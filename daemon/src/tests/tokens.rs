@@ -519,6 +519,81 @@
         assert!(!std::path::Path::new("/d/z.db").exists(), "aucun fichier créé pour un provision fail-closed");
     }
 
+    /// LE CONTRAT DE SCHÉMA S'APPLIQUE AUSSI AUX BASES TENANT — mesuré, pas déduit d'une relecture.
+    ///
+    /// Ce que la revue a mesuré sur le code précédent : une base tenant n'était migrée qu'AU
+    /// PROVISIONNEMENT. Le writer, lui, était ouvert au fil de l'eau sans `prepare_schema`, sans
+    /// `migrate` et sans contrôle -> après une mise à jour de binaire ajoutant une migration, les bases
+    /// tenant EXISTANTES étaient servies et ÉCRITES sur l'ancien schéma. Le cache mémoïse : on l'ÉVINCE
+    /// pour reproduire ce qu'est un nouveau processus (redémarrage après montée de version).
+    ///
+    /// Trois formes, dont deux que rien ne « vise » explicitement :
+    ///   (1) base tenant en RETARD de version -> elle est MIGRÉE à l'ouverture (et pas servie telle quelle) ;
+    ///   (2) base tenant estampillée au maximum mais AMPUTÉE D'UNE TABLE -> writer REFUSÉ (None) ;
+    ///   (3) base tenant estampillée au maximum mais AMPUTÉE D'UNE COLONNE -> writer REFUSÉ aussi.
+    #[test]
+    fn mode1_tenant_writer_applies_the_schema_contract() {
+        let key = tenant_generate_key();
+        let cp = mk_test_control();
+        let st = tenant_test_state("plume-admin", "plume-editor", "admins", Some(cp));
+        let path = mk_tmp_path("writer-contract.db");
+        tenant_provision(&st.tenants, "t", "T", &path, &format!("literal:{key}")).expect("provision");
+
+        // outil : agit DIRECTEMENT sur le fichier tenant, puis évince le writer mémoïsé (= nouveau processus).
+        let direct = |sql: &str| {
+            let c = open_db_keyed(&path, Some(&key)).expect("ouverture directe");
+            c.execute_batch(sql).expect("ordre direct");
+        };
+        let evict = || {
+            st.tenants.writers.lock().remove("t");
+        };
+
+        // (1) RETARD DE VERSION : la base est rendue « pré-v111 » ; le writer doit la MIGRER, pas la servir.
+        direct("UPDATE meta SET value='100' WHERE key='schema_version'");
+        evict();
+        let h = st.tenants.handle_for("t").expect("base en retard : elle doit être migrée puis servie");
+        assert_eq!(
+            read_schema_version(&h.lock()),
+            CODE_SCHEMA_MAX,
+            "la base tenant a été MIGRÉE à l'ouverture du writer (elle était servie telle quelle avant)"
+        );
+
+        // (2) TABLE ABSENTE sur une base estampillée au maximum : aucune garde `if v < N` ne la recrée.
+        direct("DROP TABLE net_ban");
+        evict();
+        assert!(
+            st.tenants.handle_for("t").is_none(),
+            "table absente -> writer REFUSÉ (fail-closed), pas de handle sur un schéma inconnu"
+        );
+
+        // (3) COLONNE ABSENTE : forme que le correctif précédent ne voyait pas du tout.
+        direct("CREATE TABLE IF NOT EXISTS net_ban(ip TEXT NOT NULL, reason TEXT, created_ts INTEGER, \
+                expires_ts INTEGER, created_by TEXT, env_id TEXT NOT NULL DEFAULT 'prod', PRIMARY KEY(ip, env_id))");
+        evict();
+        assert!(st.tenants.handle_for("t").is_some(), "précondition : la table recréée rend la base servable");
+        direct("ALTER TABLE event DROP COLUMN env_id");
+        evict();
+        assert!(
+            st.tenants.handle_for("t").is_none(),
+            "colonne absente -> writer REFUSÉ (fail-closed)"
+        );
+
+        // (4) ET LE REFUS NE DOIT PAS FAIRE ÉCRIRE AILLEURS. `req_db` doit rendre un handle (les 171
+        // sites de `req_conn!` ne savent pas échouer) : historiquement il retombait sur `st.db`, donc les
+        // écritures d'un tenant indisponible atterrissaient dans la base d'un AUTRE tenant. Le repli est
+        // désormais une base CUL-DE-SAC : écriture ET lecture y échouent, et rien n'a bougé chez `default`.
+        let avant: i64 = st.db.lock().query_row("SELECT COUNT(*) FROM event", [], |r| r.get(0)).unwrap();
+        let au = AuthUser { name: "u".into(), role: "admin".into(), tenant: "t".into(), is_superadmin: false, method: "basic".into(), csrf: String::new(), env: None };
+        let h = req_db(&st, &au);
+        assert!(!Arc::ptr_eq(&h, &st.db), "le repli ne doit PAS être la base d'un autre tenant");
+        let ecrit = h.lock().execute("INSERT INTO event(ts,source,message) VALUES(1,'x','y')", []);
+        assert!(ecrit.is_err(), "écriture sur le repli : REFUSÉE ({ecrit:?})");
+        let apres: i64 = st.db.lock().query_row("SELECT COUNT(*) FROM event", [], |r| r.get(0)).unwrap();
+        assert_eq!(avant, apres, "AUCUNE ligne n'a atterri dans la base d'un autre tenant");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// LE CRITÈRE #2a-2c : en mode 1, un JOB DE FOND dispatché via `for_each_active_tenant` ne touche QUE la
     /// base du tenant. Deux tenants A/B (fichiers SQLCipher temp, en clair pour le test) + un tenant 'x' à clé
     /// NON résoluble (vault: sans config). Prouve : (0) l'itération visite A et B, SKIP 'x' (fail-closed) et

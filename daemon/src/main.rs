@@ -628,9 +628,12 @@ fn soql_ident_ok(s: &str) -> bool {
 // req_db/req_db_path routent le CHEMIN REQUÊTE (handlers data + ingest) vers la base du tenant COURANT
 // (AuthUser.tenant, résolu par auth_guard). INVARIANT ABSOLU : mode 0 (multi_tenant=false / control=None)
 // => req_db == st.db et req_db_path == st.db_path (tenant `default`) -> comportement STRICTEMENT identique.
-// Mode 1 => TenantDbManager.handle_for / resolve. Le guard a DÉJÀ renvoyé 403 si le tenant n'est pas
-// résolvable, donc ici handle_for/resolve réussissent ; le `unwrap_or` défensif retombe sur la base
-// OPÉRATEUR `default` (st.db), JAMAIS sur une base client (fail-safe, chemin non atteint en pratique).
+// Mode 1 => TenantDbManager.handle_for / resolve. Le guard renvoie 403 quand le tenant n'est pas
+// RÉSOLVABLE, mais ce n'est plus la seule cause d'indisponibilité : `handle_for` refuse aussi une base
+// tenant dont le SCHÉMA n'est pas celui attendu (contrat `prepare_schema`), et ce cas-là n'est pas vu
+// par le guard. Le repli de `req_db` n'est donc plus « la base opérateur `default` » — c'était une
+// écriture chez un AUTRE tenant : c'est une base CUL-DE-SAC en mémoire `query_only` (cf.
+// `unavailable_tenant_db`), où toute écriture et toute lecture échouent bruyamment.
 //
 // #2a-2c (FAIT, PAS un vecteur de fuite) : les JOBS DE FOND (run_due_rules / run_playbooks / retention_run /
 // rollup_events / materialize_banned_ip / cache_refresh_all_panels / freshness périodique / autoindex)

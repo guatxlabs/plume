@@ -291,7 +291,48 @@ pub(crate) struct TenantDbManager {
     pub(crate) default_db_path: Arc<String>,
     pub(crate) default_writer: Arc<Mutex<Connection>>,
     pub(crate) control: Option<ControlPlane>,
-    pub(crate) writers: Arc<Mutex<HashMap<String, Arc<Mutex<Connection>>>>>,
+    pub(crate) writers: Arc<Mutex<HashMap<String, prepared_writer::PreparedWriter>>>,
+}
+
+/// LE CACHE DES WRITERS TENANT NE PEUT PAS CONTENIR UNE BASE NON PRÉPARÉE — et ce n'est pas une
+/// convention de relecture, c'est le TYPE.
+///
+/// Ce que la revue a mesuré sur le code précédent : `handle_for` ouvrait une base TENANT en ÉCRITURE
+/// au fil de l'eau (`open_db_keyed` puis mise en cache) SANS `prepare_schema`, sans `migrate`, sans
+/// aucun contrôle. Une base tenant n'était migrée qu'AU PROVISIONNEMENT (`tenant_provision`) : après
+/// une mise à jour de binaire ajoutant une migration, les bases tenant EXISTANTES étaient servies et
+/// ÉCRITES sur l'ancien schéma. C'est le « fail-open par l'appelant oublié », un étage plus bas.
+///
+/// La réparation ne consiste PAS à ajouter un appel de plus (le prochain appelant l'oublierait à son
+/// tour), mais à rendre l'appel STRUCTUREL : la carte des writers ne stocke plus un
+/// `Arc<Mutex<Connection>>` — que n'importe quel code peut fabriquer — mais un `PreparedWriter`, dont
+/// le champ est PRIVÉ au sous-module et dont le seul constructeur est `PreparedWriter::open`, qui
+/// applique `prepare_schema` et échoue si le contrat n'est pas satisfait. Insérer une connexion non
+/// préparée dans ce cache NE COMPILE PAS. Mesuré : le comportement par
+/// `mode1_tenant_writer_applies_the_schema_contract`, la propriété structurelle par la compilation
+/// elle-même (aucun autre chemin ne peut produire la valeur que la carte attend).
+pub(crate) mod prepared_writer {
+    use super::*;
+
+    /// Writer d'une base plume dont le contrat de schéma A ÉTÉ VÉRIFIÉ. Champ privé : hors de ce
+    /// sous-module, la seule façon d'en obtenir un est `open`.
+    #[derive(Clone)]
+    pub(crate) struct PreparedWriter(Arc<Mutex<Connection>>);
+
+    impl PreparedWriter {
+        /// Ouvre `path` avec `key`, APPLIQUE LE CONTRAT DE SCHÉMA, et n'existe que s'il est satisfait.
+        /// `Err` = base NON servie (fail-closed) : jamais un handle sur un schéma inconnu.
+        pub(crate) fn open(path: &str, key: Option<&str>) -> Result<Self, String> {
+            let conn = open_db_keyed(path, key).map_err(|e| format!("ouverture impossible ({e})"))?;
+            prepare_schema(&conn)?;
+            Ok(PreparedWriter(Arc::new(Mutex::new(conn))))
+        }
+
+        /// Le handle, une fois le contrat satisfait.
+        pub(crate) fn handle(&self) -> Arc<Mutex<Connection>> {
+            self.0.clone()
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -332,20 +373,42 @@ impl TenantDbManager {
     }
 
     /// Handle d'ÉCRITURE (writer) du tenant. Mode 0 : le writer process-global existant (st.db) —
-    /// passthrough exact. Mode 1 : writer mémoïsé, ouvert LAZY sur (db_path, clé) résolus. INERTE :
-    /// aucun handler data ne l'utilise encore (#2a-2b).
+    /// passthrough exact, AUCUNE ligne de ce chemin n'est touchée (c'est `server.rs` qui a déjà passé
+    /// ce handle par `prepare_schema` avant le bind). Mode 1 : writer mémoïsé, ouvert LAZY sur
+    /// (db_path, clé) résolus — et le contrat de schéma est appliqué à l'ouverture, parce que le type
+    /// stocké dans le cache ne peut pas être construit autrement (cf. `prepared_writer`).
+    ///
+    /// FAIL-CLOSED : une base tenant qui ne satisfait pas le contrat (migration interrompue, ou schéma
+    /// estampillé sans ce que le binaire déclare) rend `None` — le tenant n'est PAS servi, au lieu
+    /// d'être servi et ÉCRIT sur un schéma ancien. La cause est nommée dans le journal ; elle ne
+    /// contient jamais la clé.
     pub(crate) fn handle_for(&self, tenant: &str) -> Option<Arc<Mutex<Connection>>> {
         if self.control.is_none() {
             return Some(self.default_writer.clone());
         }
         if let Some(w) = self.writers.lock().get(tenant) {
-            return Some(w.clone());
+            return Some(w.handle());
         }
         let (path, key) = self.resolve(tenant)?;
-        let conn = open_db_keyed(&path, key.as_deref()).ok()?;
-        let w = Arc::new(Mutex::new(conn));
-        self.writers.lock().insert(tenant.to_string(), w.clone());
-        Some(w)
+        let w = match prepared_writer::PreparedWriter::open(&path, key.as_deref()) {
+            Ok(w) => w,
+            Err(e) => {
+                // NB : on ne prétend PAS que « rien n'a été écrit » — `prepare_schema` a pu appliquer
+                // db/schema.sql et des étapes de migration avant d'échouer. Ce qui est garanti ici est
+                // plus étroit et suffisant : AUCUNE requête ne sera routée vers cette base.
+                eprintln!(
+                    "[multi-tenant] tenant '{tenant}' : base NON servie — {e}. Aucune requête ne sera \
+                     routée vers elle ; déployer un binaire compatible ou réparer la base, puis réessayer"
+                );
+                return None;
+            }
+        };
+        // `or_insert` et non `insert` : deux requêtes concurrentes sur un tenant froid ouvrent chacune
+        // leur connexion (le verrou n'est PAS tenu pendant l'ouverture — la préparation peut migrer, on
+        // ne bloque pas les autres tenants pendant ce temps) ; la première arrivée reste, la seconde est
+        // relâchée. Aucune connexion déjà distribuée n'est remplacée sous les pieds d'un appelant.
+        let mut cache = self.writers.lock();
+        Some(cache.entry(tenant.to_string()).or_insert(w).handle())
     }
 }
 
@@ -567,12 +630,41 @@ pub(crate) fn lookup_basic_ident(st: &AppState, name: &str) -> Option<(String, S
     ident
 }
 
-/// Handle d'écriture de la base du tenant COURANT (par-requête). Mode 0 : st.db (passthrough exact).
+/// BASE CUL-DE-SAC — le repli d'un tenant INDISPONIBLE, en mode 1 uniquement.
+///
+/// POURQUOI ELLE EXISTE. `req_db` doit rendre un handle — il est appelé par la macro `req_conn!`, dont
+/// `grep -rn 'req_conn!(' daemon/src` compte 178 sites, dont aucun ne sait échouer — et le repli
+/// historique était `st.db`, c'est-à-dire LA BASE DU TENANT
+/// `default` : un tenant indisponible faisait donc ATTERRIR SES ÉCRITURES DANS UNE AUTRE BASE. Le
+/// commentaire de `main.rs` le justifiait par « chemin non atteint en pratique », ce qui n'est plus
+/// vrai depuis que `handle_for` peut refuser une base dont le SCHÉMA n'est pas celui attendu.
+///
+/// CE QU'ELLE EST : une base en mémoire, VIDE, `query_only=ON`, partagée par le processus. Toute
+/// écriture y échoue, toute lecture aussi (la table n'existe pas) ; le message exact est celui de
+/// SQLite et n'est pas re-cité ici, seul l'échec est vérifié
+/// (`mode1_tenant_writer_applies_the_schema_contract`). Le
+/// tenant est donc BRUYAMMENT indisponible au lieu d'écrire silencieusement chez quelqu'un d'autre —
+/// et ce raisonnement ne dépend PAS de la cause de l'indisponibilité (clé non résoluble, tenant
+/// suspendu, schéma refusé, ou la prochaine cause qu'on ajoutera).
+fn unavailable_tenant_db() -> Arc<Mutex<Connection>> {
+    static CUL_DE_SAC: std::sync::OnceLock<Arc<Mutex<Connection>>> = std::sync::OnceLock::new();
+    CUL_DE_SAC
+        .get_or_init(|| {
+            // une ouverture en mémoire qui échoue = plus de mémoire : le processus est déjà perdu.
+            let c = Connection::open_in_memory().expect("base cul-de-sac en mémoire");
+            let _ = c.execute_batch("PRAGMA query_only=ON;");
+            Arc::new(Mutex::new(c))
+        })
+        .clone()
+}
+
+/// Handle d'écriture de la base du tenant COURANT (par-requête). Mode 0 : st.db (passthrough exact,
+/// AUCUNE ligne changée). Mode 1 : la base DU tenant, ou la base cul-de-sac s'il est indisponible.
 pub(crate) fn req_db(st: &AppState, au: &AuthUser) -> Arc<Mutex<Connection>> {
     if !st.multi_tenant {
         return st.db.clone();
     }
-    st.tenants.handle_for(&au.tenant).unwrap_or_else(|| st.db.clone())
+    st.tenants.handle_for(&au.tenant).unwrap_or_else(unavailable_tenant_db)
 }
 
 /// Chemin de la base du tenant COURANT (clé du read-pool + des caches par-db_path). Mode 0 : st.db_path.

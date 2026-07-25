@@ -367,12 +367,14 @@ fn open_and_migrate_db(db_path: String, spool: String, conf: HashMap<String, Str
     // contrôle de sécurité, devient un passthrough).
     //
     // CHOIX ASSUMÉ : arrêt propre en code 1, AVANT `reconcile_index_state`, les `seed_*` et le bind.
-    // Conséquence à connaître : une contention TRANSITOIRE d'écriture (le sidecar backup tient le verrou
-    // plus longtemps que le `busy_timeout` -> `BEGIN IMMEDIATE` en SQLITE_BUSY) produit un
-    // CrashLoopBackOff VISIBLE au lieu d'un daemon qui sert amputé ; là, le redémarrage suffit dès que le
-    // verrou est rendu. Pour un objet manquant, en revanche, le redémarrage NE répare RIEN (le message le
-    // dit) : c'est une intervention opérateur. On préfère l'indisponibilité bruyante à la sécurité
-    // silencieusement absente dans les deux cas.
+    // Ce que ce refus couvre EXACTEMENT, et ce qu'il ne couvre pas : `prepare_schema` juge l'ÉTAT FINAL.
+    // Une contention TRANSITOIRE d'écriture (le sidecar backup tient le verrou) fait échouer
+    // `db/schema.sql`, mais sur une base DÉJÀ au schéma attendu cet échec est SANS EFFET et le démarrage
+    // continue (mesuré : `write_contention_on_an_up_to_date_database_is_not_a_refusal`). Si la base
+    // n'est PAS à jour, la contention empêche vraiment la migration : refus, et là le redémarrage suffit
+    // dès que le verrou est rendu. Pour un élément de schéma manquant, en revanche, le redémarrage NE
+    // répare RIEN (le message le dit) : c'est une intervention opérateur. On préfère l'indisponibilité
+    // bruyante à la sécurité silencieusement absente.
     if let Err(e) = prepare_schema(&conn) {
         eprintln!(
             "[schema] REFUS DE SERVIR : {e}. Servir dans cet état rendrait des fonctions (dont des \

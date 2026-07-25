@@ -3,6 +3,14 @@
 //! est décomposée en `migrate()` DISPATCHER + un `fn migrate_vN(conn)` VERBATIM par version (mêmes
 //! gardes, même ordre, mêmes bumps schema_version). Exceptions gardées INLINE car leur branche
 //! d'échec fait `return` (abandon de TOUT migrate() -> retry au boot) : v33, v67, v77.
+//!
+//! INTÉGRITÉ DE SCHÉMA : chaque `migrate_vN` est exécutée par `migrate_step` — UNE transaction par
+//! version, bump `meta.schema_version` INCLUS -> un échec OPÉRATIONNEL (disque plein, base verrouillée ;
+//! classe B, cf. `MigTx`) est ROLLBACKé et laisse la version à l'ANCIENNE valeur, l'étape étant
+//! re-tentée au prochain démarrage. Les 3 exceptions INLINE (v33/v67/v77) ne sont PAS enveloppées :
+//! elles implémentent DÉJÀ le bump conditionnel (closure faillible + `return` sur échec) et portent
+//! leur propre logique de reprise après interruption sur des mouvements de données volumineux — les
+//! toucher n'apporterait rien à l'intégrité du bump et en dégraderait la lisibilité.
 use crate::*;
 
 /// v105 (CHANGE 1) — GARDE ANTI-DOWNGRADE. Version de schéma la PLUS HAUTE que CE binaire sait migrer
@@ -33,46 +41,187 @@ pub(crate) fn schema_downgrade_guard(conn: &Connection) -> Result<i64, i64> {
     if v > CODE_SCHEMA_MAX { Err(v) } else { Ok(v) }
 }
 
+/// INTÉGRITÉ DE SCHÉMA — les `migrate_vN` ignorent volontairement le résultat de leurs DDL (`let _ =`)
+/// parce que la RÉ-APPLICATION est le cas NORMAL (base déjà partiellement au schéma). DEUX CLASSES
+/// d'échec se cachaient derrière ce même `let _ =`, et il FAUT les distinguer :
+///
+///   CLASSE A — IDEMPOTENCE, « existe déjà » (`SQLITE_ERROR`/`SQLITE_CONSTRAINT` : « duplicate column
+///     name » d'un `ALTER TABLE ADD COLUMN` déjà appliqué, « already exists », « no such table » sur le
+///     DROP d'un objet legacy absent, UNIQUE sur un seed re-joué…). L'échec ne CHANGE PAS le résultat :
+///     l'objet est déjà dans l'état voulu. On continue de l'IGNORER — c'est la raison d'être du `let _ =`
+///     et le comportement HISTORIQUE, préservé à l'identique.
+///   CLASSE B — ÉCHEC OPÉRATIONNEL (disque plein, base verrouillée, I/O, lecture seule, corruption) :
+///     l'objet N'A PAS été créé et une nouvelle tentative peut réussir. Ignorer ce résultat rendait
+///     l'échec INDISTINGUABLE de la classe A, et le bump `UPDATE meta SET value='N'` — une écriture EN
+///     PLACE, qui n'alloue aucune page et réussit donc même disque plein — estampillait la base comme
+///     migrée SANS ses objets. État IRRÉPARABLE : la garde anti-downgrade interdit tout retour à un
+///     binaire antérieur, et `if v < N` ne re-tentera jamais l'étape.
+///
+/// `MigTx` est un `Connection` emprunté qui expose la MÊME SIGNATURE que `Connection::execute` /
+/// `execute_batch` — les corps des `migrate_vN` restent donc VERBATIM, `let _ =` compris — et qui
+/// MÉMORISE la première erreur de CLASSE B. `migrate_step` en fait la condition du COMMIT.
+struct MigTx<'c> {
+    conn: &'c Connection,
+    /// Première erreur de CLASSE B rencontrée pendant l'étape (`None` = aucune).
+    failure: std::cell::RefCell<Option<String>>,
+}
+
+impl std::ops::Deref for MigTx<'_> {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        self.conn
+    }
+}
+
+impl<'c> MigTx<'c> {
+    fn new(conn: &'c Connection) -> Self {
+        MigTx { conn, failure: std::cell::RefCell::new(None) }
+    }
+
+    fn note<T>(&self, sql: &str, r: &rusqlite::Result<T>) {
+        if let Err(e) = r {
+            if is_operational_failure(e) && self.failure.borrow().is_none() {
+                // extrait COURT de l'ordre SQL : suffisant pour situer l'échec dans le journal de
+                // l'opérateur, sans recopier une DDL entière dans un log.
+                let head: Vec<&str> = sql.split_whitespace().take(5).collect();
+                *self.failure.borrow_mut() = Some(format!("{e} — sur « {}… »", head.join(" ")));
+            }
+        }
+    }
+
+    /// MÊME signature que `Connection::execute` : les appels des `migrate_vN` sont INCHANGÉS.
+    fn execute<P: rusqlite::Params>(&self, sql: &str, params: P) -> rusqlite::Result<usize> {
+        let r = self.conn.execute(sql, params);
+        self.note(sql, &r);
+        r
+    }
+
+    /// MÊME signature que `Connection::execute_batch` : les appels des `migrate_vN` sont INCHANGÉS.
+    fn execute_batch(&self, sql: &str) -> rusqlite::Result<()> {
+        let r = self.conn.execute_batch(sql);
+        self.note(sql, &r);
+        r
+    }
+}
+
+/// CLASSE B (cf. `MigTx`) : codes SQLite qui signent un échec de l'ENVIRONNEMENT — l'opération n'a PAS
+/// eu lieu et une nouvelle tentative peut réussir. Liste FERMÉE : tout le reste (dont `SQLITE_ERROR` et
+/// `SQLITE_CONSTRAINT`, qui portent les échecs d'idempotence de la classe A) conserve EXACTEMENT le
+/// comportement historique (résultat ignoré).
+fn is_operational_failure(e: &rusqlite::Error) -> bool {
+    use rusqlite::ErrorCode::*;
+    match e {
+        rusqlite::Error::SqliteFailure(err, _) => matches!(
+            err.code,
+            DiskFull
+                | DatabaseBusy
+                | DatabaseLocked
+                | ReadOnly
+                | OutOfMemory
+                | SystemIoFailure
+                | DatabaseCorrupt
+                | NotADatabase
+                | CannotOpen
+                | PermissionDenied
+                | FileLockingProtocolFailed
+                | OperationInterrupted
+                | OperationAborted
+                | InternalMalfunction
+        ),
+        _ => false,
+    }
+}
+
+/// Exécute UNE étape de migration DANS UNE TRANSACTION, bump `meta.schema_version` INCLUS.
+/// `true` = étape COMMITÉE (version == `target`). `false` = ROLLBACK : la base est rendue à son état
+/// d'AVANT l'étape, version comprise, et l'appelant ABANDONNE le reste de `migrate()` — `v` n'est lu
+/// qu'UNE fois, donc laisser les étapes suivantes bumper la version SAUTERAIT définitivement l'étape
+/// échouée (précédent : les blocs INLINE v33/v67/v77, qui `return` déjà sur échec de leur backfill).
+/// L'étape est ainsi RE-TENTÉE au prochain démarrage.
+///
+/// SQLite : les DDL (CREATE/ALTER/DROP) et les DML sont transactionnelles. `migrate.rs` ne contient
+/// AUCUN `VACUUM` ni `PRAGMA journal_mode` — les deux ordres qui ÉCHOUENT dans une transaction ; les
+/// seuls PRAGMA présents sont `analysis_limit` (simple réglage) suivi d'`ANALYZE` (v32/v35), qui écrit
+/// `sqlite_stat1` comme n'importe quel INSERT et s'exécute donc sans contrainte dans la transaction.
+fn migrate_step(conn: &Connection, target: i64, body: fn(&MigTx)) -> bool {
+    let before = read_schema_version(conn);
+    if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
+        eprintln!(
+            "[migration] v{target} ÉCHEC ouverture de transaction ({e}) — version laissée à {before}, \
+             RE-TENTÉE au prochain démarrage (migrate interrompu)"
+        );
+        return false;
+    }
+    let tx = MigTx::new(conn);
+    body(&tx);
+    let failure = tx.failure.borrow().clone();
+    // Le bump appartient à la TRANSACTION : on vérifie qu'il a bien eu lieu AVANT de committer (une
+    // étape qui n'estampille pas la version est un échec, pas un succès silencieux).
+    let stamped = read_schema_version(conn) == target;
+    if failure.is_none() && stamped {
+        if let Err(e) = conn.execute_batch("COMMIT") {
+            let _ = conn.execute_batch("ROLLBACK");
+            eprintln!(
+                "[migration] v{target} ÉCHEC COMMIT ({e}) — version laissée à {before}, RE-TENTÉE au \
+                 prochain démarrage (migrate interrompu)"
+            );
+            return false;
+        }
+        return true;
+    }
+    let _ = conn.execute_batch("ROLLBACK");
+    let cause = failure.unwrap_or_else(|| format!("schema_version non estampillée à {target}"));
+    eprintln!(
+        "[migration] v{target} ÉCHEC ({cause}) — ROLLBACK : le message « schéma -> v{target} » \
+         éventuellement affiché ci-dessus est ANNULÉ ; version laissée à {before}, RE-TENTÉE au prochain \
+         démarrage (migrate interrompu)"
+    );
+    false
+}
+
 /// Migrations de schéma versionnées (meta.schema_version). Idempotent : les `ALTER`
 /// déjà appliqués renvoient une erreur « duplicate column » qu'on ignore volontairement.
 /// Indispensable car `CREATE TABLE IF NOT EXISTS` n'ajoute pas de colonnes aux tables existantes.
+/// Chaque étape passe par `migrate_step` : UNE transaction par version, bump INCLUS -> une étape qui
+/// échoue pour une raison OPÉRATIONNELLE (classe B, cf. `MigTx`) est ROLLBACKée et laisse la version
+/// à l'ancienne valeur ; `migrate()` s'interrompt et l'étape est re-tentée au prochain démarrage.
 pub(crate) fn migrate(conn: &Connection) {
     let v: i64 = conn
         .query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get::<_, String>(0))
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
-    if v < 2 { migrate_v2(conn); }
-    if v < 3 { migrate_v3(conn); }
-    if v < 4 { migrate_v4(conn); }
-    if v < 5 { migrate_v5(conn); }
-    if v < 6 { migrate_v6(conn); }
-    if v < 7 { migrate_v7(conn); }
-    if v < 8 { migrate_v8(conn); }
-    if v < 9 { migrate_v9(conn); }
-    if v < 10 { migrate_v10(conn); }
-    if v < 11 { migrate_v11(conn); }
-    if v < 12 { migrate_v12(conn); }
-    if v < 13 { migrate_v13(conn); }
-    if v < 14 { migrate_v14(conn); }
-    if v < 15 { migrate_v15(conn); }
-    if v < 16 { migrate_v16(conn); }
-    if v < 17 { migrate_v17(conn); }
-    if v < 18 { migrate_v18(conn); }
-    if v < 19 { migrate_v19(conn); }
-    if v < 20 { migrate_v20(conn); }
-    if v < 21 { migrate_v21(conn); }
-    if v < 22 { migrate_v22(conn); }
-    if v < 23 { migrate_v23(conn); }
-    if v < 24 { migrate_v24(conn); }
-    if v < 25 { migrate_v25(conn); }
-    if v < 26 { migrate_v26(conn); }
-    if v < 27 { migrate_v27(conn); }
-    if v < 28 { migrate_v28(conn); }
-    if v < 29 { migrate_v29(conn); }
-    if v < 30 { migrate_v30(conn); }
-    if v < 31 { migrate_v31(conn); }
-    if v < 32 { migrate_v32(conn); }
+    if v < 2 && !migrate_step(conn, 2, migrate_v2) { return; }
+    if v < 3 && !migrate_step(conn, 3, migrate_v3) { return; }
+    if v < 4 && !migrate_step(conn, 4, migrate_v4) { return; }
+    if v < 5 && !migrate_step(conn, 5, migrate_v5) { return; }
+    if v < 6 && !migrate_step(conn, 6, migrate_v6) { return; }
+    if v < 7 && !migrate_step(conn, 7, migrate_v7) { return; }
+    if v < 8 && !migrate_step(conn, 8, migrate_v8) { return; }
+    if v < 9 && !migrate_step(conn, 9, migrate_v9) { return; }
+    if v < 10 && !migrate_step(conn, 10, migrate_v10) { return; }
+    if v < 11 && !migrate_step(conn, 11, migrate_v11) { return; }
+    if v < 12 && !migrate_step(conn, 12, migrate_v12) { return; }
+    if v < 13 && !migrate_step(conn, 13, migrate_v13) { return; }
+    if v < 14 && !migrate_step(conn, 14, migrate_v14) { return; }
+    if v < 15 && !migrate_step(conn, 15, migrate_v15) { return; }
+    if v < 16 && !migrate_step(conn, 16, migrate_v16) { return; }
+    if v < 17 && !migrate_step(conn, 17, migrate_v17) { return; }
+    if v < 18 && !migrate_step(conn, 18, migrate_v18) { return; }
+    if v < 19 && !migrate_step(conn, 19, migrate_v19) { return; }
+    if v < 20 && !migrate_step(conn, 20, migrate_v20) { return; }
+    if v < 21 && !migrate_step(conn, 21, migrate_v21) { return; }
+    if v < 22 && !migrate_step(conn, 22, migrate_v22) { return; }
+    if v < 23 && !migrate_step(conn, 23, migrate_v23) { return; }
+    if v < 24 && !migrate_step(conn, 24, migrate_v24) { return; }
+    if v < 25 && !migrate_step(conn, 25, migrate_v25) { return; }
+    if v < 26 && !migrate_step(conn, 26, migrate_v26) { return; }
+    if v < 27 && !migrate_step(conn, 27, migrate_v27) { return; }
+    if v < 28 && !migrate_step(conn, 28, migrate_v28) { return; }
+    if v < 29 && !migrate_step(conn, 29, migrate_v29) { return; }
+    if v < 30 && !migrate_step(conn, 30, migrate_v30) { return; }
+    if v < 31 && !migrate_step(conn, 31, migrate_v31) { return; }
+    if v < 32 && !migrate_step(conn, 32, migrate_v32) { return; }
     if v < 33 {
         // v33 : ÉLARGIT event_rollup avec src_ip + host -> les panneaux « par src_ip / par host » lisent du
         // PRÉ-AGRÉGÉ (au lieu de scanner ~1,2M lignes chiffrées). SQLite ne sait pas ALTER une PK -> on
@@ -133,39 +282,39 @@ pub(crate) fn migrate(conn: &Connection) {
             }
         }
     }
-    if v < 34 { migrate_v34(conn); }
-    if v < 35 { migrate_v35(conn); }
-    if v < 36 { migrate_v36(conn); }
-    if v < 37 { migrate_v37(conn); }
-    if v < 38 { migrate_v38(conn); }
-    if v < 39 { migrate_v39(conn); }
-    if v < 40 { migrate_v40(conn); }
-    if v < 41 { migrate_v41(conn); }
-    if v < 42 { migrate_v42(conn); }
-    if v < 43 { migrate_v43(conn); }
-    if v < 44 { migrate_v44(conn); }
-    if v < 45 { migrate_v45(conn); }
-    if v < 46 { migrate_v46(conn); }
-    if v < 47 { migrate_v47(conn); }
-    if v < 48 { migrate_v48(conn); }
-    if v < 49 { migrate_v49(conn); }
-    if v < 50 { migrate_v50(conn); }
-    if v < 51 { migrate_v51(conn); }
-    if v < 52 { migrate_v52(conn); }
-    if v < 53 { migrate_v53(conn); }
-    if v < 54 { migrate_v54(conn); }
-    if v < 55 { migrate_v55(conn); }
-    if v < 56 { migrate_v56(conn); }
-    if v < 57 { migrate_v57(conn); }
-    if v < 58 { migrate_v58(conn); }
-    if v < 59 { migrate_v59(conn); }
-    if v < 60 { migrate_v60(conn); }
-    if v < 61 { migrate_v61(conn); }
-    if v < 62 { migrate_v62(conn); }
-    if v < 63 { migrate_v63(conn); }
-    if v < 64 { migrate_v64(conn); }
-    if v < 65 { migrate_v65(conn); }
-    if v < 66 { migrate_v66(conn); }
+    if v < 34 && !migrate_step(conn, 34, migrate_v34) { return; }
+    if v < 35 && !migrate_step(conn, 35, migrate_v35) { return; }
+    if v < 36 && !migrate_step(conn, 36, migrate_v36) { return; }
+    if v < 37 && !migrate_step(conn, 37, migrate_v37) { return; }
+    if v < 38 && !migrate_step(conn, 38, migrate_v38) { return; }
+    if v < 39 && !migrate_step(conn, 39, migrate_v39) { return; }
+    if v < 40 && !migrate_step(conn, 40, migrate_v40) { return; }
+    if v < 41 && !migrate_step(conn, 41, migrate_v41) { return; }
+    if v < 42 && !migrate_step(conn, 42, migrate_v42) { return; }
+    if v < 43 && !migrate_step(conn, 43, migrate_v43) { return; }
+    if v < 44 && !migrate_step(conn, 44, migrate_v44) { return; }
+    if v < 45 && !migrate_step(conn, 45, migrate_v45) { return; }
+    if v < 46 && !migrate_step(conn, 46, migrate_v46) { return; }
+    if v < 47 && !migrate_step(conn, 47, migrate_v47) { return; }
+    if v < 48 && !migrate_step(conn, 48, migrate_v48) { return; }
+    if v < 49 && !migrate_step(conn, 49, migrate_v49) { return; }
+    if v < 50 && !migrate_step(conn, 50, migrate_v50) { return; }
+    if v < 51 && !migrate_step(conn, 51, migrate_v51) { return; }
+    if v < 52 && !migrate_step(conn, 52, migrate_v52) { return; }
+    if v < 53 && !migrate_step(conn, 53, migrate_v53) { return; }
+    if v < 54 && !migrate_step(conn, 54, migrate_v54) { return; }
+    if v < 55 && !migrate_step(conn, 55, migrate_v55) { return; }
+    if v < 56 && !migrate_step(conn, 56, migrate_v56) { return; }
+    if v < 57 && !migrate_step(conn, 57, migrate_v57) { return; }
+    if v < 58 && !migrate_step(conn, 58, migrate_v58) { return; }
+    if v < 59 && !migrate_step(conn, 59, migrate_v59) { return; }
+    if v < 60 && !migrate_step(conn, 60, migrate_v60) { return; }
+    if v < 61 && !migrate_step(conn, 61, migrate_v61) { return; }
+    if v < 62 && !migrate_step(conn, 62, migrate_v62) { return; }
+    if v < 63 && !migrate_step(conn, 63, migrate_v63) { return; }
+    if v < 64 && !migrate_step(conn, 64, migrate_v64) { return; }
+    if v < 65 && !migrate_step(conn, 65, migrate_v65) { return; }
+    if v < 66 && !migrate_step(conn, 66, migrate_v66) { return; }
     if v < 67 {
         // v67 (#2d) : env_id sur les ROLLUPS pré-agrégés (event_rollup / event_dim_rollup) + INTÉGRATION à
         // la PK/agrégation -> le FILTRE par environnement est COHÉRENT partout : les requêtes raw (event a
@@ -244,15 +393,15 @@ pub(crate) fn migrate(conn: &Connection) {
             }
         }
     }
-    if v < 68 { migrate_v68(conn); }
-    if v < 69 { migrate_v69(conn); }
-    if v < 70 { migrate_v70(conn); }
-    if v < 71 { migrate_v71(conn); }
-    if v < 72 { migrate_v72(conn); }
-    if v < 73 { migrate_v73(conn); }
-    if v < 74 { migrate_v74(conn); }
-    if v < 75 { migrate_v75(conn); }
-    if v < 76 { migrate_v76(conn); }
+    if v < 68 && !migrate_step(conn, 68, migrate_v68) { return; }
+    if v < 69 && !migrate_step(conn, 69, migrate_v69) { return; }
+    if v < 70 && !migrate_step(conn, 70, migrate_v70) { return; }
+    if v < 71 && !migrate_step(conn, 71, migrate_v71) { return; }
+    if v < 72 && !migrate_step(conn, 72, migrate_v72) { return; }
+    if v < 73 && !migrate_step(conn, 73, migrate_v73) { return; }
+    if v < 74 && !migrate_step(conn, 74, migrate_v74) { return; }
+    if v < 75 && !migrate_step(conn, 75, migrate_v75) { return; }
+    if v < 76 && !migrate_step(conn, 76, migrate_v76) { return; }
     if v < 77 {
         // v77 — HOST_ROLLUP : inventaire de FLOTTE pré-agrégé PAR HÔTE (backing de /api/fleet + /api/integrations).
         // BUG corrigé : les DEUX vues calculaient l'inventaire par `SELECT host,MAX(ts) FROM (event UNION ALL
@@ -326,40 +475,40 @@ pub(crate) fn migrate(conn: &Connection) {
             }
         }
     }
-    if v < 78 { migrate_v78(conn); }
-    if v < 79 { migrate_v79(conn); }
-    if v < 80 { migrate_v80(conn); }
-    if v < 81 { migrate_v81(conn); }
-    if v < 82 { migrate_v82(conn); }
-    if v < 83 { migrate_v83(conn); }
-    if v < 84 { migrate_v84(conn); }
-    if v < 85 { migrate_v85(conn); }
-    if v < 86 { migrate_v86(conn); }
-    if v < 87 { migrate_v87(conn); }
-    if v < 88 { migrate_v88(conn); }
-    if v < 89 { migrate_v89(conn); }
-    if v < 90 { migrate_v90(conn); }
-    if v < 91 { migrate_v91(conn); }
-    if v < 92 { migrate_v92(conn); }
-    if v < 93 { migrate_v93(conn); }
-    if v < 94 { migrate_v94(conn); }
-    if v < 95 { migrate_v95(conn); }
-    if v < 96 { migrate_v96(conn); }
-    if v < 97 { migrate_v97(conn); }
-    if v < 98 { migrate_v98(conn); }
-    if v < 99 { migrate_v99(conn); }
-    if v < 100 { migrate_v100(conn); }
-    if v < 101 { migrate_v101(conn); }
-    if v < 102 { migrate_v102(conn); }
-    if v < 103 { migrate_v103(conn); }
-    if v < 104 { migrate_v104(conn); }
-    if v < 105 { migrate_v105(conn); }
-    if v < 106 { migrate_v106(conn); }
-    if v < 107 { migrate_v107(conn); }
-    if v < 108 { migrate_v108(conn); }
-    if v < 109 { migrate_v109(conn); }
-    if v < 110 { migrate_v110(conn); }
-    if v < 111 { migrate_v111(conn); }
+    if v < 78 && !migrate_step(conn, 78, migrate_v78) { return; }
+    if v < 79 && !migrate_step(conn, 79, migrate_v79) { return; }
+    if v < 80 && !migrate_step(conn, 80, migrate_v80) { return; }
+    if v < 81 && !migrate_step(conn, 81, migrate_v81) { return; }
+    if v < 82 && !migrate_step(conn, 82, migrate_v82) { return; }
+    if v < 83 && !migrate_step(conn, 83, migrate_v83) { return; }
+    if v < 84 && !migrate_step(conn, 84, migrate_v84) { return; }
+    if v < 85 && !migrate_step(conn, 85, migrate_v85) { return; }
+    if v < 86 && !migrate_step(conn, 86, migrate_v86) { return; }
+    if v < 87 && !migrate_step(conn, 87, migrate_v87) { return; }
+    if v < 88 && !migrate_step(conn, 88, migrate_v88) { return; }
+    if v < 89 && !migrate_step(conn, 89, migrate_v89) { return; }
+    if v < 90 && !migrate_step(conn, 90, migrate_v90) { return; }
+    if v < 91 && !migrate_step(conn, 91, migrate_v91) { return; }
+    if v < 92 && !migrate_step(conn, 92, migrate_v92) { return; }
+    if v < 93 && !migrate_step(conn, 93, migrate_v93) { return; }
+    if v < 94 && !migrate_step(conn, 94, migrate_v94) { return; }
+    if v < 95 && !migrate_step(conn, 95, migrate_v95) { return; }
+    if v < 96 && !migrate_step(conn, 96, migrate_v96) { return; }
+    if v < 97 && !migrate_step(conn, 97, migrate_v97) { return; }
+    if v < 98 && !migrate_step(conn, 98, migrate_v98) { return; }
+    if v < 99 && !migrate_step(conn, 99, migrate_v99) { return; }
+    if v < 100 && !migrate_step(conn, 100, migrate_v100) { return; }
+    if v < 101 && !migrate_step(conn, 101, migrate_v101) { return; }
+    if v < 102 && !migrate_step(conn, 102, migrate_v102) { return; }
+    if v < 103 && !migrate_step(conn, 103, migrate_v103) { return; }
+    if v < 104 && !migrate_step(conn, 104, migrate_v104) { return; }
+    if v < 105 && !migrate_step(conn, 105, migrate_v105) { return; }
+    if v < 106 && !migrate_step(conn, 106, migrate_v106) { return; }
+    if v < 107 && !migrate_step(conn, 107, migrate_v107) { return; }
+    if v < 108 && !migrate_step(conn, 108, migrate_v108) { return; }
+    if v < 109 && !migrate_step(conn, 109, migrate_v109) { return; }
+    if v < 110 && !migrate_step(conn, 110, migrate_v110) { return; }
+    if v < 111 && !migrate_step(conn, 111, migrate_v111) { return; }
 }
 
 /// v111 (BAN NATIF PLUME — chantier ② Phase 1) — store LIVE `net_ban` : IPs que le daemon bloque à SON niveau
@@ -374,7 +523,7 @@ pub(crate) fn migrate(conn: &Connection) {
 /// ROLLBACK — bumpe le schéma à 111 : un binaire max=110 REFUSE d'ouvrir une base v111 (server.rs
 /// open_and_migrate_db, `v > CODE_SCHEMA_MAX` -> Err) -> restaurer le SNAPSHOT pré-migrate (initContainer).
 /// Forward-only, idempotent (le CREATE IF NOT EXISTS re-tourné est no-op ; la version ré-écrit juste '111').
-fn migrate_v111(conn: &Connection) {
+fn migrate_v111(conn: &MigTx) {
     let _ = conn.execute(
         "CREATE TABLE IF NOT EXISTS net_ban(\
          ip TEXT NOT NULL, reason TEXT, created_ts INTEGER, expires_ts INTEGER, \
@@ -409,7 +558,7 @@ fn migrate_v111(conn: &Connection) {
 /// ROLLBACK — bumpe le schéma à 108 : un binaire max=107 REFUSE d'ouvrir une base v108 (server.rs
 /// open_and_migrate_db, `v > CODE_SCHEMA_MAX` -> Err). Rollback = RESTAURER le SNAPSHOT pré-migrate
 /// (initContainer). Forward-only, idempotent (le marqueur re-tourné ré-écrit juste value='108').
-fn migrate_v108(conn: &Connection) {
+fn migrate_v108(conn: &MigTx) {
     let _ = conn.execute("UPDATE meta SET value='108' WHERE key='schema_version'", []);
     eprintln!("[migration] schéma -> v108 (marqueur : idx_event_src_ts(source,ts) créé EN FOND après bind, anti-crashloop ; re-ANALYZE ; COUNT pagination borné = index-only -> recherche raw source=X haut-volume sous budget)");
 }
@@ -452,12 +601,12 @@ fn migrate_v108(conn: &Connection) {
 /// ROLLBACK — bumpe le schéma à 110 : un binaire max=109 REFUSE d'ouvrir une base v110 (server.rs
 /// open_and_migrate_db, `v > CODE_SCHEMA_MAX` -> Err). Rollback = RESTAURER le SNAPSHOT pré-migrate
 /// (initContainer) ; ré-armer les index = re-CREATE (réversible, aucune donnée touchée). Forward-only, idempotent.
-fn migrate_v110(conn: &Connection) {
+fn migrate_v110(conn: &MigTx) {
     let _ = conn.execute("UPDATE meta SET value='110' WHERE key='schema_version'", []);
     eprintln!("[migration] schéma -> v110 (P5 allègement index hot : idx_event_sev + idx_event_src DROPPÉS EN FOND — préfixes redondants de idx_event_sev_srcip / idx_event_src_ts ; marqueur pur, re-ANALYZE ; ROLLBACK = restaurer le snapshot pré-migrate)");
 }
 
-fn migrate_v109(conn: &Connection) {
+fn migrate_v109(conn: &MigTx) {
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS ai_provider(
             id          INTEGER PRIMARY KEY,
@@ -553,7 +702,7 @@ fn migrate_v109(conn: &Connection) {
 /// ROLLBACK = restaurer le snapshot pré-migrate (garde anti-downgrade : un binaire v106 REFUSE d'ouvrir une base
 /// v107). NB : la branche différée `feat/ai-nl2soql` réservait v107 pour sa migration `ai_provider` — la ligne
 /// DÉPLOYÉE prend v107 ici ; la migration NL->SOQL a été RENUMÉROTÉE en v109 à son intégration (après v108).
-fn migrate_v107(conn: &Connection) {
+fn migrate_v107(conn: &MigTx) {
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS saved_query(
             id INTEGER PRIMARY KEY,
@@ -569,7 +718,7 @@ fn migrate_v107(conn: &Connection) {
     eprintln!("[migration] schéma -> v107 (saved_query : requêtes SOQL nommées per-user, owner-scoped ; additif, VIDE -> mode 0 byte-identique ; outillage analyste INTERNE hors projection client ; ROLLBACK = restaurer le snapshot pré-migrate)");
 }
 
-fn migrate_v106(conn: &Connection) {
+fn migrate_v106(conn: &MigTx) {
     let cols: &[(&str, &str, &str)] = &[
         ("incident", "disposition", "ALTER TABLE incident ADD COLUMN disposition TEXT"),
         ("incident", "disposition_ts", "ALTER TABLE incident ADD COLUMN disposition_ts INTEGER"),
@@ -584,7 +733,7 @@ fn migrate_v106(conn: &Connection) {
     eprintln!("[migration] schéma -> v106 (#4a case-ops disposition/verdict analyste : incident.disposition/_ts/_by ; nullable/additif -> mode 0 byte-identique ; verdict INTERNE hors projection client ; ROLLBACK = restaurer le snapshot pré-migrate)");
 }
 
-fn migrate_v105(conn: &Connection) {
+fn migrate_v105(conn: &MigTx) {
     let cols: &[(&str, &str, &str)] = &[
         ("alert", "src_ip", "ALTER TABLE alert ADD COLUMN src_ip TEXT"),
         ("alert", "pid", "ALTER TABLE alert ADD COLUMN pid TEXT"),
@@ -599,7 +748,7 @@ fn migrate_v105(conn: &Connection) {
     eprintln!("[migration] schéma -> v105 (#3 P3-A cibles structurées : alert.src_ip/alert.pid + case_step.host ; nullable/additif -> mode 0 byte-identique ; ROLLBACK = restaurer le snapshot pré-migrate)");
 }
 
-fn migrate_v104(conn: &Connection) {
+fn migrate_v104(conn: &MigTx) {
     // (1) colonnes incident (nullable, sans DEFAULT réécrit).
     let _ = conn.execute("ALTER TABLE incident ADD COLUMN incident_tier INTEGER", []);
     let _ = conn.execute("ALTER TABLE incident ADD COLUMN incident_type TEXT", []);
@@ -661,7 +810,7 @@ fn migrate_v104(conn: &Connection) {
 /// connector_id NULL -> aucune n'est une clé Firehose (kind!='firehose'), donc firehose_token_lookup les rejette
 /// (fail-closed). Mode 0 byte-identique (aucune sémantique d'auth existante changée : token_lookup exclut déjà
 /// kind='firehose').
-fn migrate_v103(conn: &Connection) {
+fn migrate_v103(conn: &MigTx) {
     let _ = conn.execute("ALTER TABLE token ADD COLUMN connector_id INTEGER", []);
     let _ = conn.execute("UPDATE meta SET value='103' WHERE key='schema_version'", []);
     eprintln!("[migration] schéma -> v103 (P-HEC : token.connector_id — clé de livraison push liée à son connecteur)");
@@ -678,7 +827,7 @@ fn migrate_v103(conn: &Connection) {
 /// -> analyze_full_background re-tourne UNE fois après bind -> sqlite_stat1 connaît l'index (le planner le choisit).
 /// source = TEXT court, faible cardinalité (~35 valeurs) -> index peu coûteux (RAM maîtrisée, budget 2 Go).
 /// Additif, mode 0 byte-identique (aucune donnée modifiée, l'index ne change AUCUNE sémantique de requête).
-fn migrate_v102(conn: &Connection) {
+fn migrate_v102(conn: &MigTx) {
     // CHANGE 5 (v103) — PURGE ONE-TIME de 5 sources-RÉSIDU gelées (artefacts de test/POC/probe restés en base,
     // 9 lignes event au total). MÊME pattern que la purge de sondes v48 (§4) : DELETE event + les DEUX rollups
     // (clés portant `source`). Gardé par `if v < 102` -> tourne UNE fois ; base neuve = aucune de ces lignes ->
@@ -711,7 +860,7 @@ fn migrate_v102(conn: &Connection) {
 /// est AUSSI dans db/schema.sql) : CREATE IF NOT EXISTS idempotent, convergence base neuve/existante. VIDE ->
 /// aucun override -> apply_content_overrides ne touche 0 ligne -> boot BYTE-IDENTIQUE (mode 0). Ne porte que
 /// `enabled` (jamais query/is_soql) -> aucune surface d'élévation SQL brut.
-fn migrate_v101(conn: &Connection) {
+fn migrate_v101(conn: &MigTx) {
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS detection_override(
             kind TEXT NOT NULL, name TEXT NOT NULL, enabled INTEGER NOT NULL,
@@ -730,7 +879,7 @@ fn migrate_v101(conn: &Connection) {
 /// et seed_detection_rules pose les règles -> zéro doublon. Idempotent (« n'existe pas déjà par nom »).
 /// event-driven : ces règles restent INERTES tant qu'aucun event plume-config/authz/audit n'est écrit
 /// (mode 0 byte-identique). Source unique : DETECTION_RULES_SEC4.
-fn migrate_v100(conn: &Connection) {
+fn migrate_v100(conn: &MigTx) {
     let seeded = conn.query_row("SELECT 1 FROM meta WHERE key='seeded_detection_rules'", [], |_| Ok(())).is_ok();
     if seeded {
         for (name, q, is_soql, op, th, sev, intv, win, mitre) in DETECTION_RULES_SEC4 {
@@ -756,7 +905,7 @@ fn migrate_v100(conn: &Connection) {
 /// `WHERE user = au.name`, jamais un id fourni par le client). `prefs` = blob JSON UI-ONLY (visibilité/ordre
 /// de colonnes, favoris de dashboards, plage temporelle par défaut, réglages par vue) — JAMAIS de secret,
 /// JAMAIS rien qui change l'autorisation ; taille plafonnée côté handler (64 KiB). Additif pur.
-fn migrate_v99(conn: &Connection) {
+fn migrate_v99(conn: &MigTx) {
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS user_pref(
             user TEXT PRIMARY KEY,
@@ -778,7 +927,7 @@ fn migrate_v99(conn: &Connection) {
 ///     et `case_get_json` se comportent EXACTEMENT comme avant (le filtre `merged_into IS NULL` par défaut ne
 ///     retire rien tant qu'aucune fusion n'a eu lieu).
 ///  Colonnes ajoutées par `col_exists` (re-jouable / idempotent), mêmes garanties que v69/v70.
-fn migrate_v98(conn: &Connection) {
+fn migrate_v98(conn: &MigTx) {
     // 1) MULTI-LEVEL SLA : politiques configurables par priorité (ack + resolve distincts). VIDE = SLA legacy.
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS sla_policy(
@@ -842,7 +991,7 @@ fn migrate_v98(conn: &Connection) {
     eprintln!("[migration] schéma -> v98 (#39 team case-ops : sla_policy + case_link + incident.merged_into/ack_due/resolve_due/breach/pause ; additif, VIDE -> mode 0 byte-identique, SLA legacy inchangé)");
 }
 
-fn migrate_v97(conn: &Connection) {
+fn migrate_v97(conn: &MigTx) {
     // v97 (#60 KNOWLEDGE OBJECTS — reliquat DIFFÉRÉ de #46 : MACROS, AUTO-LOOKUPS/GeoIP, SCHEDULED REPORTS,
     //  WORKFLOW ACTIONS). QUATRE tables NEUVES, VIDES à la création -> ZÉRO effet tant qu'aucune ligne :
     //   - macro_def / auto_lookup se chargent dans le `KnowledgeSet` du tenant (via `knowledge_reload`). VIDE
@@ -911,7 +1060,7 @@ fn migrate_v97(conn: &Connection) {
     eprintln!("[migration] schéma -> v97 (#60 KO reliquat : macro_def + auto_lookup + scheduled_report + workflow_action ; additif, VIDES -> mode 0 byte-identique tant qu'aucune ligne)");
 }
 
-fn migrate_v96(conn: &Connection) {
+fn migrate_v96(conn: &MigTx) {
     // v96 (#59 GOUVERNANCE ENTREPRISE — reliquat DIFFÉRÉ de #38). DEUX tables PER-TENANT, VIDES à la
     //  création -> ZÉRO effet tant qu'aucune ligne (mode 0 byte-identique ; prouvé par les tests de parité
     //  `gov_mode0_*`). Aucune table existante n'est touchée (additif pur).
@@ -959,7 +1108,7 @@ fn migrate_v96(conn: &Connection) {
     eprintln!("[migration] schéma -> v96 (#59 gouvernance : tables legal_hold + ledger_sink ; additif, VIDES -> mode 0 byte-identique tant qu'aucun hold/sink n'est défini)");
 }
 
-fn migrate_v95(conn: &Connection) {
+fn migrate_v95(conn: &MigTx) {
     // v95 (#47 DATA MODELS + PIVOT + DATASETS — couche SÉMANTIQUE au-dessus du CIM, façon Splunk data
     //  models). QUATRE tables NEUVES, VIDES à la création -> ZÉRO effet tant qu'aucune ligne : aucun de
     //  ces objets n'est INJECTÉ dans le compilateur SOQL (contrairement aux knowledge objects #46). Un data
@@ -1030,7 +1179,7 @@ fn migrate_v95(conn: &Connection) {
     eprintln!("[migration] schéma -> v95 (#47 data models + pivot + datasets : tables data_model/data_model_object/data_model_field/dataset ; additif, VIDES -> mode 0 byte-identique tant qu'aucun Pivot/dataset n'est invoqué)");
 }
 
-fn migrate_v94(conn: &Connection) {
+fn migrate_v94(conn: &MigTx) {
     // v94 (#46 KNOWLEDGE OBJECTS — objets de savoir SEARCH-TIME PERSISTÉS, parité Splunk / portabilité de
     //  contenu). QUATRE tables NEUVES, VIDES à la création -> ZÉRO effet tant qu'aucune ligne : le résolveur
     //  `knowledge_reload` produit un `KnowledgeSet` VIDE -> le compilateur SOQL émet le SQL legacy À
@@ -1087,7 +1236,7 @@ fn migrate_v94(conn: &Connection) {
     eprintln!("[migration] schéma -> v94 (#46 knowledge objects : tables knowledge_alias/calc/eventtype/tag ; additif, VIDES -> mode 0 byte-identique tant qu'aucun KO n'est défini)");
 }
 
-fn migrate_v93(conn: &Connection) {
+fn migrate_v93(conn: &MigTx) {
     // v93 (#55 OBSERVABILITY-AS-CODE — les OBJETS DE CONFIG du SOC deviennent DÉCLARABLES en fichiers
     //  config.d versionnés, comme le sont déjà rules/parsers/playbooks/sigma). ADDITIF & INERTE en mode 0 :
     //  cette migration n'AJOUTE qu'une colonne `managed` (+ un `name` sur notification_policy) aux tables
@@ -1116,7 +1265,7 @@ fn migrate_v93(conn: &Connection) {
     eprintln!("[migration] schéma -> v93 (#55 observability-as-code : colonne `managed` sur dashboard/panel/library_panel/connector/notifier/destination/field_filter/notification_policy + `name` sur notification_policy ; additif, DEFAULT 2 -> objets existants = ad-hoc UI, mode 0 byte-identique tant qu'aucun overlay config.d n'est livré)");
 }
 
-fn migrate_v92(conn: &Connection) {
+fn migrate_v92(conn: &MigTx) {
     // v92 (#50 OUTPUTS / DESTINATIONS — forward des events normalisés vers un SINK EXTERNE) — ADDITIF &
     //  INERTE en mode 0. UNE table NEUVE, VIDE à la création -> ZÉRO effet tant qu'aucune ligne : le
     //  forwarder (`run_due_destinations`, thread dédié) sélectionne les destinations DUES -> 0 ligne ->
@@ -1162,7 +1311,7 @@ fn migrate_v92(conn: &Connection) {
     eprintln!("[migration] schéma -> v92 (#50 outputs/destinations : table destination = forward des events vers un sink externe syslog/hec/webhook ; additif, table vide -> mode 0 byte-identique, aucun forward tant qu'aucune destination)");
 }
 
-fn migrate_v91(conn: &Connection) {
+fn migrate_v91(conn: &MigTx) {
     // v91 (#49 INDEXES LOGIQUES NOMMÉS + RÉTENTION/DIMENSIONNEMENT PAR INDEX) — ADDITIF & INERTE en mode 0.
     //  UNE table NEUVE, VIDE à la création -> ZÉRO effet tant qu'aucune ligne (retention_run reste
     //  BYTE-IDENTIQUE : sans policy la purge globale PLUME_RETENTION_DAYS s'applique exactement comme avant).
@@ -1196,7 +1345,7 @@ fn migrate_v91(conn: &Connection) {
     eprintln!("[migration] schéma -> v91 (#49 indexes logiques nommés : table index_policy = rétention/plafonds PAR env_id ; additif, table vide -> mode 0 byte-identique, purge globale inchangée)");
 }
 
-fn migrate_v90(conn: &Connection) {
+fn migrate_v90(conn: &MigTx) {
     // v90 (#54 ERGONOMIE DASHBOARDS + LARGEUR DES TYPES DE PANNEAUX) — ADDITIF & INERTE en mode 0.
     //  TROIS tables NEUVES, TOUTES vides à la création -> zéro effet tant qu'aucune ligne :
     //   - `library_panel` : définition de panneau RÉUTILISABLE (éditée une fois, référencée par N panneaux).
@@ -1242,7 +1391,7 @@ fn migrate_v90(conn: &Connection) {
     eprintln!("[migration] schéma -> v90 (#54 ergonomie dashboards : library_panel + panel.library_panel_id / playlist / dashboard_snapshot ; additif, vide/NULL -> mode 0 byte-identique)");
 }
 
-fn migrate_v89(conn: &Connection) {
+fn migrate_v89(conn: &MigTx) {
     // v89 (#48 + #53 MATURITÉ DE L'ALERTING) — ADDITIF & INERTE en mode 0 :
     //  (a) TABLES nouvelles, TOUTES vides à la création -> zéro effet tant qu'aucune ligne :
     //      - `notification_policy` : arbre de routage (matchers JSON -> points de contact = ids de canaux).
@@ -1283,7 +1432,7 @@ fn migrate_v89(conn: &Connection) {
     eprintln!("[migration] schéma -> v89 (#48/#53 alerting : notification_policy/silence/alert_throttle + rule.suppress_window_s/throttle_field/per_result ; additif, vide/NULL -> mode 0 byte-identique)");
 }
 
-fn migrate_v88(conn: &Connection) {
+fn migrate_v88(conn: &MigTx) {
     // v88 (#38 mapping de conformité) — TAG DE CADRE RÉGLEMENTAIRE PAR RÈGLE : colonne ADDITIVE
     // `rule.compliance` (CSV de `cadre[:contrôle]`, ex `pci_dss:8.7,hipaa:164.312`). Miroir EXACT de
     // `rule.mitre`/`rule.sigma_id` (v81) : NULL pour l'existant -> règle NON taguée -> comportement
@@ -1296,7 +1445,7 @@ fn migrate_v88(conn: &Connection) {
     eprintln!("[migration] schéma -> v88 (#38 conformité : colonne rule.compliance (tags cadre:contrôle) ; additive, NULL pour l'existant -> mode 0 byte-identique)");
 }
 
-fn migrate_v87(conn: &Connection) {
+fn migrate_v87(conn: &MigTx) {
     // v87 (#52 plume-as-a-datasource) — TOKEN read-scoped `datasource` : ajoute la colonne `role` à `token`
     // (NULLABLE). Les tokens datasource (kind='datasource') portent leur rôle de LECTURE (viewer|editor) ;
     // les tokens agent/hec existants gardent role NULL -> INCHANGÉS (jamais lus sur le seam datasource).
@@ -1309,7 +1458,7 @@ fn migrate_v87(conn: &Connection) {
     eprintln!("[migration] schéma -> v87 (#52 datasource : colonne token.role pour les jetons read-scoped `datasource` ; agent/hec inchangés / mode 0)");
 }
 
-fn migrate_v86(conn: &Connection) {
+fn migrate_v86(conn: &MigTx) {
     // v86 (#45) — FIELD FILTERS : masquage / contrôle d'accès AU NIVEAU CHAMP par rôle/tenant/env (équivalent
     // « Field filters » Splunk ; débloqueur PCI/PII). ADDITIF & INERTE en mode 0 : la table est VIDE à la
     // création -> `field_filters_reload` produit un registre VIDE -> la compilation SOQL et toutes les surfaces
@@ -1348,7 +1497,7 @@ fn migrate_v86(conn: &Connection) {
     eprintln!("[migration] schéma -> v86 (#45 field-filters : table `field_filter` (masquage par champ) VIDE à la création -> lecture byte-identique / mode 0 ; + sel de hash meta.field_mask_salt)");
 }
 
-fn migrate_v85(conn: &Connection) {
+fn migrate_v85(conn: &MigTx) {
     // v85 (#44) — IdP NATIF : fournisseurs d'identité fédérée (OIDC / LDAP / SAML seam) + inscription MFA
     // (TOTP RFC 6238). ADDITIF & INERTE en mode 0 : les DEUX tables sont VIDES par défaut -> aucun provider
     // fédéré, aucune inscription MFA -> resolve_identity + login_post BYTE-IDENTIQUES (Basic/session/agent-
@@ -1398,7 +1547,7 @@ fn migrate_v85(conn: &Connection) {
 
 // INTÉGRATION : v83 (#40 ingest processor) puis v84 (#37 détection avancée) — ordre du ladder garanti
 // (v83 avant v84). Version finale du schéma intégré : v84.
-fn migrate_v83(conn: &Connection) {
+fn migrate_v83(conn: &MigTx) {
     // v83 (#40) — PROCESSEUR D'INGEST : table de contrôle `ingest_rule` (règles ordonnées admin-managed
     // qui filtrent/masquent/routent/échantillonnent un event AVANT indexation). Bas-volume, CONTROL-plane
     // (jamais touchée à l'ingest chaud, seulement au reload). ADDITIVE : table NEUVE, VIDE à la création ->
@@ -1429,7 +1578,7 @@ fn migrate_v83(conn: &Connection) {
     eprintln!("[migration] schéma -> v83 (#40 processeur d'ingest : table ingest_rule ; VIDE à la création -> ingest byte-identique / mode 0)");
 }
 
-fn migrate_v84(conn: &Connection) {
+fn migrate_v84(conn: &MigTx) {
     // v84 (#37) — DÉTECTION AVANCÉE : corrélation multi-événements stateful (`correlation`) + baselining
     // statistique UEBA (`ueba_baseline` + `ueba_baseline_obs`). ADDITIF & INERTE en mode 0 : ces tables sont
     // VIDES par défaut (aucune corrélation/baseline seedée) -> run_correlations/run_baselines sélectionnent 0
@@ -1507,7 +1656,7 @@ fn migrate_v84(conn: &Connection) {
     eprintln!("[migration] schéma -> v84 (#37 détection avancée : tables `correlation` + `ueba_baseline`/`ueba_baseline_obs` ; corrélation stateful de séquence + baselining statistique UEBA, INERTES tant qu'aucune corrélation/baseline définie -> mode 0 byte-identique)");
 }
 
-fn migrate_v2(conn: &Connection) {
+fn migrate_v2(conn: &MigTx) {
     // v2 : multi-hôte (agrégation de plusieurs machines) + champs réseau
     for stmt in [
         "ALTER TABLE event ADD COLUMN src_ip TEXT",
@@ -1526,7 +1675,7 @@ fn migrate_v2(conn: &Connection) {
     eprintln!("[migration] schéma -> v2 (multi-hôte + réseau)");
 }
 
-fn migrate_v3(conn: &Connection) {
+fn migrate_v3(conn: &MigTx) {
     // v3 : notifications multi-canal
     let _ = conn.execute("ALTER TABLE alert ADD COLUMN notified INTEGER NOT NULL DEFAULT 0", []);
     let _ = conn.execute(
@@ -1540,7 +1689,7 @@ fn migrate_v3(conn: &Connection) {
     eprintln!("[migration] schéma -> v3 (notifications)");
 }
 
-fn migrate_v4(conn: &Connection) {
+fn migrate_v4(conn: &MigTx) {
     // v4 : moteur de réponse (file d'actions auditées)
     let _ = conn.execute(
         "CREATE TABLE IF NOT EXISTS action(\
@@ -1553,7 +1702,7 @@ fn migrate_v4(conn: &Connection) {
     eprintln!("[migration] schéma -> v4 (moteur de réponse)");
 }
 
-fn migrate_v5(conn: &Connection) {
+fn migrate_v5(conn: &MigTx) {
     // v5 : playbooks (détection -> réponse) + mode global observe/active
     let _ = conn.execute(
         "CREATE TABLE IF NOT EXISTS playbook(\
@@ -1568,7 +1717,7 @@ fn migrate_v5(conn: &Connection) {
     eprintln!("[migration] schéma -> v5 (playbooks + mode)");
 }
 
-fn migrate_v6(conn: &Connection) {
+fn migrate_v6(conn: &MigTx) {
     // v6 : rollup métriques (downsampling pour rétention longue)
     let _ = conn.execute(
         "CREATE TABLE IF NOT EXISTS metric_rollup(ts INTEGER NOT NULL, name TEXT NOT NULL, host TEXT, avg REAL, min REAL, max REAL, n INTEGER)",
@@ -1579,7 +1728,7 @@ fn migrate_v6(conn: &Connection) {
     eprintln!("[migration] schéma -> v6 (rollup métriques)");
 }
 
-fn migrate_v7(conn: &Connection) {
+fn migrate_v7(conn: &MigTx) {
     // v7 : intégrité (ledger à chaîne de hash + checkpoints signés)
     let _ = conn.execute(
         "CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, kind TEXT NOT NULL, detail TEXT, prev_hash TEXT NOT NULL, hash TEXT NOT NULL)",
@@ -1593,7 +1742,7 @@ fn migrate_v7(conn: &Connection) {
     eprintln!("[migration] schéma -> v7 (intégrité ledger+checkpoints)");
 }
 
-fn migrate_v8(conn: &Connection) {
+fn migrate_v8(conn: &MigTx) {
     // v8 : tokens par agent (auth d'ingestion sans le mot de passe partagé)
     let _ = conn.execute(
         "CREATE TABLE IF NOT EXISTS token(id INTEGER PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created INTEGER, last_used INTEGER)",
@@ -1603,14 +1752,14 @@ fn migrate_v8(conn: &Connection) {
     eprintln!("[migration] schéma -> v8 (tokens agents)");
 }
 
-fn migrate_v9(conn: &Connection) {
+fn migrate_v9(conn: &MigTx) {
     // v9 : fenêtre temporelle propre à chaque panneau (0 = fenêtre globale)
     let _ = conn.execute("ALTER TABLE panel ADD COLUMN window_s INTEGER NOT NULL DEFAULT 0", []);
     let _ = conn.execute("UPDATE meta SET value='9' WHERE key='schema_version'", []);
     eprintln!("[migration] schéma -> v9 (fenêtre par panneau)");
 }
 
-fn migrate_v10(conn: &Connection) {
+fn migrate_v10(conn: &MigTx) {
     // v10 : comptes multi-utilisateurs (RBAC) + ownership/visibilité des dashboards
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS user(
@@ -1635,7 +1784,7 @@ fn migrate_v10(conn: &Connection) {
     eprintln!("[migration] schéma -> v10 (comptes utilisateurs + ownership dashboards)");
 }
 
-fn migrate_v11(conn: &Connection) {
+fn migrate_v11(conn: &MigTx) {
     // v11 : niveau « vue » (ensemble de dashboards) + visibilité par panel et par requête
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS view(
@@ -1654,7 +1803,7 @@ fn migrate_v11(conn: &Connection) {
     eprintln!("[migration] schéma -> v11 (vues + visibilité panel/requête)");
 }
 
-fn migrate_v12(conn: &Connection) {
+fn migrate_v12(conn: &MigTx) {
     // v12 : panneaux redimensionnables (largeur en colonnes + hauteur en px)
     let _ = conn.execute("ALTER TABLE panel ADD COLUMN cols INTEGER NOT NULL DEFAULT 1", []);
     let _ = conn.execute("ALTER TABLE panel ADD COLUMN height INTEGER NOT NULL DEFAULT 0", []);
@@ -1662,7 +1811,7 @@ fn migrate_v12(conn: &Connection) {
     eprintln!("[migration] schéma -> v12 (panneaux redimensionnables)");
 }
 
-fn migrate_v13(conn: &Connection) {
+fn migrate_v13(conn: &MigTx) {
     // v13 (OBS-5) : labels dans le rollup métrique (sinon les séries sont écrasées) + index
     let _ = conn.execute("ALTER TABLE metric_rollup ADD COLUMN labels TEXT", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_metric_rollup_lbl ON metric_rollup(name,labels,ts)", []);
@@ -1670,14 +1819,14 @@ fn migrate_v13(conn: &Connection) {
     eprintln!("[migration] schéma -> v13 (rollup métrique par labels)");
 }
 
-fn migrate_v14(conn: &Connection) {
+fn migrate_v14(conn: &MigTx) {
     // v14 : requête de drilldown configurable par panneau (clic -> soql avec $value/$from/$to)
     let _ = conn.execute("ALTER TABLE panel ADD COLUMN drill TEXT", []);
     let _ = conn.execute("UPDATE meta SET value='14' WHERE key='schema_version'", []);
     eprintln!("[migration] schéma -> v14 (drilldown par panneau)");
 }
 
-fn migrate_v15(conn: &Connection) {
+fn migrate_v15(conn: &MigTx) {
     // v15 : layout des dashboards DANS une vue (grille : largeur en colonnes, hauteur px, ordre, replié)
     let _ = conn.execute("ALTER TABLE dashboard ADD COLUMN position INTEGER", []);
     let _ = conn.execute("ALTER TABLE dashboard ADD COLUMN cols INTEGER NOT NULL DEFAULT 2", []);
@@ -1688,7 +1837,7 @@ fn migrate_v15(conn: &Connection) {
     eprintln!("[migration] schéma -> v15 (layout dashboards dans la vue)");
 }
 
-fn migrate_v16(conn: &Connection) {
+fn migrate_v16(conn: &MigTx) {
     // v16 : gestion d'incident (cases). Table `incident` (le mot `case` est reserve en SQL)
     // + `incident_item` = timeline (notes + alertes/events/actions lies).
     let _ = conn.execute(
@@ -1710,7 +1859,7 @@ fn migrate_v16(conn: &Connection) {
     eprintln!("[migration] schéma -> v16 (gestion d'incident / cases)");
 }
 
-fn migrate_v17(conn: &Connection) {
+fn migrate_v17(conn: &MigTx) {
     // v17 : responder multi-hôte — `host` cible l'hôte qui doit appliquer (NULL = central/local) ;
     // `claimed_ts` = anti double-exécution quand un agent réclame une action à appliquer chez lui.
     let _ = conn.execute("ALTER TABLE action ADD COLUMN host TEXT", []);
@@ -1719,7 +1868,7 @@ fn migrate_v17(conn: &Connection) {
     eprintln!("[migration] schéma -> v17 (responder multi-hôte : action.host + claim)");
 }
 
-fn migrate_v18(conn: &Connection) {
+fn migrate_v18(conn: &MigTx) {
     // v18 : token d'agent LIÉ à un hôte -> un agent ne peut réclamer/clore QUE les actions de SON
     // hôte (anti-IDOR cross-agent). NULL = token non lié (ingest only ; refusé sur le responder).
     let _ = conn.execute("ALTER TABLE token ADD COLUMN host TEXT", []);
@@ -1727,7 +1876,7 @@ fn migrate_v18(conn: &Connection) {
     eprintln!("[migration] schéma -> v18 (token agent lié à un hôte)");
 }
 
-fn migrate_v19(conn: &Connection) {
+fn migrate_v19(conn: &MigTx) {
     // v19 : corrige les 2 règles hôte seedées qui utilisaient des noms de métriques PROMETHEUS
     // (node_load1 / node_memory_MemAvailable_bytes) -> noms NATIFS de resources.sh (load1 / mem_pct).
     // Elles erraient ("évaluation échouée") car prom-scrape ne livre pas ces séries. Idempotent.
@@ -1744,7 +1893,7 @@ fn migrate_v19(conn: &Connection) {
     eprintln!("[migration] schéma -> v19 (règles hôte : noms métriques natifs)");
 }
 
-fn migrate_v20(conn: &Connection) {
+fn migrate_v20(conn: &MigTx) {
     // v20 : corrige les panneaux du dashboard OBS qui interrogeaient des métriques PROMETHEUS
     // (node_load1 / node_memory_MemAvailable_bytes / node_network_*) -> natifs resources.sh.
     // Sinon ces panneaux restent VIDES (la donnée existe en load1/mem_pct/net_rx_bps). Idempotent.
@@ -1755,14 +1904,14 @@ fn migrate_v20(conn: &Connection) {
     eprintln!("[migration] schéma -> v20 (panneaux OBS : métriques natives)");
 }
 
-fn migrate_v21(conn: &Connection) {
+fn migrate_v21(conn: &MigTx) {
     // v21 : rôle `analyst` renommé `editor` (triplet admin/editor/viewer, cohérent admin-console).
     let _ = conn.execute("UPDATE user SET role='editor' WHERE role='analyst'", []);
     let _ = conn.execute("UPDATE meta SET value='21' WHERE key='schema_version'", []);
     eprintln!("[migration] schéma -> v21 (rôle analyst -> editor)");
 }
 
-fn migrate_v22(conn: &Connection) {
+fn migrate_v22(conn: &MigTx) {
     // v22 : registre de PARSERS modulaire — extraction de champs (groupes nommés) à l'ingestion,
     // pour TOUTES les sources. builtin=défauts par outil (éditables/désactivables) ; custom = ajout opérateur.
     let _ = conn.execute(
@@ -1790,7 +1939,7 @@ fn migrate_v22(conn: &Connection) {
     eprintln!("[migration] schéma -> v22 (registre de parsers modulaire)");
 }
 
-fn migrate_v23(conn: &Connection) {
+fn migrate_v23(conn: &MigTx) {
     // v23 : parsers par DÉFAUT pour les outils du stack qui émettent un message brut (crowdsec,
     // fail2ban, containerd, kube-state, sshd lignes hors "for X from"). builtin, activés, éditables.
     let seed: &[(&str, &str, &str)] = &[
@@ -1810,7 +1959,7 @@ fn migrate_v23(conn: &Connection) {
     eprintln!("[migration] schéma -> v23 (parsers par défaut du stack)");
 }
 
-fn migrate_v24(conn: &Connection) {
+fn migrate_v24(conn: &MigTx) {
     // v24 : corrige les panneaux dashboard EXISTANTS — Pods Running pointait sur une métrique
     // inexistante (kube_pod_status_phase) ; spans figés (1m/5m/1h) -> AUTO (sinon 30j en buckets 1h) ;
     // retire le panneau Température (pas de sonde sur VM).
@@ -1823,7 +1972,7 @@ fn migrate_v24(conn: &Connection) {
     eprintln!("[migration] schéma -> v24 (correctifs panneaux dashboard)");
 }
 
-fn migrate_v25(conn: &Connection) {
+fn migrate_v25(conn: &MigTx) {
     // v25 : clamp les métriques RÉSEAU négatives déjà stockées (compteur /proc/net/dev qui repart
     // à 0 au reboot -> delta négatif -> point SOUS l'axe sur les graphes réseau). Source corrigée
     // dans resources.sh (clamp >=0). On nettoie l'existant ici (table live + rollups).
@@ -1834,7 +1983,7 @@ fn migrate_v25(conn: &Connection) {
     eprintln!("[migration] schéma -> v25 (clamp métriques réseau négatives)");
 }
 
-fn migrate_v26(conn: &Connection) {
+fn migrate_v26(conn: &MigTx) {
     // v26 : dédoublonne les panneaux réseau (retours opérateur) + egress "top destinations" inutile
     // (count=1 car conntrack dédupe par dst) -> liste en table.
     let _ = conn.execute("DELETE FROM panel WHERE title='Bande passante reçue (o/s)'", []);   // doublon de 'Réseau ↓'/'Réseau reçu'
@@ -1845,14 +1994,14 @@ fn migrate_v26(conn: &Connection) {
     eprintln!("[migration] schéma -> v26 (dédup panneaux réseau + egress destinations en table)");
 }
 
-fn migrate_v27(conn: &Connection) {
+fn migrate_v27(conn: &MigTx) {
     // v27 : egress « Destinations externes » affiche le dst_host (rDNS, conntrack) -> lisible.
     let _ = conn.execute("UPDATE panel SET query='search source=conntrack dir=outbound scope=external | sort -ts | table dst_host,dst_ip,proc,dport' WHERE title='Destinations externes'", []);
     let _ = conn.execute("UPDATE meta SET value='27' WHERE key='schema_version'", []);
     eprintln!("[migration] schéma -> v27 (egress destinations + rDNS dst_host)");
 }
 
-fn migrate_v28(conn: &Connection) {
+fn migrate_v28(conn: &MigTx) {
     // v28 : parsers pour l'audit Vault (source=vault-audit, via collecteur custom) — extrait QUI
     // accède à QUEL secret (Varonis brique c). Vault HMAC les valeurs sensibles -> aucun secret en
     // clair n'est collecté. builtin, activés, éditables dans l'UI.
@@ -1871,7 +2020,7 @@ fn migrate_v28(conn: &Connection) {
     eprintln!("[migration] schéma -> v28 (parsers audit Vault)");
 }
 
-fn migrate_v29(conn: &Connection) {
+fn migrate_v29(conn: &MigTx) {
     // v29 : champ `action` NORMALISÉ (CIM) sur toutes les sources (success/failure/allowed/blocked/
     // ban/read/modify/delete/...). Met à jour les panneaux EXISTANTS qui filtraient les anciennes
     // valeurs (les seeds sont idempotents par nom -> sinon désync sur l'instance déjà déployée).
@@ -1880,7 +2029,7 @@ fn migrate_v29(conn: &Connection) {
     eprintln!("[migration] schéma -> v29 (action normalisé CIM)");
 }
 
-fn migrate_v30(conn: &Connection) {
+fn migrate_v30(conn: &MigTx) {
     // v30 : rollups d'EVENTS — counts horaires par (source,severity,action) pour des dashboards
     // RAPIDES (panneaux SQL directs sur event_rollup, SANS toucher le compilateur soql partagé
     // guatx-core). Alimentée par retention_run (watermark meta 'event_rollup_wm'), même rétention
@@ -1896,7 +2045,7 @@ fn migrate_v30(conn: &Connection) {
     eprintln!("[migration] schéma -> v30 (rollups d'events)");
 }
 
-fn migrate_v31(conn: &Connection) {
+fn migrate_v31(conn: &MigTx) {
     // v31 : index COMPOSÉS filtre+group sur src_ip. Sans eux, `WHERE severity>=3 GROUP BY src_ip`
     // SCAN les 1,24M lignes via idx_event_srcip (au lieu de SEARCH idx_event_sev) -> ~15s sur base
     // CHIFFRÉE (déchiffre toutes les pages). Avec (severity,src_ip) : SEARCH -> lit le sous-ensemble.
@@ -1906,7 +2055,7 @@ fn migrate_v31(conn: &Connection) {
     eprintln!("[migration] schéma -> v31 (index composés severity/source + src_ip)");
 }
 
-fn migrate_v32(conn: &Connection) {
+fn migrate_v32(conn: &MigTx) {
     // v32 : ANALYZE (échantillonné) -> stats SQLite (sqlite_stat1) pour que le planificateur CHOISISSE
     // les index composés v31 (severity>=3 GROUP BY src_ip -> SEARCH (severity,src_ip) au lieu de SCAN).
     // Sans stats il garde le full-scan. analysis_limit borne l'échantillon -> ANALYZE rapide.
@@ -1915,7 +2064,7 @@ fn migrate_v32(conn: &Connection) {
     eprintln!("[migration] schéma -> v32 (ANALYZE pour les index composés)");
 }
 
-fn migrate_v34(conn: &Connection) {
+fn migrate_v34(conn: &MigTx) {
     // v34 : CACHE de résultats par panneau (schéma seul ; logique dans panel_data). 1 ligne / panel
     // (PK panel_id) -> taille bornée par le nombre de panneaux. range_key = fenêtre demandée
     // (« from=..,to=.. ») pour ne servir le cache QUE si la range == celle calculée. payload = JSON brut.
@@ -1930,7 +2079,7 @@ fn migrate_v34(conn: &Connection) {
     eprintln!("[migration] schéma -> v34 (panel_cache : cache de résultats par panneau)");
 }
 
-fn migrate_v35(conn: &Connection) {
+fn migrate_v35(conn: &MigTx) {
     // v35 : ANALYZE RENFORCÉ. v32 (analysis_limit=400) échantillonnait trop peu -> le planificateur
     // ignorait idx_event_sev_srcip / idx_event_src_srcip et full-scannait. Il faut des stats exactes
     // (sqlite_stat1) pour que le planner choisisse l'index composé (EXPLAIN QUERY PLAN doit montrer
@@ -1947,7 +2096,7 @@ fn migrate_v35(conn: &Connection) {
     eprintln!("[migration] schéma -> v35 (ANALYZE borné rapide ; complet en tâche de fond après bind)");
 }
 
-fn migrate_v36(conn: &Connection) {
+fn migrate_v36(conn: &MigTx) {
     // v36 : CACHE — colonne query_fp (empreinte de la requête) sur panel_cache. On lie le
     // payload caché à la requête courante -> un panel_update (requête/viz changée) ou un rowid panel
     // réutilisé après delete ne sert jamais un payload périmé/étranger. On VIDE le cache existant (les
@@ -1958,7 +2107,7 @@ fn migrate_v36(conn: &Connection) {
     eprintln!("[migration] schéma -> v36 (panel_cache.query_fp : cache lié à la requête, anti-fuite)");
 }
 
-fn migrate_v37(conn: &Connection) {
+fn migrate_v37(conn: &MigTx) {
     // v37 : ajoute les 2 panneaux rollup (par src_ip / par host) au dashboard « Vue d'ensemble
     // (rapide) » des bases EXISTANTES (seed_rollup_dashboard ne créait ces panneaux que
     // sur installs neuves). Idempotent : garde par (dashboard, titre) -> n'insère que s'ils manquent ;
@@ -1968,7 +2117,7 @@ fn migrate_v37(conn: &Connection) {
     eprintln!("[migration] schéma -> v37 (panneaux rollup src_ip/host ajoutés aux bases existantes)");
 }
 
-fn migrate_v38(conn: &Connection) {
+fn migrate_v38(conn: &MigTx) {
     // v38 : CACHE multi-emplacement. panel_cache avait PK=panel_id (1 SEULE ligne / panel)
     // -> 24 h / zoom / pré-chauffage se battaient pour l'unique emplacement -> évictions mutuelles ->
     // recomputes répétés. FIX : PK COMPOSITE (panel_id, range_key) -> une ligne PAR plage demandée.
@@ -1986,7 +2135,7 @@ fn migrate_v38(conn: &Connection) {
     eprintln!("[migration] schéma -> v38 (panel_cache PK composite (panel_id, range_key) : cache multi-plage)");
 }
 
-fn migrate_v39(conn: &Connection) {
+fn migrate_v39(conn: &MigTx) {
     // v39 (PURPLE) : tag MITRE ATT&CK (ex 'T1110', 'T1190.001') sur les règles ET les alertes.
     // Mesure DÉFENSIVE (blue-team) : Forge (red) tire des techniques ATT&CK, chaque règle de détection
     // porte la technique qu'elle couvre -> l'alerte hérite du `mitre` de sa règle (run_due_rules) ->
@@ -2001,7 +2150,7 @@ fn migrate_v39(conn: &Connection) {
     eprintln!("[migration] schéma -> v39 (tag MITRE ATT&CK sur règles + alertes : mesure de couverture de détection)");
 }
 
-fn migrate_v40(conn: &Connection) {
+fn migrate_v40(conn: &MigTx) {
     // v40 (PHASE 1) : marqueur de schéma seulement. L'INFRA FTS5 (vtable event_fields_fts +
     // triggers event_ff_ai/ad) N'EST PLUS pilotée ICI (un DROP/CREATE gardé par
     // `if v<40` ne re-tourne JAMAIS une fois schema_version>=40 -> poser PLUME_FTS_FIELDS=0 +
@@ -2012,7 +2161,7 @@ fn migrate_v40(conn: &Connection) {
     eprintln!("[migration] schéma -> v40 (marqueur : pilotage FTS-fields déplacé dans reconcile_index_state, env-driven idempotent)");
 }
 
-fn migrate_v41(conn: &Connection) {
+fn migrate_v41(conn: &MigTx) {
     // v41 (PHASE 2) : marqueur de schéma seulement. Les 7 index expression partiels (action,user,
     // owner,kind,ns,role,scope) NE SONT PLUS créés ICI (un CREATE INDEX synchrone au boot sur une
     // table volumineuse bloque le bind -> échec de la sonde de liveness -> boucle de redémarrage ; et
@@ -2024,7 +2173,7 @@ fn migrate_v41(conn: &Connection) {
     eprintln!("[migration] schéma -> v41 (marqueur : index expression pilotés par reconcile_index_state ; CREATE lourd en fond, anti-crashloop)");
 }
 
-fn migrate_v42(conn: &Connection) {
+fn migrate_v42(conn: &MigTx) {
     // v42 (PHASE 3, infra seule) : registre des index AUTO adaptatifs + compteurs de chaleur.
     // Table d'état uniquement ; la tâche de fond autoindex_maintain_background ne tourne que si
     // PLUME_AUTOINDEX=1 (OFF par défaut) -> v42 est INERTE par défaut. Création de table = gratuit,
@@ -2043,7 +2192,7 @@ fn migrate_v42(conn: &Connection) {
     eprintln!("[migration] schéma -> v42 (infra auto-index adaptatif : table autoindex ; OFF par défaut)");
 }
 
-fn migrate_v43(conn: &Connection) {
+fn migrate_v43(conn: &MigTx) {
     // v43 (DONNÉES VIVES, rebrand soc->plume) : aligne la base LIVE déjà semée sur la nomenclature
     // plume_* (les seeds frais sont déjà corrects depuis ce build — ceci répare l'existant). Idempotent :
     //  (a) renomme la clé meta du mode global 'soc_mode' -> 'plume_mode' (collision évitée : on ne
@@ -2066,7 +2215,7 @@ fn migrate_v43(conn: &Connection) {
     eprintln!("[migration] schéma -> v43 (rebrand données vives : meta soc_mode->plume_mode + panneaux key=soc_*->plume_*)");
 }
 
-fn migrate_v44(conn: &Connection) {
+fn migrate_v44(conn: &MigTx) {
     // v44 (PHASE 3a) : PRÉ-AGRÉGATION PAR DIMENSION. (a) crée event_dim_rollup — peuplée
     // INCRÉMENTALEMENT par rollup_events (cold start borné à 24h, jamais de backfill bloquant ICI :
     // pas de scan des 2,3 M lignes au boot) ; (b) RÉÉCRIT les panneaux GROUP-BY par-source PURS déjà
@@ -2105,7 +2254,7 @@ fn migrate_v44(conn: &Connection) {
     eprintln!("[migration] schéma -> v44 (event_dim_rollup : pré-agrégation par dimension + panneaux GROUP-BY par-source réécrits en is_soql=0)");
 }
 
-fn migrate_v45(conn: &Connection) {
+fn migrate_v45(conn: &MigTx) {
     // v45 (CHANGEMENT 3) : RE-TUNE les règles de détection Cloudflare déjà SEMÉES (prod : ids 25-29) à la
     // télémétrie RÉELLE. La prod CF Free émet du managed_challenge (action=challenged, 1 ruleId/event,
     // dc(ruleId)=1, plusieurs src_ip) -> les anciennes règles (action=blocked / cf_source=ratelimit /
@@ -2131,7 +2280,7 @@ fn migrate_v45(conn: &Connection) {
     eprintln!("[migration] schéma -> v45 (re-tune règles CF 25-29 sur la télémétrie réelle : managed_challenge/action=challenged)");
 }
 
-fn migrate_v46(conn: &Connection) {
+fn migrate_v46(conn: &MigTx) {
     // v46 (PHASE 3d) : CLASSIFICATION ADAPTATIVE PAR PANNEAU. Stocke le COÛT mesuré (stats.elapsed_ms)
     // de la requête de CHAQUE panneau -> panel_data route LIVE (coût < PLUME_PANEL_LIVE_MS, défaut 100)
     // vs SWR (coût >= seuil). Clé = panel_id (1 ligne/panneau) -> la classe vaut GLOBALEMENT (où que le
@@ -2147,7 +2296,7 @@ fn migrate_v46(conn: &Connection) {
     eprintln!("[migration] schéma -> v46 (panel_cost : classification adaptative LIVE/SWR par coût mesuré)");
 }
 
-fn migrate_v47(conn: &Connection) {
+fn migrate_v47(conn: &MigTx) {
     // v47 : MARQUEUR. Ajoute l'index MANQUANT idx_event_category. Le filtre courant `category=auth`
     // n'avait AUCUN index (cf. EXPLAIN : SCAN event) -> full-scan déchiffré des 2,39M lignes. Les
     // autres filtres courants sont déjà couverts : severity (idx_event_sev + idx_event_sev_srcip),
@@ -2163,7 +2312,7 @@ fn migrate_v47(conn: &Connection) {
     eprintln!("[migration] schéma -> v47 (marqueur : idx_event_category créé EN FOND après bind, anti-crashloop ; re-ANALYZE)");
 }
 
-fn migrate_v48(conn: &Connection) {
+fn migrate_v48(conn: &MigTx) {
     // v48 : RÉPARE LES PARSEURS CASSÉS sur l'instance DÉJÀ déployée (les seeds v22/v23 ne re-tournent
     // jamais une fois schema_version franchi -> il faut UPDATE/INSERT les lignes existantes), RE-HOME
     // les détections vers les sources qui portent réellement le signal, et PURGE (une seule fois) les
@@ -2235,7 +2384,7 @@ fn migrate_v48(conn: &Connection) {
     eprintln!("[migration] schéma -> v48 (parseurs sudo/fail2ban/sshd-session/su/cloudflare réparés ; détections brute-force/CF26/UFW re-homées ; sondes purgées)");
 }
 
-fn migrate_v49(conn: &Connection) {
+fn migrate_v49(conn: &MigTx) {
     // v49 : MARQUEUR (aucune DDL synchrone — anti-crashloop M1/M4). Matérialise sur l'instance déployée
     // les rollups+index ajoutés pour TUER les full-scans SQLCipher des grosses sources (sections F/G de
     // l'audit : auditd `by exe`=13,8s, k8s-log `by severity`=7,7s, etc.). Tout se matérialise EN FOND /
@@ -2256,7 +2405,7 @@ fn migrate_v49(conn: &Connection) {
     eprintln!("[migration] schéma -> v49 (marqueur : rollups par-dim auditd/kube-audit/vault-audit/... peuplés incrémental + index expr verb/resource/operation créés EN FOND ; re-ANALYZE)");
 }
 
-fn migrate_v50(conn: &Connection) {
+fn migrate_v50(conn: &MigTx) {
     // v50 : POSE LES RÈGLES DE DÉTECTION des nouveaux signaux de télémétrie (minio-audit backup-delete,
     // auditd tamper, intégrité suid/persistance, conntrack beaconing, vault secret-read) sur l'instance
     // DÉJÀ déployée. Calque le pattern v48 : le seed (seed_detection_rules) ne re-tourne JAMAIS une fois
@@ -2290,7 +2439,7 @@ fn migrate_v50(conn: &Connection) {
     eprintln!("[migration] schéma -> v50 (règles de détection : minio backup-delete + auditd tamper + intégrité suid/persistance + conntrack beaconing + vault secret-read)");
 }
 
-fn migrate_v51(conn: &Connection) {
+fn migrate_v51(conn: &MigTx) {
     // v51 : RÈGLE 37 (durcissement standalone, item 2) — self-detection du brute-force sur l'auth
     // Plume (source=plume-auth, T1110). MÊME mécanique EXACTE que v50 : on n'INSÈRE QUE si le seed a
     // déjà tourné (flag seeded_detection_rules présent = instance live, où seed_detection_rules ne
@@ -2318,7 +2467,7 @@ fn migrate_v51(conn: &Connection) {
     eprintln!("[migration] schéma -> v51 (règle 37 : self-detection brute-force auth Plume — source=plume-auth, T1110)");
 }
 
-fn migrate_v52(conn: &Connection) {
+fn migrate_v52(conn: &MigTx) {
     // v52 : BANLIST MATÉRIALISÉE (`banned_ip`) + dashboard « Banni / Pass » + règle « attaquant actif
     // NON banni ». Objectif : surfacer les IPs qui ATTAQUENT mais ne sont PAS encore bannies, SANS la
     // requête naïve (`stats by src_ip` sur 140k web + join) qui timeoutait (>60s). Socle : une table
@@ -2362,7 +2511,7 @@ fn migrate_v52(conn: &Connection) {
     eprintln!("[migration] schéma -> v52 (banned_ip + dashboard « Banni / Pass » + règle « attaquant actif non banni » — T1595)");
 }
 
-fn migrate_v53(conn: &Connection) {
+fn migrate_v53(conn: &MigTx) {
     // v53 : RÈGLE YARA (match malware/IOC -> source=yara category=malware, T1204). MÊME mécanique EXACTE
     // que v50/v51/v52 : on n'INSÈRE QUE si le seed a déjà tourné (flag seeded_detection_rules présent =
     // instance live, où seed_detection_rules ne re-crée plus). Sur PVC NEUF migrate() précède les seeds
@@ -2390,7 +2539,7 @@ fn migrate_v53(conn: &Connection) {
     eprintln!("[migration] schéma -> v53 (règle YARA : match malware/IOC — source=yara, T1204 ; intégration OFF par défaut)");
 }
 
-fn migrate_v54(conn: &Connection) {
+fn migrate_v54(conn: &MigTx) {
     // v54 : DEBRUITAGE self/opérateur sur l'instance DÉJÀ déployée. Le navigateur de l'opérateur sur le
     // dashboard SOC (IP opérateur configurée via PLUME_OPERATOR_IPS, ex. doc 203.0.113.7 / 2001:db8::/32) génère un volume massif de challenges CF
     // + 4xx web qui REMONTENT en tête des vues « attaquants/scan/recon » et SUR-DÉCLENCHENT les règles.
@@ -2475,7 +2624,7 @@ fn migrate_v54(conn: &Connection) {
     eprintln!("[migration] schéma -> v54 (debruitage self/opérateur : exclusion IP opérateur sur règles CF 25-29 + règle 38 « attaquant non banni » + panneaux banpass + web « top clients externes »/« erreurs 4xx-5xx » ; configurable PLUME_OPERATOR_IPS/PLUME_SELF_HOSTS)");
 }
 
-fn migrate_v55(conn: &Connection) {
+fn migrate_v55(conn: &MigTx) {
     // v55 : CORRECTIF SÉCURITÉ — RETRAIT de l'exclusion self/opérateur des RÈGLES DE DÉTECTION (v54
     // l'y avait injectée -> ANGLE MORT : si la machine opérateur est compromise et attaque depuis son
     // IP, les règles ne déclenchent plus). PRINCIPE : collecte + détection = ZÉRO exclusion (on doit
@@ -2517,7 +2666,7 @@ fn migrate_v55(conn: &Connection) {
     eprintln!("[migration] schéma -> v55 (correctif sécurité : RETRAIT de l'exclusion self/opérateur des RÈGLES de détection CF 25-29 + règle 38 « attaquant non banni » — angle mort ; l'exclusion reste sur les PANNEAUX d'affichage seuls)");
 }
 
-fn migrate_v56(conn: &Connection) {
+fn migrate_v56(conn: &MigTx) {
     // v56 : RAFFINEMENTS PARSING + HEARTBEAT (audit cohérence). Mécanique v48-v55 (idempotent, borné par
     // schema_version, ne tourne qu'UNE fois ; sur PVC neuf migrate() court v0->56 -> le parseur ci-dessous
     // est aussi posé pour une base fraîche).
@@ -2559,7 +2708,7 @@ fn migrate_v56(conn: &Connection) {
     eprintln!("[migration] schéma -> v56 (heartbeat event_based élargi côté code : dataaccess/integrity/k8s-log/crowdsec/fail2ban/ufw/portscan ÉVÉNEMENTIELS, web/kube-audit CONTINUS ; parseur mail verdict amavis backstop ; fail2ban/cloudflare déjà OK depuis v48)");
 }
 
-fn migrate_v57(conn: &Connection) {
+fn migrate_v57(conn: &MigTx) {
     // v57 : DEAD-MAN'S-SWITCH CrowdSec — distingue « 0 attaque (normal) » de « moteur CrowdSec mort/cassé »
     // (incident : moteur aveugle 3,3 j sans alerte, car CrowdSec est ÉVÉNEMENTIEL -> son silence est toléré).
     //
@@ -2597,7 +2746,7 @@ fn migrate_v57(conn: &Connection) {
     eprintln!("[migration] schéma -> v57 (dead-man's-switch CrowdSec : règle « scénarios cassés / moteur dégradé » source=crowdsec category=health, T1562.001 + collecteur CONTINU crowdsec-health côté code — silence du battement de santé = collecteur/moteur CrowdSec mort)");
 }
 
-fn migrate_v58(conn: &Connection) {
+fn migrate_v58(conn: &MigTx) {
     // v58 : PANNEAU d'affichage « Cloudflare (hors self) » — surface l'activité CF EXTERNE réelle en
     // débruitant l'auto-trafic opérateur (son navigateur sur le dashboard, souvent l'essentiel des events
     // source=cloudflare) ET le vhost de l'UI, via les placeholders d'AFFICHAGE __OPERATOR_EXCL__/__SELF_EXCL__
@@ -2631,7 +2780,7 @@ fn migrate_v58(conn: &Connection) {
     eprintln!("[migration] schéma -> v58 (panneau d'affichage « Cloudflare (hors self) » sur « Trafic web » : active CF externe débruitée de l'opérateur/self ; + collecteur CONTINU k8s-log-health côté code = dead-man's-switch pod-logs)");
 }
 
-fn migrate_v59(conn: &Connection) {
+fn migrate_v59(conn: &MigTx) {
     // banned_ip = bans RÉELS (fail2ban+crowdsec+portscan) ; retrait 'ufw' (drop paquet sur port fermé ≠ ban)
     let _ = conn.execute("DELETE FROM banned_ip WHERE source='ufw'", []);
     // relabel honnête : total CUMULÉ sur la fenêtre retenue, pas « actuellement banni » (cf admin-console)
@@ -2642,7 +2791,7 @@ fn migrate_v59(conn: &Connection) {
     eprintln!("[migration] schéma -> v59 (banned_ip sans ufw + relabel ; alert.acked_by)");
 }
 
-fn migrate_v60(conn: &Connection) {
+fn migrate_v60(conn: &MigTx) {
     // v60 : PERSONNALISATION PHASE 1 — colonne `managed` sur parser/rule/playbook : 0 = builtin/seed,
     // 1 = overlay-file (config.d, source git versionnée, posée par load_overlays au boot), 2 = ad-hoc UI
     // (CRUD). Permet à un overlay de GAGNER durablement sur un builtin du même nom et de survivre au
@@ -2655,7 +2804,7 @@ fn migrate_v60(conn: &Connection) {
     eprintln!("[migration] schéma -> v60 (colonne managed: parser/rule/playbook overlay)");
 }
 
-fn migrate_v61(conn: &Connection) {
+fn migrate_v61(conn: &MigTx) {
     // v61 : LOOKUP — tables d'enrichissement par référence pour l'opérateur SOQL `lookup <name>
     // <keyfield> [OUTPUT cols]`. `lookup_kv` : paires (name,key) -> `val` (JSON des colonnes de sortie),
     // jointes en LEFT JOIN par le compilo (guatx_core::soql). `lookup_meta` : métadonnées par lookup
@@ -2669,7 +2818,7 @@ fn migrate_v61(conn: &Connection) {
     eprintln!("[migration] schéma -> v61 (tables lookup_kv/lookup_meta : enrichissement SOQL `lookup`)");
 }
 
-fn migrate_v62(conn: &Connection) {
+fn migrate_v62(conn: &MigTx) {
     // v62 : COHÉRENCE « Banni / Pass » — le cumul des IPs bannies et la banlist par source ignoraient le
     // time picker (figés tout-historique) alors que « attaquants/couverture » honorent __FROM__. On les
     // borne par `banned_ip.last_seen >= __FROM__` (picker='Tout' -> from=0 -> tout-temps reste joignable),
@@ -2680,7 +2829,7 @@ fn migrate_v62(conn: &Connection) {
     eprintln!("[migration] schéma -> v62 (Banni/Pass: cumul/banlist fenêtrées last_seen + viz stat)");
 }
 
-fn migrate_v63(conn: &Connection) {
+fn migrate_v63(conn: &MigTx) {
     // v63 : SPLIT de la vue « Sécurité » (11 dashboards / 58 panneaux empilés sur UNE page) en vues
     // FOCALISÉES + adoption de l'orphelin OBS. GARDÉ — on ne RE-HOME que les dashboards encore dans la
     // vue Sécurité héritée (view_id=2 = défaut posé par les seeds) OU orphelins (view_id IS NULL : cas
@@ -2723,7 +2872,7 @@ fn migrate_v63(conn: &Connection) {
     eprintln!("[migration] schéma -> v63 (split vue Sécurité en vues focalisées + adoption OBS)");
 }
 
-fn migrate_v64(conn: &Connection) {
+fn migrate_v64(conn: &MigTx) {
     // v64 : FRAÎCHEUR RÉELLE — colonne `last_ts` (vrai MAX(ts) du dernier event par (source,bucket)) sur
     // event_rollup. Le panneau Fraîcheur lisait MAX(bucket) = PLANCHER de l'heure (age dérivait 0->59 min
     // puis « rajeunissait » au changement d'heure). rollup_events écrit désormais `MAX(ts) AS last_ts` à
@@ -2741,7 +2890,7 @@ fn migrate_v64(conn: &Connection) {
     eprintln!("[migration] schéma -> v64 (event_rollup.last_ts : Fraîcheur âge réel vs plancher horaire)");
 }
 
-fn migrate_v65(conn: &Connection) {
+fn migrate_v65(conn: &MigTx) {
     // v65 : ADMINISTRATION UI (#1b). `setting(scope,key,value)` = réglages runtime tenant-scopables —
     // aujourd'hui la RÉTENTION éditable à chaud (retention_run relit la BDD ; la BDD gagne sur env/conf).
     // `source_settings(scope,source,...)` = métadonnées DISPLAY-only par source (attendu/inattendu, label,
@@ -2762,7 +2911,7 @@ fn migrate_v65(conn: &Connection) {
     eprintln!("[migration] schéma -> v65 (setting + source_settings : Administration UI rétention/sources)");
 }
 
-fn migrate_v66(conn: &Connection) {
+fn migrate_v66(conn: &MigTx) {
     // v66 : FONDATION MULTI-TENANT (#2a-2a) — AXE ENVIRONNEMENT intra-tenant. ALTER ADDITIF
     // `env_id TEXT NOT NULL DEFAULT 'prod'` : metadata-only via DEFAULT (SQLite n'écrit PAS les
     // 2,4 M lignes — la valeur par défaut est servie à la lecture), donc cheap même sur grosse base ;
@@ -2783,7 +2932,7 @@ fn migrate_v66(conn: &Connection) {
     eprintln!("[migration] schéma -> v66 (env_id : axe environnement intra-tenant — fondation multi-tenant #2a-2a, INERTE en mode 0)");
 }
 
-fn migrate_v68(conn: &Connection) {
+fn migrate_v68(conn: &MigTx) {
     // v68 (#3a) — CONNECTEURS de sources externes (Microsoft Defender / Graph Security d'abord). Table
     // PAR-TENANT (config dans la base du tenant, comme `rule`/`notifier` ; mode 0 = base unique `default`).
     // ADDITIF metadata-only (CREATE TABLE) -> cheap même sur la base prod 2,4 M lignes ; convergence base
@@ -2816,7 +2965,7 @@ fn migrate_v68(conn: &Connection) {
     eprintln!("[migration] schéma -> v68 (connector : sources externes #3a — Defender ; INERTE tant qu'aucune ligne)");
 }
 
-fn migrate_v69(conn: &Connection) {
+fn migrate_v69(conn: &MigTx) {
     // v69 (#4a) — CASES FIRST-CLASS : la gestion d'incident (table `incident`/`incident_item`, v16)
     // devient OPÉRATIONNELLE. ADDITIF metadata-only : ALTER + colonnes à DEFAULT servi à la lecture
     // -> SQLite NE réécrit PAS les lignes existantes (cheap même sur grosse base). Idempotent par
@@ -2859,7 +3008,7 @@ fn migrate_v69(conn: &Connection) {
     eprintln!("[migration] schéma -> v69 (cases first-class #4a : priority/assignee/sla_due/first_response_ts/escalated + backfill ; status legacy préservé)");
 }
 
-fn migrate_v70(conn: &Connection) {
+fn migrate_v70(conn: &MigTx) {
     // v70 (#4a-bis) — ARCHIVE / SOFT-DELETE des cases. ADDITIF metadata-only (comme v69) : ALTER + colonnes
     // à DEFAULT SERVI À LA LECTURE -> SQLite NE réécrit PAS les lignes existantes (cheap même sur grosse
     // base). Idempotent par col_exists (re-jouable). INVARIANT ABSOLU mode 0 : `archived` DEFAULT 0 -> TOUS
@@ -2885,7 +3034,7 @@ fn migrate_v70(conn: &Connection) {
     eprintln!("[migration] schéma -> v70 (#4a-bis : archive/soft-delete des cases — archived/archived_ts/archived_by ; masqué par défaut, append-only préservé, mode 0 inchangé)");
 }
 
-fn migrate_v71(conn: &Connection) {
+fn migrate_v71(conn: &MigTx) {
     // v71 (DURCISSEMENT SÉCU) — AUTORITÉ d'auto-exécution des playbooks. ADDITIF metadata-only : ALTER +
     // colonne à DEFAULT SERVI À LA LECTURE -> SQLite NE réécrit PAS les lignes existantes (cheap, budget 2 Go).
     // Idempotent par col_exists (re-jouable). INVARIANT ABSOLU mode 0 : `created_by_role` DEFAULT 'admin' ->
@@ -2900,7 +3049,7 @@ fn migrate_v71(conn: &Connection) {
     eprintln!("[migration] schéma -> v71 (durcissement sécu : playbook.created_by_role — auto-exécution réservée admin-authored ; DEFAULT 'admin' = prod/seeds inchangés)");
 }
 
-fn migrate_v72(conn: &Connection) {
+fn migrate_v72(conn: &MigTx) {
     // v72 (DURCISSEMENT SÉCU) — DÉCOUPLE l'exclusion de rétention d'une valeur de source FORGEABLE
     // + INDEX de lecture pour /api/alerts tous-statuts (M6). ADDITIF metadata-only : ALTER + colonne à
     // DEFAULT SERVI À LA LECTURE -> SQLite NE réécrit PAS les lignes existantes (cheap, budget 2 Go).
@@ -2934,7 +3083,7 @@ fn migrate_v72(conn: &Connection) {
     eprintln!("[migration] schéma -> v72 (durcissement sécu : event.origin — exclusion de rétention découplée d'une source forgeable ; idx_alert_ts + idx_alert_mitre_ts pour /api/alerts tous-statuts)");
 }
 
-fn migrate_v73(conn: &Connection) {
+fn migrate_v73(conn: &MigTx) {
     // v73 (DURCISSEMENT SÉCU — RÉVOCATION DE SESSION) — pose le compteur de révocation `session_epoch` dans
     // `meta` (KV), mélangé au HMAC des jetons par mint/verify_session. ADDITIF & IDEMPOTENT : INSERT OR
     // IGNORE (une base neuve l'a déjà via schema.sql -> MIROIR/CONVERGENCE). DEFAULT '0' -> aucun jeton
@@ -2946,7 +3095,7 @@ fn migrate_v73(conn: &Connection) {
     eprintln!("[migration] schéma -> v73 (durcissement sécu : meta.session_epoch — révocation serveur des sessions ; DEFAULT 0, additif, mode 0 inchangé)");
 }
 
-fn migrate_v74(conn: &Connection) {
+fn migrate_v74(conn: &MigTx) {
     // v74 (DÉMOTE règle 25 en INFORMATIONNEL). La règle 25 (« CF: scan/bot absorbé au edge », T1595.002)
     // est un signal de VOLUME grossier, FP-prone sur le trafic OPÉRATEUR (challenges CF managés). La règle 43
     // (404-breadth : `dc(path)` par IP) est désormais le signal PRÉCIS. On rétrograde 25 en severity=1
@@ -2965,7 +3114,7 @@ fn migrate_v74(conn: &Connection) {
     eprintln!("[migration] schéma -> v74 (démote règle 25 CF scan/bot en severity=1 informationnel ; règle 43 404-breadth = signal précis ; metadata-only, mode 0 inchangé)");
 }
 
-fn migrate_v75(conn: &Connection) {
+fn migrate_v75(conn: &MigTx) {
     // v75 — FONDATION DU MODE ENGAGEMENT AUTORISÉ (pentest natif black/grey/whitebox). ADDITIF & IDEMPOTENT.
     // INVARIANT ABSOLU mode 0/off : tout est INERTE (colonnes à DEFAULT '' JAMAIS lues sans PLUME_ENGAGEMENT_MODE=1
     // ET un engagement actif ; tables VIDES). Convergence base neuve/existante (v75 tourne aussi sur base fraîche).
@@ -3043,7 +3192,7 @@ fn migrate_v75(conn: &Connection) {
     eprintln!("[migration] schéma -> v75 (FONDATION mode engagement autorisé : engagement + engagement_grant + engagement_id sur event/alert/action/rollups ; INERTE tant que PLUME_ENGAGEMENT_MODE=0)");
 }
 
-fn migrate_v76(conn: &Connection) {
+fn migrate_v76(conn: &MigTx) {
     // v76 — INDEX DE LECTURE pour le TRIAGE GROUPÉ des alertes (« 1 groupe = N occurrences »,
     // /api/alerts/groups + expansion via /api/alerts?gkey=). Le GROUP BY <col> + ORDER BY MAX(ts) et la
     // sous-requête corrélée du titre échantillon (`WHERE <col>=? ORDER BY ts DESC LIMIT 1`) deviennent des
@@ -3057,7 +3206,7 @@ fn migrate_v76(conn: &Connection) {
     eprintln!("[migration] schéma -> v76 (triage groupé alertes : idx_alert_rule_ts + idx_alert_host_ts pour /api/alerts/groups ; index de lecture, additif, mode 0 inchangé)");
 }
 
-fn migrate_v78(conn: &Connection) {
+fn migrate_v78(conn: &MigTx) {
     // v78 — PARSEUR DÉCLARATIF (DSL CIM, Slice #7 pièce 2). Table des specs déclaratives chargées depuis
     // config.d/parsers/*.json (fichiers AVEC un objet `map` ; les fichiers legacy à `pattern` restent dans
     // `parser`). `spec` = JSON figé {match?, extract?, map} recompilé par dparsers_reload. ADDITIVE & INERTE :
@@ -3074,7 +3223,7 @@ fn migrate_v78(conn: &Connection) {
     eprintln!("[migration] schéma -> v78 (parseur déclaratif DSL CIM : table `dparser`, chargée de config.d, mapping source->CIM sans rebuild ; ADDITIF, mode 0 byte-identique)");
 }
 
-fn migrate_v79(conn: &Connection) {
+fn migrate_v79(conn: &MigTx) {
     // v79 (#23) — THREAT-INTEL : magasin d'IOC (indicateurs de compromission). Table PAR-TENANT (comme
     // connector/rule ; mode 0 = base unique `default`, le « tenant » du UNIQUE est donc la BASE elle-même,
     // et `env_id` est l'axe environnement intra-tenant #2d). ADDITIF metadata-only (CREATE TABLE + index)
@@ -3116,7 +3265,7 @@ fn migrate_v79(conn: &Connection) {
     eprintln!("[migration] schéma -> v79 (threat-intel #23 : table `ioc` + index value/expires ; match-on-ingest via cache mémoire, INERTE tant que la table est vide -> mode 0 byte-identique)");
 }
 
-fn migrate_v80(conn: &Connection) {
+fn migrate_v80(conn: &MigTx) {
     // v80 (#24) — RISK-BASED ALERTING (RBA, modèle Splunk ES) : au lieu d'UNE alerte par détection, les
     // détections CONTRIBUENT du RISQUE à des ENTITÉS (user/host/ip/…) ; le risque s'ACCUMULE par entité sur
     // une fenêtre ; quand le cumul franchit un seuil (ou ≥N tactiques MITRE distinctes, ou vélocité), on lève
@@ -3197,7 +3346,7 @@ fn migrate_v80(conn: &Connection) {
     eprintln!("[migration] schéma -> v80 (RBA #24 : tables `risk_event`/`risk_rollup` + colonnes risk sur `rule` ; scoring par-entité matérialisé dans rollup_risk, INERTE tant qu'aucune règle risk/IOC -> mode 0 byte-identique)");
 }
 
-fn migrate_v81(conn: &Connection) {
+fn migrate_v81(conn: &MigTx) {
     // v81 (#7) — DÉDUP SIGMA PAR `sigma_id` (UUID stable de la règle Sigma). Colonne ADDITIVE `rule.sigma_id`
     // (NULL pour TOUTES les lignes existantes -> AUCUNE mutation : mode 0 byte-identique ; les détections
     // natives/overlays/CRUD ne la renseignent pas). L'importeur Sigma (single ET bulk) y stocke l'`id` (UUID)
@@ -3213,7 +3362,7 @@ fn migrate_v81(conn: &Connection) {
     eprintln!("[migration] schéma -> v81 (dédup Sigma par sigma_id : colonne rule.sigma_id + index partiel ; additive, NULL pour l'existant -> mode 0 byte-identique)");
 }
 
-fn migrate_v82(conn: &Connection) {
+fn migrate_v82(conn: &MigTx) {
     // v82 — LIBELLÉ de provisioning `token.kind` (agent|hec). Colonne ADDITIVE, purement DESCRIPTIVE :
     // l'authentification (token_lookup) reste INCHANGÉE — un token créé ici s'authentifie EXACTEMENT comme
     // un token CLI, sur le seam agent (Bearer/responder) ET sur le collector HEC (`Splunk <tok>`), qui
@@ -3245,7 +3394,9 @@ mod v102_tests {
         )
         .unwrap();
 
-        super::migrate_v102(&conn);
+        // `migrate_vN` prend désormais un `MigTx` (Connection + mémorisation des échecs de classe B) :
+        // appel DIRECT hors transaction, comportement de la migration inchangé.
+        super::migrate_v102(&super::MigTx::new(&conn));
 
         let e22: i64 = conn.query_row("SELECT enabled FROM rule WHERE id=22", [], |r| r.get(0)).unwrap();
         let e21: i64 = conn.query_row("SELECT enabled FROM rule WHERE id=21", [], |r| r.get(0)).unwrap();
@@ -3256,5 +3407,105 @@ mod v102_tests {
 
         let v: String = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
         assert_eq!(v, "102", "schema_version doit être bumpé à 102");
+    }
+}
+
+/// INTÉGRITÉ DE SCHÉMA (défaut d'audit S4) — une migration qui ÉCHOUE pour une raison RÉELLE
+/// (disque plein, base verrouillée) ne doit JAMAIS laisser la base ESTAMPILLÉE comme migrée.
+/// Sinon : `meta.schema_version=N` sans les objets de vN, et la garde anti-downgrade
+/// (`schema_downgrade_guard`) interdit tout retour en arrière -> aucun chemin de réparation.
+#[cfg(test)]
+mod tx_integrity_tests {
+    use super::*;
+
+    /// Base MINIMALE estampillée v110 (seule `meta` est nécessaire : v111 ne crée que `net_ban` +
+    /// son index) puis SIMULATION DE DISQUE PLEIN : `PRAGMA max_page_count` plafonné au nombre de
+    /// pages COURANT -> toute ALLOCATION de page échoue en SQLITE_FULL (l'un des deux échecs réels
+    /// cités par l'audit), alors qu'un `UPDATE` EN PLACE de même longueur ('110' -> '111') n'alloue
+    /// rien et RÉUSSIT. C'est exactement l'asymétrie qui produit le défaut.
+    fn db_v110_disk_full() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO meta(key,value) VALUES('schema_version','110');",
+        )
+        .unwrap();
+        let pages: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0)).unwrap();
+        conn.execute_batch(&format!("PRAGMA max_page_count={pages}")).unwrap();
+        conn
+    }
+
+    /// Échec RÉEL au milieu d'une migration -> la version DOIT rester l'ancienne (v110), pour que la
+    /// migration soit RE-TENTÉE au prochain démarrage. AVANT correctif : le `CREATE TABLE net_ban`
+    /// échoue (SQLITE_FULL, résultat ignoré par `let _ =`) mais `UPDATE meta SET value='111'` est
+    /// INCONDITIONNEL -> base estampillée v111 SANS `net_ban`.
+    #[test]
+    fn failed_migration_leaves_schema_version_at_previous_value() {
+        let conn = db_v110_disk_full();
+        migrate(&conn);
+        assert!(
+            !table_exists(&conn, "net_ban"),
+            "précondition du test : le CREATE TABLE doit avoir échoué (disque plein simulé)"
+        );
+        assert_eq!(
+            read_schema_version(&conn),
+            110,
+            "migration échouée -> version NON bumpée (sinon base « migrée » sans ses objets, sans chemin de réparation)"
+        );
+    }
+
+    /// Corollaire : la version laissée à l'ancienne valeur doit effectivement permettre le RETRY.
+    /// Une fois la condition d'échec levée (place disque rendue), le démarrage suivant DOIT terminer
+    /// la migration. AVANT correctif la base est déjà estampillée v111 -> `if v < 111` est faux ->
+    /// `net_ban` n'est JAMAIS créée (perte silencieuse et définitive).
+    #[test]
+    fn migration_is_retried_after_failure_condition_clears() {
+        let conn = db_v110_disk_full();
+        migrate(&conn); // 1er démarrage : échoue (disque plein)
+        // place rendue (le plafond REDESCEND jamais sous le nombre de pages courant : on le remonte
+        // explicitement au maximum SQLite par défaut).
+        conn.execute_batch("PRAGMA max_page_count=1073741823").unwrap();
+        migrate(&conn); // 2e démarrage : doit RATTRAPER la migration
+        assert!(table_exists(&conn, "net_ban"), "v111 doit être re-tentée et réussir au démarrage suivant");
+        assert_eq!(read_schema_version(&conn), 111, "version bumpée SEULEMENT après succès réel");
+    }
+
+    /// Base DÉJÀ À JOUR (`== CODE_SCHEMA_MAX`, le cas de la PRODUCTION) : `migrate()` doit rester un
+    /// NO-OP TOTAL — aucune étape ne s'exécute, donc aucune transaction ouverte, aucune écriture, et la
+    /// version ne bouge pas. Verrou : le wrapper transactionnel ne doit JAMAIS re-jouer une migration
+    /// déjà appliquée ni laisser une transaction pendante.
+    #[test]
+    fn up_to_date_database_is_left_untouched() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../db/schema.sql")).unwrap();
+        migrate(&conn); // base neuve -> migrée jusqu'à CODE_SCHEMA_MAX
+        assert_eq!(read_schema_version(&conn), CODE_SCHEMA_MAX, "base neuve migrée au maximum du code");
+        // Empreinte : compteur de modifications de schéma SQLite (`PRAGMA schema_version` s'incrémente
+        // à CHAQUE DDL) + DDL complète + contenu de `meta`.
+        let snapshot = |c: &Connection| -> (i64, String, String) {
+            let cookie: i64 = c.query_row("PRAGMA schema_version", [], |r| r.get(0)).unwrap();
+            let ddl: String = c
+                .query_row(
+                    "SELECT COALESCE(group_concat(type||' '||name||' '||COALESCE(sql,'')),'') \
+                     FROM (SELECT type,name,sql FROM sqlite_master ORDER BY type,name)",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let meta: String = c
+                .query_row(
+                    "SELECT COALESCE(group_concat(key||'='||COALESCE(value,'')),'') \
+                     FROM (SELECT key,value FROM meta ORDER BY key)",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            (cookie, ddl, meta)
+        };
+        let before = snapshot(&conn);
+        migrate(&conn); // 2e démarrage sur une base à jour
+        assert_eq!(snapshot(&conn), before, "base à jour -> schéma ET meta INCHANGÉS (aucune migration re-jouée)");
+        assert_eq!(read_schema_version(&conn), CODE_SCHEMA_MAX, "version inchangée");
+        assert!(conn.is_autocommit(), "aucune transaction laissée ouverte");
     }
 }

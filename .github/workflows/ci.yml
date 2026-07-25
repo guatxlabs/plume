@@ -3,7 +3,10 @@
 #
 # Jobs:
 #   - test     : `cargo test --locked` for the Plume daemon (crate in `daemon/`),
-#                default features only → SqlcipherStore-only SMB profile (expect 723 tests),
+#                default features only → SqlcipherStore-only SMB profile. The test COUNT is
+#                ASSERTED, not commented: the step sums the `test result: ok. N passed` lines
+#                and fails on any drift from EXPECTED_TESTS (733) — that is what makes
+#                CONTRIBUTING's "constant test count" invariant an actual gate,
 #                plus `cargo build --release --locked` and the `duckdb` FEATURE-CHECK
 #                (`cargo check --features duckdb --locked`) to prove the opt-in warm tier compiles.
 #   - security : supply-chain + secret hygiene — `cargo audit --deny warnings` on the
@@ -45,7 +48,7 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # test — daemon test suite (default features = SMB profile, expect 723).
+  # test — daemon test suite (default features = SMB profile; count ASSERTED, see below).
   # ---------------------------------------------------------------------------
   test:
     name: test (daemon — cargo test --locked)
@@ -71,13 +74,33 @@ jobs:
             cargo-${{ runner.os }}-
 
       # DEFAULT build only: SqlcipherStore alone (rusqlite bundled-sqlcipher-vendored-openssl
-      # compiles C + vendored OpenSSL; cc/perl present on ubuntu-24.04). Expect 723 tests.
+      # compiles C + vendored OpenSSL; cc/perl present on ubuntu-24.04).
       # cargo fetches the guatx-core git-dep (core@v0.2.0) from GitHub.
       # NOTE: do NOT add `--features cold_tier` to this job — the cold_tier suite shares
       # fixed temp paths with the default suite and must run on a SEPARATE runner.
-      - name: cargo test (daemon, default features)
+      #
+      # THE COUNT IS ASSERTED HERE. CONTRIBUTING calls the constant test count a NON-NEGOTIABLE
+      # invariant (it is how a mode-0/gated change proves it added nothing to the default
+      # build); before this step nothing enforced it — the numbers were comments. We sum the
+      # `test result: ok. N passed` lines of the run (one per test binary; the daemon has one,
+      # plus a 0-test doc run) and compare to EXPECTED_TESTS. A gated change that leaks a test
+      # into the default profile, or a deleted test, now FAILS the build instead of passing
+      # unnoticed. `set -o pipefail` so a cargo failure is not masked by the pipe to tee.
+      - name: cargo test (daemon, default features) + assert the test count
         working-directory: daemon
-        run: cargo test --locked --verbose
+        env:
+          EXPECTED_TESTS: "733"
+        run: |
+          set -euo pipefail
+          cargo test --locked --verbose 2>&1 | tee /tmp/daemon-tests.log
+          total=$(awk '/^test result: ok\. [0-9]+ passed/{s+=$4} END{print s+0}' /tmp/daemon-tests.log)
+          echo "tests passed: $total (expected $EXPECTED_TESTS)"
+          if [ "$total" != "$EXPECTED_TESTS" ]; then
+            echo "::error::default-suite test count is $total, expected $EXPECTED_TESTS."
+            echo "::error::If the change legitimately adds or removes tests, update EXPECTED_TESTS here"
+            echo "::error::and the numbers in CONTRIBUTING.md, daemon/.cargo/audit.toml and daemon/src/tests/ingest.rs."
+            exit 1
+          fi
 
       # Release build of the default profile — proves the daemon links/optimizes clean.
       - name: cargo build --release (daemon, default features)
@@ -143,7 +166,7 @@ jobs:
       #     age -> i18n-embed-fl. Compile-time only, no runtime surface. No fix available.
       #   RUSTSEC-2024-0320 (yaml-rust 0.4.5, unmaintained) — direct dep, used ONLY by the Sigma-rule importer
       #     front-end (YAML -> serde_json::Value) on operator-supplied rule files. "Unmaintained" != vulnerable;
-      #     the successor `yaml-rust2` is a DIFFERENT crate (API break, migration risk to the 723-test suite),
+      #     the successor `yaml-rust2` is a DIFFERENT crate (API break, migration risk to the 733-test suite),
       #     so there is no in-place fix-by-update. Revisit if a real yaml-rust CVE lands.
       - name: cargo audit (daemon crate — deny warnings)
         working-directory: daemon

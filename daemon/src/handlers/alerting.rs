@@ -726,7 +726,7 @@ mod alerting_tests {
     fn mem() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-        crate::migrate(&conn);
+        assert!(crate::migrate(&conn), "fixture : la chaîne de migrations doit aller au bout");
         conn
     }
 

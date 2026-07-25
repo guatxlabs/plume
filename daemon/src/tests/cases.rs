@@ -24,7 +24,7 @@
         conn.execute("CREATE TABLE event(id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, host TEXT, env_id TEXT NOT NULL DEFAULT 'prod')", []).unwrap();
         conn.execute("CREATE TABLE metric(ts INTEGER NOT NULL, host TEXT, env_id TEXT NOT NULL DEFAULT 'prod')", []).unwrap();
         conn.execute("CREATE TABLE snapshot(id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, host TEXT, env_id TEXT NOT NULL DEFAULT 'prod')", []).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), CODE_SCHEMA_MAX.to_string());
         for c in ["priority", "assignee", "sla_due", "first_response_ts", "escalated"] {
             assert!(col_exists(&conn, "incident", c), "incident.{c} manquant");
@@ -39,7 +39,7 @@
         let (esc, fr): (i64, Option<i64>) = conn.query_row("SELECT escalated, first_response_ts FROM incident WHERE id=1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((esc, fr), (0, None), "escalated=0, first_response_ts NULL par défaut");
         // idempotent : re-migrer n'altère pas les priorités backfillées.
-        migrate(&conn);
+        let _ = migrate(&conn);
         let p0: i64 = conn.query_row("SELECT priority FROM incident WHERE id=1", [], |r| r.get(0)).unwrap();
         assert_eq!(p0, 1, "re-migrer ne réécrase pas la priorité backfillée");
     }
@@ -157,7 +157,7 @@
                   COALESCE(owner,'')||'|'||COALESCE(summary,'')||'|'||COALESCE(closed_ts,'')||'|'||priority \
                   FROM incident WHERE id=7";
         let before: String = conn.query_row(fp, [], |r| r.get(0)).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         for c in ["disposition", "disposition_ts", "disposition_by"] {
             assert!(col_exists(&conn, "incident", c), "incident.{c} posée par v106");
         }
@@ -170,7 +170,7 @@
         assert!(d.is_none() && dts.is_none() && dby.is_none(), "verdict NULL = non-défini (mode 0)");
         // IDEMPOTENT : re-migrer (v106 re-tourné via rétrograde) reste à la tête sans réécrire.
         conn.execute("UPDATE meta SET value='105' WHERE key='schema_version'", []).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), CODE_SCHEMA_MAX.to_string());
     }
 
@@ -241,7 +241,7 @@
         let path = ff_tmp_path("dispclient");
         let conn = open_db(&path).unwrap();
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         let masks = effective_masks(&path, "client", "default", None);
         let id = case_create_row(&conn, "analyst_alice", "T", 3, "", None, 2);
         assert!(case_apply_update(&conn, id, "bob", &json!({ "disposition": "true_positive" })));
@@ -610,7 +610,7 @@
         // simule PRÉ-v77 : DROP la table dérivée + rétrograde -> le bloc v77 (CREATE + backfill) DOIT re-tourner.
         conn.execute("DROP TABLE host_rollup", []).unwrap();
         conn.execute("UPDATE meta SET value='76' WHERE key='schema_version'", []).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), CODE_SCHEMA_MAX.to_string());
         let (a_last, a_first, a_sig): (i64, i64, i64) = conn.query_row(
             "SELECT last_ts, first_ts, sig_total + sig_hot FROM host_rollup WHERE host='seed-a'",
@@ -752,7 +752,7 @@
         // une ligne à backfiller -> l'INSERT ... SELECT tentera d'insérer -> le trigger ABORT -> Err propagée.
         conn.execute("INSERT INTO event(ts,host,source,message) VALUES(?1,'h','sshd','m')", params![now() - 100]).unwrap();
         conn.execute("UPDATE meta SET value='76' WHERE key='schema_version'", []).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         assert_eq!(conn.query_row::<String,_,_>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(),
                    "76", "backfill en échec -> version reste 76 (retry au prochain boot ; JAMAIS avalée + faux succès)");
     }
@@ -1341,7 +1341,7 @@
         let path = ff_tmp_path("clientread");
         let conn = open_db(&path).unwrap();
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         conn.execute("INSERT INTO field_filter(name,field,action,role) VALUES('t','title','mask','')", []).unwrap();
         field_filters_reload(&conn, &path);
         let masks = effective_masks(&path, "client", "default", None);
@@ -1415,7 +1415,7 @@
         {
             let conn = open_db(&path).unwrap();
             conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&conn);
+            let _ = migrate(&conn);
             conn.execute(
                 "INSERT INTO event(ts,source,category,severity,host,message,fields) VALUES(?1,'sshd','auth',3,'h1','m',?2)",
                 params![now(), r#"{"src_user":"alice","other":"ok"}"#],
@@ -1473,7 +1473,7 @@
         let path = ff_tmp_path("deny_overlay");
         let conn = open_db(&path).unwrap();
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         conn.execute("INSERT INTO field_filter(name,field,action,role) VALUES('d','pan','deny','')", []).unwrap();
         conn.execute("INSERT INTO field_filter(name,field,action,role) VALUES('m','pan','mask','admin')", []).unwrap();
         field_filters_reload(&conn, &path);
@@ -1494,7 +1494,7 @@
         {
             let conn = open_db(&path).unwrap();
             conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&conn);
+            let _ = migrate(&conn);
             conn.execute(
                 "INSERT INTO event(ts,source,category,severity,host,message,fields) VALUES(?1,'sshd','auth',3,'h1','msg',?2)",
                 params![now(), r#"{"src_user":"alice"}"#],

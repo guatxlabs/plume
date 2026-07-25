@@ -44,7 +44,7 @@
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             let steps = r#"[{"name":"echec auth","query":"search source=auth outcome=fail","min_count":3},{"name":"succes","query":"search source=auth outcome=success","min_count":1}]"#;
             w.execute(
                 "INSERT INTO correlation(name,enabled,key_field,entity_type,steps,window_s,interval_s,severity,mitre,risk_score,managed) \
@@ -87,7 +87,7 @@
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             let steps = r#"[{"name":"echec","query":"search source=auth outcome=fail","min_count":3},{"name":"succes","query":"search source=auth outcome=success","min_count":1}]"#;
             w.execute(
                 "INSERT INTO correlation(name,enabled,key_field,entity_type,steps,window_s,interval_s,severity,mitre,risk_score,managed) \
@@ -115,7 +115,7 @@
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             // key_field = colonne INEXISTANTE dans la projection SOQL -> key_idx None -> ok=false (échec d'éval).
             let steps = r#"[{"name":"e","query":"search source=auth","min_count":1}]"#;
             w.execute(
@@ -178,7 +178,7 @@
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             w.execute(
                 "INSERT INTO ueba_baseline(name,enabled,query,is_soql,entity_type,entity_field,value_field,bucket_s,min_samples,z_threshold,window_s,interval_s,severity,mitre,risk_score,managed) \
                  VALUES('volume auth par hôte',1,'search source=auth | stats count by host',1,'host','host','',3600,5,3.0,604800,3600,3,'T1110',0,2)",
@@ -222,7 +222,7 @@
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             for i in 0..20 {
                 w.execute("INSERT INTO event(ts,source,src_ip,fields,dedup) VALUES(?1,'auth','9.9.9.9','{\"outcome\":\"fail\"}',?2)", params![now() - 10, format!("e{i}")]).unwrap();
             }
@@ -891,7 +891,7 @@
         {
             let conn = db.lock();
             conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&conn);
+            let _ = migrate(&conn);
             // deux IP distinctes en source=web sévérité 3 -> `stats count by src_ip` = 2 lignes (2 entités).
             for (ip, k) in [("11.0.0.1", "a"), ("22.0.0.2", "b")] {
                 conn.execute("INSERT INTO event(ts,source,severity,message,src_ip,dedup) VALUES(?1,'web',3,'m',?2,?3)", params![now() - 5, ip, k]).unwrap();
@@ -934,7 +934,7 @@
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
 
             // (a) PARITÉ D'ÉCRITURE. Même contenu écrit par l'INSERT LEGACY (forme journal : category 'auth'
             // littérale, env_id/dst_ip/url/engagement_id/origin OMIS -> DEFAULT) et par le store. La ligne
@@ -1036,7 +1036,7 @@
         {
             let conn = open_db_keyed(&src, Some(key)).unwrap();
             conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&conn);
+            let _ = migrate(&conn);
             conn.execute_batch("BEGIN;").unwrap();
             for i in 0..N {
                 conn.execute(
@@ -1685,7 +1685,7 @@
         //     plume-config, category=health, severity 4, origin=daemon, dedup HORAIRE (idempotent).
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         let t0 = 1_700_000_000i64;
         assert!(crate::backup::emit_backup_symmetric_signal(&conn, t0), "1er signal écrit");
         let (src_s, cat, sev, org): (String, String, i64, String) = conn.query_row(
@@ -1925,7 +1925,7 @@
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             w.execute("INSERT INTO dparser(name,source,spec,enabled,builtin,managed,created) VALUES('nft-sd','nft',?1,1,0,1,0)",
                 params![nft_parser_spec()]).unwrap();
             dparsers_reload(&w, &p);
@@ -1980,7 +1980,7 @@
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             w.execute("INSERT INTO dparser(name,source,spec,enabled,builtin,managed,created) VALUES('cf-fe','cloudflare',?1,1,0,1,0)",
                 params![cf_parser_spec()]).unwrap();
             dparsers_reload(&w, &p);
@@ -2422,7 +2422,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
             "SELECT COUNT(*) FROM pragma_table_info('rule') WHERE name='sigma_id'", [], |r| r.get(0)).unwrap();
         assert_eq!(col, 1, "colonne rule.sigma_id présente (migration v81)");
         // IDEMPOTENCE MIGRATION : re-jouer migrate() ne casse rien (garde de version) et la colonne reste unique.
-        migrate(&conn);
+        let _ = migrate(&conn);
         let col2: i64 = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('rule') WHERE name='sigma_id'", [], |r| r.get(0)).unwrap();
         assert_eq!(col2, 1, "migration idempotente : sigma_id toujours unique après re-jeu");
@@ -2536,7 +2536,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
         }
         // (a) une requête LÉGITIME de règle fonctionne (lecture).
         let ok = run_query(&p, "SELECT COUNT(*) AS n FROM event");
@@ -2612,8 +2612,8 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     fn migration_is_idempotent() {
         // re-jouer migrate() ne doit PAS échouer (ALTER déjà appliqué = duplicate column ignoré) ni régresser.
         let conn = test_db();
-        migrate(&conn);
-        migrate(&conn);
+        let _ = migrate(&conn);
+        let _ = migrate(&conn);
         let v: String = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
         assert_eq!(v, "111");
         // FIX (test-confidence #11) : re-jouer migrate() court-circuite au niveau courant (v<N faux) -> le
@@ -2626,7 +2626,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         let eng_rule = "SOC: engagement autorisé déclaré (défense auto-ban baissée)";
         for _ in 0..2 {
             conn.execute("UPDATE meta SET value='74' WHERE key='schema_version'", []).unwrap(); // rétrograde -> le bloc v75 re-tourne
-            migrate(&conn);
+            let _ = migrate(&conn);
             assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "111", "v75+v76+v77+v78 ré-exécutés remontent proprement au sommet (aucun statement non-idempotent ; host_rollup rebuild à blanc ; dparser CREATE IF NOT EXISTS)");
         }
         let dup: i64 = conn.query_row("SELECT COUNT(*) FROM rule WHERE name=?1", params![eng_rule], |r| r.get(0)).unwrap();
@@ -2780,7 +2780,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             w.execute("INSERT INTO dparser(name,source,spec,enabled,builtin,managed,created) VALUES('nft-sd','nft',?1,1,0,1,0)",
                 params![nft_parser_spec()]).unwrap();
             dparsers_reload(&w, &p);
@@ -3269,7 +3269,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             // Chemin RÉEL de chargement des overlays (valide + compile la SOQL, pose managed=1).
             load_overlays_dir(&w, &dir);
 
@@ -3866,7 +3866,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         {
             let conn = open_db_keyed(&src, Some(key)).unwrap();
             conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&conn);
+            let _ = migrate(&conn);
             conn.execute_batch("BEGIN;").unwrap();
             for i in 0..N {
                 conn.execute(

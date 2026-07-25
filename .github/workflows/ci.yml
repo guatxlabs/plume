@@ -3,7 +3,7 @@
 #
 # Jobs:
 #   - test     : `cargo test --locked` for the Plume daemon (crate in `daemon/`),
-#                default features only → SqlcipherStore-only SMB profile (expect 636 tests),
+#                default features only → SqlcipherStore-only SMB profile (expect 723 tests),
 #                plus `cargo build --release --locked` and the `duckdb` FEATURE-CHECK
 #                (`cargo check --features duckdb --locked`) to prove the opt-in warm tier compiles.
 #   - security : supply-chain + secret hygiene — `cargo audit --deny warnings` on the
@@ -45,7 +45,7 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # test — daemon test suite (default features = SMB profile, expect 636).
+  # test — daemon test suite (default features = SMB profile, expect 723).
   # ---------------------------------------------------------------------------
   test:
     name: test (daemon — cargo test --locked)
@@ -71,7 +71,7 @@ jobs:
             cargo-${{ runner.os }}-
 
       # DEFAULT build only: SqlcipherStore alone (rusqlite bundled-sqlcipher-vendored-openssl
-      # compiles C + vendored OpenSSL; cc/perl present on ubuntu-24.04). Expect 636 tests.
+      # compiles C + vendored OpenSSL; cc/perl present on ubuntu-24.04). Expect 723 tests.
       # cargo fetches the guatx-core git-dep (core@v0.2.0) from GitHub.
       # NOTE: do NOT add `--features cold_tier` to this job — the cold_tier suite shares
       # fixed temp paths with the default suite and must run on a SEPARATE runner.
@@ -143,7 +143,7 @@ jobs:
       #     age -> i18n-embed-fl. Compile-time only, no runtime surface. No fix available.
       #   RUSTSEC-2024-0320 (yaml-rust 0.4.5, unmaintained) — direct dep, used ONLY by the Sigma-rule importer
       #     front-end (YAML -> serde_json::Value) on operator-supplied rule files. "Unmaintained" != vulnerable;
-      #     the successor `yaml-rust2` is a DIFFERENT crate (API break, migration risk to the 636-test suite),
+      #     the successor `yaml-rust2` is a DIFFERENT crate (API break, migration risk to the 723-test suite),
       #     so there is no in-place fix-by-update. Revisit if a real yaml-rust CVE lands.
       - name: cargo audit (daemon crate — deny warnings)
         working-directory: daemon

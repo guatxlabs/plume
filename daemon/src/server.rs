@@ -360,7 +360,28 @@ fn open_and_migrate_db(db_path: String, spool: String, conf: HashMap<String, Str
     }
     tune(&conn);
     conn.execute_batch(include_str!("../../db/schema.sql")).expect("schema");
-    migrate(&conn);
+    // REFUS DE SERVIR SUR UN SCHÉMA CONNU-INCOMPLET (symétrique de la garde anti-downgrade ci-dessus).
+    // `migrate()` renvoie `false` quand une étape a échoué pour une raison OPÉRATIONNELLE : la base est
+    // restée à une version < CODE_SCHEMA_MAX. Continuer signifierait servir avec des tables absentes —
+    // et une table absente n'est pas une panne visible, c'est une FONCTION SILENCIEUSEMENT ABSENTE
+    // (`net_ban` manquante -> le ban natif HTTP, un contrôle de sécurité, devient un passthrough).
+    //
+    // CHOIX ASSUMÉ : arrêt propre en code 1, AVANT `reconcile_index_state`, les `seed_*` et le bind.
+    // L'orchestrateur (k8s/systemd) redémarre et la migration est RE-TENTÉE. Conséquence à connaître :
+    // une contention TRANSITOIRE d'écriture (le sidecar backup tient le verrou plus longtemps que le
+    // `busy_timeout` -> `BEGIN IMMEDIATE` en SQLITE_BUSY) produit un CrashLoopBackOff VISIBLE au lieu
+    // d'un daemon qui sert amputé. On préfère l'indisponibilité bruyante à la sécurité silencieusement
+    // absente ; le redémarrage suffit dès que le verrou est rendu.
+    if !migrate(&conn) {
+        eprintln!(
+            "[schema] REFUS DE SERVIR : la migration s'est INTERROMPUE (cause détaillée ci-dessus) — base en \
+             schema_version={} alors que ce binaire attend v{CODE_SCHEMA_MAX}. Le schéma est INCOMPLET : \
+             servir dans cet état rendrait des fonctions (dont des contrôles de sécurité) silencieusement \
+             absentes. Aucun seed, aucun bind. Arrêt propre — la migration sera RE-TENTÉE au redémarrage.",
+            read_schema_version(&conn)
+        );
+        std::process::exit(1);
+    }
     // VRAI kill-switch env-driven, idempotent, à CHAQUE boot (après migrate, avant bind).
     // Crée/droppe la vtable+triggers FTS et droppe les index expression selon PLUME_FTS_FIELDS /
     // PLUME_EXPRINDEX. INSTANTANÉ (DDL pur, pas de scan) -> ne retarde pas le bind. Le CREATE INDEX

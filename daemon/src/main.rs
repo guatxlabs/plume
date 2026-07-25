@@ -1029,7 +1029,12 @@ fn main() {
         let token = hex_encode(&b);
         let conn = open_db(&db_path).expect("open db");
         let _ = conn.execute_batch(include_str!("../../db/schema.sql"));
-        migrate(&conn);
+        // Schéma CONNU-INCOMPLET -> on n'écrit pas de token dans une base à moitié migrée (code 1 : la
+        // CLI est scriptée, un échec doit être détectable par `$?`).
+        if !migrate(&conn) {
+            eprintln!("[schema] migration INTERROMPUE (cause ci-dessus) — token NON créé. Arrêt propre.");
+            std::process::exit(1);
+        }
         conn.execute("INSERT INTO token(name,token_hash,created,host) VALUES(?1,?2,?3,?4)", params![name, sha256_hex(token.as_bytes()), now(), host])
             .expect("insert token");
         println!("{token}");

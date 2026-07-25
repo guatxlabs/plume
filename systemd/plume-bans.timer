@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — agrégation périodique des bans actifs (fail2ban + CrowdSec)
+
+[Timer]
+OnBootSec=200s
+OnUnitActiveSec=10min
+AccuracySec=60s
+
+[Install]
+WantedBy=timers.target

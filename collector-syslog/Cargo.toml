@@ -1,0 +1,19 @@
+[package]
+name = "plume-collector-syslog"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Recepteur syslog Plume (host-natif) : ecoute UDP+TCP :514 (RFC5424 + RFC3164 legacy), decoupe le cadrage (RFC6587 octet-counting + non-transparent LF), dispatche vers un parser vendeur PLUGGABLE (1er = FortiGate), normalise en events Plume et les ecrit ATOMIQUEMENT dans le spool -> ship.sh les POST vers /api/ingest (mTLS+token). NE TOUCHE PAS le data-plane du daemon : ajoute seulement une source. cf. taxonomie source->category (firewall/utm/...) pour la composition inter-vendeurs."
+
+[[bin]]
+name = "plume-collector-syslog"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1

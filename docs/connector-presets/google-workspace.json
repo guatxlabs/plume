@@ -1,0 +1,39 @@
+{
+  "_comment": "EXEMPLE de config http_pull pour Google Workspace — Admin SDK Reports API (Activities: GET /admin/reports/v1/activity/users/all/applications/{applicationName}). Ici applicationName=login (remplaçable par admin | drive | token | saml | groups…). AUTH : l'API exige un access_token OAuth2 (portée admin.reports.audit.readonly) obtenu par un COMPTE DE SERVICE avec délégation à l'échelle du domaine (JWT-bearer signé RS256) — flow NON réalisable par le puller générique. Mettez un access_token COURT (≈1 h) dans le champ `secret` (auth kind=bearer) et rafraîchissez-le via un sidecar (workload-identity / `gcloud auth print-access-token` impersoné). Remplacez rien d'autre : la pagination `pageToken` et le watermark `startTime` sont natifs à cette API.",
+  "method": "GET",
+  "url": "https://admin.googleapis.com/admin/reports/v1/activity/users/all/applications/login",
+  "records_path": "items",
+  "source": "google-workspace",
+  "sourcetype": "gsuite:login",
+  "auth": {
+    "kind": "bearer"
+  },
+  "pagination": {
+    "kind": "cursor",
+    "param": "pageToken",
+    "size": 1000,
+    "size_param": "maxResults",
+    "cursor_path": "nextPageToken"
+  },
+  "sourcetype_map": {
+    "gsuite:login": "auth"
+  },
+  "field_map": {
+    "id": "id.uniqueQualifier",
+    "ts": "id.time",
+    "message": "events[0].name",
+    "src_ip": "ipAddress",
+    "sourcetype": "=gsuite:login",
+    "fields.user": "actor.email",
+    "fields.actor_profile_id": "actor.profileId",
+    "fields.event_type": "events[0].type",
+    "fields.event_name": "events[0].name",
+    "fields.application": "id.applicationName"
+  },
+  "watermark": {
+    "field_path": "id.time",
+    "param": "startTime",
+    "format": "iso8601",
+    "lookback_days": 7
+  }
+}

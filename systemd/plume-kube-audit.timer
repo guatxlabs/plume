@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — ingestion du log d'audit API Kubernetes
+
+[Timer]
+OnBootSec=160s
+OnUnitActiveSec=2min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

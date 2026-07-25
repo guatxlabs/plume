@@ -1,0 +1,13 @@
+{
+  "_comment": "C2 rotatif / exfil multi-destination : un processus (hors infra bruyante k3s/containerd) ouvre des flux vers >50 IP externes distinctes = fan-out anormal (là où le seed beaconing natif cible la RÉPÉTITION vers UNE même IP). Peut lever sur navigateurs/updaters -> exclusions/seuil à ajuster (enabled=false). || TÉLÉMÉTRIE REQUISE: conntrack (dir, scope, proc, dst_ip) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Égress: éventail vers de nombreuses IP externes (hors infra)",
+  "enabled": false,
+  "query": "search source=conntrack dir=outbound scope=external proc!=k3s-server proc!=containerd | stats dc(dst_ip) by proc | where dc > 50 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 2,
+  "interval_s": 300,
+  "window_s": 1800,
+  "mitre": "T1071"
+}

@@ -1,0 +1,19 @@
+[Unit]
+Description=plume collector (plugin) — MAJ d'images disponibles (digest-drift, skopeo) -> events
+# OPT-IN. Necessite skopeo. Activer : systemctl enable --now plume-imgdrift.timer
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+EnvironmentFile=-/etc/plume/imgdrift.conf
+ExecStart=/usr/local/lib/plume/collectors/imgdrift.sh
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+LockPersonality=true
+MemoryMax=128M
+CPUQuota=25%
+Nice=15

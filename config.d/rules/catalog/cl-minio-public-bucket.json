@@ -1,0 +1,13 @@
+{
+  "_comment": "Exposition de données : un bucket avec une policy PUBLIC (risk=public) = fuite potentielle. Compose sur le snapshot minio (kind=bucket, risk). Le seed a un PANNEAU 'Buckets exposés' mais aucune ALERTE. Fire en état tant qu'un bucket public existe -> enabled=false si un bucket public est intentionnel (assets). Inerte sans collecteur minio. || TÉLÉMÉTRIE REQUISE: minio (snapshot policy : kind=bucket, risk=public) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Objet-store: bucket exposé publiquement",
+  "enabled": false,
+  "query": "search source=minio kind=bucket risk=public | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 600,
+  "window_s": 3600,
+  "mitre": "T1530"
+}

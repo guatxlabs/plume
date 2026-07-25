@@ -1,0 +1,21 @@
+# Exemple d'INPUT custom (scripted input) — copier dans /etc/plume/inputs.d/<nom>.input
+# Le collecteur `custom.sh` exécute CMD et expédie chaque ligne de sa sortie en event source=<la valeur de SOURCE>.
+# Les parsers du registre s'appliquent ensuite (champs groupables). Aucun code à écrire.
+#
+# Active le collecteur : PLUME_EXTRA_COLLECTORS="... custom" + `systemctl enable --now plume-custom.timer`.
+
+SOURCE=nginx-app
+CMD=journalctl -u nginx --since -90s --no-pager -o cat
+SEVERITY=2
+CATEGORY=web
+FILTER=error|warn|denied
+
+# --- autres exemples (un fichier .input par source) ---
+# SOURCE=disque-smart
+# CMD=smartctl -H /dev/sda
+# SEVERITY=3
+# FILTER=FAILED|PASSED
+#
+# SOURCE=certs-expiry
+# CMD=/usr/local/bin/mon-script-check-certs.sh
+# SEVERITY=2

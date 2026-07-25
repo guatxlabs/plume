@@ -1,0 +1,31 @@
+[Unit]
+Description=plume collector — access-logs Traefik (JSON) -> events source=web (trafic web, FortiGate-like)
+# OPT-IN : installe mais NON active. Activer : systemctl enable --now plume-web.timer
+# Lit les access-logs JSON du pod Traefik (k3s logs) ou un fichier (PLUME_WEB_SRC=file). Lecture seule.
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/plume/plume.conf
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+# HOME inscriptible pour le cache de `k3s kubectl` en mode k3s (cf plume-mail/plume-bans).
+Environment=HOME=/tmp
+# Debruitage : self-traffic + polling d'infra ecartes UNIQUEMENT si status <500 (on GARDE tout 5xx).
+# host=exact (self-ingest mTLS de l'agent), router=sous-chaine, path=prefixe (health/seal-status Vault).
+Environment=PLUME_WEB_SKIP_HOST=ingest.example.com
+Environment=PLUME_WEB_SKIP_ROUTER=-agent-mtls
+Environment=PLUME_WEB_SKIP_PATH=/v1/sys/health|/v1/sys/seal-status
+ExecStart=/usr/local/lib/plume/collectors/web.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+# AF_INET/6 = API k3s (logs du pod Traefik).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+# 512M : `k3s kubectl` (binaire k3s complet) dépasse 96M -> OOM silencieux sinon.
+MemoryMax=512M
+CPUQuota=25%
+Nice=12

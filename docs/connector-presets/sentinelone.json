@@ -1,0 +1,41 @@
+{
+  "_comment": "EXEMPLE de config http_pull pour SentinelOne (Threats API v2.1). À COPIER/ADAPTER dans le champ `config` d'un connecteur http_pull. Le jeton API va dans le champ `secret` du connecteur (auth kind=header, prefix 'ApiToken ' -> en-tête `Authorization: ApiToken <secret>`) — JAMAIS dans cette config. Remplacez le sous-domaine de votre console (api_root). `sortBy=createdAt&sortOrder=asc` trie ASCENDANT par timestamp -> incrément SANS perte : chaque tick reprend après le dernier `createdAt` vu, et une troncature à max_pages ne saute AUCUN enregistrement (le moteur avance le watermark à la borne de la dernière page, cf. ING-2).",
+  "method": "GET",
+  "api_root": "https://your-instance.sentinelone.net",
+  "path": "/web/api/v2.1/threats?sortBy=createdAt&sortOrder=asc",
+  "records_path": "data",
+  "source": "sentinelone",
+  "auth": {
+    "kind": "header",
+    "header_name": "Authorization",
+    "prefix": "ApiToken "
+  },
+  "pagination": {
+    "kind": "cursor",
+    "param": "cursor",
+    "size": 100,
+    "size_param": "limit",
+    "cursor_path": "pagination.nextCursor"
+  },
+  "sourcetype_map": {
+    "s1:threat": "malware"
+  },
+  "field_map": {
+    "id": "id",
+    "ts": "threatInfo.createdAt",
+    "severity": "threatInfo.confidenceLevel",
+    "message": "threatInfo.threatName",
+    "host": "agentRealtimeInfo.agentComputerName",
+    "src_ip": "agentRealtimeInfo.agentIp",
+    "sourcetype": "=s1:threat",
+    "fields.classification": "threatInfo.classification",
+    "fields.mitigationStatus": "threatInfo.mitigationStatus",
+    "fields.analystVerdict": "threatInfo.analystVerdict"
+  },
+  "watermark": {
+    "field_path": "threatInfo.createdAt",
+    "param": "createdAt__gt",
+    "format": "iso8601",
+    "lookback_days": 7
+  }
+}

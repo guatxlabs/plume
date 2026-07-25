@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — origin-drop (table nft plume-origin-fw, log ORIGIN-DROP) periodique
+
+[Timer]
+OnBootSec=180s
+OnUnitActiveSec=120s
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

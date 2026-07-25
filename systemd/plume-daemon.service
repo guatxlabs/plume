@@ -1,0 +1,43 @@
+[Unit]
+Description=plume daemon tout-en-un (ingest + API + PWA + auth, 127.0.0.1:7000)
+After=network.target
+
+[Service]
+User=soc
+Group=soc
+Environment=PLUME_CONFIG=/etc/plume/soc.conf
+# RSS borné sous 2Go (glibc arenas) — indispensable pour tenir MemoryMax=2G, comme le déploiement k3s.
+Environment=MALLOC_ARENA_MAX=2
+ExecStart=/usr/local/bin/plume-daemon
+Restart=on-failure
+RestartSec=3
+
+# --- durcissement (daemon non privilégié) ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/plume/db /var/lib/plume/spool
+CapabilityBoundingSet=
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+
+# --- limites ressources (alignées sur le budget k3s 2Gi ; le daemon DOIT tenir 2Go, cf tuning
+#     MALLOC_ARENA_MAX=2 + query_sem + FTS_FIELDS off). 256M/200M OOM-aient le daemon au boot (fix). ---
+MemoryMax=2G
+MemoryHigh=1800M
+CPUQuota=80%
+TasksMax=512
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+[Install]
+WantedBy=multi-user.target

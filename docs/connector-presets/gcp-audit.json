@@ -1,0 +1,42 @@
+{
+  "_comment": "PRESET GCP Cloud Audit Logs — `field_map` -> CIM d'une `LogEntry` (payload `protoPayload` de type AuditLog). MODE DE LIVRAISON : l'API Logging `entries:list` est en POST avec pageToken DANS LE CORPS et exige un access_token OAuth2 de compte de service (JWT-bearer RS256) — mal adapté au puller GET/param. Voies recommandées : (1) PUSH — un log sink -> Pub/Sub -> abonnement push -> endpoint HTTP -> ingest HEC de Plume (le message Pub/Sub encapsule la LogEntry ; ce field_map s'y applique). (2) PULL best-effort — un sidecar dépose un access_token COURT (portée logging.read) dans le champ `secret` (auth kind=bearer) et vous exposez entries via un gateway GET paginé (records_path=`entries`, cursor `nextPageToken`). Ne mettez jamais de clé/JSON de compte de service dans `config`. CIM : cloud-audit -> `audit` (Admin Activity) ; les Data Access logs peuvent viser `data` (ajoutez au sourcetype_map). NB SÉVÉRITÉ : `severity` GCP est en MAJUSCULES (INFO/WARNING/ERROR…) -> non normalisée par le puller (défaut 0) ; affinez via parseur déclaratif si besoin.",
+  "method": "GET",
+  "url": "https://REPLACE_WITH_YOUR_LOGGING_GATEWAY/v2/entries",
+  "records_path": "entries",
+  "source": "gcp-audit",
+  "sourcetype": "gcp:audit",
+  "auth": {
+    "kind": "bearer"
+  },
+  "pagination": {
+    "kind": "cursor",
+    "param": "pageToken",
+    "size": 1000,
+    "size_param": "pageSize",
+    "cursor_path": "nextPageToken"
+  },
+  "sourcetype_map": {
+    "gcp:audit": "audit"
+  },
+  "field_map": {
+    "id": "insertId",
+    "ts": "timestamp",
+    "message": "protoPayload.methodName",
+    "src_ip": "protoPayload.requestMetadata.callerIp",
+    "sourcetype": "=gcp:audit",
+    "fields.user": "protoPayload.authenticationInfo.principalEmail",
+    "fields.service": "protoPayload.serviceName",
+    "fields.resource": "protoPayload.resourceName",
+    "fields.resource_type": "resource.type",
+    "fields.action": "protoPayload.status.code",
+    "fields.status_message": "protoPayload.status.message",
+    "fields.user_agent": "protoPayload.requestMetadata.callerSuppliedUserAgent",
+    "fields.log_name": "logName"
+  },
+  "watermark": {
+    "field_path": "timestamp",
+    "param": "since",
+    "format": "iso8601",
+    "lookback_days": 7
+  }
+}

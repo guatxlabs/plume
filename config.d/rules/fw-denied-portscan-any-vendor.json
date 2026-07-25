@@ -1,0 +1,13 @@
+{
+  "_comment": "Overlay REGLE (config.d) — Balayage de ports (scan horizontal) vu au FIREWALL, INTER-VENDEUR. Compose sur la taxonomie neutre `category=firewall` + `action=deny` + le champ `dst_port` (extrait par la famille de parsers syslog ; FortiGate: type=traffic action=deny -> category=firewall). Une IP qui se fait REFUSER >50 ports DISTINCTS sur la fenetre = reconnaissance, pas du trafic legitime (l'invariant anti-angle-mort : le critere est la NATURE du trafic — dc(dst_port) sur des refus — pas une whitelist d'IP). `action`/`dst_port` sont resolus en json_extract(fields,...) cote daemon (action est un HOT_FIELD indexe). EXEMPLE inerte (enabled=false) : le seuil 50 depend du parc — le passer a true (ou l'ajuster dans l'UI) apres calibration. T1046 (Network Service Discovery).",
+  "name": "Firewall: scan de ports refuse (tout vendeur)",
+  "enabled": false,
+  "query": "search category=firewall action=deny | stats dc(dst_port) by src_ip | where dc > 50 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 300,
+  "window_s": 1800,
+  "mitre": "T1046"
+}

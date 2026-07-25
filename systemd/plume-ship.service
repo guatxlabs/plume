@@ -1,0 +1,20 @@
+[Unit]
+Description=plume agent — expédition du spool vers le central (POST /api/ingest)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/plume/plume.conf
+ExecStart=/usr/local/lib/plume/collectors/ship.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryMax=64M
+CPUQuota=20%
+Nice=10

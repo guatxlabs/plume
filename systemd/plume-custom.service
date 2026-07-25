@@ -1,0 +1,22 @@
+[Unit]
+Description=plume collector — inputs custom opérateur (scripted inputs) -> events source=<défini>
+Documentation=file:///usr/local/share/plume/deploy/PROFILE.md
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+EnvironmentFile=-/etc/plume/plume.conf
+EnvironmentFile=-/etc/plume/custom.conf
+ExecStart=/usr/local/lib/plume/collectors/custom.sh
+# Durcissement (les CMD opérateur tournent root -> on garde NoNewPrivileges + FS read-only sauf spool ;
+# familles réseau larges car un CMD peut interroger le réseau ; /etc/plume/inputs.d doit être root-only).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+MemoryMax=192M
+CPUQuota=40%
+Nice=12

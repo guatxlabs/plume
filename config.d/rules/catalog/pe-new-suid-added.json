@@ -1,0 +1,13 @@
+{
+  "_comment": "Escalade de privilèges : APPARITION (change=ajout) d'un nouveau binaire SUID/SGID = vecteur de privesc déposé. Le seed natif couvre la MODIFICATION in-place d'un SUID existant (change=modif, trojanisation) ; cette règle couvre l'AJOUT. Peut lever sur une install de paquet légitime -> à activer après baseline (d'où enabled=false). || TÉLÉMÉTRIE REQUISE: integrity (FIM natif : kind=suid, change=ajout) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Hôte: nouveau binaire SUID déposé (intégrité)",
+  "enabled": false,
+  "query": "search source=integrity kind=suid change=ajout | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 4,
+  "interval_s": 300,
+  "window_s": 3600,
+  "mitre": "T1548.001"
+}

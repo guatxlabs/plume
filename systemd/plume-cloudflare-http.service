@@ -1,0 +1,25 @@
+[Unit]
+Description=plume collector — Cloudflare HTTP 4xx/5xx au edge (httpRequestsAdaptiveGroups) -> events source=cloudflare-http
+# OPT-IN : installe ; skip propre si pas de PLUME_CF_TOKEN/PLUME_CF_ZONE.
+# Activer : systemctl enable --now plume-cloudflare-http.timer. GraphQL Analytics (lecture seule, curl -4).
+# Alimente la regle "Web-scan edge: 404-breadth (Cloudflare)" (T1595.002). Cardinalite bornee (limit<=200, 4xx/5xx only).
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/plume/cloudflare.conf
+EnvironmentFile=-/etc/plume/plume.conf
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+ExecStart=/usr/local/lib/plume/collectors/cloudflare-http.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+# AF_INET/6 = HTTPS sortant vers api.cloudflare.com (pull-only ; aucune ecoute entrante).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryMax=96M
+CPUQuota=20%
+Nice=12

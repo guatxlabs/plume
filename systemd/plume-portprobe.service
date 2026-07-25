@@ -1,0 +1,23 @@
+[Unit]
+Description=plume collector — port-probe low-and-slow (appartenance set nft ps_rate) -> events source=portprobe
+# OPT-IN : installe mais NON active. Activer : systemctl enable --now plume-portprobe.timer
+# Lecture seule : `nft -j list ruleset` = REQUETE, PAS un log (aucun bruit journald, aucun seuil noyau touche).
+# Mode-aware : skip propre si nft / table plume-portscan absent. Complement de portscan.sh (log = scan RAPIDE).
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/plume/plume.conf
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+ExecStart=/usr/local/lib/plume/collectors/portprobe.sh
+
+NoNewPrivileges=true
+# 'full' (pas 'strict') : nft peut avoir besoin d'ecrire son verrou dans /run.
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+MemoryMax=96M
+CPUQuota=20%
+Nice=15

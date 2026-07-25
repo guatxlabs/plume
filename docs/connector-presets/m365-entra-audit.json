@@ -1,0 +1,44 @@
+{
+  "_comment": "EXEMPLE de config http_pull pour Microsoft Entra ID / Microsoft 365 directory audit logs via Microsoft Graph (GET /v1.0/auditLogs/directoryAudits). Piste d'audit du control-plane annuaire (créations/suppressions d'utilisateurs, changements de rôles, consentements d'app…). Même OAuth2 client-credentials que Defender ; client_secret dans le champ `secret` du connecteur — JAMAIS ici. Remplacez {tenant} et REPLACE_WITH_APP_CLIENT_ID. Permission d'application : AuditLog.Read.All. Pagination = watermark ascendant (voir m365-entra-signin.json).",
+  "method": "GET",
+  "url": "https://graph.microsoft.com/v1.0/auditLogs/directoryAudits?$orderby=activityDateTime",
+  "records_path": "value",
+  "source": "entra-id",
+  "sourcetype": "entra:audit",
+  "auth": {
+    "kind": "oauth2_client_credentials",
+    "token_url": "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
+    "client_id": "REPLACE_WITH_APP_CLIENT_ID",
+    "scope": "https://graph.microsoft.com/.default"
+  },
+  "pagination": {
+    "kind": "none",
+    "size": 500,
+    "size_param": "$top"
+  },
+  "sourcetype_map": {
+    "entra:audit": "audit"
+  },
+  "field_map": {
+    "id": "id",
+    "ts": "activityDateTime",
+    "message": "activityDisplayName",
+    "sourcetype": "=entra:audit",
+    "fields.user": "initiatedBy.user.userPrincipalName",
+    "fields.actor_app": "initiatedBy.app.displayName",
+    "src_ip": "initiatedBy.user.ipAddress",
+    "fields.action": "result",
+    "fields.result_reason": "resultReason",
+    "fields.category": "category",
+    "fields.operation": "operationType",
+    "fields.target": "targetResources[0].displayName",
+    "fields.target_type": "targetResources[0].type"
+  },
+  "watermark": {
+    "field_path": "activityDateTime",
+    "param": "$filter",
+    "format": "iso8601",
+    "template": "activityDateTime gt {value}",
+    "lookback_days": 1
+  }
+}

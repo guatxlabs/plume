@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — Cloudflare HTTP 4xx/5xx au edge periodique (source=cloudflare-http)
+
+[Timer]
+OnBootSec=250s
+OnUnitActiveSec=2min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

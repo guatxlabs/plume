@@ -1,0 +1,103 @@
+{
+  "_comment": "CIM — Common Information Model de Plume (Slice #7, piece 1). CONTRAT machine-lisible + versionne du vocabulaire NEUTRE `category` et du jeu de champs coeur de la ligne canonique EventRow. SOURCE UNIQUE DE VERITE partagee avec le const CIM_CATEGORIES/CIM_CORE_FIELDS/CIM_ACTION_VOCAB (daemon/src/main.rs) et docs/CIM.md ; le test `cim_contract_is_self_consistent_and_matches_schema` interdit toute derive entre les trois. Ce fichier vit sous config.d/cim/ : IGNORE par load_overlays_dir (qui ne lit que parsers/rules/playbooks) -> ZERO effet runtime, c'est une SPEC, pas une entite chargee.",
+  "version": "1.3",
+  "canonical_row": "EventRow (daemon/src/main.rs) ; insert fige EVENT_INSERT_SQL, INSERT OR IGNORE sur `dedup`.",
+  "principle": "PARSE / MAP / ENRICH — jamais un DROP. Reconnaitre une category n'en supprime aucune ; une category hors-taxonomie est ACCEPTEE (ingest inchange) et seulement SIGNALEE (warn). Toute reduction de collecte passe par les whitelists (#10), jamais par le CIM.",
+  "version_stamp": "v1.3 : chaque event est tamponne A L'INGEST avec `fields.cim = CIM_VERSION` (helper cim_stamp, ingest/mod.rs). Detection de DERIVE AU REPOS : une ligne sans la cle `fields.cim` a ete ecrite AVANT le tampon (lue « pre-tampon ») ; une valeur ancienne signale un contrat perime. ADDITIF/idempotent : n'ecrase jamais une valeur deja posee, aucune migration de schema, aucune colonne. Requetable : `search category=exec | where json_extract(fields,'$.cim')!=\"1.3\"`.",
+  "namespaces": {
+    "security": "Signal d'attaque/securite — l'axe de composition inter-vendeur ; les regles de detection `category=…` composent ici.",
+    "operational": "Telemetrie collecteur, etat de config, piste d'audit — PAS un signal d'attaque primaire ; alimente sante/couverture/whitelists. La scission est une GUIDANCE : le runtime traite toutes les categories a l'identique."
+  },
+  "severity_scale": {
+    "0": "info",
+    "1": "notice",
+    "2": "warning",
+    "3": "error",
+    "4": "critical"
+  },
+  "categories": [
+    { "name": "firewall",    "namespace": "security",    "meaning": "Filtrage L3/L4, allow/deny, session/traffic.",                         "example_sources": ["fortigate(traffic)", "ufw", "nft", "origin-drop"] },
+    { "name": "ids",         "namespace": "security",    "meaning": "Detection/prevention d'intrusion, anomalie.",                          "example_sources": ["suricata", "fortigate(ips/anomaly)"] },
+    { "name": "alert",       "namespace": "security",    "meaning": "Alerte signature IDS.",                                                "example_sources": ["suricata"] },
+    { "name": "web",         "namespace": "security",    "meaning": "Filtrage web / proxy / WAF / acces HTTP applicatif.",                  "example_sources": ["web", "fortigate(webfilter/waf)", "cloudflare-http"] },
+    { "name": "malware",     "namespace": "security",    "meaning": "Detection antivirus / EDR / YARA.",                                    "example_sources": ["clamav", "yara", "fortigate(virus)"] },
+    { "name": "auth",        "namespace": "security",    "meaning": "Authentification / autorisation (login, sudo, session).",              "example_sources": ["journal(sshd/sudo)", "fortigate(user)"] },
+    { "name": "dns",         "namespace": "security",    "meaning": "Requete / filtrage DNS.",                                              "example_sources": ["fortigate(dns)"] },
+    { "name": "mail",        "namespace": "security",    "meaning": "Securite / filtrage email.",                                           "example_sources": ["mail", "fortigate(emailfilter)"] },
+    { "name": "dlp",         "namespace": "security",    "meaning": "Prevention de fuite de donnees.",                                      "example_sources": ["fortigate(dlp)"] },
+    { "name": "vpn",         "namespace": "security",    "meaning": "Evenements de tunnel VPN.",                                            "example_sources": ["fortigate(vpn)"] },
+    { "name": "application", "namespace": "security",    "meaning": "Controle applicatif (app-ctrl).",                                      "example_sources": ["fortigate(app-ctrl)"] },
+    { "name": "endpoint",    "namespace": "security",    "meaning": "Endpoint / EMS / EDR.",                                                "example_sources": ["fortigate(endpoint/ems)"] },
+    { "name": "network",     "namespace": "security",    "meaning": "Flux / telemetrie reseau ; bucket neutre des types FortiGate non mappes.", "example_sources": ["conntrack", "crowdsec", "fortigate(router/inconnu)"] },
+    { "name": "data",        "namespace": "security",    "meaning": "Acces aux donnees / stockage objet / RBAC-vers-donnees.",              "example_sources": ["minio", "kube-rbac", "dataaccess", "dataacl"] },
+    { "name": "tamper",      "namespace": "security",    "meaning": "Alteration d'un objet critique d'integrite (tripwire).",               "example_sources": ["auditd(sudoers.d/shadow)"] },
+    { "name": "vuln",        "namespace": "security",    "meaning": "Constat de vulnerabilite.",                                            "example_sources": ["vuln"] },
+    { "name": "utm",         "namespace": "security",    "meaning": "Fourre-tout UTM FortiGate (sous-type non mappe) — bucket neutre.",     "example_sources": ["fortigate(utm)"] },
+    { "name": "posture",     "namespace": "security",    "meaning": "Evaluation de configuration / conformite (SCA-CIS) : hote x benchmark x controle x pass|fail x cadre.", "example_sources": ["wazuh(sca)", "openscap", "osquery(pack)"] },
+    { "name": "exec",        "namespace": "security",    "meaning": "Execution de processus (execve) — surveillance d'execution hote. v1.3 : home canonique du flux auditd, souvent le plus volumineux sur un hote actif ; rendu conforme retroactivement.", "example_sources": ["auditd(execve)", "osquery(process_events)"] },
+    { "name": "secrets",     "namespace": "security",    "meaning": "Acces au coffre de secrets (lecture/ecriture/suppression d'un secret). v1.3.", "example_sources": ["vault-audit"] },
+    { "name": "account",     "namespace": "security",    "meaning": "Gestion de compte (creation/modification/suppression d'utilisateur ou de groupe). v1.3.", "example_sources": ["auditd(useradd/usermod/passwd)", "journal"] },
+    { "name": "recon",       "namespace": "security",    "meaning": "Activite de reconnaissance / enumeration / decouverte. v1.3.", "example_sources": ["nft(portscan correle)", "moat-probe"] },
+    { "name": "postscreen",  "namespace": "security",    "meaning": "Postfix postscreen — pre-filtrage de connexion SMTP entrante (sous-etape mail). v1.3.", "example_sources": ["mail(postscreen)"] },
+    { "name": "reject",      "namespace": "security",    "meaning": "Rejet SMTP (relais/politique/RBL) — sous-etape mail. v1.3.", "example_sources": ["mail(reject)"] },
+    { "name": "mailflow",    "namespace": "security",    "meaning": "Etape de flux mail (livraison / file / transport) — sous-etape mail. v1.3.", "example_sources": ["mail(mailflow)"] },
+    { "name": "mail-phishing","namespace": "security",   "meaning": "Signal de phishing detecte dans le flux mail — sous-etape mail. v1.3.", "example_sources": ["mail(phishing)"] },
+    { "name": "mail-url",    "namespace": "security",    "meaning": "URL extraite d'un message (analyse de lien) — sous-etape mail. v1.3.", "example_sources": ["mail(url)"] },
+    { "name": "health",      "namespace": "operational", "meaning": "Battement de coeur / liveness du collecteur (0 attaque = normal, distingue silence de panne).", "example_sources": ["tous les collecteurs (health beat)"] },
+    { "name": "config",      "namespace": "operational", "meaning": "Auto-report de configuration du collecteur (transparence des filtres de collecte, whitelists #10).", "example_sources": ["web", "nft", "portscan", "auditd"] },
+    { "name": "audit",       "namespace": "operational", "meaning": "Transport de piste d'audit.",                                          "example_sources": ["auditd(audit.sh)"] },
+    { "name": "system",      "namespace": "operational", "meaning": "Evenements systeme / hote.",                                           "example_sources": ["fortigate(system/ha/config)"] },
+    { "name": "update",      "namespace": "operational", "meaning": "Derive d'image / paquets & mises a jour.",                             "example_sources": ["imgdrift"] },
+    { "name": "container",   "namespace": "operational", "meaning": "Evenements du runtime conteneur.",                                     "example_sources": ["containerd"] },
+    { "name": "k8s",         "namespace": "operational", "meaning": "Audit Kubernetes.",                                                    "example_sources": ["kube-audit"] },
+    { "name": "ebpf",        "namespace": "operational", "meaning": "Securite runtime eBPF.",                                               "example_sources": ["falco"] },
+    { "name": "ban",         "namespace": "operational", "meaning": "Registre des bannissements (fail2ban / CAPI).",                        "example_sources": ["bans"] },
+    { "name": "integrity",   "namespace": "operational", "meaning": "Surveillance d'integrite de fichiers (FIM).",                          "example_sources": ["integrity"] },
+    { "name": "syslog",      "namespace": "operational", "meaning": "Repli syslog generique / non classe (bucket 'pas encore mappe').",    "example_sources": ["collector-syslog (parser Generic)"] },
+    { "name": "inventory",   "namespace": "operational", "meaning": "Telemetrie d'inventaire endpoint (syscollector) : paquets installes, ports ouverts, processus.", "example_sources": ["wazuh(syscollector)", "osquery"] },
+    { "name": "trace",       "namespace": "operational", "meaning": "Telemetrie OpenTelemetry : spans de traces distribuees (operation x service x duree x statut), corrélables aux logs par trace_id.", "example_sources": ["otlp(/v1/traces)", "otel-collector", "otel-sdk"] }
+  ],
+  "core_fields": [
+    { "name": "ts",            "type": "integer", "meaning": "Horodatage de l'evenement (epoch secondes, UTC)." },
+    { "name": "source",        "type": "string",  "meaning": "Identite du PRODUCTEUR / vendeur (PAS la semantique) — ex. fortigate, suricata, web." },
+    { "name": "category",      "type": "string",  "meaning": "Classe semantique NEUTRE (cette taxonomie) — l'axe de composition des detections." },
+    { "name": "severity",      "type": "integer", "meaning": "Severite 0..4 (0 info, 1 notice, 2 warning, 3 error, 4 critical)." },
+    { "name": "message",       "type": "string",  "meaning": "Resume lisible par un humain." },
+    { "name": "host",          "type": "string",  "meaning": "Hote observateur/rapporteur (lie au token de l'agent — non usurpable, M2)." },
+    { "name": "src_ip",        "type": "string",  "meaning": "IP source (colonne promue depuis fields.src_ip | fields.rhost)." },
+    { "name": "dst_ip",        "type": "string",  "meaning": "IP destination (colonne promue depuis fields.dst_ip)." },
+    { "name": "url",           "type": "string",  "meaning": "URL / host+path (colonne promue depuis fields.url)." },
+    { "name": "dedup",         "type": "string",  "meaning": "Cle anti-doublon (INSERT OR IGNORE)." },
+    { "name": "fields",        "type": "object",  "meaning": "Sac JSON des champs ETENDUS (specifiques vendeur/parser)." },
+    { "name": "engagement_id", "type": "string",  "meaning": "Correlation d'engagement purple-team." },
+    { "name": "origin",        "type": "string",  "meaning": "Marqueur d'origine d'ingestion." },
+    { "name": "env_id",        "type": "string",  "meaning": "Liaison d'environnement (defaut 'prod')." }
+  ],
+  "promoted_fields": {
+    "_comment": "Champs de `fields` PROMUS en colonnes coeur par nom (daemon/src/main.rs fields_ip/fields_dst/fields_url). Un parser/mapping DEVRAIT poser ces cles pour peupler les colonnes.",
+    "src_ip": ["fields.src_ip", "fields.rhost"],
+    "dst_ip": ["fields.dst_ip"],
+    "url": ["fields.url"]
+  },
+  "extended_hot_fields": {
+    "_comment": "Dimensions ETENDUES chaudes (HOT_FIELDS) : cles de `fields` indexees/groupables, cardinalite bornee. C'est le 'coeur etendu' du CIM sur lequel les detections filtrent/groupent en plus des colonnes.",
+    "fields": ["action", "user", "owner", "kind", "ns", "role", "scope", "verb", "resource", "operation"]
+  },
+  "action_vocab": [
+    "success",
+    "failure",
+    "allowed",
+    "blocked",
+    "ban",
+    "read",
+    "modify",
+    "delete",
+    "sudo",
+    "session_open",
+    "session_close"
+  ],
+  "autoindex_deny": {
+    "_comment": "Champs JAMAIS eligibles a l'auto-index (haute cardinalite -> budget RAM 2 Go). Guidance de mapping : ne comptez pas indexer ces cles ; leur agregation passe par les rollups.",
+    "fields": ["path", "src_ip", "uid", "pid", "url", "message", "dedup", "remote_address", "msg", "time", "logSource", "request_id", "trace_id", "span_id", "latency", "duration", "thread"]
+  }
+}

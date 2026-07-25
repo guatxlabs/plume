@@ -1,0 +1,21 @@
+{
+  "_comment": "Overlay PARSEUR DÉCLARATIF (config.d) — nft/iptables scan-detect LOG -> CIM firewall. POURQUOI : les pare-feux généralistes appliquent en général un rate-limit sur leur propre journalisation ; un balayage LENT peut donc être étouffé avant d'atteindre le SIEM. Le remède est une table nft DÉDIÉE (ex. `inet plume-portscan`) qui logge les probes de ports fermés avec le préfixe `PORTSCAN4:/PORTSCAN6:` sur SON PROPRE budget de journalisation, indépendant de celui du pare-feu généraliste (définissez vos propres limites). Forwardez ce flux kernel/syslog à plume sous source=nft ; CE parseur le normalise en CIM SANS collecteur shell dédié (portscan.sh reste l'option native ; ceci = le chemin bring-your-own-télémétrie, sur-ensemble vendor-agnostic). Chaque probe = 1 event : src_ip + dst_port DISTINCT -> la règle de corrélation dc(dst_port) tire sur la DIVERSITÉ (le pattern), PAS sur le débit -> capte le low-and-slow qu'un seuil de DÉBIT laisse passer. action=deny (probe vers port fermé, droppé) + category=firewall alimentent les règles inter-vendeur (fw-*-any-vendor + fw-portscan-low-and-slow). ENRICH-only, jamais un drop. Match gardé sur 'PORTSCAN' -> n'agit QUE sur les lignes scan-detect (pas de faux mapping sur du trafic sous source=nft). Posé managed=1 au boot.",
+  "name": "nft scan-detect (PORTSCAN LOG) → CIM firewall",
+  "source": "nft",
+  "enabled": true,
+  "match": "PORTSCAN[46]?:",
+  "extract": [
+    { "regex": "(?:^|\\s)SRC=(?P<src>[0-9A-Fa-f.:]+)" },
+    { "regex": "(?:^|\\s)DST=(?P<dst>[0-9A-Fa-f.:]+)" },
+    { "regex": "(?:^|\\s)DPT=(?P<dpt>[0-9]+)" },
+    { "regex": "(?:^|\\s)PROTO=(?P<proto>[A-Za-z0-9_-]+)" }
+  ],
+  "map": {
+    "category": "firewall",
+    "severity": 2,
+    "action": "deny",
+    "src_ip": "$src",
+    "dst_ip": "$dst",
+    "fields": { "dst_port": "$dpt", "proto": "$proto", "signal": "portscan" }
+  }
+}

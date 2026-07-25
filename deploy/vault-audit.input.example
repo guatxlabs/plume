@@ -1,0 +1,29 @@
+# Collecte de l'AUDIT VAULT dans Plume (scripted input). Copier dans /etc/plume/inputs.d/vault-audit.input
+# Prérequis : (1) activer un audit device Vault vers stdout, (2) le collecteur `custom` actif sur l'hôte.
+#
+# 1) Activer l'audit Vault (UNE fois, avec TON token Vault) :
+#    kubectl -n <ns-vault> exec <pod-vault> -- sh -c \
+#      'VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=<votre-token-vault> vault audit enable file file_path=stdout'
+#    (Vault HMAC les valeurs sensibles dans l'audit -> aucun secret en clair n'est collecté.)
+#
+# 2) Activer le collecteur générique sur l'hôte :
+#    PLUME_EXTRA_COLLECTORS="... custom" via bootstrap-agent  (ou install manuel)  puis :
+#    sudo systemctl enable --now plume-custom.timer
+#
+# Le collecteur taile le stdout du pod Vault et ne garde QUE les lignes d'audit (type request/response)
+# -> events source=vault-audit (chaque accès aux secrets : qui, quel chemin, succès/échec). Le registre
+# de parsers peut ensuite extraire des champs (path, operation, remote_address…).
+
+SOURCE=vault-audit
+# `k3s kubectl` sur un node k3s ; remplace par `kubectl` (ou `microk8s kubectl`) selon ta distro.
+CMD=k3s kubectl -n <ns-vault> logs --since=90s --tail=500 <pod-vault>
+FILTER="type":"response"
+SEVERITY=1
+CATEGORY=secrets
+MAX=300
+# MAXLEN : une entree d'audit Vault peut etre longue, et le marqueur `"type":"response"` se trouve
+# souvent en FIN de ligne -> avec un MAXLEN trop court le FILTER ne matche plus (vtype=NULL, l'acces
+# secret manque aux dashboards). Garde une valeur large, mais reste SOUS la limite de coupure de ligne
+# de ton log-driver conteneur (~16Ko pour containerd : au-dela, `kubectl logs` split la ligne => JSON
+# casse). Vault lui-meme ne tronque PAS son audit device (lignes brutes completes a la source).
+MAXLEN=16000

@@ -1,0 +1,89 @@
+# CODEOWNERS — subsystem ownership map (GROWTH TEMPLATE)
+#
+# Plume is a solo project TODAY: every path maps to the single maintainer below. This file is
+# structured per-subsystem anyway so that, as the team grows, ownership can be reassigned box
+# by box WITHOUT restructuring — just replace @guatxlabs on the relevant lines with real
+# GitHub handles (e.g. @alice, @team/detection).
+#
+# Ownership boundaries mirror docs/MODULE-MAP.md. "Guarded" subsystems (masking, RBAC, cold
+# crypto, boot) should keep the maintainer (or a security-owner handle) as a REQUIRED reviewer
+# even after delegation — see the "safely ownable independently?" column in the module map.
+#
+# Syntax: <path glob>  <owner...>   Later matches win. Keep the catch-all first.
+#
+# TODO(team-growth): replace @guatxlabs with real handles; add security-owner to guarded paths.
+
+# ---- Catch-all (everything the maintainer owns until reassigned) -------------------------
+*                                       @guatxlabs
+
+# ---- Docs & meta -------------------------------------------------------------------------
+/CONTRIBUTING.md                        @guatxlabs
+/ARCHITECTURE.md                        @guatxlabs
+/docs/                                  @guatxlabs
+/README.md                              @guatxlabs
+
+# ---- Shared core crate (SOQL compiler + SPIs) — GUARDED, shared with Forge ----------------
+# NOTE: guatx-core lives in its own repository and is consumed as a git dependency pinned by tag.
+# Ownership of that crate belongs to that repository, so there is no entry for it here.
+
+# ---- Ingest (data-plane in) --------------------------------------------------------------
+/daemon/src/ingest/                     @guatxlabs
+/daemon/src/parsers.rs                  @guatxlabs
+/daemon/src/processors.rs               @guatxlabs
+/daemon/src/overlays.rs                 @guatxlabs
+/daemon/src/overlays_oac.rs             @guatxlabs
+
+# ---- Connectors (cleanest independently-ownable box) -------------------------------------
+/daemon/src/handlers/connectors/        @guatxlabs
+
+# ---- Detection (mostly ownable; note cold_store reparse tentacle, MODULE-MAP.md) ----------
+/daemon/src/handlers/detection.rs           @guatxlabs
+/daemon/src/handlers/detection_advanced.rs  @guatxlabs
+/daemon/src/sigma.rs                         @guatxlabs
+
+# ---- Query / SOQL / rollups — GUARDED (choke-points) -------------------------------------
+/daemon/src/query_exec.rs               @guatxlabs
+/daemon/src/soql_glue.rs                @guatxlabs
+/daemon/src/rollups.rs                  @guatxlabs
+/daemon/src/rollup_route.rs             @guatxlabs
+/daemon/src/handlers/query.rs           @guatxlabs
+/daemon/src/handlers/soql_meta.rs       @guatxlabs
+/daemon/src/handlers/search.rs          @guatxlabs
+
+# ---- Auth / identity / RBAC / masking / tenancy — GUARDED (security-critical) -------------
+/daemon/src/auth.rs                     @guatxlabs
+/daemon/src/session.rs                  @guatxlabs
+/daemon/src/rbac.rs                     @guatxlabs
+/daemon/src/field_filter.rs             @guatxlabs
+/daemon/src/handlers/field_filters.rs   @guatxlabs
+/daemon/src/idp/                      @guatxlabs
+/daemon/src/handlers/idp.rs             @guatxlabs
+/daemon/src/scim.rs                     @guatxlabs
+/daemon/src/tenants.rs                  @guatxlabs
+/daemon/src/governance.rs               @guatxlabs
+/daemon/src/handlers/governance.rs      @guatxlabs
+
+# ---- Storage / lifecycle -----------------------------------------------------------------
+/daemon/src/migrate.rs                  @guatxlabs
+/daemon/src/maintenance.rs              @guatxlabs
+/daemon/src/disk.rs                     @guatxlabs
+/daemon/src/backup.rs                   @guatxlabs
+
+# ---- Cold Parquet tier — GUARDED (crypto + crash-safety invariants) ----------------------
+# Reader path is now independently ownable post-split; writer/aging/crypto stay guarded.
+/daemon/src/cold_store/                 @guatxlabs
+
+# ---- Server / state / entry — GUARDED (boot god-function, shared AppState) ----------------
+/daemon/src/server.rs                   @guatxlabs
+/daemon/src/state.rs                    @guatxlabs
+/daemon/src/main.rs                     @guatxlabs
+
+# ---- Build, deploy, infra ----------------------------------------------------------------
+/daemon/Cargo.toml                      @guatxlabs
+/daemon/build.rs                        @guatxlabs
+/Dockerfile                             @guatxlabs
+/deploy/                                @guatxlabs
+/db/                                    @guatxlabs
+/config.d/                              @guatxlabs
+/collectors/                            @guatxlabs
+/.github/                               @guatxlabs

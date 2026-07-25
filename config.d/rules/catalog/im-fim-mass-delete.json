@@ -1,0 +1,13 @@
+{
+  "_comment": "Destruction de données : >50 fichiers SUPPRIMÉS (fim_event=deleted) sur un hôte en 15 min = wipe. Famille FIM endpoint (#57). Complète les règles d'intégrité HÔTE (natives) et de backup (stockage objet) par le signal poste de travail/serveur. Inerte sans agent endpoint FIM. || TÉLÉMÉTRIE REQUISE: endpoint FIM (category=integrity, fim_event, agent_name) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Destruction: suppression de masse de fichiers (FIM endpoint)",
+  "enabled": false,
+  "query": "search category=integrity fim_event=deleted | stats count by agent_name | where count > 50 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 4,
+  "interval_s": 120,
+  "window_s": 900,
+  "mitre": "T1485"
+}

@@ -1,0 +1,17 @@
+# Exemple livré (Slice #7, pièce 3). Démontre : logsource.category -> CIM `web`, modificateur
+# `|startswith` (URL) ET une égalité (action) combinés en ET dans une même sélection.
+title: Blocked Web Access to Admin Path
+id: 2d4b8f6a-31c0-4e9a-8f2b-77c9a0e1b342
+status: experimental
+description: WAF/proxy blocked a request whose path targets an administrative endpoint.
+logsource:
+    category: webserver
+detection:
+    selection:
+        url|startswith: /admin
+        action: blocked
+    condition: selection
+level: medium
+tags:
+    - attack.initial_access
+    - attack.t1190

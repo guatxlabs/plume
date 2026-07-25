@@ -1,0 +1,178 @@
+[package]
+name = "plume-daemon"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+# Shared SOQL compiler core. Public builds resolve this from the published git tag.
+# Local development overrides it to the sibling checkout via .cargo/config.toml (paths override, git-ignored).
+guatx-core = { git = "https://github.com/guatxlabs/core", tag = "v0.2.0" }
+axum = "0.7"
+# Verrous SANS empoisonnement (audit #67) : remplace std::sync::Mutex/RwLock -> pas de cascade poison
+# (un panic sous garde 500-ait DÉFINITIVEMENT ce tenant). Drop-in ; guards !Send (le rejet compile-time du
+# lock-tenu-au-travers-d'un .await est PRÉSERVÉ). Déjà dans le lockfile (0.12.x, tiré transitivement).
+parking_lot = "0.12"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync"] }
+tower-http = { version = "0.5", features = ["fs", "compression-gzip", "catch-panic"] }
+rusqlite = { version = "0.31", features = ["bundled-sqlcipher-vendored-openssl", "functions", "hooks"] }
+regex = "1"
+prost = "0.13"
+snap = "1"
+# OTLP traces (#41) — décompression gzip du corps OTLP/HTTP (Content-Encoding: gzip). `flate2` est DÉJÀ
+# dans l'arbre (transitif via tower-http `compression-gzip`) -> AUCUNE crate compilée nouvelle ; on la
+# promeut en dépendance DIRECTE pour l'utiliser explicitement (cap de décompression anti-bombe). Utilisée
+# UNIQUEMENT sur le chemin OTLP (inerte tant que PLUME_OTLP_TRACES != 1 -> mode 0 byte-identique).
+flate2 = "1"
+serde_json = "1"
+bcrypt = "0.15"
+argon2 = { version = "0.5", features = ["std"] }
+base64 = "0.22"
+sha2 = "0.10"
+# NATIVE IdP (#44) — validation JWT id_token OIDC (RS256/ES256) via JWKS. `jsonwebtoken` est pure-Rust
+# (ring, DÉJÀ dans l'arbre via rustls ; + serde/simple_asn1/pem). AUCUNE dépendance native/OpenSSL
+# NOUVELLE (le sqlcipher vendoré tire déjà OpenSSL, mais jsonwebtoken n'y touche pas -> ring). Utilisé
+# UNIQUEMENT sur le chemin de login OIDC (inerte tant qu'aucun provider OIDC n'est configuré -> mode 0).
+jsonwebtoken = "9"
+# TOTP MFA (#44, RFC 6238) — HMAC-SHA1 (l'algo par défaut de Google Authenticator/Authy). `sha1` pur-Rust
+# (RustCrypto, même famille que `sha2` déjà présent). Pas de crate TOTP tierce (l'algo tient en ~30 lignes,
+# testées) ni de génération de QR côté serveur (on renvoie l'URI otpauth:// standard, QR rendu ailleurs).
+sha1 = "0.11"
+# L1 (garde disque à l'ingest) : statvfs(3) pour mesurer l'espace LIBRE RÉEL du volume du spool avant
+# d'accepter un nouvel ingest -> refus explicite (503) en pré-saturation, JAMAIS une perte silencieuse.
+# `libc` est minimale, sans dépendance transitive (bindings système FFI purs) — cf. Vague 2 qui avait
+# différé statvfs faute de cette crate ; on l'implémente ici PROPREMENT.
+libc = "0.2"
+ed25519-dalek = "2"
+# TLS natif CONFIG-GATED (durcissement standalone, item 1) : si PLUME_TLS_CERT+PLUME_TLS_KEY sont posés,
+# le listener sert en HTTPS (rustls) ; sinon HTTP comme aujourd'hui (DÉFAUT -> k3s/Traefik inchangé).
+# Provider crypto = `ring` (aws-lc-rs exigerait cmake/nasm, absents ; ring se compile avec cc/perl déjà
+# requis par le sqlcipher vendoré). D'où `tls-rustls-no-provider` côté axum-server + `rustls/ring` ici.
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "tls12"] }
+# Backup compressé+chiffré (CLI `backup --compress` / `restore`) — voir bloc backup dans main.rs.
+# zstd : compression du PLAINTEXT (la DB SQLCipher chiffrée est incompressible) -> ~5-10x plus petit.
+# age  : chiffrement STREAMING par passphrase (scrypt), crypto auditée, pure-Rust (pas de hand-rolled).
+# Les deux streament en flux borné (buffer ~1 MiB) -> tient sous la limite RAM 2 GiB du pod.
+zstd = "0.13"
+age = "0.11"
+# Importeur Sigma (Slice #7, pièce 3) : les règles Sigma sont du YAML. `yaml-rust` est un parseur YAML
+# 100 % Rust, sans dépendance système (linked-hash-map uniquement), déjà présent dans le cache cargo.
+# Utilisé SEULEMENT par le front-end de l'importeur (YAML -> serde_json::Value) ; le cœur de traduction
+# Sigma -> SOQL opère sur `Value` (testable en JSON pur, sans YAML). AUCUN impact data-plane / mode 0.
+yaml-rust = "0.4"
+# WARM tier analytique (#15, `DuckDbStore` derrière la SPI `EventStore`). DÉPENDANCE OPTIONNELLE,
+# feature `duckdb` OFF PAR DÉFAUT + EXPÉRIMENTALE (voir docs/DUCKDB-STORE.md). Le build DÉFAUT (sans
+# `--features duckdb`) NE LINKE PAS duckdb -> budget 2 Go / mode 0 byte-identiques préservés.
+#
+# ⚠️ BUILD — UN-BUNDLED (PAS `bundled`) : on LIE une `libduckdb` SYSTÈME/pré-compilée au lieu de compiler
+# l'amalgamation C++ de DuckDB. `features = ["bundled"]` a été RETIRÉ DÉLIBÉRÉMENT (revue store-resource) :
+# le mode bundled forçait `libduckdb-sys` à compiler un ÉNORME single-TU C++ via `cc1plus`, ce qui exigeait
+#   (a) un toolchain C++ (`c++`/`cc1plus`) — ABSENT du VPS 2 Go (seul un compilateur C est requis par le
+#       sqlcipher vendoré) -> échec immédiat `cc-rs: failed to find tool "c++"` ;
+#   (b) ~4 Go de RAM de build + plusieurs minutes de CPU mono-cœur -> OOM/90% CPU sur un hôte modeste.
+# Sans `bundled`, `libduckdb-sys` (bindings PRÉ-GÉNÉRÉS, donc pas de bindgen/libclang) cherche une libduckdb
+# système via pkg-config / `DUCKDB_LIB_DIR` (ou téléchargement `DUCKDB_DOWNLOAD_LIB`) et se contente de la
+# LIER (`-lduckdb`) : PLUS DE `cc1plus`, PLUS D'OOM. Corollaire : `--features duckdb` EXIGE désormais une
+# `libduckdb` présente sur l'hôte de build ; à défaut, l'échec est un LINK CLAIR ET RAPIDE
+# (`cannot find -lduckdb`) au lieu de l'OOM opaque d'antan. (La crate Rust `arrow` reste compilée -> DuckDB
+# reste un tier de build lourd, réservé à un hôte ESN/MSSP ; JAMAIS le VPS 2 Go.) ClickHouse (client
+# pur-Rust, ci-dessous) est le chemin scale-out SUPPORTÉ ; DuckDB est EXPÉRIMENTAL. Sélection runtime
+# future : `PLUME_STORE=duckdb` (opt-in + ack `PLUME_STORE_DUCKDB_EXPERIMENTAL=1`, caps runtime dans
+# `duckdb_store.rs` : memory_limit + threads + watchdog budget_ms).
+duckdb = { version = "1", optional = true }
+# COLD/scale tier analytique (#18, `ClickHouseStore` derrière la SPI `EventStore`). DÉPENDANCE
+# OPTIONNELLE, feature `clickhouse` OFF PAR DÉFAUT : la crate `clickhouse` est un client HTTP async
+# (hyper/tokio) — le build DÉFAUT (sans `--features clickhouse`) NE LINKE PAS clickhouse -> budget 2 Go
+# / mode 0 byte-identique préservés. Sélection runtime future : `PLUME_STORE=clickhouse` (opt-in, ESN/
+# MSSP). `serde` (derive) est tiré UNIQUEMENT par cette feature (dérive `clickhouse::Row` + `Serialize`
+# de la ligne d'INSERT typée batchée) ; il reste absent du build par défaut.
+clickhouse = { version = "0.15", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+# LDAP / Active Directory bind (#44, priorité 2). OFF PAR DÉFAUT (feature `ldap`, comme duckdb/clickhouse) :
+# `ldap3` tire tokio-rustls (TLS pur-Rust, PAS d'OpenSSL grâce à default-features=false + tls-rustls-ring —
+# 0.12 exige un provider crypto EXPLICITE : on aligne sur `ring`, déjà en arbre via rustls/jsonwebtoken, PAS
+# aws-lc-rs qui exigerait cmake/nasm absents ; ce bump 0.11->0.12 purge l'ancienne pile rustls 0.21/ring 0.16/
+# rustls-webpki 0.101/rustls-pemfile 1.0 -> efface RUSTSEC-2025-0009/-0010, -2026-0098/-0099/-0104, -2025-0134). Le
+# build/test DÉFAUT NE LINKE PAS ldap3 -> budget 2 Go + mode 0 byte-identiques préservés. Les fonctions
+# PURES (échappement de filtre RFC 4515, mapping groupe->rôle) sont compilées/testées SANS la feature ;
+# seul le bind réseau est feature-gated. Activer : `cargo build --features ldap` (déploiement on-prem/AD).
+ldap3 = { version = "0.12", default-features = false, features = ["sync", "tls-rustls-ring"], optional = true }
+# SAML 2.0 SP (#44, priorité 3). OFF PAR DÉFAUT (feature `saml`, comme ldap/duckdb/clickhouse) : `samlify`
+# 0.3 est un re-export de `saml-rs` 0.3 — SAML 2.0 100 % pur-Rust (quick-xml + RustCrypto via `bergshamra`
+# XML-DSig/C14N/XML-Enc ; AUCUNE dépendance native OpenSSL/libxml/xmlsec, contrairement à `samael` qui est
+# banni). La vérification de signature se fait contre un certificat X.509 STATIQUEMENT configuré
+# (`verify_signature(xml, &[cert])`, pas de TOFU métadonnées) et le crate porte des défenses XSW en
+# profondeur (garde SubjectConfirmationData, rejet d'ID dupliqués, rejet multi-racine, liaison stricte
+# référence→élément, couverture d'une seule assertion, rejet de référence externe, cert inline non-fiable).
+# Le build/test DÉFAUT NE LINKE PAS samlify -> budget 2 Go + mode 0 byte-identiques préservés. Les fonctions
+# PURES (config, RelayState signé HMAC, mapping groupe->rôle, garde d'algorithme anti-SHA-1) sont
+# compilées/testées SANS la feature ; seule la consommation d'assertion (finish_sso) est feature-gated.
+# Sans la feature, les routes SAML renvoient 501 (miroir strict du précédent LDAP). Activer : `--features saml`.
+samlify = { version = "0.3", optional = true }
+# COLD tier PARQUET (#18 Phase 1) — WRITER + AGING du tier froid colonnaire OPT-IN. DÉPENDANCE OPTIONNELLE,
+# feature `cold_tier` OFF PAR DÉFAUT : le build/test DÉFAUT (sans `--features cold_tier`) NE LINKE PAS
+# `parquet` -> budget 2 Go / mode 0 byte-identiques préservés. `default-features = false` DÉLIBÉRÉ : on ne
+# tire QUE les codecs `zstd`+`snap` (déjà dans le lockfile via le backup/prost) et JAMAIS la feature `arrow`
+# (kernels de calcul + arrow-array/-buffer/... ; on décode colonne->bind SQLite en P2, on n'a AUCUN besoin
+# des compute kernels). Chaîne native = `zstd-sys` (compilateur C `cc`, DÉJÀ requis par le sqlcipher vendoré)
+# — AUCUN C++/`cc1plus`/bindgen NOUVEAU (contrairement à duckdb bundled). `thrift` (métadonnées Parquet) est
+# 100 % Rust. Aligné sur arrow 58.x DÉJÀ résolu dans le lock (via `duckdb`, off) -> pas de 2e version d'arrow.
+# Activer : `cargo build --features cold_tier` (tier froid d'un déploiement rétention-longue ; jamais requis).
+parquet = { version = "58", default-features = false, features = ["zstd", "snap"], optional = true }
+# COLD tier CHIFFREMENT AT-REST (#18 Phase 1, durcissement confidentialité) — le tier froid DOIT égaler le
+# chiffrement at-rest du hot (SQLCipher) : modèle de menace « ne pas faire confiance au disque ». On RÉUTILISE
+# la pile crypto DÉJÀ en arbre : `age` (STREAM AEAD ChaCha20-Poly1305, nonce par-fichier aléatoire + compteur
+# de chunk -> JAMAIS de réutilisation de nonce ; MÊME crate/chemin que le backup chiffré), + `hkdf`+`sha2`
+# (RustCrypto) pour DÉRIVER une clé cold à domaine séparé (`plume-cold-aead-v1`) depuis la clé SQLCipher
+# (jamais la clé brute). `hkdf` et `bytes` sont DÉJÀ dans le lockfile (hkdf via `age`, bytes via `parquet`/
+# hyper) -> AUCUNE crate compilée NOUVELLE ; 100 % pur-Rust. `optional=true` + rattachés à la feature
+# `cold_tier` : le build/mode 0 par défaut ne les utilise PAS -> byte-identique préservé (age/sha2/base64 sont
+# déjà des dép DIRECTES non-optionnelles, utilisées ici seulement sous `#[cfg(feature=\"cold_tier\")]`).
+hkdf = { version = "0.12", optional = true }
+# `bytes::Bytes` = tampon EN MÉMOIRE (ChunkReader parquet) sur lequel on rejoue le Parquet DÉCHIFFRÉ (le
+# lecteur parquet exige un accès aléatoire -> footer ; le déchiffrement age est SÉQUENTIEL. Fichiers ~8 Mio ->
+# on déchiffre en flux vers un Bytes borné puis on décode row-group par row-group ; JAMAIS de plaintext DISQUE).
+bytes = { version = "1", optional = true }
+
+[features]
+# OFF par défaut + EXPÉRIMENTAL. `cargo build/test` NU = SqlcipherStore SEUL (SMB / 2 Go / parité). Le tier
+# WARM DuckDB est un opt-in de COMPILATION réservé à un hôte ESN/MSSP disposant d'une `libduckdb` SYSTÈME
+# (un-bundled -> LINK `-lduckdb`, plus de `cc1plus`/OOM ; cf. bloc dép `duckdb` ci-dessus + docs/DUCKDB-STORE.md).
+# JAMAIS buildé NI activé sur le VPS 2 Go. ClickHouse est le chemin scale-out SUPPORTÉ ; DuckDB reste
+# expérimental : caps runtime (memory_limit + threads + watchdog budget_ms) présents mais gate
+# `PLUME_STORE_DUCKDB_EXPERIMENTAL=1` (avertissement bruyant sinon). Parité crypto/backup NON garantie.
+duckdb = ["dep:duckdb"]
+# COLD/scale tier ClickHouse (#18). OFF par défaut (idem `duckdb`) : opt-in de compilation pour un
+# déploiement scale multi-nœud (RFC Ph2 #18). Tire la crate `clickhouse` (async/HTTP) + `serde` derive.
+clickhouse = ["dep:clickhouse", "dep:serde"]
+# COLD/scale tier DISTRIBUÉ HA multi-nœud (#70) — SCAFFOLD INERTE. Sur-feature de `clickhouse` : opt-in de
+# compilation des FONDATIONS de la distribution (topologie, DDL Distributed/Replicated injection-safe,
+# coordination Keeper stub, ingest stateless, hot→cold). N'est PAS activée par `--features clickhouse`
+# (#18 single-node reste byte-identique) ; aucun câblage runtime -> mode 0 inchangé. Effort multi-trimestre.
+clickhouse-ha = ["clickhouse"]
+# COLD tier PARQUET (#18 Phase 1). OFF par défaut : opt-in de compilation du WRITER + de la branche d'AGING
+# (hot SQLite -> Parquet colonnaire). Tire `parquet` (default-features=false : codecs zstd/snap SEULEMENT,
+# PAS d'arrow). Sans la feature, `cold_store.rs` n'est pas compilé et la branche cold de `retention_run` est
+# INEXISTANTE (mode 0 byte-identique). Le gate RUNTIME `PLUME_COLD_TIER` doit AUSSI être posé pour l'activer.
+cold_tier = ["dep:parquet", "dep:hkdf", "dep:bytes", "guatx-core/cold_tier"]
+# LDAP/AD bind réseau (#44). OFF par défaut : opt-in de compilation pour un déploiement on-prem/AD. Tire
+# `ldap3` (tokio-rustls, pur-Rust). Sans cette feature, le login LDAP renvoie 501 (code présent, non linké).
+ldap = ["dep:ldap3"]
+# SAML 2.0 SP (#44). OFF par défaut : opt-in de compilation. Tire `samlify`/`saml-rs`/`bergshamra`
+# (pur-Rust, RustCrypto). Sans cette feature, les routes SAML renvoient 501 (code présent, non linké).
+saml = ["dep:samlify"]
+# COUCHE IA CONSEIL (#16, advisory NL→SOQL). OFF PAR DÉFAUT + RAM-NEUTRE. Feature de COMPILATION PURE côté
+# daemon : AUCUNE crate nouvelle (l'égress réutilise le client HTTP interne `http_call`/rustls-ring déjà
+# lié ; le JSON = `serde_json` déjà là). Active `guatx-core/ai` : le cœur ne porte QUE le CONTRAT `AiProvider`
+# + helpers purs (rédaction, prompt, couture compilo), lui aussi gated (module `ai` absent sans la feature).
+# Sans `--features ai`, TOUT le code IA (module daemon, handlers, routes, entrées rbac) est EXCLU à la
+# COMPILATION -> build/test DÉFAUT byte-identiques (0 dep IA). L'inférence est DISTANTE (Ollama/vLLM/
+# OpenAI-compat/Anthropic) -> budget 2 Go intact (aucun modèle/tokenizer/vecteur local).
+ai = ["guatx-core/ai"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1

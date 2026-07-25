@@ -1,0 +1,11 @@
+[Unit]
+Description=plume — scan CVE des images (quotidien)
+
+[Timer]
+OnBootSec=8min
+OnUnitActiveSec=24h
+AccuracySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

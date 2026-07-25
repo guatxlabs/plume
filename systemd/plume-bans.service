@@ -1,0 +1,27 @@
+[Unit]
+Description=plume collector — agrège les bans actifs (fail2ban + CrowdSec) -> events category=ban
+# OPT-IN : installe mais non active. Activer : systemctl enable --now plume-bans.timer
+# Requiert fail2ban-client (hôte) et/ou cscli (hôte ou pod k3s). Sinon se désactive seul.
+
+[Service]
+Type=oneshot
+# Config agent optionnelle (PLUME_MAIL_F2B, PLUME_MAIL_F2B_NS, PLUME_CROWDSEC_NS...) écrite par
+# bootstrap-agent.sh dans /etc/plume/plume.conf. '-' = pas d'erreur si absente ; les Environment= priment.
+EnvironmentFile=-/etc/plume/plume.conf
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+# HOME inscriptible (PrivateTmp) pour le cache de `k3s kubectl` en mode k3s (cf plume-crowdsec).
+Environment=HOME=/tmp
+ExecStart=/usr/local/lib/plume/collectors/bans.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool
+# AF_UNIX = socket fail2ban-client ; AF_INET/6 = API k3s (cscli en mode pod).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+# 512M : `k3s kubectl` (binaire k3s complet) dépasse 96M en mode k3s -> OOM silencieux sinon.
+MemoryMax=512M
+CPUQuota=25%
+Nice=12

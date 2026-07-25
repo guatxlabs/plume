@@ -1,0 +1,13 @@
+{
+  "_comment": "Overlay RÈGLE (config.d) — Web-scan edge : 404-breadth (Cloudflare), T1595.002. Signal PRÉCIS et invariant-safe du scan web vu AU EDGE (source=cloudflare-http, httpRequestsAdaptiveGroups 4xx/5xx). INVARIANT anti-angle-mort : AUCUNE IP whitelistée — l'exclusion est par NATURE du trafic : un scanner touche >30 chemins 404 DISTINCTS depuis une même IP ; l'opérateur (dashboard = 403/200/401, JAMAIS un balayage de 404) ne matche pas la clause status=404. Posé au boot avec managed=1. Remplace fonctionnellement le signal edge de la règle seed 25 (CF challenges, sujette au FP) : celle-ci reste EN L'ÉTAT (ne pas overrider live) et sera démotée en informational lors d'un futur seed daemon.",
+  "name": "Web-scan edge: 404-breadth (Cloudflare)",
+  "enabled": true,
+  "query": "search source=cloudflare-http status=404 | stats dc(path) by src_ip | where dc > 30 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 120,
+  "window_s": 1800,
+  "mitre": "T1595.002"
+}

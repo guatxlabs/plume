@@ -1,0 +1,9 @@
+{
+  "_comment": "Ollama en local (API NATIVE /api/chat). C'est exactement ce que tourne un poste dev/side-box : http://localhost:11434. Classe LOCAL (loopback) -> non soumis a PLUME_AI_ALLOW_CLOUD. NOTE EGRESS : la garde SSRF (reutilisee VERBATIM) bloque le loopback par defaut ; un endpoint loopback exige l'opt-in operateur PLUME_SSRF_ALLOW=127.0.0.1 (comme tout egress loopback du systeme), OU pointez Ollama sur une IP de side-box joignable (RFC1918, autorisee par defaut). Aucune cle API. Renseignez le modele tire (ex: llama3.1, qwen2.5-coder). Extension future RAG : /api/tags (decouverte de modeles) + /api/embeddings.",
+  "vendor": "Ollama",
+  "api_shape": "ollama-native",
+  "endpoint": "http://localhost:11434",
+  "model": "{model}",
+  "requires_cloud": false,
+  "config": { "temperature": 0, "num_ctx": 4096, "max_tokens": 512 }
+}

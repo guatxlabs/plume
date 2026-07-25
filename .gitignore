@@ -1,0 +1,51 @@
+/daemon/target/
+/collector-mail/target/
+/collector-syslog/target/
+*.db
+*.db-shm
+*.db-wal
+*.swp
+.DS_Store
+# secrets / artefacts runtime : JAMAIS dans le repo (projet public-ready, zero cred)
+*.key
+*.pem
+*.crt
+*.cer
+*.p12
+*.pfx
+*.jks
+*.age
+*.gpg
+*.token
+id_rsa*
+id_ed25519*
+kubeconfig*
+agent.toml
+*.sqlite
+*.sqlite3
+*.db-journal
+*.conf
+# ...MAIS le drop-in de durcissement systemd EST un livrable (NoNewPrivileges / ProtectSystem=strict /
+# SystemCallFilter) installe par bootstrap-agent.sh et attendu par agent/src/service/systemd.rs : sans lui,
+# les collecteurs s'installeraient SANS bac a sable. Il doit donc echapper au motif `*.conf` ci-dessus.
+!systemd/plume-collector-common.conf
+.env
+.env.*
+.envrc
+!.env.example
+setup-token.txt
+ledger.key
+responder.allow
+/spool/
+# python (collectors) — bytecode & caches
+__pycache__/
+*.pyc
+# local dev cargo override (guatx-core git-dep -> sibling path); never published — config.toml ONLY (daemon/.cargo/audit.toml is tracked, cf forge console/.cargo/audit.toml)
+**/.cargo/config.toml
+# node (si webui build) & sauvegardes/résidus
+node_modules/
+*.bak
+*.old
+*.orig
+*.tmp
+*.log

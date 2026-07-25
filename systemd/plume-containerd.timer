@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — relevé images/conteneurs (containerd)
+
+[Timer]
+OnBootSec=160s
+OnUnitActiveSec=5min
+AccuracySec=45s
+
+[Install]
+WantedBy=timers.target

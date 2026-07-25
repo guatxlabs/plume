@@ -1,0 +1,40 @@
+{
+  "_comment": "PRESET AWS GuardDuty — `field_map` -> CIM d'un finding GuardDuty. MODE DE LIVRAISON : l'API native (ListFindings/GetFindings) signe en SigV4 (non supporté par le puller). Voie recommandée : PUSH via EventBridge (règle `GuardDuty Finding`) -> Kinesis Firehose / endpoint HTTP -> ingest HEC de Plume ; le détail EventBridge `detail` EST un finding GuardDuty (ce field_map s'y applique). Sinon, un gateway proxy qui signe SigV4 côté serveur et expose /findings (records_path selon l'enveloppe de votre gateway). Ne mettez jamais de clé AWS dans `config`. CIM : guardduty -> `ids` (détection de menace). NB SÉVÉRITÉ : GuardDuty note 1.0–8.9 ; le puller borne 0..4 (High 7–8.9 -> 4, Medium 4–6.9 -> 4, Low 1–3.9 -> 1–3) — approximation acceptable, affinable via un parseur déclaratif.",
+  "method": "GET",
+  "url": "https://REPLACE_WITH_YOUR_EVENTBRIDGE_OR_SIGV4_GATEWAY/guardduty/findings",
+  "records_path": "",
+  "source": "aws-guardduty",
+  "sourcetype": "guardduty",
+  "auth": {
+    "kind": "header",
+    "header_name": "Authorization",
+    "prefix": "Bearer "
+  },
+  "pagination": {
+    "kind": "none"
+  },
+  "sourcetype_map": {
+    "guardduty": "ids"
+  },
+  "field_map": {
+    "id": "Id",
+    "ts": "UpdatedAt",
+    "severity": "Severity",
+    "message": "Title",
+    "src_ip": "Service.Action.NetworkConnectionAction.RemoteIpDetails.IpAddressV4",
+    "sourcetype": "=guardduty",
+    "fields.finding_type": "Type",
+    "fields.description": "Description",
+    "fields.aws_region": "Region",
+    "fields.account_id": "AccountId",
+    "fields.resource_type": "Resource.ResourceType",
+    "fields.action": "Service.Action.ActionType",
+    "fields.count": "Service.Count"
+  },
+  "watermark": {
+    "field_path": "UpdatedAt",
+    "param": "since",
+    "format": "iso8601",
+    "lookback_days": 7
+  }
+}

@@ -1,0 +1,30 @@
+[Unit]
+Description=plume collector — firewall (nft snapshot + intégrité du contrôle lockdown)
+After=docker.service
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+ExecStart=/usr/local/lib/plume/collectors/firewall.sh
+
+# --- Durcissement (collecteur root, lecture seule, écrit juste le spool) ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ReadWritePaths=/var/lib/plume/spool
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+# --- limites ressources (collecteur basse priorité, ne gêne jamais l'hôte) ---
+MemoryMax=64M
+CPUQuota=20%
+Nice=10
+IOSchedulingClass=idle

@@ -1,0 +1,13 @@
+{
+  "_comment": "Accès à l'API server par system:anonymous (ou *unauthenticated) = misconfig grave ou attaque (l'API ne devrait exiger que des identités authentifiées). Le wildcard `user=*anonymous` évite tout souci de tokenisation du ':' et matche system:anonymous. Near-zéro FP sur un cluster durci. Inerte sans audit k8s. || TÉLÉMÉTRIE REQUISE: kube-audit (user) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — K8s: accès API anonyme / non-authentifié",
+  "enabled": false,
+  "query": "search source=kube-audit user=*anonymous | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 120,
+  "window_s": 900,
+  "mitre": "T1078"
+}

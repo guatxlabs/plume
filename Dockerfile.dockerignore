@@ -1,0 +1,53 @@
+# Exclusions du contexte de build PLUME.
+# Le build plume utilise la RACINE DE CE DÉPÔT comme contexte (clone standalone ; la dépendance
+# guatx-core arrive via git-dep publique, aucun crate sibling requis, cf. Dockerfile). Ces motifs
+# sont relatifs à la racine du contexte. Sans eux, le contexte embarque les target/ Rust (plusieurs
+# Go), les .git, les bases SQLCipher -> upload énorme. Dockerignore par-Dockerfile : honoré par
+# BuildKit quand `-f Dockerfile`.
+#
+# SÉCURITÉ — le Dockerfile fait des COPY de RÉPERTOIRES ENTIERS (`COPY daemon/ db/ config.d/ web/`),
+# donc tout fichier local qui traîne dans l'un d'eux part dans une couche de l'image PUBLIÉE. Les
+# classes « secrets » ci-dessous sont donc exclues au niveau du CONTEXTE (défense en profondeur, en
+# plus du .gitignore). Gardez ce bloc SYNCHRONISÉ avec .dockerignore.
+
+# --- volume / cache : inutile dans le contexte ---------------------------------------------------
+**/target
+**/.git
+**/node_modules
+**/__pycache__
+**/.venv
+**/.mypy_cache
+**/.pytest_cache
+
+# --- bases locales (peuvent contenir de la télémétrie réelle) ------------------------------------
+**/*.db
+**/*.db-*
+**/*.db-journal
+**/*.sqlite
+**/*.sqlite-*
+**/*.sqlite3
+
+# --- clés, certificats, archives chiffrées -------------------------------------------------------
+**/*.pem
+**/*.key
+**/*.crt
+**/*.cer
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.age
+**/*.gpg
+**/id_rsa*
+**/id_ed25519*
+
+# --- configuration locale porteuse de secrets ----------------------------------------------------
+**/agent.toml
+**/kubeconfig*
+**/.env
+**/.env.*
+!.env.example
+**/.envrc
+**/*.token
+**/.claude
+# override dev cargo (dépendance git -> path sibling), jamais publié ni utile en image.
+**/.cargo/config.toml

@@ -1,0 +1,24 @@
+[Unit]
+Description=plume collector (plugin) — log d'audit API Kubernetes (qui fait quoi sur le cluster) -> events
+# OPT-IN : installe mais non active. Activer : systemctl enable --now plume-kube-audit.timer
+# Requiert kube-apiserver --audit-log-path actif (cf. votre runbook de durcissement du control-plane) ; sinon
+# le collecteur se desactive seul (log absent/illisible). ROOT (audit.log = 0600 root).
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+# Override possible : systemctl edit plume-kube-audit (PLUME_KUBE_AUDIT_LOG / _MAX)
+ExecStart=/usr/local/lib/plume/collectors/kube-audit.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/var/lib/rancher/k3s/server/logs
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+MemoryMax=96M
+CPUQuota=25%
+Nice=12

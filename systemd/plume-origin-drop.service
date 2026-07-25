@@ -1,0 +1,24 @@
+[Unit]
+Description=plume collector — origin-drop (table nft plume-origin-fw, log ORIGIN-DROP) -> events/metrics
+# Rend visibles les paquets rejetes par votre pare-feu d'origine (tentatives de contournement du CDN/ingress).
+# Lecture seule. Mode-aware : skip propre si nft / table plume-origin-fw absent.
+# Activer : systemctl enable --now plume-origin-drop.timer
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/plume/plume.conf
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+ExecStart=/usr/local/lib/plume/collectors/origin-drop.sh
+
+NoNewPrivileges=true
+# 'full' (pas 'strict') : nft/journalctl peut avoir besoin d'ecrire son verrou dans /run.
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+MemoryMax=96M
+CPUQuota=20%
+Nice=15

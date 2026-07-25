@@ -1,0 +1,20 @@
+[Unit]
+Description=plume collector — connexions sortantes etablies (egress) -> events
+# OPT-IN : installe mais non active par defaut. Activer : systemctl enable --now plume-conntrack.timer
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+ExecStart=/usr/local/lib/plume/collectors/conntrack.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+LockPersonality=true
+MemoryMax=64M
+CPUQuota=20%
+Nice=12

@@ -1,0 +1,52 @@
+# Exclusions du contexte de build (racine du dépôt = contexte, cf. Dockerfile).
+# BuildKit préfère Dockerfile.dockerignore ; ce fichier couvre les autres front-ends.
+# LES DEUX FICHIERS DOIVENT RESTER SYNCHRONISÉS sur les motifs « secrets » ci-dessous : le Dockerfile
+# fait des COPY de RÉPERTOIRES ENTIERS (daemon/ db/ config.d/ web/), donc tout fichier local qui
+# traîne dans l'un d'eux serait CUIT dans une couche de l'image publiée.
+
+# --- volume / cache : inutile dans le contexte ---------------------------------------------------
+daemon/target
+**/target
+**/.git
+**/node_modules
+**/__pycache__
+**/.venv
+**/.mypy_cache
+**/.pytest_cache
+deploy
+collectors
+systemd
+bootstrap*.sh
+
+# --- bases locales (peuvent contenir de la télémétrie réelle) ------------------------------------
+**/*.db
+**/*.db-*
+**/*.db-journal
+**/*.sqlite
+**/*.sqlite-*
+**/*.sqlite3
+
+# --- clés, certificats, archives chiffrées -------------------------------------------------------
+**/*.pem
+**/*.key
+**/*.crt
+**/*.cer
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.age
+**/*.gpg
+**/id_rsa*
+**/id_ed25519*
+
+# --- configuration locale porteuse de secrets ----------------------------------------------------
+**/agent.toml
+**/kubeconfig*
+**/.env
+**/.env.*
+!.env.example
+**/.envrc
+**/*.token
+**/.claude
+# override dev cargo (dépendance git -> path sibling), jamais publié ni utile en image.
+**/.cargo/config.toml

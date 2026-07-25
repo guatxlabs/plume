@@ -1,0 +1,35 @@
+# SOC central en container. Génère d'abord le hash :
+#   docker compose run --rm soc hashpw 'tonmotdepasse'   -> copie le hash dans .env (PLUME_PASS_HASH=...)
+# puis :  docker compose up -d   ->  http://soc.localhost:7000
+#
+# Lancer DEPUIS la racine de ce dépôt :
+#   docker compose up -d --build
+# Le daemon résout `guatx-core` via une git-dep publique (tag v0.2.0) — aucun crate sibling requis.
+services:
+  soc:
+    build:
+      # Contexte = racine du dépôt (clone standalone). guatx-core arrive via git-dep, pas de sibling.
+      context: .
+      dockerfile: Dockerfile
+    image: soc:latest
+    # n'expose qu'en localhost de l'hôte ; pour le LAN, mets un reverse proxy (TLS) devant et ajuste PLUME_HOST
+    ports:
+      - "127.0.0.1:7000:7000"
+    environment:
+      PLUME_USER: "${PLUME_USER:-admin}"
+      PLUME_PASS_HASH: "${PLUME_PASS_HASH:-}"   # vide -> mode SETUP (assistant web au 1er lancement) ; en démo publique PLUME_PUBLIC_DEMO=1 suffit
+      PLUME_HOST: "${PLUME_HOST:-soc.localhost}"
+      PLUME_ADDR: "0.0.0.0:7000"
+      PLUME_CONFIG: "/nonexistent"
+      PLUME_DEMO: "${PLUME_DEMO:-0}"   # 1 = peuple une instance fraîche avec des données de démo (à voir vivante sans agent)
+      PLUME_PUBLIC_DEMO: "${PLUME_PUBLIC_DEMO:-0}"   # 1 = accès ANONYME lecture seule (démo publique exposée ; instance isolée + PLUME_DEMO=1)
+    volumes:
+      - soc-data:/data
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  soc-data:

@@ -1,0 +1,13 @@
+{
+  "_comment": "Overlay RÈGLE (config.d) — Port-scan VERTICAL low-and-slow (balayage de ports d'un hôte), T1046. Compose sur la CIM inter-vendeur `category=firewall action=deny` produite par TOUT parseur firewall (nft-scan-detect, example-cim-firewall, syslog appliance) -> INDÉPENDANT de la source/du vendeur et du DÉBIT. Clé du design : le seuil est sur la DIVERSITÉ (dc(dst_port)>8), PAS sur le volume/rate -> un scanner LENT qui ne place que ~3 probes/min mais touche >8 ports DISTINCTS sur la fenêtre d'1h TIRE, là où une règle volume-threshold (>50/100) l'aurait raté. Seuil 8 BAS + fenêtre 1h LONGUE = capte le low-and-slow qui survit au rate-limit de journalisation d'un pare-feu généraliste (adaptez le seuil à votre parc). Complémentaire de fw-denied-portscan-any-vendor (exemple inerte, seuil 50 = scan bruyant) : celle-ci est la variante PERSISTANTE, ENABLED managed=1. INVARIANT anti-angle-mort : AUCUNE IP whitelistée — un balayage de ports fermés est hostile par NATURE (l'opérateur ne sonde pas des ports fermés). La corrélation status/port × src_ip force le RAW-scan (try_rollup_route décline tout filtre hors source= -> pas de faux 0 rollup). Posé au boot managed=1.",
+  "name": "Port-scan vertical low-and-slow (firewall, tout vendeur)",
+  "enabled": true,
+  "query": "search category=firewall action=deny | stats dc(dst_port) by src_ip | where dc > 8 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 300,
+  "window_s": 3600,
+  "mitre": "T1046"
+}

@@ -1,0 +1,21 @@
+# plume (daemon) — cargo-audit : advisories acceptés (convention famille, cf forge console/.cargo/audit.toml).
+# Chaque entrée = advisory INFIXABLE-par-update, justifiée + « lever quand ». À revoir régulièrement.
+[advisories]
+ignore = [
+  # rsa 0.9 — RUSTSEC-2023-0071 (Marvin, timing side-channel). Aucune release patchée n'existe.
+  # Plume n'utilise RSA que pour VÉRIFIER des signatures d'assertions IdP (op. clé publique) et
+  # SIGNER des AuthnRequests sortantes — AUCUN déchiffrement RSA de ciphertext attaquant (pas
+  # d'EncryptedAssertion ; les seuls decrypt du tree sont `age`). Pas d'oracle Marvin. Confiné à
+  # la feature `saml` (OFF par défaut). Lever dès qu'une version `rsa` patchée paraît.
+  "RUSTSEC-2023-0071",
+  # paste 0.1 — RUSTSEC-2024-0436 (unmaintained). Proc-macro de BUILD, transitif via
+  # clickhouse/parquet optionnels. Aucune surface runtime, pas de successeur. Lever si retiré de l'arbre.
+  "RUSTSEC-2024-0436",
+  # proc-macro-error2 — RUSTSEC-2026-0173 (unmaintained). Proc-macro de BUILD via age->i18n-embed-fl.
+  # Compile-time only, aucune surface runtime. Lever si l'arbre s'en débarrasse.
+  "RUSTSEC-2026-0173",
+  # yaml-rust 0.4 — RUSTSEC-2024-0320 (unmaintained, NON vulnérable). Front-end de l'importeur
+  # Sigma uniquement. Successeur `yaml-rust2` = crate différent (API-break -> risque 636 tests).
+  # Lever dès migration vers yaml-rust2.
+  "RUSTSEC-2024-0320",
+]

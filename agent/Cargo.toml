@@ -1,0 +1,66 @@
+[package]
+name = "plume-agent"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Plume cross-OS endpoint agent (#16) : lit les sources d'événements NATIVES de l'OS (journald / Windows Event Log / macOS unified log), les met en tampon sur disque (spool borné, at-least-once) et les POST vers le endpoint d'ingest Plume (/api/ingest + /api/ingest/journal, Bearer/basic, TLS+mTLS). Binaire AUTONOME qui s'installe SUR le poste (systemd / launchd / SCM) — il n'est PAS déployé dans le pod SOC. cf. contrat d'enveloppe partagé avec les collecteurs .sh + HEC."
+
+[[bin]]
+name = "plume-agent"
+path = "src/main.rs"
+
+[features]
+# FIM natif Windows (#58) : slot `ReadDirectoryChangesW` NON livré (validation runtime Windows requise).
+# Off par défaut -> sur Windows le FIM tourne en scan planifié. Activer quand l'impl native sera prête.
+fim_windows_native = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.5"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+base64 = "0.22"
+# Parseur de champs des sources DÉCLARATIVES (#66/#67) : `parser.regex` à groupes nommés
+# `(?P<champ>…)`. MÊME crate (même version) que le daemon (`daemon/Cargo.toml`) — donc déjà audité
+# et vert en CI supply-chain. Un parseur `delimiter`/`fields` zéro-dép couvre le cas simple sans regex.
+regex = "1"
+# HTTP shipping fait main sur std::net::TcpStream + rustls (déjà utilisé/caché par le daemon) — pas de
+# client HTTP lourd : l'agent POST un corps unique avec `Connection: close` et lit la réponse jusqu'à EOF.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pki-types = "1"
+# Racines TLS publiques embarquées (pas de dépendance au magasin système) ; une CA interne se pose via [tls].ca_cert.
+webpki-roots = "1"
+
+# --- dépendances natives par-OS (tirées UNIQUEMENT par la cible correspondante) ------------------
+# Windows : Event Log (EvtQuery/EvtNext/EvtRender/EvtCreateBookmark) + enregistrement/boucle SCM +
+# FIM natif #16/#58 (ReadDirectoryChangesW + completion port). Les features FileSystem/System_IO/Security
+# ne servent QU'au backend FIM Windows (source/fim/windows.rs) ; elles n'affectent AUCUN build non-Windows.
+# Ces crates ne sont JAMAIS compilées sur un build Linux/macOS (cfg(windows)) — cf. source/windows.rs,
+# service/windows_scm.rs et source/fim/windows.rs, gardés par #[cfg(target_os = "windows")].
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_EventLog",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_Security",
+] }
+windows-service = "0.8"
+
+# Unix (Linux + macOS) : FIM natif (#58). fanotify/inotify sont des syscalls Linux (pas de CLI équivalent
+# à journalctl) et la probe anti-TOCTOU `O_NOFOLLOW`/`fstat`/`S_ISREG` de `source/fim/mod.rs::probe_real`
+# est POSIX -> `#[cfg(unix)]`. libc est donc tirée sur TOUTE cible unix (Linux ET macOS) : sans elle le
+# build macOS casse (probe_real cfg(unix) référence libc). Déjà présente transitive via ring/getrandom :
+# aucun ajout d'arbre de deps. Le backend fanotify/inotify reste gardé par #[cfg(target_os = "linux")].
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# macOS : aucune crate native SPÉCIFIQUE requise — le lecteur unified log passe par le sous-processus `log`
+# (miroir de la stratégie `journalctl` sur Linux) et launchd via `launchctl` (std::process). (libc: ci-dessus.)
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1

@@ -1,0 +1,106 @@
+# plume-agent (#16) — cross-CHECK Linux-hosted (companion de agent-ci).
+# =============================================================================
+#
+# BUT : donner à un contributeur SANS Mac ni Windows une validation du code
+# cfg-gated Win/Mac depuis un simple hôte Linux, en type-checkant/liant les
+# cibles `x86_64-pc-windows-msvc` et `aarch64-apple-darwin` via les mêmes
+# wrappers que le Makefile (`make cross-check-win` / `make cross-check-mac`) :
+#   - cargo-xwin    : télécharge headers/libs MSVC -> `cargo xwin check` (aucune VM Windows) ;
+#   - cargo-zigbuild: `zig cc` fournit la libc de la cible -> lie darwin sans SDK Apple.
+# rustls -> ring compile du C dans build.rs, d'où l'usage de ces wrappers plutôt
+# qu'un `cargo check --target` nu (qui échouerait faute de compilateur C cible).
+#
+# COMPLÉMENTAIRE, PAS redondant avec agent-ci.yml : ici on ne fait que COMPILER
+# (pas d'exécution) — la validation RUNTIME réelle Win/Mac reste la matrice
+# agent-ci sur les runners windows-latest / macos-latest. Ces cibles cross ont
+# déjà surfacé de vraies erreurs FFI (signatures windows-rs 0.58) invisibles au
+# build Linux -> on les garde en CI par sécurité.
+
+name: agent-cross
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "agent/**"
+      - ".github/workflows/agent-cross.yml"
+  pull_request:
+    paths:
+      - "agent/**"
+      - ".github/workflows/agent-cross.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: agent-cross-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cross-check:
+    name: cross-check (win-msvc + mac-arm depuis Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Rust toolchain (pinné) + cibles cross
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable (pinned)
+        with:
+          toolchain: "1.96.0"
+          targets: x86_64-pc-windows-msvc, aarch64-apple-darwin
+
+      - name: Cache cargo (registry + target)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            agent/target
+          key: agent-cross-cargo-${{ hashFiles('agent/Cargo.lock') }}
+          restore-keys: |
+            agent-cross-cargo-
+
+      # zig requis par cargo-zigbuild (linker des cibles Apple).
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: "0.13.0"
+
+      # Installe cargo-xwin + cargo-zigbuild en binaires pré-compilés (rapide, pinné).
+      - name: Install cargo-xwin + cargo-zigbuild
+        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2.83.4
+        with:
+          tool: cargo-xwin,cargo-zigbuild
+
+      # Outils LLVM requis par `cargo xwin` pour la cible MSVC : l'archiveur `llvm-lib` (équivalent
+      # lib.exe), le linker `lld-link`, le compilo `clang-cl`. taiki-e/install-action pose cargo-xwin
+      # mais PAS ces binaires ; les runners ne les exposent que sous /usr/lib/llvm-<v>/bin (noms NON
+      # versionnés là), pas dans le PATH par défaut -> `cargo xwin` échouait « failed to find tool
+      # "llvm-lib" ». On installe LLVM puis on ajoute ce répertoire au PATH.
+      - name: LLVM tools for cargo-xwin (llvm-lib / lld-link / clang-cl)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y llvm lld clang
+          LLVM_LIB="$(ls /usr/lib/llvm-*/bin/llvm-lib 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$LLVM_LIB" ]; then
+            echo "::error::llvm-lib introuvable sous /usr/lib/llvm-*/bin — layout runner inattendu :"
+            ls -la /usr/lib/llvm-*/bin/ 2>/dev/null | head -40 || true
+            echo "--- recherche large ---"; find /usr -name 'llvm-lib*' -o -name 'lld-link*' 2>/dev/null | head -20 || true
+            exit 1
+          fi
+          LLVM_BIN="$(dirname "$LLVM_LIB")"
+          echo "$LLVM_BIN" >> "$GITHUB_PATH"
+          echo "LLVM bin -> $LLVM_BIN"; "$LLVM_BIN/llvm-lib" --version 2>&1 | head -1 || true
+
+      # Windows-MSVC : type-check + lien du FFI Event Log depuis Linux.
+      - name: cross-check Windows (make cross-check-win)
+        working-directory: agent
+        run: make cross-check-win
+
+      # macOS aarch64 : compilation/lien du lecteur unified-log depuis Linux.
+      - name: cross-check macOS (make cross-check-mac)
+        working-directory: agent
+        run: make cross-check-mac

@@ -1,0 +1,13 @@
+{
+  "_comment": "Une alerte de signature IDS haute-sévérité (severity>=3, mappée depuis la priorité Suricata) = exploit/malware détecté sur le fil. suricata n'émet PAS de champ structuré (signature dans message) -> la règle compose sur category=alert + severity cœur. Seeds : PANNEAU Suricata mais aucune RÈGLE d'alerte -> comble le trou. Inerte sans Suricata. || TÉLÉMÉTRIE REQUISE: suricata (IDS : category=alert, severity) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — IDS: signature Suricata déclenchée (haute sévérité)",
+  "enabled": false,
+  "query": "search source=suricata category=alert severity>=3 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 120,
+  "window_s": 900,
+  "mitre": "T1190"
+}

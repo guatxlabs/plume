@@ -1,0 +1,13 @@
+{
+  "_comment": "Overlay RÈGLE (config.d) — Scan HORIZONTAL low-and-slow (une IP source balaie MANY hôtes sur le même port/service), T1046. Miroir de la variante verticale mais sur dc(dst_ip) : le pattern de reconnaissance d'un attaquant qui cartographie un réseau (sweep). Seuil 5 hôtes DISTINCTS BAS + fenêtre 1h LONGUE = capte le sweep lent. Sur-ensemble vendor-agnostic : sur un parc mono-hôte (ex. VPS unique) cette règle reste inerte (dc(dst_ip)<=1) — SANS bruit ; elle s'active dès qu'une topologie multi-hôtes est ingérée (la CIM `dst_ip` vient de tout parseur firewall). Même invariant : aucune whitelist, le sweep est hostile par nature ; corrélation dst_ip × src_ip -> RAW-scan (rollup décliné). Posé managed=1.",
+  "name": "Scan horizontal low-and-slow (firewall, tout vendeur)",
+  "enabled": true,
+  "query": "search category=firewall action=deny | stats dc(dst_ip) by src_ip | where dc > 5 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 300,
+  "window_s": 3600,
+  "mitre": "T1046"
+}

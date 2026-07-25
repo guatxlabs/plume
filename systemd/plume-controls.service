@@ -1,0 +1,22 @@
+[Unit]
+Description=plume collector — Control Catalog (contrôles de défense présents/vivants)
+After=docker.service
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+ExecStart=/usr/local/lib/plume/collectors/controls.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+LockPersonality=true
+MemoryMax=64M
+CPUQuota=20%
+Nice=10
+IOSchedulingClass=idle

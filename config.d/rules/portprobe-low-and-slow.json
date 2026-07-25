@@ -1,0 +1,13 @@
+{
+  "_comment": "Overlay RÈGLE (config.d) — Port-probe low-and-slow (récurrence), T1046. source=portprobe = appartenance au set nft ps_rate_v4/v6 (a sondé un port NON ouvert), INDÉPENDANTE du débit -> capte le prober LENT qu'un seuil de DÉBIT kernel laisse passer (là où une règle qui lit le log de scan rapide ne voit rien). Le collecteur portprobe tourne à 60s -> au plus 1 event/IP/minute (dedup bucket-minute) ; >12 sur une fenêtre d'1h = IP présente sur 13+ minutes distinctes = prober PERSISTANT. Un one-off (1-2 events) ne franchit jamais le seuil. INVARIANT : AUCUNE IP whitelistée — un poste d'administration légitime ne sonde pas de port fermé, il est exclu par NATURE. source=portprobe (PAS 'portscan' : la règle de scan à débit rapide lit source=portscan et ferait double emploi). Posé au boot avec managed=1.",
+  "name": "Port-probe low-and-slow (récurrence)",
+  "enabled": true,
+  "query": "search source=portprobe | stats count by src_ip | where count > 12 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 2,
+  "interval_s": 300,
+  "window_s": 3600,
+  "mitre": "T1046"
+}

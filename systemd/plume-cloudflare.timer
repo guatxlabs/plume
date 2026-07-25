@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — Cloudflare firewall events périodiques (source=cloudflare)
+
+[Timer]
+OnBootSec=240s
+OnUnitActiveSec=2min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

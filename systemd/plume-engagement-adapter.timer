@@ -1,0 +1,11 @@
+[Unit]
+Description=plume — enforcer-exemption adapter (pull ~30s des exemptions d'engagement à réconcilier sur cet hôte)
+
+[Timer]
+# Cadence ~30s : réconciliation déclarative level-triggered + expiry wall-clock + fail-closed (revert après N échecs).
+OnBootSec=45s
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

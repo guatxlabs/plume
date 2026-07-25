@@ -1,0 +1,13 @@
+{
+  "_comment": "Persistance/privesc cloud : création d'un RoleBinding ou ClusterRoleBinding (resource=*rolebindings matche les deux) = octroi de droits (souvent à un ServiceAccount pour se maintenir). Signal d'or d'une prise de contrôle RBAC. Inerte sans audit k8s ; à corréler avec pe-kube-sa-clusteradmin. || TÉLÉMÉTRIE REQUISE: kube-audit (resource, verb) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — K8s: (Cluster)RoleBinding créé (octroi de droits RBAC)",
+  "enabled": false,
+  "query": "search source=kube-audit resource=*rolebindings verb=create | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 120,
+  "window_s": 1800,
+  "mitre": "T1098"
+}

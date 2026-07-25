@@ -1,0 +1,13 @@
+{
+  "_comment": "Exfiltration depuis le stockage objet : une clé télécharge >500 objets (api=GetObject) en 30 min = aspiration de données. Le seed minio natif couvre la DESTRUCTION (Delete*) ; ici c'est le VOL par lecture massive. Seuil volume à caler sur les jobs légitimes (backup/replication). Inerte sans relay MinIO audit. || TÉLÉMÉTRIE REQUISE: minio-audit (api, accessKey) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Objet-store: lecture de masse (exfiltration probable)",
+  "enabled": false,
+  "query": "search source=minio-audit api=GetObject | stats count by accessKey | where count > 500 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 300,
+  "window_s": 1800,
+  "mitre": "T1530"
+}

@@ -1,0 +1,11 @@
+[Unit]
+Description=plume — dead-man : révoque ~30s les exemptions d'engagement expirées même si l'adaptateur principal est mort
+
+[Timer]
+# Cadence ~30s, décalée de l'adaptateur principal : borne d'expiry indépendante de la liveness du loop.
+OnBootSec=50s
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

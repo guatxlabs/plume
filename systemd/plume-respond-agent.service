@@ -1,0 +1,28 @@
+[Unit]
+Description=plume responder (agent) — applique SUR CET HOTE les actions ban/unban decidees par le central
+# OPT-IN : installe mais NON active par defaut. Necessite /etc/plume/responder.conf (PLUME_RESPONDER=1).
+# Modele pull : aucune entree reseau sur l'agent. Activer : systemctl enable --now plume-respond-agent.timer
+Documentation=file:/usr/local/lib/plume/README.md
+
+[Service]
+Type=oneshot
+# PLUME_CENTRAL, PLUME_TOKEN, PLUME_HOST_LABEL, PLUME_RESPONDER=1, PLUME_RESPONDER_APPLY=0/1, PLUME_BAN_BACKEND...
+EnvironmentFile=/etc/plume/responder.conf
+# HOME inscriptible (PrivateTmp) pour le cache de `k3s kubectl` quand l'unban CrowdSec
+# passe par `kubectl exec` du pod LAPI (mode k3s, cf plume-bans/plume-crowdsec).
+Environment=HOME=/tmp
+ExecStart=/usr/local/lib/plume/collectors/respond.sh
+
+# Root requis (cscli / fail2ban-client / nft) mais surface reduite :
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+LockPersonality=true
+# 512M : en mode k3s l'unban CrowdSec lance `k3s kubectl exec` (binaire k3s complet)
+# qui dépasse 64M -> OOM silencieux. 64M suffirait en mode hôte (cscli/fail2ban/nft natifs).
+MemoryMax=512M
+CPUQuota=20%
+Nice=10

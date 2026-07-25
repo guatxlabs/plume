@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — relevé des connexions sortantes (conntrack)
+
+[Timer]
+OnBootSec=140s
+OnUnitActiveSec=3min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

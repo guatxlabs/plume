@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — intégrité/persistance périodique
+
+[Timer]
+OnBootSec=120s
+OnUnitActiveSec=15min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,13 @@
+{
+  "_comment": "Exfiltration par email ou compte relais compromis : un même expéditeur émet >200 messages sur la fenêtre. mail tague le flux accepté category=mailflow avec `sender`. Seuil à caler sur les newsletters/notifs légitimes. Inerte sans stack mail. || TÉLÉMÉTRIE REQUISE: mail (category=mailflow, sender) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Exfiltration/spam: envoi sortant de masse depuis une identité",
+  "enabled": false,
+  "query": "search source=mail category=mailflow | stats count by sender | where count > 200 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 2,
+  "interval_s": 300,
+  "window_s": 1800,
+  "mitre": "T1048"
+}

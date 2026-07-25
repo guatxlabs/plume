@@ -1,0 +1,13 @@
+{
+  "_comment": "Brute-force applicatif : >20 réponses 401 (Unauthorized) depuis une même IP sur un formulaire/endpoint de login web. Distinct de l'auth SYSTÈME (ssh/pam) : vise l'auth APPLICATIVE derrière le proxy. status est stocké en chaîne côté web ; le compilo matche `status=401` comme le seed `status=404`. || TÉLÉMÉTRIE REQUISE: web (reverse-proxy/app : category=web, champ status) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Brute-force sur login web (401 par IP)",
+  "enabled": false,
+  "query": "search source=web status=401 | stats count by src_ip | where count > 20 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 300,
+  "window_s": 900,
+  "mitre": "T1110"
+}

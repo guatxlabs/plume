@@ -1,0 +1,23 @@
+[Unit]
+Description=plume collector — scan maildir (patterns IOC/phishing) -> events mail minimaux
+# OPT-IN : installe mais NON active par defaut (regle d'or). Activer explicitement :
+#   sudo systemctl enable --now plume-collector-mail.timer
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+# Config attendue (racine maildir host, domaine) : cf. /etc/plume/mail.conf (voir deploy/MAIL.md)
+EnvironmentFile=-/etc/plume/mail.conf
+ExecStart=/usr/local/lib/plume/collectors/plume-collector-mail
+
+# Durcissement : lit le maildir (RO via ProtectSystem=strict), n'ecrit QUE le spool, pas de reseau
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+MemoryMax=256M
+CPUQuota=40%
+Nice=12

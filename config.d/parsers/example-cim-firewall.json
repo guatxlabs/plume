@@ -1,0 +1,19 @@
+{
+  "_comment": "EXEMPLE de PARSEUR DÉCLARATIF (DSL CIM — Slice #7 pièce 2). Transforme un log de firewall GÉNÉRIQUE (appliance forwardée en key=value) en événement CIM SANS rebuild Rust. Discriminant d'un parseur déclaratif = la présence d'un objet 'map' (les parseurs regex legacy à 'pattern' vivent dans le même dossier mais sont chargés séparément). Chargé au boot par load_overlay_dparsers (managed=1, validé-ou-ignoré, hot-reload). ENRICH/MAP UNIQUEMENT : jamais un drop d'event — une capture absente = pas d'enrichissement, pas une suppression (un filtre de collecte relèverait des whitelists #10). Renommer/dupliquer pour vos propres appliances.",
+  "name": "firewall générique (key=value) → CIM",
+  "source": "firewall",
+  "enabled": true,
+  "match": "\\b(?:action|act)=",
+  "extract": [
+    { "kv": true }
+  ],
+  "map": {
+    "category": "firewall",
+    "severity": 2,
+    "action": "$action",
+    "src_ip": "$src",
+    "dst_ip": "$dst",
+    "url": "$url",
+    "fields": { "proto": "$proto", "dport": "$dport", "vendor": "$devname" }
+  }
+}

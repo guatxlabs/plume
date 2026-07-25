@@ -1,0 +1,108 @@
+#!/bin/sh
+# Capteur Plume (PLUGIN, OPT-IN) : requetes HTTP 4xx/5xx vues AU EDGE Cloudflare (httpRequestsAdaptiveGroups)
+# -> events source=cloudflare-http, category=web. Ferme l'angle mort du SCAN WEB (T1595.002) absorbe/servi
+# au edge que l'origine (Traefik/web.sh) ne voit pas forcement (404 sur des chemins qui n'atteignent jamais
+# l'origine, ou trafic filtre CF). Alimente la regle "404-breadth (Cloudflare)" (dc(path)>30 par IP).
+# LECTURE SEULE : GraphQL Analytics (pull-only ; AUCUNE action/mutation CF). Cardinalite BORNEE pour le
+# pod 2Go : limit<=200 groupes + filtre edgeResponseStatus_geq:400 uniquement (les 200 legit n'entrent PAS).
+# INVARIANT anti-angle-mort : AUCUNE IP whitelistee ; le signal est la NATURE 404-en-masse, pas une IP.
+# OPT-IN : skip propre si PLUME_CF_TOKEN / PLUME_CF_ZONE absents. Requiert curl + jq.
+# GOTCHA egress IPv4 : le token CF whiteliste des IPv4 mais le VPS sort en IPv6 -> curl -4 IMPERATIF.
+# Le TOKEN n'est JAMAIS imprime/loggue (ni en clair, ni tronque).
+set -eu
+. "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
+TOKEN="${PLUME_CF_TOKEN:-}"
+ZONE="${PLUME_CF_ZONE:-}"                       # ZONE TAG 32-hex de example.com (PAS le nom de zone)
+LIMIT="${PLUME_CF_HTTP_LIMIT:-200}"            # cardinalite bornee (pod 2Go) ; groupes 4xx/5xx par fenetre
+LAG="${PLUME_CF_HTTP_LAG:-90}"                 # buffer (s) contre le lag adaptive-sampling CF ; recouvre, jamais de trou
+API="${PLUME_CF_API:-https://api.cloudflare.com/client/v4/graphql}"
+
+# OPT-IN : pas de creds -> skip silencieux (comme les autres collecteurs)
+[ -n "$TOKEN" ] && [ -n "$ZONE" ] || exit 0
+command -v curl >/dev/null 2>&1 || exit 0
+command -v jq   >/dev/null 2>&1 || exit 0
+
+plume_init
+nowiso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+WM="$STATE_DIR/cloudflare-http.watermark"
+
+# watermark = borne basse datetime_geq de la fenetre ; 1re passe (ou invalide) = now-10min
+since=$(cat "$WM" 2>/dev/null || true)
+case "$since" in
+  ????-??-??T??:??:??Z) : ;;                    # RFC3339 'Z' valide
+  *) since=$(date -u -d '10 minutes ago' +%Y-%m-%dT%H:%M:%SZ) ;;
+esac
+
+read_query() {
+cat <<'GQL'
+query($zone:String!,$since:Time!,$lim:Int!){ viewer { zones(filter:{zoneTag:$zone}){
+  httpRequestsAdaptiveGroups(limit:$lim, filter:{datetime_geq:$since, edgeResponseStatus_geq:400}, orderBy:[count_DESC]){
+    count
+    dimensions { clientIP clientRequestHTTPHost clientRequestPath edgeResponseStatus clientRequestHTTPMethodName }
+  }}}}
+GQL
+}
+
+body=$(jq -n --arg q "$(read_query)" --arg zone "$ZONE" --arg since "$since" --argjson lim "$LIMIT" \
+  '{query:$q,variables:{zone:$zone,since:$since,lim:$lim}}')
+
+# curl -4 IMPERATIF (token CF whiteliste IPv4 ; sortie IPv6 par defaut serait rejetee).
+resp=$(curl -4 -s -m 30 -w '\n%{http_code}' "$API" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data "$body" 2>/dev/null || true)
+code=$(printf '%s' "$resp" | tail -n1)
+json=$(printf '%s' "$resp" | sed '$d')
+
+# Echec API (scope token / plan CF / reseau) : ne PAS avancer le watermark, ne PAS spooler. Token JAMAIS logge.
+if [ "$code" != "200" ]; then
+  echo "cloudflare-http: GraphQL HTTP ${code:-000} (token scope/plan ? rien spoole)" >&2
+  exit 0
+fi
+errs=$(printf '%s' "$json" | jq -c '.errors // empty' 2>/dev/null || true)
+if [ -n "$errs" ] && [ "$errs" != "null" ] && [ "$errs" != "[]" ]; then
+  echo "cloudflare-http: GraphQL errors=$errs (rien spoole)" >&2
+  exit 0
+fi
+
+# Map CF -> enveloppe Plume kind:events. status/path/method/vhost = STRING (calque web.sh -> la regle
+# 'status=404 | stats dc(path)' s'applique a l'identique). severity 1 (telemetrie ; la DETECTION = regle).
+# dedup cfhttp-<ip>-<path>-<status>-<ts/60> : le recouvrement (LAG) reinsere -> dc(path) INSENSIBLE aux doublons.
+envj=$(printf '%s' "$json" | jq -c --arg host "$host" --argjson ts "$ts" '
+  ( .data.viewer.zones[0].httpRequestsAdaptiveGroups // [] ) as $g
+  | { ts:$ts, host:$host, kind:"events",
+      events: ( $g | map(
+        (.dimensions // {}) as $d |
+        ($d.clientIP // "")                       as $ip |
+        ($d.clientRequestHTTPHost // "")          as $vh |
+        ($d.clientRequestPath // "")              as $pa |
+        (($d.edgeResponseStatus // 0) | tostring) as $st |
+        ($d.clientRequestHTTPMethodName // "")    as $me |
+        (.count // 0)                             as $c  |
+        {
+          ts: $ts,
+          source: "cloudflare-http",
+          category: "web",
+          severity: 1,
+          src_ip: $ip,
+          message: ( "CF-HTTP " + $me + " " + $vh + $pa + " -> " + $st + " (x" + ($c|tostring) + ")" ),
+          dedup: ( "cfhttp-" + $ip + "-" + $pa + "-" + $st + "-" + (($ts / 60) | floor | tostring) ),
+          fields: {
+            src_ip: $ip,
+            vhost:  $vh,
+            path:   $pa,
+            status: $st,
+            method: $me,
+            count:  $c,
+            dir:    "inbound",
+            scope:  "external"
+          }
+        } ) )
+    }')
+
+n=$(printf '%s' "$envj" | jq -r '.events | length' 2>/dev/null || echo 0)
+if [ "${n:-0}" -gt 0 ]; then
+  spool_write "cloudflare-http-$ts.json" "$envj" nl
+fi
+
+# avance le watermark a now-LAG (recouvrement borne : jamais de trou face au lag CF ; dedup+dc absorbent).
+adv=$(date -u -d "@$((ts - LAG))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$nowiso")
+state_write "$WM" "$adv"

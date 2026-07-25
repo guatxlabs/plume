@@ -1,0 +1,259 @@
+# Plume — CI (hardened, reproducible; no offensive network I/O in CI).
+# =============================================================================
+#
+# Jobs:
+#   - test     : `cargo test --locked` for the Plume daemon (crate in `daemon/`),
+#                default features only → SqlcipherStore-only SMB profile (expect 636 tests),
+#                plus `cargo build --release --locked` and the `duckdb` FEATURE-CHECK
+#                (`cargo check --features duckdb --locked`) to prove the opt-in warm tier compiles.
+#   - security : supply-chain + secret hygiene — `cargo audit --deny warnings` on the
+#                daemon's locked dep tree, plus a gitleaks secret scan of tree + history.
+#   - lint     : `cargo fmt --all --check` + `cargo clippy --locked --all-targets`, both
+#                CONSULTATIVE (continue-on-error) until the tree is proven warning-free —
+#                then drop the continue-on-error / add `-D warnings` to make them blocking.
+#
+# NOTE features: `duckdb` is the daemon's ONLY compile feature (daemon/Cargo.toml).
+# `clickhouse` is NOT (yet) a feature — it is an internal RFC backend, present only in
+# comments/SPI. TODO: add `cargo check --features clickhouse` once that feature exists.
+#
+# guatx-core (the shared SOQL compiler) is a GIT dependency of the daemon
+# (daemon/Cargo.toml: `guatx-core = { git = ".../guatxlabs/core", tag = "v0.2.0" }`).
+# `guatxlabs/core@v0.2.0` must be reachable by the runner for cargo to resolve the tag (anonymous
+# fetch) — CI needs no sibling checkout and no CI-only `[patch]`. The committed
+# daemon/Cargo.lock pins guatx-core to that git source+rev, so `cargo test --locked`
+# is reproducible against exactly what public users get. (Local dev may still keep a
+# git-ignored `.cargo/config.toml` `[patch]` -> sibling checkout for build speed; it
+# is never committed and never present in CI.)
+#
+# All actions and the Rust toolchain are SHA-PINNED for reproducibility.
+
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref (runner economy).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # test — daemon test suite (default features = SMB profile, expect 636).
+  # ---------------------------------------------------------------------------
+  test:
+    name: test (daemon — cargo test --locked)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout plume
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)
+        with:
+          toolchain: "1.96.0"
+
+      - name: Cache cargo (registry + target)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            daemon/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('daemon/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      # DEFAULT build only: SqlcipherStore alone (rusqlite bundled-sqlcipher-vendored-openssl
+      # compiles C + vendored OpenSSL; cc/perl present on ubuntu-24.04). Expect 636 tests.
+      # cargo fetches the guatx-core git-dep (core@v0.2.0) from GitHub.
+      # NOTE: do NOT add `--features cold_tier` to this job — the cold_tier suite shares
+      # fixed temp paths with the default suite and must run on a SEPARATE runner.
+      - name: cargo test (daemon, default features)
+        working-directory: daemon
+        run: cargo test --locked --verbose
+
+      # Release build of the default profile — proves the daemon links/optimizes clean.
+      - name: cargo build --release (daemon, default features)
+        working-directory: daemon
+        run: cargo build --release --locked --verbose
+
+      # FEATURE-BUILD: DuckDB warm tier (bundled C++ → heavy/slow, opt-in). `check` only
+      # (no build/test) to prove the feature COMPILES without blowing up CI time.
+      - name: cargo check --features duckdb (warm tier)
+        working-directory: daemon
+        run: cargo check --features duckdb --locked --verbose
+
+  # ---------------------------------------------------------------------------
+  # security — supply-chain + secret hygiene. Independent gate: runs in parallel with
+  # the test job and never gates its logic. Two checks:
+  #   1) cargo-audit — RustSec advisory scan of the daemon crate's locked dep tree
+  #      (--deny warnings => unmaintained/yanked/vuln advisories FAIL the job). Reads
+  #      daemon/Cargo.lock only (the patched path dep guatx-core is skipped — no build,
+  #      no core checkout needed).
+  #   2) gitleaks   — secret scan of the tree + history. An ephemeral config (written
+  #      below, NOT committed) extends the default ruleset and ALLOWLISTS the two
+  #      documented unit-test PEM fixtures (daemon/src/idp.rs OIDC test key,
+  #      daemon/src/tests/saml.rs SAML test key/cert — non-secret by design) so the scan
+  #      flags REAL leaks without false-positiving on the test keys.
+  # ---------------------------------------------------------------------------
+  security:
+    name: security (cargo-audit + gitleaks)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout plume
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0   # full history so gitleaks can scan past commits, not just the tip.
+
+      - name: Setup Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)
+        with:
+          toolchain: "1.96.0"
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # `--deny warnings` = unmaintained/unsound/yanked/vuln advisories FAIL the job. The TLS/crypto
+      # advisory cluster (ring 0.16, rustls 0.21, rustls-webpki 0.101, rustls-pemfile 1.0 — RUSTSEC-2025-0009/
+      # -0010, -2026-0098/-0099/-0104, -2025-0134) and the anyhow unsound-downcast (RUSTSEC-2026-0190) were
+      # FIXED BY UPDATE (ldap3 0.11->0.12 pulls the patched rustls 0.23/ring 0.17 stack; anyhow -> 1.0.104) —
+      # NOT ignored. The four accepted advisories with no fix-by-update live in daemon/.cargo/audit.toml
+      # (family convention, cf forge console/.cargo/audit.toml) — read automatically by cargo-audit from
+      # working-directory: daemon. Each is transitive/build-time or off-by-default and justified there:
+      #
+      #   RUSTSEC-2023-0071 (rsa 0.9.x, "Marvin" RSA-decryption timing side-channel) — NO patched rsa release
+      #     exists. Enters ONLY via the off-by-default `saml` feature (samlify->bergshamra XML-DSig). Plume uses
+      #     RSA solely to (a) VERIFY IdP assertion signatures (finish_sso, public-key op — no secret) and
+      #     (b) SIGN outbound AuthnRequests (private-key SIGNING, not decryption). It NEVER performs RSA
+      #     private-key DECRYPTION of attacker-supplied ciphertext (no EncryptedAssertion handling) -> no
+      #     Marvin decryption oracle is exposed. Not applicable.
+      #   RUSTSEC-2024-0436 (paste 1.0.15, unmaintained) — build-time proc-macro, transitive via the
+      #     off-by-default clickhouse/parquet(cold_tier) deps. No maintained drop-in successor; compile-time
+      #     only, no runtime attack surface. No fix available.
+      #   RUSTSEC-2026-0173 (proc-macro-error2 2.0.1, unmaintained) — build-time proc-macro, transitive via
+      #     age -> i18n-embed-fl. Compile-time only, no runtime surface. No fix available.
+      #   RUSTSEC-2024-0320 (yaml-rust 0.4.5, unmaintained) — direct dep, used ONLY by the Sigma-rule importer
+      #     front-end (YAML -> serde_json::Value) on operator-supplied rule files. "Unmaintained" != vulnerable;
+      #     the successor `yaml-rust2` is a DIFFERENT crate (API break, migration risk to the 636-test suite),
+      #     so there is no in-place fix-by-update. Revisit if a real yaml-rust CVE lands.
+      - name: cargo audit (daemon crate — deny warnings)
+        working-directory: daemon
+        run: cargo audit --deny warnings
+
+      # Ephemeral gitleaks config (runner-only, never committed) — extends defaults +
+      # allowlists the documented unit-test PEM fixtures so they cannot false-positive.
+      - name: Write gitleaks config (allowlist documented test PEM fixtures + env-ref/placeholder paths + schema-rebrand SQL)
+        run: |
+          cat > "$GITHUB_WORKSPACE/.gitleaks-ci.toml" <<'EOF'
+          title = "plume CI gitleaks config"
+          [extend]
+          useDefault = true
+          [allowlist]
+          description = "Documented unit-test PEM fixtures, shell env-var references, documented test placeholders and the schema-rebrand SQL — non-secret by design."
+          # LINE-scoped allowlist. Production source files are NEVER excluded wholesale: a real secret introduced
+          # in `main.rs`, in `migrate.rs` or in any collector must still trip the scan. Each regex below suppresses
+          # one PRECISE non-secret shape:
+          #   1. the rebrand migration SQL — `REPLACE(query,'key=soc_creds','key=plume_creds')` and its siblings —
+          #      which the generic-api-key rule reads as a credential; it is a panel-query key rename.
+          #   2. shell references to environment variables in the collectors (`-u "${PLUME_USER:?}:${PLUME_PASS:?}"`,
+          #      `Authorization: Bearer $PLUME_TOKEN`): the value never appears, only the variable name.
+          #   3. two documented test placeholders that live in production files.
+          regexTarget = "line"
+          regexes = [
+            '''REPLACE\(query,'key=soc_\w+','key=plume_\w+'\)''',
+            '''\$\{PLUME_[A-Z0-9_]+(:\?|:-|\})''',
+            '''Bearer \$\{?[A-Z0-9_]+''',
+            '''pentest-secret-''',
+            '''env-token-xyz''',
+          ]
+          # PATH-scoped allowlist — TEST FILES ONLY (never a production path). Each holds documented, offline-generated
+          # fixtures: the OIDC/SAML unit-test PEM keys live under `daemon/src/idp/` (a directory module) and in
+          # `daemon/src/tests/saml.rs`; the remaining two carry test placeholders.
+          paths = [
+            '''daemon/src/idp/.*\.rs''',
+            '''daemon/src/tests/saml\.rs''',
+            '''daemon/src/tests/detection\.rs''',
+            '''daemon/src/tests/engagement\.rs''',
+          ]
+          EOF
+
+      # Pinned gitleaks BINARY (v8.24.3) — no repo token, no license required, and behaves
+      # identically on push and pull_request. Replaces the former gitleaks GitHub Action, which now
+      # requires a repo token on pull_request events (→ failed every PR). The download is
+      # checksum-pinned (sha256 from the release's checksums.txt) so a tampered/substituted asset
+      # fails the build. The security job checks plume out at the workspace root (no `path:`), so
+      # `--source .` == repo root and the config resolves at $GITHUB_WORKSPACE/.gitleaks-ci.toml
+      # (written just above). Scans tree + full history (fetch-depth: 0 above). This job keeps only
+      # `permissions: contents: read` — the binary needs no token (least privilege).
+      - name: Secret scan (gitleaks, pinned binary — no token/license required)
+        run: |
+          set -euo pipefail
+          GL_VER=8.24.3
+          GL_SHA=9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c
+          curl -sSfL -o /tmp/gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz"
+          echo "${GL_SHA}  /tmp/gitleaks.tgz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . --config "$GITHUB_WORKSPACE/.gitleaks-ci.toml" --no-banner --redact --exit-code 1
+
+  # ---------------------------------------------------------------------------
+  # lint — fmt + clippy, CONSULTATIVE (non-blocking until the tree is proven
+  # warning-free). cargo resolves the guatx-core git-dep (core@v0.2.0)
+  # directly. TODO: make blocking (`-D warnings`, drop continue-on-error) once
+  # the tree is clean.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: lint (fmt + clippy — consultative)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout plume
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Rust toolchain (pinned) + rustfmt/clippy
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)
+        with:
+          toolchain: "1.96.0"
+          components: rustfmt, clippy
+
+      - name: cargo fmt --all --check (consultative)
+        working-directory: daemon
+        run: cargo fmt --all --check
+        continue-on-error: true
+
+      - name: cargo clippy (consultative, no -D warnings)
+        working-directory: daemon
+        run: cargo clippy --locked --all-targets
+        continue-on-error: true
+
+  # ---------------------------------------------------------------------------
+  # ci-ok — SINGLE required status-check context for the `main` branch ruleset.
+  # The name `CI` is STABLE: it does not depend on any matrix or on the set of
+  # upstream jobs, so evolving test/security/lint never breaks the "required
+  # check" rule. Without this aggregation job the ruleset would have to require
+  # each job name directly — the day one is renamed/removed, the required check
+  # would never report again and `main` would become unpushable, including for
+  # the very fix that would repair it.
+  # ---------------------------------------------------------------------------
+  ci-ok:
+    name: CI
+    if: always() # otherwise a failed upstream job SKIPS this one instead of failing it
+    needs: [test, security, lint]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: All required jobs must have SUCCEEDED
+        # `skipped` and `cancelled` are treated as failures ON PURPOSE: GitHub
+        # counts a required-but-skipped check as satisfied, which would let a
+        # job that never ran slip through.
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+        run: |
+          echo "::error::a CI job did not succeed: ${{ join(needs.*.result, ', ') }}"
+          exit 1

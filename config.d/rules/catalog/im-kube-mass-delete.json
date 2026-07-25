@@ -1,0 +1,13 @@
+{
+  "_comment": "Sabotage/destruction cluster : un sujet supprime (verb=delete, action=allowed) >15 ressources en 15 min = purge de déploiements/données. Le collecteur kube-audit tague déjà delete/deletecollection en sev>=3 ; cette règle en fait un signal de RAFALE par identité. Inerte sans audit k8s. || TÉLÉMÉTRIE REQUISE: kube-audit (verb, action, user) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — K8s: suppression de masse de ressources",
+  "enabled": false,
+  "query": "search source=kube-audit verb=delete action=allowed | stats count by user | where count > 15 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 300,
+  "window_s": 900,
+  "mitre": "T1485"
+}

@@ -1,0 +1,19 @@
+# Litestream — réplication continue de la base SOC (RPO ~secondes, point-in-time recovery).
+# Litestream est un binaire SÉPARÉ (https://litestream.io). Installation :
+#   - installe litestream (paquet / binaire)
+#   - sudo cp deploy/litestream.yml /etc/litestream.yml
+#   - sudo systemctl enable --now litestream
+#   Restauration : litestream restore -o /var/lib/soc/db/soc.db <replica-url>
+dbs:
+  - path: /var/lib/soc/db/soc.db
+    replicas:
+      # (A) disque/NAS local — le plus simple :
+      - type: file
+        path: /var/backups/soc-litestream
+      # (B) S3-compatible (décommenter + configurer pour de la vraie résilience off-site) :
+      # - type: s3
+      #   bucket: mon-bucket-soc
+      #   path: soc.db
+      #   endpoint: https://s3.example.com
+      #   access-key-id: "..."
+      #   secret-access-key: "..."

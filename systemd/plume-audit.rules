@@ -1,0 +1,64 @@
+## Règles auditd RECOMMANDÉES pour Plume — exec + élévation de privilège + accès aux données sensibles.
+## Enrichissement OPTIONNEL du collecteur `auditd.sh` : le collecteur ne fait que LIRE le journal ; ce
+## fichier dit à auditd QUOI journaliser. À ADAPTER à votre hôte (chemins, seuils, périmètre).
+## Pour activer :
+##   sudo cp /usr/local/share/plume/plume-audit.rules /etc/audit/rules.d/plume.rules
+##   sudo augenrules --load     (ou: sudo auditctl -R /etc/audit/rules.d/plume.rules)
+##
+## ARBITRAGE VISIBILITÉ / VOLUME (à connaître avant de durcir) : une règle `execve` SANS filtre `auid`
+## journalise AUSSI les exec des daemons sans session de login. Sur un hôte qui exécute beaucoup de
+## scripts (collecteurs, agents, orchestrateur), cette churn peut représenter l'essentiel du volume et
+## noyer le signal. Les règles ci-dessous filtrent donc par défaut sur une session de login, et ajoutent
+## une couverture ciblée pour le cas « compte de service » (bloc `svc_exec` plus bas).
+
+## -- Exécutions issues d'une session de login (login/ssh/console, sudo inclus : `auid` reste le login) --
+## Si votre durcissement hôte pose déjà l'équivalent en 64 bits, gardez au moins la couverture 32 bits ici.
+-a always,exit -F arch=b32 -S execve -F auid!=-1 -k exec_tracking
+
+## -- Fichiers sensibles : altération de comptes, de sudo, du démon SSH, préchargement de bibliothèques --
+-w /etc/shadow        -p wa -k plume_sensitive
+-w /etc/sudoers       -p wa -k plume_sensitive
+-w /etc/sudoers.d     -p wa -k plume_sensitive
+-w /etc/ssh/sshd_config -p wa -k plume_sensitive
+-w /etc/ld.so.preload -p wa -k plume_persist
+
+## === Gouvernance d'accès aux DONNÉES ===
+## Objectif : « quel HUMAIN a touché aux données sensibles ». Le filtre `auid>=1000` retient les actions
+## rattachables à un utilisateur connecté et écarte la churn des daemons et des applications (dont les
+## écritures de bases ou de boîtes mail par des conteneurs, qui n'ont pas de session).
+## `perm` : w=écriture/création/suppression, a=chmod/chown, r=lecture.
+## Le défaut ci-dessous est `wa` (altération) et NON `r` : auditer la LECTURE d'un répertoire de
+## configuration très sollicité (ex. un kubeconfig lu en boucle par un client d'orchestrateur) produit un
+## volume important pour peu de signal. Ajoutez `r` sur les chemins où la lecture doit être tracée, en
+## acceptant le volume correspondant.
+## ADAPTEZ CES CHEMINS à votre installation (exemples ci-dessous).
+-a always,exit -F dir=/srv/data                    -F perm=wa  -F auid>=1000 -F auid!=4294967295 -k plume_data
+-a always,exit -F dir=/etc                         -F perm=wa  -F auid>=1000 -F auid!=4294967295 -k plume_etc
+-a always,exit -F dir=/etc/kubernetes              -F perm=wa  -F auid>=1000 -F auid!=4294967295 -k plume_creds
+
+## === Exécution par un COMPTE DE SERVICE (couverture complémentaire) ===
+## Pourquoi : les règles `exec_tracking` ci-dessus filtrent sur une session de login, donc un exec réalisé
+## par un compte de service (`auid` non défini, p.ex. un processus applicatif compromis) n'y apparaît pas.
+## Les watches de fichiers, elles, n'ont pas ce filtre : une altération de `shadow`/`sudoers`/`sshd_config`/
+## `ld.so.preload` reste vue dans tous les cas.
+##
+## L'arbitrage retenu : ne PAS journaliser TOUT exec sans session (volume ingérable), mais cibler le signal
+## fort — un interpréteur ou un outil réseau lancé par un compte de service. La règle porte sur l'INODE du
+## binaire (`-F path=<realpath> -F perm=x`) avec `-F auid=unset`. Conséquence utile : un exec INTERNE à un
+## conteneur (binaire d'une autre couche, donc autre inode) ne déclenche pas ces règles — la churn des
+## conteneurs ne les fait pas bruiter. Couvrez le niveau conteneur avec l'outillage adapté (runtime
+## security, IDS réseau) : ces règles décrivent l'HÔTE.
+##
+## Le tag `-k svc_exec` est mappé en sévérité 3 par le collecteur `auditd.sh`, et shippé même lorsque
+## `PLUME_AUDIT_REAL_USER_ONLY=1`. Détection associée côté Plume : `search key=svc_exec`
+## (MITRE T1059 — Command and Scripting Interpreter).
+##
+## À FAIRE CHEZ VOUS : ces règles pointent des REALPATHS. Résolvez les vôtres (`readlink -f $(command -v
+## <outil>)`), n'inscrivez que des chemins EXISTANTS (un watch sur un chemin absent fait échouer le
+## chargement), et complétez la liste avec les interpréteurs et outils réseau présents sur votre hôte.
+## Choisissez des binaires dont l'exécution par un compte de service est ANORMALE chez vous : un outil
+## utilisé en permanence par vos propres scripts produirait du bruit continu.
+## Exemples (à vérifier et à étendre) :
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/wget             -F perm=x -F auid=unset -k svc_exec
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/nc.openbsd       -F perm=x -F auid=unset -k svc_exec
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/xxd              -F perm=x -F auid=unset -k svc_exec

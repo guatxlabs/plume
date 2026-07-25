@@ -1,0 +1,24 @@
+[Unit]
+Description=plume collector — ingestion des alertes CrowdSec -> events
+After=crowdsec.service
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+# HOME inscriptible (PrivateTmp) : laisse `k3s kubectl` écrire son cache en mode k3s (sinon
+# ProtectHome -> /root inaccessible -> warnings/échec). Inoffensif en mode cscli hôte.
+Environment=HOME=/tmp
+ExecStart=/usr/local/lib/plume/collectors/crowdsec.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+# 512M : en mode k3s, `k3s kubectl` (binaire k3s complet) dépasse 96M -> OOM-kill silencieux -> 0 event.
+# (le mode cscli hôte reste léger ; c'est un plafond, pas une réservation.)
+MemoryMax=512M
+CPUQuota=25%
+Nice=12

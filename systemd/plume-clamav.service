@@ -1,0 +1,19 @@
+[Unit]
+Description=plume collector (plugin) — ClamAV sur fichiers nouveaux -> events malware
+# OPT-IN. Configure PLUME_CLAMAV_PATHS puis : systemctl enable --now plume-clamav.timer
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+EnvironmentFile=-/etc/plume/clamav.conf
+ExecStart=/usr/local/lib/plume/collectors/clamav.sh
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+LockPersonality=true
+MemoryMax=1200M
+CPUQuota=40%
+Nice=15

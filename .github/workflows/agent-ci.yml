@@ -1,0 +1,114 @@
+# plume-agent (#16) — matrice de VALIDATION RUNTIME cross-OS.
+# =============================================================================
+#
+# BUT : compiler ET exécuter l'agent d'endpoint sur de VRAIES machines Linux,
+# Windows et macOS (les runners `ubuntu-latest` / `windows-latest` /
+# `macos-latest` de GitHub sont des hôtes réels, pas des émulateurs).
+#
+# Pourquoi cette matrice existe (ce qu'un build Linux seul NE valide PAS) :
+#   - Windows : le lecteur Event Log est du FFI `windows`-rs 0.58
+#     (EvtQuery/EvtNext/EvtRender/EvtCreateBookmark) gardé par
+#     `#[cfg(target_os = "windows")]` (src/source/windows.rs, src/service/windows_scm.rs).
+#     Ce code n'est JAMAIS compilé sur Linux/macOS — seul `windows-latest`
+#     prouve qu'il COMPILE ET LIE réellement.
+#   - macOS   : le lecteur unified-log passe par le sous-processus `log show`
+#     et launchd via `launchctl` (src/source/macos.rs, src/service/launchd.rs),
+#     cfg-gated `target_os = "macos"`. `macos-latest` prouve la compilation native.
+#   Les tests de PARSING (winxml_to_event, mapping unified-log) tournent sur les
+#   3 OS : ils opèrent sur des chaînes en dur, donc valident la logique partout,
+#   tandis que la matrice ajoute la preuve que le FFI natif tient sur son OS.
+#
+# Comment LIRE la matrice : 3 jobs `agent (ubuntu-latest)`, `agent (windows-latest)`,
+# `agent (macos-latest)`. VERT sur les trois = l'agent compile, ses tests passent
+# et le binaire démarre (`--help` / `--version`) sur chaque OS cible. Un ROUGE
+# isolé sur windows/macos pointe une régression FFI/natif propre à cet OS.
+#
+# Versions PINNÉES (actions + toolchain Rust) pour la reproductibilité.
+# NB : ces workflows s'exécutent une fois les repos poussés sur GitHub
+# (plan de lancement Semaine 1). Ici pas de GitHub -> non exécutés, seulement
+# authorés. cf. agent/CI.md.
+
+name: agent-ci
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "agent/**"
+      - ".github/workflows/agent-ci.yml"
+  pull_request:
+    paths:
+      - "agent/**"
+      - ".github/workflows/agent-ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: agent-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  agent:
+    name: agent (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # un OS rouge ne doit PAS masquer le résultat des autres.
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # Toolchain Rust stable épinglée (alignée sur la CI Forge, 1.96.0).
+      - name: Setup Rust toolchain (pinné)
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable (pinned)
+        with:
+          toolchain: "1.96.0"
+
+      # Cache cargo par-OS (registry + git + target de l'agent). La clé inclut
+      # runner.os -> caches Linux/Windows/macOS distincts (ABI différentes).
+      - name: Cache cargo (registry + target)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            agent/target
+          key: agent-cargo-${{ runner.os }}-${{ hashFiles('agent/Cargo.lock') }}
+          restore-keys: |
+            agent-cargo-${{ runner.os }}-
+
+      # BUILD NATIF : sur windows-latest ceci compile le FFI Event Log ; sur
+      # macos-latest le lecteur unified-log ; sur ubuntu-latest le lecteur journald.
+      - name: cargo build --release (natif)
+        working-directory: agent
+        run: cargo build --release --locked --verbose
+
+      # TESTS NATIFS : parsing (tous OS) + roundtrips curseur/spool. Les tests
+      # d'I/O disque utilisent std::env::temp_dir() -> écrivable sur les 3 runners.
+      # Aucun test ne requiert d'accès au journal/Event Log réel ni au réseau.
+      - name: cargo test (natif)
+        working-directory: agent
+        run: cargo test --locked --verbose
+
+      # SMOKE sans réseau : le binaire doit démarrer et parser sa CLI clap.
+      # (On NE lance PAS `test-ship` : il exige un fichier de config + un endpoint
+      # d'ingest joignable -> réseau. Voir agent/CI.md.)
+      - name: Smoke — le binaire démarre (--version / --help)
+        working-directory: agent
+        run: |
+          cargo run --release --locked --quiet -- --version
+          cargo run --release --locked --quiet -- --help
+
+      # Artefact du binaire natif par OS (pratique pour tester à la main hors CI).
+      - name: Upload artefact (binaire agent)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plume-agent-${{ runner.os }}
+          path: |
+            agent/target/release/plume-agent
+            agent/target/release/plume-agent.exe
+          if-no-files-found: warn
+          retention-days: 7

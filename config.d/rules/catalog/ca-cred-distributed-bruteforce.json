@@ -1,0 +1,13 @@
+{
+  "_comment": "Attaque distribuée / botnet de credential-stuffing : dc(src_ip) élevé d'échecs d'auth sur la fenêtre = MANY IP frappent l'auth (là où les règles per-IP ne voient qu'un faible volume par IP). Compose sur la catégorie NEUTRE `auth` (portable journal/auditd/mail). Scalaire dc(src_ip) op>50 (miroir du seed CF dc(src_ip)). Seuil à calibrer sur le bruit de fond. || TÉLÉMÉTRIE REQUISE: toute source d'auth (category=auth : journal/auditd/mail — CIM neutre) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Brute-force distribué (nombreuses IP sources sur l'auth)",
+  "enabled": false,
+  "query": "search category=auth action=failure | stats dc(src_ip)",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 2,
+  "interval_s": 300,
+  "window_s": 900,
+  "mitre": "T1110"
+}

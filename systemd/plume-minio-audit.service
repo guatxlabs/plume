@@ -1,0 +1,35 @@
+[Unit]
+Description=plume relais — audit d'acces objet MinIO (webhook) -> events source=minio-audit
+# OPT-IN, LONG-RUNNING (pas de timer : c'est un recepteur webhook). Le spool est draine par plume-ship.timer.
+# Activer : systemctl enable --now plume-minio-audit  (apres avoir pose /etc/plume/minio-audit.token + conf MinIO)
+Documentation=file:///usr/local/lib/plume/collectors/minio-audit-relay.py
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=soc
+Group=soc
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+EnvironmentFile=-/etc/plume/plume.conf
+EnvironmentFile=-/etc/plume/minio-audit.conf
+ExecStart=/usr/bin/python3 /usr/local/lib/plume/collectors/minio-audit-relay.py
+Restart=always
+RestartSec=2
+
+# Durcissement : ne lit que /etc/plume (token), n'ecrit QUE le spool, ecoute sur cni0 (AF_INET).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+MemoryMax=128M
+CPUQuota=20%
+Nice=12
+
+[Install]
+WantedBy=multi-user.target

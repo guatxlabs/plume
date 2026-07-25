@@ -1,0 +1,11 @@
+[Unit]
+Description=Plume port-scan detector (table inet plume-portscan, log PORTSCAN: low-volume)
+After=network-pre.target
+Wants=network-pre.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/plume/plume-portscan.nft
+ExecReload=/usr/sbin/nft -f /etc/plume/plume-portscan.nft
+[Install]
+WantedBy=multi-user.target

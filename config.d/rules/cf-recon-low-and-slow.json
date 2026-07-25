@@ -1,0 +1,13 @@
+{
+  "_comment": "Overlay RÈGLE (config.d) — Recon web EDGE low-and-slow (énumération de chemins vue par Cloudflare), T1595.002. Compose sur la CIM produite par le parseur cloudflare-firewall-events (source=cloudflare, firewallEventsAdaptive). COMPLÈTE les règles edge à seuil de VOLUME (n requêtes par IP, n vhosts), qu'un recon single-shot ou étalé dans le temps peut éviter. Ici le seuil est sur la DIVERSITÉ DE CHEMINS (dc(path)>5) sur une fenêtre LONGUE d'1h -> une énumération LENTE (quelques requêtes challengées vers des chemins distincts) TIRE. INVARIANT SOLIDE : firewallEventsAdaptive ne contient QUE des events mitigés au edge -> le trafic d'administration légitime (jamais challengé) n'y figure JAMAIS -> exclu par NATURE, aucune whitelist d'IP à maintenir. Complémentaire de web-scan-404-breadth-cf (source=cloudflare-http, dc>30 bruyant) : celle-ci est la variante EDGE persistante bas-seuil. Corrélation path × src_ip -> RAW-scan (rollup décliné). Posé managed=1.",
+  "name": "Recon web edge low-and-slow (Cloudflare path-breadth)",
+  "enabled": true,
+  "query": "search source=cloudflare | stats dc(path) by src_ip | where dc > 5 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 300,
+  "window_s": 3600,
+  "mitre": "T1595.002"
+}

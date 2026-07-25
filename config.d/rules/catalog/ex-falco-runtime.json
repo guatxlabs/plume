@@ -1,0 +1,13 @@
+{
+  "_comment": "Falco (eBPF) détecte shell-dans-conteneur, montage sensible, écriture sous /etc, exécution inattendue... falco n'émet que message+severity -> la règle compose sur category=ebpf + severity>=3. event-driven : inerte tant qu'aucun event source=falco n'arrive (c.-à-d. tant que l'intégration n'est pas branchée). Donne une entrée catalogue au capteur runtime le plus riche. || TÉLÉMÉTRIE REQUISE: falco (eBPF : category=ebpf, severity) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Runtime: activité suspecte Falco (eBPF, sév≥3)",
+  "enabled": false,
+  "query": "search source=falco category=ebpf severity>=3 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 120,
+  "window_s": 900,
+  "mitre": "T1059"
+}

@@ -1,0 +1,13 @@
+{
+  "_comment": "EXEMPLE d'overlay RÈGLE de détection (config.d) — pic de 5xx nginx par IP = signal d'exploit web (T1190). Posé au boot avec managed=1. 'enabled' est false: c'est un EXEMPLE inerte; passez-le a true (ou activez-le dans l'UI) pour le mettre en service. Le moteur exécute 'query' toutes les 'interval_s' s sur une fenêtre de 'window_s' s, prend la DERNIÈRE colonne de la 1re ligne comme valeur, et lève une alerte si (valeur 'op' 'threshold'). 'is_soql' true = langage SOQL borné read-only (recommandé, autorisé a l'editor); false = SQL brut (RÉSERVÉ admin via le CRUD UI, mais accepté ici car les overlays sont git-reviewés). 'mitre' au format Txxxx[.yyy] ('' = non mappée). La requête doit COMPILER, sinon le fichier est ignoré au boot avec un warning.",
+  "name": "Exemple — pic de 5xx nginx par IP (10 min)",
+  "enabled": false,
+  "query": "search source=nginx status>=500 | stats count by src_ip | where count > 20 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 300,
+  "window_s": 600,
+  "mitre": "T1190"
+}

@@ -1,0 +1,13 @@
+{
+  "_comment": "Création de compte local = persistance/backdoor. auditd émet category=account sur les événements de gestion de comptes (ADD_USER, USER_MGMT...). Distinct de la self-detection du SOC (T1136 sur les comptes PLUME eux-mêmes) : ici c'est le compte SYSTÈME de l'hôte. event-driven ; sur un parc stable, un compte créé est rare et notable. || TÉLÉMÉTRIE REQUISE: auditd (records category=account : useradd/usermod/passwd) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Hôte: compte local créé/modifié (useradd/usermod)",
+  "enabled": false,
+  "query": "search source=auditd category=account | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 300,
+  "window_s": 1800,
+  "mitre": "T1136.001"
+}

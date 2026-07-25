@@ -1,0 +1,19 @@
+[Unit]
+Description=plume — responder (exécute en root les actions APPROUVÉES + allowlistées ; dry-run par défaut)
+
+[Service]
+Type=oneshot
+Environment=PLUME_CONFIG=/etc/plume/soc.conf
+ExecStart=/usr/local/bin/plume-daemon respond
+
+# root requis (nft/kill/systemctl) mais surface minimale
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/plume/db
+PrivateTmp=true
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_KILL
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+LockPersonality=true
+MemoryMax=64M
+CPUQuota=30%

@@ -1,0 +1,96 @@
+# plume-agent — sources DÉCLARATIVES (#66/#67)
+# =====================================================================================================
+# Un technicien qui veut envoyer des logs au SOC DÉCLARE ici ses sources — SANS écrire de .ps1 / .sh.
+# Copiez les blocs utiles dans votre `agent.toml` (à côté de `endpoint`/`token`), gardez uniquement ce
+# dont vous avez besoin, adaptez, puis :  plume-agent test-ship  et  plume-agent run.
+#
+# Chaque source est un bloc `[[source]]` avec un `type` et des champs communs :
+#   name      -> la valeur `source=` cherchable dans le SOC (aussi le nom du fichier curseur)
+#   category  -> catégorie CIM (auth / network / web / process / container / …) ; vide = le serveur tranche
+#   severity  -> 0..4 (0 info … 4 critique)
+#   parser    -> extraction de champs OPTIONNELLE (regex à groupes nommés, ou découpe delimiter/fields)
+#   interval  -> (command/http) secondes entre deux exécutions/polls
+# Le `message` de l'event reste TOUJOURS la ligne brute ; les champs extraits sont ADDITIFS.
+#
+# Une entrée MALFORMÉE (type inconnu, champ obligatoire manquant, regex invalide) est IGNORÉE avec un
+# warning — elle n'emporte JAMAIS les autres sources ni ne fait planter l'agent.
+#
+# NB : les collecteurs script restent supportés (alternative pour qui préfère scripter) :
+#   - Linux : collectors/*.sh + le générique collectors/custom.sh (/etc/plume/inputs.d/*.input, KEY=value)
+#   - Windows : collectors/windows/plume-collector.ps1
+# =====================================================================================================
+
+
+# --- 1) FILE : tail d'un log applicatif, avec parseur regex à groupes nommés ---------------------------
+# Suit un access-log nginx. Chaque nouvelle ligne = un event ; les groupes nommés (?P<champ>…) de la
+# regex deviennent des champs structurés (ip, method, path, status…). from_start=false (défaut) = on ne
+# lit QUE les nouvelles lignes (comportement tail -f), pas tout l'historique.
+[[source]]
+type = "file"
+name = "nginx-access"
+path = "/var/log/nginx/access.log"
+category = "web"
+severity = 1
+# from_start = true          # décommentez pour rejouer l'historique existant au 1er démarrage
+[source.parser]
+regex = '^(?P<ip>\S+) \S+ \S+ \[(?P<time>[^\]]+)\] "(?P<method>\S+) (?P<path>\S+)[^"]*" (?P<status>\d{3}) (?P<bytes>\d+)'
+
+
+# --- 2) FILE : log CSV/délimité, sans regex (parseur découpe zéro-dépendance) --------------------------
+# Pour un fichier « colonnes séparées » (CSV, TSV, pipe…), nommez simplement les colonnes dans l'ordre.
+[[source]]
+type = "file"
+name = "app-audit"
+path = "/var/log/myapp/audit.csv"
+category = "application"
+severity = 2
+[source.parser]
+delimiter = ","
+fields = ["ts", "user", "action", "object", "result"]
+
+
+# --- 3) COMMAND : sortie d'une commande, exécutée périodiquement --------------------------------------
+# Équivalent déclaratif de collectors/custom.sh. Chaque ligne stdout = un event. `args` est une LISTE
+# (pas de découpe shell -> pas d'injection). Astuce : faites émettre à la commande seulement le NOUVEAU
+# (fenêtre --since courte) ; la dédup horaire côté daemon absorbe les doublons d'un relancé.
+[[source]]
+type = "command"
+name = "docker-events"
+cmd = "docker"
+args = ["events", "--since", "60s", "--until", "0s", "--format", "{{json .}}"]
+interval = 60
+category = "container"
+severity = 1
+
+
+# --- 4) JOURNALD : une unité systemd (réutilise le backend natif journald) ----------------------------
+# Suit les logs d'un service systemd par son unité (journalctl -u …). `comm` (filtres _COMM=) et `units`
+# peuvent coexister. Reprise par curseur journald natif (pas de doublons au redémarrage).
+[[source]]
+type = "journald"
+name = "postgres"
+id = "postgres"                 # nom du fichier curseur (défaut = "journald")
+units = ["postgresql.service"]
+since = "15min"
+category = "database"
+
+
+# --- 5) WINLOG : un canal Windows Event Log (réutilise le backend natif Event Log) --------------------
+# Cette config se CHARGE aussi sur Linux (elle no-op-e) : écrivez un seul agent.toml pour votre parc.
+[[source]]
+type = "wineventlog"
+id = "win-powershell"
+channels = ["Microsoft-Windows-PowerShell/Operational"]
+# query = "*"                   # filtre XPath optionnel
+
+
+# --- 6) HTTP : poll d'un endpoint (métriques/health/ndjson) -------------------------------------------
+# GET l'URL toutes les `interval` s ; chaque ligne du corps = un event. Réutilise le transport TLS de
+# l'agent (CA interne / mTLS de la section [tls]). Idéal pour un exporter local ou un flux ndjson.
+[[source]]
+type = "http"
+name = "app-health"
+url = "http://127.0.0.1:9000/healthz"
+interval = 30
+category = "application"
+severity = 1

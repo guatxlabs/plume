@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — Control Catalog périodique
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=5min
+AccuracySec=20s
+
+[Install]
+WantedBy=timers.target

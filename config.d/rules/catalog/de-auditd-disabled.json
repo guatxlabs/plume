@@ -1,0 +1,13 @@
+{
+  "_comment": "Impair Defenses : exécution d'auditctl (activer/désactiver/vider les règles auditd) = un attaquant coupe la télémétrie hôte. auditd category=exec expose `exe`. Sur un système en régime établi, personne ne touche auditctl à la main. Auto-référentiel (l'outil de désactivation de l'audit est lui-même audité tant que l'execve est encore capté). || TÉLÉMÉTRIE REQUISE: auditd (records category=exec : exe) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Hôte: tentative de désactivation de l'audit (auditctl)",
+  "enabled": false,
+  "query": "search source=auditd category=exec exe=*auditctl* | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 4,
+  "interval_s": 120,
+  "window_s": 1800,
+  "mitre": "T1562.001"
+}

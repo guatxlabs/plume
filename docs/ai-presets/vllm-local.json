@@ -1,0 +1,9 @@
+{
+  "_comment": "vLLM en local, servant l'API OpenAI-compatible /v1/chat/completions (ex: http://vllm.internal:8000). Classe LOCAL par defaut (RFC1918/loopback) -> non soumis a PLUME_AI_ALLOW_CLOUD. La cle API (si votre passerelle en exige une) est saisie a l'instanciation, jamais ici.",
+  "vendor": "vLLM",
+  "api_shape": "openai",
+  "endpoint": "http://localhost:8000",
+  "model": "{model}",
+  "requires_cloud": false,
+  "config": { "temperature": 0, "max_tokens": 512 }
+}

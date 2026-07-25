@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — état cluster k8s périodique
+
+[Timer]
+OnBootSec=120s
+OnUnitActiveSec=60s
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

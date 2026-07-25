@@ -1,0 +1,44 @@
+{
+  "_comment": "EXEMPLE de config http_pull pour Okta System Log API (GET /api/v1/logs). À COPIER/ADAPTER dans le champ `config` d'un connecteur http_pull. Le jeton API Okta (SSWS) va dans le champ `secret` du connecteur (auth kind=header, prefix 'SSWS ' -> en-tête `Authorization: SSWS <secret>`) — JAMAIS dans cette config. Remplacez {yourOktaDomain} (ex. https://acme.okta.com ou https://acme.oktapreview.com). Okta renvoie un en-tête `Link` RFC5988 rel=next -> pagination link_header native. `sortOrder=ASCENDING` + watermark sur `published` = incrément SANS perte (chaque tick reprend après le dernier `published` vu).",
+  "method": "GET",
+  "url": "https://{yourOktaDomain}/api/v1/logs?sortOrder=ASCENDING",
+  "records_path": "",
+  "source": "okta",
+  "sourcetype": "okta:system",
+  "auth": {
+    "kind": "header",
+    "header_name": "Authorization",
+    "prefix": "SSWS "
+  },
+  "pagination": {
+    "kind": "link_header",
+    "size": 1000,
+    "size_param": "limit"
+  },
+  "sourcetype_map": {
+    "okta:system": "auth"
+  },
+  "field_map": {
+    "id": "uuid",
+    "ts": "published",
+    "severity": "severity",
+    "message": "displayMessage",
+    "src_ip": "client.ipAddress",
+    "sourcetype": "=okta:system",
+    "fields.user": "actor.alternateId",
+    "fields.actor_display": "actor.displayName",
+    "fields.event_type": "eventType",
+    "fields.action": "outcome.result",
+    "fields.outcome_reason": "outcome.reason",
+    "fields.city": "client.geographicalContext.city",
+    "fields.country": "client.geographicalContext.country",
+    "fields.user_agent": "client.userAgent.rawUserAgent",
+    "fields.target": "target[0].displayName"
+  },
+  "watermark": {
+    "field_path": "published",
+    "param": "since",
+    "format": "iso8601",
+    "lookback_days": 7
+  }
+}

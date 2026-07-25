@@ -1,0 +1,42 @@
+{
+  "_comment": "PRESET AWS CloudTrail — la valeur DURABLE ici est le `field_map` -> CIM d'un enregistrement CloudTrail (les entrées du tableau `Records`). ATTENTION MODE DE LIVRAISON : l'API native CloudTrail (LookupEvents) signe en SigV4, que le puller générique NE SAIT PAS signer (auth supportées : none|basic|bearer|token/header|oauth2). Deux voies recommandées, ce field_map servant à l'identique dans les deux : (1) S3-PULL — CloudTrail dépose des fichiers `.json.gz` `{\"Records\":[...]}` dans un bucket S3 ; un forwarder/gateway proxy expose ces objets en HTTP (records_path=`Records`), ou utilisez le collecteur objet-store. (2) PUSH — EventBridge/Kinesis Firehose -> endpoint HTTP -> ingest HEC de Plume (Firehose ajoute un header `X-Amz-Firehose-Access-Key`). Adaptez `url`/`auth` à VOTRE passerelle ; ne mettez jamais de clé AWS dans `config` (secret-ref uniquement). CIM : cloudtrail -> `audit` ; les data-events S3 peuvent viser `data` (ajoutez au sourcetype_map).",
+  "method": "GET",
+  "url": "https://REPLACE_WITH_YOUR_S3_OR_FIREHOSE_GATEWAY/cloudtrail",
+  "records_path": "Records",
+  "source": "aws-cloudtrail",
+  "sourcetype": "cloudtrail",
+  "auth": {
+    "kind": "header",
+    "header_name": "Authorization",
+    "prefix": "Bearer "
+  },
+  "pagination": {
+    "kind": "none"
+  },
+  "sourcetype_map": {
+    "cloudtrail": "audit"
+  },
+  "field_map": {
+    "id": "eventID",
+    "ts": "eventTime",
+    "message": "eventName",
+    "src_ip": "sourceIPAddress",
+    "sourcetype": "=cloudtrail",
+    "fields.user": "userIdentity.arn",
+    "fields.user_name": "userIdentity.userName",
+    "fields.user_type": "userIdentity.type",
+    "fields.event_source": "eventSource",
+    "fields.aws_region": "awsRegion",
+    "fields.account_id": "recipientAccountId",
+    "fields.action": "errorCode",
+    "fields.error_message": "errorMessage",
+    "fields.read_only": "readOnly",
+    "fields.user_agent": "userAgent"
+  },
+  "watermark": {
+    "field_path": "eventTime",
+    "param": "since",
+    "format": "iso8601",
+    "lookback_days": 7
+  }
+}

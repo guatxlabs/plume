@@ -20,7 +20,7 @@ A pull request that weakens any of these will be **rejected**, no matter how use
 - **Mode-0 byte-identical.** Anything behind an OFF-by-default Cargo feature (or a runtime
   gate) **must leave the default build byte-identical** — the module *does not exist*, not
   merely "skipped". You prove it by a **constant test count**: the default suite passes the
-  **same number** of tests before and after your gated change — **733** at the time of
+  **same number** of tests before and after your gated change — **745** at the time of
   writing (`cd daemon && cargo test --locked`, default features). The invariant is the
   *constancy*; when you legitimately add tests, update the number here, in
   `daemon/.cargo/audit.toml`, in `daemon/src/tests/ingest.rs` and — the one that actually
@@ -63,10 +63,10 @@ When in doubt, add a test that proves the invariant still holds.
 > ```
 
 The crate lives in `daemon/`, so point cargo at it. The default build is the SMB profile
-(`SqlcipherStore` only) and must stay **733 tests green** and **offline**:
+(`SqlcipherStore` only) and must stay **745 tests green** and **offline**:
 
 ```sh
-cargo test --manifest-path daemon/Cargo.toml        # 733 tests, default features
+cargo test --manifest-path daemon/Cargo.toml        # 745 tests, default features
 ```
 
 **Two testing gotchas** (learned the hard way):
@@ -102,7 +102,7 @@ All optional backends are **OFF by default** (each is an `optional` dep behind a
 
 1. Open an issue first for anything non-trivial, so we can agree on the approach.
 2. One logical change per PR. Keep the diff focused.
-3. Include tests. Preserve or improve coverage; keep the default count at **733** (CI asserts it).
+3. Include tests. Preserve or improve coverage; keep the default count at **745** (CI asserts it).
 4. Run `cargo test` (default) and, for gated work, the feature suite separately; run
    `cargo clippy`. All must pass.
 5. Sign off your commits (`-s`).

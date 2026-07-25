@@ -5,12 +5,18 @@
 //! d'échec fait `return` (abandon de TOUT migrate() -> retry au boot) : v33, v67, v77.
 //!
 //! INTÉGRITÉ DE SCHÉMA : chaque `migrate_vN` est exécutée par `migrate_step` — UNE transaction par
-//! version, bump `meta.schema_version` INCLUS -> un échec OPÉRATIONNEL (disque plein, base verrouillée ;
-//! classe B, cf. `MigTx`) est ROLLBACKé et laisse la version à l'ANCIENNE valeur, l'étape étant
-//! re-tentée au prochain démarrage. Les 3 exceptions INLINE (v33/v67/v77) ne sont PAS enveloppées :
-//! elles implémentent DÉJÀ le bump conditionnel (closure faillible + `return` sur échec) et portent
-//! leur propre logique de reprise après interruption sur des mouvements de données volumineux — les
-//! toucher n'apporterait rien à l'intégrité du bump et en dégraderait la lisibilité.
+//! version, bump `meta.schema_version` INCLUS. CE QUI EST GARANTI, et rien de plus : sur un échec
+//! OPÉRATIONNEL (classe B, cf. `MigTx`) la version RELUE EN BASE reste l'ANCIENNE, aucune transaction
+//! ne reste pendante, et `migrate()` renvoie `false` -> l'appelant s'arrête, l'étape est re-tentée au
+//! prochain démarrage. Cela couvre les trois chemins mesurés : échec sur DDL (rollback normal), échec
+//! sur DML (SQLite avorte lui-même la transaction -> version RÉ-ÉCRITE), échec dans un helper.
+//! CE QUI N'EST PAS GARANTI : après un avortement automatique, les ordres du corps qui SUIVENT
+//! l'avortement s'exécutent hors transaction et peuvent être commités isolément — les `migrate_vN`
+//! étant idempotentes, la re-tentative converge, mais la base n'est pas « rendue à l'octet près ».
+//! Les 3 exceptions INLINE (v33/v67/v77) ne sont PAS enveloppées : elles implémentent DÉJÀ le bump
+//! conditionnel (closure faillible + `return false` sur échec) et portent leur propre logique de reprise
+//! après interruption sur des mouvements de données volumineux — les toucher n'apporterait rien à
+//! l'intégrité du bump et en dégraderait la lisibilité.
 use crate::*;
 
 /// v105 (CHANGE 1) — GARDE ANTI-DOWNGRADE. Version de schéma la PLUS HAUTE que CE binaire sait migrer
@@ -58,24 +64,50 @@ pub(crate) fn schema_downgrade_guard(conn: &Connection) -> Result<i64, i64> {
 ///     binaire antérieur, et `if v < N` ne re-tentera jamais l'étape.
 ///
 /// `MigTx` est un `Connection` emprunté qui expose la MÊME SIGNATURE que `Connection::execute` /
-/// `execute_batch` — les corps des `migrate_vN` restent donc VERBATIM, `let _ =` compris — et qui
-/// MÉMORISE la première erreur de CLASSE B. `migrate_step` en fait la condition du COMMIT.
+/// `execute_batch` / `query_row` — les ORDRES SQL des `migrate_vN` restent donc VERBATIM, `let _ =`
+/// compris — et qui MÉMORISE la première erreur de CLASSE B. `migrate_step` en fait la condition du
+/// COMMIT. Les seuls endroits où le texte d'un corps a changé sont les appels de helper : `col_exists`
+/// / `table_exists` prennent `conn.read()`, et les 3 helpers ÉCRIVANTS `conn.unguarded_write(…)`.
+///
+/// PAS DE `Deref<Target = Connection>` — DÉLIBÉRÉ. Avec un `Deref`, tout helper prenant `&Connection`
+/// acceptait `conn` SANS un caractère de syntaxe supplémentaire : ses écritures échappaient au garde et
+/// le contournement était INVISIBLE en revue comme au compilateur. L'accès au `&Connection` nu passe
+/// désormais par `read()` (lectures) ou `unguarded_write()` (écritures), tous deux EXPLICITES à l'appel.
 struct MigTx<'c> {
     conn: &'c Connection,
     /// Première erreur de CLASSE B rencontrée pendant l'étape (`None` = aucune).
     failure: std::cell::RefCell<Option<String>>,
 }
 
-impl std::ops::Deref for MigTx<'_> {
-    type Target = Connection;
-    fn deref(&self) -> &Connection {
-        self.conn
-    }
-}
-
 impl<'c> MigTx<'c> {
     fn new(conn: &'c Connection) -> Self {
         MigTx { conn, failure: std::cell::RefCell::new(None) }
+    }
+
+    /// Accès LECTURE SEULE au `&Connection` (helpers d'introspection : `col_exists`, `table_exists`).
+    /// Une lecture ne peut pas estampiller la base — rien à mémoriser.
+    fn read(&self) -> &Connection {
+        self.conn
+    }
+
+    /// ÉCHAPPATOIRE EXPLICITE — `&Connection` nu pour un helper qui ÉCRIT. Les écritures faites par ce
+    /// chemin ne sont PAS mémorisées par `MigTx`. Ce qui les rattrape est UNIQUEMENT le contrôle
+    /// `is_autocommit()` d'après-corps de `migrate_step` : il voit l'avortement que SQLite déclenche
+    /// lui-même (FULL/IOERR/BUSY/NOMEM/INTERRUPT après modification de pages) — c'est le cas mesuré et
+    /// testé. LIMITE RESTANTE, assumée : un échec de CLASSE B qui n'avorte RIEN (par exemple un refus au
+    /// `prepare` — `SQLITE_AUTH`) DANS un de ces helpers reste invisible au garde. N'utiliser que pour
+    /// les 3 helpers historiques (v37/v52/v63), verrouillés par `unguarded_write_sites_are_locked`.
+    fn unguarded_write(&self, _helper: &str) -> &Connection {
+        self.conn
+    }
+
+    /// MÊME signature que `Connection::query_row` : les LECTURES des `migrate_vN` sont INCHANGÉES.
+    fn query_row<T, P, F>(&self, sql: &str, params: P, f: F) -> rusqlite::Result<T>
+    where
+        P: rusqlite::Params,
+        F: FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    {
+        self.conn.query_row(sql, params, f)
     }
 
     fn note<T>(&self, sql: &str, r: &rusqlite::Result<T>) {
@@ -127,9 +159,49 @@ fn is_operational_failure(e: &rusqlite::Error) -> bool {
                 | OperationInterrupted
                 | OperationAborted
                 | InternalMalfunction
+                // `SQLITE_NOLFS` — croissance du fichier refusée par le système (une base plume dépasse
+                // couramment 2 Gio) ; `SQLITE_TOOBIG` — valeur/ordre au-delà d'une limite SQLite ;
+                // `SQLITE_AUTH` — ordre REFUSÉ au `prepare` par un authorizer (le produit en installe,
+                // cf. `install_field_authorizer`). Dans les trois cas l'écriture N'A PAS EU LIEU : les
+                // classer « idempotence » estampillerait la base sans ses objets.
+                | NoLargeFileSupport
+                | TooBig
+                | AuthorizationForStatementDenied
         ),
         _ => false,
     }
+}
+
+/// Termine la transaction d'écriture d'une étape ÉCHOUÉE. `Ok(())` = la connexion est rendue en
+/// AUTOCOMMIT (ROLLBACK effectué par nous, ou déjà effectué par SQLite lui-même — l'erreur
+/// « cannot rollback - no transaction is active » est alors BÉNIGNE et c'est le seul cas où on
+/// l'ignore). `Err(msg)` = une transaction d'écriture reste OUVERTE : les écritures suivantes (seeds,
+/// ingest) seraient perdues à la sortie du process et la base resterait verrouillée aux autres
+/// écrivains -> l'appelant DOIT le signaler, jamais l'avaler.
+fn end_failed_write_tx(conn: &Connection) -> Result<(), String> {
+    let rb = conn.execute_batch("ROLLBACK");
+    if conn.is_autocommit() {
+        return Ok(());
+    }
+    Err(match rb {
+        Err(e) => format!("ROLLBACK REFUSÉ ({e}) et la connexion n'est PAS revenue en autocommit"),
+        Ok(()) => "ROLLBACK accepté mais la connexion n'est PAS revenue en autocommit".to_string(),
+    })
+}
+
+/// Ré-écrit `want` dans `meta.schema_version` si la version RELUE en base en diffère — cas de
+/// l'AVORTEMENT AUTOMATIQUE : SQLite ayant fermé la transaction au milieu du corps, le bump
+/// `UPDATE meta SET value='N'` qui suivait a été COMMITÉ SEUL, hors transaction, et aucun ROLLBACK ne
+/// peut le défaire. Renvoie la version RELUE APRÈS la tentative de réparation — JAMAIS une valeur
+/// supposée.
+fn restore_schema_version(conn: &Connection, want: i64) -> i64 {
+    if read_schema_version(conn) != want {
+        let _ = conn.execute(
+            "UPDATE meta SET value=?1 WHERE key='schema_version'",
+            params![want.to_string()],
+        );
+    }
+    read_schema_version(conn)
 }
 
 /// Exécute UNE étape de migration DANS UNE TRANSACTION, bump `meta.schema_version` INCLUS.
@@ -143,40 +215,81 @@ fn is_operational_failure(e: &rusqlite::Error) -> bool {
 /// AUCUN `VACUUM` ni `PRAGMA journal_mode` — les deux ordres qui ÉCHOUENT dans une transaction ; les
 /// seuls PRAGMA présents sont `analysis_limit` (simple réglage) suivi d'`ANALYZE` (v32/v35), qui écrit
 /// `sqlite_stat1` comme n'importe quel INSERT et s'exécute donc sans contrainte dans la transaction.
+///
+/// AVORTEMENT AUTOMATIQUE — SQLite peut FERMER LUI-MÊME la transaction au milieu du corps
+/// (`SQLITE_FULL`/`BUSY`/`NOMEM`/`IOERR`/`INTERRUPT` sur un ordre ayant déjà modifié des pages) :
+/// l'autocommit revient alors à `true` et TOUT ce qui suit — dont le bump `UPDATE meta` — est COMMITÉ
+/// SEUL, hors transaction, tandis que le `ROLLBACK` de cette fonction n'a plus rien à annuler. On teste
+/// donc `is_autocommit()` APRÈS le corps et, le cas échéant, on RÉ-ÉCRIT la version précédente.
+/// CE QUI EST GARANTI : la version n'avance pas, donc l'étape est RE-TENTÉE. CE QUI NE L'EST PAS : les
+/// ordres du corps postérieurs à l'avortement ont pu être commités isolément — les `migrate_vN` étant
+/// idempotentes (`IF NOT EXISTS`, « duplicate column » ignoré), la re-tentative converge.
 fn migrate_step(conn: &Connection, target: i64, body: fn(&MigTx)) -> bool {
     let before = read_schema_version(conn);
     if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
         eprintln!(
-            "[migration] v{target} ÉCHEC ouverture de transaction ({e}) — version laissée à {before}, \
-             RE-TENTÉE au prochain démarrage (migrate interrompu)"
+            "[migration] v{target} ÉCHEC ouverture de transaction ({e}) — version RELUE en base : {}, \
+             étape RE-TENTÉE au prochain démarrage (migrate interrompu)",
+            read_schema_version(conn)
         );
         return false;
     }
     let tx = MigTx::new(conn);
     body(&tx);
     let failure = tx.failure.borrow().clone();
+    // La transaction est-elle TOUJOURS la nôtre ? (cf. AVORTEMENT AUTOMATIQUE ci-dessus.)
+    let aborted_by_sqlite = conn.is_autocommit();
     // Le bump appartient à la TRANSACTION : on vérifie qu'il a bien eu lieu AVANT de committer (une
     // étape qui n'estampille pas la version est un échec, pas un succès silencieux).
     let stamped = read_schema_version(conn) == target;
-    if failure.is_none() && stamped {
+    if failure.is_none() && stamped && !aborted_by_sqlite {
         if let Err(e) = conn.execute_batch("COMMIT") {
-            let _ = conn.execute_batch("ROLLBACK");
+            let tx_state = end_failed_write_tx(conn);
+            let actual = restore_schema_version(conn, before);
             eprintln!(
-                "[migration] v{target} ÉCHEC COMMIT ({e}) — version laissée à {before}, RE-TENTÉE au \
-                 prochain démarrage (migrate interrompu)"
+                "[migration] v{target} ÉCHEC COMMIT ({e}) — version RELUE en base : {actual}, étape \
+                 RE-TENTÉE au prochain démarrage (migrate interrompu)"
             );
+            report_step_anomalies(target, before, actual, tx_state);
             return false;
         }
         return true;
     }
-    let _ = conn.execute_batch("ROLLBACK");
-    let cause = failure.unwrap_or_else(|| format!("schema_version non estampillée à {target}"));
+    let tx_state = end_failed_write_tx(conn);
+    let actual = restore_schema_version(conn, before);
+    let cause = failure.unwrap_or_else(|| {
+        if aborted_by_sqlite {
+            "transaction AVORTÉE par SQLite pendant l'étape".to_string()
+        } else {
+            format!("schema_version non estampillée à {target}")
+        }
+    });
     eprintln!(
-        "[migration] v{target} ÉCHEC ({cause}) — ROLLBACK : le message « schéma -> v{target} » \
-         éventuellement affiché ci-dessus est ANNULÉ ; version laissée à {before}, RE-TENTÉE au prochain \
+        "[migration] v{target} ÉCHEC ({cause}) — le message « schéma -> v{target} » éventuellement \
+         affiché ci-dessus est ANNULÉ ; version RELUE en base : {actual}, étape RE-TENTÉE au prochain \
          démarrage (migrate interrompu)"
     );
+    report_step_anomalies(target, before, actual, tx_state);
     false
+}
+
+/// Signale les deux anomalies qu'il serait FAUX d'avaler après l'échec d'une étape : une transaction
+/// d'écriture restée OUVERTE, et une `schema_version` qu'on n'a PAS réussi à ramener à sa valeur d'avant
+/// l'étape (base estampillée pour un schéma qu'elle n'a pas).
+fn report_step_anomalies(target: i64, before: i64, actual: i64, tx_state: Result<(), String>) {
+    if let Err(e) = tx_state {
+        eprintln!(
+            "[migration] v{target} ANOMALIE GRAVE : {e} — les écritures suivantes seraient perdues à la \
+             sortie du process et la base reste verrouillée aux autres écrivains."
+        );
+    }
+    if actual != before {
+        eprintln!(
+            "[migration] v{target} ANOMALIE GRAVE : schema_version n'a PAS pu être ramenée à {before} \
+             (RELUE en base : {actual}) — la base est estampillée pour un schéma qu'elle n'a peut-être pas. \
+             Restaurer la sauvegarde antérieure."
+        );
+    }
 }
 
 /// Migrations de schéma versionnées (meta.schema_version). Idempotent : les `ALTER`
@@ -185,43 +298,49 @@ fn migrate_step(conn: &Connection, target: i64, body: fn(&MigTx)) -> bool {
 /// Chaque étape passe par `migrate_step` : UNE transaction par version, bump INCLUS -> une étape qui
 /// échoue pour une raison OPÉRATIONNELLE (classe B, cf. `MigTx`) est ROLLBACKée et laisse la version
 /// à l'ancienne valeur ; `migrate()` s'interrompt et l'étape est re-tentée au prochain démarrage.
-pub(crate) fn migrate(conn: &Connection) {
+///
+/// VALEUR DE RETOUR — `false` = migration INTERROMPUE : la base est restée à une version INFÉRIEURE à
+/// `CODE_SCHEMA_MAX` et le schéma est donc CONNU-INCOMPLET. L'appelant DOIT s'arrêter : un daemon qui
+/// sert sur un schéma incomplet transforme des tables manquantes en fonctions silencieusement absentes
+/// (`net_ban` absente = le ban natif HTTP devient un passthrough). Cela rend la garde de schéma
+/// SYMÉTRIQUE : `schema_downgrade_guard` refuse déjà d'ouvrir une base TROP RÉCENTE.
+pub(crate) fn migrate(conn: &Connection) -> bool {
     let v: i64 = conn
         .query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get::<_, String>(0))
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
-    if v < 2 && !migrate_step(conn, 2, migrate_v2) { return; }
-    if v < 3 && !migrate_step(conn, 3, migrate_v3) { return; }
-    if v < 4 && !migrate_step(conn, 4, migrate_v4) { return; }
-    if v < 5 && !migrate_step(conn, 5, migrate_v5) { return; }
-    if v < 6 && !migrate_step(conn, 6, migrate_v6) { return; }
-    if v < 7 && !migrate_step(conn, 7, migrate_v7) { return; }
-    if v < 8 && !migrate_step(conn, 8, migrate_v8) { return; }
-    if v < 9 && !migrate_step(conn, 9, migrate_v9) { return; }
-    if v < 10 && !migrate_step(conn, 10, migrate_v10) { return; }
-    if v < 11 && !migrate_step(conn, 11, migrate_v11) { return; }
-    if v < 12 && !migrate_step(conn, 12, migrate_v12) { return; }
-    if v < 13 && !migrate_step(conn, 13, migrate_v13) { return; }
-    if v < 14 && !migrate_step(conn, 14, migrate_v14) { return; }
-    if v < 15 && !migrate_step(conn, 15, migrate_v15) { return; }
-    if v < 16 && !migrate_step(conn, 16, migrate_v16) { return; }
-    if v < 17 && !migrate_step(conn, 17, migrate_v17) { return; }
-    if v < 18 && !migrate_step(conn, 18, migrate_v18) { return; }
-    if v < 19 && !migrate_step(conn, 19, migrate_v19) { return; }
-    if v < 20 && !migrate_step(conn, 20, migrate_v20) { return; }
-    if v < 21 && !migrate_step(conn, 21, migrate_v21) { return; }
-    if v < 22 && !migrate_step(conn, 22, migrate_v22) { return; }
-    if v < 23 && !migrate_step(conn, 23, migrate_v23) { return; }
-    if v < 24 && !migrate_step(conn, 24, migrate_v24) { return; }
-    if v < 25 && !migrate_step(conn, 25, migrate_v25) { return; }
-    if v < 26 && !migrate_step(conn, 26, migrate_v26) { return; }
-    if v < 27 && !migrate_step(conn, 27, migrate_v27) { return; }
-    if v < 28 && !migrate_step(conn, 28, migrate_v28) { return; }
-    if v < 29 && !migrate_step(conn, 29, migrate_v29) { return; }
-    if v < 30 && !migrate_step(conn, 30, migrate_v30) { return; }
-    if v < 31 && !migrate_step(conn, 31, migrate_v31) { return; }
-    if v < 32 && !migrate_step(conn, 32, migrate_v32) { return; }
+    if v < 2 && !migrate_step(conn, 2, migrate_v2) { return false; }
+    if v < 3 && !migrate_step(conn, 3, migrate_v3) { return false; }
+    if v < 4 && !migrate_step(conn, 4, migrate_v4) { return false; }
+    if v < 5 && !migrate_step(conn, 5, migrate_v5) { return false; }
+    if v < 6 && !migrate_step(conn, 6, migrate_v6) { return false; }
+    if v < 7 && !migrate_step(conn, 7, migrate_v7) { return false; }
+    if v < 8 && !migrate_step(conn, 8, migrate_v8) { return false; }
+    if v < 9 && !migrate_step(conn, 9, migrate_v9) { return false; }
+    if v < 10 && !migrate_step(conn, 10, migrate_v10) { return false; }
+    if v < 11 && !migrate_step(conn, 11, migrate_v11) { return false; }
+    if v < 12 && !migrate_step(conn, 12, migrate_v12) { return false; }
+    if v < 13 && !migrate_step(conn, 13, migrate_v13) { return false; }
+    if v < 14 && !migrate_step(conn, 14, migrate_v14) { return false; }
+    if v < 15 && !migrate_step(conn, 15, migrate_v15) { return false; }
+    if v < 16 && !migrate_step(conn, 16, migrate_v16) { return false; }
+    if v < 17 && !migrate_step(conn, 17, migrate_v17) { return false; }
+    if v < 18 && !migrate_step(conn, 18, migrate_v18) { return false; }
+    if v < 19 && !migrate_step(conn, 19, migrate_v19) { return false; }
+    if v < 20 && !migrate_step(conn, 20, migrate_v20) { return false; }
+    if v < 21 && !migrate_step(conn, 21, migrate_v21) { return false; }
+    if v < 22 && !migrate_step(conn, 22, migrate_v22) { return false; }
+    if v < 23 && !migrate_step(conn, 23, migrate_v23) { return false; }
+    if v < 24 && !migrate_step(conn, 24, migrate_v24) { return false; }
+    if v < 25 && !migrate_step(conn, 25, migrate_v25) { return false; }
+    if v < 26 && !migrate_step(conn, 26, migrate_v26) { return false; }
+    if v < 27 && !migrate_step(conn, 27, migrate_v27) { return false; }
+    if v < 28 && !migrate_step(conn, 28, migrate_v28) { return false; }
+    if v < 29 && !migrate_step(conn, 29, migrate_v29) { return false; }
+    if v < 30 && !migrate_step(conn, 30, migrate_v30) { return false; }
+    if v < 31 && !migrate_step(conn, 31, migrate_v31) { return false; }
+    if v < 32 && !migrate_step(conn, 32, migrate_v32) { return false; }
     if v < 33 {
         // v33 : ÉLARGIT event_rollup avec src_ip + host -> les panneaux « par src_ip / par host » lisent du
         // PRÉ-AGRÉGÉ (au lieu de scanner ~1,2M lignes chiffrées). SQLite ne sait pas ALTER une PK -> on
@@ -278,43 +397,43 @@ pub(crate) fn migrate(conn: &Connection) {
                 // sauté définitivement (v est lu une seule fois en tête). Au prochain boot, v=32 -> on
                 // recommence à v33 (les migrations < 33 déjà appliquées sont no-op via leurs `if v<N`).
                 eprintln!("[migration] v33 ÉCHEC repopulation event_rollup ({e}) — version laissée à 32, RE-TENTÉE au prochain démarrage (migrate interrompu)");
-                return;
+                return false;
             }
         }
     }
-    if v < 34 && !migrate_step(conn, 34, migrate_v34) { return; }
-    if v < 35 && !migrate_step(conn, 35, migrate_v35) { return; }
-    if v < 36 && !migrate_step(conn, 36, migrate_v36) { return; }
-    if v < 37 && !migrate_step(conn, 37, migrate_v37) { return; }
-    if v < 38 && !migrate_step(conn, 38, migrate_v38) { return; }
-    if v < 39 && !migrate_step(conn, 39, migrate_v39) { return; }
-    if v < 40 && !migrate_step(conn, 40, migrate_v40) { return; }
-    if v < 41 && !migrate_step(conn, 41, migrate_v41) { return; }
-    if v < 42 && !migrate_step(conn, 42, migrate_v42) { return; }
-    if v < 43 && !migrate_step(conn, 43, migrate_v43) { return; }
-    if v < 44 && !migrate_step(conn, 44, migrate_v44) { return; }
-    if v < 45 && !migrate_step(conn, 45, migrate_v45) { return; }
-    if v < 46 && !migrate_step(conn, 46, migrate_v46) { return; }
-    if v < 47 && !migrate_step(conn, 47, migrate_v47) { return; }
-    if v < 48 && !migrate_step(conn, 48, migrate_v48) { return; }
-    if v < 49 && !migrate_step(conn, 49, migrate_v49) { return; }
-    if v < 50 && !migrate_step(conn, 50, migrate_v50) { return; }
-    if v < 51 && !migrate_step(conn, 51, migrate_v51) { return; }
-    if v < 52 && !migrate_step(conn, 52, migrate_v52) { return; }
-    if v < 53 && !migrate_step(conn, 53, migrate_v53) { return; }
-    if v < 54 && !migrate_step(conn, 54, migrate_v54) { return; }
-    if v < 55 && !migrate_step(conn, 55, migrate_v55) { return; }
-    if v < 56 && !migrate_step(conn, 56, migrate_v56) { return; }
-    if v < 57 && !migrate_step(conn, 57, migrate_v57) { return; }
-    if v < 58 && !migrate_step(conn, 58, migrate_v58) { return; }
-    if v < 59 && !migrate_step(conn, 59, migrate_v59) { return; }
-    if v < 60 && !migrate_step(conn, 60, migrate_v60) { return; }
-    if v < 61 && !migrate_step(conn, 61, migrate_v61) { return; }
-    if v < 62 && !migrate_step(conn, 62, migrate_v62) { return; }
-    if v < 63 && !migrate_step(conn, 63, migrate_v63) { return; }
-    if v < 64 && !migrate_step(conn, 64, migrate_v64) { return; }
-    if v < 65 && !migrate_step(conn, 65, migrate_v65) { return; }
-    if v < 66 && !migrate_step(conn, 66, migrate_v66) { return; }
+    if v < 34 && !migrate_step(conn, 34, migrate_v34) { return false; }
+    if v < 35 && !migrate_step(conn, 35, migrate_v35) { return false; }
+    if v < 36 && !migrate_step(conn, 36, migrate_v36) { return false; }
+    if v < 37 && !migrate_step(conn, 37, migrate_v37) { return false; }
+    if v < 38 && !migrate_step(conn, 38, migrate_v38) { return false; }
+    if v < 39 && !migrate_step(conn, 39, migrate_v39) { return false; }
+    if v < 40 && !migrate_step(conn, 40, migrate_v40) { return false; }
+    if v < 41 && !migrate_step(conn, 41, migrate_v41) { return false; }
+    if v < 42 && !migrate_step(conn, 42, migrate_v42) { return false; }
+    if v < 43 && !migrate_step(conn, 43, migrate_v43) { return false; }
+    if v < 44 && !migrate_step(conn, 44, migrate_v44) { return false; }
+    if v < 45 && !migrate_step(conn, 45, migrate_v45) { return false; }
+    if v < 46 && !migrate_step(conn, 46, migrate_v46) { return false; }
+    if v < 47 && !migrate_step(conn, 47, migrate_v47) { return false; }
+    if v < 48 && !migrate_step(conn, 48, migrate_v48) { return false; }
+    if v < 49 && !migrate_step(conn, 49, migrate_v49) { return false; }
+    if v < 50 && !migrate_step(conn, 50, migrate_v50) { return false; }
+    if v < 51 && !migrate_step(conn, 51, migrate_v51) { return false; }
+    if v < 52 && !migrate_step(conn, 52, migrate_v52) { return false; }
+    if v < 53 && !migrate_step(conn, 53, migrate_v53) { return false; }
+    if v < 54 && !migrate_step(conn, 54, migrate_v54) { return false; }
+    if v < 55 && !migrate_step(conn, 55, migrate_v55) { return false; }
+    if v < 56 && !migrate_step(conn, 56, migrate_v56) { return false; }
+    if v < 57 && !migrate_step(conn, 57, migrate_v57) { return false; }
+    if v < 58 && !migrate_step(conn, 58, migrate_v58) { return false; }
+    if v < 59 && !migrate_step(conn, 59, migrate_v59) { return false; }
+    if v < 60 && !migrate_step(conn, 60, migrate_v60) { return false; }
+    if v < 61 && !migrate_step(conn, 61, migrate_v61) { return false; }
+    if v < 62 && !migrate_step(conn, 62, migrate_v62) { return false; }
+    if v < 63 && !migrate_step(conn, 63, migrate_v63) { return false; }
+    if v < 64 && !migrate_step(conn, 64, migrate_v64) { return false; }
+    if v < 65 && !migrate_step(conn, 65, migrate_v65) { return false; }
+    if v < 66 && !migrate_step(conn, 66, migrate_v66) { return false; }
     if v < 67 {
         // v67 (#2d) : env_id sur les ROLLUPS pré-agrégés (event_rollup / event_dim_rollup) + INTÉGRATION à
         // la PK/agrégation -> le FILTRE par environnement est COHÉRENT partout : les requêtes raw (event a
@@ -389,19 +508,19 @@ pub(crate) fn migrate(conn: &Connection) {
             }
             Err(e) => {
                 eprintln!("[migration] v67 ÉCHEC recréation rollups ({e}) — version laissée à 66, RE-TENTÉE au prochain démarrage (migrate interrompu)");
-                return;
+                return false;
             }
         }
     }
-    if v < 68 && !migrate_step(conn, 68, migrate_v68) { return; }
-    if v < 69 && !migrate_step(conn, 69, migrate_v69) { return; }
-    if v < 70 && !migrate_step(conn, 70, migrate_v70) { return; }
-    if v < 71 && !migrate_step(conn, 71, migrate_v71) { return; }
-    if v < 72 && !migrate_step(conn, 72, migrate_v72) { return; }
-    if v < 73 && !migrate_step(conn, 73, migrate_v73) { return; }
-    if v < 74 && !migrate_step(conn, 74, migrate_v74) { return; }
-    if v < 75 && !migrate_step(conn, 75, migrate_v75) { return; }
-    if v < 76 && !migrate_step(conn, 76, migrate_v76) { return; }
+    if v < 68 && !migrate_step(conn, 68, migrate_v68) { return false; }
+    if v < 69 && !migrate_step(conn, 69, migrate_v69) { return false; }
+    if v < 70 && !migrate_step(conn, 70, migrate_v70) { return false; }
+    if v < 71 && !migrate_step(conn, 71, migrate_v71) { return false; }
+    if v < 72 && !migrate_step(conn, 72, migrate_v72) { return false; }
+    if v < 73 && !migrate_step(conn, 73, migrate_v73) { return false; }
+    if v < 74 && !migrate_step(conn, 74, migrate_v74) { return false; }
+    if v < 75 && !migrate_step(conn, 75, migrate_v75) { return false; }
+    if v < 76 && !migrate_step(conn, 76, migrate_v76) { return false; }
     if v < 77 {
         // v77 — HOST_ROLLUP : inventaire de FLOTTE pré-agrégé PAR HÔTE (backing de /api/fleet + /api/integrations).
         // BUG corrigé : les DEUX vues calculaient l'inventaire par `SELECT host,MAX(ts) FROM (event UNION ALL
@@ -471,44 +590,45 @@ pub(crate) fn migrate(conn: &Connection) {
                 // version NON bumpée -> retry au prochain boot (pas de backfill silencieusement perdu). On ABANDONNE
                 // le reste de migrate() (au prochain boot v=76 -> on recommence ; v78 attend que v77 réussisse).
                 eprintln!("[migration] v77 ÉCHEC backfill host_rollup ({e}) — version laissée à 76, RE-TENTÉE au prochain démarrage (migrate interrompu)");
-                return;
+                return false;
             }
         }
     }
-    if v < 78 && !migrate_step(conn, 78, migrate_v78) { return; }
-    if v < 79 && !migrate_step(conn, 79, migrate_v79) { return; }
-    if v < 80 && !migrate_step(conn, 80, migrate_v80) { return; }
-    if v < 81 && !migrate_step(conn, 81, migrate_v81) { return; }
-    if v < 82 && !migrate_step(conn, 82, migrate_v82) { return; }
-    if v < 83 && !migrate_step(conn, 83, migrate_v83) { return; }
-    if v < 84 && !migrate_step(conn, 84, migrate_v84) { return; }
-    if v < 85 && !migrate_step(conn, 85, migrate_v85) { return; }
-    if v < 86 && !migrate_step(conn, 86, migrate_v86) { return; }
-    if v < 87 && !migrate_step(conn, 87, migrate_v87) { return; }
-    if v < 88 && !migrate_step(conn, 88, migrate_v88) { return; }
-    if v < 89 && !migrate_step(conn, 89, migrate_v89) { return; }
-    if v < 90 && !migrate_step(conn, 90, migrate_v90) { return; }
-    if v < 91 && !migrate_step(conn, 91, migrate_v91) { return; }
-    if v < 92 && !migrate_step(conn, 92, migrate_v92) { return; }
-    if v < 93 && !migrate_step(conn, 93, migrate_v93) { return; }
-    if v < 94 && !migrate_step(conn, 94, migrate_v94) { return; }
-    if v < 95 && !migrate_step(conn, 95, migrate_v95) { return; }
-    if v < 96 && !migrate_step(conn, 96, migrate_v96) { return; }
-    if v < 97 && !migrate_step(conn, 97, migrate_v97) { return; }
-    if v < 98 && !migrate_step(conn, 98, migrate_v98) { return; }
-    if v < 99 && !migrate_step(conn, 99, migrate_v99) { return; }
-    if v < 100 && !migrate_step(conn, 100, migrate_v100) { return; }
-    if v < 101 && !migrate_step(conn, 101, migrate_v101) { return; }
-    if v < 102 && !migrate_step(conn, 102, migrate_v102) { return; }
-    if v < 103 && !migrate_step(conn, 103, migrate_v103) { return; }
-    if v < 104 && !migrate_step(conn, 104, migrate_v104) { return; }
-    if v < 105 && !migrate_step(conn, 105, migrate_v105) { return; }
-    if v < 106 && !migrate_step(conn, 106, migrate_v106) { return; }
-    if v < 107 && !migrate_step(conn, 107, migrate_v107) { return; }
-    if v < 108 && !migrate_step(conn, 108, migrate_v108) { return; }
-    if v < 109 && !migrate_step(conn, 109, migrate_v109) { return; }
-    if v < 110 && !migrate_step(conn, 110, migrate_v110) { return; }
-    if v < 111 && !migrate_step(conn, 111, migrate_v111) { return; }
+    if v < 78 && !migrate_step(conn, 78, migrate_v78) { return false; }
+    if v < 79 && !migrate_step(conn, 79, migrate_v79) { return false; }
+    if v < 80 && !migrate_step(conn, 80, migrate_v80) { return false; }
+    if v < 81 && !migrate_step(conn, 81, migrate_v81) { return false; }
+    if v < 82 && !migrate_step(conn, 82, migrate_v82) { return false; }
+    if v < 83 && !migrate_step(conn, 83, migrate_v83) { return false; }
+    if v < 84 && !migrate_step(conn, 84, migrate_v84) { return false; }
+    if v < 85 && !migrate_step(conn, 85, migrate_v85) { return false; }
+    if v < 86 && !migrate_step(conn, 86, migrate_v86) { return false; }
+    if v < 87 && !migrate_step(conn, 87, migrate_v87) { return false; }
+    if v < 88 && !migrate_step(conn, 88, migrate_v88) { return false; }
+    if v < 89 && !migrate_step(conn, 89, migrate_v89) { return false; }
+    if v < 90 && !migrate_step(conn, 90, migrate_v90) { return false; }
+    if v < 91 && !migrate_step(conn, 91, migrate_v91) { return false; }
+    if v < 92 && !migrate_step(conn, 92, migrate_v92) { return false; }
+    if v < 93 && !migrate_step(conn, 93, migrate_v93) { return false; }
+    if v < 94 && !migrate_step(conn, 94, migrate_v94) { return false; }
+    if v < 95 && !migrate_step(conn, 95, migrate_v95) { return false; }
+    if v < 96 && !migrate_step(conn, 96, migrate_v96) { return false; }
+    if v < 97 && !migrate_step(conn, 97, migrate_v97) { return false; }
+    if v < 98 && !migrate_step(conn, 98, migrate_v98) { return false; }
+    if v < 99 && !migrate_step(conn, 99, migrate_v99) { return false; }
+    if v < 100 && !migrate_step(conn, 100, migrate_v100) { return false; }
+    if v < 101 && !migrate_step(conn, 101, migrate_v101) { return false; }
+    if v < 102 && !migrate_step(conn, 102, migrate_v102) { return false; }
+    if v < 103 && !migrate_step(conn, 103, migrate_v103) { return false; }
+    if v < 104 && !migrate_step(conn, 104, migrate_v104) { return false; }
+    if v < 105 && !migrate_step(conn, 105, migrate_v105) { return false; }
+    if v < 106 && !migrate_step(conn, 106, migrate_v106) { return false; }
+    if v < 107 && !migrate_step(conn, 107, migrate_v107) { return false; }
+    if v < 108 && !migrate_step(conn, 108, migrate_v108) { return false; }
+    if v < 109 && !migrate_step(conn, 109, migrate_v109) { return false; }
+    if v < 110 && !migrate_step(conn, 110, migrate_v110) { return false; }
+    if v < 111 && !migrate_step(conn, 111, migrate_v111) { return false; }
+    true
 }
 
 /// v111 (BAN NATIF PLUME — chantier ② Phase 1) — store LIVE `net_ban` : IPs que le daemon bloque à SON niveau
@@ -725,7 +845,7 @@ fn migrate_v106(conn: &MigTx) {
         ("incident", "disposition_by", "ALTER TABLE incident ADD COLUMN disposition_by TEXT"),
     ];
     for (tbl, col, ddl) in cols {
-        if !col_exists(conn, tbl, col) {
+        if !col_exists(conn.read(), tbl, col) {
             let _ = conn.execute(ddl, []);
         }
     }
@@ -740,7 +860,7 @@ fn migrate_v105(conn: &MigTx) {
         ("case_step", "host", "ALTER TABLE case_step ADD COLUMN host TEXT"),
     ];
     for (tbl, col, ddl) in cols {
-        if !col_exists(conn, tbl, col) {
+        if !col_exists(conn.read(), tbl, col) {
             let _ = conn.execute(ddl, []);
         }
     }
@@ -979,7 +1099,7 @@ fn migrate_v98(conn: &MigTx) {
         ("sla_policy_id", "ALTER TABLE incident ADD COLUMN sla_policy_id INTEGER"),
     ];
     for (col, ddl) in cols {
-        if !col_exists(conn, "incident", col) {
+        if !col_exists(conn.read(), "incident", col) {
             let _ = conn.execute(ddl, []);
         }
     }
@@ -1252,13 +1372,13 @@ fn migrate_v93(conn: &MigTx) {
     //  (identité d'overlay ; DEFAULT '' -> les policies UI existantes, keyées par id, restent name='').
     //  >>> RENUMÉROTATION : si une migration v93 concurrente atterrit d'abord, renuméroter celle-ci en v94.
     for tbl in ["dashboard", "panel", "library_panel", "connector", "notifier", "destination", "field_filter", "notification_policy"] {
-        if !col_exists(conn, tbl, "managed") {
+        if !col_exists(conn.read(), tbl, "managed") {
             let _ = conn.execute(&format!("ALTER TABLE {tbl} ADD COLUMN managed INTEGER NOT NULL DEFAULT 2"), []);
         }
     }
     // notification_policy : identité d'overlay = un `name` (les policies UI restent name='' -> jamais en
     // collision avec un overlay nommé ; le prune/UPSERT de policies overlay est keyé par ce name).
-    if !col_exists(conn, "notification_policy", "name") {
+    if !col_exists(conn.read(), "notification_policy", "name") {
         let _ = conn.execute("ALTER TABLE notification_policy ADD COLUMN name TEXT NOT NULL DEFAULT ''", []);
     }
     let _ = conn.execute("UPDATE meta SET value='93' WHERE key='schema_version'", []);
@@ -2112,7 +2232,7 @@ fn migrate_v37(conn: &MigTx) {
     // (rapide) » des bases EXISTANTES (seed_rollup_dashboard ne créait ces panneaux que
     // sur installs neuves). Idempotent : garde par (dashboard, titre) -> n'insère que s'ils manquent ;
     // ne touche AUCUN dashboard utilisateur.
-    ensure_rollup_srcip_host_panels(conn);
+    ensure_rollup_srcip_host_panels(conn.unguarded_write("ensure_rollup_srcip_host_panels"));
     let _ = conn.execute("UPDATE meta SET value='37' WHERE key='schema_version'", []);
     eprintln!("[migration] schéma -> v37 (panneaux rollup src_ip/host ajoutés aux bases existantes)");
 }
@@ -2506,7 +2626,7 @@ fn migrate_v52(conn: &MigTx) {
     // sûrs sur l'instance live ET sur PVC neuf (le boot les re-tente, no-op). Cf. v37 qui appelait déjà
     // ensure_rollup_srcip_host_panels depuis migrate(). panel_cache_ttl_s>0 dépend de la colonne ajoutée
     // par une migration antérieure (déjà appliquée à ce stade : v52 > celle-ci).
-    seed_banpass_dashboard(conn);
+    seed_banpass_dashboard(conn.unguarded_write("seed_banpass_dashboard"));
     let _ = conn.execute("UPDATE meta SET value='52' WHERE key='schema_version'", []);
     eprintln!("[migration] schéma -> v52 (banned_ip + dashboard « Banni / Pass » + règle « attaquant actif non banni » — T1595)");
 }
@@ -2837,13 +2957,13 @@ fn migrate_v63(conn: &MigTx) {
     // que l'OPÉRATEUR a déjà rangé ailleurs (view_id ≠ 2). IDEMPOTENT : au 2e passage les dashboards sont
     // à leur NOUVEAU view_id (≠2) -> le WHERE ne matche plus -> no-op. On NE TOUCHE QUE
     // dashboard.view_id/collapsed (zéro écrasement de panneaux/layout utilisateur).
-    let soc = find_or_create_view(conn, "SOC");
-    let detection = find_or_create_view(conn, "Détection");
-    let reseau = find_or_create_view(conn, "Réseau & Web");
-    let mail = find_or_create_view(conn, "Mail");
-    let data = find_or_create_view(conn, "Accès données");
-    let infra_acc = find_or_create_view(conn, "Accès infra");
-    let obs = find_or_create_view(conn, "Infra & logs");
+    let soc = find_or_create_view(conn.unguarded_write("find_or_create_view"), "SOC");
+    let detection = find_or_create_view(conn.unguarded_write("find_or_create_view"), "Détection");
+    let reseau = find_or_create_view(conn.unguarded_write("find_or_create_view"), "Réseau & Web");
+    let mail = find_or_create_view(conn.unguarded_write("find_or_create_view"), "Mail");
+    let data = find_or_create_view(conn.unguarded_write("find_or_create_view"), "Accès données");
+    let infra_acc = find_or_create_view(conn.unguarded_write("find_or_create_view"), "Accès infra");
+    let obs = find_or_create_view(conn.unguarded_write("find_or_create_view"), "Infra & logs");
     // (nom EXACT du dashboard, vue cible, collapsed) — déplacement PAR NOM, primaire=déplié(0), reste=replié(1).
     let moves: [(&str, Option<i64>, i64); 12] = [
         ("Vue d'ensemble (rapide)", soc, 1),            // SOC garde « SOC — Vue d'ensemble » (non touché)
@@ -2924,7 +3044,7 @@ fn migrate_v66(conn: &MigTx) {
     // col_exists : re-jouable ; sur base neuve, event/alert/metric/snapshot portent déjà env_id via
     // db/schema.sql -> sautés ; action/incident/incident_item/banned_ip (créées par migration) -> ALTER ici.
     for t in ["event", "alert", "metric", "snapshot", "action", "incident", "incident_item", "banned_ip"] {
-        if !col_exists(conn, t, "env_id") {
+        if !col_exists(conn.read(), t, "env_id") {
             let _ = conn.execute(&format!("ALTER TABLE {t} ADD COLUMN env_id TEXT NOT NULL DEFAULT 'prod'"), []);
         }
     }
@@ -2986,7 +3106,7 @@ fn migrate_v69(conn: &MigTx) {
         ("first_response_ts", "ALTER TABLE incident ADD COLUMN first_response_ts INTEGER"),
         ("escalated", "ALTER TABLE incident ADD COLUMN escalated INTEGER NOT NULL DEFAULT 0"),
     ] {
-        if !col_exists(conn, "incident", col) {
+        if !col_exists(conn.read(), "incident", col) {
             let _ = conn.execute(ddl, []);
         }
     }
@@ -3023,7 +3143,7 @@ fn migrate_v70(conn: &MigTx) {
         ("archived_ts", "ALTER TABLE incident ADD COLUMN archived_ts INTEGER"),
         ("archived_by", "ALTER TABLE incident ADD COLUMN archived_by TEXT"),
     ] {
-        if !col_exists(conn, "incident", col) {
+        if !col_exists(conn.read(), "incident", col) {
             let _ = conn.execute(ddl, []);
         }
     }
@@ -3042,7 +3162,7 @@ fn migrate_v71(conn: &MigTx) {
     // actif comme aujourd'hui (comportement inchangé). Seul un playbook créé/édité PAR un editor (désormais
     // refusé en amont par validate_detection_content pour toute action destructive) porterait 'editor' et NE
     // s'auto-approuverait PAS dans run_playbooks -> `/api/mode active` seul n'arme jamais une réponse editor.
-    if !col_exists(conn, "playbook", "created_by_role") {
+    if !col_exists(conn.read(), "playbook", "created_by_role") {
         let _ = conn.execute("ALTER TABLE playbook ADD COLUMN created_by_role TEXT NOT NULL DEFAULT 'admin'", []);
     }
     let _ = conn.execute("UPDATE meta SET value='71' WHERE key='schema_version'", []);
@@ -3059,7 +3179,7 @@ fn migrate_v72(conn: &MigTx) {
     //      Un event INGÉRÉ (agent/collecteur, via ingest_once/journal/loki) porte origin='' -> il ne peut
     //      plus (M1) usurper une source de contrôle NON-PURGEABLE. retention_run n'exclut désormais QUE
     //      (origin='daemon' AND source IN ('plume-config','plume-operator-access','plume-tenant-admin')).
-    if !col_exists(conn, "event", "origin") {
+    if !col_exists(conn.read(), "event", "origin") {
         let _ = conn.execute("ALTER TABLE event ADD COLUMN origin TEXT NOT NULL DEFAULT ''", []);
     }
     //      BACKFILL anti-régression : les events de contrôle DÉJÀ présents (écrits avant v72) portent
@@ -3129,7 +3249,7 @@ fn migrate_v75(conn: &MigTx) {
     //     rollups -> recréer les rollups chauds serait une chirurgie gratuite sans bénéfice fondation (le fold
     //     PK est différé à une éventuelle vue Engagement agrégée). Byte-identique off : toutes les lignes ''.
     for t in ["event", "alert", "action", "event_rollup", "event_dim_rollup"] {
-        if !col_exists(conn, t, "engagement_id") {
+        if !col_exists(conn.read(), t, "engagement_id") {
             let _ = conn.execute(&format!("ALTER TABLE {t} ADD COLUMN engagement_id TEXT NOT NULL DEFAULT ''"), []);
         }
     }
@@ -3414,6 +3534,11 @@ mod v102_tests {
 /// (disque plein, base verrouillée) ne doit JAMAIS laisser la base ESTAMPILLÉE comme migrée.
 /// Sinon : `meta.schema_version=N` sans les objets de vN, et la garde anti-downgrade
 /// (`schema_downgrade_guard`) interdit tout retour en arrière -> aucun chemin de réparation.
+///
+/// PÉRIMÈTRE DE CE MODULE, à ne pas surestimer : il couvre l'échec sur DDL PURE (v111 = CREATE TABLE),
+/// c.-à-d. le cas où SQLite N'AVORTE PAS la transaction lui-même. Les cas où il l'avorte (échec sur DML)
+/// et les écritures faites hors du garde (helpers) sont couverts par `s4_round2_tests` — ce sont des
+/// chemins DIFFÉRENTS, et ce module VERT ne dit rien d'eux.
 #[cfg(test)]
 mod tx_integrity_tests {
     use super::*;
@@ -3442,7 +3567,7 @@ mod tx_integrity_tests {
     #[test]
     fn failed_migration_leaves_schema_version_at_previous_value() {
         let conn = db_v110_disk_full();
-        migrate(&conn);
+        assert!(!migrate(&conn), "migration interrompue -> l'appelant doit en être informé");
         assert!(
             !table_exists(&conn, "net_ban"),
             "précondition du test : le CREATE TABLE doit avoir échoué (disque plein simulé)"
@@ -3452,6 +3577,7 @@ mod tx_integrity_tests {
             110,
             "migration échouée -> version NON bumpée (sinon base « migrée » sans ses objets, sans chemin de réparation)"
         );
+        assert!(conn.is_autocommit(), "aucune transaction ne doit rester pendante après l'échec");
     }
 
     /// Corollaire : la version laissée à l'ancienne valeur doit effectivement permettre le RETRY.
@@ -3461,13 +3587,15 @@ mod tx_integrity_tests {
     #[test]
     fn migration_is_retried_after_failure_condition_clears() {
         let conn = db_v110_disk_full();
-        migrate(&conn); // 1er démarrage : échoue (disque plein)
+        assert!(!migrate(&conn), "1er démarrage : échoue (disque plein) et le signale");
+        assert!(conn.is_autocommit(), "aucune transaction ne doit rester pendante après l'échec");
         // place rendue (le plafond REDESCEND jamais sous le nombre de pages courant : on le remonte
         // explicitement au maximum SQLite par défaut).
         conn.execute_batch("PRAGMA max_page_count=1073741823").unwrap();
-        migrate(&conn); // 2e démarrage : doit RATTRAPER la migration
+        assert!(migrate(&conn), "2e démarrage : doit RATTRAPER la migration");
         assert!(table_exists(&conn, "net_ban"), "v111 doit être re-tentée et réussir au démarrage suivant");
         assert_eq!(read_schema_version(&conn), 111, "version bumpée SEULEMENT après succès réel");
+        assert!(conn.is_autocommit(), "aucune transaction laissée ouverte après le succès");
     }
 
     /// Base DÉJÀ À JOUR (`== CODE_SCHEMA_MAX`, le cas de la PRODUCTION) : `migrate()` doit rester un
@@ -3507,5 +3635,403 @@ mod tx_integrity_tests {
         assert_eq!(snapshot(&conn), before, "base à jour -> schéma ET meta INCHANGÉS (aucune migration re-jouée)");
         assert_eq!(read_schema_version(&conn), CODE_SCHEMA_MAX, "version inchangée");
         assert!(conn.is_autocommit(), "aucune transaction laissée ouverte");
+    }
+}
+
+/// INTÉGRITÉ DE SCHÉMA — 2e passe (revue adverse du correctif S4). Les tests de `tx_integrity_tests`
+/// ne couvraient QUE l'échec sur DDL PURE, le seul cas où SQLite N'AUTO-ROLLBACKE PAS. Ce module couvre
+/// les cas RÉELLEMENT dangereux, mesurés par la revue :
+///   1. échec sur DML (SQLite auto-rollbacke -> l'autocommit revient à `true` AU MILIEU du corps, et le
+///      bump `UPDATE meta` qui suit est COMMITÉ SEUL, hors transaction) ;
+///   2. échec dans un HELPER prenant `&Connection` (écriture hors du garde `MigTx`) ;
+///   3. échec de type AUTORISATION (SQLITE_AUTH), qui ne rollbacke rien du tout.
+/// Chaque test assert l'ÉTAT DE LA CONNEXION (`is_autocommit`), la version RELUE EN BASE, et l'ABSENCE
+/// de l'objet que l'étape prétendait créer.
+#[cfg(test)]
+mod s4_round2_tests {
+    use super::*;
+
+    /// Colonne de bourrage à DEFAULT volumineux -> TOUT INSERT dans la table doit allouer une page
+    /// d'overflow : sous `max_page_count` plafonné, l'INSERT échoue en SQLITE_FULL de façon
+    /// DÉTERMINISTE (là où un `UPDATE meta` de même longueur, EN PLACE, réussit).
+    const PAD: &str = "pad TEXT NOT NULL DEFAULT (hex(zeroblob(3000)))";
+
+    fn cap_pages(conn: &Connection) {
+        let pages: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0)).unwrap();
+        conn.execute_batch(&format!("PRAGMA max_page_count={pages}")).unwrap();
+    }
+
+    fn uncap_pages(conn: &Connection) {
+        conn.execute_batch("PRAGMA max_page_count=1073741823").unwrap();
+    }
+
+    /// (1) ÉCHEC SUR DML — v58 insère un panneau via `MigTx::execute` (chemin GARDÉ). Sur SQLITE_FULL
+    /// SQLite AVORTE la transaction : le `UPDATE meta SET value='58'` qui suit s'exécute alors HORS
+    /// transaction et est COMMITÉ SEUL. La base finit estampillée 58 SANS son panneau, et le `ROLLBACK`
+    /// de `migrate_step` est un no-op silencieux.
+    #[test]
+    fn dml_failure_never_leaves_the_database_stamped() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO meta(key,value) VALUES('schema_version','57');
+             CREATE TABLE dashboard(id INTEGER PRIMARY KEY, name TEXT);
+             INSERT INTO dashboard(name) VALUES('Trafic web');
+             CREATE TABLE panel(id INTEGER PRIMARY KEY, dashboard_id INTEGER, title TEXT, query TEXT,
+                                is_soql INTEGER, viz TEXT, position INTEGER, cols INTEGER, {PAD});"
+        ))
+        .unwrap();
+        cap_pages(&conn);
+
+        let committed = migrate_step(&conn, 58, migrate_v58);
+        let panels: i64 = conn
+            .query_row("SELECT COUNT(*) FROM panel WHERE title='Cloudflare (hors self)'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(panels, 0, "précondition : l'INSERT (via MigTx) doit échouer en SQLITE_FULL");
+        assert!(!committed, "une étape dont l'INSERT a échoué ne doit PAS être rapportée comme commitée");
+        assert_eq!(
+            read_schema_version(&conn),
+            57,
+            "version RELUE EN BASE : l'auto-rollback SQLite ne doit pas laisser passer le bump hors transaction"
+        );
+        assert!(conn.is_autocommit(), "aucune transaction ne doit rester pendante après l'échec");
+    }
+
+    /// (2) ÉCHEC DANS UN HELPER — v37 écrit via `ensure_rollup_srcip_host_panels(&Connection)`, hors du
+    /// garde `MigTx`. L'échec opérationnel du helper doit être détecté quand même.
+    #[test]
+    fn helper_write_failure_never_leaves_the_database_stamped() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO meta(key,value) VALUES('schema_version','36');
+             CREATE TABLE dashboard(id INTEGER PRIMARY KEY, name TEXT);
+             INSERT INTO dashboard(name) VALUES('Vue d''ensemble (rapide)');
+             CREATE TABLE panel(id INTEGER PRIMARY KEY, dashboard_id INTEGER, title TEXT, query TEXT,
+                                is_soql INTEGER, viz TEXT, position INTEGER, cols INTEGER, {PAD});"
+        ))
+        .unwrap();
+        cap_pages(&conn);
+
+        let committed = migrate_step(&conn, 37, migrate_v37);
+        let panels: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM panel WHERE title IN ('Volume par host','Sévérité >=3 par src_ip')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(panels, 0, "précondition : l'INSERT du helper doit échouer (disque plein simulé)");
+        assert!(!committed, "l'échec opérationnel d'un helper doit interdire le COMMIT de l'étape");
+        assert_eq!(read_schema_version(&conn), 36, "version RELUE EN BASE : inchangée");
+        assert!(conn.is_autocommit(), "aucune transaction ne doit rester pendante après l'échec");
+    }
+
+    /// (2 bis) v63 est le cas SANS FILET : contrairement à v37/v52 (re-tentés à chaque boot par
+    /// server.rs), rien ne recrée les vues. Il FAUT donc que l'étape soit re-tentable, c.-à-d. que la
+    /// version reste à 62 -> et que le démarrage suivant la rattrape RÉELLEMENT.
+    #[test]
+    fn v63_view_creation_failure_is_retried_and_recovers() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO meta(key,value) VALUES('schema_version','62');
+             CREATE TABLE view(id INTEGER PRIMARY KEY, name TEXT NOT NULL, visibility TEXT, {PAD});
+             CREATE TABLE dashboard(id INTEGER PRIMARY KEY, name TEXT, view_id INTEGER, collapsed INTEGER);
+             CREATE TABLE panel(id INTEGER PRIMARY KEY, title TEXT, query TEXT, viz TEXT);
+             INSERT INTO dashboard(name,view_id) VALUES('Sécurité & détection',2);
+             INSERT INTO dashboard(name,view_id) VALUES('Trafic web',2);"
+        ))
+        .unwrap();
+        cap_pages(&conn);
+
+        let committed = migrate_step(&conn, 63, migrate_v63);
+        let views: i64 = conn.query_row("SELECT COUNT(*) FROM view", [], |r| r.get(0)).unwrap();
+        assert_eq!(views, 0, "précondition : l'INSERT INTO view doit échouer (disque plein simulé)");
+        assert!(!committed, "étape sans aucun de ses objets -> PAS un succès");
+        assert_eq!(read_schema_version(&conn), 62, "version RELUE EN BASE : inchangée");
+        assert!(conn.is_autocommit(), "aucune transaction ne doit rester pendante après l'échec");
+
+        // place disque rendue -> le démarrage suivant DOIT rattraper l'étape.
+        uncap_pages(&conn);
+        assert!(migrate_step(&conn, 63, migrate_v63), "v63 doit être re-tentée et réussir");
+        let views2: i64 = conn.query_row("SELECT COUNT(*) FROM view", [], |r| r.get(0)).unwrap();
+        let rehomed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM dashboard d JOIN view v ON v.id=d.view_id \
+                 WHERE (d.name='Trafic web' AND v.name='Réseau & Web') \
+                    OR (d.name='Sécurité & détection' AND v.name='Détection')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(views2, 7, "les 7 vues focalisées sont créées au rattrapage");
+        assert_eq!(rehomed, 2, "les dashboards sont re-homés au rattrapage");
+        assert_eq!(read_schema_version(&conn), 63, "version bumpée SEULEMENT après succès réel");
+    }
+
+    /// (3) SQLITE_AUTH — un authorizer SQLite qui REFUSE la DDL fait échouer l'ordre AU PREPARE :
+    /// l'écriture n'a PAS eu lieu et rien n'est rollbacké. Le produit installe des authorizers
+    /// (`install_field_authorizer`) : le classer « idempotence » estampille la base sans ses objets.
+    #[test]
+    fn authorization_denied_is_an_operational_failure_not_idempotence() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO meta(key,value) VALUES('schema_version','110');",
+        )
+        .unwrap();
+        conn.authorizer(Some(|ctx: rusqlite::hooks::AuthContext<'_>| {
+            use rusqlite::hooks::{AuthAction, Authorization};
+            match ctx.action {
+                AuthAction::CreateTable { .. } => Authorization::Deny,
+                _ => Authorization::Allow,
+            }
+        }));
+
+        let committed = migrate_step(&conn, 111, migrate_v111);
+        assert!(!table_exists(&conn, "net_ban"), "précondition : le CREATE TABLE est refusé (SQLITE_AUTH)");
+        assert!(!committed, "une DDL REFUSÉE n'est pas une DDL déjà appliquée");
+        assert_eq!(read_schema_version(&conn), 110, "version RELUE EN BASE : inchangée");
+        assert!(conn.is_autocommit(), "aucune transaction ne doit rester pendante après l'échec");
+    }
+
+    /// (4) SIGNAL À L'APPELANT — une migration interrompue doit être RAPPORTÉE : sans valeur de retour,
+    /// `server.rs` enchaînait les seeds puis le bind et SERVAIT sur un schéma qu'il savait incomplet.
+    #[test]
+    fn interrupted_migration_is_reported_to_the_caller() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO meta(key,value) VALUES('schema_version','110');",
+        )
+        .unwrap();
+        cap_pages(&conn);
+        assert!(!migrate(&conn), "migration interrompue -> l'appelant DOIT pouvoir refuser de servir");
+        assert!(!table_exists(&conn, "net_ban"));
+        assert_eq!(read_schema_version(&conn), 110);
+        assert!(conn.is_autocommit());
+    }
+
+    /// (5) CONTENTION D'ÉCRITURE (SQLITE_BUSY) — le déclencheur réaliste cité par la revue : le sidecar
+    /// backup tient le verrou plus longtemps que le `busy_timeout`. MESURE de ce qu'on a choisi : la
+    /// migration NE s'applique PAS, la version NE bouge PAS, et `migrate()` renvoie `false` -> le daemon
+    /// s'arrête au lieu de servir sans la table. Le redémarrage la re-tente.
+    #[test]
+    fn write_contention_interrupts_instead_of_stamping() {
+        let path = std::env::temp_dir().join(format!(
+            "plume-mig-busy-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO meta(key,value) VALUES('schema_version','110');",
+        )
+        .unwrap();
+        // « sidecar backup » : une AUTRE connexion tient une transaction d'écriture.
+        let hog = Connection::open(&path).unwrap();
+        hog.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        conn.busy_timeout(std::time::Duration::from_millis(50)).unwrap();
+        assert!(!migrate(&conn), "SQLITE_BUSY -> migration INTERROMPUE, jamais estampillée");
+        assert_eq!(read_schema_version(&conn), 110, "version RELUE en base : inchangée");
+        assert!(!table_exists(&conn, "net_ban"));
+        assert!(conn.is_autocommit(), "aucune transaction laissée ouverte sur la connexion de boot");
+
+        hog.execute_batch("ROLLBACK").unwrap();
+        assert!(migrate(&conn), "verrou rendu -> le démarrage suivant rattrape la migration");
+        assert_eq!(read_schema_version(&conn), CODE_SCHEMA_MAX);
+        drop(hog);
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// VERROU DE CONTOURNEMENT — `MigTx` n'implémente PLUS `Deref<Target = Connection>` : un helper
+    /// prenant `&Connection` ne peut plus recevoir `conn` sans écrire l'échappatoire EXPLICITEMENT.
+    /// Ce test fige les 3 helpers historiques qui l'utilisent : en ajouter un quatrième casse la suite.
+    #[test]
+    fn unguarded_write_sites_are_locked() {
+        let src = include_str!("migrate.rs");
+        // aiguilles construites à l'exécution : sinon ce test se compterait lui-même.
+        let deref_impl = format!("impl std::ops::{} for MigTx", "Deref");
+        assert!(!src.contains(&deref_impl), "MigTx ne doit PAS réintroduire {deref_impl}");
+        let needle = format!("conn.{}(\"", "unguarded_write");
+        let sites: Vec<&str> = src
+            .match_indices(&needle)
+            .map(|(i, _)| src[i + needle.len()..].split('"').next().unwrap_or(""))
+            .collect();
+        let mut helpers: Vec<&str> = sites.clone();
+        helpers.sort_unstable();
+        helpers.dedup();
+        assert_eq!(
+            helpers,
+            vec!["ensure_rollup_srcip_host_panels", "find_or_create_view", "seed_banpass_dashboard"],
+            "toute NOUVELLE écriture hors du garde MigTx doit être ajoutée ICI, en connaissance de cause"
+        );
+        assert_eq!(sites.len(), 9, "9 appels (v37 x1, v52 x1, v63 x7) — un site en plus = une revue en plus");
+    }
+
+    /// Trois codes SQLite signent une écriture QUI N'A PAS EU LIEU et doivent donc être de CLASSE B :
+    /// `SQLITE_NOLFS` (croissance de fichier refusée — une base plume dépasse couramment 2 Gio),
+    /// `SQLITE_TOOBIG` et `SQLITE_AUTH`.
+    #[test]
+    fn operational_failure_covers_writes_that_did_not_happen() {
+        for code in [rusqlite::ffi::SQLITE_NOLFS, rusqlite::ffi::SQLITE_TOOBIG, rusqlite::ffi::SQLITE_AUTH] {
+            let e = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
+            assert!(is_operational_failure(&e), "code SQLite {code} : écriture non effectuée -> CLASSE B");
+        }
+    }
+}
+
+/// NON-RÉGRESSION DES ENTRÉES LÉGITIMES — le durcissement de `migrate_step` ne doit RIEN changer aux
+/// 5 parcours de migration NORMAUX (dont celui de la PRODUCTION, déjà au schéma courant). Chaque test
+/// imprime une EMPREINTE comparable entre deux révisions du code (`cargo test -- --nocapture`).
+#[cfg(test)]
+mod migrate_regression_tests {
+    use super::*;
+
+    /// Empreinte de schéma : version + DDL complète + contenu de `meta`, hachée pour être comparable
+    /// d'une révision à l'autre en une ligne.
+    fn fingerprint(conn: &Connection) -> String {
+        let ddl: String = conn
+            .query_row(
+                "SELECT COALESCE(group_concat(type||' '||name||' '||COALESCE(sql,'')),'') \
+                 FROM (SELECT type,name,sql FROM sqlite_master ORDER BY type,name)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // Les VALEURS de `meta` contiennent des éléments non déterministes (hash bcrypt salé, horodatages) :
+        // l'empreinte comparable d'une révision à l'autre porte sur la DDL et sur les CLÉS de `meta`.
+        let meta_keys: String = conn
+            .query_row(
+                "SELECT COALESCE(group_concat(key),'') FROM (SELECT key FROM meta ORDER BY key)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let objs: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| r.get(0)).unwrap();
+        use sha2::{Digest, Sha256};
+        format!(
+            "v={} objets={objs} sha256(ddl)={} sha256(clés meta)={}",
+            read_schema_version(conn),
+            hex_lower(&Sha256::digest(ddl.as_bytes())),
+            hex_lower(&Sha256::digest(meta_keys.as_bytes()))
+        )
+    }
+
+    fn hex_lower(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// R1 — BASE NEUVE (installation) : schema.sql puis migrate() -> schéma courant complet.
+    #[test]
+    fn r1_fresh_install_reaches_current_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../db/schema.sql")).unwrap();
+        migrate(&conn);
+        eprintln!("[REG R1 base neuve] {}", fingerprint(&conn));
+        assert_eq!(read_schema_version(&conn), CODE_SCHEMA_MAX);
+        assert!(conn.is_autocommit());
+    }
+
+    /// R2 — BASE DE PRODUCTION DÉJÀ MIGRÉE, SUR FICHIER : migrate() doit la laisser BYTE-POUR-BYTE
+    /// intacte (aucune étape, aucune transaction, aucune écriture).
+    #[test]
+    fn r2_up_to_date_file_database_is_byte_identical() {
+        let path = std::env::temp_dir().join(format!(
+            "plume-mig-reg-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(include_str!("../../db/schema.sql")).unwrap();
+            migrate(&conn);
+            assert_eq!(read_schema_version(&conn), CODE_SCHEMA_MAX);
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").ok();
+        }
+        let before = std::fs::read(&path).unwrap();
+        {
+            let conn = Connection::open(&path).unwrap();
+            migrate(&conn); // 2e démarrage sur une base à jour
+            assert!(conn.is_autocommit(), "aucune transaction laissée ouverte");
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").ok();
+        }
+        let after = std::fs::read(&path).unwrap();
+        // Le sha256 du FICHIER n'est pas comparable d'une exécution à l'autre (hash admin salé) : la mesure
+        // stable est l'IDENTITÉ avant/après DANS la même exécution.
+        eprintln!(
+            "[REG R2 base prod à jour] octets={} fichier_identique_avant_après={}",
+            after.len(),
+            before == after
+        );
+        assert_eq!(before, after, "base déjà au schéma courant -> fichier BYTE-POUR-BYTE identique");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// R3 — BASE À MI-PARCOURS (v57 sur un schéma déjà complet) : rejoue v58..CODE_SCHEMA_MAX, donc un
+    /// grand nombre d'échecs d'IDEMPOTENCE de classe A (« duplicate column », « already exists »), qui
+    /// doivent RESTER ignorés.
+    #[test]
+    fn r3_midway_database_replays_to_current_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../db/schema.sql")).unwrap();
+        migrate(&conn);
+        conn.execute("UPDATE meta SET value='57' WHERE key='schema_version'", []).unwrap();
+        migrate(&conn);
+        eprintln!("[REG R3 base v57 rejouée] {}", fingerprint(&conn));
+        assert_eq!(read_schema_version(&conn), CODE_SCHEMA_MAX);
+        assert!(conn.is_autocommit());
+    }
+
+    /// R4 — RE-JEU COMPLET depuis v33 (couvre les 3 blocs INLINE v33/v67/v77, non enveloppés).
+    #[test]
+    fn r4_replay_from_v33_reaches_current_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../db/schema.sql")).unwrap();
+        migrate(&conn);
+        conn.execute("UPDATE meta SET value='33' WHERE key='schema_version'", []).unwrap();
+        migrate(&conn);
+        eprintln!("[REG R4 rejeu depuis v33] {}", fingerprint(&conn));
+        assert_eq!(read_schema_version(&conn), CODE_SCHEMA_MAX);
+        assert!(conn.is_autocommit());
+    }
+
+    /// R5 — ÉTAPE À HELPERS SUR DISQUE SAIN (v63) : le durcissement ne doit pas empêcher une étape
+    /// LÉGITIME qui écrit via des helpers de committer normalement.
+    #[test]
+    fn r5_helper_step_succeeds_on_a_healthy_database() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO meta(key,value) VALUES('schema_version','62');
+             CREATE TABLE view(id INTEGER PRIMARY KEY, name TEXT NOT NULL, visibility TEXT);
+             CREATE TABLE dashboard(id INTEGER PRIMARY KEY, name TEXT, view_id INTEGER, collapsed INTEGER);
+             INSERT INTO dashboard(name,view_id) VALUES('Sécurité & détection',2);
+             INSERT INTO dashboard(name,view_id) VALUES('Trafic web',2);",
+        )
+        .unwrap();
+        let committed = migrate_step(&conn, 63, migrate_v63);
+        let views: i64 = conn.query_row("SELECT COUNT(*) FROM view", [], |r| r.get(0)).unwrap();
+        let rehomed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM dashboard d JOIN view v ON v.id=d.view_id \
+                 WHERE (d.name='Trafic web' AND v.name='Réseau & Web') \
+                    OR (d.name='Sécurité & détection' AND v.name='Détection')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        eprintln!("[REG R5 v63 disque sain] committed={committed} vues={views} re-homés={rehomed} v={}", read_schema_version(&conn));
+        assert!(committed);
+        assert_eq!(views, 7);
+        assert_eq!(rehomed, 2);
+        assert_eq!(read_schema_version(&conn), 63);
+        assert!(conn.is_autocommit());
     }
 }

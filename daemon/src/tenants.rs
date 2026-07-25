@@ -55,7 +55,12 @@ pub(crate) fn tenant_provision(mgr: &TenantDbManager, id: &str, name: &str, db_p
     let conn = open_db_keyed(db_path, key.as_deref()).map_err(|e| format!("création base tenant : {e}"))?;
     let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
     conn.execute_batch(include_str!("../../db/schema.sql")).map_err(|e| format!("schéma tenant : {e}"))?;
-    migrate(&conn);
+    // FAIL-CLOSED (même doctrine que la résolution de clé en 1) : une migration INTERROMPUE laisse la base
+    // tenant à une version < CODE_SCHEMA_MAX. On REFUSE de déclarer le tenant prêt plutôt que de le seeder
+    // sur un schéma incomplet.
+    if !migrate(&conn) {
+        return Err("migration de la base tenant INTERROMPUE (cause sur stderr) : schéma incomplet, tenant non provisionné".into());
+    }
     // D7 (#2c) : contenu de détection COMPLET par tenant (dashboards + règles + playbooks builtin) — une
     // base tenant neuve démarre exactement comme une install fraîche (cf. run()). Les seeds conf/déploiement
     // (overlays config.d, notifier d'env, données de démo) sont DÉLIBÉRÉMENT exclus (spécifiques au site).

@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — ingestion Suricata périodique
+
+[Timer]
+OnBootSec=170s
+OnUnitActiveSec=2min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

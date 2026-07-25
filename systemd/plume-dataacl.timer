@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — carte d'accès données (Varonis) périodique
+
+[Timer]
+OnBootSec=300s
+OnUnitActiveSec=30min
+AccuracySec=2min
+
+[Install]
+WantedBy=timers.target

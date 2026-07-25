@@ -1,0 +1,9 @@
+{
+  "_comment": "Azure OpenAI (CLOUD). Endpoint = votre ressource Azure (https://{resource}.openai.azure.com/openai/deployments/{deployment}). requires_cloud=true -> instanciation/appel refuses sauf PLUME_AI_ALLOW_CLOUD=1. Cle API saisie a l'instanciation (jamais ici) ; supportez un SecretRef (env:/file:/vault:).",
+  "vendor": "Microsoft",
+  "api_shape": "openai",
+  "endpoint": "https://{resource}.openai.azure.com",
+  "model": "{deployment}",
+  "requires_cloud": true,
+  "config": { "temperature": 0, "max_tokens": 512 }
+}

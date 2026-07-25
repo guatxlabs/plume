@@ -1,0 +1,13 @@
+{
+  "_comment": "Mouvement latéral SSH : une source établit du SSH (dport=22) vers >5 hôtes internes distincts = pivot / propagation par identifiants réutilisés. Le port de destination est `dport` (chaîne) côté conntrack/ufw/portscan (JAMAIS dst_port pour ces collecteurs natifs). Inerte sur un parc mono-hôte. Seuil bas car le SSH est-ouest large est anormal. || TÉLÉMÉTRIE REQUISE: conntrack (scope, dir, dport, dst_ip) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Latéralisation SSH interne (une source -> plusieurs hôtes en 22)",
+  "enabled": false,
+  "query": "search source=conntrack scope=internal dir=outbound dport=22 | stats dc(dst_ip) by src_ip | where dc > 5 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 300,
+  "window_s": 1800,
+  "mitre": "T1021.004"
+}

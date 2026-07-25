@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — compteurs nft (blocklists) périodiques
+
+[Timer]
+OnBootSec=180s
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

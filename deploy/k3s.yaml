@@ -1,0 +1,71 @@
+# SOC central dans k3s. Build + importe l'image dans k3s :
+#   docker build -t soc:latest .  &&  docker save soc:latest | sudo k3s ctr images import -
+#   plume-daemon hashpw 'tonmdp'   -> mets le hash dans le Secret ci-dessous
+#   kubectl apply -f deploy/k3s.yaml
+# Les hôtes/agents poussent leur télémétrie vers le Service via POST /api/ingest (bootstrap-agent.sh).
+apiVersion: v1
+kind: Namespace
+metadata: { name: soc }
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: soc-auth, namespace: soc }
+type: Opaque
+stringData:
+  PLUME_USER: "admin"
+  PLUME_PASS_HASH: "REMPLACER_PAR_LE_HASH"   # plume-daemon hashpw 'tonmdp'
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: soc-data, namespace: soc }
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: 1Gi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: soc, namespace: soc }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: soc } }
+  template:
+    metadata: { labels: { app: soc } }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001 }
+      containers:
+        - name: soc
+          image: soc:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: PLUME_ADDR, value: "0.0.0.0:7000" }
+            - { name: PLUME_HOST, value: "soc.tondomaine.tld" }   # = Host de l'Ingress
+            - { name: PLUME_CONFIG, value: "/nonexistent" }
+            - { name: PLUME_USER,      valueFrom: { secretKeyRef: { name: soc-auth, key: PLUME_USER } } }
+            - { name: PLUME_PASS_HASH, valueFrom: { secretKeyRef: { name: soc-auth, key: PLUME_PASS_HASH } } }
+          ports: [ { containerPort: 7000 } ]
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tmp,  mountPath: /tmp }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            # 2Gi = le budget de référence du daemon (cf. ARCHITECTURE §11 et
+            # systemd/plume-daemon.service : sous ~256Mi le daemon OOM au boot).
+            requests: { memory: 256Mi, cpu: 50m }
+            limits:   { memory: 2Gi, cpu: "1" }
+          readinessProbe: { httpGet: { path: /manifest.webmanifest, port: 7000 }, initialDelaySeconds: 3 }
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: soc-data } }
+        - { name: tmp,  emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: soc, namespace: soc }
+spec:
+  selector: { app: soc }
+  ports: [ { port: 7000, targetPort: 7000 } ]
+# Ingress (Traefik k3s) : route Host=soc.tondomaine.tld -> svc soc:7000 (ajoute TLS).
+# La couverture du cluster (events k8s) viendra d'un CronJob `kube.sh` qui pousse vers /api/ingest.

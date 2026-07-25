@@ -1,0 +1,13 @@
+{
+  "_comment": "Web shell : POST répétés vers un script exécutable (*.php) renvoyant 200 depuis une même IP = interaction avec un shell déposé (server software component). web expose method/status/path. Heuristique (extension .php ; adapter à .jsp/.aspx selon la stack). FP-prone sur des apps PHP légitimes -> enabled=false, seuil/extension à calibrer. || TÉLÉMÉTRIE REQUISE: web (method, status, path) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Webshell probable (POST -> script .php renvoyant 200)",
+  "enabled": false,
+  "query": "search source=web method=POST status=200 path=*.php | stats count by src_ip | where count > 3 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 300,
+  "window_s": 900,
+  "mitre": "T1505.003"
+}

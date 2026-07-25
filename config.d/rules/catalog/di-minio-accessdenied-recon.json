@@ -1,0 +1,13 @@
+{
+  "_comment": "Cloud-storage discovery : une clé d'accès essuie >10 AccessDenied = elle SONDE des buckets/objets hors de ses droits (recon de périmètre S3). Le champ est `accessKey` (camelCase) et `status` côté minio-audit. Distinct du seed minio natif (Delete refusé sur *backups) : ici c'est la RECON large. Inerte sans relay MinIO audit. || TÉLÉMÉTRIE REQUISE: minio-audit (relay audit S3 : status, accessKey) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Objet-store: rafale d'AccessDenied (recon de buckets)",
+  "enabled": false,
+  "query": "search source=minio-audit status=AccessDenied | stats count by accessKey | where count > 10 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 2,
+  "interval_s": 300,
+  "window_s": 1800,
+  "mitre": "T1526"
+}

@@ -1,0 +1,20 @@
+[Unit]
+Description=plume collector (plugin) — ingestion eve.json Suricata (IDS/TLS/fichiers) -> events
+# OPT-IN. Necessite Suricata qui ecrit eve.json. Activer : systemctl enable --now plume-suricata.timer
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+EnvironmentFile=-/etc/plume/suricata.conf
+ExecStart=/usr/local/lib/plume/collectors/suricata.sh
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+MemoryMax=96M
+CPUQuota=25%
+Nice=12

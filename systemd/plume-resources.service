@@ -1,0 +1,22 @@
+[Unit]
+Description=plume collector — ressources/perf/réseau -> metrics
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+ExecStart=/usr/local/lib/plume/collectors/resources.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryMax=48M
+CPUQuota=15%
+Nice=12
+IOSchedulingClass=idle

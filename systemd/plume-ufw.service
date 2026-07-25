@@ -1,0 +1,22 @@
+[Unit]
+Description=plume collector — UFW (blocs + état) -> events/metrics (couche firewall hôte)
+# OPT-IN : installé mais NON activé. Activer : systemctl enable --now plume-ufw.timer
+# Lecture seule. Mode-aware : skip propre si ufw absent/inactif.
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/plume/plume.conf
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+ExecStart=/usr/local/lib/plume/collectors/ufw.sh
+
+NoNewPrivileges=true
+# 'full' (pas 'strict') : ufw/iptables peut avoir besoin d'écrire son verrou dans /run.
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+MemoryMax=96M
+CPUQuota=20%
+Nice=15

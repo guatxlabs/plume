@@ -1,0 +1,23 @@
+[Unit]
+Description=plume collector — auditd (exec/privesc/fichiers sensibles) -> events
+After=auditd.service
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+ExecStart=/usr/local/lib/plume/collectors/audit.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+CapabilityBoundingSet=CAP_AUDIT_READ CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_AUDIT_READ CAP_DAC_READ_SEARCH
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+LockPersonality=true
+MemoryMax=96M
+CPUQuota=30%
+Nice=12
+IOSchedulingClass=idle

@@ -1,0 +1,13 @@
+{
+  "_comment": "Brute-force sur l'auth du serveur mail (Postfix/Dovecot SASL). Le collecteur mail émet action=failure sur chaque échec SASL avec src_ip. >15 échecs/IP en 15 min = attaque. Angle mort des règles brute-force seedées (journal/auth système, pas mail applicatif). Inerte sans stack mail. || TÉLÉMÉTRIE REQUISE: mail (collecteur mail : category=auth action=failure, src_ip promu) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Brute-force auth mail (SMTP/IMAP/POP)",
+  "enabled": false,
+  "query": "search source=mail action=failure | stats count by src_ip | where count > 15 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 300,
+  "window_s": 900,
+  "mitre": "T1110"
+}

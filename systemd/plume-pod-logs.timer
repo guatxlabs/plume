@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — collecte logs pods k8s périodique
+
+[Timer]
+OnBootSec=130s
+OnUnitActiveSec=60s
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

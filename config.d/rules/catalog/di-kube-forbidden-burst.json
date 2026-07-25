@@ -1,0 +1,13 @@
+{
+  "_comment": "Enumération RBAC / recon d'API : un sujet accumule >15 refus (action=forbidden, posé par le collecteur sur code 401/403 ou decision=forbid) en 15 min = il SONDE ce à quoi il a droit (permission groups discovery). Angle mort : l'audit k8s n'atterrit pas dans les règles seedées. Inerte sans audit k8s. || TÉLÉMÉTRIE REQUISE: kube-audit (audit Kubernetes : action=forbidden, user) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — K8s: rafale d'accès refusés (énumération API)",
+  "enabled": false,
+  "query": "search source=kube-audit action=forbidden | stats count by user | where count > 15 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 300,
+  "window_s": 900,
+  "mitre": "T1069"
+}

@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — traitement périodique des actions de réponse approuvées
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=20s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

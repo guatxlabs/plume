@@ -1,0 +1,13 @@
+{
+  "_comment": "Collecte d'identifiants : un même utilisateur LIT (action=read) >5 fois les fichiers de creds (key=plume_creds) = moisson locale de secrets. dataaccess expose key/action/user/comm. Le seed a un PANNEAU 'Accès aux secrets' mais aucune RÈGLE -> comble le trou. Seuil bas (l'accès aux creds doit être rare). || TÉLÉMÉTRIE REQUISE: dataaccess (watch fichiers sensibles : key, action, user) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Hôte: accès répété aux secrets/identifiants (dataaccess)",
+  "enabled": false,
+  "query": "search source=dataaccess key=plume_creds action=read | stats count by user | where count > 5 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 300,
+  "window_s": 1800,
+  "mitre": "T1552.001"
+}

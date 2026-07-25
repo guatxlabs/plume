@@ -1,0 +1,448 @@
+//! Crypto/clés : ouverture SQLCipher (db_key/open_db/ensure_encrypted), registre de clés par base
+//! (DB_KEY_REGISTRY) et résolution de clé Vault (VAULT_KEY_CACHE, resolve/fetch, racines TLS).
+//! Dépend de util::http_client (http_get) — appel résolu via glob re-export. Extrait de main.rs
+//! (refactor split #25 — byte-identique).
+use crate::*;
+
+/// Connexion **read-only** + vérif `stmt.readonly()` (double garde-fou) + budget temps
+/// (interruption ~3s, anti-requête-folle) + plafond de lignes. Renvoie colonnes/lignes + coût.
+/// Chiffrement at-rest SQLCipher (OPT-IN) : si `PLUME_DB_KEY` est défini, la base est ouverte/chiffrée
+/// avec cette clé (`PRAGMA key`, qui DOIT précéder toute requête). Vide/absent -> base en clair
+/// (rétrocompat total). La clé vient typiquement de Vault -> ExternalSecret -> env PLUME_DB_KEY.
+pub(crate) fn db_key() -> Option<String> {
+    // F1 — PRIORITÉ au FICHIER monté RO (`PLUME_DB_KEY_FILE`), modèle de `ledger.key` : la clé SQLCipher
+    // (crown-jewel) ne transite plus par /proc/1/environ (lisible via `kubectl exec`, ps e, crash-dump,
+    // héritage enfant). FAIL-CLOSED : si `PLUME_DB_KEY_FILE` est posé mais que le fichier est absent/
+    // illisible/vide -> on REFUSE de démarrer plutôt que de retomber EN SILENCE sur l'env (qui pourrait
+    // être absent -> base ouverte/écrite EN CLAIR = corruption/perte). Non posé -> repli rétrocompat sur
+    // l'env `PLUME_DB_KEY` (mode historique). Vide/absent partout -> None (base en clair, rétrocompat).
+    if let Ok(path) = std::env::var("PLUME_DB_KEY_FILE") {
+        if !path.is_empty() {
+            match db_key_from_file(&path) {
+                Ok(k) => return Some(k),
+                Err(e) => {
+                    eprintln!("[FATAL] {e} — refus de démarrer (fail-closed ; ne retombe PAS sur PLUME_DB_KEY env)");
+                    std::process::exit(78); // EX_CONFIG
+                }
+            }
+        }
+    }
+    std::env::var("PLUME_DB_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
+}
+
+/// Lecture PURE et TESTABLE de la clé SQLCipher depuis un FICHIER (secret mount RO). `Err` (FATAL, à
+/// traiter fail-closed) si absent/illisible/non-UTF8/VIDE (0 octet).
+///
+/// LECTURE **VERBATIM, AUCUN strip** : le MÊME secret alimente et l'ancien env `PLUME_DB_KEY` (via
+/// `env::var`, qui ne retire RIEN) et ce fichier (projection du secret par le volume, byte-pour-byte
+/// identique — un montage de secret n'ajoute AUCUN newline). Retirer un `\n` final
+/// ici FABRIQUERAIT une divergence : si la valeur du Secret se terminait par `\n`, l'ancien chemin env
+/// l'incluait dans la clé SQLCipher (la base a été chiffrée AVEC), le nouveau chemin fichier le retirerait ->
+/// clé DIFFÉRENTE au cutover -> base illisible (outage évitable). On lit donc les octets TELS QUELS ->
+/// `file == env` inconditionnellement (par construction), la classe ENTIÈRE de divergence disparaît et le
+/// préflight devient trivial (les deux sont identiques). Aucune raison légitime de stripper ne subsiste :
+/// la convention `echo`/éditeur (fichier édité à la main) ne s'applique pas ici — le fichier N'EST PAS édité,
+/// c'est la projection brute du même Secret. Seules validations : non-UTF8 -> Err, 0 octet -> Err (fail-closed),
+/// exactement comme `env::var(..).filter(|k| !k.is_empty())` rejette la chaîne vide "".
+pub(crate) fn db_key_from_file(path: &str) -> Result<String, String> {
+    // PHASE 2 — DÉLÉGUÉ à `guatx_core::secret::FileProvider` (octets DÉPLACÉS, byte-identiques). Politique
+    // STRICTE fail-closed : `NotFound` (absent OU vide) et `Unreadable`/`Malformed` -> `Err` (db_key()
+    // exit 78). VERBATIM conservé (file == env au cutover -> SQLCipher décrypte avec la MÊME clé). On
+    // reconstruit le préfixe `PLUME_DB_KEY_FILE={path}` des messages historiques (non-secret, cosmétique).
+    use guatx_core::secret::{SecretError, SecretOutcome, SecretProvider, SecretRef};
+    match guatx_core::secret::FileProvider.get(&SecretRef::file(path)) {
+        Ok(SecretOutcome::Present(v)) => Ok(v.into_string()), // VERBATIM
+        Ok(SecretOutcome::NotFound) => Err(format!("PLUME_DB_KEY_FILE={path} absent ou vide")),
+        Err(SecretError::Unreadable(e)) => Err(format!("PLUME_DB_KEY_FILE={path} illisible ({e})")),
+        Err(SecretError::Malformed(_)) => Err(format!("PLUME_DB_KEY_FILE={path} : contenu non-UTF8")),
+        Err(SecretError::Backend(e)) => Err(e), // inatteignable pour file:
+    }
+}
+/// Applique la clé SQLCipher à une connexion fraîchement ouverte (no-op si pas de clé / SQLite simple).
+pub(crate) fn apply_key(conn: &Connection) {
+    if let Some(k) = db_key() {
+        // (v108) busy_timeout AVANT `PRAGMA key` : un verrou RESIDUEL (sidecar backup) fait ATTENDRE
+        // (<=5s) au lieu d'un PRAGMA key qui echoue instantanement puis est avale. Chemin CLE uniquement
+        // (dans le `if let Some(k) = db_key()`) -> le cas EN CLAIR (db_key()=None) n'est PAS touche.
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+        let _ = conn.execute_batch(&format!("PRAGMA key = '{}';", k.replace('\'', "''")));
+    }
+}
+/// Ouvre la base en appliquant la clé SQLCipher si présente (à utiliser partout au lieu de Connection::open).
+pub(crate) fn open_db(path: &str) -> rusqlite::Result<Connection> {
+    let conn = Connection::open(path)?;
+    apply_key(&conn);
+    Ok(conn)
+}
+/// Migration de chiffrement (idempotente, NON destructive) : si `PLUME_DB_KEY` est posé MAIS que la base
+/// existante est EN CLAIR, on la sauvegarde (`.plaintext.bak`) puis on la chiffre (sqlcipher_export) —
+/// une seule fois. Ne touche RIEN si pas de clé, base déjà chiffrée, ou base illisible.
+/// Efface un fichier « best-effort » : écrase son contenu (zéros) puis le supprime, pour qu'une
+/// copie EN CLAIR de la base ne subsiste pas en clair sur le volume /data (récupérable). Le shred parfait est
+/// impossible sur SSD/COW (wear-leveling) mais l'écrasement + unlink retire la copie logique et couvre le cas
+/// disque magnétique/ext4. Toute erreur est avalée (au pire il reste `remove_file`).
+pub(crate) fn shred_file(p: &str) {
+    use std::io::Write;
+    if let Ok(meta) = std::fs::metadata(p) {
+        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(p) {
+            let zeros = [0u8; 64 * 1024];
+            let mut left = meta.len();
+            while left > 0 {
+                let n = (left.min(zeros.len() as u64)) as usize;
+                if f.write_all(&zeros[..n]).is_err() { break; }
+                left -= n as u64;
+            }
+            let _ = f.flush();
+            let _ = f.sync_all();
+        }
+    }
+    let _ = std::fs::remove_file(p);
+}
+
+/// SELF-CHECK boot — verdict de la CLASSIFICATION NON destructive d'un fichier DB
+/// vis-à-vis d'une clé SQLCipher. Distingue explicitement « base neuve/vide » (SQLCipher la créera) de « base
+/// chiffrée existante, MAUVAISE clé » : ce dernier cas doit fail-CLOSE au boot (clair) au lieu de laisser
+/// l'échec surgir à une requête ultérieure aléatoire. Reproduit la logique keyed-open/keyless-open que
+/// `ensure_encrypted` faisait déjà en ligne (aucune écriture, aucune mutation du fichier).
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum DbProbe {
+    /// Fichier absent ou VIDE (0 octet) : SQLCipher le créera chiffré d'office — rien à faire, PAS d'erreur.
+    /// (Une base neuve s'ouvre avec N'IMPORTE quelle clé — d'où la nécessité de ce cas pour éviter tout
+    /// faux positif WrongKey au premier boot / à l'install fraîche.)
+    Fresh,
+    /// Lisible AVEC la clé (sqlite_master lu) : base déjà chiffrée, clé CORRECTE -> rien à faire.
+    OpensWithKey,
+    /// Lisible SANS clé : base EN CLAIR -> migration de chiffrement.
+    Plaintext,
+    /// Fichier NON VIDE, illisible AVEC la clé ET illisible SANS -> MAUVAISE clé ou corruption : FAIL-CLOSED.
+    WrongKeyOrCorrupt,
+    /// Fichier présent mais non ouvrable du tout (I/O/permission) : on NE touche pas (comportement historique).
+    Unopenable,
+    /// (v108 follow-up) Sonde entravée par un VERROU SQLite (`SQLITE_BUSY`/`SQLITE_LOCKED`) — p.ex. le sidecar
+    /// backup tenant un write-lock au-delà du `busy_timeout` pendant un chevauchement de boot. Un verrou est
+    /// TRANSITOIRE : on ne peut RIEN conclure sur la clé tant qu'il tient. Distinct de `WrongKeyOrCorrupt` pour
+    /// que `ensure_encrypted` réessaie (backoff borné) au lieu d'un faux `exit(78)` -> faux crashloop.
+    Locked,
+}
+
+/// (v108) L'erreur rusqlite dénote-t-elle un VERROU (contention transitoire) et non un échec de clé/corruption ?
+/// On matche le CODE ffi (`DatabaseBusy`/`DatabaseLocked`), pas une chaîne. Une mauvaise clé remonte
+/// `SQLITE_NOTADB` (« file is not a database ») -> PAS un verrou -> reste `WrongKeyOrCorrupt` -> exit(78).
+fn is_lock_err(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked,
+                ..
+            },
+            _
+        )
+    )
+}
+
+/// F1a — classe `path` vis-à-vis de `key`, SANS jamais modifier le fichier (aucune écriture). Voir `DbProbe`.
+/// `busy_timeout` modeste sur les deux ouvertures : une contention de verrou transitoire (sidecar backup en
+/// vol) ATTEND au lieu d'être prise à tort pour une corruption -> pas de faux `WrongKeyOrCorrupt` sur un lock.
+pub(crate) fn probe_db(path: &str, key: &str) -> DbProbe {
+    probe_db_with_busy(path, key, std::time::Duration::from_secs(5))
+}
+
+/// (v108) Cœur testable de `probe_db` avec `busy` paramétrable. `busy=0` -> `SQLITE_BUSY` IMMÉDIAT si un verrou
+/// tient (tests déterministes, sans attente). En prod `probe_db` fixe 5 s. On CLASSE les erreurs de lecture :
+/// un verrou (`SQLITE_BUSY`/`SQLITE_LOCKED`) sur l'une OU l'autre ouverture -> `Locked` (transitoire, on ne peut
+/// PAS conclure sur la clé) ; sinon (p.ex. `SQLITE_NOTADB`) -> `WrongKeyOrCorrupt`. Ainsi une MAUVAISE clé sur
+/// une base NON verrouillée reste fail-closed (exit 78), et un verrou ne déclenche PAS de faux fail-closed.
+pub(crate) fn probe_db_with_busy(path: &str, key: &str, busy: std::time::Duration) -> DbProbe {
+    // FRESH = fichier absent OU 0 octet. Une base 0-octet est « neuve » : s'ouvre avec toute clé (SQLCipher la
+    // matérialise au 1er write) -> ne JAMAIS la classer WrongKey (pas de faux positif install/premier boot).
+    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if len == 0 { return DbProbe::Fresh; }
+    let kesc = key.replace('\'', "''");
+    // Un verrou vu sur N'IMPORTE laquelle des deux ouvertures rend le verdict clé/corruption INDÉCIDABLE :
+    // on remonte `Locked` (l'appelant réessaiera) plutôt qu'un faux `WrongKeyOrCorrupt`.
+    let mut saw_lock = false;
+    // 1) lisible AVEC la clé ? (base déjà chiffrée, BONNE clé)
+    if let Ok(c) = Connection::open(path) {
+        let _ = c.busy_timeout(busy);
+        let _ = c.execute_batch(&format!("PRAGMA key = '{}';", kesc));
+        match c.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0)) {
+            Ok(_) => return DbProbe::OpensWithKey,
+            Err(e) if is_lock_err(&e) => saw_lock = true, // verrou -> pas une preuve de mauvaise clé
+            Err(_) => {}                                  // NOTADB/HMAC/... -> possible mauvaise clé (cf. étape 2/3)
+        }
+    }
+    // 2) lisible SANS clé ? (base EN CLAIR -> à migrer). Ouverture impossible -> on NE touche pas.
+    let plain = match Connection::open(path) { Ok(c) => c, Err(_) => return DbProbe::Unopenable };
+    let _ = plain.busy_timeout(busy);
+    match plain.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0)) {
+        Ok(_) => return DbProbe::Plaintext,
+        Err(e) if is_lock_err(&e) => saw_lock = true,
+        Err(_) => {}
+    }
+    // 3) Un verrou a masqué au moins une lecture -> INDÉCIDABLE, transitoire : `Locked` (retry côté appelant),
+    //    JAMAIS `WrongKeyOrCorrupt`. Sans verrou : non vide, ni déchiffrable par la clé, ni en clair -> mauvaise
+    //    clé / corruption (fail-closed conservé).
+    if saw_lock { return DbProbe::Locked; }
+    DbProbe::WrongKeyOrCorrupt
+}
+
+pub(crate) fn ensure_encrypted(path: &str) {
+    let key = match db_key() { Some(k) => k, None => return };
+    if !std::path::Path::new(path).exists() { return; }              // base neuve -> créée chiffrée d'office
+    let bak = format!("{path}.plaintext.bak");
+    // BALAYAGE au démarrage — un `.plaintext.bak` résiduel (run précédent interrompu APRÈS le swap
+    // mais AVANT le nettoyage) est une copie EN CLAIR persistante -> on l'efface d'emblée. Sûr : la base
+    // chiffrée est déjà en place (sinon on retomberait dans le chemin d'export ci-dessous qui recrée un bak).
+    if std::path::Path::new(&bak).exists() { shred_file(&bak); }
+    // F1a — SELF-CHECK au boot : classer la base AVANT toute écriture. Une clé PRÉSENTE mais FAUSSE sur une
+    // base NON VIDE fail-CLOSE ici (exit 78), au lieu du `return` silencieux historique (qui laissait open_db()
+    // « réussir » puis une requête ultérieure planter à un endroit aléatoire) -> même signal PROPRE qu'un
+    // fichier de clé absent (fail-closed de db_key()). Rollback = revert du manifeste (env restauré).
+    // (v108 follow-up) Un VERROU transitoire (sidecar backup tenant un write-lock au-delà du busy_timeout pendant
+    // un chevauchement de boot) NE DOIT PAS être pris pour une clé fausse -> re-sonde avec BACKOFF BORNÉ. Si le
+    // verrou persiste, on PROCÈDE (return) : `open_db()` gérera la contention avec son propre busy_timeout ; un
+    // verrou N'EST PAS une condition fail-closed (contrairement à une mauvaise clé). Bornage strict = pas de
+    // boucle infinie sur un verrou coincé. AUCUNE modification du fichier dans tout ce chemin.
+    let mut verdict = probe_db(path, &key);
+    if verdict == DbProbe::Locked {
+        // Backoff borné : 0,5 s + 1 s + 2 s (max ~3,5 s d'attentes + les busy_timeout internes des sondes).
+        for attempt in 1..=3u32 {
+            std::thread::sleep(std::time::Duration::from_millis(500u64 << (attempt - 1)));
+            eprintln!("[sqlcipher] self-check : base verrouillée (SQLITE_BUSY) — re-sonde {attempt}/3 (un verrou est transitoire)");
+            verdict = probe_db(path, &key);
+            if verdict != DbProbe::Locked { break; }
+        }
+        if verdict == DbProbe::Locked {
+            eprintln!("[sqlcipher] base TOUJOURS verrouillée après re-sondes bornées — on PROCÈDE sans conclure (open_db gérera la contention ; un verrou n'est PAS un fail-closed). Fichier NON modifié.");
+            return;
+        }
+    }
+    match verdict {
+        DbProbe::Fresh | DbProbe::OpensWithKey | DbProbe::Unopenable => return,
+        DbProbe::Locked => return, // défensif : déjà traité ci-dessus (retries épuisés -> on ne touche à rien)
+        DbProbe::WrongKeyOrCorrupt => {
+            eprintln!(
+                "[FATAL] clé SQLCipher invalide — la clé fournie n'ouvre pas {path} ; \
+                 vérifiez PLUME_DB_KEY_FILE/PLUME_DB_KEY (la base existe, est chiffrée, et cette clé ne la \
+                 déchiffre pas : mauvaise clé ou base corrompue). Refus de démarrer (fail-closed) ; la base \
+                 n'est PAS modifiée. Restaurez la BONNE clé (ou une sauvegarde compatible)."
+            );
+            std::process::exit(78); // EX_CONFIG — même code que le fail-closed de db_key()
+        }
+        DbProbe::Plaintext => { /* base EN CLAIR confirmée -> migration ci-dessous */ }
+    }
+    let kesc = key.replace('\'', "''");
+    // 3) checkpoint WAL, backup clair, export chiffré -> temp, swap atomique (base EN CLAIR confirmée par probe_db)
+    let plain = match Connection::open(path) { Ok(c) => c, Err(_) => return };
+    let _ = plain.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    if std::fs::copy(path, &bak).is_err() { eprintln!("[sqlcipher] backup impossible -> abandon (base en clair intacte)"); return; }
+    let enc = format!("{path}.enc.tmp");
+    let _ = std::fs::remove_file(&enc);
+    let sql = format!("ATTACH DATABASE '{}' AS enc KEY '{}'; SELECT sqlcipher_export('enc'); DETACH DATABASE enc;",
+                      enc.replace('\'', "''"), kesc);
+    if let Err(e) = plain.execute_batch(&sql) { eprintln!("[sqlcipher] export échoué: {e} (base en clair intacte)"); let _ = std::fs::remove_file(&enc); return; }
+    drop(plain);
+    if std::fs::rename(&enc, path).is_ok() {
+        let _ = std::fs::remove_file(format!("{path}-wal"));
+        let _ = std::fs::remove_file(format!("{path}-shm"));
+        // NETTOYAGE : le swap chiffré est vérifié en place -> on EFFACE la copie EN CLAIR (shred+unlink) au lieu
+        // de la laisser traîner sur /data (l'ancien message « supprimer après vérif » comptait sur l'opérateur
+        // et laissait une base en clair persistante). La base chiffrée reste la source de vérité.
+        shred_file(&bak);
+        eprintln!("[sqlcipher] base chiffrée at-rest OK (copie en clair effacée : {bak})");
+    } else {
+        eprintln!("[sqlcipher] swap échoué (base en clair intacte ; chiffrée disponible en {enc})");
+    }
+}
+
+// ================================================================================================
+// FRONTIÈRE CRYPTO PAR TENANT (#2a-3) — REGISTRE db_path -> clé résolue + client Vault minimal.
+//
+// Le read-pool (READ_POOL) est keyé par db_path (#2a-1). L'ouverture d'une connexion pour un db_path DOIT
+// appliquer la clé DE CE TENANT (celle résolue depuis son key_ref), PAS la clé globale db_key(). Le
+// manager enregistre ici, au moment où il résout un tenant, l'association (db_path -> clé effective) ;
+// read_conn_open (chemin de lecture) consulte ce registre. Mode 0 : la base unique n'est JAMAIS enregistrée
+// -> read_conn_open retombe sur apply_key()/db_key()/PLUME_DB_KEY = comportement STRICTEMENT identique.
+// FAIL-CLOSED : un tenant dont la clé ne résout pas n'est JAMAIS enregistré, ET son db_path n'est jamais
+// produit par resolve/req_db_path/handle_for -> aucune ouverture d'un fichier tenant avec une clé par défaut.
+// ================================================================================================
+pub(crate) static DB_KEY_REGISTRY: std::sync::OnceLock<Mutex<HashMap<String, Option<String>>>> = std::sync::OnceLock::new();
+pub(crate) fn db_key_registry() -> &'static Mutex<HashMap<String, Option<String>>> {
+    DB_KEY_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+/// Enregistre (db_path -> clé effective) : `None` = base en clair, `Some` = clé SQLCipher DU TENANT.
+pub(crate) fn register_db_key(db_path: &str, key: Option<String>) {
+    db_key_registry().lock().insert(db_path.to_string(), key);
+}
+/// Oublie l'entrée (destruction crypto / éviction).
+#[allow(dead_code)]
+pub(crate) fn unregister_db_key(db_path: &str) {
+    db_key_registry().lock().remove(db_path);
+}
+/// Applique à une connexion la clé DU `db_path` : d'abord le registre (clé PAR tenant), sinon repli sur la
+/// clé globale db_key() (base par défaut mode 0 / appelants internes / tests). Le registre étant keyé par
+/// db_path, JAMAIS la clé d'un AUTRE tenant n'est appliquée. Une valeur enregistrée `None` = ouverture EN
+/// CLAIR explicite (aucune PRAGMA key).
+pub(crate) fn apply_key_for(conn: &Connection, db_path: &str) {
+    let entry = db_key_registry().lock().get(db_path).cloned();
+    match entry {
+        Some(Some(k)) => {
+            let _ = conn.execute_batch(&format!("PRAGMA key = '{}';", k.replace('\'', "''")));
+        }
+        Some(None) => { /* enregistré EN CLAIR : aucune clé */ }
+        None => apply_key(conn), // non enregistré -> clé globale (invariant mode 0 préservé)
+    }
+}
+
+// --- CLIENT VAULT MINIMAL (aucune dépendance nouvelle : std::net + rustls déjà présent + base64/serde_json).
+//     GET $PLUME_VAULT_ADDR/v1/<CHEMIN>, header X-Vault-Token, extraction data.data.key (KV v2). La clé
+//     résolue est mise en cache par CHEMIN (évite un appel Vault par requête) ; SEULS les succès sont
+//     cachés (une panne Vault transitoire reste re-tentable). La clé n'apparaît JAMAIS dans un log/erreur.
+pub(crate) static VAULT_KEY_CACHE: std::sync::OnceLock<Mutex<HashMap<String, String>>> = std::sync::OnceLock::new();
+pub(crate) fn vault_key_cache() -> &'static Mutex<HashMap<String, String>> {
+    VAULT_KEY_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+pub(crate) fn vault_key_cache_get(path: &str) -> Option<String> {
+    vault_key_cache().lock().get(path).cloned()
+}
+pub(crate) fn vault_key_cache_put(path: &str, key: &str) {
+    vault_key_cache().lock().insert(path.to_string(), key.to_string());
+}
+#[allow(dead_code)]
+pub(crate) fn vault_key_cache_forget(path: &str) {
+    vault_key_cache().lock().remove(path);
+}
+
+/// v134 (#8) — TOKEN Vault : PRIORITÉ au FICHIER monté RO (`PLUME_VAULT_TOKEN_FILE`), MIROIR de
+/// `db_key`/`PLUME_DB_KEY_FILE` : le token (credential) ne transite plus par `/proc/<pid>/environ` (lisible
+/// via `kubectl exec`, `ps e`, crash-dump, héritage enfant). FAIL-CLOSED : si `PLUME_VAULT_TOKEN_FILE` est
+/// posé mais que le fichier est absent/illisible/vide -> `Err` (jamais de repli SILENCIEUX sur l'env, qui
+/// pourrait être absent -> auth Vault ratée EN SILENCE). Non posé -> repli rétrocompat sur l'env
+/// `PLUME_VAULT_TOKEN` (mode historique). Absent partout -> `Err` (FAIL-CLOSED, comme le comportement
+/// antérieur). Lecture VERBATIM du fichier (`FileProvider`, byte-pour-byte, comme la clé SQLCipher : la
+/// projection d'un Secret k8s n'ajoute aucun newline).
+pub(crate) fn vault_token() -> Result<String, String> {
+    if let Ok(path) = std::env::var("PLUME_VAULT_TOKEN_FILE") {
+        if !path.is_empty() {
+            return vault_token_from_file(&path);
+        }
+    }
+    std::env::var("PLUME_VAULT_TOKEN").ok().filter(|s| !s.is_empty())
+        .ok_or_else(|| "vault: mais PLUME_VAULT_TOKEN (ou PLUME_VAULT_TOKEN_FILE) non défini (FAIL-CLOSED)".to_string())
+}
+
+/// v134 (#8) — lecture VERBATIM et TESTABLE du token Vault depuis un FICHIER (secret mount RO). Réutilise le
+/// MÊME `guatx_core::secret::FileProvider` que `db_key_from_file` (octets tels quels). `Err` fail-closed si
+/// absent/vide/illisible/non-UTF8 (messages scopés à `PLUME_VAULT_TOKEN_FILE`, jamais le contenu).
+pub(crate) fn vault_token_from_file(path: &str) -> Result<String, String> {
+    use guatx_core::secret::{SecretError, SecretOutcome, SecretProvider, SecretRef};
+    match guatx_core::secret::FileProvider.get(&SecretRef::file(path)) {
+        Ok(SecretOutcome::Present(v)) => Ok(v.into_string()), // VERBATIM
+        Ok(SecretOutcome::NotFound) => Err(format!("PLUME_VAULT_TOKEN_FILE={path} absent ou vide (FAIL-CLOSED)")),
+        Err(SecretError::Unreadable(e)) => Err(format!("PLUME_VAULT_TOKEN_FILE={path} illisible ({e})")),
+        Err(SecretError::Malformed(_)) => Err(format!("PLUME_VAULT_TOKEN_FILE={path} : contenu non-UTF8")),
+        Err(SecretError::Backend(e)) => Err(e), // inatteignable pour file:
+    }
+}
+
+/// PHASE 2 — résout un secret Vault KV-v2 avec CHAMP paramétrable (généralise l'ancien `data.data.key`
+/// codé en dur en `data.data.<field>`). Cache par `path#field` (un même path peut porter plusieurs
+/// champs). FAIL-CLOSED identique : Vault non configuré / injoignable / champ absent -> `Err`.
+pub(crate) fn resolve_vault_key_field(path: &str, field: &str) -> Result<String, String> {
+    let cache_key = format!("{path}#{field}");
+    if let Some(k) = vault_key_cache_get(&cache_key) {
+        return Ok(k);
+    }
+    let addr = std::env::var("PLUME_VAULT_ADDR").ok().filter(|s| !s.is_empty())
+        .ok_or("vault: mais PLUME_VAULT_ADDR non défini (FAIL-CLOSED)")?;
+    let token = vault_token()?;
+    let key = vault_fetch_field(&addr, &token, path, field)?;
+    if key.is_empty() {
+        return Err("Vault a renvoyé une valeur vide".into());
+    }
+    vault_key_cache_put(&cache_key, &key);
+    Ok(key)
+}
+
+/// Effectue le GET Vault et extrait `data.data.<field>` (KV v2). `field` généralise l'ancien `key` codé
+/// en dur (défaut `key` côté `SecretRef::vault_path_field`). Ne journalise JAMAIS le corps (il porte le secret).
+pub(crate) fn vault_fetch_field(addr: &str, token: &str, path: &str, field: &str) -> Result<String, String> {
+    let req_path = format!("/v1/{}", path.trim_start_matches('/'));
+    let body = http_get(addr, &req_path, &[("X-Vault-Token", token)])?;
+    let v: Value = serde_json::from_slice(&body).map_err(|_| "réponse Vault non-JSON".to_string())?;
+    v.get("data")
+        .and_then(|d| d.get("data"))
+        .and_then(|d| d.get(field))
+        .and_then(|k| k.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("champ absent dans la réponse Vault (data.data.{field})"))
+}
+
+/// PHASE 2 — `SecretProvider` `vault:` (HTTP KV-v2). Enveloppe le client Vault EXISTANT derrière la SPI ;
+/// AUCUN nouveau code Vault. `rest == "MOUNT/path#field"` (défaut `#key`). FAIL-CLOSED -> `Backend`. NB :
+/// ceci est le `vault:` HTTP (db-key/tenant/{KEY}_REF) — DISTINCT du `vault:` par ENV-PROJECTION des
+/// overlays (`overlays_oac::resolve_secret_ref`), qui reste une forme atteignable séparée.
+pub(crate) struct VaultProvider;
+
+impl guatx_core::secret::SecretProvider for VaultProvider {
+    fn scheme(&self) -> &'static str {
+        "vault"
+    }
+    fn get(
+        &self,
+        r: &guatx_core::secret::SecretRef,
+    ) -> Result<guatx_core::secret::SecretOutcome, guatx_core::secret::SecretError> {
+        use guatx_core::secret::{SecretError, SecretOutcome, SecretValue};
+        let (path, field) = r.vault_path_field();
+        match resolve_vault_key_field(path, field) {
+            Ok(k) => Ok(SecretOutcome::Present(SecretValue::new(k))),
+            Err(e) => Err(SecretError::Backend(e)), // Vault non configuré/injoignable/champ absent -> fail-closed
+        }
+    }
+}
+
+/// Magasin de racines TLS pour Vault : PLUME_VAULT_CA (PEM, ex. CA in-cluster montée dans le pod) puis
+/// bundles système. FAIL-CLOSED : aucune racine chargée -> `Err` (jamais de vérification désactivée).
+pub(crate) fn vault_root_store() -> Result<rustls::RootCertStore, String> {
+    let mut roots = rustls::RootCertStore::empty();
+    let mut loaded = 0usize;
+    let mut paths: Vec<String> = Vec::new();
+    if let Ok(p) = std::env::var("PLUME_VAULT_CA") {
+        if !p.is_empty() { paths.push(p); }
+    }
+    for p in ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"] {
+        paths.push(p.to_string());
+    }
+    for p in paths {
+        if let Ok(pem) = std::fs::read_to_string(&p) {
+            for der in pem_certs(&pem) {
+                if roots.add(rustls::pki_types::CertificateDer::from(der)).is_ok() { loaded += 1; }
+            }
+            if loaded > 0 { break; }
+        }
+    }
+    if loaded == 0 {
+        return Err("aucune racine TLS chargée (PLUME_VAULT_CA / bundle système) — https Vault impossible".into());
+    }
+    Ok(roots)
+}
+
+/// Extrait les blocs DER des certificats PEM (base64 entre BEGIN/END CERTIFICATE) — réutilise base64.
+pub(crate) fn pem_certs(pem: &str) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut in_cert = false;
+    let mut b64 = String::new();
+    for line in pem.lines() {
+        let t = line.trim();
+        if t == "-----BEGIN CERTIFICATE-----" { in_cert = true; b64.clear(); continue; }
+        if t == "-----END CERTIFICATE-----" {
+            if let Ok(der) = base64::engine::general_purpose::STANDARD.decode(b64.as_bytes()) { out.push(der); }
+            in_cert = false; continue;
+        }
+        if in_cert { b64.push_str(t); }
+    }
+    out
+}

@@ -1,0 +1,18 @@
+[Unit]
+Description=plume collector (plugin) — images tirees + conteneurs (CRI/crictl) -> events
+# OPT-IN : installe non active. Activer : systemctl enable --now plume-containerd.timer
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+ExecStart=/usr/local/lib/plume/collectors/containerd.sh
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+LockPersonality=true
+MemoryMax=96M
+CPUQuota=25%
+Nice=12

@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — logs mailserver périodiques
+
+[Timer]
+OnBootSec=200s
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

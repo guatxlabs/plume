@@ -1,0 +1,21 @@
+{
+  "_comment": "EXEMPLE de PARSEUR DÉCLARATIF (DSL CIM) pour la SÉCURITÉ ENDPOINT (#57) — voie VENDOR-AGNOSTIC. Le preset built-in `endpoint_normalize` couvre le schéma d'alerte Wazuh (SCA/vuln/FIM/syscollector) ; ce fichier montre comment ingérer la MÊME famille (FIM / intégrité fichiers) depuis un AUTRE agent SANS rebuild Rust. Ici une source `fim-agent` qui émet des lignes key=value (`path=... event=modified sha256=...`) -> catégorie CIM `integrity` + champs `fim_*` (mêmes noms que le preset Wazuh -> les vues natives fonctionnent à l'identique). ENRICH/MAP UNIQUEMENT, jamais un drop. Renommer/dupliquer pour votre agent (osquery pack FIM, un EDR, un tripwire maison).",
+  "name": "FIM générique (key=value) → CIM integrity",
+  "source": "fim-agent",
+  "enabled": true,
+  "match": "\\bevent=(?:added|modified|deleted)\\b",
+  "extract": [
+    { "kv": true }
+  ],
+  "map": {
+    "category": "integrity",
+    "action": "$action",
+    "fields": {
+      "fim_path": "$path",
+      "fim_event": "$event",
+      "fim_mode": "$mode",
+      "fim_sha256": "$sha256",
+      "fim_actor": "$actor"
+    }
+  }
+}

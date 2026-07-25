@@ -1,0 +1,51 @@
+[Unit]
+Description=plume collector — recepteur syslog (RFC5424+RFC3164, UDP+TCP :514) -> parser vendeur (FortiGate) -> spool
+# OPT-IN : installe mais NON active par defaut (regle d'or). Activer explicitement :
+#   sudo systemctl enable --now plume-collector-syslog.service
+# Contrairement aux autres collecteurs (oneshot + timer), c'est un SERVICE LONG-RUNNING (socket serveur).
+# ship.sh (plume-ship.timer) expedie le spool vers /api/ingest (mTLS+token) — meme chemin que conntrack.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+# Config (parser/source/binds/batch) : cf. /etc/plume/syslog.conf (voir deploy/SYSLOG.md)
+#   PLUME_SYSLOG_PARSER=fortigate|auto|generic   PLUME_SYSLOG_SOURCE=fortigate
+#   PLUME_SYSLOG_UDP=0.0.0.0:514   PLUME_SYSLOG_TCP=0.0.0.0:514  (vider une variable = desactiver ce transport)
+#   PLUME_SYSLOG_BATCH_MAX=500  PLUME_SYSLOG_FLUSH_MS=2000  PLUME_SYSLOG_MAX_FRAME=65536  PLUME_SYSLOG_MAX_CONNS=128
+# DURCISSEMENT (syslog = non authentifie) : PLUME_SYSLOG_ALLOW=<cidr,...> (allowlist source-IP ; vide = tout)
+#   + PLUME_SYSLOG_MAX_CONNS_PER_IP=16  PLUME_SYSLOG_TCP_IDLE=60  PLUME_SYSLOG_TCP_MAXLIFE=3600  (anti-slowloris)
+#   + PLUME_SYSLOG_SPOOL_MAX_BYTES=536870912  PLUME_SYSLOG_QUEUE_MAX (backpressure disque/memoire)
+#   + PLUME_SYSLOG_TZ=+0100 (tz par defaut si le device n'emet pas de champ tz ; sinon UTC)
+EnvironmentFile=-/etc/plume/syslog.conf
+ExecStart=/usr/local/lib/plume/collectors/plume-collector-syslog
+Restart=on-failure
+RestartSec=3
+
+# Bind du port PRIVILEGIE :514 sans root : capability ambiante minimale (User=soc, PAS de root).
+# Le sandbox du DAEMON reste byte-identique — cette capability est portee UNIQUEMENT par ce collecteur.
+User=soc
+Group=soc
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+# Durcissement : n'ecrit QUE le spool, ne lit rien de sensible, reseau IP + UNIX seulement.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/plume/spool
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+MemoryMax=192M
+CPUQuota=60%
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

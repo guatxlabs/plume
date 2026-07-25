@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — scan maildir périodique (collector-mail)
+
+[Timer]
+OnBootSec=130s
+OnUnitActiveSec=10min
+AccuracySec=60s
+
+[Install]
+WantedBy=timers.target

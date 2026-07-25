@@ -1,0 +1,13 @@
+{
+  "_comment": "Forced browsing / wordlist scanning à l'origine : une IP touche >20 chemins DISTINCTS renvoyant 403 (action=blocked côté web) = elle devine des chemins protégés. Complémentaire du 404-breadth seedé (chemins INEXISTANTS) : ici les chemins EXISTENT mais sont interdits. Exclusion par NATURE (l'usage légitime ne balaie pas des 403). || TÉLÉMÉTRIE REQUISE: web (action, status, path) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Recon web: forced-browsing (403-breadth par IP)",
+  "enabled": false,
+  "query": "search source=web action=blocked status=403 | stats dc(path) by src_ip | where dc > 20 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 2,
+  "interval_s": 300,
+  "window_s": 1800,
+  "mitre": "T1595.003"
+}

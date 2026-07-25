@@ -1,0 +1,22 @@
+[Unit]
+Description=plume collector — RBAC Kubernetes (Varonis) : qui peut accéder à quoi (secrets/cluster-admin) -> source=kube-rbac
+# OPT-IN : installé mais NON activé. Activer : systemctl enable --now plume-kube-rbac.timer
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/plume/plume.conf
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+Environment=HOME=/tmp
+ExecStart=/usr/local/lib/plume/collectors/kube-rbac.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryMax=512M
+CPUQuota=25%
+Nice=15

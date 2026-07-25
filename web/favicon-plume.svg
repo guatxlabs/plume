@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Plume — plume de quetzal">
+  <defs>
+    <linearGradient id="vane" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#22ecc0"/>
+      <stop offset="0.5" stop-color="#00c79f"/>
+      <stop offset="1" stop-color="#009c80"/>
+    </linearGradient>
+  </defs>
+  <!-- Plume de queue du quetzal resplendissant : émeraude, silhouette lisible en 16px. -->
+  <!-- Vane (barbes) : forme lancéolée, contour foncé pour le contraste sur onglet clair. -->
+  <path d="M 292 72
+           C 236 150, 176 210, 172 278
+           C 168 340, 196 402, 232 440
+           C 276 400, 320 322, 330 254
+           C 336 200, 330 132, 292 72 Z"
+        fill="url(#vane)" stroke="#00654f" stroke-width="5" stroke-linejoin="round"/>
+  <!-- Barbes suggérées (s'estompent en 16px, texture en grand). -->
+  <g stroke="#00654f" stroke-width="3" stroke-linecap="round" opacity="0.35" fill="none">
+    <path d="M 268 150 C 240 168, 214 188, 198 214"/>
+    <path d="M 258 208 C 228 226, 202 248, 188 278"/>
+    <path d="M 248 268 C 220 288, 200 314, 194 344"/>
+    <path d="M 240 326 C 222 348, 212 372, 214 398"/>
+    <path d="M 276 150 C 300 172, 318 200, 324 232"/>
+    <path d="M 266 208 C 292 230, 310 262, 316 296"/>
+    <path d="M 256 268 C 278 292, 292 322, 292 356"/>
+  </g>
+  <!-- Nervure centrale (rachis). -->
+  <path d="M 292 72 C 268 172, 250 300, 231 442"
+        fill="none" stroke="#004f3d" stroke-width="11" stroke-linecap="round"/>
+  <path d="M 292 72 C 268 172, 250 300, 231 442"
+        fill="none" stroke="#7ff5da" stroke-width="4" stroke-linecap="round" opacity="0.8"/>
+  <!-- Calamus nu. -->
+  <path d="M 231 442 L 224 474" fill="none" stroke="#004f3d" stroke-width="9" stroke-linecap="round"/>
+</svg>

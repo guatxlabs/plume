@@ -1,0 +1,9 @@
+{
+  "_comment": "Passerelle OpenAI-compatible generique (bring-your-own : LocalAI, LM Studio, LiteLLM, Ollama via /v1, un proxy interne...). Renseignez endpoint + model. Classe LOCAL/CLOUD selon l'endpoint reel (la garde SSRF/cloud resout l'hote) : un endpoint public exige PLUME_AI_ALLOW_CLOUD. Cle API saisie a l'instanciation si necessaire.",
+  "vendor": "Générique",
+  "api_shape": "openai",
+  "endpoint": "{endpoint}",
+  "model": "{model}",
+  "requires_cloud": false,
+  "config": { "temperature": 0, "max_tokens": 512 }
+}

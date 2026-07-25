@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — RBAC Kubernetes (Varonis) périodique
+
+[Timer]
+OnBootSec=330s
+OnUnitActiveSec=30min
+AccuracySec=2min
+
+[Install]
+WantedBy=timers.target

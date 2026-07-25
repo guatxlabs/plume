@@ -1,0 +1,20 @@
+[Unit]
+Description=plume collector (plugin) — scan CVE des images deployees (trivy) -> events vuln
+# OPT-IN. Necessite trivy. Activer : systemctl enable --now plume-vuln.timer
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+Environment=TRIVY_CACHE_DIR=/var/lib/plume/state/trivy
+EnvironmentFile=-/etc/plume/vuln.conf
+ExecStart=/usr/local/lib/plume/collectors/vuln.sh
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+LockPersonality=true
+MemoryMax=1500M
+CPUQuota=50%
+Nice=15

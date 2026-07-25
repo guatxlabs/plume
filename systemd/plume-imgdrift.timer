@@ -1,0 +1,11 @@
+[Unit]
+Description=plume — verification MAJ d'images (quotidien)
+
+[Timer]
+OnBootSec=12min
+OnUnitActiveSec=24h
+AccuracySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

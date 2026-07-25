@@ -1,0 +1,40 @@
+{
+  "_comment": "EXEMPLE de config http_pull pour Cloudflare Audit Logs (GET /client/v4/accounts/{account_id}/audit_logs) — piste d'audit du control-plane Cloudflare (changements de config, DNS, WAF, membres…). Le jeton API Cloudflare va dans le champ `secret` du connecteur (auth kind=bearer -> `Authorization: Bearer <secret>`) — JAMAIS ici. Remplacez {account_id} et créez un API token avec la permission 'Account Audit Logs: Read'. NB : ce preset couvre l'AUDIT (control-plane). Pour les logs de REQUÊTES HTTP (WAF/proxy, catégorie CIM `web`), utilisez Logpush -> R2/HTTP-endpoint vers l'ingest HEC de Plume (source `cloudflare-http`, déjà présente) : les logs de requêtes ne sont pas exposés par une API de pull paginée.",
+  "method": "GET",
+  "url": "https://api.cloudflare.com/client/v4/accounts/{account_id}/audit_logs?direction=asc",
+  "records_path": "result",
+  "source": "cloudflare",
+  "sourcetype": "cloudflare:audit",
+  "auth": {
+    "kind": "bearer"
+  },
+  "pagination": {
+    "kind": "page",
+    "param": "page",
+    "start": 1,
+    "size": 1000,
+    "size_param": "per_page"
+  },
+  "sourcetype_map": {
+    "cloudflare:audit": "audit"
+  },
+  "field_map": {
+    "id": "id",
+    "ts": "when",
+    "message": "action.type",
+    "src_ip": "actor.ip",
+    "sourcetype": "=cloudflare:audit",
+    "fields.user": "actor.email",
+    "fields.actor_type": "actor.type",
+    "fields.action": "action.result",
+    "fields.resource_type": "resource.type",
+    "fields.resource_id": "resource.id",
+    "fields.metadata": "metadata"
+  },
+  "watermark": {
+    "field_path": "when",
+    "param": "since",
+    "format": "iso8601",
+    "lookback_days": 7
+  }
+}

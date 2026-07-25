@@ -1,0 +1,39 @@
+{
+  "_comment": "EXEMPLE de config http_pull GÉNÉRIQUE (n'importe quelle API REST/JSON paginée). À COPIER/ADAPTER dans le champ `config` d'un connecteur http_pull. Le jeton bearer va dans le champ `secret` du connecteur (auth kind=bearer -> `Authorization: Bearer <secret>`) — JAMAIS ici. Squelette exhaustif : retirez ce dont vous n'avez pas besoin.",
+  "method": "GET",
+  "url": "https://api.example.com/v1/alerts",
+  "records_path": "results",
+  "source": "example-rest",
+  "auth": {
+    "kind": "bearer"
+  },
+  "pagination": {
+    "kind": "page",
+    "param": "page",
+    "start": 1,
+    "size": 100,
+    "size_param": "per_page"
+  },
+  "sourcetype_map": {
+    "example:alert": "ids"
+  },
+  "field_map": {
+    "id": "uuid",
+    "ts": "timestamp",
+    "severity": "severity",
+    "message": "title",
+    "host": "asset.hostname",
+    "src_ip": "network.source_ip",
+    "dst_ip": "network.dest_ip",
+    "url": "network.url",
+    "sourcetype": "=example:alert",
+    "fields.category": "category",
+    "fields.rule_name": "detection.rule_name"
+  },
+  "watermark": {
+    "field_path": "timestamp",
+    "param": "since",
+    "format": "epoch",
+    "lookback_days": 7
+  }
+}

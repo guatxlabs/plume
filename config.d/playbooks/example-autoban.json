@@ -1,0 +1,10 @@
+{
+  "_comment": "EXEMPLE d'overlay PLAYBOOK (détection -> réponse, config.d) — bannit les IP qui pilonnent nginx en 401 (brute-force/scan d'auth). Posé au boot avec managed=1. 'enabled' est false: EXEMPLE inerte. La 'query' renvoie des CIBLES (la 1re colonne de chaque ligne = la cible de l'action). 'action_kind' = action a appliquer (ex 'ban_ip', 'unban_ip', 'stop_service'). RAPPEL: rien n'est exécuté pour de vrai tant que le mode global est 'observe' (les actions sont créées en dry_run/pending); en mode 'active' elles sont approuvées. La requête doit COMPILER, sinon le fichier est ignoré au boot.",
+  "name": "Exemple — auto-ban brute-force nginx 401 (10 min)",
+  "enabled": false,
+  "query": "search source=nginx status=401 | stats count by src_ip | where count > 100 | table src_ip",
+  "is_soql": true,
+  "action_kind": "ban_ip",
+  "interval_s": 300,
+  "window_s": 600
+}

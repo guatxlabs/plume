@@ -1,0 +1,30 @@
+[Unit]
+Description=plume — enforcer-exemption adapter (host-side PULL) : applique/révoque SUR CET HOTE les exemptions d'auto-block des engagements autorisés déclarés par le central
+# SANDBOX : le daemon DÉCLARE (GET /api/engagements/active) ; cet adaptateur APPLIQUE (privilégié, pull, level-triggered).
+# SACRED  : suspend UNIQUEMENT l'auto-BLOCK des IP scopées (CrowdSec allowlist / fail2ban ignoreip / nft accept) ;
+#           NE TOUCHE JAMAIS détection/collecte/logging.
+# OPT-IN  : nécessite /etc/plume/engagement-adapter.conf (PLUME_ENGAGEMENT_ADAPTER=1). NO-OP sûr tant que
+#           PLUME_ENGAGEMENT_MODE=0 côté daemon (/active -> 200 [] -> desired vide). Activer le TIMER :
+#           systemctl enable --now plume-engagement-adapter.timer
+Documentation=file:/usr/local/lib/plume/collectors/engagement-adapter.sh
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/plume/engagement-adapter.conf
+# HOME inscriptible (PrivateTmp) pour le cache de `k3s kubectl` quand cscli passe par `kubectl exec` du pod LAPI.
+Environment=HOME=/tmp
+ExecStart=/usr/local/lib/plume/collectors/engagement-adapter.sh
+SyslogIdentifier=engagement-adapter
+
+# Root requis (cscli / fail2ban-client / nft) mais surface réduite (calque plume-respond-agent) :
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+LockPersonality=true
+# 512M : en mode k3s l'accès CrowdSec lance `k3s kubectl exec` (binaire k3s complet) qui dépasse 64M -> OOM silencieux.
+MemoryMax=512M
+CPUQuota=20%
+Nice=10

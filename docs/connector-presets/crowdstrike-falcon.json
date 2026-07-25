@@ -1,0 +1,40 @@
+{
+  "_comment": "EXEMPLE de config http_pull pour CrowdStrike Falcon (Alerts API v2). À COPIER/ADAPTER dans le champ `config` d'un connecteur http_pull. Le client_secret OAuth va dans le champ `secret` du connecteur (JAMAIS ici). Remplacez REPLACE_* et le host régional (api.crowdstrike.com | api.us-2.crowdstrike.com | api.eu-1.crowdstrike.com | api.laggar.gcw.crowdstrike.com). `sort=created_timestamp.asc` (FQL) trie ASCENDANT par timestamp -> incrément SANS perte : chaque tick reprend après le dernier `created_timestamp` vu, et une troncature à max_pages ne saute AUCUN enregistrement (le moteur avance le watermark à la borne de la dernière page, cf. ING-2).",
+  "method": "GET",
+  "url": "https://api.crowdstrike.com/alerts/entities/alerts/v2?sort=created_timestamp.asc",
+  "records_path": "resources",
+  "source": "crowdstrike",
+  "auth": {
+    "kind": "oauth2_client_credentials",
+    "token_url": "https://api.crowdstrike.com/oauth2/token",
+    "client_id": "REPLACE_WITH_FALCON_CLIENT_ID"
+  },
+  "pagination": {
+    "kind": "offset",
+    "param": "offset",
+    "size": 100,
+    "size_param": "limit"
+  },
+  "sourcetype_map": {
+    "falcon:detection": "malware"
+  },
+  "field_map": {
+    "id": "composite_id",
+    "ts": "created_timestamp",
+    "severity": "severity_name",
+    "message": "description",
+    "host": "device.hostname",
+    "src_ip": "device.local_ip",
+    "sourcetype": "=falcon:detection",
+    "fields.tactic": "tactic",
+    "fields.technique": "technique",
+    "fields.technique_id": "technique_id"
+  },
+  "watermark": {
+    "field_path": "created_timestamp",
+    "param": "filter",
+    "format": "iso8601",
+    "template": "created_timestamp:>'{value}'",
+    "lookback_days": 7
+  }
+}

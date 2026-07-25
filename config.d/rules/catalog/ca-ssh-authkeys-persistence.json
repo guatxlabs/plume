@@ -1,0 +1,13 @@
+{
+  "_comment": "Persistance par clé SSH : le FIM natif tague kind=authkeys tout changement d'un fichier authorized_keys. L'ajout/modif d'une clé SSH sur un serveur verrouillé est RARE et à fort signal (backdoor d'accès). Le seed natif couvre change=ajout sev>=3 LARGEMENT ; cette règle est le signal DÉDIÉ authkeys. Recommandée à activer en priorité (télémétrie universelle, faible FP hors provisioning). || TÉLÉMÉTRIE REQUISE: integrity (FIM natif hôte : kind, change — collecteur par défaut) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Persistance: clé SSH ajoutée à authorized_keys (intégrité)",
+  "enabled": false,
+  "query": "search source=integrity kind=authkeys | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 4,
+  "interval_s": 300,
+  "window_s": 3600,
+  "mitre": "T1098.004"
+}

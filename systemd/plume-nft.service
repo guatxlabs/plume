@@ -1,0 +1,22 @@
+[Unit]
+Description=plume collector — compteurs des sets nft (blocklists CAPI/crowdsec/f2b) -> metrics
+# OPT-IN : installe mais NON active. Activer : systemctl enable --now plume-nft.timer
+# Lecture seule. Mode-aware : skip propre si nft absent/non lisible (container/non-linux).
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/plume/plume.conf
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+ExecStart=/usr/local/lib/plume/collectors/nft.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool
+# AF_NETLINK = lecture du ruleset nft ; AF_UNIX/INET pour le reste eventuel.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+MemoryMax=96M
+CPUQuota=20%
+Nice=15

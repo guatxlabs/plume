@@ -1,0 +1,13 @@
+{
+  "_comment": "DEAD-MAN'S-SWITCH auditd (anti-forensics, T1562.001 Impair Defenses: Disable or Modify Tools). auditd émet EN CONTINU : le collecteur `auditd.sh` ship au MINIMUM son event de config (category=config) à CHAQUE run (~120 s) tant que le log auditd GROSSIT, plus les execve/auth/comptes/tamper. Un COUNT de `source=auditd` sur la fenêtre tombe à 0 UNIQUEMENT si le collecteur s'arrête totalement = log auditd GELÉ = le démon auditd a été TUÉ/arrêté (ou la collecte hôte est morte). CONSTRUIT ABSENCE : op '<' seuil 1 -> fire quand count==0 (COUNT(*) renvoie toujours 1 ligne à 0 pour une fenêtre vide -> eval_value=Some(0.0) -> cmp '<' 1 = vrai). Contrairement à `de-auditd-disabled` (exe=*auditctl* — ne voit PAS un `kill -9 auditd` ni `systemctl stop`, qui produisent du SILENCE, pas un execve), CE dead-man's-switch attrape le kill silencieux. LIMITES CONNUES : (1) une panne d'ingestion GLOBALE (hôte offline / collecteur crashé) zéroe aussi ce count -> l'alerte peut sur-attribuer 'auditd désactivé' alors que c'est une panne large (assumé : les deux méritent une alerte) ; (2) un timeout d'éval -> eval_value=None -> run_due_rules NE fire PAS (fail-safe, pas de FP sous charge) ; le backstop `heartbeat.audit` (check_heartbeats, sev2, capteur muet continu) couvre le silence persistant. COMPLÉMENTAIRE, pas redondant : le heartbeat daemon est un signal santé sev2 générique ; ceci est une DÉTECTION catalogue visible/ajustable, framée T1562.001, sev4. || TÉLÉMÉTRIE REQUISE: auditd (n'importe quelle category ; le battement de config suffit) || Catalogue de détection curé (#22) — managed=1 posé par le loader ; reste enabled=false ICI (entrée de BIBLIOTHÈQUE, invariant catalogue). ACTIVATION : basculez `enabled` depuis l'UI (Détection) ou dans votre overlay `config.d`.",
+  "name": "Catalogue — Hôte: auditd muet (dead-man's-switch anti-forensics)",
+  "enabled": false,
+  "query": "search source=auditd | stats count",
+  "is_soql": true,
+  "op": "<",
+  "threshold": 1,
+  "severity": 4,
+  "interval_s": 120,
+  "window_s": 600,
+  "mitre": "T1562.001"
+}

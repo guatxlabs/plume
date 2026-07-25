@@ -1,0 +1,27 @@
+[Unit]
+Description=plume collector (plugin, OFF par défaut) — scan YARA -> events malware
+# OPT-IN, INERTE tant que non configuré (le collecteur no-op si `yara` absent OU /etc/plume/yara.d vide).
+# Activation manuelle : apt install yara + déposer des règles *.yar dans /etc/plume/yara.d/ puis :
+#   sudo systemctl enable --now plume-yara.timer
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+# mktemp -> état (et non /tmp) : PrivateTmp=false (on DOIT voir le vrai /tmp pour le scanner), donc on
+# redirige les fichiers temporaires du collecteur vers un répertoire RW déclaré (pas de fuite dans /tmp).
+Environment=TMPDIR=/var/lib/plume/state
+EnvironmentFile=-/etc/plume/yara.conf
+ExecStart=/usr/local/lib/plume/collectors/yara.sh
+NoNewPrivileges=true
+ProtectSystem=strict
+# read-only (et non `true`) : YARA scanne /home par défaut -> doit pouvoir LIRE /home et /root.
+ProtectHome=read-only
+# PrivateTmp=false : /tmp, /var/tmp, /dev/shm sont des cibles de scan (malware déposé) -> ne pas les masquer.
+PrivateTmp=false
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+LockPersonality=true
+MemoryMax=1200M
+CPUQuota=40%
+Nice=15
+IOSchedulingClass=idle

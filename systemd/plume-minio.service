@@ -1,0 +1,22 @@
+[Unit]
+Description=plume collector — gouvernance MinIO/S3 (Varonis) : qui a accès à quel stockage + buckets publics -> source=minio
+# OPT-IN : installé mais NON activé. Activer : systemctl enable --now plume-minio.timer
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/plume/plume.conf
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+Environment=HOME=/tmp
+ExecStart=/usr/local/lib/plume/collectors/minio.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryMax=512M
+CPUQuota=25%
+Nice=15

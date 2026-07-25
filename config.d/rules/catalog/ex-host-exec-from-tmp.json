@@ -1,0 +1,13 @@
+{
+  "_comment": "Exécution depuis un répertoire MONDE-INSCRIPTIBLE (/tmp, /dev/shm, /var/tmp, /run) = drop-and-run classique (payload téléchargé/déposé puis exécuté depuis un chemin inscriptible). auditd category=exec expose le chemin `exe`. Couvre les 4 racines de staging via `append` : SOQL ne sait pas OU-er un préfixe dans le filtre de base (le `|` d'alternation regex casse le découpage d'étapes `|`) — on UNION-ALL 4 sous-recherches `exe=<dir>/*`, `| stats count` compte le total (seuil >0 -> tout event dans l'une des 4 racines fire). LIMITE DE COUVERTURE : si vos règles auditd filtrent l'auid (ex. `-F auid!=-1`), la visibilité se limite aux exécutions issues d'une session de LOGIN ; une exécution portée par un compte de service n'apparaît alors pas dans ce flux. Complétez au niveau conteneur/runtime (capteur eBPF ou IDS) pour couvrir cette surface — règle NÉCESSAIRE mais NON SUFFISANTE. À NOTER : un hôte qui compile (chaînes de build, doctests) peut produire des exécutables temporaires légitimes sous ces racines ; ajustez la fenêtre/le seuil plutôt que d'exclure par NOM de binaire (une exclusion nominative est contournable). || TÉLÉMÉTRIE REQUISE: auditd (records category=exec : exe) || Catalogue de détection curé (#22) — managed=1 posé par le loader ; reste enabled=false ICI (entrée de BIBLIOTHÈQUE, invariant catalogue). ACTIVATION : basculez `enabled` depuis l'UI (Détection) ou dans votre overlay `config.d`.",
+  "name": "Catalogue — Hôte: exécution depuis un répertoire monde-inscriptible (/tmp, /dev/shm, /var/tmp, /run)",
+  "enabled": false,
+  "query": "search source=auditd category=exec exe=/tmp/* | append [search source=auditd category=exec exe=/dev/shm/*] | append [search source=auditd category=exec exe=/var/tmp/*] | append [search source=auditd category=exec exe=/run/*] | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 120,
+  "window_s": 900,
+  "mitre": "T1059.004"
+}

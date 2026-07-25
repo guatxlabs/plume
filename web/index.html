@@ -1,0 +1,1071 @@
+<!doctype html>
+<html lang="fr" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Plume</title>
+<link rel="icon" type="image/svg+xml" href="/favicon-plume.svg">
+<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+<meta name="theme-color" content="#0b0e14">
+<link rel="stylesheet" href="/style.css">
+<style>
+  /* CRUD contenu de détection (#1c) — défense en profondeur. La VRAIE garde reste serveur (403/400/409).
+     Masquage RÉTROACTIF des contrôles d'écriture selon le rôle reflété sur <body> par applyRoleClass(). */
+  /* viewer = lecture seule : boutons CRUD masqués, cases « actif » neutralisées (le serveur refuse aussi). */
+  body.role-viewer #parser-new,
+  body.role-viewer #lookup-new,
+  body.role-viewer .crud-btn { display: none !important; }
+  body.role-viewer .crud-toggle { pointer-events: none; opacity: .45; }
+  /* SQL brut = admin uniquement : le toggle Type est visible/actif SEULEMENT en role-admin. Fail-closed :
+     tant que le rôle n'est pas connu (aucune classe), il reste masqué -> le formulaire envoie SOQL. */
+  body:not(.role-admin) .rawsql-toggle { display: none !important; }
+  /* badge « managed » : origine du contenu (builtin / overlay config.d / perso créé via l'UI). */
+  .mgbadge { font-family: var(--font-mono, monospace); font-size: 10px; line-height: 1.4; padding: 0 7px;
+    border-radius: 999px; margin-left: 6px; border: 1px solid var(--bd, #333); color: var(--mut, #888);
+    background: var(--card2, #1a1a1a); vertical-align: middle; }
+  .mgbadge.mg-1 { color: var(--warn, #d99a00); border-color: color-mix(in srgb, var(--warn, #d99a00) 40%, transparent); }
+  .mgbadge.mg-2 { color: var(--acc, #4aa5a0); border-color: color-mix(in srgb, var(--acc, #4aa5a0) 40%, transparent); }
+  /* delete grisé pour un contenu non supprimable (builtin/overlay). */
+  button.mg-nodel { opacity: .4; cursor: not-allowed; }
+  /* #2c multi-tenant : switcher (header) + vue Tenants (Administration) + gestion des grants. */
+  .tenantbox { display: inline-flex; align-items: center; gap: 5px; }
+  .tenantbox .tzic { opacity: .7; }
+  .tnt-card { border: 1px solid var(--bd, #333); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; background: var(--card2, #14171f); }
+  .tnt-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .tnt-title { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; }
+  .tnt-title .tnt-id { font-family: var(--font-mono, monospace); font-size: 11px; }
+  .tnt-meta { font-size: 12px; }
+  .tnt-act { display: flex; gap: 6px; flex-wrap: wrap; }
+  .badge.tnt-active { color: var(--ok, #38b000); border: 1px solid color-mix(in srgb, var(--ok, #38b000) 40%, transparent); }
+  .badge.tnt-susp { color: var(--warn, #d99a00); border: 1px solid color-mix(in srgb, var(--warn, #d99a00) 45%, transparent); }
+  .tnt-grants { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--bd, #333); }
+  .tnt-grants.hidden { display: none; }
+  .grow { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 0; }
+  .grantadd { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .grantadd input { min-width: 160px; }
+  /* ANTI-RÉSIDU HARD-REFRESH (FOUC) : app.js (type=module) route APRÈS le rendu du HTML -> sans ceci, TOUTES les
+     sections de <main> (dont celles d'Administration : rules/parsers/notifiers/coverage…) sont peintes AVANT le
+     1er route() qui masque les hors-espace -> "résidu admin/login" au Ctrl+R (JS re-fetché = fenêtre plus longue).
+     On masque <main> jusqu'à ce qu'app.js pose .app-ready (fin du 1er route). `visibility:hidden` PRÉSERVE la
+     géométrie (les mesures de largeur des charts restent justes) ; le header/nav + l'overlay login sont HORS <main>
+     donc visibles/fonctionnels immédiatement. Filet de sécurité ci-dessous : révèle après 6s si l'init JS échoue. */
+  html:not(.app-ready) main { visibility: hidden; }
+</style>
+<script>setTimeout(function(){document.documentElement.classList.add('app-ready');},6000);</script>
+</head>
+<body>
+<!-- Écran de login (form-login). Caché par défaut : affiché par app.js UNIQUEMENT si GET /api/me = 401
+     (accès direct/standalone). En SSO k3s ou mode démo, /api/me = 200 -> overlay jamais montré. -->
+<div id="login-ov" class="login-ov" hidden>
+  <form id="login-form" class="login-card" autocomplete="on">
+    <div class="login-brand"><img src="/quetzal.svg" alt="" aria-hidden="true"><span>Guat<span class="brand-x">X</span></span><span class="brand-sub">Plume</span></div>
+    <h2>Connexion</h2>
+    <label for="login-user">Utilisateur
+      <input id="login-user" name="username" type="text" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" required>
+    </label>
+    <label for="login-pass">Mot de passe
+      <input id="login-pass" name="password" type="password" autocomplete="current-password" required>
+    </label>
+    <div id="login-err" class="login-err" role="alert" hidden></div>
+    <button id="login-submit" type="submit">Se connecter</button>
+  </form>
+</div>
+<header>
+  <button id="navtoggle" class="navtoggle" type="button" aria-label="Menu"><svg class="ic" viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+  <h1><img src="/quetzal.svg" alt="" aria-hidden="true" class="qz-brand"><span>Guat<span class="brand-x">X</span></span><span class="brand-sub">Plume</span></h1>
+  <div id="posture" class="posture" role="status" aria-live="polite" aria-label="Posture de sécurité">-</div>
+  <input id="q" type="search" aria-label="Rechercher dans les logs" placeholder="Rechercher dans les logs...  (ex: source:sshd failed)">
+  <div class="hdr-tools">
+    <!-- #range = état (plage relative) caché ; l'UI est le modal ouvert par #rangepick. -->
+    <select id="range" aria-label="Fenêtre temporelle" title="Fenêtre temporelle" style="display:none">
+      <option value="300">5 min</option>
+      <option value="900">15 min</option>
+      <option value="1800">30 min</option>
+      <option value="3600">1 h</option>
+      <option value="10800">3 h</option>
+      <option value="21600">6 h</option>
+      <option value="43200">12 h</option>
+      <option value="86400" selected>24 h</option>
+      <option value="172800">2 j</option>
+      <option value="604800">7 j</option>
+      <option value="2592000">30 j</option>
+      <option value="7776000">90 j</option>
+      <option value="31536000">1 an</option>
+      <option value="0">Tout</option>
+    </select>
+    <select id="refresh" aria-label="Rafraîchissement auto" title="Rafraîchissement auto">
+      <option value="0"> Off</option>
+      <option value="10">10 s</option>
+      <option value="30" selected>30 s</option>
+      <option value="60">60 s</option>
+    </select>
+    <button id="manual-refresh" class="k-theme" type="button" aria-label="Rafraîchir maintenant" title="Rafraîchir maintenant (recharge la vue courante)"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
+    <button id="auto-toggle" class="k-theme autotgl" type="button" aria-pressed="true" title="Auto-refresh actif — cliquer pour suspendre"><span class="autodot"></span><span class="autolbl">auto on</span></button>
+    <button id="rangepick" class="k-theme rangebtn" type="button" aria-label="Plage temporelle" title="Plage temporelle (presets + intervalle précis)"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg><span id="rangelbl">24 h</span></button>
+    <span class="tzwrap"><svg class="ic tzic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3.5 2"/></svg><select id="tz" class="k-theme" aria-label="Fuseau horaire d'affichage" title="Fuseau horaire d'affichage (stockage toujours en UTC)">
+      <option value="">Navigateur</option>
+      <option value="UTC">UTC (0)</option>
+      <option value="Europe/Paris">Europe/Paris</option>
+    </select></span>
+    <select id="lang" class="k-theme" aria-label="Langue / Language" title="Langue / Language">
+      <option value="fr">FR</option>
+      <option value="en">EN</option>
+    </select>
+    <button id="theme" class="k-theme" type="button" aria-label="Changer de thème" title="Thème clair / sombre"></button>
+    <!-- #2c switcher de tenant : peuplé + révélé par initTenants() UNIQUEMENT en mode 1 (super-admin OU
+         >1 tenant). Mode 0 / mono-tenant : reste caché, aucun entête X-Plume-Tenant posé (invariant). -->
+    <span id="tenantbox" class="tenantbox" hidden>
+      <svg class="ic tzic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 21h18M6 21V8l6-4 6 4v13"/><path d="M9 21v-5h6v5M9 11h.01M15 11h.01"/></svg>
+      <select id="tenant-switch" class="k-theme" aria-label="Tenant courant" title="Tenant courant (client SOC) — sélectionne le contexte des vues"></select>
+    </span>
+    <!-- #2d sélecteur d'environnement (prod/staging/…) : peuplé + révélé par initEnvironments() UNIQUEMENT si
+         le tenant courant expose > 1 environnement. Mono-env / mode 0 : reste caché, aucun entête X-Plume-Env
+         posé (invariant : tout est prod). « Tous » (value vide) = aucun filtre. Re-résolu au changement de
+         tenant (les environnements sont cloisonnés PAR tenant). -->
+    <span id="envbox" class="tenantbox" hidden>
+      <svg class="ic tzic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+      <select id="env-switch" class="k-theme" aria-label="Environnement courant" title="Environnement (prod/staging/…) — filtre les vues du tenant courant"></select>
+    </span>
+    <span id="authbox" class="authbox" hidden>
+      <span id="auth-id" class="auth-id" aria-label="Utilisateur connecté"></span>
+      <button id="logout" class="k-theme" type="button" aria-label="Se déconnecter" title="Se déconnecter">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+      </button>
+    </span>
+  </div>
+</header>
+<!-- #51 DAY-2 OPS — bandeau MOTD/bulletin diffusé à tous. Peuplé par loadBulletin() (GET /api/bulletin) ;
+     aucun bulletin posé -> reste caché (invariant mode 0 : aucun bandeau). Niveau info/warn/critical -> classe. -->
+<div id="bulletin-banner" class="bulletin-banner" role="status" aria-live="polite" hidden></div>
+<div class="layout">
+  <!-- NIVEAU 1 : les 6 espaces. data-space = id d'espace (cf. SPACES dans app.js) ; href = 1er sous-onglet
+       (onglet par défaut de l'espace). L'état actif est piloté par data-space (renderNav), pas par href. -->
+  <nav class="sidebar" id="nav" aria-label="Navigation">
+    <a href="#overview" data-space="overview"><svg class="ic" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8M5 10v10h5v-6h4v6h5V10"/></svg> <span>Vue d'ensemble</span></a>
+    <a href="#explore" data-space="investigation"><svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg> <span>Investigation</span></a>
+    <a href="#dashboards" data-space="dashboards"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg> <span>Dashboards</span></a>
+    <a href="#detection" data-space="detresp"><svg class="ic" viewBox="0 0 24 24"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg> <span>Détection &amp; Réponse</span></a>
+    <a href="#sources" data-space="data"><svg class="ic" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg> <span>Données</span></a>
+    <a href="#settings" data-space="admin"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M22 12h-3M5 12H2M19.1 4.9l-2.1 2.1M7 17l-2.1 2.1M19.1 19.1 17 17M7 7 4.9 4.9"/></svg> <span>Administration</span></a>
+    <!-- #4c : espace Aide / Guide (documentation in-app statique) — visible pour tous les rôles. -->
+    <a href="#help" data-space="help"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9a2.4 2.4 0 1 1 3.4 2.2c-.9.5-1.5 1-1.5 2.1"/><path d="M12 17h.01"/></svg> <span>Aide</span></a>
+  </nav>
+<main>
+  <!-- NIVEAU 2 : barre des sous-onglets de l'espace actif (peuplée par renderNav). Cachée pour les espaces
+       à un seul onglet (Vue d'ensemble, Dashboards). Pleine largeur via #subnav{grid-column:1/-1}. -->
+  <div id="subnav" class="subnav" role="tablist" aria-label="Sous-navigation" hidden></div>
+  <section id="alerts" class="card span2" aria-labelledby="alerts-h"><h2 id="alerts-h">Alertes <button class="ihelp vhelp" data-help="alerts" type="button" title="Aide : Alertes">?</button></h2><div class="body" role="log" aria-live="polite" aria-relevant="additions text">...</div></section>
+  <section id="firewall" class="card"><h2>Firewall <button class="ihelp vhelp" data-help="firewall" type="button" title="Aide : Firewall">?</button></h2><div class="body">...</div></section>
+  <section id="controls" class="card"><h2>Contrôles (zéro-trou) <button class="ihelp vhelp" data-help="controls" type="button" title="Aide : Contrôles">?</button></h2><div class="body">...</div></section>
+  <section id="integrations" class="card span2"><h2>Intégrations &amp; hôtes <button class="ihelp vhelp" data-help="integrations" type="button" title="Aide : Intégrations & hôtes">?</button></h2><div class="body">...</div></section>
+  <!-- PULSE compact seulement (compteurs par état + lien). Le détail par feed a migré vers son
+       propre onglet Données → Fraîcheur (#freshness-panel). Refresh/aide vivent désormais sur cet onglet. -->
+  <section id="freshness" class="card"><h2 id="freshness-h">Fraîcheur des sources</h2><div class="body"><div class="muted">chargement…</div></div></section>
+  <section id="query" class="card span2" aria-labelledby="query-h">
+    <div class="qhead">
+      <div class="qhistnav">
+        <button id="qprev" class="picon" type="button" title="Requête précédente (historique)" disabled></button>
+        <button id="qnext" class="picon" type="button" title="Requête suivante (historique)" disabled></button>
+      </div>
+      <h2 id="query-h">Plume panel <button class="ihelp vhelp" data-help="explore" type="button" title="Aide : Recherche & Explore">?</button></h2>
+      <span id="qcrumb" class="qcrumb" role="status" aria-live="polite" hidden></span>
+    </div>
+    <div class="qsub">Requête soql ou SQL — les drilldowns atterrissent ici</div>
+    <div class="qbar">
+      <textarea id="sql" rows="3" aria-label="Requête soql ou SQL" spellcheck="false"
+        placeholder="soql:  search (tous les events · '*' aussi)  ·  search source=sudo | stats count by source | sort -count        -ou-        SQL:  SELECT * FROM event ORDER BY ts DESC LIMIT 20"></textarea>
+      <!-- #qrange = état (fenêtre Explore relative) caché ; l'UI est le modal ouvert par #qrangepick — même design que le picker Dashboard (presets jusqu'à 1 an + intervalle précis). -->
+      <select id="qrange" aria-label="Fenêtre temporelle (Explore)" title="Fenêtre temporelle (Explore)" style="display:none">
+        <option value="300">5 min</option>
+        <option value="900">15 min</option>
+        <option value="1800">30 min</option>
+        <option value="3600">1 h</option>
+        <option value="10800">3 h</option>
+        <option value="21600">6 h</option>
+        <option value="43200">12 h</option>
+        <option value="86400" selected>24 h</option>
+        <option value="172800">2 j</option>
+        <option value="604800">7 j</option>
+        <option value="2592000">30 j</option>
+        <option value="7776000">90 j</option>
+        <option value="31536000">1 an</option>
+        <option value="0">Tout</option>
+      </select>
+      <button id="qrangepick" class="k-theme rangebtn" type="button" aria-label="Fenêtre temporelle (Explore)" title="Fenêtre temporelle de la recherche (presets jusqu'à 1 an + intervalle précis)"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg><span id="qrangelbl">24 h</span></button>
+      <button id="run" type="button">Exécuter </button>
+      <button id="qstop" class="stopbtn picon" type="button" title="Arrêter la requête en cours" hidden><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg></button>
+      <button id="qhelp" type="button" title="Aide : syntaxe des requêtes (SOQL)">? Aide</button>
+      <button id="qtemplates" type="button" title="Modèles de requête (bibliothèque de snippets SOQL)">Modèles</button>
+      <button id="qsave" type="button" title="Enregistrer la requête courante (nommée, persistante, privée à votre compte)">Enregistrer</button>
+      <button id="qsaved" type="button" title="Mes requêtes sauvegardées (charger / modifier / supprimer)">Sauvegardées</button>
+      <button id="qrecent" type="button" title="Requêtes récemment exécutées (ce navigateur)">Récentes</button>
+      <select id="viz" aria-label="Visualisation"><option value="table">Table</option><option value="bar">Barres</option><option value="line">Courbe</option><option value="stat">Stat</option></select>
+      <select id="qsize" aria-label="Événements par page" title="Événements par page (pagination)">
+        <option value="10">10/page</option><option value="50">50/page</option>
+        <option value="100" selected>100/page</option><option value="200">200/page</option>
+        <option value="300">300/page</option><option value="400">400/page</option>
+        <option value="500">500/page</option><option value="1000">1000/page</option>
+        <option value="2000">2000/page</option><option value="5000">5000/page</option>
+        <option value="10000">10000/page</option>
+      </select>
+      <button id="save-panel" type="button" title="Enregistrer la requête comme panneau">Panneau</button>
+    </div>
+    <!-- #16 ASSISTANT IA (advisory NL→SOQL) — caché par défaut ; révélé par ai.js SI /api/ai/status = enabled.
+         L'IA PROPOSE une requête SOQL, l'analyste la RÉVISE dans #sql puis l'exécute lui-même (zéro exécution auto). -->
+    <div id="aiassist" class="qbar" style="display:none">
+      <input id="ainl" type="text" aria-label="Assistant IA — question en langage naturel" spellcheck="false"
+        placeholder="Assistant IA : décrivez la recherche en langage naturel (ex : échecs d'authentification par hôte sur 1 h)…" />
+      <button id="airun" type="button" title="Proposer une requête SOQL (l'IA propose, vous révisez dans la barre puis exécutez)">Proposer SOQL</button>
+      <span id="aistat" class="muted" role="status" aria-live="polite"></span>
+    </div>
+    <div id="sqlhint" class="achint" aria-label="Suggestions"></div>
+    <div id="qstats" class="muted" role="status" aria-live="polite"></div>
+    <span id="qbadge" class="qbadges" role="status" aria-live="polite" hidden></span>
+    <span id="qexport" class="export-actions noprint" hidden aria-label="Exporter le résultat">
+      <span class="muted export-lbl">Exporter</span>
+      <button id="qexport-csv" type="button" class="exportbtn" title="Exporter le résultat complet (borné) en CSV">CSV</button>
+      <button id="qexport-json" type="button" class="exportbtn" title="Exporter le résultat complet (borné) en JSON">JSON</button>
+      <button id="qexport-pdf" type="button" class="exportbtn" title="Imprimer / exporter en PDF">PDF</button>
+    </span>
+    <div id="qprog" class="tableprog" hidden aria-hidden="true"></div>
+    <div id="qresult" class="qresult"></div>
+  </section>
+  <section id="dashboards" class="span2" aria-labelledby="dash-h">
+    <h2 id="dash-h" class="sronly">Dashboards</h2>
+    <div class="viewbar card">
+      <div class="viewbar-l">
+        <span class="lvl">Vue</span>
+        <select id="view" aria-label="Vue" title="Vue = un regroupement de dashboards. Créer ou supprimer une vue n'affecte pas les autres."></select>
+        <button id="view-rename" class="picon" type="button" title="Renommer la vue"></button>
+        <button id="view-share" class="picon" type="button" title="Partager la vue avec l'équipe / la rendre privée" hidden></button>
+        <button id="view-new" type="button" title="Créer une vue : un regroupement indépendant et vide">+ Vue</button>
+        <button id="view-del" type="button" title="Supprimer la vue (les dashboards sont conservés)">Suppr. vue</button>
+      </div>
+      <div class="viewbar-r">
+        <button class="ihelp vhelp" data-help="dashboards" type="button" title="Aide : Dashboards">?</button>
+        <button id="dash-refresh" type="button" title="Recharger les panneaux de cette vue"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg> Rafraîchir</button>
+        <button id="dash-stop" class="stopbtn picon" type="button" title="Arrêter les chargements de panneaux en cours" hidden><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg></button>
+        <button id="dash-edit" type="button" title="Mode édition : placer/redimensionner les dashboards et leurs panneaux">Édition</button>
+        <button id="dash-play" type="button" title="Diaporama (NOC wall-board) : faire défiler les dashboards de la vue">▶ Diaporama</button>
+        <span id="dash-playbar" class="playbar" hidden>
+          <button id="dash-prev" class="picon" type="button" title="Dashboard précédent">‹</button>
+          <span id="dash-playpos" class="playpos"></span>
+          <button id="dash-next" class="picon" type="button" title="Dashboard suivant">›</button>
+          <input id="dash-playint" type="number" min="3" max="3600" value="30" title="Intervalle de rotation (s)" aria-label="Intervalle (s)">
+          <button id="dash-playstop" class="picon" type="button" title="Arrêter le diaporama">■</button>
+        </span>
+        <button id="dash-new" type="button" title="Ajouter un dashboard à cette vue">+ Dashboard</button>
+      </div>
+    </div>
+    <div id="dashview" class="dashview"></div>
+  </section>
+  <section id="coverage" class="card span2" aria-labelledby="cov-h">
+    <div class="panelhead">
+      <h2 id="cov-h">Couverture ATT&amp;CK (détection) <button class="ihelp vhelp" data-help="coverage" type="button" title="Aide : Couverture ATT&amp;CK">?</button></h2>
+    </div>
+    <div id="cov-body" class="body"><div class="muted">chargement...</div></div>
+  </section>
+  <section id="rules" class="card span2" aria-labelledby="rules-h">
+    <div class="panelhead">
+      <h2 id="rules-h">Règles de détection <button class="ihelp vhelp" data-help="rules" type="button" title="Aide : Règles de détection">?</button></h2>
+      <div class="hdtools">
+        <select id="rule-sort" class="picon" title="Trier les règles"><option value="id">Ordre</option><option value="sev">Sévérité ↓</option></select>
+        <button id="rule-collapse" type="button" class="picon" title="Plier / déplier" aria-expanded="true"></button>
+        <button id="sigma-import-btn" type="button" title="Importer un ruleset Sigma (absorbe une bibliothèque de détection open-source)">Importer un ruleset Sigma</button>
+        <button id="rule-new" type="button">+ Nouvelle règle</button>
+      </div>
+    </div>
+    <form id="rule-form" class="ruleform hidden">
+      <input id="rf-name" placeholder="Nom de la règle" aria-label="Nom de la règle">
+      <textarea id="rf-query" rows="2" spellcheck="false" aria-label="Requête"
+        placeholder="soql/SQL renvoyant un nombre - ex: search severity>=3 | stats count"></textarea>
+      <div class="rf-row">
+        <label class="rawsql-toggle" title="SQL brut réservé à l'administrateur (les éditeurs utilisent SOQL)">Type <select id="rf-issoql"><option value="1">soql</option><option value="0">SQL</option></select></label>
+        <label>Condition <select id="rf-op"><option>&gt;</option><option>&gt;=</option><option>&lt;</option><option>&lt;=</option><option>==</option><option>!=</option></select></label>
+        <label>Seuil <input id="rf-threshold" type="number" step="any" value="0"></label>
+        <label>Sévérité <select id="rf-sev"><option value="1">low</option><option value="2" selected>medium</option><option value="3">high</option><option value="4">critical</option></select></label>
+        <label>Intervalle(s) <input id="rf-interval" type="number" value="300"></label>
+        <label>Fenêtre(s) <input id="rf-window" type="number" value="3600"></label>
+        <label>MITRE <input id="rf-mitre" placeholder="ex: T1110" size="8" title="technique ATT&amp;CK détectée (couverture purple-team)"></label>
+        <label>Conformité <input id="rf-compliance" placeholder="ex: pci_dss:8.7,hipaa:164.312" size="22" title="cadres de conformité couverts — cadre[:contrôle], séparés par des virgules (posture / couverture, PAS une certification)"></label>
+        <label><input id="rf-enabled" type="checkbox" checked> actif</label>
+      </div>
+      <div class="rf-hint" id="rf-mitre-hint"></div>
+      <div class="rf-hint" id="rf-compliance-hint"></div>
+      <div class="rf-actions">
+        <button type="submit">Enregistrer</button>
+        <button id="rf-test" type="button">Tester la requête</button>
+        <button id="rf-cancel" type="button">Annuler</button>
+        <span id="rf-result" class="muted"></span>
+      </div>
+    </form>
+    <div id="rule-list"></div>
+  </section>
+  <section id="notifiers" class="card span2" aria-labelledby="notif-h">
+    <div class="panelhead">
+      <h2 id="notif-h">Canaux de notification <button class="ihelp vhelp" data-help="notifiers" type="button" title="Aide : Canaux de notification">?</button></h2>
+      <button id="notif-new" type="button">+ Nouveau canal</button>
+    </div>
+    <form id="notif-form" class="ruleform hidden">
+      <input id="nf-name" placeholder="Nom du canal (ex: ntfy perso)" aria-label="Nom du canal">
+      <div class="rf-row">
+        <label>Type <select id="nf-kind"><option value="ntfy">ntfy</option><option value="webhook">webhook</option><option value="email">email (SMTP)</option><option value="slack">Slack</option><option value="pagerduty">PagerDuty</option><option value="generic">HTTP générique</option><option value="lookup">lookup (enrichissement)</option></select></label>
+        <label>Sévérité min <select id="nf-sev"><option value="1">low</option><option value="2" selected>medium</option><option value="3">high</option><option value="4">critical</option></select></label>
+        <label><input id="nf-enabled" type="checkbox" checked> actif</label>
+      </div>
+      <input id="nf-url" aria-label="URL" placeholder="URL - ntfy: https://ntfy.sh/mon-topic - webhook/generic: https://... - email: smtps://smtp.host:465 - slack/pagerduty/lookup: laisser vide (cible dans config)">
+      <textarea id="nf-config" rows="2" spellcheck="false" aria-label="Config JSON" placeholder='config JSON (secret jamais réaffiché) - email: {"from","to","user","pass"} - slack: {"webhook_url":"https://hooks.slack.com/..."} - pagerduty: {"routing_key":"..."} - generic: {"template":"...{{title}}...","auth_header":"Authorization: Bearer x"} - lookup: {"lookup":"alerts","key_field":"host"}'></textarea>
+      <div class="rf-actions">
+        <button type="submit">Enregistrer</button>
+        <button id="nf-cancel" type="button">Annuler</button>
+        <span id="nf-result" class="muted"></span>
+      </div>
+    </form>
+    <div id="notif-list"></div>
+  </section>
+
+  <section id="routing-panel" class="card span2" aria-labelledby="routing-h">
+    <div class="panelhead">
+      <h2 id="routing-h">Politiques de notification</h2>
+    </div>
+    <p class="muted">Aucune politique = fan-out plat vers TOUS les canaux (comportement par défaut). Une politique route une alerte (par label) vers des canaux précis ; la plus spécifique gagne ; une route sans matcher = route par défaut.</p>
+    <form id="policy-form" class="ruleform">
+      <input id="pol-matchers" aria-label="Matchers" placeholder="matchers - ex: severity=4, mitre=T1110 (champs: severity,mitre,host,source,env,tag ; vide = route par défaut)">
+      <div class="rf-row">
+        <input id="pol-contacts" aria-label="Canaux" placeholder="ids de canaux, ex: 1,3">
+        <label><input id="pol-continue" type="checkbox"> continue (cumuler routes moins spécifiques)</label>
+      </div>
+      <div class="rf-actions">
+        <button type="submit">Ajouter la route</button>
+        <span id="pol-result" class="muted"></span>
+      </div>
+    </form>
+    <div id="policies-body"></div>
+
+    <div class="panelhead" style="margin-top:1rem">
+      <h2>Silences (mute temporisé)</h2>
+    </div>
+    <p class="muted">Mute les alertes correspondant à {champ=valeur,…} jusqu'à expiration (auto-expire). Ledgerisé (qui, quoi, jusqu'à quand). Un silence ne peut être permanent (TTL borné).</p>
+    <form id="silence-form" class="ruleform">
+      <input id="sil-matchers" aria-label="Matchers du silence" placeholder="matchers - ex: host=web-01, severity=2 (au moins un)">
+      <div class="rf-row">
+        <label>Durée (min) <input id="sil-duration" type="number" min="1" value="60" style="width:6rem"></label>
+        <input id="sil-reason" aria-label="Raison" placeholder="raison (ex: maintenance planifiée)">
+      </div>
+      <div class="rf-actions">
+        <button type="submit">Créer le silence</button>
+        <span id="sil-result" class="muted"></span>
+      </div>
+    </form>
+    <div id="silences-body"></div>
+  </section>
+
+  <section id="parsers" class="card span2" aria-labelledby="parsers-h">
+    <div class="panelhead">
+      <h2 id="parsers-h">Parsers (extraction de champs) <button class="ihelp vhelp" data-help="parsers" type="button" title="Aide : Parsers">?</button></h2>
+      <div class="hdtools">
+        <select id="parser-sort" class="picon" title="Trier les parsers"><option value="default">Défaut</option><option value="source">Source</option></select>
+        <button id="parser-collapse" type="button" class="picon" title="Plier / déplier" aria-expanded="true"></button>
+        <button id="parser-reparse" type="button" title="Réappliquer les parsers actifs aux events déjà stockés (30 j)">↻ Réappliquer aux events</button>
+        <button id="parser-new" type="button">+ Nouveau parser</button>
+      </div>
+    </div>
+    <p id="parsers-intro" class="muted" style="margin:0 0 9px;font-size:12px">Extrait des champs (groupes nommés regex <code>(?&lt;nom&gt;…)</code>) du message <b>à l'ingestion, pour toutes les sources</b> (k3s / hôte / conteneur — le parsing est central, indépendant du mode). Défauts intégrés (désactivables) + tes parsers custom. <code>source=*</code> = toutes.<br><b>Quand ?</b> un parser est <b>effectif dès l'enregistrement</b>, sur les <b>nouveaux</b> events. Pour les <b>anciens</b> : <b>↻ Réappliquer</b> (rétroactif, avec confirmation) — ou <code>| rex</code> à la volée dans une recherche.<br><b>Sens IP :</b> nomme <code>src_ip</code> = l'<b>initiateur</b> (l'attaquant en entrant), <code>dst_ip</code> = la <b>cible</b>. <code>src_ip</code>/<code>rhost</code> sont promus en colonne cherchable ; une IP de sens incertain → laisse-la en champ neutre (ex <code>ip</code>), jamais <code>src_ip</code>.</p>
+    <form id="parser-form" class="ruleform hidden">
+      <input id="pf-name" placeholder="Nom (ex: nginx access)" aria-label="Nom du parser">
+      <div class="rf-row">
+        <label>Source <input id="pf-source" placeholder="sshd, mail, *" value="*"></label>
+        <label><input id="pf-enabled" type="checkbox" checked> actif</label>
+      </div>
+      <input id="pf-pattern" spellcheck="false" aria-label="Motif regex" placeholder='regex à groupes nommés — ex: rip=(?<ip>[\d.]+).*user=<(?<user>[^>]+)>'>
+      <div class="rf-row">
+        <input id="pf-sample" spellcheck="false" aria-label="Ligne d'exemple" placeholder="coller une ligne d'exemple pour tester…">
+        <button id="pf-test" type="button">Tester</button>
+      </div>
+      <div class="rf-actions">
+        <button type="submit">Enregistrer</button>
+        <button id="pf-cancel" type="button">Annuler</button>
+        <span id="pf-result" class="muted"></span>
+      </div>
+    </form>
+    <div id="parser-list"></div>
+  </section>
+  <!-- C8 — Détection & Réponse : Playbooks (détection -> réponse auto) et Actions (file de riposte) sont
+       désormais DEUX sous-onglets distincts (Détection | Playbooks | Actions), séparés du panneau Détection.
+       Le TOGGLE de mode (Observation/Actif) vit dans l'en-tête PLAYBOOKS : c'est lui qui gouverne l'exécution
+       AUTOMATIQUE des playbooks. Tous les ids sont préservés (loadPlaybooks/loadActions/loadMode inchangés). -->
+  <section id="playbooks-panel" class="card span2" aria-labelledby="pb-h">
+    <div class="panelhead">
+      <h2 id="pb-h">Playbooks <button class="ihelp vhelp" data-help="response" type="button" title="Aide : Réponse">?</button></h2>
+      <div class="hdtools">
+        <span class="qbar modeswitch" title="Mode global : Observation = propositions seulement ; Actif = les playbooks exécutent les réponses AUTOMATIQUEMENT.">
+          <span id="mode-badge" class="modestate" role="status">...</span>
+          <button id="mode-toggle" type="button" role="switch" aria-checked="false" aria-label="Mode réponse (observation / actif)">basculer</button>
+        </span>
+        <button id="pb-new" type="button">+ Playbook</button>
+      </div>
+    </div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Détection &rarr; réponse automatique (la 1re colonne de la requête = la cible). Ils ne s'exécutent RÉELLEMENT que lorsque le mode ci-dessus est <b>Actif</b> ; en <b>Observation</b>, ils ne font que proposer.</p>
+    <form id="pb-form" class="ruleform hidden">
+      <input id="pb-name" placeholder="Nom (ex: SSH bruteforce -> ban)" aria-label="Nom du playbook">
+      <textarea id="pb-query" rows="2" spellcheck="false" aria-label="Requête (1re colonne = cible)"
+        placeholder="requête dont la 1re colonne = la cible - ex: search source=sshd severity>=3 | stats count by src_ip | where count > 10"></textarea>
+      <div class="rf-row">
+        <label class="rawsql-toggle" title="SQL brut réservé à l'administrateur (les éditeurs utilisent SOQL)">Type <select id="pb-issoql"><option value="1">soql</option><option value="0">SQL</option></select></label>
+        <label>Action <select id="pb-kind"><option value="ban_ip">ban_ip</option><option value="kill_pid">kill_pid</option><option value="stop_service">stop_service</option></select></label>
+        <label>Intervalle(s) <input id="pb-interval" type="number" value="300"></label>
+        <label>Fenêtre(s) <input id="pb-window" type="number" value="3600"></label>
+        <label><input id="pb-enabled" type="checkbox" checked> actif</label>
+      </div>
+      <div class="rf-actions">
+        <button type="submit">Enregistrer</button>
+        <button id="pb-cancel" type="button">Annuler</button>
+        <span id="pb-result" class="muted"></span>
+      </div>
+    </form>
+    <div id="pb-list"></div>
+  </section>
+  <!-- #3 INCIDENTS Phase 2 — AUTHORING de runbooks (bring-your-own), ADMIN-only (masqué au non-admin ;
+       la vraie garde est serveur : /api/runbooks* = admin, validation temps-auteur SOQL fermé + enum d'action).
+       Coexiste avec la baseline managée (git) ; un managé est immuable en place (enable/disable + clone seulement).
+       L'exécution d'une réponse reste /api/actions (INCHANGÉ) — un runbook ne fait que RÉFÉRENCER une action. -->
+  <section id="runbooks-panel" class="card span2" aria-labelledby="rb-h" style="display:none">
+    <div class="panelhead">
+      <h2 id="rb-h">Runbooks (guides d'incident)</h2>
+      <div class="hdtools">
+        <button id="rb-new" type="button">+ Runbook</button>
+      </div>
+    </div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Gabarits de réponse guidée attachés aux incidents (wizard de cases). Les <b>managés</b> (baseline git) sont immuables en place — activez/désactivez ou <b>clonez</b> pour personnaliser. Les <b>custom</b> sont pleinement éditables. Une étape <b>search</b> passe par le compilateur SOQL fermé ; une étape <b>response</b> ne référence que l'enum d'action (exécution via /api/actions, approbation + ledger).</p>
+    <div id="rb-editor" style="display:none;margin-bottom:12px"></div>
+    <div id="rb-list"></div>
+  </section>
+  <section id="actions-panel" class="card span2" aria-labelledby="act-h">
+    <div class="panelhead">
+      <h2 id="act-h">Actions <button class="ihelp vhelp" data-help="response" type="button" title="Aide : Réponse">?</button></h2>
+      <button id="act-new" type="button">+ Nouvelle action</button>
+    </div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">File de riposte : chaque action (ban_ip, unban_ip, kill_pid, stop_service) est créée <b>en attente d'approbation</b> ; en <b>dry-run</b> elle est simulée, sinon elle est exécutée <b>réellement</b> après approbation.</p>
+    <form id="act-form" class="ruleform hidden">
+      <div class="rf-row">
+        <label>Action <select id="af-kind"><option value="ban_ip">ban_ip</option><option value="unban_ip">unban_ip</option><option value="kill_pid">kill_pid</option><option value="stop_service">stop_service</option></select></label>
+        <label>Cible <input id="af-target" placeholder="IP / PID / service.service"></label>
+        <label><input id="af-dry" type="checkbox" checked> dry-run</label>
+      </div>
+      <input id="af-reason" placeholder="raison (optionnel)" aria-label="raison">
+      <div class="rf-actions">
+        <button type="submit">Créer (en attente d'approbation)</button>
+        <button id="af-cancel" type="button">Annuler</button>
+        <span id="af-result" class="muted"></span>
+      </div>
+    </form>
+    <div id="act-list"></div>
+  </section>
+  <!-- #24 Détection & Réponse → Risque : Risk-Based Alerting. Entités les plus à risque (score cumulé, contributions,
+       tactiques distinctes, vélocité) SERVIES DU ROLLUP (zéro scan d'events). Clic sur une entité → timeline horaire +
+       contributions. LECTURE seule (viewer+). Rempli par loadRiskView(). API : GET /api/risk/entities & /risk/entity/:type/:entity. -->
+  <section id="risk-panel" class="card span2" aria-labelledby="risk-h" hidden>
+    <div class="panelhead">
+      <h2 id="risk-h">Risque par entité (RBA)</h2>
+      <button id="risk-refresh" class="picon" type="button" title="Recharger les entités à risque"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
+    </div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Alerting basé sur le <b>risque</b> : chaque signal (règle en mode risque, match threat-intel…) <b>contribue</b> un score à son <b>entité</b> (IP, hôte, utilisateur…). Le tableau agrège le <b>score cumulé</b>, la <b>vélocité</b> (score récent), le nombre de contributions et de tactiques MITRE distinctes — servi du <b>rollup</b> (aucun scan d'events). Le badge <b>seuil</b> marque les entités au-dessus d'un seuil. Clique une ligne pour sa <b>timeline</b> et ses <b>contributions</b>. Lecture seule.</p>
+    <div id="risk-detail" style="margin-bottom:12px"></div>
+    <div id="risk-list"><div class="muted">chargement…</div></div>
+    <div id="risk-legend"></div>
+  </section>
+  <!-- #46 Données → Savoir : objets de savoir « search-time » (alias de champ, champs calculés, event
+       types, tags). Ils façonnent la recherche de TOUT LE MONDE -> lecture viewer+ (transparence), CRUD
+       éditeur+ (boutons crud-btn masqués au viewer + garde serveur). Rempli par loadKnowledge(). API :
+       GET/POST/DELETE /api/knowledge[/alias|calc|eventtype|tag]. -->
+  <section id="knowledge-panel" class="card span2" aria-labelledby="knowledge-h" hidden>
+    <div class="panelhead">
+      <h2 id="knowledge-h">Objets de savoir</h2>
+    </div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Couche de <b>savoir « search-time »</b> appliquée à TOUTE recherche (Explore, panneaux, règles, export, Pivot) : <b>alias de champ</b> (harmonise des noms hétérogènes, ex. <code>client_ip</code> &rarr; <code>src_ip</code>), <b>champs calculés</b> (dérivés réutilisables, ex. <code>sev_up = upper(severity)</code>), <b>event types</b> (classes d'événements nommées, ex. <code>eventtype=web_attack</code>) et <b>tags</b> (étiquettes sur <code>champ=valeur</code>). Chaque objet est <b>compile-vérifié</b> avant enregistrement (fail-closed). <b>Lecture ouverte à tous ; création/suppression réservées à l'éditeur+</b> (la vraie garde reste serveur).</p>
+    <div class="panelhead" style="margin-top:4px"><h3 class="subh" style="margin:0">Alias de champ</h3><button id="ko-alias-new" class="picon crud-btn" type="button">+ Alias</button></div>
+    <div id="ko-alias-list"><div class="muted">chargement…</div></div>
+    <div class="panelhead" style="margin-top:16px"><h3 class="subh" style="margin:0">Champs calculés</h3><button id="ko-calc-new" class="picon crud-btn" type="button">+ Champ calculé</button></div>
+    <div id="ko-calc-list"><div class="muted">chargement…</div></div>
+    <div class="panelhead" style="margin-top:16px"><h3 class="subh" style="margin:0">Event types</h3><button id="ko-eventtype-new" class="picon crud-btn" type="button">+ Event type</button></div>
+    <div id="ko-eventtype-list"><div class="muted">chargement…</div></div>
+    <div class="panelhead" style="margin-top:16px"><h3 class="subh" style="margin:0">Tags</h3><button id="ko-tag-new" class="picon crud-btn" type="button">+ Tag</button></div>
+    <div id="ko-tag-list"><div class="muted">chargement…</div></div>
+  </section>
+  <!-- #47 Données → Modèles & Pivot : couche sémantique (modèles -> objets -> champs) + report-builder
+       « Pivot » (aucune saisie SOQL/SPL) + datasets (pivots/recherches enregistrés). Lecture + exécution
+       (Pivot/dataset) = viewer+ ; CRUD = éditeur+. Le Pivot ne fabrique jamais de SQL : /api/pivot/run
+       compile un SOQL puis l'exécute par le MÊME chemin masqué que /api/query. Rempli par loadDataModels(). -->
+  <section id="datamodels-panel" class="card span2" aria-labelledby="datamodels-h" hidden>
+    <div class="panelhead">
+      <h2 id="datamodels-h">Modèles de données &amp; Pivot</h2>
+    </div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Une <b>couche sémantique</b> (<b>modèle</b> &rarr; <b>objets</b> hiérarchiques avec contrainte SOQL &rarr; <b>champs</b> typés) qui pilote le <b>Pivot</b> : un <b>report-builder</b> — découpe (split-by), agrégats et filtres au clic, <b>sans écrire une ligne de SOQL/SPL</b>. Le Pivot compile un SOQL et l'exécute par le <b>même chemin masqué</b> que l'Explore (le masquage de champ de votre rôle s'applique). Enregistrez un Pivot comme <b>dataset</b> réutilisable. <b>Lecture &amp; exécution ouvertes à tous ; création/suppression réservées à l'éditeur+.</b></p>
+    <div class="panelhead" style="margin-top:4px"><h3 class="subh" style="margin:0">Modèles</h3><button id="dm-model-new" class="picon crud-btn" type="button">+ Modèle</button></div>
+    <div id="dm-models-list"><div class="muted">chargement…</div></div>
+    <div class="panelhead" style="margin-top:16px"><h3 class="subh" style="margin:0">Objets <span id="dm-obj-ctx" class="muted" style="font-weight:400;font-size:12px"></span></h3><button id="dm-obj-new" class="picon crud-btn" type="button" disabled>+ Objet</button></div>
+    <div id="dm-objects-list"><div class="muted">sélectionnez un modèle.</div></div>
+    <div class="panelhead" style="margin-top:16px"><h3 class="subh" style="margin:0">Champs <span id="dm-field-ctx" class="muted" style="font-weight:400;font-size:12px"></span></h3><button id="dm-field-new" class="picon crud-btn" type="button" disabled>+ Champ</button></div>
+    <div id="dm-fields-list"><div class="muted">sélectionnez un objet.</div></div>
+    <div class="panelhead" style="margin-top:18px"><h3 class="subh" style="margin:0">Pivot (report-builder)</h3></div>
+    <p id="dm-pivot-hint" class="muted" style="margin:0 0 8px;font-size:12px">Sélectionnez un <b>objet</b> (avec des champs déclarés) ci-dessus pour construire un Pivot.</p>
+    <div id="dm-pivot" class="pv-builder" hidden>
+      <p class="muted" style="margin:0 0 8px;font-size:12px">Objet : <code id="dm-pivot-obj"></code></p>
+      <div class="pv-field"><label class="pv-label">Découper par (split-by)</label><div id="dm-pivot-splitby" class="pv-chips"></div></div>
+      <div class="pv-field"><div class="pv-labelrow"><label class="pv-label">Agrégats</label><button id="dm-pivot-addstat" class="picon" type="button">+ Agrégat</button></div><div id="dm-pivot-stats"></div></div>
+      <div class="pv-field"><div class="pv-labelrow"><label class="pv-label">Filtres</label><button id="dm-pivot-addfilter" class="picon" type="button">+ Filtre</button></div><div id="dm-pivot-filters"></div></div>
+      <div class="pv-opts">
+        <label class="pv-inl">Span (timechart, ex. 1h)<input id="dm-pivot-span" type="text" placeholder="(aucun)" autocomplete="off" spellcheck="false"></label>
+        <label class="pv-inl">Limite<input id="dm-pivot-limit" type="number" value="1000" min="1" max="10000"></label>
+        <label class="pv-inl">Fenêtre<select id="dm-pivot-range"></select></label>
+      </div>
+      <div class="pv-actions">
+        <button id="dm-pivot-compile" class="picon" type="button" title="Afficher le SOQL généré (transparence, sans exécuter)">Compiler</button>
+        <button id="dm-pivot-run" class="picon" type="button" title="Exécuter le Pivot (chemin masqué comme l'Explore)">Exécuter</button>
+        <button id="dm-pivot-save" class="picon crud-btn" type="button" title="Enregistrer ce Pivot comme dataset réutilisable">Enregistrer comme dataset</button>
+      </div>
+      <pre id="dm-pivot-soql" class="pv-soql" hidden></pre>
+      <div id="dm-pivot-result"></div>
+    </div>
+    <div class="panelhead" style="margin-top:18px"><h3 class="subh" style="margin:0">Datasets enregistrés</h3></div>
+    <div id="dm-datasets-list"><div class="muted">chargement…</div></div>
+  </section>
+  <!-- #37 Détection & Réponse → Avancée : corrélations multi-événements (finding-groups de séquence) +
+       baselines statistiques (UEBA, déviation z-score). Lecture viewer+ ; CRUD éditeur+ (boutons crud-btn
+       masqués au viewer). Rempli par loadDetAdv(). API : /api/correlations & /api/baselines (+ /:id/test). -->
+  <section id="detadv-panel" class="card span2" aria-labelledby="detadv-h" hidden>
+    <div class="panelhead">
+      <h2 id="detadv-h">Détection avancée</h2>
+      <button id="detadv-refresh" class="picon" type="button" title="Recharger"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
+    </div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px"><b>Corrélation de séquence</b> : une chaîne ordonnée d'étapes SOQL keyée sur une entité (ex. « échec auth ×N <b>puis</b> succès, même IP » ; « recon &rarr; exploit &rarr; C2 »). Un match agrège les événements en un <b>finding-group</b>. <b>Baseline UEBA</b> : une métrique par entité (comptage/taux/distinct par bucket) + score de <b>déviation</b> (z-score, sans ML) — une déviation alimente le risque (RBA) ou lève une alerte. Éval planifiée (<b>fail-closed</b>) + <b>Test</b> à la demande. CRUD éditeur+ ; viewer = lecture seule.</p>
+    <div class="panelhead" style="margin-top:4px">
+      <h3 class="subh" style="margin:0">Corrélations (finding-groups)</h3>
+      <button id="detadv-corr-new" class="picon crud-btn" type="button">+ Nouvelle corrélation</button>
+    </div>
+    <div id="detadv-corr-list"><div class="muted">chargement…</div></div>
+    <div class="panelhead" style="margin-top:16px">
+      <h3 class="subh" style="margin:0">Baselines (UEBA)</h3>
+      <button id="detadv-base-new" class="picon crud-btn" type="button">+ Nouvelle baseline</button>
+    </div>
+    <div id="detadv-base-list"><div class="muted">chargement…</div></div>
+  </section>
+  <!-- Détection & Réponse → ATT&CK : matrice de couverture MITRE ATT&CK (tactiques en colonnes, techniques en
+       cellules colorées par couverture -> les angles morts « ressortent »). LECTURE (viewer+), 100% via
+       GET /api/coverage/attack. Clic sur une technique -> ses alertes filtrées. Si l'endpoint 404 (daemon non
+       déployé), dégrade proprement (« couverture indisponible »). -->
+  <section id="attack-panel" class="card span2" aria-labelledby="attack-h" hidden>
+    <div class="panelhead">
+      <h2 id="attack-h">Matrice ATT&amp;CK (couverture) <button class="ihelp vhelp" data-help="attack" type="button" title="Aide : Matrice ATT&amp;CK">?</button></h2>
+      <button id="attack-refresh" class="picon" type="button" title="Recharger la matrice de couverture ATT&amp;CK"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
+    </div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Couverture <b>MITRE ATT&amp;CK</b> : chaque <b>tactique</b> (colonne) liste ses <b>techniques</b> (cellules). Une cellule <b>verte</b> = technique <b>couverte</b> (règles / alertes), teinte d'autant plus soutenue que la couverture est dense ; une cellule <b>grisée</b> = <b>angle mort</b> (aucune détection). Clique une technique pour voir ses alertes. Lecture seule.</p>
+    <div id="attack-legend"></div>
+    <div id="attack-body"><div class="muted">chargement…</div></div>
+  </section>
+  <section id="cases" class="card span2" aria-labelledby="cases-h">
+    <div class="panelhead">
+      <h2 id="cases-h">Cases (gestion d'incident) <button class="ihelp vhelp" data-help="cases" type="button" title="Aide : Cases">?</button></h2>
+      <span class="qbar">
+        <select id="case-filter" aria-label="Filtre statut">
+          <option value="">Tous statuts</option>
+          <optgroup label="Cycle de vie">
+            <option value="new">Nouveau</option>
+            <option value="triage">Triage</option>
+            <option value="in_progress">En cours</option>
+            <option value="resolved">Résolu</option>
+            <option value="closed">Clos</option>
+          </optgroup>
+          <optgroup label="Legacy">
+            <option value="open">Ouvert</option>
+            <option value="investigating">Enquête</option>
+            <option value="contained">Contenu</option>
+          </optgroup>
+        </select>
+        <select id="case-prio-filter" aria-label="Filtre priorité">
+          <option value="">Toutes priorités</option>
+          <option value="1">P1 critique</option>
+          <option value="2">P2 haute</option>
+          <option value="3">P3 moyenne</option>
+          <option value="4">P4 basse</option>
+        </select>
+        <input id="case-assignee-filter" placeholder="assigné…" aria-label="Filtre assigné" autocomplete="off"
+               style="height:38px;background:var(--card);border:1px solid var(--bd);border-radius:var(--pill);color:var(--fg);padding:0 12px;font-size:13px;max-width:150px">
+        <button id="case-mine" type="button" aria-pressed="false" title="N'afficher que les cases qui me sont assignés (ma file de travail)">À moi</button>
+        <select id="case-sort" aria-label="Tri des cases">
+          <option value="">Tri : pertinence</option>
+          <option value="updated">Récemment mis à jour</option>
+          <option value="priority">Priorité</option>
+          <option value="sla">Échéance SLA</option>
+        </select>
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--mut);height:38px">
+          <input type="checkbox" id="case-overdue-filter"> En retard</label>
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--mut);height:38px"
+               title="Afficher UNIQUEMENT les cases archivés (masqués de la liste par défaut ; historique conservé)">
+          <input type="checkbox" id="case-archived-filter"> Archivés</label>
+        <button id="case-new" type="button">+ Case</button>
+      </span>
+    </div>
+    <!-- #39 team case-ops : bandeau CHARGE (queues par assignee) + MTTA/MTTR. Vide/masqué tant que 0 case. -->
+    <div id="caseops-summary" class="noprint" style="margin:4px 0 10px"></div>
+    <div id="cases-list"></div>
+    <div id="case-detail"></div>
+  </section>
+  <section id="settings" class="card span2" aria-labelledby="set-h">
+    <h2 id="set-h">Réglages <button class="ihelp vhelp" data-help="settings" type="button" title="Aide : Compte / Réglages">?</button></h2>
+    <div id="setup-banner" class="bad" hidden>Configuration initiale - colle le <b>token d'installation</b> (dans le log du daemon / <code>setup-token.txt</code>) puis définis tes identifiants.</div>
+    <form id="setup-form" class="ruleform">
+      <input id="set-token" placeholder="token d'installation (log du daemon / setup-token.txt)" autocomplete="off">
+      <input id="set-user" placeholder="nom d'utilisateur admin" autocomplete="username">
+      <input id="set-pw" type="password" placeholder="mot de passe (>= 6 caractères)" autocomplete="new-password">
+      <div class="rf-actions"><button type="submit">Enregistrer</button><span id="set-result" class="muted"></span></div>
+    </form>
+    <!-- MFA TOTP self-service (#44) — tout compte local peut activer une 2e étape (RFC 6238). L'enrôlement
+         montre le secret/URI otpauth UNE fois ; la vérif d'un 1er code active la MFA et révèle les codes de
+         secours (show-once). La vraie garde reste serveur (/api/mfa/* borné à `au.name`). -->
+    <div id="mfa-block" style="margin-top:16px;border-top:1px solid var(--line,#2c3550);padding-top:12px">
+      <h3 style="margin:0 0 6px;font-size:14px">Double authentification (TOTP)</h3>
+      <div id="mfa-status" class="muted" style="font-size:12px">chargement…</div>
+      <div id="mfa-actions" class="rf-actions" style="margin-top:8px"></div>
+      <div id="mfa-enroll" hidden style="margin-top:8px"></div>
+    </div>
+  </section>
+  <section id="users" class="card span2" aria-labelledby="users-h" hidden>
+    <div class="panelhead">
+      <h2 id="users-h">Comptes &amp; accès <button class="ihelp vhelp" data-help="users" type="button" title="Aide : Comptes &amp; accès (RBAC)">?</button></h2>
+      <button id="user-new" type="button">+ Nouveau compte</button>
+    </div>
+    <form id="user-form" class="ruleform hidden">
+      <input id="uf-name" placeholder="nom d'utilisateur (a-z, . _ -)" autocomplete="off">
+      <input id="uf-pw" type="password" placeholder="mot de passe (>= 6 caractères)" autocomplete="new-password">
+      <div class="rf-row">
+        <label>Rôle <select id="uf-role">
+          <option value="editor">editor - lecture + écriture</option>
+          <option value="viewer">viewer - lecture seule</option>
+          <option value="admin">admin - tout + gestion des comptes</option>
+        </select></label>
+      </div>
+      <div class="rf-actions"><button type="submit">Créer</button><button id="uf-cancel" type="button">Annuler</button><span id="uf-result" class="muted"></span></div>
+    </form>
+    <div id="user-list"></div>
+  </section>
+  <!-- Administration → Jetons (agent + HEC), admin-only. Pendant UI du CLI `plume-daemon token`. Le secret
+       CLAIR n'est affiché QU'UNE fois à la création (show-once) ; seul son SHA-256 est stocké. Un jeton HEC
+       s'authentifie sur /services/collector (`Authorization: Splunk <tok>`) ; un jeton agent host-lié sert le
+       responder. La vraie garde est SERVEUR (GET/POST/DELETE /api/tokens admin-only). -->
+  <section id="tokens" class="card span2" aria-labelledby="tokens-h" hidden>
+    <div class="panelhead">
+      <h2 id="tokens-h">Jetons (agent &amp; HEC) <button class="ihelp vhelp" data-help="tokens" type="button" title="Aide : Jetons d'agent / forwarder HEC">?</button></h2>
+      <button id="token-new" type="button">+ Nouveau jeton</button>
+    </div>
+    <p id="tokens-intro" class="muted" style="margin:0 0 9px;font-size:12px">Un <b>jeton</b> authentifie une machine (Bearer) sans mot de passe partagé. <b>agent</b> : ingestion + réponse (le responder exige un jeton <b>lié à un hôte</b>). <b>HEC</b> : forwarder compatible Splunk HTTP Event Collector &rarr; <code>POST /services/collector</code> avec l'en-tête <code>Authorization: Splunk &lt;jeton&gt;</code>. Le secret n'est affiché <b>qu'une seule fois</b> à la création (seule son empreinte SHA-256 est conservée) : <b>copie-le immédiatement</b>. Réservé admin.</p>
+    <div id="token-list"></div>
+  </section>
+  <!-- Administration → Identité fédérée (SSO), admin-only. Fournisseurs OIDC (Authorization-Code+PKCE) et
+       LDAP/AD (bind). Le client_secret OIDC / mot de passe de bind LDAP sont write-only (champ password,
+       JAMAIS réaffichés ; ré-envoyés seulement s'ils sont re-saisis). La vraie garde est SERVEUR (/api/idp/*
+       admin-only ; secret jamais projeté). Le login fédéré se fait via /api/auth/oidc/<name>/start (OIDC) ou
+       /api/auth/ldap (LDAP). -->
+  <section id="idp-panel" class="card span2" aria-labelledby="idp-h" hidden>
+    <div class="panelhead">
+      <h2 id="idp-h">Identité fédérée (SSO)</h2>
+      <button id="idp-new" type="button">+ Fournisseur</button>
+    </div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Fédère l'authentification via <b>OIDC</b> (Google/Azure&nbsp;AD/Okta/Keycloak/Authentik/générique — Authorization-Code&nbsp;+&nbsp;PKCE, validation JWT via JWKS) ou <b>LDAP/AD</b> (bind). Les groupes de l'IdP sont mappés vers un rôle Plume (admin/editor/viewer) selon la même table que le SSO d'en-tête. Le <b>secret</b> (client_secret / mot de passe de bind) est chiffré au repos et n'est <b>jamais</b> réaffiché. Tant qu'aucun fournisseur n'est activé, l'auth existante est inchangée. Réservé admin.</p>
+    <div id="idp-form-host"></div>
+    <div id="idp-list"><div class="muted">chargement…</div></div>
+  </section>
+  <section id="field-filter-panel" class="card span2" aria-labelledby="field-filter-h" hidden>
+    <div class="panelhead">
+      <h2 id="field-filter-h">Field filters (masquage PII)</h2>
+      <button id="field-filter-new" type="button">+ Règle</button>
+    </div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Masque un champ d'événement (ex <b>src_user</b>, <b>email</b>, <b>message</b>, <b>src_ip</b>) pour les rôles bas. Actions : <b>masquer</b> (***), <b>partiel</b> (***+4 derniers, ex PAN), <b>hacher</b> (déterministe salé — corrélation préservée, non réversible), <b>supprimer</b> (NULL) ou <b>interdire</b> (tous rôles, admin compris). Le masque est appliqué DANS le SQL compilé : Explore/SOQL, panneaux, export, recherche et timeline de cas en héritent AUTOMATIQUEMENT, agrégations comprises (<code>| stats values(src_user)</code> ne fuit pas), et le filtrage sur un champ masqué est refusé (pas d'oracle). Par défaut l'admin voit en clair ; « interdire » s'applique à tous. <b>Portée d'« interdire » en SQL brut :</b> sur une <b>colonne réelle</b> (host, src_ip, dst_ip, url, message, source, category), l'interdiction est aussi imposée par l'authorizer SQLite — bloquée même en SQL brut admin ; sur une <b>clé du sac JSON</b> (src_user, email, pan, fields.*), un <b>admin</b> peut encore la lire en SQL brut via <code>json_extract(fields,'$.pan')</code>. Pour un blocage PCI dur d'un tel champ, pose l'« interdire » sur une colonne réelle, ou masque à l'ingestion (processeur #40). Tant qu'aucune règle n'existe, toute lecture est inchangée. Réservé admin.</p>
+    <div id="field-filter-form-host"></div>
+    <div id="field-filter-list"><div class="muted">chargement…</div></div>
+  </section>
+  <section id="lookups" class="card span2" aria-labelledby="lookups-h" hidden>
+    <div class="panelhead">
+      <h2 id="lookups-h">Lookups (tables d'enrichissement) <button class="ihelp vhelp" data-help="lookups" type="button" title="Aide : Lookups">?</button></h2>
+      <button id="lookup-new" type="button">+ Nouveau lookup</button>
+    </div>
+    <p id="lookups-intro" class="muted" style="margin:0 0 9px;font-size:12px">Une <b>table de référence</b> nommée (clé &rarr; colonnes) qui <b>enrichit</b> les événements via l'opérateur SOQL <code>lookup &lt;nom&gt; &lt;champ-clé&gt; [OUTPUT cols]</code> (jointure <b>LEFT JOIN</b>). Ex : un lookup <code>geoip</code> de clé <code>ip</code> &rarr; <code>{country, asn}</code> permet <code>search source=web | lookup geoip src_ip OUTPUT country</code> pour ajouter le pays à chaque événement. <b>Lecture pour tous les rôles ; création/suppression réservées éditeur et admin</b> (viewer = lecture seule). L'upload <b>remplace intégralement</b> le contenu du lookup (les colonnes de sortie sont déduites des lignes) et accepte le collage en <b>JSON</b> (tableau d'objets) ou en <b>CSV</b> (1re ligne = en-têtes).</p>
+    <form id="lookup-form" class="ruleform hidden">
+      <div class="rf-row">
+        <label>Nom <input id="lk-name" placeholder="ex: geoip" spellcheck="false" autocomplete="off"></label>
+        <label>Champ-clé <input id="lk-key" placeholder="ex: ip" spellcheck="false" autocomplete="off"></label>
+      </div>
+      <textarea id="lk-rows" rows="5" spellcheck="false" aria-label="Lignes au format tableau JSON ou CSV (en-têtes + lignes)" placeholder='Colle des lignes en JSON OU en CSV.&#10;JSON — tableau d&#39;objets : [{"ip":"1.2.3.4","country":"FR","asn":"AS3215"}, {"ip":"8.8.8.8","country":"US"}]&#10;CSV  — 1re ligne = en-têtes (noms de colonnes) :&#10;ip,country,asn&#10;1.2.3.4,FR,AS3215&#10;8.8.8.8,US&#10;La valeur du champ-clé est la clé ; les autres champs deviennent les colonnes de sortie.'></textarea>
+      <div class="rf-actions">
+        <button type="submit">Enregistrer</button>
+        <button id="lk-cancel" type="button">Annuler</button>
+        <span id="lk-result" class="muted"></span>
+      </div>
+    </form>
+    <div id="lookup-list"></div>
+  </section>
+  <section id="search-results" class="card span2 hidden" aria-labelledby="sr-h">
+    <h2 id="sr-h">Résultats <button class="ihelp vhelp" data-help="explore" type="button" title="Aide : Recherche & Explore">?</button></h2>
+    <div id="timeline" class="timeline"></div>
+    <div class="srchbody">
+      <aside id="fields" class="fields" aria-label="Champs intéressants"></aside>
+      <div id="events" class="events"></div>
+    </div>
+  </section>
+  <!-- Accès données (DLP Phase 1) : gouvernance d'accès LECTURE SEULE — rempli par renderDataAccess() -->
+  <section id="dataaccess-view" class="span2" aria-labelledby="da-h" hidden>
+    <div class="panelhead"><h2 id="da-h">Accès données <button class="ihelp vhelp" data-help="dataaccess" type="button" title="Aide : Accès données">?</button></h2></div>
+    <div id="da-body"></div>
+  </section>
+  <!-- Données → Sources (chantier #1b) : inventaire read-only (tous rôles) + métadonnées display-only (admin).
+       Rempli par loadSourcesView() (GET /api/sources) ; mutations via PUT /api/sources/settings (admin, confirmées). -->
+  <!-- #51 DAY-2 OPS — Console d'opérabilité « Système » : self-métriques (CPU/RSS/ingest/latence/scheduler/
+       DB) + santé R/J/V par composant + (admin) bulletin/MOTD & bundle de diagnostic. LECTURE viewer+. -->
+  <section id="system-panel" class="card span2" aria-labelledby="system-h" hidden>
+    <div class="panelhead">
+      <h2 id="system-h">Système — opérabilité</h2>
+      <button id="system-refresh" class="picon" type="button" title="Rafraîchir les self-métriques et la santé"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
+    </div>
+    <div id="system-body"><div class="muted">chargement…</div></div>
+  </section>
+  <!-- Relabel « Sources d'ingestion » -> « Inventaire des sources » (sources d'événements
+       déclarées, atelier admin éditable) — lève la collision « sources »×2 avec Fraîcheur (dénominateur distinct). -->
+  <section id="sources-panel" class="card span2" aria-labelledby="sources-h" hidden>
+    <div class="panelhead">
+      <div>
+        <h2 id="sources-h">Inventaire des sources <button class="ihelp vhelp" data-help="sources" type="button" title="Aide : Inventaire des sources">?</button></h2>
+        <div class="qsub">sources d'événements déclarées — libellé / catégorie / attendu</div>
+      </div>
+      <button id="sources-refresh" class="picon" type="button" title="Recharger l'affichage de l'inventaire (ne relance pas la collecte hôte)"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
+    </div>
+    <div id="sources-body"><div class="muted">chargement…</div></div>
+  </section>
+  <!-- Données → Fraîcheur — onglet SIBLING de Sources (pas un sous-onglet imbriqué). Rend le
+       DÉTAIL complet par feed (renderFreshness) : santé de collecte read-only + pivot d'alerte. Dénominateur =
+       feeds (events + snapshots + métriques), distinct de l'inventaire (sources d'événements déclarées). -->
+  <section id="freshness-panel" class="card span2" aria-labelledby="freshness-panel-h" hidden>
+    <div class="panelhead">
+      <div>
+        <h2 id="freshness-panel-h" style="display:flex;align-items:center;gap:8px">Fraîcheur des sources <button id="fresh-help" class="ihelp" type="button" title="Types de sources & états (frais/calme/muet)">?</button><button id="fresh-refresh" class="picon" type="button" title="Rafraîchir la fraîcheur des sources"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button></h2>
+        <div class="qsub">santé de collecte — feeds : events + snapshots + métriques</div>
+      </div>
+    </div>
+    <div class="body"><div class="muted">chargement…</div></div>
+  </section>
+  <!-- Données → Flotte (P0 UI) : inventaire des HÔTES/endpoints qui remontent des données (last-seen, statut
+       frais/en-retard/muet, enrôlement). LECTURE (viewer+), 100% via GET /api/fleet. Affichage seul : aucune
+       commande d'hôte depuis la console (invariant #3 : le daemon ne pilote pas l'hôte). -->
+  <section id="fleet-panel" class="card span2" aria-labelledby="fleet-h" hidden>
+    <div class="panelhead">
+      <h2 id="fleet-h">Flotte — par hôte <button class="ihelp vhelp" data-help="fleet" type="button" title="Aide : Flotte — par hôte">?</button></h2>
+      <button id="fleet-refresh" class="picon" type="button" title="Recharger l'inventaire de la flotte (ne relance pas la collecte hôte)"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
+    </div>
+    <div id="fleet-body"><div class="muted">chargement…</div></div>
+  </section>
+  <!-- Données → Connecteurs (chantier #3/#3a, admin-only) : sources externes en PULL. Un admin configure une
+       source (Microsoft Defender d'abord), le daemon PULL les alertes et les ingère (normalisées au schéma event).
+       Rempli par loadConnectors() (GET /api/connectors — tableau nu, JAMAIS le secret). CRUD : POST /api/connectors,
+       POST /api/connectors/:id (update partiel), DELETE /api/connectors/:id, POST /api/connectors/:id/test.
+       Le client_secret est un CREDENTIAL : champ password, jamais réaffiché (masqué •••), ré-envoyé seulement si
+       re-saisi. La vraie garde reste serveur (403 hors admin). Onglet admin-only ; sans connecteur = rien collecté. -->
+  <!-- #40 Processeur d'ingest (edge/ingest pipeline) — admin-only. Règles ordonnées filtre/masque/route/échantillon AVANT indexation. -->
+  <section id="processors-panel" class="card span2" aria-labelledby="processors-h" hidden>
+    <div class="panelhead">
+      <h2 id="processors-h">Processeur d'ingest</h2>
+      <div class="hdtools">
+        <button id="processors-refresh" class="picon" type="button" title="Recharger les règles"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
+        <button id="processor-new" type="button">+ Règle</button>
+      </div>
+    </div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Des règles <b>ordonnées</b> décident ce que le SOC <b>n'indexe PAS</b> (levier de rétention n°1). Chaque règle a un <b>prédicat</b> (sur le modèle CIM normalisé : catégorie / source / champs) et une <b>action</b> : <b>DROP</b> (n'indexe pas), <b>MASK</b> (masque un champ — PII), <b>ROUTE</b> (pose l'environnement / classe de rétention), <b>SAMPLE</b> (garde 1 event sur N d'une source bruyante). Appliquées à l'ingest, juste après normalisation, avant écriture. <b>Aucune perte silencieuse</b> : tout event non-indexé est <b>compté et visible</b> ci-dessous. Une règle invalide est <b>ignorée</b> (l'event est indexé inchangé). <b>Réservé à l'administrateur.</b></p>
+    <div id="processor-form" class="ruleform" hidden style="margin:0 0 10px"></div>
+    <div id="processor-list"></div>
+  </section>
+
+  <!-- #49 Indexes logiques nommés — admin-only. Rétention/plafonds PAR index (= env_id), aligné sur l'action ROUTE #40. -->
+  <section id="index-policies-panel" class="card span2" aria-labelledby="index-policies-h" hidden>
+    <div class="panelhead">
+      <h2 id="index-policies-h">Indexes &amp; rétention</h2>
+      <div class="hdtools">
+        <button id="index-policies-refresh" class="picon" type="button" title="Recharger les indexes"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
+        <button id="index-policy-new" type="button">+ Index</button>
+      </div>
+    </div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Un <b>index logique nommé</b> = la valeur <code>env_id</code> d'un event — le <b>même axe</b> que route l'action <b>ROUTE</b> du processeur d'ingest (#40) et qu'agrègent les rollups. Définis une <b>rétention propre par index</b> (ex : <code>auth</code> 400 j, <code>debug</code> 7 j) et des <b>plafonds</b> optionnels (nombre de lignes / taille estimée). Un index <b>sans politique</b> hérite de la <b>rétention globale</b>. Une fenêtre est <b>planchée à 7 j</b> (anti-effacement) ; les events de <b>contrôle</b> du daemon ne sont <b>jamais</b> purgés. Pour router un index HEC (<code>fields.index</code>) vers un env, crée une règle #40 <code>match fields.index eq &lt;x&gt; → route env=&lt;x&gt;</code>. Les comptes / plus ancien / taille sont <b>estimés</b> (rollups). <b>Réservé à l'administrateur.</b></p>
+    <div id="index-policy-form" class="ruleform" hidden style="margin:0 0 10px"></div>
+    <div id="index-policy-list"></div>
+  </section>
+
+  <section id="connectors-panel" class="card span2" aria-labelledby="connectors-h" hidden>
+    <div class="panelhead">
+      <h2 id="connectors-h">Connecteurs de sources <button class="ihelp vhelp" data-help="connectors" type="button" title="Aide : Connecteurs de sources">?</button></h2>
+      <div class="hdtools">
+        <button id="connectors-refresh" class="picon" type="button" title="Recharger les connecteurs"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
+        <button id="connector-new-preset" type="button" title="Partir d'un preset vendeur (Okta, M365, CrowdStrike…) — pré-remplit le formulaire en 1 clic">+ Depuis un preset</button>
+        <button id="connector-new" type="button">+ Connecteur Defender</button>
+        <button id="connector-new-taxii" type="button">+ TAXII 2.1</button>
+        <button id="connector-new-http" type="button">+ Generic HTTP</button>
+      </div>
+    </div>
+    <!-- P1 « connecteurs actifs » — PICKER de presets : liste servie par GET /api/connectors/presets
+         (métadonnée + template, JAMAIS de secret). Sélectionner un preset instanciable pré-remplit le
+         formulaire http_pull existant (l'admin saisit le secret + les placeholders, puis crée désactivé). -->
+    <div id="connector-preset-picker" class="ruleform hidden" aria-label="Choisir un preset de connecteur"></div>
+    <p id="connectors-intro" class="muted" style="margin:0 0 9px;font-size:12px">Branche une <b>source externe en PULL</b> : le daemon interroge périodiquement l'API, <b>normalise</b> les alertes au schéma <code>event</code> (<code>source=defender</code>, sévérité mappée, titre/catégorie, entités &rarr; champs) et les <b>ingère</b> dans ce tenant. <b>Microsoft Defender</b> (Graph Security API, OAuth2 client-credentials) est le premier connecteur — Windows/Sysmon, Linux/macOS et mobile viendront. Le <b>client secret</b> est un <b>credential</b> stocké chiffré au repos : il n'est <b>jamais réaffiché</b> (masqué <code>•••</code>) et n'est ré-envoyé que si tu le re-saisis. Un nouveau connecteur est créé <b>désactivé</b> : <b>Teste la connexion</b> puis active-le. Un connecteur en panne est journalisé (dernière erreur) sans casser les autres. <b>Réservé à l'administrateur.</b></p>
+    <form id="connector-form" class="ruleform hidden">
+      <input id="cf-name" placeholder="Nom du connecteur (ex: Defender prod)" aria-label="Nom du connecteur" autocomplete="off">
+      <div class="rf-row">
+        <label>Type <select id="cf-type"><option value="defender">Microsoft Defender</option><option value="taxii2">TAXII 2.1</option><option value="http_pull">Generic HTTP (bring-your-own-vendor)</option></select></label>
+        <label>Environnement <input id="cf-env" placeholder="prod" value="prod" spellcheck="false" autocomplete="off" size="10"></label>
+        <label>Intervalle(s) <input id="cf-interval" type="number" min="60" value="300" title="Fréquence de pull (secondes) — plancher 60 s"></label>
+        <label><input id="cf-enabled" type="checkbox"> actif</label>
+      </div>
+      <div class="rf-row cf-defender-fields">
+        <label>Azure tenant ID <input id="cf-azure" placeholder="GUID du tenant Azure AD" spellcheck="false" autocomplete="off"></label>
+        <label>Client ID <input id="cf-client" placeholder="GUID de l'app enregistrée" spellcheck="false" autocomplete="off"></label>
+      </div>
+      <!-- #23/#24 TAXII 2.1 : source de renseignement (feed d'IOC en PULL). Miroir du formulaire Defender ;
+           config { api_root, collection, auth, username? } + secret (token/mot de passe). Affiché quand type=taxii2. -->
+      <div class="rf-row cf-taxii-fields" hidden>
+        <label>URL (discovery / api-root) <input id="cf-taxii-url" placeholder="https://taxii.exemple/taxii2/ ou .../api-root/" spellcheck="false" autocomplete="off"></label>
+        <label>Collection (id) <input id="cf-taxii-collection" placeholder="GUID de la collection" spellcheck="false" autocomplete="off"></label>
+      </div>
+      <div class="rf-row cf-taxii-fields" hidden>
+        <label>Authentification <select id="cf-taxii-auth"><option value="none">aucune</option><option value="basic">basic (utilisateur + mot de passe)</option><option value="token">token (bearer / api-key)</option></select></label>
+        <label>Utilisateur <input id="cf-taxii-user" placeholder="(basic uniquement)" spellcheck="false" autocomplete="off"></label>
+      </div>
+      <!-- #20/#22 CONNECTEUR GÉNÉRIQUE http_pull : n'importe quelle API REST/JSON devient une source d'events par
+           CONFIG SEULE (bring-your-own-vendor, zéro code par-vendeur). config { url|api_root+path, method, records_path,
+           source?, sourcetype?, field_map{}, sourcetype_map{}, auth{}, pagination{}, watermark{} } + secret (credential). -->
+      <datalist id="cf-http-fmkeys"><option value="ts"></option><option value="host"></option><option value="source"></option><option value="category"></option><option value="sourcetype"></option><option value="severity"></option><option value="message"></option><option value="src_ip"></option><option value="dst_ip"></option><option value="url"></option><option value="entity"></option><option value="id"></option><option value="dedup"></option><option value="fields."></option></datalist>
+      <div class="rf-row cf-http-fields" hidden>
+        <label>URL (complète) <input id="cf-http-url" placeholder="https://api.exemple/v1/alerts (ou laisse vide + api-root/path)" spellcheck="false" autocomplete="off"></label>
+        <label>…ou api-root <input id="cf-http-apiroot" placeholder="https://api.exemple/v1" spellcheck="false" autocomplete="off"></label>
+        <label>…+ path <input id="cf-http-path" placeholder="/alerts" spellcheck="false" autocomplete="off" size="12"></label>
+      </div>
+      <div class="rf-row cf-http-fields" hidden>
+        <label>Méthode <select id="cf-http-method"><option value="GET">GET</option><option value="POST">POST</option></select></label>
+        <label>records_path <input id="cf-http-records" placeholder="data.items ou items[*] (vide = racine tableau)" spellcheck="false" autocomplete="off"></label>
+        <label>source (défaut) <input id="cf-http-source" placeholder="ex: crowdstrike (sinon http:{id})" spellcheck="false" autocomplete="off" size="14"></label>
+        <label>sourcetype (constante) <input id="cf-http-sourcetype" placeholder="ex: crowdstrike:detection" spellcheck="false" autocomplete="off" size="16"></label>
+      </div>
+      <div class="rf-row cf-http-fields cf-http-post" hidden>
+        <label>Corps POST (statique) <input id="cf-http-body" placeholder='{"query":"…"} — optionnel (méthode POST)' spellcheck="false" autocomplete="off"></label>
+      </div>
+      <div class="rf-row cf-http-fields" hidden>
+        <label>Authentification <select id="cf-http-auth">
+          <option value="none">aucune</option>
+          <option value="basic">basic (secret = user:pass)</option>
+          <option value="bearer">bearer (secret = token)</option>
+          <option value="token">token (en-tête + préfixe)</option>
+          <option value="header">header (en-tête custom)</option>
+          <option value="oauth2_client_credentials">OAuth2 client-credentials</option>
+        </select></label>
+        <label class="cf-http-hdr" hidden>Nom d'en-tête <input id="cf-http-header" placeholder="Authorization" spellcheck="false" autocomplete="off" size="16"></label>
+        <label class="cf-http-hdr" hidden>Préfixe <input id="cf-http-prefix" placeholder="ex: 'Token ' (espace inclus)" spellcheck="false" autocomplete="off" size="14"></label>
+      </div>
+      <div class="rf-row cf-http-fields cf-http-oauth" hidden>
+        <label>token_url <input id="cf-http-tokenurl" placeholder="https://idp/oauth/token" spellcheck="false" autocomplete="off"></label>
+        <label>client_id <input id="cf-http-clientid" placeholder="identifiant client (non-secret)" spellcheck="false" autocomplete="off"></label>
+        <label>scope <input id="cf-http-scope" placeholder="scope (optionnel)" spellcheck="false" autocomplete="off" size="14"></label>
+      </div>
+      <div class="rf-row cf-http-fields" hidden>
+        <label>Pagination <select id="cf-http-page"><option value="none">aucune</option><option value="offset">offset</option><option value="page">page</option><option value="cursor">cursor</option><option value="link_header">link_header</option></select></label>
+        <label class="cf-http-pagep" hidden>param <input id="cf-http-page-param" placeholder="offset/page/cursor" spellcheck="false" autocomplete="off" size="12"></label>
+        <label class="cf-http-pagesize" hidden>taille <input id="cf-http-page-size" type="number" min="1" placeholder="100" style="width:70px"></label>
+        <label class="cf-http-pagesize" hidden>size_param <input id="cf-http-page-sizeparam" placeholder="limit/top/page_size" spellcheck="false" autocomplete="off" size="12"></label>
+        <label class="cf-http-pagestart" hidden>start <input id="cf-http-page-start" type="number" placeholder="0" style="width:60px"></label>
+        <label class="cf-http-pagecursor" hidden>cursor_path <input id="cf-http-page-cursor" placeholder="JSONPath du curseur (kind=cursor)" spellcheck="false" autocomplete="off" size="14"></label>
+        <label class="cf-http-pagelink" hidden>next_path <input id="cf-http-page-next" placeholder="JSONPath URL suivante (fallback)" spellcheck="false" autocomplete="off" size="14"></label>
+      </div>
+      <div class="rf-row cf-http-fields">
+        <div class="cf-kvblock">
+          <div class="cf-kvhead">Field map <span class="muted">(champ <code>event</code> &rarr; JSONPath dans le record, ou <code>=constante</code> ; <code>fields.x</code> &rarr; contexte structuré)</span> <button id="cf-http-fm-add" type="button" class="cf-kvadd">+ champ</button></div>
+          <div id="cf-http-fieldmap"></div>
+        </div>
+      </div>
+      <div class="rf-row cf-http-fields">
+        <div class="cf-kvblock">
+          <div class="cf-kvhead">Sourcetype &rarr; catégorie (CIM) <span class="muted">(optionnel — mappe un sourcetype vendeur vers une catégorie normalisée)</span> <button id="cf-http-st-add" type="button" class="cf-kvadd">+ mapping</button></div>
+          <div id="cf-http-stmap"></div>
+        </div>
+      </div>
+      <div class="rf-row cf-http-fields" hidden>
+        <label>Watermark field_path <input id="cf-http-wm-field" placeholder="JSONPath date/curseur (ex: lastUpdated) — vide = dedup seul" spellcheck="false" autocomplete="off"></label>
+        <label>param <input id="cf-http-wm-param" placeholder="param requête (ex: since)" spellcheck="false" autocomplete="off" size="12"></label>
+        <label>format <select id="cf-http-wm-format"><option value="iso8601">iso8601</option><option value="epoch">epoch</option></select></label>
+        <label>template <input id="cf-http-wm-template" placeholder="gabarit {value} (ex: last_behavior:>'{value}')" spellcheck="false" autocomplete="off" size="16"></label>
+      </div>
+      <input id="cf-secret" type="password" placeholder="Secret (credential — jamais réaffiché)" aria-label="Secret du connecteur" autocomplete="new-password" spellcheck="false">
+      <div id="cf-secret-hint" class="rf-hint muted"></div>
+      <div class="rf-row cf-defender-fields">
+        <label>Ressource <select id="cf-resource"><option value="alerts">alerts_v2 (alertes)</option><option value="incidents">incidents</option></select></label>
+        <label>Cold-start (jours) <input id="cf-lookback" type="number" min="1" max="3650" value="7" title="Fenêtre initiale au 1er pull (jours) — ensuite le watermark prend le relais"></label>
+      </div>
+      <div class="rf-actions">
+        <button type="submit">Enregistrer</button>
+        <button id="cf-cancel" type="button">Annuler</button>
+        <span id="cf-result" class="muted"></span>
+      </div>
+      <!-- http_pull : Test / Prévisualisation. Le /test (dry-run) renvoie {ok,sample_count,sample:[…events mappés]}
+           SANS ingérer ni révéler le secret -> on affiche l'échantillon mappé pour vérifier le field_map AVANT d'activer.
+           Nécessite un connecteur ENREGISTRÉ (créé désactivé) : l'admin enregistre, prévisualise, puis active. -->
+      <div class="rf-actions cf-http-fields" hidden>
+        <button id="cf-http-preview" type="button">Test / Prévisualiser</button>
+        <span class="rf-hint muted">Enregistre d'abord (le connecteur est créé désactivé), puis prévisualise les events mappés — vérifie le field-map avant d'activer.</span>
+      </div>
+      <div id="cf-http-preview-out" hidden></div>
+    </form>
+    <div id="connector-list"><div class="muted">chargement…</div></div>
+  </section>
+  <!-- #50 — DESTINATIONS DE SORTIE (outputs) : forward des events NORMALISÉS vers un SINK EXTERNE (syslog /
+       HEC-out / webhook ; S3 & Kafka = design/stub). Plume devient une couche COLLECTE+NORMALISATION devant
+       un autre SIEM, ou un forwarder d'archive froide. Surface de DATA-EXFIL : admin-only, send-only (la
+       réponse du sink n'est jamais renvoyée), ledgerisé (data qui sort = event d'audit), secret d'auth
+       (config) jamais réaffiché. Le formulaire est construit dans destinations.js (rendu dynamique). -->
+  <section id="destinations-panel" class="card span2" aria-labelledby="destinations-h" hidden>
+    <div class="panelhead">
+      <h2 id="destinations-h">Destinations de sortie</h2>
+      <div class="hdtools">
+        <button id="destinations-refresh" class="picon" type="button" title="Recharger les destinations"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
+        <button id="destination-new" type="button">+ Destination</button>
+      </div>
+    </div>
+    <p id="destinations-intro" class="muted" style="margin:0 0 9px;font-size:12px">Forwarde les events <b>normalisés/filtrés</b> vers une <b>cible externe</b> : <code>syslog</code> (RFC5424 sur TCP), <code>HEC-out</code> (Splunk HTTP Event Collector) ou <code>webhook</code> (POST JSON) — <code>S3</code> &amp; <code>Kafka</code> sont en <i>design/stub</i>. Plume peut ainsi servir de <b>couche collecte + normalisation devant un autre SIEM</b>, ou de forwarder d'archive froide. Un <b>filtre allowlisté</b> (catégorie CIM / environnement / source / sévérité min — jamais de SQL libre) décide quels events sortent. Livraison <b>at-least-once</b> par curseur (watermark = dernier <code>event.id</code> forwardé), <b>lot borné</b>, envoi réseau <b>hors du chemin d'ingest</b> : un sink lent/mort ne bloque JAMAIS la collecte (watermark gelé, ré-essai au tick suivant). <b>Surface de sortie de données</b> : l'auth du sink (jeton HEC / en-tête webhook) est un <b>credential</b> stocké chiffré, <b>jamais réaffiché</b> ; toute création/activation/suppression est <b>journalisée (ledger)</b>. Une destination reçoit des events <b>bruts non masqués</b> (feed machine) — c'est pourquoi elle est <b>réservée à l'administrateur</b>.</p>
+    <div id="destination-form-host"></div>
+    <div id="destination-list"><div class="muted">chargement…</div></div>
+  </section>
+  <!-- Administration → Suppressions & whitelists (chantier whitelists→webui, admin-only) : panneau READ-ONLY
+       agrégeant TOUTES les suppressions/whitelists/filtres (daemon registre A1..A9 + collecteurs hôte via
+       events category=config + firewall) via GET /api/suppressions. SEULE l'exclusion d'affichage operator/self
+       est éditable (PUT /api/suppressions, confirmée + auditée sev3) ; tout le reste est mirror-only. -->
+  <section id="suppressions-panel" class="card span2" aria-labelledby="suppressions-h" hidden>
+    <div class="panelhead">
+      <h2 id="suppressions-h">Suppressions &amp; whitelists actives</h2>
+      <button id="suppressions-refresh" class="picon" type="button" title="Recharger l'affichage (ne modifie ni la collecte ni les règles)"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
+    </div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Vue unique de TOUS les filtres/suppressions/whitelists actifs, quel que soit leur périmètre — <b>collecte et règles NON modifiées</b> depuis cette console. Chaque entrée porte son <b>type</b> : <b>display-only</b> (de-bruite un panneau seul, jamais la détection) · <b>collection-reducing</b> (réduit l'ingestion — <b>read-only</b>, contrôle à la frontière hôte) · <b>host</b> (état firewall/enforcement — <b>read-only</b>). <b>Seule</b> l'exclusion d'affichage <b>opérateur / self</b> (prouvée display-only) est éditable ici (confirmée + auditée) ; elle ne peut créer aucun angle mort. Un seul écran → aucune suppression cachée.</p>
+    <div id="suppressions-body"><div class="muted">chargement…</div></div>
+  </section>
+  <!-- Administration → Rétention (chantier #1b, admin-only) : durées effectives via GET /api/retention ;
+       aperçu par champ via GET /api/retention/preview ; écriture via PUT /api/retention (baisse = modal destructif). -->
+  <section id="retention-panel" class="card span2" aria-labelledby="retention-h" hidden>
+    <div class="panelhead">
+      <h2 id="retention-h">Rétention des données <button class="ihelp vhelp" data-help="retention" type="button" title="Aide : Rétention des données">?</button></h2>
+      <button id="retention-refresh" class="picon" type="button" title="Recharger les durées de rétention"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
+    </div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Durées de conservation des données (valeurs <b>effectives</b>). <b>Réduire</b> une durée est <b>destructif</b> : les données plus anciennes seront purgées au prochain cycle horaire. Toute baisse exige une confirmation et est inscrite au journal d'audit. Les alertes ouvertes ne sont jamais purgées.</p>
+    <form id="retention-form" class="ruleform">
+      <div id="retention-fields"><div class="muted">chargement…</div></div>
+      <div class="rf-actions">
+        <button type="submit">Enregistrer</button>
+        <span id="retention-result" class="muted"></span>
+      </div>
+    </form>
+    <div id="retention-last" class="muted" style="margin-top:10px;font-size:12px"></div>
+  </section>
+  <!-- Administration → Audit (chantier #1b, admin-only) : journal d'audit inviolable (hash chaîné), LECTURE SEULE.
+       Rempli par loadLedger() (GET /api/ledger). Rend l'audit des changements de config/rétention consultable in-UI (H1). -->
+  <section id="ledger-panel" class="card span2" aria-labelledby="ledger-h" hidden>
+    <div class="panelhead">
+      <h2 id="ledger-h">Journal d'audit <button class="ihelp vhelp" data-help="ledger" type="button" title="Aide : Journal d'audit">?</button></h2>
+      <div class="hdtools">
+        <select id="ledger-limit" class="picon" title="Nombre d'entrées affichées">
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="200">200</option>
+          <option value="500">500</option>
+          <option value="1000">1000</option>
+        </select>
+        <button id="ledger-refresh" class="picon" type="button" title="Recharger le journal d'audit"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
+      </div>
+    </div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Chaîne d'audit inviolable (hash chaîné) des changements de configuration et de rétention. Lecture seule — les entrées ne peuvent être ni modifiées ni supprimées depuis cette console.</p>
+    <div id="ledger-body"><div class="muted">chargement…</div></div>
+    <!-- #2c Audit des accès opérateur : événements NON désactivables `plume-operator-access` (accès super-admin
+         cross-tenant) + `plume-tenant-admin` (gestion des tenants) DANS la base du tenant courant. Multi-tenant
+         uniquement — masqué en mode 0 (invariant : la vue Audit reste strictement identique). -->
+    <div id="opaccess-block" hidden style="margin-top:18px">
+      <div class="panelhead">
+        <h3 class="subh" style="margin:0">Accès opérateur &amp; administration des tenants</h3>
+        <div class="hdtools">
+          <select id="opaccess-src" class="picon" title="Source d'audit">
+            <option value="plume-operator-access">Accès opérateur (super-admin)</option>
+            <option value="plume-tenant-admin">Administration du tenant</option>
+          </select>
+          <button id="opaccess-refresh" class="picon" type="button" title="Recharger les accès opérateur"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
+        </div>
+      </div>
+      <p class="muted" style="margin:0 0 9px;font-size:12px">Marqueurs d'accès super-admin (émis à chaque accès cross-tenant, non désactivables) et journal des mutations d'administration du tenant, tels que visibles dans la base du <b>tenant courant</b>. Sélectionne le tenant via le switcher pour changer de contexte.</p>
+      <div id="opaccess-body"><div class="muted">chargement…</div></div>
+    </div>
+  </section>
+  <!-- #2c Administration → Tenants (super-admin : CRUD + onboarding + suspend/destroy ; admin de tenant :
+       gestion des accès de SON tenant uniquement). Rempli par loadTenantsView(). Onglet visible en mode 1
+       seulement (multiTenantMode) — INERTE/masqué en mode 0 (invariant absolu). -->
+  <section id="tenants-panel" class="card span2" aria-labelledby="tenants-h" hidden>
+    <div class="panelhead">
+      <h2 id="tenants-h">Tenants <button class="ihelp vhelp" data-help="tenants" type="button" title="Aide : Tenants">?</button></h2>
+      <div class="hdtools">
+        <button id="tenant-refresh" class="picon" type="button" title="Recharger les tenants"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
+        <button id="tenant-onboard" type="button" hidden>+ Onboarding</button>
+      </div>
+    </div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Espaces clients isolés (base chiffrée dédiée par tenant). <b>Créer / suspendre / supprimer</b> un tenant est réservé au <b>super-admin plateforme</b> ; un <b>admin de tenant</b> gère uniquement les accès de son propre tenant. La suppression est une <b>destruction cryptographique irréversible</b> (clé oubliée + base détruite) et exige de retaper le nom. Toute action est auditée. La vraie garde reste serveur.</p>
+    <form id="tenant-form" class="ruleform hidden">
+      <div class="rf-row">
+        <label>Identifiant <input id="tf-id" placeholder="slug (a-z0-9_-, ≤ 64)" spellcheck="false" autocomplete="off"></label>
+        <label>Nom <input id="tf-name" placeholder="nom lisible (optionnel)" autocomplete="off"></label>
+      </div>
+      <div class="rf-row">
+        <label>1er admin <input id="tf-admin" placeholder="utilisateur (optionnel)" spellcheck="false" autocomplete="off"></label>
+        <label>Clé (key_ref) <input id="tf-key" placeholder="ex: vault:chemin (optionnel — sinon clé fraîche)" spellcheck="false" autocomplete="off"></label>
+      </div>
+      <div class="rf-actions"><button type="submit">Provisionner</button><button id="tf-cancel" type="button">Annuler</button><span id="tf-result" class="muted"></span></div>
+    </form>
+    <div id="tenant-list"><div class="muted">chargement…</div></div>
+  </section>
+  <!-- #23 Administration → Threat Intel (IOC), admin-only. Magasin d'indicateurs de compromission : liste/recherche,
+       tuile de couverture, ajout manuel, import en masse (liste type,valeur) et bundle STIX 2.1. Le match-on-ingest
+       enrichit les events (fields.threat_intel / ti_match=1) — les hits dans le temps se requêtent en SOQL.
+       Rempli par loadThreatIntel(). API : GET /api/threat-intel/coverage & /iocs (viewer+), POST /iocs & /import (admin). -->
+  <section id="threatintel-panel" class="card span2" aria-labelledby="ti-h" hidden>
+    <div class="panelhead">
+      <h2 id="ti-h">Threat Intel (IOC)</h2>
+      <div class="hdtools">
+        <button id="ti-refresh" class="picon" type="button" title="Recharger la couverture et les IOC"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
+        <button id="ti-add" type="button">+ IOC</button>
+        <button id="ti-import-toggle" type="button">Import…</button>
+      </div>
+    </div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Magasin d'<b>indicateurs de compromission</b> (IOC) du tenant. Le <b>match-on-ingest</b> enrichit les events qui matchent (<code>fields.threat_intel</code>, <code>ti_match=1</code>) — il n'écrase ni ne supprime rien. Types : <code>ip · domain · url · hash_md5 · hash_sha1 · hash_sha256 · email</code>. Ajout manuel, import d'une <b>liste</b> (<code>type,valeur</code> par ligne) ou d'un <b>bundle STIX 2.1</b>. Les hits dans le temps se requêtent dans Explore (SOQL). <b>Ajout / import réservés à l'administrateur</b> (la vraie garde reste serveur).</p>
+    <div id="ti-coverage" class="ti-cov"><div class="muted">chargement…</div></div>
+    <form id="ti-import-form" class="ruleform hidden" style="margin-top:12px">
+      <div class="rf-row">
+        <label>Format <select id="ti-imp-fmt"><option value="lines">Liste (type,valeur)</option><option value="stix">Bundle STIX 2.1 (JSON)</option></select></label>
+        <label>Source <input id="ti-imp-source" placeholder="feed-x / manual" spellcheck="false" autocomplete="off"></label>
+        <label>Environnement <input id="ti-imp-env" value="prod" placeholder="prod" spellcheck="false" autocomplete="off" size="10"></label>
+      </div>
+      <textarea id="ti-imp-body" rows="6" spellcheck="false" placeholder="Liste : une ligne « type,valeur » (ex : ip,203.0.113.9). — OU — Bundle STIX : colle le JSON {type:'bundle',objects:[…]}."></textarea>
+      <div class="rf-actions">
+        <button type="submit">Importer</button>
+        <button id="ti-imp-cancel" type="button">Annuler</button>
+        <span id="ti-imp-result" class="muted"></span>
+      </div>
+    </form>
+    <input id="ti-search" type="search" placeholder="Filtrer les IOC (valeur, type, source)…" aria-label="Filtrer les IOC" style="margin:12px 0 8px;width:100%;max-width:420px">
+    <div id="ti-ioc-list"><div class="muted">chargement…</div></div>
+  </section>
+  <!-- #4c Aide / Guide : documentation in-app 100% statique — sommaire des espaces + référence SOQL +
+       glossaire des concepts. Rempli par renderHelpGuide() (aucun appel réseau). Visible pour tous les rôles. -->
+  <section id="help-panel" class="card span2" aria-labelledby="help-h" hidden>
+    <div class="panelhead"><h2 id="help-h">Aide &amp; Guide</h2></div>
+    <div id="help-body"></div>
+  </section>
+  <!-- P2/P3 : CVE - Durcissement - Auth - Process(auditd) - Intégrité(AIDE) - Réseau - Conteneurs - Ressources -->
+</main>
+</div>
+<footer><span id="status">connexion...</span> - maj <span id="updated">-</span></footer>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "_comment": "Signal macro : dc(src_ip) élevé de bannissements sur la fenêtre = vague d'attaques concertée (botnet / campagne). Compose sur la catégorie neutre `ban` (fail2ban ET crowdsec y convergent). Scalaire dc(src_ip) op>30. Indicateur de pression, pas de compromission — sev2. Seuil à caler sur le bruit de fond de bannissement. || TÉLÉMÉTRIE REQUISE: bans (fail2ban/crowdsec : category=ban, src_ip promu) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Vague d'attaques: rafale de bannissements (fail2ban/CrowdSec)",
+  "enabled": false,
+  "query": "search category=ban | stats dc(src_ip)",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 2,
+  "interval_s": 300,
+  "window_s": 900,
+  "mitre": "T1595"
+}

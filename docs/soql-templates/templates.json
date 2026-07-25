@@ -1,0 +1,21 @@
+{
+  "_comment": "SOQL snippet library for the Explore IDE-completion palette. Served verbatim by GET /api/soql/templates. Every `soql` here MUST compile through guatx_core::soql::to_sql(&Schema::events()) — a daemon test (soql_templates_all_compile) asserts it, so an invalid template fails CI, never ships. keywords are for the client-side keyword search (FR + EN). Additive UX only; no gate, no schema.",
+  "templates": [
+    { "id": "ssh-failed", "title": "Échecs SSH (par IP source)", "keywords": ["ssh", "echec", "failed", "login", "auth", "sshd", "bruteforce"], "soql": "search source=sshd action=failure | stats count by src_ip | sort -count | head 20" },
+    { "id": "top-src-ip", "title": "Top IP sources", "keywords": ["top", "ip", "source", "src_ip", "volume"], "soql": "search | stats count by src_ip | sort -count | head 20" },
+    { "id": "portscan", "title": "Port scan (par IP source)", "keywords": ["portscan", "scan", "recon", "port", "nmap"], "soql": "search source=portscan | stats count by src_ip | sort -count | head 20" },
+    { "id": "sudo-usage", "title": "Utilisation sudo (par utilisateur)", "keywords": ["sudo", "privilege", "admin", "escalation", "user", "utilisateur"], "soql": "search source=sudo | stats count by user | sort -count | head 20" },
+    { "id": "auth-fail-time", "title": "Échecs d'authentification dans le temps", "keywords": ["auth", "failure", "echec", "timechart", "temps", "login"], "soql": "search category=auth action=failure | timechart span=1h count" },
+    { "id": "fw-drops", "title": "Blocages firewall (par IP source)", "keywords": ["firewall", "drop", "block", "blocage", "pare-feu", "deny"], "soql": "search category=firewall action=blocked | stats count by src_ip | sort -count | head 20" },
+    { "id": "dns-volume", "title": "Volume DNS dans le temps", "keywords": ["dns", "volume", "timechart", "resolution", "requetes"], "soql": "search category=dns | timechart span=1h count" },
+    { "id": "malware", "title": "Détections malware récentes", "keywords": ["malware", "virus", "detection", "menace", "threat"], "soql": "search category=malware | sort -ts | head 50" },
+    { "id": "top-categories", "title": "Top catégories d'événements", "keywords": ["category", "categorie", "top", "repartition", "overview"], "soql": "search | stats count by category | sort -count" },
+    { "id": "web-errors", "title": "Erreurs web (par URL)", "keywords": ["web", "http", "4xx", "5xx", "error", "erreur", "url"], "soql": "search source=web | stats count by url | sort -count | head 20" },
+    { "id": "high-sev", "title": "Événements haute sévérité", "keywords": ["severity", "severite", "high", "critical", "critique", "grave"], "soql": "search severity>=3 | sort -ts | head 50" },
+    { "id": "bans", "title": "Bans (par IP source)", "keywords": ["ban", "block", "crowdsec", "fail2ban", "banni"], "soql": "search category=ban | stats count by src_ip | sort -count | head 20" },
+    { "id": "dlp", "title": "Événements DLP récents", "keywords": ["dlp", "data", "exfiltration", "fuite", "leak"], "soql": "search category=dlp | sort -ts | head 50" },
+    { "id": "hosts-per-source", "title": "Hôtes distincts par source", "keywords": ["host", "hote", "distinct", "dc", "source", "couverture"], "soql": "search | stats dc(host) by source | sort -dc" },
+    { "id": "recent-events", "title": "Événements les plus récents", "keywords": ["recent", "latest", "derniers", "tail", "all"], "soql": "search | sort -ts | head 50" },
+    { "id": "vuln", "title": "Vulnérabilités récentes", "keywords": ["vuln", "vulnerability", "vulnerabilite", "cve", "scan"], "soql": "search category=vuln | sort -ts | head 50" }
+  ]
+}

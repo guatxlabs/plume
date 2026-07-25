@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — accès données (Varonis) périodique
+
+[Timer]
+OnBootSec=240s
+OnUnitActiveSec=3min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

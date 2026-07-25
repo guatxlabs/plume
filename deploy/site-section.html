@@ -1,0 +1,42 @@
+<!-- Section "Plume" pour le site GuatX (FR). Autoportante : copie ce bloc dans une page,
+     ajuste les liens (GitHub, démo) et les couleurs (variables CSS) à ta charte. -->
+<section class="plume" id="plume">
+  <style>
+    .plume{max-width:1040px;margin:0 auto;padding:64px 20px;font-family:Inter,system-ui,sans-serif;color:#cdd9e6}
+    .plume .eyebrow{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#2dd4bf;font-weight:700}
+    .plume h2{font-size:38px;font-weight:800;letter-spacing:-.02em;margin:.3em 0 .1em;color:#eaf2fb}
+    .plume .lede{font-size:18px;color:#8aa0b4;max-width:680px;margin:0 0 28px;line-height:1.5}
+    .plume .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px;margin:28px 0}
+    .plume .feat{background:#0c1422;border:1px solid #16202e;border-radius:14px;padding:18px}
+    .plume .feat h3{margin:0 0 6px;font-size:16px;color:#eaf2fb}
+    .plume .feat p{margin:0;font-size:14px;color:#8aa0b4;line-height:1.5}
+    .plume .cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:26px}
+    .plume .btn{display:inline-flex;align-items:center;gap:8px;padding:11px 20px;border-radius:10px;font-weight:700;text-decoration:none;font-size:15px}
+    .plume .btn-1{background:#2dd4bf;color:#04201c}
+    .plume .btn-2{background:transparent;color:#cdd9e6;border:1px solid #16202e}
+    .plume .meta{margin-top:20px;font-size:13px;color:#5d6b65;font-family:ui-monospace,monospace}
+  </style>
+
+  <p class="eyebrow">🪶 Open source · by GuatX</p>
+  <h2>Plume — le SOC léger comme une plume</h2>
+  <p class="lede">L'observabilité sécurité <strong>sans l'usine à gaz</strong>. Un seul binaire Rust,
+    SQLite, ~4 Mo, zéro dépendance — les fonctions d'un Splunk/Grafana, en beaucoup plus léger.
+    Collecte logs &amp; métriques, recherche, dashboards, détection et réponse automatisée.</p>
+
+  <div class="grid">
+    <div class="feat"><h3>🪶 Léger</h3><p>Un binaire, une PWA sans build, &lt;128 Mo de RAM. Tourne sur Docker, hôte natif (systemd) ou Kubernetes/k3s.</p></div>
+    <div class="feat"><h3>🔌 Extensible sans code</h3><p>Ajoute n'importe quelle source (scripted inputs) et tes parsers depuis l'UI. Toute infra, sans toucher au code.</p></div>
+    <div class="feat"><h3>🔐 Sécurisé par défaut</h3><p>argon2id + RBAC, tokens d'agent liés à l'hôte, requêtes en lecture seule, journal d'intégrité inviolable. Zéro secret dans le repo.</p></div>
+    <div class="feat"><h3>🌍 Bilingue</h3><p>Interface FR / EN, tous les fuseaux horaires. Détection (règles + playbooks) et réponse (ban délégué, dry-run + validation).</p></div>
+  </div>
+
+  <div class="cta">
+    <a class="btn btn-1" href="https://github.com/guatxlabs/plume">Voir sur GitHub →</a>
+    <!-- Bouton démo : ne le publie QUE si tu exposes réellement une instance de démo DÉDIÉE et
+         DURCIE (PLUME_PUBLIC_DEMO=1 + PLUME_DEMO=1, base isolée, aucun agent, aucun secret réel —
+         cf. deploy/PROFILE.md « Démo publique »). Sinon, supprime ce lien ou pointe-le sur ton
+         guide de démarrage. -->
+    <a class="btn btn-2" href="/plume/demo">Essayer la démo</a>
+  </div>
+  <p class="meta">docker compose up -d   #   → http://localhost:7000</p>
+</section>

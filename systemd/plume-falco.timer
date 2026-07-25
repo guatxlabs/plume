@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — collecte Falco (eBPF) périodique
+
+[Timer]
+OnBootSec=100s
+OnUnitActiveSec=2min
+AccuracySec=20s
+
+[Install]
+WantedBy=timers.target

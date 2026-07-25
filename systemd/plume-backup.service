@@ -1,0 +1,21 @@
+[Unit]
+Description=plume — backup compact de la base (VACUUM INTO) + rotation
+
+[Service]
+Type=oneshot
+User=soc
+Group=soc
+EnvironmentFile=/etc/plume/soc.conf
+Environment=PLUME_BACKUP_DIR=/var/lib/plume/backups
+ExecStart=/usr/local/lib/plume/collectors/backup.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/db /var/lib/plume/backups
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+MemoryMax=128M
+Nice=15
+IOSchedulingClass=idle

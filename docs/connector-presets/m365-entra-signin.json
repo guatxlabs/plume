@@ -1,0 +1,47 @@
+{
+  "_comment": "EXEMPLE de config http_pull pour Microsoft Entra ID (Azure AD) sign-in logs via Microsoft Graph (GET /v1.0/auditLogs/signIns). Même patron OAuth2 client-credentials que le connecteur Defender. Le client_secret de l'app Entra va dans le champ `secret` du connecteur — JAMAIS dans cette config. Remplacez {tenant} (GUID ou domaine) et REPLACE_WITH_APP_CLIENT_ID. Permission d'application requise : AuditLog.Read.All (+ Directory.Read.All). NOTE PAGINATION : le lien de page suivante de Graph est la clé `@odata.nextLink` (point dans la clé, non adressable par le JSONPath sûr) ; on ne pagine donc PAS par nextLink mais par WATERMARK ASCENDANT — `$orderby=createdDateTime` + `$filter=createdDateTime gt {wm}` + `$top` — ce qui reprend chronologiquement après le dernier event à chaque tick, SANS perte. Augmentez `size` ($top) ou la fréquence de poll pour un backfill plus rapide.",
+  "method": "GET",
+  "url": "https://graph.microsoft.com/v1.0/auditLogs/signIns?$orderby=createdDateTime",
+  "records_path": "value",
+  "source": "entra-id",
+  "sourcetype": "entra:signin",
+  "auth": {
+    "kind": "oauth2_client_credentials",
+    "token_url": "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
+    "client_id": "REPLACE_WITH_APP_CLIENT_ID",
+    "scope": "https://graph.microsoft.com/.default"
+  },
+  "pagination": {
+    "kind": "none",
+    "size": 500,
+    "size_param": "$top"
+  },
+  "sourcetype_map": {
+    "entra:signin": "auth"
+  },
+  "field_map": {
+    "id": "id",
+    "ts": "createdDateTime",
+    "severity": "riskLevelDuringSignIn",
+    "message": "appDisplayName",
+    "src_ip": "ipAddress",
+    "sourcetype": "=entra:signin",
+    "fields.user": "userPrincipalName",
+    "fields.user_display": "userDisplayName",
+    "fields.action": "status.errorCode",
+    "fields.failure_reason": "status.failureReason",
+    "fields.app_id": "appId",
+    "fields.client_app": "clientAppUsed",
+    "fields.risk_state": "riskState",
+    "fields.city": "location.city",
+    "fields.country": "location.countryOrRegion",
+    "fields.conditional_access": "conditionalAccessStatus"
+  },
+  "watermark": {
+    "field_path": "createdDateTime",
+    "param": "$filter",
+    "format": "iso8601",
+    "template": "createdDateTime gt {value}",
+    "lookback_days": 1
+  }
+}

@@ -1,0 +1,56 @@
+#!/usr/sbin/nft -f
+#
+# GABARIT de détection de balayage de ports (portscan), source du capteur `portprobe`.
+# CE FICHIER N'EST PAS PRÊT À L'EMPLOI : il DOIT être adapté à votre hôte avant chargement.
+#
+# Principe : les ports que vous exposez RÉELLEMENT sont acceptés sans bruit ; tout le reste passe par un
+# compteur de débit par adresse source, et au-delà du seuil une ligne de log préfixée est émise. Le
+# capteur `portprobe` parse ce préfixe et en fait des événements Plume. Rien n'est DROPPÉ ici
+# (`policy accept`) : ce jeu de règles est un DÉTECTEUR, pas un filtre — votre pare-feu reste souverain.
+#
+# ⚠️ À RENSEIGNER AVANT USAGE — les deux `set` ci-dessous : la liste de VOS ports réellement ouverts.
+#   Tout port absent est traité comme fermé, donc compté comme sonde. Une liste incomplète produit du
+#   faux positif sur votre propre trafic légitime ; une liste trop large aveugle le détecteur. Établissez-la
+#   depuis votre hôte (p.ex. `ss -lntup`), PAS depuis les valeurs d'exemple ci-dessous (SSH + HTTPS + DNS).
+#
+# ⚠️ Sensibilité, à mesurer puis décider : `limit rate over 10/second burst 25 packets` définit à partir de
+#   quel débit une source est considérée comme balayant, et `limit rate 1/minute` borne le volume de logs
+#   par source (anti-inondation). Un seuil trop haut laisse passer un balayage lent ; un plafond de log trop
+#   bas peut être exploité pour noyer le signal.
+#
+# Charger  :  sudo nft -f /usr/local/share/plume/plume-portscan.nft
+# Vérifier :  sudo nft list table inet plume-portscan
+#
+add table inet plume-portscan
+delete table inet plume-portscan
+table inet plume-portscan {
+    # >>> ADAPTEZ CES DEUX LIGNES À VOTRE HÔTE (exemple minimal) <<<
+    set open_tcp { type inet_service; elements = { 22, 443 } }
+    set open_udp { type inet_service; elements = { 53 } }
+
+    chain input {
+        type filter hook input priority -150; policy accept;
+        iif "lo" accept
+        ct state established,related,invalid accept
+        fib daddr type != local accept
+        tcp dport @open_tcp accept
+        udp dport @open_udp accept
+        # Exceptez votre trafic interne légitime, sinon il sera compté comme sonde. Exemple à adapter —
+        # un service conteneurisé qui appelle un relais sur le réseau de vos conteneurs :
+        #   ip saddr <votre-sous-réseau>/24 ip daddr <votre-passerelle> tcp dport <votre-port> accept
+        meta nfproto ipv4 meta l4proto { tcp, udp } \
+            meter ps_rate_v4 { ip saddr timeout 60s limit rate over 10/second burst 25 packets } \
+            jump alert_v4
+        meta nfproto ipv6 meta l4proto { tcp, udp } \
+            meter ps_rate_v6 { ip6 saddr timeout 60s limit rate over 10/second burst 25 packets } \
+            jump alert_v6
+    }
+    chain alert_v4 {
+        meter ps_log_v4 { ip saddr timeout 5m limit rate 1/minute } \
+            log prefix "PORTSCAN4: " level info flags all
+    }
+    chain alert_v6 {
+        meter ps_log_v6 { ip6 saddr timeout 5m limit rate 1/minute } \
+            log prefix "PORTSCAN6: " level info flags all
+    }
+}

@@ -1,0 +1,9 @@
+{
+  "_comment": "Anthropic Messages API (CLOUD). Endpoint public https://api.anthropic.com ; forme d'API distincte (system top-level, x-api-key, anthropic-version). requires_cloud=true -> gate PLUME_AI_ALLOW_CLOUD=1. Cle API saisie a l'instanciation (SecretRef supporte).",
+  "vendor": "Anthropic",
+  "api_shape": "anthropic",
+  "endpoint": "https://api.anthropic.com",
+  "model": "{model}",
+  "requires_cloud": true,
+  "config": { "temperature": 0, "max_tokens": 512 }
+}

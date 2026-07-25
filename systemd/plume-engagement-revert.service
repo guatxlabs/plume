@@ -1,0 +1,27 @@
+[Unit]
+Description=plume — dead-man revert des exemptions d'engagement EXPIRÉES (leviers LOCAUX nft+f2b uniquement)
+# SANDBOX/SACRED : ne fait que RÉVOQUER (jamais poser) toute exemption dont window_end est écoulé,
+# en lisant l'état persisté. nft/fail2ban n'ont PAS de TTL natif -> ce timer garantit leur expiry à
+# window_end MÊME SI plume-engagement-adapter.service meurt / OOM / voit son timer stoppé.
+# Chemin LOCAL only (aucun cscli/k3s) -> pas d'OOM sur le levier lourd. NO-OP sûr quand rien n'est appliqué.
+Documentation=file:/usr/local/lib/plume/collectors/engagement-adapter.sh
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/plume/engagement-adapter.conf
+Environment=HOME=/tmp
+ExecStart=/usr/local/lib/plume/collectors/engagement-adapter.sh revert-expired
+SyslogIdentifier=engagement-adapter
+
+# Root requis (fail2ban-client / nft) mais surface réduite (calque plume-engagement-adapter) :
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+LockPersonality=true
+# Chemin local léger (pas de k3s exec) -> budget mémoire modeste.
+MemoryMax=64M
+CPUQuota=10%
+Nice=10

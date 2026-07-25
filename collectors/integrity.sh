@@ -1,0 +1,96 @@
+#!/bin/sh
+# Capteur Plume : intégrité/persistance — FIM NATIF (aucune dépendance type AIDE/auditd).
+# Baseline + diff. DURCISSEMENT :
+#   (a) SHA256 des binaires SUID/SGID -> detecte la MODIF IN-PLACE (binaire systeme trojanise au MEME
+#       chemin : 0 event avant car on ne suivait que le CHEMIN). suid modifie in-place = severity 4.
+#   (b) FIM ETENDU sur les vecteurs de persistance : /etc/sudoers.d, /etc/cron.d, authorized_keys,
+#       units systemd (/etc/systemd/system), /etc/pam.d, /etc/ld.so.preload, /etc/rc.local (hash + ajout/modif).
+#   (c) champs STRUCTURES {kind, path, sha256, scope:host|container, change:ajout|modif}.
+# Garde le PRUNE conteneur (anti-bruit snapshots buildkit/rancher/containerd). Borne le volume : baseline
+# + DELTA (comm), pas de re-scan complet emis. ROOT (CAP_DAC_READ_SEARCH) ; ProtectHome=read-only requis
+# pour lire authorized_keys. Lecture seule.
+set -eu
+. "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
+FILES="${PLUME_FIM_FILES:-/etc/passwd /etc/group /etc/shadow /etc/gshadow /etc/sudoers /etc/crontab /etc/hosts /etc/ssh/sshd_config}"
+plume_init
+BASE="$STATE/integrity.base"
+cur="$(mktemp)"
+
+# scope d'un chemin : container si sous un store conteneur (normalement PRUNE -> host en pratique).
+scope_of() {
+  case "$1" in
+    /var/lib/buildkit/*|/var/lib/rancher/*|/var/lib/containerd/*|/var/lib/docker/*|/var/lib/kubelet/*|*/overlay2/*|/run/containerd/*) echo container ;;
+    *) echo host ;;
+  esac
+}
+# emet une ligne baseline "kind|path|sha256|scope" pour un FICHIER (hash sha256).
+emit_hash() {  # $1=kind $2=path
+  [ -f "$2" ] || return 0
+  _h=$(sha256sum "$2" 2>/dev/null | cut -d' ' -f1); [ -n "$_h" ] || _h="?"
+  printf '%s|%s|%s|%s\n' "$1" "$2" "$_h" "$(scope_of "$2")" >> "$cur"
+}
+
+# (a) binaires SUID/SGID + SHA256 (modif in-place detectee par changement de hash). PRUNE conteneurs.
+PRUNE="${PLUME_FIM_PRUNE:-/var/lib/buildkit /var/lib/rancher /var/lib/containerd /var/lib/docker /var/lib/kubelet}"
+prune_expr=""; for _d in $PRUNE; do prune_expr="$prune_expr -path $_d -prune -o"; done
+# shellcheck disable=SC2086
+find / -xdev $prune_expr -type f \( -perm -4000 -o -perm -2000 \) -print 2>/dev/null | while IFS= read -r b; do
+  emit_hash suid "$b"
+done
+# fichiers critiques (identite/comptes/sshd)
+for f in $FILES; do emit_hash crit "$f"; done
+# (b) FIM ETENDU — vecteurs de persistance (hash + ajout/modif via le diff baseline)
+emit_hash preload /etc/ld.so.preload
+emit_hash rclocal /etc/rc.local
+for f in /etc/sudoers.d/*;            do emit_hash sudoersd "$f"; done
+for f in /etc/cron.d/*;               do emit_hash crond "$f"; done
+for f in /etc/pam.d/*;                do emit_hash pamd "$f"; done
+for f in /etc/systemd/system/*.service /etc/systemd/system/*.timer; do emit_hash unit "$f"; done
+for f in /root/.ssh/authorized_keys /root/.ssh/authorized_keys2 /home/*/.ssh/authorized_keys /home/*/.ssh/authorized_keys2; do emit_hash authkeys "$f"; done
+# ports TCP en écoute (kind=port, pas de hash)
+if command -v ss >/dev/null 2>&1; then
+  ss -H -tln 2>/dev/null | awk '{print $4}' | sed 's/.*://' | grep -E '^[0-9]+$' | sort -un | sed 's/^/port|/; s/$/||host/' >> "$cur" || true
+fi
+sort -o "$cur" "$cur"
+
+events=""
+add_ev() {  # $1=severity $2=message $3=fields-json
+  em=$(json_escape "$2")
+  events="$events${events:+,}{\"ts\":$ts,\"source\":\"integrity\",\"category\":\"integrity\",\"severity\":$1,\"message\":\"$em\",\"fields\":$3}"
+}
+if [ -f "$BASE" ]; then
+  comm -13 "$BASE" "$cur" > "$STATE/.int.added" 2>/dev/null || true
+  while IFS='|' read -r kind path sha scope; do
+    [ -z "${kind:-}" ] && continue
+    # ajout vs modif : le chemin existait-il deja dans la baseline (hash different) ?
+    if grep -qF "$kind|$path|" "$BASE" 2>/dev/null; then change=modif; else change=ajout; fi
+    pj=$(json_escape "$path")
+    fields="{\"kind\":\"$kind\",\"path\":\"$pj\",\"sha256\":\"$sha\",\"scope\":\"${scope:-host}\",\"change\":\"$change\"}"
+    case "$kind" in
+      suid)     [ "$change" = modif ] && add_ev 4 "SUID/SGID MODIFIE in-place (hash) : $path" "$fields" || add_ev 3 "nouveau binaire SUID/SGID : $path" "$fields" ;;
+      preload)  add_ev 4 "/etc/ld.so.preload $change (persistance LD) : $path" "$fields" ;;
+      sudoersd) add_ev 4 "sudoers.d $change (privilege) : $path" "$fields" ;;
+      authkeys) add_ev 4 "authorized_keys $change (acces SSH) : $path" "$fields" ;;
+      pamd)     add_ev 4 "pam.d $change (auth) : $path" "$fields" ;;
+      rclocal)  add_ev 4 "rc.local $change (boot persistance) : $path" "$fields" ;;
+      unit)     add_ev 3 "unit systemd $change (persistance) : $path" "$fields" ;;
+      crond)    add_ev 3 "cron.d $change : $path" "$fields" ;;
+      crit)     case "$path" in *shadow*) add_ev 4 "fichier critique $change : $path" "$fields" ;; *) add_ev 3 "fichier critique $change : $path" "$fields" ;; esac ;;
+      port)     add_ev 2 "nouveau port en écoute : $path" "$fields" ;;
+      *)        add_ev 1 "$kind $change : $path" "$fields" ;;
+    esac
+  done < "$STATE/.int.added"
+  rm -f "$STATE/.int.added"
+fi
+mv -f "$cur" "$BASE"
+
+# DEAD-MAN'S-SWITCH (battement de santé AUTONOME) : ce FIM sort tôt au 1er run (baseline) et aux runs sans
+# changement -> son silence serait indistinguable d'un collecteur mort. On écrit donc un petit .json kind:events
+# health À CHAQUE run, AVANT le garde « aucun changement » et INDÉPENDAMMENT du diff. PAS de dedup -> chaque
+# battement S'INSÈRE -> MAX(ts) avance -> heartbeat vivant. Silence > 25 min = alerte MUET (collecteur CONTINU
+# integrity-health, cf. main.rs). Le flux d'events RÉEL (category=integrity) tolère le calme (event_based).
+spool_write "integrity-health-$ts.json" \
+  "$(emit_event "$(heartbeat integrity 'integrity santé: FIM actif' '{"alive":1}')")" nl
+
+[ -z "$events" ] && exit 0   # 1er run (baseline) ou aucun changement -> rien à signaler
+spool_write "integrity-$ts.json" "$(emit_event "$events")"

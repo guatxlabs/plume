@@ -1,0 +1,52 @@
+# Dependabot — dependency alerts + updates (free on public repos).
+# Pins updates behind a PR (never an auto-merge) → human review, consistent with
+# "enforcement, not trust". Covers EVERY cargo crate of the repository — the daemon, the endpoint
+# agent (TLS stack, speaks to the network: the most exposed component, so never left uncovered) and
+# the two collector sidecars — plus the GitHub Actions (keeps the SHA-pins in .github/workflows/ current).
+version: 2
+updates:
+  # Rust daemon crate (build/runtime deps).
+  - package-ecosystem: "cargo"
+    directory: "/daemon"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(cargo)"
+
+  # Endpoint agent (own Cargo.lock) : ships the TLS stack and speaks to the network — leaving it out
+  # would mean no advisory alert on the most exposed component of the product.
+  - package-ecosystem: "cargo"
+    directory: "/agent"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(cargo)"
+
+  # Collector sidecars (each has its own Cargo.lock).
+  - package-ecosystem: "cargo"
+    directory: "/collector-mail"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(cargo)"
+
+  - package-ecosystem: "cargo"
+    directory: "/collector-syslog"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(cargo)"
+
+  # GitHub Actions — keeps the SHA-pinned actions in .github/workflows/ current
+  # (Dependabot proposes the new SHA + the version comment).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(actions)"

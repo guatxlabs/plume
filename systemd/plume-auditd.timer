@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — ingestion auditd périodique
+
+[Timer]
+OnBootSec=150s
+OnUnitActiveSec=2min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

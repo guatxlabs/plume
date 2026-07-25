@@ -1,0 +1,12 @@
+[Unit]
+Description=plume — scan YARA périodique (OPT-IN, NON activé par défaut)
+
+[Timer]
+OnBootSec=300s
+OnUnitActiveSec=15min
+AccuracySec=2min
+
+# [Install] présent pour que `systemctl enable --now plume-yara.timer` fonctionne LE JOUR où l'opérateur
+# l'active explicitement. Le bootstrap N'ACTIVE PAS ce timer (OFF par défaut) : il faut l'enable à la main.
+[Install]
+WantedBy=timers.target

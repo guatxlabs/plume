@@ -1,0 +1,13 @@
+{
+  "_comment": "Network service discovery INTERNE : une source ouvre des flux vers >20 IP internes distinctes = cartographie latérale du réseau. Compose sur conntrack scope=internal dir=outbound (dst_ip promu). Sur un parc mono-hôte : inerte (dc<=1). Complète les scans PÉRIMÈTRE seedés (firewall) par la vue EST-OUEST. || TÉLÉMÉTRIE REQUISE: conntrack (flux : scope, dir, dst_ip — parc MULTI-HÔTES) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Balayage réseau interne (une source touche de nombreux hôtes)",
+  "enabled": false,
+  "query": "search source=conntrack scope=internal dir=outbound | stats dc(dst_ip) by src_ip | where dc > 20 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 3,
+  "interval_s": 300,
+  "window_s": 1800,
+  "mitre": "T1046"
+}

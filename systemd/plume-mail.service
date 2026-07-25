@@ -1,0 +1,26 @@
+[Unit]
+Description=plume collector — logs mailserver (postfix/dovecot/postscreen) -> events source=mail
+# OPT-IN : installe mais NON active. Activer : systemctl enable --now plume-mail.timer
+# Lit le mail.log du pod docker-mailserver (k3s exec) ou un fichier (PLUME_MAIL_SRC=file). Lecture seule.
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/plume/plume.conf
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+# HOME inscriptible pour le cache de `k3s kubectl` en mode k3s (cf plume-bans/plume-crowdsec).
+Environment=HOME=/tmp
+ExecStart=/usr/local/lib/plume/collectors/mail.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+# AF_INET/6 = API k3s (exec dans le pod mail).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+# 512M : `k3s kubectl` (binaire k3s complet) dépasse 96M -> OOM silencieux sinon.
+MemoryMax=512M
+CPUQuota=25%
+Nice=12

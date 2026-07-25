@@ -1,0 +1,19 @@
+# Exemple livré (Slice #7, pièce 3). Démontre : logsource.category Sysmon `process_creation` -> CIM
+# `endpoint`, et un champ ÉTENDU quelconque (CommandLine -> fields.CommandLine via json_extract) avec
+# `|contains`. Fire si un parseur/agent a peuplé fields.CommandLine (sinon inerte : pas de faux négatif
+# sur une donnée absente). MITRE T1033 (System Owner/User Discovery).
+title: Whoami Command Execution (Discovery)
+id: 7c1e0a55-4b2d-49f8-9a3c-6e2b8d10f9c4
+status: stable
+description: Execution of whoami, a common host/user discovery command post-compromise.
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        CommandLine|contains: whoami
+    condition: selection
+level: low
+tags:
+    - attack.discovery
+    - attack.t1033

@@ -1,0 +1,22 @@
+[Unit]
+Description=plume collector — état cluster k8s (pods/nodes/deployments) -> metrics+events
+After=k3s.service
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+# overrides hote (PLUME_KUBECTL, PLUME_K3S_STORAGE=/opt/local-path-provisioner sur ce VPS)
+EnvironmentFile=-/etc/plume/k8s.conf
+ExecStart=/usr/local/lib/plume/collectors/kube-state.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryMax=128M
+CPUQuota=30%
+Nice=12

@@ -1,0 +1,26 @@
+[Unit]
+Description=plume collector (plugin) — ingestion du log auditd (exec/privesc/auth) -> events
+# OPT-IN : installe mais non active. Activer : systemctl enable --now plume-auditd.timer
+# Necessite auditd + ses regles (cf. le gabarit systemd/plume-audit.rules, a adapter a votre hote) ;
+# sinon le collecteur se desactive seul. Les cles qu il mappe sont celles de ce gabarit.
+After=auditd.service
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+# Par defaut, ne shippe que les exec d'un VRAI utilisateur connecte (auid defini) ->
+# coupe la churn execve des daemons/collecteurs. Coherent avec exec_tracking (-F auid!=-1).
+Environment=PLUME_AUDIT_REAL_USER_ONLY=1
+ExecStart=/usr/local/lib/plume/collectors/auditd.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+MemoryMax=96M
+CPUQuota=25%
+Nice=12

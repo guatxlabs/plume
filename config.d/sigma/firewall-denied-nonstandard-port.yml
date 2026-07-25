@@ -1,0 +1,24 @@
+# Exemple livré (Slice #7, pièce 3 — importeur Sigma). Format Sigma standard, traduit au boot par
+# load_overlay_sigma -> table `rule` (managed=1). Démontre : logsource.category -> CIM `firewall`,
+# égalité (action=deny), et une NÉGATION de liste (`and not filter` -> `dport not in (...)`).
+title: Firewall Denied Connection to Non-Standard Port
+id: 9f6c2b10-7a2e-4c31-9b7d-1e0a4c8d55aa
+status: experimental
+description: >
+  Deny event on the perimeter firewall towards a port that is not a common web port.
+  Cheap, vendor-agnostic signal of scanning / lateral movement attempts (composes on the
+  neutral CIM `firewall` category, so it fires the same on FortiGate, ufw, nft, ...).
+logsource:
+    category: firewall
+detection:
+    selection:
+        action: deny
+    filter:
+        dst_port:
+            - 80
+            - 443
+    condition: selection and not filter
+level: low
+tags:
+    - attack.discovery
+    - attack.t1046

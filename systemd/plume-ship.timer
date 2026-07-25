@@ -1,0 +1,10 @@
+[Unit]
+Description=plume agent — expédition périodique vers le central
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

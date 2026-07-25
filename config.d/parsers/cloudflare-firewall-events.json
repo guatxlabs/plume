@@ -1,0 +1,24 @@
+{
+  "_comment": "Overlay PARSEUR DÉCLARATIF (config.d) — Cloudflare firewallEventsAdaptive (JSON) -> CIM. POURQUOI : un CDN/WAF mitige le trafic AU EDGE, donc les requêtes bloquées ou challengées n'atteignent jamais l'origine ; une collecte limitée à l'origine ne les voit pas. Ingérer la télémétrie edge rend cette surface observable. Forwardez les nœuds JSON du GraphQL `firewallEventsAdaptive` (un objet par événement de mitigation edge : challenge/block/managed_challenge) à plume sous source=cloudflare ; CE parseur extrait la VRAIE IP attaquant + le vhost + le chemin SANS collecteur shell (cloudflare.sh reste l'option native ; ceci = le chemin bring-your-own, sur-ensemble vendor-agnostic). Alimente les règles source=cloudflare (recon multi-vhost, cf-recon-low-and-slow path-breadth). INVARIANT : firewallEventsAdaptive ne contient QUE des events DÉCLENCHÉS par une règle edge -> le trafic d'administration légitime (jamais challengé) n'y figure PAS -> exclu par NATURE, aucune whitelist d'IP à maintenir (et donc pas de FP à écarter sur ce trafic). action=$action préserve la valeur CF brute (managed_challenge/block/challenge). ENRICH-only, jamais un drop. Match gardé sur clientIP (un vrai nœud firewallEventsAdaptive). Posé managed=1 au boot.",
+  "name": "Cloudflare firewallEventsAdaptive (JSON) → CIM",
+  "source": "cloudflare",
+  "enabled": true,
+  "match": "\"clientIP\"",
+  "extract": [
+    { "json": true }
+  ],
+  "map": {
+    "category": "firewall",
+    "severity": 2,
+    "action": "$action",
+    "src_ip": "$clientIP",
+    "fields": {
+      "vhost": "$clientRequestHTTPHost",
+      "path": "$clientRequestPath",
+      "cf_source": "$source",
+      "cf_rule": "$ruleId",
+      "cf_ua": "$userAgent",
+      "cf_country": "$clientCountryName"
+    }
+  }
+}

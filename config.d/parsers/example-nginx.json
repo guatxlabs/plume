@@ -1,0 +1,7 @@
+{
+  "_comment": "EXEMPLE d'overlay PARSER (config.d) — extrait method/path/status/bytes d'un log nginx 'combined'. Posé au boot avec managed=1 (source git). Renommer/dupliquer pour vos propres parsers. Le champ 'pattern' est une regex Rust (crate `regex`, temps linéaire) avec des groupes NOMMÉS (?P<champ>...) -> chaque groupe devient un champ extrait à l'ingestion. Validation: motif non vide, <=1000 caractères, regex qui compile. 'source' = source d'event ciblée ('*' = toutes). 'enabled' true/false.",
+  "name": "nginx — méthode + chemin + statut",
+  "source": "nginx",
+  "pattern": "\"(?P<method>[A-Z]+) (?P<path>\\S+) HTTP/[\\d.]+\" (?P<status>\\d{3}) (?P<bytes>\\d+)",
+  "enabled": true
+}

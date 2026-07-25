@@ -1,0 +1,25 @@
+[Unit]
+Description=plume collector — intégrité/persistance (FIM natif : SUID, ld.so.preload, hashes, ports)
+
+[Service]
+Type=oneshot
+Environment=PLUME_SPOOL=/var/lib/plume/spool
+Environment=PLUME_STATE=/var/lib/plume/state
+ExecStart=/usr/local/lib/plume/collectors/integrity.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+# read-only (et non `true`) : le FIM doit LIRE ~/.ssh/authorized_keys (vecteur de backdoor SSH).
+# ProtectHome=true SURMONTE /home et /root (invisible) -> meme CAP_DAC_READ_SEARCH ne peut les lire.
+# read-only garde l'ecriture interdite tout en autorisant la lecture (hash) -> sandbox quasi inchange.
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+LockPersonality=true
+MemoryMax=128M
+CPUQuota=40%
+Nice=15
+IOSchedulingClass=idle

@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — collecte auditd périodique
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=2min
+AccuracySec=20s
+
+[Install]
+WantedBy=timers.target

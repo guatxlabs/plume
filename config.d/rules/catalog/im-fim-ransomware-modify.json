@@ -1,0 +1,13 @@
+{
+  "_comment": "Chiffrement ransomware : un hôte voit >100 fichiers MODIFIÉS (fim_event=modified) en 15 min = chiffrement/réécriture de masse. Compose sur la famille FIM ENDPOINT (#57, agent Wazuh/osquery : fim_event, agent_name) — distincte du FIM natif intégrity (kind/change). Inerte sans agent endpoint FIM branché. || TÉLÉMÉTRIE REQUISE: endpoint FIM (agent BYO : category=integrity, fim_event, agent_name) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Ransomware: modification de masse de fichiers (FIM endpoint)",
+  "enabled": false,
+  "query": "search category=integrity fim_event=modified | stats count by agent_name | where count > 100 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 4,
+  "interval_s": 120,
+  "window_s": 900,
+  "mitre": "T1486"
+}

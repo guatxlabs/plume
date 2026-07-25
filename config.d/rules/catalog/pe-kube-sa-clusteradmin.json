@@ -1,0 +1,13 @@
+{
+  "_comment": "Un ServiceAccount (identité non-humaine, souvent portée par un pod) lié à cluster-admin = escalade maximale (un pod compromis => cluster). Compose sur le snapshot kube-rbac (role=cluster-admin, kind du sujet). Fire en état (count>0) tant que la liaison existe -> à activer après avoir acté les SA légitimes. Inerte sans collecteur kube-rbac. || TÉLÉMÉTRIE REQUISE: kube-rbac (snapshot RBAC : role, kind, subject) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — K8s: ServiceAccount lié à cluster-admin (clés du royaume)",
+  "enabled": false,
+  "query": "search source=kube-rbac role=cluster-admin kind=ServiceAccount | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 4,
+  "interval_s": 300,
+  "window_s": 3600,
+  "mitre": "T1098"
+}

@@ -1,0 +1,13 @@
+{
+  "_comment": "Signature d'outil : un User-Agent d'outil offensif (ici sqlmap ; dupliquer pour nikto/nuclei/masscan) = scan actif à l'origine (contourne le WAF edge s'il tape l'origine directement). web expose `ua`. Heuristique triviale à évader (UA falsifiable) mais capte les scans opportunistes non déguisés. Signal d'appoint low-cost. || TÉLÉMÉTRIE REQUISE: web (ua) || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI selon la télémétrie disponible).",
+  "name": "Catalogue — Recon: scanner web identifié par User-Agent (sqlmap/nikto/nuclei)",
+  "enabled": false,
+  "query": "search source=web ua=*sqlmap* | stats count by src_ip | where count > 0 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 2,
+  "interval_s": 300,
+  "window_s": 900,
+  "mitre": "T1595.002"
+}

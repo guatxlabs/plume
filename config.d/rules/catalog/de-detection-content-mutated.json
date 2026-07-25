@@ -1,0 +1,13 @@
+{
+  "_comment": "Impair Defenses côté SIEM : toute mutation du CONTENU d'une détection (config.rule.* / config.parser.* — création, édition de query/threshold/pattern, ET désactivation qui est un update enabled=0) est auto-auditée en source=plume-config category=config (fields.kind='rule'|'parser'). Une règle compagnon attrape la RAFALE (>20) de mutations config ; celle-ci surface CHAQUE changement de contenu de détection à bas seuil (count>0) — c'est le watcher PAR-ÉDITION qui détecte DIRECTEMENT la classe « transient neuter » (un editor/admin qui réécrit une query pour qu'elle ne matche jamais). CHOIX DE CONCEPTION : (1) enabled=true (le contenu de détection change RAREMENT hors setup -> chaque édition DOIT être visible = low-FP) ; (2) query passée de `action=config.rule.*` (INERTE : les events config.rule.* ne portent PAS fields.action, seul config.user.* le fait) à `kind in (rule,parser)` (fields.kind EST posé par les audits detection.rs -> la règle TIRE réellement). || TÉLÉMÉTRIE REQUISE: plume self (auto-audit : source=plume-config category=config, fields.kind rule/parser) || Catalogue de détection curé (#22) — managed=1 posé par le loader ; SEULE règle du catalogue activée par défaut (self-detection à FP quasi-nul).",
+  "name": "Catalogue — SOC: modification du contenu de détection (règle créée/éditée/désactivée)",
+  "enabled": true,
+  "query": "search source=plume-config category=config kind in (rule,parser) | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 2,
+  "interval_s": 300,
+  "window_s": 1800,
+  "mitre": "T1562.001"
+}

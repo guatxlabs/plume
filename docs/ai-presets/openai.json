@@ -1,0 +1,9 @@
+{
+  "_comment": "OpenAI (CLOUD). Endpoint public https://api.openai.com, API /v1/chat/completions. requires_cloud=true -> instanciation/appel refuses sauf PLUME_AI_ALLOW_CLOUD=1. Cle API saisie a l'instanciation (SecretRef env:/file:/vault: supporte) ; jamais dans ce preset.",
+  "vendor": "OpenAI",
+  "api_shape": "openai",
+  "endpoint": "https://api.openai.com",
+  "model": "{model}",
+  "requires_cloud": true,
+  "config": { "temperature": 0, "max_tokens": 512 }
+}

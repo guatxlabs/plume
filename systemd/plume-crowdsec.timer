@@ -1,0 +1,10 @@
+[Unit]
+Description=plume — ingestion CrowdSec périodique
+
+[Timer]
+OnBootSec=110s
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

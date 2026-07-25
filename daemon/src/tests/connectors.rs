@@ -131,7 +131,7 @@
     fn connector_test_db() -> Arc<Mutex<Connection>> {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         Arc::new(Mutex::new(conn))
     }
 
@@ -887,8 +887,8 @@
         let env: String = conn.query_row("SELECT env_id FROM event ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap();
         assert_eq!(env, "prod", "env_id par défaut = 'prod'");
         // idempotent : re-migrer ne casse rien, env_id toujours là, version stable.
-        migrate(&conn);
-        migrate(&conn);
+        let _ = migrate(&conn);
+        let _ = migrate(&conn);
         assert!(col_exists(&conn, "banned_ip", "env_id"));
         let v: String = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
         assert_eq!(v, "111");
@@ -915,8 +915,8 @@
         assert_eq!(dn, 2, "env_id dans la PK du rollup par dimension");
         // (3) version bumpée + idempotence : re-migrer NE recrée PAS (col_exists) -> données PRÉSERVÉES.
         assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "111");
-        migrate(&conn);
-        migrate(&conn);
+        let _ = migrate(&conn);
+        let _ = migrate(&conn);
         let n2: i64 = conn.query_row("SELECT COUNT(*) FROM event_rollup WHERE bucket=?1 AND source='sshd'", params![t], |r| r.get(0)).unwrap();
         assert_eq!(n2, 2, "re-migrer v67 ne doit PAS recréer/vider event_rollup (garde col_exists)");
         assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "111");
@@ -943,7 +943,7 @@
              INSERT INTO event_rollup(bucket,source,severity,action,src_ip,host,n,last_ts) VALUES(3600,'sshd',3,'','1.2.3.4','h',9,3600);",
         ).unwrap();
         conn.execute("UPDATE meta SET value='66' WHERE key='schema_version'", []).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         // la colonne est ajoutée ET la ligne existante est préservée avec env_id='prod' (donnée pré-v67 = prod).
         assert!(col_exists(&conn, "event_dim_rollup", "env_id") && col_exists(&conn, "event_rollup", "env_id"));
         let (n, env): (i64, String) = conn.query_row(
@@ -1086,7 +1086,7 @@
         {
             let conn = open_db(&path).unwrap();
             conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&conn);
+            let _ = migrate(&conn);
             conn.execute("INSERT INTO event(ts,source,category,severity,host,message,src_ip,fields) VALUES(?1,'sshd','auth',3,'h1',?2,?3,?4)",
                 params![now(), "login alice", "10.0.0.5", r#"{"src_user":"alice"}"#]).unwrap();
             conn.execute("INSERT INTO event(ts,source,category,severity,host,message,src_ip,fields) VALUES(?1,'sshd','auth',3,'h2',?2,?3,?4)",
@@ -1334,7 +1334,7 @@
             assert!(icols.iter().any(|x| x == c), "colonne incident.{c} attendue");
         }
         // idempotence : re-migrer ne casse rien, reste à la tête.
-        migrate(&conn);
+        let _ = migrate(&conn);
         assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "111");
     }
 
@@ -1382,7 +1382,7 @@
         {
             let conn = open_db(&path).unwrap();
             conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&conn);
+            let _ = migrate(&conn);
             conn.execute("INSERT INTO event(ts,source,category,severity,host,message,src_ip,fields) VALUES(?1,'sshd','auth',3,'h1',?2,?3,?4)",
                 params![now(), "login alice", "10.0.0.5", r#"{"src_user":"alice"}"#]).unwrap();
             conn.execute("INSERT INTO event(ts,source,category,severity,host,message,src_ip,fields) VALUES(?1,'sshd','auth',3,'h2',?2,?3,?4)",
@@ -1587,7 +1587,7 @@
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             w.execute("INSERT INTO destination(id,type,name,enabled,endpoint,config,filter) \
                        VALUES(1,'hec','h',1,'https://x','{\"hec_token\":\"SECRET\"}','{}')", []).unwrap();
         }

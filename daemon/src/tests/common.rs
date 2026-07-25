@@ -12,10 +12,15 @@
     static AUTOINDEX_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
     static CUSTOM_ROLES_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
+    /// Fixture PARTAGÉE : base complète (schema.sql + TOUTE la chaîne de migrations), celle que la
+    /// production construit. Le booléen est ASSERTÉ ici — pas ignoré : cette fixture est utilisée par
+    /// des centaines de tests, donc toute régression qui ferait échouer une étape de migration sur une
+    /// base saine casse la suite entière au lieu de passer inaperçue. (Les fixtures PARTIELLES, elles,
+    /// ignorent volontairement le booléen : elles n'ont jamais eu vocation à satisfaire le contrat.)
     fn test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-        migrate(&conn);
+        assert!(migrate(&conn), "fixture de test : la chaîne de migrations doit aller au bout");
         conn
     }
 

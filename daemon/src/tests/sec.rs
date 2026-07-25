@@ -97,10 +97,10 @@ fn sec4_rules_seeded_and_backfilled_idempotent() {
     for n in names { conn.execute("DELETE FROM rule WHERE name=?1", params![n]).unwrap(); }
     conn.execute("UPDATE meta SET value='99' WHERE key='schema_version'", []).unwrap();
     assert_eq!(present(&conn), 0, "règles retirées (simulation d'un état antérieur)");
-    migrate(&conn); // v<100 -> migrate_v100 backfill (seeded présent)
+    let _ = migrate(&conn); // v<100 -> migrate_v100 backfill (seeded présent)
     assert_eq!(present(&conn), 4, "migrate_v100 backfille les 4 règles de self-detection sur instance live");
     // idempotent : re-migrer ne duplique pas.
-    migrate(&conn);
+    let _ = migrate(&conn);
     assert_eq!(present(&conn), 4, "backfill idempotent (aucun doublon)");
 }
 
@@ -170,7 +170,7 @@ fn sec_h1_verify_ledger_keyed_never_panics() {
 fn v134_ledger_pubkey_pin_rejects_resign() {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-    migrate(&conn);
+    let _ = migrate(&conn);
     // clé qui SIGNE le checkpoint (son pubkey devient le pubkey IN-BAND stocké dans la ligne checkpoint).
     let legit = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
     let legit_pub = legit.verifying_key().to_bytes();

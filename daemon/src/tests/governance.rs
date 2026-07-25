@@ -490,7 +490,7 @@
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             // event MATCHANT (fields.CommandLine contient whoami) + event NON matchant (dir).
             w.execute("INSERT INTO event(ts,source,category,severity,message,fields,dedup) VALUES(?1,'sysmon','endpoint',1,'proc','{\"CommandLine\":\"cmd /c whoami /priv\"}','ev-match')", params![ts]).unwrap();
             w.execute("INSERT INTO event(ts,source,category,severity,message,fields,dedup) VALUES(?1,'sysmon','endpoint',1,'proc','{\"CommandLine\":\"cmd /c dir\"}','ev-nomatch')", params![ts]).unwrap();
@@ -1119,7 +1119,7 @@ detection:
         {
             let w = Connection::open(&path).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             w.execute("INSERT INTO meta(key,value) VALUES('plume_mode','active') ON CONFLICT(key) DO UPDATE SET value='active'", []).unwrap();
         }
         {

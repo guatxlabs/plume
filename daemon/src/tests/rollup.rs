@@ -48,7 +48,7 @@
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             // règle 22 (T1190) canonique (const seed_purple_rules), DUE (last_run NULL).
             w.execute(
                 "INSERT INTO rule(name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,managed) \
@@ -93,7 +93,7 @@
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             // Règle qui COMPILE (rule_sql Ok — is_soql=0 = substitution __FROM__ pure) mais ERRE à l'éval
             // (colonne inexistante -> conn.prepare échoue -> run_query Err -> eval_value None). DUE.
             w.execute(
@@ -231,7 +231,7 @@
         {
             let w = open_db(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             w.execute("INSERT INTO user(name,hash,role) VALUES('carol','$argon2id$x','editor')", []).unwrap();
         }
         let st = ds_file_state(&p); // mode 0 : st.db / st.db_path / tenants pointent le fichier.
@@ -255,7 +255,7 @@
         {
             let w = open_db(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             w.execute("INSERT INTO event(ts,source,category,origin) VALUES(?1,'auditd','exec','')", params![now() - 10]).unwrap();
         }
         let v = compute_integrations(&p);

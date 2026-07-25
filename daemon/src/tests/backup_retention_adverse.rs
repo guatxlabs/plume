@@ -96,7 +96,7 @@
         {
             let c = open_db_keyed(&src, Some(key)).unwrap();
             c.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&c);
+            let _ = migrate(&c);
             c.execute("INSERT INTO event(ts,source,category,severity,host,message,fields) VALUES(?1,'sshd','auth',3,'h','m','{}')",
                 params![now()]).unwrap();
         }
@@ -152,7 +152,7 @@
         {
             let c = open_db_keyed(&src, Some(good)).unwrap();
             c.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&c);
+            let _ = migrate(&c);
         }
         // seed : 5 vieux réguliers valides.
         let old_base = crate::backup::days_from_civil(2021, 1, 1) * 86400;
@@ -294,7 +294,7 @@
         {
             let c = open_db_keyed(&src, Some(key)).unwrap();
             c.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&c);
+            let _ = migrate(&c);
             c.execute("INSERT INTO event(ts,source,category,severity,host,message,fields) VALUES(?1,'sshd','auth',3,'h','fresh','{}')",
                 params![now()]).unwrap();
         }

@@ -48,7 +48,7 @@
     fn field_filter_migration_v86() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         assert_eq!(
             conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(),
             "111", "migrate atteint la tête (v96)"
@@ -67,7 +67,7 @@
     fn knowledge_migration_v94_tables_created_empty() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         for t in ["knowledge_alias", "knowledge_calc", "knowledge_eventtype", "knowledge_tag"] {
             let c: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0)).unwrap();
             assert_eq!(c, 0, "{t} VIDE à la création (mode 0)");
@@ -79,7 +79,7 @@
         let path = ff_tmp_path("ko");
         let conn = open_db(&path).unwrap();
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         // mode 0 : aucun KO -> active_knowledge VIDE -> compilation byte-identique.
         knowledge_reload(&conn, &path);
         assert!(effective_knowledge(&path).is_empty(), "aucun KO -> jeu vide (mode 0)");
@@ -144,7 +144,7 @@
         let path = ff_tmp_path("roles");
         let conn = open_db(&path).unwrap();
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         // src_user hash pour rôles bas ('' = viewer+editor) ; pan deny (tous, admin compris).
         conn.execute("INSERT INTO field_filter(name,field,action,role) VALUES('u','src_user','hash','')", []).unwrap();
         conn.execute("INSERT INTO field_filter(name,field,action,role) VALUES('p','pan','deny','')", []).unwrap();
@@ -206,7 +206,7 @@
         {
             let conn = open_db(&path).unwrap();
             conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&conn);
+            let _ = migrate(&conn);
             conn.execute(
                 "INSERT INTO event(ts,source,category,severity,host,message,src_ip,fields) VALUES(?1,'sshd','auth',3,'h1',?2,?3,?4)",
                 params![now(), "login alice", "10.0.0.5", r#"{"src_user":"alice"}"#],
@@ -270,7 +270,7 @@
         {
             let conn = open_db(&path).unwrap();
             conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&conn);
+            let _ = migrate(&conn);
             // vtable FTS-champs (créée par reconcile en prod ; inline ici pour tester le déni de `v`).
             conn.execute_batch("CREATE VIRTUAL TABLE IF NOT EXISTS event_fields_fts USING fts5(v, content='');").unwrap();
             conn.execute("INSERT INTO field_filter(name,field,action,role) VALUES('h','host','deny','')", []).unwrap();
@@ -299,7 +299,7 @@
         {
             let conn = open_db(&ip).unwrap();
             conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&conn);
+            let _ = migrate(&conn);
             conn.execute("INSERT INTO field_filter(name,field,action,role) VALUES('s','src_ip','deny','')", []).unwrap();
             conn.execute("INSERT INTO field_filter(name,field,action,role) VALUES('so','source','deny','')", []).unwrap();
             field_filters_reload(&conn, &ip);
@@ -316,7 +316,7 @@
         {
             let conn = open_db(&clean).unwrap();
             conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&conn);
+            let _ = migrate(&conn);
             conn.execute_batch("CREATE VIRTUAL TABLE IF NOT EXISTS event_fields_fts USING fts5(v, content='');").unwrap();
             field_filters_reload(&conn, &clean); // aucun field_filter -> deny set VIDE
         }
@@ -336,7 +336,7 @@
     fn v90_migration_creates_ergonomics_tables() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         let ver: String = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
         assert_eq!(ver, "111", "schéma bumpé à la tête (v96)");
         for t in ["library_panel", "playlist", "dashboard_snapshot"] {
@@ -356,7 +356,7 @@
     fn library_panel_resolves_across_two_dashboards() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         conn.execute("INSERT INTO library_panel(name,title,query,is_soql,viz) VALUES('lib','T','search source=sudo | stats count',1,'stat')", []).unwrap();
         let lib = conn.last_insert_rowid();
         conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES('A',0,'shared')", []).unwrap();
@@ -392,7 +392,7 @@
         // round-trip DB : l'ordre stocké est restitué tel quel -> rotation NOC déterministe.
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         conn.execute("INSERT INTO playlist(name,interval_s,items) VALUES('noc',30,?1)", params![s]).unwrap();
         let got: String = conn.query_row("SELECT items FROM playlist WHERE name='noc'", [], |r| r.get(0)).unwrap();
         let ids: Vec<i64> = serde_json::from_str(&got).unwrap();
@@ -406,7 +406,7 @@
         {
             let conn = open_db(&path).unwrap();
             conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&conn);
+            let _ = migrate(&conn);
             conn.execute("INSERT INTO event(ts,source,category,severity,host,message,src_ip) VALUES(?1,'sshd','auth',3,'h1','login',?2)", params![now(), "10.0.0.5"]).unwrap();
             conn.execute("INSERT INTO event(ts,source,category,severity,host,message,src_ip) VALUES(?1,'sshd','auth',3,'h2','login',?2)", params![now(), "10.0.0.6"]).unwrap();
             conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES('D',0,'shared')", []).unwrap();
@@ -455,7 +455,7 @@
         {
             let conn = open_db(&path).unwrap();
             conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&conn);
+            let _ = migrate(&conn);
             conn.execute("INSERT INTO event(ts,source,category,severity,host,message,src_ip) VALUES(?1,'web','x',1,'h','m','1.2.3.4')", params![now()]).unwrap();
             conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES('D',0,'shared')", []).unwrap();
             did = conn.last_insert_rowid();
@@ -478,7 +478,7 @@
     fn day2_conn() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-        migrate(&c);
+        let _ = migrate(&c);
         c
     }
 

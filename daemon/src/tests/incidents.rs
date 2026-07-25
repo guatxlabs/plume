@@ -11,7 +11,7 @@
         let conn = test_db(); // schema.sql + migrate -> 105
         assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "111");
         // re-migrate = no-op (ALTER guardé par col_exists + CREATE IF NOT EXISTS avalés).
-        migrate(&conn);
+        let _ = migrate(&conn);
         assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "111");
         for c in ["incident_tier", "incident_type", "commander"] {
             assert!(col_exists(&conn, "incident", c), "incident.{c} manquant");
@@ -366,7 +366,7 @@
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             // règle AVANCÉE : throttle_field='src_ip' -> une unité de tir par IP distincte ; la requête projette
             // src_ip (group-by) et NE collapse PAS en scalaire (l'ordonnanceur extrait le dernier champ=count).
             w.execute(
@@ -413,7 +413,7 @@
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             w.execute(
                 "INSERT INTO rule(name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,managed,throttle_field) \
                  VALUES('5xx par source',1,'search status>=500 | stats count by source | where count > 10',1,'>',0.0,3,300,600,'T1190',2,'source')",
@@ -446,7 +446,7 @@
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             // corrélation MODE ALERTE (risk_score=0), 1 étape keyée src_ip, min_count=1.
             w.execute(
                 "INSERT INTO correlation(name,enabled,key_field,entity_type,steps,window_s,interval_s,severity,mitre,risk_score,managed,created) \
@@ -876,7 +876,7 @@
         let mut pb = std::env::temp_dir();
         pb.push(format!("plume-p3b-tenantB-{}-{}.db", std::process::id(), now()));
         let (pa, pb) = (pa.to_string_lossy().to_string(), pb.to_string_lossy().to_string());
-        let mkdb = |p: &str| { let c = Connection::open(p).unwrap(); c.execute_batch(include_str!("../../../db/schema.sql")).unwrap(); migrate(&c); c };
+        let mkdb = |p: &str| { let c = Connection::open(p).unwrap(); c.execute_batch(include_str!("../../../db/schema.sql")).unwrap(); assert!(migrate(&c)); c };
         let ca = mkdb(&pa);
         let cb = mkdb(&pb);
         // tenant A : un incident acquitté.

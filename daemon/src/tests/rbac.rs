@@ -95,7 +95,7 @@
             let h = st.tenants.handle_for("opread").unwrap();
             let c = h.lock();
             c.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&c);
+            let _ = migrate(&c);
         }
         // (1) résolution : accès CROSS-TENANT lecture (viewer, non membre).
         let acc = resolve_tenant_access(&st, "op-reader", None, false, Some("opread"), false, None).unwrap();
@@ -135,7 +135,7 @@
             let h = st.tenants.handle_for("opwrite").unwrap();
             let c = h.lock();
             c.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&c);
+            let _ = migrate(&c);
         }
         // (1) mutation cross-tenant SANS break-glass -> 403.
         let no_bg = resolve_tenant_access(&st, "op-writer", None, false, Some("opwrite"), true, None);

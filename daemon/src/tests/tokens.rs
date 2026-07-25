@@ -326,7 +326,7 @@
             let h = st.tenants.handle_for(t).unwrap();
             let c = h.lock();
             c.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&c);
+            let _ = migrate(&c);
         }
         // AuthUser par tenant : c'est au.tenant qui pilote le routing req_db/req_db_path.
         let au_a = AuthUser { name: "analyst".into(), role: "admin".into(), tenant: "a".into(), is_superadmin: false, method: "basic".into(), csrf: String::new(), env: None };
@@ -546,7 +546,7 @@
             let h = st.tenants.handle_for(t).unwrap();
             let c = h.lock();
             c.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&c);
+            let _ = migrate(&c);
         }
 
         // (0) ITÉRATION + SKIP FAIL-CLOSED : for_each_active_tenant visite A et B, jamais 'x' (clé vault non
@@ -693,7 +693,7 @@
         {
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-            migrate(&w);
+            let _ = migrate(&w);
             // Lookup denylist `badips` keyé par `ip` : 9.9.9.9 -> flagged=bad (via l'API interne build_lookup_kv).
             let rows: Vec<Value> = serde_json::from_str(r#"[{"ip":"9.9.9.9","flagged":"bad"}]"#).unwrap();
             let (kv, _c) = build_lookup_kv("ip", &rows);
@@ -759,7 +759,7 @@
             conn.execute("INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(1,'t',?1,1,'table',0,2)", params![q]).unwrap();
         }
         conn.execute("UPDATE meta SET value='42' WHERE key='schema_version'", []).unwrap();  // rétrograde -> v43 re-tourne
-        migrate(&conn);
+        let _ = migrate(&conn);
         // (a) meta : soc_mode renommée en plume_mode, valeur préservée, plus de soc_mode résiduel.
         let mode: String = conn.query_row("SELECT value FROM meta WHERE key='plume_mode'", [], |r| r.get(0)).unwrap();
         assert_eq!(mode, "active", "v43 doit préserver la valeur du mode en renommant la clé");
@@ -770,7 +770,7 @@
         let fixed: i64 = conn.query_row("SELECT COUNT(*) FROM panel WHERE query LIKE '%key=plume_creds%' OR query LIKE '%key=plume_etc%' OR query LIKE '%key=plume_data%'", [], |r| r.get(0)).unwrap();
         assert_eq!(fixed, 3, "les 3 panneaux doivent viser key=plume_*");
         // idempotent : re-jouer ne casse rien.
-        migrate(&conn);
+        let _ = migrate(&conn);
         let v: String = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
         assert_eq!(v, "111");
     }
@@ -995,7 +995,7 @@
             [],
         ).unwrap();
         conn.execute("UPDATE meta SET value='43' WHERE key='schema_version'", []).unwrap(); // rétrograde -> v44 re-tourne
-        migrate(&conn);
+        let _ = migrate(&conn);
         let (q, is_soql): (String, i64) = conn
             .query_row("SELECT query, is_soql FROM panel WHERE title='Codes statut'", [], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
@@ -1071,7 +1071,7 @@
     fn tenant_test_state(admin: &str, editor: &str, superadmin: &str, control: Option<ControlPlane>) -> AppState {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
-        migrate(&conn);
+        let _ = migrate(&conn);
         let db = Arc::new(Mutex::new(conn));
         let db_path = Arc::new(String::new());
         let multi_tenant = control.is_some();

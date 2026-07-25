@@ -138,7 +138,12 @@ pub(crate) fn seed_demo(conn: &Connection) {
 /// Trouve une vue partagée par son nom, ou la crée (INSERT INTO view(name) seulement si absente) ->
 /// renvoie son id (None si l'INSERT échoue). DRY entre les seeds `seed_*_dashboard` (parité PVC neuf)
 /// et la migration v63 (split de la vue « Sécurité » en vues focalisées). Idempotent PAR NOM.
-pub(crate) fn find_or_create_view(conn: &Connection, name: &str) -> Option<i64> {
+///
+/// GÉNÉRIQUE SUR `SqlExec` (cf. migrate.rs) — le SQL est le même dans les deux contextes : appelé
+/// depuis un seed de boot il reçoit le `&Connection` (comportement historique), appelé depuis la
+/// migration v63 il reçoit le `&MigTx` et ses écritures sont alors SOUS le garde de l'étape (un échec
+/// de classe B ici fait échouer la migration au lieu de l'estampiller sans ses vues).
+pub(crate) fn find_or_create_view<C: SqlExec>(conn: &C, name: &str) -> Option<i64> {
     conn.query_row("SELECT id FROM view WHERE name=?1", params![name], |r| r.get::<_, i64>(0))
         .ok()
         .or_else(|| {

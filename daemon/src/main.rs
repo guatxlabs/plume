@@ -1028,11 +1028,10 @@ fn main() {
         }
         let token = hex_encode(&b);
         let conn = open_db(&db_path).expect("open db");
-        let _ = conn.execute_batch(include_str!("../../db/schema.sql"));
-        // Schéma CONNU-INCOMPLET -> on n'écrit pas de token dans une base à moitié migrée (code 1 : la
-        // CLI est scriptée, un échec doit être détectable par `$?`).
-        if !migrate(&conn) {
-            eprintln!("[schema] migration INTERROMPUE (cause ci-dessus) — token NON créé. Arrêt propre.");
+        // Schéma qui n'est pas celui attendu -> on n'écrit pas de token dans une base à moitié migrée
+        // (code 1 : la CLI est scriptée, un échec doit être détectable par `$?`).
+        if let Err(e) = prepare_schema(&conn) {
+            eprintln!("[schema] {e} — token NON créé. Arrêt propre.");
             std::process::exit(1);
         }
         conn.execute("INSERT INTO token(name,token_hash,created,host) VALUES(?1,?2,?3,?4)", params![name, sha256_hex(token.as_bytes()), now(), host])
@@ -1075,7 +1074,15 @@ fn main() {
             }
         }
         let conn = if dry { None } else { Some(open_db(&db_path).expect("ouverture DB")) };
-        if let Some(c) = &conn { let _ = c.execute_batch(include_str!("../../db/schema.sql")); migrate(c); }
+        // MÊME contrat de schéma que `token` (le booléen de `migrate` était JETÉ ici : on UPSERTait des
+        // règles de détection dans une base dont on savait le schéma incomplet). `--dry-run` n'ouvre
+        // aucune base -> rien à préparer, l'import est purement calculatoire.
+        if let Some(c) = &conn {
+            if let Err(e) = prepare_schema(c) {
+                eprintln!("[schema] {e} — AUCUNE règle importée. Arrêt propre.");
+                std::process::exit(1);
+            }
+        }
         let (mut imported, mut skipped): (Vec<Value>, Vec<Value>) = (Vec::new(), Vec::new());
         for (origin, d) in &docs {
             let title = d.get("title").and_then(|v| v.as_str()).unwrap_or("(sans titre)").to_string();

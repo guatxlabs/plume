@@ -796,7 +796,9 @@ pub(crate) const BANPASS_COVERAGE_SQL: &str =
 /// (SQL natif : anti-join sur `banned_ip`, hors-portée du compilo SOQL) SWR-cachés (panel_cache_ttl_s>0 ->
 /// calculés EN FOND par cache_refresh_all_panels, servis depuis panel_cache ; JAMAIS de LIVE-sync
 /// timeout-able). Idempotent par nom (comme seed_rollup_dashboard). Vue 'Sécurité'. __FROM__ = fenêtre.
-pub(crate) fn seed_banpass_dashboard(conn: &Connection) {
+/// GÉNÉRIQUE SUR `SqlExec` (cf. migrate.rs) : `&Connection` depuis le boot (historique inchangé),
+/// `&MigTx` depuis la migration v52 -> écritures SOUS le garde de l'étape.
+pub(crate) fn seed_banpass_dashboard<C: SqlExec>(conn: &C) {
     if conn.query_row("SELECT 1 FROM dashboard WHERE name='Banni / Pass'", [], |r| r.get::<_, i64>(0)).is_ok() {
         return;
     }

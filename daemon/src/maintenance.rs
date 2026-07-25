@@ -298,7 +298,9 @@ pub(crate) fn ensure_host_rollup_scan_indexes_background(db: &Arc<Mutex<Connecti
 /// Ajoute (idempotent) les panneaux « Sévérité >=3 par src_ip » et « Volume par host » au dashboard
 /// « Vue d'ensemble (rapide) » s'ils manquent. Garde par (dashboard_id, titre) -> jamais de
 /// doublon, et ne touche pas les dashboards utilisateurs. Réutilisable (migration v37 + filet au boot).
-pub(crate) fn ensure_rollup_srcip_host_panels(conn: &Connection) {
+/// GÉNÉRIQUE SUR `SqlExec` (cf. migrate.rs) : `&Connection` depuis le boot (historique inchangé),
+/// `&MigTx` depuis la migration v37 -> écritures SOUS le garde de l'étape.
+pub(crate) fn ensure_rollup_srcip_host_panels<C: SqlExec>(conn: &C) {
     let did: i64 = match conn.query_row(
         "SELECT id FROM dashboard WHERE name='Vue d''ensemble (rapide)'",
         [],

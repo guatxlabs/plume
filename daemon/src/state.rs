@@ -210,7 +210,10 @@ pub(crate) fn init_control_plane(conf: &HashMap<String, String>, main_db_path: &
     if let Some(parent) = std::path::Path::new(&path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let conn = open_db_keyed(&path, control_key().as_deref()).map_err(|e| e.to_string())?;
+    // SANS CONTRAT, et le nom le dit : le control-plane n'est PAS une base plume — il ne porte ni
+    // `db/schema.sql` ni `meta.schema_version`, son schéma est `migrate_control` ci-dessus. Lui
+    // appliquer le contrat des bases tenant le refuserait à chaque boot.
+    let conn = open_db_keyed_without_schema_contract(&path, control_key().as_deref()).map_err(|e| e.to_string())?;
     let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
     migrate_control(&conn);
     // Catalogue minimal : le tenant `default` pointe vers la base tenant actuelle. key_ref='env:PLUME_DB_KEY'
@@ -307,10 +310,11 @@ pub(crate) struct TenantDbManager {
 /// tour), mais à rendre l'appel STRUCTUREL : la carte des writers ne stocke plus un
 /// `Arc<Mutex<Connection>>` — que n'importe quel code peut fabriquer — mais un `PreparedWriter`, dont
 /// le champ est PRIVÉ au sous-module et dont le seul constructeur est `PreparedWriter::open`, qui
-/// applique `prepare_schema` et échoue si le contrat n'est pas satisfait. Insérer une connexion non
-/// préparée dans ce cache NE COMPILE PAS. Mesuré : le comportement par
-/// `mode1_tenant_writer_applies_the_schema_contract`, la propriété structurelle par la compilation
-/// elle-même (aucun autre chemin ne peut produire la valeur que la carte attend).
+/// n'obtient sa connexion que par la PORTE (`PreparedDb`, cf. `db_open`) : le contrat est appliqué
+/// LÀ, une seule fois pour tout le daemon. Insérer une connexion non préparée dans ce cache NE
+/// COMPILE PAS. Mesuré : le comportement par `mode1_tenant_writer_applies_the_schema_contract`, la
+/// propriété structurelle par la compilation elle-même (aucun autre chemin ne peut produire la valeur
+/// que la carte attend).
 pub(crate) mod prepared_writer {
     use super::*;
 
@@ -320,12 +324,12 @@ pub(crate) mod prepared_writer {
     pub(crate) struct PreparedWriter(Arc<Mutex<Connection>>);
 
     impl PreparedWriter {
-        /// Ouvre `path` avec `key`, APPLIQUE LE CONTRAT DE SCHÉMA, et n'existe que s'il est satisfait.
-        /// `Err` = base NON servie (fail-closed) : jamais un handle sur un schéma inconnu.
+        /// Ouvre `path` avec `key` PAR LA PORTE (garde anti-downgrade + contrat de schéma), et
+        /// n'existe que si elle a laissé passer. `Err` = base NON servie (fail-closed) : jamais un
+        /// handle sur un schéma inconnu.
         pub(crate) fn open(path: &str, key: Option<&str>) -> Result<Self, String> {
-            let conn = open_db_keyed(path, key).map_err(|e| format!("ouverture impossible ({e})"))?;
-            prepare_schema(&conn)?;
-            Ok(PreparedWriter(Arc::new(Mutex::new(conn))))
+            let conn = PreparedDb::open_keyed(path, key).map_err(|e| e.to_string())?;
+            Ok(PreparedWriter(Arc::new(Mutex::new(conn.into_connection()))))
         }
 
         /// Le handle, une fois le contrat satisfait.
@@ -633,7 +637,9 @@ pub(crate) fn lookup_basic_ident(st: &AppState, name: &str) -> Option<(String, S
 /// BASE CUL-DE-SAC — le repli d'un tenant INDISPONIBLE, en mode 1 uniquement.
 ///
 /// POURQUOI ELLE EXISTE. `req_db` doit rendre un handle — il est appelé par la macro `req_conn!`, dont
-/// `grep -rn 'req_conn!(' daemon/src` compte 178 sites, dont aucun ne sait échouer — et le repli
+/// `grep -rn 'req_conn!(' daemon/src | grep -v '///' | wc -l` compte 178 sites d'APPEL (la commande
+/// exclut les lignes de doc, dont celle-ci : citée sans le filtre elle se compterait elle-même et
+/// rendrait 179), dont aucun ne sait échouer — et le repli
 /// historique était `st.db`, c'est-à-dire LA BASE DU TENANT
 /// `default` : un tenant indisponible faisait donc ATTERRIR SES ÉCRITURES DANS UNE AUTRE BASE. Le
 /// commentaire de `main.rs` le justifiait par « chemin non atteint en pratique », ce qui n'est plus
@@ -678,12 +684,14 @@ pub(crate) fn req_db_path(st: &AppState, au: &AuthUser) -> String {
         .unwrap_or_else(|| st.db_path.as_ref().clone())
 }
 
-/// DRY (audit qualité — top win) : prologue de verrou d'écriture répété 171 fois. S'EXPANSE SUR
+/// DRY (audit qualité — top win) : prologue de verrou d'écriture répété sur tous les sites d'appel
+/// (178 aujourd'hui, cf. la commande citée par `unavailable_tenant_db` ci-dessus ; le nombre a bougé
+/// depuis le refactor et il n'y a aucune raison de figer ici un compte qui vit). S'EXPANSE SUR
 /// PLACE en `let __rc = req_db(&$st, &$au); let $conn = __rc.lock();` — byte-équivalent au boilerplate
 /// manuel, ZÉRO changement de comportement (même fn `req_db` résolue au site d'appel, même Arc temporaire
 /// `__rc` porteur du guard, même sémantique de garde relâchée en fin de portée appelante). Contrairement
 /// à `with_write` (closure, query_exec.rs) qui ne couvre que les corps SANS early-return, cette macro
-/// déclarative se substitue au prologue IN-PLACE → traverse `return`/`?` et couvre les 171 sites.
+/// déclarative se substitue au prologue IN-PLACE → traverse `return`/`?` et couvre TOUS les sites.
 /// NB (hygiène macro_rules) : le nom du binding `$conn` DOIT venir du site d'appel (un `conn` introduit
 /// par la macro serait hygiénique et invisible à l'appelant) ; `__rc` interne reste hygiénique (jamais
 /// référencé par l'appelant, aucun risque de collision entre invocations).

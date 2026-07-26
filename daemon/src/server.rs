@@ -344,21 +344,14 @@ fn open_and_migrate_db(db_path: String, spool: String, conf: HashMap<String, Str
     rename_legacy_db(&db_path); // ④ : self-heal legacy soc.db -> plume.db (portable docker/host), AVANT ouverture
 
     ensure_encrypted(&db_path);   // SQLCipher : chiffre la base en clair existante si PLUME_DB_KEY posé (idempotent, backup auto)
-    let conn = open_db(&db_path).expect("open db");
+    // LA PORTE (`db_open`) : ouverture, garde ANTI-DOWNGRADE, `tune` (prélude), puis contrat de schéma —
+    // dans CET ordre, qui est celui d'avant, ligne pour ligne. Le daemon n'est plus le seul chemin à
+    // l'appliquer : c'est la porte qui le fait, pour tout ce qui obtient une connexion d'écriture.
+    //
     // v105 (CHANGE 1) — GARDE ANTI-DOWNGRADE, AVANT toute écriture (schema.sql/migrate/tune). Si la base est
     // estampillée PLUS HAUT que ce binaire (rollback d'image sur une base déjà migrée par un plus récent),
     // on REFUSE d'ouvrir : arrêt PROPRE (exit 1, aucune écriture -> aucun risque de corruption), pas un panic.
-    if let Err(v) = schema_downgrade_guard(&conn) {
-        eprintln!(
-            "[schema] REFUS D'OUVERTURE : base en schema_version={v} > CODE_SCHEMA_MAX={} — ce binaire est \
-             TROP ANCIEN pour cette base (probable rollback d'image sur une base déjà migrée par un binaire \
-             plus récent). Aucune écriture effectuée. Déployer un binaire >= schéma v{v}, ou restaurer une \
-             sauvegarde compatible. Arrêt propre.",
-            CODE_SCHEMA_MAX
-        );
-        std::process::exit(1);
-    }
-    tune(&conn);
+    //
     // REFUS DE SERVIR SUR UN SCHÉMA QUI N'EST PAS CELUI ATTENDU (symétrique de la garde anti-downgrade
     // ci-dessus). `prepare_schema` applique db/schema.sql, déroule les migrations, PUIS vérifie que les
     // objets attendus sont bien là (une base peut porter la version SANS ses objets : cf. sa doc).
@@ -375,13 +368,27 @@ fn open_and_migrate_db(db_path: String, spool: String, conf: HashMap<String, Str
     // dès que le verrou est rendu. Pour un élément de schéma manquant, en revanche, le redémarrage NE
     // répare RIEN (le message le dit) : c'est une intervention opérateur. On préfère l'indisponibilité
     // bruyante à la sécurité silencieusement absente.
-    if let Err(e) = prepare_schema(&conn) {
-        eprintln!(
-            "[schema] REFUS DE SERVIR : {e}. Servir dans cet état rendrait des fonctions (dont des \
-             contrôles de sécurité) silencieusement absentes. Aucun seed, aucun bind. Arrêt propre."
-        );
-        std::process::exit(1);
-    }
+    let conn = match PreparedDb::open_with_prelude(&db_path, tune) {
+        Ok(c) => c.into_connection(),
+        Err(DbOpenError::PlusRecenteQueCeBinaire(v)) => {
+            eprintln!(
+                "[schema] REFUS D'OUVERTURE : base en schema_version={v} > CODE_SCHEMA_MAX={} — ce binaire est \
+                 TROP ANCIEN pour cette base (probable rollback d'image sur une base déjà migrée par un binaire \
+                 plus récent). Aucune écriture effectuée. Déployer un binaire >= schéma v{v}, ou restaurer une \
+                 sauvegarde compatible. Arrêt propre.",
+                CODE_SCHEMA_MAX
+            );
+            std::process::exit(1);
+        }
+        Err(DbOpenError::Ouverture(e)) => panic!("open db: {e}"),
+        Err(DbOpenError::Contrat(e)) => {
+            eprintln!(
+                "[schema] REFUS DE SERVIR : {e}. Servir dans cet état rendrait des fonctions (dont des \
+                 contrôles de sécurité) silencieusement absentes. Aucun seed, aucun bind. Arrêt propre."
+            );
+            std::process::exit(1);
+        }
+    };
     // VRAI kill-switch env-driven, idempotent, à CHAQUE boot (après migrate, avant bind).
     // Crée/droppe la vtable+triggers FTS et droppe les index expression selon PLUME_FTS_FIELDS /
     // PLUME_EXPRINDEX. INSTANTANÉ (DDL pur, pas de scan) -> ne retarde pas le bind. Le CREATE INDEX

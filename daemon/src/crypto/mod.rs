@@ -70,12 +70,10 @@ pub(crate) fn apply_key(conn: &Connection) {
         let _ = conn.execute_batch(&format!("PRAGMA key = '{}';", k.replace('\'', "''")));
     }
 }
-/// Ouvre la base en appliquant la clé SQLCipher si présente (à utiliser partout au lieu de Connection::open).
-pub(crate) fn open_db(path: &str) -> rusqlite::Result<Connection> {
-    let conn = Connection::open(path)?;
-    apply_key(&conn);
-    Ok(conn)
-}
+// L'ouverture NUE (ex-`open_db`) a DÉMÉNAGÉ dans `db_open` : c'est le seul module qui peut encore
+// nommer `Connection::open`, et il n'en rend que deux choses — un `PreparedDb` (contrat de schéma
+// appliqué) ou une ouverture au nom explicite `open_db_*_without_schema_contract`. `apply_key` reste
+// ici : elle sert aussi aux connexions LECTURE SEULE (ledger), qui n'ont pas de contrat à satisfaire.
 /// Migration de chiffrement (idempotente, NON destructive) : si `PLUME_DB_KEY` est posé MAIS que la base
 /// existante est EN CLAIR, on la sauvegarde (`.plaintext.bak`) puis on la chiffre (sqlcipher_export) —
 /// une seule fois. Ne touche RIEN si pas de clé, base déjà chiffrée, ou base illisible.
@@ -165,7 +163,9 @@ pub(crate) fn probe_db_with_busy(path: &str, key: &str, busy: std::time::Duratio
     // on remonte `Locked` (l'appelant réessaiera) plutôt qu'un faux `WrongKeyOrCorrupt`.
     let mut saw_lock = false;
     // 1) lisible AVEC la clé ? (base déjà chiffrée, BONNE clé)
-    if let Ok(c) = Connection::open(path) {
+    // SANS CONTRAT, et c'est le point : cette sonde CLASSE un fichier (chiffré / en clair / illisible)
+    // AVANT que la notion de schéma existe. Lui demander le contrat serait circulaire.
+    if let Ok(c) = open_db_keyed_without_schema_contract(path, None) {
         let _ = c.busy_timeout(busy);
         let _ = c.execute_batch(&format!("PRAGMA key = '{}';", kesc));
         match c.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0)) {
@@ -175,7 +175,7 @@ pub(crate) fn probe_db_with_busy(path: &str, key: &str, busy: std::time::Duratio
         }
     }
     // 2) lisible SANS clé ? (base EN CLAIR -> à migrer). Ouverture impossible -> on NE touche pas.
-    let plain = match Connection::open(path) { Ok(c) => c, Err(_) => return DbProbe::Unopenable };
+    let plain = match open_db_keyed_without_schema_contract(path, None) { Ok(c) => c, Err(_) => return DbProbe::Unopenable };
     let _ = plain.busy_timeout(busy);
     match plain.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0)) {
         Ok(_) => return DbProbe::Plaintext,
@@ -236,7 +236,9 @@ pub(crate) fn ensure_encrypted(path: &str) {
     }
     let kesc = key.replace('\'', "''");
     // 3) checkpoint WAL, backup clair, export chiffré -> temp, swap atomique (base EN CLAIR confirmée par probe_db)
-    let plain = match Connection::open(path) { Ok(c) => c, Err(_) => return };
+    // SANS CONTRAT, assumé : ce chemin CHIFFRE une base at-rest, il tourne AVANT `prepare_schema` (le
+    // daemon l'appelle juste avant d'ouvrir) et il doit fonctionner sur une base au schéma quelconque.
+    let plain = match open_db_keyed_without_schema_contract(path, None) { Ok(c) => c, Err(_) => return };
     let _ = plain.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
     if std::fs::copy(path, &bak).is_err() { eprintln!("[sqlcipher] backup impossible -> abandon (base en clair intacte)"); return; }
     let enc = format!("{path}.enc.tmp");

@@ -20,6 +20,8 @@ use serde_json::{json, Value};
 use tower_http::services::ServeDir;
 
 // ---- Modules extraits de main.rs (refactor split #25 — réorganisation byte-identique) ----
+mod db_open; // LA PORTE : seule détentrice d'une ouverture SQLite nue -> écrire sans le contrat de schéma ne compile pas
+pub(crate) use db_open::*;
 mod backup;
 pub(crate) use backup::*;
 mod disk; // garde disque / cardinalité à l'ingest + alerte pré-saturation (#29) — mesure statvfs (unsafe) isolée
@@ -950,7 +952,10 @@ fn main() {
         let out = flag_val(&args, "--out");
         let conf = load_config();
         let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
-        let conn = match open_db(&db_path) {
+        // SANS CONTRAT, assumé : l'export du ledger est un outil de DIAGNOSTIC (SELECT seul) et la
+        // base qu'on veut exporter est souvent justement celle qui a un problème. Le refuser sur une
+        // base abîmée retirerait la preuve au moment où elle sert.
+        let conn = match open_db_without_schema_contract(&db_path) {
             Ok(c) => c,
             Err(e) => { eprintln!("ledger-export: ouverture {db_path}: {e}"); std::process::exit(2); }
         };
@@ -1030,13 +1035,16 @@ fn main() {
             std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).expect("urandom");
         }
         let token = hex_encode(&b);
-        let conn = open_db(&db_path).expect("open db");
         // Schéma qui n'est pas celui attendu -> on n'écrit pas de token dans une base à moitié migrée
-        // (code 1 : la CLI est scriptée, un échec doit être détectable par `$?`).
-        if let Err(e) = prepare_schema(&conn) {
-            eprintln!("[schema] {e} — token NON créé. Arrêt propre.");
-            std::process::exit(1);
-        }
+        // (code 1 : la CLI est scriptée, un échec doit être détectable par `$?`). La PORTE le fait —
+        // et depuis qu'elle le fait, une base PLUS RÉCENTE que ce binaire est refusée ici aussi.
+        let conn = match PreparedDb::open(&db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[schema] {e} — token NON créé. Arrêt propre.");
+                std::process::exit(1);
+            }
+        };
         conn.execute("INSERT INTO token(name,token_hash,created,host) VALUES(?1,?2,?3,?4)", params![name, sha256_hex(token.as_bytes()), now(), host])
             .expect("insert token");
         println!("{token}");
@@ -1076,16 +1084,20 @@ fn main() {
                 Err(e) => eprintln!("[sigma] {} : lecture : {e} — ignoré", f.display()),
             }
         }
-        let conn = if dry { None } else { Some(open_db(&db_path).expect("ouverture DB")) };
-        // MÊME contrat de schéma que `token` (le booléen de `migrate` était JETÉ ici : on UPSERTait des
-        // règles de détection dans une base dont on savait le schéma incomplet). `--dry-run` n'ouvre
-        // aucune base -> rien à préparer, l'import est purement calculatoire.
-        if let Some(c) = &conn {
-            if let Err(e) = prepare_schema(c) {
-                eprintln!("[schema] {e} — AUCUNE règle importée. Arrêt propre.");
-                std::process::exit(1);
+        // MÊME contrat de schéma que `token`, et par la MÊME porte (le booléen de `migrate` était JETÉ
+        // ici : on UPSERTait des règles de détection dans une base dont on savait le schéma incomplet).
+        // `--dry-run` n'ouvre aucune base -> rien à préparer, l'import est purement calculatoire.
+        let conn = if dry {
+            None
+        } else {
+            match PreparedDb::open(&db_path) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    eprintln!("[schema] {e} — AUCUNE règle importée. Arrêt propre.");
+                    std::process::exit(1);
+                }
             }
-        }
+        };
         let (mut imported, mut skipped): (Vec<Value>, Vec<Value>) = (Vec::new(), Vec::new());
         for (origin, d) in &docs {
             let title = d.get("title").and_then(|v| v.as_str()).unwrap_or("(sans titre)").to_string();
@@ -1134,8 +1146,17 @@ fn main() {
     if args.get(1).map(String::as_str) == Some("retention") {
         let conf = load_config();
         let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
-        let conn = open_db(&db_path).expect("open db");
-        let db = Arc::new(Mutex::new(conn));
+        // La rétention SUPPRIME des lignes : elle passe par la porte comme tout le reste. Mesuré AVANT
+        // ce correctif, avec le vrai binaire : sur une base estampillée 111 amputée de `net_ban` (celle
+        // que le daemon refuse de servir) `retention` sortait en 0 et annonçait « rétention OK ».
+        let conn = match PreparedDb::open(&db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[schema] {e} — AUCUNE rétention appliquée. Arrêt propre.");
+                std::process::exit(1);
+            }
+        };
+        let db = Arc::new(Mutex::new(conn.into_connection()));
         retention_run(&db);
         println!("rétention OK");
         return;
@@ -1161,8 +1182,12 @@ fn main() {
                     // -> faux positif « posture dégradée » à chaque restart. Ici le repli symétrique est PROUVÉ (le
                     // backup vient d'aboutir sans destinataire) -> signal légitime. Best-effort : un échec d'ouverture
                     // DB writer ne bloque pas le backup déjà produit.
-                    if let Ok(conn) = open_db(&db_path) {
-                        let _ = signal_backup_symmetric_if_needed(&conn, recipient.as_deref(), now());
+                    // Ce signal ÉCRIT (un événement SOC) -> il passe par la porte. Best-effort DANS LES
+                    // DEUX SENS : un contrat non satisfait ne casse pas le backup DÉJÀ produit, mais il
+                    // n'écrit rien non plus — il le DIT, au lieu d'écrire sur un schéma inconnu.
+                    match PreparedDb::open(&db_path) {
+                        Ok(conn) => { let _ = signal_backup_symmetric_if_needed(&conn, recipient.as_deref(), now()); }
+                        Err(e) => eprintln!("[backup] signal de posture NON émis (la base n'a pas passé le contrat de schéma : {e})"),
                     }
                     let ratio = if st.dest_bytes > 0 { st.plaintext_bytes as f64 / st.dest_bytes as f64 } else { 0.0 };
                     println!(
@@ -1177,7 +1202,10 @@ fn main() {
         } else {
             // sauvegarde compacte (VACUUM INTO) -> copie cohérente même DB ouverte
             let dest = dest_pos.unwrap_or_else(|| format!("{db_path}.bak"));
-            match open_db(&db_path).and_then(|c| c.execute("VACUUM INTO ?1", params![dest]).map(|_| ())) {
+            // SANS CONTRAT, assumé (même raison que `backup --compress` ci-dessus) : sauvegarder une
+            // base ABÎMÉE est précisément ce qu'on veut pouvoir faire — c'est ce que le message de refus
+            // du daemon demande à l'opérateur AVANT de réparer.
+            match open_db_without_schema_contract(&db_path).and_then(|c| c.execute("VACUUM INTO ?1", params![dest]).map(|_| ())) {
                 Ok(_) => println!("backup -> {dest}"),
                 Err(e) => {
                     eprintln!("backup: {e}");
@@ -1290,7 +1318,10 @@ fn main() {
         // Ouvre la base du tenant (clé SQLCipher) pour lire l'index cold_seal (métadonnées ; AUCUNE clé de
         // DÉCHIFFREMENT cold requise -> on ne lit AUCUN fichier Parquet). Garde de lisibilité : une clé fausse
         // ferait retourner un plan VIDE silencieux (= trou d'escrow) -> on ÉCHOUE bruyamment (exit 1).
-        let conn = match open_db(&db_path) {
+        // SANS CONTRAT, assumé : ce plan est un CALCUL DE SAUVEGARDE (SELECT sur l'index cold_seal).
+        // Le refuser sur une base au schéma inattendu ferait sauter l'escrow du tier froid au moment
+        // exact où la base va mal — soit un TROU de sauvegarde, la panne qu'on veut le moins.
+        let conn = match open_db_without_schema_contract(&db_path) {
             Ok(c) => c,
             Err(e) => { eprintln!("[cold-backup-plan] ouverture DB {db_path} : {e}"); std::process::exit(1); }
         };

@@ -578,8 +578,8 @@
             "colonne absente -> writer REFUSÉ (fail-closed)"
         );
 
-        // (4) ET LE REFUS NE DOIT PAS FAIRE ÉCRIRE AILLEURS. `req_db` doit rendre un handle (les 171
-        // sites de `req_conn!` ne savent pas échouer) : historiquement il retombait sur `st.db`, donc les
+        // (4) ET LE REFUS NE DOIT PAS FAIRE ÉCRIRE AILLEURS. `req_db` doit rendre un handle (aucun des
+        // sites de `req_conn!` ne sait échouer) : historiquement il retombait sur `st.db`, donc les
         // écritures d'un tenant indisponible atterrissaient dans la base d'un AUTRE tenant. Le repli est
         // désormais une base CUL-DE-SAC : écriture ET lecture y échouent, et rien n'a bougé chez `default`.
         let avant: i64 = st.db.lock().query_row("SELECT COUNT(*) FROM event", [], |r| r.get(0)).unwrap();

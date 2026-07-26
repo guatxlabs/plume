@@ -48,8 +48,10 @@ use crate::*;
 // opérateur lirait « ma base de production est en cours de migration » alors qu'aucune migration ne
 // tourne. La coupure est PAR THREAD (la construction est synchrone) et rendue par un garde `Drop`
 // (un panic pendant la construction ne laisse pas le journal muet pour la suite du thread). Le test
-// `reference_build_writes_nothing_to_stderr` MESURE la sortie réelle d'un processus enfant : il ne
-// lit pas ce commentaire et il tombe si un futur ajout écrit directement sur la sortie d'erreur.
+// `reference_build_writes_nothing_to_stderr` MESURE les DEUX sorties réelles d'un processus enfant :
+// il ne lit pas ce commentaire, et il tombe si un futur ajout écrit directement — sur la sortie
+// d'erreur COMME sur la sortie standard (la revue a mesuré qu'un `println!` dans une étape passait
+// avant, parce que seul `stderr` était gardé).
 thread_local! {
     static MIGRATION_LOG_SILENCED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -822,13 +824,28 @@ static REFERENCE_SHAPE: std::sync::OnceLock<Result<std::collections::BTreeSet<St
 /// `db/schema.sql` puis toute sa chaîne de migrations. C'est le seul endroit qui sait ce qu'une base
 /// plume « doit » porter, et il ne le sait pas : il le FABRIQUE. Journal coupé (cf. `mig_log!`).
 ///
-/// CE QUE CETTE RÉFÉRENCE PRÉSUPPOSE, et qui est vérifiable : que la DDL produite ne dépende PAS de la
-/// configuration du processus — sinon deux déploiements du MÊME binaire n'auraient pas la même forme
-/// attendue. Mesuré aujourd'hui : les SEULES lectures de configuration de ce fichier sont les bornes de
-/// repeuplement de v33 (`PLUME_RETENTION_DAYS`, `PLUME_ROLLUP_SRCIP_MIN_SEV`, top-N), qui n'entrent que
-/// dans un `INSERT` — aucune `migrate_vN` ne branche sa DDL sur la config (`grep -n 'cfg(\|env::var'
-/// daemon/src/migrate.rs` hors `#[cfg(test)]`). Si cela changeait, ce contrôle refuserait des bases
-/// parfaitement valides : c'est la contrainte à ne pas casser.
+/// CE QUE CETTE RÉFÉRENCE PRÉSUPPOSE. Elle est construite sur une base **VIDE**, **EN MÉMOIRE**, **SANS
+/// configuration** : la DDL de la chaîne ne doit donc dépendre de RIEN qui manque à une telle base. Ce
+/// sont TROIS classes, pas une, et la revue a pris la deuxième en défaut alors que seule la première
+/// était écrite :
+///   1. LA CONFIGURATION du processus — sinon deux déploiements du MÊME binaire n'auraient pas la même
+///      forme attendue. Mesuré : les SEULES lectures de configuration de ce fichier sont les bornes de
+///      repeuplement de v33 (`PLUME_RETENTION_DAYS`, `PLUME_ROLLUP_SRCIP_MIN_SEV`, top-N), qui
+///      n'entrent que dans un `INSERT` — aucune `migrate_vN` ne branche sa DDL sur la config
+///      (`grep -n 'cfg(\|env::var' daemon/src/migrate.rs` hors `#[cfg(test)]`).
+///   2. LES DONNÉES. Une migration dont la DDL dépend du CONTENU (« créer cette table seulement si
+///      `event` est vide », un `ALTER` conditionné à une requête) produirait une forme différente sur
+///      une base de PRODUCTION : la chaîne réussirait, rien ne serait supprimé, et le démarrage
+///      REFUSERAIT une base parfaitement saine en conseillant de restaurer une sauvegarde. C'est le
+///      PIRE mode de défaillance de ce contrôle — pire qu'un manque non vu, parce qu'il coûte une
+///      indisponibilité à quelqu'un qui n'a rien cassé. Cette classe n'est donc pas seulement écrite,
+///      elle est OPPOSABLE : `the_reference_holds_on_a_populated_database` monte une base PEUPLÉE (une
+///      ligne dans chaque table ordinaire du catalogue, colonnes DÉRIVÉES de `pragma_table_xinfo`, plus
+///      des lignes `event` réalistes) et exige la MÊME forme que cette référence.
+///   3. L'ENVIRONNEMENT D'EXÉCUTION — chemin de la base, présence d'un fichier, horloge. La référence
+///      est bâtie sur `:memory:` : une DDL qui en dépendrait ne serait pas reproductible ici.
+/// Si l'une des trois tombait, ce contrôle refuserait des bases valides : c'est LA contrainte à ne pas
+/// casser, et `CONTRIBUTING.md` la répète à l'endroit où l'on écrit une migration.
 fn build_reference_shape() -> Result<std::collections::BTreeSet<String>, String> {
     let _muet = MigrationLogSilencer::new();
     let conn = Connection::open_in_memory()
@@ -904,9 +921,19 @@ pub(crate) fn schema_gaps(conn: &Connection) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// LE CONTRAT DE SCHÉMA DU DÉMARRAGE, EN UN SEUL ENDROIT — et c'est le point : `migrate` est privée
-/// hors test, donc TOUT chemin de production qui prépare une base plume passe forcément ici (daemon,
-/// `token`, `sigma-import`, provisioning de tenant, ouverture d'un writer tenant). Trois étapes :
+/// LE CONTRAT DE SCHÉMA DU DÉMARRAGE, EN UN SEUL ENDROIT.
+///
+/// QUI PASSE PAR ICI — et cette phrase a été FAUSSE pendant quatre tours, parce qu'elle ÉNUMÉRAIT
+/// (« daemon, token, sigma-import, provisioning de tenant, writer tenant ») : la revue a mesuré deux
+/// chemins LIVRÉS en dehors, dont `plume-daemon respond`, une unité systemd qui tourne EN ROOT toutes
+/// les 20 s et qui ÉCRIT. `migrate` privée hors test ne fermait que « appeler `migrate` sans le
+/// contrat » ; ce qu'il fallait fermer était « obtenir une connexion en ÉCRITURE sans le contrat ».
+/// C'est fait ailleurs, structurellement : `db_open` est le seul module qui puisse ouvrir une
+/// connexion SQLite sur un chemin, et il n'en rend que deux choses — un `PreparedDb` (qui appelle
+/// CETTE fonction) ou une ouverture nommée `open_db_*_without_schema_contract`. Il n'y a donc plus de
+/// liste à tenir ici : le compilateur et `the_door_is_the_only_way_in` s'en chargent.
+///
+/// Trois étapes :
 ///   1. `db/schema.sql` — ce qui manque parmi SES objets est RE-CRÉÉ (auto-réparation historique) ;
 ///   2. `migrate()` — la chaîne de migrations ; `false` = INTERROMPUE, schéma connu-incomplet ;
 ///   3. `schema_gaps` — la base porte-t-elle CE QUE CE BINAIRE DÉCLARE, objets ET colonnes ? Une base
@@ -926,10 +953,11 @@ pub(crate) fn schema_gaps(conn: &Connection) -> Result<Vec<String>, String> {
 /// les deux lignes `meta` sont bien déjà là).
 ///
 /// COMBIEN DE TEMPS FAUT-IL TENIR LE VERROU POUR DÉCLENCHER CE CAS ? Cela dépend de l'appelant, et les
-/// trois valeurs sont dans le code, pas dans une estimation : le DAEMON pose `PRAGMA busy_timeout=5000`
-/// pour toute base via `tune()` (server.rs), appelé AVANT ce contrat ; les CLI `token` / `sigma-import`
-/// passent par `open_db` -> `apply_key`, qui pose 5 s MAIS seulement DANS le `if let Some(k) = db_key()`,
-/// donc une base EN CLAIR n'a AUCUN `busy_timeout` et échoue au premier verrou concurrent.
+/// valeurs sont dans le code, pas dans une estimation : le DAEMON pose `PRAGMA busy_timeout=5000` pour
+/// toute base via `tune()` (server.rs), passé en PRÉLUDE de la porte, donc AVANT ce contrat ; les
+/// autres chemins (CLI, responder, rétention) passent par `db_open::raw_env` -> `apply_key`, qui pose
+/// 5 s MAIS seulement DANS le `if let Some(k) = db_key()`, donc une base EN CLAIR n'a AUCUN
+/// `busy_timeout` et échoue au premier verrou concurrent.
 ///
 /// `Err(_)` = NE PAS SERVIR (l'appelant sort en code non nul / refuse le tenant). CE QUE FAIT CE
 /// CONTRÔLE SUR CONSTAT : il CONSTATE et NOMME. Il ne recrée rien, ne droppe rien, n'écrit rien —
@@ -4406,6 +4434,132 @@ mod schema_contract_tests {
         assert!(schema_gaps(&base).unwrap().is_empty(), "une base neuve migrée n'a aucun manque");
     }
 
+    /// Valeur littérale SQL d'une colonne, dérivée de son AFFINITÉ déclarée (règles d'affinité SQLite,
+    /// pas une liste de noms de colonnes) — de quoi fabriquer une ligne dans n'importe quelle table.
+    fn valeur_pour(type_declare: &str) -> &'static str {
+        let t = type_declare.to_ascii_uppercase();
+        if t.contains("INT") {
+            "1"
+        } else if t.contains("REAL") || t.contains("FLOA") || t.contains("DOUB") {
+            "1.0"
+        } else if t.contains("BLOB") {
+            "x'01'"
+        } else {
+            "'x'" // TEXT/CHAR/CLOB et affinité NUMERIC/vide : une chaîne est acceptée partout
+        }
+    }
+
+    /// PEUPLE la base : une ligne dans CHAQUE table ordinaire, colonnes dérivées du catalogue. Ne
+    /// touche ni les tables virtuelles ni leurs tables SHADOW (`pragma_table_list` les classe
+    /// lui-même : écrire dans l'index interne d'une FTS5 la corromprait). Rend (tables peuplées,
+    /// lignes totales) — des MESURES, imprimées par le test, jamais des seuils.
+    fn peupler(conn: &Connection) -> (usize, i64) {
+        let tables: Vec<String> = {
+            let mut st = conn
+                .prepare(
+                    "SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' \
+                     AND name NOT LIKE 'sqlite_%'",
+                )
+                .expect("pragma_table_list");
+            let v = st.query_map([], |r| r.get::<_, String>(0)).unwrap().filter_map(Result::ok).collect();
+            v
+        };
+        let mut peuplees = 0usize;
+        for t in &tables {
+            let cols: Vec<(String, String)> = {
+                let mut st = conn
+                    .prepare(&format!("SELECT name, type FROM pragma_table_xinfo('{t}') WHERE hidden=0"))
+                    .expect("xinfo");
+                let v = st
+                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .collect();
+                v
+            };
+            if cols.is_empty() {
+                continue;
+            }
+            let noms: Vec<String> = cols.iter().map(|(n, _)| format!("\"{n}\"")).collect();
+            let vals: Vec<&str> = cols.iter().map(|(_, ty)| valeur_pour(ty)).collect();
+            let sql = format!(
+                "INSERT OR IGNORE INTO \"{t}\"({}) VALUES({})",
+                noms.join(","),
+                vals.join(",")
+            );
+            if conn.execute(&sql, []).unwrap_or(0) > 0 {
+                peuplees += 1;
+            }
+        }
+        let lignes = tables
+            .iter()
+            .map(|t| conn.query_row(&format!("SELECT COUNT(*) FROM \"{t}\""), [], |r| r.get::<_, i64>(0)).unwrap_or(0))
+            .sum();
+        (peuplees, lignes)
+    }
+
+    /// Contenu RÉEL (des lignes de journal telles qu'un collecteur les ingère), en plus du remplissage
+    /// générique : la non-régression se mesure sur ce qu'une base porte vraiment, pas sur des 'x'.
+    fn evenements_reels(conn: &Connection) {
+        for (ts, source, categorie, sev, host, msg) in [
+            (1_785_000_000i64, "sshd", "auth", 2i64, "vps-1", "Failed password for invalid user admin from 203.0.113.7 port 51234 ssh2"),
+            (1_785_000_060, "sudo", "exec", 1, "vps-1", "pam_unix(sudo:session): session opened for user root by ubuntu(uid=1000)"),
+            (1_785_000_120, "auditd", "integrity", 3, "vps-1", "type=SYSCALL msg=audit(1785000120.123:456): arch=c000003e syscall=59 success=yes exe=\"/usr/bin/curl\""),
+            (1_785_000_180, "nginx", "network", 0, "edge-1", "203.0.113.9 - - [26/Jul/2026:00:03:00 +0000] \"GET /api/health HTTP/1.1\" 200 17"),
+        ] {
+            conn.execute(
+                "INSERT INTO event(ts,source,category,severity,host,message) VALUES(?1,?2,?3,?4,?5,?6)",
+                params![ts, source, categorie, sev, host, msg],
+            )
+            .expect("event réel");
+        }
+    }
+
+    /// LA RÉFÉRENCE EST CONSTRUITE SUR UNE BASE VIDE — ET UNE BASE DE PRODUCTION N'EST PAS VIDE. Si une
+    /// migration conditionnait un jour sa DDL au CONTENU, la forme attendue (dérivée à vide) ne serait
+    /// plus celle d'une base peuplée, et ce contrôle REFUSERAIT DE DÉMARRER SUR UNE BASE SAINE. Aucune
+    /// fixture du contrat ne le voyait : toutes partaient d'une base vide. Deux montées, les deux avec
+    /// des DONNÉES DÉJÀ EN PLACE :
+    ///   (1) une base ANCIENNE (`db/schema.sql` seul) peuplée PUIS migrée — le cas de la production, et
+    ///       le seul qui attrape un « créer seulement si la table est vide » (l'objet n'a jamais été
+    ///       créé à vide au préalable) ;
+    ///   (2) une base À JOUR peuplée puis REJOUÉE depuis v1 — le cas d'un `ALTER`/`DROP` conditionné.
+    /// CE QUE CETTE FIXTURE NE PROUVE PAS, et il faut le lire : les données sont posées AVANT la chaîne.
+    /// Une étape dont la DDL dépendrait de lignes qu'une étape PRÉCÉDENTE de la MÊME chaîne aurait
+    /// écrites reste hors de portée.
+    #[test]
+    fn the_reference_holds_on_a_populated_database() {
+        let reference = reference_shape().expect("référence constructible");
+
+        let ancienne = Connection::open_in_memory().unwrap();
+        ancienne.execute_batch(include_str!("../../db/schema.sql")).unwrap();
+        evenements_reels(&ancienne);
+        let (t1, l1) = peupler(&ancienne);
+        assert!(migrate(&ancienne), "la chaîne doit aller au bout SUR DES DONNÉES");
+
+        let ajour = fresh_migrated();
+        evenements_reels(&ajour);
+        let (t2, l2) = peupler(&ajour);
+        ajour.execute("UPDATE meta SET value='1' WHERE key='schema_version'", []).unwrap();
+        assert!(migrate(&ajour), "rejeu depuis v1 SUR DES DONNÉES");
+
+        println!(
+            "[contrat] bases PEUPLÉES : (1) ancienne+migrée {t1} tables / {l1} lignes | \
+             (2) à jour+rejouée {t2} tables / {l2} lignes"
+        );
+        assert!(t1 > 0 && t2 > 0 && l1 > 0 && l2 > 0, "précondition : les bases portent VRAIMENT des lignes");
+        for (quoi, conn) in [("base ancienne peuplée puis migrée", &ancienne), ("base à jour peuplée puis rejouée", &ajour)] {
+            assert_eq!(
+                &declared_shape(conn).unwrap(),
+                reference,
+                "{quoi} : la forme du schéma DÉPEND DES DONNÉES — la référence, dérivée à vide, \
+                 refuserait cette base"
+            );
+            assert!(schema_gaps(conn).unwrap().is_empty(), "{quoi} : manque signalé sur une base SAINE");
+            assert!(prepare_schema(conn).is_ok(), "{quoi} : le démarrage refuse une base SAINE");
+        }
+    }
+
     /// LA FORME NE DÉPEND PAS DU CHEMIN PARCOURU — c'est ce qui rend le contrôle valable pour une base
     /// de PRODUCTION (migrée pas à pas depuis une vieille version), pas seulement pour une install
     /// neuve. On rejoue depuis CHAQUE version de 1 à `CODE_SCHEMA_MAX`, pas depuis une poignée choisie
@@ -4695,10 +4849,14 @@ mod schema_contract_tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// LA CONSTRUCTION DE LA RÉFÉRENCE N'ÉCRIT RIEN. Mesuré sur la sortie RÉELLE d'un processus enfant
-    /// (ré-exécution de CE binaire de test sur CE seul test) : le journal de migration de la base de
-    /// référence ne doit pas atterrir dans les logs de l'opérateur. Le test ne lit aucun commentaire et
-    /// aucune source : il lit stderr. Un futur ajout qui écrirait directement le fait tomber.
+    /// LA CONSTRUCTION DE LA RÉFÉRENCE N'ÉCRIT RIEN À L'OPÉRATEUR. Mesuré sur les sorties RÉELLES d'un
+    /// processus enfant (ré-exécution de CE binaire de test sur CE seul test) : le journal de migration
+    /// de la base de référence ne doit atterrir dans AUCUN des deux flux. La revue a mesuré que la
+    /// version précédente ne gardait que `stderr` : une v112 écrite avec la macro d'impression STANDARD
+    /// (`println!`, ce qu'écrit un contributeur qui ne connaît pas `mig_log!`) laissait passer
+    /// « [migration] … » sur stdout, test VERT. Le mal décrit — un opérateur qui lit « ma base est en
+    /// cours de migration » alors qu'aucune ne tourne — est le MÊME sur les deux flux, donc les deux
+    /// sont gardés. Le test ne lit aucun commentaire et aucune source : il lit les deux sorties.
     #[test]
     fn reference_build_writes_nothing_to_stderr() {
         const MARQUEUR: &str = "PLUME_REFERENCE_BUILD_CHILD";
@@ -4728,6 +4886,12 @@ mod schema_contract_tests {
         assert!(
             stderr.trim().is_empty(),
             "la construction de la référence a écrit sur la sortie d'erreur : {stderr}"
+        );
+        // stdout porte la sortie du harnais de test (« 1 passed ») : on n'exige pas qu'il soit VIDE,
+        // on exige qu'il ne porte pas le journal opérateur — quelle que soit la macro qui l'a écrit.
+        assert!(
+            !stdout.contains("[migration]"),
+            "la construction de la référence a écrit le journal de migration sur la sortie standard : {stdout}"
         );
     }
 

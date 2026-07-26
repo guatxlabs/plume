@@ -20,7 +20,7 @@ A pull request that weakens any of these will be **rejected**, no matter how use
 - **Mode-0 byte-identical.** Anything behind an OFF-by-default Cargo feature (or a runtime
   gate) **must leave the default build byte-identical** — the module *does not exist*, not
   merely "skipped". You prove it by a **constant test count**: the default suite passes the
-  **same number** of tests before and after your gated change — **745** at the time of
+  **same number** of tests before and after your gated change — **749** at the time of
   writing (`cd daemon && cargo test --locked`, default features). The invariant is the
   *constancy*; when you legitimately add tests, update the number here, in
   `daemon/.cargo/audit.toml`, in `daemon/src/tests/ingest.rs` and — the one that actually
@@ -42,6 +42,23 @@ A pull request that weakens any of these will be **rejected**, no matter how use
   stream (bounded ~1 MiB buffers), or roll up. A query that scans an event per request is a
   bug — precompute rollups, use the rollup-route/SWR. If a change trades RAM for speed, it
   goes behind an OFF-by-default feature or it does not land.
+- **A schema migration's DDL must not depend on the DATA, the config, or the filesystem.**
+  Boot derives the expected shape of a database by replaying `db/schema.sql` + the whole
+  migration chain into an **empty, in-memory, unconfigured** database, then refuses to serve
+  a database that lacks anything that reference declares (objects *and* columns). So a step
+  that creates/alters/drops **conditionally on content** — "create this table only if `event`
+  is empty", an `ALTER` gated on a `SELECT` — makes a perfectly healthy production database
+  produce a *different* shape, and the daemon refuses to start on it while telling the
+  operator to restore a backup. That is the worst failure mode in this codebase: an outage for
+  someone who broke nothing. Write DDL that is unconditional and idempotent (`IF NOT EXISTS`);
+  put data work in `INSERT`/`UPDATE` inside the same step, where it belongs. Two tests hold
+  this: `the_reference_holds_on_a_populated_database` (populated database, both upgrade
+  directions) and `every_migration_path_lands_on_the_same_shape`.
+- **You do not get a writable database connection without the schema contract.** `db_open` is
+  the only module that may open a SQLite connection on a path. Take it from
+  `PreparedDb::open*` (anti-downgrade guard + `prepare_schema`), or say
+  `open_db_without_schema_contract` out loud and expect the reviewer to ask why. A production
+  file that opens `rusqlite::Connection` itself fails `the_door_is_the_only_way_in`.
 - **The SOQL compiler lives in `guatx-core` — fix it in place, never fork.** The closed
   grammar and its `SqliteDialect` are shared. Change the compiler *in the core crate*; do not
   copy it into the daemon or maintain a divergent parser. The dependency is one-directional:
@@ -63,10 +80,10 @@ When in doubt, add a test that proves the invariant still holds.
 > ```
 
 The crate lives in `daemon/`, so point cargo at it. The default build is the SMB profile
-(`SqlcipherStore` only) and must stay **745 tests green** and **offline**:
+(`SqlcipherStore` only) and must stay **749 tests green** and **offline**:
 
 ```sh
-cargo test --manifest-path daemon/Cargo.toml        # 745 tests, default features
+cargo test --manifest-path daemon/Cargo.toml        # 749 tests, default features
 ```
 
 **Two testing gotchas** (learned the hard way):
@@ -102,7 +119,7 @@ All optional backends are **OFF by default** (each is an `optional` dep behind a
 
 1. Open an issue first for anything non-trivial, so we can agree on the approach.
 2. One logical change per PR. Keep the diff focused.
-3. Include tests. Preserve or improve coverage; keep the default count at **745** (CI asserts it).
+3. Include tests. Preserve or improve coverage; keep the default count at **749** (CI asserts it).
 4. Run `cargo test` (default) and, for gated work, the feature suite separately; run
    `cargo clippy`. All must pass.
 5. Sign off your commits (`-s`).

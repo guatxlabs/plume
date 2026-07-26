@@ -5,7 +5,7 @@
 #   - test     : `cargo test --locked` for the Plume daemon (crate in `daemon/`),
 #                default features only → SqlcipherStore-only SMB profile. The test COUNT is
 #                ASSERTED, not commented: the step sums the `test result: ok. N passed` lines
-#                and fails on any drift from EXPECTED_TESTS (745) — that is what makes
+#                and fails on any drift from EXPECTED_TESTS (749) — that is what makes
 #                CONTRIBUTING's "constant test count" invariant an actual gate,
 #                plus `cargo build --release --locked` and the `duckdb` FEATURE-CHECK
 #                (`cargo check --features duckdb --locked`) to prove the opt-in warm tier compiles.
@@ -93,7 +93,7 @@ jobs:
       - name: cargo test (daemon, default features) + assert the test count
         working-directory: daemon
         env:
-          EXPECTED_TESTS: "745"
+          EXPECTED_TESTS: "749"
         run: |
           set -euo pipefail
           cargo test --locked --verbose 2>&1 | tee /tmp/daemon-tests.log
@@ -170,7 +170,7 @@ jobs:
       #     age -> i18n-embed-fl. Compile-time only, no runtime surface. No fix available.
       #   RUSTSEC-2024-0320 (yaml-rust 0.4.5, unmaintained) — direct dep, used ONLY by the Sigma-rule importer
       #     front-end (YAML -> serde_json::Value) on operator-supplied rule files. "Unmaintained" != vulnerable;
-      #     the successor `yaml-rust2` is a DIFFERENT crate (API break, migration risk to the 745-test suite),
+      #     the successor `yaml-rust2` is a DIFFERENT crate (API break, migration risk to the 749-test suite),
       #     so there is no in-place fix-by-update. Revisit if a real yaml-rust CVE lands.
       - name: cargo audit (daemon crate — deny warnings)
         working-directory: daemon

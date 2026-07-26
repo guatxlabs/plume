@@ -136,18 +136,11 @@ pub(crate) fn stream_copy<R: std::io::Read, W: std::io::Write>(r: &mut R, w: &mu
     Ok(total)
 }
 
-/// Ouvre une connexion SQLCipher avec une clé EXPLICITE (paramètre, PAS l'env) : backup/
-/// restore ne dépendent pas de PLUME_DB_KEY -> testables hors environnement global.
-/// `key`=None ou "" -> base ouverte EN CLAIR (SQLite simple).
-pub(crate) fn open_db_keyed(path: &str, key: Option<&str>) -> rusqlite::Result<Connection> {
-    let conn = Connection::open(path)?;
-    if let Some(k) = key {
-        if !k.is_empty() {
-            conn.execute_batch(&format!("PRAGMA key = '{}';", k.replace('\'', "''")))?;
-        }
-    }
-    Ok(conn)
-}
+// L'ouverture à clé EXPLICITE (ex-`open_db_keyed`) a DÉMÉNAGÉ dans `db_open`. Sauvegarde et restore
+// l'appellent par son nom SANS CONTRAT (`open_db_keyed_without_schema_contract`), et c'est délibéré :
+// une base ABÎMÉE est exactement celle qu'il faut pouvoir sauvegarder/exporter. Refuser ici
+// retirerait l'outil de diagnostic au moment précis où il sert — et la destination d'un backup n'est
+// pas une base plume servie.
 
 /// RÉPERTOIRE DE STAGING du plaintext temporaire. Priorité à l'env `PLUME_BACKUP_STAGING_DIR`
 /// (orientez-le vers un volume ÉPHÉMÈRE, HORS du stockage durable/sauvegardé, de sorte qu'un crash ne
@@ -306,7 +299,7 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
     // 1) EXPORT en clair : SQLCipher chiffré (main) -> SQLite clair (attaché). sqlcipher_export
     //    copie schéma + données via le pager SQLite -> RAM bornée (pas de chargement 2 GiB).
     {
-        let conn = open_db_keyed(db_path, Some(&pass)).map_err(|e| format!("ouverture DB source : {e}"))?;
+        let conn = open_db_keyed_without_schema_contract(db_path, Some(&pass)).map_err(|e| format!("ouverture DB source : {e}"))?;
         // garde-fou : la source doit être lisible AVEC la clé (sinon clé fausse / DB illisible).
         conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
             .map_err(|e| format!("DB source illisible (clé PLUME_DB_KEY incorrecte ?) : {e}"))?;
@@ -702,7 +695,7 @@ fn dump_stream<W: std::io::Write>(conn: &Connection, plan: &DumpPlan, w: &mut W)
 /// (BEGIN), collecte le plan (repli `Unsupported` AVANT toute écriture si schéma non-B1) puis dump ->
 /// zstd -> age -> dest. Renvoie {plaintext_bytes(=taille dump), dest_bytes}.
 fn backup_compressed_stream(db_path: &str, dest: &str, pass: &str, recipient: Option<&str>) -> Result<BackupStats, PlanErr> {
-    let conn = open_db_keyed(db_path, Some(pass)).map_err(|e| PlanErr::Fatal(format!("ouverture DB source : {e}")))?;
+    let conn = open_db_keyed_without_schema_contract(db_path, Some(pass)).map_err(|e| PlanErr::Fatal(format!("ouverture DB source : {e}")))?;
     conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
         .map_err(|e| PlanErr::Fatal(format!("DB source illisible (clé PLUME_DB_KEY incorrecte ?) : {e}")))?;
     // BEGIN -> snapshot lecture figé pour toute la durée du dump (cohérence multi-tables, même sous écritures concurrentes).
@@ -787,7 +780,7 @@ pub(crate) fn backup_compressed(db_path: &str, dest: &str, key: Option<&str>, re
 /// post-DDL (vtables + rebuild FTS + index + triggers + vues).
 fn restore_stream<R: std::io::Read>(r: &mut R, dest_db: &str, pass: &str) -> Result<(), String> {
     let re = |x: std::io::Result<u32>| x.map_err(|e| format!("restore : lecture flux : {e}"));
-    let conn = open_db_keyed(dest_db, Some(pass)).map_err(|e| format!("ouverture dest SQLCipher : {e}"))?;
+    let conn = open_db_keyed_without_schema_contract(dest_db, Some(pass)).map_err(|e| format!("ouverture dest SQLCipher : {e}"))?;
     let _ = conn.execute_batch("PRAGMA foreign_keys=OFF;"); // ordre d'insertion libre pendant le chargement
     conn.execute_batch("BEGIN").map_err(|e| format!("begin restore : {e}"))?;
 
@@ -900,7 +893,7 @@ pub(crate) fn restore_compressed(src: &str, dest_db: &str, key: Option<&str>, ov
         }
         for ext in ["", "-wal", "-shm"] { let _ = std::fs::remove_file(format!("{dest_db}{ext}")); }
         {
-            let conn = open_db_keyed(&tmp_plain, None).map_err(|e| format!("ouverture plaintext : {e}"))?;
+            let conn = open_db_keyed_without_schema_contract(&tmp_plain, None).map_err(|e| format!("ouverture plaintext : {e}"))?;
             conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
                 .map_err(|e| format!("plaintext illisible (passphrase invalide ?) : {e}"))?;
             let sql = format!(

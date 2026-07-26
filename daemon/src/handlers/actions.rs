@@ -557,11 +557,18 @@ pub(crate) fn ensure_nft_blocklist() {
 pub(crate) fn respond_run() {
     let conf = load_config();
     let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
-    let conn = match open_db(&db_path) {
+    // CE RESPONDER TOURNE EN ROOT (systemd/plume-respond.service, timer 20 s) ET IL ÉCRIT : il change
+    // le statut des actions et pose `done_ts`. Il passe donc par LA PORTE, comme le daemon. Mesuré
+    // avant ce correctif, avec le vrai binaire : sur une base estampillée 111 amputée de `net_ban` —
+    // celle où `plume-daemon token` sortait en 1 sans rien écrire — `respond` sortait en 0 et écrivait
+    // (action 1 `approved` -> `failed`, `done_ts` posé) ; et sur une base en retard de 5 migrations, il
+    // écrivait aussi sans migrer ni refuser. C'est l'asymétrie exacte que ce chantier voulait retirer :
+    // le daemon refusait bruyamment de SERVIR pendant que le responder root continuait d'EXÉCUTER.
+    let conn = match PreparedDb::open(&db_path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("respond: open db: {e}");
-            return;
+            eprintln!("[schema] respond : {e} — AUCUNE action exécutée. Arrêt propre.");
+            std::process::exit(1);
         }
     };
     let allow: Vec<String> = std::fs::read_to_string("/etc/plume/responder.allow")

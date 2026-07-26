@@ -1505,7 +1505,7 @@
         // (a)+(b) base chiffrée NON VIDE avec la BONNE clé (pages réelles écrites).
         let enc = dir.join("enc.db").to_string_lossy().into_owned();
         {
-            let c = crate::backup::open_db_keyed(&enc, Some("clef-correcte-1")).unwrap();
+            let c = open_db_keyed(&enc, Some("clef-correcte-1")).unwrap();
             c.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES(1);").unwrap();
         } // conn droppée -> pages flushées dans le fichier principal (journal_mode par défaut = delete)
         assert_eq!(probe_db(&enc, "clef-correcte-1"), DbProbe::OpensWithKey,
@@ -1516,7 +1516,7 @@
         // (c) base EN CLAIR non vide -> Plaintext (le chemin de migration, jamais WrongKey).
         let plain = dir.join("plain.db").to_string_lossy().into_owned();
         {
-            let c = crate::backup::open_db_keyed(&plain, None).unwrap();
+            let c = open_db_keyed(&plain, None).unwrap();
             c.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES(2);").unwrap();
         }
         assert_eq!(probe_db(&plain, "n-importe-quelle-clef"), DbProbe::Plaintext,
@@ -1550,11 +1550,11 @@
         // Base chiffrée NON VIDE avec la BONNE clé (journal_mode par défaut = delete -> EXCLUSIVE bloque les
         // lecteurs, contrairement au WAL).
         {
-            let c = crate::backup::open_db_keyed(&enc, Some("clef-correcte-1")).unwrap();
+            let c = open_db_keyed(&enc, Some("clef-correcte-1")).unwrap();
             c.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES(1);").unwrap();
         }
         // Tient un verrou EXCLUSIVE (2e connexion, bonne clé) -> toute lecture concurrente = SQLITE_BUSY.
-        let holder = crate::backup::open_db_keyed(&enc, Some("clef-correcte-1")).unwrap();
+        let holder = open_db_keyed(&enc, Some("clef-correcte-1")).unwrap();
         holder.execute_batch("BEGIN EXCLUSIVE;").unwrap();
 
         // (a) VERROUILLÉE + bonne clé -> Locked (surtout : PAS WrongKeyOrCorrupt).
@@ -1580,7 +1580,7 @@
             "absent -> Fresh (inchangé)");
         let plain = dir.join("plain.db").to_string_lossy().into_owned();
         {
-            let c = crate::backup::open_db_keyed(&plain, None).unwrap();
+            let c = open_db_keyed(&plain, None).unwrap();
             c.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES(2);").unwrap();
         }
         assert_eq!(probe_db_with_busy(&plain, "peu-importe", Duration::ZERO), DbProbe::Plaintext,
@@ -1611,7 +1611,7 @@
         let key = "test-sqlcipher-key-f3";
         let src = dir.join("src.db").to_string_lossy().into_owned();
         {
-            let c = crate::backup::open_db_keyed(&src, Some(key)).unwrap();
+            let c = open_db_keyed(&src, Some(key)).unwrap();
             c.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES(42);").unwrap();
         }
         let identity = age::x25519::Identity::generate();
@@ -1630,7 +1630,7 @@
         let restored = dir.join("restored.db").to_string_lossy().into_owned();
         crate::backup::restore_compressed(&dest, &restored, Some(key), true, Some(&identity)).expect("restore asym OK");
         {
-            let c = crate::backup::open_db_keyed(&restored, Some(key)).unwrap();
+            let c = open_db_keyed(&restored, Some(key)).unwrap();
             let v: i64 = c.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
             assert_eq!(v, 42);
         }
@@ -1659,7 +1659,7 @@
         let key = "v134-backup-key";
         let src = dir.join("src.db").to_string_lossy().into_owned();
         {
-            let c = crate::backup::open_db_keyed(&src, Some(key)).unwrap();
+            let c = open_db_keyed(&src, Some(key)).unwrap();
             c.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES(7);").unwrap();
         }
         let dest = dir.join("bk.age").to_string_lossy().into_owned();

@@ -52,12 +52,18 @@ pub(crate) fn tenant_provision(mgr: &TenantDbManager, id: &str, name: &str, db_p
     if let Some(parent) = std::path::Path::new(db_path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let conn = open_db_keyed(db_path, key.as_deref()).map_err(|e| format!("création base tenant : {e}"))?;
-    let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
-    // FAIL-CLOSED (même doctrine que la résolution de clé en 1) : `prepare_schema` applique le schéma,
-    // migre, PUIS vérifie la présence des objets attendus. On REFUSE de déclarer le tenant prêt plutôt
-    // que de le seeder sur un schéma qui n'est pas celui attendu.
-    prepare_schema(&conn).map_err(|e| format!("base tenant : {e} — tenant NON provisionné"))?;
+    // FAIL-CLOSED (même doctrine que la résolution de clé en 1) : la PORTE applique la garde
+    // anti-downgrade puis `prepare_schema` (schéma, migrations, présence des objets ET des colonnes).
+    // On REFUSE de déclarer le tenant prêt plutôt que de le seeder sur un schéma qui n'est pas celui
+    // attendu. Les PRAGMA de la base tenant sont posés dans le prélude, donc AVANT le contrat (ordre
+    // historique préservé : ils précédaient déjà `prepare_schema`).
+    let conn = PreparedDb::open_keyed_with_prelude(db_path, key.as_deref(), |c| {
+        let _ = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
+    })
+    .map_err(|e| match e {
+        DbOpenError::Ouverture(e) => format!("création base tenant : {e}"),
+        autre => format!("base tenant : {autre} — tenant NON provisionné"),
+    })?;
     // D7 (#2c) : contenu de détection COMPLET par tenant (dashboards + règles + playbooks builtin) — une
     // base tenant neuve démarre exactement comme une install fraîche (cf. run()). Les seeds conf/déploiement
     // (overlays config.d, notifier d'env, données de démo) sont DÉLIBÉRÉMENT exclus (spécifiques au site).

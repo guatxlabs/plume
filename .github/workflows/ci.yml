@@ -7,21 +7,47 @@
 #                ASSERTED, not commented: the step sums the `test result: ok. N passed` lines
 #                and fails on any drift from EXPECTED_TESTS (749) — that is what makes
 #                CONTRIBUTING's "constant test count" invariant an actual gate,
-#                plus `cargo build --release --locked` and the `duckdb` FEATURE-CHECK
-#                (`cargo check --features duckdb --locked`) to prove the opt-in warm tier compiles.
+#                plus `cargo build --release --locked`. (The `duckdb` feature-check that used to
+#                live here now runs in the `features` job, with the other gated features.)
+#   - cold-tier: `cargo test --locked --features cold_tier` on its OWN runner, with its OWN
+#                asserted count (EXPECTED_COLD_TESTS). WHY THIS JOB EXISTS — read this before
+#                deleting it: since the hot/cold split (hot window 7 days, retention 365 days)
+#                `daemon/src/cold_store/` IS THE READ PATH FOR 358 OF THE 365 DAYS of production
+#                data, and until this job existed NOTHING in CI so much as COMPILED it. The
+#                default job cannot: without `--features cold_tier` the module does not exist.
+#                MEASURED, not argued: with a deliberate type error appended to
+#                `cold_store/writer.rs`, `cargo test --locked` finished GREEN (exit 0) while
+#                `cargo test --locked --features cold_tier` failed to compile (exit 101).
+#                The feared failure mode here is NOT a crash — it is SILENT HISTORY LOSS: a
+#                query spanning >7 days that returns a wrong count without saying so.
+#   - shell    : `bash -n` on every tracked shell script. MEASURED today: 43 tracked scripts,
+#                3929 lines, and `grep -rE "shellcheck|shfmt|bash -n" .github/` returned ZERO
+#                hits — a production ingest path with no automated checking at all. Plus a
+#                CONSULTATIVE shellcheck. See the job for what is and is not guaranteed.
+#   - features : cheap `cargo check` per OFF-by-default cargo feature, so that gated code at
+#                least still COMPILES. `check` only — these prove compilation, NOT behaviour.
+#                Only `cold_tier` gets a real test run (above); see the job for the rest.
 #   - security : supply-chain + secret hygiene — `cargo audit --deny warnings` on the
 #                daemon's locked dep tree, plus a gitleaks secret scan of tree + history.
 #   - lint     : `cargo fmt --all --check` + `cargo clippy --locked --all-targets`, both
 #                CONSULTATIVE (continue-on-error) until the tree is proven warning-free —
 #                then drop the continue-on-error / add `-D warnings` to make them blocking.
 #
-# NOTE features: `duckdb` is the daemon's ONLY compile feature (daemon/Cargo.toml).
-# `clickhouse` is NOT (yet) a feature — it is an internal RFC backend, present only in
-# comments/SPI. TODO: add `cargo check --features clickhouse` once that feature exists.
+# NOTE features — the full list, from `[features]` in daemon/Cargo.toml (all OFF by default):
+#   `duckdb`, `clickhouse`, `clickhouse-ha`, `cold_tier`, `ldap`, `saml`, `ai`.
+# (An earlier version of this comment claimed `duckdb` was "the daemon's ONLY compile feature"
+# and that `clickhouse` was "NOT (yet) a feature". Both statements were false: the feature table
+# lists all seven. The comment had drifted because nothing executed it.)
+# COVERAGE, stated honestly — see the `features` job for the per-feature detail:
+#   cold_tier ......... COMPILED **and TESTED** (own job, own asserted count).
+#   duckdb/clickhouse/clickhouse-ha/ldap/saml/ai ... COMPILE-CHECKED ONLY (`cargo check`).
+#     Their code paths are NEVER EXECUTED by CI. A `saml`/`ldap`/`ai`/ClickHouse behaviour
+#     regression that still type-checks WILL pass this pipeline. Do not read a green CI as
+#     "these backends work"; it means "these backends still compile".
 #
 # guatx-core (the shared SOQL compiler) is a GIT dependency of the daemon
-# (daemon/Cargo.toml: `guatx-core = { git = ".../guatxlabs/core", tag = "v0.2.0" }`).
-# `guatxlabs/core@v0.2.0` must be reachable by the runner for cargo to resolve the tag (anonymous
+# (daemon/Cargo.toml: `guatx-core = { git = ".../guatxlabs/core", tag = "v0.2.1" }`).
+# `guatxlabs/core@v0.2.1` must be reachable by the runner for cargo to resolve the tag (anonymous
 # fetch) — CI needs no sibling checkout and no CI-only `[patch]`. The committed
 # daemon/Cargo.lock pins guatx-core to that git source+rev, so `cargo test --locked`
 # is reproducible against exactly what public users get. (Local dev may still keep a
@@ -75,9 +101,14 @@ jobs:
 
       # DEFAULT build only: SqlcipherStore alone (rusqlite bundled-sqlcipher-vendored-openssl
       # compiles C + vendored OpenSSL; cc/perl present on ubuntu-24.04).
-      # cargo fetches the guatx-core git-dep (core@v0.2.0) from GitHub.
+      # cargo fetches the guatx-core git-dep (core@v0.2.1) from GitHub.
       # NOTE: do NOT add `--features cold_tier` to this job — the cold_tier suite shares
-      # fixed temp paths with the default suite and must run on a SEPARATE runner.
+      # fixed temp paths with the default suite and must run on a SEPARATE runner
+      # (CONTRIBUTING "Two testing gotchas" #2 says the same). It now HAS one: the
+      # `cold-tier` job below. There is a SECOND, independent reason to keep them apart:
+      # this job's whole point is to assert the DEFAULT-feature count (EXPECTED_TESTS), which
+      # is how CONTRIBUTING's mode-0 invariant is enforced — folding a feature into it would
+      # destroy the very measurement. Feature suites get their own job and their own counter.
       #
       # THE COUNT IS ASSERTED HERE. CONTRIBUTING calls the constant test count a NON-NEGOTIABLE
       # invariant (it is how a mode-0/gated change proves it added nothing to the default
@@ -111,8 +142,267 @@ jobs:
         working-directory: daemon
         run: cargo build --release --locked --verbose
 
-      # FEATURE-BUILD: DuckDB warm tier (bundled C++ → heavy/slow, opt-in). `check` only
-      # (no build/test) to prove the feature COMPILES without blowing up CI time.
+      # (The `duckdb` feature-check that used to live here moved to the `features` job below,
+      # where every OFF-by-default feature is checked in one place. Same command, own runner.)
+
+  # ---------------------------------------------------------------------------
+  # cold-tier — THE COLD READ PATH, ON ITS OWN RUNNER.
+  #
+  # WHY (the risk this job exists to close): with a hot window of 7 days and a retention of
+  # 365, `daemon/src/cold_store/` (Parquet cold tier) is what actually answers any query
+  # reaching further back than a week — i.e. the overwhelming majority of the retained
+  # history. It is gated behind the OFF-by-default `cold_tier` feature, so the default `test`
+  # job does not merely skip its tests: IT DOES NOT COMPILE THE MODULE AT ALL. Before this
+  # job, a change could delete, break or silently mis-prune the cold reader and the whole
+  # pipeline would stay green.
+  #
+  # This is not a hypothetical. Two facts measured while adding this job:
+  #   (a) a deliberate type error appended to `cold_store/writer.rs` left `cargo test --locked`
+  #       GREEN (exit 0); only `--features cold_tier` caught it (exit 101, compile error);
+  #   (b) the suite was ALREADY RED on `main` when first run here — bumping guatx-core to the
+  #       v0.2.1 security release (commit 1a67014) tightened field-name validation in the SOQL
+  #       compiler, which broke two `cold_store` extractor-parity tests. That commit's message
+  #       records "749 passed / 0 failed" — the DEFAULT suite, the only one CI could run. The
+  #       cold tier had been unverified against the compiler it depends on.
+  #
+  # The dangerous failure mode for this module is NOT a crash. It is a query over >7 days that
+  # returns a WRONG COUNT WITHOUT SAYING SO (over-pruning a Parquet file drops rows silently).
+  # That is why this job runs the full `cargo test`, not a `cargo check` like the other
+  # features: compilation alone would not catch a pruning-logic regression.
+  #
+  # SEPARATE RUNNER, NOT A STEP IN `test` — two independent reasons, both load-bearing:
+  #   1. CONTRIBUTING ("Two testing gotchas" #2): the default and cold_tier suites must never
+  #      run concurrently against shared temp fixtures — run them sequentially, on separate
+  #      runners. Separate GitHub jobs are separate machines, which satisfies this by
+  #      construction.
+  #   2. The `test` job's purpose is to assert the DEFAULT-feature count; mixing a feature in
+  #      would destroy that measurement (see the note in that job).
+  # ---------------------------------------------------------------------------
+  cold-tier:
+    name: cold-tier (daemon — cargo test --features cold_tier)
+    runs-on: ubuntu-24.04
+    # Measured locally at ~34 min for the test run alone (the cold_store suite does real
+    # Parquet + crypto round-trips); the ceiling is deliberately generous so a slow runner
+    # reports a REAL failure rather than an ambiguous timeout.
+    timeout-minutes: 90
+    steps:
+      - name: Checkout plume
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)
+        with:
+          toolchain: "1.96.0"
+
+      # Own cache key ("cold-"): the cold_tier feature set produces DIFFERENT artifacts from the
+      # default job (it links `parquet`), so sharing one key would make the two jobs evict each
+      # other's target dir on every run.
+      - name: Cache cargo (registry + target)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            daemon/target
+          key: cargo-cold-${{ runner.os }}-${{ hashFiles('daemon/Cargo.lock') }}
+          restore-keys: |
+            cargo-cold-${{ runner.os }}-
+
+      # THE COUNT IS ASSERTED, exactly like the default job — same awk, same failure mode, its
+      # OWN counter. EXPECTED_COLD_TESTS is the count of the FULL suite under `--features
+      # cold_tier` (default tests + the cold_store tests the feature adds), MEASURED on the real
+      # output of this exact command, not derived by arithmetic. It must stay strictly greater
+      # than EXPECTED_TESTS: if the two ever coincide, the feature stopped adding its tests and
+      # this job silently degraded into a duplicate of the default one — the check below catches
+      # exactly that, so the job cannot rot into a no-op.
+      #
+      # TMPDIR: CONTRIBUTING gotcha #1 — these tests spill temp SQLite DBs and Parquet files, so
+      # they must land on a REAL DISK, never a RAM-backed tmpfs. $RUNNER_TEMP is disk-backed on
+      # GitHub-hosted runners.
+      - name: cargo test (daemon, --features cold_tier) + assert the cold test count
+        working-directory: daemon
+        env:
+          EXPECTED_COLD_TESTS: "939"
+          EXPECTED_DEFAULT_TESTS: "749"
+        run: |
+          set -euo pipefail
+          export TMPDIR="$RUNNER_TEMP"
+          cargo test --locked --features cold_tier --verbose 2>&1 | tee /tmp/cold-tests.log
+          total=$(awk '/^test result: ok\. [0-9]+ passed/{s+=$4} END{print s+0}' /tmp/cold-tests.log)
+          echo "cold_tier tests passed: $total (expected $EXPECTED_COLD_TESTS)"
+          if [ "$total" != "$EXPECTED_COLD_TESTS" ]; then
+            echo "::error::cold_tier suite test count is $total, expected $EXPECTED_COLD_TESTS."
+            echo "::error::If the change legitimately adds or removes cold_tier tests, update"
+            echo "::error::EXPECTED_COLD_TESTS here and the number in CONTRIBUTING.md, from your own measurement."
+            exit 1
+          fi
+          # Anti-rot: this job must actually be running MORE than the default suite.
+          if [ "$EXPECTED_COLD_TESTS" -le "$EXPECTED_DEFAULT_TESTS" ]; then
+            echo "::error::EXPECTED_COLD_TESTS ($EXPECTED_COLD_TESTS) <= EXPECTED_TESTS ($EXPECTED_DEFAULT_TESTS):"
+            echo "::error::the cold_tier feature is no longer contributing tests — this job has become a no-op."
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
+  # shell — SYNTAX GATE FOR THE COLLECTORS.
+  #
+  # WHY: the shell collectors are a production ingest path (42 tracked scripts, ~3.9k lines
+  # measured today) and NOTHING in this pipeline looked at them — `grep -rE
+  # "shellcheck|shfmt|bash -n" .github/` returned zero hits. A stray `fi`, an unclosed quote or
+  # a broken heredoc shipped green and only failed on the host, at collection time, as MISSING
+  # DATA — the same silent-loss failure mode the cold-tier job exists for.
+  #
+  # WHAT THIS DOES AND DOES NOT GUARANTEE — read before trusting it:
+  #   `bash -n` is a PARSE check. It proves each script is syntactically valid bash. It proves
+  #   NOTHING about behaviour: an unquoted variable, a wrong path, a silently-failing pipeline
+  #   all parse fine. This is a floor, not a safety net.
+  # ---------------------------------------------------------------------------
+  shell:
+    name: shell (bash -n — all tracked scripts)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout plume
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
+      # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —
+      # the odd one out is `collectors/lib.sh`, a SOURCED library with no shebang, which the
+      # extension glob catches. The shebang sweep is what stops a future extensionless
+      # `collectors/foo` from being ingested into production while invisible to this gate.
+      # Only the FIRST line counts (`head -1`): matching `^#!` anywhere would drag in Rust
+      # files that merely embed a shebang inside a string or heredoc.
+      #
+      # MIN_SCRIPTS is a FLOOR, not the exact-count invariant used for the Rust suites: adding
+      # collectors is routine and must not require touching this file. The floor exists to make
+      # the real failure mode impossible — a broken glob or a rename that leaves the loop with
+      # ZERO files would otherwise report a cheerful green "all scripts pass".
+      - name: bash -n — every tracked shell script must parse
+        env:
+          MIN_SCRIPTS: "43"
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(
+            {
+              git ls-files '*.sh' '*.bash'
+              git ls-files | while IFS= read -r f; do
+                [ -f "$f" ] || continue
+                head -1 "$f" 2>/dev/null | grep -qE '^#!.*/(env +)?(ba)?sh( |$)|^#!.*/(ba)?sh$' && printf '%s\n' "$f"
+              done
+            } | sort -u
+          )
+          echo "tracked shell scripts discovered: ${#files[@]} (floor: $MIN_SCRIPTS)"
+          if [ "${#files[@]}" -lt "$MIN_SCRIPTS" ]; then
+            echo "::error::discovered only ${#files[@]} shell scripts, floor is $MIN_SCRIPTS."
+            echo "::error::Either discovery broke (this gate would be checking nothing), or scripts were"
+            echo "::error::legitimately removed — in that case lower MIN_SCRIPTS here, from your own count."
+            exit 1
+          fi
+          rc=0
+          for f in "${files[@]}"; do
+            if ! bash -n "$f"; then
+              echo "::error file=$f::bash -n: syntax error"
+              rc=1
+            fi
+          done
+          # NB: plain `if`, not `[ ... ] && echo` — under `set -e` a false `[ ... ]` at the end of
+          # an && list aborts the script, which would exit non-zero for the right reason by pure
+          # accident. Be explicit instead.
+          if [ "$rc" -eq 0 ]; then echo "all ${#files[@]} scripts parse."; fi
+          exit "$rc"
+
+      # shellcheck is CONSULTATIVE (continue-on-error) and stays that way until someone
+      # measures the tree clean against it. It is NOT hardcoded as a blocking gate because
+      # that claim was never verified: shellcheck is absent from the machine these scripts
+      # were checked on, so the number of findings on this tree is NOT MEASURED. Promoting it
+      # to blocking on a guess would either wedge CI on day one or, worse, be quietly deleted
+      # by the next person it inconveniences. Measure first, then drop continue-on-error.
+      # (`shellcheck` ships preinstalled on the ubuntu-24.04 runner image; `|| true` on the
+      # install line keeps this step from failing the job if that ever stops being true —
+      # consistent with it being advisory.)
+      - name: shellcheck (CONSULTATIVE — advisory only, not a gate)
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          command -v shellcheck >/dev/null 2>&1 || sudo apt-get install -y shellcheck || true
+          command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck unavailable — skipping (advisory step)"; exit 0; }
+          shellcheck --version
+          # shellcheck -x follows `source`d files (collectors/lib.sh); -S style keeps output complete.
+          git ls-files '*.sh' '*.bash' | xargs -r shellcheck -x -S style || true
+
+  # ---------------------------------------------------------------------------
+  # features — COMPILE-CHECK EVERY OFF-BY-DEFAULT FEATURE.
+  #
+  # WHY: gated code that nothing compiles ROTS. `cold_tier` proved it (see that job: it was
+  # already red on main). These features are the rest of the OFF-by-default surface; each gets
+  # a `cargo check` so a refactor of shared code cannot silently break a backend nobody builds.
+  #
+  # WHAT THIS DOES NOT DO — stated plainly so a green tick is not over-read: `cargo check` is
+  # TYPE-CHECKING ONLY. It does not link, does not run a single test, and proves NOTHING about
+  # behaviour. `saml`, `ldap`, `ai`, `clickhouse` and `clickhouse-ha` have NO executed CI
+  # coverage whatsoever. A logic regression in the SAML assertion validator, the LDAP bind, the
+  # AI advisory path or the ClickHouse backend WILL pass this pipeline green.
+  # Making that real requires test suites runnable without a live IdP / directory / model
+  # endpoint / ClickHouse server — that work is NOT done and is not claimed here.
+  #
+  # Each feature is checked SEPARATELY, not as one combined `--features a,b,c`: features are
+  # additive, so a combined check can hide a feature that only fails on its own (e.g. one that
+  # relies on an import another feature happens to bring in).
+  # ---------------------------------------------------------------------------
+  features:
+    name: features (cargo check per off-by-default feature)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout plume
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)
+        with:
+          toolchain: "1.96.0"
+
+      - name: Cache cargo (registry + target)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            daemon/target
+          key: cargo-features-${{ runner.os }}-${{ hashFiles('daemon/Cargo.lock') }}
+          restore-keys: |
+            cargo-features-${{ runner.os }}-
+
+      # `ai` — pure compile feature (no new crate; enables guatx-core/ai). Cheapest of the set.
+      - name: cargo check --features ai (advisory NL->SOQL)
+        working-directory: daemon
+        run: cargo check --features ai --locked --verbose
+
+      # `ldap` — pulls ldap3 (pure-Rust, tokio-rustls).
+      - name: cargo check --features ldap (LDAP/AD bind)
+        working-directory: daemon
+        run: cargo check --features ldap --locked --verbose
+
+      # `saml` — pulls samlify/saml-rs/bergshamra (pure-Rust, RustCrypto).
+      - name: cargo check --features saml (SAML 2.0 SP)
+        working-directory: daemon
+        run: cargo check --features saml --locked --verbose
+
+      # `clickhouse` — scale-out cold backend (pure-Rust async HTTP client).
+      - name: cargo check --features clickhouse (scale-out tier)
+        working-directory: daemon
+        run: cargo check --features clickhouse --locked --verbose
+
+      # `clickhouse-ha` — INERT SCAFFOLD, superset of `clickhouse`. It is not activated by
+      # `--features clickhouse`, so it needs its own check or it would compile nowhere.
+      - name: cargo check --features clickhouse-ha (distributed scaffold)
+        working-directory: daemon
+        run: cargo check --features clickhouse-ha --locked --verbose
+
+      # `duckdb` — EXPERIMENTAL warm tier. Moved here from the `test` job (same command).
+      # Un-bundled: `--features duckdb` LINKS a system libduckdb. `cargo check` does not link,
+      # which is precisely why this is a `check` and not a `build` — it validates the Rust side
+      # without requiring libduckdb on the runner.
       - name: cargo check --features duckdb (warm tier)
         working-directory: daemon
         run: cargo check --features duckdb --locked --verbose
@@ -233,7 +523,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # lint — fmt + clippy, CONSULTATIVE (non-blocking until the tree is proven
-  # warning-free). cargo resolves the guatx-core git-dep (core@v0.2.0)
+  # warning-free). cargo resolves the guatx-core git-dep (core@v0.2.1)
   # directly. TODO: make blocking (`-D warnings`, drop continue-on-error) once
   # the tree is clean.
   # ---------------------------------------------------------------------------
@@ -272,7 +562,7 @@ jobs:
   ci-ok:
     name: CI
     if: always() # otherwise a failed upstream job SKIPS this one instead of failing it
-    needs: [test, security, lint]
+    needs: [test, cold-tier, shell, features, security, lint]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

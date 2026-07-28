@@ -28,7 +28,10 @@ A pull request that weakens any of these will be **rejected**, no matter how use
   measurement. CI SUMS the `test result: ok. N passed` lines of the default run and FAILS
   the build on any mismatch, so a gated change that silently adds or drops a test in the
   default profile cannot merge (the agent crate is separate: `cd agent && cargo test
-  --locked` → 95, not asserted by CI). A heavy new
+  --locked` → 95, not asserted by CI). **The counterpart of this invariant is that the default
+  suite is BLIND to gated code by construction** — 749 stayed green with a deliberate type
+  error in `cold_store`. So a constant default count is necessary, not sufficient: gated work
+  must ALSO be green under its own feature (`cold-tier` job). A heavy new
   dependency is `optional = true` behind a feature, defaulted OFF, with a rationale comment in
   `daemon/Cargo.toml` (that file is the canonical rationale log — match its style).
 - **Masking is applied at the `soql_field` choke-point — never re-implemented per caller.**
@@ -86,6 +89,23 @@ The crate lives in `daemon/`, so point cargo at it. The default build is the SMB
 cargo test --manifest-path daemon/Cargo.toml        # 749 tests, default features
 ```
 
+The **`cold_tier` suite has its own count and its own CI job** (`cold-tier` in
+`.github/workflows/ci.yml`, `EXPECTED_COLD_TESTS`). Run it too when you touch
+`daemon/src/cold_store/` — or anything it depends on, notably the SOQL compiler:
+
+```sh
+TMPDIR=/path/on/disk cargo test --manifest-path daemon/Cargo.toml --features cold_tier
+# 939 tests (= the 749 default tests + the cold_store tests the feature adds)
+```
+
+> **Why this matters more than it looks.** With a 7-day hot window and 365-day retention,
+> `cold_store` is the read path for ~358 of the 365 retained days. It is also the module whose
+> failure mode is *silent*: over-prune a Parquet file and a query spanning more than a week
+> returns a wrong count **without erroring**. Until this job existed, nothing in CI even
+> *compiled* the module — and it had gone red unnoticed: bumping guatx-core to v0.2.1
+> tightened SOQL field-name validation and broke the cold extractor-parity tests, while the
+> default suite stayed at 749 green.
+
 **Two testing gotchas** (learned the hard way):
 
 1. **Point `TMPDIR` at a real disk path.** `/tmp` is often RAM-backed (ZRAM tmpfs); tests
@@ -98,8 +118,24 @@ cargo test --manifest-path daemon/Cargo.toml        # 749 tests, default feature
    TMPDIR=/path/on/disk cargo test --manifest-path daemon/Cargo.toml --features cold_tier
    ```
 
-All optional backends are **OFF by default** (each is an `optional` dep behind a feature):
-`cold_tier`, `clickhouse`, `ldap`, `saml`, `duckdb`. The default binary carries none of them.
+All optional backends are **OFF by default**. The full feature list, from `[features]` in
+`daemon/Cargo.toml`: `cold_tier`, `clickhouse`, `clickhouse-ha`, `ldap`, `saml`, `duckdb`, `ai`.
+The default binary carries none of them.
+
+**What CI actually verifies about them** — do not over-read a green tick:
+
+| feature | CI coverage |
+|---|---|
+| `cold_tier` | **compiled and tested** (`cold-tier` job, own asserted count) |
+| `duckdb`, `clickhouse`, `clickhouse-ha`, `ldap`, `saml`, `ai` | **`cargo check` only** — type-checked, never executed |
+
+A behaviour regression in SAML assertion validation, the LDAP bind, the AI advisory path or the
+ClickHouse backend **will pass CI green**. Making those real requires suites that run without a
+live IdP / directory / model endpoint / ClickHouse server; that work is not done. If you touch
+one of them, say in the PR how you tested it by hand — CI will not do it for you.
+
+The **shell collectors** (43 tracked scripts) get a `bash -n` parse gate (`shell` job) and a
+*consultative* shellcheck. `bash -n` proves they parse; it proves nothing about behaviour.
 
 ## Code style
 
@@ -120,8 +156,10 @@ All optional backends are **OFF by default** (each is an `optional` dep behind a
 1. Open an issue first for anything non-trivial, so we can agree on the approach.
 2. One logical change per PR. Keep the diff focused.
 3. Include tests. Preserve or improve coverage; keep the default count at **749** (CI asserts it).
+   If you touch `cold_store`, the `cold_tier` count (**939**) is asserted too.
 4. Run `cargo test` (default) and, for gated work, the feature suite separately; run
-   `cargo clippy`. All must pass.
+   `cargo clippy`. All must pass. "The default suite is green" is **not** evidence for gated
+   code — see the mode-0 invariant above.
 5. Sign off your commits (`-s`).
 6. **Security issues do not go here** — see [`SECURITY.md`](SECURITY.md).
 

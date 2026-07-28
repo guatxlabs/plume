@@ -72,6 +72,13 @@ concurrency:
 permissions:
   contents: read
 
+# SOURCE UNIQUE du compteur de la suite par DÉFAUT. Il était écrit deux fois (job `test` et job
+# `cold-tier`, qui s'en sert pour son garde-fou anti-no-op) : deux sources de vérité qui pouvaient
+# diverger en silence — bumper l'une laissait l'autre comparer à un nombre périmé. Une seule ici,
+# consommée par les deux jobs.
+env:
+  EXPECTED_TESTS: "749"
+
 jobs:
   # ---------------------------------------------------------------------------
   # test — daemon test suite (default features = SMB profile; count ASSERTED, see below).
@@ -123,8 +130,6 @@ jobs:
       # build instead of passing unnoticed. `set -o pipefail` so a cargo failure is not masked by tee.
       - name: cargo test (daemon, default features) + assert the test count
         working-directory: daemon
-        env:
-          EXPECTED_TESTS: "749"
         run: |
           set -euo pipefail
           cargo test --locked --verbose 2>&1 | tee /tmp/daemon-tests.log
@@ -223,7 +228,7 @@ jobs:
         working-directory: daemon
         env:
           EXPECTED_COLD_TESTS: "939"
-          EXPECTED_DEFAULT_TESTS: "749"
+          EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
           export TMPDIR="$RUNNER_TEMP"
@@ -246,7 +251,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # shell — SYNTAX GATE FOR THE COLLECTORS.
   #
-  # WHY: the shell collectors are a production ingest path (42 tracked scripts, ~3.9k lines
+  # WHY: the shell collectors are a production ingest path (43 tracked scripts, ~3.9k lines
   # measured today) and NOTHING in this pipeline looked at them — `grep -rE
   # "shellcheck|shfmt|bash -n" .github/` returned zero hits. A stray `fi`, an unclosed quote or
   # a broken heredoc shipped green and only failed on the host, at collection time, as MISSING

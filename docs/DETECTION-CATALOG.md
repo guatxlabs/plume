@@ -9,7 +9,9 @@
 
 ## Principe & politique enabled/disabled
 
-- **34 règles** (compte MESURÉ : les lignes des tables ci-dessous, noms tous distincts), citant
+- **35 règles LIVRÉES** (`ls config.d/rules/catalog/ | wc -l` = 35), dont **34 décrites** dans les tables
+  ci-dessous (noms tous distincts). La règle livrée non décrite ici est `de-auditd-silent.json`
+  (« Hôte : auditd muet — dead-man's-switch anti-forensics », T1562.001). Elles citent
   **26 techniques** ATT&CK distinctes qui retombent sur **13 tactiques** (mappées via
   `guatx_core::attack::CATALOG` ; aucune technique non mappée).
 - **TOUTES `enabled=false` par défaut.** C'est une BIBLIOTHÈQUE : l'admin ACTIVE chaque règle

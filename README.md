@@ -25,19 +25,21 @@ sur **Docker**, un **hôte nu (systemd)** ou **Kubernetes/k3s**, dans **2 Go de 
 > Plume fait équipe avec **[Forge](https://github.com/guatxlabs/forge)**, le moteur red‑team. **Forge lance** un
 > engagement autorisé → **Plume détecte et corrèle** chaque action par sa technique ATT&CK → la **matrice de
 > couverture** transforme chaque manqué en un angle mort visible à combler. Le **Mode Engagement** natif permet à un
-> pentest autorisé de se dérouler à travers le SOC en production **sans aucun angle mort et sans la moindre reconfiguration**, puis
+> pentest autorisé de se dérouler à travers le SOC en production **sans reconfiguration** (le mode s'active et se désactive
+> à chaud, mode‑off prouvé byte‑identique par les tests), puis
 > nettoie automatiquement et produit un rapport signé.
 >
 > *La boucle attaque → SIEM → validation de détection **existe ailleurs** : [Splunk Attack Range](https://github.com/splunk/attack_range)
 > (OSS, Splunk Threat Research Team) l'automatise jusqu'en CI/CD, [MITRE Caldera](https://github.com/mitre/caldera)
 > l'outille côté adversaire, et le marché BAS/AEV (Cymulate, SafeBreach, Picus) la vend. Ce que **nous** n'avons trouvé
-> chez personne, c'est cette boucle livrée **dans un seul produit souverain, auto‑hébergé, qui tient dans 2 Go** —
-> rouge et bleu du même dépôt, corrélés par technique ATT&CK, sans SaaS ni cluster. Si vous connaissez un contre‑exemple,
+> chez personne, c'est cette boucle livrée **dans une suite souveraine, auto‑hébergée, dont la moitié bleue tient dans 2 Go** —
+> rouge et bleu de la même suite (deux dépôts, [Plume](https://github.com/guatxlabs/plume) et
+> [Forge](https://github.com/guatxlabs/forge)), corrélés par technique ATT&CK, sans SaaS ni cluster. Si vous connaissez un contre‑exemple,
 > [ouvrez une issue](https://github.com/guatxlabs/plume/issues) : nous corrigerons cette phrase.*
 
 ### Pourquoi Plume
 - 🪶 **Léger et souverain** — un seul binaire Rust (`axum` + `rusqlite`/SQLite, WAL+FTS5) + une PWA en JavaScript vanilla sans build. Tient dans une machine on‑premise/auto‑hébergée de **2 Go** — pas de cloud américain, pas de cluster Elastic.
-- 🧩 **Bring‑your‑own‑vendor** — *rien de spécifique à un éditeur n'est codé en dur.* Branchez **n'importe quelle** source : un **DSL de parsing** déclaratif (config.d, sans rebuild), un endpoint **compatible Splunk‑HEC** (pointez vos forwarders existants vers Plume), un **connecteur `http_pull` générique** (n'importe quelle API REST — CrowdStrike/SentinelOne/Defender par simple configuration), ou des flux **TAXII 2.1**. Vous ne *perdez* jamais une capacité en migrant vers Plume — c'est un **sur‑ensemble**.
+- 🧩 **Bring‑your‑own‑vendor** — *rien de spécifique à un éditeur n'est codé en dur.* Branchez **n'importe quelle** source : un **DSL de parsing** déclaratif (config.d, sans rebuild), un endpoint **compatible Splunk‑HEC** (pointez vos forwarders existants vers Plume), un **connecteur `http_pull` générique** (n'importe quelle API REST — CrowdStrike/SentinelOne/Defender par simple configuration), ou des flux **TAXII 2.1**. *Objectif de conception : ne pas vous faire perdre de capacité en migrant. Ce n'est pas une garantie mesurée — aucune matrice comparative n'existe dans `docs/` ; si une capacité vous manque, [ouvrez une issue](https://github.com/guatxlabs/plume/issues).*
 - 🛡️ **Une détection qui grandit avec vous** — l'**import Sigma** (unitaire et en masse) projette le jeu de règles communautaire sur la **matrice de couverture ATT&CK** ; le **threat‑intel** enrichit à l'ingestion ; l'**alerting basé sur le risque** score les entités pour réduire la fatigue d'alertes. Normalisé CIM, pour que les règles se composent par *catégorie*, jamais par éditeur.
 - 🔐 **Sécurisé et auditable par défaut** — argon2id + RBAC, tokens d'agent liés à l'hôte, requêtes validées en lecture seule, un **ledger en chaîne de hachage inviolable**, chiffrement **SQLCipher par tenant** (mode MSSP), NetworkPolicy d'egress, conteneur durci. **Aucun secret dans le dépôt** — un code ouvert est une *fonctionnalité*, pas un risque.
 - 🌍 **Interface bilingue** (FR / EN) + tous les fuseaux horaires IANA.

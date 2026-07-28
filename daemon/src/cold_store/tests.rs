@@ -4051,11 +4051,33 @@ fn phaseb_extractor_matches_core_compile_parity() {
         "search Source=apache",               // CASSE : `Source` != colonne réelle -> rien
         "search source = apache",             // ESPACES autour de `=` : le cœur colle -> source='apache' (RESTAURÉ)
         "search source=\"a b\"",              // valeur quotée : cœur strippe -> source='a b' (RESTAURÉ)
-        "search source=x in (a,b)",           // cœur mange `x in (a,b)` -> source='' (+ IN sur fields.x)
         "search host=web1 source in (a,b)",   // host=web1 EXTRAIT (IN non-élaguable) — RESTAURÉ
         "search source=a (b)",                // `(b)` freetext -> source='a' extrait
-        "search src_ip=10.0.0.1 not in (x)",  // src_ip=10.0.0.1 extrait (le `not in` ne matche pas comme in-clause)
     ];
+
+    // SECONDE BATTERIE — LES ENTRÉES QUE LE CŒUR REFUSE DE COMPILER (donc qui n'atteignent JAMAIS le cold).
+    //
+    // Ces deux formes compilaient jusqu'à guatx-core v0.2.0 : dans `champ [not] in (…)` le nom de champ était
+    // TRONQUÉ au séparateur, si bien que `src_ip=10.0.0.1 not in (x)` partait sur une vraie colonne que
+    // l'utilisateur n'avait jamais nommée. C'est précisément le défaut « entrée non fiable » fermé par le lot
+    // B.1 (core v0.2.1, pin bumpé en 1a67014) : le cœur REJETTE désormais le nom malformé.
+    // On les garde ICI, assertées comme REJETÉES, plutôt que de les supprimer : le contrat de sûreté du tier
+    // cold pour ces formes est « le cœur ne compile rien -> rien n'est extrait -> aucun fichier Parquet élagué »,
+    // et il doit rester OPPOSABLE. Si un cœur futur ré-acceptait ces noms, cette assertion rougirait — au lieu de
+    // laisser revenir en silence une divergence extracteur/compilateur, c'est-à-dire une PERTE DE LIGNES muette
+    // sur l'historique froid.
+    let battery_core_rejects = [
+        "search source=x in (a,b)",           // `source=x` : nom de champ invalide devant `in (…)`
+        "search src_ip=10.0.0.1 not in (x)",  // `src_ip=10.0.0.1` : idem devant `not in (…)`
+    ];
+    for q in battery_core_rejects {
+        let r = guatx_core::soql::to_sql(q, 0, 0, &Schema::events());
+        assert!(r.is_err(),
+            "`{q}` doit être REJETÉ par le cœur (nom de champ malformé devant `[not] in`, durci en core v0.2.1) ; \
+             compilé = {r:?}. S'il compile de nouveau, RE-VÉRIFIER la parité de l'extracteur AVANT de le \
+             réintégrer à la batterie ci-dessus.");
+    }
+
     for q in battery {
         let sql = compile_ev(q, 0, 0, FieldMaskSet::new());
         let preds = extract_cold_dim_preds(&sql);
@@ -4097,12 +4119,19 @@ fn phaseb_extractor_in_clause_extracts_the_equality_not_the_in() {
 
     // (2) `in (...)` sur la dim elle-même -> aucune égalité (mais pas de bail catastrophique) :
     assert!(xpreds("search source in (a,b)").is_empty(), "`source in (a,b)` seul -> aucune égalité");
-    // `source=x in (a,b)` : le cœur mange `x in (a,b)` (fields.x) et compile `source=''` -> on n'extrait JAMAIS
-    // `source='x'` (l'ancienne divergence F2). Preuve que le cœur ne compile PAS le pred naïf divergent :
-    let core_sql = compile_ev("search source=x in (a,b)", 0, 0, FieldMaskSet::new());
-    assert!(!core_sql.contains("\"source\" = 'x'"), "le cœur ne compile PAS source='x' ici -> jamais extrait (SQL={core_sql})");
-    assert!(!xpreds("search source=x in (a,b)").iter().any(|x| x.dim == ColdDim::Source && x.value == "x"),
-        "F2 : `source='x'` (divergence pré-fix) n'est JAMAIS extrait");
+    // `source=x in (a,b)` — F2, MAINTENANT FERMÉ PLUS HAUT, DANS LE CŒUR. Jusqu'à guatx-core v0.2.0 le cœur
+    // ACCEPTAIT ce nom de champ malformé (`source=x`), le tronquait au séparateur et compilait `source=''`
+    // (+ un IN sur `fields.x`) ; le test vérifiait ici que l'extracteur n'en tirait pas `source='x'`.
+    // guatx-core v0.2.1 (lot B.1 « entrée non fiable », pin bumpé en 1a67014) REJETTE désormais la requête à la
+    // COMPILATION : « champ invalide dans le filtre : source=x ». La garde est donc devenue STRICTEMENT plus
+    // forte — une requête que le cœur refuse de compiler n'atteint JAMAIS le tier cold, donc aucun pred ne peut
+    // en être extrait ni aucun fichier Parquet élagué à tort. On verrouille ce contrat-là (et non l'ancien SQL
+    // permissif) : si un cœur futur ré-acceptait ce nom, ce test rougirait au lieu de laisser F2 revenir en
+    // silence. NB : c'est CE test qui a rougi quand le pin est passé en v0.2.1, et rien en CI ne l'exécutait.
+    // (La liste complète des formes que le cœur rejette vit dans `battery_core_rejects`, plus bas.)
+    let rejected = guatx_core::soql::to_sql("search source=x in (a,b)", 0, 0, &Schema::events());
+    assert!(rejected.is_err(),
+        "le cœur doit REJETER le nom de champ malformé `source=x` (v0.2.1+) ; compilé = {rejected:?}");
 
     // (3) NON-RÉGRESSION — bases propres, à parité avec le cœur :
     let clean = xpreds("search source=apache host=web1 severity=3");

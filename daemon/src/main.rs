@@ -28,6 +28,7 @@ mod disk; // garde disque / cardinalité à l'ingest + alerte pré-saturation (#
 pub(crate) use disk::*;
 mod util;
 pub(crate) use util::*;
+mod collected; // INVENTAIRE de ce que les collecteurs/agent LIVRÉS émettent réellement -> ORACLE D'INERTIE (séparé de la table de TRADUCTION Sigma)
 mod sigma;
 pub(crate) use sigma::*;
 mod seeds;

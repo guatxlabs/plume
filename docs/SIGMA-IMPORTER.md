@@ -102,14 +102,30 @@ avec un **avertissement** (sur-match possible). Jamais un drop.
 
 ### 4b. Champs Sigma → champs Plume
 
-- **Alias connus** (`SIGMA_FIELD_ALIAS`) → colonnes cœur : `SourceIp`/`src_ip`/`SourceAddress` → `src_ip` ;
+**Deux questions distinctes, deux tables distinctes.** *Traduire* un nom (« ce champ Sigma s'écrit comment
+chez Plume ? ») et *savoir s'il est peuplé* (« Plume collecte-t-il cette donnée ? ») sont des questions
+différentes. Les confondre ferait qu'**ajouter un alias éteindrait l'avertissement d'inertie** sans qu'une
+seule donnée nouvelle soit collectée — du silence pris pour de la couverture.
+
+**Traduction** (`SIGMA_FIELD_ALIAS`, `daemon/src/sigma.rs`) :
+
+- **Alias connus** → colonnes cœur : `SourceIp`/`src_ip`/`SourceAddress` → `src_ip` ;
   `DestinationIp`/`dst_ip` → `dst_ip` ; `DestinationPort`/`dst_port` → `dport` ; `Url`/`Uri` → `url` ;
   `User`/`TargetUserName`/`Account` → `user` ; `Hostname`/`ComputerName` → `host`.
 - **Sinon** : le nom Sigma est utilisé **tel quel** comme champ étendu → `fields.<Nom>` (via `json_extract`,
-  **casse préservée**). La règle fire si un parseur/agent a peuplé ce champ (sinon **inerte** — pas de faux
-  négatif sur une donnée absente).
+  **casse préservée**).
 - **Nom imbriqué / à points / tiret** (`winlog.event_data.X`) → **non mappable** (`json_extract` 1 niveau) →
   la règle est **flaggée** (skip).
+
+**Inertie** (`COLLECTED_EXTENDED_FIELDS`, `daemon/src/collected.rs`) : une fois le champ traduit, l'importeur
+**avertit** si *aucun collecteur, parseur ou agent livré n'écrit ce champ*. L'inventaire est une table
+`(champ, fichier livré qui l'émet)` : chaque entrée est **citée**, et une garde de test vérifie les deux sens
+(pas d'entrée que personne n'émet ; pas de champ émis qui manque à l'inventaire). Conséquences :
+
+- un **alias vers une cible non collectée** reste **signalé inerte** — l'alias traduit, il ne collecte pas ;
+- l'avertissement **ne rejette jamais** la règle (la donnée peut arriver plus tard) ;
+- **mise à jour** : un collecteur qui se met à émettre `fields.<X>` (ou qui cesse) fait **rougir la garde**
+  tant que l'inventaire n'est pas ajusté.
 
 ### 4c. Modificateurs de champ
 

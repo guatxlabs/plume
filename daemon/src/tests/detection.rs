@@ -2262,6 +2262,147 @@
         assert!(!live.warnings.iter().any(|w| w.contains("endpoint") || w.contains("étendu")), "règle réseau vivante sans warning inerte : {:?}", live.warnings);
     }
 
+    /// SÉPARATION DES RÔLES — l'oracle d'inertie répond « plume COLLECTE-t-il cette donnée ? », il ne répond
+    /// PAS « existe-t-il un alias ? ». On épingle les QUATRE quadrants sur des cas dont la collecte est
+    /// citée dans `collected.rs` :
+    ///   (1) colonne CŒUR (`src_ip`)                        -> VIVANT ;
+    ///   (2) champ étendu inventorié, sans alias (`action`)  -> VIVANT ;
+    ///   (3) nom Sigma ALIASÉ vers une cible collectée (`dst_port` -> `dport`) -> VIVANT ;
+    ///   (4) champ étendu qu'AUCUN collecteur livré n'émet (`CommandLine`)     -> INERTE.
+    /// Et le cas qui MORD si l'on re-confondait la whitelist de PERFORMANCE avec l'inventaire de collecte :
+    /// `operation` est membre de `HOT_FIELDS` (index-expression prévu pour vault-audit) mais AUCUN
+    /// collecteur livré ne l'émet -> il DOIT rester signalé inerte. Ré-introduire `HOT_FIELDS` dans l'oracle
+    /// ferait rougir cette ligne.
+    ///
+    /// LIMITE HONNÊTE DE CETTE GARDE : elle ne peut PAS, à elle seule, détecter le retour du court-circuit
+    /// `if SIGMA_FIELD_ALIAS.iter().any(..) { return false; }`. Raison : les cibles actuelles de la table
+    /// d'alias (`src_ip`, `dst_ip`, `url`, `host`, `user`, `dport`) sont toutes collectées, donc « être une
+    /// clé d'alias » et « être collecté » coïncident sur le corpus existant — un court-circuit y rendrait le
+    /// MÊME verdict. Ce qui le détecte est la MUTATION : ajouter un alias vers un champ NON collecté et
+    /// vérifier que la règle reste signalée inerte ; c'est le contrôle exécuté pour valider ce lot. Et cette
+    /// coïncidence n'est PAS érigée en invariant (un alias vers un champ non collecté est légitime : c'est
+    /// une traduction correcte d'une donnée que plume ne collecte pas encore — il doit rester AVERTI).
+    #[test]
+    fn sigma_inertia_oracle_follows_collection_not_aliases() {
+        use crate::collected::plume_collects_field;
+        // (1) colonne CŒUR de l'enveloppe.
+        assert!(!sigma_field_is_inert_extended("src_ip"), "colonne cœur : jamais inerte");
+        // (2) champ étendu inventorié, qui n'est PAS une clé d'alias.
+        assert!(sigma_field_to_plume("action").as_deref() == Some("action"), "prémisse : `action` se traduit en lui-même (aucun alias)");
+        assert!(plume_collects_field("action"), "prémisse : `action` est inventorié comme collecté");
+        assert!(!sigma_field_is_inert_extended("action"), "champ collecté : pas inerte");
+        // (3) nom Sigma ALIASÉ dont la CIBLE est collectée.
+        assert_eq!(sigma_field_to_plume("dst_port").as_deref(), Some("dport"), "prémisse : traduction dst_port -> dport");
+        assert!(plume_collects_field("dport"), "prémisse : `dport` est inventorié comme collecté");
+        assert!(!sigma_field_is_inert_extended("dst_port"), "alias vers une cible COLLECTÉE : pas inerte");
+        // (4) champ étendu qu'aucun collecteur livré n'émet.
+        assert!(!plume_collects_field("CommandLine"), "prémisse : `CommandLine` n'est pas inventorié");
+        assert!(sigma_field_is_inert_extended("CommandLine"), "champ non collecté : INERTE");
+        // (5) MORSURE anti-reconfusion perf/collecte : membre de HOT_FIELDS, émis par AUCUN collecteur livré.
+        assert!(HOT_FIELDS.contains(&"operation"), "prémisse : `operation` est bien dans la whitelist de perf");
+        assert!(!plume_collects_field("operation"), "prémisse : aucun collecteur livré n'émet `operation`");
+        assert!(sigma_field_is_inert_extended("operation"),
+            "`operation` est une entrée de la whitelist de PERFORMANCE (HOT_FIELDS), pas une preuve de \
+             collecte : il doit rester signalé INERTE. Si cette ligne rougit, l'oracle d'inertie a re-absorbé \
+             une table qui ne répond pas à la question « plume collecte-t-il cette donnée ? ».");
+    }
+
+    /// GARDE DE L'INVENTAIRE DE COLLECTE (`collected::COLLECTED_EXTENDED_FIELDS`) — il doit rester COLLÉ à ce
+    /// que les collecteurs/parseurs/agent LIVRÉS émettent, DANS LES DEUX SENS :
+    ///   (A) AUCUNE ENTRÉE FANTÔME — le fichier livré CITÉ doit exister et contenir le nom du champ. Sans ce
+    ///       sens, on pourrait ré-éteindre un avertissement d'inertie en inventant une ligne d'inventaire :
+    ///       c'est exactement le faux vert que la séparation des rôles supprime.
+    ///   (B) AUCUNE DÉRIVE SILENCIEUSE — tout champ EXTRAIT MÉCANIQUEMENT des sources livrées (objets
+    ///       `"fields": {…}` / affectations `…fields… = {…}` ; `map.fields` et groupes nommés de `pattern`
+    ///       des overlays de parseurs) doit figurer dans l'inventaire. Un collecteur qui se met à émettre un
+    ///       nouveau champ fait donc rougir ce test tant qu'il n'est pas inventorié.
+    /// C'est le PROTOCOLE DE MISE À JOUR : on ne « pense pas à » mettre l'inventaire à jour, le test l'exige.
+    /// Les champs assemblés dynamiquement (awk `af("k",v)` d'auditd, fragment `ext` de mail.sh,
+    /// `fields.insert` de l'agent Windows) sont hors surface d'extraction : ils restent couverts par (A).
+    /// Incomplétude résiduelle -> SUR-avertissement (donnée collectée dite inerte), jamais un silence.
+    #[test]
+    fn collected_inventory_is_backed_by_shipped_collectors() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let dirs = ["collectors", "collectors/windows", "config.d/parsers", "agent/src/source", "agent/src/source/fim"];
+
+        // ---------- (A) aucune entrée fantôme : citation vérifiée ----------
+        for (field, cite) in crate::collected::COLLECTED_EXTENDED_FIELDS {
+            let path = dirs.iter().map(|d| root.join(d).join(cite)).find(|p| p.is_file())
+                .unwrap_or_else(|| panic!(
+                    "champ inventorié `{field}` : fichier livré cité `{cite}` INTROUVABLE. Si le collecteur a \
+                     été retiré, RETIRER l'entrée d'inventaire — sinon l'oracle déclare vivante une donnée que \
+                     plus rien n'émet (avertissement d'inertie éteint à tort)."));
+            let body = std::fs::read_to_string(&path).unwrap();
+            // Le nom est cherché en position de PRODUCTEUR de champ : littéral entre guillemets, forme NUE
+            // (`"x"`, JSON/Rust) ou ÉCHAPPÉE (`\"x\"`, JSON construit dans une chaîne shell/awk), ou groupe
+            // nommé d'un parseur regex (`(?P<x>…)`, qui écrit `fields.x` à l'ingestion).
+            let cited = body.contains(&format!("\"{field}\""))
+                || body.contains(&format!("\"{field}\\\""))
+                || body.contains(&format!("(?P<{field}>"));
+            assert!(cited,
+                "champ inventorié `{field}` : son fichier cité `{cite}` ne contient AUCUNE occurrence de \
+                 \"{field}\" -> entrée FANTÔME. Un champ que rien n'émet ne doit pas figurer à l'inventaire : \
+                 il y éteindrait l'avertissement d'inertie sans qu'aucune donnée ne soit collectée.");
+        }
+
+        // ---------- (B) aucune dérive silencieuse : extraction mécanique ⊆ inventaire ----------
+        // Surface d'extraction (cf. doc de `collected.rs`) : un objet `fields` littéral, où qu'il soit écrit
+        // (shell `\"fields\":{…}`, affectation `…fields…={…}`, `json!({…})` de l'agent).
+        let marker = regex::Regex::new(r#"(?:\\?"fields\\?"\s*:\s*\\?\{)|(?:\w*fields\w*\s*=\s*[("'!]*\s*\\?\{)"#).unwrap();
+        let keyre = regex::Regex::new(r#"\\?"([A-Za-z_][A-Za-z0-9_]*)\\?"\s*:"#).unwrap();
+        let grpre = regex::Regex::new(r"\(\?P<([A-Za-z_][A-Za-z0-9_]*)>").unwrap();
+        let mut derived: Vec<(String, String)> = Vec::new();
+
+        for d in ["collectors", "agent/src/source", "agent/src/source/fim"] {
+            let dir = root.join(d);
+            if !dir.is_dir() { continue; }
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("");
+                if !matches!(ext, "sh" | "rs") { continue; }
+                let name = p.file_name().unwrap().to_string_lossy().to_string();
+                let body = match std::fs::read_to_string(&p) { Ok(b) => b, Err(_) => continue };
+                let bytes = body.as_bytes();
+                for m in marker.find_iter(&body) {
+                    // Bloc à ACCOLADES ÉQUILIBRÉES à partir de la `{` du marqueur (borné : garde-fou anti-boucle).
+                    let (mut i, mut depth, start) = (m.end(), 1usize, m.end());
+                    while i < bytes.len() && depth > 0 && i - start < 8000 {
+                        match bytes[i] { b'{' => depth += 1, b'}' => depth -= 1, _ => {} }
+                        i += 1;
+                    }
+                    for c in keyre.captures_iter(&body[start..i]) {
+                        derived.push((c[1].to_string(), name.clone()));
+                    }
+                }
+            }
+        }
+        let pdir = root.join("config.d/parsers");
+        for e in std::fs::read_dir(&pdir).unwrap().flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("json") { continue; }
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+            if let Some(o) = v.pointer("/map/fields").and_then(|x| x.as_object()) {
+                for k in o.keys() { derived.push((k.clone(), name.clone())); }
+            }
+            if let Some(pat) = v.get("pattern").and_then(|x| x.as_str()) {
+                for c in grpre.captures_iter(pat) { derived.push((c[1].to_string(), name.clone())); }
+            }
+        }
+
+        assert!(derived.len() > 50,
+            "l'extraction mécanique n'a ramené que {} champs : la surface d'extraction ne mord plus (chemins \
+             déplacés ?) et ce test serait devenu vacant.", derived.len());
+        let mut missing: Vec<String> = derived.iter()
+            .filter(|(f, _)| !CIM_CORE_FIELDS.contains(&f.as_str()) && !crate::collected::plume_collects_field(f))
+            .map(|(f, src)| format!("{f} (émis par {src})")).collect();
+        missing.sort(); missing.dedup();
+        assert!(missing.is_empty(),
+            "champ(s) émis par un collecteur/parseur LIVRÉ mais ABSENT(S) de l'inventaire de collecte : {missing:?}. \
+             Ajouter chaque champ à `collected::COLLECTED_EXTENDED_FIELDS` avec le fichier qui l'émet — sinon \
+             l'oracle signale INERTES des règles qui porteraient sur une donnée réellement collectée.");
+    }
+
     /// #4 — un import Sigma NE peut PAS écraser une détection native (managed=0) ni un overlay git
     /// (managed=1) sur collision de nom ; seul un ad-hoc (managed=2) est mis à jour.
     #[test]

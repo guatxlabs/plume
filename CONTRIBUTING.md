@@ -70,7 +70,7 @@ When in doubt, add a test that proves the invariant still holds.
 ## Building & testing
 
 > **Note (open-source build):** the daemon depends on `guatx-core` as a **git dependency**
-> (`github.com/guatxlabs/core`, tag `v0.2.0`). To develop against a local core checkout, place
+> (`github.com/guatxlabs/core`, tag `v0.2.1`). To develop against a local core checkout, place
 > it as a sibling directory and add a git-ignored `.cargo/config.toml` at the repo root with a
 > `[patch]` redirecting the git dep to the path:
 > ```toml

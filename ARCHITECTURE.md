@@ -85,7 +85,7 @@ label de VOTRE ingress controller) — aucun autre pod ne peut atteindre le daem
 - **Config** : **`PLUME_*` uniquement** (l'ancien préfixe `SOC_*` n'existe plus). En conteneur,
   `PLUME_CONFIG=/nonexistent` → config purement par env ; sur hôte, l'unit lit `PLUME_CONFIG=/etc/plume/soc.conf`.
 - **Image** : `Dockerfile` multi-stage. **Contexte de build = la racine de ce dépôt** (clone
-  standalone) : `guatx-core` est résolu via une git-dep publique (tag `v0.2.0`, récupérée au build),
+  standalone) : `guatx-core` est résolu via une git-dep publique (tag `v0.2.1`, récupérée au build),
   `../../db/schema.sql` est copié depuis `db/` sibling de `daemon/`. Runtime `debian:bookworm-slim`,
   **non-root** (uid `10001`), assets web en `a+rX`. Build : `docker build -t soc:latest .` depuis la racine.
 

@@ -9,7 +9,9 @@
 
 ## Principe & politique enabled/disabled
 
-- **35 règles**, réparties sur 11 tactiques ATT&CK.
+- **34 règles** (compte MESURÉ : les lignes des tables ci-dessous, noms tous distincts), citant
+  **26 techniques** ATT&CK distinctes qui retombent sur **13 tactiques** (mappées via
+  `guatx_core::attack::CATALOG` ; aucune technique non mappée).
 - **TOUTES `enabled=false` par défaut.** C'est une BIBLIOTHÈQUE : l'admin ACTIVE chaque règle
   selon la télémétrie réellement branchée, via le toggle UI (aucune règle ne se met à alerter
   sur une install fraîche ⇒ zéro bruit day-0). Le socle « universellement présent + faible FP »

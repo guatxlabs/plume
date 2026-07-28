@@ -4,7 +4,7 @@
 #
 # Lancer DEPUIS la racine de ce dépôt :
 #   docker compose up -d --build
-# Le daemon résout `guatx-core` via une git-dep publique (tag v0.2.0) — aucun crate sibling requis.
+# Le daemon résout `guatx-core` via une git-dep publique (tag v0.2.1) — aucun crate sibling requis.
 services:
   soc:
     build:

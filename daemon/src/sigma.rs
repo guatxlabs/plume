@@ -293,19 +293,29 @@ pub(crate) fn sigma_field_to_plume(field: &str) -> Option<String> {
     if f.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') { Some(f.to_string()) } else { None }
 }
 
-/// ANTI-ANGLE-MORT (importeur Sigma) — un champ de sélection est-il ÉTENDU-INERTE ? = il se résout en
-/// `fields.<X>` (json_extract) SANS être une colonne CŒUR (CIM_CORE_FIELDS), un alias curé (SIGMA_FIELD_ALIAS)
-/// ni un champ étendu couramment peuplé (HOT_FIELDS). Un tel champ N'EST PEUPLÉ que si un parseur/collecteur
-/// l'alimente : la règle importée compile mais reste INERTE tant que rien ne remplit ce champ. On le SIGNALE
-/// (warning), on ne rejette JAMAIS (la donnée peut arriver plus tard). Sysmon/endpoint (CommandLine, Image…)
-/// tombe ici -> un import en masse endpoint devient VISIBLEMENT distinct des règles qui vont réellement fire.
+/// ANTI-ANGLE-MORT (importeur Sigma) — un champ de sélection est-il ÉTENDU-INERTE ? = une fois TRADUIT en
+/// champ plume, PLUME NE COLLECTE RIEN qui le peuple. La règle importée compile alors, mais reste INERTE.
+/// On le SIGNALE (warning), on ne rejette JAMAIS (la donnée peut arriver plus tard). Sysmon/endpoint
+/// (CommandLine, Image…) tombe ici -> un import en masse endpoint reste VISIBLEMENT distinct des règles qui
+/// vont réellement fire.
+///
+/// DEUX RÔLES, DEUX TABLES (défaut fermé) — la traduction et l'inertie sont des questions DIFFÉRENTES :
+///   * `sigma_field_to_plume` (via `SIGMA_FIELD_ALIAS`) répond « ce nom Sigma s'écrit COMMENT chez plume » ;
+///   * `collected::plume_collects_field` répond « plume PEUPLE-t-il réellement ce champ » (inventaire des
+///     collecteurs/parseurs/agent LIVRÉS, cf. `collected.rs`).
+/// La version précédente court-circuitait sur `SIGMA_FIELD_ALIAS` (`if …any(k == fl) { return false; }`) :
+/// AJOUTER UN ALIAS ÉTEIGNAIT donc l'avertissement d'inertie, sans qu'une seule donnée nouvelle soit
+/// collectée — du faux vert à l'échelle du corpus. Le court-circuit est SUPPRIMÉ : un alias dont la CIBLE
+/// n'est pas collectée laisse la règle signalée INERTE.
+/// `HOT_FIELDS` a également été retiré de cet oracle : c'est une whitelist de PERFORMANCE (index-expression),
+/// pas un inventaire de collecte — un champ y figurant n'est pas pour autant peuplé (`operation`, prévu pour
+/// vault-audit, n'est émis par AUCUN collecteur livré). Ceux de ses membres réellement émis sont inventoriés
+/// dans `collected.rs`, avec le fichier livré qui les émet.
 pub(crate) fn sigma_field_is_inert_extended(raw: &str) -> bool {
-    let fl = raw.trim().to_ascii_lowercase();
-    if fl.is_empty() { return false; }
-    if SIGMA_FIELD_ALIAS.iter().any(|(k, _)| *k == fl) { return false; }
+    if raw.trim().is_empty() { return false; }
     match sigma_field_to_plume(raw) {
         None => false, // non mappable -> déjà Err à la génération de token (pas un warning ici)
-        Some(p) => !CIM_CORE_FIELDS.contains(&p.as_str()) && !HOT_FIELDS.contains(&p.as_str()),
+        Some(p) => !crate::collected::plume_collects_field(&p),
     }
 }
 

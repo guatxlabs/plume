@@ -7,7 +7,7 @@ license = "AGPL-3.0-or-later"
 [dependencies]
 # Shared SOQL compiler core. Public builds resolve this from the published git tag.
 # Local development overrides it to the sibling checkout via .cargo/config.toml (paths override, git-ignored).
-guatx-core = { git = "https://github.com/guatxlabs/core", tag = "v0.2.0" }
+guatx-core = { git = "https://github.com/guatxlabs/core", tag = "v0.2.1" }
 axum = "0.7"
 # Verrous SANS empoisonnement (audit #67) : remplace std::sync::Mutex/RwLock -> pas de cascade poison
 # (un panic sous garde 500-ait DÉFINITIVEMENT ce tenant). Drop-in ; guards !Send (le rejet compile-time du

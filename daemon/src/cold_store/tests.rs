@@ -4066,16 +4066,31 @@ fn phaseb_extractor_matches_core_compile_parity() {
     // et il doit rester OPPOSABLE. Si un cœur futur ré-acceptait ces noms, cette assertion rougirait — au lieu de
     // laisser revenir en silence une divergence extracteur/compilateur, c'est-à-dire une PERTE DE LIGNES muette
     // sur l'historique froid.
+    //
+    // L'ASSERTION PORTE SUR L'IDENTITÉ DE L'ERREUR, PAS SUR SA PRÉSENCE. Un `is_err()` nu resterait VERT si un
+    // cœur futur rejetait ces requêtes pour une raison SANS RAPPORT (grammaire cassée, commande inconnue, schéma
+    // vide, panique convertie en Err…) : le contrat « c'est la VALIDATION DU NOM DE CHAMP qui refuse » ne serait
+    // plus vérifié, seulement le fait qu'un refus quelconque a lieu. On exige donc les DEUX marqueurs du refus
+    // attendu : le motif de validation (`champ invalide dans le filtre`) ET le NOM MALFORMÉ EXACT que le cœur
+    // cite (`source=x` / `src_ip=10.0.0.1`) — ce second marqueur prouve que le refus vise bien CE token-là.
     let battery_core_rejects = [
-        "search source=x in (a,b)",           // `source=x` : nom de champ invalide devant `in (…)`
-        "search src_ip=10.0.0.1 not in (x)",  // `src_ip=10.0.0.1` : idem devant `not in (…)`
+        // (requête, nom de champ malformé que le cœur DOIT citer dans son refus)
+        ("search source=x in (a,b)", "source=x"),          // nom de champ invalide devant `in (…)`
+        ("search src_ip=10.0.0.1 not in (x)", "src_ip=10.0.0.1"), // idem devant `not in (…)`
     ];
-    for q in battery_core_rejects {
+    const CORE_INVALID_FIELD_MARKER: &str = "champ invalide dans le filtre";
+    for (q, bad_field) in battery_core_rejects {
         let r = guatx_core::soql::to_sql(q, 0, 0, &Schema::events());
+        let e = r.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
         assert!(r.is_err(),
             "`{q}` doit être REJETÉ par le cœur (nom de champ malformé devant `[not] in`, durci en core v0.2.1) ; \
              compilé = {r:?}. S'il compile de nouveau, RE-VÉRIFIER la parité de l'extracteur AVANT de le \
              réintégrer à la batterie ci-dessus.");
+        assert!(e.contains(CORE_INVALID_FIELD_MARKER) && e.contains(bad_field),
+            "`{q}` est bien refusé, mais PAS pour la raison verrouillée ici : le refus attendu est la VALIDATION \
+             DU NOM DE CHAMP (`{CORE_INVALID_FIELD_MARKER}` + le nom malformé `{bad_field}`), or le cœur répond \
+             «{e}». Un refus pour une AUTRE cause (grammaire, commande inconnue, schéma…) ne prouve RIEN sur la \
+             garde B.1 et masquerait son retrait.");
     }
 
     for q in battery {

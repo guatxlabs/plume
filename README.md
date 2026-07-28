@@ -18,7 +18,7 @@
 Plume est la **moitié bleue d'un SOC purple**. Il ingère **logs et métriques**, puis vous offre la **recherche
 (SOQL)**, des **tableaux de bord**, un **moteur de détection** (règles · import Sigma · couverture ATT&CK · playbooks
 SOAR‑lite), du **threat‑intel** (correspondance IOC/STIX/TAXII à l'ingestion), de l'**alerting basé sur le risque**, des **cases
-d'incident** et une **réponse automatisée** — *une **couverture fonctionnelle** de classe Splunk/Sentinel* dans **un seul petit binaire** que vous exécutez
+d'incident** et une **réponse automatisée** — le tout dans **un seul petit binaire** que vous exécutez
 sur **Docker**, un **hôte nu (systemd)** ou **Kubernetes/k3s**, dans **2 Go de RAM**.
 
 > ### 🔴🔵 La boucle purple — un SOC qui s'entraîne face à son propre attaquant
@@ -26,7 +26,14 @@ sur **Docker**, un **hôte nu (systemd)** ou **Kubernetes/k3s**, dans **2 Go de 
 > engagement autorisé → **Plume détecte et corrèle** chaque action par sa technique ATT&CK → la **matrice de
 > couverture** transforme chaque manqué en un angle mort visible à combler. Le **Mode Engagement** natif permet à un
 > pentest autorisé de se dérouler à travers le SOC en production **sans aucun angle mort et sans la moindre reconfiguration**, puis
-> nettoie automatiquement et produit un rapport signé. *Aucun acteur en place ne livre l'attaquant dans la boîte.*
+> nettoie automatiquement et produit un rapport signé.
+>
+> *La boucle attaque → SIEM → validation de détection **existe ailleurs** : [Splunk Attack Range](https://github.com/splunk/attack_range)
+> (OSS, Splunk Threat Research Team) l'automatise jusqu'en CI/CD, [MITRE Caldera](https://github.com/mitre/caldera)
+> l'outille côté adversaire, et le marché BAS/AEV (Cymulate, SafeBreach, Picus) la vend. Ce que **nous** n'avons trouvé
+> chez personne, c'est cette boucle livrée **dans un seul produit souverain, auto‑hébergé, qui tient dans 2 Go** —
+> rouge et bleu du même dépôt, corrélés par technique ATT&CK, sans SaaS ni cluster. Si vous connaissez un contre‑exemple,
+> [ouvrez une issue](https://github.com/guatxlabs/plume/issues) : nous corrigerons cette phrase.*
 
 ### Pourquoi Plume
 - 🪶 **Léger et souverain** — un seul binaire Rust (`axum` + `rusqlite`/SQLite, WAL+FTS5) + une PWA en JavaScript vanilla sans build. Tient dans une machine on‑premise/auto‑hébergée de **2 Go** — pas de cloud américain, pas de cluster Elastic.
@@ -46,7 +53,7 @@ Le central est aussi son propre agent. Documentation approfondie : [`ARCHITECTUR
 | Domaine | Capacité |
 |---|---|
 | **Recherche** | SOQL — un langage à pipes façon SPL compilé en SQL **lecture seule, à l'épreuve des injections** (champs en liste blanche, paramètres liés, un seul SELECT, budget temps). |
-| **Détection** | Règles + playbooks SOAR‑lite · **import Sigma** (unitaire et en masse, avec delta de couverture ATT&CK) · **matrice de couverture ATT&CK** (14 tactiques × ~185 techniques, angles morts mis en évidence). |
+| **Détection** | Règles + playbooks SOAR‑lite · **import Sigma** (unitaire et en masse, avec delta de couverture ATT&CK) · **matrice de couverture ATT&CK** (**14 tactiques × 183 techniques** curées — le catalogue `guatx_core::attack::CATALOG`, angles morts mis en évidence). |
 | **Threat‑intel** | Base d'IOC · import **STIX 2.1** · **correspondance à l'ingestion** (`ti_match`, enrichir sans supprimer) · connecteur de flux **TAXII 2.1** · appartenance basée sur des filtres de Bloom pour le passage à l'échelle. |
 | **Risque (RBA)** | Scoring de risque par entité (modèle Splunk‑ES) · alerting sur incident de risque (cumul / tactiques distinctes / vélocité) · une seule alerte dédupliquée par entité. |
 | **Ingestion** | Agents (sh/systemd) · endpoint compatible fil **Splunk HEC** · connecteur **`http_pull` générique** (bring‑your‑own‑vendor) · parser syslog + Fortinet · DSL de parsing déclaratif. |
@@ -140,7 +147,14 @@ Faites émettre à `CMD` uniquement le **nouveau** (`journalctl --since -1min`, 
   "pattern": "^(?P<ts>\\S+) (?P<level>\\w+) (?P<msg>.+)$", "enabled": true }
 ```
 
-Un DSL déclaratif plus riche est documenté dans [`docs/PARSER-DSL.md`](docs/PARSER-DSL.md) ; les règles [Sigma](https://github.com/SigmaHQ/sigma) s'importent telles quelles (`config.d/sigma/`).
+Un DSL déclaratif plus riche est documenté dans [`docs/PARSER-DSL.md`](docs/PARSER-DSL.md).
+
+**Sigma.** Un **importeur** [Sigma](https://github.com/SigmaHQ/sigma) est livré (`plume-daemon sigma-import`, unitaire
+ou en masse, avec `--dry-run`) ; **3 règles d'exemple** sont dans `config.d/sigma/`. Ce n'est **pas un moteur Sigma
+complet** : il traduit le **sous-ensemble exprimable en SOQL**, et ce qu'il ne sait pas traduire fidèlement est
+**flaggé**, jamais deviné — la matrice exacte des constructions supportées et refusées est dans
+[`docs/SIGMA-IMPORTER.md`](docs/SIGMA-IMPORTER.md) §4 et §6. Le **taux d'acceptation sur le dépôt SigmaHQ complet
+n'est pas mesuré** à ce jour : nous ne publierons ce chiffre qu'une fois le banc passé.
 
 **3. Détecter et agir.** Ajoutez une **règle** (`config.d/rules/*.json` : requête SOQL + seuil) ou un **playbook** (`config.d/playbooks/*.json` : requête → action). Parsers, règles et playbooks sont aussi **créables/éditables dans l'interface** (rôle admin) ; le fichier reste la source durable, versionnée en git.
 

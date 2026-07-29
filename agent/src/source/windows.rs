@@ -113,7 +113,10 @@ fn severity_from_level(level: i64) -> i64 {
 }
 
 /// (Provider, Channel, EventID, Level) -> (catégorie CIM, sévérité). Vocabulaire aligné sur le daemon
-/// (`auth`/`endpoint`/`network`/`dns`/`process`) ; catégorie vide = laisser le dparser côté serveur trancher.
+/// (`auth`/`endpoint`/`network`/`dns`/`exec`) ; catégorie vide = laisser le dparser côté serveur trancher.
+/// CONTRAT : toute catégorie émise ici DOIT appartenir à `CIM_CATEGORIES` (guatx-core, v1.3) — le test
+/// `every_emitted_category_is_canonical_cim` le vérifie contre le miroir machine `config.d/cim/cim.v1.json`
+/// (l'agent ne dépend PAS de guatx-core : le miroir EST la source de vérité accessible d'ici).
 fn map_cim(provider: &str, channel: &str, eid: i64, level: i64) -> (String, i64) {
     let base = severity_from_level(level);
     // Sysmon (endpoint telemetry) : ID 3 = connexion réseau, 22 = requête DNS, sinon endpoint.
@@ -133,7 +136,10 @@ fn map_cim(provider: &str, channel: &str, eid: i64, level: i64) -> (String, i64)
             4720 | 4722 | 4724 | 4725 | 4726 | 4728 | 4732 | 4735 | 4738 | 4740 => {
                 ("auth".to_string(), base.max(1))
             }
-            4688 => ("process".to_string(), base), // création de processus
+            // 4688 = création de processus. `exec` est le nom CANONIQUE CIM v1.3 ; l'agent a émis
+            // `process` (hors taxonomie) jusqu'au 2026-07-23 — l'historique est retrouvé par l'alias
+            // de LECTURE du daemon (`cim_read_alias_exec`), jamais par une réécriture des données.
+            4688 => ("exec".to_string(), base),
             4697 => ("endpoint".to_string(), base.max(2)), // installation de service
             1102 => ("endpoint".to_string(), 3),   // journal d'audit effacé
             _ => (String::new(), base),
@@ -436,10 +442,42 @@ mod tests {
     }
 
     #[test]
-    fn security_4688_is_process() {
+    fn security_4688_is_exec() {
         let xml = r#"<Event><System><Provider Name='Microsoft-Windows-Security-Auditing'/><EventID>4688</EventID><Level>0</Level><Channel>Security</Channel><EventRecordID>1</EventRecordID><TimeCreated SystemTime='2026-06-28T00:00:00Z'/></System><EventData><Data Name='NewProcessName'>C:\Windows\cmd.exe</Data></EventData></Event>"#;
         let e = winxml_to_event(xml, "h").unwrap();
-        assert_eq!(e.category, "process");
+        assert_eq!(e.category, "exec", "4688 = création de processus -> `exec` (nom canonique CIM v1.3)");
+    }
+
+    /// GARDE DÉRIVÉE (pas une énumération) : BALAYE l'espace d'entrée de `map_cim` et exige que
+    /// CHAQUE catégorie qu'il peut produire appartienne à `CIM_CATEGORIES`. La taxonomie est lue du
+    /// MIROIR MACHINE du dépôt (`config.d/cim/cim.v1.json`, tenu en parité avec `guatx_core::cim` par
+    /// le test daemon `cim_const_mirror_matches_config_schema`) : l'agent ne dépend pas de guatx-core,
+    /// c'est la seule source de vérité qu'il puisse atteindre sans ajouter une dépendance.
+    /// Ajouter demain un `NNNN => ("foo", …)` hors taxonomie fait ROUGIR ce test — y compris un
+    /// RETOUR à `process`, qui n'est PAS dans la taxonomie (c'est le défaut corrigé le 2026-07-23).
+    #[test]
+    fn every_emitted_category_is_canonical_cim() {
+        let mirror = include_str!("../../../config.d/cim/cim.v1.json");
+        let v: serde_json::Value = serde_json::from_str(mirror).expect("miroir CIM illisible");
+        let cats: Vec<String> = v["categories"].as_array().expect("categories[]").iter()
+            .map(|c| c["name"].as_str().expect("name").to_string()).collect();
+        assert!(cats.len() >= 40, "miroir CIM suspect : {} catégories", cats.len());
+        assert!(cats.iter().any(|c| c == "exec"), "`exec` DOIT être canonique (sinon la bascule 4688 est fausse)");
+        assert!(!cats.iter().any(|c| c == "process"), "`process` n'est PAS canonique — c'est le postulat de la bascule");
+        // Balayage : tous les providers/canaux que `map_cim` distingue × tout l'espace d'EventID réel.
+        for provider in ["", "Microsoft-Windows-Security-Auditing", "Microsoft-Windows-Sysmon", "Sysmon"] {
+            for channel in ["Security", "System", "Application", "Microsoft-Windows-Sysmon/Operational", ""] {
+                for eid in 0i64..=10_000 {
+                    for level in [0i64, 2] {
+                        let (cat, _) = map_cim(provider, channel, eid, level);
+                        assert!(
+                            cat.is_empty() || cats.contains(&cat),
+                            "map_cim({provider:?},{channel:?},{eid},{level}) -> catégorie '{cat}' HORS CIM_CATEGORIES"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

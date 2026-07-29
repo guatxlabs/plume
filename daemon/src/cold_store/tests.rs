@@ -7994,3 +7994,24 @@ fn ks_multi_env_unscoped_falls_back_scoped_serves() {
     assert_eq!(rows.len(), 12, "prodA scopé rend ses 12 lignes (page 1, limite 100)");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// ====================================================================================================
+// ALIAS DE LECTURE CIM (`exec` ⊃ `process`) — ANTI-DIVERGENCE DE ROUTE. Dette de migration expirant le
+// 2027-07-23 ; ce test se retire AVEC elle (cf. `soql_glue::cim_read_alias_exec`).
+// ====================================================================================================
+
+/// L'alias est posé à l'ÉMISSION SQL (store) ; le moteur colonnaire, lui, parse le SOQL LUI-MÊME. Une
+/// requête `category=exec` DOIT donc être refusée par les mappeurs vectorisés, sinon la route rapide
+/// rendrait `category='exec'` (sans l'historique) là où l'oracle `cold_union_query` rend
+/// `IN ('exec','process')` : DEUX réponses pour UNE question, selon la route choisie, en silence.
+/// MUTATION : retirer la garde `carries_cim_read_alias` de `map_soql`/`map_keyset_soql` -> rouge.
+#[test]
+fn cim_aliased_query_is_never_vectorized() {
+    assert!(planner::carries_cim_read_alias("search category=exec"), "la requête aliasée doit être reconnue");
+    assert!(!planner::vec_agg_routable("search category=exec | stats count"), "agrégat aliasé vectorisé -> divergence");
+    assert!(!planner::vec_keyset_routable("search category=exec"), "keyset aliasé vectorisé -> divergence");
+    // TÉMOIN : la garde ne condamne QUE les requêtes aliasées — la même forme sans l'alias reste routée.
+    assert!(!planner::carries_cim_read_alias("search category=auth"));
+    assert!(planner::vec_agg_routable("search category=auth | stats count"), "la garde ne doit pas assommer la route");
+    assert!(planner::vec_keyset_routable("search category=auth"), "la garde ne doit pas assommer le keyset");
+}

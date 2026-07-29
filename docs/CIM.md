@@ -258,6 +258,50 @@ d'une ligne récente.
   events déjà stockés sous une catégorie nouvellement canonisée (ex. tout l'historique `exec`) deviennent
   in-contract **immédiatement, sans migration de données** — `cim_category_ok()` est une pure appartenance.
 
+### 5.1 Catégorie hors taxonomie à l'ingestion — accepté, jamais rejeté
+
+Une `category` déclarée par un collecteur et **absente** de `CIM_CATEGORIES` est **stockée telle quelle**.
+Le CIM est un contrat de PARSE/MAP/ENRICH, **jamais un DROP** : refuser ferait perdre au SOC les
+événements d'un collecteur tiers mal réglé, sans rejeu possible. La réduction de collecte a son chemin
+explicite et audité (whitelists, audit sev 3) — le CIM n'en décide pas.
+
+Ce qui a changé (2026-07-28) : la valeur n'était confrontée à la taxonomie **nulle part** sur le chemin
+d'ingest — pas même un `warn` (les garde-fous existants étaient en amont : chargement d'un parseur
+d'overlay, création d'un data-model, mapping HEC). Désormais la **première** occurrence de chaque couple
+(`source`, `category`) hors taxonomie est journalisée en nommant le collecteur ; **une seule ligne par
+couple et par vie du process** (un warn qui noie le journal n'avertit personne). La ligne stockée est
+inchangée.
+
+### 5.2 Dette de migration — alias de lecture `exec` ⊃ `process` (péremption **2027-07-23**)
+
+Les deux collecteurs Windows (`collectors/windows/plume-collector.ps1`, `agent/src/source/windows.rs`)
+ont déclaré `category='process'` pour la **création de processus** (EventID 4688) jusqu'au **2026-07-23**.
+`process` **n'appartient pas** à `CIM_CATEGORIES` ; le nom canonique v1.3 est **`exec`**. Les collecteurs
+émettent `exec` depuis cette date.
+
+L'historique **n'est pas migré** : rétention 365 jours, tier froid **scellé** (Parquet chiffré, jamais
+réécrit) ⇒ immuable par construction. La réconciliation se fait à la **LECTURE** :
+
+- une requête `category=exec` compile `category IN ('exec','process')` — posé au point de traversée à
+  100 % de l'émission de lecture (`SqlcipherStore::soql_to_sql*`, cf. `soql_glue::cim_read_alias_exec`),
+  plus la barre `/api/search` qui construit son SQL à la main ;
+- **ce n'est pas un moteur de réécriture** : une seule équivalence écrite en dur, aucune table, aucune
+  config, aucun ENV, inatteignable pour toute autre valeur. Elle ne s'applique qu'à l'**égalité** d'un
+  filtre (`table_conds` / `where`) — `!=`, glob et regex ne sont **pas** aliasés ;
+- **portée** : filtre de base, étage `where`, sous-recherches. **Hors portée** : corps de macro et filtre
+  d'`eventtype` (détendus dans le cœur, après ce pré-pass).
+
+Conséquences mesurées (lecture du cœur v0.2.1) : la liste `in (…)` est émise `COLLATE NOCASE` (sur-match
+de casse, **jamais** un sous-match) ; `idx_event_category` (BINARY) ne sert plus ce filtre ; le tier froid
+n'élague pas sur `category` pour une requête aliasée (`extract_cold_dim_preds` refuse la forme `IN`) et le
+moteur colonnaire **décline** de vectoriser ces requêtes — l'oracle SQL les sert, donc une seule réponse
+possible quelle que soit la route.
+
+**Retrait.** Dernier événement `process` émis le 2026-07-23 ; rétention 365 jours ⇒ le dernier Parquet le
+portant sort de rétention le **2027-07-23**. Après cette date (purge passée), supprimer le bloc
+`cim_read_alias_exec` de `soql_glue.rs`, ses 4 sites d'appel (`ingest/store.rs` ×3, `handlers/search.rs`),
+la garde `carries_cim_read_alias` du planner froid, et les tests `cim_read_alias_*` / `cim_aliased_*`.
+
 ---
 
 ## 6. Ce que le CIM n'est PAS (encore)

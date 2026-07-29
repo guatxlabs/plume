@@ -125,7 +125,7 @@
     // FIX #18 (size-caps #49 bypass sous COLD, NO-LOSS) — sous cold ON, l'aging a déjà columnarisé+supprimé les
     // vieux jours ; les lignes restées HOT sont les RÉCENTES NON archivées. Un plafond count/byte qui ne garde
     // que les N plus récentes supprimerait EXACTEMENT ces lignes SANS copie cold -> PERTE. La correction SKIP les
-    // plafonds quand PLUME_COLD_TIER=1. Ces tests sont gatés `cold_tier` (jamais dans la suite par défaut = 752)
+    // plafonds quand PLUME_COLD_TIER=1. Ces tests sont gatés `cold_tier` (jamais dans la suite par défaut = 755)
     // et sérialisés (COLD_CAPS_ENV_LOCK) car ils mutent l'env process-global PLUME_COLD_TIER/PLUME_COLD_DIR.
 
     /// Prépare un env cold : PLUME_COLD_TIER=1 + PLUME_COLD_DIR=<temp> (aucune clé -> aging fail-closed, ne
@@ -1137,6 +1137,144 @@
             assert!(cim_category_ok(c), "catégorie live '{c}' DOIT être canonique en CIM v1.3");
         }
         assert_eq!(guatx_core::cim::CIM_VERSION, "1.3", "version de contrat bumpée à v1.3");
+    }
+
+    // ============================================================================================
+    // ALIAS DE LECTURE CIM — `exec` ⊃ `process` (dette de migration, péremption 2027-07-23).
+    // Les collecteurs Windows ont écrit `category='process'` (HORS `CIM_CATEGORIES`) pour la création
+    // de processus jusqu'au 2026-07-23 ; le froid est scellé/immuable, donc la réconciliation se fait
+    // à la LECTURE. Ces tests MORDENT : retirer l'alias, ou laisser un collecteur re-régresser vers
+    // `process`, les fait rougir.
+    // ============================================================================================
+
+    /// Insère une ligne `event` BRUTE — la forme qu'un collecteur d'ALORS a laissée dans la base
+    /// (`process`) ne peut plus être produite par l'ingest d'aujourd'hui : on l'écrit donc en SQL, ce
+    /// qui est exactement ce que le tier froid scellé contient.
+    fn ins_cat(c: &Connection, ts: i64, source: &str, cat: &str, msg: &str, dedup: &str) {
+        c.execute(
+            "INSERT INTO event(ts,source,category,severity,message,dedup,engagement_id,origin,env_id) \
+             VALUES(?1,?2,?3,0,?4,?5,'','','prod')",
+            params![ts, source, cat, msg, dedup],
+        )
+        .unwrap();
+    }
+
+    fn count_of(c: &Connection, sql: &str) -> i64 {
+        c.query_row(&format!("SELECT COUNT(*) FROM ({sql})"), [], |r| r.get(0)).unwrap()
+    }
+
+    /// UNE requête `category=exec` DOIT retrouver l'historique `category=process`, et RIEN d'autre.
+    /// MUTATION : supprimer l'appel à `cim_read_alias_exec` dans `SqlcipherStore` -> le compte tombe
+    /// de 3 à 2 et l'assertion de structure sur le SQL émis (`IN`) échoue.
+    #[test]
+    fn cim_read_alias_exec_finds_sealed_process_history() {
+        let conn = test_db();
+        ins_cat(&conn, 1000, "windows-security", "exec", "4688 nouveau", "d1");     // écrit APRÈS la bascule
+        ins_cat(&conn, 900, "windows-security", "process", "4688 legacy", "d2");    // historique scellé
+        ins_cat(&conn, 800, "windows-security", "process", "4688 legacy 2", "d3");  // historique scellé
+        ins_cat(&conn, 700, "auditd", "auth", "session", "d4");                     // témoin : autre catégorie
+        ins_cat(&conn, 600, "auditd", "execve", "faux ami", "d5");                  // témoin : PAS `exec`
+
+        // (a) COMPORTEMENT : la question canonique trouve les 3 lignes de création de processus.
+        let sql = soql_to_sql_x("search category=exec", 0, 0, None).unwrap();
+        assert_eq!(count_of(&conn, &sql), 3, "`category=exec` DOIT couvrir l'historique `process`");
+        // (b) STRUCTURE : c'est bien l'équivalence qui est émise (et non un élargissement quelconque).
+        assert!(sql.contains("IN ('exec','process')"), "SQL émis sans l'équivalence : {sql}");
+        // (c) ANTI-SUR-MATCH : rien d'autre n'est happé — ni une autre catégorie, ni un faux ami.
+        let sql_auth = soql_to_sql_x("search category=auth", 0, 0, None).unwrap();
+        assert_eq!(count_of(&conn, &sql_auth), 1, "`category=auth` ne doit PAS attraper l'alias");
+        let sql_p = soql_to_sql_x("search category=execve", 0, 0, None).unwrap();
+        assert_eq!(count_of(&conn, &sql_p), 1, "`execve` n'est pas `exec` : aucun élargissement");
+        // (d) NÉGATION NON ALIASÉE : aliaser un `!=` inverserait le sens du prédicat -> jamais touché.
+        let sql_ne = soql_to_sql_x("search category!=exec", 0, 0, None).unwrap();
+        assert!(!sql_ne.contains("process"), "`category!=exec` ne doit PAS être aliasé : {sql_ne}");
+        // (e) PORTÉE : les étages qui ne sont PAS des filtres restent VERBATIM (`eval` affecte, il ne
+        //     filtre pas — l'y réécrire produirait une requête invalide).
+        let sql_eval = soql_to_sql_x("search source=auditd | eval c=\"exec\"", 0, 0, None).unwrap();
+        assert!(!sql_eval.contains("'process'"), "un `eval` ne doit JAMAIS être aliasé : {sql_eval}");
+        // (f) SOUS-RECHERCHE : le cœur la recompile au depth+1 -> son filtre de base doit l'être aussi,
+        //     sinon un `append [search category=exec]` rendrait une réponse PARTIELLE en silence.
+        let sql_sub = soql_to_sql_x("search category=auth | append [search category=exec]", 0, 0, None).unwrap();
+        assert_eq!(sql_sub.matches("IN ('exec','process')").count(), 1, "sous-recherche non aliasée : {sql_sub}");
+        assert_eq!(count_of(&conn, &sql_sub), 4, "auth (1) ∪ exec+process (3)");
+        // (g) DEUXIÈME ÉCRITURE DE LA MÊME BASE : `table_base` prend le spec ENTIER comme filtres quand
+        //     l'étage ne nomme aucune base -> `category=exec | …` (sans le mot-clé) DOIT être aliasé aussi.
+        let sql_nokw = soql_to_sql_x("category=exec | stats count", 0, 0, None).unwrap();
+        assert!(sql_nokw.contains("IN ('exec','process')"), "base sans mot-clé non aliasée : {sql_nokw}");
+        assert_eq!(
+            conn.query_row(&sql_nokw, [], |r| r.get::<_, i64>(0)).unwrap(), 3,
+            "`category=exec | stats count` doit compter les 3 mêmes lignes que `search category=exec`"
+        );
+        // (h) MODE 0 : une requête SANS cette égalité est BYTE-IDENTIQUE (aucune réécriture parasite).
+        for q in ["search", "search source=auditd", "search category=auth | stats count by source"] {
+            assert_eq!(
+                cim_read_alias_exec(q).as_ref(), q,
+                "requête sans `category=exec` réécrite : réécriture générale interdite"
+            );
+        }
+    }
+
+    /// AUCUN collecteur Windows livré ne déclare une catégorie hors `CIM_CATEGORIES`. Garde DÉRIVÉE :
+    /// elle LIT le script livré et vérifie CHAQUE `-Category '<x>'` qu'il contient — donc elle rougit
+    /// aussi bien sur un retour à `process` que sur n'importe quelle autre valeur inventée demain.
+    /// (Le pendant Rust de l'agent est gardé par `every_emitted_category_is_canonical_cim`, exécuté
+    /// par `agent-ci.yml` ; l'agent ne dépend pas de guatx-core, il lit le miroir `config.d`.)
+    #[test]
+    fn shipped_windows_collector_declares_only_canonical_categories() {
+        let ps1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../collectors/windows/plume-collector.ps1");
+        let src = std::fs::read_to_string(&ps1).expect("collecteur Windows introuvable");
+        let mut seen = 0usize;
+        let mut rest = src.as_str();
+        while let Some(p) = rest.find("-Category '") {
+            let after = &rest[p + "-Category '".len()..];
+            let end = after.find('\'').expect("littéral -Category non terminé");
+            let cat = &after[..end];
+            assert!(
+                cim_category_ok(cat),
+                "collecteur Windows : -Category '{cat}' HORS CIM_CATEGORIES v{} (la création de \
+                 processus 4688 porte `exec`, jamais `process`)",
+                guatx_core::cim::CIM_VERSION
+            );
+            seen += 1;
+            rest = &after[end..];
+        }
+        assert!(seen >= 6, "seulement {seen} déclarations -Category lues : l'extraction a décroché du script");
+        assert!(src.contains("-Category 'exec'"), "la création de processus (4688) doit porter `exec`");
+    }
+
+    /// Une catégorie hors taxonomie est ACCEPTÉE (jamais un drop) et signalée UNE SEULE FOIS par couple
+    /// (source, category) : un collecteur déréglé ne peut ni perdre ses événements ni noyer le journal.
+    #[test]
+    fn noncanonical_category_is_kept_and_warned_once_per_pair() {
+        let conn = test_db();
+        let dbp = "cim-noncanon-warn";
+        let events = vec![
+            json!({"ts": 1, "source": "tiers-mal-regle", "category": "processus-maison", "message": "a", "dedup": "n1"}),
+            json!({"ts": 2, "source": "tiers-mal-regle", "category": "processus-maison", "message": "b", "dedup": "n2"}),
+        ];
+        let n = ingest_events_batch(&conn, dbp, &events, 1, None, None).unwrap();
+        assert_eq!(n, 2, "ANTI-ANGLE-MORT : une catégorie inconnue ne fait JAMAIS jeter l'événement");
+        let kept: i64 = conn
+            .query_row("SELECT COUNT(*) FROM event WHERE category='processus-maison'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 2, "les 2 lignes sont stockées avec leur catégorie D'ORIGINE, non réécrite");
+        // Le mémo (l'état derrière le warn) : première vue -> signalée ; ensuite -> silence.
+        assert!(!cim_note_noncanonical("tiers-mal-regle", "processus-maison"), "déjà signalé à l'ingest");
+        assert!(cim_note_noncanonical("tiers-mal-regle", "autre-inconnue"), "autre catégorie = autre signal");
+        assert!(!cim_note_noncanonical("tiers-mal-regle", "autre-inconnue"), "un seul signal par couple");
+        // BORNE : `source`/`category` sont choisis par l'ÉMETTEUR — un mémo non borné serait un levier
+        // de croissance illimitée (mémoire + journal) pour un token compromis. Au plafond, on cesse de
+        // mémoriser ET de signaler ; l'ingest ne change pas pour autant (rien n'est jamais jeté).
+        for i in 0..(CIM_NONCANON_MEMO_MAX + 8) {
+            let _ = cim_note_noncanonical("flood", &format!("cat-{i}"));
+        }
+        assert!(!cim_note_noncanonical("flood", "au-dela-du-plafond"), "mémo non borné = levier de déni de service");
+        let after = vec![json!({"ts": 3, "source": "flood", "category": "au-dela-du-plafond", "message": "c", "dedup": "n3"})];
+        assert_eq!(
+            ingest_events_batch(&conn, dbp, &after, 1, None, None).unwrap(), 1,
+            "mémo plein -> plus de signal, mais l'événement est TOUJOURS ingéré"
+        );
     }
 
     /// TAMPON AU REPOS : un event ingéré porte `fields.cim = CIM_VERSION` dans la ligne STOCKÉE ->

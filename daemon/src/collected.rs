@@ -70,10 +70,31 @@
 //!     overlays LIVRÉS sont balayés).
 //!
 //! CE QUE LA GARDE (A) GARANTIT — ET SA LIMITE EXACTE. Fabriquer un faux vert ne se fait plus en ajoutant
-//! une ligne d'inventaire : il faut que l'extracteur DÉRIVE le nom du fichier cité. P1..P3 sont des
-//! positions structurelles ; P4/P5 restent SYNTAXIQUES — un commentaire, dans un collecteur livré, qui
-//! imiterait un fragment JSON (`,\"X\":\"`) serait accepté. Ce n'est donc PAS infalsifiable : c'est devenu
-//! une modification d'un fichier de COLLECTE livré, visible en revue, et non plus une ligne d'inventaire.
+//! une ligne d'inventaire : il faut que l'extracteur DÉRIVE le nom du fichier cité.
+//!
+//! DEUX CORRECTIONS D'AFFIRMATION, mesurées par une revue adverse, à ne pas reperdre :
+//!   * « P1..P3 sont des positions STRUCTURELLES » était FAUX. P1 est une regex sur les octets : une ligne
+//!     `# … le sac fields = {"X":"…"} reste TODO` dans un collecteur LIVRÉ suffisait à dériver `X`
+//!     (mesuré, `bash -n` inchangé). L'extracteur DÉPOUILLE désormais les lignes dont le premier caractère
+//!     non blanc ouvre un commentaire (`#`, `//`). Reste hors de portée, et c'est écrit plutôt qu'affirmé
+//!     fermé : un commentaire de FIN de ligne après du code réel (distinguer un `#` d'un `#` dans une
+//!     chaîne demanderait un vrai analyseur par langage).
+//!   * P3 acceptait un overlay de parseur QUE L'INGESTION NE CHARGE JAMAIS. `parsers.rs` ne lit que
+//!     `WHERE enabled=1`, et `load_overlay_dparsers` rejette un overlay sans `name` : un
+//!     `{"enabled":false,"map":{"fields":{…}}}` déposé en config, plus une ligne d'inventaire, éteignait
+//!     l'avertissement en gardant la garde VERTE (mesuré). L'extracteur exige maintenant qu'un overlay
+//!     soit CHARGEABLE (`enabled != false` ET `name` non vide) pour valoir preuve.
+//!
+//! ÉCART SÉMANTIQUE QUI SUBSISTE, ET QU'AUCUN FILTRE NE FERME. Cet oracle répond à « un fichier LIVRÉ
+//! déclare-t-il ce champ ? », pas à « la source qui l'alimente est-elle effectivement branchée ? ». Un
+//! overlay de parseur livré et activé vaut preuve même si aucun collecteur ne produit sa source : c'est le
+//! cas de `vendor` (example-cim-firewall), `fim_actor` (example-endpoint-fim), `cf_country`/`cf_rule`/
+//! `cf_ua` (feed Cloudflare) et `signal` (nft forwardé) — des gabarits que l'exploitant doit alimenter.
+//! Pour ces champs, l'absence d'avertissement signifie « plume SAIT parser cette donnée », pas « plume la
+//! reçoit ». À traiter comme un signal INDICATIF, jamais comme une garantie de couverture.
+//!
+//! Ce n'est donc PAS infalsifiable : forger un faux vert exige désormais de modifier un fichier de
+//! COLLECTE livré (visible en revue), et non plus d'ajouter une ligne d'inventaire.
 //! Symétriquement, une SUR-extraction (un nom dérivé qui n'est pas un champ) pousserait à inventorier un
 //! non-champ, donc à éteindre un avertissement à tort : c'est pourquoi la surface est syntaxiquement
 //! ÉTROITE (profondeur 1, valeur string exigée en P5, `af` conditionné à sa définition).

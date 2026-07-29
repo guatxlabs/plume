@@ -119,13 +119,32 @@ seule donnée nouvelle soit collectée — du silence pris pour de la couverture
 
 **Inertie** (`COLLECTED_EXTENDED_FIELDS`, `daemon/src/collected.rs`) : une fois le champ traduit, l'importeur
 **avertit** si *aucun collecteur, parseur ou agent livré n'écrit ce champ*. L'inventaire est une table
-`(champ, fichier livré qui l'émet)` : chaque entrée est **citée**, et une garde de test vérifie les deux sens
-(pas d'entrée que personne n'émet ; pas de champ émis qui manque à l'inventaire). Conséquences :
+`(champ, fichier livré qui l'émet)` dont chaque entrée est **citée**. Une garde de test
+(`collected_inventory_is_backed_by_shipped_collectors`) vérifie les deux sens **avec le même extracteur** :
+
+- **(A) pas d'entrée que personne n'émet** — le champ doit être **extrait** du fichier cité, donc y figurer
+  en **position de producteur** (objet `fields` littéral, insertion par clé littérale, `af(…)` awk, fragment
+  JSON échappé, overlay de parseur). Une occurrence quelconque du nom **ne suffit pas** : `web.sh` *lit* la
+  clé Traefik `RequestPath` sans jamais l'émettre, l'entrée `("RequestPath","web.sh")` est **rejetée** ;
+- **(B) pas de champ émis qui manque à l'inventaire** — l'extraction couvre les formes réellement livrées :
+  JSON échappé shell/awk, `jq` (clés non quotées), `serde_json::json!` de l'agent, dictionnaire Python,
+  hashtable PowerShell, overlays `config.d/parsers/*.json` ;
+- **(C) anti-rot par famille** — chaque famille de collecteurs a un **plancher d'extractions** : en perdre une
+  entière (chemin déplacé, syntaxe d'émission changée) fait rougir la garde au lieu de passer inaperçu.
+
+Conséquences :
 
 - un **alias vers une cible non collectée** reste **signalé inerte** — l'alias traduit, il ne collecte pas ;
 - l'avertissement **ne rejette jamais** la règle (la donnée peut arriver plus tard) ;
 - **mise à jour** : un collecteur qui se met à émettre `fields.<X>` (ou qui cesse) fait **rougir la garde**
   tant que l'inventaire n'est pas ajusté.
+
+**Ce que l'inventaire ne couvre pas** (surfaces **ouvertes**, définies au déploiement — donc non
+inventoriables statiquement ; leurs champs restent **signalés inertes**, c'est-à-dire *sur*-avertis) : la
+recopie verbatim des clés `EventData` du log Windows, les champs des sources déclaratives `[[source]]`, et
+les overlays de parseurs ajoutés par l'exploitant après déploiement. `collected.rs` en donne la liste exacte,
+ainsi que la **limite** du contrôle de citation : il exige une position de producteur, il n'est pas
+infalsifiable.
 
 ### 4c. Modificateurs de champ
 

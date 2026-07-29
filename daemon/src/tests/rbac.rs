@@ -456,15 +456,26 @@
         assert_eq!(cpu, "", "la règle CPU (opérationnelle) ne doit pas être mappée");
     }
 
-    /// Réplique EXACTE de l'agrégation servie par coverage_detections() -> garantit que le test mesure
-    /// le même contrat que l'endpoint (mitre<>'' GROUP BY mitre -> [{mitre,count,first_ts}], ts>=since).
+    /// Réplique EXACTE de ce que sert coverage_detections() -> garantit que le test mesure le même
+    /// contrat que l'endpoint : mêmes SQL/binds (mitre<>'' GROUP BY mitre, ts>=since) PUIS le MÊME
+    /// éclatement des tags multi-techniques (`explode_detection_rows`, la fonction de production —
+    /// pas une seconde implémentation qui pourrait diverger en silence).
     fn coverage(conn: &Connection, since: i64) -> Vec<(String, i64, i64)> {
         let mut st = conn.prepare(
             "SELECT mitre, COUNT(*) AS count, MIN(ts) AS first_ts FROM alert \
              WHERE mitre IS NOT NULL AND mitre<>'' AND ts>=?1 GROUP BY mitre ORDER BY count DESC, mitre",
         ).unwrap();
-        st.query_map(params![since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
-            .unwrap().flatten().collect()
+        let rows: Vec<(String, i64, i64)> = st
+            .query_map(params![since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+            .unwrap().flatten().collect();
+        explode_detection_rows(rows)
+            .into_iter()
+            .map(|v| (
+                v["mitre"].as_str().unwrap().to_string(),
+                v["count"].as_i64().unwrap(),
+                v["first_ts"].as_i64().unwrap(),
+            ))
+            .collect()
     }
 
     #[test]
@@ -485,6 +496,66 @@
         // borne `since` : à partir de t=130, seule la 2e alerte T1110 (t=150) compte -> count=1, first_ts=150.
         let cov2 = coverage(&conn, 130);
         assert_eq!(cov2, vec![("T1110".to_string(), 1, 150)]);
+    }
+
+    /// PURPLE — un tag de règle portant PLUSIEURS techniques (norme SigmaHQ : plusieurs `attack.` par
+    /// règle) est SERVI ÉCLATÉ par /api/coverage/detections : une entrée par technique, counts sommés,
+    /// `first_ts` = la PREMIÈRE détection. Sans cet éclatement, le consommateur purple joindrait sur la
+    /// pseudo-technique `"T1595.002 T1046"` — qui n'existe dans aucun référentiel — et fabriquerait
+    /// deux faux « missed ». La SOUS-technique est PRÉSERVÉE (pas de repli sur la parente : c'est elle
+    /// qui distingue une détection exacte d'une simple couverture parente côté Forge).
+    #[test]
+    fn coverage_splits_multi_technique_tags_preserving_subtechniques() {
+        let conn = test_db();
+        // une règle Sigma taguée de DEUX techniques -> 2 alertes ; + 1 alerte T1046 nue (agrégation).
+        conn.execute("INSERT INTO alert(ts,rule,severity,title,mitre) VALUES(100,'rule.sigma',3,'a','T1595.002 T1046')", []).unwrap();
+        conn.execute("INSERT INTO alert(ts,rule,severity,title,mitre) VALUES(140,'rule.sigma',3,'b','T1595.002 T1046')", []).unwrap();
+        conn.execute("INSERT INTO alert(ts,rule,severity,title,mitre) VALUES(120,'rule.scan',3,'c','T1046')", []).unwrap();
+
+        let cov = coverage(&conn, 0);
+        let by: std::collections::HashMap<&str, (i64, i64)> =
+            cov.iter().map(|(m, c, t)| (m.as_str(), (*c, *t))).collect();
+        assert!(!by.contains_key("T1595.002 T1046"),
+            "le tag COMPOSÉ ne doit JAMAIS être servi tel quel comme une technique : {cov:?}");
+        assert_eq!(by.get("T1595.002"), Some(&(2i64, 100i64)),
+            "la SOUS-technique est servie telle quelle (jamais repliée sur T1595) : {cov:?}");
+        assert_eq!(by.get("T1046"), Some(&(3i64, 100i64)),
+            "T1046 agrège le tag composé (2) + l'alerte nue (1), first_ts = la 1re des deux : {cov:?}");
+        assert!(!by.contains_key("T1595"),
+            "aucun repli sur la technique PARENTE ici — la distinction exact/parent meurt sinon");
+        // tri de sortie conservé : count DESC puis mitre ASC.
+        assert_eq!(cov[0].0, "T1046", "tri count DESC conservé : {cov:?}");
+
+        // borne `since` : l'éclatement n'échappe pas à la fenêtre (seule l'alerte t=140 reste).
+        let cov2 = coverage(&conn, 130);
+        let by2: std::collections::HashMap<&str, (i64, i64)> =
+            cov2.iter().map(|(m, c, t)| (m.as_str(), (*c, *t))).collect();
+        assert_eq!(by2.get("T1595.002"), Some(&(1i64, 140i64)));
+        assert_eq!(by2.get("T1046"), Some(&(1i64, 140i64)));
+    }
+
+    /// PURPLE — `mitre_techniques` (éclatement SANS repli parent) : les 3 séparateurs, la casse, la
+    /// déduplication, le rejet des tokens hors format — et la garantie ANTI-SILENT-DROP au niveau des
+    /// lignes servies (un tag vendeur illisible reste servi VERBATIM plutôt que de disparaître).
+    /// CONTRASTE avec `mitre_parents`, qui replie sur la parente pour la grille de couverture.
+    #[test]
+    fn mitre_techniques_splits_without_collapsing_to_parent() {
+        assert_eq!(mitre_techniques("T1595.002 T1046"), vec!["T1595.002", "T1046"]);
+        assert_eq!(mitre_techniques("T1595.002,T1046"), vec!["T1595.002", "T1046"]);
+        assert_eq!(mitre_techniques("T1595.002;T1046"), vec!["T1595.002", "T1046"]);
+        assert_eq!(mitre_techniques("t1046  T1046"), vec!["T1046"], "casse normalisée + dédupliqué");
+        assert_eq!(mitre_techniques("attack.t1046 TA0043 T1046"), vec!["T1046"], "tokens hors format ignorés");
+        assert!(mitre_techniques("pas-une-technique").is_empty());
+        // CONTRASTE explicite : mitre_parents replie, mitre_techniques NON.
+        assert_eq!(mitre_parents("T1110.001"), vec!["T1110"], "mitre_parents replie sur la parente");
+        assert_eq!(mitre_techniques("T1110.001"), vec!["T1110.001"], "mitre_techniques PRÉSERVE la sous-technique");
+        // ANTI-SILENT-DROP au niveau des lignes servies.
+        let out = explode_detection_rows(vec![("vendor-custom".to_string(), 5, 42)]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["mitre"], "vendor-custom", "un tag illisible est servi VERBATIM, jamais perdu");
+        assert_eq!(out[0]["count"], 5);
+        // une ligne au tag VIDE après trim ne produit rien (rien à joindre).
+        assert!(explode_detection_rows(vec![("   ".to_string(), 1, 1)]).is_empty());
     }
 
     // --- #22 : matrice de couverture ATT&CK (build_attack_matrix, pur) ---

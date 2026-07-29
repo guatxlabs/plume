@@ -15,7 +15,7 @@ ignore = [
   # Compile-time only, aucune surface runtime. Lever si l'arbre s'en débarrasse.
   "RUSTSEC-2026-0173",
   # yaml-rust 0.4 — RUSTSEC-2024-0320 (unmaintained, NON vulnérable). Front-end de l'importeur
-  # Sigma uniquement. Successeur `yaml-rust2` = crate différent (API-break -> risque 755 tests).
+  # Sigma uniquement. Successeur `yaml-rust2` = crate différent (API-break -> risque 757 tests).
   # Lever dès migration vers yaml-rust2.
   "RUSTSEC-2024-0320",
 ]

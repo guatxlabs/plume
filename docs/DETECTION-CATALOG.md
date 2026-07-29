@@ -140,3 +140,19 @@ Techniques nouvellement couvertes / renforcées par le catalogue : `T1021.004`, 
 
 Ces tags rejoignent la jointure de couverture (`/api/coverage/detections`) : dès qu'une règle
 catalogue est activée, sa technique passe de *missed* à *detected* dans la matrice.
+
+Deux précisions sur ce que la matrice compte, côté consommateur (la boucle purple de Forge) :
+
+- **La technique du tag est celle qui compte, sous-technique comprise.** Activer une règle taguée de
+  la technique **parente** (`T1110`) ne fait PAS passer une **sous-technique** tirée (`T1110.001`) en
+  *detected* : elle est classée `detected-parent-approx` — un angle mort **nommé**, exclu du taux de
+  détection et du MTTD. Une règle parente générique ne prouve pas la couverture d'un vecteur
+  particulier : les trois règles `T1110` de ce catalogue sont bornées au mail (`source=mail`), bornées
+  au web (`source=web status=401`), ou exigent une dispersion d'IP (`stats dc(src_ip)`) — aucune de ces
+  trois n'attrape un brute-force SSH mono-source. D'autres règles `T1110` **seedées** le pourraient
+  selon la télémétrie branchée : c'est justement ce que la jointure ne peut pas savoir depuis un tag,
+  et pourquoi elle nomme le doute au lieu de le trancher. Pour faire passer une sous-technique au vert,
+  taguez une règle **de cette sous-technique**.
+- **Un tag peut porter PLUSIEURS techniques** (`"T1595.002 T1046"`, séparateurs espace/virgule/
+  point-virgule — la norme SigmaHQ). L'endpoint les **éclate** : une entrée par technique, counts
+  sommés, `first_ts` = la première détection. La chaîne composée n'est jamais servie telle quelle.

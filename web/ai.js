@@ -1,6 +1,6 @@
-// #16 ASSISTANT IA (advisory NL->SOQL) — UI minimale, feature-gated côté serveur. L'assistant n'apparaît QUE
+// #16 ASSISTANT IA (advisory NL->GXQL) — UI minimale, feature-gated côté serveur. L'assistant n'apparaît QUE
 // si GET /api/ai/status renvoie { enabled:true } (feature `ai` compilée + PLUME_AI_ENABLE + provider actif).
-// L'IA PROPOSE une requête SOQL : on l'écrit dans #sql pour que l'analyste la RÉVISE puis l'exécute lui-même
+// L'IA PROPOSE une requête GXQL : on l'écrit dans #sql pour que l'analyste la RÉVISE puis l'exécute lui-même
 // (Exécuter). ZÉRO exécution automatique — le handler serveur ne fait que compiler+valider (compilo fermé).
 import { $, api, apiSend, showErr } from './core.js';
 
@@ -34,10 +34,10 @@ export async function initAiAssist() {
         // Proposition écrite dans la barre de requête -> l'analyste RÉVISE puis presse Exécuter.
         $('#sql').value = r.soql;
         if (r.valid) {
-          stat.textContent = 'SOQL proposé — révisez puis Exécuter';
+          stat.textContent = 'GXQL proposé — révisez puis Exécuter';
         } else {
           stat.classList.add('warn');
-          stat.textContent = 'SOQL proposé mais REJETÉ par le compilateur : ' + (r.error || 'invalide');
+          stat.textContent = 'GXQL proposé mais REJETÉ par le compilateur : ' + (r.error || 'invalide');
         }
       } else {
         stat.textContent = 'aucune proposition';

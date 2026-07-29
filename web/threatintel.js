@@ -60,7 +60,7 @@ async function loadCoverage() {
   };
   host.appendChild(chips('Par type', d.by_type, 'type'));
   host.appendChild(chips('Par source', d.by_source, 'source'));
-  // indice : les HITS dans le temps se requêtent en SOQL (aucun scan serveur ici).
+  // indice : les HITS dans le temps se requêtent en GXQL (aucun scan serveur ici).
   if (d.hits_query) {
     const hint = document.createElement('div'); hint.className = 'muted ti-hint'; hint.style.cssText = 'margin-top:8px;font-size:11px';
     const pre = document.createElement('code'); pre.textContent = d.hits_query;

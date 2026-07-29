@@ -103,7 +103,7 @@ function ruleRow(r) {
     });
   }
   name.appendChild(managedBadge(r.managed)); // origine du contenu (builtin/overlay/perso)
-  const cond = document.createElement('code'); cond.className = 'rulecond'; cond.textContent = `${r.op} ${r.threshold}`; cond.title = `${r.is_soql ? 'soql' : 'SQL'} : ${r.query}`;
+  const cond = document.createElement('code'); cond.className = 'rulecond'; cond.textContent = `${r.op} ${r.threshold}`; cond.title = `${r.is_soql ? 'GXQL' : 'SQL'} : ${r.query}`;
   const meta = document.createElement('span'); meta.className = 'rulemeta muted';
   meta.textContent = `${sev(r.severity)} - ${r.last_value == null ? 'pas encore évaluée' : 'dernier ' + r.last_value}${r.last_fired ? ' - ' + fmtTs(r.last_fired) : ''}`;
   const test = document.createElement('button'); test.textContent = 'Tester';
@@ -177,7 +177,7 @@ if ($('#rule-form')) $('#rule-form').addEventListener('submit', async e => {
   const body = {
     name: $(RF.name).value.trim() || 'Règle',
     query: $(RF.query).value.trim(),
-    // SQL brut réservé admin (garde-fou #2) : un non-admin envoie toujours SOQL (le serveur 403 sinon).
+    // SQL brut réservé admin (garde-fou #2) : un non-admin envoie toujours GXQL (le serveur 403 sinon).
     is_soql: socIsAdmin() ? ($(RF.issoql).value === '1') : true,
     op: $(RF.op).value,
     threshold: Number($(RF.threshold).value) || 0,
@@ -190,7 +190,7 @@ if ($('#rule-form')) $('#rule-form').addEventListener('submit', async e => {
     compliance: $(RF.compliance) ? $(RF.compliance).value.trim() : '',
   };
   if (!body.query) { formMsg('#rf-result', 'Écris une requête (qui renvoie un nombre).', true); toast('Écris une requête (qui renvoie un nombre).', 'bad'); return; }
-  // garde-fou #1 : le serveur VALIDE (SOQL compile / MITRE / …). Sur erreur -> {error} affiché, MODALE OUVERTE.
+  // garde-fou #1 : le serveur VALIDE (GXQL compile / MITRE / …). Sur erreur -> {error} affiché, MODALE OUVERTE.
   if (!await contentSubmit(S.editingRule ? '/rules/' + S.editingRule : '/rules', body, '#rf-result')) return;
   closeRuleForm();
   loadRules();
@@ -523,7 +523,7 @@ if ($('#pb-new')) $('#pb-new').onclick = () => openPbForm(null);
 if ($('#pb-cancel')) $('#pb-cancel').onclick = () => $('#pb-form').classList.add('hidden');
 if ($('#pb-form')) $('#pb-form').addEventListener('submit', async e => {
   e.preventDefault();
-  // SQL brut réservé admin (garde-fou #2) : un non-admin envoie toujours SOQL (le serveur 403 sinon).
+  // SQL brut réservé admin (garde-fou #2) : un non-admin envoie toujours GXQL (le serveur 403 sinon).
   const body = { name: $(PB.name).value.trim() || 'Playbook', query: $(PB.query).value.trim(), is_soql: socIsAdmin() ? ($(PB.issoql).value === '1') : true, action_kind: $(PB.kind).value, interval_s: Number($(PB.interval).value) || 300, window_s: Number($(PB.window).value) || 3600, enabled: $(PB.enabled).checked };
   if (!body.query) { formMsg('#pb-result', 'requête requise', true); toast('requête requise', 'bad'); return; }
   // garde-fous #1/#3 : le serveur valide (requête compile, action ∈ enum fermé). Erreur -> {error} affiché, formulaire OUVERT.

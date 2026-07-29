@@ -30,11 +30,11 @@ const I18N_EN = {
   "Visualisation": "Visualization", "Table": "Table", "Barres": "Bars", "Courbe": "Line", "Stat": "Stat", "Suggestions": "Suggestions",
   // explore (Plume panel : destination des drilldowns ; « Plume panel » = nom propre, identique FR/EN)
   "Plume panel": "Plume panel",
-  "Requête soql ou SQL — les drilldowns atterrissent ici": "soql or SQL query — drilldowns land here",
+  "Requête GXQL ou SQL — les drilldowns atterrissent ici": "GXQL or SQL query — drilldowns land here",
   "Détail :": "Detail:", "(drillé)": "(drilled)", "Effacer le fil d'Ariane": "Clear the breadcrumb",
   "Exécuter": "Run", "? Aide": "? Help", "← Retour": "← Back", "Aide": "Help", "Panneau": "Panel",
   "Enregistrer la requête comme panneau": "Save query as a panel", "Revenir à la requête précédente (drilldown)": "Back to previous query (drilldown)",
-  "Aide : syntaxe des requêtes (SOQL)": "Help: query syntax (SOQL)",
+  "Aide : syntaxe des requêtes (GXQL)": "Help: query syntax (GXQL)",
   "Événements par page": "Events per page", "Événements par page (pagination)": "Events per page (pagination)",
   "Fenêtre temporelle (Explore)": "Time window (Explore)",
   "Fenêtre temporelle de la recherche — glissante depuis maintenant (perf)": "Search time window — sliding from now (perf)",

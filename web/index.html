@@ -17,7 +17,7 @@
   body.role-viewer .crud-btn { display: none !important; }
   body.role-viewer .crud-toggle { pointer-events: none; opacity: .45; }
   /* SQL brut = admin uniquement : le toggle Type est visible/actif SEULEMENT en role-admin. Fail-closed :
-     tant que le rôle n'est pas connu (aucune classe), il reste masqué -> le formulaire envoie SOQL. */
+     tant que le rôle n'est pas connu (aucune classe), il reste masqué -> le formulaire envoie GXQL. */
   body:not(.role-admin) .rawsql-toggle { display: none !important; }
   /* badge « managed » : origine du contenu (builtin / overlay config.d / perso créé via l'UI). */
   .mgbadge { font-family: var(--font-mono, monospace); font-size: 10px; line-height: 1.4; padding: 0 7px;
@@ -170,10 +170,10 @@
       <h2 id="query-h">Plume panel <button class="ihelp vhelp" data-help="explore" type="button" title="Aide : Recherche & Explore">?</button></h2>
       <span id="qcrumb" class="qcrumb" role="status" aria-live="polite" hidden></span>
     </div>
-    <div class="qsub">Requête soql ou SQL — les drilldowns atterrissent ici</div>
+    <div class="qsub">Requête GXQL ou SQL — les drilldowns atterrissent ici</div>
     <div class="qbar">
-      <textarea id="sql" rows="3" aria-label="Requête soql ou SQL" spellcheck="false"
-        placeholder="soql:  search (tous les events · '*' aussi)  ·  search source=sudo | stats count by source | sort -count        -ou-        SQL:  SELECT * FROM event ORDER BY ts DESC LIMIT 20"></textarea>
+      <textarea id="sql" rows="3" aria-label="Requête GXQL ou SQL" spellcheck="false"
+        placeholder="GXQL:  search (tous les events · '*' aussi)  ·  search source=sudo | stats count by source | sort -count        -ou-        SQL:  SELECT * FROM event ORDER BY ts DESC LIMIT 20"></textarea>
       <!-- #qrange = état (fenêtre Explore relative) caché ; l'UI est le modal ouvert par #qrangepick — même design que le picker Dashboard (presets jusqu'à 1 an + intervalle précis). -->
       <select id="qrange" aria-label="Fenêtre temporelle (Explore)" title="Fenêtre temporelle (Explore)" style="display:none">
         <option value="300">5 min</option>
@@ -194,8 +194,8 @@
       <button id="qrangepick" class="k-theme rangebtn" type="button" aria-label="Fenêtre temporelle (Explore)" title="Fenêtre temporelle de la recherche (presets jusqu'à 1 an + intervalle précis)"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg><span id="qrangelbl">24 h</span></button>
       <button id="run" type="button">Exécuter </button>
       <button id="qstop" class="stopbtn picon" type="button" title="Arrêter la requête en cours" hidden><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg></button>
-      <button id="qhelp" type="button" title="Aide : syntaxe des requêtes (SOQL)">? Aide</button>
-      <button id="qtemplates" type="button" title="Modèles de requête (bibliothèque de snippets SOQL)">Modèles</button>
+      <button id="qhelp" type="button" title="Aide : syntaxe des requêtes (GXQL)">? Aide</button>
+      <button id="qtemplates" type="button" title="Modèles de requête (bibliothèque de snippets GXQL)">Modèles</button>
       <button id="qsave" type="button" title="Enregistrer la requête courante (nommée, persistante, privée à votre compte)">Enregistrer</button>
       <button id="qsaved" type="button" title="Mes requêtes sauvegardées (charger / modifier / supprimer)">Sauvegardées</button>
       <button id="qrecent" type="button" title="Requêtes récemment exécutées (ce navigateur)">Récentes</button>
@@ -210,12 +210,12 @@
       </select>
       <button id="save-panel" type="button" title="Enregistrer la requête comme panneau">Panneau</button>
     </div>
-    <!-- #16 ASSISTANT IA (advisory NL→SOQL) — caché par défaut ; révélé par ai.js SI /api/ai/status = enabled.
-         L'IA PROPOSE une requête SOQL, l'analyste la RÉVISE dans #sql puis l'exécute lui-même (zéro exécution auto). -->
+    <!-- #16 ASSISTANT IA (advisory NL→GXQL) — caché par défaut ; révélé par ai.js SI /api/ai/status = enabled.
+         L'IA PROPOSE une requête GXQL, l'analyste la RÉVISE dans #sql puis l'exécute lui-même (zéro exécution auto). -->
     <div id="aiassist" class="qbar" style="display:none">
       <input id="ainl" type="text" aria-label="Assistant IA — question en langage naturel" spellcheck="false"
         placeholder="Assistant IA : décrivez la recherche en langage naturel (ex : échecs d'authentification par hôte sur 1 h)…" />
-      <button id="airun" type="button" title="Proposer une requête SOQL (l'IA propose, vous révisez dans la barre puis exécutez)">Proposer SOQL</button>
+      <button id="airun" type="button" title="Proposer une requête GXQL (l'IA propose, vous révisez dans la barre puis exécutez)">Proposer GXQL</button>
       <span id="aistat" class="muted" role="status" aria-live="polite"></span>
     </div>
     <div id="sqlhint" class="achint" aria-label="Suggestions"></div>
@@ -278,9 +278,9 @@
     <form id="rule-form" class="ruleform hidden">
       <input id="rf-name" placeholder="Nom de la règle" aria-label="Nom de la règle">
       <textarea id="rf-query" rows="2" spellcheck="false" aria-label="Requête"
-        placeholder="soql/SQL renvoyant un nombre - ex: search severity>=3 | stats count"></textarea>
+        placeholder="GXQL/SQL renvoyant un nombre - ex: search severity>=3 | stats count"></textarea>
       <div class="rf-row">
-        <label class="rawsql-toggle" title="SQL brut réservé à l'administrateur (les éditeurs utilisent SOQL)">Type <select id="rf-issoql"><option value="1">soql</option><option value="0">SQL</option></select></label>
+        <label class="rawsql-toggle" title="SQL brut réservé à l'administrateur (les éditeurs utilisent GXQL)">Type <select id="rf-issoql"><option value="1">GXQL</option><option value="0">SQL</option></select></label>
         <label>Condition <select id="rf-op"><option>&gt;</option><option>&gt;=</option><option>&lt;</option><option>&lt;=</option><option>==</option><option>!=</option></select></label>
         <label>Seuil <input id="rf-threshold" type="number" step="any" value="0"></label>
         <label>Sévérité <select id="rf-sev"><option value="1">low</option><option value="2" selected>medium</option><option value="3">high</option><option value="4">critical</option></select></label>
@@ -411,7 +411,7 @@
       <textarea id="pb-query" rows="2" spellcheck="false" aria-label="Requête (1re colonne = cible)"
         placeholder="requête dont la 1re colonne = la cible - ex: search source=sshd severity>=3 | stats count by src_ip | where count > 10"></textarea>
       <div class="rf-row">
-        <label class="rawsql-toggle" title="SQL brut réservé à l'administrateur (les éditeurs utilisent SOQL)">Type <select id="pb-issoql"><option value="1">soql</option><option value="0">SQL</option></select></label>
+        <label class="rawsql-toggle" title="SQL brut réservé à l'administrateur (les éditeurs utilisent GXQL)">Type <select id="pb-issoql"><option value="1">GXQL</option><option value="0">SQL</option></select></label>
         <label>Action <select id="pb-kind"><option value="ban_ip">ban_ip</option><option value="kill_pid">kill_pid</option><option value="stop_service">stop_service</option></select></label>
         <label>Intervalle(s) <input id="pb-interval" type="number" value="300"></label>
         <label>Fenêtre(s) <input id="pb-window" type="number" value="3600"></label>
@@ -426,7 +426,7 @@
     <div id="pb-list"></div>
   </section>
   <!-- #3 INCIDENTS Phase 2 — AUTHORING de runbooks (bring-your-own), ADMIN-only (masqué au non-admin ;
-       la vraie garde est serveur : /api/runbooks* = admin, validation temps-auteur SOQL fermé + enum d'action).
+       la vraie garde est serveur : /api/runbooks* = admin, validation temps-auteur GXQL fermé + enum d'action).
        Coexiste avec la baseline managée (git) ; un managé est immuable en place (enable/disable + clone seulement).
        L'exécution d'une réponse reste /api/actions (INCHANGÉ) — un runbook ne fait que RÉFÉRENCER une action. -->
   <section id="runbooks-panel" class="card span2" aria-labelledby="rb-h" style="display:none">
@@ -436,7 +436,7 @@
         <button id="rb-new" type="button">+ Runbook</button>
       </div>
     </div>
-    <p class="muted" style="margin:0 0 9px;font-size:12px">Gabarits de réponse guidée attachés aux incidents (wizard de cases). Les <b>managés</b> (baseline git) sont immuables en place — activez/désactivez ou <b>clonez</b> pour personnaliser. Les <b>custom</b> sont pleinement éditables. Une étape <b>search</b> passe par le compilateur SOQL fermé ; une étape <b>response</b> ne référence que l'enum d'action (exécution via /api/actions, approbation + ledger).</p>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Gabarits de réponse guidée attachés aux incidents (wizard de cases). Les <b>managés</b> (baseline git) sont immuables en place — activez/désactivez ou <b>clonez</b> pour personnaliser. Les <b>custom</b> sont pleinement éditables. Une étape <b>search</b> passe par le compilateur GXQL fermé ; une étape <b>response</b> ne référence que l'enum d'action (exécution via /api/actions, approbation + ledger).</p>
     <div id="rb-editor" style="display:none;margin-bottom:12px"></div>
     <div id="rb-list"></div>
   </section>
@@ -493,14 +493,14 @@
     <div id="ko-tag-list"><div class="muted">chargement…</div></div>
   </section>
   <!-- #47 Données → Modèles & Pivot : couche sémantique (modèles -> objets -> champs) + report-builder
-       « Pivot » (aucune saisie SOQL/SPL) + datasets (pivots/recherches enregistrés). Lecture + exécution
+       « Pivot » (aucune saisie GXQL/SPL) + datasets (pivots/recherches enregistrés). Lecture + exécution
        (Pivot/dataset) = viewer+ ; CRUD = éditeur+. Le Pivot ne fabrique jamais de SQL : /api/pivot/run
-       compile un SOQL puis l'exécute par le MÊME chemin masqué que /api/query. Rempli par loadDataModels(). -->
+       compile un GXQL puis l'exécute par le MÊME chemin masqué que /api/query. Rempli par loadDataModels(). -->
   <section id="datamodels-panel" class="card span2" aria-labelledby="datamodels-h" hidden>
     <div class="panelhead">
       <h2 id="datamodels-h">Modèles de données &amp; Pivot</h2>
     </div>
-    <p class="muted" style="margin:0 0 9px;font-size:12px">Une <b>couche sémantique</b> (<b>modèle</b> &rarr; <b>objets</b> hiérarchiques avec contrainte SOQL &rarr; <b>champs</b> typés) qui pilote le <b>Pivot</b> : un <b>report-builder</b> — découpe (split-by), agrégats et filtres au clic, <b>sans écrire une ligne de SOQL/SPL</b>. Le Pivot compile un SOQL et l'exécute par le <b>même chemin masqué</b> que l'Explore (le masquage de champ de votre rôle s'applique). Enregistrez un Pivot comme <b>dataset</b> réutilisable. <b>Lecture &amp; exécution ouvertes à tous ; création/suppression réservées à l'éditeur+.</b></p>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Une <b>couche sémantique</b> (<b>modèle</b> &rarr; <b>objets</b> hiérarchiques avec contrainte GXQL &rarr; <b>champs</b> typés) qui pilote le <b>Pivot</b> : un <b>report-builder</b> — découpe (split-by), agrégats et filtres au clic, <b>sans écrire une ligne de GXQL/SPL</b>. Le Pivot compile un GXQL et l'exécute par le <b>même chemin masqué</b> que l'Explore (le masquage de champ de votre rôle s'applique). Enregistrez un Pivot comme <b>dataset</b> réutilisable. <b>Lecture &amp; exécution ouvertes à tous ; création/suppression réservées à l'éditeur+.</b></p>
     <div class="panelhead" style="margin-top:4px"><h3 class="subh" style="margin:0">Modèles</h3><button id="dm-model-new" class="picon crud-btn" type="button">+ Modèle</button></div>
     <div id="dm-models-list"><div class="muted">chargement…</div></div>
     <div class="panelhead" style="margin-top:16px"><h3 class="subh" style="margin:0">Objets <span id="dm-obj-ctx" class="muted" style="font-weight:400;font-size:12px"></span></h3><button id="dm-obj-new" class="picon crud-btn" type="button" disabled>+ Objet</button></div>
@@ -520,7 +520,7 @@
         <label class="pv-inl">Fenêtre<select id="dm-pivot-range"></select></label>
       </div>
       <div class="pv-actions">
-        <button id="dm-pivot-compile" class="picon" type="button" title="Afficher le SOQL généré (transparence, sans exécuter)">Compiler</button>
+        <button id="dm-pivot-compile" class="picon" type="button" title="Afficher le GXQL généré (transparence, sans exécuter)">Compiler</button>
         <button id="dm-pivot-run" class="picon" type="button" title="Exécuter le Pivot (chemin masqué comme l'Explore)">Exécuter</button>
         <button id="dm-pivot-save" class="picon crud-btn" type="button" title="Enregistrer ce Pivot comme dataset réutilisable">Enregistrer comme dataset</button>
       </div>
@@ -538,7 +538,7 @@
       <h2 id="detadv-h">Détection avancée</h2>
       <button id="detadv-refresh" class="picon" type="button" title="Recharger"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
     </div>
-    <p class="muted" style="margin:0 0 9px;font-size:12px"><b>Corrélation de séquence</b> : une chaîne ordonnée d'étapes SOQL keyée sur une entité (ex. « échec auth ×N <b>puis</b> succès, même IP » ; « recon &rarr; exploit &rarr; C2 »). Un match agrège les événements en un <b>finding-group</b>. <b>Baseline UEBA</b> : une métrique par entité (comptage/taux/distinct par bucket) + score de <b>déviation</b> (z-score, sans ML) — une déviation alimente le risque (RBA) ou lève une alerte. Éval planifiée (<b>fail-closed</b>) + <b>Test</b> à la demande. CRUD éditeur+ ; viewer = lecture seule.</p>
+    <p class="muted" style="margin:0 0 9px;font-size:12px"><b>Corrélation de séquence</b> : une chaîne ordonnée d'étapes GXQL keyée sur une entité (ex. « échec auth ×N <b>puis</b> succès, même IP » ; « recon &rarr; exploit &rarr; C2 »). Un match agrège les événements en un <b>finding-group</b>. <b>Baseline UEBA</b> : une métrique par entité (comptage/taux/distinct par bucket) + score de <b>déviation</b> (z-score, sans ML) — une déviation alimente le risque (RBA) ou lève une alerte. Éval planifiée (<b>fail-closed</b>) + <b>Test</b> à la demande. CRUD éditeur+ ; viewer = lecture seule.</p>
     <div class="panelhead" style="margin-top:4px">
       <h3 class="subh" style="margin:0">Corrélations (finding-groups)</h3>
       <button id="detadv-corr-new" class="picon crud-btn" type="button">+ Nouvelle corrélation</button>
@@ -680,7 +680,7 @@
       <h2 id="field-filter-h">Field filters (masquage PII)</h2>
       <button id="field-filter-new" type="button">+ Règle</button>
     </div>
-    <p class="muted" style="margin:0 0 9px;font-size:12px">Masque un champ d'événement (ex <b>src_user</b>, <b>email</b>, <b>message</b>, <b>src_ip</b>) pour les rôles bas. Actions : <b>masquer</b> (***), <b>partiel</b> (***+4 derniers, ex PAN), <b>hacher</b> (déterministe salé — corrélation préservée, non réversible), <b>supprimer</b> (NULL) ou <b>interdire</b> (tous rôles, admin compris). Le masque est appliqué DANS le SQL compilé : Explore/SOQL, panneaux, export, recherche et timeline de cas en héritent AUTOMATIQUEMENT, agrégations comprises (<code>| stats values(src_user)</code> ne fuit pas), et le filtrage sur un champ masqué est refusé (pas d'oracle). Par défaut l'admin voit en clair ; « interdire » s'applique à tous. <b>Portée d'« interdire » en SQL brut :</b> sur une <b>colonne réelle</b> (host, src_ip, dst_ip, url, message, source, category), l'interdiction est aussi imposée par l'authorizer SQLite — bloquée même en SQL brut admin ; sur une <b>clé du sac JSON</b> (src_user, email, pan, fields.*), un <b>admin</b> peut encore la lire en SQL brut via <code>json_extract(fields,'$.pan')</code>. Pour un blocage PCI dur d'un tel champ, pose l'« interdire » sur une colonne réelle, ou masque à l'ingestion (processeur #40). Tant qu'aucune règle n'existe, toute lecture est inchangée. Réservé admin.</p>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Masque un champ d'événement (ex <b>src_user</b>, <b>email</b>, <b>message</b>, <b>src_ip</b>) pour les rôles bas. Actions : <b>masquer</b> (***), <b>partiel</b> (***+4 derniers, ex PAN), <b>hacher</b> (déterministe salé — corrélation préservée, non réversible), <b>supprimer</b> (NULL) ou <b>interdire</b> (tous rôles, admin compris). Le masque est appliqué DANS le SQL compilé : Explore/GXQL, panneaux, export, recherche et timeline de cas en héritent AUTOMATIQUEMENT, agrégations comprises (<code>| stats values(src_user)</code> ne fuit pas), et le filtrage sur un champ masqué est refusé (pas d'oracle). Par défaut l'admin voit en clair ; « interdire » s'applique à tous. <b>Portée d'« interdire » en SQL brut :</b> sur une <b>colonne réelle</b> (host, src_ip, dst_ip, url, message, source, category), l'interdiction est aussi imposée par l'authorizer SQLite — bloquée même en SQL brut admin ; sur une <b>clé du sac JSON</b> (src_user, email, pan, fields.*), un <b>admin</b> peut encore la lire en SQL brut via <code>json_extract(fields,'$.pan')</code>. Pour un blocage PCI dur d'un tel champ, pose l'« interdire » sur une colonne réelle, ou masque à l'ingestion (processeur #40). Tant qu'aucune règle n'existe, toute lecture est inchangée. Réservé admin.</p>
     <div id="field-filter-form-host"></div>
     <div id="field-filter-list"><div class="muted">chargement…</div></div>
   </section>
@@ -689,7 +689,7 @@
       <h2 id="lookups-h">Lookups (tables d'enrichissement) <button class="ihelp vhelp" data-help="lookups" type="button" title="Aide : Lookups">?</button></h2>
       <button id="lookup-new" type="button">+ Nouveau lookup</button>
     </div>
-    <p id="lookups-intro" class="muted" style="margin:0 0 9px;font-size:12px">Une <b>table de référence</b> nommée (clé &rarr; colonnes) qui <b>enrichit</b> les événements via l'opérateur SOQL <code>lookup &lt;nom&gt; &lt;champ-clé&gt; [OUTPUT cols]</code> (jointure <b>LEFT JOIN</b>). Ex : un lookup <code>geoip</code> de clé <code>ip</code> &rarr; <code>{country, asn}</code> permet <code>search source=web | lookup geoip src_ip OUTPUT country</code> pour ajouter le pays à chaque événement. <b>Lecture pour tous les rôles ; création/suppression réservées éditeur et admin</b> (viewer = lecture seule). L'upload <b>remplace intégralement</b> le contenu du lookup (les colonnes de sortie sont déduites des lignes) et accepte le collage en <b>JSON</b> (tableau d'objets) ou en <b>CSV</b> (1re ligne = en-têtes).</p>
+    <p id="lookups-intro" class="muted" style="margin:0 0 9px;font-size:12px">Une <b>table de référence</b> nommée (clé &rarr; colonnes) qui <b>enrichit</b> les événements via l'opérateur GXQL <code>lookup &lt;nom&gt; &lt;champ-clé&gt; [OUTPUT cols]</code> (jointure <b>LEFT JOIN</b>). Ex : un lookup <code>geoip</code> de clé <code>ip</code> &rarr; <code>{country, asn}</code> permet <code>search source=web | lookup geoip src_ip OUTPUT country</code> pour ajouter le pays à chaque événement. <b>Lecture pour tous les rôles ; création/suppression réservées éditeur et admin</b> (viewer = lecture seule). L'upload <b>remplace intégralement</b> le contenu du lookup (les colonnes de sortie sont déduites des lignes) et accepte le collage en <b>JSON</b> (tableau d'objets) ou en <b>CSV</b> (1re ligne = en-têtes).</p>
     <form id="lookup-form" class="ruleform hidden">
       <div class="rf-row">
         <label>Nom <input id="lk-name" placeholder="ex: geoip" spellcheck="false" autocomplete="off"></label>
@@ -1027,7 +1027,7 @@
   </section>
   <!-- #23 Administration → Threat Intel (IOC), admin-only. Magasin d'indicateurs de compromission : liste/recherche,
        tuile de couverture, ajout manuel, import en masse (liste type,valeur) et bundle STIX 2.1. Le match-on-ingest
-       enrichit les events (fields.threat_intel / ti_match=1) — les hits dans le temps se requêtent en SOQL.
+       enrichit les events (fields.threat_intel / ti_match=1) — les hits dans le temps se requêtent en GXQL.
        Rempli par loadThreatIntel(). API : GET /api/threat-intel/coverage & /iocs (viewer+), POST /iocs & /import (admin). -->
   <section id="threatintel-panel" class="card span2" aria-labelledby="ti-h" hidden>
     <div class="panelhead">
@@ -1038,7 +1038,7 @@
         <button id="ti-import-toggle" type="button">Import…</button>
       </div>
     </div>
-    <p class="muted" style="margin:0 0 9px;font-size:12px">Magasin d'<b>indicateurs de compromission</b> (IOC) du tenant. Le <b>match-on-ingest</b> enrichit les events qui matchent (<code>fields.threat_intel</code>, <code>ti_match=1</code>) — il n'écrase ni ne supprime rien. Types : <code>ip · domain · url · hash_md5 · hash_sha1 · hash_sha256 · email</code>. Ajout manuel, import d'une <b>liste</b> (<code>type,valeur</code> par ligne) ou d'un <b>bundle STIX 2.1</b>. Les hits dans le temps se requêtent dans Explore (SOQL). <b>Ajout / import réservés à l'administrateur</b> (la vraie garde reste serveur).</p>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Magasin d'<b>indicateurs de compromission</b> (IOC) du tenant. Le <b>match-on-ingest</b> enrichit les events qui matchent (<code>fields.threat_intel</code>, <code>ti_match=1</code>) — il n'écrase ni ne supprime rien. Types : <code>ip · domain · url · hash_md5 · hash_sha1 · hash_sha256 · email</code>. Ajout manuel, import d'une <b>liste</b> (<code>type,valeur</code> par ligne) ou d'un <b>bundle STIX 2.1</b>. Les hits dans le temps se requêtent dans Explore (GXQL). <b>Ajout / import réservés à l'administrateur</b> (la vraie garde reste serveur).</p>
     <div id="ti-coverage" class="ti-cov"><div class="muted">chargement…</div></div>
     <form id="ti-import-form" class="ruleform hidden" style="margin-top:12px">
       <div class="rf-row">
@@ -1056,7 +1056,7 @@
     <input id="ti-search" type="search" placeholder="Filtrer les IOC (valeur, type, source)…" aria-label="Filtrer les IOC" style="margin:12px 0 8px;width:100%;max-width:420px">
     <div id="ti-ioc-list"><div class="muted">chargement…</div></div>
   </section>
-  <!-- #4c Aide / Guide : documentation in-app 100% statique — sommaire des espaces + référence SOQL +
+  <!-- #4c Aide / Guide : documentation in-app 100% statique — sommaire des espaces + référence GXQL +
        glossaire des concepts. Rempli par renderHelpGuide() (aucun appel réseau). Visible pour tous les rôles. -->
   <section id="help-panel" class="card span2" aria-labelledby="help-h" hidden>
     <div class="panelhead"><h2 id="help-h">Aide &amp; Guide</h2></div>

@@ -129,7 +129,7 @@ function baseFields(b) {
   b = b || {};
   return [
     { name: 'name', label: 'Nom', value: b.name || '', required: true },
-    { name: 'query', label: 'Requête SOQL (entité + valeur)', type: 'textarea', value: b.query || 'search source=auth | stats count by host', placeholder: 'search … | stats count by host' },
+    { name: 'query', label: 'Requête GXQL (entité + valeur)', type: 'textarea', value: b.query || 'search source=auth | stats count by host', placeholder: 'search … | stats count by host' },
     { name: 'entity_field', label: "Champ d'entité", value: b.entity_field || 'host', required: true },
     { name: 'value_field', label: 'Champ de valeur (vide = dernière colonne)', value: b.value_field || '' },
     { name: 'entity_type', label: "Type d'entité", value: b.entity_type || 'host' },

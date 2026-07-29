@@ -63,9 +63,9 @@ function drillTime(t, span) {
   runQuery();
 }
 
-// B : drill CONFIGURABLE par panneau. Le panneau definit un soql avec des marqueurs
+// B : drill CONFIGURABLE par panneau. Le panneau definit un GXQL avec des marqueurs
 // $value (valeur cliquee), $from / $to (bornes du bucket temporel). Substitution sure :
-// $value -> litteral entre guillemets, debarrasse de | [ ] " et retours ligne (anti-injection soql).
+// $value -> litteral entre guillemets, debarrasse de | [ ] " et retours ligne (anti-injection GXQL).
 function sanitizeVal(v) { return '"' + String(v).replace(/[|\[\]"\n\r]/g, ' ').trim() + '"'; }
 
 function customDrill(tpl, ctx) {
@@ -89,7 +89,7 @@ function customDrill(tpl, ctx) {
 
 // C : clic sur un panneau "stat" (un seul chiffre) -> voir ce qu'il y a derriere.
 // drill configure prioritaire ; sinon `search X | stats count` -> `search X` (les evenements) ;
-// une requete metric/SQL (avec |) est ouverte telle quelle (soql detecte par le |).
+// une requete metric/SQL (avec |) est ouverte telle quelle (GXQL detecte par le |).
 function statDrill(query, drill) {
   if (drill) return customDrill(drill, {});
   const q = (query || '').trim();
@@ -354,7 +354,7 @@ function attachTip(svg, W, dataAt) {
 }
 
 // ============ EXPLORE : fenêtre glissante + requête interactive annulable (budget 60 s) ============
-// La boîte EXPLORE (textarea soql + Exécuter) est une requête DÉLIBÉRÉE -> budget interactif 60 s côté
+// La boîte EXPLORE (textarea GXQL + Exécuter) est une requête DÉLIBÉRÉE -> budget interactif 60 s côté
 // daemon (interactive:true) + annulable (qid + POST /api/cancel). À NE PAS confondre avec les PANNEAUX
 // (/api/panels/:id/data, fenêtre glissante côté serveur, budget auto 5 s) : chemin séparé, intact.
 //
@@ -470,7 +470,7 @@ function vizElement(mode, cols, rows, query, drill) {
   if (mode === 'bar') return barEl(cols, rows, query, drill);
   if (mode === 'line') return lineEl(cols, rows, query, drill);
   // #54 — types de panneaux supplémentaires (parité Grafana/Splunk). Canvas/SVG inline, ZÉRO lib externe
-  // (CSP bloque les CDN + charte vendor-free). Chacun consomme le même {columns,rows} SOQL.
+  // (CSP bloque les CDN + charte vendor-free). Chacun consomme le même {columns,rows} GXQL.
   if (mode === 'gauge') return gaugeEl(cols, rows, query, drill);
   if (mode === 'pie' || mode === 'donut') return pieEl(cols, rows, query, drill, mode === 'donut');
   if (mode === 'heatmap') return heatmapEl(cols, rows, query, drill);
@@ -1068,7 +1068,7 @@ function rerenderExplorePager() {
 async function evLoad() {
   S.evState.pageSize = evPageSize();
   const q = S.evState.q, isSoql = S.evState.isSoql, limit = S.evState.pageSize;
-  const keyset = !!S.evState.keyset;                                   // KEYSET (#28) : search SOQL sans pipe -> curseur (ts,id), parcours INTÉGRAL sans plafond
+  const keyset = !!S.evState.keyset;                                   // KEYSET (#28) : search GXQL sans pipe -> curseur (ts,id), parcours INTÉGRAL sans plafond
   const cursor = keyset ? ((S.evState.cursors && S.evState.cursors[S.evState.page]) || null) : null;   // curseur pour ATTEINDRE la page courante (séquentiel)
   const jumpOff = (keyset && !cursor && S.evState.page > 0) ? S.evState.page * S.evState.pageSize : 0;  // page non atteinte en séquentiel (clic numéro / dernière) -> saut OFFSET ponctuel
   const offset = keyset ? jumpOff : S.evState.page * S.evState.pageSize;
@@ -1185,11 +1185,11 @@ async function runQuery() {
   const q = $('#sql').value.trim();
   if (!q) { cancelInflight(); $('#qresult').replaceChildren(); $('#qstats').textContent = ''; renderQBadge(null); showQExport(false); return; }
   const isSoql = /^\s*search\b/i.test(q) || q.includes('|');
-  // GARDE UI (#1c) — une saisie NON-SOQL part en {sql} BRUT (lecture arbitraire de toute
-  // la base). Le SQL brut est RÉSERVÉ ADMIN : un non-admin garde tout son accès LECTURE via SOQL/search, on
+  // GARDE UI (#1c) — une saisie NON-GXQL part en {sql} BRUT (lecture arbitraire de toute
+  // la base). Le SQL brut est RÉSERVÉ ADMIN : un non-admin garde tout son accès LECTURE via GXQL/search, on
   // refuse juste d'envoyer du SQL brut (la VRAIE garde reste serveur : /api/query renvoie 403). Message clair.
   if (!isSoql && !socIsAdmin()) {
-    showQError('SQL brut réservé à l\'administrateur — utilisez SOQL (commencez par « search », ex : search source=… | stats count by …).');
+    showQError('SQL brut réservé à l\'administrateur — utilisez GXQL (commencez par « search », ex : search source=… | stats count by …).');
     return;
   }
   qHistPush(q);   // ITEM 6 : empile la requête exécutée (sql + fenêtre) dans l'historique Explore
@@ -1220,7 +1220,7 @@ async function runQuery() {
     renderQBadge(j.stats);
     showQExport((j.rows || []).length > 0);
     const net = Math.round(performance.now() - t0);
-    $('#qstats').textContent = `${j.stats.rows} ligne(s)${j.stats.truncated ? ' (tronqué — affine la requête)' : ''} - serveur ${j.stats.elapsed_ms} ms - total ${net} ms${j.compiled_sql ? ' - soql' : ''}`;
+    $('#qstats').textContent = `${j.stats.rows} ligne(s)${j.stats.truncated ? ' (tronqué — affine la requête)' : ''} - serveur ${j.stats.elapsed_ms} ms - total ${net} ms${j.compiled_sql ? ' - GXQL' : ''}`;
     $('#qstats').title = j.compiled_sql || '';
   } catch (e) {
     if (!S.exploreInflight || S.exploreInflight.qid !== qid) return;

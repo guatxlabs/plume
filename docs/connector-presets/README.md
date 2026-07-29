@@ -44,7 +44,7 @@ contribue au risk-based alerting). Aucune config supplémentaire nécessaire.
 | `records_path` | JSONPath (sous-ensemble sûr) du tableau d'enregistrements dans la réponse (`""` = la racine est le tableau). |
 | `source` | Libellé `source` par défaut (sinon `http:{id}`). |
 | `sourcetype` / `sourcetype_map` | `sourcetype` constant + table `sourcetype -> catégorie CIM` inline (bring-your-own CIM, sans rebuild). |
-| `field_map` | Objet `champ_event: <JSONPath | "=const">`. Clés `fields.<X>` -> objet `fields` (searchable en SOQL). Clés reconnues : `ts, severity, message, host, src_ip, dst_ip, url, category, sourcetype, source, id, dedup, entity`. |
+| `field_map` | Objet `champ_event: <JSONPath | "=const">`. Clés `fields.<X>` -> objet `fields` (searchable en GXQL). Clés reconnues : `ts, severity, message, host, src_ip, dst_ip, url, category, sourcetype, source, id, dedup, entity`. |
 | `auth.kind` | `none` \| `basic` \| `bearer` \| `token`/`header` (avec `header_name`+`prefix`) \| `oauth2_client_credentials` (avec `token_url`, `client_id`, `scope`). Le credential est TOUJOURS le champ `secret` du connecteur. |
 | `pagination.kind` | `none` \| `offset` \| `page` \| `cursor` (avec `cursor_path`) \| `link_header` (avec fallback `next_path`). Params : `param`, `size`, `size_param`, `start`. |
 | `watermark` | Incrémental : `field_path` (dans chaque record), `param` (envoyé au serveur), `format` (`epoch`\|`iso8601`), `template` (`{value}`), `lookback_days` (cold-start). |

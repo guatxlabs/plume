@@ -12,11 +12,11 @@
 </div>
 
 <p align="center">
-  <img src="docs/img/plume-demo.gif" alt="Plume — SoQL search, alerts, and incident-case investigation" width="90%">
+  <img src="docs/img/plume-demo.gif" alt="Plume — GXQL search, alerts, and incident-case investigation" width="90%">
 </p>
 
 Plume est la **moitié bleue d'un SOC purple**. Il ingère **logs et métriques**, puis vous offre la **recherche
-(SOQL)**, des **tableaux de bord**, un **moteur de détection** (règles · import Sigma · couverture ATT&CK · playbooks
+(GXQL)**, des **tableaux de bord**, un **moteur de détection** (règles · import Sigma · couverture ATT&CK · playbooks
 SOAR‑lite), du **threat‑intel** (correspondance IOC/STIX/TAXII à l'ingestion), de l'**alerting basé sur le risque**, des **cases
 d'incident** et une **réponse automatisée** — le tout dans **un seul petit binaire** que vous exécutez
 sur **Docker**, un **hôte nu (systemd)** ou **Kubernetes/k3s**, dans **2 Go de RAM**.
@@ -54,7 +54,7 @@ Le central est aussi son propre agent. Documentation approfondie : [`ARCHITECTUR
 ## Au menu
 | Domaine | Capacité |
 |---|---|
-| **Recherche** | SOQL — un langage à pipes façon SPL compilé en SQL **lecture seule, à l'épreuve des injections** (champs en liste blanche, paramètres liés, un seul SELECT, budget temps). |
+| **Recherche** | GXQL (*GuatX Query Language*, **anciennement « SOQL »** — même langage, même syntaxe, seul le nom change) — un langage à pipes façon SPL compilé en SQL **lecture seule, à l'épreuve des injections** (champs en liste blanche, paramètres liés, un seul SELECT, budget temps). Aucune requête, aucun panneau, aucune règle n'est à réécrire ; les identifiants techniques (route `/api/soql/*`, clé JSON `soql`, colonne `is_soql`, module Rust `guatx_core::soql`) restent en `soql`. |
 | **Détection** | Règles + playbooks SOAR‑lite · **import Sigma** (unitaire et en masse, avec delta de couverture ATT&CK) · **matrice de couverture ATT&CK** (**14 tactiques × 183 techniques** curées — le catalogue `guatx_core::attack::CATALOG`, angles morts mis en évidence). |
 | **Threat‑intel** | Base d'IOC · import **STIX 2.1** · **correspondance à l'ingestion** (`ti_match`, enrichir sans supprimer) · connecteur de flux **TAXII 2.1** · appartenance basée sur des filtres de Bloom pour le passage à l'échelle. |
 | **Risque (RBA)** | Scoring de risque par entité (modèle Splunk‑ES) · alerting sur incident de risque (cumul / tactiques distinctes / vélocité) · une seule alerte dédupliquée par entité. |
@@ -69,7 +69,7 @@ Le central est aussi son propre agent. Documentation approfondie : [`ARCHITECTUR
 <table>
 <tr>
 <td width="50%"><a href="docs/img/06-dashboard-light.png"><img src="docs/img/06-dashboard-light.png" alt="Overview"></a><br><sub><b>Vue d'ensemble</b> — firewall, contrôles, hôtes et fraîcheur des sources</sub></td>
-<td width="50%"><a href="docs/img/03-explore-soql.png"><img src="docs/img/03-explore-soql.png" alt="SoQL"></a><br><sub><b>Explore / SoQL</b> — recherche façon SPL compilée en SQL sûr, en lecture seule</sub></td>
+<td width="50%"><a href="docs/img/03-explore-soql.png"><img src="docs/img/03-explore-soql.png" alt="GXQL"></a><br><sub><b>Explore / GXQL</b> — recherche façon SPL compilée en SQL sûr, en lecture seule</sub></td>
 </tr>
 <tr>
 <td><a href="docs/img/08-case-detail.png"><img src="docs/img/08-case-detail.png" alt="Case"></a><br><sub><b>Cases d'incident</b> — timeline, événements/alertes liés, SLA</sub></td>
@@ -153,12 +153,12 @@ Un DSL déclaratif plus riche est documenté dans [`docs/PARSER-DSL.md`](docs/PA
 
 **Sigma.** Un **importeur** [Sigma](https://github.com/SigmaHQ/sigma) est livré (`plume-daemon sigma-import`, unitaire
 ou en masse, avec `--dry-run`) ; **3 règles d'exemple** sont dans `config.d/sigma/`. Ce n'est **pas un moteur Sigma
-complet** : il traduit le **sous-ensemble exprimable en SOQL**, et ce qu'il ne sait pas traduire fidèlement est
+complet** : il traduit le **sous-ensemble exprimable en GXQL**, et ce qu'il ne sait pas traduire fidèlement est
 **flaggé**, jamais deviné — la matrice exacte des constructions supportées et refusées est dans
 [`docs/SIGMA-IMPORTER.md`](docs/SIGMA-IMPORTER.md) §4 et §6. Le **taux d'acceptation sur le dépôt SigmaHQ complet
 n'est pas mesuré** à ce jour : nous ne publierons ce chiffre qu'une fois le banc passé.
 
-**3. Détecter et agir.** Ajoutez une **règle** (`config.d/rules/*.json` : requête SOQL + seuil) ou un **playbook** (`config.d/playbooks/*.json` : requête → action). Parsers, règles et playbooks sont aussi **créables/éditables dans l'interface** (rôle admin) ; le fichier reste la source durable, versionnée en git.
+**3. Détecter et agir.** Ajoutez une **règle** (`config.d/rules/*.json` : requête GXQL + seuil) ou un **playbook** (`config.d/playbooks/*.json` : requête → action). Parsers, règles et playbooks sont aussi **créables/éditables dans l'interface** (rôle admin) ; le fichier reste la source durable, versionnée en git.
 
 Les fichiers de `config.d/` sont chargés au démarrage de façon **idempotente** (un overlay l'emporte sur le builtin de même nom) ; un fichier invalide est **ignoré avec un avertissement**, jamais un crash. Vue d'ensemble des points d'extension (parser · connecteur · détection · threat-intel · enforcer) et modèle *bring-your-own-vendor* : **[`docs/SDK.md`](docs/SDK.md)**.
 
@@ -168,7 +168,7 @@ Les fichiers de `config.d/` sont chargés au démarrage de façon **idempotente*
   ┌────────────────────────────────┐  POST /api/ingest  ┌──────────────────────────┐
   │ resources / integrity / journal│  ───── token ────► │ axum + rusqlite (SQLite) │
   │ conntrack / auditd / suricata  │                    │  ingest + retention      │
-  │ kube-state / pod-logs / …      │  HEC / http_pull   │  SOQL + FTS5 · detection │
+  │ kube-state / pod-logs / …      │  HEC / http_pull   │  GXQL + FTS5 · detection │
   │ (auto-disable if tool absent)  │  ◄── /api/actions ─│  TI · RBA · ATT&CK · PWA │
   └────────────────────────────────┘  (responder pull)  └──────────────────────────┘
                                   Forge findings ─► /api/ingest ─► correlate by ATT&CK (purple)
@@ -186,7 +186,7 @@ Sous l'AGPL, si vous distribuez une version modifiée *ou* l'exploitez comme ser
 utilisateurs le **code source complet correspondant** de votre version sous l'AGPL. Son pendant offensif
 **[Forge](https://github.com/guatxlabs/forge)** est lui aussi en **AGPL‑3.0** — le copyleft convient à un moteur de sécurité.
 
-- **Open core — AGPL‑3.0** : le **SOC complet** — ingestion, SOQL, détection (règles · Sigma · couverture
+- **Open core — AGPL‑3.0** : le **SOC complet** — ingestion, GXQL, détection (règles · Sigma · couverture
   ATT&CK), threat‑intel, RBA, cases, réponse, connecteurs bring‑your‑own‑vendor, la boucle purple et le
   Mode Engagement. Tout le nécessaire pour exploiter Plume en solo, en équipe, ou dans vos propres opérations.
 - **Licence commerciale (disponible séparément)** : pour les organisations qui ne peuvent pas satisfaire les

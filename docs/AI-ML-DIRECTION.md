@@ -28,7 +28,7 @@ The design leans entirely on surfaces plume already ships — it exposes closed 
 |---|---|
 | `SecretProvider` SPI (`core/src/secret.rs`, v126) | template for an `AiProvider` SPI |
 | connector presets (`handlers/connectors/presets.rs`) | template for secret-free AI presets |
-| closed SOQL compiler (`core/src/soql.rs` `to_sql`) | the gate that renders LLM-generated text harmless |
+| closed GXQL compiler (`core/src/soql.rs` `to_sql`) | the gate that renders LLM-generated text harmless |
 | incident wizard (`handlers/incidents.rs`) | template for human-in-the-loop draft/approve |
 | `ssrf_guard` + ledger (`ledger.rs`) | egress control + per-call audit |
 | field-deny → authorizer (`field_filter.rs`) | prompt redaction / masking |
@@ -42,7 +42,7 @@ The design leans entirely on surfaces plume already ships — it exposes closed 
 2. **Sovereignty** → AI strictly optional, feature-gated OFF, inert without config.
 3. **Vendor-agnostic** → bring-your-own-endpoint (Ollama / vLLM / llama.cpp on another machine for air-gapped, Azure OpenAI, Anthropic, any OpenAI-compatible); zero hardcode.
 4. **Human-in-the-loop** → AI never executes; everything routes through `/api/actions` unchanged.
-5. **Injection-safe by construction** → all AI-generated SOQL passes the closed compiler which validates/rejects it (a hallucinated or malicious query is rejected the same as bad human SOQL).
+5. **Injection-safe by construction** → all AI-generated GXQL passes the closed compiler which validates/rejects it (a hallucinated or malicious query is rejected the same as bad human GXQL).
 6. **PII / secrets** → prompt redaction on the existing `field_filter` infra, never hash/token; egress via `ssrf_guard`; every AI call audited to the ledger.
 7. **Cost** → no per-event LLM call (ruinous at ~289k/day); on-demand analyst or per-incident/aggregate only.
 
@@ -63,12 +63,12 @@ The design leans entirely on surfaces plume already ships — it exposes closed 
 
 | # | Use-case | Phase | Notes |
 |---|---|---|---|
-| #1 | **NL→SOQL** | Ph1 (High/Low) | Analyst types English → LLM proposes SOQL → **closed compiler validates** → analyst runs it. The best AI shape in plume: untrusted LLM text cannot bypass `to_sql`, only field *names* surface, no data. Biggest "superset-of-Splunk" lever. |
+| #1 | **NL→GXQL** | Ph1 (High/Low) | Analyst types English → LLM proposes GXQL → **closed compiler validates** → analyst runs it. The best AI shape in plume: untrusted LLM text cannot bypass `to_sql`, only field *names* surface, no data. Biggest "superset-of-Splunk" lever. |
 | #2 | **Incident summary / narrative** | Ph1 (High/Low-Med) | Bounded, redacted digest → exec summary + timeline + dedup, as a **draft** the analyst edits. Aggregate, not per-event; prompt-injection-from-logs neutralized (output is prose that gets reviewed). |
-| #3 | **Rule-writing assist** | Ph2 | Describe a behavior → propose SOQL/Sigma → same authoring gates → rule created **DISABLED**. Complements UEBA, doesn't duplicate. |
+| #3 | **Rule-writing assist** | Ph2 | Describe a behavior → propose GXQL/Sigma → same authoring gates → rule created **DISABLED**. Complements UEBA, doesn't duplicate. |
 | #5 | **Threat-intel summary** | Ph2 (small, opportunistic) | — |
 | #6 | **Parser suggestion for unknown source** | Ph2/3 (cautious) | The only case where raw log lines enter the prompt → minimal sampling + admin-review; output = validated PARSER-DSL config, not code. |
-| #4 | **Copilot / RAG investigation** | Ph3 (explore only, NOT committed) | Retrieval **must** go through `to_sql` (RBAC/masking preserved). The friction is embeddings (remote endpoint + vector store = air-gapped friction, tension with the DuckDB/ClickHouse refusal). Start lexical/SOQL without embeddings; add vectors only if proven insufficient. |
+| #4 | **Copilot / RAG investigation** | Ph3 (explore only, NOT committed) | Retrieval **must** go through `to_sql` (RBAC/masking preserved). The friction is embeddings (remote endpoint + vector store = air-gapped friction, tension with the DuckDB/ClickHouse refusal). Start lexical/GXQL without embeddings; add vectors only if proven insufficient. |
 
 ### Honest SKIPs
 
@@ -78,13 +78,13 @@ Per-event LLM triage (ruinous + duplicates UEBA); AI auto-response/remediation (
 
 - **Ph1** = SPI + OpenAI-compat provider + presets + `ssrf_guard` + ledger + redaction v1 (feature OFF) + #1 & #2. This is the MVP "AI in plume" — small, because the gates already exist.
 - **Ph2** = #3/#5/#6 (admin-gated, disabled-by-default).
-- **Ph3** = #4 exploration only. Do **not** commit embeddings/vector infra without proof it beats SOQL retrieval.
+- **Ph3** = #4 exploration only. Do **not** commit embeddings/vector infra without proof it beats GXQL retrieval.
 
 The reflection/build frontier: Ph1-2 are concrete gated builds; Ph3 is exploration.
 
 ### Open questions for the operator
 
-1. First use-case? (reco: **NL→SOQL** — tracer bullet, proves the closed-compiler gate end-to-end before touching incident data).
+1. First use-case? (reco: **NL→GXQL** — tracer bullet, proves the closed-compiler gate end-to-end before touching incident data).
 2. Presets cloud+local or local-only in the default build?
 3. Cloud endpoints allowed at all, or self-hosted-only → `PLUME_AI_ALLOW_CLOUD` default OFF?
 4. Default redaction policy = maximally conservative + versioned to the ledger?
@@ -100,7 +100,7 @@ Salvageable, adapted to plume's real need:
 1. The **deterministic anti-hallucination guardrail** (`unverified_facts`: regex verbatim check of CVE/paths/versions/URLs against the source text + correction pass + ⚠ flag) — the best artefact.
 2. The discipline **route → multi-angle → grounding/citation `[n]`** + fail-safe "insufficient information".
 
-The "deep" reinterprets for a SOC as **deep search over plume's own evidence** (events/cases/TI/runbooks via the closed SOQL compiler), not the web — that is the future RAG/copilot phase (Ph3), grounded + cited + anti-hallucination. This is why the Ollama-native adapter (`/api/chat` + `/api/embeddings`) is worth carrying.
+The "deep" reinterprets for a SOC as **deep search over plume's own evidence** (events/cases/TI/runbooks via the closed GXQL compiler), not the web — that is the future RAG/copilot phase (Ph3), grounded + cited + anti-hallucination. This is why the Ollama-native adapter (`/api/chat` + `/api/embeddings`) is worth carrying.
 
 ---
 
@@ -195,11 +195,11 @@ The ML must **never mask a real finding** nor **perturb correct operation by hid
 | `disposition` column (ML prerequisite) | **Shipped (schema v106)** |
 | Native ML triage scorer (#17) | Deferred — waits on accumulated `disposition` labels; hand-roll, feature `ml` OFF |
 | Disposition triage metrics | Autonomous-native, buildable now |
-| LLM `AiProvider` SPI + NL→SOQL (#1) | On branch `feat/ai-nl2soql`, **activation deferred until Ollama-at-the-pod wiring** ("Ollama last"); `ai_provider` migration to be renumbered v107→v108 at activation |
+| LLM `AiProvider` SPI + NL→GXQL (#1) | On branch `feat/ai-nl2soql`, **activation deferred until Ollama-at-the-pod wiring** ("Ollama last"); `ai_provider` migration to be renumbered v107→v108 at activation |
 | LLM incident summary (#2), rule-assist (#3), TI/parser (#5/#6) | Ph1-2 gated builds, on go |
 | RAG copilot (#4) + embeddings | Ph3 exploration only; not committed; salvage the OSINT-CLI anti-hallucination + grounding pattern for it |
 
-**Bottom line:** native/sovereign comfort first (SOQL editor completion/validation shipped v129/v130, native ML triage on labels), LLM optional on top (feature-off, vendor-neutral, RAM-neutral, human-in-the-loop, never masks a finding).
+**Bottom line:** native/sovereign comfort first (GXQL editor completion/validation shipped v129/v130, native ML triage on labels), LLM optional on top (feature-off, vendor-neutral, RAM-neutral, human-in-the-loop, never masks a finding).
 
 ---
 

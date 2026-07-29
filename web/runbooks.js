@@ -1,9 +1,9 @@
 // runbooks.js — #3 INCIDENTS Phase 2 : AUTHORING de runbooks (bring-your-own), ADMIN-only.
 // Surface d'édition des GABARITS de runbook : liste (managés vs custom, état activé), création/édition d'un
 // runbook CUSTOM (nom, clé MITRE tactic/technique, étapes phasées avec guidance, step_kind manual|search|
-// response, le SOQL des étapes 'search', l'action_kind des étapes 'response'), clone d'un managé, (dés)activation,
+// response, le GXQL des étapes 'search', l'action_kind des étapes 'response'), clone d'un managé, (dés)activation,
 // suppression d'un custom. Le SERVEUR est la vraie garde (route /api/runbooks* = admin-only ; validation temps-
-// auteur du SOQL fermé + enum d'action) ; ici l'admin-only n'est que COSMÉTIQUE (panneau masqué au non-admin).
+// auteur du GXQL fermé + enum d'action) ; ici l'admin-only n'est que COSMÉTIQUE (panneau masqué au non-admin).
 // L'exécution d'une réponse reste /api/actions (INCHANGÉ) — un runbook ne fait que RÉFÉRENCER une action.
 import { $, api, apiSend, confirmModal, modal, muted, toast, socIsAdmin } from './core.js';
 
@@ -131,7 +131,7 @@ async function openEditor(id) {
   box.appendChild(acts);
 }
 
-// Une ligne d'éditeur d'étape : phase, titre, guidance, genre, et champ conditionnel (SOQL si search /
+// Une ligne d'éditeur d'étape : phase, titre, guidance, genre, et champ conditionnel (GXQL si search /
 // action_kind si response). Les champs hors-genre sont neutralisés côté serveur (validate_step).
 function stepEditor(s) {
   const el = document.createElement('div'); el.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:6px;margin-bottom:6px;border:1px solid var(--bd);border-radius:6px';
@@ -142,7 +142,7 @@ function stepEditor(s) {
   const cond = document.createElement('span'); cond.style.cssText = 'display:flex;gap:4px;align-items:center;flex:1;min-width:160px';
   const rebuild = () => {
     cond.replaceChildren();
-    if (kind.value === 'search') { const i = mkInput('search host=$target$ | stats count by source', s.search_soql); i.dataset.f = 'soql'; i.style.flex = '1'; cond.append(muted('SOQL'), i); }
+    if (kind.value === 'search') { const i = mkInput('search host=$target$ | stats count by source', s.search_soql); i.dataset.f = 'soql'; i.style.flex = '1'; cond.append(muted('GXQL'), i); }
     else if (kind.value === 'response') { const sel = mkSelect(RB_ACTIONS, s.action_kind || 'ban_ip'); sel.dataset.f = 'action'; cond.append(muted('action'), sel); }
     else { cond.appendChild(muted('—')); }
   };

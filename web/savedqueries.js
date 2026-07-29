@@ -12,7 +12,7 @@
 //     aucune donnée sensible au-delà du navigateur local.
 //
 // SÉCURITÉ : l'endpoint saved-queries est owner-scoped côté serveur (clé = identité authentifiée ; le client
-// n'envoie JAMAIS d'identifiant d'utilisateur) -> pas d'IDOR/énumération. Le texte SOQL stocké est INERTE :
+// n'envoie JAMAIS d'identifiant d'utilisateur) -> pas d'IDOR/énumération. Le texte GXQL stocké est INERTE :
 // il n'est compilé/masqué/autorisé qu'au run, par le chemin gardé /api/query (comme une requête tapée à la main).
 import { $, api, apiSend, toast, modal, confirmModal, esc } from './core.js';
 
@@ -87,7 +87,7 @@ async function saveCurrent() {
     okText: 'Enregistrer',
     fields: [
       { name: 'name', label: 'Nom', required: true, placeholder: 'ex : erreurs 4xx — 24 h' },
-      { name: 'soql', label: 'Requête (SOQL)', type: 'textarea', value: sql, placeholder: 'search source=… | stats count by …' },
+      { name: 'soql', label: 'Requête (GXQL)', type: 'textarea', value: sql, placeholder: 'search source=… | stats count by …' },
     ],
   });
   if (!vals) return;
@@ -106,7 +106,7 @@ async function editSaved(q, onDone) {
     okText: 'Enregistrer',
     fields: [
       { name: 'name', label: 'Nom', required: true, value: q.name },
-      { name: 'soql', label: 'Requête (SOQL)', type: 'textarea', value: q.soql || '' },
+      { name: 'soql', label: 'Requête (GXQL)', type: 'textarea', value: q.soql || '' },
     ],
   });
   if (!vals) return;

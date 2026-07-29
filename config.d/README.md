@@ -21,7 +21,7 @@ config.d/
 ├── parsers/     *.json              → table `parser` (regex legacy) + `dparser` (DSL déclaratif, cf. docs/PARSER-DSL.md)
 ├── rules/       *.json              → table `rule`
 ├── playbooks/   *.json              → table `playbook`
-├── sigma/       *.yml|*.yaml|*.json → table `rule` (règles Sigma traduites en SOQL, cf. docs/SIGMA-IMPORTER.md)
+├── sigma/       *.yml|*.yaml|*.json → table `rule` (règles Sigma traduites en GXQL, cf. docs/SIGMA-IMPORTER.md)
 └── cim/         cim.v1.json         → SPEC (miroir machine du CIM, cf. docs/CIM.md ; IGNORÉ par le loader — zéro effet runtime)
 ```
 
@@ -30,9 +30,9 @@ fichiers sont chargés par ordre alphabétique. Les clés JSON inconnues (ex. `_
 pratique pour documenter chaque fichier (JSON n'a pas de commentaires).
 
 > **`sigma/` (Slice #7, pièce 3).** Les règles [Sigma](https://github.com/SigmaHQ/sigma) (standard ouvert
-> de détection, YAML) y sont **traduites en règles Plume** (SOQL `search … | stats count` + `title`/`level`/
+> de détection, YAML) y sont **traduites en règles Plume** (GXQL `search … | stats count` + `title`/`level`/
 > tags MITRE) au boot par `load_overlay_sigma`, `managed = 1`. Le mapping `logsource → category` passe par
-> le **CIM** (`docs/CIM.md`). Un construit non exprimable en SOQL (OU inter-champs, `1 of them`, agrégation,
+> le **CIM** (`docs/CIM.md`). Un construit non exprimable en GXQL (OU inter-champs, `1 of them`, agrégation,
 > `|base64`/`|cidr`…) est **signalé + ignoré** (jamais une règle silencieusement fausse). Voir la matrice de
 > couverture dans **`docs/SIGMA-IMPORTER.md`**. Import ponctuel/hors-git : `plume-daemon sigma-import <path>
 > [--dry-run]` ou `POST /api/sigma/import` (admin).
@@ -57,7 +57,7 @@ Chaque fichier est validé **avant** insertion ; un fichier invalide est **ignor
 logs du daemon), il **ne fait jamais crasher** le boot :
 
 - **parser** : `pattern` non vide, ≤ 1000 caractères, regex (crate Rust `regex`) qui **compile**.
-- **règle / playbook** : la `query` doit **compiler** (SOQL ou SQL brut, même chemin que l'éval/test).
+- **règle / playbook** : la `query` doit **compiler** (GXQL ou SQL brut, même chemin que l'éval/test).
 - **règle** : `mitre` au format `Txxxx` ou `Txxxx.yyy` (vide = non mappée).
 
 ## Schémas JSON
@@ -107,7 +107,7 @@ logs du daemon), il **ne fait jamais crasher** le boot :
 ## Notes de sécurité
 
 - **SQL brut (`is_soql: false`)** lit l'intégralité de la base. Dans le CRUD de l'UI, il est **réservé
-  au rôle `admin`** (durcissement 3a) ; le SOQL (langage borné, lecture seule) reste permis à l'`editor`.
+  au rôle `admin`** (durcissement 3a) ; le GXQL (langage borné, lecture seule) reste permis à l'`editor`.
   Les overlays de ce répertoire sont considérés **trusted (git-reviewés)** : le SQL brut y est accepté,
   mais reste **validé** (doit compiler).
 - L'**évaluation** des règles et playbooks s'exécute sur une **connexion lecture seule**

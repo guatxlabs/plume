@@ -1,6 +1,6 @@
 # Profil d'infra — déployer le SOC sur N'IMPORTE QUELLE infra (sans toucher au code)
 
-Le SOC est **générique** : le moteur (daemon), la recherche (SOQL), les parsers et l'architecture
+Le SOC est **générique** : le moteur (daemon), la recherche (GXQL), les parsers et l'architecture
 des collecteurs ne contiennent **rien de spécifique à une infra**. Tout ce qui dépend de TON
 environnement passe par des **variables** (env / `EnvironmentFile` des units systemd, ou env du
 Deployment k8s). Ce fichier liste ces variables — c'est le **seul** endroit à adapter.

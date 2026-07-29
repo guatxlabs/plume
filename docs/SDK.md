@@ -48,7 +48,7 @@ Trois **idiomes** seulement, par ordre de préférence :
 | **Parser** haut débit | dialecte binaire/positionnel | trait compilé | `collector-syslog` : `impl VendorParser` + `parser::select()` | oui | code |
 | **Source pull** (API REST/JSON) | une source d'events | descripteur connecteur | `POST /api/connectors` type `http_pull`, champ `config` | **non** | [connector-presets](connector-presets/README.md) |
 | **Source push** (SIEM/agent) | flux entrant | endpoint HTTP | `POST /services/collector` (HEC), `/api/ingest*` | **non** | code (`server.rs`) |
-| **Détection** | règle | overlay déclaratif | `config.d/rules/*.json` (SOQL) + `config.d/sigma/*.yml` | **non** | [SIGMA-IMPORTER.md](SIGMA-IMPORTER.md) |
+| **Détection** | règle | overlay déclaratif | `config.d/rules/*.json` (GXQL) + `config.d/sigma/*.yml` | **non** | [SIGMA-IMPORTER.md](SIGMA-IMPORTER.md) |
 | **Threat-intel** | flux d'IOC | descripteur connecteur / import | connecteur `taxii2`, `POST /api/threat-intel/import` (STIX 2.1) | **non** | `core::ti` |
 | **Réponse / enforcer** | exécuteur d'action | adaptateur hors-process | `PLUME_BAN_BACKEND` (nft/fail2ban/…), engagement `adapter` | **non** | code (`actions.rs`) |
 | **Dimensions de rollup** | pré-agrégat requêtable | variable d'env | `PLUME_ROLLUP_DIMS` | **non** | [config.d/README](../config.d/README.md) |
@@ -139,9 +139,9 @@ détection (ils convergent sur `EventRow`/`Ioc`).
 
 Overlay déclaratif, aucun rebuild. Deux formats, **une** table `rule` :
 
-- **SOQL natif** — `config.d/rules/*.json` : `{"name","query":"search category=firewall action=blocked | stats count","op":">","threshold":0,"mitre":"T1190",…}`.
-- **Sigma** (standard ouvert) — `config.d/sigma/*.yml` : traduit en règle SOQL au boot (`load_overlay_sigma`),
-  mapping `logsource → category` **via le CIM**. Un construit non exprimable en SOQL est **signalé + ignoré**
+- **GXQL natif** — `config.d/rules/*.json` : `{"name","query":"search category=firewall action=blocked | stats count","op":">","threshold":0,"mitre":"T1190",…}`.
+- **Sigma** (standard ouvert) — `config.d/sigma/*.yml` : traduit en règle GXQL au boot (`load_overlay_sigma`),
+  mapping `logsource → category` **via le CIM**. Un construit non exprimable en GXQL est **signalé + ignoré**
   (jamais une règle silencieusement fausse) — cf. matrice dans [SIGMA-IMPORTER.md](SIGMA-IMPORTER.md).
 
 > Registration : `load_overlays`/`load_overlay_sigma`, UPSERT sur `name`, `managed=1` ; validation au boot
@@ -199,7 +199,7 @@ Faut-il une sémantique nouvelle non couverte par la taxonomie CIM ?
   → proposer une évolution du CONTRAT CIM (docs/CIM.md, SemVer) — c'est le SEUL cas « cœur »
 ```
 
-**Le fil rouge** : le cœur (`guatx-core`) porte le *contrat* (CIM, SOQL, TI pur) ; les seams portent la
+**Le fil rouge** : le cœur (`guatx-core`) porte le *contrat* (CIM, GXQL, TI pur) ; les seams portent la
 *traduction* de chaque vendeur vers ce contrat. Tant qu'un vendeur peut être **décrit** (parser/connecteur/
 règle par `category`) plutôt que **codé**, l'ajout est un fichier de config, pas un rebuild — et Plume reste
 un **sur-ensemble** de l'existant client, jamais une perte de capacité.

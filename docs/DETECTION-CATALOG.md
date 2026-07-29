@@ -18,7 +18,7 @@
   selon la télémétrie réellement branchée, via le toggle UI (aucune règle ne se met à alerter
   sur une install fraîche ⇒ zéro bruit day-0). Le socle « universellement présent + faible FP »
   est DÉJÀ activé par la couche seed ; le catalogue est l'étendue opt-in.
-- **Toutes en SOQL** (`is_soql=true`) ⇒ compilées par le compilateur FERMÉ (injection-safe par
+- **Toutes en GXQL** (`is_soql=true`) ⇒ compilées par le compilateur FERMÉ (injection-safe par
   construction ; jamais de SQL brut). Une règle qui ne compile pas est DROPPÉE au boot ⇒ un test
   (`catalog_rules_all_compile_and_are_disabled_by_default`) exige que les 34 compilent et chargent.
 - **CIM-exact** : chaque règle ne référence que des `source`/`category`/`fields.*` réellement

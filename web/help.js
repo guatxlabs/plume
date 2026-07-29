@@ -87,7 +87,7 @@ Display ONLY : the console never controls the host (enrollment/config are read-o
   explore: {
     fr: { title: `Recherche & Explore (Plume panel)`, body:
 `Le cœur de l'investigation : une requête = une recherche dans les logs.
-• Champ requête : SOQL (search … | … ) ou SQL brut (admin). Bouton « ? Aide ».
+• Champ requête : GXQL (search … | … ) ou SQL brut (admin). Bouton « ? Aide ».
 • Fenêtre temporelle propre (presets jusqu'à 1 an + intervalle précis).
 • Visualisation : Table / Barres / Courbe / Stat ; pagination (n/page).
 • Résultats : timeline, « champs intéressants » (à gauche), liste d'events.
@@ -96,7 +96,7 @@ Display ONLY : the console never controls the host (enrollment/config are read-o
 • « Panneau » enregistre la requête (réutilisable dans un Dashboard).` },
     en: { title: `Search & Explore (Plume panel)`, body:
 `The heart of investigation: one query = one search across the logs.
-• Query box: SOQL (search … | … ) or raw SQL (admin). "? Help" button.
+• Query box: GXQL (search … | … ) or raw SQL (admin). "? Help" button.
 • Its own time window (presets up to 1 year + precise interval).
 • Visualization: Table / Bar / Line / Stat ; pagination (n/page).
 • Results: timeline, "interesting fields" (left), event list.
@@ -105,8 +105,12 @@ Display ONLY : the console never controls the host (enrollment/config are read-o
 • "Panel" saves the query (reusable inside a Dashboard).` },
   },
   soql: {
-    fr: { title: `SOQL — référence des requêtes`, body:
-`PIPELINE :  search <filtres>  | transform  | transform  | …
+    fr: { title: `GXQL — référence des requêtes`, body:
+`Le langage de requête s'appelle GXQL (GuatX Query Language), anciennement SOQL.
+Même langage, même syntaxe : une requête, un lien ou un panneau écrit du temps
+de « SOQL » fonctionne tel quel, rien à réécrire.
+
+PIPELINE :  search <filtres>  | transform  | transform  | …
 
 FILTRES (search) — champs : source, category|cat, severity|sev,
   src_ip|ip, dst_ip, host, message|msg|event, url, xff, fields|field
@@ -143,8 +147,12 @@ EXEMPLES RÉELS :
   search source=web | lookup geoip src_ip OUTPUT country
 
 Heure stockée en UTC ; l'affichage suit le sélecteur de fuseau.` },
-    en: { title: `SOQL — query reference`, body:
-`PIPELINE :  search <filters>  | transform  | transform  | …
+    en: { title: `GXQL — query reference`, body:
+`The query language is called GXQL (GuatX Query Language), formerly SOQL.
+Same language, same syntax: a query, a link or a panel written back when it
+was called "SOQL" still works as-is — nothing to rewrite.
+
+PIPELINE :  search <filters>  | transform  | transform  | …
 
 FILTERS (search) — fields: source, category|cat, severity|sev,
   src_ip|ip, dst_ip, host, message|msg|event, url, xff, fields|field
@@ -214,12 +222,12 @@ Time stored in UTC ; display follows the time-zone selector.` },
   },
   dashboards: {
     fr: { title: `Dashboards`, body:
-`Tableaux de bord composés de panneaux (une requête SOQL enregistrée).
+`Tableaux de bord composés de panneaux (une requête GXQL enregistrée).
 • Vue = un regroupement de dashboards (créer / renommer / supprimer une vue).
 • + Dashboard ajoute un tableau ; + Panneau (depuis Explore) ajoute une tuile.
 • Édition : glisser / redimensionner les panneaux ; Rafraîchir recharge tout.` },
     en: { title: `Dashboards`, body:
-`Boards made of panels (a saved SOQL query).
+`Boards made of panels (a saved GXQL query).
 • View = a grouping of dashboards (create / rename / delete a view).
 • + Dashboard adds a board ; + Panel (from Explore) adds a tile.
 • Edit: drag / resize panels ; Refresh reloads everything.` },
@@ -257,7 +265,7 @@ Time stored in UTC ; display follows the time-zone selector.` },
 `Une règle exécute une requête qui renvoie UN nombre, à intervalle régulier.
 • Condition + Seuil (ex. count > 10) : si vraie -> alerte à la Sévérité choisie.
 • Sévérité : 1 low, 2 medium, 3 high, 4 critical.
-• Type : SOQL (tous) ou SQL brut (réservé admin).
+• Type : GXQL (tous) ou SQL brut (réservé admin).
 • Intervalle = fréquence d'exécution ; Fenêtre = plage de temps analysée.
 • MITRE = technique Txxxx[.yyy] taguée (nourrit la Couverture ATT&CK).
 • « Tester » évalue la requête sans créer d'alerte. « actif » (dés)active.` },
@@ -265,7 +273,7 @@ Time stored in UTC ; display follows the time-zone selector.` },
 `A rule runs a query returning ONE number, on a regular interval.
 • Condition + Threshold (e.g. count > 10): if true -> alert at chosen Severity.
 • Severity: 1 low, 2 medium, 3 high, 4 critical.
-• Type: SOQL (everyone) or raw SQL (admin only).
+• Type: GXQL (everyone) or raw SQL (admin only).
 • Interval = run frequency ; Window = analyzed time span.
 • MITRE = tagged technique Txxxx[.yyy] (feeds ATT&CK Coverage).
 • "Test" evaluates the query without creating an alert. "active" toggles it.` },
@@ -337,13 +345,13 @@ Time stored in UTC ; display follows the time-zone selector.` },
   lookups: {
     fr: { title: `Lookups (tables d'enrichissement)`, body:
 `Table de référence nommée : clé -> colonnes, pour enrichir les events.
-• Utilisée en SOQL : lookup <nom> <champ-clé> [OUTPUT cols] (LEFT JOIN).
+• Utilisée en GXQL : lookup <nom> <champ-clé> [OUTPUT cols] (LEFT JOIN).
 • Ex : lookup geoip src_ip OUTPUT country ajoute le pays à chaque event.
 • Lignes = collage JSON (tableau d'objets) OU CSV (en-têtes + lignes) ; l'upload REMPLACE tout le contenu.
 • Lecture pour tous ; création / suppression = éditeur ou admin.` },
     en: { title: `Lookups (enrichment tables)`, body:
 `Named reference table: key -> columns, to enrich events.
-• Used in SOQL: lookup <name> <key-field> [OUTPUT cols] (LEFT JOIN).
+• Used in GXQL: lookup <name> <key-field> [OUTPUT cols] (LEFT JOIN).
 • E.g. lookup geoip src_ip OUTPUT country adds the country to each event.
 • Rows = paste as JSON (array of objects) OR CSV (headers + rows) ; upload REPLACES the whole content.
 • Read for everyone ; create / delete = editor or admin.` },
@@ -460,7 +468,7 @@ document.addEventListener('click', e => {
   if (b) { e.preventDefault(); openHelp(b.dataset.help); }
 });
 
-// --- Espace « Aide » : sommaire des espaces (respecte admin/mtOnly) + référence SOQL + glossaire ---
+// --- Espace « Aide » : sommaire des espaces (respecte admin/mtOnly) + référence GXQL + glossaire ---
 // C9 — `icon` = clé ic() IDENTIQUE à l'icône de la sidebar de l'espace (cohérence visuelle nav <-> guide).
 const HELP_INDEX = [
   { fr: "Vue d'ensemble", en: 'Overview', icon: 'home', items: [
@@ -471,7 +479,7 @@ const HELP_INDEX = [
   ] },
   { fr: 'Investigation', en: 'Investigation', icon: 'search', items: [
     { k: 'explore', fr: 'Recherche & Explore', en: 'Search & Explore' },
-    { k: 'soql', fr: 'SOQL (référence)', en: 'SOQL (reference)' },
+    { k: 'soql', fr: 'GXQL (référence)', en: 'GXQL (reference)' },
     { k: 'alerts', fr: 'Alertes', en: 'Alerts' },
     { k: 'cases', fr: 'Cases', en: 'Cases' },
   ] },
@@ -504,7 +512,7 @@ const HELP_INDEX = [
 ];
 // glossaire : { t: terme, fr, en }. Rendu en textContent ; définitions vérifiées contre le code.
 const GLOSSARY = [
-  { t: 'SOQL', fr: `Langage de recherche à pipeline (search … | transform …) compilé en SQL.`, en: `Pipeline search language (search … | transform …) compiled to SQL.` },
+  { t: 'GXQL', fr: `Langage de recherche à pipeline (search … | transform …) compilé en SQL.`, en: `Pipeline search language (search … | transform …) compiled to SQL.` },
   { t: 'pipeline', fr: `Enchaînement search puis transformations séparées par des barres |.`, en: `Chain of search then transforms separated by | pipes.` },
   { t: 'search / filtre', fr: `1re étape : sélectionne les events (champ=valeur, joker*, =~regex, comparaisons).`, en: `First stage: selects events (field=value, wildcard*, =~regex, comparisons).` },
   { t: 'stats', fr: `Agrège (count, sum, avg, min, max, dc, values, list), éventuellement by champs.`, en: `Aggregates (count, sum, avg, min, max, dc, values, list), optionally by fields.` },
@@ -536,7 +544,7 @@ const GLOSSARY = [
   { t: 'approbation', fr: `File d'attente : une action doit être approuvée avant exécution.`, en: `Queue: an action must be approved before it runs.` },
   { t: 'mode observe/active', fr: `Observation = propositions seulement ; ACTIF = ripostes automatiques.`, en: `Observe = proposals only ; ACTIVE = automatic responses.` },
   { t: 'RBAC', fr: `Rôles : admin (tout), editor (écriture contenu), viewer (lecture seule).`, en: `Roles: admin (all), editor (write content), viewer (read only).` },
-  { t: 'SQL brut', fr: `Requête SQL directe, réservée à l'admin (les autres utilisent SOQL).`, en: `Direct SQL query, admin only (others use SOQL).` },
+  { t: 'SQL brut', fr: `Requête SQL directe, réservée à l'admin (les autres utilisent GXQL).`, en: `Direct SQL query, admin only (others use GXQL).` },
   { t: 'tenant', fr: `Espace client isolé (base chiffrée dédiée).`, en: `Isolated client space (dedicated encrypted DB).` },
   { t: 'environnement', fr: `prod / staging… filtrant les vues d'un tenant.`, en: `prod / staging… filtering a tenant's views.` },
   { t: 'mode 0 / mode 1', fr: `Mode 0 = mono-tenant (switchers cachés) ; mode 1 = multi-tenant.`, en: `Mode 0 = single-tenant (switchers hidden) ; mode 1 = multi-tenant.` },
@@ -551,7 +559,7 @@ const GLOSSARY = [
   { t: 'credential', fr: `Secret chiffré au repos, jamais réaffiché (•••).`, en: `Secret encrypted at rest, never shown again (•••).` },
   { t: 'audit / ledger', fr: `Journal inviolable (hash chaîné) des changements, lecture seule.`, en: `Tamper-evident (hash-chained) change log, read-only.` },
   { t: 'DLP / gouvernance', fr: `Qui accède à quoi + intégrité + droits, en lecture seule.`, en: `Who accesses what + integrity + permissions, read-only.` },
-  { t: 'dashboard / panneau', fr: `Panneau = requête SOQL enregistrée ; vue = regroupement de dashboards.`, en: `Panel = saved SOQL query ; view = grouping of dashboards.` },
+  { t: 'dashboard / panneau', fr: `Panneau = requête GXQL enregistrée ; vue = regroupement de dashboards.`, en: `Panel = saved GXQL query ; view = grouping of dashboards.` },
   { t: 'fuseau / UTC', fr: `Stockage toujours en UTC ; affichage selon le fuseau choisi.`, en: `Always stored in UTC ; displayed per the chosen timezone.` },
   { t: 'notifier / canal', fr: `Destination d'alerte : ntfy, webhook, email.`, en: `Alert destination: ntfy, webhook, email.` },
 ];
@@ -567,9 +575,9 @@ function renderHelpGuide() {
   const host = $('#help-body'); if (!host) return;
   const en = LANG === 'en';
   host.replaceChildren();
-  // C9 — mini-sommaire COLLANT (Espaces · SOQL · Glossaire · Raccourcis) : ancres internes, aucun réseau.
+  // C9 — mini-sommaire COLLANT (Espaces · GXQL · Glossaire · Raccourcis) : ancres internes, aucun réseau.
   const toc = document.createElement('nav'); toc.className = 'hg-toc'; toc.setAttribute('aria-label', en ? 'Guide contents' : 'Sommaire du guide');
-  [['hg-espaces', en ? 'Spaces' : 'Espaces'], ['hg-soql', 'SOQL'], ['hg-gloss', en ? 'Glossary' : 'Glossaire'], ['hg-raccourcis', en ? 'Shortcuts' : 'Raccourcis']]
+  [['hg-espaces', en ? 'Spaces' : 'Espaces'], ['hg-soql', 'GXQL'], ['hg-gloss', en ? 'Glossary' : 'Glossaire'], ['hg-raccourcis', en ? 'Shortcuts' : 'Raccourcis']]
     .forEach(([id, lbl]) => {
       const a = document.createElement('button'); a.type = 'button'; a.className = 'hg-toclink'; a.textContent = lbl;
       a.onclick = () => { const t = document.getElementById(id); if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
@@ -602,9 +610,9 @@ function renderHelpGuide() {
     box.appendChild(links); idx.appendChild(box);
   });
   host.appendChild(idx);
-  // SOQL — bloc COLLAPSIBLE « Référence » (exemples réels + accès à la référence complète)
+  // GXQL — bloc COLLAPSIBLE « Référence » (exemples réels + accès à la référence complète)
   const ref = document.createElement('details'); ref.className = 'hg-ref hg-anchor hg-sec'; ref.id = 'hg-soql'; ref.open = true;
-  const sum = document.createElement('summary'); sum.className = 'hg-refsum'; sum.textContent = en ? 'SOQL — Reference' : 'SOQL — Référence';
+  const sum = document.createElement('summary'); sum.className = 'hg-refsum'; sum.textContent = en ? 'GXQL — Reference' : 'GXQL — Référence';
   ref.appendChild(sum);
   const sP = document.createElement('p'); sP.className = 'muted'; sP.style.cssText = 'margin:8px 0 8px;font-size:13px;line-height:1.5';
   sP.textContent = en ? 'Search language. Examples:' : 'Langage de recherche. Exemples :'; ref.appendChild(sP);
@@ -615,7 +623,7 @@ function renderHelpGuide() {
     'search source=web | lookup geoip src_ip OUTPUT country',
   ].join('\n'); ref.appendChild(ex);
   const sBtn = document.createElement('button'); sBtn.type = 'button'; sBtn.className = 'hg-link'; sBtn.style.marginBottom = '4px';
-  sBtn.textContent = en ? 'Open the full SOQL reference' : 'Ouvrir la référence SOQL complète';
+  sBtn.textContent = en ? 'Open the full GXQL reference' : 'Ouvrir la référence GXQL complète';
   sBtn.onclick = () => openHelp('soql'); ref.appendChild(sBtn);
   host.appendChild(ref);
   // GLOSSAIRE filtrable
@@ -646,12 +654,12 @@ function renderHelpGuide() {
   host.appendChild(rl);
 }
 
-// aide SOQL (modal) — référence des requêtes directement dans l'UI
+// aide GXQL (modal) — référence des requêtes directement dans l'UI
 function openHelpModal() {
   const ov = document.createElement('div'); ov.className = 'modal-ov';
   const box = document.createElement('div'); box.className = 'modal helpmodal';
   const en = LANG === 'en';
-  const h = document.createElement('h3'); h.textContent = en ? 'Help — queries (SOQL)' : 'Aide — requêtes (SOQL)';
+  const h = document.createElement('h3'); h.textContent = en ? 'Help — queries (GXQL)' : 'Aide — requêtes (GXQL)';
   const pre = document.createElement('pre'); pre.className = 'helpref';
   pre.textContent = (en ? [
     'PIPELINE :  search <filters>  | stats …  | where …  | sort …  | head N  | table *',

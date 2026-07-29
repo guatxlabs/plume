@@ -2,7 +2,7 @@
 
 > **Statut : additif, INERTE par défaut.** Plume peut ingérer des **traces distribuées**
 > OpenTelemetry via le protocole **standard OTLP/HTTP**. Chaque `span` devient une ligne CIM
-> (`category=trace`), requêtable en SOQL et **corrélable aux logs par `trace_id`**. Le récepteur
+> (`category=trace`), requêtable en GXQL et **corrélable aux logs par `trace_id`**. Le récepteur
 > est **OFF** tant que `PLUME_OTLP_TRACES=1` n'est pas posé (mode 0 byte-identique).
 
 C'est le choix **vendor-agnostic / souverain** : n'importe quel SDK OpenTelemetry ou OTel
@@ -130,7 +130,7 @@ search category=trace trace_status=error service=checkout
 
 ---
 
-## 4. SOQL / requêtes d'exemple
+## 4. GXQL / requêtes d'exemple
 
 Les traces étant des events `category=trace`, elles sont immédiatement requêtables :
 
@@ -146,7 +146,7 @@ search category=trace | stats count by span_kind
 ```
 
 > Panneaux natifs (slowest-ops, error-rate-by-service, trace-explorer groupé par `trace_id`) :
-> **différés** en follow-up UI. Les requêtes SOQL ci-dessus couvrent l'usage dès aujourd'hui et
+> **différés** en follow-up UI. Les requêtes GXQL ci-dessus couvrent l'usage dès aujourd'hui et
 > peuvent être sauvegardées comme recherches/panneaux ad-hoc.
 
 ---
@@ -173,7 +173,7 @@ borne de concurrence. Résidu assumé : au plus `PLUME_OTLP_INGEST_CONCURRENCY` 
 texte source chacun) matérialisés simultanément.
 
 JSON malformé → `400` **sans panic**. Aucun SQL n'est construit à partir de la donnée de span :
-attributs et noms traversent le **même** chemin CIM→event→SOQL **masqué** que tout champ ingéré.
+attributs et noms traversent le **même** chemin CIM→event→GXQL **masqué** que tout champ ingéré.
 
 ---
 
@@ -194,4 +194,4 @@ collector OTel relaie légitimement plusieurs services/hôtes (host autoritatif 
 - **Signaux `metrics` et `logs` OTLP** (`/v1/metrics`, `/v1/logs`) — Plume a déjà des récepteurs
   Prometheus remote_write et Loki push (cf. `ingest/obs.rs`) ; l'unification sous OTLP est un
   chantier ultérieur.
-- **Panneaux natifs traces** (trace-explorer) — SOQL couvre l'usage ; UI en follow-up.
+- **Panneaux natifs traces** (trace-explorer) — GXQL couvre l'usage ; UI en follow-up.

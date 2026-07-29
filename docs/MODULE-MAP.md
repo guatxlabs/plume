@@ -19,7 +19,7 @@ the core never depends on the daemon and must never gain a `rusqlite`/SQLCipher 
 
 | Core module | Surface | Notes |
 |-------------|---------|-------|
-| `soql` | The closed SOQL compiler → read-only SQL; `Dialect` SPI, `FieldMaskSet`, `soql_field`/`soql_filter_field`, `SOQL_PIPE_COMMANDS` | The single query engine, shared with Forge. `soql_tests.rs` is its parity harness. Field-masking choke-point lives here. |
+| `soql` | The closed GXQL compiler → read-only SQL; `Dialect` SPI, `FieldMaskSet`, `soql_field`/`soql_filter_field`, `SOQL_PIPE_COMMANDS` | The single query engine, shared with Forge. `soql_tests.rs` is its parity harness. Field-masking choke-point lives here. |
 | `store` | Neutral **`EventStore` SPI** DTOs (`EventRow`/`MetricRow`/`SnapshotRow`, `Rows`/`QueryStats`) | Pure data contract — no rusqlite. The `EventStore` trait's only prod impl (`SqlcipherStore`) stays in the daemon. Enables pluggable backends (DuckDB/ClickHouse/Parquet). |
 | `secret` | **`SecretProvider` SPI** (`SecretValue` over `secrecy`/`zeroize`) | Redacted Debug, zeroized on drop. |
 | `cim`, `attack`, `ti` | Common information model, ATT&CK, threat-intel DTOs | Taxonomy shared blue/red. |
@@ -55,7 +55,7 @@ is annotated with its feature #). Large but flat: `query`, `search`, `soql_meta`
 |-------|---------|----------|
 | `handlers/connectors/` (`mod`, `defender`, `taxii`, `httppull`, `presets`) | External source connectors + SSRF-guarded egress choke-point | **Yes** — cleanest independently-ownable box (per audit). All egress funnels through `ssrf_guard`. |
 | `handlers/detection.rs`, `handlers/detection_advanced.rs` | Detection rules, reparse/backfill | **Mostly** — one tentacle: `parser_reparse` clamps its lower bound to `hot_cutoff` via `cold_store::reparse_lower_bound` when the cold tier is on (immutable-cold invariant, H2). Touch reparse ⇒ understand cold aging. |
-| `handlers/query.rs`, `handlers/soql_meta.rs`, `handlers/search.rs` | Query surface | Guarded — sits on the SOQL/masking choke-points (see invariants). |
+| `handlers/query.rs`, `handlers/soql_meta.rs`, `handlers/search.rs` | Query surface | Guarded — sits on the GXQL/masking choke-points (see invariants). |
 
 ### Query execution & aggregation
 | Path | Purpose | Ownable? |
@@ -87,7 +87,7 @@ is annotated with its feature #). Large but flat: `query`, `search`, `soql_meta`
 | `server.rs` | `run()` boot: config → open/migrate DB → seed_* → background jobs → router (~340 routes) | Guarded — the boot god-function; changes here are deploy-gated |
 | `state.rs` | `AppState` (config carrier + shared handles) | See caveat below |
 | `main.rs` | CLI subcommands (backup/restore/…), glue | — |
-| `metrics.rs`, `knowledge.rs`, `seeds.rs`, `ledger.rs`, `sigma.rs` | Metrics, knowledge objects, seed data, audit ledger, Sigma→SOQL importer | Mostly yes |
+| `metrics.rs`, `knowledge.rs`, `seeds.rs`, `ledger.rs`, `sigma.rs` | Metrics, knowledge objects, seed data, audit ledger, Sigma→GXQL importer | Mostly yes |
 
 ---
 
@@ -106,7 +106,7 @@ submodule owns exactly one invariant, stated at the top of its file:
 | `seal` | Per-file `cold_seal` index (in the SQLCipher DB → confidential). Crash-safety commit marker (`last_file=1`), prune without decrypting. |
 | `writer` | Streamed per-file writer + **Phase 1** of aging: size-bounded files, each durably sealed (fsync+VERIFY+rename+seal) **before** any hot DELETE. |
 | `aging` | **Two-phase state machine + crash-safety (H1/H2).** Tail guard H1 (rowid-reuse), cold-immutability vs reparse H2, verify-before-delete, retention math. |
-| `reader` | **Masking deferred to P3.** `hydrate_cold` produces raw unmasked rows in an ephemeral in-mem table — **never wired into a user query path**. Cold rows become user-reachable only through the *same* compiled SOQL + `FieldMaskSet` + authorizer as hot (a temp `event` view shadowing `main.event`). |
+| `reader` | **Masking deferred to P3.** `hydrate_cold` produces raw unmasked rows in an ephemeral in-mem table — **never wired into a user query path**. Cold rows become user-reachable only through the *same* compiled GXQL + `FieldMaskSet` + authorizer as hot (a temp `event` view shadowing `main.event`). |
 | `backup` | Incremental verbatim escrow of sealed day-files (plan only; sidecar runs `mc cp`). Symmetric by design; daemon never deletes remote objects. |
 
 ---
@@ -115,9 +115,9 @@ submodule owns exactly one invariant, stated at the top of its file:
 
 | Invariant | Where it lives | How it's guarded |
 |-----------|----------------|------------------|
-| **Field-masking choke-point** — every user-visible field passes one masking point before aggregation/rename | `core/src/soql.rs::soql_field`/`soql_filter_field`; injected via `field_filter.rs` → `FieldMaskSet` | Named fns + contiguous module; tests; non-SOQL surfaces reuse `mask_json_value` |
+| **Field-masking choke-point** — every user-visible field passes one masking point before aggregation/rename | `core/src/soql.rs::soql_field`/`soql_filter_field`; injected via `field_filter.rs` → `FieldMaskSet` | Named fns + contiguous module; tests; non-GXQL surfaces reuse `mask_json_value` |
 | **DENY authorizer** — DENY on a real column holds even for raw admin SQL | `query_exec.rs` SQLite authorizer, fed by `field_filter.rs` `PHYSICAL_EVENT_COLS` | Set at `prepare()`; secret denylist (`user.hash`/`token.token_hash`) |
-| **Closed SOQL grammar** — reads are compiled, read-only; raw SQL is admin-only | `guatx_core::soql`; `stmt.readonly()` guard in `query_exec.rs` | Closed command enum; readonly assert |
+| **Closed GXQL grammar** — reads are compiled, read-only; raw SQL is admin-only | `guatx_core::soql`; `stmt.readonly()` guard in `query_exec.rs` | Closed command enum; readonly assert |
 | **Cold at-rest encryption + fail-closed** — cold never written in clear; no key ⇒ nothing aged/written/deleted | `cold_store/crypto.rs` | HKDF domain separation; fail-closed on missing key |
 | **Per-tenant isolation** — tenants disjoint by key and cold root | per-tenant SQLCipher key; `cold_store/paths.rs` cold root from tenant `db_path` | Key + path derivation; `tenants.rs` |
 | **Crash-safety: verify-before-delete** — hot rows deleted only after the cold file is proven decodable | `cold_store/{aging,identity,seal}.rs` | Two-phase machine; `last_file=1` commit; full-decode VERIFY |

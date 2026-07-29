@@ -18,7 +18,7 @@ Everything you need to run a complete SOC, solo, in a team, or across your own o
 | Area | Included in the open core |
 |---|---|
 | **Ingest** | Agents (sh/systemd), Splunk‑HEC endpoint, generic `http_pull` connector, syslog/Fortinet, declarative parser DSL |
-| **Search & dashboards** | SOQL (read‑only, injection‑safe), FTS5, saved panels/dashboards |
+| **Search & dashboards** | GXQL (read‑only, injection‑safe), FTS5, saved panels/dashboards |
 | **Detection** | Rules · SOAR‑lite playbooks · **Sigma import** (single + bulk) · **ATT&CK coverage matrix** |
 | **Threat‑intel** | IOC store · STIX 2.1 import · match‑on‑ingest · TAXII 2.1 connector · bloom‑backed membership |
 | **Risk (RBA)** | Per‑entity scoring · risk‑incident alerting |

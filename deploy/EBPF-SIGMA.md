@@ -20,6 +20,6 @@ Tetragon émet ses events en JSON (`tetra getevents -o json`). Un collecteur du 
 `/api/ingest`) le branche au SOC ; pertinent dans le cluster k3s (DaemonSet).
 
 ## Sigma — règles communautaires
-Les règles **SigmaHQ** se traduisent en requêtes `soql`. Le traducteur **Sigma → soql** (parser YAML →
+Les règles **SigmaHQ** se traduisent en requêtes `GXQL`. Le traducteur **Sigma → GXQL** (parser YAML →
 conditions `search … | stats … | where …`) est la prochaine brique. En attendant, recrée les détections
 clés à la main dans **⚙️ Règles** (le moteur est déjà là). Mapping **MITRE ATT&CK** = tag dans le nom/raison.

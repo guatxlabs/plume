@@ -230,7 +230,7 @@ contrat détectable sur des données figées**, sans quoi rien ne distingue une 
 d'une ligne récente.
 
 - **Lecture au repos** : une ligne **sans** clé `fields.cim` a été écrite **avant** le tampon (« pré-tampon »,
-  convention inconnue) ; une valeur **ancienne** (`< CIM_VERSION`) signale un contrat périmé. Ex. SOQL :
+  convention inconnue) ; une valeur **ancienne** (`< CIM_VERSION`) signale un contrat périmé. Ex. GXQL :
   `search category=exec | where json_extract(fields,'$.cim')!="1.3"`.
 - **Additif / idempotent / fail-safe** : `cim_stamp` n'écrase jamais une clé `cim` déjà posée ; un sac vide
   devient `{"cim":"1.3"}` ; un JSON non-objet imprévu est laissé INCHANGÉ (jamais de perte). Le tampon ne
@@ -268,7 +268,7 @@ périmètre de ce document) :
 
 - **Pièce 2 — DSL de parser déclaratif** : mapper des champs vendeur → champs CIM en
   `config.d` sans rebuild Rust (PARSE/MAP/ENRICH, jamais DROP).
-- **Pièce 3 — Importeur Sigma** : traduire les règles Sigma → règles Plume (SOQL) via le
+- **Pièce 3 — Importeur Sigma** : traduire les règles Sigma → règles Plume (GXQL) via le
   mapping logsource → `source`/`category` de ce contrat.
 
 Ces deux pièces **référencent** cette taxonomie ; elles ne la redéfinissent pas.

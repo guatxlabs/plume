@@ -308,7 +308,7 @@ async function removeGrant(tid, user, host) {
 }
 
 // --- Audit accès opérateur (item 4) : événements plume-operator-access / plume-tenant-admin du tenant courant.
-// Interroge la base du TENANT COURANT via /api/query (SOQL) -> réutilise le rendu tableEl. Multi-tenant only.
+// Interroge la base du TENANT COURANT via /api/query (GXQL) -> réutilise le rendu tableEl. Multi-tenant only.
 async function loadOperatorAudit() {
   const block = $('#opaccess-block'), body = $('#opaccess-body');
   if (!block || !body) return;

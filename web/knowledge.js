@@ -67,7 +67,7 @@ function renderEventtypes(rows) {
     mode: 'client', pageSize: 15, rows, sort: { key: 'name', dir: 1 },
     columns: [
       { key: 'name', label: 'Nom', sortable: true, sortVal: r => r.name || '', render: r => nameCell(r.name, r.enabled) },
-      { key: 'filter', label: 'Filtre (SOQL)', render: r => codeCell(r.filter) },
+      { key: 'filter', label: 'Filtre (GXQL)', render: r => codeCell(r.filter) },
       { key: 'managed', label: 'Origine', render: r => managedBadge(r.managed) },
       { key: 'act', label: '', render: r => delCell(r.managed, () => del('eventtype', r.id, r.name, "l'event type")) },
     ],
@@ -107,7 +107,7 @@ function newCalc() {
 function newEventtype() {
   create('eventtype', 'event type',
     [{ name: 'name', label: 'Nom', required: true, placeholder: 'web_attack' },
-     { name: 'filter', label: 'Filtre (SOQL)', type: 'textarea', required: true, placeholder: 'source=web severity=HIGH' },
+     { name: 'filter', label: 'Filtre (GXQL)', type: 'textarea', required: true, placeholder: 'source=web severity=HIGH' },
      { name: 'enabled', label: 'Actif', type: 'checkbox', value: true }],
     v => ({ name: (v.name || '').trim(), filter: (v.filter || '').trim(), enabled: !!v.enabled }));
 }

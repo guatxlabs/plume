@@ -1,15 +1,15 @@
 // datamodels.js — #47 DATA MODELS + PIVOT + DATASETS : couche sémantique (modèles -> objets -> champs) +
-// report-builder « Pivot » SANS SOQL/SPL à la main + datasets (pivots/recherches enregistrés, réutilisables).
+// report-builder « Pivot » SANS GXQL/SPL à la main + datasets (pivots/recherches enregistrés, réutilisables).
 // Vit dans l'espace DONNÉES. Lecture + exécution (Pivot / dataset run) = viewer+ ; CRUD (modèles/objets/
 // champs/datasets) = éditeur+ (boutons crud-btn masqués au viewer via CSS + garde SERVEUR editor+).
 //
 // Réutilise 100% les endpoints #47 EXISTANTS — AUCUNE surface nouvelle, AUCUN chemin de requête/masquage
-// touché. Le Pivot ne fabrique jamais de SQL : /api/pivot/run compile un SOQL puis l'exécute par le MÊME
+// touché. Le Pivot ne fabrique jamais de SQL : /api/pivot/run compile un GXQL puis l'exécute par le MÊME
 // chemin masqué que /api/query (masquage #45 du rôle appliqué côté serveur) :
 //   GET    /api/datamodels                 -> {models,objects,fields,field_types,stat_funcs,filter_ops}
 //   POST   /api/datamodels | /:id/objects | /objects/:id/fields         (editor+)
 //   DELETE /api/datamodels/:id | /objects/:id | /fields/:id             (editor+)
-//   POST   /api/pivot/compile  (SOQL généré, transparence)  |  /api/pivot/run  (exécution masquée)  viewer+
+//   POST   /api/pivot/compile  (GXQL généré, transparence)  |  /api/pivot/run  (exécution masquée)  viewer+
 //   GET    /api/datasets  |  POST /api/datasets  (editor+)  |  POST /api/datasets/:id/run  (viewer+)
 //   DELETE /api/datasets/:id                                            (editor+)
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (jeton CSRF auto).
@@ -60,7 +60,7 @@ function renderModels() {
       { key: 'act', label: '', render: r => delBtn(r.managed, () => delModel(r)) },
     ],
     renderRow: null,
-    emptyText: 'aucun modèle — créez un modèle sémantique (ex. « Authentication ») puis ses objets et champs pour piloter le Pivot sans écrire de SOQL.',
+    emptyText: 'aucun modèle — créez un modèle sémantique (ex. « Authentication ») puis ses objets et champs pour piloter le Pivot sans écrire de GXQL.',
     onRowClick: r => selectModel(r.id),
   });
 }
@@ -98,11 +98,11 @@ function renderObjects() {
     columns: [
       { key: 'name', label: 'Objet', sortable: true, sortVal: r => r.name || '', render: r => { const s = nameCell(r.name, r.enabled); if (r.id === selObject) s.style.fontWeight = '700'; return s; } },
       { key: 'parent', label: 'Parent', render: r => { const p = DM.objects.find(o => o.id === r.parent_id); return codeCell(p ? p.name : ''); } },
-      { key: 'constraint', label: 'Contrainte (SOQL)', render: r => codeCell(r.constraint) },
+      { key: 'constraint', label: 'Contrainte (GXQL)', render: r => codeCell(r.constraint) },
       { key: 'flds', label: 'Champs', align: 'r', render: r => String(DM.fields.filter(f => f.object_id === r.id).length) },
       { key: 'act', label: '', render: r => delBtn(null, () => delObject(r)) },
     ],
-    emptyText: 'aucun objet — ajoutez un objet (contrainte SOQL optionnelle, ex. action=failure) ; ses champs alimenteront le Pivot.',
+    emptyText: 'aucun objet — ajoutez un objet (contrainte GXQL optionnelle, ex. action=failure) ; ses champs alimenteront le Pivot.',
     onRowClick: r => selectObject(r.id),
   });
 }
@@ -118,7 +118,7 @@ async function newObject() {
   const parents = DM.objects.filter(o => o.model_id === selModel);
   const v = await modal({ title: 'Nouvel objet', okText: 'Créer', fields: [
     { name: 'name', label: 'Nom (identifiant)', required: true, placeholder: 'failed_logins' },
-    { name: 'constraint', label: 'Contrainte (fragment SOQL, optionnel)', placeholder: 'action=failure' },
+    { name: 'constraint', label: 'Contrainte (fragment GXQL, optionnel)', placeholder: 'action=failure' },
     { name: 'parent_id', label: 'Parent (héritage de contrainte)', type: 'select', value: '', options: [{ value: '', label: '(racine)' }].concat(parents.map(p => ({ value: p.id, label: p.name }))) },
     { name: 'enabled', label: 'Actif', type: 'checkbox', value: true },
   ] });
@@ -215,7 +215,7 @@ function addFilterRow() {
   row.append(fld, op, val, rm);
   $('#dm-pivot-filters').appendChild(row);
 }
-// Lit la PivotSpec depuis le DOM du builder (aucune saisie SOQL/SPL libre).
+// Lit la PivotSpec depuis le DOM du builder (aucune saisie GXQL/SPL libre).
 function collectSpec() {
   const splitby = [...document.querySelectorAll('#dm-pivot-splitby .pv-chip.on')].map(el => el.dataset.src);
   const stats = [...document.querySelectorAll('#dm-pivot-stats .pv-statrow')].map(r => ({ func: r.querySelector('.pv-func').value, field: r.querySelector('.pv-field').value || null })).filter(s => s.func);
@@ -272,7 +272,7 @@ async function loadDatasets() {
     columns: [
       { key: 'name', label: 'Dataset', sortable: true, sortVal: r => r.name || '', render: r => nameCell(r.name, r.enabled) },
       { key: 'kind', label: 'Type', render: r => codeCell(r.kind) },
-      { key: 'soql', label: 'SOQL', render: r => codeCell(r.soql) },
+      { key: 'soql', label: 'GXQL', render: r => codeCell(r.soql) },
       { key: 'managed', label: 'Origine', render: r => managedBadge(r.managed) },
       { key: 'act', label: '', render: r => {
         const wrap = document.createElement('span'); wrap.className = 'row-actions';

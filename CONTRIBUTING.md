@@ -35,7 +35,7 @@ A pull request that weakens any of these will be **rejected**, no matter how use
   dependency is `optional = true` behind a feature, defaulted OFF, with a rationale comment in
   `daemon/Cargo.toml` (that file is the canonical rationale log — match its style).
 - **Masking is applied at the `soql_field` choke-point — never re-implemented per caller.**
-  User-facing reads go through the shared SOQL compiler; rows pass through
+  User-facing reads go through the shared GXQL compiler; rows pass through
   `soql_field`/`soql_filter_field` (in guatx-core) **before** aggregation/rename. Do not add a
   read path that hydrates raw rows into a user query, and do not reimplement masking anywhere
   else. DENY rules also arm the SQLite authorizer so the denial holds even for admin raw SQL.
@@ -62,7 +62,7 @@ A pull request that weakens any of these will be **rejected**, no matter how use
   `PreparedDb::open*` (anti-downgrade guard + `prepare_schema`), or say
   `open_db_without_schema_contract` out loud and expect the reviewer to ask why. A production
   file that opens `rusqlite::Connection` itself fails `the_door_is_the_only_way_in`.
-- **The SOQL compiler lives in `guatx-core` — fix it in place, never fork.** The closed
+- **The GXQL compiler lives in `guatx-core` — fix it in place, never fork.** The closed
   grammar and its `SqliteDialect` are shared. Change the compiler *in the core crate*; do not
   copy it into the daemon or maintain a divergent parser. The dependency is one-directional:
   `plume-daemon` depends on `guatx-core`; the core never depends on the daemon and must never
@@ -91,7 +91,7 @@ cargo test --manifest-path daemon/Cargo.toml        # 752 tests, default feature
 
 The **`cold_tier` suite has its own count and its own CI job** (`cold-tier` in
 `.github/workflows/ci.yml`, `EXPECTED_COLD_TESTS`). Run it too when you touch
-`daemon/src/cold_store/` — or anything it depends on, notably the SOQL compiler:
+`daemon/src/cold_store/` — or anything it depends on, notably the GXQL compiler:
 
 ```sh
 TMPDIR=/path/on/disk cargo test --manifest-path daemon/Cargo.toml --features cold_tier
@@ -103,7 +103,7 @@ TMPDIR=/path/on/disk cargo test --manifest-path daemon/Cargo.toml --features col
 > failure mode is *silent*: over-prune a Parquet file and a query spanning more than a week
 > returns a wrong count **without erroring**. Until this job existed, nothing in CI even
 > *compiled* the module — and it had gone red unnoticed: bumping guatx-core to v0.2.1
-> tightened SOQL field-name validation and broke the cold extractor-parity tests, while the
+> tightened GXQL field-name validation and broke the cold extractor-parity tests, while the
 > default suite stayed at 752 green.
 
 **Two testing gotchas** (learned the hard way):

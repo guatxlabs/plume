@@ -18,10 +18,10 @@
    - CRUD : API `POST /api/rules` + UI (champ « Conformité » du formulaire de règle). Import **Sigma** :
      les `tags` du doc (namespaces `pci_dss.*`, `hipaa.*`, `nist.*`, `cis.*`, alias inclus) sont mappés.
 
-2. **Dashboards de posture PAR CADRE** (seedés au boot, SOQL, vue « Conformité (posture) ») :
+2. **Dashboards de posture PAR CADRE** (seedés au boot, GXQL, vue « Conformité (posture) ») :
    **PCI DSS**, **HIPAA**, **NIST 800-53**. Chacun filtre la posture SCA ingérée (#57,
    `category=posture`) au cadre (`posture_framework=*<id>*`) : pass/fail global, échecs par contrôle,
-   par hôte, détail. Lecture via le **chemin SOQL masqué** (#45 field-filters + RBAC hérités).
+   par hôte, détail. Lecture via le **chemin GXQL masqué** (#45 field-filters + RBAC hérités).
 
 3. **Rollup de posture** — `GET /api/compliance/posture[?framework=<id>][&since=<epoch_s>]` (viewer+).
    Compose **(a)** pass/fail SCA **par contrôle** (posture ingérée, agrégée en Rust — aucune concat SQL)

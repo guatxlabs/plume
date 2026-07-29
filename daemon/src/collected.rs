@@ -13,150 +13,237 @@
 //! n'aurait gagné que du silence. L'oracle d'inertie se fonde DONC ici sur ce que les COLLECTEURS et l'AGENT
 //! LIVRÉS écrivent réellement dans `fields.<X>`, jamais sur l'existence d'un alias.
 //!
-//! REPRÉSENTATION — une table `(champ, fichier qui l'émet)`. Chaque entrée est CITÉE : le fichier livré cité
-//! doit contenir le nom du champ. Ce n'est pas déclaratif-sur-parole, c'est VÉRIFIÉ par la garde
-//! `collected_inventory_is_backed_by_shipped_collectors` (tests/detection.rs), qui contrôle les DEUX sens :
+//! UN INVENTAIRE INCOMPLET MENT AUSSI — PAR BRUIT. Le sens « sûr » (sur-avertir) n'est PAS gratuit : un champ
+//! réellement émis mais absent de l'inventaire produit un avertissement d'inertie FAUX. La première version
+//! de ce module en comptait 52 (dont `pid`, `process`, `country`, `bucket`, `record_id` — parmi les noms
+//! Sigma les plus courants). Cause MESURÉE : sa surface d'extraction ne voyait que les objets `fields` à
+//! clés QUOTÉES (le JSON échappé du shell/awk) et les overlays de parseurs ; le `jq` à clés NUES de
+//! `cloudflare.sh`, le `json!` de l'agent, le `.py` de MinIO et le `.ps1` Windows lui échappaient tous —
+//! prouvé par mutation (ajouter un champ à chacun laissait la garde VERTE). Un avertissement auquel personne
+//! ne croit ne vaut rien : la COUVERTURE de l'extraction est donc de PREMIER ordre, pas un raffinement.
+//! (L'inventaire passe ainsi de 97 à 149 entrées, sans qu'un seul collecteur change : c'est la MESURE qui
+//! change, pas la collecte.)
 //!
-//!   (A) AUCUNE ENTRÉE FANTÔME — un champ inventorié que personne n'émet fait ROUGIR la garde. C'est le sens
-//!       qui protège du faux vert : sans lui, on pourrait ré-éteindre un avertissement en inventant une ligne.
-//!   (B) AUCUNE DÉRIVE SILENCIEUSE — tout champ que la garde EXTRAIT MÉCANIQUEMENT des collecteurs livrés
-//!       (voir plus bas la surface d'extraction) doit figurer ici, sinon elle ROUGIT.
+//! REPRÉSENTATION — une table `(champ, fichier livré qui l'émet)`. Chaque entrée est CITÉE, et la citation
+//! est VÉRIFIÉE MÉCANIQUEMENT par la garde `collected_inventory_is_backed_by_shipped_collectors`
+//! (tests/detection.rs), qui contrôle les DEUX sens AVEC LE MÊME EXTRACTEUR :
+//!
+//!   (A) AUCUNE ENTRÉE FANTÔME — le champ doit être EXTRAIT du fichier cité, c'est-à-dire y apparaître en
+//!       POSITION DE PRODUCTEUR (P1..P5 ci-dessous). Une occurrence quelconque du nom NE SUFFIT PAS : la
+//!       version précédente se contentait d'une SOUS-CHAÎNE, et `("RequestPath", "web.sh")` passait au vert
+//!       alors que `web.sh` ne fait que LIRE cette clé Traefik (`sval("RequestPath")`) et n'émet que
+//!       `fields.path` — un faux vert re-fabricable en UNE LIGNE.
+//!   (B) AUCUNE DÉRIVE SILENCIEUSE — tout champ que l'extracteur ramène d'un collecteur livré doit figurer
+//!       ici, sinon la garde ROUGIT. Un collecteur qui se met à émettre un champ force son inventaire.
 //!
 //! MISE À JOUR QUAND UN COLLECTEUR CHANGE — c'est mécanique, pas une convention :
 //!   * un collecteur commence à émettre `fields.<X>` -> la garde (B) rougit tant que `<X>` n'est pas ajouté ;
 //!   * un collecteur cesse d'émettre `<X>` (ou le fichier cité disparaît) -> la garde (A) rougit tant que
 //!     l'entrée n'est pas retirée -> l'avertissement d'inertie REVIENT pour les règles qui en dépendaient.
 //!
-//! SURFACE D'EXTRACTION MÉCANIQUE (sens B) — délibérément ÉTROITE et syntaxiquement définie :
-//!   R1. tout littéral clé JSON à l'intérieur d'un objet `"fields": { … }` ou d'une affectation shell/Rust
-//!       `…fields… = { … }`, dans `collectors/*.sh` et `agent/src/source/**.rs` ;
-//!   R2. les overlays de parseurs livrés `config.d/parsers/*.json` : clés de `map.fields` + groupes nommés
-//!       `(?P<x>…)` de `pattern` (= exactement ce que le parseur écrit dans l'event).
-//! Tout le reste échappe à cette surface : champs assemblés DYNAMIQUEMENT (awk `af("k",v)` d'auditd, fragment
-//! `ext` de mail.sh, `fields.insert` de l'agent Windows) et clés NON QUOTÉES du collecteur PowerShell
-//! (`@{ event_id = … }`). Ils sont inventoriés à la main et restent soumis au contrôle de CITATION (A).
-//! CONSÉQUENCE ASSUMÉE, STRUCTURELLE (elle découle du prédicat, pas d'une estimation) : un champ absent de
-//! l'inventaire rend `plume_collects_field` faux, donc SUR-AVERTIT (une donnée collectée signalée inerte) ;
-//! une incomplétude ne peut PAS produire l'inverse (déclarer vivante une donnée non collectée). L'inventaire
-//! ne peut donc pas fabriquer du faux vert — seulement du bruit, dans le sens sûr.
+//! SURFACE D'EXTRACTION — FAMILLES BALAYÉES (une par forme de collecteur réellement LIVRÉE ; le nombre
+//! d'extractions de CHACUNE est planchonné par la garde, pour qu'en perdre une entière ROUGISSE) :
+//!   `collectors/*.sh` · `collectors/*.py` · `collectors/windows/*.ps1` · `agent/src/source/*.rs` ·
+//!   `agent/src/source/fim/*.rs` · `config.d/parsers/*.json`.
+//! POSITIONS DE PRODUCTEUR RECONNUES :
+//!   P1. objet LITTÉRAL `fields` (clés de PROFONDEUR 1 uniquement), quelle qu'en soit la syntaxe :
+//!       `\"fields\":{…}` et `fields="{…}"` (JSON échappé de shell/awk), `fields: {…}` (jq, clés NON
+//!       quotées), `fields = serde_json::json!({…})` (agent), `fields = {…}` (python), `@{ … }` /
+//!       `-Fields @{ … }` (hashtable PowerShell, clés nues séparées par `;`).
+//!   P2. insertion par CLÉ LITTÉRALE dans le sac : `…insert("X".into()|"X".to_string(), Value::…)` (Rust),
+//!       `fields["X"] =` (python).
+//!   P3. overlays de parseurs livrés : clés de `map.fields` + groupes nommés `(?P<x>…)` de `pattern`.
+//!   P4. ajouteur de champ awk `af("X", v)` — UNIQUEMENT dans un fichier qui DÉFINIT `function af(` (c'est
+//!       le cas d'`auditd.sh`) ; ailleurs, `f("X")` reste un appel quelconque, pas un producteur.
+//!   P5. fragment d'objet JSON échappé `",\"X\":\"` concaténé dans le sac (awk : le `ext` de `mail.sh`, le
+//!       `fj` de `pod-logs.sh`) — UNIQUEMENT dans un `.sh` qui contient par ailleurs un objet `fields`.
+//! Les fichiers `.rs` sont tronqués à leur premier `#[cfg(test)]` EN COLONNE 0 : les fixtures de test ne
+//! sont pas de la collecte livrée.
+//!
+//! CE QUE L'EXTRACTION NE VOIT PAS (mesuré, pas estimé) — chaque cas produit un SUR-AVERTISSEMENT :
+//!   * la recopie VERBATIM des clés `EventData` du log Windows (`source/windows.rs`, `m.insert(name, …)`)
+//!     et les champs des sources DÉCLARATIVES `[[source]]` (`source/generic.rs`) : surfaces OUVERTES,
+//!     définies au DÉPLOIEMENT, donc non inventoriables statiquement ;
+//!   * dans un fragment P5, une clé à valeur NON-string (`\"X\":123`, `\"X\":{`) et la PREMIÈRE clé d'un
+//!     fragment (P5 exige la virgule qui la précède) ;
+//!   * les overlays `config.d/parsers/*.json` ajoutés par l'exploitant APRÈS déploiement (seuls les
+//!     overlays LIVRÉS sont balayés).
+//!
+//! CE QUE LA GARDE (A) GARANTIT — ET SA LIMITE EXACTE. Fabriquer un faux vert ne se fait plus en ajoutant
+//! une ligne d'inventaire : il faut que l'extracteur DÉRIVE le nom du fichier cité. P1..P3 sont des
+//! positions structurelles ; P4/P5 restent SYNTAXIQUES — un commentaire, dans un collecteur livré, qui
+//! imiterait un fragment JSON (`,\"X\":\"`) serait accepté. Ce n'est donc PAS infalsifiable : c'est devenu
+//! une modification d'un fichier de COLLECTE livré, visible en revue, et non plus une ligne d'inventaire.
+//! Symétriquement, une SUR-extraction (un nom dérivé qui n'est pas un champ) pousserait à inventorier un
+//! non-champ, donc à éteindre un avertissement à tort : c'est pourquoi la surface est syntaxiquement
+//! ÉTROITE (profondeur 1, valeur string exigée en P5, `af` conditionné à sa définition).
 //!
 //! PÉRIMÈTRE — ce module répond pour les CHAMPS ÉTENDUS (`fields.<X>`). Les colonnes CŒUR du CIM
 //! (`CIM_CORE_FIELDS`) sont l'enveloppe de tout event et sont traitées par `plume_collects_field`. L'oracle
-//! de CATÉGORIE (l'avertissement `category=endpoint`) n'est PAS traité dans ce lot : il ne consulte pas la
-//! table d'alias, ce n'est donc pas le rôle confondu qu'on sépare ici, et l'inventorier mécaniquement n'a
-//! pas été mesuré. NON MESURÉ = non affirmé.
-//!
-//! L'agent Windows recopie EN PLUS, verbatim, les clés `EventData` du log Windows (`source/windows.rs`) :
-//! surface OUVERTE et dépendante du déploiement, donc NON inventoriable statiquement. Ces champs restent
-//! signalés inertes — sur-avertissement assumé (sens sûr), pas un silence.
+//! de CATÉGORIE (l'avertissement `category=endpoint`) n'est PAS traité ici : il ne consulte pas la table
+//! d'alias, ce n'est donc pas le rôle confondu qu'on sépare, et l'inventorier mécaniquement n'a pas été
+//! mesuré. NON MESURÉ = non affirmé.
 
 use guatx_core::cim::CIM_CORE_FIELDS;
 
-/// Champs ÉTENDUS (`fields.<X>`) que les collecteurs/parseurs/agent LIVRÉS écrivent réellement, chacun
-/// avec le FICHIER LIVRÉ qui l'émet (citation vérifiée par la garde, sens A). La casse est SIGNIFICATIVE :
-/// `json_extract` est sensible à la casse, un `fields.Action` ne serait pas peuplé par un collecteur qui
-/// écrit `action`. NE PAS ajouter d'entrée pour « améliorer la couverture » : une entrée non émise ÉTEINT
-/// un avertissement d'inertie (c'est exactement le faux vert que ce module supprime) — et la garde rougira.
-/// Les entrées marquées « hors surface R1/R2 » sont celles que l'extraction mécanique ne voit pas (champ
-/// assemblé dynamiquement) : elles ne sont tenues que par le contrôle de citation (sens A).
+/// Champs ÉTENDUS (`fields.<X>`) que les collecteurs/parseurs/agent LIVRÉS écrivent réellement, chacun avec
+/// le FICHIER LIVRÉ qui l'émet. La citation est un SUFFIXE de chemin qui doit désigner UN SEUL fichier de la
+/// surface balayée (`mod.rs`/`windows.rs`/`linux.rs` existent en double -> `fim/mod.rs`, `source/windows.rs`).
+/// La casse est SIGNIFICATIVE : `json_extract` est sensible à la casse, un `fields.Action` ne serait pas
+/// peuplé par un collecteur qui écrit `action`.
+/// CETTE TABLE N'EST PAS TENUE À LA MAIN — elle est le MIROIR de ce que l'extracteur ramène : y ajouter une
+/// entrée qu'il ne dérive PAS du fichier cité fait ROUGIR la garde (sens A) ; en retirer une qu'il dérive la
+/// fait rougir aussi (sens B). On ne « pense pas à » la mettre à jour, le test l'exige.
 pub(crate) const COLLECTED_EXTENDED_FIELDS: &[(&str, &str)] = &[
     ("access", "minio.sh"),
-    ("acct", "auditd.sh"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
+    ("accessKey", "minio-audit-relay.py"),
+    ("acct", "auditd.sh"),
     ("action", "bans.sh"),
-    ("addr", "auditd.sh"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
+    ("addr", "auditd.sh"),
     ("agent_ready", "crowdsec.sh"),
-    ("atype", "auditd.sh"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
+    ("api", "minio-audit-relay.py"),
+    ("app", "plume-collector.ps1"),
+    ("asn", "cloudflare.sh"),
+    ("atype", "auditd.sh"),
     ("auid", "dataaccess.sh"),
+    ("backend", "fim/mod.rs"),
     ("binding", "kube-rbac.sh"),
+    ("bucket", "minio-audit-relay.py"),
     ("buckets", "minio.sh"),
     ("bytes", "example-nginx.json"),
+    ("carve_out", "auditd.sh"),
+    ("cf_action", "cloudflare.sh"),
     ("cf_country", "cloudflare-firewall-events.json"),
     ("cf_rule", "cloudflare-firewall-events.json"),
     ("cf_source", "cloudflare-firewall-events.json"),
     ("cf_ua", "cloudflare-firewall-events.json"),
     ("change", "integrity.sh"),
-    ("channel", "windows.rs"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
+    ("channel", "source/windows.rs"),
     ("code", "kube-audit.sh"),
+    ("collector", "auditd.sh"),
     ("comm", "dataaccess.sh"),
+    ("container", "pod-logs.sh"),
     ("count", "conntrack.sh"),
+    ("country", "cloudflare.sh"),
     ("decision", "kube-audit.sh"),
     ("desired", "engagement-adapter.sh"),
     ("detector", "origin-drop.sh"),
     ("dir", "conntrack.sh"),
+    ("direction", "plume-collector.ps1"),
     ("dport", "conntrack.sh"),
     ("dst_host", "conntrack.sh"),
     ("dst_port", "nft-scan-detect.json"),
     ("dur_ms", "web.sh"),
+    ("enabled", "plume-collector.ps1"),
+    ("enforcement", "nft.sh"),
     ("ensured", "engagement-adapter.sh"),
-    ("event_id", "windows.rs"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
-    ("exe", "auditd.sh"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
+    ("event_id", "source/windows.rs"),
+    ("exe", "auditd.sh"),
+    ("exec_drop_dropped_this_run", "auditd.sh"),
+    ("exec_drop_list_effective", "auditd.sh"),
+    ("exec_drop_list_tier1", "auditd.sh"),
+    ("exec_drop_list_tier2_recon", "auditd.sh"),
     ("failcount", "engagement-adapter.sh"),
     ("family", "origin-drop.sh"),
     ("file", "yara.sh"),
     ("files_scanned", "pod-logs.sh"),
+    ("filters", "auditd.sh"),
     ("fim_actor", "example-endpoint-fim.json"),
+    ("fim_change", "fim/mod.rs"),
+    ("fim_coverage", "fim/mod.rs"),
     ("fim_event", "example-endpoint-fim.json"),
+    ("fim_gid", "fim/mod.rs"),
     ("fim_mode", "example-endpoint-fim.json"),
+    ("fim_mode_octal", "fim/mod.rs"),
     ("fim_path", "example-endpoint-fim.json"),
     ("fim_sha256", "example-endpoint-fim.json"),
+    ("fim_sha256_before", "fim/mod.rs"),
+    ("fim_size", "fim/mod.rs"),
+    ("fim_size_before", "fim/mod.rs"),
+    ("fim_uid", "fim/mod.rs"),
     ("flags", "dataacl.sh"),
     ("group", "dataacl.sh"),
     ("http", "engagement-adapter.sh"),
+    ("inbound", "plume-collector.ps1"),
     ("key", "dataaccess.sh"),
     ("kind", "integrity.sh"),
     ("lapi_ok", "crowdsec.sh"),
     ("last_alert_age_s", "crowdsec.sh"),
-    ("level", "windows.rs"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
+    ("level", "source/windows.rs"),
     ("lines_scanned", "pod-logs.sh"),
+    ("local_port", "plume-collector.ps1"),
+    ("max", "portscan.sh"),
+    ("messageType", "macos.rs"),
     ("method", "example-nginx.json"),
     ("mode", "dataacl.sh"),
     ("name", "kube-audit.sh"),
     ("nft_fail", "engagement-adapter.sh"),
+    ("note", "auditd.sh"),
     ("ns", "kube-audit.sh"),
+    ("object", "minio-audit-relay.py"),
     ("objects", "minio.sh"),
+    ("os", "plume-collector.ps1"),
+    ("os_category", "macos.rs"),
+    ("outbound", "plume-collector.ps1"),
     ("owner", "dataacl.sh"),
     ("path", "cloudflare-firewall-events.json"),
+    ("pid", "source/linux.rs"),
+    ("pod", "pod-logs.sh"),
     ("policy", "minio.sh"),
     ("proc", "conntrack.sh"),
+    ("process", "macos.rs"),
+    ("profile", "plume-collector.ps1"),
     ("proto", "conntrack.sh"),
-    ("provider", "windows.rs"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
-    ("rcpt", "mail.sh"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
+    ("protocol", "plume-collector.ps1"),
+    ("provider", "source/windows.rs"),
+    ("ray", "cloudflare.sh"),
+    ("rcpt", "mail.sh"),
+    ("record_id", "plume-collector.ps1"),
     ("refused", "engagement-adapter.sh"),
+    ("remote_port", "plume-collector.ps1"),
     ("removed", "engagement-adapter.sh"),
-    ("res", "auditd.sh"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
+    ("request_id", "minio-audit-relay.py"),
+    ("res", "auditd.sh"),
     ("resource", "kube-audit.sh"),
     ("risk", "dataacl.sh"),
     ("role", "kube-rbac.sh"),
     ("router", "web.sh"),
     ("rule", "yara.sh"),
+    ("ruleId", "cloudflare.sh"),
     ("scenarios_broken", "crowdsec.sh"),
     ("scenarios_loaded", "crowdsec.sh"),
     ("scope", "conntrack.sh"),
-    ("score", "mail.sh"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
-    ("sender", "mail.sh"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
+    ("score", "mail.sh"),
+    ("sender", "mail.sh"),
     ("service", "mail.sh"),
+    ("set", "portprobe.sh"),
     ("sev3_shipped", "pod-logs.sh"),
     ("sha256", "integrity.sh"),
     ("signal", "nft-scan-detect.json"),
-    ("size", "mail.sh"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
+    ("size", "mail.sh"),
     ("skew", "engagement-adapter.sh"),
     ("sport", "origin-drop.sh"),
+    ("src_port", "plume-collector.ps1"),
     ("state", "conntrack.sh"),
     ("status", "example-nginx.json"),
+    ("statusCode", "minio-audit-relay.py"),
     ("subject", "kube-rbac.sh"),
-    ("success", "auditd.sh"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
-    ("syscall", "auditd.sh"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
+    ("subsystem", "macos.rs"),
+    ("success", "auditd.sh"),
+    ("syscall", "auditd.sh"),
     ("tags", "yara.sh"),
     ("type", "dataacl.sh"),
     ("ua", "web.sh"),
-    ("uid", "auditd.sh"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
+    ("uid", "auditd.sh"),
     ("user", "dataaccess.sh"),
+    ("user_agent", "minio-audit-relay.py"),
     ("vendor", "example-cim-firewall.json"),
     ("verb", "kube-audit.sh"),
-    ("verdict", "mail.sh"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
+    ("verdict", "mail.sh"),
+    ("version_delete", "minio-audit-relay.py"),
     ("versions", "minio.sh"),
     ("vhost", "cloudflare-firewall-events.json"),
-    ("virus", "mail.sh"), // hors surface R1/R2 (assemblé dynamiquement) — retenu par la CITATION seule
+    ("virus", "mail.sh"),
 ];
 
 /// Plume peuple-t-il réellement ce champ plume ? = colonne CŒUR du CIM (enveloppe de TOUT event, toujours

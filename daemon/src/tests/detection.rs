@@ -2307,100 +2307,209 @@
              une table qui ne répond pas à la question « plume collecte-t-il cette donnée ? ».");
     }
 
-    /// GARDE DE L'INVENTAIRE DE COLLECTE (`collected::COLLECTED_EXTENDED_FIELDS`) — il doit rester COLLÉ à ce
-    /// que les collecteurs/parseurs/agent LIVRÉS émettent, DANS LES DEUX SENS :
-    ///   (A) AUCUNE ENTRÉE FANTÔME — le fichier livré CITÉ doit exister et contenir le nom du champ. Sans ce
-    ///       sens, on pourrait ré-éteindre un avertissement d'inertie en inventant une ligne d'inventaire :
-    ///       c'est exactement le faux vert que la séparation des rôles supprime.
-    ///   (B) AUCUNE DÉRIVE SILENCIEUSE — tout champ EXTRAIT MÉCANIQUEMENT des sources livrées (objets
-    ///       `"fields": {…}` / affectations `…fields… = {…}` ; `map.fields` et groupes nommés de `pattern`
-    ///       des overlays de parseurs) doit figurer dans l'inventaire. Un collecteur qui se met à émettre un
-    ///       nouveau champ fait donc rougir ce test tant qu'il n'est pas inventorié.
-    /// C'est le PROTOCOLE DE MISE À JOUR : on ne « pense pas à » mettre l'inventaire à jour, le test l'exige.
-    /// Les champs assemblés dynamiquement (awk `af("k",v)` d'auditd, fragment `ext` de mail.sh,
-    /// `fields.insert` de l'agent Windows) sont hors surface d'extraction : ils restent couverts par (A).
-    /// Incomplétude résiduelle -> SUR-avertissement (donnée collectée dite inerte), jamais un silence.
-    #[test]
-    fn collected_inventory_is_backed_by_shipped_collectors() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let dirs = ["collectors", "collectors/windows", "config.d/parsers", "agent/src/source", "agent/src/source/fim"];
-
-        // ---------- (A) aucune entrée fantôme : citation vérifiée ----------
-        for (field, cite) in crate::collected::COLLECTED_EXTENDED_FIELDS {
-            let path = dirs.iter().map(|d| root.join(d).join(cite)).find(|p| p.is_file())
-                .unwrap_or_else(|| panic!(
-                    "champ inventorié `{field}` : fichier livré cité `{cite}` INTROUVABLE. Si le collecteur a \
-                     été retiré, RETIRER l'entrée d'inventaire — sinon l'oracle déclare vivante une donnée que \
-                     plus rien n'émet (avertissement d'inertie éteint à tort)."));
-            let body = std::fs::read_to_string(&path).unwrap();
-            // Le nom est cherché en position de PRODUCTEUR de champ : littéral entre guillemets, forme NUE
-            // (`"x"`, JSON/Rust) ou ÉCHAPPÉE (`\"x\"`, JSON construit dans une chaîne shell/awk), ou groupe
-            // nommé d'un parseur regex (`(?P<x>…)`, qui écrit `fields.x` à l'ingestion).
-            let cited = body.contains(&format!("\"{field}\""))
-                || body.contains(&format!("\"{field}\\\""))
-                || body.contains(&format!("(?P<{field}>"));
-            assert!(cited,
-                "champ inventorié `{field}` : son fichier cité `{cite}` ne contient AUCUNE occurrence de \
-                 \"{field}\" -> entrée FANTÔME. Un champ que rien n'émet ne doit pas figurer à l'inventaire : \
-                 il y éteindrait l'avertissement d'inertie sans qu'aucune donnée ne soit collectée.");
-        }
-
-        // ---------- (B) aucune dérive silencieuse : extraction mécanique ⊆ inventaire ----------
-        // Surface d'extraction (cf. doc de `collected.rs`) : un objet `fields` littéral, où qu'il soit écrit
-        // (shell `\"fields\":{…}`, affectation `…fields…={…}`, `json!({…})` de l'agent).
-        let marker = regex::Regex::new(r#"(?:\\?"fields\\?"\s*:\s*\\?\{)|(?:\w*fields\w*\s*=\s*[("'!]*\s*\\?\{)"#).unwrap();
-        let keyre = regex::Regex::new(r#"\\?"([A-Za-z_][A-Za-z0-9_]*)\\?"\s*:"#).unwrap();
+    /// EXTRACTEUR MÉCANIQUE DE CHAMPS ÉMIS — le SEUL oracle des DEUX sens de la garde d'inventaire (cf. la
+    /// doc de `collected.rs` pour les familles balayées et les positions de producteur P1..P5). Renvoie, pour
+    /// chaque fichier LIVRÉ de la surface, la liste des noms de champs qu'il écrit dans `fields`, avec son
+    /// chemin RELATIF à la racine du dépôt.
+    ///
+    /// Il sert (A) — un champ inventorié doit être extrait de son fichier cité, donc y figurer en POSITION DE
+    /// PRODUCTEUR, une occurrence quelconque du nom ne suffisant pas — ET (B) — tout champ extrait doit être
+    /// inventorié. Un seul extracteur pour les deux sens : impossible qu'ils divergent.
+    fn collected_extract_shipped(root: &std::path::Path) -> Vec<(String, String, &'static str)> {
+        // P1 — ouverture d'un objet LITTÉRAL `fields`. Deux branches : (a) `…fields… :|= …{` — le préfixe
+        // toléré entre le `:`/`=` et la `{` est BORNÉ (24 car., sans saut de ligne, alphabet fermé) : il
+        // couvre `"{`, `@{`, `serde_json::json!({`, `$(printf '{`, et RIEN d'autre — un préfixe libre ferait
+        // sauter le marqueur par-dessus du texte quelconque (mesuré : `"fields": self.fields,` capturait
+        // alors des mots de commentaires) ; (b) `-Fields @{` — le sac passé EN PARAMÈTRE d'une cmdlet
+        // PowerShell, sans `=` (mesuré : 4 sites d'appel de `plume-collector.ps1`, 11 champs, dont
+        // `profile`/`local_port`/`os`, invisibles sans cette branche).
+        let marker = regex::Regex::new(r#"(?i)(?:(?:\\?"|\$)?\w*fields\w*(?:\\?")?\s*[:=]\s*[A-Za-z0-9_:!@$('" ]{0,24}?|-fields\s+@)\{"#).unwrap();
+        // Clé en tête d'un élément de PROFONDEUR 1 : quotée (`"x":`), quotée-échappée (`\"x\":`), nue jq
+        // (`x:`) ou nue PowerShell (`x =`). Une clé imbriquée n'est PAS `fields.<X>` -> jamais extraite.
+        let keyre = regex::Regex::new(r#"^\s*[,;]?\s*\\?"?([A-Za-z_][A-Za-z0-9_]*)\\?"?\s*[:=]"#).unwrap();
+        // P2 — insertion par clé LITTÉRALE dans le sac de champs (Rust : `obj`/`fields`/`o` ; python).
+        let insrs = regex::Regex::new(r#"\.insert\(\s*"([A-Za-z_][A-Za-z0-9_]*)"(?:\.into\(\)|\.to_string\(\))\s*,\s*Value::"#).unwrap();
+        let inspy = regex::Regex::new(r#"(?i)\$?\w*fields\w*\[\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*\]\s*="#).unwrap();
+        // P3 — groupes nommés d'un `pattern` de parseur.
         let grpre = regex::Regex::new(r"\(\?P<([A-Za-z_][A-Za-z0-9_]*)>").unwrap();
-        let mut derived: Vec<(String, String)> = Vec::new();
+        // P4 — ajouteur de champ awk, conditionné à la DÉFINITION de `af` dans le même fichier.
+        let afdef = regex::Regex::new(r"function\s+af\s*\(").unwrap();
+        let afuse = regex::Regex::new(r#"\baf\(\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*,"#).unwrap();
+        // P5 — fragment d'objet JSON échappé, à VALEUR STRING (`,\"x\":\"`). La valeur string est exigée :
+        // sans elle, l'enveloppe de spool (`,\"events\":[`) serait prise pour un champ.
+        let frag = regex::Regex::new(r#"[",]\s*,?\\"([A-Za-z_][A-Za-z0-9_]*)\\"\s*:\s*\\""#).unwrap();
 
-        for d in ["collectors", "agent/src/source", "agent/src/source/fim"] {
-            let dir = root.join(d);
-            if !dir.is_dir() { continue; }
-            for e in std::fs::read_dir(&dir).unwrap().flatten() {
-                let p = e.path();
-                let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("");
-                if !matches!(ext, "sh" | "rs") { continue; }
-                let name = p.file_name().unwrap().to_string_lossy().to_string();
-                let body = match std::fs::read_to_string(&p) { Ok(b) => b, Err(_) => continue };
-                let bytes = body.as_bytes();
+        let mut out: Vec<(String, String, &'static str)> = Vec::new();
+        for (dir, ext, fam, _) in COLLECTED_SCAN_SURFACE {
+            let (dir, ext, fam) = (*dir, *ext, *fam);
+            let d = root.join(dir);
+            assert!(d.is_dir(), "surface d'extraction : répertoire livré `{dir}` INTROUVABLE (déplacé ?)");
+            let mut files: Vec<_> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.path()).collect();
+            files.sort();
+            for p in files {
+                if p.extension().and_then(|x| x.to_str()) != Some(ext) { continue; }
+                let base = p.file_name().unwrap().to_string_lossy().to_string();
+                if base == "tests.rs" { continue; }
+                let rel = format!("{dir}/{base}");
+                let mut body = match std::fs::read_to_string(&p) { Ok(b) => b, Err(_) => continue };
+
+                if ext == "json" {
+                    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+                    if let Some(o) = v.pointer("/map/fields").and_then(|x| x.as_object()) {
+                        for k in o.keys() { out.push((k.clone(), rel.clone(), fam)); }
+                    }
+                    if let Some(pat) = v.get("pattern").and_then(|x| x.as_str()) {
+                        for c in grpre.captures_iter(pat) { out.push((c[1].to_string(), rel.clone(), fam)); }
+                    }
+                    continue;
+                }
+                // Les fixtures de test ne sont pas de la collecte LIVRÉE : on tronque au `#[cfg(test)]` de
+                // COLONNE 0 (le `mod tests` final) — pas au premier, qui peut être un attribut INDENTÉ sur
+                // une fonction test-only au milieu du fichier (mesuré : `fim/mod.rs:667`).
+                if ext == "rs" {
+                    if let Some(i) = body.find("\n#[cfg(test)]") { body.truncate(i); }
+                }
+
+                let mut has_fields_obj = false;
                 for m in marker.find_iter(&body) {
-                    // Bloc à ACCOLADES ÉQUILIBRÉES à partir de la `{` du marqueur (borné : garde-fou anti-boucle).
-                    let (mut i, mut depth, start) = (m.end(), 1usize, m.end());
-                    while i < bytes.len() && depth > 0 && i - start < 8000 {
-                        match bytes[i] { b'{' => depth += 1, b'}' => depth -= 1, _ => {} }
+                    has_fields_obj = true;
+                    // Bloc à accolades ÉQUILIBRÉES ; on ne retient que les clés de PROFONDEUR 1, découpées
+                    // sur les séparateurs d'élément (`,` JSON/jq/py, `;` et saut de ligne PowerShell).
+                    let (bytes, start) = (body.as_bytes(), m.end());
+                    let (mut i, mut depth, mut seg) = (start, 1usize, start);
+                    // `closed` : on ne coupe la QUEUE du bloc que si l'accolade s'est refermée dans le
+                    // budget — sinon `i` pourrait tomber au milieu d'un caractère UTF-8 (les collecteurs
+                    // sont commentés en français). Les autres bornes sont des délimiteurs ASCII.
+                    let mut closed = false;
+                    while i < bytes.len() && i - start < 8000 {
+                        match bytes[i] {
+                            b'{' => depth += 1,
+                            b'}' => { depth -= 1; if depth == 0 { closed = true; break; } }
+                            b',' | b';' | b'\n' if depth == 1 => {
+                                if let Some(c) = keyre.captures(&body[seg..i]) { out.push((c[1].to_string(), rel.clone(), fam)); }
+                                seg = i + 1;
+                            }
+                            _ => {}
+                        }
                         i += 1;
                     }
-                    for c in keyre.captures_iter(&body[start..i]) {
-                        derived.push((c[1].to_string(), name.clone()));
+                    if closed {
+                        if let Some(c) = keyre.captures(&body[seg..i]) { out.push((c[1].to_string(), rel.clone(), fam)); }
                     }
+                }
+                if ext == "rs" { for c in insrs.captures_iter(&body) { out.push((c[1].to_string(), rel.clone(), fam)); } }
+                if ext == "py" { for c in inspy.captures_iter(&body) { out.push((c[1].to_string(), rel.clone(), fam)); } }
+                if afdef.is_match(&body) { for c in afuse.captures_iter(&body) { out.push((c[1].to_string(), rel.clone(), fam)); } }
+                if ext == "sh" && has_fields_obj {
+                    for c in frag.captures_iter(&body) { out.push((c[1].to_string(), rel.clone(), fam)); }
                 }
             }
         }
-        let pdir = root.join("config.d/parsers");
-        for e in std::fs::read_dir(&pdir).unwrap().flatten() {
-            let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) != Some("json") { continue; }
-            let name = p.file_name().unwrap().to_string_lossy().to_string();
-            let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
-            if let Some(o) = v.pointer("/map/fields").and_then(|x| x.as_object()) {
-                for k in o.keys() { derived.push((k.clone(), name.clone())); }
-            }
-            if let Some(pat) = v.get("pattern").and_then(|x| x.as_str()) {
-                for c in grpre.captures_iter(pat) { derived.push((c[1].to_string(), name.clone())); }
-            }
+        out
+    }
+
+    /// FAMILLES de collecteurs livrés balayées par l'extracteur, avec le PLANCHER d'extractions de chacune.
+    /// Le garde-fou anti-rot global (`derived.len() > 50`) était trop lâche : la perte d'une famille ENTIÈRE
+    /// passait inaperçue (mesuré — l'extraction ne mordait en fait que sur `collectors/*.sh`, et 45 champs
+    /// réellement émis étaient déclarés inertes). Un plancher PAR FAMILLE rend cette perte rouge.
+    /// Planchers ≈ 75-80 % du MESURÉ à ce commit (sh 412 · py 14 · ps1 27 · rs 11 · fim 18 · parsers 21) :
+    /// assez lâches pour qu'une retouche de collecteur ne rougisse pas, assez serrés pour qu'en perdre une
+    /// FORME de production rougisse (mesuré : retirer P5 fait tomber `collectors/*.sh` de 412 à 211).
+    const COLLECTED_SCAN_SURFACE: &[(&str, &str, &str, usize)] = &[
+        ("collectors", "sh", "collectors/*.sh", 330),
+        ("collectors", "py", "collectors/*.py", 11),
+        ("collectors/windows", "ps1", "collectors/windows/*.ps1", 20),
+        ("agent/src/source", "rs", "agent/src/source/*.rs", 8),
+        ("agent/src/source/fim", "rs", "agent/src/source/fim/*.rs", 14),
+        ("config.d/parsers", "json", "config.d/parsers/*.json", 16),
+    ];
+
+    /// GARDE DE L'INVENTAIRE DE COLLECTE (`collected::COLLECTED_EXTENDED_FIELDS`) — il doit rester COLLÉ à ce
+    /// que les collecteurs/parseurs/agent LIVRÉS émettent, DANS LES DEUX SENS, avec LE MÊME extracteur :
+    ///   (A) AUCUNE ENTRÉE FANTÔME — le champ doit être EXTRAIT du fichier cité, donc y apparaître en
+    ///       POSITION DE PRODUCTEUR. La version précédente se contentait d'une SOUS-CHAÎNE : `web.sh`
+    ///       contient `sval("RequestPath")` (une clé Traefik qu'il LIT) et n'émet que `fields.path`, si bien
+    ///       qu'`("RequestPath","web.sh")` éteignait l'avertissement en restant VERTE — faux vert
+    ///       re-fabricable en une ligne. Le test `collected_citation_rejects_a_read_only_key` fige ce cas.
+    ///   (B) AUCUNE DÉRIVE SILENCIEUSE — tout champ extrait doit figurer dans l'inventaire. Un collecteur
+    ///       qui se met à émettre un champ fait rougir ce test tant qu'il n'est pas inventorié.
+    ///   (C) ANTI-ROT PAR FAMILLE — chaque famille de collecteurs doit fournir au moins son plancher
+    ///       d'extractions, sinon en perdre une entière (chemin déplacé, syntaxe changée) serait SILENCIEUX.
+    /// C'est le PROTOCOLE DE MISE À JOUR : on ne « pense pas à » mettre l'inventaire à jour, le test l'exige.
+    /// Ce que l'extracteur ne voit pas (EventData Windows recopié verbatim, sources déclaratives
+    /// `[[source]]`, clé non-string ou première clé d'un fragment P5) est ÉNUMÉRÉ dans `collected.rs` et
+    /// produit un SUR-avertissement (donnée collectée dite inerte), jamais un silence.
+    #[test]
+    fn collected_inventory_is_backed_by_shipped_collectors() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let derived = collected_extract_shipped(&root);
+
+        // ---------- (C) anti-rot : chaque FAMILLE mord encore ----------
+        for (_, _, fam, floor) in COLLECTED_SCAN_SURFACE {
+            let n = derived.iter().filter(|(_, _, f)| f == fam).count();
+            assert!(n >= *floor,
+                "famille `{fam}` : l'extraction n'a ramené que {n} champs (plancher {floor}). Cette famille \
+                 de collecteurs a cessé d'être vue (répertoire déplacé ? syntaxe d'émission changée ?) — et \
+                 ce qu'elle émet serait désormais déclaré INERTE en silence. Corriger l'extracteur, puis \
+                 re-mesurer et remettre à jour le plancher.");
         }
 
-        assert!(derived.len() > 50,
-            "l'extraction mécanique n'a ramené que {} champs : la surface d'extraction ne mord plus (chemins \
-             déplacés ?) et ce test serait devenu vacant.", derived.len());
+        // ---------- (A) aucune entrée fantôme : citation = POSITION DE PRODUCTEUR ----------
+        for (field, cite) in crate::collected::COLLECTED_EXTENDED_FIELDS {
+            let files: std::collections::BTreeSet<&String> = derived.iter()
+                .map(|(_, rel, _)| rel)
+                .filter(|rel| rel.as_str() == *cite || rel.ends_with(&format!("/{cite}")))
+                .collect();
+            assert!(!files.is_empty(),
+                "champ inventorié `{field}` : fichier livré cité `{cite}` INTROUVABLE dans la surface \
+                 d'extraction. Si le collecteur a été retiré, RETIRER l'entrée d'inventaire — sinon l'oracle \
+                 déclare vivante une donnée que plus rien n'émet (avertissement d'inertie éteint à tort).");
+            assert!(files.len() == 1,
+                "champ inventorié `{field}` : la citation `{cite}` désigne PLUSIEURS fichiers livrés \
+                 ({files:?}). Allonger la citation jusqu'à ce qu'elle soit unique (ex. `fim/mod.rs`).");
+            let file = files.into_iter().next().unwrap();
+            let produced = derived.iter().any(|(f, rel, _)| f == field && rel == file);
+            assert!(produced,
+                "champ inventorié `{field}` : son fichier cité `{cite}` ne l'ÉMET PAS — l'extracteur ne l'y \
+                 trouve dans AUCUNE position de producteur (objet `fields` littéral, insertion par clé, \
+                 `af(…)` awk, fragment JSON, overlay de parseur). Le nom peut y figurer autrement (une clé \
+                 LUE dans un log tiers, un commentaire) : ce n'est pas de la collecte. Une entrée que rien \
+                 n'émet éteindrait l'avertissement d'inertie sans qu'aucune donnée ne soit collectée.");
+        }
+
+        // ---------- (B) aucune dérive silencieuse : extraction ⊆ inventaire ----------
         let mut missing: Vec<String> = derived.iter()
-            .filter(|(f, _)| !CIM_CORE_FIELDS.contains(&f.as_str()) && !crate::collected::plume_collects_field(f))
-            .map(|(f, src)| format!("{f} (émis par {src})")).collect();
+            .filter(|(f, _, _)| !CIM_CORE_FIELDS.contains(&f.as_str()) && !crate::collected::plume_collects_field(f))
+            .map(|(f, src, _)| format!("{f} (émis par {src})")).collect();
         missing.sort(); missing.dedup();
         assert!(missing.is_empty(),
             "champ(s) émis par un collecteur/parseur LIVRÉ mais ABSENT(S) de l'inventaire de collecte : {missing:?}. \
              Ajouter chaque champ à `collected::COLLECTED_EXTENDED_FIELDS` avec le fichier qui l'émet — sinon \
              l'oracle signale INERTES des règles qui porteraient sur une donnée réellement collectée.");
+    }
+
+    /// NON-RÉGRESSION DU FAUX VERT PAR SOUS-CHAÎNE (défaut mesuré par la revue adverse). `web.sh` CONTIENT
+    /// le nom `RequestPath` — c'est une clé du log Traefik qu'il LIT (`sval("RequestPath")`) — mais il
+    /// n'émet que `fields.path`. Sous l'ancienne citation (`body.contains("\"RequestPath\"")`), l'entrée
+    /// `("RequestPath","web.sh")` passait VERTE et éteignait l'avertissement d'inertie : faux vert en une
+    /// ligne. Ce test fige les DEUX moitiés du raisonnement — la prémisse (le nom est bien là) et la
+    /// conclusion (il n'est PAS en position de producteur) — pour qu'un retour à la sous-chaîne rougisse.
+    #[test]
+    fn collected_citation_rejects_a_read_only_key() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let body = std::fs::read_to_string(root.join("collectors/web.sh")).unwrap();
+        assert!(body.contains("\"RequestPath\""),
+            "prémisse : `web.sh` contient bien le littéral \"RequestPath\" (clé Traefik LUE)");
+        let derived = collected_extract_shipped(&root);
+        let web: Vec<&String> = derived.iter()
+            .filter(|(_, rel, _)| rel == "collectors/web.sh").map(|(f, _, _)| f).collect();
+        assert!(!web.contains(&&"RequestPath".to_string()),
+            "`RequestPath` est LU par web.sh, pas ÉMIS : l'extracteur ne doit pas l'en dériver, sinon \
+             l'entrée d'inventaire `(\"RequestPath\",\"web.sh\")` redeviendrait acceptable et rendrait le \
+             faux vert re-fabricable en une ligne.");
+        assert!(web.contains(&&"path".to_string()),
+            "contrôle en sens inverse : ce que web.sh ÉMET réellement (`fields.path`) EST dérivé — sans quoi \
+             ce test passerait pour une raison vide (extracteur muet sur web.sh).");
     }
 
     /// #4 — un import Sigma NE peut PAS écraser une détection native (managed=0) ni un overlay git
@@ -2818,8 +2927,6 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
             assert!(col_exists(&conn, "engagement_grant", c), "engagement_grant.{c} manquant après migrate v75");
         }
     }
-
-
     // ============================================================================================
     //  #1c-toggle — (DÉS)ACTIVATION ADMIN d'un contenu de détection avec OVERRIDE PERSISTANT qui survit au
     //  reboot pour les overlays config.d (managed=1). Vérifie : persistance de l'override + flip live ; que

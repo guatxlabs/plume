@@ -242,9 +242,9 @@ pub(crate) async fn panel_create(State(st): State<AppState>, Extension(au): Exte
     }
     // SQL BRUT = ADMIN — un panneau en SQL BRUT (is_soql=false) exécute du SQL arbitraire
     // read-only sur TOUTE la base à chaque refresh (panel_data) : RÉSERVÉ ADMIN, comme les règles et
-    // /api/query. Le SOQL (is_soql=true) reste ouvert à l'editor. Fail-closed via raw_sql_allowed.
+    // /api/query. Le GXQL (is_soql=true) reste ouvert à l'editor. Fail-closed via raw_sql_allowed.
     if !raw_sql_allowed(is_soql == 1, &au.role) {
-        return (StatusCode::FORBIDDEN, "SQL brut réservé à l'administrateur (utilisez SOQL)").into_response();
+        return (StatusCode::FORBIDDEN, "SQL brut réservé à l'administrateur (utilisez GXQL)").into_response();
     }
     let _ = conn.execute(
         "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,window_s,visibility,query_private,cols,height,drill,library_panel_id,position) \
@@ -270,7 +270,7 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
     }
     // SQL BRUT = ADMIN — is_soql EFFECTIF après PATCH (corps si fourni, sinon base), miroir exact
     // de rule_update : un editor ne peut NI basculer un panneau en SQL brut, NI éditer un panneau déjà en SQL
-    // brut. Le SQL brut (is_soql=false) = lecture arbitraire de toute la base -> RÉSERVÉ ADMIN. Le SOQL reste
+    // brut. Le SQL brut (is_soql=false) = lecture arbitraire de toute la base -> RÉSERVÉ ADMIN. Le GXQL reste
     // ouvert. Fail-closed via raw_sql_allowed.
     let eff_soql = b.get("is_soql").and_then(|v| v.as_bool()).unwrap_or(cur_soql);
     if !raw_sql_allowed(eff_soql, &au.role) {
@@ -620,10 +620,10 @@ pub(crate) fn apply_excl_placeholders(query: &str, is_soql: bool) -> String {
     query.replace("__OPERATOR_EXCL__", op).replace("__SELF_EXCL__", slf)
 }
 
-/// Compile la requête d'un panneau en SQL exécutable : SOQL -> soql_to_sql, sinon substitution
+/// Compile la requête d'un panneau en SQL exécutable : GXQL -> soql_to_sql, sinon substitution
 /// __FROM__/__TO__ (Phase 3b — factorisé entre panel_data, le fallback live et cache_refresh_all_panels).
 /// Substitue d'abord les placeholders d'exclusion self/opérateur (no-op si absents).
-/// `env` (#2d) : filtre par environnement propagé au chemin SOQL des panneaux (rollup-route + compilo).
+/// `env` (#2d) : filtre par environnement propagé au chemin GXQL des panneaux (rollup-route + compilo).
 /// None (mode 0) -> aucun filtre -> SQL inchangé. NB : les panneaux is_soql=0 (SQL brut sur les rollups,
 /// ex. seeds Vue d'ensemble) ne sont PAS auto-filtrés ici (SQL opaque) -> ils restent tous-env (les
 /// rollups portent env_id v67, mais l'injection dans un SQL arbitraire exigerait un parseur : différé).
@@ -863,7 +863,7 @@ pub(crate) async fn panel_data(State(st): State<AppState>, Extension(au): Extens
 }
 
 /// FIELD FILTERS (#45) — chemin panneau pour un appelant AVEC masques actifs : HORS cache (le panel_cache est
-/// rôle-agnostique). Panneaux SOQL -> compilation MASQUÉE (masque émis dans le SQL, avant agrégation ; rollup
+/// rôle-agnostique). Panneaux GXQL -> compilation MASQUÉE (masque émis dans le SQL, avant agrégation ; rollup
 /// désactivé car event_rollup porte src_ip/host en clair). Panneaux SQL BRUT (is_soql=0, opaques : impossible
 /// d'injecter le masque) -> exécution puis MASQUAGE POST-REQUÊTE par nom de colonne (défense : caviarde une
 /// colonne projetée directement, ex `SELECT src_ip …`). Toujours LIVE (jamais mis en cache) -> aucune fuite
@@ -885,7 +885,7 @@ async fn panel_data_masked_live(
     let db_path = req_db_path(st, au);
     // Jamais query_sem (réservé /api/query + /api/search). refresh_sem si dispo, sinon exécution directe
     // (chemin masqué rare ; ne bloque pas les lanes interactives).
-    let post_mask = !is_soql; // SOQL déjà masqué dans le SQL ; SQL brut -> masquage post-requête (idempotence).
+    let post_mask = !is_soql; // GXQL déjà masqué dans le SQL ; SQL brut -> masquage post-requête (idempotence).
     let dbp2 = db_path.clone();
     let run = tokio::task::spawn_blocking(move || run_query(&dbp2, &sql)).await;
     match run {

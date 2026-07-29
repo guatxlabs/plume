@@ -3,15 +3,15 @@
 //! de contraintes héritées, et surtout le GÉNÉRATEUR de Pivot `pivot_to_soql` (le CRUD HTTP vit dans
 //! `handlers::datamodels`).
 //!
-//! PRINCIPE DE SÛRETÉ CENTRAL : un Pivot ne génère JAMAIS de SQL. Il produit une chaîne **SOQL** (le langage
+//! PRINCIPE DE SÛRETÉ CENTRAL : un Pivot ne génère JAMAIS de SQL. Il produit une chaîne **GXQL** (le langage
 //! pipe fermé du cœur) qui est ENSUITE compilée par le MÊME chemin que /api/query
 //! (`soql_to_sql_masked_x` -> `guatx_core::soql`). Conséquences directes (invariants exigés par #47) :
 //!   * MASQUAGE #45 JAMAIS CONTOURNÉ : chaque champ split-by/filtré/projeté traverse `soql_field`/
 //!     `soql_filter_field` à la compilation -> un champ masqué reste masqué (split-by) et un filtre sur un
 //!     champ masqué échoue-fermé (fail-closed), exactement comme une recherche tapée à la main.
-//!   * DENYLIST DE SECRETS #query_exec intacte : le Pivot lit `event` via SOQL -> l'authorizer read-pool
+//!   * DENYLIST DE SECRETS #query_exec intacte : le Pivot lit `event` via GXQL -> l'authorizer read-pool
 //!     refuse toujours user.hash/token.token_hash/… même en aval (aucune surface SQL brute n'est ouverte).
-//!   * ENUM FERMÉE : contraintes d'objet et filtres de Pivot compilent par le compilateur SOQL (jeu de
+//!   * ENUM FERMÉE : contraintes d'objet et filtres de Pivot compilent par le compilateur GXQL (jeu de
 //!     commandes clos) ; tout ce qui ne parse pas est REJETÉ (aucune injection d'expression arbitraire).
 //!   * MODE 0 BYTE-IDENTIQUE : le compilateur du cœur n'est PAS touché ; un data model ne participe à la
 //!     compilation QUE lorsqu'un Pivot/dataset est explicitement invoqué. Le chemin de recherche standard
@@ -21,7 +21,7 @@
 //! (`data_model_field`). C'est le contrat de la couche sémantique (l'objet expose SES champs) ; le masque
 //! #45 s'applique EN PLUS (un champ déclaré mais masqué pour le rôle reste masqué / non filtrable).
 //!
-//! Module PUR (aucune dépendance daemon/rusqlite) : il n'émet que du texte SOQL et compile-vérifie via
+//! Module PUR (aucune dépendance daemon/rusqlite) : il n'émet que du texte GXQL et compile-vérifie via
 //! `guatx_core::soql` (fully-qualified). Le CRUD/DB + I/O HTTP vivent dans `handlers::datamodels`.
 
 /// Champs STRUCTURELS jamais utilisables comme nom d'objet/champ de data model (casseraient le routage/temps/
@@ -37,12 +37,12 @@ pub(crate) const DM_FIELD_TYPES: &[&str] = &["string", "number", "ipv4", "timest
 /// `count` est le seul agrégat sans champ.
 pub(crate) const DM_STAT_FUNCS: &[&str] = &["count", "sum", "avg", "min", "max", "dc", "values", "list"];
 
-/// Opérateurs de filtre de Pivot autorisés (fermé). Ils se traduisent en tokens SOQL `field op value` compilés
+/// Opérateurs de filtre de Pivot autorisés (fermé). Ils se traduisent en tokens GXQL `field op value` compilés
 /// par `table_conds` (donc masque #45 + échappement). `!=`/`=` supportent en plus le joker `*` côté cœur.
 pub(crate) const DM_FILTER_OPS: &[&str] = &["=", "!=", ">", "<", ">=", "<="];
 
-/// Valide un NOM d'objet/champ de data model : identifiant SOQL sûr (alphanumérique + '_'), non vide, hors
-/// denylist structurelle. Empêche toute interpolation de nom dans le SOQL généré (les noms sont ensuite
+/// Valide un NOM d'objet/champ de data model : identifiant GXQL sûr (alphanumérique + '_'), non vide, hors
+/// denylist structurelle. Empêche toute interpolation de nom dans le GXQL généré (les noms sont ensuite
 /// re-validés `soql_ident_ok` par le compilateur ; double garde).
 pub(crate) fn validate_dm_ident(raw: &str) -> Result<String, String> {
     let f = raw.trim();
@@ -69,8 +69,8 @@ pub(crate) fn validate_dm_ftype(raw: &str) -> Result<String, String> {
     }
 }
 
-/// Valide une CONTRAINTE d'objet (fragment de filtre SOQL de base) en la COMPILANT via `search <constraint>`
-/// sur le chemin SOQL normal (jeu de commandes clos, allowlist d'idents, échappement). Toute contrainte qui ne
+/// Valide une CONTRAINTE d'objet (fragment de filtre GXQL de base) en la COMPILANT via `search <constraint>`
+/// sur le chemin GXQL normal (jeu de commandes clos, allowlist d'idents, échappement). Toute contrainte qui ne
 /// parse pas / référence un opérateur ou un champ interdit est REJETÉE (fail-closed). Ne persiste rien, ne
 /// touche pas la DB. Vide -> OK (objet racine sans contrainte propre).
 pub(crate) fn validate_dm_constraint(constraint: &str) -> Result<(), String> {
@@ -86,21 +86,21 @@ pub(crate) fn validate_dm_constraint(constraint: &str) -> Result<(), String> {
     }
     guatx_core::soql::to_sql(&format!("search {c}"), 0, 0, &guatx_core::soql::Schema::events())
         .map(|_| ())
-        .map_err(|e| format!("contrainte SOQL invalide : {e}"))
+        .map_err(|e| format!("contrainte GXQL invalide : {e}"))
 }
 
-/// Une valeur de FILTRE de Pivot est-elle sûre à insérer dans le texte SOQL généré ? Le découpage de pipeline
+/// Une valeur de FILTRE de Pivot est-elle sûre à insérer dans le texte GXQL généré ? Le découpage de pipeline
 /// du cœur (`soql_split_pipes`) opère AVANT la tokenisation et NE respecte PAS les guillemets -> un `|`/`[`/`]`
 /// dans une valeur runtime pourrait INJECTER une étape. On REJETTE donc ces caractères structurels + les
 /// guillemets (qui basculent l'état du tokenizer) + les caractères de contrôle. C'est le point de sûreté du
-/// passage « sélection utilisateur -> texte SOQL » (les valeurs sont ENSUITE ré-échappées `soql_esc` par le
+/// passage « sélection utilisateur -> texte GXQL » (les valeurs sont ENSUITE ré-échappées `soql_esc` par le
 /// compilateur pour le littéral SQL final).
 fn pivot_value_ok(v: &str) -> bool {
     !v.is_empty()
         && !v.chars().any(|c| matches!(c, '|' | '[' | ']' | '"' | '\'' | '`' | '\n' | '\r' | '\t' | '\0'))
 }
 
-/// Émet le token SOQL `field op value` d'un filtre de Pivot. `field` est déjà validé `validate_dm_ident` ET
+/// Émet le token GXQL `field op value` d'un filtre de Pivot. `field` est déjà validé `validate_dm_ident` ET
 /// appartient à l'allowlist de l'objet. `value` est validée par `pivot_value_ok`. Une valeur contenant un
 /// espace est mise entre guillemets (le tokenizer du cœur les retire ; sans `|` interne, aucune injection de
 /// pipeline). Numérique -> laissée nue (comparaison numérique `>`/`<` correcte).
@@ -110,7 +110,7 @@ fn pivot_filter_token(field: &str, op: &str, value: &str) -> Result<String, Stri
     }
     if !pivot_value_ok(value) {
         return Err(format!(
-            "valeur de filtre invalide (caractères structurels SOQL interdits) : {value}"
+            "valeur de filtre invalide (caractères structurels GXQL interdits) : {value}"
         ));
     }
     let is_num = {
@@ -152,14 +152,14 @@ pub(crate) struct PivotSpec {
     pub limit: Option<i64>,
 }
 
-/// Le CŒUR de #47 : compile une `PivotSpec` (sur un objet résolu) en une chaîne **SOQL** injection-safe.
+/// Le CŒUR de #47 : compile une `PivotSpec` (sur un objet résolu) en une chaîne **GXQL** injection-safe.
 ///
 /// - `constraints` : la chaîne de contraintes HÉRITÉES de l'objet (parent -> enfant), chaque élément étant un
 ///   fragment de filtre déjà compile-vérifié à la création (`validate_dm_constraint`).
 /// - `allowed` : l'ensemble ALLOWLIST des champs déclarés de l'objet. TOUT champ référencé par le Pivot
 ///   (split-by / champ d'agrégat / champ de filtre) DOIT y appartenir, sinon REJET (fail-closed).
 ///
-/// Le SOQL produit a la forme : `search <constraints> <filtres> | stats|timechart <aggs> by <splitby> | head N`.
+/// Le GXQL produit a la forme : `search <constraints> <filtres> | stats|timechart <aggs> by <splitby> | head N`.
 /// Il n'y a AUCUNE émission SQL ici : la sûreté finale (masquage #45, échappement, coercition numérique, enum
 /// de commandes) est celle du compilateur du cœur, atteint via `soql_to_sql_masked_x`.
 pub(crate) fn pivot_to_soql(
@@ -251,7 +251,7 @@ mod tests {
         fields.iter().map(|s| s.to_string()).collect()
     }
 
-    // ------- Génération de base : SOQL attendu, déterministe -----------------------------------
+    // ------- Génération de base : GXQL attendu, déterministe -----------------------------------
     #[test]
     fn pivot_generates_expected_soql() {
         let spec = PivotSpec {
@@ -273,7 +273,7 @@ mod tests {
     }
 
     // ------- MODE 0 BYTE-IDENTIQUE (parité gelée) ---------------------------------------------
-    // Un Pivot sans contrainte/masque produit EXACTEMENT le SOQL tapé à la main, et il compile
+    // Un Pivot sans contrainte/masque produit EXACTEMENT le GXQL tapé à la main, et il compile
     // BYTE-IDENTIQUEMENT à cette recherche manuelle -> la couche data-model n'ouvre aucun chemin
     // d'émission neuf ; le compilateur du cœur reste la seule source de vérité (mode 0 préservé).
     #[test]
@@ -290,7 +290,7 @@ mod tests {
         assert_eq!(generated, hand);
         let a = guatx_core::soql::to_sql(&generated, 0, 0, &Schema::events()).unwrap();
         let b = guatx_core::soql::to_sql(hand, 0, 0, &Schema::events()).unwrap();
-        assert_eq!(a, b, "le SOQL Pivot compile byte-identique à la recherche manuelle");
+        assert_eq!(a, b, "le GXQL Pivot compile byte-identique à la recherche manuelle");
         // Contrôle négatif : la présence de la couche n'altère pas une recherche ordinaire indépendante.
         let plain = guatx_core::soql::to_sql("search host=web01 | stats count", 0, 0, &Schema::events()).unwrap();
         assert!(plain.contains("FROM event"));
@@ -349,7 +349,7 @@ mod tests {
     // ------- DENYLIST DE SECRETS : un champ déclaré ne peut pas exposer un secret ---------------
     // On ne peut pas déclarer un champ nommé `hash` comme colonne réelle secrète : de toute façon le Pivot
     // ne lit que `event` (fields JSON), et l'authorizer read-pool refuse user.hash même en aval. Ici on prouve
-    // que le SOQL généré ne référence QUE la table `event` (aucune table de secrets atteinte).
+    // que le GXQL généré ne référence QUE la table `event` (aucune table de secrets atteinte).
     #[test]
     fn pivot_only_touches_event_table() {
         let spec = PivotSpec {

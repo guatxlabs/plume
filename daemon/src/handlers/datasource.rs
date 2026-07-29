@@ -3,7 +3,7 @@
 //! endpoints read-only pour "aller là où sont les clients" (une Grafana existante pointe un panneau SUR plume).
 //!
 //! DEUX leviers construits + 1 différé :
-//!   1. SOQL-over-HTTP-JSON (Grafana Infinity/JSON) — `/api/ds/query` : prend un SOQL + fenêtre, renvoie des
+//!   1. GXQL-over-HTTP-JSON (Grafana Infinity/JSON) — `/api/ds/query` : prend un GXQL + fenêtre, renvoie des
 //!      lignes tabulaires JSON. RÉUTILISE le chemin masqué EXISTANT (`effective_masks` -> `soql_to_sql_masked_x`
 //!      -> `run_query_ex`), STRICTEMENT comme /api/query -> les field-filters (#45) + le RBAC s'appliquent
 //!      automatiquement. C'est le levier le plus général.
@@ -17,7 +17,7 @@
 //! INVARIANT DE SÉCURITÉ (critère de revue #1) : c'est une NOUVELLE surface de LECTURE EXTERNE ; elle NE
 //! contourne NI #45 NI le RBAC. L'appelant est résolu par `auth_guard` (token->role/tenant) EXACTEMENT comme
 //! toute autre route ; CHAQUE lecture passe par le masque effectif du rôle/tenant/env de l'appelant :
-//!   - SOQL-HTTP : `soql_to_sql_masked_x` (masque ÉMIS DANS LE SQL, avant agrégation — même choke-point que l'UI).
+//!   - GXQL-HTTP : `soql_to_sql_masked_x` (masque ÉMIS DANS LE SQL, avant agrégation — même choke-point que l'UI).
 //!   - Prometheus : (a) un matcher sur un champ MASQUÉ est REJETÉ (oracle interdit, miroir de search_mask_guard) ;
 //!     (b) les valeurs de labels/host masquées sont CAVIARDÉES en sortie via `mask_named_row`. Fail-closed : si
 //!     le masque ne peut être appliqué, on refuse (jamais servir en clair).
@@ -41,10 +41,10 @@ fn ds_row_cap(requested: Option<i64>) -> i64 {
 }
 
 // ================================================================================================
-// LEVIER 1 — SOQL-over-HTTP-JSON (Grafana Infinity / JSON datasource)
+// LEVIER 1 — GXQL-over-HTTP-JSON (Grafana Infinity / JSON datasource)
 // ================================================================================================
 
-/// CŒUR TESTABLE du levier SOQL-HTTP : compile le SOQL via le chemin MASQUÉ du rôle (choke-point unique #45)
+/// CŒUR TESTABLE du levier GXQL-HTTP : compile le GXQL via le chemin MASQUÉ du rôle (choke-point unique #45)
 /// puis exécute en lecture seule. `masks` VIDE -> STRICTEMENT identique à /api/query mode 0. C'est la fonction
 /// exacte que le handler appelle avec l'AuthUser résolu -> la preuve d'héritage du masque tient ICI.
 pub(crate) fn ds_soql_exec(
@@ -503,7 +503,7 @@ fn loki_query_enabled() -> bool {
 }
 
 /// GET/POST /loki/api/v1/query_range — STUB HONNÊTE (501). La lecture LogQL réutilisera le MÊME chemin masqué
-/// (soql_to_sql_masked_x sur `event`) ; conception + mapping LogQL->SOQL décrits dans docs/DATASOURCE.md.
+/// (soql_to_sql_masked_x sur `event`) ; conception + mapping LogQL->GXQL décrits dans docs/DATASOURCE.md.
 pub(crate) async fn loki_query_range(Extension(_au): Extension<AuthUser>) -> Response {
     let msg = if loki_query_enabled() {
         "lecture LogQL non encore implémentée (conception : docs/DATASOURCE.md ; réutilisera le chemin masqué event)"

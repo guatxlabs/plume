@@ -1,11 +1,11 @@
-//! KNOWLEDGE OBJECTS (#46) — objets de savoir SEARCH-TIME PERSISTÉS, auto-appliqués à la compilation SOQL
+//! KNOWLEDGE OBJECTS (#46) — objets de savoir SEARCH-TIME PERSISTÉS, auto-appliqués à la compilation GXQL
 //! (parité Splunk : ce qui rend un contenu SOC PORTABLE). QUATRE types, tenant-wide (comme les règles de
 //! détection ; ils façonnent la recherche de TOUT LE MONDE, donc CRUD = editor+), chargés depuis les tables
 //! `knowledge_alias`/`knowledge_calc`/`knowledge_eventtype`/`knowledge_tag` (migration v94) en un
 //! `guatx_core::soql::KnowledgeSet` INJECTÉ DANS LE SCHÉMA de compilation via `Schema::with_knowledge` :
 //!   1. ALIAS de champ   : `canonical -> source` (recherche sur le canonique -> résout la source) ;
 //!   2. CHAMPS CALCULÉS  : `name = <expr eval>` (eval implicite au-dessus de la base, ORDONNÉ) ;
-//!   3. EVENT TYPES      : `name` + filtre SOQL (`eventtype=name` compile le filtre) ;
+//!   3. EVENT TYPES      : `name` + filtre GXQL (`eventtype=name` compile le filtre) ;
 //!   4. TAGS             : `label` sur `field=value` (`tag=label` = OR des paires).
 //!
 //! MODE 0 : aucun KO -> `KnowledgeSet` VIDE -> le compilateur émet le SQL legacy À L'IDENTIQUE (invariant
@@ -15,7 +15,7 @@
 //!
 //! SÛRETÉ : noms d'alias/calc/eventtype/tag + champs allowlistés (`soql_ident_ok`, mêmes idents que les
 //! champs CIM) ; expressions de calc compilées par le chemin `eval` (déjà injection-safe), filtres d'eventtype
-//! compilés par le chemin SOQL normal ; les valeurs de tag sont échappées (`soql_esc`). Jamais de SQL brut.
+//! compilés par le chemin GXQL normal ; les valeurs de tag sont échappées (`soql_esc`). Jamais de SQL brut.
 use crate::*;
 use guatx_core::soql::{KnowledgeSet, Schema};
 
@@ -26,7 +26,7 @@ fn knowledge_cell() -> &'static parking_lot::RwLock<HashMap<String, Arc<Knowledg
     KNOWLEDGE.get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
 }
 // db_path de COMPILATION (le tenant primaire, mode 0). Posé par `knowledge_reload` au bind/CRUD ; lu par
-// `active_knowledge` sur le chemin d'émission SOQL (qui n'a pas de db_path — l'émission est db-agnostique).
+// `active_knowledge` sur le chemin d'émission GXQL (qui n'a pas de db_path — l'émission est db-agnostique).
 static KNOWLEDGE_DB: std::sync::OnceLock<parking_lot::RwLock<String>> = std::sync::OnceLock::new();
 fn knowledge_db_cell() -> &'static parking_lot::RwLock<String> {
     KNOWLEDGE_DB.get_or_init(|| parking_lot::RwLock::new(String::new()))
@@ -36,7 +36,7 @@ fn knowledge_db_cell() -> &'static parking_lot::RwLock<String> {
 /// alias/calc/eventtype/tag ne doit pas RÉÉCRIRE ces noms. (`fields` = sac brut ; masqué séparément par #45.)
 const STRUCTURAL_DENY: &[&str] = &["id", "ts", "env_id", "dedup", "origin", "engagement_id", "fields"];
 
-/// Valide un NOM d'objet / champ KO : identifiant SOQL sûr (alphanumérique + '_'), non vide, hors denylist
+/// Valide un NOM d'objet / champ KO : identifiant GXQL sûr (alphanumérique + '_'), non vide, hors denylist
 /// structurelle. Empêche toute interpolation SQL de nom (les valeurs, elles, sont échappées à la compilation).
 pub(crate) fn validate_ko_ident(raw: &str) -> Result<String, String> {
     let f = raw.trim();
@@ -61,7 +61,7 @@ pub(crate) fn validate_calc_expr(name: &str, expr: &str) -> Result<(), String> {
     guatx_core::soql::to_sql("search", 0, 0, &Schema::events().with_knowledge(ko)).map(|_| ())
 }
 
-/// Valide un FILTRE d'event type en le compilant via `eventtype=<name>` -> le chemin SOQL normal (filtres
+/// Valide un FILTRE d'event type en le compilant via `eventtype=<name>` -> le chemin GXQL normal (filtres
 /// allowlistés, échappement). Erreur de filtre (champ/opérateur invalide) -> rejet. Ne persiste rien.
 pub(crate) fn validate_eventtype_filter(name: &str, filter: &str) -> Result<(), String> {
     let mut ko = KnowledgeSet::new();
@@ -175,7 +175,7 @@ pub(crate) fn knowledge_reload(conn: &Connection, db_path: &str) {
 }
 
 /// ACTIVE le db_path de COMPILATION (mode 0 : tenant primaire) lu par `active_knowledge` sur le chemin
-/// d'émission SOQL db-agnostique. Appelé UNIQUEMENT au bind du serveur primaire et après un CRUD KO — JAMAIS
+/// d'émission GXQL db-agnostique. Appelé UNIQUEMENT au bind du serveur primaire et après un CRUD KO — JAMAIS
 /// par un simple `knowledge_reload` (tests unitaires / DB non-primaire) -> le chargement d'un cache ne peut
 /// pas détourner la compilation globale. `knowledge_reload(db_path)` DOIT précéder pour peupler le cache.
 pub(crate) fn knowledge_activate(db_path: &str) {
@@ -193,7 +193,7 @@ pub(crate) fn effective_knowledge(db_path: &str) -> KnowledgeSet {
         .unwrap_or_default()
 }
 
-/// Jeu de KO ACTIF pour la COMPILATION SOQL (chemin d'émission db-agnostique). Renvoie le KO du db_path de
+/// Jeu de KO ACTIF pour la COMPILATION GXQL (chemin d'émission db-agnostique). Renvoie le KO du db_path de
 /// compilation posé par `knowledge_reload`. VIDE (aucun reload / pas de KO) -> SQL byte-identique au legacy.
 pub(crate) fn active_knowledge() -> KnowledgeSet {
     let db = knowledge_db_cell().read().clone();

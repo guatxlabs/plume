@@ -209,7 +209,7 @@ pub(crate) async fn freshness(State(st): State<AppState>, Extension(au): Extensi
 }
 
 /// FIX #5 — extrait les valeurs `source=<x>` d'une requête de règle (stockée dans alert.detail par
-/// run_due_rules). Gère la forme SOQL `source=foo` ET la forme SQL `source='foo'` / `source="foo"`.
+/// run_due_rules). Gère la forme GXQL `source=foo` ET la forme SQL `source='foo'` / `source="foo"`.
 /// Sert à corréler une alerte ACTIVE à la SOURCE qu'elle surveille -> surlignage des feeds « chauds ».
 /// Tolérant : token lu jusqu'au prochain séparateur (espace/tab/newline/pipe ou guillemet fermant).
 pub(crate) fn extract_query_sources(detail: &str) -> Vec<String> {

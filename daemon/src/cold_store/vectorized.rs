@@ -20,7 +20,7 @@
 //! NULL/déniée (le bug corrigé). La SÉLECTION finale (ce que count/group-by/materialize consomment) = TRUE SEUL
 //! (`known && sel`) : FALSE ET UNKNOWN sont exclus — exactement `WHERE`.
 //!
-//! CORRECTION > VITESSE : les FORMES SOQL couvertes ci-dessous sont vectorisées ; toute forme NON couverte DOIT
+//! CORRECTION > VITESSE : les FORMES GXQL couvertes ci-dessous sont vectorisées ; toute forme NON couverte DOIT
 //! tomber en fallback SQLite (jamais un faux résultat). `can_vectorize` matérialise ce principe (le planner
 //! complet est P4). Ex. non couverts ICI (fallback) : extraction JSON `json_extract(fields,'$.k')` comme clé/
 //! prédicat (le kernel opère sur les COLONNES PHYSIQUES + la colonne `fields` en TEXTE brut), OR/agrégats

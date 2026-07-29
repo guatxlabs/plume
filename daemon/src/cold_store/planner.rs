@@ -20,7 +20,7 @@
 //!      la garde MASQUES-VIDES suffit à écarter tout ce que le kernel ne saurait reproduire (HASH/MASK) ET tout
 //!      cas de colonne déniée. (Le kernel IMPLÉMENTE néanmoins le masquage #45 via `denied()` — exercé
 //!      directement par le harnais — pour la défense en profondeur et P4b.)
-//!   4. FORME VECTORISABLE : le SOQL mappe sur une des formes supportées (count / group-by count / top-N /
+//!   4. FORME VECTORISABLE : le GXQL mappe sur une des formes supportées (count / group-by count / top-N /
 //!      matérialisation `| table`) SUR COLONNES PHYSIQUES, prédicat WHERE `=`/`:`/`!=`/`=~`/glob-LIKE/`in`(non,
 //!      cf. plus bas)/comparaison INT sur ts|severity. Toute forme non couverte (json_extract, jointure, bare
 //!      free-text, dim/proj non-physique, agrégat autre que count, `in(...)`, `where`, `eval`, …) -> FALLBACK.
@@ -141,7 +141,7 @@ pub(crate) fn decode_gauge_reset() {
 }
 
 // ====================================================================================================
-// PLAN — la forme vectorisable extraite du SOQL (WHERE -> Pred + agrégat/projection).
+// PLAN — la forme vectorisable extraite du GXQL (WHERE -> Pred + agrégat/projection).
 // ====================================================================================================
 
 /// Forme d'exécution vectorisée reconnue. `dims`/`proj` = colonnes PHYSIQUES (`&'static` de `PARQUET_COLS`).
@@ -186,11 +186,11 @@ fn int_phys(col: &'static str) -> Option<&'static str> {
 }
 
 // ====================================================================================================
-// MAPPING SOQL -> plan. CONSERVATEUR : `None` au moindre écart aux formes supportées (fall-through).
+// MAPPING GXQL -> plan. CONSERVATEUR : `None` au moindre écart aux formes supportées (fall-through).
 // ====================================================================================================
 
 /// ANTI-DIVERGENCE — ALIAS DE LECTURE CIM (`exec` ⊃ `process`, dette de migration expirant le
-/// 2027-07-23, cf. `soql_glue::cim_read_alias_exec`). Le moteur colonnaire parse le SOQL LUI-MÊME
+/// 2027-07-23, cf. `soql_glue::cim_read_alias_exec`). Le moteur colonnaire parse le GXQL LUI-MÊME
 /// (`build_pred`, miroir de `table_conds`) alors que l'alias est posé à l'ÉMISSION SQL (store) : sans
 /// cette garde, une requête `category=exec` rendrait `StrEq{exec}` ICI et `IN ('exec','process')` dans
 /// l'oracle -> DEUX jeux de lignes différents selon la route choisie, silencieusement. On DÉCLINE donc
@@ -212,7 +212,7 @@ pub(super) fn vec_keyset_routable(soql: &str) -> bool {
     map_keyset_soql(soql).is_some()
 }
 
-/// MAPPE un SOQL en `VecPlan`, ou `None` (forme non vectorisable -> fallback). PUR (aucun I/O) -> testable.
+/// MAPPE un GXQL en `VecPlan`, ou `None` (forme non vectorisable -> fallback). PUR (aucun I/O) -> testable.
 fn map_soql(soql: &str) -> Option<VecPlan> {
     if carries_cim_read_alias(soql) {
         return None;
@@ -735,7 +735,7 @@ pub(crate) fn cold_vectorized_try(
 const KEYSET_EVENT_COLS: [&str; 11] =
     ["ts", "host", "source", "category", "severity", "src_ip", "dst_ip", "url", "xff", "message", "fields"];
 
-/// MAPPE un SOQL keyset -> (prédicat, projection physique) ou `None` (forme non supportée -> FALLBACK). Seul
+/// MAPPE un GXQL keyset -> (prédicat, projection physique) ou `None` (forme non supportée -> FALLBACK). Seul
 /// `search [filtres]` NU (aucun pipe) est routé : c'est LA forme du browse Explore raw (liste de lignes brutes,
 /// sortie déterministe `ts,id` desc). `| table`/`| stats`/… -> `None` (le hot keyset de ces formes ne projette
 /// pas forcément `ts`+`id`, et l'agrégation n'a pas de sens keyset) -> l'appelant retombe sur `cold_union_query`.
@@ -1555,7 +1555,7 @@ pub(crate) fn cold_vectorized_merge_try(
         _ => Pred::And(vec![clone_pred(&plan.pred), ts_pred]),
     };
 
-    // SOQL de base HOT (SANS sort/head) : `stages[0] | stages[1]` (map_soql garantit >= 2 étages ; l'étage 1
+    // GXQL de base HOT (SANS sort/head) : `stages[0] | stages[1]` (map_soql garantit >= 2 étages ; l'étage 1
     // porte le `stats count[ by …]` OU le `table …`, les `sort`/`head` éventuels sont en aval -> retirés).
     let stages = guatx_core::soql::soql_split_pipes(soql);
     if stages.len() < 2 {

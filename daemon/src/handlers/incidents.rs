@@ -2,7 +2,7 @@
 //! SANS nouvelle entité : un « incident » est un case ÉLEVÉ (`incident.incident_tier` non-NULL). Un « runbook »
 //! (gabarit managé keyé MITRE) attaché à un incident INSTANCIE ses étapes en `case_step` (checklist phasée
 //! triage->investigation->containment->eradication->recovery). Le wizard PRÉSENTE : (a) les steps `search`
-//! (gabarit SOQL recompilé, comme workflow_action `search` — jamais de SQL brut), (b) les steps `response` qui
+//! (gabarit GXQL recompilé, comme workflow_action `search` — jamais de SQL brut), (b) les steps `response` qui
 //! RÉFÉRENCENT l'enum d'action FERMÉ (ban_ip/kill_pid/stop_service) et pré-remplissent la cible — MAIS
 //! l'EXÉCUTION reste /api/actions EXISTANT (arm/approbation/admin-gate/ledger/allowlist root/observe-vs-active
 //! INCHANGÉS). AUCUN chemin d'auto-exécution : analyste-in-the-loop.
@@ -11,7 +11,7 @@
 //! Chaque élévation/attachement/avancement écrit un item de timeline TYPÉ (kinds 'incident'/'runbook'/'step',
 //! HORS de l'allowlist client-read created/status/sla/merge -> jamais exposés au MSSP) + une entrée LEDGER
 //! (tamper-evident, comme case.status/case.assign). Réutilise : case_add_item (timeline + MTTA), ledger_append,
-//! guatx_core::attack (technique->tactique), le compilateur SOQL FERMÉ, l'enum action_kind_valid.
+//! guatx_core::attack (technique->tactique), le compilateur GXQL FERMÉ, l'enum action_kind_valid.
 use crate::*;
 
 // ---------------------------------------------------------------------------------------------------------
@@ -326,10 +326,10 @@ pub(crate) fn step_advance(conn: &Connection, id: i64, step_id: i64, status: &st
     true
 }
 
-/// RÉSOUT le gabarit SOQL d'une step 'search' pour une valeur concrète (défaut = cible pré-remplie), EXACTEMENT
+/// RÉSOUT le gabarit GXQL d'une step 'search' pour une valeur concrète (défaut = cible pré-remplie), EXACTEMENT
 /// comme workflow_action_resolve `search` : substitution `$target$` -> valeur SANITISÉE (scalaire), puis
 /// RECOMPILATION par le compilateur FERMÉ (jamais de SQL brut ; l'enum/masque s'appliquent à l'exécution via
-/// /api/query). Renvoie le SOQL de navigation. Err si step absente/non-search/valeur interdite/SOQL invalide.
+/// /api/query). Renvoie le GXQL de navigation. Err si step absente/non-search/valeur interdite/GXQL invalide.
 pub(crate) fn resolve_step_search(conn: &Connection, id: i64, step_id: i64, value_override: Option<&str>) -> Result<String, String> {
     let (kind, soql, target): (String, Option<String>, Option<String>) = conn
         .query_row("SELECT step_kind,search_soql,target FROM case_step WHERE id=?1 AND incident_id=?2", params![step_id, id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -342,7 +342,7 @@ pub(crate) fn resolve_step_search(conn: &Connection, id: i64, step_id: i64, valu
         .or(target.as_deref().map(str::trim).filter(|s| !s.is_empty()));
     let soql_out = match value {
         Some(v) => {
-            // MÊME prédicat de sanitisation que workflow_actions (anti-injection de fragment SOQL).
+            // MÊME prédicat de sanitisation que workflow_actions (anti-injection de fragment GXQL).
             if !crate::handlers::workflow_actions::value_scalar_ok(v) {
                 return Err("valeur non substituable (caractère interdit)".into());
             }
@@ -357,7 +357,7 @@ pub(crate) fn resolve_step_search(conn: &Connection, id: i64, step_id: i64, valu
     }
     let wrapped = format!("search {soql_out}");
     if guatx_core::soql::to_sql(&wrapped, 0, 0, &guatx_core::soql::Schema::events()).is_err() {
-        return Err("SOQL de navigation invalide (fournir une cible concrète)".into());
+        return Err("GXQL de navigation invalide (fournir une cible concrète)".into());
     }
     Ok(wrapped)
 }
@@ -432,7 +432,7 @@ pub(crate) async fn case_step_set(State(st): State<AppState>, Extension(au): Ext
     })
 }
 
-/// GET /api/cases/:id/steps/:step_id/search[?value=] — RÉSOUT le SOQL d'une step 'search' (recompilé, masqué à
+/// GET /api/cases/:id/steps/:step_id/search[?value=] — RÉSOUT le GXQL d'une step 'search' (recompilé, masqué à
 /// l'exécution via /api/query). viewer+ (readonly_post-like GET). Ne déclenche RIEN.
 pub(crate) async fn case_step_search(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, step_id)): Path<(i64, i64)>, Query(q): Query<HashMap<String, String>>) -> Response {
     let value = q.get("value").map(|s| s.as_str());
@@ -454,7 +454,7 @@ pub(crate) async fn case_step_search(State(st): State<AppState>, Extension(au): 
 //   - AUCUN chemin ne laisse un custom se faire passer pour un managé : `managed` est CÂBLÉ à 0 à la création,
 //     la `key` custom est TOUJOURS préfixée `custom-` (jamais fournie par le client), l'update refuse managed=1.
 // SÉCURITÉ (surface admin-authored) :
-//   - step SEARCH : le gabarit SOQL `$target$` passe par le COMPILATEUR FERMÉ guatx_core::soql::to_sql au
+//   - step SEARCH : le gabarit GXQL `$target$` passe par le COMPILATEUR FERMÉ guatx_core::soql::to_sql au
 //     TEMPS-AUTEUR (rejet si non compilable / SQL brut / injection) ET au TEMPS-RÉSOLUTION (resolve_step_search,
 //     value_scalar_ok + recompilation). Masquage + tenant-scoping s'appliquent à l'exécution via /api/query,
 //     EXACTEMENT comme une step managée. Un admin ne peut PAS contourner le masque, lire cross-tenant, ni injecter.
@@ -487,9 +487,9 @@ pub(crate) fn valid_step_kind(k: &str) -> bool {
     matches!(k, "manual" | "search" | "response")
 }
 
-/// TEMPS-AUTEUR — VALIDE un gabarit SOQL de step 'search' AVANT persistance, EXACTEMENT comme
+/// TEMPS-AUTEUR — VALIDE un gabarit GXQL de step 'search' AVANT persistance, EXACTEMENT comme
 /// validate_workflow_action `search` (dummy-substitution de `$target$` par un scalaire sûr, puis compile-check
-/// par le COMPILATEUR FERMÉ, standalone OU préfixé `search`). Rejette tout ce qui n'est PAS du SOQL compilable
+/// par le COMPILATEUR FERMÉ, standalone OU préfixé `search`). Rejette tout ce qui n'est PAS du GXQL compilable
 /// (SQL brut, injection, pipe malformé…). Le compilateur étant fermé, aucun gabarit ne peut produire du SQL brut.
 pub(crate) fn validate_search_template(tpl: &str) -> Result<(), String> {
     let dummy = tpl.replace("$target$", "x1");
@@ -523,7 +523,7 @@ fn validate_match(mkind: &str, mkey: &str) -> Result<(String, String), String> {
 pub(crate) type NewStep = (String, String, String, String, Option<String>, Option<String>);
 
 /// TEMPS-AUTEUR — valide UNE étape JSON. Referme les enums (phase/step_kind), borne les longueurs, et surtout :
-///  - step 'search' -> le gabarit SOQL passe le COMPILATEUR FERMÉ (validate_search_template) ;
+///  - step 'search' -> le gabarit GXQL passe le COMPILATEUR FERMÉ (validate_search_template) ;
 ///  - step 'response' -> action_kind DANS l'ENUM FERMÉ (action_kind_valid) ; JAMAIS de commande arbitraire.
 /// Les champs hors-genre sont NEUTRALISÉS (une step manual/search ne porte pas d'action_kind, etc.).
 fn validate_step(v: &Value) -> Result<NewStep, String> {
@@ -549,7 +549,7 @@ fn validate_step(v: &Value) -> Result<NewStep, String> {
             action_kind_valid(&a)?; // ENUM D'ACTION FERMÉ (temps-auteur) ; l'exécution reste /api/actions
             (None, Some(a))
         }
-        _ => (None, None), // manual : ni SOQL ni action
+        _ => (None, None), // manual : ni GXQL ni action
     };
     Ok((phase, title, guidance, step_kind, soql, act))
 }

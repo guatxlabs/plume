@@ -180,7 +180,7 @@ pub(crate) async fn user_update(State(st): State<AppState>, Extension(au): Exten
 }
 
 // ---------- LOOKUP : tables d'enrichissement (admin only via auth_guard) ----------
-// NOYAU FONCTIONNEL : table + endpoint admin minimal + op SOQL `lookup`. L'UI de GESTION (formulaire
+// NOYAU FONCTIONNEL : table + endpoint admin minimal + op GXQL `lookup`. L'UI de GESTION (formulaire
 // d'upload CSV/JSON, édition, aperçu) est un SUIVI ULTÉRIEUR — ici seul l'endpoint REST est exposé.
 
 /// Convertit une valeur JSON scalaire en chaîne exploitable comme clé/valeur de lookup. String -> telle
@@ -256,7 +256,7 @@ pub(crate) async fn lookups_list(State(st): State<AppState>, Extension(au): Exte
 pub(crate) async fn lookup_upload(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let name = b.trimmed("name");
     let key_field = b.trimmed("key_field");
-    // #1c garde-fou #1 (lookup) : nom + champ-clé au format identifiant SOQL (soql_ident_ok), rows = tableau.
+    // #1c garde-fou #1 (lookup) : nom + champ-clé au format identifiant GXQL (soql_ident_ok), rows = tableau.
     if !soql_ident_ok(&name) {
         return bad_req("nom de lookup invalide (alphanumérique + _)");
     }

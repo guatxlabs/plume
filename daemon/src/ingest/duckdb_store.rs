@@ -21,7 +21,7 @@
 //! PÉRIMÈTRE (de-risking) :
 //!   - Écritures : `insert_event`/`insert_metric`/`insert_snapshot` + `insert_events` (boucle préparée ;
 //!     le tier de prod utiliserait l'Appender DuckDB pour le débit — follow-up).
-//!   - Lecture SOQL : `query_soql` compile via `Schema::events_duckdb()` (DuckDbDialect) puis exécute sur
+//!   - Lecture GXQL : `query_soql` compile via `Schema::events_duckdb()` (DuckDbDialect) puis exécute sur
 //!     une connexion DuckDB au chemin `db_path`, et renvoie la MÊME forme JSON `{columns,rows,stats}` que
 //!     l'exécuteur SQLite (`run_query_ex`).
 //!   - GAP-4 (bornage ressources) — DÉSORMAIS HONORÉ (revue store-resource) : `query_soql_masked` pose

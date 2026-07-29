@@ -215,7 +215,7 @@ pub(crate) fn norm_mitre(s: &str) -> Option<String> {
     }
 }
 /// DURCISSEMENT 3a — le SQL BRUT (is_soql=false) lit l'INTÉGRALITÉ de la base (tout `SELECT … FROM`),
-/// donc une règle en SQL brut = lecture totale -> RÉSERVÉE à l'admin. Les règles SOQL (langage borné,
+/// donc une règle en SQL brut = lecture totale -> RÉSERVÉE à l'admin. Les règles GXQL (langage borné,
 /// read-only, sur `event`) restent permises à l'editor, comme tous les parsers/playbooks. Pur (testable
 /// sans AppState), utilisé par rule_create ET rule_update.
 pub(crate) fn raw_sql_allowed(is_soql: bool, role: &str) -> bool {
@@ -225,7 +225,7 @@ pub(crate) fn raw_sql_allowed(is_soql: bool, role: &str) -> bool {
 }
 /// #1c — VALIDATION UNIFIÉE du contenu de détection À L'ENREGISTREMENT (garde-fous #1/#2/#3), fail-closed.
 /// Pure (testable sans AppState), branchée sur create ET update des règles/parseurs/playbooks. Réutilise
-/// STRICTEMENT le socle existant : `raw_sql_allowed` (SQL brut=admin), `rule_sql` (compile SOQL via
+/// STRICTEMENT le socle existant : `raw_sql_allowed` (SQL brut=admin), `rule_sql` (compile GXQL via
 /// guatx_core::soql / substitue __FROM__ en SQL brut), `action_kind_valid` (ENUM FERMÉ dérivé d'action_valid).
 /// `kind` ∈ "rule" | "playbook" | "parser". Renvoie Err((StatusCode, message clair)) -> l'appelant répond
 /// directement (403 SQL brut non-admin / 400 requête ou regex qui ne compile pas / 400 action hors-enum).
@@ -248,11 +248,11 @@ pub(crate) fn validate_detection_content(
             }
             Ok(())
         }
-        // Règle / playbook : SOQL borné (editor OK) ou SQL brut (admin only), qui DOIT compiler.
+        // Règle / playbook : GXQL borné (editor OK) ou SQL brut (admin only), qui DOIT compiler.
         "rule" | "playbook" => {
             // garde-fou #2 : SQL brut (is_soql=false) = RÉSERVÉ ADMIN, enforce SERVEUR (create + update).
             if !raw_sql_allowed(is_soql, role) {
-                return Err((StatusCode::FORBIDDEN, "SQL brut réservé à l'administrateur (utilisez SOQL)".into()));
+                return Err((StatusCode::FORBIDDEN, "SQL brut réservé à l'administrateur (utilisez GXQL)".into()));
             }
             // garde-fou #1 : la requête doit COMPILER (même chemin que l'éval/test/overlay -> zéro angle mort).
             if let Err(e) = rule_sql(query, is_soql, window_s) {
@@ -433,7 +433,7 @@ pub(crate) async fn rule_create(State(st): State<AppState>, Extension(au): Exten
     let is_soql = b.bool_field("is_soql", true);
     let query = b.str_field("query").to_string();
     let window_s = b.i64_field("window_s", 3600);
-    // #1c garde-fous #1/#2 : SQL brut=admin + la requête DOIT compiler (SOQL via core) — AVANT toute écriture.
+    // #1c garde-fous #1/#2 : SQL brut=admin + la requête DOIT compiler (GXQL via core) — AVANT toute écriture.
     if let Err((code, msg)) = validate_detection_content("rule", is_soql, &query, "", window_s, &au.role) {
         return err_json(code, msg);
     }
@@ -504,7 +504,7 @@ pub(crate) async fn rule_update(State(st): State<AppState>, Extension(au): Exten
     };
     // #1c garde-fous #1/#2 : is_soql/query/window EFFECTIFS après le PATCH (corps si fourni, sinon base).
     // Anti-contournement : un editor ne peut ni basculer en SQL brut ni éditer une règle SQL brut ; la
-    // requête effective (SOQL ou SQL brut) DOIT compiler.
+    // requête effective (GXQL ou SQL brut) DOIT compiler.
     let eff_soql = b.get("is_soql").and_then(|x| x.as_bool()).unwrap_or(cur_soql);
     let eff_query = b.get("query").and_then(|x| x.as_str()).map(|s| s.to_string()).unwrap_or(cur_query);
     let eff_window = b.get("window_s").and_then(|x| x.as_i64()).unwrap_or(cur_window);
@@ -835,10 +835,10 @@ pub(crate) async fn rule_test_adhoc(State(st): State<AppState>, Extension(au): E
     // #1c garde-fou #2 : le TEST ad-hoc d'une requête SQL BRUT (is_soql=false) est RÉSERVÉ ADMIN, au même
     // titre que la création/édition (validate_detection_content). Sans ce garde, un editor testerait du SQL
     // brut arbitraire (lecture read-only de TOUTES les tables : user.hash, token…) via /api/rule-test ->
-    // contournement du garde-fou « SQL brut = admin only » sur la surface Règles. Le SOQL (is_soql=true)
+    // contournement du garde-fou « SQL brut = admin only » sur la surface Règles. Le GXQL (is_soql=true)
     // reste ouvert à l'editor. Miroir exact de raw_sql_allowed (create/update).
     if !raw_sql_allowed(is_soql, &au.role) {
-        return Json(json!({ "error": "SQL brut réservé à l'administrateur (utilisez SOQL)" }));
+        return Json(json!({ "error": "SQL brut réservé à l'administrateur (utilisez GXQL)" }));
     }
     let op = b.get("op").and_then(|v| v.as_str()).unwrap_or(">").to_string();
     let threshold = b.get("threshold").and_then(|v| v.as_f64()).unwrap_or(0.0);

@@ -28,7 +28,7 @@
         assert!(!col_exists(&conn, "alert", "entity_user"), "alert.entity_user NE DOIT PAS exister (A2 différé)");
     }
 
-    /// SEED : les gabarits SOQL des steps 'search' COMPILENT (après substitution de $target$) — verrou
+    /// SEED : les gabarits GXQL des steps 'search' COMPILENT (après substitution de $target$) — verrou
     /// anti-régression sur le compilateur FERMÉ (jamais de SQL brut ; recompilé à la résolution).
     #[test]
     fn seed_runbook_searches_compile() {
@@ -265,7 +265,7 @@
         assert!(!step_advance(&conn, id, first_step, "bogus", "bob", None));
     }
 
-    /// RUN SEARCH : la résolution substitue la cible, recompile (FERMÉ) et renvoie le SOQL ; valeur interdite
+    /// RUN SEARCH : la résolution substitue la cible, recompile (FERMÉ) et renvoie le GXQL ; valeur interdite
     /// refusée ; step non-search refusée. (Aucune exécution — juste de la navigation, comme workflow_action.)
     #[test]
     fn step_search_resolve_reuses_closed_compiler() {
@@ -552,7 +552,7 @@
 
     // ============================================================================================
     // #3 INCIDENTS — PHASE 2 : runbooks CUSTOM (bring-your-own), protection de la baseline managée,
-    // gabarits managés supplémentaires, adaptivité NIVEAU-TECHNIQUE. Réutilise le compilateur SOQL FERMÉ
+    // gabarits managés supplémentaires, adaptivité NIVEAU-TECHNIQUE. Réutilise le compilateur GXQL FERMÉ
     // (validate_search_template), l'enum d'action FERMÉ (action_kind_valid), la doctrine detection_override
     // (enable/disable survit au re-seed), route_min_role (admin-only), pick_runbook_id (technique>tactique).
     // ============================================================================================
@@ -673,11 +673,11 @@
         assert!(conn.query_row("SELECT 1 FROM runbook WHERE id=?1 AND name='MaPerso'", params![custom_id], |_| Ok(())).is_ok(), "custom non clobber par le re-seed");
     }
 
-    /// AUTHOR-TIME — CLÔTURE du gabarit SOQL de step 'search'. Le compilateur FERMÉ (validate_search_template) est
+    /// AUTHOR-TIME — CLÔTURE du gabarit GXQL de step 'search'. Le compilateur FERMÉ (validate_search_template) est
     /// la garantie : (a) un gabarit valide compile ; (b) tout gabarit ACCEPTÉ compile en UN SEUL `SELECT ... FROM
     /// event` sûr — un texte ressemblant à du SQL brut (`; DROP`, `'; DELETE`, `UNION SELECT token_hash`) DÉGRADE
     /// en termes de recherche plein-texte ÉCHAPPÉS (`message LIKE '%...%'`), jamais une 2e instruction ni un accès
-    /// hors-vue `event` -> AUCUNE injection possible ; (c) une commande SOQL inconnue / un pipe malformé est REJETÉ.
+    /// hors-vue `event` -> AUCUNE injection possible ; (c) une commande GXQL inconnue / un pipe malformé est REJETÉ.
     /// (Le temps-résolution est couvert par step_search_resolve_reuses_closed_compiler : value_scalar_ok + recompile.)
     #[test]
     fn author_time_search_template_closure() {
@@ -706,14 +706,14 @@
             assert!(!sql.contains("; DROP") && !sql.contains("; DELETE") && !sql.contains(") UNION"), "instruction injectée : {sql}");
             assert!(!sql.contains("token_hash FROM token"), "accès hors-event : {sql}");
         }
-        // (c) commande SOQL inconnue / pipe malformé -> REJET.
+        // (c) commande GXQL inconnue / pipe malformé -> REJET.
         for bad in [
             "search host=$target$ | delete",
             "$target$ | drop",
             "host=$target$ | inputlookup secret",
             "host=$target$ || 1=1 |||| garbage",
         ] {
-            assert!(validate_search_template(bad).is_err(), "commande SOQL invalide ACCEPTÉE à tort : {bad}");
+            assert!(validate_search_template(bad).is_err(), "commande GXQL invalide ACCEPTÉE à tort : {bad}");
         }
     }
 
@@ -784,7 +784,7 @@
     // #3 PHASE 3 — Part B : VISIBILITÉ CLIENT MINIMALE & SÛRE. La projection client gagne 3 champs ADDITIFS
     // (is_incident bool / phase coarse / acknowledged bool), tous dérivés de colonnes NON secrètes déjà
     // tenant-scopées. La denylist DURE reste fermée : tier brut, incident_type, commander, runbook, case_step,
-    // SOQL, action_kind, notes, identité analyste, cross-tenant. Réutilise client_case_get_json/_list_json,
+    // GXQL, action_kind, notes, identité analyste, cross-tenant. Réutilise client_case_get_json/_list_json,
     // incident_apply_tier, create_custom_runbook, attach_runbook. ⚠ surface d'isolation sensible.
     // ============================================================================================
 

@@ -1,6 +1,6 @@
-//! #60 — SCHEDULED REPORTS : un DATASET (#47, SOQL sauvegardé) exécuté sur un intervalle et livré à un
+//! #60 — SCHEDULED REPORTS : un DATASET (#47, GXQL sauvegardé) exécuté sur un intervalle et livré à un
 //! NOTIFIER (#53, canal admin-configuré). RÉUTILISE l'infra existante — AUCUN nouveau mécanisme de livraison
-//! (`notify_send`) ni de compilation (le SOQL du dataset passe par le MÊME chemin masqué `soql_to_sql_masked_x`
+//! (`notify_send`) ni de compilation (le GXQL du dataset passe par le MÊME chemin masqué `soql_to_sql_masked_x`
 //! que /api/query). Additif : table `scheduled_report` VIDE -> `run_due_reports` sélectionne 0 ligne -> no-op
 //! strict (mode 0 byte-identique, aucun réseau).
 //!
@@ -147,12 +147,12 @@ fn format_report_detail(name: &str, v: &Value) -> (i64, String) {
     (n, out)
 }
 
-/// EXÉCUTE un rapport (dataset SOQL) MASQUÉ par son `run_as_role` et le LIVRE via son notifier. Coeur partagé
+/// EXÉCUTE un rapport (dataset GXQL) MASQUÉ par son `run_as_role` et le LIVRE via son notifier. Coeur partagé
 /// par le tick de fond et /run. Ne PANIQUE jamais (les erreurs remontent en `Err`). Le lock métadonnées n'est
 /// tenu QUE pour lire la définition + écrire le statut ; la requête (`run_query_ex`, pool read séparé) et
 /// l'envoi (`notify_send`) tournent HORS lock.
 pub(crate) fn deliver_report(db: &Arc<Mutex<Connection>>, db_path: &str, id: i64) -> Result<(i64, bool), String> {
-    // 1) charge la définition + le dataset SOQL + le notifier (kind/url/config) sous lock, puis relâche.
+    // 1) charge la définition + le dataset GXQL + le notifier (kind/url/config) sous lock, puis relâche.
     let (name, run_as, tenant, soql, nkind, nurl, nconfig): (String, String, String, String, String, String, String) = {
         let conn = db.lock();
         let (name, dataset_id, notifier_id, run_as, tenant): (String, i64, i64, String, String) = conn.query_row(
@@ -188,7 +188,7 @@ pub(crate) fn deliver_report(db: &Arc<Mutex<Connection>>, db_path: &str, id: i64
     }
 }
 
-/// COMPILE le SOQL du dataset MASQUÉ par `(run_as, tenant)` — parité EXACTE avec /api/query, qui passe
+/// COMPILE le GXQL du dataset MASQUÉ par `(run_as, tenant)` — parité EXACTE avec /api/query, qui passe
 /// `effective_masks(path, &au.role, &au.tenant, env)`. `run_as` remplace le rôle de l'appelant (garantie
 /// anti-exfiltration) ; `tenant` = celui DU CRÉATEUR (persisté à la création) -> les field-filters tenant-scopés
 /// (`tenant='clientX'`) matchent. Un `tenant=""` codé en dur les RATAIT -> livraison de données brutes non

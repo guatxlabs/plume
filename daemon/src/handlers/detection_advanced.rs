@@ -2,7 +2,7 @@
 //! écriture, détection/ingest byte-identiques) :
 //!
 //!  1. CORRÉLATION MULTI-ÉVÉNEMENTS STATEFUL (Finding-Groups) — `correlation` : une séquence ORDONNÉE
-//!     d'étapes SOQL keyée sur UNE entité (src_ip/user/host…). Chaque étape sélectionne des events (au moins
+//!     d'étapes GXQL keyée sur UNE entité (src_ip/user/host…). Chaque étape sélectionne des events (au moins
 //!     `ts` + la colonne de clé) ; l'entité MATCHE si l'on trouve, dans la fenêtre W, `min_count` events de
 //!     l'étape 1 PUIS de l'étape 2 … PUIS de l'étape N, chaque étape survenant AU-DELÀ de l'ancre de la
 //!     précédente (« failed-auth ×N puis success même IP », « recon -> exploit -> C2 »). Un match clôt le
@@ -18,8 +18,8 @@
 //! un « tout clair » — elle N'écrit rien et NE RÉSOUT PAS de groupe ouvert (elle avance seulement last_run
 //! et re-tentera). Concurrence bornée par `PLUME_DETECT_CONCURRENCY` (mutualisé avec run_due_rules).
 //!
-//! SÉCU : étapes de corrélation & requête de baseline = SOQL UNIQUEMENT (langage borné read-only sur `event`,
-//! identifiants allowlistés, injection-safe — mêmes garanties que les règles SOQL, éditeur+). Aucun SQL brut,
+//! SÉCU : étapes de corrélation & requête de baseline = GXQL UNIQUEMENT (langage borné read-only sur `event`,
+//! identifiants allowlistés, injection-safe — mêmes garanties que les règles GXQL, éditeur+). Aucun SQL brut,
 //! aucune surface d'exécution custom, aucun contrôle hôte.
 use crate::*;
 use std::collections::HashMap;
@@ -28,7 +28,7 @@ use std::collections::HashMap;
 // MODÈLE — étapes de corrélation (JSON) + validation pure (testable sans AppState).
 // ============================================================================================
 
-/// Une étape ordonnée d'une corrélation : un filtre SOQL + un compte minimal d'events requis.
+/// Une étape ordonnée d'une corrélation : un filtre GXQL + un compte minimal d'events requis.
 #[derive(Clone, Debug)]
 pub(crate) struct CorrStep {
     pub(crate) name: String,
@@ -51,7 +51,7 @@ pub(crate) fn parse_corr_steps(steps_json: &str) -> Result<Vec<CorrStep>, String
     for (i, s) in arr.iter().enumerate() {
         let query = s.get("query").and_then(|q| q.as_str()).unwrap_or("").trim().to_string();
         if query.is_empty() {
-            return Err(format!("étape {} : requête SOQL vide", i + 1));
+            return Err(format!("étape {} : requête GXQL vide", i + 1));
         }
         let min_count = s.get("min_count").and_then(|m| m.as_i64()).unwrap_or(1).max(1);
         let name = s.get("name").and_then(|n| n.as_str()).unwrap_or("").trim().to_string();
@@ -67,7 +67,7 @@ pub(crate) fn ident_ok(s: &str) -> bool {
 }
 
 /// Valide le CONTENU d'une corrélation à l'enregistrement (fail-closed) : clé/type d'entité = identifiants
-/// sûrs, étapes non vides qui COMPILENT toutes en SOQL (même chemin que l'éval -> zéro angle mort).
+/// sûrs, étapes non vides qui COMPILENT toutes en GXQL (même chemin que l'éval -> zéro angle mort).
 pub(crate) fn validate_correlation(key_field: &str, entity_type: &str, steps_json: &str, window_s: i64) -> Result<(), (StatusCode, String)> {
     if !ident_ok(key_field) {
         return Err((StatusCode::BAD_REQUEST, "champ de clé (key_field) invalide (alphanumérique/_ ≤64)".into()));
@@ -77,7 +77,7 @@ pub(crate) fn validate_correlation(key_field: &str, entity_type: &str, steps_jso
     }
     let steps = parse_corr_steps(steps_json).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     for (i, st) in steps.iter().enumerate() {
-        // étape = SOQL borné (is_soql=true) qui DOIT compiler (rule_sql -> guatx_core::soql).
+        // étape = GXQL borné (is_soql=true) qui DOIT compiler (rule_sql -> guatx_core::soql).
         if let Err(e) = rule_sql(&st.query, true, window_s) {
             return Err((StatusCode::BAD_REQUEST, format!("étape {} : requête invalide : {e}", i + 1)));
         }
@@ -413,7 +413,7 @@ fn eval_baseline(
     out.bucket = closed;
     let bstart = closed * bucket_s;
     let bend = cur * bucket_s - 1; // borne HAUTE inclusive (soql_to_sql_x -> ts <= bend) = fin du bucket clos
-    // Compile la requête bornée AU bucket clos [bstart, bend]. SOQL uniquement (borné, read-only).
+    // Compile la requête bornée AU bucket clos [bstart, bend]. GXQL uniquement (borné, read-only).
     let sql = match soql_to_sql_x(query, bstart, bend, None) {
         Ok(s) => s,
         Err(_) => return out,
@@ -770,10 +770,10 @@ pub(crate) async fn baselines_list(State(st): State<AppState>, Extension(au): Ex
     Json(json!({ "baselines": rows }))
 }
 
-/// Valide le contenu d'une baseline (fail-closed) : query SOQL non vide qui compile, champs = identifiants sûrs.
+/// Valide le contenu d'une baseline (fail-closed) : query GXQL non vide qui compile, champs = identifiants sûrs.
 fn validate_baseline(query: &str, entity_field: &str, value_field: &str, entity_type: &str) -> Result<(), (StatusCode, String)> {
     if query.trim().is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "requête SOQL vide".into()));
+        return Err((StatusCode::BAD_REQUEST, "requête GXQL vide".into()));
     }
     if !ident_ok(entity_field) {
         return Err((StatusCode::BAD_REQUEST, "champ d'entité (entity_field) invalide".into()));

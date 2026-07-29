@@ -4,7 +4,7 @@
 //! exporter ses traces distribuées vers plume SANS nouvel agent, via le protocole STANDARD OTLP/HTTP
 //! (`POST /v1/traces`). Chaque `span` est mappé à une ligne CIM (`category=trace`) et ingéré par le MÊME
 //! chemin que tout autre event (`ingest_events_batch` via le spool) -> masquage (#45), rollups et détection
-//! s'appliquent UNIFORMÉMENT. Les spans deviennent donc requêtables en SOQL (`search category=trace ...`)
+//! s'appliquent UNIFORMÉMENT. Les spans deviennent donc requêtables en GXQL (`search category=trace ...`)
 //! et CORRÉLABLES aux logs par `trace_id` (un log qui porte le même `trace_id` joint le même trace).
 //!
 //! INERTE PAR DÉFAUT (mode 0 byte-identique) : le récepteur est OFF tant que `PLUME_OTLP_TRACES=1` n'est
@@ -16,7 +16,7 @@
 //!
 //! DÉCODEUR = NOUVELLE SURFACE D'ATTAQUE : bornes DoS dures (cf. consts OTLP_MAX_*) — nombre de spans/req,
 //! attributs/span, profondeur de valeur, et cap de DÉCOMPRESSION gzip (anti-bombe) AVANT toute allocation.
-//! JSON malformé -> 400 sans panic. Les attributs de span traversent le MÊME chemin CIM->event->SOQL masqué
+//! JSON malformé -> 400 sans panic. Les attributs de span traversent le MÊME chemin CIM->event->GXQL masqué
 //! que tout champ ingéré (jamais de SQL construit à partir de la donnée de span).
 //!
 //! PORTÉE : OTLP/HTTP signal `traces`, encodage JSON (+ gzip). gRPC (OTLP/gRPC) et les signaux metrics/logs

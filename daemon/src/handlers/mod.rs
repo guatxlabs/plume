@@ -9,7 +9,7 @@ pub(crate) mod compliance; // #38 : mapping de conformité (tags de cadre par r�
 pub(crate) mod connectors;
 pub(crate) mod dash_ergonomics; // #54 : library panels / playlists / dashboard snapshots (ergonomie)
 pub(crate) mod dashboards;
-pub(crate) mod datasource; // #52 plume-as-a-datasource : surfaces de LECTURE (SOQL-HTTP + Prometheus + stub Loki)
+pub(crate) mod datasource; // #52 plume-as-a-datasource : surfaces de LECTURE (GXQL-HTTP + Prometheus + stub Loki)
 pub(crate) mod destinations; // #50 outputs/destinations : forward des events normalisés vers un sink externe (syslog/hec/webhook)
 pub(crate) mod detection;
 pub(crate) mod detection_advanced;
@@ -24,13 +24,13 @@ pub(crate) mod freshness;
 pub(crate) mod governance; // #59 : legal-hold (rétention-lock), export streaming du ledger + sinks, rôles composables (CRUD)
 pub(crate) mod idp;
 #[cfg(feature = "ai")]
-pub(crate) mod ai; // #16 handlers de la couche IA conseil (providers CRUD + presets + NL→SOQL + status) — feature `ai` OFF -> exclu à la compilation
+pub(crate) mod ai; // #16 handlers de la couche IA conseil (providers CRUD + presets + NL→GXQL + status) — feature `ai` OFF -> exclu à la compilation
 pub(crate) mod index_policies; // #49 : indexes logiques nommés (rétention/plafonds par env_id)
 pub(crate) mod notifiers;
 pub(crate) mod overview;
 pub(crate) mod playbooks;
 pub(crate) mod prefs; // #62 : préférences utilisateur self-scoped (GET/PUT /api/prefs) — colonnes/favoris/réglages par vue
-pub(crate) mod saved_queries; // requêtes SOQL nommées per-user, owner-scoped (CRUD /api/saved-queries) — outillage analyste
+pub(crate) mod saved_queries; // requêtes GXQL nommées per-user, owner-scoped (CRUD /api/saved-queries) — outillage analyste
 pub(crate) mod processors;
 pub(crate) mod query;
 pub(crate) mod soql_meta; // complétion IDE : /api/soql/schema (vocab+champs+valeurs bornées) + /api/soql/templates

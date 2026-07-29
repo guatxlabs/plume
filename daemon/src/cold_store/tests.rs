@@ -2552,9 +2552,9 @@ fn union_boundary(db: &Arc<Mutex<Connection>>, conf: &HashMap<String, String>) -
     cold_query_boundary(&c, conf, n_now(), RET_DAYS)
 }
 
-/// Compile un pipeline SOQL event (dialect SQLite, masques éventuels) -> SQL référençant `event`.
+/// Compile un pipeline GXQL event (dialect SQLite, masques éventuels) -> SQL référençant `event`.
 fn compile_ev(soql: &str, from: i64, to: i64, masks: FieldMaskSet) -> String {
-    guatx_core::soql::to_sql(soql, from, to, &Schema::events().with_masks(masks)).expect("compile SOQL")
+    guatx_core::soql::to_sql(soql, from, to, &Schema::events().with_masks(masks)).expect("compile GXQL")
 }
 
 /// Colonne (par nom) d'un résultat {columns,rows} en Vec<Value>.
@@ -3055,11 +3055,11 @@ fn p3_masked_aggregate_over_cold() {
 }
 
 // P3 (test 12, GARDE-FOU HANDLER — le SQL BRUT ne route JAMAIS par l'union cold) — l'union cold n'est ARMÉE que
-// dans la branche SOQL du handler ; la branche `sql` BRUT (réservée admin) laisse `cold_boundary=None` -> chemin
+// dans la branche GXQL du handler ; la branche `sql` BRUT (réservée admin) laisse `cold_boundary=None` -> chemin
 // HOT byte-identique, jamais de ligne cold. On VERROUILLE ça par DEUX assertions :
 //   (a) INVARIANT DE SOURCE sur handlers/query.rs : chaque branche raw-sql (les deux handlers query+export la
 //       partagent) ne référence AUCUN jeton de routage cold (`cold_boundary`/`cold_union`/`open_cold_union`), et
-//       `cold_boundary = Some(` n'apparaît QUE dans la branche SOQL, gardé par le déclencheur fenêtre `if from<b`.
+//       `cold_boundary = Some(` n'apparaît QUE dans la branche GXQL, gardé par le déclencheur fenêtre `if from<b`.
 //       -> un refactor futur qui armerait le cold pour le SQL brut CASSE ce test.
 //   (b) BACKSTOP COMPORTEMENTAL : `cold_event` est une table TEMP LOCALE à la connexion d'union ; une connexion
 //       HOT ordinaire (celle qu'emprunte le SQL brut, via le pool de lecture) ne la voit pas -> le SQL brut est
@@ -3079,14 +3079,14 @@ fn p3_raw_sql_never_touches_cold() {
         assert!(!branch.contains("cold_union"), "la branche raw-sql n'appelle PAS cold_union_query");
         assert!(!branch.contains("open_cold_union"), "la branche raw-sql n'ouvre PAS l'union cold");
     }
-    // Positif : chaque armement `cold_boundary = Some(` est DANS la branche SOQL, sous le gate fenêtre `if from < b`.
+    // Positif : chaque armement `cold_boundary = Some(` est DANS la branche GXQL, sous le gate fenêtre `if from < b`.
     let arms: Vec<usize> = src.match_indices("cold_boundary = Some(").map(|(i, _)| i).collect();
     assert_eq!(arms.len(), 2, "cold_boundary armé exactement 2 fois (query + export)");
     for i in arms {
         let pre = &src[..i];
         let last_gate = pre.rfind("if from < b {").expect("armement gardé par le déclencheur fenêtre `if from < b`");
-        let last_soql = pre.rfind("body.get(\"soql\")").expect("armement DANS la branche SOQL");
-        assert!(last_soql < last_gate, "gate fenêtre imbriqué SOUS la branche SOQL (donc jamais dans la branche raw-sql)");
+        let last_soql = pre.rfind("body.get(\"soql\")").expect("armement DANS la branche GXQL");
+        assert!(last_soql < last_gate, "gate fenêtre imbriqué SOUS la branche GXQL (donc jamais dans la branche raw-sql)");
     }
 
     // (b) BACKSTOP COMPORTEMENTAL : cold_event est local à la connexion d'union.
@@ -3961,7 +3961,7 @@ fn phaseb_masked_or_denied_dim_filter_rejected_before_cold_prune() {
 }
 
 /// #28 PHASE B — EXTRAIT les préds cold en lisant le SQL que le CŒUR compile RÉELLEMENT (nouvelle source de
-/// vérité : `extract_cold_dim_preds` prend le SQL COMPILÉ, plus le SOQL brut). from/to=0 -> pas d'atome `ts`
+/// vérité : `extract_cold_dim_preds` prend le SQL COMPILÉ, plus le GXQL brut). from/to=0 -> pas d'atome `ts`
 /// parasite (sans effet sur l'extraction, mais WHERE plus lisible).
 fn xpreds(soql: &str) -> Vec<DimEq> {
     extract_cold_dim_preds(&compile_ev(soql, 0, 0, FieldMaskSet::new()))
@@ -3986,7 +3986,7 @@ fn phaseb_extract_preds_conservative_and_safe() {
     assert!(has(&g("source=nginx"), ColdDim::Source, "nginx"));
     assert!(has(&g("search source:zeek"), ColdDim::Source, "zeek"));
     // Valeur QUOTÉE : le cœur strippe les guillemets -> `"source" = 'a b'` -> on extrait DÉSORMAIS 'a b' (lossless :
-    // c'est exactement l'octet filtré ; l'ancien ré-parse SOQL s'en abstenait faute de tokeniser comme le cœur).
+    // c'est exactement l'octet filtré ; l'ancien ré-parse GXQL s'en abstenait faute de tokeniser comme le cœur).
     assert!(has(&g("search source=\"a b\""), ColdDim::Source, "a b"), "valeur quotée -> extraite du SQL compilé");
 
     // NÉGATIVES — ne DOIVENT rien extraire (repli ts-only, jamais de sur-élagage) :
@@ -4012,7 +4012,7 @@ fn phaseb_extract_preds_conservative_and_safe() {
 
 // PARITÉ PAR CONSTRUCTION — l'extracteur LIT le SQL compilé, donc TOUT pred émis y apparaît forcément à la
 // VALEUR EXACTE. Ce test verrouille (a) l'invariant `pred ⊆ SQL compilé` sur une batterie, et (b) la
-// RESTAURATION des formes que l'ancien ré-parse SOQL abandonnait : F1 « colle op-char » (`source=foo! bar` ->
+// RESTAURATION des formes que l'ancien ré-parse GXQL abandonnait : F1 « colle op-char » (`source=foo! bar` ->
 // cœur `source='foo!bar'`) est désormais extraite à la valeur COLLÉE exacte (lossless), tandis que les formes où
 // le cœur ne compile AUCUNE égalité de dim (op-char en tête -> freetext json) ne produisent toujours rien.
 #[test]
@@ -4120,7 +4120,7 @@ fn phaseb_extractor_matches_core_compile_parity() {
     assert!(xpreds("host=x!").iter().any(|p| p.dim == ColdDim::Host && p.value == "x!"));
 }
 
-// `in (...)` / PARENTHÈSES — l'ÉGALITÉ QUI ACCOMPAGNE un `IN` est RESTAURÉE. AVANT (ré-parse SOQL) : toute base
+// `in (...)` / PARENTHÈSES — l'ÉGALITÉ QUI ACCOMPAGNE un `IN` est RESTAURÉE. AVANT (ré-parse GXQL) : toute base
 // portant `(`/`in` -> BAIL TOTAL (perte de l'élagage sur host, alors même que `"host" = 'web1'` contraint bien
 // toutes les lignes). MAINTENANT (lecture du SQL compilé) : la clause `IN (...)` n'est pas une égalité (jamais
 // mal-extraite comme telle), MAIS l'égalité `"host" = 'web1'` qui l'accompagne EST extraite -> élagage sur host
@@ -4647,7 +4647,7 @@ fn adv_schema_required_set_matches_decoder_doc() {
 // #18 P2 — MOTEUR VECTORISÉ : HARNAIS DE PARITÉ (vectorisé == chemin hydrate-SQLite) + BENCH. Gatés cold_tier.
 // ----------------------------------------------------------------------------------------------------
 // PRINCIPE : sur le MÊME dataset (mêmes ColdRow -> écrites en cold parquet chiffré ET insérées dans un SQLite
-// éphémère), on exécute chaque forme SOQL représentative des DEUX façons et on ASSERTE l'égalité EXACTE
+// éphémère), on exécute chaque forme GXQL représentative des DEUX façons et on ASSERTE l'égalité EXACTE
 // (comptes/groupes/valeurs, masquage #45 inclus). L'oracle SQLite APPLIQUE le masquage via `union_proj` (la MÊME
 // fonction que `open_cold_union`) -> parité de masquage par CONSTRUCTION. Regex : l'oracle installe l'UDF `regexp`
 // VERBATIM (`install_query_udfs`) -> mêmes semantics `regex::Regex` que le kernel. Le test échoue si UN agrégat/
@@ -4731,7 +4731,7 @@ fn oracle_count(c: &Connection, sql_where: &str) -> i64 {
 }
 
 /// PARITÉ P2 (garde-fou NON négociable) : 300k lignes -> DEUX row-groups (accumulation cross-batch éprouvée) +
-/// NULL parsemés. Chaque forme SOQL représentative : vectorisé == oracle SQLite masqué. Deny-set VIDE ici (le
+/// NULL parsemés. Chaque forme GXQL représentative : vectorisé == oracle SQLite masqué. Deny-set VIDE ici (le
 /// masquage a son propre test dédié plus bas).
 #[test]
 #[cfg(feature = "cold_tier")]
@@ -6095,7 +6095,7 @@ impl Drop for P4aFix {
     }
 }
 
-/// ORACLE = chemin de production ACTUEL : compile le SOQL (masques vides) puis exécute via `cold_union_query`
+/// ORACLE = chemin de production ACTUEL : compile le GXQL (masques vides) puis exécute via `cold_union_query`
 /// (hydrate-SQLite hot∪cold). C'est la RÉFÉRENCE de l'invariant.
 fn p4a_oracle(f: &P4aFix, soql: &str, to: i64) -> Value {
     let sql = compile_ev(soql, f.from, to, FieldMaskSet::new());
@@ -6847,7 +6847,7 @@ fn adv_prune_denied_bloom_only_and_composite() {
     // (b) COMPOSITE And(dénié, autorisé) : deny `source` ; preds INJECTÉS=[source=rare (dénié), host=h9 (autorisé)].
     // OBSERVABLE = le COMPTEUR d'élagage (le signal de sécurité direct : la dim déniée a-t-elle piloté l'élagage ?).
     // Le garde retire `source` -> l'élagage n'utilise QUE `host=h9` -> pruned==1 (idx0 seul, PAS idx2 que
-    // `source=rare` aurait aussi élagué). Si le garde échouait -> pruned==2. Le SOQL ne référence PAS `source`
+    // `source=rare` aurait aussi élagué). Si le garde échouait -> pruned==2. Le GXQL ne référence PAS `source`
     // (sinon l'authorizer #45 rejetterait la requête AVANT tout) -> découplé des preds injectés.
     {
         let mut w = crate::field_deny_cols_cell().write();
@@ -6863,7 +6863,7 @@ fn adv_prune_denied_bloom_only_and_composite() {
     let on = cold_vectorized_try(&f.dbp, &f.conf, None, f.from, f.to, f.b, "search host=h9 | stats count", true, 60_000, &preds).unwrap();
     let (pruned, _scanned) = prune_counters();
     crate::field_deny_cols_cell().write().remove(&f.dbp);
-    assert!(on.is_some(), "routé (SOQL n'implique pas la colonne déniée)");
+    assert!(on.is_some(), "routé (GXQL n'implique pas la colonne déniée)");
     assert_eq!(pruned, 1, "garde: `source` RETIRÉ -> élagage host-SEUL (pruned==1=idx0), PAS l'élagage source (idx2) -> aucune fuite via la dim déniée");
 }
 
@@ -6887,7 +6887,7 @@ fn adv_prune_deny_case_insensitive_guard() {
         ("common", "h2", "10.0.0.2", 2),
     ];
     let (f, _n) = prune_fixture("adv-deny-case", &rows);
-    // SOQL SANS la colonne déniée (l'authorizer #45 rejetterait sinon) ; le pred `source=rare` est INJECTÉ pour
+    // GXQL SANS la colonne déniée (l'authorizer #45 rejetterait sinon) ; le pred `source=rare` est INJECTÉ pour
     // exercer le garde. OBSERVABLE = compteur d'élagage. source=rare élague {idx0,idx2} (les 2 `common`).
     let soql = "search | stats count";
     let preds = vec![DimEq { dim: ColdDim::Source, value: "rare".into() }];
@@ -6970,7 +6970,7 @@ fn p4b_fixture(tag: &str, cold_rows: &[(i64, &str)], hot_rows: &[(i64, &str)]) -
     P4aFix { root, db, dbp, conf, b, from, to }
 }
 
-/// ORACLE P4b = production ACTUELLE : compile le SOQL via le MÊME choke-point que le handler
+/// ORACLE P4b = production ACTUELLE : compile le GXQL via le MÊME choke-point que le handler
 /// (`soql_to_sql_masked_x`, masques vides) puis exécute via `cold_union_query` (hydrate-SQLite hot∪cold).
 fn p4b_oracle(f: &P4aFix, soql: &str) -> Value {
     let sql = crate::soql_glue::soql_to_sql_masked_x(soql, f.from, f.to, None, &FieldMaskSet::new()).expect("compile");
@@ -8000,7 +8000,7 @@ fn ks_multi_env_unscoped_falls_back_scoped_serves() {
 // 2027-07-23 ; ce test se retire AVEC elle (cf. `soql_glue::cim_read_alias_exec`).
 // ====================================================================================================
 
-/// L'alias est posé à l'ÉMISSION SQL (store) ; le moteur colonnaire, lui, parse le SOQL LUI-MÊME. Une
+/// L'alias est posé à l'ÉMISSION SQL (store) ; le moteur colonnaire, lui, parse le GXQL LUI-MÊME. Une
 /// requête `category=exec` DOIT donc être refusée par les mappeurs vectorisés, sinon la route rapide
 /// rendrait `category='exec'` (sans l'historique) là où l'oracle `cold_union_query` rend
 /// `IN ('exec','process')` : DEUX réponses pour UNE question, selon la route choisie, en silence.

@@ -1,8 +1,8 @@
-//! Glue SOQL côté daemon (le compilateur lui-même vit dans `guatx_core::soql`). Regroupe : tokenisation
+//! Glue GXQL côté daemon (le compilateur lui-même vit dans `guatx_core::soql`). Regroupe : tokenisation
 //! de la barre de recherche (`search_tokens`/`field_col`), contrat CIM (`CIM_*` + `cim_category_ok`),
 //! cache d'auto-indexation Phase 3 clé par db_path (`AUTOINDEX_*` statics + `autoindex_has/reload/note*`,
 //! whitelists `HOT_FIELDS`/`AUTOINDEX_DENY`, attribution du slow), toggles cachés (`FTS_FIELDS_ON`) et le
-//! point d'entrée unique d'émission SOQL->SQL `soql_to_sql_x` (traverse le store). Statics OnceLock +
+//! point d'entrée unique d'émission GXQL->SQL `soql_to_sql_x` (traverse le store). Statics OnceLock +
 //! accesseurs. MT-KEY: par db_path. Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
 
@@ -375,7 +375,7 @@ fn cim_exec_alias_clause() -> String {
     format!("category in ({CIM_EXEC_CANON},{CIM_EXEC_LEGACY})")
 }
 
-/// ALIAS DE LECTURE : rend le SOQL dans lequel toute ÉGALITÉ de filtre `category=exec` retrouve AUSSI
+/// ALIAS DE LECTURE : rend le GXQL dans lequel toute ÉGALITÉ de filtre `category=exec` retrouve AUSSI
 /// l'historique `category=process`. `Cow::Borrowed` (aucune allocation, aucune sémantique changée) dès
 /// que la requête ne porte pas cette égalité — c'est le cas de la quasi-totalité du trafic.
 pub(crate) fn cim_read_alias_exec(soql: &str) -> std::borrow::Cow<'_, str> {
@@ -485,7 +485,7 @@ fn push_span(out: &mut String, span: &str) -> bool {
 ///    donc `category!=exec` et `category=~exec` sont rejetés au lieu d'être pris pour des égalités ;
 ///  • partie GAUCHE quotée = PHRASE plein-texte (règle `SoqlTok::quoted_prefix`), jamais un champ ;
 ///  • le nom du champ doit être la COLONNE RÉELLE `category` — `cat` est un alias de la barre
-///    `/api/search` (`field_col`), que le compilateur SOQL ne résout PAS vers la colonne ;
+///    `/api/search` (`field_col`), que le compilateur GXQL ne résout PAS vers la colonne ;
 ///  • la valeur doit être EXACTEMENT `exec` (guillemets retirés comme le fait le tokeniseur) — ce qui
 ///    exclut MÉCANIQUEMENT `~exec` (regex), `exec*` (joker) et `execve` sans les énumérer.
 fn span_is_category_exec_equality(span: &str) -> bool {
@@ -514,9 +514,9 @@ fn span_is_category_exec_equality(span: &str) -> bool {
 /// (FILTRE par environnement). `None` (mode 0 / en-tête absent / `__all__`) -> SQL byte-identique au
 /// legacy (invariant absolu). La détection (rule_sql) passe TOUJOURS None : les règles sont tenant-wide (D7).
 pub(crate) fn soql_to_sql_x(soql: &str, from: i64, to: i64, env: Option<&str>) -> Result<String, String> {
-    // COUTURE STORE : l'émission SOQL->SQL traverse désormais l'UNIQUE point qu'est le store (qui compile
+    // COUTURE STORE : l'émission GXQL->SQL traverse désormais l'UNIQUE point qu'est le store (qui compile
     // via `guatx_core::soql` = Dialect). Corps byte-identique à l'ancien inline. Tous les sites de lecture
-    // SOQL (query/panels/export/règles) passent par `soql_to_sql_x` -> donc par le store.
+    // GXQL (query/panels/export/règles) passent par `soql_to_sql_x` -> donc par le store.
     store().soql_to_sql(soql, from, to, env)
 }
 
@@ -533,7 +533,7 @@ pub(crate) fn soql_to_sql_masked_x(soql: &str, from: i64, to: i64, env: Option<&
 /// (pagination par CURSEUR `(ts,id)` : parcours INTÉGRAL du match-set sans plafond, remplace le cap 10 000 qui
 /// cachait des événements). Tous les autres sites de lecture (query non-keyset/panneaux/export/détection)
 /// restent sur `soql_to_sql(_masked)_x` (cursor_id=false) -> SQL byte-identique (mode 0). Traverse le store
-/// (choke-point unique de compilation SOQL->SQL). `masks` VIDE -> keyset mode 0 (mêmes colonnes + `id`).
+/// (choke-point unique de compilation GXQL->SQL). `masks` VIDE -> keyset mode 0 (mêmes colonnes + `id`).
 pub(crate) fn soql_to_sql_masked_keyset_x(soql: &str, from: i64, to: i64, env: Option<&str>, masks: &guatx_core::soql::FieldMaskSet) -> Result<String, String> {
     store().soql_to_sql_masked_keyset(soql, from, to, env, masks)
 }

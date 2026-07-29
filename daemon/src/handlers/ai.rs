@@ -1,14 +1,14 @@
-//! Handlers HTTP de la couche IA CONSEIL (#16, Phase 1 : NL→SOQL). Feature `ai` OFF par défaut ->
+//! Handlers HTTP de la couche IA CONSEIL (#16, Phase 1 : NL→GXQL). Feature `ai` OFF par défaut ->
 //! CHAQUE endpoint appelle `require_feature()` en tête ; sans la feature -> 501 (miroir strict du stub
 //! LDAP/SAML « non compilé »). Runtime-inert de plus : sans `PLUME_AI_ENABLE` + provider `enabled=1`,
 //! aucun endpoint n'agit (mode 0 byte-identique).
 //!
 //! CRUD des providers + presets + politique de redaction = ADMIN-ONLY (route_min_role Admin + re-check
-//! in-handler + secret redigé). NL→SOQL + status = analyste (viewer+). Mode 0 UNIQUEMENT (comme l'IdP :
+//! in-handler + secret redigé). NL→GXQL + status = analyste (viewer+). Mode 0 UNIQUEMENT (comme l'IdP :
 //! pas de chemin IA cross-tenant à moitié câblé -> 501 en multi-tenant).
 //!
-//! INVARIANT CARDINAL : NL→SOQL passe le TEXTE du LLM au compilo FERMÉ `soql_to_sql_x` (le MÊME que
-//! /api/query) et renvoie SOQL+SQL validés (ou l'erreur) à l'analyste. ZÉRO exécution : ce handler
+//! INVARIANT CARDINAL : NL→GXQL passe le TEXTE du LLM au compilo FERMÉ `soql_to_sql_x` (le MÊME que
+//! /api/query) et renvoie GXQL+SQL validés (ou l'erreur) à l'analyste. ZÉRO exécution : ce handler
 //! n'appelle jamais /api/query, ne touche jamais la base avec le texte généré.
 use crate::*;
 
@@ -37,7 +37,7 @@ pub(crate) fn ai_worker_err(e: String) -> Response {
 
 /// Construit le DÉTAIL de l'entrée de ledger `ai.call`. NE CONTIENT QUE : purpose, provider, formes,
 /// compteurs de tokens, version de politique de redaction, HASH du prompt rédigé, verdicts. JAMAIS la
-/// matière du prompt, JAMAIS la clé, JAMAIS le SOQL/SQL généré. Fonction pure -> testable (invariant no-leak).
+/// matière du prompt, JAMAIS la clé, JAMAIS le GXQL/SQL généré. Fonction pure -> testable (invariant no-leak).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn ai_call_ledger_detail(
     provider_id: i64, api_shape: &str, cloud: bool, prompt_tokens: u32, completion_tokens: u32,
@@ -394,7 +394,7 @@ pub(crate) async fn ai_from_preset(State(st): State<AppState>, Extension(au): Ex
     ai_provider_create(State(st), Extension(au), Json(body)).await
 }
 
-// ================================ STATUS + NL→SOQL (analyste, viewer+) ================================
+// ================================ STATUS + NL→GXQL (analyste, viewer+) ================================
 
 /// GET /api/ai/status — l'UI l'utilise pour afficher/masquer l'assistant. Feature+runtime+provider inertness.
 pub(crate) async fn ai_status(State(st): State<AppState>, Extension(_au): Extension<AuthUser>) -> Response {
@@ -423,7 +423,7 @@ pub(crate) async fn ai_status(State(st): State<AppState>, Extension(_au): Extens
 }
 
 /// POST /api/ai/nl2soql — assemble un prompt RÉDIGÉ (noms de champ CIM + question), interroge le provider
-/// actif, passe le SOQL au compilo FERMÉ `soql_to_sql_x`, renvoie SOQL+SQL (ou l'erreur). ZÉRO exécution.
+/// actif, passe le GXQL au compilo FERMÉ `soql_to_sql_x`, renvoie GXQL+SQL (ou l'erreur). ZÉRO exécution.
 /// Un appel = une question (jamais par-event). Audité au ledger SANS matière de prompt ni clé.
 pub(crate) async fn ai_nl2soql(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     ai_gate!(au);
@@ -501,7 +501,7 @@ pub(crate) async fn ai_nl2soql(State(st): State<AppState>, Extension(au): Extens
     match outcome {
         Ok(o) => {
             // LEDGER : purpose, provider, tokens, version de politique, HASH du prompt rédigé. JAMAIS la
-            // matière du prompt, JAMAIS la clé, JAMAIS le SOQL/SQL généré (le hash suffit à l'audit).
+            // matière du prompt, JAMAIS la clé, JAMAIS le GXQL/SQL généré (le hash suffit à l'audit).
             {
                 let conn = st.db.lock();
                 let detail = ai_call_ledger_detail(

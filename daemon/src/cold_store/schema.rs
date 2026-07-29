@@ -15,9 +15,9 @@ use parquet::file::writer::{SerializedFileWriter, SerializedRowGroupWriter};
 use parquet::schema::types::Type;
 
 /// Ligne du tier froid = `EventRow` (contrat neutre du cœur) + `xff`. La colonne live `event.xff` (ajoutée
-/// par la migration, présente dans `EVENT_COLS`/le vocabulaire SOQL) n'existe PAS dans `EventRow` : pour ne
+/// par la migration, présente dans `EVENT_COLS`/le vocabulaire GXQL) n'existe PAS dans `EventRow` : pour ne
 /// JAMAIS perdre de donnée interrogeable en agant (l'aging SUPPRIME les lignes hot), le writer la porte
-/// EXPLICITEMENT ici. (`id` = rowid interne non exposé au SOQL -> non conservé ; `dedup` l'est.)
+/// EXPLICITEMENT ici. (`id` = rowid interne non exposé au GXQL -> non conservé ; `dedup` l'est.)
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ColdRow {
     pub(crate) row: EventRow,

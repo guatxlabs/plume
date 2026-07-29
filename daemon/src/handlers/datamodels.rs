@@ -6,7 +6,7 @@
 //! Write). L'EXÉCUTION d'un Pivot / dataset = viewer+ (lecture, `readonly_post`) — soumise au masquage de
 //! champ #45 du rôle de l'appelant, car elle passe par le MÊME `soql_to_sql_masked_x` que /api/query.
 //!
-//! Un Pivot ne fabrique JAMAIS de SQL : `pivot_to_soql` (module `datamodels`) produit du SOQL, compilé par le
+//! Un Pivot ne fabrique JAMAIS de SQL : `pivot_to_soql` (module `datamodels`) produit du GXQL, compilé par le
 //! chemin masqué normal -> masquage jamais contourné, denylist de secrets intacte, enum de commandes fermée.
 use crate::*;
 
@@ -121,13 +121,13 @@ pub(crate) async fn model_delete(State(st): State<AppState>, Extension(au): Exte
 }
 
 // =================================================================================================
-// OBJETS (hiérarchiques : parent_id ; constraint = fragment de filtre SOQL compile-vérifié)
+// OBJETS (hiérarchiques : parent_id ; constraint = fragment de filtre GXQL compile-vérifié)
 // =================================================================================================
 pub(crate) async fn object_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(model_id): Path<i64>, Json(b): Json<Value>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     let name = match validate_dm_ident(b.str_field("name")) { Ok(f) => f, Err(e) => return bad_req(e) };
     let constraint = b.str_field("constraint").trim().to_string();
-    // COMPILE-CHECK de la contrainte (fragment SOQL) AVANT persistance (fail-closed, enum fermée).
+    // COMPILE-CHECK de la contrainte (fragment GXQL) AVANT persistance (fail-closed, enum fermée).
     if let Err(e) = validate_dm_constraint(&constraint) { return bad_req(e); }
     let parent_id = b.get("parent_id").and_then(|v| v.as_i64());
     let enabled = b.bool_field("enabled", true) as i64;
@@ -187,7 +187,7 @@ pub(crate) async fn field_create(State(st): State<AppState>, Extension(au): Exte
     if let Err(r) = require_editor(&au) { return r; }
     let name = match validate_dm_ident(b.str_field("name")) { Ok(f) => f, Err(e) => return bad_req(e) };
     let ftype = match validate_dm_ftype(b.str_field("type")) { Ok(t) => t, Err(e) => return bad_req(e) };
-    // expr optionnelle : si fournie, doit être un identifiant SOQL sûr (nom de champ SOURCE, alias/calc #46).
+    // expr optionnelle : si fournie, doit être un identifiant GXQL sûr (nom de champ SOURCE, alias/calc #46).
     // On NE persiste PAS d'expression arbitraire : un champ de data model expose un CHAMP existant (renommage
     // sémantique), pas un calcul (les calculs vivent dans les knowledge objects #46, réutilisables via l'alias).
     let expr = b.str_field("expr").trim().to_string();
@@ -255,7 +255,7 @@ fn object_constraint_chain(conn: &Connection, object_id: i64) -> Result<Vec<Stri
 }
 
 /// Allowlist des champs déclarés de l'objet : le NOM SOURCE (expr si fournie, sinon name). C'est ce que le
-/// Pivot injecte réellement dans le SOQL (le `name` public peut renommer via `expr`). Un objet SANS champ
+/// Pivot injecte réellement dans le GXQL (le `name` public peut renommer via `expr`). Un objet SANS champ
 /// déclaré -> allowlist vide -> Pivot ne peut rien split-by/agréger (fail-closed, force la déclaration).
 fn object_field_allow(conn: &Connection, object_id: i64) -> std::collections::HashSet<String> {
     let mut set = std::collections::HashSet::new();
@@ -270,7 +270,7 @@ fn object_field_allow(conn: &Connection, object_id: i64) -> std::collections::Ha
     set
 }
 
-/// Parse une `PivotSpec` depuis le corps JSON (report-builder ; aucune saisie SOQL/SPL libre).
+/// Parse une `PivotSpec` depuis le corps JSON (report-builder ; aucune saisie GXQL/SPL libre).
 fn parse_pivot_spec(b: &Value) -> PivotSpec {
     let splitby: Vec<String> = b.get("splitby").and_then(|v| v.as_array())
         .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
@@ -290,7 +290,7 @@ fn parse_pivot_spec(b: &Value) -> PivotSpec {
     PivotSpec { splitby, stats, filters, span, limit }
 }
 
-/// Génère le SOQL d'un Pivot depuis le corps de requête (résout objet -> contraintes + allowlist).
+/// Génère le GXQL d'un Pivot depuis le corps de requête (résout objet -> contraintes + allowlist).
 fn pivot_soql_from_body(conn: &Connection, b: &Value) -> Result<String, String> {
     let object_id = b.get("object_id").and_then(|v| v.as_i64()).ok_or("object_id requis")?;
     let constraints = object_constraint_chain(conn, object_id)?;
@@ -300,9 +300,9 @@ fn pivot_soql_from_body(conn: &Connection, b: &Value) -> Result<String, String> 
 }
 
 // =================================================================================================
-// PIVOT — compile (retourne le SOQL) et run (exécute via le chemin SOQL MASQUÉ, comme /api/query)
+// PIVOT — compile (retourne le GXQL) et run (exécute via le chemin GXQL MASQUÉ, comme /api/query)
 // =================================================================================================
-/// POST /api/pivot/compile — retourne le SOQL généré (transparence report-builder ; pas d'exécution). viewer+.
+/// POST /api/pivot/compile — retourne le GXQL généré (transparence report-builder ; pas d'exécution). viewer+.
 pub(crate) async fn pivot_compile(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let __rc = req_db(&st, &au);
     let soql = {
@@ -312,7 +312,7 @@ pub(crate) async fn pivot_compile(State(st): State<AppState>, Extension(au): Ext
     Json(json!({ "soql": soql })).into_response()
 }
 
-/// EXÉCUTION d'un SOQL généré via le MÊME chemin de LECTURE MASQUÉ que /api/query (choke-point unique de
+/// EXÉCUTION d'un GXQL généré via le MÊME chemin de LECTURE MASQUÉ que /api/query (choke-point unique de
 /// redaction/RBAC). Masques EFFECTIFS du rôle -> un champ masqué reste masqué (projection) et un filtre sur
 /// champ masqué échoue-fermé. run_query_ex applique l'authorizer read-pool (denylist de secrets) + budget +
 /// plafond de lignes. AUCUNE surface SQL brute n'est ouverte.
@@ -354,7 +354,7 @@ async fn run_generated_soql(st: &AppState, au: &AuthUser, soql: &str, from: i64,
     }
 }
 
-/// POST /api/pivot/run — génère le SOQL du Pivot puis l'exécute (masqué). viewer+ (readonly_post).
+/// POST /api/pivot/run — génère le GXQL du Pivot puis l'exécute (masqué). viewer+ (readonly_post).
 pub(crate) async fn pivot_run(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let __rc = req_db(&st, &au);
     let soql = {
@@ -387,21 +387,21 @@ pub(crate) async fn datasets_list(State(st): State<AppState>, Extension(au): Ext
 }
 
 /// POST /api/datasets — enregistre un dataset. editor+.
-///  - kind='search' : `soql` figé (compile-vérifié via le chemin SOQL normal AVANT persistance) ;
-///  - kind='pivot'  : `object_id` + `spec` (PivotSpec) -> on GÉNÈRE puis compile-vérifie le SOQL avant d'enregistrer.
-/// Dans les deux cas on STOCKE le SOQL résolu (jamais du SQL) -> le run recompile par le chemin masqué normal.
+///  - kind='search' : `soql` figé (compile-vérifié via le chemin GXQL normal AVANT persistance) ;
+///  - kind='pivot'  : `object_id` + `spec` (PivotSpec) -> on GÉNÈRE puis compile-vérifie le GXQL avant d'enregistrer.
+/// Dans les deux cas on STOCKE le GXQL résolu (jamais du SQL) -> le run recompile par le chemin masqué normal.
 pub(crate) async fn dataset_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     let name = match validate_dm_ident(b.str_field("name")) { Ok(f) => f, Err(e) => return bad_req(e) };
     let kind = b.str_field("kind").trim().to_string();
     crate::req_conn!(st, au, conn);
-    // Résout le SOQL selon le type + compile-check (fail-closed).
+    // Résout le GXQL selon le type + compile-check (fail-closed).
     let (soql, object_id, spec): (String, Option<i64>, String) = match kind.as_str() {
         "search" => {
             let soql = b.str_field("soql").trim().to_string();
             if soql.is_empty() { return bad_req("dataset search : soql requis"); }
             if let Err(e) = guatx_core::soql::to_sql(&soql, 0, 0, &guatx_core::soql::Schema::events()) {
-                return bad_req(format!("dataset search : SOQL invalide : {e}"));
+                return bad_req(format!("dataset search : GXQL invalide : {e}"));
             }
             (soql, None, String::new())
         }
@@ -450,7 +450,7 @@ pub(crate) async fn dataset_delete(State(st): State<AppState>, Extension(au): Ex
     dm_commit(&conn, outcome, json!({ "ok": true }))
 }
 
-/// POST /api/datasets/:id/run — exécute le SOQL stocké du dataset via le chemin MASQUÉ. viewer+ (readonly_post).
+/// POST /api/datasets/:id/run — exécute le GXQL stocké du dataset via le chemin MASQUÉ. viewer+ (readonly_post).
 pub(crate) async fn dataset_run(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     let __rc = req_db(&st, &au);
     let soql = {

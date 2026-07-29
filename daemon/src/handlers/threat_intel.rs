@@ -344,7 +344,7 @@ fn ti_enrich(fields: Option<String>, matched: &str, meta: &IocMeta) -> String {
         "threat_intel".into(),
         json!({ "source": meta.source, "confidence": meta.confidence, "ioc_type": meta.kind, "value": matched, "severity": meta.severity }),
     );
-    // Marqueurs PLATS requêtables en SOQL par une règle de détection : `search ti_match=1 | stats count`.
+    // Marqueurs PLATS requêtables en GXQL par une règle de détection : `search ti_match=1 | stats count`.
     // `ti_confidence`/`ti_severity` sont aplatis (en plus du nid `threat_intel`) pour que la règle d'alerte
     // TI (#23 activation) puisse filtrer `ti_confidence>=80` et DÉRIVER la sévérité de l'alerte de la
     // sévérité de l'IOC (`ti_severity>=4` -> alerte haute ; `<=3` -> moyenne) — json_extract sur un champ
@@ -563,7 +563,7 @@ pub(crate) async fn stix_import(State(st): State<AppState>, Extension(au): Exten
 /// GET /api/threat-intel/coverage — DONNÉES du panneau de couverture threat-intel (viewer+). CHEAP :
 /// ne lit QUE la table `ioc` (petite), JAMAIS un scan de `event`. Renvoie l'état du magasin (total,
 /// actifs/expirés, ventilation par type et par source). Les HITS dans le temps sont servis par le
-/// chemin SOQL (`search ti_match=1 | timechart count`) — l'enrichissement écrit `ti_match` dans fields,
+/// chemin GXQL (`search ti_match=1 | timechart count`) — l'enrichissement écrit `ti_match` dans fields,
 /// donc déjà requêtable/graphable via Explore sans scan dédié ici.
 pub(crate) async fn ti_coverage(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
@@ -590,7 +590,7 @@ pub(crate) async fn ti_coverage(State(st): State<AppState>, Extension(au): Exten
         "expired": total - active,
         "by_type": by_type,
         "by_source": by_source,
-        // indice pour l'UI : les hits IOC dans le temps se requêtent en SOQL (aucun scan serveur ici).
+        // indice pour l'UI : les hits IOC dans le temps se requêtent en GXQL (aucun scan serveur ici).
         "hits_query": "search ti_match=1 | timechart count",
     }))
 }

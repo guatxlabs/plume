@@ -13,7 +13,7 @@
 //! demande pas de rebuild. Les IDs sont alignés Wazuh -> la posture ingérée et le tag de règle JOIGNENT.
 //!
 //! INJECTION-SAFE : le cadre est VALIDÉ contre le vocab (jamais interpolé) ; l'id de contrôle est un charset
-//! borné, STOCKÉ en valeur (jamais interpolé dans le SQL) ; le rollup lit la posture via le chemin SOQL
+//! borné, STOCKÉ en valeur (jamais interpolé dans le SQL) ; le rollup lit la posture via le chemin GXQL
 //! MASQUÉ (#45 field-filters + RBAC hérités) et agrège les cadres/contrôles EN RUST (aucune concat SQL).
 use crate::*;
 
@@ -56,7 +56,7 @@ fn compliance_norm_fw(s: &str) -> String {
     s.trim().to_ascii_lowercase()
 }
 /// Un id de contrôle est-il SÛR ? charset borné (alphanumérique + `. _ - / ( ) space`) et longueur bornée.
-/// PAS d'interpolation SQL (stocké en valeur, lu via SOQL/params) — on borne le charset pour éviter le bruit
+/// PAS d'interpolation SQL (stocké en valeur, lu via GXQL/params) — on borne le charset pour éviter le bruit
 /// et fermer toute surface d'injection par principe. Vide -> false (un contrôle vide = tag « cadre seul »,
 /// géré à part).
 fn compliance_ctrl_ok(c: &str) -> bool {
@@ -207,9 +207,9 @@ fn rule_compliance_map(conn: &Connection) -> std::collections::BTreeMap<String, 
     map
 }
 
-/// SOQL (fixe, littéral) de lecture de la posture pour le rollup : contrôles SCA détaillés, projetés en
+/// GXQL (fixe, littéral) de lecture de la posture pour le rollup : contrôles SCA détaillés, projetés en
 /// `posture_compliance`/`posture_framework`/`posture_result`. Head cap -> anti-OOM. Les tokens sont des
-/// CONSTANTES (aucune entrée utilisateur) ; la compilation passe par le chemin SOQL masqué (#45).
+/// CONSTANTES (aucune entrée utilisateur) ; la compilation passe par le chemin GXQL masqué (#45).
 pub(crate) fn compliance_posture_soql() -> String {
     format!(
         "search category=posture posture_kind=check | table posture_compliance,posture_framework,posture_result | head {COMPLIANCE_POSTURE_ROW_CAP}"
@@ -243,7 +243,7 @@ pub(crate) async fn compliance_frameworks_list(Extension(_au): Extension<AuthUse
 }
 
 /// GET `/api/compliance/posture[?framework=<id>][&since=<epoch_s>]` — ROLLUP de posture de conformité. viewer+,
-/// lecture seule. Compose (a) pass/fail SCA PAR contrôle (posture ingérée, chemin SOQL masqué #45) et (b) les
+/// lecture seule. Compose (a) pass/fail SCA PAR contrôle (posture ingérée, chemin GXQL masqué #45) et (b) les
 /// règles de détection qui MAPPENT ce cadre (`rule.compliance`). Sans `framework` : synthèse par cadre. ADDITIF
 /// / mode-0 : aucune posture + aucune règle taguée -> tout à zéro (jamais d'erreur). Le cadre est VALIDÉ (vocab).
 pub(crate) async fn compliance_posture(

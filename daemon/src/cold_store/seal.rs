@@ -562,7 +562,7 @@ impl<'a> BlobCursor<'a> {
 
 // ---- Extraction des prédicats d'égalité depuis le SQL COMPILÉ (parité PAR CONSTRUCTION) -------------
 //
-// #28 PHASE B — Plutôt que de RE-PARSER le SOQL brut (intrinsèquement sujet à la DÉRIVE face aux pré-passes du
+// #28 PHASE B — Plutôt que de RE-PARSER le GXQL brut (intrinsèquement sujet à la DÉRIVE face aux pré-passes du
 // cœur — F1 « colle » op-char `soql_glue_spaced_ops`, F2 pré-pass `in (...)` `soql_in_collect`), l'extracteur
 // lit le SQL que le CŒUR a RÉELLEMENT compilé et qui S'EXÉCUTE sur l'union hot∪cold (le MÊME `sql` masqué #45
 // passé à `cold_union_query`). La valeur extraite ne peut donc JAMAIS diverger de ce que la requête filtre : on

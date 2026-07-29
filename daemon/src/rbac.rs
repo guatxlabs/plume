@@ -211,7 +211,7 @@ pub(crate) fn role_satisfies(role: &str, need: MinRole) -> bool {
 /// ouverte à l'editor (ancienne allowlist fail-open). `mutating` distingue GET (lecture) de POST/DELETE
 /// pour les routes à double méthode (ex : /api/mode GET=lecture, POST=armement admin). Robuste et testable.
 pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
-    // 0) #52 DATASOURCE — surfaces de LECTURE EXTERNE (Grafana pointe SUR plume) : SOQL-over-HTTP + Prometheus
+    // 0) #52 DATASOURCE — surfaces de LECTURE EXTERNE (Grafana pointe SUR plume) : GXQL-over-HTTP + Prometheus
     //    read + stub Loki. TOUJOURS Read (GET comme POST) : read-only, aucune mutation, aucun SQL brut exposé
     //    (le handler ne consomme QUE `soql`/un sélecteur de métrique). Le masque #45 + RBAC s'appliquent DANS
     //    le handler (effective_masks du rôle). Un rôle `agent` NE satisfait PAS Read -> un token agent
@@ -257,7 +257,7 @@ pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
     if path.starts_with("/api/prefs") {
         return MinRole::Read;
     }
-    // 2quater) SAVED QUERIES self-service : liste/crée/édite/supprime SES PROPRES requêtes SOQL nommées ->
+    // 2quater) SAVED QUERIES self-service : liste/crée/édite/supprime SES PROPRES requêtes GXQL nommées ->
     //    tout compte authentifié (viewer+ ; admin court-circuité). Le handler pose TOUJOURS `owner = au.name`
     //    (list `WHERE owner=?`, mutation `WHERE id=? AND owner=?`) -> aucun accès aux requêtes d'autrui (IDOR
     //    bloqué). Ce n'est PAS une surface admin (outillage analyste personnel, aucun secret ni autz) : `Read`
@@ -267,9 +267,9 @@ pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
     }
     // 2quinquies) #16 IA CONSEIL (feature `ai` OFF par défaut -> bloc EXCLU à la compilation ; dans le build
     //    DÉFAUT aucune route /api/ai n'existe, route_min_role n'en voit jamais). L'ANALYSTE (viewer+) peut
-    //    demander une traduction NL→SOQL et lire le statut. NL→SOQL est un POST mais READ-ONLY (l'IA PROPOSE,
+    //    demander une traduction NL→GXQL et lire le statut. NL→GXQL est un POST mais READ-ONLY (l'IA PROPOSE,
     //    le compilo FERMÉ dispose ; ZÉRO exécution, aucune mutation, aucun SQL brut : le handler ne renvoie que
-    //    du SOQL+SQL validés à réviser). `Read` suffit ; le CSRF cookie s'applique quand même au POST. Le CRUD
+    //    du GXQL+SQL validés à réviser). `Read` suffit ; le CSRF cookie s'applique quand même au POST. Le CRUD
     //    providers (colonne `secret`=clé API/SecretRef) + presets + politique de redaction reste ADMIN : catch
     //    fail-closed `/api/ai` -> Admin, PLACÉ APRÈS les deux routes analyste (sinon elles tomberaient admin-only).
     #[cfg(feature = "ai")]
@@ -309,7 +309,7 @@ pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
         // le canal qu'admin-console (plan de contrôle) appelle. Miroir de /api/actions (moteur de réponse).
         || path.starts_with("/api/netban")
         // #3 Phase 2 — AUTHORING de runbooks (bring-your-own) : CRUD + clone + enable/disable = surface admin
-        // (contenu ADMIN-AUTHORED : gabarits SOQL de step 'search' + réf d'action de step 'response'). GET compris
+        // (contenu ADMIN-AUTHORED : gabarits GXQL de step 'search' + réf d'action de step 'response'). GET compris
         // (la vue d'authoring liste key/steps/match). NB : /api/cases/:id/runbook(s) (picker/attach du wizard)
         // NE commence PAS par /api/runbooks -> reste editor+/viewer+ (section 6/7), inchangé.
         || path.starts_with("/api/runbooks")
@@ -363,7 +363,7 @@ pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
         || path.starts_with("/api/parsers")
         || path == "/api/parser-test"
         || path == "/api/rule-test"
-        // #37 détection avancée : corrélations + baselines = CRUD éditorial (SOQL borné, pas de SQL brut ni
+        // #37 détection avancée : corrélations + baselines = CRUD éditorial (GXQL borné, pas de SQL brut ni
         // d'action destructive) -> editor+, comme les règles. GET reste viewer+ (capté en section 6).
         || path.starts_with("/api/correlations")
         || path.starts_with("/api/baselines")
@@ -392,12 +392,12 @@ pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
         || path.starts_with("/api/silences")
         // KNOWLEDGE OBJECTS (#46) : CRUD alias/calc/eventtype/tag = editor+ (ils façonnent la recherche de
         // tout le monde, comme les règles ; GET reste viewer+ capté en 6). Pas de SQL brut (expr calc via
-        // `eval`, filtre eventtype via SOQL), pas d'action destructive -> editor légitime.
+        // `eval`, filtre eventtype via GXQL), pas d'action destructive -> editor légitime.
         || path.starts_with("/api/knowledge")
         // DATA MODELS + DATASETS (#47) : CRUD des modèles/objets/champs/datasets = editor+ (couche sémantique
         // PARTAGÉE, comme les knowledge objects ; GET reste viewer+ capté en 6). L'EXÉCUTION de Pivot/dataset
         // (/api/pivot/*, /api/datasets/:id/run) est un POST de LECTURE (readonly_post -> mutating=false) -> capté
-        // en 6 (Read) AVANT d'arriver ici. Pas de SQL brut (le Pivot génère du SOQL) -> editor légitime.
+        // en 6 (Read) AVANT d'arriver ici. Pas de SQL brut (le Pivot génère du GXQL) -> editor légitime.
         || path.starts_with("/api/datamodels")
         || path.starts_with("/api/datasets")
         // #60 — SCHEDULED REPORTS : CRUD + run-now = editor+ (route l'exécution d'un dataset vers un notifier

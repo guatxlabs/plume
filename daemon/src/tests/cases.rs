@@ -1039,7 +1039,7 @@
     #[test]
     fn playbook_arming_requires_admin_hotfix_w1() {
         let _rg = CUSTOM_ROLES_TEST_LOCK.lock();
-        // SOQL borné qui COMPILE (même fixture que l'overlay playbook des tests d'intégration).
+        // GXQL borné qui COMPILE (même fixture que l'overlay playbook des tests d'intégration).
         let q = "search source=x | table src_ip";
         // editor : REFUSÉ (403) pour CHAQUE action de l'ENUM (toutes destructives).
         for kind in ["ban_ip", "unban_ip", "kill_pid", "stop_service"] {
@@ -1054,8 +1054,8 @@
             assert!(action_kind_destructive(kind), "{kind} est destructif");
         }
         assert!(!action_kind_destructive("notify"), "une future action non-destructive resterait ouverte à l'editor");
-        // NON-RÉGRESSION : l'editor garde le CRUD des RÈGLES SOQL (la garde ne touche QUE les playbooks armés).
-        assert!(validate_detection_content("rule", true, "search severity>=3 | stats count", "", 3600, "editor").is_ok(), "editor garde les règles SOQL");
+        // NON-RÉGRESSION : l'editor garde le CRUD des RÈGLES GXQL (la garde ne touche QUE les playbooks armés).
+        assert!(validate_detection_content("rule", true, "search severity>=3 | stats count", "", 3600, "editor").is_ok(), "editor garde les règles GXQL");
         assert!(validate_detection_content("parser", true, "^ok$", "", 0, "editor").is_ok(), "editor garde les parseurs");
         // #64 RÔLE COMPOSABLE : un base=admin SANS deny `arm_response` peut armer ; AVEC deny `arm_response`
         // il NE peut PAS (le deny subsiste sur la surface playbook, non couverte par route_denied_perm=/api/actions).
@@ -1380,7 +1380,7 @@
         let path = ds_seed_db("handler");
         let st = ds_file_state(&path);
         let viewer = AuthUser { name: "grafana".into(), role: "viewer".into(), tenant: "default".into(), is_superadmin: false, method: "datasource".into(), csrf: String::new(), env: None };
-        // SOQL-HTTP (records) : src_user/message masqués.
+        // GXQL-HTTP (records) : src_user/message masqués.
         let mut q = HashMap::new();
         q.insert("soql".to_string(), "search | table src_user, message".to_string());
         q.insert("format".to_string(), "records".to_string());

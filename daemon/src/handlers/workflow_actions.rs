@@ -1,9 +1,9 @@
 //! #60 — WORKFLOW ACTIONS : actions de menu contextuel attachées à un champ/événement (façon Splunk
 //! workflow_actions). PUREMENT DÉCLARATIVES (table `workflow_action` VIDE -> mode 0, aucun effet). Trois
 //! genres, tous SÛRS PAR CONSTRUCTION :
-//!   - `search`  : NAVIGATION — un gabarit SOQL avec `$field$` ouvre une nouvelle recherche. Le gabarit est
+//!   - `search`  : NAVIGATION — un gabarit GXQL avec `$field$` ouvre une nouvelle recherche. Le gabarit est
 //!                 compile-vérifié (compilateur FERMÉ) à la création ; à la résolution, la VALEUR substituée
-//!                 est validée (charset scalaire) puis le SOQL RECOMPILÉ -> jamais de SQL brut, enum fermée.
+//!                 est validée (charset scalaire) puis le GXQL RECOMPILÉ -> jamais de SQL brut, enum fermée.
 //!   - `url`     : NAVIGATION — un gabarit d'URL avec `$field$`. `safe_url` (http/https) au gabarit ; à la
 //!                 résolution la valeur est POURCENT-ENCODÉE (anti-injection/XSS dans la console).
 //!   - `response`: DÉCLENCHE une RÉPONSE — le `target` référence UNIQUEMENT l'ENUM D'ACTION FERMÉ
@@ -79,7 +79,7 @@ pub(crate) async fn workflow_action_create(State(st): State<AppState>, Extension
     if let Err(r) = require_editor(&au) { return r; }
     let name = match validate_dm_ident(b.str_field("name")) { Ok(f) => f, Err(e) => return bad_req(e) };
     let label = b.str_field("label").trim().to_string();
-    // scope_field : '*' (tout champ) ou un ident SOQL sûr.
+    // scope_field : '*' (tout champ) ou un ident GXQL sûr.
     let scope_field = b.str_field("scope_field").trim().to_string();
     let scope_field = if scope_field.is_empty() { "*".to_string() } else { scope_field };
     if scope_field != "*" {
@@ -139,7 +139,7 @@ pub(crate) async fn workflow_action_delete(State(st): State<AppState>, Extension
 }
 
 /// POST /api/workflow-actions/:id/resolve {value} — RÉSOUT l'action pour une valeur de champ concrète (viewer+
-/// via readonly_post). Retourne une CIBLE DE NAVIGATION prête (SOQL recompilé / URL encodée) OU, pour
+/// via readonly_post). Retourne une CIBLE DE NAVIGATION prête (GXQL recompilé / URL encodée) OU, pour
 /// 'response', l'action de l'enum + la valeur (la console la joue via /api/actions -> approbation + ledger).
 /// La valeur est SANITISÉE ; jamais d'exécution ici.
 pub(crate) async fn workflow_action_resolve(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
@@ -156,13 +156,13 @@ pub(crate) async fn workflow_action_resolve(State(st): State<AppState>, Extensio
             if !value_scalar_ok(&value) { return bad_req("valeur non substituable (caractère interdit)"); }
             let soql = target.replace("$field$", &value);
             // RECOMPILE par le compilateur FERMÉ (le résultat n'est jamais du SQL brut ; masque/enum s'appliquent
-            // à l'exécution ultérieure via /api/query). On renvoie le SOQL de navigation, pas de SQL.
+            // à l'exécution ultérieure via /api/query). On renvoie le GXQL de navigation, pas de SQL.
             let probe = if guatx_core::soql::to_sql(&soql, 0, 0, &guatx_core::soql::Schema::events()).is_ok() {
                 soql.clone()
             } else {
                 let wrapped = format!("search {soql}");
                 if guatx_core::soql::to_sql(&wrapped, 0, 0, &guatx_core::soql::Schema::events()).is_err() {
-                    return bad_req("SOQL de navigation invalide après substitution");
+                    return bad_req("GXQL de navigation invalide après substitution");
                 }
                 wrapped
             };

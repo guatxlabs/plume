@@ -1,6 +1,6 @@
 //! Store SPI (data-plane) : DTO d'insertion (`EventRow`/`MetricRow`/`SnapshotRow`), vue de lecture
 //! (`QueryStats`/`Rows`), `trait EventStore` + unique impl `SqlcipherStore` (SQLite/SQLCipher) et
-//! accesseur `store()`. Émission SOQL déléguée à `guatx_core::soql` ; lecture via `run_query_ex`
+//! accesseur `store()`. Émission GXQL déléguée à `guatx_core::soql` ; lecture via `run_query_ex`
 //! (résolu par le glob `crate::*`). Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
 
@@ -10,7 +10,7 @@ use crate::*;
 // OBJECTIF : rendre POSSIBLE un jour un backend data-plane différent (DuckDB mono-nœud, ClickHouse
 // cluster) SANS que chaque écriture/lecture soit codée en dur contre SQLite/SQLCipher. On introduit une
 // COUTURE (`trait EventStore`) devant laquelle passe le DATA-plane (event / metric / snapshot en écriture,
-// SOQL en lecture). `SqlcipherStore` est l'UNIQUE implémentation et émet EXACTEMENT le même SQL /
+// GXQL en lecture). `SqlcipherStore` est l'UNIQUE implémentation et émet EXACTEMENT le même SQL /
 // stocke des lignes BYTE-IDENTIQUES à aujourd'hui (mode 0 strictement inchangé — invariant absolu).
 //
 // FRONTIÈRE DATA vs CONTROL : ne passent par le store QUE les tables qui EXPLOSENT en volume et qui
@@ -38,7 +38,7 @@ use crate::*;
 // et le `db_path` (via `req_db_path`, clé du read-pool) sont passés PAR APPEL. Le routing tenant existant
 // est donc préservé tel quel — `store().insert_event(tenant_conn, row)` est intrinsèquement tenant-scopé.
 //
-// RÈGLE DE LECTURE (design) : le SOQL TRAVERSE le store (`query_soql`/`soql_to_sql`) — le store COMPILE
+// RÈGLE DE LECTURE (design) : le GXQL TRAVERSE le store (`query_soql`/`soql_to_sql`) — le store COMPILE
 // lui-même via `guatx_core::soql` (émission Dialect) ; on ne lui passe JAMAIS une chaîne SQL pré-fabriquée.
 // La route-rollup Plume (optimisation qui produit du SQL brut sur les tables pré-agrégées) reste servie
 // par l'exécuteur bas-niveau `run_query_ex`, comme avant.
@@ -57,7 +57,7 @@ pub(crate) use guatx_core::store::{EventRow, MetricRow, QueryStats, Rows, Snapsh
 /// SPI data-plane INTERNE (couplée `rusqlite`), chemin BYTE-IDENTIQUE historique. Une seule impl
 /// (`SqlcipherStore`). Les écritures prennent la connexion writer du tenant (résolue par l'appelant) ;
 /// la transaction/rollback/backfill restent chez l'appelant (le store n'émet QUE l'ordre SQL canonique).
-/// La lecture SOQL est compilée PAR le store. Les ~82 call-sites du daemon appellent CE trait directement
+/// La lecture GXQL est compilée PAR le store. Les ~82 call-sites du daemon appellent CE trait directement
 /// (parité stricte). Le trait BACKEND-NEUTRE `guatx_core::store::EventStore` (GAP-1) est une COUCHE
 /// ADDITIVE au-dessus : `SqlcipherStore` l'implémente en re-castant `StoreHandle::Sqlite` puis en
 /// déléguant ICI. Renommé `EventStore` -> `SqlcipherEventStore` pour libérer le nom canonique au profit
@@ -73,10 +73,10 @@ pub(crate) trait SqlcipherEventStore {
     /// SQL canonique de l'INSERT métrique — exposé pour les boucles à statement PRÉPARÉ (réutilisation),
     /// source UNIQUE de vérité du texte SQL métrique.
     fn metric_insert_sql(&self) -> &'static str;
-    /// ÉMISSION SOQL -> SQL (le store possède l'émission, via `guatx_core::soql` = Dialect). C'est le point
-    /// unique par lequel toute lecture SOQL traverse le store (jamais de SQL pré-fabriqué passé au store).
+    /// ÉMISSION GXQL -> SQL (le store possède l'émission, via `guatx_core::soql` = Dialect). C'est le point
+    /// unique par lequel toute lecture GXQL traverse le store (jamais de SQL pré-fabriqué passé au store).
     fn soql_to_sql(&self, soql: &str, from: i64, to: i64, env: Option<&str>) -> Result<String, String>;
-    /// FIELD FILTERS (#45) — ÉMISSION SOQL -> SQL AVEC masques de champ EFFECTIFS (résolus par le daemon pour
+    /// FIELD FILTERS (#45) — ÉMISSION GXQL -> SQL AVEC masques de champ EFFECTIFS (résolus par le daemon pour
     /// le RÔLE/tenant/env de l'appelant). VIDE -> STRICTEMENT identique à `soql_to_sql` (mode 0 byte-identique).
     /// DÉFAUT = FAIL-CLOSED : un store qui n'implémente pas le masquage (tier WARM/COLD) REFUSE une compilation
     /// masquée -> jamais de SQL NON masqué servi à un rôle restreint (protège plutôt que fuir). Seul le tier
@@ -99,13 +99,13 @@ pub(crate) trait SqlcipherEventStore {
     fn soql_to_sql_masked_keyset(&self, soql: &str, from: i64, to: i64, env: Option<&str>, masks: &guatx_core::soql::FieldMaskSet) -> Result<String, String> {
         self.soql_to_sql_masked(soql, from, to, env, masks)
     }
-    /// LECTURE SOQL de bout en bout : compile (émission Dialect) PUIS exécute sur la base `db_path` via
+    /// LECTURE GXQL de bout en bout : compile (émission Dialect) PUIS exécute sur la base `db_path` via
     /// l'exécuteur read-only borné (watchdog `budget_ms`, annulation `qid`). Renvoie la forme JSON live.
     /// PRIMITIVE de lecture du SPI (contrepartie des `insert_*`). Les handlers LIVE ne l'appellent pas
     /// directement car ils POST-TRAITENT le SQL compilé (interception rollup-route, wrap pagination,
     /// écho `compiled_sql`) : ils composent donc `soql_to_sql` (émission = store) + `run_query_ex`
     /// (exécuteur bas-niveau). L'ÉMISSION de lecture traverse ainsi le store à 100 % (via `soql_to_sql_x`).
-    /// `query_soql` est exercée par le test du store (preuve de bout en bout de la traversée SOQL).
+    /// `query_soql` est exercée par le test du store (preuve de bout en bout de la traversée GXQL).
     #[allow(dead_code)]
     fn query_soql(&self, db_path: &str, soql: &str, from: i64, to: i64, env: Option<&str>, budget_ms: u64, qid: Option<&str>) -> Result<Value, String>;
 }
@@ -159,9 +159,9 @@ impl SqlcipherEventStore for SqlcipherStore {
         // ALIAS DE LECTURE CIM (dette de migration, péremption 2027-07-23) : `category=exec` retrouve
         // AUSSI l'historique `category=process` des collecteurs Windows d'avant le 2026-07-23. Posé ICI
         // parce que ce trait EST le point de traversée à 100 % de l'ÉMISSION de lecture (tous les sites —
-        // Explore, panneaux, tableaux de bord, export, règles, rapports, datasource, NL->SOQL — passent par
+        // Explore, panneaux, tableaux de bord, export, règles, rapports, datasource, NL->GXQL — passent par
         // `soql_to_sql*_x` -> `store()`, et `query_soql` ci-dessous rappelle cette méthode). Requête sans
-        // cette égalité -> `Cow::Borrowed` -> SOQL et SQL BYTE-IDENTIQUES. Cf. `soql_glue::cim_read_alias_exec`.
+        // cette égalité -> `Cow::Borrowed` -> GXQL et SQL BYTE-IDENTIQUES. Cf. `soql_glue::cim_read_alias_exec`.
         let soql = crate::soql_glue::cim_read_alias_exec(soql);
         // Émission via le cœur partagé (Dialect `SqliteDialect`) — BYTE-IDENTIQUE au compilo legacy.
         // #46 : KNOWLEDGE OBJECTS actifs (alias/calc/eventtype/tag) injectés dans le schéma. VIDE (aucun KO)

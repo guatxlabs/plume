@@ -626,7 +626,7 @@
         assert_eq!(endpoint_normalize("firewall", &msg, None), (None, None, None));
     }
 
-    /// Le panneau SCA-posture est SOQL-backed : la requête `stats count by posture_result` renvoie les
+    /// Le panneau SCA-posture est GXQL-backed : la requête `stats count by posture_result` renvoie les
     /// comptes pass/fail attendus après ingest de plusieurs contrôles (2 fail + 1 pass).
     #[test]
     fn endpoint_sca_posture_panel_soql_counts() {
@@ -636,7 +636,7 @@
         ingest_wazuh(&conn, dbp, "p1", mk("failed"));
         ingest_wazuh(&conn, dbp, "p2", mk("failed"));
         ingest_wazuh(&conn, dbp, "p3", mk("passed"));
-        // requête EXACTE du panneau semé (seed_sca_dashboard) -> chemin SOQL (masqué VIDE == non masqué).
+        // requête EXACTE du panneau semé (seed_sca_dashboard) -> chemin GXQL (masqué VIDE == non masqué).
         let sql = soql_to_sql_x("search category=posture posture_kind=check | stats count by posture_result", 0, 0, None).unwrap();
         let mut st = conn.prepare(&sql).unwrap();
         let rows: std::collections::HashMap<String, i64> = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
@@ -820,7 +820,7 @@
 
     // ============================================================================================
     // #41 — OTLP TRACES : récepteur OpenTelemetry (OTLP/HTTP JSON). Mapping span->CIM (category=trace),
-    // bornes DoS du décodeur, auth-required (ingest-only), gate mode-0, et requêtabilité SOQL des traces.
+    // bornes DoS du décodeur, auth-required (ingest-only), gate mode-0, et requêtabilité GXQL des traces.
     // ============================================================================================
 
     /// Un ExportTraceServiceRequest OTLP/JSON minimal, réaliste (1 resource, 1 scope, 1 span SERVER en erreur).
@@ -896,7 +896,7 @@
         assert!(cim_category_ok(&cat), "trace DOIT être une catégorie CIM canonique");
         assert_eq!(host.as_deref(), Some("pod-checkout-7"));
         assert_eq!(source, "checkout");
-        // corrélation : requête par trace_id dans fields (le chemin SOQL/search interroge la colonne fields).
+        // corrélation : requête par trace_id dans fields (le chemin GXQL/search interroge la colonne fields).
         let found: i64 = conn.query_row(
             "SELECT COUNT(*) FROM event WHERE category='trace' AND json_extract(fields,'$.trace_id')=?1",
             params!["5b8efff798038103d269b633813fc60c"], |r| r.get(0)).unwrap();

@@ -793,7 +793,7 @@ pub(crate) const BANPASS_COVERAGE_SQL: &str =
                              /(SELECT COUNT(*) FROM attackers),1) END AS couverture_pct";
 
 /// Dashboard « Banni / Pass » — surface les IPs qui ATTAQUENT mais ne sont PAS bannies. Panneaux is_soql=0
-/// (SQL natif : anti-join sur `banned_ip`, hors-portée du compilo SOQL) SWR-cachés (panel_cache_ttl_s>0 ->
+/// (SQL natif : anti-join sur `banned_ip`, hors-portée du compilo GXQL) SWR-cachés (panel_cache_ttl_s>0 ->
 /// calculés EN FOND par cache_refresh_all_panels, servis depuis panel_cache ; JAMAIS de LIVE-sync
 /// timeout-able). Idempotent par nom (comme seed_rollup_dashboard). Vue 'Sécurité'. __FROM__ = fenêtre.
 /// GÉNÉRIQUE SUR `SqlExec` (cf. migrate.rs) : `&Connection` depuis le boot (historique inchangé),
@@ -853,7 +853,7 @@ pub(crate) fn cache_refresh_all_panels(db: &Arc<Mutex<Connection>>, db_path: &st
     let now_s = now();
     let from_default = now_s - default_window; // borne glissante, comme currentFrom() côté PWA
     let range_key = cache_range_key(from_default, 0, now_s);
-    // PHASE 3b — pré-chauffe TOUS les panneaux (plus de filtre is_soql=0) : les panneaux SOQL (Sécurité,
+    // PHASE 3b — pré-chauffe TOUS les panneaux (plus de filtre is_soql=0) : les panneaux GXQL (Sécurité,
     // les plus coûteux) sont désormais aussi réchauffés en fond -> panel_data les sert du cache (SWR) sans
     // jamais lancer de live. TTL effectif > 0. On capture id+query+is_soql pour exécuter SANS tenir le lock.
     let panels: Vec<(i64, String, bool)> = {
@@ -869,13 +869,13 @@ pub(crate) fn cache_refresh_all_panels(db: &Arc<Mutex<Connection>>, db_path: &st
         match rows { Ok(it) => it.flatten().collect(), Err(_) => return }
     };
     for (id, query, is_soql) in panels {
-        // fenêtre par défaut glissante (cohérent avec panel_data + ce que la PWA demande). SOQL compilé via
+        // fenêtre par défaut glissante (cohérent avec panel_data + ce que la PWA demande). GXQL compilé via
         // soql_to_sql ; SQL natif -> substitution __FROM__/__TO__. fingerprint sur le VRAI is_soql.
         // env=None (#2d) : le pré-chauffage remplit le slot cache TOUS-ENV (clé de plage sans préfixe env,
         // cf. env_range_key) ; les payloads par-env sont calculés À LA DEMANDE dans panel_data.
         let sql = match compile_panel_sql(&query, is_soql, from_default, 0, None) {
             Ok(s) => s,
-            Err(_) => continue, // SOQL invalide -> on saute (le panneau retombe sur le fallback live)
+            Err(_) => continue, // GXQL invalide -> on saute (le panneau retombe sur le fallback live)
         };
         let q_fp = query_fingerprint(&query, is_soql);
         // borne de concurrence sur le refresh_sem DÉDIÉ : si aucun permit libre, on saute ce

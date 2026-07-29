@@ -1,4 +1,4 @@
-//! Rollup-route (CHANGEMENT 3) : réécrit ultra-conservateur d'un SOQL au motif exact vers une table
+//! Rollup-route (CHANGEMENT 3) : réécrit ultra-conservateur d'un GXQL au motif exact vers une table
 //! pré-agrégée (event_rollup / event_dim_rollup) pour répondre en ms au lieu d'un scan déchiffré.
 //! `struct RollupRoute`, garde d'injection `rollup_source_ok`, routeur `try_rollup_route`, transparence
 //! SOC `apply_rollup_stats` (served_from/approx/truncated) et `dur_ms`. Au moindre écart au motif ->
@@ -6,7 +6,7 @@
 use crate::*;
 
 // =====================================================================================
-// ROLLUP-ROUTE (CHANGEMENT 3) — réécrit un SOQL au MOTIF EXACT vers une table pré-agrégée (event_rollup /
+// ROLLUP-ROUTE (CHANGEMENT 3) — réécrit un GXQL au MOTIF EXACT vers une table pré-agrégée (event_rollup /
 // event_dim_rollup) -> réponse en quelques ms au lieu d'un scan déchiffré de ~2,4 M lignes. ULTRA-
 // CONSERVATEUR : au MOINDRE écart au motif, renvoie None -> le compilateur soql normal prend le relais
 // (correctness > vitesse). NE compile JAMAIS d'entrée utilisateur en SQL brut : seuls une valeur `source`
@@ -318,7 +318,7 @@ pub(crate) fn event_rollup_wm(conn: &Connection) -> i64 {
         .unwrap_or(i64::MIN)
 }
 
-/// Tente de router un SOQL vers un rollup. None = motif non reconnu -> compiler normalement (fall-through).
+/// Tente de router un GXQL vers un rollup. None = motif non reconnu -> compiler normalement (fall-through).
 /// `env` (#2d) : `Some("<env>")` -> ajoute `env_id='<env>'` au WHERE du rollup (event_rollup /
 /// event_dim_rollup portent env_id depuis v67) -> agrégats FILTRÉS par environnement, cohérents avec le
 /// chemin raw. `None` (mode 0 / `__all__`) -> aucune condition -> agrégats tous-env (comportement identique).

@@ -3,7 +3,7 @@
 //!
 //! SÉCURITÉ (invariant NON NÉGOCIABLE — MASQUAGE DIFFÉRÉ À P3) : `hydrate_cold` produit des lignes cold BRUTES,
 //! NON MASQUÉES, dans une table SQLite ÉPHÉMÈRE EN MÉMOIRE. Le masquage de champs (#45) ET l'authorizer DENY sont
-//! appliqués PLUS TARD (P3) quand le SOQL s'exécute sur l'UNION hot∪cold. `hydrate_cold` N'EST DONC JAMAIS câblée
+//! appliqués PLUS TARD (P3) quand le GXQL s'exécute sur l'UNION hot∪cold. `hydrate_cold` N'EST DONC JAMAIS câblée
 //! dans un chemin de requête utilisateur (query_exec / /api/query / un handler / une route) : exposer ces lignes
 //! brutes = fuite de données non masquées. Cette fonction est une PRIMITIVE ; c'est P3 (`open_cold_union`) qui la
 //! consommera DERRIÈRE le masquage.

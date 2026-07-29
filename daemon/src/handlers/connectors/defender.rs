@@ -114,7 +114,7 @@ pub(crate) fn normalize_defender_alert(a: &Value, connector_id: i64, resource: &
     } else {
         format!("defender-{connector_id}-{id}")
     };
-    // fields : contexte structuré exploitable en SOQL / drilldown (mitreTechniques -> couverture détection).
+    // fields : contexte structuré exploitable en GXQL / drilldown (mitreTechniques -> couverture détection).
     let mut f = serde_json::Map::new();
     for k in ["id", "incidentId", "status", "determination", "serviceSource", "detectionSource", "description"] {
         if let Some(val) = a.get(k) {

@@ -17,7 +17,7 @@ analytique / détection / réponse / registre (ledger) **au-dessus** du capteur 
 possède déjà. Pendant une migration, **Wazuh / osquery / un EDR PEUT ÊTRE le capteur** ; Plume normalise
 sa sortie en CIM et la rend requêtable/corrélable/actionnable comme n'importe quelle autre source.
 
-- **Ce que Plume FAIT** : ingérer + normaliser (CIM) + indexer + détecter (SOQL/Sigma/corrélation/UEBA) +
+- **Ce que Plume FAIT** : ingérer + normaliser (CIM) + indexer + détecter (GXQL/Sigma/corrélation/UEBA) +
   scorer le risque (RBA) + répondre (playbooks) + tracer (ledger) + surfacer (vues natives).
 - **Ce que Plume NE FAIT PAS (non-goal honnête)** : scanner l'endpoint lui-même (pas d'inotify FIM natif,
   pas de feed CVE, pas d'évaluation CIS embarquée). Le **capteur** reste l'agent du client.
@@ -72,7 +72,7 @@ Plume **n'a pas de nouvel agent** : on réutilise les chemins d'ingest existants
 
 ---
 
-## 3. Vues natives (SOQL-backed)
+## 3. Vues natives (GXQL-backed)
 
 Deux dashboards semés (idempotents), vue **« Endpoint (BYO-agent) »**, **vides** tant qu'aucune télémétrie
 n'arrive :
@@ -82,7 +82,7 @@ n'arrive :
 - **Vulnérabilités (CVE endpoint)** — CVE par sévérité, hôtes les plus vulnérables, top CVE, paquets les
   plus touchés, critiques/hautes en détail. Composé sur `category=vuln`.
 
-Les panneaux sont **SOQL** (chemin masqué : respecte les field-filters #45 + RBAC automatiquement). FIM
+Les panneaux sont **GXQL** (chemin masqué : respecte les field-filters #45 + RBAC automatiquement). FIM
 alimente déjà la catégorie `integrity` (vues d'intégrité existantes) ; l'inventaire (`category=inventory`)
 est ingéré et requêtable — un dashboard dédié est un **follow-on**.
 
@@ -96,7 +96,7 @@ est ingéré et requêtable — un dashboard dédié est un **follow-on**.
 - **ENRICH / MAP, jamais DROP** : on n'ajoute que des `fields.*` absents (le collecteur gagne) ;
   `category`/`severity` ne sont posées qu'en ENRICH-only. Aucun event n'est supprimé ni filtré.
 - **Injection-safe** : les valeurs normalisées transitent par le sac `fields` → chemin `EventRow`/INSERT à
-  paramètres bindés (aucune construction SQL par chaîne). Les panneaux passent par SOQL.
+  paramètres bindés (aucune construction SQL par chaîne). Les panneaux passent par GXQL.
 - **Vendor-agnostic** : preset built-in **mince** pour Wazuh ; tout autre vendeur s'ajoute par parseur
   déclaratif `config.d` **sans recompiler**.
 

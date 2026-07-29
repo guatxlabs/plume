@@ -18,7 +18,7 @@ Le compilo de recherche est **partagé** avec le crate public `guatx-core`.
 
 - **Visibilité unifiée** dans une **PWA** (installable, offline) : posture, CVE, firewall,
   durcissement, auth, process (XDR), intégrité fichiers, réseau, conteneurs, k8s, ressources.
-- **Recherche type Splunk** sur les logs sans Elastic : un langage **SOQL** (search-like) compilé en
+- **Recherche type Splunk** sur les logs sans Elastic : un langage **GXQL** (search-like) compilé en
   SQL read-only.
 - **Léger par conception** : un binaire `axum` + `rusqlite` (~4 Mo), confortable en peu de RAM.
   Cible host < 128 Mo ; en k3s, l'instance de référence est bornée à 2 Gi (cf. §11).
@@ -52,7 +52,7 @@ Le compilo de recherche est **partagé** avec le crate public `guatx-core`.
   │  conntrack auditd kube-state pod-logs …│ ─────────────────► │  event / metric / snapshot      │
   │  collector-mail (binaire Rust)        │                     │  + FTS5 + rollups (pré-agrégé)  │
   │  spool /var/lib/plume/spool           │                     │  parsers · règles · playbooks   │
-  │  ship.sh  ·  respond.sh (pull)        │ ◄── /api/actions ── │  SOQL (compilo guatx-core)      │
+  │  ship.sh  ·  respond.sh (pull)        │ ◄── /api/actions ── │  GXQL (compilo guatx-core)      │
   └──────────────────────────────────────┘   (responder pull)  └─────────────────────────────────┘
                                                                           ▲ :7000 (ClusterIP)
    Navigateur ──► Cloudflare (tunnel) ──► Traefik ──► Authentik forward-auth ──► daemon (UI)
@@ -75,7 +75,7 @@ label de VOTRE ingress controller) — aucun autre pod ne peut atteindre le daem
 - **Sert trois choses sur le même port `:7000`** : l'**API** (`/api/*`), l'**UI web** (assets statiques
   via `tower_http::ServeDir` depuis `PLUME_WEB=/usr/local/share/plume/web`), et l'**ingestion**
   (`/api/ingest`, `/api/ingest/journal`, `/api/ingest/minio`, `/api/metrics/*`, `/loki/api/v1/push`).
-- **Compilo SOQL délégué à `guatx-core`** : `daemon/Cargo.toml` dépend de `guatx-core` via une
+- **Compilo GXQL délégué à `guatx-core`** : `daemon/Cargo.toml` dépend de `guatx-core` via une
   **git-dep publique épinglée** (cf. §4.1 « Image »).
   Le toggle **`PLUME_SOQL_CORE`** (lu au boot) a 3 états : `off` (compilo Plume historique), `shadow`
   (double-compile Plume+core, journalise les écarts, **sert l'ancien**), `on` (sert le SQL de
@@ -188,9 +188,9 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
 - **Rétention** : `PLUME_RETENTION_DAYS` (events, déf. 30), `PLUME_METRIC_DAYS`, `PLUME_SNAPSHOT_DAYS`,
   `PLUME_ALERT_DAYS`, downsample des métriques (`PLUME_METRIC_RAW_HOURS`), purge + `VACUUM`.
 
-## 7. Requête (SOQL) & moteur de détection
+## 7. Requête (GXQL) & moteur de détection
 
-- **SOQL → SQL read-only** : `search source=sshd "failed" | stats count by user` est compilé en SQL
+- **GXQL → SQL read-only** : `search source=sshd "failed" | stats count by user` est compilé en SQL
   validé (`guatx-core` quand `PLUME_SOQL_CORE=on`). Connexion **read-only**, **un seul** `SELECT`/`WITH…SELECT`
   (rejet des `;`, `pragma/attach/insert/update/delete/drop`), `LIMIT` forcé (`PLUME_QUERY_MAX`,
   `PLUME_SEARCH_LIMIT/MAX`).
@@ -198,7 +198,7 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
   interactive) + **watchdog** d'interruption ; les requêtes interactives portent un **`qid`** et
   `POST /api/cancel` les interrompt. Concurrence bornée par un sémaphore (`PLUME_QUERY_CONCURRENCY`,
   déf. 3 ; partagé `/api/query` + `/api/search` + data de panneau).
-- **Rollup-route** : un SOQL au **motif exact** (`… | stats count by source`, `search source=X | stats
+- **Rollup-route** : un GXQL au **motif exact** (`… | stats count by source`, `search source=X | stats
   count by <dim>`) est réécrit vers `event_rollup`/`event_dim_rollup` → réponse en quelques ms.
 - **Cache SWR des panneaux** : `panel_cache` + classification **adaptative LIVE/SWR par coût mesuré**
   (`panel_cost`, migration v46) — un panneau rapide est servi LIVE, un panneau coûteux passe en
@@ -208,7 +208,7 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
 - **Règles de détection** : seedées au boot (`seed_detection_rules`, repro sur PVC neuf) **et** posées
   sur les instances existantes par les **migrations** (jusqu'à v51 : règles CF, brute-force,
   minio backup-delete, auditd tamper, intégrité SUID/persistance, conntrack beaconing, vault
-  secret-read, self-detection brute-force de l'auth Plume…). Deux familles : **requête** (SOQL/SQL +
+  secret-read, self-detection brute-force de l'auth Plume…). Deux familles : **requête** (GXQL/SQL +
   seuil) et **diff** (snapshot vs baseline). Une règle qui matche → INSERT `alert` (+ sévérité) →
   **notifiers** (ntfy via `PLUME_NOTIFY_NTFY_URL`, seuil `PLUME_NOTIFY_MIN_SEV`). **Playbooks**
   (SOAR-lite) + **cases** (incidents) pour la suite.
@@ -220,7 +220,7 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
   les fuseaux IANA.
 - **Page dense** (dark, a11y) : bandeau alertes → posture/score → panneaux (firewall, durcissement,
   auth, process/auditd, intégrité, réseau, conteneurs, k8s, ressources, freshness…), barre de
-  recherche (SOQL/FTS) + plages de temps, **Explore**, **dashboards** & **panneaux** sauvegardés
+  recherche (GXQL/FTS) + plages de temps, **Explore**, **dashboards** & **panneaux** sauvegardés
   (query-driven), **règles**, **parsers**, **cases**, **actions/playbooks**, **users** (RBAC).
 - Le shell PWA est servi **hors forward-auth** ; les données restent gatées (Authentik + auth Plume).
 
@@ -348,7 +348,7 @@ config-gated**, jamais imposées :
 - **CrowdSec** : IDS/IPS + threat-intel communautaire ; on **ingère** ses décisions et on **délègue**
   l'enforcement (responder).
 - **Falco / Suricata** : runtime/IDS, ingérés en events.
-- **Sigma** : format de règles vendor-neutre → conversion vers le moteur SOQL/SQL (build-time).
+- **Sigma** : format de règles vendor-neutre → conversion vers le moteur GXQL/SQL (build-time).
 - **YARA / ClamAV** : scan fichiers/IOC à la demande → events/alertes.
 
 Tous **désactivables** par config ; absents, ils ne coûtent rien.

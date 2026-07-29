@@ -13,7 +13,7 @@ import { loadLedger } from './audit.js';
 import { applyConnectorType, loadConnectors, openConnectorForm, httpPullFormConfig, addFieldMapRow, addStMapRow, previewHttpPull, openPresetPicker } from './connectors.js';
 import { loadDestinations, openDestinationForm } from './destinations.js';
 import { loadIdpProviders, loadMfa } from './idp.js'; // #44 — IdP natif (fournisseurs OIDC/LDAP admin + MFA TOTP self-service)
-import { initAiAssist } from './ai.js'; // #16 — assistant IA (NL→SOQL) dans Explore ; révélé UNIQUEMENT si /api/ai/status = enabled (feature off -> reste caché)
+import { initAiAssist } from './ai.js'; // #16 — assistant IA (NL→GXQL) dans Explore ; révélé UNIQUEMENT si /api/ai/status = enabled (feature off -> reste caché)
 import { loadRouting } from './alerting.js'; // #53 — politiques de notification (routage) + silences (mute temporisé)
 import { loadFieldFilters } from './fieldfilters.js'; // #45 — field filters (masquage PII par champ, admin-only)
 import { loadProcessors, openProcessorForm } from './processors.js';
@@ -30,14 +30,14 @@ import { loadDataModels } from './datamodels.js'; // #47 — modèles de donnée
 import { prefGet, prefSet, prefsInit, prefsReady } from './prefs.js'; // #62 — préférences utilisateur self-scoped (favoris, réglages par vue, plage par défaut)
 import { initKeyboardNav } from './keys.js'; // #62 — navigation clavier (/, g+touche, j/k, ?) non-intrusive
 import { initSoqlComplete } from './soql_complete.js'; // complétion IDE-like NATIVE de la barre Explore (schema/templates)
-import { initSavedQueries } from './savedqueries.js'; // requêtes SOQL nommées per-user (owner-scoped) + historique récent (localStorage)
+import { initSavedQueries } from './savedqueries.js'; // requêtes GXQL nommées per-user (owner-scoped) + historique récent (localStorage)
 import { renderFreshness, renderFreshnessPulse, renderIntegrations } from './freshness.js'; // découpe par concern ; pulse compact de la Vue d'ensemble
 import { renderAlerts, setAlertMitreFilter, setAlertSourceFilter } from './alerts.js'; // decoupe par concern (alerts)
 import { renderCoverage, loadActions, loadMode, loadPlaybooks } from './detection_admin.js';
 import { loadRunbooks } from './runbooks.js'; // #3 Phase 2 — authoring runbooks (bring-your-own), admin-only
 import { ROLE_LABEL, loadUsers, loadTokens } from './admin_users.js';
 import { loadRetention, loadSuppressions } from './retention.js';
-import { renderHelpGuide, openHelpModal, openFreshnessHelp } from './help.js'; // #4c — aide in-app (split H1) : page Aide + modales SOQL/Fraîcheur, câblage #qhelp/#fresh-help ci-dessous
+import { renderHelpGuide, openHelpModal, openFreshnessHelp } from './help.js'; // #4c — aide in-app (split H1) : page Aide + modales GXQL/Fraîcheur, câblage #qhelp/#fresh-help ci-dessous
 
 
 // --- CRUD contenu de détection (#1c) : rôles UI + « managed » + remontée d'erreurs serveur ------
@@ -141,12 +141,12 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function' && !wind
 }
 
 // EXPORT EXPLORE : re-exécute la requête courante côté serveur (/api/export) pour le JEU COMPLET borné,
-// puis télécharge. Même dérivation SOQL/SQL-brut que runQuery (le SQL brut non-admin est refusé côté serveur).
+// puis télécharge. Même dérivation GXQL/SQL-brut que runQuery (le SQL brut non-admin est refusé côté serveur).
 async function exploreExport(format) {
   const q = ($('#sql') && $('#sql').value.trim()) || '';
   if (!q) { toast('Aucune requête à exporter', 'info'); return; }
   const isSoql = /^\s*search\b/i.test(q) || q.includes('|');
-  if (!isSoql && !socIsAdmin()) { toast("SQL brut réservé à l'administrateur — utilisez SOQL", 'bad'); return; }
+  if (!isSoql && !socIsAdmin()) { toast("SQL brut réservé à l'administrateur — utilisez GXQL", 'bad'); return; }
   const body = isSoql ? { soql: q } : { sql: q };
   body.from = exploreFrom(); body.to = exploreTo(); body.format = format; body.name = 'explore';
   let r;
@@ -291,7 +291,7 @@ $('#q').addEventListener('keydown', e => {
 
 // qid client unique : crypto.randomUUID si dispo, sinon préfixe + compteur croissant (jamais Math.random).
 /* state: _qidSeq -> S (state.js) */
-// UNE SEULE requête explore en vol : { qid, sig, ctrl(AbortController) }. sig = signature (soql + fenêtre
+// UNE SEULE requête explore en vol : { qid, sig, ctrl(AbortController) }. sig = signature (GXQL + fenêtre
 // + zoom + page) -> dédup d'un clic identique ; sinon cancel-previous (abort + /api/cancel) puis relance.
 /* state: exploreInflight -> S (state.js) */
 // sélecteur de colonnes : un seul menu ouvert à la fois (échappe l'overflow de .qresult via position:fixed)
@@ -370,7 +370,7 @@ async function createPanelModal(did, query = '') {
     title: 'Nouveau panneau', okText: 'Créer', fields: [
       { name: 'library_panel_id', label: 'Panneau de bibliothèque (réutilisable)', type: 'select', value: '', options: libOpts },
       { name: 'title', label: 'Titre', required: true, value: 'Panneau' },
-      { name: 'query', label: 'Requête (soql ou SQL) — ignorée si un panneau de bibliothèque est choisi', type: 'textarea', required: false, value: query, placeholder: 'search source=sudo | stats count by source' },
+      { name: 'query', label: 'Requête (GXQL ou SQL) — ignorée si un panneau de bibliothèque est choisi', type: 'textarea', required: false, value: query, placeholder: 'search source=sudo | stats count by source' },
       { name: 'viz', label: 'Visualisation', type: 'select', value: 'table', options: VIZOPTS },
       { name: 'visibility', label: 'Panneau', type: 'select', value: 'shared', options: [{ value: 'shared', label: 'public' }, { value: 'private', label: 'privé' }] },
       { name: 'query_private', label: 'Requête privée (cacher le texte aux autres)', type: 'checkbox', value: false },
@@ -387,8 +387,8 @@ async function createPanelModal(did, query = '') {
   }
   const qq = r.query.trim(); if (!qq) { toast('Requête requise (ou choisis un panneau de bibliothèque).', 'bad'); return; }
   const isSoql = /^\s*search\b/i.test(qq) || qq.includes('|');
-  // FAILLE B (UI) — un panneau en SQL brut (saisie non-SOQL) est réservé admin (miroir serveur panel_create).
-  if (!isSoql && !socIsAdmin()) { toast('SQL brut réservé à l\'administrateur (utilisez SOQL)', 'bad'); return; }
+  // FAILLE B (UI) — un panneau en SQL brut (saisie non-GXQL) est réservé admin (miroir serveur panel_create).
+  if (!isSoql && !socIsAdmin()) { toast('SQL brut réservé à l\'administrateur (utilisez GXQL)', 'bad'); return; }
   await apiSend('/panels', 'POST', { dashboard_id: Number(did), title: r.title.trim(), query: qq, is_soql: isSoql, viz: r.viz, visibility: r.visibility, query_private: !!r.query_private, drill: (r.drill || '').trim() });
   await loadDashboards(); toast('Panneau créé', 'ok');
 }
@@ -662,7 +662,7 @@ async function renderPanel(p, editable = true) {
   const vistag = p.visibility === 'private' ? '  [privé]' : '';
   const qline = document.createElement('code'); qline.className = 'panelq';
   qline.textContent = (p.query || '(requête privée)') + (p.window_s ? `  - fenêtre fixe ${p.window_s}s (épinglé)` : '') + vistag;
-  qline.title = (p.is_soql ? 'soql' : 'SQL') + (p.window_s ? " - fenêtre fixe : ignore l'intervalle/refresh global (édite, mets 0 pour resync)" : ''); card.appendChild(qline);
+  qline.title = (p.is_soql ? 'GXQL' : 'SQL') + (p.window_s ? " - fenêtre fixe : ignore l'intervalle/refresh global (édite, mets 0 pour resync)" : ''); card.appendChild(qline);
   // formulaire d'édition par panneau (titre / requête / viz / fenêtre)
   const ef = document.createElement('form'); ef.className = 'ruleform'; ef.hidden = true;
   ef.innerHTML = `<input class="pe-title" placeholder="titre"><textarea class="pe-query" rows="2" spellcheck="false"></textarea>`
@@ -682,8 +682,8 @@ async function renderPanel(p, editable = true) {
     e.preventDefault();
     const q = ef.querySelector('.pe-query').value.trim();
     const isSoql = /^\s*search\b/i.test(q) || q.includes('|');
-    // FAILLE B (UI) — éditer un panneau en SQL brut (saisie non-SOQL) est réservé admin (miroir serveur panel_update).
-    if (!isSoql && !socIsAdmin()) { toast('SQL brut réservé à l\'administrateur (utilisez SOQL)', 'bad'); return; }
+    // FAILLE B (UI) — éditer un panneau en SQL brut (saisie non-GXQL) est réservé admin (miroir serveur panel_update).
+    if (!isSoql && !socIsAdmin()) { toast('SQL brut réservé à l\'administrateur (utilisez GXQL)', 'bad'); return; }
     const upd = { title: ef.querySelector('.pe-title').value.trim() || 'Panneau', query: q, viz: ef.querySelector('.pe-viz').value, is_soql: isSoql, window_s: Number(ef.querySelector('.pe-win').value) || 0, visibility: ef.querySelector('.pe-vis').value, query_private: ef.querySelector('.pe-qpriv').checked, drill: ef.querySelector('.pe-drill').value.trim() };
     await patchPanel(p.id, upd);
     loadDashboards();
@@ -740,7 +740,7 @@ async function renderPanel(p, editable = true) {
   const pIsProjected = pIsSoql && /\|\s*(table|fields)\b/i.test(p.query || '');
   const PANEL_PAGE = 50;
   // état pager SERVEUR PAR-PANNEAU (isolé des autres panneaux — plusieurs panneaux paginent indépendamment).
-  // ① KEYSET (MIRROIR d'Explore `evLoad`, modèle Splunk) : un browse brut SOQL (`search` nu, from_soql) pagine par
+  // ① KEYSET (MIRROIR d'Explore `evLoad`, modèle Splunk) : un browse brut GXQL (`search` nu, from_soql) pagine par
   // CURSEUR en SÉQUENTIEL (Préc/Suiv = récup INTÉGRALE sans cap) MAIS garde le pager NUMÉROTÉ « 1..N » du COUNT ; un
   // clic sur un numéro de page NON atteint séquentiellement fait un SAUT OFFSET ponctuel (capé pour les pages très
   // lointaines = follow-up offset-dans-le-colonnaire). `cursors[i]` = curseur {ts,id} pour ATTEINDRE la page i (page 0
@@ -749,7 +749,7 @@ async function renderPanel(p, editable = true) {
   const spg = { page: 0, pageSize: PANEL_PAGE, total: 0, shown: 0, totalCapped: false, countFired: false, realTotal: false, cols: null, rows: null,
     keyset: panelKeyset, cursors: [null] };
   // ne serveur-pagine QUE les listes de lignes (table + non-agrégé) ET seulement quand /api/query est autorisé
-  // pour l'appelant (SOQL ouvert à tous ; SQL brut réservé admin) -> sinon repli sur la pagination CLIENT.
+  // pour l'appelant (GXQL ouvert à tous ; SQL brut réservé admin) -> sinon repli sur la pagination CLIENT.
   const serverPaged = () => curViz === 'table' && !pIsAgg && (pIsSoql || socIsAdmin());
   function panelWindow() {
     const from = p.window_s > 0 ? Math.floor(Date.now() / 1000) - p.window_s : (currentFrom() || 0);
@@ -942,7 +942,7 @@ if ($('#dash-edit')) $('#dash-edit').addEventListener('click', () => {
 });
 
 // ===================== #54 — INSTANTANÉ (snapshot partageable, lecture seule) =====================
-// Capture les données rendues du dashboard via le chemin SOQL MASQUÉ côté serveur (au rôle de l'appelant) ->
+// Capture les données rendues du dashboard via le chemin GXQL MASQUÉ côté serveur (au rôle de l'appelant) ->
 // jamais un champ hors de sa portée. Renvoie {id, token}. On affiche un aperçu (rendu par les MÊMES
 // vizElement) + un lien de partage read-only copiable (l'API renvoie le JSON figé au token).
 async function captureSnapshot(d) {
@@ -1137,8 +1137,8 @@ if ($('#setup-form')) $('#setup-form').addEventListener('submit', async e => {
 loadSettings();
 
 
-// --- Lookups (tables d'enrichissement SOQL ; réservé admin ; vit sous Réglages, comme les Comptes) ---
-// Un lookup = table de référence nommée (clé -> colonnes JSON) jointe en LEFT JOIN par l'op SOQL
+// --- Lookups (tables d'enrichissement GXQL ; réservé admin ; vit sous Réglages, comme les Comptes) ---
+// Un lookup = table de référence nommée (clé -> colonnes JSON) jointe en LEFT JOIN par l'op GXQL
 // `lookup <nom> <champ-clé> [OUTPUT cols]`. #1c : GET /api/lookups est LISIBLE par tous les rôles
 // (viewer/editor/admin) ; le CRUD (POST upload / DELETE) est autorisé éditeur+admin, le viewer est
 // bloqué serveur (403 via le gate `mutating`) ET côté UI (boutons .crud-btn masqués en role-viewer).
@@ -1598,7 +1598,7 @@ if ($('#navtoggle')) $('#navtoggle').onclick = () => { const l = document.queryS
 route();
 initKeyboardNav();   // #62 — raccourcis clavier power-user (non-intrusifs ; `?` = aide). Indépendant de l'auth.
 initSoqlComplete();  // complétion IDE-like de la barre Explore (dropdown contextuel + palette de modèles). Additif, non-intrusif.
-initSavedQueries();  // requêtes SOQL nommées (serveur, owner-scoped) + historique récent (localStorage). Additif, non-intrusif.
+initSavedQueries();  // requêtes GXQL nommées (serveur, owner-scoped) + historique récent (localStorage). Additif, non-intrusif.
 // #62 — quand les préférences serveur sont réconciliées (potentiellement depuis un AUTRE poste), re-applique
 // les réglages par-vue déjà rendus : ordre de la Vue d'ensemble + favoris de dashboards (si la vue est ouverte).
 prefsReady(() => {
@@ -1730,7 +1730,7 @@ updateQRangeBtn();
 refresh();
 applyAutoRefresh();
 
-// --- aide a la saisie / completion du champ Explore (soql + champs) ---
+// --- aide a la saisie / completion du champ Explore (GXQL + champs) ---
 const SOQL_KW = ['search', 'metric', 'stats', 'eventstats', 'timechart', 'rate', 'where', 'eval', 'rex', 'top', 'rare', 'dedup', 'table', 'fields', 'sort', 'head', 'append', 'join', 'by', 'count', 'sum(', 'avg(', 'min(', 'max(', 'dc('];
 const SOQL_FIELDS = ['ts', 'host', 'source', 'category', 'severity', 'src_ip', 'dst_ip', 'url', 'xff', 'message'];
 function acWord(ta) { const v = ta.value, c = ta.selectionStart; let i = c; while (i > 0 && /[\w(]/.test(v[i - 1])) i--; return { word: v.slice(i, c), start: i, end: c }; }
@@ -1945,7 +1945,7 @@ async function doLogout() {
       S.AUTH = me; setAuthUI(); applyRoleClass(me.role); showLogin(false);   // SSO/cookie/démo : app directe
       prefsInit();      // #62 — charge les préférences self-scoped du compte (favoris + réglages par vue) puis rejoue les callbacks
       loadBulletin();   // #51 DAY-2 OPS — bandeau MOTD (aucun bulletin -> reste caché ; invariant mode 0)
-      initAiAssist();   // #16 — assistant IA (NL→SOQL) dans Explore : révélé UNIQUEMENT si /api/ai/status = enabled (feature off -> reste caché)
+      initAiAssist();   // #16 — assistant IA (NL→GXQL) dans Explore : révélé UNIQUEMENT si /api/ai/status = enabled (feature off -> reste caché)
       // #2c switcher tenant, PUIS #2d sélecteur d'environnement (résolu APRÈS le tenant : les env sont
       // cloisonnés par tenant). initEnvironments(true) : si un env persisté est restauré, il recharge la vue.
       initTenants().then(() => initEnvironments(true)).catch(() => { try { initEnvironments(true); } catch (e) {} });

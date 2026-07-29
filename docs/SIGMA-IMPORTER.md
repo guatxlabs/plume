@@ -3,7 +3,7 @@
 > **Statut : contrat opérateur.** Absorbe la bibliothèque de détection **open-source** :
 > [Sigma](https://github.com/SigmaHQ/sigma) est le standard YAML des règles de détection (logsource +
 > `detection{selection/condition}` + tags MITRE). Cet importeur **traduit une règle Sigma en une règle
-> de détection Plume** — une requête **SOQL** + les métadonnées (`title`, `level` → sévérité,
+> de détection Plume** — une requête **GXQL** + les métadonnées (`title`, `level` → sévérité,
 > `tags: attack.Txxxx` → MITRE). C'est **ADDITIF** : une règle Sigma = des lignes `rule` en plus, **zéro
 > impact data-plane / mode 0**.
 
@@ -18,17 +18,17 @@
 
 ## 0. Principes directeurs
 
-1. **JAMAIS une règle silencieusement fausse.** Un construit non exprimable **fidèlement** en SOQL est
+1. **JAMAIS une règle silencieusement fausse.** Un construit non exprimable **fidèlement** en GXQL est
    **signalé + ignoré** avec une raison claire (`skipped: [{title, reason}]`), **jamais** émis comme une
    règle qui **sous-matche** (= angle mort) ou sur-matche en silence. Une règle Sigma mal traduite qui ne
    fire pas serait pire que pas de règle. La couverture ci-dessous est le **sous-ensemble commun** ;
    l'inexprimable est rejeté (voir §4).
 2. **Injection impossible.** Aucune valeur Sigma n'est interpolée « à cru » dans du SQL. Chaque valeur
    string devient un **motif REGEXP** construit par un encodeur qui n'émet **que des caractères inertes**
-   pour le tokenizer SOQL (les caractères STRUCTURELS — espace, `|`, `"`, `()`, `[]`, `,`, `'`, backtick —
-   sont hex-échappés `\xNN` ; le moteur regex les décode, le découpage SOQL/pipe/`in` ne les voit pas). La
-   requête finale est **recompilée par le compilo SOQL du cœur** (`soql_to_sql_x`) avant tout stockage : un
-   SOQL qui ne compile pas est **rejeté** (garde-fou ultime).
+   pour le tokenizer GXQL (les caractères STRUCTURELS — espace, `|`, `"`, `()`, `[]`, `,`, `'`, backtick —
+   sont hex-échappés `\xNN` ; le moteur regex les décode, le découpage GXQL/pipe/`in` ne les voit pas). La
+   requête finale est **recompilée par le compilo GXQL du cœur** (`soql_to_sql_x`) avant tout stockage : un
+   GXQL qui ne compile pas est **rejeté** (garde-fou ultime).
 3. **ENRICH / ADD, jamais réduire.** Importer une règle **ajoute** une détection ; ça n'en supprime ni
    n'en filtre aucune. Un `logsource` non mappé n'est **pas un drop** : la règle est importée (appliquée à
    toutes les sources) avec un **avertissement** de sur-match potentiel.
@@ -148,7 +148,7 @@ infalsifiable.
 
 ### 4c. Modificateurs de champ
 
-| Sigma | → SOQL | note |
+| Sigma | → GXQL | note |
 |-------|--------|------|
 | *(aucun)* | `field=~(?i)^…$` (ou `field=n` si entier) | **égalité** ; jokers Sigma `*`/`?` **actifs** (→ `.*`/`.`) |
 | `\|contains` | `field=~(?i)…` | sous-chaîne (non ancré) |
@@ -182,19 +182,19 @@ infalsifiable.
 
 **Non supporté (flag) :** `or` / OU inter-champs ; `1 of them` / `any of` (OU) ; agrégations
 `… | count() by X > N` ; négation d'une sélection **multi-champs** ou **avec modificateur** (pas de
-`NOT REGEXP` en SOQL) ; liste OU de **sous-chaînes** (`contains` + liste sans `|all`) ; **modificateurs**
+`NOT REGEXP` en GXQL) ; liste OU de **sous-chaînes** (`contains` + liste sans `|all`) ; **modificateurs**
 `base64`/`base64offset`/`utf16`/`wide`/`cidr`/`windash`.
 
-> **Pourquoi rejeter l'OU ?** Le `search` SOQL conjugue ses filtres en **ET** ; le seul OU disponible est
+> **Pourquoi rejeter l'OU ?** Le `search` GXQL conjugue ses filtres en **ET** ; le seul OU disponible est
 > `field in (…)` (OU d'égalités sur **un** champ). Un OU inter-champs (`a or b`, `1 of them`) n'a pas de
-> forme SOQL fidèle → le traduire approximativement **sous-matcherait** (angle mort). On préfère
+> forme GXQL fidèle → le traduire approximativement **sous-matcherait** (angle mort). On préfère
 > **flagger** honnêtement. (Le champ reste importable manuellement, ou via plusieurs règles.)
 
 ---
 
 ## 5. Exemples livrés (`config.d/sigma/`)
 
-| fichier | démontre | SOQL produit |
+| fichier | démontre | GXQL produit |
 |---------|----------|--------------|
 | `firewall-denied-nonstandard-port.yml` | `logsource.category`→`firewall`, égalité, **négation de liste** | `search category=firewall action=~(?i)^deny$ dport not in (80,443) \| stats count` |
 | `web-admin-path-blocked.yml` | `\|startswith` + égalité en **ET** | `search category=web action=~(?i)^blocked$ url=~(?i)^\/admin \| stats count` |
@@ -206,7 +206,7 @@ Pré-vol : `plume-daemon sigma-import config.d/sigma --dry-run`.
 
 ## 6. Ce que l'importeur n'est PAS
 
-- Pas un moteur Sigma complet : il cible le **sous-ensemble exprimable en SOQL** (§4). Le reste est
+- Pas un moteur Sigma complet : il cible le **sous-ensemble exprimable en GXQL** (§4). Le reste est
   **flaggé**, jamais deviné.
 - Pas un chemin de **filtre/suppression** : une règle importée **ajoute** une détection (cf. principe #3).
 - Pas un backend de **corrélation temporelle** (`timeframe`/agrégation Sigma) : hors périmètre → flag.

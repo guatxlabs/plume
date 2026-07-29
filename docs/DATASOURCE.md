@@ -9,7 +9,7 @@ Three read surfaces (2 built, 1 designed):
 
 | Lever | Endpoint(s) | Grafana datasource | Status |
 |-------|-------------|--------------------|--------|
-| 1. SOQL-over-HTTP-JSON | `GET/POST /api/ds/query` | Infinity / JSON | **built** |
+| 1. GXQL-over-HTTP-JSON | `GET/POST /api/ds/query` | Infinity / JSON | **built** |
 | 2. Prometheus read | `/api/v1/query`, `/api/v1/query_range`, `/api/v1/label/__name__/values`, `/api/v1/labels`, `/api/v1/series` | Prometheus | **built (honest subset)** |
 | 3. Loki read (LogQL) | `/loki/api/v1/query_range` | Loki | **stub (501) + design below** |
 
@@ -23,7 +23,7 @@ This is a **new external read surface**. It does **not** bypass #45 field-filter
 
 - The caller is resolved by the normal `auth_guard` choke-point (token → role/tenant), exactly like every
   other route. **Anonymous is refused** (401) unless the operator opted into `PLUME_PUBLIC_DEMO` (viewer).
-- **SOQL-HTTP** funnels every read through `soql_to_sql_masked_x(soql, from, to, env, effective_masks(role,…))`
+- **GXQL-HTTP** funnels every read through `soql_to_sql_masked_x(soql, from, to, env, effective_masks(role,…))`
   — the *same* masked compiler the UI's `/api/query` uses. The mask is emitted **inside the SQL** (before any
   aggregation/rename), and DENY rules on real columns also arm the SQLite read-pool authorizer. A viewer-scoped
   datasource token gets masked/denied fields masked; a query that *filters* on a masked field is rejected the
@@ -55,9 +55,9 @@ Datasource tokens are **mode-0 only** (like the UI token provisioning); in multi
 
 ---
 
-## Lever 1 — SOQL-over-HTTP-JSON (`/api/ds/query`)
+## Lever 1 — GXQL-over-HTTP-JSON (`/api/ds/query`)
 
-The most general lever: run any SOQL read and get tabular JSON back.
+The most general lever: run any GXQL read and get tabular JSON back.
 
 ```
 GET  /api/ds/query?soql=<soql>&from=<epoch>&to=<epoch>&limit=<n>&format=records|table
@@ -67,7 +67,7 @@ POST /api/ds/query   {"soql":"search category=auth | stats count by host", "from
 - `format=records` (default) → `[{col: val, …}, …]` (Grafana Infinity's natural shape).
 - `format=table` → `{ "columns": [...], "rows": [[...], …] }`.
 - `from`/`to` = epoch seconds (0 = unbounded). `limit` capped at 10 000.
-- Compilation is byte-identical to `/api/query`'s SOQL path (masks applied). No `sql` (raw) field is accepted.
+- Compilation is byte-identical to `/api/query`'s GXQL path (masks applied). No `sql` (raw) field is accepted.
 
 ## Lever 2 — Prometheus-compatible read
 
@@ -97,7 +97,7 @@ PromQL engine — consistent with the superset principle (don't overclaim).
 `GET/POST /loki/api/v1/query_range` currently returns **501** (config seam `PLUME_LOKI_QUERY`, default off).
 
 **Planned design (follow-on):** logs live in the `event` table (Loki push lands there with `category='log'`).
-A LogQL stream selector `{source="…", host="…"} |= "needle"` maps cleanly onto SOQL:
+A LogQL stream selector `{source="…", host="…"} |= "needle"` maps cleanly onto GXQL:
 
 ```
 {job="sshd"} |= "Failed password"   →   search source="plume-sshd" "Failed password" | table ts, host, message

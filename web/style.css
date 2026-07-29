@@ -570,7 +570,7 @@ body.role-viewer #act-new,body.role-viewer #mode-toggle{display:none!important}
   .span2{grid-column:span 1}
 }
 @media(max-width:700px){.srchbody{grid-template-columns:1fr}.intgrid{grid-template-columns:1fr}}
-/* aide a la saisie (completion soql/champs) */
+/* aide a la saisie (completion GXQL/champs) */
 .achint{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 8px;min-height:0}
 .acchip{font-family:var(--font-mono);font-size:11px;padding:3px 9px;border-radius:var(--pill);background:var(--acc-bg);color:var(--acc);border:1px solid color-mix(in srgb,var(--acc) 28%,transparent);cursor:pointer}
 .acchip:hover{background:var(--acc);color:var(--acc-ink)}
@@ -648,7 +648,7 @@ select.picon{padding:2px 6px!important;background:var(--card);color:var(--fg);bo
 .rangebtn{gap:6px} #rangelbl,#qrangelbl{font-size:12px}
 /* éditeur de règle présenté en modal (déplacé dans #rule-form-ov à l'ouverture) */
 .rulemodal{background:var(--card);border:1px solid var(--bd);border-radius:var(--radius);box-shadow:0 20px 60px #000a;padding:20px;width:min(620px,94vw);max-height:90vh;overflow:auto}
-/* aide requêtes SOQL (modal) */
+/* aide requêtes GXQL (modal) */
 .helpmodal{width:min(760px,95vw)}
 .helpref{font-family:var(--font-mono);font-size:12px;line-height:1.55;white-space:pre;overflow:auto;max-height:64vh;background:var(--card2);border:1px solid var(--bd);border-radius:8px;padding:12px;color:var(--fg);margin:0 0 12px}
 .modal-f span{font-weight:600}
@@ -798,7 +798,7 @@ h2 .ihelp,h3 .ihelp{vertical-align:middle;margin-left:6px;position:relative;top:
 /* C9 — en-tête d'espace : icône (identique à la sidebar) + nom */
 .hg-spacehd{display:flex;align-items:center;gap:8px}
 .hg-spacehd .ic{width:16px;height:16px;color:var(--acc);flex:0 0 auto}
-/* C9 — bloc SOQL collapsible « Référence » */
+/* C9 — bloc GXQL collapsible « Référence » */
 .hg-ref{background:var(--card2);border:1px solid var(--bd);border-radius:10px;padding:10px 14px}
 .hg-refsum{cursor:pointer;font-weight:700;color:var(--hd);font-size:13px;list-style:none}
 .hg-refsum::-webkit-details-marker{display:none}
@@ -885,7 +885,7 @@ h2 .ihelp,h3 .ihelp{vertical-align:middle;margin-left:6px;position:relative;top:
 .cf-kvarrow{color:var(--mut);flex:0 0 auto}
 #cf-http-preview-out{margin-top:10px}
 
-/* #47 Données → Modèles & Pivot : report-builder (split-by / agrégats / filtres) sans SOQL à la main. */
+/* #47 Données → Modèles & Pivot : report-builder (split-by / agrégats / filtres) sans GXQL à la main. */
 .pv-builder{border:1px solid var(--bd);border-radius:var(--radius);padding:12px 14px;background:var(--card2)}
 .pv-field{margin:0 0 12px}
 .pv-label{display:block;font-size:12px;font-weight:700;color:var(--hd);margin:0 0 6px}
@@ -949,7 +949,7 @@ body:not(.role-admin) #sigma-import-btn{display:none!important}
 .sigma-skip-h{font-size:12px;font-weight:700;color:var(--hd);margin:0 0 6px}
 
 /* ===== Peaufinage panneaux (batch) — Threat Intel / Risque / ATT&CK / http_pull / Sigma. Visuel seul (2 thèmes). ===== */
-/* Threat Intel : la requête SOQL « hits » peut être longue -> scroll interne au lieu d'élargir la carte. */
+/* Threat Intel : la requête GXQL « hits » peut être longue -> scroll interne au lieu d'élargir la carte. */
 .ti-hint{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px}
 .ti-hint code{font-family:var(--font-mono);background:var(--card2);border:1px solid var(--bd);border-radius:6px;padding:2px 7px;max-width:100%;overflow-x:auto;white-space:pre}
 /* Threat Intel : tuiles chiffrées bornées (densité) — pas d'étirement démesuré sur grand écran. */

@@ -96,7 +96,7 @@ schema) the scaffold emits **two** DDLs, in apply order:
 - Columns, `PARTITION BY`, `ORDER BY` are **author constants** (mirror of single-node #18) — not config,
   so not an injection surface. A test (`ha_event_columns_mirror_single_node`) locks the event column set
   to `ClickHouseStore::schema_ddl()` so the two tiers cannot drift (the `RowBinary` insert targets columns
-  by name — same SOQL surface across tiers).
+  by name — same GXQL surface across tiers).
 
 `full_schema_ddls(topology, tiering)` returns the six statements (3 tables × {local, distributed}) in
 apply order (local before distributed — the `Distributed` engine references a table that must already
@@ -202,7 +202,7 @@ Continues the RFC §5 phasing. Each step independently shippable, mode-0-inert, 
   locked (dedup strategy §3.3 — `ReplacingMergeTree` eventual vs `FINAL`-on-read; RFC Open-Q #2).
 - **Phase 4 — hot→cold tiering (optional, later):** wire `TieringPolicy` into a live storage policy;
   `MergeStore` composing hot (SQLCipher/DuckDB) + cold (ClickHouse) behind one `EventStore`; wide-range
-  SOQL fan-out + merge, or rollup-only cold (RFC §2.2b/c).
+  GXQL fan-out + merge, or rollup-only cold (RFC §2.2b/c).
 - **Cross-cutting deferred:** runtime store-selection dispatch (`PLUME_STORE=clickhouse`, ~82 call-sites,
   RFC §6.1) — the whole scale tier stays exercised by its own API + tests, not by flipping an env var in
   prod, until that lands.

@@ -31,7 +31,7 @@ before distribution's failure modes are added. It is the correctness milestone, 
 
 Two first-party pieces behind the two already-cut seams (nothing new invented — see RFC §0):
 
-- **`ClickHouseDialect : Dialect`** (`core/src/soql.rs`) — the SOQL compiler is **unchanged**; only the
+- **`ClickHouseDialect : Dialect`** (`core/src/soql.rs`) — the GXQL compiler is **unchanged**; only the
   ~8 emission fragments are re-mapped to ClickHouse SQL (`JSONExtractString`, `toFloat64OrNull`,
   `intDiv(ts,span)*span`, `arrayStringConcat(groupUniqArray(...))`, CH string fns for `mitre_parent`,
   `positionCaseInsensitive`, identifier backticking, literal escaping). Carried by
@@ -40,7 +40,7 @@ Two first-party pieces behind the two already-cut seams (nothing new invented �
   (`clickhouse_dialect_emits_clickhouse_fragments`, `events_clickhouse_compiles_via_clickhouse_dialect`).
 
 - **`ClickHouseStore : guatx_core::store::EventStore`** (`daemon/src/ingest/clickhouse_store.rs`,
-  `#[cfg(feature = "clickhouse")]`) — the write + SOQL-read impl:
+  `#[cfg(feature = "clickhouse")]`) — the write + GXQL-read impl:
   - **Ingest (batched).** `insert_events` opens one `Insert<ChEventRow>` (`RowBinary`) and writes the
     whole batch before `end()` — the native batched insert (ClickHouse collapses under row-at-a-time
     inserts). `insert_event` = a batch of one. Typed `Ch{Event,Metric,Snapshot}Row` mirror the SQLite
@@ -90,7 +90,7 @@ export PLUME_CLICKHOUSE_DATABASE=plume   # optional; the Client carries the data
 
 `ClickHouseStore::schema_ddl()` returns three `CREATE TABLE IF NOT EXISTS … ENGINE = MergeTree`
 statements mirroring `db/schema.sql`. Column **names are identical** to the SQLite tables and the
-`Ch*Row` structs, so every SOQL query / rule / panel resolves the same fields.
+`Ch*Row` structs, so every GXQL query / rule / panel resolves the same fields.
 
 ```sql
 CREATE TABLE IF NOT EXISTS event (
@@ -128,10 +128,10 @@ Mapping notes:
 
 ## 4. Injection safety
 
-**Reads go through the same SOQL compiler.** `ClickHouseStore::soql_to_sql` calls
+**Reads go through the same GXQL compiler.** `ClickHouseStore::soql_to_sql` calls
 `guatx_core::soql::to_sql(…, Schema::events_clickhouse())` — the identical pipeline compiler as SQLite,
 only the emission fragments differ. Every reviewed guard still applies:
-- the **closed compiler** (SOQL is not raw SQL; commands/functions are a closed enum),
+- the **closed compiler** (GXQL is not raw SQL; commands/functions are a closed enum),
 - the **masking chokepoint** (`soql_field`) and field-filter injection points,
 - `soql_esc` / `quote_ident` literal + identifier escaping (ClickHouse variant) — proven by the
   `store_soql_literal_is_escaped` test (`a'b` → `'a''b'`).
@@ -190,7 +190,7 @@ explicitly, like `PLUME_MULTI_TENANT=1`. Never as the SMB default.
 ## 6. Test coverage (what's proven vs. what needs a live server)
 
 Unit-tested offline (`cargo test --features clickhouse`, no ClickHouse server):
-- `store_soql_compiles_via_clickhouse_dialect` — the adapter compiles SOQL through the CH dialect
+- `store_soql_compiles_via_clickhouse_dialect` — the adapter compiles GXQL through the CH dialect
   (`JSONExtractString`, `arrayStringConcat(groupUniqArray(...))`), no SQLite fragment leaks.
 - `store_soql_time_bucket_is_clickhouse_intdiv` — `timechart span=1h` → `intDiv(ts,3600)*3600` (grain
   parity with SQLite).

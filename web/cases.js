@@ -3,7 +3,7 @@
 import { $, api, apiSend, confirmModal, downloadText, exportPDF, fmtTs, ic, modal, muted, pagedList, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
 import { S } from './state.js';
 import { refresh } from './app.js';
-// #3 incidents : « Lancer la recherche » d'une step ouvre l'Explore avec le SOQL recompilé (réutilise le
+// #3 incidents : « Lancer la recherche » d'une step ouvre l'Explore avec le GXQL recompilé (réutilise le
 // chemin de recherche existant). Cycle app<->viz bénin (appel à l'EXÉCUTION seulement, après await).
 import { runQuery } from './viz.js';
 
@@ -579,7 +579,7 @@ async function addToCase(kind, body, ref) {
 // ================================ #3 INCIDENTS + RESPONSE WIZARD (Phase 1) ================================
 // Panneau « Runbook / réponse guidée » : élévation case->incident (tier), runbook recommandé (par tactique
 // MITRE dominante des alertes liées) + attach, checklist PHASÉE avec suivi de progression. Une step 'search'
-// ouvre l'Explore (SOQL recompilé côté serveur) ; une step 'response' PRÉPARE l'action existante — l'exécution
+// ouvre l'Explore (GXQL recompilé côté serveur) ; une step 'response' PRÉPARE l'action existante — l'exécution
 // passe par /api/actions (admin + arm + approbation + ledger) INCHANGÉ, JAMAIS d'auto-exec. Les données
 // incident/runbook sont chargées PAR UN FETCH SÉPARÉ (hors case_get_json -> parité mode 0 côté détail).
 const PHASE_LABEL = { triage: 'Triage', investigation: 'Investigation', containment: 'Containment', eradication: 'Éradication', recovery: 'Rétablissement' };
@@ -723,7 +723,7 @@ async function skipStep(c, s) {
   await advanceStep(c, s, 'skipped', (r.note || '').trim());
 }
 
-// « Lancer la recherche » : résout le SOQL de la step (recompilé côté serveur), demande une cible si aucune
+// « Lancer la recherche » : résout le GXQL de la step (recompilé côté serveur), demande une cible si aucune
 // n'est pré-remplie, puis ouvre l'Explore (chemin de recherche existant). Aucune exécution d'action.
 async function runStepSearch(c, s) {
   let path = '/cases/' + c.id + '/steps/' + s.id + '/search';
@@ -734,7 +734,7 @@ async function runStepSearch(c, s) {
   }
   let j;
   try { j = await api(path); } catch (e) { toast('Recherche refusée : ' + ((e && e.message) || e), 'bad'); return; }
-  if (!j || !j.soql) { toast('SOQL indisponible', 'bad'); return; }
+  if (!j || !j.soql) { toast('GXQL indisponible', 'bad'); return; }
   location.hash = 'explore';
   if ($('#sql')) { $('#sql').value = j.soql; runQuery(); }
 }

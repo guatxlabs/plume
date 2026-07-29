@@ -74,7 +74,7 @@ Méthode : **additif d'abord** → run en parallèle → vérif de parité → r
 
 ### 3.3 Recherche & langage de requête (« un SPL en Rust, > PromQL »)
 - Moteur = **SQL read-only validé** (ARCHITECTURE §7) + **FTS5**.
-- **DSL pipe unifié « soql »** (style SPL) compilé en SQL : `search source=sshd "failed" | stats count by user | where count>5 | sort -count`. **UN seul langage pour logs + métriques + events** (vs PromQL=métriques only, LogQL=logs only) = l'avantage clé.
+- **DSL pipe unifié « GXQL »** (style SPL) compilé en SQL : `search source=sshd "failed" | stats count by user | where count>5 | sort -count`. **UN seul langage pour logs + métriques + events** (vs PromQL=métriques only, LogQL=logs only) = l'avantage clé.
 - Fonctions : `stats/agg` (count/sum/avg/percentile/rate), `group by`, **bucket temporel**, joins (FTS+relationnel), `eval`, **lookup** (enrichissement IOC/CTI/geo/asn), regex extract, subsearch, `timechart`, `top`, `transaction` (corrélation par session).
 - **Autocomplétion / aides** : lister sources, champs, valeurs dispo (le besoin « voir les jobs/labels »).
 - **Coût par requête** (demandé) : profiler chaque requête — **rows scanned, CPU, RAM, + timings
@@ -154,7 +154,7 @@ Méthode : **additif d'abord** → run en parallèle → vérif de parité → r
 
 | Outil | Ce qu'on reprend |
 |---|---|
-| **Splunk ES** | SPL (→ DSL soql), correlation searches, **risk-based alerting**, UEBA, data models, **detection versioning/rollback**, dashboards, SOAR workflow |
+| **Splunk ES** | SPL (→ DSL GXQL), correlation searches, **risk-based alerting**, UEBA, data models, **detection versioning/rollback**, dashboards, SOAR workflow |
 | **Wazuh** | **FIM**, **SCA/CIS**, **vuln detection (CVE)**, **active response**, **MITRE mapping**, system inventory, agent multi-OS |
 | **Defender XDR** | **EDR** (télémétrie comportementale), **AIR** (investigation auto), **advanced hunting** (langage de requête), **live response**, **attack disruption/containment** |
 | **CrowdSec** | scénarios, **bouncers** (enforcement délégué), **CAPI/CTI** communautaire |
@@ -169,7 +169,7 @@ Méthode : **additif d'abord** → run en parallèle → vérif de parité → r
 ## 6. Priorisation (MoSCoW) & phases
 
 - **MUST (cœur SOC, un hôte Linux couvert de bout en bout)** : collecte journald/auditd/nft + ingestion
-  des sources déjà en place (P5) · search SQL+FTS + DSL soql (P3) · dashboards query-driven + exemples
+  des sources déjà en place (P5) · search SQL+FTS + DSL GXQL (P3) · dashboards query-driven + exemples
   (P3) · règles+alertes+MITRE (P3/P4) · **Control Catalog auto-audit (§1)** · backup intégré · agent
   distant (P7).
 - **SHOULD** : YARA/AIDE/SUID-persistance (P4) · RBA + UEBA léger · playbooks réponse (délégués) · case

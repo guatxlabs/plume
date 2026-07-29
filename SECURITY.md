@@ -1,7 +1,7 @@
 # Security Policy
 
 Plume is a **feather-light SOC/SIEM**: it ingests security telemetry, stores it encrypted,
-and serves an API + UI + detection engine over a **closed SOQL read grammar** with
+and serves an API + UI + detection engine over a **closed GXQL read grammar** with
 **field masking as a single choke-point**. Its value depends on that read path staying
 sealed and on secrets never leaking into what it stores or serves. A flaw in those
 controls is a serious bug, and we want to hear about it.
@@ -35,7 +35,7 @@ boundary, or leaks secrets. In particular:
 - **RBAC / authorizer bypass** — an `editor` (or lower) reaching an admin-only mutating
   route (password reset, mode/ban/kill, playbook arming), or a fail-open in the RBAC gate.
 - **Tenant isolation break** — reading another tenant's events/findings/secrets under
-  multi-tenant mode (`PLUME_MULTI_TENANT`), including via the SOQL surface or a shared key.
+  multi-tenant mode (`PLUME_MULTI_TENANT`), including via the GXQL surface or a shared key.
 - **Secret leakage** — DB keys, session credentials, API/connector keys, or SSO secrets
   escaping into an event, a rollup, a report, a log line, or an API response.
 - **AuthN/AuthZ** — authentication bypass, privilege escalation, cross-tenant IDOR.
@@ -63,7 +63,7 @@ are not maintained; please upgrade.
 ## Hardening & audits
 
 Plume ships a documented security model and a CI pipeline that runs `cargo audit` and secret
-scanning. The core controls — the closed SOQL compiler, field masking as a single
+scanning. The core controls — the closed GXQL compiler, field masking as a single
 choke-point, the fail-closed RBAC gate + SQLite DENY authorizer, per-tenant crypto isolation,
 and mode-0 byte-identical feature gating — are covered by tests and have been adversarially
 reviewed.

@@ -1,5 +1,5 @@
 {
-  "_comment": "SOQL snippet library for the Explore IDE-completion palette. Served verbatim by GET /api/soql/templates. Every `soql` here MUST compile through guatx_core::soql::to_sql(&Schema::events()) — a daemon test (soql_templates_all_compile) asserts it, so an invalid template fails CI, never ships. keywords are for the client-side keyword search (FR + EN). Additive UX only; no gate, no schema.",
+  "_comment": "GXQL snippet library for the Explore IDE-completion palette. Served verbatim by GET /api/soql/templates. Every `soql` here MUST compile through guatx_core::soql::to_sql(&Schema::events()) — a daemon test (soql_templates_all_compile) asserts it, so an invalid template fails CI, never ships. keywords are for the client-side keyword search (FR + EN). Additive UX only; no gate, no schema.",
   "templates": [
     { "id": "ssh-failed", "title": "Échecs SSH (par IP source)", "keywords": ["ssh", "echec", "failed", "login", "auth", "sshd", "bruteforce"], "soql": "search source=sshd action=failure | stats count by src_ip | sort -count | head 20" },
     { "id": "top-src-ip", "title": "Top IP sources", "keywords": ["top", "ip", "source", "src_ip", "volume"], "soql": "search | stats count by src_ip | sort -count | head 20" },

@@ -16,7 +16,7 @@ Deux familles de noms, a ne pas confondre :
 - **Surface d'ingestion (compatibilite)** = nommee d'apres le PROTOCOLE accepte : `/loki/api/v1/push`
   (protocole Loki, chemin impose par les clients), `/api/metrics/write` (protocole remote_write, nom
   neutre cote SOC), `/api/metrics/prom` (format d'exposition Prometheus). -> permet le drop-in.
-- **Surface PROPRE au SOC** = 100% GuatX, zero "loki/prom" : soql `metric`/`search`/`rate`/`timechart`,
+- **Surface PROPRE au SOC** = 100% GuatX, zero "loki/prom" : GXQL `metric`/`search`/`rate`/`timechart`,
   dashboards, `/api/query`. C'est ce que TU utilises au quotidien.
 
 => Oui : c'est un **utilitaire reutilisable** dans tout environnement qui parle deja Prometheus/Loki
@@ -37,7 +37,7 @@ PLUME_TOKEN=...        # genere par : plume-daemon token prom
 ```
 Puis : `sudo systemctl enable --now plume-prom-scrape.timer`
 
-Requetes (PromQL -> soql) :
+Requetes (PromQL -> GXQL) :
 ```
 metric node_load1 | timechart span=1m avg(value)
 metric node_network_receive_bytes_total by device | rate | timechart span=1m avg(rate) by device

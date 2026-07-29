@@ -282,7 +282,7 @@ function openTemplatePalette() {
     ov.className = 'soql-tpl-ov';
     ov.addEventListener('mousedown', (e) => { if (e.target === ov) ov.remove(); });
     const panel = document.createElement('div'); panel.className = 'soql-tpl-panel';
-    const h = document.createElement('div'); h.className = 'soql-tpl-h'; h.textContent = 'Modèles de requête (SOQL)';
+    const h = document.createElement('div'); h.className = 'soql-tpl-h'; h.textContent = 'Modèles de requête (GXQL)';
     const search = document.createElement('input'); search.type = 'text'; search.className = 'soql-tpl-search';
     search.placeholder = 'Rechercher (ex : ssh, scan, firewall, dns)…'; search.setAttribute('aria-label', 'Rechercher un modèle');
     const list = document.createElement('div'); list.className = 'soql-tpl-list';
@@ -349,8 +349,8 @@ function showValidity(ok, msg) {
   validEl.hidden = false;
 }
 
-// N'applique la validation QU'au SOQL (miroir EXACT du heuristique de app.js) : le SQL brut n'est pas du SOQL
-// (compilateur SOQL-only) -> on n'affiche alors aucun avis (l'admin garde le SQL brut, re-validé au run).
+// N'applique la validation QU'au GXQL (miroir EXACT du heuristique de app.js) : le SQL brut n'est pas du GXQL
+// (compilateur GXQL-only) -> on n'affiche alors aucun avis (l'admin garde le SQL brut, re-validé au run).
 function looksLikeSoql(q) { return /^\s*search\b/i.test(q) || /^\s*metric\b/i.test(q) || q.includes('|'); }
 
 function scheduleValidate() {
@@ -358,7 +358,7 @@ function scheduleValidate() {
   if (validTimer) { clearTimeout(validTimer); validTimer = null; }
   const q = (ta.value || '').trim();
   if (!q) { clearValidity(); return; }                 // vide -> pas d'indicateur, ZÉRO requête
-  if (!looksLikeSoql(q)) { clearValidity(); return; }  // SQL brut -> hors compilateur SOQL, pas d'avis
+  if (!looksLikeSoql(q)) { clearValidity(); return; }  // SQL brut -> hors compilateur GXQL, pas d'avis
   if (q === lastValidated) return;                     // inchangé depuis le dernier avis -> pas de spam
   validTimer = setTimeout(() => { validTimer = null; runValidate(q); }, VALIDATE_DEBOUNCE_MS);
 }

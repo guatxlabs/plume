@@ -2355,6 +2355,14 @@
 
                 if ext == "json" {
                     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+                    // UN OVERLAY QUI NE SERA JAMAIS CHARGÉ N'EST PAS UNE PREUVE DE COLLECTE. `parsers.rs`
+                    // ne lit QUE `WHERE enabled=1`, et `load_overlay_dparsers` rejette au boot un overlay
+                    // sans `name`. Sans ce filtre, déposer un `{"enabled":false,"map":{"fields":{…}}}` +
+                    // une ligne d'inventaire ÉTEIGNAIT l'avertissement d'inertie en gardant la garde verte
+                    // (mesuré) : un fichier de CONFIG suffisait, sans toucher un seul collecteur.
+                    let loadable = v.get("enabled").map_or(true, |e| e.as_bool() != Some(false))
+                        && v.get("name").and_then(|n| n.as_str()).is_some_and(|n| !n.trim().is_empty());
+                    if !loadable { continue; }
                     if let Some(o) = v.pointer("/map/fields").and_then(|x| x.as_object()) {
                         for k in o.keys() { out.push((k.clone(), rel.clone(), fam)); }
                     }
@@ -2369,6 +2377,24 @@
                 if ext == "rs" {
                     if let Some(i) = body.find("\n#[cfg(test)]") { body.truncate(i); }
                 }
+
+                // UN COMMENTAIRE N'ÉMET RIEN. Le marqueur est une regex sur les octets bruts : sans ce
+                // dépouillage, une ligne `# NOTE : le sac fields = {"ParentImage":"…"} reste TODO` dans un
+                // collecteur LIVRÉ suffisait à « dériver » le champ, donc à valider une entrée d'inventaire
+                // et à éteindre l'avertissement d'inertie — mesuré, `bash -n` inchangé. La doc affirmait
+                // P1..P3 « structurelles » ; elles ne l'étaient pas. On retire les lignes dont le PREMIER
+                // caractère non blanc ouvre un commentaire (`#` shell/py/ps1, `//` rust/jq). Volontairement
+                // conservateur : un commentaire de FIN de ligne après du code réel reste dans le corps —
+                // le retirer exigerait de savoir si le `#` est dans une chaîne, ce que cette garde ne sait
+                // pas faire. C'est écrit tel quel dans `collected.rs`, plutôt qu'affirmé fermé.
+                let body: String = body
+                    .lines()
+                    .filter(|l| {
+                        let t = l.trim_start();
+                        !(t.starts_with('#') || t.starts_with("//"))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
 
                 let mut has_fields_obj = false;
                 for m in marker.find_iter(&body) {
@@ -2435,6 +2461,14 @@
     ///       qui se met à émettre un champ fait rougir ce test tant qu'il n'est pas inventorié.
     ///   (C) ANTI-ROT PAR FAMILLE — chaque famille de collecteurs doit fournir au moins son plancher
     ///       d'extractions, sinon en perdre une entière (chemin déplacé, syntaxe changée) serait SILENCIEUX.
+    ///       PORTÉE EXACTE, mesurée par une revue adverse : (C) attrape la perte d'une FAMILLE, pas celle
+    ///       d'une POSITION de producteur. Mesuré — retirer P4 fait tomber `collectors/*.sh` de 412 à 384
+    ///       (plancher 330 : (C) reste VERT), et retirer P2 fait tomber `collectors/*.py` de 14 à 13
+    ///       (plancher 11 : VERT). Dans ces deux cas c'est (A) qui rouge, parce qu'au moins une entrée
+    ///       d'inventaire dépendait EXCLUSIVEMENT de la position perdue. Le filet existe donc, mais il
+    ///       s'appelle (A), pas (C) — et il ne tient que tant que cette dépendance exclusive existe.
+    ///       Ne pas réécrire ceci en « perdre une forme de production rougit » : c'est vrai en RÉSULTAT,
+    ///       faux quant au mécanisme, et cette imprécision avait déjà été publiée une fois.
     /// C'est le PROTOCOLE DE MISE À JOUR : on ne « pense pas à » mettre l'inventaire à jour, le test l'exige.
     /// Ce que l'extracteur ne voit pas (EventData Windows recopié verbatim, sources déclaratives
     /// `[[source]]`, clé non-string ou première clé d'un fragment P5) est ÉNUMÉRÉ dans `collected.rs` et

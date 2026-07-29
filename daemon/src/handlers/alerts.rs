@@ -289,21 +289,98 @@ pub(crate) fn scoped_coverage_detections(conn: &Connection, id: &str, since: i64
            AND (engagement_id=?2 OR EXISTS(SELECT 1 FROM event e WHERE e.engagement_id=?2 AND e.ts>=?3 AND e.ts<=?4)) \
          GROUP BY mitre ORDER BY count DESC, mitre",
     ) { Ok(s) => s, Err(_) => return Vec::new() };
-    let out: Vec<Value> = match stmt.query_map(params![since, id, ws, we], |r| Ok(json!({
-        "mitre": r.get::<_, String>(0)?, "count": r.get::<_, i64>(1)?, "first_ts": r.get::<_, i64>(2)?
-    }))) {
+    let rows: Vec<(String, i64, i64)> = match stmt.query_map(params![since, id, ws, we], |r| Ok((
+        r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?
+    ))) {
         Ok(r) => r.flatten().collect(),
         Err(_) => Vec::new(),
     };
+    // MÊME éclatement des tags multi-techniques que la branche globale (cf. explode_detection_rows) :
+    // le rapport SCOPÉ ne doit pas dire autre chose que le rapport global sur le même corpus de règles.
+    explode_detection_rows(rows)
+}
+
+/// PURPLE — éclate les lignes `(tag_mitre, count, first_ts)` agrégées depuis `alert` en TECHNIQUES
+/// ATT&CK, **sous-technique PRÉSERVÉE**, et ré-agrège par technique (count SOMMÉ, `first_ts` = MIN —
+/// la PREMIÈRE détection).
+///
+/// POURQUOI : le champ `mitre` d'une règle peut porter PLUSIEURS techniques séparées par espace/
+/// virgule/point-virgule — c'est la NORME chez SigmaHQ (plusieurs `attack.` par règle), et
+/// `mitre_parents` le documente déjà pour la matrice ATT&CK. Servir la chaîne COMPOSÉE telle quelle
+/// sur `/api/coverage/detections` force le consommateur (la boucle purple de Forge) à joindre sur une
+/// pseudo-technique qui n'existe dans aucun référentiel : un tag `"T1595.002 T1046"` ne matche alors
+/// AUCUNE des deux techniques et le corpus Sigma FABRIQUE de faux « missed ».
+///
+/// La sous-technique n'est PAS repliée sur sa parente (contrairement à `mitre_parents`, qui sert la
+/// grille de couverture) : le consommateur distingue `detected-exact` de `detected-parent-approx`, et
+/// cette distinction meurt si on normalise ici.
+///
+/// ANTI-SILENT-DROP : un tag vendeur/custom hors format `T####` reste servi VERBATIM — une détection
+/// qui s'évapore serait pire qu'un tag illisible. Tri de sortie IDENTIQUE au `ORDER BY count DESC,
+/// mitre` du SQL (contrat de la réponse inchangé). PUR / testable sans DB.
+pub(crate) fn explode_detection_rows(rows: Vec<(String, i64, i64)>) -> Vec<Value> {
+    let mut agg: std::collections::BTreeMap<String, (i64, i64)> = std::collections::BTreeMap::new();
+    for (tag, count, first_ts) in rows {
+        let mut keys = mitre_techniques(&tag);
+        if keys.is_empty() {
+            let raw = tag.trim();
+            if raw.is_empty() { continue; }
+            keys.push(raw.to_string());
+        }
+        for k in keys {
+            let e = agg.entry(k).or_insert((0, first_ts));
+            e.0 += count;
+            if first_ts < e.1 { e.1 = first_ts; }
+        }
+    }
+    let mut out: Vec<(String, i64, i64)> = agg.into_iter().map(|(m, (c, t))| (m, c, t)).collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0))); // count DESC, mitre ASC
+    out.into_iter()
+        .map(|(m, c, t)| json!({ "mitre": m, "count": c, "first_ts": t }))
+        .collect()
+}
+
+/// PURPLE — éclate un tag `mitre` en ses techniques DISTINCTES, **sous-technique PRÉSERVÉE**.
+/// Séparateurs espace/virgule/point-virgule (norme SigmaHQ). Format accepté : `T` + chiffres, avec une
+/// sous-technique optionnelle `.` + chiffres ; casse normalisée en haut de casse ; token hors format
+/// ignoré ; dédupliqué, ordre d'apparition préservé.
+///
+/// DISTINCT de `mitre_parents`, qui replie CHAQUE technique sur sa PARENTE pour la grille de couverture
+/// (`build_attack_matrix`). Ici la sous-technique est conservée : c'est elle que la boucle purple joint
+/// pour distinguer une détection EXACTE d'une simple couverture PARENTE. Les deux fonctions coexistent
+/// volontairement — `mitre_parents` est laissée INCHANGÉE (ses 4 tests figent son comportement).
+/// PUR / testable. Contrat d'éclatement ALIGNÉ sur `console/src/detection.rs::mitre_techniques` côté
+/// Forge : les deux extrémités de la jointure doivent découper le tag de la MÊME façon.
+pub(crate) fn mitre_techniques(tag: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tok in tag.split(|c: char| c.is_whitespace() || c == ',' || c == ';') {
+        let t = tok.trim().to_ascii_uppercase();
+        let Some(rest) = t.strip_prefix('T') else { continue };
+        let (base, sub) = match rest.split_once('.') {
+            Some((b, s)) => (b, Some(s)),
+            None => (rest, None),
+        };
+        if base.is_empty() || !base.bytes().all(|b| b.is_ascii_digit()) { continue; }
+        if let Some(s) = sub {
+            if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) { continue; }
+        }
+        if !out.contains(&t) { out.push(t); }
+    }
     out
 }
 
 /// PURPLE — couverture de détection. Agrège les ALERTES portant un tag MITRE ATT&CK (héritées de la
-/// règle qui les a tirées, cf. run_due_rules) par technique : pour chaque `mitre` non vide, le nombre
+/// règle qui les a tirées, cf. run_due_rules) par TECHNIQUE : pour chaque technique, le nombre
 /// d'alertes et l'horodatage de la 1re détection. C'est la mesure DÉFENSIVE (blue-team) : la console
-/// joint cette liste aux techniques tirées par Forge (red) pour exposer detected/missed/MTTD. Lecture
-/// seule (read_with -> pool chiffré), pas d'écriture. Réponse triée par count décroissant (techniques
-/// les plus détectées en tête). Paramètre optionnel `since` (epoch s) borne la fenêtre.
+/// Forge joint cette liste aux techniques tirées (red) pour exposer, à TROIS états, detected-exact /
+/// detected-parent-approx / missed + MTTD. Lecture seule (read_with -> pool chiffré), pas d'écriture.
+///
+/// CONTRAT : la clé `mitre` servie est une TECHNIQUE, jamais un tag composé. Un tag de règle portant
+/// plusieurs techniques (`"T1595.002 T1046"`, norme SigmaHQ) est ÉCLATÉ en autant d'entrées, counts
+/// sommés et `first_ts` = min (cf. explode_detection_rows) ; la SOUS-technique est PRÉSERVÉE (c'est
+/// elle qui permet au consommateur de distinguer une détection exacte d'une couverture parente).
+/// Réponse triée par count décroissant (techniques les plus détectées en tête), `mitre` ASC à égalité.
+/// Paramètre optionnel `since` (epoch s) borne la fenêtre.
 pub(crate) async fn coverage_detections(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
     let since: i64 = q.get("since").and_then(|s| s.parse().ok()).unwrap_or(0);
     // v75 (MODE ENGAGEMENT) : `?engagement=<id>` -> rapport de couverture SCOPÉ (fondation de la matrice purple
@@ -321,9 +398,9 @@ pub(crate) async fn coverage_detections(State(st): State<AppState>, Extension(au
     let db_path = req_db_path(&st, &au);
     let res = tokio::task::spawn_blocking(move || {
         read_with_watchdog(&db_path, json!({ "detections": [] }), move |conn| {
-            let row_json = |r: &rusqlite::Row| -> rusqlite::Result<Value> { Ok(json!({
-                "mitre": r.get::<_, String>(0)?, "count": r.get::<_, i64>(1)?, "first_ts": r.get::<_, i64>(2)?
-            })) };
+            let row_tuple = |r: &rusqlite::Row| -> rusqlite::Result<(String, i64, i64)> {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+            };
             if let Some(id) = &engagement {
                 // fenêtre de l'engagement (borne temporelle du rapport scopé).
                 let (ws, we): (i64, i64) = match conn.query_row(
@@ -342,11 +419,13 @@ pub(crate) async fn coverage_detections(State(st): State<AppState>, Extension(au
                 Ok(s) => s,
                 Err(_) => return json!({ "detections": [] }),
             };
-            let out: Vec<Value> = match stmt.query_map(params![since], row_json) {
+            let rows: Vec<(String, i64, i64)> = match stmt.query_map(params![since], row_tuple) {
                 Ok(r) => r.flatten().collect(),
                 Err(_) => return json!({ "detections": [] }),
             };
-            json!({ "detections": out })
+            // ÉCLATEMENT des tags multi-techniques (Sigma) avant de servir : le consommateur purple
+            // joint sur des TECHNIQUES, jamais sur une chaîne composée. Cf. explode_detection_rows.
+            json!({ "detections": explode_detection_rows(rows) })
         })
     })
     .await

@@ -5,7 +5,7 @@
 #   - test     : `cargo test --locked` for the Plume daemon (crate in `daemon/`),
 #                default features only → SqlcipherStore-only SMB profile. The test COUNT is
 #                ASSERTED, not commented: the step sums the `test result: ok. N passed` lines
-#                and fails on any drift from EXPECTED_TESTS (755) — that is what makes
+#                and fails on any drift from EXPECTED_TESTS (757) — that is what makes
 #                CONTRIBUTING's "constant test count" invariant an actual gate,
 #                plus `cargo build --release --locked`. (The `duckdb` feature-check that used to
 #                live here now runs in the `features` job, with the other gated features.)
@@ -77,7 +77,7 @@ permissions:
 # diverger en silence — bumper l'une laissait l'autre comparer à un nombre périmé. Une seule ici,
 # consommée par les deux jobs.
 env:
-  EXPECTED_TESTS: "755"
+  EXPECTED_TESTS: "757"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -227,7 +227,7 @@ jobs:
       - name: cargo test (daemon, --features cold_tier) + assert the cold test count
         working-directory: daemon
         env:
-          EXPECTED_COLD_TESTS: "946"
+          EXPECTED_COLD_TESTS: "948"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -465,7 +465,7 @@ jobs:
       #     age -> i18n-embed-fl. Compile-time only, no runtime surface. No fix available.
       #   RUSTSEC-2024-0320 (yaml-rust 0.4.5, unmaintained) — direct dep, used ONLY by the Sigma-rule importer
       #     front-end (YAML -> serde_json::Value) on operator-supplied rule files. "Unmaintained" != vulnerable;
-      #     the successor `yaml-rust2` is a DIFFERENT crate (API break, migration risk to the 755-test suite),
+      #     the successor `yaml-rust2` is a DIFFERENT crate (API break, migration risk to the 757-test suite),
       #     so there is no in-place fix-by-update. Revisit if a real yaml-rust CVE lands.
       - name: cargo audit (daemon crate — deny warnings)
         working-directory: daemon

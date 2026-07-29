@@ -13,7 +13,7 @@
     - windows-security  : ouverture/échec de session (4624/4625), logoff (4634),
                           privilèges spéciaux (4672), création de processus (4688),
                           verrouillage de compte (4740), gestion de comptes
-                          (4720/4722/4724/4726/4732/4756).  category=auth|process|account
+                          (4720/4722/4724/4726/4732/4756).  category=auth|exec|account
     - windows-firewall  : paquets/connexions BLOQUÉS par le pare-feu Windows (WFP :
                           5152/5157) + état des profils (Get-NetFirewallProfile).  category=firewall
     - windows-system    : arrêts inattendus (6008), échecs de service (7031/7034/7000).  category=system
@@ -166,10 +166,14 @@ function Collect-Log {
   Set-Watermark $Name $max
 }
 
-# --- 1) Journal Security : auth / process / account -----------------------------------------
+# --- 1) Journal Security : auth / exec / account --------------------------------------------
 # (Le journal Security exige des droits élevés : exécuter en SYSTEM ou administrateur.)
+# CIM : la création de processus (4688) porte `exec`, le nom CANONIQUE de la taxonomie v1.3
+# (`CIM_CATEGORIES`, guatx-core). Elle a porté `process` — un nom HORS taxonomie — jusqu'au
+# 2026-07-23 ; les événements de cette période sont retrouvés par l'alias de LECTURE du daemon
+# (cf. `cim_read_alias_exec`, soql_glue.rs) et non par une réécriture de données.
 Collect-Log -Name 'win-auth'    -LogName 'Security' -Ids @(4624,4625,4634,4672,4740) -Source 'windows-security' -Category 'auth'
-Collect-Log -Name 'win-process' -LogName 'Security' -Ids @(4688)                     -Source 'windows-security' -Category 'process'
+Collect-Log -Name 'win-process' -LogName 'Security' -Ids @(4688)                     -Source 'windows-security' -Category 'exec'
 Collect-Log -Name 'win-account' -LogName 'Security' -Ids @(4720,4722,4724,4726,4732,4756) -Source 'windows-security' -Category 'account'
 
 # --- 2) Pare-feu Windows : connexions bloquées (WFP) + état des profils ----------------------

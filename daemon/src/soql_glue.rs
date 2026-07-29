@@ -317,6 +317,193 @@ pub(crate) const EVENT_COLS: &[&str] = &["ts", "host", "source", "category", "se
 // soql_split_pipes : SUPPRIMÉ (P1-H3) — copie locale byte-identique de
 // guatx_core::soql::soql_split_pipes. Sites d'appel fully-qualifiés.
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  ALIAS DE LECTURE CIM — `exec` ⊃ `process`.  DETTE DE MIGRATION, PÉREMPTION 2027-07-23.
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+//  LE DÉFAUT. Les deux collecteurs Windows (`collectors/windows/plume-collector.ps1`,
+//  `agent/src/source/windows.rs`) ont déclaré `category='process'` pour la création de processus
+//  (EventID 4688) jusqu'au 2026-07-23. `process` n'appartient PAS à `CIM_CATEGORIES` ; le nom
+//  canonique de la création de processus en CIM v1.3 est `exec`. Les collecteurs émettent `exec`
+//  désormais.
+//
+//  POURQUOI UN ALIAS ET PAS UNE MIGRATION. La rétention est de 365 jours et le tier froid est
+//  SCELLÉ (Parquet chiffré + identité de seal, jamais réécrit) : l'historique portant `process` est
+//  IMMUABLE par construction. Renommer la catégorie côté collecteurs sans rien d'autre rendrait
+//  toute règle `category=exec` AVEUGLE sur cet historique. La réconciliation se fait donc à la
+//  LECTURE, sans toucher une seule ligne stockée.
+//
+//  PÉREMPTION — 2027-07-23. Dernier événement `process` émis : 2026-07-23 (bascule des collecteurs).
+//  Rétention 365 jours -> le dernier Parquet le portant sort de rétention le 2027-07-23. Après cette
+//  date (une fois la purge passée), ce bloc ENTIER se supprime, avec ses SEULS dépendants (mesurés) :
+//  `ingest/store.rs` ×3, `handlers/search.rs` ×1, la garde `carries_cim_read_alias` de
+//  `cold_store/planner.rs` (et ses 2 sites), les tests `cim_read_alias_exec_finds_sealed_process_history`
+//  et `cim_aliased_query_is_never_vectorized`, et la section 5.2 de `docs/CIM.md`.
+//
+//  CE QUE CE N'EST PAS. Pas un moteur de réécriture de requêtes : aucune table d'alias, aucune
+//  config, aucun ENV. UNE équivalence, écrite en dur ci-dessous, inatteignable pour toute autre
+//  valeur. La reconnaissance est DÉRIVÉE de la grammaire du cœur (mêmes opérateurs, même ordre,
+//  même règle de quotation, mêmes étages que `table_conds`/`compile_where`), pas énumérée.
+//
+//  CONSÉQUENCES MESURÉES (lecture du cœur v0.2.1, pas une supposition) :
+//   • `x in (a,b)` positif textuel est émis `COLLATE NOCASE` (`soql_in_cond`) -> une requête
+//     `category=exec` devient insensible à la casse SUR CETTE COLONNE. SUR-match, jamais un
+//     sous-match : aucun événement ne peut disparaître d'un résultat à cause de l'alias.
+//   • `idx_event_category` (collation BINARY, `maintenance.rs`) n'est pas utilisable par un
+//     `IN … COLLATE NOCASE` -> le filtre category cesse d'être servi par cet index ; la fenêtre `ts`
+//     porte alors le balayage. Coût NON MESURÉ en charge réelle (pas d'accès prod ici).
+//   • `extract_cold_dim_preds` (cold_store/seal.rs) REFUSE explicitement la forme ` IN ` -> aucun
+//     élagage bloom/min-max sur category pour une requête aliasée -> tous les fichiers froids de la
+//     fenêtre sont lus. CONSERVATEUR : jamais un fichier sauté à tort.
+//
+//  LIMITES CONNUES (non couvertes, délibérément — surface tenue au minimum) :
+//   • une macro (`` `nom(args)` ``) dont le CORPS écrit `category=exec` : le cœur détend les macros
+//     APRÈS ce pré-pass ; l'auteur de la macro écrit l'alias lui-même s'il en a besoin ;
+//   • un `eventtype` (knowledge object) dont le filtre stocké écrit `category=exec` : détendu dans
+//     le cœur, hors de portée d'ici ;
+//   • `category!=exec` / `category=exec*` / `category=~exec` : formes NON aliasées (une négation
+//     aliasée changerait le sens du prédicat ; un glob/regex est déjà l'outil de l'analyste).
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/// Nom CANONIQUE (CIM v1.3, `CIM_CATEGORIES`) de la création de processus.
+pub(crate) const CIM_EXEC_CANON: &str = "exec";
+/// Nom LEGACY hors taxonomie écrit par les collecteurs Windows jusqu'au 2026-07-23.
+pub(crate) const CIM_EXEC_LEGACY: &str = "process";
+
+/// L'UNIQUE équivalence, sous la forme que le cœur sait compiler dans un filtre de base ET dans un
+/// `where` (clause `in (…)` entière — vérifié dans `table_conds` et `in_clause_whole`).
+fn cim_exec_alias_clause() -> String {
+    format!("category in ({CIM_EXEC_CANON},{CIM_EXEC_LEGACY})")
+}
+
+/// ALIAS DE LECTURE : rend le SOQL dans lequel toute ÉGALITÉ de filtre `category=exec` retrouve AUSSI
+/// l'historique `category=process`. `Cow::Borrowed` (aucune allocation, aucune sémantique changée) dès
+/// que la requête ne porte pas cette égalité — c'est le cas de la quasi-totalité du trafic.
+pub(crate) fn cim_read_alias_exec(soql: &str) -> std::borrow::Cow<'_, str> {
+    // Garde de coût : sans la sous-chaîne `exec` nulle part, il n'y a rien à faire (memchr).
+    if !soql.contains(CIM_EXEC_CANON) {
+        return std::borrow::Cow::Borrowed(soql);
+    }
+    match alias_pipeline(soql, 0) {
+        Some(s) => std::borrow::Cow::Owned(s),
+        None => std::borrow::Cow::Borrowed(soql),
+    }
+}
+
+/// Parcourt le pipeline EXACTEMENT là où le cœur lit un filtre `champ=valeur` : le filtre de la BASE
+/// `search` (étage 0, `table_conds`), l'étage `where` (`compile_where`, condition UNIQUE — d'où la
+/// clause `in (…)` entière) et, récursivement, la sous-recherche entre crochets (recompilée au depth+1
+/// par le cœur). Tout autre étage (`stats`/`eval`/`rename`/`fields`/`timechart`/…) est rendu VERBATIM :
+/// `| eval category="exec"` n'est PAS un filtre et ne doit pas être touché. `None` = rien à réécrire.
+/// Borne de récursion IDENTIQUE à `compile_depth` (> 3 = refusé par le cœur de toute façon).
+fn alias_pipeline(text: &str, depth: u32) -> Option<String> {
+    if depth > 3 {
+        return None;
+    }
+    let stages = guatx_core::soql::soql_split_pipes(text);
+    if stages.is_empty() {
+        return None;
+    }
+    let mut changed = false;
+    let mut out: Vec<String> = Vec::with_capacity(stages.len());
+    for (i, stage) in stages.iter().enumerate() {
+        let t = stage.trim();
+        let rewritten = if i == 0 {
+            // BASE. `table_base` (cœur) accepte DEUX écritures du MÊME filtre : `search <filtres>` et —
+            // quand l'étage ne nomme AUCUNE base connue — le spec ENTIER pris comme filtres (`category=exec
+            // | stats count` est une requête valide). On couvre les deux, sinon la seconde écriture rendrait
+            // une réponse PARTIELLE en silence. `metric …` est la seule autre base du schéma `events()`
+            // (`alts` est vide) : elle n'a pas de filtre `table_conds` -> laissée VERBATIM.
+            match t.strip_prefix("search ") {
+                Some(body) => alias_filter_body(body).map(|b| format!("search {b}")),
+                None if t == "search" || t == "metric" || t.starts_with("metric ") => None,
+                None => alias_filter_body(t),
+            }
+        } else if let Some(expr) = t.strip_prefix("where ") {
+            alias_filter_body(expr).map(|e| format!("where {e}"))
+        } else if let (Some(a), Some(b)) = (t.find('['), t.rfind(']')) {
+            // SOUS-RECHERCHE (`append [search …]` / `join … [search …]`) : le cœur la recompile telle
+            // quelle au depth+1 -> son filtre de base doit être aliasé de la MÊME façon.
+            (b > a + 1)
+                .then(|| alias_pipeline(&t[a + 1..b], depth + 1))
+                .flatten()
+                .map(|inner| format!("{}[{}]{}", &t[..a], inner, &t[b + 1..]))
+        } else {
+            None
+        };
+        match rewritten {
+            Some(r) => {
+                changed = true;
+                out.push(r);
+            }
+            None => out.push(t.to_string()),
+        }
+    }
+    // Rejoint sur ` | ` : `soql_split_pipes` trime et jette les étages vides, et le cœur RE-DÉCOUPE
+    // avec la MÊME fonction -> il reverra EXACTEMENT ces étages-là (aucune dérive de découpage).
+    changed.then(|| out.join(" | "))
+}
+
+/// Réécrit les JETONS d'un corps de filtre. Frontière de jeton = celle du cœur (blanc hors
+/// guillemets, `soql_tokenize_marked`) ; les blancs d'origine sont recopiés à l'identique.
+fn alias_filter_body(body: &str) -> Option<String> {
+    let mut out = String::with_capacity(body.len() + 24);
+    let mut changed = false;
+    let mut in_q = false;
+    let mut start: Option<usize> = None;
+    for (i, c) in body.char_indices() {
+        if c == '"' {
+            in_q = !in_q;
+        }
+        if c.is_whitespace() && !in_q {
+            if let Some(s) = start.take() {
+                changed |= push_span(&mut out, &body[s..i]);
+            }
+            out.push(c);
+        } else if start.is_none() {
+            start = Some(i);
+        }
+    }
+    if let Some(s) = start {
+        changed |= push_span(&mut out, &body[s..]);
+    }
+    changed.then_some(out)
+}
+
+/// Pousse un jeton, ALIASÉ s'il est l'égalité `category=exec`. Rend `true` s'il a été aliasé.
+fn push_span(out: &mut String, span: &str) -> bool {
+    if span_is_category_exec_equality(span) {
+        out.push_str(&cim_exec_alias_clause());
+        true
+    } else {
+        out.push_str(span);
+        false
+    }
+}
+
+/// Ce jeton est-il l'ÉGALITÉ `category=exec` ? Reconnaissance DÉRIVÉE de la grammaire du cœur :
+///  • MÊME LISTE, MÊME ORDRE d'opérateurs que `table_conds` -> `!=`/`=~`/`>=`/`<=` sont vus AVANT `=`,
+///    donc `category!=exec` et `category=~exec` sont rejetés au lieu d'être pris pour des égalités ;
+///  • partie GAUCHE quotée = PHRASE plein-texte (règle `SoqlTok::quoted_prefix`), jamais un champ ;
+///  • le nom du champ doit être la COLONNE RÉELLE `category` — `cat` est un alias de la barre
+///    `/api/search` (`field_col`), que le compilateur SOQL ne résout PAS vers la colonne ;
+///  • la valeur doit être EXACTEMENT `exec` (guillemets retirés comme le fait le tokeniseur) — ce qui
+///    exclut MÉCANIQUEMENT `~exec` (regex), `exec*` (joker) et `execve` sans les énumérer.
+fn span_is_category_exec_equality(span: &str) -> bool {
+    for op in ["=~", ">=", "<=", "!=", "=", ":", ">", "<"] {
+        let Some(pos) = span.find(op) else { continue };
+        if op != "=" && op != ":" {
+            return false;
+        }
+        let lhs = &span[..pos];
+        if lhs.contains('"') || lhs != "category" {
+            return false;
+        }
+        let rhs = &span[pos + op.len()..];
+        return rhs.chars().filter(|c| *c != '"').eq(CIM_EXEC_CANON.chars());
+    }
+    false
+}
+
 /// POINT D'ENTRÉE UNIQUE de génération du SQL de base depuis une requête soql, partagé par les 3
 /// sites (query / compile_panel_sql / rule_sql). Le compilo soql vit DÉSORMAIS ENTIÈREMENT dans
 /// `guatx_core::soql` (cœur partagé Plume/Forge) : l'ancien compilo legacy de main.rs et le toggle

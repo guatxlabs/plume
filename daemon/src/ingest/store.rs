@@ -156,30 +156,39 @@ impl SqlcipherEventStore for SqlcipherStore {
         Self::METRIC_INSERT_SQL
     }
     fn soql_to_sql(&self, soql: &str, from: i64, to: i64, env: Option<&str>) -> Result<String, String> {
+        // ALIAS DE LECTURE CIM (dette de migration, péremption 2027-07-23) : `category=exec` retrouve
+        // AUSSI l'historique `category=process` des collecteurs Windows d'avant le 2026-07-23. Posé ICI
+        // parce que ce trait EST le point de traversée à 100 % de l'ÉMISSION de lecture (tous les sites —
+        // Explore, panneaux, tableaux de bord, export, règles, rapports, datasource, NL->SOQL — passent par
+        // `soql_to_sql*_x` -> `store()`, et `query_soql` ci-dessous rappelle cette méthode). Requête sans
+        // cette égalité -> `Cow::Borrowed` -> SOQL et SQL BYTE-IDENTIQUES. Cf. `soql_glue::cim_read_alias_exec`.
+        let soql = crate::soql_glue::cim_read_alias_exec(soql);
         // Émission via le cœur partagé (Dialect `SqliteDialect`) — BYTE-IDENTIQUE au compilo legacy.
         // #46 : KNOWLEDGE OBJECTS actifs (alias/calc/eventtype/tag) injectés dans le schéma. VIDE (aucun KO)
         // -> `with_knowledge` no-op -> SQL byte-identique (mode 0). Tenant-wide -> s'applique AUSSI aux règles.
-        guatx_core::soql::to_sql(soql, from, to,
+        guatx_core::soql::to_sql(&soql, from, to,
             &guatx_core::soql::Schema::events().with_env(env).with_knowledge(crate::active_knowledge())
                 .with_message_pruning(crate::soql_prune_message())) // Phase B opt-in : OFF par défaut -> byte-identique
     }
     fn soql_to_sql_masked(&self, soql: &str, from: i64, to: i64, env: Option<&str>, masks: &guatx_core::soql::FieldMaskSet) -> Result<String, String> {
+        let soql = crate::soql_glue::cim_read_alias_exec(soql); // idem soql_to_sql (dette 2027-07-23)
         // #45 : masques INJECTÉS DANS LE SCHÉMA -> émis au choke-point `soql_field` (avant agrégation). VIDE ->
         // `with_masks` no-op -> SQL byte-identique à `soql_to_sql` (mode 0). #46 : les KNOWLEDGE OBJECTS se
         // COMPOSENT avec le masque (alias résolu AVANT le masque, calc sur base masquée, eventtype/tag rejetés
         // sur champ masqué) -> un KO ne peut pas contourner un field-filter.
-        guatx_core::soql::to_sql(soql, from, to,
+        guatx_core::soql::to_sql(&soql, from, to,
             &guatx_core::soql::Schema::events().with_env(env).with_masks(masks.clone()).with_knowledge(crate::active_knowledge())
                 .with_message_pruning(crate::soql_prune_message())) // Phase B opt-in : OFF par défaut -> byte-identique
     }
     fn soql_to_sql_masked_keyset(&self, soql: &str, from: i64, to: i64, env: Option<&str>, masks: &guatx_core::soql::FieldMaskSet) -> Result<String, String> {
+        let soql = crate::soql_glue::cim_read_alias_exec(soql); // idem soql_to_sql (dette 2027-07-23)
         // KEYSET (#28) — SEULE différence avec `soql_to_sql_masked` : `.with_cursor_id(true)` -> le cœur AJOUTE
         // `id` (colonne RÉELLE de `event`) EN FIN de projection de la base, clé de tri stable du curseur `(ts,id)`.
         // Masques (#45) + KNOWLEDGE (#46) + pruning (Phase B) STRICTEMENT INCHANGÉS -> mêmes garanties d'autorisation
         // et de masquage que le chemin normal (l'authorizer read-pool DENY user.hash/token_hash s'applique au
         // prepare() ensuite, à l'identique ; `id` n'est JAMAIS un champ masqué). Seule la LISTE de projection
         // s'allonge de `id`. cursor_id=false partout ailleurs -> détection/panneaux/export byte-identiques (mode 0).
-        guatx_core::soql::to_sql(soql, from, to,
+        guatx_core::soql::to_sql(&soql, from, to,
             &guatx_core::soql::Schema::events().with_env(env).with_masks(masks.clone()).with_knowledge(crate::active_knowledge())
                 .with_message_pruning(crate::soql_prune_message()).with_cursor_id(true))
     }

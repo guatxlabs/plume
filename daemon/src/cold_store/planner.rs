@@ -189,8 +189,34 @@ fn int_phys(col: &'static str) -> Option<&'static str> {
 // MAPPING SOQL -> plan. CONSERVATEUR : `None` au moindre écart aux formes supportées (fall-through).
 // ====================================================================================================
 
+/// ANTI-DIVERGENCE — ALIAS DE LECTURE CIM (`exec` ⊃ `process`, dette de migration expirant le
+/// 2027-07-23, cf. `soql_glue::cim_read_alias_exec`). Le moteur colonnaire parse le SOQL LUI-MÊME
+/// (`build_pred`, miroir de `table_conds`) alors que l'alias est posé à l'ÉMISSION SQL (store) : sans
+/// cette garde, une requête `category=exec` rendrait `StrEq{exec}` ICI et `IN ('exec','process')` dans
+/// l'oracle -> DEUX jeux de lignes différents selon la route choisie, silencieusement. On DÉCLINE donc
+/// la vectorisation de ces requêtes-là : l'appelant retombe sur `cold_union_query`, qui exécute le SQL
+/// COMPILÉ (donc aliasé) -> un seul résultat possible. Coût borné aux requêtes qui écrivent
+/// littéralement `category=exec` ; se retire AVEC l'alias.
+pub(super) fn carries_cim_read_alias(soql: &str) -> bool {
+    matches!(crate::soql_glue::cim_read_alias_exec(soql), std::borrow::Cow::Owned(_))
+}
+
+/// TEST-ONLY — expose la DÉCISION des mappeurs (le plan lui-même reste d'un type privé) pour que le
+/// test d'anti-divergence de l'alias CIM morde sur les VRAIS mappeurs, et non sur une copie de la garde.
+#[cfg(test)]
+pub(super) fn vec_agg_routable(soql: &str) -> bool {
+    map_soql(soql).is_some()
+}
+#[cfg(test)]
+pub(super) fn vec_keyset_routable(soql: &str) -> bool {
+    map_keyset_soql(soql).is_some()
+}
+
 /// MAPPE un SOQL en `VecPlan`, ou `None` (forme non vectorisable -> fallback). PUR (aucun I/O) -> testable.
 fn map_soql(soql: &str) -> Option<VecPlan> {
+    if carries_cim_read_alias(soql) {
+        return None;
+    }
     let stages = guatx_core::soql::soql_split_pipes(soql);
     if stages.is_empty() {
         return None;
@@ -714,6 +740,9 @@ const KEYSET_EVENT_COLS: [&str; 11] =
 /// sortie déterministe `ts,id` desc). `| table`/`| stats`/… -> `None` (le hot keyset de ces formes ne projette
 /// pas forcément `ts`+`id`, et l'agrégation n'a pas de sens keyset) -> l'appelant retombe sur `cold_union_query`.
 fn map_keyset_soql(soql: &str) -> Option<(Pred, Vec<&'static str>)> {
+    if carries_cim_read_alias(soql) {
+        return None;
+    }
     let stages = guatx_core::soql::soql_split_pipes(soql);
     if stages.len() != 1 {
         return None; // pipes -> non supporté ici (bare search uniquement)

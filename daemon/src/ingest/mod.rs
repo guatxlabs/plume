@@ -188,6 +188,74 @@ pub(crate) fn cim_stamp(fields: Option<String>) -> Option<String> {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  CATÉGORIE HORS TAXONOMIE À L'INGEST — DÉCISION : ON N'EN REJETTE AUCUNE, ON LA REND VISIBLE.
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+//  ÉTAT MESURÉ AVANT (2026-07-28, `ingest_events_batch_env`) : la `category` DÉCLARÉE par un
+//  collecteur n'était confrontée à `CIM_CATEGORIES` NULLE PART sur le chemin d'ingest — pas même un
+//  `warn`. Les seuls garde-fous existants sont en AMONT et ailleurs : chargement d'un parseur
+//  d'overlay (`overlays.rs`, warn), création d'un data-model (`handlers/datamodels.rs`, refus) et
+//  mapping HEC (`ingest/hec.rs`, ne mappe PAS une valeur hors contrat). C'est très exactement ce
+//  trou qui a laissé les deux collecteurs Windows écrire `category='process'` pendant des mois sans
+//  qu'aucune ligne de journal ne le dise.
+//
+//  POURQUOI PAS UN REFUS. Le CIM est un contrat de PARSE/MAP/ENRICH, jamais un DROP (invariant écrit
+//  dans le cœur, `cim_category_ok`, et dans le bandeau CIM de main.rs). Refuser une catégorie
+//  inconnue ferait jeter au SOC les événements d'un collecteur tiers mal réglé — au moment PRÉCIS
+//  où l'opérateur en a le plus besoin, et sans qu'il puisse les rejouer. Un SOC bruyant se corrige ;
+//  un SOC qui jette silencieusement ne se rattrape pas. La réduction de collecte a déjà son chemin
+//  EXPLICITE et audité (whitelists #10, audit sev 3) — ce n'est pas au CIM de la décider.
+//
+//  CE QUI CHANGE : la ligne est stockée À L'IDENTIQUE, et la PREMIÈRE occurrence de chaque couple
+//  (source, category) hors taxonomie est JOURNALISÉE en nommant le collecteur fautif et la version de
+//  contrat. Une seule ligne par couple et par vie du process : un collecteur déréglé qui pousse un
+//  million d'événements produit UNE ligne, pas un million (un warn qui noie le journal n'avertit
+//  personne). Mémo BORNÉ par la cardinalité (source × category) d'un parc, pas par le débit.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/// BORNE DU MÉMO. `source` ET `category` viennent de l'ÉVÉNEMENT : ce sont des chaînes choisies par
+/// l'ÉMETTEUR. Un mémo non borné serait donc un levier de croissance illimitée (mémoire ET journal)
+/// pour un token d'agent compromis. 256 couples DISTINCTS hors taxonomie est déjà 1 à 2 ordres de
+/// grandeur au-dessus d'un parc réel (la taxonomie compte 40 catégories) ; au plafond on cesse de
+/// mémoriser ET de signaler. L'INGEST, lui, reste strictement inchangé — on ne jette toujours rien.
+pub(crate) const CIM_NONCANON_MEMO_MAX: usize = 256;
+
+/// Première fois qu'on voit ce couple (source, category) hors `CIM_CATEGORIES` ? Seam PUR et testable
+/// (le mémo est l'état, le journal est l'effet). N'est appelée que sur le chemin DÉJÀ non canonique.
+/// Verrou empoisonné -> `false` (aucun signal), jamais une panique sur le chemin d'ingest.
+pub(crate) fn cim_note_noncanonical(source: &str, category: &str) -> bool {
+    static SEEN: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    let seen = SEEN.get_or_init(Default::default);
+    let key = format!("{source}\u{1}{category}");
+    // Cas répété (le plus fréquent) et cas « plafond atteint » : un verrou en LECTURE, aucune écriture.
+    if seen.read().map(|s| s.contains(&key) || s.len() >= CIM_NONCANON_MEMO_MAX).unwrap_or(true) {
+        return false;
+    }
+    match seen.write() {
+        // Re-test SOUS le verrou d'écriture (une course a pu insérer/atteindre le plafond entre-temps).
+        Ok(mut s) if s.len() < CIM_NONCANON_MEMO_MAX => s.insert(key),
+        _ => false,
+    }
+}
+
+/// AVERTIT (une fois par couple) qu'une `category` déclarée est hors taxonomie. NE REJETTE JAMAIS —
+/// l'appelant continue et stocke la ligne inchangée. Vide -> rien (le dparser tranchera côté serveur).
+fn cim_warn_if_noncanonical(source: &str, category: &str) {
+    if category.is_empty() || cim_category_ok(category) {
+        return;
+    }
+    if cim_note_noncanonical(source, category) {
+        eprintln!(
+            "[cim] WARN collecteur '{source}' : category='{category}' hors taxonomie CIM v{} — \
+             événement ACCEPTÉ et stocké tel quel (le CIM ne jette jamais), mais AUCUNE règle \
+             `category=…` canonique ne le verra. Corrigez le collecteur ou déclarez un parseur de \
+             mapping (cf. docs/CIM.md). Signalé UNE fois par couple (source, category).",
+            guatx_core::cim::CIM_VERSION
+        );
+    }
+}
+
 /// ING-1 : `Ok(n)` = n lignes traitées et COMMITTÉES ; `Err(n)` = ROLLBACK atomique après un INSERT (ou le
 /// COMMIT) échoué -> l'appelant (`ingest_journal`) remonte le signal pour QUARANTAINER le fichier (rejouable)
 /// au lieu de le supprimer. Mirroir STRICT de `ingest_events_batch` (voie `.json`), pour que la voie journald
@@ -354,6 +422,10 @@ pub(crate) fn ingest_events_batch_env(
         let source = ext_ingest_source(ev.get("source").and_then(|x| x.as_str()).unwrap_or("agent"));
         let sev = ev.get("severity").and_then(|x| x.as_i64()).unwrap_or(0);
         let cat = ev.get("category").and_then(|x| x.as_str()).unwrap_or("");
+        // CIM (warn-only, JAMAIS un drop) : une catégorie DÉCLARÉE hors taxonomie est signalée UNE fois
+        // par couple (source, category) — cf. le bandeau « CATÉGORIE HORS TAXONOMIE À L'INGEST ». La ligne
+        // stockée est INCHANGÉE (aucune branche d'écriture ne dépend de ce test).
+        cim_warn_if_noncanonical(&source, cat);
         let m = ev.get("message").and_then(|x| x.as_str()).unwrap_or("");
         // M2 : le host forcé (agent lié) ÉCRASE le host de l'event ; sinon host event -> host fichier.
         let ehost = match forced_host {

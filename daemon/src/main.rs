@@ -52,8 +52,8 @@ pub(crate) use query_exec::*;
 mod soql_glue;
 pub(crate) use soql_glue::*;
 mod field_filter; // #45 FIELD FILTERS : registre de masquage par champ (rôle/tenant/env), résolu en FieldMaskSet
-mod knowledge; // #46 KNOWLEDGE OBJECTS : registre alias/calc/eventtype/tag, résolu en KnowledgeSet (auto-appliqué au compilo SOQL)
-mod datamodels; // #47 DATA MODELS + PIVOT : logique pure (validation objets/champs, chaîne de contraintes, générateur pivot_to_soql -> SOQL, jamais SQL)
+mod knowledge; // #46 KNOWLEDGE OBJECTS : registre alias/calc/eventtype/tag, résolu en KnowledgeSet (auto-appliqué au compilo GXQL)
+mod datamodels; // #47 DATA MODELS + PIVOT : logique pure (validation objets/champs, chaîne de contraintes, générateur pivot_to_soql -> GXQL, jamais SQL)
 pub(crate) use field_filter::*;
 pub(crate) use knowledge::*;
 pub(crate) use datamodels::*;
@@ -83,7 +83,7 @@ pub(crate) use handlers::scheduled_reports::*; // #60 rapports planifiés (datas
 pub(crate) use handlers::workflow_actions::*; // #60 workflow actions (navigation + réponse enum-only)
 pub(crate) use handlers::playbooks::*;
 pub(crate) use handlers::prefs::*; // #62 préférences utilisateur self-scoped (GET/PUT /api/prefs)
-pub(crate) use handlers::saved_queries::*; // requêtes SOQL nommées per-user, owner-scoped (CRUD /api/saved-queries)
+pub(crate) use handlers::saved_queries::*; // requêtes GXQL nommées per-user, owner-scoped (CRUD /api/saved-queries)
 pub(crate) use handlers::processors::*;
 pub(crate) use handlers::admin_ui::*;
 pub(crate) use handlers::engagement::*;
@@ -95,7 +95,7 @@ pub(crate) use handlers::governance::*; // #59 gouvernance : legal-hold + export
 pub(crate) use handlers::fleet::*;
 pub(crate) use handlers::idp::*;
 #[cfg(feature = "ai")]
-pub(crate) use handlers::ai::*; // #16 couche IA conseil (NL→SOQL) — feature `ai` OFF par défaut -> module ENTIÈREMENT exclu à la compilation
+pub(crate) use handlers::ai::*; // #16 couche IA conseil (NL→GXQL) — feature `ai` OFF par défaut -> module ENTIÈREMENT exclu à la compilation
 pub(crate) use handlers::index_policies::*; // #49 indexes logiques nommés (rétention/plafonds par index)
 pub(crate) use handlers::detection::*;
 pub(crate) use handlers::detection_advanced::*;
@@ -110,7 +110,7 @@ pub(crate) use handlers::rba::*;
 pub(crate) use handlers::query::*;
 pub(crate) use handlers::soql_meta::*; // complétion IDE (schema/templates de la barre Explore)
 pub(crate) use handlers::search::*; // handler /api/search (extrait de main.rs, refactor split #25)
-pub(crate) use handlers::datasource::*; // #52 plume-as-a-datasource (SOQL-HTTP + Prometheus read + Loki stub)
+pub(crate) use handlers::datasource::*; // #52 plume-as-a-datasource (GXQL-HTTP + Prometheus read + Loki stub)
 pub(crate) use handlers::cases::*;
 pub(crate) use handlers::caseops::*; // #39 team case-ops
 pub(crate) use handlers::incidents::*; // #3 incidents Phase 1 : élévation + runbooks + wizard de steps
@@ -130,7 +130,7 @@ pub(crate) use scim::*;
 mod idp;
 pub(crate) use idp::*;
 #[cfg(feature = "ai")]
-mod ai; // #16 couche IA CONSEIL (advisory) : provider HTTP (feature `ai`) + garde cloud/budget ; NL→SOQL. Exclu du build DÉFAUT.
+mod ai; // #16 couche IA CONSEIL (advisory) : provider HTTP (feature `ai`) + garde cloud/budget ; NL→GXQL. Exclu du build DÉFAUT.
 mod tenants;
 pub(crate) use tenants::*;
 mod server;
@@ -851,7 +851,7 @@ fn seed_rollup_dashboard(conn: &Connection) {
     // Les panneaux « par src_ip / par host » lisent désormais le PRÉ-AGRÉGÉ (v33) au lieu de scanner event.
     // Ces panneaux n'utilisent QUE les colonnes du rollup (pas de json_extract) -> robustes aux évolutions
     // du format `fields`. src_ip<>'' filtre le lump basse-sévérité (cf. borne v33). NB : SQL sur rollup =
-    // is_soql=0, le compilateur soql guatx-core n'y touche pas (event_rollup n'est pas un objet SOQL).
+    // is_soql=0, le compilateur soql guatx-core n'y touche pas (event_rollup n'est pas un objet GXQL).
     let panels: [(&str, &str, &str); 7] = [
         ("Volume dans le temps", "SELECT bucket, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ GROUP BY bucket ORDER BY bucket", "line"),
         ("Par source", "SELECT source, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ GROUP BY source ORDER BY n DESC LIMIT 20", "bar"),
@@ -1057,7 +1057,7 @@ fn main() {
     }
     if args.get(1).map(String::as_str) == Some("sigma-import") {
         // `plume-daemon sigma-import <fichier|dossier> [--dry-run]` — traduit des règles Sigma (YAML/JSON)
-        // en règles Plume (SOQL) et les UPSERT en base (managed=2), OU affiche seulement le plan (--dry-run).
+        // en règles Plume (GXQL) et les UPSERT en base (managed=2), OU affiche seulement le plan (--dry-run).
         // Émet un rapport JSON (importées / ignorées-avec-raison / résumé) sur stdout. GitOps -> préférer
         // config.d/sigma/ (managed=1) ; ce sous-commande sert l'import opérateur ponctuel / le pré-vol.
         let dry = args.iter().skip(2).any(|a| a == "--dry-run" || a == "-n");

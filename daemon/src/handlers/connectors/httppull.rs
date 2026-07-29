@@ -295,7 +295,7 @@ fn httppull_hash(parts: &[&str]) -> String {
 
 /// MAPPE un record vendeur -> event Plume (schéma d'ingest). `field_map` (obligatoire) mappe chaque champ
 /// via un JSONPath OU une constante `=`. `fields.*` -> objet `fields` (contexte structuré, searchable en
-/// SOQL). category : explicite (field_map.category) sinon dérivée du sourcetype via `hec_category` (gate
+/// GXQL). category : explicite (field_map.category) sinon dérivée du sourcetype via `hec_category` (gate
 /// CIM). source : field_map.source sinon config.source sinon `http:{id}`. dedup : field_map.dedup sinon
 /// `http-{id}-{field_map.id|hash}` (idempotent). Skip (None) uniquement si le record n'est pas un objet.
 pub(crate) fn httppull_map_record(rec: &Value, cfg: &HttpPullCfg, connector_id: i64) -> Option<Value> {

@@ -1,4 +1,4 @@
-    // ===================== SOQL COMPLÉTION IDE (v129) =====================
+    // ===================== GXQL COMPLÉTION IDE (v129) =====================
     // Garde-fous de l'autocomplétion native de la barre Explore : (a) chaque gabarit livré COMPILE via
     // `to_sql`, (b) le vocabulaire de complétion (commandes/fonctions/opérateurs) est un SOUS-ENSEMBLE
     // STRICT de ce que le compilateur fermé accepte, (c) les valeurs connues (`source`) viennent du ROLLUP

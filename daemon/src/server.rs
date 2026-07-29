@@ -434,8 +434,8 @@ fn open_and_migrate_db(db_path: String, spool: String, conf: HashMap<String, Str
     dparsers_reload(&conn, &db_path);  // Slice #7 pièce 2 : registre de parseurs DÉCLARATIFS (config.d) de CE db_path
     processors_reload(&conn, &db_path); // #40 : registre du PROCESSEUR D'INGEST (table ingest_rule) de CE db_path (VIDE en mode 0 -> ingest byte-identique)
     field_filters_reload(&conn, &db_path); // #45 : registre des FIELD FILTERS (table field_filter) de CE db_path (VIDE en mode 0 -> lecture byte-identique)
-    knowledge_reload(&conn, &db_path); // #46 : registre des KNOWLEDGE OBJECTS (tables knowledge_*) de CE db_path (VIDE en mode 0 -> compilation SOQL byte-identique)
-    knowledge_activate(&db_path); // #46 : ACTIVE ce db_path (tenant primaire) pour la compilation SOQL db-agnostique (VIDE -> byte-identique)
+    knowledge_reload(&conn, &db_path); // #46 : registre des KNOWLEDGE OBJECTS (tables knowledge_*) de CE db_path (VIDE en mode 0 -> compilation GXQL byte-identique)
+    knowledge_activate(&db_path); // #46 : ACTIVE ce db_path (tenant primaire) pour la compilation GXQL db-agnostique (VIDE -> byte-identique)
     seed_env_notifier(&conn, &conf);
     conn
 }
@@ -1168,7 +1168,7 @@ fn alerts_coverage_routes() -> Router<AppState> {
 fn compliance_routes() -> Router<AppState> {
     Router::<AppState>::new()
         // #38 CONFORMITÉ (viewer+, read-only ; GET -> route_min_role section 6 = Read) : vocab des cadres,
-        // rollup de posture PAR cadre (posture SCA ingérée + règles mappées, chemin SOQL masqué #45), rapport.
+        // rollup de posture PAR cadre (posture SCA ingérée + règles mappées, chemin GXQL masqué #45), rapport.
         .route("/api/compliance/frameworks", get(compliance_frameworks_list))
         .route("/api/compliance/posture", get(compliance_posture))
         .route("/api/compliance/report", get(compliance_report))
@@ -1177,7 +1177,7 @@ fn compliance_routes() -> Router<AppState> {
 fn query_export_routes() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/api/query", post(query))
-        .route("/api/export", post(export)) // EXPORT CSV/JSON : RÉUTILISE le chemin /api/query (même compilation SOQL/admin, même run_query_ex -> même authorizer/redaction). readonly_post (viewer OK).
+        .route("/api/export", post(export)) // EXPORT CSV/JSON : RÉUTILISE le chemin /api/query (même compilation GXQL/admin, même run_query_ex -> même authorizer/redaction). readonly_post (viewer OK).
         .route("/api/cancel", post(cancel))
         // COMPLÉTION IDE de la barre Explore (100 % natif). GET -> route_min_role Read (section 6) : viewer+.
         // Read-only, aucune donnée sensible (noms de champs + enums fermés + noms de source déjà exposés
@@ -1195,7 +1195,7 @@ fn datasource_routes() -> Router<AppState> {
         // (route_min_role -> Read ; readonly_post -> mutating=false), auth REQUISE (token datasource / Basic /
         // SSO / cookie via auth_guard), rate-limitées par la couche globale+per-IP. Chaque lecture hérite du
         // masque #45 + RBAC de l'appelant (soql_to_sql_masked_x / mask_named_row). Anonyme -> 401.
-        .route("/api/ds/query", get(ds_query_get).post(ds_query_post)) // SOQL-over-HTTP-JSON (Infinity)
+        .route("/api/ds/query", get(ds_query_get).post(ds_query_post)) // GXQL-over-HTTP-JSON (Infinity)
         // Prometheus-compatible read (Grafana Prometheus datasource) — sous-ensemble honnête sur `metric`.
         .route("/api/v1/query", get(prom_query).post(prom_query))
         .route("/api/v1/query_range", get(prom_query_range).post(prom_query_range))
@@ -1222,7 +1222,7 @@ fn dashboard_ergonomics_routes() -> Router<AppState> {
         // #54 ERGONOMIE DASHBOARDS — library panels / playlists / snapshots. GET = viewer+ (section 6 Read),
         // POST/DELETE = editor+ (section 7 Write, prefixes déclarés dans route_min_role). La lecture d'un
         // snapshot PAR TOKEN (:token) est viewer+ (read-only, token-scoped) ; les données figées sont DÉJÀ
-        // masquées à la capture (chemin SOQL masqué du rôle du créateur).
+        // masquées à la capture (chemin GXQL masqué du rôle du créateur).
         .route("/api/library-panels", get(library_panels_list).post(library_panel_create))
         .route("/api/library-panels/:id", post(library_panel_update).delete(library_panel_delete))
         .route("/api/playlists", get(playlists_list).post(playlist_create))
@@ -1260,7 +1260,7 @@ fn idp_auth_mfa_routes() -> Router<AppState> {
         // #62 — PRÉFÉRENCES UTILISATEUR (self-scoped, viewer+) : GET lit / PUT remplace le blob JSON UI-only
         // de L'APPELANT (clé = identité authentifiée ; jamais un id fourni par le client). route_min_role = Read.
         .route("/api/prefs", get(prefs_get).put(prefs_put))
-        // SAVED QUERIES — requêtes SOQL nommées per-user, OWNER-scoped (viewer+ self-service, cf. route_min_role
+        // SAVED QUERIES — requêtes GXQL nommées per-user, OWNER-scoped (viewer+ self-service, cf. route_min_role
         // /api/saved-queries -> Read ; POST/PUT/DELETE restent CSRF-gardés par le middleware). GET = MES requêtes ;
         // POST crée ; PUT/DELETE /:id sont IDOR-sûrs (WHERE id=? AND owner=?). ADDITIF : table vide -> mode 0.
         .route("/api/saved-queries", get(saved_queries_list).post(saved_query_create))
@@ -1272,7 +1272,7 @@ fn idp_auth_mfa_routes() -> Router<AppState> {
     // COUCHE IA CONSEIL (#16, feature `ai` OFF par défaut) — routes EXCLUES À LA COMPILATION sans la feature
     // (le module handler `ai` n'existe pas dans le build DÉFAUT -> mode 0 byte-identique ; pas de stub 501).
     // CRUD providers + presets + politique de redaction = ADMIN (route_min_role /api/ai -> Admin ; secret
-    // write-only + redigé). NL→SOQL + status = analyste (viewer+, cf. route_min_role). Routes NON publiques
+    // write-only + redigé). NL→GXQL + status = analyste (viewer+, cf. route_min_role). Routes NON publiques
     // (auth requise) — pas d'ajout à l'allowlist auth_guard. L'ordre de `.route` n'affecte pas le matching
     // (chemins exacts distincts) : ajout en fin de chaîne via rebind cfg-gaté.
     #[cfg(feature = "ai")]
@@ -1327,7 +1327,7 @@ fn knowledge_routes() -> Router<AppState> {
     Router::<AppState>::new()
         // KNOWLEDGE OBJECTS (#46) — CRUD alias/calc/eventtype/tag. GET = viewer+ (transparence, section 6) ;
         // POST/DELETE = editor+ (route_min_role /api/knowledge -> Write : ils façonnent la recherche de tous).
-        // Auto-appliqués à la compilation SOQL suivante (Explore/panels/règles/export en héritent). ADDITIF -> mode 0 vide.
+        // Auto-appliqués à la compilation GXQL suivante (Explore/panels/règles/export en héritent). ADDITIF -> mode 0 vide.
         .route("/api/knowledge", get(knowledge_list))
         .route("/api/knowledge/alias", post(alias_create))
         .route("/api/knowledge/alias/:id", delete(alias_delete))
@@ -1337,7 +1337,7 @@ fn knowledge_routes() -> Router<AppState> {
         .route("/api/knowledge/eventtype/:id", delete(eventtype_delete))
         .route("/api/knowledge/tag", post(tag_create))
         .route("/api/knowledge/tag/:id", delete(tag_delete))
-        // #60 — MACROS (fragment SOQL détendu par le compilateur FERMÉ) + AUTO-LOOKUPS (enrichissement auto
+        // #60 — MACROS (fragment GXQL détendu par le compilateur FERMÉ) + AUTO-LOOKUPS (enrichissement auto
         // mask-aware ; GeoIP = auto-lookup BYO). Même famille que les KO -> editor+ (façonnent la recherche de
         // tous). Compile-vérifiés à la création ; auto-appliqués via `knowledge_reload`. ADDITIF -> mode 0 vide.
         .route("/api/knowledge/macro", post(macro_create))
@@ -1358,11 +1358,11 @@ fn datamodels_routes() -> Router<AppState> {
         .route("/api/datamodels/objects/:id", delete(object_delete))
         .route("/api/datamodels/objects/:id/fields", post(field_create))
         .route("/api/datamodels/fields/:id", delete(field_delete))
-        .route("/api/pivot/compile", post(pivot_compile)) // génère le SOQL (transparence report-builder ; readonly_post)
-        .route("/api/pivot/run", post(pivot_run)) // exécute le Pivot via le chemin SOQL masqué (readonly_post)
+        .route("/api/pivot/compile", post(pivot_compile)) // génère le GXQL (transparence report-builder ; readonly_post)
+        .route("/api/pivot/run", post(pivot_run)) // exécute le Pivot via le chemin GXQL masqué (readonly_post)
         .route("/api/datasets", get(datasets_list).post(dataset_create))
         .route("/api/datasets/:id", delete(dataset_delete))
-        .route("/api/datasets/:id/run", post(dataset_run)) // exécute le SOQL stocké via le chemin masqué (readonly_post)
+        .route("/api/datasets/:id/run", post(dataset_run)) // exécute le GXQL stocké via le chemin masqué (readonly_post)
 }
 
 fn reports_workflow_routes() -> Router<AppState> {
@@ -1388,7 +1388,7 @@ fn detection_advanced_routes() -> Router<AppState> {
         .route("/api/rule-test", post(rule_test_adhoc))
         // #37 — DÉTECTION AVANCÉE : corrélations de séquence (finding-groups) + baselines statistiques (UEBA).
         // GET = viewer+ (lecture posture, section 6 route_min_role) ; POST/DELETE = editor+ (Write, section 7 —
-        // étapes/requêtes SOQL bornées, pas de SQL brut ni d'action destructive). ADDITIF -> mode 0 = [].
+        // étapes/requêtes GXQL bornées, pas de SQL brut ni d'action destructive). ADDITIF -> mode 0 = [].
         .route("/api/correlations", get(correlations_list).post(correlation_create))
         .route("/api/correlations/:id", post(correlation_update).delete(correlation_delete))
         .route("/api/correlations/:id/test", post(correlation_test))
@@ -1584,7 +1584,7 @@ fn playbooks_cases_routes() -> Router<AppState> {
         .route("/api/cases/:id/runbook", post(case_runbook_attach)) // attache un runbook (instancie les steps) : editor+
         .route("/api/cases/:id/steps", get(case_steps_get)) // steps + progression : viewer+
         .route("/api/cases/:id/steps/:step_id", post(case_step_set)) // avance/skip une step (+note) : editor+
-        .route("/api/cases/:id/steps/:step_id/search", get(case_step_search)) // résout le SOQL d'une step search (recompilé) : viewer+
+        .route("/api/cases/:id/steps/:step_id/search", get(case_step_search)) // résout le GXQL d'une step search (recompilé) : viewer+
         // #3 INCIDENTS Phase 2 — RUNBOOKS CUSTOM (bring-your-own) : CRUD ADMIN-only (route_min_role section 3 :
         // /api/runbooks -> Admin, GET compris). Managé=1 IMMUABLE en place (seulement enable/disable + clone) ;
         // CRUD complet sur custom=managed=0. Une step response reste jouée via /api/actions (INCHANGÉ). Par-tenant

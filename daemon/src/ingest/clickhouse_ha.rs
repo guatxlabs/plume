@@ -273,7 +273,7 @@ pub(crate) struct HaTableSpec {
 
 impl HaTableSpec {
     /// Les 3 tables data-plane (event/metric/snapshot), MIROIR du schéma single-node #18
-    /// (`clickhouse_store.rs`) : mêmes colonnes/ordre -> MÊME surface SOQL. La parité de NOMS de colonnes
+    /// (`clickhouse_store.rs`) : mêmes colonnes/ordre -> MÊME surface GXQL. La parité de NOMS de colonnes
     /// event <-> single-node est asserée par test (`ha_event_columns_mirror_single_node`).
     pub(crate) fn canonical() -> Result<Vec<HaTableSpec>, HaError> {
         Ok(vec![
@@ -750,7 +750,7 @@ mod tests {
     fn ha_event_columns_mirror_single_node() {
         // Parité avec le schéma single-node #18 : chaque colonne event du single-node
         // (`ClickHouseStore::schema_ddl()[0]`) DOIT apparaître dans le corps de colonnes HA -> même
-        // surface SOQL, l'INSERT RowBinary (par nom) ne dérive pas entre les deux tiers.
+        // surface GXQL, l'INSERT RowBinary (par nom) ne dérive pas entre les deux tiers.
         let single = super::super::clickhouse_store::ClickHouseStore::schema_ddl()[0];
         for col in ["ts", "source", "category", "severity", "message", "host", "src_ip", "dst_ip",
                     "url", "dedup", "fields", "engagement_id", "origin", "env_id"] {

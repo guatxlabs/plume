@@ -8,7 +8,7 @@
 //! (investigation, chasse rétrospective) et renvoie des lignes, sans coût de rétention permanent.
 //!
 //! ── OÙ ÇA S'INSÈRE ───────────────────────────────────────────────────────────────────────────────
-//! Le store SPI (`crate::ingest::store`) possède DÉJÀ l'émission SOQL -> SQL (`soql_to_sql`) et la vue de
+//! Le store SPI (`crate::ingest::store`) possède DÉJÀ l'émission GXQL -> SQL (`soql_to_sql`) et la vue de
 //! lecture typée `guatx_core::store::Rows` (miroir DTO de la forme `{columns, rows, stats}` de
 //! `run_query_ex`). La federated search est une SECONDE SOURCE de `Rows`, PARALLÈLE au store chaud :
 //!   - le CHAUD répond via `store().query_soql(...)` (SQLite, indexé) ;
@@ -23,7 +23,7 @@
 //! écrits en object-storage sous un layout PARTITIONNÉ par temps + tenant + env :
 //!     s3://<bucket>/plume/<tenant>/<env>/dt=YYYY-MM-DD/hh/events-*.ndjson.zst  (age-chiffré, cf. backup)
 //! Le partitionnement par `dt/hh` permet le PARTITION PRUNING : une requête [from,to] ne LIT que les
-//! préfixes couvrant la fenêtre (jamais un full-scan du bucket). Le prédicat SOQL est poussé au scan
+//! préfixes couvrant la fenêtre (jamais un full-scan du bucket). Le prédicat GXQL est poussé au scan
 //! (filtre ligne-à-ligne après décompression), le tri/agrégation restant à la charge de l'appelant.
 //!
 //! ── COÛT / BORNES ────────────────────────────────────────────────────────────────────────────────
@@ -54,7 +54,7 @@ impl std::fmt::Display for ColdSearchError {
     }
 }
 
-/// COUTURE federated search : interroge les données FROIDES (object-storage) pour une fenêtre + un SOQL,
+/// COUTURE federated search : interroge les données FROIDES (object-storage) pour une fenêtre + un GXQL,
 /// SANS ré-ingérer. Renvoie la MÊME vue typée (`Rows`) que le store chaud -> fusion transparente côté
 /// appelant. `budget_bytes`/`timeout_ms` bornent le scan (jamais illimité). Backend-neutre (MinIO/S3/…).
 pub(crate) trait ColdSearch {

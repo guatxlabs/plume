@@ -316,7 +316,7 @@ pub(crate) fn seed_web_dashboard(conn: &Connection) {
     // v63 : « Trafic web » est le dashboard PRIMAIRE (déplié) de la vue « Réseau & Web ».
     let Some(did) = seed_dashboard_head_named(conn, "Trafic web", "Réseau & Web", false) else { return };
     // Panneaux GROUP-BY PURS (vhost/status/path) -> lisent le pré-agrégé event_dim_rollup (is_soql=0,
-    // <100 ms, pré-chauffables) ; les autres (timechart / filtre scope / table détail) restent SOQL live.
+    // <100 ms, pré-chauffables) ; les autres (timechart / filtre scope / table détail) restent GXQL live.
     let (q_vhost, q_status, q_path) = (
         dim_panel_sql("web", "vhost", 0, false),
         dim_panel_sql("web", "status", 0, false),
@@ -350,7 +350,7 @@ pub(crate) fn seed_mail_dashboard(conn: &Connection) {
     // v63 : « Mail — flux & verdicts » est le seul dashboard (primaire/déplié) de la vue « Mail ».
     let Some(did) = seed_dashboard_head_named(conn, "Mail — flux & verdicts", "Mail", false) else { return };
     // « Verdicts » est un GROUP-BY pur (le filtre verdict=* ≡ verdict IS NOT NULL ≡ val<>'') -> pré-agrégé
-    // is_soql=0. Les autres panneaux gardent un filtre/agrégat non couvert par le rollup -> SOQL live.
+    // is_soql=0. Les autres panneaux gardent un filtre/agrégat non couvert par le rollup -> GXQL live.
     let q_verdict = dim_panel_sql("mail", "verdict", 0, true);
     let panels: [(&str, &str, i64, &str); 6] = [
         ("Verdicts", q_verdict.as_str(), 0, "bar"),
@@ -374,7 +374,7 @@ pub(crate) fn seed_mail_dashboard(conn: &Connection) {
 pub(crate) fn seed_dataaccess_dashboard(conn: &Connection) {
     // v63 : « Accès données (Varonis) » est le dashboard PRIMAIRE (déplié) de la vue « Accès données ».
     let Some(did) = seed_dashboard_head_named(conn, "Accès données (Varonis)", "Accès données", false) else { return };
-    // GROUP-BY purs (user/action/path) -> pré-agrégé is_soql=0 ; creds/timechart/détail restent SOQL live.
+    // GROUP-BY purs (user/action/path) -> pré-agrégé is_soql=0 ; creds/timechart/détail restent GXQL live.
     let (q_user, q_action, q_path) = (
         dim_panel_sql("dataaccess", "user", 0, false),
         dim_panel_sql("dataaccess", "action", 0, false),
@@ -402,7 +402,7 @@ pub(crate) fn seed_dataaccess_dashboard(conn: &Connection) {
 pub(crate) fn seed_dataacl_dashboard(conn: &Connection) {
     // v63 : « Carte d'accès (Varonis) » -> vue « Accès données », REPLIÉ (non primaire).
     let Some(did) = seed_dashboard_head_named(conn, "Carte d'accès (Varonis)", "Accès données", true) else { return };
-    // GROUP-BY purs (owner/group) -> pré-agrégé is_soql=0 ; risques/carte/détail (filtre+table) SOQL live.
+    // GROUP-BY purs (owner/group) -> pré-agrégé is_soql=0 ; risques/carte/détail (filtre+table) GXQL live.
     let (q_owner, q_group) = (
         dim_panel_sql("dataacl", "owner", 0, false),
         dim_panel_sql("dataacl", "group", 0, false),
@@ -428,8 +428,8 @@ pub(crate) fn seed_dataacl_dashboard(conn: &Connection) {
 /// endpoint via `PLUME_ENDPOINT_NORMALIZE`, défaut `wazuh`). Vue « Endpoint (BYO-agent) » — PRIMAIRE (déplié).
 pub(crate) fn seed_sca_dashboard(conn: &Connection) {
     let Some(did) = seed_dashboard_head_named(conn, "Posture de configuration (SCA/CIS)", "Endpoint (BYO-agent)", false) else { return };
-    // Panneaux SOQL live (volume posture modeste ; pas de rollup dédié). Composent sur `category=posture` +
-    // champs `posture_*`/`agent_name` normalisés par `endpoint_normalize` -> lecture SOQL masquée (RBAC/#45).
+    // Panneaux GXQL live (volume posture modeste ; pas de rollup dédié). Composent sur `category=posture` +
+    // champs `posture_*`/`agent_name` normalisés par `endpoint_normalize` -> lecture GXQL masquée (RBAC/#45).
     let panels: [(&str, &str, i64, &str); 5] = [
         ("Contrôles pass / fail", "search category=posture posture_kind=check | stats count by posture_result", 1, "bar"),
         ("Échecs par hôte", "search category=posture posture_result=fail | stats count by agent_name | sort -count | head 20", 1, "table"),
@@ -466,7 +466,7 @@ pub(crate) fn seed_vuln_dashboard(conn: &Connection) {
     }
 }
 
-/// #38 — Dashboard de POSTURE DE CONFORMITÉ pour UN cadre (PCI DSS / HIPAA / NIST 800-53…). SOQL-backed,
+/// #38 — Dashboard de POSTURE DE CONFORMITÉ pour UN cadre (PCI DSS / HIPAA / NIST 800-53…). GXQL-backed,
 /// seedé au boot (idempotent par nom), dans la vue « Conformité (posture) ». Compose la posture SCA ingérée
 /// (#57, `category=posture`) FILTRÉE au cadre (`posture_framework=*<fw>*`, wildcard -> LIKE injection-safe,
 /// littéral) : pass/fail global, échecs par contrôle, par hôte, détail. HONNÊTE : c'est de la COUVERTURE /
@@ -477,7 +477,7 @@ pub(crate) fn seed_compliance_dashboard(conn: &Connection, fw_id: &str, label: &
     let dash_name = format!("Conformité — {label}");
     // primary -> déplié ; secondaire -> replié (collapsed = !primary).
     let Some(did) = seed_dashboard_head_named(conn, &dash_name, "Conformité (posture)", !primary) else { return };
-    // Filtre cadre : `posture_framework=*<fw>*` (wildcard SOQL -> LIKE '%<fw>%', échappé par le compilo). Le
+    // Filtre cadre : `posture_framework=*<fw>*` (wildcard GXQL -> LIKE '%<fw>%', échappé par le compilo). Le
     // token <fw> est un id de vocab CONSTANT (aucune entrée utilisateur) -> injection-safe.
     let f = format!("posture_framework=*{fw_id}*");
     let q_passfail = format!("search category=posture posture_kind=check {f} | stats count by posture_result");
@@ -512,7 +512,7 @@ pub(crate) fn seed_compliance_dashboards(conn: &Connection) {
 pub(crate) fn seed_kube_rbac_dashboard(conn: &Connection) {
     // v63 : « RBAC k8s (Varonis) » est le dashboard PRIMAIRE (déplié) de la vue « Accès infra ».
     let Some(did) = seed_dashboard_head_named(conn, "RBAC k8s (Varonis)", "Accès infra", false) else { return };
-    // GROUP-BY purs (role/subject) -> pré-agrégé is_soql=0 ; cluster-admin/accès sensible/map (filtre+table) SOQL live.
+    // GROUP-BY purs (role/subject) -> pré-agrégé is_soql=0 ; cluster-admin/accès sensible/map (filtre+table) GXQL live.
     let (q_role, q_subject) = (
         dim_panel_sql("kube-rbac", "role", 20, false),
         dim_panel_sql("kube-rbac", "subject", 20, false),
@@ -717,7 +717,7 @@ pub(crate) const DETECTION_RULES_V51: [(&str, &str, i64, &str, f64, i64, i64, i6
 /// activité hostile (web status>=400 OU cloudflare action=challenged) sur la fenêtre `window_s` de la
 /// règle, n'en garde que les bursts (HAVING activite > seuil par-IP), puis ANTI-JOINT la banlist
 /// matérialisée (`banned_ip`, peuplée incrémentalement) : LEFT JOIN ... WHERE banned_ip.src_ip IS NULL
-/// = exactement les attaquants qui frappent ENCORE et ne sont PAS bannis. is_soql=0 (le compilo SOQL ne
+/// = exactement les attaquants qui frappent ENCORE et ne sont PAS bannis. is_soql=0 (le compilo GXQL ne
 /// sait pas faire de LEFT JOIN / anti-join). BORNÉE : la fenêtre `window_s` (1 h) limite le scan web 4xx,
 /// le HAVING par-IP élague le bruit, et l'anti-join sur banned_ip (petite table) est cheap. eval_value lit
 /// la DERNIÈRE cellule de la 1re ligne -> le COUNT(*) des non-mitigés. T1595 (active scanning, le signal
@@ -755,7 +755,7 @@ pub(crate) const DETECTION_RULES_V52: [(&str, &str, i64, &str, f64, i64, i64, i6
 /// déposée dans /etc/plume/yara.d) émet, quand activé, des events `source=yara category=malware`
 /// {rule,file,tags,sha256} en severity 4. Cette règle est event-driven : tant qu'aucun event source=yara
 /// n'arrive (intégration OFF) elle ne tire jamais — `count>0` sur la fenêtre = au moins un match réel.
-/// is_soql=1 (simple stats count, compilable SOQL), op '>' seuil 0.0, severity 4 (un match YARA = signal
+/// is_soql=1 (simple stats count, compilable GXQL), op '>' seuil 0.0, severity 4 (un match YARA = signal
 /// fort, pas de bruit de fond : le collecteur ne ship QUE les MATCHES). BORNÉE par window_s (1 h) ; dédup
 /// d'alerte = clé stable `rule-{id}` (1 notif/épisode, ré-armée sous le seuil). T1204 (User Execution —
 /// exécution de malware ; les règles YARA ciblent binaires/scripts malveillants déposés/exécutés).
@@ -769,7 +769,7 @@ pub(crate) const DETECTION_RULES_V53: [(&str, &str, i64, &str, f64, i64, i64, i6
 /// RÈGLE v57 — DEAD-MAN'S-SWITCH CrowdSec (PART 2) : le MOTEUR CrowdSec est DÉGRADÉ (scénarios cassés).
 /// Fire sur le battement de SANTÉ émis par collectors/crowdsec.sh à CHAQUE run (source=crowdsec
 /// category=health, fields.scenarios_broken) quand AU MOINS un scénario est cassé/tainted sur la fenêtre.
-/// is_soql=0 (json_extract + CAST natif, comme ATTACKER_UNMITIGATED — le compilo SOQL ne garantit pas la
+/// is_soql=0 (json_extract + CAST natif, comme ATTACKER_UNMITIGATED — le compilo GXQL ne garantit pas la
 /// comparaison numérique sur un champ json) : `COUNT(*)` des battements à scenarios_broken>0 sur
 /// __FROM__..now ; op '>' seuil 0.0 -> fire dès ≥1. severity 4 (HIGH). T1562.001 (Impair Defenses: Disable
 /// or Modify Tools — un contrôle de sécurité, l'IPS CrowdSec, défaille). Dédup d'alerte = clé stable
@@ -1213,7 +1213,7 @@ pub(crate) fn seed_k8s_rules(conn: &Connection) {
 /// containment -> eradication -> recovery) ; une step `response` RÉFÉRENCE l'enum d'action FERMÉ (ban_ip/kill_pid/
 /// stop_service) — elle NE l'exécute PAS (le wizard PRÉSENTE l'action + pré-remplit la cible ; l'exécution reste
 /// /api/actions, avec arm/approbation/admin/ledger/allowlist root INCHANGÉS). Les steps `search` portent un
-/// gabarit SOQL `$target$` (compile-vérifié par le test seed_runbook_searches_compile ; recompilé à la
+/// gabarit GXQL `$target$` (compile-vérifié par le test seed_runbook_searches_compile ; recompilé à la
 /// résolution, comme workflow_action search) -> jamais de SQL brut.
 pub(crate) fn seed_runbooks(conn: &Connection) {
     // Phase 2 : IDEMPOTENCE PAR-KEY (et NON plus un flag global court-circuitant). Chaque runbook managé est

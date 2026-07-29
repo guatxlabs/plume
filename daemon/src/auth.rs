@@ -863,7 +863,7 @@ pub(crate) fn apply_gates(
 }
 
 /// POST de LECTURE (exempts de la classe `mutating`) — choke-point unique, extrait pour être TESTABLE.
-/// Un POST listé ici est un READ (compile/exécute un SOQL en lecture, aucune mutation, aucun SQL brut) :
+/// Un POST listé ici est un READ (compile/exécute un GXQL en lecture, aucune mutation, aucun SQL brut) :
 /// viewer+ (route_min_role -> Read via section 6, car `mutating=false`), pas de CSRF M2M. Toute autre
 /// méthode non-GET reste `mutating` (editor+/admin). Le test `readonly_post_membership` garde cette liste.
 pub(crate) fn is_readonly_post(path: &str) -> bool {
@@ -872,15 +872,15 @@ pub(crate) fn is_readonly_post(path: &str) -> bool {
         "/api/query" | "/api/search" | "/api/cancel" | "/api/export"
             | "/api/ds/query" | "/api/v1/query" | "/api/v1/query_range" | "/api/v1/series" | "/api/v1/labels"
             | "/loki/api/v1/query_range"
-        // #47 PIVOT / DATASETS : l'EXÉCUTION est une LECTURE (compile un SOQL généré/stocké via le chemin
+        // #47 PIVOT / DATASETS : l'EXÉCUTION est une LECTURE (compile un GXQL généré/stocké via le chemin
         // masqué #45, aucune mutation, aucun SQL brut) -> exemptée de la classe `mutating` (viewer autorisé),
         // exactement comme /api/query. Le CRUD (/api/datamodels*, POST /api/datasets) RESTE mutating (editor+).
             | "/api/pivot/compile" | "/api/pivot/run"
         // v130 LIVE VALIDATION : /api/soql/validate COMPILE UNIQUEMENT (to_sql, JAMAIS d'exécution ni de
-        // handle DB) -> pur READ advisory (viewer+), exactement comme le chemin SOQL de /api/query dont il est ⊆.
+        // handle DB) -> pur READ advisory (viewer+), exactement comme le chemin GXQL de /api/query dont il est ⊆.
             | "/api/soql/validate"
     ) || (path.starts_with("/api/datasets/") && path.ends_with("/run"))
-        // #60 WORKFLOW ACTION RESOLVE : sanitise $field$ + recompile un SOQL de navigation (aucune mutation,
+        // #60 WORKFLOW ACTION RESOLVE : sanitise $field$ + recompile un GXQL de navigation (aucune mutation,
         // aucun déclenchement — une réponse se joue via /api/actions) -> LECTURE (viewer+), comme /api/query.
         || (path.starts_with("/api/workflow-actions/") && path.ends_with("/resolve"))
 }
@@ -1020,7 +1020,7 @@ pub(crate) async fn auth_guard(State(st): State<AppState>, mut req: Request, nex
     };
     // RBAC : viewer = lecture seule. Les POSTs de LECTURE (query/search) sont exemptés ; tout le reste
     // (création/màj/suppression, ingest, mail/body…) est bloqué. /api/users et /api/actions = admin only.
-    // #52 DATASOURCE : les POST de LECTURE des surfaces datasource (SOQL-HTTP + Prometheus query/range/series +
+    // #52 DATASOURCE : les POST de LECTURE des surfaces datasource (GXQL-HTTP + Prometheus query/range/series +
     // stub Loki) sont des LECTURES -> exemptés de la classe `mutating` (viewer autorisé, pas de CSRF M2M).
     let readonly_post = is_readonly_post(path.as_str());
     let mutating = !matches!(*req.method(), axum::http::Method::GET | axum::http::Method::HEAD) && !readonly_post;

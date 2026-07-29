@@ -3,7 +3,7 @@
 //!     résolution vit dans `dashboards.rs` : panel_access / dash_get LEFT JOIN library_panel) ;
 //!   - `playlist` : listes ORDONNÉES de dashboards qui défilent (NOC wall-board) ;
 //!   - `dashboard_snapshot` : capture POINT-IN-TIME des données rendues, partageable en LECTURE SEULE via
-//!     un token CSPRNG. ⚠ La capture passe par le CHEMIN SOQL MASQUÉ (effective_masks du rôle du créateur)
+//!     un token CSPRNG. ⚠ La capture passe par le CHEMIN GXQL MASQUÉ (effective_masks du rôle du créateur)
 //!     -> un snapshot ne fige JAMAIS un champ que le créateur n'aurait pas pu voir (hérite #45 + RBAC).
 //! CRUD = editor+ (route_min_role section 7) ; lecture d'un snapshot par token = viewer+ (Read, section 6).
 use crate::*;
@@ -75,7 +75,7 @@ pub(crate) async fn library_panel_create(State(st): State<AppState>, Extension(a
     let visibility = vis_of(&b);
     // SQL BRUT (is_soql=0) = lecture arbitraire de toute la base à chaque refresh -> RÉSERVÉ ADMIN (miroir panel_create).
     if !raw_sql_allowed(is_soql == 1, &au.role) {
-        return forbidden("SQL brut réservé à l'administrateur (utilisez SOQL)");
+        return forbidden("SQL brut réservé à l'administrateur (utilisez GXQL)");
     }
     crate::req_conn!(st, au, conn);
     let _ = conn.execute(
@@ -237,9 +237,9 @@ pub(crate) fn gen_snapshot_token() -> Option<String> {
 }
 
 /// CAPTURE (pure, testable sans AppState) : résout TOUS les panneaux d'un dashboard en données rendues, via
-/// le CHEMIN SOQL MASQUÉ (mêmes garanties que panel_data_masked_live). `masks` = jeu EFFECTIF du rôle du
+/// le CHEMIN GXQL MASQUÉ (mêmes garanties que panel_data_masked_live). `masks` = jeu EFFECTIF du rôle du
 /// créateur (effective_masks) : VIDE -> compilation NON masquée (identique au rendu live d'un rôle non masqué).
-/// Non vide -> SOQL masqué dans le SQL (soql_to_sql_masked_x) + masquage POST-requête du SQL brut opaque
+/// Non vide -> GXQL masqué dans le SQL (soql_to_sql_masked_x) + masquage POST-requête du SQL brut opaque
 /// (mask_query_result). Le snapshot ne peut donc JAMAIS contenir un champ hors de la portée du créateur.
 /// Résout aussi les LIBRARY PANELS (LEFT JOIN). Renvoie {dashboard_id, name, captured_at, panels:[…]}.
 pub(crate) fn capture_dashboard_data(
@@ -264,7 +264,7 @@ pub(crate) fn capture_dashboard_data(
     for (title, query, is_soql, viz, _drill) in rows {
         let q2 = apply_excl_placeholders(query.trim(), is_soql);
         let (sql, post_mask) = if is_soql {
-            // SOQL : masque ÉMIS dans le SQL (avant agrégation). rollup-route désactivé (masques actifs).
+            // GXQL : masque ÉMIS dans le SQL (avant agrégation). rollup-route désactivé (masques actifs).
             let compiled = if masks.is_empty() {
                 compile_panel_sql(&query, true, from, to, env)
             } else {
@@ -370,7 +370,7 @@ pub(crate) async fn snapshots_list(State(st): State<AppState>, Extension(au): Ex
 }
 
 /// Lecture d'un snapshot PAR TOKEN (read-only, token-scoped). Renvoie les données DÉJÀ figées & masquées à la
-/// capture -> aucune re-exécution SOQL, aucune fuite : ce que le créateur a vu, rien de plus. viewer+ (Read).
+/// capture -> aucune re-exécution GXQL, aucune fuite : ce que le créateur a vu, rien de plus. viewer+ (Read).
 pub(crate) async fn snapshot_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(token): Path<String>) -> Response {
     // token allowlisté (hex 64) : anti-injection & anti-probe (aucun match si format inattendu).
     if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {

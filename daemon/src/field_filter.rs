@@ -1,10 +1,10 @@
 //! FIELD FILTERS (#45) — masquage / contrôle d'accès AU NIVEAU CHAMP, par rôle/tenant/env (équivalent
 //! « Field filters » Splunk ; débloqueur PCI/PII). Registre par db_path chargé depuis la table `field_filter`
 //! (admin-only, migration v86), résolu pour l'appelant courant en un `guatx_core::soql::FieldMaskSet` qui est
-//! INJECTÉ DANS LE SCHÉMA de compilation SOQL -> le masque est émis DANS le SQL (choke-point `soql_field`),
+//! INJECTÉ DANS LE SCHÉMA de compilation GXQL -> le masque est émis DANS le SQL (choke-point `soql_field`),
 //! donc AVANT toute agrégation/renommage. VIDE (aucune règle) -> court-circuit -> compilation byte-identique
 //! (mode 0). En PLUS : les règles DENY sur une COLONNE RÉELLE alimentent l'authorizer SQLite (query_exec.rs)
-//! -> déni même en SQL brut admin, comme la denylist de secrets. Les surfaces NON-SOQL (/api/search, timeline
+//! -> déni même en SQL brut admin, comme la denylist de secrets. Les surfaces NON-GXQL (/api/search, timeline
 //! de cas) réutilisent `mask_json_value` sur leurs lignes construites à la main.
 //!
 //! FAIL-CLOSED : rôle indéterminé/inconnu -> rank 0 -> masqué par toute règle (protège par défaut). Action
@@ -14,7 +14,7 @@ use guatx_core::soql::{FieldMaskSet, MaskAction};
 
 /// Colonnes RÉELLES de la table `event` : une règle DENY sur l'une d'elles est AUSSI posée dans l'authorizer
 /// SQLite (déni au prepare(), même admin en SQL brut). Les autres champs (clés du sac JSON `fields`) ne sont
-/// masquables qu'au niveau SOQL (l'authorizer ne voit que la colonne `fields`, pas ses clés).
+/// masquables qu'au niveau GXQL (l'authorizer ne voit que la colonne `fields`, pas ses clés).
 pub(crate) const PHYSICAL_EVENT_COLS: &[&str] = &[
     "host", "source", "category", "severity", "src_ip", "dst_ip", "url", "xff", "message",
 ];
@@ -24,7 +24,7 @@ pub(crate) const PHYSICAL_EVENT_COLS: &[&str] = &[
 /// pas la détection) -> autorisés (l'admin assume l'impact d'affichage).
 const STRUCTURAL_DENY: &[&str] = &["id", "ts", "env_id", "dedup", "origin", "engagement_id", "fields"];
 
-/// Une règle compilée (résolue de la table). `field` = nom CANONIQUE utilisé à la compilation SOQL (clé de
+/// Une règle compilée (résolue de la table). `field` = nom CANONIQUE utilisé à la compilation GXQL (clé de
 /// masque), déjà normalisé (`fields.k` -> `k`). `role` = seuil (cf. `role_threshold`). `tenant`/`env` = ''=tous.
 pub(crate) struct CompiledFilter {
     pub field: String,
@@ -50,7 +50,7 @@ pub(crate) fn field_deny_cols_cell() -> &'static parking_lot::RwLock<HashMap<Str
     FIELD_DENY_COLS.get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
 }
 // Sel de HASH par db_path (créé immuable par migrate_v86 dans meta.field_mask_salt), caché au reload pour le
-// masquage Rust des surfaces non-SOQL. Le HASH SQL (query_exec.rs) lit le sel directement sur sa connexion.
+// masquage Rust des surfaces non-GXQL. Le HASH SQL (query_exec.rs) lit le sel directement sur sa connexion.
 static FIELD_SALT: std::sync::OnceLock<parking_lot::RwLock<HashMap<String, String>>> = std::sync::OnceLock::new();
 fn salt_cell() -> &'static parking_lot::RwLock<HashMap<String, String>> {
     FIELD_SALT.get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
@@ -77,14 +77,14 @@ pub(crate) fn action_str(a: MaskAction) -> &'static str {
     }
 }
 
-/// Normalise un nom de champ pour la CLÉ de masque : `fields.k` -> `k`, trim. (Le compilo SOQL référence les
+/// Normalise un nom de champ pour la CLÉ de masque : `fields.k` -> `k`, trim. (Le compilo GXQL référence les
 /// clés JSON par leur nom NU ; `fields.` est une commodité de config côté processors.)
 pub(crate) fn normalize_field(raw: &str) -> String {
     let f = raw.trim();
     f.strip_prefix("fields.").unwrap_or(f).to_string()
 }
 
-/// Valide un nom de champ à la CRÉATION : identifiant SOQL sûr + hors denylist structurelle. Renvoie le nom
+/// Valide un nom de champ à la CRÉATION : identifiant GXQL sûr + hors denylist structurelle. Renvoie le nom
 /// NORMALISÉ (clé de masque) ou une erreur. Empêche toute interpolation SQL (le masque agit sur la VALEUR).
 pub(crate) fn validate_field(raw: &str) -> Result<String, String> {
     let f = normalize_field(raw);
@@ -170,7 +170,7 @@ pub(crate) fn field_filters_reload(conn: &Connection, db_path: &str) {
 }
 
 /// Jeu de masques EFFECTIF pour l'appelant (role/tenant/env). VIDE si aucune règle applicable -> compilation
-/// SOQL byte-identique (mode 0). FAIL-CLOSED : `role` inconnu -> rank 0 -> masqué par toute règle.
+/// GXQL byte-identique (mode 0). FAIL-CLOSED : `role` inconnu -> rank 0 -> masqué par toute règle.
 pub(crate) fn effective_masks(db_path: &str, role: &str, tenant: &str, env: Option<&str>) -> FieldMaskSet {
     let mut set = FieldMaskSet::new();
     let rules = match filters_cell().read().get(db_path).cloned() {
@@ -269,7 +269,7 @@ pub(crate) fn search_mask_guard(term: &str, masks: &FieldMaskSet, fts_fields: bo
     Ok(())
 }
 
-/// Sel de HASH caché pour ce db_path (masquage Rust des surfaces non-SOQL). "" si inconnu.
+/// Sel de HASH caché pour ce db_path (masquage Rust des surfaces non-GXQL). "" si inconnu.
 fn salt_for(db_path: &str) -> String {
     salt_cell().read().get(db_path).cloned().unwrap_or_default()
 }
@@ -290,7 +290,7 @@ pub(crate) fn fmask_hash(salt: &str, value: &str) -> String {
     s
 }
 
-/// Applique une action de masque à une VALEUR JSON déjà lue (surfaces NON-SOQL : /api/search, timeline de
+/// Applique une action de masque à une VALEUR JSON déjà lue (surfaces NON-GXQL : /api/search, timeline de
 /// cas). Miroir EXACT de la sémantique SQL de `mask_wrap` (Mask -> `***`, MaskPartial -> `***`+last4,
 /// Hash -> `plume_fmask_hash`, Redact/Deny -> Null). NULL/absent reste inchangé.
 pub(crate) fn mask_json_value(action: MaskAction, salt: &str, v: &Value) -> Value {
@@ -325,7 +325,7 @@ pub(crate) fn mask_field_value(db_path: &str, masks: &FieldMaskSet, field: &str,
 /// surfaces OPAQUES où le masque ne peut pas être injecté dans le SQL (panneaux SQL BRUT is_soql=0). Caviarde
 /// toute cellule d'une colonne dont le NOM correspond à un champ masqué. NB : ne couvre QUE la projection
 /// directe (`SELECT src_ip …`) — un agrégat/alias échappe (limite documentée) ; à réserver au SQL brut opaque,
-/// JAMAIS au SOQL (déjà masqué dans le SQL -> double-hash). VIDE -> no-op.
+/// JAMAIS au GXQL (déjà masqué dans le SQL -> double-hash). VIDE -> no-op.
 pub(crate) fn mask_query_result(db_path: &str, masks: &FieldMaskSet, v: &mut Value) {
     if masks.is_empty() {
         return;
@@ -355,7 +355,7 @@ pub(crate) fn mask_query_result(db_path: &str, masks: &FieldMaskSet, v: &mut Val
     }
 }
 
-/// Applique le jeu de masques effectif d'un appelant à une ligne d'événement construite HORS SOQL, indexée
+/// Applique le jeu de masques effectif d'un appelant à une ligne d'événement construite HORS GXQL, indexée
 /// par nom de champ (ex : /api/search -> {ts,source,severity,message,host,src_ip}). Chaque champ masqué est
 /// remplacé en place. VIDE -> no-op (mode 0). Renvoie true si au moins un champ a été masqué.
 pub(crate) fn mask_named_row(db_path: &str, masks: &FieldMaskSet, obj: &mut serde_json::Map<String, Value>) -> bool {

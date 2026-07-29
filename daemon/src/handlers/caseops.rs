@@ -35,7 +35,7 @@
 //!     • `acknowledged` (bool) = `first_response_ts IS NOT NULL` — timing MTTA-style coarse (pas de timestamp/durée).
 //!   DENYLIST DURE INCHANGÉE (jamais exposé, ni valeur ni chaîne dérivable) : `incident_tier` brut,
 //!   `incident_type`, `commander`, tout runbook (nom/id/key), tout `case_step` (titre/guidance/status/count/
-//!   target/host), tout SOQL/search, tout `action_kind`, notes/commentaires internes, identité analyste/assignee,
+//!   target/host), tout GXQL/search, tout `action_kind`, notes/commentaires internes, identité analyste/assignee,
 //!   cross-tenant. La timeline client garde son allowlist de kinds INCHANGÉE (jamais 'incident'/'runbook'/'step').
 use crate::*;
 

@@ -140,7 +140,7 @@ pub(crate) fn install_query_udfs(conn: &Connection) {
 }
 
 /// #18 P3 — HASH de masquage (#45) : fonction scalaire déterministe salée `plume_fmask_hash(v)` (émise par le
-/// compilo SOQL quand un champ porte l'action HASH). Sel lu sur CETTE connexion depuis `meta.field_mask_salt`
+/// compilo GXQL quand un champ porte l'action HASH). Sel lu sur CETTE connexion depuis `meta.field_mask_salt`
 /// (posé immuable par migrate_v86) -> stable = corrélation préservée. La connexion d'UNION cold ayant le HOT
 /// en `main`, le sel se lit à L'IDENTIQUE (même `meta`). Enregistrée sur TOUTES les connexions de lecture
 /// (inoffensif si jamais appelée -> mode 0 byte-identique).
@@ -178,7 +178,7 @@ pub(crate) fn install_field_authorizer(conn: &Connection, db_path: &str) {
     // read-pool : il REFUSE la LECTURE des colonnes de secrets (user.hash, token.token_hash) MÊME pour un
     // admin en SQL brut. Non contournable : il agit dans le préparateur SQLite (sqlite3_prepare), donc toute
     // requête qui référence ces colonnes échoue à `conn.prepare()` avec « not authorized » -> renvoyée en 400
-    // par run_query_ex (aucun 500, aucune fuite, aucune ligne servie). Il ne casse NI le SOQL (qui ne lit
+    // par run_query_ex (aucun 500, aucune fuite, aucune ligne servie). Il ne casse NI le GXQL (qui ne lit
     // jamais ces colonnes), NI l'auth/login/token (portés par des connexions st.db distinctes, SANS
     // authorizer). Les autres colonnes de `user`/`token` (id, name, role, host, created…) et COUNT(*) restent
     // parfaitement lisibles. Closure capture `db_path` (String : Send + RefUnwindSafe + 'static) pour

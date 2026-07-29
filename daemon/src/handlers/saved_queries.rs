@@ -1,4 +1,4 @@
-//! SAVED QUERIES — requêtes SOQL NOMMÉES, PERSISTANTES, PER-USER (table `saved_query`, v107). Outillage
+//! SAVED QUERIES — requêtes GXQL NOMMÉES, PERSISTANTES, PER-USER (table `saved_query`, v107). Outillage
 //! d'analyste PERSONNEL : `/api/saved-queries` GET (liste MES requêtes) / POST (créer {name, soql}) /
 //! PUT `/:id` (modifier {name?, soql?}) / DELETE `/:id`. RBAC = viewer+ SELF-SERVICE (route_min_role :
 //! `/api/saved-queries` -> Read, MÊME modèle que `/api/prefs` et `/api/mfa/*`) : ce n'est PAS une surface
@@ -13,7 +13,7 @@
 //!
 //! DRAFTS : le `soql` est stocké TEL QUEL (jamais compilé au save -> on peut sauver un brouillon incomplet).
 //! Le chargement ne fait que remplir la barre côté client ; l'exécution passe par le chemin VALIDÉ /api/query
-//! (compilation SOQL + authorizer + masquage). Le texte stocké est INERTE : aucune injection possible tant
+//! (compilation GXQL + authorizer + masquage). Le texte stocké est INERTE : aucune injection possible tant
 //! qu'il n'est pas exécuté, et l'exécution est gardée comme n'importe quelle requête tapée à la main.
 use crate::*;
 
@@ -22,7 +22,7 @@ use crate::*;
 pub(crate) const SAVED_QUERY_MAX_PER_USER: i64 = 200;
 /// Plafond de longueur du NOM (caractères). Un libellé, pas un document.
 pub(crate) const SAVED_QUERY_NAME_MAX: usize = 200;
-/// Plafond de longueur du TEXTE SOQL (octets). Très large pour une requête (même longue avec `| eval`/`| where`
+/// Plafond de longueur du TEXTE GXQL (octets). Très large pour une requête (même longue avec `| eval`/`| where`
 /// enchaînés), borne l'abus de stockage. Miroir d'esprit des autres plafonds (prefs 64 KiB).
 pub(crate) const SAVED_QUERY_SOQL_MAX: usize = 16 * 1024;
 

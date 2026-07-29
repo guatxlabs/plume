@@ -608,7 +608,13 @@ fn v105_ledger_unsigned_signal_soc_visible_nonpurgeable_deduped() {
     let conn = test_db();
     let cnt_health = |c: &Connection| c.query_row(
         "SELECT COUNT(*) FROM event WHERE source='plume-config' AND origin='daemon' AND category='health'", [], |r| r.get::<_, i64>(0)).unwrap();
-    let old = now() - 40 * 86400; // bien au-delà de la rétention event (7 j) -> preuve de non-purge
+    // Bien au-delà de la rétention event (7 j) -> preuve de non-purge. ALIGNÉ SUR UN DÉBUT D'HEURE :
+    // ce test dédup par BUCKET HORAIRE et vérifie plus bas que `old + 59` tombe dans le MÊME bucket.
+    // `40 * 86400` étant un multiple de 3600, `old` héritait du décalage sub-horaire de `now()` — le
+    // test échouait donc quand la suite tournait dans les 59 DERNIÈRES SECONDES d'une heure (~1,6 %
+    // des exécutions, observé rouge à 14:59 puis vert immédiatement après). Un test dont le résultat
+    // dépend de l'heure de la CI n'est pas une preuve : il apprend à ignorer le rouge.
+    let old = ((now() - 40 * 86400) / 3600) * 3600;
 
     // (a) 1er signal -> écrit ; sévérité 4 (P1) ; message SOC-parlant.
     assert!(emit_ledger_unsigned(&conn, old, "/etc/plume/ledger/ledger.key"), "1er signal émis");

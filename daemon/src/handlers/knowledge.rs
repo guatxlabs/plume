@@ -2,9 +2,9 @@
 //! `knowledge_tag`). CRUD = editor+ (route_min_role : `/api/knowledge` -> Write ; ils façonnent la recherche
 //! de TOUT LE MONDE, comme les règles de détection). GET (liste) = viewer+ (transparence de la politique).
 //! Chaque mutation VALIDE l'objet (idents allowlistés ; expr de calc compilée via `eval` ; filtre d'eventtype
-//! compilé via SOQL) AVANT écriture (fail-closed : objet invalide REFUSÉ en 400, jamais persisté), écrit sous
+//! compilé via GXQL) AVANT écriture (fail-closed : objet invalide REFUSÉ en 400, jamais persisté), écrit sous
 //! transaction auditée, puis `knowledge_reload` recompile le `KnowledgeSet` de CE db_path -> auto-appliqué à
-//! la compilation SOQL suivante (Explore, panels, règles, export en héritent).
+//! la compilation GXQL suivante (Explore, panels, règles, export en héritent).
 use crate::*;
 
 
@@ -186,14 +186,14 @@ pub(crate) async fn calc_delete(State(st): State<AppState>, Extension(au): Exten
 }
 
 // ---------------------------------------------------------------------------------------------
-// 3) EVENT TYPES : name + filtre SOQL
+// 3) EVENT TYPES : name + filtre GXQL
 // ---------------------------------------------------------------------------------------------
 pub(crate) async fn eventtype_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     let name = match validate_ko_ident(b.str_field("name")) { Ok(f) => f, Err(e) => return bad_req(e) };
     let filter = b.str_field("filter").trim().to_string();
     if filter.is_empty() { return bad_req("eventtype : filtre requis"); }
-    // Compile-check du filtre via `eventtype=<name>` -> chemin SOQL normal (allowlist/échappement) AVANT persistance.
+    // Compile-check du filtre via `eventtype=<name>` -> chemin GXQL normal (allowlist/échappement) AVANT persistance.
     if let Err(e) = validate_eventtype_filter(&name, &filter) { return bad_req(format!("filtre d'eventtype invalide : {e}")); }
     let enabled = b.bool_field("enabled", true) as i64;
     crate::req_conn!(st, au, conn);
@@ -275,13 +275,13 @@ pub(crate) async fn tag_delete(State(st): State<AppState>, Extension(au): Extens
 }
 
 // ---------------------------------------------------------------------------------------------
-// 5) MACROS (#60) : fragment SOQL nommé + paramétré, détendu À LA COMPILATION par le compilateur FERMÉ.
+// 5) MACROS (#60) : fragment GXQL nommé + paramétré, détendu À LA COMPILATION par le compilateur FERMÉ.
 //    Corps + params compile-vérifiés (validate_macro : dry-expansion + compile-check) AVANT persistance.
 // ---------------------------------------------------------------------------------------------
 pub(crate) async fn macro_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     let name = match validate_ko_ident(b.str_field("name")) { Ok(f) => f, Err(e) => return bad_req(e) };
-    // params : liste (JSON array) OU chaîne "a,b" ; chaque param = ident SOQL sûr (validate_ko_ident).
+    // params : liste (JSON array) OU chaîne "a,b" ; chaque param = ident GXQL sûr (validate_ko_ident).
     let params: Vec<String> = match b.get("params") {
         Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(|s| s.trim().to_string())).filter(|s| !s.is_empty()).collect(),
         Some(Value::String(s)) => s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect(),

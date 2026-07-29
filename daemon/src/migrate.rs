@@ -1191,7 +1191,7 @@ fn migrate_v109(conn: &MigTx) {
 /// projection client-read multi-tenant. Additif pur (nullable/DEFAULT, aucune donnée existante touchée).
 /// ROLLBACK = restaurer le snapshot pré-migrate (garde anti-downgrade : un binaire v106 REFUSE d'ouvrir une base
 /// v107). NB : la branche différée `feat/ai-nl2soql` réservait v107 pour sa migration `ai_provider` — la ligne
-/// DÉPLOYÉE prend v107 ici ; la migration NL->SOQL a été RENUMÉROTÉE en v109 à son intégration (après v108).
+/// DÉPLOYÉE prend v107 ici ; la migration NL->GXQL a été RENUMÉROTÉE en v109 à son intégration (après v108).
 fn migrate_v107(conn: &MigTx) {
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS saved_query(
@@ -1205,7 +1205,7 @@ fn migrate_v107(conn: &MigTx) {
          CREATE INDEX IF NOT EXISTS idx_saved_query_owner ON saved_query(owner, name);",
     );
     let _ = conn.execute("UPDATE meta SET value='107' WHERE key='schema_version'", []);
-    mig_log!("[migration] schéma -> v107 (saved_query : requêtes SOQL nommées per-user, owner-scoped ; additif, VIDE -> mode 0 byte-identique ; outillage analyste INTERNE hors projection client ; ROLLBACK = restaurer le snapshot pré-migrate)");
+    mig_log!("[migration] schéma -> v107 (saved_query : requêtes GXQL nommées per-user, owner-scoped ; additif, VIDE -> mode 0 byte-identique ; outillage analyste INTERNE hors projection client ; ROLLBACK = restaurer le snapshot pré-migrate)");
 }
 
 fn migrate_v106(conn: &MigTx) {
@@ -1485,7 +1485,7 @@ fn migrate_v97(conn: &MigTx) {
     // v97 (#60 KNOWLEDGE OBJECTS — reliquat DIFFÉRÉ de #46 : MACROS, AUTO-LOOKUPS/GeoIP, SCHEDULED REPORTS,
     //  WORKFLOW ACTIONS). QUATRE tables NEUVES, VIDES à la création -> ZÉRO effet tant qu'aucune ligne :
     //   - macro_def / auto_lookup se chargent dans le `KnowledgeSet` du tenant (via `knowledge_reload`). VIDE
-    //     -> `KnowledgeSet` sans macro/auto-lookup -> le compilateur SOQL émet le SQL legacy À L'IDENTIQUE
+    //     -> `KnowledgeSet` sans macro/auto-lookup -> le compilateur GXQL émet le SQL legacy À L'IDENTIQUE
     //     (mode 0 byte-identique, prouvé côté cœur par les tests `macro_mode0_*`/`auto_lookup_mode0_*`).
     //   - scheduled_report : tick de fond `run_due_reports` sélectionne 0 ligne -> no-op strict (aucun réseau).
     //   - workflow_action : métadonnées de menu contextuel console (navigation/URL/réponse) ; PUREMENT
@@ -1497,8 +1497,8 @@ fn migrate_v97(conn: &MigTx) {
         "CREATE TABLE IF NOT EXISTS macro_def(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
-            params TEXT NOT NULL DEFAULT '',   -- liste de paramètres séparés par ',' (idents SOQL)
-            body TEXT NOT NULL DEFAULT '',      -- fragment SOQL avec placeholders $param$
+            params TEXT NOT NULL DEFAULT '',   -- liste de paramètres séparés par ',' (idents GXQL)
+            body TEXT NOT NULL DEFAULT '',      -- fragment GXQL avec placeholders $param$
             enabled INTEGER NOT NULL DEFAULT 1,
             managed INTEGER NOT NULL DEFAULT 2,
             created INTEGER NOT NULL DEFAULT 0,
@@ -1519,7 +1519,7 @@ fn migrate_v97(conn: &MigTx) {
          CREATE TABLE IF NOT EXISTS scheduled_report(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
-            dataset_id INTEGER NOT NULL,        -- FK dataset (#47) : le SOQL stocké à exécuter
+            dataset_id INTEGER NOT NULL,        -- FK dataset (#47) : le GXQL stocké à exécuter
             notifier_id INTEGER NOT NULL,       -- FK notifier (#53) : le canal de livraison (config admin)
             run_as_role TEXT NOT NULL DEFAULT 'viewer', -- IDENTITÉ d'exécution : le résultat est MASQUÉ par CE rôle
             tenant TEXT NOT NULL DEFAULT '',     -- TENANT du créateur : les field-filters tenant-scopés sont résolus DESSUS (parité /api/query)
@@ -1538,7 +1538,7 @@ fn migrate_v97(conn: &MigTx) {
             name TEXT NOT NULL UNIQUE,
             label TEXT NOT NULL DEFAULT '',
             scope_field TEXT NOT NULL DEFAULT '*', -- champ auquel l'action s'attache ('*' = tout champ)
-            kind TEXT NOT NULL DEFAULT 'search',   -- 'search' (SOQL navig.) | 'url' (navig.) | 'response' (enum)
+            kind TEXT NOT NULL DEFAULT 'search',   -- 'search' (GXQL navig.) | 'url' (navig.) | 'response' (enum)
             target TEXT NOT NULL DEFAULT '',       -- gabarit avec $field$ (search/url) OU ban|kill|stop (response)
             enabled INTEGER NOT NULL DEFAULT 1,
             managed INTEGER NOT NULL DEFAULT 2,
@@ -1601,14 +1601,14 @@ fn migrate_v96(conn: &MigTx) {
 fn migrate_v95(conn: &MigTx) {
     // v95 (#47 DATA MODELS + PIVOT + DATASETS — couche SÉMANTIQUE au-dessus du CIM, façon Splunk data
     //  models). QUATRE tables NEUVES, VIDES à la création -> ZÉRO effet tant qu'aucune ligne : aucun de
-    //  ces objets n'est INJECTÉ dans le compilateur SOQL (contrairement aux knowledge objects #46). Un data
+    //  ces objets n'est INJECTÉ dans le compilateur GXQL (contrairement aux knowledge objects #46). Un data
     //  model ne PARTICIPE à la compilation QUE lorsqu'un Pivot/dataset est explicitement invoqué ; le chemin
     //  de recherche standard (Explore/panels/règles) est INCHANGÉ -> mode 0 byte-identique (le compilateur du
     //  cœur n'est pas touché ; prouvé côté cœur par `tests/plume_parity.rs` et côté daemon par
     //  `datamodels_mode0_byte_identical`). Additif pur (aucune table existante touchée). `managed` DEFAULT 2
     //  (= ad-hoc UI), aligné sur la doctrine #55 (0=builtin/seed, 1=overlay config.d, 2=ad-hoc UI).
     //   - data_model         : modèle sémantique nommé (optionnellement rattaché à une `category` CIM) ;
-    //   - data_model_object  : objet HIÉRARCHIQUE (parent_id) + `constraint` (fragment de filtre SOQL,
+    //   - data_model_object  : objet HIÉRARCHIQUE (parent_id) + `constraint` (fragment de filtre GXQL,
     //                          compile-vérifié à la création) ; un enfant HÉRITE des contraintes du parent ;
     //   - data_model_field   : champ TYPÉ d'un objet (`type` string/number/ipv4/timestamp/boolean ; `expr`
     //                          optionnelle -> peut référencer un alias/champ-calculé #46). ALLOWLIST du Pivot :
@@ -1616,7 +1616,7 @@ fn migrate_v95(conn: &MigTx) {
     //                          #45 s'applique PAR-DESSUS via `soql_field`/`soql_filter_field`) ;
     //   - dataset            : définition de résultat SAUVEGARDÉE réutilisable (kind='pivot' -> `spec` JSON +
     //                          `object_id` ; kind='search' -> `soql` figé). Compile TOUJOURS via le chemin
-    //                          SOQL masqué normal (jamais de SQL brut).
+    //                          GXQL masqué normal (jamais de SQL brut).
     //  >>> RENUMÉROTATION : si une migration v95 concurrente atterrit d'abord, renuméroter celle-ci en v96.
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS data_model(
@@ -1672,13 +1672,13 @@ fn migrate_v95(conn: &MigTx) {
 fn migrate_v94(conn: &MigTx) {
     // v94 (#46 KNOWLEDGE OBJECTS — objets de savoir SEARCH-TIME PERSISTÉS, parité Splunk / portabilité de
     //  contenu). QUATRE tables NEUVES, VIDES à la création -> ZÉRO effet tant qu'aucune ligne : le résolveur
-    //  `knowledge_reload` produit un `KnowledgeSet` VIDE -> le compilateur SOQL émet le SQL legacy À
+    //  `knowledge_reload` produit un `KnowledgeSet` VIDE -> le compilateur GXQL émet le SQL legacy À
     //  L'IDENTIQUE (mode 0 byte-identique, invariant absolu — prouvé côté cœur par `tests/plume_parity.rs`).
     //  Additif pur (aucune table existante touchée). `managed` DEFAULT 2 (= ad-hoc UI), aligné sur la
     //  doctrine #55 (0=builtin/seed, 1=overlay config.d, 2=ad-hoc UI) pour un overlay config.d ULTÉRIEUR.
     //   - knowledge_alias   : `canonical -> source` (une recherche sur le canonique résout la source) ;
     //   - knowledge_calc    : `name = <expr eval>` (champ calculé search-time, ORDONNÉ par `ord`) ;
-    //   - knowledge_eventtype : `name` + filtre SOQL (`eventtype=name` compile le filtre stocké) ;
+    //   - knowledge_eventtype : `name` + filtre GXQL (`eventtype=name` compile le filtre stocké) ;
     //   - knowledge_tag     : `label` sur une paire `field=value` (`tag=label` = OR des paires du label).
     //  >>> RENUMÉROTATION : si une migration v94 concurrente atterrit d'abord, renuméroter celle-ci en v95.
     let _ = conn.execute_batch(
@@ -1845,12 +1845,12 @@ fn migrate_v90(conn: &MigTx) {
     //   - `playlist` : liste ORDONNÉE de dashboards qui défilent (NOC wall-board). `items` = JSON d'ids
     //     ordonnés ; `interval_s` = période de rotation. Aucune playlist -> aucun défilement.
     //   - `dashboard_snapshot` : capture POINT-IN-TIME des données DÉJÀ rendues d'un dashboard, partageable
-    //     en LECTURE SEULE via un `token` CSPRNG (UNIQUE). ⚠ La capture passe par le CHEMIN SOQL MASQUÉ
+    //     en LECTURE SEULE via un `token` CSPRNG (UNIQUE). ⚠ La capture passe par le CHEMIN GXQL MASQUÉ
     //     (effective_masks du rôle du créateur) -> un snapshot ne contient JAMAIS un champ que le créateur
     //     n'aurait pas pu voir. `data` = JSON résolu {panels:[{title,viz,columns,rows}]}. Le mot « snapshot »
     //     étant DÉJÀ un kind d'ingest télémétrie, cette table s'appelle `dashboard_snapshot` (pas de collision).
     //  Les types de panneaux SUPPLÉMENTAIRES (gauge/pie/heatmap/histogram) sont un rendu WEB pur (viz.js) et
-    //  n'exigent AUCUN schéma : ils consomment le même {columns,rows} SOQL. Opt-in par `panel.viz`.
+    //  n'exigent AUCUN schéma : ils consomment le même {columns,rows} GXQL. Opt-in par `panel.viz`.
     //  Convergence base neuve/existante : ce bloc tourne aussi sur une base fraîche (après schema.sql).
     //  >>> RENUMÉROTATION : si une migration v90 concurrente atterrit d'abord, renuméroter celle-ci en v91.
     let _ = conn.execute(
@@ -1951,7 +1951,7 @@ fn migrate_v87(conn: &MigTx) {
 fn migrate_v86(conn: &MigTx) {
     // v86 (#45) — FIELD FILTERS : masquage / contrôle d'accès AU NIVEAU CHAMP par rôle/tenant/env (équivalent
     // « Field filters » Splunk ; débloqueur PCI/PII). ADDITIF & INERTE en mode 0 : la table est VIDE à la
-    // création -> `field_filters_reload` produit un registre VIDE -> la compilation SOQL et toutes les surfaces
+    // création -> `field_filters_reload` produit un registre VIDE -> la compilation GXQL et toutes les surfaces
     // de lecture restent BYTE-IDENTIQUES (aucun masque émis). La capacité s'active par la DONNÉE (une règle
     // configurée en UI admin), JAMAIS par un flag. Idempotent (CREATE TABLE IF NOT EXISTS).
     //
@@ -2076,7 +2076,7 @@ fn migrate_v84(conn: &MigTx) {
     // s'active par la DONNÉE (une corrélation/baseline définie via l'UI), jamais par un flag. Convergence base
     // neuve/existante (v84 tourne aussi à froid). Idempotent (CREATE TABLE IF NOT EXISTS).
     //
-    //  - correlation : séquence ORDONNÉE d'étapes SOQL keyée sur une entité. `steps` = JSON [{name,query,
+    //  - correlation : séquence ORDONNÉE d'étapes GXQL keyée sur une entité. `steps` = JSON [{name,query,
     //    min_count}]. run_correlations (planifié, à côté de run_due_rules) apparie la séquence par entité dans
     //    la fenêtre `window_s` et lève UN finding-group dédupliqué `corr-<id>-<entity>` (ou contribue au RBA si
     //    risk_score>0). FAIL-CLOSED : une étape en erreur/timeout NE RÉSOUT PAS de groupe ouvert.
@@ -3295,7 +3295,7 @@ fn migrate_v60(conn: &MigTx) {
 }
 
 fn migrate_v61(conn: &MigTx) {
-    // v61 : LOOKUP — tables d'enrichissement par référence pour l'opérateur SOQL `lookup <name>
+    // v61 : LOOKUP — tables d'enrichissement par référence pour l'opérateur GXQL `lookup <name>
     // <keyfield> [OUTPUT cols]`. `lookup_kv` : paires (name,key) -> `val` (JSON des colonnes de sortie),
     // jointes en LEFT JOIN par le compilo (guatx_core::soql). `lookup_meta` : métadonnées par lookup
     // (champ-clé, colonnes exposées, horodatage) pour l'endpoint admin /api/lookups et l'UI à venir.
@@ -3305,7 +3305,7 @@ fn migrate_v61(conn: &MigTx) {
          CREATE TABLE IF NOT EXISTS lookup_meta(name TEXT PRIMARY KEY, key_field TEXT, cols TEXT, updated INTEGER);",
     );
     let _ = conn.execute("UPDATE meta SET value='61' WHERE key='schema_version'", []);
-    mig_log!("[migration] schéma -> v61 (tables lookup_kv/lookup_meta : enrichissement SOQL `lookup`)");
+    mig_log!("[migration] schéma -> v61 (tables lookup_kv/lookup_meta : enrichissement GXQL `lookup`)");
 }
 
 fn migrate_v62(conn: &MigTx) {

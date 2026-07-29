@@ -4,7 +4,7 @@
 
     /// EXEC-LEVER (Wave 3) — les deux règles catalogue auditd/exec de ce lot COMPILENT via rule_sql (sinon
     /// le loader d'overlay les WARN+skip -> détection inerte). (a) exec-depuis-un-dir-monde-inscriptible
-    /// ÉTENDU aux 4 racines (/tmp, /dev/shm, /var/tmp, /run) via `append` — SOQL ne sait pas OU-er un
+    /// ÉTENDU aux 4 racines (/tmp, /dev/shm, /var/tmp, /run) via `append` — GXQL ne sait pas OU-er un
     /// préfixe dans le filtre de base (le `|` d'alternation regex casse le découpage d'étapes) ; (b) le
     /// dead-man's-switch anti-forensics `source=auditd | stats count` avec op '<' seuil 1 (fire quand le
     /// COUNT tombe à 0 = auditd tué). Garde-fou : ces requêtes doivent rester compilables.
@@ -116,7 +116,7 @@
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
             let _ = migrate(&w);
-            // key_field = colonne INEXISTANTE dans la projection SOQL -> key_idx None -> ok=false (échec d'éval).
+            // key_field = colonne INEXISTANTE dans la projection GXQL -> key_idx None -> ok=false (échec d'éval).
             let steps = r#"[{"name":"e","query":"search source=auth","min_count":1}]"#;
             w.execute(
                 "INSERT INTO correlation(name,enabled,key_field,entity_type,steps,window_s,interval_s,severity,mitre,risk_score,managed) \
@@ -974,7 +974,7 @@
             assert_eq!((skind.as_str(), senv.as_str()), ("firewall", "prod"), "snapshot stocké + env_id DEFAULT 'prod'");
         } // writer fermé -> le pool READ_ONLY ouvre une connexion fraîche
 
-        // (b) LECTURE VIA LE STORE : query_soql compile le SOQL (émission Dialect) PUIS exécute. Les 2 events
+        // (b) LECTURE VIA LE STORE : query_soql compile le GXQL (émission Dialect) PUIS exécute. Les 2 events
         // sshd (legacy + store) sont comptés. Rows = vue typée du SPI.
         let v = store().query_soql(&p, "search source=sshd | stats count", 0, 0, None, query_budget_ms(), None).unwrap();
         let rows = Rows::from_query_json(&v).expect("forme {columns,rows,stats}");
@@ -1800,7 +1800,7 @@
         let dir = mk_overlay_dir("bad");
         write_overlay(&dir, "parsers", "broken.json", r#"{ pas du json "#);              // JSON cassé
         write_overlay(&dir, "parsers", "badrx.json", r#"{"name":"bad-rx","pattern":"(?P<x>","enabled":true}"#); // regex invalide
-        write_overlay(&dir, "rules", "badrule.json", r#"{"name":"bad-rule","query":"search x | stats nope(y)","is_soql":true}"#); // SOQL invalide
+        write_overlay(&dir, "rules", "badrule.json", r#"{"name":"bad-rule","query":"search x | stats nope(y)","is_soql":true}"#); // GXQL invalide
         write_overlay(&dir, "rules", "badmitre.json", r#"{"name":"bad-mitre","query":"search severity>=3 | stats count","is_soql":true,"mitre":"XXXX"}"#); // MITRE invalide
         write_overlay(&dir, "parsers", "good.json", r#"{"name":"good-parser","pattern":"ok=(?P<ok>\\d+)","enabled":true}"#); // valide
         load_overlays_dir(&conn, &dir); // NE doit PAS paniquer
@@ -1824,7 +1824,7 @@
     #[test]
     fn shipped_config_d_examples_load() {
         // Garde-fou : les EXEMPLES livrés dans le repo (../config.d) doivent réellement charger (regex +
-        // SOQL valides), pas être silencieusement skippés. Chemin résolu via CARGO_MANIFEST_DIR (= daemon/).
+        // GXQL valides), pas être silencieusement skippés. Chemin résolu via CARGO_MANIFEST_DIR (= daemon/).
         let conn = test_db();
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../config.d");
         load_overlays_dir(&conn, &root);
@@ -2011,7 +2011,7 @@
     }
 
     /// GARDE-FOU — le contenu de détection SHIPPÉ (config.d réel) charge : les 2 nouveaux parseurs (nft/CF) et
-    /// les 3 nouvelles règles low-and-slow sont posés managed=1 ET compilent (regex + SOQL valides), pas
+    /// les 3 nouvelles règles low-and-slow sont posés managed=1 ET compilent (regex + GXQL valides), pas
     /// silencieusement skippés. Chemin RÉEL load_overlays_dir sur ../config.d.
     #[test]
     fn shipped_config_d_scan_content_loads() {
@@ -2060,7 +2060,7 @@
         }
     }
 
-    /// RÈGLE RÉELLE #1 (Sysmon process_creation, |contains) -> SOQL + métadonnées correctes.
+    /// RÈGLE RÉELLE #1 (Sysmon process_creation, |contains) -> GXQL + métadonnées correctes.
     #[test]
     fn sigma_process_creation_contains_translates() {
         let doc = json!({
@@ -2076,8 +2076,8 @@
         assert_eq!(t.mitre, "T1033", "attack.t1033 -> T1033");
         assert_eq!(t.op, ">");
         assert_eq!(t.threshold, 0.0);
-        // C'est une règle Plume VALIDE (recompile via le compilo SOQL du cœur).
-        assert!(rule_sql(&t.query, true, t.window_s).is_ok(), "le SOQL produit doit compiler");
+        // C'est une règle Plume VALIDE (recompile via le compilo GXQL du cœur).
+        assert!(rule_sql(&t.query, true, t.window_s).is_ok(), "le GXQL produit doit compiler");
     }
 
     /// RÈGLE RÉELLE #2 (firewall, `selection and not filter` avec liste) -> égalité + `not in`.
@@ -2102,7 +2102,7 @@
     }
 
     /// Les modificateurs `|contains` vs `|startswith` mappent DIFFÉREMMENT (non ancré vs ancré début) ;
-    /// la ponctuation littérale (`/`) est échappée sans casser SOQL.
+    /// la ponctuation littérale (`/`) est échappée sans casser GXQL.
     #[test]
     fn sigma_contains_vs_startswith_map_correctly() {
         let mk = |k: &str| json!({
@@ -2157,7 +2157,7 @@
         // (e) match sur null (existence)
         let e = sigma_translate(&base(json!({ "selection": {"user": null}, "condition": "selection" }))).unwrap_err();
         assert!(e.contains("null"), "null doit être flaggé : {e}");
-        // (f) champ imbriqué (non-identifiant SOQL)
+        // (f) champ imbriqué (non-identifiant GXQL)
         let e = sigma_translate(&base(json!({ "selection": {"winlog.event_data.X": "y"}, "condition": "selection" }))).unwrap_err();
         assert!(e.contains("non mappable") || e.contains("imbriqué"), "champ imbriqué doit être flaggé : {e}");
         // (g) agrégation Sigma
@@ -2800,7 +2800,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     // --- DURCISSEMENT 3a : SQL brut réservé admin -----------------------------------------------------
     #[test]
     fn raw_sql_rule_gate_admin_only() {
-        // SOQL (langage borné, read-only) -> tout rôle OK.
+        // GXQL (langage borné, read-only) -> tout rôle OK.
         assert!(raw_sql_allowed(true, "editor"));
         assert!(raw_sql_allowed(true, "viewer"));
         assert!(raw_sql_allowed(true, "admin"));
@@ -3525,7 +3525,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
 
     // ============================================================================================
     // T1190 (Exploit Public-Facing Application) — les DEUX règles overlay config.d/rules/t1190-*.json
-    // CHARGENT (parse + SOQL compile via load_overlays_dir/rule_sql), puis TIRENT via l'ORDONNANCEUR
+    // CHARGENT (parse + GXQL compile via load_overlays_dir/rule_sql), puis TIRENT via l'ORDONNANCEUR
     // (run_due_rules, PAS le dry-run) sur de la télémétrie CIM synthétique. Calque de
     // scheduled_run_due_rules_fires_rule22_srcip_5xx_correlation (rollup.rs). Ferme l'angle mort :
     // avant, le seul signal T1190 était le seed `source=web` — INERTE (web.sh vide, CF absorbe au edge).
@@ -3552,7 +3552,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
             let w = Connection::open(&p).unwrap();
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
             let _ = migrate(&w);
-            // Chemin RÉEL de chargement des overlays (valide + compile la SOQL, pose managed=1).
+            // Chemin RÉEL de chargement des overlays (valide + compile la GXQL, pose managed=1).
             load_overlays_dir(&w, &dir);
 
             // Les deux règles ont chargé, managed=1, enabled=1, mitre=T1190 (preuve parse + compile).

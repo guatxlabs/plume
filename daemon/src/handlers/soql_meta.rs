@@ -1,4 +1,4 @@
-//! SOQL completion metadata (IDE-like autocomplete) — surfaces de LECTURE cheap/read-only pour la
+//! GXQL completion metadata (IDE-like autocomplete) — surfaces de LECTURE cheap/read-only pour la
 //! complétion contextuelle de la barre Explore. 100 % natif : vocabulaire grammatical STATIQUE (consts
 //! du cœur `guatx_core::soql`, source unique de vérité du compilateur fermé), champs CIM, valeurs
 //! connues BORNÉES (enums CIM + `source` distinct du rollup pré-agrégé — JAMAIS un scan `event`), et une
@@ -15,7 +15,7 @@ use guatx_core::soql::{
     SOQL_KEYWORDS, SOQL_PIPE_COMMANDS, SOQL_STATS_FUNCTIONS,
 };
 
-/// Bibliothèque de gabarits SOQL EMBARQUÉE (`include_str!` -> zéro I/O au runtime, servie verbatim).
+/// Bibliothèque de gabarits GXQL EMBARQUÉE (`include_str!` -> zéro I/O au runtime, servie verbatim).
 /// La source vit dans `plume/docs/soql-templates/` : le Dockerfile la COPIE dans le contexte de build
 /// AVANT `cargo build` (cf. `COPY plume/docs/soql-templates` — gotcha include_str-hors-daemon). Chaque
 /// `soql` est prouvé compilable par le test `soql_templates_all_compile` -> un gabarit invalide casse la CI.
@@ -25,10 +25,10 @@ const SOQL_TEMPLATES_JSON: &str = include_str!("../../../docs/soql-templates/tem
 // v130 — DOCUMENTATION INLINE (feature 2) + LIVE VALIDATION (feature 1).
 // =====================================================================================================
 
-/// Longueur MAX du SOQL accepté par `/api/soql/validate`. Borne défensive anti-abus : la compilation est en
+/// Longueur MAX du GXQL accepté par `/api/soql/validate`. Borne défensive anti-abus : la compilation est en
 /// µs et le client débounce, mais on refuse un corps déraisonnable AVANT tout traitement (miroir des caps de
 /// message 8 Kio du daemon ; le compilateur borne de toute façon en interne). Au-delà -> `valid:false` +
-/// message, ZÉRO compilation. Le chemin réel `/api/query` n'a pas de cap dur sur la chaîne SOQL -> on en pose
+/// message, ZÉRO compilation. Le chemin réel `/api/query` n'a pas de cap dur sur la chaîne GXQL -> on en pose
 /// un sain ici puisque c'est un endpoint appelé à chaque frappe.
 pub(crate) const SOQL_VALIDATE_MAX_LEN: usize = 8192;
 
@@ -234,8 +234,8 @@ pub(crate) async fn soql_schema(State(st): State<AppState>, Extension(au): Exten
     }))
 }
 
-/// POST /api/soql/validate — VALIDATION « compile-as-you-type » : compile le SOQL fourni via le compilateur
-/// FERMÉ `guatx_core::soql::to_sql` (le MÊME dont le chemin SOQL de `/api/query` est ⊆) et renvoie
+/// POST /api/soql/validate — VALIDATION « compile-as-you-type » : compile le GXQL fourni via le compilateur
+/// FERMÉ `guatx_core::soql::to_sql` (le MÊME dont le chemin GXQL de `/api/query` est ⊆) et renvoie
 /// `{valid: bool, error?: string}`. Read-only, viewer+ (`is_readonly_post` -> mutating=false -> route_min_role
 /// Read). 100 % natif (aucun modèle, aucun appel externe).
 ///
@@ -264,7 +264,7 @@ pub(crate) async fn soql_validate(Json(body): Json<Value>) -> Json<Value> {
     }
 }
 
-/// GET /api/soql/templates — bibliothèque de gabarits SOQL curée (snippet palette). Servie depuis le JSON
+/// GET /api/soql/templates — bibliothèque de gabarits GXQL curée (snippet palette). Servie depuis le JSON
 /// embarqué (verbatim). Read-only, viewer+. Chaque `soql` est prouvé compilable (test dédié).
 pub(crate) async fn soql_templates() -> Response {
     // Servie telle quelle (déjà du JSON valide, validé au build par le test de compilation des gabarits).

@@ -1,4 +1,4 @@
-//! Requête analytique (P3) en lecture seule : handler `query` (SQL brut réservé admin / SOQL ouvert),
+//! Requête analytique (P3) en lecture seule : handler `query` (SQL brut réservé admin / GXQL ouvert),
 //! annulation `cancel`, et export (`export_max_rows`, `csv_cell`/`result_to_csv`/
 //! `result_to_json_records`, `safe_export_name`, handler `export`).
 //! Extrait de main.rs (refactor split #25 — byte-identique).
@@ -177,7 +177,7 @@ fn cold_keyset_vectorized_page(
 
 // Requête analytique (P3) : SQL ou soql, en LECTURE SEULE (spawn_blocking).
 // SQL BRUT = ADMIN : `au` sert à réserver le champ `sql` BRUT (is_soql=false) à l'admin ;
-// le chemin SOQL/search reste OUVERT à TOUS les rôles (viewer inclus).
+// le chemin GXQL/search reste OUVERT à TOUS les rôles (viewer inclus).
 pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(body): Json<Value>) -> Response {
     let _mt = crate::search_timer(); // #51 DAY-2 OPS : latence recherche (p50/p95) enregistrée à la sortie (Drop)
     // FIX perf (métrique honnête) : chrono à l'ENTRÉE -> couvre TOUT (attente du permit sémaphore +
@@ -193,7 +193,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     let qid_owned: Option<String> = body.get("qid").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     // KEYSET (#28) — le client OPTE dans la pagination par CURSEUR avec `keyset:true`. Le browse Explore raw
     // l'utilise pour parcourir l'INTÉGRALITÉ du match-set (millions de lignes auditd-7d) sans le cap 10 000 qui
-    // CACHAIT des événements. N'a d'effet que sur le chemin SOQL (la compilation cursor_id est SOQL-only) : un
+    // CACHAIT des événements. N'a d'effet que sur le chemin GXQL (la compilation cursor_id est GXQL-only) : un
     // `sql` brut admin retombe sur la pagination offset habituelle. Off (défaut) -> chemins offset/count intacts.
     let keyset = body.bool_field("keyset", false);
     // KEYSET APPLICABILITÉ (fix #-panels « no such column: ts/id ») : un pipeline projetant `| table`/`| fields`
@@ -207,10 +207,10 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     let mut rollup_meta: Option<(bool, bool, Option<String>)> = None;
     // #18 P3 — UNION hot∪cold : `Some(B)` (frontière jour) si le tier cold est ON ET que la fenêtre atteint
     // SOUS `B` (territoire cold). None (feature off / cold off / fenêtre entièrement HOT / SQL brut) -> chemin
-    // HOT byte-identique. Posé dans la branche SOQL ci-dessous (sous gate compile+runtime).
+    // HOT byte-identique. Posé dans la branche GXQL ci-dessous (sous gate compile+runtime).
     #[allow(unused_mut)]
     let mut cold_boundary: Option<i64> = None;
-    // #18 P4a — SOQL post-exclusion capturé pour le ROUTEUR VECTORISÉ (pur-froid + vectorisable). Posé UNIQUEMENT
+    // #18 P4a — GXQL post-exclusion capturé pour le ROUTEUR VECTORISÉ (pur-froid + vectorisable). Posé UNIQUEMENT
     // quand masques VIDES et hors keyset (gate #3) ; None sinon -> le routeur n'est jamais tenté (fallback
     // = chemin actuel cold_union_query inchangé). Mode 0 / sans feature : variable absente.
     #[cfg(feature = "cold_tier")]
@@ -232,7 +232,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         // (les tables event_rollup portent src_ip/host EN CLAIR -> les servir court-circuiterait le masque) et
         // on compile via le chemin masqué (masque émis DANS le SQL, avant agrégation).
         let masks = effective_masks(req_db_path(&st, &au).as_str(), &au.role, &au.tenant, env);
-        // #18 P4a — capture le SOQL post-exclusion pour le routeur vectorisé quand masques VIDES et hors keyset
+        // #18 P4a — capture le GXQL post-exclusion pour le routeur vectorisé quand masques VIDES et hors keyset
         // (le routeur ne reproduit ni HASH/MASK ni le browse par curseur). Non vide -> le routeur sera tenté sur
         // le chemin cold non paginé ; échec de routage -> fallback cold_union_query (aucune régression).
         #[cfg(feature = "cold_tier")]
@@ -320,11 +320,11 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     } else {
         // SQL BRUT = ADMIN — le champ `sql` BRUT (is_soql=false) lit l'INTÉGRALITÉ de la base
         // (tout `SELECT … FROM …`, y compris user.hash / token.token_hash) : RÉSERVÉ ADMIN, exactement comme
-        // les règles (validate_detection_content) et les panneaux (panel_create/update). Le chemin SOQL/search
+        // les règles (validate_detection_content) et les panneaux (panel_create/update). Le chemin GXQL/search
         // (branche `if` supra) reste OUVERT à TOUS les rôles — c'est le langage de lecture prévu du viewer.
         // Fail-closed via raw_sql_allowed : is_soql=false + rôle non-admin -> 403 (message clair, pas d'exécution).
         if !raw_sql_allowed(false, &au.role) {
-            return forbidden("SQL brut réservé à l'administrateur (utilisez SOQL)");
+            return forbidden("SQL brut réservé à l'administrateur (utilisez GXQL)");
         }
         let raw = apply_excl_placeholders(body.str_field("sql").trim(), false);
         (raw.replace("__FROM__", &from.to_string()).replace("__TO__", &to.to_string()), false)
@@ -366,7 +366,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         return Json(json!({ "count_only": true, "total": total })).into_response();
     }
     // KEYSET (#28) — chemin browse par CURSEUR (parcours intégral, ZÉRO plafond de comptage). N'est actif que
-    // sur le chemin SOQL (`from_soql` : la clé de tri `id` n'existe que via la compilation cursor_id). `cursor`
+    // sur le chemin GXQL (`from_soql` : la clé de tri `id` n'existe que via la compilation cursor_id). `cursor`
     // OPTIONNEL continue une page précédente : `{ts:<i64>, id:<i64>}`. SÉCURITÉ : `ts`/`id` sont parsés en i64
     // STRICT (`as_i64()` -> None si non entier) puis formatés dans le SQL -> injection IMPOSSIBLE (jamais de
     // texte non fiable interpolé). Curseur mal formé / absent -> première page (pas d'erreur).
@@ -697,7 +697,7 @@ pub(crate) async fn cancel(State(st): State<AppState>, Extension(au): Extension<
 
 // ================================================================================================
 // EXPORT (CSV / JSON) — P0 UI. INVARIANT DE SÉCURITÉ : ne fait RIEN d'autre que /api/query, en changeant
-// UNIQUEMENT le format de sortie. Même compilation (SOQL ouvert à tous ; champ `sql` BRUT réservé admin via
+// UNIQUEMENT le format de sortie. Même compilation (GXQL ouvert à tous ; champ `sql` BRUT réservé admin via
 // raw_sql_allowed), même exécuteur run_query_ex -> donc MÊME authorizer read-pool qui DENY user.hash /
 // token.token_hash / connector.secret au prepare() (non contournable, même en SQL brut admin), MÊME budget/
 // watchdog, MÊME plafond de lignes. Un export ne peut donc PAS voir une colonne que /api/query ne verrait
@@ -781,7 +781,7 @@ pub(crate) fn result_to_csv(v: &Value) -> String {
 }
 
 /// Sérialise un résultat en JSON « records » ([{col: val, ...}, ...]) — le format le plus consommable par
-/// un tiers. Colonnes homonymes : la dernière l'emporte (rare en SOQL/table). Valeurs déjà caviardées par
+/// un tiers. Colonnes homonymes : la dernière l'emporte (rare en GXQL/table). Valeurs déjà caviardées par
 /// run_query_ex (l'authorizer a refusé les colonnes secrètes au prepare()).
 pub(crate) fn result_to_json_records(v: &Value) -> Value {
     let cols: Vec<String> = v
@@ -820,7 +820,7 @@ pub(crate) fn safe_export_name(raw: Option<&str>) -> String {
 
 /// EXPORT CSV/JSON — même gating et même exécuteur que /api/query (cf. bloc EXPORT supra). Body :
 /// `{ format:"csv"|"json", soql?|sql?, from?, to?, limit?, name? }`. Enregistré en `readonly_post`
-/// (POST de LECTURE) -> viewer autorisé pour SOQL ; `sql` brut refusé au non-admin (raw_sql_allowed).
+/// (POST de LECTURE) -> viewer autorisé pour GXQL ; `sql` brut refusé au non-admin (raw_sql_allowed).
 /// Réponse = fichier en pièce jointe (Content-Disposition: attachment) + X-Plume-Truncated si le plafond
 /// de lignes a été atteint.
 pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(body): Json<Value>) -> Response {
@@ -899,7 +899,7 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
         // FAILLE A (miroir /api/query) : le champ `sql` BRUT lit toute la base -> RÉSERVÉ ADMIN. L'authorizer
         // read-pool DENY quand même les colonnes secrètes, même pour un admin (défense en profondeur).
         if !raw_sql_allowed(false, &au.role) {
-            return forbidden("SQL brut réservé à l'administrateur (utilisez SOQL)");
+            return forbidden("SQL brut réservé à l'administrateur (utilisez GXQL)");
         }
         let raw = apply_excl_placeholders(body.str_field("sql").trim(), false);
         (raw.replace("__FROM__", &from.to_string()).replace("__TO__", &to.to_string()), false)

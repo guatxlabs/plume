@@ -158,7 +158,7 @@ fn journal_action(msg: &str) -> Option<&'static str> {
 /// TAMPON DE VERSION CIM PAR EVENT (Reorg Wave 2) — pose `fields.cim = CIM_VERSION` sur CHAQUE event
 /// à l'ingest, pour rendre la DÉRIVE DE CONTRAT DÉTECTABLE AU REPOS : une ligne SANS la clé a été écrite
 /// AVANT ce tampon (lue « pré-tampon », convention inconnue) ; une valeur ANCIENNE (< `CIM_VERSION`) signale
-/// un contrat périmé sur des données figées. Requêtable en SOQL (`json_extract(fields,'$.cim')`).
+/// un contrat périmé sur des données figées. Requêtable en GXQL (`json_extract(fields,'$.cim')`).
 ///
 /// LOWEST-BLAST-RADIUS choisi : un champ du sac `fields` déjà sérialisé, PAS une colonne — aucune migration
 /// de schéma, aucun changement d'`EventRow`/`EVENT_INSERT_SQL` (donc aucune parité de store à re-prouver).

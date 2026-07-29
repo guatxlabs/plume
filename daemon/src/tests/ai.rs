@@ -94,7 +94,7 @@ async fn ai_provider_crud_redacts_secret() {
     assert_eq!(code, StatusCode::FORBIDDEN, "list réservé admin");
 }
 
-// ---- inertie runtime : sans PLUME_AI_ENABLE / sans provider actif, NL→SOQL n'agit pas (aucun egress) ----
+// ---- inertie runtime : sans PLUME_AI_ENABLE / sans provider actif, NL→GXQL n'agit pas (aucun egress) ----
 #[cfg(feature = "ai")]
 #[tokio::test]
 async fn ai_nl2soql_inert_without_enable_or_provider() {
@@ -105,7 +105,7 @@ async fn ai_nl2soql_inert_without_enable_or_provider() {
     let (code, _v) = tok_resp_json(ai_nl2soql(
         State(st.clone()), Extension(ergo_au("viewer")), Json(json!({ "nl": "erreurs auth" })),
     ).await).await;
-    assert_eq!(code, StatusCode::CONFLICT, "NL→SOQL inerte sans PLUME_AI_ENABLE");
+    assert_eq!(code, StatusCode::CONFLICT, "NL→GXQL inerte sans PLUME_AI_ENABLE");
 
     // ENABLE posé mais AUCUN provider actif -> 409 (jamais d'egress).
     std::env::set_var("PLUME_AI_ENABLE", "1");

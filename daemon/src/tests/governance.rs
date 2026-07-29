@@ -158,7 +158,7 @@
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// INVARIANT : les overlays config.d sont SOQL-ONLY. Une règle managed=1 en SQL brut
+    /// INVARIANT : les overlays config.d sont GXQL-ONLY. Une règle managed=1 en SQL brut
     /// (is_soql=false) est REFUSÉE au chargement (elle contournerait sinon le gate admin raw_sql_allowed +
     /// l'audit) ; une règle is_soql=true du même dossier CHARGE normalement (managed=1). Un event de refus
     /// (source=plume-config, kind=config.overlay.reject) est émis -> visible in-console, pas juste sur stdout.
@@ -166,20 +166,20 @@
     fn oac_overlay_rejects_raw_sql_rule() {
         let conn = test_db();
         let dir = mk_overlay_dir("oac-rawsql");
-        // règle SOQL légitime -> charge. règle raw-SQL managed=1 -> refusée.
+        // règle GXQL légitime -> charge. règle raw-SQL managed=1 -> refusée.
         write_overlay(&dir, "rules", "soql.json", r#"{"name":"ov-soql-ok","query":"search severity>=3 | stats count","is_soql":true,"mitre":"T1110"}"#);
         write_overlay(&dir, "rules", "raw.json", r#"{"name":"ov-rawsql-bad","query":"SELECT * FROM event WHERE severity>=3","is_soql":false,"mitre":"T1110"}"#);
         // playbook raw-SQL managed=1 -> refusé aussi (même frontière).
         write_overlay(&dir, "playbooks", "rawpb.json", r#"{"name":"ov-rawpb-bad","query":"SELECT src FROM event","is_soql":false,"action_kind":"notify"}"#);
         load_overlays_dir(&conn, &dir); // NE doit PAS paniquer
         let ok: i64 = conn.query_row("SELECT COUNT(*) FROM rule WHERE name='ov-soql-ok' AND managed=1", [], |r| r.get(0)).unwrap();
-        assert_eq!(ok, 1, "règle SOQL overlay CHARGE (managed=1)");
+        assert_eq!(ok, 1, "règle GXQL overlay CHARGE (managed=1)");
         let bad: i64 = conn.query_row("SELECT COUNT(*) FROM rule WHERE name='ov-rawsql-bad'", [], |r| r.get(0)).unwrap();
-        assert_eq!(bad, 0, "règle raw-SQL managed=1 REFUSÉE (SOQL-only)");
+        assert_eq!(bad, 0, "règle raw-SQL managed=1 REFUSÉE (GXQL-only)");
         let badpb: i64 = conn.query_row("SELECT COUNT(*) FROM playbook WHERE name='ov-rawpb-bad'", [], |r| r.get(0)).unwrap();
-        assert_eq!(badpb, 0, "playbook raw-SQL managed=1 REFUSÉ (SOQL-only)");
+        assert_eq!(badpb, 0, "playbook raw-SQL managed=1 REFUSÉ (GXQL-only)");
         // event de refus émis (source=plume-config, kind config.overlay.reject) -> traçable in-console.
-        let ev: i64 = conn.query_row("SELECT COUNT(*) FROM event WHERE source='plume-config' AND category='config' AND message LIKE '%refus%SOQL%'", [], |r| r.get(0)).unwrap();
+        let ev: i64 = conn.query_row("SELECT COUNT(*) FROM event WHERE source='plume-config' AND category='config' AND message LIKE '%refus%GXQL%'", [], |r| r.get(0)).unwrap();
         assert!(ev >= 2, "au moins 2 events de refus émis (règle + playbook raw-SQL) — visibles in-console");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -401,7 +401,7 @@
     }
 
     /// ROLLUP POSTURE : la posture SCA ingérée (Wazuh) est comptée pass/fail PAR (cadre, contrôle) via le MÊME
-    /// SOQL que le rollup/handler, puis agrégée. Prouve la couture posture ingérée -> compteurs de conformité.
+    /// GXQL que le rollup/handler, puis agrégée. Prouve la couture posture ingérée -> compteurs de conformité.
     #[test]
     fn compliance_posture_rollup_counts() {
         let conn = test_db();
@@ -410,7 +410,7 @@
         ingest_wazuh(&conn, dbp, "c1", mk("1", "failed"));
         ingest_wazuh(&conn, dbp, "c2", mk("2", "failed"));
         ingest_wazuh(&conn, dbp, "c3", mk("3", "passed"));
-        // MÊME SOQL que le handler/rollup, compilé par le cœur (masque VIDE = non masqué).
+        // MÊME GXQL que le handler/rollup, compilé par le cœur (masque VIDE = non masqué).
         let sql = soql_to_sql_x(&compliance_posture_soql(), 0, 0, None).unwrap();
         let mut st = conn.prepare(&sql).unwrap();
         let rows: Vec<(String, String, String)> = st.query_map([], |r| Ok((
@@ -442,7 +442,7 @@
         let v: i64 = conn.query_row("SELECT COUNT(*) FROM view WHERE name='Conformité (posture)'", [], |r| r.get(0)).unwrap();
         assert_eq!(v, 1, "vue Conformité (posture) créée une fois");
         // CHAQUE requête de panneau (dont le filtre wildcard `posture_framework=*<fw>*`) COMPILE via le cœur
-        // SOQL (injection-safe) -> pas de panneau mort. 12 panneaux (3 cadres × 4).
+        // GXQL (injection-safe) -> pas de panneau mort. 12 panneaux (3 cadres × 4).
         let mut st = conn.prepare("SELECT p.query FROM panel p JOIN dashboard d ON p.dashboard_id=d.id WHERE d.name LIKE 'Conformité — %'").unwrap();
         let queries: Vec<String> = st.query_map([], |r| r.get::<_, String>(0)).unwrap().flatten().collect();
         assert_eq!(queries.len(), 12, "12 panneaux de conformité (3 cadres × 4)");
@@ -452,7 +452,7 @@
     }
 
     /// SÉCURITÉ — une valeur Sigma HOSTILE (quotes/pipe/SQL) est NEUTRALISÉE : hex-échappée dans le
-    /// motif regex, donc INVISIBLE au découpage SOQL (aucune étape de pipeline injectée) et le SOQL
+    /// motif regex, donc INVISIBLE au découpage GXQL (aucune étape de pipeline injectée) et le GXQL
     /// compile. Pas d'interpolation « à cru ».
     #[test]
     fn sigma_injection_is_neutralized() {
@@ -469,11 +469,11 @@
         assert!(t.query.contains("\\x27"), "' encodé \\x27");
         assert!(t.query.contains("\\x22"), "\" encodé \\x22");
         assert!(t.query.contains("\\x20"), "espace encodé \\x20");
-        // et ça compile via le compilo SOQL du cœur (chemin injection-safe).
+        // et ça compile via le compilo GXQL du cœur (chemin injection-safe).
         assert!(rule_sql(&t.query, true, t.window_s).is_ok());
     }
 
-    // helper local : nombre d'étapes SOQL (pipes de 1er niveau).
+    // helper local : nombre d'étapes GXQL (pipes de 1er niveau).
     fn soql_split_pipes_count(q: &str) -> usize {
         guatx_core::soql::soql_split_pipes(q).len()
     }

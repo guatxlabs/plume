@@ -140,7 +140,7 @@ pub(crate) async fn token_create(State(st): State<AppState>, Extension(au): Exte
                 "name": name, "kind": kind, "host": host_opt, "role": role,
                 "token": secret,
                 "hec_path": "/services/collector",
-                "datasource_path": "/api/ds/query", // #52 : endpoint SOQL-HTTP à pointer depuis Grafana Infinity
+                "datasource_path": "/api/ds/query", // #52 : endpoint GXQL-HTTP à pointer depuis Grafana Infinity
             })).into_response()
         }
         Err(_) => {

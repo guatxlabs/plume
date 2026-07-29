@@ -693,7 +693,7 @@
         let _ = std::fs::remove_file(&pb);
     }
 
-    // --- LOOKUP (v61) : upload -> lookup_kv, puis requête SOQL `lookup` enrichit -----------------------
+    // --- LOOKUP (v61) : upload -> lookup_kv, puis requête GXQL `lookup` enrichit -----------------------
     #[test]
     fn build_lookup_kv_serializes_non_key_cols() {
         // `key_field` devient la CLÉ ; les autres colonnes (requêtables) sont sérialisées dans `val`.
@@ -731,7 +731,7 @@
                 params![now(), ip],
             ).unwrap();
         }
-        // (3) REQUÊTE SOQL : enrichissement src_ip -> country via le lookup geoip.
+        // (3) REQUÊTE GXQL : enrichissement src_ip -> country via le lookup geoip.
         let sql = soql_to_sql_x("search source=web | lookup geoip src_ip OUTPUT country", 0, 0, None).unwrap();
         let mut stmt = conn.prepare(&format!("SELECT src_ip, country FROM ({sql}) ORDER BY src_ip")).unwrap();
         let got: Vec<(String, Option<String>)> = stmt
@@ -749,13 +749,13 @@
         );
     }
 
-    /// LOOKUP × DÉTECTION ORDONNANCÉE (Tier-1 #36) : une règle SOQL peut RÉFÉRENCER un lookup pour
+    /// LOOKUP × DÉTECTION ORDONNANCÉE (Tier-1 #36) : une règle GXQL peut RÉFÉRENCER un lookup pour
     /// enrichir puis FILTRER, et ce chemin traverse l'ORDONNANCEUR (`run_due_rules`), pas seulement le
     /// dry-run. On prouve DEUX choses en une passe :
     ///   (a) FIRING — règle `search source=web | lookup badips src_ip OUTPUT flagged | where flagged in
     ///       (bad) | stats count` : seuls les events dont l'IP est dans le lookup denylist sont comptés ->
     ///       l'alerte TIRE avec last_value = nb d'events flaggés (enrichissement utilisable en détection).
-    ///   (b) FAIL-CLOSED — règle avec un champ-clé de lookup INVALIDE (`lookup badips bad-field`) : le SOQL
+    ///   (b) FAIL-CLOSED — règle avec un champ-clé de lookup INVALIDE (`lookup badips bad-field`) : le GXQL
     ///       NE COMPILE PAS (rule_sql Err) -> l'ordonnanceur la traite comme un échec d'éval : il N'ÉCRIT PAS
     ///       un faux last_value 0.0 « tout clair » et NE LÈVE PAS d'alerte (mêmes semantics fail-closed que
     ///       (6), appliquées au seam lookup). Garde-fou contre un lookup cassé qui simulerait un all-clear.
@@ -902,7 +902,7 @@
         conn.prepare(&r38).unwrap_or_else(|e| panic!("SQL règle 38 invalide : {e}\n{r38}"));
 
         // (D) PANNEAUX (affichage seul) — `compile_panel_sql` SUBSTITUE bien l'exclusion -> SQL valide, plus
-        // aucun placeholder résiduel. Panneau web SOQL (src_ip + vhost) + panneaux banpass natifs.
+        // aucun placeholder résiduel. Panneau web GXQL (src_ip + vhost) + panneaux banpass natifs.
         let web = "search source=web __OPERATOR_EXCL__ __SELF_EXCL__ | where severity>=2 | sort -ts | table vhost,path,status,src_ip,ua";
         let wsql = compile_panel_sql(web, true, now() - 3600, 0, None).unwrap_or_else(|e| panic!("compilation web échouée : {e}"));
         conn.prepare(&wsql).unwrap_or_else(|e| panic!("SQL web invalide : {e}\n{wsql}"));
@@ -934,7 +934,7 @@
             "search source=cloudflare action=challenged | stats dc(src_ip)",
         ];
         for q in cf_queries {
-            let sql = rule_sql(q, true, 900).unwrap_or_else(|e| panic!("compilation SOQL échouée pour `{q}` : {e}"));
+            let sql = rule_sql(q, true, 900).unwrap_or_else(|e| panic!("compilation GXQL échouée pour `{q}` : {e}"));
             conn.prepare(&sql).unwrap_or_else(|e| panic!("SQL invalide pour `{q}` : {e}\nSQL: {sql}"));
         }
         // le fix soql_agg : dc(vhost) doit json_extract le champ JSON (pas COUNT(DISTINCT "vhost")).
@@ -1048,7 +1048,7 @@
 
     #[test]
     fn seed_web_panels_rewritten_to_dim_rollup() {
-        // les panneaux GROUP-BY purs sont semés en is_soql=0 sur event_dim_rollup ; les autres restent SOQL.
+        // les panneaux GROUP-BY purs sont semés en is_soql=0 sur event_dim_rollup ; les autres restent GXQL.
         let conn = test_db();
         seed_web_dashboard(&conn);
         let (q, is_soql): (String, i64) = conn

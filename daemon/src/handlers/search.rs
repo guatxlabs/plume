@@ -55,10 +55,10 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
                             where_extra.push(format!("e.{col} LIKE '{}'", v.replace('*', "%")));
                         } else if col == "category" && v == CIM_EXEC_CANON {
                             // ALIAS DE LECTURE CIM (dette de migration, péremption 2027-07-23) : cette barre
-                            // construit son SQL À LA MAIN — elle NE passe PAS par le compilo SOQL, donc pas par
+                            // construit son SQL À LA MAIN — elle NE passe PAS par le compilo GXQL, donc pas par
                             // `cim_read_alias_exec`. Sans cette branche, `category:exec` ici serait AVEUGLE sur
                             // l'historique `process` des collecteurs Windows d'avant le 2026-07-23 alors que la
-                            // MÊME question posée en SOQL le trouverait — deux réponses pour une question.
+                            // MÊME question posée en GXQL le trouverait — deux réponses pour une question.
                             where_extra.push(format!("e.category IN ('{CIM_EXEC_CANON}','{CIM_EXEC_LEGACY}')"));
                         } else {                                           // champ:val -> exact
                             where_extra.push(format!("e.{col}='{v}'"));

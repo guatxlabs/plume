@@ -5,7 +5,7 @@
 //! Anthropic du trait `guatx_core::ai::AiProvider`, dont l'ÉGRESS passe VERBATIM par `ssrf_guard` +
 //! le client HTTP interne `http_call` (AUCUNE nouvelle crate réseau).
 //!
-//! INVARIANT CARDINAL (cf. core::ai) : l'IA propose du TEXTE SOQL, le compilo FERMÉ (`soql_to_sql_x`)
+//! INVARIANT CARDINAL (cf. core::ai) : l'IA propose du TEXTE GXQL, le compilo FERMÉ (`soql_to_sql_x`)
 //! dispose. Le daemon n'exécute JAMAIS le texte généré. RAM-neutre : inférence DISTANTE ; ce module ne
 //! fait que sérialiser du JSON, appeler dehors, parser du JSON. Aucun modèle/tokenizer/vecteur.
 mod presets;
@@ -125,7 +125,7 @@ fn ai_calls_per_min() -> u32 {
     std::env::var("PLUME_AI_MAX_CALLS_PER_MIN").ok().and_then(|v| v.parse().ok()).filter(|&n: &u32| n > 0).unwrap_or(30)
 }
 
-/// Consomme un jeton de budget pour `tenant`. Err si la fenêtre est saturée. NL→SOQL = 1 appel/question,
+/// Consomme un jeton de budget pour `tenant`. Err si la fenêtre est saturée. NL→GXQL = 1 appel/question,
 /// jamais par-event.
 pub(crate) fn budget_take(tenant: &str) -> Result<(), String> {
     let cap = ai_calls_per_min();
@@ -145,7 +145,7 @@ pub(crate) fn budget_take(tenant: &str) -> Result<(), String> {
 
 // ============================== IMPL PROVIDER HTTP (feature-gated) ==============================
 
-/// Exécute NL→SOQL de bout en bout. DEUX bras : `ai` (impl réelle) / non-`ai` (stub 501 « non compilé »).
+/// Exécute NL→GXQL de bout en bout. DEUX bras : `ai` (impl réelle) / non-`ai` (stub 501 « non compilé »).
 /// `compile` = couture du compilo FERMÉ (en prod `soql_to_sql_x`). Renvoie l'outcome pur (core) ou une
 /// erreur (dont la variante « non compilé » -> 501). AUCUNE exécution du SQL.
 #[cfg(not(feature = "ai"))]

@@ -10,7 +10,7 @@ use crate::*;
 // APRÈS migrate() + TOUS les seed_* -> un overlay GAGNE sur un builtin/seed du même `name` (override
 // opérateur durable, survit au re-seed). Chaque entrée est posée avec managed=1 (source = git ;
 // managed=2 = CRUD UI ; managed=0 = builtin/seed). IDEMPOTENT : UPSERT keyé par `name` -> re-jouer
-// donne le MÊME état. Fichier invalide (JSON cassé, regex/SOQL qui ne compile pas) -> WARNING + skip,
+// donne le MÊME état. Fichier invalide (JSON cassé, regex/GXQL qui ne compile pas) -> WARNING + skip,
 // JAMAIS de crash du boot.
 // =====================================================================================
 
@@ -156,7 +156,7 @@ pub(crate) fn load_overlay_dparsers(conn: &Connection, dir: &std::path::Path) ->
 
 /// Règles d'overlay : la requête soql/SQL doit COMPILER (rule_sql, même chemin que l'éval/test) + MITRE
 /// normalisé/validé (norm_mitre, comme rule_create). UPSERT keyé par name avec managed=1. INVARIANT :
-/// les overlays sont SOQL-ONLY -> une règle en SQL brut (is_soql=false) est REFUSÉE au chargement (elle
+/// les overlays sont GXQL-ONLY -> une règle en SQL brut (is_soql=false) est REFUSÉE au chargement (elle
 /// contournerait sinon le gate admin `raw_sql_allowed` + le ledger d'audit ; le raw SQL reste admin-only via l'API).
 pub(crate) fn load_overlay_rules(conn: &Connection, dir: &std::path::Path) -> u32 {
     let mut n = 0;
@@ -170,16 +170,16 @@ pub(crate) fn load_overlay_rules(conn: &Connection, dir: &std::path::Path) -> u3
         let query = v.get("query").and_then(|x| x.as_str()).unwrap_or("").to_string();
         let is_soql = v.get("is_soql").and_then(|x| x.as_bool()).unwrap_or(true);
         let window_s = v.get("window_s").and_then(|x| x.as_i64()).unwrap_or(3600);
-        // INVARIANT : les overlays config.d sont SOQL-ONLY. Une règle managed=1 en SQL brut
+        // INVARIANT : les overlays config.d sont GXQL-ONLY. Une règle managed=1 en SQL brut
         // (is_soql=false) contournerait le gate admin `raw_sql_allowed` du CRUD ET le ledger d'audit plume
         // (seul un commit git la tracerait). On la REFUSE au chargement (skip + WARN + event config-source, PAS
         // un crash). Le SQL brut reste une action admin-authorée, gatée et auditée, via l'API SEULEMENT.
         if !is_soql {
-            eprintln!("[overlays] refus règle raw-SQL managed=1 '{name}' — SOQL requis");
+            eprintln!("[overlays] refus règle raw-SQL managed=1 '{name}' — GXQL requis");
             let _ = audit_config_change(
                 conn, "config.overlay.reject",
-                &format!("règle overlay '{name}' refusée : SQL brut interdit (SOQL requis)"), 3,
-                &format!("overlay config.d : règle raw-SQL '{name}' refusée au chargement (SOQL-only)"),
+                &format!("règle overlay '{name}' refusée : SQL brut interdit (GXQL requis)"), 3,
+                &format!("overlay config.d : règle raw-SQL '{name}' refusée au chargement (GXQL-only)"),
                 &json!({ "op": "reject", "kind": "rule", "name": name, "reason": "raw-sql-overlay-forbidden" }).to_string(),
             );
             continue;
@@ -234,14 +234,14 @@ pub(crate) fn load_overlay_playbooks(conn: &Connection, dir: &std::path::Path) -
         let query = v.get("query").and_then(|x| x.as_str()).unwrap_or("").to_string();
         let is_soql = v.get("is_soql").and_then(|x| x.as_bool()).unwrap_or(true);
         let window_s = v.get("window_s").and_then(|x| x.as_i64()).unwrap_or(3600);
-        // INVARIANT : même frontière SOQL-only sur les playbooks overlay (query exécutée ->
+        // INVARIANT : même frontière GXQL-only sur les playbooks overlay (query exécutée ->
         // même classe de contournement du gate raw-SQL + audit). Raw-SQL managed=1 -> refus (skip + WARN + event).
         if !is_soql {
-            eprintln!("[overlays] refus playbook raw-SQL managed=1 '{name}' — SOQL requis");
+            eprintln!("[overlays] refus playbook raw-SQL managed=1 '{name}' — GXQL requis");
             let _ = audit_config_change(
                 conn, "config.overlay.reject",
-                &format!("playbook overlay '{name}' refusé : SQL brut interdit (SOQL requis)"), 3,
-                &format!("overlay config.d : playbook raw-SQL '{name}' refusé au chargement (SOQL-only)"),
+                &format!("playbook overlay '{name}' refusé : SQL brut interdit (GXQL requis)"), 3,
+                &format!("overlay config.d : playbook raw-SQL '{name}' refusé au chargement (GXQL-only)"),
                 &json!({ "op": "reject", "kind": "playbook", "name": name, "reason": "raw-sql-overlay-forbidden" }).to_string(),
             );
             continue;

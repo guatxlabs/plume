@@ -1,4 +1,4 @@
-//! Importeur Sigma (Slice #7 pièce 3) : traduction Sigma YAML -> règle Plume (SOQL). Transforms
+//! Importeur Sigma (Slice #7 pièce 3) : traduction Sigma YAML -> règle Plume (GXQL). Transforms
 //! purs sur serde_json::Value + le handler HTTP sigma_import. Extrait de main.rs (refactor split
 //! #25 — byte-identique).
 use crate::*;
@@ -7,7 +7,7 @@ use crate::*;
 //  SLICE #7 — PIÈCE 3 : IMPORTEUR SIGMA (Sigma YAML -> règle de détection Plume)
 // =====================================================================================
 //  Traduit une règle Sigma (standard ouvert de détection : logsource + detection{selection/
-//  condition} + tags) en une RÈGLE PLUME : requête SOQL (`search … | stats count`) + métadonnées
+//  condition} + tags) en une RÈGLE PLUME : requête GXQL (`search … | stats count`) + métadonnées
 //  (title -> name, level -> severity 0..4, tags attack.Txxxx -> MITRE). C'est le levier d'adoption #7
 //  (absorbe la bibliothèque de détection open-source) et il est ADDITIF : une règle Sigma = des
 //  lignes `rule` en plus, ZÉRO impact data-plane / mode 0.
@@ -15,13 +15,13 @@ use crate::*;
 //  PRINCIPE — JAMAIS de règle silencieusement fausse. Un construit non traduisible fidèlement est
 //  SIGNALÉ+IGNORÉ avec une raison claire (`Err(String)`), jamais émis comme une règle qui SOUS-matche
 //  (= angle mort) ou SUR-matche en silence. La couverture supportée est le sous-ensemble commun ;
-//  l'INEXprimable en SOQL (OU inter-champs, `1 of them`, agrégations, encodages base64/cidr…) est rejeté.
+//  l'INEXprimable en GXQL (OU inter-champs, `1 of them`, agrégations, encodages base64/cidr…) est rejeté.
 //
 //  SÉCURITÉ — INJECTION IMPOSSIBLE. Aucune valeur Sigma n'est interpolée « à cru » : chaque valeur
 //  string devient un motif REGEXP construit par `sigma_re_literal`/`sigma_re_wildcard` qui n'ÉMET QUE
-//  des caractères inertes pour le tokenizer SOQL (les caractères STRUCTURELS — espace, `|`, `"`, `()`,
+//  des caractères inertes pour le tokenizer GXQL (les caractères STRUCTURELS — espace, `|`, `"`, `()`,
 //  `[]`, `,`, `'`, backtick — sont hex-échappés `\xNN`, décodés par le moteur regex mais invisibles au
-//  découpage SOQL/pipe/`in`). La requête finale est de plus RECOMPILÉE par `rule_sql` (compilo SOQL du
+//  découpage GXQL/pipe/`in`). La requête finale est de plus RECOMPILÉE par `rule_sql` (compilo GXQL du
 //  cœur, `soql_to_sql_x`) AVANT tout stockage : échec de compilation -> rejet (garde-fou ultime).
 //
 //  COUVERTURE (cf. docs/SIGMA-IMPORTER.md) :
@@ -78,12 +78,12 @@ pub(crate) fn sigma_has_wildcard(s: &str) -> bool {
     false
 }
 
-/// Émet UN caractère littéral dans un motif regex de façon INERTE pour le tokenizer SOQL.
+/// Émet UN caractère littéral dans un motif regex de façon INERTE pour le tokenizer GXQL.
 ///   - alphanumérique / `_`                       -> verbatim.
-///   - STRUCTUREL SOQL (espace,`|`,`"`,`()`,`[]`,`,`,`'`,backtick) -> `\xNN` (invisible au découpage
-///     SOQL/pipe/`in`, décodé en littéral par le moteur regex).
+///   - STRUCTUREL GXQL (espace,`|`,`"`,`()`,`[]`,`,`,`'`,backtick) -> `\xNN` (invisible au découpage
+///     GXQL/pipe/`in`, décodé en littéral par le moteur regex).
 ///   - autre ponctuation ASCII imprimable (métacar. regex : `. * + ? ^ $ { } \ …`) -> `\c`
-///     (échappement backslash — valide en regex Rust pour toute ponctuation ASCII, et SOQL-sûr).
+///     (échappement backslash — valide en regex Rust pour toute ponctuation ASCII, et GXQL-sûr).
 ///   - contrôle / non-ASCII -> `\xNN` / `\x{..}`.
 pub(crate) fn sigma_push_literal_char(out: &mut String, c: char) {
     let u = c as u32;
@@ -103,7 +103,7 @@ pub(crate) fn sigma_push_literal_char(out: &mut String, c: char) {
 }
 
 /// String LITTÉRALE Sigma -> fragment regex qui la matche EXACTEMENT et n'émet QUE des caractères
-/// SOQL-inertes (cf. `sigma_push_literal_char`). Aucun joker interprété (usage : contains/startswith/…).
+/// GXQL-inertes (cf. `sigma_push_literal_char`). Aucun joker interprété (usage : contains/startswith/…).
 pub(crate) fn sigma_re_literal(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 2);
     for c in s.chars() { sigma_push_literal_char(&mut out, c); }
@@ -111,7 +111,7 @@ pub(crate) fn sigma_re_literal(s: &str) -> String {
 }
 
 /// Valeur Sigma AVEC jokers -> fragment regex : `*` -> `.*`, `?` -> `.`, `\*`/`\?`/`\\` -> littéraux,
-/// tout le reste hex/backslash-échappé (SOQL-inerte). Usage : égalité simple (les jokers y sont actifs).
+/// tout le reste hex/backslash-échappé (GXQL-inerte). Usage : égalité simple (les jokers y sont actifs).
 pub(crate) fn sigma_re_wildcard(s: &str) -> String {
     let mut out = String::new();
     let mut chars = s.chars().peekable();
@@ -131,7 +131,7 @@ pub(crate) fn sigma_re_wildcard(s: &str) -> String {
     out
 }
 
-/// Un motif `|re` brut est-il EMBARQUABLE tel quel dans un token SOQL ? (pas de caractère structurel
+/// Un motif `|re` brut est-il EMBARQUABLE tel quel dans un token GXQL ? (pas de caractère structurel
 /// qui casserait le découpage : `|`,`"`,`()`,`[]`,`,`,`'`,backtick, espace). Sinon -> `re` non supporté
 /// (on ne PEUT PAS hex-échapper un vrai regex sans en changer le sens : `|`=alternance, `[]`=classe…).
 pub(crate) fn sigma_regex_embeddable(re: &str) -> bool {
@@ -281,7 +281,7 @@ const SIGMA_FIELD_ALIAS: &[(&str, &str)] = &[
 ];
 
 /// Champ Sigma -> champ Plume. Alias connu -> colonne/champ dédié ; sinon le nom brut S'IL est un
-/// identifiant SOQL simple (`[A-Za-z0-9_]`, -> `fields.<Nom>` via json_extract, CASSE PRÉSERVÉE).
+/// identifiant GXQL simple (`[A-Za-z0-9_]`, -> `fields.<Nom>` via json_extract, CASSE PRÉSERVÉE).
 /// Nom imbriqué/à points/tiret (ex `winlog.event_data.X`) -> None (json_extract 1 niveau) -> flag.
 pub(crate) fn sigma_field_to_plume(field: &str) -> Option<String> {
     let f = field.trim();
@@ -333,7 +333,7 @@ pub(crate) fn sigma_collect_inert_fields(sel: &Value, out: &mut Vec<String>) {
     }
 }
 
-/// Traduit UNE entrée `field[|mods]: value` de sélection en token(s) SOQL (tous en ET). Les modificateurs
+/// Traduit UNE entrée `field[|mods]: value` de sélection en token(s) GXQL (tous en ET). Les modificateurs
 /// de comparaison string sont CASSE-INSENSIBLE par défaut (`(?i)`, conforme Sigma — et sûr : sur-match
 /// plutôt que sous-match). Err(raison) pour tout construit non exprimable (jamais un token faux).
 pub(crate) fn sigma_field_tokens(key: &str, val: &Value) -> Result<Vec<String>, String> {
@@ -341,7 +341,7 @@ pub(crate) fn sigma_field_tokens(key: &str, val: &Value) -> Result<Vec<String>, 
     let raw_field = it.next().unwrap_or("");
     let mods: Vec<String> = it.map(|m| m.trim().to_ascii_lowercase()).collect();
     if val.is_null() {
-        return Err(format!("champ '{key}' : match sur null (existence de champ) non exprimable en SOQL"));
+        return Err(format!("champ '{key}' : match sur null (existence de champ) non exprimable en GXQL"));
     }
     let field = sigma_field_to_plume(raw_field)
         .ok_or_else(|| format!("champ '{raw_field}' non mappable (nom imbriqué / non-identifiant)"))?;
@@ -369,7 +369,7 @@ pub(crate) fn sigma_field_tokens(key: &str, val: &Value) -> Result<Vec<String>, 
         for v in &values {
             let re = sigma_scalar_str(v).ok_or_else(|| format!("champ '{key}' : valeur '|re' non-string"))?;
             if !sigma_regex_embeddable(&re) {
-                return Err(format!("champ '{key}' : le regex '|re' contient un caractère structurel SOQL (|, parenthèse, classe [], espace, guillemet) — non embarquable"));
+                return Err(format!("champ '{key}' : le regex '|re' contient un caractère structurel GXQL (|, parenthèse, classe [], espace, guillemet) — non embarquable"));
             }
             let prefix = if has("i") { "(?i)" } else { "" };
             let pat = format!("{prefix}{re}");
@@ -381,7 +381,7 @@ pub(crate) fn sigma_field_tokens(key: &str, val: &Value) -> Result<Vec<String>, 
             toks.push(sigma_regex_token(&field, &pat)?);
         }
         if toks.len() > 1 && !has("all") {
-            return Err(format!("champ '{key}' : liste de regex en OU non exprimable en SOQL (utiliser |all pour un ET)"));
+            return Err(format!("champ '{key}' : liste de regex en OU non exprimable en GXQL (utiliser |all pour un ET)"));
         }
         return Ok(toks);
     }
@@ -418,7 +418,7 @@ pub(crate) fn sigma_field_tokens(key: &str, val: &Value) -> Result<Vec<String>, 
     }
     let string_mod = has("contains") || has("startswith") || has("endswith");
     if string_mod {
-        return Err(format!("champ '{key}' : liste (OU) de sous-chaînes non exprimable en SOQL (pas d'alternance possible) — utiliser |all pour un ET"));
+        return Err(format!("champ '{key}' : liste (OU) de sous-chaînes non exprimable en GXQL (pas d'alternance possible) — utiliser |all pour un ET"));
     }
     // OU d'égalités -> `field in (...)` SI toutes les valeurs sont sans joker et embarquables.
     if strs.iter().all(|s| !sigma_has_wildcard(s) && sigma_in_safe(s)) {
@@ -428,7 +428,7 @@ pub(crate) fn sigma_field_tokens(key: &str, val: &Value) -> Result<Vec<String>, 
         // CMD.EXE). Cohérent avec l'égalité scalaire `(?i)`. (Négation `not in` reste BINARY = sur-inclut.)
         return Ok(vec![format!("{field} in ({list})")]);
     }
-    Err(format!("champ '{key}' : liste de valeurs en OU avec jokers/caractères spéciaux non exprimable en SOQL — non supporté"))
+    Err(format!("champ '{key}' : liste de valeurs en OU avec jokers/caractères spéciaux non exprimable en GXQL — non supporté"))
 }
 
 /// Une sélection Sigma -> tokens (ET). Map = ET de champs ; liste singleton = son unique élément ;
@@ -443,7 +443,7 @@ pub(crate) fn sigma_selection_tokens(sel: &Value) -> Result<Vec<String>, String>
         }
         Value::Array(items) => {
             if items.len() == 1 { return sigma_selection_item(&items[0]); }
-            Err("sélection en liste (OU de sous-sélections / keywords) non exprimable en SOQL — non supporté".into())
+            Err("sélection en liste (OU de sous-sélections / keywords) non exprimable en GXQL — non supporté".into())
         }
         Value::String(_) => sigma_selection_item(sel),
         _ => Err("forme de sélection non supportée".into()),
@@ -460,7 +460,7 @@ pub(crate) fn sigma_selection_item(v: &Value) -> Result<Vec<String>, String> {
     }
 }
 
-/// NON(sélection). N'est exprimable en SOQL que pour une sélection MONO-champ en ÉGALITÉ (ou liste
+/// NON(sélection). N'est exprimable en GXQL que pour une sélection MONO-champ en ÉGALITÉ (ou liste
 /// d'égalités) : `field!=v` / `field not in (...)`. Multi-champs (= NON(a ET b) = OU de négations),
 /// modificateurs (pas de NOT REGEXP), jokers -> Err. La négation en casse-sensible est SÛRE sur l'axe CASSE
 /// (elle INCLUT plutôt qu'exclut si la casse diffère). ⚠️ AXE NULL : en logique SQL à 3 valeurs,
@@ -474,7 +474,7 @@ pub(crate) fn sigma_selection_negated_tokens(sel: &Value) -> Result<Vec<String>,
     }
     let (k, v) = map.iter().next().unwrap();
     if k.contains('|') {
-        return Err(format!("négation avec modificateur ('{k}') non supportée (pas de NOT REGEXP en SOQL)"));
+        return Err(format!("négation avec modificateur ('{k}') non supportée (pas de NOT REGEXP en GXQL)"));
     }
     let field = sigma_field_to_plume(k).ok_or_else(|| format!("champ '{k}' non mappable (négation)"))?;
     match v {
@@ -520,7 +520,7 @@ pub(crate) fn sigma_parse_condition(cond: &str, sel_names: &[String]) -> Result<
     let toks: Vec<String> = spaced.split_whitespace().map(|s| s.to_string()).collect();
     let lower: Vec<String> = toks.iter().map(|t| t.to_ascii_lowercase()).collect();
     if lower.iter().any(|w| w == "or") {
-        return Err("condition avec 'or' (OU) non exprimable en SOQL (recherche conjonctive uniquement)".into());
+        return Err("condition avec 'or' (OU) non exprimable en GXQL (recherche conjonctive uniquement)".into());
     }
     let mut out: Vec<(bool, String)> = Vec::new();
     let mut negate = false;
@@ -529,17 +529,17 @@ pub(crate) fn sigma_parse_condition(cond: &str, sel_names: &[String]) -> Result<
         match lower[i].as_str() {
             "(" => {
                 // NÉGATION d'un GROUPE (`not (...)`) : NON(a ET b) = (NON a OU NON b) = un OU inexprimable
-                // en SOQL conjonctif (et NON(a OU b) est déjà rejeté par le garde `or`). On REJETTE (flag+
+                // en GXQL conjonctif (et NON(a OU b) est déjà rejeté par le garde `or`). On REJETTE (flag+
                 // skip) au lieu de mistranslater silencieusement en `NON a ET b` (De Morgan erroné, sous-match).
                 if negate {
-                    return Err("condition : négation d'un GROUPE entre parenthèses (`not (...)`) = NON(a ET b) = (NON a OU NON b) — OU non exprimable en SOQL conjonctif — non supporté".into());
+                    return Err("condition : négation d'un GROUPE entre parenthèses (`not (...)`) = NON(a ET b) = (NON a OU NON b) — OU non exprimable en GXQL conjonctif — non supporté".into());
                 }
                 i += 1;
             }
             ")" | "and" => { i += 1; }
             "not" => { negate = !negate; i += 1; }
             "1" | "any" => {
-                return Err("condition : '1 of'/'any of' (OU) non exprimable en SOQL — non supporté".into());
+                return Err("condition : '1 of'/'any of' (OU) non exprimable en GXQL — non supporté".into());
             }
             "all" => {
                 if lower.get(i + 1).map(|s| s.as_str()) != Some("of") {
@@ -551,7 +551,7 @@ pub(crate) fn sigma_parse_condition(cond: &str, sel_names: &[String]) -> Result<
                 // plutôt qu'un `NON a ET NON b` = NON(a OU b) silencieusement plus étroit (sous-match). Le cas
                 // fidèle `not all of <un seul sélecteur>` = NON(single) reste exprimable.
                 if negate && names.len() > 1 {
-                    return Err("condition : `not all of <multi>` = NON(a ET b) = (NON a OU NON b) — OU non exprimable en SOQL conjonctif — non supporté".into());
+                    return Err("condition : `not all of <multi>` = NON(a ET b) = (NON a OU NON b) — OU non exprimable en GXQL conjonctif — non supporté".into());
                 }
                 for name in names { out.push((negate, name)); }
                 negate = false;
@@ -611,9 +611,9 @@ pub(crate) fn sigma_find_existing(conn: &Connection, t: &SigmaTranslation) -> Op
 }
 
 /// TRADUCTEUR — une règle Sigma (serde_json::Value) -> `SigmaTranslation`, ou Err(raison claire) si un
-/// construit n'est pas exprimable fidèlement. Le SOQL produit est `search <cat?> <champs…> | stats
+/// construit n'est pas exprimable fidèlement. Le GXQL produit est `search <cat?> <champs…> | stats
 /// count` + op `> 0` : fire s'il existe ≥1 event matchant dans la fenêtre. RECOMPILÉ par `rule_sql`
-/// (chemin injection-safe du cœur) avant retour — un SOQL qui ne compile pas est REJETÉ (jamais stocké).
+/// (chemin injection-safe du cœur) avant retour — un GXQL qui ne compile pas est REJETÉ (jamais stocké).
 pub(crate) fn sigma_translate(doc: &Value) -> Result<SigmaTranslation, String> {
     let obj = doc.as_object().ok_or("document Sigma non-objet")?;
     let name = obj.get("title").and_then(|v| v.as_str()).map(|s| s.trim())
@@ -670,7 +670,7 @@ pub(crate) fn sigma_translate(doc: &Value) -> Result<SigmaTranslation, String> {
     // ANTI-ANGLE-MORT #7 : en logique NULL SQL, un `field!=v` / `field not in (...)` EXCLUT une ligne dont
     // le champ nié est ABSENT (NULL), alors que Sigma traite l'absence comme « ne matche pas le filtre »
     // (INCLURAIT). Sous-match possible si le champ n'est pas systématiquement peuplé. On le SIGNALE (la forme
-    // NULL-tolérante `(field IS NULL OR …)` = un OU inexprimable dans le sous-ensemble SOQL conjonctif figé).
+    // NULL-tolérante `(field IS NULL OR …)` = un OU inexprimable dans le sous-ensemble GXQL conjonctif figé).
     if has_negation {
         warnings.push("négation (`not <filter>`) : un événement dont le champ nié est ABSENT est EXCLU (logique NULL SQL) là où Sigma l'inclurait — sous-match possible si le champ n'est pas toujours peuplé.".to_string());
     }
@@ -680,9 +680,9 @@ pub(crate) fn sigma_translate(doc: &Value) -> Result<SigmaTranslation, String> {
     parts.extend(tokens);
     let query = format!("search {} | stats count", parts.join(" "));
     let window_s = 3600i64;
-    // Garde-fou ULTIME : la traduction DOIT compiler via le compilo SOQL du cœur (soql_to_sql_x).
+    // Garde-fou ULTIME : la traduction DOIT compiler via le compilo GXQL du cœur (soql_to_sql_x).
     if let Err(e) = rule_sql(&query, true, window_s) {
-        return Err(format!("échec de compilation SOQL (traduction non fiable, NON importée) : {e} — SOQL=«{query}»"));
+        return Err(format!("échec de compilation GXQL (traduction non fiable, NON importée) : {e} — GXQL=«{query}»"));
     }
     let severity = sigma_level_to_sev(obj.get("level").and_then(|v| v.as_str()).unwrap_or(""));
     let mitre = sigma_first_technique(obj.get("tags"));

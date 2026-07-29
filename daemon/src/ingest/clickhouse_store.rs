@@ -7,7 +7,7 @@
 //! mode 0 byte-identique préservés. Sélection runtime FUTURE : `PLUME_STORE=clickhouse` (opt-in, comme
 //! `PLUME_STORE=duckdb`). On livre ici la PREUVE #18 Phase 2 (RFC §1) qu'un TROISIÈME backend — réseau,
 //! async, NON-`rusqlite`/NON-`duckdb` — monte la MÊME SPI : émission via `ClickHouseDialect` (cœur) +
-//! exécuteur ClickHouse, sans toucher au compilateur SOQL ni au chemin SQLite (parité mode 0 intacte).
+//! exécuteur ClickHouse, sans toucher au compilateur GXQL ni au chemin SQLite (parité mode 0 intacte).
 //!
 //! CHOIX SPI (documenté, RFC §1.3) :
 //!   - GAP-2 (SPI SYNCHRONE ; ClickHouse est ASYNC/HTTP) : on prend l'OPTION A du RFC — bloquer sur un
@@ -115,7 +115,7 @@ impl ClickHouseStore {
     // mais en moteur COLONNAIRE `MergeTree` (RFC §3.2, Phase 2 « cluster de un »). Idempotent (`IF NOT
     // EXISTS`). Émis par `ensure_schema()` au PROVISIONING d'un déploiement scale (opt-in) ; JAMAIS sur le
     // chemin SMB / mode 0. Les NOMS de colonnes sont IDENTIQUES aux `Ch*Row` (l'INSERT `RowBinary` du
-    // client cible les colonnes PAR NOM) et à l'`event` SQLite -> MÊME surface SOQL, aucune réécriture.
+    // client cible les colonnes PAR NOM) et à l'`event` SQLite -> MÊME surface GXQL, aucune réécriture.
     //
     // CHOIX MergeTree (RFC §3.1/§3.2) :
     //   - `PARTITION BY toYYYYMM(toDateTime(ts))` : partitionnement mensuel -> la purge de rétention
@@ -319,7 +319,7 @@ impl EventStore for ClickHouseStore {
 // ====================================================================================================
 // TESTS UNITAIRES — compilés UNIQUEMENT sous `--features clickhouse` (le module l'est). Ils prouvent, SANS
 // serveur ClickHouse, les deux propriétés vérifiables offline (RFC §1.2 / §3.2) :
-//   1. l'ADAPTATEUR compile le SOQL VIA le `ClickHouseDialect` du cœur (jamais de SQL pré-fabriqué) — le
+//   1. l'ADAPTATEUR compile le GXQL VIA le `ClickHouseDialect` du cœur (jamais de SQL pré-fabriqué) — le
 //      délta d'émission CH apparaît (l'émission elle-même est déjà prouvée dans `core/src/soql.rs`) ;
 //   2. la DDL est bien `MergeTree` et MIROIR des colonnes `event` de l'INSERT (parité de schéma).
 // L'INSERT batché + la lecture round-trip exigent un serveur CH -> test `#[ignore]` (cf. plus bas), hors CI.
@@ -327,7 +327,7 @@ impl EventStore for ClickHouseStore {
 mod tests {
     use super::*;
 
-    /// Compile un SOQL VIA la méthode du store (`EventStore::soql_to_sql`) — n'ouvre AUCUNE connexion
+    /// Compile un GXQL VIA la méthode du store (`EventStore::soql_to_sql`) — n'ouvre AUCUNE connexion
     /// réseau (le `Client` ne se connecte qu'à l'envoi d'une requête ; ici on ne fait que compiler).
     fn compile(soql: &str) -> String {
         let store = ClickHouseStore::with_client(clickhouse::Client::default()).expect("store");

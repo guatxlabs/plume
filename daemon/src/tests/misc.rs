@@ -417,7 +417,7 @@
             field_filters_reload(&conn, &path);
         } // writer droppé -> WAL visible au read pool (run_query lit le FICHIER)
 
-        // CAPTURE au rôle VIEWER (masques actifs) -> passe par le chemin SOQL MASQUÉ.
+        // CAPTURE au rôle VIEWER (masques actifs) -> passe par le chemin GXQL MASQUÉ.
         let vm = effective_masks(&path, "viewer", "default", None);
         assert!(!vm.is_empty(), "le viewer a un masque src_ip actif");
         let rconn = open_db(&path).unwrap();

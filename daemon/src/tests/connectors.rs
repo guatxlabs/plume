@@ -710,7 +710,7 @@
             assert_eq!(ts, minio_to_epoch(Some("2026-07-05T10:00:00Z")));
             assert_eq!(msg, "Falcon detection");
             assert_eq!(dd, "http-1-ldt:1", "dedup = http-<id>-<composite_id>");
-            // fields structurés (searchable en SOQL)
+            // fields structurés (searchable en GXQL)
             let fields: String = c.query_row("SELECT fields FROM event WHERE dedup='http-1-ldt:1'", [], |r| r.get(0)).unwrap();
             let fv: Value = serde_json::from_str(&fields).unwrap();
             assert_eq!(fv["technique"].as_str(), Some("T1059"), "fields.technique mappé");
@@ -1076,7 +1076,7 @@
 
     // ============================================================================================
     // DATASOURCE (#52) — plume-AS-A-datasource : le masque #45 + le RBAC sont HÉRITÉS sur la nouvelle
-    // surface de LECTURE EXTERNE (SOQL-HTTP + Prometheus). Preuve via les fonctions exactes des handlers.
+    // surface de LECTURE EXTERNE (GXQL-HTTP + Prometheus). Preuve via les fonctions exactes des handlers.
     // ============================================================================================
 
     /// Base de test file-backed : 2 events (src_user JSON + host), 2 samples metric (labels+host), et des
@@ -1113,7 +1113,7 @@
         st
     }
 
-    /// LEVIER 1 (SOQL-HTTP) — le cœur `ds_soql_exec` (appelé tel quel par le handler avec l'AuthUser résolu)
+    /// LEVIER 1 (GXQL-HTTP) — le cœur `ds_soql_exec` (appelé tel quel par le handler avec l'AuthUser résolu)
     /// HÉRITE du masque #45 : viewer -> src_user haché / message masqué ; admin -> clair. ET la garde d'oracle
     /// #45 (filtrage sur champ masqué REJETÉ) est héritée via soql_to_sql_masked_x.
     #[test]
@@ -1338,7 +1338,7 @@
         assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "111");
     }
 
-    /// #60 — MODE 0 : sans macro/auto-lookup, la compilation SOQL est BYTE-IDENTIQUE au legacy (le KnowledgeSet
+    /// #60 — MODE 0 : sans macro/auto-lookup, la compilation GXQL est BYTE-IDENTIQUE au legacy (le KnowledgeSet
     /// chargé depuis des tables VIDES reste vide -> aucun hook). Preuve daemon (le cœur le prouve aussi).
     #[test]
     fn ko_reliquat_mode0_byte_identical() {

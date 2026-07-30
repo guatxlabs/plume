@@ -20,7 +20,7 @@ A pull request that weakens any of these will be **rejected**, no matter how use
 - **Mode-0 byte-identical.** Anything behind an OFF-by-default Cargo feature (or a runtime
   gate) **must leave the default build byte-identical** — the module *does not exist*, not
   merely "skipped". You prove it by a **constant test count**: the default suite passes the
-  **same number** of tests before and after your gated change — **757** at the time of
+  **same number** of tests before and after your gated change — **758** at the time of
   writing (`cd daemon && cargo test --locked`, default features). The invariant is the
   *constancy*; when you legitimately add tests, update the number here, in
   `daemon/.cargo/audit.toml`, in `daemon/src/tests/ingest.rs` and — the one that actually
@@ -83,10 +83,10 @@ When in doubt, add a test that proves the invariant still holds.
 > ```
 
 The crate lives in `daemon/`, so point cargo at it. The default build is the SMB profile
-(`SqlcipherStore` only) and must stay **757 tests green** and **offline**:
+(`SqlcipherStore` only) and must stay **758 tests green** and **offline**:
 
 ```sh
-cargo test --manifest-path daemon/Cargo.toml        # 757 tests, default features
+cargo test --manifest-path daemon/Cargo.toml        # 758 tests, default features
 ```
 
 The **`cold_tier` suite has its own count and its own CI job** (`cold-tier` in
@@ -95,7 +95,7 @@ The **`cold_tier` suite has its own count and its own CI job** (`cold-tier` in
 
 ```sh
 TMPDIR=/path/on/disk cargo test --manifest-path daemon/Cargo.toml --features cold_tier
-# 948 tests (= the 757 default tests + the cold_store tests the feature adds)
+# 949 tests (= the 758 default tests + the cold_store tests the feature adds)
 ```
 
 > **Why this matters more than it looks.** With a 7-day hot window and 365-day retention,
@@ -155,8 +155,8 @@ The **shell collectors** (43 tracked scripts) get a `bash -n` parse gate (`shell
 
 1. Open an issue first for anything non-trivial, so we can agree on the approach.
 2. One logical change per PR. Keep the diff focused.
-3. Include tests. Preserve or improve coverage; keep the default count at **757** (CI asserts it).
-   If you touch `cold_store`, the `cold_tier` count (**948**) is asserted too.
+3. Include tests. Preserve or improve coverage; keep the default count at **758** (CI asserts it).
+   If you touch `cold_store`, the `cold_tier` count (**949**) is asserted too.
 4. Run `cargo test` (default) and, for gated work, the feature suite separately; run
    `cargo clippy`. All must pass. "The default suite is green" is **not** evidence for gated
    code — see the mode-0 invariant above.

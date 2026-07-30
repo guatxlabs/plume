@@ -34,9 +34,12 @@ def fmt_dur(v):
     l'unité) ; en prose l'unité doit être collée à la valeur, sinon on écrit « 15.7 s ms »."""
     if v is None:
         return "—"
-    if v < 10:
+    # L'unité est choisie sur la MAGNITUDE : un écart de -2 500 ms doit s'écrire « -2.5 s », pas
+    # « -2500 ms » (les deltas avant/après sont signés).
+    m = abs(v)
+    if m < 10:
         return f"{v:.1f} ms"
-    if v < 2000:
+    if m < 2000:
         return f"{v:.0f} ms"
     return f"{v/1000:.1f} s"
 
@@ -67,6 +70,17 @@ def hw_block():
             "mem_total_bytes": mem, "kernel": platform.release()}
 
 
+def _cmp_load(eff, cfg):
+    """Charge machine (loadavg 1 min) relevée PENDANT une passe : min-max sur ses cellules. Sans elle,
+    un écart de latence entre deux passes pourrait n'être qu'un écart de charge."""
+    v = [(r.get("pressure_before") or {}).get("loadavg", [None])[0]
+         for r in eff if r["config_id"] == cfg]
+    v = [x for x in v if x is not None]
+    if not v:
+        return "non relevé"
+    return f"{min(v):.1f}–{max(v):.1f}"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("results", nargs="+",
@@ -80,6 +94,19 @@ def main():
                     help="journal d'une passe run.sh : les lignes de progression du générateur "
                          "(« N événements … R ev/s produits ») sont du DÉBIT MESURÉ de bout en bout, "
                          "et couvrent le début du remplissage que l'échantillonneur peut manquer")
+    ap.add_argument("--ref", default=None, metavar="CONFIG_ID",
+                    help="configuration qui sert de RÉFÉRENCE au verdict et aux leviers. Par défaut : "
+                         "FTS off + masque vide, au plus gros volume, et à volume égal la plus "
+                         "récemment mesurée. À poser EXPLICITEMENT quand plusieurs passes coexistent "
+                         "au même volume — sinon le document pourrait décrire une passe prise sur une "
+                         "version du code qui n'est plus celle du dépôt.")
+    ap.add_argument("--compare", default=None, metavar="AVANT:APRES",
+                    help="deux étiquettes de configuration : rend un tableau d'ÉCART cellule par "
+                         "cellule (avant, après, delta). Sert à publier ce qu'un correctif a changé "
+                         "SANS reformuler les tableaux — chaque ligne reste une mesure.")
+    ap.add_argument("--compare-note", default=None,
+                    help="ce qui a changé entre les deux configurations comparées (une phrase). "
+                         "Rendu tel quel : sans lui, le tableau d'écart ne dit pas ce qu'il mesure.")
     ap.add_argument("--ingest-curve", default=None,
                     help="CSV t_unix,events,db_bytes,rss_bytes,loadavg1 échantillonné pendant "
                          "l'ingest : rend la COURBE de débit en fonction du volume déjà en base")
@@ -152,9 +179,11 @@ def main():
     W("")
     W("## Ce que ce document est, et ce qu'il n'est pas")
     W("")
-    W("C'est **la première mesure de référence** de plume, prise avec un instrument publié et")
-    W("rejouable. Chaque chiffre porte ses qualificatifs. Rien n'est extrapolé : une case vide est")
-    W("une case **non mesurée**, pas une case implicitement bonne.")
+    W("C'est la **mesure de référence** de plume, prise avec un instrument publié et rejouable.")
+    W("Chaque chiffre porte ses qualificatifs. Rien n'est extrapolé : une case vide est une case")
+    W("**non mesurée**, pas une case implicitement bonne. Quand plusieurs passes coexistent au même")
+    W("volume, elles sont TOUTES rendues : une passe n'est jamais remplacée par une plus flatteuse,")
+    W("et la section « Écart mesuré entre deux passes » dit laquelle décrit le code actuel.")
     W("")
     W("Ce n'est **pas** une comparaison à un autre produit, ni une mesure de production : c'est un")
     W("banc synthétique au **profil** de la production (voir `bench/profile-prod.json`).")
@@ -165,8 +194,17 @@ def main():
     # n'autorisent pas. Tout ici est dérivé des cellules, aucune phrase n'est un jugement libre.
     def _nev0(c):
         return (cfgmeta[c].get("events") or 0)
-    ref = max([c for c in configs if cfgmeta[c].get("fts_fields") == 0
-               and "non-vide" not in (cfgmeta[c].get("mask") or "")] or configs, key=_nev0)
+    # À volume ÉGAL, la configuration la PLUS RÉCEMMENT mesurée gagne (dernière apparition dans le
+    # JSONL). Sans ce départage, une passe de RE-mesure après correctif serait ignorée et le document
+    # continuerait à décrire un état du code déjà corrigé.
+    _cands0 = [c for c in configs if cfgmeta[c].get("fts_fields") == 0
+               and "non-vide" not in (cfgmeta[c].get("mask") or "")] or configs
+    if args.ref:
+        if args.ref not in configs:
+            raise SystemExit(f"--ref : configuration absente des résultats : {args.ref}")
+        ref = args.ref
+    else:
+        ref = max(_cands0, key=lambda c: (_nev0(c), configs.index(c)))
     ref_rows = [r for r in eff if r["config_id"] == ref and r.get("wall_p50_ms") is not None]
     peak_all = max((r.get("peak_rss_bytes") or 0) for r in rows)
     fast = sorted(ref_rows, key=lambda r: r["wall_p50_ms"])[:4]
@@ -188,7 +226,8 @@ def main():
           f"({r['label']}), servi par `{r.get('served_from') or 'scan'}`")
     W("")
     fl0 = idx.get((ref, "C0-plancher", "all")) or idx.get((ref, "C0-plancher", "1h"))
-    if fl0 and fl0.get("wall_p50_ms") is not None:
+    if fl0 and fl0.get("wall_p50_ms") is not None \
+            and (fl0["wall_p50_ms"] - (fl0.get("sql_p50_ms") or 0)) > 10.0:
         W(f"Toutes ces cellules sont AU PLANCHER. Une requête dont le SQL ne coûte rien revient en "
           f"**{fmt_dur(fl0['wall_p50_ms'])}** (`C0-plancher`, SQL mesuré à "
           f"{fmt_dur(fl0.get('sql_p50_ms'))}) : c'est un coût FIXE, indépendant du volume, et "
@@ -219,8 +258,10 @@ def main():
       "le vrai chemin d'ingest dans le temps disponible (voir le débit mesuré ci-dessous). Toute "
       "phrase sur 10 M ou 100 M serait une extrapolation, pas une mesure.")
     W("- rien sur le tier froid, la concurrence, ni le multi-tenant (voir la section dédiée).")
-    mk = max([c for c in configs if "non-vide" in (cfgmeta[c].get("mask") or "")
-              and _nev0(c) == _nev0(ref)] or [None], key=lambda c: _nev0(c) if c else -1)
+    # MÊME correctif que pour les leviers : ne pas exiger le volume EXACT, sinon l'axe masquage
+    # disparaît du verdict dès qu'une nouvelle passe compte quelques événements de plus.
+    mk = max([c for c in configs if "non-vide" in (cfgmeta[c].get("mask") or "")] or [None],
+             key=lambda c: _nev0(c) if c else -1)
     worst = None
     if mk:
         for cid, _lab, _k in classes:
@@ -499,6 +540,55 @@ def main():
         W("")
 
     # ---------------------------------------------------------------- verdicts
+    # ------------------------------------------------------------ ÉCART AVANT/APRÈS (option)
+    # Un correctif ne se publie pas en réécrivant les tableaux : on mesure DEUX FOIS, avec le même
+    # instrument et la même base, et on montre l'écart cellule par cellule. Une cellule absente d'un
+    # côté reste absente (jamais complétée par déduction).
+    if args.compare:
+        try:
+            c_av, c_ap = args.compare.split(":", 1)
+        except ValueError:
+            raise SystemExit("--compare attend AVANT:APRES")
+        missing = [c for c in (c_av, c_ap) if c not in configs]
+        if missing:
+            raise SystemExit("--compare : configuration(s) absente(s) des résultats : " + ", ".join(missing))
+        W("## Écart mesuré entre deux passes")
+        W("")
+        W(f"Comparaison `{c_av}` -> `{c_ap}`, MÊME base, MÊME instrument, MÊME machine, passes "
+          "consécutives. Les deux lignes sont des mesures ; le delta est leur soustraction, rien de plus.")
+        W("")
+        if args.compare_note:
+            W(f"**Ce qui a changé entre les deux passes** : {args.compare_note}")
+            W("")
+        W(f"Charge machine relevée : `loadavg` {_cmp_load(eff, c_av)} pendant la passe AVANT, "
+          f"{_cmp_load(eff, c_ap)} pendant la passe APRÈS. Sur une machine partagée, un écart de "
+          "quelques millisecondes ne prouve rien ; seuls les écarts francs sont exploitables, et les "
+          "cellules dont la dispersion est annotée plus haut restent à lire avec la même réserve.")
+        W("")
+        W("| Classe | Fenêtre | p50 avant | p50 après | delta | SQL avant | SQL après | route avant | route après |")
+        W("|---|:--:|---:|---:|---:|---:|---:|---|---|")
+        seen_pairs = 0
+        for cid, win in [(r["class_id"], r["window"]) for r in eff if r["config_id"] == c_ap]:
+            a, b = idx.get((c_av, cid, win)), idx.get((c_ap, cid, win))
+            if not a or not b or a.get("wall_p50_ms") is None or b.get("wall_p50_ms") is None:
+                continue
+            seen_pairs += 1
+            d = b["wall_p50_ms"] - a["wall_p50_ms"]
+            sign = "+" if d > 0 else ""
+            W(f"| `{cid}` | {win} | {fmt_dur(a['wall_p50_ms'])} | {fmt_dur(b['wall_p50_ms'])} | "
+              f"{sign}{fmt_dur(d)} | {fmt_dur(a.get('sql_p50_ms'))} | {fmt_dur(b.get('sql_p50_ms'))} | "
+              f"{a.get('served_from') or '—'} | {b.get('served_from') or '—'} |")
+        W("")
+        only_ap = sorted({(r["class_id"], r["window"]) for r in eff if r["config_id"] == c_ap}
+                         - {(r["class_id"], r["window"]) for r in eff if r["config_id"] == c_av})
+        only_av = sorted({(r["class_id"], r["window"]) for r in eff if r["config_id"] == c_av}
+                         - {(r["class_id"], r["window"]) for r in eff if r["config_id"] == c_ap})
+        W(f"{seen_pairs} cellules comparables. "
+          + (f"Mesurées SEULEMENT après : {', '.join(f'`{c}`/{w}' for c, w in only_ap)}. " if only_ap else "")
+          + (f"Mesurées SEULEMENT avant : {', '.join(f'`{c}`/{w}' for c, w in only_av)}. " if only_av else "")
+          + "Une cellule non comparable n'est PAS un résultat neutre : elle est absente d'un côté.")
+        W("")
+
     W("## Le budget de 2 Gio")
     W("")
     peak = max((r.get("peak_rss_bytes") or 0) for r in eff)
@@ -629,17 +719,29 @@ def main():
         return cfgmeta[c].get("events") or 0
     cands = [c for c in configs if cfgmeta[c].get("fts_fields") == 0
              and "non-vide" not in (cfgmeta[c].get("mask") or "")]
-    base = max(cands or configs, key=nev)
+    # MÊME référence que le verdict : `--ref` si posé, sinon départage par récence (à volume égal,
+    # la dernière passe mesurée gagne).
+    base = args.ref or max(cands or configs, key=lambda c: (nev(c), configs.index(c)))
     vol = nev(base)
-    masked = max([c for c in configs if "non-vide" in (cfgmeta[c].get("mask") or "")
-                  and nev(c) == vol] or [None], key=lambda c: nev(c) if c else -1)
+    # Configuration MASQUÉE de référence : la plus grosse mesurée, PAS forcément au volume EXACT de
+    # `base`. Exiger `nev(c) == vol` faisait DISPARAÎTRE le levier du masquage dès qu'une nouvelle
+    # passe comptait quelques événements de plus (le daemon écrit ses propres traces pendant une
+    # passe) — un levier de 36 s s'évaporait pour 4 lignes d'écart. L'écart de volume est REPORTÉ
+    # dans le texte du levier plutôt que caché.
+    masked = max([c for c in configs if "non-vide" in (cfgmeta[c].get("mask") or "")] or [None],
+                 key=lambda c: nev(c) if c else -1)
     fts1 = max([c for c in configs if cfgmeta[c].get("fts_fields") == 1] or [None],
                key=lambda c: nev(c) if c else -1)
     lev = []
 
-    # L1 — le plancher de 50 ms
+    # L1 — le plancher fixe par requête. NE S'ÉMET QUE S'IL EXISTE ENCORE : un levier est une
+    # DÉSIGNATION faite par la mesure, donc il doit disparaître du document quand la mesure ne le
+    # montre plus. Seuil à 10 ms = bien au-dessus du bruit (le plancher mesuré valait ~51 ms) et bien
+    # en dessous du tick de 50 ms qui le causait.
+    FLOOR_MIN_MS = 10.0
     fl = cell(base, "C0-plancher", "1h")
-    if fl and fl.get("wall_p50_ms") is not None:
+    if fl and fl.get("wall_p50_ms") is not None and \
+            (fl["wall_p50_ms"] - (fl.get("sql_p50_ms") or 0)) > FLOOR_MIN_MS:
         floor = fl["wall_p50_ms"] - (fl.get("sql_p50_ms") or 0)
         lev.append((floor, "Le plancher fixe par requête",
                     f"une requête dont le SQL coûte {fmt_dur(fl.get('sql_p50_ms'))} revient en "
@@ -688,7 +790,12 @@ def main():
                         "la lecture du rollup, ou matérialiser un rollup par classe de masque. "
                         "**Coût RAM : celui d'un jeu de rollups supplémentaire** (mesuré en "
                         "production : `event_rollup` = 4,4 Mio pour 1,4 M d'événements, donc "
-                        "marginal), plus le masquage au vol.",
+                        "marginal), plus le masquage au vol."
+                        + ("" if nev(masked) == vol else
+                           f" **Réserve** : la passe masquée porte {fmt_n(nev(masked))} événements "
+                           f"contre {fmt_n(vol)} pour la passe non masquée — l'écart de volume est "
+                           "négligeable devant le facteur mesuré, mais les deux chiffres ne viennent "
+                           "pas de la MÊME passe."),
                         "C3b masqué vs non masqué"))
 
     # L4 — group-by multi-dim haute cardinalité
@@ -725,20 +832,26 @@ def main():
                     "`PLUME_AUTOINDEX_MAX` existe.",
                     "C5b vs C5c"))
 
-    # L6 — pagination profonde
-    a, b = cell(base, "C4b-raw-deep", "all"), cell(base, "C4c-raw-keyset", "all")
+    # L6 — le curseur DEMANDÉ mais pas servi. COMPARAISON LIKE-FOR-LIKE : C4d et C4c posent la MÊME
+    # demande (`keyset:true`, limit 200, même filtre) ; la SEULE différence est la projection. Comparer
+    # C4b (saut OFFSET à la profondeur 200 000) à C4c (PREMIÈRE page keyset, sans curseur) serait
+    # comparer deux profondeurs différentes — c'est ce que faisait la première version de ce document.
+    a, b = cell(base, "C4d-keyset-projete", "all"), cell(base, "C4c-raw-keyset", "all")
     g = gain_ms(a, b)
-    if g is not None and g > 0:
-        lev.append((g, "Faire du keyset le défaut de la pagination profonde",
-                    f"page profonde en `OFFSET` : **{fmt_dur(a['wall_p50_ms'])}** ; la même "
-                    f"profondeur en curseur keyset : **{fmt_dur(b['wall_p50_ms'])}** — et ce, en "
-                    "rendant PLUS de données (le keyset porte toutes les colonnes, la page `OFFSET` "
-                    "n'en projette que cinq), ce qui rend l'écart conservateur. Le keyset "
-                    "existe déjà (`keyset:true`) mais il est **désactivé dès que le pipeline contient "
-                    "`| table` ou `| fields`** (`handlers/query.rs:198-205`) — c'est-à-dire dès qu'on "
-                    "projette des colonnes, ce que fait toute récupération RAW réelle. "
+    # MÊME règle que le plancher : un levier est une DÉSIGNATION par la mesure, il doit disparaître
+    # quand l'écart n'est plus là. Seuil 20 ms = au-dessus du bruit d'une machine partagée.
+    if g is not None and g > 20:
+        lev.append((g, "Servir le curseur demandé, y compris quand le pipeline projette",
+                    f"MÊME demande (`keyset:true`, limit 200, même filtre), seule la projection "
+                    f"change : **{fmt_dur(a['wall_p50_ms'])}** avec `| table …` contre "
+                    f"**{fmt_dur(b['wall_p50_ms'])}** sans projection. Le client a demandé une "
+                    "pagination par CURSEUR et reçoit une page `OFFSET` : le curseur est désactivé "
+                    "dès que le pipeline contient `| table` ou `| fields`, c'est-à-dire dès qu'on "
+                    "projette des colonnes — ce que fait toute récupération RAW réelle. "
+                    "Conséquences : pas de `next_cursor`, un `total` PLAFONNÉ à 10 000 (des "
+                    "événements restent donc cachés) et un coût qui croît avec le numéro de page. "
                     "**Coût RAM : nul.**",
-                    "C4b vs C4c"))
+                    "C4d vs C4c"))
 
     # L7 — coût de PLUME_FTS_FIELDS
     if fts1:

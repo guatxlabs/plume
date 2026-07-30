@@ -1,6 +1,6 @@
 // KEYSET (#28) — pagination par CURSEUR `(ts,id)` : preuve de PARCOURS INTÉGRAL sans plafond (fin du cap
 // 10 000 qui CACHAIT des événements). On teste le SQL RÉELLEMENT émis par le daemon : compile via le
-// choke-point store (`soql_to_sql_masked_keyset_x` -> cursor_id=true) PUIS wrap via `keyset_page_sql`, exécuté
+// choke-point store (`soql_to_sql_masked_keyset_x` -> cursor_id=true) PUIS wrap via `page_sql`, exécuté
 // sur une base in-memory au schéma de prod. `keyset_finalize` (contrat has_more/next_cursor) est testé isolément.
 
     use guatx_core::soql::FieldMaskSet;
@@ -37,14 +37,14 @@
 
     // Parcourt TOUTES les pages keyset de `search source=auditd` (fenêtre 0,0 = sans borne) et renvoie la liste
     // ORDONNÉE des (ts,id) visités + le nombre de pages. Émule EXACTEMENT le handler : compile keyset une fois,
-    // puis boucle keyset_page_sql(curseur) -> keyset_finalize -> next_cursor.
+    // puis boucle page_sql(curseur) -> keyset_finalize -> next_cursor.
     fn ks_traverse(conn: &Connection, lim: i64) -> (Vec<(i64, i64)>, usize) {
         let base = crate::soql_to_sql_masked_keyset_x("search source=auditd", 0, 0, None, &FieldMaskSet::new()).unwrap();
         let mut cursor: Option<(i64, i64)> = None;
         let mut seen: Vec<(i64, i64)> = Vec::new();
         let mut pages = 0usize;
         loop {
-            let page_sql = crate::keyset_page_sql(&base, cursor, 0, lim);
+            let page_sql = crate::page_sql(&base, crate::keyset_plan(cursor, 0), lim);
             let mut v = ks_run_page(conn, &page_sql);
             let ti = ks_col(&v, "ts");
             let ii = ks_col(&v, "id");
@@ -76,7 +76,7 @@
         let base = crate::soql_to_sql_masked_keyset_x("search source=auditd", 0, 0, None, &FieldMaskSet::new()).unwrap();
         assert!(base.contains(",id FROM") || base.trim_end().contains("id FROM") || base.contains("id FROM event"),
             "keyset compile DOIT projeter `id` : {base}");
-        let mut v = ks_run_page(&c, &crate::keyset_page_sql(&base, None, 0, 10));
+        let mut v = ks_run_page(&c, &crate::page_sql(&base, crate::keyset_plan(None, 0), 10));
         let ti = ks_col(&v, "ts");
         let rows = v["rows"].as_array().unwrap().clone();
         assert_eq!(rows.len(), 10, "première page = lim lignes");
@@ -127,11 +127,11 @@
         for ts in 400..413 { ks_ins(&c, ts); } // 13 lignes
         let base = crate::soql_to_sql_masked_keyset_x("search source=auditd", 0, 0, None, &FieldMaskSet::new()).unwrap();
         // page 1 (10), page 2 (3 -> partielle)
-        let mut v1 = ks_run_page(&c, &crate::keyset_page_sql(&base, None, 0, 10));
+        let mut v1 = ks_run_page(&c, &crate::page_sql(&base, crate::keyset_plan(None, 0), 10));
         crate::keyset_finalize(&mut v1, 10);
         assert_eq!(v1["has_more"], json!(true));
         let cur = (v1["next_cursor"]["ts"].as_i64().unwrap(), v1["next_cursor"]["id"].as_i64().unwrap());
-        let mut v2 = ks_run_page(&c, &crate::keyset_page_sql(&base, Some(cur), 0, 10));
+        let mut v2 = ks_run_page(&c, &crate::page_sql(&base, crate::keyset_plan(Some(cur), 0), 10));
         assert_eq!(v2["rows"].as_array().unwrap().len(), 3, "reste 3 lignes");
         crate::keyset_finalize(&mut v2, 10);
         assert_eq!(v2["has_more"], json!(false), "3 < 10 -> dernière page");
@@ -181,28 +181,144 @@
     }
 
     // SÉCURITÉ : le curseur i64 formaté dans le SQL est injection-safe (valeurs entières uniquement) — on prouve
-    // que keyset_page_sql produit littéralement les entiers, sans texte.
+    // que page_sql produit littéralement les entiers, sans texte.
     #[test]
     fn keyset_cursor_is_i64_only_no_injection() {
-        let sql = crate::keyset_page_sql("SELECT ts,id FROM event", Some((1700000000, 42)), 0, 50);
+        let sql = crate::page_sql("SELECT ts,id FROM event", crate::keyset_plan(Some((1700000000, 42)), 0), 50);
         assert!(sql.contains("ts < 1700000000 OR (ts = 1700000000 AND id < 42)"), "curseur = entiers littéraux : {sql}");
         assert!(sql.ends_with("ORDER BY ts DESC, id DESC LIMIT 50"));
     }
 
-    // FIX PANNEAUX « no such column: ts/id » — un pipeline projetant (`| table`/`| fields`) retire la clé de
-    // tri keyset : `soql_projects_away_keyset` doit le DÉTECTER (-> le handler dégrade vers l'offset). Le
-    // `search` brut nu et les stages non-projetants (`sort`/`where`/`head`/`dedup`) restent keyset-ables.
+    // APPLICABILITÉ KEYSET — DÉRIVÉE, pas énumérée. Le prédicat n'énumère plus les commandes qui CASSENT
+    // le wrap (il y en avait deux : `table`, `fields`) : il énumère celles qui rendent UNE ligne par
+    // ÉVÉNEMENT sans réordonner, et refuse tout le reste PAR DÉFAUT — y compris une commande GXQL qui
+    // n'existe pas encore. Les projections redeviennent applicables parce que le daemon RESTITUE `ts`/`id`
+    // dans leur liste (`keyset_projection_augment`), pas parce qu'on a fait une exception pour elles.
     #[test]
-    fn keyset_projection_detection() {
-        assert!(crate::soql_projects_away_keyset("search source=suricata category=alert | table ts,message"));
-        assert!(crate::soql_projects_away_keyset("search source=conntrack | sort -ts | table dst_host,dst_ip"));
-        assert!(crate::soql_projects_away_keyset("search source=mail | fields rcpt,sender"));
-        assert!(crate::soql_projects_away_keyset("search x | TABLE a"), "casse-insensible");
-        // NON projetants -> keyset conservé
-        assert!(!crate::soql_projects_away_keyset("search source=auditd"));
-        assert!(!crate::soql_projects_away_keyset("search source=auditd | sort -ts | head 100"));
-        assert!(!crate::soql_projects_away_keyset("search source=web | where severity>=2"));
-        // un `table` DANS la valeur du search (pas un stage) reste tolérable : faux positif = sûr (offset).
+    fn keyset_applicability_is_derived_not_enumerated() {
+        // (P3 restituée par l'augmentation) — les projections sont désormais SERVIES par le curseur.
+        assert!(crate::keyset_applicable("search source=suricata category=alert | table ts,message"));
+        assert!(crate::keyset_applicable("search source=conntrack | sort -ts | table dst_host,dst_ip"));
+        assert!(crate::keyset_applicable("search source=mail | fields rcpt,sender"));
+        // Détection insensible à la casse (le prédicat), MAIS l'augmentation ré-émet la commande
+        // telle qu'écrite : `| TABLE a` reste refusé par le compilateur, comme avant.
+        assert!(crate::keyset_applicable("search x | TABLE a"), "casse-insensible");
+        let (aug, n) = crate::keyset_projection_augment("search x | TABLE a");
+        assert_eq!(n, 2);
+        assert!(aug.contains("TABLE a,ts,id"), "casse PRÉSERVÉE (sinon on ferait compiler l'incompilable) : {aug}");
+        // Étages préservant la ligne et l'ordre.
+        assert!(crate::keyset_applicable("search source=auditd"));
+        assert!(crate::keyset_applicable("search source=auditd | sort -ts | head 100"));
+        assert!(crate::keyset_applicable("search source=web | where severity>=2"));
+        assert!(crate::keyset_applicable("search x | dedup host"));
+        // (P2) — un tri sur une AUTRE clé serait ÉCRASÉ par le wrap `ORDER BY ts DESC, id DESC` : le
+        // client recevrait des lignes triées autrement que demandé. C'était le cas AVANT (mesuré sur la
+        // base de banc : `| sort severity` rendait severity [2,2,2,2,3,2] au lieu de [1,1,1,1,1,1]).
+        assert!(!crate::keyset_applicable("search severity>=1 | sort severity"));
+        assert!(!crate::keyset_applicable("search severity>=1 | sort -host"));
+        assert!(!crate::keyset_applicable("search x | sort ts"), "ts ASC n'est pas l'ordre du wrap");
+        assert!(crate::keyset_applicable("search x | sort -ts,-id"), "la clé du wrap elle-même");
+        // (P1) — agrégation : plus une ligne par événement.
+        assert!(!crate::keyset_applicable("search x | stats count by host"));
+        assert!(!crate::keyset_applicable("search x | timechart count"));
+        assert!(!crate::keyset_applicable("search x | top host"));
+        // (P1) — duplication de lignes : `(ts,id)` n'est plus UNIQUE, le curseur strict `<` sauterait les
+        // doublons de la ligne frontière (perte silencieuse).
+        assert!(!crate::keyset_applicable("search x | mvexpand tags"));
+        // (P1) — lignes étrangères sans clé keyset.
+        assert!(!crate::keyset_applicable("search x | append [search y]"));
+        assert!(!crate::keyset_applicable("search x | join host [search y]"));
+        assert!(!crate::keyset_applicable("search x | lookup t host"));
+        // (P3) — un étage qui CRÉE des colonnes et NOMME la clé de tri peut la redéfinir/la dupliquer.
+        assert!(!crate::keyset_applicable("search x | eval ts=0"));
+        assert!(!crate::keyset_applicable("search x | rename host AS id"));
+        assert!(crate::keyset_applicable("search x | eval sev2=severity*2"), "eval qui ne touche pas la clé");
+        // REFUS PAR DÉFAUT : une commande inconnue (future) n'est PAS keyset-able sans qu'on l'ait nommée.
+        assert!(!crate::keyset_applicable("search x | commande-qui-nexiste-pas foo"));
+    }
+
+    // AUGMENTATION DE PROJECTION — c'est ce qui remplace le refus. Elle doit (a) ajouter EXACTEMENT les clés
+    // manquantes, (b) ne rien ajouter si elles sont déjà là, (c) laisser les passe-plat tranquilles, et
+    // (d) dire COMBIEN de colonnes retirer de la réponse pour rendre au client sa projection exacte.
+    #[test]
+    fn keyset_projection_augment_restores_the_sort_key() {
+        let (aug, n) = crate::keyset_projection_augment("search severity>=1 | table ts,host,source");
+        assert_eq!(n, 1, "`ts` déjà présent -> seul `id` est ajouté");
+        assert!(aug.ends_with("table ts,host,source,id"), "{aug}");
+        let (aug, n) = crate::keyset_projection_augment("search x | fields host,message");
+        assert_eq!(n, 2, "ni `ts` ni `id` -> les deux sont ajoutés");
+        assert!(aug.ends_with("fields host,message,ts,id"), "{aug}");
+        let (aug, n) = crate::keyset_projection_augment("search x | table ts,id");
+        assert_eq!(n, 0, "clé complète -> aucune colonne ajoutée");
+        assert_eq!(aug, "search x | table ts,id", "SOQL inchangée quand il n'y a rien à ajouter");
+        let (aug, n) = crate::keyset_projection_augment("search x | table *");
+        assert_eq!((aug.as_str(), n), ("search x | table *", 0), "`table *` est un passe-plat");
+        let (aug, n) = crate::keyset_projection_augment("search source=auditd");
+        assert_eq!((aug.as_str(), n), ("search source=auditd", 0), "aucune projection -> identité STRICTE");
+        // `table` sépare aussi par BLANCS : la liste est relue puis ré-émise en virgules (forme acceptée).
+        let (aug, n) = crate::keyset_projection_augment("search x | table host source");
+        assert_eq!(n, 2);
+        assert!(aug.ends_with("table host source,ts,id"), "{aug}");
+    }
+
+    // Le trim rend au client EXACTEMENT sa projection : les colonnes ajoutées pour le wrap disparaissent,
+    // et `next_cursor` (fabriqué AVANT le trim) reste exploitable. Sans le trim, le client verrait des
+    // colonnes qu'il n'a pas demandées -> le résultat aurait CHANGÉ.
+    #[test]
+    fn keyset_trim_returns_the_requested_projection_only() {
+        let mut v = json!({ "columns": ["ts","host","id"], "rows": [[10, "h1", 7], [9, "h2", 6]] });
+        crate::keyset_trim_helper_cols(&mut v, 1);
+        assert_eq!(v["columns"], json!(["ts","host"]));
+        assert_eq!(v["rows"], json!([[10, "h1"], [9, "h2"]]));
+        // n=0 -> no-op STRICT
+        let mut w = json!({ "columns": ["ts","host"], "rows": [[10, "h1"]] });
+        let before = w.clone();
+        crate::keyset_trim_helper_cols(&mut w, 0);
+        assert_eq!(w, before);
+        // garde-fou : plus d'ajouts que de colonnes -> on ne mutile rien
+        let mut x = json!({ "columns": ["ts"], "rows": [[10]] });
+        let before = x.clone();
+        crate::keyset_trim_helper_cols(&mut x, 3);
+        assert_eq!(x, before, "jamais de réponse mutilée : on préfère ne rien retirer");
+    }
+
+    // UN SEUL FABRICANT DE PAGE. Le défaut n'était pas « ce site d'appel utilise OFFSET » : c'était que
+    // TROIS sites composaient leur propre clause de page, donc un quatrième pouvait naître sans que
+    // personne ne le remarque. L'invariant : dans handlers/query.rs, aucune ligne non commentée ne
+    // fabrique un `OFFSET` hors du corps de `page_sql`.
+    #[test]
+    fn page_sql_is_the_only_place_that_builds_an_offset() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/handlers/query.rs"),
+        )
+        .unwrap();
+        let mut in_page_sql = false;
+        let mut seen_inside = 0usize;
+        let mut offenders: Vec<&str> = Vec::new();
+        for line in src.lines() {
+            if line.starts_with("pub(crate) fn page_sql(") {
+                in_page_sql = true;
+            } else if in_page_sql && line.starts_with('}') {
+                in_page_sql = false;
+            }
+            let code = line.trim_start();
+            if code.starts_with("//") || code.starts_with("///") {
+                continue;
+            }
+            if code.contains("OFFSET") {
+                if in_page_sql {
+                    seen_inside += 1;
+                } else {
+                    offenders.push(line);
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "une page est fabriquée hors de `page_sql` — un chemin de pagination peut donc retomber sur \
+             OFFSET sans passer par la décision unique : {offenders:?}"
+        );
+        assert!(seen_inside >= 2, "invariant vide = invariant mort : `page_sql` doit bien contenir les formes OFFSET (vu {seen_inside})");
     }
 
     // REPRO EXACTE du bug : `search … | table cols` NON-keyset + wrap OFFSET s'exécute SANS « no such column:
@@ -213,7 +329,7 @@
         for ts in 500..515 { ks_ins(&c, ts); } // 15 lignes source=auditd
         // le handler, requête projetée -> keyset shadow=false -> compile NON-keyset (soql_to_sql_masked_x)…
         let base = crate::soql_to_sql_masked_x("search source=auditd | table ts,id", 0, 0, None, &FieldMaskSet::new()).unwrap();
-        // …puis wrap OFFSET (PAS keyset_page_sql : aucun ORDER BY ts,id externe qui casserait sur une projection).
+        // …puis wrap OFFSET (PAS le wrap keyset : aucun ORDER BY ts,id externe qui casserait sur une projection).
         let page = format!("SELECT * FROM ({base}) LIMIT 5 OFFSET 0");
         let v = ks_run_page(&c, &page); // panique si SQLite renvoie une erreur (prepare/exec)
         assert_eq!(v["rows"].as_array().unwrap().len(), 5, "page offset de 5 lignes servie sans erreur SQL");

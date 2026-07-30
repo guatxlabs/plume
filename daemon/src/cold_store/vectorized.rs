@@ -671,7 +671,7 @@ pub(super) fn vec_materialize_ex(
 // ---- KERNEL : MATÉRIALISATION KEYSET (browse brut froid par curseur, RAM bornée à `limit`) --------
 //
 // ①a — Le browse Explore raw (`search source=X`) pagine des LIGNES BRUTES par curseur `(ts,id)`, ordre
-// `ts DESC, id DESC`. L'ancien chemin (`cold_union_query` + `keyset_page_sql`) HYDRATE le froid dans SQLite
+// `ts DESC, id DESC`. L'ancien chemin (`cold_union_query` + `page_sql`) HYDRATE le froid dans SQLite
 // PLAFONNÉ à `cold_hydrate_row_cap` PUIS filtre le curseur -> IMPOSSIBLE de paginer au-delà du cap. Ce kernel
 // matérialise UNE page keyset DIRECTEMENT depuis le colonnaire, RAM bornée à `limit` lignes (MIN-tas) + un batch,
 // QUEL QUE SOIT le volume froid -> 2 Go-safe, parcours INTÉGRAL sans cap.
@@ -818,7 +818,7 @@ pub(super) fn vec_materialize_keyset(
             let ts = ts_col[i];
             let id = cold_synth_id(seq, pos_base + i);
             let key = (ts, id);
-            // FILTRE CURSEUR (== `keyset_page_sql`) : `(ts,id) < (cts,cid)` STRICT (tie-break id).
+            // FILTRE CURSEUR (== `page_sql`) : `(ts,id) < (cts,cid)` STRICT (tie-break id).
             if let Some((cts, cid)) = cursor {
                 if !(ts < cts || (ts == cts && id < cid)) {
                     continue;

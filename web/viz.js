@@ -1197,7 +1197,13 @@ async function runQuery() {
   // Tout le reste (raw, | table, | fields, | sort) PRÉSERVE les lignes -> pagination SERVEUR (scale 1M) via evLoad.
   const hasAgg = isSoql && /\|\s*(stats|timechart|top|rare|eventstats)\b/i.test(q);
   if (!hasAgg) {
-    const useKeyset = isSoql && q.indexOf('|') === -1;   // KEYSET (#28) : search BRUT (sans pipe) -> curseur (ts,id) = parcours de la TOTALITÉ (auditd 4M+/7j) sans plafond. Pipé / | table -> offset (id non projeté en aval).
+    // KEYSET (#28) : `search` BRUT (sans pipe) -> curseur (ts,id) = parcours de la TOTALITÉ (auditd
+    // 4M+/7j) sans plafond. Pipé -> OFFSET. Le motif « aucun pipe » est plus strict que ce que le daemon
+    // sait faire (il sert le curseur sur `| table`/`| fields`/`| where`/`| sort -ts`) : l'élargir ici
+    // changerait l'ORDRE des lignes affichées pour ces requêtes (l'offset les rend dans l'ordre physique
+    // SQLite, non spécifié ; le curseur impose le plus récent d'abord), donc c'est une décision produit,
+    // pas un simple alignement.
+    const useKeyset = isSoql && q.indexOf('|') === -1;
     S.evState = { q, isSoql, keyset: useKeyset, cursors: [null], page: 0, pageSize: evPageSize(), total: useKeyset ? -1 : 0, shown: 0, totalCapped: false, countFired: false };
     await evLoad(); return;
   }

@@ -20,12 +20,17 @@ A pull request that weakens any of these will be **rejected**, no matter how use
 - **Mode-0 byte-identical.** Anything behind an OFF-by-default Cargo feature (or a runtime
   gate) **must leave the default build byte-identical** — the module *does not exist*, not
   merely "skipped". You prove it by a **constant test count**: the default suite passes the
-  **same number** of tests before and after your gated change — **758** at the time of
-  writing (`cd daemon && cargo test --locked`, default features). The invariant is the
-  *constancy*; when you legitimately add tests, update the number here, in
-  `daemon/.cargo/audit.toml`, in `daemon/src/tests/ingest.rs` and — the one that actually
-  enforces it — in `EXPECTED_TESTS` in `.github/workflows/ci.yml`, from your own
-  measurement. CI SUMS the `test result: ok. N passed` lines of the default run and FAILS
+  **same number** of tests before and after your gated change (`cd daemon && cargo test
+  --locked`, default features). **That number is written in exactly ONE place**:
+  `EXPECTED_TESTS` in `.github/workflows/ci.yml` — the place CI actually enforces. Read it
+  there; do not copy it into prose. This document used to name it, and so did three other
+  files; all four rotted out of date while CI stayed correct, which is the only outcome a
+  duplicated counter can have. A CI step now FAILS if the live value reappears as a bare
+  "N tests" claim anywhere else in the tree, so the duplication cannot come back. When you
+  legitimately add tests, update `EXPECTED_TESTS` from your own measurement — and nothing
+  else. (Historical measurements *quoted with their date* are fine and are not counters:
+  they record what was true then, and must NOT be "fixed" to today's value.)
+  CI SUMS the `test result: ok. N passed` lines of the default run and FAILS
   the build on any mismatch, so a gated change that silently adds or drops a test in the
   default profile cannot merge (the agent crate is separate: `cd agent && cargo test
   --locked` → 96, not asserted by CI). **The counterpart of this invariant is that the default
@@ -84,12 +89,33 @@ When in doubt, add a test that proves the invariant still holds.
 > [patch."https://github.com/guatxlabs/core"]
 > guatx-core = { path = "../../core" }
 > ```
+>
+> **This patch fails SILENTLY when your local core's version differs from the locked one —
+> measured 2026-07-30, and it is a false-green trap, not a nuisance.** The committed
+> `Cargo.lock` pins guatx-core to a git source **and rev**. If the sibling checkout carries a
+> different `version =` (say you bumped it to 0.2.2 while the lock pins 0.2.1), cargo **declines
+> the substitution** and builds against the *published* core, so your build is green and proves
+> nothing about your local change. All you get is one line, easy to lose in cargo's output:
+> ```
+> warning: patch `guatx-core v0.2.2 (/path/to/core)` was not used in the crate graph
+> ```
+> Measured both ways: with the lock in place → resolved from
+> `git+…?tag=v0.2.1#a622183`; with the lock allowed to re-resolve → resolved from the local
+> path. So **do not assume — verify which core you actually compiled**:
+> ```sh
+> cargo metadata --format-version 1 | python3 -c "import json,sys; \
+>   print([ (p['version'], p.get('source') or 'LOCAL PATH') \
+>           for p in json.load(sys.stdin)['packages'] if p['name']=='guatx-core' ])"
+> ```
+> It must print `LOCAL PATH`. If it prints a `git+…` source, let the lock re-resolve
+> (`cargo update -p guatx-core`) — and never commit that lock change.
 
 The crate lives in `daemon/`, so point cargo at it. The default build is the SMB profile
-(`SqlcipherStore` only) and must stay **758 tests green** and **offline**:
+(`SqlcipherStore` only) and must stay **green at the count `EXPECTED_TESTS` asserts** (see
+above — that variable is the single source of truth) and **offline**:
 
 ```sh
-cargo test --manifest-path daemon/Cargo.toml        # 758 tests, default features
+cargo test --manifest-path daemon/Cargo.toml        # default features
 ```
 
 The **`cold_tier` suite has its own count and its own CI job** (`cold-tier` in
@@ -98,7 +124,7 @@ The **`cold_tier` suite has its own count and its own CI job** (`cold-tier` in
 
 ```sh
 TMPDIR=/path/on/disk cargo test --manifest-path daemon/Cargo.toml --features cold_tier
-# 949 tests (= the 758 default tests + the cold_store tests the feature adds)
+# the count `EXPECTED_COLD_TESTS` asserts (= the default suite + what the feature adds)
 ```
 
 > **Why this matters more than it looks.** With a 7-day hot window and 365-day retention,
@@ -107,7 +133,9 @@ TMPDIR=/path/on/disk cargo test --manifest-path daemon/Cargo.toml --features col
 > returns a wrong count **without erroring**. Until this job existed, nothing in CI even
 > *compiled* the module — and it had gone red unnoticed: bumping guatx-core to v0.2.1
 > tightened GXQL field-name validation and broke the cold extractor-parity tests, while the
-> default suite stayed at 752 green.
+> default suite stayed green — **752 green on 2026-07-28**, the suite size on that date. That
+> number is a dated measurement, not a counter: do **not** align it on today's value, or you
+> destroy the evidence. The live counter is `EXPECTED_TESTS` and lives only in `ci.yml`.
 
 **Two testing gotchas** (learned the hard way):
 

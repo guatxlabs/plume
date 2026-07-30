@@ -536,6 +536,28 @@ jobs:
           tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
           /tmp/gitleaks detect --source . --config "$GITHUB_WORKSPACE/.gitleaks-ci.toml" --no-banner --redact --exit-code 1
 
+      # `deny.toml` existait depuis longtemps mais AUCUN job ne l'exécutait : une configuration
+      # que personne ne lance n'est pas une garde, c'est de la décoration. Mesuré avant l'ajout —
+      # `grep -c "cargo-deny\|cargo deny" ci.yml` = 0.
+      #
+      # PÉRIMÈTRE : `licenses bans sources`, PAS `advisories`. Les avis sont déjà couverts par
+      # `cargo audit --deny warnings` ci-dessus ; les dupliquer n'ajoute rien et importe une
+      # fragilité réelle — cargo-deny 0.18.2 échoue à parser un avis portant un score CVSS 4.0
+      # (« unsupported CVSS version: 4.0 »), constaté sur la base d'avis locale.
+      #
+      # Binaire ÉPINGLÉ par version + sha256, comme gitleaks juste au-dessus : `cargo install`
+      # recompilerait l'outil à chaque exécution pour le même résultat.
+      - name: Licences, bans et sources des dépendances (cargo-deny, binaire épinglé)
+        run: |
+          set -euo pipefail
+          CD_VER=0.18.2
+          CD_SHA=43c4a79c4b9fd1fcb3dddb305a1b4d8f7ac4a72accd61bb50a0b698789ca894c
+          CD_TGZ="cargo-deny-${CD_VER}-x86_64-unknown-linux-musl"
+          curl -sSfL -o /tmp/cargo-deny.tgz "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CD_VER}/${CD_TGZ}.tar.gz"
+          echo "${CD_SHA}  /tmp/cargo-deny.tgz" | sha256sum -c -
+          tar -xzf /tmp/cargo-deny.tgz --strip-components=1 -C /tmp "${CD_TGZ}/cargo-deny"
+          /tmp/cargo-deny --manifest-path daemon/Cargo.toml check licenses bans sources
+
   # ---------------------------------------------------------------------------
   # lint — fmt + clippy, CONSULTATIVE (non-blocking until the tree is proven
   # warning-free). cargo resolves the guatx-core git-dep (core@v0.2.1)

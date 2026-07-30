@@ -342,23 +342,93 @@ pub(crate) fn with_write<T>(st: &AppState, au: &AuthUser, f: impl FnOnce(&Connec
     f(&conn)
 }
 
-// Comme read_with mais avec un watchdog 3s qui interrompt un scan trop long (anti-DoS, cf /api/search :
-// regex/FTS full-scan sans filtre = ~0.8s@1M, linéaire). À appeler depuis spawn_blocking (occupe le
-// thread courant le temps de la requête ; n'occupe donc pas un worker async). Requête coupée -> default.
-pub(crate) fn read_with_watchdog<T>(db_path: &str, default: T, f: impl FnOnce(&Connection) -> T) -> T {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    let conn = match read_conn_get(db_path) { Ok(c) => c, Err(_) => return default };
-    let interrupt = conn.get_interrupt_handle();
-    let done = Arc::new(AtomicBool::new(false));
-    let done_wd = done.clone();
-    let watchdog = std::thread::spawn(move || {
-        let mut waited = 0u32;
-        while waited < 5000 { if done_wd.load(Ordering::Relaxed) { return; } std::thread::sleep(Duration::from_millis(50)); waited += 50; }
-        interrupt.interrupt();
+// =====================================================================================
+// GARDE DE BUDGET — LE SEUL MÉCANISME D'ARMEMENT D'UN BUDGET TEMPS SUR UNE LECTURE.
+//
+// CE QU'ELLE PROTÈGE (à ne pas perdre) : une requête folle (regex/FTS sans filtre, group-by sur
+// des millions de lignes) monopoliserait un thread de lecture et un permit du sémaphore jusqu'à
+// épuisement. La garde arme un fil qui appelle `interrupt()` sur la connexion au-delà du budget ;
+// la requête remonte alors une erreur explicite au lieu de tourner sans fin. C'est un anti-DoS, et
+// il est CONSERVÉ tel quel : même seuil, même interruption, même message.
+//
+// CE QUI CHANGE : l'ATTENTE. L'implémentation précédente SONDAIT un drapeau atomique
+// (`sleep(50 ms)` en boucle) et le chemin de requête JOIGNAIT ce fil avant de rendre sa réponse.
+// Conséquence MESURÉE : la latence de TOUTE lecture était arrondie au multiple de 50 ms supérieur
+// (mesures p50 `server_ms` avant : SQL 0,76 ms -> 50,7 ms ; SQL 11,4 ms -> 50,8 ms ; SQL 20,5 ms ->
+// 50,8 ms ; SQL 311 ms -> 351,9 ms). Ici l'attente est une CONDITION avec délai (condvar) : la fin
+// de requête réveille la garde IMMÉDIATEMENT, donc le `join` ne coûte plus l'arrondi au tick suivant.
+// Deux effets de bord, tous deux dans le bon sens :
+//   * l'interruption tombe À l'échéance du budget, plus au multiple de 50 ms qui la suit (pour les
+//     budgets livrés — 5 000 et 60 000 ms, multiples de 50 — l'échéance est INCHANGÉE) ;
+//   * la décision d'interrompre est prise SOUS LE VERROU, donc une garde qui expire pendant que la
+//     requête se termine n'interrompt plus (l'ancienne boucle sortait sur `waited >= budget` sans
+//     relire le drapeau : elle pouvait interrompre une connexion déjà rendue au pool).
+// =====================================================================================
+
+/// Rendez-vous entre une lecture et sa garde de budget : `done` sous verrou + condvar de réveil.
+struct BudgetGate {
+    done: parking_lot::Mutex<bool>,
+    woke: parking_lot::Condvar,
+}
+
+/// GARDE DE BUDGET, RAII. `budget_guard` l'arme ; son `Drop` signale la fin de requête et JOINT le
+/// fil de garde. Il n'y a AUCUN chemin de sortie (retour, `?`, panique) qui évite ce `Drop`, donc
+/// il est impossible d'oublier le signal, et impossible que l'interruption tombe après que la
+/// connexion ait quitté la portée. Les champs sont privés et il n'existe pas d'autre constructeur :
+/// un futur appelant qui veut un budget passe par ici — il ne peut pas re-fabriquer un sondage.
+pub(crate) struct BudgetGuard {
+    gate: Arc<BudgetGate>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl Drop for BudgetGuard {
+    fn drop(&mut self) {
+        {
+            let mut done = self.gate.done.lock();
+            *done = true;
+            self.gate.woke.notify_all(); // réveil IMMÉDIAT : plus d'arrondi au tick de sondage
+        }
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// Arme la garde : au-delà de `budget_ms` sans fin de requête, `interrupt()` est appelé sur la
+/// connexion dont vient `interrupt`. `budget_ms` est plancherisé à 1 ms (un budget nul serait une
+/// interruption immédiate, pas une absence de garde).
+pub(crate) fn budget_guard(interrupt: rusqlite::InterruptHandle, budget_ms: u64) -> BudgetGuard {
+    let gate = Arc::new(BudgetGate { done: parking_lot::Mutex::new(false), woke: parking_lot::Condvar::new() });
+    let g = gate.clone();
+    let budget = Duration::from_millis(budget_ms.max(1));
+    let thread = std::thread::spawn(move || {
+        let mut done = g.done.lock();
+        // `wait_while_for` re-teste la condition après chaque réveil -> immunise contre les réveils
+        // spurieux (une condvar peut réveiller sans notification).
+        let r = g.woke.wait_while_for(&mut done, |d| !*d, budget);
+        if r.timed_out() && !*done {
+            interrupt.interrupt();
+        }
     });
-    let out = f(&conn);
-    done.store(true, Ordering::Relaxed);
-    let _ = watchdog.join();
+    BudgetGuard { gate, thread: Some(thread) }
+}
+
+/// Budget des lectures de LISTE/PANNEAU passant par `read_with_watchdog` (alertes, cases, fraîcheur,
+/// /api/search…). Nommé ici plutôt qu'en littéral au milieu de la fonction : c'est un seuil, pas une
+/// constante de boucle.
+const READ_WATCHDOG_BUDGET_MS: u64 = 5000;
+
+// Comme read_with mais sous GARDE DE BUDGET (5 s) : interrompt un scan trop long (anti-DoS, cf
+// /api/search : regex/FTS full-scan sans filtre = ~0.8s@1M, linéaire). À appeler depuis
+// spawn_blocking (occupe le thread courant le temps de la requête ; n'occupe donc pas un worker
+// async). Requête coupée -> default.
+pub(crate) fn read_with_watchdog<T>(db_path: &str, default: T, f: impl FnOnce(&Connection) -> T) -> T {
+    let conn = match read_conn_get(db_path) { Ok(c) => c, Err(_) => return default };
+    let out = {
+        // La garde est droppée à la SORTIE de ce bloc -> signal + join AVANT que la connexion ne
+        // retourne au pool (ordre identique à l'ancien `done.store` + `join`).
+        let _budget = budget_guard(conn.get_interrupt_handle(), READ_WATCHDOG_BUDGET_MS);
+        f(&conn)
+    };
     read_conn_put(db_path, conn);
     out
 }
@@ -457,23 +527,12 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
     let cancelled = Arc::new(AtomicBool::new(false));
     let _cancel_guard = qid.map(|q| cancel_register(db_path, q, conn.get_interrupt_handle(), cancelled.clone()));
 
-    // budget temps : un watchdog interrompt la requête après `budget_ms` (anti-requête-folle). SEUIL
-    // par requête (CHANGEMENT 1) ; mécanisme d'interruption inchangé.
-    let interrupt = conn.get_interrupt_handle();
-    let done = Arc::new(AtomicBool::new(false));
-    let done_wd = done.clone();
+    // budget temps : la GARDE DE BUDGET interrompt la requête après `budget_ms` (anti-requête-folle).
+    // SEUIL par requête (CHANGEMENT 1) ; mécanisme d'interruption inchangé. Le `Drop` de la garde
+    // (fin de fonction, AVANT `_cancel_guard` qui est déclaré plus haut) signale la fin et joint le
+    // fil : même ordonnancement que l'ancien `done.store(true)` + `watchdog.join()`, sans le sondage.
     let budget = budget_ms.max(1);
-    let watchdog = std::thread::spawn(move || {
-        let mut waited = 0u64;
-        while waited < budget {
-            if done_wd.load(Ordering::Relaxed) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-            waited += 50;
-        }
-        interrupt.interrupt();
-    });
+    let _budget_guard = budget_guard(conn.get_interrupt_handle(), budget);
 
     let result = (|| -> Result<Value, String> {
         let t0 = Instant::now();
@@ -532,8 +591,8 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
         }))
     })();
 
-    done.store(true, Ordering::Relaxed);
-    let _ = watchdog.join();
     result
-    // _cancel_guard est droppé ICI -> entrée retirée du registre (même en erreur/timeout).
+    // Droppés ICI, dans l'ordre inverse de déclaration : d'abord `_budget_guard` (signal + join de la
+    // garde -> l'interruption ne peut plus tomber sur cette connexion), puis `_cancel_guard` (entrée
+    // retirée du registre, même en erreur/timeout).
 }

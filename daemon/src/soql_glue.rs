@@ -423,7 +423,22 @@ fn alias_pipeline(text: &str, depth: u32) -> Option<String> {
         } else if let (Some(a), Some(b)) = (t.find('['), t.rfind(']')) {
             // SOUS-RECHERCHE (`append [search …]` / `join … [search …]`) : le cœur la recompile telle
             // quelle au depth+1 -> son filtre de base doit être aliasé de la MÊME façon.
-            (b > a + 1)
+            //
+            // MAIS SEULEMENT SI C'EN EST UNE. Cette branche testait la seule PRÉSENCE de `[`…`]` sur
+            // n'importe quel étage non-`where`, donc elle réécrivait aussi l'intérieur d'un LITTÉRAL :
+            // mesuré, `eval label="[category=exec]"` devenait `eval label="[category in (exec,process)]"`.
+            // Réécrire la CHAÎNE d'un utilisateur est une corruption silencieuse de sa requête — l'alias
+            // n'a le droit de toucher qu'un FILTRE. On exige donc que l'étage soit `append`/`join` (les
+            // deux seules étapes du cœur qui prennent une sous-recherche) ET que l'intérieur commence
+            // par une base — sinon VERBATIM, ce que le commentaire promettait déjà.
+            let is_subsearch = matches!(
+                t.split_whitespace().next().map(str::to_ascii_lowercase).as_deref(),
+                Some("append") | Some("join")
+            ) && {
+                let inner = t[a + 1..b].trim_start();
+                inner == "search" || inner.starts_with("search ") || inner.starts_with("metric ")
+            };
+            (is_subsearch && b > a + 1)
                 .then(|| alias_pipeline(&t[a + 1..b], depth + 1))
                 .flatten()
                 .map(|inner| format!("{}[{}]{}", &t[..a], inner, &t[b + 1..]))
@@ -481,8 +496,15 @@ fn push_span(out: &mut String, span: &str) -> bool {
 }
 
 /// Ce jeton est-il l'ÉGALITÉ `category=exec` ? Reconnaissance DÉRIVÉE de la grammaire du cœur :
-///  • MÊME LISTE, MÊME ORDRE d'opérateurs que `table_conds` -> `!=`/`=~`/`>=`/`<=` sont vus AVANT `=`,
-///    donc `category!=exec` et `category=~exec` sont rejetés au lieu d'être pris pour des égalités ;
+///  • MÊME LISTE, MÊME ORDRE d'opérateurs que `table_conds` (le FILTRE DE BASE) -> `!=`/`=~`/`>=`/`<=`
+///    sont vus AVANT `=`, donc `category!=exec` et `category=~exec` sont rejetés au lieu d'être pris
+///    pour des égalités ;
+///    ÉCART CONNU ET MESURÉ, à ne pas re-généraliser : l'étage `where` du cœur (`stages.rs`) a une liste
+///    SANS `:`. Ce prédicat étant partagé par les deux étages, `where category:exec` est reconnu ici
+///    alors que le cœur REFUSE `where category:auth`. L'alias rend donc compilable une écriture que le
+///    langage rejette — une TOLÉRANCE indue, jamais un changement de jeu de lignes (elle ne peut que
+///    produire un `IN (exec,process)` là où l'utilisateur aurait eu une erreur de syntaxe). Corriger
+///    exigerait deux listes distinctes selon l'étage ; la dette est ici plutôt que sous-entendue ;
 ///  • partie GAUCHE quotée = PHRASE plein-texte (règle `SoqlTok::quoted_prefix`), jamais un champ ;
 ///  • le nom du champ doit être la COLONNE RÉELLE `category` — `cat` est un alias de la barre
 ///    `/api/search` (`field_col`), que le compilateur GXQL ne résout PAS vers la colonne ;

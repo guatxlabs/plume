@@ -2,6 +2,25 @@
 //! garde-oracle, watchdog read-pool). Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
 
+/// Prédicat d'égalité `champ:valeur` de la BARRE, y compris l'ALIAS DE LECTURE CIM.
+///
+/// EXTRAITE DU HANDLER POUR ÊTRE TESTABLE, et ce n'est pas de la cosmétique : tant que cette décision
+/// vivait en ligne dans un handler `async`, aucun test ne pouvait l'atteindre — une revue adverse a
+/// neutralisé la branche d'alias et la suite est restée VERTE à 757. Une garde qu'aucun test ne défend
+/// sera supprimée au premier nettoyage, par quelqu'un de bonne foi qui la croira morte.
+///
+/// L'alias lui-même (dette de migration, péremption 2027-07-23) : cette barre construit son SQL À LA
+/// MAIN, elle NE passe PAS par le compilateur GXQL, donc pas par `cim_read_alias_exec`. Sans lui,
+/// `category:exec` ici serait AVEUGLE sur l'historique `process` des collecteurs Windows d'avant le
+/// 2026-07-23, alors que la MÊME question posée en GXQL le trouverait — deux réponses pour une question.
+pub(crate) fn search_bar_exact_pred(col: &str, v: &str) -> String {
+    if col == "category" && v == CIM_EXEC_CANON {
+        format!("e.category IN ('{CIM_EXEC_CANON}','{CIM_EXEC_LEGACY}')")
+    } else {
+        format!("e.{col}='{v}'")
+    }
+}
+
 pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
     let _mt = crate::search_timer(); // #51 DAY-2 OPS : latence recherche (p50/p95) enregistrée à la sortie (Drop)
     let term = q.get("q").cloned().unwrap_or_default();
@@ -53,15 +72,8 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
                             where_extra.push(format!("e.{col} REGEXP '{rx}'"));
                         } else if v.contains('*') {                        // champ:val* -> joker (LIKE)
                             where_extra.push(format!("e.{col} LIKE '{}'", v.replace('*', "%")));
-                        } else if col == "category" && v == CIM_EXEC_CANON {
-                            // ALIAS DE LECTURE CIM (dette de migration, péremption 2027-07-23) : cette barre
-                            // construit son SQL À LA MAIN — elle NE passe PAS par le compilo GXQL, donc pas par
-                            // `cim_read_alias_exec`. Sans cette branche, `category:exec` ici serait AVEUGLE sur
-                            // l'historique `process` des collecteurs Windows d'avant le 2026-07-23 alors que la
-                            // MÊME question posée en GXQL le trouverait — deux réponses pour une question.
-                            where_extra.push(format!("e.category IN ('{CIM_EXEC_CANON}','{CIM_EXEC_LEGACY}')"));
-                        } else {                                           // champ:val -> exact
-                            where_extra.push(format!("e.{col}='{v}'"));
+                        } else {                                           // champ:val -> exact (ou alias CIM)
+                            where_extra.push(search_bar_exact_pred(col, &v));
                         }
                     }
                 }

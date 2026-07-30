@@ -125,7 +125,7 @@
     // FIX #18 (size-caps #49 bypass sous COLD, NO-LOSS) — sous cold ON, l'aging a déjà columnarisé+supprimé les
     // vieux jours ; les lignes restées HOT sont les RÉCENTES NON archivées. Un plafond count/byte qui ne garde
     // que les N plus récentes supprimerait EXACTEMENT ces lignes SANS copie cold -> PERTE. La correction SKIP les
-    // plafonds quand PLUME_COLD_TIER=1. Ces tests sont gatés `cold_tier` (jamais dans la suite par défaut = 757)
+    // plafonds quand PLUME_COLD_TIER=1. Ces tests sont gatés `cold_tier` (jamais dans la suite par défaut = 758)
     // et sérialisés (COLD_CAPS_ENV_LOCK) car ils mutent l'env process-global PLUME_COLD_TIER/PLUME_COLD_DIR.
 
     /// Prépare un env cold : PLUME_COLD_TIER=1 + PLUME_COLD_DIR=<temp> (aucune clé -> aging fail-closed, ne
@@ -1163,6 +1163,26 @@
         c.query_row(&format!("SELECT COUNT(*) FROM ({sql})"), [], |r| r.get(0)).unwrap()
     }
 
+    /// LA BARRE `/api/search` DOIT DONNER LA MÊME RÉPONSE QUE GXQL sur `category=exec`.
+    /// Ce test existe parce qu'une revue adverse a neutralisé la branche d'alias de `handlers/search.rs`
+    /// et a obtenu `758 passed; 0 failed` : la garde était réelle, documentée et justifiée dans son
+    /// commit, mais AUCUN test ne la défendait. Elle aurait été retirée au premier nettoyage.
+    /// MUTATION : retirer la branche `col == "category" && v == CIM_EXEC_CANON` de
+    /// `search_bar_exact_pred` -> ce test rougit.
+    #[test]
+    fn search_bar_category_exec_matches_the_gxql_answer() {
+        use crate::handlers::search::search_bar_exact_pred;
+        // (a) la barre émet bien l'équivalence, pas une égalité sèche.
+        let pred = search_bar_exact_pred("category", crate::CIM_EXEC_CANON);
+        assert!(pred.contains(crate::CIM_EXEC_LEGACY),
+            "la barre doit couvrir l'historique scellé comme le fait GXQL, sinon deux routes donnent \
+             deux réponses à la même question -> {pred}");
+        // (b) ANTI-SUR-MATCH : aucune autre catégorie, aucun autre champ n'est élargi.
+        assert_eq!(search_bar_exact_pred("category", "auth"), "e.category='auth'");
+        assert_eq!(search_bar_exact_pred("source", crate::CIM_EXEC_CANON),
+            format!("e.source='{}'", crate::CIM_EXEC_CANON), "seul le champ `category` est aliasé");
+    }
+
     /// UNE requête `category=exec` DOIT retrouver l'historique `category=process`, et RIEN d'autre.
     /// MUTATION : supprimer l'appel à `cim_read_alias_exec` dans `SqlcipherStore` -> le compte tombe
     /// de 3 à 2 et l'assertion de structure sur le SQL émis (`IN`) échoue.
@@ -1192,6 +1212,16 @@
         //     filtre pas — l'y réécrire produirait une requête invalide).
         let sql_eval = soql_to_sql_x("search source=auditd | eval c=\"exec\"", 0, 0, None).unwrap();
         assert!(!sql_eval.contains("'process'"), "un `eval` ne doit JAMAIS être aliasé : {sql_eval}");
+        // (e-bis) LITTÉRAL À CROCHETS — le défaut que ce cas fige. La branche sous-recherche testait la
+        //     seule PRÉSENCE de `[`…`]` sur un étage non-`where`, donc elle réécrivait aussi l'INTÉRIEUR
+        //     d'une chaîne : `eval label="[category=exec]"` devenait `…[category in (exec,process)]…`.
+        //     Réécrire la chaîne d'un utilisateur est une corruption silencieuse de sa requête. Une
+        //     sous-recherche est désormais reconnue par l'ÉTAGE (`append`/`join`) et par sa base, pas
+        //     par la présence d'un crochet.
+        let sql_lit = soql_to_sql_x("search source=auditd | eval label=\"[category=exec]\"", 0, 0, None).unwrap();
+        assert!(!sql_lit.contains("in (exec,process)") && !sql_lit.contains("IN ('exec','process')"),
+            "un littéral entre crochets n'est PAS une sous-recherche : la requête a été corrompue -> {sql_lit}");
+        assert!(sql_lit.contains("[category=exec]"), "le littéral doit être rendu VERBATIM : {sql_lit}");
         // (f) SOUS-RECHERCHE : le cœur la recompile au depth+1 -> son filtre de base doit l'être aussi,
         //     sinon un `append [search category=exec]` rendrait une réponse PARTIELLE en silence.
         let sql_sub = soql_to_sql_x("search category=auth | append [search category=exec]", 0, 0, None).unwrap();

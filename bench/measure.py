@@ -183,6 +183,13 @@ def query_classes(end_ts):
         dict(id="C4c-raw-keyset", kind="gxql",
              label="RAW paginé en keyset (curseur, sans offset)",
              soql="search severity>=1", limit=200, keyset=True),
+        # Le client DEMANDE le curseur sur un pipeline PROJETÉ — c'est ce que fait toute récupération
+        # RAW réelle (on projette des colonnes). À comparer à C4c (même demande, sans projection) : si
+        # les deux ne se ressemblent pas, c'est que la projection fait perdre le curseur.
+        dict(id="C4d-keyset-projete", kind="gxql",
+             label="keyset DEMANDÉ sur un pipeline PROJETÉ (| table)",
+             soql="search severity>=1 | table ts,host,source,severity,message",
+             limit=200, keyset=True),
         # (v) regex sur un champ ÉTENDU (JSON) — le cas le plus coûteux, et celui demandé
         dict(id="C5-regex-json-planted", kind="gxql",
              label="regex sur champ ÉTENDU planté (fields.needle)",

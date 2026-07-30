@@ -733,10 +733,13 @@ async function renderPanel(p, editable = true) {
   // agrégé = groupes déjà en mémoire -> pagination CLIENT du DOM (tableEl opts) + vrai total (count_only si tronqué).
   const pIsSoql = !!p.is_soql || /^\s*search\b/i.test(p.query || '') || (p.query || '').includes('|');
   const pIsAgg = pIsSoql && /\|\s*(stats|timechart|top|rare|eventstats)\b/i.test(p.query || '');
-  // PROJECTION `| table`/`| fields` : retire la clé de tri (ts,id) -> keyset impossible (le daemon dégrade
-  // vers l'offset, cf soql_projects_away_keyset). Le web DOIT s'aligner : sinon il enverrait un CURSEUR pour
-  // les pages séquentielles (que le daemon en mode offset ignore -> renverrait la page 0). -> ces panneaux
-  // paginent en OFFSET côté web AUSSI (déterministe, sans trou). Mirroir EXACT de la détection daemon.
+  // PROJECTION `| table`/`| fields` : le web reste en OFFSET pour ces panneaux. CE N'EST PLUS UNE
+  // CONTRAINTE DU DAEMON — il sait désormais servir le curseur sur un pipeline projeté (il restitue la
+  // clé de tri dans la projection puis la retire de la réponse, cf `keyset_projection_augment` côté
+  // daemon). C'est un choix WEB, encore non pris : passer ces panneaux au curseur changerait l'ORDRE
+  // affiché (l'offset les rend dans l'ordre physique SQLite, non spécifié ; le curseur impose le plus
+  // récent d'abord). Tant que ce choix n'est pas fait, le web NE DOIT PAS envoyer `keyset:true` ici,
+  // sinon il mélangerait deux ordres entre les pages d'une même navigation.
   const pIsProjected = pIsSoql && /\|\s*(table|fields)\b/i.test(p.query || '');
   const PANEL_PAGE = 50;
   // état pager SERVEUR PAR-PANNEAU (isolé des autres panneaux — plusieurs panneaux paginent indépendamment).

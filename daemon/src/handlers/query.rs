@@ -15,38 +15,194 @@ use crate::*;
 /// le watchdog reste `total=-1` (UI ◀ ▶ sans numéros).
 pub(crate) const PAGINATION_COUNT_CAP: i64 = 10_000;
 
-/// KEYSET (#28) — APPLICABILITÉ. Le browse keyset ordonne par la clé stable `(ts,id)` dans un wrap EXTERNE
-/// (`keyset_page_sql`). Un stage de PROJECTION explicite (`| table …`, `| fields …`) RE-PROJETTE la sortie et
-/// peut RETIRER `ts`/`id` du SELECT de tête -> le wrap `ORDER BY ts DESC, id DESC` référencerait alors une
-/// colonne absente (« no such column: ts/id »). Ces requêtes projetées ne sont PAS keyset-ables : elles
-/// retombent sur la pagination OFFSET (le `| sort` interne ordonne déjà ; borné, correct, = comportement
-/// pré-keyset byte-identique). Détection : un stage de pipeline (segment après un `|`) dont la commande de
-/// tête est `table` ou `fields`. Un `|` dans une valeur citée peut produire un FAUX POSITIF -> sûr (offset).
-/// Le `search` brut nu (sans projection) garde le keyset (parcours intégral du brut, le cas d'usage central).
-pub(crate) fn soql_projects_away_keyset(soql: &str) -> bool {
-    soql.split('|').skip(1).any(|stage| {
-        let cmd = stage.trim_start().split_whitespace().next().unwrap_or("").to_ascii_lowercase();
-        cmd == "table" || cmd == "fields"
+// =====================================================================================
+// PAGINATION DU FLUX D'ÉVÉNEMENTS — un SEUL décideur (`keyset_applicable`) et un SEUL fabricant
+// (`page_sql`). Avant, trois sites formataient leur propre `LIMIT/OFFSET` et l'applicabilité du
+// keyset était une LISTE de deux commandes (`table`, `fields`) : la liste était à la fois trop
+// stricte (elle refusait des pipelines que le curseur peut servir) et trop laxiste (elle acceptait
+// `| sort <autre clé>`, dont le wrap keyset ÉCRASE silencieusement l'ordre demandé — mesuré :
+// `search severity>=1 | sort severity` avec `keyset:true` rendait severity [2,2,2,2,3,2] au lieu de
+// [1,1,1,1,1,1]). Les deux fonctions ci-dessous remplacent la liste par les PROPRIÉTÉS requises.
+// =====================================================================================
+
+/// Commandes de pipeline qui rendent UNE ligne de sortie PAR ÉVÉNEMENT d'entrée et n'imposent aucun
+/// ordre : la clé `(ts,id)` reste unique et l'ordre reste celui du wrap. `table`/`fields` en font
+/// partie UNIQUEMENT parce que le daemon RESTITUE `ts`/`id` dans leur liste (cf.
+/// `keyset_projection_augment`) ; sans cette restitution, le wrap référencerait une colonne absente.
+const KEYSET_ROW_PRESERVING: &[&str] =
+    &["where", "head", "limit", "eval", "rex", "rename", "dedup", "eventstats", "rate", "table", "fields"];
+
+/// Commandes qui CRÉENT des colonnes : si l'une nomme `ts` ou `id`, elle peut les redéfinir/les
+/// dupliquer et le wrap ne peut plus garantir sa clé de tri -> non applicable (repli OFFSET).
+const KEYSET_COL_CREATING: &[&str] = &["eval", "rex", "rename", "eventstats", "rate"];
+
+/// KEYSET (#28) — APPLICABILITÉ, **DÉRIVÉE** des trois propriétés dont le wrap `page_sql` a besoin :
+///   (P1) une ligne de sortie par ÉVÉNEMENT, donc `(ts,id)` UNIQUE — sinon le curseur strict `<`
+///        sauterait les doublons de la ligne frontière (perte SILENCIEUSE) ;
+///   (P2) l'ordre DEMANDÉ est bien `(ts DESC, id DESC)` — sinon le wrap écrase l'ordre du client ;
+///   (P3) `ts` et `id` sont présents dans la projection finale — restitué par l'augmentation.
+/// Le défaut est le REFUS : toute commande hors de `KEYSET_ROW_PRESERVING` (connue —
+/// `stats`/`timechart`/`top`/`rare` agrègent, `mvexpand` duplique, `append`/`join`/`lookup`
+/// introduisent des lignes étrangères — ou INCONNUE, p. ex. une commande GXQL ajoutée demain) rend
+/// la requête non applicable, donc servie par la pagination OFFSET : correcte, bornée, et identique
+/// au comportement pré-keyset. Un futur étage est ainsi couvert SANS être énuméré ici.
+/// `sort` est admis pour la SEULE clé keyset (`-ts`, éventuellement `-ts,-id`) : c'est exactement
+/// l'ordre que le wrap impose, donc il ne peut pas le contredire.
+/// Un `|` dans une valeur citée peut produire un FAUX NÉGATIF -> sûr (OFFSET).
+pub(crate) fn keyset_applicable(soql: &str) -> bool {
+    soql.split('|').skip(1).all(|stage| {
+        let stage = stage.trim();
+        let cmd = stage.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+        if cmd.is_empty() {
+            return true; // pipe terminal / vide : aucun étage
+        }
+        if cmd == "sort" {
+            // (P2) le seul tri compatible avec le wrap est le wrap lui-même.
+            let keys: Vec<String> = stage[4..]
+                .split(',')
+                .map(|k| k.trim().to_ascii_lowercase())
+                .filter(|k| !k.is_empty())
+                .collect();
+            return !keys.is_empty() && keys.iter().all(|k| k == "-ts" || k == "-id");
+        }
+        if !KEYSET_ROW_PRESERVING.contains(&cmd.as_str()) {
+            return false; // (P1) — et refus par DÉFAUT de l'inconnu
+        }
+        if KEYSET_COL_CREATING.contains(&cmd.as_str()) {
+            // (P3) — un étage qui écrit des colonnes et NOMME la clé de tri n'est pas digne de confiance.
+            let rest = stage[cmd.len()..].to_ascii_lowercase();
+            let names_key = rest
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .any(|w| w == "ts" || w == "id");
+            return !names_key;
+        }
+        true
     })
 }
 
-/// KEYSET (#28) — construit le SQL d'UNE page keyset autour du SQL compilé `sql` (qui projette `id` en fin,
-/// via cursor_id). Tri STABLE `ts DESC, id DESC` (le plus récent d'abord). Sans curseur = PREMIÈRE page.
-/// Avec curseur `(cts,cid)` = page SUIVANTE strictement APRÈS la dernière ligne rendue : `ts < cts OR (ts = cts
-/// AND id < cid)` -> le tiebreak `id` garantit ZÉRO chevauchement / ZÉRO trou aux `ts` égaux (auditd firehose).
-/// SÉCURITÉ : `cts`/`cid` sont des `i64` (parsés stricts en amont) formatés directement -> injection impossible.
-/// PAS de plafond de comptage : le curseur pilote le parcours INTÉGRAL du match-set (fin du cap qui cachait).
-pub(crate) fn keyset_page_sql(sql: &str, cursor: Option<(i64, i64)>, offset: i64, lim: i64) -> String {
-    match cursor {
-        // CURSEUR (Suivant/Précédent séquentiel) : O(page), rapide — PRIORITAIRE sur offset.
-        Some((cts, cid)) => format!(
+/// KEYSET (#28) — AUGMENTATION DE PROJECTION. C'est ce qui rend (P3) vrai pour `| table`/`| fields`
+/// au lieu de les REFUSER : chaque étage de projection explicite se voit ajouter les clés `ts`/`id`
+/// qui lui manquent, de sorte que le wrap keyset trouve toujours sa clé de tri. Rend
+/// `(soql augmenté, nombre de colonnes ajoutées au DERNIER étage de projection)` — ce nombre sert à
+/// RETIRER ces colonnes de la réponse (`keyset_trim_helper_cols`), pour que le client reçoive
+/// EXACTEMENT la projection qu'il a demandée, ni plus ni moins.
+/// N'ajoute `id` que sous compilation keyset (`cursor_id=true`), où `id` est une colonne RÉELLE de la
+/// base ; sans cursor_id le compilateur le résoudrait en `json_extract(fields,'$.id')` (mesuré) et le
+/// curseur serait NULL — c'est pourquoi cette fonction n'est appelée que sur le chemin keyset.
+/// `table *` / `table` nu sont des passe-plat (aucune liste) -> rien à augmenter.
+pub(crate) fn keyset_projection_augment(soql: &str) -> (String, usize) {
+    let mut out: Vec<String> = Vec::new();
+    let mut added_last = 0usize;
+    for (i, stage) in soql.split('|').enumerate() {
+        if i == 0 {
+            out.push(stage.to_string());
+            continue;
+        }
+        let trimmed = stage.trim();
+        let cmd = trimmed.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+        if cmd != "table" && cmd != "fields" {
+            out.push(stage.to_string());
+            continue;
+        }
+        let list = trimmed[cmd.len()..].trim();
+        if list.is_empty() || list == "*" {
+            out.push(stage.to_string()); // passe-plat : la clé de tri survit déjà
+            continue;
+        }
+        // `table` sépare par virgules OU blancs, `fields` par virgules seules -> on lit les deux et on
+        // ré-émet en VIRGULES, forme acceptée par les deux étages.
+        let have: Vec<String> = list
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .map(|f| f.trim().to_ascii_lowercase())
+            .filter(|f| !f.is_empty())
+            .collect();
+        let mut add: Vec<&str> = Vec::new();
+        for key in ["ts", "id"] {
+            if !have.iter().any(|f| f == key) {
+                add.push(key);
+            }
+        }
+        added_last = add.len();
+        if add.is_empty() {
+            out.push(stage.to_string());
+        } else {
+            // On ré-émet la commande TELLE QU'ÉCRITE (pas sa forme minuscule) : le compilateur GXQL
+            // dispatche sur le token EXACT, donc normaliser la casse ici ferait COMPILER un `| TABLE a`
+            // qui échoue aujourd'hui — un changement de résultat, gratuit et non demandé.
+            let cmd_txt = &trimmed[..cmd.len()];
+            out.push(format!(" {cmd_txt} {list},{}", add.join(",")));
+        }
+    }
+    (out.join("|"), added_last)
+}
+
+/// KEYSET (#28) — retire les `n` DERNIÈRES colonnes de la réponse : celles que l'augmentation a
+/// ajoutées pour que le wrap ait sa clé de tri. À appeler APRÈS `keyset_finalize` (qui a besoin de
+/// `ts`/`id` pour fabriquer `next_cursor`). `n == 0` -> no-op strict.
+pub(crate) fn keyset_trim_helper_cols(v: &mut Value, n: usize) {
+    if n == 0 {
+        return;
+    }
+    let keep = match v.get("columns").and_then(|c| c.as_array()).map(|a| a.len()) {
+        Some(len) if len > n => len - n,
+        _ => return, // moins de colonnes que d'ajouts : on ne touche à rien plutôt que de mutiler
+    };
+    if let Some(cols) = v.get_mut("columns").and_then(|c| c.as_array_mut()) {
+        cols.truncate(keep);
+    }
+    if let Some(rows) = v.get_mut("rows").and_then(|r| r.as_array_mut()) {
+        for r in rows.iter_mut() {
+            if let Some(a) = r.as_array_mut() {
+                a.truncate(keep);
+            }
+        }
+    }
+}
+
+/// PLAN DE PAGINATION — la forme de page à fabriquer. Le type existe pour qu'il n'y ait qu'UN endroit
+/// où la question « comment atteint-on cette page ? » se pose : ajouter une variante oblige à traiter
+/// le cas dans `page_sql`, et un appelant ne peut pas composer sa propre clause d'offset.
+pub(crate) enum PagePlan {
+    /// CURSEUR `(ts,id)` (Suivant/Précédent séquentiel) : O(page) quelle que soit la profondeur.
+    Cursor(i64, i64),
+    /// SAUT à une page arbitraire DANS l'ordre keyset (clic sur un numéro / « Dernière ») : l'OFFSET
+    /// est le seul moyen d'atteindre la page k sans parcourir les k-1 précédentes. C'est un choix
+    /// ASSUMÉ, pas un oubli : la page atterrie rend son `next_cursor`, donc le Suivant repart en curseur.
+    KeysetJump(i64),
+    /// PREMIÈRE page keyset.
+    KeysetFirst,
+    /// Pagination OFFSET NUE — pipelines dont l'ordre demandé n'est PAS la clé keyset, et `sql` brut
+    /// admin. AUCUN `ORDER BY` imposé : l'ordre reste celui du SQL compilé, byte-identique au pré-keyset.
+    Offset(i64),
+}
+
+/// KEYSET (#28) — LE SEUL fabricant de page du flux d'événements. Wrappe le SQL compilé `sql` (qui
+/// projette `id` en fin via cursor_id sur les variantes keyset). Tri STABLE `ts DESC, id DESC` (le plus
+/// récent d'abord) sur les trois variantes keyset. Avec curseur `(cts,cid)` = page SUIVANTE strictement
+/// APRÈS la dernière ligne rendue : `ts < cts OR (ts = cts AND id < cid)` -> le tiebreak `id` garantit
+/// ZÉRO chevauchement / ZÉRO trou aux `ts` égaux (auditd firehose).
+/// SÉCURITÉ : `cts`/`cid`/`offset` sont des `i64` (parsés stricts en amont) formatés directement ->
+/// injection impossible. PAS de plafond de comptage sur les variantes curseur : le curseur pilote le
+/// parcours INTÉGRAL du match-set (fin du cap qui cachait des événements).
+pub(crate) fn page_sql(sql: &str, plan: PagePlan, lim: i64) -> String {
+    match plan {
+        PagePlan::Cursor(cts, cid) => format!(
             "SELECT * FROM ({sql}) WHERE ts < {cts} OR (ts = {cts} AND id < {cid}) ORDER BY ts DESC, id DESC LIMIT {lim}"
         ),
-        // SAUT À UNE PAGE (clic sur un numéro / Dernière) : OFFSET ponctuel (borné par le budget) ; la page atterrie
-        // fournit son `next_cursor` -> le Suivant repart en curseur rapide. `offset` = i64 validé (>=0) -> pas d'injection.
-        None if offset > 0 => format!("SELECT * FROM ({sql}) ORDER BY ts DESC, id DESC LIMIT {lim} OFFSET {offset}"),
-        // PREMIÈRE page.
-        None => format!("SELECT * FROM ({sql}) ORDER BY ts DESC, id DESC LIMIT {lim}"),
+        PagePlan::KeysetJump(offset) => {
+            format!("SELECT * FROM ({sql}) ORDER BY ts DESC, id DESC LIMIT {lim} OFFSET {offset}")
+        }
+        PagePlan::KeysetFirst => format!("SELECT * FROM ({sql}) ORDER BY ts DESC, id DESC LIMIT {lim}"),
+        PagePlan::Offset(offset) => format!("SELECT * FROM ({sql}) LIMIT {lim} OFFSET {offset}"),
+    }
+}
+
+/// Traduit (curseur, offset) en plan keyset — la décision est ici, pas chez l'appelant.
+pub(crate) fn keyset_plan(cursor: Option<(i64, i64)>, offset: i64) -> PagePlan {
+    match cursor {
+        Some((cts, cid)) => PagePlan::Cursor(cts, cid), // le curseur PRIME sur l'offset
+        None if offset > 0 => PagePlan::KeysetJump(offset),
+        None => PagePlan::KeysetFirst,
     }
 }
 
@@ -124,8 +280,8 @@ fn cold_keyset_vectorized_page(
         (None, Vec::new())
     } else {
         let hot_sql = format!("SELECT * FROM ({sql}) WHERE ts >= {boundary}");
-        let page_sql = keyset_page_sql(&hot_sql, cursor, 0, n);
-        match run_query_ex(db_path, &page_sql, budget_ms, qid) {
+        let hot_page = page_sql(&hot_sql, keyset_plan(cursor, 0), n);
+        match run_query_ex(db_path, &hot_page, budget_ms, qid) {
             Ok(hv) => {
                 let cols = hv.get("columns").and_then(|c| c.as_array()).cloned().unwrap_or_default();
                 let rws = hv.get("rows").and_then(|r| r.as_array()).cloned().unwrap_or_default();
@@ -196,13 +352,19 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     // CACHAIT des événements. N'a d'effet que sur le chemin GXQL (la compilation cursor_id est GXQL-only) : un
     // `sql` brut admin retombe sur la pagination offset habituelle. Off (défaut) -> chemins offset/count intacts.
     let keyset = body.bool_field("keyset", false);
-    // KEYSET APPLICABILITÉ (fix #-panels « no such column: ts/id ») : un pipeline projetant `| table`/`| fields`
-    // retire la clé de tri (ts,id) -> keyset impossible. On DÉGRADE vers l'offset AVANT toute compilation, pour
-    // que la base compile en mode NON-keyset (soql_to_sql_masked_x -> `| sort` interne préservé, byte-identique
-    // au pré-keyset) et que `do_keyset` reste faux. `search` brut nu -> keyset intact (parcours complet). Point
-    // UNIQUE : ce shadow gouverne la route rollup (l.~260), le choix de compilation (l.~288) ET `do_keyset` (l.~351).
+    // KEYSET APPLICABILITÉ — DÉRIVÉE des propriétés du wrap (cf. `keyset_applicable`), plus l'AUGMENTATION
+    // qui restitue `ts`/`id` aux pipelines projetés (`| table`/`| fields`), lesquels étaient auparavant
+    // refusés en bloc et payaient donc un OFFSET croissant à chaque page. Non applicable -> on DÉGRADE vers
+    // l'offset AVANT toute compilation, pour que la base compile en mode NON-keyset (soql_to_sql_masked_x ->
+    // `| sort` interne préservé, byte-identique au pré-keyset) et que `do_keyset` reste faux. Point UNIQUE :
+    // ce shadow gouverne la route rollup, le choix de compilation ET `do_keyset`.
     let keyset = keyset
-        && body.get("soql").and_then(|v| v.as_str()).map(|s| !soql_projects_away_keyset(s)).unwrap_or(true);
+        && body.get("soql").and_then(|v| v.as_str()).map(keyset_applicable).unwrap_or(true);
+    // Colonnes AJOUTÉES par l'augmentation de projection, à retirer de la réponse (0 = rien ajouté).
+    let mut keyset_trim = 0usize;
+    // REPLI : la forme augmentée ne compile pas (p. ex. un `|` dans une valeur citée a fait mal découper les
+    // étages) -> on sert EXACTEMENT comme avant (offset + COUNT borné) au lieu de rendre une erreur.
+    let mut keyset_compile_failed = false;
     // rollup_meta = Some((approx, truncated, note)) si la requête a été ROUTÉE vers un rollup (sinon raw).
     let mut rollup_meta: Option<(bool, bool, Option<String>)> = None;
     // #18 P3 — UNION hot∪cold : `Some(B)` (frontière jour) si le tier cold est ON ET que la fenêtre atteint
@@ -307,8 +469,26 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
             // KEYSET : compile AVEC la clé de tri `id` en fin de projection (cursor_id=true) ; sinon compile masqué
             // habituel (cursor_id=false, byte-identique mode 0). Les DEUX passent par le MÊME choke-point store
             // (masques #45 + authorizer read-pool inchangés -> aucune fuite via le chemin keyset).
+            // AUGMENTATION : sur le chemin keyset, un pipeline projeté (`| table`/`| fields`) se voit restituer
+            // `ts`/`id` dans sa liste, faute de quoi le wrap n'aurait pas de clé de tri. Les colonnes ajoutées
+            // sont retirées de la réponse (`keyset_trim`) -> le client reçoit EXACTEMENT sa projection.
+            // REPLI : si la forme augmentée ne compile pas, on RETOMBE sur le compilé non-keyset et on
+            // désarme le curseur -> la réponse est celle d'avant (offset + COUNT borné), jamais une erreur.
             let compiled = if keyset {
-                soql_to_sql_masked_keyset_x(&soql, from, to, env, &masks)
+                let (aug, added) = keyset_projection_augment(&soql);
+                match soql_to_sql_masked_keyset_x(&aug, from, to, env, &masks) {
+                    Ok(s) => {
+                        keyset_trim = added;
+                        Ok(s)
+                    }
+                    Err(e) if added > 0 => {
+                        keyset_compile_failed = true;
+                        keyset_trim = 0;
+                        let _ = e;
+                        soql_to_sql_masked_x(&soql, from, to, env, &masks)
+                    }
+                    Err(e) => Err(e),
+                }
             } else {
                 soql_to_sql_masked_x(&soql, from, to, env, &masks)
             };
@@ -379,7 +559,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     // KEYSET — taille de page par défaut si le client n'a pas fourni `limit` (il l'envoie normalement = pageSize).
     let keyset_lim = limit.unwrap_or(100);
     // KEYSET (#28) — CHEMIN COLD hot∪cold par curseur. cold_tier OFF en prod : le HOT ci-dessous est prioritaire.
-    // On applique le MÊME wrap keyset (`keyset_page_sql`) sur l'union hydratée + le MÊME masquage/authorizer que
+    // On applique le MÊME wrap keyset (`page_sql`) sur l'union hydratée + le MÊME masquage/authorizer que
     // le hot (via `cold_union_query`). Pas de COUNT (le curseur pilote le parcours). CAVEAT documenté : si
     // l'hydratation cold PLAFONNE (meta.truncated), on le surface et on garde `has_more` -> jamais présenté complet.
     #[cfg(feature = "cold_tier")]
@@ -424,11 +604,11 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                     }
                 }
             }
-            let page_sql = keyset_page_sql(&sql, cursor, offset, keyset_lim);
+            let ks_page = page_sql(&sql, keyset_plan(cursor, offset), keyset_lim);
             let dbp = db_path.clone();
             let qid = qid_owned.clone();
             let res = tokio::task::spawn_blocking(move || {
-                crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &page_sql, None, budget_ms, qid.as_deref(), &preds)
+                crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &ks_page, None, budget_ms, qid.as_deref(), &preds)
             })
             .await;
             return match res {
@@ -437,6 +617,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                     // présenté comme dernière page). Puis on annote la couverture cold (transparence).
                     if meta.truncated { v["stats"]["truncated"] = json!(true); }
                     keyset_finalize(&mut v, keyset_lim);
+                    keyset_trim_helper_cols(&mut v, keyset_trim); // APRÈS finalize (qui a besoin de ts/id)
                     v["stats"]["server_ms"] = json!(dur_ms(t_start.elapsed()));
                     v["stats"]["sem_wait_ms"] = json!(sem_wait_ms);
                     v["compiled_sql"] = json!(sql_for_resp);
@@ -460,16 +641,17 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     // masques (#45), authorizer DENY (user.hash/token_hash au prepare) et scope tenant/env : `SELECT *` d'une
     // sous-requête masquée reste masqué (`id` n'est pas un champ masqué). MÊME budget/qid/permit que le hot offset.
     if do_keyset {
-        let page_sql = keyset_page_sql(&sql, cursor, offset, keyset_lim);
+        let ks_page = page_sql(&sql, keyset_plan(cursor, offset), keyset_lim);
         let dbp = db_path.clone();
         let qid = qid_owned.clone();
-        let res = tokio::task::spawn_blocking(move || run_query_ex(&dbp, &page_sql, budget_ms, qid.as_deref())).await;
+        let res = tokio::task::spawn_blocking(move || run_query_ex(&dbp, &ks_page, budget_ms, qid.as_deref())).await;
         return match res {
             Ok(inner) => {
                 autoindex_mark_slow_if(req_db_path(&st, &au).as_str(), &inner); // Phase 3 : chaleur lente (no-op si OFF)
                 match inner {
                     Ok(mut v) => {
                         keyset_finalize(&mut v, keyset_lim);
+                        keyset_trim_helper_cols(&mut v, keyset_trim); // APRÈS finalize (qui a besoin de ts/id)
                         v["stats"]["server_ms"] = json!(dur_ms(t_start.elapsed()));
                         v["stats"]["sem_wait_ms"] = json!(sem_wait_ms);
                         v["compiled_sql"] = json!(sql_for_resp);
@@ -538,9 +720,9 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         }
         let conf = load_config();
         let env_s = au.env_filter().map(|s| s.to_string());
-        let (page_sql, count_sql) = match limit {
+        let (cold_page, count_sql) = match limit {
             Some(lim) => (
-                format!("SELECT * FROM ({sql}) LIMIT {lim} OFFSET {offset}"),
+                page_sql(&sql, PagePlan::Offset(offset), lim),
                 // COUNT BORNÉ (perf) : MÊME plafond que le chemin hot (cf. PAGINATION_COUNT_CAP) -> le COUNT sur
                 // l'union hydratée hot∪cold s'arrête à CAP+1 lignes au lieu de compter tout le match-set.
                 Some(format!("SELECT COUNT(*) AS n FROM (SELECT 1 FROM ({sql}) LIMIT {})", PAGINATION_COUNT_CAP + 1)),
@@ -553,7 +735,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         // #45), le MÊME jeu que le chemin vectorisé ci-dessus -> parité par construction + gate cap cohérent.
         let preds = cold_dim_preds;
         let res = tokio::task::spawn_blocking(move || {
-            crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &page_sql, count_sql.as_deref(), budget_ms, qid.as_deref(), &preds)
+            crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &cold_page, count_sql.as_deref(), budget_ms, qid.as_deref(), &preds)
         })
         .await;
         return match res {
@@ -594,7 +776,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         // pagination par WRAP en sous-requête : marche AUSSI quand {sql} a déjà un LIMIT (`| head`) ->
         // l'inner cape, l'outer pagine dedans. AVANT : `if !contains(" limit ")` SAUTAIT la pagination
         // pour ces requêtes -> offset ignoré (chaque page = mêmes lignes) + pas de `total` -> pager cassé.
-        let page_sql = format!("SELECT * FROM ({sql}) LIMIT {lim} OFFSET {offset}");
+        let off_page = page_sql(&sql, PagePlan::Offset(offset), lim);
         // COUNT BORNÉ (perf) : plafonné à PAGINATION_COUNT_CAP+1 lignes -> exact sous le plafond, capé au-dessus
         // (cf. PAGINATION_COUNT_CAP). Le SELECT 1 s'aplatit -> index-only via idx_event_src_ts, s'arrête au cap.
         let count_sql = format!("SELECT COUNT(*) AS n FROM (SELECT 1 FROM ({sql}) LIMIT {})", PAGINATION_COUNT_CAP + 1);
@@ -607,7 +789,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         let qid1 = qid_owned.clone();
         let qid2 = qid_owned.clone();
         let count_fut = tokio::task::spawn_blocking(move || run_query_ex(&dbp, &count_sql, budget_ms, qid1.as_deref()));
-        let page_fut = tokio::task::spawn_blocking(move || run_query_ex(&db_path, &page_sql, budget_ms, qid2.as_deref()));
+        let page_fut = tokio::task::spawn_blocking(move || run_query_ex(&db_path, &off_page, budget_ms, qid2.as_deref()));
         let (count_res, page) = tokio::join!(count_fut, page_fut);
         // total best-effort : si le COUNT dépasse le watchdog (requête énorme), -1 -> UI ◀ ▶ sans numéros.
         let raw_total = count_res
@@ -921,7 +1103,7 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
         Err(_) => return err_json(StatusCode::SERVICE_UNAVAILABLE, "service indisponible"),
     };
     let db_path = req_db_path(&st, &au); // #2a : base du tenant courant (jamais st.db, jamais une autre base)
-    let page_sql = format!("SELECT * FROM ({sql}) LIMIT {limit}");
+    let export_sql = format!("SELECT * FROM ({sql}) LIMIT {limit}");
     let budget = query_budget_interactive_ms(); // export = action délibérée -> budget interactif (comme /api/query interactive)
     // #18 P3 — INCOMPLÉTUDE : un export cold-tronqué DOIT le signaler (X-Plume-Truncated) -> jamais un CSV/JSON
     // partiel présenté comme complet. `cold_extra_truncated` OR-e la troncature cold au flag `stats.truncated`.
@@ -932,7 +1114,7 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
         let conf = load_config();
         let env_s = au.env_filter().map(|s| s.to_string());
         let dbp = db_path.clone();
-        let ps = page_sql.clone();
+        let ps = export_sql.clone();
         // #28 PHASE B — extrait du SQL COMPILÉ (`sql`, post-masquage #45), le MÊME qui s'exécute sur l'union.
         let preds = crate::cold_store::extract_cold_dim_preds(&sql);
         let res = tokio::task::spawn_blocking(move || {
@@ -949,7 +1131,7 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
         }
     } else {
         let dbp = db_path.clone();
-        let ps = page_sql.clone();
+        let ps = export_sql.clone();
         match tokio::task::spawn_blocking(move || run_query_ex(&dbp, &ps, budget, None)).await {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => return bad_req(e),
@@ -958,7 +1140,7 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
     };
     #[cfg(not(feature = "cold_tier"))]
     let v = {
-        let res = tokio::task::spawn_blocking(move || run_query_ex(&db_path, &page_sql, budget, None)).await;
+        let res = tokio::task::spawn_blocking(move || run_query_ex(&db_path, &export_sql, budget, None)).await;
         match res {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => return bad_req(e),

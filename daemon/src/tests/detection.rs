@@ -2060,7 +2060,137 @@
         }
     }
 
-    /// RÈGLE RÉELLE #1 (Sysmon process_creation, |contains) -> GXQL + métadonnées correctes.
+    /// Racine du dépôt, résolue depuis `CARGO_MANIFEST_DIR` (= `daemon/`) — les gardes F7 LISENT les
+    /// fichiers de collecte LIVRÉS, elles ne recopient pas leur contenu.
+    fn f7_repo_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
+    }
+
+    /// F7 (b) — TOUTE catégorie visée par `SIGMA_LOGSOURCE_CATEGORY` est RÉELLEMENT ÉMISE par un
+    /// émetteur LIVRÉ. Un mapping vers une catégorie que rien ne produit fabrique une couverture
+    /// APPARENTE : la règle s'importe, se catégorise, et ne peut jamais fire. Cette garde ferme l'axe
+    /// `category` que `collected.rs` déclarait explicitement NON mesuré, avec le même contrat de citation
+    /// que `COLLECTED_EXTENDED_FIELDS`, dans les DEUX sens :
+    ///   (A) aucune citation FANTÔME — le fragment ÉMETTEUR cité doit être présent dans le fichier cité.
+    ///       C'est le TEXTE d'émission, pas le nom de la catégorie : une occurrence quelconque du mot ne
+    ///       vaut pas preuve. Un collecteur qui cesse d'émettre, ou qui change de forme, fait rougir.
+    ///   (B) aucune cible SANS citation — ajouter un mapping vers une catégorie non citée fait rougir,
+    ///       donc on ne PEUT PAS élargir la table sans avoir mesuré qui alimente la cible.
+    /// LIMITE HONNÊTE, la même que `collected.rs` : cette garde répond « un fichier LIVRÉ émet-il cette
+    /// catégorie ? », PAS « la source qui l'alimente est-elle branchée chez l'exploitant ? ». `endpoint`
+    /// (Sysmon), `vpn`/`dlp` (FortiGate) exigent une télémétrie TIERCE que plume ne déploie pas — d'où
+    /// l'avertissement d'import distinct.
+    #[test]
+    fn sigma_logsource_targets_are_emitted_by_a_shipped_collector() {
+        let root = f7_repo_root();
+        // (A) chaque citation est VÉRIFIÉE contre le fichier livré.
+        for (cat, file, frag) in SIGMA_TARGET_CATEGORY_EMITTERS {
+            let p = root.join(file);
+            let body = std::fs::read_to_string(&p)
+                .unwrap_or_else(|e| panic!("citation `{cat}` -> fichier livré '{file}' illisible ({e})"));
+            assert!(body.contains(frag),
+                "CITATION FANTÔME : '{file}' n'émet plus `{cat}` sous la forme citée ({frag:?}). \
+                 Soit le collecteur a changé de forme d'émission, soit il a cessé d'émettre cette \
+                 catégorie — dans les deux cas les règles Sigma qui la visent tirent dans le vide.");
+            assert!(cim_category_ok(cat), "catégorie citée '{cat}' hors taxonomie CIM");
+        }
+        // (B) chaque cible de la table a une citation.
+        for (ls, cat) in SIGMA_LOGSOURCE_CATEGORY {
+            assert!(SIGMA_TARGET_CATEGORY_EMITTERS.iter().any(|(c, _, _)| c == cat),
+                "logsource '{ls}' -> '{cat}' : AUCUN émetteur livré cité pour cette catégorie. Mesurer qui \
+                 l'alimente et l'ajouter à SIGMA_TARGET_CATEGORY_EMITTERS, ou NE PAS mapper ce logsource \
+                 (non mappé = visiblement non catégorisé ; mappé vers du vide = fausse couverture).");
+        }
+        // Anti-rot : aucune citation ORPHELINE (une cible retirée de la table doit retirer sa citation).
+        for (cat, file, _) in SIGMA_TARGET_CATEGORY_EMITTERS {
+            assert!(SIGMA_LOGSOURCE_CATEGORY.iter().any(|(_, c)| c == cat),
+                "citation orpheline `{cat}` ({file}) : plus aucun logsource ne vise cette catégorie");
+        }
+    }
+
+    /// F7 (1) — `process_creation` DOIT viser la catégorie que le chemin 4688 LIVRÉ émet réellement.
+    ///
+    /// LE DÉFAUT QUE CETTE GARDE FIGE : la table visait `endpoint`, alors que la création de processus
+    /// Windows (EventID 4688) est émise en `exec` (nom canonique CIM v1.3) par les DEUX émetteurs Windows
+    /// livrés. Toute règle Sigma `process_creation` importée filtrait donc `category=endpoint` et restait
+    /// AVEUGLE à la télémétrie qu'elle vise — la famille de règles la plus nombreuse de SigmaHQ.
+    ///
+    /// GARDE DÉRIVÉE, PAS ÉNUMÉRÉE : elle LIT les trois fichiers de collecte livrés et exige que la table
+    /// s'accorde avec eux. Elle rougit donc dans les DEUX sens — retour de la table à `endpoint`, comme
+    /// dérive d'un collecteur (un `4688 => ("process"…)` réintroduit).
+    #[test]
+    fn sigma_process_creation_targets_the_category_the_shipped_4688_path_emits() {
+        let root = f7_repo_root();
+        // (1) agent Rust — la branche `4688 => ("<cat>".to_string(), …)` de `map_cim`, hors fixtures de test.
+        let win = std::fs::read_to_string(root.join("agent/src/source/windows.rs")).expect("agent/src/source/windows.rs");
+        let win = &win[..win.find("\n#[cfg(test)]").unwrap_or(win.len())];
+        let agent_cat = regex::Regex::new(r#"4688\s*=>\s*\(\s*"([a-z0-9_-]+)"\s*\.to_string\(\)"#).unwrap()
+            .captures(win).map(|c| c[1].to_string())
+            .expect("aucune branche `4688 => (\"…\".to_string(), …)` dans map_cim : la forme d'émission a changé, \
+                     cette garde ne mesure plus rien -> l'ADAPTER, ne pas la supprimer");
+        // (2) collecteur PowerShell — `-Ids @(4688) … -Category '<cat>'` (commentaires dépouillés).
+        let ps1 = std::fs::read_to_string(root.join("collectors/windows/plume-collector.ps1")).expect("plume-collector.ps1");
+        let re_cat = regex::Regex::new(r"-Category\s+'([a-z0-9_-]+)'").unwrap();
+        let ps_cat = ps1.lines().filter(|l| !l.trim_start().starts_with('#')).filter(|l| l.contains("@(4688)"))
+            .find_map(|l| re_cat.captures(l).map(|c| c[1].to_string()))
+            .expect("aucune ligne `-Ids @(4688) … -Category '…'` dans le collecteur PowerShell livré");
+        // (3) flux Linux — `collectors/auditd.sh` émet la MÊME catégorie pour execve (TSV `\t<cat>\t`).
+        let auditd = std::fs::read_to_string(root.join("collectors/auditd.sh")).expect("auditd.sh");
+        assert!(auditd.contains(&format!("\\t{agent_cat}\\t")),
+            "collectors/auditd.sh n'émet pas `{agent_cat}` : les chemins Windows et Linux de la création de \
+             processus ont divergé, une règle Sigma `process_creation` ne peut plus couvrir les deux");
+        // (4) les émetteurs s'accordent…
+        assert_eq!(agent_cat, ps_cat,
+            "les deux collecteurs Windows livrés émettent des catégories DIFFÉRENTES pour 4688 \
+             (agent='{agent_cat}', ps1='{ps_cat}') : aucune valeur de table ne peut être correcte");
+        // …et la table Sigma les SUIT.
+        let mapped = SIGMA_LOGSOURCE_CATEGORY.iter().find(|(k, _)| *k == "process_creation").map(|(_, c)| *c);
+        assert_eq!(mapped, Some(agent_cat.as_str()),
+            "SIGMA_LOGSOURCE_CATEGORY mappe `process_creation` -> {mapped:?} alors que le chemin 4688 LIVRÉ \
+             émet `{agent_cat}` : toute règle Sigma `process_creation` importée serait AVEUGLE à la \
+             télémétrie qu'elle vise");
+    }
+
+    /// F7 (2) — `ps_script` est DÉLIBÉRÉMENT NON MAPPÉ. Il visait `endpoint` ; la MESURE dit qu'aucun
+    /// émetteur livré ne peut produire cette catégorie pour du PowerShell Script Block Logging (EventID
+    /// 4104, canal `Microsoft-Windows-PowerShell/Operational`) :
+    ///   (a) le canal n'est pas dans les canaux PAR DÉFAUT de l'agent livré (`d_win_channels`) ;
+    ///   (b) le collecteur PowerShell livré ne lit aucun `-LogName` PowerShell ;
+    ///   (c) et même si l'exploitant AJOUTAIT le canal, `map_cim` n'a aucune branche pour lui -> catégorie
+    ///       VIDE, jamais `endpoint`.
+    /// Non mappé, la règle est VISIBLEMENT non catégorisée (avertissement de sur-match) au lieu d'être
+    /// faussement « couverte ». Si l'agent gagne un jour un vrai support PowerShell, (a)/(b)/(c) rougissent
+    /// -> le mapping doit être RECONSIDÉRÉ, mesure en main.
+    #[test]
+    fn sigma_ps_script_is_unmapped_because_no_shipped_emitter_produces_it() {
+        let root = f7_repo_root();
+        assert!(sigma_logsource_category(&json!({"category": "ps_script"})).is_none(),
+            "`ps_script` ne doit PAS être mappé tant qu'aucun émetteur livré n'alimente sa cible");
+        // (a) canaux par défaut de l'agent.
+        let cfg = std::fs::read_to_string(root.join("agent/src/config.rs")).expect("agent/src/config.rs");
+        let chans = cfg.split("fn d_win_channels()").nth(1).expect("d_win_channels absent : ADAPTER la garde")
+            .split("\n}").next().unwrap();
+        assert!(!chans.to_ascii_lowercase().contains("powershell"),
+            "l'agent livré lit désormais un canal PowerShell : re-mesurer quelle catégorie `map_cim` \
+             produit pour lui, puis (re)mapper `ps_script` en conséquence");
+        // (b) collecteur PowerShell livré.
+        let ps1 = std::fs::read_to_string(root.join("collectors/windows/plume-collector.ps1")).expect("plume-collector.ps1");
+        assert!(!ps1.lines().filter(|l| !l.trim_start().starts_with('#'))
+                    .any(|l| l.contains("LogName") && l.to_ascii_lowercase().contains("windows-powershell")),
+            "le collecteur PowerShell livré lit désormais le canal PowerShell : re-mesurer et (re)mapper");
+        // (c) `map_cim` n'a aucune branche PowerShell (hors fixtures de test).
+        let win = std::fs::read_to_string(root.join("agent/src/source/windows.rs")).expect("agent/src/source/windows.rs");
+        let win = &win[..win.find("\n#[cfg(test)]").unwrap_or(win.len())];
+        let map_cim = win.split("fn map_cim(").nth(1).expect("map_cim absent : ADAPTER la garde")
+            .split("\n}").next().unwrap();
+        assert!(!map_cim.to_ascii_lowercase().contains("powershell"),
+            "`map_cim` mappe désormais un canal/provider PowerShell : re-mesurer la catégorie émise et \
+             (re)mapper `ps_script` dessus");
+    }
+
+    /// RÈGLE RÉELLE #1 (`process_creation`, |contains) -> GXQL + métadonnées correctes. La catégorie visée
+    /// est `exec` (F7) : c'est ce que le chemin 4688 des collecteurs Windows livrés émet réellement — cf.
+    /// `sigma_process_creation_targets_the_category_the_shipped_4688_path_emits`.
     #[test]
     fn sigma_process_creation_contains_translates() {
         let doc = json!({
@@ -2071,13 +2201,159 @@
             "tags": ["attack.discovery", "attack.t1033"]
         });
         let t = sigma_translate(&doc).expect("doit traduire");
-        assert_eq!(t.query, "search category=endpoint CommandLine=~(?i)whoami | stats count");
+        assert_eq!(t.query, "search category=exec CommandLine=~(?i)whoami | stats count");
         assert_eq!(t.severity, 1, "level low -> sev 1");
         assert_eq!(t.mitre, "T1033", "attack.t1033 -> T1033");
         assert_eq!(t.op, ">");
         assert_eq!(t.threshold, 0.0);
         // C'est une règle Plume VALIDE (recompile via le compilo GXQL du cœur).
         assert!(rule_sql(&t.query, true, t.window_s).is_ok(), "le GXQL produit doit compiler");
+    }
+
+    /// XML EventLog RÉEL d'un EventID 4688 (« A new process has been created »), canal Security, tel que
+    /// `EvtRender(EventXml)` le rend et tel que l'agent livré le lit (`agent/src/source/windows.rs`).
+    /// SANS `CommandLine` : c'est l'état d'un Windows PAR DÉFAUT — le champ n'apparaît dans un 4688 que si
+    /// la GPO « Include command line in process creation events » est activée. C'est LE caveat mesuré de la
+    /// famille `process_creation` (cf. `sigma_process_creation_rule_fires_on_real_4688_event`).
+    const F7_XML_4688_WHOAMI: &str = r#"<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Security-Auditing' Guid='{54849625-5478-4994-a5ba-3e3b0328c30d}'/><EventID>4688</EventID><Version>2</Version><Level>0</Level><Task>13312</Task><Opcode>0</Opcode><Keywords>0x8020000000000000</Keywords><TimeCreated SystemTime='2026-07-28T09:14:22.7781234Z'/><EventRecordID>884213</EventRecordID><Correlation/><Execution ProcessID='4' ThreadID='6120'/><Channel>Security</Channel><Computer>WIN-EP01.corp.local</Computer><Security/></System><EventData><Data Name='SubjectUserSid'>S-1-5-21-1004336348-1177238915-682003330-1108</Data><Data Name='SubjectUserName'>jdoe</Data><Data Name='SubjectDomainName'>CORP</Data><Data Name='SubjectLogonId'>0x3e7f21</Data><Data Name='NewProcessId'>0x1a94</Data><Data Name='NewProcessName'>C:\Windows\System32\whoami.exe</Data><Data Name='TokenElevationType'>%%1936</Data><Data Name='ProcessId'>0x0f10</Data><Data Name='ParentProcessName'>C:\Windows\System32\cmd.exe</Data><Data Name='MandatoryLabel'>S-1-16-8192</Data></EventData></Event>"#;
+    /// Même 4688, processus BÉNIN — témoin de SPÉCIFICITÉ (la règle ne doit PAS le compter).
+    const F7_XML_4688_BENIGN: &str = r#"<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Security-Auditing'/><EventID>4688</EventID><Level>0</Level><TimeCreated SystemTime='2026-07-28T09:14:25.1000000Z'/><EventRecordID>884214</EventRecordID><Channel>Security</Channel><Computer>WIN-EP01.corp.local</Computer></System><EventData><Data Name='SubjectUserName'>jdoe</Data><Data Name='SubjectDomainName'>CORP</Data><Data Name='NewProcessId'>0x1b02</Data><Data Name='NewProcessName'>C:\Windows\System32\notepad.exe</Data><Data Name='ProcessId'>0x0f10</Data><Data Name='ParentProcessName'>C:\Windows\explorer.exe</Data></EventData></Event>"#;
+
+    /// Reproduit la partie de `winxml_to_event` (agent) dont la fixture a besoin : les paires
+    /// `<Data Name='k'>v</Data>` de l'EventData + `provider`/`channel`/`event_id`/`level`, plus le `dedup`
+    /// `win-<channel>-<EventRecordID>`. La fixture est ainsi DÉRIVÉE de l'XML réel, pas écrite à la main
+    /// pour matcher la règle — un `fields` inventé serait exactement la preuve circulaire qu'on refuse.
+    /// (Le daemon ne peut pas appeler la crate `agent` ; l'accord des deux est gardé par la citation
+    /// `("exec", "agent/src/source/windows.rs", …)` de `SIGMA_TARGET_CATEGORY_EMITTERS`.)
+    fn f7_winxml_fields(xml: &str) -> (Value, String, String) {
+        let mut m = serde_json::Map::new();
+        let re = regex::Regex::new(r"<Data Name='([^']+)'>([^<]*)</Data>").unwrap();
+        for c in re.captures_iter(xml) {
+            m.insert(c[1].to_string(), Value::String(c[2].to_string()));
+        }
+        let one = |tag: &str| regex::Regex::new(&format!(r"<{tag}[^>]*>([^<]*)</{tag}>")).unwrap()
+            .captures(xml).map(|c| c[1].to_string()).unwrap_or_default();
+        let provider = regex::Regex::new(r"<Provider Name='([^']+)'").unwrap()
+            .captures(xml).map(|c| c[1].to_string()).unwrap_or_default();
+        let channel = one("Channel");
+        let eid = one("EventID");
+        let level = one("Level");
+        m.insert("provider".into(), Value::String(provider.clone()));
+        m.insert("channel".into(), Value::String(channel.clone()));
+        m.insert("event_id".into(), Value::from(eid.parse::<i64>().unwrap_or(0)));
+        m.insert("level".into(), Value::from(level.parse::<i64>().unwrap_or(4)));
+        let dedup = format!("win-{channel}-{}", one("EventRecordID"));
+        (Value::Object(m), format!("WinEventLog:{channel}"), dedup)
+    }
+
+    /// F7 — LA PREUVE DE BOUT EN BOUT : une règle Sigma `process_creation` au FORMAT RÉEL (YAML, front-end
+    /// `sigma_yaml_to_docs`) importée aujourd'hui **TIRE** sur un événement 4688 RÉEL de l'agent Windows.
+    /// TRADUIRE N'EST PAS DÉTECTER — c'est la distinction que ce lot vise, et que l'ancienne fixture
+    /// (`category='endpoint'` écrit à la main pour matcher le mapping) ne prouvait pas.
+    ///
+    /// Ce que le test épingle, ligne par ligne :
+    ///   (a) la règle traduit avec `category=exec` — la catégorie que le chemin 4688 livré émet ;
+    ///   (b) elle COMPTE l'événement 4688 réel (fixture DÉRIVÉE de l'XML) -> elle FIRE ;
+    ///   (c) l'HISTORIQUE compte : le même 4688 scellé sous `category=process` (avant la bascule du
+    ///       2026-07-23) est AUSSI compté — l'alias de lecture CIM s'applique bien aux requêtes issues de
+    ///       l'import Sigma, parce que l'importeur RECOMPILE par `rule_sql` -> `soql_to_sql_x` ->
+    ///       `SqlcipherStore::soql_to_sql` -> `cim_read_alias_exec`. PROUVÉ (structure + comptage), pas supposé ;
+    ///   (d) l'ANGLE MORT MESURÉ ne se referme PAS tout seul : la MÊME création de processus rapportée par
+    ///       Sysmon (ID 1, émis `category=endpoint` par l'agent) n'est PAS comptée. Épinglé pour qu'on ne
+    ///       puisse pas prétendre le contraire ;
+    ///   (e) SPÉCIFICITÉ : un 4688 bénin n'est pas compté ;
+    ///   (f) la règle ouvre une VRAIE alerte via `run_due_rules`, sévérité + MITRE hérités.
+    ///
+    /// CAVEAT MESURÉ, à ne pas masquer : cette règle filtre `NewProcessName`, champ TOUJOURS présent dans un
+    /// 4688. La règle vitrine livrée `config.d/sigma/process-whoami-discovery.yml` filtre `CommandLine`, qui
+    /// n'apparaît dans un 4688 QUE si la GPO « Include command line in process creation events » est activée
+    /// — elle reste donc INERTE sur un Windows par défaut, même après ce lot. C'est une limite de la
+    /// TÉLÉMÉTRIE Windows, pas de la traduction.
+    #[test]
+    fn sigma_process_creation_rule_fires_on_real_4688_event() {
+        // Règle Sigma au format réel (SigmaHQ), écrite ici — filtre un champ qu'un 4688 porte TOUJOURS.
+        let yaml = "\
+title: Whoami Execution From Process Creation
+id: 5b0f2d94-6a1e-4c77-9d3a-2e8b41f0c6d5
+status: experimental
+description: Discovery of the current security context via whoami.exe.
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        NewProcessName|endswith: '\\whoami.exe'
+    condition: selection
+level: high
+tags:
+    - attack.discovery
+    - attack.t1033
+";
+        let docs = sigma_yaml_to_docs(yaml).expect("YAML Sigma valide");
+        assert_eq!(docs.len(), 1);
+        let t = sigma_translate(&docs[0]).expect("doit traduire");
+        // (a) la catégorie visée est celle que le chemin 4688 LIVRÉ émet.
+        assert_eq!(t.query, "search category=exec NewProcessName=~(?i)\\\\whoami\\.exe$ | stats count",
+            "GXQL produit inattendu : {}", t.query);
+        // (c-structure) l'alias de lecture CIM est bien appliqué à la requête ISSUE DE L'IMPORT.
+        let sql = rule_sql(&t.query, true, t.window_s).expect("le GXQL importé doit compiler");
+        assert!(sql.contains("IN ('exec','process')"),
+            "la requête issue de l'import Sigma n'est PAS aliasée : toute règle `process_creation` \
+             importée serait aveugle à l'historique scellé `process` -> {sql}");
+
+        // La catégorie de la FIXTURE est LUE dans le collecteur livré, jamais écrite pour matcher la règle.
+        let win = std::fs::read_to_string(f7_repo_root().join("agent/src/source/windows.rs")).unwrap();
+        let win = &win[..win.find("\n#[cfg(test)]").unwrap_or(win.len())];
+        let cat_4688 = regex::Regex::new(r#"4688\s*=>\s*\(\s*"([a-z0-9_-]+)"\s*\.to_string\(\)"#).unwrap()
+            .captures(win).map(|c| c[1].to_string()).expect("catégorie 4688 de l'agent livré");
+
+        let mut path = std::env::temp_dir();
+        path.push(format!("plume-f7-4688-{}-{}.db", std::process::id(), now()));
+        let p = path.to_string_lossy().to_string();
+        let ts = now();
+        {
+            let w = Connection::open(&p).unwrap();
+            w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
+            assert!(migrate(&w), "fixture : la chaîne de migrations doit aller au bout");
+            let ins = |cat: &str, xml: &str, dsuffix: &str| {
+                let (fields, source, dedup) = f7_winxml_fields(xml);
+                w.execute(
+                    "INSERT INTO event(ts,host,source,category,severity,message,fields,dedup) VALUES(?1,?2,?3,?4,0,?5,?6,?7)",
+                    params![ts, "WIN-EP01.corp.local", source, cat, "Microsoft-Windows-Security-Auditing EventID 4688 [Security]",
+                            fields.to_string(), format!("{dedup}{dsuffix}")],
+                ).unwrap();
+            };
+            ins(&cat_4688, F7_XML_4688_WHOAMI, "");                 // (b) télémétrie du jour
+            ins(CIM_EXEC_LEGACY, F7_XML_4688_WHOAMI, "-legacy");    // (c) historique scellé `process`
+            ins(&cat_4688, F7_XML_4688_BENIGN, "");                 // (e) témoin de spécificité
+            // (d) MÊME création de processus vue par SYSMON : l'agent l'émet en `endpoint` -> hors portée.
+            w.execute(
+                "INSERT INTO event(ts,host,source,category,severity,message,fields,dedup) VALUES(?1,'WIN-EP01.corp.local','WinEventLog:Microsoft-Windows-Sysmon/Operational','endpoint',0,'Microsoft-Windows-Sysmon EventID 1',?2,'win-sysmon-1')",
+                params![ts, "{\"Image\":\"C:\\\\Windows\\\\System32\\\\whoami.exe\",\"NewProcessName\":\"C:\\\\Windows\\\\System32\\\\whoami.exe\",\"event_id\":1}"],
+            ).unwrap();
+
+            // (b)+(c)+(d)+(e) : le compte VAUT 2 — le 4688 du jour ET l'historique scellé, RIEN d'autre.
+            assert_eq!(eval_value(&p, &sql), Some(2.0),
+                "attendu 2 (4688 du jour + historique scellé `process`). 1 -> l'alias de lecture ne \
+                 s'applique pas aux requêtes de l'import Sigma ; 3 -> la ligne Sysmon `endpoint` est happée \
+                 (l'angle mort documenté se serait refermé par accident : re-mesurer et METTRE À JOUR la doc) ; \
+                 0 -> la règle ne voit RIEN de la télémétrie 4688 réelle.");
+
+            w.execute("INSERT INTO rule(name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,managed) VALUES(?1,1,?2,1,?3,?4,?5,?6,?7,?8,2)",
+                params![t.name, t.query, t.op, t.threshold, t.severity, t.interval_s, t.window_s, t.mitre]).unwrap();
+        }
+        // (f) la règle TIRE réellement : une alerte est ouverte, sévérité + MITRE hérités.
+        let db = Arc::new(Mutex::new(open_db(&p).unwrap()));
+        run_due_rules(&db, &p);
+        let (n, sev, mitre): (i64, i64, String) = {
+            let c = db.lock();
+            c.query_row("SELECT COUNT(*), COALESCE(MAX(severity),0), COALESCE(MAX(mitre),'') FROM alert", [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
+        };
+        assert_eq!(n, 1, "la règle Sigma `process_creation` importée doit OUVRIR une alerte sur un 4688 réel");
+        assert_eq!(sev, 3, "level high -> sévérité 3 héritée");
+        assert_eq!(mitre, "T1033", "MITRE hérité (mesure de couverture)");
+        let _ = std::fs::remove_file(&p);
     }
 
     /// RÈGLE RÉELLE #2 (firewall, `selection and not filter` avec liste) -> égalité + `not in`.
@@ -2233,7 +2509,7 @@
             "title": "t", "logsource": {"category":"process_creation"},
             "detection": { "selection": { "Image": ["cmd.exe","PowerShell.exe"] }, "condition": "selection" }
         })).unwrap();
-        assert_eq!(t.query, "search category=endpoint Image in (cmd.exe,PowerShell.exe) | stats count");
+        assert_eq!(t.query, "search category=exec Image in (cmd.exe,PowerShell.exe) | stats count");
         let sql = rule_sql(&t.query, true, t.window_s).unwrap();
         assert!(sql.contains("COLLATE NOCASE IN ('cmd.exe','PowerShell.exe')"), "in(...) textuel doit être COLLATE NOCASE : {sql}");
         let n = sigma_translate(&json!({
@@ -2246,14 +2522,34 @@
 
     /// #1 (ANTI-ANGLE-MORT) — une règle Sigma endpoint/champ étendu s'IMPORTE (pas rejetée) MAIS porte
     /// des warnings la distinguant d'une règle qui va réellement fire ; une règle réseau vivante n'en a pas.
+    ///
+    /// F7 — les DEUX avertissements sont désormais portés par des logsources DIFFÉRENTS, parce que la
+    /// mesure a séparé les deux questions :
+    ///   * `registry_event` (Sysmon 12/13/14) vise BIEN `endpoint` -> avertissement de dépendance à une
+    ///     télémétrie TIERCE (Sysmon / FortiGate EMS) ;
+    ///   * `process_creation` vise `exec` (émis par les collecteurs livrés) -> PLUS d'avertissement
+    ///     `endpoint`, mais l'avertissement de CHAMP inerte (`CommandLine`) subsiste — c'est exactement la
+    ///     distinction « la catégorie est alimentée » vs « le champ est peuplé ».
     #[test]
     fn sigma_inert_endpoint_import_is_warned_not_silent() {
+        let reg = sigma_translate(&json!({
+            "title":"Registry Persistence","logsource":{"category":"registry_event","product":"windows"},
+            "detection": { "selection": {"TargetObject|contains":"\\Run\\"}, "condition":"selection" },
+            "level":"medium","tags":["attack.t1547.001"]
+        })).unwrap();
+        // L'avertissement de DÉPENDANCE CATÉGORIE est celui qui COMMENCE par `category=endpoint` — le
+        // caveat Sysmon de `process_creation` mentionne aussi ces mots, il ne doit pas être confondu.
+        assert!(reg.warnings.iter().any(|w| w.starts_with("category=endpoint")),
+            "dépendance à une télémétrie tierce (Sysmon/EMS) signalée : {:?}", reg.warnings);
         let t = sigma_translate(&json!({
             "title":"Whoami Discovery","logsource":{"category":"process_creation","product":"windows"},
             "detection": { "selection": {"CommandLine|contains":"whoami"}, "condition":"selection" },
             "level":"low","tags":["attack.t1033"]
         })).unwrap();
-        assert!(t.warnings.iter().any(|w| w.contains("endpoint")), "category=endpoint non collectée signalée : {:?}", t.warnings);
+        assert!(!t.warnings.iter().any(|w| w.starts_with("category=endpoint")),
+            "`process_creation` vise `exec` (émis par les collecteurs livrés) : plus d'avertissement endpoint : {:?}", t.warnings);
+        assert!(t.warnings.iter().any(|w| w.to_ascii_uppercase().contains("SYSMON") && w.contains("ID 1")),
+            "l'angle mort MESURÉ (Sysmon ID 1 -> endpoint) doit rester DIT à l'import : {:?}", t.warnings);
         assert!(t.warnings.iter().any(|w| w.contains("CommandLine")), "champ étendu inerte signalé : {:?}", t.warnings);
         let live = sigma_translate(&json!({
             "title":"fw","logsource":{"category":"firewall"},

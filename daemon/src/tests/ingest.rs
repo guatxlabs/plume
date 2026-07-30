@@ -125,7 +125,7 @@
     // FIX #18 (size-caps #49 bypass sous COLD, NO-LOSS) — sous cold ON, l'aging a déjà columnarisé+supprimé les
     // vieux jours ; les lignes restées HOT sont les RÉCENTES NON archivées. Un plafond count/byte qui ne garde
     // que les N plus récentes supprimerait EXACTEMENT ces lignes SANS copie cold -> PERTE. La correction SKIP les
-    // plafonds quand PLUME_COLD_TIER=1. Ces tests sont gatés `cold_tier` (jamais dans la suite par défaut = 758)
+    // plafonds quand PLUME_COLD_TIER=1. Ces tests sont gatés `cold_tier` (jamais dans la suite par défaut = 762)
     // et sérialisés (COLD_CAPS_ENV_LOCK) car ils mutent l'env process-global PLUME_COLD_TIER/PLUME_COLD_DIR.
 
     /// Prépare un env cold : PLUME_COLD_TIER=1 + PLUME_COLD_DIR=<temp> (aucune clé -> aging fail-closed, ne
@@ -1165,8 +1165,8 @@
 
     /// LA BARRE `/api/search` DOIT DONNER LA MÊME RÉPONSE QUE GXQL sur `category=exec`.
     /// Ce test existe parce qu'une revue adverse a neutralisé la branche d'alias de `handlers/search.rs`
-    /// et a obtenu `758 passed; 0 failed` : la garde était réelle, documentée et justifiée dans son
-    /// commit, mais AUCUN test ne la défendait. Elle aurait été retirée au premier nettoyage.
+    /// et a obtenu `758 passed; 0 failed` (taille de la suite à CETTE date ; 762 depuis F7) : la garde
+    /// était réelle, documentée et justifiée dans son commit, mais AUCUN test ne la défendait. Elle aurait été retirée au premier nettoyage.
     /// MUTATION : retirer la branche `col == "category" && v == CIM_EXEC_CANON` de
     /// `search_bar_exact_pred` -> ce test rougit.
     #[test]

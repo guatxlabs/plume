@@ -230,7 +230,45 @@ pub(crate) fn sigma_compliance_tags(tags: Option<&Value>) -> String {
 
 /// Table de mapping logsource Sigma -> catégorie CIM NEUTRE (docs/CIM.md §2). Sigma est très
 /// endpoint/Windows-centré ; on rabat proprement sur la taxonomie Plume. Toute valeur de droite DOIT
-/// être une catégorie CIM valide (garde de test `sigma_logsource_map_targets_are_cim`).
+/// (a) être une catégorie CIM valide — garde `sigma_logsource_map_targets_are_cim` — ET (b) être une
+/// catégorie qu'un ÉMETTEUR LIVRÉ produit réellement — garde
+/// `sigma_logsource_targets_are_emitted_by_a_shipped_collector`, adossée aux citations de
+/// `SIGMA_TARGET_CATEGORY_EMITTERS`.
+///
+/// POURQUOI (b) — UN MAPPING QUI POINTE VERS DU VIDE EST PIRE QU'UNE ABSENCE DE MAPPING. Il fabrique
+/// une couverture APPARENTE : la règle s'importe, se catégorise, apparaît « couverte » et ne peut
+/// JAMAIS fire. Non mappée, elle est VISIBLEMENT non catégorisée (avertissement de sur-match). Deux
+/// entrées ont été corrigées sur ce critère, chacune adossée à une MESURE :
+///
+///  1. `process_creation` visait `endpoint`, alors que la création de processus Windows (EventID 4688)
+///     est émise en `exec` — le nom CANONIQUE CIM v1.3 — par les DEUX émetteurs Windows livrés
+///     (`agent/src/source/windows.rs` : `4688 => ("exec"…)` ; `collectors/windows/plume-collector.ps1` :
+///     `-Ids @(4688) … -Category 'exec'`) et par le flux Linux `collectors/auditd.sh` (TSV `\texec\t`).
+///     Toute règle Sigma `process_creation` importée filtrait donc `category=endpoint` et restait
+///     AVEUGLE à la télémétrie qu'elle vise. La garde
+///     `sigma_process_creation_targets_the_category_the_shipped_4688_path_emits` LIT ces trois fichiers
+///     et exige que la table s'y accorde : elle rougit sur un retour à `endpoint` comme sur une dérive
+///     d'un collecteur.
+///  2. `ps_script` (PowerShell Script Block Logging, EventID 4104, canal
+///     `Microsoft-Windows-PowerShell/Operational`) visait `endpoint` : AUCUN émetteur livré ne peut le
+///     produire — le canal n'est ni dans les canaux par défaut de l'agent (`agent/src/config.rs`,
+///     `d_win_channels`) ni dans les `-LogName` du collecteur PowerShell, et `map_cim` rendrait de
+///     toute façon une catégorie VIDE pour lui. Entrée RETIRÉE (donc non mappée -> avertissement de
+///     sur-match, VISIBLE) plutôt que rabattue par confort sur une catégorie voisine.
+///
+/// CE QUE `endpoint` RESTE — correction d'une affirmation courante, mesurée : `endpoint` n'est PAS une
+/// catégorie morte. Elle est émise par `agent/src/source/windows.rs` (Sysmon hors ID 3/22 ; Security
+/// 4697/1102 ; System 7045/7036/7040) et par `collector-syslog/src/fortigate.rs`
+/// (`event/endpoint|ems|connector`). Les logsources Sysmon restants (`process_access`, `image_load`,
+/// `driver_load`, `create_remote_thread`, `file_*`, `registry_*`) y pointent donc CORRECTEMENT — à
+/// condition que Sysmon (tiers, que plume ne déploie pas) tourne sur l'hôte.
+///
+/// DIVERGENCE RÉSIDUELLE MESURÉE, NON REFERMÉE ICI : `map_cim` range Sysmon **ID 1** (création de
+/// processus) en `endpoint` (branche par défaut « Sysmon hors 3/22 »), pas en `exec`. Une règle
+/// `process_creation` importée voit donc 4688 et l'`execve` auditd, mais PAS Sysmon ID 1. Refermer cela
+/// exige de changer la catégorie ÉMISE par l'agent (data-plane) et rouvre la même dette d'historique que
+/// `process` -> `exec` (cf. `soql_glue::cim_read_alias_exec`) : hors périmètre, mais SIGNALÉ à l'import
+/// (avertissement) et épinglé par la ligne (d) de `sigma_process_creation_rule_fires_on_real_4688_event`.
 pub(crate) const SIGMA_LOGSOURCE_CATEGORY: &[(&str, &str)] = &[
     ("firewall", "firewall"),
     ("proxy", "web"), ("webserver", "web"), ("web", "web"),
@@ -242,30 +280,73 @@ pub(crate) const SIGMA_LOGSOURCE_CATEGORY: &[(&str, &str)] = &[
     ("dlp", "dlp"),
     ("email", "mail"), ("smtp", "mail"),
     ("network_connection", "network"), ("netflow", "network"), ("firewall_traffic", "firewall"),
-    // endpoint / Sysmon (rabattu sur les buckets CIM les plus proches)
-    ("process_creation", "endpoint"), ("process_access", "endpoint"), ("ps_script", "endpoint"),
+    // Création de processus -> `exec` (home CANONIQUE CIM v1.3, cf. le bloc ci-dessus) : c'est ce
+    // qu'émettent le chemin 4688 des deux collecteurs Windows livrés ET l'`execve` d'auditd.
+    ("process_creation", "exec"),
+    // Sysmon (hors ID 1/3/22) -> `endpoint`, ce que `map_cim` émet réellement pour ces IDs.
+    ("process_access", "endpoint"),
     ("image_load", "endpoint"), ("driver_load", "endpoint"), ("create_remote_thread", "endpoint"),
     ("file_event", "endpoint"), ("file_change", "endpoint"), ("file_delete", "endpoint"),
     ("registry_event", "endpoint"), ("registry_set", "endpoint"), ("registry_add", "endpoint"),
     ("registry_delete", "endpoint"),
+    // `ps_script` : DÉLIBÉRÉMENT ABSENT (aucun émetteur livré, cf. le bloc ci-dessus).
     ("kubernetes", "k8s"), ("falco", "ebpf"), ("container", "container"),
     ("syslog", "syslog"), ("system", "system"),
 ];
+
+/// ORACLE (test) DES CIBLES DE `SIGMA_LOGSOURCE_CATEGORY` — pour chaque catégorie visée par la table :
+/// `(catégorie, fichier LIVRÉ qui l'émet, fragment LITTÉRAL de ce fichier qui l'émet)`. Même contrat que
+/// `collected::COLLECTED_EXTENDED_FIELDS`, appliqué à l'axe `category` (que `collected.rs` déclarait
+/// explicitement NON mesuré) et vérifié dans les DEUX sens par
+/// `sigma_logsource_targets_are_emitted_by_a_shipped_collector` :
+///   (A) aucune citation FANTÔME — le fragment doit être PRÉSENT dans le fichier cité (un collecteur qui
+///       cesse d'émettre cette catégorie, ou qui change de forme d'émission, fait rougir) ;
+///   (B) aucune cible SANS citation — toute catégorie visée par la table doit figurer ici (ajouter un
+///       mapping vers une catégorie non citée fait rougir).
+/// Le fragment est le TEXTE ÉMETTEUR, pas le nom de la catégorie : une simple occurrence du mot ne vaut
+/// pas preuve (`web.sh` mentionne bien d'autres choses que ce qu'il émet).
+#[cfg(test)]
+pub(crate) const SIGMA_TARGET_CATEGORY_EMITTERS: &[(&str, &str, &str)] = &[
+    ("auth",      "collectors/windows/plume-collector.ps1", "-Category 'auth'"),
+    ("container", "collectors/containerd.sh",               "\\\"category\\\":\\\"container\\\""),
+    ("dns",       "collector-syslog/src/fortigate.rs",      "\"dns\" | \"dns-query\" => \"dns\""),
+    ("dlp",       "collector-syslog/src/fortigate.rs",      "\"dlp\" | \"file-filter\" | \"dlp-archive\" => \"dlp\""),
+    ("ebpf",      "collectors/falco.sh",                    "\\\"category\\\":\\\"ebpf\\\""),
+    ("endpoint",  "agent/src/source/windows.rs",            "_ => \"endpoint\","),
+    ("exec",      "agent/src/source/windows.rs",            "4688 => (\"exec\".to_string(), base)"),
+    ("firewall",  "collectors/ufw.sh",                      "\\\"category\\\":\\\"firewall\\\""),
+    ("k8s",       "collectors/kube-audit.sh",               "\\\"category\\\":\\\"k8s\\\""),
+    ("mail",      "collector-mail/src/main.rs",             "\"category\": \"mail\""),
+    ("malware",   "collectors/clamav.sh",                   "\\\"category\\\":\\\"malware\\\""),
+    ("network",   "collectors/conntrack.sh",                "\\\"category\\\":\\\"network\\\""),
+    ("syslog",    "collector-syslog/src/parser.rs",         "\"category\": \"syslog\""),
+    ("system",    "collectors/windows/plume-collector.ps1", "-Category 'system'"),
+    ("vpn",       "collector-syslog/src/fortigate.rs",      "\"vpn\" => \"vpn\""),
+    ("web",       "collectors/web.sh",                      "\\\"category\\\":\\\"web\\\""),
+];
+
+/// logsource Sigma (`{category?,service?,product?}`) -> CLÉ retenue dans `SIGMA_LOGSOURCE_CATEGORY`
+/// (priorité category>service>product). UNE seule résolution de priorité dans tout le fichier : la
+/// catégorie ET l'éventuel caveat de couverture en DÉRIVENT, ils ne peuvent donc pas diverger.
+pub(crate) fn sigma_logsource_key(ls: &Value) -> Option<&'static str> {
+    let obj = ls.as_object()?;
+    for key in ["category", "service", "product"] {
+        if let Some(v) = obj.get(key).and_then(|x| x.as_str()) {
+            let vl = v.trim().to_ascii_lowercase();
+            for (k, _) in SIGMA_LOGSOURCE_CATEGORY {
+                if *k == vl { return Some(k); }
+            }
+        }
+    }
+    None
+}
 
 /// logsource Sigma (bloc `{category?,service?,product?}`) -> catégorie CIM (priorité category>service>product).
 /// None = non mappé (l'appelant AVERTIT et applique la règle à toutes les sources — sur-match signalé,
 /// jamais un drop). ENRICH, jamais SUPPRESS.
 pub(crate) fn sigma_logsource_category(ls: &Value) -> Option<&'static str> {
-    let obj = ls.as_object()?;
-    for key in ["category", "service", "product"] {
-        if let Some(v) = obj.get(key).and_then(|x| x.as_str()) {
-            let vl = v.trim().to_ascii_lowercase();
-            for (k, c) in SIGMA_LOGSOURCE_CATEGORY {
-                if *k == vl { return Some(c); }
-            }
-        }
-    }
-    None
+    let k = sigma_logsource_key(ls)?;
+    SIGMA_LOGSOURCE_CATEGORY.iter().find(|(kk, _)| *kk == k).map(|(_, c)| *c)
 }
 
 /// Alias de champs Sigma courants -> champ Plume (colonne coeur si possible, cf. Schema::events).
@@ -638,11 +719,20 @@ pub(crate) fn sigma_translate(doc: &Value) -> Result<SigmaTranslation, String> {
         match sigma_logsource_category(ls) {
             Some(c) => {
                 cat_token = Some(format!("category={c}"));
-                // ANTI-ANGLE-MORT #1 : `endpoint` (Sysmon/EDR) est un bucket CIM sur lequel Plume RABAT le
-                // gros de la bibliothèque Sigma, mais qu'un SOC réseau/syslog N'ALIMENTE PAS par défaut. La
-                // règle s'importe (MITRE + sévérité) mais ne peut FIRE que si une source peuple category=endpoint.
+                // ANTI-ANGLE-MORT #1 : `endpoint` (Sysmon/EDR) est un bucket CIM sur lequel Plume RABAT une
+                // bonne part de la bibliothèque Sigma. MESURE (cf. le bloc de doc de la table) : il n'est
+                // alimenté que par Sysmon via l'agent Windows livré (IDs hors 1/3/22) ou par FortiGate
+                // `event/endpoint|ems|connector` — deux télémétries TIERCES que plume ne déploie pas. Sans
+                // l'une d'elles, la règle s'importe (MITRE + sévérité) mais reste INERTE.
                 if c == "endpoint" {
-                    warnings.push("category=endpoint (télémétrie hôte/EDR) : règle importée mais INERTE tant qu'une source n'alimente pas category=endpoint (Plume collecte typiquement réseau/syslog).".to_string());
+                    warnings.push("category=endpoint : alimentée UNIQUEMENT par Sysmon (agent Windows livré, IDs hors 1/3/22) ou FortiGate endpoint/ems — télémétries TIERCES que plume ne déploie pas. Règle importée mais INERTE si aucune des deux n'est branchée.".to_string());
+                }
+                // ANTI-ANGLE-MORT (F7) : la création de processus est SCINDÉE entre deux catégories ÉMISES.
+                // 4688 (agent + collecteur PowerShell) et l'`execve` auditd donnent `exec` — la cible de la
+                // table. Sysmon ID 1 donne `endpoint` (branche par défaut de `map_cim`). Une règle
+                // `process_creation` ne peut donc pas voir les deux : on le DIT, on ne le masque pas.
+                if sigma_logsource_key(ls) == Some("process_creation") {
+                    warnings.push("logsource `process_creation` -> category=exec (EventID 4688 des collecteurs Windows livrés + execve auditd). La création de processus rapportée par SYSMON (ID 1) est, elle, émise en `category=endpoint` par l'agent livré : cette règle ne la verra PAS. Angle mort MESURÉ, à refermer côté agent (`map_cim`).".to_string());
                 }
             }
             None => warnings.push("logsource non mappé sur une catégorie CIM : règle appliquée à TOUTES les sources (peut sur-matcher). Ajouter un mapping dans SIGMA_LOGSOURCE_CATEGORY si besoin.".to_string()),

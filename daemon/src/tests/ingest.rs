@@ -1165,7 +1165,8 @@
 
     /// LA BARRE `/api/search` DOIT DONNER LA MÊME RÉPONSE QUE GXQL sur `category=exec`.
     /// Ce test existe parce qu'une revue adverse a neutralisé la branche d'alias de `handlers/search.rs`
-    /// et a obtenu `758 passed; 0 failed` (taille de la suite à CETTE date ; 762 depuis F7) : la garde
+    /// et a obtenu `758 passed; 0 failed` — taille de la suite le 2026-07-28, mesure DATÉE qu'il ne faut
+    /// pas réaligner sur aujourd'hui (le compte vivant est `EXPECTED_TESTS` dans ci.yml) : la garde
     /// était réelle, documentée et justifiée dans son commit, mais AUCUN test ne la défendait. Elle aurait été retirée au premier nettoyage.
     /// MUTATION : retirer la branche `col == "category" && v == CIM_EXEC_CANON` de
     /// `search_bar_exact_pred` -> ce test rougit.

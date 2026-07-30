@@ -160,7 +160,7 @@ pub(crate) fn resolve_tenant_access(
         return Err((StatusCode::FORBIDDEN, "aucun accès à ce tenant (grant requis)".into()));
     }
     // Le tenant doit exister ET être résoluble (fail-closed : jamais d'accès à un tenant fantôme/suspendu).
-    if st.tenants.resolve(&tenant).is_none() {
+    if !st.tenants.tenant_available(&tenant) {
         return Err((StatusCode::FORBIDDEN, "tenant inconnu ou indisponible".into()));
     }
     if mutating {

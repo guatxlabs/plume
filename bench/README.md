@@ -15,6 +15,33 @@ chiffre annoncé n'est pas contestable.
 | `measure.py` | La matrice : latence p50/p95, **RSS crête mesurée** (échantillonnage /proc à 15 ms), lecture disque, pression machine. |
 | `report.py` | Rend `docs/BENCHMARK.md`. Ne masque aucune cellule. |
 | `run.sh` | **La commande unique.** Enchaîne tout, budget de 2 Gio *appliqué* par cgroup. |
+| `results/` | Les **données brutes** de la mesure publiée dans `docs/BENCHMARK.md`. Versionnées exprès — voir ci-dessous. |
+
+## Pourquoi les données brutes sont versionnées
+
+Un tableau de mesures sans ses données brutes ne peut être que **cru ou ignoré** ; il ne peut pas
+être *contredit*. `results/` porte donc les fichiers dont `docs/BENCHMARK.md` est rendu :
+
+| Fichier | Contenu |
+|---|---|
+| `results/results.jsonl` | 270 lignes, une par cellule : p50/p95 mur et SQL, RSS crête, octets lus, pression mémoire avant/après, `swap_suspect`, la requête et son SQL compilé. |
+| `results/results-smoke-200k.jsonl` | La passe de rodage à 200 k événements. |
+| `results/ingest_rate.csv` | La courbe de débit d'ingest échantillonnée pendant le remplissage. |
+
+**Scannés avant publication** : chemins personnels, e-mails, jetons (`ghp_`/`AKIA`/`xox*-`/
+`AGE-SECRET`/`hvs.`/JWT), IP hors plages de documentation, hexadécimal ≥ 32 — **zéro
+correspondance**. Les seules requêtes qui y figurent sont celles du banc, synthétiques.
+
+**Ce qui est DÉLIBÉRÉMENT absent** : `matrix.log`, le journal d'exécution. Il porte des chemins de
+build absolus de la machine qui a mesuré (3 occurrences de chemins personnels, vérifié) — le publier
+serait une fuite pour zéro gain de vérifiabilité, puisqu'il ne contient aucun chiffre qui ne soit
+déjà dans les JSONL. `report.py` l'accepte en `--fill-log` quand vous lancez le banc vous-même : il
+est une sortie de VOTRE exécution, pas une entrée qu'il faut recevoir de nous.
+
+**Corollaire pour un contributeur** : si vous contestez un chiffre, rejouez `bench/run.sh` et
+comparez vos JSONL aux nôtres. Le générateur étant déterministe (`--digest` imprime le SHA-256 du
+flux), un désaccord se tranche sur des données identiques — ce qui est le seul cas où un désaccord
+de performance est arbitrable.
 
 ## Lancer
 

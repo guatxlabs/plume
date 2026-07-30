@@ -173,9 +173,15 @@ def main():
     W("     bench/README.md. -->")
     W("")
     import os as _os
+    # Les données BRUTES sont VERSIONNÉES dans `bench/results/`. C'est ce qui rend ce document
+    # RÉFUTABLE : sans elles, un lecteur ne peut que croire le tableau ou l'ignorer. Elles ont été
+    # scannées avant publication (270 + ~80 lignes JSON : chemins personnels, e-mails, jetons, IP hors
+    # plages de documentation, hexadécimal long — ZÉRO correspondance ; les seules requêtes qui y
+    # figurent sont celles du banc, synthétiques).
     W(f"Rendu le {time.strftime('%Y-%m-%d %H:%M:%S%z')} depuis "
       + ", ".join(f"`{_os.path.basename(p)}`" for p in args.results)
-      + " (données brutes conservées hors dépôt, cf. `bench/README.md`).")
+      + " — données brutes VERSIONNÉES dans [`bench/results/`](../bench/results/), pour que ce"
+      + " tableau puisse être contredit et pas seulement cru (cf. `bench/README.md`).")
     W("")
     W("## Ce que ce document est, et ce qu'il n'est pas")
     W("")

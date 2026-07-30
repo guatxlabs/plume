@@ -990,3 +990,323 @@ fn secretprov_phase2_cfg_secret_ref_additive_and_default_unchanged() {
     assert_eq!(cfg_secret(&conf, K), "from-file\n", "_REF absent -> _FILE VERBATIM (v117 inchangé)");
     let _ = std::fs::remove_file(&f);
 }
+
+// ================================================================================================
+// #45 — ORACLE NON MASQUÉ SUR LES SURFACES DE TEST / DRY-RUN DE DÉTECTION
+//
+// La compilation GXQL a DEUX portes : `soql_to_sql_x` (SANS masque — chemins SYSTÈME sans appelant :
+// ordonnanceur de détection tenant-wide D7, rollups, validation de syntaxe) et `soql_to_sql_masked_x`
+// (AVEC le `FieldMaskSet` de l'appelant — chemins RÔLE-SCOPÉS : /api/query, /api/export, panneaux). La
+// porte masquée fait DEUX choses : elle masque la PROJECTION *et* elle REJETTE tout prédicat de base sur
+// un champ masqué (garde-oracle du cœur : chaque comparaison fuit la valeur par le NOMBRE DE LIGNES).
+//
+// Les surfaces de TEST/DRY-RUN de détection (`/api/rule-test`, `/api/rules/:id/test`,
+// `/api/playbooks/:id/test`, `/api/correlations/:id/test`, `/api/baselines/:id/test`) sont TOUTES
+// EDITOR+ (route_min_role section 7) et compilaient par la porte NON MASQUÉE tout en RENVOYANT le
+// résultat à l'appelant -> oracle (voire exfiltration directe des valeurs pour playbook/corrélation/
+// baseline, qui renvoient les CIBLES/ENTITÉS). C'est exactement la famille de l'incident « un viewer
+// exfiltrait les hash via du SQL brut dans Explore ».
+// ================================================================================================
+
+/// Base de test #45 : 3 events, masque `mask` (PAS `deny`) sur `src_ip` et sur la clé JSON `pan`.
+/// `mask` est délibéré : l'authorizer SQLite ne connaît QUE les DENY de colonnes réelles -> il n'entre
+/// PAS en jeu ici. La compilation masquée est donc la SEULE défense -> le test la mesure ISOLÉMENT.
+/// Supprime une base de test AVEC ses sidecars WAL/SHM. `remove_file` seul laisse `-wal`/`-shm` derrière
+/// (4 Mio par base migrée) : /tmp est un tmpfs, ces résidus s'accumulent à chaque exécution de la suite.
+fn ff_rm(path: &str) {
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{path}{suffix}"));
+    }
+}
+
+fn oracle_db(tag: &str) -> String {
+    let path = ff_tmp_path(tag);
+    let conn = open_db(&path).unwrap();
+    conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
+    let _ = migrate(&conn);
+    for (h, ip, pan) in [("h1", "10.0.0.5", "4111111111111111"), ("h2", "10.0.0.6", "4222222222222222"), ("h3", "10.0.0.6", "4222222222222222")] {
+        conn.execute(
+            "INSERT INTO event(ts,source,category,severity,host,message,src_ip,fields) VALUES(?1,'sshd','auth',3,?2,'login',?3,?4)",
+            // ts dans le bucket de 60 s PRÉCÉDENT : `eval_baseline` n'observe que le dernier bucket CLOS
+            // (`closed = now/bucket - 1`) -> des events à `now()` seraient invisibles et la surface baseline
+            // ne serait pas RÉELLEMENT exercée (0 observation = faux négatif de test).
+            params![now() - 60, h, ip, format!(r#"{{"pan":"{pan}"}}"#)],
+        ).unwrap();
+    }
+    conn.execute("INSERT INTO field_filter(name,field,action,role) VALUES('ip','src_ip','mask','')", []).unwrap();
+    conn.execute("INSERT INTO field_filter(name,field,action,role) VALUES('p','pan','mask','')", []).unwrap();
+    field_filters_reload(&conn, &path);
+    drop(conn); // writer droppé -> WAL visible au pool read-only
+    path
+}
+
+/// MESURE + GARDE — aucune surface de test/dry-run ne doit servir d'oracle sur un champ masqué.
+/// Un `editor` a src_ip/pan MASQUÉS (règle role='' -> seuil editor). Chaque surface doit REFUSER, pas
+/// répondre un compte/une cible : la réponse est la MESURE de l'oracle (1 vs 0 = un bit de la valeur).
+#[tokio::test]
+async fn sec_ff_detection_test_surfaces_are_not_unmasked_oracles() {
+    let path = oracle_db("oracle-surfaces");
+    let st = ds_file_state(&path);
+    let editor = ergo_au("editor");
+    // Contrôle de l'hypothèse : l'editor EST bien masqué sur src_ip et pan (sinon le test ne prouve rien).
+    let m = effective_masks(&path, "editor", "default", None);
+    assert!(m.get("src_ip").is_some() && m.get("pan").is_some(), "prémisse : editor masqué sur src_ip+pan");
+
+    // ---- (1) /api/rule-test (ad-hoc) : filtre GXQL sur une COLONNE RÉELLE masquée. ----
+    let probe = |q: &str| {
+        let (st, au) = (st.clone(), editor.clone());
+        let q = q.to_string();
+        async move {
+            rule_test_adhoc(State(st), Extension(au),
+                Json(json!({ "query": q, "is_soql": true, "op": ">", "threshold": 0.0, "window_s": 0 }))).await.0
+        }
+    };
+    let hit = probe("search src_ip=10.0.0.6 | stats count").await;
+    let miss = probe("search src_ip=9.9.9.9 | stats count").await;
+    let err_of = |v: &Value| v.get("error").and_then(|e| e.as_str()).unwrap_or("").to_string();
+    assert!(err_of(&hit).contains("masqué"),
+        "/api/rule-test : filtre sur src_ip MASQUÉ doit être REFUSÉ *pour cause de masque* — reçu {hit} \
+         (oracle mesuré avant correctif : value=2 pour l'IP présente vs 0 pour une IP absente, soit un bit \
+         de la valeur d'un champ que le rôle ne peut PAS voir)");
+    // Le REFUS ne dépend PAS des données (sinon le refus serait lui-même l'oracle).
+    assert_eq!(err_of(&hit), err_of(&miss), "même refus, présente ou absente : le message ne fuit rien");
+
+    // ---- (2) /api/rule-test : filtre sur une CLÉ DU SAC JSON masquée (hors authorizer par construction). ----
+    let jhit = probe("search pan=4222222222222222 | stats count").await;
+    assert!(err_of(&jhit).contains("masqué"),
+        "/api/rule-test : filtre sur la clé JSON pan MASQUÉE doit être REFUSÉ — reçu {jhit}. Cas CRUCIAL : \
+         l'authorizer SQLite ne connaît QUE les colonnes RÉELLES sous DENY -> sur une clé du sac JSON, la \
+         compilation masquée est la SEULE défense.");
+
+    // ---- (3) /api/rules/:id/test : même oracle via une règle STOCKÉE (créable par un editor). ----
+    {
+        let c = st.db.lock();
+        c.execute("INSERT INTO rule(name,query,is_soql,op,threshold,severity,window_s,interval_s,enabled) \
+                   VALUES('probe','search src_ip=10.0.0.6 | stats count',1,'>',0,3,0,3600,0)", []).unwrap();
+    }
+    let rid: i64 = st.db.lock().query_row("SELECT id FROM rule WHERE name='probe'", [], |r| r.get(0)).unwrap();
+    let rt = rule_test(State(st.clone()), Extension(editor.clone()), axum::extract::Path(rid)).await.0;
+    assert!(err_of(&rt).contains("masqué"),
+        "/api/rules/:id/test : règle filtrant un champ masqué doit être REFUSÉE — reçu {rt}");
+
+    // ---- (4) /api/playbooks/:id/test : renvoie les CIBLES -> exfiltration DIRECTE des valeurs masquées. ----
+    {
+        let c = st.db.lock();
+        c.execute("INSERT INTO playbook(name,query,is_soql,action_kind,window_s,interval_s,enabled,created_by_role) \
+                   VALUES('probe','search | table src_ip',1,'ban_ip',0,3600,0,'admin')", []).unwrap();
+    }
+    let pid: i64 = st.db.lock().query_row("SELECT id FROM playbook WHERE name='probe'", [], |r| r.get(0)).unwrap();
+    let pt = playbook_test(State(st.clone()), Extension(editor.clone()), axum::extract::Path(pid)).await.0;
+    let targets = pt.get("targets").map(|t| t.to_string()).unwrap_or_default();
+    assert!(!targets.contains("10.0.0.6") && !targets.contains("10.0.0.5"),
+        "/api/playbooks/:id/test : les CIBLES ne doivent PAS porter la valeur masquée en clair — exfiltré : {targets}");
+    // Comportement ATTENDU pinné : le masque est émis DANS le SQL -> la cible est restituée MASQUÉE (le
+    // dry-run reste utilisable : on voit COMBIEN de cibles, jamais LESQUELLES).
+    assert!(targets.contains("***"), "/api/playbooks/:id/test : cibles MASQUÉES attendues, reçu {targets}");
+
+    // ---- (5) /api/correlations/:id/test : renvoie les ENTITÉS (key_field) -> idem. ----
+    {
+        let c = st.db.lock();
+        let steps = r#"[{"query":"search source=sshd | table ts,src_ip"},{"query":"search source=sshd | table ts,src_ip"}]"#;
+        c.execute("INSERT INTO correlation(name,key_field,entity_type,steps,window_s,interval_s,severity,enabled) \
+                   VALUES('probe','src_ip','ip',?1,86400,3600,3,0)", params![steps]).unwrap();
+    }
+    let cid: i64 = st.db.lock().query_row("SELECT id FROM correlation WHERE name='probe'", [], |r| r.get(0)).unwrap();
+    let ct = correlation_test(State(st.clone()), Extension(editor.clone()), axum::extract::Path(cid)).await.0;
+    let ents = ct.get("entities").map(|t| t.to_string()).unwrap_or_default();
+    assert!(!ents.contains("10.0.0.6") && !ents.contains("10.0.0.5"),
+        "/api/correlations/:id/test : les ENTITÉS ne doivent PAS porter la valeur masquée en clair — exfiltré : {ents}");
+    assert!(err_of(&ct).contains("masqué"),
+        "/api/correlations/:id/test : la clé de corrélation étant masquée, la surface doit REFUSER — reçu {ct}");
+
+    // ---- (6) /api/baselines/:id/test : renvoie les ÉCHANTILLONS (entité, valeur) -> idem. ----
+    {
+        let c = st.db.lock();
+        c.execute("INSERT INTO ueba_baseline(name,query,entity_field,value_field,entity_type,bucket_s,min_samples,z_threshold,window_s,interval_s,severity,enabled) \
+                   VALUES('probe','search source=sshd | stats count by src_ip','src_ip','count','ip',60,1,3.0,86400,3600,3,0)", []).unwrap();
+    }
+    let bid: i64 = st.db.lock().query_row("SELECT id FROM ueba_baseline WHERE name='probe'", [], |r| r.get(0)).unwrap();
+    let bt = baseline_test(State(st.clone()), Extension(editor.clone()), axum::extract::Path(bid)).await.0;
+    let samples = bt.get("samples").map(|t| t.to_string()).unwrap_or_default();
+    assert!(!samples.contains("10.0.0.6") && !samples.contains("10.0.0.5"),
+        "/api/baselines/:id/test : les ÉCHANTILLONS ne doivent PAS porter la valeur masquée en clair — exfiltré : {samples}");
+    assert!(err_of(&bt).contains("masqué"),
+        "/api/baselines/:id/test : le champ d'entité étant masqué, la surface doit REFUSER — reçu {bt}");
+
+    ff_rm(&path);
+}
+
+
+/// #45 — LE COMPORTEMENT LÉGITIME N'EST PAS CASSÉ, ET LE MODE 0 EST BYTE-IDENTIQUE.
+/// (a) un `editor` AVEC des masques actifs garde `/api/rule-test` sur des champs NON masqués ;
+/// (b) un `admin` n'est pas masqué par une règle role='' -> il garde l'accès complet ;
+/// (c) SANS aucun field-filter (mode 0), la porte APPELANT produit EXACTEMENT le SQL de la porte
+///     SYSTÈME `rule_sql` et la surface répond comme avant (le fix est un no-op en mode 0).
+#[tokio::test]
+async fn sec_ff_caller_compile_preserves_legitimate_use_and_mode0() {
+    // ---- (a)+(b) : masques ACTIFS sur src_ip/pan, requête sur des champs NON masqués. ----
+    let path = oracle_db("legit");
+    let st = ds_file_state(&path);
+    let ask = |role: &str, q: &str| {
+        let (st, q, au) = (st.clone(), q.to_string(), ergo_au(role));
+        async move {
+            rule_test_adhoc(State(st), Extension(au),
+                Json(json!({ "query": q, "is_soql": true, "op": ">", "threshold": 0.0, "window_s": 0 }))).await.0
+        }
+    };
+    let ok = ask("editor", "search source=sshd host=h1 | stats count").await;
+    assert_eq!(ok.get("value").and_then(|v| v.as_f64()), Some(1.0),
+        "editor masqué sur src_ip garde le dry-run sur des champs NON masqués : {ok}");
+    assert!(ok.get("error").is_none(), "aucune erreur sur un champ non masqué : {ok}");
+    // admin : la règle role='' a un seuil `editor` -> l'admin n'est PAS masqué, il garde même src_ip.
+    let adm = ask("admin", "search src_ip=10.0.0.6 | stats count").await;
+    assert_eq!(adm.get("value").and_then(|v| v.as_f64()), Some(2.0),
+        "admin non masqué par une règle role='' : accès conservé sur src_ip : {adm}");
+    ff_rm(&path);
+
+    // ---- (c) MODE 0 (aucun field_filter) : porte APPELANT == porte SYSTÈME, bit à bit. ----
+    let clean = ff_tmp_path("legit-mode0");
+    {
+        let conn = open_db(&clean).unwrap();
+        conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
+        let _ = migrate(&conn);
+        conn.execute("INSERT INTO event(ts,source,category,severity,host,message,src_ip) VALUES(?1,'sshd','auth',3,'h1','login','10.0.0.5')",
+            params![now()]).unwrap();
+        field_filters_reload(&conn, &clean); // registre VIDE -> mode 0
+    }
+    let st0 = ds_file_state(&clean);
+    let editor = ergo_au("editor");
+    for (q, is_soql, win) in [
+        ("search src_ip=10.0.0.5 | stats count", true, 0i64),
+        ("search source=sshd | stats count by host", true, 3600),
+        ("SELECT COUNT(*) FROM event WHERE ts>=__FROM__", false, 900),
+    ] {
+        let system = rule_sql(q, is_soql, win);
+        let caller = rule_sql_for_caller(&st0, &editor, q, is_soql, win);
+        assert_eq!(format!("{system:?}"), format!("{caller:?}"),
+            "MODE 0 : la porte APPELANT doit émettre le SQL de la porte SYSTÈME, bit à bit — `{q}`");
+    }
+    // Et la SURFACE répond comme avant le fix (l'oracle n'existe pas en mode 0 : rien n'est masqué).
+    let v = rule_test_adhoc(State(st0.clone()), Extension(editor.clone()),
+        Json(json!({ "query": "search src_ip=10.0.0.5 | stats count", "is_soql": true, "op": ">", "threshold": 0.0, "window_s": 0 }))).await.0;
+    assert_eq!(v.get("value").and_then(|x| x.as_f64()), Some(1.0), "mode 0 : /api/rule-test inchangé : {v}");
+    // `caller_dryrun_guard` est également un NO-OP strict en mode 0 (aucune surface de dry-run dégradée).
+    assert!(caller_dryrun_guard(&st0, &editor, &["search src_ip=10.0.0.5 | stats count"], &["src_ip"], 0).is_ok(),
+        "mode 0 : caller_dryrun_guard NE restreint RIEN");
+    ff_rm(&clean);
+}
+
+/// #45 — GARDE DÉRIVÉE (STATIQUE, DEFAULT-DENY) : « aucune SURFACE d'appelant ne compile sans masque ».
+///
+/// Pourquoi une garde statique et pas une liste de tests par route : le défaut mesuré ne venait pas d'une
+/// route oubliée mais d'une PORTE DE COMPILATION partagée (`rule_sql`) atteinte depuis un contexte
+/// d'appelant. Énumérer les 5 surfaces trouvées laisserait la 6e (ajoutée demain) rouvrir le trou. On
+/// dérive donc l'invariant en DEUX moitiés, sans aucune allowlist de surface :
+///
+///   PARTIE 1 — PORTES : l'ensemble des fonctions de `daemon/src/handlers/**` qui contiennent un appel de
+///   compilation NON MASQUÉE (`soql_to_sql_x(`) doit être EXACTEMENT l'ensemble déclaré ici. Une NOUVELLE
+///   porte non masquée (ou la disparition d'une existante) fait ROUGIR : impossible d'introduire
+///   discrètement un second `rule_sql`.
+///
+///   PARTIE 2 — SURFACES : toute fonction de `daemon/src/handlers/**` dont la SIGNATURE porte
+///   `Extension<AuthUser>` (= elle s'exécute POUR un appelant, c'est la définition d'une surface HTTP) et
+///   dont le CORPS atteint une de ces portes (directement ou via un évaluateur qui en dépend) DOIT résoudre
+///   le contexte de masquage de l'appelant. DEFAULT-DENY : la garde ne connaît AUCUNE surface par son nom ;
+///   elle les découvre dans la source. Une surface ajoutée demain est couverte sans que personne n'y pense.
+///
+/// CE QUE CETTE GARDE NE COUVRE PAS (dit explicitement) : (1) c'est une analyse de TEXTE, pas de flot de
+/// données — une surface qui résout les masques puis IGNORE le résultat passerait (c'est pourquoi les tests
+/// de COMPORTEMENT ci-dessus existent) ; (2) elle ne suit qu'un niveau d'indirection, celui des portes
+/// déclarées en partie 1 — une NOUVELLE fonction intermédiaire hors `handlers/` qui compilerait sans masque
+/// échapperait à la partie 2 (mais la partie 1 la verrait si elle vit dans `handlers/`) ; (3) elle ne scanne
+/// que `daemon/src/handlers/**` (les chemins système — ordonnanceur, rollups, sigma, cold — sont
+/// DÉLIBÉRÉMENT non masqués : la détection est tenant-wide D7).
+#[test]
+fn sec_ff_no_unmasked_compile_in_caller_scoped_surfaces() {
+    // Découpe un fichier .rs en (nom de fonction, signature, corps) au niveau TOP (indentation 0).
+    fn functions(src: &str) -> Vec<(String, String, String)> {
+        let is_fn_start = |l: &str| {
+            let t = l.trim_start();
+            l.len() - t.len() == 0 && (t.starts_with("fn ") || t.starts_with("pub(crate) fn ")
+                || t.starts_with("async fn ") || t.starts_with("pub(crate) async fn ")
+                || t.starts_with("pub fn ") || t.starts_with("pub async fn "))
+        };
+        let lines: Vec<&str> = src.lines().collect();
+        let starts: Vec<usize> = (0..lines.len()).filter(|&i| is_fn_start(lines[i])).collect();
+        let mut out = Vec::new();
+        for (k, &i) in starts.iter().enumerate() {
+            let end = starts.get(k + 1).copied().unwrap_or(lines.len());
+            let name = lines[i].split("fn ").nth(1).unwrap_or("").split('(').next().unwrap_or("").trim().to_string();
+            // signature = de la ligne `fn` jusqu'à la ligne qui ouvre le corps (`{` en fin de ligne).
+            let mut sig_end = i;
+            while sig_end < end && !lines[sig_end].trim_end().ends_with('{') { sig_end += 1; }
+            let sig = lines[i..=sig_end.min(end - 1)].join("\n");
+            let body = lines[sig_end.min(end - 1)..end].join("\n");
+            out.push((name, sig, body));
+        }
+        out
+    }
+    fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() { rs_files(&p, out); } else if p.extension().and_then(|x| x.to_str()) == Some("rs") { out.push(p); }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/handlers");
+    let mut files = Vec::new();
+    rs_files(&root, &mut files);
+    assert!(files.len() > 20, "la garde doit VOIR les handlers (trouvés : {})", files.len());
+
+    // ---------- PARTIE 1 : l'ensemble des PORTES non masquées est FERMÉ et déclaré. ----------
+    // Chaque entrée = (fonction, pourquoi elle a le DROIT de compiler sans masque). Ces fonctions n'ont
+    // PAS d'appelant : elles servent l'ordonnanceur / la validation de syntaxe / un chemin déjà gaté.
+    const DECLARED_UNMASKED_GATES: &[(&str, &str)] = &[
+        ("compile_panel_sql", "panneaux : PURE, sans appelant ; la surface panel_data bascule sur panel_data_masked_live dès qu'un masque est actif"),
+        ("eval_baseline", "évaluateur PARTAGÉ avec l'ordonnanceur : doit rester tenant-wide (D7) ; la SURFACE baseline_test est gardée par caller_dryrun_guard"),
+        ("validate_baseline", "validation de SYNTAXE au CRUD : ne renvoie qu'une erreur de compilation, AUCUNE donnée"),
+    ];
+    let mut found: Vec<String> = Vec::new();
+    for f in &files {
+        let src = std::fs::read_to_string(f).unwrap();
+        for (name, _sig, body) in functions(&src) {
+            if body.contains("soql_to_sql_x(") { found.push(name); }
+        }
+    }
+    found.sort();
+    found.dedup();
+    let mut declared: Vec<String> = DECLARED_UNMASKED_GATES.iter().map(|(n, _)| n.to_string()).collect();
+    declared.sort();
+    assert_eq!(found, declared,
+        "PORTES DE COMPILATION NON MASQUÉES dans daemon/src/handlers/** : l'ensemble TROUVÉ doit être \
+         l'ensemble DÉCLARÉ. Trouvé={found:?} / Déclaré={declared:?}. Si vous ajoutez une porte non masquée, \
+         déclarez-la ICI avec sa justification (« pas d'appelant »), et vérifiez que la PARTIE 2 couvre les \
+         surfaces qui l'atteignent — sinon vous rouvrez l'oracle #45.");
+
+    // ---------- PARTIE 2 : toute SURFACE d'appelant qui atteint une porte résout le masque. ----------
+    // Marqueurs d'ATTEINTE d'une porte non masquée (portes de la partie 1 + leurs façades de règle et les
+    // évaluateurs qui en dépendent). Ce sont les noms qu'un handler écrit quand il compile du GXQL.
+    const REACHES_UNMASKED: &[&str] = &[
+        "soql_to_sql_x(", "rule_sql(", "compile_panel_sql(", "eval_correlation(", "eval_baseline(",
+    ];
+    // Marqueurs de RÉSOLUTION du contexte de masquage de l'appelant (les 3 seules façons légitimes).
+    const RESOLVES_MASKS: &[&str] = &["effective_masks(", "rule_sql_for_caller(", "caller_dryrun_guard("];
+    let mut surfaces = 0usize;
+    let mut violations: Vec<String> = Vec::new();
+    for f in &files {
+        let src = std::fs::read_to_string(f).unwrap();
+        for (name, sig, body) in functions(&src) {
+            if !sig.contains("Extension<AuthUser>") { continue; } // pas une surface d'appelant
+            surfaces += 1;
+            if !REACHES_UNMASKED.iter().any(|m| body.contains(m)) { continue; }
+            if !RESOLVES_MASKS.iter().any(|m| body.contains(m)) {
+                violations.push(format!("{}::{name}", f.file_name().unwrap().to_string_lossy()));
+            }
+        }
+    }
+    assert!(surfaces > 100, "la garde doit voir les SURFACES d'appelant (trouvées : {surfaces})");
+    assert!(violations.is_empty(),
+        "SURFACE D'APPELANT QUI COMPILE SANS MASQUE (#45 oracle) : {violations:?}. Un handler qui reçoit \
+         `Extension<AuthUser>` s'exécute POUR un appelant : s'il compile du GXQL il DOIT résoudre le masque \
+         de ce rôle. Passez par `rule_sql_for_caller` (règles/playbooks), `caller_dryrun_guard` (surfaces \
+         dont l'évaluateur est partagé avec l'ordonnanceur) ou `effective_masks` + `soql_to_sql_masked_x`.");
+}

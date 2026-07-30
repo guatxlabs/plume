@@ -137,7 +137,11 @@ pub(crate) async fn playbook_test(State(st): State<AppState>, Extension(au): Ext
         Some(x) => x,
         None => return Json(json!({ "error": "playbook introuvable" })),
     };
-    let sql = match rule_sql(&query, is_soql, window_s) {
+    // #45 — DRY-RUN = SURFACE D'APPELANT : cette route est EDITOR+ et RENVOIE les CIBLES de la requête
+    // (1re colonne) à l'appelant. Compilée par la porte SYSTÈME `rule_sql`, un playbook `search | table
+    // src_ip` restituait les valeurs EN CLAIR à un rôle dont src_ip est masqué (exfiltration directe, pas
+    // seulement un oracle). On passe donc par la porte APPELANT (masque #45 résolu DANS la porte).
+    let sql = match rule_sql_for_caller(&st, &au, &query, is_soql, window_s) {
         Ok(s) => s,
         Err(e) => return Json(json!({ "error": e })),
     };

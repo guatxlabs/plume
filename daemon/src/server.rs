@@ -1617,7 +1617,14 @@ fn tenants_routes() -> Router<AppState> {
 
 /// Construit la table de routage complète + les couches (auth/host/rate-limit/headers/compression/
 /// catch-panic) et injecte l'état. Routes et ordre des layers IDENTIQUES.
-fn build_router(state: AppState, webdir: String) -> Router {
+///
+/// `pub(crate)` (et non privé) DÉLIBÉRÉMENT : les gardes d'autorisation étaient toutes prouvées à la
+/// COUTURE (`rbac_gate`, `route_min_role`, `is_readonly_post` — fonctions pures) et AUCUNE au CÂBLAGE. La
+/// mutation a été mesurée : en RETIRANT la couche `auth_guard` de ce routeur, la suite passait 762/762 —
+/// on pouvait supprimer l'authentification sans faire rougir un seul test. Les tests
+/// `router_*` (tests/rbac.rs) construisent DONC ce routeur, le servent sur une socket éphémère et
+/// interrogent CHAQUE route de la table : c'est la seule façon de défendre la COMPOSITION.
+pub(crate) fn build_router(state: AppState, webdir: String) -> Router {
     let app = Router::<AppState>::new()
         .merge(health_system_routes())
         .merge(overview_search_routes())

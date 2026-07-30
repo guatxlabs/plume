@@ -492,7 +492,12 @@ pub(crate) async fn ai_nl2soql(State(st): State<AppState>, Extension(au): Extens
     let prompt_sha = sha256_hex(format!("{sys_p}\n{usr_p}").as_bytes());
 
     // COUTURE COMPILO FERMÉ = /api/query. Aucune borne temporelle (l'analyste choisit sa fenêtre en Explore).
-    let compile = |s: &str| -> Result<String, String> { soql_to_sql_x(s, 0, 0, None) };
+    // #45 : c'est le MÊME compilo que /api/query, donc le MÊME jeu de masques que /api/query — le GXQL
+    // rendu à l'analyste ne peut pas référencer un champ masqué pour son rôle (sinon la couche IA serait un
+    // générateur de requêtes que la surface d'exécution refuserait, ou pire un contournement). Masque VIDE
+    // (mode 0 / admin sans règle) -> STRICTEMENT identique à `soql_to_sql_x`.
+    let ai_masks = effective_masks(&req_db_path(&st, &au), &au.role, &au.tenant, au.env_filter());
+    let compile = |s: &str| -> Result<String, String> { soql_to_sql_masked_x(s, 0, 0, None, &ai_masks) };
 
     let outcome = crate::ai::run_nl2soql(
         &endpoint, &api_shape, &model, &key, temperature, num_ctx, &nl, &fields, categories, &policy, max_tokens, &compile,

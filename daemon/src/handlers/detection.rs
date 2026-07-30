@@ -13,7 +13,22 @@ pub(crate) fn cmp_op(a: f64, op: &str, b: f64) -> bool {
         _ => false,
     }
 }
+/// COMPILATION D'UNE REQUÊTE DE RÈGLE — chemin SYSTÈME (ordonnanceur / validation / overlays).
+///
+/// ⚠️ AUCUN MASQUE. Réservé aux chemins qui n'ont PAS d'appelant : `run_due_rules`, `run_advanced_rules`,
+/// `run_playbooks`, `run_risk_rules`, `eval_correlation`, la validation de contenu et l'import Sigma. Une
+/// surface HTTP qui compile la requête d'un UTILISATEUR et lui RENVOIE le résultat NE DOIT PAS passer ici :
+/// elle passe par `rule_sql_for_caller` (qui exige `AuthUser` et applique le masque #45). Cette séparation
+/// est DÉFENDUE par la garde statique `sec_ff_no_unmasked_compile_in_caller_scoped_surfaces`.
 pub(crate) fn rule_sql(query: &str, is_soql: bool, window_s: i64) -> Result<String, String> {
+    // Masque VIDE = chemin système. `soql_to_sql_masked_x` court-circuite sur un jeu vide et retombe
+    // EXACTEMENT sur `soql_to_sql_x` (cf. `EventStore::soql_to_sql_masked`) -> SQL byte-identique.
+    rule_sql_masked(query, is_soql, window_s, &guatx_core::soql::FieldMaskSet::new())
+}
+/// Corps PARTAGÉ (unique) de la compilation d'une requête de règle : la SEULE variable est le jeu de
+/// masques. Toute porte de compilation de règle passe ici -> impossible d'avoir deux sémantiques de fenêtre
+/// ou de placeholder entre le chemin système et le chemin appelant.
+fn rule_sql_masked(query: &str, is_soql: bool, window_s: i64, masks: &guatx_core::soql::FieldMaskSet) -> Result<String, String> {
     let from = if window_s > 0 { now() - window_s } else { 0 };
     // SÉCURITÉ — AUCUNE exclusion self/opérateur sur le chemin DÉTECTION : les règles doivent TOUT
     // voir, y compris une attaque venant de l'IP opérateur (machine opérateur compromise). On NE
@@ -22,7 +37,60 @@ pub(crate) fn rule_sql(query: &str, is_soql: bool, window_s: i64) -> Result<Stri
     // invalide -> visible au test/PREPARE, jamais un angle mort silencieux.
     // FILTRE ENVIRONNEMENT (#2d) : TOUJOURS None ici — la DÉTECTION est tenant-wide (D7) : une règle
     // s'évalue sur TOUS les environnements du tenant (une attaque sur staging doit alerter). Jamais d'env.
-    if is_soql { soql_to_sql_x(query, from, 0, None) } else { Ok(query.replace("__FROM__", &from.to_string())) }
+    if is_soql { soql_to_sql_masked_x(query, from, 0, None, masks) } else { Ok(query.replace("__FROM__", &from.to_string())) }
+}
+
+/// #45 — UNIQUE PORTE DE COMPILATION D'UNE REQUÊTE DE RÈGLE POUR UN APPELANT IDENTIFIÉ.
+///
+/// POURQUOI ELLE EXISTE (et pourquoi elle prend `st`+`au` et non un `FieldMaskSet` déjà résolu) : les
+/// surfaces de TEST / DRY-RUN de détection (`/api/rule-test`, `/api/rules/:id/test`,
+/// `/api/playbooks/:id/test`) sont EDITOR+ et RENVOIENT le résultat de la requête à l'appelant. Compilées
+/// par la porte SYSTÈME (`rule_sql`, sans masque), elles étaient un ORACLE : `search src_ip=10.0.0.6 |
+/// stats count` répondait `value=2` là où `search src_ip=9.9.9.9` répondait `value=0` — un bit de la valeur
+/// d'un champ que le rôle ne peut PAS voir, à volonté (et pour un playbook, la valeur EN CLAIR dans
+/// `targets`). C'est la famille exacte de l'incident « un viewer exfiltrait les hash par du SQL brut ».
+/// La garde n'est donc PAS « ajouter search_mask_guard sur /api/rule-test » : c'est de rendre le masque
+/// INSÉPARABLE de la compilation quand un appelant existe. `effective_masks` est résolu ICI, jamais par le
+/// handler -> une surface ne peut pas l'oublier : soit elle a un `AuthUser` et passe par cette porte, soit
+/// elle n'a pas d'appelant et n'est pas une surface d'appelant.
+///
+/// MODE 0 / aucun field-filter -> `masks` VIDE -> SQL BYTE-IDENTIQUE à `rule_sql` (invariant prouvé par
+/// `sec_ff_caller_compile_is_byte_identical_in_mode0`).
+///
+/// SQL BRUT (`is_soql=false`) : opaque, le masque est INJECTABLE nulle part et la surface ne renvoie qu'un
+/// scalaire (un masquage post-requête n'aurait aucun sens). Dès qu'un masque est actif pour l'appelant ->
+/// REFUS fail-closed. Masque vide -> comportement inchangé (le seul cas en mode 0).
+pub(crate) fn rule_sql_for_caller(st: &AppState, au: &AuthUser, query: &str, is_soql: bool, window_s: i64) -> Result<String, String> {
+    let masks = effective_masks(&req_db_path(st, au), &au.role, &au.tenant, au.env_filter());
+    if !is_soql && !masks.is_empty() {
+        return Err("dry-run d'une requête SQL BRUTE interdit : un field-filter est actif pour votre rôle et le masque ne peut pas être appliqué à du SQL opaque (utilisez GXQL)".into());
+    }
+    rule_sql_masked(query, is_soql, window_s, &masks)
+}
+
+/// #45 — GARDE-ORACLE des surfaces de DRY-RUN qui n'ont PAS de porte de compilation propre : le GXQL y est
+/// compilé DANS l'évaluateur PARTAGÉ avec l'ordonnanceur (`eval_correlation`, `eval_baseline`), qui doit
+/// rester tenant-wide et NON masqué (D7 : une corrélation ne doit pas devenir aveugle parce qu'un rôle est
+/// restreint). On ne peut donc pas y injecter le masque sans dégrader la DÉTECTION ; on garde la SURFACE :
+///   (1) chaque requête fournie doit COMPILER SOUS LE MASQUE de l'appelant -> tout prédicat sur un champ
+///       masqué est rejeté par le cœur (fin de l'oracle par nombre de lignes) ;
+///   (2) tout champ que la surface RENVOIE EN CLAIR (clé de corrélation, champ d'entité/valeur d'une
+///       baseline) doit être NON masqué pour l'appelant -> fin de l'exfiltration directe des valeurs.
+/// VIDE (mode 0 / admin sans règle) -> `Ok(())` immédiat, AUCUN changement de comportement.
+pub(crate) fn caller_dryrun_guard(st: &AppState, au: &AuthUser, queries: &[&str], returned_fields: &[&str], window_s: i64) -> Result<(), String> {
+    let masks = effective_masks(&req_db_path(st, au), &au.role, &au.tenant, au.env_filter());
+    if masks.is_empty() {
+        return Ok(()); // mode 0 : chemin STRICTEMENT inchangé
+    }
+    for f in returned_fields.iter().filter(|f| !f.is_empty()) {
+        if masks.get(f).is_some() {
+            return Err(format!("dry-run interdit : le champ « {f} » est RENVOYÉ par cette surface et il est masqué pour votre rôle (un champ que vous ne pouvez pas voir ne peut pas être restitué ni sondé)"));
+        }
+    }
+    for q in queries {
+        rule_sql_masked(q, true, window_s, &masks)?;
+    }
+    Ok(())
 }
 /// Exécute la requête et renvoie la dernière colonne de la 1re ligne comme nombre. DURCISSEMENT 3b —
 /// l'ÉVALUATION passe par run_query -> connexion du pool LECTURE SEULE (SQLITE_OPEN_READ_ONLY +
@@ -812,7 +880,8 @@ pub(crate) async fn rule_test(State(st): State<AppState>, Extension(au): Extensi
         Some(x) => x,
         None => return Json(json!({ "error": "règle introuvable" })),
     };
-    let sql = match rule_sql(&query, is_soql, window_s) {
+    // #45 : porte de compilation APPELANT (masque du rôle appliqué / prédicat sur champ masqué rejeté).
+    let sql = match rule_sql_for_caller(&st, &au, &query, is_soql, window_s) {
         Ok(s) => s,
         Err(e) => return Json(json!({ "error": e })),
     };
@@ -843,7 +912,8 @@ pub(crate) async fn rule_test_adhoc(State(st): State<AppState>, Extension(au): E
     let op = b.get("op").and_then(|v| v.as_str()).unwrap_or(">").to_string();
     let threshold = b.get("threshold").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let window_s = b.i64_field("window_s", 3600);
-    let sql = match rule_sql(&query, is_soql, window_s) {
+    // #45 : porte de compilation APPELANT (masque du rôle appliqué / prédicat sur champ masqué rejeté).
+    let sql = match rule_sql_for_caller(&st, &au, &query, is_soql, window_s) {
         Ok(s) => s,
         Err(e) => return Json(json!({ "error": e })),
     };

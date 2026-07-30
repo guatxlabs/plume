@@ -38,7 +38,7 @@ tripping a cross-module invariant.
 | Path | Purpose | Boundary | Ownable? |
 |------|---------|----------|----------|
 | `ingest/mod.rs`, `ingest/store.rs` | Ingest pipeline + the `EventStore` SPI mount (`SqlcipherStore`) | `POST /api/ingest` → normalize → store | Yes |
-| `ingest/{hec,minio,otlp,pubsub,firehose,obs,federated,endpoint}.rs` | Alternate receivers (Splunk HEC, S3/MinIO, OTLP traces, pub/sub, …) | Each gated by a `PLUME_*` runtime flag (mode 0 when off) | Yes, per-receiver |
+| `ingest/{hec,minio,otlp,pubsub,firehose,obs,federated,endpoint}.rs` | Alternate receivers (Splunk HEC, S3/MinIO, OTLP traces, pub/sub, …) | Each gated by a `PLUME_*` runtime flag (mode 0 when off) — **except `federated.rs`, which is an inert scaffold: no route/handler calls it and no flag gates it** | Yes, per-receiver |
 | `ingest/{duckdb,clickhouse}_store.rs`, `ingest/clickhouse_ha.rs` | Feature-gated alternate backends behind the `EventStore` SPI | `#[cfg(feature=…)]`; absent from default build | Yes (isolated by feature) |
 | `parsers.rs`, `processors.rs`, `datamodels.rs`, `overlays*.rs` | Parse/normalize/enrich; config.d overlays | CIM contract (see `CIM.md`) | Mostly — respect CIM stamping |
 
@@ -115,7 +115,7 @@ submodule owns exactly one invariant, stated at the top of its file:
 
 | Invariant | Where it lives | How it's guarded |
 |-----------|----------------|------------------|
-| **Field-masking choke-point** — every user-visible field passes one masking point before aggregation/rename | `core/src/soql.rs::soql_field`/`soql_filter_field`; injected via `field_filter.rs` → `FieldMaskSet` | Named fns + contiguous module; tests; non-GXQL surfaces reuse `mask_json_value` |
+| **Field-masking choke-point** — every user-visible field passes one masking point before aggregation/rename | `core/src/soql/mod.rs::soql_field`/`soql_filter_field`; injected via `field_filter.rs` → `FieldMaskSet` | Named fns + contiguous module; tests; non-GXQL surfaces reuse `mask_json_value` |
 | **DENY authorizer** — DENY on a real column holds even for raw admin SQL | `query_exec.rs` SQLite authorizer, fed by `field_filter.rs` `PHYSICAL_EVENT_COLS` | Set at `prepare()`; secret denylist (`user.hash`/`token.token_hash`) |
 | **Closed GXQL grammar** — reads are compiled, read-only; raw SQL is admin-only | `guatx_core::soql`; `stmt.readonly()` guard in `query_exec.rs` | Closed command enum; readonly assert |
 | **Cold at-rest encryption + fail-closed** — cold never written in clear; no key ⇒ nothing aged/written/deleted | `cold_store/crypto.rs` | HKDF domain separation; fail-closed on missing key |

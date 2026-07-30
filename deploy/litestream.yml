@@ -1,19 +1,31 @@
-# Litestream — réplication continue de la base SOC (RPO ~secondes, point-in-time recovery).
+# Litestream — réplication continue de la base Plume (RPO ~secondes, point-in-time recovery).
+#
+# ⚠️ INCOMPATIBLE AVEC LE CHIFFREMENT AT-REST. Litestream réplique les frames du WAL SQLite ; il ne
+# sait pas lire une base SQLCipher. Si vous activez le chiffrement (`PLUME_DB_KEY_FILE`), ce fichier
+# NE FONCTIONNE PLUS — utilisez à la place le backup natif du daemon (`PLUME_BACKUP_INTERVAL`, archive
+# `age(zstd(...))`, cf. docs/DR-plume-restore.md), qui lui est conçu pour une base chiffrée.
+# Ce chemin de réplication ne vaut donc que pour une base EN CLAIR.
+#
 # Litestream est un binaire SÉPARÉ (https://litestream.io). Installation :
 #   - installe litestream (paquet / binaire)
 #   - sudo cp deploy/litestream.yml /etc/litestream.yml
 #   - sudo systemctl enable --now litestream
-#   Restauration : litestream restore -o /var/lib/soc/db/soc.db <replica-url>
+#   Restauration : litestream restore -o /var/lib/plume/db/plume.db <replica-url>
+#
+# Le chemin ci-dessous doit correspondre à `PLUME_DB` dans /etc/plume/soc.conf — VÉRIFIEZ-LE
+# (`grep PLUME_DB /etc/plume/soc.conf`) : un chemin qui ne pointe sur rien produit un réplica VIDE
+# sans erreur bruyante, c'est-à-dire une sauvegarde qui n'existe pas alors que le service tourne.
 dbs:
-  - path: /var/lib/soc/db/soc.db
+  - path: /var/lib/plume/db/plume.db
     replicas:
       # (A) disque/NAS local — le plus simple :
       - type: file
-        path: /var/backups/soc-litestream
-      # (B) S3-compatible (décommenter + configurer pour de la vraie résilience off-site) :
+        path: /var/backups/plume-litestream
+      # (B) S3-compatible (décommenter + configurer pour de la vraie résilience off-site).
+      #     Ne mettez PAS les clés en clair ici : ce fichier est lisible par le service. Préférez
+      #     les variables d'environnement LITESTREAM_ACCESS_KEY_ID / LITESTREAM_SECRET_ACCESS_KEY
+      #     posées via un drop-in systemd (`EnvironmentFile=` sur un fichier en 0600).
       # - type: s3
-      #   bucket: mon-bucket-soc
-      #   path: soc.db
+      #   bucket: mon-bucket-plume
+      #   path: plume.db
       #   endpoint: https://s3.example.com
-      #   access-key-id: "..."
-      #   secret-access-key: "..."

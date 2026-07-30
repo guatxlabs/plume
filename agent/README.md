@@ -230,7 +230,7 @@ cargo check --target aarch64-apple-darwin     # compile la partie cfg(macos)
 > **Note d'environnement** : la dev box Linux courante utilise un `rustc` distro **sans `rustup`** (seule
 > la std `x86_64-unknown-linux-gnu` est présente), donc le cross-check n'a **pas pu être exécuté ici** ;
 > il tourne en CI (ou sur une machine avec `rustup`). Les dépendances résolvent (`cargo add --dry-run`
-> OK pour `windows`/`windows-service`) et **tout ce qui est testable sur Linux est vert** (49 tests).
+> OK pour `windows`/`windows-service`) et **tout ce qui est testable sur Linux est vert** (96 tests).
 
 ## Sémantique at-least-once
 

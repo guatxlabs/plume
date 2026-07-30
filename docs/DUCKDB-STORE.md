@@ -17,7 +17,13 @@ client-selectable backend on the 2 GB node.
 
 ## 1. `PLUME_STORE` selector semantics
 
-`PLUME_STORE` picks the data-plane store at runtime. **Unset ⇒ `SqlcipherStore` (default, untouched).**
+> ⚠️ **DESIGN, NOT YET WIRED.** `PLUME_STORE` is **read nowhere in the daemon** — `grep -rn '"PLUME_STORE"' daemon/src`
+> returns nothing. Setting it has **no effect**: the daemon always uses `SqlcipherStore`. The only store
+> variable actually read today is `PLUME_STORE_DUCKDB_EXPERIMENTAL` (`daemon/src/ingest/duckdb_store.rs`).
+> The table below is the **intended** selector contract, kept as the design of record. Do not treat it as
+> operator documentation until a runtime path reads the variable.
+
+`PLUME_STORE` is designed to pick the data-plane store at runtime. **Unset ⇒ `SqlcipherStore` (default, untouched).**
 
 | `PLUME_STORE` | Store | Build feature | Tier | Support |
 |---|---|---|---|---|

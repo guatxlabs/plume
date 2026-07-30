@@ -1,7 +1,10 @@
 # IdP natif (#44) — OIDC / LDAP / MFA, et la conception SAML 2.0
 
 > **Statut.** OIDC (Authorization-Code + PKCE), LDAP/AD (bind), et TOTP MFA sont **implémentés et testés**.
-> SAML 2.0 est **conçu ici + a un *seam* de config**, mais **n'est pas encore implémenté** (login SAML → 501).
+> SAML 2.0 SP est **implémenté et testé**, mais **derrière la feature de compilation `saml`** (cf. §5) :
+> compilé **sans** cette feature, le login SAML renvoie **501**. ⚠️ **L'image Docker livrée est construite
+> avec `--features ldap` uniquement** (cf. `Dockerfile`) — donc **SAML y répond 501** ; il faut recompiler
+> avec `--features saml` pour l'activer.
 > Cet incrément est **additif et fail-closed** : sans fournisseur configuré ni MFA enrôlée, toute
 > l'authentification existante (Basic / cookie de session / token d'agent / HEC / SSO d'en-tête Authentik)
 > est **strictement inchangée** (mode 0 byte-identique, prouvé par la suite de tests).

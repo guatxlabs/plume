@@ -31,7 +31,7 @@ before distribution's failure modes are added. It is the correctness milestone, 
 
 Two first-party pieces behind the two already-cut seams (nothing new invented — see RFC §0):
 
-- **`ClickHouseDialect : Dialect`** (`core/src/soql.rs`) — the GXQL compiler is **unchanged**; only the
+- **`ClickHouseDialect : Dialect`** (`core/src/soql/dialect.rs`) — the GXQL compiler is **unchanged**; only the
   ~8 emission fragments are re-mapped to ClickHouse SQL (`JSONExtractString`, `toFloat64OrNull`,
   `intDiv(ts,span)*span`, `arrayStringConcat(groupUniqArray(...))`, CH string fns for `mitre_parent`,
   `positionCaseInsensitive`, identifier backticking, literal escaping). Carried by
@@ -67,7 +67,8 @@ cargo build --release --features clickhouse
 Point at a ClickHouse server and select the store at runtime:
 
 ```bash
-export PLUME_STORE=clickhouse            # opt-in; unset ⇒ SqlcipherStore (default, untouched)
+export PLUME_STORE=clickhouse            # DESIGN ONLY — cette variable n'est lue par AUCUN chemin runtime
+                                         # (cf. docs/CLICKHOUSE-HA.md) : la poser n'a AUCUN effet aujourd'hui.
 export PLUME_CLICKHOUSE_URL=http://ch-host:8123
 export PLUME_CLICKHOUSE_USER=plume       # optional
 export PLUME_CLICKHOUSE_PASSWORD=…       # optional
@@ -198,7 +199,7 @@ Unit-tested offline (`cargo test --features clickhouse`, no ClickHouse server):
 - `schema_ddl_is_mergetree` — all three DDLs are `MergeTree`, idempotent, monthly-partitioned.
 - `event_ddl_mirrors_insert_columns` — every `EVENT_INSERT_SQL` column exists in the DDL (RowBinary
   by-name parity); `env_id`/`origin` defaults present.
-- Core emission is separately proven in `core/src/soql.rs`
+- Core emission is separately proven in `core/src/soql/`
   (`clickhouse_dialect_emits_clickhouse_fragments`, `events_clickhouse_compiles_via_clickhouse_dialect`).
 
 Needs a live ClickHouse (deferred, `#[ignore]`):

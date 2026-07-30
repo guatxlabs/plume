@@ -28,7 +28,7 @@ The design leans entirely on surfaces plume already ships — it exposes closed 
 |---|---|
 | `SecretProvider` SPI (`core/src/secret.rs`, v126) | template for an `AiProvider` SPI |
 | connector presets (`handlers/connectors/presets.rs`) | template for secret-free AI presets |
-| closed GXQL compiler (`core/src/soql.rs` `to_sql`) | the gate that renders LLM-generated text harmless |
+| closed GXQL compiler (`core/src/soql/mod.rs` `to_sql`) | the gate that renders LLM-generated text harmless |
 | incident wizard (`handlers/incidents.rs`) | template for human-in-the-loop draft/approve |
 | `ssrf_guard` + ledger (`ledger.rs`) | egress control + per-call audit |
 | field-deny → authorizer (`field_filter.rs`) | prompt redaction / masking |

@@ -4,6 +4,37 @@ Ce runbook couvre la restauration d'un backup Plume `plume-<TS>.db.age` (format
 `age(zstd(SQLite en clair))`) depuis votre stockage objet (`<votre-bucket>/plume/`), et les **deux
 modes** de chiffrement de backup proposés par le produit.
 
+## D'abord : quel backup avez-vous ? Le produit en écrit DEUX formats différents
+
+Ne suivez pas ce runbook avant d'avoir identifié le format entre vos mains — ils ne se restaurent pas
+de la même façon.
+
+| Produit par | Nom du fichier | Format | Restauration |
+|---|---|---|---|
+| **Scheduler natif in‑daemon** (`PLUME_BACKUP_INTERVAL` > 0 — activé par le `docker-compose.yml` et `deploy/k3s.yaml` livrés) | `plume-<TS>.db.age` | `age(zstd(SQLite en clair))` | **ce runbook** (`plume-daemon restore`) |
+| **Timer hôte** `plume-backup.timer` (installé par `bootstrap.sh`, quotidien 04:00) | `plume-<TS>.db` | **copie SQLite compacte** (`VACUUM INTO`), *chiffrée SQLCipher si et seulement si la base l'était* — **jamais** d'enveloppe age | *voir ci‑dessous*, pas `restore` |
+
+**Restaurer une copie du timer hôte** (`.db`, sans `.age`) : c'est un fichier SQLite ordinaire, donc
+la restauration est une **copie de fichier**, daemon arrêté — n'utilisez pas `plume-daemon restore`,
+qui attend une enveloppe age.
+
+```sh
+sudo systemctl stop plume-daemon
+sudo install -o soc -g soc -m 0600 /var/lib/plume/backups/plume-<TS>.db /var/lib/plume/db/plume.db
+sudo rm -f /var/lib/plume/db/plume.db-wal /var/lib/plume/db/plume.db-shm   # WAL de l'ancienne base
+sudo systemctl start plume-daemon
+```
+La copie n'est lisible qu'avec la **même clé SQLCipher** que la base d'origine : si vous aviez posé
+`PLUME_DB_KEY`/`PLUME_DB_KEY_FILE`, il faut la même valeur au redémarrage. Si la base était **en
+clair**, cette copie est **en clair** — traitez-la comme la base elle‑même.
+
+**Sink local vs stockage objet.** Le scheduler natif écrit par défaut dans un **répertoire local**
+(`PLUME_BACKUP_DEST`, défaut `<dir(PLUME_DB)>/backups`) : les `mc cp` de ce runbook ne s'appliquent
+qu'à un déploiement qui pousse ensuite vers un stockage objet. Le sink `s3://` natif **n'est pas
+implémenté** — le daemon le **refuse explicitement** et se désactive plutôt que d'écrire un faux
+backup local. **Un backup qui reste sur le même volume que la base ne protège que de la corruption
+logique, pas de la perte du volume** : copiez-le hors de la machine.
+
 ## Deux modes de chiffrement de backup
 
 | Mode | En-tête age | Déchiffré avec | Où vit la clé de lecture | Vérif automatisée in-cluster |

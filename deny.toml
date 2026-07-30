@@ -1,4 +1,17 @@
-# cargo-deny — contrôles supply-chain (lancer : cargo deny check, depuis daemon/)
+# cargo-deny — contrôles supply-chain.
+#
+# LANCER DEPUIS LA RACINE DU DÉPÔT :
+#
+#     cargo deny --manifest-path daemon/Cargo.toml check
+#
+# et NON depuis `daemon/` : `--config` vaut par défaut `<cwd>/deny.toml`, or ce
+# fichier vit à la racine et il n'y a pas de `daemon/deny.toml`. Lancé depuis
+# `daemon/`, cargo-deny ne trouvait donc PAS cette configuration — il ne remonte
+# pas dans les dossiers parents. Il n'y a par ailleurs aucun workspace Cargo ici
+# (pas de `Cargo.toml` racine) : les quatre crates — `daemon`, `agent`,
+# `collector-mail`, `collector-syslog` — sont indépendants, d'où le
+# `--manifest-path` explicite. Répéter la commande par crate pour les couvrir
+# tous.
 [advisories]
 yanked = "deny"
 
@@ -7,7 +20,18 @@ multiple-versions = "warn"
 wildcards = "warn"
 
 [licenses]
+# Tout ce qui n'est pas listé est REFUSÉ. La liste doit donc couvrir non seulement
+# les licences des dépendances tierces, mais aussi celles du PROJET LUI-MÊME et de
+# son cœur — sans quoi le contrôle échoue sur nos propres crates :
+#   · `AGPL-3.0-or-later` : les quatre crates de ce dépôt (`license =` dans chaque
+#     Cargo.toml). Aucun n'est marqué `publish = false`, donc `private.ignore`
+#     ne les exempterait pas — leur expression de licence est bien évaluée.
+#   · `LGPL-3.0-or-later` : `guatx-core`, tiré comme dépendance (git-dep épinglée
+#     par tag), présent dans le graphe et donc contrôlé comme n'importe quelle
+#     autre dépendance.
+# Les y ajouter n'élargit rien vers un tiers : ce sont les licences de notre code.
 allow = [
+  "AGPL-3.0-or-later", "LGPL-3.0-or-later",
   "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "MPL-2.0",
   "Unicode-DFS-2016", "Unicode-3.0", "CC0-1.0",
@@ -16,3 +40,10 @@ allow = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# `unknown-git = "deny"` refuse toute source git hors de cette liste — y compris,
+# sans cette entrée, la seule que le projet utilise réellement. Mesuré dans
+# `daemon/Cargo.lock` : une unique source git,
+# `git+https://github.com/guatxlabs/core?tag=v0.2.1`. L'autoriser NOMMÉMENT est le
+# but du réglage : le dépôt de notre cœur est admis, tout autre dépôt git reste
+# refusé. Une git-dep ajoutée à la sauvette échoue donc le contrôle.
+allow-git = ["https://github.com/guatxlabs/core"]

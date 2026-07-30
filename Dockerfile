@@ -64,6 +64,14 @@ COPY docs/connector-presets ./docs/connector-presets
 # soql-templates/*.json est embarqué par include_str! dans handlers/soql_meta.rs (hors daemon/) -> DOIT être
 # présent dans le contexte de build AVANT cargo build, sinon la compilation échoue (gotcha include_str-hors-daemon).
 COPY docs/soql-templates ./docs/soql-templates
+# ai-presets/*.json : MÊME gotcha, mais la rupture était LATENTE au lieu d'immédiate. Les six
+# include_str! de daemon/src/ai/presets.rs vivent derrière `#[cfg(feature = "ai")]` (main.rs), donc le
+# build par défaut de cette image (`--features ldap`, sans `ai`) ne les évalue jamais : le dossier
+# manquait sans que rien n'échoue. Ajouter `ai` à la ligne cargo build ci-dessous aurait cassé la
+# compilation sur un fichier introuvable, loin de sa cause. On copie donc le dossier
+# INCONDITIONNELLEMENT (24 Kio de JSON secret-free) pour que l'activation de la feature soit un
+# changement d'UNE ligne, pas une chasse au chemin manquant.
+COPY docs/ai-presets ./docs/ai-presets
 WORKDIR /build/daemon
 RUN cargo build --release --locked --features ldap
 
@@ -98,5 +106,8 @@ ENV PLUME_WEB=/usr/local/share/plume/web \
     PLUME_CONFIG=/nonexistent
 EXPOSE 7000
 VOLUME /data
-# SOC_PASS_HASH doit être fourni au run :  docker run --rm soc hashpw 'monmdp'
+# PLUME_PASS_HASH doit être fourni au run :  docker run --rm soc hashpw 'monmdp'
+# (variable lue par `cfg_secret_optional` dans daemon/src/server.rs ; l'ancien nom
+# `SOC_PASS_HASH` n'est plus lu par aucun chemin depuis le retrait du préfixe
+# `SOC_` — le poser n'aurait AUCUN effet et ferait démarrer en mode SETUP.)
 ENTRYPOINT ["plume-daemon"]

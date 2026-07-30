@@ -5,7 +5,7 @@
 # lit (k3s exec, ou fichier en natif/container) et emet les events SECURITE : connexions reussies,
 # echecs d'auth, rejets, postscreen, + verdicts ANTIVIRUS ClamAV/amavis (virus detecte, piece
 # jointe bannie, panne du scanner). Champs PARSES (qui=src_ip/user, quand=ts, ou=service,
-# comment=action) -> groupables en SOQL ( | stats count by action / by src_ip / by user ).
+# comment=action) -> groupables en GXQL ( | stats count by action / by src_ip / by user ).
 # Mode-aware : PLUME_MAIL_SRC=k3s|file. OPT-IN (non actif par defaut). Lecture seule, aucune action.
 #
 # Horodatage : le log est en ISO avec offset (+02:00) ; l'epoch UTC = mktime(heure) - offset, avec

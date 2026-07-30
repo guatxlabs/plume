@@ -52,13 +52,17 @@ boundary, or leaks secrets. In particular:
 
 ## Supported versions
 
-Plume is pre-1.0. Security fixes land on `main` and in the latest tagged release. Older tags
-are not maintained; please upgrade.
+Plume is pre-1.0 and has **no tagged release yet**. Security fixes land on `main`, which is the
+only thing maintained, so please cite a `main` commit when you report.
 
 | Version | Supported |
 |---------|-----------|
-| `main` / latest release | ✅ |
-| older tags | ❌ |
+| `main` | ✅ |
+| tagged releases | none exist yet |
+
+This section will name supported versions once tags exist — not before. Announcing per-version
+support while no version exists would be a false promise, and would send a reporter looking for a
+release number they cannot find.
 
 ## Hardening & audits
 

@@ -801,3 +801,248 @@
         assert!(!obj_exists(&conn, "index", "idx_ev_f_user"), "index doit être droppé après PLUME_EXPRINDEX=0");
     }
 
+
+// ================================================================================================
+// CÂBLAGE DU ROUTEUR (composition) — mesuré AVANT correctif : en retirant la couche `auth_guard` de
+// `build_router`, la suite passait 762/762. Chaque garde d'autorisation était prouvée à la COUTURE
+// (`rbac_gate` / `route_min_role` / `is_readonly_post`, fonctions pures) et AUCUNE au CÂBLAGE. Le
+// précédent CRITICAL du projet était précisément un défaut de COMPOSITION (route mutante hors de
+// l'allowlist admin-only, `rbac_gate` fail-open par défaut) : c'est un angle mort STRUCTUREL.
+//
+// GARDE DÉRIVÉE (pas d'énumération de routes) : axum n'expose PAS d'itérateur sur sa table matchit, mais
+// les routes sont déclarées à UN SEUL endroit (`daemon/src/server.rs`, les `*_routes()` fusionnés par
+// `build_router`). Les tests ci-dessous LISENT cette table dans la source, CONSTRUISENT le routeur réel,
+// le servent sur une socket loopback éphémère, et interrogent CHAQUE (route, méthode) déclarée. Une route
+// ajoutée demain entre donc automatiquement dans le périmètre — personne n'a à l'inscrire sur une liste.
+// ================================================================================================
+
+/// Table de routage DÉCLARÉE, lue à son UNIQUE site de déclaration : (chemin axum, méthodes HTTP).
+/// Une route ajoutée dans `server.rs` apparaît ici sans action supplémentaire.
+fn declared_route_table() -> Vec<(String, Vec<String>)> {
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server.rs")).unwrap();
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for line in src.lines() {
+        let code = line.split("//").next().unwrap_or(""); // jamais un `.route(` en commentaire
+        let Some(rest) = code.split_once(".route(\"") else { continue };
+        let Some((path, tail)) = rest.1.split_once('"') else { continue };
+        let mut methods: Vec<String> = ["get", "post", "put", "delete", "patch"]
+            .iter().filter(|v| tail.contains(&format!("{v}("))).map(|v| v.to_uppercase()).collect();
+        if methods.is_empty() { continue; }
+        methods.sort();
+        out.push((path.to_string(), methods));
+    }
+    out
+}
+
+/// Chemin CONCRET pour une route paramétrée (`/api/rules/:id/test` -> `/api/rules/1/test`).
+fn concrete_path(p: &str) -> String {
+    p.split('/').map(|seg| if seg.starts_with(':') { "1" } else { seg }).collect::<Vec<_>>().join("/")
+}
+
+/// Routes que `auth_guard` sert AVANT toute vérification d'identité/rôle (chaque entrée = une décision de
+/// sécurité assumée, justifiée). Les tests n'attendent donc PAS de 403 dessus — mais `router_*_anonymous`
+/// exige quand même qu'AUCUNE ne réponde 2xx à un anonyme hors des trois sondes publiques.
+const ROUTER_PRE_GATE_BYPASS: &[(&str, &str)] = &[
+    ("/healthz", "sonde k8s liveness (aucune donnée)"),
+    ("/readyz", "sonde k8s readiness (aucune donnée)"),
+    ("/api/login", "l'auth se fait DANS le handler (verify_pw + lockout)"),
+    ("/api/logout", "efface le cookie ; aucune donnée"),
+    ("/api/login/mfa", "2e facteur : validé DANS le handler (code TOTP)"),
+    ("/api/auth/ldap", "bind LDAP validé DANS le handler"),
+    ("/api/auth/oidc/", "id_token OIDC signé, validé DANS le handler"),
+    ("/api/auth/saml/", "assertion SAML signée, validée DANS le handler"),
+    ("/services/collector/health", "health-check HEC public (comme Splunk)"),
+    ("/api/ingest/firehose", "clé de livraison AWS propriétaire, vérifiée DANS le handler"),
+    ("/api/ingest/pubsub", "clé de livraison GCP en query, vérifiée DANS le handler"),
+    ("/scim/v2/", "bearer SCIM dédié ; mode 0 -> 404 (endpoint fonctionnellement absent)"),
+    ("/api/ai/", "feature `ai` OFF par défaut -> routes EXCLUES à la compilation (absentes du routeur)"),
+];
+fn router_bypassed(path: &str) -> bool {
+    ROUTER_PRE_GATE_BYPASS.iter().any(|(p, _)| if p.ends_with('/') { path.starts_with(p) } else { path == *p })
+}
+
+/// Routes de MÉTHODE MUTANTE délibérément ouvertes à un `viewer` : SELF-SERVICE STRICT — le handler n'opère
+/// que sur `au.name` (owner-scopé), aucune donnée d'autrui, aucun secret, aucune autorisation. Aujourd'hui
+/// ces décisions ne vivaient que dans des commentaires de `route_min_role` : les épingler ici force toute
+/// NOUVELLE route mutante ouverte au viewer à être déclarée (et justifiée) au lieu de passer inaperçue.
+/// Chemins EXACTS (pas de préfixe) : un préfixe `/api/mfa/` exempterait tout le sous-arbre, donc une route
+/// mutante AJOUTÉE demain sous ce préfixe — c'est précisément la mutation qu'on doit détecter. Mesuré :
+/// avec des préfixes, `POST /api/mfa/purge-all-events` (route mutante rangée sous un préfixe classé LECTURE
+/// par `route_min_role`, la forme EXACTE du CRITICAL historique) passait le test. En exact, elle rougit.
+const ROUTER_VIEWER_SELF_SERVICE: &[(&str, &str)] = &[
+    ("/api/prefs", "#62 préférences d'UI self-scopées (le handler écrit user_pref WHERE user=au.name)"),
+    ("/api/saved-queries", "requêtes GXQL nommées per-user (owner=au.name posé par le handler ; IDOR fermé)"),
+    ("/api/saved-queries/:id", "idem, mutation WHERE id=? AND owner=au.name (IDOR fermé)"),
+    ("/api/mfa/enroll", "#44 enrôlement de SA PROPRE MFA (au.name uniquement)"),
+    ("/api/mfa/verify", "#44 vérification de SON PROPRE code TOTP"),
+    ("/api/mfa/disable", "#44 désactivation de SA PROPRE MFA"),
+];
+fn router_viewer_self_service(path: &str) -> bool {
+    ROUTER_VIEWER_SELF_SERVICE.iter().any(|(p, _)| path == *p)
+}
+
+/// AppState file-backed avec un mot de passe admin POSÉ (sinon `auth_guard` est en mode SETUP et répond
+/// 401 partout pour une raison qui n'est PAS l'authentification) + un compte `viewer` réel.
+fn router_test_state(tag: &str) -> (AppState, String) {
+    let path = ff_tmp_path(tag);
+    {
+        let conn = open_db(&path).unwrap();
+        conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
+        assert!(migrate(&conn), "fixture routeur : migrations complètes");
+        conn.execute("INSERT INTO user(name,hash,role) VALUES('vwr',?1,'viewer')", params![hash_pw("viewerpw12345").unwrap()]).unwrap();
+    }
+    let mut st = ds_file_state(&path);
+    st.user = Arc::new("root".to_string());
+    st.pass_hash = Arc::new(hash_pw("rootpw1234567").unwrap());
+    // Plafonds de rate-limit relevés : le balayage envoie >250 requêtes depuis 127.0.0.1 en <10 s, ce qui
+    // franchit LÉGITIMEMENT le budget d'auth strict (`rl_auth_max`=120/10 s, partagé par IP) -> /api/setup
+    // et /api/password répondraient 429 au lieu de 401. Ces tests mesurent le câblage AUTH/RBAC, pas le
+    // limiteur (qui n'est donc PAS couvert ici — dit explicitement).
+    st.rl_auth_max = 1_000_000;
+    st.rl_ip_max = 1_000_000;
+    st.rl_global_max = 1_000_000;
+    (st, path)
+}
+
+/// Sert le routeur RÉEL (toutes ses couches) sur 127.0.0.1:0 et renvoie l'adresse liée.
+async fn router_serve(st: AppState) -> std::net::SocketAddr {
+    let app = build_router(st, std::env::temp_dir().join("plume-router-test-webdir").to_string_lossy().into_owned());
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(l, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await;
+    });
+    addr
+}
+
+/// Une requête HTTP/1.1 brute -> code de statut (0 si pas de réponse). Aucune dépendance nouvelle : on
+/// parle le protocole à la main sur une TcpStream (et c'est CE chemin-là qu'on veut, pas un appel direct
+/// au handler : le but est justement de traverser les 6 couches du routeur).
+async fn router_probe(addr: std::net::SocketAddr, method: &str, path: &str, authz: Option<&str>) -> u16 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Length: 0\r\n");
+    if let Some(a) = authz { req.push_str(&format!("Authorization: {a}\r\n")); }
+    req.push_str("\r\n");
+    let fut = async {
+        let mut s = tokio::net::TcpStream::connect(addr).await.ok()?;
+        s.write_all(req.as_bytes()).await.ok()?;
+        let mut buf = vec![0u8; 64];
+        let n = s.read(&mut buf).await.ok()?;
+        String::from_utf8_lossy(&buf[..n]).split_whitespace().nth(1)?.parse::<u16>().ok()
+    };
+    tokio::time::timeout(Duration::from_secs(20), fut).await.ok().flatten().unwrap_or(0)
+}
+
+fn viewer_authz() -> String {
+    format!("Basic {}", base64::engine::general_purpose::STANDARD.encode("vwr:viewerpw12345"))
+}
+
+/// (B-1) AUTHENTIFICATION CÂBLÉE — toute route déclarée hors bypass répond EXACTEMENT 401 à une requête
+/// ANONYME. L'attente est le CONTRAT de `auth_guard` (« pas d'identité -> 401 »), pas un simple « pas de
+/// 2xx » : sans la couche, l'extracteur `Extension<AuthUser>` échoue en 500 et un test « pas de 2xx »
+/// laisserait passer la suppression de l'authentification. Mesuré : retirer la couche fait rougir 176 (route,
+/// méthode) mutantes + 28 GET admin-only + 3 routes servies en 200 à un anonyme (/metrics,
+/// /api/soql/templates, /api/setup-status) ; avant ces tests, la même mutation ne faisait rougir RIEN.
+#[tokio::test]
+async fn router_no_declared_route_serves_anonymous_requests() {
+    let (st, dbp) = router_test_state("router-anon");
+    let table = declared_route_table();
+    assert!(table.len() > 200, "table de routage lue depuis server.rs : {} routes", table.len());
+    let addr = router_serve(st).await;
+    let mut bad: Vec<String> = Vec::new();
+    let mut probed = 0usize;
+    for (path, methods) in &table {
+        if router_bypassed(path) { continue; } // routes servies AVANT le gate (liste déclarée + justifiée)
+        for m in methods {
+            let code = router_probe(addr, m, &concrete_path(path), None).await;
+            probed += 1;
+            if code != 401 { bad.push(format!("{m} {path} -> {code}")); }
+        }
+    }
+    assert!(probed > 250, "sonde effective sur toute la table ({probed} requêtes)");
+    assert!(bad.is_empty(),
+        "ROUTE NE RÉPONDANT PAS 401 À UN ANONYME : {bad:?}. Toute route déclarée doit exiger une identité \
+         (couche auth_guard dans build_router) ; une route servie avant le gate doit être AJOUTÉE À \
+         `ROUTER_PRE_GATE_BYPASS` avec sa justification, jamais par accident.");
+    ff_rm(&dbp);
+}
+
+/// (B-2) RBAC CÂBLÉ, ET L'ATTENTE N'EST PAS DÉRIVÉE DE LA TABLE QU'ON VÉRIFIE — pour chaque route dont la
+/// MÉTHODE HTTP est mutante (POST/PUT/DELETE/PATCH), un compte `viewer` AUTHENTIFIÉ doit recevoir 403, sauf
+/// si le chemin est un POST DE LECTURE déclaré (`is_readonly_post`). L'attente vient de la MÉTHODE (un fait
+/// externe), PAS de `route_min_role` : une erreur de classification de chemin — exactement le CRITICAL
+/// historique (route mutante rangée du côté lecture) — est donc DÉTECTÉE et non recopiée.
+/// (Les routes attendues 403 sont rejetées par `auth_guard` AVANT le handler : aucun handler ne s'exécute.)
+#[tokio::test]
+async fn router_viewer_cannot_reach_any_mutating_route() {
+    let (st, dbp) = router_test_state("router-viewer");
+    let addr = router_serve(st).await;
+    let authz = viewer_authz();
+    let mut leaks: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    for (path, methods) in declared_route_table() {
+        if router_bypassed(&path) || router_viewer_self_service(&path) { continue; }
+        for m in &methods {
+            if m == "GET" { continue; }
+            if is_readonly_post(&concrete_path(&path)) { continue; } // POST de LECTURE déclaré (liste gardée en B-3)
+            let code = router_probe(addr, m, &concrete_path(&path), Some(&authz)).await;
+            checked += 1;
+            if code != 403 { leaks.push(format!("{m} {path} -> {code}")); }
+        }
+    }
+    assert!(checked > 100, "sonde effective sur les routes mutantes ({checked})");
+    assert!(leaks.is_empty(),
+        "ROUTE MUTANTE ATTEIGNABLE PAR UN VIEWER (attendu 403) : {leaks:?}. Soit la route est mal classée \
+         par route_min_role (le CRITICAL historique), soit la couche RBAC n'est plus câblée dans build_router.");
+    ff_rm(&dbp);
+}
+
+/// (B-3) Les GET ADMIN-ONLY sont câblés eux aussi (secrets/config exposés en LECTURE : users, tokens, idp,
+/// notifiers, connectors, ledger…), ET la liste des POST DE LECTURE — le levier EXACT du fail-open
+/// historique — est enfin épinglée : `is_readonly_post` accorde `mutating=false` (donc viewer+) à des POST ;
+/// aucun test ne gardait cette liste, malgré le commentaire d'auth.rs qui en annonçait un.
+#[tokio::test]
+async fn router_admin_only_gets_and_readonly_post_allowlist_are_wired() {
+    // (a) la liste des POST DE LECTURE est FERMÉE et déclarée : chaque entrée est une LECTURE (compile ou
+    //     exécute un GXQL via le chemin masqué #45 ; aucune mutation, aucun SQL brut).
+    const DECLARED_READONLY_POSTS: &[&str] = &[
+        "/api/query", "/api/cancel", "/api/export",
+        "/api/ds/query", "/api/v1/query", "/api/v1/query_range", "/api/v1/series", "/api/v1/labels",
+        "/loki/api/v1/query_range", "/api/pivot/compile", "/api/pivot/run", "/api/soql/validate",
+        "/api/datasets/1/run", "/api/workflow-actions/1/resolve",
+        // NB : `/api/search` est AUSSI dans `is_readonly_post` mais sa route est déclarée en GET SEUL ->
+        // l'exemption y est INERTE (aucune surface mutante ouverte). Elle apparaîtrait ici si un POST
+        // /api/search était un jour déclaré — ce qui EXIGERAIT de le justifier.
+    ];
+    let mut found: Vec<String> = Vec::new();
+    for (path, methods) in declared_route_table() {
+        if methods.iter().all(|m| m == "GET") { continue; }
+        let c = concrete_path(&path);
+        if is_readonly_post(&c) { found.push(c); }
+    }
+    found.sort();
+    found.dedup();
+    let mut declared: Vec<String> = DECLARED_READONLY_POSTS.iter().map(|s| s.to_string()).collect();
+    declared.sort();
+    assert_eq!(found, declared,
+        "POST DE LECTURE (viewer+ sur une méthode mutante) : l'ensemble TROUVÉ doit être l'ensemble \
+         DÉCLARÉ. Trouvé={found:?} / Déclaré={declared:?}. Ajouter un chemin à `is_readonly_post` OUVRE \
+         cette route au viewer : c'est le levier exact du fail-open historique -> à déclarer ICI.");
+
+    // (b) CÂBLAGE : tout GET que `rbac_gate` refuse à un viewer doit RÉELLEMENT renvoyer 403 via le routeur.
+    let (st, dbp) = router_test_state("router-adminget");
+    let addr = router_serve(st).await;
+    let authz = viewer_authz();
+    let mut leaks: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    for (path, methods) in declared_route_table() {
+        if router_bypassed(&path) || !methods.iter().any(|m| m == "GET") { continue; }
+        if rbac_gate("viewer", &concrete_path(&path), false).is_ok() { continue; }
+        let code = router_probe(addr, "GET", &concrete_path(&path), Some(&authz)).await;
+        checked += 1;
+        if code != 403 { leaks.push(format!("GET {path} -> {code}")); }
+    }
+    assert!(checked > 20, "sonde effective sur les GET admin-only ({checked})");
+    assert!(leaks.is_empty(), "GET ADMIN-ONLY ATTEIGNABLE PAR UN VIEWER (attendu 403) : {leaks:?}");
+    ff_rm(&dbp);
+}

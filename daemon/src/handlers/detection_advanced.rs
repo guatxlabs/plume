@@ -735,6 +735,13 @@ pub(crate) async fn correlation_test(State(st): State<AppState>, Extension(au): 
         Some(x) => x,
         None => return Json(json!({ "error": "corrélation introuvable" })),
     };
+    // #45 — DRY-RUN = SURFACE D'APPELANT : cette route est EDITOR+ et RENVOIE les ENTITÉS (`key_field`)
+    // en clair. `eval_correlation` est PARTAGÉ avec l'ordonnanceur et doit rester tenant-wide/non masqué
+    // (D7 : ne jamais rendre une corrélation aveugle) -> on garde la SURFACE, pas l'évaluateur.
+    let step_qs: Vec<String> = parse_corr_steps(&steps).map(|v| v.into_iter().map(|s| s.query).collect()).unwrap_or_default();
+    if let Err(e) = caller_dryrun_guard(&st, &au, &step_qs.iter().map(|s| s.as_str()).collect::<Vec<_>>(), &[&key_field], window_s) {
+        return Json(json!({ "error": e }));
+    }
     let db_path = req_db_path(&st, &au);
     let ev = tokio::task::spawn_blocking(move || eval_correlation(&db_path, id, &name, &key_field, &entity_type, &steps, window_s, severity, &mitre, risk_score)).await;
     match ev {
@@ -917,6 +924,25 @@ pub(crate) async fn baseline_delete(State(st): State<AppState>, Extension(au): E
 /// POST /api/baselines/:id/test — dry-run : calcule les valeurs du dernier bucket clos + le z-score par entité
 /// SANS persister d'observation ni lever d'alerte. Aperçu pour régler seuil/fenêtre.
 pub(crate) async fn baseline_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Json<Value> {
+    // #45 — DRY-RUN = SURFACE D'APPELANT : cette route est EDITOR+ et RENVOIE les ÉCHANTILLONS
+    // (entité, valeur) en clair. `eval_baseline` est PARTAGÉ avec l'ordonnanceur et doit rester
+    // tenant-wide/non masqué (D7) -> on garde la SURFACE, pas l'évaluateur. Pré-lecture des seuls champs
+    // nécessaires à la garde (la lecture complète reste DANS le bloc bloquant, inchangée).
+    {
+        let pre: Option<(String, String, String, i64)> = {
+            crate::req_conn!(st, au, conn);
+            conn.query_row(
+                "SELECT query,entity_field,value_field,window_s FROM ueba_baseline WHERE id=?1",
+                params![id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?)),
+            ).ok()
+        };
+        if let Some((q, ef, vf, ws)) = pre {
+            if let Err(e) = caller_dryrun_guard(&st, &au, &[q.as_str()], &[&ef, &vf], ws) {
+                return Json(json!({ "error": e }));
+            }
+        }
+    }
     let db = req_db(&st, &au);
     let db_path = req_db_path(&st, &au);
     let out = tokio::task::spawn_blocking(move || -> Value {

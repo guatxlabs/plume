@@ -1,7 +1,15 @@
-# SOC central dans k3s. Build + importe l'image dans k3s :
-#   docker build -t soc:latest .  &&  docker save soc:latest | sudo k3s ctr images import -
-#   plume-daemon hashpw 'tonmdp'   -> mets le hash dans le Secret ci-dessous
-#   kubectl apply -f deploy/k3s.yaml
+# Plume central dans k3s / Kubernetes. Manifeste COMPLET et applicable tel quel :
+# Namespace + Secret + PVC + Deployment + Service + Ingress + NetworkPolicy.
+#
+#   1) AUCUNE IMAGE N'EST PUBLIÉE À CE JOUR -> vous construisez et importez la vôtre :
+#        docker build -t soc:latest .
+#        docker save soc:latest | sudo k3s ctr images import -
+#      (aucun registre requis ; `imagePullPolicy: IfNotPresent` utilise l'image importée)
+#   2) plume-daemon hashpw 'tonmdp'   -> mets le hash dans le Secret ci-dessous
+#   3) remplace `soc.tondomaine.tld` (PLUME_HOST **et** l'Ingress — ils DOIVENT correspondre :
+#      PLUME_HOST est la garde anti-DNS-rebinding, un écart renvoie 421)
+#   4) kubectl apply -f deploy/k3s.yaml
+#
 # Les hôtes/agents poussent leur télémétrie vers le Service via POST /api/ingest (bootstrap-agent.sh).
 apiVersion: v1
 kind: Namespace
@@ -14,13 +22,25 @@ type: Opaque
 stringData:
   PLUME_USER: "admin"
   PLUME_PASS_HASH: "REMPLACER_PAR_LE_HASH"   # plume-daemon hashpw 'tonmdp'
+  # CHIFFREMENT AT-REST (SQLCipher) — OPT-IN. Laissé VIDE = la base sur le PVC est EN CLAIR.
+  # Pour l'activer : mets une passphrase forte ici, PUIS décommente le bloc `PLUME_DB_KEY_FILE`
+  # du Deployment (montage en lecture seule — préféré à une variable d'env, qui reste lisible via
+  # `kubectl exec` dans /proc/<pid>/environ). Une base neuve est créée chiffrée d'office ; une base
+  # en clair existante est convertie au boot (idempotent).
+  # PERTE DE CLÉ = PERTE DE LA BASE. Sauvegarde-la HORS du cluster.
+  PLUME_DB_KEY: ""
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata: { name: soc-data, namespace: soc }
 spec:
   accessModes: [ReadWriteOnce]
-  resources: { requests: { storage: 1Gi } }
+  resources:
+    # 1Gi = un DÉMARRAGE, pas une capacité de production. Ce volume porte la base ET les backups
+    # locaux du scheduler natif (`/data/backups`, KEEP-N ci-dessous). Dimensionne-le sur ta rétention
+    # réelle et ton volume d'événements : un PVC saturé arrête l'ingestion. Volume non mesuré ici —
+    # observe la croissance réelle avec `plume-daemon db-stats` avant de figer la taille.
+    requests: { storage: 1Gi }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -39,14 +59,41 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - { name: PLUME_ADDR, value: "0.0.0.0:7000" }
-            - { name: PLUME_HOST, value: "soc.tondomaine.tld" }   # = Host de l'Ingress
+            - { name: PLUME_HOST, value: "soc.tondomaine.tld" }   # = Host de l'Ingress (sinon 421)
             - { name: PLUME_CONFIG, value: "/nonexistent" }
             - { name: PLUME_USER,      valueFrom: { secretKeyRef: { name: soc-auth, key: PLUME_USER } } }
             - { name: PLUME_PASS_HASH, valueFrom: { secretKeyRef: { name: soc-auth, key: PLUME_PASS_HASH } } }
+            # CHIFFREMENT AT-REST — décommente pour l'activer (après avoir renseigné PLUME_DB_KEY
+            # dans le Secret). FAIL-CLOSED : si le chemin est posé mais le fichier absent/vide, le
+            # daemon REFUSE de démarrer (exit 78) au lieu d'ouvrir la base en clair en silence.
+            # - { name: PLUME_DB_KEY_FILE, value: "/etc/plume/secrets/PLUME_DB_KEY" }
+            #
+            # --- OPS NATIVES : BACKUP + AUTO-VACUUM DANS LE BINAIRE (zéro sidecar, zéro CronJob) ---
+            # Les deux boucles sont GATÉES sur un intervalle > 0. Sans ces variables, ce déploiement
+            # NE SAUVEGARDE RIEN — c'était le cas de ce manifeste avant ce commit.
+            - { name: PLUME_BACKUP_INTERVAL, value: "21600" }   # secondes ; 0 = désactivé. 21600 = 6 h
+            - { name: PLUME_BACKUP_KEEP,     value: "24" }      # rétention KEEP-N (24 × 6 h ≈ 6 jours)
+            - { name: PLUME_BACKUP_DEST,     value: "/data/backups" }  # répertoire LOCAL (sur le PVC)
+            # ESCROW HORS-CLUSTER : clé PUBLIQUE age (`age1…`). Ce n'est PAS un secret -> elle peut
+            # rester en clair ici. NON POSÉE -> repli sur le chiffrement SYMÉTRIQUE (passphrase = clé
+            # SQLCipher, présente sur le nœud) donc les backups sont DÉCHIFFRABLES PAR LE NŒUD : pas
+            # d'escrow. Le daemon émet alors un événement de posture non-purgeable (health, sév. 4).
+            # Mets PLUME_BACKUP_REQUIRE_ASYMMETRIC=1 pour REFUSER ce repli.
+            # - { name: PLUME_BACKUP_AGE_RECIPIENT, value: "age1..." }
+            # - { name: PLUME_BACKUP_REQUIRE_ASYMMETRIC, value: "1" }
+            #
+            # Auto-vacuum incrémental (non bloquant). INOPÉRANT — avec un warn honnête, jamais de
+            # VACUUM plein bloquant — si la base n'est pas en `auto_vacuum=INCREMENTAL` (`db-stats`).
+            - { name: PLUME_AUTOVACUUM_INTERVAL, value: "86400" }
+            # Borne les arenas malloc glibc : mesuré 2300 -> 310 MiB de RSS sur ce process (nombreux
+            # threads : rollup/refresh/ingest + pool read-only). Indispensable pour tenir la limite 2Gi.
+            - { name: MALLOC_ARENA_MAX, value: "2" }
           ports: [ { containerPort: 7000 } ]
           volumeMounts:
             - { name: data, mountPath: /data }
             - { name: tmp,  mountPath: /tmp }
+            # Montage de la clé SQLCipher — décommente avec PLUME_DB_KEY_FILE ci-dessus.
+            # - { name: db-key, mountPath: /etc/plume/secrets, readOnly: true }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -60,6 +107,7 @@ spec:
       volumes:
         - { name: data, persistentVolumeClaim: { claimName: soc-data } }
         - { name: tmp,  emptyDir: {} }
+        # - { name: db-key, secret: { secretName: soc-auth, items: [ { key: PLUME_DB_KEY, path: PLUME_DB_KEY } ] } }
 ---
 apiVersion: v1
 kind: Service
@@ -67,5 +115,71 @@ metadata: { name: soc, namespace: soc }
 spec:
   selector: { app: soc }
   ports: [ { port: 7000, targetPort: 7000 } ]
-# Ingress (Traefik k3s) : route Host=soc.tondomaine.tld -> svc soc:7000 (ajoute TLS).
-# La couverture du cluster (events k8s) viendra d'un CronJob `kube.sh` qui pousse vers /api/ingest.
+---
+# Ingress — route Host=soc.tondomaine.tld -> svc soc:7000. Testé avec Traefik (l'ingress controller
+# par défaut de k3s) ; `ingressClassName` est à adapter pour nginx/HAProxy/autre.
+# TLS : décommente le bloc `tls:` et fournis le Secret de certificat (cert-manager, ou
+# `kubectl create secret tls soc-tls --cert=… --key=…`). SANS TLS, le mot de passe admin et les
+# cookies de session transitent EN CLAIR — n'expose jamais cet Ingress sur Internet sans certificat.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: soc
+  namespace: soc
+spec:
+  ingressClassName: traefik
+  # tls:
+  #   - hosts: [ "soc.tondomaine.tld" ]
+  #     secretName: soc-tls
+  rules:
+    - host: soc.tondomaine.tld          # DOIT être identique à PLUME_HOST (garde anti-rebinding)
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: soc
+                port: { number: 7000 }
+---
+# NetworkPolicy — DEFAULT-DENY sur les DEUX sens, puis on ré-autorise le STRICT nécessaire.
+# POURQUOI L'EGRESS COMPTE ICI : un SIEM concentre les données les plus sensibles du parc. En
+# coupant l'egress par défaut, un daemon compromis (ou un connecteur mal configuré) ne peut pas
+# exfiltrer vers Internet — il ne reste que le DNS du cluster.
+#
+# CE QUE ÇA CASSE SI VOUS L'ÉTENDEZ PAS : toute fonctionnalité SORTANTE est bloquée tant que vous
+# n'ajoutez pas la règle correspondante — connecteurs `http_pull` (API vendeur), notifications
+# sortantes (SMTP/webhook), fournisseur LDAP/IdP, fournisseur d'IA distant, upload de backup.
+# L'ingestion par les agents n'est PAS concernée : les agents POUSSENT (ingress), ils ne sont pas
+# interrogés. Ajoutez alors un bloc `egress` ciblé (jamais un `0.0.0.0/0` global).
+#
+# PRÉREQUIS : le CNI doit APPLIQUER les NetworkPolicy. k3s livre flannel, qui NE LES APPLIQUE PAS
+# tout seul — k3s embarque kube-router pour ça et l'active par défaut, mais un cluster démarré avec
+# `--disable-network-policy` (ou un autre CNI sans support) ACCEPTE ce manifeste SANS RIEN FILTRER.
+# Vérifiez-le pour de vrai plutôt que de le supposer : depuis le pod, une sortie Internet doit
+# échouer  ->  kubectl -n soc exec deploy/soc -- curl -sS --max-time 5 https://example.com
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: soc-default-deny
+  namespace: soc
+spec:
+  podSelector: { matchLabels: { app: soc } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # L'UI/API via l'ingress controller, et les agents qui poussent sur /api/ingest.
+    # `namespaceSelector: {}` = depuis N'IMPORTE QUEL namespace du cluster, port 7000 seulement.
+    # Resserrez-le sur le namespace de votre ingress controller (kube-system pour Traefik/k3s) dès
+    # que vos agents poussent via l'Ingress plutôt qu'en direct sur le Service.
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - { protocol: TCP, port: 7000 }
+  egress:
+    # DNS du cluster UNIQUEMENT. Rien d'autre ne sort.
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }

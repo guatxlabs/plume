@@ -21,7 +21,8 @@ Le compilo de recherche est **partagé** avec le crate public `guatx-core`.
 - **Recherche type Splunk** sur les logs sans Elastic : un langage **GXQL** (search-like) compilé en
   SQL read-only.
 - **Léger par conception** : un binaire `axum` + `rusqlite` (~4 Mo), confortable en peu de RAM.
-  Cible host < 128 Mo ; en k3s, l'instance de référence est bornée à 2 Gi (cf. §11).
+  L'instance de référence **mesure ~310 Mio de RSS** et est bornée à **2 Gi** (host comme k3s) — cf. §11
+  pour les conditions de mesure et la réserve (aucune garde CI ne défend ce plafond).
 - **Exposition maîtrisée** : le daemon ne s'expose **jamais** seul sur Internet — il vit derrière une
   chaîne reverse-proxy (Cloudflare → Traefik → Authentik forward-auth), et l'ingest agent passe par
   un chemin **mTLS dédié**. En standalone, bind `127.0.0.1` par défaut + garde `Host` anti-rebinding.
@@ -81,7 +82,9 @@ label de VOTRE ingress controller) — aucun autre pod ne peut atteindre le daem
   (double-compile Plume+core, journalise les écarts, **sert l'ancien**), `on` (sert le SQL de
   `guatx_core::soql::to_sql(...)`). **Recommandé : `on`.**
 - **Sous-commandes CLI** : `hashpw '<mdp>'` (génère le hash argon2id), `token <nom> [hôte]` (minte un
-  token d'agent lié à un hôte), `backup <fichier>` (`VACUUM INTO` — copie **chiffrée** car SQLCipher).
+  token d'agent lié à un hôte), `backup <fichier>` (`VACUUM INTO` — copie **chiffrée** car SQLCipher)
+  et `backup --compress <fichier>` (`age(zstd(...))`, ~5-10x plus petit, **mais via un export en clair
+  temporaire sur disque** — cf. deploy/CONFIDENTIALITE.md).
 - **Config** : **`PLUME_*` uniquement** (l'ancien préfixe `SOC_*` n'existe plus). En conteneur,
   `PLUME_CONFIG=/nonexistent` → config purement par env ; sur hôte, l'unit lit `PLUME_CONFIG=/etc/plume/soc.conf`.
 - **Image** : `Dockerfile` multi-stage. **Contexte de build = la racine de ce dépôt** (clone
@@ -199,7 +202,17 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
   `POST /api/cancel` les interrompt. Concurrence bornée par un sémaphore (`PLUME_QUERY_CONCURRENCY`,
   déf. 3 ; partagé `/api/query` + `/api/search` + data de panneau).
 - **Rollup-route** : un GXQL au **motif exact** (`… | stats count by source`, `search source=X | stats
-  count by <dim>`) est réécrit vers `event_rollup`/`event_dim_rollup` → réponse en quelques ms.
+  count by <dim>`, `count by source,severity`) est réécrit vers les compteurs **pré-agrégés**
+  d'`event_rollup`/`event_dim_rollup` → réponse en quelques millisecondes **parce qu'elle ne lit pas les
+  events brutes** : les 92 panneaux semés répondent en **1 à 7 ms** en lisant **~62 000 lignes de rollup
+  pré-agrégé**, pas les 9,8 M events. Chaque réponse porte `served_from: rollup|raw` + `approx` +
+  `truncated` — l'analyste voit **toujours** si le chiffre est exact ou agrégé. **Ce qui n'est PAS routé
+  l'est délibérément** : un `count by source,severity,action` (ou `host`, ou `src_ip`) retombe sur le
+  **scan brut et coûte ~32 s sur 9,8 M lignes**, parce que le rollup fusionne `NULL` et `''` sur ces
+  dimensions et rendrait un group-by **faux** sous une étiquette « approximatif ». Nous refusons de servir
+  une réponse approchée comme si elle était exacte : **32 s exactes plutôt que 30 ms fausses**. La route
+  n'est jamais tentée quand un **masque de champ** est actif (`event_rollup` porte source/host/severity/
+  action en clair) — tous les chiffres ci-dessus sont mesurés **masquage inactif**.
 - **Cache SWR des panneaux** : `panel_cache` + classification **adaptative LIVE/SWR par coût mesuré**
   (`panel_cost`, migration v46) — un panneau rapide est servi LIVE, un panneau coûteux passe en
   **stale-while-revalidate** (TTL `PLUME_PANEL_CACHE_TTL`), avec **anti-stampede** (un seul refresh
@@ -228,21 +241,27 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
 
 Trois cibles, **même binaire** (mode-aware) :
 
-- **Docker** : `docker-compose.yml` (context parent `..`, dépend de `core/`). `hashpw` → `.env`
-  (`PLUME_PASS_HASH`) → `docker compose up`. `PLUME_DEMO=1` peuple des données de démo.
+- **Docker** : `docker-compose.yml` — contexte de build = **la racine de ce dépôt** (`context: .`) ;
+  `guatx-core` est résolu par une **git‑dep publique** (`guatxlabs/core@v0.2.1`), aucun crate sibling
+  requis. `hashpw` → `.env` (`PLUME_PASS_HASH`) → `docker compose up -d --build`. `PLUME_DEMO=1` peuple
+  des données de démo. Le compose active les **ops natives** (backup 6 h + auto‑vacuum quotidien).
+  **Aucune image n'est publiée** : ce mode compile depuis les sources (stage `rust:1-bookworm`).
 - **Hôte nu (systemd)** : `bootstrap.sh` (central) installe le binaire + `plume-daemon.service`
   (`User=soc`, durci : `NoNewPrivileges`, `ProtectSystem=strict`, `CapabilityBoundingSet=`,
   `MemoryMax=2G`, `ReadWritePaths=/var/lib/plume/db /var/lib/plume/spool`, bind `127.0.0.1:7000`).
   `bootstrap-agent.sh` installe un **agent** (collecteurs + `ship`, pas de daemon/DB/web).
 - **k3s** : manifeste générique [`deploy/k3s.yaml`](deploy/k3s.yaml) (Namespace + Secret + PVC +
-  Deployment + Service + Ingress). Un déploiement de **production** type (à porter dans **votre dépôt
+  Deployment + Service + **Ingress** + **NetworkPolicy** egress *default‑deny*), backup natif activé.
+  L'Ingress est livré **sans TLS** (bloc à décommenter) et la NetworkPolicy n'a d'effet que si votre CNI
+  les applique. Un déploiement de **production** type (à porter dans **votre dépôt
   GitOps**, piloté par ArgoCD/Flux ou équivalent) ajoute :
   - **Deployment** — `replicas: 1`, **`strategy: Recreate`** (PVC RWO +
     SQLite = un seul writer, pas de rolling). `securityContext` non-root uid `10001`,
     `readOnlyRootFilesystem`, `drop: [ALL]`, `seccomp RuntimeDefault`.
   - **initContainer** optionnel qui dépose un client objet (`mc`, `aws`…) dans un emptyDir partagé.
   - Conteneur **`plume`** (image **pinnée par digest/SHA** — bump après build) + **sidecar
-    `backup`** (même image ; `plume-daemon backup` = `VACUUM INTO` **chiffré** → copie vers
+    `backup`** (même image ; `plume-daemon backup` = `VACUUM INTO` **chiffré** — la variante
+    `--compress` passe elle par un export en clair temporaire → copie vers
     `<votre-bucket>/plume/` ; remplace Litestream, incompatible SQLCipher).
   - **Env `PLUME_*` uniquement** : `PLUME_ADDR=0.0.0.0:7000`,
     `PLUME_HOST=plume.example.com,ingest.example.com` (multi-hôte : navigateur + SNI mTLS),
@@ -282,7 +301,14 @@ Trois cibles, **même binaire** (mode-aware) :
   d'aws-lc-rs : évite cmake/nasm).
 - **DB** : requêtes API **read-only validées** + budget temps ; **SQLCipher** at-rest (`PLUME_DB_KEY`).
 - **Intégrité tamper-evident** : **journal à chaîne de hash** (ledger, `PLUME_LEDGER_KEY`) +
-  checkpoints **Ed25519** → toute altération casse la chaîne. AIDE pour l'intégrité fichiers hôte.
+  checkpoints **Ed25519**. Une altération **partielle** (une ligne modifiée/supprimée) casse la chaîne et
+  est détectée par `plume-daemon verify`. **Ce qui n'est PAS couvert par défaut** : la vérification
+  recalcule la chaîne depuis le début, donc un attaquant qui obtient **l'écriture en base ET la clé de
+  signature** peut **réécrire tout le journal** et le re-signer de façon auto-cohérente. Fermer cette
+  brèche exige d'**épingler la clé publique hors de la base** via **`PLUME_LEDGER_PUBKEY`** (escrow) :
+  `verify` refuse alors une chaîne re-signée avec une autre clé. **Ce pin est OFF par défaut** — sans lui,
+  la propriété tenue est « tamper-**evident** contre une altération partielle », pas « inviolable ».
+  AIDE pour l'intégrité fichiers hôte.
 - **Réponse** : actions **déléguées** aux enforcers existants (CrowdSec/fail2ban/nft), **dry-run par
   défaut** + **approbation** + **allowlist** + trace au ledger.
 - **Conteneur durci** : non-root, rootfs read-only, `no-new-privileges`, capabilities `drop: ALL`.
@@ -293,13 +319,15 @@ Trois cibles, **même binaire** (mode-aware) :
 
 | Cible | RAM |
 |---|---|
-| Daemon (Rust) host | ~15-30 Mo |
-| Host (cible générale) | < 128 Mo |
-| k3s / conteneur (profil de référence « SMB », SQLCipher) | requests 256Mi-768Mi selon la charge / **limit 2Gi** |
+| k3s / conteneur (profil de référence « SMB », SQLCipher) | **~310 Mio de RSS mesurés** · requests 256Mi-768Mi selon la charge / **limit 2Gi** |
+| Hôte nu (systemd) | même binaire, même budget : `MemoryMax=2G` / `MemoryHigh=1800M` (cf. `systemd/plume-daemon.service`). **256 Mo et 200 Mo OOM-aient le daemon au boot** — ne descendez pas sous ~512 Mo. |
 
-Le profil de référence est dimensionné pour **tenir dans 2 Gi** quel que soit le volume ingéré (la
-consommation dépend surtout de la **concurrence de requêtes**, pas de la taille de la base) ; mesurez
-votre propre empreinte et **définissez vos propres seuils**. Leviers disponibles :
+Le profil de référence est **mesuré à ~310 Mio de RSS** sur l'instance de production de référence
+(**9 844 503 events en base, 2 vCPU, plafond mémoire 2 Gio, masquage de champs inactif**), et le plafond
+de 2 Gio est **appliqué à l'exécution** (`limits.memory: 2Gi` en k3s, `MemoryMax=2G` en systemd) — mais
+**aucun job de CI ne vérifie ce plafond** : c'est une mesure et une borne d'exécution, pas une garantie
+re-prouvée à chaque commit. La consommation dépend surtout de la **concurrence de requêtes**, pas de la
+taille de la base ; mesurez votre propre empreinte et **définissez vos propres seuils**. Leviers disponibles :
 `MALLOC_ARENA_MAX=2` (borne les arènes glibc), `PLUME_QUERY_CONCURRENCY` (borne les requêtes
 simultanées — chacune coûte de la RAM), `PLUME_FTS_FIELDS=0` (défaut : pas de vtable
 `event_fields_fts`, la plus grosse économie disponible). La stratégie tient aux **rollups

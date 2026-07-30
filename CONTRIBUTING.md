@@ -41,7 +41,10 @@ A pull request that weakens any of these will be **rejected**, no matter how use
   else. DENY rules also arm the SQLite authorizer so the denial holds even for admin raw SQL.
   Fail **closed**: unknown role → masked; unreadable rule at reload → treated as DENY.
 - **The 2 GB RAM budget is non-negotiable — optimise, don't grow.** The reference deployment
-  is bounded to **2 GiB** (the SMB profile). Keep the working set bounded: paginate (keyset),
+  measures **~310 MiB RSS** (9,844,503 events, 2 vCPU, field masking off) and is **capped at
+  runtime** to **2 GiB** (`limits.memory: 2Gi` in k3s, `MemoryMax=2G` in systemd) — **no CI job
+  asserts that ceiling**, so treat it as a budget you must re-measure, not a guarantee the
+  pipeline defends. Keep the working set bounded: paginate (keyset),
   stream (bounded ~1 MiB buffers), or roll up. A query that scans an event per request is a
   bug — precompute rollups, use the rollup-route/SWR. If a change trades RAM for speed, it
   goes behind an OFF-by-default feature or it does not land.
@@ -147,7 +150,7 @@ The **shell collectors** (43 tracked scripts) get a `bash -n` parse gate (`shell
 - **Comments carry the rationale.** Each module/invariant states its "why" at the top of the
   file (see the `cold_store/*.rs` headers and the `daemon/Cargo.toml` dependency blocks). The
   *why* is load-bearing here — keep the discipline.
-- **Tests are co-located by domain** under `daemon/src/tests/{rollup,detection,rbac,soql,cases,
+- **Tests are co-located by domain** under `daemon/src/tests/{rollup,detection,rbac,soql_completion,cases,
   governance,connectors,tokens,engagement,tenants,…}.rs`. Add tests next to the domain they
   exercise; do not grow a test monolith.
 

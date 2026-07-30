@@ -38,18 +38,20 @@ sur **Docker**, un **hôte nu (systemd)** ou **Kubernetes/k3s**, dans **2 Go de 
 > [ouvrez une issue](https://github.com/guatxlabs/plume/issues) : nous corrigerons cette phrase.*
 
 ### Pourquoi Plume
-- 🪶 **Léger et souverain** — un seul binaire Rust (`axum` + `rusqlite`/SQLite, WAL+FTS5) + une PWA en JavaScript vanilla sans build. Tient dans une machine on‑premise/auto‑hébergée de **2 Go** — pas de cloud américain, pas de cluster Elastic.
+- 🪶 **Léger et souverain** — un seul binaire Rust (`axum` + `rusqlite`/SQLite, WAL+FTS5) + une PWA en JavaScript vanilla sans build. **Mesuré : ~310 Mio de RSS** sur l'instance de référence (**9 844 503 events, 2 vCPU, plafond 2 Gio, masquage inactif**) ; un `count` sur ces 9 844 503 events rend en **6,5 s** sous ce plafond. Le plafond de 2 Gio est **appliqué à l'exécution, pas vérifié par la CI** — mesurez votre propre empreinte. Pas de cloud américain, pas de cluster à opérer.
 - 🧩 **Bring‑your‑own‑vendor** — *rien de spécifique à un éditeur n'est codé en dur.* Branchez **n'importe quelle** source : un **DSL de parsing** déclaratif (config.d, sans rebuild), un endpoint **compatible Splunk‑HEC** (pointez vos forwarders existants vers Plume), un **connecteur `http_pull` générique** (n'importe quelle API REST — CrowdStrike/SentinelOne/Defender par simple configuration), ou des flux **TAXII 2.1**. *Objectif de conception : ne pas vous faire perdre de capacité en migrant. Ce n'est pas une garantie mesurée — aucune matrice comparative n'existe dans `docs/` ; si une capacité vous manque, [ouvrez une issue](https://github.com/guatxlabs/plume/issues).*
 - 🛡️ **Une détection qui grandit avec vous** — l'**import Sigma** (unitaire et en masse) projette le jeu de règles communautaire sur la **matrice de couverture ATT&CK** ; le **threat‑intel** enrichit à l'ingestion ; l'**alerting basé sur le risque** score les entités pour réduire la fatigue d'alertes. Normalisé CIM, pour que les règles se composent par *catégorie*, jamais par éditeur.
-- 🔐 **Sécurisé et auditable par défaut** — argon2id + RBAC, tokens d'agent liés à l'hôte, requêtes validées en lecture seule, un **ledger en chaîne de hachage inviolable**, chiffrement **SQLCipher par tenant** (mode MSSP), NetworkPolicy d'egress, conteneur durci. **Aucun secret dans le dépôt** — un code ouvert est une *fonctionnalité*, pas un risque.
+- 🔐 **Sécurisé et auditable par défaut** — argon2id + RBAC **fail‑closed** (une route non listée est refusée, pas autorisée), tokens d'agent liés à l'hôte, requêtes validées en lecture seule, un **ledger en chaîne de hachage** vérifiable (`plume-daemon verify`), conteneur durci (non‑root, rootfs en lecture seule, capabilities supprimées) et une **NetworkPolicy d'egress default‑deny** livrée dans [`deploy/k3s.yaml`](deploy/k3s.yaml). **Aucun secret dans le dépôt** — un code ouvert est une *fonctionnalité*, pas un risque.
+  *Deux réserves explicites, parce qu'un défaut annoncé vaut mieux qu'un défaut découvert :* le **chiffrement at‑rest SQLCipher** (par tenant en mode MSSP) est **compilé mais OPT‑IN** — sans clé (`PLUME_DB_KEY_FILE`), **la base est en clair sur le disque** ; et la NetworkPolicy n'a d'effet que si votre CNI les applique (flannel seul ne le fait pas — [vérifiez‑le](deploy/k3s.yaml), ne le supposez pas).
 - 🌍 **Interface bilingue** (FR / EN) + tous les fuseaux horaires IANA.
 
 **Architecture** — *Central* : un seul binaire Rust qui ingère, stocke et sert l'API + la PWA sur `:7000`.
 *Agents* : des collecteurs `sh` + `systemd` sans dépendances (plugins, désactivés par défaut) qui poussent vers le central
 (`POST /api/ingest`, token bearer) ; un agent endpoint multi‑OS (Linux aujourd'hui, Windows/macOS en cours).
 Le central est aussi son propre agent. Documentation approfondie : [`ARCHITECTURE.md`](ARCHITECTURE.md) ·
-[`docs/`](docs/) ([SDK](docs/SDK.md) · [CIM](docs/CIM.md) · [DSL de parsing](docs/PARSER-DSL.md) ·
-[Importeur Sigma](docs/SIGMA-IMPORTER.md)).
+**[index de la documentation](docs/README.md)** (chaque document y porte son état : livré / opt-in /
+conception) — dont [SDK](docs/SDK.md) · [CIM](docs/CIM.md) · [DSL de parsing](docs/PARSER-DSL.md) ·
+[Importeur Sigma](docs/SIGMA-IMPORTER.md) · [reprise après sinistre](docs/DR-plume-restore.md).
 
 ## Au menu
 | Domaine | Capacité |
@@ -77,7 +79,7 @@ Le central est aussi son propre agent. Documentation approfondie : [`ARCHITECTUR
 </tr>
 <tr>
 <td><a href="docs/img/10-inventaire-sources.png"><img src="docs/img/10-inventaire-sources.png" alt="Sources"></a><br><sub><b>Inventaire des sources</b> — flux déclarés, attendu vs réel, fraîcheur</sub></td>
-<td><a href="docs/img/21-admin-audit.png"><img src="docs/img/21-admin-audit.png" alt="Audit"></a><br><sub><b>Administration</b> — ledger d'audit inviolable en chaîne de hachage</sub></td>
+<td><a href="docs/img/21-admin-audit.png"><img src="docs/img/21-admin-audit.png" alt="Audit"></a><br><sub><b>Administration</b> — ledger d'audit en chaîne de hachage, vérifiable</sub></td>
 </tr>
 </table>
 
@@ -87,6 +89,20 @@ Le mot de passe admin n'est **jamais** stocké en clair : vous fournissez son **
 `PLUME_PASS_HASH` (généré par la commande `hashpw`). En son absence, le central démarre en **mode SETUP**
 (un token d'installation à usage unique affiché dans les logs → assistant web).
 
+> ### ⚠️ À lire avant de choisir un mode : rien n'est encore pré‑construit
+> **Aucune image de conteneur et aucun binaire ne sont publiés à ce jour** (pas de `ghcr.io/...`, pas
+> d'artefact de release). Les trois modes **compilent le daemon depuis les sources**. Concrètement :
+> - **Docker** ne demande **pas** de toolchain Rust sur votre machine : le `Dockerfile` compile dans un
+>   stage `rust:1-bookworm`. Docker (avec BuildKit) suffit.
+> - **Hôte nu** et **k3s** demandent, eux, **un Rust stable installé** (`cargo`) : le premier pour
+>   produire le binaire, le second pour produire l'image à importer.
+> - Le build tire crates.io **et** la git‑dep `guatxlabs/core@v0.2.1` → **un accès réseau est requis**
+>   au premier build. *Durée et pic mémoire du build : non mesurés sur cette machine ; le `Dockerfile`
+>   borne `CARGO_BUILD_JOBS=2` pour éviter l'OOM sur une petite machine.*
+>
+> Publier une image et des binaires signés est le **prérequis n°1** pour un démarrage « sans toolchain » ;
+> c'est un manque assumé et connu, pas un oubli.
+
 ### A. Docker (le plus simple)
 Depuis la racine de ce dépôt (le contexte de build est le dépôt lui‑même ; `guatx-core` est résolu
 via une git‑dep publique, aucun crate sibling requis) :
@@ -95,13 +111,25 @@ docker compose run --rm soc hashpw 'my-password'     # -> copy the printed $argo
 cp .env.example .env                                 # paste PLUME_PASS_HASH=...
 docker compose up -d --build                         # -> http://soc.localhost:7000
 ```
+Le `docker-compose.yml` livré active les **ops natives du binaire** : **backup toutes les 6 h** vers
+`/data/backups` (rétention des 24 plus récents) + **auto‑vacuum quotidien**, sans sidecar ni cron hôte.
+Réglez‑les — ou coupez‑les avec `PLUME_BACKUP_INTERVAL=0` — via `.env`.
+
 > 🪶 **Démo (peuplée, sans agents)** — ajoutez `PLUME_DEMO=1` : des événements/métriques/alertes d'exemple sur 24 h pour voir Plume *vivant* immédiatement. *(Désactivé en production.)*
 
-### B. Hôte nu (systemd)
+### B. Hôte nu (systemd) — mode de première classe, sans Docker
 ```sh
-cd daemon && cargo build --release && cd ..          # single-file binary
+cd daemon && cargo build --release && cd ..          # single-file binary (Rust stable requis)
 sudo bash bootstrap.sh                               # central: daemon + units, :7000 (idempotent)
 ```
+`bootstrap.sh` **refuse de continuer** si `daemon/target/release/plume-daemon` est absent : compilez d'abord.
+Il installe le daemon, les collecteurs et leurs units/timers — dont **`plume-backup.timer` (quotidien,
+04:00)**, qui appelle `plume-daemon backup` (copie compacte `VACUUM INTO`, rotation à 7). *Ce chemin hôte
+diffère de celui du mode Docker/k3s* : le timer produit une copie `.db` non compressée, le scheduler
+in‑daemon produit une archive `age(zstd(...))` — voir [`docs/DR-plume-restore.md`](docs/DR-plume-restore.md).
+Pour aligner l'hôte sur le scheduler natif, posez `PLUME_BACKUP_INTERVAL` dans `/etc/plume/soc.conf` et
+désactivez le timer (`systemctl disable --now plume-backup.timer`).
+
 Enrôlez une autre machine comme agent qui pousse vers le central :
 ```sh
 sudo /usr/local/bin/plume-daemon token agent-$(hostname) $(hostname)   # on the central
@@ -109,12 +137,25 @@ sudo env PLUME_CENTRAL=https://central:7000 PLUME_TOKEN='<token>' bash bootstrap
 ```
 
 ### C. Kubernetes / k3s
-Le manifeste par défaut **[`deploy/k3s.yaml`](deploy/k3s.yaml)** (Deployment + PVC + Service + Ingress) — remplacez les
-valeurs à compléter (`PLUME_PASS_HASH`, hôte de l'Ingress), importez l'image (multi‑stage `debian‑slim`, non‑root ;
-aucun registre requis : `docker save … | k3s ctr images import -`), puis :
+**[`deploy/k3s.yaml`](deploy/k3s.yaml)** est complet et applicable tel quel : **Namespace + Secret + PVC +
+Deployment + Service + Ingress + NetworkPolicy** (egress *default‑deny*, DNS seul autorisé) — avec le
+backup natif activé. Remplacez les valeurs à compléter (`PLUME_PASS_HASH`, et `soc.tondomaine.tld` **aux
+deux endroits** : `PLUME_HOST` et l'Ingress — un écart déclenche la garde anti‑DNS‑rebinding → 421),
+construisez et importez l'image (multi‑stage `debian‑slim`, non‑root ; aucun registre requis), puis :
 ```sh
+docker build -t soc:latest .
+docker save soc:latest | sudo k3s ctr images import -
 kubectl apply -f deploy/k3s.yaml
 ```
+L'Ingress est livré **sans TLS** (bloc `tls:` à décommenter) : ne l'exposez pas sur Internet sans certificat.
+Le PVC est à **1Gi**, une valeur de démarrage — dimensionnez‑le sur votre rétention réelle.
+
+### Chiffrement de la base (at‑rest) — opt‑in, à décider AVANT le premier démarrage
+Par défaut **la base est en clair sur le disque**. SQLCipher est compilé dans le binaire mais ne s'active
+qu'avec une clé : `PLUME_DB_KEY_FILE=/chemin/vers/la/cle` (préféré — un fichier monté en lecture seule,
+**fail‑closed** s'il est absent) ou `PLUME_DB_KEY=<passphrase>` (lisible via `/proc/<pid>/environ`).
+Une base neuve est créée chiffrée d'office ; une base en clair existante est convertie au boot (idempotent).
+**Perte de la clé = perte de la base** : conservez‑la hors de la machine.
 
 ### Désinstallation (hôte)
 ```sh
@@ -126,7 +167,20 @@ sudo bash uninstall.sh --purge    # ALSO removes data (DB, spool, ledger key) + 
 
 Plume ingère **n'importe quelle source** sans rebuild ni intervention de notre part — trois leviers, du plus simple au plus fin.
 
-**1. Une nouvelle source, sans code (« scripted input »).** Sur l'hôte où tourne un collecteur, déposez `/etc/plume/inputs.d/<nom>.input` (`KEY=value`) : le collecteur générique `custom.sh` exécute la commande et transforme chaque ligne de sa sortie en événement `source=<SOURCE>`.
+**1. Une nouvelle source, sans code (« scripted input »).** Le collecteur générique `custom.sh` lit
+`/etc/plume/inputs.d/<nom>.input` (`KEY=value`), exécute la commande et transforme chaque ligne de sa
+sortie en événement `source=<SOURCE>`.
+
+> ⚠️ **`custom` n'est PAS installé par défaut** — `bootstrap-agent.sh` n'installe que
+> `resources integrity ship`. Deux étapes explicites (la « règle d'or » du projet : on installe sans
+> activer, l'opérateur décide) :
+> ```sh
+> sudo env PLUME_EXTRA_COLLECTORS="custom" PLUME_CENTRAL=… PLUME_TOKEN=… bash bootstrap-agent.sh
+> sudo install -d -o root -g root -m 0700 /etc/plume/inputs.d   # aucun script ne le crée
+> sudo systemctl enable --now plume-custom.timer                # cadence : 60 s
+> ```
+> Le répertoire **doit** être root-only : `CMD` s'exécute **en root** (le collecteur n'a pas de
+> `User=`), donc y déposer un fichier revient à exécuter du code privilégié.
 
 ```sh
 # /etc/plume/inputs.d/monapp.input
@@ -177,7 +231,7 @@ Les fichiers de `config.d/` sont chargés au démarrage de façon **idempotente*
 ## Sécurité (intégrée)
 - **Authentification** : argon2id (+bcrypt) + **RBAC** (viewer/editor/admin) ; tokens d'agent **liés à l'hôte** ; vérification du `Host` (anti‑rebinding) ; en‑têtes + rate‑limit par IP.
 - **Base de données** : les requêtes de l'API sont **en lecture seule**, validées, à budget temps. Le SQL brut est réservé aux admins ; un autorisateur refuse les colonnes de mot de passe/token, même aux admins.
-- **Réponse** : les actions sont **déléguées** aux exécuteurs, en **dry‑run par défaut** + approbation + liste blanche + **ledger en chaîne de hachage** (inviolable).
+- **Réponse** : les actions sont **déléguées** aux exécuteurs, en **dry‑run par défaut** + approbation + liste blanche + **ledger en chaîne de hachage** (vérifiable par `plume-daemon verify` ; voir la réserve sur l'épinglage de clé dans ARCHITECTURE §14).
 - **Au repos** : chiffrement optionnel **SQLCipher par tenant**. **Conteneur** : non‑root, rootfs en lecture seule, `no‑new‑privileges`, capabilities supprimées, NetworkPolicy d'egress.
 
 ## Licence et modèle

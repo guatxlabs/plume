@@ -1,10 +1,21 @@
-# SOC central en container. Génère d'abord le hash :
+# Plume central en container. Génère d'abord le hash :
 #   docker compose run --rm soc hashpw 'tonmotdepasse'   -> copie le hash dans .env (PLUME_PASS_HASH=...)
 # puis :  docker compose up -d   ->  http://soc.localhost:7000
 #
 # Lancer DEPUIS la racine de ce dépôt :
 #   docker compose up -d --build
 # Le daemon résout `guatx-core` via une git-dep publique (tag v0.2.1) — aucun crate sibling requis.
+#
+# AUCUNE IMAGE N'EST PUBLIÉE À CE JOUR : ce compose COMPILE le daemon depuis les sources (stage
+# `rust:1-bookworm` du Dockerfile). Vous n'avez PAS besoin d'une toolchain Rust sur l'hôte — Docker
+# suffit — mais le premier build télécharge le graphe de dépendances (crates.io + la git-dep core)
+# et compile en release : prévoyez du temps et un accès réseau. Durée non mesurée sur cette machine.
+#
+# OPS NATIVES (backup + auto-vacuum) — activées ici, PAS par défaut dans le binaire.
+# Le daemon embarque son propre scheduler de backup (`spawn_backup_scheduler`, daemon/src/server.rs) et
+# une boucle d'auto-vacuum incrémental. LES DEUX SONT GATÉS SUR UN INTERVALLE > 0 : retirez les
+# variables ci-dessous (ou posez PLUME_BACKUP_INTERVAL=0) et ce déploiement NE SAUVEGARDE PLUS RIEN.
+# Telles quelles, elles rendent le mode Docker autonome : zéro sidecar, zéro cron hôte.
 services:
   soc:
     build:
@@ -23,6 +34,36 @@ services:
       PLUME_CONFIG: "/nonexistent"
       PLUME_DEMO: "${PLUME_DEMO:-0}"   # 1 = peuple une instance fraîche avec des données de démo (à voir vivante sans agent)
       PLUME_PUBLIC_DEMO: "${PLUME_PUBLIC_DEMO:-0}"   # 1 = accès ANONYME lecture seule (démo publique exposée ; instance isolée + PLUME_DEMO=1)
+      # --- CHIFFREMENT AT-REST (SQLCipher) — OPT-IN, VIDE PAR DÉFAUT ---
+      # VIDE = la base sur le volume `soc-data` est EN CLAIR. Le chiffrement SQLCipher est compilé dans
+      # le binaire mais ne s'active QUE si une clé est fournie (`db_key()`, daemon/src/crypto/mod.rs) :
+      # une base neuve est alors créée chiffrée d'office, une base en clair existante est convertie au
+      # boot (`ensure_encrypted`, idempotent). Préférez PLUME_DB_KEY_FILE (fichier monté en lecture
+      # seule, fail-closed s'il est absent) à la variable d'env, qui reste lisible via /proc/<pid>/environ.
+      # PERTE DE CLÉ = PERTE DE LA BASE : aucune récupération possible, gardez-la hors de l'hôte.
+      PLUME_DB_KEY: "${PLUME_DB_KEY:-}"
+      # --- BACKUP NATIF (scheduler in-daemon) ---
+      # Intervalle en SECONDES ; 0/absent = DÉSACTIVÉ (aucun thread). 21600 = toutes les 6 h.
+      PLUME_BACKUP_INTERVAL: "${PLUME_BACKUP_INTERVAL:-21600}"
+      # Rétention KEEP-N : on garde les N backups les plus récents (24 × 6 h ≈ 6 jours).
+      PLUME_BACKUP_KEEP: "${PLUME_BACKUP_KEEP:-24}"
+      # Destination = un RÉPERTOIRE LOCAL. Défaut du binaire = `<dir(PLUME_DB)>/backups` -> /data/backups,
+      # donc déjà sur le volume `soc-data`. `s3://…` est DÉTECTÉ ET REFUSÉ (sink S3 natif non implémenté) :
+      # le scheduler se désactive avec un log clair plutôt que de produire un faux backup local.
+      PLUME_BACKUP_DEST: "${PLUME_BACKUP_DEST:-/data/backups}"
+      # 1 = un backup dès le démarrage (après le bind + la liveness), en plus du cycle périodique.
+      PLUME_BACKUP_ON_START: "${PLUME_BACKUP_ON_START:-0}"
+      # Escrow HORS-HÔTE : clé PUBLIQUE age (`age1…`) — ce n'est PAS un secret, elle peut vivre en clair
+      # ici. Non posée -> repli sur le chiffrement SYMÉTRIQUE (passphrase = clé SQLCipher, présente sur
+      # l'hôte) donc DÉCHIFFRABLE PAR L'HÔTE : pas d'escrow. Le daemon émet alors un événement de posture
+      # non-purgeable (category=health, sévérité 4). Posez PLUME_BACKUP_REQUIRE_ASYMMETRIC=1 pour REFUSER
+      # ce repli. Sans clé SQLCipher NI destinataire age, l'archive n'est pas chiffrée du tout.
+      PLUME_BACKUP_AGE_RECIPIENT: "${PLUME_BACKUP_AGE_RECIPIENT:-}"
+      PLUME_BACKUP_REQUIRE_ASYMMETRIC: "${PLUME_BACKUP_REQUIRE_ASYMMETRIC:-0}"
+      # --- AUTO-VACUUM INCRÉMENTAL (reclaim non-bloquant, best-effort) ---
+      # 0/absent = DÉSACTIVÉ. 86400 = une passe/jour. INOPÉRANT (warn honnête, jamais de VACUUM plein
+      # bloquant) si la base n'est pas en `auto_vacuum=INCREMENTAL` — vérifiez avec `plume-daemon db-stats`.
+      PLUME_AUTOVACUUM_INTERVAL: "${PLUME_AUTOVACUUM_INTERVAL:-86400}"
     volumes:
       - soc-data:/data
     restart: unless-stopped

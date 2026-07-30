@@ -147,3 +147,155 @@
         );
         assert_eq!(got, vec![300, 250], "combo fenêtre+severity+regex+sort -> exactement [300,250] (ordre DESC)");
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // (6) GARDE DE BUDGET — ce qu'elle DOIT protéger, et ce qu'elle NE DOIT PAS coûter.
+    //
+    // L'ancienne garde SONDAIT un drapeau (`sleep(50 ms)` en boucle) et le chemin de requête la
+    // JOIGNAIT avant de rendre sa réponse : toute lecture était donc arrondie au multiple de 50 ms
+    // supérieur (mesuré sur la base de banc : SQL 0,76 ms -> 50,7 ms de `server_ms`). Les trois tests
+    // ci-dessous épinglent, dans cet ordre : (a) la protection MORD toujours, (b) elle ne coûte plus
+    // l'arrondi — sur les DEUX portes d'exécution, (c) aucune autre porte ne peut apparaître.
+    // ---------------------------------------------------------------------------------------------
+
+    /// Un SELECT dont la durée est PARAMÉTRABLE, sans horloge ni dépendance à la machine : une CTE
+    /// récursive qui compte jusqu'à `n`. `readonly()` vaut vrai (c'est un SELECT) -> passe la garde
+    /// `stmt.readonly()` de `run_on_conn`.
+    fn qb_slow_sql(n: i64) -> String {
+        format!("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x < {n}) SELECT count(*) FROM c")
+    }
+
+    /// (a) LA PROTECTION MORD. Une requête qui dépasse son budget DOIT être interrompue et remonter
+    /// l'erreur de budget — sinon un scan fou monopoliserait un thread de lecture et un permit du
+    /// sémaphore sans fin. C'est ce que la garde existe pour empêcher ; le levier de latence ne doit
+    /// pas l'échanger contre des millisecondes.
+    #[test]
+    fn budget_guard_interrupts_a_runaway_query() {
+        let c = test_db();
+        let t0 = std::time::Instant::now();
+        // 400 millions d'itérations : des dizaines de secondes sans garde, ~0,3 s avec.
+        let r = crate::query_exec::run_on_conn(&c, ":memory:", &qb_slow_sql(400_000_000), 300, None);
+        let waited = t0.elapsed();
+        let err = r.expect_err("une requête au-delà de son budget DOIT être interrompue, pas rendue");
+        assert!(
+            err.contains("budget"),
+            "l'erreur doit NOMMER le budget (et non se confondre avec une annulation utilisateur) : {err}"
+        );
+        // Borne LARGE (10 s) : on prouve que l'interruption tombe, pas la précision de l'échéance —
+        // une borne serrée serait floconneuse sur une machine chargée.
+        assert!(waited < std::time::Duration::from_secs(10), "l'interruption doit tomber près de l'échéance, pas après : {waited:?}");
+    }
+
+    /// (b) LA GARDE NE QUANTIFIE PLUS LA LATENCE — sur les DEUX portes d'exécution bornées du daemon
+    /// (`run_on_conn`, qui sert /api/query, et `read_with_watchdog`, qui sert alertes/cases/fraîcheur/
+    /// /api/search). On mesure le SURCOÛT (mur total − durée SQL rapportée) et on prend le MINIMUM sur
+    /// plusieurs tirs : le minimum est insensible aux pics de charge, alors que l'arrondi au tick, lui,
+    /// est DÉTERMINISTE (il ne peut pas être « chanceux »). Avec le sondage `sleep(50 ms)`, ce minimum
+    /// valait ~50 ms − durée SQL ; ici il doit rester très en dessous d'un demi-tick.
+    #[test]
+    fn budget_guard_does_not_quantize_query_latency() {
+        let c = test_db();
+        // Requête volontairement PLUS LONGUE que le démarrage d'un thread (~50 µs) et bien plus courte
+        // qu'un tick : sinon la course « la requête finit avant que la garde ne s'endorme » masquerait
+        // l'arrondi et le test passerait même en présence du défaut.
+        let sql = qb_slow_sql(2_000);
+        let mut min_overhead_ms = f64::MAX;
+        let mut min_sql_ms = f64::MAX;
+        for _ in 0..7 {
+            let t0 = std::time::Instant::now();
+            let v = crate::query_exec::run_on_conn(&c, ":memory:", &sql, 60_000, None).expect("la requête doit aboutir");
+            let wall_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            let sql_ms = v["stats"]["elapsed_ms"].as_f64().expect("stats.elapsed_ms");
+            min_overhead_ms = min_overhead_ms.min(wall_ms - sql_ms);
+            min_sql_ms = min_sql_ms.min(sql_ms);
+        }
+        // La requête doit bien être dans la fenêtre où l'arrondi serait visible (garde-fou du test
+        // lui-même : si la CTE devenait instantanée ou dépassait 50 ms, le test ne prouverait rien).
+        assert!(
+            (0.2..45.0).contains(&min_sql_ms),
+            "la requête témoin doit coûter entre 0,2 et 45 ms pour que l'arrondi au tick de 50 ms soit observable (mesuré {min_sql_ms:.2} ms)"
+        );
+        assert!(
+            min_overhead_ms < 20.0,
+            "run_on_conn : surcoût minimal {min_overhead_ms:.2} ms — au-delà de 20 ms la latence est arrondie au tick de la garde (le sondage est revenu)"
+        );
+
+        // MÊME preuve sur l'autre porte. `read_with_watchdog` prend une connexion DANS LE POOL du
+        // db_path ; on l'exerce sur une base fichier temporaire pour que le pool puisse l'ouvrir.
+        let dir = std::env::temp_dir().join(format!("plume-budget-guard-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dbp = dir.join("q.db");
+        let dbps = dbp.to_string_lossy().to_string();
+        {
+            let c2 = Connection::open(&dbp).unwrap();
+            c2.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
+            assert!(migrate(&c2), "fixture de test : la chaîne de migrations doit aller au bout");
+        }
+        let mut min_overhead2 = f64::MAX;
+        for _ in 0..7 {
+            let t0 = std::time::Instant::now();
+            let sql_ms = crate::query_exec::read_with_watchdog(&dbps, -1.0f64, |conn| {
+                let t1 = std::time::Instant::now();
+                let _n: i64 = conn.query_row(&sql, [], |r| r.get(0)).unwrap();
+                t1.elapsed().as_secs_f64() * 1000.0
+            });
+            assert!(sql_ms >= 0.0, "read_with_watchdog n'a pas pu ouvrir la base de test");
+            min_overhead2 = min_overhead2.min(t0.elapsed().as_secs_f64() * 1000.0 - sql_ms);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            min_overhead2 < 20.0,
+            "read_with_watchdog : surcoût minimal {min_overhead2:.2} ms — la latence des listes/panneaux est arrondie au tick de la garde"
+        );
+    }
+
+    /// (c) AUCUNE AUTRE PORTE. Le défaut corrigé n'était pas « une ligne à changer » : c'était DEUX
+    /// gardes de budget écrites à la main, chacune avec sa boucle de sondage, et rien n'empêchait une
+    /// troisième d'apparaître. L'invariant DÉRIVÉ est : un `InterruptHandle` ne peut être armé que par
+    /// les deux mécanismes sanctionnés — `budget_guard` (budget temps, attente à CONDITION) ou
+    /// `cancel_register` (annulation utilisateur). Tout nouveau site qui prendrait un handle pour
+    /// piloter son propre fil de garde fait rougir ce test, sans qu'il ait besoin d'être énuméré ici.
+    #[test]
+    fn budget_guard_is_the_only_way_to_arm_an_interrupt() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut sites: Vec<(String, String)> = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    // `src/tests/` est du code de test : il a le droit d'exercer les primitives.
+                    if p.file_name().map(|n| n == "tests").unwrap_or(false) {
+                        continue;
+                    }
+                    stack.push(p);
+                    continue;
+                }
+                if p.extension().map(|x| x != "rs").unwrap_or(true) {
+                    continue;
+                }
+                let src = std::fs::read_to_string(&p).unwrap();
+                for line in src.lines() {
+                    if line.contains("get_interrupt_handle()") {
+                        sites.push((p.strip_prefix(&root).unwrap().to_string_lossy().to_string(), line.trim().to_string()));
+                    }
+                }
+            }
+        }
+        assert!(!sites.is_empty(), "invariant vide = invariant mort : aucun site d'armement trouvé, la sonde est cassée");
+        for (file, line) in &sites {
+            assert!(
+                line.contains("budget_guard(") || line.contains("cancel_register("),
+                "{file} arme un InterruptHandle hors des deux mécanismes sanctionnés \
+                 (`budget_guard` = budget temps par attente à condition, `cancel_register` = annulation \
+                 utilisateur). Une garde écrite à la main réintroduit le sondage et son arrondi : {line}"
+            );
+        }
+        // Et le sondage lui-même ne doit plus exister dans l'exécuteur de lecture : c'est là que les
+        // deux boucles vivaient, et c'est la forme (pas le site) qu'on interdit.
+        let qe = std::fs::read_to_string(root.join("query_exec.rs")).unwrap();
+        assert!(
+            !qe.lines().any(|l| l.contains("thread::sleep") && !l.trim_start().starts_with("//")),
+            "query_exec.rs ne doit plus attendre par SONDAGE : une garde de budget attend une CONDITION (condvar avec délai)"
+        );
+    }

@@ -1050,11 +1050,12 @@ pub(crate) async fn auth_guard(State(st): State<AppState>, mut req: Request, nex
     }
     // #2a-3 FAIL-CLOSED (choke-point unique) : en mode 1, REFUSER ici — AVANT tout handler — si la base du
     // tenant courant n'est pas résoluble (tenant suspendu, OU clé non résoluble : Vault injoignable /
-    // PLUME_VAULT_TOKEN absent / key_ref cassé). Sans ce garde, req_db/req_db_path retomberaient (unwrap_or
-    // défensif) sur la base OPÉRATEUR `default` -> un user/agent lirait ET écrirait la base d'un AUTRE tenant
-    // (fuite + corruption croisées) au moindre incident Vault. resolve() enregistre au passage la clé DU
-    // tenant (registre read-pool). Mode 0 : sauté (multi_tenant=false) -> comportement STRICTEMENT identique.
-    if st.multi_tenant && st.tenants.resolve(&tenant).is_none() {
+    // PLUME_VAULT_TOKEN absent / key_ref cassé) : l'appelant reçoit un 403 NOMMÉ au lieu d'une base
+    // cul-de-sac muette. `req_db`/`req_db_path` sont fail-closed par eux-mêmes (base/chemin CUL-DE-SAC, jamais
+    // la base d'un autre tenant) — ce garde reste la couche qui le DIT à l'appelant, il n'est plus ce qui
+    // empêche la fuite. `tenant_available` enregistre au passage la clé DU tenant (registre read-pool).
+    // Mode 0 : sauté (multi_tenant=false) -> comportement STRICTEMENT identique.
+    if st.multi_tenant && !st.tenants.tenant_available(&tenant) {
         return (StatusCode::FORBIDDEN, "tenant indisponible (base non résoluble)").into_response();
     }
     // #2b/D3/R9 — MARQUEUR STRUCTUREL d'accès OPÉRATEUR cross-tenant : un super-admin consulte/écrit un

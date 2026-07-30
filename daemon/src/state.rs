@@ -287,7 +287,7 @@ pub(crate) fn resolve_tenant_key(key_ref: &str) -> Result<Option<String>, String
 ///    writer = st.db. Comportement STRICTEMENT identique à aujourd'hui.
 ///  - Mode 1 (`control=Some`) : lit la table `tenant` du control-plane + résout key_ref -> ouvre/mémoïse.
 // INERTE #2a-2a : `control` est lu par les accesseurs d'identité (token/user) ; les autres champs + les
-// méthodes (resolve/handle_for) ne seront câblés aux handlers data qu'en #2a-2b -> allow(dead_code).
+// méthodes (ready/handle_for/ready_db_path) ne seront câblés aux handlers data qu'en #2a-2b -> allow(dead_code).
 #[derive(Clone)]
 #[allow(dead_code)]
 pub(crate) struct TenantDbManager {
@@ -318,33 +318,89 @@ pub(crate) struct TenantDbManager {
 pub(crate) mod prepared_writer {
     use super::*;
 
-    /// Writer d'une base plume dont le contrat de schéma A ÉTÉ VÉRIFIÉ. Champ privé : hors de ce
-    /// sous-module, la seule façon d'en obtenir un est `open`.
+    /// Writer d'une base plume dont le contrat de schéma A ÉTÉ VÉRIFIÉ **et dont les registres
+    /// PAR db_path sont CHARGÉS**. Champs privés : hors de ce sous-module, la seule façon d'en obtenir
+    /// un est `open` — donc détenir cette valeur EST la preuve des deux propriétés, pour la connexion
+    /// comme pour le CHEMIN (qui ne sort d'ici que par `path()`).
     #[derive(Clone)]
-    pub(crate) struct PreparedWriter(Arc<Mutex<Connection>>);
+    pub(crate) struct PreparedWriter {
+        conn: Arc<Mutex<Connection>>,
+        path: Arc<String>,
+    }
 
     impl PreparedWriter {
-        /// Ouvre `path` avec `key` PAR LA PORTE (garde anti-downgrade + contrat de schéma), et
-        /// n'existe que si elle a laissé passer. `Err` = base NON servie (fail-closed) : jamais un
-        /// handle sur un schéma inconnu.
+        /// Ouvre `path` avec `key` PAR LA PORTE (garde anti-downgrade + contrat de schéma), HYDRATE les
+        /// registres par-db_path de cette base, et n'existe que si tout cela a réussi. `Err` = base NON
+        /// servie (fail-closed) : jamais un handle sur un schéma inconnu, jamais un CHEMIN dont les
+        /// registres (dont le masquage #45) seraient vides.
         pub(crate) fn open(path: &str, key: Option<&str>) -> Result<Self, String> {
-            let conn = PreparedDb::open_keyed(path, key).map_err(|e| e.to_string())?;
-            Ok(PreparedWriter(Arc::new(Mutex::new(conn.into_connection()))))
+            let conn = PreparedDb::open_keyed(path, key).map_err(|e| e.to_string())?.into_connection();
+            // L'HYDRATATION EST ICI, ET NULLE PART AILLEURS : elle est faite sur la connexion AVANT que
+            // la valeur n'existe, donc aucun appelant ne peut l'oublier — il n'y a rien à oublier.
+            per_db_registries_reload(&conn, path);
+            Ok(PreparedWriter { conn: Arc::new(Mutex::new(conn)), path: Arc::new(path.to_string()) })
         }
 
         /// Le handle, une fois le contrat satisfait.
         pub(crate) fn handle(&self) -> Arc<Mutex<Connection>> {
-            self.0.clone()
+            self.conn.clone()
+        }
+
+        /// Le db_path de CETTE base — clé du read-pool et de tous les caches/registres par-db_path.
+        /// Ne peut désigner qu'une base dont `open` a hydraté les registres (c'est tout l'intérêt).
+        pub(crate) fn path(&self) -> String {
+            self.path.as_ref().clone()
         }
     }
 }
 
+/// LE POINT D'HYDRATATION UNIQUE DES REGISTRES **PAR db_path**.
+///
+/// CE QUE LA REVUE A MESURÉ. Le daemon tient plusieurs registres process-globaux keyés par db_path
+/// (masquage/DLP `field_filter` #45 — qui alimente AUSSI l'authorizer SQLite —, processeur d'ingest,
+/// parseurs regex + déclaratifs, knowledge objects, index auto). Ils étaient chargés au BIND, pour
+/// PLUME_DB, et — pour les field filters — après chaque CRUD. Aucun de ces deux moments ne couvre une
+/// base TENANT : après un redémarrage, tout tenant autre que celui de PLUME_DB tournait donc avec un
+/// registre de masquage VIDE, et `SELECT src_ip FROM event` rendait la valeur EN CLAIR (mesuré :
+/// `203.0.113.7`) alors que l'exploitant avait posé un DENY dans la base de CE tenant.
+///
+/// POURQUOI CETTE FORME. Ajouter « un appel à `field_filters_reload` dans `handle_for` » aurait fermé le
+/// cas mesuré et laissé les cinq autres registres, plus le prochain chemin d'obtention de connexion.
+/// Ici l'hydratation est appelée par `PreparedWriter::open`, SEUL constructeur de la valeur que le cache
+/// des writers tenant sait stocker et SEULE source d'un db_path tenant servi (cf. `TenantDbManager`) :
+/// une connexion ou un chemin tenant dont les registres ne sont pas chargés NE PEUT PAS EXISTER.
+/// La COMPOSITION de cette fonction, elle, est tenue par un test qui DÉRIVE la liste des registres du
+/// texte du bind (`every_per_db_registry_loaded_at_boot_is_loaded_for_a_tenant_base`) : un registre
+/// ajouté demain au boot fait rougir tant qu'il n'est pas ici — personne n'a de liste à maintenir.
+///
+/// N'INCLUT PAS `knowledge_activate` : ce n'est pas un registre mais l'ÉLECTION du db_path de
+/// compilation GXQL (global). L'activer depuis ici laisserait la base d'un tenant détourner la
+/// compilation des autres — sa doc l'interdit explicitement, et le motif dérivé (`X_reload(&conn,
+/// &db_path)`) ne l'attrape pas.
+///
+/// MODE 0 : jamais appelée (aucun writer tenant n'est ouvert) -> comportement STRICTEMENT identique.
+pub(crate) fn per_db_registries_reload(conn: &Connection, db_path: &str) {
+    parsers_reload(conn, db_path);
+    dparsers_reload(conn, db_path);
+    processors_reload(conn, db_path);
+    field_filters_reload(conn, db_path);
+    knowledge_reload(conn, db_path);
+    autoindex_reload(conn, db_path);
+}
+
 #[allow(dead_code)]
 impl TenantDbManager {
-    /// (db_path, clé_effective) du tenant. Mode 0 : passthrough (PLUME_DB, PLUME_DB_KEY), quel que soit
-    /// `tenant` (il n'existe qu'un tenant). Mode 1 : catalogue control-plane ; tenant absent ou suspendu
-    /// -> None (fail-closed : jamais de repli silencieux sur une autre base).
-    pub(crate) fn resolve(&self, tenant: &str) -> Option<(String, Option<String>)> {
+    /// LE CATALOGUE, PAS UN CHEMIN SERVABLE. Rend (db_path, clé_effective) du tenant. Mode 0 :
+    /// passthrough (PLUME_DB, PLUME_DB_KEY), quel que soit `tenant` (il n'existe qu'un tenant). Mode 1 :
+    /// catalogue control-plane ; tenant absent ou suspendu -> None (fail-closed : jamais de repli
+    /// silencieux sur une autre base).
+    ///
+    /// PRIVÉE À CE MODULE (et `pub(crate)` UNIQUEMENT en build de test, comme `open_db` dans db_open.rs) :
+    /// le chemin qu'elle rend n'a PAS ses registres par-db_path chargés, donc le SERVIR serait le fail-open
+    /// #45. Le seul chemin servable sort de `ready`/`ready_db_path`. Un chemin de production qui
+    /// l'appellerait ne COMPILE PAS (`cargo build`, CI) ; les tests, eux, mesurent légitimement le
+    /// catalogue nu.
+    fn catalog_route(&self, tenant: &str) -> Option<(String, Option<String>)> {
         match &self.control {
             None => Some((self.default_db_path.as_ref().clone(), db_key())),
             Some(cp) => {
@@ -376,24 +432,53 @@ impl TenantDbManager {
         }
     }
 
-    /// Handle d'ÉCRITURE (writer) du tenant. Mode 0 : le writer process-global existant (st.db) —
-    /// passthrough exact, AUCUNE ligne de ce chemin n'est touchée (c'est `server.rs` qui a déjà passé
-    /// ce handle par `prepare_schema` avant le bind). Mode 1 : writer mémoïsé, ouvert LAZY sur
-    /// (db_path, clé) résolus — et le contrat de schéma est appliqué à l'ouverture, parce que le type
-    /// stocké dans le cache ne peut pas être construit autrement (cf. `prepared_writer`).
+    /// VISIBILITÉ DE TEST du catalogue nu (cf. `catalog_route`) : les tests mesurent légitimement
+    /// « ce tenant est-il catalogué / sa clé résout-elle », sans rien servir. Absente du binaire de
+    /// production, exactement comme `open_db`/`open_db_keyed` dans db_open.rs.
+    #[cfg(test)]
+    pub(crate) fn resolve(&self, tenant: &str) -> Option<(String, Option<String>)> {
+        self.catalog_route(tenant)
+    }
+
+    /// LE TENANT EST-IL DISPONIBLE ? (existe, non suspendu, clé résoluble). C'est TOUT ce dont les
+    /// gardes d'entrée (auth_guard, résolution de rôle cross-tenant) ont besoin : elles REFUSENT, elles
+    /// ne servent rien. Elles n'obtiennent donc AUCUN chemin — la seule façon d'en obtenir un reste
+    /// `ready_db_path`. Effet de bord conservé (identique à l'ancien `resolve` qu'elles appelaient) :
+    /// la clé DU tenant est enregistrée au registre du read-pool.
+    pub(crate) fn tenant_available(&self, tenant: &str) -> bool {
+        self.catalog_route(tenant).is_some()
+    }
+
+    /// LE POINT DE PASSAGE UNIQUE VERS UNE BASE TENANT — mode 1 uniquement.
     ///
-    /// FAIL-CLOSED : une base tenant qui ne satisfait pas le contrat (migration interrompue, ou schéma
-    /// estampillé sans ce que le binaire déclare) rend `None` — le tenant n'est PAS servi, au lieu
-    /// d'être servi et ÉCRIT sur un schéma ancien. La cause est nommée dans le journal ; elle ne
-    /// contient jamais la clé.
-    pub(crate) fn handle_for(&self, tenant: &str) -> Option<Arc<Mutex<Connection>>> {
+    /// Tout ce qui sert un tenant (writer, chemin de lecture, cible d'ingest, job de fond) passe ICI, et
+    /// n'en ressort qu'avec un `PreparedWriter` : contrat de schéma satisfait ET registres par-db_path
+    /// chargés, par construction (cf. `prepared_writer`). Un futur chemin d'obtention devra demander la
+    /// même valeur — ou ne pas compiler.
+    ///
+    /// LE CATALOGUE EST RE-INTERROGÉ À CHAQUE PASSAGE, pas seulement à l'ouverture froide. Mesuré :
+    /// l'ancien fast-path « writer déjà en cache » rendait le handle d'un tenant SUSPENDU depuis (la
+    /// suspension n'était vue que par les appelants qui pensaient à la vérifier eux-mêmes). Une garde qui
+    /// ne tient que pour les tenants jamais utilisés n'est pas une garde. Le coût est une lecture d'une
+    /// table minuscule et indexée du control-plane (ce que `auth_guard` fait déjà par requête).
+    ///
+    /// FAIL-CLOSED à chaque étape : tenant inconnu/suspendu, clé non résoluble, schéma refusé -> `None`.
+    /// Le tenant n'est PAS servi (au lieu d'être servi depuis, ou dans, la base d'un autre). La cause est
+    /// nommée dans le journal ; elle ne contient jamais la clé.
+    fn ready(&self, tenant: &str) -> Option<prepared_writer::PreparedWriter> {
         if self.control.is_none() {
-            return Some(self.default_writer.clone());
+            return None; // mode 0 : inatteignable (tous les appelants court-circuitent AVANT) ; fail-closed si ça change
         }
-        if let Some(w) = self.writers.lock().get(tenant) {
-            return Some(w.handle());
+        let (path, key) = self.catalog_route(tenant)?;
+        let cached = self.writers.lock().get(tenant).cloned();
+        if let Some(w) = cached {
+            if w.path() == path {
+                return Some(w);
+            }
+            // Le catalogue désigne désormais un AUTRE fichier pour ce tenant : le writer chaud pointe la
+            // base PRÉCÉDENTE -> on l'évince plutôt que de continuer à servir l'ancien fichier.
+            self.writers.lock().remove(tenant);
         }
-        let (path, key) = self.resolve(tenant)?;
         let w = match prepared_writer::PreparedWriter::open(&path, key.as_deref()) {
             Ok(w) => w,
             Err(e) => {
@@ -412,7 +497,24 @@ impl TenantDbManager {
         // ne bloque pas les autres tenants pendant ce temps) ; la première arrivée reste, la seconde est
         // relâchée. Aucune connexion déjà distribuée n'est remplacée sous les pieds d'un appelant.
         let mut cache = self.writers.lock();
-        Some(cache.entry(tenant.to_string()).or_insert(w).handle())
+        Some(cache.entry(tenant.to_string()).or_insert(w).clone())
+    }
+
+    /// Handle d'ÉCRITURE (writer) du tenant. Mode 0 : le writer process-global existant (st.db) —
+    /// passthrough exact, AUCUNE ligne de ce chemin n'est touchée (c'est `server.rs` qui a déjà passé
+    /// ce handle par `prepare_schema` avant le bind). Mode 1 : le writer du `PreparedWriter` (cf. `ready`).
+    pub(crate) fn handle_for(&self, tenant: &str) -> Option<Arc<Mutex<Connection>>> {
+        if self.control.is_none() {
+            return Some(self.default_writer.clone());
+        }
+        self.ready(tenant).map(|w| w.handle())
+    }
+
+    /// db_path SERVABLE du tenant (clé du read-pool et de tous les caches/registres par-db_path) — mode 1.
+    /// Il ne peut sortir que d'un `PreparedWriter`, donc les registres de cette base SONT chargés : c'est
+    /// ce qui rend impossible de LIRE un tenant avec un masquage vide. `None` = tenant non servable.
+    pub(crate) fn ready_db_path(&self, tenant: &str) -> Option<String> {
+        self.ready(tenant).map(|w| w.path())
     }
 }
 
@@ -673,15 +775,33 @@ pub(crate) fn req_db(st: &AppState, au: &AuthUser) -> Arc<Mutex<Connection>> {
     st.tenants.handle_for(&au.tenant).unwrap_or_else(unavailable_tenant_db)
 }
 
+/// CHEMIN CUL-DE-SAC — le pendant LECTURE de `unavailable_tenant_db`, et il vient du MÊME raisonnement.
+///
+/// `req_db_path` doit rendre une `String` (110 sites d'appel, dont aucun ne sait échouer) et son repli
+/// historique était `st.db_path`, c'est-à-dire LA BASE DU PROCESSUS = celle du tenant `default` : une
+/// LECTURE d'un tenant indisponible servait donc les lignes d'un AUTRE tenant. Mesuré : tenant suspendu ->
+/// chemin rendu = celui de la base opérateur, et la requête a servi 1 ligne qui n'appartient qu'à elle.
+///
+/// CE QU'IL EST : un chemin qui ne peut désigner AUCUN fichier, sur AUCUN système, pour AUCUN uid — root
+/// compris. `/dev/null` EXISTE mais n'est PAS un répertoire : toute ouverture SOUS lui échoue (ENOTDIR),
+/// en lecture comme en écriture, et personne ne peut « créer le répertoire manquant ». Le tenant est donc
+/// BRUYAMMENT indisponible (le pool de lecture rend son erreur, `read_with` rend son défaut) au lieu de
+/// servir silencieusement la base de quelqu'un d'autre — et ce raisonnement ne dépend PAS de la CAUSE de
+/// l'indisponibilité (suspension, clé non résoluble, schéma refusé, ou la prochaine cause qu'on ajoutera).
+/// Vérifié par `the_dead_end_path_can_never_designate_a_real_database`.
+pub(crate) const UNAVAILABLE_TENANT_DB_PATH: &str = "/dev/null/plume-tenant-indisponible.db";
+
 /// Chemin de la base du tenant COURANT (clé du read-pool + des caches par-db_path). Mode 0 : st.db_path.
+/// Mode 1 : le chemin SERVABLE du tenant (registres chargés, cf. `ready_db_path`), sinon le cul-de-sac.
 pub(crate) fn req_db_path(st: &AppState, au: &AuthUser) -> String {
-    if !st.multi_tenant {
+    // Mode 0 — ET mode 1 DÉGRADÉ sans control-plane (init échoué : « l'identité retombe sur la base
+    // unique », cf. server.rs) : passthrough EXACT, comme `req_db`/`handle_for` au même instant.
+    if !st.multi_tenant || st.tenants.control.is_none() {
         return st.db_path.as_ref().clone();
     }
     st.tenants
-        .resolve(&au.tenant)
-        .map(|(p, _)| p)
-        .unwrap_or_else(|| st.db_path.as_ref().clone())
+        .ready_db_path(&au.tenant)
+        .unwrap_or_else(|| UNAVAILABLE_TENANT_DB_PATH.to_string())
 }
 
 /// DRY (audit qualité — top win) : prologue de verrou d'écriture répété sur tous les sites d'appel
@@ -739,24 +859,17 @@ pub(crate) fn for_each_active_tenant<F: FnMut(&str, &Arc<Mutex<Connection>>, &st
         list
     };
     for tid in tenants {
-        // resolve() enregistre (db_path -> clé du tenant) au registre read-pool + FAIL-CLOSED si la clé n'est
-        // pas résoluble (vault: injoignable / préfixe inconnu) -> SKIP (le job ne tourne pas sur `default`).
-        let db_path = match mgr.resolve(&tid) {
-            Some((p, _)) => p,
+        // MÊME point de passage que le chemin requête (`ready`) : clé résolue + enregistrée au registre
+        // read-pool, contrat de schéma appliqué, registres par-db_path hydratés — sinon SKIP fail-closed
+        // (le job ne tourne JAMAIS sur la base `default` à la place d'un tenant).
+        let w = match mgr.ready(&tid) {
+            Some(w) => w,
             None => {
-                eprintln!("[multi-tenant][jobs] tenant '{tid}' : clé non résolue -> SKIP (fail-closed ; job NON exécuté sur la base default)");
+                eprintln!("[multi-tenant][jobs] tenant '{tid}' : base non servable (tenant suspendu / clé non résolue / schéma refusé) -> SKIP (fail-closed ; job NON exécuté sur la base default)");
                 continue;
             }
         };
-        // handle_for() ouvre/mémoïse le writer du tenant avec SA clé (cache après le 1er tick).
-        let handle = match mgr.handle_for(&tid) {
-            Some(h) => h,
-            None => {
-                eprintln!("[multi-tenant][jobs] tenant '{tid}' : writer indisponible (base non ouvrable) -> SKIP (fail-closed)");
-                continue;
-            }
-        };
-        body(&tid, &handle, &db_path);
+        body(&tid, &w.handle(), w.path().as_str());
     }
 }
 
@@ -910,12 +1023,17 @@ pub(crate) fn spool_file_tenant(name: &str) -> String {
     "default".to_string()
 }
 
-/// (writer, db_path) cible de l'ingest pour un tenant. Mode 0 : (st.db, st.db_path) quel que soit `tenant`.
-/// Mode 1 : catalogue control-plane ; tenant inconnu/suspendu/clé non résolue -> None (fail-closed R8).
+/// (writer, db_path) cible de l'ingest pour un tenant. Mode 0 : (st.db, st.db_path) quel que soit `tenant`
+/// (passthrough EXACT — mêmes deux valeurs qu'avant). Mode 1 : le MÊME point de passage que le chemin
+/// requête et les jobs (`ready`) -> writer et db_path viennent du MÊME `PreparedWriter` (ils ne peuvent
+/// plus désigner deux bases différentes), registres hydratés ; tenant inconnu/suspendu/clé non résolue/
+/// schéma refusé -> None (fail-closed R8 : quarantaine du fichier spool, jamais un repli vers `default`).
 pub(crate) fn resolve_ingest_target(mgr: &TenantDbManager, tenant: &str) -> Option<(Arc<Mutex<Connection>>, String)> {
-    let handle = mgr.handle_for(tenant)?;
-    let (path, _key) = mgr.resolve(tenant)?;
-    Some((handle, path))
+    if mgr.control.is_none() {
+        return Some((mgr.default_writer.clone(), mgr.default_db_path.as_ref().clone()));
+    }
+    let w = mgr.ready(tenant)?;
+    Some((w.handle(), w.path()))
 }
 
 /// QUARANTAINE d'un fichier spool NON routable (tenant inconnu/suspendu) : déplacé sous `<spool>/quarantine`

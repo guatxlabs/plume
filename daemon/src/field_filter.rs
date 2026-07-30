@@ -169,6 +169,19 @@ pub(crate) fn field_filters_reload(conn: &Connection, db_path: &str) {
     }
 }
 
+/// TEST — ce qu'un NOUVEAU PROCESSUS a en mémoire pour un db_path : RIEN. Oublie TOUT l'état par-db_path de
+/// ce module (règles compilées, colonnes DENY de l'authorizer, sel de hash) pour mesurer le comportement
+/// APRÈS redémarrage sans lancer un second processus. Visibilité de TEST uniquement — même geste que
+/// `open_db` dans db_open.rs : aucun chemin de PRODUCTION ne peut DÉ-charger un registre (la seule
+/// opération de production est de le (re)charger), donc « registre vide » ne peut y être qu'un registre
+/// JAMAIS chargé — ce que la garde d'hydratation rend impossible pour une base servie.
+#[cfg(test)]
+pub(crate) fn field_filters_forget(db_path: &str) {
+    filters_cell().write().remove(db_path);
+    field_deny_cols_cell().write().remove(db_path);
+    salt_cell().write().remove(db_path);
+}
+
 /// Jeu de masques EFFECTIF pour l'appelant (role/tenant/env). VIDE si aucune règle applicable -> compilation
 /// GXQL byte-identique (mode 0). FAIL-CLOSED : `role` inconnu -> rank 0 -> masqué par toute règle.
 pub(crate) fn effective_masks(db_path: &str, role: &str, tenant: &str, env: Option<&str>) -> FieldMaskSet {

@@ -492,8 +492,13 @@
             w.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
             let _ = migrate(&w);
             // event MATCHANT (fields.CommandLine contient whoami) + event NON matchant (dir).
-            w.execute("INSERT INTO event(ts,source,category,severity,message,fields,dedup) VALUES(?1,'sysmon','endpoint',1,'proc','{\"CommandLine\":\"cmd /c whoami /priv\"}','ev-match')", params![ts]).unwrap();
-            w.execute("INSERT INTO event(ts,source,category,severity,message,fields,dedup) VALUES(?1,'sysmon','endpoint',1,'proc','{\"CommandLine\":\"cmd /c dir\"}','ev-nomatch')", params![ts]).unwrap();
+            // F7 — `category` = `exec`, la catégorie que le chemin 4688 des collecteurs Windows LIVRÉS émet
+            // réellement (`process_creation` -> `exec`, cf. la doc de `SIGMA_LOGSOURCE_CATEGORY`). La fixture
+            // suppose `fields.CommandLine` PEUPLÉ : dans un 4688 cela exige la GPO « Include command line in
+            // process creation events » (sinon le champ est absent). Le cas 4688 par DÉFAUT (sans GPO, donc
+            // sans CommandLine) est prouvé par `sigma_process_creation_rule_fires_on_real_4688_event`.
+            w.execute("INSERT INTO event(ts,source,category,severity,message,fields,dedup) VALUES(?1,'WinEventLog:Security','exec',1,'proc','{\"CommandLine\":\"cmd /c whoami /priv\"}','ev-match')", params![ts]).unwrap();
+            w.execute("INSERT INTO event(ts,source,category,severity,message,fields,dedup) VALUES(?1,'WinEventLog:Security','exec',1,'proc','{\"CommandLine\":\"cmd /c dir\"}','ev-nomatch')", params![ts]).unwrap();
             // traduit + insère la règle Sigma.
             let t = sigma_translate(&json!({
                 "title": "e2e whoami", "logsource": {"category":"process_creation"},

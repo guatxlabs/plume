@@ -302,6 +302,40 @@ portant sort de rétention le **2027-07-23**. Après cette date (purge passée),
 `cim_read_alias_exec` de `soql_glue.rs`, ses 4 sites d'appel (`ingest/store.rs` ×3, `handlers/search.rs`),
 la garde `carries_cim_read_alias` du planner froid, et les tests `cim_read_alias_*` / `cim_aliased_*`.
 
+### 5.3 Conséquence en aval — l'import Sigma réconcilié sur `exec`
+
+Poser `exec` comme home canonique laissait une surface **non réconciliée** : l'importeur Sigma mappait le
+logsource `process_creation` sur `endpoint`. Toute règle Sigma de création de processus importée filtrait
+donc `category=endpoint` alors que **le 4688 des collecteurs livrés arrive en `exec`** — elle était
+aveugle à la télémétrie qu'elle vise. Corrigé : `process_creation` → **`exec`**
+(`SIGMA_LOGSOURCE_CATEGORY`, `daemon/src/sigma.rs`), avec une garde **dérivée** qui LIT les collecteurs
+livrés et exige que la table s'accorde avec eux
+(`sigma_process_creation_targets_the_category_the_shipped_4688_path_emits`).
+
+**L'historique est couvert, et c'est prouvé.** L'importeur **recompile** la requête traduite par
+`rule_sql` → `soql_to_sql_x` → `SqlcipherStore::soql_to_sql`, donc elle traverse
+`cim_read_alias_exec` : une règle Sigma `process_creation` importée aujourd'hui voit la télémétrie `exec`
+du jour **et** l'historique scellé `process`. Vérifié de bout en bout par
+`sigma_process_creation_rule_fires_on_real_4688_event` (fixture 4688 réelle) — structure (`IN
+('exec','process')` présent dans le SQL émis) **et** comptage ; neutraliser l'alias fait tomber le compte
+de 2 à 1.
+
+**Angle mort qui subsiste, mesuré.** `map_cim` (`agent/src/source/windows.rs`) range **Sysmon ID 1**
+(création de processus) en `endpoint`, pas en `exec` — c'est la branche par défaut « Sysmon hors 3/22 ».
+La création de processus est donc **scindée entre deux catégories émises** : `exec` (4688 + `execve`
+auditd) et `endpoint` (Sysmon ID 1). Une règle `process_creation` ne peut pas voir les deux ; l'importeur
+le **signale** (avertissement) et un test l'**épingle**. Le refermer signifie changer la catégorie
+**émise** par l'agent : c'est un changement de data-plane qui rouvre exactement la dette du §5.2
+(l'historique Sysmon rangé en `endpoint` deviendrait inatteignable par `category=exec`, et aucun alias ne
+peut le désambiguïser puisque `endpoint` porte aussi image-load / registry / installation de service).
+**Décision consciente** : non fait, écrit.
+
+**Corollaire pour la taxonomie.** L'axe `category` a désormais un oracle d'émission **mesuré**, ce que
+`daemon/src/collected.rs` déclarait explicitement absent : `SIGMA_TARGET_CATEGORY_EMITTERS` cite, pour
+chaque catégorie visée par l'import Sigma, **le fichier livré et le fragment qui l'émet** ; la garde
+vérifie les deux sens. Le périmètre reste celui des cibles de l'import (16 catégories), pas la taxonomie
+entière — **le reste n'est pas mesuré, donc pas affirmé**.
+
 ---
 
 ## 6. Ce que le CIM n'est PAS (encore)

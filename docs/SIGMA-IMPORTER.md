@@ -86,19 +86,105 @@ name       = title
 
 ### 4a. logsource → `category` (CIM)
 
-Priorité `category` > `service` > `product`. Table `SIGMA_LOGSOURCE_CATEGORY` (extensible). Exemples :
+Priorité `category` > `service` > `product`. Table `SIGMA_LOGSOURCE_CATEGORY` — **40 entrées, 16
+catégories cibles distinctes** (compté dans `daemon/src/sigma.rs`).
 
 | Sigma logsource | CIM `category` | | Sigma logsource | CIM `category` |
 |-----------------|:--------------:|-|-----------------|:--------------:|
-| `firewall`      | `firewall`     | | `process_creation`, `image_load`, `registry_event`, `file_event`… | `endpoint` |
-| `proxy`, `webserver`, `apache`, `nginx` | `web` | | `network_connection`, `netflow` | `network` |
-| `dns`           | `dns`          | | `kubernetes` | `k8s` |
-| `antivirus`, `clamav` | `malware` | | `falco` | `ebpf` |
-| `authentication`, `sshd`, `sudo` | `auth` | | `container` | `container` |
-| `email`, `smtp` | `mail`         | | `vpn`, `dlp` | `vpn`, `dlp` |
+| `firewall`, `firewall_traffic` | `firewall` | | **`process_creation`** | **`exec`** |
+| `proxy`, `webserver`, `apache`, `nginx`, `modsecurity`, `web` | `web` | | `process_access`, `image_load`, `driver_load`, `create_remote_thread`, `file_event`/`_change`/`_delete`, `registry_event`/`_set`/`_add`/`_delete` | `endpoint` |
+| `dns`, `dns_query` | `dns`          | | `network_connection`, `netflow` | `network` |
+| `antivirus`, `av`, `clamav` | `malware` | | `kubernetes` | `k8s` |
+| `authentication`, `auth`, `sshd`, `sudo` | `auth` | | `falco` | `ebpf` |
+| `email`, `smtp` | `mail`         | | `container` | `container` |
+| `vpn`, `dlp` | `vpn`, `dlp` | | `syslog`, `system` | `syslog`, `system` |
 
 **logsource non mappé** → règle importée **sans** filtre `category=` (s'applique à toutes les sources),
 avec un **avertissement** (sur-match possible). Jamais un drop.
+
+#### La règle qui gouverne cette table : *une cible sans émetteur est pire qu'une absence de mapping*
+
+Un mapping vers une catégorie que **rien ne produit** fabrique une couverture **apparente** : la règle
+s'importe, se catégorise, apparaît « couverte », et ne peut **jamais** fire. Non mappée, elle est
+**visiblement** non catégorisée. Toute cible de la table est donc adossée à une **citation vérifiée
+mécaniquement** — `(catégorie, fichier livré, fragment émetteur)` dans `SIGMA_TARGET_CATEGORY_EMITTERS`,
+gardée dans les deux sens par `sigma_logsource_targets_are_emitted_by_a_shipped_collector` : pas de
+citation fantôme (le fragment doit être présent dans le fichier cité), pas de cible sans citation
+(mapper vers une catégorie non mesurée fait **rougir** la CI). Même contrat que
+`collected::COLLECTED_EXTENDED_FIELDS` pour les champs, appliqué ici à l'axe `category`.
+
+Deux entrées ont été corrigées sur ce critère :
+
+- **`process_creation` → `exec`** (et non plus `endpoint`). La création de processus Windows
+  (**EventID 4688**) est émise en `exec` — le nom canonique CIM v1.3 — par les **deux** collecteurs
+  Windows livrés (`agent/src/source/windows.rs` : `4688 => ("exec"…)` ; `plume-collector.ps1` :
+  `-Ids @(4688) … -Category 'exec'`) **et** par le flux Linux `collectors/auditd.sh` (`execve`). Tant
+  que la table visait `endpoint`, **toute règle Sigma `process_creation` importée était aveugle à la
+  télémétrie qu'elle vise** — la famille de règles la plus nombreuse de SigmaHQ.
+- **`ps_script` : retiré** (donc non mappé). PowerShell Script Block Logging (EventID 4104, canal
+  `Microsoft-Windows-PowerShell/Operational`) n'a **aucun** émetteur livré : le canal n'est ni dans les
+  canaux par défaut de l'agent (`d_win_channels`) ni dans les `-LogName` du collecteur PowerShell, et
+  `map_cim` rendrait de toute façon une catégorie **vide** pour lui. Pour brancher cette famille il faut
+  d'abord **produire** la télémétrie (parseur/source déclarative), puis mapper.
+
+#### Ce que chaque catégorie exige RÉELLEMENT de l'exploitant
+
+Mesuré en lisant les émetteurs livrés (`collectors/`, `collectors/windows/`, `agent/src/`,
+`collector-syslog/`, `collector-mail/`, `config.d/parsers/`, presets d'ingest du daemon).
+
+> **Cadrage indispensable, mesuré dans `bootstrap.sh` : plume n'installe AUCUN paquet.** Il déploie les
+> collecteurs + leurs timers systemd, et *arme* les règles auditd **si `augenrules` est déjà présent**
+> (sinon il le dit : « auditd absent … sinon auditd.sh reste inerte »). Chaque ligne ci-dessous nomme donc
+> ce que **l'exploitant** doit avoir sur l'hôte. Sans lui la catégorie reste **vide** et les règles Sigma
+> qui la visent sont **inertes** — c'est signalé à l'import, jamais silencieux.
+
+| CIM `category` | émetteur livré (exemple) | prérequis sur l'hôte |
+|----------------|--------------------------|----------------------|
+| `auth` | agent `source/linux.rs` (journald : sshd/sudo/su) | **journald** — présent sur toute distro systemd, donc le cas le plus courant |
+| `firewall` | `collectors/ufw.sh`, `nft.sh`, `origin-drop.sh`, `portscan.sh`, `portprobe.sh` | **ufw** et/ou **nftables** (collecteurs en lecture, rien n'est installé) |
+| `exec` | `collectors/auditd.sh` (`execve`) ; EventID 4688 côté Windows | **auditd installé** (les règles sont armées par `bootstrap.sh`) ; côté Windows, la politique d'audit « Audit Process Creation » |
+| `network` | `collectors/conntrack.sh`, `crowdsec.sh` | **conntrack** (paquet `conntrack-tools`) |
+| `web` | `collectors/web.sh`, `cloudflare.sh`, `cloudflare-http.sh` | un front web dont les logs d'accès sont lisibles (Traefik/nginx) ou le feed Cloudflare |
+| `syslog` | `collector-syslog/src/parser.rs` (parser Generic) | le récepteur syslog `collector-syslog` déployé et des équipements qui y envoient |
+| `malware` | `clamav.sh`, `yara.sh`, `plume-collector.ps1` (Defender) | un scanner : **ClamAV** / **YARA** / **Defender** |
+| `k8s` | `kube-audit.sh`, `kube-state.sh`, `pod-logs.sh` | un **cluster Kubernetes** (+ audit log activé) |
+| `container` | `collectors/containerd.sh` | **containerd** |
+| `ebpf` | `collectors/falco.sh` | **Falco** |
+| `mail` | `collector-mail/src/main.rs` | le service `collector-mail` branché sur une pile mail |
+| `dns` | agent Sysmon ID 22, `suricata.sh`, FortiGate `utm/dns` | **Sysmon** ou **Suricata** ou **FortiGate** |
+| `endpoint` | agent `map_cim` (Sysmon hors ID 1/3/22 ; Security 4697/1102 ; System 7045/7036/7040), FortiGate `event/endpoint`/`ems`/`connector` | **Sysmon** (+ agent plume sur l'hôte Windows) ou **FortiGate EMS** |
+| `system` | `plume-collector.ps1`, FortiGate `event/system` | le **collecteur Windows** ou **FortiGate** |
+| `vpn` | `collector-syslog/src/fortigate.rs` (`event/vpn`) | **FortiGate** |
+| `dlp` | `collector-syslog/src/fortigate.rs` (`utm/dlp`) | **FortiGate** |
+
+**Lecture pratique.** Sur un hôte Linux systemd sans composant tiers ajouté, les familles Sigma qui
+peuvent réellement fire sont celles adossées à `auth` (`authentication`, `auth`, `sshd`, `sudo`) ; en
+ajoutant les paquets `auditd`, `ufw`/`nftables` et `conntrack-tools` — que plume n'installe pas — s'y
+joignent `process_creation` (via l'`execve` auditd), `firewall` / `firewall_traffic` et
+`network_connection` / `netflow`, plus la famille web dès qu'un front est collecté. **Toutes les familles
+Sysmon** (`process_access`, `image_load`, `driver_load`, `create_remote_thread`, `file_*`, `registry_*`)
+exigent que **Sysmon** tourne sur les hôtes Windows *et* que l'agent plume y soit déployé : sans Sysmon,
+elles s'importent et restent **inertes**.
+
+#### Deux angles morts MESURÉS, écrits plutôt que masqués
+
+1. **La création de processus est scindée entre deux catégories émises.** 4688 (agent + collecteur
+   PowerShell) et l'`execve` auditd donnent `exec` ; **Sysmon ID 1** (création de processus) est rangé en
+   `endpoint` par `map_cim` (branche par défaut « Sysmon hors 3/22 »). Une règle `process_creation`
+   importée voit donc 4688 et auditd, **mais pas Sysmon ID 1**. Signalé par un **avertissement à
+   l'import** et épinglé par un test. Refermer cela demande de changer la catégorie **émise** par
+   l'agent (data-plane) et rouvre la même dette d'historique que `process` → `exec` (`docs/CIM.md` §5.2).
+2. **`CommandLine` n'existe pas dans un 4688 par défaut.** Le champ n'apparaît que si la GPO *« Include
+   command line in process creation events »* est activée. La règle vitrine livrée
+   `config.d/sigma/process-whoami-discovery.yml` filtre `CommandLine` : elle **reste inerte sur un
+   Windows par défaut, même après cette réconciliation** (l'importeur le signale — champ étendu inerte).
+   Une règle qui filtre `NewProcessName` (toujours présent) fire, elle : c'est ce que prouve
+   `sigma_process_creation_rule_fires_on_real_4688_event` sur une fixture 4688 réelle.
+
+> **Quelle part d'un ruleset survit à la traduction ? NON MESURÉ ICI** — aucun corpus SigmaHQ n'est
+> embarqué dans le dépôt, donc aucun taux n'est publié. Mesurez-le **sur votre propre ruleset** :
+> `plume-daemon sigma-import <dossier> --dry-run` rend `imported[]` (avec leurs `warnings`) et
+> `skipped[{title,reason}]`. C'est le seul chiffre qui vous concerne.
 
 ### 4b. Champs Sigma → champs Plume
 
@@ -198,7 +284,12 @@ infalsifiable.
 |---------|----------|--------------|
 | `firewall-denied-nonstandard-port.yml` | `logsource.category`→`firewall`, égalité, **négation de liste** | `search category=firewall action=~(?i)^deny$ dport not in (80,443) \| stats count` |
 | `web-admin-path-blocked.yml` | `\|startswith` + égalité en **ET** | `search category=web action=~(?i)^blocked$ url=~(?i)^\/admin \| stats count` |
-| `process-whoami-discovery.yml` | Sysmon `process_creation`→`endpoint`, champ étendu `\|contains` | `search category=endpoint CommandLine=~(?i)whoami \| stats count` |
+| `process-whoami-discovery.yml` | `process_creation`→`exec`, champ étendu `\|contains` | `search category=exec CommandLine=~(?i)whoami \| stats count` |
+
+> ⚠️ **`process-whoami-discovery.yml` reste INERTE sur un Windows par défaut** : elle filtre
+> `CommandLine`, champ **absent** d'un EventID 4688 tant que la GPO *« Include command line in process
+> creation events »* n'est pas activée (cf. §4a, angle mort #2). Elle démontre la **traduction** d'un
+> champ étendu, pas une détection active out-of-the-box. Traduire n'est pas détecter.
 
 Pré-vol : `plume-daemon sigma-import config.d/sigma --dry-run`.
 

@@ -4,7 +4,7 @@
      Ne pas l'éditer à la main : la prochaine passe l'écrase. Tout commentaire durable va dans
      bench/README.md. -->
 
-Rendu le 2026-07-30 15:48:34+0200 depuis `results-smoke-200k.jsonl`, `results.jsonl` (données brutes conservées hors dépôt, cf. `bench/README.md`).
+Rendu le 2026-07-30 15:48:34+0200 depuis `results-smoke-200k.jsonl`, `results.jsonl` — données brutes VERSIONNÉES dans [`bench/results/`](../bench/results/), pour que ce tableau puisse être contredit et pas seulement cru (cf. `bench/README.md`).
 
 ## Ce que ce document est, et ce qu'il n'est pas
 

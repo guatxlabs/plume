@@ -1,5 +1,7 @@
 // Tests de la couche IA CONSEIL (#16). TOUS gated `#[cfg(feature = "ai")]` -> le build/test DÉFAUT reste
-// à 600 tests (byte-identique, aucune dep IA). Sous `--features ai` : garde cloud, instanciation preset +
+// à un compte INCHANGÉ (byte-identique, aucune dep IA) ; ce compte vivant est `EXPECTED_TESTS` dans
+// ci.yml, et il n'est PAS recopié ici — quatre copies avaient pourri, celle-ci disait 600 alors que la
+// suite en comptait 162 de plus. Sous `--features ai` : garde cloud, instanciation preset +
 // garde à la création, redaction du secret en CRUD, inertie runtime, mapping 501, no-leak du ledger.
 // Le CŒUR (invariant cardinal « compilo fermé dispose », zéro-exécution, redaction, rebond) est prouvé en
 // pur dans core/src/ai.rs (mock provider, sans réseau). Ici on prouve le CÂBLAGE daemon, hors réseau.

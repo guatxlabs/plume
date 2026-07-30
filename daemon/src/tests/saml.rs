@@ -1,5 +1,7 @@
-// Tests SAML 2.0 SP (#44). TOUS gated `#[cfg(feature = "saml")]` -> le build/test DÉFAUT reste à 600 tests
-// (byte-identique, samlify non linké). Sous `--features saml` : tests PURS (RelayState, mapping, garde
+// Tests SAML 2.0 SP (#44). TOUS gated `#[cfg(feature = "saml")]` -> le build/test DÉFAUT reste à un compte
+// INCHANGÉ (byte-identique, samlify non linké) ; ce compte vivant est `EXPECTED_TESTS` dans ci.yml, et il
+// n'est PAS recopié ici — cette ligne disait 600, soit 162 de moins que le réel, pendant des mois.
+// Sous `--features saml` : tests PURS (RelayState, mapping, garde
 // d'algorithme, cache anti-rejeu, parsing config) + tests ADVERSAIRES de l'ACS (fixtures signées générées
 // via le round-trip samlify IdP, puis mutées : non signé, signature altérée, mauvaise audience/recipient/
 // issuer, expiré, pas-encore-valide, InResponseTo divergent, rejeu, mauvais cert, SHA-1, XSW, statut != Success).

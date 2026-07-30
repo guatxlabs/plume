@@ -15,10 +15,17 @@ qui croit la prose pense la suite plus petite qu'elle n'est, donc qu'un écart d
 normal, alors que la CONSTANCE de ce compte est précisément l'invariant qui prouve qu'une feature
 OFF laisse le build par défaut inchangé.
 
-LA GARDE EST DÉRIVÉE, PAS ÉNUMÉRÉE. Elle ne connaît aucun fichier par son nom et ne porte aucune
-liste d'exceptions. Elle lit la valeur VIVANTE dans `ci.yml` — la seule que la CI fasse respecter
-— puis applique deux jambes à tous les fichiers texte suivis. Un fichier créé demain est couvert
-par construction.
+LA GARDE EST DÉRIVÉE, PAS ÉNUMÉRÉE. Elle ne porte aucune liste de fichiers tolérés. Elle lit la
+valeur VIVANTE dans `ci.yml` — la seule que la CI fasse respecter — puis applique deux jambes à
+tous les fichiers texte suivis. Un fichier créé demain est couvert par construction.
+
+DEUX FICHIERS SONT HORS PORTÉE, et il faut dire pourquoi ce ne sont pas des exceptions : ce sont
+les deux fichiers AUTO-RÉFÉRENTS. `ci.yml` PORTE la valeur — c'est tout l'objet de la garde — et
+ce script DÉFINIT le motif, donc il contient forcément des exemples de ce qu'il détecte et le
+récit du défaut qui l'a fait naître. Les dater serait faux : ce sont des EXEMPLES, pas des
+mesures. Une règle ne peut pas être sa propre violation. Mesuré, et c'est ce qui a imposé la
+règle : sans cette exemption, la garde a échoué d'abord sur son propre message d'erreur, puis sur
+sa propre documentation — deux tours, deux faux positifs, aucun signal utile.
 
   (A) La valeur vivante n'apparaît nulle part ailleurs comme affirmation de taille de suite.
       Aucune liste d'exceptions n'est nécessaire, et c'est ce qui rend la garde tenable : une
@@ -60,6 +67,7 @@ Sortie :  0 = sain ; 1 = violation (chaque fichier:ligne nommé, avec la jambe v
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -128,10 +136,20 @@ def main() -> int:
     print("[count-guard] compteurs vivants : " + ", ".join(f"{k}={v}" for k, v in counters.items()))
     pats = {name: claim_re(val) for name, val in counters.items()}
 
+    # DEUX exemptions, et ce ne sont pas des exceptions à une liste : ce sont les deux fichiers
+    # AUTO-RÉFÉRENTS. `ci.yml` PORTE la valeur (c'est le point), et ce script DÉFINIT le motif —
+    # il doit donc contenir des exemples de ce qu'il détecte (`600 tests`, `758 passed`,
+    # `752 green`) et le récit du défaut qui l'a fait naître. Les dater serait faux : ce sont des
+    # EXEMPLES, pas des mesures. Une règle ne peut pas être sa propre violation. Mesuré : sans
+    # cette exemption, la garde échouait sur son propre message d'erreur puis sur sa propre
+    # documentation — deux tours, deux faux positifs, aucun signal.
+    myself = os.path.relpath(os.path.abspath(__file__), repo)
+    exempt = {CI, myself}
+
     dup: list[tuple[str, int, str, str]] = []
     undated: list[tuple[str, int, str]] = []
     for rel in tracked_text_files(repo):
-        if rel == CI:  # l'unique endroit autorisé à porter la valeur vivante
+        if rel in exempt:
             continue
         try:
             lines = (repo / rel).read_text(encoding="utf-8", errors="replace").splitlines()
@@ -157,7 +175,10 @@ def main() -> int:
         print(
             "\n[count-guard] ÉCHEC (B) — affirmation chiffrée sur la taille de la suite, SANS DATE.\n"
             "  Une mesure sans date devient fausse en silence : c'est exactement ce qui est arrivé\n"
-            "  aux « 600 tests » restés 162 en dessous du réel. Soit vous citez `EXPECTED_TESTS`\n"
+            # Cette ligne est elle-même DATÉE, et pas par coquetterie : sans l'année, la garde
+            # attrapait son propre message d'erreur. Elle mange donc sa propre nourriture.
+            "  aux « 600 tests » de 2026, restés 162 en dessous du réel. Soit vous citez\n"
+            "  `EXPECTED_TESTS`\n"
             "  sans recopier sa valeur, soit vous datez la mesure (une année sur la ligne suffit)."
         )
         for rel, line_no, text in undated:

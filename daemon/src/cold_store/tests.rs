@@ -7544,6 +7544,15 @@ fn p6_ram_bounded_peak_concurrency_le_degree() {
 /// assertion était donc un générateur de faux échecs sur le seul environnement qu'elle prétendait
 /// protéger.
 ///
+/// VÉRIFIÉ QUE L'ASSERTION NE CACHAIT PAS UNE VRAIE RÉGRESSION — c'est la question qu'on doit se poser
+/// avant de retirer une garde, et elle a été mesurée plutôt que supposée. Le MÊME test rejoué sur la
+/// même machine REDEVENUE AU REPOS (charge 3 au lieu de 16) : séquentiel 47 097 ms, parallèle 18 108 ms,
+/// soit **x2,60 de gain RÉEL**. La parallélisation paie donc bel et bien ; les x0,24 et x0,60 observés
+/// plus tôt mesuraient l'ordonnanceur, pas le code. Retirer l'assertion ne masque rien.
+/// (Et les valeurs absolues n'ont de toute façon aucune valeur publiable : `cargo test` construit en
+/// profil DEBUG, non optimisé — d'où 47 s là où le binaire release du harnais `bench/` scanne 1,4 M
+/// lignes en ~3 s. Une raison de plus pour que le chiffre de perf vive dans `bench/` et pas ici.)
+///
 /// ET ELLE N'APPORTAIT AUCUNE COUVERTURE. La parallélisation est déjà prouvée juste au-dessus, par
 /// OBSERVATION DE LA CONCURRENCE et non par chronomètre : `p6_ram_*` lit une jauge de décodes
 /// simultanés et exige `pic <= degré` (borné par le pool, pas par le nombre de fichiers) puis

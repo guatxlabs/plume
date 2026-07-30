@@ -53,6 +53,12 @@ explicitement plutôt que laissé à la surprise de l'opérateur.
 | [CLICKHOUSE-STORE.md](CLICKHOUSE-STORE.md) | 📐 | Adaptateur mono-nœud. `PLUME_STORE=clickhouse` **n'a aucun effet** aujourd'hui. |
 | [CLICKHOUSE-HA.md](CLICKHOUSE-HA.md) | 📐 | Scaffold distribué multi-nœuds — inerte, non câblé (et le masquage n'est pas encore porté sur le SPI neutre : à lire avant d'y toucher). |
 
+## Mesurer les performances
+
+| Document | État | Pour quoi |
+|---|---|---|
+| [BENCHMARK.md](BENCHMARK.md) | ✅ | **La référence chiffrée, et l'instrument pour la contredire.** 213 cellules mesurées (4 classes de requêtes × fenêtres × masque activé/non × FTS activé/non) sur une base synthétique au profil de production, daemon sous cgroup `MemoryMax=2G` **appliqué** — pas observé. Dit ce qui est **lent** avec la même franchise que ce qui est rapide, et publie les leviers restants par gain mesuré. Le harnais (`../bench/`) rejoue la matrice par une commande unique, pour qu'un tiers puisse refaire la mesure. **Lisez ses qualificatifs avant d'en citer un chiffre** : la référence est à 1 440 003 événements, PAS à 10 M (le débit d'ingest réel est publié à la place), le tier froid n'y est pas mesuré, et la base tenait dans le cache de pages — donc les latences sont un **meilleur cas** borné par le CPU. |
+
 ## Direction et internes
 
 | Document | État | Pour quoi |

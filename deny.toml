@@ -30,8 +30,19 @@ wildcards = "warn"
 #     par tag), présent dans le graphe et donc contrôlé comme n'importe quelle
 #     autre dépendance.
 # Les y ajouter n'élargit rien vers un tiers : ce sont les licences de notre code.
+#
+# FORME SPDX — écrite « nue » (`AGPL-3.0`, `LGPL-3.0`) et non `-or-later`, parce que
+# cargo-deny la REFUSE ici. Mesuré sur 0.18.2, les trois variantes essayées :
+#   "AGPL-3.0-or-later"  -> erreur de désérialisation (« expected a <bare-gnu-license> »)
+#   "AGPL-3.0-only"      -> même erreur
+#   "AGPL-3.0+"          -> même erreur
+#   "AGPL-3.0"           -> accepté, et `check licenses` passe
+# La forme nue couvre bien nos crates déclarées `AGPL-3.0-or-later` : l'outil évalue
+# lui-même la sémantique « ou ultérieure ». PROUVÉ par mutation — en retirant la seule
+# entrée `AGPL-3.0`, le contrôle échoue en nommant `plume-daemon v0.1.0`
+# (« rejected: license is not explicitly allowed »). L'entrée porte donc réellement.
 allow = [
-  "AGPL-3.0-or-later", "LGPL-3.0-or-later",
+  "AGPL-3.0", "LGPL-3.0",
   "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "MPL-2.0",
   "Unicode-DFS-2016", "Unicode-3.0", "CC0-1.0",

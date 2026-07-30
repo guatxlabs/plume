@@ -2,8 +2,20 @@
 #
 # Plume is a solo project TODAY: every path maps to the single maintainer below. This file is
 # structured per-subsystem anyway so that, as the team grows, ownership can be reassigned box
-# by box WITHOUT restructuring — just replace @guatxlabs on the relevant lines with real
-# GitHub handles (e.g. @alice, @team/detection).
+# by box WITHOUT restructuring — add the new handles on the relevant lines (e.g. @alice, or a
+# team as @org/team-name).
+#
+# @guatxlabs IS A REAL, WORKING OWNER — do not "fix" it. It is the GitHub account that owns this
+# repository (account type: User), so GitHub resolves it and assigns it. This is worth stating
+# because the reverse case is a classic silent failure: an ORGANISATION name on its own is NOT a
+# valid code owner. GitHub accepts only @user, @org/team-name, or the e-mail address of an
+# account — an org handle alone renders as "Unknown owner" and assigns NOBODY, so the file looks
+# like a guard while doing nothing. If ownership ever moves to an organisation, these lines must
+# become @org/team-name, never @org.
+#
+# Two further conditions, both outside this file — it is not self-sufficient:
+#   · every owner listed here needs EXPLICIT write access to the repository;
+#   · assignment is advisory until branch protection enables "Require review from Code Owners".
 #
 # Ownership boundaries mirror docs/MODULE-MAP.md. "Guarded" subsystems (masking, RBAC, cold
 # crypto, boot) should keep the maintainer (or a security-owner handle) as a REQUIRED reviewer
@@ -11,7 +23,8 @@
 #
 # Syntax: <path glob>  <owner...>   Later matches win. Keep the catch-all first.
 #
-# TODO(team-growth): replace @guatxlabs with real handles; add security-owner to guarded paths.
+# TODO(team-growth): delegate subsystems to per-person/per-team handles as contributors join, and
+# add a security-owner alongside the maintainer on the guarded paths.
 
 # ---- Catch-all (everything the maintainer owns until reassigned) -------------------------
 *                                       @guatxlabs

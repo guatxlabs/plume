@@ -1,7 +1,7 @@
 #!/bin/sh
 # Capteur Plume (PLUGIN, OPT-IN) : access-logs Traefik (JSON) -> events source=web.
 # Vue "trafic web" facon FortiGate : qui (src_ip reelle via Cf-Connecting-Ip / forwarded) accede a
-# quel host/chemin, methode, statut, octets, duree, routeur, User-Agent. Groupable en SOQL
+# quel host/chemin, methode, statut, octets, duree, routeur, User-Agent. Groupable en GXQL
 # ( | stats count by status / by host / by src_ip / by path ). Pre-requis : Traefik en accesslog JSON
 # (deja le cas ici : --accesslog=true --accesslog.format=json). Lecture seule, AUCUNE action.
 # Mode-aware : PLUME_WEB_SRC=k3s (kubectl logs) | file (chemin local). OPT-IN (non actif par defaut).

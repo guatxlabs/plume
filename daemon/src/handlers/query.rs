@@ -15,6 +15,27 @@ use crate::*;
 /// le watchdog reste `total=-1` (UI ◀ ▶ sans numéros).
 pub(crate) const PAGINATION_COUNT_CAP: i64 = 10_000;
 
+/// #18 — REFUS MOTIVÉ d'une valeur dérivée d'un ensemble froid TRONQUÉ (cf. `cold_store::exactness`).
+/// 422 et non 400 : la requête est SYNTAXIQUEMENT valide et le serveur la comprend — il refuse de la
+/// TRAITER parce que la seule réponse qu'il pourrait former serait un nombre faux. Un client peut donc
+/// distinguer « ta requête est mal écrite » de « ta fenêtre est trop large pour une réponse exacte »,
+/// ce qu'un 400 fourre-tout lui interdirait. `truncated:true` + `reason` sont posés dans le corps pour
+/// que le SPA puisse proposer la voie exacte sans parser un message.
+#[cfg(feature = "cold_tier")]
+fn refuse_truncated_aggregate(t: crate::cold_store::TruncatedAggregate) -> Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(json!({
+            "error": t.message(),
+            "reason": "cold_truncated_aggregate",
+            "truncated": true,
+            "cold_rows_hydrated": t.rows_hydrated,
+            "cold_row_cap": t.cap,
+        })),
+    )
+        .into_response()
+}
+
 // =====================================================================================
 // PAGINATION DU FLUX D'ÉVÉNEMENTS — un SEUL décideur (`keyset_applicable`) et un SEUL fabricant
 // (`page_sql`). Avant, trois sites formataient leur propre `LIMIT/OFFSET` et l'applicabilité du
@@ -367,6 +388,12 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     let mut keyset_compile_failed = false;
     // rollup_meta = Some((approx, truncated, note)) si la requête a été ROUTÉE vers un rollup (sinon raw).
     let mut rollup_meta: Option<(bool, bool, Option<String>)> = None;
+    // #18 — le GXQL post-exclusion, capturé INCONDITIONNELLEMENT (masques compris) : c'est de LUI que la
+    // FORME de la réponse est dérivée (`AnswerShape::of_gxql`) sur les chemins froids. `None` = champ `sql`
+    // brut (admin) -> rien à dériver -> `AnswerShape::undecidable()` = refus. Distinct de `cold_vec_soql`,
+    // qui est une capture CONDITIONNELLE (masques vides) au service du ROUTEUR, pas de la correction.
+    #[cfg_attr(not(feature = "cold_tier"), allow(unused_mut, unused_variables))]
+    let mut req_soql: Option<String> = None;
     // #18 P3 — UNION hot∪cold : `Some(B)` (frontière jour) si le tier cold est ON ET que la fenêtre atteint
     // SOUS `B` (territoire cold). None (feature off / cold off / fenêtre entièrement HOT / SQL brut) -> chemin
     // HOT byte-identique. Posé dans la branche GXQL ci-dessous (sous gate compile+runtime).
@@ -387,6 +414,13 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         // compile_panel_sql) -> /api/query débruite comme les panneaux ; no-op si absents. JAMAIS sur la
         // détection (rule_sql ne substitue pas ; cf invariant excl_v55_*).
         let soql = apply_excl_placeholders(soql.trim(), true);
+        // #18 — capture pour la DÉRIVATION DE FORME. Inconditionnelle vis-à-vis des MASQUES (la correction
+        // ne doit pas dépendre d'eux, contrairement au routage) ; gatée sur la feature parce qu'en mode 0
+        // aucun chemin froid ne la lit — l'écrire y serait une affectation morte.
+        #[cfg(feature = "cold_tier")]
+        {
+            req_soql = Some(soql.to_string());
+        }
         // FILTRE ENVIRONNEMENT (#2d) : propagé au rollup-route ET au compilo (raw event). None en mode 0.
         let env = au.env_filter();
         // FIELD FILTERS (#45) : masques EFFECTIFS pour le rôle/tenant/env de l'appelant. VIDE (mode 0 / aucune
@@ -574,7 +608,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
             // NE S'INTERLEAVENT PAS en `ts DESC` -> on remplit la page depuis le HOT (keyset SQLite existant,
             // borné `ts>=boundary`), et si le hot s'épuise avant N on COMPLÈTE avec le COLD keyset colonnaire.
             // `None` (forme non vectorisable / hydrat. impossible) -> FALLBACK `cold_union_query` ci-dessous.
-            if offset == 0 && crate::cfg(&conf, "PLUME_COLD_VECTORIZED", "") == "1" {
+            if offset == 0 && crate::cold_store::cold_vectorized_armed(&conf) {
                 if let Some(rsoql) = cold_vec_soql.clone() {
                     let dbp = db_path.clone();
                     let confc = conf.clone();
@@ -611,11 +645,25 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                 crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &ks_page, None, budget_ms, qid.as_deref(), &preds)
             })
             .await;
+            // #18 — la FORME de la réponse est DÉRIVÉE du GXQL, jamais affirmée ici : `render` refuse
+            // toute valeur dérivée d'un ensemble tronqué (un `| eventstats`/`| dedup` keyset-applicable
+            // rendrait des colonnes calculées sur l'échantillon). Voie par-événement -> page partielle.
+            let shape = match req_soql.as_deref() {
+                Some(s) => crate::cold_store::AnswerShape::of_gxql(s),
+                None => crate::cold_store::AnswerShape::undecidable(),
+            };
             return match res {
-                Ok(Ok((mut v, _total, meta))) => {
-                    // truncated cold OR-é AVANT keyset_finalize -> `has_more` en tient compte (jamais un union tronqué
-                    // présenté comme dernière page). Puis on annote la couverture cold (transparence).
-                    if meta.truncated { v["stats"]["truncated"] = json!(true); }
+                Ok(Ok((answer, meta))) => {
+                    let mut v = match answer.render(shape) {
+                        Ok(r) => {
+                            // truncated cold OR-é AVANT keyset_finalize -> `has_more` en tient compte (jamais un union
+                            // tronqué présenté comme dernière page).
+                            let mut v = r.value;
+                            if r.truncated { v["stats"]["truncated"] = json!(true); }
+                            v
+                        }
+                        Err(t) => return refuse_truncated_aggregate(t),
+                    };
                     keyset_finalize(&mut v, keyset_lim);
                     keyset_trim_helper_cols(&mut v, keyset_trim); // APRÈS finalize (qui a besoin de ts/id)
                     v["stats"]["server_ms"] = json!(dur_ms(t_start.elapsed()));
@@ -738,8 +786,20 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
             crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &cold_page, count_sql.as_deref(), budget_ms, qid.as_deref(), &preds)
         })
         .await;
+        // #18 — FORME DÉRIVÉE du GXQL. C'est ICI que le défaut mordait : `search source=auditd severity>=2 |
+        // stats count` rendait 289 au lieu de 58 747 (×203 mesuré), avec un drapeau à côté. `render` refuse
+        // désormais de former ce nombre ; la voie exacte est le routeur vectorisé essayé juste au-dessus.
+        let shape = match req_soql.as_deref() {
+            Some(s) => crate::cold_store::AnswerShape::of_gxql(s),
+            None => crate::cold_store::AnswerShape::undecidable(), // `sql` brut admin : rien de dérivable
+        };
         return match res {
-            Ok(Ok((mut v, total, meta))) => {
+            Ok(Ok((answer, meta))) => {
+                let crate::cold_store::Rendered { mut value, total, truncated } = match answer.render(shape) {
+                    Ok(r) => r,
+                    Err(t) => return refuse_truncated_aggregate(t),
+                };
+                let v = &mut value;
                 v["stats"]["server_ms"] = json!(dur_ms(t_start.elapsed()));
                 v["stats"]["sem_wait_ms"] = json!(sem_wait_ms);
                 v["compiled_sql"] = json!(sql_for_resp);
@@ -754,11 +814,13 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                     "files_pruned": meta.files_pruned,
                     "truncated": meta.truncated,
                 });
-                if meta.truncated {
+                if truncated {
                     v["stats"]["truncated"] = json!(true);
                 }
                 if let Some(lim) = limit {
                     // COUNT BORNÉ : raw = min(vrai_total, CAP+1). > CAP -> capé (CAP + total_capped) ; sinon exact.
+                    // `total` est None sur un ensemble tronqué (un COUNT de pagination est lui aussi une valeur
+                    // dérivée) -> -1, et le pager rend ◀ ▶ sans numéros au lieu d'un total faux.
                     let raw_total = total.unwrap_or(-1);
                     let total_capped = raw_total > PAGINATION_COUNT_CAP;
                     v["total"] = json!(if total_capped { PAGINATION_COUNT_CAP } else { raw_total });
@@ -766,7 +828,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                     v["offset"] = json!(offset);
                     v["limit"] = json!(lim);
                 }
-                Json(v).into_response()
+                Json(value).into_response()
             }
             Ok(Err(e)) => bad_req(e),
             Err(_) => server_err("exécution échouée"),
@@ -1018,8 +1080,15 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
     // #28 PHASE B — MÊME élagage dimensionnel cold que /api/query : les prédicats sont extraits du SQL COMPILÉ
     // juste avant `cold_union_query` (parité par construction), pas ici.
     // --- COMPILATION STRICTEMENT IDENTIQUE À /api/query (choke-point unique de redaction/RBAC) ---
+    // #18 — GXQL post-exclusion pour la DÉRIVATION DE FORME (cf. /api/query). `None` = `sql` brut admin.
+    #[cfg_attr(not(feature = "cold_tier"), allow(unused_mut, unused_variables))]
+    let mut req_soql: Option<String> = None;
     let (sql, _from_soql) = if let Some(soql) = body.get("soql").and_then(|v| v.as_str()) {
         let soql = apply_excl_placeholders(soql.trim(), true);
+        #[cfg(feature = "cold_tier")]
+        {
+            req_soql = Some(soql.to_string());
+        }
         let env = au.env_filter();
         // FIELD FILTERS (#45) : export = MÊME compilation masquée que /api/query (choke-point unique). Masques
         // VIDES -> byte-identique + rollup-route intact ; sinon rollup désactivé (src_ip/host en clair) + compile
@@ -1121,11 +1190,21 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
             crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &ps, None, budget, None, &preds)
         })
         .await;
+        // #18 — un export est un fichier qu'on archive et qu'on cite : y écrire un agrégat calculé sur un
+        // échantillon est pire qu'ailleurs (le drapeau X-Plume-Truncated ne survit pas au fichier). FORME
+        // DÉRIVÉE, refus si dérivée-sur-tronqué.
+        let shape = match req_soql.as_deref() {
+            Some(s) => crate::cold_store::AnswerShape::of_gxql(s),
+            None => crate::cold_store::AnswerShape::undecidable(),
+        };
         match res {
-            Ok(Ok((v, _total, meta))) => {
-                cold_extra_truncated = meta.truncated;
-                v
-            }
+            Ok(Ok((answer, _meta))) => match answer.render(shape) {
+                Ok(r) => {
+                    cold_extra_truncated = r.truncated;
+                    r.value
+                }
+                Err(t) => return refuse_truncated_aggregate(t),
+            },
             Ok(Err(e)) => return bad_req(e),
             Err(_) => return server_err("exécution échouée"),
         }

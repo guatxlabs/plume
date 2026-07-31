@@ -1017,8 +1017,14 @@ pub(crate) fn open_cold_union(
 
 /// #18 P3 — EXÉCUTE une requête (page + COUNT optionnel) sur l'union hot∪cold. Construit la connexion d'union
 /// UNE FOIS (une seule hydratation) puis exécute `page_sql` (et `count_sql` si paginé) via `run_on_conn` (MÊME
-/// budget/watchdog/annulation/masquage/authorizer que le hot). Renvoie (page, total?, meta de couverture). Une
-/// erreur d'hydratation (cold corrompu) -> Err (fail-closed). À appeler depuis `spawn_blocking` (I/O + déchiffr.).
+/// budget/watchdog/annulation/masquage/authorizer que le hot). Une erreur d'hydratation (cold corrompu) -> Err
+/// (fail-closed). À appeler depuis `spawn_blocking` (I/O + déchiffrement).
+///
+/// RENVOIE UNE `ColdAnswer`, PAS UN `Value`. Quand l'hydratation froide a PLAFONNÉ, le `Value` calculé sur
+/// l'échantillon est SÉQUESTRÉ : le seul chemin vers la sérialisation est `ColdAnswer::render(shape)`, qui
+/// REFUSE toute valeur dérivée d'un ensemble tronqué (cf. `cold_store::exactness`). Avant ce type, cette
+/// fonction rendait un `Value` que trois sites d'appel affichaient tel quel, avec un drapeau à côté —
+/// c'est-à-dire un `stats count` faux d'un facteur mesuré ×203.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cold_union_query(
     db_path: &str,
@@ -1032,7 +1038,7 @@ pub(crate) fn cold_union_query(
     budget_ms: u64,
     qid: Option<&str>,
     dim_preds: &[DimEq],
-) -> Result<(Value, Option<i64>, ColdUnionMeta), String> {
+) -> Result<(ColdAnswer, ColdUnionMeta), String> {
     let u = open_cold_union(db_path, conf, env_filter, q_from, q_to, boundary, dim_preds)?;
     let page = run_on_conn(&u.conn, db_path, page_sql, budget_ms, qid)?;
     let total = match count_sql {
@@ -1041,5 +1047,6 @@ pub(crate) fn cold_union_query(
             .and_then(|v| v.get("rows").and_then(|r| r.get(0)).and_then(|r0| r0.get(0)).and_then(|x| x.as_i64())),
         None => None,
     };
-    Ok((page, total, u.meta))
+    let answer = ColdAnswer::new(page, total, u.meta.truncated, cold_hydrate_row_cap(), u.meta.rows_hydrated);
+    Ok((answer, u.meta))
 }

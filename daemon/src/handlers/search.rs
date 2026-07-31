@@ -21,6 +21,51 @@ pub(crate) fn search_bar_exact_pred(col: &str, v: &str) -> String {
     }
 }
 
+/// #18 — COUVERTURE DÉCLARÉE DE LA BARRE DE RECHERCHE.
+///
+/// LE DÉFAUT QU'ELLE FERME. `/api/search` interroge `event` — la table HOT — et RIEN d'autre. Quand le
+/// tier froid est actif, tout ce qui est plus vieux que la frontière `B` a quitté `event` pour du
+/// Parquet. Avec une rétention d'un an et une fenêtre chaude de 7 jours, la barre était donc MUETTE sur
+/// 358 des 365 jours conservés — et elle rendait `{"results": []}`, c'est-à-dire « rien ne correspond »,
+/// alors que la réponse honnête était « je n'ai pas cherché là ». Un mensonge par omission.
+///
+/// POURQUOI ELLE DÉCLARE AU LIEU DE SERVIR. Servir le froid ici demanderait un index plein-texte sur le
+/// colonnaire, qui n'existe pas ; l'imiter par un `LIKE`/regex donnerait une AUTRE sémantique
+/// (tokenisation, préfixes, opérateurs booléens de FTS5) — donc un second mensonge, plus difficile à
+/// voir. On refuse donc explicitement, on NOMME la cause, et on donne la voie qui, elle, lit le froid :
+/// `/api/query` en GXQL. Une erreur vaut mieux qu'une réponse fausse ; un silence ne vaut rien.
+///
+/// `None` = rien à déclarer (tier froid inactif, aucune donnée froide, ou fenêtre entièrement chaude).
+#[cfg(feature = "cold_tier")]
+pub(crate) fn search_cold_coverage(conn: &Connection, conf: &HashMap<String, String>, boundary: i64, from: i64) -> Option<Value> {
+    if !crate::cold_store::cold_tier_runtime_on(conf) {
+        return None;
+    }
+    // La fenêtre demandée atteint-elle SOUS la frontière ? `from == 0` = non bornée -> oui.
+    if from > 0 && from >= boundary {
+        return None;
+    }
+    // Y a-t-il vraiment de l'histoire froide ? Sans seal, la barre couvre tout ce qui existe et une
+    // note serait du bruit. Table absente / illisible -> None (jamais d'alarme sur une incertitude).
+    let has_cold: bool = conn
+        .query_row("SELECT EXISTS(SELECT 1 FROM cold_seal WHERE day < ?1)", params![boundary / 86_400], |r| r.get::<_, i64>(0))
+        .map(|n| n == 1)
+        .unwrap_or(false);
+    if !has_cold {
+        return None;
+    }
+    Some(json!({
+        "searched_from": boundary,
+        "cold_boundary_ts": boundary,
+        "reason": "fts_hot_only",
+        "notice": "recherche INCOMPLÈTE : la barre plein-texte n'interroge que l'index FTS5, qui n'existe \
+                   que sur la fenêtre chaude — l'historique columnarisé plus ancien n'a PAS été cherché \
+                   (ce n'est donc pas « aucun résultat »). Voie EXACTE sur tout l'historique : /api/query \
+                   en GXQL, qui lit le tier froid (p. ex. `search message=~<motif>` ou `search \
+                   <champ>=<valeur>`)."
+    }))
+}
+
 pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
     let _mt = crate::search_timer(); // #51 DAY-2 OPS : latence recherche (p50/p95) enregistrée à la sortie (Drop)
     let term = q.get("q").cloned().unwrap_or_default();
@@ -82,9 +127,8 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
         }
         fts_terms.push(tok);
     }
-    if let Some(f) = q.get("from").and_then(|s| s.parse::<i64>().ok()) {
-        if f > 0 { where_extra.push(format!("e.ts>={f}")); }
-    }
+    let q_from = q.get("from").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+    if q_from > 0 { where_extra.push(format!("e.ts>={q_from}")); }
     if let Some(t) = q.get("to").and_then(|s| s.parse::<i64>().ok()) {
         if t > 0 { where_extra.push(format!("e.ts<={t}")); }
     }
@@ -109,9 +153,38 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
     // RÉELLE est EN PLUS bloquée au prepare() par l'authorizer read-pool (SELECT ...e.src_ip... échoue).
     // spawn_blocking : n'occupe pas un worker async pendant le scan. read_with_watchdog : pool read-only
     // (a REGEXP) + watchdog 3s qui interrompt un scan trop long (anti-DoS, cf stress-test). Renvoie Value.
+    // #18 — FRONTIÈRE chaud/froid, dérivée EXACTEMENT comme dans /api/query (`cold_query_boundary` sur la
+    // même `cold_hot_cutoff` que l'aging) : jamais réinventée ici. Feature/flag OFF -> `None` -> aucune
+    // note, aucun coût, /api/search byte-identique (mode 0).
+    #[allow(unused_mut)]
+    let mut cold_boundary: Option<i64> = None;
+    #[cfg(feature = "cold_tier")]
+    {
+        let conf = load_config();
+        if crate::cold_store::cold_tier_runtime_on(&conf) {
+            let rc = req_db(&st, &au);
+            let c = rc.lock();
+            let rd = retention_effective(&c, &conf, "retention_days");
+            cold_boundary = Some(crate::cold_store::cold_query_boundary(&c, &conf, now(), rd));
+        }
+    }
     let db_path = req_db_path(&st, &au);
     let res = tokio::task::spawn_blocking(move || {
         read_with_watchdog(&db_path, json!({ "results": [] }), move |conn| {
+            // #18 — COUVERTURE : ce qui n'a PAS été cherché est dit, jamais tu. Calculée sur la MÊME
+            // connexion que la recherche (l'index `cold_seal` vit dans la base du tenant).
+            #[allow(unused_mut)]
+            let mut coverage: Option<Value> = None;
+            #[cfg(feature = "cold_tier")]
+            if let Some(b) = cold_boundary {
+                coverage = search_cold_coverage(conn, &load_config(), b, q_from);
+            }
+            let with_coverage = |mut v: Value| -> Value {
+                if let Some(c) = coverage.clone() {
+                    v["coverage"] = c;
+                }
+                v
+            };
             let map_row = |r: &rusqlite::Row| -> rusqlite::Result<Value> {
                 Ok(json!({
                     "ts": r.get::<_, i64>(0)?, "source": r.get::<_, String>(1)?,
@@ -122,18 +195,18 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
             const COLS: &str = "e.ts,e.source,e.severity,e.message,e.host,e.src_ip";
             let out: Vec<Value> = if fts_terms.is_empty() {
                 if where_extra.is_empty() {
-                    return json!({ "results": [] });
+                    return with_coverage(json!({ "results": [] }));
                 }
                 let sql = format!("SELECT {COLS} FROM event e WHERE {} ORDER BY e.ts DESC LIMIT ?1", where_extra.join(" AND "));
                 let mut stmt = match conn.prepare(&sql) {
                     Ok(s) => s,
-                    Err(_) => return json!({ "results": [] }),
+                    Err(_) => return with_coverage(json!({ "results": [] })),
                 };
                 let rows: Vec<Value> = match stmt.query_map(params![limit], map_row) {
                     // collect en Result : s'ARRÊTE à la 1re erreur (interruption watchdog) au lieu de la
                     // swallow + re-step (ce que faisait .flatten() -> le watchdog ne coupait pas le scan).
-                    Ok(r) => match r.collect::<rusqlite::Result<Vec<Value>>>() { Ok(v) => v, Err(_) => return json!({ "results": [] }) },
-                    Err(_) => return json!({ "results": [] }),
+                    Ok(r) => match r.collect::<rusqlite::Result<Vec<Value>>>() { Ok(v) => v, Err(_) => return with_coverage(json!({ "results": [] })) },
+                    Err(_) => return with_coverage(json!({ "results": [] })),
                 };
                 rows
             } else {
@@ -157,17 +230,17 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
                 };
                 let mut stmt = match conn.prepare(&sql) {
                     Ok(s) => s,
-                    Err(_) => return json!({ "results": [] }),
+                    Err(_) => return with_coverage(json!({ "results": [] })),
                 };
                 let rows: Vec<Value> = match stmt.query_map(params![match_q, limit], map_row) {
                     // collect en Result : s'ARRÊTE à la 1re erreur (interruption watchdog) au lieu de la
                     // swallow + re-step (ce que faisait .flatten() -> le watchdog ne coupait pas le scan).
-                    Ok(r) => match r.collect::<rusqlite::Result<Vec<Value>>>() { Ok(v) => v, Err(_) => return json!({ "results": [] }) },
-                    Err(_) => return json!({ "results": [] }),
+                    Ok(r) => match r.collect::<rusqlite::Result<Vec<Value>>>() { Ok(v) => v, Err(_) => return with_coverage(json!({ "results": [] })) },
+                    Err(_) => return with_coverage(json!({ "results": [] })),
                 };
                 rows
             };
-            json!({ "results": out })
+            with_coverage(json!({ "results": out }))
         })
     }).await.unwrap_or_else(|_| json!({ "results": [] }));
     // FIELD FILTERS (#45) : caviarde les champs masqués de chaque résultat pour le rôle appelant (no-op si

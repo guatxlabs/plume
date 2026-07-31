@@ -6,6 +6,35 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 // ---- helpers ---------------------------------------------------------------------------------------
 
+/// L'ORACLE HISTORIQUE — `cold_union_query` rendu sous sa forme d'AVANT `exactness` : `(Value, total,
+/// meta)`, la valeur DÉSÉQUESTRÉE, tronquée ou non.
+///
+/// Il n'est PAS un raccourci de confort. Deux usages, tous deux légitimes :
+///   1. Les tests P3/P3.5/P4 portent sur le SQL RÉELLEMENT EXÉCUTÉ (union, masquage #45, authorizer,
+///      élagage seal) — pas sur la correction des agrégats. Ils veulent la valeur, pas le verdict.
+///   2. Le harnais de PARITÉ a besoin de la valeur FAUSSE pour PROUVER qu'elle est fausse : sans
+///      accès à ce que le chemin d'union calcule, on ne peut pas mesurer le ×203 qu'on prétend fermer.
+/// La production, elle, n'a AUCUN chemin vers cette valeur : `render` est sa seule sortie.
+#[allow(clippy::too_many_arguments)]
+fn union_query_oracle(
+    db_path: &str,
+    conf: &HashMap<String, String>,
+    env_filter: Option<&str>,
+    q_from: i64,
+    q_to: i64,
+    boundary: i64,
+    page_sql: &str,
+    count_sql: Option<&str>,
+    budget_ms: u64,
+    qid: Option<&str>,
+    dim_preds: &[DimEq],
+) -> Result<(Value, Option<i64>, ColdUnionMeta), String> {
+    let (answer, meta) =
+        cold_union_query(db_path, conf, env_filter, q_from, q_to, boundary, page_sql, count_sql, budget_ms, qid, dim_preds)?;
+    let (v, total) = answer.into_value_even_if_wrong();
+    Ok((v, total, meta))
+}
+
 static UNIQ: AtomicU64 = AtomicU64::new(0);
 
 /// Répertoire temporaire unique (pid + compteur + nanos) — chaque test s'isole.
@@ -2541,7 +2570,9 @@ fn conf_union(hw: i64) -> HashMap<String, String> {
     m.insert("PLUME_COLD_TIER".to_string(), "1".to_string());
     m.insert("PLUME_COLD_HOT_WINDOW_DAYS".to_string(), hw.to_string());
     m.insert("PLUME_DB_KEY".to_string(), TEST_DB_KEY.to_string());
-    // GATE 0 (kill-switch dark) activé pour les tests de routage vectorisé — la prod le laisse OFF par défaut.
+    // GATE 0 posé EXPLICITEMENT (il vaut son défaut : ARMÉ). Le laisser écrit rend les fixtures
+    // indépendantes du défaut, de sorte qu'un futur changement de défaut ne déplace pas silencieusement
+    // ce que ces tests mesurent. Le défaut lui-même est prouvé par `gate0_vectorized_router_is_armed_by_default…`.
     m.insert("PLUME_COLD_VECTORIZED".to_string(), "1".to_string());
     m
 }
@@ -2601,7 +2632,7 @@ fn p3_masking_applies_to_cold_rows() {
 
     // (a) SANS masque : le src_ip COLD revient BRUT ('10.0.0.1') -> l'union sert bien les lignes cold.
     let raw_sql = compile_ev("search | table source, src_ip", UWIN_FROM, UWIN_TO, FieldMaskSet::new());
-    let (raw, _t, _m) = cold_union_query(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &raw_sql, None, 60_000, None, &[]).unwrap();
+    let (raw, _t, _m) = union_query_oracle(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &raw_sql, None, 60_000, None, &[]).unwrap();
     let raw_srcs = col_vals(&raw, "source");
     let cold_present = raw_srcs.iter().any(|s| s.as_str().map(|x| x.starts_with("src-")).unwrap_or(false));
     let hot_present = raw_srcs.iter().any(|s| s.as_str() == Some("recent-tail"));
@@ -2612,7 +2643,7 @@ fn p3_masking_applies_to_cold_rows() {
     let mut masks = FieldMaskSet::new();
     masks.insert("src_ip".to_string(), MaskAction::Mask);
     let masked_sql = compile_ev("search | table source, src_ip", UWIN_FROM, UWIN_TO, masks);
-    let (masked, _t2, _m2) = cold_union_query(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &masked_sql, None, 60_000, None, &[]).unwrap();
+    let (masked, _t2, _m2) = union_query_oracle(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &masked_sql, None, 60_000, None, &[]).unwrap();
     let m_srcs = col_vals(&masked, "source");
     let m_ips = col_vals(&masked, "src_ip");
     // Au moins une ligne cold présente ET masquée (preuve que le COLD passe par le masque, pas seulement le hot).
@@ -2695,7 +2726,7 @@ fn p3_no_double_count_at_overlap() {
     let b = union_boundary(&db, &conf);
     // count sur la fenêtre du jour : la partition exclut le hot ts<B, garde le cold ts<B -> compté UNE fois.
     let sql = compile_ev("search | stats count", base, base + n_rows, FieldMaskSet::new());
-    let (v, _t, _m) = cold_union_query(&dbp, &conf, None, base, base + n_rows, b, &sql, None, 60_000, None, &[]).unwrap();
+    let (v, _t, _m) = union_query_oracle(&dbp, &conf, None, base, base + n_rows, b, &sql, None, 60_000, None, &[]).unwrap();
     let cnt = col_vals(&v, "count")[0].as_i64().unwrap();
     assert_eq!(cnt, n_rows, "compté UNE fois (partition hot ts>=B / cold ts<B) — pas 2N={}", 2 * n_rows);
     let _ = std::fs::remove_dir_all(&root);
@@ -2721,7 +2752,7 @@ fn p3_rollup_gap_aggregate_complete_from_cold_raw() {
     let (from, to) = (base, base + 36);
     assert!(to < b, "fenêtre entièrement cold");
     let sql = compile_ev("search | stats count", from, to, FieldMaskSet::new());
-    let (v, _t, meta) = cold_union_query(&dbp, &conf, None, from, to, b, &sql, None, 60_000, None, &[]).unwrap();
+    let (v, _t, meta) = union_query_oracle(&dbp, &conf, None, from, to, b, &sql, None, 60_000, None, &[]).unwrap();
     assert_eq!(col_vals(&v, "count")[0].as_i64().unwrap(), 37, "agrégat COMPLET depuis le brut cold (pas de rollup tronqué)");
     assert_eq!(meta.rows_hydrated, 37, "37 lignes cold brutes scannées");
     let _ = std::fs::remove_dir_all(&root);
@@ -2767,9 +2798,9 @@ fn p3_aggregate_correctness_union_equals_single_table() {
     cold_age_run(&db, &dbp, &conf, n_now(), RET_DAYS); // columnarise le jour cold
     assert_eq!(count_hot_day(&db, "prod", cold_day), 0);
     let b = union_boundary(&db, &conf);
-    let (u_by, _t1, _m1) = cold_union_query(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &by_sql, None, 60_000, None, &[]).unwrap();
-    let (u_dc, _t2, _m2) = cold_union_query(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &dc_sql, None, 60_000, None, &[]).unwrap();
-    let (u_avg, _t3, _m3) = cold_union_query(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &avg_sql, None, 60_000, None, &[]).unwrap();
+    let (u_by, _t1, _m1) = union_query_oracle(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &by_sql, None, 60_000, None, &[]).unwrap();
+    let (u_dc, _t2, _m2) = union_query_oracle(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &dc_sql, None, 60_000, None, &[]).unwrap();
+    let (u_avg, _t3, _m3) = union_query_oracle(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &avg_sql, None, 60_000, None, &[]).unwrap();
 
     assert_eq!(count_by_source(&u_by), count_by_source(&ref_by), "count by source : union == table unique");
     let dc_col = u_dc["columns"][0].as_str().unwrap().to_string();
@@ -2807,7 +2838,7 @@ fn p3_truncated_surfaced() {
     cold_age_run(&db, &dbp, &conf, n_now(), RET_DAYS);
     let b = union_boundary(&db, &conf);
     let sql = compile_ev("search | table source", base, base + total, FieldMaskSet::new());
-    let (_v, _t, meta) = cold_union_query(&dbp, &conf, None, base, base + total, b, &sql, None, 60_000, None, &[]).unwrap();
+    let (_v, _t, meta) = union_query_oracle(&dbp, &conf, None, base, base + total, b, &sql, None, 60_000, None, &[]).unwrap();
     assert!(meta.truncated, "cap cold dépassé -> truncated SIGNALÉ (incomplétude jamais silencieuse)");
     assert_eq!(meta.rows_hydrated, 5000, "borné au plafond interactif");
     let _ = std::fs::remove_dir_all(&root);
@@ -2873,7 +2904,7 @@ fn p3_per_tenant_isolation() {
     assert_ne!(cold_root(&conf, &a_dbp), cold_root(&conf, &b_dbp), "racines cold DISJOINTES");
     let b = union_boundary(&a_db, &conf);
     let sql = compile_ev("search | table source", UWIN_FROM, UWIN_TO, FieldMaskSet::new());
-    let (v, _t, _m) = cold_union_query(&a_dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &sql, None, 60_000, None, &[]).unwrap();
+    let (v, _t, _m) = union_query_oracle(&a_dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &sql, None, 60_000, None, &[]).unwrap();
     let srcs = col_vals(&v, "source");
     assert!(srcs.iter().any(|s| s.as_str().map(|x| x.starts_with("a-")).unwrap_or(false)), "union A sert le cold de A");
     assert!(!srcs.iter().any(|s| s.as_str().map(|x| x.starts_with("b-")).unwrap_or(false)), "union A ne sert JAMAIS le cold de B (isolation)");
@@ -2922,7 +2953,7 @@ fn p3_hash_masking_over_cold_matches_hot() {
     masks.insert("src_ip".to_string(), MaskAction::Hash);
     let sql = compile_ev("search | table source, src_ip", UWIN_FROM, UWIN_TO, masks);
     assert!(sql.contains("plume_fmask_hash"), "le compilo émet le HASH dans la projection : {sql}");
-    let (v, _t, _m) = cold_union_query(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &sql, None, 60_000, None, &[]).unwrap();
+    let (v, _t, _m) = union_query_oracle(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &sql, None, 60_000, None, &[]).unwrap();
 
     // Hash de RÉFÉRENCE recalculé indépendamment (même fonction que l'UDF SQL) -> preuve non circulaire.
     let expected = crate::fmask_hash(SALT, "10.0.0.1");
@@ -2984,7 +3015,7 @@ fn p3_fields_json_key_masking_over_cold() {
     masks.insert("password".to_string(), MaskAction::Deny); // clé JSON (pas une colonne réelle) -> retirée du sac
     let sql = compile_ev("search | table source, fields", UWIN_FROM, UWIN_TO, masks);
     assert!(sql.contains("json_remove"), "le compilo RETIRE la clé masquée du blob (json_remove) : {sql}");
-    let (v, _t, _m) = cold_union_query(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &sql, None, 60_000, None, &[]).unwrap();
+    let (v, _t, _m) = union_query_oracle(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &sql, None, 60_000, None, &[]).unwrap();
 
     let srcs = col_vals(&v, "source");
     let fields = col_vals(&v, "fields");
@@ -3038,7 +3069,7 @@ fn p3_masked_aggregate_over_cold() {
     masks.insert("src_ip".to_string(), MaskAction::Hash);
     let sql = compile_ev("search | stats count by src_ip", UWIN_FROM, UWIN_TO, masks);
     assert!(sql.contains("plume_fmask_hash"), "group-by sur la valeur HACHÉE, jamais brute : {sql}");
-    let (v, _t, _m) = cold_union_query(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &sql, None, 60_000, None, &[]).unwrap();
+    let (v, _t, _m) = union_query_oracle(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &sql, None, 60_000, None, &[]).unwrap();
 
     let expected = crate::fmask_hash(SALT, "10.0.0.1");
     let keys = col_vals(&v, "src_ip");
@@ -3347,7 +3378,7 @@ fn phase_a_cold_route_count_by_source_equals_raw_zero_parquet() {
     let routed = crate::run_query_ex(&dbp, &rr.sql, 60_000, None).expect("exec route cold (pool read-only, aucun Parquet)");
     // (b) ground truth : scan brut hot∪cold (cold_union_query) sur le MÊME `stats count by source`.
     let gt_sql = compile_ev("search | stats count by source", from, to, FieldMaskSet::new());
-    let (gt, _t, _m) = cold_union_query(&dbp, &conf, None, from, to, b, &gt_sql, None, 60_000, None, &[]).unwrap();
+    let (gt, _t, _m) = union_query_oracle(&dbp, &conf, None, from, to, b, &gt_sql, None, 60_000, None, &[]).unwrap();
     assert_eq!(count_by_source(&routed), count_by_source(&gt), "route cold == scan brut cold (correctness)");
     assert!(count_by_source(&routed).iter().any(|(s, c)| s == "shared" && *c == 5), "count exact dim rollée");
     let _ = std::fs::remove_dir_all(&root);
@@ -3391,7 +3422,7 @@ fn phase_a_cold_route_multidim_by_dims_equals_raw_b2() {
     assert!(!low.contains("cold_event") && !low.contains("parquet"), "route N'OUVRE PAS de Parquet: {}", rr.sql);
     let routed = crate::run_query_ex(&dbp, &rr.sql, 60_000, None).expect("exec route cold multi-dim");
     let gt_sql = compile_ev(soql, from, to, FieldMaskSet::new());
-    let (gt, _t, _m) = cold_union_query(&dbp, &conf, None, from, to, b, &gt_sql, None, 60_000, None, &[]).unwrap();
+    let (gt, _t, _m) = union_query_oracle(&dbp, &conf, None, from, to, b, &gt_sql, None, 60_000, None, &[]).unwrap();
     // map (source|severity -> count), ordre-insensible.
     let dims_map = |v: &Value| -> Vec<(String, i64)> {
         let s = col_vals(v, "source");
@@ -3535,7 +3566,7 @@ fn phase_a_masking_cold_rollup_raw_but_union_masks_cold() {
     let mut masks = FieldMaskSet::new();
     masks.insert("source".to_string(), MaskAction::Mask);
     let msql = compile_ev("search | table source", UWIN_FROM, UWIN_TO, masks);
-    let (mres, _t, _m) = cold_union_query(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &msql, None, 60_000, None, &[]).unwrap();
+    let (mres, _t, _m) = union_query_oracle(&dbp, &conf, None, UWIN_FROM, UWIN_TO, b, &msql, None, 60_000, None, &[]).unwrap();
     let msrc = col_vals(&mres, "source");
     assert!(msrc.iter().any(|v| v.as_str() == Some("***")), "source COLD masquée '***' via l'union sous masque");
     assert!(!msrc.iter().any(|v| v.as_str().map(|s| s.starts_with("src-")).unwrap_or(false)), "source brute 'src-*' JAMAIS servie sous masque");
@@ -6099,7 +6130,7 @@ impl Drop for P4aFix {
 /// (hydrate-SQLite hot∪cold). C'est la RÉFÉRENCE de l'invariant.
 fn p4a_oracle(f: &P4aFix, soql: &str, to: i64) -> Value {
     let sql = compile_ev(soql, f.from, to, FieldMaskSet::new());
-    let (v, _t, _m) = cold_union_query(&f.dbp, &f.conf, None, f.from, to, f.b, &sql, None, 60_000, None, &[]).unwrap();
+    let (v, _t, _m) = union_query_oracle(&f.dbp, &f.conf, None, f.from, to, f.b, &sql, None, 60_000, None, &[]).unwrap();
     v
 }
 
@@ -6128,26 +6159,10 @@ fn p4a_assert_parity(oracle: &Value, plan: &Value, label: &str) {
     );
 }
 
-/// GATE 0 (kill-switch dark) : sans `PLUME_COLD_VECTORIZED=1`, le routeur est DORMANT -> fallback systématique
-/// = déploiement byte-identique / rollback instantané. La prod déploie OFF puis active délibérément.
-#[test]
-fn p4a_gate0_dark_switch_off_forces_fallback() {
-    let _lk = p4a_lock();
-    let f = p4a_fixture("gate0-dark", 40);
-    let soql = "search | stats count by source";
-    // Pré-condition : flag ON (via conf_union) -> routé vectorisé.
-    assert!(p4a_plan(&f, soql, f.to).is_some(), "flag ON -> routé vectorisé");
-    // Flag ABSENT (défaut prod) -> fallback.
-    let mut off = f.conf.clone();
-    off.remove("PLUME_COLD_VECTORIZED");
-    let r_off = cold_vectorized_try(&f.dbp, &off, None, f.from, f.to, f.b, soql, true, 60_000, &[]).unwrap();
-    assert!(r_off.is_none(), "GATE 0 absent -> routeur dormant -> fallback (None)");
-    // Flag = "0" explicite -> fallback aussi.
-    let mut zero = f.conf.clone();
-    zero.insert("PLUME_COLD_VECTORIZED".to_string(), "0".to_string());
-    let r_zero = cold_vectorized_try(&f.dbp, &zero, None, f.from, f.to, f.b, soql, true, 60_000, &[]).unwrap();
-    assert!(r_zero.is_none(), "GATE 0 =\"0\" -> fallback");
-}
+// GATE 0 : son contrat a CHANGÉ (défaut ARMÉ) et son test vit désormais avec l'invariant de correction
+// qu'il sert — `gate0_vectorized_router_is_armed_by_default_and_opt_out_still_works`, en fin de fichier.
+// L'ancien test asseyait le défaut DORMANT, qui s'est révélé être la cause mesurée du ×203 : le conserver
+// aurait été conserver la preuve que le défaut est voulu.
 
 /// SHAPES pur-froid VECTORISABLES : chacune DOIT router vectorisé (Some) ET == oracle. Couvre count, count
 /// WHERE (int/streq/!=/3VL), group mono/multi/int-dim, regex, glob-LIKE (+ NOT LIKE), top-N (desc/asc), et la
@@ -6291,21 +6306,41 @@ fn p4a_masking_router_falls_back_and_kernel_denies() {
     );
 }
 
-/// TRONCATURE (gate #5) : au-delà de `cold_hydrate_row_cap` (défaut 5000) l'oracle TRONQUERAIT -> le routeur
-/// FALLBACK (préserve le comportement actuel). En-dessous du cap -> routé + parité.
+/// GATE 5 — SA PORTÉE A CHANGÉ, ET C'EST LA CORRECTION.
+///
+/// Avant : au-delà de `cold_hydrate_row_cap` (5 000), le routeur retombait sur l'oracle POUR TOUTE FORME,
+/// « pour préserver le comportement actuel ». Or le comportement actuel, au-delà du cap, c'est un agrégat
+/// calculé sur 5 000 lignes hydratées — 289 au lieu de 58 747 sur le banc. Préserver ça n'était pas une
+/// vertu de parité, c'était la propagation d'un nombre faux.
+///
+/// Maintenant :
+///   • AGRÉGAT au-delà du cap  -> ROUTÉ, et EXACT (les kernels balaient tout le froid).
+///   • MATÉRIALISATION au-delà -> FALLBACK inchangé (les deux chemins rendent un préfixe de lignes VRAIES,
+///                                simplement pas le même : aucun n'est faux, la gate reste iso-oracle).
+///   • Sous le cap             -> routé + parité avec l'oracle, comme avant (l'oracle y est exact).
 #[test]
-fn p4a_truncation_over_cap_falls_back() {
+fn p4a_truncation_over_cap_routes_aggregates_exactly_and_still_falls_back_for_rows() {
     let _lk = p4a_lock();
     // Cap PAR DÉFAUT (PLUME_QUERY_MAX=5000) — on NE touche PAS l'env (process-global : casserait les tests
     // concurrents). On écrit 5001 lignes (comme p3_truncated_surfaced) pour dépasser le cap réel.
-    let f = p4a_fixture("p4a-trunc", 5001); // > cap 5000 -> l'oracle TRONQUERAIT
-    assert!(p4a_plan(&f, "search | stats count", f.to).is_none(), "> cap -> fallback (l'oracle tronquerait)");
-    // Fenêtre restreinte à <= cap lignes -> routé + parité (résultat COMPLET des deux côtés).
+    let f = p4a_fixture("p4a-trunc", 5001);
+    // AGRÉGAT : routé, et la valeur est LA VRAIE (5001), pas l'échantillon (5000).
+    let plan = p4a_plan(&f, "search | stats count", f.to).expect("> cap : l'agrégat est ROUTÉ (exact), plus renvoyé à l'échantillon");
+    assert_eq!(plan["rows"][0][0].as_i64().unwrap(), 5001, "count EXACT sur toute la fenêtre froide");
+    // ... et l'oracle, lui, se trompe : c'est la MESURE du défaut, faite ici plutôt que sur un banc.
+    let oracle_cnt = p4a_oracle(&f, "search | stats count", f.to)["rows"][0][0].as_i64().unwrap();
+    assert_eq!(oracle_cnt, 5000, "l'ancien chemin agrège sur l'ÉCHANTILLON hydraté (plafond 5000) — c'est le défaut");
+    assert!(oracle_cnt < 5001, "le chemin d'union SOUS-COMPTE : c'est pour ça qu'il ne peut plus servir d'oracle d'agrégat");
+    // MATÉRIALISATION au-delà du cap : fallback conservé (iso-oracle ; aucun des deux n'est faux).
+    assert!(
+        p4a_plan(&f, "search | table source,severity", f.to).is_none(),
+        "> cap + matérialisation -> fallback (préfixe de l'oracle préservé)"
+    );
+    // Sous le cap : routé + parité avec l'oracle (qui y est exact).
     let to_small = f.from + 50; // ~51 lignes <= 5000
     let plan = p4a_plan(&f, "search | stats count", to_small);
     assert!(plan.is_some(), "<= cap -> vectorisé");
-    let cnt = plan.as_ref().unwrap()["rows"][0][0].as_i64().unwrap();
-    assert_eq!(cnt, 51, "51 lignes dans [from, from+50]");
+    assert_eq!(plan.as_ref().unwrap()["rows"][0][0].as_i64().unwrap(), 51, "51 lignes dans [from, from+50]");
     p4a_assert_parity(&p4a_oracle(&f, "search | stats count", to_small), plan.as_ref().unwrap(), "sous le cap");
 }
 
@@ -6324,7 +6359,7 @@ fn p4a_bench_group_and_regex_vectorized_vs_current() {
         let sql = compile_ev(soql, f.from, f.to, FieldMaskSet::new());
         let t0 = std::time::Instant::now();
         for _ in 0..iters {
-            let _ = cold_union_query(&f.dbp, &f.conf, None, f.from, f.to, f.b, &sql, None, 60_000, None, &[]).unwrap();
+            let _ = union_query_oracle(&f.dbp, &f.conf, None, f.from, f.to, f.b, &sql, None, 60_000, None, &[]).unwrap();
         }
         let cur_ms = t0.elapsed().as_secs_f64() * 1000.0 / iters as f64;
         // ROUTEUR vectorisé.
@@ -6334,7 +6369,7 @@ fn p4a_bench_group_and_regex_vectorized_vs_current() {
         }
         let vec_ms = t1.elapsed().as_secs_f64() * 1000.0 / iters as f64;
         // Parité (une fois).
-        let o = cold_union_query(&f.dbp, &f.conf, None, f.from, f.to, f.b, &sql, None, 60_000, None, &[]).unwrap().0;
+        let o = union_query_oracle(&f.dbp, &f.conf, None, f.from, f.to, f.b, &sql, None, 60_000, None, &[]).unwrap().0;
         let p = cold_vectorized_try(&f.dbp, &f.conf, None, f.from, f.to, f.b, soql, true, 60_000, &[]).unwrap().unwrap();
         p4a_assert_parity(&o, &p, soql);
         (cur_ms, vec_ms)
@@ -6389,7 +6424,7 @@ fn prune_preds(f: &P4aFix, soql: &str, to: i64) -> Vec<DimEq> {
 /// Oracle AVEC preds (le handler passe les MÊMES preds au chemin vectorisé ET à `cold_union_query`).
 fn prune_oracle(f: &P4aFix, soql: &str, preds: &[DimEq]) -> Value {
     let sql = compile_ev(soql, f.from, f.to, FieldMaskSet::new());
-    cold_union_query(&f.dbp, &f.conf, None, f.from, f.to, f.b, &sql, None, 60_000, None, preds).unwrap().0
+    union_query_oracle(&f.dbp, &f.conf, None, f.from, f.to, f.b, &sql, None, 60_000, None, preds).unwrap().0
 }
 
 /// (1) PARITÉ prune-ON / prune-OFF / ORACLE sur count / group-by / matérialisation multi-fichiers, + PREUVE
@@ -6718,7 +6753,7 @@ fn hostile_tiebreak_fallback_only_on_boundary_tie() {
 // Cible les 4 risques de la revue P3.5 : (1) régression de l'ORACLE `cold_union_query` (le chemin prod servi
 // aujourd'hui), (2) SUR-ÉLAGAGE vectorisé, (3) contournement du garde colonne-déniée #45, (4) cohérence du
 // gate-cap / double-chemin. Le harnais P3.5 compare le vectorisé à l'oracle AVEC preds ; ces tests ajoutent
-// la RÉFÉRENCE MANQUANTE = `cold_union_query(&[])` = HYDRATATION SQLITE COMPLÈTE SANS ÉLAGAGE (ni prune ni
+// la RÉFÉRENCE MANQUANTE = `union_query_oracle(&[])` = HYDRATATION SQLITE COMPLÈTE SANS ÉLAGAGE (ni prune ni
 // kernel) -> ground truth indépendant qui casse si l'élagage (oracle OU vectorisé) perd/ajoute une ligne.
 // ====================================================================================================
 
@@ -6974,7 +7009,7 @@ fn p4b_fixture(tag: &str, cold_rows: &[(i64, &str)], hot_rows: &[(i64, &str)]) -
 /// (`soql_to_sql_masked_x`, masques vides) puis exécute via `cold_union_query` (hydrate-SQLite hot∪cold).
 fn p4b_oracle(f: &P4aFix, soql: &str) -> Value {
     let sql = crate::soql_glue::soql_to_sql_masked_x(soql, f.from, f.to, None, &FieldMaskSet::new()).expect("compile");
-    let (v, _t, _m) = cold_union_query(&f.dbp, &f.conf, None, f.from, f.to, f.b, &sql, None, 60_000, None, &[]).unwrap();
+    let (v, _t, _m) = union_query_oracle(&f.dbp, &f.conf, None, f.from, f.to, f.b, &sql, None, 60_000, None, &[]).unwrap();
     v
 }
 
@@ -7130,7 +7165,7 @@ fn p4b_masking_forces_fallback_and_kernel_denies_both_sides() {
     masks.insert("src_ip".to_string(), MaskAction::Deny);
     let hot_masked_sql = crate::soql_glue::soql_to_sql_masked_x("search | table source,src_ip", f.b, f.to, None, &masks).expect("compile masqué");
     // Fenêtre hot-only [boundary, to] (q_from=boundary -> pas d'hydratation cold), comme le fait le merge.
-    let (hv, _t2, _m2) = cold_union_query(&f.dbp, &f.conf, None, f.b, f.to, f.b, &hot_masked_sql, None, 60_000, None, &[]).unwrap();
+    let (hv, _t2, _m2) = union_query_oracle(&f.dbp, &f.conf, None, f.b, f.to, f.b, &hot_masked_sql, None, 60_000, None, &[]).unwrap();
     assert!(!col_vals(&hv, "src_ip").is_empty(), "des lignes HOT existent dans [boundary,to]");
     assert!(col_vals(&hv, "src_ip").iter().all(|x| x.is_null()), "HOT : src_ip DÉNIÉ -> NULL (union_proj)");
     crate::field_deny_cols_cell().write().remove(&f.dbp); // hygiène
@@ -7185,20 +7220,25 @@ fn p4b_window_edges_and_route_census() {
     let plan_edge = cold_vectorized_merge_try(&f.dbp, &f.conf, None, f.from, f.b, f.b, soql, true, 60_000, None, &[]).unwrap();
     assert!(plan_edge.is_some(), "boundary==to -> routé");
     let sql = crate::soql_glue::soql_to_sql_masked_x(soql, f.from, f.b, None, &FieldMaskSet::new()).unwrap();
-    let (oracle_edge, _t, _m) = cold_union_query(&f.dbp, &f.conf, None, f.from, f.b, f.b, &sql, None, 60_000, None, &[]).unwrap();
+    let (oracle_edge, _t, _m) = union_query_oracle(&f.dbp, &f.conf, None, f.from, f.b, f.b, &sql, None, 60_000, None, &[]).unwrap();
     p4b_assert_parity(&oracle_edge, plan_edge.as_ref().unwrap(), "boundary==to");
 }
 
-/// GATE 0 (kill-switch dark) : sans `PLUME_COLD_VECTORIZED=1`, le merge est DORMANT -> fallback (None).
+/// GATE 0 sur le MERGE : ARMÉ par défaut (comme P4a), `=0` le désarme. Même raison qu'en P4a — le
+/// fallback n'est pas un chemin équivalent plus lent, c'est le chemin qui agrège sur un échantillon.
 #[test]
-fn p4b_gate0_dark_switch_off_forces_fallback() {
+fn p4b_gate0_armed_by_default_and_opt_out_still_works() {
     let _lk = p4a_lock();
     let f = p4b_fixture("p4b-gate0", &[(0, "c"), (1, "c")], &[(0, "h"), (1, "h")]);
-    assert!(p4b_merge(&f, "search | stats count").is_some(), "flag ON -> routé");
+    assert!(p4b_merge(&f, "search | stats count").is_some(), "flag posé -> routé");
+    let mut dflt = f.conf.clone();
+    dflt.remove("PLUME_COLD_VECTORIZED");
+    let r = cold_vectorized_merge_try(&f.dbp, &dflt, None, f.from, f.to, f.b, "search | stats count", true, 60_000, None, &[]).unwrap();
+    assert!(r.is_some(), "GATE 0 ABSENT = défaut -> ARMÉ -> merge routé (exact)");
     let mut off = f.conf.clone();
-    off.remove("PLUME_COLD_VECTORIZED");
-    let r = cold_vectorized_merge_try(&f.dbp, &off, None, f.from, f.to, f.b, "search | stats count", true, 60_000, None, &[]).unwrap();
-    assert!(r.is_none(), "GATE 0 absent -> merge dormant -> fallback (None)");
+    off.insert("PLUME_COLD_VECTORIZED".to_string(), "0".to_string());
+    let r0 = cold_vectorized_merge_try(&f.dbp, &off, None, f.from, f.to, f.b, "search | stats count", true, 60_000, None, &[]).unwrap();
+    assert!(r0.is_none(), "opt-out explicite `=0` -> merge dormant -> fallback (qui REFUSE au-delà du cap)");
 }
 
 /// FORMES NON VECTORISABLES sur fenêtre chevauchante -> le merge DÉCLINE (None) et l'oracle sert (dc/quantile/
@@ -7925,7 +7965,7 @@ fn ks_full_traversal_hot_cold_eq_raw_scan_no_gap_no_dup() {
     std::env::set_var("PLUME_QUERY_MAX", "100000");
     let oracle_page = crate::page_sql(&base_sql, crate::keyset_plan(None, 0), 100_000);
     let (oracle_v, _t, ometa) =
-        cold_union_query(&f.dbp, &f.conf, None, f.from, f.to, f.b, &oracle_page, None, 60_000, None, &[]).unwrap();
+        union_query_oracle(&f.dbp, &f.conf, None, f.from, f.to, f.b, &oracle_page, None, 60_000, None, &[]).unwrap();
     assert!(!ometa.truncated, "oracle (cap large) doit être COMPLET");
     let oracle_rows = ks_rows_no_id(&oracle_v);
     assert_eq!(oracle_rows.len() as i64, total, "oracle = toutes les lignes hot∪cold");
@@ -7936,7 +7976,7 @@ fn ks_full_traversal_hot_cold_eq_raw_scan_no_gap_no_dup() {
     std::env::set_var("PLUME_QUERY_MAX", "20");
     let capped_page = crate::page_sql(&base_sql, crate::keyset_plan(None, 0), 100_000);
     let (_cv, _ct, cmeta) =
-        cold_union_query(&f.dbp, &f.conf, None, f.from, f.to, f.b, &capped_page, None, 60_000, None, &[]).unwrap();
+        union_query_oracle(&f.dbp, &f.conf, None, f.from, f.to, f.b, &capped_page, None, 60_000, None, &[]).unwrap();
     assert!(cmeta.truncated, "sous cap=20, l'ancien chemin cold_union_query TRONQUE (60 cold > 20)");
 
     // PARCOURS KEYSET INTÉGRAL (page=7, curseur), cap TOUJOURS à 20 -> prouve l'indépendance au cap.
@@ -7969,16 +8009,22 @@ fn ks_full_traversal_hot_cold_eq_raw_scan_no_gap_no_dup() {
     assert!(pages >= (total as usize) / (n as usize), "plusieurs pages parcourues (pages={pages})");
 }
 
-/// GATE-OFF : sans `PLUME_COLD_VECTORIZED=1`, `cold_keyset_page` retourne `None` (le handler retombe sur le chemin
-/// `cold_union_query` capé INCHANGÉ) -> déploiement dark / rollback instantané.
+/// GATE du browse KEYSET colonnaire : ARMÉ par défaut, `=0` le désarme. Le défaut a changé parce que le
+/// fallback (`cold_union_query` keyset) hydrate au plus `cold_hydrate_row_cap` lignes PUIS filtre le
+/// curseur : il est STRUCTURELLEMENT incapable de paginer au-delà du plafond, donc de montrer l'histoire
+/// froide. Les autres refus (masque actif, forme agrégat) restent inchangés.
 #[test]
-fn ks_gate_off_falls_back_none() {
+fn ks_gate_armed_by_default_opt_out_and_unsupported_shapes_fall_back() {
     let _lk = p4a_lock();
     let (f, _nc, _nh, _nf) = ks_fixture("ks-gate", 6, 2, 3, 8);
+    let mut dflt = f.conf.clone();
+    dflt.remove("PLUME_COLD_VECTORIZED");
+    let r_d = cold_keyset_page(&f.dbp, &dflt, None, f.from, f.to, f.b, "search source=auditd", true, None, 10, &[]).unwrap();
+    assert!(r_d.is_some(), "GATE 0 ABSENT = défaut -> ARMÉ -> browse keyset colonnaire (parcours intégral)");
     let mut off = f.conf.clone();
-    off.remove("PLUME_COLD_VECTORIZED");
+    off.insert("PLUME_COLD_VECTORIZED".to_string(), "0".to_string());
     let r = cold_keyset_page(&f.dbp, &off, None, f.from, f.to, f.b, "search source=auditd", true, None, 10, &[]).unwrap();
-    assert!(r.is_none(), "gate off -> None (fallback cold_union_query capé)");
+    assert!(r.is_none(), "opt-out explicite `=0` -> None (fallback cold_union_query capé)");
     // Masque actif -> None aussi (fallback), même gate ON.
     let r2 = cold_keyset_page(&f.dbp, &f.conf, None, f.from, f.to, f.b, "search source=auditd", false, None, 10, &[]).unwrap();
     assert!(r2.is_none(), "masks_empty=false -> None (fallback)");
@@ -8052,4 +8098,359 @@ fn cim_aliased_query_is_never_vectorized() {
     assert!(!planner::carries_cim_read_alias("search category=auth"));
     assert!(planner::vec_agg_routable("search category=auth | stats count"), "la garde ne doit pas assommer la route");
     assert!(planner::vec_keyset_routable("search category=auth"), "la garde ne doit pas assommer le keyset");
+}
+
+// ====================================================================================================
+// PARITÉ CHAUD/FROID — LE TEST QUI MANQUAIT.
+// ----------------------------------------------------------------------------------------------------
+// CE QU'IL FERME. Rien, dans cette suite, ne comparait la réponse AVEC et SANS tier froid. Les harnais
+// p4a/p4b comparent le chemin ROUTÉ au chemin d'UNION — deux chemins froids — et prennent le second pour
+// oracle. Quand le second s'est mis à agréger sur un échantillon de 5 000 lignes, ils sont restés VERTS :
+// ils prouvaient l'égalité de deux réponses également fausses. Le banc, lui, a vu `stats count` rendre 289
+// au lieu de 58 747 (×203) — mais un banc est une OBSERVATION, il ne barre pas la route à une régression.
+//
+// L'INVARIANT TESTÉ, DÉRIVÉ (et non « la cellule C1 doit valoir 58 747 ») :
+//   (1) RIEN DE FAUX     — toute ligne rendue par le chemin froid apparaît VERBATIM dans la réponse VRAIE
+//                          (celle du MÊME SQL sur les MÊMES lignes, avant columnarisation, sans plafond).
+//   (2) RIEN D'AMPUTÉ EN SILENCE — si le chemin froid rend MOINS de lignes que la vérité, il DOIT le
+//                          déclarer (`stats.truncated`) ou REFUSER. Jamais un sous-ensemble présenté
+//                          comme complet.
+// Ces deux clauses valent pour TOUTE forme : un `stats count` (une seule ligne) ne peut satisfaire (1)
+// qu'en étant EXACT — c'est exactement le ×203 qui échoue ici. Une matérialisation partielle, elle, les
+// satisfait toutes les deux : ses lignes sont vraies et son incomplétude est dite.
+//
+// LA FAMILLE EST DÉRIVÉE DU SCHÉMA, pas énumérée : produit de `PARQUET_COLS` (les colonnes RÉELLES du
+// tier froid) par trois formes, plus les seuils de `severity`. Ajouter une colonne au tier froid ajoute
+// ses cas de parité sans qu'on écrive une ligne de plus ici.
+// ====================================================================================================
+
+/// La RÉPONSE VRAIE : le MÊME SQL compilé, exécuté sur les MÊMES lignes AVANT columnarisation, SANS le
+/// plafond de sortie de `run_on_conn`. C'est la référence « sans tier froid » — la seule qui puisse
+/// arbitrer, puisque les deux chemins froids peuvent se tromper ensemble.
+fn true_rows(conn: &Connection, sql: &str) -> Vec<String> {
+    let mut st = conn.prepare(sql).expect("prepare référence");
+    let ncol = st.column_count();
+    let mut rows = st.query([]).expect("query référence");
+    let mut out: Vec<String> = Vec::new();
+    while let Some(r) = rows.next().expect("step référence") {
+        let cells: Vec<Value> = (0..ncol)
+            .map(|i| match r.get_ref(i).expect("cell") {
+                rusqlite::types::ValueRef::Null => Value::Null,
+                rusqlite::types::ValueRef::Integer(n) => json!(n),
+                rusqlite::types::ValueRef::Real(f) => json!(f),
+                rusqlite::types::ValueRef::Text(t) => json!(String::from_utf8_lossy(t)),
+                rusqlite::types::ValueRef::Blob(b) => json!(format!("<blob {} o>", b.len())),
+            })
+            .collect();
+        out.push(Value::Array(cells).to_string());
+    }
+    out.sort();
+    out
+}
+
+/// SERT COMME LA PRODUCTION : routeur vectorisé d'abord (pur-froid ou merge selon la fenêtre, comme
+/// `handlers::query`), puis chemin d'union — et, sur ce dernier, l'INVARIANT DE RENDU (`ColdAnswer::render`
+/// avec la forme DÉRIVÉE du GXQL). `Err` = REFUS explicite, exactement ce que le handler transforme en 422.
+/// (La route de rollups, essayée avant tout ça par le handler, n'a rien à servir ici : aucune table de
+/// rollup n'est alimentée dans ces fixtures.)
+fn serve_like_prod(f: &P4aFix, soql: &str, from: i64, to: i64) -> Result<Value, String> {
+    let pure_cold = to > 0 && to < f.b;
+    let routed = if pure_cold {
+        cold_vectorized_try(&f.dbp, &f.conf, None, from, to, f.b, soql, true, 60_000, &[])?
+    } else {
+        cold_vectorized_merge_try(&f.dbp, &f.conf, None, from, to, f.b, soql, true, 60_000, None, &[])?
+    };
+    if let Some(v) = routed {
+        return Ok(v);
+    }
+    let sql = compile_ev(soql, from, to, FieldMaskSet::new());
+    let (answer, _meta) = cold_union_query(&f.dbp, &f.conf, None, from, to, f.b, &sql, None, 60_000, None, &[])?;
+    answer.render(AnswerShape::of_gxql(soql)).map(|r| {
+        let mut v = r.value;
+        if r.truncated {
+            v["stats"]["truncated"] = json!(true);
+        }
+        v
+    }).map_err(|t| t.message())
+}
+
+/// LA FAMILLE — produit `PARQUET_COLS` × {agrégat groupé, matérialisation} + les seuils de `severity`
+/// (le seul domaine INT borné du schéma). Aucune requête n'est ici pour elle-même : chacune est l'image
+/// d'une colonne ou d'un seuil.
+fn parity_family() -> Vec<String> {
+    let mut out = vec!["search | stats count".to_string()];
+    for c in PARQUET_COLS {
+        out.push(format!("search | stats count by {c}"));
+        // SANS `head` : un `head N` est une BORNE DEMANDÉE par l'utilisateur, pas une troncature — et sur
+        // une requête sans `sort`, l'ordre des lignes n'est pas défini, donc « les N premières » n'est pas
+        // une valeur comparable. La forme NUE, elle, l'est : l'ensemble complet des lignes matchantes.
+        out.push(format!("search | table {c}"));
+    }
+    // Seuils dérivés du domaine de `severity` (rich_row : i % 5) — un scalaire agrégé par seuil.
+    for k in 0..5 {
+        out.push(format!("search severity>={k} | stats count"));
+    }
+    out
+}
+
+/// Lignes NORMALISÉES d'une réponse servie (triées, comparables à `true_rows`).
+fn served_rows(v: &Value) -> Vec<String> {
+    let empty: Vec<Value> = Vec::new();
+    let mut rows: Vec<String> = v["rows"].as_array().unwrap_or(&empty).iter().map(|r| r.to_string()).collect();
+    rows.sort();
+    rows
+}
+
+/// LE CŒUR DE L'ASSERTION — les deux clauses, appliquées à UNE requête.
+fn assert_parity_clauses(label: &str, soql: &str, truth: &[String], served: Result<Value, String>) {
+    let v = match served {
+        // REFUS explicite : ce n'est ni la même réponse ni un nombre faux. C'est la position de repli
+        // ADMISE par l'invariant — mais elle doit NOMMER sa cause, sinon c'est un mur.
+        Err(e) => {
+            assert!(
+                e.contains("refus"),
+                "{label} / `{soql}` : refus NON motivé (« {e} ») — une erreur qui ne nomme pas sa cause \
+                 ne vaut pas mieux qu'un nombre faux"
+            );
+            return;
+        }
+        Ok(v) => v,
+    };
+    let got = served_rows(&v);
+    let truncated = v["stats"]["truncated"].as_bool().unwrap_or(false);
+    // (1) RIEN DE FAUX.
+    for row in &got {
+        assert!(
+            truth.contains(row),
+            "{label} / `{soql}` : ligne RENDUE absente de la vérité -> valeur FAUSSE.\n  rendue = {row}\n  \
+             vérité ({} lignes) = {:?}",
+            truth.len(),
+            &truth[..truth.len().min(6)]
+        );
+    }
+    // (2) RIEN D'AMPUTÉ EN SILENCE.
+    if got.len() < truth.len() {
+        assert!(
+            truncated,
+            "{label} / `{soql}` : {} lignes rendues pour {} vraies, SANS drapeau `truncated` -> \
+             incomplétude silencieuse",
+            got.len(),
+            truth.len()
+        );
+    }
+}
+
+/// PARITÉ CHAUD/FROID sur un volume qui DÉPASSE le plafond d'hydratation (5 001 lignes > 5 000) —
+/// LA configuration du défaut : sous le plafond, tous les chemins s'accordent déjà et ne prouvent rien.
+///
+/// DEUX FENÊTRES, une seule base : PUR-FROID (tout sous la frontière -> kernels seuls) et CHEVAUCHANTE
+/// (froid ∪ chaud -> merge, ou union hydratée). Les chemins diffèrent ; l'invariant, non. Une seule
+/// fixture pour les deux : la columnarisation de 5 001 lignes est ce qui coûte, et la refaire ne
+/// prouverait rien de plus.
+#[test]
+fn parity_hot_vs_cold_over_the_row_cap() {
+    let _lk = p4a_lock();
+    let root = tmp_root("parity");
+    let db = mkdb(&root);
+    let dbp_s = dbp(&root);
+    let conf = conf_union(HOT_WIN);
+    let day = M - 10;
+    let base = day * SECS_PER_DAY;
+    let n = 5001i64; // > cold_hydrate_row_cap (5000) -> l'ancien chemin agrégeait sur un ÉCHANTILLON
+    {
+        // Une seule transaction : 5 001 commits séparés dominent la durée du test sans rien prouver.
+        let c = db.lock();
+        c.execute_batch("BEGIN").unwrap();
+    }
+    for i in 0..n {
+        insert_event(&db, &p4a_row(base, i));
+    }
+    insert_recent_tail_holder(&db); // jour M-1 : DANS la fenêtre chaude -> jamais columnarisé
+    {
+        let c = db.lock();
+        c.execute_batch("COMMIT").unwrap();
+    }
+
+    // Les DEUX fenêtres, nommées par ce qu'elles traversent.
+    let windows: [(&str, i64, i64); 2] =
+        [("pur-froid", base, base + n - 1), ("chevauchante", UWIN_FROM, UWIN_TO)];
+
+    // VÉRITÉ : le MÊME SQL, sur les MÊMES lignes, AVANT columnarisation, sans plafond de sortie.
+    let family = parity_family();
+    let truths: Vec<Vec<Vec<String>>> = {
+        let c = db.lock();
+        windows
+            .iter()
+            .map(|(_, from, to)| {
+                family.iter().map(|q| true_rows(&c, &compile_ev(q, *from, *to, FieldMaskSet::new()))).collect()
+            })
+            .collect()
+    };
+
+    cold_age_run(&db, &dbp_s, &conf, n_now(), RET_DAYS);
+    assert_eq!(count_hot_day(&db, "prod", day), 0, "jour froid columnarisé");
+    let b = union_boundary(&db, &conf);
+    assert!(windows[0].2 < b, "fenêtre 1 PUR-FROID (to={} < b={b})", windows[0].2);
+    assert!(windows[1].1 < b && windows[1].2 >= b, "fenêtre 2 CHEVAUCHANTE");
+    let f = P4aFix { root, db, dbp: dbp_s, conf, b, from: base, to: base + n - 1 };
+
+    for (w, (label, from, to)) in windows.iter().enumerate() {
+        for (q, truth) in family.iter().zip(truths[w].iter()) {
+            assert_parity_clauses(label, q, truth, serve_like_prod(&f, q, *from, *to));
+        }
+    }
+}
+
+/// LA FORME EST DÉRIVÉE, ET LE DÉFAUT EST LE REFUS. On ne teste pas une liste d'agrégats : on teste que
+/// l'INCONNU — un étage GXQL qui n'existe pas encore — retombe du côté sûr. C'est ce qui fait que le
+/// prochain agrégat ajouté au langage est couvert sans que personne n'y pense.
+#[test]
+fn answer_shape_defaults_to_refusal_for_unknown_stages() {
+    // PAR-ÉVÉNEMENT : chaque ligne rendue EST un événement d'entrée.
+    for q in [
+        "search",
+        "search source=web",
+        "search severity>=2 | where severity<4",
+        "search | table ts,source | head 10",
+        "search | fields ts,host",
+        "search | eval x=1 | rename x as y | rex field=message \"(?<a>.)\"",
+    ] {
+        assert!(AnswerShape::of_gxql(q).is_per_event(), "`{q}` est par-événement");
+    }
+    // DÉRIVÉ DE L'ENSEMBLE : refusé sur un ensemble tronqué.
+    for q in [
+        "search | stats count",
+        "search | stats count by source",
+        "search | stats dc(host)",
+        "search | stats sum(severity)",
+        "search | timechart count",
+        "search | top source",
+        "search | rare source",
+        "search | eventstats avg(severity)",
+        "search | rate 1h",
+        "search | dedup source",
+        "search | sort -severity | head 10",
+        // L'INCONNU — un étage qui n'existe pas (aujourd'hui). Le défaut le condamne SANS qu'il soit nommé
+        // dans `PER_EVENT_STAGES` : c'est la propriété qui survit aux évolutions du langage.
+        "search | percentile95 latence",
+        "search | forecast count by source",
+    ] {
+        assert!(!AnswerShape::of_gxql(q).is_per_event(), "`{q}` dérive une valeur de l'ensemble -> refus sur tronqué");
+    }
+    // SQL BRUT : rien de dérivable -> refus.
+    assert!(!AnswerShape::undecidable().is_per_event(), "SQL brut : indécidable -> refus");
+}
+
+/// L'INVARIANT DE RENDU, EXERCÉ DIRECTEMENT : un ensemble tronqué ne rend JAMAIS un agrégat, rend une
+/// matérialisation partielle DÉCLARÉE, et n'émet JAMAIS de total de pagination (un COUNT est lui aussi
+/// une valeur dérivée de l'ensemble).
+#[test]
+fn cold_answer_render_refuses_derived_values_on_a_truncated_set() {
+    let body = json!({ "columns": ["count"], "rows": [[289]], "stats": {} });
+    // TRONQUÉ + agrégat -> REFUS, avec un message qui nomme la cause ET les voies exactes.
+    let refused = ColdAnswer::new(body.clone(), Some(289), true, 5000, 5000)
+        .render(AnswerShape::of_gxql("search source=auditd severity>=2 | stats count"))
+        .err()
+        .expect("un agrégat sur ensemble tronqué DOIT être refusé");
+    let msg = refused.message();
+    for must in ["refus", "PLUME_QUERY_MAX", "restreindre la fenêtre"] {
+        assert!(msg.contains(must), "le refus doit contenir « {must} » — sinon c'est un mur : {msg}");
+    }
+    // TRONQUÉ + par-événement -> partielle DÉCLARÉE, et total ÉCARTÉ.
+    let r = ColdAnswer::new(body.clone(), Some(4242), true, 5000, 5000)
+        .render(AnswerShape::of_gxql("search | table ts,source"))
+        .expect("une matérialisation partielle reste rendable");
+    assert!(r.truncated, "l'incomplétude est DÉCLARÉE");
+    assert!(r.total.is_none(), "le total de pagination est un COUNT : jamais rendu d'un ensemble tronqué");
+    // EXACT -> tout passe, total compris.
+    let r = ColdAnswer::new(body, Some(58_747), false, 5000, 120)
+        .render(AnswerShape::of_gxql("search source=auditd severity>=2 | stats count"))
+        .expect("un ensemble complet rend tout");
+    assert!(!r.truncated);
+    assert_eq!(r.total, Some(58_747));
+}
+
+/// GATE 0 — le routeur vectorisé est ARMÉ PAR DÉFAUT dès que le tier froid est actif, et `=0` le désarme.
+/// C'est le remplaçant de `p4a_gate0_dark_switch_off_forces_fallback`, dont le contrat (défaut DORMANT)
+/// était la CAUSE MESURÉE du défaut : sur le banc du 31/07, aucune des 105 cellules froides n'a atteint
+/// les kernels, et 57 d'entre elles ont donc été servies par l'échantillon hydraté.
+#[test]
+fn gate0_vectorized_router_is_armed_by_default_and_opt_out_still_works() {
+    let _lk = p4a_lock();
+    let f = p4a_fixture("gate0-default", 40);
+    let soql = "search | stats count by source";
+    // ABSENT (le défaut de production) -> ARMÉ.
+    let mut dflt = f.conf.clone();
+    dflt.remove("PLUME_COLD_VECTORIZED");
+    assert!(cold_vectorized_armed(&dflt), "défaut = ARMÉ (un interrupteur entre exact et faux ne peut pas défaut-er sur faux)");
+    let r_default = cold_vectorized_try(&f.dbp, &dflt, None, f.from, f.to, f.b, soql, true, 60_000, &[]).unwrap();
+    assert!(r_default.is_some(), "flag absent -> routé vectorisé (exact)");
+    // "0" explicite -> DÉSARMÉ (opt-out conservé) -> fallback.
+    let mut off = f.conf.clone();
+    off.insert("PLUME_COLD_VECTORIZED".to_string(), "0".to_string());
+    assert!(!cold_vectorized_armed(&off));
+    let r_off = cold_vectorized_try(&f.dbp, &off, None, f.from, f.to, f.b, soql, true, 60_000, &[]).unwrap();
+    assert!(r_off.is_none(), "opt-out explicite -> fallback (qui REFUSE au-delà du cap, il ne ment pas)");
+}
+
+/// LA BARRE DE RECHERCHE DÉCLARE CE QU'ELLE N'A PAS CHERCHÉ. `/api/search` n'interroge que l'index FTS5,
+/// qui n'existe que sur la fenêtre chaude : au-delà, il rendait `{"results": []}` — « rien ne correspond »
+/// alors que la vérité était « je n'ai pas cherché là ». Le test porte sur la DÉCISION (déclarer ou se
+/// taire), pas sur le texte de la note : elle est due quand la fenêtre atteint sous la frontière ET qu'il
+/// existe vraiment du froid, et due jamais autrement (sinon la note devient du bruit qu'on apprend à ignorer).
+#[test]
+fn search_declares_what_it_did_not_search_only_when_cold_history_exists() {
+    let _lk = p4a_lock();
+    let root = tmp_root("search-cov");
+    let db = mkdb(&root);
+    let dbp_s = dbp(&root);
+    let conf = conf_union(HOT_WIN);
+    let day = M - 10;
+    let base = day * SECS_PER_DAY;
+
+    // (a) AUCUN froid encore -> aucune note, même sur une fenêtre non bornée. Une alarme permanente
+    //     n'est pas une information.
+    let b0 = union_boundary(&db, &conf);
+    {
+        let c = db.lock();
+        assert!(
+            crate::handlers::search::search_cold_coverage(&c, &conf, b0, 0).is_none(),
+            "sans histoire froide, la barre couvre tout ce qui existe -> RIEN à déclarer"
+        );
+    }
+
+    // (b) Après columnarisation d'un jour ancien : la fenêtre non bornée et la fenêtre qui atteint sous
+    //     la frontière DOIVENT déclarer ; une fenêtre entièrement chaude, non.
+    for i in 0..40 {
+        insert_event(&db, &rich_row(base + i, i));
+    }
+    insert_recent_tail_holder(&db);
+    cold_age_run(&db, &dbp_s, &conf, n_now(), RET_DAYS);
+    let b = union_boundary(&db, &conf);
+    let c = db.lock();
+    let cov = crate::handlers::search::search_cold_coverage(&c, &conf, b, 0)
+        .expect("fenêtre non bornée + froid présent -> DÉCLARÉ");
+    assert_eq!(cov["searched_from"].as_i64(), Some(b), "la note dit À PARTIR D'OÙ elle a cherché");
+    assert_eq!(cov["reason"].as_str(), Some("fts_hot_only"), "la note NOMME la cause, pas seulement l'effet");
+    assert!(
+        cov["notice"].as_str().unwrap_or("").contains("/api/query"),
+        "la note propose la voie EXACTE (celle qui, elle, lit le froid) — sinon c'est un mur"
+    );
+    assert!(
+        crate::handlers::search::search_cold_coverage(&c, &conf, b, base).is_some(),
+        "fenêtre atteignant SOUS la frontière -> DÉCLARÉ"
+    );
+    assert!(
+        crate::handlers::search::search_cold_coverage(&c, &conf, b, b).is_none(),
+        "fenêtre entièrement CHAUDE -> rien à déclarer (la barre a tout couvert)"
+    );
+    // (c) Tier froid éteint -> jamais de note (mode 0 : /api/search byte-identique).
+    let mut off = conf.clone();
+    off.insert("PLUME_COLD_TIER".to_string(), "0".to_string());
+    assert!(
+        crate::handlers::search::search_cold_coverage(&c, &off, b, 0).is_none(),
+        "tier froid OFF -> aucune note, aucun coût"
+    );
+    drop(c);
+    let _ = std::fs::remove_dir_all(&root);
 }

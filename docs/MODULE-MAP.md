@@ -99,6 +99,7 @@ submodule owns exactly one invariant, stated at the top of its file:
 
 | Submodule | Owns / invariant |
 |-----------|------------------|
+| `exactness` | **No derived value from a truncated set is ever rendered as a number.** Truncating a *materialisation* is legitimate (real rows, flagged incomplete); truncating an *aggregate* is a wrong number. Carried by types: a truncated `ColdAnswer` sequesters its `Value`, the only way out is `render(AnswerShape)`, and `AnswerShape` has no literal constructor — it is *derived* from the query, default-refusing every unknown pipeline stage. A future aggregate is covered without being named. |
 | `crypto` | **At-rest encryption.** HKDF-SHA256 domain-separated key (`plume-cold-aead-v1`) from the tenant SQLCipher key; age STREAM AEAD (ChaCha20-Poly1305, random per-file nonce + chunk counter → no nonce reuse). Cold ON **requires** encryption → fail-closed if key unavailable. |
 | `schema` | Columnar `ColdRow` + Parquet schema. Thin cols first, fat (`message`/`fields`) last; ZSTD; declared sorted on `ts`. |
 | `identity` | **(env_id, day, seq) binding** stamped in the AEAD Parquet footer + **VERIFY** (full decode) before any hot DELETE. Closes intra-tenant day↔day / env↔env / seq swap. |
@@ -122,6 +123,7 @@ submodule owns exactly one invariant, stated at the top of its file:
 | **Per-tenant isolation** — tenants disjoint by key and cold root | per-tenant SQLCipher key; `cold_store/paths.rs` cold root from tenant `db_path` | Key + path derivation; `tenants.rs` |
 | **Crash-safety: verify-before-delete** — hot rows deleted only after the cold file is proven decodable | `cold_store/{aging,identity,seal}.rs` | Two-phase machine; `last_file=1` commit; full-decode VERIFY |
 | **scrypt lockstep** — cold AEAD work-factor fixed and matched to the backup/age crypto | `cold_store/crypto.rs` (`COLD_SCRYPT_LOG_N`), `backup.rs` | Compile-time assert in `cold_store/mod.rs`; fixed work factor |
+| **No false number from the cold tier** — a value derived from a truncated read is never serialised | `cold_store/exactness.rs`; the three `cold_union_query` call sites in `handlers/query.rs` | `ColdAnswer::Truncated` sequesters its `Value`; `AnswerShape` is derivation-only and default-refuses unknown stages; hot-vs-cold parity test over the row cap |
 | **Fail-closed RBAC** — unknown role/route ⇒ deny | `rbac.rs` (`rbac_gate` default-deny, `route_min_role`) | Flat policy `match`; ~200 fail-closed/rbac_gate test sites |
 
 ---

@@ -5,9 +5,20 @@
 //! production actuel (`cold_union_query`, hydrate-SQLite). Le routeur ne DUPLIQUE JAMAIS le fallback : il route
 //! AUTOUR (l'appelant garde son `cold_union_query` inchangé).
 //!
-//! INVARIANT (gate de déploiement, NON NÉGOCIABLE) : pour TOUTE requête, `résultat_routé == résultat_actuel`.
-//! Le câblage ne change QUE la vitesse, jamais le résultat (masquage #45 identique). Prouvé par le harnais de
-//! PARITÉ (`tests.rs`, module `p4a_*`) qui force `cold_union_query` comme ORACLE.
+//! INVARIANT — RÉÉNONCÉ APRÈS MESURE. Il disait : « pour TOUTE requête, `résultat_routé == résultat_actuel` ;
+//! le câblage ne change QUE la vitesse ». Cet énoncé traitait `cold_union_query` comme une référence de VÉRITÉ.
+//! Il ne l'est pas : au-delà de `cold_hydrate_row_cap`, il hydrate un ÉCHANTILLON puis agrège dessus — mesuré
+//! au banc, `search source=auditd severity>=2 | stats count` rend 289 là où la vérité est 58 747 (×203). Une
+//! parité avec un nombre faux n'est pas une vertu, c'est la propagation du défaut. L'invariant devient :
+//!
+//!     résultat_routé == `cold_union_query` QUAND celui-ci est EXACT ; résultat_routé == EXACT sinon.
+//!
+//! Concrètement : sous le plafond, l'oracle reste l'oracle et la parité est prouvée comme avant (`p4a_*`/`p4b_*`) ;
+//! au-dessus, l'AGRÉGAT est calculé par les kernels sur TOUT le froid, et c'est LUI qui a raison. Ce que le
+//! routeur ne sait pas calculer exactement n'est pas approximé : il retombe sur le chemin d'union, qui REFUSE
+//! de sérialiser une valeur dérivée d'un ensemble tronqué (`cold_store::exactness`). Le masquage #45 reste
+//! identique sur les deux chemins. La parité CHAUD/FROID elle-même — la même requête avec et sans tier froid —
+//! est désormais un TEST (`parity_hot_vs_cold_over_the_row_cap`), pas seulement une observation de banc.
 //!
 //! CONDITION DE ROUTAGE (CONSERVATRICE — dans le doute, FALLBACK) : route SSI les CINQ tiennent :
 //!   1. cold tier ON (runtime `PLUME_COLD_TIER`, garanti par l'appelant qui a déjà calculé `boundary`).
@@ -24,22 +35,22 @@
 //!      matérialisation `| table`) SUR COLONNES PHYSIQUES, prédicat WHERE `=`/`:`/`!=`/`=~`/glob-LIKE/`in`(non,
 //!      cf. plus bas)/comparaison INT sur ts|severity. Toute forme non couverte (json_extract, jointure, bare
 //!      free-text, dim/proj non-physique, agrégat autre que count, `in(...)`, `where`, `eval`, …) -> FALLBACK.
-//!   5. PAS DE TRONCATURE : le chemin actuel (`cold_union_query`) HYDRATE le froid dans SQLite BORNÉ à
-//!      `cold_hydrate_row_cap` (défaut 5000) puis agrège sur cet ensemble — au-delà il TRONQUE (`truncated`).
-//!      Le moteur vectorisé, lui, scanne TOUT le froid. Pour préserver l'invariant à l'IDENTIQUE, le routeur
-//!      compte d'abord (passe ts-only, cheap) les lignes de la fenêtre froide : si `> cap`, l'oracle
-//!      TRONQUERAIT -> FALLBACK (l'oracle sert son résultat capé, invariant trivialement préservé) ; si `<= cap`,
-//!      aucune troncature -> l'agrégat vectorisé COMPLET == l'agrégat oracle COMPLET (mêmes lignes). (P4b lèvera
-//!      le cap avec le merge hot∪cold ; ici on reste STRICTEMENT iso-résultat.)
+//!   5. PAS DE TRONCATURE — **pour la MATÉRIALISATION SEULEMENT**. `cold_union_query` hydrate le froid dans
+//!      SQLite BORNÉ à `cold_hydrate_row_cap` (défaut 5000) ; au-delà il TRONQUE. Pour une matérialisation, les
+//!      deux chemins rendent alors un PRÉFIXE de lignes VRAIES — mais pas le même : le routeur décline donc
+//!      (iso-oracle, aucun des deux n'étant faux). Pour un AGRÉGAT, décliner reviendrait à servir un nombre
+//!      calculé sur 5 000 lignes : la gate SAUTE, les kernels balaient tout le froid, et la RAM est bornée non
+//!      plus par le nombre de LIGNES mais par le nombre de GROUPES (`cold_group_max`, refus explicite au-delà).
+//!      C'est LA correction ; le reste du fichier en découle.
 //!
 //! SÉLECTION DE FICHIERS : RÉUTILISE EXACTEMENT la sélection de `hydrate_cold`/`open_cold_union` (jours spannés ×
 //! `file_seals` dont `[ts_min,ts_max]` chevauche la fenêtre, ordre canonique (day, seq)) + le MÊME
 //! `verify_parquet_rows` fail-closed + le MÊME ÉLAGAGE DIMENSIONNEL SEAL (#28 P3.5, `DimStats::excluded_by`, les
 //! mêmes `dim_preds` que le chemin oracle) : un fichier dont le seal PROUVE 0 match (min/max hors bornes OU bloom
 //! certain-absent) est SAUTÉ sans le déchiffrer -> c'est LE levier ×10-100 des requêtes sélectives longue-portée.
-//! COHÉRENCE DU GATE CAP : le chemin oracle (`cold_union_query`) reçoit les MÊMES `dim_preds` et élague les MÊMES
-//! fichiers -> `window_rows` (calculé ici sur les fichiers NON élagués) == lignes que l'oracle hydraterait ->
-//! décision de troncature IDENTIQUE (aucune requête routée que l'oracle tronquerait, ni l'inverse). `dim_preds=&[]`
+//! COHÉRENCE DU GATE CAP (matérialisation) : le chemin oracle (`cold_union_query`) reçoit les MÊMES `dim_preds` et
+//! élague les MÊMES fichiers -> `window_rows` (calculé ici sur les fichiers NON élagués) == lignes que l'oracle
+//! hydraterait -> décision de troncature IDENTIQUE sur cette forme-là. `dim_preds=&[]`
 //! (ou dims non sealées / colonne déniée) -> pas d'élagage -> sélection ts-only, conservatrice, inchangée.
 
 use super::*;
@@ -111,6 +122,57 @@ fn note_prune(pruned: usize, scanned: usize) {
     PRUNE_SCANNED.fetch_add(scanned as u64, Ordering::Relaxed);
 }
 
+/// GATE 0 — le routeur vectorisé est-il ARMÉ ? **DÉFAUT : OUI** dès que le tier froid est actif.
+/// `PLUME_COLD_VECTORIZED=0` le désarme explicitement.
+///
+/// CE N'EST PLUS UN INTERRUPTEUR DE PERFORMANCE, et son défaut a donc changé. Il avait été posé en
+/// kill-switch de déploiement DARK, sous l'hypothèse que les deux chemins étaient ÉQUIVALENTS et que
+/// seul l'un allait plus vite. La mesure a réfuté l'hypothèse : le chemin d'union hydrate au plus
+/// `cold_hydrate_row_cap` lignes puis AGRÈGE SUR CET ÉCHANTILLON (`stats count` mesuré à 289 au lieu
+/// de 58 747, ×203), là où les kernels balaient tout le froid et rendent la valeur EXACTE. Un
+/// interrupteur qui choisit entre « exact » et « faux » ne peut pas avoir « faux » pour défaut — et
+/// laisser le défaut à OFF aurait rendu la correction invisible en production, ce qui est exactement
+/// comment le défaut a survécu jusqu'ici.
+///
+/// `=0` reste honoré et reste SÛR : il ne rétablit pas le nombre faux (l'invariant de `exactness` le
+/// refuse au moment de rendre), il rétablit le REFUS. Le rollback instantané qu'il offrait porte donc
+/// désormais sur la vitesse et le risque de chemin, jamais sur la correction.
+pub(crate) fn cold_vectorized_armed(conf: &HashMap<String, String>) -> bool {
+    crate::cfg(conf, "PLUME_COLD_VECTORIZED", "1") != "0"
+}
+
+/// PLAFOND DE GROUPES d'un agrégat `count by …` calculé côté froid (knob `PLUME_COLD_GROUP_MAX`,
+/// clampé [1, 5 000 000]). C'est une BORNE RAM, pas une borne de résultat.
+///
+/// POURQUOI IL EXISTE MAINTENANT : tant que le routeur déclinait toute fenêtre de plus de
+/// `cold_hydrate_row_cap` lignes (l'ancienne GATE 5), le nombre de groupes était borné PAR ACCIDENT
+/// (au plus 5 000 lignes -> au plus 5 000 groupes). En levant cette gate pour les agrégats — la
+/// correction elle-même — on expose un `| stats count by src_ip` d'un an de froid : des millions de
+/// clés en RAM, sous un budget de 2 Gio. La borne accidentelle doit donc devenir EXPLICITE.
+///
+/// Au-delà, on REFUSE (Err nommée) : on ne rend jamais une map partielle, qui serait précisément le
+/// défaut qu'on ferme. 500 000 groupes ≈ quelques dizaines de Mio (clés courtes + un i64), très loin
+/// du budget, et très au-delà de tout group-by qu'un humain lit.
+fn cold_group_max(conf: &HashMap<String, String>) -> usize {
+    crate::cfg(conf, "PLUME_COLD_GROUP_MAX", "")
+        .parse::<usize>()
+        .ok()
+        .filter(|&n| n > 0 && n <= 5_000_000)
+        .unwrap_or(500_000)
+}
+
+/// REFUS nommé quand le plafond de groupes est atteint. Nomme la cause, le plafond, sa variable, et
+/// les voies exactes — un refus qui ne dit pas quoi faire est un mur.
+fn refuse_group_explosion(n: usize, max: usize) -> String {
+    format!(
+        "refus de rendre un agrégat INCOMPLET : ce group-by dépasse {max} groupes distincts sur \
+         l'historique froid ({n} atteints, plafond RAM PLUME_COLD_GROUP_MAX={max}) — poursuivre \
+         obligerait soit à dépasser le budget mémoire, soit à rendre une liste partielle de groupes \
+         présentée comme complète. Voies EXACTES : restreindre la fenêtre, filtrer avant de grouper, \
+         ou grouper sur une dimension de moindre cardinalité."
+    )
+}
+
 // #18 P6 — JAUGE DE CONCURRENCE (test-only) : compte les fichiers cold en cours de décode/déchiffrement EN
 // PARALLÈLE. `MAX` = pic observé = BORNE RAM effective (chaque décode simultané = 1 buffer déchiffré + 1
 // ColumnBatch). Le test PROUVE `MAX <= degree` (jamais > `cold_read_parallelism`), INDÉPENDAMMENT du nombre de
@@ -174,9 +236,54 @@ fn plan_columns(agg: &VecAgg) -> Vec<String> {
     }
 }
 
-/// Résout un nom de champ vers son `&'static str` PHYSIQUE (élément de `PARQUET_COLS`), sinon `None` (fallback).
-fn phys(col: &str) -> Option<&'static str> {
-    PARQUET_COLS.iter().copied().find(|c| *c == col)
+// ====================================================================================================
+// QUELLES COLONNES SONT « PHYSIQUES » — ET POUR QUOI FAIRE.
+// ----------------------------------------------------------------------------------------------------
+// `PARQUET_COLS` dit ce que le tier froid STOCKE. Ça ne dit PAS ce que le compilateur GXQL considère
+// comme une colonne : il a DEUX listes distinctes, et une colonne hors liste est résolue en
+// `json_extract(fields,'$.<nom>')`.
+//   `real_cols`   : filtrables dans un WHERE (events : + `dedup`, `id`).
+//   `select_cols` : projetables / groupables (events : SANS `dedup` ni `id`).
+// Le tier froid stocke EN PLUS `engagement_id`, `origin`, `env_id`, que le schéma events ne déclare NI
+// filtrables NI projetables.
+//
+// LE DÉFAUT QUE ÇA CAUSAIT (trouvé par le test de parité, pas par une relecture) : `phys()` acceptait
+// TOUT `PARQUET_COLS`, donc `search | stats count by dedup` était ROUTÉ vers les kernels, qui rendaient
+// les vraies valeurs de la colonne `dedup` — tandis que la MÊME requête sans tier froid rendait
+// `json_extract(fields,'$.dedup')`, c'est-à-dire NULL, en UN seul groupe. Deux réponses pour une
+// question, selon la route. Latent jusqu'ici parce que le routeur était dormant par défaut ; l'armer
+// l'aurait publié.
+//
+// LES DEUX ENSEMBLES SONT DÉRIVÉS DU CŒUR, pas recopiés : `Schema::events()` en est la source, calculée
+// une fois. Si le cœur déclare demain `origin` projetable, l'intersection le suit sans qu'on touche ici.
+// ====================================================================================================
+
+/// `PARQUET_COLS` ∩ colonnes RÉELLES (filtrables) du schéma GXQL. Calculée UNE FOIS depuis le cœur.
+fn phys_pred_cols() -> &'static [&'static str] {
+    static C: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        let s = guatx_core::soql::Schema::events();
+        PARQUET_COLS.iter().copied().filter(|c| s.default.real_cols.iter().any(|r| r == c)).collect()
+    })
+}
+
+/// `PARQUET_COLS` ∩ colonnes de PROJECTION du schéma GXQL (dims de group-by, `| table`). Idem.
+fn phys_proj_cols() -> &'static [&'static str] {
+    static C: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        let s = guatx_core::soql::Schema::events();
+        PARQUET_COLS.iter().copied().filter(|c| s.default.select_cols.iter().any(|r| r == c)).collect()
+    })
+}
+
+/// Colonne utilisable dans un PRÉDICAT ; sinon `None` (fallback -> le compilateur décide, un seul résultat).
+fn phys_pred(col: &str) -> Option<&'static str> {
+    phys_pred_cols().iter().copied().find(|c| *c == col)
+}
+
+/// Colonne utilisable en DIMENSION / PROJECTION ; sinon `None` (fallback).
+fn phys_proj(col: &str) -> Option<&'static str> {
+    phys_proj_cols().iter().copied().find(|c| *c == col)
 }
 
 /// Colonne INT physique du cold (les SEULES INT64 : `ts`/`severity`). Les comparaisons NUMÉRIQUES ne sont
@@ -331,7 +438,7 @@ fn map_cols(raw: &str) -> Option<Vec<&'static str>> {
         if c.is_empty() || !soql_ident_ok(c) {
             return None;
         }
-        out.push(phys(c)?);
+        out.push(phys_proj(c)?);
     }
     (!out.is_empty()).then_some(out)
 }
@@ -368,7 +475,7 @@ fn build_pred(body: &str) -> Option<Pred> {
         if !soql_ident_ok(field) {
             return None;
         }
-        let fcol = phys(field)?;
+        let fcol = phys_pred(field)?;
         let p = build_leaf(op, fcol, val)?;
         conds.push(p);
     }
@@ -583,11 +690,11 @@ pub(crate) fn cold_vectorized_try(
 ) -> Result<Option<Value>, String> {
     let t0 = Instant::now();
 
-    // GATE 0 : KILL-SWITCH RUNTIME (défaut OFF) = déploiement DARK. Sans `PLUME_COLD_VECTORIZED=1`, le routeur
-    // vectorisé est DORMANT -> fallback systématique vers `cold_union_query` = comportement BYTE-IDENTIQUE à
-    // l'existant. Activation délibérée + rollback INSTANTANÉ (unset le flag, sans redéploiement). Le kernel + le
-    // câblage restent compilés/testés ; seul le routage runtime est gaté.
-    if crate::cfg(conf, "PLUME_COLD_VECTORIZED", "") != "1" {
+    // GATE 0 : ARMÉ PAR DÉFAUT (cf. `cold_vectorized_armed`). `PLUME_COLD_VECTORIZED=0` désarme -> fallback
+    // vers `cold_union_query`, qui REFUSE alors toute valeur dérivée d'un ensemble tronqué : l'opt-out coûte
+    // des refus, jamais des nombres faux. Le défaut DORMANT d'origine était la cause MESURÉE du défaut de
+    // correction (aucune des 105 cellules froides du banc n'atteignait les kernels).
+    if !cold_vectorized_armed(conf) {
         note_fallback();
         return Ok(None);
     }
@@ -681,16 +788,31 @@ pub(crate) fn cold_vectorized_try(
     // remis à `open_verified`/`open_cold_reader` -> jamais déchiffrés. Compteurs enregistrés dès la sélection.
     note_prune(scan.pruned, scan.files.len());
 
-    // GATE 5 : PAS DE TRONCATURE. On veut savoir si le nombre de lignes de la fenêtre froide dépasse le cap
-    // d'hydratation (au-delà, l'oracle TRONQUERAIT -> fallback pour préserver son résultat capé). PERF : pour
-    // un fichier ENTIÈREMENT couvert par la fenêtre (`ts_min>=lo && ts_max<=hi`), TOUTES ses `expected` lignes
-    // (métadonnée de seal) sont dans la fenêtre -> AUCUN déchiffrement/décodage nécessaire pour les compter
-    // (cas commun : fenêtre = jours entiers). Seuls les fichiers PARTIELS (chevauchant un bord) sont décodés
-    // pour un comptage EXACT (rare, <= 2 fichiers de bord). -> une SEULE passe de décodage (l'agrégat), pas deux.
-    let cap = cold_hydrate_row_cap() as i64;
-    if window_rows_capped(&scan, lo, hi, &deny, cap)?.is_none() {
-        note_fallback();
-        return Ok(None); // > cap -> l'oracle TRONQUERAIT l'hydratation cold -> fallback (résultat capé préservé)
+    // GATE 5 : PAS DE TRONCATURE — DÉSORMAIS RESTREINTE À LA MATÉRIALISATION.
+    //
+    // CE QUI A CHANGÉ, ET POURQUOI. L'ancien contrat était « ne router que ce que l'oracle rendrait à
+    // l'identique », donc : fallback dès que l'oracle TRONQUERAIT. Ce contrat traitait l'oracle comme une
+    // référence de VÉRITÉ. Il ne l'est pas. Au-delà du cap, l'oracle hydrate `cold_hydrate_row_cap` lignes
+    // puis agrège SUR CET ÉCHANTILLON : son `stats count` vaut 289 là où la vérité vaut 58 747 (×203, mesuré).
+    // Préserver la parité avec ce nombre-là, c'est préserver le défaut. Le contrat DEVIENT :
+    //     résultat routé == oracle QUAND l'oracle est exact ; résultat routé == EXACT sinon.
+    //
+    //   • AGRÉGATS (count / count by / top-N) : le kernel balaie TOUT le froid sans jamais matérialiser les
+    //     lignes -> exact ET borné en RAM (un i64, ou une map bornée par `cold_group_max`). Il n'y a aucune
+    //     raison de lui préférer un échantillon : la gate SAUTE. C'est LA correction.
+    //   • MATÉRIALISATION : les deux chemins rendent un PRÉFIXE de lignes VRAIES — mais pas le même (l'oracle
+    //     hydrate en ordre canonique puis laisse SQLite ordonner). Aucun des deux n'est faux ; on garde donc
+    //     l'ancien comportement, iso-oracle, et la gate reste.
+    //
+    // PERF (inchangée) : pour un fichier ENTIÈREMENT couvert par la fenêtre (`ts_min>=lo && ts_max<=hi`),
+    // toutes ses `expected` lignes (métadonnée de seal) sont dans la fenêtre -> aucun déchiffrement pour les
+    // compter. Seuls les fichiers PARTIELS (bords) sont décodés (rare, <= 2).
+    if matches!(plan.agg, VecAgg::Materialize(..)) {
+        let cap = cold_hydrate_row_cap() as i64;
+        if window_rows_capped(&scan, lo, hi, &deny, cap)?.is_none() {
+            note_fallback();
+            return Ok(None); // > cap -> l'oracle TRONQUERAIT ses LIGNES -> fallback (préfixe de l'oracle préservé)
+        }
     }
 
     // Prédicat COMPLET = filtre utilisateur ∧ fenêtre. (window_rows <= cap -> aucune troncature -> l'agrégat
@@ -703,7 +825,7 @@ pub(crate) fn cold_vectorized_try(
     // `exec_agg` peut décider un FALLBACK tardif (ex. tie de count STRADDLE le head-cut d'un top-N : le SET
     // renvoyé serait ambigu vs l'ordre intra-égalité indéfini de l'oracle) -> il renvoie `Ok(None)` et le routeur
     // retombe sur `cold_union_query` (invariant préservé).
-    match exec_agg(&scan, &plan.agg, &full, &deny, t0)? {
+    match exec_agg(&scan, &plan.agg, &full, &deny, cold_group_max(conf), t0)? {
         Some(mut value) => {
             note_vec();
             // TRANSPARENCE (parité ignore `stats` — comparée sur columns+rows) : couverture d'élagage seal.
@@ -758,7 +880,7 @@ fn map_keyset_soql(soql: &str) -> Option<(Pred, Vec<&'static str>)> {
     let pred = build_pred(body)?;
     // Résout chaque colonne par défaut vers son `&'static` de `PARQUET_COLS` (garantit l'identité de pointeur
     // attendue par le kernel + `can_vectorize`).
-    let proj: Vec<&'static str> = KEYSET_EVENT_COLS.iter().filter_map(|c| phys(c)).collect();
+    let proj: Vec<&'static str> = KEYSET_EVENT_COLS.iter().filter_map(|c| phys_proj(c)).collect();
     if proj.len() != KEYSET_EVENT_COLS.len() {
         return None; // divergence schéma cold (défensif) -> fallback
     }
@@ -812,8 +934,11 @@ pub(crate) fn cold_keyset_page(
     limit: usize,
     dim_preds: &[DimEq],
 ) -> Result<Option<(Vec<String>, Vec<Vec<Value>>)>, String> {
-    // GATES (miroir `cold_vectorized_try`) : kill-switch runtime + cold ON + masques vides. Sinon FALLBACK.
-    if crate::cfg(conf, "PLUME_COLD_VECTORIZED", "") != "1" {
+    // GATES (miroir `cold_vectorized_try`) : GATE 0 (armé par défaut, cf. `cold_vectorized_armed`) + cold ON +
+    // masques vides. Sinon FALLBACK. Ici aussi le défaut ARMÉ est un choix de CORRECTION : le fallback
+    // (`cold_union_query` keyset) hydrate au plus `cold_hydrate_row_cap` lignes PUIS filtre le curseur -> il
+    // est STRUCTURELLEMENT incapable de paginer au-delà du plafond, donc de montrer l'historique froid.
+    if !cold_vectorized_armed(conf) {
         return Ok(None);
     }
     if !cold_tier_runtime_on(conf) {
@@ -1180,7 +1305,7 @@ fn par_materialize_files(
 /// `Value` {columns,rows,stats} iso-`run_on_conn`. Renvoie `Ok(None)` = FALLBACK TARDIF demandé (seul cas :
 /// top-N dont l'égalité de count STRADDLE le head-cut -> SET ambigu, cf. arm `TopN`) ; l'appelant retombe alors
 /// sur `cold_union_query`.
-fn exec_agg(scan: &ColdScan, agg: &VecAgg, full: &Pred, deny: &std::collections::HashSet<String>, t0: Instant) -> Result<Option<Value>, String> {
+fn exec_agg(scan: &ColdScan, agg: &VecAgg, full: &Pred, deny: &std::collections::HashSet<String>, group_max: usize, t0: Instant) -> Result<Option<Value>, String> {
     let cols = plan_columns(agg);
     match agg {
         VecAgg::Count => {
@@ -1189,7 +1314,7 @@ fn exec_agg(scan: &ColdScan, agg: &VecAgg, full: &Pred, deny: &std::collections:
             Ok(Some(finalize(cols, vec![vec![json!(total)]], false, t0)))
         }
         VecAgg::GroupCount(dims) => {
-            let agg_map = scan_group(scan, full, dims, deny)?;
+            let agg_map = scan_group(scan, full, dims, deny, group_max)?;
             // ORDRE canonique DÉTERMINISTE (clé ASC) : GROUP BY SQL est un SAC non ordonné -> on rend un ordre
             // stable (l'invariant porte sur les DONNÉES ; le harnais compare normalisé). N'ALTÈRE aucune donnée.
             let mut rows: Vec<(GroupKey, i64)> = agg_map.into_iter().collect();
@@ -1197,7 +1322,7 @@ fn exec_agg(scan: &ColdScan, agg: &VecAgg, full: &Pred, deny: &std::collections:
             Ok(Some(finalize(cols, group_rows(&rows, dims), false, t0)))
         }
         VecAgg::TopN(dims, asc, n) => {
-            let agg_map = scan_group(scan, full, dims, deny)?;
+            let agg_map = scan_group(scan, full, dims, deny, group_max)?;
             // Tri COMPLET par count (DESC par défaut, ASC si `sort +count`), tie-break clé pour un affichage
             // stable. On ne tronque PAS encore : il faut inspecter la ligne JUSTE APRÈS le head-cut.
             let mut ranked: Vec<(GroupKey, i64)> = agg_map.into_iter().collect();
@@ -1249,13 +1374,21 @@ fn exec_agg(scan: &ColdScan, agg: &VecAgg, full: &Pred, deny: &std::collections:
 /// décode PARALLÈLE borné : chaque fichier produit sa map partielle (dans un worker), fusionnées par UNION
 /// COMMUTATIVE (somme par clé) sur le consommateur -> résultat IDENTIQUE au balayage séquentiel (l'ordre
 /// d'achèvement des workers n'entre PAS dans la somme). RAM bornée à `degree` maps partielles en vol.
+///
+/// BORNE RAM DE LA MAP FUSIONNÉE (`group_max`) : depuis que GATE 5 ne s'applique plus aux agrégats, la
+/// fenêtre froide balayée n'est plus bornée -> le nombre de clés distinctes ne l'est plus non plus. On
+/// REFUSE (Err nommée) au-delà du plafond, on ne TRONQUE JAMAIS la map : une map tronquée rendrait des
+/// groupes manquants et des counts justes, présentés comme complets — c'est-à-dire le défaut qu'on ferme,
+/// déplacé d'un cran.
 fn scan_group(
     scan: &ColdScan,
     full: &Pred,
     dims: &[&'static str],
     deny: &std::collections::HashSet<String>,
+    group_max: usize,
 ) -> Result<std::collections::HashMap<GroupKey, i64>, String> {
-    par_fold_files(
+    let mut overflow: Option<usize> = None;
+    let map = par_fold_files(
         scan,
         std::collections::HashMap::<GroupKey, i64>::new(),
         |env, s| {
@@ -1266,8 +1399,15 @@ fn scan_group(
             for (k, c) in part {
                 *acc.entry(k).or_insert(0) += c;
             }
+            if acc.len() > group_max && overflow.is_none() {
+                overflow = Some(acc.len());
+            }
         },
-    )
+    )?;
+    match overflow {
+        Some(n) => Err(refuse_group_explosion(n, group_max)),
+        None => Ok(map),
+    }
 }
 
 /// (GroupKey, count) -> lignes JSON : chaque composant de dim converti selon le TYPE physique (int -> nombre,
@@ -1312,7 +1452,19 @@ fn sqlval_to_json(v: rusqlite::types::Value) -> Value {
 
 /// Construit le `Value` final {columns,rows,stats} — MÊME forme que `run_on_conn` (stats: elapsed_ms/rows/
 /// truncated). `served_from`/`cold` sont posés par le HANDLER (comme pour le chemin oracle).
-fn finalize(columns: Vec<String>, rows: Vec<Vec<Value>>, truncated: bool, t0: Instant) -> Value {
+///
+/// PLAFOND DE SORTIE (un SEUL site, pour TOUTES les formes). `run_on_conn` — le chemin SQLite qui sert le
+/// hot comme l'oracle — borne sa SORTIE à `PLUME_QUERY_MAX` lignes et pose `truncated`. Tant que GATE 5
+/// écartait toute fenêtre de plus de `cap` lignes, le vectorisé ne pouvait PAS dépasser ce plafond : la
+/// parité était accidentelle. En levant la gate pour les agrégats, un `| stats count by <dim>` peut
+/// désormais rendre plus de `cap` GROUPES là où le hot en rendrait `cap` + `truncated` -> divergence
+/// INTRODUITE par la correction. On applique donc ICI le MÊME plafond, une fois, pour toute forme
+/// présente ou future : c'est une troncature de SORTIE (chaque ligne rendue reste exacte), pas la
+/// troncature d'ENTRÉE que `exactness` interdit.
+fn finalize(columns: Vec<String>, mut rows: Vec<Vec<Value>>, truncated: bool, t0: Instant) -> Value {
+    let out_cap = cold_hydrate_row_cap();
+    let truncated = truncated || rows.len() > out_cap;
+    rows.truncate(out_cap);
     let n = rows.len();
     let elapsed_ms = (t0.elapsed().as_secs_f64() * 1_000_000.0).round() / 1000.0;
     json!({
@@ -1425,7 +1577,10 @@ fn hot_partial(
     // q_from=boundary -> open_cold_union : hi=boundary-1 < lo=boundary -> AUCUNE hydratation cold -> la vue
     // d'union = `event WHERE ts>=boundary` SEULE (cold-arm vide). C'est EXACTEMENT la contribution hot de
     // l'oracle (même masquage/authorizer/budget) -> parité hot par CONSTRUCTION.
-    let (v, _total, _meta) = cold_union_query(db_path, conf, env_filter, boundary, q_to, boundary, &hot_sql, None, budget_ms, qid, dim_preds)?;
+    // `q_from = boundary` -> AUCUNE hydratation froide -> la réponse est STRUCTURELLEMENT exacte. Un
+    // `Truncated` ici serait un bug de ce chemin, pas une requête trop large -> Err fail-closed.
+    let (answer, _meta) = cold_union_query(db_path, conf, env_filter, boundary, q_to, boundary, &hot_sql, None, budget_ms, qid, dim_preds)?;
+    let (v, _total) = answer.expect_exact("P4b hot_partial")?;
     Ok(v)
 }
 
@@ -1433,7 +1588,7 @@ fn hot_partial(
 /// `Ok(Some(value))` si SERVI par le merge vectorisé (== `cold_union_query`) ; `Ok(None)` si la requête DOIT
 /// tomber en fallback (l'appelant appelle alors `cold_union_query` VERBATIM) ; `Err` sur corruption cold
 /// (fail-closed). Met à jour les compteurs de route. À appeler depuis `spawn_blocking` (I/O + déchiffrement +
-/// requête hot SQLite). Gates : GATE 0 kill-switch dark, cold ON, masques vides, FENÊTRE CHEVAUCHANTE
+/// requête hot SQLite). Gates : GATE 0 (armé par défaut), cold ON, masques vides, FENÊTRE CHEVAUCHANTE
 /// (`q_from < boundary <= q_to`, ou `q_to<=0` = non borné haut = atteint le hot), forme vectorisable, cap
 /// (froid `[lo,boundary-1]` <= cap sinon l'oracle tronquerait ; + total matérialisé pour `table`).
 #[allow(clippy::too_many_arguments)]
@@ -1452,8 +1607,8 @@ pub(crate) fn cold_vectorized_merge_try(
 ) -> Result<Option<Value>, String> {
     let t0 = Instant::now();
 
-    // GATE 0 : KILL-SWITCH RUNTIME (défaut OFF) = déploiement DARK (comme P4a).
-    if crate::cfg(conf, "PLUME_COLD_VECTORIZED", "") != "1" {
+    // GATE 0 : ARMÉ PAR DÉFAUT (comme P4a) ; `=0` désarme et fait retomber sur un chemin qui REFUSE.
+    if !cold_vectorized_armed(conf) {
         note_fallback();
         return Ok(None);
     }
@@ -1537,10 +1692,14 @@ pub(crate) fn cold_vectorized_merge_try(
     };
     note_prune(scan.pruned, scan.files.len());
 
-    // GATE 5 (cap FROID) : si la fenêtre froide dépasse le cap d'hydratation, l'oracle TRONQUERAIT sa partie
-    // cold -> fallback (résultat capé de l'oracle préservé). Compte identique à P4a (seal + bords).
+    // GATE 5 (cap FROID) — MÊME restriction qu'en P4a : elle ne vaut plus que pour la MATÉRIALISATION.
+    // Pour un agrégat, retomber sur l'oracle au-delà du cap, c'est retomber sur un agrégat calculé sur
+    // `cold_hydrate_row_cap` lignes, donc sur un nombre faux. Le merge, lui, calcule le froid EXACTEMENT
+    // (kernels) et le hot EXACTEMENT (SQLite), et la somme de deux exacts est exacte.
+    // (Le gate d'oracle qui SUBSISTE côté groupes — `oracle_would_truncate_groups` — porte sur autre chose :
+    // le HOT-arm de l'oracle borne sa SORTIE à `cap` GROUPES, donc au-delà le merge lui-même serait incomplet.)
     let cap = cold_hydrate_row_cap() as i64;
-    if window_rows_capped(&scan, lo, hi, &deny, cap)?.is_none() {
+    if matches!(plan.agg, VecAgg::Materialize(..)) && window_rows_capped(&scan, lo, hi, &deny, cap)?.is_none() {
         note_fallback();
         return Ok(None);
     }
@@ -1577,7 +1736,7 @@ pub(crate) fn cold_vectorized_merge_try(
         }
         VecAgg::GroupCount(dims) | VecAgg::TopN(dims, _, _) => {
             // FROID : group-by count vectorisé (map non tronquée). HOT : group-by count SQLite (SANS head).
-            let cold_map = scan_group(&scan, &full, dims, &deny)?;
+            let cold_map = scan_group(&scan, &full, dims, &deny, cold_group_max(conf))?;
             let hv = hot_partial(db_path, conf, env_filter, boundary, q_to, &hot_base, dim_preds, budget_ms, qid)?;
             let hot_rows = value_rows(&hv);
             // FIX #18 P4b-cap — l'oracle groupe (froid∪hot) via `run_on_conn`, qui BORNE sa SORTIE à `cap`

@@ -4,7 +4,7 @@
      Ne pas l'éditer à la main : la prochaine passe l'écrase. Tout commentaire durable va dans
      bench/README.md. -->
 
-Rendu le 2026-07-31 16:07:03+0200 depuis `results-smoke-200k.jsonl`, `results.jsonl`, `results-2026-07-31.jsonl`, `results-2026-07-31-corrige.jsonl`, `parity-avant-2026-07-31.jsonl`, `parity-apres-2026-07-31.jsonl` — données brutes VERSIONNÉES dans [`bench/results/`](../bench/results/), pour que ce tableau puisse être contredit et pas seulement cru (cf. `bench/README.md`).
+Rendu le 2026-07-31 23:26:07+0200 depuis `results-smoke-200k.jsonl`, `results.jsonl`, `results-2026-07-31.jsonl`, `results-2026-07-31-corrige.jsonl`, `parity-avant-2026-07-31.jsonl`, `parity-apres-2026-07-31.jsonl`, `parity-couverture-2026-07-31.jsonl` — données brutes VERSIONNÉES dans [`bench/results/`](../bench/results/), pour que ce tableau puisse être contredit et pas seulement cru (cf. `bench/README.md`).
 
 ## Ce que ce document est, et ce qu'il n'est pas
 
@@ -1813,6 +1813,86 @@ ensemble tronqué n'est rendue comme un nombre.
 
 > Réserve : LES 3 NOMBRES FAUX QUI RESTENT NE SONT PAS CEUX DU TIER FROID. Ils sont tous portés par la MÊME classe, `C3b-groupby-routable` (`search | stats count by source,severity`), et les deux côtés la servent par la ROUTE DE ROLLUPS, pas par le chemin froid. Mesuré sur la fenêtre `au-dela-7d`, sur la MÊME donnée : la somme des counts vaut 164 165 côté SANS tier froid (`approx:false`, `truncated:false` — donc présentée comme EXACTE) et 1 082 346 côté AVEC (`approx:true`, avec sa note). Le compte BRUT de la même fenêtre, mesuré des deux côtés par `search | stats count`, vaut 1 080 321. C'est donc la route de rollups du côté SANS tier froid qui SOUS-COMPTE d'un facteur 6,6, en se déclarant exacte — un second défaut de la même famille (un nombre faux sans avertissement), DISTINCT de la troncature froide, NON corrigé ici, et reproductible : une base restaurée dont `event_rollup` ne couvre pas le passé profond sert des tableaux de bord sous-comptés. La réserve de la passe du 31/07 laissait ce mécanisme « non expliqué » ; il l'est maintenant, et il reste ouvert.
 
+### La réponse est-elle la MÊME ? (parité mesurée)
+
+Une latence n'est comparable que si les deux chemins rendent la même réponse : un
+chemin qui TRONQUE est plus rapide parce qu'il en fait moins. Cette sous-section ne
+compare donc pas des temps, elle compare **les valeurs rendues**.
+
+Méthode : APRÈS les correctifs de COUVERTURE des rollups (event_rollup ET event_dim_rollup, cf. daemon/src/rollup_coverage.rs). MÊME base de banc 1440007 événements, deux copies FRAÎCHES du même fichier : l'une columnarisée (PLUME_COLD_TIER=1, 330255 lignes chaudes + 1109752 en 22 Parquet), l'autre intacte (PLUME_COLD_TIER=0). MÊME binaire de mesure (bin:80a19382ef3d30b8), MÊME machine, MÊMES requêtes, MÊMES fenêtres — la matrice de measure.py en entier, produite par bench/parity.py (rejouable). La columnarisation a été produite par un build release de l'arbre efd39e5 ; le code d'aging (cold_age_run) est identique dans le binaire de mesure. LES DEUX daemons ont TICKÉ avant la mesure et la publication de leur couverture (event_rollup_cov_id) a été VÉRIFIÉE des deux côtés — la passe précédente notait elle-même que l'un des daemons venait de démarrer quand l'autre tournait depuis vingt minutes, facteur non contrôlé qui est ici éliminé.
+
+| Verdict | n | ce qu'il signifie |
+|---|---:|---|
+| `same` | 62 | les deux côtés rendent la MÊME réponse. |
+| `differs` | 7 | ils divergent **sans le dire** — un nombre faux, lisible et copiable. C'est LE cas grave. |
+| `declared` | 12 | ils divergent et le côté froid le DIT (`truncated`, ou note de couverture). L'incomplétude devient une information. |
+| `refused` | 24 | un côté REFUSE, avec un motif nommé. Une erreur vaut mieux qu'un nombre faux : c'est la position de repli, pas l'échec. |
+
+`declared` n'acquitte rien : un AGRÉGAT tronqué reste un nombre faux, déclaré ou non.
+Les catégories ne s'additionnent jamais en un « tout va bien ».
+
+**Le compte qui compte : 2 NOMBRE(S) FAUX.** C'est le nombre de contrôles dont la
+réponse porte une valeur calculée SUR L'ENSEMBLE (`count`/`dc`/`stats … by …`) et dont
+les deux côtés DIVERGENT — que le côté froid l'ait déclaré ou non. C'est exactement ce
+que l'invariant de `cold_store/exactness.rs` interdit. Les autres catégories décrivent
+des réponses partielles de LIGNES (vraies, incomplètes, signalées) ou des refus motivés :
+elles ne sont pas du même ordre de gravité.
+
+Le détail de tout ce qui n'est pas `same` :
+
+| Requête | Fenêtre | Verdict | Sans tier froid | Avec tier froid |
+|---|:--:|:--:|---|---|
+| `search source=k8s-log \| stats dc(host)` | 7d | refused | **64** | refus 422 |
+| `search source=k8s-log \| stats dc(host)` | au-dela-7d | refused | **64** | refus 422 |
+| `search source=k8s-log \| stats dc(host)` | all | refused | **64** | refus 422 |
+| `search anomalieplumebench \| stats count` | 7d | refused | **349** | refus 422 |
+| `search anomalieplumebench \| stats count` | au-dela-7d | refused | **1 091** | refus 422 |
+| `search anomalieplumebench \| stats count` | all | refused | **1 440** | refus 422 |
+| `anomalieplumebench` | au-dela-7d | declared | 200 lignes `9c78ce2c33bf372c` | 0 lignes `e3b0c44298fc1c14` (couverture déclarée) |
+| `search anomalieplumebench \| table ts,host,source,message` | 7d | declared | 100 lignes `f72ae12b4bdf55c8` | 100 lignes `f52dbc1c103e7f85` (tronqué) |
+| `search anomalieplumebench \| table ts,host,source,message` | au-dela-7d | declared | 100 lignes `d3c813e56493a55b` | **[1782992260, 'bench-node-005.plume.invalid', 'auditd', 'anom** |
+| `search anomalieplumebench \| table ts,host,source,message` | all | declared | 100 lignes `4d04f605e5553863` | 100 lignes `f52dbc1c103e7f85` (tronqué) |
+| `search sessionplumebench \| stats count` | 7d | refused | **35 876** | refus 422 |
+| `search sessionplumebench \| stats count` | au-dela-7d | refused | **108 124** | refus 422 |
+| `search sessionplumebench \| stats count` | all | refused | **144 000** | refus 422 |
+| `search \| stats count by src_ip,host,source \| sort -count \| head 50` | 7d | refused | 50 lignes `6d735a44351b289e` | refus 422 |
+| `search \| stats count by src_ip,host,source \| sort -count \| head 50` | all | refused | 50 lignes `d2e9e2128c6a20cc` | refus 422 |
+| `search \| stats count by source,severity` | 7d | differs | 63 lignes `a0ed57fa1c5d9bc4` | 63 lignes `90dac9300067cbde` |
+| `search \| stats count by source,severity` | au-dela-7d | differs | 68 lignes `fbd1621013e0a038` | 68 lignes `0a0a8af58152d7df` |
+| `search \| stats count by action,source \| sort -count \| head 50` | 7d | refused | 50 lignes `6708bbab4feb00cc` | refus 422 |
+| `search \| stats count by action,source \| sort -count \| head 50` | au-dela-7d | refused | 50 lignes `5c1a9b1495ee34ed` | refus 422 |
+| `search \| stats count by action,source \| sort -count \| head 50` | all | refused | 50 lignes `1a3cfe0fe89e163e` | refus 422 |
+| `search severity>=1 \| table ts,host,source,severity,message` | 7d | declared | 200 lignes `7751d804f61177dc` | 200 lignes `0a3a70ce8ec66dda` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | au-dela-7d | declared | 200 lignes `cc2a01764c203c24` | 200 lignes `ddd0ec415bcf020e` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | all | declared | 200 lignes `d9d46972d13b2c93` | 200 lignes `0a3a70ce8ec66dda` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | 7d | declared | 200 lignes `d2089c14727c0ea2` | 200 lignes `f404c5baffd5865c` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | au-dela-7d | declared | 200 lignes `bd8755d9328aa11c` | 0 lignes `e3b0c44298fc1c14` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | all | declared | 200 lignes `9ca430786fb9a4e3` | 200 lignes `f404c5baffd5865c` (tronqué) |
+| `search severity>=1` | au-dela-7d | differs | 200 lignes `409b636e003ac087` | 200 lignes `f86df08b66bb8913` |
+| `search severity>=1 \| table ts,host,source,severity,message` | 7d | differs | 200 lignes `4d1842d2d07101ba` | 200 lignes `851189e3a3a3096d` |
+| `search severity>=1 \| table ts,host,source,severity,message` | au-dela-7d | declared | 200 lignes `6210ef32fce88a29` | 200 lignes `b75c13c0060f6ba8` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | all | differs | 200 lignes `79c39c5f14e54169` | 200 lignes `cfc66de8daa83556` |
+| `search needle=~objetplumebench \| stats count` | 7d | refused | **720** | refus 422 |
+| `search needle=~objetplumebench \| stats count` | au-dela-7d | refused | **2 160** | refus 422 |
+| `search needle=~objetplumebench \| stats count` | all | refused | **2 880** | refus 422 |
+| `search object=~[0-9a-f]{6}c \| stats count` | 7d | refused | **10 528** | refus 422 |
+| `search object=~[0-9a-f]{6}c \| stats count` | au-dela-7d | refused | **31 768** | refus 422 |
+| `search object=~[0-9a-f]{6}c \| stats count` | all | refused | **42 296** | refus 422 |
+| `search \| stats count by host \| sort -count \| head 50` | 7d | refused | 50 lignes `4069e45a545b631b` | refus 422 |
+| `search host=bench-node-000.plume.invalid \| table ts,host,source,severity,message` | 7d | differs | 200 lignes `6e46072414e9dbf5` | 200 lignes `c674bdce229ced73` |
+| `search host=bench-node-000.plume.invalid \| table ts,host,source,severity,message` | au-dela-7d | declared | 200 lignes `24f68972e58bd09b` | 80 lignes `0e4d979290ef6378` (tronqué) |
+| `search host=bench-node-000.plume.invalid \| table ts,host,source,severity,message` | all | differs | 200 lignes `6e46072414e9dbf5` | 200 lignes `c674bdce229ced73` |
+| `search user=bench-user-0007 \| stats count` | 7d | refused | **650** | refus 422 |
+| `search user=bench-user-0007 \| stats count` | au-dela-7d | refused | **2 075** | refus 422 |
+| `search user=bench-user-0007 \| stats count` | all | refused | **2 725** | refus 422 |
+
+**Aucun agrégat scalaire ne diverge.** Les contrôles réductibles à un nombre rendent
+la même valeur des deux côtés, ou bien le côté froid REFUSE de répondre en nommant sa
+cause. C'est l'invariant de `cold_store/exactness.rs` : aucune valeur dérivée d'un
+ensemble tronqué n'est rendue comme un nombre.
+
+> Réserve : LA DIVERGENCE ×6,6 DE LA PASSE PRÉCÉDENTE EST CORRIGÉE, ET C'EST CETTE PASSE QUI LE MESURE. La réserve de `parity-apres-2026-07-31` décrivait le binaire d'AVANT le correctif de couverture des rollups ; elle ne décrit plus le dépôt. Mesuré ici, sur la MÊME base et au MÊME instant que la matrice (le compte BRUT étant `search | stats count` sur le MÊME daemon) : côté SANS tier froid, `search | stats count by source,severity` rend 1 080 321 sur la fenêtre `au-dela-7d`, 359 679 sur `7d` et 1 440 007 sur `all` — soit EXACTEMENT le compte brut des trois fenêtres, là où la passe précédente rendait 164 165 sous `approx:false` pour 1 080 321 réels. Le nombre de groupes coïncide désormais des deux côtés (68/68, 63/63, 70/70 ; c'était 59 contre 68). CE QUI RESTE, ET DANS L'AUTRE SENS : 2 contrôles divergent encore, tous deux `C3b-groupby-routable`, et c'est le côté AVEC tier froid qui SUR-compte — 1 082 346 contre 1 080 321 (+2 025, soit +0,19 %) sur `au-dela-7d`, 360 020 contre 359 679 (+341, soit +0,09 %) sur `7d`. Ce côté-là se déclare `approx:true` et porte sa note ; le côté sans tier froid est `approx:false` et exact. La cause est le résidu DOCUMENTÉ de `plan_merge` : sous la frontière chaud/froid, `event` est agé en Parquet, donc un partiel de TÊTE sous-horaire ne peut pas être scanné en brut et est REPLIÉ dans le corps rollup, qui couvre l'heure entière — la fenêtre `au-dela-7d` du banc commence à 1782990828, non aligné à l'heure, et le repli ajoute la tranche [1782990000, 1782990828). Ce n'est donc pas un reste du défaut corrigé : c'est le grain horaire, borné à une sliver sub-horaire, et annoncé. POURQUOI CES 2 SONT QUAND MÊME COMPTÉS COMME NOMBRES FAUX : le classifieur ne rachète JAMAIS un agrégat qui diverge parce qu'il est déclaré (`declared n'acquitte rien`). La règle est conservée telle quelle — l'assouplir pour faire tomber le compte à zéro serait changer la règle après avoir vu le résultat.
+
 ### `froid-actif@1.4M`
 
 Frontière chaud/froid CALCULÉE PAR LE DAEMON : `boundary_ts=1784851200`. Une fenêtre
@@ -2275,7 +2355,7 @@ bench/run.sh                       # 10 M d'événements
 BENCH_EVENTS=1000000 bench/run.sh  # 1 M, pour itérer
 # 3. le rendu — LA COMMANDE EXACTE qui a produit CE document, reconstruite depuis ses propres
 #    arguments et pointée sur les données VERSIONNÉES (donc rejouable par un tiers) :
-python3 bench/report.py bench/results/results-smoke-200k.jsonl bench/results/results.jsonl bench/results/results-2026-07-31.jsonl bench/results/results-2026-07-31-corrige.jsonl bench/results/parity-avant-2026-07-31.jsonl bench/results/parity-apres-2026-07-31.jsonl \
+python3 bench/report.py bench/results/results-smoke-200k.jsonl bench/results/results.jsonl bench/results/results-2026-07-31.jsonl bench/results/results-2026-07-31-corrige.jsonl bench/results/parity-avant-2026-07-31.jsonl bench/results/parity-apres-2026-07-31.jsonl bench/results/parity-couverture-2026-07-31.jsonl \
     --ingest-curve bench/results/ingest_rate.csv \
     --ingest-curve bench/results/ingest_rate-quiet-2g.csv \
     --ref chaud-seul-v2@1.4M \

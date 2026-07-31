@@ -85,6 +85,7 @@ Un tableau de mesures sans ses données brutes ne peut être que **cru ou ignor�
 | `results/results-2026-07-31-corrige.jsonl` | La passe du 31/07 REJOUÉE après le correctif de troncature froide (témoin chaud `chaud-seul-v2@1.4M` + `froid-actif-v2@1.4M`, même machine, mêmes copies de base, binaire post-correctif). C'est elle qui décrit le code actuel. |
 | `results/parity-avant-2026-07-31.jsonl` | La parité chaud/froid mesurée sur toute la matrice **AVANT** le correctif : 53 contrôles sur 105 divergent en silence. |
 | `results/parity-apres-2026-07-31.jsonl` | La MÊME mesure **APRÈS** : plus aucun agrégat scalaire ne diverge en silence. |
+| `results/parity-couverture-2026-07-31.jsonl` | La MÊME mesure, REJOUÉE avec le binaire post-correctifs de **couverture des rollups**, sur deux copies FRAÎCHES de la même base et avec une stabilisation VÉRIFIÉE (les deux daemons ont tické, leur couverture est publiée). C'est elle qui mesure que le sous-compte ×6,6 de la passe précédente est corrigé : le côté sans tier froid rend désormais EXACTEMENT le compte brut. Elle décrit le dépôt actuel ; les réserves des passes antérieures décrivent leurs binaires. |
 | `results/fill-progress-quiet-2g.txt` | Les lignes de progression du générateur pour cette passe. Extension `.txt` et non `.log` : `.gitignore` exclut `*.log`, et une donnée publiée ne doit pas dépendre d'une exception d'ignore. |
 
 **Scannés avant publication** : chemins personnels, e-mails, jetons (`ghp_`/`AKIA`/`xox*-`/

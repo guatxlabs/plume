@@ -4,7 +4,7 @@
      Ne pas l'éditer à la main : la prochaine passe l'écrase. Tout commentaire durable va dans
      bench/README.md. -->
 
-Rendu le 2026-07-31 12:54:50+0200 depuis `results-smoke-200k.jsonl`, `results.jsonl`, `results-2026-07-31.jsonl` — données brutes VERSIONNÉES dans [`bench/results/`](../bench/results/), pour que ce tableau puisse être contredit et pas seulement cru (cf. `bench/README.md`).
+Rendu le 2026-07-31 16:07:03+0200 depuis `results-smoke-200k.jsonl`, `results.jsonl`, `results-2026-07-31.jsonl`, `results-2026-07-31-corrige.jsonl`, `parity-avant-2026-07-31.jsonl`, `parity-apres-2026-07-31.jsonl` — données brutes VERSIONNÉES dans [`bench/results/`](../bench/results/), pour que ce tableau puisse être contredit et pas seulement cru (cf. `bench/README.md`).
 
 ## Ce que ce document est, et ce qu'il n'est pas
 
@@ -19,32 +19,32 @@ banc synthétique au **profil** de la production (voir `bench/profile-prod.json`
 
 ## Verdict — ce que ces mesures autorisent à affirmer
 
-Volume de référence : **1 440 007 événements** (`chaud-seul@1.4M`), base **1434 Mio** chiffrée SQLCipher.
+Volume de référence : **1 440 007 événements** (`chaud-seul-v2@1.4M`), base **1434 Mio** chiffrée SQLCipher.
 
 **Sur le budget de 2 Gio — soutenu.** RSS crête la plus haute mesurée sur l'ensemble des cellules : **1097 Mio**, soit **54 %** du budget. Et ce n'est pas une observation passive : le daemon tournait sous `MemoryMax=2G MemorySwapMax=0`, où un dépassement est un kill du noyau.
 
 **Ce qui est RAPIDE** (p50, fenêtre indiquée, config de référence) :
 
-- `C0-plancher` / 7d — **0.6 ms** (PLANCHER : seek sur une source inexistante (0 ligne)), servi par `raw`
-- `C0-plancher` / au-dela-7d — **0.6 ms** (PLANCHER : seek sur une source inexistante (0 ligne)), servi par `raw`
 - `C0-plancher` / all — **0.6 ms** (PLANCHER : seek sur une source inexistante (0 ligne)), servi par `raw`
-- `C0-plancher` / 24h — **0.7 ms** (PLANCHER : seek sur une source inexistante (0 ligne)), servi par `raw`
+- `C0-plancher` / au-dela-7d — **0.6 ms** (PLANCHER : seek sur une source inexistante (0 ligne)), servi par `raw`
+- `C0-plancher` / 7d — **0.7 ms** (PLANCHER : seek sur une source inexistante (0 ligne)), servi par `raw`
+- `C0-plancher` / 1h — **0.7 ms** (PLANCHER : seek sur une source inexistante (0 ligne)), servi par `raw`
 
 **Ce qui est LENT** — et ce sont les cas que la promesse « sur tous les champs » met en avant :
 
-- `C3c-groupby-json` / au-dela-7d — **21.3 s** (group-by sur champ ÉTENDU indexé (action) + colonne), servi par `raw`
-- `C6b-groupby-host` / au-dela-7d — **20.7 s** (group-by sur host (autant de groupes que de machines)), servi par `raw`
-- `C6b-groupby-host` / 7d — **20.7 s** (group-by sur host (autant de groupes que de machines)), servi par `raw`
-- `C3-groupby-hi` / all — **13.0 s** (group-by 3 dims haute cardinalité (src_ip,host,source)), servi par `raw`
+- `C6b-groupby-host` / 7d — **22.2 s** (group-by sur host (autant de groupes que de machines)), servi par `raw`
+- `C3c-groupby-json` / au-dela-7d — **21.8 s** (group-by sur champ ÉTENDU indexé (action) + colonne), servi par `raw`
+- `C6b-groupby-host` / au-dela-7d — **20.9 s** (group-by sur host (autant de groupes que de machines)), servi par `raw`
+- `C3-groupby-hi` / all — **14.2 s** (group-by 3 dims haute cardinalité (src_ip,host,source)), servi par `raw`
 
 **Le disque n'a pas été sollicité — et c'est une limite, pas une bonne nouvelle.** Octets lus au bloc, maximum sur toutes les cellules : **0 Mio**. La base (1434 Mio) tient entièrement dans le cache de pages de la machine (6839 Mio de mémoire disponible au minimum pendant la mesure). Ces latences sont donc **bornées par le CPU, pas par le stockage**, et constituent un MEILLEUR CAS. À un volume où la base dépasse la RAM disponible, le stockage entre dans l'équation — et ce régime n'est pas mesuré ici.
 
 **Ce que ces mesures n'autorisent PAS à affirmer** :
 
 - rien au-delà de 1 440 007 événements. La cible de 10 M n'a pas été atteinte par le vrai chemin d'ingest — non pas faute de l'avoir cherché, mais parce que le débit d'ingest s'effondre avec le volume déjà en base, ce que la section « D'où vient l'effondrement » ATTRIBUE désormais (et non plus suppose) : le coût CPU par événement monte, le daemon écrit de plus en plus d'octets par ligne, et le chemin d'écriture est séquentiel. Le coût restant pour atteindre 10 M y est chiffré, en tant que PLANCHER arithmétique sur des débits mesurés. Toute latence annoncée à 10 M ou 100 M serait une extrapolation, pas une mesure.
-- rien sur la concurrence ni le multi-tenant (voir la section dédiée). Le tier froid, lui, EST mesuré ici — mais seulement dans `froid-actif@1.4M`, à une seule fenêtre chaude et un seul volume : les autres tableaux restent des tableaux SANS tier froid.
-- rien sur un déploiement AVEC masquage à partir des chiffres masque-vide : l'écart mesuré le plus fort est **x258.1** sur `C3b-groupby-routable` / all (141 ms masque vide contre 36.3 s masque non vide).
-  Et le masquage ne va pas TOUJOURS dans le sens du ralentissement : sur `C4b-raw-deep` / all il est **x0.15**, donc plus RAPIDE (366 ms masque vide contre 54 ms masque non vide, même nombre de lignes rendues). **La cause n'est PAS établie par cette mesure**, et on ne va pas l'inventer. Deux mécanismes candidats, qui demandent chacun une expérience dédiée pour être départagés : (a) un masque posé sur une dimension à haute cardinalité l'effondre, il reste moins de groupes à agréger — la requête va plus vite **parce que la réponse a changé** ; (b) la passe masquée a tourné APRÈS la passe non masquée, donc sur un cache de pages plus chaud. Ce qui trancherait : rejouer les deux passes dans l'ordre inverse, et comparer les résultats ligne à ligne. En attendant, la règle est simple — **une latence qui baisse en présence d'un masque ne doit jamais être citée comme un gain**.
+- rien sur la concurrence ni le multi-tenant (voir la section dédiée). Le tier froid, lui, EST mesuré ici — mais seulement dans `froid-actif@1.4M`, `froid-actif-v2@1.4M`, à une seule fenêtre chaude et un seul volume : les autres tableaux restent des tableaux SANS tier froid.
+- rien sur un déploiement AVEC masquage à partir des chiffres masque-vide : l'écart mesuré le plus fort est **x287.3** sur `C3b-groupby-routable` / 24h (8.6 ms masque vide contre 2.5 s masque non vide).
+  Et le masquage ne va pas TOUJOURS dans le sens du ralentissement : sur `C2-free-term` / 24h il est **x0.14**, donc plus RAPIDE (741 ms masque vide contre 101 ms masque non vide, même nombre de lignes rendues). **La cause n'est PAS établie par cette mesure**, et on ne va pas l'inventer. Deux mécanismes candidats, qui demandent chacun une expérience dédiée pour être départagés : (a) un masque posé sur une dimension à haute cardinalité l'effondre, il reste moins de groupes à agréger — la requête va plus vite **parce que la réponse a changé** ; (b) la passe masquée a tourné APRÈS la passe non masquée, donc sur un cache de pages plus chaud. Ce qui trancherait : rejouer les deux passes dans l'ordre inverse, et comparer les résultats ligne à ligne. En attendant, la règle est simple — **une latence qui baisse en présence d'un masque ne doit jamais être citée comme un gain**.
 
 ## Matériel et conditions
 
@@ -53,14 +53,14 @@ Volume de référence : **1 440 007 événements** (`chaud-seul@1.4M`), base **1
 | Processeur | Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 cœurs logiques) |
 | RAM de la machine | 15.4 Gio |
 | Noyau | 7.1.4-zen1-1-zen |
-| Version de plume mesurée | `bin:bc481b69f4aca22c construit:2026-07-30T13:25:38Z (HEAD au rendu: 09fc07f — indicatif, l'arbre bouge)` |
+| Version de plume mesurée | `bin:4bfcb9f76b4353a2 construit:2026-07-31T12:23:28Z (correctif troncature froide)` |
 | Volumes mesurés | 200 003 événements, 335 255 événements, 600 003 événements, 1 440 003 événements, 1 440 007 événements |
 | Taille de la base (SQLCipher, chiffrée) | 1263 Mio, 1401 Mio, 1434 Mio, 197 Mio, 336 Mio, 351 Mio, 560 Mio |
 | Budget mémoire | **appliqué** par un scope systemd `MemoryMax=2G MemorySwapMax=0` — la même contrainte que la limite de conteneur de production (`limits.memory: 2Gi`) |
 | Concurrence de requêtes | `PLUME_QUERY_CONCURRENCY=3` (le défaut livré) |
 | Budget par requête | interactif, 60 s (`interactive:true`) |
 
-**Plusieurs binaires** figurent dans ce document : `10db2d2`, `bin:0642474ceedfaf15`, `bin:b2d10fa90506682c`, `bin:bc481b69f4aca22c`, `ea1d072`. Chaque cellule porte le sien dans le JSONL brut, et chaque tableau de configuration l'affiche dans son sous-titre. Une comparaison entre deux tableaux de binaires différents mesure aussi l'écart entre les deux binaires — ce n'est légitime que dans la section « Écart mesuré entre deux passes », qui le dit.
+**Plusieurs binaires** figurent dans ce document : `10db2d2`, `bin:0642474ceedfaf15`, `bin:4bfcb9f76b4353a2`, `bin:b2d10fa90506682c`, `bin:bc481b69f4aca22c`, `ea1d072`. Chaque cellule porte le sien dans le JSONL brut, et chaque tableau de configuration l'affiche dans son sous-titre. Une comparaison entre deux tableaux de binaires différents mesure aussi l'écart entre les deux binaires — ce n'est légitime que dans la section « Écart mesuré entre deux passes », qui le dit.
 
 **Honnêteté sur les conditions** : la machine de mesure n'était pas dédiée — d'autres travaux
 tournaient en parallèle. Chaque cellule enregistre son `loadavg` et le swap consommé pendant
@@ -210,6 +210,8 @@ La colonne RSS est la mémoire réellement occupée par le daemon PENDANT l'inge
 | `flotte-1h@0.6M` | 600 003 | 1 | 0 | vide | off | **sous-ensemble** `C0-,C1-scan-agg,C3-groupby-hi,C6` (30 cellules) |
 | `flotte-50h@0.6M` | 600 003 | 50 | 0 | vide | off | **sous-ensemble** `C0-,C1-scan-agg,C3-groupby-hi,C6` (30 cellules) |
 | `flotte-200h@0.6M` | 600 003 | 200 | 0 | vide | off | **sous-ensemble** `C0-,C1-scan-agg,C3-groupby-hi,C6` (30 cellules) |
+| `froid-actif-v2@1.4M` | 1 440 007 | 64 | 0 | vide | actif (hot=7j) | toutes (105 cellules) |
+| `chaud-seul-v2@1.4M` | 1 440 007 | 64 | 0 | vide | off | toutes (105 cellules) |
 
 Le masquage compte parce qu'il est **contre-intuitif** : un ensemble de masquage non vide
 désarme la route de rollups *et* le moteur vectorisé (`handlers/query.rs:282`,
@@ -1046,6 +1048,248 @@ processus (0 = servi depuis le cache de pages).
 | `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | au-dela-7d | 4.5 | 5.2 | 4.5 | 548 | 0 | 200 | raw |  |
 | `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | all | 3.8 | 3.9 | 3.9 | 548 | 0 | 200 | raw |  |
 
+## Résultats — `froid-actif-v2@1.4M`
+
+*`PLUME_FTS_FIELDS`=0, masquage=vide, froid=actif (hot=7j), version=`bin:4bfcb9f76b4353a2 construit:2026-07-31T12:23:28Z (correctif troncature froide)`, 1 440 007 événements, base 1434 Mio.*
+
+Latences en millisecondes (mur, côté client), sauf mention `s`. `RSS` = crête réelle du
+processus échantillonnée à 15 ms pendant la requête. `lu` = octets lus au bloc par le
+processus (0 = servi depuis le cache de pages).
+
+
+**28 cellules de ce tableau ont une dispersion `p95/p50` supérieure à 3.** Sur une machine partagée, cela ne décrit pas plume : cela décrit le fait que la mesure a été bousculée par les autres travaux. Ces cellules sont annotées ; leur `p50` reste utilisable, leur `p95` non.
+
+**Ce que `p95` vaut ici** : 3, 7 répétitions par cellule (le harnais retombe à 3 quand le premier tir dépasse 3 s, pour que la matrice tienne). À ce nombre d'échantillons, `p95` par rang le plus proche **est le maximum observé** : c'est une borne haute sur un tout petit échantillon, pas une vraie queue de distribution. Le lire comme « le pire des N tirs », rien de plus.
+
+| Classe | Fenêtre | p50 | p95 | 1er tir | RSS crête | lu | lignes | route | note |
+|---|:--:|---:|---:|---:|---:|---:|---:|---|---|
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 1h | 1.3 | 31 | 31 | 429 | 0 | 1 | raw | dispersion x22.9 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 24h | 14 | 540 | 540 | 429 | 0 | 1 | raw | dispersion x37.3 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 7d | 1851 | 2573 | 2573 | 429 | 0 | 1 | cold-vectorized-merge |  |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | au-dela-7d | 2884 | 3002 | 3002 | 429 | 0 | 1 | cold-vectorized |  |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | all | 4118 | 4195 | 4110 | 429 | 0 | 1 | cold-vectorized-merge | **pris sous swap — à rejouer** |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 1h | 1.0 | 16 | 16 | 429 | 0 | 1 | raw | dispersion x16.0 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 24h | 9.6 | 167 | 167 | 429 | 0 | 1 | raw | dispersion x17.4 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 7d | — | — | 1390 | 429 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / **pris sous swap — à rejouer** / 0/7 tirs OK |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | au-dela-7d | — | — | 1096 | 429 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/7 tirs OK |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | all | — | — | 1759 | 429 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / **pris sous swap — à rejouer** / 0/7 tirs OK |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 1h | 2.4 | 35 | 35 | 429 | 0 | 1 | raw | dispersion x14.3 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 24h | 526 | 648 | 648 | 429 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 7d | — | — | 3506 | 429 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/3 tirs OK |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | au-dela-7d | — | — | 1083 | 429 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/7 tirs OK |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | all | — | — | 4603 | 429 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/3 tirs OK |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 1h | 2.7 | 35 | 35 | 429 | 0 | 1 | raw | dispersion x12.9 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 24h | 557 | 571 | 571 | 429 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 7d | 4201 | 4263 | 4263 | 429 | 0 | 1 | cold-vectorized-merge |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | au-dela-7d | 2820 | 3115 | 2817 | 429 | 0 | 1 | cold-vectorized |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | all | 6284 | 6665 | 6284 | 429 | 0 | 1 | cold-vectorized-merge |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 1h | 1.8 | 25 | 25 | 429 | 0 | 3 | scan | dispersion x13.9 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 24h | 2.0 | 2.1 | 2.1 | 429 | 0 | 38 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 7d | 3.1 | 3.3 | 3.1 | 429 | 0 | 100 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | au-dela-7d | 1.4 | 1.6 | 1.6 | 429 | 0 | 0 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | all | 2.2 | 2.6 | 2.6 | 429 | 0 | 100 | scan |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 1h | 4.5 | 28 | 28 | 468 | 0 | 50 | raw | dispersion x6.1 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 24h | 554 | 575 | 575 | 468 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 7d | — | — | 10.1 s | 468 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/3 tirs OK |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | au-dela-7d | 4145 | 4703 | 4145 | 471 | 0 | 50 | cold-vectorized |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | all | — | — | 14.9 s | 509 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/3 tirs OK |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 1h | 3.0 | 28 | 28 | 509 | 0 | 37 | raw | dispersion x9.3 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 24h | 8.4 | 58 | 58 | 509 | 0 | 48 | rollup | dispersion x7.0 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 7d | 46 | 163 | 163 | 509 | 0 | 54 | rollup | approx / dispersion x3.6 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | au-dela-7d | 858 | 3300 | 3300 | 509 | 0 | 68 | rollup | approx / dispersion x3.8 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | all | 873 | 910 | 910 | 509 | 0 | 70 | rollup |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 1h | 6.0 | 29 | 29 | 509 | 0 | 50 | raw | dispersion x4.8 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 24h | 653 | 727 | 653 | 509 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 7d | — | — | 3954 | 509 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/3 tirs OK |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | au-dela-7d | — | — | 1183 | 509 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/7 tirs OK |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | all | — | — | 6766 | 509 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/3 tirs OK |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 1h | 3.5 | 27 | 27 | 509 | 0 | 200 | raw | dispersion x7.7 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 24h | 9.7 | 162 | 162 | 509 | 0 | 200 | raw | dispersion x16.7 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 7d | 680 | 720 | 674 | 509 | 0 | 200 | scan | tronqué |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | au-dela-7d | 1106 | 1303 | 1303 | 509 | 0 | 200 | scan | tronqué |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | all | 1296 | 1398 | 1245 | 509 | 0 | 200 | scan | tronqué |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 1h | 3.8 | 26 | 26 | 509 | 0 | 0 | raw | dispersion x6.9 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 24h | 373 | 548 | 495 | 509 | 0 | 0 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 7d | 3078 | 4622 | 3023 | 509 | 0 | 200 | scan | tronqué |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | au-dela-7d | 1189 | 1362 | 1226 | 509 | 0 | 0 | scan | tronqué |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | all | 3495 | 3499 | 3013 | 509 | 0 | 200 | scan | tronqué |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 1h | 3.6 | 10 | 10 | 509 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 24h | 3.6 | 5.1 | 3.5 | 509 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 7d | 3.9 | 4.5 | 3.8 | 509 | 0 | 0 | scan |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | au-dela-7d | 626 | 702 | 684 | 509 | 0 | 0 | scan |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | all | 3.3 | 3.6 | 3.5 | 509 | 0 | 0 | scan |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 1h | 3.6 | 34 | 34 | 509 | 0 | 1 | raw | dispersion x9.3 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 24h | 446 | 593 | 593 | 509 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 7d | — | — | 2910 | 509 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/7 tirs OK |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | au-dela-7d | — | — | 1103 | 509 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/7 tirs OK |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | all | — | — | 4103 | 509 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/3 tirs OK |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 1h | 4.0 | 28 | 28 | 509 | 0 | 1 | raw | dispersion x7.0 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 24h | 595 | 668 | 619 | 509 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 7d | — | — | 4677 | 509 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/3 tirs OK |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | au-dela-7d | — | — | 1096 | 509 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/7 tirs OK |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | all | — | — | 4327 | 509 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/3 tirs OK |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 1h | 1.1 | 27 | 27 | 509 | 0 | 1 | raw | dispersion x24.0 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 24h | 1.0 | 1.1 | 1.1 | 509 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 7d | — | — | 571 | 509 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/7 tirs OK |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | au-dela-7d | — | — | 1421 | 509 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/7 tirs OK |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | all | — | — | 1227 | 509 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/7 tirs OK |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 1h | 0.8 | 49 | 49 | 428 | 0 | 1 | raw | dispersion x64.0 (loadavg 2) — p95 dominé par la contention, pas par plume |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 24h | 0.8 | 0.9 | 0.6 | 428 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 7d | 575 | 636 | 616 | 429 | 0 | 1 | cold-vectorized-merge |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | au-dela-7d | 2785 | 2953 | 2483 | 429 | 0 | 1 | cold-vectorized |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | all | 3202 | 3279 | 3279 | 429 | 0 | 1 | cold-vectorized-merge |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 1h | 4.4 | 26 | 26 | 429 | 0 | 3 | raw | dispersion x5.9 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 24h | 577 | 1620 | 577 | 429 | 0 | 38 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 7d | 6558 | 7017 | 7017 | 468 | 0 | 100 | scan | tronqué |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | au-dela-7d | 1151 | 1454 | 1454 | 468 | 0 | 4 | scan | tronqué |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | all | 5665 | 6744 | 6744 | 468 | 0 | 100 | scan | tronqué |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 1h | 2.5 | 27 | 27 | 468 | 0 | 1 | raw | dispersion x10.4 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 24h | 525 | 544 | 544 | 468 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | — | — | 4067 | 468 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/3 tirs OK |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | — | — | 1101 | 468 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/7 tirs OK |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | — | — | 5113 | 468 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/3 tirs OK |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.9 | 2.2 | 2.2 | 509 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 1.9 | 2.4 | 2.0 | 509 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.3 | 2.5 | 2.2 | 509 | 0 | 0 | scan |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 1164 | 1294 | 1110 | 509 | 0 | 200 | scan | tronqué |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 3.1 | 7.3 | 7.3 | 509 | 0 | 0 | scan |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.8 | 26 | 26 | 509 | 0 | 1 | raw | dispersion x14.5 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 506 | 547 | 547 | 509 | 0 | 1 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 654 | 759 | 654 | 509 | 0 | 1 | cold-vectorized-merge |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | au-dela-7d | 2728 | 3138 | 2588 | 509 | 0 | 1 | cold-vectorized |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | all | 3041 | 3449 | 2934 | 509 | 0 | 1 | cold-vectorized-merge |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 1h | 2.9 | 26 | 26 | 509 | 0 | 50 | raw | dispersion x9.0 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 24h | 427 | 494 | 494 | 509 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 7d | — | — | 6637 | 509 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/3 tirs OK |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | au-dela-7d | 2755 | 2888 | 2764 | 509 | 0 | 50 | cold-vectorized |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | all | 7775 | 8012 | 8012 | 509 | 0 | 50 | cold-vectorized-merge |  |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 1h | 2.1 | 25 | 25 | 509 | 0 | 22 | raw | dispersion x12.1 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 24h | 11 | 129 | 129 | 509 | 0 | 200 | raw | dispersion x11.4 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 7d | 6.6 | 88 | 88 | 509 | 0 | 0 | scan | dispersion x13.3 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | au-dela-7d | 1181 | 1511 | 1058 | 509 | 0 | 80 | scan | tronqué |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | all | 7.2 | 192 | 192 | 509 | 0 | 0 | scan | dispersion x26.5 (loadavg 5) — p95 dominé par la contention, pas par plume |
+
+## Résultats — `chaud-seul-v2@1.4M`
+
+*`PLUME_FTS_FIELDS`=0, masquage=vide, froid=off, version=`bin:4bfcb9f76b4353a2 construit:2026-07-31T12:23:28Z (correctif troncature froide)`, 1 440 007 événements, base 1434 Mio.*
+
+Latences en millisecondes (mur, côté client), sauf mention `s`. `RSS` = crête réelle du
+processus échantillonnée à 15 ms pendant la requête. `lu` = octets lus au bloc par le
+processus (0 = servi depuis le cache de pages).
+
+
+**32 cellules de ce tableau ont une dispersion `p95/p50` supérieure à 3.** Sur une machine partagée, cela ne décrit pas plume : cela décrit le fait que la mesure a été bousculée par les autres travaux. Ces cellules sont annotées ; leur `p50` reste utilisable, leur `p95` non.
+
+**Ce que `p95` vaut ici** : 3, 7 répétitions par cellule (le harnais retombe à 3 quand le premier tir dépasse 3 s, pour que la matrice tienne). À ce nombre d'échantillons, `p95` par rang le plus proche **est le maximum observé** : c'est une borne haute sur un tout petit échantillon, pas une vraie queue de distribution. Le lire comme « le pire des N tirs », rien de plus.
+
+| Classe | Fenêtre | p50 | p95 | 1er tir | RSS crête | lu | lignes | route | note |
+|---|:--:|---:|---:|---:|---:|---:|---:|---|---|
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 1h | 1.4 | 22 | 22 | 716 | 0 | 1 | raw | dispersion x16.4 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 24h | 17 | 439 | 439 | 716 | 0 | 1 | raw | dispersion x25.5 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 7d | 1576 | 2531 | 2531 | 716 | 0 | 1 | raw |  |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | au-dela-7d | 4573 | 6895 | 4573 | 730 | 0 | 1 | raw |  |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | all | 5134 | 6319 | 4100 | 730 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 1h | 77 | 3874 | 3874 | 730 | 0 | 1 | raw | dispersion x50.4 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 24h | 18 | 346 | 346 | 730 | 0 | 1 | raw | dispersion x19.4 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 7d | 851 | 1735 | 1735 | 756 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | au-dela-7d | 2671 | 3776 | 3776 | 756 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | all | 4001 | 10.4 s | 3196 | 718 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 1h | 2.8 | 32 | 32 | 718 | 0 | 1 | raw | dispersion x11.2 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 24h | 741 | 1731 | 1091 | 718 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 7d | 7010 | 9125 | 7010 | 718 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | au-dela-7d | 3841 | 4121 | 4121 | 812 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | all | 2878 | 4885 | 4885 | 812 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 1h | 3.5 | 39 | 39 | 717 | 0 | 1 | raw | dispersion x11.3 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 24h | 787 | 1747 | 787 | 717 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 7d | 8636 | 9212 | 9212 | 721 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | au-dela-7d | 4904 | 9113 | 4904 | 721 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | all | 4028 | 4261 | 3265 | 721 | 0 | 1 | raw |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 1h | 2.3 | 43 | 43 | 722 | 0 | 3 | scan | dispersion x18.7 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 24h | 2.2 | 3.5 | 2.2 | 722 | 0 | 38 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 7d | 3.2 | 3.3 | 3.2 | 722 | 0 | 100 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | au-dela-7d | 3.9 | 4.5 | 4.5 | 722 | 0 | 100 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | all | 3.7 | 4.1 | 3.8 | 722 | 0 | 100 | scan |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 1h | 3.9 | 27 | 27 | 801 | 0 | 50 | raw | dispersion x6.8 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 24h | 635 | 671 | 671 | 801 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 7d | 8494 | 8512 | 8494 | 801 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | au-dela-7d | 11.6 s | 11.9 s | 10.7 s | 801 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | all | 14.2 s | 15.3 s | 14.2 s | 801 | 0 | 50 | raw | **pris sous swap — à rejouer** |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 1h | 3.1 | 47 | 47 | 801 | 0 | 37 | raw | dispersion x15.2 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 24h | 8.6 | 49 | 49 | 801 | 0 | 48 | rollup | dispersion x5.7 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 7d | 46 | 195 | 195 | 801 | 0 | 53 | rollup | dispersion x4.2 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | au-dela-7d | 132 | 319 | 319 | 801 | 0 | 59 | rollup |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | all | 141 | 300 | 300 | 801 | 0 | 63 | rollup |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 1h | 6.2 | 83 | 83 | 801 | 0 | 50 | raw | dispersion x13.3 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 24h | 698 | 1777 | 1777 | 801 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 7d | 5130 | 7020 | 7020 | 801 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | au-dela-7d | 21.8 s | 22.0 s | 22.0 s | 852 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | all | 7002 | 8392 | 7002 | 972 | 0 | 50 | raw |  |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 1h | 4.8 | 2577 | 2577 | 972 | 0 | 200 | raw | dispersion x533.5 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 24h | 15 | 472 | 419 | 972 | 0 | 200 | raw | dispersion x30.8 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 7d | 20 | 588 | 375 | 972 | 0 | 200 | raw | dispersion x30.2 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | au-dela-7d | 3.0 | 40 | 40 | 972 | 0 | 200 | raw | dispersion x13.2 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | all | 1.7 | 2.5 | 2.5 | 972 | 0 | 200 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 1h | 6.6 | 59 | 59 | 972 | 0 | 0 | raw | dispersion x9.0 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 24h | 450 | 1490 | 1490 | 972 | 0 | 0 | raw | dispersion x3.3 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 7d | 2729 | 4259 | 4259 | 972 | 0 | 200 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | au-dela-7d | 441 | 634 | 634 | 972 | 0 | 200 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | all | 254 | 1289 | 338 | 972 | 0 | 200 | raw | dispersion x5.1 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 1h | 8.0 | 9.5 | 8.9 | 972 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 24h | 7.5 | 8.0 | 7.4 | 972 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 7d | 7.4 | 7.6 | 7.3 | 972 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | au-dela-7d | 9.1 | 9.9 | 9.9 | 972 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | all | 8.4 | 11 | 9.0 | 972 | 0 | 200 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 1h | 38 | 43 | 41 | 972 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 24h | 601 | 1665 | 881 | 972 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 7d | 8702 | 9442 | 9442 | 972 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | au-dela-7d | 5000 | 5015 | 5000 | 972 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | all | 5441 | 7876 | 7876 | 987 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 1h | 4.6 | 57 | 57 | 987 | 0 | 1 | raw | dispersion x12.4 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 24h | 688 | 6436 | 1168 | 987 | 0 | 1 | raw | dispersion x9.4 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 7d | 8501 | 9133 | 8075 | 987 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | au-dela-7d | 5616 | 6368 | 4977 | 987 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | all | 6074 | 7261 | 6074 | 987 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 1h | 2.9 | 217 | 217 | 987 | 0 | 1 | raw | dispersion x75.2 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 24h | 2.9 | 3.6 | 3.2 | 987 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 7d | 3.0 | 3.9 | 2.6 | 987 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | au-dela-7d | 3.5 | 3.9 | 3.5 | 987 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | all | 1.1 | 1.4 | 1.2 | 987 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 1h | 0.7 | 53 | 53 | 716 | 0 | 1 | raw | dispersion x72.3 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 24h | 0.8 | 0.9 | 0.7 | 716 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 7d | 0.7 | 0.8 | 0.8 | 716 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | au-dela-7d | 0.6 | 0.7 | 0.6 | 716 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | all | 0.6 | 0.6 | 0.6 | 716 | 0 | 1 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 1h | 5.4 | 29 | 29 | 722 | 0 | 3 | raw | dispersion x5.4 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 24h | 734 | 6184 | 718 | 809 | 0 | 38 | raw | dispersion x8.4 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 7d | 6841 | 7472 | 6841 | 809 | 0 | 100 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | au-dela-7d | 2618 | 6131 | 6131 | 801 | 0 | 100 | raw | **pris sous swap — à rejouer** |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | all | 3108 | 4580 | 3108 | 801 | 0 | 100 | raw | **pris sous swap — à rejouer** |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 1h | 47 | 4243 | 4243 | 801 | 0 | 1 | raw | dispersion x89.4 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 24h | 602 | 1588 | 1588 | 801 | 0 | 1 | raw | **pris sous swap — à rejouer** |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 8349 | 11.0 s | 8349 | 801 | 0 | 1 | raw | **pris sous swap — à rejouer** |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 3484 | 4323 | 3484 | 801 | 0 | 1 | raw | **pris sous swap — à rejouer** |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 3685 | 8071 | 3685 | 801 | 0 | 1 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 6.7 | 9.9 | 9.9 | 972 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 6.4 | 6.9 | 6.4 | 972 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 6.4 | 6.9 | 6.4 | 972 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 6.5 | 7.7 | 7.7 | 972 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 6.9 | 8.0 | 6.5 | 972 | 0 | 200 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 2.5 | 28 | 28 | 987 | 0 | 1 | raw | dispersion x11.3 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 600 | 1668 | 1389 | 987 | 0 | 1 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 259 | 661 | 661 | 987 | 0 | 1 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | au-dela-7d | 27 | 5772 | 272 | 987 | 0 | 1 | raw | dispersion x215.2 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | all | 3.3 | 3.7 | 3.7 | 987 | 0 | 1 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 1h | 3.8 | 51 | 51 | 987 | 0 | 50 | raw | dispersion x13.3 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 24h | 623 | 1696 | 1696 | 987 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 7d | 22.2 s | 22.6 s | 22.6 s | 987 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | au-dela-7d | 20.9 s | 21.0 s | 21.0 s | 987 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | all | 102 | 263 | 263 | 987 | 0 | 50 | raw |  |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 1h | 2.7 | 28 | 28 | 987 | 0 | 22 | raw | dispersion x10.4 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 24h | 13 | 148 | 148 | 987 | 0 | 200 | raw | dispersion x11.6 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 7d | 260 | 265 | 251 | 987 | 0 | 200 | raw |  |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | au-dela-7d | 21 | 812 | 515 | 987 | 0 | 200 | raw | dispersion x39.2 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | all | 21 | 21 | 20 | 987 | 0 | 200 | raw |  |
+
 ## Écart mesuré entre deux passes — `avant-leviers@1.4M` vs `apres-leviers@1.4M`
 
 Comparaison `avant-leviers@1.4M` -> `apres-leviers@1.4M`, MÊME base, MÊME instrument, MÊME machine, passes consécutives. Les deux lignes sont des mesures ; le delta est leur soustraction, rien de plus.
@@ -1117,7 +1361,7 @@ Charge machine relevée : `loadavg` 2.9–5.5 pendant la passe AVANT, 2.8–3.5 
 
 Comparaison `chaud-seul@1.4M` -> `froid-actif@1.4M`, MÊME base, MÊME instrument, MÊME machine, passes consécutives. Les deux lignes sont des mesures ; le delta est leur soustraction, rien de plus.
 
-**Ce qui a changé entre les deux passes** : le tier froid, et rien d'autre. MÊME fichier de base, MÊME binaire, MÊME machine, passes consécutives : entre les deux, `plume-daemon retention` a columnarisé en Parquet les jours entièrement plus vieux que la fenêtre chaude (1 104 752 lignes sur 1 440 007, soit 76,7 %), et le daemon a été relancé avec `PLUME_COLD_TIER=1`. ATTENTION : 57 des 105 cellules froides rendent une réponse TRONQUÉE (le chemin d'union hydrate au plus `PLUME_QUERY_MAX`=5 000 lignes) — leur delta n'est PAS un écart de vitesse mais un écart de travail, et elles sont marquées comme telles dans le tableau. La sous-section « La réponse est-elle la MÊME ? » chiffre l'écart de contenu : jusqu'à x203 sur un simple `stats count`.
+**Ce qui a changé entre les deux passes** : le tier froid, et rien d'autre. MÊME fichier de base, MÊME binaire, MÊME machine, passes consécutives : entre les deux, `plume-daemon retention` a columnarisé en Parquet les jours entièrement plus vieux que la fenêtre chaude (1 104 752 lignes sur 1 440 007, soit 76,7 %), et le daemon a été relancé avec `PLUME_COLD_TIER=1`. ATTENTION : 57 des 105 cellules froides rendent une réponse TRONQUÉE (le chemin d'union hydrate au plus `PLUME_QUERY_MAX`=5 000 lignes) — leur delta n'est PAS un écart de vitesse mais un écart de travail, et elles sont marquées comme telles dans le tableau. La sous-section « La réponse est-elle la MÊME ? » chiffre l'écart de contenu : jusqu'à x203 sur un simple `stats count`. CETTE PASSE DÉCRIT LE CODE D'AVANT LE CORRECTIF de troncature froide et elle est conservée pour cela : elle est la MESURE du défaut. La passe qui décrit le dépôt actuel est `chaud-seul-v2@1.4M` contre `froid-actif-v2@1.4M`, plus bas.
 
 Charge machine relevée : `loadavg` 2.5–3.7 pendant la passe AVANT, 1.9–3.9 pendant la passe APRÈS. Sur une machine partagée, un écart de quelques millisecondes ne prouve rien ; seuls les écarts francs sont exploitables, et les cellules dont la dispersion est annotée plus haut restent à lire avec la même réserve.
 
@@ -1233,6 +1477,102 @@ Charge machine relevée : `loadavg` 2.5–3.7 pendant la passe AVANT, 1.9–3.9 
 
 105 cellules comparables. Une cellule non comparable n'est PAS un résultat neutre : elle est absente d'un côté.
 
+## Écart mesuré entre deux passes — `chaud-seul-v2@1.4M` vs `froid-actif-v2@1.4M`
+
+Comparaison `chaud-seul-v2@1.4M` -> `froid-actif-v2@1.4M`, MÊME base, MÊME instrument, MÊME machine, passes consécutives. Les deux lignes sont des mesures ; le delta est leur soustraction, rien de plus.
+
+**Ce qui a changé entre les deux passes** : le tier froid APRÈS le correctif de troncature, sur les MÊMES copies de base et la MÊME machine que la passe précédente, avec le binaire post-correctif. Ce qui a changé dans le produit : (1) le routeur colonnaire est ARMÉ PAR DÉFAUT dès que le tier froid est actif — son défaut DORMANT était la cause mesurée du défaut : aucune des 105 cellules froides n'atteignait les kernels ; (2) la garde « ne router que ce que le chemin d'union rendrait à l'identique » ne s'applique plus aux AGRÉGATS — au-delà du plafond d'hydratation, le chemin d'union agrège sur un ÉCHANTILLON, et la parité avec un nombre faux n'est pas une vertu ; (3) aucune valeur DÉRIVÉE d'un ensemble tronqué ne peut plus être sérialisée (`cold_store/exactness.rs`) : à défaut de pouvoir la calculer exactement, le daemon REFUSE en nommant sa cause et la voie exacte (HTTP 422). RÉSULTAT MESURÉ : les cellules TRONQUÉES passent de 57 à 11, et les 11 restantes sont TOUTES des matérialisations (`| table` / pages brutes) — c'est-à-dire le cas légitime : des lignes vraies, en nombre incomplet, signalé. 24 cellules répondent désormais 422 : ce sont les formes que le moteur colonnaire ne sait pas calculer exactement (dc(), terme libre, champ JSON, group-by chevauchant la frontière). Une cellule 422 n'a pas de latence comparable : elle mesure un refus, pas un travail. ATTENTION à la lecture des deltas : une cellule qui passe de « tronquée » à « exacte » fait PLUS de travail qu'avant — un ralentissement y est le prix de la justesse, pas une régression.
+
+Charge machine relevée : `loadavg` 2.6–3.8 pendant la passe AVANT, 1.5–5.2 pendant la passe APRÈS. Sur une machine partagée, un écart de quelques millisecondes ne prouve rien ; seuls les écarts francs sont exploitables, et les cellules dont la dispersion est annotée plus haut restent à lire avec la même réserve.
+
+| Classe | Fenêtre | p50 avant | p50 après | delta | SQL avant | SQL après | route avant | route après |
+|---|:--:|---:|---:|---:|---:|---:|---|---|
+| `C0-plancher` | 1h | 0.7 ms | 0.8 ms | +0.0 ms | 0.1 ms | 0.1 ms | raw | raw |
+| `C0-plancher` | 24h | 0.8 ms | 0.8 ms | -0.1 ms | 0.1 ms | 0.1 ms | raw | raw |
+| `C0-plancher` | 7d | 0.7 ms | 575 ms | +574 ms | 0.1 ms | 574 ms | raw | cold-vectorized-merge |
+| `C0-plancher` | au-dela-7d | 0.6 ms | 2.8 s | +2.8 s | 0.0 ms | 2.8 s | raw | cold-vectorized |
+| `C0-plancher` | all | 0.6 ms | 3.2 s | +3.2 s | 0.0 ms | 3.2 s | raw | cold-vectorized-merge |
+| `C1-scan-agg` | 1h | 1.4 ms | 1.3 ms | -0.0 ms | 0.6 ms | 0.6 ms | raw | raw |
+| `C1-scan-agg` | 24h | 17 ms | 14 ms | -2.7 ms | 16 ms | 14 ms | raw | raw |
+| `C1-scan-agg` | 7d | 1576 ms | 1851 ms | +276 ms | 1575 ms | 1850 ms | raw | cold-vectorized-merge |
+| `C1-scan-agg` | au-dela-7d | 4.6 s | 2.9 s | -1690 ms | 4.6 s | 2.9 s | raw | cold-vectorized |
+| `C1-scan-agg` | all | 5.1 s | 4.1 s | -1015 ms | 5.1 s | 4.1 s | raw | cold-vectorized-merge |
+| `C1b-scan-agg-dc` | 1h | 77 ms | 1.0 ms | -76 ms | 14 ms | 0.3 ms | raw | raw |
+| `C1b-scan-agg-dc` | 24h | 18 ms | 9.6 ms | -8.2 ms | 17 ms | 8.6 ms | raw | raw |
+| `C2-free-term` | 1h | 2.8 ms | 2.4 ms | -0.4 ms | 2.1 ms | 1.6 ms | raw | raw |
+| `C2-free-term` | 24h | 741 ms | 526 ms | -215 ms | 740 ms | 525 ms | raw | raw |
+| `C2b-regex-msg` | 1h | 3.5 ms | 2.7 ms | -0.8 ms | 2.7 ms | 2.0 ms | raw | raw |
+| `C2b-regex-msg` | 24h | 787 ms | 557 ms | -231 ms | 786 ms | 555 ms | raw | raw |
+| `C2b-regex-msg` | 7d | 8.6 s | 4.2 s | -4.4 s | 8.2 s | 4.2 s | raw | cold-vectorized-merge |
+| `C2b-regex-msg` | au-dela-7d | 4.9 s | 2.8 s | -2.1 s | 4.9 s | 2.8 s | raw | cold-vectorized |
+| `C2b-regex-msg` | all | 4.0 s | 6.3 s | +2.3 s | 4.0 s | 6.3 s | raw | cold-vectorized-merge |
+| `C2c-fts-bar` | 1h | 2.3 ms | 1.8 ms | -0.5 ms | — | — | — | — |
+| `C2c-fts-bar` | 24h | 2.2 ms | 2.0 ms | -0.3 ms | — | — | — | — |
+| `C2c-fts-bar` | 7d | 3.2 ms | 3.1 ms | -0.1 ms | — | — | — | — |
+| `C2c-fts-bar` | au-dela-7d | 3.9 ms | 1.4 ms | -2.5 ms | — | — | — | — |
+| `C2c-fts-bar` | all | 3.7 ms | 2.2 ms | -1.5 ms | — | — | — | — |
+| `C2d-free-term-rows` | 1h | 5.4 ms | 4.4 ms | -1.0 ms | 4.5 ms | 3.5 ms | raw | raw |
+| `C2d-free-term-rows` | 24h | 734 ms | 577 ms | -157 ms | 721 ms | 576 ms | raw | raw |
+| `C2d-free-term-rows` | 7d | 6.8 s | 6.6 s | -284 ms ⚠ **réponse tronquée d'un côté** | 2.2 s | 1948 ms | raw | — |
+| `C2d-free-term-rows` | au-dela-7d | 2.6 s | 1151 ms | -1467 ms ⚠ **réponse tronquée d'un côté** | 293 ms | 2.1 ms | raw | — |
+| `C2d-free-term-rows` | all | 3.1 s | 5.7 s | +2.6 s ⚠ **réponse tronquée d'un côté** | 307 ms | 1143 ms | raw | — |
+| `C2e-free-term-common` | 1h | 47 ms | 2.5 ms | -45 ms | 47 ms | 1.6 ms | raw | raw |
+| `C2e-free-term-common` | 24h | 602 ms | 525 ms | -77 ms | 601 ms | 524 ms | raw | raw |
+| `C3-groupby-hi` | 1h | 3.9 ms | 4.5 ms | +0.6 ms | 3.0 ms | 3.4 ms | raw | raw |
+| `C3-groupby-hi` | 24h | 635 ms | 554 ms | -81 ms | 634 ms | 553 ms | raw | raw |
+| `C3-groupby-hi` | au-dela-7d | 11.6 s | 4.1 s | -7.5 s | 11.6 s | 4.1 s | raw | cold-vectorized |
+| `C3b-groupby-routable` | 1h | 3.1 ms | 3.0 ms | -0.1 ms | 2.2 ms | 2.1 ms | raw | raw |
+| `C3b-groupby-routable` | 24h | 8.6 ms | 8.4 ms | -0.2 ms | 7.6 ms | 7.4 ms | rollup | rollup |
+| `C3b-groupby-routable` | 7d | 46 ms | 46 ms | -0.7 ms | 46 ms | 45 ms | rollup | rollup |
+| `C3b-groupby-routable` | au-dela-7d | 132 ms | 858 ms | +726 ms | 131 ms | 857 ms | rollup | rollup |
+| `C3b-groupby-routable` | all | 141 ms | 873 ms | +733 ms | 140 ms | 872 ms | rollup | rollup |
+| `C3c-groupby-json` | 1h | 6.2 ms | 6.0 ms | -0.2 ms | 5.3 ms | 5.0 ms | raw | raw |
+| `C3c-groupby-json` | 24h | 698 ms | 653 ms | -45 ms | 697 ms | 652 ms | raw | raw |
+| `C4-raw-page1` | 1h | 4.8 ms | 3.5 ms | -1.3 ms | 1.4 ms | 1.0 ms | raw | raw |
+| `C4-raw-page1` | 24h | 15 ms | 9.7 ms | -5.6 ms | 1.2 ms | 0.9 ms | raw | raw |
+| `C4-raw-page1` | 7d | 20 ms | 680 ms | +660 ms ⚠ **réponse tronquée d'un côté** | 1.8 ms | 4.9 ms | raw | — |
+| `C4-raw-page1` | au-dela-7d | 3.0 ms | 1106 ms | +1103 ms ⚠ **réponse tronquée d'un côté** | 0.3 ms | 0.5 ms | raw | — |
+| `C4-raw-page1` | all | 1.7 ms | 1296 ms | +1294 ms ⚠ **réponse tronquée d'un côté** | 0.4 ms | 5.3 ms | raw | — |
+| `C4b-raw-deep` | 1h | 6.6 ms | 3.8 ms | -2.8 ms | 5.5 ms | 2.9 ms | raw | raw |
+| `C4b-raw-deep` | 24h | 450 ms | 373 ms | -77 ms | 449 ms | 372 ms | raw | raw |
+| `C4b-raw-deep` | 7d | 2.7 s | 3.1 s | +349 ms ⚠ **réponse tronquée d'un côté** | 2.7 s | 2.4 s | raw | — |
+| `C4b-raw-deep` | au-dela-7d | 441 ms | 1189 ms | +748 ms ⚠ **réponse tronquée d'un côté** | 440 ms | 0.8 ms | raw | — |
+| `C4b-raw-deep` | all | 254 ms | 3.5 s | +3.2 s ⚠ **réponse tronquée d'un côté** | 252 ms | 2.3 s | raw | — |
+| `C4c-raw-keyset` | 1h | 8.0 ms | 3.6 ms | -4.3 ms | 6.1 ms | 0.7 ms | raw | raw |
+| `C4c-raw-keyset` | 24h | 7.5 ms | 3.6 ms | -3.8 ms | 5.6 ms | 0.7 ms | raw | raw |
+| `C4c-raw-keyset` | 7d | 7.4 ms | 3.9 ms | -3.5 ms | 5.5 ms | — | raw | — |
+| `C4c-raw-keyset` | au-dela-7d | 9.1 ms | 626 ms | +617 ms | 7.0 ms | — | raw | — |
+| `C4c-raw-keyset` | all | 8.4 ms | 3.3 ms | -5.2 ms | 6.3 ms | — | raw | — |
+| `C4d-keyset-projete` | 1h | 6.7 ms | 1.9 ms | -4.8 ms | 5.4 ms | 0.5 ms | raw | raw |
+| `C4d-keyset-projete` | 24h | 6.4 ms | 1.9 ms | -4.6 ms | 5.2 ms | 0.4 ms | raw | raw |
+| `C4d-keyset-projete` | 7d | 6.4 ms | 2.3 ms | -4.2 ms | 5.2 ms | — | raw | — |
+| `C4d-keyset-projete` | au-dela-7d | 6.5 ms | 1164 ms | +1158 ms ⚠ **réponse tronquée d'un côté** | 5.2 ms | 7.9 ms | raw | — |
+| `C4d-keyset-projete` | all | 6.9 ms | 3.1 ms | -3.8 ms | 5.5 ms | — | raw | — |
+| `C5-regex-json-planted` | 1h | 38 ms | 3.6 ms | -34 ms | 37 ms | 2.7 ms | raw | raw |
+| `C5-regex-json-planted` | 24h | 601 ms | 446 ms | -155 ms | 600 ms | 445 ms | raw | raw |
+| `C5b-regex-json-cold` | 1h | 4.6 ms | 4.0 ms | -0.6 ms | 3.7 ms | 3.2 ms | raw | raw |
+| `C5b-regex-json-cold` | 24h | 688 ms | 595 ms | -93 ms | 687 ms | 594 ms | raw | raw |
+| `C6-filter-host` | 1h | 2.5 ms | 1.8 ms | -0.7 ms | 1.7 ms | 1.0 ms | raw | raw |
+| `C6-filter-host` | 24h | 600 ms | 506 ms | -94 ms | 598 ms | 505 ms | raw | raw |
+| `C6-filter-host` | 7d | 259 ms | 654 ms | +395 ms | 258 ms | 653 ms | raw | cold-vectorized-merge |
+| `C6-filter-host` | au-dela-7d | 27 ms | 2.7 s | +2.7 s | 26 ms | 2.7 s | raw | cold-vectorized |
+| `C6-filter-host` | all | 3.3 ms | 3.0 s | +3.0 s | 2.5 ms | 3.0 s | raw | cold-vectorized-merge |
+| `C6b-groupby-host` | 1h | 3.8 ms | 2.9 ms | -0.9 ms | 3.0 ms | 2.1 ms | raw | raw |
+| `C6b-groupby-host` | 24h | 623 ms | 427 ms | -196 ms | 622 ms | 425 ms | raw | raw |
+| `C6b-groupby-host` | au-dela-7d | 20.9 s | 2.8 s | -18.2 s | 19.5 s | 2.8 s | raw | cold-vectorized |
+| `C6b-groupby-host` | all | 102 ms | 7.8 s | +7.7 s | 101 ms | 7.8 s | raw | cold-vectorized-merge |
+| `C6c-raw-one-host` | 1h | 2.7 ms | 2.1 ms | -0.6 ms | 1.7 ms | 1.2 ms | raw | raw |
+| `C6c-raw-one-host` | 24h | 13 ms | 11 ms | -1.4 ms | 11 ms | 9.9 ms | raw | raw |
+| `C6c-raw-one-host` | 7d | 260 ms | 6.6 ms | -254 ms | 259 ms | — | raw | — |
+| `C6c-raw-one-host` | au-dela-7d | 21 ms | 1181 ms | +1161 ms ⚠ **réponse tronquée d'un côté** | 19 ms | 1.0 ms | raw | — |
+| `C6c-raw-one-host` | all | 21 ms | 7.2 ms | -13 ms | 19 ms | — | raw | — |
+| `C5c-eq-json-hot` | 1h | 2.9 ms | 1.1 ms | -1.8 ms | 2.1 ms | 0.5 ms | raw | raw |
+| `C5c-eq-json-hot` | 24h | 2.9 ms | 1.0 ms | -1.9 ms | 2.1 ms | 0.3 ms | raw | raw |
+
+**11 de ces lignes opposent des réponses de contenu DIFFÉRENT** (un côté tronque) : leur delta mesure un écart de travail, pas un écart de vitesse. Elles sont marquées.
+
+81 cellules comparables. Une cellule non comparable n'est PAS un résultat neutre : elle est absente d'un côté.
+
 ## Les fenêtres mesurées, et celles qui ne le sont pas
 
 Les fenêtres ne sont pas choisies : elles sont DÉRIVÉES de deux paramètres du produit — la
@@ -1289,17 +1629,189 @@ Méthode : MÊME base, deux copies : l'une columnarisée (PLUME_COLD_TIER=1, 335
 | `search source=auditd severity>=2 \| stats count` | au-dela-7d | **58 747** | **289** | x203.3 | **oui** (5 000 lignes hydratées) |
 | `search source=auditd severity>=2 \| stats count` | all | **78 314** | **18 325** | x4.3 | **oui** (5 000 lignes hydratées) |
 
-**C'est le résultat le plus important de cette section.** Le chemin d'union chaud∪froid
-hydrate le froid dans une table temporaire SQLite bornée à `PLUME_QUERY_MAX` lignes
-(défaut **5 000**, `cold_store/reader.rs:130`) puis agrège SUR CET ÉCHANTILLON. Le
-compte rendu n'est donc pas « approché » : il est **faux d'un facteur qui dépend du
-volume de la fenêtre** — mesuré ici jusqu'à **x203**. Le daemon le SIGNALE
-(`stats.truncated=true`, et le harnais l'enregistre), mais un lecteur qui ne regarde
-que le nombre voit un nombre faux. Toute latence « froide » de cette section doit donc
-être lue avec sa colonne « tronqué » : quand elle dit oui, la cellule mesure le temps
-d'une réponse INCOMPLÈTE, et ne peut pas être comparée à la cellule chaude.
+Le chemin d'union chaud∪froid hydrate le froid dans une table temporaire SQLite bornée
+à `PLUME_QUERY_MAX` lignes (défaut **5 000**, `cold_store/reader.rs:130`) puis agrège
+SUR CET ÉCHANTILLON. Le compte rendu n'est donc pas « approché » : il est **faux d'un
+facteur qui dépend du volume de la fenêtre**. Le daemon le SIGNALE
+(`stats.truncated=true`), mais un lecteur qui ne regarde que le nombre voit un nombre
+faux. Toute latence « froide » de cette passe doit donc être lue avec sa colonne
+« tronqué » : quand elle dit oui, la cellule mesure le temps d'une réponse INCOMPLÈTE,
+et ne peut pas être comparée à la cellule chaude.
 
 > Réserve : Une TROISIÈME requête a été tirée (`search | stats count by source,severity`, fenêtre au-dela-7d) : les deux côtés l'ont servie par la ROUTE DE ROLLUPS, sans troncature, mais leurs valeurs divergent d'un facteur ~6,6 (la copie intacte rend ~160 k événements au total, la columnarisée ~1,05 M — cette dernière étant cohérente avec le volume attendu de la fenêtre). Cette divergence N'EST PAS EXPLIQUÉE par cette mesure. Mécanisme candidat, à départager par une expérience dédiée : la fraîcheur d'`event_rollup`, que la boucle de rollups (120 s) et `retention_run` alimentent — le daemon de la copie intacte venait de démarrer, celui de la copie columnarisée tournait depuis 20 minutes ET avait vu passer un `retention_run` complet. Tant que ce n'est pas tranché, aucune conclusion n'est tirée de cette troisième requête.
+
+### La réponse est-elle la MÊME ? (parité mesurée)
+
+Une latence n'est comparable que si les deux chemins rendent la même réponse : un
+chemin qui TRONQUE est plus rapide parce qu'il en fait moins. Cette sous-section ne
+compare donc pas des temps, elle compare **les valeurs rendues**.
+
+Méthode : AVANT le correctif. MÊME base 1 440 007 événements, deux copies : l'une columnarisée (PLUME_COLD_TIER=1, 335 255 lignes chaudes + 1 104 752 en 22 Parquet), l'autre intacte (PLUME_COLD_TIER=0). MÊME binaire pré-correctif (bin:0642474ceedfaf15), MÊME machine, MÊMES requêtes, MÊMES fenêtres — la matrice de measure.py, en entier.
+
+| Verdict | n | ce qu'il signifie |
+|---|---:|---|
+| `same` | 52 | les deux côtés rendent la MÊME réponse. |
+| `differs` | 4 | ils divergent **sans le dire** — un nombre faux, lisible et copiable. C'est LE cas grave. |
+| `declared` | 49 | ils divergent et le côté froid le DIT (`truncated`, ou note de couverture). L'incomplétude devient une information. |
+| `refused` | 0 | un côté REFUSE, avec un motif nommé. Une erreur vaut mieux qu'un nombre faux : c'est la position de repli, pas l'échec. |
+
+`declared` n'acquitte rien : un AGRÉGAT tronqué reste un nombre faux, déclaré ou non.
+Les catégories ne s'additionnent jamais en un « tout va bien ».
+
+**Le compte qui compte : 36 NOMBRE(S) FAUX.** C'est le nombre de contrôles dont la
+réponse porte une valeur calculée SUR L'ENSEMBLE (`count`/`dc`/`stats … by …`) et dont
+les deux côtés DIVERGENT — que le côté froid l'ait déclaré ou non. C'est exactement ce
+que l'invariant de `cold_store/exactness.rs` interdit. Les autres catégories décrivent
+des réponses partielles de LIGNES (vraies, incomplètes, signalées) ou des refus motivés :
+elles ne sont pas du même ordre de gravité.
+
+> Comptage : Verdicts et compte de NOMBRES FAUX RE-DÉRIVÉS avec le classifieur courant à partir des réponses `hot`/`cold` STOCKÉES, qui sont la mesure. Sans ce re-dérivage, les deux passes seraient comptées par deux règles différentes et leur comparaison ne voudrait rien dire. Aucune réponse n'a été re-mesurée.
+
+Le détail de tout ce qui n'est pas `same` :
+
+| Requête | Fenêtre | Verdict | Sans tier froid | Avec tier froid |
+|---|:--:|:--:|---|---|
+| `search source=auditd severity>=2 \| stats count` | 7d | declared | **19 567** | **18 324** |
+| `search source=auditd severity>=2 \| stats count` | au-dela-7d | declared | **58 747** | **289** |
+| `search source=auditd severity>=2 \| stats count` | all | declared | **78 314** | **18 325** |
+| `search anomalieplumebench \| stats count` | 7d | declared | **349** | **327** |
+| `search anomalieplumebench \| stats count` | au-dela-7d | declared | **1 091** | **4** |
+| `search anomalieplumebench \| stats count` | all | declared | **1 440** | **329** |
+| `search message=~anomalieplumebench \| stats count` | 7d | declared | **349** | **327** |
+| `search message=~anomalieplumebench \| stats count` | au-dela-7d | declared | **1 091** | **4** |
+| `search message=~anomalieplumebench \| stats count` | all | declared | **1 440** | **329** |
+| `anomalieplumebench` | au-dela-7d | differs | 200 lignes `9c78ce2c33bf372c` | 0 lignes `e3b0c44298fc1c14` |
+| `search anomalieplumebench \| table ts,host,source,message` | 7d | declared | 100 lignes `f72ae12b4bdf55c8` | 100 lignes `f52dbc1c103e7f85` (tronqué) |
+| `search anomalieplumebench \| table ts,host,source,message` | au-dela-7d | declared | 100 lignes `d3c813e56493a55b` | **[1782992260, 'bench-node-005.plume.invalid', 'auditd', 'anom** |
+| `search anomalieplumebench \| table ts,host,source,message` | all | declared | 100 lignes `4d04f605e5553863` | 100 lignes `f52dbc1c103e7f85` (tronqué) |
+| `search sessionplumebench \| stats count` | 7d | declared | **35 876** | **33 453** |
+| `search sessionplumebench \| stats count` | au-dela-7d | declared | **108 124** | **522** |
+| `search sessionplumebench \| stats count` | all | declared | **144 000** | **33 483** |
+| `search \| stats count by src_ip,host,source \| sort -count \| head 50` | 7d | declared | 50 lignes `6d735a44351b289e` | 50 lignes `4a73c821813dae02` (tronqué) |
+| `search \| stats count by src_ip,host,source \| sort -count \| head 50` | au-dela-7d | declared | 50 lignes `2637cadfbf7608b4` | 50 lignes `d383b75cef3723bb` (tronqué) |
+| `search \| stats count by src_ip,host,source \| sort -count \| head 50` | all | declared | 50 lignes `d2e9e2128c6a20cc` | 50 lignes `1a5464f34cb8cdf9` (tronqué) |
+| `search \| stats count by source,severity` | 7d | differs | 53 lignes `b4fd67245376834f` | 54 lignes `5f5ce15873df856a` |
+| `search \| stats count by source,severity` | au-dela-7d | differs | 59 lignes `95d5cd07721e2ccb` | 68 lignes `0a0a8af58152d7df` |
+| `search \| stats count by source,severity` | all | differs | 63 lignes `e6c1b918e4b588e4` | 70 lignes `f506e60be6f1cbe5` |
+| `search \| stats count by action,source \| sort -count \| head 50` | 7d | declared | 50 lignes `6708bbab4feb00cc` | 50 lignes `ee961c139b6f5785` (tronqué) |
+| `search \| stats count by action,source \| sort -count \| head 50` | au-dela-7d | declared | 50 lignes `5c1a9b1495ee34ed` | 50 lignes `0f837dfd59cec58b` (tronqué) |
+| `search \| stats count by action,source \| sort -count \| head 50` | all | declared | 50 lignes `1a3cfe0fe89e163e` | 50 lignes `edc885712c330f1c` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | 7d | declared | 200 lignes `7751d804f61177dc` | 200 lignes `0a3a70ce8ec66dda` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | au-dela-7d | declared | 200 lignes `cc2a01764c203c24` | 200 lignes `ddd0ec415bcf020e` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | all | declared | 200 lignes `d9d46972d13b2c93` | 200 lignes `0a3a70ce8ec66dda` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | 7d | declared | 200 lignes `d2089c14727c0ea2` | 200 lignes `f404c5baffd5865c` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | au-dela-7d | declared | 200 lignes `bd8755d9328aa11c` | 0 lignes `e3b0c44298fc1c14` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | all | declared | 200 lignes `9ca430786fb9a4e3` | 200 lignes `f404c5baffd5865c` (tronqué) |
+| `search severity>=1` | au-dela-7d | declared | 200 lignes `409b636e003ac087` | 200 lignes `47f3aee8c673c46b` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | 7d | declared | 200 lignes `7751d804f61177dc` | 200 lignes `0a3a70ce8ec66dda` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | au-dela-7d | declared | 200 lignes `cc2a01764c203c24` | 200 lignes `ddd0ec415bcf020e` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | all | declared | 200 lignes `d9d46972d13b2c93` | 200 lignes `0a3a70ce8ec66dda` (tronqué) |
+| `search needle=~objetplumebench \| stats count` | 7d | declared | **720** | **678** |
+| `search needle=~objetplumebench \| stats count` | au-dela-7d | declared | **2 160** | **15** |
+| `search needle=~objetplumebench \| stats count` | all | declared | **2 880** | **688** |
+| `search object=~[0-9a-f]{6}c \| stats count` | 7d | declared | **10 528** | **9 754** |
+| `search object=~[0-9a-f]{6}c \| stats count` | au-dela-7d | declared | **31 768** | **140** |
+| `search object=~[0-9a-f]{6}c \| stats count` | all | declared | **42 296** | **9 740** |
+| `search host=bench-node-000.plume.invalid \| stats count` | 7d | declared | **5 627** | **5 232** |
+| `search host=bench-node-000.plume.invalid \| stats count` | au-dela-7d | declared | **16 975** | **80** |
+| `search host=bench-node-000.plume.invalid \| stats count` | all | declared | **22 602** | **5 226** |
+| `search \| stats count by host \| sort -count \| head 50` | 7d | declared | 50 lignes `4069e45a545b631b` | 50 lignes `a05ee0ac24a382e9` (tronqué) |
+| `search \| stats count by host \| sort -count \| head 50` | au-dela-7d | declared | 50 lignes `d3ecb66df15075e4` | 50 lignes `4dae3d99a8922ff8` (tronqué) |
+| `search \| stats count by host \| sort -count \| head 50` | all | declared | 50 lignes `2c6e066ee6dba227` | 50 lignes `29c979051d2efbfa` (tronqué) |
+| `search host=bench-node-000.plume.invalid \| table ts,host,source,severity,message` | 7d | declared | 200 lignes `71cfd0ff9d877633` | 200 lignes `e97410f213384eff` (tronqué) |
+| `search host=bench-node-000.plume.invalid \| table ts,host,source,severity,message` | au-dela-7d | declared | 200 lignes `c5864ed3c1cdc04d` | 80 lignes `0e4d979290ef6378` (tronqué) |
+| `search host=bench-node-000.plume.invalid \| table ts,host,source,severity,message` | all | declared | 200 lignes `94d07562922eb9ba` | 200 lignes `e97410f213384eff` (tronqué) |
+| `search user=bench-user-0007 \| stats count` | 7d | declared | **650** | **602** |
+| `search user=bench-user-0007 \| stats count` | au-dela-7d | declared | **2 075** | **7** |
+| `search user=bench-user-0007 \| stats count` | all | declared | **2 725** | **599** |
+
+**Écart maximal mesuré sur un agrégat scalaire** : `search user=bench-user-0007 | stats count` sur la fenêtre `au-dela-7d` rend **2 075** sans tier froid et **7** avec — soit **x296.4**. Ce n'est pas une réponse approchée, c'est un mauvais nombre : le
+chemin d'union hydrate le froid dans une table temporaire SQLite bornée à
+`PLUME_QUERY_MAX` lignes (défaut **5 000**, `cold_store/reader.rs:130`) puis agrège
+SUR CET ÉCHANTILLON.
+
+### La réponse est-elle la MÊME ? (parité mesurée)
+
+Une latence n'est comparable que si les deux chemins rendent la même réponse : un
+chemin qui TRONQUE est plus rapide parce qu'il en fait moins. Cette sous-section ne
+compare donc pas des temps, elle compare **les valeurs rendues**.
+
+Méthode : APRÈS le correctif. MÊME base 1 440 007 événements, deux copies : l'une columnarisée (PLUME_COLD_TIER=1, 335 255 lignes chaudes + 1 104 752 en 22 Parquet), l'autre intacte (PLUME_COLD_TIER=0). MÊME binaire post-correctif (bin:4bfcb9f76b4353a2), MÊME machine, MÊMES requêtes, MÊMES fenêtres — la matrice de measure.py en entier, produite par bench/parity.py (rejouable).
+
+| Verdict | n | ce qu'il signifie |
+|---|---:|---|
+| `same` | 61 | les deux côtés rendent la MÊME réponse. |
+| `differs` | 8 | ils divergent **sans le dire** — un nombre faux, lisible et copiable. C'est LE cas grave. |
+| `declared` | 12 | ils divergent et le côté froid le DIT (`truncated`, ou note de couverture). L'incomplétude devient une information. |
+| `refused` | 24 | un côté REFUSE, avec un motif nommé. Une erreur vaut mieux qu'un nombre faux : c'est la position de repli, pas l'échec. |
+
+`declared` n'acquitte rien : un AGRÉGAT tronqué reste un nombre faux, déclaré ou non.
+Les catégories ne s'additionnent jamais en un « tout va bien ».
+
+**Le compte qui compte : 3 NOMBRE(S) FAUX.** C'est le nombre de contrôles dont la
+réponse porte une valeur calculée SUR L'ENSEMBLE (`count`/`dc`/`stats … by …`) et dont
+les deux côtés DIVERGENT — que le côté froid l'ait déclaré ou non. C'est exactement ce
+que l'invariant de `cold_store/exactness.rs` interdit. Les autres catégories décrivent
+des réponses partielles de LIGNES (vraies, incomplètes, signalées) ou des refus motivés :
+elles ne sont pas du même ordre de gravité.
+
+> Comptage : Verdicts et compte de NOMBRES FAUX RE-DÉRIVÉS avec le classifieur courant à partir des réponses `hot`/`cold` STOCKÉES, qui sont la mesure. Sans ce re-dérivage, les deux passes seraient comptées par deux règles différentes et leur comparaison ne voudrait rien dire. Aucune réponse n'a été re-mesurée.
+
+Le détail de tout ce qui n'est pas `same` :
+
+| Requête | Fenêtre | Verdict | Sans tier froid | Avec tier froid |
+|---|:--:|:--:|---|---|
+| `search source=k8s-log \| stats dc(host)` | 7d | refused | **64** | refus 422 |
+| `search source=k8s-log \| stats dc(host)` | au-dela-7d | refused | **64** | refus 422 |
+| `search source=k8s-log \| stats dc(host)` | all | refused | **64** | refus 422 |
+| `search anomalieplumebench \| stats count` | 7d | refused | **349** | refus 422 |
+| `search anomalieplumebench \| stats count` | au-dela-7d | refused | **1 091** | refus 422 |
+| `search anomalieplumebench \| stats count` | all | refused | **1 440** | refus 422 |
+| `anomalieplumebench` | au-dela-7d | declared | 200 lignes `9c78ce2c33bf372c` | 0 lignes `e3b0c44298fc1c14` (couverture déclarée) |
+| `search anomalieplumebench \| table ts,host,source,message` | 7d | declared | 100 lignes `f72ae12b4bdf55c8` | 100 lignes `f52dbc1c103e7f85` (tronqué) |
+| `search anomalieplumebench \| table ts,host,source,message` | au-dela-7d | declared | 100 lignes `d3c813e56493a55b` | **[1782992260, 'bench-node-005.plume.invalid', 'auditd', 'anom** |
+| `search anomalieplumebench \| table ts,host,source,message` | all | declared | 100 lignes `4d04f605e5553863` | 100 lignes `f52dbc1c103e7f85` (tronqué) |
+| `search sessionplumebench \| stats count` | 7d | refused | **35 876** | refus 422 |
+| `search sessionplumebench \| stats count` | au-dela-7d | refused | **108 124** | refus 422 |
+| `search sessionplumebench \| stats count` | all | refused | **144 000** | refus 422 |
+| `search \| stats count by src_ip,host,source \| sort -count \| head 50` | 7d | refused | 50 lignes `6d735a44351b289e` | refus 422 |
+| `search \| stats count by src_ip,host,source \| sort -count \| head 50` | all | refused | 50 lignes `d2e9e2128c6a20cc` | refus 422 |
+| `search \| stats count by source,severity` | 7d | differs | 53 lignes `b4fd67245376834f` | 54 lignes `5f5ce15873df856a` |
+| `search \| stats count by source,severity` | au-dela-7d | differs | 59 lignes `95d5cd07721e2ccb` | 68 lignes `0a0a8af58152d7df` |
+| `search \| stats count by source,severity` | all | differs | 63 lignes `e6c1b918e4b588e4` | 70 lignes `f506e60be6f1cbe5` |
+| `search \| stats count by action,source \| sort -count \| head 50` | 7d | refused | 50 lignes `6708bbab4feb00cc` | refus 422 |
+| `search \| stats count by action,source \| sort -count \| head 50` | au-dela-7d | refused | 50 lignes `5c1a9b1495ee34ed` | refus 422 |
+| `search \| stats count by action,source \| sort -count \| head 50` | all | refused | 50 lignes `1a3cfe0fe89e163e` | refus 422 |
+| `search severity>=1 \| table ts,host,source,severity,message` | 7d | declared | 200 lignes `7751d804f61177dc` | 200 lignes `0a3a70ce8ec66dda` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | au-dela-7d | declared | 200 lignes `cc2a01764c203c24` | 200 lignes `ddd0ec415bcf020e` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | all | declared | 200 lignes `d9d46972d13b2c93` | 200 lignes `0a3a70ce8ec66dda` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | 7d | declared | 200 lignes `d2089c14727c0ea2` | 200 lignes `f404c5baffd5865c` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | au-dela-7d | declared | 200 lignes `bd8755d9328aa11c` | 0 lignes `e3b0c44298fc1c14` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | all | declared | 200 lignes `9ca430786fb9a4e3` | 200 lignes `f404c5baffd5865c` (tronqué) |
+| `search severity>=1` | au-dela-7d | differs | 200 lignes `409b636e003ac087` | 200 lignes `f86df08b66bb8913` |
+| `search severity>=1 \| table ts,host,source,severity,message` | 7d | differs | 200 lignes `4d1842d2d07101ba` | 200 lignes `851189e3a3a3096d` |
+| `search severity>=1 \| table ts,host,source,severity,message` | au-dela-7d | declared | 200 lignes `6210ef32fce88a29` | 200 lignes `b75c13c0060f6ba8` (tronqué) |
+| `search severity>=1 \| table ts,host,source,severity,message` | all | differs | 200 lignes `79c39c5f14e54169` | 200 lignes `cfc66de8daa83556` |
+| `search needle=~objetplumebench \| stats count` | 7d | refused | **720** | refus 422 |
+| `search needle=~objetplumebench \| stats count` | au-dela-7d | refused | **2 160** | refus 422 |
+| `search needle=~objetplumebench \| stats count` | all | refused | **2 880** | refus 422 |
+| `search object=~[0-9a-f]{6}c \| stats count` | 7d | refused | **10 528** | refus 422 |
+| `search object=~[0-9a-f]{6}c \| stats count` | au-dela-7d | refused | **31 768** | refus 422 |
+| `search object=~[0-9a-f]{6}c \| stats count` | all | refused | **42 296** | refus 422 |
+| `search \| stats count by host \| sort -count \| head 50` | 7d | refused | 50 lignes `4069e45a545b631b` | refus 422 |
+| `search host=bench-node-000.plume.invalid \| table ts,host,source,severity,message` | 7d | differs | 200 lignes `6e46072414e9dbf5` | 200 lignes `c674bdce229ced73` |
+| `search host=bench-node-000.plume.invalid \| table ts,host,source,severity,message` | au-dela-7d | declared | 200 lignes `24f68972e58bd09b` | 80 lignes `0e4d979290ef6378` (tronqué) |
+| `search host=bench-node-000.plume.invalid \| table ts,host,source,severity,message` | all | differs | 200 lignes `6e46072414e9dbf5` | 200 lignes `c674bdce229ced73` |
+| `search user=bench-user-0007 \| stats count` | 7d | refused | **650** | refus 422 |
+| `search user=bench-user-0007 \| stats count` | au-dela-7d | refused | **2 075** | refus 422 |
+| `search user=bench-user-0007 \| stats count` | all | refused | **2 725** | refus 422 |
+
+**Aucun agrégat scalaire ne diverge.** Les contrôles réductibles à un nombre rendent
+la même valeur des deux côtés, ou bien le côté froid REFUSE de répondre en nommant sa
+cause. C'est l'invariant de `cold_store/exactness.rs` : aucune valeur dérivée d'un
+ensemble tronqué n'est rendue comme un nombre.
+
+> Réserve : LES 3 NOMBRES FAUX QUI RESTENT NE SONT PAS CEUX DU TIER FROID. Ils sont tous portés par la MÊME classe, `C3b-groupby-routable` (`search | stats count by source,severity`), et les deux côtés la servent par la ROUTE DE ROLLUPS, pas par le chemin froid. Mesuré sur la fenêtre `au-dela-7d`, sur la MÊME donnée : la somme des counts vaut 164 165 côté SANS tier froid (`approx:false`, `truncated:false` — donc présentée comme EXACTE) et 1 082 346 côté AVEC (`approx:true`, avec sa note). Le compte BRUT de la même fenêtre, mesuré des deux côtés par `search | stats count`, vaut 1 080 321. C'est donc la route de rollups du côté SANS tier froid qui SOUS-COMPTE d'un facteur 6,6, en se déclarant exacte — un second défaut de la même famille (un nombre faux sans avertissement), DISTINCT de la troncature froide, NON corrigé ici, et reproductible : une base restaurée dont `event_rollup` ne couvre pas le passé profond sert des tableaux de bord sous-comptés. La réserve de la passe du 31/07 laissait ce mécanisme « non expliqué » ; il l'est maintenant, et il reste ouvert.
 
 ### `froid-actif@1.4M`
 
@@ -1421,6 +1933,124 @@ l'enjambe lit les DEUX et paie l'union.
 « passé par le froid » : elle vient de `stats.cold` renvoyé par le daemon, pas de
 l'étiquette de configuration). **57 cellules sont TRONQUÉES** : le chemin d'union hydrate le froid dans SQLite avec un plafond de lignes (`PLUME_QUERY_MAX`, défaut 5 000, `cold_store/reader.rs:130`) — au-delà, la réponse est PARTIELLE et le daemon le dit. Un agrégat sur une fenêtre froide large n'est donc pas exact par défaut : c'est le résultat le plus important de cette section.
 
+### `froid-actif-v2@1.4M`
+
+Frontière chaud/froid CALCULÉE PAR LE DAEMON : `boundary_ts=1784851200`. Une fenêtre
+dont la borne basse passe sous cette valeur lit du Parquet ; une fenêtre qui
+l'enjambe lit les DEUX et paie l'union.
+
+| Classe | Fenêtre | p50 | lignes | route | passé par le froid | tronqué |
+|---|:--:|---:|---:|---|---|:--:|
+| `C1-scan-agg` | 1h | 1.3 ms | 1 | raw | non | non |
+| `C1-scan-agg` | 24h | 14 ms | 1 | raw | non | non |
+| `C1-scan-agg` | 7d | 1851 ms | 1 | cold-vectorized-merge | cold-vectorized-merge | non |
+| `C1-scan-agg` | au-dela-7d | 2.9 s | 1 | cold-vectorized | cold-vectorized | non |
+| `C1-scan-agg` | all | 4.1 s | 1 | cold-vectorized-merge | cold-vectorized-merge | non |
+| `C1b-scan-agg-dc` | 1h | 1.0 ms | 1 | raw | non | non |
+| `C1b-scan-agg-dc` | 24h | 9.6 ms | 1 | raw | non | non |
+| `C1b-scan-agg-dc` | 7d | — | — | — | non | non |
+| `C1b-scan-agg-dc` | au-dela-7d | — | — | — | non | non |
+| `C1b-scan-agg-dc` | all | — | — | — | non | non |
+| `C2-free-term` | 1h | 2.4 ms | 1 | raw | non | non |
+| `C2-free-term` | 24h | 526 ms | 1 | raw | non | non |
+| `C2-free-term` | 7d | — | — | — | non | non |
+| `C2-free-term` | au-dela-7d | — | — | — | non | non |
+| `C2-free-term` | all | — | — | — | non | non |
+| `C2b-regex-msg` | 1h | 2.7 ms | 1 | raw | non | non |
+| `C2b-regex-msg` | 24h | 557 ms | 1 | raw | non | non |
+| `C2b-regex-msg` | 7d | 4.2 s | 1 | cold-vectorized-merge | cold-vectorized-merge | non |
+| `C2b-regex-msg` | au-dela-7d | 2.8 s | 1 | cold-vectorized | cold-vectorized | non |
+| `C2b-regex-msg` | all | 6.3 s | 1 | cold-vectorized-merge | cold-vectorized-merge | non |
+| `C2c-fts-bar` | 1h | 1.8 ms | 3 | — | non | non |
+| `C2c-fts-bar` | 24h | 2.0 ms | 38 | — | non | non |
+| `C2c-fts-bar` | 7d | 3.1 ms | 100 | — | non | non |
+| `C2c-fts-bar` | au-dela-7d | 1.4 ms | 0 | — | non | non |
+| `C2c-fts-bar` | all | 2.2 ms | 100 | — | non | non |
+| `C3-groupby-hi` | 1h | 4.5 ms | 50 | raw | non | non |
+| `C3-groupby-hi` | 24h | 554 ms | 50 | raw | non | non |
+| `C3-groupby-hi` | 7d | — | — | — | non | non |
+| `C3-groupby-hi` | au-dela-7d | 4.1 s | 50 | cold-vectorized | cold-vectorized | non |
+| `C3-groupby-hi` | all | — | — | — | non | non |
+| `C3b-groupby-routable` | 1h | 3.0 ms | 37 | raw | non | non |
+| `C3b-groupby-routable` | 24h | 8.4 ms | 48 | rollup | non | non |
+| `C3b-groupby-routable` | 7d | 46 ms | 54 | rollup | non | non |
+| `C3b-groupby-routable` | au-dela-7d | 858 ms | 68 | rollup | non | non |
+| `C3b-groupby-routable` | all | 873 ms | 70 | rollup | non | non |
+| `C3c-groupby-json` | 1h | 6.0 ms | 50 | raw | non | non |
+| `C3c-groupby-json` | 24h | 653 ms | 50 | raw | non | non |
+| `C3c-groupby-json` | 7d | — | — | — | non | non |
+| `C3c-groupby-json` | au-dela-7d | — | — | — | non | non |
+| `C3c-groupby-json` | all | — | — | — | non | non |
+| `C4-raw-page1` | 1h | 3.5 ms | 200 | raw | non | non |
+| `C4-raw-page1` | 24h | 9.7 ms | 200 | raw | non | non |
+| `C4-raw-page1` | 7d | 680 ms | 200 | — | hot+cold | **oui** |
+| `C4-raw-page1` | au-dela-7d | 1106 ms | 200 | — | hot+cold | **oui** |
+| `C4-raw-page1` | all | 1296 ms | 200 | — | hot+cold | **oui** |
+| `C4b-raw-deep` | 1h | 3.8 ms | 0 | raw | non | non |
+| `C4b-raw-deep` | 24h | 373 ms | 0 | raw | non | non |
+| `C4b-raw-deep` | 7d | 3.1 s | 200 | — | hot+cold | **oui** |
+| `C4b-raw-deep` | au-dela-7d | 1189 ms | 0 | — | hot+cold | **oui** |
+| `C4b-raw-deep` | all | 3.5 s | 200 | — | hot+cold | **oui** |
+| `C4c-raw-keyset` | 1h | 3.6 ms | 200 | raw | non | non |
+| `C4c-raw-keyset` | 24h | 3.6 ms | 200 | raw | non | non |
+| `C4c-raw-keyset` | 7d | 3.9 ms | 0 | — | hot+cold-vectorized-keyset | non |
+| `C4c-raw-keyset` | au-dela-7d | 626 ms | 0 | — | hot+cold-vectorized-keyset | non |
+| `C4c-raw-keyset` | all | 3.3 ms | 0 | — | hot+cold-vectorized-keyset | non |
+| `C5-regex-json-planted` | 1h | 3.6 ms | 1 | raw | non | non |
+| `C5-regex-json-planted` | 24h | 446 ms | 1 | raw | non | non |
+| `C5-regex-json-planted` | 7d | — | — | — | non | non |
+| `C5-regex-json-planted` | au-dela-7d | — | — | — | non | non |
+| `C5-regex-json-planted` | all | — | — | — | non | non |
+| `C5b-regex-json-cold` | 1h | 4.0 ms | 1 | raw | non | non |
+| `C5b-regex-json-cold` | 24h | 595 ms | 1 | raw | non | non |
+| `C5b-regex-json-cold` | 7d | — | — | — | non | non |
+| `C5b-regex-json-cold` | au-dela-7d | — | — | — | non | non |
+| `C5b-regex-json-cold` | all | — | — | — | non | non |
+| `C5c-eq-json-hot` | 1h | 1.1 ms | 1 | raw | non | non |
+| `C5c-eq-json-hot` | 24h | 1.0 ms | 1 | raw | non | non |
+| `C5c-eq-json-hot` | 7d | — | — | — | non | non |
+| `C5c-eq-json-hot` | au-dela-7d | — | — | — | non | non |
+| `C5c-eq-json-hot` | all | — | — | — | non | non |
+| `C0-plancher` | 1h | 0.8 ms | 1 | raw | non | non |
+| `C0-plancher` | 24h | 0.8 ms | 1 | raw | non | non |
+| `C0-plancher` | 7d | 575 ms | 1 | cold-vectorized-merge | cold-vectorized-merge | non |
+| `C0-plancher` | au-dela-7d | 2.8 s | 1 | cold-vectorized | cold-vectorized | non |
+| `C0-plancher` | all | 3.2 s | 1 | cold-vectorized-merge | cold-vectorized-merge | non |
+| `C2d-free-term-rows` | 1h | 4.4 ms | 3 | raw | non | non |
+| `C2d-free-term-rows` | 24h | 577 ms | 38 | raw | non | non |
+| `C2d-free-term-rows` | 7d | 6.6 s | 100 | — | hot+cold | **oui** |
+| `C2d-free-term-rows` | au-dela-7d | 1151 ms | 4 | — | hot+cold | **oui** |
+| `C2d-free-term-rows` | all | 5.7 s | 100 | — | hot+cold | **oui** |
+| `C2e-free-term-common` | 1h | 2.5 ms | 1 | raw | non | non |
+| `C2e-free-term-common` | 24h | 525 ms | 1 | raw | non | non |
+| `C2e-free-term-common` | 7d | — | — | — | non | non |
+| `C2e-free-term-common` | au-dela-7d | — | — | — | non | non |
+| `C2e-free-term-common` | all | — | — | — | non | non |
+| `C4d-keyset-projete` | 1h | 1.9 ms | 200 | raw | non | non |
+| `C4d-keyset-projete` | 24h | 1.9 ms | 200 | raw | non | non |
+| `C4d-keyset-projete` | 7d | 2.3 ms | 0 | — | hot+cold-vectorized-keyset | non |
+| `C4d-keyset-projete` | au-dela-7d | 1164 ms | 200 | — | hot+cold | **oui** |
+| `C4d-keyset-projete` | all | 3.1 ms | 0 | — | hot+cold-vectorized-keyset | non |
+| `C6-filter-host` | 1h | 1.8 ms | 1 | raw | non | non |
+| `C6-filter-host` | 24h | 506 ms | 1 | raw | non | non |
+| `C6-filter-host` | 7d | 654 ms | 1 | cold-vectorized-merge | cold-vectorized-merge | non |
+| `C6-filter-host` | au-dela-7d | 2.7 s | 1 | cold-vectorized | cold-vectorized | non |
+| `C6-filter-host` | all | 3.0 s | 1 | cold-vectorized-merge | cold-vectorized-merge | non |
+| `C6b-groupby-host` | 1h | 2.9 ms | 50 | raw | non | non |
+| `C6b-groupby-host` | 24h | 427 ms | 50 | raw | non | non |
+| `C6b-groupby-host` | 7d | — | — | — | non | non |
+| `C6b-groupby-host` | au-dela-7d | 2.8 s | 50 | cold-vectorized | cold-vectorized | non |
+| `C6b-groupby-host` | all | 7.8 s | 50 | cold-vectorized-merge | cold-vectorized-merge | non |
+| `C6c-raw-one-host` | 1h | 2.1 ms | 22 | raw | non | non |
+| `C6c-raw-one-host` | 24h | 11 ms | 200 | raw | non | non |
+| `C6c-raw-one-host` | 7d | 6.6 ms | 0 | — | hot+cold-vectorized-keyset | non |
+| `C6c-raw-one-host` | au-dela-7d | 1181 ms | 80 | — | hot+cold | **oui** |
+| `C6c-raw-one-host` | all | 7.2 ms | 0 | — | hot+cold-vectorized-keyset | non |
+
+**33 cellules sur 105 ont réellement traversé le tier froid** (colonne
+« passé par le froid » : elle vient de `stats.cold` renvoyé par le daemon, pas de
+l'étiquette de configuration). **11 cellules sont TRONQUÉES** : le chemin d'union hydrate le froid dans SQLite avec un plafond de lignes (`PLUME_QUERY_MAX`, défaut 5 000, `cold_store/reader.rs:130`) — au-delà, la réponse est PARTIELLE et le daemon le dit. Un agrégat sur une fenêtre froide large n'est donc pas exact par défaut : c'est le résultat le plus important de cette section.
+
 ## Le nombre de machines — ce que le profil mono-hôte cachait
 
 La production profilée est **mono-nœud** : ses 32 sources ont `distinct_hosts: 1`. `host`
@@ -1503,15 +2133,39 @@ noyau, pas par du swap. Il n'a pas été tué.
 ## Cellules à ne pas croire telles quelles
 
 - 33 cellules ont été **rejouées** (une mesure bousculée remplacée par une mesure propre) ; seule la dernière figure dans les tableaux, le JSONL brut garde les deux.
-- **19 cellules prises pendant que la machine swappait** (apres-leviers@1.4M/C3-groupby-hi/all, apres-leviers@1.4M/C5b-regex-json-cold/24h, avant-leviers@1.4M/C2e-free-term-common/all, avant-leviers@1.4M/C5b-regex-json-cold/all, chaud-seul@1.4M/C6b-groupby-host/au-dela-7d, flotte-1h@0.6M/C6-filter-host/7d, fts0-masque-non-vide@1.4M/C2d-free-term-rows/all, fts0-masque-non-vide@1.4M/C2e-free-term-common/1h, fts0-masque-non-vide@1.4M/C2e-free-term-common/24h, fts0-masque-non-vide@1.4M/C2e-free-term-common/all, fts0-masque-non-vide@1.4M/C3-groupby-hi/24h, fts0-masque-non-vide@1.4M/C3c-groupby-json/24h, fts0-masque-non-vide@1.4M/C3c-groupby-json/all, fts0-masque-non-vide@1.4M/C4b-raw-deep/24h, fts0-masque-non-vide@1.4M/C5-regex-json-planted/24h, fts0-masque-non-vide@1.4M/C5-regex-json-planted/all, fts0-masque-vide@1.4M/C3c-groupby-json/24h, fts0-masque-vide@1.4M/C3c-groupby-json/all, fts0-masque-vide@1.4M/C5-regex-json-planted/24h). Un chiffre pris sous swap est faux. Un rejeu a été TENTÉ pour les cellules de la configuration de référence ; celles qui restent listées ici sont celles pour lesquelles la machine n'a pas offert de fenêtre sans swap. Leur `p50` est à prendre comme une borne haute, leur `p95` comme non exploitable.
-- **6 cellules en échec ou en erreur** — elles restent dans le tableau avec leur message :
+- **28 cellules prises pendant que la machine swappait** (apres-leviers@1.4M/C3-groupby-hi/all, apres-leviers@1.4M/C5b-regex-json-cold/24h, avant-leviers@1.4M/C2e-free-term-common/all, avant-leviers@1.4M/C5b-regex-json-cold/all, chaud-seul-v2@1.4M/C2d-free-term-rows/all, chaud-seul-v2@1.4M/C2d-free-term-rows/au-dela-7d, chaud-seul-v2@1.4M/C2e-free-term-common/24h, chaud-seul-v2@1.4M/C2e-free-term-common/7d, chaud-seul-v2@1.4M/C2e-free-term-common/au-dela-7d, chaud-seul-v2@1.4M/C3-groupby-hi/all, chaud-seul@1.4M/C6b-groupby-host/au-dela-7d, flotte-1h@0.6M/C6-filter-host/7d, froid-actif-v2@1.4M/C1-scan-agg/all, froid-actif-v2@1.4M/C1b-scan-agg-dc/7d, froid-actif-v2@1.4M/C1b-scan-agg-dc/all, fts0-masque-non-vide@1.4M/C2d-free-term-rows/all, fts0-masque-non-vide@1.4M/C2e-free-term-common/1h, fts0-masque-non-vide@1.4M/C2e-free-term-common/24h, fts0-masque-non-vide@1.4M/C2e-free-term-common/all, fts0-masque-non-vide@1.4M/C3-groupby-hi/24h, fts0-masque-non-vide@1.4M/C3c-groupby-json/24h, fts0-masque-non-vide@1.4M/C3c-groupby-json/all, fts0-masque-non-vide@1.4M/C4b-raw-deep/24h, fts0-masque-non-vide@1.4M/C5-regex-json-planted/24h, fts0-masque-non-vide@1.4M/C5-regex-json-planted/all, fts0-masque-vide@1.4M/C3c-groupby-json/24h, fts0-masque-vide@1.4M/C3c-groupby-json/all, fts0-masque-vide@1.4M/C5-regex-json-planted/24h). Un chiffre pris sous swap est faux. Un rejeu a été TENTÉ pour les cellules de la configuration de référence ; celles qui restent listées ici sont celles pour lesquelles la machine n'a pas offert de fenêtre sans swap. Leur `p50` est à prendre comme une borne haute, leur `p95` comme non exploitable.
+- **30 cellules en échec ou en erreur** — elles restent dans le tableau avec leur message :
   - `fts0-masque-non-vide` / `C5c-eq-json-hot` / 1h : {"error":"filtrage interdit sur le champ masqué « user » (field-filter actif pour votre rôle : un champ que vous ne pouvez pas voir ne peut pas être filtré)"} (statuts [400])
   - `fts0-masque-non-vide` / `C5c-eq-json-hot` / 24h : {"error":"filtrage interdit sur le champ masqué « user » (field-filter actif pour votre rôle : un champ que vous ne pouvez pas voir ne peut pas être filtré)"} (statuts [400])
   - `fts0-masque-non-vide` / `C5c-eq-json-hot` / all : {"error":"filtrage interdit sur le champ masqué « user » (field-filter actif pour votre rôle : un champ que vous ne pouvez pas voir ne peut pas être filtré)"} (statuts [400])
   - `fts0-masque-non-vide@1.4M` / `C5c-eq-json-hot` / 1h : {"error":"filtrage interdit sur le champ masqué « user » (field-filter actif pour votre rôle : un champ que vous ne pouvez pas voir ne peut pas être filtré)"} (statuts [400])
   - `fts0-masque-non-vide@1.4M` / `C5c-eq-json-hot` / 24h : {"error":"filtrage interdit sur le champ masqué « user » (field-filter actif pour votre rôle : un champ que vous ne pouvez pas voir ne peut pas être filtré)"} (statuts [400])
   - `fts0-masque-non-vide@1.4M` / `C5c-eq-json-hot` / all : {"error":"filtrage interdit sur le champ masqué « user » (field-filter actif pour votre rôle : un champ que vous ne pouvez pas voir ne peut pas être filtré)"} (statuts [400])
-- **57 cellules tronquées** par le plafond de lignes (`PLUME_QUERY_MAX`, 5 000 par défaut) : leur latence est celle d'un résultat PARTIEL.
+  - `froid-actif-v2@1.4M` / `C1b-scan-agg-dc` / 7d : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C1b-scan-agg-dc` / au-dela-7d : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C1b-scan-agg-dc` / all : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C2-free-term` / 7d : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C2-free-term` / au-dela-7d : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C2-free-term` / all : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C2e-free-term-common` / 7d : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C2e-free-term-common` / au-dela-7d : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C2e-free-term-common` / all : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C3-groupby-hi` / 7d : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C3-groupby-hi` / all : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C3c-groupby-json` / 7d : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C3c-groupby-json` / au-dela-7d : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C3c-groupby-json` / all : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C5-regex-json-planted` / 7d : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C5-regex-json-planted` / au-dela-7d : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C5-regex-json-planted` / all : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C5b-regex-json-cold` / 7d : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C5b-regex-json-cold` / au-dela-7d : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C5b-regex-json-cold` / all : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C6b-groupby-host` / 7d : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C5c-eq-json-hot` / 7d : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C5c-eq-json-hot` / au-dela-7d : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+  - `froid-actif-v2@1.4M` / `C5c-eq-json-hot` / all : {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendre un nombre FAUX : cette requête calcule une valeur (count/sum/dc/stats … by …) sur l'historique froid, mais la lecture froide a dû s'arrêter à 5000 lignes (plafond RAM PLUME_QUERY_MAX=5000) — la valeur porterait sur cet échantillon, pas sur la fenêtre demandée. Voies EXACTES : restreindre la fenêtre sous le plafon (statuts [422])
+- **68 cellules tronquées** par le plafond de lignes (`PLUME_QUERY_MAX`, 5 000 par défaut) : leur latence est celle d'un résultat PARTIEL.
 
 ## Comment la latence monte avec le volume
 
@@ -1519,29 +2173,29 @@ Mesuré à plusieurs volumes sur la même machine, même binaire, masque vide, `
 
 Réserve à connaître avant de citer ce tableau : les volumes viennent de **passes distinctes**, donc de bases distinctes et de nombres de répétitions possiblement différents (la colonne `reps` du JSONL brut le dit cellule par cellule). Les points sont comparables en ordre de grandeur, pas au pourcentage près. Une case vide = classe non mesurée à ce volume.
 
-| Classe | 200 003 lignes | 335 255 lignes | 1 440 003 lignes | 1 440 007 lignes | 1 440 007 lignes | 1 440 007 lignes | rapport |
-|---|---|---|---|---|---|---|---|
-| `C1-scan-agg` | 51 | 2252 | 2856 | 2154 | 2036 | 4579 | x89.6 pour x7.2 de lignes ⚠ base au plancher |
-| `C1b-scan-agg-dc` | 577 | 1725 | 5109 | 2004 | 4721 | 3209 | x5.6 pour x7.2 de lignes |
-| `C2-free-term` | 652 | 4898 | 5860 | 3406 | 2568 | 2813 | x4.3 pour x7.2 de lignes |
-| `C2b-regex-msg` | 502 | 4532 | 3863 | 3506 | 3156 | 3364 | x6.7 pour x7.2 de lignes |
-| `C2c-fts-bar` | 51 | 2.1 | 51 | 51 | 2.8 | 4.3 | x0.1 pour x7.2 de lignes ⚠ base au plancher |
-| `C3-groupby-hi` | 870 | 5126 | 15.7 s | 14.7 s | 13.9 s | 13.0 s | x15.0 pour x7.2 de lignes |
-| `C3b-groupby-routable` | 151 | 948 | 152 | 201 | 130 | 141 | x0.9 pour x7.2 de lignes |
-| `C3c-groupby-json` | 853 | 5314 | 12.6 s | 9214 | 8127 | 7969 | x9.3 pour x7.2 de lignes |
-| `C4-raw-page1` | 52 | 1195 | 52 | 51 | 1.7 | 2.9 | x0.1 pour x7.2 de lignes ⚠ base au plancher |
-| `C4b-raw-deep` | 51 | 3513 | 1055 | 552 | 31 | 366 | x7.1 pour x7.2 de lignes ⚠ base au plancher |
-| `C4c-raw-keyset` | 54 | 1096 | 54 | 53 | 3.5 | 2.7 | x0.0 pour x7.2 de lignes ⚠ base au plancher |
-| `C5-regex-json-planted` | 552 | 5746 | 6110 | 4808 | 5274 | 3672 | x6.7 pour x7.2 de lignes |
-| `C5b-regex-json-cold` | 652 | 4934 | 9616 | 6063 | 5873 | 5727 | x8.8 pour x7.2 de lignes |
-| `C5c-eq-json-hot` | 51 | 1071 | 54 | 51 | 0.8 | 0.8 | x0.0 pour x7.2 de lignes ⚠ base au plancher |
-| `C0-plancher` | — | 1032 | 51 | 51 | 0.7 | 0.6 | — |
-| `C2d-free-term-rows` | — | 5695 | 3406 | 2756 | 2600 | 3288 | — |
-| `C2e-free-term-common` | — | 4478 | 2705 | 3357 | 2696 | 2924 | — |
-| `C4d-keyset-projete` | — | 1122 | — | 52 | 1.6 | 1.6 | — |
-| `C6-filter-host` | — | 1138 | — | — | — | 1.6 | — |
-| `C6b-groupby-host` | — | 4606 | — | — | — | 99 | — |
-| `C6c-raw-one-host` | — | 1116 | — | — | — | 22 | — |
+| Classe | 200 003 lignes | 335 255 lignes | 1 440 003 lignes | 1 440 007 lignes | 1 440 007 lignes | 1 440 007 lignes | 1 440 007 lignes | 1 440 007 lignes | rapport |
+|---|---|---|---|---|---|---|---|---|---|
+| `C1-scan-agg` | 51 | 2252 | 2856 | 2154 | 2036 | 4579 | 4118 | 5134 | x100.5 pour x7.2 de lignes ⚠ base au plancher |
+| `C1b-scan-agg-dc` | 577 | 1725 | 5109 | 2004 | 4721 | 3209 | — | 4001 | x6.9 pour x7.2 de lignes |
+| `C2-free-term` | 652 | 4898 | 5860 | 3406 | 2568 | 2813 | — | 2878 | x4.4 pour x7.2 de lignes |
+| `C2b-regex-msg` | 502 | 4532 | 3863 | 3506 | 3156 | 3364 | 6284 | 4028 | x8.0 pour x7.2 de lignes |
+| `C2c-fts-bar` | 51 | 2.1 | 51 | 51 | 2.8 | 4.3 | 2.2 | 3.7 | x0.1 pour x7.2 de lignes ⚠ base au plancher |
+| `C3-groupby-hi` | 870 | 5126 | 15.7 s | 14.7 s | 13.9 s | 13.0 s | — | 14.2 s | x16.4 pour x7.2 de lignes |
+| `C3b-groupby-routable` | 151 | 948 | 152 | 201 | 130 | 141 | 873 | 141 | x0.9 pour x7.2 de lignes |
+| `C3c-groupby-json` | 853 | 5314 | 12.6 s | 9214 | 8127 | 7969 | — | 7002 | x8.2 pour x7.2 de lignes |
+| `C4-raw-page1` | 52 | 1195 | 52 | 51 | 1.7 | 2.9 | 1296 | 1.7 | x0.0 pour x7.2 de lignes ⚠ base au plancher |
+| `C4b-raw-deep` | 51 | 3513 | 1055 | 552 | 31 | 366 | 3495 | 254 | x4.9 pour x7.2 de lignes ⚠ base au plancher |
+| `C4c-raw-keyset` | 54 | 1096 | 54 | 53 | 3.5 | 2.7 | 3.3 | 8.4 | x0.2 pour x7.2 de lignes ⚠ base au plancher |
+| `C5-regex-json-planted` | 552 | 5746 | 6110 | 4808 | 5274 | 3672 | — | 5441 | x9.9 pour x7.2 de lignes |
+| `C5b-regex-json-cold` | 652 | 4934 | 9616 | 6063 | 5873 | 5727 | — | 6074 | x9.3 pour x7.2 de lignes |
+| `C5c-eq-json-hot` | 51 | 1071 | 54 | 51 | 0.8 | 0.8 | — | 1.1 | x0.0 pour x7.2 de lignes ⚠ base au plancher |
+| `C0-plancher` | — | 1032 | 51 | 51 | 0.7 | 0.6 | 3202 | 0.6 | — |
+| `C2d-free-term-rows` | — | 5695 | 3406 | 2756 | 2600 | 3288 | 5665 | 3108 | — |
+| `C2e-free-term-common` | — | 4478 | 2705 | 3357 | 2696 | 2924 | — | 3685 | — |
+| `C4d-keyset-projete` | — | 1122 | — | 52 | 1.6 | 1.6 | 3.1 | 6.9 | — |
+| `C6-filter-host` | — | 1138 | — | — | — | 1.6 | 3041 | 3.3 | — |
+| `C6b-groupby-host` | — | 4606 | — | — | — | 99 | 7775 | 102 | — |
+| `C6c-raw-one-host` | — | 1116 | — | — | — | 22 | 7.2 | 21 | — |
 
 Une classe dont le rapport de latence suit le rapport de lignes est un **scan** : son coût est linéaire en volume et rien ne l'indexe. Une classe dont le rapport reste plat est servie par un index ou par un rollup.
 
@@ -1557,41 +2211,41 @@ dit ce que le levier ajouterait au budget de 2 Gio ; quand il est nul, c'est éc
 
 *Gain mesuré : **36.2 s** au p50 sur la cellule la plus parlante (C3b masqué vs non masqué). Ce n'est pas une promesse de gain : c'est l'écart QUE LA MESURE MONTRE aujourd'hui entre le chemin lent et un chemin rapide déjà existant ou atteignable.*
 
-le MÊME group-by, le MÊME rôle : **141 ms** masque vide (servi depuis `rollup`, 63 lignes) contre **36.3 s** masque non vide (servi depuis `raw`, 70 lignes — les comptes diffèrent parce que la route de rollups est APPROCHÉE, `stats.approx=true` : c'est le prix de sa vitesse), soit **258.1x plus lent**. Le rempart de confidentialité est donc aussi un frein de performance : un masque non vide désarme la route de rollups (`handlers/query.rs:282`) parce que `event_rollup` stocke `src_ip`/`host` en clair. Deux voies : masquer à la lecture du rollup, ou matérialiser un rollup par classe de masque. **Coût RAM : celui d'un jeu de rollups supplémentaire** (mesuré en production : `event_rollup` = 4,4 Mio pour 1,4 M d'événements, donc marginal), plus le masquage au vol. **Réserve** : la passe masquée porte 1 440 003 événements contre 1 440 007 pour la passe non masquée — l'écart de volume est négligeable devant le facteur mesuré, mais les deux chiffres ne viennent pas de la MÊME passe.
+le MÊME group-by, le MÊME rôle : **141 ms** masque vide (servi depuis `rollup`, 63 lignes) contre **36.3 s** masque non vide (servi depuis `raw`, 70 lignes — les comptes diffèrent parce que la route de rollups est APPROCHÉE, `stats.approx=true` : c'est le prix de sa vitesse), soit **257.8x plus lent**. Le rempart de confidentialité est donc aussi un frein de performance : un masque non vide désarme la route de rollups (`handlers/query.rs:282`) parce que `event_rollup` stocke `src_ip`/`host` en clair. Deux voies : masquer à la lecture du rollup, ou matérialiser un rollup par classe de masque. **Coût RAM : celui d'un jeu de rollups supplémentaire** (mesuré en production : `event_rollup` = 4,4 Mio pour 1,4 M d'événements, donc marginal), plus le masquage au vol. **Réserve** : la passe masquée porte 1 440 003 événements contre 1 440 007 pour la passe non masquée — l'écart de volume est négligeable devant le facteur mesuré, mais les deux chiffres ne viennent pas de la MÊME passe.
 
 ### L2. Rendre l'index d'hôte utilisable AVEC une borne temporelle
 
-*Gain mesuré : **20.6 s** au p50 sur la cellule la plus parlante (C6b 7d vs all). Ce n'est pas une promesse de gain : c'est l'écart QUE LA MESURE MONTRE aujourd'hui entre le chemin lent et un chemin rapide déjà existant ou atteignable.*
+*Gain mesuré : **22.1 s** au p50 sur la cellule la plus parlante (C6b 7d vs all). Ce n'est pas une promesse de gain : c'est l'écart QUE LA MESURE MONTRE aujourd'hui entre le chemin lent et un chemin rapide déjà existant ou atteignable.*
 
-le MÊME `stats count by host`, la MÊME base : **99 ms** sans borne de temps contre **20.7 s** borné à la fenêtre chaude du produit (`7d`), soit **209x plus lent**. Sans borne, le group-by est servi par un parcours d'index seul (`idx_event_host` couvre la requête). Dès qu'une borne `ts` entre, l'index d'hôte ne suffit plus — il faut ouvrir chaque ligne pour lire son `ts` — et la requête redevient un scan. Or la borne temporelle est le cas NORMAL : un tableau de bord regarde toujours une fenêtre. Voie : un index composite `(host, ts)`, qui rend le prédicat de temps satisfiable dans l'index. **Coût RAM : nul ; coût DISQUE : un index de plus** (mesuré en production : `idx_event_host` pèse 35,8 Mio pour 1,4 M d'événements). À noter : cette cellule est déjà à 64 hôtes ; sur une flotte, le nombre de groupes ne fait que grandir.
+le MÊME `stats count by host`, la MÊME base : **102 ms** sans borne de temps contre **22.2 s** borné à la fenêtre chaude du produit (`7d`), soit **217x plus lent**. Sans borne, le group-by est servi par un parcours d'index seul (`idx_event_host` couvre la requête). Dès qu'une borne `ts` entre, l'index d'hôte ne suffit plus — il faut ouvrir chaque ligne pour lire son `ts` — et la requête redevient un scan. Or la borne temporelle est le cas NORMAL : un tableau de bord regarde toujours une fenêtre. Voie : un index composite `(host, ts)`, qui rend le prédicat de temps satisfiable dans l'index. **Coût RAM : nul ; coût DISQUE : un index de plus** (mesuré en production : `idx_event_host` pèse 35,8 Mio pour 1,4 M d'événements). À noter : cette cellule est déjà à 64 hôtes ; sur une flotte, le nombre de groupes ne fait que grandir.
 
 ### L3. Étendre la route de rollups aux dimensions à haute cardinalité
 
-*Gain mesuré : **12.9 s** au p50 sur la cellule la plus parlante (C3-groupby-hi / all). Ce n'est pas une promesse de gain : c'est l'écart QUE LA MESURE MONTRE aujourd'hui entre le chemin lent et un chemin rapide déjà existant ou atteignable.*
+*Gain mesuré : **14.1 s** au p50 sur la cellule la plus parlante (C3-groupby-hi / all). Ce n'est pas une promesse de gain : c'est l'écart QUE LA MESURE MONTRE aujourd'hui entre le chemin lent et un chemin rapide déjà existant ou atteignable.*
 
-`stats count by src_ip,host,source` sur tout l'historique : **13.0 s**, servi par `raw`. Seules les formes `by` dont TOUTES les dimensions tiennent dans `{source, severity}` sont routables (`rollup_route.rs:349-366`) ; dès qu'une dimension à haute cardinalité entre, on retombe sur le scan. **Coût RAM : celui du grain choisi** — un rollup à grain `src_ip` est borné en production par `PLUME_ROLLUP_SRCIP_TOPN` (50) précisément pour ne pas exploser, ce qui rend le résultat approché. Le compromis exactitude/mémoire doit être décidé, pas subi.
+`stats count by src_ip,host,source` sur tout l'historique : **14.2 s**, servi par `raw`. Seules les formes `by` dont TOUTES les dimensions tiennent dans `{source, severity}` sont routables (`rollup_route.rs:349-366`) ; dès qu'une dimension à haute cardinalité entre, on retombe sur le scan. **Coût RAM : celui du grain choisi** — un rollup à grain `src_ip` est borné en production par `PLUME_ROLLUP_SRCIP_TOPN` (50) précisément pour ne pas exploser, ce qui rend le résultat approché. Le compromis exactitude/mémoire doit être décidé, pas subi.
 
 ### L4. Le champ étendu non indexé n'a aucun chemin d'accès
 
-*Gain mesuré : **5.7 s** au p50 sur la cellule la plus parlante (C5b vs C5c). Ce n'est pas une promesse de gain : c'est l'écart QUE LA MESURE MONTRE aujourd'hui entre le chemin lent et un chemin rapide déjà existant ou atteignable.*
+*Gain mesuré : **6.1 s** au p50 sur la cellule la plus parlante (C5b vs C5c). Ce n'est pas une promesse de gain : c'est l'écart QUE LA MESURE MONTRE aujourd'hui entre le chemin lent et un chemin rapide déjà existant ou atteignable.*
 
-regex sur `fields.object` (aucun index) : **5.7 s** contre **0.8 ms** pour une égalité sur `fields.user`, qui a un index d'expression partiel. Dix champs seulement sont indexés (`HOT_FIELDS` : action, user, owner, kind, ns, role, scope, verb, resource, operation) sur les **241 clés distinctes mesurées en production**. Pour les 231 autres, toute recherche est un scan avec `json_extract` par ligne. C'est exactement la promesse « sur tous les champs » qui est en jeu. Voies : `event_fields_fts` (déjà écrit, voir le levier sur le coût de `PLUME_FTS_FIELDS`), ou des index d'expression sur demande, ou un stockage colonnaire des champs. **Coût RAM : un index d'expression par champ**, à arbitrer — c'est pour ça que `PLUME_AUTOINDEX_MAX` existe.
+regex sur `fields.object` (aucun index) : **6.1 s** contre **1.1 ms** pour une égalité sur `fields.user`, qui a un index d'expression partiel. Dix champs seulement sont indexés (`HOT_FIELDS` : action, user, owner, kind, ns, role, scope, verb, resource, operation) sur les **241 clés distinctes mesurées en production**. Pour les 231 autres, toute recherche est un scan avec `json_extract` par ligne. C'est exactement la promesse « sur tous les champs » qui est en jeu. Voies : `event_fields_fts` (déjà écrit, voir le levier sur le coût de `PLUME_FTS_FIELDS`), ou des index d'expression sur demande, ou un stockage colonnaire des champs. **Coût RAM : un index d'expression par champ**, à arbitrer — c'est pour ça que `PLUME_AUTOINDEX_MAX` existe.
 
 ### L5. Câbler FTS5 sur le chemin GXQL
 
-*Gain mesuré : **3.3 s** au p50 sur la cellule la plus parlante (C2c vs C2d). Ce n'est pas une promesse de gain : c'est l'écart QUE LA MESURE MONTRE aujourd'hui entre le chemin lent et un chemin rapide déjà existant ou atteignable.*
+*Gain mesuré : **3.1 s** au p50 sur la cellule la plus parlante (C2c vs C2d). Ce n'est pas une promesse de gain : c'est l'écart QUE LA MESURE MONTRE aujourd'hui entre le chemin lent et un chemin rapide déjà existant ou atteignable.*
 
-la même aiguille, le même nombre de lignes rendues : **3.3 s** par GXQL (`message LIKE '%…%'`, scan complet) contre **4.3 ms** par `/api/search` (index FTS5 `event_fts`). L'index EXISTE et est déjà payé — mesuré en production : 389 Mio, soit 0,61 fois le poids de la table — mais il n'est câblé que sur `/api/search`. Sur le chemin GXQL, un terme libre devient `col LIKE '%motif%'` (`core/src/soql/dialect.rs:65-67`, appelé depuis `soql/mod.rs:881-891`), donc un scan complet. **Coût RAM : nul** — l'index est déjà construit et déjà en base.
+la même aiguille, le même nombre de lignes rendues : **3.1 s** par GXQL (`message LIKE '%…%'`, scan complet) contre **3.7 ms** par `/api/search` (index FTS5 `event_fts`). L'index EXISTE et est déjà payé — mesuré en production : 389 Mio, soit 0,61 fois le poids de la table — mais il n'est câblé que sur `/api/search`. Sur le chemin GXQL, un terme libre devient `col LIKE '%motif%'` (`core/src/soql/dialect.rs:65-67`, appelé depuis `soql/mod.rs:881-891`), donc un scan complet. **Coût RAM : nul** — l'index est déjà construit et déjà en base.
 
 ### L6. Le coût de `PLUME_FTS_FIELDS=1`, et à qui il profite
 
 *Coût DISQUE mesuré : **+-33 Mio** (+-2 %) sur la base. Ce n'est pas un gain, c'est une dépense — et le document dit plus bas à qui elle profite.*
 
-activer `PLUME_FTS_FIELDS=1` a fait passer la base de **1434 Mio à 1401 Mio** (+-33 Mio, +-2 %). RSS crête, sur les SEULES classes mesurées dans les deux configurations : **869 Mio** à `FTS_FIELDS=0` contre **691 Mio** à `FTS_FIELDS=1`. Attention : chaque configuration repart d'un daemon neuf, donc ces deux crêtes n'ont pas eu le même historique pour monter — l'écart n'est PAS attribuable au drapeau seul. Le chiffre solide de cette ligne est le coût DISQUE. Écart de latence observé sur le terme libre GXQL (tout l'historique) : **619 ms** en défaveur de FTS_FIELDS=1 — mais cet écart ne peut PAS venir du drapeau, puisque le chemin GXQL ne lit jamais `event_fields_fts` : c'est du bruit de mesure sur une machine partagée, et il est reporté comme tel. À retenir : `event_fields_fts` n'est lu que par `/api/search` (`handlers/search.rs:146-157`). Le chemin GXQL ne le consulte JAMAIS — donc son coût en disque et en ingest est payé sans que les requêtes GXQL en profitent. C'est le levier « Câbler FTS5 sur le chemin GXQL » qui rendrait ce coût déjà consenti utile aux requêtes GXQL.
+activer `PLUME_FTS_FIELDS=1` a fait passer la base de **1434 Mio à 1401 Mio** (+-33 Mio, +-2 %). RSS crête, sur les SEULES classes mesurées dans les deux configurations : **987 Mio** à `FTS_FIELDS=0` contre **691 Mio** à `FTS_FIELDS=1`. Attention : chaque configuration repart d'un daemon neuf, donc ces deux crêtes n'ont pas eu le même historique pour monter — l'écart n'est PAS attribuable au drapeau seul. Le chiffre solide de cette ligne est le coût DISQUE. Écart de latence observé sur le terme libre GXQL (tout l'historique) : **798 ms** en défaveur de FTS_FIELDS=1 — mais cet écart ne peut PAS venir du drapeau, puisque le chemin GXQL ne lit jamais `event_fields_fts` : c'est du bruit de mesure sur une machine partagée, et il est reporté comme tel. À retenir : `event_fields_fts` n'est lu que par `/api/search` (`handlers/search.rs:146-157`). Le chemin GXQL ne le consulte JAMAIS — donc son coût en disque et en ingest est payé sans que les requêtes GXQL en profitent. C'est le levier « Câbler FTS5 sur le chemin GXQL » qui rendrait ce coût déjà consenti utile aux requêtes GXQL.
 
 ## Ce qui n'est PAS mesuré ici
 
-- **Le tier froid au-delà de ce qui est tiré** : 1 configuration(s) tournent
+- **Le tier froid au-delà de ce qui est tiré** : 2 configuration(s) tournent
   `PLUME_COLD_TIER=1` (section dédiée plus haut), mais sur UNE seule taille de fenêtre
   chaude et UN seul volume. Le moteur vectorisé n'est pas mesuré séparément du chemin
   d'hydratation : le document ne dit pas lequel a servi chaque cellule au-delà de ce que
@@ -1621,14 +2275,16 @@ bench/run.sh                       # 10 M d'événements
 BENCH_EVENTS=1000000 bench/run.sh  # 1 M, pour itérer
 # 3. le rendu — LA COMMANDE EXACTE qui a produit CE document, reconstruite depuis ses propres
 #    arguments et pointée sur les données VERSIONNÉES (donc rejouable par un tiers) :
-python3 bench/report.py bench/results/results-smoke-200k.jsonl bench/results/results.jsonl bench/results/results-2026-07-31.jsonl \
+python3 bench/report.py bench/results/results-smoke-200k.jsonl bench/results/results.jsonl bench/results/results-2026-07-31.jsonl bench/results/results-2026-07-31-corrige.jsonl bench/results/parity-avant-2026-07-31.jsonl bench/results/parity-apres-2026-07-31.jsonl \
     --ingest-curve bench/results/ingest_rate.csv \
     --ingest-curve bench/results/ingest_rate-quiet-2g.csv \
-    --ref chaud-seul@1.4M \
+    --ref chaud-seul-v2@1.4M \
     --compare avant-leviers@1.4M:apres-leviers@1.4M \
     --compare-note 'deux correctifs du chemin de requête, mesurés ici. (1) La garde de budget attend désormais une CONDITION (condvar avec délai) au lieu de sonder un drapeau toutes les 50 ms : elle protège la même chose, au même seuil, avec la même interruption, mais elle ne QUANTIFIE plus la latence — auparavant toute lecture était arrondie au multiple de 50 ms supérieur, et la garde était jointe avant l'"'"'envoi de la réponse. Elle couvre les deux portes d'"'"'exécution : `run_on_conn` (/api/query) et `read_with_watchdog` (alertes, cases, fraîcheur, sources, /api/search). (2) L'"'"'applicabilité de la pagination par curseur est DÉRIVÉE des propriétés du wrap au lieu d'"'"'une liste de deux commandes, et un pipeline projeté (`| table`/`| fields`) est désormais servi par le curseur au lieu de retomber en silence sur l'"'"'OFFSET : c'"'"'est la cellule `C4d-keyset-projete`. Réserve de comparabilité : ces deux passes tournent sur la MÊME base, mais APRÈS le remplissage `event_fields_fts` de la phase 3 (base 1434 Mio contre 1263 Mio pour les tableaux `fts0-*@1.4M` ci-dessus) et sur une machine bien moins chargée. Elles sont comparables ENTRE ELLES ; elles ne sont pas comparables aux tableaux de la première référence. Cinq cellules vont dans l'"'"'autre sens (C1b/all +2.7 s, C5b/24h +632 ms, C5/all +467 ms, C2d/24h +252 ms) : sur ces quatre-là la colonne `SQL` bouge AUTANT que le mur, or les correctifs n'"'"'agissent QUE sur l'"'"'attente AUTOUR du SQL — ce sont donc des scans longs bousculés par la machine, et ils sont laissés tels quels.' \
     --compare chaud-seul@1.4M:froid-actif@1.4M \
-    --compare-note 'le tier froid, et rien d'"'"'autre. MÊME fichier de base, MÊME binaire, MÊME machine, passes consécutives : entre les deux, `plume-daemon retention` a columnarisé en Parquet les jours entièrement plus vieux que la fenêtre chaude (1 104 752 lignes sur 1 440 007, soit 76,7 %), et le daemon a été relancé avec `PLUME_COLD_TIER=1`. ATTENTION : 57 des 105 cellules froides rendent une réponse TRONQUÉE (le chemin d'"'"'union hydrate au plus `PLUME_QUERY_MAX`=5 000 lignes) — leur delta n'"'"'est PAS un écart de vitesse mais un écart de travail, et elles sont marquées comme telles dans le tableau. La sous-section « La réponse est-elle la MÊME ? » chiffre l'"'"'écart de contenu : jusqu'"'"'à x203 sur un simple `stats count`.' \
+    --compare-note 'le tier froid, et rien d'"'"'autre. MÊME fichier de base, MÊME binaire, MÊME machine, passes consécutives : entre les deux, `plume-daemon retention` a columnarisé en Parquet les jours entièrement plus vieux que la fenêtre chaude (1 104 752 lignes sur 1 440 007, soit 76,7 %), et le daemon a été relancé avec `PLUME_COLD_TIER=1`. ATTENTION : 57 des 105 cellules froides rendent une réponse TRONQUÉE (le chemin d'"'"'union hydrate au plus `PLUME_QUERY_MAX`=5 000 lignes) — leur delta n'"'"'est PAS un écart de vitesse mais un écart de travail, et elles sont marquées comme telles dans le tableau. La sous-section « La réponse est-elle la MÊME ? » chiffre l'"'"'écart de contenu : jusqu'"'"'à x203 sur un simple `stats count`. CETTE PASSE DÉCRIT LE CODE D'"'"'AVANT LE CORRECTIF de troncature froide et elle est conservée pour cela : elle est la MESURE du défaut. La passe qui décrit le dépôt actuel est `chaud-seul-v2@1.4M` contre `froid-actif-v2@1.4M`, plus bas.' \
+    --compare chaud-seul-v2@1.4M:froid-actif-v2@1.4M \
+    --compare-note 'le tier froid APRÈS le correctif de troncature, sur les MÊMES copies de base et la MÊME machine que la passe précédente, avec le binaire post-correctif. Ce qui a changé dans le produit : (1) le routeur colonnaire est ARMÉ PAR DÉFAUT dès que le tier froid est actif — son défaut DORMANT était la cause mesurée du défaut : aucune des 105 cellules froides n'"'"'atteignait les kernels ; (2) la garde « ne router que ce que le chemin d'"'"'union rendrait à l'"'"'identique » ne s'"'"'applique plus aux AGRÉGATS — au-delà du plafond d'"'"'hydratation, le chemin d'"'"'union agrège sur un ÉCHANTILLON, et la parité avec un nombre faux n'"'"'est pas une vertu ; (3) aucune valeur DÉRIVÉE d'"'"'un ensemble tronqué ne peut plus être sérialisée (`cold_store/exactness.rs`) : à défaut de pouvoir la calculer exactement, le daemon REFUSE en nommant sa cause et la voie exacte (HTTP 422). RÉSULTAT MESURÉ : les cellules TRONQUÉES passent de 57 à 11, et les 11 restantes sont TOUTES des matérialisations (`| table` / pages brutes) — c'"'"'est-à-dire le cas légitime : des lignes vraies, en nombre incomplet, signalé. 24 cellules répondent désormais 422 : ce sont les formes que le moteur colonnaire ne sait pas calculer exactement (dc(), terme libre, champ JSON, group-by chevauchant la frontière). Une cellule 422 n'"'"'a pas de latence comparable : elle mesure un refus, pas un travail. ATTENTION à la lecture des deltas : une cellule qui passe de « tronquée » à « exacte » fait PLUS de travail qu'"'"'avant — un ralentissement y est le prix de la justesse, pas une régression.' \
     --fill-log bench/results/fill-progress-quiet-2g.txt \
     -o docs/BENCHMARK.md
 ```

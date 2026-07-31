@@ -238,7 +238,7 @@ def main():
                 # Une fenêtre ÉCARTÉE par la garde de couverture du harnais. Elle n'est pas une
                 # cellule : elle est une ABSENCE, et elle est publiée comme telle.
                 unmeasured_win.append(d)
-            elif d.get("phase") in ("ingest", "cold_age", "cold_parity"):
+            elif d.get("phase") in ("ingest", "cold_age") or str(d.get("phase") or "").startswith("cold_parity"):
                 ingest.append(d)
             else:
                 rows.append(d)
@@ -401,8 +401,12 @@ def main():
     _cold_on = [c for c in configs
                 if str(cfgmeta[c].get("cold", "off")).lower() not in ("off", "0", "", "none")]
     if _cold_on:
+        # TOUTES les configurations froides sont nommées, pas seulement la première : depuis qu'une
+        # passe corrigée coexiste avec la passe qui a mesuré le défaut, n'en citer qu'une ferait
+        # croire qu'il n'y en a qu'une — et laisserait le lecteur sur la mauvaise.
+        _cold_list = ", ".join(f"`{c}`" for c in _cold_on)
         W("- rien sur la concurrence ni le multi-tenant (voir la section dédiée). Le tier froid, lui, "
-          f"EST mesuré ici — mais seulement dans `{_cold_on[0]}`, à une seule fenêtre chaude et un "
+          f"EST mesuré ici — mais seulement dans {_cold_list}, à une seule fenêtre chaude et un "
           "seul volume : les autres tableaux restent des tableaux SANS tier froid.")
     else:
         W("- rien sur le tier froid, la concurrence, ni le multi-tenant (voir la section dédiée).")
@@ -983,7 +987,7 @@ def main():
                 W("> met en liste libre (`auto_vacuum=0`, comme en production). L'espace est réutilisé")
                 W("> par les écritures suivantes, il n'est pas rendu au disque. C'est mesuré, pas supposé.")
                 W("")
-        for d in [x for x in ingest if x.get("phase") == "cold_parity"]:
+        for d in [x for x in ingest if str(x.get("phase") or "").startswith("cold_parity")]:
             W("### La réponse est-elle la MÊME ? (parité mesurée)")
             W("")
             W("Une latence n'est comparable que si les deux chemins rendent la même réponse : un")
@@ -992,26 +996,109 @@ def main():
             W("")
             W(f"Méthode : {d.get('method')}")
             W("")
-            W("| Requête | Fenêtre | Sans tier froid | Avec tier froid | Écart | Tronqué ? |")
-            W("|---|:--:|---:|---:|---:|:--:|")
-            for ck in d.get("checks") or []:
-                # Une requête GXQL contient un `|` : dans une cellule de tableau Markdown il
-                # coupe la ligne en deux. On l'échappe — sinon le tableau se disloque à l'affichage.
-                _q = ck["query"].replace("|", "\\|")
-                W(f"| `{_q}` | {ck['window']} | **{fmt_n(ck['hot_value'])}** | "
-                  f"**{fmt_n(ck['cold_value'])}** | x{ck['ratio_hot_over_cold']:.1f} | "
-                  f"{'**oui** (' + fmt_n(ck['cold_rows_hydrated']) + ' lignes hydratées)' if ck['cold_truncated'] else 'non'} |")
-            W("")
-            W("**C'est le résultat le plus important de cette section.** Le chemin d'union chaud∪froid")
-            W("hydrate le froid dans une table temporaire SQLite bornée à `PLUME_QUERY_MAX` lignes")
-            W("(défaut **5 000**, `cold_store/reader.rs:130`) puis agrège SUR CET ÉCHANTILLON. Le")
-            W("compte rendu n'est donc pas « approché » : il est **faux d'un facteur qui dépend du")
-            W("volume de la fenêtre** — mesuré ici jusqu'à **x203**. Le daemon le SIGNALE")
-            W("(`stats.truncated=true`, et le harnais l'enregistre), mais un lecteur qui ne regarde")
-            W("que le nombre voit un nombre faux. Toute latence « froide » de cette section doit donc")
-            W("être lue avec sa colonne « tronqué » : quand elle dit oui, la cellule mesure le temps")
-            W("d'une réponse INCOMPLÈTE, et ne peut pas être comparée à la cellule chaude.")
-            W("")
+            checks = d.get("checks") or []
+            # DEUX SCHÉMAS COEXISTENT, et c'est délibéré. Les passes anciennes portent des contrôles
+            # écrits À LA MAIN (`hot_value`/`cold_value`/`ratio`) ; les passes produites par
+            # `bench/parity.py` portent un VERDICT par contrôle sur toute la matrice. On rend chacun
+            # sous sa forme : réécrire l'ancien dans le nouveau serait inventer des chiffres.
+            if checks and "verdict" in checks[0]:
+                counts = d.get("counts") or {}
+                W("| Verdict | n | ce qu'il signifie |")
+                W("|---|---:|---|")
+                W(f"| `same` | {counts.get('same', 0)} | les deux côtés rendent la MÊME réponse. |")
+                W(f"| `differs` | {counts.get('differs', 0)} | ils divergent **sans le dire** — un nombre faux, "
+                  "lisible et copiable. C'est LE cas grave. |")
+                W(f"| `declared` | {counts.get('declared', 0)} | ils divergent et le côté froid le DIT (`truncated`, "
+                  "ou note de couverture). L'incomplétude devient une information. |")
+                W(f"| `refused` | {counts.get('refused', 0)} | un côté REFUSE, avec un motif nommé. Une erreur vaut "
+                  "mieux qu'un nombre faux : c'est la position de repli, pas l'échec. |")
+                W("")
+                W("`declared` n'acquitte rien : un AGRÉGAT tronqué reste un nombre faux, déclaré ou non.")
+                W("Les catégories ne s'additionnent jamais en un « tout va bien ».")
+                W("")
+                if "nombre_faux" in (d.get("counts") or {}):
+                    nf = d["counts"]["nombre_faux"]
+                    W(f"**Le compte qui compte : {nf} NOMBRE(S) FAUX.** C'est le nombre de contrôles dont la")
+                    W("réponse porte une valeur calculée SUR L'ENSEMBLE (`count`/`dc`/`stats … by …`) et dont")
+                    W("les deux côtés DIVERGENT — que le côté froid l'ait déclaré ou non. C'est exactement ce")
+                    W("que l'invariant de `cold_store/exactness.rs` interdit. Les autres catégories décrivent")
+                    W("des réponses partielles de LIGNES (vraies, incomplètes, signalées) ou des refus motivés :")
+                    W("elles ne sont pas du même ordre de gravité.")
+                    W("")
+                if d.get("_reclassement"):
+                    W(f"> Comptage : {d['_reclassement']}")
+                    W("")
+                notsame = [c for c in checks if c.get("verdict") != "same"]
+                if notsame:
+                    W("Le détail de tout ce qui n'est pas `same` :")
+                    W("")
+                    W("| Requête | Fenêtre | Verdict | Sans tier froid | Avec tier froid |")
+                    W("|---|:--:|:--:|---|---|")
+                    for ck in notsame:
+                        _q = str(ck.get("query") or "").replace("|", "\\|")
+
+                        def _side(x):
+                            if x.get("values"):
+                                return "**" + ", ".join(fmt_n(r[-1]) if isinstance(r, list) and r and isinstance(r[-1], int)
+                                                        else str(r) for r in x["values"])[:60] + "**"
+                            if x.get("status", 200) >= 400:
+                                return f"refus {x.get('status')}"
+                            n = x.get("rows")
+                            tag = " (tronqué)" if x.get("truncated") else (" (couverture déclarée)" if x.get("coverage") else "")
+                            return f"{fmt_n(n)} lignes `{x.get('digest')}`{tag}"
+
+                        W(f"| `{_q}` | {ck['window']} | {ck['verdict']} | {_side(ck.get('hot') or {})} | "
+                          f"{_side(ck.get('cold') or {})} |")
+                    W("")
+                # ÉCART MAXIMAL sur les contrôles réductibles à UN nombre — CALCULÉ, jamais écrit en dur.
+                worst = None
+                for ck in checks:
+                    h, c = ck.get("hot") or {}, ck.get("cold") or {}
+                    hv, cv = h.get("values"), c.get("values")
+                    if not (hv and cv and len(hv) == 1 and len(cv) == 1):
+                        continue
+                    a_, b_ = hv[0], cv[0]
+                    if not (isinstance(a_, list) and isinstance(b_, list) and len(a_) == 1 and len(b_) == 1):
+                        continue
+                    if not (isinstance(a_[0], int) and isinstance(b_[0], int)) or b_[0] <= 0:
+                        continue
+                    r = a_[0] / b_[0]
+                    if worst is None or r > worst[0]:
+                        worst = (r, ck, a_[0], b_[0])
+                if worst and worst[0] > 1.01:
+                    r, ck, hv1, cv1 = worst
+                    W(f"**Écart maximal mesuré sur un agrégat scalaire** : `{ck['query']}` sur la fenêtre "
+                      f"`{ck['window']}` rend **{fmt_n(hv1)}** sans tier froid et **{fmt_n(cv1)}** avec — "
+                      f"soit **x{r:.1f}**. Ce n'est pas une réponse approchée, c'est un mauvais nombre : le")
+                    W("chemin d'union hydrate le froid dans une table temporaire SQLite bornée à")
+                    W("`PLUME_QUERY_MAX` lignes (défaut **5 000**, `cold_store/reader.rs:130`) puis agrège")
+                    W("SUR CET ÉCHANTILLON.")
+                else:
+                    W("**Aucun agrégat scalaire ne diverge.** Les contrôles réductibles à un nombre rendent")
+                    W("la même valeur des deux côtés, ou bien le côté froid REFUSE de répondre en nommant sa")
+                    W("cause. C'est l'invariant de `cold_store/exactness.rs` : aucune valeur dérivée d'un")
+                    W("ensemble tronqué n'est rendue comme un nombre.")
+                W("")
+            else:
+                W("| Requête | Fenêtre | Sans tier froid | Avec tier froid | Écart | Tronqué ? |")
+                W("|---|:--:|---:|---:|---:|:--:|")
+                for ck in checks:
+                    # Une requête GXQL contient un `|` : dans une cellule de tableau Markdown il
+                    # coupe la ligne en deux. On l'échappe — sinon le tableau se disloque à l'affichage.
+                    _q = ck["query"].replace("|", "\\|")
+                    W(f"| `{_q}` | {ck['window']} | **{fmt_n(ck['hot_value'])}** | "
+                      f"**{fmt_n(ck['cold_value'])}** | x{ck['ratio_hot_over_cold']:.1f} | "
+                      f"{'**oui** (' + fmt_n(ck['cold_rows_hydrated']) + ' lignes hydratées)' if ck['cold_truncated'] else 'non'} |")
+                W("")
+                W("Le chemin d'union chaud∪froid hydrate le froid dans une table temporaire SQLite bornée")
+                W("à `PLUME_QUERY_MAX` lignes (défaut **5 000**, `cold_store/reader.rs:130`) puis agrège")
+                W("SUR CET ÉCHANTILLON. Le compte rendu n'est donc pas « approché » : il est **faux d'un")
+                W("facteur qui dépend du volume de la fenêtre**. Le daemon le SIGNALE")
+                W("(`stats.truncated=true`), mais un lecteur qui ne regarde que le nombre voit un nombre")
+                W("faux. Toute latence « froide » de cette passe doit donc être lue avec sa colonne")
+                W("« tronqué » : quand elle dit oui, la cellule mesure le temps d'une réponse INCOMPLÈTE,")
+                W("et ne peut pas être comparée à la cellule chaude.")
+                W("")
             if d.get("_reserve_rollup"):
                 W(f"> Réserve : {d['_reserve_rollup']}")
                 W("")

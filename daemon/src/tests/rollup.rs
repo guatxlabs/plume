@@ -16,7 +16,7 @@
             "search source=web status>=500 | stats count by src_ip",
             "search source=web status>=500 | stats count by src_ip | where count > 10 | stats count",
         ] {
-            assert!(try_rollup_route(q, 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(), "rule22 corrélation status×src_ip DOIT décliner -> raw : {q}");
+            assert!(try_rollup_route(q, 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(), "rule22 corrélation status×src_ip DOIT décliner -> raw : {q}");
         }
         // (b) le CHEMIN RAW (celui qu'emprunte réellement la détection via rule_sql/soql_to_sql_x) renvoie le
         //     compte EXACT non-nul : preuve que la règle TIRE (pas d'angle mort).
@@ -365,7 +365,7 @@
             "search | stats count by severity,source",           // ordre inversé -> route aussi
             "search source=web | stats count by source,severity", // + filtre source
         ] {
-            let rr = try_rollup_route(soql, 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX))
+            let rr = try_rollup_route(soql, 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test())
                 .unwrap_or_else(|| panic!("multi-dim DOIT router : {soql}"));
             // B2b MERGE : corps rollup (event_rollup) ∪ queue raw (event). Tous les events sont dans l'heure
             // courante (volatile) -> le corps rollup ne sert rien, la QUEUE raw sur `event` sert tout -> EXACT.
@@ -398,7 +398,7 @@
             "search | stats count by source,severity,src_ip",
             "search source=web | stats count by src_ip,action",
         ] {
-            assert!(try_rollup_route(q, 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(), "src_ip approx dans le group-by DOIT décliner -> raw : {q}");
+            assert!(try_rollup_route(q, 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(), "src_ip approx dans le group-by DOIT décliner -> raw : {q}");
         }
         // dim JSON hors grain (path/vhost) -> non exprimable par event_rollup -> décline.
         for q in [
@@ -406,7 +406,7 @@
             "search | stats count by status,severity",
             "search source=web | stats count by severity,vhost",
         ] {
-            assert!(try_rollup_route(q, 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(), "dim hors grain dans le multi-dim DOIT décliner -> raw : {q}");
+            assert!(try_rollup_route(q, 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(), "dim hors grain dans le multi-dim DOIT décliner -> raw : {q}");
         }
         // host/action sont COALESCE'd '' à la matérialisation (NULL relabélisé/fusionné) -> EXCLUS du grain
         // routable (sinon faux group-by sous approx:true, cf. non-régressions b2_adverse_*). DOIVENT décliner.
@@ -417,15 +417,15 @@
             "search | stats count by severity,action",
             "search source=web | stats count by severity,action",
         ] {
-            assert!(try_rollup_route(q, 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(), "host/action (COALESCE '' -> divergence NULL/'') DOIT décliner -> raw : {q}");
+            assert!(try_rollup_route(q, 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(), "host/action (COALESCE '' -> divergence NULL/'') DOIT décliner -> raw : {q}");
         }
         // doublon -> refus (garde-fou).
-        assert!(try_rollup_route("search | stats count by source,source", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(), "doublon de dim DOIT décliner");
+        assert!(try_rollup_route("search | stats count by source,source", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(), "doublon de dim DOIT décliner");
         // NON-RÉGRESSION single-dim : `by source` route (ROUTE A) ; `by severity` seul NE route PAS (inchangé,
         // pré-B2 -> scan raw) ; ROUTE B `search source=X | stats count by <dim rollée>` intacte.
-        let a = try_rollup_route("search | stats count by source", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).expect("ROUTE A single-source intacte");
+        let a = try_rollup_route("search | stats count by source", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).expect("ROUTE A single-source intacte");
         assert!(a.sql.contains("GROUP BY source ORDER BY"), "ROUTE A single-dim inchangée (GROUP BY source seul) : {}", a.sql);
-        assert!(try_rollup_route("search | stats count by severity", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(), "single `by severity` inchangé (pré-B2) -> raw");
+        assert!(try_rollup_route("search | stats count by severity", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(), "single `by severity` inchangé (pré-B2) -> raw");
     }
 
     /// (2 boundary) STRUCTURE DU MERGE + FRAÎCHEUR SANS RETARD — corps rollup borné aux buckets DÉFINITIFS
@@ -443,7 +443,7 @@
         let soql = "search | stats count by source,severity";
         // (a) fenêtre alignée dans le passé (to = recent) -> corps `[from, recent)`, queue raw à `recent`.
         let from = cur - 10 * 3600;
-        let past = try_rollup_route_at(soql, from, recent, None, now_ts, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).unwrap();
+        let past = try_rollup_route_at(soql, from, recent, None, now_ts, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).unwrap();
         assert!(past.sql.contains(&format!("bucket >= {from}")), "corps rollup borné bas au from aligné : {}", past.sql);
         assert!(past.sql.contains(&format!("bucket < {recent}")), "corps BORNÉ aux buckets DÉFINITIFS (< recent) : {}", past.sql);
         assert!(past.sql.contains("FROM event WHERE"), "queue RAW sur `event` présente : {}", past.sql);
@@ -452,7 +452,7 @@
         assert!(!past.approx, "MERGE exact -> approx:false");
         assert!(past.note.is_none(), "MERGE exact -> aucune note");
         // (b) fenêtre touchant l'heure COURANTE -> queue raw couvre heure préc.+courante -> EXACT & FRAIS.
-        let recent_w = try_rollup_route_at(soql, from, now_ts, None, now_ts, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).unwrap();
+        let recent_w = try_rollup_route_at(soql, from, now_ts, None, now_ts, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).unwrap();
         assert!(recent_w.sql.contains(&format!("bucket < {recent}")), "corps s'arrête à la frontière définitive : {}", recent_w.sql);
         assert!(
             recent_w.sql.contains(&format!("ts >= {recent}")) && recent_w.sql.contains(&format!("ts <= {now_ts}")),
@@ -463,7 +463,7 @@
         assert!(recent_w.note.is_none(), "heure courante RAW-servie -> AUCUN retard de fraîcheur (note:none)");
         // (c) fenêtre ENTIÈREMENT sub-horaire dans l'heure courante -> aucun bucket définitif -> DÉCLINE (raw).
         assert!(
-            try_rollup_route_at(soql, cur + 100, cur + 200, None, now_ts, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(),
+            try_rollup_route_at(soql, cur + 100, cur + 200, None, now_ts, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(),
             "fenêtre sub-horaire (aucun bucket définitif complet) -> décline -> scan raw exact"
         );
     }
@@ -511,7 +511,7 @@
             (0, 0),                               // non borné
         ];
         for &(from, to) in windows {
-            let rr = try_rollup_route_at(soql, from, to, None, n, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX))
+            let rr = try_rollup_route_at(soql, from, to, None, n, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test())
                 .unwrap_or_else(|| panic!("multi-dim (corps définitif présent) DOIT router : ({from},{to})"));
             let raw = soql_to_sql_x(soql, from, to, None).unwrap();
             let got = b2_map(&conn, &rr.sql);
@@ -525,7 +525,7 @@
         }
         // + filtre source= : la parité tient aussi (source= appliqué au corps ET aux partiels raw).
         let sf = "search source=web | stats count by source,severity";
-        let rr = try_rollup_route_at(sf, cur - 4 * 3600 + 55, n, None, n, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).unwrap();
+        let rr = try_rollup_route_at(sf, cur - 4 * 3600 + 55, n, None, n, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).unwrap();
         assert_eq!(b2_map(&conn, &rr.sql), b2_map(&conn, &soql_to_sql_x(sf, cur - 4 * 3600 + 55, n, None).unwrap()), "PARITÉ avec filtre source=");
     }
 
@@ -549,7 +549,7 @@
             .unwrap();
         }
         let soql = "search | stats count by source,severity";
-        let rr = try_rollup_route_at(soql, cur - 2 * 3600, n, None, n, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).unwrap();
+        let rr = try_rollup_route_at(soql, cur - 2 * 3600, n, None, n, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).unwrap();
         let raw = soql_to_sql_x(soql, cur - 2 * 3600, n, None).unwrap();
         assert_eq!(
             b2_map(&conn, &rr.sql),
@@ -568,8 +568,8 @@
     fn b2_multidim_killswitch_disables_route() {
         let _g = B2_ENV_LOCK.lock();
         std::env::set_var("PLUME_ROLLUP_MULTIDIM", "0");
-        let multidim = try_rollup_route("search | stats count by source,severity", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX));
-        let single = try_rollup_route("search | stats count by source", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX));
+        let multidim = try_rollup_route("search | stats count by source,severity", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test());
+        let single = try_rollup_route("search | stats count by source", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test());
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM"); // RESTORE avant les asserts (pas de fuite d'env)
         assert!(multidim.is_none(), "flag OFF -> multi-dim NON routé (fallback scan brut)");
         assert!(single.is_some(), "flag OFF -> ROUTE A single-dim reste routée (kill-switch ciblé B2)");
@@ -609,7 +609,7 @@
 
         let soql = "search | stats count by source,host";
         // FIX : la route DÉCLINE (host hors grain routable) -> pas de faux group-by servi approx:true.
-        assert!(try_rollup_route(soql, 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(), "host hors grain -> DÉCLINE -> scan raw : {soql}");
+        assert!(try_rollup_route(soql, 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(), "host hors grain -> DÉCLINE -> scan raw : {soql}");
 
         // Le chemin RAW réellement emprunté rend le résultat CORRECT (3 groupes DISTINCTS, NULL préservé).
         let raw = soql_to_sql_x(soql, 0, 0, None).unwrap();
@@ -644,7 +644,7 @@
         rollup_events(&conn);
 
         let soql = "search | stats count by source,action";
-        assert!(try_rollup_route(soql, 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(), "action hors grain -> DÉCLINE -> scan raw : {soql}");
+        assert!(try_rollup_route(soql, 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(), "action hors grain -> DÉCLINE -> scan raw : {soql}");
 
         let raw = soql_to_sql_x(soql, 0, 0, None).unwrap();
         let want = b2_map(&conn, &raw);
@@ -672,7 +672,7 @@
         }
         rollup_events(&conn);
         let soql = "search | stats count by source,host";
-        assert!(try_rollup_route(soql, 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(), "host hors grain -> DÉCLINE -> scan raw : {soql}");
+        assert!(try_rollup_route(soql, 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(), "host hors grain -> DÉCLINE -> scan raw : {soql}");
         let raw = soql_to_sql_x(soql, 0, 0, None).unwrap();
         let want = b2_map(&conn, &raw);
         eprintln!("[B2 NON-RÉG host-null-only] raw={want:?}");
@@ -709,7 +709,7 @@
         // fenêtre ALIGNÉE entièrement DÉFINITIVE (to strictement < recent) -> corps rollup PUR, aucune queue raw.
         let from = cur - 4 * 3600;
         let to = cur - 3600 - 1;
-        let rr = try_rollup_route_at(soql, from, to, None, n, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).unwrap();
+        let rr = try_rollup_route_at(soql, from, to, None, n, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).unwrap();
         assert!(!rr.sql.contains("FROM event WHERE"), "fenêtre définitive alignée -> corps rollup PUR (aucun scan raw) : {}", rr.sql);
         let raw = soql_to_sql_x(soql, from, to, None).unwrap();
         // chauffe + mesure

@@ -2707,8 +2707,10 @@ fn migrate_v43(conn: &MigTx) {
 
 fn migrate_v44(conn: &MigTx) {
     // v44 (PHASE 3a) : PRÉ-AGRÉGATION PAR DIMENSION. (a) crée event_dim_rollup — peuplée
-    // INCRÉMENTALEMENT par rollup_events (cold start borné à 24h, jamais de backfill bloquant ICI :
-    // pas de scan des 2,3 M lignes au boot) ; (b) RÉÉCRIT les panneaux GROUP-BY par-source PURS déjà
+    // INCRÉMENTALEMENT par rollup_events, dont la BANDE couverte descend d'au plus
+    // PLUME_ROLLUP_DIM_BACKFILL par tick jusqu'au plus vieux `ts` d'`event` (jamais de backfill bloquant
+    // ICI : pas de scan des 2,3 M lignes au boot, et plus de trou définitif au-delà du premier pas —
+    // cf. `rollup_coverage`, section « LE JUMEAU », pour la mesure du trou et sa fermeture) ; (b) RÉÉCRIT les panneaux GROUP-BY par-source PURS déjà
     // semés (prod) en is_soql=0 sur le pré-agrégé -> <100 ms + pré-chauffables (cache_refresh_all_panels
     // filtre is_soql=0). Match par requête EXACTE (+ is_soql=1) : ciblage précis, NO-OP sûr si la
     // requête a divergé (le panneau est alors laissé en l'état, aucune régression).
@@ -2881,9 +2883,14 @@ fn migrate_v49(conn: &MigTx) {
     // INCRÉMENTAL, jamais au boot synchrone :
     //   (a) ROLLUPS par dimension — DIM_ROLLUP_SPECS gagne auditd/sshd-session/kube-audit/k8s-log/
     //       vault-audit/ufw/cloudflare/fail2ban/crowdsec/sudo. event_dim_rollup (table v44) les peuple
-    //       INCRÉMENTALEMENT via rollup_events (cold start borné PLUME_ROLLUP_DIM_BACKFILL=24h, forward-
-    //       fill ensuite) -> AUCUN backfill bloquant des 2,6M lignes ici. La rollup-route les sert dès
-    //       qu'elles existent (served_from:rollup + approx/truncated pour les dims cappées top-N).
+    //       INCRÉMENTALEMENT via rollup_events, par une BANDE qui monte ET descend d'au plus
+    //       PLUME_ROLLUP_DIM_BACKFILL (24h) par tick -> AUCUN backfill bloquant des 2,6M lignes ici, et
+    //       la bande finit par couvrir tout ce qu'`event` porte. (La rédaction précédente promettait un
+    //       « forward-fill » qui n'existait pas : mesuré le 31/07, tout ce qui était plus vieux que 24 h
+    //       n'était JAMAIS agrégé — 19 991 événements comptés sur 1 440 007. Voir `rollup_coverage`.)
+    //       La rollup-route les sert dès qu'elles sont TÉMOIGNÉES par la couverture publiée
+    //       (served_from:rollup + approx/truncated pour les dims cappées top-N, + la bande non couverte
+    //       NOMMÉE quand la fenêtre déborde).
     //   (b) INDEX EXPRESSION — HOT_FIELDS gagne verb,resource,operation (filtres d'audit). Le CREATE est
     //       délégué à reconcile_expr_indexes_background (après le bind, 1 index à la fois, lock writer
     //       borné), JAMAIS ici : un CREATE INDEX sur l'historique chiffré bloquerait le bind -> échec de

@@ -43,7 +43,7 @@
         let soql = "search | stats count by source,severity";
         let from = cur - 4 * 3600;
         let to = cur + 60; // sub-horaire, touche l'heure courante
-        let rr = try_rollup_route_at(soql, from, to, None, n, RollupCoverage::of(&conn))
+        let rr = try_rollup_route_at(soql, from, to, None, n, RollupCoverage::of(&conn), DimRollupCoverage::of(&conn))
             .expect("corps définitif présent -> DOIT router");
         let got = b2_map(&conn, &rr.sql);
         let want = b2_map(&conn, &soql_to_sql_x(soql, from, to, None).unwrap());
@@ -72,14 +72,14 @@
         rollup_events(&conn);
         let soql = "search | stats count by source,severity";
         let from = cur - 5 * 3600;
-        let rr = try_rollup_route_at(soql, from, n, None, n, RollupCoverage::of(&conn)).expect("DOIT router");
+        let rr = try_rollup_route_at(soql, from, n, None, n, RollupCoverage::of(&conn), DimRollupCoverage::of(&conn)).expect("DOIT router");
         // STRUCTURE : corps borné < recent ; queue raw depuis recent (pas recent±1).
         assert!(rr.sql.contains(&format!("bucket < {recent}")), "corps borné < recent : {}", rr.sql);
         assert!(rr.sql.contains(&format!("ts >= {recent}")), "queue raw démarre PILE à recent : {}", rr.sql);
         assert!(!rr.sql.contains(&format!("bucket < {}", recent + 3600)), "corps ne lit JAMAIS un bucket >= recent : {}", rr.sql);
         // PARITÉ à chaque borne autour du watermark.
         for &(f, t) in &[(from, recent - 1), (from, recent), (from, recent + 3600), (from, n)] {
-            if let Some(r) = try_rollup_route_at(soql, f, t, None, n, RollupCoverage::of(&conn)) {
+            if let Some(r) = try_rollup_route_at(soql, f, t, None, n, RollupCoverage::of(&conn), DimRollupCoverage::of(&conn)) {
                 let got = b2_map(&conn, &r.sql);
                 let want = b2_map(&conn, &soql_to_sql_x(soql, f, t, None).unwrap());
                 assert_eq!(got, want, "WATERMARK parité ({f},{t})\nmerge={got:?}\nraw={want:?}\nSQL={}", r.sql);
@@ -138,7 +138,7 @@
         let from = cur - 4 * 3600;
         // FIX : la route lit le watermark RÉEL (event_rollup_wm) et borne le corps à `< wm` -> le bucket cur-2H
         // est servi par la QUEUE RAW (à jour, index-servie) et NON depuis le rollup périmé.
-        let rr = try_rollup_route_at(soql, from, n, None, n, RollupCoverage::of(&conn)).expect("DOIT router (corps définitif présent)");
+        let rr = try_rollup_route_at(soql, from, n, None, n, RollupCoverage::of(&conn), DimRollupCoverage::of(&conn)).expect("DOIT router (corps définitif présent)");
         let got = b2_map(&conn, &rr.sql);                                    // ce que sert le merge
         let want = b2_map(&conn, &soql_to_sql_x(soql, from, n, None).unwrap()); // ORACLE brut
 
@@ -187,7 +187,7 @@
         let soql = "search | stats count by source,severity";
         let from = cur - 4 * 3600;
         for env in ["prod", "staging"] {
-            let rr = try_rollup_route_at(soql, from, n, Some(env), n, RollupCoverage::of(&conn)).expect("DOIT router");
+            let rr = try_rollup_route_at(soql, from, n, Some(env), n, RollupCoverage::of(&conn), DimRollupCoverage::of(&conn)).expect("DOIT router");
             let got = b2_map(&conn, &rr.sql);
             let want = b2_map(&conn, &soql_to_sql_x(soql, from, n, Some(env)).unwrap());
             assert_eq!(got, want, "PARITÉ env={env}\nmerge={got:?}\nraw={want:?}\nSQL={}", rr.sql);
@@ -206,11 +206,11 @@
         let cur = (now_ts / 3600) * 3600;
         let recent = cur - 3600;
         // (a) sub-horaire dans l'heure courante. (wm=MAX : le déclin vient de l'absence de bucket définitif, pas du wm.)
-        assert!(try_rollup_route_at(soql, cur + 100, cur + 200, None, now_ts, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(), "sub-horaire courant -> décline");
+        assert!(try_rollup_route_at(soql, cur + 100, cur + 200, None, now_ts, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(), "sub-horaire courant -> décline");
         // (b) entièrement dans les 2h volatiles [recent, now].
-        assert!(try_rollup_route_at(soql, recent + 5, now_ts, None, now_ts, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(), "fenêtre volatile pure -> décline");
+        assert!(try_rollup_route_at(soql, recent + 5, now_ts, None, now_ts, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(), "fenêtre volatile pure -> décline");
         // (c) fenêtre sub-horaire dans l'heure préc. (aucun bucket complet définitif).
-        assert!(try_rollup_route_at(soql, recent + 100, recent + 200, None, now_ts, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(), "sub-horaire volatile -> décline");
+        assert!(try_rollup_route_at(soql, recent + 100, recent + 200, None, now_ts, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(), "sub-horaire volatile -> décline");
     }
 
     /// VECTEUR 6 (COLD) — parité pour une fenêtre COLD alignée-heure (dashboards) : EXACT & FRAIS
@@ -248,10 +248,10 @@
         rollup_events(&conn);
         let soql = "search | stats count by source,severity";
         // (a) fenêtre COLD alignée-heure (from aligné sous B, to aligné) -> approx:false attendu.
-        let ra = try_cold_rollup_route_at(soql, boundary - 2 * 3600, recent, None, boundary, now_ts, RollupCoverage::of(&conn)).expect("cold aligné DOIT router");
+        let ra = try_cold_rollup_route_at(soql, boundary - 2 * 3600, recent, None, boundary, now_ts, RollupCoverage::of(&conn), DimRollupCoverage::of(&conn)).expect("cold aligné DOIT router");
         assert!(!ra.approx, "COLD aligné-heure -> EXACT (approx:false) : note={:?}", ra.note);
         // (b) tête deep-past SUB-HORAIRE (<B) -> repli corps -> approx:true (résidu honnête BORNÉ).
-        let rb = try_cold_rollup_route_at(soql, boundary - 2 * 3600 + 123, recent, None, boundary, now_ts, RollupCoverage::of(&conn)).expect("cold sub-horaire DOIT router");
+        let rb = try_cold_rollup_route_at(soql, boundary - 2 * 3600 + 123, recent, None, boundary, now_ts, RollupCoverage::of(&conn), DimRollupCoverage::of(&conn)).expect("cold sub-horaire DOIT router");
         assert!(rb.approx, "tête deep-past sub-horaire (<B, event purgé) -> approx:true (résidu borné)");
         assert!(rb.note.is_some(), "résidu approx -> note explicite (jamais silencieux)");
     }

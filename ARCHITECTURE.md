@@ -188,6 +188,12 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
   `event_rollup` (cappe `src_ip` en top-N par bucket, le reste lumpé puis ré-agrégé = jamais perdu) et
   **`event_dim_rollup`** (cappe **chaque dimension** au top-N par bucket, `PLUME_ROLLUP_DIM_TOPN`).
   Rafraîchis périodiquement (`PLUME_ROLLUP_INTERVAL_S`) + backfill incrémental.
+  **Chacun PUBLIE ce qu'il couvre**, et aucune route ne lit au-delà : `event_rollup` publie sa borne
+  (`RollupCoverage`) et REconstruit les bandes où une ligne est arrivée en retard ; `event_dim_rollup`
+  entretient une **bande** qui monte, descend (`PLUME_ROLLUP_DIM_BACKFILL` par tick, jusqu'au plus vieux
+  `ts` d'`event`) et se rétracte sur une écriture rétro-datée. Couverture non publiée → la route
+  **décline** et le scan brut sert. Voir `daemon/src/rollup_coverage.rs` pour la mesure qui a motivé les
+  deux (un sous-compte ×6,6 servi comme exact ; un `0` de couverture servi comme un `0` de données).
 - **Rétention** : `PLUME_RETENTION_DAYS` (events, déf. 30), `PLUME_METRIC_DAYS`, `PLUME_SNAPSHOT_DAYS`,
   `PLUME_ALERT_DAYS`, downsample des métriques (`PLUME_METRIC_RAW_HOURS`), purge + `VACUUM`.
 

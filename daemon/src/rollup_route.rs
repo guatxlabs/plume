@@ -23,7 +23,10 @@ use crate::*;
 //     être exacte au grain sous-horaire — seul le scan raw (fall-through) l'est.
 //   - event_dim_rollup cappe CHAQUE dim au top-N (défaut PLUME_ROLLUP_DIM_TOPN=50) PAR bucket et ABANDONNE le
 //     reste -> counts par <dim> potentiellement SOUS-COMPTÉS et liste de valeurs INCOMPLÈTE -> approx:true,
-//     truncated:true (l'analyste ne doit JAMAIS croire un chiffre rollup tronqué exact).
+//     truncated:true (l'analyste ne doit JAMAIS croire un chiffre rollup tronqué exact). ET IL NE COUVRE PAS
+//     TOUT LE TEMPS : sa bande est entretenue par pas bornés (cf. `rollup_coverage`, section « LE JUMEAU »),
+//     donc la ROUTE B ne lit que les buckets TÉMOIGNÉS, nomme ce qui manque, et DÉCLINE quand rien n'est
+//     témoigné — un `0` de couverture est indiscernable d'un `0` de données, et c'est le cas mesuré.
 // RECENCY GUARD (QRY-1) : si la borne haute `to` tombe dans le bucket horaire COURANT (potentiellement pas
 //   encore matérialisé par le tick de rollup_events), une requête « 15 dernières min » SOUS-COMPTERAIT les
 //   événements récents. On garde la route (perf des dashboards « dernières N h »), mais on pose `note` =
@@ -348,14 +351,16 @@ fn merge_env_cond(env: Option<&str>) -> Vec<String> {
 /// Valeur validée en amont (env_slug_ok) + ré-échappée (soql_esc) -> jamais d'injection.
 /// `cov` = la COUVERTURE du rollup (`RollupCoverage::of(conn)`) -> borne le corps du MERGE multi-dim à ce que
 /// le job a réellement agrégé et fait rattraper les retardataires (cf. `rollup_coverage`, `plan_merge`) ;
-/// `RollupCoverage::unproven()` = tout raw ; sans effet sur ROUTE A/B (single-dim, déjà `approx:true`).
-pub(crate) fn try_rollup_route(soql: &str, from: i64, to: i64, env: Option<&str>, cov: RollupCoverage) -> Option<RollupRoute> {
-    try_rollup_route_at(soql, from, to, env, now(), cov)
+/// `RollupCoverage::unproven()` = tout raw ; sans effet sur ROUTE A (single-dim `source`, déjà `approx:true`).
+/// `dim_cov` = la COUVERTURE du rollup PAR DIMENSION (`DimRollupCoverage::of(conn)`) -> borne la ROUTE B aux
+/// buckets dont le job témoigne, et lui fait NOMMER ce qu'elle ne couvre pas ; l'aveu vaut déclin.
+pub(crate) fn try_rollup_route(soql: &str, from: i64, to: i64, env: Option<&str>, cov: RollupCoverage, dim_cov: DimRollupCoverage) -> Option<RollupRoute> {
+    try_rollup_route_at(soql, from, to, env, now(), cov, dim_cov)
 }
 
 /// Cœur testable de `try_rollup_route` : `now_ts` injecté (recency guard QRY-1) pour tester le caveat de
 /// fraîcheur sans horloge murale. Voir `try_rollup_route` pour le contrat public (production = `now()`).
-pub(crate) fn try_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&str>, now_ts: i64, cov: RollupCoverage) -> Option<RollupRoute> {
+pub(crate) fn try_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&str>, now_ts: i64, cov: RollupCoverage, dim_cov: DimRollupCoverage) -> Option<RollupRoute> {
     let sh = parse_stats_by_shape(soql)?;
     let tconds = rollup_time_conds(from, to, env);
     let order = if sh.asc { "ASC" } else { "DESC" };
@@ -428,16 +433,33 @@ pub(crate) fn try_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&s
     if !dim_rolled {
         return None; // (source, dim) non pré-agrégé -> fall-through
     }
+    // COUVERTURE (cf. `rollup_coverage`, section « LE JUMEAU ») : on ne lit QUE des buckets dont le job
+    // témoigne. Rien de témoigné dans la fenêtre -> DÉCLIN -> scan brut (exact) ; c'est aussi ce qui arrive à
+    // TOUTE base d'avant ce correctif (couverture absente -> aveu -> déclin), par le TYPE et non par un `if`.
+    let (cov_conds, cov_note) = dim_coverage_conds(dim_cov, from, to)?;
     let mut conds = vec![format!("source='{}'", guatx_core::soql::soql_esc(src)), format!("dim='{}'", guatx_core::soql::soql_esc(by))];
     conds.extend(tconds);
+    conds.extend(cov_conds);
     let sql = format!(
         "SELECT val AS {}, SUM(n) AS \"count\" FROM event_dim_rollup WHERE {} GROUP BY val ORDER BY \"count\" {order}{lim}",
         guatx_core::soql::soql_qid(by),
         conds.join(" AND ")
     );
     // dim cappée top-N/bucket à la POPULATION -> sous-comptage possible + valeurs manquantes -> partiel.
-    // note = caveat de fraîcheur additionnel si la fenêtre touche l'heure courante (recency guard QRY-1).
-    Some(RollupRoute { sql, approx: true, truncated: true, note: recency_note() })
+    // note = caveat de COUVERTURE (ce que la bande ne témoigne pas, avec ses bornes et sa part) puis caveat de
+    // fraîcheur si la fenêtre touche l'heure courante (recency guard QRY-1). Les deux sont des absences : on
+    // les publie ensemble plutôt que d'en taire une.
+    Some(RollupRoute { sql, approx: true, truncated: true, note: join_notes(cov_note, recency_note()) })
+}
+
+/// Concatène deux caveats optionnels sans en perdre un (le champ `rollup_note` est unique). L'ordre est celui
+/// de la gravité : ce que le rollup ne couvre PAS d'abord, sa fraîcheur ensuite.
+fn join_notes(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(format!("{x} ; {y}")),
+        (Some(x), None) | (None, Some(x)) => Some(x),
+        (None, None) => None,
+    }
 }
 
 /// MOTIF `stats count by <field>` reconnu (partagé par le rollup-route HOT et le rollup-route COLD #28). Champs
@@ -544,6 +566,73 @@ pub(crate) fn parse_stats_by_shape(soql: &str) -> Option<StatsByShape> {
     Some(StatsByShape { source_filter, by_fields, asc, limit })
 }
 
+/// La fenêtre `[from, to]` d'une requête, rendue en BUCKETS demi-ouverts `[lo, hi)` — la forme dans laquelle
+/// une couverture peut la recouper. `from<=0` -> pas de borne basse (`i64::MIN`) ; `to<=0` -> pas de borne
+/// haute (`i64::MAX`). Le bucket qui COUVRE `to` est inclus (c'est déjà la sémantique de `rollup_time_conds`).
+fn window_buckets(from: i64, to: i64) -> (i64, i64) {
+    let lo = if from > 0 { hour_floor(from) } else { i64::MIN };
+    let hi = if to > 0 { hour_floor(to).saturating_add(3600) } else { i64::MAX };
+    (lo, hi)
+}
+
+/// Conditions SQL `bucket` des bandes TÉMOIGNÉES par la couverture du rollup par dimension, et la NOTE qui
+/// nomme ce qui manque. Voir `rollup_coverage` (section « LE JUMEAU ») pour la mesure qui motive tout ceci.
+///
+/// Ce que ça change pour la ROUTE B, et ce que ça NE change pas. `approx`/`truncated` restent `true` : le cap
+/// top-N/(bucket,source,dim) abandonne toujours la queue des valeurs, et la route ne s'est jamais prétendue
+/// exacte. Ce qui change est qu'elle ne lit plus QUE ce dont la couverture témoigne, et qu'au lieu du seul mot
+/// « approximatif » elle dit MAINTENANT DE COMBIEN elle est aveugle — avec les bornes et la proportion.
+/// `None` = la fenêtre ne rencontre aucun bucket témoigné : l'appelant DÉCLINE (le brut sert, exact). Sans
+/// cela la route rendrait `0` sur une fenêtre non vide — mesuré : `0` contre 5 696 sur la base de banc — et
+/// un `0` de couverture est INDISCERNABLE d'un `0` de données.
+fn dim_coverage_conds(cov: DimRollupCoverage, from: i64, to: i64) -> Option<(Vec<String>, Option<String>)> {
+    let (lo, hi) = window_buckets(from, to);
+    let w = cov.witness(lo, hi)?;
+    let band = |(a, b): &(i64, i64)| -> String {
+        let mut c: Vec<String> = Vec::new();
+        if *a > i64::MIN {
+            c.push(format!("bucket >= {a}"));
+        }
+        if *b < i64::MAX {
+            c.push(format!("bucket < {b}"));
+        }
+        if c.is_empty() { "1".to_string() } else { c.join(" AND ") }
+    };
+    let pred = w.served.iter().map(|s| format!("({})", band(s))).collect::<Vec<_>>().join(" OR ");
+    let note = (!w.missing.is_empty()).then(|| {
+        // « DE COMBIEN » : les bornes de ce qui manque, et sa part de la fenêtre quand celle-ci est bornée
+        // (une fenêtre non bornée n'a pas de part — on ne l'invente pas, on n'en publie pas).
+        let bornes = w
+            .missing
+            .iter()
+            .map(|(a, b)| {
+                let d = if *a > i64::MIN && *b < i64::MAX { format!(" ({} h)", (b - a) / 3600) } else { String::new() };
+                match (*a > i64::MIN, *b < i64::MAX) {
+                    (true, true) => format!("[{a}, {b}){d}"),
+                    (true, false) => format!("[{a}, →)"),
+                    (false, true) => format!("(←, {b})"),
+                    (false, false) => "toute la fenêtre".to_string(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let part = match (lo > i64::MIN, hi < i64::MAX) {
+            (true, true) => {
+                let manquant: i64 = w.missing.iter().map(|(a, b)| b - a).sum();
+                format!(", soit {} % de la fenêtre demandée", (manquant * 100) / (hi - lo).max(1))
+            }
+            _ => String::new(),
+        };
+        format!(
+            "le pré-agrégé par dimension ne couvre PAS {bornes}{part} : ces heures sont ABSENTES du compte \
+             (ce n'est pas un zéro de données). La bande couverte s'étend d'au plus PLUME_ROLLUP_DIM_BACKFILL \
+             par tick de rollup ; pour un compte complet, refaire la requête sans `stats count by` routable \
+             (ou attendre que la bande ait rattrapé)."
+        )
+    });
+    Some((vec![format!("({pred})")], note))
+}
+
 /// Bornes temporelles + filtre environnement PARTAGÉS (bucket aligné au grain horaire, inclut le bucket couvrant
 /// `from`). `env` None -> agrégats tous-env. Réutilisé par le rollup HOT et le rollup COLD.
 fn rollup_time_conds(from: i64, to: i64, env: Option<&str>) -> Vec<String> {
@@ -580,8 +669,8 @@ fn rollup_time_conds(from: i64, to: i64, env: Option<&str>) -> Vec<String> {
 /// (frontière jour hot/cold, `cold_query_boundary`). None = motif non `count by` -> l'appelant retombe sur le
 /// chemin brut hot∪cold. La fenêtre `[from, to]` atteint SOUS `B` (garanti par l'appelant : `from < B`).
 #[cfg(feature = "cold_tier")]
-pub(crate) fn try_cold_rollup_route(soql: &str, from: i64, to: i64, env: Option<&str>, boundary: i64, cov: RollupCoverage) -> Option<RollupRoute> {
-    try_cold_rollup_route_at(soql, from, to, env, boundary, now(), cov)
+pub(crate) fn try_cold_rollup_route(soql: &str, from: i64, to: i64, env: Option<&str>, boundary: i64, cov: RollupCoverage, dim_cov: DimRollupCoverage) -> Option<RollupRoute> {
+    try_cold_rollup_route_at(soql, from, to, env, boundary, now(), cov, dim_cov)
 }
 
 /// Cœur testable de `try_cold_rollup_route` (`now_ts` injecté pour le recency guard, comme le HOT). `cov` =
@@ -590,8 +679,10 @@ pub(crate) fn try_cold_rollup_route(soql: &str, from: i64, to: i64, env: Option<
 /// et VIDE en dessous (agé en Parquet) -> il ajoute exactement les lignes qu'`event` porte encore, ce que le
 /// chemin brut hot∪cold compte lui aussi. Sous `B`, la couverture d'un bucket relève de `cold_rollup`, scellé
 /// par `seal_cold_rollup` sur la tranche columnarisée exacte.
+/// `dim_cov` : MÊME rôle pour la ROUTE B, mais appliqué au SEUL côté chaud (`bucket >= B`) — sous `B`,
+/// `cold_dim_rollup` est scellé sur la tranche columnarisée exacte, sa provenance n'est pas un watermark.
 #[cfg(feature = "cold_tier")]
-pub(crate) fn try_cold_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&str>, boundary: i64, now_ts: i64, cov: RollupCoverage) -> Option<RollupRoute> {
+pub(crate) fn try_cold_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&str>, boundary: i64, now_ts: i64, cov: RollupCoverage, dim_cov: DimRollupCoverage) -> Option<RollupRoute> {
     let sh = parse_stats_by_shape(soql)?;
     let base_tconds = rollup_time_conds(from, to, env);
     let order = if sh.asc { "ASC" } else { "DESC" };
@@ -674,7 +765,22 @@ pub(crate) fn try_cold_rollup_route_at(soql: &str, from: i64, to: i64, env: Opti
         format!("source='{}'", guatx_core::soql::soql_esc(src)),
         format!("dim='{}'", guatx_core::soql::soql_esc(by)),
     ];
-    let hot_w = side_where(&dim_cond, &format!("bucket >= {boundary}"));
+    // COUVERTURE, CÔTÉ CHAUD SEULEMENT. Sous `B`, `cold_dim_rollup` est SCELLÉ par `seal_cold_rollup` sur la
+    // tranche columnarisée EXACTE du jour (mêmes dims, même SQL) : sa provenance est un scellement, pas un
+    // watermark, donc la question « le job est-il passé par là ? » n'y a pas de sens. Au-dessus de `B`, c'est
+    // le MÊME `event_dim_rollup` que le HOT et la MÊME couverture s'applique. Si la fenêtre au-dessus de `B`
+    // n'est pas témoignée, on retire simplement le côté chaud — le froid, lui, reste servable ; et si la
+    // fenêtre est ENTIÈREMENT au-dessus de `B` sans rien de témoigné, on décline (comme le HOT).
+    let reaches_cold = from <= 0 || from < boundary;
+    let hot_cov = dim_coverage_conds(dim_cov, from.max(boundary), to);
+    if hot_cov.is_none() && !reaches_cold {
+        return None; // fenêtre purement chaude et rien de témoigné -> brut cold_union_query (exact)
+    }
+    // Rien de témoigné au-dessus de `B` mais du froid à servir : le côté chaud est ÉTEINT (`0`), pas deviné.
+    let (hot_cov_conds, cov_note) = hot_cov.unwrap_or_else(|| (vec!["0".to_string()], None));
+    let mut hot_dim = dim_cond.clone();
+    hot_dim.extend(hot_cov_conds);
+    let hot_w = side_where(&hot_dim, &format!("bucket >= {boundary}"));
     let cold_w = side_where(&dim_cond, &format!("bucket < {boundary}"));
     let sql = format!(
         "SELECT val AS {}, SUM(n) AS \"count\" FROM (\
@@ -684,7 +790,7 @@ pub(crate) fn try_cold_rollup_route_at(soql: &str, from: i64, to: i64, env: Opti
          GROUP BY val ORDER BY \"count\" {order}{lim}",
         guatx_core::soql::soql_qid(by),
     );
-    Some(RollupRoute { sql, approx: true, truncated: true, note: recency_note() })
+    Some(RollupRoute { sql, approx: true, truncated: true, note: join_notes(cov_note, recency_note()) })
 }
 
 /// Injecte les champs de TRANSPARENCE dans `stats` (chemin soql uniquement). rollup -> served_from:"rollup"

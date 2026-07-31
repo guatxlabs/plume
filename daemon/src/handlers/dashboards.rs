@@ -640,7 +640,7 @@ pub(crate) fn compile_panel_sql(query: &str, is_soql: bool, from: i64, to: i64, 
         // une table incomplète. CONSÉQUENCE : un panneau `stats count by <2 dims du grain>` retombe sur le
         // compilo brut (exact, plus lent) ; les ROUTES A/B single-dim, qui n'ont jamais dépendu de la couverture,
         // sont inchangées — et aucun panneau LIVRÉ n'est multi-dim (seeds.rs : tous `count by <une dim>`).
-        if let Some(rr) = try_rollup_route(&query, from, to, env, RollupCoverage::unproven()) {
+        if let Some(rr) = try_rollup_route(&query, from, to, env, RollupCoverage::unproven(), DimRollupCoverage::unproven()) {
             return Ok(rr.sql);
         }
         soql_to_sql_x(&query, from, to, env)

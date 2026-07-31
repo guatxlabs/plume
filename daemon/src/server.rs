@@ -482,7 +482,12 @@ fn spawn_background_jobs(conf: HashMap<String, String>, spool: String, db_path: 
         spawn_destination_tick(tenants.clone());
     }
 
-    // rétention + purge + ledger (horaire) — appelle aussi rollup_events (filet). #2a-2c : PAR TENANT — chaque
+    // rétention + purge + ledger (horaire). #2a-2c : PAR TENANT — chaque
+    // NB (constat VÉRIFIÉ le 31/07) : ce commentaire annonçait un « filet » — que `retention_run` rappelait
+    // `rollup_events`. C'est FAUX depuis #23 F3, qui a RETIRÉ ce re-run du plus long verrou writer parce que
+    // la boucle dédiée (`spawn_rollup_loop`, ~120 s) l'appelle déjà à une cadence bien plus fine (cf.
+    // `rollups.rs`, « les re-runs rollup_events / materialize_banned_ip / rollup_risk sont RETIRÉS »). Un
+    // commentaire qui promet un filet inexistant est pire qu'aucun : il ferme la question qu'il faudrait poser.
     // tenant lit SES settings de rétention (#1b) depuis SA base (mode 0 = 1 itération `default`=st.db).
     {
         spawn_retention_loop(tenants.clone());

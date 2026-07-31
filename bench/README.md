@@ -16,6 +16,7 @@ chiffre annoncé n'est pas contestable.
 | `gen_events.py` | Générateur **déterministe** (splitmix64, graine explicite, aucun appel à l'horloge) au profil ci-dessus. Zéro donnée réelle. |
 | `measure.py` | La matrice : latence p50/p95, **RSS crête mesurée** (échantillonnage /proc à 15 ms), lecture disque, pression machine. Les fenêtres y sont **dérivées**, pas énumérées. |
 | `probe.py` | L'échantillonneur d'ingest. Relève, à chaque tick, ce qui permet de dire POURQUOI le débit tombe : CPU du daemon, CPU du reste de la machine, octets lus/écrits au bloc, stall mémoire du cgroup. |
+| `parity.py` | **La réponse est-elle la MÊME ?** Interroge DEUX daemons (avec et sans tier froid) sur la MÊME matrice et compare **les valeurs**, pas les temps. Le jeu de contrôles n'est pas écrit : c'est `query_classes` × `windows` de `measure.py`. |
 | `report.py` | Rend `docs/BENCHMARK.md`. Ne masque aucune cellule. |
 | `run.sh` | **La commande unique.** Enchaîne tout, budget de 2 Gio *appliqué* par cgroup. |
 | `results/` | Les **données brutes** de la mesure publiée dans `docs/BENCHMARK.md`. Versionnées exprès — voir ci-dessous. |
@@ -81,6 +82,9 @@ Un tableau de mesures sans ses données brutes ne peut être que **cru ou ignor�
 | `results/results-2026-07-31.jsonl` | La passe du 31/07 : fenêtre chaude du produit, tier froid ACTIF (avec le bilan de columnarisation et la **parité de réponse** chaud/froid), et les trois profils de flotte. Porte aussi les fenêtres ÉCARTÉES par la garde de couverture — une absence y est une donnée. |
 | `results/ingest_rate.csv` | La courbe de débit d'ingest de la passe du 30/07 (machine chargée, sans colonnes CPU). |
 | `results/ingest_rate-quiet-2g.csv` | La courbe du 31/07, machine au repos et sonde complète : c'est elle qui permet d'ATTRIBUER l'effondrement du débit au lieu de le supposer. |
+| `results/results-2026-07-31-corrige.jsonl` | La passe du 31/07 REJOUÉE après le correctif de troncature froide (témoin chaud `chaud-seul-v2@1.4M` + `froid-actif-v2@1.4M`, même machine, mêmes copies de base, binaire post-correctif). C'est elle qui décrit le code actuel. |
+| `results/parity-avant-2026-07-31.jsonl` | La parité chaud/froid mesurée sur toute la matrice **AVANT** le correctif : 53 contrôles sur 105 divergent en silence. |
+| `results/parity-apres-2026-07-31.jsonl` | La MÊME mesure **APRÈS** : plus aucun agrégat scalaire ne diverge en silence. |
 | `results/fill-progress-quiet-2g.txt` | Les lignes de progression du générateur pour cette passe. Extension `.txt` et non `.log` : `.gitignore` exclut `*.log`, et une donnée publiée ne doit pas dépendre d'une exception d'ignore. |
 
 **Scannés avant publication** : chemins personnels, e-mails, jetons (`ghp_`/`AKIA`/`xox*-`/
@@ -118,6 +122,10 @@ BENCH_PHASES=simple bench/run.sh      # UNE configuration (masque vide) — le m
 BENCH_PHASES=cold BENCH_COLD=1 bench/run.sh   # tier froid : témoin chaud, aging réel
                                       # (`plume-daemon retention`), bilan, puis matrice froide
 BENCH_SKIP=1400000 BENCH_PHASES=ingest bench/run.sh   # PROLONGER une base sans changer de graine
+# la PARITÉ (valeurs, pas latences) : deux daemons, l'un columnarisé, l'autre intact, MÊME binaire.
+python3 bench/parity.py --hot-base http://127.0.0.1:7421 --cold-base http://127.0.0.1:7422 \
+    --user <u> --password <p> --end-ts <ts> --span-days 28 --hot-window-days 7 \
+    --retention-days 30 -o parity.jsonl
 # le rendu : NE PAS l'écrire de mémoire. La commande EXACTE est publiée par le document
 # lui-même (docs/BENCHMARK.md, section « Reproduire ») et elle en est un point fixe.
 ```

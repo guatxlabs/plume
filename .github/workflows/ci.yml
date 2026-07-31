@@ -227,7 +227,7 @@ jobs:
       - name: cargo test (daemon, --features cold_tier) + assert the cold test count
         working-directory: daemon
         env:
-          EXPECTED_COLD_TESTS: "970"
+          EXPECTED_COLD_TESTS: "974"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

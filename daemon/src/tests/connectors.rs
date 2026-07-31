@@ -976,14 +976,14 @@
         let raw_all = soql_to_sql_x("search source=web", 0, 0, None).unwrap();
         assert!(!raw_all.contains("env_id"), "INVARIANT mode 0 : AUCUN filtre env_id sur le raw : {raw_all}");
         // (b) ROLLUP route A (event_rollup) : `... | stats count by source`.
-        let ra = try_rollup_route("search | stats count by source", 0, 0, Some("staging"), i64::MAX).unwrap();
+        let ra = try_rollup_route("search | stats count by source", 0, 0, Some("staging"), RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).unwrap();
         assert!(ra.sql.contains("event_rollup") && ra.sql.contains("env_id='staging'"), "rollup A filtre env : {}", ra.sql);
-        let ra0 = try_rollup_route("search | stats count by source", 0, 0, None, i64::MAX).unwrap();
+        let ra0 = try_rollup_route("search | stats count by source", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).unwrap();
         assert!(!ra0.sql.contains("env_id"), "INVARIANT mode 0 : rollup A sans filtre env : {}", ra0.sql);
         // (c) ROLLUP route B (event_dim_rollup) : `search source=web | stats count by status`.
-        let rb = try_rollup_route("search source=web | stats count by status", 0, 0, Some("staging"), i64::MAX).unwrap();
+        let rb = try_rollup_route("search source=web | stats count by status", 0, 0, Some("staging"), RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).unwrap();
         assert!(rb.sql.contains("event_dim_rollup") && rb.sql.contains("env_id='staging'"), "rollup B filtre env : {}", rb.sql);
-        let rb0 = try_rollup_route("search source=web | stats count by status", 0, 0, None, i64::MAX).unwrap();
+        let rb0 = try_rollup_route("search source=web | stats count by status", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).unwrap();
         assert!(!rb0.sql.contains("env_id"), "INVARIANT mode 0 : rollup B sans filtre env : {}", rb0.sql);
         // (d) ANTI-INJECTION : la valeur env est échappée (soql_esc) -> jamais de rupture de littéral (défense
         //     en profondeur ; env_slug_ok l'aurait DÉJÀ rejetée en amont dans auth_guard).

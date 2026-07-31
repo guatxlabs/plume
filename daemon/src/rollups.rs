@@ -504,7 +504,10 @@ pub(crate) fn seal_cold_rollup(conn: &Connection, env_id: &str, day: i64, max_id
 
 /// Rollup d'events (tick ~5 min) : agrège les counts (source,severity,action,src_ip,host) dans
 /// `event_rollup`. Ré-agrège TOUJOURS l'heure en cours + la précédente (latence ~tick + rattrape les
-/// events tardifs), et rattrape UNE fois les heures définitives via le watermark `event_rollup_wm`.
+/// events tardifs), rattrape les heures définitives via le watermark `event_rollup_wm`, et RÉPARE les
+/// bandes où une ligne est arrivée SOUS le watermark après son passage (cf. `rollup_coverage` — ce
+/// n'était pas un retard mais un trou définitif, mesuré ×6,6 le 31/07). Publie enfin la COUVERTURE
+/// (`event_rollup_cov_id`) que la route de rollups exige pour servir un corps comme EXACT.
 /// Idempotent (OR REPLACE). NE touche PAS le compilateur soql partagé. Bornes = i64 (pas d'injection).
 /// src_ip DOUBLEMENT BORNÉ : seuil severity>=PLUME_ROLLUP_SRCIP_MIN_SEV (défaut 3) + cap top-N
 /// par bucket (PLUME_ROLLUP_SRCIP_TOPN, défaut 50) -> cardinalité bornée même sous attaque, top conservé.
@@ -512,26 +515,76 @@ pub(crate) fn rollup_events(conn: &Connection) {
     let n = now();
     let cur = (n / 3600) * 3600;
     let recent = (cur - 3600).max(0);   // fenêtre chaude = heure courante + précédente
-    let wm: i64 = conn.query_row("SELECT value FROM meta WHERE key='event_rollup_wm'", [], |r| r.get::<_, String>(0))
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let meta_i64 = |k: &str| -> Option<i64> {
+        conn.query_row("SELECT value FROM meta WHERE key=?1", params![k], |r| r.get::<_, String>(0))
+            .ok().and_then(|s| s.parse().ok())
+    };
+    let wm: i64 = meta_i64(META_ROLLUP_WM).unwrap_or(0);
     let (min_sev, topn) = {
         let conf = load_config();
         (cfg(&conf, "PLUME_ROLLUP_SRCIP_MIN_SEV", "3").parse().unwrap_or(3), rollup_srcip_topn(&conf))
     };
-    let agg = |cond: String| {
-        let _ = conn.execute(&rollup_insert_sql(&cond, min_sev, topn), []);
+    // ---- COUVERTURE (cf. rollup_coverage) : ce que le watermark VAUT réellement. ----
+    // Un watermark dit « le job est passé par là ». La ROUTE, elle, a besoin de « le rollup est une image
+    // d'`event` là ». Les deux divergent dès qu'une ligne est écrite SOUS le watermark après son passage
+    // (import d'historique, agent qui vide un tampon hors-ligne, relais en retard). L'ancien tick avançait
+    // alors le watermark PAR-DESSUS ces lignes et n'y revenait JAMAIS : trou DÉFINITIF, mesuré ×6,6.
+    // Les lignes arrivées depuis la couverture sont EXACTEMENT `id > cov` (`event.id` = rowid, monotone à
+    // l'insertion). La plus ancienne d'entre elles qui tombe sous `wm` RÉTRACTE le plancher d'agrégation
+    // jusqu'à son bucket -> elle finit agrégée. `NOT INDEXED` force la porte rowid (sinon le planificateur
+    // choisit `idx_event_ts` et rebalaie tout l'historique sous `wm`).
+    let cov: Option<i64> = meta_i64(META_ROLLUP_COV_ID);
+    let dirty_lo: Option<i64> = match cov {
+        // COUVERTURE ABSENTE = base d'avant ce correctif, tick jamais passé, ou publication interrompue :
+        // on ne peut rien affirmer sous `wm` -> on RECONSTRUIT, une fois. C'est ce qui répare une base dont
+        // le rollup a été laissé en arrière (le cas mesuré).
+        None => Some(0),
+        Some(c) => conn
+            .query_row("SELECT MIN(ts) FROM event NOT INDEXED WHERE id>?1 AND ts<?2", params![c, wm], |r| r.get::<_, Option<i64>>(0))
+            .ok().flatten(),
     };
-    if recent > wm {
-        agg(format!("ts >= {wm} AND ts < {recent}"));   // heures définitives pas encore agrégées (1x)
+    // Le rollup ne peut témoigner que de ce qu'`event` porte ENCORE : on ne redescend JAMAIS sous le plus
+    // vieux `ts` d'`event`. Les buckets plus anciens sont l'histoire que SEUL le rollup garde (lignes agées
+    // en Parquet, ou purge non-symétrique de la rétention) — les recomposer depuis `event` les effacerait.
+    let event_floor = conn.query_row("SELECT MIN(ts) FROM event", [], |r| r.get::<_, Option<i64>>(0)).ok().flatten();
+    let agg_from = match (dirty_lo, event_floor) {
+        (Some(d), Some(f)) => ((d / 3600) * 3600).min(wm).max((f / 3600) * 3600),
+        (Some(_), None) => recent, // `event` vide : rien à agréger, rien à réparer
+        (None, _) => wm,           // rien de sale -> rattrapage nominal `[wm, recent)`
+    };
+    // BORNE D'IDENTIFIANT prise AVANT d'agréger, et POUSSÉE DANS la condition d'agrégation : le rollup
+    // porte alors EXACTEMENT les lignes `id <= new_cov`, donc la couverture publiée plus bas est vraie par
+    // CONSTRUCTION et non par espoir (une ligne insérée PENDANT l'agrégation ne peut plus y entrer à
+    // moitié — elle sera rattrapée par le fragment retardataire de la route, puis par le tick suivant).
+    let new_cov: i64 = conn.query_row("SELECT COALESCE(MAX(id),0) FROM event", [], |r| r.get(0)).unwrap_or(0);
+    let mut aggregated = true;
+    if recent > agg_from {
+        // RÉTRACTER D'ABORD, RÉPARER ENSUITE : tant que la ré-agrégation n'a pas fini, la route doit servir
+        // cette bande en BRUT (exact, plus lent) et non depuis un rollup qu'on SAIT incomplet. On efface donc
+        // la couverture avant de toucher quoi que ce soit ; elle sera republiée si et seulement si on finit.
+        let _ = conn.execute("DELETE FROM meta WHERE key=?1", params![META_ROLLUP_COV_ID]);
+        // Buckets recomposés ENTIÈREMENT : le cap top-N src_ip peut laisser une ligne orpheline à PK
+        // différente -> double comptage. Même purge-avant-agrégation que la fenêtre chaude ci-dessous.
+        let _ = conn.execute("DELETE FROM event_rollup WHERE bucket >= ?1 AND bucket < ?2", params![agg_from, recent]);
+        aggregated = conn
+            .execute(&rollup_insert_sql(&format!("ts >= {agg_from} AND ts < {recent} AND id <= {new_cov}"), min_sev, topn), [])
+            .is_ok();
     }
     // NB : le cap top-N peut faire SORTIR une IP du top entre deux ticks ; un simple OR REPLACE
     // laisserait alors une ligne orpheline (PK différente) -> double comptage. On PURGE d'abord les
     // buckets de la fenêtre chaude avant la ré-agrégation (les buckets définitifs <recent ne sont écrits
     // qu'une fois et restent stables). Borne = i64 (pas d'injection).
     let _ = conn.execute("DELETE FROM event_rollup WHERE bucket >= ?1", params![recent]);
-    agg(format!("ts >= {recent}"));                       // fenêtre chaude (ré-agrégée à chaque tick)
-    let _ = conn.execute("DELETE FROM meta WHERE key='event_rollup_wm'", []);
-    let _ = conn.execute("INSERT INTO meta(key,value) VALUES('event_rollup_wm', ?1)", params![recent.to_string()]);
+    let _ = conn.execute(&rollup_insert_sql(&format!("ts >= {recent}"), min_sev, topn), []); // fenêtre chaude
+    let _ = conn.execute("DELETE FROM meta WHERE key=?1", params![META_ROLLUP_WM]);
+    let _ = conn.execute("INSERT INTO meta(key,value) VALUES(?1,?2)", params![META_ROLLUP_WM, recent.to_string()]);
+    // PUBLICATION DE LA COUVERTURE — jamais avant, jamais seule. Si l'agrégation a échoué (base occupée,
+    // interruption, disque), on N'ANNONCE RIEN : la clé reste absente, la route décline, le brut sert.
+    // FAIL-CLOSED : une couverture qu'on n'a pas prouvée ne s'écrit pas.
+    let _ = conn.execute("DELETE FROM meta WHERE key=?1", params![META_ROLLUP_COV_ID]);
+    if aggregated {
+        let _ = conn.execute("INSERT INTO meta(key,value) VALUES(?1,?2)", params![META_ROLLUP_COV_ID, new_cov.to_string()]);
+    }
 
     // ---- PHASE 3a : event_dim_rollup (pré-agrégation par DIMENSION) ----
     // MÊME mécanique incrémentale que event_rollup mais avec un watermark DÉDIÉ (event_dim_rollup_wm) :

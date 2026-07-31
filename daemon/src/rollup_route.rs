@@ -151,6 +151,7 @@ fn hour_ceil(ts: i64) -> i64 {
 /// Découpe temporelle du MERGE `rollup ∪ raw-partiels` (B2b). Voir le bloc B2b : le CORPS rollup sert les
 /// buckets alignés-heure COMPLETS **et** DÉFINITIFS `[body_lo, body_hi)` ; les partiels TÊTE/QUEUE sont
 /// scannés en brut sur `event` (exact, à jour). Régions DISJOINTES, union == `[from,to]`.
+/// Le corps porte EN PLUS un fragment RETARDATAIRE (`event` restreint à `id > at_id`) — voir `build_merge_sql`.
 struct MergeSplit {
     /// Corps rollup : `bucket >= body_lo AND bucket < body_hi` (exclusif). `body_lo` peut valoir 0 (from non borné).
     body_lo: i64,
@@ -174,9 +175,9 @@ impl MergeSplit {
 
 /// Calcule le MERGE exact-et-frais pour `[from,to]` à `now_ts`. `event_floor` = plus petit `ts` pour lequel un
 /// scan brut d'`event` est COMPLET : `i64::MIN` pour le HOT (event retient toute la fenêtre du rollup), = la
-/// frontière `B` pour le COLD (event agé/purgé sous B). `wm` = watermark RÉEL finalisé par le job de rollup
-/// (`event_rollup_wm` dans `meta`, cf rollups.rs) : plus petit `bucket` que le corps peut lire du rollup SANS
-/// risque de péremption. CORPS = buckets DÉFINITIFS complets `[_, min(recent, wm))` ; partiels TÊTE/QUEUE =
+/// frontière `B` pour le COLD (event agé/purgé sous B). `wm` = borne haute de la COUVERTURE publiée par le job
+/// (`RollupCoverage::covered_below`, cf. `rollup_coverage`) : au-dessus d'elle le rollup n'a rien agrégé — ou
+/// n'a rien PROUVÉ avoir agrégé, ce qui vaut pareil ici. CORPS = buckets DÉFINITIFS complets `[_, min(recent, wm))` ; partiels TÊTE/QUEUE =
 /// scan brut d'`event` quand `>= event_floor` (exact, à jour), sinon REPLIÉS dans le corps (approx bornée).
 ///
 /// FIX (sous-comptage silencieux) : `recent = plancher-heure(now_REQUÊTE)-3600` court en AVANT du watermark
@@ -186,8 +187,14 @@ impl MergeSplit {
 /// queue raw (qui ne rescannait que `>= recent`) -> sous-compté ET servi sous `approx:false` (mensonge). On
 /// borne donc le corps par le vrai watermark : `body_hi = min(h_hi, recent, wm)`. La queue raw descend alors
 /// jusqu'à `wm` (fenêtre hot, index-servie `idx_event_ts`/`idx_event_src_ts` -> bornée + peu chère) et rattrape
-/// TOUT event `>= wm` -> exact ET frais. `wm = i64::MIN` (watermark absent : DB neuve / jamais tické) -> body_hi
-/// effondré -> `!has_body` -> tout servi en raw (exact, jamais de corps périmé).
+/// TOUT event `>= wm` -> exact ET frais. `wm = i64::MIN` (COUVERTURE non établie : DB neuve, jamais tické, ou
+/// base d'avant le correctif de couverture) -> body_hi effondré -> `!has_body` -> tout servi en raw (exact,
+/// jamais de corps dont la complétude n'est pas prouvée).
+///
+/// FIX 2 (le trou DÉFINITIF, mesuré ×6,6 le 31/07 — cf. `rollup_coverage`) : borner le corps par le watermark
+/// ne suffisait pas, parce que le watermark AVANÇAIT par-dessus des lignes jamais agrégées. Le corps ne
+/// témoigne désormais que des lignes `id <= at_id` de la couverture, et `build_merge_sql` ajoute le fragment
+/// RETARDATAIRE qui rattrape `id > at_id` DANS la plage du corps.
 fn plan_merge(from: i64, to: i64, now_ts: i64, event_floor: i64, wm: i64) -> MergeSplit {
     let cur = hour_floor(now_ts);
     let recent = (cur - 3600).max(0);
@@ -237,6 +244,18 @@ fn plan_merge(from: i64, to: i64, now_ts: i64, event_floor: i64, wm: i64) -> Mer
 /// s'appliquent aux TROIS surfaces — rollup, cold_rollup et `event` — qui portent toutes source+env_id).
 /// `cols` = grain routable {source,severity} NOT NULL nu -> `event` (COUNT(*)) et rollup (`SUM(n)`) émettent
 /// EXACTEMENT les mêmes valeurs -> le merge == `count by <cols>` raw. Appelé UNIQUEMENT si `split.has_body()`.
+///
+/// `late_floor_id` = la borne d'identifiant de la COUVERTURE (`RollupCoverage::late_floor_id`). Le corps ne
+/// témoigne QUE des lignes `id <= at_id` : celles arrivées depuis (`id > at_id`) et tombant DANS la plage du
+/// corps sont exactement les RETARDATAIRES que le rollup n'a pas vues. Elles ne sont ni dans le corps, ni dans
+/// la tête (`ts < body_lo`), ni dans la queue (`ts >= body_hi`) -> sans ce fragment elles seraient perdues, et
+/// le merge rendrait un sous-compte sous `approx:false`. Le fragment les rattrape par un balayage du rowid.
+/// `NOT INDEXED` n'est PAS cosmétique — il FORCE la porte rowid ; MESURÉ (EXPLAIN QUERY PLAN, base de banc
+/// 1 440 007 événements, 2026-07-31) :
+///     avec `NOT INDEXED` : `SEARCH event USING INTEGER PRIMARY KEY (rowid>?)`  <- bornée aux lignes récentes
+///     sans               : `SCAN event USING INDEX idx_event_src_ts`           <- toute la plage du corps
+/// Coût réel : les lignes ingérées depuis le dernier tick — une fraction de ce que la QUEUE brute (l'heure
+/// courante + la précédente) balaie déjà à chaque merge.
 fn build_merge_sql(
     by_fields: &[String],
     src_cond: &[String],
@@ -245,6 +264,7 @@ fn build_merge_sql(
     order: &str,
     lim: &str,
     cold_boundary: Option<i64>,
+    late_floor_id: Option<i64>,
 ) -> String {
     let cols = by_fields.join(", ");
     let sel = multidim_select(by_fields);
@@ -291,6 +311,21 @@ fn build_merge_sql(
     if let Some((lo, hi)) = split.tail {
         parts.push(raw_part(lo, hi, true)); // `[lo, hi]` (hi==0 -> pas de borne haute)
     }
+    // --- RETARDATAIRES : les lignes arrivées APRÈS la couverture, dans la plage du CORPS. ---
+    // Disjointes du corps (qui ne porte que `id <= at_id`), de la tête (`ts < body_lo`) et de la queue
+    // (`ts >= body_hi`) -> ni double comptage ni trou. Sans couverture il n'y a pas de corps, donc rien à
+    // rattraper (l'appelant a déjà décliné).
+    if let Some(at_id) = late_floor_id {
+        let mut lc = vec![format!("id > {at_id}"), format!("ts < {}", split.body_hi)];
+        if split.body_lo > 0 {
+            lc.push(format!("ts >= {}", split.body_lo));
+        }
+        let c = base_cond(&lc);
+        parts.push(format!(
+            "SELECT {cols}, COUNT(*) AS c FROM event NOT INDEXED WHERE {} GROUP BY {cols}",
+            c.join(" AND ")
+        ));
+    }
     format!(
         "SELECT {sel}, SUM(c) AS \"count\" FROM ({}) GROUP BY {cols} ORDER BY \"count\" {order}{lim}",
         parts.join(" UNION ALL ")
@@ -306,32 +341,21 @@ fn merge_env_cond(env: Option<&str>) -> Vec<String> {
     env.filter(|e| !e.is_empty()).map(|e| vec![format!("env_id='{}'", guatx_core::soql::soql_esc(e))]).unwrap_or_default()
 }
 
-/// Lit le watermark FINALISÉ du job de rollup (`event_rollup_wm` dans `meta`, écrit par `rollup_events`,
-/// cf rollups.rs) : plus grand `bucket` au-delà duquel le rollup est encore VOLATILE (re-agrégé à chaque
-/// tick). Per-DB/tenant (la table `meta` vit dans la base tenant). ABSENT (DB neuve / jamais tické) ou
-/// illisible -> `i64::MIN` : le MERGE traite alors tout en raw (exact, jamais de corps périmé). À passer à
-/// `try_rollup_route` / `try_cold_rollup_route` pour BORNER le corps rollup au réellement-finalisé (cf. `plan_merge`).
-pub(crate) fn event_rollup_wm(conn: &Connection) -> i64 {
-    conn.query_row("SELECT value FROM meta WHERE key='event_rollup_wm'", [], |r| r.get::<_, String>(0))
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(i64::MIN)
-}
-
 /// Tente de router un GXQL vers un rollup. None = motif non reconnu -> compiler normalement (fall-through).
 /// `env` (#2d) : `Some("<env>")` -> ajoute `env_id='<env>'` au WHERE du rollup (event_rollup /
 /// event_dim_rollup portent env_id depuis v67) -> agrégats FILTRÉS par environnement, cohérents avec le
 /// chemin raw. `None` (mode 0 / `__all__`) -> aucune condition -> agrégats tous-env (comportement identique).
 /// Valeur validée en amont (env_slug_ok) + ré-échappée (soql_esc) -> jamais d'injection.
-/// `wm` = watermark rollup RÉEL (via `event_rollup_wm`) -> borne le corps du MERGE multi-dim au finalisé
-/// (anti sous-comptage silencieux, cf. `plan_merge`) ; passer `i64::MIN` = tout raw ; sans effet sur ROUTE A/B.
-pub(crate) fn try_rollup_route(soql: &str, from: i64, to: i64, env: Option<&str>, wm: i64) -> Option<RollupRoute> {
-    try_rollup_route_at(soql, from, to, env, now(), wm)
+/// `cov` = la COUVERTURE du rollup (`RollupCoverage::of(conn)`) -> borne le corps du MERGE multi-dim à ce que
+/// le job a réellement agrégé et fait rattraper les retardataires (cf. `rollup_coverage`, `plan_merge`) ;
+/// `RollupCoverage::unproven()` = tout raw ; sans effet sur ROUTE A/B (single-dim, déjà `approx:true`).
+pub(crate) fn try_rollup_route(soql: &str, from: i64, to: i64, env: Option<&str>, cov: RollupCoverage) -> Option<RollupRoute> {
+    try_rollup_route_at(soql, from, to, env, now(), cov)
 }
 
 /// Cœur testable de `try_rollup_route` : `now_ts` injecté (recency guard QRY-1) pour tester le caveat de
 /// fraîcheur sans horloge murale. Voir `try_rollup_route` pour le contrat public (production = `now()`).
-pub(crate) fn try_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&str>, now_ts: i64, wm: i64) -> Option<RollupRoute> {
+pub(crate) fn try_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&str>, now_ts: i64, cov: RollupCoverage) -> Option<RollupRoute> {
     let sh = parse_stats_by_shape(soql)?;
     let tconds = rollup_time_conds(from, to, env);
     let order = if sh.asc { "ASC" } else { "DESC" };
@@ -353,15 +377,16 @@ pub(crate) fn try_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&s
     // event_floor = i64::MIN (event retient toute la fenêtre du rollup, cf. retention_run) -> partiels TOUJOURS
     // raw-servables -> `split.approx` toujours false. Une dim hors grain OU le flag OFF -> route non prise.
     if rollup_multidim_enabled() && multidim_routable(&sh.by_fields) {
-        let split = plan_merge(from, to, now_ts, i64::MIN, wm);
+        let split = plan_merge(from, to, now_ts, i64::MIN, cov.covered_below());
         if !split.has_body() {
-            // Aucun bucket DÉFINITIF complet (fenêtre sub-horaire OU entièrement dans les ~2h volatiles) : le
-            // scan raw seul est déjà borné, rapide et exact -> on DÉCLINE (fall-through vers le compilo raw).
+            // Aucun bucket DÉFINITIF complet (fenêtre sub-horaire, entièrement dans les ~2h volatiles, OU
+            // COUVERTURE NON ÉTABLIE -> `covered_below()==i64::MIN` -> corps effondré) : le scan raw seul est
+            // déjà borné, rapide et exact -> on DÉCLINE (fall-through vers le compilo raw).
             return None;
         }
         let src_cond = merge_src_cond(&sh.source_filter);
         let env_cond = merge_env_cond(env);
-        let sql = build_merge_sql(&sh.by_fields, &src_cond, &env_cond, &split, order, &lim, None);
+        let sql = build_merge_sql(&sh.by_fields, &src_cond, &env_cond, &split, order, &lim, None, cov.late_floor_id());
         // MERGE HOT : EXACT & FRAIS. `approx = split.approx` (toujours false ici) ; truncated:false (dims exactes,
         // rien d'abandonné) ; note:none (aucun sous-comptage de fraîcheur — l'heure courante est raw-servie).
         return Some(RollupRoute { sql, approx: split.approx, truncated: false, note: None });
@@ -555,14 +580,18 @@ fn rollup_time_conds(from: i64, to: i64, env: Option<&str>) -> Vec<String> {
 /// (frontière jour hot/cold, `cold_query_boundary`). None = motif non `count by` -> l'appelant retombe sur le
 /// chemin brut hot∪cold. La fenêtre `[from, to]` atteint SOUS `B` (garanti par l'appelant : `from < B`).
 #[cfg(feature = "cold_tier")]
-pub(crate) fn try_cold_rollup_route(soql: &str, from: i64, to: i64, env: Option<&str>, boundary: i64, wm: i64) -> Option<RollupRoute> {
-    try_cold_rollup_route_at(soql, from, to, env, boundary, now(), wm)
+pub(crate) fn try_cold_rollup_route(soql: &str, from: i64, to: i64, env: Option<&str>, boundary: i64, cov: RollupCoverage) -> Option<RollupRoute> {
+    try_cold_rollup_route_at(soql, from, to, env, boundary, now(), cov)
 }
 
-/// Cœur testable de `try_cold_rollup_route` (`now_ts` injecté pour le recency guard, comme le HOT). `wm` =
-/// watermark rollup RÉEL (cf `event_rollup_wm`) -> borne le corps au finalisé (anti sous-comptage silencieux).
+/// Cœur testable de `try_cold_rollup_route` (`now_ts` injecté pour le recency guard, comme le HOT). `cov` =
+/// la COUVERTURE du rollup (cf `rollup_coverage`) -> borne le corps au réellement agrégé et rattrape les
+/// retardataires. NB : le fragment retardataire lit `event`, qui est AUTORITAIRE au-dessus de la frontière `B`
+/// et VIDE en dessous (agé en Parquet) -> il ajoute exactement les lignes qu'`event` porte encore, ce que le
+/// chemin brut hot∪cold compte lui aussi. Sous `B`, la couverture d'un bucket relève de `cold_rollup`, scellé
+/// par `seal_cold_rollup` sur la tranche columnarisée exacte.
 #[cfg(feature = "cold_tier")]
-pub(crate) fn try_cold_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&str>, boundary: i64, now_ts: i64, wm: i64) -> Option<RollupRoute> {
+pub(crate) fn try_cold_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&str>, boundary: i64, now_ts: i64, cov: RollupCoverage) -> Option<RollupRoute> {
     let sh = parse_stats_by_shape(soql)?;
     let base_tconds = rollup_time_conds(from, to, env);
     let order = if sh.asc { "ASC" } else { "DESC" };
@@ -595,13 +624,15 @@ pub(crate) fn try_cold_rollup_route_at(soql: &str, from: i64, to: i64, env: Opti
     // le corps rollup (approx bornée à la sliver sub-horaire) -> `plan_merge(event_floor=boundary)` pose alors
     // `split.approx=true`. Fenêtres COLD alignées-heure (dashboards) -> approx=false, EXACT & FRAIS.
     if rollup_multidim_enabled() && multidim_routable(&sh.by_fields) {
-        let split = plan_merge(from, to, now_ts, boundary, wm);
+        let split = plan_merge(from, to, now_ts, boundary, cov.covered_below());
         if !split.has_body() {
-            return None; // aucun bucket définitif complet -> fall-through vers le brut cold_union_query
+            // aucun bucket définitif complet — ou COUVERTURE NON ÉTABLIE (corps effondré) -> fall-through
+            // vers le brut cold_union_query (correct, plus lent).
+            return None;
         }
         let src_cond = merge_src_cond(&sh.source_filter);
         let env_cond = merge_env_cond(env);
-        let sql = build_merge_sql(&sh.by_fields, &src_cond, &env_cond, &split, order, &lim, Some(boundary));
+        let sql = build_merge_sql(&sh.by_fields, &src_cond, &env_cond, &split, order, &lim, Some(boundary), cov.late_floor_id());
         // note = caveat UNIQUEMENT si un résidu deep-past est resté approx (tête sub-horaire repliée) ; sinon
         // None (EXACT). truncated:false (dims exactes, rien d'abandonné sur {source,severity}).
         let note = split

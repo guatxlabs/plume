@@ -322,10 +322,10 @@ async fn run_generated_soql(st: &AppState, au: &AuthUser, soql: &str, from: i64,
     // Masque non vide -> rollup-route DÉSACTIVÉ (les tables event_rollup portent src_ip/host en clair) ; sinon
     // on peut router (identique à /api/query). Le Pivot ne produit que du stats/timechart/search -> compatible.
     let compiled = if masks.is_empty() {
-        // WATERMARK rollup RÉEL (event_rollup_wm) : borne le corps du MERGE multi-dim au finalisé (anti
-        // sous-comptage silencieux, cf. rollup_route::plan_merge). Absent -> MIN -> tout raw (exact).
-        let rollup_wm = { let rc = req_db(st, au); let c = rc.lock(); event_rollup_wm(&c) };
-        match try_rollup_route(soql, from, to, env, rollup_wm) {
+        // COUVERTURE du rollup (cf. rollup_coverage) : ÉTABLIE depuis la base, jamais affirmée ici — elle borne
+        // le corps du MERGE multi-dim au réellement-agrégé. Non établie -> aucun corps -> tout raw (exact).
+        let rollup_cov = { let rc = req_db(st, au); let c = rc.lock(); RollupCoverage::of(&c) };
+        match try_rollup_route(soql, from, to, env, rollup_cov) {
             Some(rr) => rr.sql,
             None => match soql_to_sql_masked_x(soql, from, to, env, &masks) { Ok(s) => s, Err(e) => return bad_req(e) },
         }

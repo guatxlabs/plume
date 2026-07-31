@@ -255,7 +255,7 @@
     /// (3) CORRÉLATION path × src_ip (règle 21, T1595.002 web-scan, agg `dc`) : idem, décline -> raw exact.
     #[test]
     fn rollup_route_declines_dc_path_by_srcip_correlation_rule21() {
-        assert!(try_rollup_route("search source=web status=404 | stats dc(path) by src_ip", 0, 0, None, i64::MAX).is_none(),
+        assert!(try_rollup_route("search source=web status=404 | stats dc(path) by src_ip", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(),
                 "rule21 corrélation path×src_ip (dc + 2e filtre) DOIT décliner -> raw");
         let conn = test_db();
         let t = now() - 10;
@@ -274,10 +274,10 @@
     fn rollup_route_still_routes_expressible_queries() {
         // ROUTE A (by source) : counts exacts EN SOMME depuis event_rollup, mais grain HORAIRE -> approx:true
         // (QRY-1, jamais « exact » au sous-horaire) ; truncated:false (aucune source abandonnée).
-        let a = try_rollup_route("search | stats count by source", 0, 0, None, i64::MAX).expect("A doit router");
+        let a = try_rollup_route("search | stats count by source", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).expect("A doit router");
         assert!(a.sql.contains("FROM event_rollup") && a.approx && !a.truncated, "A route event_rollup (approx horaire, non tronqué) : {}", a.sql);
         // ROUTE B (source=web | count by status) : status EST une dim web -> event_dim_rollup (approx/partiel).
-        let b = try_rollup_route("search source=web | stats count by status", 0, 0, None, i64::MAX).expect("B doit router");
+        let b = try_rollup_route("search source=web | stats count by status", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).expect("B doit router");
         assert_eq!(
             b.sql,
             "SELECT val AS \"status\", SUM(n) AS \"count\" FROM event_dim_rollup WHERE source='web' AND dim='status' GROUP BY val ORDER BY \"count\" DESC",
@@ -285,7 +285,7 @@
         );
         assert!(b.approx && b.truncated, "B : dim cappée top-N -> approx/partiel signalé");
         // src_ip N'EST PAS une dim web (colonne réelle exclue à dessein) -> même SANS 2e filtre, décline -> raw.
-        assert!(try_rollup_route("search source=web | stats count by src_ip", 0, 0, None, i64::MAX).is_none(),
+        assert!(try_rollup_route("search source=web | stats count by src_ip", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(),
                 "by src_ip (non pré-agrégé) décline -> raw exact via idx couvrant");
     }
 
@@ -295,10 +295,10 @@
     fn rollup_route_expressibility_parity_env_modes() {
         for env in [None, Some("staging")] {
             // inexprimable (2e filtre) -> décline dans LES DEUX modes.
-            assert!(try_rollup_route("search source=web status>=500 | stats count by src_ip", 0, 0, env, i64::MAX).is_none(),
+            assert!(try_rollup_route("search source=web status>=500 | stats count by src_ip", 0, 0, env, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(),
                     "décline stable quel que soit env={env:?}");
             // exprimable -> route dans les DEUX modes (env ajoute juste un env_id au WHERE).
-            let r = try_rollup_route("search source=web | stats count by status", 0, 0, env, i64::MAX).expect("route stable");
+            let r = try_rollup_route("search source=web | stats count by status", 0, 0, env, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).expect("route stable");
             assert_eq!(r.sql.contains("env_id"), env.is_some(), "env_id présent SSI env=Some ; env={env:?}");
         }
     }
@@ -315,7 +315,7 @@
         //     approx:true (grain horaire, jamais « exact »), truncated:false, PAS de caveat de fraîcheur.
         let past_to = cur_hour - 100; // dans le bucket précédent
         let past_from = past_to - 900; // fenêtre 15 min
-        let a = try_rollup_route_at("search | stats count by source", past_from, past_to, None, now_ts, i64::MAX).expect("route A");
+        let a = try_rollup_route_at("search | stats count by source", past_from, past_to, None, now_ts, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).expect("route A");
         assert!(a.sql.contains("FROM event_rollup"), "route A -> event_rollup");
         assert!(a.approx, "grain horaire -> approx:true (jamais exact au sous-horaire)");
         assert!(!a.truncated, "counts par source non tronqués");
@@ -324,13 +324,13 @@
         // (b) Fenêtre RÉCENTE courte (« 15 dernières min », to=now dans l'heure courante) : NON rapportée exacte
         //     (approx:true) + caveat « bucket courant non matérialisé » -> jamais un sous-comptage SILENCIEUX.
         let recent_from = now_ts - 900;
-        let r = try_rollup_route_at("search | stats count by source", recent_from, now_ts, None, now_ts, i64::MAX).expect("route A récente");
+        let r = try_rollup_route_at("search | stats count by source", recent_from, now_ts, None, now_ts, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).expect("route A récente");
         assert!(r.approx, "fenêtre récente -> jamais exacte");
         assert!(r.note.as_deref().map(|s| s.contains("bucket courant")).unwrap_or(false),
                 "to dans l'heure courante -> caveat de fraîcheur ; note={:?}", r.note);
 
         // (c) Route B (dim) reste approx+truncated ET porte le caveat de fraîcheur si récente.
-        let b = try_rollup_route_at("search source=web | stats count by status", recent_from, now_ts, None, now_ts, i64::MAX).expect("route B récente");
+        let b = try_rollup_route_at("search source=web | stats count by status", recent_from, now_ts, None, now_ts, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).expect("route B récente");
         assert!(b.approx && b.truncated, "route B dim -> approx/partiel");
         assert!(b.note.is_some(), "route B récente -> caveat de fraîcheur");
     }

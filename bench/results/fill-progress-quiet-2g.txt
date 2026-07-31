@@ -1,0 +1,2 @@
+      600000 événements     302.2 Mio      7190 ev/s produits  spool=22
+     1200000 événements     603.7 Mio      3018 ev/s produits  spool=24

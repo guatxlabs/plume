@@ -70,6 +70,118 @@ def hw_block():
             "mem_total_bytes": mem, "kernel": platform.release()}
 
 
+USER_HZ = 100.0   # /proc/stat est TOUJOURS en USER_HZ=100 (ABI du noyau), quel que soit CONFIG_HZ.
+
+
+def ingest_intervals(path):
+    """Lit le CSV de la sonde d'ingest et rend UN dictionnaire PAR INTERVALLE. Rien n'est lissé :
+    chaque grandeur est la différence de deux compteurs cumulatifs lus dans /proc et /sys. Les
+    colonnes riches (CPU, E/S, stall mémoire) peuvent manquer — un CSV d'une passe antérieure n'en a
+    pas : les clés correspondantes sortent alors à None, jamais à zéro."""
+    import csv as _csv
+    try:
+        pts = list(_csv.DictReader(open(path, encoding="utf-8")))
+    except OSError:
+        return []
+
+    def g(row, key, cast=float):
+        v = (row.get(key) or "").strip()
+        try:
+            return cast(v)
+        except (TypeError, ValueError):
+            return None
+
+    out = []
+    for x, y in zip(pts, pts[1:]):
+        dt = g(y, "t_unix", int) - g(x, "t_unix", int)
+        dn = g(y, "events", int) - g(x, "events", int)
+        if not dt or dt <= 0 or dn is None or dn <= 0:
+            continue
+        d = {"events": g(y, "events", int), "db_bytes": g(y, "db_bytes", int),
+             "rss_bytes": g(y, "rss_bytes", int), "rate": dn / dt, "dt": dt, "dn": dn,
+             "loadavg1": g(y, "loadavg1"), "wal_bytes": g(y, "wal_bytes", int),
+             "count_ms": g(y, "count_ms")}
+        dcpu = None
+        if g(x, "daemon_cpu_s") is not None and g(y, "daemon_cpu_s") is not None:
+            dcpu = g(y, "daemon_cpu_s") - g(x, "daemon_cpu_s")
+            d["daemon_cores"] = dcpu / dt
+            d["cpu_ms_per_event"] = dcpu * 1000.0 / dn
+        gcpu = None
+        if g(x, "gen_cpu_s") is not None and g(y, "gen_cpu_s") is not None:
+            gcpu = g(y, "gen_cpu_s") - g(x, "gen_cpu_s")
+            d["gen_cores"] = gcpu / dt
+        if g(x, "cpu_busy_jiffies") is not None and g(y, "cpu_busy_jiffies") is not None:
+            busy = (g(y, "cpu_busy_jiffies") - g(x, "cpu_busy_jiffies")) / USER_HZ
+            d["machine_cores"] = busy / dt
+            if dcpu is not None:
+                # « les autres » = tout ce qui a consommé du CPU sans être le daemon ni le
+                # générateur. Y compris les fils NOYAU qui exécutent NOS écritures (chiffrement du
+                # volume, journalisation) : ce n'est donc pas « la contention d'un tiers », c'est
+                # « le CPU non facturé au daemon ». Le dire autrement serait mentir sur la cause.
+                d["other_cores"] = max(busy / dt - (dcpu / dt) - ((gcpu or 0) / dt), 0.0)
+        for k, col in (("read_bytes", "read_bytes"), ("write_bytes", "write_bytes"),
+                       ("syscw", "syscw"), ("cg_pgmajfault", "cg_pgmajfault"),
+                       ("cg_pgsteal", "cg_pgsteal"), ("cg_mem_stall_us", "cg_mem_stall_us")):
+            a, b = g(x, col), g(y, col)
+            if a is not None and b is not None:
+                d["d_" + k] = b - a
+        d["cg_mem_current"] = g(y, "cg_mem_current", int)
+        out.append(d)
+    return out
+
+
+def repro_cmd(args):
+    """Reconstruit la commande de rendu À PARTIR DES ARGUMENTS REÇUS, en repointant tout chemin hors
+    dépôt vers son homologue VERSIONNÉ dans `bench/results/`. Deux raisons, toutes deux dures :
+      * un chemin absolu de la machine qui a mesuré n'a rien à faire dans un document publié ;
+      * une commande de reproduction doit pointer sur des fichiers que le lecteur POSSÈDE — sinon
+        elle est décorative. Les données brutes sont versionnées exactement pour ça.
+    Un fichier passé au rendu mais ABSENT de `bench/results/` est signalé dans la commande même,
+    plutôt que réécrit en silence vers un chemin qui n'existerait pas."""
+    import os as _o
+    import shlex as _sh
+
+    def vers(p):
+        b = _o.path.basename(p)
+        local = _o.path.join("bench", "results", b)
+        return (f"bench/results/{b}", _o.path.exists(local))
+
+    parts, missing = [], []
+    for p in args.results:
+        v, ok = vers(p)
+        parts.append(v)
+        if not ok:
+            missing.append(v)
+    line = ["python3 bench/report.py " + " ".join(parts) + " \\"]
+    for _c in (args.ingest_curve or []):
+        v, ok = vers(_c)
+        line.append(f"    --ingest-curve {v} \\")
+        if not ok:
+            missing.append(v)
+    if args.profile and args.profile != "bench/profile-prod.json":
+        line.append(f"    --profile {args.profile} \\")
+    if args.ref:
+        line.append(f"    --ref {_sh.quote(args.ref)} \\")
+    for i, c in enumerate(args.compare or []):
+        line.append(f"    --compare {_sh.quote(c)} \\")
+        note = (args.compare_note or [])[i] if i < len(args.compare_note or []) else None
+        if note:
+            # QUOTAGE SHELL, pas JSON : ces notes contiennent des accents graves. Entre guillemets
+            # doubles, un lecteur qui copie-colle la commande déclencherait une substitution de
+            # commande — la commande publiée doit être collable telle quelle, sans surprise.
+            line.append(f"    --compare-note {_sh.quote(note)} \\")
+    if args.fill_log:
+        v, ok = vers(args.fill_log)
+        line.append(f"    --fill-log {v} \\")
+        if not ok:
+            missing.append(v)
+    line.append("    -o docs/BENCHMARK.md")
+    if missing:
+        line.append("# ATTENTION : " + ", ".join(missing) + " n'est pas (encore) versionné —")
+        line.append("# la commande ci-dessus ne tournera qu'une fois ce fichier ajouté à bench/results/.")
+    return line
+
+
 def _cmp_load(eff, cfg):
     """Charge machine (loadavg 1 min) relevée PENDANT une passe : min-max sur ses cellules. Sans elle,
     un écart de latence entre deux passes pourrait n'être qu'un écart de charge."""
@@ -100,19 +212,19 @@ def main():
                          "récemment mesurée. À poser EXPLICITEMENT quand plusieurs passes coexistent "
                          "au même volume — sinon le document pourrait décrire une passe prise sur une "
                          "version du code qui n'est plus celle du dépôt.")
-    ap.add_argument("--compare", default=None, metavar="AVANT:APRES",
+    ap.add_argument("--compare", action="append", metavar="AVANT:APRES",
                     help="deux étiquettes de configuration : rend un tableau d'ÉCART cellule par "
                          "cellule (avant, après, delta). Sert à publier ce qu'un correctif a changé "
                          "SANS reformuler les tableaux — chaque ligne reste une mesure.")
-    ap.add_argument("--compare-note", default=None,
+    ap.add_argument("--compare-note", action="append",
                     help="ce qui a changé entre les deux configurations comparées (une phrase). "
                          "Rendu tel quel : sans lui, le tableau d'écart ne dit pas ce qu'il mesure.")
-    ap.add_argument("--ingest-curve", default=None,
+    ap.add_argument("--ingest-curve", action="append",
                     help="CSV t_unix,events,db_bytes,rss_bytes,loadavg1 échantillonné pendant "
                          "l'ingest : rend la COURBE de débit en fonction du volume déjà en base")
     args = ap.parse_args()
 
-    rows, ingest, deaths = [], [], []
+    rows, ingest, deaths, unmeasured_win = [], [], [], []
     for path in args.results:
       with open(path, encoding="utf-8") as fh:
         for line in fh:
@@ -122,7 +234,11 @@ def main():
             d = json.loads(line)
             if d.get("daemon_died_after_this_cell"):
                 deaths.append(d)
-            elif d.get("phase") == "ingest":
+            elif d.get("window_not_measured"):
+                # Une fenêtre ÉCARTÉE par la garde de couverture du harnais. Elle n'est pas une
+                # cellule : elle est une ABSENCE, et elle est publiée comme telle.
+                unmeasured_win.append(d)
+            elif d.get("phase") in ("ingest", "cold_age", "cold_parity"):
                 ingest.append(d)
             else:
                 rows.append(d)
@@ -145,7 +261,21 @@ def main():
             classes.append((cid, r["label"], r["kind"]))
         else:
             classes[_seen[cid]] = (cid, r["label"], r["kind"])
-    wins = ["1h", "24h", "all"]
+    # Les fenêtres sont DÉRIVÉES des cellules présentes, jamais écrites en dur : le harnais les
+    # dérive lui-même de l'étendue du jeu et de la fenêtre chaude du produit
+    # (`PLUME_COLD_HOT_WINDOW_DAYS`), donc une passe faite avec une autre fenêtre chaude rend son
+    # propre tableau. L'ordre est chronologique (portée croissante), `tout` en dernier.
+    def _win_key(w):
+        if w == "all":
+            return (9e18, w)
+        if w.endswith("h"):
+            return (float(w[:-1]) * 3600, w)
+        if w.startswith("au-dela-"):
+            return (8e18, w)      # bande la plus ancienne : juste avant `tout`
+        if w.endswith("d"):
+            return (float(w[:-1]) * 86400, w)
+        return (7e18, w)
+    wins = sorted({r["window"] for r in rows}, key=_win_key)
     # Une cellule rejouée (parce qu'elle avait été prise sous swap, par exemple) écrit une SECONDE
     # ligne pour la même clé. La dernière écrite gagne : c'est la mesure valide. Les verdicts sont
     # donc calculés sur les cellules EFFECTIVES, pas sur l'historique — sinon une cellule corrigée
@@ -261,9 +391,21 @@ def main():
     W("**Ce que ces mesures n'autorisent PAS à affirmer** :")
     W("")
     W(f"- rien au-delà de {fmt_n(_nev0(ref))} événements. La cible de 10 M n'a pas été atteinte par "
-      "le vrai chemin d'ingest dans le temps disponible (voir le débit mesuré ci-dessous). Toute "
-      "phrase sur 10 M ou 100 M serait une extrapolation, pas une mesure.")
-    W("- rien sur le tier froid, la concurrence, ni le multi-tenant (voir la section dédiée).")
+      "le vrai chemin d'ingest — non pas faute de l'avoir cherché, mais parce que le débit "
+      "d'ingest s'effondre avec le volume déjà en base, ce que la section « D'où vient "
+      "l'effondrement » ATTRIBUE désormais (et non plus suppose) : le coût CPU par événement monte, "
+      "le daemon écrit de plus en plus d'octets par ligne, et le chemin d'écriture est séquentiel. "
+      "Le coût restant pour atteindre 10 M y est chiffré, en tant que PLANCHER arithmétique sur des "
+      "débits mesurés. Toute latence annoncée à 10 M ou 100 M serait une extrapolation, pas une "
+      "mesure.")
+    _cold_on = [c for c in configs
+                if str(cfgmeta[c].get("cold", "off")).lower() not in ("off", "0", "", "none")]
+    if _cold_on:
+        W("- rien sur la concurrence ni le multi-tenant (voir la section dédiée). Le tier froid, lui, "
+          f"EST mesuré ici — mais seulement dans `{_cold_on[0]}`, à une seule fenêtre chaude et un "
+          "seul volume : les autres tableaux restent des tableaux SANS tier froid.")
+    else:
+        W("- rien sur le tier froid, la concurrence, ni le multi-tenant (voir la section dédiée).")
     # MÊME correctif que pour les leviers : ne pas exiger le volume EXACT, sinon l'axe masquage
     # disparaît du verdict dès qu'une nouvelle passe compte quelques événements de plus.
     mk = max([c for c in configs if "non-vide" in (cfgmeta[c].get("mask") or "")] or [None],
@@ -327,6 +469,17 @@ def main():
     W("| Concurrence de requêtes | `PLUME_QUERY_CONCURRENCY=3` (le défaut livré) |")
     W("| Budget par requête | interactif, 60 s (`interactive:true`) |")
     W("")
+    _bins = sorted({(r.get("config") or {}).get("version", "").split(" ")[0]
+                    for r in eff if (r.get("config") or {}).get("version")}
+                   | {(d.get("version") or "").split(" ")[0]
+                      for d in ingest if d.get("version")})
+    if len(_bins) > 1:
+        W("**Plusieurs binaires** figurent dans ce document : " + ", ".join(f"`{b}`" for b in _bins)
+          + ". Chaque cellule porte le sien dans le JSONL brut, et chaque tableau de configuration "
+          "l'affiche dans son sous-titre. Une comparaison entre deux tableaux de binaires "
+          "différents mesure aussi l'écart entre les deux binaires — ce n'est légitime que dans la "
+          "section « Écart mesuré entre deux passes », qui le dit.")
+        W("")
     W("**Honnêteté sur les conditions** : la machine de mesure n'était pas dédiée — d'autres travaux")
     W("tournaient en parallèle. Chaque cellule enregistre son `loadavg` et le swap consommé pendant")
     W("la mesure ; les cellules prises sous swap sont marquées et listées plus bas. Le daemon lui-même")
@@ -337,17 +490,19 @@ def main():
     # Si la phase d'ingest n'a pas écrit sa ligne de synthèse (remplissage interrompu à un volume
     # borné, par exemple), on la RECONSTRUIT depuis l'échantillonneur — qui est de la donnée mesurée,
     # pas une estimation — et on le DIT dans le tableau.
-    curve_pts = []
-    if args.ingest_curve:
+    curve_sets = []
+    for _c0 in (args.ingest_curve or []):
         import csv as _csv0
         try:
-            curve_pts = list(_csv0.DictReader(open(args.ingest_curve, encoding="utf-8")))
+            curve_sets.append(list(_csv0.DictReader(open(_c0, encoding="utf-8"))))
         except OSError:
-            curve_pts = []
+            pass
     # On AJOUTE la ligne dérivée de l'échantillonneur dès qu'il y a une courbe : sans ça, une passe
     # dont la synthèse n'a pas été écrite (remplissage borné en temps) disparaîtrait du tableau au
     # profit d'une autre passe qui, elle, avait écrit la sienne.
-    if len(curve_pts) >= 2:
+    for curve_pts in curve_sets:
+        if len(curve_pts) < 2:
+            continue
         f0, f1 = curve_pts[0], curve_pts[-1]
         dt = int(f1["t_unix"]) - int(f0["t_unix"])
         dn = int(f1["events"]) - int(f0["events"])
@@ -357,17 +512,22 @@ def main():
                            "path": "POST /api/ingest -> spool -> ingest_events_batch",
                            "_derived": "reconstruit depuis l'échantillonneur (premier et dernier "
                                        "point mesurés), le remplissage ayant été borné en temps"})
-    if ingest:
+    if [x for x in ingest if x.get("phase") in (None, "ingest")]:
         W("## Débit d'ingest mesuré (chemin HTTP complet)")
         W("")
-        W("| Événements | Durée | Débit | Base après | `PLUME_FTS_FIELDS` |")
-        W("|---:|---:|---:|---:|:--:|")
-        for d in ingest:
+        # La colonne « binaire » n'est pas décorative : les passes d'INGEST et les passes de
+        # REQUÊTE de ce document n'ont pas toutes été tirées avec le même binaire. Le taire
+        # laisserait croire à une passe unique.
+        W("| Événements | Durée | Débit | Base après | `PLUME_FTS_FIELDS` | Binaire |")
+        W("|---:|---:|---:|---:|:--:|---|")
+        for d in [x for x in ingest if x.get("phase") in (None, "ingest")]:
+            _v = (d.get("version") or "").split(" ")[0] or "—"
             W(f"| {fmt_n(d.get('events'))} | {d.get('seconds')} s | "
               f"**{fmt_n(d.get('events_per_second'))} ev/s** | {fmt_mib(d.get('db_bytes'))} Mio | "
-              f"{d.get('fts_fields')} |")
+              f"{d.get('fts_fields')} | `{_v}` |")
         W("")
-        W(f"Chemin traversé : `{ingest[0].get('path','')}`.")
+        W("Chemin traversé : `" + next(x.get('path','') for x in ingest
+                                       if x.get('phase') in (None, 'ingest')) + "`.")
         W("")
         for d in ingest:
             if d.get("_derived"):
@@ -406,10 +566,16 @@ def main():
                       "C'est pour ça que la cible de 10 M n'a pas été atteinte : à ce débit, il "
                       "aurait fallu plusieurs heures de plus.")
                     W("")
-        if args.ingest_curve:
+        for _ci, _curve in enumerate(args.ingest_curve or []):
+            # UNE SOUS-SECTION PAR COURBE. Deux remplissages du MÊME volume, l'un sur machine
+            # chargée et l'autre sur machine au repos, se lisent côte à côte : c'est ce qui
+            # SÉPARE la contention du volume, au lieu de les mélanger dans une seule phrase.
+            import os as _o2
+            W(f"### Courbe de remplissage — `{_o2.path.basename(_curve)}`")
+            W("")
             import csv as _csv
             try:
-                pts = list(_csv.DictReader(open(args.ingest_curve, encoding="utf-8")))
+                pts = list(_csv.DictReader(open(_curve, encoding="utf-8")))
             except OSError:
                 pts = []
             segs = []
@@ -420,7 +586,7 @@ def main():
                     segs.append((int(y["events"]), int(y["db_bytes"]), int(y["rss_bytes"]),
                                  dn / dt, float(y["loadavg1"])))
             if segs:
-                W("### Le débit d'ingest se dégrade avec le volume — mesuré, pas supposé")
+                W("#### Le débit d'ingest se dégrade avec le volume — mesuré, pas supposé")
                 W("")
                 W("Un débit moyen seul cacherait cette dégradation. Chaque ligne est un intervalle")
                 W("d'échantillonnage réel pendant le remplissage (la maintenance des index et de la")
@@ -433,17 +599,146 @@ def main():
                     W(f"| {fmt_n(n)} | {fmt_mib(db)} Mio | {fmt_mib(rss)} Mio | "
                       f"{fmt_n(int(rate))} ev/s | {la:.1f} |")
                 W("")
+                # ------------------------------------------------ ATTRIBUTION (colonnes riches)
+                iv = [d for d in ingest_intervals(_curve) if d.get("cpu_ms_per_event")]
+                if len(iv) >= 4:
+                    W("##### D'où vient l'effondrement — attribution mesurée, pas supposée")
+                    W("")
+                    W("Un débit qui tombe ne dit pas POURQUOI il tombe. Trois grandeurs le disent, et")
+                    W("elles sont relevées à chaque tick par `bench/probe.py` :")
+                    W("")
+                    W("- **CPU du daemon par événement** — s'il monte, le travail par ligne grandit")
+                    W("  vraiment (b-trees plus profonds, index et FTS à maintenir) : c'est le VOLUME.")
+                    W("- **CPU consommé par le reste de la machine** — c'est la CONTENTION. Elle inclut")
+                    W("  les fils noyau qui exécutent NOS propres écritures : ce n'est donc pas")
+                    W("  seulement « d'autres travaux », c'est « du CPU non facturé au daemon ».")
+                    W("- **Octets lus au bloc et stall mémoire du cgroup** — si le plafond de 2 Gio")
+                    W("  forçait la récupération du cache de pages, ils monteraient. Le budget est")
+                    W("  appliqué par ce même cgroup, et son cache de pages lui est facturé.")
+                    W("")
+                    W("| Lignes en base | Débit | CPU daemon / événement | cœurs daemon | cœurs du reste | lu au bloc | écrit / 1 000 év. | stall mémoire | part de la sonde |")
+                    W("|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+                    stp = max(1, len(iv) // 12)
+                    for d in iv[::stp]:
+                        W(f"| {fmt_n(d['events'])} | {fmt_n(int(d['rate']))} ev/s | "
+                          f"{d['cpu_ms_per_event']:.3f} ms | {d.get('daemon_cores') or 0:.2f} | "
+                          f"{d.get('other_cores') if d.get('other_cores') is not None else float('nan'):.2f} | "
+                          f"{fmt_mib(d.get('d_read_bytes') or 0)} Mio | "
+                          f"{(d.get('d_write_bytes') or 0)/max(d['dn'],1)*1000/2**20:.1f} Mio | "
+                          f"{(d.get('d_cg_mem_stall_us') or 0)/1000:.0f} ms | "
+                          f"{100*(d.get('count_ms') or 0)/1000/max(d['dt'],1):.1f} % |")
+                    W("")
+                    # L'INSTRUMENT SE COMPTE LUI-MÊME. Le comptage des lignes qui sert d'abscisse est
+                    # un scan : à gros volume il consomme une part croissante de l'intervalle, ET son
+                    # CPU est facturé au daemon. Sans cette colonne, sa dépense se lirait comme une
+                    # dégradation du produit.
+                    pr = [(d.get("count_ms") or 0) / 1000 / max(d["dt"], 1) for d in iv]
+                    _prs = sorted(pr)
+                    W(f"« Part de la sonde » = ce que le COMPTAGE DES LIGNES de l'échantillonneur "
+                      f"consomme de l'intervalle : **{100*_prs[len(_prs)//2]:.1f} % en médiane**, "
+                      f"**{100*_prs[-1]:.1f} % au pire**. Ce comptage est un scan servi par le daemon : "
+                      "son coût est DANS les colonnes CPU et débit ci-dessus. La dégradation nette du "
+                      "produit est donc un peu plus faible que celle affichée — jamais plus forte.")
+                    W("")
+                    k = max(1, len(iv) // 4)
+                    cpu0 = sum(d["cpu_ms_per_event"] for d in iv[:k]) / k
+                    cpu1 = sum(d["cpu_ms_per_event"] for d in iv[-k:]) / k
+                    r0 = sum(d["rate"] for d in iv[:k]) / k
+                    r1 = sum(d["rate"] for d in iv[-k:]) / k
+                    n0, n1 = iv[:k][0]["events"], iv[-1]["events"]
+                    oth = sorted(d["other_cores"] for d in iv if d.get("other_cores") is not None)
+                    othmed = oth[len(oth) // 2] if oth else None
+                    dmn = sorted(d["daemon_cores"] for d in iv if d.get("daemon_cores") is not None)
+                    dmnmed = dmn[len(dmn) // 2] if dmn else None
+                    rd = sum(d.get("d_read_bytes") or 0 for d in iv)
+                    stall = sum(d.get("d_cg_mem_stall_us") or 0 for d in iv) / 1e6
+                    # Le VERDICT est CALCULÉ, jamais rédigé d'avance : chaque facteur est le rapport
+                    # de deux colonnes mesurées, et la phrase choisie dépend de ce que ces rapports
+                    # valent. Une passe où le débit ne tomberait pas produirait une autre phrase.
+                    fall = r0 / max(r1, 1e-9)
+                    cpu_growth = cpu1 / max(cpu0, 1e-9)
+                    W(f"Entre {fmt_n(n0)} et {fmt_n(n1)} lignes en base, le débit passe de "
+                      f"**{fmt_n(int(r0))} à {fmt_n(int(r1))} ev/s** (**÷{fall:.2f}**) et le coût CPU "
+                      f"du daemon par événement de **{cpu0:.3f} à {cpu1:.3f} ms** "
+                      f"(**×{cpu_growth:.2f}**).")
+                    W("")
+                    # DÉCOMPOSITION EXACTE, pas une part estimée : le débit EST le quotient des deux
+                    # colonnes mesurées, `débit = cœurs occupés par le daemon / CPU par événement`.
+                    # La chute se factorise donc SANS reste entre « le travail par ligne a grandi » et
+                    # « le daemon tourne moins souvent » (il attend). Les deux facteurs sont mesurés.
+                    c0 = sum(d.get("daemon_cores") or 0 for d in iv[:k]) / k
+                    c1 = sum(d.get("daemon_cores") or 0 for d in iv[-k:]) / k
+                    if cpu_growth >= 1.15 and fall >= 1.15:
+                        W(f"Cette chute se FACTORISE, sans reste, en deux facteurs mesurés — le débit "
+                          f"est exactement `cœurs occupés / CPU par événement` :")
+                        W("")
+                        _prod = cpu_growth * (c0 / max(c1, 1e-9))
+                        W(f"> **÷{fall:.2f}** (débit mesuré) = **×{cpu_growth:.2f}** (CPU par "
+                          f"événement : le travail par ligne grandit avec les b-trees) × "
+                          f"**÷{c0/max(c1,1e-9):.2f}** (cœurs occupés par le daemon : {c0:.2f} au "
+                          f"début contre {c1:.2f} à la fin — il ATTEND davantage). Le produit vaut "
+                          f"÷{_prod:.2f}, soit {abs(_prod-fall)/fall*100:.0f} % d'écart avec la chute "
+                          "mesurée : l'écart est celui de la moyenne par quartile, l'identité "
+                          "`débit = cœurs / CPU par événement` étant exacte intervalle par intervalle.")
+                        W("")
+                        W(f"Le travail par ligne grandit donc RÉELLEMENT avec le volume déjà en base : "
+                          f"c'est le VOLUME, pas la machine. Et le daemon n'occupe jamais plus de "
+                          f"{max((d.get('daemon_cores') or 0) for d in iv):.2f} cœur sur les 12 "
+                          "disponibles : le chemin d'écriture est SÉQUENTIEL, ajouter des cœurs n'y "
+                          "changerait rien.")
+                    elif cpu_growth < 1.15 and fall >= 1.15:
+                        W("Le coût CPU par événement ne bouge PAS pendant que le débit tombe : le "
+                          "daemon n'a pas plus de travail par ligne, il ATTEND. La cause n'est donc "
+                          "pas le volume en base.")
+                    else:
+                        W("Le débit ne s'effondre pas sur cet intervalle : il n'y a rien à attribuer.")
+                    W("")
+                    if dmnmed is not None and othmed is not None:
+                        W(f"Le daemon occupe **{dmnmed:.2f} cœur** en médiane pendant que le reste de "
+                          f"la machine en occupe **{othmed:.2f}** (12 cœurs disponibles). "
+                          + ("La machine n'est donc pas saturée : la chute n'est pas une contention "
+                             "de CPU disponible." if dmnmed + othmed < 8 else
+                             "La machine est proche de la saturation : une part de la chute est de "
+                             "la contention."))
+                        W("")
+                    # CE QUE ÇA COÛTE D'ALLER PLUS HAUT. Arithmétique sur des débits MESURÉS, et
+                    # présentée comme un PLANCHER : le débit baisse encore au-delà, donc le vrai
+                    # coût est SUPÉRIEUR. Ce n'est pas une mesure à 10 M, et c'est écrit.
+                    for target in (10_000_000,):
+                        if n1 < target:
+                            h = (target - n1) / max(r1, 1) / 3600.0
+                            W(f"**Ce que coûterait {fmt_n(target)} événements** : au DERNIER débit "
+                              f"mesuré ({fmt_n(int(r1))} ev/s), il resterait {fmt_n(target - n1)} "
+                              f"événements à ingérer, soit **{h:.1f} h** — et c'est un PLANCHER, "
+                              f"puisque le débit a déjà été divisé par {fall:.1f} sur la plage "
+                              "mesurée et continue de baisser. Cette ligne est de l'arithmétique sur "
+                              "des débits mesurés, PAS une mesure à ce volume : aucune latence de ce "
+                              "document ne vaut au-delà du volume réellement rempli.")
+                            W("")
+                    W(f"**Le stockage n'est pas en cause côté LECTURE** : {fmt_mib(rd)} Mio lus au bloc "
+                      f"sur tout le remplissage — la base tient dans le cache de pages. **Le plafond de "
+                      f"2 Gio ne freine pas non plus par récupération mémoire** : {stall:.1f} s de stall "
+                      "mémoire cumulé sur le cgroup, mesuré.")
+                    W("")
                 rates = sorted(r for _, _, _, r, _ in segs)
                 las = sorted(la for _, _, _, _, la in segs)
                 med = rates[len(rates) // 2]
-                W(f"Débit sur les intervalles échantillonnés : **min {rates[0]:.0f} ev/s, "
-                  f"médiane {med:.0f} ev/s, max {rates[-1]:.0f} ev/s**, pour un `loadavg` allant de "
-                  f"{las[0]:.1f} à {las[-1]:.1f}. L'écart d'un facteur "
-                  f"{rates[-1]/max(rates[0],1):.1f} entre le plus lent et le plus rapide intervalle "
-                  "suit le `loadavg` : **sur cette machine non dédiée, le débit d'ingest est "
-                  "dominé par la contention CPU**, pas seulement par le volume déjà en base. Il faut "
-                  "donc lire ces chiffres comme un PLANCHER, et refaire la mesure sur une machine "
-                  "au repos avant d'en publier un débit nominal.")
+                base = (f"Débit sur les intervalles échantillonnés : **min {rates[0]:.0f} ev/s, "
+                        f"médiane {med:.0f} ev/s, max {rates[-1]:.0f} ev/s**, pour un `loadavg` "
+                        f"allant de {las[0]:.1f} à {las[-1]:.1f}. L'écart d'un facteur "
+                        f"{rates[-1]/max(rates[0],1):.1f} entre le plus lent et le plus rapide "
+                        "intervalle ")
+                if len(iv) >= 4:
+                    # La sonde a relevé le CPU : la cause est ATTRIBUÉE au-dessus, on ne la devine
+                    # plus depuis le `loadavg` (qui compte aussi les tâches en attente d'E/S et ne
+                    # dit à qui appartient aucune d'elles).
+                    W(base + "n'est plus interprété depuis le `loadavg` : la sous-section "
+                             "d'attribution ci-dessus le décompose en CPU du daemon, CPU du reste de "
+                             "la machine et attente du stockage — trois grandeurs mesurées.")
+                else:
+                    W(base + "suit le `loadavg` : **cette passe ne sépare pas** le volume déjà en "
+                             "base de la charge de la machine — son CSV est antérieur à la sonde qui "
+                             "relève le CPU par processus. À lire comme un PLANCHER.")
                 W("")
                 W("La colonne RSS est la mémoire réellement occupée par le daemon PENDANT l'ingest — "
                   f"crête échantillonnée ici : **{fmt_mib(max(x[2] for x in segs))} Mio**, à "
@@ -456,13 +751,16 @@ def main():
 
     W("## Configurations mesurées")
     W("")
-    W("| Étiquette | Événements | `PLUME_FTS_FIELDS` | Masquage de champs | Tier froid | Classes mesurées |")
-    W("|---|---:|:--:|---|:--:|---|")
+    W("| Étiquette | Événements | Hôtes | `PLUME_FTS_FIELDS` | Masquage de champs | Tier froid | Classes mesurées |")
+    W("|---|---:|---:|:--:|---|:--:|---|")
     for c in configs:
         m = cfgmeta[c]
         n_cells = sum(1 for r in eff if r["config_id"] == c)
         sub = m.get("classes")
-        W(f"| `{c}` | {fmt_n(m.get('events'))} | {m.get('fts_fields','?')} | "
+        # La colonne « Hôtes » est la cardinalité de `host` DU JEU DE DONNÉES, pas un réglage : elle
+        # vient du profil lu par le générateur. Sans elle, deux passes au même volume mais à des
+        # cardinalités d'hôte différentes seraient indiscernables dans ce tableau.
+        W(f"| `{c}` | {fmt_n(m.get('events'))} | {m.get('hosts', '?')} | {m.get('fts_fields','?')} | "
           f"{m.get('mask','?')} | {m.get('cold','?')} | "
           f"{'toutes' if not sub else '**sous-ensemble** `' + sub + '`'} ({n_cells} cellules) |")
     W("")
@@ -550,21 +848,22 @@ def main():
     # Un correctif ne se publie pas en réécrivant les tableaux : on mesure DEUX FOIS, avec le même
     # instrument et la même base, et on montre l'écart cellule par cellule. Une cellule absente d'un
     # côté reste absente (jamais complétée par déduction).
-    if args.compare:
+    for _i, _pair in enumerate(args.compare or []):
         try:
-            c_av, c_ap = args.compare.split(":", 1)
+            c_av, c_ap = _pair.split(":", 1)
         except ValueError:
             raise SystemExit("--compare attend AVANT:APRES")
         missing = [c for c in (c_av, c_ap) if c not in configs]
         if missing:
             raise SystemExit("--compare : configuration(s) absente(s) des résultats : " + ", ".join(missing))
-        W("## Écart mesuré entre deux passes")
+        _note = (args.compare_note or [])[_i] if _i < len(args.compare_note or []) else None
+        W(f"## Écart mesuré entre deux passes — `{c_av}` vs `{c_ap}`")
         W("")
         W(f"Comparaison `{c_av}` -> `{c_ap}`, MÊME base, MÊME instrument, MÊME machine, passes "
           "consécutives. Les deux lignes sont des mesures ; le delta est leur soustraction, rien de plus.")
         W("")
-        if args.compare_note:
-            W(f"**Ce qui a changé entre les deux passes** : {args.compare_note}")
+        if _note:
+            W(f"**Ce qui a changé entre les deux passes** : {_note}")
             W("")
         W(f"Charge machine relevée : `loadavg` {_cmp_load(eff, c_av)} pendant la passe AVANT, "
           f"{_cmp_load(eff, c_ap)} pendant la passe APRÈS. Sur une machine partagée, un écart de "
@@ -581,18 +880,275 @@ def main():
             seen_pairs += 1
             d = b["wall_p50_ms"] - a["wall_p50_ms"]
             sign = "+" if d > 0 else ""
+            # Un delta entre deux réponses DIFFÉRENTES n'est pas un gain. Quand un côté tronque, la
+            # cellule le porte : sans ce marqueur, un « -5 s » se lirait comme une accélération alors
+            # qu'il mesure une réponse incomplète.
+            trunc = " ⚠ **réponse tronquée d'un côté**" if (a.get("truncated") or b.get("truncated")) else ""
             W(f"| `{cid}` | {win} | {fmt_dur(a['wall_p50_ms'])} | {fmt_dur(b['wall_p50_ms'])} | "
-              f"{sign}{fmt_dur(d)} | {fmt_dur(a.get('sql_p50_ms'))} | {fmt_dur(b.get('sql_p50_ms'))} | "
+              f"{sign}{fmt_dur(d)}{trunc} | {fmt_dur(a.get('sql_p50_ms'))} | {fmt_dur(b.get('sql_p50_ms'))} | "
               f"{a.get('served_from') or '—'} | {b.get('served_from') or '—'} |")
         W("")
         only_ap = sorted({(r["class_id"], r["window"]) for r in eff if r["config_id"] == c_ap}
                          - {(r["class_id"], r["window"]) for r in eff if r["config_id"] == c_av})
         only_av = sorted({(r["class_id"], r["window"]) for r in eff if r["config_id"] == c_av}
                          - {(r["class_id"], r["window"]) for r in eff if r["config_id"] == c_ap})
+        _nt = sum(1 for cid, win in [(r["class_id"], r["window"]) for r in eff if r["config_id"] == c_ap]
+                  if (idx.get((c_av, cid, win)) or {}).get("truncated")
+                  or (idx.get((c_ap, cid, win)) or {}).get("truncated"))
+        if _nt:
+            W(f"**{_nt} de ces lignes opposent des réponses de contenu DIFFÉRENT** (un côté tronque) : "
+              "leur delta mesure un écart de travail, pas un écart de vitesse. Elles sont marquées.")
+            W("")
         W(f"{seen_pairs} cellules comparables. "
           + (f"Mesurées SEULEMENT après : {', '.join(f'`{c}`/{w}' for c, w in only_ap)}. " if only_ap else "")
           + (f"Mesurées SEULEMENT avant : {', '.join(f'`{c}`/{w}' for c, w in only_av)}. " if only_av else "")
           + "Une cellule non comparable n'est PAS un résultat neutre : elle est absente d'un côté.")
+        W("")
+
+    # ------------------------------------------------------------ FENÊTRES (dont les non mesurées)
+    W("## Les fenêtres mesurées, et celles qui ne le sont pas")
+    W("")
+    W("Les fenêtres ne sont pas choisies : elles sont DÉRIVÉES de deux paramètres du produit — la")
+    W("fenêtre chaude (`PLUME_COLD_HOT_WINDOW_DAYS`, défaut **7 j**, `cold_store/aging.rs`) et la")
+    W("rétention (`PLUME_RETENTION_DAYS`) — puis filtrées par l'étendue réelle du jeu de données.")
+    W("")
+    W("| Fenêtre | Ce qu'elle mesure |")
+    W("|---|---|")
+    _wl = {}
+    for r in rows:
+        if r.get("window_label"):
+            _wl[r["window"]] = r["window_label"]
+    for w in wins:
+        W(f"| `{w}` | {_wl.get(w, '—')} |")
+    W("")
+    if unmeasured_win:
+        _seen_w = {}
+        for d in unmeasured_win:
+            _seen_w[d["window"]] = d
+        W("**Fenêtres écartées par la garde de couverture — donc NON MESURÉES** :")
+        W("")
+        for w, d in sorted(_seen_w.items()):
+            W(f"- `{w}` ({d.get('label')}) — {d.get('why')}")
+        W("")
+        W("Une fenêtre plus large que le jeu ne mesure pas ce que dit son étiquette : elle mesure")
+        W("`tout` sous un autre nom. Le harnais refuse de la tirer plutôt que de publier une cellule")
+        W("dont le titre serait faux. Pour l'obtenir, il faut un jeu qui la couvre — c'est-à-dire")
+        W("remplir sur une étendue plus longue (`BENCH_SPAN_DAYS`), pas rendre la garde plus permissive.")
+        W("")
+
+    # ------------------------------------------------------------ TIER FROID
+    cold_cfgs = [c for c in configs
+                 if str(cfgmeta[c].get("cold", "off")).lower() not in ("off", "0", "", "none")]
+    cold_age = [d for d in ingest if d.get("phase") == "cold_age"]
+    if cold_cfgs or cold_age:
+        W("## Le tier froid — mesuré")
+        W("")
+        W("Avec une fenêtre chaude de 7 jours et une rétention de 365, `daemon/src/cold_store/` est")
+        W("le chemin de lecture de **358 des 365 jours** d'une production. Les tableaux ci-dessus")
+        W("tournent tous à `PLUME_COLD_TIER=0` : ils ne disent rien de ce chemin. Cette section est")
+        W("la seule qui en parle, et elle ne parle que de ce qui a été tiré.")
+        W("")
+        for d in cold_age:
+            moved = (d.get("hot_rows_before") or 0) - (d.get("hot_rows_after") or 0)
+            hb, ha = d.get("hot_bytes_before") or 0, d.get("hot_bytes_after") or 0
+            W("**Columnarisation mesurée** (chemin réel : `plume-daemon retention` -> `retention_run`")
+            W(f"-> `cold_age_run`, fenêtre chaude {d.get('hot_window_days')} j) :")
+            W("")
+            W("| | Avant | Après |")
+            W("|---|---:|---:|")
+            W(f"| Lignes CHAUDES (SQLite) | {fmt_n(d.get('hot_rows_before'))} | {fmt_n(d.get('hot_rows_after'))} |")
+            W(f"| Base chaude | {fmt_mib(hb)} Mio | {fmt_mib(ha)} Mio |")
+            W(f"| Tier froid (Parquet chiffré) | 0 Mio | {fmt_mib(d.get('cold_bytes'))} Mio en {d.get('cold_files')} fichiers |")
+            W("")
+            pct = 100.0 * moved / max(d.get("hot_rows_before") or 1, 1)
+            ratio = (d.get("cold_bytes") or 0) / max(moved, 1)
+            W(f"**{fmt_n(moved)} lignes ({pct:.1f} %) ont quitté SQLite pour le Parquet**, en "
+              f"{fmt_n(d.get('cold_files'))} fichiers (un par jour). Le froid pèse "
+              f"**{ratio:.0f} octets par événement** là où le chaud en occupait "
+              f"{(hb)/max(d.get('hot_rows_before') or 1,1):.0f} (table, index et FTS compris), "
+              f"soit **{((hb)/max(d.get('hot_rows_before') or 1,1))/max(ratio,1):.0f}x plus "
+              "compact**.")
+            W("")
+            # La DURÉE n'est publiée que si la passe qui l'a produite était propre. Une passe
+            # interrompue puis reprise mesure l'interruption autant que le produit : on publie la
+            # note, pas un débit qui aurait l'air d'en être un.
+            if d.get("_note_seconds"):
+                W(f"> Durée : {d['_note_seconds']}")
+            elif d.get("seconds"):
+                W(f"Durée mesurée : **{d['seconds']} s**, soit "
+                  f"{moved/max(d.get('seconds') or 1,1):.0f} lignes/s.")
+            W("")
+            if ha > hb:
+                W("> La base chaude n'a pas RÉTRÉCI : SQLite ne rend pas les pages au système, il les")
+                W("> met en liste libre (`auto_vacuum=0`, comme en production). L'espace est réutilisé")
+                W("> par les écritures suivantes, il n'est pas rendu au disque. C'est mesuré, pas supposé.")
+                W("")
+        for d in [x for x in ingest if x.get("phase") == "cold_parity"]:
+            W("### La réponse est-elle la MÊME ? (parité mesurée)")
+            W("")
+            W("Une latence n'est comparable que si les deux chemins rendent la même réponse : un")
+            W("chemin qui TRONQUE est plus rapide parce qu'il en fait moins. Cette sous-section ne")
+            W("compare donc pas des temps, elle compare **les valeurs rendues**.")
+            W("")
+            W(f"Méthode : {d.get('method')}")
+            W("")
+            W("| Requête | Fenêtre | Sans tier froid | Avec tier froid | Écart | Tronqué ? |")
+            W("|---|:--:|---:|---:|---:|:--:|")
+            for ck in d.get("checks") or []:
+                # Une requête GXQL contient un `|` : dans une cellule de tableau Markdown il
+                # coupe la ligne en deux. On l'échappe — sinon le tableau se disloque à l'affichage.
+                _q = ck["query"].replace("|", "\\|")
+                W(f"| `{_q}` | {ck['window']} | **{fmt_n(ck['hot_value'])}** | "
+                  f"**{fmt_n(ck['cold_value'])}** | x{ck['ratio_hot_over_cold']:.1f} | "
+                  f"{'**oui** (' + fmt_n(ck['cold_rows_hydrated']) + ' lignes hydratées)' if ck['cold_truncated'] else 'non'} |")
+            W("")
+            W("**C'est le résultat le plus important de cette section.** Le chemin d'union chaud∪froid")
+            W("hydrate le froid dans une table temporaire SQLite bornée à `PLUME_QUERY_MAX` lignes")
+            W("(défaut **5 000**, `cold_store/reader.rs:130`) puis agrège SUR CET ÉCHANTILLON. Le")
+            W("compte rendu n'est donc pas « approché » : il est **faux d'un facteur qui dépend du")
+            W("volume de la fenêtre** — mesuré ici jusqu'à **x203**. Le daemon le SIGNALE")
+            W("(`stats.truncated=true`, et le harnais l'enregistre), mais un lecteur qui ne regarde")
+            W("que le nombre voit un nombre faux. Toute latence « froide » de cette section doit donc")
+            W("être lue avec sa colonne « tronqué » : quand elle dit oui, la cellule mesure le temps")
+            W("d'une réponse INCOMPLÈTE, et ne peut pas être comparée à la cellule chaude.")
+            W("")
+            if d.get("_reserve_rollup"):
+                W(f"> Réserve : {d['_reserve_rollup']}")
+                W("")
+        for c in cold_cfgs:
+            crows = [r for r in eff if r["config_id"] == c]
+            bnd = next((r["cold"].get("boundary_ts") for r in crows
+                        if isinstance(r.get("cold"), dict) and r["cold"].get("boundary_ts")), None)
+            W(f"### `{c}`")
+            W("")
+            if bnd:
+                W(f"Frontière chaud/froid CALCULÉE PAR LE DAEMON : `boundary_ts={bnd}`. Une fenêtre")
+                W("dont la borne basse passe sous cette valeur lit du Parquet ; une fenêtre qui")
+                W("l'enjambe lit les DEUX et paie l'union.")
+                W("")
+            W("| Classe | Fenêtre | p50 | lignes | route | passé par le froid | tronqué |")
+            W("|---|:--:|---:|---:|---|---|:--:|")
+            for cid, lab, _k in classes:
+                for w in wins:
+                    r = idx.get((c, cid, w))
+                    if not r:
+                        continue
+                    cold = r.get("cold") if isinstance(r.get("cold"), dict) else None
+                    W(f"| `{cid}` | {w} | {fmt_dur(r.get('wall_p50_ms'))} | {fmt_n(r.get('rows'))} | "
+                      f"{r.get('served_from') or '—'} | "
+                      f"{cold.get('served_from') if cold else 'non'} | "
+                      f"{'**oui**' if r.get('truncated') else 'non'} |")
+            W("")
+            _ev = cfgmeta[c].get("events")
+            if cold_age and _ev and _ev == (cold_age[0].get("hot_rows_after")):
+                W(f"> Dans le tableau des configurations, la colonne « Événements » de `{c}` vaut "
+                  f"{fmt_n(_ev)} : c'est le nombre de lignes CHAUDES, pas la taille du jeu. "
+                  f"{fmt_n(cold_age[0].get('hot_rows_before'))} événements sont interrogeables, dont "
+                  f"{fmt_n((cold_age[0].get('hot_rows_before') or 0) - _ev)} depuis le Parquet.")
+                W("")
+            ncold = sum(1 for r in crows if isinstance(r.get("cold"), dict))
+            ntrunc = sum(1 for r in crows if r.get("truncated"))
+            W(f"**{ncold} cellules sur {len(crows)} ont réellement traversé le tier froid** (colonne")
+            W("« passé par le froid » : elle vient de `stats.cold` renvoyé par le daemon, pas de")
+            W("l'étiquette de configuration). "
+              + (f"**{ntrunc} cellules sont TRONQUÉES** : le chemin d'union hydrate le froid dans "
+                 "SQLite avec un plafond de lignes (`PLUME_QUERY_MAX`, défaut 5 000, "
+                 "`cold_store/reader.rs:130`) — au-delà, la réponse est PARTIELLE et le daemon le "
+                 "dit. Un agrégat sur une fenêtre froide large n'est donc pas exact par défaut : "
+                 "c'est le résultat le plus important de cette section."
+                 if ntrunc else "Aucune cellule tronquée."))
+            W("")
+
+    # ------------------------------------------------------------ PROFIL FLOTTE
+    # GARDE : ne comparer que des passes qui ne diffèrent QUE par le nombre de machines. Deux
+    # passes à des volumes ou des réglages différents ne mesureraient pas l'effet de la flotte, elles
+    # mesureraient leur propre écart. Le critère est DÉRIVÉ des étiquettes de configuration (volume,
+    # masquage, FTS, tier froid, sous-ensemble de classes) : aucune liste de configurations en dur.
+    def _fleet_key(c):
+        m = cfgmeta[c]
+        return (m.get("events"), m.get("mask"), m.get("fts_fields"), m.get("cold"), m.get("classes"))
+    _groups = {}
+    for c in configs:
+        if str(cfgmeta[c].get("hosts", "")).isdigit():
+            _groups.setdefault(_fleet_key(c), []).append(c)
+    _best = max(_groups.values(),
+                key=lambda g: len({int(cfgmeta[c]["hosts"]) for c in g}), default=[])
+    host_cfgs = _best
+    host_vals = sorted({int(cfgmeta[c]["hosts"]) for c in host_cfgs})
+    if len(host_vals) >= 2:
+        W("## Le nombre de machines — ce que le profil mono-hôte cachait")
+        W("")
+        W("La production profilée est **mono-nœud** : ses 32 sources ont `distinct_hosts: 1`. `host`")
+        W("étant l'une des six colonnes indexées, toute cellule qui filtre ou groupe par hôte y porte")
+        W("sur un cas **dégénéré de cardinalité 1**. Les passes ci-dessous rejouent les mêmes classes")
+        W("sur des profils FLOTTE dérivés (`bench/make_fleet_profile.py`), **à volume d'événements")
+        W("égal**.")
+        W("")
+        W("**Ce qui change exactement entre ces passes** — il faut le dire avant de lire le tableau :")
+        W("**(1)** la cardinalité de `host` (1, puis N) ; **(2)** le MÉLANGE des sources, parce que")
+        W("multiplier les sources host-locales par N change leur poids relatif (`auditd` passe de")
+        W("38,5 % à 44,7 % du flux). Les deux viennent de la même dérivation. Une classe qui bouge")
+        W("peut donc bouger pour l'une OU l'autre raison — sauf les classes `C6*`, qui nomment `host`")
+        W("dans la requête : celles-là isolent la cardinalité, et ce sont elles qu'il faut lire pour")
+        W("juger du trou de généricité.")
+        W("")
+        # Ce que le profil FLOTTE dérive en VOLUME. Lu dans le profil lui-même (section `fleet`,
+        # `provenance: derived`) : c'est de l'arithmétique sur des distributions mesurées, et le
+        # document doit dire lequel des deux il cite.
+        import os as _o3
+        fl_rows = []
+        for c in host_cfgs:
+            pn = cfgmeta[c].get("profile")
+            if not pn:
+                continue
+            try:
+                with open(_o3.path.join("bench", pn), encoding="utf-8") as fh:
+                    fl = json.load(fh).get("fleet") or {}
+            except (OSError, ValueError):
+                continue
+            if fl and not any(r[0] == fl.get("hosts") for r in fl_rows):
+                fl_rows.append((fl.get("hosts"), fl.get("events_measured_mono_host"),
+                                fl.get("events_fleet_derived"), fl.get("multiplier_effective"),
+                                len(fl.get("per_host_sources") or [])))
+        if fl_rows:
+            W("**Ce que la taille de flotte change en VOLUME** — dérivé (`bench/make_fleet_profile.py`)")
+            W("des distributions MESURÉES par source, sur la fenêtre de la production profilée :")
+            W("")
+            W("| Hôtes | Sources host-locales | Événements mono-hôte (mesuré) | Événements flotte (dérivé) | Facteur |")
+            W("|---:|---:|---:|---:|---:|")
+            for h, m0, m1, mult, nph in sorted(fl_rows):
+                W(f"| {h} | {nph} sur 32 | {fmt_n(m0)} | {fmt_n(m1)} | x{mult} |")
+            W("")
+            W("La colonne « dérivé » n'est PAS une mesure : c'est la multiplication du poids des")
+            W("sources déclarées host-locales par le nombre de machines. Ce qui est mesuré, ce sont")
+            W("les distributions de chaque source ; ce qui est déclaré, c'est la liste des sources")
+            W("host-locales (`bench/fleet-per-host.txt`, une ligne par source, avec sa raison).")
+            W("")
+        W("| Classe | Fenêtre | " + " | ".join(f"{h} hôte{'s' if h > 1 else ''}" for h in host_vals) + " |")
+        W("|---|:--:|" + "---:|" * len(host_vals))
+        by_hosts = {}
+        for c in host_cfgs:
+            by_hosts.setdefault(int(cfgmeta[c]["hosts"]), []).append(c)
+        for cid, lab, _k in classes:
+            for w in wins:
+                cells = []
+                for h in host_vals:
+                    r = None
+                    for c in by_hosts[h]:
+                        r = idx.get((c, cid, w)) or r
+                    cells.append(r)
+                if sum(1 for x in cells if x and x.get("wall_p50_ms") is not None) < 2:
+                    continue
+                W(f"| `{cid}` | {w} | "
+                  + " | ".join(fmt_dur(x.get("wall_p50_ms")) if x else "—" for x in cells) + " |")
+        W("")
+        W("Une classe dont la latence ne bouge pas avec le nombre de machines ne dépend pas de la")
+        W("cardinalité de `host`. Une classe qui bouge est une classe dont les chiffres publiés sur")
+        W("un profil mono-hôte **ne valent pas** pour une flotte — et le sens de l'erreur n'est pas")
+        W("toujours le même : là où `host` sert de FILTRE, le mono-hôte est PESSIMISTE (le filtre y")
+        W("sélectionne tout, alors qu'il sélectionne 1/N sur une flotte) ; là où `host` sert de clé de")
+        W("GROUPEMENT, il est OPTIMISTE (un seul groupe au lieu de N). Un profil mono-hôte ne")
+        W("« flatte » donc pas le produit : il le décrit FAUX, dans les deux sens à la fois.")
         W("")
 
     W("## Le budget de 2 Gio")
@@ -656,8 +1212,15 @@ def main():
     # volumes est laissée vide — pas interpolée.
     _f = idx.get((max(configs, key=lambda c: cfgmeta[c].get("events") or 0), "C0-plancher", "all"))
     floor_ms = (_f or {}).get("wall_p50_ms")
+    # GARDE : un tableau « d'échelle » ne doit contenir que des passes dont SEUL LE VOLUME diffère.
+    # Une passe faite sur un autre PROFIL de données (une flotte de 50 hôtes, par exemple) n'est pas
+    # un point de volume : sa colonne `host` n'a pas la même cardinalité, donc l'écart mesuré ne
+    # serait pas attribuable au volume. Le critère est DÉRIVÉ de l'étiquette de configuration (nombre
+    # d'hôtes du profil), pas d'une liste de configurations à exclure.
+    _ref_hosts = cfgmeta.get(ref, {}).get("hosts")
     fts0_vide = [c for c in configs if cfgmeta[c].get("fts_fields") == 0
-                 and "non-vide" not in (cfgmeta[c].get("mask") or "")]
+                 and "non-vide" not in (cfgmeta[c].get("mask") or "")
+                 and (_ref_hosts is None or cfgmeta[c].get("hosts") in (None, _ref_hosts))]
     fts0_vide.sort(key=lambda c: cfgmeta[c].get("events") or 0)
     if len(fts0_vide) >= 2:
         W("## Comment la latence monte avec le volume")
@@ -775,6 +1338,32 @@ def main():
                     "(`core/src/soql/dialect.rs:65-67`, appelé depuis `soql/mod.rs:881-891`), donc un "
                     "scan complet. **Coût RAM : nul** — l'index est déjà construit et déjà en base.",
                     "C2c vs C2d"))
+
+    # L2bis — LA BORNE TEMPORELLE DÉSARME L'INDEX D'HÔTE. Découvert par les classes `C6*`, qui
+    # n'existaient pas avant qu'on mesure autre chose qu'une production mono-nœud. La comparaison
+    # est faite entre DEUX FENÊTRES de la MÊME cellule (pas entre deux configurations) : c'est le
+    # seul écart du document qui n'oppose pas deux réglages mais deux formes de la même requête.
+    _hotw = next((w for w in wins if w not in ("1h", "24h", "all") and not w.startswith("au-dela")), None)
+    if _hotw:
+        a, b = cell(base, "C6b-groupby-host", _hotw), cell(base, "C6b-groupby-host", "all")
+        g = gain_ms(a, b)
+        if g is not None and g > 0:
+            ratio = (a["wall_p50_ms"] / b["wall_p50_ms"]) if b["wall_p50_ms"] else None
+            lev.append((g, "Rendre l'index d'hôte utilisable AVEC une borne temporelle",
+                        f"le MÊME `stats count by host`, la MÊME base : **{fmt_dur(b['wall_p50_ms'])}** "
+                        f"sans borne de temps contre **{fmt_dur(a['wall_p50_ms'])}** borné à la "
+                        f"fenêtre chaude du produit (`{_hotw}`)"
+                        + (f", soit **{ratio:.0f}x plus lent**" if ratio else "") + ". Sans borne, le "
+                        "group-by est servi par un parcours d'index seul (`idx_event_host` couvre la "
+                        "requête). Dès qu'une borne `ts` entre, l'index d'hôte ne suffit plus — il "
+                        "faut ouvrir chaque ligne pour lire son `ts` — et la requête redevient un "
+                        "scan. Or la borne temporelle est le cas NORMAL : un tableau de bord regarde "
+                        "toujours une fenêtre. Voie : un index composite `(host, ts)`, qui rend le "
+                        "prédicat de temps satisfiable dans l'index. **Coût RAM : nul ; coût DISQUE : "
+                        "un index de plus** (mesuré en production : `idx_event_host` pèse 35,8 Mio "
+                        "pour 1,4 M d'événements). À noter : cette cellule est déjà à 64 hôtes ; sur "
+                        "une flotte, le nombre de groupes ne fait que grandir.",
+                        f"C6b {_hotw} vs all"))
 
     # L3 — masque non vide qui désarme la route de rollups
     if masked:
@@ -921,9 +1510,16 @@ def main():
 
     W("## Ce qui n'est PAS mesuré ici")
     W("")
-    W("- **Le tier froid** (`--features cold_tier` + `PLUME_COLD_TIER=1`) : le binaire est compilé")
-    W("  avec la feature, mais toutes les cellules tournent `PLUME_COLD_TIER=0`. Aucun chiffre de ce")
-    W("  document ne dit quoi que ce soit du chemin Parquet ni du moteur vectorisé.")
+    if cold_cfgs:
+        W(f"- **Le tier froid au-delà de ce qui est tiré** : {len(cold_cfgs)} configuration(s) tournent")
+        W("  `PLUME_COLD_TIER=1` (section dédiée plus haut), mais sur UNE seule taille de fenêtre")
+        W("  chaude et UN seul volume. Le moteur vectorisé n'est pas mesuré séparément du chemin")
+        W("  d'hydratation : le document ne dit pas lequel a servi chaque cellule au-delà de ce que")
+        W("  `stats.cold` en rapporte.")
+    else:
+        W("- **Le tier froid** (`--features cold_tier` + `PLUME_COLD_TIER=1`) : le binaire est compilé")
+        W("  avec la feature, mais toutes les cellules tournent `PLUME_COLD_TIER=0`. Aucun chiffre de ce")
+        W("  document ne dit quoi que ce soit du chemin Parquet ni du moteur vectorisé.")
     W("- **La concurrence** : une requête à la fois. `PLUME_QUERY_CONCURRENCY=3` est en place mais")
     W("  jamais saturé (`sem_wait_ms` reste nul). Le comportement à 10 utilisateurs simultanés n'est")
     W("  pas mesuré.")
@@ -948,13 +1544,17 @@ def main():
     W("    --manifest-path daemon/Cargo.toml")
     W("bench/run.sh                       # 10 M d'événements")
     W("BENCH_EVENTS=1000000 bench/run.sh  # 1 M, pour itérer")
-    W("# 3. le rendu (les deux options portent des mesures, pas de la décoration :")
-    W("#    --ingest-curve = débit/RSS échantillonnés pendant le remplissage,")
-    W("#    --fill-log     = débit cumulé relevé par le générateur lui-même) :")
-    W("python3 bench/report.py ../.bench/results.jsonl \\")
-    W("    --ingest-curve ../.bench/ingest_rate.csv \\")
-    W("    --fill-log ../.bench/matrix.log -o docs/BENCHMARK.md")
+    W("# 3. le rendu — LA COMMANDE EXACTE qui a produit CE document, reconstruite depuis ses propres")
+    W("#    arguments et pointée sur les données VERSIONNÉES (donc rejouable par un tiers) :")
+    for _l in repro_cmd(args):
+        W(_l)
     W("```")
+    W("")
+    W("Cette commande est **régénérée à chaque rendu** : elle ne peut pas se désynchroniser du")
+    W("document. C'est délibéré — la version précédente publiait une commande incomplète qui, rejouée")
+    W("telle quelle, AMPUTAIT le document de ses sections d'écart et de ses tableaux d'attribution.")
+    W("Une commande de reproduction fausse est pire qu'absente : elle fait croire à une")
+    W("reproduction réussie.")
     W("")
     W("Le générateur est déterministe : `python3 bench/gen_events.py --count N --end-ts T --digest`")
     W("imprime le SHA-256 du flux. Deux exécutions avec les mêmes paramètres donnent la même")

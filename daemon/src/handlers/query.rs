@@ -471,27 +471,27 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         // KEYSET (#28) : le browse par curseur porte sur des LIGNES BRUTES (ts,id) ; un rollup pré-agrégé n'a NI
         // `id` NI ligne individuelle -> on DÉSACTIVE toute route rollup (hot comme cold) quand `keyset` est demandé
         // et on compile la base brute AVEC `id` (via `soql_to_sql_masked_keyset_x`). Sans keyset : logique intacte.
-        // WATERMARK rollup RÉEL (event_rollup_wm) : borne le corps du MERGE multi-dim au réellement-finalisé
-        // (anti sous-comptage silencieux d'events ingérés en retard, cf. rollup_route::plan_merge). Absent -> MIN
-        // -> tout raw (exact). Lecture indexée (PK meta), coût négligeable ; sans effet sur ROUTE A/B (single-dim).
-        let rollup_wm = { let rc = req_db(&st, &au); let c = rc.lock(); event_rollup_wm(&c) };
+        // COUVERTURE du rollup (cf. rollup_coverage) : ÉTABLIE depuis la base, jamais affirmée ici. Elle borne
+        // le corps du MERGE multi-dim au réellement-agrégé ET fait rattraper les retardataires. Non établie ->
+        // aucun corps -> chemin brut (exact). Lecture indexée (PK meta) ; sans effet sur ROUTE A/B (single-dim).
+        let rollup_cov = { let rc = req_db(&st, &au); let c = rc.lock(); RollupCoverage::of(&c) };
         let rr = if masks.is_empty() && !keyset {
             #[cfg(feature = "cold_tier")]
             {
                 match cold_boundary {
                     Some(b) => {
-                        let c = try_cold_rollup_route(&soql, from, to, env, b, rollup_wm);
+                        let c = try_cold_rollup_route(&soql, from, to, env, b, rollup_cov);
                         if c.is_some() {
                             cold_boundary = None;
                         }
                         c
                     }
-                    None => try_rollup_route(&soql, from, to, env, rollup_wm),
+                    None => try_rollup_route(&soql, from, to, env, rollup_cov),
                 }
             }
             #[cfg(not(feature = "cold_tier"))]
             {
-                try_rollup_route(&soql, from, to, env, rollup_wm)
+                try_rollup_route(&soql, from, to, env, rollup_cov)
             }
         } else {
             None
@@ -1115,25 +1115,25 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
         // #28 Phase A — MÊME logique que /api/query : rollup COLD+HOT (ZÉRO Parquet) quand la fenêtre atteint
         // sous `B` et qu'aucun masque n'est actif ; succès -> cold_boundary effacé (pool normal) ; sinon chemin
         // brut cold_union_query. Un masque/deny actif -> aucune route -> compile masqué + authorizer (parité).
-        // WATERMARK rollup RÉEL (event_rollup_wm) : voir /api/query — borne le corps du MERGE au finalisé.
-        let rollup_wm = { let rc = req_db(&st, &au); let c = rc.lock(); event_rollup_wm(&c) };
+        // COUVERTURE du rollup : voir /api/query — ÉTABLIE depuis la base, jamais affirmée ici.
+        let rollup_cov = { let rc = req_db(&st, &au); let c = rc.lock(); RollupCoverage::of(&c) };
         let rr = if masks.is_empty() {
             #[cfg(feature = "cold_tier")]
             {
                 match cold_boundary {
                     Some(b) => {
-                        let c = try_cold_rollup_route(&soql, from, to, env, b, rollup_wm);
+                        let c = try_cold_rollup_route(&soql, from, to, env, b, rollup_cov);
                         if c.is_some() {
                             cold_boundary = None;
                         }
                         c
                     }
-                    None => try_rollup_route(&soql, from, to, env, rollup_wm),
+                    None => try_rollup_route(&soql, from, to, env, rollup_cov),
                 }
             }
             #[cfg(not(feature = "cold_tier"))]
             {
-                try_rollup_route(&soql, from, to, env, rollup_wm)
+                try_rollup_route(&soql, from, to, env, rollup_cov)
             }
         } else {
             None

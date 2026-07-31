@@ -57,6 +57,8 @@ mod datamodels; // #47 DATA MODELS + PIVOT : logique pure (validation objets/cha
 pub(crate) use field_filter::*;
 pub(crate) use knowledge::*;
 pub(crate) use datamodels::*;
+mod rollup_coverage; // L'INVARIANT de la route de rollups : ce que le rollup COUVRE ne se déclare pas, il s'établit
+pub(crate) use rollup_coverage::*;
 mod rollup_route;
 pub(crate) use rollup_route::*;
 mod ledger;

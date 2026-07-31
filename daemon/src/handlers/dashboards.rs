@@ -632,11 +632,15 @@ pub(crate) fn compile_panel_sql(query: &str, is_soql: bool, from: i64, to: i64, 
     if is_soql {
         // Router les PANNEAUX vers le rollup comme /api/query : « … | stats count by source »
         // lit event_rollup (qq ms) au lieu de scanner event (timeout 5 s -> cache figé/périmé).
-        // WATERMARK : `compile_panel_sql` est PUR (aucune Connection tenant) -> on passe `i64::MAX` = corps
-        // rollup non borné par le watermark, comportement PANNEAU inchangé (les dashboards sont servis via
-        // cache SWR = éventuellement-cohérents). Le fix anti sous-comptage (borne au watermark réel) s'applique
-        // aux chemins interactifs AUTORITATIFS (/api/query, /api/datamodels) qui surfacent `approx:false`.
-        if let Some(rr) = try_rollup_route(&query, from, to, env, i64::MAX) {
+        // COUVERTURE : `compile_panel_sql` est PUR (aucune Connection tenant) -> il ne peut RIEN établir, donc
+        // il AVOUE (`RollupCoverage::unproven`). L'ancienne version passait `i64::MAX` — un site d'appel qui
+        // AFFIRMAIT que le rollup couvrait tout l'historique sans rien pour l'établir ; c'est exactement ce que
+        // le type interdit désormais, et c'est par là que le sous-compte ×6,6 mesuré le 31/07 arrivait aussi
+        // dans les panneaux. « Cache SWR = éventuellement cohérent » couvre un RETARD, pas un nombre calculé sur
+        // une table incomplète. CONSÉQUENCE : un panneau `stats count by <2 dims du grain>` retombe sur le
+        // compilo brut (exact, plus lent) ; les ROUTES A/B single-dim, qui n'ont jamais dépendu de la couverture,
+        // sont inchangées — et aucun panneau LIVRÉ n'est multi-dim (seeds.rs : tous `count by <une dim>`).
+        if let Some(rr) = try_rollup_route(&query, from, to, env, RollupCoverage::unproven()) {
             return Ok(rr.sql);
         }
         soql_to_sql_x(&query, from, to, env)

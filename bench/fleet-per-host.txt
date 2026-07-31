@@ -1,0 +1,44 @@
+# bench/fleet-per-host.txt — DÉCLARATION D'OPÉRATEUR, PAS UNE MESURE.
+#
+# Liste des sources de `bench/profile-prod.json` qui tournent SUR CHAQUE MACHINE : leur volume est
+# multiplié par la taille de la flotte dans les profils dérivés (bench/profile-fleet-*.json). Les
+# sources ABSENTES de cette liste sont traitées comme CENTRALES (un émetteur pour toute la flotte,
+# volume inchangé).
+#
+# Pourquoi c'est une déclaration et pas une mesure : la production profilée est MONO-NŒUD. Ses 32
+# sources ont toutes `distinct_hosts: 1`, y compris celles qui seraient centrales sur une flotte —
+# le profil ne contient donc AUCUNE trace permettant de trancher. Le classement ci-dessous est un
+# jugement sur ce qu'EST chaque source, il est écrit ici pour pouvoir être contesté ligne à ligne,
+# et il change si vous déployez autrement (un ingress par nœud, un agent Vault par machine…).
+
+# --- systèmes d'exploitation et agents installés sur chaque machine ---
+auditd              # audit noyau : un auditd par machine
+sshd                # démon SSH
+sshd-session        # sessions SSH
+sudo                # élévations de privilèges locales
+journal             # santé du journal systemd local
+dataaccess          # surveillance des accès fichiers locaux
+integrity           # contrôle d'intégrité de fichiers local
+dataacl             # ACL du système de fichiers local
+plume-disk          # santé du disque de la machine
+
+# --- pare-feu et pile réseau DE L'HÔTE (netfilter tourne sur chaque machine) ---
+ufw                 # pare-feu d'hôte
+nft                 # règles netfilter d'hôte
+conntrack           # table de suivi de connexions du noyau local
+portprobe           # détecteur de sondage sur l'hôte
+portscan            # détecteur de balayage sur l'hôte
+origin-drop         # rejets à l'origine, sur l'hôte
+fail2ban            # bannissement local
+crowdsec            # agent local
+
+# --- exécution de conteneurs, par NŒUD ---
+containerd          # runtime de conteneurs du nœud
+k8s-log             # journaux de conteneurs, collectés par nœud
+engagement-adapter  # adaptateur d'enforcement, exécuté sur l'hôte
+
+# --- NE SONT PAS dans la liste, donc CENTRALES, et pourquoi ---
+#   kube-audit, k8s, kube-rbac   plan de contrôle Kubernetes : un émetteur pour le cluster
+#   vault-audit, minio, minio-audit, mail, web   services : un émetteur par service, pas par machine
+#   cloudflare, cloudflare-http  flux d'un fournisseur, en amont de la flotte
+#   plume-config, plume-engagement   le SOC lui-même

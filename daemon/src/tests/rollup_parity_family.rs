@@ -156,10 +156,11 @@
         ] {
             let conn = parity_family_db(state, now_ts);
             let cov = RollupCoverage::of(&conn);
+            let dim_cov = DimRollupCoverage::of(&conn);
             for soql in &queries {
                 for (from, to) in parity_family_windows(now_ts) {
                     cellules += 1;
-                    let Some(rr) = try_rollup_route_at(soql, from, to, None, now_ts, cov) else {
+                    let Some(rr) = try_rollup_route_at(soql, from, to, None, now_ts, cov, dim_cov) else {
                         continue; // DÉCLINE -> le compilo brut sert -> exact par construction
                     };
                     routees += 1;
@@ -221,7 +222,7 @@
         // …et le corps doit REDEVENIR servable sur une fenêtre profonde.
         let soql = "search | stats count by source,severity";
         assert!(
-            try_rollup_route_at(soql, cur - 9 * 3600, cur - 5 * 3600, None, now_ts, RollupCoverage::of(&repare)).is_some(),
+            try_rollup_route_at(soql, cur - 9 * 3600, cur - 5 * 3600, None, now_ts, RollupCoverage::of(&repare), DimRollupCoverage::of(&repare)).is_some(),
             "après réparation la route doit REPRENDRE (sinon le rollup ne sert plus à rien)"
         );
     }
@@ -244,7 +245,7 @@
         for soql in parity_family_queries() {
             for (from, to) in parity_family_windows(now_ts) {
                 assert!(
-                    try_rollup_route_at(&soql, from, to, None, now_ts, cov).is_none(),
+                    try_rollup_route_at(&soql, from, to, None, now_ts, cov, DimRollupCoverage::of(&conn)).is_none(),
                     "corps servi SANS couverture établie : {soql} ({from},{to})"
                 );
             }
@@ -252,7 +253,7 @@
         // …et le watermark seul ne rachète rien : c'est bien la couverture qui ouvre la porte.
         let ouverte = RollupCoverage::asserted_by_the_test(cur - 3600, i64::MAX);
         assert!(
-            try_rollup_route_at("search | stats count by source,severity", cur - 9 * 3600, cur - 5 * 3600, None, now_ts, ouverte).is_some(),
+            try_rollup_route_at("search | stats count by source,severity", cur - 9 * 3600, cur - 5 * 3600, None, now_ts, ouverte, DimRollupCoverage::of(&conn)).is_some(),
             "avec une couverture, la même requête route : la différence vient bien de la couverture"
         );
     }

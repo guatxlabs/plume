@@ -474,24 +474,26 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         // COUVERTURE du rollup (cf. rollup_coverage) : ÉTABLIE depuis la base, jamais affirmée ici. Elle borne
         // le corps du MERGE multi-dim au réellement-agrégé ET fait rattraper les retardataires. Non établie ->
         // aucun corps -> chemin brut (exact). Lecture indexée (PK meta) ; sans effet sur ROUTE A/B (single-dim).
-        let rollup_cov = { let rc = req_db(&st, &au); let c = rc.lock(); RollupCoverage::of(&c) };
+        // MÊME discipline pour le rollup PAR DIMENSION (ROUTE B) : la bande dont le job témoigne est LUE
+        // depuis la base, jamais affirmée ici ; l'absence de bande vaut déclin (cf. `rollup_coverage`).
+        let (rollup_cov, dim_cov) = { let rc = req_db(&st, &au); let c = rc.lock(); (RollupCoverage::of(&c), DimRollupCoverage::of(&c)) };
         let rr = if masks.is_empty() && !keyset {
             #[cfg(feature = "cold_tier")]
             {
                 match cold_boundary {
                     Some(b) => {
-                        let c = try_cold_rollup_route(&soql, from, to, env, b, rollup_cov);
+                        let c = try_cold_rollup_route(&soql, from, to, env, b, rollup_cov, dim_cov);
                         if c.is_some() {
                             cold_boundary = None;
                         }
                         c
                     }
-                    None => try_rollup_route(&soql, from, to, env, rollup_cov),
+                    None => try_rollup_route(&soql, from, to, env, rollup_cov, dim_cov),
                 }
             }
             #[cfg(not(feature = "cold_tier"))]
             {
-                try_rollup_route(&soql, from, to, env, rollup_cov)
+                try_rollup_route(&soql, from, to, env, rollup_cov, dim_cov)
             }
         } else {
             None
@@ -1116,24 +1118,26 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
         // sous `B` et qu'aucun masque n'est actif ; succès -> cold_boundary effacé (pool normal) ; sinon chemin
         // brut cold_union_query. Un masque/deny actif -> aucune route -> compile masqué + authorizer (parité).
         // COUVERTURE du rollup : voir /api/query — ÉTABLIE depuis la base, jamais affirmée ici.
-        let rollup_cov = { let rc = req_db(&st, &au); let c = rc.lock(); RollupCoverage::of(&c) };
+        // MÊME discipline pour le rollup PAR DIMENSION (ROUTE B) : la bande dont le job témoigne est LUE
+        // depuis la base, jamais affirmée ici ; l'absence de bande vaut déclin (cf. `rollup_coverage`).
+        let (rollup_cov, dim_cov) = { let rc = req_db(&st, &au); let c = rc.lock(); (RollupCoverage::of(&c), DimRollupCoverage::of(&c)) };
         let rr = if masks.is_empty() {
             #[cfg(feature = "cold_tier")]
             {
                 match cold_boundary {
                     Some(b) => {
-                        let c = try_cold_rollup_route(&soql, from, to, env, b, rollup_cov);
+                        let c = try_cold_rollup_route(&soql, from, to, env, b, rollup_cov, dim_cov);
                         if c.is_some() {
                             cold_boundary = None;
                         }
                         c
                     }
-                    None => try_rollup_route(&soql, from, to, env, rollup_cov),
+                    None => try_rollup_route(&soql, from, to, env, rollup_cov, dim_cov),
                 }
             }
             #[cfg(not(feature = "cold_tier"))]
             {
-                try_rollup_route(&soql, from, to, env, rollup_cov)
+                try_rollup_route(&soql, from, to, env, rollup_cov, dim_cov)
             }
         } else {
             None

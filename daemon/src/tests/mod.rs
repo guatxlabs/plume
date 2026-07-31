@@ -26,5 +26,6 @@ include!("keyset.rs");
 include!("query_verify.rs"); // preuve chemin de requête sans perte silencieuse (bornes/regex/joker/combo)
 include!("rollup_b2b_adverse.rs"); // B2b (merge rollup ∪ raw) — ajout tests-only
 include!("rollup_parity_family.rs"); // parité route rapide == chemin brut, sur une FAMILLE dérivée (pas un cas nommé)
+include!("rollup_dim_coverage.rs"); // le JUMEAU : couverture du rollup PAR DIMENSION (trou mesuré, fermeture, garde)
 include!("backup_retention_adverse.rs"); // scheduler backup natif + rétention KEEP-N — tests-only
 include!("netban.rs"); // chantier ② Phase 1 — ban natif HTTP (IP réelle, store net_ban, guard, API admin)

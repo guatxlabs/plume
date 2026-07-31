@@ -3369,7 +3369,7 @@ fn phase_a_cold_route_count_by_source_equals_raw_zero_parquet() {
     let b = union_boundary(&db, &conf);
     let from = base;
     let to = base + SECS_PER_DAY - 1; // jour M-10 entier, tout < B
-    let rr = crate::try_cold_rollup_route("search | stats count by source", from, to, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX))
+    let rr = crate::try_cold_rollup_route("search | stats count by source", from, to, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test())
         .expect("route cold `count by source`");
     // (c) ZÉRO Parquet : la route ne cite QUE les tables rollup EN BASE, jamais cold_event/Parquet.
     let low = rr.sql.to_lowercase();
@@ -3416,7 +3416,7 @@ fn phase_a_cold_route_multidim_by_dims_equals_raw_b2() {
     let from = base;
     let to = base + SECS_PER_DAY - 1; // jour M-10 entier, tout < B
     let soql = "search | stats count by source,severity";
-    let rr = crate::try_cold_rollup_route(soql, from, to, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).expect("route cold multi-dim (B2)");
+    let rr = crate::try_cold_rollup_route(soql, from, to, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).expect("route cold multi-dim (B2)");
     let low = rr.sql.to_lowercase();
     assert!(rr.sql.contains("cold_rollup") && rr.sql.contains("event_rollup"), "union des rollups EN BASE: {}", rr.sql);
     assert!(!low.contains("cold_event") && !low.contains("parquet"), "route N'OUVRE PAS de Parquet: {}", rr.sql);
@@ -3476,7 +3476,7 @@ fn phase_a_hot_cold_union_no_double_count_at_boundary() {
         // PIÈGE : event_rollup STALE à bucket<B (999) -> la route DOIT l'exclure (côté hot = bucket>=B).
         c.execute("INSERT INTO event_rollup(bucket,source,severity,action,src_ip,host,n,last_ts,env_id) VALUES(?1,'shared',0,'','','',999,?1,'prod')", params![base]).unwrap();
     }
-    let rr = crate::try_cold_rollup_route("search | stats count by source", 0, 0, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).unwrap();
+    let rr = crate::try_cold_rollup_route("search | stats count by source", 0, 0, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).unwrap();
     let res = crate::run_query_ex(&dbp, &rr.sql, 60_000, None).unwrap();
     let m: std::collections::HashMap<String, i64> = count_by_source(&res).into_iter().collect();
     assert_eq!(m.get("shared").copied().unwrap_or(0), 17, "shared = cold(10)+hot(7) ; STALE <B (999) EXCLU -> pas de double-comptage à B");
@@ -3491,11 +3491,11 @@ fn phase_a_hot_cold_union_no_double_count_at_boundary() {
 #[test]
 fn phase_a_dc_timechart_secondfilter_fall_back_no_cold_route() {
     let b = 12_345 * SECS_PER_DAY;
-    assert!(crate::try_cold_rollup_route("search | stats dc(host) by source", 0, 0, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(), "dc() by -> pas de route cold");
-    assert!(crate::try_cold_rollup_route("search | stats dc(host)", 0, 0, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(), "dc() -> pas de route cold");
-    assert!(crate::try_cold_rollup_route("search | timechart count", 0, 0, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(), "timechart -> pas de route cold");
-    assert!(crate::try_cold_rollup_route("search source=web status=500 | stats count by path", 0, 0, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(), "2e filtre non exprimable -> pas de route cold (angle mort évité)");
-    assert!(crate::try_cold_rollup_route("search | stats avg(severity) by source", 0, 0, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).is_none(), "avg() -> pas de route cold");
+    assert!(crate::try_cold_rollup_route("search | stats dc(host) by source", 0, 0, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(), "dc() by -> pas de route cold");
+    assert!(crate::try_cold_rollup_route("search | stats dc(host)", 0, 0, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(), "dc() -> pas de route cold");
+    assert!(crate::try_cold_rollup_route("search | timechart count", 0, 0, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(), "timechart -> pas de route cold");
+    assert!(crate::try_cold_rollup_route("search source=web status=500 | stats count by path", 0, 0, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(), "2e filtre non exprimable -> pas de route cold (angle mort évité)");
+    assert!(crate::try_cold_rollup_route("search | stats avg(severity) by source", 0, 0, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(), "avg() -> pas de route cold");
 }
 
 // (f) — DENY (#45) sur une colonne réelle est REFUSÉ sur le MIROIR cold_rollup / cold_dim_rollup EXACTEMENT
@@ -3596,7 +3596,7 @@ fn phase_a_generic_unknown_source_rolls_up_zero_config() {
     assert_eq!(cold_rollup_sum(&db, "source='totally-unknown-vendor-xyz'"), 9, "source INCONNUE rollée SANS config");
     let from = base;
     let to = base + SECS_PER_DAY - 1;
-    let rr = crate::try_cold_rollup_route("search | stats count by source", from, to, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX)).unwrap();
+    let rr = crate::try_cold_rollup_route("search | stats count by source", from, to, None, b, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).unwrap();
     let res = crate::run_query_ex(&dbp, &rr.sql, 60_000, None).unwrap();
     assert!(count_by_source(&res).iter().any(|(s, c)| s == "totally-unknown-vendor-xyz" && *c == 9), "route sert la source inconnue vite (aucun Parquet)");
     let _ = std::fs::remove_dir_all(&root);

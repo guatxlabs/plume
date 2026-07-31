@@ -587,36 +587,95 @@ pub(crate) fn rollup_events(conn: &Connection) {
     }
 
     // ---- PHASE 3a : event_dim_rollup (pré-agrégation par DIMENSION) ----
-    // MÊME mécanique incrémentale que event_rollup mais avec un watermark DÉDIÉ (event_dim_rollup_wm) :
-    // ré-agrège l'heure courante+précédente (fenêtre chaude, purge anti-orphelin top-N) et rattrape 1x les
-    // heures définitives via le watermark. Le watermark est BORNÉ par dim_backfill (défaut 24 h) : au COLD
-    // START (watermark absent -> 0) on n'agrège QUE [recent-24h, recent) par-source (scan indexé idx_event_src
-    // borné, en tâche de fond) -> JAMAIS de full-scan bloquant des 2,3 M lignes ; le reste se remplit en
-    // forward-fill au fil des ticks. Cap top-N/(bucket,source,dim) -> cardinalité bornée (path/vhost).
+    // Le jumeau d'`event_rollup`, et il portait le MÊME défaut de watermark plus un trou en propre : voir
+    // `rollup_coverage` (section « LE JUMEAU »), qui porte la mesure — 19 991 lignes agrégées sur 1 440 007,
+    // une bande de 25 h sur 28 jours, et un watermark posé PAR-DESSUS tout le reste. Ici, plus de watermark :
+    // le job entretient une BANDE `[from, below)` DONT IL PEUT TÉMOIGNER, et cette bande bouge par trois
+    // mouvements BORNÉS par le même `PLUME_ROLLUP_DIM_BACKFILL` (défaut 24 h) — elle MONTE (donc elle ne saute
+    // plus une indisponibilité), elle DESCEND jusqu'à `MIN(event.ts)` (donc un démarrage à froid finit par tout
+    // couvrir, sans jamais le scan bloquant que le plafond de 24 h évitait), et elle SE RÉTRACTE sur une
+    // écriture rétro-datée (que la remontée reconstruit ensuite). Coût par tick : au plus DEUX tranches de
+    // `dim_backfill`, soit le même ordre que l'unique tranche d'avant. La fenêtre VOLATILE `[recent, ∞)` reste
+    // ré-agrégée intégralement à chaque tick — elle n'est pas dans la bande prouvée, elle est publiée à part.
     let dconf = load_config();
-    let dim_backfill: i64 = cfg(&dconf, "PLUME_ROLLUP_DIM_BACKFILL", "86400").parse().unwrap_or(86400).max(3600);
+    // ALIGNÉ À L'HEURE, et pas seulement plancher à 3600 : les fronts se déplacent de ce pas, et un pas non
+    // aligné poserait une borne de bande AU MILIEU d'un bucket -> le bucket coupé serait agrégé À MOITIÉ tout
+    // en étant témoigné entier par la couverture. La contrainte vient du grain de la table, pas d'un goût.
+    let dim_backfill: i64 = (cfg(&dconf, "PLUME_ROLLUP_DIM_BACKFILL", "86400").parse().unwrap_or(86400).max(3600) / 3600) * 3600;
     let dim_topn: i64 = cfg(&dconf, "PLUME_ROLLUP_DIM_TOPN", "50").parse().unwrap_or(50).max(0);
-    let dim_floor = (recent - dim_backfill).max(0);
-    let dim_wm: i64 = conn.query_row("SELECT value FROM meta WHERE key='event_dim_rollup_wm'", [], |r| r.get::<_, String>(0))
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(0).max(dim_floor); // cold start / rattrapage BORNÉS à dim_backfill
     // spec EFFECTIVE = défauts + env PLUME_ROLLUP_DIMS (cf. dim_rollup_specs). Pour CHAQUE (source,dim)
     // — y compris les dims EXTRAITES (Phase 1) comme k8s-log/level — dim_rollup_insert_sql matérialise
     // val = COALESCE(json_extract(fields,'$.<dim>'),'') : aucune distinction core/extrait, toute dim est
     // lue depuis le JSON `fields` (ns/pod/level vivent tous dans `fields`, pas en colonne réelle).
-    let dim_agg = |cond: String| {
+    // Renvoie false si UNE seule des agrégations a échoué -> fail-closed : on ne publiera RIEN.
+    let dim_agg = |cond: String| -> bool {
+        let mut ok = true;
         for (source, dims) in dim_rollup_specs().iter() {
             for dim in dims.iter() {
-                let _ = conn.execute(&dim_rollup_insert_sql(source, dim, &cond, dim_topn), []);
+                ok &= conn.execute(&dim_rollup_insert_sql(source, dim, &cond, dim_topn), []).is_ok();
             }
         }
+        ok
     };
-    if recent > dim_wm {
-        dim_agg(format!("ts >= {dim_wm} AND ts < {recent}")); // heures définitives (bornées à dim_backfill), 1x
+    let dim_cov = DimRollupCoverage::of(conn);
+    // Départ : la bande publiée, ou — rien n'étant établi — une bande VIDE posée au sommet (`recent`). Le
+    // démarrage à froid est donc le cas dégénéré de la règle générale, pas une branche à part.
+    let (mut band_lo, mut band_hi) = match dim_cov.band() {
+        Some((from, below, _)) => (from, below),
+        None => (recent, recent),
+    };
+    // RÉTRACTATION. Une ligne écrite SOUS la bande depuis sa publication (`id > at_id`, `event.id` = rowid
+    // monotone à l'insertion) n'a pas été agrégée : la bande redescend jusqu'à SON bucket, et tout ce qui est
+    // au-dessus cesse d'être témoigné jusqu'à ce que la remontée l'ait reconstruit. `NOT INDEXED` force la
+    // porte rowid (sinon le planificateur balaie `idx_event_ts` sur toute la bande).
+    if let Some(at) = dim_cov.late_floor_id() {
+        if let Ok(Some(t)) = conn.query_row(
+            "SELECT MIN(ts) FROM event NOT INDEXED WHERE id>?1 AND ts>=?2 AND ts<?3",
+            params![at, band_lo, band_hi],
+            |r| r.get::<_, Option<i64>>(0),
+        ) {
+            band_hi = (t / 3600) * 3600;
+        }
     }
+    // Les deux fronts, chacun d'au plus `dim_backfill`. Le bas s'arrête à ce qu'`event` porte ENCORE (sous
+    // `MIN(event.ts)` il n'y a rien à agréger : les buckets plus vieux sont l'histoire que SEUL le rollup
+    // garde, et les recomposer depuis `event` les effacerait — même règle que `event_rollup`).
+    let dim_event_floor = conn
+        .query_row("SELECT MIN(ts) FROM event", [], |r| r.get::<_, Option<i64>>(0))
+        .ok()
+        .flatten()
+        .map(|t| (t / 3600) * 3600)
+        .unwrap_or(recent);
+    let down_lo = (band_lo - dim_backfill).max(dim_event_floor).min(band_lo);
+    let up_hi = (band_hi + dim_backfill).min(recent).max(band_hi);
+    // La BORNE D'IDENTIFIANT est prise AVANT d'agréger et POUSSÉE DANS la condition : la bande publiée porte
+    // alors EXACTEMENT les lignes `id <= dim_at_id`, donc la couverture est vraie par CONSTRUCTION.
+    let dim_at_id: i64 = conn.query_row("SELECT COALESCE(MAX(id),0) FROM event", [], |r| r.get(0)).unwrap_or(0);
+    // RÉTRACTER D'ABORD, RÉPARER ENSUITE : tant que les tranches ne sont pas agrégées, la route doit décliner
+    // (le brut sert, exact) plutôt que lire une table qu'on SAIT en cours de reconstruction.
+    DimRollupCoverage::retract(conn);
+    // Le cap top-N peut faire SORTIR une valeur du top entre deux ticks -> ligne orpheline à PK différente ->
+    // double comptage. Chaque tranche est donc PURGÉE avant d'être ré-agrégée (même règle que la fenêtre chaude).
+    let mut dim_ok = true;
+    let mut dim_slice = |lo: i64, hi: i64| {
+        if hi <= lo {
+            return;
+        }
+        dim_ok &= conn.execute("DELETE FROM event_dim_rollup WHERE bucket >= ?1 AND bucket < ?2", params![lo, hi]).is_ok();
+        dim_ok &= dim_agg(format!("ts >= {lo} AND ts < {hi} AND id <= {dim_at_id}"));
+    };
+    dim_slice(down_lo, band_lo); // le front BAS : vers l'histoire jamais agrégée
+    dim_slice(band_hi, up_hi);   // le front HAUT : vers le présent, sans jamais sauter
     let _ = conn.execute("DELETE FROM event_dim_rollup WHERE bucket >= ?1", params![recent]); // purge fenêtre chaude (anti-orphelin top-N)
-    dim_agg(format!("ts >= {recent}"));                       // fenêtre chaude (ré-agrégée à chaque tick)
-    let _ = conn.execute("DELETE FROM meta WHERE key='event_dim_rollup_wm'", []);
-    let _ = conn.execute("INSERT INTO meta(key,value) VALUES('event_dim_rollup_wm', ?1)", params![recent.to_string()]);
+    dim_ok &= dim_agg(format!("ts >= {recent}"));                       // fenêtre chaude (ré-agrégée à chaque tick)
+    // PUBLICATION — jamais avant, jamais partielle (une seule ligne `meta`), et JAMAIS si une agrégation a
+    // échoué : une couverture qu'on n'a pas prouvée ne s'écrit pas, la route décline, le brut sert.
+    if dim_ok {
+        DimRollupCoverage::publish(conn, down_lo, up_hi, recent, dim_at_id);
+    }
+    // Le watermark HISTORIQUE ne doit plus exister : il ne vaut pas couverture, et le laisser là inviterait
+    // une lecture future à le reprendre pour telle. C'est précisément l'erreur qu'on ferme.
+    let _ = conn.execute("DELETE FROM meta WHERE key=?1", params![META_DIM_ROLLUP_WM_LEGACY]);
 
     // ---- PHASE host : host_rollup (inventaire de FLOTTE pré-agrégé PAR HÔTE) ----
     // MÊME tick, MÊME mécanique watermark que event_rollup, mais keyé par HÔTE (pas bucketé) -> /api/fleet +
@@ -1191,6 +1250,10 @@ pub(crate) fn retention_run_tenant(db: &Arc<Mutex<Connection>>, db_path: &str) {
     // plus LONGUE que le global garde ses buckets). Purge chunkée (#23 F3), mêmes lignes finales supprimées.
     retention_prune_table(db, "event_rollup", "bucket", "", global_cutoff, n, &policies);
     retention_prune_table(db, "event_dim_rollup", "bucket", "", global_cutoff, n, &policies);
+    // La purge vient de SUPPRIMER des buckets sous le cutoff : la bande publiée ne peut plus en témoigner.
+    // On remonte son plancher (cf. `DimRollupCoverage::raise_floor`) — sinon la couverture affirmerait une
+    // image sur des buckets qu'on vient d'effacer, ce qui est exactement le défaut qu'on ferme.
+    { let conn = db.lock(); DimRollupCoverage::raise_floor(&conn, global_cutoff); }
     // RÉTENTION DE L'AUDIT : NE JAMAIS purger l'audit de config NI les marqueurs d'accès
     // opérateur/tenant-admin (client-visibles). Sinon un admin baisse la rétention, agit, et sous quelques
     // jours TOUTE la trace SOC-visible/alertable de ses changements — y compris l'event « rétention baissée »

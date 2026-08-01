@@ -133,8 +133,26 @@ désactivez le timer (`systemctl disable --now plume-backup.timer`).
 Enrôlez une autre machine comme agent qui pousse vers le central :
 ```sh
 sudo /usr/local/bin/plume-daemon token agent-$(hostname) $(hostname)   # on the central
-sudo env PLUME_CENTRAL=https://central:7000 PLUME_TOKEN='<token>' bash bootstrap-agent.sh   # on the agent
+# on the agent — le token passe par STDIN, JAMAIS par la ligne de commande (voir l'avertissement) :
+umask 077
+printf 'PLUME_CENTRAL=%s\nPLUME_TOKEN=%s\n' 'https://central:7000' '<token>' \
+  | sudo tee /etc/plume/plume.conf >/dev/null
+sudo chgrp soc /etc/plume/plume.conf && sudo chmod 0640 /etc/plume/plume.conf
+sudo bash bootstrap-agent.sh          # conf déjà présente -> conservée telle quelle
 ```
+
+> ### ⚠️ Ne passez JAMAIS le token sur la ligne de commande
+> La forme `sudo env PLUME_TOKEN='<token>' bash bootstrap-agent.sh` **fuite le token dans le SOC
+> lui‑même**. `sudo` journalise sa ligne de commande complète (`COMMAND=…`) ; le collecteur `journal`
+> expédie ces entrées vers `/api/ingest/journal`, et le daemon les stocke **en clair** dans
+> `event.message` **et** `event.fields.command`. *Mesuré le 2026‑08‑01 sur Ubuntu 24.04.4 amd64 : la
+> commande d'enrôlement documentée jusqu'ici produisait 6 events contenant le token en clair ; la
+> variante `tee` ci‑dessus en produit 0, agent fonctionnel à l'identique.* Tout **viewer** du SOC peut
+> alors lire le token (`search source=sudo`) et s'en servir pour injecter des events, usurper un hôte
+> via HEC/OTLP, ou réclamer une action de réponse non assignée.
+> Le collecteur `journal` remonte jusqu'à **15 min en arrière** à son premier run : l'activer *après*
+> l'enrôlement ne protège pas. Si la fuite a déjà eu lieu : **révoquez et recréez le token**, puis
+> purgez les events concernés.
 
 ### C. Kubernetes / k3s
 **[`deploy/k3s.yaml`](deploy/k3s.yaml)** est complet et applicable tel quel : **Namespace + Secret + PVC +
@@ -161,7 +179,10 @@ Une base neuve est créée chiffrée d'office ; une base en clair existante est 
 ```sh
 sudo bash uninstall.sh            # removes binary + collectors + units + config (KEEPS /var/lib/plume)
 sudo bash uninstall.sh --purge    # ALSO removes data (DB, spool, ledger key) + the plume user
+sudo bash uninstall.sh --purge -y # idem, sans confirmation interactive (scripts / SSH non interactif)
 ```
+> `--purge` **demande une confirmation `[y/N]`** : sans terminal (SSH non interactif, script), il lit
+> une réponse vide, **n'enlève rien et sort en 0**. Utilisez `-y` dans ce cas. *Mesuré le 2026‑08‑01.*
 
 ## Ajouter vos sources et collecteurs
 
@@ -194,7 +215,36 @@ MAXLEN=4000                            # longueur max/ligne (monter pour du JSON
 
 Faites émettre à `CMD` uniquement le **nouveau** (`journalctl --since -1min`, `tail -n0 -F`, un appel d'API…) ; la déduplication horaire absorbe les doublons. Tout ce qui produit du texte se collecte ainsi : un log Linux, une API REST, une base — le collecteur tourne sur un hôte Linux mais la **cible** peut être n'importe quel système.
 
-> **Linux** (serveur ou poste, toute distribution) est couvert nativement : les collecteurs (`collectors/*.sh`, POSIX-sh) s'installent via `bootstrap-agent.sh` et **s'auto-désactivent** si leur outil est absent (auditd, journald, conntrack, ufw/nftables, ClamAV, Falco, kube-state…). **Windows** (poste, entreprise, Windows Server) a un **collecteur natif PowerShell clé-en-main** — événements · pare-feu · réseau · Defender — dans **[`collectors/windows/`](collectors/windows/)** : copiez-le, planifiez-le (tâche toutes les 5 min), il POST directement au central. **macOS** : via un scripted input (`log show`).
+> **Linux** (serveur ou poste, toute distribution) est couvert nativement par les collecteurs
+> (`collectors/*.sh`, POSIX-sh), qui **s'auto-désactivent** si leur outil est absent (auditd, journald,
+> conntrack, ufw/nftables, ClamAV, Falco, kube-state…). **Mais `bootstrap-agent.sh` n'en installe que
+> trois** — `resources` (métriques), `integrity` (FIM) et `ship` (expédition). *Mesuré le 2026‑08‑01 sur
+> Ubuntu 24.04.4 : après un `bootstrap-agent.sh` par défaut, le SOC ne reçoit **aucun** événement de
+> sécurité — seulement des métriques et des battements `category=health`.* Les autres sont **opt‑in en
+> deux temps** (règle d'or : on installe sans activer) :
+> ```sh
+> sudo env PLUME_EXTRA_COLLECTORS="journal auditd" bash bootstrap-agent.sh   # installe, N'ACTIVE PAS
+> sudo systemctl enable --now plume-journal.timer plume-auditd.timer         # l'opérateur active
+> ```
+> `journal` (→ `category=auth`, sources `sshd`/`sudo`/`su`) est **immédiatement** productif. `auditd`
+> (→ `category=exec`) exige, lui, trois étapes de plus, sinon il tourne **sans rien remonter** :
+> ```sh
+> sudo apt install auditd                                    # absent d'une Ubuntu Server par défaut
+> sudo cp systemd/plume-audit.rules /etc/audit/rules.d/plume.rules   # depuis CE dépôt : bootstrap-agent.sh
+>                                                            # NE pose PAS le gabarit (seul bootstrap.sh le fait)
+> sudoedit /etc/audit/rules.d/plume.rules                    # cf. les 2 pièges ci-dessous
+> sudo augenrules --load && sudo auditctl -l                 # TOUJOURS relire ce que auditd a réellement chargé
+> ```
+> **Piège 1 — `augenrules` s'arrête à la première règle en échec** et charge donc *tout ce qui précède,
+> rien de ce qui suit*, en sortant `0`. Le gabarit livré référence des chemins d'exemple (`/srv/data`,
+> `/etc/kubernetes`, `/usr/bin/nc.openbsd`…) qui, absents chez vous, **décapitent silencieusement la fin
+> du fichier**. Retirez-les ou remplacez-les par vos chemins réels *avant* de charger.
+> **Piège 2 — la seule règle `execve` du gabarit est `arch=b32`** : sur un hôte **amd64**, elle ne capte
+> quasiment rien. Ajoutez l'équivalent 64 bits :
+> `-a always,exit -F arch=b64 -S execve -F auid!=-1 -k exec_tracking`.
+> *Mesuré le 2026‑08‑01, Ubuntu 24.04.4 amd64 : gabarit tel quel → 6 règles chargées sur 12 et **0**
+> enregistrement `EXECVE` ; les deux pièges corrigés → 9 règles et `category=exec` alimenté.*
+> **Windows** (poste, entreprise, Windows Server) a un **collecteur natif PowerShell clé-en-main** — événements · pare-feu · réseau · Defender — dans **[`collectors/windows/`](collectors/windows/)** : copiez-le, planifiez-le (tâche toutes les 5 min), il POST directement au central. **macOS** : via un scripted input (`log show`).
 
 **2. Extraire des champs d'un format inconnu (parser).** Déposez `config.d/parsers/<nom>.json` : une regex à groupes nommés `(?P<champ>…)` transforme le texte brut en champs structurés, cherchables et mappables au CIM — sans rebuild.
 

@@ -163,12 +163,32 @@ déclaratif produisent des events **indistinguables** côté SOC.
 ## Utilisation
 
 ```bash
-plume-agent test-ship --config agent.toml        # test connectivité/auth/TLS (1 event de santé)
-plume-agent run --config agent.toml              # boucle service (ou --once pour un cycle timer/cron)
-sudo plume-agent install --endpoint https://soc.guatx.com --token TOK   # génère la config + service systemd
+# 1. poser le binaire et la config HORS de /home (voir l'avertissement ci-dessous)
+cargo build --release
+sudo install -m0755 target/release/plume-agent /usr/local/bin/plume-agent
+sudo install -d -m0750 /etc/plume
+umask 077; printf 'endpoint = "https://soc.example.com"\ntoken = "%s"\n' '<token>' \
+  | sudo tee /etc/plume/agent.toml >/dev/null      # token par STDIN, jamais en argv
+
+# 2. tester, installer, vérifier
+plume-agent test-ship --config /etc/plume/agent.toml   # connectivité/auth/TLS (1 event de santé)
+sudo /usr/local/bin/plume-agent install --config /etc/plume/agent.toml
+systemctl is-active plume-agent                        # <- VÉRIFIEZ : `install` sort 0 sans le faire
 plume-agent status
 sudo plume-agent uninstall
 ```
+
+> ### ⚠️ Deux pièges d'installation (mesurés le 2026‑08‑01, Ubuntu 24.04.4 amd64)
+> **1. Ne lancez pas `install` sur un binaire resté dans `/home`.** `install` écrit un `ExecStart=`
+> pointant sur le **chemin courant** du binaire, sans le copier — et la même unité pose
+> `ProtectHome=yes`. Un binaire fraîchement compilé dans `~/plume/agent/target/release/` donne donc une
+> unité **en boucle de redémarrage** (`status=203/EXEC`). *Mesuré : `install` affiche
+> « service installé et démarré » et sort **0** alors que le service échoue — d'où le
+> `systemctl is-active` ci‑dessus.* Copiez le binaire dans `/usr/local/bin` et la config dans
+> `/etc/plume` d'abord.
+> **2. `--token TOK` met le secret dans l'argv de `sudo`**, que `sudo` journalise et que le collecteur
+> `journal` (ou la source `journald` de cet agent) expédie **en clair** au central. Écrivez le TOML par
+> STDIN comme ci‑dessus, puis `install --config`.
 
 ## Déploiement (service auto-installé)
 

@@ -182,6 +182,423 @@ def repro_cmd(args):
     return line
 
 
+def render_concurrency(W, conc):
+    """LA COURBE DE CONCURRENCE. Rendue à partir de `bench/concurrency.py` — une ligne par NIVEAU
+    (nombre d'analystes simultanés), plus une ligne d'en-tête par configuration de sémaphore.
+
+    Ce bloc ne calcule aucun chiffre : il range ceux qui ont été mesurés. Les seuls calculs sont des
+    RAPPORTS entre deux mesures de la même passe (débit rapporté au niveau 1, écart entre deux
+    tailles de sémaphore), et chacun est affiché à côté de ses deux termes."""
+    heads = [d for d in conc if d.get("phase") == "concurrency_probe"]
+    lvls = [d for d in conc if d.get("phase") == "concurrency" and d.get("analysts") is not None
+            and not d.get("daemon_died_at_level")]
+    deaths = [d for d in conc if d.get("daemon_died_at_level")]
+    if not lvls:
+        return
+    cfgs = []
+    for r in lvls:
+        if r["config_id"] not in cfgs:
+            cfgs.append(r["config_id"])
+    head_of = {h["config_id"]: h for h in heads}
+
+    W("## La concurrence — ce que le nœud fait quand l'équipe travaille en même temps")
+    W("")
+    W("Tout le reste de ce document est pris **une requête à la fois** : `sem_wait_ms` y est nul par")
+    W("construction, et le document le disait lui-même. Cette section mesure l'autre condition, la")
+    W("vraie : plusieurs analystes qui lancent de **très grosses** requêtes en même temps, sur la")
+    W("même base et sous le **même budget appliqué** de 2 Gio.")
+    W("")
+    W("**Un niveau** = *N* analystes indépendants (chacun sa connexion HTTP, chacun son compte")
+    W("`viewer`), chacun parcourant le mélange plusieurs fois, en décalant son point de départ — deux")
+    W("voisins ne tirent donc pas la même requête au même instant. Le niveau se termine quand tous ont")
+    W("fini leur travail : le débit agrégé est du travail RÉELLEMENT servi, pas une extrapolation.")
+    W("")
+    W("**L'ordre des questions est délibéré : la justesse d'abord.** Trois défauts de correction")
+    W("viennent d'être trouvés dans les chemins d'agrégat de ce produit, et aucun n'était visible sur")
+    W("un banc de latence. Chaque réponse concurrente est donc comparée **par sa valeur** à la réponse")
+    W("obtenue seul — même base, même binaire, même fenêtre — avant qu'on ne regarde un seul temps.")
+    W("")
+
+    # ---------------------------------------------------------------- le mélange et sa dérivation
+    h0 = heads[0] if heads else None
+    if h0:
+        d = h0.get("derivation") or {}
+        solo = h0.get("solo") or {}
+        W("### Le mélange, et pourquoi c'est celui-là")
+        W("")
+        W(f"Le mélange n'est pas une liste de goûts : il est **dérivé de la passe solo qui le")
+        W(f"précède**. Le PLANCHER est la requête la moins chère observée (`{d.get('floor_id')}`,")
+        W(f"{fmt_dur(d.get('floor_ms'))}) — c'est le coût FIXE d'une requête, pas du travail de base.")
+        W("Chaque **famille** de la matrice (les classes `C1`…`C6` de ce document) entre par son")
+        W(f"représentant le plus coûteux, et seulement s'il coûte au moins **{d.get('heavy_factor', 0):g} ×**")
+        W("le plancher. La famille du plancher échoue ainsi à son propre test et s'exclut d'elle-même.")
+        W("Le plancher est ensuite ajouté **à part** : il ne charge rien, il mesure ce que devient le")
+        W("clic instantané d'un tableau de bord pendant que les collègues lancent des monstres.")
+        W("")
+        W("| Classe retenue | Famille | Ce que c'est | Coût SEUL (p50) |")
+        W("|---|:--:|---|---:|")
+        for cid in (d.get("mix_effectif") or d.get("mix") or []):
+            s = solo.get(cid) or {}
+            fam = cid[1] if len(cid) > 1 else "?"
+            W(f"| `{cid}` | {fam} | {s.get('label','—')} | {fmt_ms(s.get('p50_ms'))} ms |")
+        W("")
+        if d.get("rejected"):
+            W("Familles **écartées** du mélange lourd, avec leur motif mesuré :")
+            W("")
+            for r in d["rejected"]:
+                W(f"- famille {r['family']} (`{r['class_id']}`) : {r['why']}.")
+            W("")
+        q = h0.get("quiescence") or {}
+        if q:
+            W(f"**Mise au repos avant de mesurer** : un daemon qui vient de démarrer lance un `ANALYZE`")
+            W(f"complet en arrière-plan qui prend le verrou d'écriture, et le chemin interactif consulte")
+            W(f"la base AVANT de prendre son permit — mesurer tout de suite, c'est mesurer le démarrage.")
+            W(f"Le harnais attend donc {q.get('need')} tirs consécutifs dont l'attente avant moteur est")
+            W(f"sous la milliseconde : **{fmt_dur((q.get('seconds') or 0) * 1000)}** ici")
+            W(f"(`quiescent={str(q.get('quiescent')).lower()}`).")
+            W("")
+
+    # ---------------------------------------------------------------- la courbe, par sémaphore
+    for c in cfgs:
+        rows = sorted([r for r in lvls if r["config_id"] == c], key=lambda r: r["analysts"])
+        h = head_of.get(c) or {}
+        sem = rows[0].get("query_sem")
+        W(f"### La courbe — `{c}` (`PLUME_QUERY_CONCURRENCY={sem}`)")
+        W("")
+        W(f"Sémaphore **{sem}**, {h.get('query_sem_source', 'source inconnue')}. Fenêtre "
+          f"`{rows[0].get('window')}` (sans borne : le cas le plus coûteux). "
+          f"{rows[0].get('rounds')} passages par analyste sur "
+          f"{len(rows[0].get('mix') or [])} classes.")
+        W("")
+        _d = h.get("derivation") or {}
+        if _d.get("imposed"):
+            _dv = _d.get("diverge_de_la_derivation") or []
+            W("Mélange **IMPOSÉ** (celui de la passe de référence), pour que la comparaison entre "
+              "sémaphores ne porte que sur le sémaphore."
+              + (f" Sa propre passe solo aurait dérivé un mélange différent de "
+                 f"{len(_dv)} classe(s) : {', '.join('`' + x + '`' for x in _dv)} — "
+                 f"c'est précisément ce que l'imposition neutralise." if _dv else
+                 " Sa propre passe solo aurait dérivé exactement le même."))
+            W("")
+        elif h.get("derivation"):
+            W("Mélange **DÉRIVÉ** par la passe solo de cette configuration (tableau plus haut).")
+            W("")
+        W("| Analystes | file possible | requêtes | durée | débit | p50 | p95 | pire | p50 du pire analyste | attente p50 | attente p95 | RSS crête | plafond touché | OOM |")
+        W("|---:|:--:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:--:|")
+        base_q = rows[0].get("throughput_qps") or 0
+        for r in rows:
+            ev = r.get("cg_events_delta")
+            _q = r.get("throughput_qps") or 0
+            _rel = "" if not base_q else f" (x{_q/base_q:.2f})"
+            # Le cgroup a disparu avec le processus tué : on n'invente pas la valeur, on dit qu'elle
+            # n'existe plus. Une case « — » est une absence ; un 0 serait un mensonge.
+            _recl = fmt_n(ev.get("max")) if ev else ("— (cgroup disparu)" if r.get("cgroup_gone") else "—")
+            _dead = "" if r.get("daemon_alive", True) else " — **daemon TUÉ**"
+            W(f"| **{r['analysts']}** | {'oui' if r.get('queue_possible') else 'non'} "
+              f"| {r['queries_ok']}/{r['queries']}{_dead} | {r['elapsed_s']:.0f} s "
+              f"| {_q:.2f} q/s{_rel} "
+              f"| {fmt_ms(r.get('wall_p50_ms'))} | {fmt_ms(r.get('wall_p95_ms'))} "
+              f"| {fmt_ms(r.get('wall_max_ms'))} | {fmt_ms(r.get('analyst_p50_max_ms'))} "
+              f"| {fmt_ms(r.get('sem_wait_p50_ms'))} | {fmt_ms(r.get('sem_wait_p95_ms'))} "
+              f"| {fmt_mib(r.get('peak_rss_bytes'))} Mio | {_recl} "
+              f"| {'**OUI**' if (ev or {}).get('oom_kill') else 'non'} |")
+        W("")
+        # CE QUI EST ARRIVÉ AUX REQUÊTES QUI N'ONT PAS ABOUTI. Un refus NOMMÉ et une connexion coupée
+        # ne se rangent pas ensemble : le premier est une dégradation maîtrisée, le second est
+        # l'absence de processus.
+        bad = [r for r in rows if r["queries_ok"] < r["queries"]]
+        if bad:
+            W("Requêtes qui n'ont pas abouti, par statut HTTP :")
+            W("")
+            W("| Analystes | statuts | messages |")
+            W("|---:|---|---|")
+            for r in bad:
+                sc = r.get("status_counts") or {}
+                W(f"| {r['analysts']} | "
+                  + ", ".join(f"`{k}` x{v}" for k, v in sorted(sc.items())) + " | "
+                  + "<br>".join(f"`{e[:110]}`" for e in (r.get("errors") or [])[:3]) + " |")
+            W("")
+            W("`0` = pas de réponse HTTP du tout (connexion coupée / refusée) : c'est ce que voit un")
+            W("client quand le processus n'est plus là. Un `4xx` avec une cause nommée est l'inverse :")
+            W("le daemon a REFUSÉ proprement, en disant pourquoi.")
+            W("")
+        W("Colonnes : *durée* = temps mur du niveau entier ; *débit* = requêtes servies par seconde")
+        W("(entre parenthèses, le rapport au niveau 1 de la même passe) ; *p50/p95/pire* portent sur")
+        W("**toutes** les requêtes du niveau ; *p50 du pire analyste* est le pire des médians")
+        W("individuels — c'est lui qui dit si la charge est équitable ; *plafond touché* est le")
+        W("compteur `memory.events:max` du cgroup, c'est-à-dire le nombre de fois où le noyau a dû")
+        W("récupérer de la mémoire pour rester sous 2 Gio pendant ce niveau.")
+        W("")
+        sw = [r for r in rows if r.get("swap_suspect")]
+        if sw:
+            W(f"**{len(sw)} niveau(x) pris pendant que la MACHINE swappait** "
+              f"({', '.join(str(r['analysts']) for r in sw)} analystes) : ces lignes mesurent le")
+            W("stockage de l'hôte autant que plume, elles sont à rejouer.")
+            W("")
+        cpu = max((r.get("harness_cpu_share") or 0) for r in rows)
+        W(f"*Charger le daemon, pas la machine* : l'instrument lui-même n'a jamais consommé plus de")
+        W(f"**{cpu*100:.1f} %** d'un cœur-seconde par seconde de mesure sur cette passe — la latence")
+        W(f"mesurée n'est donc pas la sienne. Le daemon, lui, est enfermé dans son cgroup à 2 Gio")
+        W(f"sans swap : les deux pressions sont relevées séparément (`pressure_*` dans le JSONL).")
+        W("")
+
+    # ---------------------------------------------------------------- justesse
+    W("### La réponse est-elle la MÊME sous charge ?")
+    W("")
+    tot = dict(judged=0, same=0, differs=0, nombre_faux=0, hors_verdict=0)
+    for r in lvls:
+        j = r.get("justesse") or {}
+        for k in tot:
+            tot[k] += j.get(k, 0) or 0
+    W("| | |")
+    W("|---|---:|")
+    W(f"| Réponses comparées à leur référence solo | **{fmt_n(tot['judged'])}** |")
+    W(f"| Identiques (empreinte ET total) | **{fmt_n(tot['same'])}** |")
+    W(f"| Divergentes | **{fmt_n(tot['differs'])}** |")
+    W(f"| Dont NOMBRES FAUX (valeur dérivée d'un ensemble) | **{fmt_n(tot['nombre_faux'])}** |")
+    tot_fail = sum(r["queries"] - r["queries_ok"] for r in lvls)
+    W(f"| Hors verdict (voir ci-dessous) | {fmt_n(tot['hors_verdict'])} |")
+    W("")
+    if tot["hors_verdict"]:
+        if tot["hors_verdict"] == tot_fail:
+            W(f"Les {fmt_n(tot['hors_verdict'])} réponses hors verdict sont EXACTEMENT les "
+              f"{fmt_n(tot_fail)} requêtes qui n'ont pas abouti (connexion coupée après le kill, ou "
+              "refus nommé) : une requête sans réponse n'a rien à comparer. Aucune n'est hors verdict "
+              "pour cause d'instabilité — le compte le prouve, il n'est pas affirmé.")
+        else:
+            W(f"Sur {fmt_n(tot['hors_verdict'])} réponses hors verdict, {fmt_n(tot_fail)} sont des "
+              "requêtes qui n'ont pas abouti (rien à comparer) ; le reste vient des classes déclarées "
+              "instables SEUL (voir ci-dessous).")
+        W("")
+    if tot["differs"] == 0:
+        W("**Aucune réponse concurrente ne diffère de la réponse obtenue seul.** L'empreinte est")
+        W("insensible à l'ordre (un `GROUP BY` est un sac non ordonné) et le total de pagination est")
+        W("comparé en plus. Ce n'est pas une déduction depuis les latences : ce sont les VALEURS qui")
+        W("ont été comparées, requête par requête, contre une référence prise sur la même base et le")
+        W("même binaire quelques minutes plus tôt.")
+    else:
+        W("**Des réponses concurrentes diffèrent de la réponse obtenue seul.** Le détail est dans le")
+        W("JSONL (`justesse.divergences` : empreinte et valeurs des deux côtés) :")
+        W("")
+        W("| Passe | Analystes | Classe | Dérivée d'un ensemble | Solo | Sous charge |")
+        W("|---|---:|---|:--:|---|---|")
+        for r in lvls:
+            for dv in ((r.get("justesse") or {}).get("divergences") or [])[:8]:
+                W(f"| `{r['config_id']}` | {r['analysts']} | `{dv['class_id']}` | "
+                  f"{'**OUI**' if dv.get('set_derived') else 'non'} | "
+                  f"`{str(dv.get('solo_values') or dv.get('solo_digest'))[:60]}` | "
+                  f"`{str(dv.get('values') or dv.get('digest'))[:60]}` |")
+    W("")
+    excl = sorted({x for h in heads for x in (h.get("exclus_du_verdict") or [])})
+    if excl:
+        W("**Hors verdict, et pourquoi** : une classe dont la réponse varie DÉJÀ sans charge ne peut")
+        W("pas servir à accuser la concurrence — l'accuser d'une divergence qu'on observe seul serait")
+        W("une fausse alerte, et une fausse alerte détruit la valeur des vraies. Classes retirées du")
+        W(f"verdict : {', '.join('`' + x + '`' for x in excl)}.")
+    else:
+        W("**Aucune classe n'a été retirée du verdict** : chacune rend la même réponse à chacune de ses")
+        W("répétitions SEUL, donc chacune est comparable sous charge. C'est vérifié, pas supposé.")
+    W("")
+
+    # ---------------------------------------------------------------- sem_wait
+    W("### `sem_wait_ms` ne mesure pas l'attente du sémaphore")
+    W("")
+    W("C'est le champ que le daemon publie pour séparer « la requête est lente » de « la requête")
+    W("attendait son tour ». **La mesure montre qu'il ne le fait pas.**")
+    W("")
+    W("La démonstration ne demande aucun seuil : tant qu'il y a **au moins autant de permis que")
+    W("d'analystes**, aucune requête ne peut attendre son tour. À ces niveaux, `sem_wait_ms` doit être")
+    W("nul par construction. Mesuré :")
+    W("")
+    W("| Passe | Analystes | Permis | File possible ? | `sem_wait_ms` p95 | `sem_wait_ms` max |")
+    W("|---|---:|---:|:--:|---:|---:|")
+    contam = []
+    for r in lvls:
+        if r.get("queue_possible"):
+            continue
+        contam.append(r)
+        W(f"| `{r['config_id']}` | {r['analysts']} | {r.get('query_sem')} | **non** | "
+          f"{fmt_ms(r.get('sem_wait_contamination_p95_ms'))} | "
+          f"**{fmt_ms(r.get('sem_wait_contamination_ms'))}** |")
+    W("")
+    worst = max((r.get("sem_wait_contamination_ms") or 0) for r in contam) if contam else 0
+    solo_worst = max((h.get("sem_wait_solo_max_ms") or 0) for h in heads) if heads else 0
+    if worst > 1 or solo_worst > 1:
+        W(f"Le maximum observé **là où aucune file n'est possible** est de **{fmt_dur(worst)}** en")
+        W(f"charge sous-critique, et de **{fmt_dur(solo_worst)}** pendant la passe solo (un seul")
+        W("client, aucun autre en vol). Un sémaphore avec des permis libres ne peut pas produire ça.")
+        W("")
+        W("**Ce que le champ mesure réellement** : le chrono démarre à l'entrée du handler")
+        W("(`daemon/src/handlers/query.rs:362`) et n'est lu qu'APRÈS le permit (`:556`, `sem_wait_ms`")
+        W("posé en `:560`). Entre les deux, la requête résout les masques de champs et lit la")
+        W("**couverture des rollups** — et cette lecture prend le verrou de la connexion PARTAGÉE")
+        W("(`:479`, `req_db(...).lock()`), celui-là même que tiennent les travaux de fond (`ANALYZE`")
+        W("de démarrage, boucle de rollups). `sem_wait_ms` additionne donc **l'attente du permit ET")
+        W("une attente de verrou qui n'est bornée par aucun sémaphore** — un point de sérialisation")
+        W("qui, lui, existe AVANT la borne de concurrence et n'est mesuré nulle part. Conséquence")
+        W("directe sur la lecture de ce document : un `sem_wait_ms` élevé ne prouve PAS que le")
+        W("sémaphore est trop petit — il faut regarder le niveau, et savoir si une file y était")
+        W("seulement possible. C'est pour cela que la colonne « file possible » existe.")
+    else:
+        W("Aucune contamination mesurée : là où aucune file n'est possible, l'attente publiée est")
+        W("nulle. Le champ mesure donc bien ce que son nom dit, sur cette passe.")
+    W("")
+    nosw = sorted({x for h in heads for x in (h.get("classes_sans_sem_wait") or [])})
+    if nosw:
+        W(f"**Angle mort restant** : {', '.join('`' + x + '`' for x in nosw)} ne publie(nt) aucun")
+        W("`stats` — la barre `/api/search` prend pourtant un permit sur le MÊME sémaphore. Sur cette")
+        W("route, il est donc impossible de distinguer une recherche lente d'une recherche qui")
+        W("attendait : c'est mesuré ici, ce n'est pas corrigé ici.")
+        W("")
+
+    # ---------------------------------------------------------------- le clic sous charge
+    floor_id = (h0.get("derivation") or {}).get("floor_id") if h0 else None
+    if floor_id:
+        W("### Le clic de tableau de bord, pendant que les autres travaillent")
+        W("")
+        W(f"`{floor_id}` est la requête la moins chère de la matrice. Seule, elle est instantanée. Ce")
+        W("tableau est ce que l'analyste RESSENT : aucune moyenne ne le montre, parce qu'elle est")
+        W("noyée dans les monstres.")
+        W("")
+        W("| Passe | Analystes | p50 | p95 | pire |")
+        W("|---|---:|---:|---:|---:|")
+        for r in lvls:
+            pc = (r.get("per_class") or {}).get(floor_id) or {}
+            W(f"| `{r['config_id']}` | {r['analysts']} | {fmt_ms(pc.get('p50_ms'))} | "
+              f"{fmt_ms(pc.get('p95_ms'))} | {fmt_ms(pc.get('max_ms'))} |")
+        W("")
+
+    # ---------------------------------------------------------------- budget
+    W("### Le budget de 2 Gio, à plusieurs")
+    W("")
+    peak = max((r.get("peak_rss_bytes") or 0) for r in lvls)
+    cgpeak = max((r.get("peak_cgroup_bytes") or 0) for r in lvls)
+    cgmax = max((r.get("cgroup_max_bytes") or 0) for r in lvls)
+    ooms = sum((r.get("cg_events_delta") or {}).get("oom_kill", 0) or 0 for r in lvls)
+    killed = [r for r in lvls if not r.get("daemon_alive", True)]
+    W(f"- **RSS crête du daemon, tous niveaux confondus : {fmt_mib(peak)} Mio** "
+      f"({peak/BUDGET_BYTES*100:.0f} % du budget).")
+    W(f"- **Mémoire du cgroup crête : {fmt_mib(cgpeak)} Mio** pour un plafond de {fmt_mib(cgmax)} Mio.")
+    W("  Ce n'est pas la même grandeur que la RSS : le noyau compare au plafond la mémoire du CGROUP,")
+    W("  cache de pages compris. Une base de 1,4 Gio lue en boucle le remplit — le cgroup vit donc")
+    W("  **collé à son plafond**, et ce qui varie n'est pas son occupation mais son travail de")
+    W("  récupération.")
+    if killed:
+        for r in killed:
+            # Le plafond du cgroup n'est plus lisible sur le niveau qui a tué le processus (le cgroup
+            # est parti avec lui) : on reprend celui des autres niveaux de LA MÊME passe, qui est le
+            # même scope et le même réglage. Publier « — » ici cacherait le seul terme de comparaison.
+            _cm = max((x.get("cgroup_max_bytes") or 0) for x in lvls
+                      if x["config_id"] == r["config_id"]) or None
+            W(f"- **LE BUDGET A CÉDÉ** : `{r['config_id']}`, **{r['analysts']} analystes** "
+              f"(sémaphore {r.get('query_sem')}). RSS crête {fmt_mib(r.get('peak_rss_bytes'))} Mio "
+              f"contre un plafond de {fmt_mib(_cm)} Mio, "
+              f"{r['queries'] - r['queries_ok']} requêtes sur {r['queries']} n'ont pas abouti, et le "
+              f"processus n'existait plus à la fin du niveau. Sous `MemoryMax` **sans swap**, cela ne "
+              f"peut pas être autre chose qu'un dépassement du budget : le noyau tue, il ne glisse "
+              f"pas en swap. Les niveaux au-delà ne sont **pas** mesurés — une absence, pas un zéro.")
+        W("- La dégradation n'est pas binaire : AVANT le kill, le daemon a d'abord REFUSÉ proprement "
+          "des requêtes en nommant sa cause (budget interactif de 60 s dépassé, `4xx`). Le refus "
+          "nommé arrive donc en premier ; le kill est ce qui suit quand la mémoire, elle, ne "
+          "négocie pas.")
+    W(f"- **Tués par le noyau (`memory.events:oom_kill`) : {ooms}** — compteur du cgroup, à lire avec "
+      "la réserve ci-dessus : le cgroup d'un scope tué disparaît avec lui, et son compteur n'est "
+      "alors plus lisible du tout.")
+    if deaths:
+        for d in deaths:
+            W(f"- Le harnais a ARRÊTÉ le balayage après le niveau {d['daemon_died_at_level']} "
+              f"(`{d.get('config_id')}`) : {d['note']}")
+    if not killed:
+        W("- **Le daemon n'a été tué à aucun niveau mesuré.** Le dépassement du budget ne se manifeste")
+        W("  donc pas ici par un kill mais par du **travail de récupération** : la colonne « plafond")
+        W("  touché » des courbes ci-dessus compte, pour chaque niveau, le nombre de fois où le noyau")
+        W("  a dû reprendre de la mémoire au cgroup pour rester sous 2 Gio.")
+    W("")
+
+    # ---------------------------------------------------------------- l'échange sémaphore <-> RAM
+    # GARDE DE COMPARABILITÉ, DÉRIVÉE DES DONNÉES : deux passes ne peuvent être comparées en DÉBIT
+    # que si elles ont fait EXACTEMENT le même travail. Le mélange est enregistré dans chaque ligne
+    # de niveau ; on ne compare donc que les configurations dont le mélange est identique, et on
+    # NOMME celles qu'on écarte. Sans cette garde, une différence de mélange (deux classes proches
+    # d'une même famille départagées autrement) se lirait comme un effet du sémaphore.
+    groups = {}
+    for c in cfgs:
+        key = tuple((next(r for r in lvls if r["config_id"] == c).get("mix") or []))
+        groups.setdefault(key, []).append(c)
+    best = max(groups.values(), key=len) if groups else []
+    excluded_cfgs = [c for c in cfgs if c not in best]
+    if len(best) > 1:
+        cfgs = best
+        W("### Ce que coûte, et ce que rapporte, la taille du sémaphore")
+        W("")
+        W("Le sémaphore de l'interactif est à 3 par défaut, après avoir été baissé depuis 8 **comme")
+        W("levier de RAM**. Les passes comparées ici tournent sur la MÊME base, la MÊME machine, le")
+        W("MÊME binaire **et le MÊME mélange de requêtes** : leur écart, à niveau d'analystes égal,")
+        W("EST le taux de change entre concurrence et mémoire.")
+        W("")
+        W("**Il est réglable sans recompiler** : `PLUME_QUERY_CONCURRENCY` est lu dans la")
+        W("configuration au démarrage (`daemon/src/server.rs:254`, défaut 3) et le daemon publie la")
+        W("valeur qu'il applique sur `/api/system/diag` — c'est de là que ce banc la lit, plutôt que")
+        W("de la supposer. En revanche il est lu **une seule fois, au boot** : le changer demande un")
+        W("redémarrage, et un redémarrage a son propre coût (voir la mise au repos plus haut).")
+        W("")
+        if excluded_cfgs:
+            W(f"**Écartée(s) de cette comparaison** : {', '.join('`' + c + '`' for c in excluded_cfgs)}")
+            W("— leur mélange n'est pas celui des autres passes, donc leur écart de débit ne serait pas")
+            W("attribuable au sémaphore mais au travail. Leur courbe reste publiée plus haut ; c'est")
+            W("cette comparaison-ci, et elle seule, qui exige un travail identique.")
+            W("")
+        W("| Analystes | " + " | ".join(f"débit `{c}`" for c in cfgs) + " | écart de débit | "
+          + " | ".join(f"p95 `{c}`" for c in cfgs) + " | "
+          + " | ".join(f"RSS `{c}`" for c in cfgs) + " |")
+        W("|---:|" + "---:|" * (len(cfgs) * 3 + 1))
+        by = {}
+        for r in lvls:
+            if r["config_id"] in cfgs:
+                by.setdefault(r["analysts"], {})[r["config_id"]] = r
+        for n in sorted(by):
+            got = by[n]
+            if len(got) < len(cfgs):
+                continue
+            qs = [got[c].get("throughput_qps") or 0 for c in cfgs]
+            gain = "—" if not qs[0] else f"x{qs[-1]/qs[0]:.2f}"
+            W(f"| **{n}** | " + " | ".join(f"{q:.2f} q/s" for q in qs) + f" | {gain} | "
+              + " | ".join(fmt_ms(got[c].get("wall_p95_ms")) for c in cfgs) + " | "
+              + " | ".join(fmt_mib(got[c].get("peak_rss_bytes")) + " Mio" for c in cfgs) + " |")
+        W("")
+        # CE QUE LES DEUX COLONNES DISENT, calculé DEPUIS le tableau ci-dessus et nulle part ailleurs.
+        # Le niveau retenu est le plus chargé mesuré des DEUX côtés : c'est là que l'écart de
+        # sémaphore a le plus de chances de se voir, donc le cas le plus favorable au grand
+        # sémaphore. S'il n'y gagne pas, il ne gagne nulle part.
+        common = [n for n in sorted(by) if len(by[n]) == len(cfgs)]
+        if common:
+            n = common[-1]
+            g = by[n]
+            q0 = g[cfgs[0]].get("throughput_qps") or 0
+            q1 = g[cfgs[-1]].get("throughput_qps") or 0
+            r0 = g[cfgs[0]].get("peak_rss_bytes") or 0
+            r1 = g[cfgs[-1]].get("peak_rss_bytes") or 0
+            p0 = g[cfgs[0]].get("wall_p95_ms")
+            p1 = g[cfgs[-1]].get("wall_p95_ms")
+            W(f"**Au niveau le plus chargé mesuré des deux côtés ({n} analystes)** : "
+              f"{q1:.2f} contre {q0:.2f} requête/s "
+              + (f"(**{(q1/q0-1)*100:+.0f} %** de travail servi)" if q0 else "") + ", "
+              f"p95 {fmt_dur(p1)} contre {fmt_dur(p0)}, RSS crête {fmt_mib(r1)} contre "
+              f"{fmt_mib(r0)} Mio (**{(r1-r0)/2**20:+.0f} Mio**, soit "
+              f"{(r1-r0)/BUDGET_BYTES*100:+.1f} % du budget). Ces six nombres SONT le taux de change "
+              f"entre un sémaphore à {g[cfgs[0]].get('query_sem')} et un sémaphore à "
+              f"{g[cfgs[-1]].get('query_sem')} — celui que la baisse de 8 à 3, faite comme levier de "
+              f"RAM, avait acheté sans jamais être chiffré.")
+            W("")
+    elif len(cfgs) > 1:
+        W("### Ce que coûte, et ce que rapporte, la taille du sémaphore")
+        W("")
+        W("**Pas de comparaison publiée.** Les passes mesurées n'ont pas tiré le MÊME mélange de")
+        W("requêtes : leur écart de débit mélangerait l'effet du sémaphore et celui du travail. Un")
+        W("banc ne change qu'une chose à la fois — les courbes restent publiées séparément.")
+        W("")
+
+
 def _cmp_load(eff, cfg):
     """Charge machine (loadavg 1 min) relevée PENDANT une passe : min-max sur ses cellules. Sans elle,
     un écart de latence entre deux passes pourrait n'être qu'un écart de charge."""
@@ -224,7 +641,7 @@ def main():
                          "l'ingest : rend la COURBE de débit en fonction du volume déjà en base")
     args = ap.parse_args()
 
-    rows, ingest, deaths, unmeasured_win = [], [], [], []
+    rows, ingest, deaths, unmeasured_win, conc = [], [], [], [], []
     for path in args.results:
       with open(path, encoding="utf-8") as fh:
         for line in fh:
@@ -238,6 +655,14 @@ def main():
                 # Une fenêtre ÉCARTÉE par la garde de couverture du harnais. Elle n'est pas une
                 # cellule : elle est une ABSENCE, et elle est publiée comme telle.
                 unmeasured_win.append(d)
+            elif str(d.get("phase") or "").startswith("concurrency") or "analyst" in d:
+                # LA CONCURRENCE a ses propres lignes : un NIVEAU (N analystes) n'est pas une cellule
+                # de la matrice et n'a ni classe ni fenêtre unique. La ranger avec les cellules
+                # ferait entrer des lignes sans `class_id` dans tous les tableaux.
+                # Le second critère (`analyst`) attrape le JSONL des REQUÊTES INDIVIDUELLES, qui est
+                # une donnée brute publiée : il est reconnu à sa FORME (une requête appartient à un
+                # analyste), pas à une étiquette — le passer au rendu ne peut donc pas le casser.
+                conc.append(d)
             elif d.get("phase") in ("ingest", "cold_age") or str(d.get("phase") or "").startswith("cold_parity"):
                 ingest.append(d)
             else:
@@ -405,11 +830,21 @@ def main():
         # passe corrigée coexiste avec la passe qui a mesuré le défaut, n'en citer qu'une ferait
         # croire qu'il n'y en a qu'une — et laisserait le lecteur sur la mauvaise.
         _cold_list = ", ".join(f"`{c}`" for c in _cold_on)
-        W("- rien sur la concurrence ni le multi-tenant (voir la section dédiée). Le tier froid, lui, "
+        # La concurrence n'est retirée de cette phrase QUE si elle a réellement été tirée : la
+        # présence de lignes `concurrency` est le seul critère, jamais une affirmation d'auteur.
+        _cc = ("le multi-tenant" if conc else "la concurrence ni le multi-tenant")
+        W(f"- rien sur {_cc} (voir la section dédiée). Le tier froid, lui, "
           f"EST mesuré ici — mais seulement dans {_cold_list}, à une seule fenêtre chaude et un "
           "seul volume : les autres tableaux restent des tableaux SANS tier froid.")
     else:
-        W("- rien sur le tier froid, la concurrence, ni le multi-tenant (voir la section dédiée).")
+        W("- rien sur le tier froid, "
+          + ("le multi-tenant" if conc else "la concurrence, ni le multi-tenant")
+          + " (voir la section dédiée).")
+    if conc:
+        _cn = max((r.get("analysts") or 0) for r in conc)
+        W(f"- la CONCURRENCE, elle, est mesurée : jusqu'à {_cn} analystes simultanés lançant de très "
+          "grosses requêtes sous le même budget de 2 Gio appliqué, avec vérification que la réponse "
+          "concurrente est IDENTIQUE à la réponse obtenue seul (section dédiée).")
     # MÊME correctif que pour les leviers : ne pas exiger le volume EXACT, sinon l'axe masquage
     # disparaît du verdict dès qu'une nouvelle passe compte quelques événements de plus.
     mk = max([c for c in configs if "non-vide" in (cfgmeta[c].get("mask") or "")] or [None],
@@ -471,6 +906,11 @@ def main():
     W("| Budget mémoire | **appliqué** par un scope systemd `MemoryMax=2G MemorySwapMax=0` — "
       "la même contrainte que la limite de conteneur de production (`limits.memory: 2Gi`) |")
     W("| Concurrence de requêtes | `PLUME_QUERY_CONCURRENCY=3` (le défaut livré) |")
+    if conc:
+        _cs = sorted({r.get("query_sem") for r in conc if r.get("query_sem")})
+        _cn = sorted({r.get("analysts") for r in conc if r.get("analysts")})
+        W(f"| Passes de CONCURRENCE | {', '.join(str(n) for n in _cn)} analystes simultanés, "
+          f"sémaphore {' et '.join(str(s) for s in _cs)} (section dédiée) |")
     W("| Budget par requête | interactif, 60 s (`interactive:true`) |")
     W("")
     _bins = sorted({(r.get("config") or {}).get("version", "").split(" ")[0]
@@ -1260,6 +1700,8 @@ def main():
         W("noyau, pas par du swap. Il n'a pas été tué.")
         W("")
 
+    render_concurrency(W, conc)
+
     W("## Cellules à ne pas croire telles quelles")
     W("")
     if superseded:
@@ -1607,9 +2049,20 @@ def main():
         W("- **Le tier froid** (`--features cold_tier` + `PLUME_COLD_TIER=1`) : le binaire est compilé")
         W("  avec la feature, mais toutes les cellules tournent `PLUME_COLD_TIER=0`. Aucun chiffre de ce")
         W("  document ne dit quoi que ce soit du chemin Parquet ni du moteur vectorisé.")
-    W("- **La concurrence** : une requête à la fois. `PLUME_QUERY_CONCURRENCY=3` est en place mais")
-    W("  jamais saturé (`sem_wait_ms` reste nul). Le comportement à 10 utilisateurs simultanés n'est")
-    W("  pas mesuré.")
+    if conc:
+        _cl = sorted({r.get("analysts") for r in conc if r.get("analysts")})
+        _sems = sorted({r.get("query_sem") for r in conc if r.get("query_sem")})
+        _wins = sorted({r.get("window") for r in conc if r.get("window")})
+        W(f"- **La concurrence est mesurée** (section dédiée) : jusqu'à {max(_cl)} analystes")
+        W(f"  simultanés, sémaphore {' et '.join(str(s) for s in _sems)}. Ce qui reste hors mesure :")
+        W(f"  la concurrence PENDANT une ingestion (les deux charges sont mesurées séparément), la")
+        W(f"  charge SOUTENUE sur des heures (chaque niveau dure des dizaines de secondes, pas une")
+        W(f"  journée), et les fenêtres autres que {', '.join('`' + w + '`' for w in _wins)} — le")
+        W("  mélange est tiré sur la fenêtre la plus coûteuse, pas sur toutes.")
+    else:
+        W("- **La concurrence** : une requête à la fois. `PLUME_QUERY_CONCURRENCY=3` est en place mais")
+        W("  jamais saturé (`sem_wait_ms` reste nul). Le comportement à 10 utilisateurs simultanés n'est")
+        W("  pas mesuré.")
     W("- **Le multi-tenant** (`PLUME_MULTI_TENANT=1`) : tout est mesuré en mode 0.")
     W("- **Le cache de pages froid** : impossible de le vider sans privilège root sur la machine de")
     W("  mesure. La colonne `lu` dit ce qui a réellement atteint le disque ; elle ne dit pas ce que")
@@ -1631,6 +2084,12 @@ def main():
     W("    --manifest-path daemon/Cargo.toml")
     W("bench/run.sh                       # 10 M d'événements")
     W("BENCH_EVENTS=1000000 bench/run.sh  # 1 M, pour itérer")
+    if conc:
+        _cs = ",".join(str(s) for s in sorted({r.get("query_sem") for r in conc if r.get("query_sem")}))
+        _cl = ",".join(str(n) for n in sorted({r.get("analysts") for r in conc if r.get("analysts")}))
+        W("# 2 bis. la CONCURRENCE, sur une base déjà remplie (redémarre le daemon par valeur de")
+        W("#        sémaphore et lui REDEMANDE ce qu'il applique avant de mesurer) :")
+        W(f"BENCH_PHASES=concurrency BENCH_SEM_SWEEP={_cs} BENCH_CONC_LEVELS={_cl} bench/run.sh")
     W("# 3. le rendu — LA COMMANDE EXACTE qui a produit CE document, reconstruite depuis ses propres")
     W("#    arguments et pointée sur les données VERSIONNÉES (donc rejouable par un tiers) :")
     for _l in repro_cmd(args):

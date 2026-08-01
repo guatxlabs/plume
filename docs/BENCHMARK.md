@@ -4,7 +4,7 @@
      Ne pas l'éditer à la main : la prochaine passe l'écrase. Tout commentaire durable va dans
      bench/README.md. -->
 
-Rendu le 2026-07-31 23:26:07+0200 depuis `results-smoke-200k.jsonl`, `results.jsonl`, `results-2026-07-31.jsonl`, `results-2026-07-31-corrige.jsonl`, `parity-avant-2026-07-31.jsonl`, `parity-apres-2026-07-31.jsonl`, `parity-couverture-2026-07-31.jsonl` — données brutes VERSIONNÉES dans [`bench/results/`](../bench/results/), pour que ce tableau puisse être contredit et pas seulement cru (cf. `bench/README.md`).
+Rendu le 2026-08-01 04:04:48+0200 depuis `results-smoke-200k.jsonl`, `results.jsonl`, `results-2026-07-31.jsonl`, `results-2026-07-31-corrige.jsonl`, `parity-avant-2026-07-31.jsonl`, `parity-apres-2026-07-31.jsonl`, `parity-couverture-2026-07-31.jsonl`, `concurrency-2026-08-01.jsonl` — données brutes VERSIONNÉES dans [`bench/results/`](../bench/results/), pour que ce tableau puisse être contredit et pas seulement cru (cf. `bench/README.md`).
 
 ## Ce que ce document est, et ce qu'il n'est pas
 
@@ -42,7 +42,8 @@ Volume de référence : **1 440 007 événements** (`chaud-seul-v2@1.4M`), base 
 **Ce que ces mesures n'autorisent PAS à affirmer** :
 
 - rien au-delà de 1 440 007 événements. La cible de 10 M n'a pas été atteinte par le vrai chemin d'ingest — non pas faute de l'avoir cherché, mais parce que le débit d'ingest s'effondre avec le volume déjà en base, ce que la section « D'où vient l'effondrement » ATTRIBUE désormais (et non plus suppose) : le coût CPU par événement monte, le daemon écrit de plus en plus d'octets par ligne, et le chemin d'écriture est séquentiel. Le coût restant pour atteindre 10 M y est chiffré, en tant que PLANCHER arithmétique sur des débits mesurés. Toute latence annoncée à 10 M ou 100 M serait une extrapolation, pas une mesure.
-- rien sur la concurrence ni le multi-tenant (voir la section dédiée). Le tier froid, lui, EST mesuré ici — mais seulement dans `froid-actif@1.4M`, `froid-actif-v2@1.4M`, à une seule fenêtre chaude et un seul volume : les autres tableaux restent des tableaux SANS tier froid.
+- rien sur le multi-tenant (voir la section dédiée). Le tier froid, lui, EST mesuré ici — mais seulement dans `froid-actif@1.4M`, `froid-actif-v2@1.4M`, à une seule fenêtre chaude et un seul volume : les autres tableaux restent des tableaux SANS tier froid.
+- la CONCURRENCE, elle, est mesurée : jusqu'à 10 analystes simultanés lançant de très grosses requêtes sous le même budget de 2 Gio appliqué, avec vérification que la réponse concurrente est IDENTIQUE à la réponse obtenue seul (section dédiée).
 - rien sur un déploiement AVEC masquage à partir des chiffres masque-vide : l'écart mesuré le plus fort est **x287.3** sur `C3b-groupby-routable` / 24h (8.6 ms masque vide contre 2.5 s masque non vide).
   Et le masquage ne va pas TOUJOURS dans le sens du ralentissement : sur `C2-free-term` / 24h il est **x0.14**, donc plus RAPIDE (741 ms masque vide contre 101 ms masque non vide, même nombre de lignes rendues). **La cause n'est PAS établie par cette mesure**, et on ne va pas l'inventer. Deux mécanismes candidats, qui demandent chacun une expérience dédiée pour être départagés : (a) un masque posé sur une dimension à haute cardinalité l'effondre, il reste moins de groupes à agréger — la requête va plus vite **parce que la réponse a changé** ; (b) la passe masquée a tourné APRÈS la passe non masquée, donc sur un cache de pages plus chaud. Ce qui trancherait : rejouer les deux passes dans l'ordre inverse, et comparer les résultats ligne à ligne. En attendant, la règle est simple — **une latence qui baisse en présence d'un masque ne doit jamais être citée comme un gain**.
 
@@ -58,6 +59,7 @@ Volume de référence : **1 440 007 événements** (`chaud-seul-v2@1.4M`), base 
 | Taille de la base (SQLCipher, chiffrée) | 1263 Mio, 1401 Mio, 1434 Mio, 197 Mio, 336 Mio, 351 Mio, 560 Mio |
 | Budget mémoire | **appliqué** par un scope systemd `MemoryMax=2G MemorySwapMax=0` — la même contrainte que la limite de conteneur de production (`limits.memory: 2Gi`) |
 | Concurrence de requêtes | `PLUME_QUERY_CONCURRENCY=3` (le défaut livré) |
+| Passes de CONCURRENCE | 1, 2, 3, 4, 6, 8, 10 analystes simultanés, sémaphore 3 et 8 (section dédiée) |
 | Budget par requête | interactif, 60 s (`interactive:true`) |
 
 **Plusieurs binaires** figurent dans ce document : `10db2d2`, `bin:0642474ceedfaf15`, `bin:4bfcb9f76b4353a2`, `bin:b2d10fa90506682c`, `bin:bc481b69f4aca22c`, `ea1d072`. Chaque cellule porte le sien dans le JSONL brut, et chaque tableau de configuration l'affiche dans son sous-titre. Une comparaison entre deux tableaux de binaires différents mesure aussi l'écart entre les deux binaires — ce n'est légitime que dans la section « Écart mesuré entre deux passes », qui le dit.
@@ -2210,6 +2212,245 @@ RSS crête la plus haute observée, toutes cellules confondues : **1097 Mio** (5
 dans un scope `MemoryMax=2G MemorySwapMax=0`, où un dépassement se traduit par un kill du
 noyau, pas par du swap. Il n'a pas été tué.
 
+## La concurrence — ce que le nœud fait quand l'équipe travaille en même temps
+
+Tout le reste de ce document est pris **une requête à la fois** : `sem_wait_ms` y est nul par
+construction, et le document le disait lui-même. Cette section mesure l'autre condition, la
+vraie : plusieurs analystes qui lancent de **très grosses** requêtes en même temps, sur la
+même base et sous le **même budget appliqué** de 2 Gio.
+
+**Un niveau** = *N* analystes indépendants (chacun sa connexion HTTP, chacun son compte
+`viewer`), chacun parcourant le mélange plusieurs fois, en décalant son point de départ — deux
+voisins ne tirent donc pas la même requête au même instant. Le niveau se termine quand tous ont
+fini leur travail : le débit agrégé est du travail RÉELLEMENT servi, pas une extrapolation.
+
+**L'ordre des questions est délibéré : la justesse d'abord.** Trois défauts de correction
+viennent d'être trouvés dans les chemins d'agrégat de ce produit, et aucun n'était visible sur
+un banc de latence. Chaque réponse concurrente est donc comparée **par sa valeur** à la réponse
+obtenue seul — même base, même binaire, même fenêtre — avant qu'on ne regarde un seul temps.
+
+### Le mélange, et pourquoi c'est celui-là
+
+Le mélange n'est pas une liste de goûts : il est **dérivé de la passe solo qui le
+précède**. Le PLANCHER est la requête la moins chère observée (`C0-plancher`,
+0.7 ms) — c'est le coût FIXE d'une requête, pas du travail de base.
+Chaque **famille** de la matrice (les classes `C1`…`C6` de ce document) entre par son
+représentant le plus coûteux, et seulement s'il coûte au moins **10 ×**
+le plancher. La famille du plancher échoue ainsi à son propre test et s'exclut d'elle-même.
+Le plancher est ensuite ajouté **à part** : il ne charge rien, il mesure ce que devient le
+clic instantané d'un tableau de bord pendant que les collègues lancent des monstres.
+
+| Classe retenue | Famille | Ce que c'est | Coût SEUL (p50) |
+|---|:--:|---|---:|
+| `C1b-scan-agg-dc` | 1 | scan filtré + dc() sur colonne réelle | 7315 ms |
+| `C2b-regex-msg` | 2 | regex sur message (REGEXP, UDF Rust) | 4053 ms |
+| `C3-groupby-hi` | 3 | group-by 3 dims haute cardinalité (src_ip,host,source) | 9539 ms |
+| `C4b-raw-deep` | 4 | RAW paginé page profonde (offset 200 000) | 348 ms |
+| `C5-regex-json-planted` | 5 | regex sur champ ÉTENDU planté (fields.needle) | 4825 ms |
+| `C6b-groupby-host` | 6 | group-by sur host (autant de groupes que de machines) | 332 ms |
+| `C0-plancher` | 0 | PLANCHER : seek sur une source inexistante (0 ligne) | 0.7 ms |
+
+Familles **écartées** du mélange lourd, avec leur motif mesuré :
+
+- famille 0 (`C0-plancher`) : le plus coûteux de la famille 0 ne fait que 1.0 x le plancher (seuil 10).
+
+**Mise au repos avant de mesurer** : un daemon qui vient de démarrer lance un `ANALYZE`
+complet en arrière-plan qui prend le verrou d'écriture, et le chemin interactif consulte
+la base AVANT de prendre son permit — mesurer tout de suite, c'est mesurer le démarrage.
+Le harnais attend donc 3 tirs consécutifs dont l'attente avant moteur est
+sous la milliseconde : **10.0 s** ici
+(`quiescent=true`).
+
+### La courbe — `conc-sem3@1.4M` (`PLUME_QUERY_CONCURRENCY=3`)
+
+Sémaphore **3**, déclaré par le daemon (/api/system/diag). Fenêtre `all` (sans borne : le cas le plus coûteux). 3 passages par analyste sur 7 classes.
+
+Mélange **DÉRIVÉ** par la passe solo de cette configuration (tableau plus haut).
+
+| Analystes | file possible | requêtes | durée | débit | p50 | p95 | pire | p50 du pire analyste | attente p50 | attente p95 | RSS crête | plafond touché | OOM |
+|---:|:--:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:--:|
+| **1** | non | 21/21 | 72 s | 0.29 q/s (x1.00) | 2785 | 10.4 s | 12.9 s | 2785 | 0.1 | 1213 | 1026 Mio | 0 | non |
+| **2** | non | 42/42 | 80 s | 0.53 q/s (x1.81) | 2930 | 13.7 s | 14.2 s | 2930 | 0.1 | 2.4 | 1114 Mio | 0 | non |
+| **3** | non | 63/63 | 93 s | 0.68 q/s (x2.33) | 3751 | 14.7 s | 19.8 s | 3783 | 0.2 | 804 | 1069 Mio | 0 | non |
+| **4** | oui | 84/84 | 126 s | 0.67 q/s (x2.29) | 4646 | 14.3 s | 19.8 s | 5417 | 542 | 5419 | 1161 Mio | 1 223 | non |
+| **6** | oui | 126/126 | 170 s | 0.74 q/s (x2.55) | 7206 | 17.5 s | 24.5 s | 7587 | 3007 | 9474 | 1173 Mio | 3 341 | non |
+| **8** | oui | 168/168 | 231 s | 0.73 q/s (x2.50) | 9763 | 19.5 s | 30.1 s | 12.3 s | 5985 | 12.0 s | 1186 Mio | 5 022 | non |
+| **10** | oui | 210/210 | 300 s | 0.70 q/s (x2.40) | 13.3 s | 27.2 s | 34.0 s | 16.6 s | 9156 | 18.5 s | 1320 Mio | 30 250 | non |
+
+Colonnes : *durée* = temps mur du niveau entier ; *débit* = requêtes servies par seconde
+(entre parenthèses, le rapport au niveau 1 de la même passe) ; *p50/p95/pire* portent sur
+**toutes** les requêtes du niveau ; *p50 du pire analyste* est le pire des médians
+individuels — c'est lui qui dit si la charge est équitable ; *plafond touché* est le
+compteur `memory.events:max` du cgroup, c'est-à-dire le nombre de fois où le noyau a dû
+récupérer de la mémoire pour rester sous 2 Gio pendant ce niveau.
+
+*Charger le daemon, pas la machine* : l'instrument lui-même n'a jamais consommé plus de
+**1.1 %** d'un cœur-seconde par seconde de mesure sur cette passe — la latence
+mesurée n'est donc pas la sienne. Le daemon, lui, est enfermé dans son cgroup à 2 Gio
+sans swap : les deux pressions sont relevées séparément (`pressure_*` dans le JSONL).
+
+### La courbe — `conc-sem8@1.4M` (`PLUME_QUERY_CONCURRENCY=8`)
+
+Sémaphore **8**, déclaré par le daemon (/api/system/diag). Fenêtre `all` (sans borne : le cas le plus coûteux). 3 passages par analyste sur 7 classes.
+
+Mélange **IMPOSÉ** (celui de la passe de référence), pour que la comparaison entre sémaphores ne porte que sur le sémaphore. Sa propre passe solo aurait dérivé un mélange différent de 2 classe(s) : `C5-regex-json-planted`, `C5b-regex-json-cold` — c'est précisément ce que l'imposition neutralise.
+
+| Analystes | file possible | requêtes | durée | débit | p50 | p95 | pire | p50 du pire analyste | attente p50 | attente p95 | RSS crête | plafond touché | OOM |
+|---:|:--:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:--:|
+| **1** | non | 21/21 | 82 s | 0.26 q/s (x1.00) | 3915 | 12.5 s | 12.6 s | 3915 | 0.1 | 0.4 | 1015 Mio | 0 | non |
+| **2** | non | 42/42 | 89 s | 0.47 q/s (x1.84) | 4066 | 13.6 s | 16.7 s | 4153 | 0.2 | 0.9 | 1220 Mio | 8 283 | non |
+| **3** | non | 63/63 | 102 s | 0.61 q/s (x2.41) | 4797 | 15.9 s | 18.4 s | 5048 | 0.2 | 2148 | 1430 Mio | 15 381 | non |
+| **4** | non | 84/84 | 142 s | 0.59 q/s (x2.32) | 5555 | 20.2 s | 28.2 s | 5804 | 0.2 | 2057 | 1442 Mio | 94 243 | non |
+| **6** | non | 126/126 | 183 s | 0.69 q/s (x2.70) | 7721 | 26.4 s | 27.2 s | 9026 | 0.2 | 6335 | 1589 Mio | 175 777 | non |
+| **8** | non | 168/168 | 299 s | 0.56 q/s (x2.21) | 9039 | 46.7 s | 52.3 s | 10.1 s | 0.3 | 4705 | 2025 Mio | 244 846 | non |
+| **10** | oui | 148/210 — **daemon TUÉ** | 460 s | 0.32 q/s (x1.26) | 15.5 s | 50.1 s | 89.5 s | 24.6 s | 2044 | 16.7 s | 2045 Mio | — (cgroup disparu) | non |
+
+Requêtes qui n'ont pas abouti, par statut HTTP :
+
+| Analystes | statuts | messages |
+|---:|---|---|
+| 10 | `0` x45, `200` x148, `400` x17 | `RemoteDisconnected: Remote end closed connection without response`<br>`URLError: <urlopen error [Errno 111] Connection refused>`<br>`{"error":"requête interrompue (budget 60 s dépassé)"}` |
+
+`0` = pas de réponse HTTP du tout (connexion coupée / refusée) : c'est ce que voit un
+client quand le processus n'est plus là. Un `4xx` avec une cause nommée est l'inverse :
+le daemon a REFUSÉ proprement, en disant pourquoi.
+
+Colonnes : *durée* = temps mur du niveau entier ; *débit* = requêtes servies par seconde
+(entre parenthèses, le rapport au niveau 1 de la même passe) ; *p50/p95/pire* portent sur
+**toutes** les requêtes du niveau ; *p50 du pire analyste* est le pire des médians
+individuels — c'est lui qui dit si la charge est équitable ; *plafond touché* est le
+compteur `memory.events:max` du cgroup, c'est-à-dire le nombre de fois où le noyau a dû
+récupérer de la mémoire pour rester sous 2 Gio pendant ce niveau.
+
+*Charger le daemon, pas la machine* : l'instrument lui-même n'a jamais consommé plus de
+**1.4 %** d'un cœur-seconde par seconde de mesure sur cette passe — la latence
+mesurée n'est donc pas la sienne. Le daemon, lui, est enfermé dans son cgroup à 2 Gio
+sans swap : les deux pressions sont relevées séparément (`pressure_*` dans le JSONL).
+
+### La réponse est-elle la MÊME sous charge ?
+
+| | |
+|---|---:|
+| Réponses comparées à leur référence solo | **1 366** |
+| Identiques (empreinte ET total) | **1 366** |
+| Divergentes | **0** |
+| Dont NOMBRES FAUX (valeur dérivée d'un ensemble) | **0** |
+| Hors verdict (voir ci-dessous) | 62 |
+
+Les 62 réponses hors verdict sont EXACTEMENT les 62 requêtes qui n'ont pas abouti (connexion coupée après le kill, ou refus nommé) : une requête sans réponse n'a rien à comparer. Aucune n'est hors verdict pour cause d'instabilité — le compte le prouve, il n'est pas affirmé.
+
+**Aucune réponse concurrente ne diffère de la réponse obtenue seul.** L'empreinte est
+insensible à l'ordre (un `GROUP BY` est un sac non ordonné) et le total de pagination est
+comparé en plus. Ce n'est pas une déduction depuis les latences : ce sont les VALEURS qui
+ont été comparées, requête par requête, contre une référence prise sur la même base et le
+même binaire quelques minutes plus tôt.
+
+**Aucune classe n'a été retirée du verdict** : chacune rend la même réponse à chacune de ses
+répétitions SEUL, donc chacune est comparable sous charge. C'est vérifié, pas supposé.
+
+### `sem_wait_ms` ne mesure pas l'attente du sémaphore
+
+C'est le champ que le daemon publie pour séparer « la requête est lente » de « la requête
+attendait son tour ». **La mesure montre qu'il ne le fait pas.**
+
+La démonstration ne demande aucun seuil : tant qu'il y a **au moins autant de permis que
+d'analystes**, aucune requête ne peut attendre son tour. À ces niveaux, `sem_wait_ms` doit être
+nul par construction. Mesuré :
+
+| Passe | Analystes | Permis | File possible ? | `sem_wait_ms` p95 | `sem_wait_ms` max |
+|---|---:|---:|:--:|---:|---:|
+| `conc-sem3@1.4M` | 1 | 3 | **non** | 1213 | **2029** |
+| `conc-sem3@1.4M` | 2 | 3 | **non** | 2.4 | **1491** |
+| `conc-sem3@1.4M` | 3 | 3 | **non** | 804 | **3386** |
+| `conc-sem8@1.4M` | 1 | 8 | **non** | 0.4 | **2287** |
+| `conc-sem8@1.4M` | 2 | 8 | **non** | 0.9 | **4174** |
+| `conc-sem8@1.4M` | 3 | 8 | **non** | 2148 | **3549** |
+| `conc-sem8@1.4M` | 4 | 8 | **non** | 2057 | **8107** |
+| `conc-sem8@1.4M` | 6 | 8 | **non** | 6335 | **10.1 s** |
+| `conc-sem8@1.4M` | 8 | 8 | **non** | 4705 | **10.2 s** |
+
+Le maximum observé **là où aucune file n'est possible** est de **10.2 s** en
+charge sous-critique, et de **3.8 s** pendant la passe solo (un seul
+client, aucun autre en vol). Un sémaphore avec des permis libres ne peut pas produire ça.
+
+**Ce que le champ mesure réellement** : le chrono démarre à l'entrée du handler
+(`daemon/src/handlers/query.rs:362`) et n'est lu qu'APRÈS le permit (`:556`, `sem_wait_ms`
+posé en `:560`). Entre les deux, la requête résout les masques de champs et lit la
+**couverture des rollups** — et cette lecture prend le verrou de la connexion PARTAGÉE
+(`:479`, `req_db(...).lock()`), celui-là même que tiennent les travaux de fond (`ANALYZE`
+de démarrage, boucle de rollups). `sem_wait_ms` additionne donc **l'attente du permit ET
+une attente de verrou qui n'est bornée par aucun sémaphore** — un point de sérialisation
+qui, lui, existe AVANT la borne de concurrence et n'est mesuré nulle part. Conséquence
+directe sur la lecture de ce document : un `sem_wait_ms` élevé ne prouve PAS que le
+sémaphore est trop petit — il faut regarder le niveau, et savoir si une file y était
+seulement possible. C'est pour cela que la colonne « file possible » existe.
+
+**Angle mort restant** : `C2c-fts-bar` ne publie(nt) aucun
+`stats` — la barre `/api/search` prend pourtant un permit sur le MÊME sémaphore. Sur cette
+route, il est donc impossible de distinguer une recherche lente d'une recherche qui
+attendait : c'est mesuré ici, ce n'est pas corrigé ici.
+
+### Le clic de tableau de bord, pendant que les autres travaillent
+
+`C0-plancher` est la requête la moins chère de la matrice. Seule, elle est instantanée. Ce
+tableau est ce que l'analyste RESSENT : aucune moyenne ne le montre, parce qu'elle est
+noyée dans les monstres.
+
+| Passe | Analystes | p50 | p95 | pire |
+|---|---:|---:|---:|---:|
+| `conc-sem3@1.4M` | 1 | 0.9 | 1.0 | 1.0 |
+| `conc-sem3@1.4M` | 2 | 1.0 | 1.2 | 1.2 |
+| `conc-sem3@1.4M` | 3 | 1.2 | 7.0 | 7.0 |
+| `conc-sem3@1.4M` | 4 | 1610 | 5712 | 5712 |
+| `conc-sem3@1.4M` | 6 | 1336 | 11.4 s | 11.4 s |
+| `conc-sem3@1.4M` | 8 | 6250 | 13.3 s | 18.1 s |
+| `conc-sem3@1.4M` | 10 | 12.8 s | 19.7 s | 20.2 s |
+| `conc-sem8@1.4M` | 1 | 0.9 | 1.5 | 1.5 |
+| `conc-sem8@1.4M` | 2 | 2.5 | 9.4 | 9.4 |
+| `conc-sem8@1.4M` | 3 | 1.0 | 17 | 17 |
+| `conc-sem8@1.4M` | 4 | 1.4 | 1571 | 1571 |
+| `conc-sem8@1.4M` | 6 | 2.7 | 280 | 280 |
+| `conc-sem8@1.4M` | 8 | 7.9 | 32 | 42 |
+| `conc-sem8@1.4M` | 10 | 1310 | 19.6 s | 89.5 s |
+
+### Le budget de 2 Gio, à plusieurs
+
+- **RSS crête du daemon, tous niveaux confondus : 2045 Mio** (100 % du budget).
+- **Mémoire du cgroup crête : 2048 Mio** pour un plafond de 2048 Mio.
+  Ce n'est pas la même grandeur que la RSS : le noyau compare au plafond la mémoire du CGROUP,
+  cache de pages compris. Une base de 1,4 Gio lue en boucle le remplit — le cgroup vit donc
+  **collé à son plafond**, et ce qui varie n'est pas son occupation mais son travail de
+  récupération.
+- **LE BUDGET A CÉDÉ** : `conc-sem8@1.4M`, **10 analystes** (sémaphore 8). RSS crête 2045 Mio contre un plafond de 2048 Mio, 62 requêtes sur 210 n'ont pas abouti, et le processus n'existait plus à la fin du niveau. Sous `MemoryMax` **sans swap**, cela ne peut pas être autre chose qu'un dépassement du budget : le noyau tue, il ne glisse pas en swap. Les niveaux au-delà ne sont **pas** mesurés — une absence, pas un zéro.
+- La dégradation n'est pas binaire : AVANT le kill, le daemon a d'abord REFUSÉ proprement des requêtes en nommant sa cause (budget interactif de 60 s dépassé, `4xx`). Le refus nommé arrive donc en premier ; le kill est ce qui suit quand la mémoire, elle, ne négocie pas.
+- **Tués par le noyau (`memory.events:oom_kill`) : 0** — compteur du cgroup, à lire avec la réserve ci-dessus : le cgroup d'un scope tué disparaît avec lui, et son compteur n'est alors plus lisible du tout.
+- Le harnais a ARRÊTÉ le balayage après le niveau 10 (`conc-sem8@1.4M`) : le daemon n'existe plus après ce niveau : sous MemoryMax sans swap, cela signifie un DÉPASSEMENT DU BUDGET (kill du noyau). Les niveaux suivants ne sont PAS mesurés.
+
+### Ce que coûte, et ce que rapporte, la taille du sémaphore
+
+Le sémaphore de l'interactif est à 3 par défaut, après avoir été baissé depuis 8 **comme
+levier de RAM**. Les passes comparées ici tournent sur la MÊME base, la MÊME machine, le
+MÊME binaire **et le MÊME mélange de requêtes** : leur écart, à niveau d'analystes égal,
+EST le taux de change entre concurrence et mémoire.
+
+**Il est réglable sans recompiler** : `PLUME_QUERY_CONCURRENCY` est lu dans la
+configuration au démarrage (`daemon/src/server.rs:254`, défaut 3) et le daemon publie la
+valeur qu'il applique sur `/api/system/diag` — c'est de là que ce banc la lit, plutôt que
+de la supposer. En revanche il est lu **une seule fois, au boot** : le changer demande un
+redémarrage, et un redémarrage a son propre coût (voir la mise au repos plus haut).
+
+| Analystes | débit `conc-sem3@1.4M` | débit `conc-sem8@1.4M` | écart de débit | p95 `conc-sem3@1.4M` | p95 `conc-sem8@1.4M` | RSS `conc-sem3@1.4M` | RSS `conc-sem8@1.4M` |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| **1** | 0.29 q/s | 0.26 q/s | x0.88 | 10.4 s | 12.5 s | 1026 Mio | 1015 Mio |
+| **2** | 0.53 q/s | 0.47 q/s | x0.89 | 13.7 s | 13.6 s | 1114 Mio | 1220 Mio |
+| **3** | 0.68 q/s | 0.61 q/s | x0.91 | 14.7 s | 15.9 s | 1069 Mio | 1430 Mio |
+| **4** | 0.67 q/s | 0.59 q/s | x0.89 | 14.3 s | 20.2 s | 1161 Mio | 1442 Mio |
+| **6** | 0.74 q/s | 0.69 q/s | x0.93 | 17.5 s | 26.4 s | 1173 Mio | 1589 Mio |
+| **8** | 0.73 q/s | 0.56 q/s | x0.77 | 19.5 s | 46.7 s | 1186 Mio | 2025 Mio |
+| **10** | 0.70 q/s | 0.32 q/s | x0.46 | 27.2 s | 50.1 s | 1320 Mio | 2045 Mio |
+
+**Au niveau le plus chargé mesuré des deux côtés (10 analystes)** : 0.32 contre 0.70 requête/s (**-54 %** de travail servi), p95 50.1 s contre 27.2 s, RSS crête 2045 contre 1320 Mio (**+725 Mio**, soit +35.4 % du budget). Ces six nombres SONT le taux de change entre un sémaphore à 3 et un sémaphore à 8 — celui que la baisse de 8 à 3, faite comme levier de RAM, avait acheté sans jamais être chiffré.
+
 ## Cellules à ne pas croire telles quelles
 
 - 33 cellules ont été **rejouées** (une mesure bousculée remplacée par une mesure propre) ; seule la dernière figure dans les tableaux, le JSONL brut garde les deux.
@@ -2330,9 +2571,12 @@ activer `PLUME_FTS_FIELDS=1` a fait passer la base de **1434 Mio à 1401 Mio** (
   chaude et UN seul volume. Le moteur vectorisé n'est pas mesuré séparément du chemin
   d'hydratation : le document ne dit pas lequel a servi chaque cellule au-delà de ce que
   `stats.cold` en rapporte.
-- **La concurrence** : une requête à la fois. `PLUME_QUERY_CONCURRENCY=3` est en place mais
-  jamais saturé (`sem_wait_ms` reste nul). Le comportement à 10 utilisateurs simultanés n'est
-  pas mesuré.
+- **La concurrence est mesurée** (section dédiée) : jusqu'à 10 analystes
+  simultanés, sémaphore 3 et 8. Ce qui reste hors mesure :
+  la concurrence PENDANT une ingestion (les deux charges sont mesurées séparément), la
+  charge SOUTENUE sur des heures (chaque niveau dure des dizaines de secondes, pas une
+  journée), et les fenêtres autres que `all` — le
+  mélange est tiré sur la fenêtre la plus coûteuse, pas sur toutes.
 - **Le multi-tenant** (`PLUME_MULTI_TENANT=1`) : tout est mesuré en mode 0.
 - **Le cache de pages froid** : impossible de le vider sans privilège root sur la machine de
   mesure. La colonne `lu` dit ce qui a réellement atteint le disque ; elle ne dit pas ce que
@@ -2353,9 +2597,12 @@ CARGO_TARGET_DIR=../.bench-target cargo build --release --features cold_tier \
     --manifest-path daemon/Cargo.toml
 bench/run.sh                       # 10 M d'événements
 BENCH_EVENTS=1000000 bench/run.sh  # 1 M, pour itérer
+# 2 bis. la CONCURRENCE, sur une base déjà remplie (redémarre le daemon par valeur de
+#        sémaphore et lui REDEMANDE ce qu'il applique avant de mesurer) :
+BENCH_PHASES=concurrency BENCH_SEM_SWEEP=3,8 BENCH_CONC_LEVELS=1,2,3,4,6,8,10 bench/run.sh
 # 3. le rendu — LA COMMANDE EXACTE qui a produit CE document, reconstruite depuis ses propres
 #    arguments et pointée sur les données VERSIONNÉES (donc rejouable par un tiers) :
-python3 bench/report.py bench/results/results-smoke-200k.jsonl bench/results/results.jsonl bench/results/results-2026-07-31.jsonl bench/results/results-2026-07-31-corrige.jsonl bench/results/parity-avant-2026-07-31.jsonl bench/results/parity-apres-2026-07-31.jsonl bench/results/parity-couverture-2026-07-31.jsonl \
+python3 bench/report.py bench/results/results-smoke-200k.jsonl bench/results/results.jsonl bench/results/results-2026-07-31.jsonl bench/results/results-2026-07-31-corrige.jsonl bench/results/parity-avant-2026-07-31.jsonl bench/results/parity-apres-2026-07-31.jsonl bench/results/parity-couverture-2026-07-31.jsonl bench/results/concurrency-2026-08-01.jsonl \
     --ingest-curve bench/results/ingest_rate.csv \
     --ingest-curve bench/results/ingest_rate-quiet-2g.csv \
     --ref chaud-seul-v2@1.4M \

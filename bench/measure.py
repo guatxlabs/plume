@@ -28,6 +28,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# SEUIL DE SUSPICION DE SWAP. Un chiffre pris pendant que la MACHINE swappe est FAUX : il mesure le
+# stockage, pas plume. 8 Mio de swap apparus PENDANT une cellule suffisent à la disqualifier — c'est
+# une borne basse volontairement serrée (le bruit normal est de zéro). DÉFINI ICI, UNE FOIS : les
+# autres harnais (concurrency.py) l'IMPORTENT au lieu de le réécrire, sinon deux passes du même banc
+# pourraient appliquer deux seuils différents et se croire comparables.
+SWAP_SUSPECT_BYTES = 8 * 1024 * 1024
+
+
 # ------------------------------------------------------------------ /proc
 def proc_rss_bytes(pid):
     try:
@@ -448,7 +456,7 @@ def main():
                     swap_delta_bytes=swap_delta,
                     # Un chiffre pris pendant que la machine swappe est FAUX. On ne le corrige pas,
                     # on le MARQUE : la cellule doit être rejouée.
-                    swap_suspect=bool(swap_delta > 8 * 1024 * 1024),
+                    swap_suspect=bool(swap_delta > SWAP_SUSPECT_BYTES),
                     measured_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 )
                 out.write(json.dumps(row, ensure_ascii=False) + "\n")

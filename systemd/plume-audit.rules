@@ -3,7 +3,23 @@
 ## fichier dit à auditd QUOI journaliser. À ADAPTER à votre hôte (chemins, seuils, périmètre).
 ## Pour activer :
 ##   sudo cp /usr/local/share/plume/plume-audit.rules /etc/audit/rules.d/plume.rules
+##     ^ ce chemin n'existe QUE sur un central (pose par bootstrap.sh). Sur une machine AGENT
+##       (bootstrap-agent.sh), copiez depuis ce depot : sudo cp systemd/plume-audit.rules \
+##       /etc/audit/rules.d/plume.rules
 ##   sudo augenrules --load     (ou: sudo auditctl -R /etc/audit/rules.d/plume.rules)
+##   sudo auditctl -l           # RELISEZ TOUJOURS : c'est la seule preuve de ce qui est charge
+##
+## !! DEUX PIEGES MESURES (2026-08-01, Ubuntu 24.04.4 amd64, gabarit tel quel) :
+##  1. `augenrules --load` S'ARRETE A LA PREMIERE REGLE EN ECHEC et sort quand meme 0. Les regles
+##     d'EXEMPLE ci-dessous pointent des chemins qui n'existent pas partout (/srv/data,
+##     /etc/kubernetes, /usr/bin/nc.openbsd, /usr/bin/xxd) : sur un hote ou ils manquent, TOUT CE QUI
+##     SUIT la premiere ligne fautive n'est PAS charge. Mesure : 6 regles chargees sur 12, sans erreur
+##     visible dans le flux normal. RETIREZ/REMPLACEZ ces chemins par les votres AVANT de charger.
+##  2. La seule regle `execve` ci-dessous est `arch=b32`. Sur un hote amd64 elle ne capte QUASIMENT
+##     RIEN : mesure = 0 enregistrement type=EXECVE apres plusieurs dizaines d'exec. Sans couverture
+##     64 bits, `category=exec` reste VIDE (angle mort total). Ajoutez, en connaissance du volume :
+##       -a always,exit -F arch=b64 -S execve -F auid!=-1 -k exec_tracking
+##     Mesure avec les 2 pieges corriges : 9 regles chargees, category=exec alimente.
 ##
 ## ARBITRAGE VISIBILITÉ / VOLUME (à connaître avant de durcir) : une règle `execve` SANS filtre `auid`
 ## journalise AUSSI les exec des daemons sans session de login. Sur un hôte qui exécute beaucoup de

@@ -244,6 +244,7 @@ Faites émettre à `CMD` uniquement le **nouveau** (`journalctl --since -1min`, 
 > `-a always,exit -F arch=b64 -S execve -F auid!=-1 -k exec_tracking`.
 > *Mesuré le 2026‑08‑01, Ubuntu 24.04.4 amd64 : gabarit tel quel → 6 règles chargées sur 12 et **0**
 > enregistrement `EXECVE` ; les deux pièges corrigés → 9 règles et `category=exec` alimenté.*
+>
 > **Windows** (poste, entreprise, Windows Server) a un **collecteur natif PowerShell clé-en-main** — événements · pare-feu · réseau · Defender — dans **[`collectors/windows/`](collectors/windows/)** : copiez-le, planifiez-le (tâche toutes les 5 min), il POST directement au central. **macOS** : via un scripted input (`log show`).
 
 **2. Extraire des champs d'un format inconnu (parser).** Déposez `config.d/parsers/<nom>.json` : une regex à groupes nommés `(?P<champ>…)` transforme le texte brut en champs structurés, cherchables et mappables au CIM — sans rebuild.

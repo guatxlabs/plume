@@ -22,6 +22,7 @@ pub(crate) mod workflow_actions; // #60 actions de menu contextuel (navigation s
 pub(crate) mod fleet;
 pub(crate) mod freshness;
 pub(crate) mod governance; // #59 : legal-hold (rétention-lock), export streaming du ledger + sinks, rôles composables (CRUD)
+pub(crate) mod purge; // PURGE EXPLICITE d'événements : surface HTTP deux temps, admin-only, FERMÉE par défaut (PLUME_PURGE_API)
 pub(crate) mod idp;
 #[cfg(feature = "ai")]
 pub(crate) mod ai; // #16 handlers de la couche IA conseil (providers CRUD + presets + NL→GXQL + status) — feature `ai` OFF -> exclu à la compilation

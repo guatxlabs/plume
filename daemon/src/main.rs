@@ -67,6 +67,14 @@ mod governance; // #59 GOUVERNANCE ENTREPRISE : legal-hold (rétention-lock fail
 pub(crate) use governance::*;
 mod rollups;
 pub(crate) use rollups::*;
+// PURGE EXPLICITE D'ÉVÉNEMENTS — la seule suppression de `event` qui ne soit pas la rétention temporelle.
+// Déclaré APRÈS `rollups` (il consomme `retention_nonpurge_for`/`rollup_insert_sql_into`) et APRÈS
+// `governance` (legal-hold). Les TYPES du pipeline (`PurgeWindow`/`PurgeScope`/`PurgePlan`/`ConfirmedPurge`/
+// `PurgeInscribed`) ont des champs PRIVÉS : ce `use` réexporte les NOMS, jamais de quoi les fabriquer
+// autrement que par les constructeurs faillibles du module. C'est ce qui rend « purger sans borne / sans
+// simuler / sans inscrire au registre » non représentable ailleurs dans la crate.
+mod purge;
+pub(crate) use purge::*;
 // #18 Phase 1 — TIER FROID PARQUET (writer + aging). GATE DE COMPILATION `cold_tier` : sans la feature, ce
 // module n'existe PAS -> build/mode 0 byte-identiques (aucune dép `parquet` linkée). Le gate RUNTIME
 // `PLUME_COLD_TIER` (dans cold_age_run) le rend en plus inerte tant qu'il n'est pas explicitement activé.
@@ -94,6 +102,7 @@ pub(crate) use handlers::notifiers::*;
 pub(crate) use handlers::alerting::*;
 pub(crate) use handlers::freshness::*;
 pub(crate) use handlers::governance::*; // #59 gouvernance : legal-hold + export ledger + sinks + rôles composables
+pub(crate) use handlers::purge::*; // purge explicite d'événements (routes plan/apply, gate PLUME_PURGE_API)
 pub(crate) use handlers::fleet::*;
 pub(crate) use handlers::idp::*;
 #[cfg(feature = "ai")]
@@ -1162,6 +1171,21 @@ fn main() {
         let db = Arc::new(Mutex::new(conn.into_connection()));
         retention_run(&db);
         println!("rétention OK");
+        return;
+    }
+    // PURGE EXPLICITE D'ÉVÉNEMENTS — sous-commande DEUX TEMPS. Sans `--confirm`, elle SIMULE : elle rend le
+    // compte EXACT, la ventilation par source, un échantillon des deux extrémités, ce qu'elle NE couvre PAS,
+    // et un JETON qui est l'empreinte de ce résultat. Avec `--confirm <jeton>`, elle RE-SIMULE, compare, puis
+    // exécute — donc un jeton rejoué ou un contenu qui a bougé entre les deux échoue.
+    //
+    // POURQUOI LA CLI EST LE CHEMIN PRINCIPAL : purger, c'est détruire des preuves. Ici l'appelant possède
+    // déjà la clé SQLCipher et l'accès à l'hôte — soit exactement le pouvoir qu'il faudrait pour effacer la
+    // base à la main. La sous-commande n'ajoute donc AUCUNE capacité nouvelle ; elle remplace un `DELETE`
+    // manuel non tracé par un chemin borné, simulé, confirmé et INSCRIT AU REGISTRE. La surface HTTP, elle,
+    // ajouterait une capacité de destruction À DISTANCE : elle existe (admin-only) mais reste FERMÉE par
+    // défaut (`PLUME_PURGE_API`).
+    if args.get(1).map(String::as_str) == Some("purge") {
+        purge_cli(&args);
         return;
     }
     if args.get(1).map(String::as_str) == Some("backup") {

@@ -20,6 +20,7 @@ explicitement plutôt que laissé à la surprise de l'opérateur.
 |---|---|---|
 | [DR-plume-restore.md](DR-plume-restore.md) | ✅ | **Reprise après sinistre** — les deux formats de backup produits par le produit, et comment restaurer chacun. À lire *avant* d'en avoir besoin. |
 | [COMPLIANCE.md](COMPLIANCE.md) | ✅ | Posture et couverture de conformité (≠ certification). |
+| [PURGE.md](PURGE.md) | ✅ CLI · 🧪 HTTP | **Purger des événements nommés** (au-delà de la rétention temporelle) : deux temps avec jeton, refus motivés (rétention légale, tier froid, chaîne de preuve), inscription au registre — et la liste explicite de ce qui **n'est pas** couvert, à commencer par les sauvegardes. |
 | [DETECTION-CATALOG.md](DETECTION-CATALOG.md) | ✅ | Catalogue de détection curé livré comme point de départ. |
 | [../deploy/CONFIDENTIALITE.md](../deploy/CONFIDENTIALITE.md) | ✅ | TLS, portée réelle des tokens d'agent, chiffrement at-rest, réserve sur l'export en clair du backup. |
 | [../deploy/PROFILE.md](../deploy/PROFILE.md) | ✅ | Déployer sur n'importe quelle infra (variables `PLUME_*`, scripted inputs). |

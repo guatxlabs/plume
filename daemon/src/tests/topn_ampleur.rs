@@ -16,7 +16,9 @@
 //   3. elle est écrite MÊME À ZÉRO — sinon son absence serait indiscernable d'un reste nul ;
 //   4. la route PUBLIE cette ampleur, et le chiffre publié est celui de l'oracle brut ;
 //   5. sans lignes de reste, l'ampleur est AVOUÉE, pas supposée nulle (c'est la garde qui MORD) ;
-//   6. le reste ne pollue AUCUN résultat servi (ni la route, ni les panneaux).
+//   6. le reste ne pollue AUCUN résultat servi (ni la route, ni les panneaux) ;
+//   7. une perte NULLE PROUVÉE n'est plus déclarée « tronquée » — le drapeau varie enfin, dans les
+//      deux sens, et l'ignorance reste du côté sûr.
 // =====================================================================================
 
     /// Sème `n` events d'une source à `ts`, chacun avec une VALEUR DISTINCTE de la dimension -> le
@@ -245,4 +247,34 @@
             .query_row(&format!("SELECT COUNT(*), COALESCE(SUM(count),0) FROM ({sql})"), [], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
         assert_eq!((plignes, psomme), (attendu, attendu), "le panneau ne doit pas voir le reste non plus");
+    }
+
+    /// (7) UNE PERTE NULLE PROUVÉE N'EST PAS UNE TRONCATURE. Contrepartie directe de la mesure, et défaut
+    /// MIROIR de celui qu'on ferme : avant, TOUTE réponse de la ROUTE B sortait `truncated: true`, y
+    /// compris pour les 23 couples (source, dim) sur 37 qui n'écartent rien. Un drapeau qui ne varie
+    /// jamais cesse d'être lu. Maintenant qu'on SAIT, on le dit dans les deux sens — et l'ignorance
+    /// (`aucune ligne de reste`) reste du côté sûr.
+    #[test]
+    fn une_perte_nulle_prouvee_n_est_pas_declaree_tronquee() {
+        let _g = ROLLUP_DIMS_ENV_LOCK.lock();
+        std::env::remove_var("PLUME_ROLLUP_DIM_TOPN"); // plafond livré (50) -> 3 valeurs passent largement
+        let conn = test_db();
+        let now_ts = now();
+        let bucket = (now_ts / 3600) * 3600;
+        amp_seed_distinct(&conn, bucket + 61, "web", "status", 3, "nulle");
+        rollup_events(&conn);
+        let rr = try_rollup_route_at(
+            "search source=web | stats count by status", 0, 0, None, now_ts,
+            RollupCoverage::unproven(), DimRollupCoverage::of(&conn),
+        )
+        .expect("ROUTE B");
+        assert!(rr.cap.plafonne(), "la route POSE bien un plafond (c'est sa nature)");
+        let mesure = rr.cap.mesurer(&conn);
+        assert_eq!(mesure.chiffres(), Some((0, 3, 3)), "ampleur établie et NULLE");
+        assert!(!mesure.tronque(), "une perte nulle PROUVÉE ne doit pas être déclarée tronquée");
+        assert!(mesure.note().is_none(), "…et n'a rien à dire à l'analyste");
+
+        // …tandis que l'IGNORANCE, elle, reste du côté sûr.
+        conn.execute("DELETE FROM event_dim_rollup WHERE dim LIKE ?1", params![format!("{RESTE_DIM_PREFIX}%")]).unwrap();
+        assert!(rr.cap.mesurer(&conn).tronque(), "sans preuve, le plafond reste déclaré mordant");
     }

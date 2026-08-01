@@ -134,10 +134,23 @@ pub(crate) struct CapMesure(Etat);
 
 impl CapMesure {
     /// La réponse est-elle INCOMPLÈTE du fait du plafond ? (`stats.truncated`, OR-é avec le plafond de
-    /// lignes existant par `apply_rollup_stats`.) `NonEtablie` répond OUI : le plafond est posé, c'est
-    /// son ampleur qui manque, pas la troncature.
+    /// lignes existant par `apply_rollup_stats`.)
+    ///
+    /// LE DRAPEAU DEVIENT INFORMATIF DANS LES DEUX SENS, et c'est la contrepartie de la mesure. Avant,
+    /// toute réponse de la ROUTE B sortait `truncated: true` — y compris les 23 couples (source, dim) sur
+    /// 37 qui, MESURE À L'APPUI, n'écartent RIEN (leur cardinalité tient sous le plafond). Un drapeau qui
+    /// ne varie jamais cesse d'être lu, et crier au loup est le défaut MIROIR de taire l'ampleur. Une
+    /// perte NULLE, ÉTABLIE sur TOUTE la bande servie, rend donc `false` : la réponse est complète, et on
+    /// est en mesure de le prouver. `NonEtablie` rend `true` — le plafond est posé et rien ne permet de
+    /// dire qu'il n'a pas mordu ; l'ignorance penche du côté sûr.
     pub(crate) fn tronque(&self) -> bool {
-        !matches!(self.0, Etat::Aucun)
+        match self.0 {
+            Etat::Aucun => false,
+            Etat::NonEtablie => true,
+            Etat::Etablie { ecartes, heures_connues, heures_servies, .. } => {
+                ecartes > 0 || heures_connues < heures_servies
+            }
+        }
     }
 
     /// Les trois nombres publiés dans `stats` : écartés, servis, total réel (servis + écartés) sur la

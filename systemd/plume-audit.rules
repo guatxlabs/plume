@@ -4,8 +4,8 @@
 ## Pour activer :
 ##   sudo cp /usr/local/share/plume/plume-audit.rules /etc/audit/rules.d/plume.rules
 ##     ^ ce chemin n'existe QUE sur un central (pose par bootstrap.sh). Sur une machine AGENT
-##       (bootstrap-agent.sh), copiez depuis ce depot : sudo cp systemd/plume-audit.rules \
-##       /etc/audit/rules.d/plume.rules
+##       (bootstrap-agent.sh), copiez depuis ce depot :
+##         sudo cp systemd/plume-audit.rules /etc/audit/rules.d/plume.rules
 ##   sudo augenrules --load     (ou: sudo auditctl -R /etc/audit/rules.d/plume.rules)
 ##   sudo auditctl -l           # RELISEZ TOUJOURS : c'est la seule preuve de ce qui est charge
 ##

@@ -330,6 +330,24 @@ le **signale** (avertissement) et un test l'**épingle**. Le refermer signifie c
 peut le désambiguïser puisque `endpoint` porte aussi image-load / registry / installation de service).
 **Décision consciente** : non fait, écrit.
 
+**Mesuré en conditions réelles le 2026‑08‑02** (Windows 11 Enterprise 24H2 build 26100, Sysmon 15.21
+installé en 18 s avec une config minimale `ProcessCreate`, agent Rust cross-compilé et enregistré en
+service SCM) : l'angle mort n'est plus déduit du code, il est **constaté**. Sysmon ID 1 arrive bien en
+`category=endpoint` (36 événements), et sur le **même** poste, au **même** moment, la requête de la règle
+Sigma `process_creation` importée telle quelle —
+`search category=exec CommandLine=~(?i)whoami | stats count` — compte **50**, tandis que
+`search category=endpoint CommandLine=~(?i)whoami | stats count` en compte **20** de plus qu'elle ne
+voit pas. Ce sont les mêmes exécutions, vues deux fois, rangées dans deux catégories.
+
+Deux conséquences pratiques que la lecture du code ne donnait pas :
+- **Sysmon peuple `CommandLine` sans AUCUNE GPO** (c'est dans son schéma d'événement, pas dans l'audit
+  Windows). Un parc équipé de Sysmon a donc la ligne de commande partout — y compris, mesuré, **les
+  secrets passés en argv** (cf. l'avertissement de `collectors/windows/README.md`) — alors même que la
+  règle `process_creation` reste aveugle à ces événements.
+- La bascule d'`endpoint` vers `exec` serait donc *plus* payante qu'estimé (elle rendrait visible une
+  télémétrie déjà riche en `CommandLine`), et *aussi* plus coûteuse (l'historique `endpoint` est mêlé).
+  La décision reste inchangée ; seul son chiffrage est désormais mesuré.
+
 **Corollaire pour la taxonomie.** L'axe `category` a désormais un oracle d'émission **mesuré**, ce que
 `daemon/src/collected.rs` déclarait explicitement absent : `SIGMA_TARGET_CATEGORY_EMITTERS` cite, pour
 chaque catégorie visée par l'import Sigma, **le fichier livré et le fragment qui l'émet** ; la garde

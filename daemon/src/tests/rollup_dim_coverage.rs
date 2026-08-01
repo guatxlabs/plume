@@ -333,6 +333,38 @@
     /// scan brut. Ce n'est pas un mensonge (`approx:true` a toujours été posé), mais ce n'était PROUVÉ
     /// par aucun test : ce test le PIN, pour qu'un futur passage à `approx:false` casse ici et pas en
     /// production.
+    ///
+    /// ────────────────────────────────────────────────────────────────────────────────────────────
+    /// LA DÉCISION (2026-08-01) : ON LAISSE — ET VOICI CE QUI LA SOUTIENT.
+    ///
+    /// Le point à trancher n'était pas « est-ce que ça arrive dans ce test » (il le fabrique), mais
+    /// « PAR QUELLE PORTE la production y entre ». Il y en a deux, et elles ont été mesurées :
+    ///
+    ///   PORTE 1 — LA RÉTENTION. FERMÉE, prouvé par `la_retention_ne_laisse_jamais_le_rollup_plus_vieux_qu_event`
+    ///     (module `topn_ampleur`). `retention_run_tenant` purge `event` par `ts < cutoff` ET
+    ///     `event_rollup` par `bucket < cutoff` ; comme un bucket commence AVANT les `ts` qu'il
+    ///     contient, le rollup est toujours purgé AU MOINS aussi profond — et même davantage, les
+    ///     sources de contrôle (`origin='daemon'`) étant épargnées dans `event` et pas dans le rollup.
+    ///     Le sur-compte est donc INATTEIGNABLE par là. Contrepartie MESURÉE et épinglée par ce même
+    ///     test : un SOUS-compte confiné au seul bucket qui chevauche le cutoff.
+    ///
+    ///   PORTE 2 — LE TIER FROID. OUVERTE dans la TABLE, fermée sur le CHEMIN SERVI. Le vieillissement
+    ///     supprime les lignes d'`event` d'un jour scellé sans toucher aux rollups (délibéré :
+    ///     `cold_rollup`/`cold_dim_rollup` servent ces heures). Mais une fenêtre qui descend sous la
+    ///     frontière `B` est servie par la route COLD (`query.rs` : `from < B` -> `cold_boundary`), qui
+    ///     partitionne à `B` et n'a JAMAIS le droit de lire `event_rollup` en dessous — épinglé par un
+    ///     piège explicite (`phase_a_hot_cold_union_no_double_count_at_boundary`, feature `cold_tier`,
+    ///     une ligne stale à `n=999` sous `B` que la route DOIT exclure).
+    ///
+    /// IL NE RESTE QUE « le tier froid a tourné, puis a été désactivé ». Là, la ROUTE A sert la mémoire
+    /// que le rollup garde d'événements qui ont RÉELLEMENT existé (ils sont en Parquet, simplement
+    /// illisibles dans ce mode), sous `approx:true` — et la ROUTE B fait EXACTEMENT LA MÊME CHOSE, sa
+    /// bande n'étant remontée que par la rétention (`raise_floor`) et jamais par le vieillissement. Les
+    /// deux routes restent donc D'ACCORD ENTRE ELLES ; la seule divergence est route-contre-brut, et
+    /// elle est déclarée. CORRIGER voudrait dire clamper la ROUTE A au plancher d'`event`, c'est-à-dire
+    /// EFFACER de la réponse des événements réels sur le seul chemin qui les compte encore — un
+    /// sous-compte choisi pour éviter un sur-compte subi. On garde donc l'état actuel, épinglé ici.
+    /// ────────────────────────────────────────────────────────────────────────────────────────────
     #[test]
     fn route_a_sur_compte_sous_le_plancher_event_et_le_declare() {
         let now_ts = now();

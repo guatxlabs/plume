@@ -95,7 +95,9 @@
         let bucket = (now_ts / 3600) * 3600; // fenêtre chaude : ré-agrégée à chaque tick, aucune bande à attendre
         let mut cellules = 0usize;
         let mut avec_perte = 0usize;
-        for topn in [1i64, 3, 10, 50] {
+        // `0` = plafond DÉSACTIVÉ (`PLUME_ROLLUP_DIM_TOPN=0`) : rien n'est jamais écarté, mais la ligne de
+        // reste doit exister quand même — sinon « pas de cap » et « pas de trace » se ressemblent.
+        for topn in [0i64, 1, 3, 10, 50] {
             for cardinalite in [1usize, 2, 5, 25, 60, 120] {
                 let conn = test_db();
                 std::env::set_var("PLUME_ROLLUP_DIM_TOPN", topn.to_string());
@@ -107,8 +109,17 @@
                     verite,
                     "plafond {topn}, cardinalité {cardinalite} : servi({servi}) + reste({reste}) doit être la VÉRITÉ ({verite})"
                 );
-                let attendu = (cardinalite as i64 - topn).max(0);
+                let attendu = if topn <= 0 { 0 } else { (cardinalite as i64 - topn).max(0) };
                 assert_eq!(reste, attendu, "plafond {topn}, cardinalité {cardinalite} : le reste doit valoir exactement ce qui dépasse");
+                // …et la LIGNE existe dans tous les cas, y compris plafond désactivé et reste nul.
+                let lignes_reste: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM event_dim_rollup WHERE source='web' AND dim=?1",
+                        params![reste_dim("status")],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(lignes_reste, 1, "plafond {topn}, cardinalité {cardinalite} : une ligne de reste par (bucket, env)");
                 cellules += 1;
                 if reste > 0 {
                     avec_perte += 1;
@@ -116,7 +127,7 @@
             }
         }
         std::env::remove_var("PLUME_ROLLUP_DIM_TOPN");
-        assert!(cellules >= 20, "famille trop petite pour prouver quoi que ce soit : {cellules}");
+        assert!(cellules >= 25, "famille trop petite pour prouver quoi que ce soit : {cellules}");
         assert!(avec_perte >= 8, "aucune cellule ne perd rien : le plafond ne serait pas exercé ({avec_perte})");
     }
 

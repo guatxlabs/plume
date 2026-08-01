@@ -847,7 +847,7 @@
         // idempotent : re-jouer ne casse rien.
         let _ = migrate(&conn);
         let v: String = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, "111");
+        assert_eq!(v, "112");
     }
 
     #[test]

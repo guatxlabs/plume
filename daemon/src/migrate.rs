@@ -90,7 +90,7 @@ impl Drop for MigrationLogSilencer {
 /// rien (toutes ses gardes `v < N` sont fausses) et OPÈRE À L'AVEUGLE sur un schéma qu'il ne connaît pas
 /// -> risque de corruption (survivable AUJOURD'HUI car migrations additives, mais non gardé). On REFUSE
 /// d'ouvrir : arrêt PROPRE (exit non-zéro), JAMAIS un panic, JAMAIS un « proceed » silencieux.
-pub(crate) const CODE_SCHEMA_MAX: i64 = 111;
+pub(crate) const CODE_SCHEMA_MAX: i64 = 112;
 
 /// Lit `meta.schema_version` (défaut 1 si table/lignes absentes ou illisibles) — MÊME lecture que `migrate()`.
 /// Une base NEUVE (pas encore de table meta) renvoie 1 -> jamais refusée par la garde.
@@ -768,6 +768,7 @@ fn migrate_chain(conn: &Connection) -> bool {
     if v < 109 && !migrate_step(conn, 109, migrate_v109) { return false; }
     if v < 110 && !migrate_step(conn, 110, migrate_v110) { return false; }
     if v < 111 && !migrate_step(conn, 111, migrate_v111) { return false; }
+    if v < 112 && !migrate_step(conn, 112, migrate_v112) { return false; }
     true
 }
 
@@ -1023,6 +1024,24 @@ fn migrate_v111(conn: &MigTx) {
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_net_ban_ip ON net_ban(ip)", []);
     let _ = conn.execute("UPDATE meta SET value='111' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v111 (net_ban : ban natif HTTP plume, live-store DISTINCT de banned_ip analytique — chantier ② Phase 1)");
+}
+
+/// v112 (AMPLEUR DU PLAFOND TOP-N). Le rollup par dimension écrit désormais, pour chaque (bucket, source,
+/// dim, env) qu'il agrège, une LIGNE DE RESTE qui dit combien d'événements le plafond a écartés là
+/// (cf. `rollups::dim_rollup_select_sql`, `topn_cap`). Les buckets déjà agrégés par un binaire antérieur
+/// n'en portent PAS — et le job ne repasse jamais sur une bande qu'il a déjà couverte : sans intervention,
+/// l'ampleur resterait indéfiniment « non établie » sur tout l'historique d'une base existante.
+///
+/// ON RÉTRACTE DONC LA COUVERTURE, UNE FOIS. C'est le geste déjà utilisé par le job lui-même (« rétracter
+/// d'abord, réparer ensuite ») : la bande repart de l'heure courante et redescend au rythme borné de
+/// `PLUME_ROLLUP_DIM_BACKFILL`, en réagrégeant — donc en écrivant les restes. PENDANT la reconstruction la
+/// route DÉCLINE sur ce qui n'est pas encore témoigné et le chemin brut sert, EXACT : la réponse reste
+/// juste à chaque instant. On ne supprime AUCUNE ligne : la table garde ses comptes, seule l'AFFIRMATION
+/// de couverture est retirée.
+fn migrate_v112(conn: &MigTx) {
+    let _ = conn.execute("DELETE FROM meta WHERE key='event_dim_rollup_cov'", []);
+    let _ = conn.execute("UPDATE meta SET value='112' WHERE key='schema_version'", []);
+    mig_log!("[migration] schéma -> v112 (ampleur du plafond top-N : couverture par dimension rétractée une fois -> le job réagrège en écrivant les lignes de reste ; le brut sert pendant ce temps)");
 }
 
 /// v108 (PERF — RECHERCHE RAW HAUT-VOLUME source=X sur fenêtre longue). MARQUEUR PUR (aucune DDL lourde
@@ -3971,7 +3990,7 @@ mod tx_integrity_tests {
         conn.execute_batch("PRAGMA max_page_count=1073741823").unwrap();
         assert!(migrate(&conn), "2e démarrage : doit RATTRAPER la migration");
         assert!(table_exists(&conn, "net_ban"), "v111 doit être re-tentée et réussir au démarrage suivant");
-        assert_eq!(read_schema_version(&conn), 111, "version bumpée SEULEMENT après succès réel");
+        assert_eq!(read_schema_version(&conn), CODE_SCHEMA_MAX, "version bumpée SEULEMENT après succès réel");
         assert!(conn.is_autocommit(), "aucune transaction laissée ouverte après le succès");
     }
 

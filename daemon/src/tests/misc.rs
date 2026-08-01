@@ -51,7 +51,7 @@
         let _ = migrate(&conn);
         assert_eq!(
             conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(),
-            "111", "migrate atteint la tête (v96)"
+            "112", "migrate atteint la tête (v96)"
         );
         // table field_filter présente + colonnes attendues.
         let cnt: i64 = conn.query_row("SELECT COUNT(*) FROM field_filter", [], |r| r.get(0)).unwrap();
@@ -338,7 +338,7 @@
         conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
         let _ = migrate(&conn);
         let ver: String = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
-        assert_eq!(ver, "111", "schéma bumpé à la tête (v96)");
+        assert_eq!(ver, "112", "schéma bumpé à la tête (v96)");
         for t in ["library_panel", "playlist", "dashboard_snapshot"] {
             let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0)).unwrap();
             assert_eq!(n, 0, "{t} VIDE à la création (mode 0)");

@@ -212,7 +212,14 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
   d'`event_rollup`/`event_dim_rollup` → réponse en quelques millisecondes **parce qu'elle ne lit pas les
   events brutes** : les 92 panneaux semés répondent en **1 à 7 ms** en lisant **~62 000 lignes de rollup
   pré-agrégé**, pas les 9,8 M events. Chaque réponse porte `served_from: rollup|raw` + `approx` +
-  `truncated` — l'analyste voit **toujours** si le chiffre est exact ou agrégé. **Ce qui n'est PAS routé
+  `truncated` — l'analyste voit **toujours** si le chiffre est exact ou agrégé.
+  **Et quand il est tronqué, il porte DE COMBIEN** : le plafond top-N par dimension écarte de x1,0 à
+  **x16,4** selon la dimension (mesuré 2026-08-01, banc 1 436 026 events, `daemon/src/topn_cap.rs`), ce
+  qu'un simple drapeau ne disait pas. Le job de rollup écrit, dans la même instruction qu'il tronque, une
+  **ligne de reste** par (bucket, source, dim, env) — écrite **même à zéro**, faute de quoi son absence
+  serait indiscernable d'un reste nul. La route la lit et publie `topn_ecartes`/`topn_servis`/`topn_total`.
+  Buckets sans ligne de reste (agrégés par un binaire antérieur) → l'ampleur est **avouée inconnue**,
+  jamais remplacée par 0. **Ce qui n'est PAS routé
   l'est délibérément** : un `count by source,severity,action` (ou `host`, ou `src_ip`) retombe sur le
   **scan brut et coûte ~32 s sur 9,8 M lignes**, parce que le rollup fusionne `NULL` et `''` sur ces
   dimensions et rendrait un group-by **faux** sous une étiquette « approximatif ». Nous refusons de servir

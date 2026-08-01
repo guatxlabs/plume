@@ -389,8 +389,10 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     // REPLI : la forme augmentée ne compile pas (p. ex. un `|` dans une valeur citée a fait mal découper les
     // étages) -> on sert EXACTEMENT comme avant (offset + COUNT borné) au lieu de rendre une erreur.
     let mut keyset_compile_failed = false;
-    // rollup_meta = Some((approx, truncated, note)) si la requête a été ROUTÉE vers un rollup (sinon raw).
-    let mut rollup_meta: Option<(bool, bool, Option<String>)> = None;
+    // rollup_meta = Some((approx, ampleur du plafond, note)) si la requête a été ROUTÉE vers un rollup
+    // (sinon raw). Le deuxième membre n'est PAS un booléen : c'est une `CapMesure`, qui n'existe qu'après
+    // dérivation depuis la base (cf. `topn_cap`) -> déclarer une troncature sans la chiffrer ne compile pas.
+    let mut rollup_meta: Option<(bool, CapMesure, Option<String>)> = None;
     // #18 — le GXQL post-exclusion, capturé INCONDITIONNELLEMENT (masques compris) : c'est de LUI que la
     // FORME de la réponse est dérivée (`AnswerShape::of_gxql`) sur les chemins froids. `None` = champ `sql`
     // brut (admin) -> rien à dériver -> `AnswerShape::undecidable()` = refus. Distinct de `cold_vec_soql`,
@@ -532,7 +534,13 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
             None
         };
         if let Some(rr) = rr {
-            rollup_meta = Some((rr.approx, rr.truncated, rr.note));
+            // L'AMPLEUR DU PLAFOND, MESURÉE — sur le POOL DE LECTURE, pour la même raison que la couverture
+            // juste au-dessus (aucune sérialisation derrière le verrou d'un tick de rollups). La sonde lit la
+            // MÊME table et le MÊME index que la route, sur les mêmes bandes, et le reste y tient une ligne
+            // par heure : MESURÉ 2,4 ms (p50, base de banc, fenêtre de 22 j) contre ~25 ms pour la route.
+            // Pool indisponible -> `sans_base()` = AVEU (« plafond posé, ampleur inconnue »), jamais un zéro.
+            let cap = read_with(req_db_path(&st, &au).as_str(), rr.cap.sans_base(), |c| rr.cap.mesurer(c));
+            rollup_meta = Some((rr.approx, cap, rr.note));
             (rr.sql, true)
         } else {
             // KEYSET : compile AVEC la clé de tri `id` en fin de projection (cursor_id=true) ; sinon compile masqué

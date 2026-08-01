@@ -172,7 +172,7 @@
                     let s: i64 = got.iter().map(|(_, c)| c).sum();
                     let w: i64 = want.iter().map(|(_, c)| c).sum();
                     assert!(
-                        rr.approx || rr.truncated,
+                        rr.approx || rr.cap.plafonne(),
                         "NOMBRE FAUX SOUS `approx:false` — état {state:?}, fenêtre ({from},{to})\n  \
                          requête : {soql}\n  route : {s} sur {} groupes\n  brut  : {w} sur {} groupes\n  SQL={}",
                         got.len(), want.len(), rr.sql

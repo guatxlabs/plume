@@ -233,7 +233,7 @@
             .query_row(&format!("SELECT COALESCE(SUM(\"count\"),0) FROM ({})", rr.sql), [], |r| r.get(0))
             .unwrap();
         assert_eq!(total, dimt_raw_count(&conn, "web"), "le bucket hors bande ne doit PAS entrer dans le compte");
-        assert!(rr.approx && rr.truncated, "la ROUTE B reste déclarée approchée et partielle");
+        assert!(rr.approx && rr.cap.plafonne(), "la ROUTE B reste déclarée approchée et partielle");
         // …et l'absence est NOMMÉE, pas tue : la note dit CE QUI manque, pas seulement « approximatif ».
         let note = rr.note.expect("une fenêtre qui déborde la bande doit porter une note de couverture");
         assert!(note.contains("ne couvre PAS"), "la note doit NOMMER ce qui manque : {note}");

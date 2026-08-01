@@ -62,7 +62,7 @@ is annotated with its feature #). Large but flat: `query`, `search`, `soql_meta`
 |------|---------|----------|
 | `query_exec.rs` | Bounded read executor: per-`db_path` read pool (LRU, cross-DB cap 8), watchdog budgets, in-flight cancel registry, `stmt.readonly()` guard, DENY authorizer | Guarded — the enforcement point for read safety + budgets |
 | `soql_glue.rs` | Wires the daemon into `guatx_core::soql` (schema/dialect/mask injection) | Guarded — masking injection lives here |
-| `rollups.rs`, `rollup_route.rs` | Precomputed aggregates + transparent rollup routing (the 2 GB strategy) | Mostly yes |
+| `rollups.rs`, `rollup_route.rs`, `topn_cap.rs` | Precomputed aggregates + transparent rollup routing (the 2 GB strategy). `topn_cap` owns **a top-N cap is never declared without its magnitude**: `truncated` is a type, not a bool — the only way to declare a cap is `Cap::top_n(probe)`, which *requires* the query that quantifies it, and `apply_rollup_stats` takes the *measured* value, so declaring truncation without measuring it does not compile. | Mostly yes |
 
 ### Auth / identity / governance
 | Path | Purpose | Ownable? |

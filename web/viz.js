@@ -414,7 +414,23 @@ function renderQBadge(stats) {
   } else if (stats && stats.served_from === 'raw') {
     parts.push(['qb-raw', 'brut', 'Données brutes (scan, non pré-agrégé) — exact']);
   }
-  if (stats && stats.truncated) parts.push(['qb-trunc', 'tronqué (top 50)', 'Résultat INCOMPLET (top 50) — resserre la requête ou la fenêtre']);
+  // TRONQUÉ : dire l'AMPLEUR, pas seulement le mot. « tronqué (top 50) » ne permettait pas de savoir s'il
+  // manque trois valeurs ou seize fois le compte affiché (MESURÉ : jusqu'à x16,4 sur le banc). Quand le
+  // serveur a pu CHIFFRER ce que le plafond écarte (stats.topn_ecartes/topn_total), on l'affiche ; sinon on
+  // dit que l'ampleur est INCONNUE — jamais un chiffre qu'on n'a pas.
+  if (stats && stats.truncated) {
+    const ec = stats.topn_ecartes, tot = stats.topn_total;
+    if (Number.isFinite(ec) && Number.isFinite(tot) && tot > 0) {
+      const pct = Math.round((ec / tot) * 100);
+      parts.push(['qb-trunc', `tronqué — ${ec.toLocaleString('fr-FR')} écartés (${pct} %)`,
+        `Le compte affiché est un PLANCHER : ${ec.toLocaleString('fr-FR')} événement(s) écartés sur ${tot.toLocaleString('fr-FR')} par le plafond top-N du pré-agrégé.` +
+        (stats.rollup_note ? '\n\n' + stats.rollup_note : '')]);
+    } else {
+      parts.push(['qb-trunc', 'tronqué — ampleur inconnue',
+        "Résultat INCOMPLET et l'ampleur de ce qui manque n'a pas pu être établie — le compte affiché est un PLANCHER d'écart inconnu." +
+        (stats.rollup_note ? '\n\n' + stats.rollup_note : '')]);
+    }
+  }
   el.replaceChildren(...parts.map(([cls, text, title]) => {
     const b = document.createElement('span'); b.className = 'qb ' + cls; b.textContent = text; b.title = title; return b;
   }));

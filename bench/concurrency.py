@@ -158,6 +158,13 @@ def one_request(cli, spec, win, interactive=True, timeout=600):
         # `sem_wait_ms` n'existe que sur les routes qui le PUBLIENT. `None` n'est pas 0 : c'est
         # « la route ne le dit pas », et le rapport doit pouvoir faire la différence.
         sem_wait_ms=st.get("sem_wait_ms"),
+        # LE DÉCOUPAGE (daemon/src/query_timing.rs). `sem_wait_ms` seul ne suffisait pas à lire un
+        # p95 sous charge : il additionnait l'attente du PERMIT (que le sémaphore borne) et
+        # l'attente du VERROU de la connexion partagée (qu'il ne borne pas, et qui a lieu AVANT
+        # lui). Les trois champs ci-dessous séparent les deux et disent où passe le reste.
+        prepare_ms=st.get("prepare_ms"),
+        db_lock_wait_ms=st.get("db_lock_wait_ms"),
+        exec_ms=st.get("exec_ms"),
         rows=(len(rows) if rows is not None else None),
         total=body.get("total"), truncated=bool(st.get("truncated")),
         served_from=st.get("served_from"),
@@ -171,26 +178,49 @@ def one_request(cli, spec, win, interactive=True, timeout=600):
     return rec
 
 
+def pre_engine_ms(rec):
+    """TOUT CE QUE LA REQUÊTE SUBIT AVANT D'EXÉCUTER : préparation + attente du permit.
+
+    DÉRIVÉE, pas re-mesurée : `server_ms - exec_ms`, donc exactement le complément de l'exécution
+    dans le découpage que le daemon publie. C'est la grandeur qu'un exploitant regarde pour savoir
+    si sa requête a été RALENTIE avant même de commencer — et c'est celle que l'ancien `sem_wait_ms`
+    publiait sous un nom qui en désignait une PART. Retombe sur `sem_wait_ms` quand le daemon ne
+    publie pas le découpage (binaire antérieur), et `None` quand il ne publie rien du tout."""
+    s, e = rec.get("server_ms"), rec.get("exec_ms")
+    if s is not None and e is not None:
+        return round(s - e, 3)
+    return rec.get("sem_wait_ms")
+
+
 # ------------------------------------------------------------------ phase 0 : LE DAEMON EST-IL AU REPOS ?
 def wait_quiescent(cli, spec, win, need=3, timeout_s=420, period_s=5.0):
     """MESURER UN DAEMON QUI VIENT DE DÉMARRER, C'EST MESURER SON DÉMARRAGE.
 
     Au boot, plume lance un `ANALYZE` complet EN ARRIÈRE-PLAN qui prend le lock writer (~3 min sur
-    cette base, `daemon/src/server.rs`), et la boucle de rollups tourne. Or le chemin interactif
-    consulte la base (masques, couverture des rollups) AVANT de prendre son permit : tant que ces
-    travaux tiennent le verrou, toute requête attend — et c'est du démarrage, pas de la concurrence.
+    cette base, `daemon/src/server.rs`), et la boucle de rollups tourne. Le chemin interactif ne
+    prend plus ce verrou (la lecture de couverture est passée au pool de lecture le 2026-08-01), mais
+    ces travaux consomment le disque et le CPU du même processus : mesurer tout de suite, c'est
+    mesurer le démarrage. La sonde reste donc, et elle reste utile même quand le verrou a disparu.
 
-    LA SONDE N'EST PAS LE TEMPS DE LA REQUÊTE, c'est son ATTENTE AVANT MOTEUR (`sem_wait_ms`), qui
-    ne dépend PAS de la requête choisie : n'importe quelle classe la révèle. On attend `need` tirs
-    consécutifs sous la milliseconde — c'est-à-dire indiscernables de zéro à la résolution publiée.
-    Le temps qu'il a fallu est RENDU, parce qu'il est lui-même une mesure : c'est la durée pendant
-    laquelle un nœud qui redémarre fait attendre ses analystes."""
+    LA SONDE N'EST PAS LE TEMPS DE LA REQUÊTE, c'est son ATTENTE AVANT MOTEUR — TOUT ce que la
+    requête subit avant d'exécuter quoi que ce soit. Elle ne peut donc PAS être `sem_wait_ms` seul :
+    depuis que ce champ ne mesure plus que l'attente du permit (daemon/src/query_timing.rs), il est
+    NUL par construction quand un permit est libre, et une sonde qui ne regarderait que lui
+    déclarerait le daemon « au repos » alors qu'il tient encore le verrou d'écriture. La sonde est
+    donc `pre_engine_ms` = préparation + attente du permit, c'est-à-dire `server_ms - exec_ms` ; sur
+    un daemon d'avant le découpage (champs absents), elle retombe sur `sem_wait_ms`, qui portait
+    exactement cette somme. Elle ne dépend PAS de la requête choisie : n'importe quelle classe la
+    révèle. On attend `need` tirs consécutifs sous la milliseconde — c'est-à-dire indiscernables de
+    zéro à la résolution publiée. Le temps qu'il a fallu est RENDU, parce qu'il est lui-même une
+    mesure : c'est la durée pendant laquelle un nœud qui redémarre fait attendre ses analystes."""
     t0 = time.monotonic()
     streak, seen = 0, []
     while time.monotonic() - t0 < timeout_s:
         r = one_request(cli, spec, win)
-        w = r.get("sem_wait_ms")
-        seen.append(dict(t_s=round(time.monotonic() - t0, 1), sem_wait_ms=w,
+        w = pre_engine_ms(r)
+        seen.append(dict(t_s=round(time.monotonic() - t0, 1), pre_engine_ms=w,
+                         sem_wait_ms=r.get("sem_wait_ms"), prepare_ms=r.get("prepare_ms"),
+                         db_lock_wait_ms=r.get("db_lock_wait_ms"),
                          wall_ms=r["wall_ms"], status=r["status"]))
         if w is not None and w < 1.0:
             streak += 1
@@ -230,7 +260,10 @@ def probe_solo(cli, classes, win, reps):
             p50_ms=pctl([r["wall_ms"] for r in ok], 50),
             p95_ms=pctl([r["wall_ms"] for r in ok], 95),
             sem_wait_ms=max((r["sem_wait_ms"] or 0 for r in ok), default=None),
+            db_lock_wait_ms=max((r["db_lock_wait_ms"] or 0 for r in ok), default=None),
+            pre_engine_ms=max((pre_engine_ms(r) or 0 for r in ok), default=None),
             publishes_sem_wait=any(r["sem_wait_ms"] is not None for r in ok),
+            publishes_split=any(r["db_lock_wait_ms"] is not None for r in ok),
             rows=(ok[0]["rows"] if ok else None),
             digest=(ok[0]["digest"] if ok else None),
             total=(ok[0]["total"] if ok else None),
@@ -357,6 +390,12 @@ def run_level(n, sem, mk_client, mix, win, rounds, pid, cgdir, ref, out_req, lev
     ok = [r for r in reqs if r["status"] == 200 and not r["error"]]
     walls = [r["wall_ms"] for r in ok]
     waits = [r["sem_wait_ms"] for r in ok if r["sem_wait_ms"] is not None]
+    # LA SÉRIALISATION CACHÉE, RENDUE VISIBLE. Le verrou de la connexion PARTAGÉE est pris sur le
+    # chemin de CHAQUE requête, et il est tenu par des travaux de fond (boucle de rollups, ANALYZE).
+    # Aucun sémaphore ne le borne : augmenter `PLUME_QUERY_CONCURRENCY` ne réduira jamais cette
+    # attente — il mettra plus de monde dessus.
+    dbw = [r["db_lock_wait_ms"] for r in ok if r["db_lock_wait_ms"] is not None]
+    pre = [pre_engine_ms(r) for r in ok if pre_engine_ms(r) is not None]
     per_analyst = []
     for i in range(n):
         w = [r["wall_ms"] for r in ok if r["analyst"] == i]
@@ -390,11 +429,19 @@ def run_level(n, sem, mk_client, mix, win, rounds, pid, cgdir, ref, out_req, lev
         sem_wait_p50_ms=pctl(waits, 50), sem_wait_p95_ms=pctl(waits, 95),
         sem_wait_max_ms=(max(waits) if waits else None),
         sem_wait_samples=len(waits),
+        db_lock_wait_p50_ms=pctl(dbw, 50), db_lock_wait_p95_ms=pctl(dbw, 95),
+        db_lock_wait_max_ms=(max(dbw) if dbw else None),
+        db_lock_wait_samples=len(dbw),
+        pre_engine_p50_ms=pctl(pre, 50), pre_engine_p95_ms=pctl(pre, 95),
+        pre_engine_max_ms=(max(pre) if pre else None),
         # GARDE DÉRIVÉE DE LA SÉMANTIQUE D'UN SÉMAPHORE, pas d'un seuil choisi : tant qu'il y a AU
         # MOINS autant de permis que d'analystes, AUCUNE requête ne peut attendre son tour. À ces
         # niveaux, `sem_wait_ms` non nul ne PEUT PAS être de l'attente de permit — c'est donc autre
-        # chose, et le nom du champ ment. On ne corrige rien ici : on MESURE l'écart et on le publie,
-        # parce qu'il change entièrement la lecture des p95 sous charge.
+        # chose, et le nom du champ ment. Elle ne compare rien à un seuil : elle compare un compte de
+        # permis à un compte de clients, ce qui la rend valable pour toute taille de sémaphore et
+        # pour toujours. Depuis le correctif du 2026-08-01 elle doit rester à zéro ; si elle
+        # repasse au-dessus, le harnais SORT EN ERREUR (rc=5) au lieu de publier un chiffre qui
+        # enverrait l'exploitant augmenter le sémaphore — la seule action mesurée comme nuisible.
         queue_possible=bool(n > sem),
         sem_wait_contamination_ms=(None if n > sem else (max(waits) if waits else None)),
         sem_wait_contamination_p95_ms=(None if n > sem else pctl(waits, 95)),
@@ -614,6 +661,13 @@ def main():
                 # SEUL, aucune requête ne peut attendre un permit : ce maximum est, par construction,
                 # de la contamination — du travail fait AVANT le permit et compté comme de l'attente.
                 sem_wait_solo_max_ms=max((v["sem_wait_ms"] or 0) for v in probe.values()),
+                # CE QUE LA CONTAMINATION ÉTAIT. Mesuré SEUL, donc sans aucune file possible : ce
+                # que la requête a passé à ATTENDRE LE VERROU de la connexion partagée, et le total
+                # de ce qu'elle subit avant d'exécuter. C'est la grandeur qui répond à « pourquoi ma
+                # requête a-t-elle attendu si personne d'autre ne travaillait ».
+                db_lock_wait_solo_max_ms=max((v.get("db_lock_wait_ms") or 0) for v in probe.values()),
+                pre_engine_solo_max_ms=max((v.get("pre_engine_ms") or 0) for v in probe.values()),
+                classes_sans_decoupage=sorted(k for k, v in probe.items() if not v.get("publishes_split")),
                 exclus_du_verdict=[k for k, v in probe.items() if not v["stable"]],
                 routes_sans_sem_wait=sorted({v["kind"] for v in probe.values()
                                              if not v["publishes_sem_wait"]}),
@@ -647,12 +701,23 @@ def main():
             print(f"   {row['queries_ok']}/{row['queries']} ok en {row['elapsed_s']:.1f}s "
                   f"= {row['throughput_qps']} req/s ; "
                   f"p50={nn(row['wall_p50_ms']):.0f}ms p95={nn(row['wall_p95_ms']):.0f}ms ; "
-                  f"attente p50={row['sem_wait_p50_ms']} max={row['sem_wait_max_ms']} ms ; "
+                  f"permit p50={row['sem_wait_p50_ms']} max={row['sem_wait_max_ms']} ms ; "
+                  f"verrou partagé p50={row['db_lock_wait_p50_ms']} max={row['db_lock_wait_max_ms']} ms ; "
                   f"rss={row['peak_rss_bytes']/2**20:.0f}Mio cgroup={row['peak_cgroup_bytes']/2**20:.0f}Mio ; "
                   f"justesse same={j['same']} differs={j['differs']} faux={j['nombre_faux']}"
                   f"{' SWAP!' if row['swap_suspect'] else ''}", file=sys.stderr, flush=True)
             if j["nombre_faux"]:
                 rc = 4
+            # LA GARDE MORD ICI, PAS SEULEMENT DANS LE RAPPORT. Une attente de permit non nulle là
+            # où aucune file n'est possible n'est pas une mesure : c'est la preuve que le champ
+            # mesure autre chose que son nom. Publier ça sans le dire fort, c'est ce qui a fait
+            # croire pendant une campagne entière que le sémaphore était le levier.
+            if not row["queue_possible"] and (row["sem_wait_contamination_ms"] or 0) > 0:
+                print(f"!!! niveau {n} : {row['sem_wait_contamination_ms']} ms d'attente de PERMIT "
+                      f"alors que {sem} permis étaient libres pour {n} analyste(s) — "
+                      f"IMPOSSIBLE. Le champ `sem_wait_ms` mesure autre chose que son nom.",
+                      file=sys.stderr, flush=True)
+                rc = 5
             if not row["daemon_alive"]:
                 # Sous `MemoryMax` sans swap, un daemon disparu est un DÉPASSEMENT DU BUDGET, pas un
                 # incident de mesure. On l'écrit comme tel et on arrête : tout ce qui suivrait serait

@@ -357,10 +357,13 @@ fn cold_keyset_vectorized_page(
 // le chemin GXQL/search reste OUVERT à TOUS les rôles (viewer inclus).
 pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(body): Json<Value>) -> Response {
     let _mt = crate::search_timer(); // #51 DAY-2 OPS : latence recherche (p50/p95) enregistrée à la sortie (Drop)
-    // FIX perf (métrique honnête) : chrono à l'ENTRÉE -> couvre TOUT (attente du permit sémaphore +
-    // COUNT pagination + page), là où stats.elapsed_ms ne mesure QUE l'exécution SQL de la page. Exposé
-    // en stats.server_ms (+ stats.sem_wait_ms = attente du permit). elapsed_ms conservé (compat).
-    let t_start = Instant::now();
+    // MÉTRIQUE HONNÊTE (cf. `query_timing`) — l'horloge démarre à l'ENTRÉE et ne sait rendre QUE le
+    // temps total ; le DÉCOUPAGE (préparation / attente du permit / verrou partagé / exécution)
+    // n'existe qu'après `clock.permit(...)`, qui encadre l'acquisition elle-même. Avant ce module,
+    // ce chrono d'entrée était lu APRÈS le permit et publié sous `sem_wait_ms` : il additionnait
+    // l'attente du permit et une attente de VERROU qui a lieu avant toute borne de concurrence
+    // (mesuré : jusqu'à 10,2 s, dont 3,8 s avec UN SEUL client). `elapsed_ms` conservé (compat).
+    let clock = QueryClock::start();
     let from = body.i64_field("from", 0);
     let to = body.i64_field("to", 0);
     // CHANGEMENT 1 : budget PAR REQUÊTE. interactive:true -> budget INTERACTIF (60 s) ; sinon AUTO (5 s,
@@ -453,7 +456,10 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
             if crate::cold_store::cold_tier_runtime_on(&conf) {
                 let rc = req_db(&st, &au);
                 let b = {
-                    let c = rc.lock();
+                    // VERROU PARTAGÉ CHRONOMÉTRÉ (cf. `query_timing::SharedDbWait`) : ce que ce
+                    // `lock()` fait ATTENDRE part dans `stats.db_lock_wait_ms`, jamais fondu dans
+                    // une attente de sémaphore.
+                    let c = clock.db().lock(&rc);
                     let rd = retention_effective(&c, &conf, "retention_days");
                     crate::cold_store::cold_query_boundary(&c, &conf, now(), rd)
                 };
@@ -476,7 +482,34 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         // aucun corps -> chemin brut (exact). Lecture indexée (PK meta) ; sans effet sur ROUTE A/B (single-dim).
         // MÊME discipline pour le rollup PAR DIMENSION (ROUTE B) : la bande dont le job témoigne est LUE
         // depuis la base, jamais affirmée ici ; l'absence de bande vaut déclin (cf. `rollup_coverage`).
-        let (rollup_cov, dim_cov) = { let rc = req_db(&st, &au); let c = rc.lock(); (RollupCoverage::of(&c), DimRollupCoverage::of(&c)) };
+        // LA SÉRIALISATION RETIRÉE, ET POURQUOI C'EST SÛR. Cette lecture prenait le mutex de la
+        // connexion PARTAGÉE — celui que la boucle de rollups tient pendant tout un tick
+        // (`server::spawn_rollup_loop`, 120 s) et que l'`ANALYZE` de démarrage tient plusieurs
+        // minutes. MESURÉ le 2026-08-01 sur la base de banc, en publiant l'attente à part
+        // (`stats.db_lock_wait_ms`) : jusqu'à 3,4 s en SOLO et 4,1 s sous charge, sur le chemin de
+        // CHAQUE requête GXQL — dont 3,4 s pour `C6-filter-host`, une requête qui s'exécute en
+        // 14 ms. C'était un point de sérialisation situé AVANT la borne de concurrence, que rien
+        // ne bornait et que personne ne voyait.
+        //
+        // ELLE PASSE DONC PAR LE POOL DE LECTURE, et la couverture ne change PAS de nature :
+        //   * ce sont les MÊMES lignes `meta` COMMITÉES (WAL : un lecteur voit le dernier état
+        //     validé, exactement comme la connexion d'écriture le verrait) ;
+        //   * la lecture n'était DÉJÀ dans aucune transaction commune avec l'exécution — la
+        //     requête, elle, s'exécute depuis toujours sur une connexion DIFFÉRENTE (le pool). On
+        //     ne rapproche donc pas deux instantanés qui étaient liés : on aligne la couverture sur
+        //     la famille de connexions qui servira la requête ;
+        //   * l'invariant « rétracter d'abord, réparer ensuite » est une propriété de l'ORDRE des
+        //     écritures (cf. `rollup_coverage`), pas de la connexion qui lit ;
+        //   * FAIL-CLOSED IDENTIQUE : connexion indisponible -> `unproven` -> aucun corps rollup ->
+        //     la route décline -> le chemin brut sert, exact. C'est EXACTEMENT ce que rendait déjà
+        //     une lecture en échec.
+        // Le chronomètre `clock.db()` RESTE armé sur le chemin (frontière froide ci-dessus) : si un
+        // verrou partagé y revient un jour, il sera publié, pas absorbé.
+        let (rollup_cov, dim_cov) = read_with(
+            req_db_path(&st, &au).as_str(),
+            (RollupCoverage::unproven(), DimRollupCoverage::unproven()),
+            |c| (RollupCoverage::of(c), DimRollupCoverage::of(c)),
+        );
         let rr = if masks.is_empty() && !keyset {
             #[cfg(feature = "cold_tier")]
             {
@@ -548,16 +581,18 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     if sql.is_empty() {
         return bad_req("requête vide");
     }
-    // backpressure : acquire_owned ATTEND un permit (borne les déchiffrements concurrents à
-    // N -> anti-OOM, les waiters ne déchiffrent pas) ; il ne rejette jamais sous charge. UN seul acquire
+    // backpressure : l'acquisition ATTEND un permit (borne les déchiffrements concurrents à
+    // N -> anti-OOM, les waiters ne déchiffrent pas) ; elle ne rejette jamais sous charge. UN seul acquire
     // par handler (pas de ré-acquisition imbriquée -> pas de deadlock) ; le permit couvre AUSSI le COUNT de
     // pagination ; relâché en fin de handler. Seule erreur possible = sémaphore fermé (shutdown) -> on sert
     // vide proprement (identique à panel_data + /api/search, pas de 503 « saturation » trompeur).
-    let _permit = match st.query_sem.clone().acquire_owned().await {
-        Ok(p) => p,
+    // MÉTRIQUE : `clock.permit` CONSOMME l'horloge d'entrée et rend le DÉCOUPAGE (`QueryTimings`).
+    // C'est la seule porte : l'attente publiée en `sem_wait_ms` ne peut venir que de l'acquisition
+    // qui vient d'avoir lieu ici, jamais du temps écoulé depuis l'entrée du handler.
+    let (_permit, timings) = match clock.permit(&st.query_sem).await {
+        Ok(x) => x,
         Err(_) => return Json(json!({ "columns": [], "rows": [] })).into_response(),
     };
-    let sem_wait_ms = dur_ms(t_start.elapsed()); // temps passé À ATTENDRE un permit (hors exécution)
     let sql_for_resp = sql.clone();
     let db_path = req_db_path(&st, &au); // #2a-2b : requête interactive routée vers la base du tenant courant
     // PAGINATION SERVEUR : si `limit` fourni ET pas de LIMIT déjà dans le SQL (raw search), on renvoie
@@ -625,8 +660,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                     .await;
                     match res {
                         Ok(Ok(Some(mut v))) => {
-                            v["stats"]["server_ms"] = json!(dur_ms(t_start.elapsed()));
-                            v["stats"]["sem_wait_ms"] = json!(sem_wait_ms);
+                            timings.stamp(&mut v);
                             v["compiled_sql"] = json!(sql_for_resp);
                             // TRANSPARENCE : servi par le browse keyset colonnaire hot∪cold (COMPLET, sans cap).
                             v["stats"]["cold"] = json!({ "served_from": "hot+cold-vectorized-keyset", "boundary_ts": boundary });
@@ -668,8 +702,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                     };
                     keyset_finalize(&mut v, keyset_lim);
                     keyset_trim_helper_cols(&mut v, keyset_trim); // APRÈS finalize (qui a besoin de ts/id)
-                    v["stats"]["server_ms"] = json!(dur_ms(t_start.elapsed()));
-                    v["stats"]["sem_wait_ms"] = json!(sem_wait_ms);
+                    timings.stamp(&mut v);
                     v["compiled_sql"] = json!(sql_for_resp);
                     v["stats"]["cold"] = json!({
                         "served_from": "hot+cold",
@@ -702,8 +735,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                     Ok(mut v) => {
                         keyset_finalize(&mut v, keyset_lim);
                         keyset_trim_helper_cols(&mut v, keyset_trim); // APRÈS finalize (qui a besoin de ts/id)
-                        v["stats"]["server_ms"] = json!(dur_ms(t_start.elapsed()));
-                        v["stats"]["sem_wait_ms"] = json!(sem_wait_ms);
+                        timings.stamp(&mut v);
                         v["compiled_sql"] = json!(sql_for_resp);
                         apply_rollup_stats(&mut v, &rollup_meta); // rollup_meta = None ici (keyset désactive la route) -> served_from=raw
                         Json(v).into_response()
@@ -754,8 +786,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                 match res {
                     Ok(Ok(Some(mut v))) => {
                         let mode = if pure_cold { "cold-vectorized" } else { "cold-vectorized-merge" };
-                        v["stats"]["server_ms"] = json!(dur_ms(t_start.elapsed()));
-                        v["stats"]["sem_wait_ms"] = json!(sem_wait_ms);
+                        timings.stamp(&mut v);
                         v["compiled_sql"] = json!(sql_for_resp);
                         v["stats"]["served_from"] = json!(mode);
                         // TRANSPARENCE : servi par le moteur colonnaire (pur-froid) ou le merge hot∪cold vectorisé.
@@ -802,8 +833,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                     Err(t) => return refuse_truncated_aggregate(t),
                 };
                 let v = &mut value;
-                v["stats"]["server_ms"] = json!(dur_ms(t_start.elapsed()));
-                v["stats"]["sem_wait_ms"] = json!(sem_wait_ms);
+                timings.stamp(v);
                 v["compiled_sql"] = json!(sql_for_resp);
                 // TRANSPARENCE + INCOMPLÉTUDE : couverture cold + drapeau. Truncated cold -> on OR-e aussi le
                 // `stats.truncated` global (même posture que le row-cap hot) : aucun consommateur ne peut prendre
@@ -875,8 +905,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                         if total_capped { v["total_capped"] = json!(true); }  // le SPA rend « … sur 10 000+ »
                         v["offset"] = json!(offset);
                         v["limit"] = json!(lim);
-                        v["stats"]["server_ms"] = json!(dur_ms(t_start.elapsed()));
-                        v["stats"]["sem_wait_ms"] = json!(sem_wait_ms);
+                        timings.stamp(&mut v);
                         if from_soql {
                             v["compiled_sql"] = json!(sql_for_resp);
                             apply_rollup_stats(&mut v, &rollup_meta); // served_from/approx/truncated (transparence)
@@ -900,8 +929,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
             }
             match inner {
                 Ok(mut v) => {
-                    v["stats"]["server_ms"] = json!(dur_ms(t_start.elapsed()));
-                    v["stats"]["sem_wait_ms"] = json!(sem_wait_ms);
+                    timings.stamp(&mut v);
                     if from_soql {
                         v["compiled_sql"] = json!(sql_for_resp);
                         apply_rollup_stats(&mut v, &rollup_meta); // served_from/approx/truncated (transparence)
@@ -1120,7 +1148,13 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
         // COUVERTURE du rollup : voir /api/query — ÉTABLIE depuis la base, jamais affirmée ici.
         // MÊME discipline pour le rollup PAR DIMENSION (ROUTE B) : la bande dont le job témoigne est LUE
         // depuis la base, jamais affirmée ici ; l'absence de bande vaut déclin (cf. `rollup_coverage`).
-        let (rollup_cov, dim_cov) = { let rc = req_db(&st, &au); let c = rc.lock(); (RollupCoverage::of(&c), DimRollupCoverage::of(&c)) };
+        // POOL DE LECTURE, pour la MÊME raison qu'en /api/query (voir le raisonnement là-bas) : un export
+        // est déclenché par un humain qui attend, il n'a pas à faire la queue derrière un tick de rollups.
+        let (rollup_cov, dim_cov) = read_with(
+            req_db_path(&st, &au).as_str(),
+            (RollupCoverage::unproven(), DimRollupCoverage::unproven()),
+            |c| (RollupCoverage::of(c), DimRollupCoverage::of(c)),
+        );
         let rr = if masks.is_empty() {
             #[cfg(feature = "cold_tier")]
             {
@@ -1171,8 +1205,8 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
         .unwrap_or_else(export_max_rows)
         .min(export_max_rows());
     // backpressure : MÊME sémaphore que /api/query (borne les déchiffrements concurrents ; anti-OOM).
-    let _permit = match st.query_sem.clone().acquire_owned().await {
-        Ok(p) => p,
+    let _permit = match acquire_query_permit(&st.query_sem).await {
+        Ok((p, _wait)) => p,
         Err(_) => return err_json(StatusCode::SERVICE_UNAVAILABLE, "service indisponible"),
     };
     let db_path = req_db_path(&st, &au); // #2a : base du tenant courant (jamais st.db, jamais une autre base)

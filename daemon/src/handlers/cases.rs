@@ -451,8 +451,8 @@ pub(crate) async fn cases_list(State(st): State<AppState>, Extension(au): Extens
     // M6 : SORT du mutex d'ÉCRITURE (avant : req_db -> lock writer pendant le scan/tri de la table incident,
     // contention avec l'ingestion). Passe au pool read-only + query_sem + spawn_blocking + watchdog, comme
     // /api/query. Lecture pure (incident/incident_item) -> aucun secret dénié par l'authorizer du read-pool.
-    let _permit = match st.query_sem.clone().acquire_owned().await {
-        Ok(p) => p,
+    let _permit = match acquire_query_permit(&st.query_sem).await {
+        Ok((p, _wait)) => p,
         Err(_) => return Json(json!({ "cases": [], "total": 0 })),
     };
     let db_path = req_db_path(&st, &au);

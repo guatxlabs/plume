@@ -561,8 +561,8 @@ pub(crate) fn client_case_get_json(conn: &Connection, db_path: &str, masks: &gua
 /// GET /api/cases/queues — résumé de charge par assignee (+ « my queue » côté UI via le filtre assignee de
 /// /api/cases). Lecture (viewer+). Read-pool + watchdog (comme cases_list).
 pub(crate) async fn case_queues(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
-    let _permit = match st.query_sem.clone().acquire_owned().await {
-        Ok(p) => p,
+    let _permit = match acquire_query_permit(&st.query_sem).await {
+        Ok((p, _wait)) => p,
         Err(_) => return Json(json!({ "queues": [] })),
     };
     let db_path = req_db_path(&st, &au);
@@ -577,8 +577,8 @@ pub(crate) async fn case_queues(State(st): State<AppState>, Extension(au): Exten
 pub(crate) async fn case_metrics(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
     let from = q.get("from").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
     let to = q.get("to").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
-    let _permit = match st.query_sem.clone().acquire_owned().await {
-        Ok(p) => p,
+    let _permit = match acquire_query_permit(&st.query_sem).await {
+        Ok((p, _wait)) => p,
         Err(_) => return Json(json!({})),
     };
     let db_path = req_db_path(&st, &au);
@@ -718,8 +718,8 @@ pub(crate) async fn client_cases_list(State(st): State<AppState>, Extension(au):
     let state = q.get("state").cloned().unwrap_or_default();
     let limit = q.get("limit").and_then(|s| s.parse::<i64>().ok()).unwrap_or(100).clamp(1, 500);
     let offset = q.get("offset").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0).clamp(0, 100_000);
-    let _permit = match st.query_sem.clone().acquire_owned().await {
-        Ok(p) => p,
+    let _permit = match acquire_query_permit(&st.query_sem).await {
+        Ok((p, _wait)) => p,
         Err(_) => return Json(json!({ "cases": [], "total": 0 })),
     };
     let db_path = req_db_path(&st, &au);

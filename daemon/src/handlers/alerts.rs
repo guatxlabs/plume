@@ -140,8 +140,8 @@ pub(crate) async fn alerts(State(st): State<AppState>, Extension(au): Extension<
     // (permit query_sem borne les déchiffrements concurrents ; spawn_blocking n'occupe pas un worker async ;
     // read_with_watchdog = pool read-only + interruption anti-scan-trop-long). idx_alert_ts / idx_alert_mitre_ts
     // (v72) évitent le tri complet. Le backlog borné (LIMIT 200) profite du même chemin sans surcoût.
-    let _permit = match st.query_sem.clone().acquire_owned().await {
-        Ok(p) => p,
+    let _permit = match acquire_query_permit(&st.query_sem).await {
+        Ok((p, _wait)) => p,
         Err(_) => return Json(json!({ "alerts": [] })),
     };
     let db_path = req_db_path(&st, &au);
@@ -251,8 +251,8 @@ pub(crate) async fn alert_groups(State(st): State<AppState>, Extension(au): Exte
     let uncased = q.get("uncased").map(|s| s == "1").unwrap_or(false);
     let limit = q.get("limit").and_then(|s| s.trim().parse::<i64>().ok()).unwrap_or(50).clamp(1, 500);
     let offset = q.get("offset").and_then(|s| s.trim().parse::<i64>().ok()).unwrap_or(0).clamp(0, 100_000);
-    let _permit = match st.query_sem.clone().acquire_owned().await {
-        Ok(p) => p,
+    let _permit = match acquire_query_permit(&st.query_sem).await {
+        Ok((p, _wait)) => p,
         Err(_) => return Json(json!({ "groups": [], "group": group_col })),
     };
     let db_path = req_db_path(&st, &au);
@@ -391,8 +391,8 @@ pub(crate) async fn coverage_detections(State(st): State<AppState>, Extension(au
     let engagement = q.get("engagement").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     // M6 : agrégation (GROUP BY mitre) sur toute la table alert -> même régime que /api/query (query_sem +
     // spawn_blocking + read_with_watchdog). idx_alert_mitre_ts (v72) couvre le filtre mitre<>'' + ts>=?.
-    let _permit = match st.query_sem.clone().acquire_owned().await {
-        Ok(p) => p,
+    let _permit = match acquire_query_permit(&st.query_sem).await {
+        Ok((p, _wait)) => p,
         Err(_) => return Json(json!({ "detections": [] })),
     };
     let db_path = req_db_path(&st, &au);
@@ -547,8 +547,8 @@ fn tactics_json_len(v: &[Value]) -> i64 { v.len() as i64 }
 pub(crate) async fn coverage_attack(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
     let since: i64 = q.get("since").and_then(|s| s.parse().ok()).unwrap_or(0);
     // Même régime de concurrence que coverage_detections (query_sem + spawn_blocking + watchdog).
-    let _permit = match st.query_sem.clone().acquire_owned().await {
-        Ok(p) => p,
+    let _permit = match acquire_query_permit(&st.query_sem).await {
+        Ok((p, _wait)) => p,
         Err(_) => return Json(json!({ "tactics": [], "totals": {} })),
     };
     let db_path = req_db_path(&st, &au);

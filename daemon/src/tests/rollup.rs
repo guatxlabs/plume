@@ -373,7 +373,7 @@
             assert!(rr.sql.contains("FROM event WHERE"), "queue raw sur `event` présente (fraîcheur) : {}", rr.sql);
             assert!(!rr.approx, "MERGE exact -> approx:false : {soql}");
             assert!(rr.note.is_none(), "MERGE frais -> aucun caveat de fraîcheur : {soql}");
-            assert!(!rr.truncated, "truncated:false (dims exactes, rien d'abandonné) : {soql}");
+            assert!(!rr.cap.plafonne(), "truncated:false (dims exactes, rien d'abandonné) : {soql}");
             let raw = soql_to_sql_x(soql, 0, 0, None).unwrap();
             let got = b2_map(&conn, &rr.sql);
             let want = b2_map(&conn, &raw);

@@ -61,6 +61,8 @@ pub(crate) use knowledge::*;
 pub(crate) use datamodels::*;
 mod rollup_coverage; // L'INVARIANT de la route de rollups : ce que le rollup COUVRE ne se déclare pas, il s'établit
 pub(crate) use rollup_coverage::*;
+mod topn_cap; // Le PLAFOND top-N ne se déclare pas sans son AMPLEUR : `truncated` est un type, plus un booléen
+pub(crate) use topn_cap::*;
 mod rollup_route;
 pub(crate) use rollup_route::*;
 mod ledger;

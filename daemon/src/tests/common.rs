@@ -11,6 +11,11 @@
     static ENGAGEMENT_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
     static AUTOINDEX_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
     static CUSTOM_ROLES_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    // Sérialise les tests qui mutent PLUME_ROLLUP_DIM_TOPN (plafond du rollup par dimension) — env
+    // process-global, lu à CHAQUE tick par `rollup_events`.
+    static ROLLUP_DIMS_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    // Sérialise les tests qui mutent PLUME_RETENTION_DAYS (fenêtre de rétention) — env process-global.
+    static RETENTION_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
     /// Fixture PARTAGÉE : base complète (schema.sql + TOUTE la chaîne de migrations), celle que la
     /// production construit. Le booléen est ASSERTÉ ici — pas ignoré : cette fixture est utilisée par

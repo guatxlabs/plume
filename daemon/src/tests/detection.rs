@@ -275,7 +275,7 @@
         // ROUTE A (by source) : counts exacts EN SOMME depuis event_rollup, mais grain HORAIRE -> approx:true
         // (QRY-1, jamais « exact » au sous-horaire) ; truncated:false (aucune source abandonnée).
         let a = try_rollup_route("search | stats count by source", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).expect("A doit router");
-        assert!(a.sql.contains("FROM event_rollup") && a.approx && !a.truncated, "A route event_rollup (approx horaire, non tronqué) : {}", a.sql);
+        assert!(a.sql.contains("FROM event_rollup") && a.approx && !a.cap.plafonne(), "A route event_rollup (approx horaire, non tronqué) : {}", a.sql);
         // ROUTE B (source=web | count by status) : status EST une dim web -> event_dim_rollup (approx/partiel).
         // Le SQL n'est PLUS byte-identique à l'historique, et c'est délibéré : il porte désormais la BANDE
         // TÉMOIGNÉE par la couverture (`rollup_coverage`, section « LE JUMEAU »). L'ancienne forme lisait tous
@@ -293,7 +293,7 @@
              AND ((bucket >= 1000000)) GROUP BY val ORDER BY \"count\" DESC",
             "B : SQL rollup + borne de couverture (la bande prouvée et la volatile sont contiguës -> une seule)"
         );
-        assert!(b.approx && b.truncated, "B : dim cappée top-N -> approx/partiel signalé");
+        assert!(b.approx && b.cap.plafonne(), "B : dim cappée top-N -> approx/partiel signalé");
         // src_ip N'EST PAS une dim web (colonne réelle exclue à dessein) -> même SANS 2e filtre, décline -> raw.
         assert!(try_rollup_route("search source=web | stats count by src_ip", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).is_none(),
                 "by src_ip (non pré-agrégé) décline -> raw exact via idx couvrant");
@@ -328,7 +328,7 @@
         let a = try_rollup_route_at("search | stats count by source", past_from, past_to, None, now_ts, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).expect("route A");
         assert!(a.sql.contains("FROM event_rollup"), "route A -> event_rollup");
         assert!(a.approx, "grain horaire -> approx:true (jamais exact au sous-horaire)");
-        assert!(!a.truncated, "counts par source non tronqués");
+        assert!(!a.cap.plafonne(), "counts par source non tronqués");
         assert!(a.note.is_none(), "fenêtre passée -> pas de caveat de fraîcheur : {:?}", a.note);
 
         // (b) Fenêtre RÉCENTE courte (« 15 dernières min », to=now dans l'heure courante) : NON rapportée exacte
@@ -341,7 +341,7 @@
 
         // (c) Route B (dim) reste approx+truncated ET porte le caveat de fraîcheur si récente.
         let b = try_rollup_route_at("search source=web | stats count by status", recent_from, now_ts, None, now_ts, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test()).expect("route B récente");
-        assert!(b.approx && b.truncated, "route B dim -> approx/partiel");
+        assert!(b.approx && b.cap.plafonne(), "route B dim -> approx/partiel");
         assert!(b.note.is_some(), "route B récente -> caveat de fraîcheur");
     }
 
@@ -3195,7 +3195,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         assert!(col_exists(&conn, "rule", "mitre"), "rule.mitre manquant après migrate");
         assert!(col_exists(&conn, "alert", "mitre"), "alert.mitre manquant après migrate");
         let v: String = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, "111", "schema_version à la tête (… v94 knowledge + v95 data models + v96 #59 gouvernance legal_hold/ledger_sink)");
+        assert_eq!(v, "112", "schema_version à la tête (… v94 knowledge + v95 data models + v96 #59 gouvernance legal_hold/ledger_sink)");
     }
 
     #[test]
@@ -3205,7 +3205,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         let _ = migrate(&conn);
         let _ = migrate(&conn);
         let v: String = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, "111");
+        assert_eq!(v, "112");
         // FIX (test-confidence #11) : re-jouer migrate() court-circuite au niveau courant (v<N faux) -> le
         // bloc v75 n'était JAMAIS ré-exécuté, donc un statement non-idempotent y serait passé inaperçu. On
         // RÉTROGRADE schema_version (pattern v43/v44 lignes 17965/18201) pour FORCER la ré-exécution du bloc
@@ -3217,7 +3217,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         for _ in 0..2 {
             conn.execute("UPDATE meta SET value='74' WHERE key='schema_version'", []).unwrap(); // rétrograde -> le bloc v75 re-tourne
             let _ = migrate(&conn);
-            assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "111", "v75+v76+v77+v78 ré-exécutés remontent proprement au sommet (aucun statement non-idempotent ; host_rollup rebuild à blanc ; dparser CREATE IF NOT EXISTS)");
+            assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "112", "v75+v76+v77+v78 ré-exécutés remontent proprement au sommet (aucun statement non-idempotent ; host_rollup rebuild à blanc ; dparser CREATE IF NOT EXISTS)");
         }
         let dup: i64 = conn.query_row("SELECT COUNT(*) FROM rule WHERE name=?1", params![eng_rule], |r| r.get(0)).unwrap();
         assert_eq!(dup, 1, "ré-exécuter v75 (instance live) n'insère la règle self-detection engagement QU'UNE fois (INSERT borné par nom)");

@@ -9,10 +9,10 @@
     #[test]
     fn incident_migration_v105_idempotent() {
         let conn = test_db(); // schema.sql + migrate -> 105
-        assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "111");
+        assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "112");
         // re-migrate = no-op (ALTER guardé par col_exists + CREATE IF NOT EXISTS avalés).
         let _ = migrate(&conn);
-        assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "111");
+        assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "112");
         for c in ["incident_tier", "incident_type", "commander"] {
             assert!(col_exists(&conn, "incident", c), "incident.{c} manquant");
         }

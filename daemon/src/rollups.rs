@@ -233,31 +233,75 @@ pub(crate) fn dim_rollup_insert_sql_into(table: &str, source: &str, dim: &str, c
     )
 }
 
+/// PRÉFIXE RÉSERVÉ de la dimension qui porte LE RESTE — les événements que le plafond top-N a écartés.
+///
+/// POURQUOI IL NE PEUT PAS ENTRER EN COLLISION. Toute dimension qui atteint cette table a d'abord passé
+/// `soql_ident_ok` (défauts de `DIM_ROLLUP_SPECS` d'un côté, `merge_rollup_dims` pour la spec
+/// d'environnement de l'autre), et ce validateur n'accepte que `[A-Za-z0-9_]`. `!` en est exclu : aucune
+/// dimension configurable ne peut donc produire `!<dim>`. La garde n'est pas une convention à respecter,
+/// elle est portée par le validateur qui filtre DÉJÀ toute dimension — c'est le test
+/// `le_prefixe_du_reste_ne_peut_pas_etre_une_dimension` qui l'épingle.
+pub(crate) const RESTE_DIM_PREFIX: &str = "!";
+
+/// Nom de dimension sous lequel le RESTE de `dim` est stocké — MÊME table, MÊME index, MÊME cycle de vie
+/// (purge par bucket, delete-avant-ré-agrégation, rétention) que les lignes gardées. Un lecteur qui filtre
+/// `dim='<dim>'` (route, panneaux) ne le voit JAMAIS : le reste ne pollue aucun résultat.
+pub(crate) fn reste_dim(dim: &str) -> String {
+    format!("{RESTE_DIM_PREFIX}{dim}")
+}
+
 /// CORPS SELECT (sans préfixe INSERT) du rollup par-dimension : les 6 colonnes ordonnées
 /// (bucket,source,dim,val,n,env_id). Délégué par `dim_rollup_insert_sql_into` (INSERT du hot ET du sidecar
 /// cold) et réutilisé VERBATIM par le scan lock-free du sidecar cold (#28 Phase A) qui MATÉRIALISE ces lignes
 /// EN MÉMOIRE (résultat top-N-borné -> RAM bornée) hors du verrou writer. Même SQL -> même résultat -> parité.
+///
+/// LA LIGNE DE RESTE, ET POURQUOI ELLE EST ÉCRITE ICI ET NULLE PART AILLEURS. Le plafond top-N ABANDONNE
+/// la queue des valeurs de chaque (bucket, env). Un drapeau `truncated` disait ensuite « des valeurs
+/// manquent » — sans jamais dire COMBIEN, alors que c'est ici, et seulement ici, que le nombre existe :
+/// l'agrégat complet (`base`) est sous la main juste avant d'être jeté. On l'écrit donc, dans la MÊME
+/// instruction (donc le MÊME balayage : `ranked` est référencé deux fois, SQLite le matérialise), sous la
+/// dimension réservée `reste_dim(dim)`.
+///
+/// ELLE EST ÉCRITE MÊME QUAND ELLE VAUT ZÉRO, et c'est le point. Si le reste n'était écrit que lorsqu'il
+/// est non nul, son ABSENCE serait indiscernable de « ce bucket a été agrégé par une version qui ne le
+/// notait pas » — c'est-à-dire, encore une fois, un zéro qui n'en est pas un. Une ligne à `n=0` dit « rien
+/// n'a été écarté ici » ; PAS de ligne dit « on n'en sait rien », et la route l'AVOUE au lieu d'afficher 0.
+///
+/// CE QU'ELLE NE PORTE PAS. Le nombre de VALEURS distinctes absentes de la réponse n'est pas additif entre
+/// buckets (une valeur écartée d'un bucket peut être gardée dans un autre) : l'établir demanderait
+/// exactement le balayage que le plafond évite. Le compte d'ÉVÉNEMENTS, lui, est additif et exact.
 pub(crate) fn dim_rollup_select_sql(source: &str, dim: &str, cond: &str, topn: i64) -> String {
     let valexpr = format!("COALESCE(json_extract(fields,'$.{dim}'),'')");
+    let reste = reste_dim(dim);
+    // env_id (#2d/v67) : dimension d'agrégation supplémentaire (COALESCE défensif ; event.env_id NOT NULL).
+    let base = format!(
+        "base AS ( \
+           SELECT (ts/3600)*3600 AS bucket, {valexpr} AS val, COALESCE(env_id,'prod') AS env_id, COUNT(*) AS n \
+           FROM event WHERE source='{source}' AND ({cond}) \
+           GROUP BY 1, 2, 3 \
+         )"
+    );
     if topn <= 0 {
-        // env_id (#2d/v67) : dimension d'agrégation supplémentaire (COALESCE défensif ; event.env_id NOT NULL).
+        // Pas de cap top-N : rien n'est jamais écarté. La ligne de reste est écrite QUAND MÊME, à 0 —
+        // sinon « pas de cap » et « pas de trace » se ressembleraient, et la route ne pourrait pas
+        // distinguer un reste nul d'un reste inconnu.
         return format!(
-            "SELECT (ts/3600)*3600, '{source}', '{dim}', {valexpr}, COUNT(*), COALESCE(env_id,'prod') \
-             FROM event WHERE source='{source}' AND ({cond}) \
-             GROUP BY 1, {valexpr}, COALESCE(env_id,'prod')"
+            "WITH {base} \
+             SELECT bucket, '{source}', '{dim}', val, n, env_id FROM base \
+             UNION ALL \
+             SELECT bucket, '{source}', '{reste}', '', 0, env_id FROM base GROUP BY bucket, env_id"
         );
     }
     // Cap top-N/(bucket, env_id, source, dim) : le rang est calculé PAR environnement (#2d) -> pas de
     // compétition inter-env pour les slots ; le grain (source,dim) est fixe dans cet INSERT.
     format!(
-        "WITH base AS ( \
-           SELECT (ts/3600)*3600 AS bucket, {valexpr} AS val, COALESCE(env_id,'prod') AS env_id, COUNT(*) AS n \
-           FROM event WHERE source='{source}' AND ({cond}) \
-           GROUP BY 1, 2, 3 \
-         ), ranked AS ( \
+        "WITH {base}, ranked AS ( \
            SELECT bucket, val, env_id, n, ROW_NUMBER() OVER (PARTITION BY bucket, env_id ORDER BY n DESC, val) AS rnk FROM base \
          ) \
-         SELECT bucket, '{source}', '{dim}', val, n, env_id FROM ranked WHERE rnk <= {topn}"
+         SELECT bucket, '{source}', '{dim}', val, n, env_id FROM ranked WHERE rnk <= {topn} \
+         UNION ALL \
+         SELECT bucket, '{source}', '{reste}', '', SUM(CASE WHEN rnk > {topn} THEN n ELSE 0 END), env_id \
+         FROM ranked GROUP BY bucket, env_id"
     )
 }
 

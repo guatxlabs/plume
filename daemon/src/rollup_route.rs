@@ -35,7 +35,11 @@ use crate::*;
 pub(crate) struct RollupRoute {
     pub(crate) sql: String,
     pub(crate) approx: bool,
-    pub(crate) truncated: bool,
+    /// CE QUE LA ROUTE ÉCARTE (cf. `topn_cap`). C'était un `bool` — il disait « des valeurs manquent »
+    /// sans jamais dire COMBIEN, et l'écart mesuré va jusqu'à x16,4. Le type EXIGE désormais, pour
+    /// déclarer un plafond, la sonde qui en chiffre l'ampleur ; l'appelant doit la MESURER avant de
+    /// pouvoir remplir `stats` (`apply_rollup_stats` ne prend plus de booléen).
+    pub(crate) cap: Cap,
     /// Caveat de FRAÎCHEUR optionnel (ex. « bucket courant non matérialisé ») — surfacé en stats.rollup_note.
     pub(crate) note: Option<String>,
 }
@@ -394,7 +398,7 @@ pub(crate) fn try_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&s
         let sql = build_merge_sql(&sh.by_fields, &src_cond, &env_cond, &split, order, &lim, None, cov.late_floor_id());
         // MERGE HOT : EXACT & FRAIS. `approx = split.approx` (toujours false ici) ; truncated:false (dims exactes,
         // rien d'abandonné) ; note:none (aucun sous-comptage de fraîcheur — l'heure courante est raw-servie).
-        return Some(RollupRoute { sql, approx: split.approx, truncated: false, note: None });
+        return Some(RollupRoute { sql, approx: split.approx, cap: Cap::Aucun, note: None });
     }
 
     // --- ROUTE A : `... | stats count by source` -> event_rollup (counts EXACTS). ---
@@ -412,7 +416,7 @@ pub(crate) fn try_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&s
         );
         // approx:true (QRY-1) : counts exacts EN SOMME mais grain HORAIRE -> jamais « exact » au sous-horaire.
         // truncated:false (aucune source abandonnée). note = caveat de fraîcheur si la fenêtre touche l'heure courante.
-        return Some(RollupRoute { sql, approx: true, truncated: false, note: recency_note() });
+        return Some(RollupRoute { sql, approx: true, cap: Cap::Aucun, note: recency_note() });
     }
 
     // --- ROUTE B : `search source=X | stats count by <dim>` -> event_dim_rollup (source IMPLIQUÉ). ---
@@ -437,7 +441,14 @@ pub(crate) fn try_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&s
     // témoigne. Rien de témoigné dans la fenêtre -> DÉCLIN -> scan brut (exact) ; c'est aussi ce qui arrive à
     // TOUTE base d'avant ce correctif (couverture absente -> aveu -> déclin), par le TYPE et non par un `if`.
     let (cov_conds, cov_note) = dim_coverage_conds(dim_cov, from, to)?;
-    let mut conds = vec![format!("source='{}'", guatx_core::soql::soql_esc(src)), format!("dim='{}'", guatx_core::soql::soql_esc(by))];
+    // Conditions COMMUNES à ce que la route SERT et à ce que la sonde MESURE — mêmes bandes, même source,
+    // même environnement, même fenêtre. Seule la dimension diffère : la route lit `dim='<by>'`, la sonde lit
+    // `dim IN ('<by>', '!<by>')` pour recouper les lignes gardées et LEUR RESTE.
+    let src_cond = format!("source='{}'", guatx_core::soql::soql_esc(src));
+    let mut communes = vec![src_cond.clone()];
+    communes.extend(tconds.iter().cloned());
+    communes.extend(cov_conds.iter().cloned());
+    let mut conds = vec![src_cond, format!("dim='{}'", guatx_core::soql::soql_esc(by))];
     conds.extend(tconds);
     conds.extend(cov_conds);
     let sql = format!(
@@ -446,10 +457,50 @@ pub(crate) fn try_rollup_route_at(soql: &str, from: i64, to: i64, env: Option<&s
         conds.join(" AND ")
     );
     // dim cappée top-N/bucket à la POPULATION -> sous-comptage possible + valeurs manquantes -> partiel.
+    // L'AMPLEUR de ce sous-comptage n'est plus tue : la sonde la lit dans les lignes de reste que le job
+    // écrit au même instant qu'il tronque (cf. `topn_cap` et `rollups::dim_rollup_select_sql`).
     // note = caveat de COUVERTURE (ce que la bande ne témoigne pas, avec ses bornes et sa part) puis caveat de
     // fraîcheur si la fenêtre touche l'heure courante (recency guard QRY-1). Les deux sont des absences : on
-    // les publie ensemble plutôt que d'en taire une.
-    Some(RollupRoute { sql, approx: true, truncated: true, note: join_notes(cov_note, recency_note()) })
+    // les publie ensemble plutôt que d'en taire une ; l'ampleur du plafond s'y ajoute après mesure.
+    let cap = Cap::top_n(sonde_reste_sql("event_dim_rollup", by, &communes, None));
+    Some(RollupRoute { sql, approx: true, cap, note: join_notes(cov_note, recency_note()) })
+}
+
+/// LA SONDE : ce que le plafond top-N a écarté sur EXACTEMENT les bandes que la route sert.
+///
+/// Elle rend quatre entiers, dans l'ordre attendu par `Cap::mesurer` : événements ÉCARTÉS, événements
+/// SERVIS, heures dont le reste est CONNU, heures SERVIES. La quatrième colonne n'est pas décorative : une
+/// heure servie SANS ligne de reste a été agrégée par un binaire qui n'en écrivait pas — l'ampleur y est
+/// INCONNUE, et `Cap::mesurer` le fait dire plutôt que de compter 0 (le zéro de couverture, encore lui).
+///
+/// COÛT : même table, même index (`idx_event_dim_rollup_q(source, dim, bucket)`), mêmes bornes de bucket que
+/// la route — et le reste, à raison d'UNE ligne par (bucket, env), est un ordre de grandeur plus petit que
+/// ce qui est servi. `sec` : segment optionnel `(table, conditions)` d'un SECOND miroir (le côté froid), dont
+/// les lignes s'ajoutent à celles du premier.
+fn sonde_reste_sql(table: &str, dim: &str, conds: &[String], sec: Option<(&str, &[String])>) -> String {
+    let reste = reste_dim(dim);
+    let brin = |t: &str, c: &[String]| -> String {
+        format!(
+            "SELECT dim, bucket, n FROM {t} WHERE dim IN ('{}','{}') AND {}",
+            guatx_core::soql::soql_esc(dim),
+            guatx_core::soql::soql_esc(&reste),
+            c.join(" AND ")
+        )
+    };
+    let mut brins = vec![brin(table, conds)];
+    if let Some((t2, c2)) = sec {
+        brins.push(brin(t2, c2));
+    }
+    format!(
+        "SELECT COALESCE(SUM(CASE WHEN dim='{r}' THEN n END),0), \
+                COALESCE(SUM(CASE WHEN dim='{d}' THEN n END),0), \
+                COUNT(DISTINCT CASE WHEN dim='{r}' THEN bucket END), \
+                COUNT(DISTINCT CASE WHEN dim='{d}' THEN bucket END) \
+         FROM ({})",
+        brins.join(" UNION ALL "),
+        r = guatx_core::soql::soql_esc(&reste),
+        d = guatx_core::soql::soql_esc(dim),
+    )
 }
 
 /// Concatène deux caveats optionnels sans en perdre un (le champ `rollup_note` est unique). L'ordre est celui
@@ -729,7 +780,7 @@ pub(crate) fn try_cold_rollup_route_at(soql: &str, from: i64, to: i64, env: Opti
         let note = split
             .approx
             .then(|| "rollup cold+hot + raw event (queue à jour) ; tête sub-horaire deep-past (<B, agé) repliée sur le rollup (approx bornée)".to_string());
-        return Some(RollupRoute { sql, approx: split.approx, truncated: false, note });
+        return Some(RollupRoute { sql, approx: split.approx, cap: Cap::Aucun, note });
     }
 
     // --- ROUTE A : `stats count by source` -> (event_rollup[bucket>=B] ∪ cold_rollup[bucket<B]). ---
@@ -748,7 +799,7 @@ pub(crate) fn try_cold_rollup_route_at(soql: &str, from: i64, to: i64, env: Opti
                SELECT source, n FROM cold_rollup{cold_w}) \
              GROUP BY source ORDER BY \"count\" {order}{lim}"
         );
-        return Some(RollupRoute { sql, approx: true, truncated: false, note: recency_note() });
+        return Some(RollupRoute { sql, approx: true, cap: Cap::Aucun, note: recency_note() });
     }
 
     // --- ROUTE B : `search source=X | stats count by <dim>` -> (event_dim_rollup ∪ cold_dim_rollup). ---
@@ -779,7 +830,7 @@ pub(crate) fn try_cold_rollup_route_at(soql: &str, from: i64, to: i64, env: Opti
     // Rien de témoigné au-dessus de `B` mais du froid à servir : le côté chaud est ÉTEINT (`0`), pas deviné.
     let (hot_cov_conds, cov_note) = hot_cov.unwrap_or_else(|| (vec!["0".to_string()], None));
     let mut hot_dim = dim_cond.clone();
-    hot_dim.extend(hot_cov_conds);
+    hot_dim.extend(hot_cov_conds.iter().cloned());
     let hot_w = side_where(&hot_dim, &format!("bucket >= {boundary}"));
     let cold_w = side_where(&dim_cond, &format!("bucket < {boundary}"));
     let sql = format!(
@@ -790,20 +841,45 @@ pub(crate) fn try_cold_rollup_route_at(soql: &str, from: i64, to: i64, env: Opti
          GROUP BY val ORDER BY \"count\" {order}{lim}",
         guatx_core::soql::soql_qid(by),
     );
-    Some(RollupRoute { sql, approx: true, truncated: true, note: join_notes(cov_note, recency_note()) })
+    // AMPLEUR DU PLAFOND, DES DEUX CÔTÉS DE LA FRONTIÈRE. La sonde recoupe les MÊMES bandes que le SQL
+    // ci-dessus (mêmes conditions, moins la dimension) sur les DEUX miroirs. Une tranche froide SCELLÉE
+    // AVANT ce correctif ne porte pas ses lignes de reste : la sonde le VOIT (heures connues < heures
+    // servies) et `topn_cap` le DIT — c'est ce qui empêche un vieux scellement de passer pour un reste nul.
+    let side_conds = |extra: &[String], bc: String| -> Vec<String> {
+        let mut c = vec![format!("source='{}'", guatx_core::soql::soql_esc(src))];
+        c.extend(extra.iter().cloned());
+        c.extend(base_tconds.iter().cloned());
+        c.push(bc);
+        c
+    };
+    let sonde_hot = side_conds(&hot_cov_conds, format!("bucket >= {boundary}"));
+    let sonde_cold = side_conds(&[], format!("bucket < {boundary}"));
+    let cap = Cap::top_n(sonde_reste_sql("event_dim_rollup", by, &sonde_hot, Some(("cold_dim_rollup", &sonde_cold))));
+    Some(RollupRoute { sql, approx: true, cap, note: join_notes(cov_note, recency_note()) })
 }
 
 /// Injecte les champs de TRANSPARENCE dans `stats` (chemin soql uniquement). rollup -> served_from:"rollup"
 /// + approx/truncated du rollup (truncated OR-é avec le plafond de lignes existant) + `rollup_note` optionnel
-/// (caveat de fraîcheur QRY-1) ; sinon raw -> exact.
-pub(crate) fn apply_rollup_stats(v: &mut Value, meta: &Option<(bool, bool, Option<String>)>) {
+/// (caveat de fraîcheur QRY-1, caveat de couverture, puis L'AMPLEUR du plafond) ; sinon raw -> exact.
+///
+/// LE DEUXIÈME MEMBRE N'EST PLUS UN BOOLÉEN, et c'est la garde : `truncated` se déduit d'une `CapMesure`,
+/// qui ne s'obtient que par dérivation depuis la base (`Cap::mesurer`) ou par aveu (`Cap::sans_base`).
+/// Un appelant ne peut donc plus DÉCLARER une troncature sans l'avoir chiffrée — la forme qui le
+/// permettait ne compile plus. Les trois chiffres (`topn_ecartes`/`topn_servis`/`topn_total`) ne sont
+/// publiés que lorsqu'ils sont ÉTABLIS : une case absente est une case non mesurée, jamais un zéro.
+pub(crate) fn apply_rollup_stats(v: &mut Value, meta: &Option<(bool, CapMesure, Option<String>)>) {
     match meta {
-        Some((approx, trunc, note)) => {
+        Some((approx, cap, note)) => {
             v["stats"]["served_from"] = json!("rollup");
             v["stats"]["approx"] = json!(*approx);
             let prev = v["stats"]["truncated"].as_bool().unwrap_or(false);
-            v["stats"]["truncated"] = json!(prev || *trunc);
-            if let Some(n) = note {
+            v["stats"]["truncated"] = json!(prev || cap.tronque());
+            if let Some((ecartes, servis, total)) = cap.chiffres() {
+                v["stats"]["topn_ecartes"] = json!(ecartes);
+                v["stats"]["topn_servis"] = json!(servis);
+                v["stats"]["topn_total"] = json!(total);
+            }
+            if let Some(n) = join_notes(note.clone(), cap.note()) {
                 v["stats"]["rollup_note"] = json!(n);
             }
         }

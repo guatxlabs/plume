@@ -17,6 +17,7 @@ chiffre annoncé n'est pas contestable.
 | `measure.py` | La matrice : latence p50/p95, **RSS crête mesurée** (échantillonnage /proc à 15 ms), lecture disque, pression machine. Les fenêtres y sont **dérivées**, pas énumérées. |
 | `probe.py` | L'échantillonneur d'ingest. Relève, à chaque tick, ce qui permet de dire POURQUOI le débit tombe : CPU du daemon, CPU du reste de la machine, octets lus/écrits au bloc, stall mémoire du cgroup. |
 | `parity.py` | **La réponse est-elle la MÊME ?** Interroge DEUX daemons (avec et sans tier froid) sur la MÊME matrice et compare **les valeurs**, pas les temps. Le jeu de contrôles n'est pas écrit : c'est `query_classes` × `windows` de `measure.py`. |
+| `concurrency.py` | **N analystes en même temps.** L'angle mort que `measure.py` déclare lui-même (une requête à la fois → `sem_wait_ms` nul par construction). Mesure, dans cet ordre : la JUSTESSE sous charge (chaque réponse concurrente comparée par sa VALEUR à la réponse obtenue seul), la RAM sous budget appliqué (RSS + cgroup + `memory.events`), la courbe de latence/débit, et `sem_wait_ms`. Le mélange de requêtes est **dérivé** de la passe solo qui le précède. |
 | `report.py` | Rend `docs/BENCHMARK.md`. Ne masque aucune cellule. |
 | `run.sh` | **La commande unique.** Enchaîne tout, budget de 2 Gio *appliqué* par cgroup. |
 | `results/` | Les **données brutes** de la mesure publiée dans `docs/BENCHMARK.md`. Versionnées exprès — voir ci-dessous. |
@@ -44,6 +45,28 @@ ajoutée plus tard. Vérifier sans rien mesurer :
 ```sh
 python3 bench/measure.py --list-windows --end-ts 0 --span-days 28 --hot-window-days 7 \
     --retention-days 30 --user x --password x --pid 1 --config-id x
+```
+
+## La concurrence — les gardes sont DÉRIVÉES, y compris celle du balayage
+
+`concurrency.py` n'a pas de liste de requêtes ni de liste de niveaux « autorisés ». Tout ce qui
+pourrait être écrit à la main y est dérivé d'une mesure ou d'une déclaration du daemon :
+
+| Ce qui pourrait être écrit à la main | Ce dont c'est dérivé |
+|---|---|
+| la taille du sémaphore mesurée | **demandée au daemon** (`/api/system/diag` publie `PLUME_QUERY_CONCURRENCY`). `--expect-sem` compare l'étiquette de la passe à ce que le daemon applique VRAIMENT, et refuse si les deux divergent : une passe dont l'étiquette ment ne mesure rien. |
+| le mélange de requêtes | la passe SOLO qui le précède : chaque **famille** de la matrice (`C1`…`C6`) entre par son représentant le plus coûteux, s'il coûte au moins 10 × le **plancher mesuré** dans la même passe. La famille du plancher échoue à son propre test et s'exclut d'elle-même. Le plancher est ajouté à part — il mesure le clic de tableau de bord sous charge. |
+| la fenêtre | la seule fenêtre **sans borne** que `measure.windows` retient (le cas le plus coûteux). Reconnue à cette propriété, pas à son nom. |
+| « les deux passes sont comparables » | le mélange est **DÉRIVÉ par la première passe puis IMPOSÉ aux suivantes** (`--mix`, posé par `run.sh`). Deux passes qui dérivent chacune le leur peuvent différer — mesuré : `C5` 3,7 s contre `C5b` 6,0 s, deux classes de la même famille que la machine peut départager autrement d'une fois sur l'autre — et leur écart de débit ne serait alors plus attribuable au sémaphore. La dérivation propre de chaque passe reste calculée et publiée à côté du mélange imposé. `report.py` refuse en plus de publier la comparaison de deux passes dont le mélange diffère. |
+| les niveaux du balayage | libres, mais **gardés** : le balayage doit contenir un point strictement en dessous du sémaphore ET un point strictement au-dessus. En dessous, aucune requête ne peut attendre ; la file ne commence qu'au-delà. Un balayage qui ne franchit pas ce point mesure un seul régime et l'appelle « la capacité ». |
+| « la réponse a changé » | l'empreinte de `parity.py` (insensible à l'ordre) + le total de pagination, contre la référence SOLO de la MÊME passe. Une classe dont la réponse varie **déjà seule** est retirée du verdict, et le retrait est publié. |
+| « le champ `sem_wait_ms` est faux » | la sémantique d'un sémaphore : à *N* analystes pour *S* ≥ *N* permis, **aucune** requête ne peut attendre son tour. Toute attente publiée à ces niveaux est donc autre chose. Aucun seuil n'intervient. |
+| « le daemon est prêt » | trois tirs consécutifs dont l'attente avant moteur est **sous la milliseconde**. Au démarrage, l'`ANALYZE` de fond tient le verrou d'écriture et le chemin interactif le traverse avant son permit : mesurer tout de suite, c'est mesurer le démarrage. Le temps qu'il a fallu est publié — c'est lui-même une mesure. |
+
+```sh
+BENCH_PHASES=concurrency BENCH_DIR=<copie d une base remplie> bench/run.sh
+# variables : BENCH_SEM_SWEEP (défaut 3,8) · BENCH_CONC_LEVELS (défaut 1,2,3,4,6,8,10)
+#             BENCH_CONC_ROUNDS (passages par analyste) · BENCH_CONC_PROBE_REPS
 ```
 
 ## Le profil FLOTTE — ce qui est mesuré, ce qui est dérivé
@@ -87,10 +110,17 @@ Un tableau de mesures sans ses données brutes ne peut être que **cru ou ignor�
 | `results/parity-apres-2026-07-31.jsonl` | La MÊME mesure **APRÈS** : plus aucun agrégat scalaire ne diverge en silence. |
 | `results/parity-couverture-2026-07-31.jsonl` | La MÊME mesure, REJOUÉE avec le binaire post-correctifs de **couverture des rollups**, sur deux copies FRAÎCHES de la même base et avec une stabilisation VÉRIFIÉE (les deux daemons ont tické, leur couverture est publiée). C'est elle qui mesure que le sous-compte ×6,6 de la passe précédente est corrigé : le côté sans tier froid rend désormais EXACTEMENT le compte brut. Elle décrit le dépôt actuel ; les réserves des passes antérieures décrivent leurs binaires. |
 | `results/fill-progress-quiet-2g.txt` | Les lignes de progression du générateur pour cette passe. Extension `.txt` et non `.log` : `.gitignore` exclut `*.log`, et une donnée publiée ne doit pas dépendre d'une exception d'ignore. |
+| `results/concurrency-2026-08-01.jsonl` | **La CONCURRENCE** : une ligne par NIVEAU (N analystes simultanés), plus une ligne d'en-tête par valeur de sémaphore (référence solo classe par classe, dérivation du mélange, mise au repos, état du cgroup). C'est l'entrée de la section « La concurrence » du document. |
+| `results/concurrency-requests-2026-08-01.jsonl` | La MÊME passe, **une ligne par requête** (analyste, tour, classe, instant relatif, mur/serveur/attente, empreinte de réponse, verdict de justesse). Donnée brute : c'est elle qui permet de recalculer n'importe quel percentile publié, ou de contredire un verdict de justesse requête par requête. `report.py` l'accepte sans s'en servir (il la reconnaît à sa forme). |
 
 **Scannés avant publication** : chemins personnels, e-mails, jetons (`ghp_`/`AKIA`/`xox*-`/
 `AGE-SECRET`/`hvs.`/JWT), IP hors plages de documentation, hexadécimal ≥ 32 — **zéro
 correspondance**. Les seules requêtes qui y figurent sont celles du banc, synthétiques.
+Une seule chaîne déclenche le motif « e-mail » et elle est publiée en connaissance de cause :
+`user@1000.service`, un nom d'unité systemd dans le chemin du cgroup où le budget de 2 Gio a été
+appliqué (`.../user-1000.slice/user@1000.service/app.slice/plume-bench-N.scope`). Ce n'est pas une
+adresse ; c'est la PREUVE que le plafond était appliqué à un cgroup réel, et c'est pour ça qu'elle
+reste.
 
 **Ce qui est DÉLIBÉRÉMENT absent** : `matrix.log`, le journal d'exécution. Il porte des chemins de
 build absolus de la machine qui a mesuré (3 occurrences de chemins personnels, vérifié) — le publier

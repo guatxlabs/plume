@@ -47,6 +47,19 @@ BENCH_COLD_HOT_DAYS="${BENCH_COLD_HOT_DAYS:-7}"
 # Rétention du daemon. SOURCE UNIQUE : la même valeur part dans PLUME_RETENTION_DAYS et dans le
 # harnais de mesure, qui en dérive la fenêtre « toute la rétention ».
 BENCH_RETENTION_DAYS="${BENCH_RETENTION_DAYS:-30}"
+# CONCURRENCE DE L'INTERACTIF (`PLUME_QUERY_CONCURRENCY`, défaut PRODUIT 3, daemon/src/server.rs:254).
+# Elle était écrite en dur ici ; elle est maintenant un PARAMÈTRE, parce que la phase `concurrency`
+# doit chiffrer l'échange concurrence <-> RAM en la faisant varier. Le défaut 3 laisse toutes les
+# autres phases STRICTEMENT identiques à ce qu'elles étaient.
+BENCH_QUERY_CONCURRENCY="${BENCH_QUERY_CONCURRENCY:-3}"
+# Les valeurs de sémaphore balayées par la phase `concurrency`. 3 = le défaut livré ; 8 = la valeur
+# d'AVANT la baisse faite comme levier de RAM. Mesurer les deux, c'est chiffrer ce que cette baisse a
+# coûté en concurrence et rapporté en mémoire.
+BENCH_SEM_SWEEP="${BENCH_SEM_SWEEP:-3,8}"
+# Analystes simultanés. Une COURBE, pas un point : c'est elle qui donne la capacité par nœud.
+BENCH_CONC_LEVELS="${BENCH_CONC_LEVELS:-1,2,3,4,6,8,10}"
+BENCH_CONC_ROUNDS="${BENCH_CONC_ROUNDS:-2}"
+BENCH_CONC_PROBE_REPS="${BENCH_CONC_PROBE_REPS:-3}"
 BENCH_ADMIN_PW="${BENCH_ADMIN_PW:-benchadmin-motdepasse}"
 BENCH_VIEWER_PW="${BENCH_VIEWER_PW:-benchviewer-motdepasse}"
 # Clé SQLCipher DU BANC. Ce n'est pas un secret : elle est publiée pour que le banc soit rejouable.
@@ -101,7 +114,7 @@ export PLUME_FTS_FIELDS=$1
 export PLUME_FTS_FIELDS_BACKFILL=1
 export PLUME_EXPRINDEX=1
 export PLUME_AUTOINDEX=0
-export PLUME_QUERY_CONCURRENCY=3
+export PLUME_QUERY_CONCURRENCY=$BENCH_QUERY_CONCURRENCY
 export PLUME_RETENTION_DAYS=$BENCH_RETENTION_DAYS
 export PLUME_COLD_TIER=$BENCH_COLD
 $COLD_EXTRA_ENV
@@ -444,6 +457,72 @@ if [ "$BENCH_PHASES" = "cold" ]; then
   run_matrix "froid-actif@$VOLC" "{\"fts_fields\":0,\"mask\":\"vide\",\"cold\":\"actif (hot=${BENCH_COLD_HOT_DAYS}j)\",\"version\":\"$VERSION\",\"events\":$NEV_HOT0,\"db_bytes\":$DBC1,\"cold_bytes\":${COLD_BYTES:-0},\"hosts\":$PROFILE_HOSTS,\"profile\":\"$PROFILE_NAME\"}" ""
   oom_report
   stop_daemon
+fi
+
+# ================================================================== CONCURRENCE
+# `BENCH_PHASES=concurrency` : N ANALYSTES EN MÊME TEMPS, sur une base déjà remplie. C'est l'angle
+# mort que docs/BENCHMARK.md déclarait lui-même — toute la matrice est prise UNE requête à la fois,
+# donc `sem_wait_ms` y est nul par construction et le comportement d'une ÉQUIPE n'est pas mesuré.
+#
+# Le sémaphore de l'interactif est la variable : le daemon est REDÉMARRÉ pour chaque valeur de
+# `BENCH_SEM_SWEEP`, et le harnais REDEMANDE au daemon ce qu'il applique vraiment
+# (`/api/system/diag`) avant de mesurer — une passe étiquetée « sem=8 » sur un daemon à 3 ne
+# mesurerait rien du tout.
+#
+#   BENCH_PHASES=concurrency BENCH_DIR=<copie d une base remplie> bench/run.sh
+if [ "$BENCH_PHASES" = "concurrency" ]; then
+  CONC="$BENCH_DIR/concurrency.jsonl"
+  CONC_REQ="$BENCH_DIR/concurrency-requests.jsonl"
+  IFS=',' read -r -a SEMS <<< "$BENCH_SEM_SWEEP"
+  # MÊME TRAVAIL DES DEUX CÔTÉS. Le mélange est DÉRIVÉ par la PREMIÈRE passe, puis IMPOSÉ aux
+  # suivantes. Sans ça, chaque passe dérive le sien depuis sa propre passe solo — et il suffit que
+  # deux classes d'une même famille soient proches (mesuré : C5 3,7 s contre C5b 6,0 s) pour que la
+  # machine les départage autrement d'une passe à l'autre. L'écart de débit entre deux sémaphores ne
+  # serait alors plus attribuable au sémaphore, mais au travail. Un banc ne change qu'UNE chose.
+  CONC_MIX="${BENCH_CONC_MIX:-}"
+  for SEMV in "${SEMS[@]}"; do
+    say "concurrence — PLUME_QUERY_CONCURRENCY=$SEMV, analystes: $BENCH_CONC_LEVELS"
+    guard_disk
+    BENCH_QUERY_CONCURRENCY="$SEMV"
+    start_daemon 0
+    NEV="$(count_events)"
+    DB0="$(stat -c%s "$DB_DIR/plume.db")"
+    VOL="$(python3 -c "print(f'{$NEV/1e6:.1f}M')")"
+    echo "base : $NEV événements, $((DB0/1048576)) Mio"
+    # Le compte de lecture est le MÊME que celui de la matrice (viewer) : mesurer la concurrence en
+    # admin donnerait des chiffres d'un rôle que personne n'utilise pour travailler. Créé s'il manque
+    # (base remplie par une passe antérieure) ; l'erreur « existe déjà » est sans effet.
+    api POST /api/users "{\"name\":\"benchviewer\",\"password\":\"$BENCH_VIEWER_PW\",\"role\":\"viewer\"}" >/dev/null 2>&1
+    drop_bench_filters
+    python3 "$REPO/bench/concurrency.py" --base "http://127.0.0.1:$BENCH_PORT" --host-header localhost \
+      --user benchviewer --password "$BENCH_VIEWER_PW" \
+      --admin-user benchadmin --admin-password "$BENCH_ADMIN_PW" \
+      --pid "$DAEMON_PID" --end-ts "$BENCH_END_TS" --span-days "$BENCH_SPAN_DAYS" \
+      --hot-window-days "$BENCH_COLD_HOT_DAYS" --retention-days "$BENCH_RETENTION_DAYS" \
+      --levels "$BENCH_CONC_LEVELS" --rounds "$BENCH_CONC_ROUNDS" --expect-sem "$SEMV" \
+      --probe-reps "$BENCH_CONC_PROBE_REPS" --mix "$CONC_MIX" \
+      --config-id "conc-sem$SEMV${BENCH_CONC_ID_SUFFIX:-}@$VOL" \
+      --config-meta "{\"fts_fields\":0,\"mask\":\"vide\",\"cold\":\"off\",\"version\":\"$VERSION\",\"events\":$NEV,\"db_bytes\":$DB0,\"hosts\":$PROFILE_HOSTS,\"profile\":\"$PROFILE_NAME\",\"query_concurrency\":$SEMV,\"mem_max\":\"$BENCH_MEMMAX\"}" \
+      -o "$CONC" --out-requests "$CONC_REQ"
+    CRC=$?
+    [ "$CRC" = "0" ] || say "concurrency.py a rendu $CRC (3=budget dépassé, 4=nombre FAUX sous charge) — C'EST UN RÉSULTAT"
+    # Le mélange EFFECTIVEMENT tiré par cette passe devient celui de toutes les suivantes. Il est relu
+    # DANS LE JSONL (pas reconstruit) : ce qui est imposé est donc exactement ce qui a été mesuré.
+    if [ -z "$CONC_MIX" ]; then
+      CONC_MIX="$(python3 -c '
+import json, sys
+mix = ""
+for line in open(sys.argv[1], encoding="utf-8"):
+    d = json.loads(line)
+    if d.get("phase") == "concurrency_probe":
+        mix = ",".join(d["derivation"]["mix_effectif"])
+print(mix)' "$CONC")"
+      say "mélange FIGÉ pour les passes suivantes : $CONC_MIX"
+    fi
+    oom_report
+    stop_daemon
+  done
+  say "concurrence — niveaux : $CONC ; requêtes : $CONC_REQ"
 fi
 
 say "terminé — résultats bruts : $RESULTS"

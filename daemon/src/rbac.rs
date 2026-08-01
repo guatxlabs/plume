@@ -300,6 +300,10 @@ pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
         || path.starts_with("/api/ledger") // #38 ledger view + #59 /api/ledger/export (chaîne préservée) : GET compris -> ADMIN
         || path.starts_with("/api/ledger-sinks") // #59 sinks d'export streaming (secret_ref) : GET compris -> ADMIN
         || path.starts_with("/api/legal-holds") // #59 legal-hold / rétention-lock (gouvernance destructive) : GET compris -> ADMIN
+        // PURGE EXPLICITE D'ÉVÉNEMENTS : la seule surface qui DÉTRUIT des preuves à la demande. ADMIN-only,
+        // GET compris (aucun GET n'existe aujourd'hui — le préfixe ferme d'avance toute lecture future de
+        // périmètre/jeton). La route reste en plus fermée tant que `PLUME_PURGE_API` n'est pas armé.
+        || path.starts_with("/api/purge")
         || path.starts_with("/api/roles") // #59 catalogue de rôles composables : GET compris -> ADMIN (super-admin en mode 1, re-check handler)
         || path.starts_with("/api/sources/settings")
         || path.starts_with("/api/suppressions") // chantier whitelists→webui : GET (config sensible) + PUT (display-only) admin-only
@@ -433,6 +437,12 @@ pub(crate) fn route_denied_perm(path: &str) -> Option<&'static str> {
     }
     if path.starts_with("/api/ledger") {
         return Some("ledger_export");
+    }
+    // Un rôle composable base=admin peut se voir RETIRER la purge sans perdre le reste de l'autorité admin :
+    // « admin » n'est pas forcément le bon quantum d'autorité pour détruire des preuves. Soustractif comme
+    // les autres (jamais additif), et enfermé dans l'enum `KNOWN_DENY_PERMS`.
+    if path.starts_with("/api/purge") {
+        return Some("purge_events");
     }
     None
 }

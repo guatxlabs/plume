@@ -1545,6 +1545,13 @@ fn governance_retention_ledger_routes() -> Router<AppState> {
         .route("/api/ledger-sinks/:id/flush", post(ledger_sink_flush))
         .route("/api/legal-holds", get(legal_holds_list).post(legal_hold_create))
         .route("/api/legal-holds/:id/release", post(legal_hold_release))
+        // PURGE EXPLICITE D'ÉVÉNEMENTS — deux temps. `/plan` SIMULE (aucune écriture) et rend le jeton ;
+        // `/apply` RE-SIMULE, compare le jeton, inscrit au registre PUIS supprime. Les deux sont ADMIN-only
+        // (préfixe `/api/purge` dans la section admin-only de `route_min_role`, GET compris) et refusent tant
+        // que `PLUME_PURGE_API` n'est pas armé au déploiement. Déclarées ICI, donc automatiquement balayées
+        // par les gardes de câblage du routeur (401 anonyme / 403 viewer) sans être inscrites sur une liste.
+        .route("/api/purge/plan", post(purge_plan_route))
+        .route("/api/purge/apply", post(purge_apply_route))
         .route("/api/roles", get(roles_list).post(role_create))
         .route("/api/roles/:name", delete(role_delete))
         // #59 SCIM 2.0 — provisioning IdP (bearer scim_token, auth DANS auth_guard, HORS session). Mode 0 :

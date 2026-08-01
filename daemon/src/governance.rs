@@ -297,7 +297,8 @@ pub(crate) struct RoleDef {
 
 /// Perms SOUSTRACTIBLES connues (enum FERMÉ). Un deny_perm HORS de cet ensemble est IGNORÉ au chargement
 /// (fail-safe : jamais un flag muet qui « ouvrirait » quelque chose — le deny ne peut que retirer).
-pub(crate) const KNOWN_DENY_PERMS: &[&str] = &["raw_sql", "arm_response", "ledger_export", "manage_users"];
+pub(crate) const KNOWN_DENY_PERMS: &[&str] =
+    &["raw_sql", "arm_response", "ledger_export", "manage_users", "purge_events"];
 
 /// Cache process-global du catalogue de rôles custom (control-plane). VIDE par défaut (mode 0 / aucun rôle
 /// custom) -> tous les chemins RBAC restent byte-identiques. Rempli au boot (mode 1) + rafraîchi sur mutation.

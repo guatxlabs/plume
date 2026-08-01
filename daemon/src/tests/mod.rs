@@ -29,3 +29,4 @@ include!("rollup_parity_family.rs"); // parité route rapide == chemin brut, sur
 include!("rollup_dim_coverage.rs"); // le JUMEAU : couverture du rollup PAR DIMENSION (trou mesuré, fermeture, garde)
 include!("backup_retention_adverse.rs"); // scheduler backup natif + rétention KEEP-N — tests-only
 include!("netban.rs"); // chantier ② Phase 1 — ban natif HTTP (IP réelle, store net_ban, guard, API admin)
+include!("purge.rs"); // PURGE EXPLICITE d'événements — refus (legal-hold/tier froid/case/FTS), caducité du jeton, registre, dérivés

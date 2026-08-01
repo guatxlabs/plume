@@ -70,6 +70,7 @@ is annotated with its feature #). Large but flat: `query`, `search`, `soql_meta`
 | `auth.rs`, `session.rs`, `rbac.rs` | Password/session/RBAC. `rbac.rs::route_min_role` is a flat policy `match`; `rbac_gate` is fail-closed default-deny | Guarded — the RBAC allowlist is security-critical |
 | `idp.rs`, `handlers/idp.rs`, `scim.rs` | Native IdP (OIDC/JWT/TOTP), SCIM provisioning; LDAP/SAML feature-gated | Mostly — pure fns un- gated, network bind gated |
 | `governance.rs`, `handlers/governance.rs`, `compliance.rs` | Legal-hold, ledger export, composable roles, compliance mapping | Yes |
+| `purge.rs`, `handlers/purge.rs` | Explicit **event purge** (beyond time-based retention): typed scope (mandatory time window + named identifiers, no free predicate), two-phase plan→token→apply, refusals (legal hold, cold tier, case-cited, FTS desync), mandatory hash-chained ledger inscription | **Guarded — the only non-retention DELETE on `event`.** See [PURGE.md](PURGE.md) |
 | `tenants.rs` | Multi-tenant routing/key/RBAC (mode `PLUME_MULTI_TENANT`, default OFF) | Guarded — per-tenant isolation invariant |
 | `field_filter.rs`, `handlers/field_filters.rs` | Field-level masking (#45); resolves caller → `FieldMaskSet`; arms SQLite authorizer for DENY on real columns | **Guarded — the masking choke-point.** |
 

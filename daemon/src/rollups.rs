@@ -1029,6 +1029,20 @@ pub(crate) fn cache_refresh_all_panels(db: &Arc<Mutex<Connection>>, db_path: &st
 pub(crate) const RETENTION_NONPURGE: &str =
     "NOT (origin='daemon' AND source IN ('plume-config','plume-operator-access','plume-tenant-admin','plume-engagement'))";
 
+/// MÊME clause, avec les colonnes QUALIFIÉES par `alias`. La PURGE EXPLICITE (`purge.rs`) doit joindre `event`
+/// à `incident_item` — qui porte aussi une colonne `ts` — donc son prédicat ne peut pas laisser de colonne nue
+/// (SQLite refuserait l'ambiguïté). Recopier le littéral aurait créé DEUX vérités qui dérivent en silence :
+/// ajouter une source de contrôle d'un côté et pas de l'autre rendrait cette source purgeable par la purge
+/// explicite alors que la rétention la protège. `alias` VIDE reproduit le littéral historique à l'octet près,
+/// et le test `retention_nonpurge_qualified_matches_the_literal` VERROUILLE cette égalité : modifier l'un sans
+/// l'autre fait rougir.
+pub(crate) fn retention_nonpurge_for(alias: &str) -> String {
+    let p = if alias.is_empty() { String::new() } else { format!("{alias}.") };
+    format!(
+        "NOT ({p}origin='daemon' AND {p}source IN ('plume-config','plume-operator-access','plume-tenant-admin','plume-engagement'))"
+    )
+}
+
 /// #23 F3 — taille de LOT des purges de rétention chunkées. La 1re purge d'un gros backlog supprimait des
 /// MILLIONS de lignes en UNE transaction sous le mutex WRITER (le plus long verrou d'écriture du daemon),
 /// affamant l'ingest pendant toute la durée. On borne chaque DELETE à `RETENTION_PURGE_BATCH` lignes puis on

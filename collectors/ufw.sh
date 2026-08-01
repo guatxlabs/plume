@@ -10,9 +10,9 @@ set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 DUMP="${PLUME_UFW_DUMP:-/var/lib/plume/ufw-status.txt}"
 MAX="${PLUME_UFW_MAX:-300}"
-command -v ufw >/dev/null 2>&1 || exit 0
-st=$(ufw status 2>/dev/null) || exit 0                     # pas root / indispo -> skip
-case "$st" in *"Status: active"*) : ;; *) exit 0 ;; esac   # ufw inactif -> rien à surveiller
+command -v ufw >/dev/null 2>&1 || plume_unavailable ufw missing-dependency "ufw absent"
+st=$(ufw status 2>/dev/null) || plume_unavailable ufw subsystem-absent "ufw present mais status illisible (droits insuffisants)"                     # pas root / indispo -> skip
+case "$st" in *"Status: active"*) : ;; *) plume_unavailable ufw subsystem-absent "ufw installe mais INACTIF : aucun filtrage a observer sur cet hote" ;; esac   # ufw inactif -> rien à surveiller
 plume_init
 umask 027
 

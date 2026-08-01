@@ -1,0 +1,35 @@
+# CONTRE-EXEMPLE LIVRÉ, VOLONTAIREMENT APPAIRÉ à `process-whoami-discovery.yml`.
+#
+# POURQUOI CE FICHIER EXISTE — MESURÉ le 2026-08-01 (VM Ubuntu 24.04 Server, amd64, 2 vCPU/2 Gio,
+# règles auditd chargées, charge = build de 100 unités de compilation => 533 événements `category=exec`
+# réels dans le SOC) :
+#   * `CommandLine` .......  0 / 533 événements   -> la règle vitrine ne peut PAS matcher sur Linux
+#   * `exe` ...............  407 / 533 événements -> cette règle-ci matche
+#   * `comm` ..............  305 / 533 événements
+# Les clés RÉELLEMENT émises par le chemin `execve` d'auditd sont exactement :
+#   action · auid · cim · comm · exe · key · success · syscall · uid
+# `CommandLine` n'en fait pas partie et n'en fera jamais partie : auditd ne l'émet pas. L'inertie de la
+# règle vitrine sur Linux est donc STRUCTURELLE — ce n'est pas, comme sur Windows, une GPO qu'on peut
+# activer. Deux causes différentes, deux remèdes différents ; les confondre ferait croire qu'un réglage
+# suffit. Cf. docs/SIGMA-IMPORTER.md §4a, angle mort n°2.
+#
+# CE QUE CE FICHIER DÉMONTRE : sur Linux, filtrez un champ que la source ÉMET (`exe`, `comm`) — le
+# reste de la traduction Sigma est identique. Une règle qui filtre un champ jamais peuplé n'est pas
+# une couverture, c'est une couverture APPARENTE, et c'est plus dangereux que pas de règle du tout.
+title: Whoami Command Execution (Discovery) — Linux/auditd
+id: 3f9a2c71-8d64-4e05-b1a7-52c9f0d4e883
+status: stable
+description: >-
+  Exécution de `whoami` (découverte hôte/utilisateur post-compromission) vue par le chemin execve
+  d'auditd. Jumelle Linux de process-whoami-discovery.yml, qui filtre CommandLine et reste inerte ici.
+logsource:
+    category: process_creation
+    product: linux
+detection:
+    selection:
+        exe|contains: whoami
+    condition: selection
+level: low
+tags:
+    - attack.discovery
+    - attack.t1033

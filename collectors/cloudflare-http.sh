@@ -18,9 +18,9 @@ LAG="${PLUME_CF_HTTP_LAG:-90}"                 # buffer (s) contre le lag adapti
 API="${PLUME_CF_API:-https://api.cloudflare.com/client/v4/graphql}"
 
 # OPT-IN : pas de creds -> skip silencieux (comme les autres collecteurs)
-[ -n "$TOKEN" ] && [ -n "$ZONE" ] || exit 0
-command -v curl >/dev/null 2>&1 || exit 0
-command -v jq   >/dev/null 2>&1 || exit 0
+[ -n "$TOKEN" ] && [ -n "$ZONE" ] || plume_unavailable cloudflare-http missing-config "PLUME_CF_TOKEN et/ou PLUME_CF_ZONE non poses"
+command -v curl >/dev/null 2>&1 || plume_unavailable cloudflare-http missing-dependency "curl absent"
+command -v jq   >/dev/null 2>&1 || plume_unavailable cloudflare-http missing-dependency "jq absent"
 
 plume_init
 nowiso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -55,12 +55,12 @@ json=$(printf '%s' "$resp" | sed '$d')
 # Echec API (scope token / plan CF / reseau) : ne PAS avancer le watermark, ne PAS spooler. Token JAMAIS logge.
 if [ "$code" != "200" ]; then
   echo "cloudflare-http: GraphQL HTTP ${code:-000} (token scope/plan ? rien spoole)" >&2
-  exit 0
+  plume_unavailable cloudflare-http unreachable "API GraphQL Cloudflare HTTP ${code:-000} (scope du token / plan CF / reseau) : rien spoole, watermark non avance"
 fi
 errs=$(printf '%s' "$json" | jq -c '.errors // empty' 2>/dev/null || true)
 if [ -n "$errs" ] && [ "$errs" != "null" ] && [ "$errs" != "[]" ]; then
   echo "cloudflare-http: GraphQL errors=$errs (rien spoole)" >&2
-  exit 0
+  plume_unavailable cloudflare-http unreachable "API GraphQL Cloudflare a repondu des erreurs : rien spoole, watermark non avance"
 fi
 
 # Map CF -> enveloppe Plume kind:events. status/path/method/vhost = STRING (calque web.sh -> la regle

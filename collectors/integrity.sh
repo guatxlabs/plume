@@ -92,5 +92,5 @@ mv -f "$cur" "$BASE"
 spool_write "integrity-health-$ts.json" \
   "$(emit_event "$(heartbeat integrity 'integrity santé: FIM actif' '{"alive":1}')")" nl
 
-[ -z "$events" ] && exit 0   # 1er run (baseline) ou aucun changement -> rien à signaler
+[ -z "$events" ] && plume_exit_nodata   # 1er run (baseline) ou aucun changement -> rien à signaler
 spool_write "integrity-$ts.json" "$(emit_event "$events")"

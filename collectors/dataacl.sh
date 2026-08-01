@@ -18,7 +18,7 @@ tmp=$(mktemp "$SPOOL/.acl.XXXXXX")
 # appendrait APRÈS -maxdepth/-printf et casserait find). shellcheck disable=SC2086 (glob voulu).
 set --
 for p in $PATHS; do [ -e "$p" ] && set -- "$@" "$p"; done
-[ "$#" -gt 0 ] || { rm -f "$tmp"; exit 0; }
+[ "$#" -gt 0 ] || { rm -f "$tmp"; plume_exit_nodata; }
 find "$@" -maxdepth "$DEPTH" \( -type f -o -type d \) -printf '%p\t%u\t%g\t%m\t%y\n' 2>/dev/null \
   | head -n "$MAX" \
   | awk -v ts="$ts" -v host="$host" -v out="$tmp" '

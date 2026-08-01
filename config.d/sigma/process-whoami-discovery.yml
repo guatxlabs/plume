@@ -8,6 +8,15 @@
 # règle montre la TRADUCTION d'un champ étendu, pas une détection active out-of-the-box — l'importeur
 # le signale (avertissement « champ étendu inerte »). Une règle qui filtre `NewProcessName` (toujours
 # présent dans un 4688) fire, elle. Cf. docs/SIGMA-IMPORTER.md §4a.
+#
+# ⚠️ ET SUR LINUX, ELLE EST INERTE POUR UNE RAISON PLUS FORTE : STRUCTURELLE, PAS UN RÉGLAGE.
+# MESURÉ le 2026-08-01 (VM Ubuntu 24.04 Server amd64, règles auditd chargées, 533 événements
+# `category=exec` réels) : `CommandLine` = 0/533. Le chemin `execve` d'auditd émet exactement
+# action·auid·cim·comm·exe·key·success·syscall·uid — jamais `CommandLine`, et aucune option ne le fera
+# apparaître. Sur Windows une GPO suffit ; sur Linux il n'y a rien à activer. La jumelle Linux qui
+# FIRE (`exe|contains`, mesurée à 407/533 sur le même jeu) est livrée à côté :
+# `config.d/sigma/process-whoami-discovery-linux.yml`. Gardez les deux : c'est le couple qui enseigne
+# la différence entre « champ traduit » et « champ peuplé ».
 title: Whoami Command Execution (Discovery)
 id: 7c1e0a55-4b2d-49f8-9a3c-6e2b8d10f9c4
 status: stable

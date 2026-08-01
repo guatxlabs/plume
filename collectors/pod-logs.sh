@@ -13,7 +13,7 @@ FILTER="${PLUME_POD_LOG_FILTER:-error|fail|denied|unauthorized|panic|fatal|excep
 SKIP="${PLUME_POD_LOG_SKIP:-}"
 MAX="${PLUME_POD_LOG_MAX:-200}"
 MIN_SEV="${PLUME_POD_LOG_MIN_SEV:-3}"   # DÉBRUITAGE : ne shippe que sev>=3 (denied/unauthorized/fatal/panic/segfault) ; coupe le bruit du grep error|fail (sev2) et les auth-ok (sev1)
-[ -d "$DIR" ] || exit 0
+[ -d "$DIR" ] || plume_unavailable k8s-log missing-source "$DIR absent : aucun log de pod a lire sur cet hote"
 mkdir -p "$STATE/podoff" 2>/dev/null || true
 
 raw=$(mktemp)

@@ -85,6 +85,21 @@ for c in ${PLUME_EXTRA_COLLECTORS:-}; do
   fi
 done
 
+# --- gabarit de regles auditd + chargeur VERIFIE ---------------------------------------------------
+# DEFAUT MESURE le 2026-08-01 (VM Ubuntu 24.04 Server fraiche) : le gabarit `plume-audit.rules` n'etait
+# pose que par bootstrap.sh (le CENTRAL). Sur un AGENT, le chemin que le gabarit documentait lui-meme
+# (/usr/local/share/plume/) N'EXISTAIT PAS -> l'operateur qui suivait la doc ne trouvait rien, et
+# `auditd.sh` tournait sans aucune regle, donc sans remonter le moindre execve. On pose donc les deux
+# fichiers ICI AUSSI, au chemin que la doc annonce.
+# REGLE D'OR RESPECTEE : on POSE, on n'ACTIVE PAS. Charger des regles d'audit modifie la politique de
+# journalisation du noyau et a un cout en volume : c'est une decision d'exploitant, pas un effet de bord
+# d'une installation d'agent. Le chargeur est fourni pret a l'emploi, et il REFUSE un chargement partiel.
+install -d -m0755 /usr/local/share/plume
+install -m0644 "$SRC/systemd/plume-audit.rules" /usr/local/share/plume/plume-audit.rules
+install -m0755 "$SRC/systemd/plume-audit-rules-load.sh" /usr/local/lib/plume/plume-audit-rules-load.sh
+echo ">> gabarit auditd pose (NON charge) : /usr/local/share/plume/plume-audit.rules"
+echo "   pour l'armer :  sudo apt install auditd  &&  sudo bash /usr/local/lib/plume/plume-audit-rules-load.sh"
+
 # --- collector-mail (OPT-IN : PLUME_WITH_MAIL=1) : detection mail host-native (cf. deploy/MAIL.md, ADR-0008) ---
 if [ "${PLUME_WITH_MAIL:-0}" = "1" ]; then
   MAILBIN="$SRC/collector-mail/target/release/plume-collector-mail"

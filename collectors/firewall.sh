@@ -12,8 +12,8 @@ set -eu
 PORTS="${PLUME_LOCKDOWN_PORTS:-5900,6080,8080,8081,8090,5173}"
 IFACE="${PLUME_LOCKDOWN_IFACE:-wlan0}"
 plume_init
-command -v nft >/dev/null 2>&1 || exit 0          # pas de nft (container/non-linux) -> rien à snapshot -> skip
-nft list ruleset >/dev/null 2>&1 || exit 0        # nft présent mais non lisible (pas root/cap) -> skip
+command -v nft >/dev/null 2>&1 || plume_unavailable firewall missing-dependency "nft absent (conteneur / non-linux) : aucun ruleset a instantaner"          # pas de nft (container/non-linux) -> rien à snapshot -> skip
+nft list ruleset >/dev/null 2>&1 || plume_unavailable firewall subsystem-absent "nft present mais ruleset illisible (droits root/CAP_NET_ADMIN insuffisants)"        # nft présent mais non lisible (pas root/cap) -> skip
 # hash sur la STRUCTURE des règles : on retire les compteurs volatils (packets/bytes) -> un snapshot
 # n'est stocké que si les règles changent vraiment (pas toutes les 2 min).
 rs_hash=$(nft list ruleset 2>/dev/null | sed -E 's/packets [0-9]+ bytes [0-9]+//g' | sha256sum | cut -d' ' -f1)

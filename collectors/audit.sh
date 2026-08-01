@@ -4,11 +4,11 @@
 set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 plume_init
-command -v ausearch >/dev/null 2>&1 || exit 0
+command -v ausearch >/dev/null 2>&1 || plume_unavailable auditd missing-dependency "ausearch absent (paquet auditd non installe) : la piste d'audit ne peut pas etre relue"
 CKPT="$STATE/audit.ckpt"
 
 out="$(ausearch --checkpoint "$CKPT" --start checkpoint --format text 2>/dev/null || true)"
-[ -z "$out" ] && exit 0
+[ -z "$out" ] && plume_exit_nodata
 
 tmpf=$(mktemp)
 printf '%s\n' "$out" > "$tmpf"
@@ -25,6 +25,6 @@ while IFS= read -r line; do
   events="$events${events:+,}{\"ts\":$ts,\"source\":\"auditd\",\"category\":\"audit\",\"severity\":$sev,\"message\":\"$em\"}"
 done < "$tmpf"
 rm -f "$tmpf"
-[ -z "$events" ] && exit 0
+[ -z "$events" ] && plume_exit_nodata
 
 spool_write "audit-$ts.json" "$(emit_event "$events")"

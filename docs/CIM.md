@@ -124,7 +124,7 @@ catégories à l'identique) :
 | category | signification | sources d'exemple |
 |----------|---------------|-------------------|
 | `health`    | Battement de cœur / liveness du collecteur (0 attaque = normal ; distingue **silence** de **panne**). | tous les collecteurs (health beat) |
-| `config`    | Auto-report de configuration du collecteur (transparence des filtres, **whitelists #10**). | `web`, `nft`, `portscan`, `auditd` |
+| `config`    | Auto-report du collecteur : transparence des filtres (**whitelists #10**) **et DISPONIBILITÉ** — `fields.collect_status` ∈ {`unavailable`, `disabled`} + `fields.reason` dit qu'un capteur ne PEUT PAS collecter (dépendance/source/réglage absent), au lieu de sortir silencieusement en succès. Voir `plume_unavailable` / `plume_disabled` (`collectors/lib.sh`). | `web`, `nft`, `portscan`, `auditd`, **tout capteur incapable** |
 | `audit`     | Transport de piste d'audit.                                              | `auditd(audit.sh)` |
 | `system`    | Événements système / hôte.                                              | `fortigate(system/ha/config)` |
 | `update`    | Dérive d'image / paquets & mises à jour.                                | `imgdrift` |

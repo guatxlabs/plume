@@ -6,7 +6,7 @@
 set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 plume_init
-command -v trivy >/dev/null 2>&1 || exit 0
+command -v trivy >/dev/null 2>&1 || plume_unavailable vuln missing-dependency "trivy absent : aucun scan de vulnerabilite possible"
 SEV="${PLUME_VULN_MIN_SEVERITY:-HIGH,CRITICAL}"
 MAXI="${PLUME_VULN_MAX_IMAGES:-60}"
 MAXE="${PLUME_VULN_MAX_EVENTS:-500}"
@@ -24,7 +24,7 @@ elif command -v crictl >/dev/null 2>&1; then
 elif command -v k3s >/dev/null 2>&1; then
   k3s crictl images 2>/dev/null | awk 'NR>1 && $1!="" && $1!="<none>" {print $1":"$2}'
 fi | sort -u > "$imgs_f"
-[ -s "$imgs_f" ] || { rm -f "$imgs_f"; exit 0; }
+[ -s "$imgs_f" ] || { rm -f "$imgs_f"; plume_exit_nodata; }
 
 sevmap() { case "$1" in CRITICAL) echo 4 ;; HIGH) echo 3 ;; MEDIUM) echo 2 ;; LOW) echo 1 ;; *) echo 0 ;; esac; }
 
@@ -50,6 +50,6 @@ while IFS="$TAB" read -r sev cve pkg inst fixed img; do
   events="$events${events:+,}{\"ts\":$ts,\"source\":\"vuln\",\"category\":\"vuln\",\"severity\":$s,\"message\":\"$m\",\"dedup\":\"vuln-$key\"}"
 done < "$all"
 rm -f "$all"
-[ -z "$events" ] && exit 0
+[ -z "$events" ] && plume_exit_nodata
 
 spool_write "vuln-$ts.json" "$(emit_event "$events")"

@@ -216,32 +216,50 @@ MAXLEN=4000                            # longueur max/ligne (monter pour du JSON
 Faites émettre à `CMD` uniquement le **nouveau** (`journalctl --since -1min`, `tail -n0 -F`, un appel d'API…) ; la déduplication horaire absorbe les doublons. Tout ce qui produit du texte se collecte ainsi : un log Linux, une API REST, une base — le collecteur tourne sur un hôte Linux mais la **cible** peut être n'importe quel système.
 
 > **Linux** (serveur ou poste, toute distribution) est couvert nativement par les collecteurs
-> (`collectors/*.sh`, POSIX-sh), qui **s'auto-désactivent** si leur outil est absent (auditd, journald,
-> conntrack, ufw/nftables, ClamAV, Falco, kube-state…). **Mais `bootstrap-agent.sh` n'en installe que
-> trois** — `resources` (métriques), `integrity` (FIM) et `ship` (expédition). *Mesuré le 2026‑08‑01 sur
-> Ubuntu 24.04.4 : après un `bootstrap-agent.sh` par défaut, le SOC ne reçoit **aucun** événement de
-> sécurité — seulement des métriques et des battements `category=health`.* Les autres sont **opt‑in en
-> deux temps** (règle d'or : on installe sans activer) :
+> (`collectors/*.sh`, POSIX-sh). Un collecteur dont l'outil est absent **se désactive — et le DIT** :
+> il émet un événement `category=config` avec `collect_status=unavailable` et une `reason`
+> (`missing-dependency`, `missing-source`, `missing-config`, `subsystem-absent`, `unreachable`), et la
+> règle livrée `de-collector-unavailable` en lève une **alerte**.
+> *Jusqu'au 2026‑08‑01, il sortait silencieusement en succès : rien ne distinguait « ce capteur est
+> aveugle » de « il ne s'est rien passé » — 29 des 37 capteurs livrés portaient cette forme, soit 50
+> sorties muettes.* **Réserve, mesurée elle aussi :** cette alerte est **globale**. Elle ne fait pas
+> (encore) basculer la pastille de la source fautive en « dégradé », parce que le daemon impute une
+> alerte à un feed en cherchant `source=` **dans le texte de la règle** — et une règle générique, qui
+> est justement ce qu'on veut pour ne pas énumérer les capteurs, n'en contient aucun. L'angle mort se
+> voit donc par l'alerte et par cette requête, pas par la pastille :
+> ```sh
+> search category=config collect_status=unavailable | table host, source, reason, detail
+> ```
+> **`bootstrap-agent.sh` n'installe que trois collecteurs** — `resources` (métriques), `integrity` (FIM)
+> et `ship` (expédition). *Mesuré le 2026‑08‑01 sur Ubuntu 24.04 Server : après un `bootstrap-agent.sh`
+> par défaut, le SOC ne reçoit **aucun** événement de sécurité — seulement des métriques et des
+> battements `category=health`.* Les autres sont **opt‑in en deux temps** (règle d'or : on installe sans
+> activer) :
 > ```sh
 > sudo env PLUME_EXTRA_COLLECTORS="journal auditd" bash bootstrap-agent.sh   # installe, N'ACTIVE PAS
 > sudo systemctl enable --now plume-journal.timer plume-auditd.timer         # l'opérateur active
 > ```
 > `journal` (→ `category=auth`, sources `sshd`/`sudo`/`su`) est **immédiatement** productif. `auditd`
-> (→ `category=exec`) exige, lui, trois étapes de plus, sinon il tourne **sans rien remonter** :
+> (→ `category=exec`) a besoin, en plus, que le **noyau** journalise les `execve` — c'est une politique
+> d'audit, pas un réglage du collecteur. Deux commandes :
 > ```sh
-> sudo apt install auditd                                    # absent d'une Ubuntu Server par défaut
-> sudo cp systemd/plume-audit.rules /etc/audit/rules.d/plume.rules   # depuis CE dépôt : bootstrap-agent.sh
->                                                            # NE pose PAS le gabarit (seul bootstrap.sh le fait)
-> sudoedit /etc/audit/rules.d/plume.rules                    # cf. les 2 pièges ci-dessous
-> sudo augenrules --load && sudo auditctl -l                 # TOUJOURS relire ce que auditd a réellement chargé
+> sudo apt install auditd                                       # absent d'une Ubuntu Server par défaut
+> sudo bash /usr/local/lib/plume/plume-audit-rules-load.sh       # posé par bootstrap-agent.sh
 > ```
-> **Piège 1 — `augenrules` s'arrête à la première règle en échec** et charge donc *tout ce qui précède,
-> rien de ce qui suit*, en sortant `0`. Le gabarit livré référence des chemins d'exemple (`/srv/data`,
-> `/etc/kubernetes`, `/usr/bin/nc.openbsd`…) qui, absents chez vous, **décapitent silencieusement la fin
-> du fichier**. Retirez-les ou remplacez-les par vos chemins réels *avant* de charger.
-> **Piège 2 — la seule règle `execve` du gabarit est `arch=b32`** : sur un hôte **amd64**, elle ne capte
-> quasiment rien. Ajoutez l'équivalent 64 bits :
-> `-a always,exit -F arch=b64 -S execve -F auid!=-1 -k exec_tracking`.
+> Le chargeur **REFUSE un chargement partiel** : il dérive du gabarit le nombre de règles attendues *par
+> clé*, le compare à ce que `auditctl -l` rapporte réellement, et échoue en nommant la clé manquante.
+> C'est nécessaire parce que **`augenrules --load` s'arrête à la première règle en échec sans revenir en
+> arrière** : la machine reste à moitié armée. *Mesuré le 2026‑08‑01 sur le gabarit précédent : **12
+> règles déclarées, 6 chargées** ; le gabarit livré aujourd'hui charge **8/8** sur une Ubuntu Server
+> vierge, parce que ses chemins propres au site sont désormais commentés et placés **après** les règles
+> de base — une erreur dans vos ajouts ne peut plus décapiter le socle.*
+>
+> La règle `execve` **64 bits est active par défaut** : sans elle `category=exec` reste **vide** sur un
+> amd64. *Mesuré le 2026‑08‑01, même VM, même charge (build de 100 unités de compilation) : gabarit
+> précédent (`arch=b32` seul) → **0** événement `category=exec` ; gabarit actuel → **533**.* Elle a un
+> **coût en volume, chiffré** dans
+> [`docs/ENDPOINT-SECURITY.md`](docs/ENDPOINT-SECURITY.md#coût-de-la-règle-execve-mesuré) — lisez-le
+> avant de déployer sur une flotte, avec les deux leviers pour réduire sans redevenir aveugle.
 > *Mesuré le 2026‑08‑01, Ubuntu 24.04.4 amd64 : gabarit tel quel → 6 règles chargées sur 12 et **0**
 > enregistrement `EXECVE` ; les deux pièges corrigés → 9 règles et `category=exec` alimenté.*
 >

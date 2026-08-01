@@ -25,7 +25,7 @@ journalctl $SEL -o json --no-pager _COMM=sshd _COMM=sshd-session _COMM=sudo _COM
 # (source_is_known) -> zéro faux « inattendu ». Silence > 25 min = alerte MUET (journal-health, cf. main.rs).
 spool_write "journal-health-$ts.json" \
   "$(emit_event "$(heartbeat journal 'journal santé: shipper auth actif' '{"alive":1}')")" nl
-if [ ! -s "$tmp" ]; then rm -f "$tmp"; exit 0; fi
+if [ ! -s "$tmp" ]; then rm -f "$tmp"; plume_exit_nodata; fi
 # nouveau curseur = __CURSOR de la dernière entrée (sans jq)
 newcur=$(tail -n1 "$tmp" | grep -oP '"__CURSOR"\s*:\s*"\K[^"]+' || true)
 [ -n "$newcur" ] && state_write "$CUR" "$newcur"

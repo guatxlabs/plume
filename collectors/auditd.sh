@@ -16,13 +16,38 @@ set -eu
 plume_init
 LOG="${PLUME_AUDIT_LOG:-/var/log/audit/audit.log}"
 OFF="$STATE_DIR/auditd.offset"
-[ -r "$LOG" ] || exit 0
+[ -r "$LOG" ] || plume_unavailable auditd missing-source "$LOG absent ou illisible (auditd non installe, non demarre, ou droits insuffisants) : aucun execve/tamper ne peut etre collecte"
+
+# --- COUVERTURE DES REGLES : le collecteur peut LIRE le journal et rester AVEUGLE ------------------
+# DEUXIEME angle mort, MESURE le 2026-08-01 sur la meme VM Ubuntu 24.04 : auditd installe, journal
+# parfaitement lisible, collecteur vert... et `category=exec` A ZERO, parce que la seule regle execve
+# du gabarit visait `arch=b32` sur un hote amd64. `plume_unavailable` ne peut pas l'attraper : le
+# capteur n'est PAS incapable, il collecte tres bien un journal qui ne contient simplement aucun
+# execve. L'incapacite s'est deplacee d'un cran, vers la POLITIQUE D'AUDIT DU NOYAU.
+# Mais le collecteur PEUT le savoir : `auditctl -l` dit exactement quelles regles tournent. Ne pas le
+# demander releverait du meme defaut que celui qu'on corrige — connaitre son angle mort et se taire.
+# On le RAPPORTE donc en `category=config` (auto-report du collecteur, docs/CIM.md §2b), a cote des
+# filtres deja publies. Requetable : `search source=auditd exec_rule_b64=0`.
+# Emis ICI, AVANT tout arret anticipe : sur un hote sans aucune regle il n'y a rien a parser, donc le
+# rapport de config plus bas n'est jamais atteint — c'est precisement le cas ou il faut parler.
+# Dedup a bucket HORAIRE (meme raison que plume_report_availability : re-affirmer sans inonder).
+_ar=""
+command -v auditctl >/dev/null 2>&1 && _ar=$(auditctl -l 2>/dev/null || true)
+_ar_n=$(printf '%s\n' "$_ar" | grep -c '^-' 2>/dev/null || true); _ar_n=${_ar_n:-0}
+_ar_b64=0; _ar_b32=0
+case "$_ar" in *"arch=b64 -S execve"*|*"arch=b64"*"execve"*) _ar_b64=1 ;; esac
+case "$_ar" in *"arch=b32 -S execve"*|*"arch=b32"*"execve"*) _ar_b32=1 ;; esac
+_arc_fields=$(printf '{"type":"collector-rule-coverage","collector":"auditd","audit_rules_loaded":%s,"exec_rule_b64":%s,"exec_rule_b32":%s,"note":"exec_rule_b64=0 sur un hote amd64 => category=exec restera VIDE quoi que fasse le collecteur : la politique d audit du noyau ne journalise aucun execve 64 bits. Correctif : sudo bash /usr/local/lib/plume/plume-audit-rules-load.sh (gabarit systemd/plume-audit.rules)."}' \
+  "$_ar_n" "$_ar_b64" "$_ar_b32")
+_arc_dd="auditrules-$(printf '%s' "$_arc_fields" | cksum | cut -d' ' -f1)-$((ts / 3600))"
+spool_write "config-auditrules-$ts.json" "$(emit_event "$(printf '{"ts":%s,"source":"auditd","category":"config","severity":%s,"message":"couverture des regles auditd : %s regle(s) chargee(s), execve b64=%s b32=%s","dedup":"%s","fields":%s}' \
+  "$ts" "$([ "$_ar_b64" = 1 ] && echo 0 || echo 2)" "$_ar_n" "$_ar_b64" "$_ar_b32" "$_arc_dd" "$_arc_fields")")" 2>/dev/null || true
 
 size=$(wc -c < "$LOG" 2>/dev/null || echo 0)
 prev=$(cat "$OFF" 2>/dev/null || echo 0)
 case "$prev" in *[!0-9]*) prev=0 ;; esac
 [ "$prev" -gt "$size" ] && prev=0
-if [ "$prev" -ge "$size" ]; then printf '%s' "$size" > "$OFF"; exit 0; fi
+if [ "$prev" -ge "$size" ]; then printf '%s' "$size" > "$OFF"; plume_exit_nodata; fi
 
 new=$(mktemp)
 tail -c +"$((prev + 1))" "$LOG" 2>/dev/null > "$new" || true
@@ -184,7 +209,7 @@ parsed=$(awk -v realonly="${PLUME_AUDIT_REAL_USER_ONLY:-0}" -v tk="$TAMPER_KEYS"
   }
 ' "$new" | head -"${PLUME_AUDIT_MAX:-4000}")
 rm -f "$new"
-[ -z "$parsed" ] && exit 0
+[ -z "$parsed" ] && plume_exit_nodata
 
 events=""; EXEC_DROPPED=0; TAB=$(printf '\t')
 while IFS="$TAB" read -r sev cat fields msg; do
@@ -218,6 +243,6 @@ cfg_event=$(printf '{"ts":%s,"source":"auditd","category":"config","severity":0,
   "$ts" "$cfg_dd" "$cfg_fields")
 spool_write "config-auditd-$ts.json" "$(emit_event "$cfg_event")"
 
-[ -z "$events" ] && exit 0
+[ -z "$events" ] && plume_exit_nodata
 
 spool_write "auditd-$ts.json" "$(emit_event "$events")"

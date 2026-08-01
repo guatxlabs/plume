@@ -1,0 +1,13 @@
+{
+  "_comment": "ANGLE MORT D'EXÉCUTION : le collecteur auditd tourne, lit son journal sans erreur, et `category=exec` reste VIDE — parce que la politique d'audit du NOYAU ne journalise aucun execve 64 bits. MESURÉ le 2026-08-01 (VM Ubuntu 24.04 Server, amd64) : gabarit d'alors = seule règle execve en `arch=b32` -> 0 enregistrement `type=EXECVE` après 120 exec réels, et 0 événement `category=exec` dans le SOC. || POURQUOI UNE RÈGLE À PART de de-collector-unavailable : ici le capteur n'est PAS incapable — il collecte parfaitement un journal qui ne contient rien. `plume_unavailable` ne peut donc pas se déclencher : l'incapacité s'est déplacée d'un cran, vers le noyau. Le collecteur la mesure quand même (`auditctl -l`) et la publie en `category=config` (fields.exec_rule_b64). || CORRECTIF OPÉRATEUR : sudo bash /usr/local/lib/plume/plume-audit-rules-load.sh (le chargeur REFUSE un chargement partiel). || TÉLÉMÉTRIE REQUISE: collecteur auditd installé et actif. || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI).",
+  "name": "Catalogue — Couverture: auditd tourne mais aucune règle execve 64 bits (category=exec restera vide)",
+  "enabled": false,
+  "query": "search source=auditd category=config exec_rule_b64=0 | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 2,
+  "interval_s": 600,
+  "window_s": 7200,
+  "mitre": "T1562.001"
+}

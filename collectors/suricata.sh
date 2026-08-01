@@ -8,7 +8,7 @@ set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 plume_init
 EVE="${PLUME_SURICATA_EVE:-/var/log/suricata/eve.json}"
-[ -r "$EVE" ] || exit 0
+[ -r "$EVE" ] || plume_unavailable suricata missing-source "$EVE absent ou illisible : Suricata non installe/non demarre, ou eve.json ailleurs"
 OFF="$STATE_DIR/suricata.offset"
 # types ingeres (defaut = haut signal ; tls/dns sont volumineux -> opt-in)
 TYPES_RE=$(printf '%s' "${PLUME_SURICATA_TYPES:-alert fileinfo}" | tr ', ' '||' | sed 's/^|*//; s/|*$//')
@@ -17,7 +17,7 @@ size=$(wc -c < "$EVE" 2>/dev/null || echo 0)
 prev=$(cat "$OFF" 2>/dev/null || echo 0)
 case "$prev" in *[!0-9]*) prev=0 ;; esac
 [ "$prev" -gt "$size" ] && prev=0
-if [ "$prev" -ge "$size" ]; then printf '%s' "$size" > "$OFF"; exit 0; fi
+if [ "$prev" -ge "$size" ]; then printf '%s' "$size" > "$OFF"; plume_exit_nodata; fi
 
 new=$(mktemp)
 tail -c +"$((prev + 1))" "$EVE" 2>/dev/null > "$new" || true
@@ -38,7 +38,7 @@ parsed=$(awk -v types="$TYPES_RE" '
   }
 ' "$new" | head -400)
 rm -f "$new"
-[ -z "$parsed" ] && exit 0
+[ -z "$parsed" ] && plume_exit_nodata
 
 events=""; TAB=$(printf '\t')
 while IFS="$TAB" read -r sev cat msg; do
@@ -48,6 +48,6 @@ while IFS="$TAB" read -r sev cat msg; do
 done <<EOF
 $parsed
 EOF
-[ -z "$events" ] && exit 0
+[ -z "$events" ] && plume_exit_nodata
 
 spool_write "suricata-$ts.json" "$(emit_event "$events")"

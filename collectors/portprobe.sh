@@ -12,9 +12,9 @@
 set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 plume_init
-command -v nft >/dev/null 2>&1 || exit 0                       # pas de nft -> skip propre
-command -v jq  >/dev/null 2>&1 || exit 0
-nft list table inet plume-portscan >/dev/null 2>&1 || exit 0   # detecteur absent -> rien a faire
+command -v nft >/dev/null 2>&1 || plume_unavailable portprobe missing-dependency "nft absent"                       # pas de nft -> skip propre
+command -v jq  >/dev/null 2>&1 || plume_unavailable portprobe missing-dependency "jq absent"
+nft list table inet plume-portscan >/dev/null 2>&1 || plume_unavailable portprobe subsystem-absent "table nft plume-portscan absente : le detecteur de scan n est pas pose (systemd/plume-portscan.nft)"   # detecteur absent -> rien a faire
 umask 027
 
 # Membres courants des sets ps_rate_v4/v6 (val = IP source ayant sonde un port ferme). `nft -j` = requete

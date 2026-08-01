@@ -45,6 +45,26 @@ A pull request that weakens any of these will be **rejected**, no matter how use
   read path that hydrates raw rows into a user query, and do not reimplement masking anywhere
   else. DENY rules also arm the SQLite authorizer so the denial holds even for admin raw SQL.
   Fail **closed**: unknown role → masked; unreadable rule at reload → treated as DENY.
+- **A collector that cannot collect must SAY SO — a silent `exit 0` is a lie.** A sensor whose
+  prerequisite is missing (binary, source file, credential, subsystem) used to exit **successfully**
+  and emit nothing, so the SOC could not tell *"this sensor is blind"* from *"nothing happened"*.
+  *Measured 2026-08-01 on a fresh Ubuntu 24.04 Server VM: `auditd.sh` did `[ -r "$LOG" ] || exit 0`,
+  auditd is not installed by default, and `category=exec` was empty with nothing anywhere saying why —
+  29 of the 37 shipped sensors carried the same shape — 50 silent exits.* Every early exit is exactly
+  one of three cases, and each has a named primitive in `collectors/lib.sh` that carries its own
+  `exit`: `plume_unavailable` (prerequisite missing → emits `category=config`,
+  `collect_status=unavailable`, closed `reason` vocabulary), `plume_disabled` (operator switch off),
+  `plume_exit_nodata` (nothing new — the only legitimate silence). **A bare `exit 0` in a collector
+  fails CI** (`.github/scripts/check_collector_exit_is_classified.py`): the gate enumerates no sensor
+  list, so a collector written tomorrow is covered by construction. Reporting is not enough to be
+  *seen*: an extra `config` event makes a blind source look **fresh** (measured: `/api/sources` returned
+  `status: "frais"` for a source that had just admitted it was blind), so the shipped rule
+  `config.d/rules/catalog/de-collector-unavailable.json` raises an **alert** on the admission —
+  verified end to end. *Known gap, stated rather than hidden:* that alert is **global**, it does not
+  flip the guilty feed to `warn`, because the daemon attributes `active_alerts` by scanning the rule's
+  **query text** for `source=` tokens (`daemon/src/handlers/freshness.rs`, "limite assumée") and a
+  deliberately generic rule carries none. Closing it means attributing an alert to the source of the
+  **matched events** instead of to the rule text.
 - **The 2 GB RAM budget is non-negotiable — optimise, don't grow.** The reference deployment
   measures **~310 MiB RSS** (9,844,503 events, 2 vCPU, field masking off) and is **capped at
   runtime** to **2 GiB** (`limits.memory: 2Gi` in k3s, `MemoryMax=2G` in systemd) — **no CI job

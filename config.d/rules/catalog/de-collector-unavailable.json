@@ -1,0 +1,13 @@
+{
+  "_comment": "TROU DE COUVERTURE : un capteur a DIT qu'il ne peut pas collecter (category=config, fields.collect_status=unavailable, posé par plume_unavailable dans collectors/lib.sh). Ce n'est PAS une attaque — c'est l'angle mort lui-même, et c'est pour cela qu'il doit lever une alerte plutôt que rester une ligne de config au milieu des autres. || POURQUOI CETTE RÈGLE EXISTE, ET PAS SEULEMENT L'ÉVÉNEMENT : émettre ne suffit pas à VOIR. MESURÉ le 2026-08-01 : après ingestion d'un aveu d'indisponibilité pour `auditd`, `/api/sources` rendait `status: \"frais\"` pour auditd — l'aveu lui-même RAFRAÎCHIT la source et masquerait donc le problème s'il restait un simple event. || PORTÉE EXACTE, MESURÉE (ne promettez pas plus) : cette règle lève bien une alerte (vérifié de bout en bout, sév. 2), mais l'alerte est GLOBALE. Elle ne fait PAS basculer la pastille de la source fautive en « dégradé » : `web/freshness.js:80` bascule un feed sur `active_alerts > 0`, or le daemon calcule `active_alerts` en cherchant des jetons `source=<nom>` DANS LE TEXTE DE LA REQUÊTE (daemon/src/handlers/freshness.rs, « limite assumée »), et une règle volontairement GÉNÉRIQUE — pour ne pas énumérer les capteurs — n'en porte aucun. Mesuré : `active_alerts: 0` sur auditd malgré l'alerte levée. Fermer l'écart = imputer l'alerte à la source des ÉVÉNEMENTS MATCHÉS plutôt qu'au texte de la règle (changement daemon). || VOIR QUI EST AVEUGLE : search category=config collect_status=unavailable | table host, source, reason, detail || TÉLÉMÉTRIE REQUISE: aucune (auto-report du collecteur ; disponible dès qu'un agent pousse). || Fenêtre 2 h contre l'intervalle 10 min : la dédup de plume_unavailable est horaire, une fenêtre plus courte que le bucket manquerait l'aveu la plupart des passages. || Catalogue de détection curé (#22) — managed=1 posé par le loader, enabled=false (bibliothèque : activer via l'UI).",
+  "name": "Catalogue — Couverture: un capteur déclare ne PAS pouvoir collecter",
+  "enabled": false,
+  "query": "search category=config collect_status=unavailable | stats count",
+  "is_soql": true,
+  "op": ">",
+  "threshold": 0,
+  "severity": 2,
+  "interval_s": 600,
+  "window_s": 7200,
+  "mitre": "T1562.001"
+}

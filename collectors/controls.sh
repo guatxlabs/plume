@@ -49,6 +49,6 @@ for f in /etc/plume/controls.d/*.check; do
   done < "$f"
 done
 
-[ -z "$items" ] && exit 0
+[ -z "$items" ] && plume_exit_nodata
 hash=$(printf '%s' "$hash" | sha256sum | cut -d' ' -f1)
 spool_write "controls-$ts.json" "$(printf '{"ts":%s,"host":"%s","kind":"controls","hash":"%s","data":{"failed":%s,"controls":[%s]}}' "$ts" "$host" "$hash" "$failed" "$items")"

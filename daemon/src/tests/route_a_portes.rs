@@ -68,6 +68,18 @@
             "le rollup témoigne d'un bucket ({plancher_rollup}) plus ancien que ce qu'`event` porte ({plancher_event}) : \
              la ROUTE A sur-compterait par la porte de la RÉTENTION"
         );
+        // …et la MÊME propriété PAR SOURCE, qui est celle qui MORD. La globale ci-dessus est rendue facile
+        // par l'event de contrôle non purgeable : il tire `MIN(event.ts)` très bas, donc n'importe quel
+        // plancher de rollup passe. Par source purgeable, il n'y a plus de filet — une rétention qui
+        // garderait le rollup ne serait-ce qu'un cran plus profond qu'`event` casse ici (vérifié par mutation).
+        let (p_ev_web, p_ro_web): (i64, i64) = (
+            conn.query_row("SELECT MIN(ts) FROM event WHERE source='web'", [], |r| r.get(0)).unwrap(),
+            conn.query_row("SELECT MIN(bucket) FROM event_rollup WHERE source='web'", [], |r| r.get(0)).unwrap(),
+        );
+        assert!(
+            p_ro_web >= (p_ev_web / 3600) * 3600,
+            "par source : le rollup de `web` remonte à {p_ro_web} alors qu'`event` s'arrête à {p_ev_web}"
+        );
         // …et la ROUTE A, sur toute la fenêtre, ne rend alors RIEN DE PLUS que le brut.
         let rr = try_rollup_route_at(
             "search | stats count by source", 0, 0, None, n,

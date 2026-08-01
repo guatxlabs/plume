@@ -68,6 +68,13 @@ pub(crate) fn search_cold_coverage(conn: &Connection, conf: &HashMap<String, Str
 
 pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
     let _mt = crate::search_timer(); // #51 DAY-2 OPS : latence recherche (p50/p95) enregistrée à la sortie (Drop)
+    // MÉTRIQUE (cf. `query_timing`) — LA BARRE PREND UN PERMIT SUR LE MÊME SÉMAPHORE QUE /api/query,
+    // et ne publiait AUCUN `stats` : sur cette route il était donc impossible de distinguer une
+    // recherche LENTE d'une recherche qui ATTENDAIT, et la campagne de concurrence devait publier
+    // `C2c-fts-bar` comme un angle mort (« routes_sans_sem_wait: ["search"] »). Une route invisible
+    // à la mesure de concurrence pèse pourtant sur elle : elle consomme les mêmes permis. L'horloge
+    // démarre ici, le découpage est publié à la sortie sous la MÊME forme que /api/query.
+    let clock = QueryClock::start();
     let term = q.get("q").cloned().unwrap_or_default();
     let mut limit: i64 = q.get("limit").and_then(|s| s.parse().ok()).unwrap_or(st.search_limit_default).clamp(1, st.search_limit_max);
     if term.trim().is_empty() {
@@ -143,8 +150,8 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
     // branche « saturation » : comportement IDENTIQUE à panel_data + /api/query (avant, /api/search
     // renvoyait 200 + error là où les autres « rejetaient » -> incohérent). Seule erreur
     // possible = sémaphore fermé (shutdown) -> on sert vide. Relâché en fin de handler.
-    let _permit = match st.query_sem.clone().acquire_owned().await {
-        Ok(p) => p,
+    let (_permit, timings) = match clock.permit(&st.query_sem).await {
+        Ok(x) => x,
         Err(_) => return Json(json!({ "results": [] })),
     };
     // FIELD FILTERS (#45) : /api/search NE PASSE PAS par run_query_ex (lignes construites à la main dans
@@ -163,7 +170,8 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
         let conf = load_config();
         if crate::cold_store::cold_tier_runtime_on(&conf) {
             let rc = req_db(&st, &au);
-            let c = rc.lock();
+            // VERROU PARTAGÉ CHRONOMÉTRÉ : publié en `stats.db_lock_wait_ms`, comme /api/query.
+            let c = timings.db().lock(&rc);
             let rd = retention_effective(&c, &conf, "retention_days");
             cold_boundary = Some(crate::cold_store::cold_query_boundary(&c, &conf, now(), rd));
         }
@@ -255,5 +263,10 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
             }
         }
     }
+    // L'ANGLE MORT REFERMÉ : la barre publie désormais le MÊME découpage que /api/query. Elle prend
+    // les mêmes permis, elle doit être visible dans la même mesure — sinon une part de la charge du
+    // sémaphore reste hors de toute courbe de concurrence. Champ ADDITIF : les consommateurs de
+    // `results` sont inchangés.
+    timings.stamp(&mut res);
     Json(res)
 }

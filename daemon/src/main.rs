@@ -49,6 +49,8 @@ mod ingest;
 pub(crate) use ingest::*;
 mod query_exec;
 pub(crate) use query_exec::*;
+mod query_timing; // LE DÉCOUPAGE DU TEMPS D'UNE REQUÊTE : l'attente d'un permit n'est fabricable QUE par l'acquisition
+pub(crate) use query_timing::*;
 mod soql_glue;
 pub(crate) use soql_glue::*;
 mod field_filter; // #45 FIELD FILTERS : registre de masquage par champ (rôle/tenant/env), résolu en FieldMaskSet

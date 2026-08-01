@@ -203,8 +203,8 @@ def render_concurrency(W, conc):
 
     W("## La concurrence — ce que le nœud fait quand l'équipe travaille en même temps")
     W("")
-    W("Tout le reste de ce document est pris **une requête à la fois** : `sem_wait_ms` y est nul par")
-    W("construction, et le document le disait lui-même. Cette section mesure l'autre condition, la")
+    W("Tout le reste de ce document est pris **une requête à la fois** : aucune requête n'y attend")
+    W("son tour, et le document le disait lui-même. Cette section mesure l'autre condition, la")
     W("vraie : plusieurs analystes qui lancent de **très grosses** requêtes en même temps, sur la")
     W("même base et sous le **même budget appliqué** de 2 Gio.")
     W("")
@@ -251,8 +251,8 @@ def render_concurrency(W, conc):
         q = h0.get("quiescence") or {}
         if q:
             W(f"**Mise au repos avant de mesurer** : un daemon qui vient de démarrer lance un `ANALYZE`")
-            W(f"complet en arrière-plan qui prend le verrou d'écriture, et le chemin interactif consulte")
-            W(f"la base AVANT de prendre son permit — mesurer tout de suite, c'est mesurer le démarrage.")
+            W(f"complet en arrière-plan, qui prend le verrou d'écriture et consomme disque et CPU —")
+            W(f"mesurer tout de suite, c'est mesurer le démarrage.")
             W(f"Le harnais attend donc {q.get('need')} tirs consécutifs dont l'attente avant moteur est")
             W(f"sous la milliseconde : **{fmt_dur((q.get('seconds') or 0) * 1000)}** ici")
             W(f"(`quiescent={str(q.get('quiescent')).lower()}`).")
@@ -283,7 +283,7 @@ def render_concurrency(W, conc):
         elif h.get("derivation"):
             W("Mélange **DÉRIVÉ** par la passe solo de cette configuration (tableau plus haut).")
             W("")
-        W("| Analystes | file possible | requêtes | durée | débit | p50 | p95 | pire | p50 du pire analyste | attente p50 | attente p95 | RSS crête | plafond touché | OOM |")
+        W("| Analystes | file possible | requêtes | durée | débit | p50 | p95 | pire | p50 du pire analyste | attente PERMIT p50 | attente PERMIT p95 | RSS crête | plafond touché | OOM |")
         W("|---:|:--:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:--:|")
         base_q = rows[0].get("throughput_qps") or 0
         for r in rows:
@@ -325,7 +325,9 @@ def render_concurrency(W, conc):
         W("Colonnes : *durée* = temps mur du niveau entier ; *débit* = requêtes servies par seconde")
         W("(entre parenthèses, le rapport au niveau 1 de la même passe) ; *p50/p95/pire* portent sur")
         W("**toutes** les requêtes du niveau ; *p50 du pire analyste* est le pire des médians")
-        W("individuels — c'est lui qui dit si la charge est équitable ; *plafond touché* est le")
+        W("individuels — c'est lui qui dit si la charge est équitable ; *attente PERMIT* est le temps")
+        W("passé à faire la queue au sémaphore, et RIEN d'autre (le temps passé à attendre le verrou")
+        W("de la connexion partagée est publié séparément, plus bas) ; *plafond touché* est le")
         W("compteur `memory.events:max` du cgroup, c'est-à-dire le nombre de fois où le noyau a dû")
         W("récupérer de la mémoire pour rester sous 2 Gio pendant ce niveau.")
         W("")
@@ -400,56 +402,139 @@ def render_concurrency(W, conc):
         W("répétitions SEUL, donc chacune est comparable sous charge. C'est vérifié, pas supposé.")
     W("")
 
-    # ---------------------------------------------------------------- sem_wait
-    W("### `sem_wait_ms` ne mesure pas l'attente du sémaphore")
+    # ---------------------------------------------------------------- l'attente : ce qui en est, ce qui n'en est pas
+    W("### L'attente d'un permit, séparée de ce qui n'en est pas")
     W("")
-    W("C'est le champ que le daemon publie pour séparer « la requête est lente » de « la requête")
-    W("attendait son tour ». **La mesure montre qu'il ne le fait pas.**")
+    W("C'est le champ `sem_wait_ms` que le daemon publie pour séparer « la requête est lente » de")
+    W("« la requête attendait son tour ». La campagne précédente a montré **qu'il ne le faisait pas**,")
+    W("et la démonstration ne demandait aucun seuil : tant qu'il y a **au moins autant de permis que")
+    W("d'analystes**, aucune requête ne peut attendre son tour. À ces niveaux, l'attente d'un permit")
+    W("est nulle *par construction* — toute valeur non nulle y est nécessairement autre chose.")
     W("")
-    W("La démonstration ne demande aucun seuil : tant qu'il y a **au moins autant de permis que")
-    W("d'analystes**, aucune requête ne peut attendre son tour. À ces niveaux, `sem_wait_ms` doit être")
-    W("nul par construction. Mesuré :")
-    W("")
-    W("| Passe | Analystes | Permis | File possible ? | `sem_wait_ms` p95 | `sem_wait_ms` max |")
-    W("|---|---:|---:|:--:|---:|---:|")
+    W("| Passe | Analystes | Permis | File possible ? | découpage publié ? | attente PERMIT p95 | attente PERMIT max |")
+    W("|---|---:|---:|:--:|:--:|---:|---:|")
     contam = []
     for r in lvls:
         if r.get("queue_possible"):
             continue
         contam.append(r)
         W(f"| `{r['config_id']}` | {r['analysts']} | {r.get('query_sem')} | **non** | "
+          f"{'oui' if r.get('db_lock_wait_samples') else '**non**'} | "
           f"{fmt_ms(r.get('sem_wait_contamination_p95_ms'))} | "
           f"**{fmt_ms(r.get('sem_wait_contamination_ms'))}** |")
     W("")
-    worst = max((r.get("sem_wait_contamination_ms") or 0) for r in contam) if contam else 0
-    solo_worst = max((h.get("sem_wait_solo_max_ms") or 0) for h in heads) if heads else 0
-    if worst > 1 or solo_worst > 1:
-        W(f"Le maximum observé **là où aucune file n'est possible** est de **{fmt_dur(worst)}** en")
-        W(f"charge sous-critique, et de **{fmt_dur(solo_worst)}** pendant la passe solo (un seul")
-        W("client, aucun autre en vol). Un sémaphore avec des permis libres ne peut pas produire ça.")
+    # La colonne « découpage publié ? » PARTITIONNE les passes : celles d'AVANT le découpage (le champ
+    # additionnait deux attentes) et celles d'APRÈS. Sans elle, un lecteur verrait des zéros et des
+    # secondes dans la même colonne sans savoir que ce ne sont pas les mêmes binaires.
+    avant = [r for r in contam if not r.get("db_lock_wait_samples")]
+    apres = [r for r in contam if r.get("db_lock_wait_samples")]
+    split = [r for r in lvls if r.get("db_lock_wait_samples")]
+    # Une passe est « d'après le découpage » si son en-tête porte la mesure du verrou partagé : le
+    # critère est la PRÉSENCE du champ, jamais un numéro de version qu'il faudrait tenir à jour.
+    h_avant = [h for h in heads if h.get("db_lock_wait_solo_max_ms") is None]
+    h_apres = [h for h in heads if h.get("db_lock_wait_solo_max_ms") is not None]
+    worst = max((r.get("sem_wait_contamination_ms") or 0) for r in avant) if avant else 0
+    solo_worst = max((h.get("sem_wait_solo_max_ms") or 0) for h in h_avant) if h_avant else 0
+    if worst > 0 or solo_worst > 0:
+        W(f"**Avant le découpage** : le maximum observé là où aucune file n'est possible est de")
+        W(f"**{fmt_dur(worst)}** en charge sous-critique, et de **{fmt_dur(solo_worst)}** pendant la")
+        W("passe solo (un seul client, aucun autre en vol). Un sémaphore avec des permis libres ne")
+        W("peut pas produire ça : le champ mesurait autre chose que son nom, et son nom envoie")
+        W("l'exploitant AUGMENTER le sémaphore — la seule action que la section précédente mesure")
+        W("comme nuisible (débit ×0,46, p95 27 s → 50 s, RSS +725 Mio, daemon tué à 10 analystes).")
         W("")
-        W("**Ce que le champ mesure réellement** : le chrono démarre à l'entrée du handler")
-        W("(`daemon/src/handlers/query.rs:362`) et n'est lu qu'APRÈS le permit (`:556`, `sem_wait_ms`")
-        W("posé en `:560`). Entre les deux, la requête résout les masques de champs et lit la")
-        W("**couverture des rollups** — et cette lecture prend le verrou de la connexion PARTAGÉE")
-        W("(`:479`, `req_db(...).lock()`), celui-là même que tiennent les travaux de fond (`ANALYZE`")
-        W("de démarrage, boucle de rollups). `sem_wait_ms` additionne donc **l'attente du permit ET")
-        W("une attente de verrou qui n'est bornée par aucun sémaphore** — un point de sérialisation")
-        W("qui, lui, existe AVANT la borne de concurrence et n'est mesuré nulle part. Conséquence")
-        W("directe sur la lecture de ce document : un `sem_wait_ms` élevé ne prouve PAS que le")
-        W("sémaphore est trop petit — il faut regarder le niveau, et savoir si une file y était")
-        W("seulement possible. C'est pour cela que la colonne « file possible » existe.")
-    else:
-        W("Aucune contamination mesurée : là où aucune file n'est possible, l'attente publiée est")
-        W("nulle. Le champ mesure donc bien ce que son nom dit, sur cette passe.")
-    W("")
-    nosw = sorted({x for h in heads for x in (h.get("classes_sans_sem_wait") or [])})
+    if apres:
+        worst_apres = max((r.get("sem_wait_contamination_ms") or 0) for r in apres)
+        solo_apres = max((h.get("sem_wait_solo_max_ms") or 0) for h in h_apres) if h_apres else 0
+        if worst_apres == 0 and solo_apres == 0:
+            W("**Après : zéro partout.** Là où aucune file n'est possible, l'attente publiée est nulle —")
+            W("pas « petite » : nulle, à la microseconde de résolution du champ. Ce n'est pas une mesure")
+            W("qui a bien voulu tomber juste : quand un permit est libre il est pris sans jamais")
+            W("suspendre la tâche, et la valeur publiée est le zéro CONSTANT")
+            W("(`daemon/src/query_timing.rs`) — aucune horloge n'intervient sur ce chemin, donc rien ne")
+            W("peut la contaminer. La propriété « autant de permis que de clients ⇒ aucune attente » a")
+            W("cessé d'être une mesure à vérifier pour devenir la construction de la valeur, et le")
+            W("harnais SORT EN ERREUR si elle est violée au lieu de publier le chiffre.")
+        else:
+            W(f"**Après le découpage, il reste {fmt_dur(worst_apres)}** là où aucune file n'est")
+            W("possible : la correction est incomplète, et c'est publié tel quel.")
+        W("")
+
+    if split:
+        W("#### Où passe le temps, maintenant qu'il est découpé")
+        W("")
+        W("Le champ ne pouvait pas être corrigé en le déplaçant : ce qu'il additionnait devait être")
+        W("**séparé**, sinon la part cachée serait simplement retombée ailleurs. Le daemon publie donc")
+        W("un découpage TOTAL — `prepare + sem_wait + exec == server` par construction, `exec` étant le")
+        W("reste et jamais une troisième horloge :")
+        W("")
+        W("| champ | ce qu'il mesure |")
+        W("|---|---|")
+        W("| `prepare_ms` | avant le permit : corps, masques, **couverture des rollups**, compilation |")
+        W("| `sem_wait_ms` | l'attente du PERMIT, et rien d'autre |")
+        W("| `db_lock_wait_ms` | le temps passé à **obtenir** le verrou de la connexion PARTAGÉE (pas celui passé à le tenir) |")
+        W("| `exec_ms` | le reste : l'exécution |")
+        W("")
+        # « avant moteur » = prepare + sem_wait, pas la seule préparation : c'est ce que la requête
+        # subit avant d'exécuter quoi que ce soit, et c'est exactement ce que l'ancien champ publiait
+        # sous le nom du sémaphore. L'appeler « prépa » ici rejouerait l'erreur au format tableau.
+        W("| Passe | Analystes | file ? | avant moteur p50 | avant moteur p95 | **verrou partagé** p50 | **verrou partagé** max | permit p95 | mur p95 |")
+        W("|---|---:|:--:|---:|---:|---:|---:|---:|---:|")
+        for r in split:
+            W(f"| `{r['config_id']}` | {r['analysts']} | {'oui' if r.get('queue_possible') else 'non'} | "
+              f"{fmt_ms(r.get('pre_engine_p50_ms'))} | {fmt_ms(r.get('pre_engine_p95_ms'))} | "
+              f"**{fmt_ms(r.get('db_lock_wait_p50_ms'))}** | **{fmt_ms(r.get('db_lock_wait_max_ms'))}** | "
+              f"{fmt_ms(r.get('sem_wait_p95_ms'))} | {fmt_ms(r.get('wall_p95_ms'))} |")
+        W("")
+        # LA PARTITION EST DANS LES DONNÉES : les passes qui MESURENT encore le verrou en place, et
+        # celles où il a été retiré. Écrire « le chemin prend le verrou » au présent pour toutes
+        # serait faux pour les secondes — et c'est exactement le genre de phrase qui survit à son fait.
+        avec = [r for r in split if (r.get("db_lock_wait_max_ms") or 0) > 0]
+        sans = [r for r in split if (r.get("db_lock_wait_max_ms") or 0) == 0]
+        W("**La sérialisation que personne ne voyait.** Le chemin d'une requête interactive lit la")
+        W("couverture des rollups. Tant que cette lecture prenait le verrou de la connexion")
+        W("**partagée** — celui-là même que la boucle de rollups tient pendant tout un tick")
+        W("(`spawn_rollup_loop`, 120 s) et que l'`ANALYZE` de démarrage tient plusieurs minutes —")
+        W("**aucun sémaphore ne bornait cette attente** : elle avait lieu ailleurs que sur le")
+        W("sémaphore, et augmenter le sémaphore n'y met que plus de monde.")
+        W("")
+        if avec:
+            dbw_worst = max((r.get("db_lock_wait_max_ms") or 0) for r in avec)
+            dbw_solo = max((h.get("db_lock_wait_solo_max_ms") or 0) for h in heads
+                           if h["config_id"] in {r["config_id"] for r in avec}) if heads else 0
+            W(f"MESURÉ, verrou en place ({', '.join('`' + c + '`' for c in sorted({r['config_id'] for r in avec}))}) :")
+            W(f"jusqu'à **{fmt_dur(dbw_worst)}** sous charge et **{fmt_dur(dbw_solo)}** en solo — sur le")
+            W("chemin de CHAQUE requête GXQL, pendant que l'attente de permit, elle, était nulle.")
+            W("")
+        if sans:
+            W(f"MESURÉ après retrait ({', '.join('`' + c + '`' for c in sorted({r['config_id'] for r in sans}))}) :")
+            W("**zéro**. La lecture de couverture est passée au pool de lecture — mêmes lignes `meta`")
+            W("commitées, même repli fail-closed vers « rien d'établi », donc le même corps de rollup")
+            W("servi ou décliné ; seul le verrou disparaît. Le champ reste publié à zéro : une absence")
+            W("de champ se lirait « je ne sais pas », un zéro se lit « j'ai regardé ».")
+            W("")
+        W("C'est la lecture qui change une décision : un exploitant qui voit l'attente du permit à")
+        W("zéro et le verrou partagé non nul sait que son sémaphore n'est pas le levier. Avant le")
+        W("découpage, les deux étaient dans le même champ, sous le nom du sémaphore.")
+        W("")
+    # L'ANGLE MORT SE LIT SUR LA GÉNÉRATION LA PLUS RÉCENTE, pas sur toutes : une route corrigée
+    # depuis resterait signalée à jamais si on unissait les passes. `h_apres` quand il existe, sinon
+    # tout ce qu'on a — le critère est la présence du découpage, pas un numéro de version.
+    hs = h_apres or heads
+    nosw = sorted({x for h in hs for x in (h.get("classes_sans_sem_wait") or [])})
     if nosw:
         W(f"**Angle mort restant** : {', '.join('`' + x + '`' for x in nosw)} ne publie(nt) aucun")
         W("`stats` — la barre `/api/search` prend pourtant un permit sur le MÊME sémaphore. Sur cette")
         W("route, il est donc impossible de distinguer une recherche lente d'une recherche qui")
         W("attendait : c'est mesuré ici, ce n'est pas corrigé ici.")
         W("")
+    else:
+        W("**Aucune route en angle mort** : toutes les classes tirées ici publient leur découpage, y")
+        W("compris la barre `/api/search`, qui prend un permit sur le MÊME sémaphore et ne publiait")
+        W("rien du tout jusqu'à la campagne précédente. Une route invisible à la mesure de concurrence")
+        W("pèse pourtant dessus : elle consomme les mêmes permis.")
+        W("")
+
 
     # ---------------------------------------------------------------- le clic sous charge
     floor_id = (h0.get("derivation") or {}).get("floor_id") if h0 else None
@@ -521,11 +606,26 @@ def render_concurrency(W, conc):
     # de niveau ; on ne compare donc que les configurations dont le mélange est identique, et on
     # NOMME celles qu'on écarte. Sans cette garde, une différence de mélange (deux classes proches
     # d'une même famille départagées autrement) se lirait comme un effet du sémaphore.
+    # LA CLÉ PORTE AUSSI LE BINAIRE, et c'est un correctif de ce rapport : quand le document publie
+    # plusieurs GÉNÉRATIONS de binaire (une passe d'avant un correctif et une passe d'après), grouper
+    # sur le seul mélange les met dans le MÊME tableau — et la phrase de synthèse (« ces six nombres
+    # SONT le taux de change entre un sémaphore à X et un sémaphore à Y ») devient fausse, parce que
+    # DEUX choses ont changé. La provenance du binaire est déjà dans les données (`config.version`,
+    # l'empreinte du binaire mesuré) : on la met dans la clé plutôt que d'énumérer des passes.
+    def _bin_of(c):
+        r = next(r for r in lvls if r["config_id"] == c)
+        return str((r.get("config") or {}).get("version") or "")
+
+    def _when_of(c):
+        return str(next(r for r in lvls if r["config_id"] == c).get("measured_at") or "")
+
+    all_cfgs = list(cfgs)
     groups = {}
     for c in cfgs:
-        key = tuple((next(r for r in lvls if r["config_id"] == c).get("mix") or []))
+        key = (tuple((next(r for r in lvls if r["config_id"] == c).get("mix") or [])), _bin_of(c))
         groups.setdefault(key, []).append(c)
-    best = max(groups.values(), key=len) if groups else []
+    # À taille égale, la génération la PLUS RÉCENTE : c'est celle qui décrit le dépôt actuel.
+    best = max(groups.values(), key=lambda g: (len(g), max(_when_of(c) for c in g))) if groups else []
     excluded_cfgs = [c for c in cfgs if c not in best]
     if len(best) > 1:
         cfgs = best
@@ -544,9 +644,10 @@ def render_concurrency(W, conc):
         W("")
         if excluded_cfgs:
             W(f"**Écartée(s) de cette comparaison** : {', '.join('`' + c + '`' for c in excluded_cfgs)}")
-            W("— leur mélange n'est pas celui des autres passes, donc leur écart de débit ne serait pas")
-            W("attribuable au sémaphore mais au travail. Leur courbe reste publiée plus haut ; c'est")
-            W("cette comparaison-ci, et elle seule, qui exige un travail identique.")
+            W("— leur mélange OU leur binaire n'est pas celui des autres passes, donc leur écart de")
+            W("débit ne serait pas attribuable au sémaphore mais au travail ou au code. Leur courbe")
+            W("reste publiée plus haut ; c'est cette comparaison-ci, et elle seule, qui exige que")
+            W("tout le reste soit identique.")
             W("")
         W("| Analystes | " + " | ".join(f"débit `{c}`" for c in cfgs) + " | écart de débit | "
           + " | ".join(f"p95 `{c}`" for c in cfgs) + " | "
@@ -596,6 +697,71 @@ def render_concurrency(W, conc):
         W("**Pas de comparaison publiée.** Les passes mesurées n'ont pas tiré le MÊME mélange de")
         W("requêtes : leur écart de débit mélangerait l'effet du sémaphore et celui du travail. Un")
         W("banc ne change qu'une chose à la fois — les courbes restent publiées séparément.")
+        W("")
+
+    # ---------------------------------------------------------------- l'écart entre GÉNÉRATIONS
+    # MÊME sémaphore, MÊME mélange, MÊME base, MÊME niveau — SEUL le binaire change. C'est la seule
+    # forme sous laquelle un « avant/après » de correctif est lisible. Les paires sont DÉRIVÉES des
+    # données (on apparie sur la valeur de sémaphore et sur le mélange, et on refuse d'apparier deux
+    # passes du même binaire) : aucune liste de passes n'est écrite ici.
+    par_sem = {}
+    for c in all_cfgs:
+        r0 = next(r for r in lvls if r["config_id"] == c)
+        # LA CLÉ D'APPARIEMENT = tout ce qui doit être IDENTIQUE pour qu'un écart soit imputable au
+        # binaire : la taille du sémaphore, le mélange tiré, et le nombre de passages par analyste.
+        # Deux passes qui ne partagent pas les trois ne sont jamais appariées — donc jamais publiées
+        # comme un « avant/après », même si leurs noms s'y prêtent.
+        par_sem.setdefault(
+            (r0.get("query_sem"), tuple(r0.get("mix") or []), r0.get("rounds")), []
+        ).append((str((r0.get("config") or {}).get("version") or ""), str(r0.get("measured_at") or ""), c))
+    paires = []
+    for (sem, _mix, _rounds), items in sorted(par_sem.items(), key=lambda kv: (kv[0][0] or 0)):
+        gens = sorted({(v, w, c) for v, w, c in items}, key=lambda x: x[1])
+        if len({g[0] for g in gens}) < 2:
+            continue
+        paires.append((sem, gens[0], gens[-1]))
+    if paires:
+        W("### L'écart avant / après le correctif de métrique")
+        W("")
+        W("MÊME base, MÊME machine, MÊME sémaphore, MÊME mélange **imposé**, MÊMES niveaux : seul le")
+        W("BINAIRE change. Ce n'est donc pas une comparaison de configurations, c'est la mesure de ce")
+        W("qu'un correctif a fait — et les deux colonnes d'attente sont l'essentiel, parce que c'est")
+        W("là que le défaut vivait.")
+        W("")
+        for sem, (v0, w0, c0), (v1, w1, c1) in paires:
+            W(f"**Sémaphore {sem}** — `{c0}` ({w0[:10]}, `{v0.split(' ')[0]}`) contre "
+              f"`{c1}` ({w1[:10]}, `{v1.split(' ')[0]}`)")
+            W("")
+            W("| Analystes | file ? | débit avant | débit après | p95 avant | p95 après | "
+              "attente PERMIT max avant | attente PERMIT max après | verrou partagé max après | RSS avant | RSS après |")
+            W("|---:|:--:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+            a = {r["analysts"]: r for r in lvls if r["config_id"] == c0}
+            b = {r["analysts"]: r for r in lvls if r["config_id"] == c1}
+            for n in sorted(set(a) & set(b)):
+                x, y = a[n], b[n]
+                W(f"| **{n}** | {'oui' if x.get('queue_possible') else 'non'} | "
+                  f"{(x.get('throughput_qps') or 0):.2f} q/s | {(y.get('throughput_qps') or 0):.2f} q/s | "
+                  f"{fmt_ms(x.get('wall_p95_ms'))} | {fmt_ms(y.get('wall_p95_ms'))} | "
+                  f"{fmt_ms(x.get('sem_wait_max_ms'))} | {fmt_ms(y.get('sem_wait_max_ms'))} | "
+                  f"{fmt_ms(y.get('db_lock_wait_max_ms'))} | "
+                  f"{fmt_mib(x.get('peak_rss_bytes'))} Mio | {fmt_mib(y.get('peak_rss_bytes'))} Mio |")
+            W("")
+        W("Lire la colonne « file ? » AVANT les colonnes d'attente : là où elle dit **non**, aucune")
+        W("requête ne PEUT attendre son tour, donc toute attente de permit publiée y est fausse.")
+        _reste = max((b.get("db_lock_wait_max_ms") or 0)
+                     for _s, _g0, (_v, _w, _c) in paires
+                     for b in [r for r in lvls if r["config_id"] == _c]) if paires else 0
+        if _reste > 0:
+            W(f"La colonne « verrou partagé » dit où cette attente passait, et il en reste")
+            W(f"{fmt_dur(_reste)} : la sérialisation existe encore sur ce chemin.")
+        else:
+            W("La colonne « verrou partagé » est à zéro **parce que la sérialisation a été retirée**")
+            W("(la lecture de couverture des rollups est passée au pool de lecture) — pas parce")
+            W("qu'elle n'était pas là : c'est la passe d'ATTRIBUTION, plus haut, qui la mesure encore")
+            W("en place, et le champ reste publié pour que la prochaine soit visible immédiatement.")
+        W("Les colonnes de débit et de p95, elles, ne sont PAS un résultat de ce correctif : elles")
+        W("portent la charge de la machine du jour autant que le code — on les publie pour qu'on")
+        W("puisse les contredire, pas pour en tirer une conclusion.")
         W("")
 
 

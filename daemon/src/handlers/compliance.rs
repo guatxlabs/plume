@@ -259,8 +259,8 @@ pub(crate) async fn compliance_posture(
     }
     let since: i64 = q.get("since").and_then(|s| s.parse().ok()).filter(|&n: &i64| n >= 0).unwrap_or(0);
     let empty = json!({ "framework": target, "controls": [], "rules": [], "totals": {}, "frameworks": compliance_frameworks() });
-    let _permit = match st.query_sem.clone().acquire_owned().await {
-        Ok(p) => p,
+    let _permit = match acquire_query_permit(&st.query_sem).await {
+        Ok((p, _wait)) => p,
         Err(_) => return Json(empty),
     };
     let db_path = req_db_path(&st, &au);

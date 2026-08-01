@@ -470,6 +470,15 @@ fi
 # mesurerait rien du tout.
 #
 #   BENCH_PHASES=concurrency BENCH_DIR=<copie d une base remplie> bench/run.sh
+# LE JEU DE DONNÉES NE DOIT PAS CHANGER PENDANT LA MESURE. Un jeu figé une fois pour toutes finit
+# par sortir de la rétention du daemon : l'horloge avance, le bord de rétention rattrape la queue du
+# jeu, et le travail de purge se met à SUPPRIMER des événements PENDANT la campagne. Mesuré le
+# 2026-08-01 à 13:13 (locale), 2 jours après le remplissage : 1 440 007 -> 1 436 516 événements en
+# une demi-heure, et un `stats count` qui rend 1438 à la référence SOLO puis 1437 sous charge —
+# c'est-à-dire un verdict de JUSTESSE faux, imputé à la concurrence alors qu'il vient de l'horloge.
+# `BENCH_RETENTION_DAYS` doit donc COUVRIR le jeu (défaut 30 j pour un jeu de 28 j : ça ne tient que
+# les deux premiers jours). La valeur utilisée part dans `config.retention_days` du JSONL : une passe
+# dit elle-même sous quelle rétention elle a été prise.
 if [ "$BENCH_PHASES" = "concurrency" ]; then
   CONC="$BENCH_DIR/concurrency.jsonl"
   CONC_REQ="$BENCH_DIR/concurrency-requests.jsonl"
@@ -502,10 +511,10 @@ if [ "$BENCH_PHASES" = "concurrency" ]; then
       --levels "$BENCH_CONC_LEVELS" --rounds "$BENCH_CONC_ROUNDS" --expect-sem "$SEMV" \
       --probe-reps "$BENCH_CONC_PROBE_REPS" --mix "$CONC_MIX" \
       --config-id "conc-sem$SEMV${BENCH_CONC_ID_SUFFIX:-}@$VOL" \
-      --config-meta "{\"fts_fields\":0,\"mask\":\"vide\",\"cold\":\"off\",\"version\":\"$VERSION\",\"events\":$NEV,\"db_bytes\":$DB0,\"hosts\":$PROFILE_HOSTS,\"profile\":\"$PROFILE_NAME\",\"query_concurrency\":$SEMV,\"mem_max\":\"$BENCH_MEMMAX\"}" \
+      --config-meta "{\"fts_fields\":0,\"mask\":\"vide\",\"cold\":\"off\",\"version\":\"$VERSION\",\"events\":$NEV,\"db_bytes\":$DB0,\"hosts\":$PROFILE_HOSTS,\"profile\":\"$PROFILE_NAME\",\"query_concurrency\":$SEMV,\"mem_max\":\"$BENCH_MEMMAX\",\"retention_days\":$BENCH_RETENTION_DAYS}" \
       -o "$CONC" --out-requests "$CONC_REQ"
     CRC=$?
-    [ "$CRC" = "0" ] || say "concurrency.py a rendu $CRC (3=budget dépassé, 4=nombre FAUX sous charge) — C'EST UN RÉSULTAT"
+    [ "$CRC" = "0" ] || say "concurrency.py a rendu $CRC (3=budget dépassé, 4=nombre FAUX sous charge, 5=attente de permit là où aucune file n'est possible) — C'EST UN RÉSULTAT"
     # Le mélange EFFECTIVEMENT tiré par cette passe devient celui de toutes les suivantes. Il est relu
     # DANS LE JSONL (pas reconstruit) : ce qui est imposé est donc exactement ce qui a été mesuré.
     if [ -z "$CONC_MIX" ]; then

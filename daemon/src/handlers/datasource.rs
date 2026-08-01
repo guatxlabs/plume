@@ -94,8 +94,8 @@ async fn ds_soql_run(st: AppState, au: AuthUser, soql: String, from: i64, to: i6
         return bad_req("soql requis (champ `soql` ou `query`)");
     }
     // backpressure : MÊME sémaphore que /api/query (borne les déchiffrements concurrents ; anti-OOM).
-    let _permit = match st.query_sem.clone().acquire_owned().await {
-        Ok(p) => p,
+    let _permit = match acquire_query_permit(&st.query_sem).await {
+        Ok((p, _wait)) => p,
         Err(_) => return err_json(StatusCode::SERVICE_UNAVAILABLE, "service indisponible"),
     };
     let db_path = req_db_path(&st, &au);
@@ -338,7 +338,7 @@ async fn prom_run(st: AppState, au: AuthUser, query: String, from: i64, to: i64)
         return Err(prom_err(format!("filtre interdit sur un champ masqué : {field}")));
     }
     let sql = prom_metric_sql(&name, &matchers, from, to).map_err(prom_err)?;
-    let _permit = st.query_sem.clone().acquire_owned().await.map_err(|_| err_json(StatusCode::SERVICE_UNAVAILABLE, "service indisponible"))?;
+    let _permit = acquire_query_permit(&st.query_sem).await.map(|(p, _wait)| p).map_err(|_| err_json(StatusCode::SERVICE_UNAVAILABLE, "service indisponible"))?;
     let db_path = req_db_path(&st, &au);
     let dbp = db_path.clone();
     let budget = query_budget_ms();
@@ -425,8 +425,8 @@ pub(crate) async fn prom_label_values(State(st): State<AppState>, Extension(au):
 
 /// Exécute un SELECT d'UNE colonne et renvoie `{status:success,data:[...]}` (valeurs string).
 async fn prom_distinct_col(st: &AppState, db_path: &str, sql: &str) -> Response {
-    let _permit = match st.query_sem.clone().acquire_owned().await {
-        Ok(p) => p,
+    let _permit = match acquire_query_permit(&st.query_sem).await {
+        Ok((p, _wait)) => p,
         Err(_) => return err_json(StatusCode::SERVICE_UNAVAILABLE, "service indisponible"),
     };
     let dbp = db_path.to_string();
@@ -448,8 +448,8 @@ async fn prom_distinct_col(st: &AppState, db_path: &str, sql: &str) -> Response 
 pub(crate) async fn prom_labels(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
     let masks = caller_masks(&st, &au);
     let db_path = req_db_path(&st, &au);
-    let _permit = match st.query_sem.clone().acquire_owned().await {
-        Ok(p) => p,
+    let _permit = match acquire_query_permit(&st.query_sem).await {
+        Ok((p, _wait)) => p,
         Err(_) => return err_json(StatusCode::SERVICE_UNAVAILABLE, "service indisponible"),
     };
     let dbp = db_path.clone();

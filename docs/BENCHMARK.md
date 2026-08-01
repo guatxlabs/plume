@@ -4,7 +4,7 @@
      Ne pas l'éditer à la main : la prochaine passe l'écrase. Tout commentaire durable va dans
      bench/README.md. -->
 
-Rendu le 2026-08-01 04:04:48+0200 depuis `results-smoke-200k.jsonl`, `results.jsonl`, `results-2026-07-31.jsonl`, `results-2026-07-31-corrige.jsonl`, `parity-avant-2026-07-31.jsonl`, `parity-apres-2026-07-31.jsonl`, `parity-couverture-2026-07-31.jsonl`, `concurrency-2026-08-01.jsonl` — données brutes VERSIONNÉES dans [`bench/results/`](../bench/results/), pour que ce tableau puisse être contredit et pas seulement cru (cf. `bench/README.md`).
+Rendu le 2026-08-01 16:03:00+0200 depuis `results-smoke-200k.jsonl`, `results.jsonl`, `results-2026-07-31.jsonl`, `results-2026-07-31-corrige.jsonl`, `parity-avant-2026-07-31.jsonl`, `parity-apres-2026-07-31.jsonl`, `parity-couverture-2026-07-31.jsonl`, `concurrency-2026-08-01.jsonl`, `concurrency-reproduction-2026-08-01.jsonl`, `concurrency-attribution-2026-08-01.jsonl`, `concurrency-corrige-2026-08-01.jsonl` — données brutes VERSIONNÉES dans [`bench/results/`](../bench/results/), pour que ce tableau puisse être contredit et pas seulement cru (cf. `bench/README.md`).
 
 ## Ce que ce document est, et ce qu'il n'est pas
 
@@ -2214,8 +2214,8 @@ noyau, pas par du swap. Il n'a pas été tué.
 
 ## La concurrence — ce que le nœud fait quand l'équipe travaille en même temps
 
-Tout le reste de ce document est pris **une requête à la fois** : `sem_wait_ms` y est nul par
-construction, et le document le disait lui-même. Cette section mesure l'autre condition, la
+Tout le reste de ce document est pris **une requête à la fois** : aucune requête n'y attend
+son tour, et le document le disait lui-même. Cette section mesure l'autre condition, la
 vraie : plusieurs analystes qui lancent de **très grosses** requêtes en même temps, sur la
 même base et sous le **même budget appliqué** de 2 Gio.
 
@@ -2255,8 +2255,8 @@ Familles **écartées** du mélange lourd, avec leur motif mesuré :
 - famille 0 (`C0-plancher`) : le plus coûteux de la famille 0 ne fait que 1.0 x le plancher (seuil 10).
 
 **Mise au repos avant de mesurer** : un daemon qui vient de démarrer lance un `ANALYZE`
-complet en arrière-plan qui prend le verrou d'écriture, et le chemin interactif consulte
-la base AVANT de prendre son permit — mesurer tout de suite, c'est mesurer le démarrage.
+complet en arrière-plan, qui prend le verrou d'écriture et consomme disque et CPU —
+mesurer tout de suite, c'est mesurer le démarrage.
 Le harnais attend donc 3 tirs consécutifs dont l'attente avant moteur est
 sous la milliseconde : **10.0 s** ici
 (`quiescent=true`).
@@ -2267,7 +2267,7 @@ Sémaphore **3**, déclaré par le daemon (/api/system/diag). Fenêtre `all` (sa
 
 Mélange **DÉRIVÉ** par la passe solo de cette configuration (tableau plus haut).
 
-| Analystes | file possible | requêtes | durée | débit | p50 | p95 | pire | p50 du pire analyste | attente p50 | attente p95 | RSS crête | plafond touché | OOM |
+| Analystes | file possible | requêtes | durée | débit | p50 | p95 | pire | p50 du pire analyste | attente PERMIT p50 | attente PERMIT p95 | RSS crête | plafond touché | OOM |
 |---:|:--:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:--:|
 | **1** | non | 21/21 | 72 s | 0.29 q/s (x1.00) | 2785 | 10.4 s | 12.9 s | 2785 | 0.1 | 1213 | 1026 Mio | 0 | non |
 | **2** | non | 42/42 | 80 s | 0.53 q/s (x1.81) | 2930 | 13.7 s | 14.2 s | 2930 | 0.1 | 2.4 | 1114 Mio | 0 | non |
@@ -2280,7 +2280,9 @@ Mélange **DÉRIVÉ** par la passe solo de cette configuration (tableau plus hau
 Colonnes : *durée* = temps mur du niveau entier ; *débit* = requêtes servies par seconde
 (entre parenthèses, le rapport au niveau 1 de la même passe) ; *p50/p95/pire* portent sur
 **toutes** les requêtes du niveau ; *p50 du pire analyste* est le pire des médians
-individuels — c'est lui qui dit si la charge est équitable ; *plafond touché* est le
+individuels — c'est lui qui dit si la charge est équitable ; *attente PERMIT* est le temps
+passé à faire la queue au sémaphore, et RIEN d'autre (le temps passé à attendre le verrou
+de la connexion partagée est publié séparément, plus bas) ; *plafond touché* est le
 compteur `memory.events:max` du cgroup, c'est-à-dire le nombre de fois où le noyau a dû
 récupérer de la mémoire pour rester sous 2 Gio pendant ce niveau.
 
@@ -2295,7 +2297,7 @@ Sémaphore **8**, déclaré par le daemon (/api/system/diag). Fenêtre `all` (sa
 
 Mélange **IMPOSÉ** (celui de la passe de référence), pour que la comparaison entre sémaphores ne porte que sur le sémaphore. Sa propre passe solo aurait dérivé un mélange différent de 2 classe(s) : `C5-regex-json-planted`, `C5b-regex-json-cold` — c'est précisément ce que l'imposition neutralise.
 
-| Analystes | file possible | requêtes | durée | débit | p50 | p95 | pire | p50 du pire analyste | attente p50 | attente p95 | RSS crête | plafond touché | OOM |
+| Analystes | file possible | requêtes | durée | débit | p50 | p95 | pire | p50 du pire analyste | attente PERMIT p50 | attente PERMIT p95 | RSS crête | plafond touché | OOM |
 |---:|:--:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:--:|
 | **1** | non | 21/21 | 82 s | 0.26 q/s (x1.00) | 3915 | 12.5 s | 12.6 s | 3915 | 0.1 | 0.4 | 1015 Mio | 0 | non |
 | **2** | non | 42/42 | 89 s | 0.47 q/s (x1.84) | 4066 | 13.6 s | 16.7 s | 4153 | 0.2 | 0.9 | 1220 Mio | 8 283 | non |
@@ -2318,7 +2320,122 @@ le daemon a REFUSÉ proprement, en disant pourquoi.
 Colonnes : *durée* = temps mur du niveau entier ; *débit* = requêtes servies par seconde
 (entre parenthèses, le rapport au niveau 1 de la même passe) ; *p50/p95/pire* portent sur
 **toutes** les requêtes du niveau ; *p50 du pire analyste* est le pire des médians
-individuels — c'est lui qui dit si la charge est équitable ; *plafond touché* est le
+individuels — c'est lui qui dit si la charge est équitable ; *attente PERMIT* est le temps
+passé à faire la queue au sémaphore, et RIEN d'autre (le temps passé à attendre le verrou
+de la connexion partagée est publié séparément, plus bas) ; *plafond touché* est le
+compteur `memory.events:max` du cgroup, c'est-à-dire le nombre de fois où le noyau a dû
+récupérer de la mémoire pour rester sous 2 Gio pendant ce niveau.
+
+*Charger le daemon, pas la machine* : l'instrument lui-même n'a jamais consommé plus de
+**1.4 %** d'un cœur-seconde par seconde de mesure sur cette passe — la latence
+mesurée n'est donc pas la sienne. Le daemon, lui, est enfermé dans son cgroup à 2 Gio
+sans swap : les deux pressions sont relevées séparément (`pressure_*` dans le JSONL).
+
+### La courbe — `conc-sem3-rouge@1.4M` (`PLUME_QUERY_CONCURRENCY=3`)
+
+Sémaphore **3**, déclaré par le daemon (/api/system/diag). Fenêtre `all` (sans borne : le cas le plus coûteux). 1 passages par analyste sur 7 classes.
+
+Mélange **DÉRIVÉ** par la passe solo de cette configuration (tableau plus haut).
+
+| Analystes | file possible | requêtes | durée | débit | p50 | p95 | pire | p50 du pire analyste | attente PERMIT p50 | attente PERMIT p95 | RSS crête | plafond touché | OOM |
+|---:|:--:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:--:|
+| **1** | non | 7/7 | 23 s | 0.31 q/s (x1.00) | 1707 | 7754 | 7754 | 1707 | 0.2 | 3348 | 1195 Mio | 6 433 | non |
+| **4** | oui | 28/28 | 39 s | 0.72 q/s (x2.35) | 4655 | 8880 | 9026 | 6515 | 437 | 5124 | 1196 Mio | 14 905 | non |
+
+Colonnes : *durée* = temps mur du niveau entier ; *débit* = requêtes servies par seconde
+(entre parenthèses, le rapport au niveau 1 de la même passe) ; *p50/p95/pire* portent sur
+**toutes** les requêtes du niveau ; *p50 du pire analyste* est le pire des médians
+individuels — c'est lui qui dit si la charge est équitable ; *attente PERMIT* est le temps
+passé à faire la queue au sémaphore, et RIEN d'autre (le temps passé à attendre le verrou
+de la connexion partagée est publié séparément, plus bas) ; *plafond touché* est le
+compteur `memory.events:max` du cgroup, c'est-à-dire le nombre de fois où le noyau a dû
+récupérer de la mémoire pour rester sous 2 Gio pendant ce niveau.
+
+*Charger le daemon, pas la machine* : l'instrument lui-même n'a jamais consommé plus de
+**1.1 %** d'un cœur-seconde par seconde de mesure sur cette passe — la latence
+mesurée n'est donc pas la sienne. Le daemon, lui, est enfermé dans son cgroup à 2 Gio
+sans swap : les deux pressions sont relevées séparément (`pressure_*` dans le JSONL).
+
+### La courbe — `conc-sem3-attribue@1.4M` (`PLUME_QUERY_CONCURRENCY=3`)
+
+Sémaphore **3**, déclaré par le daemon (/api/system/diag). Fenêtre `all` (sans borne : le cas le plus coûteux). 1 passages par analyste sur 7 classes.
+
+Mélange **DÉRIVÉ** par la passe solo de cette configuration (tableau plus haut).
+
+| Analystes | file possible | requêtes | durée | débit | p50 | p95 | pire | p50 du pire analyste | attente PERMIT p50 | attente PERMIT p95 | RSS crête | plafond touché | OOM |
+|---:|:--:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:--:|
+| **1** | non | 7/7 | 29 s | 0.24 q/s (x1.00) | 3347 | 9948 | 9948 | 3347 | 0.0 | 0.0 | 732 Mio | 0 | non |
+| **4** | oui | 28/28 | 43 s | 0.66 q/s (x2.69) | 3721 | 13.9 s | 15.0 s | 5344 | 447 | 4513 | 819 Mio | 0 | non |
+
+Colonnes : *durée* = temps mur du niveau entier ; *débit* = requêtes servies par seconde
+(entre parenthèses, le rapport au niveau 1 de la même passe) ; *p50/p95/pire* portent sur
+**toutes** les requêtes du niveau ; *p50 du pire analyste* est le pire des médians
+individuels — c'est lui qui dit si la charge est équitable ; *attente PERMIT* est le temps
+passé à faire la queue au sémaphore, et RIEN d'autre (le temps passé à attendre le verrou
+de la connexion partagée est publié séparément, plus bas) ; *plafond touché* est le
+compteur `memory.events:max` du cgroup, c'est-à-dire le nombre de fois où le noyau a dû
+récupérer de la mémoire pour rester sous 2 Gio pendant ce niveau.
+
+**2 niveau(x) pris pendant que la MACHINE swappait** (1, 4 analystes) : ces lignes mesurent le
+stockage de l'hôte autant que plume, elles sont à rejouer.
+
+*Charger le daemon, pas la machine* : l'instrument lui-même n'a jamais consommé plus de
+**1.1 %** d'un cœur-seconde par seconde de mesure sur cette passe — la latence
+mesurée n'est donc pas la sienne. Le daemon, lui, est enfermé dans son cgroup à 2 Gio
+sans swap : les deux pressions sont relevées séparément (`pressure_*` dans le JSONL).
+
+### La courbe — `conc-sem3-corrige@1.4M` (`PLUME_QUERY_CONCURRENCY=3`)
+
+Sémaphore **3**, déclaré par le daemon (/api/system/diag). Fenêtre `all` (sans borne : le cas le plus coûteux). 3 passages par analyste sur 7 classes.
+
+Mélange **IMPOSÉ** (celui de la passe de référence), pour que la comparaison entre sémaphores ne porte que sur le sémaphore. Sa propre passe solo aurait dérivé un mélange différent de 6 classe(s) : `C2b-regex-msg`, `C2d-free-term-rows`, `C5-regex-json-planted`, `C5b-regex-json-cold`, `C6b-groupby-host`, `C6c-raw-one-host` — c'est précisément ce que l'imposition neutralise.
+
+| Analystes | file possible | requêtes | durée | débit | p50 | p95 | pire | p50 du pire analyste | attente PERMIT p50 | attente PERMIT p95 | RSS crête | plafond touché | OOM |
+|---:|:--:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:--:|
+| **1** | non | 21/21 | 81 s | 0.26 q/s (x1.00) | 3319 | 12.4 s | 13.3 s | 3319 | 0.0 | 0.0 | 826 Mio | 0 | non |
+| **2** | non | 42/42 | 88 s | 0.48 q/s (x1.85) | 3931 | 12.4 s | 13.8 s | 3931 | 0.0 | 0.0 | 873 Mio | 0 | non |
+| **3** | non | 63/63 | 93 s | 0.68 q/s (x2.61) | 3460 | 14.0 s | 15.0 s | 3641 | 0.0 | 0.0 | 858 Mio | 0 | non |
+| **4** | oui | 84/84 | 120 s | 0.70 q/s (x2.71) | 4267 | 14.6 s | 19.8 s | 4452 | 459 | 4475 | 908 Mio | 0 | non |
+| **6** | oui | 126/126 | 169 s | 0.75 q/s (x2.88) | 6860 | 17.2 s | 27.2 s | 7391 | 3391 | 9144 | 984 Mio | 1 580 | non |
+| **8** | oui | 168/168 | 234 s | 0.72 q/s (x2.78) | 9518 | 20.8 s | 28.2 s | 11.0 s | 5940 | 12.8 s | 1039 Mio | 6 327 | non |
+| **10** | oui | 210/210 | 362 s | 0.58 q/s (x2.24) | 16.2 s | 30.6 s | 37.1 s | 17.4 s | 12.1 s | 18.6 s | 1243 Mio | 170 949 | non |
+
+Colonnes : *durée* = temps mur du niveau entier ; *débit* = requêtes servies par seconde
+(entre parenthèses, le rapport au niveau 1 de la même passe) ; *p50/p95/pire* portent sur
+**toutes** les requêtes du niveau ; *p50 du pire analyste* est le pire des médians
+individuels — c'est lui qui dit si la charge est équitable ; *attente PERMIT* est le temps
+passé à faire la queue au sémaphore, et RIEN d'autre (le temps passé à attendre le verrou
+de la connexion partagée est publié séparément, plus bas) ; *plafond touché* est le
+compteur `memory.events:max` du cgroup, c'est-à-dire le nombre de fois où le noyau a dû
+récupérer de la mémoire pour rester sous 2 Gio pendant ce niveau.
+
+*Charger le daemon, pas la machine* : l'instrument lui-même n'a jamais consommé plus de
+**1.1 %** d'un cœur-seconde par seconde de mesure sur cette passe — la latence
+mesurée n'est donc pas la sienne. Le daemon, lui, est enfermé dans son cgroup à 2 Gio
+sans swap : les deux pressions sont relevées séparément (`pressure_*` dans le JSONL).
+
+### La courbe — `conc-sem8-corrige@1.4M` (`PLUME_QUERY_CONCURRENCY=8`)
+
+Sémaphore **8**, déclaré par le daemon (/api/system/diag). Fenêtre `all` (sans borne : le cas le plus coûteux). 3 passages par analyste sur 7 classes.
+
+Mélange **IMPOSÉ** (celui de la passe de référence), pour que la comparaison entre sémaphores ne porte que sur le sémaphore. Sa propre passe solo aurait dérivé un mélange différent de 2 classe(s) : `C5-regex-json-planted`, `C5b-regex-json-cold` — c'est précisément ce que l'imposition neutralise.
+
+| Analystes | file possible | requêtes | durée | débit | p50 | p95 | pire | p50 du pire analyste | attente PERMIT p50 | attente PERMIT p95 | RSS crête | plafond touché | OOM |
+|---:|:--:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:--:|
+| **1** | non | 21/21 | 87 s | 0.24 q/s (x1.00) | 3941 | 13.8 s | 14.2 s | 3941 | 0.0 | 0.0 | 992 Mio | 0 | non |
+| **2** | non | 42/42 | 86 s | 0.49 q/s (x2.04) | 3574 | 12.6 s | 14.6 s | 3574 | 0.0 | 0.0 | 1217 Mio | 399 | non |
+| **3** | non | 63/63 | 86 s | 0.73 q/s (x3.04) | 3620 | 14.1 s | 14.3 s | 3972 | 0.0 | 0.0 | 1198 Mio | 1 868 | non |
+| **4** | non | 84/84 | 113 s | 0.75 q/s (x3.09) | 5143 | 16.8 s | 20.2 s | 5706 | 0.0 | 0.0 | 1318 Mio | 25 736 | non |
+| **6** | non | 126/126 | 174 s | 0.72 q/s (x3.00) | 7480 | 27.9 s | 29.9 s | 8060 | 0.0 | 0.0 | 1615 Mio | 146 803 | non |
+| **8** | non | 168/168 | 270 s | 0.62 q/s (x2.58) | 9906 | 41.7 s | 48.1 s | 11.3 s | 0.0 | 0.0 | 2035 Mio | 392 993 | non |
+| **10** | oui | 210/210 | 351 s | 0.60 q/s (x2.48) | 12.4 s | 50.1 s | 56.9 s | 14.1 s | 1562 | 9331 | 2035 Mio | 892 090 | non |
+
+Colonnes : *durée* = temps mur du niveau entier ; *débit* = requêtes servies par seconde
+(entre parenthèses, le rapport au niveau 1 de la même passe) ; *p50/p95/pire* portent sur
+**toutes** les requêtes du niveau ; *p50 du pire analyste* est le pire des médians
+individuels — c'est lui qui dit si la charge est équitable ; *attente PERMIT* est le temps
+passé à faire la queue au sémaphore, et RIEN d'autre (le temps passé à attendre le verrou
+de la connexion partagée est publié séparément, plus bas) ; *plafond touché* est le
 compteur `memory.events:max` du cgroup, c'est-à-dire le nombre de fois où le noyau a dû
 récupérer de la mémoire pour rester sous 2 Gio pendant ce niveau.
 
@@ -2331,64 +2448,133 @@ sans swap : les deux pressions sont relevées séparément (`pressure_*` dans le
 
 | | |
 |---|---:|
-| Réponses comparées à leur référence solo | **1 366** |
-| Identiques (empreinte ET total) | **1 366** |
-| Divergentes | **0** |
-| Dont NOMBRES FAUX (valeur dérivée d'un ensemble) | **0** |
+| Réponses comparées à leur référence solo | **2 864** |
+| Identiques (empreinte ET total) | **2 859** |
+| Divergentes | **5** |
+| Dont NOMBRES FAUX (valeur dérivée d'un ensemble) | **5** |
 | Hors verdict (voir ci-dessous) | 62 |
 
 Les 62 réponses hors verdict sont EXACTEMENT les 62 requêtes qui n'ont pas abouti (connexion coupée après le kill, ou refus nommé) : une requête sans réponse n'a rien à comparer. Aucune n'est hors verdict pour cause d'instabilité — le compte le prouve, il n'est pas affirmé.
 
-**Aucune réponse concurrente ne diffère de la réponse obtenue seul.** L'empreinte est
-insensible à l'ordre (un `GROUP BY` est un sac non ordonné) et le total de pagination est
-comparé en plus. Ce n'est pas une déduction depuis les latences : ce sont les VALEURS qui
-ont été comparées, requête par requête, contre une référence prise sur la même base et le
-même binaire quelques minutes plus tôt.
+**Des réponses concurrentes diffèrent de la réponse obtenue seul.** Le détail est dans le
+JSONL (`justesse.divergences` : empreinte et valeurs des deux côtés) :
+
+| Passe | Analystes | Classe | Dérivée d'un ensemble | Solo | Sous charge |
+|---|---:|---|:--:|---|---|
+| `conc-sem3-attribue@1.4M` | 1 | `C2-free-term` | **OUI** | `[[1438]]` | `[[1437]]` |
+| `conc-sem3-attribue@1.4M` | 4 | `C2-free-term` | **OUI** | `[[1438]]` | `[[1437]]` |
+| `conc-sem3-attribue@1.4M` | 4 | `C2-free-term` | **OUI** | `[[1438]]` | `[[1437]]` |
+| `conc-sem3-attribue@1.4M` | 4 | `C2-free-term` | **OUI** | `[[1438]]` | `[[1437]]` |
+| `conc-sem3-attribue@1.4M` | 4 | `C2-free-term` | **OUI** | `[[1438]]` | `[[1437]]` |
 
 **Aucune classe n'a été retirée du verdict** : chacune rend la même réponse à chacune de ses
 répétitions SEUL, donc chacune est comparable sous charge. C'est vérifié, pas supposé.
 
-### `sem_wait_ms` ne mesure pas l'attente du sémaphore
+### L'attente d'un permit, séparée de ce qui n'en est pas
 
-C'est le champ que le daemon publie pour séparer « la requête est lente » de « la requête
-attendait son tour ». **La mesure montre qu'il ne le fait pas.**
+C'est le champ `sem_wait_ms` que le daemon publie pour séparer « la requête est lente » de
+« la requête attendait son tour ». La campagne précédente a montré **qu'il ne le faisait pas**,
+et la démonstration ne demandait aucun seuil : tant qu'il y a **au moins autant de permis que
+d'analystes**, aucune requête ne peut attendre son tour. À ces niveaux, l'attente d'un permit
+est nulle *par construction* — toute valeur non nulle y est nécessairement autre chose.
 
-La démonstration ne demande aucun seuil : tant qu'il y a **au moins autant de permis que
-d'analystes**, aucune requête ne peut attendre son tour. À ces niveaux, `sem_wait_ms` doit être
-nul par construction. Mesuré :
+| Passe | Analystes | Permis | File possible ? | découpage publié ? | attente PERMIT p95 | attente PERMIT max |
+|---|---:|---:|:--:|:--:|---:|---:|
+| `conc-sem3@1.4M` | 1 | 3 | **non** | **non** | 1213 | **2029** |
+| `conc-sem3@1.4M` | 2 | 3 | **non** | **non** | 2.4 | **1491** |
+| `conc-sem3@1.4M` | 3 | 3 | **non** | **non** | 804 | **3386** |
+| `conc-sem8@1.4M` | 1 | 8 | **non** | **non** | 0.4 | **2287** |
+| `conc-sem8@1.4M` | 2 | 8 | **non** | **non** | 0.9 | **4174** |
+| `conc-sem8@1.4M` | 3 | 8 | **non** | **non** | 2148 | **3549** |
+| `conc-sem8@1.4M` | 4 | 8 | **non** | **non** | 2057 | **8107** |
+| `conc-sem8@1.4M` | 6 | 8 | **non** | **non** | 6335 | **10.1 s** |
+| `conc-sem8@1.4M` | 8 | 8 | **non** | **non** | 4705 | **10.2 s** |
+| `conc-sem3-rouge@1.4M` | 1 | 3 | **non** | **non** | 3348 | **3348** |
+| `conc-sem3-attribue@1.4M` | 1 | 3 | **non** | oui | 0.0 | **0.0** |
+| `conc-sem3-corrige@1.4M` | 1 | 3 | **non** | oui | 0.0 | **0.0** |
+| `conc-sem3-corrige@1.4M` | 2 | 3 | **non** | oui | 0.0 | **0.0** |
+| `conc-sem3-corrige@1.4M` | 3 | 3 | **non** | oui | 0.0 | **0.0** |
+| `conc-sem8-corrige@1.4M` | 1 | 8 | **non** | oui | 0.0 | **0.0** |
+| `conc-sem8-corrige@1.4M` | 2 | 8 | **non** | oui | 0.0 | **0.0** |
+| `conc-sem8-corrige@1.4M` | 3 | 8 | **non** | oui | 0.0 | **0.0** |
+| `conc-sem8-corrige@1.4M` | 4 | 8 | **non** | oui | 0.0 | **0.0** |
+| `conc-sem8-corrige@1.4M` | 6 | 8 | **non** | oui | 0.0 | **0.0** |
+| `conc-sem8-corrige@1.4M` | 8 | 8 | **non** | oui | 0.0 | **0.0** |
 
-| Passe | Analystes | Permis | File possible ? | `sem_wait_ms` p95 | `sem_wait_ms` max |
-|---|---:|---:|:--:|---:|---:|
-| `conc-sem3@1.4M` | 1 | 3 | **non** | 1213 | **2029** |
-| `conc-sem3@1.4M` | 2 | 3 | **non** | 2.4 | **1491** |
-| `conc-sem3@1.4M` | 3 | 3 | **non** | 804 | **3386** |
-| `conc-sem8@1.4M` | 1 | 8 | **non** | 0.4 | **2287** |
-| `conc-sem8@1.4M` | 2 | 8 | **non** | 0.9 | **4174** |
-| `conc-sem8@1.4M` | 3 | 8 | **non** | 2148 | **3549** |
-| `conc-sem8@1.4M` | 4 | 8 | **non** | 2057 | **8107** |
-| `conc-sem8@1.4M` | 6 | 8 | **non** | 6335 | **10.1 s** |
-| `conc-sem8@1.4M` | 8 | 8 | **non** | 4705 | **10.2 s** |
+**Avant le découpage** : le maximum observé là où aucune file n'est possible est de
+**10.2 s** en charge sous-critique, et de **16.5 s** pendant la
+passe solo (un seul client, aucun autre en vol). Un sémaphore avec des permis libres ne
+peut pas produire ça : le champ mesurait autre chose que son nom, et son nom envoie
+l'exploitant AUGMENTER le sémaphore — la seule action que la section précédente mesure
+comme nuisible (débit ×0,46, p95 27 s → 50 s, RSS +725 Mio, daemon tué à 10 analystes).
 
-Le maximum observé **là où aucune file n'est possible** est de **10.2 s** en
-charge sous-critique, et de **3.8 s** pendant la passe solo (un seul
-client, aucun autre en vol). Un sémaphore avec des permis libres ne peut pas produire ça.
+**Après : zéro partout.** Là où aucune file n'est possible, l'attente publiée est nulle —
+pas « petite » : nulle, à la microseconde de résolution du champ. Ce n'est pas une mesure
+qui a bien voulu tomber juste : quand un permit est libre il est pris sans jamais
+suspendre la tâche, et la valeur publiée est le zéro CONSTANT
+(`daemon/src/query_timing.rs`) — aucune horloge n'intervient sur ce chemin, donc rien ne
+peut la contaminer. La propriété « autant de permis que de clients ⇒ aucune attente » a
+cessé d'être une mesure à vérifier pour devenir la construction de la valeur, et le
+harnais SORT EN ERREUR si elle est violée au lieu de publier le chiffre.
 
-**Ce que le champ mesure réellement** : le chrono démarre à l'entrée du handler
-(`daemon/src/handlers/query.rs:362`) et n'est lu qu'APRÈS le permit (`:556`, `sem_wait_ms`
-posé en `:560`). Entre les deux, la requête résout les masques de champs et lit la
-**couverture des rollups** — et cette lecture prend le verrou de la connexion PARTAGÉE
-(`:479`, `req_db(...).lock()`), celui-là même que tiennent les travaux de fond (`ANALYZE`
-de démarrage, boucle de rollups). `sem_wait_ms` additionne donc **l'attente du permit ET
-une attente de verrou qui n'est bornée par aucun sémaphore** — un point de sérialisation
-qui, lui, existe AVANT la borne de concurrence et n'est mesuré nulle part. Conséquence
-directe sur la lecture de ce document : un `sem_wait_ms` élevé ne prouve PAS que le
-sémaphore est trop petit — il faut regarder le niveau, et savoir si une file y était
-seulement possible. C'est pour cela que la colonne « file possible » existe.
+#### Où passe le temps, maintenant qu'il est découpé
 
-**Angle mort restant** : `C2c-fts-bar` ne publie(nt) aucun
-`stats` — la barre `/api/search` prend pourtant un permit sur le MÊME sémaphore. Sur cette
-route, il est donc impossible de distinguer une recherche lente d'une recherche qui
-attendait : c'est mesuré ici, ce n'est pas corrigé ici.
+Le champ ne pouvait pas être corrigé en le déplaçant : ce qu'il additionnait devait être
+**séparé**, sinon la part cachée serait simplement retombée ailleurs. Le daemon publie donc
+un découpage TOTAL — `prepare + sem_wait + exec == server` par construction, `exec` étant le
+reste et jamais une troisième horloge :
+
+| champ | ce qu'il mesure |
+|---|---|
+| `prepare_ms` | avant le permit : corps, masques, **couverture des rollups**, compilation |
+| `sem_wait_ms` | l'attente du PERMIT, et rien d'autre |
+| `db_lock_wait_ms` | le temps passé à **obtenir** le verrou de la connexion PARTAGÉE (pas celui passé à le tenir) |
+| `exec_ms` | le reste : l'exécution |
+
+| Passe | Analystes | file ? | avant moteur p50 | avant moteur p95 | **verrou partagé** p50 | **verrou partagé** max | permit p95 | mur p95 |
+|---|---:|:--:|---:|---:|---:|---:|---:|---:|
+| `conc-sem3-attribue@1.4M` | 1 | non | 0.1 | 2876 | **0.0** | **2876** | 0.0 | 9948 |
+| `conc-sem3-attribue@1.4M` | 4 | oui | 654 | 4517 | **0.0** | **4142** | 4513 | 13.9 s |
+| `conc-sem3-corrige@1.4M` | 1 | non | 0.2 | 20 | **0.0** | **0.0** | 0.0 | 12.4 s |
+| `conc-sem3-corrige@1.4M` | 2 | non | 1.1 | 11 | **0.0** | **0.0** | 0.0 | 12.4 s |
+| `conc-sem3-corrige@1.4M` | 3 | non | 0.3 | 20 | **0.0** | **0.0** | 0.0 | 14.0 s |
+| `conc-sem3-corrige@1.4M` | 4 | oui | 459 | 4475 | **0.0** | **0.0** | 4475 | 14.6 s |
+| `conc-sem3-corrige@1.4M` | 6 | oui | 3392 | 9144 | **0.0** | **0.0** | 9144 | 17.2 s |
+| `conc-sem3-corrige@1.4M` | 8 | oui | 5961 | 12.8 s | **0.0** | **0.0** | 12.8 s | 20.8 s |
+| `conc-sem3-corrige@1.4M` | 10 | oui | 12.1 s | 18.6 s | **0.0** | **0.0** | 18.6 s | 30.6 s |
+| `conc-sem8-corrige@1.4M` | 1 | non | 0.4 | 19 | **0.0** | **0.0** | 0.0 | 13.8 s |
+| `conc-sem8-corrige@1.4M` | 2 | non | 0.2 | 14 | **0.0** | **0.0** | 0.0 | 12.6 s |
+| `conc-sem8-corrige@1.4M` | 3 | non | 0.2 | 17 | **0.0** | **0.0** | 0.0 | 14.1 s |
+| `conc-sem8-corrige@1.4M` | 4 | non | 0.7 | 16 | **0.0** | **0.0** | 0.0 | 16.8 s |
+| `conc-sem8-corrige@1.4M` | 6 | non | 1.1 | 28 | **0.0** | **0.0** | 0.0 | 27.9 s |
+| `conc-sem8-corrige@1.4M` | 8 | non | 1.6 | 51 | **0.0** | **0.0** | 0.0 | 41.7 s |
+| `conc-sem8-corrige@1.4M` | 10 | oui | 1562 | 9331 | **0.0** | **0.0** | 9331 | 50.1 s |
+
+**La sérialisation que personne ne voyait.** Le chemin d'une requête interactive lit la
+couverture des rollups. Tant que cette lecture prenait le verrou de la connexion
+**partagée** — celui-là même que la boucle de rollups tient pendant tout un tick
+(`spawn_rollup_loop`, 120 s) et que l'`ANALYZE` de démarrage tient plusieurs minutes —
+**aucun sémaphore ne bornait cette attente** : elle avait lieu ailleurs que sur le
+sémaphore, et augmenter le sémaphore n'y met que plus de monde.
+
+MESURÉ, verrou en place (`conc-sem3-attribue@1.4M`) :
+jusqu'à **4.1 s** sous charge et **3.4 s** en solo — sur le
+chemin de CHAQUE requête GXQL, pendant que l'attente de permit, elle, était nulle.
+
+MESURÉ après retrait (`conc-sem3-corrige@1.4M`, `conc-sem8-corrige@1.4M`) :
+**zéro**. La lecture de couverture est passée au pool de lecture — mêmes lignes `meta`
+commitées, même repli fail-closed vers « rien d'établi », donc le même corps de rollup
+servi ou décliné ; seul le verrou disparaît. Le champ reste publié à zéro : une absence
+de champ se lirait « je ne sais pas », un zéro se lit « j'ai regardé ».
+
+C'est la lecture qui change une décision : un exploitant qui voit l'attente du permit à
+zéro et le verrou partagé non nul sait que son sémaphore n'est pas le levier. Avant le
+découpage, les deux étaient dans le même champ, sous le nom du sémaphore.
+
+**Aucune route en angle mort** : toutes les classes tirées ici publient leur découpage, y
+compris la barre `/api/search`, qui prend un permit sur le MÊME sémaphore et ne publiait
+rien du tout jusqu'à la campagne précédente. Une route invisible à la mesure de concurrence
+pèse pourtant dessus : elle consomme les mêmes permis.
 
 ### Le clic de tableau de bord, pendant que les autres travaillent
 
@@ -2412,6 +2598,24 @@ noyée dans les monstres.
 | `conc-sem8@1.4M` | 6 | 2.7 | 280 | 280 |
 | `conc-sem8@1.4M` | 8 | 7.9 | 32 | 42 |
 | `conc-sem8@1.4M` | 10 | 1310 | 19.6 s | 89.5 s |
+| `conc-sem3-rouge@1.4M` | 1 | 9.1 | 9.1 | 9.1 |
+| `conc-sem3-rouge@1.4M` | 4 | 90 | 5127 | 5127 |
+| `conc-sem3-attribue@1.4M` | 1 | 0.9 | 0.9 | 0.9 |
+| `conc-sem3-attribue@1.4M` | 4 | 1813 | 1975 | 1975 |
+| `conc-sem3-corrige@1.4M` | 1 | 1.0 | 5.5 | 5.5 |
+| `conc-sem3-corrige@1.4M` | 2 | 1.5 | 13 | 13 |
+| `conc-sem3-corrige@1.4M` | 3 | 1.1 | 7.4 | 7.4 |
+| `conc-sem3-corrige@1.4M` | 4 | 573 | 3934 | 3934 |
+| `conc-sem3-corrige@1.4M` | 6 | 5231 | 10.7 s | 10.7 s |
+| `conc-sem3-corrige@1.4M` | 8 | 6368 | 13.8 s | 13.9 s |
+| `conc-sem3-corrige@1.4M` | 10 | 13.0 s | 19.2 s | 20.8 s |
+| `conc-sem8-corrige@1.4M` | 1 | 0.9 | 4.2 | 4.2 |
+| `conc-sem8-corrige@1.4M` | 2 | 0.9 | 1.3 | 1.3 |
+| `conc-sem8-corrige@1.4M` | 3 | 1.1 | 39 | 39 |
+| `conc-sem8-corrige@1.4M` | 4 | 1.1 | 20 | 20 |
+| `conc-sem8-corrige@1.4M` | 6 | 1.4 | 75 | 75 |
+| `conc-sem8-corrige@1.4M` | 8 | 6.6 | 33 | 92 |
+| `conc-sem8-corrige@1.4M` | 10 | 2177 | 8417 | 9029 |
 
 ### Le budget de 2 Gio, à plusieurs
 
@@ -2439,17 +2643,64 @@ valeur qu'il applique sur `/api/system/diag` — c'est de là que ce banc la lit
 de la supposer. En revanche il est lu **une seule fois, au boot** : le changer demande un
 redémarrage, et un redémarrage a son propre coût (voir la mise au repos plus haut).
 
-| Analystes | débit `conc-sem3@1.4M` | débit `conc-sem8@1.4M` | écart de débit | p95 `conc-sem3@1.4M` | p95 `conc-sem8@1.4M` | RSS `conc-sem3@1.4M` | RSS `conc-sem8@1.4M` |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| **1** | 0.29 q/s | 0.26 q/s | x0.88 | 10.4 s | 12.5 s | 1026 Mio | 1015 Mio |
-| **2** | 0.53 q/s | 0.47 q/s | x0.89 | 13.7 s | 13.6 s | 1114 Mio | 1220 Mio |
-| **3** | 0.68 q/s | 0.61 q/s | x0.91 | 14.7 s | 15.9 s | 1069 Mio | 1430 Mio |
-| **4** | 0.67 q/s | 0.59 q/s | x0.89 | 14.3 s | 20.2 s | 1161 Mio | 1442 Mio |
-| **6** | 0.74 q/s | 0.69 q/s | x0.93 | 17.5 s | 26.4 s | 1173 Mio | 1589 Mio |
-| **8** | 0.73 q/s | 0.56 q/s | x0.77 | 19.5 s | 46.7 s | 1186 Mio | 2025 Mio |
-| **10** | 0.70 q/s | 0.32 q/s | x0.46 | 27.2 s | 50.1 s | 1320 Mio | 2045 Mio |
+**Écartée(s) de cette comparaison** : `conc-sem3@1.4M`, `conc-sem8@1.4M`, `conc-sem3-rouge@1.4M`, `conc-sem3-attribue@1.4M`
+— leur mélange OU leur binaire n'est pas celui des autres passes, donc leur écart de
+débit ne serait pas attribuable au sémaphore mais au travail ou au code. Leur courbe
+reste publiée plus haut ; c'est cette comparaison-ci, et elle seule, qui exige que
+tout le reste soit identique.
 
-**Au niveau le plus chargé mesuré des deux côtés (10 analystes)** : 0.32 contre 0.70 requête/s (**-54 %** de travail servi), p95 50.1 s contre 27.2 s, RSS crête 2045 contre 1320 Mio (**+725 Mio**, soit +35.4 % du budget). Ces six nombres SONT le taux de change entre un sémaphore à 3 et un sémaphore à 8 — celui que la baisse de 8 à 3, faite comme levier de RAM, avait acheté sans jamais être chiffré.
+| Analystes | débit `conc-sem3-corrige@1.4M` | débit `conc-sem8-corrige@1.4M` | écart de débit | p95 `conc-sem3-corrige@1.4M` | p95 `conc-sem8-corrige@1.4M` | RSS `conc-sem3-corrige@1.4M` | RSS `conc-sem8-corrige@1.4M` |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| **1** | 0.26 q/s | 0.24 q/s | x0.93 | 12.4 s | 13.8 s | 826 Mio | 992 Mio |
+| **2** | 0.48 q/s | 0.49 q/s | x1.03 | 12.4 s | 12.6 s | 873 Mio | 1217 Mio |
+| **3** | 0.68 q/s | 0.73 q/s | x1.08 | 14.0 s | 14.1 s | 858 Mio | 1198 Mio |
+| **4** | 0.70 q/s | 0.75 q/s | x1.06 | 14.6 s | 16.8 s | 908 Mio | 1318 Mio |
+| **6** | 0.75 q/s | 0.72 q/s | x0.97 | 17.2 s | 27.9 s | 984 Mio | 1615 Mio |
+| **8** | 0.72 q/s | 0.62 q/s | x0.86 | 20.8 s | 41.7 s | 1039 Mio | 2035 Mio |
+| **10** | 0.58 q/s | 0.60 q/s | x1.03 | 30.6 s | 50.1 s | 1243 Mio | 2035 Mio |
+
+**Au niveau le plus chargé mesuré des deux côtés (10 analystes)** : 0.60 contre 0.58 requête/s (**+3 %** de travail servi), p95 50.1 s contre 30.6 s, RSS crête 2035 contre 1243 Mio (**+792 Mio**, soit +38.6 % du budget). Ces six nombres SONT le taux de change entre un sémaphore à 3 et un sémaphore à 8 — celui que la baisse de 8 à 3, faite comme levier de RAM, avait acheté sans jamais être chiffré.
+
+### L'écart avant / après le correctif de métrique
+
+MÊME base, MÊME machine, MÊME sémaphore, MÊME mélange **imposé**, MÊMES niveaux : seul le
+BINAIRE change. Ce n'est donc pas une comparaison de configurations, c'est la mesure de ce
+qu'un correctif a fait — et les deux colonnes d'attente sont l'essentiel, parce que c'est
+là que le défaut vivait.
+
+**Sémaphore 3** — `conc-sem3@1.4M` (2026-08-01, `bin:80a19382ef3d30b8`) contre `conc-sem3-corrige@1.4M` (2026-08-01, `bin:4126d13c2e094bc5`)
+
+| Analystes | file ? | débit avant | débit après | p95 avant | p95 après | attente PERMIT max avant | attente PERMIT max après | verrou partagé max après | RSS avant | RSS après |
+|---:|:--:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **1** | non | 0.29 q/s | 0.26 q/s | 10.4 s | 12.4 s | 2029 | 0.0 | 0.0 | 1026 Mio | 826 Mio |
+| **2** | non | 0.53 q/s | 0.48 q/s | 13.7 s | 12.4 s | 1491 | 0.0 | 0.0 | 1114 Mio | 873 Mio |
+| **3** | non | 0.68 q/s | 0.68 q/s | 14.7 s | 14.0 s | 3386 | 0.0 | 0.0 | 1069 Mio | 858 Mio |
+| **4** | oui | 0.67 q/s | 0.70 q/s | 14.3 s | 14.6 s | 5762 | 6020 | 0.0 | 1161 Mio | 908 Mio |
+| **6** | oui | 0.74 q/s | 0.75 q/s | 17.5 s | 17.2 s | 12.7 s | 12.6 s | 0.0 | 1173 Mio | 984 Mio |
+| **8** | oui | 0.73 q/s | 0.72 q/s | 19.5 s | 20.8 s | 18.1 s | 19.9 s | 0.0 | 1186 Mio | 1039 Mio |
+| **10** | oui | 0.70 q/s | 0.58 q/s | 27.2 s | 30.6 s | 24.4 s | 23.0 s | 0.0 | 1320 Mio | 1243 Mio |
+
+**Sémaphore 8** — `conc-sem8@1.4M` (2026-08-01, `bin:80a19382ef3d30b8`) contre `conc-sem8-corrige@1.4M` (2026-08-01, `bin:4126d13c2e094bc5`)
+
+| Analystes | file ? | débit avant | débit après | p95 avant | p95 après | attente PERMIT max avant | attente PERMIT max après | verrou partagé max après | RSS avant | RSS après |
+|---:|:--:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **1** | non | 0.26 q/s | 0.24 q/s | 12.5 s | 13.8 s | 2287 | 0.0 | 0.0 | 1015 Mio | 992 Mio |
+| **2** | non | 0.47 q/s | 0.49 q/s | 13.6 s | 12.6 s | 4174 | 0.0 | 0.0 | 1220 Mio | 1217 Mio |
+| **3** | non | 0.61 q/s | 0.73 q/s | 15.9 s | 14.1 s | 3549 | 0.0 | 0.0 | 1430 Mio | 1198 Mio |
+| **4** | non | 0.59 q/s | 0.75 q/s | 20.2 s | 16.8 s | 8107 | 0.0 | 0.0 | 1442 Mio | 1318 Mio |
+| **6** | non | 0.69 q/s | 0.72 q/s | 26.4 s | 27.9 s | 10.1 s | 0.0 | 0.0 | 1589 Mio | 1615 Mio |
+| **8** | non | 0.56 q/s | 0.62 q/s | 46.7 s | 41.7 s | 10.2 s | 0.0 | 0.0 | 2025 Mio | 2035 Mio |
+| **10** | oui | 0.32 q/s | 0.60 q/s | 50.1 s | 50.1 s | 87.5 s | 14.7 s | 0.0 | 2045 Mio | 2035 Mio |
+
+Lire la colonne « file ? » AVANT les colonnes d'attente : là où elle dit **non**, aucune
+requête ne PEUT attendre son tour, donc toute attente de permit publiée y est fausse.
+La colonne « verrou partagé » est à zéro **parce que la sérialisation a été retirée**
+(la lecture de couverture des rollups est passée au pool de lecture) — pas parce
+qu'elle n'était pas là : c'est la passe d'ATTRIBUTION, plus haut, qui la mesure encore
+en place, et le champ reste publié pour que la prochaine soit visible immédiatement.
+Les colonnes de débit et de p95, elles, ne sont PAS un résultat de ce correctif : elles
+portent la charge de la machine du jour autant que le code — on les publie pour qu'on
+puisse les contredire, pas pour en tirer une conclusion.
 
 ## Cellules à ne pas croire telles quelles
 
@@ -2602,7 +2853,7 @@ BENCH_EVENTS=1000000 bench/run.sh  # 1 M, pour itérer
 BENCH_PHASES=concurrency BENCH_SEM_SWEEP=3,8 BENCH_CONC_LEVELS=1,2,3,4,6,8,10 bench/run.sh
 # 3. le rendu — LA COMMANDE EXACTE qui a produit CE document, reconstruite depuis ses propres
 #    arguments et pointée sur les données VERSIONNÉES (donc rejouable par un tiers) :
-python3 bench/report.py bench/results/results-smoke-200k.jsonl bench/results/results.jsonl bench/results/results-2026-07-31.jsonl bench/results/results-2026-07-31-corrige.jsonl bench/results/parity-avant-2026-07-31.jsonl bench/results/parity-apres-2026-07-31.jsonl bench/results/parity-couverture-2026-07-31.jsonl bench/results/concurrency-2026-08-01.jsonl \
+python3 bench/report.py bench/results/results-smoke-200k.jsonl bench/results/results.jsonl bench/results/results-2026-07-31.jsonl bench/results/results-2026-07-31-corrige.jsonl bench/results/parity-avant-2026-07-31.jsonl bench/results/parity-apres-2026-07-31.jsonl bench/results/parity-couverture-2026-07-31.jsonl bench/results/concurrency-2026-08-01.jsonl bench/results/concurrency-reproduction-2026-08-01.jsonl bench/results/concurrency-attribution-2026-08-01.jsonl bench/results/concurrency-corrige-2026-08-01.jsonl \
     --ingest-curve bench/results/ingest_rate.csv \
     --ingest-curve bench/results/ingest_rate-quiet-2g.csv \
     --ref chaud-seul-v2@1.4M \

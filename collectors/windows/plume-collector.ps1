@@ -63,7 +63,13 @@ $Central   = $Central.TrimEnd('/')
 $StateDir  = 'C:\ProgramData\plume\state'
 $null = New-Item -ItemType Directory -Force -Path $StateDir -ErrorAction SilentlyContinue
 $HostName  = $env:COMPUTERNAME
-$NowEpoch  = [int64][double]::Parse((Get-Date -UFormat %s))
+# HORODATAGE — NE PAS revenir à `Get-Date -UFormat %s`. Sur Windows PowerShell 5.1, `%s` rend l'heure
+# LOCALE exprimée comme si elle était UTC : l'epoch produit est décalé du décalage horaire de la machine.
+# MESURÉ le 2026-08-02 (Windows 11 Enterprise 24H2, fuseau « Romance Standard Time ») : `%s` = epoch vrai
+# + 7 201 s, soit exactement l'offset UTC (+02:00) ; la même mesure en fuseau UTC donne un écart nul —
+# c'est pourquoi le défaut est resté invisible. Tous les événements arrivaient donc DEUX HEURES DANS LE
+# FUTUR au central. `[DateTimeOffset]` est sans ambiguïté et indépendant du fuseau ET de la culture.
+$NowEpoch  = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 
 # TLS : vérifié par défaut ; opt-out explicite de test seulement.
 if ($env:PLUME_TLS_INSECURE -eq '1') {
@@ -74,15 +80,38 @@ try { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityP
 # --- Helpers ---------------------------------------------------------------------------------
 
 # Epoch (s) depuis un DateTime.
-function To-Epoch([datetime]$dt) { [int64][double]::Parse((Get-Date $dt -UFormat %s)) }
+function To-Epoch([datetime]$dt) { [DateTimeOffset]::new($dt.ToUniversalTime(), [TimeSpan]::Zero).ToUnixTimeSeconds() }
 
 # Filigrane par source (dernier TimeCreated traité, ISO 8601).
+#
+# BORNE AU PRÉSENT, des DEUX côtés. Un seul enregistrement daté du FUTUR dans le journal Windows suffit
+# sinon à rendre la source AVEUGLE, DÉFINITIVEMENT et EN SILENCE : le filigrane prend cette date, le
+# `StartTime` de la requête suivante est dans le futur, `Get-WinEvent` ne renvoie rien, lève, et le
+# `catch` plus bas avale l'erreur. MESURÉ le 2026-08-02 (Windows 11 Enterprise 24H2) : des 4624/4688
+# écrits pendant l'installation portaient une heure décalée de ~6 h ; après un run, `win-auth`,
+# `win-process` et `win-account` avaient tous un filigrane à +6 h, et le run suivant a expédié
+# ZÉRO événement en sortant 0 sans un mot — `category=exec` est resté figé à 59 alors que 12 nouveaux
+# 4688 attendaient dans le journal. Le seul remède était de supprimer l'état à la main.
+# Les horloges reculent (VM restaurée, resynchronisation NTP, RTC en heure locale) : ce cas n'est pas
+# théorique, et il ne doit pas coûter la visibilité de l'hôte.
 function Get-Watermark([string]$name) {
   $f = Join-Path $StateDir "$name.watermark"
-  if (Test-Path $f) { try { return [datetime]::Parse((Get-Content $f -Raw)) } catch {} }
-  return (Get-Date).AddMinutes(-$MaxAgeMinutes)
+  $floor = (Get-Date).AddMinutes(-$MaxAgeMinutes)
+  if (Test-Path $f) {
+    try {
+      $wm = [datetime]::Parse((Get-Content $f -Raw))
+      # Filigrane dans le futur -> il ne peut venir que d'une horloge fausse : on le ramène au plancher
+      # de rattrapage au lieu de rester aveugle.
+      if ($wm -gt (Get-Date)) { return $floor }
+      return $wm
+    } catch {}
+  }
+  return $floor
 }
 function Set-Watermark([string]$name, [datetime]$dt) {
+  # Ne jamais ÉCRIRE un filigrane futur : on plafonne à maintenant.
+  $now = Get-Date
+  if ($dt -gt $now) { $dt = $now }
   try { Set-Content -Path (Join-Path $StateDir "$name.watermark") -Value $dt.ToString('o') -NoNewline } catch {}
 }
 

@@ -10,8 +10,8 @@
 set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 plume_init
-command -v nft >/dev/null 2>&1 || exit 0            # pas de nft (container/non-linux) -> skip propre
-nft list ruleset >/dev/null 2>&1 || exit 0          # nft present mais non lisible (pas root/cap) -> skip
+command -v nft >/dev/null 2>&1 || plume_unavailable nft missing-dependency "nft absent (conteneur / non-linux)"            # pas de nft (container/non-linux) -> skip propre
+nft list ruleset >/dev/null 2>&1 || plume_unavailable nft subsystem-absent "nft present mais ruleset illisible (droits root/CAP_NET_ADMIN insuffisants)"          # nft present mais non lisible (pas root/cap) -> skip
 m() { printf '{"name":"%s","value":%s}' "$1" "$2"; }
 metrics=""; total=0
 if command -v jq >/dev/null 2>&1; then

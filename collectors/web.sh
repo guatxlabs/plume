@@ -34,8 +34,8 @@ read_log() {
   esac
 }
 
-raw=$(read_log) || exit 0
-[ -n "$raw" ] || exit 0
+raw=$(read_log) || plume_unavailable web missing-source "source de log web illisible (PLUME_WEB_SRC=$WEBSRC) : ni fichier lisible, ni pod joignable"
+[ -n "$raw" ] || plume_exit_nodata
 umask 027
 tmp=$(mktemp "$SPOOL/.web.XXXXXX")
 newwm=$(printf '%s\n' "$raw" | TZ=UTC awk -v last="$last" -v host="$host" -v now="$now" -v out="$tmp" -v skiphost="$SKIP_HOST" -v skippath="$SKIP_PATH" -v skiprouter="$SKIP_ROUTER" '

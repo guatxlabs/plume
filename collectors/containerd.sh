@@ -8,7 +8,7 @@ set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 if command -v crictl >/dev/null 2>&1; then CRICTL="crictl"
 elif command -v k3s >/dev/null 2>&1; then CRICTL="k3s crictl"
-else exit 0; fi
+else plume_unavailable containerd missing-dependency "ni crictl ni k3s sur cet hote : runtime conteneur non interrogeable"; fi
 plume_init
 IMG_STATE="$STATE_DIR/containerd.images"; CTR_STATE="$STATE_DIR/containerd.ctr"
 TAB=$(printf '\t')
@@ -45,5 +45,5 @@ if command -v jq >/dev/null 2>&1; then
   rm -f "$ctrs_f"
 fi
 
-[ -z "$events" ] && exit 0
+[ -z "$events" ] && plume_exit_nodata
 spool_write "containerd-$ts.json" "$(emit_event "$events")"

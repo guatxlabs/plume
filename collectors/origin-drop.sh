@@ -13,8 +13,8 @@
 set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 MAX="${PLUME_ORIGINDROP_MAX:-300}"
-command -v nft >/dev/null 2>&1 || exit 0                          # pas de nft -> skip propre
-nft list table inet "${PLUME_ORIGINDROP_TABLE:-plume-origin-fw}" >/dev/null 2>&1 || exit 0   # table absente -> rien a faire
+command -v nft >/dev/null 2>&1 || plume_unavailable origin-drop missing-dependency "nft absent"                          # pas de nft -> skip propre
+nft list table inet "${PLUME_ORIGINDROP_TABLE:-plume-origin-fw}" >/dev/null 2>&1 || plume_unavailable origin-drop subsystem-absent "table nft ${PLUME_ORIGINDROP_TABLE:-plume-origin-fw} absente : le filtrage origine n est pas pose"   # table absente -> rien a faire
 plume_init; umask 027
 
 WM="$STATE_DIR/origin-drop.watermark"

@@ -13,7 +13,7 @@
 set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 plume_init
-command -v ss >/dev/null 2>&1 || exit 0
+command -v ss >/dev/null 2>&1 || plume_unavailable conntrack missing-dependency "ss absent (paquet iproute2) : aucune socket/flux observable"
 # rDNS (PTR) CACHÉ -> egress LISIBLE (ex deb.debian.org). INFORMATIF seulement (le PTR est controle par le
 # proprietaire de l'IP -> ne jamais s'en servir pour decider ; dst_ip = verite).
 RDNS_CACHE="$STATE_DIR/rdns.cache"; touch "$RDNS_CACHE" 2>/dev/null || true
@@ -77,7 +77,7 @@ agg=$(awk -v keep="$KEEP" -v listen="$listen" '
   END{ for(key in conns) printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\n", dira[key], sca[key], proca[key], sipa[key], dipa[key], dpta[key], states[key], conns[key] }
 ' "$raw")
 rm -f "$raw"
-[ -z "$agg" ] && exit 0
+[ -z "$agg" ] && plume_exit_nodata
 
 # tri par count DECROISSANT -> les flux les plus frequents (beaconing) survivent au plafond MAX
 events=""; n=0
@@ -109,6 +109,6 @@ cfg_event=$(printf '{"ts":%s,"source":"conntrack","category":"config","severity"
   "$ts" "$cfg_dd" "$cfg_fields")
 spool_write "config-conntrack-$ts.json" "$(emit_event "$cfg_event")"
 
-[ -z "$events" ] && exit 0
+[ -z "$events" ] && plume_exit_nodata
 
 spool_write "conntrack-$ts.json" "$(emit_event "$events")"

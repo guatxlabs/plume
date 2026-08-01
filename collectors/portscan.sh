@@ -8,8 +8,8 @@ set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 plume_init
 MAX="${PLUME_PORTSCAN_MAX:-300}"
-command -v nft >/dev/null 2>&1 || exit 0                       # pas de nft -> skip propre
-nft list table inet plume-portscan >/dev/null 2>&1 || exit 0   # détecteur absent -> rien à faire
+command -v nft >/dev/null 2>&1 || plume_unavailable portscan missing-dependency "nft absent"                       # pas de nft -> skip propre
+nft list table inet plume-portscan >/dev/null 2>&1 || plume_unavailable portscan subsystem-absent "table nft plume-portscan absente : le detecteur de scan n est pas pose (systemd/plume-portscan.nft)"   # détecteur absent -> rien à faire
 umask 027
 
 WM="$STATE_DIR/portscan.watermark"

@@ -181,6 +181,26 @@ elles s'importent et restent **inertes**.
    Une règle qui filtre `NewProcessName` (toujours présent) fire, elle : c'est ce que prouve
    `sigma_process_creation_rule_fires_on_real_4688_event` sur une fixture 4688 réelle.
 
+   **Sur Linux, la même règle est inerte pour une raison PLUS FORTE — structurelle, pas un réglage.**
+   *Mesuré le 2026-08-01 (VM Ubuntu 24.04 Server amd64, 2 vCPU/2 Gio, règles auditd chargées, charge =
+   build de 100 unités de compilation → 533 événements `category=exec` réels) :*
+
+   | champ filtré   | événements `exec` correspondants | verdict |
+   |----------------|----------------------------------|---------|
+   | `CommandLine`  | **0 / 533**                      | ne peut pas matcher |
+   | `exe`          | 407 / 533                        | matche |
+   | `comm`         | 305 / 533                        | matche |
+
+   Le chemin `execve` d'auditd émet exactement `action · auid · cim · comm · exe · key · success ·
+   syscall · uid`. `CommandLine` n'en fait pas partie et **aucune option ne le fera apparaître** :
+   sur Windows une GPO suffit, sur Linux il n'y a rien à activer. Les deux inerties ont donc des
+   remèdes différents, et les confondre ferait croire qu'un réglage suffit.
+   La **jumelle Linux qui fire** est livrée à côté :
+   `config.d/sigma/process-whoami-discovery-linux.yml` (`exe|contains`). Le couple est délibéré — il
+   enseigne la différence entre *champ traduit* (§4b, table de traduction) et *champ peuplé*.
+   Une règle qui filtre un champ jamais peuplé n'est pas une couverture : c'est une couverture
+   **apparente**, plus dangereuse que pas de règle du tout.
+
 > **Quelle part d'un ruleset survit à la traduction ? NON MESURÉ ICI** — aucun corpus SigmaHQ n'est
 > embarqué dans le dépôt, donc aucun taux n'est publié. Mesurez-le **sur votre propre ruleset** :
 > `plume-daemon sigma-import <dossier> --dry-run` rend `imported[]` (avec leurs `warnings`) et

@@ -7,10 +7,10 @@ set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 plume_init
 PATHS="${PLUME_CLAMAV_PATHS:-}"                       # ex: "/opt/.../mail-data /var/www/uploads"
-[ -n "$PATHS" ] || exit 0
+[ -n "$PATHS" ] || plume_unavailable clamav missing-config "PLUME_CLAMAV_PATHS non pose : aucun chemin a scanner"
 if command -v clamdscan >/dev/null 2>&1; then SCAN="clamdscan --fdpass --no-summary -i"
 elif command -v clamscan >/dev/null 2>&1; then SCAN="clamscan --no-summary -i"
-else exit 0; fi
+else plume_unavailable clamav missing-dependency "ni clamdscan ni clamscan sur cet hote"; fi
 STAMP="$STATE_DIR/clamav.stamp"
 MAX="${PLUME_CLAMAV_MAX:-500}"                        # plafond de fichiers scannes par passage
 
@@ -24,7 +24,7 @@ for p in $PATHS; do
 done | head -n "$MAX" > "$list"
 touch "$STAMP"
 
-if [ ! -s "$list" ]; then rm -f "$list"; exit 0; fi
+if [ ! -s "$list" ]; then rm -f "$list"; plume_exit_nodata; fi
 
 # scan -> ClamAV imprime "<fichier>: <signature> FOUND" pour chaque infection
 res=$(mktemp)
@@ -41,6 +41,6 @@ while IFS= read -r line; do
   events="$events${events:+,}{\"ts\":$ts,\"source\":\"clamav\",\"category\":\"malware\",\"severity\":4,\"message\":\"$m\",\"dedup\":\"clamav-$file-$sig\"}"
 done < "$res"
 rm -f "$res"
-[ -z "$events" ] && exit 0
+[ -z "$events" ] && plume_exit_nodata
 
 spool_write "clamav-$ts.json" "$(emit_event "$events")"

@@ -13,7 +13,7 @@ LOG="${PLUME_AUDIT_LOG:-/var/log/audit/audit.log}"
 # Lit le log COURANT + le rotated .1 : avec le firehose exec_tracking, audit.log rote vite et des
 # records soc_* peuvent basculer dans .1 avant notre passage. Le watermark (epoch) evite tout retraitement.
 LOGS=""; for f in "$LOG.1" "$LOG"; do [ -r "$f" ] && LOGS="$LOGS $f"; done
-[ -n "$LOGS" ] || exit 0
+[ -n "$LOGS" ] || plume_unavailable dataaccess missing-config "aucun log de donnees configure (PLUME_DATAACCESS_LOGS)"
 plume_init
 WM="$STATE_DIR/dataaccess.epoch"
 last=$(cat "$WM" 2>/dev/null || echo 0)
@@ -33,7 +33,7 @@ trap 'rm -f "$ids" "$rec"' EXIT
 grep -h -E 'type=SYSCALL.*key="(plume_data|plume_etc|plume_creds)"' $LOGS 2>/dev/null | awk -v last="$last" '
 { if(!match($0,/audit\([0-9]+\.[0-9]+:[0-9]+\)/)) next; idt=substr($0,RSTART,RLENGTH);
   ep=idt; sub(/audit\(/,"",ep); sub(/\..*/,"",ep); if(ep+0<=last) next; print idt }' | sort -u > "$ids"
-[ -s "$ids" ] || exit 0
+[ -s "$ids" ] || plume_exit_nodata
 
 # Pass 2 : toutes les lignes (SYSCALL + PATH) de ces events uniquement.
 grep -h -F -f "$ids" $LOGS 2>/dev/null > "$rec"

@@ -20,7 +20,7 @@
 set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 DIR="${PLUME_INPUTS_DIR:-/etc/plume/inputs.d}"
-[ -d "$DIR" ] || exit 0
+[ -d "$DIR" ] || plume_unavailable custom missing-config "$DIR absent : aucune entree scriptee declaree (voir README, scripted input)"
 plume_init
 esc() { json_escape "$1"; }
 raw=$(mktemp)
@@ -43,6 +43,6 @@ for f in "$DIR"/*.input; do
       "$ts" "$sj" "$cj" "${SEVERITY:-1}" "$em" "$dd" "$((ts / 3600))"
   done >> "$raw"
 done
-if [ ! -s "$raw" ]; then rm -f "$raw"; exit 0; fi
+if [ ! -s "$raw" ]; then rm -f "$raw"; plume_exit_nodata; fi
 events=$(paste -sd, "$raw"); rm -f "$raw"
 spool_write "custom-$ts.json" "$(emit_event "$events")"

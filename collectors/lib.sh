@@ -113,3 +113,107 @@ kctl() {
     k3s kubectl "$@"
   fi
 }
+
+# =================================================================================================
+# DISPONIBILITÉ DU CAPTEUR — « un capteur qui ne peut pas collecter doit le DIRE »
+# -------------------------------------------------------------------------------------------------
+# LE DÉFAUT QUE CECI FERME (mesuré le 2026-08-01, VM Ubuntu 24.04 Server fraîche, 2 vCPU / 2 Gio) :
+# `auditd.sh` faisait `[ -r "$LOG" ] || exit 0`. Sur une Ubuntu Server, auditd n'est PAS installé, donc
+# `/var/log/audit/audit.log` n'existe pas, donc le capteur sortait en SUCCÈS sans rien émettre. Vu du
+# SOC, RIEN ne distingue « ce capteur ne PEUT PAS fonctionner » de « il ne s'est rien passé ». C'est la
+# même famille que les défauts de requête corrigés cette semaine : un composant CONNAÎT son incapacité
+# et ne la dit pas. Le silence est ici la pire réponse possible, parce qu'il est indiscernable du calme.
+#
+# LA PARTITION (fermée) — tout arrêt anticipé d'un collecteur est EXACTEMENT l'un de ces trois cas :
+#   (I)   INCAPACITÉ  : un PRÉREQUIS de la collecte est absent sur cet hôte (binaire, fichier/répertoire
+#                       source, identifiant/réglage obligatoire, sous-système ou objet absent, endpoint
+#                       injoignable). Le capteur ne produira RIEN tant qu'un opérateur n'agit pas.
+#                       -> `plume_unavailable` : DOIT le dire. C'est le défaut ci-dessus.
+#   (II)  DÉSACTIVÉ   : un opérateur l'a délibérément coupé (interrupteur `PLUME_*`). État connu, mais
+#                       une unit ACTIVE dont le capteur est coupé reste une surprise pour l'analyste.
+#                       -> `plume_disabled` : DOIT le dire, à sévérité plus basse.
+#   (III) RIEN DE NEUF: le capteur a tourné NORMALEMENT, le curseur n'a pas bougé / le résultat est vide.
+#                       -> `plume_exit_nodata` : silence LÉGITIME (le battement de santé le couvre déjà,
+#                       et l'IHM sait déjà dire « calme »). Aucun event, aucun octet en plus.
+# Seuls (I) et (II) sont des MENSONGES. (III) est honnête. La partition est fermée : il n'existe pas de
+# quatrième raison de s'arrêter tôt, donc classer est TOUJOURS possible.
+#
+# POURQUOI UN CAPTEUR ÉCRIT DEMAIN EST COUVERT PAR CONSTRUCTION — ce n'est PAS une énumération de
+# capteurs (une liste pourrit ; le prochain capteur n'y serait pas). Deux jambes :
+#   1. La SEULE façon de sortir tôt d'un collecteur est l'une de ces trois FONCTIONS, qui portent chacune
+#      leur `exit 0`. Un auteur qui veut sortir doit en CHOISIR une, donc CLASSER.
+#   2. `.github/scripts/check_collector_exit_is_classified.py` interdit tout `exit 0` NU dans un
+#      collecteur suivi. Le défaut d'origine (`|| exit 0`) n'est plus une chose qu'on PEUT écrire : elle
+#      ne franchit pas la CI. Le mauvais défaut — le silence — n'est plus disponible.
+#
+# ON RÉUTILISE L'EXISTANT, ON N'INVENTE RIEN : la catégorie CIM `config` est déjà l'auto-report de
+# configuration du collecteur (docs/CIM.md §2b, « transparence des filtres ») — `web`, `nft`, `portscan`,
+# `auditd`, `conntrack`, `mail`, `pod-logs` en émettent déjà. La disponibilité EST de la configuration
+# observée. Aucune nouvelle catégorie, aucun champ cœur, aucun changement de daemon.
+#
+# VISIBILITÉ — ce qui est MESURÉ, et ce qui ne l'est PAS (lisez les deux, la nuance compte).
+# Émettre ne suffit pas à VOIR : un event `config` de plus rend même la source « fraîche » dans l'IHM.
+# MESURÉ le 2026-08-01 sur l'instance de test, après ingestion d'un aveu d'indisponibilité `auditd` :
+# `/api/sources` rendait bien `status: "frais"` pour auditd. Émettre SANS alerter masquerait donc le
+# problème. La règle livrée `config.d/rules/catalog/de-collector-unavailable.json` lève donc une ALERTE
+# sur ces events — VÉRIFIÉ de bout en bout : l'alerte se lève (« capteur indisponible : 1 > 0 », sév. 2).
+#
+# CE QUI N'EST PAS COUVERT, et il faut le dire : cette alerte est GLOBALE, elle ne fait PAS basculer la
+# source fautive en « dégradé ». `web/freshness.js:80` bascule bien un feed en `warn` dès
+# `active_alerts > 0`, MAIS le daemon calcule `active_alerts` en cherchant des jetons `source=<nom>`
+# DANS LE TEXTE DE LA REQUÊTE de la règle (`daemon/src/handlers/freshness.rs:270`, « limite assumée »).
+# Une règle générique — qui est précisément ce qu'on veut, pour ne pas énumérer les capteurs — ne porte
+# aucun jeton `source=`, donc ne s'impute à aucun feed : mesuré `active_alerts: 0` sur auditd malgré
+# l'alerte levée. Fermer cet écart demande d'imputer l'alerte à la source des ÉVÉNEMENTS MATCHÉS plutôt
+# qu'au texte de la règle — un changement côté daemon, hors du périmètre de ce correctif.
+# En l'état, l'opérateur voit l'angle mort par l'ALERTE et par la requête ci-dessous, pas par la pastille :
+#   search category=config collect_status=unavailable | table host, source, reason, detail
+#
+# DÉDUP : clé = source + empreinte du contenu + BUCKET HORAIRE. Le daemon fait `INSERT OR IGNORE` sur
+# `dedup` (cf. config.d/cim/cim.v1.json). Un capteur cadencé à 60 s qui reste incapable écrit donc
+# ~24 lignes/jour au lieu de 1440, tout en RÉ-AFFIRMANT son incapacité chaque heure — sans quoi une
+# dédup purement de contenu ferait vieillir l'aveu jusqu'à le rendre invisible.
+#
+# VOCABULAIRE FERMÉ de `reason` (requêtable, pas de la prose) :
+#   missing-dependency · missing-source · missing-config · subsystem-absent · unreachable · disabled
+#
+# ROBUSTESSE : ces fonctions ne doivent JAMAIS transformer un skip en échec d'unit. `plume_init` est
+# rappelé si besoin (certains collecteurs sortent AVANT de l'avoir appelé), et l'écriture du spool est
+# best-effort (`|| true`) : si le spool est absent/non inscriptible, on sort quand même 0.
+# =================================================================================================
+
+# plume_report_availability <source> <status> <reason> <detail> <severity> — n'exite PAS (usage interne).
+plume_report_availability() {
+  [ -n "${SPOOL:-}" ] || plume_init
+  _av_fields=$(printf '{"type":"collector-availability","collector":"%s","collect_status":"%s","reason":"%s","detail":"%s"}' \
+    "$(json_escape "$1")" "$(json_escape "$2")" "$(json_escape "$3")" "$(json_escape "${4:-}")")
+  _av_dd="avail-$1-$(printf '%s' "$_av_fields" | cksum | cut -d' ' -f1)-$((ts / 3600))"
+  _av_ev=$(printf '{"ts":%s,"source":"%s","category":"config","severity":%s,"message":"%s","dedup":"%s","fields":%s}' \
+    "$ts" "$(json_escape "$1")" "$5" "$(json_escape "capteur $1 $2 : $3 — ${4:-}")" "$_av_dd" "$_av_fields")
+  spool_write "config-availability-$1-$ts.json" "$(emit_event "$_av_ev")"
+}
+
+# plume_unavailable <source> <reason> <detail> — cas (I) : PRÉREQUIS ABSENT. Émet puis sort 0.
+# sévérité 2 (warning) : ce n'est pas une attaque, c'est un TROU DE COUVERTURE — il doit se voir.
+plume_unavailable() {
+  plume_report_availability "$1" unavailable "$2" "${3:-}" 2 2>/dev/null || true
+  exit 0
+}
+
+# plume_disabled <source> <detail> — cas (II) : coupé par un interrupteur opérateur. Émet puis sort 0.
+# sévérité 1 (notice) : c'est un CHOIX, pas une panne ; mais il reste dit, jamais deviné.
+# ZÉRO APPELANT AUJOURD'HUI, et c'est mesuré : le 2026-08-01, aucun des 37 capteurs livrés n'a
+# d'interrupteur on/off — les deux seuls composants qui en portent un (`respond.sh`,
+# `engagement-adapter.sh`) sont des ENFORCERS, hors partition. Cette fonction n'est donc pas du code
+# mort par négligence : sans elle, l'auteur du premier capteur à interrupteur n'aurait AUCUNE primitive
+# correcte à appeler, et la garde de CI lui refuserait le `exit 0` nu — on l'aurait poussé à mentir en
+# rangeant son cas en « rien de neuf ». Une partition à laquelle il manque un cas ne partitionne rien.
+plume_disabled() {
+  plume_report_availability "$1" disabled disabled "${2:-}" 1 2>/dev/null || true
+  exit 0
+}
+
+# plume_exit_nodata — cas (III) : rien de neuf à remonter. Sortie 0 NUE, volontairement sans event :
+# zéro octet de plus, comportement inchangé. La fonction n'existe QUE pour porter un NOM : c'est ce nom
+# qui prouve à la relecture (et à la CI) que le silence est ici un CHOIX et non un oubli.
+plume_exit_nodata() { exit 0; }

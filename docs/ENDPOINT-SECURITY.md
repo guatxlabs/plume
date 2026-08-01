@@ -102,6 +102,86 @@ est ingéré et requêtable — un dashboard dédié est un **follow-on**.
 
 ---
 
+## 4bis. Coût de la règle `execve` (mesuré)
+
+La règle `execve` **64 bits est active par défaut** dans `systemd/plume-audit.rules`. Sans elle,
+`category=exec` est **vide** sur un hôte amd64 — angle mort total sur l'exécution de processus. Un
+défaut aveugle est pire qu'un défaut volumineux. Mais elle coûte, et voici le coût **mesuré**, pas
+estimé, pour que vous puissiez le projeter sur VOTRE parc.
+
+> **Banc de mesure — 2026-08-01.** VM QEMU/KVM, image cloud officielle `noble-server-cloudimg-amd64`
+> (Ubuntu 24.04 Server), **2 vCPU / 2 Gio**, `auditd` installé, gabarit livré chargé (**8/8 règles**,
+> vérifié par `auditctl -l`), collecteur `auditd.sh` en réglages par défaut
+> (`PLUME_AUDITD_EXEC_DROP` non posé), central Plume local. Refaites-la chez vous : les chiffres
+> ci-dessous décrivent CETTE machine et CETTE charge, pas la vôtre.
+
+### Grandeurs primitives (les seules réellement mesurées)
+
+| grandeur | valeur mesurée | comment |
+|---|---|---|
+| **Taille sur DISQUE d'un événement `exec`** | **534 octets** | 10 000 événements `exec` ingérés, base passée au `wal_checkpoint(TRUNCATE)` : +5 349 376 octets. Inclut la ligne, l'overhead SQLite et **les 8 index**. |
+| Taille *logique* (message + `fields`) | 270 octets en moyenne (198 min / 278 max) | `message` 75 o + blob `fields` 169 o. L'écart avec les 534 o disque = **×1,97 d'amplification** (overhead + index) — c'est le chiffre disque qui compte pour dimensionner. |
+| **Au repos** (aucune session de login) | **≈ 0 / heure** | Fenêtre de **900 s**. 9 enregistrements `EXECVE` observés, tous imputables aux commandes du banc lui-même (9 ouvertures de session dans la même fenêtre). Surtout : **0** enregistrement avec `auid` non défini, alors que `plume-ship.timer` (30 s) et `plume-resources.timer` (60 s) ont tourné ~30 et ~15 fois pendant la fenêtre. |
+| **Sous charge de build** | **533 événements** pour un build de 100 unités de compilation C + link (2 s) | soit **≈ 285 Kio** de base par build. |
+
+### Pourquoi le repos est si calme — et ce que ça implique
+
+Le filtre `-F auid!=-1` du gabarit ne journalise que les exec rattachables à une **session de login**.
+Les timers systemd, les collecteurs Plume et les daemons tournent avec `auid` non défini : **ils ne
+produisent aucun événement `exec`**. Le volume suit donc l'**activité humaine**, pas la churn machine.
+C'est ce qui rend le défaut « actif » tenable sur un serveur, et c'est aussi pourquoi un **poste de
+développeur ou un runner de CI** est le cas coûteux, pas le serveur de production.
+
+### Projection à 30 jours (rétention par défaut du produit)
+
+> ⚠️ **Ces lignes sont de l'ARITHMÉTIQUE sur les grandeurs mesurées ci-dessus, pas des mesures.** Le
+> nombre de builds/jour est **votre** paramètre : remplacez-le.
+
+| profil d'hôte | événements `exec`/jour | par jour | **à 30 jours** |
+|---|---|---|---|
+| Serveur, personne ne se connecte | ≈ 0 *(mesuré)* | ≈ 0 | **≈ 0** |
+| Poste dev / runner CI, 20 builds/jour | 20 × 533 = 10 660 | 5,7 Mio | **~171 Mio** |
+| **Build en continu (borne haute)** | 266 ev/s → **23 M/jour** | **12,3 Gio** | **~369 Gio** |
+
+Le régime « serveur avec une session d'administration de temps en temps » n'est **pas** tabulé : il dépend
+entièrement de ce que vos administrateurs tapent, et publier un nombre inventé pour cette ligne serait
+exactement le genre de chiffre non mesuré que ce document refuse. Mesurez-le sur VOTRE parc, c'est une
+requête :
+
+```
+search source=auditd category=exec | stats count by host
+```
+
+**La borne haute est le résultat qui compte** : un hôte qui compile en permanence sature n'importe quel
+disque bien avant 30 jours. Sur un parc de build, `execve` large **doit** être réduit (voir plus bas) ;
+ce n'est pas une opinion, c'est ce que dit le calcul.
+
+**À l'échelle d'un parc.** Une mesure interne de la semaine du 2026-07-25 donne un facteur **×43** en
+volume total en passant de **1 à 50 hôtes** (les hôtes ne sont pas identiques ; ce n'est pas ×50). Sur
+ce facteur, 50 postes dev à 171 Mio/30 j donnent **≈ 7,3 Gio / 30 j** pour le seul flux `exec`. À
+comparer à votre volume actuel avant de généraliser.
+
+**Le budget 2 Gio de RAM n'est pas le facteur limitant ici, le DISQUE l'est.** Le flux `exec` grossit
+la base, pas le working set : la lecture reste paginée (keyset) et passe par les rollups. Ce qu'il faut
+surveiller est l'espace disque et la fenêtre de rétention, pas le RSS.
+
+### Réduire sans redevenir aveugle — deux leviers, du plus doux au plus radical
+
+1. **Filtrer au collecteur** (la forensique hôte reste **complète** : `ausearch` voit tout ; seule
+   l'ingestion Plume est réduite). Dans `/etc/plume/plume.conf` :
+   ```sh
+   PLUME_AUDITD_EXEC_DROP=1                   # bruit build/système non équivoque (palier 1)
+   PLUME_AUDITD_EXEC_DROP_INCLUDE_RECON=1     # + primitives de découverte (palier 2, plus agressif)
+   ```
+   Le palier 2 est **volontairement séparé** : il porte des primitives de découverte et de chasse aux
+   secrets (T1083/T1057/T1552.001) qui restent **gardées par défaut**, même palier 1 actif. Mesurez la
+   part réelle avant d'activer : `search source=auditd category=exec | stats count by exe | sort -count`.
+2. **Retirer la couverture 64 bits** (commenter la ligne `arch=b64` du gabarit). Vous retombez alors
+   dans l'angle mort mesuré : **`category=exec` redevient vide**. À ne faire qu'en le sachant.
+
+Le collecteur **publie l'état de ces interrupteurs** en `category=config` à chaque passage — un
+défenseur voit donc la surface d'angle mort exacte quelle que soit leur position, sans lire le code.
+
 ## 5. Réglages
 
 | Variable                      | Défaut   | Effet |

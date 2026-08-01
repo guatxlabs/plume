@@ -21,12 +21,12 @@ RULES_DIR="${PLUME_YARA_RULES:-/etc/plume/yara.d}"
 PATHS="${PLUME_YARA_PATHS:-/home /tmp /var/tmp /dev/shm}"
 
 # (1) garde-fou : binaire yara absent -> inerte.
-command -v yara >/dev/null 2>&1 || exit 0
+command -v yara >/dev/null 2>&1 || plume_unavailable yara missing-dependency "yara absent"
 # (2) garde-fou : aucune regle deposee -> inerte. On collecte les fichiers de regles (multiples acceptes
 #     par yara 4.x en positionnels). Repertoire absent/vide = OFF.
-[ -d "$RULES_DIR" ] || exit 0
+[ -d "$RULES_DIR" ] || plume_unavailable yara missing-config "$RULES_DIR absent : aucun repertoire de regles YARA"
 RULES=$(find "$RULES_DIR" -type f \( -name '*.yar' -o -name '*.yara' \) 2>/dev/null | sort)
-[ -n "$RULES" ] || exit 0
+[ -n "$RULES" ] || plume_unavailable yara missing-config "aucune regle *.yar/*.yara dans $RULES_DIR"
 
 STAMP="$STATE_DIR/yara.stamp"           # watermark incremental (ne re-scanne que le nouveau, cf. clamav)
 SEEN="$STATE_DIR/yara.seen"; touch "$SEEN"  # dedup persistant par (rule|file|mtime)
@@ -47,7 +47,7 @@ for p in $PATHS; do
   find "$p" -xdev $prune_expr -type f $findnew ! -size +"$MAXSZ" -print 2>/dev/null
 done | head -n "$MAX" > "$list"
 touch "$STAMP"
-if [ ! -s "$list" ]; then rm -f "$list"; exit 0; fi
+if [ ! -s "$list" ]; then rm -f "$list"; plume_exit_nodata; fi
 
 # --- scan : yara une fois (--scan-list lit la liste ; -g imprime les tags). timeout borne le run. ---
 # Format de sortie yara -g : "<rule> [<tags>] <fichier>" (1 ligne par match).
@@ -56,7 +56,7 @@ res=$(mktemp)
 # shellcheck disable=SC2086  ($TO/$RULES = listes de tokens ; "$list" = cible (dernier positionnel)).
 $TO yara -g --scan-list $RULES "$list" 2>/dev/null > "$res" || true
 rm -f "$list"
-if [ ! -s "$res" ]; then rm -f "$res"; exit 0; fi
+if [ ! -s "$res" ]; then rm -f "$res"; plume_exit_nodata; fi
 
 # parse -> TSV "rule \t tags \t file" (file = reste de la ligne ; tags = contenu des [] s'il y en a).
 TAB=$(printf '\t')
@@ -72,7 +72,7 @@ parsed=$(awk '
   }
 ' "$res")
 rm -f "$res"
-[ -z "$parsed" ] && exit 0
+[ -z "$parsed" ] && plume_exit_nodata
 
 # here-doc (PAS un pipe) -> la boucle tourne dans le shell COURANT : $events/$ne persistent (cf. auditd.sh).
 events=""; ne=0
@@ -95,6 +95,6 @@ while IFS="$TAB" read -r rule tags file; do
 done <<EOF
 $parsed
 EOF
-[ -z "$events" ] && exit 0
+[ -z "$events" ] && plume_exit_nodata
 
 spool_write "yara-$ts.json" "$(emit_event "$events")"

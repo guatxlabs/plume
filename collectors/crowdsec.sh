@@ -17,7 +17,7 @@ if [ -n "${PLUME_CSCLI:-}" ]; then cscli_cmd() { $PLUME_CSCLI "$@"; }
 elif command -v cscli >/dev/null 2>&1; then cscli_cmd() { cscli "$@"; }
 elif command -v k3s >/dev/null 2>&1 && k3s kubectl -n "$NS" get deploy "$LAPI" >/dev/null 2>&1; then cscli_cmd() { k3s kubectl -n "$NS" exec "deploy/$LAPI" -- cscli "$@"; }
 elif command -v kubectl >/dev/null 2>&1 && kubectl -n "$NS" get deploy "$LAPI" >/dev/null 2>&1; then cscli_cmd() { kubectl -n "$NS" exec "deploy/$LAPI" -- cscli "$@"; }
-else exit 0; fi
+else plume_unavailable crowdsec missing-dependency "aucun acces a cscli (ni binaire local, ni deploiement LAPI joignable)"; fi
 # Résolution de l'AGENT (hub/scénarios + LOG) pour le battement de SANTÉ. L'agent CrowdSec est un DaemonSet
 # (ds/) — PAS un Deployment — donc on sonde ds/ puis deploy/ (jamais un nom de pod figé). host/explicite
 # (cscli local) voient le hub local ; sinon on exec/log dans la ressource agent kube. # shellcheck disable=SC2086
@@ -45,7 +45,7 @@ fi
 if [ -n "$AGENT_REF" ]; then agent_logs() { $KUBE -n "$NS" logs "$AGENT_REF" -c "$ALOG_C" --since=15m; }
 else agent_logs() { false; }   # host/explicite : pas de chemin log pod -> scenarios_broken=-1 (inconnu)
 fi
-command -v jq >/dev/null 2>&1 || exit 0
+command -v jq >/dev/null 2>&1 || plume_unavailable crowdsec missing-dependency "jq absent"
 plume_init
 
 # ── 1) ALERTES (chemin existant) : ne SORT PLUS si vide -> le battement de santé ci-dessous part TOUJOURS.
@@ -110,5 +110,5 @@ hfields="{\"scenarios_loaded\":$scen_loaded,\"scenarios_broken\":$scen_broken,\"
 events="$events${events:+,}$(heartbeat crowdsec "$hmsg" "$hfields" "$hsev")"
 
 # ── 3) SHIP : un seul spool par run (alertes éventuelles + battement de santé TOUJOURS présent).
-[ -z "$events" ] && exit 0
+[ -z "$events" ] && plume_exit_nodata
 spool_write "crowdsec-$ts.json" "$(emit_event "$events")"

@@ -16,18 +16,18 @@ if [ -n "$ALIAS" ] && command -v mc >/dev/null 2>&1; then
   A="$ALIAS"; mc(){ command mc "$@"; }
 else
   KC="kubectl"; command -v kubectl >/dev/null 2>&1 || KC="k3s kubectl"
-  command -v "${KC%% *}" >/dev/null 2>&1 || exit 0
+  command -v "${KC%% *}" >/dev/null 2>&1 || plume_unavailable minio missing-dependency "ni kubectl ni k3s sur cet hote"
   POD=$($KC -n "$NS" get pod -l app.kubernetes.io/name=minio \
         -o jsonpath='{range .items[*]}{.metadata.name} {.status.phase}{"\n"}{end}' 2>/dev/null \
         | awk '$2=="Running"{print $1; exit}')
-  [ -z "${POD:-}" ] && exit 0
+  [ -z "${POD:-}" ] && plume_exit_nodata
   A="local"; mc(){ $KC -n "$NS" exec "$POD" -- mc "$@"; }
 fi
 
 USERS=$(mc --json admin user list "$A" 2>/dev/null || true)
 BKTS=$(mc --json ls "$A" 2>/dev/null || true)
 INFO=$(mc --json admin info "$A" 2>/dev/null || true)
-[ -z "$USERS$BKTS" ] && exit 0
+[ -z "$USERS$BKTS" ] && plume_exit_nodata
 
 # Etat anonyme (public/prive) par bucket -> une ligne "<bucket>\t<texte mc anonymous>".
 blist=$(printf '%s\n' "$BKTS" | grep -oE '"key":"[^"]+"' | sed 's/"key":"//; s/"//; s#/$##')

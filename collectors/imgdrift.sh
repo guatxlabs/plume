@@ -6,7 +6,7 @@
 set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 plume_init
-command -v skopeo >/dev/null 2>&1 || exit 0
+command -v skopeo >/dev/null 2>&1 || plume_unavailable update missing-dependency "skopeo absent : derive d image non verifiable"
 SEEN="$STATE_DIR/imgdrift.digests"; touch "$SEEN"   # lignes: <image:tag>\t<digest>
 MAXI="${PLUME_IMGDRIFT_MAX_IMAGES:-80}"
 TAB=$(printf '\t')
@@ -19,7 +19,7 @@ elif command -v crictl >/dev/null 2>&1; then
 elif command -v k3s >/dev/null 2>&1; then
   k3s crictl images 2>/dev/null | awk 'NR>1 && $1!="" && $1!="<none>" {print $1":"$2}'
 fi | sort -u | grep -v ':<none>$' > "$imgs_f"
-[ -s "$imgs_f" ] || { rm -f "$imgs_f"; exit 0; }
+[ -s "$imgs_f" ] || { rm -f "$imgs_f"; plume_exit_nodata; }
 
 events=""; ni=0
 while IFS= read -r img; do
@@ -38,6 +38,6 @@ while IFS= read -r img; do
   events="$events${events:+,}{\"ts\":$ts,\"source\":\"update\",\"category\":\"update\",\"severity\":1,\"message\":\"$m\",\"dedup\":\"update-$img-$dig\"}"
 done < "$imgs_f"
 rm -f "$imgs_f"
-[ -z "$events" ] && exit 0
+[ -z "$events" ] && plume_exit_nodata
 
 spool_write "imgdrift-$ts.json" "$(emit_event "$events")"

@@ -20,14 +20,14 @@ if [ -z "$LOG" ]; then
 fi
 MAX="${PLUME_KUBE_AUDIT_MAX:-4000}"
 plume_init
-[ -r "$LOG" ] || exit 0                      # audit pas activé / pas root -> skip propre
+[ -r "$LOG" ] || plume_unavailable kube-audit missing-source "$LOG absent ou illisible : audit Kubernetes non active, ou droits insuffisants"                      # audit pas activé / pas root -> skip propre
 
 OFFF="$STATE/kube-audit.offset"
 SIZE=$(wc -c < "$LOG" 2>/dev/null || echo 0)
 OFF=$(cat "$OFFF" 2>/dev/null || echo 0)
 case "$OFF" in ''|*[!0-9]*) OFF=0 ;; esac
 [ "$SIZE" -lt "$OFF" ] && OFF=0              # rotation/troncature -> reprise au début
-[ "$SIZE" -eq "$OFF" ] && exit 0            # rien de neuf
+[ "$SIZE" -eq "$OFF" ] && plume_exit_nodata            # rien de neuf
 
 # Nouveau chunk (depuis l'offset), borné aux MAX dernières lignes (anti-flood 1er run).
 chunk=$(mktemp); tail -c +$((OFF + 1)) "$LOG" 2>/dev/null | tail -n "$MAX" > "$chunk" || true
@@ -86,5 +86,5 @@ while IFS= read -r line; do
 done < "$chunk"
 rm -f "$chunk"
 
-[ -z "$events" ] && exit 0
+[ -z "$events" ] && plume_exit_nodata
 spool_write "kubeaudit-$ts.json" "$(emit_event "$events")"

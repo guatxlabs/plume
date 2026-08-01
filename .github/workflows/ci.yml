@@ -286,6 +286,15 @@ jobs:
       - name: Le compte de tests n'existe qu'à un seul endroit, et toute mesure est datée
         run: python3 .github/scripts/check_no_duplicated_test_count.py
 
+      # Un capteur qui ne peut pas collecter doit le DIRE. MESURÉ le 2026-08-01 sur une VM Ubuntu
+      # 24.04 Server fraîche : `auditd.sh` sortait en SUCCÈS sans rien émettre parce que auditd
+      # n'est pas installé — le SOC ne pouvait pas distinguer « capteur aveugle » de « rien à
+      # signaler ». MESURÉ : 29 des 37 capteurs livrés portaient la même forme, 50 sorties muettes.
+      # La garde n'énumère aucun capteur : elle exige que TOUTE sortie anticipée soit classée par
+      # l'une des trois primitives de lib.sh, donc un capteur écrit demain est couvert d'office.
+      - name: Un capteur qui ne peut pas collecter doit le dire (aucune sortie muette)
+        run: python3 .github/scripts/check_collector_exit_is_classified.py
+
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
       # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —
       # the odd one out is `collectors/lib.sh`, a SOURCED library with no shebang, which the

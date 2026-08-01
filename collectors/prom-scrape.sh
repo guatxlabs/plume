@@ -4,12 +4,18 @@
 # OPT-IN. Cibles : /etc/plume/prom-targets (1 URL/ligne, # = commentaire) ou $PLUME_PROM_TARGETS.
 # Auth : PLUME_TOKEN (Bearer, recommande) OU PLUME_USER+PLUME_PASS (basic). Portable (sh + curl).
 set -eu
+# lib.sh est sourcé UNIQUEMENT pour les primitives de sortie classée (plume_unavailable & co) : ce
+# collecteur POSTe directement au central et n'utilise ni le spool ni les helpers d'événement. Sourcer
+# ne fait que DÉFINIR des fonctions — aucun effet de bord, `plume_init` n'est pas appelé ici.
+. "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 SOC="${PLUME_CENTRAL:-http://127.0.0.1:7000}"
 HOSTN="${PLUME_HOST_LABEL:-$(hostname)}"
 TFILE="${PLUME_PROM_TARGETS_FILE:-/etc/plume/prom-targets}"
 targets="${PLUME_PROM_TARGETS:-}"
 [ -z "$targets" ] && [ -r "$TFILE" ] && targets=$(grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$TFILE" | tr '\n' ' ')
-[ -z "$targets" ] && { echo "prom-scrape: aucune cible ($TFILE ou PLUME_PROM_TARGETS)"; exit 0; }
+# « aucune cible » n'est PAS un silence légitime : c'est un capteur NON CONFIGURÉ, donc structurellement
+# incapable de scraper quoi que ce soit. Il le dit (missing-config) au lieu de sortir 0 sans un mot.
+[ -z "$targets" ] && plume_unavailable prom-scrape missing-config "aucune cible de scrape ($TFILE absent/vide et PLUME_PROM_TARGETS non pose)"
 # PLUME_HOST_HEADER : override Host (central in-cluster atteint par ClusterIP). Sans espace -> split sh-safe.
 HH=""; [ -n "${PLUME_HOST_HEADER:-}" ] && HH="-H Host:$PLUME_HOST_HEADER"
 # mTLS optionnel (cert client agent) vers le central : mêmes variables PLUME_TLS_* que ship.sh.

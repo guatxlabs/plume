@@ -40,8 +40,8 @@ read_log() {
   esac
 }
 
-raw=$(read_log) || exit 0
-[ -n "$raw" ] || exit 0
+raw=$(read_log) || plume_unavailable mail missing-source "source de log mail illisible (PLUME_MAIL_SRC=$MAILSRC) : ni fichier lisible, ni pod joignable"
+[ -n "$raw" ] || plume_exit_nodata
 
 now=$(date +%s)
 umask 027

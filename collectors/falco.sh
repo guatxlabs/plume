@@ -6,14 +6,14 @@ set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 plume_init
 LOG="${PLUME_FALCO_LOG:-/var/log/falco/events.txt}"
-[ -r "$LOG" ] || exit 0
+[ -r "$LOG" ] || plume_unavailable falco missing-source "$LOG absent ou illisible : Falco non installe/non demarre"
 OFF="$STATE/falco.offset"
 last=$(cat "$OFF" 2>/dev/null || echo 0)
 size=$(wc -c < "$LOG" 2>/dev/null || echo 0)
 [ "$size" -lt "$last" ] && last=0   # rotation -> on repart du début
 new=$(tail -c "+$((last + 1))" "$LOG" 2>/dev/null || true)
 printf '%s' "$size" > "$OFF"
-[ -z "$new" ] && exit 0
+[ -z "$new" ] && plume_exit_nodata
 
 tmpf=$(mktemp)
 printf '%s\n' "$new" > "$tmpf"
@@ -30,6 +30,6 @@ while IFS= read -r line; do
   events="$events${events:+,}{\"ts\":$ts,\"source\":\"falco\",\"category\":\"ebpf\",\"severity\":$sev,\"message\":\"$out\"}"
 done < "$tmpf"
 rm -f "$tmpf"
-[ -z "$events" ] && exit 0
+[ -z "$events" ] && plume_exit_nodata
 
 spool_write "falco-$ts.json" "$(emit_event "$events")"

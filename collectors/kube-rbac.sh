@@ -6,8 +6,8 @@
 # d'attribution (= signal Varonis : un droit a change). kubectl LECTURE SEULE. Mode k3s/natif.
 set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
-command -v kubectl >/dev/null 2>&1 || command -v k3s >/dev/null 2>&1 || exit 0
-kctl version --request-timeout=5s >/dev/null 2>&1 || exit 0
+command -v kubectl >/dev/null 2>&1 || command -v k3s >/dev/null 2>&1 || plume_unavailable kube-rbac missing-dependency "ni kubectl ni k3s sur cet hote"
+kctl version --request-timeout=5s >/dev/null 2>&1 || plume_unavailable kube-rbac unreachable "kubectl present mais l API du cluster ne repond pas (kubeconfig / reseau / RBAC)"
 plume_init
 # Roles (cluster + ns) qui DONNENT l'acces aux secrets (rules mentionnant secrets + un verbe de lecture).
 SEC=$( { kctl get clusterroles -o jsonpath='{range .items[*]}{.metadata.name}={.rules}{"\n"}{end}' 2>/dev/null

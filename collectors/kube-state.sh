@@ -11,7 +11,7 @@ KTMO="${PLUME_KUBECTL_TIMEOUT:-8s}"
 if [ -n "${PLUME_KUBECTL:-}" ]; then kc() { $PLUME_KUBECTL --request-timeout="$KTMO" "$@"; }
 elif command -v kubectl >/dev/null 2>&1; then kc() { kubectl --request-timeout="$KTMO" "$@"; }
 elif command -v k3s >/dev/null 2>&1; then kc() { k3s kubectl --request-timeout="$KTMO" "$@"; }
-else exit 0; fi
+else plume_unavailable k8s missing-dependency "ni kubectl ni k3s sur cet hote"; fi
 plume_init
 
 pods=$(kc get pods -A --no-headers 2>/dev/null || true)

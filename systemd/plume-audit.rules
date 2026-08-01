@@ -1,80 +1,114 @@
 ## Règles auditd RECOMMANDÉES pour Plume — exec + élévation de privilège + accès aux données sensibles.
-## Enrichissement OPTIONNEL du collecteur `auditd.sh` : le collecteur ne fait que LIRE le journal ; ce
-## fichier dit à auditd QUOI journaliser. À ADAPTER à votre hôte (chemins, seuils, périmètre).
-## Pour activer :
-##   sudo cp /usr/local/share/plume/plume-audit.rules /etc/audit/rules.d/plume.rules
-##     ^ ce chemin n'existe QUE sur un central (pose par bootstrap.sh). Sur une machine AGENT
-##       (bootstrap-agent.sh), copiez depuis ce depot :
-##         sudo cp systemd/plume-audit.rules /etc/audit/rules.d/plume.rules
-##   sudo augenrules --load     (ou: sudo auditctl -R /etc/audit/rules.d/plume.rules)
-##   sudo auditctl -l           # RELISEZ TOUJOURS : c'est la seule preuve de ce qui est charge
+## Enrichissement du collecteur `auditd.sh` : le collecteur ne fait que LIRE le journal ; ce fichier dit
+## à auditd QUOI journaliser. Sans lui, `auditd.sh` tourne et ne remonte RIEN (il vous le DIT désormais :
+## cf. `plume_unavailable` dans collectors/lib.sh — un capteur incapable n'est plus silencieux).
 ##
-## !! DEUX PIEGES MESURES (2026-08-01, Ubuntu 24.04.4 amd64, gabarit tel quel) :
-##  1. `augenrules --load` S'ARRETE A LA PREMIERE REGLE EN ECHEC et sort quand meme 0. Les regles
-##     d'EXEMPLE ci-dessous pointent des chemins qui n'existent pas partout (/srv/data,
-##     /etc/kubernetes, /usr/bin/nc.openbsd, /usr/bin/xxd) : sur un hote ou ils manquent, TOUT CE QUI
-##     SUIT la premiere ligne fautive n'est PAS charge. Mesure : 6 regles chargees sur 12, sans erreur
-##     visible dans le flux normal. RETIREZ/REMPLACEZ ces chemins par les votres AVANT de charger.
-##  2. La seule regle `execve` ci-dessous est `arch=b32`. Sur un hote amd64 elle ne capte QUASIMENT
-##     RIEN : mesure = 0 enregistrement type=EXECVE apres plusieurs dizaines d'exec. Sans couverture
-##     64 bits, `category=exec` reste VIDE (angle mort total). Ajoutez, en connaissance du volume :
-##       -a always,exit -F arch=b64 -S execve -F auid!=-1 -k exec_tracking
-##     Mesure avec les 2 pieges corriges : 9 regles chargees, category=exec alimente.
+## POUR L'INSTALLER — une seule commande, qui VÉRIFIE ce qui a réellement été chargé :
+##   sudo bash /usr/local/lib/plume/plume-audit-rules-load.sh      # posé par bootstrap-agent.sh
+## ou, depuis ce dépôt :
+##   sudo bash systemd/plume-audit-rules-load.sh
+## Le chargement manuel (`cp` + `augenrules --load`) reste possible, mais RELISEZ TOUJOURS
+## `auditctl -l` : c'est la seule preuve de ce qui tourne réellement. Le script ci-dessus fait
+## exactement cette relecture, et REFUSE un chargement partiel.
 ##
-## ARBITRAGE VISIBILITÉ / VOLUME (à connaître avant de durcir) : une règle `execve` SANS filtre `auid`
-## journalise AUSSI les exec des daemons sans session de login. Sur un hôte qui exécute beaucoup de
-## scripts (collecteurs, agents, orchestrateur), cette churn peut représenter l'essentiel du volume et
-## noyer le signal. Les règles ci-dessous filtrent donc par défaut sur une session de login, et ajoutent
-## une couverture ciblée pour le cas « compte de service » (bloc `svc_exec` plus bas).
+## ================================================================================================
+## CE FICHIER SE CHARGE À 100 % SUR UN HÔTE ORDINAIRE — et ce n'est pas un détail de confort
+## ------------------------------------------------------------------------------------------------
+## MESURÉ le 2026-08-01 (VM Ubuntu 24.04 Server fraîche, image cloud officielle, amd64, 2 vCPU/2 Gio),
+## sur la version PRÉCÉDENTE de ce gabarit : **12 règles déclarées, 6 chargées**. `augenrules --load`
+## S'ARRÊTE À LA PREMIÈRE RÈGLE EN ÉCHEC et ne revient PAS en arrière : tout ce qui SUIT la ligne
+## fautive est absent, et la machine reste dans cet état à moitié armé. Les coupables étaient des
+## chemins d'EXEMPLE que ce fichier posait en dur alors qu'ils n'existent pas partout : `/srv/data` et
+## `/etc/kubernetes` (mesurés absents sur cette image).
+##   Nuance mesurée, contre l'idée reçue : sur cette image `augenrules --load` a bien rendu **rc=1** et
+##   affiché « error in line 12 » — il ne sort donc pas TOUJOURS 0. Mais le code de retour ne dit NI
+##   combien de règles manquent, NI lesquelles, et il ne défait pas le chargement partiel. C'est
+##   pourquoi la garde ne regarde PAS `$?` : elle COMPTE ce que `auditctl -l` rapporte réellement.
+##   (Autre mesure contre-intuitive : `/usr/bin/nc.openbsd` et `/usr/bin/xxd` sont PRÉSENTS sur cette
+##   image, et un `-w` sur un fichier ABSENT — `/etc/ld.so.preload` — se charge sans erreur. Seules
+##   les règles `-F dir=` / `-F path=` sur chemin absent font échouer le chargement.)
+##
+## RÈGLE DE CONCEPTION QUI EN DÉCOULE : la partie LIVRÉE de ce fichier ne référence que des chemins
+## présents sur une installation standard. Tout ce qui est PROPRE À VOTRE SITE est plus bas, en
+## COMMENTAIRE, dans la section « À COMPLÉTER CHEZ VOUS ». Ainsi une erreur dans VOS ajouts ne peut
+## pas décapiter les règles de base : elles sont AVANT.
+## ================================================================================================
+
+## ================================================================================================
+## ARBITRAGE VISIBILITÉ / VOLUME — LISEZ CECI AVANT DE DÉPLOYER SUR UNE FLOTTE
+## ------------------------------------------------------------------------------------------------
+## La règle `execve` 64 bits ci-dessous est ACTIVE PAR DÉFAUT. C'est un choix délibéré : sans elle,
+## `category=exec` est VIDE sur un hôte amd64 (mesuré : 0 enregistrement `type=EXECVE` après 120 exec
+## réels) — c'est-à-dire un angle mort TOTAL sur l'exécution de processus, la télémétrie dont dépendent
+## la plupart des détections hôte. Un défaut aveugle est pire qu'un défaut volumineux.
+##
+## MAIS ELLE COÛTE, et le coût est mesuré — voir docs/ENDPOINT-SECURITY.md § « Coût de la règle
+## execve » pour les chiffres par hôte/heure, l'octet par événement et la projection à 30 jours.
+## Deux leviers, du plus doux au plus radical, si votre budget disque ne suit pas :
+##
+##   1. FILTRER AU COLLECTEUR (garde la forensique hôte COMPLÈTE, ne réduit que l'ingestion Plume) :
+##        PLUME_AUDITD_EXEC_DROP=1                      # coupe le bruit build/système non équivoque
+##        PLUME_AUDITD_EXEC_DROP_INCLUDE_RECON=1        # + les primitives de découverte (plus agressif)
+##      À poser dans /etc/plume/plume.conf. `ausearch` sur l'hôte reste exhaustif dans les deux cas.
+##   2. RETIRER LA COUVERTURE 64 BITS (commentez la ligne `arch=b64` ci-dessous). Vous retombez alors
+##      dans l'angle mort mesuré ci-dessus : `category=exec` redevient vide. À ne faire qu'en
+##      connaissance de cause, et en le SACHANT — pas par accident.
+## ================================================================================================
 
 ## -- Exécutions issues d'une session de login (login/ssh/console, sudo inclus : `auid` reste le login) --
-## Si votre durcissement hôte pose déjà l'équivalent en 64 bits, gardez au moins la couverture 32 bits ici.
+## `auid!=-1` = rattachable à un humain connecté ; écarte la churn des daemons sans session de login.
+## La couverture 64 bits est la ligne qui compte sur un amd64 ; la 32 bits attrape les binaires legacy.
+-a always,exit -F arch=b64 -S execve -F auid!=-1 -k exec_tracking
 -a always,exit -F arch=b32 -S execve -F auid!=-1 -k exec_tracking
 
 ## -- Fichiers sensibles : altération de comptes, de sudo, du démon SSH, préchargement de bibliothèques --
--w /etc/shadow        -p wa -k plume_sensitive
--w /etc/sudoers       -p wa -k plume_sensitive
--w /etc/sudoers.d     -p wa -k plume_sensitive
+## Ce sont des WATCHES (`-w`) : mesuré, elles se chargent même si la cible n'existe pas encore
+## (`/etc/ld.so.preload` est absent d'une Ubuntu par défaut — et sa CRÉATION est justement le signal).
+-w /etc/shadow          -p wa -k plume_sensitive
+-w /etc/sudoers         -p wa -k plume_sensitive
+-w /etc/sudoers.d       -p wa -k plume_sensitive
 -w /etc/ssh/sshd_config -p wa -k plume_sensitive
--w /etc/ld.so.preload -p wa -k plume_persist
+-w /etc/ld.so.preload   -p wa -k plume_persist
 
 ## === Gouvernance d'accès aux DONNÉES ===
 ## Objectif : « quel HUMAIN a touché aux données sensibles ». Le filtre `auid>=1000` retient les actions
 ## rattachables à un utilisateur connecté et écarte la churn des daemons et des applications (dont les
 ## écritures de bases ou de boîtes mail par des conteneurs, qui n'ont pas de session).
 ## `perm` : w=écriture/création/suppression, a=chmod/chown, r=lecture.
-## Le défaut ci-dessous est `wa` (altération) et NON `r` : auditer la LECTURE d'un répertoire de
-## configuration très sollicité (ex. un kubeconfig lu en boucle par un client d'orchestrateur) produit un
-## volume important pour peu de signal. Ajoutez `r` sur les chemins où la lecture doit être tracée, en
-## acceptant le volume correspondant.
-## ADAPTEZ CES CHEMINS à votre installation (exemples ci-dessous).
--a always,exit -F dir=/srv/data                    -F perm=wa  -F auid>=1000 -F auid!=4294967295 -k plume_data
--a always,exit -F dir=/etc                         -F perm=wa  -F auid>=1000 -F auid!=4294967295 -k plume_etc
--a always,exit -F dir=/etc/kubernetes              -F perm=wa  -F auid>=1000 -F auid!=4294967295 -k plume_creds
+## Le défaut est `wa` (altération) et NON `r` : auditer la LECTURE d'un répertoire de configuration très
+## sollicité produit un volume important pour peu de signal. Ajoutez `r` sur les chemins où la lecture
+## doit être tracée, en acceptant le volume correspondant.
+## `/etc` existe partout — c'est la seule règle `-F dir=` livrée active.
+-a always,exit -F dir=/etc -F perm=wa -F auid>=1000 -F auid!=4294967295 -k plume_etc
 
-## === Exécution par un COMPTE DE SERVICE (couverture complémentaire) ===
-## Pourquoi : les règles `exec_tracking` ci-dessus filtrent sur une session de login, donc un exec réalisé
-## par un compte de service (`auid` non défini, p.ex. un processus applicatif compromis) n'y apparaît pas.
-## Les watches de fichiers, elles, n'ont pas ce filtre : une altération de `shadow`/`sudoers`/`sshd_config`/
-## `ld.so.preload` reste vue dans tous les cas.
+## ================================================================================================
+## À COMPLÉTER CHEZ VOUS — tout ce qui suit est COMMENTÉ EXPRÈS
+## ------------------------------------------------------------------------------------------------
+## Ces règles référencent des chemins qui n'existent PAS sur tous les hôtes. Une règle `-F dir=` ou
+## `-F path=` sur un chemin ABSENT fait échouer le chargement, et `augenrules` abandonne alors TOUT CE
+## QUI SUIT. Elles sont donc (a) commentées et (b) placées APRÈS les règles de base, pour qu'une erreur
+## ici ne puisse jamais décapiter ce qui précède.
 ##
-## L'arbitrage retenu : ne PAS journaliser TOUT exec sans session (volume ingérable), mais cibler le signal
-## fort — un interpréteur ou un outil réseau lancé par un compte de service. La règle porte sur l'INODE du
-## binaire (`-F path=<realpath> -F perm=x`) avec `-F auid=unset`. Conséquence utile : un exec INTERNE à un
-## conteneur (binaire d'une autre couche, donc autre inode) ne déclenche pas ces règles — la churn des
-## conteneurs ne les fait pas bruiter. Couvrez le niveau conteneur avec l'outillage adapté (runtime
-## security, IDS réseau) : ces règles décrivent l'HÔTE.
+## MODE D'EMPLOI : décommentez, remplacez par VOS chemins, vérifiez qu'ils EXISTENT
+## (`ls -d <chemin>`, `readlink -f $(command -v <outil>)`), puis rechargez avec
+## `plume-audit-rules-load.sh` — qui refusera le chargement s'il est partiel.
 ##
-## Le tag `-k svc_exec` est mappé en sévérité 3 par le collecteur `auditd.sh`, et shippé même lorsque
-## `PLUME_AUDIT_REAL_USER_ONLY=1`. Détection associée côté Plume : `search key=svc_exec`
-## (MITRE T1059 — Command and Scripting Interpreter).
+## -- Répertoires de données / de credentials propres à votre installation --
+# -a always,exit -F dir=/srv/data       -F perm=wa -F auid>=1000 -F auid!=4294967295 -k plume_data
+# -a always,exit -F dir=/etc/kubernetes -F perm=wa -F auid>=1000 -F auid!=4294967295 -k plume_creds
 ##
-## À FAIRE CHEZ VOUS : ces règles pointent des REALPATHS. Résolvez les vôtres (`readlink -f $(command -v
-## <outil>)`), n'inscrivez que des chemins EXISTANTS (un watch sur un chemin absent fait échouer le
-## chargement), et complétez la liste avec les interpréteurs et outils réseau présents sur votre hôte.
-## Choisissez des binaires dont l'exécution par un compte de service est ANORMALE chez vous : un outil
+## -- Exécution par un COMPTE DE SERVICE (couverture complémentaire) --
+## Pourquoi : les règles `exec_tracking` ci-dessus filtrent sur une session de login, donc un exec
+## réalisé par un compte de service (`auid` non défini, p.ex. un processus applicatif compromis) n'y
+## apparaît pas. Les watches de fichiers, elles, n'ont pas ce filtre.
+## L'arbitrage retenu : ne PAS journaliser TOUT exec sans session (volume ingérable), mais cibler le
+## signal fort — un interpréteur ou un outil réseau lancé par un compte de service. La règle porte sur
+## l'INODE du binaire (`-F path=<realpath> -F perm=x`) avec `-F auid=unset`. Conséquence utile : un exec
+## INTERNE à un conteneur (binaire d'une autre couche, donc autre inode) ne déclenche pas ces règles.
+## Le tag `-k svc_exec` est mappé en sévérité 3 par `auditd.sh`, et shippé même lorsque
+## `PLUME_AUDIT_REAL_USER_ONLY=1`. Détection : `search key=svc_exec` (MITRE T1059).
+## Choisissez des binaires dont l'exécution par un compte de service est ANORMALE CHEZ VOUS : un outil
 ## utilisé en permanence par vos propres scripts produirait du bruit continu.
-## Exemples (à vérifier et à étendre) :
--a always,exit -F arch=b64 -S execve -F path=/usr/bin/wget             -F perm=x -F auid=unset -k svc_exec
--a always,exit -F arch=b64 -S execve -F path=/usr/bin/nc.openbsd       -F perm=x -F auid=unset -k svc_exec
--a always,exit -F arch=b64 -S execve -F path=/usr/bin/xxd              -F perm=x -F auid=unset -k svc_exec
+# -a always,exit -F arch=b64 -S execve -F path=/usr/bin/wget       -F perm=x -F auid=unset -k svc_exec
+# -a always,exit -F arch=b64 -S execve -F path=/usr/bin/nc.openbsd -F perm=x -F auid=unset -k svc_exec
+# -a always,exit -F arch=b64 -S execve -F path=/usr/bin/xxd        -F perm=x -F auid=unset -k svc_exec

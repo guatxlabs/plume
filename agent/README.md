@@ -24,9 +24,16 @@ vers le endpoint d'ingest Plume — le même contrat de fil que les collecteurs 
 
 ### Mapping CIM des sources natives
 
-- **Windows Event Log** (`WinEventLog:<canal>`, catégories `auth`/`process`/`network`/`dns`/`endpoint`) :
-  `4625`→`auth` (échec, sévérité 3), `4624/4634/4672/…`→`auth`, `4688`→`process`, `1102`/`7045`→`endpoint` ;
+- **Windows Event Log** (`WinEventLog:<canal>`, catégories `auth`/`exec`/`network`/`dns`/`endpoint`) :
+  `4625`→`auth` (échec, sévérité 3), `4624/4634/4672/…`→`auth`, `4688`→**`exec`**, `1102`/`7045`→`endpoint` ;
   **Sysmon** ID `3`→`network`, `22`→`dns`, sinon `endpoint`. Curseur = signet XML `<BookmarkList>` (multi-canal).
+  *(`4688`→`process` était écrit ici : c'est faux depuis le 2026‑07‑23. `map_cim` émet `exec`, le nom
+  canonique CIM v1.3 ; `process` n'appartient pas à `CIM_CATEGORIES`. Mesuré le 2026‑08‑02 sur Windows 11
+  Enterprise 24H2 (build 26100) : les 4688 remontés par l'agent arrivent en `category=exec`.)*
+  **Tout ce qui n'est pas listé ci-dessus part avec une catégorie VIDE** — ce n'est pas marginal :
+  *mesuré le 2026‑08‑02, 1 572 des 5 189 événements Windows (30 %) sont arrivés sans catégorie*, dont
+  834 du canal `Security` et 604 du canal `System`. Le champ CIM `action` (vocabulaire neutre,
+  `docs/CIM.md` §4c) n'est **jamais** posé par ce lecteur : **0 / 5 189** événements Windows le portent.
 - **macOS unified log** (`source=subsystem`) : `sshd/sudo/su/authd/…` ou subsystem `*auth*`/`*ssh*`→`auth` ;
   subsystem `*network*`→`network` ; sinon catégorie vide (le dparser serveur tranche). `messageType`
   `Error`/`Fault`→sévérité 3. Curseur = dernier `timestamp` (`log show --start`), dédup via `traceID`.
@@ -222,9 +229,23 @@ Le code natif Win/macOS est **implémenté** et `cfg`-gated : un build Linux com
 (mapping CIM, construction requête/plist/binPath, parsing epoch — toutes **testées**) et ignore la FFI.
 Un `Makefile` fournit la matrice de build ; `.cargo/config.toml` documente les linkers.
 
+> ### ⚠️ Le binaire MSVC par défaut NE DÉMARRE PAS sur un Windows neuf (mesuré le 2026‑08‑02)
+> `cargo xwin build --release --target x86_64-pc-windows-msvc` produit un exécutable qui importe
+> `VCRUNTIME140.dll` — **absente d'un Windows 11 Enterprise 24H2 fraîchement installé** (le
+> redistribuable Visual C++ n'est pas livré avec l'OS). *Mesuré : l'exe se termine immédiatement avec
+> `0xC0000135` (STATUS_DLL_NOT_FOUND), y compris pour `--help` ; la lecture de la table d'imports PE
+> donne `VCRUNTIME140.dll` comme seule DLL réellement manquante (les `api-ms-win-crt-*` sont des
+> apisets résolus par le chargeur).* **Compilez avec la CRT statique** — aucun redistribuable à
+> déployer, et c'est ce qu'on attend d'un agent endpoint :
+> ```bash
+> RUSTFLAGS="-C target-feature=+crt-static" cargo xwin build --release --target x86_64-pc-windows-msvc
+> ```
+> *Vérifié : binaire 3 350 528 octets, `--help` sort 0, `test-ship` → HTTP 202, `install` crée et démarre
+> le service SCM sur la même VM où le binaire dynamique refusait de démarrer.*
+
 | Cible | Triple | Outil de build depuis Linux |
 | --- | --- | --- |
-| Windows x64 (MSVC) | `x86_64-pc-windows-msvc` | `cargo xwin build --target …` (`make win-msvc`) — headers/libs MSVC auto, pas de VM |
+| Windows x64 (MSVC) | `x86_64-pc-windows-msvc` | `cargo xwin build --target …` (`make win-msvc`) — headers/libs MSVC auto, pas de VM ; **ajouter `RUSTFLAGS="-C target-feature=+crt-static"`** (cf. avertissement ci-dessus) |
 | Windows x64 (GNU) | `x86_64-pc-windows-gnu` | MinGW-w64 + `cargo build --target …` (`make win-gnu`) |
 | macOS x64 | `x86_64-apple-darwin` | `cargo zigbuild --target …` (`make mac-x64`) — Zig comme linker + SDK Apple |
 | macOS ARM | `aarch64-apple-darwin` | `cargo zigbuild --target …` (`make mac-arm`) |
@@ -247,10 +268,16 @@ cargo check --target aarch64-apple-darwin     # compile la partie cfg(macos)
 > par la cible Windows. macOS n'a **aucune** crate native (sous-processus `log` + `launchctl`).
 > `rustls` reste sur le provider **ring** (comme le daemon) — pas de cmake/nasm requis.
 
-> **Note d'environnement** : la dev box Linux courante utilise un `rustc` distro **sans `rustup`** (seule
-> la std `x86_64-unknown-linux-gnu` est présente), donc le cross-check n'a **pas pu être exécuté ici** ;
-> il tourne en CI (ou sur une machine avec `rustup`). Les dépendances résolvent (`cargo add --dry-run`
-> OK pour `windows`/`windows-service`) et **tout ce qui est testable sur Linux est vert** (96 tests).
+> **Note d'environnement (remplacée — mesuré le 2026‑08‑02)** : cette note disait que le cross-check
+> n'avait « pas pu être exécuté ici » faute de `rustup`. Ce n'est plus vrai : la cible MSVC a été
+> **entièrement CROSS-COMPILÉE** depuis Linux avec `cargo xwin` (51 s avec le SDK MSVC déjà en cache
+> local ; **le premier build d'une machine neuve doit d'abord télécharger ce SDK — ~1,2 Gio dans
+> `~/.cache/cargo-xwin` — durée NON mesurée ici, le cache préexistait**), puis le binaire a été
+> **exécuté sur un vrai Windows 11 Enterprise 24H2** : FFI Event Log (`wevtapi.dll` bien dans la table
+> d'imports), service SCM, ship TLS — tout fonctionne. La cible **`x86_64-pc-windows-gnu`, elle, échoue
+> sans MinGW-w64** : `error calling dlltool 'x86_64-w64-mingw32-dlltool': No such file or directory`
+> (mesuré, en 16 s, sur une machine où seul `rustup target add` avait été fait). MSVC + `cargo xwin`
+> est donc bien le chemin à recommander, mais il n'est pas « sans prérequis ».
 
 ## Sémantique at-least-once
 

@@ -181,6 +181,26 @@ elles s'importent et restent **inertes**.
    Une règle qui filtre `NewProcessName` (toujours présent) fire, elle : c'est ce que prouve
    `sigma_process_creation_rule_fires_on_real_4688_event` sur une fixture 4688 réelle.
 
+   **Les DEUX états ont maintenant été mesurés sur un vrai Windows** *(2026‑08‑02, Windows 11
+   Enterprise 24H2 build 26100, `Audit Process Creation` activé, collecteur PowerShell livré,
+   règle importée telle quelle par `plume-daemon sigma-import`)* :
+
+   | état de la GPO | `4688` portant un `CommandLine` non vide | `search category=exec CommandLine=~(?i)whoami \| stats count` |
+   |---|---|---|
+   | **désactivée** (défaut) | **0 / 40** | **0** — inerte |
+   | **activée** (`ProcessCreationIncludeCmdLine_Enabled=1`) | **12 / 25** | **15** — la règle **FIRE** |
+
+   Détail utile au diagnostic : sans la GPO, l'élément `<Data Name='CommandLine'>` **est présent mais
+   VIDE** dans le XML. Le collecteur ne pose donc pas la clé (`if ($d[$k])` écarte la chaîne vide) et
+   `fields.CommandLine` est absent — la règle ne matche pas, sans laisser de champ vide trompeur.
+   *Mesuré côté SOC : 25 événements `category=exec` porteurs de `fields.CommandLine` après activation,
+   0 avant.*
+
+   **Conclusion, et c'est la différence qui compte** : sur Windows la règle est inerte **par
+   configuration** — un réglage la réveille, et il tient en une valeur de registre. Sur Linux elle est
+   inerte **par nature** (ci-dessous). Le remède n'est donc pas le même, et le message à l'opérateur non
+   plus : sur Windows « activez la GPO », sur Linux « prenez la règle jumelle qui filtre `exe` ».
+
    **Sur Linux, la même règle est inerte pour une raison PLUS FORTE — structurelle, pas un réglage.**
    *Mesuré le 2026-08-01 (VM Ubuntu 24.04 Server amd64, 2 vCPU/2 Gio, règles auditd chargées, charge =
    build de 100 unités de compilation → 533 événements `category=exec` réels) :*

@@ -685,26 +685,30 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
             }
         }
     }
-    // (3) ÉTAT HÔTE/FIREWALL — dernier snapshot kind=firewall, surfacé RO (nft sets / origin-fw / etc.).
-    let firewall = conn
-        .query_row(
-            "SELECT ts, data, host FROM snapshot WHERE kind='firewall' ORDER BY ts DESC LIMIT 1",
-            [],
-            |r| {
-                Ok(json!({
-                    "ts": r.get::<_, i64>(0)?,
-                    "data": serde_json::from_str::<Value>(&r.get::<_, String>(1)?).unwrap_or(Value::Null),
-                    "host": r.get::<_, Option<String>>(2)?,
-                }))
-            },
-        )
-        .ok();
+    // (3) ÉTAT HÔTE/FIREWALL — dernier instantané kind=firewall, surfacé RO (nft sets / origin-fw / etc.),
+    // PAR MACHINE. Ce site faisait `ORDER BY ts DESC LIMIT 1` : l'état d'UNE machine s'affichait comme
+    // l'état du parc (mesuré : 1 hôte rendu pour 50). C'est la même faute que le `contested` déjà posé
+    // sur les auto-reports collecteurs ci-dessus — plusieurs machines revendiquant la même chose DOIT
+    // devenir visible. `firewall` reste la plus fraîche (mono-hôte -> réponse inchangée) ; `firewall_hosts`
+    // porte la ventilation et `firewall_n_hosts` le dénominateur.
+    let fw_par_hote = crate::ingest::store::dernier_instantane_par_hote(&conn, "firewall", 500);
+    let fw_json: Vec<Value> = fw_par_hote
+        .iter()
+        .map(|(h, ts, _, data)| json!({
+            "ts": ts,
+            "data": serde_json::from_str::<Value>(data).unwrap_or(Value::Null),
+            "host": h,
+        }))
+        .collect();
+    let firewall = fw_json.first().cloned();
     Json(json!({
         "ok": true,
         "generated": now(),
         "daemon": daemon,
         "collectors": collectors,
         "firewall": firewall,
+        "firewall_hosts": fw_json,
+        "firewall_n_hosts": fw_json.len(),
         "legend": {
             "display-only": "de-bruite un PANNEAU seul — jamais retiré du stockage ni de la détection (rule_sql). Operator/self = ÉDITABLE+audité.",
             "collection-reducing": "réduit ce qui est INGÉRÉ/STOCKÉ — READ-ONLY ici, contrôle à la frontière hôte.",

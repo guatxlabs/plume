@@ -80,21 +80,32 @@ pub(crate) async fn environments(State(st): State<AppState>, Extension(au): Exte
     })
 }
 
+/// GET /api/panel/:kind — état point-in-time d'un `kind` d'instantané (firewall / contrôles).
+///
+/// PAR HÔTE, PAS « LE » PARC. Cette route rendait `… ORDER BY ts DESC LIMIT 1` : l'état de la DERNIÈRE
+/// machine à avoir parlé, présenté comme l'état du déploiement (MESURÉ le 2026-08-02 : `srv00` rendu seul
+/// pour un parc de 50 hôtes, sans que rien n'indique les 49 autres). Les champs de tête (`ts`/`hash`/
+/// `data`) sont CONSERVÉS — c'est la machine la plus fraîche, et sur un déploiement mono-hôte la réponse
+/// est strictement celle d'avant — mais ils sont désormais ATTRIBUÉS (`host`) et accompagnés de la
+/// ventilation complète (`hosts`) et de son dénominateur (`n_hosts`) : aucune surface ne peut plus
+/// présenter une machine comme le parc SANS LE DIRE.
 pub(crate) async fn panel(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(kind): Path<String>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
-    let row: Option<(i64, String, String)> = conn
-        .query_row(
-            "SELECT ts,hash,data FROM snapshot WHERE kind=?1 ORDER BY ts DESC LIMIT 1",
-            params![kind],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .ok();
-    match row {
-        Some((ts, hash, data)) => Json(json!({
-            "kind": kind, "ts": ts, "hash": hash,
-            "data": serde_json::from_str::<Value>(&data).unwrap_or_else(|_| json!({}))
+    let par_hote = crate::ingest::store::dernier_instantane_par_hote(&conn, &kind, 500);
+    let jhosts: Vec<Value> = par_hote
+        .iter()
+        .map(|(h, ts, hash, data)| json!({
+            "host": h, "ts": ts, "hash": hash,
+            "data": serde_json::from_str::<Value>(data).unwrap_or_else(|_| json!({}))
+        }))
+        .collect();
+    match par_hote.first() {
+        Some((h, ts, hash, data)) => Json(json!({
+            "kind": kind, "ts": ts, "hash": hash, "host": h,
+            "data": serde_json::from_str::<Value>(data).unwrap_or_else(|_| json!({})),
+            "hosts": jhosts, "n_hosts": jhosts.len()
         })),
-        None => Json(json!({ "kind": kind, "data": Value::Null })),
+        None => Json(json!({ "kind": kind, "data": Value::Null, "hosts": [], "n_hosts": 0 })),
     }
 }
 

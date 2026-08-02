@@ -356,6 +356,37 @@ entière — **le reste n'est pas mesuré, donc pas affirmé**.
 
 ---
 
+## 5.4 L'autre ligne canonique — l'INSTANTANÉ (`snapshot`), et sa portée d'unicité
+
+Un émetteur ne produit pas que des événements : il peut publier un **instantané d'état**
+(enveloppe spool `{"ts","host","kind","hash","data"}` — `collectors/firewall.sh`,
+`collectors/controls.sh`, ou `POST /api/ingest` avec n'importe quel `kind`). Le daemon ne
+réécrit `data` que si `hash` a **changé** ; sinon il avance le `ts` de la ligne existante
+(*heartbeat* : un capteur stable ne doit pas être déclaré muet).
+
+**LA SÉRIE EST `(kind, host)`, JAMAIS `kind` SEUL.** Un instantané capture ce que l'émetteur
+peut OBSERVER, et un émetteur n'observe que sa machine. Toute la voie snapshot est donc
+cloisonnée par l'hôte de la ligne (`SnapshotSeries`, `daemon/src/ingest/store.rs`) :
+comparaison d'état, heartbeat, clés d'alerte d'état (`firewall.lockdown`, `control.catalog`),
+sondes de fraîcheur et surfaces de lecture.
+
+Conséquences pour qui écrit un émetteur :
+
+- **`host` est ce qui vous identifie.** Deux machines qui publient le même `kind` avec le même
+  `hash` sont **deux séries** ; aucune ne peut effacer l'autre. *Avant ce cloisonnement, un parc
+  homogène de 3 machines rendait **1 seule ligne** — deux tiers du parc jetés en silence — et le
+  battement d'une machine rajeunissait la ligne d'une autre (mesuré : +3540 s sur la ligne d'un
+  hôte mort depuis 3600 s).*
+- **Omettre `host` n'est pas un oubli toléré, c'est une DÉCLARATION** : l'instantané rejoint la
+  série `(kind, NULL)`, celle de ce qui décrit **le déploiement** et non une machine. C'est ainsi —
+  et seulement ainsi — qu'un instantané est légitimement global.
+- **`hash` doit être stable et déterministe pour un même état**, et ne dépendre que de ce que
+  l'émetteur observe (`firewall.sh` retire les compteurs volatils du ruleset avant de hasher).
+- La **fraîcheur d'un parc** est celle de la machine la **plus en retard** (`MIN` sur les `MAX(ts)`
+  par hôte) : une machine encore vivante ne peut plus faire passer tout le parc pour frais.
+
+---
+
 ## 6. Ce que le CIM n'est PAS (encore)
 
 Le CIM v1 est la **pièce 1** de la slice #7 (formalisation). Il **n'introduit aucun** nouveau

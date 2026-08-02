@@ -779,23 +779,19 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) {
             // `done` LIÉ (pas en position de queue) : le temporaire `Result<Txn>` est ainsi dropé AVANT `conn`.
             let done = if let Ok(tx) = Txn::begin(&conn) {
                 let mut ok = true;
-                let last: Option<String> = conn
-                    .query_row(
-                        "SELECT hash FROM snapshot WHERE kind=?1 ORDER BY ts DESC LIMIT 1",
-                        params![kind],
-                        |r| r.get(0),
-                    )
-                    .ok();
+                // SÉRIE = (kind, host) — cf. le bandeau `SnapshotSeries` de `ingest/store.rs`. C'est le SEUL
+                // point d'écriture de la voie snapshot : la comparaison d'état, le heartbeat ET les clés
+                // d'alerte ci-dessous en DÉRIVENT, donc aucune des trois ne peut confondre deux machines.
+                let serie = SnapshotSeries::new(&kind, host);
+                let last: Option<String> = serie.dernier_hash(&conn);
                 if hash.is_empty() || last.as_deref() != Some(hash.as_str()) {
                     // COUTURE STORE (data-plane). kind/hash CLONÉS (réutilisés dans la branche else = heartbeat).
                     if store().insert_snapshot(&conn, &SnapshotRow { ts, kind: kind.clone(), hash: hash.clone(), data: data.to_string(), host: host.map(|s| s.to_string()) }).is_err() { ok = false; }
                 } else {
-                    // même état (hash inchangé) -> on TOUCHE le ts du dernier snapshot = heartbeat. Sinon un
-                    // capteur stable (ex Control Catalog 3-manquants constants) est marqué "muet" à tort (dédup).
-                    if conn.execute(
-                        "UPDATE snapshot SET ts=?1 WHERE kind=?2 AND ts=(SELECT MAX(ts) FROM snapshot WHERE kind=?2)",
-                        params![ts, kind],
-                    ).is_err() { ok = false; }
+                    // même état (hash inchangé) -> on TOUCHE le ts du dernier snapshot DE CETTE SÉRIE = heartbeat.
+                    // Sinon un capteur stable (ex Control Catalog 3-manquants constants) est marqué "muet" à tort
+                    // (dédup) — et, sans le filtre d'hôte, on rajeunissait la ligne de la machine d'à côté.
+                    if serie.toucher_le_dernier(&conn, ts).is_err() { ok = false; }
                 }
                 if ok && kind == "firewall" {
                     let fw_ok = data
@@ -804,7 +800,9 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) {
                         .and_then(|b| b.as_bool())
                         .unwrap_or(true);
                     if !fw_ok {
-                        let dedup = format!("fw-lockdown-{}", ts / 86400);
+                        // 1 alerte par JOUR et PAR MACHINE : le constat décrit l'état d'UNE machine (l'INSERT
+                        // lie d'ailleurs `host`). MESURÉ sans l'hôte : 5 machines sans lockdown -> 1 alerte.
+                        let dedup = serie.cle_alerte(&format!("fw-lockdown-{}", ts / 86400));
                         if conn.execute(
                             "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host) \
                              VALUES(?1,'firewall.lockdown',3,?2,?3,?4,?5)",
@@ -815,9 +813,11 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) {
                 if ok && kind == "controls" {
                     let failed = data.get("failed").and_then(|x| x.as_i64()).unwrap_or(0);
                     if failed > 0 {
-                        // dédup sur l'ÉTAT (hash) + jour : 1 alerte/jour tant que l'état ne change pas
-                        // (avant : /3600 = toutes les heures = verbeux pour un manque de contrôle persistant).
-                        let dedup = format!("controls-{}-{}", hash, ts / 86400);
+                        // dédup sur l'ÉTAT (hash) + jour, PAR MACHINE : 1 alerte/jour tant que l'état de CETTE
+                        // machine ne change pas (avant : /3600 = toutes les heures = verbeux pour un manque
+                        // persistant). L'hôte manquait à la clé alors que le `hash` dédupliqué est celui d'UNE
+                        // machine — MESURÉ : 5 machines à 2 contrôles manquants (même hash) -> 1 alerte.
+                        let dedup = serie.cle_alerte(&format!("controls-{}-{}", hash, ts / 86400));
                         if conn.execute(
                             "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host) \
                              VALUES(?1,'control.catalog',3,?2,?3,?4,?5)",

@@ -34,3 +34,4 @@ include!("netban.rs"); // chantier ② Phase 1 — ban natif HTTP (IP réelle, s
 include!("purge.rs"); // PURGE EXPLICITE d'événements — refus (legal-hold/tier froid/case/FTS), caducité du jeton, registre, dérivés
 include!("query_timing.rs"); // la métrique d'attente : garde SANS SEUIL (S permis >= N clients -> attente NULLE) + un seul écrivain
 include!("dedup_flotte.rs"); // LA FLOTTE : `event.dedup` cloisonné par hôte (perte silencieuse entre machines)
+include!("snapshot_flotte.rs"); // LA FLOTTE (2) : la voie SNAPSHOT — la série est (kind, host)

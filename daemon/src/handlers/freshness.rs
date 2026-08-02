@@ -92,8 +92,11 @@ pub(crate) fn compute_integrations(db_path: &str) -> Value {
         let pipe_fresh = pipeline_is_fresh(conn, now_ts);
         let collectors: Vec<Value> = COLLECTORS
             .iter()
-            .map(|(id, label, interval, q, event_based)| {
-                let ls: Option<i64> = conn.query_row(q, [], |r| r.get::<_, Option<i64>>(0)).ok().flatten();
+            .map(|(id, label, interval, sonde, event_based)| {
+                // SONDE TYPÉE (cf. bandeau `Sonde` de main.rs) : le SQL est DÉRIVÉ de ce que la sonde
+                // observe. Pour un capteur d'INSTANTANÉ, `ls` est la machine la PLUS EN RETARD du parc —
+                // une seule machine encore vivante ne peut plus faire passer tout le parc pour frais.
+                let ls: Option<i64> = sonde.derniere_collecte(conn);
                 let status = if *event_based {
                     // ÉVÉNEMENTIEL : 'inconnu' si jamais vu ; sinon 'actif' tant que le pipeline est frais
                     // (silence = hôte calme, PAS une panne) ; 'muet' SEULEMENT si le pipeline global décroche.
@@ -313,9 +316,25 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
                 }
             }
         }
-        if let Ok(mut s) = conn.prepare(&format!("SELECT kind, MAX(ts), SUM(CASE WHEN ts>?1 THEN 1 ELSE 0 END) FROM snapshot WHERE ts>?2{envp} GROUP BY kind")) {
-            if let Ok(rows) = s.query_map(params![d1, cut7], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) {
-                for (k, m, n) in rows.flatten() { feeds.push(mk("snapshot", k, m, n)); }
+        // INSTANTANÉS — un feed par `kind`, mais dont la FRAÎCHEUR est celle de la machine la PLUS EN
+        // RETARD (`MIN` sur les `MAX(ts)` par hôte), même dérivation que `Sonde::Instantane`. Avant :
+        // `MAX(ts) … GROUP BY kind` = la machine la plus FRAÎCHE -> mesuré le 2026-08-02, un parc de 50
+        // dont 49 muettes depuis 2 h affichait UN feed « frais ». Le volume (`n_24h`) est INCHANGÉ (somme
+        // sur les hôtes) et `n_hosts` donne le dénominateur. Mono-hôte : un seul groupe -> valeurs
+        // STRICTEMENT identiques à l'ancienne requête.
+        if let Ok(mut s) = conn.prepare(&format!(
+            "SELECT kind, MIN(l), SUM(nn), COUNT(*) FROM (\
+               SELECT kind, host, MAX(ts) AS l, SUM(CASE WHEN ts>?1 THEN 1 ELSE 0 END) AS nn \
+               FROM snapshot WHERE ts>?2{envp} GROUP BY kind, host) GROUP BY kind"
+        )) {
+            if let Ok(rows) = s.query_map(params![d1, cut7], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))
+            }) {
+                for (k, m, n, nh) in rows.flatten() {
+                    let mut f = mk("snapshot", k, m, n);
+                    if let Some(o) = f.as_object_mut() { o.insert("n_hosts".into(), json!(nh)); }
+                    feeds.push(f);
+                }
             }
         }
         // métriques : un feed agrégé (remote-write) + DÉTAIL par série (déplié dans l'UI sur clic)
@@ -351,8 +370,8 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) {
     // donnée la plus récente, toutes sources confondues, est fraîche, l'auth n'est PAS muette (silence
     // normal). Les capteurs CONTINUS gardent leur logique 5x-intervalle (vraies alertes muet préservées).
     let pipe_fresh = pipeline_is_fresh(&conn, now_ts);
-    for (id, label, interval, q, event_based) in COLLECTORS.iter() {
-        let ls: Option<i64> = conn.query_row(q, [], |r| r.get::<_, Option<i64>>(0)).ok().flatten();
+    for (id, label, interval, sonde, event_based) in COLLECTORS.iter() {
+        let ls: Option<i64> = sonde.derniere_collecte(&conn);
         let dedup = format!("hb-{id}"); // clé STABLE -> une seule alerte par épisode (zéro répétition horaire)
         // MUET ? ÉVÉNEMENTIEL -> seulement si le pipeline global est en panne ; CONTINU -> silence > 5x son
         // intervalle (logique d'origine, None ne déclenche jamais d'alerte).
@@ -364,10 +383,25 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) {
         if mute {
             // détail : ancienneté de CE capteur si connue, sinon état du pipeline (cas événementiel sans
             // historique). Sévérité 2 inchangée.
-            let detail = match ls {
+            let mut detail = match ls {
                 Some(t) => format!("aucune donnée depuis {} min", (now_ts - t) / 60),
                 None => "pipeline d'ingestion muet".to_string(),
             };
+            // QUELLES MACHINES. Sur un parc, « Capteur muet : firewall » sans nom n'est pas actionnable :
+            // l'opérateur ne sait pas s'il s'agit d'une machine ou de quarante-neuf. Les sondes d'INSTANTANÉ
+            // savent le dire (la série est (kind, hôte)) -> on nomme les 5 plus en retard + le reste compté.
+            // Vide pour les sondes à portée flotte confondue -> détail INCHANGÉ (mode 0 byte-identique).
+            let retard = sonde.hotes_en_retard(&conn, now_ts - interval * 5, 6);
+            if !retard.is_empty() {
+                let noms: Vec<String> = retard.iter().take(5)
+                    .map(|(h, t)| format!("{} ({} min)", if h.is_empty() { "(sans hôte)" } else { h }, (now_ts - t) / 60))
+                    .collect();
+                detail.push_str(&format!(
+                    " — machines en retard : {}{}",
+                    noms.join(", "),
+                    if retard.len() > 5 { ", …" } else { "" }
+                ));
+            }
             let _ = conn.execute(
                 "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup) VALUES(?1,?2,2,?3,?4,?5)",
                 params![now_ts, format!("heartbeat.{id}"), format!("Capteur muet : {label}"), detail, dedup],

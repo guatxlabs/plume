@@ -207,6 +207,145 @@ pub(crate) fn dedup_scoped_by_host(host: Option<&str>, dedup: Option<&str>) -> O
     Some(format!("{}{DEDUP_SCOPE_SEP}{h}{DEDUP_SCOPE_SEP}{cle}", h.len()))
 }
 
+// ====================================================================================================
+// LA VOIE SNAPSHOT — LA SÉRIE EST `(kind, host)`, JAMAIS `kind` SEUL.
+//
+// CE QUI ÉTAIT CASSÉ. La table `snapshot` porte l'ÉTAT point-in-time d'une machine, et l'ingestion ne
+// réécrit `data` que sur CHANGEMENT : elle compare le hash reçu au « dernier instantané du `kind` » —
+// TOUS HÔTES CONFONDUS. MESURÉ le 2026-08-02 par le VRAI chemin (`ingest_once` sur un vrai spool, avec
+// le marqueur `#H#` d'un jeton d'agent lié), enveloppes VERBATIM de `collectors/firewall.sh` et
+// `collectors/controls.sh` :
+//   - PARC HOMOGÈNE (3 machines, même image dorée -> même hash, 3 tours) : 9 instantanés ENVOYÉS,
+//     1 SEULE ligne stockée. `web02` et `web03` : ZÉRO ligne, JAMAIS enregistrées, sans un mot.
+//     1 hôte représenté sur 3. C'est le cas le plus COURANT d'un parc, et le plus grave.
+//   - PARC HÉTÉROGÈNE (2 rôles STABLES, 5 tours chacun) : 10 envoyés, 2 états réels -> 10 lignes,
+//     dont 8 CHANGEMENTS FANTÔMES. La détection de changement est purement et simplement inopérante :
+//     chaque rapport « change » par rapport à celui de la machine d'à côté.
+//   - HEARTBEAT CROISÉ (le pire) : `web01` MEURT à T-3600 s ; les rapports de `web02` (même hash)
+//     ont AVANCÉ le `ts` de la ligne qui porte `host='web01'` de 3540 s. La ligne d'une machine morte
+//     est rajeunie par une autre machine : ce n'est pas une requête qui ment, c'est la DONNÉE STOCKÉE
+//     qui est fausse. (Et `web02`, lui, n'a toujours aucune ligne.)
+//   - ALERTES : 5 machines sans le contrôle docker-lockdown -> 1 SEULE alerte (`lap0`), 4 machines en
+//     défaut invisibles ; 5 machines avec 2 contrôles manquants (même hash) -> 1 ligne, 1 alerte.
+//
+// LA FORME DÉRIVÉE. Comme pour `event.dedup`, la question n'est pas « quels sites filtrer par hôte » mais
+// « quelle est la PORTÉE D'UNICITÉ correcte ». Un instantané capture ce qu'un émetteur peut OBSERVER, et
+// un émetteur n'observe QUE sa machine — `firewall.sh` hashe le ruleset nft DE CETTE MACHINE,
+// `controls.sh` n'inclut un contrôle QUE s'il s'applique SUR CETTE MACHINE (il est « mode-aware » par
+// construction). Donc la SÉRIE d'instantanés est `(kind, host)`. Le daemon connaît cet hôte au moment
+// d'écrire — c'est la colonne `host` de la ligne, ATTESTÉE quand le jeton est lié
+// (`spool_host_marker`/`forced_host` ÉCRASENT le host déclaré).
+//
+// CE QUI RESTE LÉGITIMEMENT GLOBAL — ET COMMENT C'EST ÉTABLI SANS ÉNUMÉRER. Un instantané qui décrit LE
+// DÉPLOIEMENT et non UNE machine n'a pas d'hôte à déclarer : il arrive `host=NULL` et forme alors sa
+// PROPRE série `(kind, NULL)`, exactement comme aujourd'hui. C'est l'ATTESTATION DE L'ÉMETTEUR qui
+// tranche, pas une liste de `kind` « autorisés à être globaux » — laquelle serait fausse dès demain,
+// `POST /api/ingest` acceptant n'importe quel `kind` d'un client. (Pendant exact de
+// `dedup_scoped_by_host(None, …)`, qui lie les lignes sans hôte à UNE portée, jamais moins.)
+// Vérifié le 2026-08-02 sur l'arbre livré : les deux SEULS `kind` émis (`firewall`, `controls`)
+// décrivent une machine — aucun instantané livré n'est aujourd'hui légitimement global.
+//
+// PARITÉ MONO-HÔTE (le déploiement par défaut, PME) : un seul `host` -> une seule série -> `dernier_hash`
+// et `toucher_le_dernier` sélectionnent EXACTEMENT les mêmes lignes qu'avant. Zéro changement de
+// comportement, zéro migration : on ne touche NI le schéma NI les lignes existantes.
+// ====================================================================================================
+
+/// SÉRIE d'instantanés = la PORTÉE D'UNICITÉ de la table `snapshot`. Le type existe pour que la question
+/// « quel est le dernier instantané ? » soit IMPOSSIBLE à poser sans nommer l'hôte : les deux opérations
+/// qui la posent (détection de changement, heartbeat) sont des méthodes DE CE TYPE, et le type ne peut pas
+/// être construit sans passer `host`. Un `host=None` est une réponse VALIDE (série du déploiement), pas
+/// une omission — mais c'est une réponse, pas un oubli silencieux.
+pub(crate) struct SnapshotSeries<'a> {
+    kind: &'a str,
+    host: Option<&'a str>,
+}
+
+impl<'a> SnapshotSeries<'a> {
+    pub(crate) fn new(kind: &'a str, host: Option<&'a str>) -> Self {
+        Self { kind, host }
+    }
+
+    /// Hash du DERNIER instantané DE CETTE SÉRIE. `host IS ?` (et non `=`) : SQLite traite `IS` comme
+    /// `IS NOT DISTINCT FROM`, donc la série `(kind, NULL)` se sélectionne elle-même au lieu de ne
+    /// jamais rien matcher (avec `=`, un NULL ne s'égale pas lui-même -> on aurait remplacé la
+    /// confusion d'hôtes par une réécriture à CHAQUE rapport des instantanés sans hôte).
+    pub(crate) fn dernier_hash(&self, conn: &Connection) -> Option<String> {
+        conn.query_row(
+            "SELECT hash FROM snapshot WHERE kind=?1 AND host IS ?2 ORDER BY ts DESC LIMIT 1",
+            params![self.kind, self.host],
+            |r| r.get(0),
+        )
+        .ok()
+    }
+
+    /// HEARTBEAT (état INCHANGÉ) — avance le `ts` du dernier instantané DE CETTE SÉRIE. Sans le filtre
+    /// d'hôte, le rapport d'une machine rajeunissait la ligne d'une AUTRE : mesuré à +3540 s sur la ligne
+    /// d'un hôte mort depuis 3600 s.
+    pub(crate) fn toucher_le_dernier(&self, conn: &Connection, ts: i64) -> rusqlite::Result<usize> {
+        conn.execute(
+            "UPDATE snapshot SET ts=?1 WHERE kind=?2 AND host IS ?3 \
+             AND ts=(SELECT MAX(ts) FROM snapshot WHERE kind=?2 AND host IS ?3)",
+            params![ts, self.kind, self.host],
+        )
+    }
+
+    /// Clé anti-doublon d'une alerte qui décrit L'ÉTAT DE CETTE MACHINE (`firewall.lockdown`,
+    /// `control.catalog`). Ces clés-là sont fabriquées par le daemon, mais — contrairement à
+    /// `alert.dedup` des règles, laissé GLOBAL par décision en P3.1-a parce que son grain est DÉCLARÉ
+    /// (`rule-{id}[::{throttle_field}]`) — leur grain ne l'était PAS : l'INSERT lie pourtant `host` sur
+    /// la ligne d'alerte, donc le code VEUT attribuer le constat à une machine, et l'état dédupliqué
+    /// (`data`/`hash`) est celui d'UNE machine. La clé omettait simplement la seule chose qui la rend
+    /// unique. MESURÉ : 5 machines en défaut -> 1 alerte. On réutilise l'encodage INJECTIF déjà prouvé
+    /// (`dedup_scoped_by_host`) : espace de clés DISJOINT de l'hérité (`\u{1}` réservé), donc une alerte
+    /// ouverte de l'ancien format ne masque pas les nouvelles — le prix de la bascule est UNE
+    /// ré-affirmation par (hôte, jour), pas une boucle.
+    pub(crate) fn cle_alerte(&self, brut: &str) -> String {
+        dedup_scoped_by_host(self.host, Some(brut)).unwrap_or_else(|| brut.to_string())
+    }
+}
+
+/// Un instantané au sens de la LECTURE : `(host, ts, hash, data)`.
+pub(crate) type InstantaneLu = (Option<String>, i64, String, String);
+
+/// LE DERNIER INSTANTANÉ **DE CHAQUE MACHINE** pour un `kind`, la plus fraîche d'abord.
+///
+/// POURQUOI CE POINT D'ACCÈS UNIQUE. Les surfaces de LECTURE faisaient toutes
+/// `… FROM snapshot WHERE kind=… ORDER BY ts DESC LIMIT 1` : l'état d'UNE machine — celle qui a parlé en
+/// dernier — s'affichait comme l'état DU PARC. MESURÉ le 2026-08-02 : sur un parc de 50 hôtes, le panneau
+/// rendait `srv00` sans jamais indiquer qu'il y en avait 49 autres. Une lecture par hôte n'est pas une
+/// option de présentation : sans elle, la surface AFFIRME une complétude qu'elle n'a pas.
+///
+/// Coût : `snapshot` ne garde qu'UNE ligne vivante par (kind, hôte) — le heartbeat TOUCHE le `ts` au lieu
+/// d'insérer — donc le `GROUP BY host` porte sur la cardinalité de la FLOTTE, pas sur l'historique.
+/// `s.host IS j.host` (et non `=`) pour que la série sans hôte se joigne à elle-même. `max` borne la
+/// réponse ; les doublons (host, ts) exacts sont réduits au premier vu.
+pub(crate) fn dernier_instantane_par_hote(conn: &Connection, kind: &str, max: usize) -> Vec<InstantaneLu> {
+    let Ok(mut s) = conn.prepare(
+        "SELECT s.host, s.ts, COALESCE(s.hash,''), COALESCE(s.data,'') FROM snapshot s \
+         JOIN (SELECT host, MAX(ts) AS mts FROM snapshot WHERE kind=?1 GROUP BY host) j \
+           ON s.host IS j.host AND s.ts = j.mts \
+         WHERE s.kind=?1 ORDER BY s.ts DESC",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = s.query_map(params![kind], |r| {
+        Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+    }) else {
+        return Vec::new();
+    };
+    let mut vus: std::collections::HashSet<Option<String>> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for row in rows.flatten() {
+        if vus.insert(row.0.clone()) {
+            out.push(row);
+            if out.len() >= max {
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// UNIQUE implémentation du SPI : SQLite/SQLCipher, exactement le comportement historique de Plume.
 /// Sans état -> instanciable partout (`SqlcipherStore`), la connexion/`db_path` du tenant est passée par appel.
 #[derive(Clone, Copy, Debug, Default)]

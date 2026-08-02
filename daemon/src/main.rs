@@ -757,26 +757,130 @@ fn soql_ident_ok(s: &str) -> bool {
 
 
 // ---------- intégrations & heartbeat (P4) ----------
-/// Capteurs attendus : (id, libellé, intervalle attendu s, requête « dernière collecte », ÉVÉNEMENTIEL ?).
+
+// ====================================================================================================
+// LA SONDE DE FRAÎCHEUR — CE QU'ELLE OBSERVE EST TYPÉ, SA REQUÊTE EN EST DÉRIVÉE.
+//
+// CE QUI ÉTAIT CASSÉ. Le descripteur d'un capteur portait une CHAÎNE SQL LIBRE, et celle des deux
+// capteurs d'INSTANTANÉ était `SELECT MAX(ts) FROM snapshot WHERE kind='…'` — sans filtre d'hôte, donc
+// la donnée la PLUS FRAÎCHE du parc. MESURÉ le 2026-08-02 par le vrai chemin d'ingestion, parc de 50
+// machines dont 49 se taisent depuis 2 h : la sonde livrée déclarait un âge de 101 s et le statut
+// « actif », alors que la machine la plus en retard avait 7301 s de retard et que 49 hôtes sur 50
+// étaient muets. `check_heartbeats` levait ZÉRO alerte. Un SOC qui affiche « frais » pendant que 49
+// machines sur 50 se sont tues est pire qu'un SOC en retard : il donne une confiance FAUSSE.
+//
+// LA FORME DÉRIVÉE. Une sonde de fraîcheur répond « quand la donnée de ce capteur est-elle arrivée pour
+// la dernière fois ». Sur un parc, la réponse utile n'est PAS celle de la machine la plus fraîche mais
+// celle de la machine la PLUS EN RETARD : `MIN` sur les `MAX(ts)` PAR HÔTE. Propriété qui rend la
+// bascule sûre : sur un déploiement MONO-HÔTE (le défaut PME) il n'y a qu'un groupe, donc
+// `MIN(MAX(ts)) == MAX(ts)` — valeur IDENTIQUE, à la seconde près, aucune bascule de statut.
+//
+// POURQUOI UN TYPE ET PAS UNE RELECTURE DES DEUX LIGNES. Le champ n'est plus une chaîne : c'est ce que
+// la sonde OBSERVE. Il n'existe AUCUNE façon d'ÉCRIRE une sonde d'instantané qui confonde les hôtes —
+// `Sonde::Instantane` ne prend qu'un `kind`, et le `GROUP BY host` est posé par `derniere_collecte()`,
+// pas par l'auteur du descripteur. Un 24ᵉ capteur ajouté demain par quelqu'un qui n'a jamais lu ce
+// fichier est couvert PAR CONSTRUCTION : le défaut ne compile pas.
+//
+// CE QUE ÇA NE FERME PAS (écrit pour être opposable, pas pour rassurer) : les 20 sondes d'EVENTS
+// (`EventFlotteConfondue`) et celle des MÉTRIQUES gardent leur portée « tous hôtes confondus » — dont
+// 12 sont CONTINUES, donc leur statut dépend VRAIMENT de la valeur (les 9 autres sont événementielles :
+// leur statut suit `pipeline_is_fresh`, la valeur ne sert qu'au texte du détail). C'est
+// le MÊME défaut de famille — mesuré identique — mais il n'a PAS le même coût : `snapshot` ne garde
+// qu'une ligne vivante par (kind, hôte) (le heartbeat la TOUCHE au lieu d'en insérer une), donc son
+// `GROUP BY host` porte sur la cardinalité de la FLOTTE ; `event` compte ~9,8 M lignes en production et
+// ces sondes tournent DANS `check_heartbeats`, sous le verrou d'écriture. La portée est donc désormais
+// DÉCLARÉE (et comptée par `snapshot_sonde_instantanee_ancrage_de_portee`) au lieu d'être accidentelle :
+// c'est une dette nommée, pas un angle mort. (Chantier séparé — cf. le rapport P3.2-a.)
+//
+// RÉSIDU ASSUMÉ, écrit parce qu'il compte : une machine DÉCOMMISSIONNÉE continue de tirer la sonde vers
+// le retard tant que ses lignes `snapshot` n'ont pas expiré (`snapshot_days`, 30 j par défaut) — donc une
+// alerte « capteur muet » qui NOMME cette machine reste ouverte jusque-là. L'échange est délibéré et il
+// est asymétrique : le coût est une alerte bruyante mais VRAIE (« une machine qui rapportait ne rapporte
+// plus ») et auto-résorbable, contre un angle mort silencieux qui, lui, ne se résorbe jamais. Le retirer
+// exigerait un INVENTAIRE DÉCLARÉ des machines attendues, que Plume n'a pas (l'inventaire `host_rollup`
+// est DÉCOUVERT : une machine qui se tait entièrement en sortirait, ce qui rouvrirait exactement le trou
+// qu'on ferme).
+// ====================================================================================================
+
+/// CE QU'UNE SONDE DE FRAÎCHEUR OBSERVE — et donc, par dérivation, la requête qu'elle émet.
+pub(crate) enum Sonde {
+    /// INSTANTANÉ (`snapshot`) — un instantané décrit UNE machine (`firewall.sh` hashe le ruleset de
+    /// CETTE machine, `controls.sh` n'inclut un contrôle que s'il s'applique SUR cette machine), donc la
+    /// fraîcheur du PARC est celle de la machine la plus en retard. Le `kind` est LIÉ (paramètre), jamais
+    /// interpolé.
+    Instantane { kind: &'static str },
+    /// EVENT — portée FLOTTE CONFONDUE, DÉCLARÉE (cf. bandeau ci-dessus) : `MAX(ts)` tous hôtes
+    /// confondus. Le descripteur ne porte que le PRÉDICAT ; la table est figée par le variant.
+    EventFlotteConfondue { predicat: &'static str },
+    /// MÉTRIQUES — portée FLOTTE CONFONDUE, DÉCLARÉE. Aucun prédicat (toutes séries confondues).
+    MetriqueFlotteConfondue,
+}
+
+impl Sonde {
+    /// Dernière collecte OBSERVÉE. Le SQL ne SORT PAS de ce type : aucun appelant ne peut le réécrire,
+    /// l'oublier, ni en dériver une variante sans hôte. `None` = jamais rien vu (statut « inconnu »),
+    /// exactement comme un `MAX(ts)` sur table vide auparavant.
+    pub(crate) fn derniere_collecte(&self, conn: &Connection) -> Option<i64> {
+        let r = match self {
+            // MIN sur les MAX PAR HÔTE = la machine la plus EN RETARD. Mono-hôte : un seul groupe ->
+            // valeur strictement identique à l'ancien `MAX(ts) … WHERE kind=…`.
+            Sonde::Instantane { kind } => conn.query_row(
+                "SELECT MIN(l) FROM (SELECT host, MAX(ts) AS l FROM snapshot WHERE kind=?1 GROUP BY host)",
+                params![kind],
+                |r| r.get::<_, Option<i64>>(0),
+            ),
+            Sonde::EventFlotteConfondue { predicat } => conn.query_row(
+                &format!("SELECT MAX(ts) FROM event WHERE {predicat}"),
+                [],
+                |r| r.get::<_, Option<i64>>(0),
+            ),
+            Sonde::MetriqueFlotteConfondue => {
+                conn.query_row("SELECT MAX(ts) FROM metric", [], |r| r.get::<_, Option<i64>>(0))
+            }
+        };
+        r.ok().flatten()
+    }
+
+    /// Les machines dont la dernière collecte est ANTÉRIEURE à `avant_ts`, la plus en retard d'abord.
+    /// Sert à ce que l'alerte « capteur muet » NOMME les machines au lieu de dire « le capteur » :
+    /// sur le parc mesuré (49 muettes sur 50), sans ça l'opérateur ne sait pas où regarder. Bornée à
+    /// `max` entrées + le reste compté par l'appelant. Vide pour les sondes à portée flotte confondue
+    /// (elles n'ont pas de notion d'hôte — c'est précisément la dette déclarée).
+    pub(crate) fn hotes_en_retard(&self, conn: &Connection, avant_ts: i64, max: usize) -> Vec<(String, i64)> {
+        let Sonde::Instantane { kind } = self else { return Vec::new() };
+        let Ok(mut s) = conn.prepare(
+            "SELECT COALESCE(host,''), MAX(ts) AS l FROM snapshot WHERE kind=?1 GROUP BY host \
+             HAVING l < ?2 ORDER BY l ASC",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = s.query_map(params![kind, avant_ts], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) else {
+            return Vec::new();
+        };
+        rows.flatten().take(max).collect()
+    }
+}
+
+/// Capteurs attendus : (id, libellé, intervalle attendu s, SONDE (ce qu'elle observe), ÉVÉNEMENTIEL ?).
 /// FIX #2 — `event_based=true` : capteur dont le débit dépend d'une ACTIVITÉ externe (ici les logins
 /// SSH/sudo/su) et non d'un timer. Un hôte calme = pas de login = silence NORMAL -> ne JAMAIS le déclarer
 /// MUET tant que le pipeline d'ingestion GLOBAL est frais (logique alignée sur compute_freshness, où
 /// crowdsec/fail2ban/ufw/nft sont déjà de type « événement »). `false` = capteur CONTINU (timer/flux
 /// régulier) : un silence > 5x son intervalle est un vrai angle mort -> alerte MUET légitime (auditd
 /// inclus : sur un hôte vivant l'auditd exec/privesc remonte en continu, son silence = daemon mort).
-const COLLECTORS: [(&str, &str, i64, &str, bool); 23] = [
-    ("journal", "journald (auth)", 60, "SELECT MAX(ts) FROM event WHERE source IN ('sshd','sshd-session','sudo','su')", true),
-    ("resources", "ressources/réseau", 60, "SELECT MAX(ts) FROM metric", false),
-    ("firewall", "firewall", 120, "SELECT MAX(ts) FROM snapshot WHERE kind='firewall'", false),
-    ("controls", "Control Catalog", 300, "SELECT MAX(ts) FROM snapshot WHERE kind='controls'", false),
-    ("audit", "auditd (exec/privesc)", 120, "SELECT MAX(ts) FROM event WHERE source='auditd'", false),
+const COLLECTORS: [(&str, &str, i64, Sonde, bool); 23] = [
+    ("journal", "journald (auth)", 60, Sonde::EventFlotteConfondue { predicat: "source IN ('sshd','sshd-session','sudo','su')" }, true),
+    ("resources", "ressources/réseau", 60, Sonde::MetriqueFlotteConfondue, false),
+    ("firewall", "firewall", 120, Sonde::Instantane { kind: "firewall" }, false),
+    ("controls", "Control Catalog", 300, Sonde::Instantane { kind: "controls" }, false),
+    ("audit", "auditd (exec/privesc)", 120, Sonde::EventFlotteConfondue { predicat: "source='auditd'" }, false),
     // YARA (scan) — intégration OFF par défaut : le collecteur host yara.sh est inerte tant que `yara`
     // n'est pas installé / aucune règle n'est déposée (cf. bootstrap PLUME_WITH_YARA=1). event_based=true ->
     // statut 'inconnu' (UI : « en attente ») tant qu'aucun event source=yara n'arrive, et JAMAIS « muet »
     // sur son propre silence (le muet d'un capteur événementiel ne se juge que sur la santé du pipeline
     // global). Quand un match YARA remonte -> 'actif'. Présence ici = la pastille « Non branché : YARA »
     // (web app.js) s'efface d'elle-même (data-driven : l'intégration off devient une vraie intégration).
-    ("yara", "YARA (scan)", 900, "SELECT MAX(ts) FROM event WHERE source='yara'", true),
+    ("yara", "YARA (scan)", 900, Sonde::EventFlotteConfondue { predicat: "source='yara'" }, true),
     // ── FIX (audit cohérence v56) — capteurs ÉVÉNEMENTIELS/ÉPARS : leur débit dépend d'une ACTIVITÉ externe
     // (un ban, un scan, un accès à un fichier sensible, un changement FIM) ET le débruitage les rend calmes
     // par construction (dataaccess = écritures seules, integrity = FIM, k8s-log = sev≥3). event_based=true ->
@@ -784,9 +888,9 @@ const COLLECTORS: [(&str, &str, i64, &str, bool); 23] = [
     // sur la santé du pipeline GLOBAL (pipeline_is_fresh). Sans ce flag ils alerteraient à tort dès qu'ils se
     // taisent — observé sur l'instance : k8s-log calme ~20 h, crowdsec ~3 j, portscan ~7 h, pipeline pourtant
     // frais. su/sudo/sshd sont DÉJÀ couverts (et event_based) par `journal` ci-dessus -> pas de doublon.
-    ("dataaccess", "accès données sensibles (FIM)", 300, "SELECT MAX(ts) FROM event WHERE source='dataaccess'", true),
-    ("integrity", "intégrité fichiers (FIM)", 900, "SELECT MAX(ts) FROM event WHERE source='integrity'", true),
-    ("k8s-log", "logs pods k8s (sev≥3)", 300, "SELECT MAX(ts) FROM event WHERE source='k8s-log'", true),
+    ("dataaccess", "accès données sensibles (FIM)", 300, Sonde::EventFlotteConfondue { predicat: "source='dataaccess'" }, true),
+    ("integrity", "intégrité fichiers (FIM)", 900, Sonde::EventFlotteConfondue { predicat: "source='integrity'" }, true),
+    ("k8s-log", "logs pods k8s (sev≥3)", 300, Sonde::EventFlotteConfondue { predicat: "source='k8s-log'" }, true),
     // DEAD-MAN'S-SWITCH pod-logs (calque EXACT de crowdsec-health) — battement de SANTÉ ÉMIS À CHAQUE RUN par
     // collectors/pod-logs.sh (timer 5 min) MÊME quand 0 ligne sev≥3 : source=k8s-log category=health
     // {files_scanned,lines_scanned,sev3_shipped}. CONTINU (event_based=false) -> son SILENCE > 5x l'intervalle
@@ -794,8 +898,8 @@ const COLLECTORS: [(&str, &str, i64, &str, bool); 23] = [
     // (normal : la ligne `k8s-log` ÉVÉNEMENTIELLE ci-dessus tolère le calme) » de « collecteur pod-logs mort ».
     // La requête matche sur source+category -> NE se confond PAS avec le flux d'events k8s (category=k8s).
     // Avant le 1er battement (PVC neuf) : last_seen NULL -> statut 'inconnu', jamais 'muet'. Pas de seed DB.
-    ("k8s-log-health", "Pod-logs santé (collecteur)", 300, "SELECT MAX(ts) FROM event WHERE source='k8s-log' AND category='health'", false),
-    ("crowdsec", "CrowdSec (décisions)", 3600, "SELECT MAX(ts) FROM event WHERE source='crowdsec'", true),
+    ("k8s-log-health", "Pod-logs santé (collecteur)", 300, Sonde::EventFlotteConfondue { predicat: "source='k8s-log' AND category='health'" }, false),
+    ("crowdsec", "CrowdSec (décisions)", 3600, Sonde::EventFlotteConfondue { predicat: "source='crowdsec'" }, true),
     // DEAD-MAN'S-SWITCH CrowdSec — battement de SANTÉ ÉMIS À CHAQUE RUN par collectors/crowdsec.sh (timer
     // 5 min) MÊME quand 0 ban : source=crowdsec category=health {scenarios_loaded,scenarios_broken,...}.
     // CONTINU (event_based=false, le SEUL de la famille crowdsec) -> son SILENCE > 5x l'intervalle (25 min)
@@ -805,16 +909,16 @@ const COLLECTORS: [(&str, &str, i64, &str, bool); 23] = [
     // source+category -> NE se confond PAS avec le flux de bans (category=network) -> 0 bruit pendant les
     // accalmies de ban normales. Avant le 1er battement (PVC neuf) : last_seen NULL -> statut 'inconnu', jamais
     // 'muet' (la logique CONTINU ne déclenche que sur Some(t) trop ancien). scenarios_broken>0 -> règle v57.
-    ("crowdsec-health", "CrowdSec santé (moteur)", 300, "SELECT MAX(ts) FROM event WHERE source='crowdsec' AND category='health'", false),
-    ("fail2ban", "fail2ban (bans actifs)", 3600, "SELECT MAX(ts) FROM event WHERE source='fail2ban'", true),
-    ("ufw", "UFW (blocages firewall)", 300, "SELECT MAX(ts) FROM event WHERE source='ufw'", true),
-    ("portscan", "port-scan (nft PORTSCAN)", 900, "SELECT MAX(ts) FROM event WHERE source='portscan'", true),
+    ("crowdsec-health", "CrowdSec santé (moteur)", 300, Sonde::EventFlotteConfondue { predicat: "source='crowdsec' AND category='health'" }, false),
+    ("fail2ban", "fail2ban (bans actifs)", 3600, Sonde::EventFlotteConfondue { predicat: "source='fail2ban'" }, true),
+    ("ufw", "UFW (blocages firewall)", 300, Sonde::EventFlotteConfondue { predicat: "source='ufw'" }, true),
+    ("portscan", "port-scan (nft PORTSCAN)", 900, Sonde::EventFlotteConfondue { predicat: "source='portscan'" }, true),
     // ── CONTINUS (event_based=false) : flux réguliers sur un hôte vivant -> un silence > 5x l'intervalle EST
     // un vrai angle mort -> alerte « muet » LÉGITIME (à garder, comme auditd/resources). web = accès/4xx d'un
     // site public (débit soutenu quand sain) ; kube-audit = audit de l'API k8s (flux constant). Ils DOIVENT
     // crier s'ils se taisent. Intervalles généreux pour tolérer les accalmies normales sans faux positif.
-    ("web", "web (accès / 4xx)", 1800, "SELECT MAX(ts) FROM event WHERE source='web'", false),
-    ("kube-audit", "audit API k8s", 120, "SELECT MAX(ts) FROM event WHERE source='kube-audit'", false),
+    ("web", "web (accès / 4xx)", 1800, Sonde::EventFlotteConfondue { predicat: "source='web'" }, false),
+    ("kube-audit", "audit API k8s", 120, Sonde::EventFlotteConfondue { predicat: "source='kube-audit'" }, false),
     // ── DEAD-MAN'S-SWITCH des collecteurs ÉVÉNEMENTIELS SANS compagnon -health (calque EXACT de
     // crowdsec-health / k8s-log-health). Les feeds RÉELS ci-dessus (portscan/ufw/fail2ban/dataaccess/
     // integrity/journal) sont event_based=true -> ils NE crient JAMAIS « muet » sur leur propre silence
@@ -829,12 +933,12 @@ const COLLECTORS: [(&str, &str, i64, &str, bool); 23] = [
     // Intervalles = max(300, cadence_timer) pour garder mute ≥ 25 min et ≥ 5 runs manqués. Chaque tuple obtient
     // AUSSI sa carte dans le panneau intégrations (integrations() est data-driven sur COLLECTORS). CODE-only :
     // aucune migration DB (comme crowdsec-health/k8s-log-health). Les entrées event_based ci-dessus NE bougent PAS.
-    ("portscan-health",   "port-scan santé (nft)",         300, "SELECT MAX(ts) FROM event WHERE source='portscan'   AND category='health'", false),
-    ("ufw-health",        "UFW santé (collecteur)",        300, "SELECT MAX(ts) FROM event WHERE source='ufw'        AND category='health'", false),
-    ("fail2ban-health",   "bans santé (collecteur)",       600, "SELECT MAX(ts) FROM event WHERE source='fail2ban'   AND category='health'", false),
-    ("dataaccess-health", "accès données santé (FIM)",     300, "SELECT MAX(ts) FROM event WHERE source='dataaccess' AND category='health'", false),
-    ("integrity-health",  "intégrité santé (FIM)",         900, "SELECT MAX(ts) FROM event WHERE source='integrity'  AND category='health'", false),
-    ("journal-health",    "journald santé (shipper auth)", 300, "SELECT MAX(ts) FROM event WHERE source='journal'    AND category='health'", false),
+    ("portscan-health",   "port-scan santé (nft)",         300, Sonde::EventFlotteConfondue { predicat: "source='portscan' AND category='health'" }, false),
+    ("ufw-health",        "UFW santé (collecteur)",        300, Sonde::EventFlotteConfondue { predicat: "source='ufw' AND category='health'" }, false),
+    ("fail2ban-health",   "bans santé (collecteur)",       600, Sonde::EventFlotteConfondue { predicat: "source='fail2ban' AND category='health'" }, false),
+    ("dataaccess-health", "accès données santé (FIM)",     300, Sonde::EventFlotteConfondue { predicat: "source='dataaccess' AND category='health'" }, false),
+    ("integrity-health",  "intégrité santé (FIM)",         900, Sonde::EventFlotteConfondue { predicat: "source='integrity' AND category='health'" }, false),
+    ("journal-health",    "journald santé (shipper auth)", 300, Sonde::EventFlotteConfondue { predicat: "source='journal' AND category='health'" }, false),
 ];
 
 

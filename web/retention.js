@@ -257,7 +257,11 @@ async function loadSuppressions() {
   }
   // ---- (3) ÉTAT FIREWALL (hôte) ----
   if (d.firewall && d.firewall.data != null) {
-    wrap.appendChild(suppSectionTitle('État firewall (hôte)', 'snapshot' + (d.firewall.host ? ' · ' + d.firewall.host : '')));
+    // DÉNOMINATEUR EXPLICITE : cette section montrait l'état d'UNE machine sans jamais dire combien il y
+    // en avait (mesuré : 1 hôte rendu pour un parc de 50). `firewall_n_hosts` est le dénominateur.
+    const nfw = d.firewall_n_hosts || 0;
+    wrap.appendChild(suppSectionTitle('État firewall (hôte)', 'snapshot' + (d.firewall.host ? ' · ' + d.firewall.host : '')
+      + (nfw > 1 ? ` · 1 machine sur ${nfw} (voir Flotte pour les autres)` : '')));
     const fw = document.createElement('pre'); fw.style.cssText = 'font-family:var(--mono,monospace);font-size:11px;overflow:auto;max-height:220px;background:var(--bg2,#0002);padding:8px;border-radius:6px;margin:0';
     try { fw.textContent = JSON.stringify(d.firewall.data, null, 2); } catch { fw.textContent = String(d.firewall.data); }
     wrap.appendChild(fw);

@@ -175,6 +175,14 @@ async function refresh() {
 }
 
 
+// DÉNOMINATEUR EXPLICITE (règle des surfaces réconciliées) — un panneau d'INSTANTANÉ montre l'état d'UNE
+// machine ; tant qu'il ne dit pas laquelle ni combien il y en a, il AFFIRME une complétude qu'il n'a pas.
+// L'API rend désormais `host` + `hosts[]` + `n_hosts` (cf. handlers/overview.rs::panel).
+function snapScope(r) {
+  const n = r.n_hosts || 0;
+  if (n <= 1) return r.host ? `hôte ${esc(r.host)}` : '';
+  return `hôte ${esc(r.host || '?')} — <b>1 machine sur ${n}</b>`;
+}
 async function renderFirewall() {
   const r = await api('/panel/firewall');
   const b = $('#firewall .body');
@@ -185,15 +193,25 @@ async function renderFirewall() {
     <div class="kv"><span>DOCKER-USER v4</span><b>${bool(c.docker_user_v4)}</b></div>
     <div class="kv"><span>INPUT v4 / v6</span><b>${bool(c.input_v4)} / ${bool(c.input_v6)}</b></div>`
     : `<div class="kv"><span>Contrôle docker-lockdown</span><b class="muted">n/a (pas d'interface lockdown sur cet hôte)</b></div>`;
-  b.innerHTML = lockdown + `<div class="muted">ruleset ${esc((r.data.ruleset_sha256 || '').slice(0, 12))}... - ${fmtTs(r.ts)}</div>`;
+  const sc = snapScope(r);
+  b.innerHTML = lockdown + `<div class="muted">ruleset ${esc((r.data.ruleset_sha256 || '').slice(0, 12))}... - ${fmtTs(r.ts)}${sc ? ' · ' + sc : ''}</div>`;
 }
 async function renderControls() {
   const r = await api('/panel/controls');
   const b = $('#controls .body');
   if (!r.data || !r.data.controls) { b.innerHTML = '<div class="muted">en attente du capteur (5 min)...</div>'; return; }
+  // `failed` de la machine affichée ; le total PARC est la somme sur `hosts[]` — sans lui, un parc dont
+  // une seule machine est saine se lit « 0 manquant ».
+  const hs = Array.isArray(r.hosts) ? r.hosts : [];
+  const parc = hs.reduce((a, h) => a + ((h.data && h.data.failed) || 0), 0);
+  const enDefaut = hs.filter(h => h.data && h.data.failed > 0).length;
+  const sc = snapScope(r);
+  const total = hs.length > 1
+    ? ` · parc : ${parc} manquant(s) sur ${enDefaut}/${hs.length} machine(s)`
+    : '';
   b.innerHTML = r.data.controls.map(c =>
     `<div class="kv"><span>${esc(c.id)}</span><b class="${c.ok ? 'ok' : 'bad'}">${c.ok ? 'OK ' + ic('check') : 'MANQUANT ' + ic('warn')}</b></div>`
-  ).join('') + `<div class="muted">${r.data.failed || 0} manquant(s) - ${fmtTs(r.ts)}</div>`;
+  ).join('') + `<div class="muted">${r.data.failed || 0} manquant(s) - ${fmtTs(r.ts)}${sc ? ' · ' + sc : ''}${total}</div>`;
 }
 
 

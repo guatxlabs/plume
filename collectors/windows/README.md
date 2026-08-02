@@ -38,6 +38,22 @@ métadonnées d'événements.
 > Autrement dit : sans la ligne 2, la surveillance d'exécution de processus est inexistante ; sans la
 > ligne 1, le pare-feu ne remonte aucun blocage. Les trois commandes ont été exécutées **telles quelles**
 > et fonctionnent (`The command was successfully executed.`, 0,16 s au total).
+>
+> **Un SERVEUR n'audite PAS plus qu'un poste — mesuré, et c'est contre-intuitif.** *Le 2026‑08‑02, sur
+> Windows Server 2022 Standard Évaluation (build 20348.587) fraîchement installé, les **59** sous-catégories
+> rendues par `auditpol /get /category:*` ont été comparées entre **Server Core** et **Desktop Experience** :
+> **aucune différence**, et les trois lignes ci-dessus valent **exactement** ce que vaut un Windows 11 —
+> `Logon` = Succès et Échec, `Process Creation` = **Aucun audit**, `Filtering Platform Connection` =
+> **Aucun audit**. Les trois commandes restent donc **obligatoires** sur un serveur.* Ce que le serveur
+> active en plus par défaut (et qu'un poste client n'a pas été mesuré comme ayant) : `Credential Validation`,
+> `Kerberos Authentication Service`, `Kerberos Service Ticket Operations`, `Directory Service Access`,
+> `Computer/Security Group/User Account Management`, `Audit Policy Change` — **tous en Succès seulement**.
+>
+> **`category=exec` n'est pas VIDE sans la ligne 2 : elle est TROMPEUSE.** *Mesuré : audit `Process Creation`
+> à « Aucun audit », Windows écrit quand même **~23 `4688` à CHAQUE démarrage** (les processus créés avant
+> que LSASS n'applique la politique : `wininit`, `csrss`, `winlogon`, `services`, `lsass`…), tous avec un
+> `CommandLine` **vide**, puis plus rien. Un tableau de bord qui compte les `exec` voit donc un chiffre
+> non nul et stable — et ne surveille rien.*
    ```powershell
    auditpol /set /subcategory:"Filtering Platform Connection" /success:disable /failure:enable   # 5152/5157 (pare-feu)
    auditpol /set /subcategory:"Process Creation" /success:enable                                  # 4688
@@ -46,8 +62,22 @@ métadonnées d'événements.
 
 ## Configuration
 
-Créez un jeton sur le central : `plume-daemon token poste-win01`, puis renseignez
-soit des variables d'environnement, soit `C:\ProgramData\plume\plume.conf` :
+Créez un jeton sur le central — **avec le nom de la machine en 2ᵉ argument**, sinon le jeton n'est
+lié à **aucun** hôte :
+
+```sh
+plume-daemon token poste-win01 POSTE-WIN01      # 2e argument = l'hôte AUQUEL le jeton est lié
+```
+
+> **La forme sans hôte (`plume-daemon token poste-win01`) laisse usurper n'importe quelle machine.**
+> Elle était écrite ici jusqu'au 2026‑08‑02. *Mesuré ce jour‑là depuis un Windows Server 2022 : avec le
+> jeton produit par la commande sans hôte, une enveloppe portant `"host":"CONTROLEUR-DE-DOMAINE-USURPE"`
+> est acceptée (**HTTP 202**) et l'événement est **stocké sous ce nom‑là**. Avec un jeton **lié**, la même
+> enveloppe est acceptée mais le `host` est **réécrit** vers l'hôte du jeton (`WS22-LAB`) : le liage MORD.*
+> Le liage est aussi ce qui autorise le responder à agir sur cet hôte. **Une seule exception connue, côté
+> serveur** : `/api/metrics/prom?host=` écrit le `?host=` sans consulter le liage (cf. `docs/CIM.md`).
+
+Puis renseignez soit des variables d'environnement, soit `C:\ProgramData\plume\plume.conf` :
 
 ```ini
 PLUME_CENTRAL=https://soc.central:7000
@@ -129,6 +159,96 @@ bureautique c'est absorbable ; sur un serveur chargé ou une VDI dense, préfér
 > **au plus un battement par heure**. *Mesuré : 6 runs consécutifs → 1 seul événement `category=health`
 > stocké.* Un dead-man's-switch réglé sur « pas de battement depuis 10 min » lèverait de faux positifs.
 
+## Windows Server 2022 : ce que le serveur change (mesuré le 2026‑08‑02)
+
+*Deux VM QEMU 2 vCPU / 4 Gio, Windows Server 2022 Standard Évaluation build 20348.587 : `WS22-LAB` en
+**Server Core** (sans interface graphique) et `WS22-GUI` en **Desktop Experience**, promue **contrôleur de
+domaine** en fin de campagne. Central plume compilé depuis ce dépôt, chemin réseau privé.*
+
+| | Server Core | Desktop Experience | Windows 11 (fiche précédente) |
+|---|---|---|---|
+| installation sans TPM ni Secure Boot | **oui** — VM lancée sur OVMF nu, aucun `swtpm` | **oui** | non : `swtpm` absent = friction |
+| durée d'installation sans surveillance | **216 s** (mise sous tension → 1ᵉʳ contact du harnais dans l'invité) | même ordre — **non chronométré à la même précision** (sonde relevée par intervalle : entre 250 s et 341 s) | non chiffrée |
+| `auditpol` par défaut (59 sous-catégories) | *(identiques, cf. encadré des prérequis)* | **identique à Core** | identique sur les 3 lignes mesurées |
+| collecteur PowerShell | **fonctionne intégralement** | fonctionne | fonctionne |
+| durée d'un run | 6,7 s à 11,2 s | **9,3 s** | 35 s |
+| crête mémoire du run | **177,3 Mio** | **176,8 Mio** | 191,5 Mio |
+| CPU d'un run | 9,5 s (141 % d'un cœur : PowerShell est multi-thread) | 8,4 s (90 %) | 17,4 s (49 %) |
+| agent Rust en service | **7,9 Mio** | 7,8 Mio | 9,6 Mio |
+| mise sous tension → 1ᵉʳ event, agent Rust | **8,6 s** (2ᵉ mesure : 11,1 s) | — | 24,6 s *(convention non consignée)* |
+| mise sous tension → 1ᵉʳ event, collecteur ps1 | **138,4 s** | — | 240,2 s *(idem)* |
+
+> **Convention de la ligne « mise sous tension »** : t0 = **lancement de la VM, machine éteinte avant**.
+> Un premier essai chronométré depuis l'**ordre de redémarrage** a donné 17,6 s / 112,9 s — chiffres
+> **écartés** : l'arrêt propre de Windows produit des événements que l'agent expédie *pendant* l'extinction,
+> donc ils ne mesurent pas le délai de reprise. La fiche Windows 11 ne consigne pas laquelle des deux
+> conventions elle emploie : les 24,6 s / 240,2 s ne sont **pas** directement comparables aux chiffres
+> ci-dessus, seul l'ordre de grandeur et le rapport agent/collecteur le sont.
+>
+> **Le 1ᵉʳ événement du serveur n'est ni de la santé, ni catégorisé.** *Mesuré : le premier événement de
+> l'agent après mise sous tension vient du canal `Application` (Core) et arrive avec une catégorie
+> **VIDE** — voir plus bas les 36,7 % d'événements sans catégorie. Le premier événement du collecteur
+> PowerShell, lui, est bien `windows-security`/`auth`, comme sur Windows 11.*
+
+**Server Core ne coûte RIEN au collecteur.** *Mesuré : `Import-Certificate` (0,41 s), `schtasks /Create`
+(0,06 s), `Get-NetFirewallProfile`, `Get-MpComputerStatus` (Defender **est** présent et actif par défaut),
+`Get-WinEvent`, `Expand-Archive` — tout répond sur Core. L'agent Rust y installe et démarre son service SCM
+(`install` → `Running`), et `test-ship` répond **202**.* Aucune dépendance à l'interface graphique n'a été
+trouvée, dans le collecteur comme dans l'agent.
+
+> ### Sur un contrôleur de domaine, le collecteur PowerShell est AVEUGLE à Kerberos
+> *Mesuré après promotion de `WS22-GUI` en contrôleur du domaine `lab.plume`
+> (`Install-WindowsFeature AD-Domain-Services` **43,4 s**, `Install-ADDSForest` **54,9 s**, +1 redémarrage,
+> DC opérationnel **70 s** après) : la création d'un compte et deux authentifications ont produit **2 × 4768**
+> (ticket TGT) et **8 × 4769** (ticket de service) dans le journal `Security`. Côté SOC, ces événements
+> n'existent QUE par l'agent Rust (`WinEventLog:Security`, `category=auth`) : le collecteur PowerShell en a
+> remonté **0**, parce que sa liste d'identifiants ne contient ni `4768`, ni `4769`, ni `4771`, ni `4776`.*
+> Sur un DC — c'est-à-dire là où se joue l'authentification de tout le parc — **utilisez l'agent Rust**, ou
+> ajoutez ces identifiants à l'appel `Collect-Log` du journal Security.
+>
+> **La promotion en DC n'ajoute AUCUNE couverture d'audit.** *Mesuré : les 59 sous-catégories avant/après
+> `dcpromo` ne diffèrent que des 2 lignes activées à la main par les commandes des prérequis. La stratégie
+> « Default Domain Controllers » ne réveille donc rien de ce que Plume attend — et, bonne nouvelle
+> symétrique, elle n'écrase pas non plus les réglages `auditpol` posés avant la promotion.*
+
+> ### Sysmon sur un serveur : 2 s à installer, 11 Mio — et il rend la ligne de commande sans AUCUNE GPO
+> *Mesuré : `Sysmon64.exe -accepteula -i` (v15.21) = **2,11 s** sur Core, **1,6 s** sur Desktop
+> (désinstallation `-u` : 3,5 s) ; le service tourne à **11,0 Mio** et 0,03 s de CPU cumulé après démarrage.
+> Sur `WS22-LAB`, machine dont **aucune** politique d'audit n'a jamais été touchée (`Process Creation` =
+> « Aucun audit », GPO ligne de commande **absente**), l'appât `APPAT-CORE-SYSMON-…` passé en argv d'un
+> `cmd.exe` n'a produit **aucun** `4688` — mais **2 événements Sysmon ID 1 le portant en clair**.*
+> Autrement dit : **installer Sysmon suffit à faire remonter toutes les lignes de commande au SOC**, secrets
+> en argv compris, sans qu'aucun réglage d'audit n'ait été fait. Avec la GPO *« Include command line… »*
+> activée (et `gpupdate /force` — *mesuré : sans lui le réglage ne mord pas*), l'appât est ressorti par
+> **deux** chemins indépendants : `windows-security`/`exec` (ce script) et `WinEventLog:Security`/`exec`
+> (agent Rust) ; sans elle, **0** des `4688` portait une ligne de commande non vide.
+>
+> ⚠️ **Sysmon installé APRÈS l'agent** : ses événements sont bien lus (le canal est dans la liste par
+> défaut de l'agent, et le signet l'inclut dès le run suivant) — c'est le piège de flotte ci-dessous, et
+> non un problème de canal, qui les faisait disparaître.
+
+> ### Le piège de la FLOTTE : deux serveurs se volaient leurs événements (corrigé le 2026‑08‑02)
+> `event.dedup` est **UNIQUE au niveau de la base** du central, pas de l'hôte, et les identifiants
+> d'enregistrement du journal Windows **repartent de 1 sur chaque machine**. Les clés produites ici
+> (`windows-security-<record_id>`, `windows-agent-health-<heure>`, `windows-fwprofile-<profil>-<heure>`…)
+> ne portaient **pas** le nom de l'hôte : la 2ᵉ machine enrôlée voyait ses événements écartés **en silence**
+> par l'`INSERT OR IGNORE` du central.
+> *Mesuré avec deux serveurs sur un même central : sur les **311** enregistrements du canal Sysmon de
+> `WS22-LAB`, **266 sont arrivés et 45 ont disparu** — exactement les 45 que `WS22-GUI` avait déjà expédiés ;
+> et le battement de santé horaire de `WS22-GUI` n'a **jamais** été stocké, la clé étant déjà prise.*
+> **Correctif** : le nom de l'hôte est préfixé une fois pour toutes dans `Add-Event` (et dans
+> `winxml_to_event` côté agent) — impossible d'oublier l'hôte en ajoutant une source.
+> *Vérifié APRÈS correctif, sur les mêmes machines : `WS22-LAB` porte désormais **323 clés Sysmon
+> continues de 1 à 323** (plus aucun trou), et `WS22-GUI` a enfin son battement
+> (`WS22-GUI-windows-agent-health-…`).* **Conséquence de mise à jour** : les clés changent de forme, donc
+> le premier run après mise à jour ré-expédie une fois les événements encore dans la fenêtre du filigrane
+> (doublons ponctuels, jamais de perte).
+> ⚠️ **Le même piège vaut pour tout émetteur** dont la clé n'inclut pas l'hôte : c'est une propriété du
+> central, pas du collecteur Windows. *Lecture de code (NON mesurée) : plusieurs collecteurs Linux
+> (`update-<image>-<digest>`, `ban-<jail>-<ip>-<heure>`, `clamav-<fichier>-<signature>`…) forment des clés
+> identiques d'une machine à l'autre et sont donc exposés au même effacement silencieux — à vérifier par la
+> mesure avant de conclure.*
+
 ## Limites connues, mesurées — à lire avant de déployer en flotte
 
 1. **Aucun spool : un POST qui échoue perd le lot.** `Flush-Events` journalise un `Write-Warning` puis
@@ -151,6 +271,13 @@ bureautique c'est absorbable ; sur un serveur chargé ou une VDI dense, préfér
    garde reste verte tout en sous-couvrant ce chemin — c'est une limite de méthode, pas une dérive.
 4. **Sysmon n'est pas lu.** Ce script ne touche pas au canal `Microsoft-Windows-Sysmon/Operational`.
    Pour de la télémétrie Sysmon, il faut l'agent Rust (`agent/README.md`).
+5. **Le champ CIM `action` n'est JAMAIS posé.** *Mesuré le 2026‑08‑02 sur les deux Windows Server 2022 :
+   **0 des 1 505** événements de ce collecteur porte `action` — comme les **0 / 6 962** de l'agent Rust
+   (`docs/CIM.md` §4c en fait pourtant le vocabulaire neutre de composition).* En revanche ce collecteur
+   pose **toujours** une `category` (**0 / 1 505** sans catégorie), là où l'agent en laisse 36,7 % vides :
+   sur ce point précis, le collecteur PowerShell est le plus complet des deux.
+6. **Kerberos manque sur un contrôleur de domaine** (`4768`/`4769`/`4771`/`4776` absents de la liste
+   d'identifiants) — mesuré, cf. la section Windows Server 2022 ci-dessus.
 
 ## Étendre
 

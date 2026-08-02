@@ -218,6 +218,23 @@ c'est le comportement par défaut, pensé pour un agent endpoint (démarrage au 
 | **macOS (launchd)** | pose le `LaunchDaemon` plist + `launchctl bootstrap` (démarre + au boot) | `plume-agent uninstall` = `bootout` + suppression du plist |
 | **Windows (SCM)** | `CreateService` (start=auto) + démarrage | `plume-agent uninstall` = `stop` + `DeleteService` |
 
+> ### `uninstall` dit ce qu'il a fait — et ce qu'il n'a pas fait (corrigé le 2026‑08‑02)
+> *Mesuré ce jour‑là sur une machine où **rien** n'était installé : `plume-agent uninstall` affichait
+> « Failed to disable unit: … », puis « Reload daemon failed: … », puis **« service retiré :
+> plume-agent.service »**, et sortait **0**. Zéro fichier supprimé, deux commandes en échec, un succès
+> annoncé.* Chaque étape était un `let _ = …status();` : l'échec n'était ni vérifié ni remonté.
+> Le retrait est désormais **OBSERVÉ** — chaque artefact est sondé, agi, puis **re‑sondé** — et le
+> rapport nomme les trois issues sans les confondre :
+> ```
+>   retiré   : service plume-agent.service (arrêté et désactivé)
+>   absent   : /etc/systemd/system/plume-agent.service (rien à retirer)
+>   ÉCHEC    : … — toujours ACTIF après `systemctl disable --now` (droits root ?)
+> ```
+> Un artefact qui **résiste** fait sortir la commande **non nul** (c'est le cas qui était avalé) ;
+> « rien n'était installé » sort 0 mais ne prétend **jamais** avoir retiré quoi que ce soit.
+> *Vérifié à l'exécution sur Linux uniquement ; les backends launchd/SCM ont la même structure et sont
+> compilés par `agent-ci` sur `macos-latest`/`windows-latest`, non exécutés.*
+
 > **Auto-start = voulu.** Un endpoint doit collecter en continu, y compris après reboot. Si tu veux
 > **installer sans démarrer**, pose l'unité toi-même (ou `install` puis `sudo systemctl disable --now
 > plume-agent`). Pour un déploiement **sans service** (cron/timer/foreground), n'utilise pas `install` :

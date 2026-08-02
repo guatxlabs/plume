@@ -15,7 +15,7 @@
 //! Cross-compile depuis Linux : `cargo build --target x86_64-pc-windows-gnu` (ou `cargo-xwin` MSVC).
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
 
-use super::{ServiceManager, ServiceSpec};
+use super::{Removal, ServiceManager, ServiceSpec};
 
 pub const SERVICE_NAME: &str = "plume-agent";
 pub const DISPLAY_NAME: &str = "Plume endpoint agent (#16)";
@@ -69,7 +69,7 @@ impl ServiceManager for WindowsScm {
         }
     }
 
-    fn uninstall(&self) -> anyhow::Result<()> {
+    fn uninstall(&self) -> anyhow::Result<Removal> {
         #[cfg(target_os = "windows")]
         {
             imp::uninstall()
@@ -111,7 +111,7 @@ pub fn dispatch_if_service(config_path: &std::path::Path) -> anyhow::Result<bool
 #[cfg(target_os = "windows")]
 mod imp {
     use super::{DISPLAY_NAME, SERVICE_NAME};
-    use crate::service::ServiceSpec;
+    use crate::service::{Disposition, Removal, ServiceSpec};
     use std::ffi::OsString;
     use std::path::Path;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -162,17 +162,52 @@ mod imp {
         Ok(())
     }
 
-    pub fn uninstall() -> anyhow::Result<()> {
-        let manager =
-            ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-        let service = manager.open_service(
+    /// RETRAIT OBSERVÉ (cf. `Removal`). DEUX pièges Windows sont dits ici plutôt que devinés :
+    ///  1. `open_service` ÉCHOUE si le service n'existe pas — c'est le seul backend qui, avant ce
+    ///     correctif, était déjà BRUYANT sur « rien à retirer » (erreur, code de retour non nul).
+    ///     Il devient maintenant HONNÊTE : « absent », rendu 0, sans prétendre avoir retiré.
+    ///  2. `DeleteService` marque le service pour suppression ; s'il tourne encore (arrêt lent, ou
+    ///     handle ouvert par un autre outil), il ne DISPARAÎT qu'ensuite. On re-sonde donc l'état
+    ///     après `stop()`+`delete()` et on ne dit `Removed` que si le service ne s'ouvre plus.
+    /// NON VÉRIFIÉ À L'EXÉCUTION (aucune VM Windows allumée) : ce qui est prouvé, c'est que ça
+    /// compile et lie sur `windows-latest` (agent-ci).
+    pub fn uninstall() -> anyhow::Result<Removal> {
+        let mut r = Removal::default();
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+        let opened = manager.open_service(
             SERVICE_NAME,
             ServiceAccess::STOP | ServiceAccess::DELETE | ServiceAccess::QUERY_STATUS,
-        )?;
+        );
+        let service = match opened {
+            Ok(s) => s,
+            Err(_) => {
+                r.note(format!("service SCM {SERVICE_NAME}"), Disposition::Absent);
+                return Ok(r);
+            }
+        };
         let _ = service.stop(); // best-effort (peut déjà être arrêté)
-        service.delete()?;
-        println!("service retiré : {SERVICE_NAME}");
-        Ok(())
+        if let Err(e) = service.delete() {
+            r.note(
+                format!("service SCM {SERVICE_NAME}"),
+                Disposition::Failed(format!("DeleteService : {e} (élévation requise ?)")),
+            );
+            return Ok(r);
+        }
+        drop(service);
+        // RE-SONDE : le service ne doit plus s'ouvrir. S'il s'ouvre encore, la suppression est
+        // seulement EN ATTENTE — le dire, plutôt que de l'appeler « retiré ».
+        match manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS) {
+            Ok(_) => r.note(
+                format!("service SCM {SERVICE_NAME}"),
+                Disposition::Failed(
+                    "suppression EN ATTENTE : le service est encore enregistré (processus vivant ou \
+                     handle ouvert) — il partira à l'arrêt du service ou au redémarrage"
+                        .into(),
+                ),
+            ),
+            Err(_) => r.note(format!("service SCM {SERVICE_NAME}"), Disposition::Removed),
+        }
+        Ok(r)
     }
 
     pub fn status() -> anyhow::Result<String> {

@@ -206,8 +206,17 @@ The **shell collectors** (43 tracked scripts) get a `bash -n` parse gate (`shell
 
 1. Open an issue first for anything non-trivial, so we can agree on the approach.
 2. One logical change per PR. Keep the diff focused.
-3. Include tests. Preserve or improve coverage; keep the default count at **758** (CI asserts it).
-   If you touch `cold_store`, the `cold_tier` count (**949**) is asserted too.
+3. Include tests. Preserve or improve coverage; keep the default count CONSTANT — the value lives
+   in `EXPECTED_TESTS` (`.github/workflows/ci.yml`) and nowhere else, so read it there.
+   If you touch `cold_store`, `EXPECTED_COLD_TESTS` is asserted the same way.
+   <!-- Ces deux lignes ont porté « 758 » et « 949 » jusqu'au 2026-08-02, quand les compteurs vivants
+        valaient 866 et 1061 : 108 et 112 de retard, dans le fichier même qui INTERDIT de recopier la
+        valeur. La garde `check_no_duplicated_test_count.py` restait verte — c'est son résidu
+        documenté (jambe A ne cherche que la valeur COURANTE ; jambe B n'attrape que la forme
+        « nombre PUIS mot », or ici le nombre suivait le mot et était en gras markdown). Élargir la
+        jambe B a été MESURÉ le 2026-08-02 : 162 candidats pour 2 vrais — donc NON élargie, et le
+        remède est de ne plus écrire de nombre ici du tout. -->
+
 4. Run `cargo test` (default) and, for gated work, the feature suite separately; run
    `cargo clippy`. All must pass. "The default suite is green" is **not** evidence for gated
    code — see the mode-0 invariant above.

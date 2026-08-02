@@ -1002,8 +1002,44 @@ fn seed_rollup_dashboard(conn: &Connection) {
 // `(StatusCode::X, Json(json!({"error": msg}))).into_response()` : statut + corps `{"error":"<msg>"}`
 // BYTE-IDENTIQUES aux sites inline qu'elles remplacent (json! sérialise `String`/`&str` à l'identique).
 // `err_json` est la base (statut variable) ; les 4 nommées figent le statut usuel.
+/// UNE 500 LAISSE UNE TRACE QU'ON PEUT SUIVRE — des deux côtés.
+///
+/// CE QUI ÉTAIT CASSÉ (établi le 2026-08-02 par LECTURE et COMPTAGE, hors tests et hors
+/// commentaires) : **234** chemins rendent un 5xx — **193** appels à `server_err(` et **41**
+/// `INTERNAL_SERVER_ERROR` littéraux —, **aucun** TraceLayer / access-log n'est monté (déjà noté
+/// dans `ingest/pubsub.rs`), et le mot `request_id` n'existe nulle part dans la couche HTTP. Le
+/// client recevait `{"error":"erreur interne"}` et le serveur ne gardait **rien** : impossible de
+/// relier le ticket d'un utilisateur à ce qui s'est passé sur la machine.
+///
+/// LA FORME DÉRIVÉE, ET SA PORTÉE EXACTE. On n'instrumente pas 234 sites : `err_json` est le point de
+/// passage des erreurs JSON (`bad_req`/`forbidden`/`not_found`/`server_err` s'y réduisent), donc les
+/// **197** chemins qui passent par lui — les 193 `server_err(` + 4 `err_json(INTERNAL_SERVER_ERROR…)`
+/// — sont tracés d'un coup, y compris ceux qu'on ajoutera : la condition n'énumère aucun code, c'est
+/// `code.is_server_error()`. Les 4xx (faute du client) gardent EXACTEMENT leur forme d'avant : aucun
+/// champ ajouté, aucune ligne de journal.
+///
+/// CE QUE ÇA NE COUVRE PAS, COMPTÉ : **37** sites construisent leur 500 SANS passer par ici —
+/// `(StatusCode::INTERNAL_SERVER_ERROR, "…").into_response()`, dont 10 dans `tenants.rs`, 7 dans
+/// `handlers/admin_ui.rs`, 4 dans `handlers/notifiers.rs`, 4 dans `handlers/detection.rs`. Ils ne
+/// rendent pas du JSON (corps texte nu) : les faire passer par `err_json` CHANGERAIT leur contrat de
+/// réponse, ce qui n'est pas un correctif de traçabilité mais une modification d'API. Dette DÉCLARÉE
+/// et comptée, pas un angle mort.
+///
+/// L'identifiant est court, greppable, et rendu au client : `plume-e<pid>-<n>`. Le journal du daemon
+/// n'est PAS collecté par le collecteur `journal` (il ne suit que sshd/sudo/su) -> aucune boucle
+/// d'auto-ingestion.
+static ERR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 fn err_json(code: StatusCode, msg: impl Into<String>) -> Response {
-    (code, Json(json!({ "error": msg.into() }))).into_response()
+    let msg = msg.into();
+    if code.is_server_error() {
+        let n = ERR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id = format!("plume-e{}-{n}", std::process::id());
+        // La SEULE trace serveur d'un 5xx. `eprintln!` (stderr -> journald/conteneur), comme le reste
+        // du diagnostic du daemon : aucune dépendance de journalisation ajoutée.
+        eprintln!("[{id}] HTTP {} : {msg}", code.as_u16());
+        return (code, Json(json!({ "error": msg, "id": id }))).into_response();
+    }
+    (code, Json(json!({ "error": msg }))).into_response()
 }
 /// #59 — valeur d'un flag CLI `--k <v>` dans argv (None si absent/sans valeur). Helper des sous-commandes.
 fn flag_val(args: &[String], flag: &str) -> Option<String> {
@@ -1031,6 +1067,61 @@ impl JsonBody for serde_json::Value {
     fn bool_field(&self, k: &str, def: bool) -> bool { self.get(k).and_then(|v| v.as_bool()).unwrap_or(def) }
 }
 
+
+/// Sous-commandes qui n'existent QUE dans certains builds. Le dispatch de `cold-backup-plan` est
+/// `#[cfg(feature = "cold_tier")]` : sans la feature, la branche N'EXISTE PAS. L'aide doit le dire
+/// (« indisponible » plutôt que de la promettre), et le rejet doit le dire aussi — sinon un
+/// opérateur qui suit la doc du tier froid lit « argument inconnu » et croit à une faute de frappe.
+#[cfg(feature = "cold_tier")]
+const SUBCOMMANDS_COLD: [(&str, &str); 1] =
+    [("cold-backup-plan", "cold-backup-plan — plan de sauvegarde du tier froid (lecture seule)")];
+#[cfg(not(feature = "cold_tier"))]
+const SUBCOMMANDS_COLD: [(&str, &str); 1] = [(
+    "cold-backup-plan",
+    "cold-backup-plan — INDISPONIBLE dans ce binaire (compilé sans `--features cold_tier`)",
+)];
+
+/// LES SOUS-COMMANDES DU DAEMON, avec leur ligne d'aide. Sert UNIQUEMENT à l'affichage : la
+/// détection d'une sous-commande INCONNUE, elle, n'est PAS une comparaison à cette liste (cf. la
+/// garde en bas de `main`). La liste est tenue alignée sur le code par
+/// `aide_cli_liste_les_memes_sous_commandes_que_le_dispatch` (elle lit `main.rs`).
+const SUBCOMMANDS: [(&str, &str); 16] = [
+    ("hashpw", "hashpw [<mdp>] — hash argon2 d'un mot de passe (stdin si omis)"),
+    ("respond", "respond — boucle du moteur de réponse (service séparé)"),
+    ("verify", "verify — vérifie la chaîne d'intégrité du ledger"),
+    ("ledger-export", "ledger-export [--from <id>] [--out <f>] — export JSONL du ledger"),
+    ("ledger-verify-export", "ledger-verify-export <f> — vérifie un export hors-ligne"),
+    ("scim-token", "scim-token — génère/affiche le jeton SCIM"),
+    ("token", "token <sous-commande> — jetons d'agent"),
+    ("sigma-import", "sigma-import <chemin> — importe des règles Sigma"),
+    ("retention", "retention — applique la rétention maintenant"),
+    ("purge", "purge — purge ciblée (cf. docs/PURGE.md)"),
+    ("backup", "backup [--out <f>] — sauvegarde chiffrée"),
+    ("restore", "restore <f> — restaure une sauvegarde"),
+    ("backup-verify", "backup-verify <f> — vérifie une sauvegarde sans restaurer"),
+    ("backup-prune-plan", "backup-prune-plan — plan de purge des sauvegardes (lecture seule)"),
+    ("migrate-check", "migrate-check — compare le schéma live au code (lecture seule)"),
+    ("db-stats", "db-stats — occupation disque SQLite (lecture seule)"),
+];
+
+fn usage() -> String {
+    let mut s = String::from(
+        "plume-daemon — SOC/XDR souverain.\n\n\
+         Usage :\n  \
+         plume-daemon                    lance le serveur (aucun argument)\n  \
+         plume-daemon <sous-commande>    outil ponctuel, puis sortie\n  \
+         plume-daemon --version          version + version de schéma attendue\n\n\
+         Sous-commandes :\n",
+    );
+    for (_, aide) in SUBCOMMANDS.iter().chain(SUBCOMMANDS_COLD.iter()) {
+        s.push_str(&format!("  {aide}\n"));
+    }
+    s.push_str(
+        "\nConfiguration : variables PLUME_* (cf. README.md). `<sous-commande> --help` quand elle\n\
+         en propose une (p. ex. migrate-check).\n",
+    );
+    s
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -1548,6 +1639,48 @@ fn main() {
         println!("  live     = {:.1} MiB", mib(total - free));
         println!("  events   = {events}");
         return;
+    }
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // ON N'ARRIVE ICI QUE SI AUCUNE SOUS-COMMANDE N'A RÉCLAMÉ L'ARGUMENT.
+    //
+    // CE QUI ÉTAIT CASSÉ (mesuré le 2026-08-02 sur le binaire release) : tout argument non reconnu
+    // TOMBAIT dans le lancement du serveur. `plume-daemon --help` ne paniquait pas — il MIGRAIT LA
+    // BASE, imprimait un JETON D'INSTALLATION à usage unique et se mettait à écouter sur :7000 ; il a
+    // fallu le TUER (rc=124 sous `timeout 8`). Idem pour `--version`, `help`, et — c'est le cas qui
+    // coûte — une sous-commande MAL ORTHOGRAPHIÉE : `plume-daemon bakcup` dans un timer de
+    // maintenance ne sauvegarde rien et laisse un SECOND serveur vivant sur la machine.
+    //
+    // LA GARDE EST DÉRIVÉE, PAS ÉNUMÉRÉE : chaque bloc de sous-commande ci-dessus `return`/`exit`.
+    // Atteindre cette ligne avec un `argv[1]` signifie donc, PAR CONSTRUCTION, qu'aucune branche ne
+    // l'a reconnu — c'est le COMPLÉMENT calculé par le flot de contrôle. Une 18ᵉ sous-commande
+    // ajoutée demain est couverte sans que personne ne pense à cette ligne. `SUBCOMMANDS` ne sert
+    // qu'à AFFICHER l'aide (et un test la maintient alignée sur le dispatch).
+    //
+    // Le serveur, lui, se lance SANS aucun argument — c'est ce que font `systemd/plume-daemon.service`
+    // (`ExecStart=/usr/local/bin/plume-daemon`) et l'`ENTRYPOINT ["plume-daemon"]` du Dockerfile ;
+    // `plume-respond.service` passe `respond`, qui est une sous-commande. Aucun appelant de
+    // production ne passe autre chose : la garde ne peut pas casser un déploiement existant.
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    if let Some(arg) = args.get(1) {
+        if matches!(arg.as_str(), "-h" | "--help" | "help") {
+            print!("{}", usage());
+            return;
+        }
+        if matches!(arg.as_str(), "-V" | "--version" | "version") {
+            println!("plume-daemon {} (schéma {CODE_SCHEMA_MAX})", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        // Une sous-commande RÉELLE mais absente de CE build (feature désactivée) : le dire, plutôt
+        // que « argument inconnu ». On n'arrive ici que si sa branche `cfg` n'a pas été compilée.
+        if SUBCOMMANDS_COLD.iter().any(|(n, _)| *n == arg.as_str()) {
+            eprintln!(
+                "plume-daemon: « {arg} » n'existe que dans un binaire compilé avec \
+                 `--features cold_tier` — celui-ci ne l'est pas. AUCUN serveur n'a été lancé."
+            );
+            std::process::exit(2);
+        }
+        eprint!("plume-daemon: argument inconnu « {arg} » — AUCUN serveur n'a été lancé.\n\n{}", usage());
+        std::process::exit(2);
     }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()

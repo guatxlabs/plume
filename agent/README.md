@@ -64,6 +64,18 @@ vers le endpoint d'ingest Plume — le même contrat de fil que les collecteurs 
 - ACK = **HTTP 202** (204 pour un journal vide). Auth : `Authorization: Bearer <token>` ou Basic.
 - mTLS optionnel : CA interne (`[tls].ca_cert`) + cert client (`[tls].client_cert/client_key`).
 
+> ### Certificat du central refusé — ce qui marche, mesuré (2026‑08‑02)
+> `test-ship` disait `io: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))` : ni le mot
+> « certificat » en clair, ni le réglage qui corrige. Le message **nomme désormais le remède**, et
+> celui-ci a été **exécuté** contre un `openssl s_server` avant d'être écrit :
+> | Configuration du central | `[tls]` de l'agent | Résultat mesuré |
+> | --- | --- | --- |
+> | CA interne (CA:TRUE) signant une **feuille** (CA:FALSE) | `ca_cert = /chemin/ca.pem` | **accepté** |
+> | feuille **auto‑signée** (CA:FALSE) | `ca_cert = /chemin/de/cette/feuille.pem` | **accepté** |
+> | feuille auto‑signée, rien de déclaré | — | refusé (`UnknownIssuer`) |
+> | certificat **de CA** servi comme certificat serveur | `ca_cert` = ce même fichier | **toujours refusé** (`CaUsedAsEndEntity`) — c'est le CENTRAL qu'il faut corriger (servir une feuille signée par la CA) |
+> | n'importe laquelle | `insecure = true` | accepté — **dev uniquement**, aucune vérification |
+
 ## Configuration (TOML)
 
 ```toml
@@ -190,20 +202,36 @@ umask 077; printf 'endpoint = "https://soc.example.com"\ntoken = "%s"\n' '<token
 # 2. tester, installer, vérifier
 plume-agent test-ship --config /etc/plume/agent.toml   # connectivité/auth/TLS (1 event de santé)
 sudo /usr/local/bin/plume-agent install --config /etc/plume/agent.toml
-systemctl is-active plume-agent                        # <- VÉRIFIEZ : `install` sort 0 sans le faire
 plume-agent status
 sudo plume-agent uninstall
 ```
 
-> ### ⚠️ Deux pièges d'installation (mesurés le 2026‑08‑01, Ubuntu 24.04.4 amd64)
-> **1. Ne lancez pas `install` sur un binaire resté dans `/home`.** `install` écrit un `ExecStart=`
-> pointant sur le **chemin courant** du binaire, sans le copier — et la même unité pose
-> `ProtectHome=yes`. Un binaire fraîchement compilé dans `~/plume/agent/target/release/` donne donc une
-> unité **en boucle de redémarrage** (`status=203/EXEC`). *Mesuré : `install` affiche
-> « service installé et démarré » et sort **0** alors que le service échoue — d'où le
-> `systemctl is-active` ci‑dessus.* Copiez le binaire dans `/usr/local/bin` et la config dans
-> `/etc/plume` d'abord.
-> **2. `--token TOK` met le secret dans l'argv de `sudo`**, que `sudo` journalise et que le collecteur
+> ### `install` dit ce qu'il a posé — et refuse ce qui ne pourrait pas marcher (corrigé le 2026‑08‑02)
+> **1. Un binaire resté dans `/home` (ou `/root`, ou `/tmp`) est désormais REFUSÉ, avant toute
+> écriture.** `install` écrit un `ExecStart=` pointant sur le **chemin courant** du binaire, sans le
+> copier — et la même unité pose `ProtectHome=yes` / `PrivateTmp=yes`. *Mesuré le 2026‑08‑02 (systemd
+> 261, sonde différentielle à une seule variable) : même exécutable, sans `ProtectHome` le service
+> tourne (`ExecMainStatus=0`) ; avec, il meurt en `status=203/EXEC` — le service ne peut pas lire son
+> propre binaire — et `systemctl enable --now` rend quand même **0**, si bien que `install` affichait
+> « service installé et démarré » et sortait 0 sur une machine qui ne collectait rien et redémarrait
+> en boucle toutes les 5 s.* La commande refuse maintenant d'écrire une unité qui se contredit, et dit
+> quoi faire (copier le binaire dans `/usr/local/bin`, la config dans `/etc/plume`).
+> **2. Ce qu'`install` affirme est RE‑OBSERVÉ, et sur une DURÉE.** *Mesuré le 2026‑08‑02, 3 fois sur
+> 3 : l'échantillon pris juste après le démarrage d'une unité dont l'`ExecStart` est injoignable dit
+> `active/running/ExecMainStatus=0` — le SUCCÈS —, et la même unité est en `auto-restart/203` 1,2 s
+> plus tard.* Une sonde instantanée validerait donc exactement le défaut qu'elle doit attraper :
+> `install` exige que `active/running` tienne **2,5 s d'affilée** (budget 12 s), traite `auto-restart`
+> et `NRestarts>0` comme des ÉCHECS, et vérifie séparément `is-enabled` (l'artefact dit « au boot »).
+> Répertoires et unité sont relus après écriture. Un service qui ne tient pas fait sortir la commande
+> **non nul** — plus besoin d'un `systemctl is-active` de vérification derrière.
+> ```
+>   posé     : /etc/systemd/system/plume-agent.service
+>   ÉCHEC    : service plume-agent.service (actif au boot et maintenant) — le service NE TOURNE PAS
+>              après `systemctl enable --now` (ActiveState=activating SubState=auto-restart
+>              Result=exit-code ExecMainStatus=203) — 203/EXEC : l'ExecStart est INJOIGNABLE depuis
+>              le bac à sable de l'unité…
+> ```
+> **3. `--token TOK` met le secret dans l'argv de `sudo`**, que `sudo` journalise et que le collecteur
 > `journal` (ou la source `journald` de cet agent) expédie **en clair** au central. Écrivez le TOML par
 > STDIN comme ci‑dessus, puis `install --config`.
 
@@ -254,26 +282,27 @@ cargo test                     # tests unitaires (aucun réseau requis)
 
 Le code natif Win/macOS est **implémenté** et `cfg`-gated : un build Linux compile les parties PURES
 (mapping CIM, construction requête/plist/binPath, parsing epoch — toutes **testées**) et ignore la FFI.
-Un `Makefile` fournit la matrice de build ; `.cargo/config.toml` documente les linkers.
+Un `Makefile` fournit la matrice de build ; [`.cargo/config.toml`](.cargo/config.toml) porte les réglages
+PAR CIBLE (aujourd'hui : la CRT statique de Windows/MSVC, cf. ci-dessous).
 
-> ### ⚠️ Le binaire MSVC par défaut NE DÉMARRE PAS sur un Windows neuf (mesuré le 2026‑08‑02)
-> `cargo xwin build --release --target x86_64-pc-windows-msvc` produit un exécutable qui importe
-> `VCRUNTIME140.dll` — **absente d'un Windows 11 Enterprise 24H2 fraîchement installé** (le
+> ### La CRT statique est désormais IMPOSÉE pour Windows/MSVC (corrigé le 2026‑08‑02)
+> Sans elle, `cargo xwin build --release --target x86_64-pc-windows-msvc` produit un exécutable qui
+> importe `VCRUNTIME140.dll` — **absente d'un Windows 11 Enterprise 24H2 fraîchement installé** (le
 > redistribuable Visual C++ n'est pas livré avec l'OS). *Mesuré : l'exe se termine immédiatement avec
-> `0xC0000135` (STATUS_DLL_NOT_FOUND), y compris pour `--help` ; la lecture de la table d'imports PE
-> donne `VCRUNTIME140.dll` comme seule DLL réellement manquante (les `api-ms-win-crt-*` sont des
-> apisets résolus par le chargeur).* **Compilez avec la CRT statique** — aucun redistribuable à
-> déployer, et c'est ce qu'on attend d'un agent endpoint :
-> ```bash
-> RUSTFLAGS="-C target-feature=+crt-static" cargo xwin build --release --target x86_64-pc-windows-msvc
-> ```
-> *Vérifié : binaire 3 350 528 octets, `--help` sort 0, `test-ship` → HTTP 202, `install` crée et démarre
-> le service SCM sur la même VM où le binaire dynamique refusait de démarrer.*
+> `0xC0000135` (STATUS_DLL_NOT_FOUND), y compris pour `--help`.* **Aucun diagnostic n'est possible
+> depuis le programme** : le chargeur échoue avant la première instruction de notre code — la seule
+> correction est de SUPPRIMER la dépendance, pas de la détecter.
+> Le drapeau vit dans [`.cargo/config.toml`](.cargo/config.toml) (donc `make win-msvc`, `cargo xwin
+> build`, `cargo check` et la CI l'appliquent tous), et un test le garde contre une suppression
+> silencieuse. *Mesuré le 2026‑08‑02 en lisant la table d'imports PE des deux binaires produits ici :
+> sans le drapeau **3 259 392 o avec `VCRUNTIME140.dll`** + 5 apisets `api-ms-win-crt-*` ; avec,
+> **3 359 744 o, aucune des deux** (et `wevtapi.dll` toujours importée — c'est bien l'agent complet).*
+> Ne posez pas de `RUSTFLAGS=` pour cette cible : la variable d'environnement **écrase** le fichier.
 
 | Cible | Triple | Outil de build depuis Linux |
 | --- | --- | --- |
-| Windows x64 (MSVC) | `x86_64-pc-windows-msvc` | `cargo xwin build --target …` (`make win-msvc`) — headers/libs MSVC auto, pas de VM ; **ajouter `RUSTFLAGS="-C target-feature=+crt-static"`** (cf. avertissement ci-dessus) |
-| Windows x64 (GNU) | `x86_64-pc-windows-gnu` | MinGW-w64 + `cargo build --target …` (`make win-gnu`) |
+| Windows x64 (MSVC) | `x86_64-pc-windows-msvc` | `cargo xwin build --target …` (`make win-msvc`) — headers/libs MSVC auto, pas de VM ; CRT statique **déjà imposée** par `.cargo/config.toml` |
+| Windows x64 (GNU) | `x86_64-pc-windows-gnu` | **MinGW-w64 REQUIS** (`x86_64-w64-mingw32-gcc`, paquet `mingw-w64-gcc`) + `cargo build --target …` (`make win-gnu`, qui vérifie le prérequis et le dit) — cible **non vérifiée ici**, préférez MSVC |
 | macOS x64 | `x86_64-apple-darwin` | `cargo zigbuild --target …` (`make mac-x64`) — Zig comme linker + SDK Apple |
 | macOS ARM | `aarch64-apple-darwin` | `cargo zigbuild --target …` (`make mac-arm`) |
 | Linux statique | `x86_64-unknown-linux-musl` | `cargo build --target …` (`make linux-musl`) |

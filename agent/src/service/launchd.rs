@@ -9,7 +9,7 @@
 //! Le fichier compile sur toutes les cibles (comme systemd.rs) : `plist_text`/`bin` sont purs et
 //! testés ; les invocations `launchctl` n'existent qu'à l'exécution (hôte macOS requis).
 
-use super::{Disposition, Removal, ServiceManager, ServiceSpec};
+use super::{Outcome, ServiceManager, ServiceSpec};
 use std::process::Command;
 
 pub const LABEL: &str = "com.guatx.plume-agent";
@@ -76,69 +76,105 @@ impl ServiceManager for Launchd {
         &self.name
     }
 
-    fn install(&self, spec: &ServiceSpec) -> anyhow::Result<()> {
+    /// POSE OBSERVÉE (cf. `Outcome`) — même structure que le backend systemd : chaque artefact est
+    /// sondé, agi, RE-SONDÉ. `launchctl bootstrap` peut rendre 0 sans que le daemon soit chargé
+    /// (plist refusé, binaire absent) : la conclusion vient de `launchctl print`, pas du code retour.
+    /// NON VÉRIFIÉ À L'EXÉCUTION (aucun hôte macOS ici) ; ce qui est prouvé, c'est que ça compile.
+    fn install(&self, spec: &ServiceSpec) -> anyhow::Result<Outcome> {
+        let mut r = Outcome::pose();
         // Répertoires spool/state (0750).
         for d in [&spec.spool_dir, &spec.state_dir] {
-            std::fs::create_dir_all(d)
-                .map_err(|e| anyhow::anyhow!("création {}: {e}", d.display()))?;
+            let existait = d.is_dir();
+            let res = std::fs::create_dir_all(d);
             #[cfg(unix)]
-            {
+            if res.is_ok() {
                 use std::os::unix::fs::PermissionsExt;
                 let _ = std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o750));
             }
+            r.observe(format!("répertoire {}", d.display()), existait, || match res {
+                Ok(()) if d.is_dir() => Ok(()),
+                Ok(()) => Err("créé sans erreur mais absent à la re-sonde".into()),
+                Err(e) => Err(format!("{e} (root requis ?)")),
+            });
         }
         // Écrit le plist (launchd exige un plist NON inscriptible par le groupe/monde : 0644 root).
-        std::fs::write(PLIST_PATH, Self::plist_text(spec))
-            .map_err(|e| anyhow::anyhow!("écriture {PLIST_PATH}: {e} (root requis ?)"))?;
+        let voulu = Self::plist_text(spec);
+        let deja = std::fs::read_to_string(PLIST_PATH).map(|t| t == voulu).unwrap_or(false);
+        let ecrit = std::fs::write(PLIST_PATH, &voulu);
         #[cfg(unix)]
-        {
+        if ecrit.is_ok() {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(PLIST_PATH, std::fs::Permissions::from_mode(0o644));
         }
+        r.observe(PLIST_PATH, deja, || match ecrit {
+            Err(e) => Err(format!("{e} (root requis ?)")),
+            Ok(()) => match std::fs::read_to_string(PLIST_PATH) {
+                Ok(t) if t == voulu => Ok(()),
+                Ok(_) => Err("écrit mais son contenu diffère à la relecture".into()),
+                Err(e) => Err(format!("écrit mais illisible ensuite : {e}")),
+            },
+        });
+        if !r.failures().is_empty() {
+            return Ok(r);
+        }
 
-        // Décharge une éventuelle instance précédente (best-effort) puis (ré)amorce.
+        // Décharge une éventuelle instance précédente (best-effort) puis (ré)amorce. Le plist a-t-il
+        // CHANGÉ ? Si oui, l'état voulu n'était PAS atteint même si le daemon tournait : c'était
+        // l'ANCIEN plist qui tournait (même raison que le redémarrage explicite côté systemd).
+        let etait_conforme = Self::is_loaded() && deja;
         let _ = Command::new("launchctl").args(["bootout", DOMAIN_TARGET]).status();
         // macOS 11+ : bootstrap ; repli hérité si indisponible.
-        if Self::launchctl(&["bootstrap", "system", PLIST_PATH]).is_err() {
-            Self::launchctl(&["load", "-w", PLIST_PATH])?;
-        }
+        let amorce = if Self::launchctl(&["bootstrap", "system", PLIST_PATH]).is_err() {
+            Self::launchctl(&["load", "-w", PLIST_PATH])
+        } else {
+            Ok(())
+        };
         let _ = Command::new("launchctl").args(["enable", DOMAIN_TARGET]).status();
         // Force un (re)démarrage immédiat.
         let _ = Command::new("launchctl").args(["kickstart", "-k", DOMAIN_TARGET]).status();
-        println!("service installé et démarré : {LABEL}");
-        Ok(())
+        r.observe(format!("daemon {LABEL} (chargé et démarré)"), etait_conforme, || {
+            if let Err(e) = amorce {
+                return Err(format!("{e}"));
+            }
+            if Self::is_loaded() {
+                Ok(())
+            } else {
+                Err("NON chargé après `launchctl bootstrap` (`launchctl print system/…`, \
+                     /var/log/plume-agent.err.log)"
+                    .into())
+            }
+        });
+        Ok(r)
     }
 
-    /// RETRAIT OBSERVÉ (cf. `Removal`) : on sonde `launchctl print` avant/après, et le plist avant/
+    /// RETRAIT OBSERVÉ (cf. `Outcome`) : on sonde `launchctl print` avant/après, et le plist avant/
     /// après. NON VÉRIFIÉ À L'EXÉCUTION (aucun hôte macOS ici) : la STRUCTURE est celle du backend
     /// systemd, qui l'est ; ce qui est prouvé sur macOS, à ce jour, c'est que ça compile (agent-ci).
-    fn uninstall(&self) -> anyhow::Result<Removal> {
-        let mut r = Removal::default();
-        let was_loaded = Self::is_loaded();
+    fn uninstall(&self) -> anyhow::Result<Outcome> {
+        let mut r = Outcome::retrait();
+        let deja_decharge = !Self::is_loaded();
         let _ = Command::new("launchctl").args(["bootout", DOMAIN_TARGET]).status();
         let _ = Command::new("launchctl").args(["unload", "-w", PLIST_PATH]).status(); // repli hérité
-        if was_loaded {
+        let nom = if deja_decharge {
+            format!("daemon {LABEL}")
+        } else {
+            format!("daemon {LABEL} (déchargé)")
+        };
+        r.observe(nom, deja_decharge, || {
             if Self::is_loaded() {
-                r.note(
-                    format!("daemon {LABEL} (chargé)"),
-                    Disposition::Failed("toujours chargé après `launchctl bootout` (root requis ?)".into()),
-                );
+                Err("toujours chargé après `launchctl bootout` (root requis ?)".into())
             } else {
-                r.note(format!("daemon {LABEL} (déchargé)"), Disposition::Removed);
+                Ok(())
             }
-        } else {
-            r.note(format!("daemon {LABEL}"), Disposition::Absent);
-        }
+        });
         let plist = std::path::Path::new(PLIST_PATH);
-        if plist.exists() {
-            match std::fs::remove_file(plist) {
-                Ok(()) if !plist.exists() => r.note(PLIST_PATH, Disposition::Removed),
-                Ok(()) => r.note(PLIST_PATH, Disposition::Failed("toujours présent après suppression".into())),
-                Err(e) => r.note(PLIST_PATH, Disposition::Failed(format!("{e} (root requis ?)"))),
-            }
-        } else {
-            r.note(PLIST_PATH, Disposition::Absent);
-        }
+        let deja_absent = !plist.exists();
+        let supprime = if deja_absent { Ok(()) } else { std::fs::remove_file(plist) };
+        r.observe(PLIST_PATH, deja_absent, || match supprime {
+            Err(e) => Err(format!("{e} (root requis ?)")),
+            Ok(()) if plist.exists() => Err("toujours présent après suppression".into()),
+            Ok(()) => Ok(()),
+        });
         Ok(r)
     }
 

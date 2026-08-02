@@ -11,6 +11,86 @@ use crate::*;
 /// ts-leading existe : idx_event_ts (event) + idx_metric_ts / idx_snapshot_ts (ensure_host_rollup_scan_indexes_
 /// background). Sans eux (fenêtre transitoire du 1er boot), metric/snapshot retombent en full-scan -> c'est
 /// justement ce que ces index suppriment (MAX(ts) non borné par-requête = risque watchdog).
+// ====================================================================================================
+// LE VERDICT SUR UN CAPTEUR — UNE SEULE DÉRIVATION, DEUX SURFACES.
+//
+// CE QUI ÉTAIT CASSÉ. Le statut AFFICHÉ (`compute_integrations`) et le déclenchement de l'ALERTE
+// (`check_heartbeats`) étaient deux `match` écrits séparément sur les mêmes entrées. Ils divergeaient
+// sur le cas le plus fréquent d'une PME : un capteur JAMAIS BRANCHÉ (`last_seen = None` — YARA,
+// CrowdSec, k8s… absents d'un Linux nu). Le panneau disait « inconnu » (en attente) ; l'alerte, elle,
+// levait « Capteur muet : YARA (scan) — pipeline d'ingestion muet » dès que le pipeline global
+// décrochait. MESURÉ le 2026-08-02 par le vrai chemin (`check_heartbeats` sur une base où seul
+// `sshd` a déjà émis, silence de 11 min) : 8 alertes « capteur muet » nommaient des capteurs qui
+// n'ont JAMAIS RIEN ÉMIS sur cette machine. C'est la famille qu'on ferme : une surface qui SAIT
+// qu'elle n'a jamais rien observé et qui affirme quand même une panne.
+//
+// LA FORME DÉRIVÉE. `None` n'est pas « en retard depuis longtemps » : c'est « aucune observation ».
+// Un capteur sans aucune observation n'a pas de silence à constater — il ne peut donc pas être
+// « muet », quel que soit l'état du pipeline. Le verdict est désormais UNE fonction ; les deux
+// surfaces l'appellent, et `StatutCapteur::alerte()` dit lequel des trois verdicts réveille
+// quelqu'un. Une 24ᵉ entrée de `COLLECTORS`, ou une 3ᵉ surface, hérite de la règle sans la réécrire.
+//
+// L'ÉCART DE SEUIL EST GARDÉ, MAIS DÉCLARÉ. Le panneau montrait « muet » à 3 cycles manqués,
+// l'alerte à 5 — écart réel, jamais écrit nulle part, qu'on aurait effacé par mégarde en unifiant.
+// Il devient un PARAMÈTRE NOMMÉ (`CYCLES_TOLERES_*`) : l'humain qui REGARDE voit l'écart tout de
+// suite, celui qu'on RÉVEILLE mérite deux cycles de plus. Aucune valeur ne change.
+// ====================================================================================================
+
+/// Cycles manqués tolérés AVANT de déclarer un capteur continu muet. Deux valeurs, deux usages.
+pub(crate) const CYCLES_TOLERES_AFFICHAGE: i64 = 3;
+pub(crate) const CYCLES_TOLERES_ALERTE: i64 = 5;
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum StatutCapteur {
+    /// AUCUNE observation, jamais. « en attente » côté UI. N'alerte JAMAIS : il n'y a pas de silence
+    /// à constater sur un capteur qui n'a jamais parlé.
+    Inconnu,
+    /// Il parle (ou son silence est normal : capteur événementiel + pipeline frais).
+    Actif,
+    /// Il a DÉJÀ parlé et s'est tu au-delà du tolérable — le seul verdict qui alerte.
+    Muet,
+}
+
+impl StatutCapteur {
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            StatutCapteur::Inconnu => "inconnu",
+            StatutCapteur::Actif => "actif",
+            StatutCapteur::Muet => "muet",
+        }
+    }
+    /// LE SEUL verdict qui lève une alerte. Écrit ici plutôt qu'au site d'appel pour qu'une 3ᵉ
+    /// surface ne puisse pas inventer sa propre règle de déclenchement.
+    pub(crate) fn alerte(&self) -> bool {
+        matches!(self, StatutCapteur::Muet)
+    }
+}
+
+/// LE verdict. `ls` = dernière collecte OBSERVÉE (`None` = jamais rien vu, cf. `Sonde`).
+/// `event_based` = capteur dont le débit dépend d'une activité externe : son silence propre n'est PAS
+/// un symptôme (hôte calme), seul l'effondrement du pipeline GLOBAL en est un.
+pub(crate) fn statut_capteur(
+    ls: Option<i64>,
+    interval: i64,
+    event_based: bool,
+    pipe_fresh: bool,
+    cycles_toleres: i64,
+    now_ts: i64,
+) -> StatutCapteur {
+    match ls {
+        None => StatutCapteur::Inconnu,
+        Some(_) if event_based => {
+            if pipe_fresh {
+                StatutCapteur::Actif
+            } else {
+                StatutCapteur::Muet
+            }
+        }
+        Some(t) if now_ts - t <= interval * cycles_toleres => StatutCapteur::Actif,
+        Some(_) => StatutCapteur::Muet,
+    }
+}
+
 pub(crate) fn pipeline_is_fresh(conn: &Connection, now_ts: i64) -> bool {
     let global_last: Option<i64> = conn.query_row(
         "SELECT MAX(m) FROM (SELECT MAX(ts) m FROM event UNION ALL SELECT MAX(ts) FROM metric UNION ALL SELECT MAX(ts) FROM snapshot)",
@@ -97,22 +177,18 @@ pub(crate) fn compute_integrations(db_path: &str) -> Value {
                 // observe. Pour un capteur d'INSTANTANÉ, `ls` est la machine la PLUS EN RETARD du parc —
                 // une seule machine encore vivante ne peut plus faire passer tout le parc pour frais.
                 let ls: Option<i64> = sonde.derniere_collecte(conn);
-                let status = if *event_based {
-                    // ÉVÉNEMENTIEL : 'inconnu' si jamais vu ; sinon 'actif' tant que le pipeline est frais
-                    // (silence = hôte calme, PAS une panne) ; 'muet' SEULEMENT si le pipeline global décroche.
-                    match ls {
-                        None => "inconnu",
-                        _ if pipe_fresh => "actif",
-                        _ => "muet",
-                    }
-                } else {
-                    // CONTINU : statut basé sur SON intervalle (inchangé).
-                    match ls {
-                        None => "inconnu",
-                        Some(t) if now_ts - t <= interval * 3 => "actif",
-                        Some(_) => "muet",
-                    }
-                };
+                // VERDICT PARTAGÉ avec l'alerte (`statut_capteur`) : ces deux surfaces ne peuvent plus
+                // dire deux choses différentes de la même observation. Seul le nombre de cycles
+                // tolérés diffère, et il est nommé.
+                let status = statut_capteur(
+                    ls,
+                    *interval,
+                    *event_based,
+                    pipe_fresh,
+                    CYCLES_TOLERES_AFFICHAGE,
+                    now_ts,
+                )
+                .label();
                 json!({ "id": id, "label": label, "interval_s": interval, "last_seen": ls, "status": status, "event_based": event_based })
             })
             .collect();
@@ -373,25 +449,31 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) {
     for (id, label, interval, sonde, event_based) in COLLECTORS.iter() {
         let ls: Option<i64> = sonde.derniere_collecte(&conn);
         let dedup = format!("hb-{id}"); // clé STABLE -> une seule alerte par épisode (zéro répétition horaire)
-        // MUET ? ÉVÉNEMENTIEL -> seulement si le pipeline global est en panne ; CONTINU -> silence > 5x son
-        // intervalle (logique d'origine, None ne déclenche jamais d'alerte).
-        let mute = if *event_based {
-            !pipe_fresh
-        } else {
-            matches!(ls, Some(t) if now_ts - t > interval * 5)
-        };
+        // MUET ? Le MÊME verdict que celui affiché par le panneau (cf. `statut_capteur`), à ceci près
+        // qu'on réveille quelqu'un deux cycles plus tard. `Inconnu` (jamais rien vu) n'alerte JAMAIS :
+        // c'était le défaut mesuré le 2026-08-02 (8 alertes « capteur muet » sur des capteurs jamais
+        // installés, pendant que le panneau les affichait « en attente »).
+        let mute = statut_capteur(ls, *interval, *event_based, pipe_fresh, CYCLES_TOLERES_ALERTE, now_ts)
+            .alerte();
         if mute {
             // détail : ancienneté de CE capteur si connue, sinon état du pipeline (cas événementiel sans
             // historique). Sévérité 2 inchangée.
+            // `None` est désormais INATTEIGNABLE ici : `Inconnu` n'alerte plus (un capteur jamais vu
+            // n'a pas de silence à constater), donc `mute` implique `ls.is_some()`. On garde le bras
+            // comme filet — il ne doit plus jamais s'imprimer, et s'il s'imprime c'est que la règle
+            // a été réécrite ailleurs.
             let mut detail = match ls {
                 Some(t) => format!("aucune donnée depuis {} min", (now_ts - t) / 60),
-                None => "pipeline d'ingestion muet".to_string(),
+                None => "pipeline d'ingestion muet (cas devenu inatteignable)".to_string(),
             };
             // QUELLES MACHINES. Sur un parc, « Capteur muet : firewall » sans nom n'est pas actionnable :
             // l'opérateur ne sait pas s'il s'agit d'une machine ou de quarante-neuf. Les sondes d'INSTANTANÉ
             // savent le dire (la série est (kind, hôte)) -> on nomme les 5 plus en retard + le reste compté.
             // Vide pour les sondes à portée flotte confondue -> détail INCHANGÉ (mode 0 byte-identique).
-            let retard = sonde.hotes_en_retard(&conn, now_ts - interval * 5, 6);
+            // MÊME seuil que le verdict (`CYCLES_TOLERES_ALERTE`) : un littéral ici se serait mis à
+            // diverger en silence du jour où quelqu'un touche la constante — la liste des machines
+            // « en retard » ne correspondrait plus à ce qui a déclenché l'alerte.
+            let retard = sonde.hotes_en_retard(&conn, now_ts - interval * CYCLES_TOLERES_ALERTE, 6);
             if !retard.is_empty() {
                 let noms: Vec<String> = retard.iter().take(5)
                     .map(|(h, t)| format!("{} ({} min)", if h.is_empty() { "(sans hôte)" } else { h }, (now_ts - t) / 60))

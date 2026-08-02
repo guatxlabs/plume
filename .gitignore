@@ -42,6 +42,13 @@ __pycache__/
 *.pyc
 # local dev cargo override (guatx-core git-dep -> sibling path); never published — config.toml ONLY (daemon/.cargo/audit.toml is tracked, cf forge console/.cargo/audit.toml)
 **/.cargo/config.toml
+# EXCEPTION EXPLICITE : agent/.cargo/config.toml n'est PAS un override local, c'est un réglage de
+# PRODUIT — il impose la CRT statique à la cible Windows/MSVC. Sans lui, le binaire livré importe
+# VCRUNTIME140.dll et NE DÉMARRE PAS sur un Windows sans redistribuable (mesuré le 2026-08-02 sur la
+# table d'imports PE). Sans cette exception il resterait NON SUIVI (`git log --all` sur ce chemin est
+# vide : il ne l'a jamais été) alors même que agent/README.md le cite et qu'un test échoue s'il
+# manque — un clone frais n'aurait ni le fichier, ni le drapeau, ni le binaire démarrable.
+!agent/.cargo/config.toml
 # node (si webui build) & sauvegardes/résidus
 node_modules/
 *.bak

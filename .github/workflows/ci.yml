@@ -80,7 +80,7 @@ permissions:
 # diverger en silence — bumper l'une laissait l'autre comparer à un nombre périmé. Une seule ici,
 # consommée par les deux jobs.
 env:
-  EXPECTED_TESTS: "866"
+  EXPECTED_TESTS: "872"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -230,7 +230,7 @@ jobs:
       - name: cargo test (daemon, --features cold_tier) + assert the cold test count
         working-directory: daemon
         env:
-          EXPECTED_COLD_TESTS: "1061"
+          EXPECTED_COLD_TESTS: "1067"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

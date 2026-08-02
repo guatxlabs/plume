@@ -7,6 +7,7 @@ include!("common.rs");
 include!("rollup.rs");
 include!("detection.rs");
 include!("misc.rs");
+include!("heartbeat_maintenance.rs"); // P4.1-e : ce qu'une fenêtre de maintenance lève vraiment
 include!("ingest.rs");
 include!("governance.rs");
 include!("engagement.rs");

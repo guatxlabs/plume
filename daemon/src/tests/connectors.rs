@@ -891,7 +891,7 @@
         let _ = migrate(&conn);
         assert!(col_exists(&conn, "banned_ip", "env_id"));
         let v: String = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, "112");
+        assert_eq!(v, CODE_SCHEMA_MAX.to_string());
     }
 
     // --- FILTRE PAR ENVIRONNEMENT (#2d) : v67 rollups + injection READ PATH + /api/environments -----
@@ -914,12 +914,12 @@
         let dn: i64 = conn.query_row("SELECT COUNT(*) FROM event_dim_rollup WHERE source='web' AND dim='status' AND val='200'", [], |r| r.get(0)).unwrap();
         assert_eq!(dn, 2, "env_id dans la PK du rollup par dimension");
         // (3) version bumpée + idempotence : re-migrer NE recrée PAS (col_exists) -> données PRÉSERVÉES.
-        assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "112");
+        assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), CODE_SCHEMA_MAX.to_string());
         let _ = migrate(&conn);
         let _ = migrate(&conn);
         let n2: i64 = conn.query_row("SELECT COUNT(*) FROM event_rollup WHERE bucket=?1 AND source='sshd'", params![t], |r| r.get(0)).unwrap();
         assert_eq!(n2, 2, "re-migrer v67 ne doit PAS recréer/vider event_rollup (garde col_exists)");
-        assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "112");
+        assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), CODE_SCHEMA_MAX.to_string());
     }
 
     #[test]
@@ -954,7 +954,7 @@
             "SELECT n, env_id FROM event_rollup WHERE source='sshd' AND src_ip='1.2.3.4'",
             [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((rn, renv.as_str()), (9, "prod"), "ligne event_rollup pré-v67 préservée et stampée prod");
-        assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "112");
+        assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), CODE_SCHEMA_MAX.to_string());
     }
 
     #[test]
@@ -1283,7 +1283,7 @@
     fn dest_v92_migration_creates_table() {
         let conn = test_db();
         let v: String = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, "112", "schema_version à la tête après migrate (#59 gouvernance legal_hold/ledger_sink)");
+        assert_eq!(v, CODE_SCHEMA_MAX.to_string(), "schema_version à la tête après migrate (#59 gouvernance legal_hold/ledger_sink)");
         let cols: Vec<String> = conn.prepare("SELECT name FROM pragma_table_info('destination')").unwrap()
             .query_map([], |r| r.get(0)).unwrap().flatten().collect();
         for c in ["type", "endpoint", "config", "filter", "watermark", "last_error", "error_count", "batch_max", "interval_s"] {
@@ -1296,7 +1296,7 @@
     fn v97_migration_creates_ko_reliquat_tables() {
         let conn = test_db();
         let v: String = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, "112", "schema_version à la tête après migrate (#60 macros/auto-lookups/scheduled-reports/workflow-actions)");
+        assert_eq!(v, CODE_SCHEMA_MAX.to_string(), "schema_version à la tête après migrate (#60 macros/auto-lookups/scheduled-reports/workflow-actions)");
         for (tbl, need) in [
             ("macro_def", vec!["name", "params", "body", "enabled"]),
             ("auto_lookup", vec!["name", "key_field", "out_cols", "kind", "enabled"]),
@@ -1320,7 +1320,7 @@
     #[test]
     fn v98_migration_creates_caseops_tables() {
         let conn = test_db();
-        assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "112");
+        assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), CODE_SCHEMA_MAX.to_string());
         for (tbl, need) in [
             ("sla_policy", vec!["name", "priority", "ack_target_s", "resolve_target_s", "enabled"]),
             ("case_link", vec!["src_id", "dst_id", "kind", "note"]),
@@ -1335,7 +1335,7 @@
         }
         // idempotence : re-migrer ne casse rien, reste à la tête.
         let _ = migrate(&conn);
-        assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "112");
+        assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), CODE_SCHEMA_MAX.to_string());
     }
 
     /// #60 — MODE 0 : sans macro/auto-lookup, la compilation GXQL est BYTE-IDENTIQUE au legacy (le KnowledgeSet

@@ -75,6 +75,8 @@ FLUSH_FN = "Flush-Events"       # envoie le tampon ; LÈVE si le POST n'est pas 
 PROOF_VAR = "script:DeliveryFailed"   # preuve de livraison
 BUFFER_VAR = "script:Events"          # tampon d'événements
 REASONS_VAR = "script:PlumeReasons"   # vocabulaire fermé déclaré côté PowerShell
+COLLECT_FN = "Collect-Log"      # collecte générique d'un journal
+OUTCOMES_PARAM = "Outcomes"     # table `identifiant -> issue` dont la liste d'ids est DÉRIVÉE
 
 # Cmdlets d'ÉCRITURE de fichier (liste fermée : ce sont les verbes qui persistent).
 WRITE_CMDS = {
@@ -189,6 +191,36 @@ def check(path: str, errs: list) -> int:
             f"— la règle livrée `config.d/rules/catalog/de-collector-unavailable.json` "
             f"(`search category=config collect_status=unavailable`) ne les verrait pas : le capteur "
             f"avouerait dans le vide."
+        )
+
+    # ---------- (5bis) ISSUE : on ne collecte pas un identifiant sans dire ce qu'il vaut ----------
+    # `fields.action` est l'OUTCOME normalisé du CIM — l'axe sur lequel composent les détections
+    # cross-source. MESURÉ le 2026-08-02 : trois échecs d'ouverture de session Windows (4625) en base,
+    # et `search category=auth action=failure` en comptait ZÉRO, tandis que les DEUX règles de
+    # brute-force livrées (T1110, activées) sont exactement cette requête. La cause tenait à la
+    # SIGNATURE : `Collect-Log -Ids @(…)` laissait déclarer QUOI collecter sans jamais dire QUELLE
+    # ISSUE l'enregistrement porte. On exige donc que la liste d'identifiants soit DÉRIVÉE d'une table
+    # d'issues : un identifiant ajouté demain arrive avec son issue, ou il n'arrive pas.
+    for c in cmds:
+        if c["name"] != COLLECT_FN:
+            continue
+        if "-Ids" in c["text"]:
+            errs.append(
+                f"{path}:{c['line']}: `{COLLECT_FN} -Ids …` — une liste d'identifiants NUE dit QUOI "
+                f"collecter sans jamais dire QUELLE ISSUE l'enregistrement porte, et `fields.action` "
+                f"reste vide : l'événement est stocké et RESTE INVISIBLE aux règles qui interrogent "
+                f"`action=…` (mesuré : 0 échec Windows vu par `category=auth action=failure`). "
+                f"Passez `-{OUTCOMES_PARAM} @{{ <id> = '<issue>' }}` — la liste d'identifiants en est dérivée."
+            )
+        elif f"-{OUTCOMES_PARAM}" not in c["text"]:
+            errs.append(
+                f"{path}:{c['line']}: `{COLLECT_FN}` appelé sans `-{OUTCOMES_PARAM}` : les événements "
+                f"collectés partiraient sans outcome CIM, donc invisibles aux détections `action=…`."
+            )
+    if not any(c["name"] == COLLECT_FN for c in cmds) and COLLECT_FN in funcs:
+        errs.append(
+            f"{path}: `{COLLECT_FN}` est défini mais jamais appelé — soit l'extraction AST a décroché "
+            f"(la règle des issues ne vérifierait alors RIEN), soit la collecte de journaux a disparu."
         )
 
     # ---------- (6) DURABILITÉ — seulement si ce fichier PERSISTE une progression ----------

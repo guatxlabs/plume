@@ -610,8 +610,20 @@ pub(crate) fn seed_example_rules(conn: &Connection) {
     // Dernière colonne = tag MITRE ATT&CK (purple) : technique que la règle DÉTECTE. Sert de clé de
     // jointure avec les techniques tirées par Forge (red) -> /api/coverage/detections (detected/missed).
     // '' = règle opérationnelle non mappée (ex CPU) -> exclue de la couverture (filtre mitre<>'').
+    // P5.7-a — CETTE RÈGLE NE MESURAIT PAS CE QU'ELLE ANNONÇAIT.
+    // Elle s'appelle « Pic d'échecs d'authentification », elle est taguée **T1110 (Brute Force)** — ce
+    // tag est la clé de jointure de `/api/coverage/detections`, donc il ANNONCE la technique comme
+    // COUVERTE — et sa requête était `search severity>=3 | stats count` : aucun filtre de catégorie,
+    // d'action ni de source. Elle comptait TOUT événement de sévérité ≥ 3, c'est-à-dire le BRUIT de
+    // l'hôte (mesuré sur une base de labo peuplée par les collecteurs livrés : 30 des 414 événements
+    // ingérés sont des `category=config`/`health` sans rapport avec une authentification). Un exploitant
+    // lisant la couverture ATT&CK y voyait T1110 en vert alors que rien n'observait l'authentification.
+    // La requête devient celle que le nom promet — et depuis les correctifs Windows de ce même lot, elle
+    // voit AUSSI les échecs Windows (4625/4771/4776), qui n'avaient jamais porté `action`.
+    // Complémentaire, non doublon, de la règle « Brute-force auth par IP » (par IP, 5 min) : celle-ci
+    // est le PIC GLOBAL sur 1 h, qui attrape un password-spraying réparti sur beaucoup d'IP.
     let rules: [(&str, &str, i64, &str, f64, i64, i64, i64, &str); 2] = [
-        ("Pic d'échecs d'authentification (1h)", "search severity>=3 | stats count", 1, ">", 100.0, 3, 300, 3600, "T1110"),
+        ("Pic d'échecs d'authentification (1h)", "search category=auth action=failure | stats count", 1, ">", 100.0, 3, 300, 3600, "T1110"),
         ("CPU > 90% (10 min)", "SELECT value FROM metric WHERE name='cpu_pct' AND ts>=__FROM__ ORDER BY ts DESC LIMIT 1", 0, ">", 90.0, 2, 300, 600, ""),
     ];
     for (name, q, is_soql, op, th, sev, intv, win, mitre) in rules {
@@ -673,6 +685,23 @@ pub(crate) fn seed_purple_rules(conn: &Connection) {
 ///   4. integrity kind=suid change=modif : binaire SUID réécrit in-place (hash changé) = trojanisation. T1554.
 ///   5. integrity change=ajout severity>=3 : nouveau vecteur de persistance (le collecteur tague sev>=3
 ///      preload/sudoersd/authkeys/pamd/rclocal/unit/crond/suid/crit ; sev1 = port/divers, exclu). T1543.
+///      P5.7-b — CETTE RÈGLE SE DÉCLENCHE SUR L'INSTALLATION DE PLUME LUI-MÊME, ET C'EST MESURÉ.
+///      `bootstrap.sh` installe les unités du SOC dans `/etc/systemd/system/` (27 chemins
+///      `plume-*.service|.timer` distincts sur l'arbre du 2026-08-02, pour 88 unités livrées :
+///      activer un collecteur optionnel en ajoute) ; `collectors/integrity.sh` surveille précisément
+///      `/etc/systemd/system/*.service` et `*.timer` et rend `kind=unit change=ajout severity=3`.
+///      PREUVE DYNAMIQUE (2026-08-02, une ligne `unit|…` retirée de la baseline puis re-run du
+///      collecteur LIVRÉ) : l'événement produit est
+///      `{"source":"integrity","category":"integrity","severity":3,"fields":{"kind":"unit",
+///        "change":"ajout",…}}` — la requête de cette règle, verbatim. Une mise à jour de plume qui
+///      ajoute une unité lève donc une alerte severity 4 « vecteur de persistance ajouté » sur le SOC
+///      lui-même. Le premier boot, lui, ne la lève pas (le 1er run d'`integrity.sh` construit la
+///      baseline APRÈS l'installation, donc les unités y sont déjà).
+///      CE QU'ON N'A PAS FAIT, ET POURQUOI. Aucune exemption par NOM (`plume-*`) n'a été posée : elle
+///      créerait un angle mort qu'un attaquant occupe en nommant son unité `plume-quelquechose.service`.
+///      Pour un SOC, un angle mort taillé sur mesure est PIRE que du bruit de maintenance. La garde
+///      `plume_own_units_that_trip_the_persistence_rule_are_declared` ÉPINGLE le compte : il ne peut
+///      plus grandir en silence. Cf. la section P5.7-b du rapport de lot.
 ///   6. conntrack flux : MÊME (proc,dst_ip) externe sortant répété > 10 ticks = cadence beacon. La liste
 ///      d'exclusion `proc!=…` de la requête et le seuil de ticks sont des EXEMPLES / PLACEHOLDERS — à
 ///      REMPLACER par les gros causeurs d'égress légitime de VOTRE hôte (orchestrateur, runtime de conteneurs,

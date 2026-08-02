@@ -2137,19 +2137,31 @@
     #[test]
     fn sigma_process_creation_targets_the_category_the_shipped_4688_path_emits() {
         let root = f7_repo_root();
-        // (1) agent Rust — la branche `4688 => ("<cat>".to_string(), …)` de `map_cim`, hors fixtures de test.
+        // (1) agent Rust — la branche 4688 de `classer` (ex-`map_cim`), hors fixtures de test.
         let win = std::fs::read_to_string(root.join("agent/src/source/windows.rs")).expect("agent/src/source/windows.rs");
         let win = &win[..win.find("\n#[cfg(test)]").unwrap_or(win.len())];
-        let agent_cat = regex::Regex::new(r#"4688\s*=>\s*\(\s*"([a-z0-9_-]+)"\s*\.to_string\(\)"#).unwrap()
+        // FORME ADAPTÉE (P5.1-a) : la classification est devenue INDIVISIBLE — `cim("<cat>", <sev>, Issue::…)`
+        // rend catégorie, sévérité et issue d'un coup (`ClasseWin::Cim`, sans champ optionnel). La garde suit
+        // la forme réelle plutôt que de disparaître : elle continue de LIRE la catégorie émise pour 4688.
+        let agent_cat = regex::Regex::new(r#"4688\s*=>\s*cim\(\s*"([a-z0-9_-]+)""#).unwrap()
             .captures(win).map(|c| c[1].to_string())
-            .expect("aucune branche `4688 => (\"…\".to_string(), …)` dans map_cim : la forme d'émission a changé, \
-                     cette garde ne mesure plus rien -> l'ADAPTER, ne pas la supprimer");
+            .expect("aucune branche `4688 => cim(\"…\", …)` dans la classification de l'agent : la forme \
+                     d'émission a changé, cette garde ne mesure plus rien -> l'ADAPTER, ne pas la supprimer");
         // (2) collecteur PowerShell — `-Ids @(4688) … -Category '<cat>'` (commentaires dépouillés).
         let ps1 = std::fs::read_to_string(root.join("collectors/windows/plume-collector.ps1")).expect("plume-collector.ps1");
         let re_cat = regex::Regex::new(r"-Category\s+'([a-z0-9_-]+)'").unwrap();
-        let ps_cat = ps1.lines().filter(|l| !l.trim_start().starts_with('#')).filter(|l| l.contains("@(4688)"))
-            .find_map(|l| re_cat.captures(l).map(|c| c[1].to_string()))
-            .expect("aucune ligne `-Ids @(4688) … -Category '…'` dans le collecteur PowerShell livré");
+        // FORME ADAPTÉE (P5.4-a) : la liste d'identifiants est DÉRIVÉE d'une table `identifiant -> issue`
+        // (`-Outcomes @{ 4688 = '-' }`), qui s'étend sur les lignes suivant l'appel. On lit donc l'appel
+        // `Collect-Log … -Category '<cat>' -Outcomes @{` et on exige que 4688 figure dans SON bloc.
+        let sans_commentaire: Vec<&str> = ps1.lines().filter(|l| !l.trim_start().starts_with('#')).collect();
+        let ps_cat = sans_commentaire.iter().enumerate()
+            .filter(|(_, l)| l.contains("Collect-Log") && l.contains("-Outcomes"))
+            .find(|(i, _)| sans_commentaire[*i + 1..].iter()
+                    .take_while(|l| !l.trim_start().starts_with('}'))
+                    .any(|l| regex::Regex::new(r"\b4688\s*=").unwrap().is_match(l)))
+            .and_then(|(_, l)| re_cat.captures(l).map(|c| c[1].to_string()))
+            .expect("aucun `Collect-Log … -Category '…' -Outcomes @{ … 4688 = … }` dans le collecteur \
+                     PowerShell livré : la forme de collecte a changé -> ADAPTER la garde, ne pas la supprimer");
         // (3) flux Linux — `collectors/auditd.sh` émet la MÊME catégorie pour execve (TSV `\t<cat>\t`).
         let auditd = std::fs::read_to_string(root.join("collectors/auditd.sh")).expect("auditd.sh");
         assert!(auditd.contains(&format!("\\t{agent_cat}\\t")),
@@ -2172,7 +2184,7 @@
     /// 4104, canal `Microsoft-Windows-PowerShell/Operational`) :
     ///   (a) le canal n'est pas dans les canaux PAR DÉFAUT de l'agent livré (`d_win_channels`) ;
     ///   (b) le collecteur PowerShell livré ne lit aucun `-LogName` PowerShell ;
-    ///   (c) et même si l'exploitant AJOUTAIT le canal, `map_cim` n'a aucune branche pour lui -> catégorie
+    ///   (c) et même si l'exploitant AJOUTAIT le canal, `classer` n'a aucune branche pour lui -> catégorie
     ///       VIDE, jamais `endpoint`.
     /// Non mappé, la règle est VISIBLEMENT non catégorisée (avertissement de sur-match) au lieu d'être
     /// faussement « couverte ». Si l'agent gagne un jour un vrai support PowerShell, (a)/(b)/(c) rougissent
@@ -2187,21 +2199,29 @@
         let chans = cfg.split("fn d_win_channels()").nth(1).expect("d_win_channels absent : ADAPTER la garde")
             .split("\n}").next().unwrap();
         assert!(!chans.to_ascii_lowercase().contains("powershell"),
-            "l'agent livré lit désormais un canal PowerShell : re-mesurer quelle catégorie `map_cim` \
+            "l'agent livré lit désormais un canal PowerShell : re-mesurer quelle catégorie `classer` \
              produit pour lui, puis (re)mapper `ps_script` en conséquence");
         // (b) collecteur PowerShell livré.
         let ps1 = std::fs::read_to_string(root.join("collectors/windows/plume-collector.ps1")).expect("plume-collector.ps1");
         assert!(!ps1.lines().filter(|l| !l.trim_start().starts_with('#'))
                     .any(|l| l.contains("LogName") && l.to_ascii_lowercase().contains("windows-powershell")),
             "le collecteur PowerShell livré lit désormais le canal PowerShell : re-mesurer et (re)mapper");
-        // (c) `map_cim` n'a aucune branche PowerShell (hors fixtures de test).
+        // (c) `classer` n'a aucune branche PowerShell (hors fixtures de test).
         let win = std::fs::read_to_string(root.join("agent/src/source/windows.rs")).expect("agent/src/source/windows.rs");
         let win = &win[..win.find("\n#[cfg(test)]").unwrap_or(win.len())];
-        let map_cim = win.split("fn map_cim(").nth(1).expect("map_cim absent : ADAPTER la garde")
+        let classification = win.split("fn classer(").nth(1)
+            .expect("`classer` (ex-`map_cim`) absent : ADAPTER la garde")
             .split("\n}").next().unwrap();
-        assert!(!map_cim.to_ascii_lowercase().contains("powershell"),
-            "`map_cim` mappe désormais un canal/provider PowerShell : re-mesurer la catégorie émise et \
-             (re)mapper `ps_script` dessus");
+        // LES COMMENTAIRES NE SONT PAS DU CODE — même leçon que l'extracteur de `collected.rs`, et elle
+        // a re-mordu ici : une note expliquant que « le collecteur PowerShell range … » suffisait à faire
+        // rougir cette garde alors qu'aucune branche ne vise ce canal. On DÉPOUILLE les lignes dont le
+        // premier caractère non blanc ouvre un commentaire ; une vraie branche PowerShell, elle, est du code.
+        let classification: String = classification.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>().join("\n");
+        assert!(!classification.to_ascii_lowercase().contains("powershell"),
+            "la classification de l'agent mappe désormais un canal/provider PowerShell : re-mesurer la \
+             catégorie émise et (re)mapper `ps_script` dessus");
     }
 
     /// RÈGLE RÉELLE #1 (`process_creation`, |contains) -> GXQL + métadonnées correctes. La catégorie visée
@@ -2320,7 +2340,7 @@ tags:
         // La catégorie de la FIXTURE est LUE dans le collecteur livré, jamais écrite pour matcher la règle.
         let win = std::fs::read_to_string(f7_repo_root().join("agent/src/source/windows.rs")).unwrap();
         let win = &win[..win.find("\n#[cfg(test)]").unwrap_or(win.len())];
-        let cat_4688 = regex::Regex::new(r#"4688\s*=>\s*\(\s*"([a-z0-9_-]+)"\s*\.to_string\(\)"#).unwrap()
+        let cat_4688 = regex::Regex::new(r#"4688\s*=>\s*cim\(\s*"([a-z0-9_-]+)""#).unwrap()
             .captures(win).map(|c| c[1].to_string()).expect("catégorie 4688 de l'agent livré");
 
         let mut path = std::env::temp_dir();
@@ -3201,7 +3221,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         assert!(col_exists(&conn, "rule", "mitre"), "rule.mitre manquant après migrate");
         assert!(col_exists(&conn, "alert", "mitre"), "alert.mitre manquant après migrate");
         let v: String = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, "112", "schema_version à la tête (… v94 knowledge + v95 data models + v96 #59 gouvernance legal_hold/ledger_sink)");
+        assert_eq!(v, CODE_SCHEMA_MAX.to_string(), "schema_version à la tête (… v94 knowledge + v95 data models + v96 #59 gouvernance legal_hold/ledger_sink)");
     }
 
     #[test]
@@ -3211,7 +3231,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         let _ = migrate(&conn);
         let _ = migrate(&conn);
         let v: String = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, "112");
+        assert_eq!(v, CODE_SCHEMA_MAX.to_string());
         // FIX (test-confidence #11) : re-jouer migrate() court-circuite au niveau courant (v<N faux) -> le
         // bloc v75 n'était JAMAIS ré-exécuté, donc un statement non-idempotent y serait passé inaperçu. On
         // RÉTROGRADE schema_version (pattern v43/v44 lignes 17965/18201) pour FORCER la ré-exécution du bloc
@@ -3223,7 +3243,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         for _ in 0..2 {
             conn.execute("UPDATE meta SET value='74' WHERE key='schema_version'", []).unwrap(); // rétrograde -> le bloc v75 re-tourne
             let _ = migrate(&conn);
-            assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), "112", "v75+v76+v77+v78 ré-exécutés remontent proprement au sommet (aucun statement non-idempotent ; host_rollup rebuild à blanc ; dparser CREATE IF NOT EXISTS)");
+            assert_eq!(conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap(), CODE_SCHEMA_MAX.to_string(), "v75+v76+v77+v78 ré-exécutés remontent proprement au sommet (aucun statement non-idempotent ; host_rollup rebuild à blanc ; dparser CREATE IF NOT EXISTS)");
         }
         let dup: i64 = conn.query_row("SELECT COUNT(*) FROM rule WHERE name=?1", params![eng_rule], |r| r.get(0)).unwrap();
         assert_eq!(dup, 1, "ré-exécuter v75 (instance live) n'insère la règle self-detection engagement QU'UNE fois (INSERT borné par nom)");
@@ -4768,3 +4788,226 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         adv_cleanup(&[&src, &dest, &restored]);
     }
 
+
+    // ================================================================================================
+    // P5.7-a — UNE RÈGLE NE PEUT PAS ANNONCER UNE TECHNIQUE QU'ELLE N'OBSERVE PAS.
+    // ------------------------------------------------------------------------------------------------
+    // `rule.mitre` n'est pas un libellé : c'est la clé de jointure de `/api/coverage/detections`, donc
+    // ce qui fait apparaître une technique ATT&CK comme COUVERTE dans la matrice purple. MESURÉ le
+    // 2026-08-02 sur une base neuve semée par le binaire courant : la règle id 1 « Pic d'échecs
+    // d'authentification (1h) », activée, taguée T1110, avait pour requête `search severity>=3 | stats
+    // count` — un compteur de bruit d'hôte, sans le moindre filtre de catégorie, d'action ou de source.
+    //
+    // LA GARDE EST DÉRIVÉE, PAS UNE LISTE. Elle ne nomme aucune règle : elle SÈME la base comme le
+    // boot le fait, LIT toutes les règles taguées, et exige de chacune qu'elle contraigne au moins une
+    // chose AUTRE que la sévérité. Une règle ajoutée demain avec un tag et un filtre `severity>=N` pour
+    // seule contrainte rougit sans que personne n'ait à y penser. Le PLANCHER (nombre de règles taguées
+    // examinées) est là parce qu'une découverte cassée passerait sinon joyeusement au vert.
+    // ================================================================================================
+
+    /// Le filtre de base d'une requête GXQL (l'étage `search …` avant le premier `|`), découpé en
+    /// termes. Pur, pour que la garde ci-dessous ne dépende d'aucune énumération de règle.
+    fn gxql_base_terms(q: &str) -> Vec<String> {
+        let base = q.split('|').next().unwrap_or("").trim();
+        let base = base.strip_prefix("search").unwrap_or(base).trim();
+        base.split_whitespace().map(|s| s.to_string()).collect()
+    }
+
+    /// Un terme ne contraint-il QUE la sévérité ? (`severity>=3`, `severity=4`, `severity<2`…)
+    fn terme_ne_contraint_que_la_severite(t: &str) -> bool {
+        let t = t.trim();
+        t.starts_with("severity") && t[8..].starts_with(|c: char| matches!(c, '=' | '>' | '<' | '!'))
+    }
+
+    #[test]
+    fn a_seeded_rule_that_claims_a_mitre_technique_constrains_more_than_severity() {
+        let conn = test_db();
+        seed_example_rules(&conn);
+        seed_purple_rules(&conn);
+        seed_detection_rules(&conn);
+        seed_ti_alert_rules(&conn);
+        seed_risk_rules(&conn);
+        let mut s = conn
+            .prepare("SELECT name, query FROM rule WHERE mitre<>'' AND is_soql=1")
+            .unwrap();
+        let regles: Vec<(String, String)> = s
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert!(
+            regles.len() >= 10,
+            "seulement {} règle(s) GXQL taguée(s) examinée(s) : la découverte est cassée, cette garde \
+             ne vérifierait RIEN (mesuré : 15 le 2026-08-02)",
+            regles.len()
+        );
+        for (nom, q) in &regles {
+            let termes = gxql_base_terms(q);
+            let contraint = termes.iter().any(|t| !terme_ne_contraint_que_la_severite(t));
+            assert!(
+                contraint,
+                "règle « {nom} » : taguée ATT&CK — donc annoncée COUVERTE par \
+                 /api/coverage/detections — mais son filtre de base ne contraint que la sévérité \
+                 ({q:?}). C'est un compteur de bruit présenté comme une détection. Ajoutez le filtre \
+                 qui observe vraiment la technique, ou retirez le tag."
+            );
+        }
+    }
+
+    /// La règle semée « Pic d'échecs d'authentification » doit interroger l'AUTHENTIFICATION, sur les
+    /// DEUX moitiés du prédicat que les émetteurs livrés peuplent désormais (`category=auth` ET
+    /// `action=failure`). Épingle le correctif P5.7-a côté SEED ; `migrate_v113` fait la ligne LIVE.
+    #[test]
+    fn the_seeded_bruteforce_rule_queries_authentication_not_noise() {
+        let conn = test_db();
+        seed_example_rules(&conn);
+        let q: String = conn
+            .query_row("SELECT query FROM rule WHERE name LIKE 'Pic d%authentification%'", [], |r| r.get(0))
+            .unwrap();
+        let termes = gxql_base_terms(&q);
+        assert!(termes.iter().any(|t| t == "category=auth"), "doit filtrer category=auth : {q:?}");
+        assert!(termes.iter().any(|t| t == "action=failure"), "doit filtrer action=failure : {q:?}");
+        rule_sql(&q, true, 3600).unwrap_or_else(|e| panic!("la règle corrigée doit compiler : {e}"));
+    }
+
+    /// La MIGRATION corrige la ligne LIVE — et SEULEMENT si elle porte encore la requête livrée.
+    /// Une règle éditée par l'exploitant n'est jamais écrasée : c'est la différence entre corriger un
+    /// défaut de produit et écraser une décision d'exploitation.
+    #[test]
+    fn migration_v113_fixes_the_shipped_rule_and_leaves_an_edited_one_alone() {
+        let conn = test_db();
+        // La ligne LIVE telle qu'un déploiement antérieur la porte (le seed a court-circuité sur son flag).
+        conn.execute(
+            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) \
+             VALUES('Pic d''échecs d''authentification (1h)','search severity>=3 | stats count',1,'>',100.0,3,300,3600,'T1110',1)",
+            [],
+        ).unwrap();
+        // ET une règle que l'exploitant a personnalisée : même nom, même tag, requête DIFFÉRENTE.
+        conn.execute(
+            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) \
+             VALUES('Pic d''échecs d''authentification (1h)','search category=auth action=failure user!=svc | stats count',1,'>',50.0,3,300,3600,'T1110',1)",
+            [],
+        ).unwrap();
+        conn.execute("UPDATE meta SET value='112' WHERE key='schema_version'", []).unwrap();
+        assert!(migrate(&conn), "la chaîne de migrations doit aller au bout");
+        let livree: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM rule WHERE query='search category=auth action=failure | stats count'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(livree, 1, "la ligne LIVRÉE doit être corrigée");
+        let editee: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM rule WHERE query='search category=auth action=failure user!=svc | stats count'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(editee, 1, "la règle ÉDITÉE par l'exploitant ne doit PAS être touchée");
+        let bruit: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM rule WHERE query='search severity>=3 | stats count' AND mitre='T1110'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(bruit, 0, "plus aucune règle T1110 ne doit compter le bruit");
+    }
+
+    // ================================================================================================
+    // P5.1-b — LA CATÉGORIE ABSENTE EST UN ÉTAT, PAS UN SILENCE.
+    // ================================================================================================
+
+    /// La résolution connaît TROIS états et un seul constructeur. Le cas VIDE — celui que les émetteurs
+    /// livrés produisent le plus (branche par défaut de la classification Windows de l'agent, lignes
+    /// bénignes du lecteur macOS) — n'est plus confondu avec « canonique ».
+    #[test]
+    fn ingested_category_resolution_has_three_states() {
+        use crate::ingest::{CategorieIngeree, EtatCategorie};
+        assert_eq!(CategorieIngeree::resoudre("auth", None).etat(), EtatCategorie::Canonique);
+        assert_eq!(CategorieIngeree::resoudre("pas-une-categorie", None).etat(), EtatCategorie::HorsTaxonomie);
+        assert_eq!(CategorieIngeree::resoudre("", None).etat(), EtatCategorie::Absente);
+        // ENRICH-only : le repli parseur ne sert QUE si l'émetteur n'a rien déclaré (parité stricte).
+        assert_eq!(CategorieIngeree::resoudre("", Some("firewall")).etat(), EtatCategorie::Canonique);
+        assert_eq!(CategorieIngeree::resoudre("auth", Some("firewall")).valeur(), "auth");
+        // On n'invente JAMAIS de valeur : une catégorie absente reste absente dans la ligne stockée.
+        assert_eq!(CategorieIngeree::resoudre("", None).stockee(), "");
+    }
+
+    /// PARITÉ DE LA LIGNE STOCKÉE. Le passage par la résolution ne doit changer AUCUNE valeur écrite :
+    /// collecteur prioritaire, repli parseur seulement sur vide, vide conservé vide.
+    #[test]
+    fn ingested_category_resolution_stores_the_same_value_as_before() {
+        use crate::ingest::CategorieIngeree;
+        for (declaree, repli, attendu) in [
+            ("auth", None, "auth"),
+            ("auth", Some("firewall"), "auth"),
+            ("", Some("firewall"), "firewall"),
+            ("", None, ""),
+            ("hors-taxo", Some("firewall"), "hors-taxo"),
+        ] {
+            let avant = if declaree.is_empty() { repli.unwrap_or(declaree) } else { declaree };
+            assert_eq!(
+                CategorieIngeree::resoudre(declaree, repli).stockee(), avant,
+                "parité : ({declaree:?},{repli:?}) doit stocker {attendu:?}"
+            );
+        }
+    }
+
+    // ================================================================================================
+    // P5.7-b — LE SOC S'ALERTE SUR SA PROPRE INSTALLATION, ET ÇA NE PEUT PLUS GRANDIR EN SILENCE.
+    // ------------------------------------------------------------------------------------------------
+    // `bootstrap.sh` installe les unités de plume dans /etc/systemd/system/ ; `collectors/integrity.sh`
+    // surveille exactement ce répertoire (`*.service`, `*.timer`) et rend `kind=unit change=ajout
+    // severity=3` ; la règle semée « vecteur de persistance ajouté » (T1543, severity 4, activée)
+    // interroge `source=integrity change=ajout severity>=3`. Les trois se recouvrent EXACTEMENT.
+    //
+    // ON NE POSE PAS D'EXEMPTION PAR NOM. Exclure `plume-*` du FIM fabriquerait un angle mort qu'un
+    // attaquant occupe en nommant son unité `plume-quelquechose.service` : pour un SOC, un angle mort
+    // taillé sur mesure est PIRE que du bruit de maintenance. Ce qu'on ferme, c'est la CROISSANCE
+    // SILENCIEUSE du recouvrement : la garde le DÉRIVE des fichiers livrés et le confronte au compte
+    // DÉCLARÉ. Ajouter une unité au bootstrap sans le savoir n'est plus possible.
+    // ================================================================================================
+
+    /// Nombre de chemins `/etc/systemd/system/*.service|*.timer` que `bootstrap.sh` installe et que le
+    /// FIM livré signalera comme « vecteur de persistance ajouté ». DÉCLARÉ, donc contestable — et
+    /// vérifié par dérivation juste en dessous. Mesuré le 2026-08-02 sur l'arbre f722290.
+    const UNITES_PLUME_DECLENCHANT_LE_FIM: usize = 27;
+
+    #[test]
+    fn plume_own_units_that_trip_the_persistence_rule_are_declared() {
+        let racine = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+        let boot = std::fs::read_to_string(racine.join("bootstrap.sh")).expect("bootstrap.sh");
+        let fim = std::fs::read_to_string(racine.join("collectors/integrity.sh")).expect("integrity.sh");
+
+        // (1) Le FIM surveille-t-il TOUJOURS ce répertoire ? Si non, cette garde ne mesure plus rien.
+        assert!(
+            fim.contains("/etc/systemd/system/*.service") && fim.contains("/etc/systemd/system/*.timer"),
+            "integrity.sh ne surveille plus /etc/systemd/system/*.service|*.timer : le recouvrement \
+             mesuré ici a changé de nature, re-mesurez avant de toucher la constante."
+        );
+        // (2) …et le fait-il en severity >= 3 avec change=ajout ? (c'est ce que la règle interroge)
+        assert!(
+            fim.contains("unit)     add_ev 3 \"unit systemd $change (persistance) : $path\""),
+            "integrity.sh n'émet plus l'unité systemd en severity 3 : la règle T1543 ne la verrait plus \
+             — vérifiez que le recouvrement décrit ici tient encore."
+        );
+        // (3) La règle livrée interroge-t-elle bien cette forme ?
+        let regle = DETECTION_RULES_V50.iter().find(|r| r.8 == "T1543").expect("règle T1543 livrée");
+        assert_eq!(regle.1, "search source=integrity change=ajout severity>=3 | stats count");
+
+        // (4) Combien d'unités plume bootstrap.sh dépose-t-il DANS ce répertoire ? Dérivé du fichier.
+        let mut unites: std::collections::BTreeSet<String> = Default::default();
+        for l in boot.lines() {
+            let l = l.trim();
+            if l.starts_with('#') || !l.contains("/etc/systemd/system") {
+                continue;
+            }
+            if let Some(p) = l.find("systemd/plume-") {
+                let reste = &l[p + "systemd/".len()..];
+                let nom: String = reste.chars().take_while(|c| !c.is_whitespace() && *c != '"').collect();
+                if nom.ends_with(".service") || nom.ends_with(".timer") {
+                    unites.insert(nom);
+                }
+            }
+        }
+        assert_eq!(
+            unites.len(), UNITES_PLUME_DECLENCHANT_LE_FIM,
+            "bootstrap.sh dépose maintenant {} unité(s) dans /etc/systemd/system que le FIM livré \
+             signalera comme « vecteur de persistance ajouté » (severity 4, T1543) — la constante en \
+             déclare {}. Le SOC s'alerte sur sa propre mise à jour : ce n'est pas un bug du FIM (une \
+             exemption par nom serait un angle mort qu'un attaquant occuperait), c'est un fait qui \
+             doit rester DIT. Mettez la constante à jour en connaissance de cause. Unités : {:?}",
+            unites.len(), UNITES_PLUME_DECLENCHANT_LE_FIM, unites
+        );
+    }

@@ -27,7 +27,7 @@ vers le endpoint d'ingest Plume — le même contrat de fil que les collecteurs 
 - **Windows Event Log** (`WinEventLog:<canal>`, catégories `auth`/`exec`/`network`/`dns`/`endpoint`) :
   `4625`→`auth` (échec, sévérité 3), `4624/4634/4672/…`→`auth`, `4688`→**`exec`**, `1102`/`7045`→`endpoint` ;
   **Sysmon** ID `3`→`network`, `22`→`dns`, sinon `endpoint`. Curseur = signet XML `<BookmarkList>` (multi-canal).
-  *(`4688`→`process` était écrit ici : c'est faux depuis le 2026‑07‑23. `map_cim` émet `exec`, le nom
+  *(`4688`→`process` était écrit ici : c'est faux depuis le 2026‑07‑23. la classification de l'agent (`classer`) émet `exec`, le nom
   canonique CIM v1.3 ; `process` n'appartient pas à `CIM_CATEGORIES`. Mesuré le 2026‑08‑02 sur Windows 11
   Enterprise 24H2 (build 26100) : les 4688 remontés par l'agent arrivent en `category=exec`.)*
   **Tout ce qui n'est pas listé ci-dessus part avec une catégorie VIDE** — ce n'est pas marginal :

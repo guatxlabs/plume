@@ -10,7 +10,7 @@ que `ship.sh`, `Authorization: Bearer <token>`).
 
 | source Plume        | contenu                                                        | catégorie |
 |---------------------|----------------------------------------------------------------|-----------|
-| `windows-security`  | sessions 4624/4625, logoff 4634, privilèges 4672, verrouillage 4740, création de processus 4688, gestion de comptes | auth · process · account |
+| `windows-security`  | sessions 4624/4625, logoff 4634, privilèges 4672, verrouillage 4740, **Kerberos/NTLM 4768/4769/4771/4776**, création de processus 4688, gestion de comptes | auth · exec · account |
 | `windows-firewall`  | connexions **bloquées** par le pare-feu (WFP 5152/5157) + état des profils | firewall |
 | `windows-system`    | arrêts inattendus 6008, échecs de service 7000/7031/7034       | system |
 | `windows-defender`  | détections Microsoft Defender 1006/1015/1116/1117              | malware |
@@ -211,15 +211,27 @@ domaine** en fin de campagne. Central plume compilé depuis ce dépôt, chemin r
 (`install` → `Running`), et `test-ship` répond **202**.* Aucune dépendance à l'interface graphique n'a été
 trouvée, dans le collecteur comme dans l'agent.
 
-> ### Sur un contrôleur de domaine, le collecteur PowerShell est AVEUGLE à Kerberos
+> ### Sur un contrôleur de domaine, le collecteur était AVEUGLE à Kerberos — corrigé, et le trou suivant se déclare tout seul
 > *Mesuré après promotion de `WS22-GUI` en contrôleur du domaine `lab.plume`
 > (`Install-WindowsFeature AD-Domain-Services` **43,4 s**, `Install-ADDSForest` **54,9 s**, +1 redémarrage,
 > DC opérationnel **70 s** après) : la création d'un compte et deux authentifications ont produit **2 × 4768**
 > (ticket TGT) et **8 × 4769** (ticket de service) dans le journal `Security`. Côté SOC, ces événements
-> n'existent QUE par l'agent Rust (`WinEventLog:Security`, `category=auth`) : le collecteur PowerShell en a
-> remonté **0**, parce que sa liste d'identifiants ne contient ni `4768`, ni `4769`, ni `4771`, ni `4776`.*
-> Sur un DC — c'est-à-dire là où se joue l'authentification de tout le parc — **utilisez l'agent Rust**, ou
-> ajoutez ces identifiants à l'appel `Collect-Log` du journal Security.
+> n'existaient QUE par l'agent Rust (`WinEventLog:Security`, `category=auth`) : le collecteur PowerShell en
+> avait remonté **0**, parce que sa liste d'identifiants ne contenait ni `4768`, ni `4769`, ni `4771`, ni
+> `4776`.*
+>
+> **Ce qui a changé, et pourquoi ce n'est pas « quatre identifiants de plus ».** Les quatre sont là. Mais
+> ajouter une liste laisse le trou SUIVANT au prochain relecteur, alors :
+> - la liste d'identifiants est désormais **DÉRIVÉE d'une table `identifiant → issue`** — on ne peut plus
+>   collecter un identifiant sans dire s'il vaut `success`, `failure`, `session_open`… (ou `'-'`, « pas
+>   d'issue », qui est une déclaration qu'il faut écrire). Une garde de CI refuse tout appel `-Ids` nu ;
+> - le collecteur **RECENSE** à chaque run ce que le canal a produit et qu'il ne collecte pas, et l'émet en
+>   `category=config type=collector-coverage` (`uncollected_ids`, `uncollected_events`, `census_capped`).
+>   Le trou n'attend plus une relecture de code : il est **mesurable depuis le SOC, sur chaque hôte**.
+>   Ce jour-là, il aurait affiché `Security : 10 événement(s) non collecté(s), identifiants [4768,4769]`.
+>
+> Le recensement est borné (au plus quelques milliers d'enregistrements par run) et **dit quand il a été
+> borné** : un recensement qui se croirait complet mentirait à son tour.
 >
 > **La promotion en DC n'ajoute AUCUNE couverture d'audit.** *Mesuré : les 59 sous-catégories avant/après
 > `dcpromo` ne diffèrent que des 2 lignes activées à la main par les commandes des prérequis. La stratégie
@@ -237,6 +249,13 @@ trouvée, dans le collecteur comme dans l'agent.
 > activée (et `gpupdate /force` — *mesuré : sans lui le réglage ne mord pas*), l'appât est ressorti par
 > **deux** chemins indépendants : `windows-security`/`exec` (ce script) et `WinEventLog:Security`/`exec`
 > (agent Rust) ; sans elle, **0** des `4688` portait une ligne de commande non vide.
+>
+> **Un `exec` sans ligne de commande a l'air complet, et ne l'est pas — le collecteur le dit maintenant.**
+> C'était la forme exacte du défaut : l'événement arrivait entier (utilisateur, image, hôte), une recherche
+> sur `CommandLine` rendait zéro, et rien n'expliquait pourquoi. À chaque run, le collecteur COMPTE les
+> `4688` collectés sans ligne de commande et émet, si le compte n'est pas nul, un
+> `category=config type=collector-coverage gap=exec-cmdline` portant `cmdline_absent` / `cmdline_present`.
+> Aucune valeur n'est inventée : on ne fabrique pas une ligne de commande, on déclare qu'elle manque.
 >
 > ⚠️ **Sysmon installé APRÈS l'agent** : ses événements sont bien lus (le canal est dans la liste par
 > défaut de l'agent, et le signet l'inclut dès le run suivant) — c'est le piège de flotte ci-dessous, et

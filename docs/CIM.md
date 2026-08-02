@@ -193,6 +193,46 @@ parsers FortiGate/web, etc.). Guidance de mapping (réutiliser ces verbes neutre
 success  failure  allowed  blocked  ban  read  modify  delete  sudo  session_open  session_close
 ```
 
+**`action` EST UNE ISSUE — donc son absence n'est PAS uniforme, et ce document le disait mal.**
+Ce paragraphe listait un vocabulaire sans jamais dire **où** `action` s'applique, ni ce que son
+absence signifie. Deux relevés du 2026‑08‑02 montrent que la question n'est pas cosmétique :
+
+- **Production réelle** (extraction lecture seule `bench/prod-profile.sql`, ~1,4 M d'événements) :
+  `fields.action` est présent sur **68,7 %** des lignes, cardinalité 18.
+- **Hôte Linux avec les collecteurs livrés** (base de labo peuplée par `collectors/*.sh` + journald
+  réel) : absent sur **12,6 %** des lignes — et ces lignes-là sont **exactement** les catégories
+  `health`, `config` et les flux `network`, c'est-à-dire celles qui **n'ont pas d'issue**.
+
+La règle est donc : **une catégorie qui décrit un ACTE porte son issue ; une catégorie qui décrit un
+ÉTAT n'en a pas.** Un battement de cœur ne réussit ni n'échoue ; un auto-report de disponibilité non
+plus. Ce qui reste **exigible** :
+
+| famille | `action` attendu |
+|---|---|
+| `auth` (ouverture/échec de session, Kerberos/NTLM, sudo, session) | **OUI** — `success` / `failure` / `session_open` / `session_close` / `sudo` |
+| `firewall`, `web`, `dns`, `mail`, `dlp`, `application` (filtrage : il y a un verdict) | **OUI** — `allowed` / `blocked` |
+| `ban` | **OUI** — `ban` |
+| `data`, `secrets`, `integrity`, `account` (accès/mutation) | **OUI** — `read` / `modify` / `delete` |
+| `exec` | **OUI** — `success` / `failure` (`auditd` rend `failure` sur un `execve` refusé ; Windows n'écrit 4688 que sur succès) |
+| `health`, `config`, `inventory`, `posture`, `trace`, `network` (flux) | **NON** — pas d'issue à porter |
+
+> Ce tableau est **NORMATIF** (ce qui est exigible d'un émetteur), pas un relevé de l'existant : la
+> conformité n'est mesurée aujourd'hui que sur les chemins cités dans ce document. Un émetteur qui porte
+> l'outcome sous un autre nom (`operation` pour `vault-audit`, par exemple) reste hors de portée des
+> détections qui composent sur `action` — non mesuré ailleurs, donc non affirmé ailleurs.
+
+> **Ce que l'absence coûtait, mesuré.** Les deux règles de brute-force livrées compilent
+> `category=auth action=failure`, et **aucun** des deux émetteurs Windows livrés ne posait `action`.
+> Trois échecs d'ouverture de session Windows (4625) réellement ingérés : `search category=auth |
+> stats count by source` rendait `windows-security 2 · WinEventLog:Security 1 · sudo 366`, tandis que
+> `search category=auth action=failure | stats count by source` rendait **`sudo 17` et RIEN pour
+> Windows**. Une détection T1110 activée était aveugle sur l'OS où le brute-force est le plus courant.
+> Fermé côté émetteur : l'agent (`agent/src/source/windows.rs`) décide catégorie, sévérité **et**
+> issue en **une seule variante de type sans champ optionnel** — une branche qui oublierait l'issue ne
+> compile pas ; le collecteur PowerShell (`collectors/windows/plume-collector.ps1`) dérive sa liste
+> d'identifiants d'une **table `identifiant → issue`**, donc collecter sans déclarer l'issue n'est plus
+> exprimable (garde de CI `check_windows_collector_is_honest.py`).
+
 ### 4d. Denylist d'auto-index (cardinalité)
 
 Champs **jamais** éligibles à l'auto-index (budget RAM 2 Go) — leur agrégation passe par les
@@ -272,6 +312,42 @@ d'overlay, création d'un data-model, mapping HEC). Désormais la **première** 
 couple et par vie du process** (un warn qui noie le journal n'avertit personne). La ligne stockée est
 inchangée.
 
+### 5.1bis Catégorie **ABSENTE** à l'ingestion — acceptée, mais plus jamais silencieuse
+
+La §5.1 ne couvrait qu'un cas sur deux. Il y a **trois** états possibles, pas deux :
+
+| état | ligne stockée | signalé | vu par une règle `category=…` |
+|---|---|---|---|
+| **canonique** (dans `CIM_CATEGORIES`) | telle quelle | non | oui |
+| **hors taxonomie** (non vide, inconnue) | telle quelle | `warn`, une fois par couple (source, category) | non |
+| **absente** (`category` vide) | telle quelle, **vide** | `warn`, une fois par source | **non, définitivement** |
+
+Le troisième état sortait **avant tout contrôle**, sur ce motif écrit dans le code : « *Vide → rien
+(le dparser tranchera côté serveur)* ». **C'était faux, et c'est mesuré** (2026‑08‑02) : quatre
+événements à la forme exacte de l'agent livré (`WinEventLog:Security` 4768/4769,
+`WinEventLog:Application` 1000, `macos-unified-log`) avec `category:""` → HTTP 202, **4 stockés tels
+quels, zéro ligne de journal** ; et sur les **cinq** parseurs déclaratifs livrés, **aucun** ne cible
+les sources de l'agent (ils ciblent `cloudflare`, `firewall`, `fim-agent`, `nginx`, `nft`). Rien ne
+tranchait, ni à l'ingestion ni plus tard.
+
+C'était l'état **le plus produit** par les émetteurs livrés : la classification Windows de l'agent
+rend « non classé » pour tout identifiant hors de sa table, et le lecteur macOS rend une catégorie
+vide pour toute ligne bénigne.
+
+**On n'invente PAS de valeur.** Poser d'office un `unknown` serait pire que le vide : ce serait une
+classification **fabriquée**, et `search category=unknown` ressemblerait à une classe alors que rien
+n'a été reconnu. La ligne reste donc vide — ce qui est honnête. Ce qui est fermé, c'est le **silence** :
+
+- la résolution est un **type à champ privé, constructeur unique** (`CategorieIngeree::resoudre`,
+  `daemon/src/ingest/store.rs`), et sa somme est **exhaustive** : la valeur ne se fabrique pas hors de
+  ce module, et un état ajouté demain ne compile pas tant qu'il n'est pas traité. *Limite exacte : le
+  type n'OBLIGE pas un futur point d'écriture à l'emprunter — la colonne `category` d'`EventRow` reste
+  une `String`. La garantie est « un seul endroit résout, et l'ingest y passe », pas « rien d'autre ne
+  peut écrire ».*
+- **mesurable au repos**, sur les données et non sur un compteur de processus (qui repart à zéro à
+  chaque redémarrage) : `GET /api/system/diag` publie `counts.events_without_category` et la
+  ventilation `unclassified_by_source`. En GXQL : `search category="" | stats count by source`.
+
 ### 5.2 Dette de migration — alias de lecture `exec` ⊃ `process` (péremption **2027-07-23**)
 
 Les deux collecteurs Windows (`collectors/windows/plume-collector.ps1`, `agent/src/source/windows.rs`)
@@ -320,7 +396,7 @@ du jour **et** l'historique scellé `process`. Vérifié de bout en bout par
 ('exec','process')` présent dans le SQL émis) **et** comptage ; neutraliser l'alias fait tomber le compte
 de 2 à 1.
 
-**Angle mort qui subsiste, mesuré.** `map_cim` (`agent/src/source/windows.rs`) range **Sysmon ID 1**
+**Angle mort qui subsiste, mesuré.** `classer` (`agent/src/source/windows.rs`) range **Sysmon ID 1**
 (création de processus) en `endpoint`, pas en `exec` — c'est la branche par défaut « Sysmon hors 3/22 ».
 La création de processus est donc **scindée entre deux catégories émises** : `exec` (4688 + `execve`
 auditd) et `endpoint` (Sysmon ID 1). Une règle `process_creation` ne peut pas voir les deux ; l'importeur
@@ -384,6 +460,28 @@ Conséquences pour qui écrit un émetteur :
   l'émetteur observe (`firewall.sh` retire les compteurs volatils du ruleset avant de hasher).
 - La **fraîcheur d'un parc** est celle de la machine la **plus en retard** (`MIN` sur les `MAX(ts)`
   par hôte) : une machine encore vivante ne peut plus faire passer tout le parc pour frais.
+
+### 5.5 Deux émetteurs Windows, deux catégories pour le MÊME événement — mesuré, non corrigé
+
+Les deux émetteurs Windows **livrés** rangent la gestion de comptes (4720/4722/4724/4726/4732/4756)
+dans deux catégories différentes :
+
+| émetteur | `category` émise |
+|---|---|
+| `collectors/windows/plume-collector.ps1` | **`account`** (le home canonique v1.3) |
+| `agent/src/source/windows.rs` | **`auth`** |
+
+Conséquence : une règle `category=account` ne voit que les postes équipés du collecteur PowerShell,
+et une règle `category=auth` ramasse la gestion de comptes des postes équipés de l'agent. Aucune des
+deux ne voit le parc entier — **c'est le même défaut de forme que le §5.3** (Sysmon ID 1 rangé en
+`endpoint` alors que le 4688 va en `exec`).
+
+**Décision consciente, comme au §5.3 : non fait, écrit.** Basculer l'agent vers `account` rouvrirait
+exactement la dette du §5.2 — l'historique agent rangé en `auth` deviendrait inatteignable par
+`category=account`, et **aucun alias de lecture ne peut le désambiguïser**, puisque `auth` porte
+aussi les ouvertures de session, Kerberos et sudo. Le coût d'un alias `account ⊃ auth` serait de
+faire remonter tout le trafic d'authentification sur une requête de gestion de comptes : le remède
+serait pire.
 
 ---
 

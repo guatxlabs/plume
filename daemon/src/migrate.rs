@@ -90,7 +90,7 @@ impl Drop for MigrationLogSilencer {
 /// rien (toutes ses gardes `v < N` sont fausses) et OPÈRE À L'AVEUGLE sur un schéma qu'il ne connaît pas
 /// -> risque de corruption (survivable AUJOURD'HUI car migrations additives, mais non gardé). On REFUSE
 /// d'ouvrir : arrêt PROPRE (exit non-zéro), JAMAIS un panic, JAMAIS un « proceed » silencieux.
-pub(crate) const CODE_SCHEMA_MAX: i64 = 112;
+pub(crate) const CODE_SCHEMA_MAX: i64 = 113;
 
 /// Lit `meta.schema_version` (défaut 1 si table/lignes absentes ou illisibles) — MÊME lecture que `migrate()`.
 /// Une base NEUVE (pas encore de table meta) renvoie 1 -> jamais refusée par la garde.
@@ -769,6 +769,7 @@ fn migrate_chain(conn: &Connection) -> bool {
     if v < 110 && !migrate_step(conn, 110, migrate_v110) { return false; }
     if v < 111 && !migrate_step(conn, 111, migrate_v111) { return false; }
     if v < 112 && !migrate_step(conn, 112, migrate_v112) { return false; }
+    if v < 113 && !migrate_step(conn, 113, migrate_v113) { return false; }
     true
 }
 
@@ -1042,6 +1043,31 @@ fn migrate_v112(conn: &MigTx) {
     let _ = conn.execute("DELETE FROM meta WHERE key='event_dim_rollup_cov'", []);
     let _ = conn.execute("UPDATE meta SET value='112' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v112 (ampleur du plafond top-N : couverture par dimension rétractée une fois -> le job réagrège en écrivant les lignes de reste ; le brut sert pendant ce temps)");
+}
+
+/// v113 (P5.7-a — LA RÈGLE QUI ANNONÇAIT UNE TECHNIQUE QU'ELLE N'OBSERVAIT PAS). La règle semée
+/// « Pic d'échecs d'authentification (1h) » porte le tag **T1110**, qui est la clé de jointure de
+/// `/api/coverage/detections` : il ANNONCE la technique comme couverte. Sa requête, elle, était
+/// `search severity>=3 | stats count` — aucun filtre de catégorie, d'action ni de source : un compteur
+/// de BRUIT. Le seed est corrigé, mais le seed ne s'applique QU'AUX BASES NEUVES (`seed_example_rules`
+/// court-circuite sur son flag `meta.seeded_rules`), donc la ligne LIVE resterait telle quelle.
+///
+/// MÊME POSTURE QUE v102/CHANGE 6 (UPDATE rétroactif one-time), avec une garde de plus : le `WHERE`
+/// exige la requête EXACTE d'origine. Un exploitant qui a édité sa règle n'est donc JAMAIS écrasé —
+/// on ne corrige que la ligne qui porte encore le défaut livré. Gardé par `v < 113` : ne tourne qu'une
+/// fois ; base neuve = déjà semée corrigée -> 0 ligne touchée.
+///
+/// ROLLBACK — bumpe le schéma à 113 : un binaire max=112 REFUSE d'ouvrir une base v113. Rollback =
+/// restaurer le snapshot pré-migrate. Forward-only, idempotent.
+fn migrate_v113(conn: &MigTx) {
+    let _ = conn.execute(
+        "UPDATE rule SET query='search category=auth action=failure | stats count' \
+         WHERE name='Pic d''échecs d''authentification (1h)' AND mitre='T1110' AND is_soql=1 \
+           AND query='search severity>=3 | stats count'",
+        [],
+    );
+    let _ = conn.execute("UPDATE meta SET value='113' WHERE key='schema_version'", []);
+    mig_log!("[migration] schéma -> v113 (P5.7-a : la règle T1110 semée comptait TOUT severity>=3 ; sa requête devient `category=auth action=failure` — one-time, et seulement si la requête livrée est encore intacte)");
 }
 
 /// v108 (PERF — RECHERCHE RAW HAUT-VOLUME source=X sur fenêtre longue). MARQUEUR PUR (aucune DDL lourde

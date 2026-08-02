@@ -112,44 +112,154 @@ fn severity_from_level(level: i64) -> i64 {
     }
 }
 
-/// (Provider, Channel, EventID, Level) -> (catégorie CIM, sévérité). Vocabulaire aligné sur le daemon
-/// (`auth`/`endpoint`/`network`/`dns`/`exec`) ; catégorie vide = laisser le dparser côté serveur trancher.
+/// ISSUE d'un événement — le vocabulaire NEUTRE `action` du CIM (`CIM_ACTION_VOCAB`), en somme FERMÉE.
+///
+/// POURQUOI UN TYPE ET PAS UN `Option<&str>`. `fields.action` est l'OUTCOME normalisé : c'est lui que
+/// les détections cross-source interrogent. Les deux règles de brute-force LIVRÉES
+/// (« Brute-force auth par IP » et « RBA : brute-force d'authentification », toutes deux T1110 et
+/// activées) compilent `category=auth action=failure`. MESURÉ le 2026-08-02 sur trois échecs
+/// d'ouverture de session Windows (4625) réellement ingérés à la forme des DEUX émetteurs livrés :
+/// `search category=auth | stats count by source` rend `WinEventLog:Security 1 · windows-security 2 ·
+/// sudo 366`, tandis que `search category=auth action=failure | stats count by source` rend **sudo 17
+/// et RIEN pour Windows**. Les événements étaient là, la règle ne les voyait pas — un `Option` par
+/// défaut à `None` est exactement ce qui rend ce trou écrivable sans y penser.
+///
+/// `SansIssue` n'est PAS un défaut : c'est une DÉCLARATION qu'il faut écrire (« cet enregistrement ne
+/// porte pas d'issue »). `SelonStatut` dit que l'issue n'est pas dans l'identifiant mais dans
+/// l'enregistrement (code de statut Kerberos/NTLM) — le résolveur va la lire.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Issue {
+    Reussite,
+    Echec,
+    SessionOuverte,
+    SessionFermee,
+    /// L'identifiant seul ne tranche pas : lire `Status` (4768/4769/4771) ou `Error Code` (4776).
+    SelonStatut,
+    /// Aucune issue à porter — déclaré, pas oublié.
+    SansIssue,
+}
+
+impl Issue {
+    /// Mot du vocabulaire NEUTRE `CIM_ACTION_VOCAB`, ou `None` quand il n'y a rien à écrire.
+    /// Le test `issue_vocabulary_is_within_cim_action_vocab` confronte ces mots au miroir machine.
+    fn mot(self, data: &Map<String, Value>) -> Option<&'static str> {
+        match self {
+            Issue::Reussite => Some("success"),
+            Issue::Echec => Some("failure"),
+            Issue::SessionOuverte => Some("session_open"),
+            Issue::SessionFermee => Some("session_close"),
+            Issue::SelonStatut => Some(if statut_est_succes(data) { "success" } else { "failure" }),
+            Issue::SansIssue => None,
+        }
+    }
+}
+
+/// Le code de statut Windows d'un enregistrement d'authentification vaut-il SUCCÈS ?
+/// `Status` (Kerberos 4768/4769/4771) et `Error Code` (NTLM 4776) portent `0x0` en cas de succès.
+/// ABSENT ou ILLISIBLE -> `false` : on ne déclare pas un succès qu'on n'a pas lu (un faux `failure`
+/// fait du bruit, un faux `success` fabrique un angle mort sur la détection de brute-force).
+fn statut_est_succes(data: &Map<String, Value>) -> bool {
+    let brut = data
+        .get("Status")
+        .or_else(|| data.get("Error Code"))
+        .or_else(|| data.get("ErrorCode"))
+        .and_then(|v| v.as_str());
+    match brut {
+        Some(s) => {
+            let s = s.trim();
+            let hex = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"));
+            match hex {
+                Some(h) => i64::from_str_radix(h, 16).map(|n| n == 0).unwrap_or(false),
+                None => s.parse::<i64>().map(|n| n == 0).unwrap_or(false),
+            }
+        }
+        None => false,
+    }
+}
+
+/// CLASSIFICATION D'UN ENREGISTREMENT WINDOWS — UNE SEULE DÉCISION, INDIVISIBLE.
+///
+/// La variante `Cim` porte les TROIS choses en même temps : la catégorie CIM, la sévérité et l'ISSUE.
+/// Elle n'a **pas** de `Default` et aucun champ optionnel : une branche ajoutée demain qui omettrait
+/// l'issue **ne compile pas** (E0063, « missing field `issue` »). C'est la garantie, et elle ne dépend
+/// d'aucune relecture : on ne peut plus classer un événement d'authentification sans dire s'il a
+/// réussi ou échoué.
+///
+/// `NonClasse` est l'AUTRE moitié de la partition, et elle est nommée. Elle rend `category=""` sur le
+/// fil, ce qui est honnête (rien n'a été classé) — mais ce n'est PAS « le serveur tranchera » : aucun
+/// des 5 parseurs déclaratifs livrés ne cible `WinEventLog:*` (mesuré le 2026-08-02 : 4 événements à
+/// catégorie vide ingérés -> 4 stockés tels quels, 0 ligne de journal). Ce que devient un événement
+/// non classé est décidé côté central, où il est désormais compté et signalé
+/// (`CategorieIngeree::resoudre`, daemon/src/ingest/store.rs).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ClasseWin {
+    Cim { categorie: &'static str, severite: i64, issue: Issue },
+    NonClasse { severite: i64 },
+}
+
+/// (Provider, Channel, EventID, Level) -> classification CIM. Vocabulaire aligné sur le daemon
+/// (`auth`/`endpoint`/`network`/`dns`/`exec`).
 /// CONTRAT : toute catégorie émise ici DOIT appartenir à `CIM_CATEGORIES` (guatx-core, v1.3) — le test
 /// `every_emitted_category_is_canonical_cim` le vérifie contre le miroir machine `config.d/cim/cim.v1.json`
 /// (l'agent ne dépend PAS de guatx-core : le miroir EST la source de vérité accessible d'ici).
-fn map_cim(provider: &str, channel: &str, eid: i64, level: i64) -> (String, i64) {
+fn classer(provider: &str, channel: &str, eid: i64, level: i64) -> ClasseWin {
     let base = severity_from_level(level);
+    let cim = |categorie, severite, issue| ClasseWin::Cim { categorie, severite, issue };
     // Sysmon (endpoint telemetry) : ID 3 = connexion réseau, 22 = requête DNS, sinon endpoint.
+    // Aucun de ces enregistrements ne porte un verdict autorisé/refusé : `SansIssue` est DÉCLARÉ.
     if provider.to_ascii_lowercase().contains("sysmon") {
-        let cat = match eid {
-            3 => "network",
-            22 => "dns",
-            _ => "endpoint",
+        return match eid {
+            3 => cim("network", base, Issue::SansIssue),
+            22 => cim("dns", base, Issue::SansIssue),
+            _ => cim("endpoint", base, Issue::SansIssue),
         };
-        return (cat.to_string(), base);
     }
     match channel {
         "Security" => match eid {
-            4625 => ("auth".to_string(), 3), // échec d'ouverture de session
-            4624 | 4634 | 4647 | 4648 | 4672 | 4768 | 4769 | 4776 => ("auth".to_string(), base),
-            // gestion de comptes / verrouillage -> auth, plancher 1
-            4720 | 4722 | 4724 | 4725 | 4726 | 4728 | 4732 | 4735 | 4738 | 4740 => {
-                ("auth".to_string(), base.max(1))
+            4625 => cim("auth", 3, Issue::Echec), // échec d'ouverture de session
+            4624 => cim("auth", base, Issue::SessionOuverte),
+            4634 | 4647 => cim("auth", base, Issue::SessionFermee),
+            4648 => cim("auth", base, Issue::SansIssue), // tentative avec identifiants explicites
+            4672 => cim("auth", base, Issue::Reussite),  // privilèges spéciaux attribués
+            // KERBEROS / NTLM — l'authentification de tout un domaine passe par là sur un contrôleur
+            // de domaine. Ces identifiants sont écrits AUSSI BIEN en succès qu'en échec : l'issue est
+            // dans le code de statut de l'enregistrement, pas dans l'identifiant.
+            //   4768 = ticket TGT demandé · 4769 = ticket de service demandé
+            //   4776 = validation d'identifiants NTLM
+            4768 | 4769 | 4776 => cim("auth", base, Issue::SelonStatut),
+            // 4771 = échec de pré-authentification Kerberos : Windows ne l'écrit QUE sur échec.
+            // On le DIT plutôt que de relire un statut qui pourrait, sur une forme inattendue,
+            // rendre un `success` que l'identifiant contredit.
+            4771 => cim("auth", base, Issue::Echec),
+            // Gestion de comptes / verrouillage -> `auth`, plancher 1. Windows n'écrit ces
+            // enregistrements QUE lorsque l'opération a abouti -> `Reussite`.
+            // ÉCART CONNU ET ÉCRIT : le collecteur PowerShell livré range les mêmes identifiants en
+            // `category=account` (le home canonique CIM v1.3). Basculer l'agent rouvrirait la dette du
+            // §5.2 de docs/CIM.md (l'historique agent rangé en `auth` deviendrait inatteignable par
+            // `category=account`, et aucun alias ne peut le désambiguïser puisque `auth` porte aussi
+            // les ouvertures de session). Non fait, écrit — cf. docs/CIM.md §5.5.
+            4720 | 4722 | 4724 | 4725 | 4726 | 4728 | 4732 | 4735 | 4738 => {
+                cim("auth", base.max(1), Issue::Reussite)
             }
+            4740 => cim("auth", base.max(1), Issue::SansIssue), // compte verrouillé : constat, pas une issue
             // 4688 = création de processus. `exec` est le nom CANONIQUE CIM v1.3 ; l'agent a émis
             // `process` (hors taxonomie) jusqu'au 2026-07-23 — l'historique est retrouvé par l'alias
             // de LECTURE du daemon (`cim_read_alias_exec`), jamais par une réécriture des données.
-            4688 => ("exec".to_string(), base),
-            4697 => ("endpoint".to_string(), base.max(2)), // installation de service
-            1102 => ("endpoint".to_string(), 3),   // journal d'audit effacé
-            _ => (String::new(), base),
+            // Windows n'écrit 4688 QUE lorsque le processus A ÉTÉ créé -> `Reussite`. C'est ce qui
+            // aligne `category=exec` sur le flux Linux (`collectors/auditd.sh` rend `action=failure`
+            // quand l'`execve` échoue) : sans issue ici, la MÊME catégorie ne répondrait pas à la
+            // même requête selon l'OS.
+            4688 => cim("exec", base, Issue::Reussite),
+            4697 => cim("endpoint", base.max(2), Issue::Reussite), // installation de service
+            1102 => cim("endpoint", 3, Issue::Reussite),           // journal d'audit effacé
+            _ => ClasseWin::NonClasse { severite: base },
         },
         "System" => match eid {
-            7045 => ("endpoint".to_string(), base.max(2)), // nouveau service
-            7036 | 7040 => ("endpoint".to_string(), base),
-            _ => (String::new(), base),
+            7045 => cim("endpoint", base.max(2), Issue::Reussite), // nouveau service
+            7036 | 7040 => cim("endpoint", base, Issue::SansIssue),
+            _ => ClasseWin::NonClasse { severite: base },
         },
-        _ => (String::new(), base),
+        _ => ClasseWin::NonClasse { severite: base },
     }
 }
 
@@ -239,8 +349,16 @@ pub fn winxml_to_event(xml: &str, host: &str) -> Option<Event> {
         .and_then(|s| super::parse_epoch(&s))
         .unwrap_or_else(super::now_secs);
 
-    let (category, severity) = map_cim(&provider, &channel, eid, level);
+    let classe = classer(&provider, &channel, eid, level);
     let data = extract_event_data(xml);
+    // L'issue est résolue AVANT que `data` ne soit consommé par le sac `fields` (elle lit le code de
+    // statut de l'enregistrement pour les identifiants Kerberos/NTLM).
+    let (category, severity, action) = match classe {
+        ClasseWin::Cim { categorie, severite, issue } => {
+            (categorie.to_string(), severite, issue.mot(&data))
+        }
+        ClasseWin::NonClasse { severite } => (String::new(), severite, None),
+    };
 
     // Message synthétique : le XML brut ne porte PAS le texte rendu (EvtFormatMessage requis) — on
     // compose un résumé stable + les champs auth saillants ; le daemon enrichit/dparse ensuite.
@@ -260,6 +378,12 @@ pub fn winxml_to_event(xml: &str, host: &str) -> Option<Event> {
     fields.insert("channel".to_string(), Value::String(channel.clone()));
     fields.insert("event_id".to_string(), Value::from(eid));
     fields.insert("level".to_string(), Value::from(level));
+    // OUTCOME normalisé CIM (`CIM_ACTION_VOCAB`) — c'est le champ sur lequel les détections
+    // cross-source composent. Absent ici, un échec d'ouverture de session Windows n'existe pas pour
+    // `search category=auth action=failure` (mesuré : 0 sur 3 avant ce correctif).
+    if let Some(a) = action {
+        fields.insert("action".to_string(), Value::String(a.to_string()));
+    }
 
     // L'HÔTE FAIT PARTIE DE LA CLÉ — et depuis le 2026-08-02 le CENTRAL le garantit aussi de son côté.
     // Le défaut : `event.dedup` était UNIQUE au niveau de la BASE du central, pas de l'hôte ; deux
@@ -470,7 +594,7 @@ mod tests {
         assert_eq!(e.category, "exec", "4688 = création de processus -> `exec` (nom canonique CIM v1.3)");
     }
 
-    /// GARDE DÉRIVÉE (pas une énumération) : BALAYE l'espace d'entrée de `map_cim` et exige que
+    /// GARDE DÉRIVÉE (pas une énumération) : BALAYE l'espace d'entrée de `classer` et exige que
     /// CHAQUE catégorie qu'il peut produire appartienne à `CIM_CATEGORIES`. La taxonomie est lue du
     /// MIROIR MACHINE du dépôt (`config.d/cim/cim.v1.json`, tenu en parité avec `guatx_core::cim` par
     /// le test daemon `cim_const_mirror_matches_config_schema`) : l'agent ne dépend pas de guatx-core,
@@ -486,20 +610,99 @@ mod tests {
         assert!(cats.len() >= 40, "miroir CIM suspect : {} catégories", cats.len());
         assert!(cats.iter().any(|c| c == "exec"), "`exec` DOIT être canonique (sinon la bascule 4688 est fausse)");
         assert!(!cats.iter().any(|c| c == "process"), "`process` n'est PAS canonique — c'est le postulat de la bascule");
-        // Balayage : tous les providers/canaux que `map_cim` distingue × tout l'espace d'EventID réel.
+        // Balayage : tous les providers/canaux que `classer` distingue × tout l'espace d'EventID réel.
         for provider in ["", "Microsoft-Windows-Security-Auditing", "Microsoft-Windows-Sysmon", "Sysmon"] {
             for channel in ["Security", "System", "Application", "Microsoft-Windows-Sysmon/Operational", ""] {
                 for eid in 0i64..=10_000 {
                     for level in [0i64, 2] {
-                        let (cat, _) = map_cim(provider, channel, eid, level);
-                        assert!(
-                            cat.is_empty() || cats.contains(&cat),
-                            "map_cim({provider:?},{channel:?},{eid},{level}) -> catégorie '{cat}' HORS CIM_CATEGORIES"
-                        );
+                        if let ClasseWin::Cim { categorie, .. } = classer(provider, channel, eid, level) {
+                            assert!(
+                                cats.contains(&categorie.to_string()),
+                                "classer({provider:?},{channel:?},{eid},{level}) -> catégorie '{categorie}' HORS CIM_CATEGORIES"
+                            );
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// GARDE DÉRIVÉE, MÊME FORME, SUR L'AUTRE MOITIÉ DE LA DÉCISION : tout mot d'`action` que la
+    /// classification peut produire doit appartenir au vocabulaire NEUTRE du CIM (`action_vocab` du
+    /// miroir machine). Le balayage couvre l'espace d'entrée entier ET les deux résolutions de
+    /// `SelonStatut` (statut présent/absent), donc un mot inventé demain ROUGIT — quelle que soit la
+    /// branche qui l'introduit. Sans cette garde, un `action` hors vocabulaire serait STOCKÉ sans un
+    /// mot (le CIM n'est pas un DROP) et aucune règle ne le verrait jamais.
+    #[test]
+    fn issue_vocabulary_is_within_cim_action_vocab() {
+        let mirror = include_str!("../../../config.d/cim/cim.v1.json");
+        let v: serde_json::Value = serde_json::from_str(mirror).expect("miroir CIM illisible");
+        let vocab: Vec<String> = v["action_vocab"].as_array().expect("action_vocab[]").iter()
+            .map(|c| c.as_str().expect("mot").to_string()).collect();
+        assert!(vocab.len() >= 11, "miroir CIM suspect : {} mots d'action", vocab.len());
+        let mut succes = Map::new();
+        succes.insert("Status".into(), Value::String("0x0".into()));
+        let mut echec = Map::new();
+        echec.insert("Status".into(), Value::String("0x18".into()));
+        let vide = Map::new();
+        let mut vus = 0usize;
+        for provider in ["", "Microsoft-Windows-Security-Auditing", "Microsoft-Windows-Sysmon"] {
+            for channel in ["Security", "System", "Application", ""] {
+                for eid in 0i64..=10_000 {
+                    let ClasseWin::Cim { issue, .. } = classer(provider, channel, eid, 0) else { continue };
+                    for data in [&succes, &echec, &vide] {
+                        if let Some(mot) = issue.mot(data) {
+                            assert!(vocab.contains(&mot.to_string()),
+                                "classer({provider:?},{channel:?},{eid}) -> action '{mot}' HORS action_vocab");
+                            vus += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(vus > 0, "aucune action produite : le balayage a décroché, cette garde ne vérifierait rien");
+    }
+
+    /// Le contrôleur de domaine : l'authentification de tout le parc passe par Kerberos/NTLM, et son
+    /// issue est dans le CODE DE STATUT, pas dans l'identifiant. Un `4768` de succès et un `4768`
+    /// d'échec doivent donc rendre DEUX actions différentes — sinon la règle `action=failure` compte
+    /// les succès, ou n'en compte aucun.
+    #[test]
+    fn kerberos_outcome_comes_from_the_status_code() {
+        let xml = |eid: i64, st: &str| format!(
+            "<Event><System><Provider Name='Microsoft-Windows-Security-Auditing'/><EventID>{eid}</EventID>\
+             <Level>0</Level><Channel>Security</Channel><EventRecordID>{eid}</EventRecordID>\
+             <TimeCreated SystemTime='2026-08-02T00:00:00Z'/></System><EventData>\
+             <Data Name='TargetUserName'>svc</Data><Data Name='Status'>{st}</Data></EventData></Event>");
+        // 4768/4769/4776 sont écrits en succès COMME en échec -> l'issue vient du statut.
+        for eid in [4768i64, 4769, 4776] {
+            let ok = winxml_to_event(&xml(eid, "0x0"), "dc01").expect("event");
+            assert_eq!(ok.category, "auth", "{eid} = authentification");
+            assert_eq!(ok.fields["action"], "success", "{eid} statut 0x0 -> succès");
+            let ko = winxml_to_event(&xml(eid, "0x18"), "dc01").expect("event");
+            assert_eq!(ko.fields["action"], "failure", "{eid} statut non nul -> échec");
+        }
+        // 4771 = échec de pré-authentification : l'identifiant DIT l'échec, quel que soit le statut.
+        // Une forme de statut inattendue ne doit pas pouvoir le retourner en succès.
+        for st in ["0x0", "0x18", "", "n'importe quoi"] {
+            let e = winxml_to_event(&xml(4771, st), "dc01").expect("event");
+            assert_eq!(e.category, "auth");
+            assert_eq!(e.fields["action"], "failure", "4771 est un échec, statut={st:?}");
+        }
+        // Statut ABSENT : on ne déclare pas un succès qu'on n'a pas lu.
+        let sans = r#"<Event><System><Provider Name='Microsoft-Windows-Security-Auditing'/><EventID>4768</EventID><Level>0</Level><Channel>Security</Channel><EventRecordID>1</EventRecordID><TimeCreated SystemTime='2026-08-02T00:00:00Z'/></System><EventData><Data Name='TargetUserName'>svc</Data></EventData></Event>"#;
+        assert_eq!(winxml_to_event(sans, "dc01").unwrap().fields["action"], "failure");
+    }
+
+    /// LA RÈGLE LIVRÉE DOIT VOIR L'ÉVÉNEMENT. `4625` est l'échec d'ouverture de session Windows ; les
+    /// deux règles de brute-force livrées compilent `category=auth action=failure`. MESURÉ le
+    /// 2026-08-02 AVANT ce correctif : 3 échecs 4625 en base, `search category=auth action=failure`
+    /// en comptait 0. Cette garde épingle les DEUX moitiés du prédicat.
+    #[test]
+    fn a_failed_windows_logon_carries_the_outcome_the_shipped_rules_query() {
+        let e = winxml_to_event(XML_4625, "ep01").expect("event");
+        assert_eq!(e.category, "auth");
+        assert_eq!(e.fields["action"], "failure", "sans ce champ, `category=auth action=failure` ne rend rien");
     }
 
     #[test]

@@ -165,7 +165,27 @@ pub(crate) fn diag_bundle_json(conn: &Connection, spool: &str, db_path: &str, wa
         "alerts_open": count("SELECT COUNT(*) FROM alert WHERE status='new'"),
         "destinations": count("SELECT COUNT(*) FROM destination"),
         "connectors": count("SELECT COUNT(*) FROM connector"),
+        // TAXONOMIE — CE QUE PLUME N'A PAS CLASSÉ, MESURÉ SUR LES DONNÉES ET NON SUR UN COMPTEUR DE
+        // PROCESSUS. Une ligne à `category` vide est invisible à TOUTE règle `category=…` (l'axe de
+        // composition des détections, docs/CIM.md §2) et le produit n'en disait rien : ni refus, ni
+        // repli, ni journal (mesuré le 2026-08-02 : 4 événements à catégorie vide -> 4 stockés, 0
+        // ligne). Le compte est fait EN SQL, donc il survit aux redémarrages et décrit l'état RÉEL de
+        // la base — un compteur en mémoire n'aurait mesuré que la vie du process courant.
+        "events_without_category": count("SELECT COUNT(*) FROM event WHERE category IS NULL OR category=''"),
     });
+    // Quel ÉMETTEUR n'a pas classé. Sans cette ventilation, le compte ci-dessus dit qu'il y a un trou
+    // sans dire où le boucher. Borné à 20 sources (des NOMBRES et des noms de source, jamais de ligne).
+    let mut unclassified: Vec<Value> = Vec::new();
+    if let Ok(mut s) = conn.prepare(
+        "SELECT source, COUNT(*) n FROM event WHERE category IS NULL OR category='' \
+         GROUP BY source ORDER BY n DESC LIMIT 20",
+    ) {
+        if let Ok(rows) = s.query_map([], |r| {
+            Ok(json!({ "source": r.get::<_, String>(0)?, "events": r.get::<_, i64>(1)? }))
+        }) {
+            unclassified = rows.flatten().collect();
+        }
+    }
     json!({
         "generated_at": now(),
         "kind": "plume-diagnostic-bundle",
@@ -177,6 +197,7 @@ pub(crate) fn diag_bundle_json(conn: &Connection, spool: &str, db_path: &str, wa
         "recent_events": recent,
         "heartbeat_alerts": heartbeats,
         "counts": counts,
+        "unclassified_by_source": unclassified,
     })
 }
 

@@ -312,7 +312,7 @@
         // (a) ATOMICITÉ : APRÈS COMMIT, tous les non-doublons sont visibles (rien resté dans une transaction ouverte).
         let visible: i64 = conn.query_row("SELECT COUNT(*) FROM event WHERE message IN ('alpha','bravo','delta')", [], |r| r.get(0)).unwrap();
         assert_eq!(visible, 3, "alpha/bravo/delta committés et visibles");
-        assert_eq!(conn.query_row("SELECT message FROM event WHERE dedup='k1'", [], |r| r.get::<_, String>(0)).unwrap(), "alpha", "le 1er gagne (OR IGNORE)");
+        assert_eq!(conn.query_row(&format!("SELECT message FROM event WHERE dedup='{}'", ddk(None, "k1")), [], |r| r.get::<_, String>(0)).unwrap(), "alpha", "le 1er gagne (OR IGNORE)");
         // (b) RE-JEU du même batch = idempotent sur les clés dédup ; seul 'delta' (dedup NULL) ré-insère.
         let n2 = ingest_events_batch(&conn, ":memory:", &events, 1234, None, None).expect("2e batch committé");
         assert_eq!(n2, 4);
@@ -353,7 +353,7 @@
         assert_eq!(n, 2, "les 2 events sont TRAITÉS (parité du retour), même le droppé");
         let stored: i64 = conn.query_row("SELECT COUNT(*) FROM event", [], |r| r.get(0)).unwrap();
         assert_eq!(stored, 1, "seul l'event non-noise est indexé (le noise est droppé par policy)");
-        assert!(conn.query_row("SELECT 1 FROM event WHERE dedup='d1'", [], |r| r.get::<_, i64>(0)).is_err(), "l'event droppé n'existe PAS");
+        assert!(conn.query_row(&format!("SELECT 1 FROM event WHERE dedup='{}'", ddk(None, "d1")), [], |r| r.get::<_, i64>(0)).is_err(), "l'event droppé n'existe PAS");
         let c = processors_counters_json(dbp);
         assert_eq!(c["totals"]["dropped"], 1, "1 drop COMPTÉ (non-silence)");
         assert_eq!(c["totals"]["not_indexed"], 1);
@@ -368,7 +368,7 @@
         add_ingest_rule(&conn, dbp, 1, "source", "eq", "pii", "mask", "fields.ssn");
         let events = vec![json!({"ts": 1, "source": "pii", "message": "SSN=123-45-6789", "fields": {"ssn": "123-45-6789", "keep": "ok"}, "dedup": "m1"})];
         ingest_events_batch(&conn, dbp, &events, 1, None, None).unwrap();
-        let (msg, fields): (String, String) = conn.query_row("SELECT message, fields FROM event WHERE dedup='m1'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let (msg, fields): (String, String) = conn.query_row(&format!("SELECT message, fields FROM event WHERE dedup='{}'", ddk(None, "m1")), [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(msg, "[redacted]", "le message est masqué");
         let fv: Value = serde_json::from_str(&fields).unwrap();
         assert_eq!(fv["ssn"], "[redacted]", "fields.ssn masqué");
@@ -384,7 +384,7 @@
         add_ingest_rule(&conn, dbp, 0, "source", "eq", "app", "route", "cold");
         let events = vec![json!({"ts": 1, "source": "app", "message": "x", "dedup": "r1"})];
         ingest_events_batch(&conn, dbp, &events, 1, None, None).unwrap();
-        let env: String = conn.query_row("SELECT env_id FROM event WHERE dedup='r1'", [], |r| r.get(0)).unwrap();
+        let env: String = conn.query_row(&format!("SELECT env_id FROM event WHERE dedup='{}'", ddk(None, "r1")), [], |r| r.get(0)).unwrap();
         assert_eq!(env, "cold", "l'event est routé vers l'environnement cible");
         assert_eq!(processors_counters_json(dbp)["totals"]["routed"], 1);
     }
@@ -417,7 +417,7 @@
         processors_reload(&conn, dbp);
         let events = vec![json!({"ts": 1, "source": "agent", "message": "important", "dedup": "b1"})];
         ingest_events_batch(&conn, dbp, &events, 1, None, None).unwrap();
-        let msg: String = conn.query_row("SELECT message FROM event WHERE dedup='b1'", [], |r| r.get(0)).unwrap();
+        let msg: String = conn.query_row(&format!("SELECT message FROM event WHERE dedup='{}'", ddk(None, "b1")), [], |r| r.get(0)).unwrap();
         assert_eq!(msg, "important", "l'event est indexé INCHANGÉ malgré la règle cassée (fail-safe)");
         assert_eq!(processors_counters_json(dbp)["reload_errors"], 1, "la règle invalide est COMPTÉE (visible), jamais silencieuse");
     }
@@ -434,7 +434,7 @@
         let n = ingest_events_batch(&conn, dbp, &events, 42, None, None).unwrap();
         assert_eq!(n, 1);
         let (src, cat, sev, msg, ip, env): (String, String, i64, String, Option<String>, String) = conn.query_row(
-            "SELECT source, category, severity, message, src_ip, env_id FROM event WHERE dedup='z1'",
+            &format!("SELECT source, category, severity, message, src_ip, env_id FROM event WHERE dedup='{}'", ddk(None, "z1")),
             [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
         ).unwrap();
         assert_eq!((src.as_str(), cat.as_str(), sev, msg.as_str(), ip.as_deref(), env.as_str()),
@@ -470,7 +470,7 @@
         ingest_events_batch(&conn, dbp, &events, 1, None, None).unwrap();
         let stored: i64 = conn.query_row("SELECT COUNT(*) FROM event", [], |r| r.get(0)).unwrap();
         assert_eq!(stored, 1, "o2 droppé par la 2e règle malgré le masque de la 1re");
-        let msg: String = conn.query_row("SELECT message FROM event WHERE dedup='o1'", [], |r| r.get(0)).unwrap();
+        let msg: String = conn.query_row(&format!("SELECT message FROM event WHERE dedup='{}'", ddk(None, "o1")), [], |r| r.get(0)).unwrap();
         assert_eq!(msg, "[redacted]", "o1 gardé ET masqué (MASK ne court-circuite pas)");
         let c = processors_counters_json(dbp);
         assert_eq!(c["totals"]["masked"], 2, "les 2 events matchent le MASK (avant le drop de o2)");
@@ -486,7 +486,7 @@
     fn ingest_wazuh(conn: &Connection, dbp: &str, dedup: &str, alert: Value) -> (String, i64, String) {
         let ev = json!({ "ts": 1000, "source": "wazuh", "message": alert.to_string(), "dedup": dedup });
         ingest_events_batch(conn, dbp, std::slice::from_ref(&ev), 1000, None, None).unwrap();
-        conn.query_row("SELECT category,severity,COALESCE(fields,'{}') FROM event WHERE dedup=?1", params![dedup],
+        conn.query_row("SELECT category,severity,COALESCE(fields,'{}') FROM event WHERE dedup=?1", params![ddk(None, dedup)],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))).unwrap()
     }
     fn jf(fields: &str, key: &str) -> Option<String> {
@@ -601,7 +601,7 @@
         let ev = json!({ "ts": 1, "source":"wazuh", "category":"malware", "severity":4, "message": alert.to_string(), "dedup":"o1" });
         ingest_events_batch(&conn, dbp, std::slice::from_ref(&ev), 1, None, None).unwrap();
         let (cat, sev, f): (String, i64, String) = conn.query_row(
-            "SELECT category,severity,COALESCE(fields,'{}') FROM event WHERE dedup='o1'", [],
+            &format!("SELECT category,severity,COALESCE(fields,'{{}}') FROM event WHERE dedup='{}'", ddk(None, "o1")), [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
         assert_eq!((cat.as_str(), sev), ("malware", 4), "category/severity déclarées NON écrasées");
         assert_eq!(jf(&f, "cve").as_deref(), Some("CVE-1"), "mais les fields sont enrichis");
@@ -618,7 +618,7 @@
         let ev = json!({ "ts": 1, "source":"firewall", "category":"firewall", "message": msg, "dedup":"m0" });
         ingest_events_batch(&conn, dbp, std::slice::from_ref(&ev), 1, None, None).unwrap();
         let (cat, f): (String, String) = conn.query_row(
-            "SELECT category,COALESCE(fields,'{}') FROM event WHERE dedup='m0'", [],
+            &format!("SELECT category,COALESCE(fields,'{{}}') FROM event WHERE dedup='{}'", ddk(None, "m0")), [],
             |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(cat, "firewall", "source non-endpoint -> category inchangée");
         assert!(jf(&f, "fim_path").is_none(), "aucune normalisation FIM hors source endpoint");
@@ -657,7 +657,7 @@
         dparsers_reload(&conn, dbp);
         let ev = json!({ "ts":1, "source":"fim-agent", "message":"path=/etc/passwd event=modified sha256=abc123 action=modify", "dedup":"dsl1" });
         ingest_events_batch(&conn, dbp, std::slice::from_ref(&ev), 1, None, None).unwrap();
-        let (cat, f): (String, String) = conn.query_row("SELECT category,COALESCE(fields,'{}') FROM event WHERE dedup='dsl1'", [],
+        let (cat, f): (String, String) = conn.query_row(&format!("SELECT category,COALESCE(fields,'{{}}') FROM event WHERE dedup='{}'", ddk(None, "dsl1")), [],
             |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(cat, "integrity", "DSL mappe fim-agent -> category integrity");
         assert_eq!(jf(&f, "fim_path").as_deref(), Some("/etc/passwd"));
@@ -1326,7 +1326,7 @@
             "SELECT COUNT(*) FROM event WHERE json_extract(fields,'$.cim')=?1", params![ver], |r| r.get(0)).unwrap();
         assert_eq!(stamped, 2, "les 2 events portent fields.cim = CIM_VERSION au repos");
         let user: Option<String> = conn.query_row(
-            "SELECT json_extract(fields,'$.user') FROM event WHERE dedup='s1'", [], |r| r.get(0)).unwrap();
+            &format!("SELECT json_extract(fields,'$.user') FROM event WHERE dedup='{}'", ddk(None, "s1")), [], |r| r.get(0)).unwrap();
         assert_eq!(user.as_deref(), Some("root"), "tampon ADDITIF : les fields d'origine survivent");
     }
 

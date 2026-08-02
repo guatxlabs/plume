@@ -217,13 +217,13 @@
         })];
         assert_eq!(ingest_events_batch(&conn, dpath, &events, 1000, None, None).expect("batch"), 1);
         let (cat, sev, src, dst): (String, i64, String, Option<String>) = conn.query_row(
-            "SELECT category, severity, src_ip, dst_ip FROM event WHERE dedup='fw1'", [],
+            &format!("SELECT category, severity, src_ip, dst_ip FROM event WHERE dedup='{}'", ddk(None, "fw1")), [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?))).unwrap();
         assert_eq!(cat, "firewall", "category mappée depuis le map littéral");
         assert_eq!(sev, 2, "severity mappée");
         assert_eq!(src, "203.0.113.7", "src_ip mappé (fields.src_ip) PROMU en colonne");
         assert_eq!(dst.as_deref(), Some("198.51.100.2"), "dst_ip mappé PROMU en colonne");
-        let fv: Value = serde_json::from_str(&conn.query_row::<String, _, _>("SELECT fields FROM event WHERE dedup='fw1'", [], |r| r.get(0)).unwrap()).unwrap();
+        let fv: Value = serde_json::from_str(&conn.query_row::<String, _, _>(&format!("SELECT fields FROM event WHERE dedup='{}'", ddk(None, "fw1")), [], |r| r.get(0)).unwrap()).unwrap();
         assert_eq!(fv["action"], "deny", "action (vendeur) -> fields.action (outcome CIM)");
         assert_eq!(fv["proto"], "tcp", "proto -> fields.proto");
         let _ = std::fs::remove_dir_all(&dir);
@@ -266,7 +266,7 @@
         // l'ingest reste fonctionnel : le bon dparser mappe la category.
         dparsers_reload(&conn, dpath);
         ingest_events_batch(&conn, dpath, &[json!({"ts":1,"source":"x","category":"","message":"go now","dedup":"g1"})], 1, None, None).unwrap();
-        assert_eq!(conn.query_row::<String, _, _>("SELECT category FROM event WHERE dedup='g1'", [], |r| r.get(0)).unwrap(), "firewall");
+        assert_eq!(conn.query_row::<String, _, _>(&format!("SELECT category FROM event WHERE dedup='{}'", ddk(None, "g1")), [], |r| r.get(0)).unwrap(), "firewall");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -781,13 +781,13 @@ detection:
         ingest_events_batch(&conn, db_path, &[ev_norm], 3000, None, Some("web01")).unwrap();
 
         // PROVENANCE non-forgeable persistée dans origin (colonne serveur, jamais lue de l'event).
-        let att_org: String = conn.query_row("SELECT origin FROM event WHERE dedup='cfg-mail-a'", [], |r| r.get(0)).unwrap();
+        let att_org: String = conn.query_row(&format!("SELECT origin FROM event WHERE dedup='{}'", ddk(Some("mail01"), "cfg-mail-a")), [], |r| r.get(0)).unwrap();
         assert_eq!(att_org, "agent", "report d'un agent lié -> origin=agent (attesté)");
-        let att_host: String = conn.query_row("SELECT host FROM event WHERE dedup='cfg-mail-a'", [], |r| r.get(0)).unwrap();
+        let att_host: String = conn.query_row(&format!("SELECT host FROM event WHERE dedup='{}'", ddk(Some("mail01"), "cfg-mail-a")), [], |r| r.get(0)).unwrap();
         assert_eq!(att_host, "mail01", "M2 : host FORCÉ au token, le host déclaré 'spoofed' est écrasé");
-        let forge_org: String = conn.query_row("SELECT origin FROM event WHERE dedup='cfg-mail-b'", [], |r| r.get(0)).unwrap();
+        let forge_org: String = conn.query_row(&format!("SELECT origin FROM event WHERE dedup='{}'", ddk(Some("attacker"), "cfg-mail-b")), [], |r| r.get(0)).unwrap();
         assert_eq!(forge_org, "unverified", "report sans token lié -> origin=unverified (host auto-déclaré, non attesté)");
-        let norm_org: String = conn.query_row("SELECT origin FROM event WHERE dedup='n1'", [], |r| r.get(0)).unwrap();
+        let norm_org: String = conn.query_row(&format!("SELECT origin FROM event WHERE dedup='{}'", ddk(Some("web01"), "n1")), [], |r| r.get(0)).unwrap();
         assert_eq!(norm_org, "", "event non-config -> origin='' (parité mode-0)");
 
         // CONTESTE : 2 hôtes distincts revendiquent source='mail' -> le conflit est VISIBLE (>1).

@@ -56,7 +56,7 @@ sur une seule ligne, `EventRow` (`guatx_core::store`, crate `guatx-core`, `src/s
 | `src_ip`        | string  | IP source — colonne **promue** depuis `fields.src_ip` \| `fields.rhost` (§4). |
 | `dst_ip`        | string  | IP destination — colonne **promue** depuis `fields.dst_ip`. |
 | `url`           | string  | URL / host+path — colonne **promue** depuis `fields.url`. |
-| `dedup`         | string  | Clé anti-doublon (`INSERT OR IGNORE`). **UNIQUE au niveau de la BASE, pas de l'hôte** : tout émetteur DOIT y faire figurer l'hôte, sinon deux machines se volent leurs événements en silence (cf. `collectors/windows/README.md`, « le piège de la flotte » — mesuré). |
+| `dedup`         | string  | Clé anti-doublon (`INSERT OR IGNORE`). **CLOISONNÉE PAR HÔTE À L'ÉCRITURE** : la valeur STOCKÉE est `dedup_scoped_by_host(host, dedup)` (`daemon/src/ingest/store.rs`), donc la portée d'unicité est l'HÔTE de la ligne, pas la base. Un émetteur n'a **pas** à faire figurer l'hôte dans sa clé — et **ne peut pas** en produire une qui collisionne entre machines, quel que soit son langage. Il doit en revanche produire une clé **stable et déterministe** pour un même événement, c'est elle qui absorbe les réémissions du spool (at-least-once). *Avant ce cloisonnement, deux machines se volaient leurs événements en silence : mesuré 45 événements Sysmon disparus sur Windows (cf. `collectors/windows/README.md`) et 26 sur 78 côté Linux (cf. le bandeau de `ingest/store.rs`).* |
 | `fields`        | object  | Sac JSON des champs **ÉTENDUS** (spécifiques vendeur/parser). |
 | `engagement_id` | string  | Corrélation d'engagement purple-team. |
 | `origin`        | string  | Marqueur d'origine d'ingestion. |

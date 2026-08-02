@@ -66,7 +66,11 @@ impl ChEventRow {
             src_ip: r.src_ip.clone(),
             dst_ip: r.dst_ip.clone(),
             url: r.url.clone(),
-            dedup: r.dedup.clone(),
+            // CLOISONNEMENT PAR HÔTE — MÊME fonction que le tier chaud SQLite (`ingest::store`) : la portée
+            // d'unicité de `dedup` est l'HÔTE de la ligne, quel que soit le backend. ClickHouse n'a pas de
+            // contrainte UNIQUE (cf. EVENT_DDL) : la valeur y est PORTÉE, pas encore appliquée — mais un
+            // `ReplacingMergeTree` clé sur `dedup` (durcissement documenté) hériterait de la bonne portée.
+            dedup: crate::ingest::store::dedup_scoped_by_host(r.host.as_deref(), r.dedup.as_deref()),
             fields: r.fields.clone(),
             engagement_id: r.engagement_id.clone(),
             origin: r.origin.clone(),

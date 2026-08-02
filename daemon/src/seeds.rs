@@ -36,9 +36,12 @@ pub(crate) fn seed_demo(conn: &Connection) {
         let sip = if has_ip { Some(ip) } else { None };
         // NB (démo seulement, PLUME_DEMO=1) : events en direct alors que les métriques passent par
         // `store().insert_metric` — asymétrie cosmétique documentée dans l'en-tête STORE SPI (0 impact prod).
+        // CLOISONNEMENT PAR HÔTE : ce chemin écrit `event.dedup` en SQL direct, il applique donc la MÊME
+        // fonction que le store — AUCUNE exception, sinon la garde `event_dedup_toujours_cloisonne` rougit
+        // (et une exception « ce n'est que la démo » est exactement par où la règle se serait perdue).
         let _ = conn.execute(
             "INSERT OR IGNORE INTO event(ts,source,category,severity,message,host,src_ip,dedup) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-            params![t, src, cat, sev, msg.replace("{ip}", ip), host, sip, format!("demo-{k}")],
+            params![t, src, cat, sev, msg.replace("{ip}", ip), host, sip, dedup_scoped_by_host(Some(host), Some(&format!("demo-{k}")))],
         );
         k += 1;
         t += 130 + (k as i64 % 7) * 40;   // ~2-7 min, varié
@@ -65,11 +68,14 @@ pub(crate) fn seed_demo(conn: &Connection) {
     // narratifs dédiés (dedup 'democase-*') liés en timeline pour que les chips alert/event se résolvent. Sous le
     // flag `seeded_demo` déjà posé -> idempotent (une seule fois). JAMAIS en prod (n'active pas PLUME_DEMO).
     let ev = |ts: i64, src: &str, cat: &str, sev: i64, msg: &str, ip: Option<&str>, dk: &str| -> i64 {
+        // CLOISONNEMENT PAR HÔTE (cf. ci-dessus) : la clé STOCKÉE est cloisonnée, DONC la relecture qui
+        // résout l'id de l'event narratif l'est aussi — sinon la timeline de la case de démo casserait.
+        let dks = dedup_scoped_by_host(Some(host), Some(dk));
         let _ = conn.execute(
             "INSERT OR IGNORE INTO event(ts,source,category,severity,message,host,src_ip,dedup) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-            params![ts, src, cat, sev, msg, host, ip, dk],
+            params![ts, src, cat, sev, msg, host, ip, dks],
         );
-        conn.query_row("SELECT id FROM event WHERE dedup=?1", params![dk], |r| r.get::<_, i64>(0)).unwrap_or(0)
+        conn.query_row("SELECT id FROM event WHERE dedup=?1", params![dks], |r| r.get::<_, i64>(0)).unwrap_or(0)
     };
     let alert_id = |dk: &str| -> Option<i64> {
         conn.query_row("SELECT id FROM alert WHERE dedup=?1", params![dk], |r| r.get::<_, i64>(0)).ok()

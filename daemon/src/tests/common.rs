@@ -29,6 +29,14 @@
         conn
     }
 
+    /// La clé `event.dedup` telle qu'elle est STOCKÉE : le store la CLOISONNE par l'hôte de la ligne
+    /// (cf. `ingest::store::dedup_scoped_by_host` — deux machines ne peuvent plus se voler leurs
+    /// événements). Un test qui INGÈRE avec une clé d'émetteur puis relit `WHERE dedup=…` doit donc
+    /// passer par ici, avec le MÊME hôte que la ligne écrite (`None` = event sans hôte).
+    fn ddk(host: Option<&str>, cle: &str) -> String {
+        dedup_scoped_by_host(host, Some(cle)).unwrap()
+    }
+
     /// Helper : insère un event env-scopé au ts donné. env_id + origin par défaut ('' = purgeable).
     fn ins_ev(c: &Connection, ts: i64, env: &str, msg: &str) {
         c.execute("INSERT INTO event(ts,source,message,env_id,origin) VALUES(?1,'agent',?2,?3,'')", params![ts, msg, env]).unwrap();

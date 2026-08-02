@@ -149,7 +149,7 @@
         ingest_once(&st.tenants, &st.spool);
         let (cat, env, ip): (String, String, String) = {
             let c = st.db.lock();
-            c.query_row("SELECT category, env_id, src_ip FROM event WHERE dedup='http-1-e1'", [],
+            c.query_row(&format!("SELECT category, env_id, src_ip FROM event WHERE dedup='{}'", ddk(Some(&host_self()), "http-1-e1")), [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
         };
         assert_eq!(cat, "audit", "CIM category persistée");

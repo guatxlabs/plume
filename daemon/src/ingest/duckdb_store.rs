@@ -85,7 +85,11 @@ impl EventStore for DuckDbStore {
         let conn = h.downcast::<duckdb::Connection>("duckdb")?;
         conn.execute(Self::EVENT_INSERT_SQL, duckdb::params![
             row.ts, row.source, row.category, row.severity, row.message, row.host,
-            row.src_ip, row.dst_ip, row.url, row.dedup, row.fields, row.engagement_id,
+            row.src_ip, row.dst_ip, row.url,
+            // CLOISONNEMENT PAR HÔTE — MÊME fonction que le tier chaud SQLite (`ingest::store`) : la
+            // portée d'unicité de `dedup` est l'HÔTE de la ligne, quel que soit le backend.
+            crate::ingest::store::dedup_scoped_by_host(row.host.as_deref(), row.dedup.as_deref()),
+            row.fields, row.engagement_id,
             row.origin, row.env_id.as_deref().unwrap_or("prod")
         ]).map_err(be)
     }
@@ -106,7 +110,9 @@ impl EventStore for DuckDbStore {
         for row in rows {
             n += stmt.execute(duckdb::params![
                 row.ts, row.source, row.category, row.severity, row.message, row.host,
-                row.src_ip, row.dst_ip, row.url, row.dedup, row.fields, row.engagement_id,
+                row.src_ip, row.dst_ip, row.url,
+                crate::ingest::store::dedup_scoped_by_host(row.host.as_deref(), row.dedup.as_deref()), // idem
+                row.fields, row.engagement_id,
                 row.origin, row.env_id.as_deref().unwrap_or("prod")
             ]).map_err(be)?;
         }

@@ -94,7 +94,7 @@
         ingest_once(&st.tenants, &st.spool);
         let (cat, env, ip): (String, String, String) = {
             let c = st.db.lock();
-            c.query_row("SELECT category, env_id, src_ip FROM event WHERE dedup=?1", params![format!("http-{cid}-ins-1")],
+            c.query_row("SELECT category, env_id, src_ip FROM event WHERE dedup=?1", params![ddk(Some(&host_self()), &format!("http-{cid}-ins-1"))],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
         };
         assert_eq!(cat, "audit");

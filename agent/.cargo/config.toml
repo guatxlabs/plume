@@ -1,0 +1,34 @@
+# plume-agent — réglages de build par CIBLE.
+#
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# CRT STATIQUE SUR WINDOWS/MSVC — ce n'est pas un réglage de goût, c'est la différence entre un
+# binaire qui DÉMARRE sur un Windows neuf et un binaire qui n'en est pas capable.
+#
+# MESURÉ le 2026-08-02 (cross-build local `cargo xwin build --release --target
+# x86_64-pc-windows-msvc`, SDK MSVC déjà en cache, 21,55 s), en lisant la TABLE D'IMPORTS PE des
+# deux binaires produits :
+#   - SANS ce réglage : 3 259 392 octets, importe **VCRUNTIME140.dll** + 5 apisets `api-ms-win-crt-*`.
+#     Le redistribuable Visual C++ n'est PAS livré avec Windows : sur une machine fraîchement
+#     installée l'exe se termine immédiatement en 0xC0000135 (STATUS_DLL_NOT_FOUND), y compris pour
+#     `--help`. Aucun diagnostic n'est possible DEPUIS le programme : le chargeur échoue avant que
+#     la moindre ligne de notre code ne s'exécute. On ne peut donc pas « détecter » cette panne —
+#     seulement supprimer la dépendance.
+#   - AVEC ce réglage : 3 359 744 octets, **aucun** VCRUNTIME140.dll, **aucun** api-ms-win-crt-*,
+#     et `wevtapi.dll` toujours importée (c'est bien l'agent complet, pas un binaire amputé).
+#     CE QUI N'EST PAS PROUVÉ ICI : que CE binaire-là démarre sur un vrai Windows — aucune VM n'a été
+#     allumée. Ce qui est mesuré, c'est sa table d'imports. (Une version ANTÉRIEURE du binaire
+#     statique, elle, a bien été exécutée sur un Windows 11 Enterprise 24H2.)
+#
+# Le réglage vit ICI plutôt que dans un `RUSTFLAGS=` du Makefile ou de la CI pour qu'il s'applique à
+# toute invocation de cargo lancée DEPUIS CE RÉPERTOIRE (make, cargo xwin, cargo check, CI — dont les
+# étapes portent `working-directory: agent` —, build manuel d'un contributeur). ATTENTION, deux
+# façons de le CONTOURNER sans le vouloir : cargo découvre ce fichier depuis le RÉPERTOIRE COURANT et
+# non depuis le manifeste, donc un `cargo build --manifest-path agent/Cargo.toml` lancé de la racine
+# ne le lit PAS ; et un `RUSTFLAGS=` d'environnement ÉCRASE ce bloc entièrement. La garde `crt_statique_est_impose_pour_windows_msvc` (src/service/windows_scm.rs) lit ce
+# fichier et échoue si la ligne disparaît.
+#
+# Pas de réglage pour `x86_64-pc-windows-gnu` : cette cible n'a PAS été mesurée ici (MinGW-w64 est
+# absent de cette machine, cf. README « Cross-compilation ») — on n'écrit pas un chiffre non mesuré.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

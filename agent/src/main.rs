@@ -269,32 +269,44 @@ fn cmd_install(cpath: &std::path::Path, endpoint: Option<String>, token: Option<
     }
     let cfg = Config::load(cpath)?;
     let spec = service_spec(cpath, &cfg)?;
-    service::current().install(&spec)
+    conclure(service::current().install(&spec)?)
 }
 
-/// `uninstall` DIT CE QU'IL A FAIT, et échoue quand il n'a pas pu le faire.
+/// LA CONCLUSION D'UNE OPÉRATION DE SERVICE — une SEULE voie, pour les DEUX sens.
 ///
-/// MESURÉ le 2026-08-02 sur la version précédente, sans rien d'installé : deux commandes systemctl
-/// en échec affichées, 0 fichier supprimé, puis « service retiré : plume-agent.service » et un code
-/// de retour **0**. Un opérateur qui retire l'agent d'un poste compromis lisait un succès qu'il
-/// n'avait pas obtenu. Trois issues, exhaustives : quelque chose a été retiré (0), il n'y avait
-/// rien (0, mais dit avec ces mots), ou un artefact résiste (non nul — c'est le cas qui était
-/// avalé par les `let _ = …`).
-fn cmd_uninstall() -> Result<()> {
-    let report = service::current().uninstall()?;
-    println!("{}", report.render());
-    let failed = report.failures();
+/// C'est ici que le mensonge sortait : `install` imprimait « service installé et démarré » depuis le
+/// backend et rendait `Ok(())` ; `uninstall` imprimait « service retiré » sans avoir rien retiré.
+/// Désormais aucun backend n'imprime : ils RENDENT ce qu'ils ont OBSERVÉ, et le code de sortie est
+/// une FONCTION de ces observations. Trois issues, exhaustives : quelque chose a changé (0), il n'y
+/// avait rien à faire (0, mais dit avec ces mots-là), ou un artefact résiste (NON NUL).
+fn conclure(rapport: service::Outcome) -> Result<()> {
+    println!("{}", rapport.render());
+    let failed = rapport.failures();
+    let (quoi, consequence) = match rapport.operation() {
+        service::Operation::Pose => ("installation", "l'agent NE COLLECTE PAS"),
+        service::Operation::Retrait => ("retrait", "l'agent tourne peut-être encore"),
+    };
     if !failed.is_empty() {
         anyhow::bail!(
-            "retrait INCOMPLET : {} artefact(s) toujours en place ({}) — l'agent tourne peut-être encore",
+            "{quoi} INCOMPLET : {} artefact(s) pas dans l'état voulu ({}) — {consequence}",
             failed.len(),
             failed.join(", ")
         );
     }
-    if !report.removed_any() {
+    if !rapport.a_change() && rapport.operation() == service::Operation::Retrait {
         println!("plume-agent n'était pas installé ici : AUCUN retrait effectué.");
     }
     Ok(())
+}
+
+/// `uninstall` DIT CE QU'IL A FAIT, et échoue quand il n'a pas pu le faire (cf. `conclure`).
+///
+/// MESURÉ le 2026-08-02 sur la version précédente, sans rien d'installé : deux commandes systemctl
+/// en échec affichées, 0 fichier supprimé, puis « service retiré : plume-agent.service » et un code
+/// de retour **0**. Un opérateur qui retire l'agent d'un poste compromis lisait un succès qu'il
+/// n'avait pas obtenu.
+fn cmd_uninstall() -> Result<()> {
+    conclure(service::current().uninstall()?)
 }
 
 fn cmd_status(cpath: &std::path::Path) -> Result<()> {

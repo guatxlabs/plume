@@ -74,17 +74,67 @@ impl HttpTransport {
         head: &[u8],
         body: &[u8],
     ) -> Result<Vec<u8>, TransportError> {
-        s.write_all(head).map_err(|e| TransportError::Io(e.to_string()))?;
-        s.write_all(body).map_err(|e| TransportError::Io(e.to_string()))?;
-        s.flush().map_err(|e| TransportError::Io(e.to_string()))?;
+        s.write_all(head).map_err(classer_erreur)?;
+        s.write_all(body).map_err(classer_erreur)?;
+        s.flush().map_err(classer_erreur)?;
         let mut buf = Vec::new();
         match s.read_to_end(&mut buf) {
             Ok(_) => Ok(buf),
             // Fermeture non propre (pas de close_notify TLS) mais réponse déjà lue -> on tolère.
             Err(_) if !buf.is_empty() => Ok(buf),
-            Err(e) => Err(TransportError::Io(e.to_string())),
+            Err(e) => Err(classer_erreur(e)),
         }
     }
+}
+
+/// CLASSE UNE ERREUR D'ÉCHANGE, ET DIT QUOI FAIRE QUAND C'EST LE CERTIFICAT.
+///
+/// CE QUI ÉTAIT CASSÉ. Le handshake TLS n'a pas lieu à la construction de la connexion rustls mais à
+/// la PREMIÈRE écriture : son échec remontait donc par `io::Error`, était aplati en chaîne
+/// (`e.to_string()`) et rangé dans `TransportError::Io` — alors qu'une variante `Tls` existait.
+/// MESURÉ le 2026-08-02 contre un `openssl s_server` à certificat auto-signé, le technicien lisait :
+///     `plume-agent: erreur: échec d'envoi : io: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))`
+/// Ni le mot « certificat » en français, ni le nom du réglage qui corrige (`[tls].ca_cert`), ni même
+/// l'indication que c'est le certificat DU SERVEUR qui est refusé. Le programme, lui, SAVAIT :
+/// rustls le lui avait dit dans un type.
+///
+/// LA FORME DÉRIVÉE. On ne devine pas à partir du TEXTE de l'erreur (il change de version en version,
+/// et il y a une dizaine de causes de refus : auto-signé, expiré, mauvais nom, CA inconnue…). On
+/// remonte au TYPE : `io::Error` porte la `rustls::Error` d'origine ; `InvalidCertificate(_)` — quelle
+/// que soit la cause précise, présente ou future — est un refus de la chaîne du serveur, et le remède
+/// est le même. Toute autre erreur garde son classement (une coupure réseau reste une erreur d'IO).
+fn classer_erreur(e: std::io::Error) -> TransportError {
+    // `io::Error` enveloppe la `rustls::Error` : on la RÉCUPÈRE au lieu de lire son texte.
+    if let Some(rerr) = e.get_ref().and_then(|inner| inner.downcast_ref::<rustls::Error>()) {
+        if let rustls::Error::InvalidCertificate(cause) = rerr {
+            // Les deux remèdes ci-dessous ont été EXÉCUTÉS le 2026-08-02 contre un `openssl s_server`
+            // (cf. `remede_tls_dit_ce_qui_a_ete_mesure`). On n'écrit pas un conseil non vérifié : le
+            // cas « CA présentée comme certificat serveur » ne se corrige PAS côté agent — mesuré.
+            // `CertificateError::Other` est un FOURRE-TOUT (toute cause webpki non nommée) : on ne
+            // peut donc pas l'assimiler à `CaUsedAsEndEntity`. On donne le remède général — le seul
+            // qui soit vrai dans tous les cas d'émetteur inconnu, mesuré — ET on nomme le piège
+            // quand le libellé le désigne, sans jamais présenter l'un pour l'autre.
+            let remede_general = "Déclare l'autorité du central dans la config de l'agent : [tls] \
+                 ca_cert = \"/etc/plume/ca.pem\" — le PEM de la CA interne qui a signé son \
+                 certificat (un certificat auto-signé sans CA se déclare lui-même ici : mesuré, \
+                 accepté).";
+            let piege = if matches!(cause, rustls::CertificateError::Other(_)) {
+                " EXCEPTION MESURÉE : si le libellé ci-dessus dit `CaUsedAsEndEntity`, le central \
+                 présente le certificat de sa CA COMME SON PROPRE certificat serveur — et le \
+                 déclarer dans ca_cert ne corrige RIEN (mesuré). Il faut alors que le CENTRAL \
+                 présente une FEUILLE signée par cette CA (basicConstraints CA:FALSE)."
+            } else {
+                ""
+            };
+            let remede = format!("{remede_general}{piege}");
+            return TransportError::Tls(format!(
+                "le certificat du SERVEUR a été refusé ({cause:?}). {remede} En dernier recours et \
+                 en DEV uniquement : [tls] insecure = true (aucune vérification — jamais en production)"
+            ));
+        }
+        return TransportError::Tls(rerr.to_string());
+    }
+    TransportError::Io(e.to_string())
 }
 
 impl HttpTransport {
@@ -466,6 +516,54 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::sync::Mutex;
+
+    /// LE REMÈDE DIT CE QUI A ÉTÉ MESURÉ — et rien d'autre.
+    ///
+    /// MESURÉ le 2026-08-02 contre `openssl s_server` (quatre configurations, même agent) :
+    ///  A. CA interne (CA:TRUE) signant une FEUILLE (CA:FALSE), `ca_cert` = la CA  -> handshake OK.
+    ///  B. `insecure = true`                                                        -> handshake OK.
+    ///  C. feuille AUTO-SIGNÉE (CA:FALSE) déclarée telle quelle dans `ca_cert`      -> handshake OK.
+    ///  D. la MÊME feuille, rien de déclaré                                         -> UnknownIssuer.
+    ///  E. certificat auto-signé CA:TRUE servi comme certificat serveur, déclaré dans `ca_cert`
+    ///     -> TOUJOURS refusé (`CaUsedAsEndEntity`) : le remède « mets-le dans ca_cert » est FAUX
+    ///        pour ce cas-là, et le message ne doit pas le donner.
+    ///
+    /// Le classement vient du TYPE (`rustls::Error::InvalidCertificate`), pas du texte de l'erreur :
+    /// une coupure réseau reste une erreur d'IO.
+    ///
+    /// CE QUE CE TEST NE PROUVE PAS (et qui l'a été autrement) : il FABRIQUE l'`io::Error` enveloppe,
+    /// donc il ne dit rien de la façon dont rustls emballe réellement l'erreur. C'est le tir de bout
+    /// en bout qui l'a montré, le même jour, contre un `openssl s_server` auto-signé :
+    ///   `plume-agent: erreur: échec d'envoi : tls: le certificat du SERVEUR a été refusé
+    ///    (Other(OtherError(CaUsedAsEndEntity))). Déclare l'autorité du central … ca_cert …`
+    /// (avant : `io: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))`).
+    #[test]
+    fn remede_tls_dit_ce_qui_a_ete_mesure() {
+        let cert_err = |c: rustls::CertificateError| {
+            let io = std::io::Error::new(std::io::ErrorKind::InvalidData, rustls::Error::InvalidCertificate(c));
+            match classer_erreur(io) {
+                TransportError::Tls(m) => m,
+                autre => panic!("un refus de certificat doit être classé TLS, pas {autre:?}"),
+            }
+        };
+        // Cas D (émetteur inconnu) : le remède mesuré est `ca_cert`.
+        let d = cert_err(rustls::CertificateError::UnknownIssuer);
+        assert!(d.contains("ca_cert"), "{d}");
+        assert!(d.contains("certificat du SERVEUR a été refusé"), "{d}");
+        assert!(d.contains("insecure = true"), "le dernier recours est nommé ET encadré : {d}");
+        // Cas E (CA servie comme feuille) : le remède général reste donné — `Other` est un
+        // FOURRE-TOUT, on n'a pas le droit de le prendre pour `CaUsedAsEndEntity` — et le piège est
+        // nommé EN PLUS, conditionné au libellé.
+        let e = cert_err(rustls::CertificateError::Other(rustls::OtherError(std::sync::Arc::new(
+            std::io::Error::other("CaUsedAsEndEntity"),
+        ))));
+        assert!(e.contains("ca_cert"), "le remède général n'est jamais escamoté : {e}");
+        assert!(e.contains("ne corrige RIEN"), "{e}");
+        assert!(e.contains("FEUILLE signée"), "{e}");
+        // Une VRAIE erreur d'IO n'est PAS re-classée en TLS (contre-épreuve mesurée : port fermé).
+        let io = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset par le pair");
+        assert!(matches!(classer_erreur(io), TransportError::Io(_)));
+    }
 
     /// Transport injectable : rejoue une file de réponses, enregistre chaque appel (url + corps).
     struct MockTransport {

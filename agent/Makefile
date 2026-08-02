@@ -34,11 +34,26 @@ linux-musl:
 
 # --- Windows -------------------------------------------------------------------------------------
 # MSVC via cargo-xwin (télécharge les headers/libs MSVC, aucune VM Windows requise).
+# La CRT STATIQUE est imposée par `.cargo/config.toml` (sans elle l'exe importe VCRUNTIME140.dll et
+# ne démarre pas sur un Windows sans redistribuable — mesuré). NE PAS poser de RUSTFLAGS ici : la
+# variable d'environnement ÉCRASERAIT le fichier de config, en silence.
 win-msvc:
 	$(CARGO) xwin build --release --target x86_64-pc-windows-msvc
 
 # GNU via MinGW-w64 (paquet système `mingw-w64-gcc`).
+# PRÉREQUIS VÉRIFIÉ AVANT DE LANCER LE BUILD : sans MinGW, `cargo build` part quand même, compile
+# plusieurs minutes de dépendances, puis échoue au fond d'un build script sur un message que rien ne
+# relie au paquet manquant. MESURÉ le 2026-08-02 sur cette machine :
+#   error occurred in cc-rs: failed to find tool "x86_64-w64-mingw32-gcc": No such file or directory
+#   error: error calling dlltool 'x86_64-w64-mingw32-dlltool': No such file or directory
+# On teste donc l'outil AVANT et on nomme le paquet à installer.
 win-gnu:
+	@command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1 || { \
+	  echo "!! MinGW-w64 absent : la cible x86_64-pc-windows-gnu ne peut pas LIER."; \
+	  echo "   Installe-le (Debian/Ubuntu: apt install mingw-w64 | Arch: pacman -S mingw-w64-gcc |"; \
+	  echo "   Fedora: dnf install mingw64-gcc), ou utilise la cible MSVC : make win-msvc"; \
+	  echo "   (MSVC est le chemin recommandé : cargo-xwin télécharge le SDK, aucune VM requise.)"; \
+	  exit 1; }
 	rustup target add x86_64-pc-windows-gnu
 	$(CARGO) build --release --target x86_64-pc-windows-gnu
 

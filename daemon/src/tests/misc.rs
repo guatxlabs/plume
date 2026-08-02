@@ -725,3 +725,85 @@
         assert!(!d3.join("plume.db").exists(), "aucun legacy -> no-op (pas de création)");
         let _ = fs::remove_dir_all(&base);
     }
+
+    // ============================================================================================
+    // CLI — AUCUN ARGUMENT INCONNU NE DOIT DEVENIR « lance le serveur ».
+    // ============================================================================================
+
+    /// L'AIDE DIT CE QUE LE DISPATCH FAIT. `SUBCOMMANDS` ne sert qu'à AFFICHER l'aide — la détection
+    /// d'un argument inconnu, elle, est le COMPLÉMENT calculé par le flot de contrôle (chaque bloc de
+    /// `main` retourne). Ce test empêche la seule dérive possible : une sous-commande ajoutée au
+    /// dispatch et absente de l'aide (ou l'inverse), qui ferait mentir le message d'erreur.
+    ///
+    /// MESURÉ le 2026-08-02 sur le binaire release AVANT la garde : `plume-daemon --help` (et
+    /// `--version`, et `help`, et toute faute de frappe) migrait la base, imprimait un jeton
+    /// d'installation à usage unique, puis ÉCOUTAIT sur :7000 jusqu'à ce qu'on le tue.
+    #[test]
+    fn aide_cli_liste_les_memes_sous_commandes_que_le_dispatch() {
+        let src = std::fs::read_to_string(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+        )
+        .expect("src/main.rs lisible");
+        // Les sites RÉELS du dispatch : `args.get(1).map(String::as_str) == Some("<nom>")`.
+        const MOTIF: &str = r#"args.get(1).map(String::as_str) == Some(""#;
+        let mut dispatch: Vec<String> = Vec::new();
+        for (i, _) in src.match_indices(MOTIF) {
+            let reste = &src[i + MOTIF.len()..];
+            if let Some(fin) = reste.find('"') {
+                dispatch.push(reste[..fin].to_string());
+            }
+        }
+        assert!(
+            dispatch.len() > 10,
+            "précondition : le scanner voit le dispatch ({} sites trouvés)",
+            dispatch.len()
+        );
+        // L'aide = les sous-commandes inconditionnelles + celles qui dépendent d'une feature (elles
+        // restent LISTÉES même quand le build ne les a pas — marquées indisponibles).
+        let mut aide: Vec<String> = crate::SUBCOMMANDS
+            .iter()
+            .chain(crate::SUBCOMMANDS_COLD.iter())
+            .map(|(n, _)| n.to_string())
+            .collect();
+        let mut d = dispatch.clone();
+        d.sort();
+        aide.sort();
+        assert_eq!(
+            d, aide,
+            "l'aide `plume-daemon --help` et le dispatch de main() ont divergé"
+        );
+        // Chaque ligne d'aide COMMENCE par le nom de sa sous-commande (sinon l'aide est illisible).
+        for (nom, ligne) in crate::SUBCOMMANDS.iter().chain(crate::SUBCOMMANDS_COLD.iter()) {
+            assert!(ligne.starts_with(nom), "ligne d'aide de {nom} : {ligne}");
+        }
+        // Le texte d'usage dit les DEUX modes, sans quoi « argument inconnu » n'est pas actionnable.
+        let u = crate::usage();
+        assert!(u.contains("lance le serveur (aucun argument)"), "{u}");
+        for (nom, _) in crate::SUBCOMMANDS.iter().chain(crate::SUBCOMMANDS_COLD.iter()) {
+            assert!(u.contains(nom), "usage sans {nom}");
+        }
+    }
+
+    /// UNE 500 EST TRAÇABLE, UNE 400 NE CHANGE PAS. Le client reçoit un identifiant court que le
+    /// serveur a écrit dans son journal ; sans lui, un ticket « ça a planté » n'était rattachable à
+    /// rien (mesuré le 2026-08-02 : 237 chemins rendent un 5xx, 0 ligne de journal, 0 corrélation,
+    /// aucun TraceLayer monté).
+    #[tokio::test]
+    async fn une_erreur_serveur_porte_un_identifiant_de_correlation() {
+        let json = |t: String| serde_json::from_str::<serde_json::Value>(&t).unwrap();
+        let (c5, t5) = resp_bytes(crate::server_err("verrou base indisponible")).await;
+        let v5 = json(t5);
+        assert_eq!(c5, StatusCode::INTERNAL_SERVER_ERROR);
+        let id = v5.get("id").and_then(|x| x.as_str()).unwrap_or("");
+        assert!(id.starts_with("plume-e"), "un 5xx porte un id greppable : {v5}");
+        assert_eq!(v5["error"], "verrou base indisponible", "le message d'origine est préservé");
+        // Deux 500 ne partagent PAS le même identifiant (sinon la corrélation ne sert à rien).
+        let (_, t5b) = resp_bytes(crate::server_err("verrou base indisponible")).await;
+        assert_ne!(json(t5b)["id"], v5["id"]);
+        // Un 4xx garde sa forme EXACTE d'avant : pas d'id, pas de trace serveur.
+        let (c4, t4) = resp_bytes(crate::bad_req("paramètre absent")).await;
+        let v4 = json(t4);
+        assert_eq!(c4, StatusCode::BAD_REQUEST);
+        assert!(v4.get("id").is_none(), "une faute du client n'est pas un incident serveur : {v4}");
+        assert_eq!(v4["error"], "paramètre absent");
+    }

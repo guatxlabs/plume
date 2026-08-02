@@ -9,7 +9,7 @@
 //! Le fichier compile sur toutes les cibles (comme systemd.rs) : `plist_text`/`bin` sont purs et
 //! testés ; les invocations `launchctl` n'existent qu'à l'exécution (hôte macOS requis).
 
-use super::{ServiceManager, ServiceSpec};
+use super::{Disposition, Removal, ServiceManager, ServiceSpec};
 use std::process::Command;
 
 pub const LABEL: &str = "com.guatx.plume-agent";
@@ -45,6 +45,15 @@ impl Launchd {
             exec = spec.exec_path.display(),
             config = spec.config_path.display(),
         )
+    }
+
+    /// Le daemon est-il CHARGÉ ? `launchctl print system/<label>` rend 0 quand il l'est.
+    fn is_loaded() -> bool {
+        Command::new("launchctl")
+            .args(["print", DOMAIN_TARGET])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 
     fn launchctl(args: &[&str]) -> anyhow::Result<()> {
@@ -100,15 +109,37 @@ impl ServiceManager for Launchd {
         Ok(())
     }
 
-    fn uninstall(&self) -> anyhow::Result<()> {
+    /// RETRAIT OBSERVÉ (cf. `Removal`) : on sonde `launchctl print` avant/après, et le plist avant/
+    /// après. NON VÉRIFIÉ À L'EXÉCUTION (aucun hôte macOS ici) : la STRUCTURE est celle du backend
+    /// systemd, qui l'est ; ce qui est prouvé sur macOS, à ce jour, c'est que ça compile (agent-ci).
+    fn uninstall(&self) -> anyhow::Result<Removal> {
+        let mut r = Removal::default();
+        let was_loaded = Self::is_loaded();
         let _ = Command::new("launchctl").args(["bootout", DOMAIN_TARGET]).status();
         let _ = Command::new("launchctl").args(["unload", "-w", PLIST_PATH]).status(); // repli hérité
-        if std::path::Path::new(PLIST_PATH).exists() {
-            std::fs::remove_file(PLIST_PATH)
-                .map_err(|e| anyhow::anyhow!("suppression {PLIST_PATH}: {e}"))?;
+        if was_loaded {
+            if Self::is_loaded() {
+                r.note(
+                    format!("daemon {LABEL} (chargé)"),
+                    Disposition::Failed("toujours chargé après `launchctl bootout` (root requis ?)".into()),
+                );
+            } else {
+                r.note(format!("daemon {LABEL} (déchargé)"), Disposition::Removed);
+            }
+        } else {
+            r.note(format!("daemon {LABEL}"), Disposition::Absent);
         }
-        println!("service retiré : {LABEL}");
-        Ok(())
+        let plist = std::path::Path::new(PLIST_PATH);
+        if plist.exists() {
+            match std::fs::remove_file(plist) {
+                Ok(()) if !plist.exists() => r.note(PLIST_PATH, Disposition::Removed),
+                Ok(()) => r.note(PLIST_PATH, Disposition::Failed("toujours présent après suppression".into())),
+                Err(e) => r.note(PLIST_PATH, Disposition::Failed(format!("{e} (root requis ?)"))),
+            }
+        } else {
+            r.note(PLIST_PATH, Disposition::Absent);
+        }
+        Ok(r)
     }
 
     fn status(&self) -> anyhow::Result<String> {

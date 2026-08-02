@@ -272,8 +272,29 @@ fn cmd_install(cpath: &std::path::Path, endpoint: Option<String>, token: Option<
     service::current().install(&spec)
 }
 
+/// `uninstall` DIT CE QU'IL A FAIT, et échoue quand il n'a pas pu le faire.
+///
+/// MESURÉ le 2026-08-02 sur la version précédente, sans rien d'installé : deux commandes systemctl
+/// en échec affichées, 0 fichier supprimé, puis « service retiré : plume-agent.service » et un code
+/// de retour **0**. Un opérateur qui retire l'agent d'un poste compromis lisait un succès qu'il
+/// n'avait pas obtenu. Trois issues, exhaustives : quelque chose a été retiré (0), il n'y avait
+/// rien (0, mais dit avec ces mots), ou un artefact résiste (non nul — c'est le cas qui était
+/// avalé par les `let _ = …`).
 fn cmd_uninstall() -> Result<()> {
-    service::current().uninstall()
+    let report = service::current().uninstall()?;
+    println!("{}", report.render());
+    let failed = report.failures();
+    if !failed.is_empty() {
+        anyhow::bail!(
+            "retrait INCOMPLET : {} artefact(s) toujours en place ({}) — l'agent tourne peut-être encore",
+            failed.len(),
+            failed.join(", ")
+        );
+    }
+    if !report.removed_any() {
+        println!("plume-agent n'était pas installé ici : AUCUN retrait effectué.");
+    }
+    Ok(())
 }
 
 fn cmd_status(cpath: &std::path::Path) -> Result<()> {

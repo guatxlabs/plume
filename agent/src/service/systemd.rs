@@ -5,7 +5,7 @@
 //! NoNewPrivileges/SystemCallFilter réduisent la surface), crée les répertoires, `daemon-reload`,
 //! `enable --now`. `uninstall` : `disable --now` + suppression de l'unité + reload. Nécessite root.
 
-use super::{ServiceManager, ServiceSpec};
+use super::{Disposition, Removal, ServiceManager, ServiceSpec};
 use std::process::Command;
 
 pub const UNIT_NAME: &str = "plume-agent.service";
@@ -65,6 +65,17 @@ impl Systemd {
         )
     }
 
+    /// L'unité est-elle ACTIVE ? Observation, pas hypothèse : `systemctl is-active` rend 0 quand
+    /// elle l'est. Une erreur d'exécution (systemd injoignable) est traitée comme « pas actif » —
+    /// et c'est sans risque ici, parce que le retrait RE-SONDE et ne conclut jamais sans preuve.
+    fn is_active() -> bool {
+        Command::new("systemctl")
+            .args(["is-active", "--quiet", UNIT_NAME])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
     fn systemctl(args: &[&str]) -> anyhow::Result<()> {
         let status = Command::new("systemctl").args(args).status()?;
         if !status.success() {
@@ -105,16 +116,46 @@ impl ServiceManager for Systemd {
         Ok(())
     }
 
-    fn uninstall(&self) -> anyhow::Result<()> {
-        // best-effort : ne pas échouer si déjà arrêté/absent.
+    /// RETRAIT OBSERVÉ, pas annoncé. Chaque artefact est SONDÉ avant, agi, puis RE-SONDÉ : c'est la
+    /// seconde observation qui autorise à écrire `Removed`. « best-effort » restait légitime pour
+    /// l'ACTION (désactiver une unité déjà arrêtée n'est pas une erreur) ; ce qui ne l'était pas,
+    /// c'est de conclure sans regarder.
+    fn uninstall(&self) -> anyhow::Result<Removal> {
+        let mut r = Removal::default();
+
+        // 1. Le service tourne-t-il ? (`is-active` : 0 = actif)
+        let was_active = Self::is_active();
         let _ = Command::new("systemctl").args(["disable", "--now", UNIT_NAME]).status();
-        if std::path::Path::new(UNIT_PATH).exists() {
-            std::fs::remove_file(UNIT_PATH)
-                .map_err(|e| anyhow::anyhow!("suppression {UNIT_PATH}: {e}"))?;
+        if was_active {
+            if Self::is_active() {
+                r.note(
+                    format!("service {UNIT_NAME} (actif)"),
+                    Disposition::Failed(
+                        "toujours ACTIF après `systemctl disable --now` (droits root ? systemd \
+                         injoignable ?)"
+                            .into(),
+                    ),
+                );
+            } else {
+                r.note(format!("service {UNIT_NAME} (arrêté et désactivé)"), Disposition::Removed);
+            }
+        } else {
+            r.note(format!("service {UNIT_NAME}"), Disposition::Absent);
         }
-        let _ = Command::new("systemctl").arg("daemon-reload").status();
-        println!("service retiré : {UNIT_NAME}");
-        Ok(())
+
+        // 2. L'unité est-elle sur le disque ?
+        let unit = std::path::Path::new(UNIT_PATH);
+        if unit.exists() {
+            match std::fs::remove_file(unit) {
+                Ok(()) if !unit.exists() => r.note(UNIT_PATH, Disposition::Removed),
+                Ok(()) => r.note(UNIT_PATH, Disposition::Failed("toujours présent après suppression".into())),
+                Err(e) => r.note(UNIT_PATH, Disposition::Failed(format!("{e} (root requis ?)"))),
+            }
+            let _ = Command::new("systemctl").arg("daemon-reload").status();
+        } else {
+            r.note(UNIT_PATH, Disposition::Absent);
+        }
+        Ok(r)
     }
 
     fn status(&self) -> anyhow::Result<String> {

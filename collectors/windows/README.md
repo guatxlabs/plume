@@ -262,18 +262,47 @@ trouvée, dans le collecteur comme dans l'agent.
 
 ## Limites connues, mesurées — à lire avant de déployer en flotte
 
-1. **Aucun spool : un POST qui échoue perd le lot.** `Flush-Events` journalise un `Write-Warning` puis
-   **vide le tampon**, et le filigrane de la source est avancé juste après — les événements concernés ne
-   seront jamais réémis. Un central indisponible 10 minutes = 10 minutes de télémétrie **définitivement**
-   perdues. Sous tâche planifiée, le `Write-Warning` ne va nulle part : la perte est **silencieuse**.
-   *Non corrigé ici : y remédier demande un spool disque (c'est précisément ce que fait l'agent Rust,
-   `spool_cap`, at-least-once).*
-2. **Un capteur qui ne peut pas collecter ne le dit pas.** Chaque source est enveloppée dans un
-   `try/catch` qui fait `return` : journal absent, accès refusé, filtre vide — les trois sont
-   **indiscernables** vu du SOC, exactement le défaut que `collectors/lib.sh` interdit côté Linux avec
-   `plume_unavailable` / `plume_disabled` / `plume_exit_nodata`. La garde de CI
-   `.github/scripts/check_collector_exit_is_classified.py` ne balaie que `collectors/*.sh` : **ce
-   fichier n'est pas dans son périmètre**, et il porte le défaut qu'elle rend non-écrivable ailleurs.
+1. ~~**Aucun spool : un POST qui échoue perd le lot.**~~ **CORRIGÉ le 2026‑08‑02.** Le défaut était réel et
+   mesuré : `Flush-Events` attrapait l'échec, écrivait un `Write-Warning` (qui, sous tâche planifiée, ne va
+   **nulle part**), vidait le tampon **inconditionnellement**, et `Set-Watermark` avait **déjà** avancé le
+   filigrane. *Mesuré (harnais pwsh exécutant ce script TEL QUEL, journal Windows et central simulés) :
+   central indisponible pendant UN run, **42** événements éligibles → **0 arrivés**, filigrane avancé quand
+   même → **42 perdus DÉFINITIVEMENT**, 0 rattrapé au rétablissement. Même harnais, central disponible :
+   0 perdu / 42 arrivés.*
+   **Ce qui change** : le filigrane n'est plus écrit là où il est calculé — il est **mis en attente**
+   (`Stage-Watermark`) et n'est **commis** qu'après un POST **acquitté**, par `Complete-Run`, seul endroit
+   du fichier qui écrive sur le disque d'état. **Le journal Windows EST le spool** : tant que le filigrane
+   ne bouge pas, le run suivant relit exactement ce qui n'est pas passé (at‑least‑once ; les réémissions
+   sont absorbées par le `dedup`, cloisonné par hôte côté central). *Re‑mesuré après correctif, même
+   scénario : **0 perdu, 42 rattrapés**.*
+   > ⚠️ **Changement de comportement à connaître avant de déployer** : un POST non acquitté **LÈVE** et le
+   > run sort **non nul** (le `Write-Warning` muet a disparu). Sous `schtasks`, cela remonte dans
+   > `LastTaskResult` — un central indisponible devient **visible** au lieu d'être silencieux. C'est
+   > voulu : c'est le seul canal qui subsiste quand le central est injoignable.
+   >
+   > **Ce qui n'est PAS rejoué** : les ÉCHANTILLONS d'un run perdu (profils pare‑feu, instantané réseau,
+   > battement) ne sont pas dans un journal — ils sont **recalculés** au run suivant. Aucune HISTOIRE
+   > n'est perdue ; un point d'échantillonnage l'est. Pour un spool disque en bonne et due forme,
+   > l'agent Rust reste la réponse (`spool_cap`, at‑least‑once sur disque).
+2. ~~**Un capteur qui ne peut pas collecter ne le dit pas.**~~ **CORRIGÉ le 2026‑08‑02.** *Mesuré avant :
+   journal `Security` en **accès refusé** (le cas du technicien qui lance le script hors SYSTEM) → **12**
+   événements attendus, **0 arrivé, 0 aveu**, code de retour **0**, et le battement de santé annonçait
+   quand même « plume windows collector ok ».*
+   Le script porte désormais le miroir PowerShell de la partition fermée de `collectors/lib.sh` :
+   `Plume-Unavailable` (incapacité) · `Plume-Disabled` (coupé par l'opérateur) · `Plume-NoData` (rien de
+   neuf — silence **légitime**, aucun octet). Le discriminant entre « rien de neuf » et « aveugle » est le
+   `FullyQualifiedErrorId` de `Get-WinEvent`, **jamais** le message : les messages Windows sont
+   **localisés**, et un test sur le texte classerait une vraie cécité en « calme » dès que la machine
+   n'est pas anglophone. La partition penche du côté sûr : **seul** `NoMatchingEventsFound` vaut silence.
+   *Re‑mesuré après correctif, même scénario : **5 aveux** `collect_status=unavailable`
+   (3 × `windows-security`, 1 × `windows-firewall`, 1 × `windows-defender`).*
+   Les aveux ont le format de `plume_report_availability` (`category=config`,
+   `collect_status=unavailable`, `reason` du **même vocabulaire fermé** que les capteurs shell), donc la
+   règle **existante** `config.d/rules/catalog/de-collector-unavailable.json` les couvre sans être touchée.
+   Voir qui est aveugle : `search category=config collect_status=unavailable | table host, source, reason, detail`.
+   **Garde de CI** : `.github/scripts/check_windows_collector_is_honest.py` (AST PowerShell réel) exige que
+   tout `catch` classe ou relève, qu'aucune erreur ne soit avalée (`-ErrorAction SilentlyContinue` interdit),
+   et qu'aucun filigrane ne s'écrive avant un envoi acquitté. *Prouvée par mutation : 11 mutations, 11 rouges.*
 3. **L'inventaire de champs ne couvre pas ce collecteur.** `daemon/src/collected.rs` déclare 12 champs
    pour `plume-collector.ps1` ; *mesuré, ce collecteur en a réellement émis **55 distincts*** (tout
    l'`EventData` du journal : `SubjectUserName`, `NewProcessName`, `LogonType`, `CommandLine`…). L'écart

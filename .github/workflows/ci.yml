@@ -24,6 +24,9 @@
 #                3929 lines, and `grep -rE "shellcheck|shfmt|bash -n" .github/` returned ZERO
 #                hits — a production ingest path with no automated checking at all. Plus a
 #                CONSULTATIVE shellcheck. See the job for what is and is not guaranteed.
+#                This job also carries the COLLECTOR HONESTY gates, shell AND PowerShell: a sensor
+#                that cannot collect must SAY so, and the Windows collector must not advance its
+#                watermark before the central has acknowledged the batch (measured loss: 42/42).
 #   - features : cheap `cargo check` per OFF-by-default cargo feature, so that gated code at
 #                least still COMPILES. `check` only — these prove compilation, NOT behaviour.
 #                Only `cold_tier` gets a real test run (above); see the job for the rest.
@@ -294,6 +297,20 @@ jobs:
       # l'une des trois primitives de lib.sh, donc un capteur écrit demain est couvert d'office.
       - name: Un capteur qui ne peut pas collecter doit le dire (aucune sortie muette)
         run: python3 .github/scripts/check_collector_exit_is_classified.py
+
+      # MÊME DÉFAUT, AUTRE LANGAGE — et sur la flotte DOMINANTE en entreprise. La garde ci-dessus ne
+      # balaie que `collectors/*.sh` : le collecteur Windows était hors périmètre, et il portait les
+      # deux défauts. MESURÉ le 2026-08-02 (harnais pwsh, collecteur exécuté TEL QUEL) : (1) central
+      # indisponible pendant UN run -> 42 événements éligibles, 0 arrivés, filigrane avancé quand
+      # même -> 42 PERDUS DÉFINITIVEMENT ; (2) journal Security en accès refusé -> 12 attendus, 0
+      # arrivé, 0 aveu, code retour 0, battement « ok ». Après correctif, mêmes scénarios :
+      # 0 perdu / 42 rattrapés, et 5 aveux `collect_status=unavailable`.
+      # La garde ne cite aucun capteur : elle exige que tout `catch` classe ou relève, qu'aucune
+      # erreur ne soit avalée en silence, et qu'aucun filigrane ne s'écrive avant un POST acquitté.
+      # `pwsh` est fourni par l'image ubuntu-24.04 (PowerShell 7.6.3, vérifié dans le README de
+      # actions/runner-images) ; s'il manquait, la garde ÉCHOUE au lieu de passer.
+      - name: Le collecteur Windows ne peut ni mentir ni oublier (AST PowerShell)
+        run: python3 .github/scripts/check_windows_collector_is_honest.py
 
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
       # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —

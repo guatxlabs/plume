@@ -236,8 +236,19 @@ trouvée, dans le collecteur comme dans l'agent.
 > *Mesuré avec deux serveurs sur un même central : sur les **311** enregistrements du canal Sysmon de
 > `WS22-LAB`, **266 sont arrivés et 45 ont disparu** — exactement les 45 que `WS22-GUI` avait déjà expédiés ;
 > et le battement de santé horaire de `WS22-GUI` n'a **jamais** été stocké, la clé étant déjà prise.*
-> **Correctif** : le nom de l'hôte est préfixé une fois pour toutes dans `Add-Event` (et dans
-> `winxml_to_event` côté agent) — impossible d'oublier l'hôte en ajoutant une source.
+> **Correctif (1er temps, côté émetteur)** : le nom de l'hôte est préfixé une fois pour toutes dans
+> `Add-Event` (et dans `winxml_to_event` côté agent) — impossible d'oublier l'hôte en ajoutant une source.
+>
+> **Correctif (2e temps, côté central — 2026‑08‑02)** : le piège n'était pas windowsien. Mesuré côté
+> Linux le même jour, en faisant tourner les **36 capteurs livrés** sur deux hôtes auxquels il manque les
+> mêmes prérequis : **36 clés produites par machine, dont 26 identiques**, et à l'ingestion **78
+> événements envoyés → 52 stockés, 26 perdus**, tous sur la 2ᵉ machine (39 lignes pour la 1ʳᵉ, **13** pour
+> la 2ᵉ). Corriger émetteur par émetteur n'était donc pas une correction : 40 clés fabriquées dans 30
+> fichiers livrés, 5 langages, plus les capteurs qu'écriront les clients. Le central **cloisonne
+> désormais `event.dedup` par l'hôte de la ligne** à l'écriture (`dedup_scoped_by_host`,
+> `daemon/src/ingest/store.rs`) : deux lignes dont la colonne `host` diffère ne peuvent plus se supprimer
+> l'une l'autre, quelle que soit la clé fabriquée par l'émetteur. Les préfixes posés ici deviennent
+> **redondants et sont conservés** (un collecteur doit rester correct face à un central plus ancien).
 > *Vérifié APRÈS correctif, sur les mêmes machines : `WS22-LAB` porte désormais **323 clés Sysmon
 > continues de 1 à 323** (plus aucun trou), et `WS22-GUI` a enfin son battement
 > (`WS22-GUI-windows-agent-health-…`).* **Conséquence de mise à jour** : les clés changent de forme, donc

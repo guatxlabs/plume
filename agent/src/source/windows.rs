@@ -261,15 +261,23 @@ pub fn winxml_to_event(xml: &str, host: &str) -> Option<Event> {
     fields.insert("event_id".to_string(), Value::from(eid));
     fields.insert("level".to_string(), Value::from(level));
 
-    // L'HÔTE FAIT PARTIE DE LA CLÉ. `event.dedup` est UNIQUE au niveau de la BASE du central, pas de
-    // l'hôte : deux machines qui forment la même clé se volent leurs événements, et la seconde est
-    // écartée en SILENCE (INSERT OR IGNORE). Or `record_id` repart de 1 sur CHAQUE machine Windows —
-    // la collision n'est donc pas un cas limite, c'est le cas NOMINAL dès le 2e poste enrôlé, et elle
-    // frappe le plus fort au démarrage, quand le SOC a le plus besoin des événements.
+    // L'HÔTE FAIT PARTIE DE LA CLÉ — et depuis le 2026-08-02 le CENTRAL le garantit aussi de son côté.
+    // Le défaut : `event.dedup` était UNIQUE au niveau de la BASE du central, pas de l'hôte ; deux
+    // machines qui formaient la même clé se volaient leurs événements, la seconde écartée en SILENCE
+    // (INSERT OR IGNORE). Or `record_id` repart de 1 sur CHAQUE machine Windows — la collision n'était
+    // pas un cas limite, c'était le cas NOMINAL dès le 2e poste enrôlé, et elle frappait le plus fort
+    // au démarrage, quand le SOC a le plus besoin des événements.
     // MESURÉ le 2026-08-02 sur deux Windows Server 2022 (WS22-LAB / WS22-GUI, même central) : la 2e
     // machine avait 311 enregistrements dans son canal Sysmon, 266 sont arrivés et 45 ont disparu —
     // exactement les 45 déjà expédiés par la 1re machine. Vérifié APRÈS ce correctif : les 45
     // manquants arrivent (cf. collectors/windows/README.md).
+    // LA GARANTIE N'EST PLUS ICI : le central cloisonne `event.dedup` par l'hôte de la ligne
+    // (`dedup_scoped_by_host`, daemon/src/ingest/store.rs), parce qu'un correctif par émetteur ne
+    // tenait pas à l'échelle (mesuré côté Linux : 26 événements sur 78 perdus entre deux hôtes, avec
+    // au moins 29 formes de clé distinctes réparties sur 30 fichiers et 6 langages). Ce préfixe-ci est donc REDONDANT et
+    // CONSERVÉ : il reste correct face à un central plus ancien, et il ne coûte rien. Ce qui est
+    // encore EXIGÉ d'un émetteur, c'est une clé STABLE (elle absorbe les réémissions), pas une clé
+    // qui porte l'hôte.
     let dedup = if record_id.is_empty() {
         Some(format!("win-{host}-{eid}-{ts}"))
     } else {

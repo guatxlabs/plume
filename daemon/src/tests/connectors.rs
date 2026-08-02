@@ -222,7 +222,7 @@
             let c = db.lock();
             // 1 event ingéré, ENRICHI, SHAPE NormEvent préservée (dedup Defender = defender-<cid>-<id>).
             let (src, cat, sev, sip, env, fields): (String, String, i64, Option<String>, String, String) = c.query_row(
-                "SELECT source, category, severity, src_ip, env_id, fields FROM event WHERE dedup='defender-1-mde-1'",
+                &format!("SELECT source, category, severity, src_ip, env_id, fields FROM event WHERE dedup='{}'", ddk(None, "defender-1-mde-1")),
                 [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).unwrap();
             assert_eq!(src, "defender", "source='defender' littéral préservée (shape NormEvent)");
             assert_eq!(cat, "CommandAndControl", "category NormEvent préservée");
@@ -700,7 +700,7 @@
             let n: i64 = c.query_row("SELECT COUNT(*) FROM event WHERE source='http:1'", [], |r| r.get(0)).unwrap();
             assert_eq!(n, 3, "3 alertes Falcon ingérées");
             let (cat, sev, host, ip, env, ts, msg, dd): (String, i64, String, String, String, i64, String, String) = c.query_row(
-                "SELECT category,severity,host,src_ip,env_id,ts,message,dedup FROM event WHERE dedup='http-1-ldt:1'",
+                &format!("SELECT category,severity,host,src_ip,env_id,ts,message,dedup FROM event WHERE dedup='{}'", ddk(Some("WIN-01"), "http-1-ldt:1")),
                 [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))).unwrap();
             assert_eq!(cat, "malware", "sourcetype -> CIM category");
             assert_eq!(sev, 3, "high -> 3");
@@ -709,9 +709,9 @@
             assert_eq!(env, "prod", "env_id du connecteur porté");
             assert_eq!(ts, minio_to_epoch(Some("2026-07-05T10:00:00Z")));
             assert_eq!(msg, "Falcon detection");
-            assert_eq!(dd, "http-1-ldt:1", "dedup = http-<id>-<composite_id>");
+            assert_eq!(dd, ddk(Some("WIN-01"), "http-1-ldt:1"), "dedup = CLOISONNÉ PAR HÔTE au-dessus de http-<id>-<composite_id>");
             // fields structurés (searchable en GXQL)
-            let fields: String = c.query_row("SELECT fields FROM event WHERE dedup='http-1-ldt:1'", [], |r| r.get(0)).unwrap();
+            let fields: String = c.query_row(&format!("SELECT fields FROM event WHERE dedup='{}'", ddk(Some("WIN-01"), "http-1-ldt:1")), [], |r| r.get(0)).unwrap();
             let fv: Value = serde_json::from_str(&fields).unwrap();
             assert_eq!(fv["technique"].as_str(), Some("T1059"), "fields.technique mappé");
             // watermark = max created_timestamp (monotone)
@@ -777,14 +777,14 @@
             assert_eq!(lc, 2, "last_count = lignes réellement insérées");
             // HIT : passé par le MATCH-ON-INGEST -> fields enrichis (preuve du chemin d'enrichissement).
             let (hf, env): (String, String) = c.query_row(
-                "SELECT fields, env_id FROM event WHERE dedup='http-1-hit'",
+                &format!("SELECT fields, env_id FROM event WHERE dedup='{}'", ddk(None, "http-1-hit")),
                 [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
             let hv: Value = serde_json::from_str(&hf).unwrap();
             assert_eq!(hv["ti_match"], 1, "event pullé IOC-matché -> ti_match=1 (enrichi via ingest_events_batch)");
             assert_eq!(hv["threat_intel"]["source"], "feed-x", "fields.threat_intel renseigné par le match-on-ingest");
             assert_eq!(env, "prod", "env_id du connecteur porté sur la ligne enrichie");
             // MISS : non enrichi (aucun IOC) -> pas de ti_match/threat_intel (byte-identique au chemin natif).
-            let mf: Option<String> = c.query_row("SELECT fields FROM event WHERE dedup='http-1-miss'", [], |r| r.get(0)).ok();
+            let mf: Option<String> = c.query_row(&format!("SELECT fields FROM event WHERE dedup='{}'", ddk(None, "http-1-miss")), [], |r| r.get(0)).ok();
             assert!(mf.as_deref().map(|s| !s.contains("ti_match") && !s.contains("threat_intel")).unwrap_or(true),
                 "record non-matchant : aucun enrichissement TI (enrich-not-suppress)");
         }

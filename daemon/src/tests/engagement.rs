@@ -54,7 +54,7 @@
         let conn = test_db();
         let events = vec![json!({"ts": 1000, "source": "agent", "message": "x", "src_ip": "198.51.100.9", "dedup": "z1"})];
         ingest_events_batch(&conn, ":memory:", &events, 1234, None, None).expect("batch committé");
-        let eid: String = conn.query_row("SELECT engagement_id FROM event WHERE dedup='z1'", [], |r| r.get(0)).unwrap();
+        let eid: String = conn.query_row(&format!("SELECT engagement_id FROM event WHERE dedup='{}'", ddk(None, "z1")), [], |r| r.get(0)).unwrap();
         assert_eq!(eid, "", "mode off -> engagement_id='' (= DEFAULT, byte-identique)");
         eng_test_reset();
     }

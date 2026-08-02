@@ -31,6 +31,9 @@ OFF="$STATE_DIR/auditd.offset"
 # Emis ICI, AVANT tout arret anticipe : sur un hote sans aucune regle il n'y a rien a parser, donc le
 # rapport de config plus bas n'est jamais atteint — c'est precisement le cas ou il faut parler.
 # Dedup a bucket HORAIRE (meme raison que plume_report_availability : re-affirmer sans inonder).
+# La clef ne porte PAS l'hote, et n'a pas a le porter : le central CLOISONNE `event.dedup` par l'hote de
+# la ligne a l'ecriture (`dedup_scoped_by_host`, daemon/src/ingest/store.rs) — cf. le bandeau de ce
+# fichier-la pour la mesure (26 evenements sur 78 perdus entre deux hotes avant cloisonnement).
 _ar=""
 command -v auditctl >/dev/null 2>&1 && _ar=$(auditctl -l 2>/dev/null || true)
 _ar_n=$(printf '%s\n' "$_ar" | grep -c '^-' 2>/dev/null || true); _ar_n=${_ar_n:-0}
@@ -238,6 +241,9 @@ cfg_exdrop="${PLUME_AUDITD_EXEC_DROP:-}"; [ -n "$cfg_exdrop" ] && cfg_exdrop_on=
 cfg_recon="${PLUME_AUDITD_EXEC_DROP_INCLUDE_RECON:-}"; [ -n "$cfg_recon" ] && cfg_recon_on="1" || cfg_recon_on="0"
 cfg_fields=$(printf '{"type":"collection-reducing","collector":"auditd","filters":{"real_user_only":"%s","exec_drop":"%s","exec_drop_include_recon":"%s"},"exec_drop_dropped_this_run":%s,"exec_drop_list_tier1":"%s","exec_drop_list_tier2_recon":"%s","exec_drop_list_effective":"%s","carve_out":"svc_exec + auid=-1 + exec echoue + exec depuis dir inscriptible + interpreteurs/priv/reseau/audit/permission + RECON/chasse-secrets (grep/find/ls/cat/stat/id/strings/sed/tee : palier 2, KEEP tant que exec_drop_include_recon non pose) + TOUS les events TAMPER : TOUJOURS shippes (anti-angle-mort)","note":"exec_drop=1 -> DROP palier 1 (build/systeme non-equivoque) des coreutils benins (success=yes, auid in {0,1000}, exec_tracking, prefixe standard, basename in tier1). exec_drop_include_recon=1 ajoute le palier 2 (recon : T1083/T1057/T1552.001) SEULEMENT si exec_drop aussi pose. defaut vide=OFF byte-identique ; recon defaut KEEP meme interrupteur principal ON. real_user_only=1 -> drop execve comptes de service (hors svc_exec/TAMPER)."}' \
   "$(json_escape "$cfg_ruo")" "$cfg_exdrop_on" "$cfg_recon_on" "${EXEC_DROPPED:-0}" "$(json_escape "$AUDIT_EXEC_DROP_LIST_TIER1")" "$(json_escape "$AUDIT_EXEC_DROP_LIST_TIER2")" "$(json_escape "$AUDIT_EXEC_DROP_LIST")")
+# Clef d'ETAT : ni hote NI temps — elle re-affirme UNIQUEMENT quand la configuration change. L'absence
+# d'hote est sans consequence depuis que le central cloisonne `event.dedup` par hote (cf. plus haut) :
+# chaque machine a DESORMAIS son evenement de configuration, la ou une seule l'avait, pour toujours.
 cfg_dd="cfg-auditd-$(printf '%s' "$cfg_fields" | cksum | cut -d' ' -f1)"
 cfg_event=$(printf '{"ts":%s,"source":"auditd","category":"config","severity":0,"message":"config collecteur auditd (filtres de collecte)","dedup":"%s","fields":%s}' \
   "$ts" "$cfg_dd" "$cfg_fields")

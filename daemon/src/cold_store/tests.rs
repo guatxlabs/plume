@@ -1548,11 +1548,15 @@ fn p15_per_index_hot_purge_vs_extension() {
 // bien au-delà de la fenêtre chaude ; il RESTE MUET en régime drainé normal (zéro faux positif).
 #[test]
 fn p15_aging_stall_signal_fires_on_stall_and_quiet_when_drained() {
+    // `event.dedup` est CLOISONNÉ PAR HÔTE à l'écriture (`ingest::store::dedup_scoped_by_host`) : la clé
+    // STOCKÉE d'un signal daemon est `<len>\u{1}plume-daemon\u{1}plume-cold-…`. Le `LIKE` porte donc sur
+    // la clé ÉMETTEUR à l'intérieur de la clé cloisonnée (`…||char(1)||'plume-cold-…-%'`) — ce qui est
+    // EXACTEMENT la propriété testée (1 signal par heure sur CE daemon), sans dépendre de l'encodage du préfixe.
     let health_stall = |db: &Arc<Mutex<Connection>>| -> i64 {
         db.lock()
             .query_row(
                 "SELECT COUNT(*) FROM event WHERE source='plume-config' AND origin='daemon' AND category='health' \
-                 AND dedup LIKE 'plume-cold-aging-stall-%'",
+                 AND dedup LIKE '%'||char(1)||'plume-cold-aging-stall-%'",
                 [],
                 |r| r.get(0),
             )
@@ -1624,7 +1628,7 @@ fn health_seal_stuck(db: &Arc<Mutex<Connection>>) -> i64 {
     db.lock()
         .query_row(
             "SELECT COUNT(*) FROM event WHERE source='plume-config' AND origin='daemon' AND category='health' \
-             AND severity=4 AND dedup LIKE 'plume-cold-seal-stuck-%'",
+             AND severity=4 AND dedup LIKE '%'||char(1)||'plume-cold-seal-stuck-%'",
             [],
             |r| r.get(0),
         )
@@ -1691,7 +1695,7 @@ fn fix18_seal_stuck_fires_and_is_nonpurgeable() {
     let (src, org, cat, sev): (String, String, String, i64) = db
         .lock()
         .query_row(
-            "SELECT source, origin, category, severity FROM event WHERE dedup LIKE 'plume-cold-seal-stuck-%'",
+            "SELECT source, origin, category, severity FROM event WHERE dedup LIKE '%'||char(1)||'plume-cold-seal-stuck-%'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
@@ -1700,7 +1704,7 @@ fn fix18_seal_stuck_fires_and_is_nonpurgeable() {
     // Champs JSON exigés.
     let fields: String = db
         .lock()
-        .query_row("SELECT fields FROM event WHERE dedup LIKE 'plume-cold-seal-stuck-%'", [], |r| r.get(0))
+        .query_row("SELECT fields FROM event WHERE dedup LIKE '%'||char(1)||'plume-cold-seal-stuck-%'", [], |r| r.get(0))
         .unwrap();
     assert!(fields.contains("\"subsystem\":\"cold-tier\"") && fields.contains("\"signal\":\"seal-stuck\""), "fields={fields}");
     assert!(fields.contains("\"stuck_files\":1") && fields.contains("\"stuck_days\":1"), "compteurs seal-stuck : {fields}");
@@ -1754,7 +1758,7 @@ fn fix18_seal_stuck_complementary_to_aging_stall() {
     let health_aging = |db: &Arc<Mutex<Connection>>| -> i64 {
         db.lock()
             .query_row(
-                "SELECT COUNT(*) FROM event WHERE dedup LIKE 'plume-cold-aging-stall-%'",
+                "SELECT COUNT(*) FROM event WHERE dedup LIKE '%'||char(1)||'plume-cold-aging-stall-%'",
                 [],
                 |r| r.get(0),
             )
@@ -1767,7 +1771,7 @@ fn fix18_seal_stuck_complementary_to_aging_stall() {
     assert_eq!(health_seal_stuck(&db), 1, "seal-stuck tire sur le jour scellé-bloqué");
     let stuck_days: String = db
         .lock()
-        .query_row("SELECT fields FROM event WHERE dedup LIKE 'plume-cold-seal-stuck-%'", [], |r| r.get(0))
+        .query_row("SELECT fields FROM event WHERE dedup LIKE '%'||char(1)||'plume-cold-seal-stuck-%'", [], |r| r.get(0))
         .unwrap();
     assert!(stuck_days.contains("\"stuck_days\":1"), "un seul jour bloqué : {stuck_days}");
     // aging-stall : tire sur le jour hot jamais-scellé ; le jour scellé-bloqué est EXCLU (il a un seal) -> pas de

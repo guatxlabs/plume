@@ -183,6 +183,18 @@ kctl() {
 # =================================================================================================
 
 # plume_report_availability <source> <status> <reason> <detail> <severity> — n'exite PAS (usage interne).
+# CE QUE CETTE CLÉ N'A PAS BESOIN DE PORTER, ET POURQUOI (2026-08-02). `_av_dd` ne contient AUCUN
+# élément propre à la machine : deux hôtes auxquels il manque le MÊME prérequis produisent la MÊME clé.
+# C'était une perte SILENCIEUSE — `event.dedup` était UNIQUE au niveau de la BASE du central et
+# l'ingestion fait `INSERT OR IGNORE` : le 2e hôte était jeté sans un mot, et c'est l'aveu « capteur
+# aveugle » lui-même qui disparaissait. MESURÉ en faisant tourner les 36 capteurs livrés sur deux hôtes :
+# 36 clés chacun, dont 26 IDENTIQUES ; 78 événements envoyés, 52 stockés, 26 perdus (39 lignes pour le
+# 1er hôte, 13 pour le 2e). Le correctif N'EST PAS ici : le central CLOISONNE `event.dedup` par l'hôte de
+# la ligne à l'écriture (`dedup_scoped_by_host`, daemon/src/ingest/store.rs), là où l'hôte est déjà connu
+# et ATTESTÉ (jeton lié). Corriger les >=29 formes de clé des 30 fichiers émetteurs, en 6 langages, aurait laissé le
+# prochain capteur — y compris celui d'un client, via `custom.sh` — refaire la même faute.
+# CE QUI RESTE EXIGÉ D'UNE CLÉ ÉMETTEUR : être STABLE et DÉTERMINISTE pour un même événement — c'est elle
+# qui absorbe les réémissions du spool (at-least-once). Le bucket horaire ci-dessous joue ce rôle.
 plume_report_availability() {
   [ -n "${SPOOL:-}" ] || plume_init
   _av_fields=$(printf '{"type":"collector-availability","collector":"%s","collect_status":"%s","reason":"%s","detail":"%s"}' \

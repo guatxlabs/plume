@@ -33,3 +33,4 @@ include!("backup_retention_adverse.rs"); // scheduler backup natif + rétention 
 include!("netban.rs"); // chantier ② Phase 1 — ban natif HTTP (IP réelle, store net_ban, guard, API admin)
 include!("purge.rs"); // PURGE EXPLICITE d'événements — refus (legal-hold/tier froid/case/FTS), caducité du jeton, registre, dérivés
 include!("query_timing.rs"); // la métrique d'attente : garde SANS SEUIL (S permis >= N clients -> attente NULLE) + un seul écrivain
+include!("dedup_flotte.rs"); // LA FLOTTE : `event.dedup` cloisonné par hôte (perte silencieuse entre machines)

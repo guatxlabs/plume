@@ -491,7 +491,7 @@
         // Ingest complet : un event dont l'IP serait un IOC SI le store en contenait -> ici aucun -> pas d'enrichissement.
         let events = vec![json!({"ts": 500, "source": "agent", "message": "x", "src_ip": "203.0.113.9", "dedup": "e1"})];
         ingest_events_batch(&conn, "dbp-empty", &events, 500, None, None).unwrap();
-        let f: Option<String> = conn.query_row("SELECT fields FROM event WHERE dedup='e1'", [], |r| r.get(0)).unwrap();
+        let f: Option<String> = conn.query_row(&format!("SELECT fields FROM event WHERE dedup='{}'", ddk(None, "e1")), [], |r| r.get(0)).unwrap();
         assert!(f.as_deref().map(|s| !s.contains("ti_match") && !s.contains("threat_intel")).unwrap_or(true), "aucun enrichissement TI en mode 0 (store vide)");
     }
 
@@ -508,17 +508,17 @@
         ];
         let n = ingest_events_batch(&conn, dbp, &events, 600, None, None).unwrap();
         assert_eq!(n, 2, "les 2 events sont INSÉRÉS (enrich-not-suppress : aucun drop)");
-        let cnt: i64 = conn.query_row("SELECT COUNT(*) FROM event WHERE dedup IN ('hit','miss')", [], |r| r.get(0)).unwrap();
+        let cnt: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM event WHERE dedup IN ('{}','{}')", ddk(None, "hit"), ddk(None, "miss")), [], |r| r.get(0)).unwrap();
         assert_eq!(cnt, 2, "aucun event supprimé par le match");
         // HIT : fields enrichis.
-        let hit: String = conn.query_row("SELECT fields FROM event WHERE dedup='hit'", [], |r| r.get(0)).unwrap();
+        let hit: String = conn.query_row(&format!("SELECT fields FROM event WHERE dedup='{}'", ddk(None, "hit")), [], |r| r.get(0)).unwrap();
         let hv: Value = serde_json::from_str(&hit).unwrap();
         assert_eq!(hv["ti_match"], 1);
         assert_eq!(hv["threat_intel"]["source"], "feed-x");
         assert_eq!(hv["threat_intel"]["ioc_type"], "ip");
         assert_eq!(hv["threat_intel"]["value"], "203.0.113.9");
         // MISS : pas d'enrichissement.
-        let miss: Option<String> = conn.query_row("SELECT fields FROM event WHERE dedup='miss'", [], |r| r.get(0)).unwrap();
+        let miss: Option<String> = conn.query_row(&format!("SELECT fields FROM event WHERE dedup='{}'", ddk(None, "miss")), [], |r| r.get(0)).unwrap();
         assert!(miss.as_deref().map(|s| !s.contains("ti_match")).unwrap_or(true), "l'event non-IOC reste intact (cas négatif)");
     }
 
@@ -536,9 +536,9 @@
             json!({"ts": 701, "source": "agent", "message": "d", "dedup": "d", "fields": {"domain": "EVIL.example"}}),
         ];
         ingest_events_batch(&conn, dbp, &events, 700, None, None).unwrap();
-        let h: String = conn.query_row("SELECT fields FROM event WHERE dedup='h'", [], |r| r.get(0)).unwrap();
+        let h: String = conn.query_row(&format!("SELECT fields FROM event WHERE dedup='{}'", ddk(None, "h")), [], |r| r.get(0)).unwrap();
         assert!(h.contains("\"ti_match\":1") && h.contains("hash_sha256"), "hash sha256 (des fields) matché");
-        let d: String = conn.query_row("SELECT fields FROM event WHERE dedup='d'", [], |r| r.get(0)).unwrap();
+        let d: String = conn.query_row(&format!("SELECT fields FROM event WHERE dedup='{}'", ddk(None, "d")), [], |r| r.get(0)).unwrap();
         assert!(d.contains("\"ti_match\":1") && d.contains("\"ioc_type\":\"domain\""), "domaine (des fields) matché, casse-insensible");
     }
 
@@ -550,7 +550,7 @@
         seed_ioc(&conn, dbp, "ip", "198.51.100.7", "old-feed", Some(now() - 10)); // déjà expiré
         let events = vec![json!({"ts": 800, "source": "agent", "message": "e", "src_ip": "198.51.100.7", "dedup": "x"})];
         ingest_events_batch(&conn, dbp, &events, 800, None, None).unwrap();
-        let f: Option<String> = conn.query_row("SELECT fields FROM event WHERE dedup='x'", [], |r| r.get(0)).unwrap();
+        let f: Option<String> = conn.query_row(&format!("SELECT fields FROM event WHERE dedup='{}'", ddk(None, "x")), [], |r| r.get(0)).unwrap();
         assert!(f.as_deref().map(|s| !s.contains("ti_match")).unwrap_or(true), "un IOC expiré ne matche pas (exclu du cache)");
     }
 
@@ -655,9 +655,9 @@
             json!({"ts": 901, "source": "agent", "message": "miss", "src_ip": "8.8.8.8",     "dedup": "fp-miss"}),
         ];
         ingest_events_batch(&conn, dbp, &events, 900, None, None).unwrap();
-        let hit: String = conn.query_row("SELECT fields FROM event WHERE dedup='fp-hit'", [], |r| r.get(0)).unwrap();
+        let hit: String = conn.query_row(&format!("SELECT fields FROM event WHERE dedup='{}'", ddk(None, "fp-hit")), [], |r| r.get(0)).unwrap();
         assert!(hit.contains("\"ti_match\":1"), "l'IOC réel est enrichi (confirm exact = présent)");
-        let miss: Option<String> = conn.query_row("SELECT fields FROM event WHERE dedup='fp-miss'", [], |r| r.get(0)).unwrap();
+        let miss: Option<String> = conn.query_row(&format!("SELECT fields FROM event WHERE dedup='{}'", ddk(None, "fp-miss")), [], |r| r.get(0)).unwrap();
         assert!(miss.as_deref().map(|s| !s.contains("ti_match")).unwrap_or(true), "faux positif du filtre RATTRAPÉ par le confirm exact : aucun faux match");
     }
 
@@ -678,9 +678,9 @@
             json!({"ts": 951, "source": "agent", "message": "miss", "src_ip": "10.0.0.1",     "dedup": "bl-miss"}),
         ];
         ingest_events_batch(&conn, dbp, &events, 950, None, None).unwrap();
-        let hit: String = conn.query_row("SELECT fields FROM event WHERE dedup='bl-hit'", [], |r| r.get(0)).unwrap();
+        let hit: String = conn.query_row(&format!("SELECT fields FROM event WHERE dedup='{}'", ddk(None, "bl-hit")), [], |r| r.get(0)).unwrap();
         assert!(hit.contains("\"ti_match\":1") && hit.contains("203.0.113.9"), "bloom : vrai IOC toujours matché (aucun faux négatif)");
-        let miss: Option<String> = conn.query_row("SELECT fields FROM event WHERE dedup='bl-miss'", [], |r| r.get(0)).unwrap();
+        let miss: Option<String> = conn.query_row(&format!("SELECT fields FROM event WHERE dedup='{}'", ddk(None, "bl-miss")), [], |r| r.get(0)).unwrap();
         assert!(miss.as_deref().map(|s| !s.contains("ti_match")).unwrap_or(true), "bloom : le miss reste intact");
     }
 
@@ -857,7 +857,7 @@
         assert_eq!(conn.query_row("SELECT COUNT(*) FROM risk_rollup", [], |r| r.get::<_, i64>(0)).unwrap(), 0, "risk_rollup vide");
         assert_eq!(conn.query_row("SELECT COUNT(*) FROM alert WHERE dedup LIKE 'risk-%'", [], |r| r.get::<_, i64>(0)).unwrap(), 0, "aucune alerte risk");
         // l'event est byte-identique (aucun enrichissement, cf. #23) — le champ fields n'a pas de marqueur risk.
-        let f: Option<String> = conn.query_row("SELECT fields FROM event WHERE dedup='e1'", [], |r| r.get(0)).unwrap();
+        let f: Option<String> = conn.query_row(&format!("SELECT fields FROM event WHERE dedup='{}'", ddk(None, "e1")), [], |r| r.get(0)).unwrap();
         assert!(f.as_deref().map(|s| !s.contains("ti_match")).unwrap_or(true), "event byte-identique (mode 0)");
     }
 
@@ -960,8 +960,12 @@
                 dst_ip: None, url: None, dedup: Some("store".into()), fields: Some("{\"a\":1}".into()),
                 engagement_id: String::new(), origin: String::new(), env_id: None,
             }).unwrap();
-            // Signature ligne = concat de TOUTES les colonnes (NULL -> ∅). env_id doit valoir 'prod' des deux
-            // côtés (legacy: DEFAULT NOT NULL ; store: None -> lie 'prod', jamais NULL).
+            // Signature ligne = concat de TOUTES les colonnes SAUF `dedup` (NULL -> ∅). env_id doit valoir
+            // 'prod' des deux côtés (legacy: DEFAULT NOT NULL ; store: None -> lie 'prod', jamais NULL).
+            // `dedup` est HORS signature, et depuis le cloisonnement par hôte c'est LOAD-BEARING : l'INSERT
+            // legacy écrit la clé NUE, le store écrit `dedup_scoped_by_host(host, clé)`. La parité porte donc
+            // sur les 13 autres colonnes — la 14e diverge EXPRÈS (c'est le correctif de la perte de flotte).
+            // Chaque ligne est donc retrouvée par la clé qu'ELLE porte réellement.
             let sig = |dedup: &str| -> String {
                 w.query_row(
                     "SELECT ts||'|'||source||'|'||category||'|'||severity||'|'||message||'|'||COALESCE(host,'∅') \
@@ -971,11 +975,13 @@
                     params![dedup], |r| r.get::<_, String>(0),
                 ).unwrap()
             };
-            assert_eq!(sig("legacy"), sig("store"), "store écrit une ligne BYTE-IDENTIQUE à l'INSERT legacy");
-            assert!(sig("store").ends_with("|prod"), "env_id None -> 'prod' (jamais NULL) : {}", sig("store"));
+            let cle_store = ddk(Some("h1"), "store");
+            assert_eq!(sig("legacy"), sig(&cle_store), "store écrit une ligne IDENTIQUE à l'INSERT legacy sur les 13 colonnes hors `dedup`");
+            assert!(sig(&cle_store).ends_with("|prod"), "env_id None -> 'prod' (jamais NULL) : {}", sig(&cle_store));
 
             // (a bis) dédup OR IGNORE + fields/metric/snapshot via le store.
-            assert_eq!(store().insert_event(&w, &EventRow { ts: 100, source: "sshd".into(), category: "auth".into(), severity: 3, message: "dup".into(), dedup: Some("store".into()), ..Default::default() }).unwrap(), 0, "OR IGNORE : dedup en collision -> 0 ligne");
+            // MÊME hôte + MÊME clé -> MÊME clé cloisonnée -> OR IGNORE mord (c'est la réémission du spool).
+            assert_eq!(store().insert_event(&w, &EventRow { ts: 100, source: "sshd".into(), category: "auth".into(), severity: 3, message: "dup".into(), host: Some("h1".into()), dedup: Some("store".into()), ..Default::default() }).unwrap(), 0, "OR IGNORE : dedup en collision -> 0 ligne");
             store().insert_metric(&w, &MetricRow { ts: 100, name: "load1".into(), labels: None, value: 0.5, host: Some("h1".into()) }).unwrap();
             store().insert_snapshot(&w, &SnapshotRow { ts: 100, kind: "firewall".into(), hash: "h".into(), data: "{}".into(), host: Some("h1".into()) }).unwrap();
             let mlabels: Option<String> = w.query_row("SELECT labels FROM metric WHERE name='load1'", [], |r| r.get(0)).unwrap();
@@ -2873,11 +2879,11 @@ tags:
         dparsers_reload(&conn, dpath);
         // event AVEC category/severity déclarées -> NON écrasées par le parseur wildcard.
         ingest_events_batch(&conn, dpath, &[json!({"ts":1,"source":"firewall","category":"malware","severity":4,"message":"x","dedup":"d1"})], 1, None, None).unwrap();
-        let (c, s): (String, i64) = conn.query_row("SELECT category,severity FROM event WHERE dedup='d1'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let (c, s): (String, i64) = conn.query_row(&format!("SELECT category,severity FROM event WHERE dedup='{}'", ddk(None, "d1")), [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((c.as_str(), s), ("malware", 4), "category/severity déclarées NON écrasées");
         // event SANS category -> le dparser enrichit (comble le vide).
         ingest_events_batch(&conn, dpath, &[json!({"ts":2,"source":"firewall","category":"","severity":0,"message":"y","dedup":"d2"})], 2, None, None).unwrap();
-        let (c2, s2): (String, i64) = conn.query_row("SELECT category,severity FROM event WHERE dedup='d2'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let (c2, s2): (String, i64) = conn.query_row(&format!("SELECT category,severity FROM event WHERE dedup='{}'", ddk(None, "d2")), [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((c2.as_str(), s2), ("web", 1), "category vide / severity défaut -> enrichies");
     }
 

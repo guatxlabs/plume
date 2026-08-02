@@ -136,16 +136,22 @@ function Add-Event {
                    message = $Message; fields = $Fields }
   if ($SrcIp) { $o.src_ip = $SrcIp }
   if ($DstIp) { $o.dst_ip = $DstIp }
-  # LE NOM DE L'HÔTE EST PRÉFIXÉ ICI, ET NULLE PART AILLEURS. `event.dedup` est UNIQUE au niveau de
-  # la BASE, pas de l'hôte : deux machines qui produisent la même clé se volent leurs événements —
-  # la seconde est écartée en SILENCE par l'INSERT OR IGNORE du central. Les identifiants
-  # d'enregistrement du journal Windows repartent de 1 sur CHAQUE machine, donc la collision est
-  # certaine dès le 2e poste, et maximale au moment où le SOC en a le plus besoin (l'enrôlement).
-  # MESURÉ le 2026-08-02 sur deux Windows Server 2022 (WS22-LAB, WS22-GUI) : sur 311 enregistrements
-  # Sysmon présents sur la 2e machine, 266 sont arrivés et 45 ont disparu — exactement les 45 que la
-  # 1re machine avait déjà expédiés ; et le battement de santé horaire de la 2e machine (clé
-  # `windows-agent-health-<heure>`) n'a JAMAIS été stocké. Préfixer ICI plutôt qu'à chaque appel rend
-  # la faute non-représentable : un nouvel Add-Event ne peut pas oublier l'hôte.
+  # LE NOM DE L'HÔTE EST PRÉFIXÉ ICI — ET, DEPUIS LE 2026-08-02, LE CENTRAL LE FAIT AUSSI DE SON CÔTÉ.
+  # Le défaut : `event.dedup` était UNIQUE au niveau de la BASE, pas de l'hôte ; deux machines qui
+  # produisaient la même clé se volaient leurs événements, la seconde étant écartée en SILENCE par
+  # l'INSERT OR IGNORE du central. Les identifiants d'enregistrement du journal Windows repartent de 1
+  # sur CHAQUE machine, donc la collision était certaine dès le 2e poste, et maximale au moment où le
+  # SOC en a le plus besoin (l'enrôlement). MESURÉ le 2026-08-02 sur deux Windows Server 2022
+  # (WS22-LAB, WS22-GUI) : sur 311 enregistrements Sysmon présents sur la 2e machine, 266 sont arrivés
+  # et 45 ont disparu — exactement les 45 que la 1re machine avait déjà expédiés ; et le battement de
+  # santé horaire de la 2e machine (clé `windows-agent-health-<heure>`) n'a JAMAIS été stocké.
+  # LA GARANTIE N'EST PLUS ICI : le central CLOISONNE désormais `event.dedup` par l'hôte de la ligne
+  # (`dedup_scoped_by_host`, daemon/src/ingest/store.rs) — parce qu'un correctif par émetteur ne tenait
+  # pas (mesuré : au moins 29 formes de clé distinctes dans 30 fichiers livrés, 6 langages, plus les
+  # capteurs qu'écriront les clients). Ce préfixe-ci devient donc REDONDANT, et on le GARDE : il ne coûte rien, il rend la clé
+  # lisible côté poste, et un collecteur doit rester correct même branché sur un central plus ancien.
+  # Ce qui reste EXIGÉ d'un émetteur : une clé STABLE pour un même événement (c'est elle qui absorbe
+  # les réémissions), pas une clé qui porte l'hôte.
   if ($Dedup) { $o.dedup  = "$HostName-$Dedup" }
   $null = $script:Events.Add([pscustomobject]$o)
   if ($script:Events.Count -ge $BatchSize) { Flush-Events }

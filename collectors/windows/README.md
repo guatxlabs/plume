@@ -69,13 +69,18 @@ lié à **aucun** hôte :
 plume-daemon token poste-win01 POSTE-WIN01      # 2e argument = l'hôte AUQUEL le jeton est lié
 ```
 
-> **La forme sans hôte (`plume-daemon token poste-win01`) laisse usurper n'importe quelle machine.**
-> Elle était écrite ici jusqu'au 2026‑08‑02. *Mesuré ce jour‑là depuis un Windows Server 2022 : avec le
-> jeton produit par la commande sans hôte, une enveloppe portant `"host":"CONTROLEUR-DE-DOMAINE-USURPE"`
-> est acceptée (**HTTP 202**) et l'événement est **stocké sous ce nom‑là**. Avec un jeton **lié**, la même
+> **La forme sans hôte (`plume-daemon token poste-win01`) laissait usurper n'importe quelle machine, et
+> elle n'existe plus.** Elle était écrite ici jusqu'au 2026‑08‑02. *Mesuré ce jour‑là : avec le jeton
+> produit par la commande sans hôte, une enveloppe portant `"host":"CONTROLEUR-DE-DOMAINE-USURPE"` est
+> acceptée (**HTTP 202**) et l'événement est **stocké sous ce nom‑là**. Avec un jeton **lié**, la même
 > enveloppe est acceptée mais le `host` est **réécrit** vers l'hôte du jeton (`WS22-LAB`) : le liage MORD.*
-> Le liage est aussi ce qui autorise le responder à agir sur cet hôte. **Une seule exception connue, côté
-> serveur** : `/api/metrics/prom?host=` écrit le `?host=` sans consulter le liage (cf. `docs/CIM.md`).
+> Le liage est aussi ce qui autorise le responder à agir sur cet hôte. La portée d'un jeton est désormais
+> une **déclaration** : `plume-daemon token <nom> <HOTE>` (machine) ou `plume-daemon token <nom> --relais`
+> (forwarder multi-hôtes, dont l'hôte n'est **pas** attesté). La forme à deux arguments est **refusée**.
+>
+> *Le liage est consulté sur **toutes** les surfaces d'ingestion depuis le 2026‑08‑02. Auparavant il ne
+> l'était que sur `/api/ingest` et `/loki/api/v1/push` — mesuré usurpable avec un jeton lié sur
+> `/api/metrics/prom` (200), `/api/metrics/write` (204) et `/services/collector` (200). Cf. `docs/CIM.md`.*
 
 Puis renseignez soit des variables d'environnement, soit `C:\ProgramData\plume\plume.conf` :
 
@@ -85,8 +90,10 @@ PLUME_TOKEN=<le-jeton>
 # PLUME_TLS_INSECURE=1   # UNIQUEMENT pour un central en certificat auto-signé de test
 ```
 
-> ### ⚠️ Ne passez JAMAIS le jeton en ligne de commande
-> Le script accepte `-Central` et `-Token` en paramètres. **Ne vous en servez pas pour poser le jeton.**
+> ### ⚠️ Le jeton ne passe JAMAIS en ligne de commande — et le paramètre a été retiré
+> Le script acceptait `-Token` en paramètre, avec cette consigne de ne pas s'en servir. Une consigne
+> n'est pas une garde : **le paramètre n'existe plus** (le jeton vient de `PLUME_TOKEN` ou de
+> `plume.conf`). Ce qui suit explique pourquoi, et ce qui reste à votre charge.
 > Si l'audit `Process Creation` est actif — c'est-à-dire dès que vous avez suivi les prérequis ci-dessus —
 > **et** que la GPO *« Include command line in process creation events »* est activée, ou simplement que
 > **Sysmon** tourne (Sysmon met la ligne de commande dans son ID 1 **sans aucune GPO**), alors le jeton
@@ -97,6 +104,14 @@ PLUME_TOKEN=<le-jeton>
 > pendant Windows de la fuite `sudo` mesurée sur Ubuntu, en **plus large** : le mécanisme n'est pas
 > l'outil d'élévation, c'est l'audit d'exécution lui-même. **Écrivez le jeton dans `plume.conf`, jamais
 > en argv** — et si vous l'avez déjà fait, révoquez-le.
+>
+> **Ce qui a été fermé, et ce qui ne peut pas l'être ici.** Fermé côté produit : le paramètre `-Token` de
+> ce script (retiré) et le `--token <valeur>` de l'agent Rust (remplacé par `--token-stdin`, qui lit le
+> jeton sur l'entrée standard). Ce qui reste ouvert, et qui ne se corrige PAS dans ce dépôt : si un
+> opérateur tape lui-même un secret sur **n'importe quelle** ligne de commande, l'audit d'exécution le
+> capture. C'est une propriété de Windows (Sysmon ID 1 sans GPO ; 4688 avec la GPO *« Include command
+> line »*), pas de ces scripts. La contre-mesure est organisationnelle — et, si l'exposition a eu lieu,
+> la révocation du jeton.
 
 > ### Le central est en TLS : préparez la confiance AVANT le premier run
 > Avec un certificat émis par une CA que le poste ne connaît pas, le run échoue sur

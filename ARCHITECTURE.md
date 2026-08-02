@@ -307,20 +307,39 @@ Trois cibles, **même binaire** (mode-aware) :
   alerte sur une rafale contre l'auth de Plume. La src_ip n'utilise **pas** `X-Forwarded-For` (spoofable).
 - **Rate-limit** : par IP source (`PLUME_RL_IP_MAX`) + plafond global (`PLUME_RL_GLOBAL_MAX`) + cap
   durci sur les routes d'auth (`PLUME_RL_AUTH_MAX`) → 429.
-- **Tokens d'agent** : Bearer, SHA-256 en base, **liés à un hôte** → un agent ne peut agir (responder)
-  que sur les actions de **son** hôte. Ingest agent durci par **mTLS** (cert-manager, SNI dédié).
+- **Tokens d'agent** : Bearer, SHA-256 en base. **La portée est DÉCLARÉE à la création**, jamais
+  défaultée : `plume-daemon token <nom> <HOTE>` = jeton de **machine** (l'hôte est réécrit à l'écriture
+  sur **toutes** les surfaces d'ingestion — `HoteIngere::resoudre` — et c'est lui qui autorise le
+  responder sur cette machine) ; `plume-daemon token <nom> --relais` = **forwarder multi-hôtes**, dont
+  l'hôte déclaré n'est **pas** attesté. La forme à deux arguments est refusée : elle produisait un jeton
+  non lié avec lequel `{"host":"CONTROLEUR-DE-DOMAINE-USURPE"}` était accepté et stocké sous ce nom
+  (mesuré le 2026‑08‑02). Ingest agent durci par **mTLS** (cert-manager, SNI dédié).
+- **Le secret ne transite jamais par une ligne de commande** : les capteurs passent l'auth à curl par
+  l'entrée standard (`plume_curl_auth_stdin`, `collectors/lib.sh`), l'agent lit son jeton avec
+  `--token-stdin`, et le collecteur Windows n'a plus de paramètre `-Token`. *Un argument de processus est
+  public : mesuré le 2026‑08‑02 lisible dans `/proc/<pid>/cmdline` (argv de 101 octets, secret verbatim),
+  recopié par journald dans `_CMDLINE`, et — sous Windows — écrit dans 4688/Sysmon ID 1, c'est-à-dire dans
+  ce que Plume collecte lui-même.* Ce que ça **ne** ferme pas : un opérateur qui tape un secret sur sa
+  propre ligne de commande reste capté par l'audit d'exécution (`sudo` le journalise, et `MESSAGE` est
+  stocké) — d'où la procédure d'enrôlement par `tee` du `README.md`.
 - **TLS natif config-gated** : si `PLUME_TLS_CERT` + `PLUME_TLS_KEY` sont posés, le listener sert en
   **HTTPS (rustls/ring)** + HSTS ; sinon HTTP (défaut, derrière Traefik). Provider `ring` (pas
   d'aws-lc-rs : évite cmake/nasm).
-  ⚠️ **En TLS natif, tout client HTTP/2 reçoit 421 sur toutes les routes** sauf `/healthz`, `/readyz` et
-  `/metrics`. *Mesuré le 2026‑08‑02 sur ce mode : ALPN annoncé = `h2` (`openssl s_client -alpn h2,http/1.1`
-  → « ALPN protocol: h2 ») et la même requête répond **421 « bad host »** en HTTP/2, **200** en
-  `--http1.1`.* Cause : `host_guard` (`daemon/src/auth.rs`) ne lit que l'en-tête `Host`, **absent** en
-  HTTP/2 (l'autorité y est le pseudo-en-tête `:authority`, que hyper range dans l'URI, pas dans les
-  en-têtes) → `unwrap_or(false)`. Les émetteurs actuels (collecteurs `.sh`, `plume-collector.ps1`,
-  `plume-agent`) sont tous en HTTP/1.1, ce qui a masqué le défaut ; **un navigateur, lui, négocie h2**.
-  Contournement immédiat : servir le TLS via un proxy (mode k3s/Traefik, défaut). *Correctif non fait ici :
-  hors périmètre de la campagne Windows où il a été trouvé.*
+  **HTTP/2 y est servi correctement — il ne l'était pas, et c'était grave.** *Mesuré le 2026‑08‑02 sur ce
+  mode : ALPN annoncé = `h2` (`openssl s_client -alpn h2,http/1.1` → « ALPN protocol: h2 », donc un
+  navigateur négocie h2 systématiquement), et la même requête sur la même autorité répondait **421 « bad
+  host » en HTTP/2** contre **401/404 en `--http1.1`** — sur `/api/me`, `/api/search`, `/login` et `/`.
+  Seules `/healthz`, `/readyz` et `/metrics` répondaient, parce qu'elles sont exemptées de la garde :
+  **242 des 245 routes déclarées, interface web comprise, étaient injoignables depuis un navigateur.***
+  Cause : `host_guard` ne lisait que l'en-tête `Host`, **absent** en HTTP/2 (l'autorité y est le
+  pseudo-en-tête `:authority`, que hyper range dans l'URI) → `unwrap_or(false)`. Les émetteurs (collecteurs
+  `.sh`, `plume-collector.ps1`, `plume-agent`) sont tous en HTTP/1.1, ce qui a masqué le défaut pendant
+  toute la vie de ce mode. **Correctif** : l'autorité vient d'une source unique (`AutoriteDemandee`,
+  `daemon/src/auth.rs`) qui lit les deux emplacements du protocole ; son champ est privé, donc on ne peut
+  pas fabriquer une autorité à partir d'un seul des deux. La garde n'a pas été assouplie : une requête qui
+  ne nomme **aucune** autorité reste refusée, et une autorité hors `PLUME_HOST` reçoit toujours 421 — en
+  h2 comme en HTTP/1.1 (re-mesuré). `sso_same_origin_ok`, second et dernier lecteur de `Host`, consomme la
+  même source.
 - **DB** : requêtes API **read-only validées** + budget temps ; **SQLCipher** at-rest (`PLUME_DB_KEY`).
 - **Intégrité tamper-evident** : **journal à chaîne de hash** (ledger, `PLUME_LEDGER_KEY`) +
   checkpoints **Ed25519**. Une altération **partielle** (une ligne modifiée/supprimée) casse la chaîne et

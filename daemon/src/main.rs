@@ -1234,10 +1234,20 @@ fn main() {
         return;
     }
     if args.get(1).map(String::as_str) == Some("token") {
-        // crée un token d'agent : `plume-daemon token <name> [host]`. Affiche le secret UNE fois (SHA-256 stocké).
-        // [host] LIE le token à un hôte -> requis pour le responder (l'agent n'agit que sur cet hôte).
+        // crée un token d'agent : `plume-daemon token <name> <hôte>` (machine) OU `<name> --relais`
+        // (forwarder multi-hôtes). Affiche le secret UNE fois (SHA-256 stocké). P5.2-b : la PORTÉE est
+        // désormais DÉCLARÉE — la forme à deux arguments produisait un jeton non lié, avec lequel une
+        // enveloppe `{"host":"CONTROLEUR-DE-DOMAINE-USURPE"}` était acceptée et stockée sous ce nom (mesuré
+        // le 2026-08-02). Le liage est aussi ce qui autorise le responder à agir sur cet hôte.
         let name = args.get(2).cloned().unwrap_or_else(|| "agent".into());
-        let host = args.get(3).cloned();
+        let relais = args.iter().skip(3).any(|a| a == "--relais");
+        let portee = match PorteeJeton::declarer(args.get(3).filter(|a| !a.starts_with("--")).map(String::as_str), relais) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("usage : plume-daemon token <nom> <hôte> | plume-daemon token <nom> --relais\n{e}");
+                std::process::exit(2);
+            }
+        };
         let conf = load_config();
         let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
         let mut b = [0u8; 32];
@@ -1256,12 +1266,11 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        conn.execute("INSERT INTO token(name,token_hash,created,host) VALUES(?1,?2,?3,?4)", params![name, sha256_hex(token.as_bytes()), now(), host])
-            .expect("insert token");
+        inserer_jeton(&conn, &name, &sha256_hex(token.as_bytes()), None, None, &portee).expect("insert token");
         println!("{token}");
-        match &host {
-            Some(h) => eprintln!("token agent '{name}' lié à l'hôte '{h}' créé — PLUME_TOKEN=... (responder OK). Affiché une seule fois."),
-            None => eprintln!("token agent '{name}' (NON lié à un hôte : ingest only ; pour le responder, relancer avec un hôte) — PLUME_TOKEN=... Affiché une seule fois."),
+        match portee.hote_lie() {
+            Some(h) => eprintln!("token agent '{name}' lié à l'hôte '{h}' créé — PLUME_TOKEN=... (responder autorisé sur cet hôte). Affiché une seule fois."),
+            None => eprintln!("token RELAIS '{name}' créé — PLUME_TOKEN=... L'hôte des lignes reste celui que l'ÉMETTEUR déclare : il n'est PAS attesté, et quiconque tient ce jeton peut écrire sous n'importe quel nom d'hôte. Réservé aux forwarders multi-hôtes ; pour une machine, relancez avec son hôte. Affiché une seule fois."),
         }
         return;
     }

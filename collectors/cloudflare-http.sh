@@ -8,7 +8,8 @@
 # INVARIANT anti-angle-mort : AUCUNE IP whitelistee ; le signal est la NATURE 404-en-masse, pas une IP.
 # OPT-IN : skip propre si PLUME_CF_TOKEN / PLUME_CF_ZONE absents. Requiert curl + jq.
 # GOTCHA egress IPv4 : le token CF whiteliste des IPv4 mais le VPS sort en IPv6 -> curl -4 IMPERATIF.
-# Le TOKEN n'est JAMAIS imprime/loggue (ni en clair, ni tronque).
+# Le TOKEN n'est JAMAIS imprime/loggue (ni en clair, ni tronque) NI passe en argument de curl (P5.5-a :
+# un argument est lisible dans /proc/<pid>/cmdline par tout utilisateur local — il transite par stdin).
 set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 TOKEN="${PLUME_CF_TOKEN:-}"
@@ -47,8 +48,11 @@ body=$(jq -n --arg q "$(read_query)" --arg zone "$ZONE" --arg since "$since" --a
   '{query:$q,variables:{zone:$zone,since:$since,lim:$lim}}')
 
 # curl -4 IMPERATIF (token CF whiteliste IPv4 ; sortie IPv6 par defaut serait rejetee).
-resp=$(curl -4 -s -m 30 -w '\n%{http_code}' "$API" \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data "$body" 2>/dev/null || true)
+# P5.5-a : le jeton CF passe par l'ENTREE STANDARD (`-K -`), jamais en argument de curl. L'en-tete
+# du fichier promettait « JAMAIS imprime/loggue » : c'etait faux tant qu'il etait en argv, ou tout
+# utilisateur local le lisait dans /proc/<pid>/cmdline (mesure 2026-08-02, argv de 101 octets).
+resp=$(plume_curlcfg_header_auth "$TOKEN" | curl -K - -4 -s -m 30 -w '\n%{http_code}' "$API" \
+  -H 'Content-Type: application/json' --data "$body" 2>/dev/null || true)
 code=$(printf '%s' "$resp" | tail -n1)
 json=$(printf '%s' "$resp" | sed '$d')
 

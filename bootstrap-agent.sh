@@ -1,8 +1,20 @@
 #!/usr/bin/env bash
 # Installe le SOC en mode AGENT : capteurs génériques + shipper -> central. PAS de daemon/DB/web.
-# Auth recommandée par TOKEN (créé sur le central : plume-daemon token <nom>) :
-#   sudo env PLUME_CENTRAL=https://soc.central:7000 PLUME_TOKEN='...' bash bootstrap-agent.sh
-# (ou basic : PLUME_USER=admin PLUME_PASS='motdepasse')
+# Auth recommandée par TOKEN, créé sur le central AVEC L'HÔTE AUQUEL IL EST LIÉ :
+#     plume-daemon token agent-<hote> <HOTE>        # jeton de MACHINE (hôte attesté, responder autorisé)
+#     plume-daemon token relais-siem --relais       # forwarder multi-hôtes (hôte NON attesté)
+# P5.5-a — N'ÉCRIVEZ JAMAIS LE JETON SUR UNE LIGNE DE COMMANDE. La forme
+# `sudo env PLUME_TOKEN='...' bash bootstrap-agent.sh`, documentée ici jusqu'au 2026-08-02, fuite le
+# jeton DANS LE SOC LUI-MÊME : sudo journalise sa ligne de commande complète, et le capteur `journal`
+# expédie ces entrées au central (mesuré le 2026-08-02 : un leurre passé ainsi ressort dans DEUX champs
+# journald, `_CMDLINE` — désormais retiré à l'expédition — et `MESSAGE`, qui est LU et STOCKÉ en base).
+# Posez la conf par STDIN, puis lancez ce script SANS secret dans son invocation :
+#     umask 077
+#     printf 'PLUME_CENTRAL=%s\nPLUME_TOKEN=%s\n' 'https://soc.central:7000' '<jeton>' \
+#       | sudo tee /etc/plume/plume.conf >/dev/null
+#     sudo chgrp soc /etc/plume/plume.conf && sudo chmod 0640 /etc/plume/plume.conf
+#     sudo bash bootstrap-agent.sh      # conf déjà présente -> conservée telle quelle
+# (basic PLUME_USER/PLUME_PASS : même règle, même fichier.)
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
 
@@ -50,7 +62,13 @@ if [ -f /etc/plume/plume.conf ]; then
 else
   : "${PLUME_CENTRAL:?PLUME_CENTRAL requis (1er install)}"
   if [ -z "${PLUME_TOKEN:-}" ] && { [ -z "${PLUME_USER:-}" ] || [ -z "${PLUME_PASS:-}" ]; }; then
-    echo "!! fournis PLUME_TOKEN (recommande) OU PLUME_USER+PLUME_PASS"; exit 1
+    echo "!! /etc/plume/plume.conf absent et aucun secret fourni."
+    echo "!! Ecris la conf par STDIN (le secret ne doit PAS passer par une ligne de commande — il finirait"
+    echo "!! dans le journal sudo, que ce meme agent expedie au SOC) :"
+    echo "!!   umask 077"
+    echo "!!   printf 'PLUME_CENTRAL=%s\\nPLUME_TOKEN=%s\\n' 'https://soc.central:7000' '<jeton>' | sudo tee /etc/plume/plume.conf >/dev/null"
+    echo "!!   sudo chgrp soc /etc/plume/plume.conf && sudo chmod 0640 /etc/plume/plume.conf"
+    echo "!! puis relance ce script."; exit 1
   fi
   umask 027
   {

@@ -499,8 +499,13 @@ pub(crate) async fn otlp_traces_post(
     };
     let n = INGEST_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mk = spool_tenant_marker(&st, &au); // R8 : tenant du token encodé dans le nom -> routé à la relecture
+    // P5.2-a : ce chemin n'avait pas de marqueur d'hôte au motif qu'« un collector OTel relaie plusieurs
+    // services/hôtes ». Vrai d'un RELAIS, faux d'une MACHINE. `spool_host_marker` n'émet QUE pour un jeton
+    // LIÉ : un collector (jeton non lié) garde le comportement d'avant — l'attribut resource `host.name`
+    // reste autoritatif. La distinction est le liage du jeton, plus une décision par route.
+    let hk = spool_host_marker(&au);
     let tmp = format!("{}/.otlp-{}-{}.tmp", st.spool, now(), n);
-    let dst = format!("{}/otlp-{}-{}{}.json", st.spool, now(), n, mk);
+    let dst = format!("{}/otlp-{}-{}{}{}.json", st.spool, now(), n, mk, hk);
     if std::fs::write(&tmp, body_out.as_bytes()).is_err() {
         let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur écriture partielle
         return (StatusCode::INTERNAL_SERVER_ERROR, "spool write failed").into_response();

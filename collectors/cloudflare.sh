@@ -39,8 +39,11 @@ GQL
 body=$(jq -n --arg q "$(read_query)" --arg zone "$ZONE" --arg since "$since" --argjson lim "$LIMIT" \
   '{query:$q,variables:{zone:$zone,since:$since,lim:$lim}}')
 
-resp=$(curl -4 -s -m 30 -w '\n%{http_code}' "$API" \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data "$body" 2>/dev/null || true)
+# P5.5-a : le jeton CF passe par l'ENTREE STANDARD (`-K -`), jamais en argument de curl. L'en-tete
+# du fichier promettait « JAMAIS imprime/loggue » : c'etait faux tant qu'il etait en argv, ou tout
+# utilisateur local le lisait dans /proc/<pid>/cmdline (mesure 2026-08-02, argv de 101 octets).
+resp=$(plume_curlcfg_header_auth "$TOKEN" | curl -K - -4 -s -m 30 -w '\n%{http_code}' "$API" \
+  -H 'Content-Type: application/json' --data "$body" 2>/dev/null || true)
 code=$(printf '%s' "$resp" | tail -n1)
 json=$(printf '%s' "$resp" | sed '$d')
 

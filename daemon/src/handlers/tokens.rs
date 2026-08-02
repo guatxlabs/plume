@@ -28,6 +28,101 @@ fn token_host_ok(host: &str) -> bool {
     host.len() <= 253 && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
 }
 
+// ====================================================================================================
+// LA PORTÉE D'UN JETON EST UNE DÉCLARATION, PAS UNE OMISSION (P5.2-b).
+//
+// CE QUI ÉTAIT CASSÉ. `plume-daemon token <nom>` — deux arguments, la forme la plus courte, celle que la
+// documentation montrait — produisait un jeton NON LIÉ. MESURÉ le 2026-08-02 : avec ce jeton, une
+// enveloppe `{"host":"CONTROLEUR-DE-DOMAINE-USURPE"}` sur `/api/ingest` est acceptée (HTTP 202) et
+// l'événement est STOCKÉ sous ce nom-là ; même chose sur `/loki/api/v1/push` (204, `LOKI-USURPE-NONLIE`).
+// Avec un jeton lié, la même enveloppe est réécrite vers l'hôte du jeton. Le troisième argument n'était
+// donc pas une option de confort : c'était la différence entre une identité et un laissez-passer. Le
+// message affiché après coup — « NON lié à un hôte : ingest only ; pour le responder, relancer avec un
+// hôte » — présentait ce laissez-passer comme une capacité RÉDUITE. Il ne disait pas ce qu'il ouvrait.
+//
+// POURQUOI ON NE SUPPRIME PAS LA FORME NON LIÉE. Elle est LÉGITIME et nécessaire : un relais central
+// (forwarder HEC, Alloy, Prometheus — cf. `deploy/OBS.md`) multiplexe plusieurs hôtes par construction,
+// et c'est précisément son absence de liage qui, depuis P5.2-a, laisse passer l'hôte qu'il déclare.
+// Supprimer la forme casserait ces déploiements ; la garder par DÉFAUT laisse le chemin le plus court
+// être le chemin le moins sûr.
+//
+// IMPACT SUR L'EXISTANT — MESURÉ AVANT DE TRANCHER. Cette garde porte sur la CRÉATION, jamais sur la
+// vérification : `token_lookup` est INCHANGÉ, aucun jeton déjà émis n'est révoqué, aucune ligne de la
+// table `token` n'est touchée, et aucune migration n'est ajoutée. Un parc dont les agents portent
+// aujourd'hui des jetons non liés continue d'émettre exactement comme avant (avec l'usurpation qu'on
+// vient de mesurer — la re-liaison est un geste d'opérateur, pas un effet de bord d'une mise à jour).
+//
+// LA FORME DÉRIVÉE. On ne peut pas rendre l'omission sûre ; on peut rendre l'omission IMPOSSIBLE. La
+// portée devient une somme FERMÉE à deux cas, et le point d'écriture de la table `token` n'accepte que
+// cette somme — pas un `Option<String>`. Il n'y a donc plus de valeur « host absent » à interpréter :
+// il y a `Machine(hôte)` ou `Relais`, tous deux ÉCRITS par celui qui provisionne. Un futur chemin de
+// provisioning (nouvelle sous-commande, nouvelle route, import) ne peut pas créer un jeton sans
+// trancher : `inserer_jeton` ne compile pas sans une `PorteeJeton`.
+// ====================================================================================================
+
+/// PORTÉE d'un jeton d'ingestion. Somme FERMÉE : tout jeton est l'un ou l'autre, jamais « ni l'un ni
+/// l'autre par défaut ». C'est ce que `HoteIngere::resoudre` lit à chaque écriture (P5.2-a).
+#[derive(Debug)]
+pub(crate) enum PorteeJeton {
+    /// Identité de MACHINE : le jeton est lié à cet hôte. Tout ce qu'il écrit lui est attribué, quel que
+    /// soit l'hôte déclaré dans la requête — et c'est ce liage qui autorise le responder à agir dessus.
+    Machine(String),
+    /// RELAIS multi-hôtes DÉCLARÉ (forwarder HEC, Alloy, Prometheus, collector OTel). L'hôte des lignes
+    /// reste celui que le relais DÉCLARE : non attesté, et donc usurpable par quiconque tient ce jeton.
+    /// C'est le prix d'un relais, il se paie en le sachant.
+    Relais,
+}
+
+impl PorteeJeton {
+    /// Portée DÉCLARÉE par un provisionneur. `hote` non vide -> machine ; `relais` -> relais. Les deux à
+    /// la fois, ou aucun des deux, sont des DÉCLARATIONS INCOHÉRENTES : refus explicite, jamais un défaut
+    /// silencieux. Renvoie le message d'erreur destiné à l'opérateur (CLI comme API).
+    pub(crate) fn declarer(hote: Option<&str>, relais: bool) -> Result<Self, String> {
+        let hote = hote.map(str::trim).filter(|h| !h.is_empty());
+        match (hote, relais) {
+            (Some(_), true) => Err("portée contradictoire : un hôte de liaison ET --relais".into()),
+            (Some(h), false) if !token_host_ok(h) => {
+                Err("hôte de liaison invalide (alphanumérique, . _ - ; ≤ 253 car.)".into())
+            }
+            (Some(h), false) => Ok(Self::Machine(h.to_string())),
+            (None, true) => Ok(Self::Relais),
+            (None, false) => Err(
+                "portée du jeton non déclarée. Un jeton d'agent est SOIT lié à une machine, SOIT un relais \
+                 multi-hôtes — et un jeton non lié laisse usurper n'importe quel hôte (mesuré). Déclarez :\n  \
+                 <hôte>     jeton lié à CETTE machine (responder autorisé sur elle)\n  \
+                 --relais   forwarder/collector multi-hôtes (hôte déclaré par l'émetteur, NON attesté)"
+                    .into(),
+            ),
+        }
+    }
+
+    /// L'hôte de liaison à écrire en colonne `host`, ou `None` pour un relais. SEULE façon d'obtenir cette
+    /// valeur : elle vient forcément d'une portée déclarée.
+    pub(crate) fn hote_lie(&self) -> Option<&str> {
+        match self {
+            Self::Machine(h) => Some(h.as_str()),
+            Self::Relais => None,
+        }
+    }
+}
+
+/// SEUL point d'écriture d'une ligne `token` (CLI comme UI). La colonne `host` n'est pas un paramètre
+/// libre : elle est DÉRIVÉE de la portée déclarée. `kind`/`role` restent `None` pour la voie CLI
+/// historique -> ligne stockée IDENTIQUE à l'INSERT d'avant (colonnes omises == NULL).
+pub(crate) fn inserer_jeton(
+    conn: &Connection,
+    name: &str,
+    hash: &str,
+    kind: Option<&str>,
+    role: Option<&str>,
+    portee: &PorteeJeton,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "INSERT INTO token(name,token_hash,created,host,kind,role) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![name, hash, now(), portee.hote_lie(), kind, role],
+    )
+}
+
 /// GET /api/tokens — liste les jetons (JAMAIS le secret : ni clair ni hash). Admin-only.
 pub(crate) async fn tokens_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
     if !au.is_admin() {
@@ -104,10 +199,20 @@ pub(crate) async fn token_create(State(st): State<AppState>, Extension(au): Exte
     if !token_name_ok(&name) {
         return bad_req("nom de jeton invalide (alphanumérique, . _ - uniquement)");
     }
-    if !host.is_empty() && !token_host_ok(&host) {
-        return bad_req("hôte de liaison invalide (alphanumérique, . _ - ; ≤ 253 car.)");
-    }
-    let host_opt: Option<String> = if host.is_empty() { None } else { Some(host.clone()) };
+    // P5.2-b — la PORTÉE est déclarée ici aussi, sinon la garde du CLI se contournerait par le SPA (les deux
+    // écrivent la MÊME table `token`). Un jeton `datasource`/`client` est LECTURE SEULE et n'est jamais
+    // host-lié (cf. juste au-dessus) : sa portée n'est pas une question ouverte, elle vaut `Relais` par
+    // CONSTRUCTION, pas par omission. Pour agent/HEC, `{host}` OU `{"relay":true}` — l'un des deux, jamais
+    // ni l'un ni l'autre.
+    let portee = if kind == "datasource" || kind == "client" {
+        PorteeJeton::Relais
+    } else {
+        match PorteeJeton::declarer(Some(host.as_str()), b.bool_field("relay", false)) {
+            Ok(p) => p,
+            Err(e) => return bad_req(e),
+        }
+    };
+    let host_opt: Option<String> = portee.hote_lie().map(|h| h.to_string());
     let Some(secret) = token_rand_hex() else {
         return server_err("entropie noyau indisponible — jeton NON créé");
     };
@@ -120,10 +225,7 @@ pub(crate) async fn token_create(State(st): State<AppState>, Extension(au): Exte
         return server_err("verrou base indisponible");
     }
     let outcome: rusqlite::Result<()> = (|| {
-        conn.execute(
-            "INSERT INTO token(name,token_hash,created,host,kind,role) VALUES(?1,?2,?3,?4,?5,?6)",
-            params![name, hash, now(), host_opt, kind, role],
-        )?;
+        inserer_jeton(&conn, &name, &hash, Some(kind), role, &portee)?;
         audit_config_change(
             &conn, "config.token.create",
             &format!("jeton {kind} '{name}'{} créé par {}", host_opt.as_deref().map(|h| format!(" (hôte {h})")).unwrap_or_default(), au.name), 2,

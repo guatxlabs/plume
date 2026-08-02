@@ -8,11 +8,18 @@ Le daemon sert en HTTP (localhost par défaut, bind configurable). Pour le rése
 - Cert auto-signé rapide : `openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj /CN=soc.local`.
 
 ## Auth des agents — tokens (recommandé)
-Sur le central, crée un token par machine (révocable, ≠ mot de passe partagé) :
+Sur le central, crée un token par machine (révocable, ≠ mot de passe partagé). **La portée se DÉCLARE** :
 ```
-plume-daemon token example-host      # affiche le token UNE fois
+plume-daemon token agent-example example-host   # MACHINE : lié à cet hôte (hôte attesté à l'écriture)
+plume-daemon token relais-siem   --relais       # RELAIS  : forwarder multi-hôtes (hôte NON attesté)
 ```
-Puis sur l'agent : `PLUME_TOKEN=<token>` (bootstrap-agent.sh).
+La forme à deux arguments (`plume-daemon token <nom>`) est **refusée** : elle produisait un jeton non lié,
+avec lequel une enveloppe `{"host":"CONTROLEUR-DE-DOMAINE-USURPE"}` était acceptée (202) et stockée sous ce
+nom-là (mesuré le 2026-08-02). Le token s'affiche **une seule fois**.
+
+Puis sur l'agent, dans `/etc/plume/plume.conf` : `PLUME_TOKEN=<token>`. **Ne le passez jamais sur une ligne
+de commande** : `sudo` journalise sa commande complète, et le capteur `journal` expédie ces lignes au SOC —
+le jeton y arriverait en clair (cf. l'avertissement du `README.md`).
 
 **Portée réelle d'un token d'agent** — un Bearer d'agent n'établit une identité que sur les **9 chemins
 machine** ci-dessous (défaut fermé : partout ailleurs → 401, jamais d'accès UI/admin) — cf.

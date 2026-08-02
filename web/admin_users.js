@@ -89,7 +89,7 @@ async function loadTokens() {
   const columns = [
     { key: 'name', label: 'Nom', sortable: true, render: t => { const b = document.createElement('b'); b.textContent = t.name; return b; } },
     { key: 'kind', label: 'Type', sortable: true, render: t => { const s = document.createElement('span'); s.className = 'badge'; s.textContent = TOK_KIND_LABEL[t.kind] || t.kind; return s; } },
-    { key: 'host', label: 'Hôte lié', render: t => { const c = document.createElement('span'); if (t.host) { c.textContent = t.host; } else { c.className = 'muted'; c.textContent = 'non lié (ingest / HEC)'; } return c; } },
+    { key: 'host', label: 'Hôte lié', render: t => { const c = document.createElement('span'); if (t.host) { c.textContent = t.host; } else { c.className = 'muted'; c.textContent = 'relais — hôte non attesté'; } return c; } },
     { key: 'created', label: 'Créé', sortable: true, sortVal: t => t.created || 0, render: t => t.created ? fmtTs(t.created) : '—' },
     { key: 'last_used', label: 'Dern. usage', sortable: true, sortVal: t => t.last_used || 0, render: t => t.last_used ? fmtTs(t.last_used) : '—' },
     { key: '_act', label: '', align: 'r', render: t => {
@@ -114,17 +114,29 @@ async function newTokenFlow() {
         { value: 'agent', label: 'agent — Bearer (ingest + responder host-lié)' },
         { value: 'hec', label: 'HEC — forwarder Splunk (/services/collector)' },
       ] },
-      { name: 'host', label: 'Hôte lié (optionnel)', placeholder: 'ex: web01.internal — requis pour le responder' },
+      // P5.2-b — la PORTÉE est une DÉCLARATION, plus une case laissée vide. La vraie garde est SERVEUR
+      // (POST /api/tokens refuse « ni hôte ni relais » — même règle que le CLI, même table) ; ce champ
+      // existe pour que le choix soit posé ICI, pas subi. Un jeton relais laisse écrire sous N'IMPORTE
+      // quel nom d'hôte : c'est le prix d'un forwarder, il doit être choisi les yeux ouverts.
+      { name: 'portee', label: 'Portée', type: 'select', value: 'machine', options: [
+        { value: 'machine', label: 'machine — lié à un hôte (hôte attesté, responder autorisé sur lui)' },
+        { value: 'relais', label: 'relais — forwarder multi-hôtes (hôte DÉCLARÉ par l\'émetteur, NON attesté)' },
+      ] },
+      { name: 'host', label: 'Hôte lié', placeholder: 'ex: web01.internal — requis pour la portée « machine »' },
     ],
     validate: v => {
       if (!TOK_NAME_RE.test((v.name || '').trim())) return 'nom invalide (alphanumérique, . _ - uniquement)';
-      if ((v.host || '').trim() && !TOK_HOST_RE.test(v.host.trim())) return 'hôte invalide (alphanumérique, . _ - ; ≤ 253 car.)';
+      const host = (v.host || '').trim();
+      if (v.portee === 'relais' && host) return 'portée « relais » : laissez l\'hôte vide (un relais n\'est lié à aucune machine)';
+      if (v.portee !== 'relais' && !host) return 'portée « machine » : l\'hôte est requis (sinon choisissez « relais »)';
+      if (host && !TOK_HOST_RE.test(host)) return 'hôte invalide (alphanumérique, . _ - ; ≤ 253 car.)';
       return null;
     },
   });
   if (!vals) return;
   const body = { name: vals.name.trim(), kind: vals.kind };
-  if ((vals.host || '').trim()) body.host = vals.host.trim();
+  if (vals.portee === 'relais') body.relay = true;
+  else body.host = vals.host.trim();
   let res;
   try { res = await apiSend('/tokens', 'POST', body); }
   catch (e) { toast(e.message || 'échec de création du jeton', 'bad'); return; }

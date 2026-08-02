@@ -5,6 +5,28 @@
 # Delegue l'enforcement a l'IPS existant : CrowdSec (cscli) > fail2ban > nft (fallback). Portable (sh + curl).
 set -eu
 
+# P5.5-a — L'AUTH NE PASSE PAS PAR argv. Un argument de processus est public : mesure du 2026-08-02,
+# le jeton etait lisible verbatim dans /proc/<pid>/cmdline (argv de 101 octets) et recopie par journald
+# dans `_CMDLINE`, que Plume collecte lui-meme. On emet donc les options PORTEUSES DE SECRET sur
+# l'ENTREE STANDARD de curl (`curl -K -`, format de ses fichiers de config) ; l'URL et les timeouts
+# restent en argv, ou il n'y a rien a cacher.
+# POURQUOI CETTE FONCTION EST DEFINIE ICI plutot que reprise de la bibliotheque des capteurs : ce
+# script est un ENFORCER, pas un capteur. Une garde de CI
+# (.github/scripts/check_collector_exit_is_classified.py) VERIFIE qu'il ne depend PAS de cette
+# bibliotheque — c'est cette exclusion qui garde le code privilegie a surface de dependance minimale,
+# et elle est AUTO-INVALIDANTE (elle se declenche des qu'on l'enfreint, y compris par une simple
+# mention). On paie donc quelques lignes de duplication plutot que d'affaiblir une garde.
+# Meme raison, meme forme, dans engagement-adapter.sh.
+resp_curl_auth_stdin() {
+  if [ -n "${PLUME_TOKEN:-}" ]; then
+    printf 'header = "Authorization: Bearer %s"\n' "$(printf '%s' "$PLUME_TOKEN" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  elif [ -n "${PLUME_USER:-}" ] && [ -n "${PLUME_PASS:-}" ]; then
+    printf 'user = "%s:%s"\n' \
+      "$(printf '%s' "$PLUME_USER" | sed 's/\\/\\\\/g; s/"/\\"/g')" \
+      "$(printf '%s' "$PLUME_PASS" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  fi
+}
+
 [ "${PLUME_RESPONDER:-0}" = "1" ] || exit 0            # desactive tant que non explicitement active
 CENTRAL="${PLUME_CENTRAL:?PLUME_CENTRAL requis}"
 HOSTN="${PLUME_HOST_LABEL:-$(hostname)}"
@@ -92,24 +114,17 @@ enforce() {              # kind target -> applique ; renvoie 0/!=0, sortie dans 
 }
 
 # --- recupere la liste (TSV: id  kind  target  dry_run), 1 action/ligne ---
+# P5.5-a : auth par l'ENTRÉE STANDARD (`-K -`), jamais en argument -> rien dans /proc/<pid>/cmdline.
+if [ -z "${PLUME_TOKEN:-}" ]; then : "${PLUME_USER:?}" "${PLUME_PASS:?}"; fi
 # shellcheck disable=SC2086  ($HH = 0 ou 2 tokens, expansion voulue)
-if [ -n "${PLUME_TOKEN:-}" ]; then
-  list=$(curl $HH $TLS -sS --max-time 15 -H "Authorization: Bearer $PLUME_TOKEN" "$CENTRAL/api/actions/pending?host=$HOSTN" 2>/dev/null) || exit 0
-else
-  list=$(curl $HH $TLS -sS --max-time 15 -u "${PLUME_USER:?}:${PLUME_PASS:?}" "$CENTRAL/api/actions/pending?host=$HOSTN" 2>/dev/null) || exit 0
-fi
+list=$(resp_curl_auth_stdin | curl -K - $HH $TLS -sS --max-time 15 "$CENTRAL/api/actions/pending?host=$HOSTN" 2>/dev/null) || exit 0
 [ -n "$list" ] || exit 0
 
-post_result() {          # id status result (auth inline, pas de tableau)
+post_result() {          # id status result (auth par stdin, jamais en argv)
   body="{\"id\":$1,\"status\":\"$2\",\"result\":\"$(esc "$3")\"}"
   # shellcheck disable=SC2086  ($HH = 0 ou 2 tokens, expansion voulue)
-  if [ -n "${PLUME_TOKEN:-}" ]; then
-    curl $HH $TLS -sS --max-time 15 -o /dev/null -H "Authorization: Bearer $PLUME_TOKEN" \
-      -H 'Content-Type: application/json' --data-binary "$body" "$CENTRAL/api/actions/result" 2>/dev/null || true
-  else
-    curl $HH $TLS -sS --max-time 15 -o /dev/null -u "${PLUME_USER:?}:${PLUME_PASS:?}" \
-      -H 'Content-Type: application/json' --data-binary "$body" "$CENTRAL/api/actions/result" 2>/dev/null || true
-  fi
+  resp_curl_auth_stdin | curl -K - $HH $TLS -sS --max-time 15 -o /dev/null \
+    -H 'Content-Type: application/json' --data-binary "$body" "$CENTRAL/api/actions/result" 2>/dev/null || true
 }
 
 printf '%s\n' "$list" | while IFS='	' read -r id kind target dry; do

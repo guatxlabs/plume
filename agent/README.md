@@ -15,10 +15,10 @@ vers le endpoint d'ingest Plume — le même contrat de fil que les collecteurs 
 | Spool disque en anneau borné + backoff (503-aware) + curseurs post-ack | **complet** |
 | Expédition HTTP/1.1 (TCP + rustls, Bearer/Basic, CA interne, mTLS, insecure) | **complet** |
 | Service **systemd** (Linux) install/enable/start + durcissement | **complet** |
-| Source **Windows Event Log** (`EvtQuery/EvtNext/EvtRender` + `EvtCreateBookmark`) | **implémentée** (FFI `cfg(windows)` ; mapping CIM pur testé sur Linux) — *validation runtime : hôte Windows* |
+| Source **Windows Event Log** (`EvtQuery/EvtNext/EvtRender` + `EvtCreateBookmark`) | **implémentée** — *validation runtime FAITE : Windows 11 24H2 (2026‑08‑02) **et** Windows Server 2022 build 20348, en **Server Core** comme en Desktop Experience, y compris promue contrôleur de domaine* |
 | Source **macOS unified log** (`log show --style ndjson`) | **implémentée** (sous-processus `cfg(macos)` ; mapping CIM pur testé sur Linux) — *validation runtime : hôte macOS* |
 | Service **launchd** (macOS) install/enable/start (`launchctl bootstrap`) | **implémenté** (plist testé) — *validation runtime : hôte macOS* |
-| Service **Windows SCM** (`create_service`/dispatcher) via `windows-service` | **implémenté** (`cfg(windows)`) — *validation runtime : hôte Windows* |
+| Service **Windows SCM** (`create_service`/dispatcher) via `windows-service` | **implémenté** — *validation runtime FAITE : `install` crée et démarre le service (Running, StartMode Auto) sur Windows 11, sur Server 2022 **Server Core** (aucune dépendance à l'interface graphique) et sur un contrôleur de domaine* |
 | Source **FIM natif** (#58 : `type = "fim"`) | **implémentée** — Linux `fanotify`→`inotify` (réel) ; repli **scan planifié** sur les autres OS ; Windows `ReadDirectoryChangesW` **stubbé** (feature `fim_windows_native`). Cœur diff/baseline/CIM **testé** ; chemin syscall fanotify/inotify → *validation runtime : hôte Linux root* |
 | Sources **génériques DÉCLARATIVES** (#66/#67 : `file` / `command` / `http`) + parseur `regex`/`delimiter` | **implémentées** — tail à curseur d'offset (rotation gérée), poll de commande/URL cadencé, extraction de champs à groupes nommés. Mapping ligne→event + tail + parseur **testés**. Voir [`examples/sources.toml`](examples/sources.toml) |
 
@@ -34,6 +34,16 @@ vers le endpoint d'ingest Plume — le même contrat de fil que les collecteurs 
   *mesuré le 2026‑08‑02, 1 572 des 5 189 événements Windows (30 %) sont arrivés sans catégorie*, dont
   834 du canal `Security` et 604 du canal `System`. Le champ CIM `action` (vocabulaire neutre,
   `docs/CIM.md` §4c) n'est **jamais** posé par ce lecteur : **0 / 5 189** événements Windows le portent.
+  *Les deux lacunes ont été **reconfirmées le 2026‑08‑02 sur deux Windows Server 2022** (Server Core +
+  Desktop Experience promue contrôleur de domaine), donc sur un autre OS et un autre profil de machine :
+  **2 552 / 6 962 (36,7 %)** sans catégorie — `Application` **100 %**, `Security` **43,6 %**, `System`
+  **41,8 %**, Sysmon **0 %** — et **0 / 6 962** avec `action`. Ce ne sont pas des accidents de poste : ce
+  sont deux défauts produit.* Le collecteur PowerShell, lui, pose toujours une catégorie (0 / 1 505 vide)
+  mais **jamais** `action` non plus (0 / 1 505) : la lacune `action` est commune aux deux émetteurs.
+  **Clé `dedup`** : `win-<hôte>-<canal>-<EventRecordID>`. *Le nom de l'hôte y est entré le 2026‑08‑02 : sans
+  lui, deux machines s'écrasaient mutuellement (`event.dedup` est UNIQUE au niveau de la base) — 45
+  enregistrements Sysmon perdus en silence sur 311, mesuré, corrigé, revérifié. Détail complet et preuve
+  dans `collectors/windows/README.md`, « le piège de la flotte ».*
 - **macOS unified log** (`source=subsystem`) : `sshd/sudo/su/authd/…` ou subsystem `*auth*`/`*ssh*`→`auth` ;
   subsystem `*network*`→`network` ; sinon catégorie vide (le dparser serveur tranche). `messageType`
   `Error`/`Fault`→sévérité 3. Curseur = dernier `timestamp` (`log show --start`), dédup via `traceID`.

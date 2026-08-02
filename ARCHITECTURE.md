@@ -312,6 +312,15 @@ Trois cibles, **même binaire** (mode-aware) :
 - **TLS natif config-gated** : si `PLUME_TLS_CERT` + `PLUME_TLS_KEY` sont posés, le listener sert en
   **HTTPS (rustls/ring)** + HSTS ; sinon HTTP (défaut, derrière Traefik). Provider `ring` (pas
   d'aws-lc-rs : évite cmake/nasm).
+  ⚠️ **En TLS natif, tout client HTTP/2 reçoit 421 sur toutes les routes** sauf `/healthz`, `/readyz` et
+  `/metrics`. *Mesuré le 2026‑08‑02 sur ce mode : ALPN annoncé = `h2` (`openssl s_client -alpn h2,http/1.1`
+  → « ALPN protocol: h2 ») et la même requête répond **421 « bad host »** en HTTP/2, **200** en
+  `--http1.1`.* Cause : `host_guard` (`daemon/src/auth.rs`) ne lit que l'en-tête `Host`, **absent** en
+  HTTP/2 (l'autorité y est le pseudo-en-tête `:authority`, que hyper range dans l'URI, pas dans les
+  en-têtes) → `unwrap_or(false)`. Les émetteurs actuels (collecteurs `.sh`, `plume-collector.ps1`,
+  `plume-agent`) sont tous en HTTP/1.1, ce qui a masqué le défaut ; **un navigateur, lui, négocie h2**.
+  Contournement immédiat : servir le TLS via un proxy (mode k3s/Traefik, défaut). *Correctif non fait ici :
+  hors périmètre de la campagne Windows où il a été trouvé.*
 - **DB** : requêtes API **read-only validées** + budget temps ; **SQLCipher** at-rest (`PLUME_DB_KEY`).
 - **Intégrité tamper-evident** : **journal à chaîne de hash** (ledger, `PLUME_LEDGER_KEY`) +
   checkpoints **Ed25519**. Une altération **partielle** (une ligne modifiée/supprimée) casse la chaîne et

@@ -52,11 +52,11 @@ sur une seule ligne, `EventRow` (`guatx_core::store`, crate `guatx-core`, `src/s
 | `category`      | string  | Classe **sémantique NEUTRE** (§2) — l'axe de composition des détections. |
 | `severity`      | integer | **0..4** (§3). |
 | `message`       | string  | Résumé lisible par un humain. |
-| `host`          | string  | Hôte observateur/rapporteur. Lié au token de l'agent → **non usurpable** (M2). |
+| `host`          | string  | Hôte observateur/rapporteur. Lié au token de l'agent sur les routes d'**events** (`/api/ingest`, `/loki/api/v1/push`) → **non usurpable là** (M2). ⚠️ **PAS sur `/api/metrics/prom`** : le `?host=` de la query string est écrit tel quel, le liage n'y est **pas** consulté — *mesuré le 2026‑08‑02 depuis un troisième OS (Windows Server 2022), après Ubuntu et Windows 11 : jeton lié à `WS22-LAB`, `?host=HOTE-USURPE-PAR-METRICS` → HTTP 200, métrique stockée sous l'hôte usurpé. Le défaut est donc **côté serveur**, pas côté client.* |
 | `src_ip`        | string  | IP source — colonne **promue** depuis `fields.src_ip` \| `fields.rhost` (§4). |
 | `dst_ip`        | string  | IP destination — colonne **promue** depuis `fields.dst_ip`. |
 | `url`           | string  | URL / host+path — colonne **promue** depuis `fields.url`. |
-| `dedup`         | string  | Clé anti-doublon (`INSERT OR IGNORE`). |
+| `dedup`         | string  | Clé anti-doublon (`INSERT OR IGNORE`). **UNIQUE au niveau de la BASE, pas de l'hôte** : tout émetteur DOIT y faire figurer l'hôte, sinon deux machines se volent leurs événements en silence (cf. `collectors/windows/README.md`, « le piège de la flotte » — mesuré). |
 | `fields`        | object  | Sac JSON des champs **ÉTENDUS** (spécifiques vendeur/parser). |
 | `engagement_id` | string  | Corrélation d'engagement purple-team. |
 | `origin`        | string  | Marqueur d'origine d'ingestion. |

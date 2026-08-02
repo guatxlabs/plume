@@ -239,20 +239,46 @@ pub(crate) fn cim_note_noncanonical(source: &str, category: &str) -> bool {
     }
 }
 
-/// AVERTIT (une fois par couple) qu'une `category` déclarée est hors taxonomie. NE REJETTE JAMAIS —
-/// l'appelant continue et stocke la ligne inchangée. Vide -> rien (le dparser tranchera côté serveur).
-fn cim_warn_if_noncanonical(source: &str, category: &str) {
-    if category.is_empty() || cim_category_ok(category) {
-        return;
-    }
-    if cim_note_noncanonical(source, category) {
-        eprintln!(
-            "[cim] WARN collecteur '{source}' : category='{category}' hors taxonomie CIM v{} — \
-             événement ACCEPTÉ et stocké tel quel (le CIM ne jette jamais), mais AUCUNE règle \
-             `category=…` canonique ne le verra. Corrigez le collecteur ou déclarez un parseur de \
-             mapping (cf. docs/CIM.md). Signalé UNE fois par couple (source, category).",
-            guatx_core::cim::CIM_VERSION
-        );
+/// AVERTIT (une fois par couple) sur l'état d'une `category` RÉSOLUE. NE REJETTE JAMAIS — l'appelant
+/// continue et stocke la ligne inchangée.
+///
+/// LES TROIS ÉTATS SONT TRAITÉS, PAS DEUX. La version précédente sortait sur `category.is_empty()`
+/// AVANT tout contrôle, au motif que « le dparser tranchera côté serveur ». MESURÉ le 2026-08-02 :
+/// quatre événements à catégorie vide à la forme exacte de l'agent livré -> 4 stockés, 0 ligne de
+/// journal ; et AUCUN des 5 parseurs déclaratifs livrés ne cible les sources de l'agent. Le cas le
+/// plus fréquent était donc le seul totalement silencieux. `match` exhaustif : un état ajouté demain
+/// ne compile pas tant qu'il n'est pas traité ici.
+fn cim_warn_sur_etat(source: &str, cat: &CategorieIngeree) {
+    match cat.etat() {
+        EtatCategorie::Canonique => {}
+        EtatCategorie::HorsTaxonomie => {
+            // `valeur()` est l'accès NON consommant : le message peut lire la catégorie sans
+            // s'arroger le droit de l'écrire (seul `stockee()`, qui consomme, sert le point d'écriture).
+            if cim_note_noncanonical(source, cat.valeur()) {
+                eprintln!(
+                    "[cim] WARN collecteur '{source}' : category='{}' hors taxonomie CIM v{} — \
+                     événement ACCEPTÉ et stocké tel quel (le CIM ne jette jamais), mais AUCUNE règle \
+                     `category=…` canonique ne le verra. Corrigez le collecteur ou déclarez un parseur de \
+                     mapping (cf. docs/CIM.md). Signalé UNE fois par couple (source, category).",
+                    cat.valeur(),
+                    guatx_core::cim::CIM_VERSION
+                );
+            }
+        }
+        EtatCategorie::Absente => {
+            // Mémo partagé avec le cas hors-taxonomie : même borne, même « une fois par couple ». La
+            // catégorie vide ne peut pas entrer en collision avec une catégorie réelle (aucune n'est vide).
+            if cim_note_noncanonical(source, "") {
+                eprintln!(
+                    "[cim] WARN collecteur '{source}' : AUCUNE catégorie (`category` vide) — événement \
+                     ACCEPTÉ et stocké tel quel, mais il est invisible à TOUTE règle `category=…`, \
+                     définitivement : rien ne le classera plus tard (aucun parseur déclaratif ne cible \
+                     cette source). Déclarez la catégorie dans le collecteur, ou un parseur de mapping \
+                     (cf. docs/CIM.md §5.1bis). Compte au repos : `search category=\"\" | stats count by \
+                     source`. Signalé UNE fois par source."
+                );
+            }
+        }
     }
 }
 
@@ -422,10 +448,6 @@ pub(crate) fn ingest_events_batch_env(
         let source = ext_ingest_source(ev.get("source").and_then(|x| x.as_str()).unwrap_or("agent"));
         let sev = ev.get("severity").and_then(|x| x.as_i64()).unwrap_or(0);
         let cat = ev.get("category").and_then(|x| x.as_str()).unwrap_or("");
-        // CIM (warn-only, JAMAIS un drop) : une catégorie DÉCLARÉE hors taxonomie est signalée UNE fois
-        // par couple (source, category) — cf. le bandeau « CATÉGORIE HORS TAXONOMIE À L'INGEST ». La ligne
-        // stockée est INCHANGÉE (aucune branche d'écriture ne dépend de ce test).
-        cim_warn_if_noncanonical(&source, cat);
         let m = ev.get("message").and_then(|x| x.as_str()).unwrap_or("");
         // M2 : le host forcé (agent lié) ÉCRASE le host de l'event ; sinon host event -> host fichier.
         let ehost = match forced_host {
@@ -504,6 +526,12 @@ pub(crate) fn ingest_events_batch_env(
         } else {
             ""
         };
+        // CATÉGORIE : UNE SEULE RÉSOLUTION, ET ELLE CONNAÎT LES TROIS ÉTATS (`CategorieIngeree`,
+        // ingest/store.rs). L'ENRICH-only est PRÉSERVÉ à l'identique (le repli parseur ne sert que si
+        // l'émetteur n'a rien déclaré) -> valeur stockée BYTE-IDENTIQUE. Ce qui change : la catégorie
+        // VIDE n'est plus le seul état silencieux du contrôle de taxonomie.
+        let categorie = CategorieIngeree::resoudre(cat, dpar_cat.as_deref());
+        cim_warn_sur_etat(&source, &categorie);
         // COUTURE STORE (data-plane, chemin CHAUD) : INSERT event via le store. `env_id` omis à l'origine
         // (-> DEFAULT 'prod') est reproduit par `env_id: None` (le store lie 'prod'). Ligne BYTE-IDENTIQUE.
         let mut row = EventRow {
@@ -516,7 +544,7 @@ pub(crate) fn ingest_events_batch_env(
             // ne peut plus réécrire la category `malware`/`ids` d'un FortiGate). Sinon = byte-identique.
             // NB : le calcul `origin` ci-dessus lit le `cat` D'ORIGINE (provenance des auto-reports `config`
             // inchangée — un dparser enrichit, il ne re-tamponne pas).
-            category: if cat.is_empty() { dpar_cat.as_deref().unwrap_or(cat).to_string() } else { cat.to_string() },
+            category: categorie.stockee(),
             severity: if sev == 0 { dpar_sev.unwrap_or(sev) } else { sev },
             message: m.to_string(),
             host: ehost.map(|s| s.to_string()),

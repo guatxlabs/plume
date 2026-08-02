@@ -11,14 +11,21 @@
   Sources couvertes (chacune dégrade proprement si indisponible — même
   philosophie « auto-disable if tool absent » que les collecteurs Linux) :
     - windows-security  : ouverture/échec de session (4624/4625), logoff (4634),
-                          privilèges spéciaux (4672), création de processus (4688),
-                          verrouillage de compte (4740), gestion de comptes
-                          (4720/4722/4724/4726/4732/4756).  category=auth|exec|account
+                          privilèges spéciaux (4672), Kerberos/NTLM (4768/4769/4771/4776),
+                          création de processus (4688), verrouillage de compte (4740),
+                          gestion de comptes (4720/4722/4724/4726/4732/4756).  category=auth|exec|account
     - windows-firewall  : paquets/connexions BLOQUÉS par le pare-feu Windows (WFP :
                           5152/5157) + état des profils (Get-NetFirewallProfile).  category=firewall
     - windows-system    : arrêts inattendus (6008), échecs de service (7031/7034/7000).  category=system
     - windows-defender  : détections Microsoft Defender (1006/1015/1116/1117).  category=malware
     - windows-network   : connexions TCP établies (distantes) + ports en écoute.  category=network
+
+  CE QUE CETTE LISTE NE COUVRE PAS EST DIT PAR LE PRODUIT, PAS PAR CE COMMENTAIRE.
+  Une liste d'identifiants EST un filtre ; un filtre non déclaré est un angle mort, et un
+  commentaire qui l'énumère vieillit sans prévenir. `Report-Coverage` interroge donc le CANAL sur
+  la MÊME fenêtre et émet, à chaque run, un événement `category=config type=collector-coverage`
+  portant les identifiants PRODUITS et NON COLLECTÉS, avec leur compte (borné, et il dit quand il
+  a été borné). Le trou est ainsi mesurable depuis le SOC, sur chaque hôte, sans relire ce fichier.
 
   Idempotence : un filigrane par source (dernier `TimeCreated` traité) est
   persisté sous $StateDir ; seuls les nouveaux événements sont expédiés. Chaque
@@ -376,18 +383,94 @@ function Get-EventData {
 function Sev-For([int]$id) {
   switch ($id) {
     4625 { 2 } 4740 { 3 } 4672 { 2 } 4720 { 2 } 4726 { 2 } 4732 { 2 } 4756 { 2 }
+    4768 { 1 } 4769 { 1 } 4771 { 2 } 4776 { 1 }
     5152 { 1 } 5157 { 2 } 6008 { 3 } 7031 { 2 } 7034 { 2 } 7000 { 2 }
     1116 { 4 } 1015 { 4 } 1006 { 4 } 1117 { 3 }
     default { 1 }
   }
 }
 
-# Collecte générique d'un journal via filtre, avec filigrane.
+# =================================================================================================
+# L'ISSUE N'EST PAS UNE OPTION — ET LA LISTE D'IDENTIFIANTS EN EST DÉRIVÉE
+# -------------------------------------------------------------------------------------------------
+# `fields.action` porte l'OUTCOME normalisé du CIM : c'est LUI que les détections cross-source
+# interrogent. Les deux règles de brute-force LIVRÉES (« Brute-force auth par IP » et « RBA :
+# brute-force d'authentification », toutes deux T1110, activées) compilent
+# `category=auth action=failure`.
+# MESURÉ le 2026-08-02, trois échecs d'ouverture de session Windows (4625) réellement ingérés à la
+# forme des DEUX émetteurs livrés : `search category=auth | stats count by source` rendait
+# `windows-security 2 · WinEventLog:Security 1 · sudo 366`, et `search category=auth action=failure
+# | stats count by source` rendait **sudo 17 et RIEN pour Windows**. Les échecs étaient en base ; la
+# règle qui prétend les détecter n'en voyait aucun.
+#
+# CE QUI CHANGE STRUCTURELLEMENT : `Collect-Log` ne prend plus de liste d'identifiants. Il prend une
+# table `identifiant -> issue`, et la liste des identifiants collectés en est DÉRIVÉE (`.Keys`). On
+# ne peut donc plus collecter un identifiant sans dire ce qu'il vaut ; et une issue hors du
+# vocabulaire fermé LÈVE au lieu de se glisser en base en prose libre. La garde de CI
+# (`check_windows_collector_is_honest.py`) refuse en plus tout appel qui passerait `-Ids` en dur.
+# =================================================================================================
+
+# Vocabulaire FERMÉ des issues acceptées. `'-'` = « cet enregistrement ne porte pas d'issue » : c'est
+# une DÉCLARATION qu'il faut écrire, pas un oubli qui passe. `'@status'` = « l'issue n'est pas dans
+# l'identifiant mais dans le code de statut de l'enregistrement » (Kerberos/NTLM).
+# Les mots réels appartiennent au vocabulaire NEUTRE `action_vocab` du CIM (config.d/cim/cim.v1.json).
+$script:PlumeOutcomes = @('success','failure','session_open','session_close','allowed','blocked','-','@status')
+
+# Résout `@status` : `Status` (Kerberos 4768/4769/4771) ou `Error Code` (NTLM 4776) valent 0x0 en cas
+# de succès. ABSENT ou ILLISIBLE -> `failure` : on ne déclare pas un succès qu'on n'a pas lu (un faux
+# `success` fabriquerait un angle mort sur la détection de brute-force ; un faux `failure` fait du bruit).
+function Resolve-StatusOutcome {
+  param([hashtable]$Data, [string]$Source)
+  $raw = $null
+  foreach ($k in @('Status','Error Code','ErrorCode')) { if (-not $raw -and $Data.ContainsKey($k)) { $raw = [string]$Data[$k] } }
+  if (-not $raw) { return 'failure' }
+  $raw = $raw.Trim()
+  try {
+    if ($raw -match '^0[xX]([0-9a-fA-F]+)$') { if ([Convert]::ToInt64($Matches[1],16) -eq 0) { return 'success' } else { return 'failure' } }
+    if ([int64]$raw -eq 0) { return 'success' }
+  } catch {
+    # Un code de statut illisible n'est pas un succès. On le DIT (l'issue restera `failure`), sinon un
+    # format inattendu de Windows silencierait la moitié du prédicat de détection.
+    Plume-Unavailable $Source 'subsystem-absent' "code de statut d'authentification illisible ('$raw') — issue prise pour un échec"
+  }
+  return 'failure'
+}
+
+# RECENSEMENT DE COUVERTURE — ce que le canal a produit et que ce collecteur NE COLLECTE PAS.
+# Une table d'identifiants EST un filtre, et un filtre non déclaré est un angle mort : sur un
+# contrôleur de domaine promu le 2026-08-02, 2×4768 et 8×4769 ont été écrits dans `Security` et le
+# collecteur en a remonté 0, sans un mot. Ajouter les quatre identifiants manquants n'aurait fermé
+# que CE trou-là. Le recensement, lui, ne dépend d'aucune liste : il DEMANDE au canal ce qu'il a
+# produit sur la MÊME fenêtre, et déclare la différence. Un identifiant nouveau (nouvelle version de
+# Windows, nouveau rôle, nouvelle sous-catégorie d'audit activée) apparaît donc tout seul.
+# Le recensement est BORNÉ (`$CensusMaxEvents`) et il DIT quand il a été borné (`census_capped`) :
+# un recensement qui se croirait complet mentirait à son tour.
+$script:CensusScope = @{}   # canal -> @{ ids = @{}; since = <datetime> }
+
+function Declare-Collected {
+  param([string]$LogName, [int[]]$Ids, [datetime]$Since)
+  if (-not $script:CensusScope.ContainsKey($LogName)) { $script:CensusScope[$LogName] = @{ ids = @{}; since = $Since } }
+  $sc = $script:CensusScope[$LogName]
+  foreach ($i in $Ids) { $sc.ids[[int]$i] = $true }
+  if ($Since -lt $sc.since) { $sc.since = $Since }
+}
+
+# Collecte générique d'un journal, avec filigrane. `$Outcomes` = table identifiant -> issue ;
+# la liste des identifiants interrogés en est DÉRIVÉE.
 function Collect-Log {
-  param([string]$Name, [string]$LogName, [int[]]$Ids, [string]$Source, [string]$Category)
+  param([string]$Name, [string]$LogName, [hashtable]$Outcomes, [string]$Source, [string]$Category)
+  if (-not $Outcomes -or $Outcomes.Count -eq 0) {
+    throw "Collect-Log '$Name' : aucune table d'issues. Un identifiant collecté sans issue déclarée laisse fields.action vide, donc invisible aux règles qui interrogent action=..."
+  }
+  foreach ($k in $Outcomes.Keys) {
+    if ($script:PlumeOutcomes -notcontains [string]$Outcomes[$k]) {
+      throw "Collect-Log '$Name' : issue '$($Outcomes[$k])' (identifiant $k) hors vocabulaire fermé ($($script:PlumeOutcomes -join ', '))"
+    }
+  }
+  $ids = @($Outcomes.Keys | ForEach-Object { [int]$_ })
   $since = Get-Watermark -Name $Name -Source $Source
-  $filter = @{ LogName = $LogName; StartTime = $since }
-  if ($Ids) { $filter.Id = $Ids }
+  Declare-Collected -LogName $LogName -Ids $ids -Since $since
+  $filter = @{ LogName = $LogName; StartTime = $since; Id = $ids }
   $max = $since
   try {
     $evts = Get-WinEvent -FilterHashtable $filter -ErrorAction Stop
@@ -399,6 +482,12 @@ function Collect-Log {
     else { Plume-Unavailable $Source $kind "canal '$LogName' illisible ($($_.Exception.Message))" }
     return
   }
+  # P5.4-b — `exec` SANS ligne de commande a l'air complet et ne l'est pas. Sans la GPO « Include
+  # command line in process creation events » (et sans Sysmon, qui peuple `CommandLine` dans son
+  # propre schéma, hors audit Windows), un 4688 arrive sans `CommandLine` : l'événement paraît entier,
+  # et toute règle/recherche qui filtre sur la ligne de commande rend zéro sans savoir pourquoi.
+  # On COMPTE, et on le déclare en fin de run (jamais on n'invente une valeur).
+  $cmdlinePresent = 0; $cmdlineAbsent = 0
   foreach ($e in ($evts | Sort-Object TimeCreated)) {
     if ($e.TimeCreated -le $since) { continue }
     if ($e.TimeCreated -gt $max) { $max = $e.TimeCreated }
@@ -409,13 +498,68 @@ function Collect-Log {
     if (-not $msg) { $msg = "$Source event $id" }
     $fields = @{ event_id = $id; provider = $e.ProviderName; level = "$($e.LevelDisplayName)"
                  record_id = $e.RecordId; channel = $LogName }
+    $issue = [string]$Outcomes[$id]
+    if ($issue -eq '@status') { $issue = Resolve-StatusOutcome -Data $d -Source $Source }
+    if ($issue -ne '-') { $fields['action'] = $issue }
+    if ($id -eq 4688) { if ($d.ContainsKey('CommandLine') -and $d['CommandLine']) { $cmdlinePresent++ } else { $cmdlineAbsent++ } }
     foreach ($k in $d.Keys) { if ($d[$k] -and -not $fields.ContainsKey($k)) { $fields[$k] = $d[$k] } }
     $sip = $d['IpAddress']; if ($sip -eq '-' -or $sip -eq '::1' -or $sip -eq '127.0.0.1') { $sip = $null }
     $ded = "$Source-$($e.RecordId)"
     Add-Event -Source $Source -Category $Category -Severity $sev -Message $msg -Fields $fields `
               -Ts (To-Epoch $e.TimeCreated) -SrcIp $sip -Dedup $ded
   }
+  if ($cmdlinePresent + $cmdlineAbsent -gt 0) {
+    Report-ExecCompleteness -Source $Source -Present $cmdlinePresent -Absent $cmdlineAbsent
+  }
   Stage-Watermark -Name $Name -Value $max
+}
+
+# P5.4-b — DÉCLARE l'incomplétude de `exec`. Sévérité 2 (trou de couverture, pas une attaque), même
+# famille que `Plume-Unavailable` : le capteur COLLECTE, mais il sait que ce qu'il rend est amputé.
+# Dédup horaire, comme les aveux d'indisponibilité.
+function Report-ExecCompleteness {
+  param([string]$Source, [int]$Present, [int]$Absent)
+  if ($Absent -le 0) { return }
+  Add-Event -Source $Source -Category 'config' -Severity 2 `
+    -Message "exec incomplet : $Absent creation(s) de processus sans ligne de commande sur $($Present + $Absent) — activez l'audit 'Include command line in process creation events' (GPO) ou Sysmon" `
+    -Fields @{ type='collector-coverage'; collector=$Source; gap='exec-cmdline'
+               cmdline_absent=$Absent; cmdline_present=$Present } `
+    -Dedup "coverage-cmdline-$Source-$([int]($NowEpoch/3600))"
+}
+
+# RECENSEMENT — émet, par canal interrogé, ce que le canal a produit et qui n'est PAS collecté.
+# Ne LÈVE jamais le run : un recensement en échec est un aveu d'indisponibilité, pas une perte.
+$CensusMaxEvents = 5000
+function Report-Coverage {
+  param([string]$Source)
+  foreach ($LogName in @($script:CensusScope.Keys)) {
+    $sc = $script:CensusScope[$LogName]
+    try {
+      $all = Get-WinEvent -FilterHashtable @{ LogName = $LogName; StartTime = $sc.since } -MaxEvents $CensusMaxEvents -ErrorAction Stop
+    } catch {
+      $kind = Get-WinEventFailureKind $_
+      if ($kind -eq 'nodata') { Plume-NoData $Source }
+      else { Plume-Unavailable $Source $kind "recensement de couverture impossible sur '$LogName' ($($_.Exception.Message))" }
+      continue
+    }
+    $manquants = @{}
+    $vus = 0
+    foreach ($e in $all) {
+      $vus++
+      $id = [int]$e.Id
+      if (-not $sc.ids.ContainsKey($id)) { $manquants[$id] = 1 + ($(if ($manquants.ContainsKey($id)) { $manquants[$id] } else { 0 })) }
+    }
+    $capped = [int]($vus -ge $CensusMaxEvents)
+    $liste = (($manquants.Keys | Sort-Object) -join ',')
+    $total = 0; foreach ($v in $manquants.Values) { $total += $v }
+    $sev = $(if ($total -gt 0) { 2 } else { 0 })
+    Add-Event -Source $Source -Category 'config' -Severity $sev `
+      -Message "couverture $LogName : $total evenement(s) non collecte(s) sur $vus, identifiants [$liste]" `
+      -Fields @{ type='collector-coverage'; collector=$Source; gap='channel-ids'; channel=$LogName
+                 uncollected_ids=$liste; uncollected_events=$total; census_seen=$vus
+                 collected_ids=((($sc.ids.Keys | Sort-Object) -join ',')); census_capped=$capped } `
+      -Dedup "coverage-ids-$Source-$LogName-$([int]($NowEpoch/3600))"
+  }
 }
 
 # Epoch (s) depuis un DateTime.
@@ -427,21 +571,41 @@ function To-Epoch([datetime]$dt) { [DateTimeOffset]::new($dt.ToUniversalTime(), 
 # (`CIM_CATEGORIES`, guatx-core). Elle a porté `process` — un nom HORS taxonomie — jusqu'au
 # 2026-07-23 ; les événements de cette période sont retrouvés par l'alias de LECTURE du daemon
 # (cf. `cim_read_alias_exec`, soql_glue.rs) et non par une réécriture de données.
-Collect-Log -Name 'win-auth'    -LogName 'Security' -Ids @(4624,4625,4634,4672,4740) -Source 'windows-security' -Category 'auth'
-Collect-Log -Name 'win-process' -LogName 'Security' -Ids @(4688)                     -Source 'windows-security' -Category 'exec'
-Collect-Log -Name 'win-account' -LogName 'Security' -Ids @(4720,4722,4724,4726,4732,4756) -Source 'windows-security' -Category 'account'
+# KERBEROS/NTLM : sur un CONTRÔLEUR DE DOMAINE, l'authentification de TOUT le parc passe par 4768
+# (ticket TGT), 4769 (ticket de service), 4771 (échec de pré-authentification) et 4776 (validation
+# NTLM). MESURÉ le 2026-08-02 après promotion d'un WS22-GUI en DC : une création de compte et deux
+# authentifications ont écrit 2×4768 et 8×4769 dans `Security` ; le collecteur en a remonté 0.
+# 4768/4769/4776 sont écrits AUSSI BIEN en succès qu'en échec -> `@status` (l'issue est dans le code
+# de statut, pas dans l'identifiant) ; 4771 ne s'écrit QUE sur échec -> `failure`, dit en clair. Et pour que le PROCHAIN trou ne dorme pas jusqu'au prochain
+# relecteur, `Report-Coverage` déclare, à chaque run, ce que le canal produit et qui n'est pas ici.
+Collect-Log -Name 'win-auth'    -LogName 'Security' -Source 'windows-security' -Category 'auth' -Outcomes @{
+  4624 = 'session_open'; 4625 = 'failure'; 4634 = 'session_close'; 4672 = 'success'; 4740 = '-'
+  4768 = '@status';      4769 = '@status'; 4771 = 'failure';       4776 = '@status'
+}
+# 4688 n'est écrit QUE lorsque le processus a été créé -> `success`, ce qui aligne `category=exec` sur le
+# flux Linux (`collectors/auditd.sh` rend `action=failure` quand l'`execve` échoue).
+Collect-Log -Name 'win-process' -LogName 'Security' -Source 'windows-security' -Category 'exec' -Outcomes @{
+  4688 = 'success'
+}
+Collect-Log -Name 'win-account' -LogName 'Security' -Source 'windows-security' -Category 'account' -Outcomes @{
+  4720 = 'success'; 4722 = 'success'; 4724 = 'success'; 4726 = 'success'; 4732 = 'success'; 4756 = 'success'
+}
 
 # --- 2) Pare-feu Windows : connexions bloquées (WFP) + état des profils ----------------------
 # 5152 = paquet bloqué, 5157 = connexion bloquée (audit « Filtering Platform Connection »).
 $fwSince = Get-Watermark -Name 'win-firewall' -Source 'windows-firewall'
 $fwMax = $fwSince
+Declare-Collected -LogName 'Security' -Ids @(5152,5157) -Since $fwSince
 try {
   $fw = Get-WinEvent -FilterHashtable @{ LogName='Security'; Id=@(5152,5157); StartTime=$fwSince } -ErrorAction Stop
   foreach ($e in ($fw | Sort-Object TimeCreated)) {
     if ($e.TimeCreated -le $fwSince) { continue }
     if ($e.TimeCreated -gt $fwMax) { $fwMax = $e.TimeCreated }
     $d = Get-EventData -Evt $e -Source 'windows-firewall'
-    $fields = @{ event_id=[int]$e.Id; direction=$d['Direction']; protocol=$d['Protocol']
+    # 5152 = paquet BLOQUÉ, 5157 = connexion BLOQUÉE : l'issue est dans la définition même de
+    # l'identifiant -> `blocked`, le mot NEUTRE du CIM. Sans lui, `category=firewall action=blocked`
+    # (la forme portable d'une règle de filtrage) ne rendait rien sur Windows.
+    $fields = @{ event_id=[int]$e.Id; action='blocked'; direction=$d['Direction']; protocol=$d['Protocol']
                  app=$d['Application']; src_port=$d['SourcePort']; dst_port=$d['DestPort']
                  record_id=$e.RecordId }
     Add-Event -Source 'windows-firewall' -Category 'firewall' -Severity (Sev-For ([int]$e.Id)) `
@@ -468,11 +632,18 @@ try {
 }
 
 # --- 3) Journal System : arrêts inattendus, échecs de service --------------------------------
-Collect-Log -Name 'win-system' -LogName 'System' -Ids @(6008,7000,7031,7034) -Source 'windows-system' -Category 'system'
+Collect-Log -Name 'win-system' -LogName 'System' -Source 'windows-system' -Category 'system' -Outcomes @{
+  6008 = 'failure'; 7000 = 'failure'; 7031 = 'failure'; 7034 = 'failure'
+}
 
 # --- 4) Microsoft Defender : détections ------------------------------------------------------
+# 1117 = une action a été PRISE sur la menace -> `blocked`. 1006/1015/1116 sont des CONSTATS de
+# détection sans verdict d'action : `'-'` est écrit exprès, pour ne pas annoncer une remédiation
+# qui n'a pas eu lieu.
 Collect-Log -Name 'win-defender' -LogName 'Microsoft-Windows-Windows Defender/Operational' `
-            -Ids @(1006,1015,1116,1117) -Source 'windows-defender' -Category 'malware'
+            -Source 'windows-defender' -Category 'malware' -Outcomes @{
+  1006 = '-'; 1015 = '-'; 1116 = '-'; 1117 = 'blocked'
+}
 
 # --- 5) Réseau : connexions TCP établies (distantes) + ports en écoute -----------------------
 # Instantané périodique (pas de filigrane) ; dédup par tuple dans l'heure.
@@ -529,4 +700,8 @@ try {
 Add-Event -Source 'windows-agent' -Category 'health' -Severity 0 -Message 'plume windows collector ok' `
           -Fields @{ os = $osCaption; collector='windows' } `
           -Dedup "windows-agent-health-$([int]($NowEpoch/3600))"
+# CE QUE CE COLLECTEUR NE COLLECTE PAS, DIT PAR LE CANAL LUI-MÊME. Émis APRÈS toute la collecte
+# (les portées de recensement sont enregistrées au fil des `Collect-Log`) et AVANT `Complete-Run`,
+# donc le recensement part dans le même envoi que les événements qu'il qualifie.
+Report-Coverage -Source 'windows-agent'
 Complete-Run

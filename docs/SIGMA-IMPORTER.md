@@ -124,7 +124,7 @@ Deux entrées ont été corrigées sur ce critère :
 - **`ps_script` : retiré** (donc non mappé). PowerShell Script Block Logging (EventID 4104, canal
   `Microsoft-Windows-PowerShell/Operational`) n'a **aucun** émetteur livré : le canal n'est ni dans les
   canaux par défaut de l'agent (`d_win_channels`) ni dans les `-LogName` du collecteur PowerShell, et
-  `map_cim` rendrait de toute façon une catégorie **vide** pour lui. Pour brancher cette famille il faut
+  `classer` rendrait de toute façon une catégorie **vide** pour lui. Pour brancher cette famille il faut
   d'abord **produire** la télémétrie (parseur/source déclarative), puis mapper.
 
 #### Ce que chaque catégorie exige RÉELLEMENT de l'exploitant
@@ -152,7 +152,7 @@ Mesuré en lisant les émetteurs livrés (`collectors/`, `collectors/windows/`, 
 | `ebpf` | `collectors/falco.sh` | **Falco** |
 | `mail` | `collector-mail/src/main.rs` | le service `collector-mail` branché sur une pile mail |
 | `dns` | agent Sysmon ID 22, `suricata.sh`, FortiGate `utm/dns` | **Sysmon** ou **Suricata** ou **FortiGate** |
-| `endpoint` | agent `map_cim` (Sysmon hors ID 1/3/22 ; Security 4697/1102 ; System 7045/7036/7040), FortiGate `event/endpoint`/`ems`/`connector` | **Sysmon** (+ agent plume sur l'hôte Windows) ou **FortiGate EMS** |
+| `endpoint` | agent `classer` (Sysmon hors ID 1/3/22 ; Security 4697/1102 ; System 7045/7036/7040), FortiGate `event/endpoint`/`ems`/`connector` | **Sysmon** (+ agent plume sur l'hôte Windows) ou **FortiGate EMS** |
 | `system` | `plume-collector.ps1`, FortiGate `event/system` | le **collecteur Windows** ou **FortiGate** |
 | `vpn` | `collector-syslog/src/fortigate.rs` (`event/vpn`) | **FortiGate** |
 | `dlp` | `collector-syslog/src/fortigate.rs` (`utm/dlp`) | **FortiGate** |
@@ -170,7 +170,7 @@ elles s'importent et restent **inertes**.
 
 1. **La création de processus est scindée entre deux catégories émises.** 4688 (agent + collecteur
    PowerShell) et l'`execve` auditd donnent `exec` ; **Sysmon ID 1** (création de processus) est rangé en
-   `endpoint` par `map_cim` (branche par défaut « Sysmon hors 3/22 »). Une règle `process_creation`
+   `endpoint` par `classer` (branche par défaut « Sysmon hors 3/22 »). Une règle `process_creation`
    importée voit donc 4688 et auditd, **mais pas Sysmon ID 1**. Signalé par un **avertissement à
    l'import** et épinglé par un test. Refermer cela demande de changer la catégorie **émise** par
    l'agent (data-plane) et rouvre la même dette d'historique que `process` → `exec` (`docs/CIM.md` §5.2).

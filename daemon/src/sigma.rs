@@ -252,7 +252,7 @@ pub(crate) fn sigma_compliance_tags(tags: Option<&Value>) -> String {
 ///  2. `ps_script` (PowerShell Script Block Logging, EventID 4104, canal
 ///     `Microsoft-Windows-PowerShell/Operational`) visait `endpoint` : AUCUN émetteur livré ne peut le
 ///     produire — le canal n'est ni dans les canaux par défaut de l'agent (`agent/src/config.rs`,
-///     `d_win_channels`) ni dans les `-LogName` du collecteur PowerShell, et `map_cim` rendrait de
+///     `d_win_channels`) ni dans les `-LogName` du collecteur PowerShell, et la classification de l'agent (`classer`) rendrait de
 ///     toute façon une catégorie VIDE pour lui. Entrée RETIRÉE (donc non mappée -> avertissement de
 ///     sur-match, VISIBLE) plutôt que rabattue par confort sur une catégorie voisine.
 ///
@@ -263,7 +263,7 @@ pub(crate) fn sigma_compliance_tags(tags: Option<&Value>) -> String {
 /// `driver_load`, `create_remote_thread`, `file_*`, `registry_*`) y pointent donc CORRECTEMENT — à
 /// condition que Sysmon (tiers, que plume ne déploie pas) tourne sur l'hôte.
 ///
-/// DIVERGENCE RÉSIDUELLE MESURÉE, NON REFERMÉE ICI : `map_cim` range Sysmon **ID 1** (création de
+/// DIVERGENCE RÉSIDUELLE MESURÉE, NON REFERMÉE ICI : la classification de l'agent (`classer`) range Sysmon **ID 1** (création de
 /// processus) en `endpoint` (branche par défaut « Sysmon hors 3/22 »), pas en `exec`. Une règle
 /// `process_creation` importée voit donc 4688 et l'`execve` auditd, mais PAS Sysmon ID 1. Refermer cela
 /// exige de changer la catégorie ÉMISE par l'agent (data-plane) et rouvre la même dette d'historique que
@@ -283,7 +283,7 @@ pub(crate) const SIGMA_LOGSOURCE_CATEGORY: &[(&str, &str)] = &[
     // Création de processus -> `exec` (home CANONIQUE CIM v1.3, cf. le bloc ci-dessus) : c'est ce
     // qu'émettent le chemin 4688 des deux collecteurs Windows livrés ET l'`execve` d'auditd.
     ("process_creation", "exec"),
-    // Sysmon (hors ID 1/3/22) -> `endpoint`, ce que `map_cim` émet réellement pour ces IDs.
+    // Sysmon (hors ID 1/3/22) -> `endpoint`, ce que la classification de l'agent émet réellement pour ces IDs.
     ("process_access", "endpoint"),
     ("image_load", "endpoint"), ("driver_load", "endpoint"), ("create_remote_thread", "endpoint"),
     ("file_event", "endpoint"), ("file_change", "endpoint"), ("file_delete", "endpoint"),
@@ -312,8 +312,8 @@ pub(crate) const SIGMA_TARGET_CATEGORY_EMITTERS: &[(&str, &str, &str)] = &[
     ("dns",       "collector-syslog/src/fortigate.rs",      "\"dns\" | \"dns-query\" => \"dns\""),
     ("dlp",       "collector-syslog/src/fortigate.rs",      "\"dlp\" | \"file-filter\" | \"dlp-archive\" => \"dlp\""),
     ("ebpf",      "collectors/falco.sh",                    "\\\"category\\\":\\\"ebpf\\\""),
-    ("endpoint",  "agent/src/source/windows.rs",            "_ => \"endpoint\","),
-    ("exec",      "agent/src/source/windows.rs",            "4688 => (\"exec\".to_string(), base)"),
+    ("endpoint",  "agent/src/source/windows.rs",            "_ => cim(\"endpoint\", base, Issue::SansIssue)"),
+    ("exec",      "agent/src/source/windows.rs",            "4688 => cim(\"exec\", base, Issue::Reussite)"),
     ("firewall",  "collectors/ufw.sh",                      "\\\"category\\\":\\\"firewall\\\""),
     ("k8s",       "collectors/kube-audit.sh",               "\\\"category\\\":\\\"k8s\\\""),
     ("mail",      "collector-mail/src/main.rs",             "\"category\": \"mail\""),
@@ -729,10 +729,10 @@ pub(crate) fn sigma_translate(doc: &Value) -> Result<SigmaTranslation, String> {
                 }
                 // ANTI-ANGLE-MORT (F7) : la création de processus est SCINDÉE entre deux catégories ÉMISES.
                 // 4688 (agent + collecteur PowerShell) et l'`execve` auditd donnent `exec` — la cible de la
-                // table. Sysmon ID 1 donne `endpoint` (branche par défaut de `map_cim`). Une règle
+                // table. Sysmon ID 1 donne `endpoint` (branche par défaut de `classer`). Une règle
                 // `process_creation` ne peut donc pas voir les deux : on le DIT, on ne le masque pas.
                 if sigma_logsource_key(ls) == Some("process_creation") {
-                    warnings.push("logsource `process_creation` -> category=exec (EventID 4688 des collecteurs Windows livrés + execve auditd). La création de processus rapportée par SYSMON (ID 1) est, elle, émise en `category=endpoint` par l'agent livré : cette règle ne la verra PAS. Angle mort MESURÉ, à refermer côté agent (`map_cim`).".to_string());
+                    warnings.push("logsource `process_creation` -> category=exec (EventID 4688 des collecteurs Windows livrés + execve auditd). La création de processus rapportée par SYSMON (ID 1) est, elle, émise en `category=endpoint` par l'agent livré : cette règle ne la verra PAS. Angle mort MESURÉ, à refermer côté agent (`classer`).".to_string());
                 }
             }
             None => warnings.push("logsource non mappé sur une catégorie CIM : règle appliquée à TOUTES les sources (peut sur-matcher). Ajouter un mapping dans SIGMA_LOGSOURCE_CATEGORY si besoin.".to_string()),

@@ -331,7 +331,7 @@
     fn compliance_migration_v88_additive() {
         let conn = test_db();
         let ver: String = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
-        assert_eq!(ver, "112", "schema à la tête après migrate");
+        assert_eq!(ver, CODE_SCHEMA_MAX.to_string(), "schema à la tête après migrate");
         let has_col: bool = conn.prepare("SELECT compliance FROM rule LIMIT 0").is_ok();
         assert!(has_col, "colonne rule.compliance présente (v88)");
     }

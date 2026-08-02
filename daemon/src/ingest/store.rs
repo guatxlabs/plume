@@ -287,6 +287,88 @@ impl HoteIngere {
     }
 }
 
+// ====================================================================================================
+// LA CATÉGORIE D'UNE LIGNE INGÉRÉE — TROIS ÉTATS, PAS DEUX.
+//
+// CE QUI ÉTAIT CASSÉ. Le contrôle de taxonomie à l'ingest ne connaissait que DEUX cas : « dans
+// `CIM_CATEGORIES` » (silence) et « hors taxonomie » (accepté + warn une fois par couple). Le TROISIÈME
+// — la catégorie VIDE — sortait AVANT tout contrôle, sur ce commentaire : « Vide -> rien (le dparser
+// tranchera côté serveur) ». Or c'est l'état que les émetteurs livrés produisent le PLUS : la
+// classification Windows de l'agent rend `NonClasse` (donc `category=""`) pour tout identifiant hors de
+// sa table, et le lecteur macOS rend `""` pour toute ligne bénigne.
+//
+// MESURÉ le 2026-08-02 sur un daemon de labo : quatre événements à la forme EXACTE de l'agent livré
+// (`WinEventLog:Security` 4768/4769, `WinEventLog:Application` 1000, `macos-unified-log`) avec
+// `category:""` -> HTTP 202, **4 sur 4 stockés tels quels, ZÉRO ligne de journal**. Et le repli annoncé
+// n'existe pas : sur les 5 parseurs déclaratifs LIVRÉS, **0** cible `WinEventLog:*` ou
+// `macos-unified-log` (ils ciblent cloudflare, firewall, fim-agent, nginx, nft). « Le dparser
+// tranchera » était donc une affirmation FAUSSE inscrite dans le dépôt : rien ne tranche, jamais.
+//
+// POURQUOI C'EST GRAVE, ET POURQUOI ON N'INVENTE PAS DE VALEUR. `category` est l'axe sur lequel
+// composent TOUTES les détections (docs/CIM.md §2). Une ligne à catégorie vide est invisible à toute
+// règle `category=…`, définitivement. Mais poser d'office un `unknown` serait PIRE : ce serait une
+// classification FABRIQUÉE, et `search category=unknown` ressemblerait à une classe alors que rien n'a
+// été reconnu. La ligne reste donc VIDE — ce qui est honnête — et c'est le SILENCE qui est fermé.
+//
+// LA FORME — ET SA LIMITE EXACTE, ÉCRITE PLUTÔT QU'AFFIRMÉE. Une somme FERMÉE à trois états et un type
+// à champ PRIVÉ dont l'unique constructeur est la résolution : hors de ce module la valeur NE SE
+// FABRIQUE PAS, donc on ne peut pas tenir une catégorie « résolue » sans l'avoir résolue, et aucun
+// `match` sur `EtatCategorie` ne peut oublier un cas.
+// CE QUE LE TYPE NE FAIT PAS : il n'OBLIGE pas un futur point d'écriture à l'emprunter. `EventRow`
+// vient du cœur et sa colonne `category` reste une `String` — un chemin qui la construirait à la main
+// compilerait. La garantie est donc « un seul endroit RÉSOUT, et l'ingest y passe », pas « rien d'autre
+// ne peut écrire ». C'est plus faible qu'une garde à la compilation, et le dire est le minimum : une
+// allégation de sécurité fausse coûte plus cher que pas d'allégation.
+// ====================================================================================================
+
+/// L'état d'une catégorie confrontée à la taxonomie CIM. Partition EXHAUSTIVE : un `match` sur ce type
+/// ne peut pas oublier un cas.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum EtatCategorie {
+    /// Dans `CIM_CATEGORIES` — les règles `category=…` la voient.
+    Canonique,
+    /// Non vide mais hors taxonomie : STOCKÉE telle quelle (le CIM n'est jamais un DROP), signalée.
+    HorsTaxonomie,
+    /// AUCUNE classification. Ni le collecteur ni un parseur déclaratif n'ont tranché.
+    Absente,
+}
+
+/// LA CATÉGORIE D'UNE LIGNE ÉCRITE. Champ PRIVÉ, constructeur UNIQUE (`resoudre`) : impossible d'écrire
+/// une ligne dont la catégorie n'a pas été confrontée à la taxonomie.
+pub(crate) struct CategorieIngeree(String, EtatCategorie);
+
+impl CategorieIngeree {
+    /// SEULE résolution. `declaree` = ce que l'ÉMETTEUR a écrit ; `repli_parseur` = ce qu'un parseur
+    /// déclaratif propose (ENRICH-only : il ne sert QUE si l'émetteur n'a rien déclaré — parité stricte
+    /// avec le comportement historique du point d'écriture).
+    pub(crate) fn resoudre(declaree: &str, repli_parseur: Option<&str>) -> Self {
+        let v = if declaree.is_empty() { repli_parseur.unwrap_or(declaree) } else { declaree };
+        let etat = if v.is_empty() {
+            EtatCategorie::Absente
+        } else if guatx_core::cim::cim_category_ok(v) {
+            EtatCategorie::Canonique
+        } else {
+            EtatCategorie::HorsTaxonomie
+        };
+        Self(v.to_string(), etat)
+    }
+
+    pub(crate) fn etat(&self) -> EtatCategorie {
+        self.1
+    }
+
+    /// Lecture NON consommante — pour le message de journal uniquement. Le point d'écriture, lui,
+    /// passe par `stockee()` (qui consomme) : on ne peut pas écrire la ligne en lisant ici.
+    pub(crate) fn valeur(&self) -> &str {
+        &self.0
+    }
+
+    /// La valeur STOCKÉE — jamais fabriquée : c'est celle qui a été résolue, y compris la chaîne vide.
+    pub(crate) fn stockee(self) -> String {
+        self.0
+    }
+}
+
 /// Construit la ligne `metric` d'une SURFACE D'INGESTION. Le host n'est pas un paramètre libre : c'est un
 /// `HoteIngere`, donc il a forcément traversé la résolution. Une route qui voudrait écrire `?host=` tel
 /// quel ne peut pas appeler cette fonction — le type ne se fabrique pas depuis une chaîne.

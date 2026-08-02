@@ -342,9 +342,15 @@ fi
 : "${PLUME_TOKEN:?PLUME_TOKEN requis (token agent host-bound)}"
 f2b_load_ledger
 BODY_TMP="$(mktemp)"; trap 'rm -f "$BODY_TMP"' EXIT
-http="$(curl "${HH[@]}" "${TLS[@]}" -sS --max-time 15 \
+# P5.5-a : le jeton passe par l'ENTRÉE STANDARD (format de config curl), jamais en argument — il y était
+# lisible dans /proc/<pid>/cmdline (mesuré 2026-08-02) et recopié dans `_CMDLINE` journald, que Plume
+# collecte lui-même. Échappement `\` puis `"` fait sur place : cet adaptateur est un ENFORCER, et une
+# garde de CI vérifie qu'il ne dépend PAS de la bibliothèque des capteurs (surface de dépendance
+# minimale pour du code privilégié) — on paie deux lignes plutôt que d'affaiblir cette garde.
+http="$(printf 'header = "Authorization: Bearer %s"\n' \
+          "$(printf '%s' "$PLUME_TOKEN" | sed 's/\\/\\\\/g; s/"/\\"/g')" \
+        | curl -K - "${HH[@]}" "${TLS[@]}" -sS --max-time 15 \
           -o "$BODY_TMP" -w '%{http_code}' \
-          -H "Authorization: Bearer $PLUME_TOKEN" \
           "$SOC/api/engagements/active" 2>/dev/null)" || http="000"
 body="$(cat "$BODY_TMP" 2>/dev/null || true)"
 

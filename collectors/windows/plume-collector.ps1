@@ -58,6 +58,7 @@
   Déploiement (voir README.md de ce dossier) : tâche planifiée toutes les 1–5 min,
   en compte SYSTEM (accès au journal Security). Config par variables d'env
   (PLUME_CENTRAL / PLUME_TOKEN) ou fichier C:\ProgramData\plume\plume.conf (KEY=value).
+  Le jeton N'a PAS de paramètre de ligne de commande : cf. le bandeau P5.5-a sous `param()`.
 
   Sûreté : lecture seule du système, aucun secret en clair dans le code, TLS
   vérifié par défaut (PLUME_TLS_INSECURE=1 pour un central en certificat auto-signé
@@ -68,10 +69,24 @@
 [CmdletBinding()]
 param(
   [string]$Central = $env:PLUME_CENTRAL,
-  [string]$Token   = $env:PLUME_TOKEN,
   [int]$MaxAgeMinutes = 60,   # borne de rattrapage au 1er run (pas de filigrane) — anti-flood
   [int]$BatchSize = 400       # nb max d'événements par POST
 )
+
+# P5.5-a — IL N'Y A PLUS DE PARAMÈTRE `-Token`, ET C'EST LA CORRECTION.
+# Le script en acceptait un, et le README disait « ne vous en servez pas ». Une consigne n'est pas une
+# garde : dès que l'audit `Process Creation` est actif — ce que les prérequis de ce collecteur DEMANDENT
+# d'activer — la ligne de commande complète part dans l'événement Security 4688 si la GPO « Include
+# command line » est posée, ET dans Sysmon ID 1 SANS aucune GPO. MESURÉ le 2026-08-02 : un jeton-appât
+# passé via `-Token` est ressorti lisible dans le SOC par TROIS chemins indépendants
+# (`windows-security`/exec via ce script, `WinEventLog:Security`/exec via l'agent Rust,
+# `WinEventLog:Microsoft-Windows-Sysmon/Operational`/endpoint via Sysmon). Le jeton arrivait donc en
+# clair dans le SOC que ce collecteur alimente. Le paramètre est retiré : le jeton vient de
+# l'environnement (PLUME_TOKEN, hérité du processus) ou de C:\ProgramData\plume\plume.conf.
+# CE QUI RESTE OUVERT ET NE SE CORRIGE PAS ICI : si l'OPÉRATEUR tape lui-même un jeton sur une ligne de
+# commande (n'importe laquelle), l'audit d'exécution le capturera. C'est une propriété de l'audit
+# Windows, pas de ce script — cf. collectors/windows/README.md.
+$Token = $env:PLUME_TOKEN
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
@@ -89,7 +104,7 @@ if ((-not $Central -or -not $Token) -and (Test-Path $ConfFile)) {
   }
 }
 if (-not $Central) { throw 'PLUME_CENTRAL manquant (variable d''env ou C:\ProgramData\plume\plume.conf).' }
-if (-not $Token)   { throw 'PLUME_TOKEN manquant (créé sur le central : plume-daemon token <nom>).' }
+if (-not $Token)   { throw 'PLUME_TOKEN manquant. Sur le central : plume-daemon token <nom> <HOTE> (le 2e argument LIE le jeton a cette machine ; sans lui il faut declarer --relais, et un relais laisse usurper n''importe quel hote). A poser dans C:\ProgramData\plume\plume.conf, JAMAIS en ligne de commande.' }
 $Central   = $Central.TrimEnd('/')
 $StateDir  = 'C:\ProgramData\plume\state'
 $HostName  = $env:COMPUTERNAME

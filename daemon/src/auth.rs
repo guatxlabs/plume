@@ -15,6 +15,90 @@ pub(crate) struct AuthFail {
     pub(crate) last: Instant,
 }
 
+// ====================================================================================================
+// L'AUTORITÉ D'UNE REQUÊTE — UNE SEULE SOURCE, LES DEUX FORMES DU PROTOCOLE.
+//
+// CE QUI ÉTAIT CASSÉ. `host_guard` ne lisait QUE l'en-tête `Host`. Cet en-tête n'existe PAS en HTTP/2 :
+// l'autorité y est le pseudo-en-tête `:authority`, que hyper range dans l'URI de la requête, pas dans
+// les en-têtes. Le `.unwrap_or(false)` final transformait donc « le client n'a pas nommé d'autorité
+// LÀ OÙ JE REGARDE » en « autorité refusée ».
+//
+// MESURÉ le 2026-08-02, daemon en TLS natif (`PLUME_TLS_CERT`/`PLUME_TLS_KEY`, `PLUME_HOST=plume.test`) :
+//   - `openssl s_client -alpn h2,http/1.1` -> « ALPN protocol: h2 ». axum-server annonce h2 EN PREMIER :
+//     un navigateur négocie donc h2 SYSTÉMATIQUEMENT sur ce mode de déploiement.
+//   - MÊME requête, MÊME autorité `plume.test`, deux versions : `/api/me`, `/api/search`, `/login`, `/`
+//     -> **421 « bad host » en HTTP/2**, **401/404 en `--http1.1`** (la garde passe). Seules `/healthz`,
+//     `/readyz`, `/metrics` (les 3 exemptions ci-dessous) répondaient en h2 : **242 des 245 routes
+//     déclarées étaient injoignables depuis un navigateur**, l'interface web comprise.
+//   - Sonde jetable posée DANS le middleware puis retirée (l'arbre est revenu propre) :
+//       HTTP/1.1 -> `uri.authority=None`,               `header_host=Some("plume.test:7443")`
+//       HTTP/2.0 -> `uri.authority=Some(plume.test:7443)`, `header_host=None`
+//     Les deux emplacements sont exactement COMPLÉMENTAIRES — c'est la mesure, pas une lecture de doc.
+// Tous nos émetteurs (collecteurs shell, agent Rust, PowerShell) parlent HTTP/1.1 : c'est ce qui a
+// masqué le défaut pendant toute la vie du mode TLS natif.
+//
+// CE QUE LE REMÈDE N'EST PAS. Laisser passer quand l'autorité est absente désarmerait la garde
+// (anti-DNS-rebinding) sur TOUTES les requêtes : `None` doit rester un REFUS.
+//
+// LA FORME DÉRIVÉE. La question n'est pas « faut-il aussi lire l'URI ? » mais « QU'EST-CE QUE
+// L'AUTORITÉ D'UNE REQUÊTE ? ». C'est une notion du PROTOCOLE, pas d'un en-tête : HTTP la range dans
+// la cible de requête (forme absolue, `:authority` de h2 et h3) ou dans `Host` (forme origine de
+// HTTP/1.x), et RFC 9112 §3.2.2 tranche l'ambiguïté — quand la cible porte une autorité, elle FAIT FOI
+// et `Host` est ignoré. On en fait donc UN TYPE, dont le SEUL constructeur prend la REQUÊTE ENTIÈRE et
+// consulte les deux emplacements. Conséquence — et c'est la garantie à la compilation : le champ est
+// PRIVÉ, donc **aucun appelant ne peut fabriquer une `AutoriteDemandee` à partir d'un seul des deux
+// emplacements**. Une garde qui n'en verrait qu'un ne compile pas ; elle ne « rend » pas `false` en
+// silence. Ajouter demain une version du protocole qui range l'autorité ailleurs est un changement
+// D'UN SEUL endroit, et ce n'est pas une garde qu'on aura oublié de mettre à jour.
+// ====================================================================================================
+
+/// MODULE-COFFRE. Le champ d'`AutoriteDemandee` est privé À CE MODULE-CI, pas au fichier : même
+/// `host_guard`, juste en dessous, ne peut pas fabriquer la valeur — il DOIT passer par le
+/// constructeur. Sans cette enveloppe, l'auteur d'une garde future pourrait, DANS `auth.rs`, écrire
+/// `AutoriteDemandee(headers.get(HOST)…)` et rouvrir exactement le trou qu'on ferme, sans que rien ne
+/// l'arrête. Vérifié par mutation : cette écriture-là ne compile pas (E0603, champ privé).
+mod autorite {
+    use super::*;
+
+    /// L'AUTORITÉ que le client a DEMANDÉ à joindre — « quel nom d'hôte a-t-il cru appeler ? ».
+    ///
+    /// Champ PRIVÉ, constructeur UNIQUE : on ne peut pas en fabriquer une depuis le seul en-tête `Host`
+    /// (HTTP/1.x) ni depuis la seule URI (HTTP/2, HTTP/3). Voir le bandeau ci-dessus pour la mesure.
+    pub(crate) struct AutoriteDemandee(Option<String>);
+
+    impl AutoriteDemandee {
+        /// SEUL constructeur. Lit les DEUX emplacements où HTTP range l'autorité, dans l'ordre que fixe
+        /// RFC 9112 §3.2.2 : la cible de requête d'abord (forme absolue HTTP/1.x, `:authority` en h2/h3 —
+        /// hyper les expose tous deux par `uri().authority()`), l'en-tête `Host` à défaut (forme origine,
+        /// le cas du navigateur en HTTP/1.1). Aucune des deux -> `None` = le client n'a nommé AUCUNE
+        /// autorité, ce qui reste un REFUS pour les appelants (jamais un laissez-passer).
+        pub(crate) fn de_la_requete(req: &Request) -> Self {
+            Self(
+                req.uri()
+                    .authority()
+                    .map(|a| a.as_str().to_string())
+                    .or_else(|| req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).map(|s| s.to_string())),
+            )
+        }
+
+        /// L'hôte SEUL : sans le port, et sans les crochets d'une littérale IPv6. `None` = aucune autorité
+        /// nommée. Le port n'est retiré que s'il en EST un (suffixe `:<chiffres>`) — sinon `[::1]` sans port
+        /// se ferait amputer par son propre dernier `:`. Aucun changement pour une autorité réelle
+        /// (`plume.test`, `plume.test:7443`, `[::1]:7443`) ; seules les formes MALFORMÉES (`plume.test:`)
+        /// cessent d'être tronquées, donc cessent de matcher l'allowlist : une garde ne s'élargit pas ici.
+        pub(crate) fn hote(&self) -> Option<&str> {
+            self.0.as_deref().map(|h| {
+                let hp = match h.rsplit_once(':') {
+                    Some((g, p)) if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => g,
+                    _ => h,
+                };
+                hp.trim_start_matches('[').trim_end_matches(']')
+            })
+        }
+    }
+}
+pub(crate) use autorite::AutoriteDemandee;
+
 // ---------- middlewares ----------
 pub(crate) async fn host_guard(State(st): State<AppState>, req: Request, next: Next) -> Response {
     // #51 DAY-2 OPS — endpoints d'infra exemptés de l'allowlist Host : les sondes k8s (httpGet) posent
@@ -25,13 +109,11 @@ pub(crate) async fn host_guard(State(st): State<AppState>, req: Request, next: N
     if p == "/healthz" || p == "/readyz" || p == "/metrics" {
         return next.run(req).await;
     }
-    let ok = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .map(|h| {
-            let hp = h.rsplit_once(':').map(|(a, _)| a).unwrap_or(h);
-            let hp = hp.trim_start_matches('[').trim_end_matches(']');
+    // P5.3-a : l'autorité vient de la SOURCE UNIQUE (les deux formes du protocole), plus de l'en-tête seul.
+    // `None` (aucune autorité nommée) reste un REFUS — le `unwrap_or(false)` d'origine est conservé tel quel.
+    let ok = AutoriteDemandee::de_la_requete(&req)
+        .hote()
+        .map(|hp| {
             // PLUME_HOST peut lister plusieurs hôtes (virgule) : ex "plume.example.com,plume-ingest.example.com"
             // (chemin navigateur + chemin agent mTLS sur un SNI dédié, déclaré dans votre ingress).
             let fqdn_ok = st.host.split(',').any(|x| hp == x.trim());
@@ -496,16 +578,24 @@ pub(crate) fn origin_host(v: &str) -> String {
 /// Défense CSRF des mutations SSO. Une session SSO (trusted-header amont) n'a PAS de plume_session
 /// -> aucun token plume à double-soumettre. On applique donc la défense CSRF TOKEN-LESS recommandée (OWASP) :
 /// same-origin par Origin/Referer. L'hôte de l'Origin (à défaut Referer) DOIT appartenir à PLUME_TRUSTED_ORIGINS
-/// si défini, sinon égaler l'hôte du header Host (déploiement sans proxy réécrivant Host). FAIL-CLOSED : ni
+/// si défini, sinon égaler l'AUTORITÉ DEMANDÉE (déploiement sans proxy la réécrivant). FAIL-CLOSED : ni
 /// Origin ni Referer exploitable -> refus (un navigateur émet TOUJOURS l'un des deux sur une mutation cross-site).
+///
+/// P5.3-a : cette comparaison lisait elle aussi l'en-tête `Host` SEUL. En HTTP/2 (le mode TLS natif annonce
+/// `h2` en premier — mesuré) l'en-tête est absent, donc le repli sans `PLUME_TRUSTED_ORIGINS` refusait
+/// TOUTE mutation SSO d'un navigateur. Elle consomme désormais la MÊME source d'autorité que `host_guard`.
+/// C'est un défaut de DISPONIBILITÉ et non de sécurité (le refus était fail-closed), mais il vient du même
+/// trou : c'était le SECOND et DERNIER site du daemon qui lisait `header::HOST` pour décider quelque chose.
 pub(crate) fn sso_same_origin_ok(req: &Request) -> bool {
     let host_matches = |h: &str| -> bool {
         let t = trusted_origin_hosts();
         if !t.is_empty() {
             return t.iter().any(|a| a == h);
         }
-        req.headers().get(header::HOST).and_then(|v| v.to_str().ok())
-            .map(|host| origin_host(host) == h).unwrap_or(false)
+        AutoriteDemandee::de_la_requete(req)
+            .hote()
+            .map(|autorite| autorite.eq_ignore_ascii_case(h))
+            .unwrap_or(false)
     };
     for hn in [header::ORIGIN, header::REFERER] {
         if let Some(v) = req.headers().get(hn).and_then(|v| v.to_str().ok()) {

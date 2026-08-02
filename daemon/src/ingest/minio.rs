@@ -204,8 +204,12 @@ pub(crate) async fn ingest_minio_post(State(st): State<AppState>, Extension(au):
     };
     let n = INGEST_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mk = spool_tenant_marker(&st, &au); // R8 : tenant du token encodé dans le nom -> routé à la relecture
+    // P5.2-a : uniformité des surfaces d'ingestion. Ce chemin déclare `host: host_self()` (le daemon), et
+    // les records MinIO ne portent pas d'hôte propre -> avec un jeton NON lié la ligne est inchangée. Avec
+    // un jeton LIÉ (le webhook MinIO provisionné pour SA machine), l'attribution devient attestée.
+    let hk = spool_host_marker(&au);
     let tmp = format!("{}/.minio-audit-{}-{}.tmp", st.spool, now(), n);
-    let dst = format!("{}/minio-audit-{}-{}{}.json", st.spool, now(), n, mk);
+    let dst = format!("{}/minio-audit-{}-{}{}{}.json", st.spool, now(), n, mk, hk);
     if std::fs::write(&tmp, body_out.as_bytes()).is_err() {
         let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur écriture partielle
         return server_err("écriture spool échouée");

@@ -954,11 +954,14 @@ pub(crate) fn host_marker_ok(h: &str) -> bool {
 /// Basic (editor/admin) multiplexent LÉGITIMEMENT plusieurs hôtes -> jamais de marqueur -> collecte intacte.
 /// Indépendant du multi-tenant (les agents existent en mode 0). Encadré par `#H#…#H#` (délimiteur distinct
 /// du marqueur tenant `#T#`, parsing non ambigu).
+///
+/// P5.2-a : le prédicat « ce jeton est-il une identité de machine ? » n'est plus recopié ici — il est LU
+/// à `HoteIngere::lie`, l'unique résolution partagée par toutes les surfaces d'ingestion. Le marqueur
+/// n'est plus qu'un ENCODAGE de cette réponse dans un nom de fichier ; il ne peut plus diverger d'elle.
 pub(crate) fn spool_host_marker(au: &AuthUser) -> String {
-    if au.role == "agent" && host_marker_ok(&au.name) {
-        format!("#H#{}#H#", au.name)
-    } else {
-        String::new()
+    match HoteIngere::lie(au) {
+        Some(h) => format!("#H#{h}#H#"),
+        None => String::new(),
     }
 }
 

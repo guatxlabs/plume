@@ -33,7 +33,7 @@ http://127.0.0.1:8080/metrics    # kube-state-metrics (kubectl -n <votre-ns> por
 `/etc/plume/prom.conf` :
 ```
 PLUME_CENTRAL=https://soc.exemple:7000
-PLUME_TOKEN=...        # genere par : plume-daemon token prom
+PLUME_TOKEN=...        # genere par : plume-daemon token prom --relais  (scrape multi-cibles = RELAIS)
 ```
 Puis : `sudo systemctl enable --now plume-prom-scrape.timer`
 
@@ -51,7 +51,7 @@ ajoute un 2e `prometheus.remote_write` dans Alloy vers le SOC (EN PLUS de Promet
 prometheus.remote_write "soc" {
   endpoint {
     url          = "https://soc.exemple:7000/api/metrics/write"
-    bearer_token = "..."   // plume-daemon token alloy
+    bearer_token = "..."   // plume-daemon token alloy --relais  (Alloy relaie plusieurs hotes)
   }
 }
 ```
@@ -66,7 +66,7 @@ Dans la config Grafana Alloy, ajouter un `loki.write` vers le SOC (fan-out, EN P
 loki.write "soc" {
   endpoint {
     url          = "https://soc.exemple:7000/loki/api/v1/push"
-    bearer_token = "..."   // plume-daemon token alloy
+    bearer_token = "..."   // plume-daemon token alloy --relais  (Alloy relaie plusieurs hotes)
   }
 }
 ```

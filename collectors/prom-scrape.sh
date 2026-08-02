@@ -22,16 +22,17 @@ HH=""; [ -n "${PLUME_HOST_HEADER:-}" ] && HH="-H Host:$PLUME_HOST_HEADER"
 TLS=""; [ -n "${PLUME_TLS_CACERT:-}" ] && TLS="$TLS --cacert $PLUME_TLS_CACERT"; [ -n "${PLUME_TLS_CERT:-}" ] && TLS="$TLS --cert $PLUME_TLS_CERT"; [ -n "${PLUME_TLS_KEY:-}" ] && TLS="$TLS --key $PLUME_TLS_KEY"
 
 post() { # $1 = corps texte
+  # P5.5-a : l'auth passe par l'ENTRÉE STANDARD (`-K -`), jamais par argv (mesuré lisible dans
+  # /proc/<pid>/cmdline). Stdin étant pris par la config, le CORPS passe par un fichier temporaire —
+  # c'est du texte d'exposition Prometheus, il ne contient aucun secret. 0600 + effacé aussitôt.
+  if [ -z "${PLUME_TOKEN:-}" ]; then : "${PLUME_USER:?}" "${PLUME_PASS:?}"; fi
+  _pb=$(umask 077; mktemp)
+  printf '%s' "$1" > "$_pb"
   # shellcheck disable=SC2086  ($HH = 0 ou 2 tokens, expansion voulue)
-  if [ -n "${PLUME_TOKEN:-}" ]; then
-    printf '%s' "$1" | curl $HH $TLS -sS --max-time 15 -o /dev/null -w '%{http_code}' \
-      -H "Authorization: Bearer $PLUME_TOKEN" -H 'Content-Type: text/plain' \
-      --data-binary @- "$SOC/api/metrics/prom?host=$HOSTN" 2>/dev/null || echo 000
-  else
-    printf '%s' "$1" | curl $HH $TLS -sS --max-time 15 -o /dev/null -w '%{http_code}' \
-      -u "${PLUME_USER:?}:${PLUME_PASS:?}" -H 'Content-Type: text/plain' \
-      --data-binary @- "$SOC/api/metrics/prom?host=$HOSTN" 2>/dev/null || echo 000
-  fi
+  plume_curl_auth_stdin | curl -K - $HH $TLS -sS --max-time 15 -o /dev/null -w '%{http_code}' \
+    -H 'Content-Type: text/plain' \
+    --data-binary @"$_pb" "$SOC/api/metrics/prom?host=$HOSTN" 2>/dev/null || echo 000
+  rm -f "$_pb"
 }
 
 ok=0; total=0

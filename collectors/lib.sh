@@ -229,3 +229,53 @@ plume_disabled() {
 # zéro octet de plus, comportement inchangé. La fonction n'existe QUE pour porter un NOM : c'est ce nom
 # qui prouve à la relecture (et à la CI) que le silence est ici un CHOIX et non un oubli.
 plume_exit_nodata() { exit 0; }
+
+# ====================================================================================================
+# LE SECRET NE PASSE PAS PAR argv (P5.5-a).
+#
+# CE QUI ÉTAIT CASSÉ. Chaque expédition posait le jeton en ARGUMENT de curl :
+# `curl -H "Authorization: Bearer $PLUME_TOKEN" …` (idem `-u user:pass`). Un argument de processus est
+# PUBLIC : le noyau l'expose dans /proc/<pid>/cmdline, lisible par tout utilisateur local tant que /proc
+# n'est pas monté `hidepid`. MESURÉ le 2026-08-02 (instrument validé — on vérifie d'abord que
+# /proc/<pid>/cmdline EXISTE, sinon un « 0 » n'est pas une absence de fuite mais une absence de mesure) :
+#   forme actuelle  -> argv de 101 octets : `curl -sS --max-time 8 -H Authorization: Bearer <JETON> …`
+#                      le jeton y figure VERBATIM.
+#   `curl -K -`     -> argv : `curl -K -`. Le jeton n'y figure PAS.
+# La même argv part aussi dans journald (`_CMDLINE`) dès que le processus émet une ligne de log, et,
+# sous Windows, dans les événements 4688 / Sysmon ID 1 — c'est-à-dire dans ce que Plume COLLECTE
+# lui-même (cf. `collectors/windows/README.md`, mesuré le même jour).
+#
+# LA FORME DÉRIVÉE. On ne « masque » pas un argument : on ne l'écrit pas. Les options PORTEUSES DE
+# SECRET sont émises sur l'ENTRÉE STANDARD de curl, au format de ses fichiers de configuration ; le
+# reste (URL, timeouts, corps) reste en argv, où il n'y a rien à cacher. Un appelant ne peut donc plus
+# « oublier » d'appliquer la protection au bon endroit : il n'y a plus qu'un seul endroit où l'auth
+# s'écrit, et il n'est pas argv.
+#
+# LIMITE DÉCLARÉE : un secret contenant un SAUT DE LIGNE ne survivrait pas à ce format (une option par
+# ligne). Aucun jeton Plume n'en contient (hex de 32 octets) et un `EnvironmentFile` systemd ne sait
+# déjà pas en porter — la contrainte n'est donc pas nouvelle, elle est seulement dite.
+# ====================================================================================================
+
+# plume_curl_auth_stdin — écrit sur STDOUT la configuration curl portant l'authentification, à donner à
+# `curl -K -`. PLUME_TOKEN (Bearer) prioritaire, sinon PLUME_USER+PLUME_PASS (basic), sinon RIEN (config
+# vide : curl se comporte comme sans `-K`). Les valeurs sont échappées pour le format de config curl
+# (`\` et `"` dans une chaîne entre guillemets).
+plume_curl_auth_stdin() {
+  if [ -n "${PLUME_TOKEN:-}" ]; then
+    printf 'header = "Authorization: Bearer %s"\n' "$(plume_curlcfg_escape "$PLUME_TOKEN")"
+  elif [ -n "${PLUME_USER:-}" ] && [ -n "${PLUME_PASS:-}" ]; then
+    printf 'user = "%s:%s"\n' "$(plume_curlcfg_escape "$PLUME_USER")" "$(plume_curlcfg_escape "$PLUME_PASS")"
+  fi
+}
+
+# plume_curlcfg_escape <valeur> — échappe `\` puis `"` pour une chaîne entre guillemets d'un fichier de
+# config curl. L'ordre importe : les antislashs D'ABORD, sinon on ré-échapperait ceux qu'on vient de poser.
+plume_curlcfg_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# plume_curlcfg_header_auth <secret> — config curl portant un Bearer ARBITRAIRE (API TIERCE : Cloudflare
+# & co, dont le secret n'est pas PLUME_TOKEN). Même règle, même raison : un secret ne s'écrit pas en argv.
+plume_curlcfg_header_auth() {
+  printf 'header = "Authorization: Bearer %s"\n' "$(plume_curlcfg_escape "$1")"
+}

@@ -48,8 +48,16 @@ enum Cmd {
     Install {
         #[arg(long)]
         endpoint: Option<String>,
+        /// Lit le jeton sur l'ENTRÉE STANDARD (`… install --endpoint URL --token-stdin <<< "$TOK"`).
+        ///
+        /// P5.5-a — IL N'Y A PAS DE `--token <valeur>`, ET C'EST LA CORRECTION. Un argument de processus
+        /// est public : sous Linux tout utilisateur local le lit dans `/proc/<pid>/cmdline` (mesuré le
+        /// 2026-08-02 : argv de 101 octets, secret verbatim) et journald le recopie dans `_CMDLINE` ;
+        /// sous Windows il part dans l'événement 4688 et dans Sysmon ID 1 — **que cet agent expédie
+        /// lui-même au central**. Le jeton arrivait donc en clair dans le SOC qu'il sert. Le fermer par
+        /// une note de documentation ne le ferme pas : on retire l'argument.
         #[arg(long)]
-        token: Option<String>,
+        token_stdin: bool,
     },
     /// Retire le service natif.
     Uninstall,
@@ -75,7 +83,7 @@ fn real_main() -> Result<()> {
     let cpath = config_path(&cli);
     match &cli.cmd {
         Cmd::Run { once } => cmd_run(&cpath, *once),
-        Cmd::Install { endpoint, token } => cmd_install(&cpath, endpoint.clone(), token.clone()),
+        Cmd::Install { endpoint, token_stdin } => cmd_install(&cpath, endpoint.clone(), *token_stdin),
         Cmd::Uninstall => cmd_uninstall(),
         Cmd::Status => cmd_status(&cpath),
         Cmd::TestShip => cmd_test_ship(&cpath),
@@ -242,13 +250,15 @@ fn service_spec(cfg_path: &std::path::Path, cfg: &Config) -> Result<service::Ser
     })
 }
 
-fn cmd_install(cpath: &std::path::Path, endpoint: Option<String>, token: Option<String>) -> Result<()> {
+fn cmd_install(cpath: &std::path::Path, endpoint: Option<String>, token_stdin: bool) -> Result<()> {
     // Génère un fichier de config minimal si absent et qu'un endpoint est fourni.
     if !cpath.exists() {
         let Some(ep) = endpoint else {
             anyhow::bail!(
-                "config absente ({}) : fournis --endpoint <url> [--token <tok>] pour en générer une, \
-                 ou crée le fichier à la main",
+                "config absente ({}) : fournis --endpoint <url> [--token-stdin] pour en générer une, \
+                 ou crée le fichier à la main. Le jeton se lit sur l'ENTRÉE STANDARD, jamais en argument \
+                 (un argument part dans /proc/<pid>/cmdline, dans `_CMDLINE` journald et, sous Windows, \
+                 dans les événements 4688/Sysmon-1 que cet agent expédie lui-même au central).",
                 cpath.display()
             );
         };
@@ -256,8 +266,17 @@ fn cmd_install(cpath: &std::path::Path, endpoint: Option<String>, token: Option<
             std::fs::create_dir_all(parent)?;
         }
         let mut toml = format!("endpoint = \"{ep}\"\n");
-        if let Some(t) = token {
-            toml.push_str(&format!("token = \"{t}\"\n"));
+        if token_stdin {
+            use std::io::Read;
+            let mut t = String::new();
+            std::io::stdin().read_to_string(&mut t)?;
+            let t = t.trim();
+            if t.is_empty() {
+                anyhow::bail!("--token-stdin : rien lu sur l'entrée standard — jeton NON écrit");
+            }
+            // Le TOML est écrit en 0600 juste en dessous ; on échappe `\` puis `"` pour ne pas produire
+            // un fichier illisible si le jeton en contenait (ils n'en contiennent pas, mais on n'en dépend pas).
+            toml.push_str(&format!("token = \"{}\"\n", t.replace('\\', "\\\\").replace('"', "\\\"")));
         }
         std::fs::write(cpath, toml)?;
         #[cfg(unix)]

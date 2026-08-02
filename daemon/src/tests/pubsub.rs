@@ -156,7 +156,7 @@
         };
         // un token HEC (seam agent/ingest) via le provisioning UI.
         let (_c, v) = tok_resp_json(token_create(State(st.clone()), Extension(tok_au("admin")),
-            Json(json!({ "name": "hec-x", "kind": "hec" }))).await).await;
+            Json(json!({ "name": "hec-x", "kind": "hec", "relay": true }))).await).await; // P5.2-b : portée DÉCLARÉE
         let hec_token = v["token"].as_str().unwrap().to_string();
 
         // pubsub token : NE s'authentifie QUE sur pubsub.

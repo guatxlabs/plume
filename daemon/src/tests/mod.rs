@@ -36,3 +36,4 @@ include!("purge.rs"); // PURGE EXPLICITE d'événements — refus (legal-hold/ti
 include!("query_timing.rs"); // la métrique d'attente : garde SANS SEUIL (S permis >= N clients -> attente NULLE) + un seul écrivain
 include!("dedup_flotte.rs"); // LA FLOTTE : `event.dedup` cloisonné par hôte (perte silencieuse entre machines)
 include!("snapshot_flotte.rs"); // LA FLOTTE (2) : la voie SNAPSHOT — la série est (kind, host)
+include!("transport_liaison.rs"); // TRANSPORT + LIAISON : autorité de la requête (h1/h2), hôte d'une ligne ingérée, portée d'un jeton

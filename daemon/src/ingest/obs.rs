@@ -69,15 +69,18 @@ pub(crate) async fn metrics_prom(State(st): State<AppState>, Extension(au): Exte
         return bad_req("aucune métrique Prometheus valide");
     }
     let ts = q.get("ts").and_then(|s| s.parse::<i64>().ok()).filter(|t| *t > 0).unwrap_or_else(now); // ?ts= : backfill/import
-    let host = q.get("host").cloned();
+    // P5.2-a : `?host=` est un hôte DÉCLARÉ par la requête -> il traverse la résolution unique. Jeton lié
+    // -> écrasé par l'hôte du jeton (mesuré usurpable avant : 200 + métrique stockée sous l'hôte usurpé) ;
+    // relais (Basic / jeton non lié) -> inchangé, la collecte multi-hôtes reste intacte.
+    let hote = HoteIngere::resoudre(&au, q.get("host").map(|s| s.as_str()));
     let n = series.len();
     with_write(&st, &au, |conn| {
     let _ = conn.execute_batch("BEGIN IMMEDIATE");
     {
-        if let Ok(mut stmt) = conn.prepare(store().metric_insert_sql()) {
-            for (name, labels, value) in &series {
-                let _ = stmt.execute(params![ts, name, labels, value, host]);
-            }
+        for (name, labels, value) in &series {
+            // Passe par le DTO d'ingestion (host = `HoteIngere`) : le point d'écriture n'accepte plus
+            // une chaîne d'hôte brute. `insert_metric` prépare-en-cache le MÊME SQL que la boucle d'avant.
+            let _ = store().insert_metric(conn, &metric_ingeree(ts, name, labels, *value, &hote));
         }
     }
     let _ = conn.execute_batch("COMMIT");
@@ -148,6 +151,9 @@ pub(crate) async fn metrics_write(State(st): State<AppState>, Extension(au): Ext
     };
     // M5 : labels partagés via Arc<str> -> plus de clone O(labels)×O(samples) (le vrai moteur d'OOM) ; chaque
     // sample ne bump qu'un refcount. name aussi partagé (Arc) pour la même raison.
+    // P5.2-a : les labels `instance`/`host`/`node` sont DÉCLARÉS par l'émetteur — mesuré usurpable avant
+    // (204 + métrique stockée sous `HOTE-USURPE-PAR-REMOTEWRITE` avec un jeton lié à `WS22-LAB`). Ils
+    // traversent la résolution unique à l'écriture, ci-dessous.
     let mut rows: Vec<(i64, Arc<str>, Arc<str>, Option<Arc<str>>, f64)> = Vec::new();
     for ts in &wr.timeseries {
         let mut name = String::new();
@@ -187,10 +193,10 @@ pub(crate) async fn metrics_write(State(st): State<AppState>, Extension(au): Ext
     }
     with_write(&st, &au, |conn| {
     let _ = conn.execute_batch("BEGIN IMMEDIATE");
-    if let Ok(mut stmt) = conn.prepare(store().metric_insert_sql()) {
-        for (ts, name, labels, host, value) in &rows {
-            let _ = stmt.execute(params![ts, name.as_ref(), labels.as_ref(), value, host.as_deref()]);
-        }
+    for (ts, name, labels, host, value) in &rows {
+        // Le host des labels est le DÉCLARÉ ; la résolution tranche (jeton lié -> écrasé, relais -> gardé).
+        let hote = HoteIngere::resoudre(&au, host.as_deref());
+        let _ = store().insert_metric(conn, &metric_ingeree(*ts, name.as_ref(), labels.as_ref(), *value, &hote));
     }
     let _ = conn.execute_batch("COMMIT");
     StatusCode::NO_CONTENT.into_response()
@@ -252,7 +258,9 @@ pub(crate) async fn loki_push(State(st): State<AppState>, Extension(au): Extensi
     // M2 : host LIÉ au token de l'agent (role='agent', name=host du token). Some -> ÉCRASE le host des labels
     // (loki_push insère en DIRECT, pas de spool) -> un agent ne peut pas usurper l'hôte d'un autre. Les
     // collecteurs centraux Basic (editor/admin) multiplexent légitimement plusieurs hôtes -> None -> inchangé.
-    let bind_host: Option<String> = if au.role == "agent" && host_marker_ok(&au.name) { Some(au.name.clone()) } else { None };
+    // P5.2-a : ce prédicat était RECOPIÉ ici à la main ; il est désormais LU à la résolution unique — même
+    // comportement, mais il ne peut plus diverger de celui du spool ni des autres surfaces.
+    let bind_host: Option<String> = HoteIngere::lie(&au);
     let mut rows: Vec<(i64, Arc<str>, i64, Option<Arc<str>>, String, Arc<str>)> = Vec::new();
     // M5 : garde-fou dur du nombre d'entrées matérialisées (jamais atteint par un push légitime).
     macro_rules! push_capped { ($row:expr) => {{

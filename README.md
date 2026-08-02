@@ -132,7 +132,8 @@ désactivez le timer (`systemctl disable --now plume-backup.timer`).
 
 Enrôlez une autre machine comme agent qui pousse vers le central :
 ```sh
-sudo /usr/local/bin/plume-daemon token agent-$(hostname) $(hostname)   # on the central
+sudo /usr/local/bin/plume-daemon token agent-$(hostname) $(hostname)   # on the central — 2e arg = l'hôte LIÉ
+# (un forwarder multi-hôtes se déclare : `plume-daemon token <nom> --relais` ; la forme à 2 arguments est refusée)
 # on the agent — le token passe par STDIN, JAMAIS par la ligne de commande (voir l'avertissement) :
 umask 077
 printf 'PLUME_CENTRAL=%s\nPLUME_TOKEN=%s\n' 'https://central:7000' '<token>' \

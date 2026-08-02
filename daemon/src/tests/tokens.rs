@@ -35,10 +35,19 @@
         }
         // token_lookup projette l'hôte lié -> responder OK (comme un token CLI host-lié).
         assert_eq!(valid_token(&st, &agent_secret), Some("web01.internal".to_string()), "agent host-lié -> host projeté");
-        // --- create HEC non lié ---
+        // --- create HEC RELAIS (non lié) — P5.2-b : « non lié » se DÉCLARE (`relay: true`). L'omission
+        // n'est plus un défaut silencieux : sans déclaration, ce même appel rend 400 (assertion ci-dessous).
+        let (code, _) = tok_resp_json(token_create(State(st.clone()), Extension(tok_au("admin")),
+            Json(json!({ "name": "hec-sans-portee", "kind": "hec" }))).await).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "kind hec SANS portée déclarée -> 400 (P5.2-b)");
+        {
+            let c = st.db.lock();
+            let n: i64 = c.query_row("SELECT COUNT(*) FROM token WHERE name='hec-sans-portee'", [], |r| r.get(0)).unwrap();
+            assert_eq!(n, 0, "un refus de portée n'écrit AUCUNE ligne token");
+        }
         let (code, v) = tok_resp_json(token_create(State(st.clone()), Extension(tok_au("admin")),
-            Json(json!({ "name": "hec-splunk", "kind": "hec" }))).await).await;
-        assert_eq!(code, StatusCode::OK, "create hec -> 200");
+            Json(json!({ "name": "hec-splunk", "kind": "hec", "relay": true }))).await).await;
+        assert_eq!(code, StatusCode::OK, "create hec relais -> 200");
         let hec_secret = v["token"].as_str().unwrap().to_string();
         assert_eq!(v["kind"], "hec");
         assert!(v["host"].is_null(), "HEC non lié -> host null");
@@ -81,6 +90,12 @@
         assert_eq!(token_create(State(st.clone()), Extension(tok_au("admin")), Json(json!({ "name": "", "kind": "agent" }))).await.status(), StatusCode::BAD_REQUEST);
         assert_eq!(token_create(State(st.clone()), Extension(tok_au("admin")), Json(json!({ "name": "bad name!", "kind": "agent" }))).await.status(), StatusCode::BAD_REQUEST);
         assert_eq!(token_create(State(st.clone()), Extension(tok_au("admin")), Json(json!({ "name": "ok", "kind": "agent", "host": "bad host!" }))).await.status(), StatusCode::BAD_REQUEST);
+        // P5.2-b — PORTÉE NON DÉCLARÉE : ni hôte, ni `relay` -> 400. La garde du CLI serait contournable par
+        // le SPA sans celle-ci (les deux écrivent la MÊME table `token`). Et une déclaration CONTRADICTOIRE
+        // (hôte ET relais) est refusée elle aussi, plutôt qu'arbitrée en silence.
+        assert_eq!(token_create(State(st.clone()), Extension(tok_au("admin")), Json(json!({ "name": "ok", "kind": "agent" }))).await.status(), StatusCode::BAD_REQUEST, "ni hôte ni relais -> 400");
+        assert_eq!(token_create(State(st.clone()), Extension(tok_au("admin")), Json(json!({ "name": "ok", "kind": "agent", "host": "web01", "relay": true }))).await.status(), StatusCode::BAD_REQUEST, "hôte ET relais -> 400");
+        { let c = st.db.lock(); let n: i64 = c.query_row("SELECT COUNT(*) FROM token", [], |r| r.get(0)).unwrap(); assert_eq!(n, 0, "aucun refus n'a écrit de jeton"); }
     }
 
     /// MODE 0 INCHANGÉ : un token créé via l'UI est byte-identique à un token CLI (même colonnes, kind=NULL du

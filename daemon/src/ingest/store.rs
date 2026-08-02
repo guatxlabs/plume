@@ -27,12 +27,19 @@ use crate::*;
 //     statement PRÉPARÉ à 7 colonnes (boucle chaude, jusqu'à INGEST_MAX_ENTRIES/req). Le reste de l'ingest
 //     (journal / spool générique / self-detect / connecteur) passe DÉJÀ par `store().insert_event` ; Loki
 //     est l'exception. Le convertir n'est PAS trivialement byte-identique (7 col vs 14 col `INSERT OR
-//     IGNORE`) -> DIFFÉRÉ. Clé d'une migration propre : un accesseur `event_insert_sql()` symétrique de
-//     `metric_insert_sql()` (aujourd'hui `EVENT_INSERT_SQL` est privé), pour piloter une boucle préparée.
+//     IGNORE`) -> DIFFÉRÉ. Clé d'une migration propre : un accesseur `event_insert_sql()` (aujourd'hui
+//     `EVENT_INSERT_SQL` est privé côté trait local), pour piloter une boucle préparée.
 //   - `seed_demo` (PLUME_DEMO=1, JAMAIS en prod) : ses events de démo sont insérés en direct alors que ses
 //     métriques passent par `store().insert_metric` — asymétrie cosmétique, sans impact prod.
 // Ces deux-là ne cassent PAS la parité mode 0 (SQL inchangé) ; c'est une note de COMPLÉTUDE/lisibilité de la
 // couture, pas une régression byte-identique.
+//
+// UNE EXCEPTION EN MOINS (P5.2-a) : les DEUX récepteurs de métriques (`metrics_prom`, `metrics_write`)
+// pilotaient leur PROPRE boucle préparée via un accesseur `metric_insert_sql()` du trait LOCAL — ils
+// passent désormais par `store().insert_metric` (MÊME SQL, `prepare_cached`), parce que c'est ce point-là
+// qui exige un `HoteIngere` et non une chaîne d'hôte libre. Ligne stockée byte-identique. L'accesseur
+// local se retrouvait sans appelant : il est retiré. (Son HOMONYME du trait NEUTRE
+// `guatx_core::store::EventStore` reste — il fait partie de la SPI du cœur, pas de ce trait-ci.)
 //
 // RÉSOLUTION PAR-TENANT : le store est SANS état ; la connexion writer (résolue via `handle_for`/`req_db`)
 // et le `db_path` (via `req_db_path`, clé du read-pool) sont passés PAR APPEL. Le routing tenant existant
@@ -70,9 +77,6 @@ pub(crate) trait SqlcipherEventStore {
     fn insert_metric(&self, conn: &Connection, m: &MetricRow) -> rusqlite::Result<usize>;
     /// INSERT d'un snapshot point-in-time.
     fn insert_snapshot(&self, conn: &Connection, s: &SnapshotRow) -> rusqlite::Result<usize>;
-    /// SQL canonique de l'INSERT métrique — exposé pour les boucles à statement PRÉPARÉ (réutilisation),
-    /// source UNIQUE de vérité du texte SQL métrique.
-    fn metric_insert_sql(&self) -> &'static str;
     /// ÉMISSION GXQL -> SQL (le store possède l'émission, via `guatx_core::soql` = Dialect). C'est le point
     /// unique par lequel toute lecture GXQL traverse le store (jamais de SQL pré-fabriqué passé au store).
     fn soql_to_sql(&self, soql: &str, from: i64, to: i64, env: Option<&str>) -> Result<String, String>;
@@ -205,6 +209,95 @@ pub(crate) fn dedup_scoped_by_host(host: Option<&str>, dedup: Option<&str>) -> O
     let cle = dedup?;
     let h = host.unwrap_or("");
     Some(format!("{}{DEDUP_SCOPE_SEP}{h}{DEDUP_SCOPE_SEP}{cle}", h.len()))
+}
+
+// ====================================================================================================
+// L'HÔTE D'UNE LIGNE INGÉRÉE — UNE SEULE RÉSOLUTION, TOUTES LES SURFACES.
+//
+// CE QUI ÉTAIT CASSÉ. La règle « un jeton lié à un hôte ne peut écrire que SOUS cet hôte » existait à
+// TROIS exemplaires ÉCRITS SÉPARÉMENT (marqueur `#H#` du spool pour `/api/ingest` + `/api/ingest/journal` ;
+// prédicat recopié à la main dans `loki_push`) — et était ABSENTE de quatre autres surfaces. MESURÉ le
+// 2026-08-02 sur un daemon de labo, jeton d'agent LIÉ à `WS22-LAB`, une requête par surface :
+//   /api/metrics/prom?host=HOTE-USURPE-PAR-METRICS    -> HTTP 200, `metric.host` = HOTE-USURPE-PAR-METRICS
+//   /api/metrics/write  label instance=HOTE-USURPE-…  -> HTTP 204, `metric.host` = HOTE-USURPE-PAR-REMOTEWRITE
+//   /services/collector (HEC) {"host":"HEC-USURPE"}   -> HTTP 200, `event.host`  = HEC-USURPE
+//   /api/ingest         {"host":"…-USURPE"}           -> HTTP 202, `event.host`  = WS22-LAB   (le liage MORD)
+//   /loki/api/v1/push   label host=LOKI-USURPE        -> HTTP 204, `event.host`  = WS22-LAB   (le liage MORD)
+// `/api/metrics/prom` était la seule exception CONNUE (elle était même écrite comme telle dans
+// `docs/CIM.md`). Elle n'était pas la seule : il y en avait QUATRE, dont deux jamais documentées
+// (`/api/metrics/write`, `/services/collector`) et `/v1/traces` par lecture (même absence de marqueur).
+//
+// POURQUOI CE N'EST PAS COSMÉTIQUE. `event.host` n'est pas un libellé d'affichage : c'est lui qui
+// attribue un constat à une machine, donc ce qui autorise le responder à agir SUR cette machine
+// (`actions_pending` dérive l'hôte du jeton — mais l'action, elle, est ciblée par l'hôte des lignes).
+// Une métrique écrite sous le nom d'une autre machine déplace aussi ses seuils et ses alertes.
+//
+// CE QUE LA CORRECTION N'EST PAS. Ce n'est pas « lier partout » : un relais central (forwarder HEC,
+// Alloy, Prometheus) multiplexe LÉGITIMEMENT plusieurs hôtes, et le lui interdire casserait la
+// collecte. Ce n'est pas non plus une décision PAR ROUTE — c'est exactement ce raisonnement
+// par-route qui a produit les quatre trous : chaque nouvelle surface refaisait le débat, et trois
+// fois sur sept la réponse a été « pas de marqueur, un relais existe ».
+//
+// LA FORME DÉRIVÉE. La distinction « machine » / « relais » est DÉJÀ portée par la donnée : c'est le
+// LIAGE DU JETON. Un jeton lié EST une identité de machine ; un jeton non lié EST un relais. La
+// résolution ne dépend donc d'AUCUNE propriété de la route : `hôte de la ligne = hôte du jeton s'il est
+// lié, sinon l'hôte déclaré`. On en fait UN TYPE à champ privé, dont le seul constructeur est cette
+// résolution. Conséquence à la compilation : une surface d'ingestion qui prendrait l'hôte d'une query
+// string, d'un label ou d'un corps JSON **ne peut pas fabriquer la valeur** que le point d'écriture
+// exige — elle ne compile pas. Une surface ajoutée demain n'a pas de débat à trancher : soit elle passe
+// par `HoteIngere::resoudre`, soit elle n'écrit pas.
+//
+// CE QUE ÇA CHANGE POUR L'EXISTANT (dit franchement) : un déploiement qui utilisait un jeton LIÉ pour
+// un relais multi-hôtes verra désormais ses lignes attribuées à l'hôte du jeton. C'est déjà le
+// comportement de `/api/ingest` et de `/loki/api/v1/push` depuis M2 — la nouveauté n'est pas la règle,
+// c'est son uniformité. Un relais se provisionne avec un jeton NON lié (`--relais`, cf. P5.2-b).
+// ====================================================================================================
+
+/// L'HÔTE D'UNE LIGNE ÉCRITE PAR UNE SURFACE D'INGESTION. Champ PRIVÉ, constructeur UNIQUE : impossible
+/// d'écrire une ligne sous un hôte qui n'a pas traversé `resoudre`.
+pub(crate) struct HoteIngere(Option<String>);
+
+impl HoteIngere {
+    /// SEULE résolution. `au` = le porteur de la requête ; `declare` = l'hôte que la requête déclare
+    /// (query string, label, champ HEC, enveloppe JSON — peu importe, il est TOUJOURS suspect).
+    ///
+    /// Jeton d'AGENT LIÉ (`role == "agent"` et `au.name` un hostname valide) -> l'hôte du jeton ÉCRASE
+    /// le déclaré : c'est une identité de machine, elle ne parle que d'elle-même. Tout le reste (Basic
+    /// editor/admin, jeton non lié, SSO) -> l'hôte déclaré passe INCHANGÉ : c'est un relais, il parle
+    /// pour d'autres, et la colonne `origin` dit déjà que ce host-là n'est pas attesté.
+    ///
+    /// MÊME prédicat que `spool_host_marker` (agent + `host_marker_ok`) — c'est volontaire : les deux
+    /// répondent à la même question, et `spool_host_marker` est désormais écrit EN TERMES DE CELUI-CI.
+    pub(crate) fn resoudre(au: &AuthUser, declare: Option<&str>) -> Self {
+        match Self::lie(au) {
+            Some(h) => Self(Some(h)),
+            None => Self(declare.map(|s| s.to_string())),
+        }
+    }
+
+    /// L'hôte AUQUEL LE JETON EST LIÉ, ou `None` (relais / utilisateur / jeton non lié). Extrait pour que
+    /// `spool_host_marker` et cette résolution ne puissent pas diverger : il n'y a qu'un seul prédicat.
+    pub(crate) fn lie(au: &AuthUser) -> Option<String> {
+        if au.role == "agent" && host_marker_ok(&au.name) { Some(au.name.clone()) } else { None }
+    }
+
+    /// L'hôte résolu, prêt à être lié en paramètre SQL. `None` = aucune attribution (ligne sans hôte).
+    pub(crate) fn as_deref(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+}
+
+/// Construit la ligne `metric` d'une SURFACE D'INGESTION. Le host n'est pas un paramètre libre : c'est un
+/// `HoteIngere`, donc il a forcément traversé la résolution. Une route qui voudrait écrire `?host=` tel
+/// quel ne peut pas appeler cette fonction — le type ne se fabrique pas depuis une chaîne.
+pub(crate) fn metric_ingeree(ts: i64, name: &str, labels: &str, value: f64, hote: &HoteIngere) -> MetricRow {
+    MetricRow {
+        ts,
+        name: name.to_string(),
+        labels: Some(labels.to_string()),
+        value,
+        host: hote.as_deref().map(|s| s.to_string()),
+    }
 }
 
 // ====================================================================================================
@@ -393,9 +486,6 @@ impl SqlcipherEventStore for SqlcipherStore {
     }
     fn insert_snapshot(&self, conn: &Connection, s: &SnapshotRow) -> rusqlite::Result<usize> {
         conn.prepare_cached(Self::SNAPSHOT_INSERT_SQL)?.execute(params![s.ts, s.kind, s.hash, s.data, s.host])
-    }
-    fn metric_insert_sql(&self) -> &'static str {
-        Self::METRIC_INSERT_SQL
     }
     fn soql_to_sql(&self, soql: &str, from: i64, to: i64, env: Option<&str>) -> Result<String, String> {
         // ALIAS DE LECTURE CIM (dette de migration, péremption 2027-07-23) : `category=exec` retrouve

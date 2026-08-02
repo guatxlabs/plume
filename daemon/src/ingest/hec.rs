@@ -8,7 +8,11 @@
 //!
 //! ADDITIF / MODE 0 BYTE-IDENTIQUE : ces routes n'existent pas aujourd'hui -> aucune requête existante
 //! n'est touchée. L'auth réutilise l'infra token existante (schéma HEC `Authorization: Splunk <tok>` OU
-//! `?token=`) -> identité `agent` host-bound, INGEST-ONLY (jamais UI/admin). Le mapping sourcetype->CIM
+//! `?token=`) -> identité de rôle `agent`, INGEST-ONLY (jamais UI/admin). ATTENTION AU MOT « host-bound »,
+//! qui figurait ici et était FAUX pour cette route : le liage d'hôte n'y était PAS appliqué (mesuré
+//! usurpable le 2026-08-02 — cf. le bandeau de `hec_event_post`). Il l'est depuis, comme partout, et
+//! UNIQUEMENT pour un jeton de MACHINE : un forwarder (jeton `--relais`) reste multi-hôtes.
+//! Le mapping sourcetype->CIM
 //! est extensible par ENV (PLUME_HEC_SOURCETYPE_MAP) -> zéro hardcode vendeur verrouillé. Le chemin de
 //! stockage RÉUTILISE l'ingest existant (envelope `{kind:events}` -> spool -> `ingest_events_batch`).
 use crate::*;
@@ -247,11 +251,18 @@ pub(crate) async fn hec_health() -> Response {
     (StatusCode::OK, Json(json!({ "text": "HEC is healthy", "code": 17 }))).into_response()
 }
 
-/// POST /services/collector[/event] — ingest HEC wire-compatible. Auth (token HEC -> agent host-bound)
-/// déjà appliquée par auth_guard (route ingest-only). Parse -> mappe CIM -> écrit l'enveloppe
-/// `{kind:events}` dans le spool (atomique, RÉUTILISE `ingest_events_batch` via la boucle de fond).
-/// PAS de host-marker : un forwarder HEC relaie LÉGITIMEMENT plusieurs hôtes (host authoritatif = champ
-/// HEC par event) -> comme un collecteur central. NE fait AUCUN travail DB sur le worker tokio.
+/// POST /services/collector[/event] — ingest HEC wire-compatible. Auth (token HEC/agent) déjà appliquée
+/// par auth_guard (route ingest-only). Parse -> mappe CIM -> écrit l'enveloppe `{kind:events}` dans le
+/// spool (atomique, RÉUTILISE `ingest_events_batch` via la boucle de fond). NE fait AUCUN travail DB sur
+/// le worker tokio.
+///
+/// P5.2-a — CE CHEMIN N'AVAIT PAS DE MARQUEUR D'HÔTE, et le justifiait par « un forwarder HEC relaie
+/// LÉGITIMEMENT plusieurs hôtes ». C'est vrai d'un RELAIS, et faux d'une MACHINE : MESURÉ le 2026-08-02,
+/// un jeton lié à `WS22-LAB` postant `{"event":…,"host":"HEC-USURPE"}` recevait 200 et l'événement était
+/// stocké sous `HEC-USURPE`. Le marqueur ci-dessous est posé par `spool_host_marker`, qui n'émet QUE pour
+/// un jeton LIÉ : un forwarder (jeton non lié) garde donc EXACTEMENT le comportement d'avant — le champ
+/// `host` de chaque record HEC reste autoritatif. La distinction n'est plus une décision de route, c'est
+/// le liage du jeton. (Le bandeau du module disait « identité agent host-bound » : c'était faux ICI.)
 pub(crate) async fn hec_event_post(State(st): State<AppState>, Extension(au): Extension<AuthUser>, body: String) -> Response {
     if body.trim().is_empty() {
         return hec_err(StatusCode::BAD_REQUEST, 5, "No data");
@@ -282,8 +293,9 @@ pub(crate) async fn hec_event_post(State(st): State<AppState>, Extension(au): Ex
     };
     let n = INGEST_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mk = spool_tenant_marker(&st, &au); // R8 : tenant du token encodé dans le nom -> routé à la relecture
+    let hk = spool_host_marker(&au); // P5.2-a : jeton LIÉ -> écrase le `host` HEC à la relecture ; relais -> vide
     let tmp = format!("{}/.hec-{}-{}.tmp", st.spool, now(), n);
-    let dst = format!("{}/hec-{}-{}{}.json", st.spool, now(), n, mk);
+    let dst = format!("{}/hec-{}-{}{}{}.json", st.spool, now(), n, mk, hk);
     if std::fs::write(&tmp, body_out.as_bytes()).is_err() {
         let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur écriture partielle
         return hec_err(StatusCode::INTERNAL_SERVER_ERROR, 8, "Internal server error");

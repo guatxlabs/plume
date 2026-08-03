@@ -112,6 +112,21 @@ pub(crate) fn pipeline_is_fresh(conn: &Connection, now_ts: i64) -> bool {
 // hors du lock writer (read pool + watchdog 5 s) — inchangé. Fix alternatif plus profond NON retenu (risque) :
 // un composite (source,category,ts) rendrait chaque MAX(ts) O(1) mais impose un build sur 4,7 M lignes +
 // amplification d'écriture sur le chemin d'ingest chaud ; le SWR est byte-identique et sans risque ingest.
+//
+// ── 2026-08-03 (P3.7-a) — CE PARAGRAPHE EST EN PARTIE PÉRIMÉ, ET CE QU'IL A LAISSÉ PASSER COMPTE.
+// (a) « n'a qu'un idx_event_src MONOCOLONNE » : FAUX depuis v108, idx_event_src_ts(source, ts) existe —
+//     les 12 sondes SANS `category` sont donc DÉJÀ des sauts en fin de plage d'index (15 VM steps,
+//     constants sous x4 volume). L'attribution « toutes les 23 requêtes balayent » ne tenait plus.
+// (b) L'objection sur le composite (source, category, ts) était JUSTE — mais elle ne visait QUE le
+//     composite PLEIN. Un index PARTIEL `(source, ts) WHERE category='health'` ferme les mêmes 8 sondes
+//     en n'indexant QUE les battements : mesuré 21,8 o/battement (~1,5 Mio) contre 25,5 o/ligne INGÉRÉE
+//     (~250 Mio) pour le composite plein, et un insert btree toutes les ~37 s au lieu d'un par event.
+//     C'est ce qui a été livré (cf. daemon/src/sondes.rs, migration v114).
+// (c) LE COÛT QUE CE SWR N'A JAMAIS COUVERT : le cache ci-dessous protège /api/integrations. Il ne
+//     protège PAS `check_heartbeats`, qui exécute LES MÊMES sondes toutes les 20 s SOUS LE VERROU
+//     D'ÉCRITURE. Mettre un cache devant la surface de LECTURE a rendu le symptôme invisible côté UI
+//     pendant que le coût continuait d'être payé sur le chemin d'ÉCRITURE — c'est là que le O(N)
+//     mesuré en P3.7-a se cachait. Un cache déplace un coût ; il n'en supprime aucun.
 pub(crate) const INTEGRATIONS_TTL: Duration = Duration::from_secs(30);
 pub(crate) static INTEGRATIONS_CACHE: std::sync::OnceLock<Mutex<HashMap<String, (Instant, Value)>>> = std::sync::OnceLock::new();
 pub(crate) static INTEGRATIONS_REFRESHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

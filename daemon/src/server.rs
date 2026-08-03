@@ -622,6 +622,15 @@ fn spawn_background_jobs(conf: HashMap<String, String>, spool: String, db_path: 
         spawn_ensure_event_src_ts_index(db.clone());
     }
 
+    // P3.7-a (PERF INGEST) — CREATE de l'index PARTIEL idx_event_health_beat(source,ts) WHERE
+    // category='health' EN FOND après le bind (même doctrine anti-crashloop). Sans lui, les 8 sondes
+    // dead-man's-switch de COLLECTORS remontent la plage de leur source ligne par ligne, sous le verrou
+    // d'écriture, toutes les 20 s — coût mesuré `5 x (lignes depuis le dernier battement)`, donc O(N)
+    // exactement quand le collecteur surveillé est mort. One-shot, idempotent (IF NOT EXISTS + court-circuit).
+    {
+        spawn_ensure_event_health_beat_index(db.clone());
+    }
+
     // ANTI FULL-SCAN (rollup_hosts sur metric/snapshot) — CREATE des index ts-leading idx_metric_ts/idx_snapshot_ts
     // EN FOND après le bind (jamais synchrone : CREATE INDEX sur ~2M lignes metric chiffrées bloquerait le bind).
     // Une fois créés, rollup_hosts range-prune la fenêtre chaude/définitive (plus de full-scan+déchiffrement sous
@@ -1066,6 +1075,13 @@ fn spawn_ensure_event_src_ts_index(db: Arc<Mutex<Connection>>) {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(33)); // après le bind + la liveness probe (v108)
             ensure_event_src_ts_index_background(&db);
+        });
+}
+
+fn spawn_ensure_event_health_beat_index(db: Arc<Mutex<Connection>>) {
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(35)); // après le bind + la liveness probe (P3.7-a)
+            ensure_event_health_beat_index_background(&db);
         });
 }
 

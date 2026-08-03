@@ -58,6 +58,18 @@ CREATE INDEX IF NOT EXISTS idx_event_src ON event(source);
 -- est créé EN FOND après bind (ensure_event_src_ts_index_background) car un CREATE sur des millions de lignes
 -- chiffrées bloquerait le bind ; ici (base neuve, event VIDE) il est instantané. MÊME nom -> jamais en double.
 CREATE INDEX IF NOT EXISTS idx_event_src_ts ON event(source, ts);
+-- (P3.7-a) PARTIEL sur les BATTEMENTS DE SANTÉ. Les 8 sondes dead-man's-switch de `COLLECTORS`
+-- demandent `MAX(ts) WHERE source=? AND category='health'` : `category` étant ABSENTE de
+-- idx_event_src_ts, SQLite remonte la plage de la source ligne par ligne jusqu'à trouver un
+-- battement -> coût = 5 VM steps x (lignes de la source depuis le dernier battement), donc O(N)
+-- exactement quand le collecteur est MORT (mesuré le 2026-08-03 : x4 pour x4 lignes). PARTIEL et pas
+-- (source, category, ts) : le composite plein indexe TOUTE ligne ingérée (~250 Mio sur 9,8 M lignes,
+-- + un insert btree sur le chemin d'ingest CHAUD) là où le partiel n'indexe que les battements
+-- (~1,5 Mio, un insert toutes les ~37 s). `category='health'` doit rester LITTÉRAL côté requête,
+-- sinon SQLite ne peut pas prouver l'implication et ignore l'index en SILENCE (cf. daemon/src/sondes.rs).
+-- Sur base MIGRÉE il est créé EN FOND après bind (ensure_event_health_beat_index_background) ; ici
+-- (base neuve, event VIDE) il est instantané. MÊME nom -> jamais en double.
+CREATE INDEX IF NOT EXISTS idx_event_health_beat ON event(source, ts) WHERE category='health';
 
 -- Recherche plein-texte « SPL-lite »
 CREATE VIRTUAL TABLE IF NOT EXISTS event_fts USING fts5(

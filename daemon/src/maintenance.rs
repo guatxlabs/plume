@@ -261,6 +261,56 @@ pub(crate) fn ensure_event_src_ts_index_background(db: &Arc<Mutex<Connection>>) 
     }
 }
 
+/// P3.7-a (PERF INGEST — les sondes dead-man's-switch rendaient l'ingestion quadratique) — crée EN TÂCHE
+/// DE FOND l'index PARTIEL `idx_event_health_beat(source, ts) WHERE category='health'` sur la base MIGRÉE.
+///
+/// CE QU'IL FERME. Les 8 sondes `Sonde::EventBattementSante` de `COLLECTORS` tournent DANS
+/// `check_heartbeats`, SOUS LE VERROU D'ÉCRITURE, tous les 20 s. Leur `MAX(ts) WHERE source=? AND
+/// category='health'` ne peut pas être servi par idx_event_src_ts(source, ts) : `category` n'y est pas,
+/// donc SQLite SEEK la source puis REMONTE sa plage en lisant la LIGNE de chaque candidat jusqu'à trouver
+/// un battement. MESURÉ le 2026-08-03 (compteur VM_STEP, déterministe) : `VM steps = 5 x (lignes de la
+/// source postérieures au dernier battement) + c`, la PENTE valant EXACTEMENT 5 sur 5 points (`c` = petite
+/// constante, 13 à 20 selon l'implémentation SQLite ; le 6e point, 0 ligne, est le cas dégénéré = coût
+/// constant). À volume x4 les sondes dont la source n'a jamais battu passent EXACTEMENT x4, confirmé sur
+/// DEUX implémentations SQLite indépendantes (CLI 3.53 et le SQLCipher embarqué : 2 014 -> 8 014 sans
+/// l'index, 13 constant avec). Une sonde dead-man's-switch devient donc la plus
+/// chère précisément quand le collecteur qu'elle surveille est MORT — panne AUTO-AMPLIFIANTE, et ce qu'elle
+/// consomme sous le verrou, l'ingestion ne l'a pas.
+///
+/// POURQUOI PARTIEL et pas (source, category, ts) : MESURÉ, le composite plein coûte 25,5 o/LIGNE INGÉRÉE
+/// (~250 Mio sur les 9,8 M lignes prod) + un insert btree sur le CHEMIN D'INGEST CHAUD ; le partiel coûte
+/// 21,8 o/LIGNE DE BATTEMENT (~1,5 Mio pour 8 collecteurs battant toutes les 5 min sur 30 j) + un insert
+/// toutes les ~37 s. 166x moins de disque, et l'objection d'amplification d'écriture qui avait fait écarter
+/// le correctif (cf. handlers/freshness.rs) ne porte que sur le composite plein. Budget 2 Go préservé.
+///
+/// JAMAIS SYNCHRONE AU BOOT : un CREATE INDEX sur des millions de lignes chiffrées SQLCipher bloquerait le
+/// bind -> liveness k8s -> CrashLoopBackOff (leçon idx_event_category / idx_event_src_ts). Modèle EXACT de
+/// `ensure_event_src_ts_index_background` : court-circuit si présent (base neuve via schema.sql, ou déjà
+/// créé), sinon UN CREATE one-shot IF NOT EXISTS (idempotent, MÊME nom que schema.sql -> aucun btree en
+/// double). Le re-ANALYZE (bump v114) fait connaître l'index au planner. La DDL n'est PAS réécrite ici :
+/// elle vient de `sondes::DDL_IDX_BATTEMENT_SANTE`, à côté des sondes qui en dépendent (zéro dérive).
+/// ADDITIF, mode 0 byte-identique : l'index ne change AUCUNE valeur rendue, seulement le chemin d'accès.
+pub(crate) fn ensure_event_health_beat_index_background(db: &Arc<Mutex<Connection>>) {
+    // court-circuit : déjà là -> on évite même de prendre le lock writer.
+    {
+        let conn = db.lock();
+        if conn
+            .query_row("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1", params![IDX_BATTEMENT_SANTE], |_| Ok(()))
+            .is_ok()
+        {
+            return;
+        }
+    }
+    let conn = db.lock();
+    match conn.execute(DDL_IDX_BATTEMENT_SANTE, []) {
+        Ok(_) => eprintln!(
+            "[reconcile-bg] {IDX_BATTEMENT_SANTE}(source,ts) WHERE category='health' créé en fond \
+             (les 8 sondes dead-man's-switch cessent de remonter la plage de leur source sous le verrou d'écriture ; P3.7-a)"
+        ),
+        Err(e) => eprintln!("[reconcile-bg] CREATE INDEX {IDX_BATTEMENT_SANTE} ÉCHEC ({e}) — retry au prochain boot"),
+    }
+}
+
 /// ANTI FULL-SCAN (rollup_hosts sur metric/snapshot) — crée EN TÂCHE DE FOND les index ts-leading
 /// idx_metric_ts / idx_snapshot_ts. `metric` n'a que idx_metric(name,ts) et `snapshot` idx_snapshot(kind,ts) :
 /// ts n'y est PAS colonne de tête, donc le prédicat borné `ts >= recent` de rollup_hosts (chaque tick, sous le

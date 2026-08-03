@@ -90,7 +90,7 @@ impl Drop for MigrationLogSilencer {
 /// rien (toutes ses gardes `v < N` sont fausses) et OPÈRE À L'AVEUGLE sur un schéma qu'il ne connaît pas
 /// -> risque de corruption (survivable AUJOURD'HUI car migrations additives, mais non gardé). On REFUSE
 /// d'ouvrir : arrêt PROPRE (exit non-zéro), JAMAIS un panic, JAMAIS un « proceed » silencieux.
-pub(crate) const CODE_SCHEMA_MAX: i64 = 113;
+pub(crate) const CODE_SCHEMA_MAX: i64 = 114;
 
 /// Lit `meta.schema_version` (défaut 1 si table/lignes absentes ou illisibles) — MÊME lecture que `migrate()`.
 /// Une base NEUVE (pas encore de table meta) renvoie 1 -> jamais refusée par la garde.
@@ -770,6 +770,7 @@ fn migrate_chain(conn: &Connection) -> bool {
     if v < 111 && !migrate_step(conn, 111, migrate_v111) { return false; }
     if v < 112 && !migrate_step(conn, 112, migrate_v112) { return false; }
     if v < 113 && !migrate_step(conn, 113, migrate_v113) { return false; }
+    if v < 114 && !migrate_step(conn, 114, migrate_v114) { return false; }
     true
 }
 
@@ -1068,6 +1069,49 @@ fn migrate_v113(conn: &MigTx) {
     );
     let _ = conn.execute("UPDATE meta SET value='113' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v113 (P5.7-a : la règle T1110 semée comptait TOUT severity>=3 ; sa requête devient `category=auth action=failure` — one-time, et seulement si la requête livrée est encore intacte)");
+}
+
+/// v114 (P3.7-a — LES SONDES DEAD-MAN'S-SWITCH RENDAIENT L'INGESTION QUADRATIQUE). MARQUEUR PUR (aucune
+/// DDL lourde synchrone), MÊME posture EXACTE que v108. Comble l'index PARTIEL MANQUANT
+/// `idx_event_health_beat(source, ts) WHERE category='health'` sur la base MIGRÉE.
+///
+/// CE QUI ÉTAIT CASSÉ. Les 8 sondes `Sonde::EventBattementSante` de `COLLECTORS` demandent
+/// `SELECT MAX(ts) FROM event WHERE source=? AND category='health'`, dans `check_heartbeats`, SOUS LE
+/// VERROU D'ÉCRITURE, tous les 20 s. `category` est ABSENTE de idx_event_src_ts(source, ts) : SQLite SEEK
+/// la source puis REMONTE sa plage en `ts` décroissant, en LISANT LA LIGNE de chaque candidat, jusqu'à
+/// trouver un battement. MESURÉ le 2026-08-03 (EXPLAIN QUERY PLAN + compteur SQLITE_STMTSTATUS_VM_STEP,
+/// déterministe) : `VM steps = 5 x (lignes de la source postérieures au dernier battement) + c`, la PENTE
+/// valant EXACTEMENT 5 sur 5 points (`c` = petite constante, 13 à 20 ; le 6e point, 0 ligne, est le cas
+/// dégénéré = coût constant, et c'est le cas nominal). À volume x4 (217 280 -> 817 280 lignes) les 5 sondes
+/// dont la source n'a jamais battu passent EXACTEMENT x4 pendant que les 15 autres ne bougent pas ; loi
+/// re-confirmée sur le SQLCipher EMBARQUÉ (2 014 -> 8 014 sans l'index, 13 constant avec). Une sonde
+/// dead-man's-switch devient donc la plus chère précisément quand le collecteur qu'elle surveille est
+/// MORT (le flux réel de
+/// la source, lui, continue) : panne AUTO-AMPLIFIANTE, et ce qu'elle consomme sous le verrou, l'ingestion
+/// ne l'a pas.
+///
+/// POURQUOI PARTIEL et pas (source, category, ts) : MESURÉ, le composite plein coûte 25,5 o/LIGNE INGÉRÉE
+/// (~250 Mio sur 9,8 M lignes) + un insert btree sur le CHEMIN D'INGEST CHAUD ; le partiel coûte 21,8 o par
+/// LIGNE DE BATTEMENT (~1,5 Mio pour 8 collecteurs battant toutes les 5 min sur 30 j de rétention) + un
+/// insert toutes les ~37 s. 166x moins de disque (budget 2 Go), et l'objection d'amplification d'écriture
+/// consignée en v104 dans handlers/freshness.rs ne portait que sur le composite plein.
+///
+/// `db/schema.sql` le déclare (bases NEUVES : `event` VIDE -> CREATE instantané) mais AUCUNE migration ne
+/// peut le créer ICI : un `CREATE INDEX` sur des MILLIONS de lignes chiffrées SQLCipher au boot déchiffre
+/// page par page et BLOQUE le bind -> liveness k8s -> CrashLoopBackOff (leçon v102/v103/v108, migrate()
+/// tourne AVANT le bind). Le CREATE est DÉLÉGUÉ à `ensure_event_health_beat_index_background`, lancé EN FOND
+/// APRÈS le bind (idempotent, IF NOT EXISTS, MÊME nom que schema.sql -> aucun btree en double). Cette
+/// migration ne fait que BUMPER la version -> ce qui DÉSYNCHRONISE 'analyze_full_done' (keyé sur
+/// schema_version) -> analyze_full_background re-tourne UNE fois après bind -> sqlite_stat1 connaît le
+/// nouvel index. ADDITIF, mode 0 byte-identique (l'index ne change AUCUNE valeur rendue par une sonde ni
+/// aucune sémantique de requête ; aucune donnée modifiée). PURE optimisation.
+///
+/// ROLLBACK — bumpe le schéma à 114 : un binaire max=113 REFUSE d'ouvrir une base v114 (server.rs
+/// open_and_migrate_db, `v > CODE_SCHEMA_MAX` -> Err). Rollback = RESTAURER le SNAPSHOT pré-migrate
+/// (initContainer). Forward-only, idempotent (le marqueur re-tourné ré-écrit juste value='114').
+fn migrate_v114(conn: &MigTx) {
+    let _ = conn.execute("UPDATE meta SET value='114' WHERE key='schema_version'", []);
+    mig_log!("[migration] schéma -> v114 (P3.7-a, marqueur : idx_event_health_beat(source,ts) WHERE category='health' créé EN FOND après bind, anti-crashloop ; re-ANALYZE ; les 8 sondes dead-man's-switch cessent de remonter la plage de leur source sous le verrou d'écriture)");
 }
 
 /// v108 (PERF — RECHERCHE RAW HAUT-VOLUME source=X sur fenêtre longue). MARQUEUR PUR (aucune DDL lourde

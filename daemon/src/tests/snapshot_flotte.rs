@@ -436,7 +436,9 @@
         for (_, _, _, sonde, _) in COLLECTORS.iter() {
             match sonde {
                 Sonde::Instantane { kind } => instantanes.push(kind),
-                Sonde::EventFlotteConfondue { .. } => ev += 1,
+                // P3.7-a : la famille « event » s'est SCINDÉE (flux réel vs battement de santé) sans que
+                // la dette déclarée change de taille — c'est la MÊME portée « flotte confondue ».
+                Sonde::EventFlux { .. } | Sonde::EventBattementSante { .. } => ev += 1,
                 Sonde::MetriqueFlotteConfondue => me += 1,
             }
         }
@@ -518,10 +520,13 @@
         // ANTI-ROT — la garde serait VACUE si l'extracteur ne voyait plus rien. On fige ce qu'il DOIT voir,
         // mesuré le 2026-08-02 : store.rs x4 (`dernier_hash`, le `UPDATE` du heartbeat COMPTÉ DEUX FOIS —
         // une par motif —, et la lecture par hôte) · main.rs x2 (les deux méthodes de `Sonde`).
+        // 2026-08-03 (P3.7-a) : `Sonde` a QUITTÉ main.rs pour `sondes.rs` (le module qui porte aussi ce
+        // qui BORNE le coût d'une sonde) — les deux mêmes requêtes, le même `GROUP BY host`, un autre
+        // fichier. C'est le cas (b) ci-dessous, et c'est cette garde qui l'a signalé.
         vues.sort();
         assert_eq!(
             vues,
-            vec!["main.rs", "main.rs", "store.rs", "store.rs", "store.rs", "store.rs"],
+            vec!["sondes.rs", "sondes.rs", "store.rs", "store.rs", "store.rs", "store.rs"],
             "ANTI-ROT : l'ensemble des interrogations de `snapshot` PAR `kind` vues par l'extracteur a \
              changé. (a) requête reformatée -> réparez l'EXTRACTEUR, sinon la garde passe au vert en ne \
              regardant rien ; (b) site ajouté/retiré LÉGITIMEMENT -> vérifiez qu'il porte l'hôte et mettez \

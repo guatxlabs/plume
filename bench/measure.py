@@ -10,8 +10,16 @@ CE QU'IL MESURE PAR CELLULE
                démarrage du processus) est relevé en plus, avant/après.
   LECTURE      /proc/<pid>/io `read_bytes` — octets réellement lus au bloc. 0 = servi depuis le
                cache de pages, ce qui est un RÉSULTAT à publier, pas une erreur.
-  PRESSION     loadavg et swap avant/après. Un chiffre pris pendant que la machine swappe est FAUX :
-               la cellule est marquée `swap_suspect` et doit être rejouée.
+  PRESSION     loadavg, et la mémoire DU CGROUP du daemon avant/après — `memory.current`,
+               `memory.swap.current`, et `memory.events:max` (le nombre de fois où le cgroup a
+               touché son plafond et dû récupérer de la mémoire : c'est CE compteur qui dit la
+               pression, et il n'a pas d'équivalent système). `swap_suspect` n'est armé QUE par le
+               swap du cgroup, donc par ce qui est ATTRIBUABLE au daemon.
+               Le swap de la MACHINE reste publié sous `host_swap_*`, comme contexte : il ralentit
+               tout, mais il n'est pas imputable au daemon. Les deux ont été confondus, et c'était
+               un verdict faux — sous `MemorySwapMax=0` le daemon ne peut pas swapper, or des
+               cellules saines étaient marquées « prises sous swap » parce que d'AUTRES processus
+               de la machine swappaient (mesuré : 5,7 Gio occupés par des travaux tiers).
 
 CE QU'IL NE MESURE PAS
   Rien n'est déduit d'un autre chiffre. Une cellule qui échoue (budget dépassé, 4xx, 5xx) est
@@ -67,7 +75,46 @@ def proc_io_read_bytes(pid):
     return 0
 
 
-def host_pressure():
+def cgroup_mem(pid):
+    """Mémoire DU CGROUP DU DAEMON — donc ATTRIBUABLE à lui, contrairement à `/proc/meminfo`.
+
+    LE DÉFAUT QUE ÇA FERME, et il a produit un verdict faux : `swap_suspect` était dérivé du swap
+    SYSTÈME. Or le daemon tourne sous `MemorySwapMax=0` : il ne PEUT PAS swapper. Le drapeau ne
+    mesurait donc jamais le daemon — il mesurait les autres processus de la machine (mesuré :
+    5,7 Gio de swap occupés par des travaux tiers pendant la campagne), et il marquait « prise sous
+    swap » des cellules parfaitement saines. Un chiffre non attribuable qui porte le nom d'un
+    diagnostic est pire qu'absent : il fait rejeter des mesures justes et croire que le produit a
+    swappé alors que le noyau le lui interdit.
+
+    Ce qu'on lit ici est attribuable : `memory.current` (dont le cache de pages, facturé au cgroup),
+    `memory.swap.current` (0 par construction sous MemorySwapMax=0), et `memory.events:max` — le
+    nombre de fois où le cgroup a TOUCHÉ son plafond et dû récupérer de la mémoire. C'est ce dernier
+    qui dit la pression réelle, et il n'a pas d'équivalent système."""
+    out = {}
+    try:
+        cg = open(f"/proc/{pid}/cgroup").read().strip().split("::")[-1]
+        base = "/sys/fs/cgroup" + cg
+        for name, key in (("memory.current", "cg_mem_current_bytes"),
+                          ("memory.swap.current", "cg_swap_current_bytes"),
+                          ("memory.max", "cg_mem_max_bytes")):
+            try:
+                v = open(base + "/" + name).read().strip()
+                out[key] = int(v) if v.isdigit() else v
+            except OSError:
+                pass
+        try:
+            for line in open(base + "/memory.events"):
+                k, _, v = line.partition(" ")
+                if k == "max":
+                    out["cg_mem_max_events"] = int(v)
+        except OSError:
+            pass
+    except OSError:
+        pass
+    return out
+
+
+def host_pressure(pid=None):
     la = open("/proc/loadavg").read().split()[:3]
     mem = {}
     with open("/proc/meminfo") as fh:
@@ -75,9 +122,15 @@ def host_pressure():
             k, _, v = line.partition(":")
             if k in ("MemTotal", "MemAvailable", "SwapTotal", "SwapFree"):
                 mem[k] = int(v.split()[0]) * 1024
-    return {"loadavg": [float(x) for x in la],
-            "mem_available_bytes": mem.get("MemAvailable", 0),
-            "swap_used_bytes": mem.get("SwapTotal", 0) - mem.get("SwapFree", 0)}
+    out = {"loadavg": [float(x) for x in la],
+           "mem_available_bytes": mem.get("MemAvailable", 0),
+           # RENOMMÉ : ce compteur est celui de LA MACHINE, pas du daemon. Il reste publié — une
+           # machine qui swappe ralentit tout — mais sous un nom qui dit à qui il appartient, pour
+           # qu'il ne serve plus jamais à juger le daemon.
+           "host_swap_used_bytes": mem.get("SwapTotal", 0) - mem.get("SwapFree", 0)}
+    if pid:
+        out.update(cgroup_mem(pid))
+    return out
 
 
 class RssSampler(threading.Thread):
@@ -407,20 +460,25 @@ def main():
         out.flush()
         for spec in classes:
             for win in wanted:
-                p_before = host_pressure()
+                p_before = host_pressure(a.pid)
                 hwm_before = proc_vmhwm_bytes(a.pid)
                 first = run_one(cli, a.pid, spec, win, bool(a.interactive))
                 reps = a.reps if (first["wall_ms"] or 0) < a.slow_ms else a.reps_slow
                 runs = [first]
                 for _ in range(max(reps - 1, 0)):
                     runs.append(run_one(cli, a.pid, spec, win, bool(a.interactive)))
-                p_after = host_pressure()
+                p_after = host_pressure(a.pid)
                 hwm_after = proc_vmhwm_bytes(a.pid)
                 ok = [r for r in runs if r["status"] == 200 and not r["error"]]
                 walls = [r["wall_ms"] for r in ok]
                 servs = [r["server_ms"] for r in ok if r["server_ms"] is not None]
                 elaps = [r["elapsed_ms"] for r in ok if r["elapsed_ms"] is not None]
-                swap_delta = p_after["swap_used_bytes"] - p_before["swap_used_bytes"]
+                # LE DELTA ATTRIBUABLE est celui du CGROUP (0 par construction sous
+                # MemorySwapMax=0) ; celui de la MACHINE est publié à côté, sous son propre nom,
+                # comme contexte et jamais comme verdict sur le daemon.
+                swap_delta = ((p_after.get("cg_swap_current_bytes") or 0)
+                              - (p_before.get("cg_swap_current_bytes") or 0))
+                host_swap_delta = p_after["host_swap_used_bytes"] - p_before["host_swap_used_bytes"]
                 row = dict(
                     config_id=a.config_id, config=meta,
                     class_id=spec["id"], label=spec["label"], kind=spec["kind"],
@@ -464,8 +522,13 @@ def main():
                     compiled_sql=first.get("compiled_sql"),
                     pressure_before=p_before, pressure_after=p_after,
                     swap_delta_bytes=swap_delta,
+                    host_swap_delta_bytes=host_swap_delta,
                     # Un chiffre pris pendant que la machine swappe est FAUX. On ne le corrige pas,
                     # on le MARQUE : la cellule doit être rejouée.
+                    # Le drapeau ne juge QUE ce qui est attribuable au daemon. Sous
+                    # `MemorySwapMax=0` il est faux par construction — et c'est le bon
+                    # comportement : le noyau interdit au daemon de swapper, donc aucune cellule
+                    # ne peut être « prise sous swap » de son fait.
                     swap_suspect=bool(swap_delta > SWAP_SUSPECT_BYTES),
                     measured_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 )

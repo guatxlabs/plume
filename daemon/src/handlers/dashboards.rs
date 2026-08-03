@@ -26,14 +26,18 @@ pub(crate) fn dash_editable(conn: &Connection, au: &AuthUser, dash_id: i64) -> b
 pub(crate) fn panel_access(conn: &Connection, au: &AuthUser, panel_id: i64) -> Option<(String, bool, i64, bool)> {
     // LIBRARY PANELS (#54) : si le panneau RÉFÉRENCE une définition réutilisable (panel.library_panel_id),
     // la requête EXÉCUTÉE et son is_soql viennent de `library_panel` (résolus à la lecture -> éditer la
-    // bibliothèque met à jour partout). LEFT JOIN + COALESCE : library_panel_id NULL (tout l'existant) ->
-    // retombe sur p.query/p.is_soql -> RÉSULTAT byte-identique au mode 0. La fenêtre/visibilité restent au panneau.
-    let (did, query, issoql, window, pvis): (i64, String, i64, i64, String) = conn
+    // bibliothèque met à jour partout). Cette résolution vit dans UN SEUL endroit — le coffre
+    // `panneau_resolu` (P7.13-a) — et c'est CELLE-LÀ que la porte « SQL brut = admin » de
+    // panel_create/panel_update emprunte : la porte ne peut donc pas juger autre chose que ce qui
+    // s'exécute ici. Référence NULL (tout l'existant) -> retombe sur p.query/p.is_soql -> RÉSULTAT
+    // byte-identique au mode 0. La fenêtre/visibilité restent au panneau.
+    let def = DefinitionExecutee::courante(conn, panel_id)?;
+    let (query, issoql) = (def.query().to_string(), def.is_soql());
+    let (did, window, pvis): (i64, i64, String) = conn
         .query_row(
-            "SELECT p.dashboard_id,COALESCE(lp.query,p.query),COALESCE(lp.is_soql,p.is_soql),p.window_s,COALESCE(p.visibility,'shared') \
-             FROM panel p LEFT JOIN library_panel lp ON lp.id=p.library_panel_id WHERE p.id=?1",
+            "SELECT dashboard_id,window_s,COALESCE(visibility,'shared') FROM panel WHERE id=?1",
             params![panel_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .ok()?;
     let (downer, dvis): (String, String) = conn
@@ -47,11 +51,13 @@ pub(crate) fn panel_access(conn: &Connection, au: &AuthUser, panel_id: i64) -> O
     if !accessible {
         return None;
     }
-    let owns = au.is_admin() || downer == au.name || downer.is_empty();
-    if pvis == "private" && !owns {
+    // P7.13-a : la portée de lecture (et donc « ce panneau privé m'est-il servi ? ») vient du coffre —
+    // la MÊME décision que `dash_get` et que la capture de snapshot.
+    let portee = PorteeLecture::du_dashboard(au, &downer);
+    if !portee.voit(&pvis) {
         return None; // panneau privé d'un autre
     }
-    Some((query, issoql != 0, window, owns))
+    Some((query, issoql, window, portee.est_proprietaire()))
 }
 
 pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
@@ -170,13 +176,21 @@ pub(crate) async fn dash_get(State(st): State<AppState>, Extension(au): Extensio
     if !au.is_admin() && vis != "shared" && !owner.is_empty() && owner != au.name {
         return (StatusCode::FORBIDDEN, "dashboard privé").into_response();
     }
-    let owns = au.is_admin() || owner.is_empty() || owner == au.name;
+    // P7.13-a : portée de lecture DÉRIVÉE au coffre (même décision que `panel_access` et que la capture).
+    let portee = PorteeLecture::du_dashboard(&au, &owner);
+    let owns = portee.est_proprietaire();
     // LIBRARY PANELS (#54) : titre/requête/is_soql/viz/drill AFFICHÉS sont résolus depuis `library_panel`
-    // quand le panneau la référence (LEFT JOIN + COALESCE). library_panel_id NULL (tout l'existant) ->
-    // COALESCE retombe sur les colonnes du panneau -> JSON byte-identique au mode 0 (+ `library_panel_id`:null).
+    // quand le panneau la référence. La résolution est EMPRUNTÉE au coffre `panneau_resolu` (P7.13-a) —
+    // elle n'est plus réécrite ici, et `build.rs` refuse de compiler toute réécriture ailleurs.
+    // library_panel_id NULL (tout l'existant) -> retombe sur les colonnes du panneau -> JSON
+    // byte-identique au mode 0 (+ `library_panel_id`:null).
     let mut stmt = conn
-        .prepare("SELECT p.id,COALESCE(lp.title,p.title),COALESCE(lp.query,p.query),COALESCE(lp.is_soql,p.is_soql),COALESCE(lp.viz,p.viz),p.position,p.window_s,COALESCE(p.visibility,'shared'),COALESCE(p.query_private,0),COALESCE(p.cols,1),COALESCE(p.height,0),COALESCE(lp.drill,p.drill,''),p.library_panel_id \
-                  FROM panel p LEFT JOIN library_panel lp ON lp.id=p.library_panel_id WHERE p.dashboard_id=?1 ORDER BY p.position,p.id")
+        .prepare(&format!(
+            "SELECT p.id,{t},{q},{s},{v},p.position,p.window_s,COALESCE(p.visibility,'shared'),COALESCE(p.query_private,0),COALESCE(p.cols,1),COALESCE(p.height,0),{d},p.library_panel_id \
+             FROM {j} WHERE p.dashboard_id=?1 ORDER BY p.position,p.id",
+            t = panneau_resolu::COL_TITRE, q = panneau_resolu::COL_QUERY, s = panneau_resolu::COL_IS_SOQL,
+            v = panneau_resolu::COL_VIZ, d = panneau_resolu::COL_DRILL, j = panneau_resolu::JOINTURE,
+        ))
         .unwrap();
     let panels: Vec<Value> = stmt
         .query_map(params![id], |r| {
@@ -188,7 +202,7 @@ pub(crate) async fn dash_get(State(st): State<AppState>, Extension(au): Extensio
         })
         .unwrap()
         .flatten()
-        .filter(|(_, _, _, _, _, _, _, pvis, _, _, _, _, _)| owns || pvis.as_str() == "shared") // panneau privé -> proprio seulement
+        .filter(|(_, _, _, _, _, _, _, pvis, _, _, _, _, _)| portee.voit(pvis)) // panneau privé -> proprio seulement
         .map(|(pid, title, query, is_soql, viz, position, window_s, pvis, qpriv, cols, height, drill, lib_id)| {
             let hide = qpriv && !owns; // requête privée masquée (et son drill)
             let qtext = if hide { String::new() } else { query };
@@ -235,15 +249,26 @@ pub(crate) async fn panel_create(State(st): State<AppState>, Extension(au): Exte
     let height = b.i64_field("height", 0).max(0);
     let drill = b.str_field("drill").to_string();
     // LIBRARY PANELS (#54) : référence optionnelle à une définition réutilisable. 0/absent -> panneau autonome.
-    let library_panel_id = b.get("library_panel_id").and_then(|v| v.as_i64()).filter(|&n| n > 0);
+    // UNIQUE lecture du champ, et c'est CETTE valeur qui sert à la fois à la porte et à l'écriture.
+    let ref_bib = RefBibliotheque::du_corps_a_la_creation(&b);
+    let library_panel_id = ref_bib.a_ecrire().flatten();
     crate::req_conn!(st, au, conn);
     if !dash_editable(&conn, &au, did) {
         return (StatusCode::FORBIDDEN, "dashboard non modifiable").into_response();
     }
-    // SQL BRUT = ADMIN — un panneau en SQL BRUT (is_soql=false) exécute du SQL arbitraire
-    // read-only sur TOUTE la base à chaque refresh (panel_data) : RÉSERVÉ ADMIN, comme les règles et
-    // /api/query. Le GXQL (is_soql=true) reste ouvert à l'editor. Fail-closed via raw_sql_allowed.
-    if !raw_sql_allowed(is_soql == 1, &au.role) {
+    // SQL BRUT = ADMIN — un panneau en SQL BRUT (is_soql=false) exécute du SQL arbitraire read-only sur
+    // TOUTE la base à chaque refresh (panel_data) : RÉSERVÉ ADMIN, comme les règles et /api/query. Le
+    // GXQL (is_soql=true) reste ouvert à l'editor.
+    // P7.13-a — LA PORTE JUGE LA DÉFINITION QUI S'EXÉCUTERA, pas celle du corps : un panneau créé en
+    // GXQL mais RÉFÉRENÇANT une définition de bibliothèque en SQL brut exécute du SQL brut (mesuré :
+    // l'editor obtenait 200 + 2 lignes de la table `user`). `DefinitionExecutee::projetee` résout
+    // panneau ∪ bibliothèque via le MÊME chemin que `panel_access`, et refuse au passage une définition
+    // que l'appelant n'a pas le droit de VOIR. Fail-closed.
+    let def = match DefinitionExecutee::projetee(&conn, &au, None, &ref_bib, (query.clone(), is_soql == 1)) {
+        Ok(d) => d,
+        Err((code, msg)) => return (code, msg).into_response(),
+    };
+    if !def.permise_pour(&au.role) {
         return (StatusCode::FORBIDDEN, "SQL brut réservé à l'administrateur (utilisez GXQL)").into_response();
     }
     let _ = conn.execute(
@@ -256,11 +281,12 @@ pub(crate) async fn panel_create(State(st): State<AppState>, Extension(au): Exte
 
 pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
     crate::req_conn!(st, au, conn);
-    // État courant : dashboard (droit d'édition) + is_soql (garde SQL brut EFFECTIVE, anti-contournement).
-    let (did, cur_soql) = match conn.query_row(
-        "SELECT dashboard_id, COALESCE(is_soql,1) FROM panel WHERE id=?1",
+    // État courant du panneau : dashboard (droit d'édition) + ses colonnes propres + la référence de
+    // bibliothèque qu'il porte AUJOURD'HUI (elle entre dans le calcul de ce qui s'exécutera).
+    let (did, cur_soql, cur_query, cur_bib) = match conn.query_row(
+        "SELECT dashboard_id, COALESCE(is_soql,1), COALESCE(query,''), library_panel_id FROM panel WHERE id=?1",
         params![id],
-        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? != 0)),
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? != 0, r.get::<_, String>(2)?, r.get::<_, Option<i64>>(3)?)),
     ) {
         Ok(x) => x,
         Err(_) => return StatusCode::NOT_FOUND,
@@ -268,12 +294,26 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
     if !dash_editable(&conn, &au, did) {
         return StatusCode::FORBIDDEN;
     }
-    // SQL BRUT = ADMIN — is_soql EFFECTIF après PATCH (corps si fourni, sinon base), miroir exact
-    // de rule_update : un editor ne peut NI basculer un panneau en SQL brut, NI éditer un panneau déjà en SQL
-    // brut. Le SQL brut (is_soql=false) = lecture arbitraire de toute la base -> RÉSERVÉ ADMIN. Le GXQL reste
-    // ouvert. Fail-closed via raw_sql_allowed.
+    // LIBRARY PANELS (#54) : (dé)référencer une définition réutilisable. UNIQUE lecture du champ —
+    // la valeur retenue sert À LA FOIS à la porte ci-dessous et à l'écriture plus bas.
+    let ref_bib = RefBibliotheque::du_corps(&b);
+    // SQL BRUT = ADMIN — la porte juge la DÉFINITION QUI S'EXÉCUTERA APRÈS ce PATCH : colonnes du
+    // panneau après patch, RÉSOLUES contre la bibliothèque qu'il référencera. C'est le MÊME chemin de
+    // résolution que `panel_access` (coffre `panneau_resolu`) : la porte ne peut pas juger autre chose
+    // que ce qui tournera. Un editor ne peut donc NI basculer son panneau en SQL brut, NI éditer un
+    // panneau qui EXÉCUTE déjà du SQL brut (le sien ou celui d'une bibliothèque), NI en RATTACHER un.
+    // MESURÉ AVANT (2026-08-03, `3256e4d`) : `{"library_panel_id": N}` vers une définition SQL brut
+    // d'admin -> 204, puis `panel_data` -> 200 et 2 lignes de la table `user` rendues à l'editor.
+    // `projetee` refuse en outre de POSER une référence vers une définition que l'appelant n'a pas le
+    // droit de VOIR (mesuré : une définition PRIVÉE d'admin, absente de son inventaire, se rattachait
+    // en 204 et rendait son texte comme ses données). Fail-closed.
+    let eff_query = b.get("query").and_then(|v| v.as_str()).unwrap_or(&cur_query).to_string();
     let eff_soql = b.get("is_soql").and_then(|v| v.as_bool()).unwrap_or(cur_soql);
-    if !raw_sql_allowed(eff_soql, &au.role) {
+    let def = match DefinitionExecutee::projetee(&conn, &au, cur_bib, &ref_bib, (eff_query, eff_soql)) {
+        Ok(d) => d,
+        Err((code, _)) => return code,
+    };
+    if !def.permise_pour(&au.role) {
         return StatusCode::FORBIDDEN;
     }
     if let Some(viz) = b.get("viz").and_then(|v| v.as_str()) {
@@ -310,13 +350,11 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
     if let Some(v) = b.get("position").and_then(|v| v.as_i64()) {
         let _ = conn.execute("UPDATE panel SET position=?1 WHERE id=?2", params![v, id]);
     }
-    // LIBRARY PANELS (#54) : (dé)référencer une définition réutilisable. 0/null -> panneau autonome (détache).
-    if let Some(vv) = b.get("library_panel_id") {
-        if vv.is_null() || vv.as_i64() == Some(0) {
-            let _ = conn.execute("UPDATE panel SET library_panel_id=NULL WHERE id=?1", params![id]);
-        } else if let Some(n) = vv.as_i64() {
-            let _ = conn.execute("UPDATE panel SET library_panel_id=?1 WHERE id=?2", params![n, id]);
-        }
+    // LIBRARY PANELS (#54) : l'écriture de la référence rejoue EXACTEMENT la décision déjà passée par
+    // la porte (`ref_bib`, lu une seule fois) — jamais une seconde lecture du corps qui pourrait en
+    // différer. 0/null -> panneau autonome (détache).
+    if let Some(v) = ref_bib.a_ecrire() {
+        let _ = conn.execute("UPDATE panel SET library_panel_id=?1 WHERE id=?2", params![v, id]);
     }
     // INVALIDATION : invalide le cache du panneau à chaque update. On purge sans condition (le coût est nul :
     // 1 ligne max) -> aucun payload périmé servi après changement de requête/viz/fenêtre/visibilité. La

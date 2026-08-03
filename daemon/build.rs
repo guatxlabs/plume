@@ -23,10 +23,19 @@ const COFFRE_TMP: &str = "src/tmp_possede.rs";
 /// ignorées, cf. `appel_hors_commentaire`).
 const APPEL_TMP: &str = "env::temp_dir";
 
+/// LE COFFRE DE LA RÉSOLUTION PANNEAU∪BIBLIOTHÈQUE (P7.13-a) : `src/handlers/panneau_resolu.rs` est le
+/// SEUL fichier autorisé à ÉCRIRE la résolution « la définition de bibliothèque gagne, sinon le panneau ».
+const COFFRE_PANNEAU: &str = "src/handlers/panneau_resolu.rs";
+/// Les DEUX formes que prend cette résolution en SQL : la jointure qui la rend possible, et la colonne
+/// qui l'exprime. On garde le MÉCANISME (la jointure), pas l'orthographe d'une colonne : un futur site
+/// qui résoudrait `title` ou un champ pas encore inventé est couvert le jour même.
+const MOTIFS_RESOLUTION: &[&str] = &["LEFT JOIN library_panel", "COALESCE(lp."];
+
 fn main() {
     // Re-run le build script uniquement si le contrat CIM embarqué change.
     println!("cargo:rerun-if-changed={CIM_JSON}");
     garde_temporaire_possede();
+    garde_resolution_panneau();
 
     let json = fs::read_to_string(CIM_JSON).unwrap_or_else(|e| {
         panic!("build.rs: lecture impossible de {CIM_JSON} (contrat CIM embarqué) : {e}")
@@ -60,25 +69,7 @@ fn main() {
 /// que personne ait à y penser. Un appel direct à la racine temporaire du système hors du coffre
 /// FAIT ÉCHOUER LE BUILD — plus jamais un test qui passe au vert en semant dans le `/tmp` d'autrui.
 fn garde_temporaire_possede() {
-    println!("cargo:rerun-if-changed=src");
-    let mut fautifs = Vec::new();
-    parcourir(Path::new("src"), &mut |f: &Path| {
-        if f.extension().and_then(|e| e.to_str()) != Some("rs") {
-            return;
-        }
-        // Le coffre EST l'exception, et il est nommé une seule fois (const ci-dessus).
-        if f == Path::new(COFFRE_TMP) {
-            return;
-        }
-        let Ok(src) = fs::read_to_string(f) else {
-            return;
-        };
-        for (i, ligne) in src.lines().enumerate() {
-            if appel_hors_commentaire(ligne) {
-                fautifs.push(format!("{}:{}", f.display(), i + 1));
-            }
-        }
-    });
+    let fautifs = occurrences_hors_coffre(COFFRE_TMP, &[APPEL_TMP]);
     if !fautifs.is_empty() {
         panic!(
             "\n\n  GARDE `tmp_possede` — {n} appel(s) direct(s) à la racine temporaire du système hors du coffre :\n\
@@ -96,14 +87,70 @@ fn garde_temporaire_possede() {
     }
 }
 
-/// Vrai si la ligne APPELLE la racine temporaire (et ne fait pas que la mentionner). Une occurrence
-/// précédée d'un `//` sur la même ligne est du commentaire : la garde doit pouvoir être DOCUMENTÉE
+/// GARDE-FOU À LA COMPILATION — LA RÉSOLUTION PANNEAU∪BIBLIOTHÈQUE VIT À UN SEUL ENDROIT (P7.13-a).
+///
+/// Mesuré le 2026-08-03 sur `3256e4d` : la porte « SQL brut = admin » de `panel_update` évaluait
+/// `p.is_soql` pendant que l'exécuteur résolvait `COALESCE(lp.is_soql, p.is_soql)`. La bibliothèque
+/// gagnait, la porte ne le savait pas : un `editor` rattachait une définition SQL BRUT d'admin (204)
+/// et en lisait le résultat (200, 2 lignes de la table `user`). La résolution était écrite à TROIS
+/// endroits ; c'est cette dispersion qui a permis à la porte d'en ignorer une.
+///
+/// La garde ne liste pas les sites — elle DÉRIVE (parcours récursif de `src/`) et interdit le
+/// MÉCANISME hors du coffre : la jointure de résolution et sa forme colonne. Un quatrième site de
+/// résolution ne peut donc plus naître en silence, il NE COMPILE PAS.
+fn garde_resolution_panneau() {
+    let fautifs = occurrences_hors_coffre(COFFRE_PANNEAU, MOTIFS_RESOLUTION);
+    if !fautifs.is_empty() {
+        panic!(
+            "\n\n  GARDE `panneau_resolu` — {n} résolution(s) panneau∪bibliothèque hors du coffre :\n\
+             \x20   {liste}\n\n\
+             \x20 La définition qu'un panneau EXÉCUTE (bibliothèque sinon panneau) se résout à UN SEUL\n\
+             \x20 endroit, parce que la porte « SQL brut = admin » EMPRUNTE cette résolution. Une 2e\n\
+             \x20 écriture la fait diverger de la porte — c'est exactement le contournement P7.13-a.\n\n\
+             \x20   lire ce qu'un panneau exécute -> DefinitionExecutee::courante(conn, panel_id)\n\
+             \x20   projeter ce qu'il exécutera   -> DefinitionExecutee::projetee(..)\n\
+             \x20   projeter en SQL               -> panneau_resolu::JOINTURE / COL_QUERY / COL_IS_SOQL / …\n\n\
+             \x20 Seul {COFFRE_PANNEAU} peut écrire la résolution.\n",
+            n = fautifs.len(),
+            liste = fautifs.join("\n     "),
+        );
+    }
+}
+
+/// Les occurrences de CODE (hors commentaire) de `motifs` dans `src/`, en dehors du fichier-coffre.
+/// La liste des fichiers examinés est DÉRIVÉE de l'arborescence : un fichier ajouté demain est couvert
+/// le jour même, sans que personne ait à l'inscrire quelque part.
+fn occurrences_hors_coffre(coffre: &str, motifs: &[&str]) -> Vec<String> {
+    println!("cargo:rerun-if-changed=src");
+    let mut fautifs = Vec::new();
+    parcourir(Path::new("src"), &mut |f: &Path| {
+        if f.extension().and_then(|e| e.to_str()) != Some("rs") {
+            return;
+        }
+        // Le coffre EST l'exception, et il est nommé une seule fois (const en tête).
+        if f == Path::new(coffre) {
+            return;
+        }
+        let Ok(src) = fs::read_to_string(f) else {
+            return;
+        };
+        for (i, ligne) in src.lines().enumerate() {
+            if motifs.iter().any(|m| hors_commentaire(ligne, m)) {
+                fautifs.push(format!("{}:{}", f.display(), i + 1));
+            }
+        }
+    });
+    fautifs
+}
+
+/// Vrai si la ligne porte le motif en tant que CODE (et ne fait pas que le mentionner). Une occurrence
+/// précédée d'un `//` sur la même ligne est du commentaire : une garde doit pouvoir être DOCUMENTÉE
 /// sans se déclencher elle-même.
-fn appel_hors_commentaire(ligne: &str) -> bool {
-    match ligne.find(APPEL_TMP) {
+fn hors_commentaire(ligne: &str, motif: &str) -> bool {
+    match ligne.find(motif) {
         None => false,
         Some(pos) => match ligne.find("//") {
-            Some(c) => c > pos, // `//` APRÈS l'appel -> l'appel est bien du code
+            Some(c) => c > pos, // `//` APRÈS l'occurrence -> c'est bien du code
             None => true,
         },
     }

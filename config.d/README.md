@@ -108,8 +108,19 @@ logs du daemon), il **ne fait jamais crasher** le boot :
 
 - **SQL brut (`is_soql: false`)** lit l'intégralité de la base. Dans le CRUD de l'UI, il est **réservé
   au rôle `admin`** (durcissement 3a) ; le GXQL (langage borné, lecture seule) reste permis à l'`editor`.
-  Les overlays de ce répertoire sont considérés **trusted (git-reviewés)** : le SQL brut y est accepté,
-  mais reste **validé** (doit compiler).
+  Les overlays de ce répertoire sont considérés **trusted (git-reviewés)**, mais la frontière **n'est pas
+  la même selon l'objet** — cette section affirmait un « le SQL brut y est accepté » uniforme que le code
+  contredisait pour la moitié des objets. État réel, vérifié le 2026-08-03 :
+
+  | Objet d'overlay | `is_soql: false` | Où |
+  |---|---|---|
+  | `rules/`, `playbooks/` | **REFUSÉ** au chargement (WARN + event `config.overlay.reject`) | `overlays.rs` |
+  | `library-panels/`, `dashboards/` | **ACCEPTÉ**, et **tracé** au ledger (`config.overlay.raw_sql`) | `overlays_oac.rs` |
+
+  La différence est assumée : une règle s'exécute **toute seule, en boucle**, alors qu'un panneau ne rend
+  que ce que son lecteur a le droit de voir. Dans les deux cas la requête reste **validée** (doit compiler),
+  et l'écriture de ce répertoire est un acte d'**opérateur** (image bakée en lecture seule / ConfigMap,
+  process non-propriétaire) — jamais une action d'utilisateur authentifié.
 - L'**évaluation** des règles et playbooks s'exécute sur une **connexion lecture seule**
   (`PRAGMA query_only=ON` + `SQLITE_OPEN_READ_ONLY` + garde `stmt.readonly()`) : une règle/playbook ne
   peut **que lire**, jamais muter la base (durcissement 3b).

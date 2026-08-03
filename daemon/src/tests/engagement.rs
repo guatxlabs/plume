@@ -701,7 +701,8 @@
         let _g = ENGAGEMENT_TEST_LOCK.lock();
         eng_test_reset();
         set_engagement_mode(true);
-        let st = tenant_test_state("plume-admin", "plume-editor", "admins", Some(mk_test_control()));
+        let (cp, _cptmp) = mk_test_control();
+        let st = tenant_test_state("plume-admin", "plume-editor", "admins", Some(cp));
         assert!(st.tenants.control.is_some(), "mode 1 : control-plane présent");
         let admin = eng_admin_au();
         // greybox (scoped_cred seul) ET whitebox (scoped_cred + config_read) sont tous deux refusés.

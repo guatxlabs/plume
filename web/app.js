@@ -155,8 +155,17 @@ async function exploreExport(format) {
   if (!r.ok) { let m = ''; try { m = (await r.json()).error || ''; } catch (_) {} toast('Export refusé' + (m ? ' : ' + m : ' (' + r.status + ')'), 'bad'); return; }
   const text = await r.text();
   const trunc = r.headers.get('x-plume-truncated') === '1';
-  downloadText(`plume-explore-${tsSlug()}.${format}`, format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json', text);
-  toast('Export ' + format.toUpperCase() + ' téléchargé' + (trunc ? ' (tronqué au plafond de lignes)' : ''), trunc ? 'info' : 'ok');
+  // P7.3-b — LE NOM DU FICHIER PORTE L'AVEU. Le serveur le met déjà dans son `Content-Disposition`,
+  // mais CE client ne le lit pas : il refabrique le nom ici, donc c'est ICI que l'aveu doit être
+  // reposé — sinon le fichier qui atterrit sur le disque de l'analyste reste d'apparence complète,
+  // et le toast qui l'accompagnait aura disparu bien avant qu'on rouvre le fichier.
+  // P7.3-c — avec son AMPLEUR quand le serveur a su la mesurer, « ampleur inconnue » sinon : on ne
+  // fabrique pas un chiffre qu'on n'a pas.
+  const ecartes = parseInt(r.headers.get('x-plume-truncated-ecartes') || '', 10);
+  const marque = !trunc ? '' : (Number.isFinite(ecartes) && ecartes > 0 ? `-TRONQUE-${ecartes}-lignes-manquantes` : '-TRONQUE-ampleur-inconnue');
+  downloadText(`plume-explore-${tsSlug()}${marque}.${format}`, format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json', text);
+  const combien = Number.isFinite(ecartes) && ecartes > 0 ? ` — ${ecartes} ligne(s) manquante(s)` : ' — ampleur inconnue';
+  toast('Export ' + format.toUpperCase() + ' téléchargé' + (trunc ? ` (TRONQUÉ${combien})` : ''), trunc ? 'info' : 'ok');
 }
 
 

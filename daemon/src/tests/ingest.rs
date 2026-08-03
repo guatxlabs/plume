@@ -131,9 +131,8 @@
     /// Prépare un env cold : PLUME_COLD_TIER=1 + PLUME_COLD_DIR=<temp> (aucune clé -> aging fail-closed, ne
     /// touche RIEN ; de toute façon les events de test sont RÉCENTS, hors fenêtre d'aging). Renvoie le temp dir.
     #[cfg(feature = "cold_tier")]
-    fn cold_env_on() -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("plume-caps-cold-{}-{}", std::process::id(), now()));
-        std::fs::create_dir_all(&d).unwrap();
+    fn cold_env_on() -> crate::tmp_possede::TmpPossede {
+        let d = crate::tmp_possede::TmpPossede::neuf("caps-cold");
         std::env::set_var("PLUME_COLD_TIER", "1");
         std::env::set_var("PLUME_COLD_DIR", d.to_string_lossy().to_string());
         d
@@ -1053,7 +1052,8 @@
         std::env::set_var("PLUME_OTLP_TRACES", "1");
         std::env::remove_var("PLUME_OTLP_MAX_DECOMPRESS");
 
-        let spool = std::env::temp_dir().join(format!("plume-otlp-{}-{}", std::process::id(), now()));
+        let _tmpg2 = crate::tmp_possede::TmpPossede::neuf("otlp");
+        let spool = _tmpg2.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&spool).unwrap();
         let mut st = sso_test_state("plume-admin", "plume-editor", "admins");
         st.spool = Arc::new(spool.to_string_lossy().to_string());
@@ -1336,11 +1336,11 @@
     // ================================================================================================
 
     /// State de test + spool ISOLÉ (tmpdir unique par appel — les tests tournent en parallèle).
-    fn ing_state_with_spool() -> (AppState, std::path::PathBuf) {
+    // Spool RENDU avec sa propriété (cf. `fh_state_with_spool`).
+    fn ing_state_with_spool() -> (AppState, crate::tmp_possede::TmpPossede) {
         static ING_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let uniq = ING_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let spool = std::env::temp_dir().join(format!("plume-ing-{}-{}-{}", std::process::id(), now(), uniq));
-        std::fs::create_dir_all(&spool).unwrap();
+        let spool = crate::tmp_possede::TmpPossede::neuf(&format!("ing-{uniq}"));
         let mut st = sso_test_state("plume-admin", "plume-editor", "admins");
         st.spool = Arc::new(spool.to_string_lossy().to_string());
         (st, spool)

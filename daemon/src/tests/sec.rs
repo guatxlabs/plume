@@ -373,7 +373,7 @@ async fn sec1_csrf_sso_mutation_requires_same_origin() {
 // ------------------------------------------------------------------------------------------------
 #[tokio::test]
 async fn sec1_scim_put_delete_tenant_scoped() {
-    let cp = mk_test_control();
+    let (cp, _cptmp) = mk_test_control();
     let alice = ensure_platform_user(&cp, "alice").unwrap(); // t1
     let bob = ensure_platform_user(&cp, "bob").unwrap();       // t2
     {
@@ -547,7 +547,7 @@ fn v105_ledger_key_read_and_failclosed() {
     let secret_missing = mk_tmp_path("v105-ledger-conf-secret.key");
     let _ = std::fs::remove_file(&secret_missing);
     let mut conf: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    conf.insert("PLUME_LEDGER_KEY_PATH".to_string(), secret_missing.clone());
+    conf.insert("PLUME_LEDGER_KEY_PATH".to_string(), secret_missing.as_str().to_string());
     // garde-fou : le test n'a de sens que si l'env process n'impose pas déjà le chemin (cfg lit l'env d'abord).
     if std::env::var("PLUME_LEDGER_KEY_PATH").is_err() {
         assert!(ledger_key(&conf).is_none(), "PLUME_LEDGER_KEY_PATH -> Secret absent -> fail-closed");
@@ -687,7 +687,7 @@ fn secretprov_phase1_cfg_secret_file_preferred_env_fallback() {
     // (b) `{key}_FILE` posé -> le FICHIER gagne sur l'env (même si `{key}` env/conf est aussi présent).
     let f = mk_tmp_path("secretprov-cfg.key");
     std::fs::write(&f, b"file-wins-token\n").unwrap();
-    conf.insert(file_key.clone(), f.clone());
+    conf.insert(file_key.clone(), f.as_str().to_string());
     assert_eq!(cfg_secret(&conf, K), "file-wins-token\n",
         "KEY_FILE posé -> fichier VERBATIM préféré, ignore l'env KEY");
     // (c) `{key}_FILE` = "" (vide) traité comme NON posé -> repli env (pas d'exit, pas de faux fail-closed).
@@ -747,18 +747,19 @@ fn secretprov_v118_passhash_cfg_secret_optional_wiring() {
     // (a) `_FILE` posé + fichier ABSENT + AUCUN env -> "" -> MODE SETUP (le boot teste pass.is_empty()).
     //     Reproduit exactement l'invariant setup du mount `optional: true` sur cluster non-bootstrappé.
     let mut conf = std::collections::HashMap::new();
-    conf.insert(file_key.clone(), mk_tmp_path("v118-cfgopt-absent.key"));
+    let absent = mk_tmp_path("v118-cfgopt-absent.key");
+    conf.insert(file_key.clone(), absent.as_str().to_string());
     assert_eq!(cfg_secret_optional(&conf, K), "", "_FILE posé + fichier absent + pas d'env -> \"\" -> mode setup");
     // (b) `_FILE` posé + fichier PRÉSENT lisible -> hash VERBATIM (l'auth l'utilise), ignore l'env.
     let f = mk_tmp_path("v118-cfgopt-real.key");
     std::fs::write(&f, b"$2b$12$fromfile\n").unwrap();
-    conf.insert(file_key.clone(), f.clone());
+    conf.insert(file_key.clone(), f.as_str().to_string());
     conf.insert(K.to_string(), "$2b$12$fromenv".to_string()); // env présent -> le FICHIER doit gagner
     assert_eq!(cfg_secret_optional(&conf, K), "$2b$12$fromfile\n", "_FILE présent -> fichier VERBATIM préféré à l'env");
     // (c) `_FILE` posé + fichier VIDE -> "" (mode setup), même si l'env porte une valeur (vide = pas de hash).
     let empty = mk_tmp_path("v118-cfgopt-empty.key");
     std::fs::write(&empty, b"").unwrap();
-    conf.insert(file_key.clone(), empty.clone());
+    conf.insert(file_key.clone(), empty.as_str().to_string());
     assert_eq!(cfg_secret_optional(&conf, K), "", "_FILE vide -> \"\" -> mode setup (hash vide = pas de hash)");
     // (d) `_FILE` NON posé -> repli env `{key}` (parité v116/v117 STRICTE : chemin env inchangé).
     conf.remove(&file_key);
@@ -977,7 +978,7 @@ fn secretprov_phase2_cfg_secret_ref_additive_and_default_unchanged() {
     conf.insert(ref_key.clone(), format!("env:{evar}"));
     let f = mk_tmp_path("p2-ref-file.key");
     std::fs::write(&f, b"from-file\n").unwrap();
-    conf.insert(file_key.clone(), f.clone());
+    conf.insert(file_key.clone(), f.as_str().to_string());
     assert_eq!(cfg_secret(&conf, K), "from-ref-env\n", "_REF=env: -> VERBATIM, gagne sur _FILE");
     std::env::remove_var(&evar);
 
@@ -1019,7 +1020,7 @@ fn ff_rm(path: &str) {
     }
 }
 
-fn oracle_db(tag: &str) -> String {
+fn oracle_db(tag: &str) -> crate::tmp_possede::TmpDb {
     let path = ff_tmp_path(tag);
     let conn = open_db(&path).unwrap();
     conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();

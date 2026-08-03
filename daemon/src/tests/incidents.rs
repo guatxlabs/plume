@@ -359,8 +359,8 @@
     /// l'IP franchissante ; le wizard pré-remplit ALORS la step `ban_ip` avec cette IP (chemin ordonnanceur réel).
     #[test]
     fn p3a_advanced_rule_captures_src_ip_and_wizard_prefills_ban_ip() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-p3a-adv-{}-{}.db", std::process::id(), now()));
+        let _tmpg1 = crate::tmp_possede::TmpPossede::neuf("p3a-adv");
+        let path = _tmpg1.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         let t = now() - 10; // en fenêtre (window_s=600)
         {
@@ -406,8 +406,8 @@
     /// structurée -> alert.src_ip/pid restent NULL (on ne fait pas passer un group-by arbitraire pour une IP).
     #[test]
     fn p3a_ambiguous_groupby_leaves_structured_null() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-p3a-amb-{}-{}.db", std::process::id(), now()));
+        let _tmpg2 = crate::tmp_possede::TmpPossede::neuf("p3a-amb");
+        let path = _tmpg2.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         let t = now() - 10;
         {
@@ -439,8 +439,8 @@
     /// CAPTURE MOTEUR (corrélation) : une corrélation keyée `src_ip` (mode alerte) range l'entité dans alert.src_ip.
     #[test]
     fn p3a_correlation_captures_src_ip() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-p3a-corr-{}-{}.db", std::process::id(), now()));
+        let _tmpg3 = crate::tmp_possede::TmpPossede::neuf("p3a-corr");
+        let path = _tmpg3.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         let t = now() - 10;
         {
@@ -871,10 +871,10 @@
     /// -> None (aucun cross-tenant). Miroir de l'isolation /api/query & #60.
     #[test]
     fn p3b_tenant_scope_no_cross_tenant_incident() {
-        let mut pa = std::env::temp_dir();
-        pa.push(format!("plume-p3b-tenantA-{}-{}.db", std::process::id(), now()));
-        let mut pb = std::env::temp_dir();
-        pb.push(format!("plume-p3b-tenantB-{}-{}.db", std::process::id(), now()));
+        let _tmpg4 = crate::tmp_possede::TmpPossede::neuf("p3b-tenantA");
+        let pa = _tmpg4.sous("plume.db").chemin().to_path_buf();
+        let _tmpg5 = crate::tmp_possede::TmpPossede::neuf("p3b-tenantB");
+        let pb = _tmpg5.sous("plume.db").chemin().to_path_buf();
         let (pa, pb) = (pa.to_string_lossy().to_string(), pb.to_string_lossy().to_string());
         let mkdb = |p: &str| { let c = Connection::open(p).unwrap(); c.execute_batch(include_str!("../../../db/schema.sql")).unwrap(); assert!(migrate(&c)); c };
         let ca = mkdb(&pa);

@@ -350,6 +350,35 @@ pub(crate) fn load_overlay_field_filters(conn: &Connection, dir: &std::path::Pat
     n
 }
 
+/// LE SQL BRUT D'UN OVERLAY DE PANNEAU — frontière ÉTABLIE, plus seulement constatée (P7.9-a).
+///
+/// Le CRUD HTTP des panneaux garde le SQL brut derrière `raw_sql_allowed` (admin, et pas de
+/// permission `raw_sql` retirée) — `dash_ergonomics.rs` à l'INSERT comme à l'UPDATE. Ce chemin-ci
+/// n'y passe pas, et c'est ASSUMÉ : établi par lecture le 2026-08-03, il n'est atteignable que par
+/// `main() -> run() -> open_and_migrate_db -> load_overlays`, c'est-à-dire AU DÉMARRAGE. Aucune
+/// route HTTP, aucune commande CLI, aucun job de fond n'y mène — donc aucun utilisateur
+/// authentifié, quel que soit son rôle, ne peut le déclencher. La source est le répertoire
+/// `PLUME_CONFIG_DIR`, baké dans l'image (`chmod a+rX`, process `USER soc` non-propriétaire) ou
+/// monté en ConfigMap, sous `readOnlyRootFilesystem`/`read_only`. Écrire là, c'est être opérateur :
+/// l'auteur d'un overlay est déjà équivalent-admin, et lui redemander un rôle n'a pas de sens.
+///
+/// CE QUI MANQUAIT VRAIMENT. Le chemin JUMEAU des règles/playbooks REFUSE le SQL brut au
+/// chargement (`overlays.rs`), et sa raison écrite est double : « contournerait le gate admin
+/// `raw_sql_allowed` ET LE LEDGER D'AUDIT plume (seul un commit git la tracerait) ». Le premier
+/// motif ne vaut pas ici (pas d'utilisateur), mais LE SECOND SI : un panneau en SQL brut arrivait
+/// sans laisser la moindre trace côté plume. On ne renverse donc pas la décision — on la DÉCLARE
+/// et on la TRACE, comme le fait déjà son jumeau de son côté.
+fn tracer_panneau_sql_brut(conn: &Connection, kind: &str, name: &str) {
+    let _ = audit_config_change(
+        conn,
+        "config.overlay.raw_sql",
+        &format!("{kind} overlay '{name}' posé en SQL brut (auteur d'overlay = équivalent-admin)"),
+        3,
+        &format!("overlay config.d : {kind} '{name}' en SQL brut accepté au chargement (hors gate raw_sql_allowed, tracé ici)"),
+        &json!({ "op": "accept", "kind": kind, "name": name, "reason": "raw-sql-overlay-operator-authored" }).to_string(),
+    );
+}
+
 /// LIBRARY-PANELS (#54 panneaux réutilisables). Aucun secret. Requête validée par compile_panel_sql.
 pub(crate) fn load_overlay_library_panels(conn: &Connection, dir: &std::path::Path) -> u32 {
     let mut n = 0;
@@ -360,6 +389,7 @@ pub(crate) fn load_overlay_library_panels(conn: &Connection, dir: &std::path::Pa
         let query = v.get("query").and_then(|x| x.as_str()).unwrap_or("").to_string();
         let is_soql = v.get("is_soql").and_then(|x| x.as_bool()).unwrap_or(true);
         if let Err(e) = compile_panel_sql(&query, is_soql, 0, 0, None) { eprintln!("[oac] WARN library-panel '{name}' : requête invalide ({e}) — ignoré"); continue; }
+        if !is_soql { tracer_panneau_sql_brut(conn, "library-panel", &name); }
         let viz = v.get("viz").and_then(|x| x.as_str()).unwrap_or("table").to_string();
         let drill = v.get("drill").and_then(|x| x.as_str()).unwrap_or("").to_string();
         match plan_upsert(conn, "library_panel", &name) {
@@ -422,6 +452,11 @@ pub(crate) fn load_overlay_dashboards(conn: &Connection, dir: &std::path::Path) 
             ));
         }
         if bad { continue; }
+        // Même frontière que les library-panels : un panneau de dashboard overlay en SQL brut est
+        // opérateur-authoré, donc accepté — mais TRACÉ (cf. `tracer_panneau_sql_brut`).
+        if compiled.iter().any(|(_, _, is_soql, _, _, _)| *is_soql == 0) {
+            tracer_panneau_sql_brut(conn, "dashboard-panel", &name);
+        }
         let did = match plan_upsert(conn, "dashboard", &name) {
             UpsertPlan::SkipUser => { eprintln!("[oac] WARN dashboard '{name}' : un dashboard UI (managed=2) du même nom existe — overlay ignoré"); continue; }
             UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE dashboard SET managed=1 WHERE id=?1", params![id]); id }

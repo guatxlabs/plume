@@ -37,19 +37,15 @@ fn union_query_oracle(
 
 static UNIQ: AtomicU64 = AtomicU64::new(0);
 
-/// Répertoire temporaire unique (pid + compteur + nanos) — chaque test s'isole.
-fn tmp_root(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let d = std::env::temp_dir().join(format!(
-        "plume-cold-{tag}-{}-{}-{nanos}",
-        std::process::id(),
+/// Répertoire temporaire unique — chaque test s'isole. Il se POSSÈDE : sa destruction efface le
+/// répertoire ENTIER, donc aussi les `-wal`/`-shm` que SQLite crée à côté sans que personne ne les
+/// nomme (c'est là qu'était 90 % de la fuite mesurée). Rendre un `TmpPossede` au lieu d'un
+/// `PathBuf` ne change RIEN aux appelants : il se déréférence en `&Path`.
+fn tmp_root(tag: &str) -> crate::tmp_possede::TmpPossede {
+    crate::tmp_possede::TmpPossede::neuf(&format!(
+        "cold-{tag}-{}",
         UNIQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    ))
 }
 
 /// Table `event` MIROIR du schéma live (colonnes lues/supprimées par cold_store). In-file SQLite (pas

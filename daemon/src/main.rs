@@ -27,6 +27,8 @@ pub(crate) use backup::*;
 mod disk; // garde disque / cardinalité à l'ingest + alerte pré-saturation (#29) — mesure statvfs (unsafe) isolée
 pub(crate) use disk::*;
 mod util;
+
+mod tmp_possede; // LE COFFRE du répertoire temporaire : seule détentrice d'un accès à $TMPDIR -> une fixture qui ne possède pas son temporaire ne compile pas (build.rs)
 pub(crate) use util::*;
 mod collected; // INVENTAIRE de ce que les collecteurs/agent LIVRÉS émettent réellement -> ORACLE D'INERTIE (séparé de la table de TRADUCTION Sigma)
 mod sigma;

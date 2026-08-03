@@ -4241,11 +4241,8 @@ mod s4_round2_tests {
     /// s'arrête au lieu de servir sans la table. Le redémarrage la re-tente.
     #[test]
     fn write_contention_interrupts_instead_of_stamping() {
-        let path = std::env::temp_dir().join(format!(
-            "plume-mig-busy-{}-{}.db",
-            std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ));
+        let _tmpg1 = crate::tmp_possede::TmpPossede::neuf("mig-busy");
+        let path = _tmpg1.sous("plume.db").chemin().to_path_buf();
         let _ = std::fs::remove_file(&path);
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
@@ -4633,7 +4630,8 @@ mod schema_contract_tests {
     /// on redémarre un daemon sur une base déjà au schéma courant).
     #[test]
     fn a_real_file_database_is_accepted_on_every_boot() {
-        let path = std::env::temp_dir().join(format!("plume-contract-{}.db", std::process::id()));
+        let _tmpg2 = crate::tmp_possede::TmpPossede::neuf("contract");
+        let path = _tmpg2.sous("plume.db").chemin().to_path_buf();
         let _ = std::fs::remove_file(&path);
         let reference = declared_shape(&fresh_migrated()).unwrap();
         for boot in 1..=3 {
@@ -4848,7 +4846,8 @@ mod schema_contract_tests {
     /// ACCEPTER (l'état final est bon) — c'était un refus, mesuré, avant ce correctif.
     #[test]
     fn write_contention_on_an_up_to_date_database_is_not_a_refusal() {
-        let path = std::env::temp_dir().join(format!("plume-contention-{}.db", std::process::id()));
+        let _tmpg3 = crate::tmp_possede::TmpPossede::neuf("contention");
+        let path = _tmpg3.sous("plume.db").chemin().to_path_buf();
         let _ = std::fs::remove_file(&path);
         {
             let c = Connection::open(&path).unwrap();
@@ -4881,7 +4880,8 @@ mod schema_contract_tests {
     /// final change.
     #[test]
     fn a_schema_sql_failure_that_leaves_a_gap_is_still_refused() {
-        let path = std::env::temp_dir().join(format!("plume-contention-gap-{}.db", std::process::id()));
+        let _tmpg4 = crate::tmp_possede::TmpPossede::neuf("contention-gap");
+        let path = _tmpg4.sous("plume.db").chemin().to_path_buf();
         let _ = std::fs::remove_file(&path);
         {
             let c = Connection::open(&path).unwrap();
@@ -5060,11 +5060,8 @@ mod migrate_regression_tests {
     /// intacte (aucune étape, aucune transaction, aucune écriture).
     #[test]
     fn r2_up_to_date_file_database_is_byte_identical() {
-        let path = std::env::temp_dir().join(format!(
-            "plume-mig-reg-{}-{}.db",
-            std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ));
+        let _tmpg5 = crate::tmp_possede::TmpPossede::neuf("mig-reg");
+        let path = _tmpg5.sous("plume.db").chemin().to_path_buf();
         let _ = std::fs::remove_file(&path);
         {
             let conn = Connection::open(&path).unwrap();

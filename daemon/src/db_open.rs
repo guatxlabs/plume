@@ -460,7 +460,8 @@ mod door_tests {
     /// NOMMANT l'objet et SANS rien réparer, base PLUS RÉCENTE refusée sans écrire une ligne.
     #[test]
     fn the_door_applies_the_contract_on_a_real_file() {
-        let base = std::env::temp_dir().join(format!("plume-porte-{}-{}.db", std::process::id(), line!()));
+        let _tmpg1 = crate::tmp_possede::TmpPossede::neuf("porte");
+        let base = _tmpg1.sous("plume.db").chemin().to_path_buf();
         let _ = std::fs::remove_file(&base);
         let p = base.to_str().unwrap();
 

@@ -38,10 +38,11 @@
     }
 
     // ================================ FIELD FILTERS (#45) ================================
-    fn ff_tmp_path(tag: &str) -> String {
-        let mut p = std::env::temp_dir();
-        p.push(format!("plume-ff-{}-{tag}-{}.db", std::process::id(), now()));
-        p.to_string_lossy().into_owned()
+    /// Rend un temporaire QUI SE POSSÈDE : l'appelant reçoit la propriété du répertoire, donc il
+    /// vit exactement le temps du test puis disparaît entièrement. Rendre un `String` nu ici
+    /// aurait laissé le chemin sans propriétaire — c'est la forme même de la fuite.
+    fn ff_tmp_path(tag: &str) -> crate::tmp_possede::TmpDb {
+        crate::tmp_possede::TmpDb::neuf(&format!("ff-{tag}"))
     }
 
     #[test]
@@ -700,7 +701,8 @@
     #[test]
     fn rename_legacy_soc_db_to_plume() {
         use std::fs;
-        let base = std::env::temp_dir().join(format!("plume-rn-{}", std::process::id()));
+        let _tmpg2 = crate::tmp_possede::TmpPossede::neuf("rn");
+        let base = _tmpg2.racine().chemin().to_path_buf();
         // (1) legacy soc.db seul -> renommé (+ wal/shm) en plume.db.
         let d1 = base.join("case1");
         fs::create_dir_all(&d1).unwrap();

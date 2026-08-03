@@ -37,8 +37,8 @@
     /// UN finding-group (alerte `corr-<id>-<entity>`), sur le CHEMIN PLANIFIÉ (pas le dry-run).
     #[test]
     fn scheduled_run_correlations_fires_on_sequence() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-corr-fire-{}-{}.db", std::process::id(), now()));
+        let _tmpg1 = crate::tmp_possede::TmpPossede::neuf("corr-fire");
+        let path = _tmpg1.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         let base = now() - 100; // en fenêtre (window_s=3600)
         {
@@ -80,8 +80,8 @@
     /// (#37-c) NON-DÉCLENCHEMENT sur séquence CASSÉE : que des échecs, jamais de succès -> aucun finding-group.
     #[test]
     fn scheduled_run_correlations_no_fire_on_broken_sequence() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-corr-nofire-{}-{}.db", std::process::id(), now()));
+        let _tmpg2 = crate::tmp_possede::TmpPossede::neuf("corr-nofire");
+        let path = _tmpg2.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         let base = now() - 100;
         {
@@ -109,8 +109,8 @@
     /// absente du résultat -> échec d'éval, PAS un « aucun match ») NE RÉSOUT PAS un finding-group ouvert.
     #[test]
     fn scheduled_run_correlations_eval_failure_fail_closed() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-corr-failclosed-{}-{}.db", std::process::id(), now()));
+        let _tmpg3 = crate::tmp_possede::TmpPossede::neuf("corr-failclosed");
+        let path = _tmpg3.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         {
             let w = Connection::open(&p).unwrap();
@@ -168,8 +168,8 @@
     /// anomalie (alerte `baseline-<id>-<entity>-<bucket>`), sur le CHEMIN PLANIFIÉ.
     #[test]
     fn scheduled_run_baselines_flags_anomaly() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-baseline-{}-{}.db", std::process::id(), now()));
+        let _tmpg4 = crate::tmp_possede::TmpPossede::neuf("baseline");
+        let path = _tmpg4.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         let bucket_s = 3600i64;
         let cur = now() / bucket_s;
@@ -216,8 +216,8 @@
     /// (aucune alerte, aucune observation) -> tick byte-identique.
     #[test]
     fn advanced_detection_mode0_inert() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-adv-mode0-{}-{}.db", std::process::id(), now()));
+        let _tmpg5 = crate::tmp_possede::TmpPossede::neuf("adv-mode0");
+        let path = _tmpg5.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         {
             let w = Connection::open(&p).unwrap();
@@ -892,8 +892,8 @@
     #[test]
     fn rba_risk_rule_emits_per_entity_contributions() {
         // DB fichier : run_risk_rules éval via run_query (pool lecture sur chemin disque, comme la prod).
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-rba-rule-{}-{}.db", std::process::id(), now()));
+        let _tmpg6 = crate::tmp_possede::TmpPossede::neuf("rba-rule");
+        let path = _tmpg6.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         // Writer via open_db (WAL + busy_timeout + clé mode 0) -> run_query (pool lecture) coexiste sans
         // blocage, EXACTEMENT comme le test e2e de run_due_rules.
@@ -938,8 +938,8 @@
     #[test]
     fn store_spi_byte_identical_writes_and_query_soql() {
         // DB fichier (query_soql lit via le pool READ_ONLY sur un chemin disque, comme la prod).
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-store-spi-{}-{}.db", std::process::id(), now()));
+        let _tmpg7 = crate::tmp_possede::TmpPossede::neuf("store-spi");
+        let path = _tmpg7.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         {
             let w = Connection::open(&p).unwrap();
@@ -1022,13 +1022,13 @@
     }
 
     /// Base temporaire UNIQUE (pid + horodatage + compteur) pour les tests sur disque.
-    fn mk_tmp_path(tag: &str) -> String {
+    /// Temporaire de backup QUI SE POSSÈDE (l'appelant en reçoit la propriété). Les `.age`, `-wal`
+    /// et plaintexts intermédiaires que le backup sème à côté naissent dans le répertoire possédé.
+    fn mk_tmp_path(tag: &str) -> crate::tmp_possede::TmpDb {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let mut p = std::env::temp_dir();
-        p.push(format!("plume-bk-{}-{tag}-{}-{n}", std::process::id(), now()));
-        p.to_string_lossy().into_owned()
+        crate::tmp_possede::TmpDb::neuf(&format!("bk-{tag}-{n}"))
     }
     fn bytes_contain(hay: &[u8], needle: &[u8]) -> bool {
         !needle.is_empty() && hay.windows(needle.len()).any(|w| w == needle)
@@ -1134,7 +1134,8 @@
     /// AUCUN plaintext en clair ne doit subsister.
     #[test]
     fn backup_dropguard_reaps_temp_and_journal_on_error_path() {
-        let dir = std::env::temp_dir().join(format!("plume-dropguard-{}-{}", std::process::id(), now()));
+        let _tmpg17 = crate::tmp_possede::TmpPossede::neuf("dropguard");
+        let dir = _tmpg17.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let dest = dir.join("plume.db.age").to_string_lossy().into_owned();
 
@@ -1398,7 +1399,8 @@
     #[test]
     fn backup_startup_sweep_reaps_old_orphan_spares_fresh_and_real_db() {
         use std::time::{Duration, SystemTime};
-        let dir = std::env::temp_dir().join(format!("plume-sweep-{}-{}", std::process::id(), now()));
+        let _tmpg18 = crate::tmp_possede::TmpPossede::neuf("sweep");
+        let dir = _tmpg18.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let mk = |name: &str, body: &[u8]| -> std::path::PathBuf {
             let p = dir.join(name);
@@ -1439,7 +1441,8 @@
     /// se terminait par `\n` -> clé DIFFÉRENTE au cutover -> base illisible. On PROUVE ici la lecture verbatim.
     #[test]
     fn f1_db_key_from_file_reads_and_fails_closed() {
-        let dir = std::env::temp_dir().join(format!("plume-dbkeyfile-{}-{}", std::process::id(), now()));
+        let _tmpg19 = crate::tmp_possede::TmpPossede::neuf("dbkeyfile");
+        let dir = _tmpg19.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let ok = dir.join("db.key");
         // (a) VERBATIM : un `\n` final est CONSERVÉ (= exactement ce que `env::var("PLUME_DB_KEY")` renverrait
@@ -1470,7 +1473,8 @@
     /// plus par /proc/environ quand le fichier est utilisé). Le cœur `vault_token_from_file` est PUR (no env).
     #[test]
     fn v134_vault_token_file_first_and_env_fallback() {
-        let dir = std::env::temp_dir().join(format!("plume-vaulttok-{}-{}", std::process::id(), now()));
+        let _tmpg20 = crate::tmp_possede::TmpPossede::neuf("vaulttok");
+        let dir = _tmpg20.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         // (a) lecture VERBATIM du fichier (comme db_key_from_file) — cœur PUR, déterministe.
         let ok = dir.join("tok");
@@ -1515,7 +1519,8 @@
     #[test]
     fn f1a_probe_db_wrong_key_fails_closed_but_never_on_fresh() {
         use crate::crypto::{probe_db, DbProbe};
-        let dir = std::env::temp_dir().join(format!("plume-probe-{}-{}", std::process::id(), now()));
+        let _tmpg21 = crate::tmp_possede::TmpPossede::neuf("probe");
+        let dir = _tmpg21.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
 
         // (a)+(b) base chiffrée NON VIDE avec la BONNE clé (pages réelles écrites).
@@ -1560,7 +1565,8 @@
     fn v108_locked_probe_is_locked_never_wrongkey_but_wrongkey_still_fails_closed() {
         use crate::crypto::{probe_db, probe_db_with_busy, DbProbe};
         use std::time::Duration;
-        let dir = std::env::temp_dir().join(format!("plume-lockprobe-{}-{}", std::process::id(), now()));
+        let _tmpg22 = crate::tmp_possede::TmpPossede::neuf("lockprobe");
+        let dir = _tmpg22.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let enc = dir.join("enc.db").to_string_lossy().into_owned();
         // Base chiffrée NON VIDE avec la BONNE clé (journal_mode par défaut = delete -> EXCLUSIVE bloque les
@@ -1622,7 +1628,8 @@
     /// Et INERTE : recipient=None -> chiffrement SYMÉTRIQUE historique, full-verify EN cluster (aucun changement).
     #[test]
     fn f3_asymmetric_roundtrip_and_symmetric_inert() {
-        let dir = std::env::temp_dir().join(format!("plume-f3-{}-{}", std::process::id(), now()));
+        let _tmpg23 = crate::tmp_possede::TmpPossede::neuf("f3");
+        let dir = _tmpg23.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let key = "test-sqlcipher-key-f3";
         let src = dir.join("src.db").to_string_lossy().into_owned();
@@ -1670,7 +1677,8 @@
     /// par ce test -> pas de course.
     #[test]
     fn v134_backup_require_asymmetric_gate_and_signal() {
-        let dir = std::env::temp_dir().join(format!("plume-v134bk-{}-{}", std::process::id(), now()));
+        let _tmpg24 = crate::tmp_possede::TmpPossede::neuf("v134bk");
+        let dir = _tmpg24.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let key = "v134-backup-key";
         let src = dir.join("src.db").to_string_lossy().into_owned();
@@ -1753,14 +1761,11 @@
 
     // --- PERSONNALISATION PHASE 1 : overlays config.d -------------------------------------------------
     // Répertoire temporaire unique (pid + compteur monotone) -> pas de collision entre tests parallèles.
-    fn mk_overlay_dir(tag: &str) -> std::path::PathBuf {
+    fn mk_overlay_dir(tag: &str) -> crate::tmp_possede::TmpPossede {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let mut p = std::env::temp_dir();
-        p.push(format!("plume-overlays-{}-{tag}-{}-{n}", std::process::id(), now()));
-        std::fs::create_dir_all(&p).unwrap();
-        p
+        crate::tmp_possede::TmpPossede::neuf(&format!("overlays-{tag}-{n}"))
     }
     fn write_overlay(root: &std::path::Path, sub: &str, file: &str, json: &str) {
         let d = root.join(sub);
@@ -1832,8 +1837,10 @@
     #[test]
     fn overlays_missing_dir_is_noop() {
         let conn = test_db();
-        let mut p = std::env::temp_dir();
-        p.push(format!("plume-overlays-absent-{}-{}", std::process::id(), now()));
+        let tmp = crate::tmp_possede::TmpPossede::neuf("overlays-absent");
+        // `sous()` NOMME sans créer : le sous-chemin n'existe pas, ce que ce test EXIGE. (Prendre
+        // la racine possédée, elle, existe -> le test ne testerait plus rien.)
+        let p = tmp.sous("absent").chemin().to_path_buf();
         load_overlays_dir(&conn, &p); // répertoire inexistant -> no-op gracieux, pas de panique
     }
 
@@ -1934,8 +1941,8 @@
     /// « détecter le pattern dans ce qui arrive, pas le débit brut ». Ingest via le PARSEUR nft (chemin réel).
     #[test]
     fn scheduled_low_and_slow_portscan_fires_on_diverse_low_volume() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-lns-ps-{}-{}.db", std::process::id(), now()));
+        let _tmpg11 = crate::tmp_possede::TmpPossede::neuf("lns-ps");
+        let path = _tmpg11.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         let base = now() - 1800; // dans la fenêtre 3600s
         {
@@ -1989,8 +1996,8 @@
     /// PARSEUR CF (firewallEventsAdaptive JSON -> CIM). Prouve la fermeture de l'angle mort edge single-shot.
     #[test]
     fn scheduled_low_and_slow_cf_recon_fires() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-lns-cf-{}-{}.db", std::process::id(), now()));
+        let _tmpg12 = crate::tmp_possede::TmpPossede::neuf("lns-cf");
+        let path = _tmpg12.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         let base = now() - 900;
         {
@@ -2343,8 +2350,8 @@ tags:
         let cat_4688 = regex::Regex::new(r#"4688\s*=>\s*cim\(\s*"([a-z0-9_-]+)""#).unwrap()
             .captures(win).map(|c| c[1].to_string()).expect("catégorie 4688 de l'agent livré");
 
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-f7-4688-{}-{}.db", std::process::id(), now()));
+        let _tmpg13 = crate::tmp_possede::TmpPossede::neuf("f7");
+        let path = _tmpg13.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         let ts = now();
         {
@@ -3146,8 +3153,8 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     #[test]
     fn eval_path_is_read_only() {
         // DB fichier temporaire (run_query ouvre une connexion du pool READ_ONLY sur un chemin disque).
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-eval-ro-{}-{}.db", std::process::id(), now()));
+        let _tmpg14 = crate::tmp_possede::TmpPossede::neuf("eval-ro");
+        let path = _tmpg14.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         {
             let w = Connection::open(&p).unwrap();
@@ -3383,8 +3390,8 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     /// que la bascule débouche réellement sur une détection qui tourne. Télémétrie via le PARSEUR nft (réel).
     #[test]
     fn scheduler_fires_override_enabled_config_d_rule() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-ovr-sched-{}-{}.db", std::process::id(), now()));
+        let _tmpg15 = crate::tmp_possede::TmpPossede::neuf("ovr-sched");
+        let path = _tmpg15.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         let base = now() - 900;
         let dir = mk_overlay_dir("ovr-sched");
@@ -3876,8 +3883,8 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
             std::fs::copy(src_rules.join(f), rd.join(f)).unwrap_or_else(|e| panic!("copie overlay {f}: {e}"));
         }
 
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-t1190-{}-{}.db", std::process::id(), now()));
+        let _tmpg16 = crate::tmp_possede::TmpPossede::neuf("t1190");
+        let path = _tmpg16.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         let t = now() - 10; // en fenêtre (window_s 900 / 1800)
         {
@@ -4448,7 +4455,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     fn native_ops_off_by_default_no_effect() {
         let dest = mk_tmp_path("sched-off-dest");
         let mut conf = std::collections::HashMap::new();
-        conf.insert("PLUME_BACKUP_DEST".to_string(), dest.clone()); // DEST posé MAIS interval absent -> inerte.
+        conf.insert("PLUME_BACKUP_DEST".to_string(), dest.as_str().to_string()); // DEST posé MAIS interval absent -> inerte.
         // PLUME_BACKUP_INTERVAL / PLUME_AUTOVACUUM_INTERVAL ABSENTS (env de test propre) -> désactivés.
         assert!(std::env::var("PLUME_BACKUP_INTERVAL").is_err(), "pré-condition : interval non posé");
         assert!(std::env::var("PLUME_AUTOVACUUM_INTERVAL").is_err(), "pré-condition : autovacuum non posé");

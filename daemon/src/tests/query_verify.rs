@@ -222,7 +222,8 @@
 
         // MÊME preuve sur l'autre porte. `read_with_watchdog` prend une connexion DANS LE POOL du
         // db_path ; on l'exerce sur une base fichier temporaire pour que le pool puisse l'ouvrir.
-        let dir = std::env::temp_dir().join(format!("plume-budget-guard-{}", std::process::id()));
+        let _tmpg1 = crate::tmp_possede::TmpPossede::neuf("budget-guard");
+        let dir = _tmpg1.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let dbp = dir.join("q.db");
         let dbps = dbp.to_string_lossy().to_string();
@@ -298,4 +299,50 @@
             !qe.lines().any(|l| l.contains("thread::sleep") && !l.trim_start().starts_with("//")),
             "query_exec.rs ne doit plus attendre par SONDAGE : une garde de budget attend une CONDITION (condvar avec délai)"
         );
+    }
+
+    // ===================== P7.3-b/c — L'EXPORT AVOUE DANS LE FICHIER =====================
+    // Le handler `export` n'avait AUCUN test. Ce qui est éprouvé ici, c'est la RÈGLE : ce que le
+    // nom du fichier doit dire, pour toute combinaison (tronqué ?, ampleur connue ?).
+
+    /// L'INVARIANT ANTI-OUBLI, dérivé sur la famille ENTIÈRE des cas plutôt qu'énuméré sur trois
+    /// exemples choisis : la marque est présente SI ET SEULEMENT SI le résultat est tronqué. Aucun
+    /// couple (tronqué, ampleur) ne peut produire un nom d'apparence complète.
+    #[test]
+    fn la_marque_de_troncature_est_presente_exactement_quand_le_resultat_est_tronque() {
+        for tronque in [false, true] {
+            for ecartes in [None, Some(-1), Some(0), Some(1), Some(42), Some(16_420)] {
+                let m = marque_troncature(tronque, ecartes);
+                assert_eq!(
+                    !m.is_empty(), tronque,
+                    "marque présente <=> tronqué (tronqué={tronque}, ecartes={ecartes:?}, marque={m:?})"
+                );
+                if tronque {
+                    assert!(m.contains("TRONQUE"), "un nom tronqué doit se lire comme tel : {m:?}");
+                }
+            }
+        }
+    }
+
+    /// L'AMPLEUR quand elle est connue — le NOMBRE lui-même est dans le nom, pas seulement un
+    /// drapeau. C'est ce qui manquait au top-N, où une perte jusqu'à x16,42 tenait dans un booléen.
+    #[test]
+    fn la_marque_porte_le_nombre_de_lignes_manquantes_quand_il_est_mesure() {
+        for n in [1_i64, 7, 4_242] {
+            let m = marque_troncature(true, Some(n));
+            assert!(m.contains(&n.to_string()), "l'ampleur mesurée ({n}) doit figurer dans le nom : {m:?}");
+            assert!(!m.contains("inconnue"), "ampleur mesurée -> jamais « inconnue » : {m:?}");
+        }
+    }
+
+    /// UNE AMPLEUR NON ÉTABLIE S'AVOUE — elle n'est pas repliée sur zéro. `None` (sonde sans base)
+    /// et `Some(0)` (aucune ligne écartée COMPTÉE) valent tous deux « inconnue » ici : le plafond a
+    /// mordu, donc annoncer « 0 ligne manquante » serait un chiffre faux, pas une absence de perte.
+    #[test]
+    fn une_ampleur_non_etablie_est_avouee_pas_supposee_nulle() {
+        for ecartes in [None, Some(0), Some(-3)] {
+            let m = marque_troncature(true, ecartes);
+            assert!(m.contains("ampleur-inconnue"), "ampleur non établie ({ecartes:?}) -> aveu explicite : {m:?}");
+            assert!(!m.contains("-0-"), "jamais « 0 ligne manquante » sur une ampleur non établie : {m:?}");
+        }
     }

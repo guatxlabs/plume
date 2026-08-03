@@ -483,8 +483,8 @@
     #[test]
     fn sigma_imported_rule_fires_on_matching_event() {
         // DB fichier temporaire.
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-sigma-e2e-{}-{}.db", std::process::id(), now()));
+        let _tmpg1 = crate::tmp_possede::TmpPossede::neuf("sigma-e2e");
+        let path = _tmpg1.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         let ts = now();
         {
@@ -1055,7 +1055,7 @@ detection:
     /// hors tenant -> 404 (identité cross-tenant jamais révélée).
     #[tokio::test]
     async fn gov_scim_users_are_tenant_scoped() {
-        let cp = mk_test_control();
+        let (cp, _cptmp) = mk_test_control();
         let alice = ensure_platform_user(&cp, "alice").unwrap();
         let bob = ensure_platform_user(&cp, "bob").unwrap();
         {
@@ -1083,7 +1083,7 @@ detection:
     /// videraient le dernier admin ; avec DEUX admins, en retirer un est permis (contre-épreuve).
     #[tokio::test]
     async fn gov_scim_cannot_remove_last_admin() {
-        let cp = mk_test_control();
+        let (cp, _cptmp) = mk_test_control();
         let sole = ensure_platform_user(&cp, "sole-admin").unwrap();
         cp.conn.lock().execute("INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,'t1','admin')", params![sole]).unwrap();
         let st = tenant_test_state("admins", "editors", "supers", Some(cp.clone()));
@@ -1175,7 +1175,7 @@ detection:
             let mut m = custom_roles_cell().lock();
             m.insert("c64sc-admin".into(), RoleDef { base: "admin".into(), deny: vec![] });
         }
-        let cp = mk_test_control();
+        let (cp, _cptmp) = mk_test_control();
         let sole = ensure_platform_user(&cp, "sole-gov-admin").unwrap();
         cp.conn.lock().execute("INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,'t1','c64sc-admin')", params![sole]).unwrap();
         let st = tenant_test_state("admins", "editors", "supers", Some(cp.clone()));
@@ -1238,7 +1238,7 @@ detection:
     #[tokio::test]
     async fn gov_role_create_accepts_admin_base() {
         let _rg = CUSTOM_ROLES_TEST_LOCK.lock();
-        let cp = mk_test_control();
+        let (cp, _cptmp) = mk_test_control();
         let st = tenant_test_state("admins", "editors", "supers", Some(cp.clone()));
         let sa = || { let mut a = tok_au("admin"); a.is_superadmin = true; a };
         // base=admin (avec un deny explicite) -> ACCEPTÉ + créé + résout admin + deny conservé.
@@ -1301,7 +1301,7 @@ detection:
         assert!(!tok_au("").is_admin(), "rôle vide -> JAMAIS admin");
         // (e) ANTI-AUTO-ESCALADE : la création/édition de rôles est réservée au SUPER-ADMIN (roles_guard). Un
         // custom-admin (is_superadmin=false) ne peut donc PAS retirer ses propres denies via POST /api/roles.
-        let cp = mk_test_control();
+        let (cp, _cptmp) = mk_test_control();
         let st = tenant_test_state("admins", "editors", "supers", Some(cp.clone()));
         let mut au_ca = tok_au("gov-admin"); // base=admin, is_superadmin=false
         au_ca.is_superadmin = false;

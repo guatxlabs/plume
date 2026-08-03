@@ -80,7 +80,7 @@ permissions:
 # diverger en silence — bumper l'une laissait l'autre comparer à un nombre périmé. Une seule ici,
 # consommée par les deux jobs.
 env:
-  EXPECTED_TESTS: "891"
+  EXPECTED_TESTS: "894"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -135,6 +135,8 @@ jobs:
         working-directory: daemon
         run: |
           set -euo pipefail
+          export TMPDIR="$RUNNER_TEMP/plume-tmp-defaut"
+          rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"
           cargo test --locked --verbose 2>&1 | tee /tmp/daemon-tests.log
           total=$(awk '/^test result: ok\. [0-9]+ passed/{s+=$4} END{print s+0}' /tmp/daemon-tests.log)
           echo "tests passed: $total (expected $EXPECTED_TESTS)"
@@ -144,6 +146,7 @@ jobs:
             echo "::error::and the numbers in CONTRIBUTING.md, daemon/.cargo/audit.toml and daemon/src/tests/ingest.rs."
             exit 1
           fi
+          "$GITHUB_WORKSPACE/.github/aucun-temporaire-laisse.sh" "suite par défaut"
 
       # Release build of the default profile — proves the daemon links/optimizes clean.
       - name: cargo build --release (daemon, default features)
@@ -230,11 +233,12 @@ jobs:
       - name: cargo test (daemon, --features cold_tier) + assert the cold test count
         working-directory: daemon
         env:
-          EXPECTED_COLD_TESTS: "1086"
+          EXPECTED_COLD_TESTS: "1089"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
-          export TMPDIR="$RUNNER_TEMP"
+          export TMPDIR="$RUNNER_TEMP/plume-tmp-cold"
+          rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"
           cargo test --locked --features cold_tier --verbose 2>&1 | tee /tmp/cold-tests.log
           total=$(awk '/^test result: ok\. [0-9]+ passed/{s+=$4} END{print s+0}' /tmp/cold-tests.log)
           echo "cold_tier tests passed: $total (expected $EXPECTED_COLD_TESTS)"
@@ -589,7 +593,18 @@ jobs:
       #
       # Binaire ÉPINGLÉ par version + sha256, comme gitleaks juste au-dessus : `cargo install`
       # recompilerait l'outil à chaque exécution pour le même résultat.
-      - name: Licences, bans et sources des dépendances (cargo-deny, binaire épinglé)
+      # P7.7-b — la liste des crates couverts est DÉRIVÉE de l'arborescence, plus ÉNUMÉRÉE.
+      # Ce dépôt n'a PAS de workspace Cargo : les crates sont indépendants, et la commande ne
+      # nommait que `daemon/Cargo.toml`. `agent` (celui qu'on INSTALLE sur les postes clients),
+      # `collector-mail` et `collector-syslog` n'étaient donc vérifiés ni en licences, ni en bans,
+      # ni en sources — et un crate ajouté demain ne l'aurait pas été davantage, sans que personne
+      # ne le voie. Le `find` découvre les manifestes : couvrir un nouveau crate ne demande plus
+      # aucun geste.
+      #
+      # CE QUE ÇA A TROUVÉ, mesuré le 2026-08-03 en étendant la couverture : `agent` ÉCHOUAIT
+      # (code 4) sur `webpki-roots@1.0.8` en `CDLA-Permissive-2.0`. La licence est désormais
+      # autorisée NOMMÉMENT et justifiée dans `deny.toml` — pas ajoutée en silence.
+      - name: Licences, bans et sources des dépendances (cargo-deny, TOUS les crates découverts)
         run: |
           set -euo pipefail
           CD_VER=0.18.2
@@ -598,7 +613,28 @@ jobs:
           curl -sSfL -o /tmp/cargo-deny.tgz "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CD_VER}/${CD_TGZ}.tar.gz"
           echo "${CD_SHA}  /tmp/cargo-deny.tgz" | sha256sum -c -
           tar -xzf /tmp/cargo-deny.tgz --strip-components=1 -C /tmp "${CD_TGZ}/cargo-deny"
-          /tmp/cargo-deny --manifest-path daemon/Cargo.toml check licenses bans sources
+
+          # Découverte : un crate = un Cargo.toml de premier niveau (pas de workspace ici).
+          mapfile -t MANIFESTES < <(find . -mindepth 2 -maxdepth 2 -name Cargo.toml -not -path './target/*' | sort)
+
+          # VALIDER L'INSTRUMENT : un `find` qui ne rend rien passerait au vert en ne vérifiant
+          # RIEN. Le seuil est celui des crates réellement présents aujourd'hui.
+          echo "crates découverts : ${#MANIFESTES[@]}"
+          printf '  %s\n' "${MANIFESTES[@]}"
+          if [ "${#MANIFESTES[@]}" -lt 4 ]; then
+            echo "::error::découverte des crates suspecte (${#MANIFESTES[@]} < 4) — la garde ne garderait rien"
+            exit 1
+          fi
+
+          # Tous les crates sont vérifiés AVANT de conclure : on veut la liste COMPLÈTE des
+          # violations, pas seulement la première (sinon chaque correctif en révèle une de plus).
+          rc=0
+          for m in "${MANIFESTES[@]}"; do
+            echo "::group::cargo-deny ${m}"
+            /tmp/cargo-deny --manifest-path "${m}" check licenses bans sources || rc=1
+            echo "::endgroup::"
+          done
+          exit "${rc}"
 
   # ---------------------------------------------------------------------------
   # lint — fmt + clippy, CONSULTATIVE (non-blocking until the tree is proven

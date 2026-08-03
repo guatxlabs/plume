@@ -320,6 +320,64 @@ def generate(profile, count, end_ts, span_days, seed, hosts, batch_events, skip=
                "kind": "events", "events": batch}
 
 
+class BodyTooLarge(Exception):
+    """Le serveur a refusé le lot pour sa TAILLE (HTTP 413). Portée par `post_batch` jusqu'à
+    l'appelant, qui sait, lui, découper l'enveloppe — `post_batch` ne voit que des octets."""
+
+
+def post_envelope(url, token, env, max_bytes=0, depth=0):
+    """Poste une enveloppe, en la COUPANT EN DEUX autant de fois qu'il le faut.
+
+    DEUX DÉCOUPES, ET ELLES NE FONT PAS LE MÊME TRAVAIL :
+      * PRÉVENTIVE (`max_bytes`) — le lot est découpé AVANT l'envoi s'il dépasse le budget d'octets.
+        Elle évite qu'un POST sur deux soit rejeté, ce qui fausserait le DÉBIT publié : un envoi
+        refusé coûte un aller-retour et n'ingère rien.
+      * RÉACTIVE (HTTP 413) — le serveur reste l'autorité. Le budget d'octets est une prévision
+        (l'enveloppe JSON gonfle selon les champs présents) ; la limite réelle, elle, est celle du
+        serveur, et elle peut changer sans que ce script le sache. La découpe réactive rattrape donc
+        toute prévision optimiste, quelle que soit la limite en face.
+    Le générateur ne code EN DUR aucune limite de serveur — il réagit à celle qu'il rencontre.
+
+    Un événement SEUL qui dépasse encore est une vraie anomalie (pas un lot trop gros) : on s'arrête
+    en le disant, plutôt que de boucler."""
+    body = json.dumps(env, separators=(",", ":"), sort_keys=True).encode()
+    evs0 = env.get("events") or []
+    if max_bytes and len(body) > max_bytes and len(evs0) > 1:
+        mid = len(evs0) // 2
+        tot_b = tot_n = 0
+        for half in (evs0[:mid], evs0[mid:]):
+            sub = dict(env)
+            sub["events"] = half
+            sub["ts"] = half[-1]["ts"]
+            sub["host"] = half[-1]["host"]
+            b, n = post_envelope(url, token, sub, max_bytes, depth + 1)
+            tot_b += b
+            tot_n += n
+        return tot_b, tot_n
+    try:
+        post_batch(url, token, body)
+        return len(body), 1
+    except BodyTooLarge as e:
+        evs = env.get("events") or []
+        if len(evs) <= 1:
+            sys.exit(f"POST {url} -> 413 sur UN SEUL événement ({len(body)} octets) : ce n'est pas "
+                     f"un lot trop gros, c'est un événement trop gros. Réponse du serveur : {e}")
+        mid = len(evs) // 2
+        tot_b = tot_n = 0
+        for half in (evs[:mid], evs[mid:]):
+            sub = dict(env)
+            sub["events"] = half
+            sub["ts"] = half[-1]["ts"]
+            sub["host"] = half[-1]["host"]
+            b, n = post_envelope(url, token, sub, max_bytes, depth + 1)
+            tot_b += b
+            tot_n += n
+        if depth == 0:
+            print(f"  (lot de {len(evs)} événements refusé pour sa TAILLE — recoupé en {tot_n} "
+                  f"envois ; le remplissage continue)", flush=True)
+        return tot_b, tot_n
+
+
 def post_batch(url, token, body, retries=6):
     req = urllib.request.Request(url, data=body, method="POST", headers={
         "Content-Type": "application/json",
@@ -336,6 +394,17 @@ def post_batch(url, token, body, retries=6):
                 time.sleep(delay)
                 delay = min(delay * 2, 8)
                 continue
+            if e.code == 413:
+                # LE LOT EST TROP GROS POUR LE SERVEUR. Ce n'est PAS le plafond de plume
+                # (`PLUME_INGEST_MAX_EVENTS`, qui compte des ÉVÉNEMENTS) : c'est la limite d'OCTETS
+                # du routeur HTTP (`DefaultBodyLimit`, 8 Mio). Le générateur ne la connaît pas et ne
+                # doit pas la connaître — un nombre écrit ici serait faux dès qu'elle change, ou
+                # dès qu'un profil produit des événements plus gros. Il RÉAGIT donc à la limite
+                # réelle au lieu de la deviner : on coupe le lot en deux et on réessaie. Sans ça, le
+                # remplissage MEURT (`sys.exit`) — mesuré le 2026-08-03 : un profil à événements x3
+                # a perdu la totalité de son remplissage sur le PREMIER lot, et sa passe n'a rien
+                # mesuré du tout.
+                raise BodyTooLarge(e.read()[:400])
             sys.exit(f"POST {url} -> HTTP {e.code}: {e.read()[:400]!r}")
         except OSError as e:
             if attempt < retries - 1:
@@ -366,6 +435,11 @@ def main():
     ap.add_argument("--span-days", type=int, default=None, help="défaut : bench_target.span_days")
     ap.add_argument("--seed", type=lambda x: int(x, 0), default=0x504C554D45)
     ap.add_argument("--hosts", type=int, default=None, help="défaut : bench_target.hosts")
+    ap.add_argument("--max-batch-bytes", type=int, default=6 * 1024 * 1024,
+                    help="budget d'OCTETS par envoi. Le découpage par NOMBRE d'événements seul "
+                         "ne tient pas : un profil à événements plus gros dépasse la limite de "
+                         "corps du serveur au MÊME nombre d'événements (mesuré : l'axe « taille "
+                         "d'événement » a perdu tout son remplissage sur le 1er lot).")
     ap.add_argument("--batch-events", type=int, default=12000,
                     help="12 000 x ~500 o ≈ 6 Mio, sous le plafond de corps de 8 Mio d'axum")
     ap.add_argument("--post", help="URL /api/ingest — LE VRAI CHEMIN")
@@ -428,7 +502,10 @@ def main():
             if a.spool_dir:
                 while spool_pending(a.spool_dir) > a.max_spool_files:
                     time.sleep(0.5)
-            post_batch(a.post, a.token or "", body)
+            # `post_envelope` peut recouper : les octets réellement envoyés sont ceux qu'il rend,
+            # pas ceux du corps initial — sinon le débit publié porterait sur un corps jamais reçu.
+            sent, _n = post_envelope(a.post, a.token or "", env, a.max_batch_bytes)
+            n_bytes += sent - len(body)
         else:
             sys.exit("choisir --post, --out-dir ou --digest")
         if n_batch % a.progress_every == 0 and not a.digest:

@@ -52,6 +52,13 @@ BENCH_RETENTION_DAYS="${BENCH_RETENTION_DAYS:-30}"
 # doit chiffrer l'échange concurrence <-> RAM en la faisant varier. Le défaut 3 laisse toutes les
 # autres phases STRICTEMENT identiques à ce qu'elles étaient.
 BENCH_QUERY_CONCURRENCY="${BENCH_QUERY_CONCURRENCY:-3}"
+# INDEXATION DES CHAMPS ÉTENDUS. Ces deux valeurs sont les DÉFAUTS DU PRODUIT, vérifiés dans le code
+# (`maintenance.rs` : PLUME_EXPRINDEX défaut "1" ; `server.rs` : PLUME_AUTOINDEX défaut "0"). Elles
+# étaient écrites en dur ici ; elles deviennent des paramètres pour que la sonde `hotfields` puisse
+# mesurer CE QUE CHANGE le fait d'activer l'auto-indexation — la question que se pose un exploitant.
+# Les défauts laissent TOUTES les autres passes strictement identiques à ce qu'elles étaient.
+BENCH_EXPRINDEX="${BENCH_EXPRINDEX:-1}"
+BENCH_AUTOINDEX="${BENCH_AUTOINDEX:-0}"
 # Les valeurs de sémaphore balayées par la phase `concurrency`. 3 = le défaut livré ; 8 = la valeur
 # d'AVANT la baisse faite comme levier de RAM. Mesurer les deux, c'est chiffrer ce que cette baisse a
 # coûté en concurrence et rapporté en mémoire.
@@ -112,8 +119,8 @@ export PLUME_PASS_HASH='$ADMIN_HASH'
 export PLUME_DB_KEY='$BENCH_DB_KEY'
 export PLUME_FTS_FIELDS=$1
 export PLUME_FTS_FIELDS_BACKFILL=1
-export PLUME_EXPRINDEX=1
-export PLUME_AUTOINDEX=0
+export PLUME_EXPRINDEX=$BENCH_EXPRINDEX
+export PLUME_AUTOINDEX=$BENCH_AUTOINDEX
 export PLUME_QUERY_CONCURRENCY=$BENCH_QUERY_CONCURRENCY
 export PLUME_RETENTION_DAYS=$BENCH_RETENTION_DAYS
 export PLUME_COLD_TIER=$BENCH_COLD
@@ -233,6 +240,34 @@ SAVED_END_TS=$BENCH_END_TS
 SAVED_ADMIN_HASH='$ADMIN_HASH'
 EOF
 echo "fenêtre de données : end_ts=$BENCH_END_TS  span=${BENCH_SPAN_DAYS}j  cible=${BENCH_EVENTS} événements"
+
+# ------------------------------------------------------------------ LA GARDE DE RÉTENTION
+# LE DÉFAUT QU'ELLE FERME, ET IL A MORDU POUR DE BON : un jeu figé une fois pour toutes finit par
+# sortir de la rétention du daemon. L'horloge avance, le bord de rétention rattrape la queue du jeu,
+# et la purge SUPPRIME des événements PENDANT la campagne — mesuré le 2026-08-01, 1 440 007 ->
+# 1 436 516 en une demi-heure, avec à la clef un verdict de justesse FAUX imputé à la concurrence
+# alors qu'il venait de l'horloge. Ce n'était jusqu'ici qu'un COMMENTAIRE ; c'est maintenant une
+# garde, parce qu'un piège documenté que rien ne vérifie se represente à l'identique.
+#
+# ELLE EST DÉRIVÉE, PAS ÉNUMÉRÉE. Aucune durée n'est choisie ici. Le daemon supprime `ts < now -
+# PLUME_RETENTION_DAYS` (daemon/src/server.rs, `spawn_retention_loop` : premier passage 60 s après le
+# démarrage, puis toutes les heures — donc la purge n'attend pas, elle a lieu DÈS le démarrage).
+# Le plus vieil événement du jeu vaut `end_ts - span_days`. Le jeu est donc intact tant que
+#     end_ts - span_days*86400  >=  now - retention_days*86400
+# et la marge restante — l'INSTANT où la campagne commencerait à mesurer un jeu qui rétrécit — est
+#     end_ts + (retention_days - span_days)*86400 - now
+# La garde compare deux instants ; elle ne connaît aucune liste de valeurs interdites et vaut donc
+# pour toute rétention, toute étendue et tout end_ts qu'on lui donnera plus tard.
+RETENTION_MARGIN_S=$(( BENCH_END_TS + (BENCH_RETENTION_DAYS - BENCH_SPAN_DAYS) * 86400 - $(date +%s) ))
+if [ "$RETENTION_MARGIN_S" -le 0 ]; then
+  die "LE JEU EST DÉJÀ DANS LA ZONE DE PURGE — il a $(( -RETENTION_MARGIN_S / 3600 )) h de retard.
+     Le plus vieil événement du jeu est à end_ts-${BENCH_SPAN_DAYS}j ; la rétention du daemon coupe à
+     now-${BENCH_RETENTION_DAYS}j. Démarrer le daemon supprimerait des événements 60 s plus tard, et
+     la campagne mesurerait un jeu qui rétrécit sous elle — ce qui ne se voit pas dans les latences.
+     Refaire le jeu (effacer $STATE pour re-figer end_ts) ou augmenter BENCH_RETENTION_DAYS."
+fi
+echo "marge de rétention : $(( RETENTION_MARGIN_S / 3600 )) h avant que la purge n'entame le jeu \
+(échéance $(date -d "@$(( BENCH_END_TS + (BENCH_RETENTION_DAYS - BENCH_SPAN_DAYS) * 86400 ))" -Is))"
 echo "matériel : $(nproc) cœurs, $(free -g | awk '/^Mem:/{print $2}') Gio RAM totale, $(free_gib) Gio libres sur /"
 echo "pression au départ : loadavg=$(cut -d' ' -f1-3 /proc/loadavg)  swap utilisé=$(free -m | awk '/^Swap:/{print $3}') Mio"
 
@@ -256,9 +291,17 @@ MANIFEST_PID=$!; sleep 2; kill "$MANIFEST_PID" 2>/dev/null; wait "$MANIFEST_PID"
 if [ "$BENCH_PHASES" = "all" ] || [ "$BENCH_PHASES" = "ingest" ]; then
   say "phase 1/3 — ingest de $BENCH_EVENTS événements PAR LE VRAI CHEMIN (POST /api/ingest)"
   start_daemon 0
+  # `--relais` est la PORTÉE du jeton, et elle n'est pas décorative : depuis le durcissement des
+  # jetons d'agent, `token <nom>` sans portée est REFUSÉ (rc=2) parce qu'un jeton non lié laisse
+  # écrire sous le nom de n'importe quelle machine. Le générateur du banc émet pour toute la flotte
+  # synthétique (`bench-node-NNN.plume.invalid`) : c'est exactement un relais multi-hôtes, dont
+  # l'émetteur déclare l'hôte. Le lier à UNE machine ferait échouer l'ingest de toutes les autres —
+  # et la campagne flotte ne mesurerait plus rien.
+  # NOTE : `2>/dev/null` masquait l'usage imprimé par la CLI, et le banc ne disait alors que « 0
+  # caractères ». Le diagnostic part maintenant dans le journal du daemon.
   TOK="$(PLUME_DB="$DB_DIR/plume.db" PLUME_DB_KEY="$BENCH_DB_KEY" PLUME_CONFIG=/nonexistent \
-        "$BIN" token bench-generator 2>/dev/null | tr -d '\r\n')"
-  [ ${#TOK} -ge 32 ] || die "jeton d'ingest non miné (obtenu : ${#TOK} caractères)"
+        "$BIN" token bench-generator --relais 2>>"$LOG" | tr -d '\r\n')"
+  [ ${#TOK} -ge 32 ] || die "jeton d'ingest non miné (obtenu : ${#TOK} caractères) — voir $LOG"
   api POST /api/users "{\"name\":\"benchviewer\",\"password\":\"$BENCH_VIEWER_PW\",\"role\":\"viewer\"}" >/dev/null
 
   N0="$(count_events)"; T0=$(date +%s)
@@ -396,6 +439,79 @@ if [ "$BENCH_PHASES" = "simple" ]; then
   COLD_LABEL="off"
   [ "$BENCH_COLD" = "1" ] && COLD_LABEL="actif (hot=${BENCH_COLD_HOT_DAYS}j)"
   run_matrix "${BENCH_CONFIG_ID:-simple@$VOL}" "{\"fts_fields\":0,\"mask\":\"vide\",\"cold\":\"$COLD_LABEL\",\"version\":\"$VERSION\",\"events\":$NEV,\"db_bytes\":$DB0,\"hosts\":$PROFILE_HOSTS,\"profile\":\"$PROFILE_NAME\"$CLASSES_META}" "${BENCH_CLASSES:-}"
+  oom_report
+  stop_daemon
+fi
+
+# ================================================================== CHAMPS INDEXÉS vs NON INDEXÉS
+# `BENCH_PHASES=hotfields` : deux clés étendues APPARIÉES (même type, même cardinalité, même taux de
+# présence, dérivées du profil), dont une seule est dans la liste EN DUR `HOT_FIELDS`. Même jeu,
+# même opérateur : la seule différence structurelle est l'existence d'un index.
+#   BENCH_PHASES=hotfields BENCH_AUTOINDEX=1 ...  mesure ce que l'auto-indexation REFERME
+if [ "$BENCH_PHASES" = "hotfields" ]; then
+  say "sonde CHAMPS INDEXÉS — PLUME_EXPRINDEX=$BENCH_EXPRINDEX PLUME_AUTOINDEX=$BENCH_AUTOINDEX"
+  start_daemon 0
+  NEV="$(count_events)"
+  echo "base : $NEV événements"
+  api POST /api/users "{\"name\":\"benchviewer\",\"password\":\"$BENCH_VIEWER_PW\",\"role\":\"viewer\"}" >/dev/null 2>&1
+  drop_bench_filters
+  python3 "$REPO/bench/probe_hot_fields.py" --base "http://127.0.0.1:$BENCH_PORT" \
+    --host-header localhost --user benchviewer --password "$BENCH_VIEWER_PW" \
+    --admin-user benchadmin --admin-password "$BENCH_ADMIN_PW" \
+    --profile "$BENCH_PROFILE" --end-ts "$BENCH_END_TS" --span-days "$BENCH_SPAN_DAYS" \
+    --reps "$BENCH_REPS" --config-id "${BENCH_CONFIG_ID:-hotfields}" \
+    --phase-label "${BENCH_HF_LABEL:-défaut livré}" -o "$BENCH_DIR/hotfields.jsonl"
+  # L'AUTO-INDEXATION NE PEUT PAS RÉPONDRE INSTANTANÉMENT : elle exige `MIN_HITS`(10) et
+  # `MIN_SLOW`(3) puis un tick (120 s d'amorçage + `INTERVAL`, défaut 300 s). Mesurer juste après
+  # l'avoir activée ne mesurerait donc QUE le fait qu'elle n'a pas encore tourné. On lui donne le
+  # trafic qu'elle attend, puis le temps qu'elle demande, avec SES valeurs par défaut.
+  if [ "$BENCH_AUTOINDEX" = "1" ]; then
+    say "auto-index : génération du trafic (>= MIN_HITS) puis attente d'un tick, réglages par défaut"
+    for _ in $(seq 1 14); do
+      python3 "$REPO/bench/probe_hot_fields.py" --base "http://127.0.0.1:$BENCH_PORT" \
+        --host-header localhost --user benchviewer --password "$BENCH_VIEWER_PW" \
+        --profile "$BENCH_PROFILE" --end-ts "$BENCH_END_TS" --span-days "$BENCH_SPAN_DAYS" \
+        --reps 1 --config-id "chauffe" --phase-label "chauffe" -o /dev/null >/dev/null 2>&1
+    done
+    sleep 460
+    grep -a '\[autoindex\]' "$LOG" | tail -5 || echo "  (aucune ligne [autoindex] dans le journal)"
+    python3 "$REPO/bench/probe_hot_fields.py" --base "http://127.0.0.1:$BENCH_PORT" \
+      --host-header localhost --user benchviewer --password "$BENCH_VIEWER_PW" \
+      --admin-user benchadmin --admin-password "$BENCH_ADMIN_PW" \
+      --profile "$BENCH_PROFILE" --end-ts "$BENCH_END_TS" --span-days "$BENCH_SPAN_DAYS" \
+      --reps "$BENCH_REPS" --config-id "${BENCH_CONFIG_ID:-hotfields}-apres-tick" \
+      --phase-label "auto-index ACTIF, après un tick" -o "$BENCH_DIR/hotfields.jsonl"
+  fi
+  oom_report
+  stop_daemon
+fi
+
+# ================================================================== ROUTE B (rollup par dimension)
+# `BENCH_PHASES=routeb` tire la seule forme que la matrice ne tire PAS : `search source=X | stats
+# count by <dim>`, servie par `event_dim_rollup` UNIQUEMENT si le couple (X, dim) figure dans la
+# table EN DUR `DIM_ROLLUP_SPECS` du daemon. Le nom de la source décide donc de la route.
+# LE NOM DE LA SOURCE EST DÉRIVÉ DU PROFIL (la source la plus lourde), jamais écrit ici : c'est ce
+# qui permet de tirer la MÊME requête sur un jeu dont les sources ont été renommées, sans quoi la
+# requête ne rendrait aucune ligne et on mesurerait un plancher au lieu d'une route.
+if [ "$BENCH_PHASES" = "routeb" ]; then
+  say "sonde ROUTE B — le nom de la source décide-t-il de la route ?"
+  PROBE_SRC="$(python3 -c "
+import json,sys
+srcs=json.load(open(sys.argv[1]))['sources']['list']
+print(max(srcs,key=lambda s:s['n'])['name'])" "$BENCH_PROFILE")"
+  [ -n "$PROBE_SRC" ] || die "source de sonde non dérivable du profil $BENCH_PROFILE"
+  start_daemon 0
+  NEV="$(count_events)"
+  DB0="$(stat -c%s "$DB_DIR/plume.db")"
+  echo "base : $NEV événements, $((DB0/1048576)) Mio — source dérivée du profil : $PROBE_SRC"
+  api POST /api/users "{\"name\":\"benchviewer\",\"password\":\"$BENCH_VIEWER_PW\",\"role\":\"viewer\"}" >/dev/null 2>&1
+  drop_bench_filters
+  python3 "$REPO/bench/probe_route_b.py" --base "http://127.0.0.1:$BENCH_PORT" \
+    --host-header localhost --user benchviewer --password "$BENCH_VIEWER_PW" \
+    --source "$PROBE_SRC" --dim "${BENCH_ROUTEB_DIM:-exe}" \
+    --end-ts "$BENCH_END_TS" --span-days "$BENCH_SPAN_DAYS" --reps "$BENCH_REPS" \
+    --config-id "${BENCH_CONFIG_ID:-routeb}" --profile "$PROFILE_NAME" \
+    -o "$BENCH_DIR/routeb.jsonl"
   oom_report
   stop_daemon
 fi

@@ -13,6 +13,10 @@ chiffre annoncé n'est pas contestable.
 | `profile-prod.json` | Le profil versionné. C'est la **seule** entrée du générateur. |
 | `make_fleet_profile.py` | **Dérive** un profil FLOTTE (`profile-fleet-N.json`) du profil mesuré : le nombre d'hôtes devient un paramètre explicite. Refuse de deviner quelles sources sont host-locales — voir ci-dessous. |
 | `fleet-per-host.txt` | La **déclaration d'opérateur** que le script exige : quelles sources tournent sur chaque machine. Une ligne, une raison. |
+| `make_axis_profile.py` | **DÉRIVE un profil qui ne diffère du mesuré que par UN axe** — cardinalité des clés étendues, taille d'événement, distribution de sévérité, nom des sources. Chaque axe vient d'une DÉCISION du chemin d'exécution (voir plus bas). Refuse d'en changer deux à la fois : un profil qui diffère sur deux paramètres ne mesure ni l'un ni l'autre. |
+| `campagne-generique.sh` | La campagne **multi-profils** : la même matrice sur chaque profil, à volume égal, **témoin mesuré deux fois** pour donner la bande de bruit. |
+| `probe_route_b.py` + `campagne-noms-sources.sh` | La sonde de la **ROUTE B** (`event_dim_rollup`), la seule forme que la matrice ne tire pas, et la seule dont la route dépend du **NOM** de la source. |
+| `campagne-10m.sh` | Le remplissage à **10 M par le vrai chemin**, avec **preuve de survie du jeu** (recompte après matrice). |
 | `gen_events.py` | Générateur **déterministe** (splitmix64, graine explicite, aucun appel à l'horloge) au profil ci-dessus. Zéro donnée réelle. |
 | `measure.py` | La matrice : latence p50/p95, **RSS crête mesurée** (échantillonnage /proc à 15 ms), lecture disque, pression machine. Les fenêtres y sont **dérivées**, pas énumérées. |
 | `probe.py` | L'échantillonneur d'ingest. Relève, à chaque tick, ce qui permet de dire POURQUOI le débit tombe : CPU du daemon, CPU du reste de la machine, octets lus/écrits au bloc, stall mémoire du cgroup. |
@@ -94,6 +98,71 @@ La répartition des événements sur les hôtes est **uniforme** : c'est le cas 
 group-by (tous les groupes sont peuplés) et le plus facile pour un filtre sur un hôte (sélectivité
 exactement 1/N). C'est une hypothèse de banc, pas une mesure — une vraie flotte est déséquilibrée.
 
+## La généricité — les axes sont DÉRIVÉS du chemin d'exécution, et ceux qu'on écarte le sont AUSSI
+
+Un chiffre mesuré sur notre profil prouve NOTRE cas. Pour savoir s'il tient ailleurs, il faut le
+remesurer sur des jeux qui diffèrent, et publier l'écart. Encore faut-il ne pas choisir les axes au
+hasard : chacun de ceux ci-dessous correspond à une **décision** que le daemon prend en fonction de
+la DONNÉE, pas de la requête.
+
+| Axe mesuré | La décision qu'il déplace | Ancre dans le code |
+|---|---|---|
+| cardinalité de `host` | sélectivité de `idx_event_host` (filtre) et nombre de groupes (group-by) | `migrate.rs` (`idx_event_host`) |
+| cardinalité des clés étendues | sélectivité du **seek d'index d'expression** sur les 10 clés de `HOT_FIELDS`, et nombre de groupes d'un `by <clé>` | `soql_glue.rs` (`HOT_FIELDS`), `maintenance.rs` (`idx_ev_f_*`) |
+| taille d'événement | **aucun index** ne porte sur `message` ni `fields` ; en GXQL un terme libre compile en `LIKE '%…%'`. Le coût est proportionnel aux OCTETS lus | `db/schema.sql`, compilateur GXQL (`freetext_col`) |
+| distribution de sévérité | `event_rollup.src_ip` n'est une DIMENSION que si `severity >= PLUME_ROLLUP_SRCIP_MIN_SEV` (défaut 3) — sinon la valeur est ramenée à `''` | `rollups.rs` |
+| **nom** des sources | la ROUTE B (`event_dim_rollup`) n'est prise que si le couple (nom de source, dimension) figure dans `DIM_ROLLUP_SPECS`, une table **écrite en dur** | `rollups.rs` (`DIM_ROLLUP_SPECS`), `rollup_route.rs` |
+
+**Et les axes ÉCARTÉS, avec leur raison** — un axe écarté sans motif est un angle mort déguisé :
+
+| Axe écarté | Pourquoi |
+|---|---|
+| mélange de sources (uniforme) | **MESURÉ, pas supposé** : rendre le mélange uniforme fait passer la part de `severity >= 3` de 0,064 à 0,219 et la taille moyenne de 252,8 à 237,4 octets — parce que la sévérité est une propriété DE chaque source. L'écart ne serait attribuable ni au mélange ni à la sévérité. Le profil `profile-axe-mix-uniforme.json` est conservé : sa section `axis` PORTE cette preuve. |
+| cardinalité de `src_ip` | déplacerait en même temps la colonne indexée (`idx_event_srcip`) ET le plafond top-N des rollups (`PLUME_ROLLUP_SRCIP_TOPN`). Même problème d'attribution. |
+| cardinalité de `category` | `category` est indexée, mais **aucune classe de la matrice ne la filtre ni ne la groupe** : l'axe ne serait exercé par aucune requête. Écarté faute de sonde, pas faute d'importance. |
+| `env_id`, `origin`, `engagement_id` | constants en mode 0 (multi-tenant off, hors engagement). |
+| `dst_ip`, `url`, `xff` | non indexées ET non interrogées par la matrice. |
+| profondeur de rétention | ce n'est pas une propriété du JEU mais un réglage du daemon ; les fenêtres en sont déjà dérivées, et la garde de couverture écarte déjà celles que le jeu ne porte pas. |
+
+**Ce que ces profils ne prétendent pas être** : ils sont SYNTHÉTIQUES et DÉRIVÉS. Ils ne sont la
+production de personne. Ils répondent à « le chiffre bouge-t-il quand ce paramètre bouge, et de
+combien », qui est la seule question à laquelle un banc puisse répondre sans les données du tiers.
+Ils ne répondent PAS à « voici ce que mesurera tel client » — cette phrase exigerait SON jeu.
+
+### Le bruit avant l'écart
+
+Un écart entre deux profils ne veut rien dire tant qu'on ne sait pas ce que la **même** mesure rend
+deux fois de suite sur le **même** jeu. La campagne mesure donc le témoin **deux fois**, en
+encadrant la campagne (une passe au début, une à la fin, donc dérive de la machine comprise), et la
+bande de bruit qui en sort devient le critère : un écart n'est déclaré attribuable au profil que
+s'il sort de l'**étendue complète** de cette bande. Aucun seuil n'est écrit — si la machine est plus
+bruyante, la bande s'élargit et le document **conclut moins**. C'est voulu : un banc doit perdre en
+conclusions quand il perd en conditions, jamais gagner en confiance.
+
+`measure.py` publie pour cela les **échantillons par tir** (`wall_samples_ms`, `sql_samples_ms`) et
+plus seulement leurs percentiles : une dispersion ne se recalcule pas depuis un p50.
+
+## La garde de rétention — le piège qui a mordu, fermé pour de bon
+
+Un jeu figé une fois pour toutes finit par sortir de la rétention du daemon : l'horloge avance, le
+bord de rétention rattrape la queue du jeu, et la purge SUPPRIME des événements **pendant** la
+campagne. Ce n'est pas théorique — mesuré le 2026-08-01 : 1 440 007 -> 1 436 516 événements en une
+demi-heure, avec à la clef un verdict de justesse FAUX imputé à la concurrence alors qu'il venait de
+l'horloge. Et la purge n'attend pas : `spawn_retention_loop` (`daemon/src/server.rs`) passe une
+première fois **60 s après le démarrage**, puis toutes les heures.
+
+`run.sh` REFUSE désormais de démarrer quand la marge est négative, et l'annonce quand elle ne l'est
+pas. La garde est DÉRIVÉE — elle compare deux instants, `end_ts - span_days` contre
+`now - retention_days`, et vaut donc pour toute rétention, toute étendue et tout `end_ts` :
+
+```
+marge de rétention : 48 h avant que la purge n'entame le jeu (échéance …)
+STOP: LE JEU EST DÉJÀ DANS LA ZONE DE PURGE — il a 42 h de retard.
+```
+
+Une garde de DÉPART ne prouve toutefois rien sur ce qui s'est passé PENDANT : `campagne-10m.sh`
+recompte donc les événements **après** la matrice et publie le avant/après.
+
 ## Pourquoi les données brutes sont versionnées
 
 Un tableau de mesures sans ses données brutes ne peut être que **cru ou ignoré** ; il ne peut pas
@@ -117,6 +186,9 @@ Un tableau de mesures sans ses données brutes ne peut être que **cru ou ignor�
 | `results/concurrency-attribution-2026-08-01.jsonl` | **CE QUE `sem_wait_ms` MESURAIT.** Passe COURTE (2 niveaux, 1 tour) tirée sur le binaire qui découpe l'attente mais garde la lecture de couverture sur le verrou d'écriture partagé. C'est elle qui ATTRIBUE : à 1 analyste pour 3 permis, l'attente du permit tombe à **0,000 ms** et 2 876 ms réapparaissent en `db_lock_wait_ms`. Sans elle, la correction serait une affirmation ; avec elle, c'est une mesure. |
 | `results/concurrency-corrige-2026-08-01.jsonl` | La campagne COMPLÈTE d'après correctif (mêmes niveaux, MÊME mélange imposé que la passe d'avant, deux sémaphores). C'est elle qui décrit le dépôt actuel. |
 | `results/concurrency-requests-corrige-2026-08-01.jsonl` | Le détail par requête de la passe ci-dessus. |
+| `results/generique-2026-08-03.jsonl` | **LA CAMPAGNE MULTI-PROFILS** : la même matrice sur 5 profils (témoin, flotte 1 et 50 hôtes, cardinalité x25, sévérité décalée, taille d'événement x3), à volume égal, **plus le témoin mesuré DEUX FOIS** — c'est cette répétition qui donne la bande de bruit sans laquelle aucun écart inter-profils n'est interprétable. Porte les **échantillons par tir** (`wall_samples_ms`), donc toute dispersion y est recalculable. Les étiquettes de flotte portent `-v2` : les passes du 31/07 s'appelaient pareil, et sans ce suffixe deux campagnes de binaires différents auraient fusionné en silence. |
+| `results/routeb-noms-sources-2026-08-03.jsonl` | **LE NOM DE LA SOURCE DÉCIDE DE LA ROUTE.** Deux jeux identiques à un détail près — le nom des sources. `served_from` passe de `rollup` à `raw` : preuve DIRECTE, pas une inférence sur des latences. |
+| `results/hotfields-2026-08-03.jsonl` | **CHAMP INDEXÉ CONTRE CHAMP NON INDEXÉ**, paire APPARIÉE dérivée du profil (même type, même cardinalité, même taux de présence), au défaut livré puis avec `PLUME_AUTOINDEX=1`. Porte le réglage EFFECTIF relu sur le daemon, pas celui supposé depuis le code. |
 
 **Scannés avant publication** : chemins personnels, e-mails, jetons (`ghp_`/`AKIA`/`xox*-`/
 `AGE-SECRET`/`hvs.`/JWT), IP hors plages de documentation, hexadécimal ≥ 32 — **zéro

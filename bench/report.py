@@ -8,6 +8,7 @@ en erreur, tronquée, ou prise pendant que la machine swappait apparaît AVEC so
 """
 import argparse
 import json
+import os
 import platform
 import subprocess
 import time
@@ -765,6 +766,213 @@ def render_concurrency(W, conc):
         W("")
 
 
+def _profile_axis(name):
+    """Relit la section `axis` (ou `fleet`) DU PROFIL lui-même. Le document ne réécrit donc jamais
+    de mémoire ce qu'un profil contient : il le cite. Un profil absent rend `None` et la passe
+    correspondante est publiée sans étiquette d'axe plutôt que sous une étiquette devinée."""
+    if not name:
+        return None
+    for cand in (os.path.join("bench", name), name):
+        try:
+            with open(cand, encoding="utf-8") as fh:
+                p = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if p.get("axis"):
+            a = dict(p["axis"])
+            a["kind"] = "axis"
+            return a
+        if p.get("fleet"):
+            return {"kind": "fleet", "axis": "hosts",
+                    "value": p["fleet"].get("hosts"), "detail": {}, "before": {}, "after": {}}
+        return {"kind": "temoin", "axis": None, "value": None,
+                "detail": {}, "before": {}, "after": {}}
+    return None
+
+
+def render_genericity(W, eff, cfgmeta, classes, wins, fmt_dur):
+    """Publie la VARIANCE par axe, jamais une moyenne seule.
+
+    LA GARDE EST DÉRIVÉE, PAS CHOISIE. Un écart entre deux profils ne veut rien dire tant qu'on ne
+    sait pas ce que la MÊME mesure rend deux fois de suite sur le MÊME jeu. La campagne mesure donc
+    le témoin DEUX FOIS, et la bande de bruit qui en sort — l'étendue des rapports cellule par
+    cellule — devient le seuil au-delà duquel un écart est attribuable au PROFIL. Aucun seuil n'est
+    écrit ici : si la machine est plus bruyante, la bande s'élargit d'elle-même et le document
+    conclut moins, ce qui est le comportement voulu."""
+    # Les passes de la campagne sont reconnues à leur profil ET à leur comparabilité (même volume,
+    # même masquage, même FTS, même tier froid) : aucune liste de configurations en dur.
+    by_cfg = {}
+    for r in eff:
+        by_cfg.setdefault(r["config_id"], []).append(r)
+    cand = [c for c in by_cfg if cfgmeta.get(c, {}).get("profile")]
+    if len(cand) < 3:
+        return
+    def _evbucket(n):
+        # Le VOLUME doit être égal pour que la comparaison ait un sens, mais « égal » ne peut pas
+        # vouloir dire « au même entier près » : le daemon estampille lui-même quelques événements
+        # de contrôle, et deux remplissages du même nombre d'événements finissent à 600 003 ici et
+        # 600 005 là. Comparer sur l'entier exact scinderait les passes en groupes d'une seule et
+        # ferait DISPARAÎTRE des profils du tableau sans rien dire. On compare donc à deux chiffres
+        # significatifs : 600 003 et 600 005 tombent ensemble, 600 000 et 10 000 000 non.
+        # La MAGNITUDE fait partie de la clé : sans elle, 140 000 et 1 440 007 rendent tous deux 14
+        # et deux volumes qui diffèrent d'un facteur 10 seraient comparés comme s'ils étaient égaux.
+        if not n:
+            return None
+        d = len(str(int(n)))
+        return (d, round(n / 10 ** (d - 2)))
+
+    def _key(c):
+        m = cfgmeta[c]
+        return (_evbucket(m.get("events")), m.get("mask"), m.get("fts_fields"),
+                m.get("cold"), m.get("classes"))
+    groups = {}
+    for c in cand:
+        groups.setdefault(_key(c), []).append(c)
+    camp = max(groups.values(), key=len)
+    if len(camp) < 3:
+        return
+    axes = {c: _profile_axis(cfgmeta[c].get("profile")) for c in camp}
+
+    # LE TÉMOIN et sa RÉPÉTITION : deux passes qui citent le MÊME fichier de profil. C'est la seule
+    # paire dont on sache qu'elle mesure deux fois la même chose.
+    byprof = {}
+    for c in camp:
+        byprof.setdefault(cfgmeta[c].get("profile"), []).append(c)
+    pair = next((v for v in byprof.values() if len(v) >= 2), None)
+    temoin = pair[0] if pair else next(
+        (c for c in camp if (axes.get(c) or {}).get("kind") == "temoin"), None)
+    if not temoin:
+        return
+
+    W("## La généricité — les mêmes requêtes sur d'AUTRES profils de données")
+    W("")
+    W("Un chiffre mesuré sur notre profil prouve NOTRE cas, pas le cas général. Les passes ci-dessous")
+    W("rejouent **la même matrice** sur des profils qui ne diffèrent du témoin que par **un seul**")
+    W("paramètre du jeu de données, **à volume d'événements égal**, sur la même machine et le même")
+    W("binaire. Chaque axe est DÉRIVÉ d'une décision du chemin d'exécution — pas choisi pour")
+    W("l'occasion : ce qui décide index ou scan, route de rollups ou balayage, chaud ou froid.")
+    W("")
+    W("| Passe | Axe | Valeur | Ce que le profil dit AVANT -> APRÈS | Événements | Base (Mio) |")
+    W("|---|---|---|---|---:|---:|")
+    for c in camp:
+        a = axes.get(c) or {}
+        m = cfgmeta[c]
+        moved = "—"
+        b, af = a.get("before") or {}, a.get("after") or {}
+        for k, lab in (("severity_ge3_frac", "sévérité >= 3"),
+                       ("mean_value_bytes", "octets/événement"),
+                       ("top_source_share", "poids source dominante")):
+            if b.get(k) is not None and af.get(k) is not None and b[k] != af[k]:
+                moved = f"{lab} {b[k]} -> {af[k]}"
+        if (a.get("before") or {}).get("ext_card") and a.get("axis") == "ext_card_scale":
+            moved = (f"cardinalité médiane {a['before']['ext_card'].get('card_median')} -> "
+                     f"{a['after']['ext_card'].get('card_median')}")
+        if a.get("kind") == "fleet":
+            moved = f"cardinalité de `host` = {a.get('value')}"
+        W(f"| `{c}` | {a.get('axis') or '**témoin**'} | {a.get('value') if a.get('value') is not None else '—'} "
+          f"| {moved} | {fmt_n(m.get('events'))} | {fmt_mib(m.get('db_bytes'))} |")
+    W("")
+
+    def val(c, cid, w):
+        for r in by_cfg.get(c, []):
+            if r["class_id"] == cid and r["window"] == w:
+                return r.get("wall_p50_ms")
+        return None
+
+    cells = [(cid, w) for cid, _l, _k in classes for w in wins]
+
+    # ---------------------------------------------------------------- LA BANDE DE BRUIT
+    noise = []
+    if pair and len(pair) >= 2:
+        a_, b_ = pair[0], pair[1]
+        for cid, w in cells:
+            x, y = val(a_, cid, w), val(b_, cid, w)
+            if x and y and x > 0:
+                noise.append(y / x)
+    W("### Le bruit d'abord — sinon aucun écart n'est interprétable")
+    W("")
+    if len(noise) >= 5:
+        ns = sorted(noise)
+        lo, hi = ns[0], ns[-1]
+        med = ns[len(ns) // 2]
+        q = lambda p: ns[max(0, min(len(ns) - 1, int(round(p * (len(ns) - 1)))))]
+        W(f"Le témoin a été mesuré **deux fois**, sur la **même base**, avec le même binaire et la")
+        W(f"même machine — `{pair[0]}` puis `{pair[1]}`. Rien n'y change : ni la donnée, ni le code,")
+        W(f"ni le réglage. Les deux passes ENCADRENT la campagne (l'une au début, l'autre à la fin),")
+        W(f"donc la bande contient aussi la dérive de la machine pendant la campagne. Le rapport")
+        W(f"d'une passe à l'autre, cellule par cellule, est du BRUIT pur, et il vaut :")
+        W("")
+        W(f"| Cellules | min | 5 % | médian | 95 % | max |")
+        W(f"|---:|---:|---:|---:|---:|---:|")
+        W(f"| {len(ns)} | x{lo:.2f} | x{q(0.05):.2f} | x{med:.2f} | x{q(0.95):.2f} | x{hi:.2f} |")
+        W("")
+        W(f"**C'est l'étalon.** Le critère retenu plus bas est l'ÉTENDUE COMPLÈTE `[x{lo:.2f},")
+        W(f"x{hi:.2f}]` — le plus conservateur des deux : un écart n'est déclaré attribuable au")
+        W("profil que s'il sort de tout ce que la répétition a produit sans qu'on change quoi que ce")
+        W("soit. Les quantiles sont publiés à côté pour que le lecteur voie si la bande est large")
+        W("à cause d'UNE cellule ou de toutes.")
+        W("")
+        W("Cette bande n'est pas un seuil choisi : c'est une mesure. Elle s'élargit d'elle-même si")
+        W("la machine est plus chargée, et le document conclut alors MOINS. C'est le comportement")
+        W("voulu — un banc doit perdre en conclusions quand il perd en conditions, jamais gagner en")
+        W("confiance. **Réserve à connaître** : les cellules les plus rapides (proches du coût fixe")
+        W("d'une requête, mesuré par `C0-plancher`) ont un bruit relatif élevé alors que leur enjeu")
+        W("est nul ; elles élargissent la bande et rendent donc le test PLUS strict, jamais moins.")
+    else:
+        lo, hi = None, None
+        W("**Le témoin n'a pas été mesuré deux fois dans cette passe** : aucune bande de bruit n'est")
+        W("disponible, donc aucun écart ci-dessous n'est déclaré significatif. Les rapports sont")
+        W("publiés bruts, et ils ne prouvent rien tant que la répétition n'a pas été faite.")
+    W("")
+
+    # ---------------------------------------------------------------- ÉCART PAR AXE
+    others = [c for c in camp if c != temoin and (not pair or c != pair[1])]
+    W("### L'écart, axe par axe")
+    W("")
+    W(f"Rapport de la latence p50 de chaque passe à celle du témoin `{temoin}`. **Gras** = l'écart")
+    W("sort de la bande de bruit ci-dessus, donc il est attribuable au PROFIL DE DONNÉES et pas à la")
+    W("machine. Une cellule vide n'a pas été mesurée des deux côtés.")
+    W("")
+    hdr = " | ".join(f"`{c}`" for c in others)
+    W(f"| Classe | Fenêtre | témoin | {hdr} |")
+    W("|---|:--:|---:|" + "---:|" * len(others))
+    outside = {c: 0 for c in others}
+    total = {c: 0 for c in others}
+    for cid, w in cells:
+        t = val(temoin, cid, w)
+        if not t or t <= 0:
+            continue
+        row, any_cell = [], False
+        for c in others:
+            v = val(c, cid, w)
+            if v is None:
+                row.append("—")
+                continue
+            any_cell = True
+            r = v / t
+            total[c] += 1
+            sig = lo is not None and (r < lo or r > hi)
+            if sig:
+                outside[c] += 1
+            row.append(f"**x{r:.2f}**" if sig else f"x{r:.2f}")
+        if any_cell:
+            W(f"| `{cid}` | {w} | {fmt_dur(t)} | " + " | ".join(row) + " |")
+    W("")
+    W("### Ce que ça donne, axe par axe")
+    W("")
+    W("| Axe | Cellules comparables | Hors bande de bruit | Part |")
+    W("|---|---:|---:|---:|")
+    for c in others:
+        a = axes.get(c) or {}
+        n, k = total[c], outside[c]
+        W(f"| `{c}` ({a.get('axis') or '?'}) | {n} | {k} | {100*k/n if n else 0:.0f} % |")
+    W("")
+    W("Une part élevée veut dire : **sur cet axe, nos chiffres ne se transposent pas**. Un tiers dont")
+    W("le jeu diffère de nous sur ce paramètre n'obtiendra pas nos latences, et l'écart n'est pas un")
+    W("artefact de mesure puisqu'il sort de la bande mesurée sur une répétition à l'identique.")
+    W("")
+
+
 def _cmp_load(eff, cfg):
     """Charge machine (loadavg 1 min) relevée PENDANT une passe : min-max sur ses cellules. Sans elle,
     un écart de latence entre deux passes pourrait n'être qu'un écart de charge."""
@@ -981,14 +1189,27 @@ def main():
     W("")
     W("**Ce que ces mesures n'autorisent PAS à affirmer** :")
     W("")
-    W(f"- rien au-delà de {fmt_n(_nev0(ref))} événements. La cible de 10 M n'a pas été atteinte par "
-      "le vrai chemin d'ingest — non pas faute de l'avoir cherché, mais parce que le débit "
-      "d'ingest s'effondre avec le volume déjà en base, ce que la section « D'où vient "
-      "l'effondrement » ATTRIBUE désormais (et non plus suppose) : le coût CPU par événement monte, "
-      "le daemon écrit de plus en plus d'octets par ligne, et le chemin d'écriture est séquentiel. "
-      "Le coût restant pour atteindre 10 M y est chiffré, en tant que PLANCHER arithmétique sur des "
-      "débits mesurés. Toute latence annoncée à 10 M ou 100 M serait une extrapolation, pas une "
-      "mesure.")
+    # LA BORNE DE VOLUME EST DÉRIVÉE, PAS ÉCRITE. Elle était affirmée en dur (« la cible de 10 M
+    # n'a pas été atteinte ») : le jour où une passe à 10 M entre dans le document, cette phrase le
+    # fait se contredire lui-même, en publiant un tableau à 10 M sous un verdict qui dit l'inverse.
+    # Le verdict lit donc le volume MAXIMUM réellement mesuré et se formule à partir de lui.
+    _volmax_cfg = max(configs, key=lambda c: _nev0(c) or 0)
+    _volmax = _nev0(_volmax_cfg) or 0
+    if _volmax > (_nev0(ref) or 0):
+        W(f"- au-delà de {fmt_n(_volmax)} événements, rien. C'est le volume le plus élevé "
+          f"réellement REMPLI par le vrai chemin d'ingest (`{_volmax_cfg}`) ; la configuration de "
+          f"référence de ce verdict, elle, porte sur {fmt_n(_nev0(ref))} événements, et les deux "
+          "ne se lisent pas l'une pour l'autre. Toute latence annoncée à un volume supérieur "
+          "serait une extrapolation, pas une mesure.")
+    else:
+        W(f"- rien au-delà de {fmt_n(_nev0(ref))} événements. La cible de 10 M n'a pas été atteinte "
+          "par le vrai chemin d'ingest — non pas faute de l'avoir cherché, mais parce que le débit "
+          "d'ingest s'effondre avec le volume déjà en base, ce que la section « D'où vient "
+          "l'effondrement » ATTRIBUE désormais (et non plus suppose) : le coût CPU par événement "
+          "monte, le daemon écrit de plus en plus d'octets par ligne, et le chemin d'écriture est "
+          "séquentiel. Le coût restant pour atteindre 10 M y est chiffré, en tant que PLANCHER "
+          "arithmétique sur des débits mesurés. Toute latence annoncée à 10 M ou 100 M serait une "
+          "extrapolation, pas une mesure.")
     _cold_on = [c for c in configs
                 if str(cfgmeta[c].get("cold", "off")).lower() not in ("off", "0", "", "none")]
     if _cold_on:
@@ -1173,8 +1394,9 @@ def main():
                       f"{fmt_n(fpts[-1][0])} événements produits, soit **x{fpts[0][2]/max(fpts[-1][2],1):.1f}**. "
                       "Deux causes se superposent — le volume déjà en base (maintenance des index et "
                       "de la FTS5) et la charge de la machine — et cette passe ne les sépare pas. "
-                      "C'est pour ça que la cible de 10 M n'a pas été atteinte : à ce débit, il "
-                      "aurait fallu plusieurs heures de plus.")
+                      "À ce débit-là, atteindre 10 M depuis ce point aurait demandé plusieurs "
+                      "heures de plus : c'est ce qui a borné CETTE passe-ci, et cela ne dit rien "
+                      "des autres passes du document.")
                     W("")
         for _ci, _curve in enumerate(args.ingest_curve or []):
             # UNE SOUS-SECTION PAR COURBE. Deux remplissages du MÊME volume, l'un sur machine
@@ -1843,6 +2065,13 @@ def main():
         W("GROUPEMENT, il est OPTIMISTE (un seul groupe au lieu de N). Un profil mono-hôte ne")
         W("« flatte » donc pas le produit : il le décrit FAUX, dans les deux sens à la fois.")
         W("")
+
+    # ------------------------------------------------------------ GÉNÉRICITÉ MULTI-AXES
+    # LA QUESTION : nos chiffres décrivent-ils autre chose que NOTRE jeu de données ? Un tableau qui
+    # donnerait un chiffre unique par requête répondrait « oui » sans l'avoir mesuré. Cette section
+    # rejoue la MÊME matrice sur des profils qui ne diffèrent du témoin que par UN paramètre, et
+    # publie l'ÉCART — avec, en premier, la seule chose qui rende un écart interprétable : le BRUIT.
+    render_genericity(W, eff, cfgmeta, classes, wins, fmt_dur)
 
     W("## Le budget de 2 Gio")
     W("")

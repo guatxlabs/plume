@@ -4,7 +4,7 @@
      Ne pas l'éditer à la main : la prochaine passe l'écrase. Tout commentaire durable va dans
      bench/README.md. -->
 
-Rendu le 2026-08-01 16:03:00+0200 depuis `results-smoke-200k.jsonl`, `results.jsonl`, `results-2026-07-31.jsonl`, `results-2026-07-31-corrige.jsonl`, `parity-avant-2026-07-31.jsonl`, `parity-apres-2026-07-31.jsonl`, `parity-couverture-2026-07-31.jsonl`, `concurrency-2026-08-01.jsonl`, `concurrency-reproduction-2026-08-01.jsonl`, `concurrency-attribution-2026-08-01.jsonl`, `concurrency-corrige-2026-08-01.jsonl` — données brutes VERSIONNÉES dans [`bench/results/`](../bench/results/), pour que ce tableau puisse être contredit et pas seulement cru (cf. `bench/README.md`).
+Rendu le 2026-08-03 10:23:43+0200 depuis `results-smoke-200k.jsonl`, `results.jsonl`, `results-2026-07-31.jsonl`, `results-2026-07-31-corrige.jsonl`, `parity-avant-2026-07-31.jsonl`, `parity-apres-2026-07-31.jsonl`, `parity-couverture-2026-07-31.jsonl`, `concurrency-2026-08-01.jsonl`, `concurrency-reproduction-2026-08-01.jsonl`, `concurrency-attribution-2026-08-01.jsonl`, `concurrency-corrige-2026-08-01.jsonl`, `generique-2026-08-03.jsonl` — données brutes VERSIONNÉES dans [`bench/results/`](../bench/results/), pour que ce tableau puisse être contredit et pas seulement cru (cf. `bench/README.md`).
 
 ## Ce que ce document est, et ce qu'il n'est pas
 
@@ -54,15 +54,15 @@ Volume de référence : **1 440 007 événements** (`chaud-seul-v2@1.4M`), base 
 | Processeur | Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 cœurs logiques) |
 | RAM de la machine | 15.4 Gio |
 | Noyau | 7.1.4-zen1-1-zen |
-| Version de plume mesurée | `bin:4bfcb9f76b4353a2 construit:2026-07-31T12:23:28Z (correctif troncature froide)` |
+| Version de plume mesurée | `bin:72c367a16a91f06a construit:2026-08-03T06:02:47Z (HEAD au rendu: 77600da — indicatif, l'arbre bouge)` |
 | Volumes mesurés | 200 003 événements, 335 255 événements, 600 003 événements, 1 440 003 événements, 1 440 007 événements |
-| Taille de la base (SQLCipher, chiffrée) | 1263 Mio, 1401 Mio, 1434 Mio, 197 Mio, 336 Mio, 351 Mio, 560 Mio |
+| Taille de la base (SQLCipher, chiffrée) | 1039 Mio, 1263 Mio, 1401 Mio, 1434 Mio, 197 Mio, 336 Mio, 351 Mio, 377 Mio, 560 Mio, 634 Mio, 647 Mio, 649 Mio, 656 Mio |
 | Budget mémoire | **appliqué** par un scope systemd `MemoryMax=2G MemorySwapMax=0` — la même contrainte que la limite de conteneur de production (`limits.memory: 2Gi`) |
 | Concurrence de requêtes | `PLUME_QUERY_CONCURRENCY=3` (le défaut livré) |
 | Passes de CONCURRENCE | 1, 2, 3, 4, 6, 8, 10 analystes simultanés, sémaphore 3 et 8 (section dédiée) |
 | Budget par requête | interactif, 60 s (`interactive:true`) |
 
-**Plusieurs binaires** figurent dans ce document : `10db2d2`, `bin:0642474ceedfaf15`, `bin:4bfcb9f76b4353a2`, `bin:b2d10fa90506682c`, `bin:bc481b69f4aca22c`, `ea1d072`. Chaque cellule porte le sien dans le JSONL brut, et chaque tableau de configuration l'affiche dans son sous-titre. Une comparaison entre deux tableaux de binaires différents mesure aussi l'écart entre les deux binaires — ce n'est légitime que dans la section « Écart mesuré entre deux passes », qui le dit.
+**Plusieurs binaires** figurent dans ce document : `10db2d2`, `bin:0642474ceedfaf15`, `bin:4bfcb9f76b4353a2`, `bin:72c367a16a91f06a`, `bin:b2d10fa90506682c`, `bin:bc481b69f4aca22c`, `ea1d072`. Chaque cellule porte le sien dans le JSONL brut, et chaque tableau de configuration l'affiche dans son sous-titre. Une comparaison entre deux tableaux de binaires différents mesure aussi l'écart entre les deux binaires — ce n'est légitime que dans la section « Écart mesuré entre deux passes », qui le dit.
 
 **Honnêteté sur les conditions** : la machine de mesure n'était pas dédiée — d'autres travaux
 tournaient en parallèle. Chaque cellule enregistre son `loadavg` et le swap consommé pendant
@@ -79,6 +79,12 @@ latences absolues sont **pessimistes** sur une machine chargée.
 | 600 000 | 212 s | **2 830 ev/s** | 545 Mio | 0 | `bin:bc481b69f4aca22c` |
 | 600 000 | 131 s | **4 580 ev/s** | 321 Mio | 0 | `bin:bc481b69f4aca22c` |
 | 600 000 | 128 s | **4 687 ev/s** | 337 Mio | 0 | `bin:bc481b69f4aca22c` |
+| 600 000 | 309 s | **1 941 ev/s** | 623 Mio | 0 | `bin:72c367a16a91f06a` |
+| 600 000 | 308 s | **1 948 ev/s** | 609 Mio | 0 | `bin:72c367a16a91f06a` |
+| 600 000 | 155 s | **3 870 ev/s** | 356 Mio | 0 | `bin:72c367a16a91f06a` |
+| 600 000 | 313 s | **1 916 ev/s** | 621 Mio | 0 | `bin:72c367a16a91f06a` |
+| 600 000 | 326 s | **1 840 ev/s** | 619 Mio | 0 | `bin:72c367a16a91f06a` |
+| 600 000 | 512 s | **1 171 ev/s** | 1012 Mio | 0 | `bin:72c367a16a91f06a` |
 | 444 000 | 541 s | **820 ev/s** | 1217 Mio | 0 | `—` |
 | 1 400 000 | 801 s | **1 747 ev/s** | 1214 Mio | 0 | `—` |
 
@@ -95,7 +101,7 @@ Débit **cumulé** relevé par le générateur lui-même pendant le remplissage 
 | 600 000 | 302 Mio | **7 190 ev/s** |
 | 1 200 000 | 604 Mio | **3 018 ev/s** |
 
-Le débit cumulé passe de **7 190 ev/s** à **3 018 ev/s** entre 600 000 et 1 200 000 événements produits, soit **x2.4**. Deux causes se superposent — le volume déjà en base (maintenance des index et de la FTS5) et la charge de la machine — et cette passe ne les sépare pas. C'est pour ça que la cible de 10 M n'a pas été atteinte : à ce débit, il aurait fallu plusieurs heures de plus.
+Le débit cumulé passe de **7 190 ev/s** à **3 018 ev/s** entre 600 000 et 1 200 000 événements produits, soit **x2.4**. Deux causes se superposent — le volume déjà en base (maintenance des index et de la FTS5) et la charge de la machine — et cette passe ne les sépare pas. À ce débit-là, atteindre 10 M depuis ce point aurait demandé plusieurs heures de plus : c'est ce qui a borné CETTE passe-ci, et cela ne dit rien des autres passes du document.
 
 ### Courbe de remplissage — `ingest_rate.csv`
 
@@ -214,6 +220,13 @@ La colonne RSS est la mémoire réellement occupée par le daemon PENDANT l'inge
 | `flotte-200h@0.6M` | 600 003 | 200 | 0 | vide | off | **sous-ensemble** `C0-,C1-scan-agg,C3-groupby-hi,C6` (30 cellules) |
 | `froid-actif-v2@1.4M` | 1 440 007 | 64 | 0 | vide | actif (hot=7j) | toutes (105 cellules) |
 | `chaud-seul-v2@1.4M` | 1 440 007 | 64 | 0 | vide | off | toutes (105 cellules) |
+| `temoin-64h@0.6M` | 600 003 | 64 | 0 | vide | off | toutes (105 cellules) |
+| `flotte-1h-v2@0.6M` | 600 003 | 1 | 0 | vide | off | toutes (105 cellules) |
+| `flotte-50h-v2@0.6M` | 600 003 | 50 | 0 | vide | off | toutes (105 cellules) |
+| `card-haute@0.6M` | 600 003 | 64 | 0 | vide | off | toutes (105 cellules) |
+| `sev-haute@0.6M` | 600 003 | 64 | 0 | vide | off | toutes (105 cellules) |
+| `temoin-bis@0.6M` | 600 003 | 64 | 0 | vide | off | toutes (105 cellules) |
+| `taille-grande@0.6M` | 600 003 | 64 | 0 | vide | off | toutes (105 cellules) |
 
 Le masquage compte parce qu'il est **contre-intuitif** : un ensemble de masquage non vide
 désarme la route de rollups *et* le moteur vectorisé (`handlers/query.rs:282`,
@@ -1292,6 +1305,853 @@ processus (0 = servi depuis le cache de pages).
 | `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | au-dela-7d | 21 | 812 | 515 | 987 | 0 | 200 | raw | dispersion x39.2 (loadavg 3) — p95 dominé par la contention, pas par plume |
 | `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | all | 21 | 21 | 20 | 987 | 0 | 200 | raw |  |
 
+## Résultats — `temoin-64h@0.6M`
+
+*`PLUME_FTS_FIELDS`=0, masquage=vide, froid=off, version=`bin:72c367a16a91f06a construit:2026-08-03T06:02:47Z (HEAD au rendu: 77600da — indicatif, l'arbre bouge)`, 600 003 événements, base 647 Mio.*
+
+Latences en millisecondes (mur, côté client), sauf mention `s`. `RSS` = crête réelle du
+processus échantillonnée à 15 ms pendant la requête. `lu` = octets lus au bloc par le
+processus (0 = servi depuis le cache de pages).
+
+
+**35 cellules de ce tableau ont une dispersion `p95/p50` supérieure à 3.** Sur une machine partagée, cela ne décrit pas plume : cela décrit le fait que la mesure a été bousculée par les autres travaux. Ces cellules sont annotées ; leur `p50` reste utilisable, leur `p95` non.
+
+**Ce que `p95` vaut ici** : 3, 7 répétitions par cellule (le harnais retombe à 3 quand le premier tir dépasse 3 s, pour que la matrice tienne). À ce nombre d'échantillons, `p95` par rang le plus proche **est le maximum observé** : c'est une borne haute sur un tout petit échantillon, pas une vraie queue de distribution. Le lire comme « le pire des N tirs », rien de plus.
+
+| Classe | Fenêtre | p50 | p95 | 1er tir | RSS crête | lu | lignes | route | note |
+|---|:--:|---:|---:|---:|---:|---:|---:|---|---|
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 1h | 1.3 | 21 | 21 | 117 | 0 | 1 | raw | dispersion x16.4 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 24h | 11 | 378 | 378 | 149 | 0 | 1 | raw | dispersion x33.7 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 7d | 611 | 1774 | 1774 | 176 | 0 | 1 | raw |  |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | au-dela-7d | 1869 | 3402 | 3402 | 176 | 0 | 1 | raw |  |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | all | 1223 | 2181 | 1070 | 506 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 1h | 1.5 | 4.2 | 4.2 | 505 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 24h | 9.0 | 77 | 77 | 508 | 0 | 1 | raw | dispersion x8.6 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 7d | 97 | 496 | 496 | 511 | 0 | 1 | raw | dispersion x5.1 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | au-dela-7d | 1233 | 2829 | 1304 | 549 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | all | 1534 | 3170 | 1679 | 328 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 1h | 1.3 | 9.6 | 9.6 | 328 | 0 | 1 | raw | dispersion x7.4 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 24h | 38 | 264 | 264 | 499 | 0 | 1 | raw | dispersion x6.9 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 7d | 1986 | 4763 | 1986 | 499 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | au-dela-7d | 1677 | 2180 | 1805 | 524 | 0 | 1 | raw | **pris sous swap — à rejouer** |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | all | 1471 | 2521 | 1419 | 607 | 0 | 1 | raw | **pris sous swap — à rejouer** |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 1h | 2.2 | 12 | 12 | 607 | 0 | 1 | raw | dispersion x5.2 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 24h | 36 | 207 | 207 | 607 | 0 | 1 | raw | dispersion x5.7 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 7d | 2098 | 3529 | 2718 | 607 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | au-dela-7d | 1850 | 3096 | 2173 | 596 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | all | 1871 | 2532 | 2532 | 596 | 0 | 1 | raw | **pris sous swap — à rejouer** |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 1h | 115 | 233 | 233 | 387 | 0 | 3 | scan | **pris sous swap — à rejouer** |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 24h | 2.5 | 37 | 37 | 387 | 0 | 18 | scan | dispersion x14.8 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 7d | 3.7 | 3.9 | 3.5 | 387 | 0 | 100 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | au-dela-7d | 4.5 | 5.3 | 4.5 | 387 | 0 | 100 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | all | 3.2 | 3.8 | 3.2 | 387 | 0 | 100 | scan |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 1h | 2.8 | 12 | 12 | 551 | 0 | 50 | raw | dispersion x4.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 24h | 291 | 319 | 303 | 551 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 7d | 3313 | 4315 | 2363 | 752 | 0 | 50 | raw | **pris sous swap — à rejouer** |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | au-dela-7d | 4292 | 5012 | 5012 | 768 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | all | 6319 | 7174 | 7174 | 768 | 0 | 50 | raw |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 1h | 1.9 | 37 | 37 | 551 | 0 | 33 | raw | dispersion x19.1 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 24h | 15 | 35 | 35 | 551 | 0 | 50 | rollup |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 7d | 106 | 233 | 233 | 551 | 0 | 59 | rollup |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | au-dela-7d | 342 | 1422 | 1422 | 551 | 0 | 65 | rollup | dispersion x4.2 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | all | 518 | 1218 | 454 | 551 | 0 | 68 | rollup | **pris sous swap — à rejouer** |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 1h | 3.3 | 4.0 | 3.3 | 550 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 24h | 357 | 925 | 925 | 565 | 0 | 50 | raw | **pris sous swap — à rejouer** |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 7d | 3386 | 5729 | 3386 | 749 | 0 | 50 | raw | **pris sous swap — à rejouer** |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | au-dela-7d | 10.9 s | 12.0 s | 10.9 s | 717 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | all | 3219 | 3429 | 3429 | 732 | 0 | 50 | raw |  |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 1h | 2.4 | 20 | 20 | 732 | 0 | 200 | raw | dispersion x8.2 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 24h | 13 | 151 | 91 | 732 | 0 | 200 | raw | dispersion x11.6 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 7d | 201 | 310 | 169 | 732 | 0 | 200 | raw |  |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | au-dela-7d | 5.2 | 58 | 58 | 732 | 0 | 200 | raw | dispersion x11.1 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | all | 2.6 | 3.8 | 3.8 | 732 | 0 | 200 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 1h | 2.9 | 13 | 13 | 732 | 0 | 0 | raw | dispersion x4.6 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 24h | 145 | 259 | 259 | 732 | 0 | 0 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 7d | 1099 | 1570 | 1570 | 732 | 0 | 0 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | au-dela-7d | 805 | 1230 | 614 | 754 | 0 | 200 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | all | 415 | 749 | 749 | 755 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 1h | 3.5 | 25 | 25 | 547 | 0 | 200 | raw | dispersion x7.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 24h | 5.0 | 6.1 | 6.1 | 547 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 7d | 3.3 | 4.2 | 4.2 | 547 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | au-dela-7d | 3.0 | 12 | 12 | 547 | 0 | 200 | raw | dispersion x3.9 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | all | 3.9 | 6.5 | 2.9 | 547 | 0 | 200 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 1h | 2.9 | 18 | 18 | 547 | 0 | 1 | raw | dispersion x6.1 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 24h | 42 | 536 | 536 | 547 | 0 | 1 | raw | dispersion x12.7 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 7d | 3158 | 3179 | 3179 | 547 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | au-dela-7d | 2121 | 3104 | 2486 | 762 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | all | 2653 | 3406 | 2271 | 765 | 0 | 1 | raw | **pris sous swap — à rejouer** |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 1h | 3.7 | 28 | 28 | 547 | 0 | 1 | raw | dispersion x7.6 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 24h | 345 | 361 | 359 | 547 | 0 | 1 | raw | **pris sous swap — à rejouer** |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 7d | 2899 | 5296 | 2899 | 722 | 0 | 1 | raw | **pris sous swap — à rejouer** |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | au-dela-7d | 3191 | 3947 | 3191 | 547 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | all | 2443 | 3869 | 2249 | 762 | 0 | 1 | raw | **pris sous swap — à rejouer** |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 1h | 4.6 | 20 | 20 | 546 | 0 | 1 | raw | dispersion x4.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 24h | 3.3 | 39 | 39 | 546 | 0 | 1 | raw | dispersion x11.8 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 7d | 1.8 | 3.7 | 3.7 | 546 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | au-dela-7d | 2.2 | 2.8 | 2.8 | 546 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | all | 1.0 | 1.2 | 1.2 | 546 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 1h | 0.8 | 57 | 57 | 115 | 0 | 1 | raw | dispersion x70.0 (loadavg 3) — p95 dominé par la contention, pas par plume |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 24h | 0.8 | 1.1 | 0.8 | 115 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 7d | 0.8 | 1.5 | 1.5 | 115 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | au-dela-7d | 0.9 | 1.3 | 0.9 | 115 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | all | 1.0 | 2.0 | 2.0 | 115 | 0 | 1 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 1h | 3.0 | 30 | 30 | 387 | 0 | 3 | raw | dispersion x9.9 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 24h | 70 | 797 | 797 | 399 | 0 | 18 | raw | **pris sous swap — à rejouer** / dispersion x11.4 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 7d | 2069 | 3235 | 3235 | 736 | 0 | 100 | raw | **pris sous swap — à rejouer** |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | au-dela-7d | 1472 | 2684 | 1548 | 737 | 0 | 100 | raw | **pris sous swap — à rejouer** |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | all | 1506 | 2410 | 1346 | 767 | 0 | 100 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 1h | 1.8 | 3.2 | 3.2 | 767 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 24h | 36 | 42 | 42 | 767 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 241 | 4163 | 267 | 767 | 0 | 1 | raw | dispersion x17.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 1481 | 2602 | 2059 | 763 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 1454 | 2432 | 1308 | 551 | 0 | 1 | raw | **pris sous swap — à rejouer** |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 2.2 | 3.8 | 2.8 | 547 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.1 | 3.7 | 1.9 | 547 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.4 | 3.5 | 2.6 | 547 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 1.7 | 5.8 | 5.8 | 547 | 0 | 200 | raw | dispersion x3.4 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 2.1 | 2.9 | 2.6 | 547 | 0 | 200 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.8 | 14 | 14 | 547 | 0 | 1 | raw | dispersion x7.9 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 9.9 | 147 | 147 | 547 | 0 | 1 | raw | dispersion x14.9 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 8.3 | 10 | 8.3 | 547 | 0 | 1 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | au-dela-7d | 8.4 | 9.8 | 9.8 | 547 | 0 | 1 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | all | 1.8 | 2.6 | 1.8 | 547 | 0 | 1 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 1h | 2.1 | 3.8 | 1.7 | 547 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 24h | 324 | 1044 | 720 | 547 | 0 | 50 | raw | **pris sous swap — à rejouer** / dispersion x3.2 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 7d | 7806 | 11.6 s | 7806 | 773 | 0 | 50 | raw | **pris sous swap — à rejouer** |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | au-dela-7d | 10.1 s | 10.4 s | 10.1 s | 773 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | all | 58 | 365 | 365 | 546 | 0 | 50 | raw | dispersion x6.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 1h | 2.5 | 24 | 24 | 546 | 0 | 5 | raw | dispersion x9.6 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 24h | 15 | 236 | 236 | 546 | 0 | 200 | raw | dispersion x15.6 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 7d | 12 | 247 | 247 | 546 | 0 | 200 | raw | dispersion x21.2 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | au-dela-7d | 11 | 12 | 11 | 546 | 0 | 200 | raw |  |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | all | 10 | 12 | 12 | 546 | 0 | 200 | raw |  |
+
+## Résultats — `flotte-1h-v2@0.6M`
+
+*`PLUME_FTS_FIELDS`=0, masquage=vide, froid=off, version=`bin:72c367a16a91f06a construit:2026-08-03T06:02:47Z (HEAD au rendu: 77600da — indicatif, l'arbre bouge)`, 600 003 événements, base 634 Mio.*
+
+Latences en millisecondes (mur, côté client), sauf mention `s`. `RSS` = crête réelle du
+processus échantillonnée à 15 ms pendant la requête. `lu` = octets lus au bloc par le
+processus (0 = servi depuis le cache de pages).
+
+
+**37 cellules de ce tableau ont une dispersion `p95/p50` supérieure à 3.** Sur une machine partagée, cela ne décrit pas plume : cela décrit le fait que la mesure a été bousculée par les autres travaux. Ces cellules sont annotées ; leur `p50` reste utilisable, leur `p95` non.
+
+**Ce que `p95` vaut ici** : 3, 7 répétitions par cellule (le harnais retombe à 3 quand le premier tir dépasse 3 s, pour que la matrice tienne). À ce nombre d'échantillons, `p95` par rang le plus proche **est le maximum observé** : c'est une borne haute sur un tout petit échantillon, pas une vraie queue de distribution. Le lire comme « le pire des N tirs », rien de plus.
+
+| Classe | Fenêtre | p50 | p95 | 1er tir | RSS crête | lu | lignes | route | note |
+|---|:--:|---:|---:|---:|---:|---:|---:|---|---|
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 1h | 1.3 | 17 | 17 | 115 | 0 | 1 | raw | dispersion x13.2 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 24h | 8.7 | 372 | 372 | 130 | 0 | 1 | raw | dispersion x42.6 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 7d | 590 | 1722 | 1722 | 157 | 0 | 1 | raw |  |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | au-dela-7d | 1847 | 3103 | 3103 | 157 | 0 | 1 | raw |  |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | all | 1124 | 2151 | 950 | 457 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 1h | 1.2 | 15 | 15 | 459 | 0 | 1 | raw | dispersion x12.5 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 24h | 6.9 | 72 | 72 | 459 | 0 | 1 | raw | dispersion x10.4 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 7d | 228 | 430 | 403 | 533 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | au-dela-7d | 1376 | 3026 | 1425 | 575 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | all | 1566 | 3564 | 1746 | 346 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 1h | 1.6 | 17 | 17 | 345 | 0 | 1 | raw | dispersion x10.7 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 24h | 39 | 677 | 376 | 556 | 0 | 1 | raw | dispersion x17.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 7d | 2078 | 4465 | 2204 | 556 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | au-dela-7d | 1445 | 1916 | 1916 | 543 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | all | 1432 | 2644 | 1445 | 586 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 1h | 2.7 | 23 | 23 | 586 | 0 | 1 | raw | dispersion x8.8 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 24h | 45 | 874 | 874 | 586 | 0 | 1 | raw | dispersion x19.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 7d | 2299 | 4008 | 4008 | 573 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | au-dela-7d | 1756 | 2357 | 2357 | 573 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | all | 1707 | 3076 | 2905 | 577 | 0 | 1 | raw |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 1h | 78 | 91 | 80 | 360 | 0 | 3 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 24h | 1.8 | 17 | 17 | 360 | 0 | 18 | scan | dispersion x9.6 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 7d | 2.8 | 3.1 | 3.0 | 360 | 0 | 100 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | au-dela-7d | 3.0 | 4.3 | 2.3 | 360 | 0 | 100 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | all | 3.0 | 5.1 | 4.0 | 360 | 0 | 100 | scan |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 1h | 4.0 | 13 | 13 | 836 | 0 | 50 | raw | dispersion x3.2 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 24h | 41 | 249 | 249 | 836 | 0 | 50 | raw | dispersion x6.0 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 7d | 3041 | 4806 | 2066 | 836 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | au-dela-7d | 5494 | 6180 | 5494 | 831 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | all | 5027 | 5605 | 5027 | 806 | 0 | 50 | raw |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 1h | 1.6 | 8.7 | 8.7 | 619 | 0 | 33 | raw | dispersion x5.3 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 24h | 14 | 28 | 28 | 619 | 0 | 50 | rollup |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 7d | 88 | 158 | 158 | 619 | 0 | 59 | rollup |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | au-dela-7d | 260 | 581 | 581 | 619 | 0 | 65 | rollup |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | all | 467 | 935 | 331 | 619 | 0 | 68 | rollup |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 1h | 3.9 | 4.9 | 4.9 | 619 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 24h | 282 | 866 | 866 | 822 | 0 | 50 | raw | dispersion x3.1 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 7d | 2528 | 4852 | 2894 | 822 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | au-dela-7d | 8875 | 10.3 s | 7763 | 831 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | all | 3723 | 4014 | 3288 | 803 | 0 | 50 | raw |  |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 1h | 3.2 | 13 | 13 | 619 | 0 | 200 | raw | dispersion x4.0 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 24h | 12 | 152 | 152 | 619 | 0 | 200 | raw | dispersion x13.2 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 7d | 13 | 149 | 144 | 619 | 0 | 200 | raw | dispersion x11.3 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | au-dela-7d | 4.4 | 28 | 28 | 619 | 0 | 200 | raw | dispersion x6.4 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | all | 2.1 | 3.7 | 3.7 | 619 | 0 | 200 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 1h | 2.6 | 3.0 | 2.7 | 619 | 0 | 0 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 24h | 37 | 227 | 227 | 619 | 0 | 0 | raw | dispersion x6.1 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 7d | 1786 | 3689 | 1506 | 845 | 0 | 0 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | au-dela-7d | 569 | 866 | 778 | 619 | 0 | 200 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | all | 467 | 1104 | 1104 | 619 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 1h | 3.1 | 12 | 12 | 619 | 0 | 200 | raw | dispersion x3.8 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 24h | 3.4 | 4.7 | 4.7 | 619 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 7d | 2.7 | 3.4 | 3.2 | 619 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | au-dela-7d | 4.3 | 8.7 | 8.7 | 619 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | all | 3.8 | 4.7 | 4.7 | 619 | 0 | 200 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 1h | 2.4 | 15 | 15 | 619 | 0 | 1 | raw | dispersion x6.5 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 24h | 44 | 584 | 584 | 619 | 0 | 1 | raw | dispersion x13.2 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 7d | 2537 | 4113 | 2537 | 831 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | au-dela-7d | 2485 | 2962 | 2962 | 834 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | all | 1778 | 2765 | 1630 | 831 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 1h | 2.7 | 16 | 16 | 832 | 0 | 1 | raw | dispersion x5.9 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 24h | 56 | 270 | 270 | 832 | 0 | 1 | raw | dispersion x4.8 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 7d | 2246 | 3501 | 1619 | 832 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | au-dela-7d | 2553 | 3444 | 3444 | 834 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | all | 2752 | 3462 | 2752 | 834 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 1h | 2.3 | 25 | 25 | 619 | 0 | 1 | raw | dispersion x11.2 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 24h | 1.6 | 46 | 46 | 619 | 0 | 1 | raw | dispersion x28.8 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 7d | 1.9 | 2.4 | 1.9 | 619 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | au-dela-7d | 1.9 | 2.4 | 1.4 | 619 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | all | 1.0 | 1.3 | 1.3 | 619 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 1h | 0.9 | 67 | 67 | 115 | 0 | 1 | raw | dispersion x76.0 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 24h | 0.7 | 0.8 | 0.7 | 115 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 7d | 0.8 | 0.9 | 0.6 | 115 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | au-dela-7d | 0.8 | 1.1 | 1.1 | 115 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | all | 0.8 | 0.9 | 0.9 | 115 | 0 | 1 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 1h | 3.4 | 17 | 17 | 360 | 0 | 3 | raw | dispersion x5.1 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 24h | 308 | 470 | 470 | 360 | 0 | 18 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 7d | 1934 | 2849 | 2196 | 683 | 0 | 100 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | au-dela-7d | 1509 | 2608 | 1526 | 689 | 0 | 100 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | all | 1655 | 2580 | 1303 | 833 | 0 | 100 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 1h | 2.1 | 6.9 | 6.9 | 619 | 0 | 1 | raw | dispersion x3.2 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 24h | 30 | 139 | 139 | 619 | 0 | 1 | raw | dispersion x4.7 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 1980 | 2793 | 911 | 626 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 1428 | 2502 | 2113 | 833 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 1491 | 2647 | 1461 | 836 | 0 | 1 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.8 | 3.2 | 1.8 | 619 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.2 | 2.5 | 2.3 | 619 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 1.9 | 2.8 | 2.2 | 619 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.0 | 3.0 | 3.0 | 619 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.9 | 2.6 | 2.6 | 619 | 0 | 200 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.4 | 23 | 23 | 834 | 0 | 1 | raw | dispersion x16.8 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 21 | 297 | 297 | 834 | 0 | 1 | raw | dispersion x14.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 1842 | 4922 | 1654 | 834 | 0 | 1 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | au-dela-7d | 1160 | 2269 | 2269 | 834 | 0 | 1 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | all | 42 | 376 | 163 | 834 | 0 | 1 | raw | dispersion x9.0 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 1h | 2.6 | 31 | 31 | 619 | 0 | 1 | raw | dispersion x12.0 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 24h | 260 | 945 | 439 | 619 | 0 | 1 | raw | dispersion x3.6 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 7d | 1311 | 2432 | 2432 | 837 | 0 | 1 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | au-dela-7d | 1307 | 1953 | 1323 | 837 | 0 | 1 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | all | 56 | 433 | 433 | 619 | 0 | 2 | raw | dispersion x7.7 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 1h | 2.1 | 28 | 28 | 619 | 0 | 200 | raw | dispersion x13.2 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 24h | 1.7 | 2.5 | 2.5 | 619 | 0 | 200 | raw |  |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 7d | 2.1 | 3.4 | 1.7 | 619 | 0 | 200 | raw |  |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | au-dela-7d | 2.4 | 13 | 13 | 619 | 0 | 200 | raw | dispersion x5.4 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | all | 1.6 | 2.4 | 2.4 | 619 | 0 | 200 | raw |  |
+
+## Résultats — `flotte-50h-v2@0.6M`
+
+*`PLUME_FTS_FIELDS`=0, masquage=vide, froid=off, version=`bin:72c367a16a91f06a construit:2026-08-03T06:02:47Z (HEAD au rendu: 77600da — indicatif, l'arbre bouge)`, 600 003 événements, base 377 Mio.*
+
+Latences en millisecondes (mur, côté client), sauf mention `s`. `RSS` = crête réelle du
+processus échantillonnée à 15 ms pendant la requête. `lu` = octets lus au bloc par le
+processus (0 = servi depuis le cache de pages).
+
+
+**25 cellules de ce tableau ont une dispersion `p95/p50` supérieure à 3.** Sur une machine partagée, cela ne décrit pas plume : cela décrit le fait que la mesure a été bousculée par les autres travaux. Ces cellules sont annotées ; leur `p50` reste utilisable, leur `p95` non.
+
+**Ce que `p95` vaut ici** : 3, 7 répétitions par cellule (le harnais retombe à 3 quand le premier tir dépasse 3 s, pour que la matrice tienne). À ce nombre d'échantillons, `p95` par rang le plus proche **est le maximum observé** : c'est une borne haute sur un tout petit échantillon, pas une vraie queue de distribution. Le lire comme « le pire des N tirs », rien de plus.
+
+| Classe | Fenêtre | p50 | p95 | 1er tir | RSS crête | lu | lignes | route | note |
+|---|:--:|---:|---:|---:|---:|---:|---:|---|---|
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 1h | 1.0 | 21 | 21 | 121 | 0 | 1 | raw | dispersion x19.9 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 24h | 9.3 | 416 | 416 | 138 | 0 | 1 | raw | dispersion x44.8 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 7d | 315 | 1322 | 1322 | 163 | 0 | 1 | raw | dispersion x4.2 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | au-dela-7d | 936 | 1302 | 1302 | 163 | 0 | 1 | raw |  |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | all | 628 | 702 | 437 | 163 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 1h | 1.0 | 2.6 | 2.6 | 163 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 24h | 7.1 | 28 | 28 | 163 | 0 | 1 | raw | dispersion x3.9 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 7d | 38 | 166 | 166 | 163 | 0 | 1 | raw | dispersion x4.4 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | au-dela-7d | 568 | 764 | 543 | 352 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | all | 1445 | 2657 | 668 | 468 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 1h | 11 | 13 | 13 | 270 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 24h | 251 | 718 | 683 | 270 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 7d | 1078 | 2174 | 2174 | 270 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | au-dela-7d | 867 | 1523 | 867 | 486 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | all | 744 | 878 | 659 | 486 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 1h | 2.8 | 49 | 49 | 279 | 0 | 1 | raw | dispersion x17.7 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 24h | 339 | 894 | 767 | 280 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 7d | 1753 | 2826 | 2826 | 424 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | au-dela-7d | 1020 | 1075 | 738 | 424 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | all | 1065 | 1096 | 1019 | 424 | 0 | 1 | raw |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 1h | 1.5 | 9.8 | 9.8 | 424 | 0 | 0 | scan | dispersion x6.5 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 24h | 2.5 | 3.4 | 2.3 | 424 | 0 | 25 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 7d | 4.3 | 7.6 | 4.3 | 424 | 0 | 100 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | au-dela-7d | 5.5 | 6.0 | 5.5 | 424 | 0 | 100 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | all | 2.9 | 6.0 | 5.6 | 424 | 0 | 100 | scan |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 1h | 4.3 | 12 | 12 | 355 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 24h | 249 | 848 | 178 | 355 | 0 | 50 | raw | dispersion x3.4 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 7d | 1750 | 2861 | 2861 | 501 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | au-dela-7d | 1551 | 2211 | 1684 | 374 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | all | 1769 | 2475 | 1760 | 594 | 0 | 50 | raw |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 1h | 2.5 | 9.8 | 9.8 | 384 | 0 | 26 | raw | dispersion x4.0 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 24h | 9.4 | 20 | 20 | 384 | 0 | 42 | rollup |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 7d | 47 | 99 | 99 | 384 | 0 | 52 | rollup |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | au-dela-7d | 166 | 353 | 353 | 384 | 0 | 53 | rollup |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | all | 189 | 207 | 205 | 384 | 0 | 57 | rollup |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 1h | 2.0 | 3.2 | 2.2 | 384 | 0 | 26 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 24h | 257 | 856 | 257 | 385 | 0 | 50 | raw | dispersion x3.3 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 7d | 1887 | 3456 | 2678 | 594 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | au-dela-7d | 5252 | 6081 | 5252 | 551 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | all | 1485 | 2265 | 958 | 551 | 0 | 50 | raw |  |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 1h | 3.3 | 23 | 23 | 537 | 0 | 200 | raw | dispersion x6.9 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 24h | 420 | 477 | 447 | 578 | 0 | 200 | raw |  |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 7d | 14 | 373 | 373 | 384 | 0 | 200 | raw | dispersion x25.9 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | au-dela-7d | 5.8 | 30 | 30 | 384 | 0 | 200 | raw | dispersion x5.2 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | all | 1.8 | 2.9 | 2.9 | 384 | 0 | 200 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 1h | 3.0 | 20 | 20 | 384 | 0 | 0 | raw | dispersion x6.4 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 24h | 41 | 250 | 250 | 384 | 0 | 0 | raw | dispersion x6.2 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 7d | 1020 | 2197 | 2197 | 594 | 0 | 0 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | au-dela-7d | 49 | 243 | 243 | 594 | 0 | 200 | raw | dispersion x5.0 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | all | 30 | 33 | 33 | 594 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 1h | 2.6 | 3.7 | 2.6 | 594 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 24h | 2.8 | 3.4 | 2.8 | 594 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 7d | 2.2 | 3.3 | 2.1 | 594 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | au-dela-7d | 2.5 | 3.0 | 2.8 | 594 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | all | 2.4 | 2.8 | 2.8 | 594 | 0 | 200 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 1h | 2.1 | 3.1 | 2.1 | 594 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 24h | 25 | 40 | 40 | 594 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 7d | 172 | 190 | 190 | 594 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | au-dela-7d | 202 | 211 | 211 | 594 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | all | 777 | 1468 | 204 | 594 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 1h | 1.8 | 8.5 | 8.5 | 384 | 0 | 1 | raw | dispersion x4.7 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 24h | 194 | 198 | 197 | 384 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 7d | 1480 | 2564 | 1480 | 594 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | au-dela-7d | 737 | 865 | 462 | 594 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | all | 774 | 1577 | 1577 | 384 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 1h | 0.7 | 1.9 | 1.9 | 571 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 24h | 0.7 | 1.2 | 0.7 | 571 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 7d | 0.8 | 1.2 | 1.2 | 571 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | au-dela-7d | 0.7 | 0.7 | 0.7 | 571 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | all | 0.7 | 1.0 | 0.7 | 571 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 1h | 0.8 | 52 | 52 | 121 | 0 | 1 | raw | dispersion x68.0 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 24h | 0.8 | 0.8 | 0.8 | 121 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 7d | 0.7 | 0.9 | 0.8 | 121 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | au-dela-7d | 0.8 | 1.1 | 0.9 | 121 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | all | 0.8 | 1.0 | 1.0 | 121 | 0 | 1 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 1h | 2.9 | 13 | 13 | 424 | 0 | 0 | raw | dispersion x4.4 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 24h | 196 | 296 | 296 | 424 | 0 | 25 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 7d | 850 | 2683 | 1759 | 550 | 0 | 100 | raw | dispersion x3.2 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | au-dela-7d | 231 | 549 | 549 | 535 | 0 | 100 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | all | 219 | 233 | 226 | 535 | 0 | 100 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 1h | 1.5 | 2.6 | 2.6 | 535 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 24h | 27 | 32 | 32 | 535 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 1595 | 2715 | 216 | 535 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 908 | 1601 | 728 | 562 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 781 | 801 | 749 | 355 | 0 | 1 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.7 | 2.6 | 2.6 | 594 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 1.8 | 3.0 | 3.0 | 594 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 1.8 | 3.8 | 3.8 | 594 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.1 | 2.4 | 2.1 | 594 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.9 | 2.9 | 1.7 | 594 | 0 | 200 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.5 | 10 | 10 | 384 | 0 | 1 | raw | dispersion x6.9 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 188 | 201 | 201 | 384 | 0 | 1 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 9.4 | 115 | 115 | 384 | 0 | 1 | raw | dispersion x12.2 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | au-dela-7d | 9.7 | 11 | 10 | 384 | 0 | 1 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | all | 1.9 | 2.2 | 2.2 | 384 | 0 | 1 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 1h | 1.7 | 2.3 | 1.7 | 384 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 24h | 222 | 232 | 210 | 384 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 7d | 2470 | 6407 | 6407 | 562 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | au-dela-7d | 6138 | 8233 | 2304 | 571 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | all | 58 | 144 | 144 | 571 | 0 | 50 | raw |  |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 1h | 1.9 | 14 | 14 | 571 | 0 | 14 | raw | dispersion x7.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 24h | 15 | 133 | 133 | 571 | 0 | 200 | raw | dispersion x8.9 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 7d | 13 | 174 | 161 | 571 | 0 | 200 | raw | dispersion x13.5 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | au-dela-7d | 12 | 25 | 13 | 571 | 0 | 200 | raw |  |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | all | 13 | 14 | 13 | 571 | 0 | 200 | raw |  |
+
+## Résultats — `card-haute@0.6M`
+
+*`PLUME_FTS_FIELDS`=0, masquage=vide, froid=off, version=`bin:72c367a16a91f06a construit:2026-08-03T06:02:47Z (HEAD au rendu: 77600da — indicatif, l'arbre bouge)`, 600 003 événements, base 649 Mio.*
+
+Latences en millisecondes (mur, côté client), sauf mention `s`. `RSS` = crête réelle du
+processus échantillonnée à 15 ms pendant la requête. `lu` = octets lus au bloc par le
+processus (0 = servi depuis le cache de pages).
+
+
+**29 cellules de ce tableau ont une dispersion `p95/p50` supérieure à 3.** Sur une machine partagée, cela ne décrit pas plume : cela décrit le fait que la mesure a été bousculée par les autres travaux. Ces cellules sont annotées ; leur `p50` reste utilisable, leur `p95` non.
+
+**Ce que `p95` vaut ici** : 3, 7 répétitions par cellule (le harnais retombe à 3 quand le premier tir dépasse 3 s, pour que la matrice tienne). À ce nombre d'échantillons, `p95` par rang le plus proche **est le maximum observé** : c'est une borne haute sur un tout petit échantillon, pas une vraie queue de distribution. Le lire comme « le pire des N tirs », rien de plus.
+
+| Classe | Fenêtre | p50 | p95 | 1er tir | RSS crête | lu | lignes | route | note |
+|---|:--:|---:|---:|---:|---:|---:|---:|---|---|
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 1h | 1.0 | 23 | 23 | 115 | 0 | 1 | raw | dispersion x22.2 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 24h | 9.1 | 376 | 376 | 130 | 0 | 1 | raw | dispersion x41.2 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 7d | 567 | 1670 | 1670 | 157 | 0 | 1 | raw |  |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | au-dela-7d | 1631 | 3106 | 3106 | 157 | 0 | 1 | raw |  |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | all | 1117 | 1547 | 1048 | 306 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 1h | 1.2 | 20 | 20 | 317 | 0 | 1 | raw | dispersion x16.5 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 24h | 8.5 | 133 | 133 | 391 | 0 | 1 | raw | dispersion x15.6 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 7d | 45 | 605 | 605 | 490 | 0 | 1 | raw | dispersion x13.4 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | au-dela-7d | 1143 | 1450 | 1450 | 618 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | all | 89 | 203 | 203 | 618 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 1h | 1.7 | 5.3 | 5.3 | 618 | 0 | 1 | raw | dispersion x3.1 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 24h | 344 | 1027 | 116 | 618 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 7d | 2010 | 3601 | 3601 | 394 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | au-dela-7d | 1426 | 2386 | 2301 | 613 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | all | 1377 | 2440 | 1343 | 613 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 1h | 1.6 | 12 | 12 | 407 | 0 | 1 | raw | dispersion x7.2 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 24h | 273 | 288 | 251 | 407 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 7d | 1533 | 2158 | 2099 | 627 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | au-dela-7d | 2311 | 2919 | 1516 | 629 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | all | 1699 | 2842 | 1699 | 627 | 0 | 1 | raw |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 1h | 79 | 82 | 77 | 410 | 0 | 3 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 24h | 1.8 | 12 | 12 | 410 | 0 | 18 | scan | dispersion x6.5 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 7d | 2.4 | 3.6 | 3.6 | 410 | 0 | 100 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | au-dela-7d | 2.9 | 3.7 | 3.7 | 410 | 0 | 100 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | all | 2.4 | 3.2 | 2.1 | 410 | 0 | 100 | scan |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 1h | 2.8 | 13 | 13 | 582 | 0 | 50 | raw | dispersion x4.5 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 24h | 267 | 290 | 287 | 582 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 7d | 2871 | 3514 | 2951 | 754 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | au-dela-7d | 5123 | 6763 | 5123 | 798 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | all | 7003 | 7324 | 7324 | 798 | 0 | 50 | raw |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 1h | 2.1 | 19 | 19 | 758 | 0 | 33 | raw | dispersion x8.8 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 24h | 17 | 27 | 27 | 758 | 0 | 50 | rollup |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 7d | 102 | 198 | 198 | 758 | 0 | 59 | rollup |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | au-dela-7d | 350 | 604 | 604 | 758 | 0 | 65 | rollup |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | all | 477 | 1170 | 486 | 758 | 0 | 68 | rollup |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 1h | 4.2 | 38 | 38 | 582 | 0 | 50 | raw | dispersion x9.1 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 24h | 69 | 901 | 901 | 582 | 0 | 50 | raw | dispersion x13.0 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 7d | 1885 | 3758 | 3758 | 582 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | au-dela-7d | 9089 | 9786 | 7873 | 790 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | all | 3776 | 3780 | 3776 | 790 | 0 | 50 | raw |  |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 1h | 3.8 | 28 | 28 | 582 | 0 | 200 | raw | dispersion x7.5 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 24h | 15 | 154 | 154 | 582 | 0 | 200 | raw | dispersion x10.5 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 7d | 13 | 382 | 382 | 582 | 0 | 200 | raw | dispersion x29.2 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | au-dela-7d | 5.2 | 62 | 62 | 582 | 0 | 200 | raw | dispersion x12.0 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | all | 1.7 | 3.8 | 3.8 | 582 | 0 | 200 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 1h | 2.3 | 9.1 | 9.1 | 582 | 0 | 0 | raw | dispersion x4.0 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 24h | 38 | 182 | 182 | 582 | 0 | 0 | raw | dispersion x4.7 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 7d | 2517 | 5044 | 2517 | 797 | 0 | 0 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | au-dela-7d | 898 | 1229 | 951 | 587 | 0 | 200 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | all | 415 | 444 | 388 | 587 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 1h | 10 | 15 | 15 | 587 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 24h | 8.7 | 13 | 8.7 | 587 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 7d | 9.4 | 13 | 9.4 | 587 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | au-dela-7d | 11 | 15 | 15 | 587 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | all | 9.8 | 11 | 9.8 | 587 | 0 | 200 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 1h | 20 | 27 | 27 | 587 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 24h | 527 | 916 | 916 | 794 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 7d | 2507 | 3984 | 3984 | 794 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | au-dela-7d | 1812 | 1989 | 1989 | 796 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | all | 2108 | 3149 | 2108 | 798 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 1h | 21 | 23 | 22 | 586 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 24h | 593 | 1128 | 612 | 587 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 7d | 4459 | 4773 | 4773 | 801 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | au-dela-7d | 2570 | 3094 | 3094 | 587 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | all | 3066 | 3396 | 3396 | 806 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 1h | 2.0 | 9.5 | 9.5 | 586 | 0 | 1 | raw | dispersion x4.8 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 24h | 1.6 | 12 | 12 | 586 | 0 | 1 | raw | dispersion x7.5 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 7d | 1.4 | 1.6 | 1.6 | 586 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | au-dela-7d | 1.2 | 1.3 | 1.1 | 586 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | all | 0.8 | 1.0 | 1.0 | 586 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 1h | 1.2 | 57 | 57 | 115 | 0 | 1 | raw | dispersion x47.7 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 24h | 1.1 | 1.1 | 1.1 | 115 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 7d | 0.9 | 1.1 | 0.9 | 115 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | au-dela-7d | 0.9 | 1.2 | 0.9 | 115 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | all | 1.0 | 1.8 | 1.1 | 115 | 0 | 1 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 1h | 2.7 | 15 | 15 | 410 | 0 | 3 | raw | dispersion x5.5 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 24h | 275 | 295 | 289 | 410 | 0 | 18 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 7d | 1536 | 2923 | 1880 | 741 | 0 | 100 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | au-dela-7d | 1453 | 2176 | 1501 | 782 | 0 | 100 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | all | 1392 | 1884 | 1349 | 799 | 0 | 100 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 1h | 2.0 | 4.2 | 4.2 | 799 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 24h | 28 | 76 | 76 | 799 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 196 | 453 | 453 | 799 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 1419 | 2150 | 757 | 799 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 1636 | 2548 | 1806 | 798 | 0 | 1 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 9.3 | 9.9 | 9.9 | 587 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 7.7 | 9.3 | 7.7 | 587 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 8.9 | 11 | 7.7 | 587 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 8.9 | 12 | 9.6 | 587 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 7.7 | 10.0 | 8.0 | 587 | 0 | 200 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.5 | 20 | 20 | 803 | 0 | 1 | raw | dispersion x13.4 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 7.7 | 138 | 138 | 803 | 0 | 1 | raw | dispersion x17.9 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 6.8 | 8.0 | 8.0 | 803 | 0 | 1 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | au-dela-7d | 7.7 | 8.1 | 8.1 | 803 | 0 | 1 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | all | 1.3 | 2.1 | 2.1 | 803 | 0 | 1 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 1h | 1.8 | 2.2 | 2.2 | 803 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 24h | 30 | 223 | 223 | 803 | 0 | 50 | raw | dispersion x7.5 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 7d | 7670 | 9507 | 7670 | 803 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | au-dela-7d | 8510 | 10.3 s | 8510 | 775 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | all | 69 | 306 | 306 | 586 | 0 | 50 | raw | dispersion x4.4 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 1h | 3.1 | 23 | 23 | 586 | 0 | 5 | raw | dispersion x7.6 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 24h | 17 | 217 | 217 | 586 | 0 | 200 | raw | dispersion x13.0 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 7d | 9.0 | 174 | 174 | 586 | 0 | 200 | raw | dispersion x19.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | au-dela-7d | 10 | 12 | 10 | 586 | 0 | 200 | raw |  |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | all | 10 | 13 | 10 | 586 | 0 | 200 | raw |  |
+
+## Résultats — `sev-haute@0.6M`
+
+*`PLUME_FTS_FIELDS`=0, masquage=vide, froid=off, version=`bin:72c367a16a91f06a construit:2026-08-03T06:02:47Z (HEAD au rendu: 77600da — indicatif, l'arbre bouge)`, 600 003 événements, base 649 Mio.*
+
+Latences en millisecondes (mur, côté client), sauf mention `s`. `RSS` = crête réelle du
+processus échantillonnée à 15 ms pendant la requête. `lu` = octets lus au bloc par le
+processus (0 = servi depuis le cache de pages).
+
+
+**35 cellules de ce tableau ont une dispersion `p95/p50` supérieure à 3.** Sur une machine partagée, cela ne décrit pas plume : cela décrit le fait que la mesure a été bousculée par les autres travaux. Ces cellules sont annotées ; leur `p50` reste utilisable, leur `p95` non.
+
+**Ce que `p95` vaut ici** : 3, 7 répétitions par cellule (le harnais retombe à 3 quand le premier tir dépasse 3 s, pour que la matrice tienne). À ce nombre d'échantillons, `p95` par rang le plus proche **est le maximum observé** : c'est une borne haute sur un tout petit échantillon, pas une vraie queue de distribution. Le lire comme « le pire des N tirs », rien de plus.
+
+| Classe | Fenêtre | p50 | p95 | 1er tir | RSS crête | lu | lignes | route | note |
+|---|:--:|---:|---:|---:|---:|---:|---:|---|---|
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 1h | 0.9 | 19 | 19 | 116 | 0 | 1 | raw | dispersion x20.4 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 24h | 7.9 | 417 | 417 | 131 | 0 | 1 | raw | dispersion x52.8 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 7d | 525 | 1630 | 1630 | 158 | 0 | 1 | raw | dispersion x3.1 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | au-dela-7d | 1716 | 3113 | 3113 | 158 | 0 | 1 | raw |  |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | all | 1073 | 1669 | 1005 | 304 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 1h | 1.3 | 19 | 19 | 311 | 0 | 1 | raw | dispersion x14.3 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 24h | 7.1 | 111 | 111 | 362 | 0 | 1 | raw | dispersion x15.6 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 7d | 113 | 620 | 620 | 599 | 0 | 1 | raw | dispersion x5.5 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | au-dela-7d | 990 | 1350 | 1319 | 634 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | all | 92 | 3791 | 208 | 634 | 0 | 1 | raw | dispersion x41.3 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 1h | 1.6 | 40 | 40 | 410 | 0 | 1 | raw | dispersion x25.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 24h | 281 | 430 | 430 | 410 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 7d | 1915 | 3815 | 2451 | 584 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | au-dela-7d | 1628 | 2359 | 1989 | 584 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | all | 1334 | 2437 | 1334 | 627 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 1h | 1.7 | 11 | 11 | 410 | 0 | 1 | raw | dispersion x6.4 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 24h | 295 | 322 | 251 | 410 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 7d | 2460 | 3654 | 1994 | 720 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | au-dela-7d | 1759 | 2849 | 2584 | 496 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | all | 1792 | 2984 | 1520 | 713 | 0 | 1 | raw |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 1h | 83 | 96 | 83 | 496 | 0 | 3 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 24h | 1.7 | 12 | 12 | 496 | 0 | 18 | scan | dispersion x7.1 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 7d | 2.5 | 3.4 | 2.5 | 496 | 0 | 100 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | au-dela-7d | 3.0 | 3.8 | 3.0 | 496 | 0 | 100 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | all | 2.1 | 3.5 | 2.8 | 496 | 0 | 100 | scan |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 1h | 3.5 | 15 | 15 | 472 | 0 | 50 | raw | dispersion x4.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 24h | 322 | 847 | 268 | 472 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 7d | 2209 | 4075 | 4075 | 687 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | au-dela-7d | 4363 | 5106 | 5106 | 838 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | all | 4765 | 5267 | 4765 | 838 | 0 | 50 | raw |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 1h | 3.3 | 23 | 23 | 614 | 0 | 41 | raw | dispersion x6.9 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 24h | 14 | 46 | 46 | 614 | 0 | 53 | rollup | dispersion x3.2 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 7d | 98 | 265 | 265 | 614 | 0 | 62 | rollup |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | au-dela-7d | 332 | 795 | 795 | 614 | 0 | 65 | rollup |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | all | 396 | 523 | 362 | 614 | 0 | 69 | rollup |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 1h | 3.5 | 3.9 | 3.5 | 614 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 24h | 273 | 382 | 349 | 807 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 7d | 3272 | 3844 | 3844 | 807 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | au-dela-7d | 9710 | 10.6 s | 10.6 s | 792 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | all | 4226 | 4815 | 4815 | 831 | 0 | 50 | raw |  |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 1h | 3.1 | 32 | 32 | 614 | 0 | 200 | raw | dispersion x10.4 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 24h | 19 | 167 | 167 | 614 | 0 | 200 | raw | dispersion x8.7 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 7d | 11 | 298 | 298 | 614 | 0 | 200 | raw | dispersion x26.8 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | au-dela-7d | 3.2 | 40 | 40 | 614 | 0 | 200 | raw | dispersion x12.6 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | all | 1.5 | 2.4 | 2.4 | 614 | 0 | 200 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 1h | 3.0 | 11 | 11 | 614 | 0 | 0 | raw | dispersion x3.6 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 24h | 151 | 254 | 254 | 614 | 0 | 0 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 7d | 1313 | 2850 | 2478 | 809 | 0 | 0 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | au-dela-7d | 521 | 776 | 776 | 809 | 0 | 200 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | all | 36 | 402 | 402 | 809 | 0 | 200 | raw | dispersion x11.1 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 1h | 5.1 | 7.6 | 7.6 | 809 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 24h | 4.0 | 5.4 | 5.4 | 809 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 7d | 2.6 | 4.5 | 2.5 | 809 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | au-dela-7d | 3.5 | 8.1 | 8.1 | 809 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | all | 3.6 | 4.9 | 3.2 | 809 | 0 | 200 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 1h | 4.0 | 9.7 | 9.7 | 809 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 24h | 46 | 196 | 196 | 809 | 0 | 1 | raw | dispersion x4.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 7d | 2383 | 3487 | 3487 | 809 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | au-dela-7d | 2747 | 3149 | 2285 | 862 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | all | 1946 | 3056 | 2080 | 850 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 1h | 3.2 | 10 | 10 | 849 | 0 | 1 | raw | dispersion x3.1 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 24h | 51 | 251 | 251 | 849 | 0 | 1 | raw | dispersion x4.9 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 7d | 2133 | 4861 | 1744 | 849 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | au-dela-7d | 2557 | 3306 | 3306 | 809 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | all | 2105 | 3245 | 2171 | 851 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 1h | 3.5 | 12 | 12 | 867 | 0 | 1 | raw | dispersion x3.3 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 24h | 2.1 | 17 | 17 | 867 | 0 | 1 | raw | dispersion x8.3 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 7d | 2.1 | 3.0 | 1.5 | 867 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | au-dela-7d | 2.1 | 3.1 | 2.1 | 867 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | all | 1.4 | 1.8 | 1.7 | 867 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 1h | 0.8 | 58 | 58 | 116 | 0 | 1 | raw | dispersion x69.8 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 24h | 0.8 | 1.0 | 0.7 | 116 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 7d | 0.9 | 1.3 | 0.9 | 116 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | au-dela-7d | 0.7 | 0.8 | 0.8 | 116 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | all | 1.0 | 1.2 | 1.2 | 116 | 0 | 1 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 1h | 3.3 | 18 | 18 | 496 | 0 | 3 | raw | dispersion x5.5 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 24h | 309 | 342 | 339 | 496 | 0 | 18 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 7d | 2554 | 3148 | 3148 | 496 | 0 | 100 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | au-dela-7d | 1625 | 2716 | 2281 | 713 | 0 | 100 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | all | 1601 | 2489 | 1246 | 722 | 0 | 100 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 1h | 2.1 | 42 | 42 | 722 | 0 | 1 | raw | dispersion x20.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 24h | 25 | 294 | 294 | 722 | 0 | 1 | raw | dispersion x11.8 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 1792 | 2710 | 1291 | 722 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 1487 | 2638 | 2638 | 673 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 1512 | 2524 | 1979 | 673 | 0 | 1 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 2.2 | 2.8 | 2.2 | 809 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.2 | 3.0 | 1.4 | 809 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.1 | 3.2 | 1.5 | 809 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.2 | 3.1 | 1.9 | 809 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.9 | 2.8 | 1.8 | 809 | 0 | 200 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.2 | 9.6 | 9.6 | 851 | 0 | 1 | raw | dispersion x7.7 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 7.5 | 78 | 78 | 851 | 0 | 1 | raw | dispersion x10.3 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 7.8 | 8.3 | 7.7 | 851 | 0 | 1 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | au-dela-7d | 7.9 | 8.3 | 8.3 | 851 | 0 | 1 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | all | 1.5 | 1.7 | 1.6 | 851 | 0 | 1 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 1h | 2.2 | 2.5 | 1.9 | 851 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 24h | 327 | 1039 | 439 | 851 | 0 | 50 | raw | dispersion x3.2 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 7d | 10.9 s | 12.0 s | 12.0 s | 850 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | au-dela-7d | 8973 | 10.9 s | 8788 | 867 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | all | 54 | 172 | 172 | 867 | 0 | 50 | raw | dispersion x3.2 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 1h | 1.2 | 12 | 12 | 867 | 0 | 5 | raw | dispersion x10.0 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 24h | 12 | 150 | 150 | 867 | 0 | 200 | raw | dispersion x12.4 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 7d | 9.4 | 107 | 107 | 867 | 0 | 200 | raw | dispersion x11.3 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | au-dela-7d | 10.0 | 12 | 10.0 | 867 | 0 | 200 | raw |  |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | all | 12 | 13 | 12 | 867 | 0 | 200 | raw |  |
+
+## Résultats — `temoin-bis@0.6M`
+
+*`PLUME_FTS_FIELDS`=0, masquage=vide, froid=off, version=`bin:72c367a16a91f06a construit:2026-08-03T06:02:47Z (HEAD au rendu: 77600da — indicatif, l'arbre bouge)`, 600 003 événements, base 656 Mio.*
+
+Latences en millisecondes (mur, côté client), sauf mention `s`. `RSS` = crête réelle du
+processus échantillonnée à 15 ms pendant la requête. `lu` = octets lus au bloc par le
+processus (0 = servi depuis le cache de pages).
+
+
+**33 cellules de ce tableau ont une dispersion `p95/p50` supérieure à 3.** Sur une machine partagée, cela ne décrit pas plume : cela décrit le fait que la mesure a été bousculée par les autres travaux. Ces cellules sont annotées ; leur `p50` reste utilisable, leur `p95` non.
+
+**Ce que `p95` vaut ici** : 3, 7 répétitions par cellule (le harnais retombe à 3 quand le premier tir dépasse 3 s, pour que la matrice tienne). À ce nombre d'échantillons, `p95` par rang le plus proche **est le maximum observé** : c'est une borne haute sur un tout petit échantillon, pas une vraie queue de distribution. Le lire comme « le pire des N tirs », rien de plus.
+
+| Classe | Fenêtre | p50 | p95 | 1er tir | RSS crête | lu | lignes | route | note |
+|---|:--:|---:|---:|---:|---:|---:|---:|---|---|
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 1h | 1.0 | 6.6 | 6.6 | 357 | 0 | 1 | raw | dispersion x6.6 (loadavg 8) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 24h | 8.7 | 140 | 140 | 388 | 0 | 1 | raw | dispersion x16.2 (loadavg 8) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 7d | 548 | 662 | 662 | 415 | 0 | 1 | raw |  |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | au-dela-7d | 1751 | 1866 | 1866 | 463 | 0 | 1 | raw |  |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | all | 1221 | 1446 | 1213 | 550 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 1h | 1.4 | 33 | 33 | 312 | 0 | 1 | raw | dispersion x24.1 (loadavg 8) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 24h | 5.9 | 269 | 213 | 312 | 0 | 1 | raw | dispersion x45.6 (loadavg 8) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 7d | 30 | 1018 | 1018 | 312 | 0 | 1 | raw | dispersion x34.0 (loadavg 8) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | au-dela-7d | 1116 | 2514 | 2514 | 312 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | all | 1578 | 2382 | 1835 | 484 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 1h | 2.3 | 6.3 | 6.3 | 484 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 24h | 31 | 169 | 169 | 484 | 0 | 1 | raw | dispersion x5.5 (loadavg 8) — p95 dominé par la contention, pas par plume |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 7d | 2000 | 4366 | 1959 | 484 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | au-dela-7d | 1339 | 2280 | 2280 | 534 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | all | 1539 | 2506 | 1217 | 580 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 1h | 2.9 | 16 | 16 | 537 | 0 | 1 | raw | dispersion x5.7 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 24h | 283 | 336 | 336 | 537 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 7d | 1894 | 3142 | 1603 | 537 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | au-dela-7d | 1932 | 3119 | 2524 | 535 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | all | 1672 | 2982 | 2826 | 534 | 0 | 1 | raw |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 1h | 79 | 85 | 85 | 534 | 0 | 3 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 24h | 1.4 | 11 | 11 | 534 | 0 | 18 | scan | dispersion x8.0 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 7d | 2.1 | 2.7 | 2.7 | 534 | 0 | 100 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | au-dela-7d | 2.3 | 2.8 | 2.7 | 534 | 0 | 100 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | all | 2.3 | 2.6 | 2.6 | 534 | 0 | 100 | scan |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 1h | 2.9 | 29 | 29 | 415 | 0 | 50 | raw | dispersion x9.8 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 24h | 273 | 345 | 345 | 415 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 7d | 3456 | 4090 | 3080 | 624 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | au-dela-7d | 5179 | 5378 | 5378 | 606 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | all | 4706 | 6249 | 4706 | 621 | 0 | 50 | raw |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 1h | 3.3 | 7.6 | 7.6 | 621 | 0 | 33 | raw |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 24h | 17 | 51 | 26 | 621 | 0 | 50 | rollup | dispersion x3.0 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 7d | 157 | 393 | 252 | 621 | 0 | 59 | rollup |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | au-dela-7d | 330 | 1531 | 1531 | 415 | 0 | 65 | rollup | dispersion x4.6 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | all | 420 | 598 | 598 | 415 | 0 | 68 | rollup |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 1h | 7.9 | 36 | 36 | 415 | 0 | 50 | raw | dispersion x4.5 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 24h | 336 | 930 | 930 | 415 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 7d | 2253 | 5258 | 5258 | 590 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | au-dela-7d | 8737 | 8967 | 8192 | 697 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | all | 3894 | 4345 | 3894 | 535 | 0 | 50 | raw |  |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 1h | 4.3 | 93 | 93 | 554 | 0 | 200 | raw | dispersion x21.5 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 24h | 16 | 357 | 357 | 554 | 0 | 200 | raw | dispersion x22.3 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 7d | 18 | 416 | 303 | 766 | 0 | 200 | raw | dispersion x23.5 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | au-dela-7d | 5.4 | 32 | 32 | 766 | 0 | 200 | raw | dispersion x6.0 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | all | 2.4 | 3.9 | 3.9 | 766 | 0 | 200 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 1h | 3.8 | 21 | 21 | 767 | 0 | 0 | raw | dispersion x5.6 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 24h | 449 | 928 | 644 | 767 | 0 | 0 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 7d | 1117 | 3074 | 3074 | 584 | 0 | 0 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | au-dela-7d | 56 | 922 | 922 | 620 | 0 | 200 | raw | dispersion x16.4 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | all | 34 | 61 | 34 | 620 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 1h | 3.2 | 4.0 | 3.7 | 620 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 24h | 4.3 | 4.9 | 4.1 | 620 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 7d | 3.9 | 4.9 | 4.9 | 620 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | au-dela-7d | 3.4 | 7.4 | 7.4 | 620 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | all | 3.3 | 4.2 | 3.3 | 620 | 0 | 200 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 1h | 2.2 | 3.0 | 2.2 | 620 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 24h | 34 | 172 | 172 | 620 | 0 | 1 | raw | dispersion x5.1 (loadavg 7) — p95 dominé par la contention, pas par plume |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 7d | 2213 | 4272 | 734 | 755 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | au-dela-7d | 1870 | 3210 | 2149 | 755 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | all | 1788 | 3061 | 1708 | 750 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 1h | 2.8 | 13 | 13 | 535 | 0 | 1 | raw | dispersion x4.7 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 24h | 316 | 344 | 344 | 535 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 7d | 2776 | 3727 | 3727 | 718 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | au-dela-7d | 2220 | 3307 | 2221 | 718 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | all | 2194 | 3319 | 3319 | 744 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 1h | 2.7 | 22 | 22 | 744 | 0 | 1 | raw | dispersion x8.1 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 24h | 2.4 | 29 | 29 | 744 | 0 | 1 | raw | dispersion x12.4 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 7d | 2.0 | 2.8 | 2.8 | 744 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | au-dela-7d | 2.3 | 3.0 | 3.0 | 744 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | all | 1.1 | 1.5 | 1.5 | 744 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 1h | 0.8 | 52 | 52 | 357 | 0 | 1 | raw | dispersion x62.3 (loadavg 8) — p95 dominé par la contention, pas par plume |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 24h | 0.7 | 0.8 | 0.8 | 357 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 7d | 0.9 | 2.3 | 1.6 | 357 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | au-dela-7d | 0.6 | 0.7 | 0.7 | 357 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | all | 0.9 | 1.1 | 0.9 | 357 | 0 | 1 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 1h | 2.6 | 16 | 16 | 534 | 0 | 3 | raw | dispersion x6.1 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 24h | 61 | 297 | 297 | 534 | 0 | 18 | raw | dispersion x4.9 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 7d | 1780 | 4234 | 1780 | 563 | 0 | 100 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | au-dela-7d | 1441 | 2403 | 1780 | 612 | 0 | 100 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | all | 1373 | 2483 | 1317 | 425 | 0 | 100 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 1h | 1.9 | 6.2 | 6.2 | 415 | 0 | 1 | raw | dispersion x3.2 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 24h | 33 | 133 | 133 | 415 | 0 | 1 | raw | dispersion x4.1 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 857 | 1939 | 946 | 617 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 1317 | 1747 | 1281 | 617 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 1435 | 2456 | 2250 | 631 | 0 | 1 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 2.2 | 2.8 | 2.4 | 620 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.1 | 2.7 | 2.1 | 620 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.4 | 2.6 | 2.5 | 620 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.1 | 2.7 | 2.1 | 620 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.9 | 2.4 | 1.8 | 620 | 0 | 200 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.4 | 12 | 12 | 744 | 0 | 1 | raw | dispersion x8.2 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 8.7 | 88 | 88 | 744 | 0 | 1 | raw | dispersion x10.2 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 7.8 | 8.2 | 7.9 | 744 | 0 | 1 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | au-dela-7d | 6.9 | 7.6 | 7.3 | 744 | 0 | 1 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | all | 1.1 | 1.5 | 1.1 | 744 | 0 | 1 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 1h | 1.8 | 2.8 | 1.8 | 744 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 24h | 30 | 204 | 204 | 744 | 0 | 50 | raw | dispersion x6.8 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 7d | 8276 | 9588 | 7580 | 744 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | au-dela-7d | 9969 | 10.6 s | 10.6 s | 733 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | all | 52 | 285 | 285 | 534 | 0 | 50 | raw | dispersion x5.5 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 1h | 2.1 | 17 | 17 | 534 | 0 | 5 | raw | dispersion x8.2 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 24h | 451 | 640 | 244 | 717 | 0 | 200 | raw |  |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 7d | 15 | 540 | 248 | 744 | 0 | 200 | raw | dispersion x36.3 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | au-dela-7d | 15 | 17 | 16 | 744 | 0 | 200 | raw |  |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | all | 13 | 16 | 16 | 744 | 0 | 200 | raw |  |
+
+## Résultats — `taille-grande@0.6M`
+
+*`PLUME_FTS_FIELDS`=0, masquage=vide, froid=off, version=`bin:72c367a16a91f06a construit:2026-08-03T06:02:47Z (HEAD au rendu: 77600da — indicatif, l'arbre bouge)`, 600 003 événements, base 1039 Mio.*
+
+Latences en millisecondes (mur, côté client), sauf mention `s`. `RSS` = crête réelle du
+processus échantillonnée à 15 ms pendant la requête. `lu` = octets lus au bloc par le
+processus (0 = servi depuis le cache de pages).
+
+
+**29 cellules de ce tableau ont une dispersion `p95/p50` supérieure à 3.** Sur une machine partagée, cela ne décrit pas plume : cela décrit le fait que la mesure a été bousculée par les autres travaux. Ces cellules sont annotées ; leur `p50` reste utilisable, leur `p95` non.
+
+**Ce que `p95` vaut ici** : 3, 7 répétitions par cellule (le harnais retombe à 3 quand le premier tir dépasse 3 s, pour que la matrice tienne). À ce nombre d'échantillons, `p95` par rang le plus proche **est le maximum observé** : c'est une borne haute sur un tout petit échantillon, pas une vraie queue de distribution. Le lire comme « le pire des N tirs », rien de plus.
+
+| Classe | Fenêtre | p50 | p95 | 1er tir | RSS crête | lu | lignes | route | note |
+|---|:--:|---:|---:|---:|---:|---:|---:|---|---|
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 1h | 1.5 | 24 | 24 | 116 | 0 | 1 | raw | dispersion x15.8 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 24h | 6.4 | 330 | 330 | 149 | 0 | 1 | raw | dispersion x51.4 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | 7d | 696 | 1984 | 1984 | 175 | 0 | 1 | raw |  |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | au-dela-7d | 2097 | 4468 | 4468 | 175 | 0 | 1 | raw |  |
+| `C1-scan-agg` <br><sub>scan filtré + agrégat (source + severity)</sub> | all | 1962 | 2874 | 1468 | 572 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 1h | 1.1 | 25 | 25 | 397 | 0 | 1 | raw | dispersion x22.3 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 24h | 217 | 425 | 220 | 397 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | 7d | 417 | 1026 | 1026 | 344 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | au-dela-7d | 1298 | 3120 | 3120 | 344 | 0 | 1 | raw |  |
+| `C1b-scan-agg-dc` <br><sub>scan filtré + dc() sur colonne réelle</sub> | all | 2912 | 3080 | 3080 | 344 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 1h | 2.2 | 9.6 | 9.6 | 344 | 0 | 1 | raw | dispersion x4.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 24h | 228 | 364 | 228 | 502 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | 7d | 2676 | 5410 | 5410 | 502 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | au-dela-7d | 4158 | 4649 | 4158 | 541 | 0 | 1 | raw |  |
+| `C2-free-term` <br><sub>terme libre sur message (compile en LIKE '%…%')</sub> | all | 3021 | 4857 | 2651 | 658 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 1h | 39 | 58 | 58 | 455 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 24h | 358 | 995 | 995 | 455 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | 7d | 5194 | 5793 | 5194 | 609 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | au-dela-7d | 4137 | 4461 | 4137 | 612 | 0 | 1 | raw |  |
+| `C2b-regex-msg` <br><sub>regex sur message (REGEXP, UDF Rust)</sub> | all | 3368 | 4938 | 2917 | 644 | 0 | 1 | raw |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 1h | 148 | 164 | 164 | 443 | 0 | 0 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 24h | 1.5 | 15 | 15 | 443 | 0 | 22 | scan | dispersion x10.0 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | 7d | 3.0 | 3.7 | 3.7 | 443 | 0 | 100 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | au-dela-7d | 3.1 | 3.9 | 3.0 | 443 | 0 | 100 | scan |  |
+| `C2c-fts-bar` <br><sub>MÊME aiguille via /api/search (FTS5 event_fts, 100 lignes)</sub> | all | 3.3 | 3.9 | 3.6 | 443 | 0 | 100 | scan |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 1h | 2.7 | 15 | 15 | 825 | 0 | 50 | raw | dispersion x5.6 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 24h | 326 | 959 | 299 | 825 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | 7d | 6787 | 7645 | 6787 | 729 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | au-dela-7d | 8631 | 8728 | 8631 | 815 | 0 | 50 | raw |  |
+| `C3-groupby-hi` <br><sub>group-by 3 dims haute cardinalité (src_ip,host,source)</sub> | all | 7618 | 9160 | 9160 | 815 | 0 | 50 | raw |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 1h | 2.0 | 11 | 11 | 627 | 0 | 32 | raw | dispersion x5.4 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 24h | 16 | 33 | 33 | 627 | 0 | 50 | rollup |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | 7d | 108 | 239 | 239 | 627 | 0 | 59 | rollup |  |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | au-dela-7d | 349 | 1389 | 1389 | 627 | 0 | 69 | rollup | dispersion x4.0 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C3b-groupby-routable` <br><sub>group-by 2 dims ROUTABLE en rollup (source,severity)</sub> | all | 494 | 645 | 645 | 816 | 0 | 71 | rollup |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 1h | 5.6 | 7.1 | 5.5 | 816 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 24h | 1089 | 1235 | 1132 | 816 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | 7d | 6346 | 6535 | 6346 | 783 | 0 | 50 | raw | **pris sous swap — à rejouer** |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | au-dela-7d | 13.3 s | 13.6 s | 13.3 s | 784 | 0 | 50 | raw |  |
+| `C3c-groupby-json` <br><sub>group-by sur champ ÉTENDU indexé (action) + colonne</sub> | all | 6608 | 6874 | 6874 | 827 | 0 | 50 | raw | **pris sous swap — à rejouer** |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 1h | 3.4 | 24 | 24 | 627 | 0 | 200 | raw | dispersion x6.9 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 24h | 13 | 174 | 174 | 627 | 0 | 200 | raw | dispersion x13.6 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | 7d | 13 | 193 | 193 | 627 | 0 | 200 | raw | dispersion x15.1 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | au-dela-7d | 6.1 | 91 | 91 | 627 | 0 | 200 | raw | dispersion x15.0 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4-raw-page1` <br><sub>RAW paginé page 1 (limit 200, offset 0)</sub> | all | 2.6 | 3.1 | 3.1 | 627 | 0 | 200 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 1h | 2.4 | 17 | 17 | 627 | 0 | 0 | raw | dispersion x7.0 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 24h | 174 | 323 | 323 | 627 | 0 | 0 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | 7d | 1823 | 3653 | 1986 | 913 | 0 | 0 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | au-dela-7d | 1058 | 2080 | 1513 | 972 | 0 | 200 | raw |  |
+| `C4b-raw-deep` <br><sub>RAW paginé page profonde (offset 200 000)</sub> | all | 829 | 1570 | 829 | 1000 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 1h | 4.3 | 31 | 31 | 777 | 0 | 200 | raw | dispersion x7.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 24h | 3.2 | 4.4 | 3.2 | 777 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | 7d | 4.2 | 4.8 | 4.8 | 777 | 0 | 200 | raw |  |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | au-dela-7d | 4.3 | 16 | 16 | 777 | 0 | 200 | raw | dispersion x3.7 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4c-raw-keyset` <br><sub>RAW paginé en keyset (curseur, sans offset)</sub> | all | 4.5 | 5.1 | 5.1 | 777 | 0 | 200 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 1h | 2.4 | 19 | 19 | 777 | 0 | 1 | raw | dispersion x8.1 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 24h | 367 | 771 | 771 | 777 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | 7d | 4666 | 5733 | 4666 | 978 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | au-dela-7d | 4351 | 4822 | 4351 | 946 | 0 | 1 | raw |  |
+| `C5-regex-json-planted` <br><sub>regex sur champ ÉTENDU planté (fields.needle)</sub> | all | 3011 | 4867 | 2833 | 956 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 1h | 4.5 | 32 | 32 | 777 | 0 | 1 | raw | dispersion x7.2 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 24h | 346 | 392 | 328 | 837 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | 7d | 3190 | 6122 | 3190 | 976 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | au-dela-7d | 4791 | 5585 | 5585 | 971 | 0 | 1 | raw |  |
+| `C5b-regex-json-cold` <br><sub>regex sur champ ÉTENDU NON indexé (fields.object)</sub> | all | 4455 | 5580 | 5580 | 777 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 1h | 2.8 | 13 | 13 | 776 | 0 | 1 | raw | dispersion x4.6 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 24h | 3.3 | 32 | 32 | 776 | 0 | 1 | raw | dispersion x9.8 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | 7d | 3.0 | 3.9 | 2.2 | 776 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | au-dela-7d | 3.6 | 4.3 | 4.3 | 776 | 0 | 1 | raw |  |
+| `C5c-eq-json-hot` <br><sub>égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)</sub> | all | 0.9 | 1.1 | 0.9 | 776 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 1h | 1.3 | 68 | 68 | 114 | 0 | 1 | raw | dispersion x52.8 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 24h | 1.0 | 1.1 | 1.1 | 114 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | 7d | 0.8 | 0.9 | 0.9 | 114 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | au-dela-7d | 0.8 | 1.0 | 0.8 | 114 | 0 | 1 | raw |  |
+| `C0-plancher` <br><sub>PLANCHER : seek sur une source inexistante (0 ligne)</sub> | all | 0.7 | 0.9 | 0.9 | 114 | 0 | 1 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 1h | 2.6 | 14 | 14 | 443 | 0 | 0 | raw | dispersion x5.5 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 24h | 355 | 1047 | 284 | 443 | 0 | 22 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | 7d | 2603 | 5015 | 5015 | 628 | 0 | 100 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | au-dela-7d | 3281 | 4418 | 4418 | 662 | 0 | 100 | raw |  |
+| `C2d-free-term-rows` <br><sub>MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)</sub> | all | 2915 | 4702 | 2558 | 870 | 0 | 100 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 1h | 2.2 | 14 | 14 | 870 | 0 | 1 | raw | dispersion x6.4 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 24h | 45 | 300 | 300 | 870 | 0 | 1 | raw | dispersion x6.6 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 4785 | 5177 | 1842 | 827 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 3199 | 4470 | 4470 | 627 | 0 | 1 | raw |  |
+| `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 2677 | 4887 | 4887 | 825 | 0 | 1 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 2.9 | 4.2 | 2.1 | 777 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.5 | 3.0 | 3.0 | 777 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.9 | 3.7 | 2.0 | 777 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 3.0 | 3.7 | 3.0 | 777 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 2.5 | 2.8 | 2.8 | 777 | 0 | 200 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.9 | 21 | 21 | 776 | 0 | 1 | raw | dispersion x11.2 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 11 | 302 | 302 | 776 | 0 | 1 | raw | dispersion x27.7 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 8.3 | 10 | 8.7 | 776 | 0 | 1 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | au-dela-7d | 7.3 | 11 | 7.3 | 776 | 0 | 1 | raw |  |
+| `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | all | 1.2 | 1.6 | 1.5 | 776 | 0 | 1 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 1h | 1.5 | 3.9 | 3.9 | 776 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 24h | 280 | 333 | 333 | 776 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | 7d | 10.5 s | 11.2 s | 10.5 s | 964 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | au-dela-7d | 11.6 s | 12.3 s | 6919 | 956 | 0 | 50 | raw |  |
+| `C6b-groupby-host` <br><sub>group-by sur host (autant de groupes que de machines)</sub> | all | 51 | 239 | 239 | 776 | 0 | 50 | raw | dispersion x4.7 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 1h | 1.7 | 15 | 15 | 776 | 0 | 10 | raw | dispersion x8.7 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 24h | 16 | 170 | 170 | 776 | 0 | 200 | raw | dispersion x10.9 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | 7d | 12 | 190 | 190 | 776 | 0 | 200 | raw | dispersion x16.4 (loadavg 5) — p95 dominé par la contention, pas par plume |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | au-dela-7d | 13 | 16 | 13 | 776 | 0 | 200 | raw |  |
+| `C6c-raw-one-host` <br><sub>RAW keyset d'UN hôte (« montre-moi cette machine »)</sub> | all | 13 | 14 | 14 | 776 | 0 | 200 | raw |  |
+
 ## Écart mesuré entre deux passes — `avant-leviers@1.4M` vs `apres-leviers@1.4M`
 
 Comparaison `avant-leviers@1.4M` -> `apres-leviers@1.4M`, MÊME base, MÊME instrument, MÊME machine, passes consécutives. Les deux lignes sont des mesures ; le delta est leur soustraction, rien de plus.
@@ -2204,6 +3064,177 @@ sélectionne tout, alors qu'il sélectionne 1/N sur une flotte) ; là où `host`
 GROUPEMENT, il est OPTIMISTE (un seul groupe au lieu de N). Un profil mono-hôte ne
 « flatte » donc pas le produit : il le décrit FAUX, dans les deux sens à la fois.
 
+## La généricité — les mêmes requêtes sur d'AUTRES profils de données
+
+Un chiffre mesuré sur notre profil prouve NOTRE cas, pas le cas général. Les passes ci-dessous
+rejouent **la même matrice** sur des profils qui ne diffèrent du témoin que par **un seul**
+paramètre du jeu de données, **à volume d'événements égal**, sur la même machine et le même
+binaire. Chaque axe est DÉRIVÉ d'une décision du chemin d'exécution — pas choisi pour
+l'occasion : ce qui décide index ou scan, route de rollups ou balayage, chaud ou froid.
+
+| Passe | Axe | Valeur | Ce que le profil dit AVANT -> APRÈS | Événements | Base (Mio) |
+|---|---|---|---|---:|---:|
+| `temoin-64h@0.6M` | **témoin** | — | — | 600 003 | 647 |
+| `flotte-1h-v2@0.6M` | hosts | 1 | cardinalité de `host` = 1 | 600 003 | 634 |
+| `flotte-50h-v2@0.6M` | hosts | 50 | cardinalité de `host` = 50 | 600 003 | 377 |
+| `card-haute@0.6M` | ext_card_scale | 25.0 | cardinalité médiane 4 -> 100 | 600 003 | 649 |
+| `sev-haute@0.6M` | severity_shift | 0.6 | sévérité >= 3 0.064 -> 0.4768 | 600 003 | 649 |
+| `temoin-bis@0.6M` | **témoin** | — | — | 600 003 | 656 |
+| `taille-grande@0.6M` | event_size_scale | 3.0 | octets/événement 252.8 -> 758.2 | 600 003 | 1039 |
+
+### Le bruit d'abord — sinon aucun écart n'est interprétable
+
+Le témoin a été mesuré **deux fois**, sur la **même base**, avec le même binaire et la
+même machine — `temoin-64h@0.6M` puis `temoin-bis@0.6M`. Rien n'y change : ni la donnée, ni le code,
+ni le réglage. Les deux passes ENCADRENT la campagne (l'une au début, l'autre à la fin),
+donc la bande contient aussi la dérive de la machine pendant la campagne. Le rapport
+d'une passe à l'autre, cellule par cellule, est du BRUIT pur, et il vaut :
+
+| Cellules | min | 5 % | médian | 95 % | max |
+|---:|---:|---:|---:|---:|---:|
+| 105 | x0.07 | x0.51 | x0.92 | x1.80 | x29.82 |
+
+**C'est l'étalon.** Le critère retenu plus bas est l'ÉTENDUE COMPLÈTE `[x0.07,
+x29.82]` — le plus conservateur des deux : un écart n'est déclaré attribuable au
+profil que s'il sort de tout ce que la répétition a produit sans qu'on change quoi que ce
+soit. Les quantiles sont publiés à côté pour que le lecteur voie si la bande est large
+à cause d'UNE cellule ou de toutes.
+
+Cette bande n'est pas un seuil choisi : c'est une mesure. Elle s'élargit d'elle-même si
+la machine est plus chargée, et le document conclut alors MOINS. C'est le comportement
+voulu — un banc doit perdre en conclusions quand il perd en conditions, jamais gagner en
+confiance. **Réserve à connaître** : les cellules les plus rapides (proches du coût fixe
+d'une requête, mesuré par `C0-plancher`) ont un bruit relatif élevé alors que leur enjeu
+est nul ; elles élargissent la bande et rendent donc le test PLUS strict, jamais moins.
+
+### L'écart, axe par axe
+
+Rapport de la latence p50 de chaque passe à celle du témoin `temoin-64h@0.6M`. **Gras** = l'écart
+sort de la bande de bruit ci-dessus, donc il est attribuable au PROFIL DE DONNÉES et pas à la
+machine. Une cellule vide n'a pas été mesurée des deux côtés.
+
+| Classe | Fenêtre | témoin | `flotte-1h-v2@0.6M` | `flotte-50h-v2@0.6M` | `card-haute@0.6M` | `sev-haute@0.6M` | `taille-grande@0.6M` |
+|---|:--:|---:|---:|---:|---:|---:|---:|
+| `C1-scan-agg` | 1h | 1.3 ms | x1.00 | x0.83 | x0.83 | x0.72 | x1.19 |
+| `C1-scan-agg` | 24h | 11 ms | x0.78 | x0.83 | x0.81 | x0.70 | x0.57 |
+| `C1-scan-agg` | 7d | 611 ms | x0.97 | x0.52 | x0.93 | x0.86 | x1.14 |
+| `C1-scan-agg` | au-dela-7d | 1869 ms | x0.99 | x0.50 | x0.87 | x0.92 | x1.12 |
+| `C1-scan-agg` | all | 1223 ms | x0.92 | x0.51 | x0.91 | x0.88 | x1.60 |
+| `C1b-scan-agg-dc` | 1h | 1.5 ms | x0.77 | x0.67 | x0.81 | x0.87 | x0.75 |
+| `C1b-scan-agg-dc` | 24h | 9.0 ms | x0.77 | x0.79 | x0.95 | x0.79 | x24.10 |
+| `C1b-scan-agg-dc` | 7d | 97 ms | x2.35 | x0.39 | x0.47 | x1.16 | x4.30 |
+| `C1b-scan-agg-dc` | au-dela-7d | 1233 ms | x1.12 | x0.46 | x0.93 | x0.80 | x1.05 |
+| `C1b-scan-agg-dc` | all | 1534 ms | x1.02 | x0.94 | **x0.06** | **x0.06** | x1.90 |
+| `C2-free-term` | 1h | 1.3 ms | x1.20 | x8.35 | x1.34 | x1.22 | x1.70 |
+| `C2-free-term` | 24h | 38 ms | x1.02 | x6.53 | x8.96 | x7.34 | x5.95 |
+| `C2-free-term` | 7d | 1986 ms | x1.05 | x0.54 | x1.01 | x0.96 | x1.35 |
+| `C2-free-term` | au-dela-7d | 1677 ms | x0.86 | x0.52 | x0.85 | x0.97 | x2.48 |
+| `C2-free-term` | all | 1471 ms | x0.97 | x0.51 | x0.94 | x0.91 | x2.05 |
+| `C2b-regex-msg` | 1h | 2.2 ms | x1.20 | x1.25 | x0.74 | x0.76 | x17.35 |
+| `C2b-regex-msg` | 24h | 36 ms | x1.24 | x9.30 | x7.49 | x8.09 | x9.81 |
+| `C2b-regex-msg` | 7d | 2.1 s | x1.10 | x0.84 | x0.73 | x1.17 | x2.48 |
+| `C2b-regex-msg` | au-dela-7d | 1850 ms | x0.95 | x0.55 | x1.25 | x0.95 | x2.24 |
+| `C2b-regex-msg` | all | 1871 ms | x0.91 | x0.57 | x0.91 | x0.96 | x1.80 |
+| `C2c-fts-bar` | 1h | 115 ms | x0.68 | **x0.01** | x0.69 | x0.72 | x1.29 |
+| `C2c-fts-bar` | 24h | 2.5 ms | x0.69 | x1.00 | x0.71 | x0.67 | x0.58 |
+| `C2c-fts-bar` | 7d | 3.7 ms | x0.75 | x1.16 | x0.63 | x0.66 | x0.80 |
+| `C2c-fts-bar` | au-dela-7d | 4.5 ms | x0.66 | x1.22 | x0.65 | x0.66 | x0.68 |
+| `C2c-fts-bar` | all | 3.2 ms | x0.94 | x0.91 | x0.75 | x0.67 | x1.03 |
+| `C3-groupby-hi` | 1h | 2.8 ms | x1.45 | x1.53 | x1.02 | x1.24 | x0.96 |
+| `C3-groupby-hi` | 24h | 291 ms | x0.14 | x0.86 | x0.92 | x1.11 | x1.12 |
+| `C3-groupby-hi` | 7d | 3.3 s | x0.92 | x0.53 | x0.87 | x0.67 | x2.05 |
+| `C3-groupby-hi` | au-dela-7d | 4.3 s | x1.28 | x0.36 | x1.19 | x1.02 | x2.01 |
+| `C3-groupby-hi` | all | 6.3 s | x0.80 | x0.28 | x1.11 | x0.75 | x1.21 |
+| `C3b-groupby-routable` | 1h | 1.9 ms | x0.85 | x1.29 | x1.10 | x1.74 | x1.04 |
+| `C3b-groupby-routable` | 24h | 15 ms | x0.97 | x0.64 | x1.15 | x0.99 | x1.06 |
+| `C3b-groupby-routable` | 7d | 106 ms | x0.83 | x0.44 | x0.96 | x0.92 | x1.02 |
+| `C3b-groupby-routable` | au-dela-7d | 342 ms | x0.76 | x0.49 | x1.02 | x0.97 | x1.02 |
+| `C3b-groupby-routable` | all | 518 ms | x0.90 | x0.36 | x0.92 | x0.76 | x0.95 |
+| `C3c-groupby-json` | 1h | 3.3 ms | x1.18 | x0.60 | x1.27 | x1.07 | x1.69 |
+| `C3c-groupby-json` | 24h | 357 ms | x0.79 | x0.72 | x0.19 | x0.77 | x3.05 |
+| `C3c-groupby-json` | 7d | 3.4 s | x0.75 | x0.56 | x0.56 | x0.97 | x1.87 |
+| `C3c-groupby-json` | au-dela-7d | 10.9 s | x0.81 | x0.48 | x0.83 | x0.89 | x1.22 |
+| `C3c-groupby-json` | all | 3.2 s | x1.16 | x0.46 | x1.17 | x1.31 | x2.05 |
+| `C4-raw-page1` | 1h | 2.4 ms | x1.30 | x1.35 | x1.55 | x1.26 | x1.42 |
+| `C4-raw-page1` | 24h | 13 ms | x0.88 | **x32.22** | x1.12 | x1.48 | x0.98 |
+| `C4-raw-page1` | 7d | 201 ms | **x0.07** | x0.07 | **x0.07** | **x0.06** | **x0.06** |
+| `C4-raw-page1` | au-dela-7d | 5.2 ms | x0.84 | x1.10 | x0.98 | x0.60 | x1.16 |
+| `C4-raw-page1` | all | 2.6 ms | x0.80 | x0.68 | x0.67 | x0.58 | x1.01 |
+| `C4b-raw-deep` | 1h | 2.9 ms | x0.91 | x1.05 | x0.79 | x1.05 | x0.82 |
+| `C4b-raw-deep` | 24h | 145 ms | x0.26 | x0.28 | x0.27 | x1.05 | x1.21 |
+| `C4b-raw-deep` | 7d | 1099 ms | x1.63 | x0.93 | x2.29 | x1.20 | x1.66 |
+| `C4b-raw-deep` | au-dela-7d | 805 ms | x0.71 | **x0.06** | x1.11 | x0.65 | x1.31 |
+| `C4b-raw-deep` | all | 415 ms | x1.13 | x0.07 | x1.00 | x0.09 | x2.00 |
+| `C4c-raw-keyset` | 1h | 3.5 ms | x0.88 | x0.75 | x2.99 | x1.45 | x1.22 |
+| `C4c-raw-keyset` | 24h | 5.0 ms | x0.68 | x0.57 | x1.76 | x0.80 | x0.65 |
+| `C4c-raw-keyset` | 7d | 3.3 ms | x0.82 | x0.67 | x2.84 | x0.80 | x1.26 |
+| `C4c-raw-keyset` | au-dela-7d | 3.0 ms | x1.44 | x0.84 | x3.63 | x1.17 | x1.46 |
+| `C4c-raw-keyset` | all | 3.9 ms | x0.96 | x0.61 | x2.52 | x0.93 | x1.15 |
+| `C5-regex-json-planted` | 1h | 2.9 ms | x0.81 | x0.73 | x6.72 | x1.40 | x0.81 |
+| `C5-regex-json-planted` | 24h | 42 ms | x1.05 | x0.60 | x12.50 | x1.09 | x8.70 |
+| `C5-regex-json-planted` | 7d | 3.2 s | x0.80 | **x0.05** | x0.79 | x0.75 | x1.48 |
+| `C5-regex-json-planted` | au-dela-7d | 2.1 s | x1.17 | x0.10 | x0.85 | x1.30 | x2.05 |
+| `C5-regex-json-planted` | all | 2.7 s | x0.67 | x0.29 | x0.79 | x0.73 | x1.13 |
+| `C5b-regex-json-cold` | 1h | 3.7 ms | x0.74 | x0.50 | x5.74 | x0.88 | x1.22 |
+| `C5b-regex-json-cold` | 24h | 345 ms | x0.16 | x0.56 | x1.72 | x0.15 | x1.00 |
+| `C5b-regex-json-cold` | 7d | 2.9 s | x0.77 | x0.51 | x1.54 | x0.74 | x1.10 |
+| `C5b-regex-json-cold` | au-dela-7d | 3.2 s | x0.80 | x0.23 | x0.81 | x0.80 | x1.50 |
+| `C5b-regex-json-cold` | all | 2.4 s | x1.13 | x0.32 | x1.25 | x0.86 | x1.82 |
+| `C5c-eq-json-hot` | 1h | 4.6 ms | x0.49 | x0.16 | x0.43 | x0.76 | x0.61 |
+| `C5c-eq-json-hot` | 24h | 3.3 ms | x0.48 | x0.22 | x0.49 | x0.62 | x0.99 |
+| `C5c-eq-json-hot` | 7d | 1.8 ms | x1.06 | x0.44 | x0.78 | x1.16 | x1.70 |
+| `C5c-eq-json-hot` | au-dela-7d | 2.2 ms | x0.88 | x0.31 | x0.56 | x0.95 | x1.65 |
+| `C5c-eq-json-hot` | all | 1.0 ms | x1.06 | x0.77 | x0.83 | x1.43 | x0.98 |
+| `C0-plancher` | 1h | 0.8 ms | x1.07 | x0.93 | x1.46 | x1.01 | x1.56 |
+| `C0-plancher` | 24h | 0.8 ms | x0.92 | x0.96 | x1.36 | x1.08 | x1.24 |
+| `C0-plancher` | 7d | 0.8 ms | x0.96 | x0.89 | x1.07 | x1.10 | x0.92 |
+| `C0-plancher` | au-dela-7d | 0.9 ms | x0.85 | x0.92 | x1.06 | x0.76 | x0.94 |
+| `C0-plancher` | all | 1.0 ms | x0.84 | x0.83 | x1.02 | x1.05 | x0.73 |
+| `C2d-free-term-rows` | 1h | 3.0 ms | x1.11 | x0.95 | x0.90 | x1.08 | x0.85 |
+| `C2d-free-term-rows` | 24h | 70 ms | x4.41 | x2.80 | x3.93 | x4.42 | x5.07 |
+| `C2d-free-term-rows` | 7d | 2.1 s | x0.93 | x0.41 | x0.74 | x1.23 | x1.26 |
+| `C2d-free-term-rows` | au-dela-7d | 1472 ms | x1.03 | x0.16 | x0.99 | x1.10 | x2.23 |
+| `C2d-free-term-rows` | all | 1506 ms | x1.10 | x0.15 | x0.92 | x1.06 | x1.94 |
+| `C2e-free-term-common` | 1h | 1.8 ms | x1.19 | x0.85 | x1.10 | x1.15 | x1.22 |
+| `C2e-free-term-common` | 24h | 36 ms | x0.84 | x0.75 | x0.80 | x0.70 | x1.27 |
+| `C2e-free-term-common` | 7d | 241 ms | x8.23 | x6.63 | x0.81 | x7.45 | x19.89 |
+| `C2e-free-term-common` | au-dela-7d | 1481 ms | x0.96 | x0.61 | x0.96 | x1.00 | x2.16 |
+| `C2e-free-term-common` | all | 1454 ms | x1.03 | x0.54 | x1.13 | x1.04 | x1.84 |
+| `C4d-keyset-projete` | 1h | 2.2 ms | x0.82 | x0.78 | x4.22 | x1.00 | x1.30 |
+| `C4d-keyset-projete` | 24h | 2.1 ms | x1.03 | x0.84 | x3.58 | x1.01 | x1.14 |
+| `C4d-keyset-projete` | 7d | 2.4 ms | x0.80 | x0.78 | x3.81 | x0.88 | x1.22 |
+| `C4d-keyset-projete` | au-dela-7d | 1.7 ms | x1.16 | x1.23 | x5.23 | x1.32 | x1.79 |
+| `C4d-keyset-projete` | all | 2.1 ms | x0.88 | x0.86 | x3.57 | x0.89 | x1.14 |
+| `C6-filter-host` | 1h | 1.8 ms | x0.78 | x0.83 | x0.85 | x0.70 | x1.09 |
+| `C6-filter-host` | 24h | 9.9 ms | x2.11 | x19.03 | x0.78 | x0.76 | x1.10 |
+| `C6-filter-host` | 7d | 8.3 ms | **x220.58** | x1.13 | x0.82 | x0.94 | x1.00 |
+| `C6-filter-host` | au-dela-7d | 8.4 ms | **x138.72** | x1.15 | x0.92 | x0.95 | x0.87 |
+| `C6-filter-host` | all | 1.8 ms | x23.29 | x1.03 | x0.72 | x0.83 | x0.66 |
+| `C6b-groupby-host` | 1h | 2.1 ms | x1.25 | x0.82 | x0.86 | x1.09 | x0.74 |
+| `C6b-groupby-host` | 24h | 324 ms | x0.80 | x0.68 | x0.09 | x1.01 | x0.86 |
+| `C6b-groupby-host` | 7d | 7.8 s | x0.17 | x0.32 | x0.98 | x1.40 | x1.34 |
+| `C6b-groupby-host` | au-dela-7d | 10.1 s | x0.13 | x0.61 | x0.84 | x0.89 | x1.15 |
+| `C6b-groupby-host` | all | 58 ms | x0.97 | x1.01 | x1.20 | x0.94 | x0.88 |
+| `C6c-raw-one-host` | 1h | 2.5 ms | x0.86 | x0.75 | x1.23 | x0.47 | x0.67 |
+| `C6c-raw-one-host` | 24h | 15 ms | x0.11 | x0.99 | x1.10 | x0.80 | x1.03 |
+| `C6c-raw-one-host` | 7d | 12 ms | x0.18 | x1.10 | x0.77 | x0.81 | x0.99 |
+| `C6c-raw-one-host` | au-dela-7d | 11 ms | x0.21 | x1.06 | x0.92 | x0.91 | x1.22 |
+| `C6c-raw-one-host` | all | 10 ms | x0.15 | x1.23 | x1.00 | x1.13 | x1.30 |
+
+### Ce que ça donne, axe par axe
+
+| Axe | Cellules comparables | Hors bande de bruit | Part |
+|---|---:|---:|---:|
+| `flotte-1h-v2@0.6M` (hosts) | 105 | 3 | 3 % |
+| `flotte-50h-v2@0.6M` (hosts) | 105 | 4 | 4 % |
+| `card-haute@0.6M` (ext_card_scale) | 105 | 2 | 2 % |
+| `sev-haute@0.6M` (severity_shift) | 105 | 2 | 2 % |
+| `taille-grande@0.6M` (event_size_scale) | 105 | 1 | 1 % |
+
+Une part élevée veut dire : **sur cet axe, nos chiffres ne se transposent pas**. Un tiers dont
+le jeu diffère de nous sur ce paramètre n'obtiendra pas nos latences, et l'écart n'est pas un
+artefact de mesure puisqu'il sort de la bande mesurée sur une répétition à l'identique.
+
 ## Le budget de 2 Gio
 
 RSS crête la plus haute observée, toutes cellules confondues : **1097 Mio** (53.5 % du budget de 2 Gio).
@@ -2705,7 +3736,7 @@ puisse les contredire, pas pour en tirer une conclusion.
 ## Cellules à ne pas croire telles quelles
 
 - 33 cellules ont été **rejouées** (une mesure bousculée remplacée par une mesure propre) ; seule la dernière figure dans les tableaux, le JSONL brut garde les deux.
-- **28 cellules prises pendant que la machine swappait** (apres-leviers@1.4M/C3-groupby-hi/all, apres-leviers@1.4M/C5b-regex-json-cold/24h, avant-leviers@1.4M/C2e-free-term-common/all, avant-leviers@1.4M/C5b-regex-json-cold/all, chaud-seul-v2@1.4M/C2d-free-term-rows/all, chaud-seul-v2@1.4M/C2d-free-term-rows/au-dela-7d, chaud-seul-v2@1.4M/C2e-free-term-common/24h, chaud-seul-v2@1.4M/C2e-free-term-common/7d, chaud-seul-v2@1.4M/C2e-free-term-common/au-dela-7d, chaud-seul-v2@1.4M/C3-groupby-hi/all, chaud-seul@1.4M/C6b-groupby-host/au-dela-7d, flotte-1h@0.6M/C6-filter-host/7d, froid-actif-v2@1.4M/C1-scan-agg/all, froid-actif-v2@1.4M/C1b-scan-agg-dc/7d, froid-actif-v2@1.4M/C1b-scan-agg-dc/all, fts0-masque-non-vide@1.4M/C2d-free-term-rows/all, fts0-masque-non-vide@1.4M/C2e-free-term-common/1h, fts0-masque-non-vide@1.4M/C2e-free-term-common/24h, fts0-masque-non-vide@1.4M/C2e-free-term-common/all, fts0-masque-non-vide@1.4M/C3-groupby-hi/24h, fts0-masque-non-vide@1.4M/C3c-groupby-json/24h, fts0-masque-non-vide@1.4M/C3c-groupby-json/all, fts0-masque-non-vide@1.4M/C4b-raw-deep/24h, fts0-masque-non-vide@1.4M/C5-regex-json-planted/24h, fts0-masque-non-vide@1.4M/C5-regex-json-planted/all, fts0-masque-vide@1.4M/C3c-groupby-json/24h, fts0-masque-vide@1.4M/C3c-groupby-json/all, fts0-masque-vide@1.4M/C5-regex-json-planted/24h). Un chiffre pris sous swap est faux. Un rejeu a été TENTÉ pour les cellules de la configuration de référence ; celles qui restent listées ici sont celles pour lesquelles la machine n'a pas offert de fenêtre sans swap. Leur `p50` est à prendre comme une borne haute, leur `p95` comme non exploitable.
+- **48 cellules prises pendant que la machine swappait** (apres-leviers@1.4M/C3-groupby-hi/all, apres-leviers@1.4M/C5b-regex-json-cold/24h, avant-leviers@1.4M/C2e-free-term-common/all, avant-leviers@1.4M/C5b-regex-json-cold/all, chaud-seul-v2@1.4M/C2d-free-term-rows/all, chaud-seul-v2@1.4M/C2d-free-term-rows/au-dela-7d, chaud-seul-v2@1.4M/C2e-free-term-common/24h, chaud-seul-v2@1.4M/C2e-free-term-common/7d, chaud-seul-v2@1.4M/C2e-free-term-common/au-dela-7d, chaud-seul-v2@1.4M/C3-groupby-hi/all, chaud-seul@1.4M/C6b-groupby-host/au-dela-7d, flotte-1h@0.6M/C6-filter-host/7d, froid-actif-v2@1.4M/C1-scan-agg/all, froid-actif-v2@1.4M/C1b-scan-agg-dc/7d, froid-actif-v2@1.4M/C1b-scan-agg-dc/all, fts0-masque-non-vide@1.4M/C2d-free-term-rows/all, fts0-masque-non-vide@1.4M/C2e-free-term-common/1h, fts0-masque-non-vide@1.4M/C2e-free-term-common/24h, fts0-masque-non-vide@1.4M/C2e-free-term-common/all, fts0-masque-non-vide@1.4M/C3-groupby-hi/24h, fts0-masque-non-vide@1.4M/C3c-groupby-json/24h, fts0-masque-non-vide@1.4M/C3c-groupby-json/all, fts0-masque-non-vide@1.4M/C4b-raw-deep/24h, fts0-masque-non-vide@1.4M/C5-regex-json-planted/24h, fts0-masque-non-vide@1.4M/C5-regex-json-planted/all, fts0-masque-vide@1.4M/C3c-groupby-json/24h, fts0-masque-vide@1.4M/C3c-groupby-json/all, fts0-masque-vide@1.4M/C5-regex-json-planted/24h, taille-grande@0.6M/C3c-groupby-json/7d, taille-grande@0.6M/C3c-groupby-json/all, temoin-64h@0.6M/C2-free-term/all, temoin-64h@0.6M/C2-free-term/au-dela-7d, temoin-64h@0.6M/C2b-regex-msg/all, temoin-64h@0.6M/C2c-fts-bar/1h, temoin-64h@0.6M/C2d-free-term-rows/24h, temoin-64h@0.6M/C2d-free-term-rows/7d, temoin-64h@0.6M/C2d-free-term-rows/au-dela-7d, temoin-64h@0.6M/C2e-free-term-common/all, temoin-64h@0.6M/C3-groupby-hi/7d, temoin-64h@0.6M/C3b-groupby-routable/all, temoin-64h@0.6M/C3c-groupby-json/24h, temoin-64h@0.6M/C3c-groupby-json/7d, temoin-64h@0.6M/C5-regex-json-planted/all, temoin-64h@0.6M/C5b-regex-json-cold/24h, temoin-64h@0.6M/C5b-regex-json-cold/7d, temoin-64h@0.6M/C5b-regex-json-cold/all, temoin-64h@0.6M/C6b-groupby-host/24h, temoin-64h@0.6M/C6b-groupby-host/7d). Un chiffre pris sous swap est faux. Un rejeu a été TENTÉ pour les cellules de la configuration de référence ; celles qui restent listées ici sont celles pour lesquelles la machine n'a pas offert de fenêtre sans swap. Leur `p50` est à prendre comme une borne haute, leur `p95` comme non exploitable.
 - **30 cellules en échec ou en erreur** — elles restent dans le tableau avec leur message :
   - `fts0-masque-non-vide` / `C5c-eq-json-hot` / 1h : {"error":"filtrage interdit sur le champ masqué « user » (field-filter actif pour votre rôle : un champ que vous ne pouvez pas voir ne peut pas être filtré)"} (statuts [400])
   - `fts0-masque-non-vide` / `C5c-eq-json-hot` / 24h : {"error":"filtrage interdit sur le champ masqué « user » (field-filter actif pour votre rôle : un champ que vous ne pouvez pas voir ne peut pas être filtré)"} (statuts [400])
@@ -2745,29 +3776,29 @@ Mesuré à plusieurs volumes sur la même machine, même binaire, masque vide, `
 
 Réserve à connaître avant de citer ce tableau : les volumes viennent de **passes distinctes**, donc de bases distinctes et de nombres de répétitions possiblement différents (la colonne `reps` du JSONL brut le dit cellule par cellule). Les points sont comparables en ordre de grandeur, pas au pourcentage près. Une case vide = classe non mesurée à ce volume.
 
-| Classe | 200 003 lignes | 335 255 lignes | 1 440 003 lignes | 1 440 007 lignes | 1 440 007 lignes | 1 440 007 lignes | 1 440 007 lignes | 1 440 007 lignes | rapport |
-|---|---|---|---|---|---|---|---|---|---|
-| `C1-scan-agg` | 51 | 2252 | 2856 | 2154 | 2036 | 4579 | 4118 | 5134 | x100.5 pour x7.2 de lignes ⚠ base au plancher |
-| `C1b-scan-agg-dc` | 577 | 1725 | 5109 | 2004 | 4721 | 3209 | — | 4001 | x6.9 pour x7.2 de lignes |
-| `C2-free-term` | 652 | 4898 | 5860 | 3406 | 2568 | 2813 | — | 2878 | x4.4 pour x7.2 de lignes |
-| `C2b-regex-msg` | 502 | 4532 | 3863 | 3506 | 3156 | 3364 | 6284 | 4028 | x8.0 pour x7.2 de lignes |
-| `C2c-fts-bar` | 51 | 2.1 | 51 | 51 | 2.8 | 4.3 | 2.2 | 3.7 | x0.1 pour x7.2 de lignes ⚠ base au plancher |
-| `C3-groupby-hi` | 870 | 5126 | 15.7 s | 14.7 s | 13.9 s | 13.0 s | — | 14.2 s | x16.4 pour x7.2 de lignes |
-| `C3b-groupby-routable` | 151 | 948 | 152 | 201 | 130 | 141 | 873 | 141 | x0.9 pour x7.2 de lignes |
-| `C3c-groupby-json` | 853 | 5314 | 12.6 s | 9214 | 8127 | 7969 | — | 7002 | x8.2 pour x7.2 de lignes |
-| `C4-raw-page1` | 52 | 1195 | 52 | 51 | 1.7 | 2.9 | 1296 | 1.7 | x0.0 pour x7.2 de lignes ⚠ base au plancher |
-| `C4b-raw-deep` | 51 | 3513 | 1055 | 552 | 31 | 366 | 3495 | 254 | x4.9 pour x7.2 de lignes ⚠ base au plancher |
-| `C4c-raw-keyset` | 54 | 1096 | 54 | 53 | 3.5 | 2.7 | 3.3 | 8.4 | x0.2 pour x7.2 de lignes ⚠ base au plancher |
-| `C5-regex-json-planted` | 552 | 5746 | 6110 | 4808 | 5274 | 3672 | — | 5441 | x9.9 pour x7.2 de lignes |
-| `C5b-regex-json-cold` | 652 | 4934 | 9616 | 6063 | 5873 | 5727 | — | 6074 | x9.3 pour x7.2 de lignes |
-| `C5c-eq-json-hot` | 51 | 1071 | 54 | 51 | 0.8 | 0.8 | — | 1.1 | x0.0 pour x7.2 de lignes ⚠ base au plancher |
-| `C0-plancher` | — | 1032 | 51 | 51 | 0.7 | 0.6 | 3202 | 0.6 | — |
-| `C2d-free-term-rows` | — | 5695 | 3406 | 2756 | 2600 | 3288 | 5665 | 3108 | — |
-| `C2e-free-term-common` | — | 4478 | 2705 | 3357 | 2696 | 2924 | — | 3685 | — |
-| `C4d-keyset-projete` | — | 1122 | — | 52 | 1.6 | 1.6 | 3.1 | 6.9 | — |
-| `C6-filter-host` | — | 1138 | — | — | — | 1.6 | 3041 | 3.3 | — |
-| `C6b-groupby-host` | — | 4606 | — | — | — | 99 | 7775 | 102 | — |
-| `C6c-raw-one-host` | — | 1116 | — | — | — | 22 | 7.2 | 21 | — |
+| Classe | 200 003 lignes | 335 255 lignes | 600 003 lignes | 600 003 lignes | 600 003 lignes | 600 003 lignes | 600 003 lignes | 1 440 003 lignes | 1 440 007 lignes | 1 440 007 lignes | 1 440 007 lignes | 1 440 007 lignes | 1 440 007 lignes | rapport |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `C1-scan-agg` | 51 | 2252 | 1223 | 1117 | 1073 | 1221 | 1962 | 2856 | 2154 | 2036 | 4579 | 4118 | 5134 | x100.5 pour x7.2 de lignes ⚠ base au plancher |
+| `C1b-scan-agg-dc` | 577 | 1725 | 1534 | 89 | 92 | 1578 | 2912 | 5109 | 2004 | 4721 | 3209 | — | 4001 | x6.9 pour x7.2 de lignes |
+| `C2-free-term` | 652 | 4898 | 1471 | 1377 | 1334 | 1539 | 3021 | 5860 | 3406 | 2568 | 2813 | — | 2878 | x4.4 pour x7.2 de lignes |
+| `C2b-regex-msg` | 502 | 4532 | 1871 | 1699 | 1792 | 1672 | 3368 | 3863 | 3506 | 3156 | 3364 | 6284 | 4028 | x8.0 pour x7.2 de lignes |
+| `C2c-fts-bar` | 51 | 2.1 | 3.2 | 2.4 | 2.1 | 2.3 | 3.3 | 51 | 51 | 2.8 | 4.3 | 2.2 | 3.7 | x0.1 pour x7.2 de lignes ⚠ base au plancher |
+| `C3-groupby-hi` | 870 | 5126 | 6319 | 7003 | 4765 | 4706 | 7618 | 15.7 s | 14.7 s | 13.9 s | 13.0 s | — | 14.2 s | x16.4 pour x7.2 de lignes |
+| `C3b-groupby-routable` | 151 | 948 | 518 | 477 | 396 | 420 | 494 | 152 | 201 | 130 | 141 | 873 | 141 | x0.9 pour x7.2 de lignes |
+| `C3c-groupby-json` | 853 | 5314 | 3219 | 3776 | 4226 | 3894 | 6608 | 12.6 s | 9214 | 8127 | 7969 | — | 7002 | x8.2 pour x7.2 de lignes |
+| `C4-raw-page1` | 52 | 1195 | 2.6 | 1.7 | 1.5 | 2.4 | 2.6 | 52 | 51 | 1.7 | 2.9 | 1296 | 1.7 | x0.0 pour x7.2 de lignes ⚠ base au plancher |
+| `C4b-raw-deep` | 51 | 3513 | 415 | 415 | 36 | 34 | 829 | 1055 | 552 | 31 | 366 | 3495 | 254 | x4.9 pour x7.2 de lignes ⚠ base au plancher |
+| `C4c-raw-keyset` | 54 | 1096 | 3.9 | 9.8 | 3.6 | 3.3 | 4.5 | 54 | 53 | 3.5 | 2.7 | 3.3 | 8.4 | x0.2 pour x7.2 de lignes ⚠ base au plancher |
+| `C5-regex-json-planted` | 552 | 5746 | 2653 | 2108 | 1946 | 1788 | 3011 | 6110 | 4808 | 5274 | 3672 | — | 5441 | x9.9 pour x7.2 de lignes |
+| `C5b-regex-json-cold` | 652 | 4934 | 2443 | 3066 | 2105 | 2194 | 4455 | 9616 | 6063 | 5873 | 5727 | — | 6074 | x9.3 pour x7.2 de lignes |
+| `C5c-eq-json-hot` | 51 | 1071 | 1.0 | 0.8 | 1.4 | 1.1 | 0.9 | 54 | 51 | 0.8 | 0.8 | — | 1.1 | x0.0 pour x7.2 de lignes ⚠ base au plancher |
+| `C0-plancher` | — | 1032 | 1.0 | 1.0 | 1.0 | 0.9 | 0.7 | 51 | 51 | 0.7 | 0.6 | 3202 | 0.6 | — |
+| `C2d-free-term-rows` | — | 5695 | 1506 | 1392 | 1601 | 1373 | 2915 | 3406 | 2756 | 2600 | 3288 | 5665 | 3108 | — |
+| `C2e-free-term-common` | — | 4478 | 1454 | 1636 | 1512 | 1435 | 2677 | 2705 | 3357 | 2696 | 2924 | — | 3685 | — |
+| `C4d-keyset-projete` | — | 1122 | 2.1 | 7.7 | 1.9 | 1.9 | 2.5 | — | 52 | 1.6 | 1.6 | 3.1 | 6.9 | — |
+| `C6-filter-host` | — | 1138 | 1.8 | 1.3 | 1.5 | 1.1 | 1.2 | — | — | — | 1.6 | 3041 | 3.3 | — |
+| `C6b-groupby-host` | — | 4606 | 58 | 69 | 54 | 52 | 51 | — | — | — | 99 | 7775 | 102 | — |
+| `C6c-raw-one-host` | — | 1116 | 10 | 10 | 12 | 13 | 13 | — | — | — | 22 | 7.2 | 21 | — |
 
 Une classe dont le rapport de latence suit le rapport de lignes est un **scan** : son coût est linéaire en volume et rien ne l'indexe. Une classe dont le rapport reste plat est servie par un index ou par un rollup.
 
@@ -2853,7 +3884,7 @@ BENCH_EVENTS=1000000 bench/run.sh  # 1 M, pour itérer
 BENCH_PHASES=concurrency BENCH_SEM_SWEEP=3,8 BENCH_CONC_LEVELS=1,2,3,4,6,8,10 bench/run.sh
 # 3. le rendu — LA COMMANDE EXACTE qui a produit CE document, reconstruite depuis ses propres
 #    arguments et pointée sur les données VERSIONNÉES (donc rejouable par un tiers) :
-python3 bench/report.py bench/results/results-smoke-200k.jsonl bench/results/results.jsonl bench/results/results-2026-07-31.jsonl bench/results/results-2026-07-31-corrige.jsonl bench/results/parity-avant-2026-07-31.jsonl bench/results/parity-apres-2026-07-31.jsonl bench/results/parity-couverture-2026-07-31.jsonl bench/results/concurrency-2026-08-01.jsonl bench/results/concurrency-reproduction-2026-08-01.jsonl bench/results/concurrency-attribution-2026-08-01.jsonl bench/results/concurrency-corrige-2026-08-01.jsonl \
+python3 bench/report.py bench/results/results-smoke-200k.jsonl bench/results/results.jsonl bench/results/results-2026-07-31.jsonl bench/results/results-2026-07-31-corrige.jsonl bench/results/parity-avant-2026-07-31.jsonl bench/results/parity-apres-2026-07-31.jsonl bench/results/parity-couverture-2026-07-31.jsonl bench/results/concurrency-2026-08-01.jsonl bench/results/concurrency-reproduction-2026-08-01.jsonl bench/results/concurrency-attribution-2026-08-01.jsonl bench/results/concurrency-corrige-2026-08-01.jsonl bench/results/generique-2026-08-03.jsonl \
     --ingest-curve bench/results/ingest_rate.csv \
     --ingest-curve bench/results/ingest_rate-quiet-2g.csv \
     --ref chaud-seul-v2@1.4M \

@@ -435,6 +435,16 @@ def main():
                     first_row=(ok[0]["first_row"] if ok else None),
                     reps=len(runs), reps_ok=len(ok),
                     cold_first_wall_ms=first["wall_ms"],
+                    # LES ÉCHANTILLONS EUX-MÊMES, pas seulement leur résumé. Un p50 sur 3 à 7 tirs
+                    # ne dit RIEN de sa propre dispersion : deux passes sur deux profils de données
+                    # peuvent différer d'un facteur 2 sans que rien ne distingue l'effet du profil
+                    # du bruit de la machine. Comparer deux profils EXIGE donc de connaître l'écart
+                    # INTRA-profil, et il ne se recalcule pas depuis un percentile. Les tirs sont
+                    # écrits dans l'ordre où ils ont eu lieu (le premier est le tir À FROID, déjà
+                    # publié à part) : un lecteur peut ainsi recalculer n'importe quel percentile,
+                    # l'étendue, ou contredire une conclusion de généricité tir par tir.
+                    wall_samples_ms=[round(x, 3) for x in walls],
+                    sql_samples_ms=[round(x, 3) for x in elaps],
                     wall_p50_ms=pctl(walls, 50), wall_p95_ms=pctl(walls, 95),
                     server_p50_ms=pctl(servs, 50), server_p95_ms=pctl(servs, 95),
                     sql_p50_ms=pctl(elaps, 50), sql_p95_ms=pctl(elaps, 95),

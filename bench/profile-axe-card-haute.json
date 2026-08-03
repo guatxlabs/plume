@@ -1,0 +1,6476 @@
+{
+ "schema_version": 1,
+ "_lisez_moi": "Profil de données de la PRODUCTION plume, distillé en distributions. Aucune valeur de ligne n'y figure. Chaque section porte son champ `provenance` : `measured` = sortie de bench/prod-profile.sql à la date indiquée ; `derived` = choix de banc documenté, PAS une mesure. Le générateur (bench/gen_events.py) ne lit QUE ce fichier.",
+ "provenance_source": {
+  "measured": "mesuré sur la production VPS OVH mono-noeud (6 vCPU, 11,4 Gio RAM, k3s, limite conteneur 2 Gio), image guatx-plume:fde5c9c, le 2026-07-30T10:50:00Z, via bench/prod-profile.sql",
+  "method": "connexion SQLCipher LECTURE SEULE (file:…?mode=ro) ouverte à côté du daemon vivant ; seuls des agrégats sont sortis (comptes, cardinalités, longueurs, noms de clés) ; aucune valeur de message/host/src_ip/url/dedup ni de valeur JSON n'a quitté la machine.",
+  "host": "VPS OVH mono-noeud (6 vCPU, 11,4 Gio RAM, k3s, limite conteneur 2 Gio)",
+  "image": "guatx-plume:fde5c9c",
+  "measured_at": "2026-07-30T10:50:00Z"
+ },
+ "volume": {
+  "provenance": "measured",
+  "events": 1397446,
+  "min_ts": 1782897564,
+  "max_ts": 1785409017,
+  "span_days": 29.07,
+  "min_id": 4189750,
+  "max_id": 11921291,
+  "ids_consumed": 7731542,
+  "_note_purge": "ids_consumed - events = lignes déjà purgées par la rétention. L'écart mesuré dit que la base a porté ~6,3 M d'événements de plus que ce qu'elle contient aujourd'hui : la topologie sur laquelle les anciens chiffres avaient été pris N'EXISTE PLUS."
+ },
+ "disk": {
+  "provenance": "measured",
+  "page_size": 4096,
+  "page_count": 644665,
+  "freelist_pages": 285426,
+  "file_bytes": 2640547840,
+  "live_bytes": 1471442944,
+  "journal_mode": "wal",
+  "auto_vacuum": 0,
+  "event_table_bytes": 673648640,
+  "event_indexes_bytes": 305680384,
+  "event_fts_bytes": 408428544,
+  "ratio_indexes_over_table": 0.454,
+  "ratio_fts_over_table": 0.606,
+  "by_object_bytes": [
+   {
+    "name": "event",
+    "bytes": 673648640,
+    "pages": 164465
+   },
+   {
+    "name": "event_fts_data",
+    "bytes": 389488640,
+    "pages": 95090
+   },
+   {
+    "name": "sqlite_autoindex_event_1",
+    "bytes": 49176576,
+    "pages": 12006
+   },
+   {
+    "name": "idx_event_src_srcip",
+    "bytes": 38805504,
+    "pages": 9474
+   },
+   {
+    "name": "idx_event_host",
+    "bytes": 35770368,
+    "pages": 8733
+   },
+   {
+    "name": "idx_event_src_ts",
+    "bytes": 35667968,
+    "pages": 8708
+   },
+   {
+    "name": "idx_event_sev_srcip",
+    "bytes": 26652672,
+    "pages": 6507
+   },
+   {
+    "name": "idx_event_srcip",
+    "bytes": 24834048,
+    "pages": 6063
+   },
+   {
+    "name": "idx_event_category",
+    "bytes": 22773760,
+    "pages": 5560
+   },
+   {
+    "name": "idx_event_ts",
+    "bytes": 22753280,
+    "pages": 5555
+   },
+   {
+    "name": "event_fts_docsize",
+    "bytes": 18669568,
+    "pages": 4558
+   },
+   {
+    "name": "idx_ev_f_action",
+    "bytes": 16871424,
+    "pages": 4119
+   },
+   {
+    "name": "event_dim_rollup",
+    "bytes": 9383936,
+    "pages": 2291
+   },
+   {
+    "name": "sqlite_autoindex_cold_dim_rollup_1",
+    "bytes": 9072640,
+    "pages": 2215
+   },
+   {
+    "name": "cold_dim_rollup",
+    "bytes": 8880128,
+    "pages": 2168
+   },
+   {
+    "name": "sqlite_autoindex_event_dim_rollup_1",
+    "bytes": 8732672,
+    "pages": 2132
+   },
+   {
+    "name": "idx_ev_f_user",
+    "bytes": 7467008,
+    "pages": 1823
+   },
+   {
+    "name": "idx_ev_f_ns",
+    "bytes": 6635520,
+    "pages": 1620
+   },
+   {
+    "name": "idx_cold_dim_rollup_q",
+    "bytes": 5177344,
+    "pages": 1264
+   },
+   {
+    "name": "idx_event_dim_rollup_q",
+    "bytes": 5099520,
+    "pages": 1245
+   },
+   {
+    "name": "idx_ev_auto_dir",
+    "bytes": 4616192,
+    "pages": 1127
+   },
+   {
+    "name": "event_rollup",
+    "bytes": 4583424,
+    "pages": 1119
+   },
+   {
+    "name": "snapshot",
+    "bytes": 4427776,
+    "pages": 1081
+   },
+   {
+    "name": "cold_rollup",
+    "bytes": 3973120,
+    "pages": 970
+   },
+   {
+    "name": "metric",
+    "bytes": 3878912,
+    "pages": 947
+   },
+   {
+    "name": "sqlite_autoindex_event_rollup_1",
+    "bytes": 3809280,
+    "pages": 930
+   },
+   {
+    "name": "metric_rollup",
+    "bytes": 3784704,
+    "pages": 924
+   },
+   {
+    "name": "idx_ev_f_scope",
+    "bytes": 3710976,
+    "pages": 906
+   },
+   {
+    "name": "sqlite_autoindex_cold_rollup_1",
+    "bytes": 3698688,
+    "pages": 903
+   },
+   {
+    "name": "idx_metric",
+    "bytes": 2609152,
+    "pages": 637
+   },
+   {
+    "name": "idx_metric_rollup_lbl",
+    "bytes": 2293760,
+    "pages": 560
+   },
+   {
+    "name": "idx_metric_rollup",
+    "bytes": 2228224,
+    "pages": 544
+   },
+   {
+    "name": "idx_ev_f_resource",
+    "bytes": 1531904,
+    "pages": 374
+   },
+   {
+    "name": "idx_metric_ts",
+    "bytes": 1150976,
+    "pages": 281
+   },
+   {
+    "name": "idx_ev_f_verb",
+    "bytes": 1040384,
+    "pages": 254
+   },
+   {
+    "name": "panel_cache",
+    "bytes": 999424,
+    "pages": 244
+   },
+   {
+    "name": "idx_event_rollup",
+    "bytes": 892928,
+    "pages": 218
+   },
+   {
+    "name": "idx_cold_rollup",
+    "bytes": 839680,
+    "pages": 205
+   },
+   {
+    "name": "idx_ev_auto_vtype",
+    "bytes": 733184,
+    "pages": 179
+   },
+   {
+    "name": "alert",
+    "bytes": 647168,
+    "pages": 158
+   },
+   {
+    "name": "idx_ev_f_operation",
+    "bytes": 593920,
+    "pages": 145
+   },
+   {
+    "name": "idx_snapshot",
+    "bytes": 487424,
+    "pages": 119
+   },
+   {
+    "name": "checkpoint",
+    "bytes": 462848,
+    "pages": 113
+   },
+   {
+    "name": "idx_snapshot_ts",
+    "bytes": 282624,
+    "pages": 69
+   },
+   {
+    "name": "event_fts_idx",
+    "bytes": 266240,
+    "pages": 65
+   },
+   {
+    "name": "risk_event",
+    "bytes": 196608,
+    "pages": 48
+   },
+   {
+    "name": "sqlite_stat4",
+    "bytes": 126976,
+    "pages": 31
+   },
+   {
+    "name": "banned_ip",
+    "bytes": 106496,
+    "pages": 26
+   },
+   {
+    "name": "idx_alert_rule_ts",
+    "bytes": 102400,
+    "pages": 25
+   },
+   {
+    "name": "ledger",
+    "bytes": 98304,
+    "pages": 24
+   },
+   {
+    "name": "idx_alert_status",
+    "bytes": 86016,
+    "pages": 21
+   },
+   {
+    "name": "sqlite_autoindex_banned_ip_1",
+    "bytes": 65536,
+    "pages": 16
+   },
+   {
+    "name": "idx_risk_event_dedup",
+    "bytes": 65536,
+    "pages": 16
+   },
+   {
+    "name": "idx_alert_mitre_ts",
+    "bytes": 65536,
+    "pages": 16
+   },
+   {
+    "name": "sqlite_schema",
+    "bytes": 57344,
+    "pages": 14
+   },
+   {
+    "name": "idx_banned_ip_srcip",
+    "bytes": 57344,
+    "pages": 14
+   },
+   {
+    "name": "idx_alert_host_ts",
+    "bytes": 53248,
+    "pages": 13
+   },
+   {
+    "name": "idx_alert_ts",
+    "bytes": 49152,
+    "pages": 12
+   },
+   {
+    "name": "idx_risk_event_entity",
+    "bytes": 45056,
+    "pages": 11
+   },
+   {
+    "name": "idx_alert_mitre",
+    "bytes": 45056,
+    "pages": 11
+   },
+   {
+    "name": "rule",
+    "bytes": 24576,
+    "pages": 6
+   },
+   {
+    "name": "panel",
+    "bytes": 20480,
+    "pages": 5
+   },
+   {
+    "name": "idx_risk_event_ts",
+    "bytes": 20480,
+    "pages": 5
+   },
+   {
+    "name": "idx_alert_dedup",
+    "bytes": 20480,
+    "pages": 5
+   },
+   {
+    "name": "cold_seal",
+    "bytes": 20480,
+    "pages": 5
+   },
+   {
+    "name": "sqlite_autoindex_panel_cache_1",
+    "bytes": 16384,
+    "pages": 4
+   },
+   {
+    "name": "runbook_step",
+    "bytes": 16384,
+    "pages": 4
+   },
+   {
+    "name": "idx_ev_f_kind",
+    "bytes": 16384,
+    "pages": 4
+   },
+   {
+    "name": "idx_ev_f_role",
+    "bytes": 12288,
+    "pages": 3
+   },
+   {
+    "name": "idx_ev_f_owner",
+    "bytes": 12288,
+    "pages": 3
+   },
+   {
+    "name": "idx_ev_auto_risk",
+    "bytes": 12288,
+    "pages": 3
+   },
+   {
+    "name": "workflow_action",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "view",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "user_pref",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "user_mfa",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "user",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "ueba_baseline_obs",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "ueba_baseline",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "token",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_stat1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_sequence",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_workflow_action_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_user_pref_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_user_mfa_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_user_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_ueba_baseline_obs_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_token_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_source_settings_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_sla_policy_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_setting_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_scheduled_report_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_runbook_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_risk_rollup_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_net_ban_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_meta_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_macro_def_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_lookup_meta_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_lookup_kv_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_legal_hold_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_ledger_sink_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_knowledge_eventtype_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_knowledge_calc_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_knowledge_alias_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_ioc_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_index_policy_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_idp_provider_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_host_rollup_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_field_filter_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_engagement_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_detection_override_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_dataset_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_data_model_object_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_data_model_field_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_data_model_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_dashboard_snapshot_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_cold_seal_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_case_link_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_baseline_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_autoindex_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_auto_lookup_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_alert_throttle_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sqlite_autoindex_ai_provider_1",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "source_settings",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "sla_policy",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "silence",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "setting",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "scheduled_report",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "saved_query",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "runbook",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "risk_rollup",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "playlist",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "playbook",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "parser",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "panel_cost",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "notifier",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "notification_policy",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "net_ban",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "meta",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "macro_def",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "lookup_meta",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "lookup_kv",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "library_panel",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "legal_hold",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "ledger_sink",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "knowledge_tag",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "knowledge_eventtype",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "knowledge_calc",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "knowledge_alias",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "ioc",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "ingest_rule",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "index_policy",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "incident_item",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "incident",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_silence_expiry",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_saved_query_owner",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_runbook_step_rb",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_runbook_match",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_rule_sigma_id",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_risk_rollup_score",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_panel_dash",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_net_ban_ip",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_legal_hold_active",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_knowledge_tag_label",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_ioc_value",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_ioc_expires",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_ingest_rule_ord",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_incident_status",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_incident_slaml",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_incident_sla",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_incident_notmerged",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_incident_item",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_incident_active",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_engagement_status",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_engagement_grant_eng",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_dm_object_model",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_dm_field_object",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_dashboard_snapshot_tok",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_case_step_inc",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_case_link_src",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_case_link_dst",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idx_baseline_obs",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "idp_provider",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "host_rollup",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "field_filter",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "event_fts_config",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "engagement_grant",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "engagement",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "dparser",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "detection_override",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "destination",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "dataset",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "data_model_object",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "data_model_field",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "data_model",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "dashboard_snapshot",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "dashboard",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "correlation",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "connector",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "case_step",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "case_link",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "baseline",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "autoindex",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "auto_lookup",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "alert_throttle",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "ai_provider",
+    "bytes": 4096,
+    "pages": 1
+   },
+   {
+    "name": "action",
+    "bytes": 4096,
+    "pages": 1
+   }
+  ],
+  "_note": "event_fts est le FTS5 sur (message, source, category) — il est INCONDITIONNEL. event_fields_fts (PLUME_FTS_FIELDS=1) est ABSENT de cette production : la prod tourne à PLUME_FTS_FIELDS=0, son coût disque n'est donc PAS mesuré ici."
+ },
+ "columns": {
+  "provenance": "measured",
+  "cardinality": {
+   "source": 32,
+   "category": 19,
+   "host": 2,
+   "src_ip": 21140,
+   "dst_ip": 25,
+   "url": 3147,
+   "xff": 0,
+   "message": 394960,
+   "env_id": 1,
+   "origin": 3,
+   "engagement_id": 1,
+   "dedup": 536293
+  },
+  "nulls": {
+   "category": 0,
+   "host": 0,
+   "message": 0,
+   "fields": 0,
+   "srcip": 959076,
+   "dstip": 1326753,
+   "url": 1368577,
+   "xff": 1395963,
+   "dedup": 859670
+  },
+  "message_len": {
+   "min": 24,
+   "avg": 185.5,
+   "max": 4083,
+   "sum": 259010676
+  },
+  "fields_len": {
+   "min": 23,
+   "avg": 149.5,
+   "max": 1864,
+   "sum": 208718290
+  },
+  "message_len_hist": {
+   "0-32": 45855,
+   "1025-4096": 34919,
+   "129-256": 84702,
+   "257-512": 236346,
+   "33-64": 690252,
+   "513-1024": 51,
+   "65-128": 303843
+  },
+  "fields_len_hist": {
+   "0-32": 32049,
+   "1025-4096": 240,
+   "129-256": 803179,
+   "257-512": 92147,
+   "33-64": 45910,
+   "513-1024": 68,
+   "65-128": 422375
+  }
+ },
+ "distribution": {
+  "provenance": "measured",
+  "by_category": {
+   "exec": 537103,
+   "k8s": 310530,
+   "firewall": 164800,
+   "auth": 121298,
+   "health": 67508,
+   "web": 55406,
+   "ban": 43733,
+   "data": 42743,
+   "secrets": 34866,
+   "network": 14279,
+   "container": 2310,
+   "config": 1018,
+   "postscreen": 161,
+   "reject": 88,
+   "mailflow": 69,
+   "mail-url": 43,
+   "tamper": 8,
+   "integrity": 4,
+   "mail-phishing": 1
+  },
+  "by_severity": {
+   "0": 178518,
+   "1": 903359,
+   "2": 224817,
+   "3": 86464,
+   "4": 2810
+  },
+  "by_env_origin": [
+   {
+    "env_id": "prod",
+    "origin": "",
+    "engagement_id": "",
+    "n": 1394944
+   },
+   {
+    "env_id": "prod",
+    "origin": "agent",
+    "engagement_id": "",
+    "n": 977
+   },
+   {
+    "env_id": "prod",
+    "origin": "daemon",
+    "engagement_id": "",
+    "n": 47
+   }
+  ]
+ },
+ "temporal": {
+  "provenance": "measured",
+  "per_day": {
+   "2026-07-01": 16,
+   "2026-07-02": 2,
+   "2026-07-03": 14,
+   "2026-07-08": 2,
+   "2026-07-09": 2,
+   "2026-07-12": 4,
+   "2026-07-17": 1,
+   "2026-07-18": 1,
+   "2026-07-19": 1,
+   "2026-07-22": 1,
+   "2026-07-23": 312399,
+   "2026-07-24": 184894,
+   "2026-07-25": 186671,
+   "2026-07-26": 174724,
+   "2026-07-27": 160541,
+   "2026-07-28": 154639,
+   "2026-07-29": 149699,
+   "2026-07-30": 72755
+  },
+  "per_hour_of_day": {
+   "0": 71220,
+   "1": 51233,
+   "2": 48543,
+   "3": 75061,
+   "4": 52462,
+   "5": 52472,
+   "6": 152648,
+   "7": 49812,
+   "8": 48588,
+   "9": 49365,
+   "10": 50177,
+   "11": 55140,
+   "12": 57191,
+   "13": 51715,
+   "14": 48799,
+   "15": 49258,
+   "16": 61487,
+   "17": 65052,
+   "18": 65204,
+   "19": 62221,
+   "20": 44720,
+   "21": 45569,
+   "22": 44243,
+   "23": 44186
+  }
+ },
+ "extended_fields": {
+  "provenance": "measured",
+  "distinct_keys": 241,
+  "total_kv_pairs": 10565668,
+  "keys_per_event_hist": {
+   "2": 32071,
+   "3": 48195,
+   "4": 170236,
+   "5": 81516,
+   "6": 102131,
+   "7": 206952,
+   "8": 7145,
+   "9": 618342,
+   "10": 68020,
+   "11": 14568,
+   "12": 1664,
+   "13": 16,
+   "14": 7393,
+   "16": 27386,
+   "17": 10731
+  },
+  "keys": [
+   {
+    "key": "cim",
+    "n": 1396565,
+    "avg_len": 3.0,
+    "max_len": 3,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "action",
+    "n": 960435,
+    "avg_len": 6.9,
+    "max_len": 13,
+    "card": 18,
+    "type": "text"
+   },
+   {
+    "key": "uid",
+    "n": 653630,
+    "avg_len": 2.9,
+    "max_len": 10,
+    "card": 5,
+    "type": "text"
+   },
+   {
+    "key": "key",
+    "n": 537581,
+    "avg_len": 13.0,
+    "max_len": 14,
+    "card": 5,
+    "type": "text"
+   },
+   {
+    "key": "comm",
+    "n": 537581,
+    "avg_len": 6.9,
+    "max_len": 15,
+    "card": 228,
+    "type": "text"
+   },
+   {
+    "key": "auid",
+    "n": 537581,
+    "avg_len": 3.1,
+    "max_len": 10,
+    "card": 5,
+    "type": "text"
+   },
+   {
+    "key": "syscall",
+    "n": 537573,
+    "avg_len": 6.0,
+    "max_len": 6,
+    "card": 4,
+    "type": "text"
+   },
+   {
+    "key": "success",
+    "n": 537573,
+    "avg_len": 2.9,
+    "max_len": 3,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "exe",
+    "n": 537573,
+    "avg_len": 14.9,
+    "max_len": 118,
+    "card": 148,
+    "type": "text"
+   },
+   {
+    "key": "ns",
+    "n": 310662,
+    "avg_len": 8.3,
+    "max_len": 23,
+    "card": 20,
+    "type": "text"
+   },
+   {
+    "key": "src_ip",
+    "n": 285821,
+    "avg_len": 16.8,
+    "max_len": 39,
+    "card": 20705,
+    "type": "text"
+   },
+   {
+    "key": "pod",
+    "n": 255030,
+    "avg_len": 30.9,
+    "max_len": 57,
+    "card": 266,
+    "type": "text"
+   },
+   {
+    "key": "container",
+    "n": 252733,
+    "avg_len": 5.8,
+    "max_len": 36,
+    "card": 17,
+    "type": "text"
+   },
+   {
+    "key": "dir",
+    "n": 234519,
+    "avg_len": 7.0,
+    "max_len": 8,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "user",
+    "n": 214388,
+    "avg_len": 34.1,
+    "max_len": 63,
+    "card": 1053,
+    "type": "text"
+   },
+   {
+    "key": "scope",
+    "n": 179716,
+    "avg_len": 8.0,
+    "max_len": 19,
+    "card": 6,
+    "type": "array"
+   },
+   {
+    "key": "unit",
+    "n": 116057,
+    "avg_len": 14.0,
+    "max_len": 19,
+    "card": 6845,
+    "type": "text"
+   },
+   {
+    "key": "pid",
+    "n": 116057,
+    "avg_len": 6.6,
+    "max_len": 7,
+    "card": 22456,
+    "type": "text"
+   },
+   {
+    "key": "detector",
+    "n": 114844,
+    "avg_len": 3.4,
+    "max_len": 23,
+    "card": 3,
+    "type": "text"
+   },
+   {
+    "key": "set",
+    "n": 109908,
+    "avg_len": 10.0,
+    "max_len": 10,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "path",
+    "n": 90708,
+    "avg_len": 19.6,
+    "max_len": 1478,
+    "card": 3744,
+    "type": "text"
+   },
+   {
+    "key": "proto",
+    "n": 76596,
+    "avg_len": 3.5,
+    "max_len": 8,
+    "card": 10,
+    "type": "text"
+   },
+   {
+    "key": "query",
+    "n": 74790,
+    "avg_len": 45.5,
+    "max_len": 234,
+    "card": 5,
+    "type": "text"
+   },
+   {
+    "key": "status",
+    "n": 70139,
+    "avg_len": 3.8,
+    "max_len": 15,
+    "card": 17,
+    "type": "text"
+   },
+   {
+    "key": "dst_ip",
+    "n": 69214,
+    "avg_len": 14.2,
+    "max_len": 39,
+    "card": 25,
+    "type": "text"
+   },
+   {
+    "key": "dport",
+    "n": 69205,
+    "avg_len": 3.9,
+    "max_len": 5,
+    "card": 20535,
+    "type": "text"
+   },
+   {
+    "key": "resource",
+    "n": 58912,
+    "avg_len": 12.4,
+    "max_len": 38,
+    "card": 110,
+    "type": "text"
+   },
+   {
+    "key": "name",
+    "n": 58347,
+    "avg_len": 12.3,
+    "max_len": 65,
+    "card": 1252,
+    "type": "text"
+   },
+   {
+    "key": "verb",
+    "n": 57818,
+    "avg_len": 5.3,
+    "max_len": 16,
+    "card": 5,
+    "type": "text"
+   },
+   {
+    "key": "decision",
+    "n": 57818,
+    "avg_len": 5.0,
+    "max_len": 5,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "code",
+    "n": 57818,
+    "avg_len": 3.0,
+    "max_len": 3,
+    "card": 5,
+    "type": "text"
+   },
+   {
+    "key": "vhost",
+    "n": 55406,
+    "avg_len": 14.6,
+    "max_len": 22,
+    "card": 15,
+    "type": "text"
+   },
+   {
+    "key": "method",
+    "n": 55406,
+    "avg_len": 3.0,
+    "max_len": 4,
+    "card": 3,
+    "type": "text"
+   },
+   {
+    "key": "rhost",
+    "n": 47005,
+    "avg_len": 15.1,
+    "max_len": 39,
+    "card": 848,
+    "type": "text"
+   },
+   {
+    "key": "jail",
+    "n": 43733,
+    "avg_len": 5.2,
+    "max_len": 12,
+    "card": 4,
+    "type": "text"
+   },
+   {
+    "key": "user_agent",
+    "n": 42112,
+    "avg_len": 38.1,
+    "max_len": 115,
+    "card": 6,
+    "type": "text"
+   },
+   {
+    "key": "statusCode",
+    "n": 42112,
+    "avg_len": 3.0,
+    "max_len": 3,
+    "card": 5,
+    "type": "text"
+   },
+   {
+    "key": "request_id",
+    "n": 42112,
+    "avg_len": 16.0,
+    "max_len": 16,
+    "card": 42112,
+    "type": "text"
+   },
+   {
+    "key": "object",
+    "n": 42112,
+    "avg_len": 66.8,
+    "max_len": 100,
+    "card": 4521,
+    "type": "text"
+   },
+   {
+    "key": "bucket",
+    "n": 42112,
+    "avg_len": 14.0,
+    "max_len": 14,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "api",
+    "n": 42112,
+    "avg_len": 9.3,
+    "max_len": 26,
+    "card": 9,
+    "type": "text"
+   },
+   {
+    "key": "accessKey",
+    "n": 42112,
+    "avg_len": 5.3,
+    "max_len": 20,
+    "card": 3,
+    "type": "text"
+   },
+   {
+    "key": "count",
+    "n": 34921,
+    "avg_len": 1.2,
+    "max_len": 2,
+    "card": 49,
+    "type": "integer"
+   },
+   {
+    "key": "vtype",
+    "n": 34870,
+    "avg_len": 8.0,
+    "max_len": 8,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "remote_address",
+    "n": 34870,
+    "avg_len": 11.0,
+    "max_len": 11,
+    "card": 32,
+    "type": "text"
+   },
+   {
+    "key": "operation",
+    "n": 34870,
+    "avg_len": 4.8,
+    "max_len": 6,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "ua",
+    "n": 34768,
+    "avg_len": 85.3,
+    "max_len": 273,
+    "card": 237,
+    "type": "text"
+   },
+   {
+    "key": "url",
+    "n": 27386,
+    "avg_len": 28.3,
+    "max_len": 81,
+    "card": 3147,
+    "type": "text"
+   },
+   {
+    "key": "ruleId",
+    "n": 27386,
+    "avg_len": 4.2,
+    "max_len": 32,
+    "card": 8,
+    "type": "text"
+   },
+   {
+    "key": "ray",
+    "n": 27386,
+    "avg_len": 16.0,
+    "max_len": 16,
+    "card": 27386,
+    "type": "text"
+   },
+   {
+    "key": "country",
+    "n": 27386,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 43,
+    "type": "text"
+   },
+   {
+    "key": "cf_source",
+    "n": 27386,
+    "avg_len": 12.8,
+    "max_len": 15,
+    "card": 5,
+    "type": "text"
+   },
+   {
+    "key": "cf_action",
+    "n": 27386,
+    "avg_len": 17.3,
+    "max_len": 26,
+    "card": 5,
+    "type": "text"
+   },
+   {
+    "key": "asn",
+    "n": 27386,
+    "avg_len": 4.1,
+    "max_len": 6,
+    "card": 109,
+    "type": "text"
+   },
+   {
+    "key": "mode",
+    "n": 20855,
+    "avg_len": 8.9,
+    "max_len": 10,
+    "card": 10,
+    "type": "text"
+   },
+   {
+    "key": "skew",
+    "n": 20518,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "removed",
+    "n": 20518,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "refused",
+    "n": 20518,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "nft_fail",
+    "n": 20518,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "http",
+    "n": 20518,
+    "avg_len": 3.0,
+    "max_len": 3,
+    "card": 3,
+    "type": "text"
+   },
+   {
+    "key": "failcount",
+    "n": 20518,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 6,
+    "type": "integer"
+   },
+   {
+    "key": "ensured",
+    "n": 20518,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "desired",
+    "n": 20518,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "alive",
+    "n": 14976,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "state",
+    "n": 14282,
+    "avg_len": 5.0,
+    "max_len": 8,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "proc",
+    "n": 14282,
+    "avg_len": 8.8,
+    "max_len": 15,
+    "card": 14,
+    "type": "text"
+   },
+   {
+    "key": "dst_host",
+    "n": 14282,
+    "avg_len": 5.4,
+    "max_len": 39,
+    "card": 23,
+    "type": "text"
+   },
+   {
+    "key": "visitors",
+    "n": 10732,
+    "avg_len": 2.1,
+    "max_len": 3,
+    "card": 11,
+    "type": "text"
+   },
+   {
+    "key": "users",
+    "n": 10732,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "topics_active",
+    "n": 10732,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "tag",
+    "n": 10732,
+    "avg_len": 8.0,
+    "max_len": 8,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "subscribers",
+    "n": 10732,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "messages_published",
+    "n": 10732,
+    "avg_len": 5.0,
+    "max_len": 5,
+    "card": 251,
+    "type": "text"
+   },
+   {
+    "key": "messages_cached",
+    "n": 10732,
+    "avg_len": 3.0,
+    "max_len": 3,
+    "card": 26,
+    "type": "text"
+   },
+   {
+    "key": "emails_sent_success",
+    "n": 10732,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "emails_sent_failure",
+    "n": 10732,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "emails_sent",
+    "n": 10732,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "emails_received_success",
+    "n": 10732,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "emails_received_failure",
+    "n": 10732,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "emails_received",
+    "n": 10732,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "sev3_shipped",
+    "n": 10658,
+    "avg_len": 1.7,
+    "max_len": 3,
+    "card": 124,
+    "type": "integer"
+   },
+   {
+    "key": "lines_scanned",
+    "n": 10658,
+    "avg_len": 1.7,
+    "max_len": 3,
+    "card": 124,
+    "type": "integer"
+   },
+   {
+    "key": "files_scanned",
+    "n": 10658,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 13,
+    "type": "integer"
+   },
+   {
+    "key": "scans_seen",
+    "n": 10657,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 2,
+    "type": "integer"
+   },
+   {
+    "key": "router",
+    "n": 7382,
+    "avg_len": 24.2,
+    "max_len": 28,
+    "card": 7,
+    "type": "text"
+   },
+   {
+    "key": "dur_ms",
+    "n": 7382,
+    "avg_len": 2.1,
+    "max_len": 5,
+    "card": 653,
+    "type": "text"
+   },
+   {
+    "key": "bytes",
+    "n": 7382,
+    "avg_len": 2.3,
+    "max_len": 5,
+    "card": 692,
+    "type": "text"
+   },
+   {
+    "key": "service",
+    "n": 5635,
+    "avg_len": 7.1,
+    "max_len": 10,
+    "card": 4,
+    "type": "text"
+   },
+   {
+    "key": "hits_seen",
+    "n": 5352,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 7,
+    "type": "integer"
+   },
+   {
+    "key": "family",
+    "n": 4935,
+    "avg_len": 4.0,
+    "max_len": 4,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "sport",
+    "n": 4926,
+    "avg_len": 4.9,
+    "max_len": 5,
+    "card": 4212,
+    "type": "text"
+   },
+   {
+    "key": "time",
+    "n": 4712,
+    "avg_len": 20.0,
+    "max_len": 20,
+    "card": 2833,
+    "type": "text"
+   },
+   {
+    "key": "msg",
+    "n": 4712,
+    "avg_len": 45.9,
+    "max_len": 237,
+    "card": 190,
+    "type": "text"
+   },
+   {
+    "key": "level",
+    "n": 4712,
+    "avg_len": 4.2,
+    "max_len": 7,
+    "card": 3,
+    "type": "text"
+   },
+   {
+    "key": "logSource",
+    "n": 4515,
+    "avg_len": 39.8,
+    "max_len": 50,
+    "card": 31,
+    "type": "text"
+   },
+   {
+    "key": "target",
+    "n": 2543,
+    "avg_len": 4.0,
+    "max_len": 6,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "command",
+    "n": 2543,
+    "avg_len": 101.4,
+    "max_len": 911,
+    "card": 343,
+    "type": "text"
+   },
+   {
+    "key": "merror",
+    "n": 2364,
+    "avg_len": 16.9,
+    "max_len": 21,
+    "card": 3,
+    "type": "text"
+   },
+   {
+    "key": "image",
+    "n": 2311,
+    "avg_len": 70.8,
+    "max_len": 71,
+    "card": 64,
+    "type": "text"
+   },
+   {
+    "key": "mproviderName",
+    "n": 2258,
+    "avg_len": 13.0,
+    "max_len": 13,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "mnamespace",
+    "n": 2258,
+    "avg_len": 12.0,
+    "max_len": 12,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "mingress",
+    "n": 2258,
+    "avg_len": 26.0,
+    "max_len": 26,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "backupRepo",
+    "n": 2254,
+    "avg_len": 28.9,
+    "max_len": 31,
+    "card": 12,
+    "type": "text"
+   },
+   {
+    "key": "scenarios_loaded",
+    "n": 2144,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 2,
+    "type": "integer"
+   },
+   {
+    "key": "scenarios_broken",
+    "n": 2144,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "last_alert_age_s",
+    "n": 2144,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "lapi_ok",
+    "n": 2144,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "true"
+   },
+   {
+    "key": "agent_ready",
+    "n": 2144,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 2,
+    "type": "true"
+   },
+   {
+    "key": "rules_allow",
+    "n": 2143,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "blocks_seen",
+    "n": 2143,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 44,
+    "type": "integer"
+   },
+   {
+    "key": "backup",
+    "n": 1670,
+    "avg_len": 39.1,
+    "max_len": 40,
+    "card": 9,
+    "type": "text"
+   },
+   {
+    "key": "namespace",
+    "n": 1455,
+    "avg_len": 7.9,
+    "max_len": 11,
+    "card": 5,
+    "type": "text"
+   },
+   {
+    "key": "type",
+    "n": 1348,
+    "avg_len": 5.3,
+    "max_len": 19,
+    "card": 7,
+    "type": "text"
+   },
+   {
+    "key": "group",
+    "n": 1164,
+    "avg_len": 11.1,
+    "max_len": 39,
+    "card": 29,
+    "type": "text"
+   },
+   {
+    "key": "active_bans",
+    "n": 1072,
+    "avg_len": 3.0,
+    "max_len": 3,
+    "card": 92,
+    "type": "integer"
+   },
+   {
+    "key": "note",
+    "n": 977,
+    "avg_len": 163.3,
+    "max_len": 434,
+    "card": 7,
+    "type": "text"
+   },
+   {
+    "key": "collector",
+    "n": 977,
+    "avg_len": 3.5,
+    "max_len": 9,
+    "card": 7,
+    "type": "text"
+   },
+   {
+    "key": "enforcement",
+    "n": 811,
+    "avg_len": 26.0,
+    "max_len": 26,
+    "card": 811,
+    "type": "object"
+   },
+   {
+    "key": "error",
+    "n": 756,
+    "avg_len": 56.3,
+    "max_len": 130,
+    "card": 71,
+    "type": "text"
+   },
+   {
+    "key": "risk",
+    "n": 452,
+    "avg_len": 4.8,
+    "max_len": 14,
+    "card": 7,
+    "type": "text"
+   },
+   {
+    "key": "kind",
+    "n": 434,
+    "avg_len": 10.0,
+    "max_len": 37,
+    "card": 22,
+    "type": "text"
+   },
+   {
+    "key": "controller",
+    "n": 430,
+    "avg_len": 17.3,
+    "max_len": 23,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "cmd",
+    "n": 430,
+    "avg_len": 30.0,
+    "max_len": 30,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "owner",
+    "n": 364,
+    "avg_len": 6.8,
+    "max_len": 39,
+    "card": 13,
+    "type": "text"
+   },
+   {
+    "key": "err",
+    "n": 352,
+    "avg_len": 6.3,
+    "max_len": 118,
+    "card": 6,
+    "type": "text"
+   },
+   {
+    "key": "flags",
+    "n": 337,
+    "avg_len": 1.2,
+    "max_len": 7,
+    "card": 3,
+    "type": "text"
+   },
+   {
+    "key": "subject",
+    "n": 294,
+    "avg_len": 10.5,
+    "max_len": 43,
+    "card": 83,
+    "type": "text"
+   },
+   {
+    "key": "backupLocation",
+    "n": 234,
+    "avg_len": 13.2,
+    "max_len": 14,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "location",
+    "n": 224,
+    "avg_len": 14.0,
+    "max_len": 14,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "function",
+    "n": 188,
+    "avg_len": 33.0,
+    "max_len": 48,
+    "card": 16,
+    "type": "text"
+   },
+   {
+    "key": "file",
+    "n": 188,
+    "avg_len": 62.0,
+    "max_len": 62,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "versions",
+    "n": 179,
+    "avg_len": 3.0,
+    "max_len": 3,
+    "card": 128,
+    "type": "text"
+   },
+   {
+    "key": "objects",
+    "n": 179,
+    "avg_len": 4.0,
+    "max_len": 4,
+    "card": 156,
+    "type": "text"
+   },
+   {
+    "key": "buckets",
+    "n": 179,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "filters",
+    "n": 165,
+    "avg_len": 68.8,
+    "max_len": 211,
+    "card": 5,
+    "type": "object"
+   },
+   {
+    "key": "exec_drop_list_tier2_recon",
+    "n": 161,
+    "avg_len": 57.0,
+    "max_len": 57,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "exec_drop_list_tier1",
+    "n": 161,
+    "avg_len": 307.0,
+    "max_len": 307,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "exec_drop_list_effective",
+    "n": 161,
+    "avg_len": 307.0,
+    "max_len": 307,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "exec_drop_dropped_this_run",
+    "n": 161,
+    "avg_len": 2.6,
+    "max_len": 5,
+    "card": 161,
+    "type": "integer"
+   },
+   {
+    "key": "carve_out",
+    "n": 161,
+    "avg_len": 295.0,
+    "max_len": 295,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "item",
+    "n": 135,
+    "avg_len": 18.6,
+    "max_len": 32,
+    "card": 13,
+    "type": "text"
+   },
+   {
+    "key": "connIndex",
+    "n": 135,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 4,
+    "type": "text"
+   },
+   {
+    "key": "event",
+    "n": 114,
+    "avg_len": 1.1,
+    "max_len": 3,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "role",
+    "n": 111,
+    "avg_len": 32.0,
+    "max_len": 61,
+    "card": 99,
+    "type": "text"
+   },
+   {
+    "key": "binding",
+    "n": 111,
+    "avg_len": 32.7,
+    "max_len": 61,
+    "card": 105,
+    "type": "text"
+   },
+   {
+    "key": "ip",
+    "n": 109,
+    "avg_len": 13.1,
+    "max_len": 14,
+    "card": 13,
+    "type": "text"
+   },
+   {
+    "key": "mmiddlewareName",
+    "n": 100,
+    "avg_len": 9.0,
+    "max_len": 9,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "verdict",
+    "n": 69,
+    "avg_len": 12.1,
+    "max_len": 19,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "size",
+    "n": 69,
+    "avg_len": 4.8,
+    "max_len": 5,
+    "card": 68,
+    "type": "text"
+   },
+   {
+    "key": "sender",
+    "n": 69,
+    "avg_len": 42.8,
+    "max_len": 74,
+    "card": 17,
+    "type": "text"
+   },
+   {
+    "key": "score",
+    "n": 69,
+    "avg_len": 6.0,
+    "max_len": 6,
+    "card": 34,
+    "type": "text"
+   },
+   {
+    "key": "rcpt",
+    "n": 69,
+    "avg_len": 16.0,
+    "max_len": 17,
+    "card": 3,
+    "type": "text"
+   },
+   {
+    "key": "PVB",
+    "n": 60,
+    "avg_len": 38.2,
+    "max_len": 39,
+    "card": 9,
+    "type": "text"
+   },
+   {
+    "key": "probe",
+    "n": 57,
+    "avg_len": 20.0,
+    "max_len": 20,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "volume",
+    "n": 45,
+    "avg_len": 3.0,
+    "max_len": 3,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "sample",
+    "n": 44,
+    "avg_len": 200.0,
+    "max_len": 200,
+    "card": 44,
+    "type": "text"
+   },
+   {
+    "key": "patterns",
+    "n": 44,
+    "avg_len": 22.0,
+    "max_len": 33,
+    "card": 3,
+    "type": "text"
+   },
+   {
+    "key": "msgid",
+    "n": 44,
+    "avg_len": 67.4,
+    "max_len": 77,
+    "card": 44,
+    "type": "text"
+   },
+   {
+    "key": "folder",
+    "n": 44,
+    "avg_len": 5.0,
+    "max_len": 5,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "fileid",
+    "n": 44,
+    "avg_len": 53.3,
+    "max_len": 54,
+    "card": 44,
+    "type": "text"
+   },
+   {
+    "key": "account",
+    "n": 44,
+    "avg_len": 16.0,
+    "max_len": 16,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "realSource",
+    "n": 40,
+    "avg_len": 44.0,
+    "max_len": 44,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "actor",
+    "n": 39,
+    "avg_len": 9.2,
+    "max_len": 14,
+    "card": 8,
+    "type": "text"
+   },
+   {
+    "key": "UID",
+    "n": 32,
+    "avg_len": 36.0,
+    "max_len": 36,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "volumeNamespace",
+    "n": 28,
+    "avg_len": 8.0,
+    "max_len": 8,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "repositoryType",
+    "n": 28,
+    "avg_len": 5.0,
+    "max_len": 5,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "cn",
+    "n": 27,
+    "avg_len": 66.5,
+    "max_len": 73,
+    "card": 3,
+    "type": "text"
+   },
+   {
+    "key": "op",
+    "n": 24,
+    "avg_len": 7.2,
+    "max_len": 12,
+    "card": 6,
+    "type": "text"
+   },
+   {
+    "key": "id",
+    "n": 21,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 8,
+    "type": "integer"
+   },
+   {
+    "key": "client_id",
+    "n": 20,
+    "avg_len": 250.0,
+    "max_len": 256,
+    "card": 6,
+    "type": "text"
+   },
+   {
+    "key": "logger",
+    "n": 17,
+    "avg_len": 14.1,
+    "max_len": 23,
+    "card": 3,
+    "type": "text"
+   },
+   {
+    "key": "workload",
+    "n": 11,
+    "avg_len": 8.3,
+    "max_len": 32,
+    "card": 3,
+    "type": "text"
+   },
+   {
+    "key": "uploader",
+    "n": 10,
+    "avg_len": 5.0,
+    "max_len": 5,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "table",
+    "n": 10,
+    "avg_len": 4.0,
+    "max_len": 4,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "repository",
+    "n": 10,
+    "avg_len": 5.0,
+    "max_len": 5,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "reason",
+    "n": 10,
+    "avg_len": 14.5,
+    "max_len": 16,
+    "card": 6,
+    "type": "text"
+   },
+   {
+    "key": "jobName",
+    "n": 10,
+    "avg_len": 38.2,
+    "max_len": 39,
+    "card": 9,
+    "type": "text"
+   },
+   {
+    "key": "engagement_id",
+    "n": 10,
+    "avg_len": 36.0,
+    "max_len": 36,
+    "card": 5,
+    "type": "text"
+   },
+   {
+    "key": "bsl",
+    "n": 10,
+    "avg_len": 7.0,
+    "max_len": 7,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "volDir",
+    "n": 9,
+    "avg_len": 3.0,
+    "max_len": 3,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "signal",
+    "n": 9,
+    "avg_len": 8.0,
+    "max_len": 8,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "expandedIncludes",
+    "n": 9,
+    "avg_len": 141.9,
+    "max_len": 142,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "expandedExcludes",
+    "n": 9,
+    "avg_len": 48.0,
+    "max_len": 48,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "excludedCount",
+    "n": 9,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "dst_port",
+    "n": 9,
+    "avg_len": 4.0,
+    "max_len": 5,
+    "card": 8,
+    "type": "text"
+   },
+   {
+    "key": "u003e",
+    "n": 8,
+    "avg_len": 147.0,
+    "max_len": 147,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "interval",
+    "n": 8,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "job",
+    "n": 7,
+    "avg_len": 56.0,
+    "max_len": 56,
+    "card": 7,
+    "type": "text"
+   },
+   {
+    "key": "is_soql",
+    "n": 7,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 2,
+    "type": "true"
+   },
+   {
+    "key": "timeout",
+    "n": 6,
+    "avg_len": 3.0,
+    "max_len": 3,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "node",
+    "n": 6,
+    "avg_len": 12.0,
+    "max_len": 12,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "mrouterName",
+    "n": 6,
+    "avg_len": 90.3,
+    "max_len": 92,
+    "card": 6,
+    "type": "text"
+   },
+   {
+    "key": "mentryPointName",
+    "n": 6,
+    "avg_len": 6.0,
+    "max_len": 6,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "window_end",
+    "n": 5,
+    "avg_len": 10.0,
+    "max_len": 10,
+    "card": 5,
+    "type": "integer"
+   },
+   {
+    "key": "node_decryptable",
+    "n": 5,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "true"
+   },
+   {
+    "key": "box",
+    "n": 5,
+    "avg_len": 7.6,
+    "max_len": 8,
+    "card": 3,
+    "type": "text"
+   },
+   {
+    "key": "backup_encryption",
+    "n": 5,
+    "avg_len": 9.0,
+    "max_len": 9,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "authorizer",
+    "n": 5,
+    "avg_len": 1.6,
+    "max_len": 4,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "sha256",
+    "n": 4,
+    "avg_len": 0.0,
+    "max_len": 0,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "override",
+    "n": 4,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "false"
+   },
+   {
+    "key": "managed",
+    "n": 4,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "exception",
+    "n": 4,
+    "avg_len": 19.0,
+    "max_len": 19,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "enabled",
+    "n": 4,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "false"
+   },
+   {
+    "key": "change",
+    "n": 4,
+    "avg_len": 5.0,
+    "max_len": 5,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "suggested_protocol",
+    "n": 3,
+    "avg_len": 4.0,
+    "max_len": 4,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "source",
+    "n": 3,
+    "avg_len": 9.7,
+    "max_len": 11,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "run_id",
+    "n": 3,
+    "avg_len": 36.0,
+    "max_len": 36,
+    "card": 3,
+    "type": "text"
+   },
+   {
+    "key": "hard_fail",
+    "n": 3,
+    "avg_len": 5.0,
+    "max_len": 5,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "seeded",
+    "n": 2,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "policy",
+    "n": 2,
+    "avg_len": 16.0,
+    "max_len": 16,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "old",
+    "n": 2,
+    "avg_len": 25.0,
+    "max_len": 37,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "new",
+    "n": 2,
+    "avg_len": 25.0,
+    "max_len": 37,
+    "card": 2,
+    "type": "text"
+   },
+   {
+    "key": "field",
+    "n": 2,
+    "avg_len": 8.0,
+    "max_len": 8,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "effect",
+    "n": 2,
+    "avg_len": 51.0,
+    "max_len": 51,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "builtin",
+    "n": 2,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "true"
+   },
+   {
+    "key": "access",
+    "n": 2,
+    "avg_len": 7.0,
+    "max_len": 7,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "warnings",
+    "n": 1,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 1,
+    "type": "array"
+   },
+   {
+    "key": "used_pct",
+    "n": 1,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "total_mb",
+    "n": 1,
+    "avg_len": 5.0,
+    "max_len": 5,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "token_kind",
+    "n": 1,
+    "avg_len": 3.0,
+    "max_len": 3,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "threshold_pct",
+    "n": 1,
+    "avg_len": 2.0,
+    "max_len": 2,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "skipped",
+    "n": 1,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "rule",
+    "n": 1,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "playbook",
+    "n": 1,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "parser",
+    "n": 1,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "panel",
+    "n": 1,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "notifier",
+    "n": 1,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "notification_policy",
+    "n": 1,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "next",
+    "n": 1,
+    "avg_len": 256.0,
+    "max_len": 256,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "max",
+    "n": 1,
+    "avg_len": 3.0,
+    "max_len": 3,
+    "card": 1,
+    "type": "text"
+   },
+   {
+    "key": "library_panel",
+    "n": 1,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "index_policy",
+    "n": 1,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "imported",
+    "n": 1,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "host",
+    "n": 1,
+    "avg_len": null,
+    "max_len": null,
+    "card": 0,
+    "type": "null"
+   },
+   {
+    "key": "free_mb",
+    "n": 1,
+    "avg_len": 5.0,
+    "max_len": 5,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "field_filter",
+    "n": 1,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "dparser",
+    "n": 1,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "destination",
+    "n": 1,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "dashboard",
+    "n": 1,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "connector",
+    "n": 1,
+    "avg_len": 1.0,
+    "max_len": 1,
+    "card": 1,
+    "type": "integer"
+   },
+   {
+    "key": "category",
+    "n": 1,
+    "avg_len": 4.0,
+    "max_len": 4,
+    "card": 1,
+    "type": "text"
+   }
+  ],
+  "_note": "`cim` est présent sur 100 % des lignes : le daemon l'estampille à l'ingest (cim_stamp). Un générateur qui ne le pose pas ne change rien — l'ingest le remet."
+ },
+ "sources": {
+  "provenance": "derived",
+  "list": [
+   {
+    "name": "auditd",
+    "n": 537272,
+    "distinct_hosts": 1,
+    "distinct_categories": 3,
+    "msg_len": {
+     "min": 46,
+     "avg": 58.8,
+     "max": 166
+    },
+    "fields_len": {
+     "avg": 155.4,
+     "max": 1690
+    },
+    "src_ip_present": 0,
+    "severity": {
+     "0": 161,
+     "1": 461346,
+     "2": 76278,
+     "3": 82,
+     "4": 4
+    },
+    "categories": {
+     "exec": 537678,
+     "config": 161,
+     "tamper": 32
+    },
+    "fields": [
+     {
+      "key": "cim",
+      "n": 537734,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "uid",
+      "n": 537573,
+      "avg_len": 3.1,
+      "card": 125,
+      "type": "text"
+     },
+     {
+      "key": "syscall",
+      "n": 537573,
+      "avg_len": 6.0,
+      "card": 100,
+      "type": "text"
+     },
+     {
+      "key": "success",
+      "n": 537573,
+      "avg_len": 2.9,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "key",
+      "n": 537573,
+      "avg_len": 13.0,
+      "card": 125,
+      "type": "text"
+     },
+     {
+      "key": "exe",
+      "n": 537573,
+      "avg_len": 14.9,
+      "card": 3700,
+      "type": "text"
+     },
+     {
+      "key": "comm",
+      "n": 537573,
+      "avg_len": 6.9,
+      "card": 5700,
+      "type": "text"
+     },
+     {
+      "key": "auid",
+      "n": 537573,
+      "avg_len": 3.1,
+      "card": 125,
+      "type": "text"
+     },
+     {
+      "key": "action",
+      "n": 537573,
+      "avg_len": 7.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "type",
+      "n": 161,
+      "avg_len": 19.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "note",
+      "n": 161,
+      "avg_len": 434.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "filters",
+      "n": 161,
+      "avg_len": 68.0,
+      "card": 25,
+      "type": "object"
+     },
+     {
+      "key": "exec_drop_list_tier2_recon",
+      "n": 161,
+      "avg_len": 57.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "exec_drop_list_tier1",
+      "n": 161,
+      "avg_len": 307.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "exec_drop_list_effective",
+      "n": 161,
+      "avg_len": 307.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "exec_drop_dropped_this_run",
+      "n": 161,
+      "avg_len": 2.6,
+      "card": 4025,
+      "type": "integer"
+     },
+     {
+      "key": "collector",
+      "n": 161,
+      "avg_len": 6.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "carve_out",
+      "n": 161,
+      "avg_len": 295.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "path",
+      "n": 14,
+      "avg_len": 74.2,
+      "card": 100,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "k8s-log",
+    "n": 263359,
+    "distinct_hosts": 1,
+    "distinct_categories": 3,
+    "msg_len": {
+     "min": 48,
+     "avg": 361.4,
+     "max": 400
+    },
+    "fields_len": {
+     "avg": 123.8,
+     "max": 490
+    },
+    "src_ip_present": 0,
+    "severity": {
+     "0": 10661,
+     "1": 205513,
+     "2": 47221,
+     "3": 17
+    },
+    "categories": {
+     "k8s": 252751,
+     "health": 10660,
+     "config": 1
+    },
+    "fields": [
+     {
+      "key": "cim",
+      "n": 263402,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "pod",
+      "n": 252742,
+      "avg_len": 31.0,
+      "card": 550,
+      "type": "text"
+     },
+     {
+      "key": "ns",
+      "n": 252742,
+      "avg_len": 8.8,
+      "card": 200,
+      "type": "text"
+     },
+     {
+      "key": "container",
+      "n": 252742,
+      "avg_len": 5.8,
+      "card": 425,
+      "type": "text"
+     },
+     {
+      "key": "query",
+      "n": 74790,
+      "avg_len": 45.5,
+      "card": 125,
+      "type": "text"
+     },
+     {
+      "key": "visitors",
+      "n": 10733,
+      "avg_len": 2.1,
+      "card": 275,
+      "type": "text"
+     },
+     {
+      "key": "users",
+      "n": 10733,
+      "avg_len": 2.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "topics_active",
+      "n": 10733,
+      "avg_len": 2.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "tag",
+      "n": 10733,
+      "avg_len": 8.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "subscribers",
+      "n": 10733,
+      "avg_len": 2.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "messages_published",
+      "n": 10733,
+      "avg_len": 5.0,
+      "card": 6275,
+      "type": "text"
+     },
+     {
+      "key": "messages_cached",
+      "n": 10733,
+      "avg_len": 3.0,
+      "card": 650,
+      "type": "text"
+     },
+     {
+      "key": "emails_sent_success",
+      "n": 10733,
+      "avg_len": 2.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "emails_sent_failure",
+      "n": 10733,
+      "avg_len": 2.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "emails_sent",
+      "n": 10733,
+      "avg_len": 2.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "emails_received_success",
+      "n": 10733,
+      "avg_len": 2.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "emails_received_failure",
+      "n": 10733,
+      "avg_len": 2.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "emails_received",
+      "n": 10733,
+      "avg_len": 2.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "sev3_shipped",
+      "n": 10659,
+      "avg_len": 1.7,
+      "card": 3100,
+      "type": "integer"
+     },
+     {
+      "key": "lines_scanned",
+      "n": 10659,
+      "avg_len": 1.7,
+      "card": 3100,
+      "type": "integer"
+     },
+     {
+      "key": "files_scanned",
+      "n": 10659,
+      "avg_len": 2.0,
+      "card": 325,
+      "type": "integer"
+     },
+     {
+      "key": "time",
+      "n": 4712,
+      "avg_len": 20.0,
+      "card": 70825,
+      "type": "text"
+     },
+     {
+      "key": "msg",
+      "n": 4712,
+      "avg_len": 45.9,
+      "card": 4750,
+      "type": "text"
+     },
+     {
+      "key": "level",
+      "n": 4712,
+      "avg_len": 4.2,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "logSource",
+      "n": 4515,
+      "avg_len": 39.8,
+      "card": 775,
+      "type": "text"
+     },
+     {
+      "key": "merror",
+      "n": 2364,
+      "avg_len": 16.9,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "mproviderName",
+      "n": 2258,
+      "avg_len": 13.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "mnamespace",
+      "n": 2258,
+      "avg_len": 12.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "mingress",
+      "n": 2258,
+      "avg_len": 26.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "backupRepo",
+      "n": 2254,
+      "avg_len": 28.9,
+      "card": 300,
+      "type": "text"
+     },
+     {
+      "key": "backup",
+      "n": 1670,
+      "avg_len": 39.1,
+      "card": 225,
+      "type": "text"
+     },
+     {
+      "key": "namespace",
+      "n": 1444,
+      "avg_len": 8.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "resource",
+      "n": 1094,
+      "avg_len": 13.5,
+      "card": 2500,
+      "type": "text"
+     },
+     {
+      "key": "group",
+      "n": 827,
+      "avg_len": 13.8,
+      "card": 600,
+      "type": "text"
+     },
+     {
+      "key": "error",
+      "n": 756,
+      "avg_len": 56.3,
+      "card": 1775,
+      "type": "text"
+     },
+     {
+      "key": "name",
+      "n": 516,
+      "avg_len": 24.1,
+      "card": 2675,
+      "type": "text"
+     },
+     {
+      "key": "controller",
+      "n": 430,
+      "avg_len": 17.3,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "cmd",
+      "n": 430,
+      "avg_len": 30.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "err",
+      "n": 352,
+      "avg_len": 6.3,
+      "card": 150,
+      "type": "text"
+     },
+     {
+      "key": "backupLocation",
+      "n": 234,
+      "avg_len": 13.2,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "location",
+      "n": 224,
+      "avg_len": 14.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "function",
+      "n": 188,
+      "avg_len": 33.0,
+      "card": 400,
+      "type": "text"
+     },
+     {
+      "key": "file",
+      "n": 188,
+      "avg_len": 62.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "item",
+      "n": 135,
+      "avg_len": 18.6,
+      "card": 325,
+      "type": "text"
+     },
+     {
+      "key": "connIndex",
+      "n": 135,
+      "avg_len": 1.0,
+      "card": 100,
+      "type": "text"
+     },
+     {
+      "key": "kind",
+      "n": 121,
+      "avg_len": 16.4,
+      "card": 300,
+      "type": "text"
+     },
+     {
+      "key": "ip",
+      "n": 109,
+      "avg_len": 13.1,
+      "card": 325,
+      "type": "text"
+     },
+     {
+      "key": "event",
+      "n": 109,
+      "avg_len": 1.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "mmiddlewareName",
+      "n": 100,
+      "avg_len": 9.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "path",
+      "n": 68,
+      "avg_len": 48.2,
+      "card": 325,
+      "type": "text"
+     },
+     {
+      "key": "PVB",
+      "n": 60,
+      "avg_len": 38.2,
+      "card": 225,
+      "type": "text"
+     },
+     {
+      "key": "probe",
+      "n": 57,
+      "avg_len": 20.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "volume",
+      "n": 45,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "realSource",
+      "n": 40,
+      "avg_len": 44.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "type",
+      "n": 33,
+      "avg_len": 12.0,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "UID",
+      "n": 32,
+      "avg_len": 36.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "volumeNamespace",
+      "n": 28,
+      "avg_len": 8.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "repositoryType",
+      "n": 28,
+      "avg_len": 5.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "owner",
+      "n": 27,
+      "avg_len": 38.1,
+      "card": 225,
+      "type": "text"
+     },
+     {
+      "key": "cn",
+      "n": 27,
+      "avg_len": 66.5,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "client_id",
+      "n": 20,
+      "avg_len": 250.0,
+      "card": 150,
+      "type": "text"
+     },
+     {
+      "key": "logger",
+      "n": 17,
+      "avg_len": 14.1,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "uploader",
+      "n": 10,
+      "avg_len": 5.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "repository",
+      "n": 10,
+      "avg_len": 5.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "jobName",
+      "n": 10,
+      "avg_len": 38.2,
+      "card": 225,
+      "type": "text"
+     },
+     {
+      "key": "bsl",
+      "n": 10,
+      "avg_len": 7.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "volDir",
+      "n": 9,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "expandedIncludes",
+      "n": 9,
+      "avg_len": 141.9,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "expandedExcludes",
+      "n": 9,
+      "avg_len": 48.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "excludedCount",
+      "n": 9,
+      "avg_len": 1.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "u003e",
+      "n": 8,
+      "avg_len": 147.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "interval",
+      "n": 8,
+      "avg_len": 2.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "job",
+      "n": 7,
+      "avg_len": 56.0,
+      "card": 175,
+      "type": "text"
+     },
+     {
+      "key": "timeout",
+      "n": 6,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "node",
+      "n": 6,
+      "avg_len": 12.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "mrouterName",
+      "n": 6,
+      "avg_len": 90.3,
+      "card": 150,
+      "type": "text"
+     },
+     {
+      "key": "mentryPointName",
+      "n": 6,
+      "avg_len": 6.0,
+      "card": 25,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "portprobe",
+    "n": 109869,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 53,
+     "avg": 58.3,
+     "max": 83
+    },
+    "fields_len": {
+     "avg": 127.3,
+     "max": 152
+    },
+    "src_ip_present": 109869,
+    "severity": {
+     "1": 109938
+    },
+    "categories": {
+     "firewall": 109938
+    },
+    "fields": [
+     {
+      "key": "src_ip",
+      "n": 109924,
+      "avg_len": 13.3,
+      "card": 18118,
+      "type": "text"
+     },
+     {
+      "key": "set",
+      "n": 109924,
+      "avg_len": 10.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "scope",
+      "n": 109924,
+      "avg_len": 8.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "dir",
+      "n": 109924,
+      "avg_len": 7.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "detector",
+      "n": 109924,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "cim",
+      "n": 109924,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "action",
+      "n": 109924,
+      "avg_len": 6.0,
+      "card": 25,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "sshd-session",
+    "n": 101473,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 24,
+     "avg": 79.7,
+     "max": 339
+    },
+    "fields_len": {
+     "avg": 105.0,
+     "max": 155
+    },
+    "src_ip_present": 46212,
+    "severity": {
+     "0": 97710,
+     "3": 3838
+    },
+    "categories": {
+     "auth": 101548
+    },
+    "fields": [
+     {
+      "key": "user",
+      "n": 101544,
+      "avg_len": 5.9,
+      "card": 25200,
+      "type": "null"
+     },
+     {
+      "key": "unit",
+      "n": 101544,
+      "avg_len": 13.8,
+      "card": 171175,
+      "type": "text"
+     },
+     {
+      "key": "uid",
+      "n": 101544,
+      "avg_len": 1.9,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "pid",
+      "n": 101544,
+      "avg_len": 6.7,
+      "card": 498100,
+      "type": "text"
+     },
+     {
+      "key": "cim",
+      "n": 101544,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "action",
+      "n": 101544,
+      "avg_len": 9.0,
+      "card": 100,
+      "type": "null"
+     },
+     {
+      "key": "rhost",
+      "n": 40683,
+      "avg_len": 15.3,
+      "card": 843,
+      "type": "text"
+     },
+     {
+      "key": "src_ip",
+      "n": 3546,
+      "avg_len": 13.5,
+      "card": 407,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "kube-audit",
+    "n": 57816,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 49,
+     "avg": 95.8,
+     "max": 149
+    },
+    "fields_len": {
+     "avg": 201.1,
+     "max": 254
+    },
+    "src_ip_present": 57816,
+    "severity": {
+     "2": 56905,
+     "3": 967
+    },
+    "categories": {
+     "k8s": 57872
+    },
+    "fields": [
+     {
+      "key": "verb",
+      "n": 57872,
+      "avg_len": 5.3,
+      "card": 125,
+      "type": "text"
+     },
+     {
+      "key": "user",
+      "n": 57872,
+      "avg_len": 49.1,
+      "card": 650,
+      "type": "text"
+     },
+     {
+      "key": "resource",
+      "n": 57872,
+      "avg_len": 12.4,
+      "card": 1000,
+      "type": "text"
+     },
+     {
+      "key": "ns",
+      "n": 57872,
+      "avg_len": 6.1,
+      "card": 450,
+      "type": "text"
+     },
+     {
+      "key": "name",
+      "n": 57872,
+      "avg_len": 12.1,
+      "card": 30900,
+      "type": "text"
+     },
+     {
+      "key": "decision",
+      "n": 57872,
+      "avg_len": 5.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "code",
+      "n": 57872,
+      "avg_len": 3.0,
+      "card": 125,
+      "type": "text"
+     },
+     {
+      "key": "cim",
+      "n": 57872,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "action",
+      "n": 57872,
+      "avg_len": 7.0,
+      "card": 50,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "ufw",
+    "n": 52131,
+    "distinct_hosts": 1,
+    "distinct_categories": 2,
+    "msg_len": {
+     "min": 39,
+     "avg": 47.1,
+     "max": 73
+    },
+    "fields_len": {
+     "avg": 125.6,
+     "max": 180
+    },
+    "src_ip_present": 49988,
+    "severity": {
+     "0": 2144,
+     "1": 50010
+    },
+    "categories": {
+     "firewall": 50010,
+     "health": 2144
+    },
+    "fields": [
+     {
+      "key": "cim",
+      "n": 52154,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "src_ip",
+      "n": 50010,
+      "avg_len": 14.0,
+      "card": 10537,
+      "type": "text"
+     },
+     {
+      "key": "proto",
+      "n": 50010,
+      "avg_len": 3.0,
+      "card": 175,
+      "type": "text"
+     },
+     {
+      "key": "dst_ip",
+      "n": 50010,
+      "avg_len": 13.8,
+      "card": 2,
+      "type": "text"
+     },
+     {
+      "key": "dport",
+      "n": 50010,
+      "avg_len": 4.2,
+      "card": 513475,
+      "type": "text"
+     },
+     {
+      "key": "dir",
+      "n": 50010,
+      "avg_len": 7.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "action",
+      "n": 50010,
+      "avg_len": 7.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "rules_allow",
+      "n": 2144,
+      "avg_len": 1.0,
+      "card": 25,
+      "type": "integer"
+     },
+     {
+      "key": "blocks_seen",
+      "n": 2144,
+      "avg_len": 2.0,
+      "card": 1100,
+      "type": "integer"
+     }
+    ]
+   },
+   {
+    "name": "fail2ban",
+    "n": 44804,
+    "distinct_hosts": 1,
+    "distinct_categories": 2,
+    "msg_len": {
+     "min": 26,
+     "avg": 31.5,
+     "max": 61
+    },
+    "fields_len": {
+     "avg": 42.9,
+     "max": 50
+    },
+    "src_ip_present": 43733,
+    "severity": {
+     "0": 1072,
+     "3": 43733
+    },
+    "categories": {
+     "ban": 43733,
+     "health": 1072
+    },
+    "fields": [
+     {
+      "key": "cim",
+      "n": 44805,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "jail",
+      "n": 43733,
+      "avg_len": 5.2,
+      "card": 100,
+      "type": "text"
+     },
+     {
+      "key": "action",
+      "n": 43733,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "active_bans",
+      "n": 1072,
+      "avg_len": 3.0,
+      "card": 2300,
+      "type": "integer"
+     }
+    ]
+   },
+   {
+    "name": "minio-audit",
+    "n": 42112,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 64,
+     "avg": 171.2,
+     "max": 213
+    },
+    "fields_len": {
+     "avg": 300.3,
+     "max": 408
+    },
+    "src_ip_present": 42111,
+    "severity": {
+     "1": 465,
+     "2": 4052,
+     "3": 34806,
+     "4": 2789
+    },
+    "categories": {
+     "data": 42112
+    },
+    "fields": [
+     {
+      "key": "user_agent",
+      "n": 42112,
+      "avg_len": 38.1,
+      "card": 150,
+      "type": "text"
+     },
+     {
+      "key": "statusCode",
+      "n": 42112,
+      "avg_len": 3.0,
+      "card": 125,
+      "type": "text"
+     },
+     {
+      "key": "status",
+      "n": 42112,
+      "avg_len": 4.3,
+      "card": 125,
+      "type": "text"
+     },
+     {
+      "key": "src_ip",
+      "n": 42112,
+      "avg_len": 10.5,
+      "card": 216,
+      "type": "text"
+     },
+     {
+      "key": "request_id",
+      "n": 42112,
+      "avg_len": 16.0,
+      "card": 1052800,
+      "type": "text"
+     },
+     {
+      "key": "object",
+      "n": 42112,
+      "avg_len": 66.8,
+      "card": 113025,
+      "type": "text"
+     },
+     {
+      "key": "cim",
+      "n": 42112,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "bucket",
+      "n": 42112,
+      "avg_len": 14.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "api",
+      "n": 42112,
+      "avg_len": 9.3,
+      "card": 225,
+      "type": "text"
+     },
+     {
+      "key": "accessKey",
+      "n": 42112,
+      "avg_len": 5.3,
+      "card": 75,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "vault-audit",
+    "n": 34866,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 1486,
+     "avg": 2553.6,
+     "max": 4083
+    },
+    "fields_len": {
+     "avg": 177.8,
+     "max": 186
+    },
+    "src_ip_present": 0,
+    "severity": {
+     "1": 34913
+    },
+    "categories": {
+     "secrets": 34913
+    },
+    "fields": [
+     {
+      "key": "vtype",
+      "n": 34913,
+      "avg_len": 8.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "user",
+      "n": 34913,
+      "avg_len": 51.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "remote_address",
+      "n": 34913,
+      "avg_len": 11.0,
+      "card": 800,
+      "type": "text"
+     },
+     {
+      "key": "path",
+      "n": 34913,
+      "avg_len": 24.1,
+      "card": 550,
+      "type": "text"
+     },
+     {
+      "key": "operation",
+      "n": 34913,
+      "avg_len": 4.8,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "cim",
+      "n": 34913,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "cloudflare",
+    "n": 27386,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 52,
+     "avg": 101.8,
+     "max": 170
+    },
+    "fields_len": {
+     "avg": 435.7,
+     "max": 577
+    },
+    "src_ip_present": 27386,
+    "severity": {
+     "1": 949,
+     "2": 26404,
+     "3": 33
+    },
+    "categories": {
+     "web": 27386
+    },
+    "fields": [
+     {
+      "key": "vhost",
+      "n": 27386,
+      "avg_len": 14.5,
+      "card": 350,
+      "type": "text"
+     },
+     {
+      "key": "url",
+      "n": 27386,
+      "avg_len": 28.3,
+      "card": 3147,
+      "type": "text"
+     },
+     {
+      "key": "ua",
+      "n": 27386,
+      "avg_len": 82.4,
+      "card": 5500,
+      "type": "text"
+     },
+     {
+      "key": "src_ip",
+      "n": 27386,
+      "avg_len": 32.3,
+      "card": 453,
+      "type": "text"
+     },
+     {
+      "key": "scope",
+      "n": 27386,
+      "avg_len": 8.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "ruleId",
+      "n": 27386,
+      "avg_len": 4.2,
+      "card": 200,
+      "type": "text"
+     },
+     {
+      "key": "ray",
+      "n": 27386,
+      "avg_len": 16.0,
+      "card": 684650,
+      "type": "text"
+     },
+     {
+      "key": "path",
+      "n": 27386,
+      "avg_len": 13.8,
+      "card": 63300,
+      "type": "text"
+     },
+     {
+      "key": "method",
+      "n": 27386,
+      "avg_len": 3.0,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "dir",
+      "n": 27386,
+      "avg_len": 7.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "country",
+      "n": 27386,
+      "avg_len": 2.0,
+      "card": 1075,
+      "type": "text"
+     },
+     {
+      "key": "cim",
+      "n": 27386,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "cf_source",
+      "n": 27386,
+      "avg_len": 12.8,
+      "card": 125,
+      "type": "text"
+     },
+     {
+      "key": "cf_action",
+      "n": 27386,
+      "avg_len": 17.3,
+      "card": 125,
+      "type": "text"
+     },
+     {
+      "key": "asn",
+      "n": 27386,
+      "avg_len": 4.1,
+      "card": 2725,
+      "type": "text"
+     },
+     {
+      "key": "action",
+      "n": 27386,
+      "avg_len": 9.9,
+      "card": 75,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "cloudflare-http",
+    "n": 20638,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 34,
+     "avg": 52.8,
+     "max": 279
+    },
+    "fields_len": {
+     "avg": 180.5,
+     "max": 390
+    },
+    "src_ip_present": 20638,
+    "severity": {
+     "1": 20638
+    },
+    "categories": {
+     "web": 20638
+    },
+    "fields": [
+     {
+      "key": "vhost",
+      "n": 20638,
+      "avg_len": 14.4,
+      "card": 200,
+      "type": "text"
+     },
+     {
+      "key": "status",
+      "n": 20638,
+      "avg_len": 3.0,
+      "card": 125,
+      "type": "text"
+     },
+     {
+      "key": "src_ip",
+      "n": 20638,
+      "avg_len": 30.6,
+      "card": 431,
+      "type": "text"
+     },
+     {
+      "key": "scope",
+      "n": 20638,
+      "avg_len": 8.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "path",
+      "n": 20638,
+      "avg_len": 14.2,
+      "card": 43400,
+      "type": "text"
+     },
+     {
+      "key": "method",
+      "n": 20638,
+      "avg_len": 3.0,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "dir",
+      "n": 20638,
+      "avg_len": 7.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "count",
+      "n": 20638,
+      "avg_len": 1.2,
+      "card": 1200,
+      "type": "integer"
+     },
+     {
+      "key": "cim",
+      "n": 20638,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "engagement-adapter",
+    "n": 20513,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 95,
+     "avg": 100.0,
+     "max": 101
+    },
+    "fields_len": {
+     "avg": 129.0,
+     "max": 130
+    },
+    "src_ip_present": 0,
+    "severity": {
+     "0": 20522
+    },
+    "categories": {
+     "health": 20522
+    },
+    "fields": [
+     {
+      "key": "skew",
+      "n": 20521,
+      "avg_len": 1.0,
+      "card": 25,
+      "type": "integer"
+     },
+     {
+      "key": "removed",
+      "n": 20521,
+      "avg_len": 1.0,
+      "card": 25,
+      "type": "integer"
+     },
+     {
+      "key": "refused",
+      "n": 20521,
+      "avg_len": 1.0,
+      "card": 25,
+      "type": "integer"
+     },
+     {
+      "key": "nft_fail",
+      "n": 20521,
+      "avg_len": 1.0,
+      "card": 25,
+      "type": "integer"
+     },
+     {
+      "key": "mode",
+      "n": 20521,
+      "avg_len": 9.0,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "http",
+      "n": 20521,
+      "avg_len": 3.0,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "failcount",
+      "n": 20521,
+      "avg_len": 1.0,
+      "card": 150,
+      "type": "integer"
+     },
+     {
+      "key": "ensured",
+      "n": 20521,
+      "avg_len": 1.0,
+      "card": 25,
+      "type": "integer"
+     },
+     {
+      "key": "desired",
+      "n": 20521,
+      "avg_len": 1.0,
+      "card": 25,
+      "type": "integer"
+     },
+     {
+      "key": "cim",
+      "n": 20521,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "conntrack",
+    "n": 14280,
+    "distinct_hosts": 1,
+    "distinct_categories": 2,
+    "msg_len": {
+     "min": 40,
+     "avg": 57.0,
+     "max": 80
+    },
+    "fields_len": {
+     "avg": 198.2,
+     "max": 262
+    },
+    "src_ip_present": 14279,
+    "severity": {
+     "0": 1,
+     "1": 5820,
+     "2": 8462
+    },
+    "categories": {
+     "network": 14282,
+     "config": 1
+    },
+    "fields": [
+     {
+      "key": "cim",
+      "n": 14283,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "state",
+      "n": 14282,
+      "avg_len": 5.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "src_ip",
+      "n": 14282,
+      "avg_len": 17.2,
+      "card": 501,
+      "type": "text"
+     },
+     {
+      "key": "scope",
+      "n": 14282,
+      "avg_len": 8.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "proto",
+      "n": 14282,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "proc",
+      "n": 14282,
+      "avg_len": 8.8,
+      "card": 350,
+      "type": "text"
+     },
+     {
+      "key": "dst_ip",
+      "n": 14282,
+      "avg_len": 15.9,
+      "card": 24,
+      "type": "text"
+     },
+     {
+      "key": "dst_host",
+      "n": 14282,
+      "avg_len": 5.4,
+      "card": 575,
+      "type": "text"
+     },
+     {
+      "key": "dport",
+      "n": 14282,
+      "avg_len": 3.4,
+      "card": 250,
+      "type": "text"
+     },
+     {
+      "key": "dir",
+      "n": 14282,
+      "avg_len": 7.4,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "count",
+      "n": 14282,
+      "avg_len": 1.1,
+      "card": 1025,
+      "type": "integer"
+     }
+    ]
+   },
+   {
+    "name": "journal",
+    "n": 10689,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 33,
+     "avg": 33.0,
+     "max": 33
+    },
+    "fields_len": {
+     "avg": 23.0,
+     "max": 23
+    },
+    "src_ip_present": 0,
+    "severity": {
+     "0": 10694
+    },
+    "categories": {
+     "health": 10694
+    },
+    "fields": [
+     {
+      "key": "cim",
+      "n": 10693,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "alive",
+      "n": 10693,
+      "avg_len": 1.0,
+      "card": 25,
+      "type": "integer"
+     }
+    ]
+   },
+   {
+    "name": "portscan",
+    "n": 10664,
+    "distinct_hosts": 1,
+    "distinct_categories": 3,
+    "msg_len": {
+     "min": 36,
+     "avg": 36.0,
+     "max": 65
+    },
+    "fields_len": {
+     "avg": 28.1,
+     "max": 202
+    },
+    "src_ip_present": 9,
+    "severity": {
+     "0": 10660,
+     "3": 9
+    },
+    "categories": {
+     "health": 10659,
+     "firewall": 9,
+     "config": 1
+    },
+    "fields": [
+     {
+      "key": "cim",
+      "n": 10668,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "scans_seen",
+      "n": 10658,
+      "avg_len": 1.0,
+      "card": 50,
+      "type": "integer"
+     },
+     {
+      "key": "detector",
+      "n": 10,
+      "avg_len": 5.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "src_ip",
+      "n": 9,
+      "avg_len": 12.9,
+      "card": 8,
+      "type": "text"
+     },
+     {
+      "key": "proto",
+      "n": 9,
+      "avg_len": 3.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "family",
+      "n": 9,
+      "avg_len": 4.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "dst_ip",
+      "n": 9,
+      "avg_len": 13.0,
+      "card": 1,
+      "type": "text"
+     },
+     {
+      "key": "dport",
+      "n": 9,
+      "avg_len": 4.0,
+      "card": 200,
+      "type": "text"
+     },
+     {
+      "key": "dir",
+      "n": 9,
+      "avg_len": 7.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "action",
+      "n": 9,
+      "avg_len": 8.0,
+      "card": 25,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "origin-drop",
+    "n": 10276,
+    "distinct_hosts": 1,
+    "distinct_categories": 2,
+    "msg_len": {
+     "min": 38,
+     "avg": 70.1,
+     "max": 133
+    },
+    "fields_len": {
+     "avg": 102.7,
+     "max": 239
+    },
+    "src_ip_present": 4925,
+    "severity": {
+     "0": 5353,
+     "2": 4927
+    },
+    "categories": {
+     "health": 5353,
+     "firewall": 4927
+    },
+    "fields": [
+     {
+      "key": "cim",
+      "n": 10280,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "hits_seen",
+      "n": 5353,
+      "avg_len": 1.0,
+      "card": 175,
+      "type": "integer"
+     },
+     {
+      "key": "src_ip",
+      "n": 4927,
+      "avg_len": 13.1,
+      "card": 1368,
+      "type": "text"
+     },
+     {
+      "key": "sport",
+      "n": 4927,
+      "avg_len": 4.9,
+      "card": 105325,
+      "type": "text"
+     },
+     {
+      "key": "proto",
+      "n": 4927,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "family",
+      "n": 4927,
+      "avg_len": 4.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "dst_ip",
+      "n": 4927,
+      "avg_len": 13.2,
+      "card": 2,
+      "type": "text"
+     },
+     {
+      "key": "dport",
+      "n": 4927,
+      "avg_len": 2.8,
+      "card": 150,
+      "type": "text"
+     },
+     {
+      "key": "dir",
+      "n": 4927,
+      "avg_len": 7.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "detector",
+      "n": 4927,
+      "avg_len": 13.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "action",
+      "n": 4927,
+      "avg_len": 7.0,
+      "card": 25,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "sudo",
+    "n": 7599,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 52,
+     "avg": 94.4,
+     "max": 961
+    },
+    "fields_len": {
+     "avg": 150.7,
+     "max": 1155
+    },
+    "src_ip_present": 0,
+    "severity": {
+     "0": 7446,
+     "3": 195
+    },
+    "categories": {
+     "auth": 7641
+    },
+    "fields": [
+     {
+      "key": "user",
+      "n": 7641,
+      "avg_len": 4.7,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "unit",
+      "n": 7641,
+      "avg_len": 18.9,
+      "card": 43500,
+      "type": "text"
+     },
+     {
+      "key": "uid",
+      "n": 7641,
+      "avg_len": 4.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "pid",
+      "n": 7641,
+      "avg_len": 6.8,
+      "card": 63625,
+      "type": "text"
+     },
+     {
+      "key": "cim",
+      "n": 7641,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "action",
+      "n": 7641,
+      "avg_len": 9.7,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "target",
+      "n": 2546,
+      "avg_len": 4.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "command",
+      "n": 2546,
+      "avg_len": 101.4,
+      "card": 8575,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "web",
+    "n": 7383,
+    "distinct_hosts": 1,
+    "distinct_categories": 2,
+    "msg_len": {
+     "min": 25,
+     "avg": 61.4,
+     "max": 1508
+    },
+    "fields_len": {
+     "avg": 395.9,
+     "max": 1864
+    },
+    "src_ip_present": 7382,
+    "severity": {
+     "0": 1,
+     "1": 6545,
+     "2": 115,
+     "3": 722
+    },
+    "categories": {
+     "web": 7382,
+     "config": 1
+    },
+    "fields": [
+     {
+      "key": "cim",
+      "n": 7383,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "vhost",
+      "n": 7382,
+      "avg_len": 15.4,
+      "card": 175,
+      "type": "text"
+     },
+     {
+      "key": "ua",
+      "n": 7382,
+      "avg_len": 96.1,
+      "card": 925,
+      "type": "text"
+     },
+     {
+      "key": "status",
+      "n": 7382,
+      "avg_len": 3.0,
+      "card": 250,
+      "type": "text"
+     },
+     {
+      "key": "src_ip",
+      "n": 7382,
+      "avg_len": 32.7,
+      "card": 77,
+      "type": "text"
+     },
+     {
+      "key": "scope",
+      "n": 7382,
+      "avg_len": 8.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "router",
+      "n": 7382,
+      "avg_len": 24.2,
+      "card": 175,
+      "type": "text"
+     },
+     {
+      "key": "proto",
+      "n": 7382,
+      "avg_len": 8.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "path",
+      "n": 7382,
+      "avg_len": 30.9,
+      "card": 21100,
+      "type": "text"
+     },
+     {
+      "key": "method",
+      "n": 7382,
+      "avg_len": 3.1,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "dur_ms",
+      "n": 7382,
+      "avg_len": 2.1,
+      "card": 16325,
+      "type": "text"
+     },
+     {
+      "key": "dir",
+      "n": 7382,
+      "avg_len": 7.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "bytes",
+      "n": 7382,
+      "avg_len": 2.3,
+      "card": 17300,
+      "type": "text"
+     },
+     {
+      "key": "action",
+      "n": 7382,
+      "avg_len": 7.0,
+      "card": 75,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "sshd",
+    "n": 6909,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 31,
+     "avg": 127.9,
+     "max": 161
+    },
+    "fields_len": {
+     "avg": 105.9,
+     "max": 117
+    },
+    "src_ip_present": 6899,
+    "severity": {
+     "0": 6908,
+     "3": 3
+    },
+    "categories": {
+     "auth": 6911
+    },
+    "fields": [
+     {
+      "key": "user",
+      "n": 6909,
+      "avg_len": 10.0,
+      "card": 25,
+      "type": "null"
+     },
+     {
+      "key": "unit",
+      "n": 6909,
+      "avg_len": 11.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "uid",
+      "n": 6909,
+      "avg_len": 1.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "pid",
+      "n": 6909,
+      "avg_len": 4.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "cim",
+      "n": 6909,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "action",
+      "n": 6909,
+      "avg_len": null,
+      "card": 25,
+      "type": "null"
+     },
+     {
+      "key": "rhost",
+      "n": 6330,
+      "avg_len": 13.3,
+      "card": 843,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "mail",
+    "n": 5680,
+    "distinct_hosts": 1,
+    "distinct_categories": 7,
+    "msg_len": {
+     "min": 44,
+     "avg": 201.7,
+     "max": 485
+    },
+    "fields_len": {
+     "avg": 107.3,
+     "max": 457
+    },
+    "src_ip_present": 5635,
+    "severity": {
+     "0": 1,
+     "1": 5123,
+     "2": 556
+    },
+    "categories": {
+     "auth": 5317,
+     "postscreen": 161,
+     "reject": 88,
+     "mailflow": 69,
+     "mail-url": 43,
+     "mail-phishing": 1,
+     "config": 1
+    },
+    "fields": [
+     {
+      "key": "cim",
+      "n": 5680,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "user",
+      "n": 5635,
+      "avg_len": 15.7,
+      "card": 400,
+      "type": "text"
+     },
+     {
+      "key": "src_ip",
+      "n": 5635,
+      "avg_len": 13.2,
+      "card": 283,
+      "type": "text"
+     },
+     {
+      "key": "service",
+      "n": 5635,
+      "avg_len": 7.1,
+      "card": 100,
+      "type": "text"
+     },
+     {
+      "key": "action",
+      "n": 5635,
+      "avg_len": 7.0,
+      "card": 100,
+      "type": "text"
+     },
+     {
+      "key": "verdict",
+      "n": 69,
+      "avg_len": 12.1,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "size",
+      "n": 69,
+      "avg_len": 4.8,
+      "card": 1700,
+      "type": "text"
+     },
+     {
+      "key": "sender",
+      "n": 69,
+      "avg_len": 42.8,
+      "card": 425,
+      "type": "text"
+     },
+     {
+      "key": "score",
+      "n": 69,
+      "avg_len": 6.0,
+      "card": 850,
+      "type": "text"
+     },
+     {
+      "key": "rcpt",
+      "n": 69,
+      "avg_len": 16.0,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "sample",
+      "n": 44,
+      "avg_len": 200.0,
+      "card": 1100,
+      "type": "text"
+     },
+     {
+      "key": "patterns",
+      "n": 44,
+      "avg_len": 22.0,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "msgid",
+      "n": 44,
+      "avg_len": 67.4,
+      "card": 1100,
+      "type": "text"
+     },
+     {
+      "key": "folder",
+      "n": 44,
+      "avg_len": 5.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "fileid",
+      "n": 44,
+      "avg_len": 53.3,
+      "card": 1100,
+      "type": "text"
+     },
+     {
+      "key": "account",
+      "n": 44,
+      "avg_len": 16.0,
+      "card": 50,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "dataaccess",
+    "n": 3569,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 34,
+     "avg": 34.5,
+     "max": 154
+    },
+    "fields_len": {
+     "avg": 23.7,
+     "max": 205
+    },
+    "src_ip_present": 0,
+    "severity": {
+     "0": 3571,
+     "2": 14
+    },
+    "categories": {
+     "health": 3571,
+     "data": 14
+    },
+    "fields": [
+     {
+      "key": "cim",
+      "n": 3585,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "alive",
+      "n": 3571,
+      "avg_len": 1.0,
+      "card": 25,
+      "type": "integer"
+     },
+     {
+      "key": "user",
+      "n": 14,
+      "avg_len": 6.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "path",
+      "n": 14,
+      "avg_len": 98.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "key",
+      "n": 14,
+      "avg_len": 10.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "comm",
+      "n": 14,
+      "avg_len": 9.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "auid",
+      "n": 14,
+      "avg_len": 4.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "action",
+      "n": 14,
+      "avg_len": 4.0,
+      "card": 25,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "containerd",
+    "n": 2310,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 45,
+     "avg": 159.0,
+     "max": 203
+    },
+    "fields_len": {
+     "avg": 126.2,
+     "max": 161
+    },
+    "src_ip_present": 0,
+    "severity": {
+     "1": 2311
+    },
+    "categories": {
+     "container": 2311
+    },
+    "fields": [
+     {
+      "key": "image",
+      "n": 2311,
+      "avg_len": 70.8,
+      "card": 1600,
+      "type": "text"
+     },
+     {
+      "key": "cim",
+      "n": 2311,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "pod",
+      "n": 2297,
+      "avg_len": 22.6,
+      "card": 6600,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "crowdsec",
+    "n": 2143,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 45,
+     "avg": 45.8,
+     "max": 52
+    },
+    "fields_len": {
+     "avg": 112.9,
+     "max": 113
+    },
+    "src_ip_present": 0,
+    "severity": {
+     "0": 237,
+     "3": 1907
+    },
+    "categories": {
+     "health": 2144
+    },
+    "fields": [
+     {
+      "key": "scenarios_loaded",
+      "n": 2144,
+      "avg_len": 2.0,
+      "card": 50,
+      "type": "integer"
+     },
+     {
+      "key": "scenarios_broken",
+      "n": 2144,
+      "avg_len": 1.0,
+      "card": 25,
+      "type": "integer"
+     },
+     {
+      "key": "last_alert_age_s",
+      "n": 2144,
+      "avg_len": 2.0,
+      "card": 25,
+      "type": "integer"
+     },
+     {
+      "key": "lapi_ok",
+      "n": 2144,
+      "avg_len": 1.0,
+      "card": 25,
+      "type": "true"
+     },
+     {
+      "key": "cim",
+      "n": 2144,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "agent_ready",
+      "n": 2144,
+      "avg_len": 1.0,
+      "card": 50,
+      "type": "true"
+     }
+    ]
+   },
+   {
+    "name": "nft",
+    "n": 820,
+    "distinct_hosts": 1,
+    "distinct_categories": 2,
+    "msg_len": {
+     "min": 45,
+     "avg": 47.9,
+     "max": 339
+    },
+    "fields_len": {
+     "avg": 205.2,
+     "max": 206
+    },
+    "src_ip_present": 9,
+    "severity": {
+     "0": 812,
+     "2": 9
+    },
+    "categories": {
+     "config": 812,
+     "firewall": 9
+    },
+    "fields": [
+     {
+      "key": "cim",
+      "n": 821,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "type",
+      "n": 812,
+      "avg_len": 4.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "note",
+      "n": 812,
+      "avg_len": 110.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "enforcement",
+      "n": 812,
+      "avg_len": 26.0,
+      "card": 20300,
+      "type": "object"
+     },
+     {
+      "key": "collector",
+      "n": 812,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "src_ip",
+      "n": 9,
+      "avg_len": 12.9,
+      "card": 8,
+      "type": "text"
+     },
+     {
+      "key": "signal",
+      "n": 9,
+      "avg_len": 8.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "proto",
+      "n": 9,
+      "avg_len": 3.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "dst_port",
+      "n": 9,
+      "avg_len": 4.0,
+      "card": 200,
+      "type": "text"
+     },
+     {
+      "key": "dst_ip",
+      "n": 9,
+      "avg_len": 13.0,
+      "card": 1,
+      "type": "text"
+     },
+     {
+      "key": "action",
+      "n": 9,
+      "avg_len": 4.0,
+      "card": 25,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "integrity",
+    "n": 718,
+    "distinct_hosts": 1,
+    "distinct_categories": 2,
+    "msg_len": {
+     "min": 26,
+     "avg": 26.0,
+     "max": 29
+    },
+    "fields_len": {
+     "avg": 23.3,
+     "max": 85
+    },
+    "src_ip_present": 0,
+    "severity": {
+     "0": 714,
+     "2": 4
+    },
+    "categories": {
+     "health": 714,
+     "integrity": 4
+    },
+    "fields": [
+     {
+      "key": "cim",
+      "n": 718,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "alive",
+      "n": 714,
+      "avg_len": 1.0,
+      "card": 25,
+      "type": "integer"
+     }
+    ]
+   },
+   {
+    "name": "dataacl",
+    "n": 337,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 39,
+     "avg": 133.5,
+     "max": 182
+    },
+    "fields_len": {
+     "avg": 212.5,
+     "max": 261
+    },
+    "src_ip_present": 0,
+    "severity": {
+     "1": 207,
+     "3": 127,
+     "4": 3
+    },
+    "categories": {
+     "data": 337
+    },
+    "fields": [
+     {
+      "key": "type",
+      "n": 337,
+      "avg_len": 1.0,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "risk",
+      "n": 337,
+      "avg_len": 5.4,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "path",
+      "n": 337,
+      "avg_len": 107.4,
+      "card": 8425,
+      "type": "text"
+     },
+     {
+      "key": "owner",
+      "n": 337,
+      "avg_len": 4.3,
+      "card": 100,
+      "type": "text"
+     },
+     {
+      "key": "mode",
+      "n": 337,
+      "avg_len": 3.0,
+      "card": 175,
+      "type": "text"
+     },
+     {
+      "key": "group",
+      "n": 337,
+      "avg_len": 4.3,
+      "card": 125,
+      "type": "text"
+     },
+     {
+      "key": "flags",
+      "n": 337,
+      "avg_len": 1.2,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "cim",
+      "n": 337,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "minio",
+    "n": 183,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 35,
+     "avg": 50.9,
+     "max": 56
+    },
+    "fields_len": {
+     "avg": 94.2,
+     "max": 119
+    },
+    "src_ip_present": 0,
+    "severity": {
+     "1": 182,
+     "2": 1
+    },
+    "categories": {
+     "data": 183
+    },
+    "fields": [
+     {
+      "key": "subject",
+      "n": 183,
+      "avg_len": 5.3,
+      "card": 125,
+      "type": "text"
+     },
+     {
+      "key": "kind",
+      "n": 183,
+      "avg_len": 5.0,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "cim",
+      "n": 183,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "versions",
+      "n": 179,
+      "avg_len": 3.0,
+      "card": 3200,
+      "type": "text"
+     },
+     {
+      "key": "objects",
+      "n": 179,
+      "avg_len": 4.0,
+      "card": 3900,
+      "type": "text"
+     },
+     {
+      "key": "buckets",
+      "n": 179,
+      "avg_len": 1.0,
+      "card": 25,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "kube-rbac",
+    "n": 111,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 55,
+     "avg": 89.7,
+     "max": 142
+    },
+    "fields_len": {
+     "avg": 195.4,
+     "max": 274
+    },
+    "src_ip_present": 0,
+    "severity": {
+     "1": 86,
+     "3": 21,
+     "4": 4
+    },
+    "categories": {
+     "data": 111
+    },
+    "fields": [
+     {
+      "key": "subject",
+      "n": 111,
+      "avg_len": 19.2,
+      "card": 1950,
+      "type": "text"
+     },
+     {
+      "key": "scope",
+      "n": 111,
+      "avg_len": 5.6,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "role",
+      "n": 111,
+      "avg_len": 32.0,
+      "card": 2475,
+      "type": "text"
+     },
+     {
+      "key": "risk",
+      "n": 111,
+      "avg_len": 3.1,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "ns",
+      "n": 111,
+      "avg_len": 2.7,
+      "card": 275,
+      "type": "text"
+     },
+     {
+      "key": "kind",
+      "n": 111,
+      "avg_len": 12.2,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "cim",
+      "n": 111,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "binding",
+      "n": 111,
+      "avg_len": 32.7,
+      "card": 2625,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "plume-config",
+    "n": 36,
+    "distinct_hosts": 1,
+    "distinct_categories": 2,
+    "msg_len": {
+     "min": 40,
+     "avg": 117.9,
+     "max": 379
+    },
+    "fields_len": {
+     "avg": 93.5,
+     "max": 204
+    },
+    "src_ip_present": 0,
+    "severity": {
+     "2": 19,
+     "3": 12,
+     "4": 5
+    },
+    "categories": {
+     "config": 31,
+     "health": 5
+    },
+    "fields": [
+     {
+      "key": "actor",
+      "n": 29,
+      "avg_len": 7.9,
+      "card": 150,
+      "type": "text"
+     },
+     {
+      "key": "op",
+      "n": 24,
+      "avg_len": 7.2,
+      "card": 150,
+      "type": "text"
+     },
+     {
+      "key": "id",
+      "n": 21,
+      "avg_len": 2.0,
+      "card": 200,
+      "type": "integer"
+     },
+     {
+      "key": "kind",
+      "n": 15,
+      "avg_len": 5.2,
+      "card": 100,
+      "type": "text"
+     },
+     {
+      "key": "name",
+      "n": 13,
+      "avg_len": 22.2,
+      "card": 225,
+      "type": "text"
+     },
+     {
+      "key": "table",
+      "n": 10,
+      "avg_len": 4.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "is_soql",
+      "n": 7,
+      "avg_len": 1.0,
+      "card": 50,
+      "type": "true"
+     },
+     {
+      "key": "reason",
+      "n": 5,
+      "avg_len": 16.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "node_decryptable",
+      "n": 5,
+      "avg_len": 1.0,
+      "card": 25,
+      "type": "true"
+     },
+     {
+      "key": "backup_encryption",
+      "n": 5,
+      "avg_len": 9.0,
+      "card": 25,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "k8s",
+    "n": 11,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 36,
+     "avg": 40.2,
+     "max": 67
+    },
+    "fields_len": {
+     "avg": 56.2,
+     "max": 83
+    },
+    "src_ip_present": 0,
+    "severity": {
+     "3": 11
+    },
+    "categories": {
+     "k8s": 11
+    },
+    "fields": [
+     {
+      "key": "workload",
+      "n": 11,
+      "avg_len": 8.3,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "namespace",
+      "n": 11,
+      "avg_len": 5.9,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "cim",
+      "n": 11,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "plume-engagement",
+    "n": 10,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 134,
+     "avg": 154.8,
+     "max": 178
+    },
+    "fields_len": {
+     "avg": 151.8,
+     "max": 213
+    },
+    "src_ip_present": 0,
+    "severity": {
+     "3": 5,
+     "4": 5
+    },
+    "categories": {
+     "config": 10
+    },
+    "fields": [
+     {
+      "key": "engagement_id",
+      "n": 10,
+      "avg_len": 36.0,
+      "card": 125,
+      "type": "text"
+     },
+     {
+      "key": "actor",
+      "n": 10,
+      "avg_len": 13.2,
+      "card": 50,
+      "type": "text"
+     },
+     {
+      "key": "window_end",
+      "n": 5,
+      "avg_len": 10.0,
+      "card": 125,
+      "type": "integer"
+     },
+     {
+      "key": "status",
+      "n": 5,
+      "avg_len": 6.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "scope",
+      "n": 5,
+      "avg_len": 19.0,
+      "card": 25,
+      "type": "array"
+     },
+     {
+      "key": "reason",
+      "n": 5,
+      "avg_len": 13.0,
+      "card": 125,
+      "type": "text"
+     },
+     {
+      "key": "event",
+      "n": 5,
+      "avg_len": 3.0,
+      "card": 25,
+      "type": "text"
+     },
+     {
+      "key": "box",
+      "n": 5,
+      "avg_len": 7.6,
+      "card": 75,
+      "type": "text"
+     },
+     {
+      "key": "authorizer",
+      "n": 5,
+      "avg_len": 1.6,
+      "card": 50,
+      "type": "text"
+     }
+    ]
+   },
+   {
+    "name": "plume-disk",
+    "n": 1,
+    "distinct_hosts": 1,
+    "distinct_categories": 1,
+    "msg_len": {
+     "min": 96,
+     "avg": 96.0,
+     "max": 96
+    },
+    "fields_len": {
+     "avg": 82.0,
+     "max": 82
+    },
+    "src_ip_present": 0,
+    "severity": {
+     "3": 1
+    },
+    "categories": {
+     "health": 1
+    },
+    "fields": []
+   }
+  ],
+  "_derived_note": "cardinalités/longueurs/poids retouchés par bench/make_axis_profile.py sur l'axe ext_card_scale. Les distributions de départ sont mesurées ; leur mise à l'échelle ne l'est pas."
+ },
+ "rollups": {
+  "provenance": "measured",
+  "rows": {
+   "event_rollup": 64683,
+   "event_dim_rollup": 180842,
+   "cold_rollup": 63159,
+   "event_fts_rows": 1396366
+  }
+ },
+ "bench_target": {
+  "provenance": "derived",
+  "events": 10000000,
+  "span_days": 28,
+  "_span_rationale": "28 j et pas 30 : la purge de rétention (PLUME_RETENTION_DAYS, défaut 30) supprime ts < now-30j. À 30 j pleins, les plus vieux événements du banc disparaîtraient PENDANT la mesure et le nombre de lignes ne serait plus stable.",
+  "events_per_day": 357142,
+  "_density_vs_prod": "la prod mesurée fait ~186671 événements/jour ; le banc en fait ~357 000/jour, soit ~2,2x. La FORME horaire (courbe heure-du-jour mesurée) est conservée, seule l'amplitude change.",
+  "hosts": 64,
+  "_hosts_rationale": "la prod mesurée n'a que 2 hosts (k3s mono-nœud). Garder 2 rendrait tout group-by sur `host` artificiellement gratuit et donnerait des chiffres FLATTEURS. 64 est un choix de banc, non une mesure : il rend le banc PLUS DUR que cette prod.",
+  "src_ip_v4_pool": [
+   "192.0.2.0/24",
+   "198.51.100.0/24",
+   "203.0.113.0/24"
+  ],
+  "src_ip_v6_pool": "2001:db8::/32",
+  "src_ip_target_cardinality": 20000,
+  "_ip_rationale": "les 3 /24 de documentation (RFC 5737) ne portent que 768 adresses — bien moins que les 21 140 src_ip distinctes mesurées en prod, ce qui rendrait le group-by sur src_ip trop facile. Le complément vient du préfixe de documentation IPv6 2001:db8::/32 (RFC 3849), qui est lui aussi manifestement fictif et non routable. AUCUNE adresse réelle n'est générée.",
+  "hostname_suffix": ".plume.invalid",
+  "user_pool_size": 1053,
+  "_naming_rationale": "noms d'hôte en .invalid et .example (RFC 2606/6761 : réservés, non résolvables), utilisateurs `bench-user-NNNN`, domaines `example.com`. Rien n'est emprunté à la production : le profil ne contient AUCUNE valeur, seulement des distributions.",
+  "known_divergences_from_prod": [
+   "src_ip : cardinalité plafonnée par les plages de documentation (compensée en IPv6).",
+   "message : le corps du texte est SYNTHÉTIQUE. Longueur, alphabet et vocabulaire de termes recherchables sont calés sur les distributions mesurées, mais un vrai log a une entropie et une répétitivité que le banc n'imite pas. Conséquence : les chiffres FTS5 et LIKE dépendent de ce vocabulaire — c'est le point le plus faible du banc et il est explicitement borné (voir bench/gen_events.py, VOCAB).",
+   "dedup : prod a 62 % de NULL et 536 k valeurs distinctes ; le banc met un dedup unique sur 100 % des lignes pour que le rejeu soit idempotent. Conséquence : l'index UNIQUE sur dedup est PLUS gros au banc qu'en prod (mesuré en prod : 46,9 Mio).",
+   "cold tier : la prod a 130 Mio de Parquet froid. Le banc génère du CHAUD uniquement."
+  ]
+ },
+ "masking": {
+  "provenance": "measured",
+  "field_filter_rows": 0,
+  "_note": "0 ligne dans `field_filter` = ENSEMBLE DE MASQUAGE VIDE. La production mesurée ici tourne SANS masquage : tous ses chiffres historiques valent pour l'état masque-vide, celui où la route de rollups et le moteur vectorisé sont ARMÉS."
+ },
+ "axis": {
+  "provenance": "derived",
+  "axis": "ext_card_scale",
+  "value": 25.0,
+  "detail": {
+   "fields_touched": 317,
+   "keys_excluded_promoted": [
+    "dst_ip",
+    "rhost",
+    "src_ip",
+    "url"
+   ]
+  },
+  "source_profile_sha256": "bf4ec87387c81df51469a91640d1d16ad46f655a3467c2196fbfb8c4c12c2312",
+  "before": {
+   "ext_card": {
+    "n_keys": 194,
+    "card_min": 1,
+    "card_max": 42112,
+    "card_median": 4,
+    "hot_fields_card": {
+     "action": 4,
+     "user": 1008,
+     "owner": 9,
+     "kind": 12,
+     "ns": 18,
+     "role": 99,
+     "scope": 2,
+     "verb": 5,
+     "resource": 100,
+     "operation": 2
+    }
+   },
+   "mean_value_bytes": 252.8,
+   "severity_ge3_frac": 0.064,
+   "top_source_share": 0.3849
+  },
+  "after": {
+   "ext_card": {
+    "n_keys": 194,
+    "card_min": 25,
+    "card_max": 1052800,
+    "card_median": 100,
+    "hot_fields_card": {
+     "action": 100,
+     "user": 25200,
+     "owner": 225,
+     "kind": 300,
+     "ns": 450,
+     "role": 2475,
+     "scope": 50,
+     "verb": 125,
+     "resource": 2500,
+     "operation": 50
+    }
+   },
+   "mean_value_bytes": 252.8,
+   "severity_ge3_frac": 0.064,
+   "top_source_share": 0.3849
+  },
+  "_note": "`before`/`after` sont RELUS sur le profil, pas recopiés de la consigne : si une retouche n'a pas mordu, l'écart entre les deux le montre."
+ }
+}

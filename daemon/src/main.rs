@@ -120,6 +120,7 @@ pub(crate) use handlers::users_lookups::*;
 pub(crate) use handlers::tokens::*;
 pub(crate) use handlers::dash_ergonomics::*; // #54 library panels / playlists / dashboard snapshots
 pub(crate) use handlers::dashboards::*;
+pub(crate) use handlers::panneau_resolu::{self, DefinitionExecutee, PorteeLecture, RefBibliotheque}; // P7.13-a : le coffre de la résolution panneau∪bibliothèque
 pub(crate) use handlers::connectors::*;
 pub(crate) use handlers::destinations::*; // #50 outputs/destinations (forward vers sink externe)
 pub(crate) use handlers::threat_intel::*;

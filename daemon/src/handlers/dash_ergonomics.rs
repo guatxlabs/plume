@@ -1,16 +1,26 @@
 //! Ergonomie des dashboards (#54) — SUR-ENSEMBLE Grafana/Splunk, ADDITIF & INERTE en mode 0 :
 //!   - `library_panel` : panneaux RÉUTILISABLES (édités une fois, référencés par N dashboards ; la
-//!     résolution vit dans `dashboards.rs` : panel_access / dash_get LEFT JOIN library_panel) ;
+//!     résolution de la définition EXÉCUTÉE vit dans le coffre `panneau_resolu.rs`, et c'est elle que
+//!     la porte « SQL brut = admin » emprunte — P7.13-a) ;
 //!   - `playlist` : listes ORDONNÉES de dashboards qui défilent (NOC wall-board) ;
 //!   - `dashboard_snapshot` : capture POINT-IN-TIME des données rendues, partageable en LECTURE SEULE via
-//!     un token CSPRNG. ⚠ La capture passe par le CHEMIN GXQL MASQUÉ (effective_masks du rôle du créateur)
-//!     -> un snapshot ne fige JAMAIS un champ que le créateur n'aurait pas pu voir (hérite #45 + RBAC).
+//!     un token CSPRNG. Deux garanties DISTINCTES, et ce bandeau n'en annonçait qu'une seule en les
+//!     mélangeant (« hérite #45 + RBAC ») alors que la seconde était ABSENTE :
+//!       1. CHAMPS — la capture passe par le CHEMIN GXQL MASQUÉ (effective_masks du rôle du créateur)
+//!          -> un snapshot ne fige jamais un CHAMP hors de la portée du créateur (#45) ;
+//!       2. PANNEAUX — la capture reçoit désormais la PORTÉE DE LECTURE du créateur (`PorteeLecture`,
+//!          paramètre OBLIGATOIRE) -> un panneau PRIVÉ d'un autre propriétaire n'y entre pas. Mesuré
+//!          le 2026-08-03 sur `3256e4d` AVANT ce correctif : `dash_get` -> `panels: []` et `panel_data`
+//!          -> 403 pour ce tiers, mais `snapshot_create` -> 200 avec la ligne privée figée dedans.
 //! CRUD = editor+ (route_min_role section 7) ; lecture d'un snapshot par token = viewer+ (Read, section 6).
 use crate::*;
 
 // ---------- helpers communs ----------
 /// Le compte peut-il modifier CET objet (library_panel / playlist) ? admin: toujours ; sinon: propriétaire,
 /// partagé, ou ownership vide (legacy). Miroir de `dash_editable`/`view_*`. `table` allowlistée (jamais du body).
+/// P7.13-a : le PRÉDICAT lui-même n'est plus réécrit ici — c'est `panneau_resolu::lisible_par`, le MÊME que
+/// celui qui filtre l'inventaire (`library_panels_list`) et que celui qui autorise un RATTACHEMENT. Trois
+/// surfaces, une seule expression : elles ne peuvent plus diverger.
 fn ergo_editable(conn: &Connection, au: &AuthUser, table: &str, id: i64) -> bool {
     if au.is_admin() {
         return true;
@@ -21,7 +31,7 @@ fn ergo_editable(conn: &Connection, au: &AuthUser, table: &str, id: i64) -> bool
         _ => return false,
     };
     match conn.query_row(sql, params![id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
-        Ok((owner, vis)) => owner == au.name || owner.is_empty() || vis == "shared",
+        Ok((owner, vis)) => panneau_resolu::lisible_par(&owner, &vis, au),
         Err(_) => false,
     }
 }
@@ -35,31 +45,41 @@ fn vis_of(b: &Value) -> &'static str {
 // =====================================================================================
 pub(crate) async fn library_panels_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     let (me, role) = (au.name.clone(), au.role.clone());
-    // #64 : autorité admin EFFECTIVE (rôle composable base=admin inclus) -> bind `?1` visibilité + ownership.
-    let adm = if au.is_admin() { "admin" } else { "" };
+    // #64 : autorité admin EFFECTIVE (rôle composable base=admin inclus).
+    let adm = au.is_admin();
     read_with(req_db_path(&st, &au).as_str(), Json(json!({ "library_panels": [], "me": &me, "role": &role })), |conn| {
         let mut stmt = match conn.prepare(
             "SELECT id,name,title,query,is_soql,viz,COALESCE(drill,''),COALESCE(owner,''),COALESCE(visibility,'shared'),\
                     (SELECT COUNT(*) FROM panel p WHERE p.library_panel_id=library_panel.id) \
-             FROM library_panel \
-             WHERE ?1='admin' OR COALESCE(visibility,'shared')='shared' OR owner=?2 OR COALESCE(owner,'')='' \
-             ORDER BY name,id",
+             FROM library_panel ORDER BY name,id",
         ) {
             Ok(s) => s,
             Err(_) => return Json(json!({ "library_panels": [], "me": &me, "role": &role })),
         };
+        // P7.13-a — LE MÊME PRÉDICAT que celui qui autorise un RATTACHEMENT (`panneau_resolu::lisible_par`).
+        // Il était auparavant écrit une 2e fois en SQL ici ; c'est cette duplication qui rendait crédible
+        // « l'editor ne voit pas cette définition » alors que le rattachement, lui, ne regardait rien.
+        // Le filtre passe en Rust (la table des définitions réutilisables est petite : dizaines de lignes).
         let out: Vec<Value> = stmt
-            .query_map(params![adm, me], |r| {
-                let owner: String = r.get(7)?;
-                let owns = adm == "admin" || owner.is_empty() || owner == me;
-                Ok(json!({
-                    "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "title": r.get::<_, String>(2)?,
-                    "query": r.get::<_, String>(3)?, "is_soql": r.get::<_, i64>(4)? != 0, "viz": r.get::<_, String>(5)?,
-                    "drill": r.get::<_, String>(6)?, "owner": owner, "visibility": r.get::<_, String>(8)?,
-                    "used_by": r.get::<_, i64>(9)?, "editable": owns
-                }))
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)? != 0, r.get::<_, String>(5)?, r.get::<_, String>(6)?, r.get::<_, String>(7)?,
+                    r.get::<_, String>(8)?, r.get::<_, i64>(9)?,
+                ))
             })
-            .map(|rows| rows.flatten().collect())
+            .map(|rows| {
+                rows.flatten()
+                    .filter(|(_, _, _, _, _, _, _, owner, vis, _)| panneau_resolu::lisible_par(owner, vis, &au))
+                    .map(|(id, name, title, query, is_soql, viz, drill, owner, vis, used_by)| {
+                        let owns = adm || owner.is_empty() || owner == me;
+                        json!({
+                            "id": id, "name": name, "title": title, "query": query, "is_soql": is_soql, "viz": viz,
+                            "drill": drill, "owner": owner, "visibility": vis, "used_by": used_by, "editable": owns
+                        })
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
         Json(json!({ "library_panels": out, "me": &me, "role": &role }))
     })
@@ -241,27 +261,35 @@ pub(crate) fn gen_snapshot_token() -> Option<String> {
 /// créateur (effective_masks) : VIDE -> compilation NON masquée (identique au rendu live d'un rôle non masqué).
 /// Non vide -> GXQL masqué dans le SQL (soql_to_sql_masked_x) + masquage POST-requête du SQL brut opaque
 /// (mask_query_result). Le snapshot ne peut donc JAMAIS contenir un champ hors de la portée du créateur.
-/// Résout aussi les LIBRARY PANELS (LEFT JOIN). Renvoie {dashboard_id, name, captured_at, panels:[…]}.
+/// Résout aussi les LIBRARY PANELS — par le coffre `panneau_resolu` (P7.13-a), donc par la MÊME
+/// expression que `panel_access` et `dash_get`. Renvoie {dashboard_id, name, captured_at, panels:[…]}.
 pub(crate) fn capture_dashboard_data(
     db_path: &str, conn: &Connection, dashboard_id: i64, dash_name: &str, from: i64, to: i64,
-    env: Option<&str>, masks: &guatx_core::soql::FieldMaskSet,
+    env: Option<&str>, masks: &guatx_core::soql::FieldMaskSet, portee: &PorteeLecture,
 ) -> Value {
     let mut panels_out: Vec<Value> = Vec::new();
-    let rows: Vec<(String, String, bool, String, String)> = {
-        let mut stmt = match conn.prepare(
-            "SELECT COALESCE(lp.title,p.title),COALESCE(lp.query,p.query),COALESCE(lp.is_soql,p.is_soql),COALESCE(lp.viz,p.viz),COALESCE(lp.drill,p.drill,'') \
-             FROM panel p LEFT JOIN library_panel lp ON lp.id=p.library_panel_id WHERE p.dashboard_id=?1 ORDER BY p.position,p.id",
-        ) {
+    let rows: Vec<(String, String, bool, String, String, String)> = {
+        let mut stmt = match conn.prepare(&format!(
+            "SELECT {t},{q},{s},{v},{d},COALESCE(p.visibility,'shared') FROM {j} WHERE p.dashboard_id=?1 ORDER BY p.position,p.id",
+            t = panneau_resolu::COL_TITRE, q = panneau_resolu::COL_QUERY, s = panneau_resolu::COL_IS_SOQL,
+            v = panneau_resolu::COL_VIZ, d = panneau_resolu::COL_DRILL, j = panneau_resolu::JOINTURE,
+        )) {
             Ok(s) => s,
             Err(_) => return json!({ "dashboard_id": dashboard_id, "name": dash_name, "captured_at": now(), "panels": [] }),
         };
         stmt.query_map(params![dashboard_id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0, r.get::<_, String>(3)?, r.get::<_, String>(4)?))
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?))
         })
         .map(|it| it.flatten().collect())
         .unwrap_or_default()
     };
-    for (title, query, is_soql, viz, _drill) in rows {
+    // P7.13-a — LA MÊME PORTÉE DE LECTURE QUE `dash_get`/`panel_access` : un panneau PRIVÉ d'un autre
+    // propriétaire n'entre PAS dans la capture. MESURÉ AVANT (2026-08-03, `3256e4d`) : sur un dashboard
+    // PARTAGÉ d'alice portant un panneau privé, un editor tiers avait `dash_get` -> `panels: []` et
+    // `panel_data` -> 403, mais `snapshot_create` -> 200 avec la ligne privée FIGÉE dans le snapshot,
+    // ensuite partageable par jeton. L'en-tête de ce module affirmait « hérite #45 + RBAC ».
+    let rows: Vec<_> = rows.into_iter().filter(|(_, _, _, _, _, pvis)| portee.voit(pvis)).collect();
+    for (title, query, is_soql, viz, _drill, _pvis) in rows {
         let q2 = apply_excl_placeholders(query.trim(), is_soql);
         let (sql, post_mask) = if is_soql {
             // GXQL : masque ÉMIS dans le SQL (avant agrégation). rollup-route désactivé (masques actifs).
@@ -320,9 +348,13 @@ pub(crate) async fn snapshot_create(State(st): State<AppState>, Extension(au): E
     let snap_name = b.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| name.clone());
     // 2) CAPTURE via le chemin MASQUÉ (jeu effectif du rôle du CRÉATEUR) — jamais de données hors de sa portée.
     let masks = effective_masks(&db_path, &au.role, &au.tenant, env);
+    // P7.13-a — la capture reçoit la PORTÉE DE LECTURE du créateur (même décision que `dash_get`) : un
+    // panneau privé d'un autre propriétaire n'y entre pas. Le paramètre est OBLIGATOIRE (E0061) : un
+    // futur appelant ne peut pas l'oublier, ce qui était exactement la faute mesurée ici.
+    let portee = PorteeLecture::du_dashboard(&au, &owner);
     let data = {
         crate::req_conn!(st, au, conn);
-        capture_dashboard_data(&db_path, &conn, dashboard_id, &name, from, to, env, &masks)
+        capture_dashboard_data(&db_path, &conn, dashboard_id, &name, from, to, env, &masks, &portee)
     };
     let payload = serde_json::to_string(&data).unwrap_or_else(|_| "{}".into());
     let token = match gen_snapshot_token() {

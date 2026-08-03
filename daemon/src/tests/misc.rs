@@ -418,11 +418,14 @@
             field_filters_reload(&conn, &path);
         } // writer droppé -> WAL visible au read pool (run_query lit le FICHIER)
 
-        // CAPTURE au rôle VIEWER (masques actifs) -> passe par le chemin GXQL MASQUÉ.
+        // CAPTURE au rôle VIEWER (masques actifs) -> passe par le chemin GXQL MASQUÉ. La PORTÉE de
+        // lecture (P7.13-a) est `Proprietaire` : ces dashboards de fixture n'ont pas d'owner (legacy),
+        // donc `PorteeLecture::du_dashboard` la rendrait pour n'importe qui — ce test-ci mesure les
+        // MASQUES DE CHAMPS, pas la portée (celle-ci a son propre test).
         let vm = effective_masks(&path, "viewer", "default", None);
         assert!(!vm.is_empty(), "le viewer a un masque src_ip actif");
         let rconn = open_db(&path).unwrap();
-        let data = capture_dashboard_data(&path, &rconn, did, "D", 0, 0, None, &vm);
+        let data = capture_dashboard_data(&path, &rconn, did, "D", 0, 0, None, &vm, &PorteeLecture::Proprietaire);
         let panels = data["panels"].as_array().unwrap();
         assert_eq!(panels.len(), 1, "1 panneau capturé");
         assert!(!panels[0]["rows"].as_array().unwrap().is_empty(), "le snapshot contient des lignes");
@@ -432,7 +435,7 @@
         assert!(!dump.contains("10.0.0.5") && !dump.contains("10.0.0.6"), "aucune IP en clair dans le snapshot viewer");
         // CONTRASTE ADMIN (rôle '' = seuil editor -> admin NON masqué) : IP en clair.
         let am = effective_masks(&path, "admin", "default", None);
-        let dadmin = serde_json::to_string(&capture_dashboard_data(&path, &rconn, did, "D", 0, 0, None, &am)).unwrap();
+        let dadmin = serde_json::to_string(&capture_dashboard_data(&path, &rconn, did, "D", 0, 0, None, &am, &PorteeLecture::Proprietaire)).unwrap();
         assert!(dadmin.contains("10.0.0."), "admin (non masqué) -> IP en clair (le masquage dépend BIEN du rôle du créateur)");
 
         // TOKEN read-only : stockage + relecture PAR TOKEN renvoie les données FIGÉES & MASQUÉES (aucune re-exécution).
@@ -464,7 +467,7 @@
         }
         let empty = guatx_core::soql::FieldMaskSet::new();
         let rconn = open_db(&path).unwrap();
-        let data = capture_dashboard_data(&path, &rconn, did, "D", 0, 0, None, &empty);
+        let data = capture_dashboard_data(&path, &rconn, did, "D", 0, 0, None, &empty, &PorteeLecture::Proprietaire);
         let dump = serde_json::to_string(&data).unwrap();
         assert!(dump.contains("1.2.3.4"), "mode 0 (aucun masque) -> IP en clair dans le snapshot");
         assert!(!dump.contains("***"), "mode 0 -> aucun masquage fantôme");

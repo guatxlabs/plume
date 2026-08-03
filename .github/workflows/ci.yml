@@ -80,7 +80,7 @@ permissions:
 # diverger en silence — bumper l'une laissait l'autre comparer à un nombre périmé. Une seule ici,
 # consommée par les deux jobs.
 env:
-  EXPECTED_TESTS: "894"
+  EXPECTED_TESTS: "903"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -233,7 +233,7 @@ jobs:
       - name: cargo test (daemon, --features cold_tier) + assert the cold test count
         working-directory: daemon
         env:
-          EXPECTED_COLD_TESTS: "1089"
+          EXPECTED_COLD_TESTS: "1098"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -245,7 +245,9 @@ jobs:
           if [ "$total" != "$EXPECTED_COLD_TESTS" ]; then
             echo "::error::cold_tier suite test count is $total, expected $EXPECTED_COLD_TESTS."
             echo "::error::If the change legitimately adds or removes cold_tier tests, update"
-            echo "::error::EXPECTED_COLD_TESTS here and the number in CONTRIBUTING.md, from your own measurement."
+            echo "::error::EXPECTED_COLD_TESTS HERE, from your own measurement — and nowhere else."
+            echo "::error::(This message used to send you to a number in CONTRIBUTING.md; there is none,"
+            echo "::error:: and CONTRIBUTING says so itself: the live counters live ONLY in this file.)"
             exit 1
           fi
           # Anti-rot: this job must actually be running MORE than the default suite.

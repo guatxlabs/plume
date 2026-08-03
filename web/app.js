@@ -406,17 +406,28 @@ async function createPanelModal(did, query = '') {
   });
   if (!r) return;
   const libId = Number(r.library_panel_id) || 0;
-  // Panneau RÉFÉRENÇANT une bibliothèque : la requête/viz sont héritées -> pas de garde SQL brut ici (le
-  // library_panel a été gardé à SA création). Sinon, panneau autonome : requête requise + garde SQL brut.
+  // P7.13-a — CE COMMENTAIRE AFFIRMAIT LE CONTRAIRE ET C'EST CE RAISONNEMENT QUI A OUVERT LE TROU : il
+  // disait « pas de garde SQL brut ici, le library_panel a été gardé à SA création ». Or la garde de la
+  // création vise l'AUTEUR de la définition, jamais celui qui CHOISIT de l'exécuter. Un editor pouvait
+  // donc référencer une définition SQL brut d'admin et en lire le résultat (mesuré 2026-08-03 : 200,
+  // 2 lignes de la table `user`). Le SERVEUR tranche désormais (`panel_create`/`panel_update` résolvent
+  // panneau ∪ bibliothèque AVANT la porte) : ce chemin peut légitimement répondre 403, et l'UI le montre.
+  // Sinon, panneau autonome : requête requise + garde SQL brut côté saisie.
   if (libId) {
-    await apiSend('/panels', 'POST', { dashboard_id: Number(did), title: r.title.trim(), library_panel_id: libId, query: '', is_soql: true, visibility: r.visibility });
+    // Le refus du serveur doit être VU : sans ce catch, un 403 se perdait en rejet non traité (la
+    // fenêtre se fermait « comme si » le panneau avait été créé). Une garde invisible n'en est pas une.
+    try {
+      await apiSend('/panels', 'POST', { dashboard_id: Number(did), title: r.title.trim(), library_panel_id: libId, query: '', is_soql: true, visibility: r.visibility });
+    } catch (e) { toast('Panneau non créé : ' + ((e && e.message) || e), 'bad'); return; }
     await loadDashboards(); toast('Panneau (bibliothèque) créé', 'ok'); return;
   }
   const qq = r.query.trim(); if (!qq) { toast('Requête requise (ou choisis un panneau de bibliothèque).', 'bad'); return; }
   const isSoql = /^\s*search\b/i.test(qq) || qq.includes('|');
   // FAILLE B (UI) — un panneau en SQL brut (saisie non-GXQL) est réservé admin (miroir serveur panel_create).
   if (!isSoql && !socIsAdmin()) { toast('SQL brut réservé à l\'administrateur (utilisez GXQL)', 'bad'); return; }
-  await apiSend('/panels', 'POST', { dashboard_id: Number(did), title: r.title.trim(), query: qq, is_soql: isSoql, viz: r.viz, visibility: r.visibility, query_private: !!r.query_private, drill: (r.drill || '').trim() });
+  try {
+    await apiSend('/panels', 'POST', { dashboard_id: Number(did), title: r.title.trim(), query: qq, is_soql: isSoql, viz: r.viz, visibility: r.visibility, query_private: !!r.query_private, drill: (r.drill || '').trim() });
+  } catch (e) { toast('Panneau non créé : ' + ((e && e.message) || e), 'bad'); return; }
   await loadDashboards(); toast('Panneau créé', 'ok');
 }
 // La VUE courante affiche TOUS ses dashboards ; chaque dashboard = une tuile (carte) avec sa grille de panneaux.
@@ -712,7 +723,10 @@ async function renderPanel(p, editable = true) {
     // FAILLE B (UI) — éditer un panneau en SQL brut (saisie non-GXQL) est réservé admin (miroir serveur panel_update).
     if (!isSoql && !socIsAdmin()) { toast('SQL brut réservé à l\'administrateur (utilisez GXQL)', 'bad'); return; }
     const upd = { title: ef.querySelector('.pe-title').value.trim() || 'Panneau', query: q, viz: ef.querySelector('.pe-viz').value, is_soql: isSoql, window_s: Number(ef.querySelector('.pe-win').value) || 0, visibility: ef.querySelector('.pe-vis').value, query_private: ef.querySelector('.pe-qpriv').checked, drill: ef.querySelector('.pe-drill').value.trim() };
-    await patchPanel(p.id, upd);
+    // Le refus du serveur doit être VU (P7.13-a) : depuis que la porte « SQL brut = admin » juge la
+    // définition RÉELLEMENT EXÉCUTÉE, éditer un panneau qui exécute une définition de bibliothèque en
+    // SQL brut répond 403 — sans ce catch, l'enregistrement se perdait en rejet non traité.
+    try { await patchPanel(p.id, upd); } catch (e) { toast('Panneau non enregistré : ' + ((e && e.message) || e), 'bad'); return; }
     loadDashboards();
   };
   card.appendChild(ef);

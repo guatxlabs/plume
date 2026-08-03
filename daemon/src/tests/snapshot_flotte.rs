@@ -293,8 +293,8 @@
     /// LE FEED `/api/freshness` (`kind`) porte lui aussi la fraîcheur du PARC + son dénominateur.
     #[test]
     fn snapshot_feed_freshness_porte_le_parc_et_son_denominateur() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-snapfresh-{}-{}.db", std::process::id(), now()));
+        let _tmpg1 = crate::tmp_possede::TmpPossede::neuf("snapfresh");
+        let path = _tmpg1.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         let now_ts = now();
         {

@@ -255,7 +255,7 @@
     fn mode1_identity_resolves_from_control_plane() {
         // (c) : mode 1 (control-plane temp) -> token->tenant + platform_user auth lus du CONTROL-PLANE,
         // PAS de la base tenant. Prouve R6/R7 : l'identité vit hors de portée du SQL brut d'un tenant-admin.
-        let cp = mk_test_control();
+        let (cp, _cptmp) = mk_test_control();
         // seed control-plane : 1 tenant, 1 platform_user (auth), 1 token agent.
         let hash = hash_pw("cp-pass").unwrap();
         {
@@ -294,7 +294,7 @@
     #[test]
     fn mode1_suspended_tenant_and_key_ref_resolution() {
         // tenant suspendu -> resolve None (fail-closed) ; key_ref literal/env résolus.
-        let cp = mk_test_control();
+        let (cp, _cptmp) = mk_test_control();
         {
             let c = cp.conn.lock();
             c.execute("INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES('susp','S','literal:sekret','/d/s.db',?1,1)",
@@ -322,13 +322,13 @@
     async fn mode1_request_path_isolation_no_cross_tenant_leak() {
         use std::sync::atomic::{AtomicBool, Ordering};
         // control-plane temp + 2 tenants sur 2 fichiers temp DISTINCTS (key_ref='' -> en clair pour le test).
-        let cp = mk_test_control();
+        let (cp, _cptmp) = mk_test_control();
         let pa = mk_tmp_path("tenant-a.db");
         let pb = mk_tmp_path("tenant-b.db");
         {
             let c = cp.conn.lock();
-            c.execute("INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES('a','A','',?1,?2,0)", params![pa, now()]).unwrap();
-            c.execute("INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES('b','B','',?1,?2,0)", params![pb, now()]).unwrap();
+            c.execute("INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES('a','A','',?1,?2,0)", params![pa.as_str(), now()]).unwrap();
+            c.execute("INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES('b','B','',?1,?2,0)", params![pb.as_str(), now()]).unwrap();
             // un user 'analyst' granté sur les 2 tenants (rôles différents PAR tenant).
             c.execute("INSERT INTO platform_user(id,name,hash,is_superadmin,created) VALUES('u','analyst',NULL,0,?1)", params![now()]).unwrap();
             c.execute("INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES('u','a','admin')", []).unwrap();
@@ -455,7 +455,7 @@
         assert_ne!(key_a, key_b, "deux clés générées sont distinctes");
         assert_eq!(key_a.len(), 64, "clé = 256 bits en hex (64 chars)");
 
-        let cp = mk_test_control();
+        let (cp, _cptmp) = mk_test_control();
         let st = tenant_test_state("plume-admin", "plume-editor", "admins", Some(cp));
         let pa = mk_tmp_path("keyed-a.db");
         let pb = mk_tmp_path("keyed-b.db");
@@ -500,7 +500,7 @@
         tenant_destroy(&st.tenants, "a").expect("destroy A");
         assert!(!std::path::Path::new(&pa).exists(), "fichier de A supprimé (destruction crypto)");
         assert_eq!(st.tenants.resolve("a"), None, "entrée catalogue de A oubliée -> plus de handle");
-        assert!(!db_key_registry().lock().contains_key(&pa), "clé de A oubliée du registre read-pool");
+        assert!(!db_key_registry().lock().contains_key(pa.as_str()), "clé de A oubliée du registre read-pool");
         assert!(tenant_destroy(&st.tenants, "default").is_err(), "le tenant 'default' ne peut PAS être détruit");
 
         let _ = std::fs::remove_file(&pb);
@@ -513,7 +513,7 @@
         // Déterminisme : pas de Vault configuré -> résolution vault: échoue AVANT tout accès réseau.
         std::env::remove_var("PLUME_VAULT_ADDR");
         std::env::remove_var("PLUME_VAULT_TOKEN");
-        let cp = mk_test_control();
+        let (cp, _cptmp) = mk_test_control();
         {
             let c = cp.conn.lock();
             c.execute("INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES('vlt','V','vault:secret/data/ghost','/d/v.db',?1,0)", params![now()]).unwrap();
@@ -549,7 +549,7 @@
     #[test]
     fn mode1_tenant_writer_applies_the_schema_contract() {
         let key = tenant_generate_key();
-        let cp = mk_test_control();
+        let (cp, _cptmp) = mk_test_control();
         let st = tenant_test_state("plume-admin", "plume-editor", "admins", Some(cp));
         let path = mk_tmp_path("writer-contract.db");
         tenant_provision(&st.tenants, "t", "T", &path, &format!("literal:{key}")).expect("provision");
@@ -619,13 +619,13 @@
         // Déterminisme : pas de Vault configuré -> la clé du tenant 'x' échoue AVANT tout accès réseau.
         std::env::remove_var("PLUME_VAULT_ADDR");
         std::env::remove_var("PLUME_VAULT_TOKEN");
-        let cp = mk_test_control();
+        let (cp, _cptmp) = mk_test_control();
         let pa = mk_tmp_path("jobs-a.db");
         let pb = mk_tmp_path("jobs-b.db");
         {
             let c = cp.conn.lock();
-            c.execute("INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES('a','A','',?1,?2,0)", params![pa, now()]).unwrap();
-            c.execute("INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES('b','B','',?1,?2,0)", params![pb, now()]).unwrap();
+            c.execute("INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES('a','A','',?1,?2,0)", params![pa.as_str(), now()]).unwrap();
+            c.execute("INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES('b','B','',?1,?2,0)", params![pb.as_str(), now()]).unwrap();
             // tenant à clé NON résoluble -> DOIT être SKIP (fail-closed) par for_each_active_tenant.
             c.execute("INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES('x','X','vault:secret/data/ghost','/d/x.db',?1,0)", params![now()]).unwrap();
         }
@@ -649,8 +649,8 @@
         assert!(!ids.contains(&"default"), "mode 1 : jamais le tenant opérateur 'default'");
         // chaque tenant reçoit SON db_path (jamais celui d'un autre / jamais la base default).
         let dbp_of = |t: &str| visited.iter().find(|(x, _)| x == t).map(|(_, p)| p.clone()).unwrap();
-        assert_eq!(dbp_of("a"), pa);
-        assert_eq!(dbp_of("b"), pb);
+        assert_eq!(dbp_of("a"), pa.as_str());
+        assert_eq!(dbp_of("b"), pb.as_str());
         assert_ne!(dbp_of("a"), dbp_of("b"), "db_path distinct par tenant");
 
         // (1) RÈGLE PAR TENANT : A pose une règle (COUNT(event) >= 1) qui fire (A a 1 event) ; B n'a AUCUNE
@@ -776,8 +776,8 @@
     ///       (6), appliquées au seam lookup). Garde-fou contre un lookup cassé qui simulerait un all-clear.
     #[test]
     fn scheduled_run_due_rules_with_lookup_enrich_filter_and_failclosed() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-schedlk-{}-{}.db", std::process::id(), now()));
+        let _tmpg1 = crate::tmp_possede::TmpPossede::neuf("schedlk");
+        let path = _tmpg1.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         let t = now() - 10; // en fenêtre (window_s=600)
         {
@@ -1217,11 +1217,19 @@
 
     /// Control-plane de TEST : base SQLCipher (ici en clair) sur disque temp, schéma control-plane créé.
     /// Sert les tests d'identité mode 1 (token->tenant + platform_user auth lus du control-plane).
-    fn mk_test_control() -> ControlPlane {
-        let path = mk_tmp_path("control.db");
-        let conn = open_db_keyed(&path, None).unwrap();
+    fn mk_test_control() -> (ControlPlane, crate::tmp_possede::TmpDb) {
+        let path = mk_tmp_path("control");
+        let cp = mk_control_at(path.as_str());
+        (cp, path)
+    }
+
+    /// Control-plane à un chemin DONNÉ. Sépare « où vit le fichier » de « qui le possède », pour que
+    /// l'appelant qui possède DÉJÀ un répertoire y loge son control-plane au lieu d'en faire naître
+    /// un second qu'il devrait maintenir vivant en parallèle.
+    fn mk_control_at(path: &str) -> ControlPlane {
+        let conn = open_db_keyed(path, None).unwrap();
         migrate_control(&conn);
-        ControlPlane { conn: Arc::new(Mutex::new(conn)), db_path: Arc::new(path) }
+        ControlPlane { conn: Arc::new(Mutex::new(conn)), db_path: Arc::new(path.to_string()) }
     }
 
     // ---------- (#2c) GESTION DES TENANTS EN ROUTES HTTP ----------
@@ -1229,11 +1237,13 @@
     /// AppState MODE 1 avec control-plane (tenant `default` catalogué) et un db_path SOUS un répertoire temp
     /// UNIQUE -> tenant_db_path(...) crée les bases tenant dans ce répertoire (isolé, nettoyable). Renvoie
     /// (state, répertoire temp) ; l'appelant supprime le répertoire en fin de test.
-    fn mk_mode1_state() -> (AppState, String) {
-        let dir = mk_tmp_path("mt2c");
-        std::fs::create_dir_all(&dir).unwrap();
+    fn mk_mode1_state() -> (AppState, crate::tmp_possede::TmpPossede) {
+        let dir = crate::tmp_possede::TmpPossede::neuf("mt2c");
         let main_db = format!("{dir}/plume.db");
-        let cp = mk_test_control();
+        // Le control-plane vit DANS le répertoire déjà possédé : un seul propriétaire pour tout ce que
+        // la fixture crée. (Un second temporaire aurait été détruit à la sortie de cette fonction —
+        // la base du control-plane disparaissait sous le test.)
+        let cp = mk_control_at(dir.sous("control.db").as_str());
         {
             let c = cp.conn.lock();
             c.execute(

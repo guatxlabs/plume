@@ -1105,6 +1105,22 @@ pub(crate) fn safe_export_name(raw: Option<&str>) -> String {
 /// (POST de LECTURE) -> viewer autorisé pour GXQL ; `sql` brut refusé au non-admin (raw_sql_allowed).
 /// Réponse = fichier en pièce jointe (Content-Disposition: attachment) + X-Plume-Truncated si le plafond
 /// de lignes a été atteint.
+/// P7.3-b/c — CE QUE LE NOM DU FICHIER DOIT AVOUER. Fonction PURE : c'est la règle elle-même qui est
+/// testable, pas seulement le chemin HTTP qui l'emprunte (le handler `export` n'avait AUCUN test).
+///
+/// Trois états, et trois seulement — « non tronqué », « tronqué de N lignes », « tronqué d'une ampleur
+/// que la sonde n'a pas établie ». Le troisième n'est PAS replié sur zéro : un `truncated` sans
+/// ampleur est précisément la faiblesse déjà corrigée sur le top-N, où la perte atteignait ×16,42.
+pub(crate) fn marque_troncature(truncated: bool, ecartes: Option<i64>) -> String {
+    if !truncated {
+        return String::new();
+    }
+    match ecartes {
+        Some(n) if n > 0 => format!("-TRONQUE-{n}-lignes-manquantes"),
+        _ => "-TRONQUE-ampleur-inconnue".to_string(),
+    }
+}
+
 pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(body): Json<Value>) -> Response {
     let from = body.i64_field("from", 0);
     let to = body.i64_field("to", 0);
@@ -1115,6 +1131,9 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
     // #18 P3 — comme /api/query : union hot∪cold quand la fenêtre atteint sous la frontière jour (sinon None).
     #[allow(unused_mut)]
     let mut cold_boundary: Option<i64> = None;
+    // P7.3 — AMPLEUR du plafond top-N de la route rollup (même triplet qu'en /api/query). Portée
+    // FONCTION : la sonde est prise à la compilation, mais elle n'est rendue qu'après l'exécution.
+    let mut rollup_meta: Option<(bool, CapMesure, Option<String>)> = None;
     // #28 PHASE B — MÊME élagage dimensionnel cold que /api/query : les prédicats sont extraits du SQL COMPILÉ
     // juste avant `cold_union_query` (parité par construction), pas ici.
     // --- COMPILATION STRICTEMENT IDENTIQUE À /api/query (choke-point unique de redaction/RBAC) ---
@@ -1185,6 +1204,13 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
             None
         };
         if let Some(rr) = rr {
+            // P7.3 — L'EXPORT SERVI DEPUIS LE ROLLUP DOIT AVOUER SON PLAFOND. Il jetait `rr.cap`
+            // (la sonde top-N), `rr.approx` et `rr.note` pour ne garder que le SQL : un export
+            // agrégé sortait donc avec `x-plume-truncated: 0` alors que le plafond par dimension
+            // avait mordu. `/api/query` mesure la sonde depuis toujours ; l'export ne le faisait
+            // pas — même moteur, même plafond, aveu manquant d'un seul côté.
+            let cap = read_with(req_db_path(&st, &au).as_str(), rr.cap.sans_base(), |c| rr.cap.mesurer(c));
+            rollup_meta = Some((rr.approx, cap, rr.note));
             (rr.sql, true)
         } else {
             match soql_to_sql_masked_x(&soql, from, to, env, &masks) {
@@ -1272,16 +1298,42 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
             Err(_) => return server_err("exécution échouée"),
         }
     };
+    // P7.3 — l'ampleur top-N entre dans `stats` AVANT toute lecture de `truncated` (miroir exact de
+    // /api/query : `stats.truncated` devient `prev || cap.tronque()`, et `topn_ecartes/servis/total`
+    // n'apparaissent QUE si la sonde a pu mesurer — case absente = non mesuré, jamais un zéro).
+    let mut v = v;
+    apply_rollup_stats(&mut v, &rollup_meta);
     // AUDIT : audite l'export SI le volume dépasse le seuil (exfiltration potentielle).
     let nrows = v.get("rows").and_then(|r| r.as_array()).map(|a| a.len()).unwrap_or(0);
     audit_bulk_read(&st, &au, "export", nrows);
     let truncated = v.get("stats").and_then(|s| s.get("truncated")).and_then(|t| t.as_bool()).unwrap_or(false) || cold_extra_truncated;
+    let ecartes = v.get("stats").and_then(|s| s.get("topn_ecartes")).and_then(|x| x.as_i64());
     let (ct, ext, body_str): (&'static str, &str, String) = if format == "csv" {
         ("text/csv; charset=utf-8", "csv", result_to_csv(&v))
     } else {
         ("application/json; charset=utf-8", "json", serde_json::to_string(&result_to_json_records(&v)).unwrap_or_else(|_| "[]".into()))
     };
-    let fname = format!("plume-{}-{}.{}", safe_export_name(body.get("name").and_then(|v| v.as_str())), now(), ext);
+    // P7.3-b — LE FICHIER PORTE L'AVEU. Un export existe pour SURVIVRE à la réponse : enregistré, un
+    // résultat tronqué devenait un fichier d'apparence complète, rouvert des semaines plus tard sans
+    // le moindre indice. L'en-tête HTTP, elle, meurt avec la réponse.
+    //
+    // POURQUOI LE NOM DE FICHIER, et pas le corps. MESURÉ le 2026-08-03 : le CSV est un en-tête de
+    // colonnes + N lignes CRLF, le JSON un TABLEAU NU d'objets — et `result_to_json_records` sert
+    // AUSSI `/api/ds/query` (datasource Grafana Infinity). Une ligne de commentaire en tête du CSV
+    // ou une enveloppe autour du JSON changeraient le contrat de format et casseraient ces tuyaux.
+    // Le nom, lui, voyage avec le fichier et ne traverse aucun parseur.
+    //
+    // P7.3-c — et il porte l'AMPLEUR, pas un simple drapeau : `truncated` nu était la faiblesse déjà
+    // corrigée sur le top-N, où une perte allant jusqu'à ×16,42 tenait dans un booléen. Quand la
+    // sonde a chiffré l'écart, le nom le dit ; quand elle ne l'a pas établi, le nom dit « ampleur
+    // inconnue » — on n'invente pas un nombre qu'on n'a pas.
+    let fname = format!(
+        "plume-{}-{}{}.{}",
+        safe_export_name(body.get("name").and_then(|v| v.as_str())),
+        now(),
+        marque_troncature(truncated, ecartes),
+        ext
+    );
     let disp = format!("attachment; filename=\"{fname}\"");
     let mut resp = (StatusCode::OK, body_str).into_response();
     let h = resp.headers_mut();
@@ -1293,5 +1345,16 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
         axum::http::HeaderName::from_static("x-plume-truncated"),
         axum::http::HeaderValue::from_static(if truncated { "1" } else { "0" }),
     );
+    // L'ampleur en en-tête est ADDITIVE : le seul consommateur connu (`web/app.js`) teste
+    // `x-plume-truncated === '1'` et n'est pas touché. `x-plume-rows` est toujours posée (le nombre
+    // de lignes RENDUES est toujours connu) ; `x-plume-truncated-ecartes` seulement si mesurée.
+    if let Ok(hv) = axum::http::HeaderValue::from_str(&nrows.to_string()) {
+        h.insert(axum::http::HeaderName::from_static("x-plume-rows"), hv);
+    }
+    if let Some(n) = ecartes {
+        if let Ok(hv) = axum::http::HeaderValue::from_str(&n.to_string()) {
+            h.insert(axum::http::HeaderName::from_static("x-plume-truncated-ecartes"), hv);
+        }
+    }
     resp
 }

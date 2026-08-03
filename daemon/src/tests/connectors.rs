@@ -1081,7 +1081,7 @@
 
     /// Base de test file-backed : 2 events (src_user JSON + host), 2 samples metric (labels+host), et des
     /// field-filters role='' (viewer/editor masqués, admin en clair) : src_user hash, message mask, host mask.
-    fn ds_seed_db(tag: &str) -> String {
+    fn ds_seed_db(tag: &str) -> crate::tmp_possede::TmpDb {
         let path = ff_tmp_path(tag);
         {
             let conn = open_db(&path).unwrap();
@@ -1581,8 +1581,8 @@
     /// restent lisibles.
     #[test]
     fn dest_config_secret_raw_sql_denied() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-dest-deny-{}-{}.db", std::process::id(), now()));
+        let _tmpg1 = crate::tmp_possede::TmpPossede::neuf("dest-deny");
+        let path = _tmpg1.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         {
             let w = Connection::open(&p).unwrap();

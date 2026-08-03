@@ -1292,7 +1292,7 @@
         assert!(!valid_grant_role("client"), "client NON-octroyable (valid_grant_role)");
         assert!(custom_role_lookup("client").is_none(), "client jamais résolu comme rôle custom");
         // (a) role_create REFUSE le nom réservé.
-        let cp = mk_test_control();
+        let (cp, _cptmp) = mk_test_control();
         let st = tenant_test_state("admins", "editors", "supers", Some(cp.clone()));
         let sa = || { let mut a = tok_au("admin"); a.is_superadmin = true; a };
         let (c1, _) = tok_resp_json(role_create(State(st.clone()), Extension(sa()), Json(json!({ "name": "client", "base_role": "viewer" }))).await).await;

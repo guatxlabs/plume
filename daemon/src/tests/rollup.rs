@@ -41,8 +41,8 @@
     /// pendant que le dry-run passe (le mode d'échec exact décrit par la revue purple).
     #[test]
     fn scheduled_run_due_rules_fires_rule22_srcip_5xx_correlation() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-sched22-{}-{}.db", std::process::id(), now()));
+        let _tmpg1 = crate::tmp_possede::TmpPossede::neuf("sched22");
+        let path = _tmpg1.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         let t = now() - 10; // en fenêtre (window_s=600)
         {
@@ -87,8 +87,8 @@
     /// None en 0.0 -> une détection réelle résolue par une erreur transitoire = angle mort SILENCIEUX).
     #[test]
     fn scheduled_run_due_rules_eval_failure_does_not_fake_all_clear() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-schedfail-{}-{}.db", std::process::id(), now()));
+        let _tmpg2 = crate::tmp_possede::TmpPossede::neuf("schedfail");
+        let path = _tmpg2.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         {
             let w = Connection::open(&p).unwrap();
@@ -225,8 +225,8 @@
     // ============================================================================================
     #[test]
     fn f4_cookie_role_via_read_pool_reflects_live_change() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-f4-{}-{}.db", std::process::id(), now()));
+        let _tmpg3 = crate::tmp_possede::TmpPossede::neuf("f4");
+        let path = _tmpg3.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         {
             let w = open_db(&p).unwrap();
@@ -249,8 +249,8 @@
     // ============================================================================================
     #[test]
     fn integrations_compute_shape_and_status() {
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-int-{}-{}.db", std::process::id(), now()));
+        let _tmpg4 = crate::tmp_possede::TmpPossede::neuf("int");
+        let path = _tmpg4.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         {
             let w = open_db(&p).unwrap();

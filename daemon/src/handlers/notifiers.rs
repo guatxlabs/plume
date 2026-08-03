@@ -97,8 +97,14 @@ pub(crate) fn notify_send(kind: &str, url: &str, config: &Value, sev: i64, title
                 return false;
             }
             let seq = INGEST_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let mut p = std::env::temp_dir();
-            p.push(format!("plume-mail-{ts}-{seq}.eml"));
+            // Le corps du mail (titre + détail de l'alerte) transite par un fichier temporaire que
+            // curl téléverse. Il était effacé sur le SEUL chemin nominal : un `return false` après
+            // une écriture PARTIELLE, ou une panique, laissait le contenu de l'alerte en clair dans
+            // $TMPDIR. Le garde RAII l'efface sur TOUTE sortie de portée — et ses sidecars avec.
+            let garde = crate::backup::PlaintextTempGuard(
+                crate::tmp_possede::racine_systeme().join(format!("plume-mail-{ts}-{seq}.eml")),
+            );
+            let p = garde.path().to_path_buf();
             if !egress_url_ok(url) { // garde SSRF (smtp) au point d'égress
                 return false;
             }
@@ -117,7 +123,9 @@ pub(crate) fn notify_send(kind: &str, url: &str, config: &Value, sev: i64, title
                 secret_cfg.push_str(&format!("user = \"{}:{}\"\n", curl_cfg_quote(&oneline(user)), curl_cfg_quote(pass)));
             }
             let r = curl_send(&args, &secret_cfg);
-            let _ = std::fs::remove_file(&p);
+            // Plus de `remove_file` ici : le garde efface en sortie de portée, et il ÉCRASE le
+            // contenu avant de délier (`secure_delete`) — un simple unlink laissait les pages du
+            // corps d'alerte récupérables sur le volume.
             r
         }
         // #48 SLACK (incoming webhook). L'URL du webhook EST un secret -> elle vit dans `config.webhook_url`

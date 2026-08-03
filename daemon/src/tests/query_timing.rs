@@ -174,8 +174,8 @@
         if !std::env::var("PLUME_DB_KEY").map(|v| v.is_empty()).unwrap_or(true) {
             return;
         }
-        let mut path = std::env::temp_dir();
-        path.push(format!("plume-cov-pool-{}-{}.db", std::process::id(), now()));
+        let _tmpg1 = crate::tmp_possede::TmpPossede::neuf("cov-pool");
+        let path = _tmpg1.sous("plume.db").chemin().to_path_buf();
         let p = path.to_string_lossy().to_string();
         let (below, at_id) = (1_785_000_000i64, 4242i64);
         {

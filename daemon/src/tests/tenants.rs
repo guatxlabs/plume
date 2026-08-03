@@ -49,7 +49,7 @@
         {
             { let mut w = parsers_cell().write();
                 let re = regex::Regex::new(r"tok=(?P<iso>\w+)").unwrap();
-                w.insert(a.clone(), vec![("*".to_string(), re)]);
+                w.insert(a.as_str().to_string(), vec![("*".to_string(), re)]);
             }
             let fa = parsers_apply(&a, "src", "tok=HELLO", None);
             let fb = parsers_apply(&b, "src", "tok=HELLO", None);

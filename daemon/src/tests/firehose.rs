@@ -25,13 +25,15 @@
         let recs: Vec<Value> = datas.iter().map(|d| json!({ "data": d })).collect();
         axum::body::Bytes::from(json!({ "requestId": request_id, "timestamp": 1_700_000_000_000i64, "records": recs }).to_string())
     }
-    fn fh_state_with_spool() -> (AppState, std::path::PathBuf) {
+    // Le spool RENDU porte sa propriété avec lui : l'appelant le garde vivant le temps du test, et
+    // sa destruction efface le répertoire entier. Rendre un `PathBuf` nu laisserait le répertoire
+    // sans propriétaire — la fuite exacte qu'on ferme.
+    fn fh_state_with_spool() -> (AppState, crate::tmp_possede::TmpPossede) {
         // suffixe UNIQUE par appel (les tests tournent en PARALLÈLE : pid+secondes seuls collisionnent, et le
         // remove_dir_all d'un test effacerait le spool d'un autre -> read_dir NotFound). Compteur atomique.
         static FH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let uniq = FH_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let spool = std::env::temp_dir().join(format!("plume-fh-{}-{}-{}", std::process::id(), now(), uniq));
-        std::fs::create_dir_all(&spool).unwrap();
+        let spool = crate::tmp_possede::TmpPossede::neuf(&format!("fh-{uniq}"));
         let mut st = sso_test_state("plume-admin", "plume-editor", "admins");
         st.spool = Arc::new(spool.to_string_lossy().to_string());
         (st, spool)

@@ -29,7 +29,7 @@
     fn mode1_rbac_role_per_tenant() {
         // #2b : un même user est admin dans A et viewer dans B ; un viewer-de-B ne peut pas MUTER B ; un
         // user SANS grant sur C -> 403. Grants Basic/cookie (table `grant`) ET grants SSO (map live).
-        let cp = mk_test_control();
+        let (cp, _cptmp) = mk_test_control();
         {
             let c = cp.conn.lock();
             for (id, p) in [("a", "/d/a.db"), ("b", "/d/b.db"), ("c", "/d/c.db")] {
@@ -81,11 +81,11 @@
         // #2b/D3/R9 : un super-admin lit un tenant dont il n'est PAS membre -> accès CROSS-TENANT (viewer,
         // read-only) MARQUÉ 2x : control_ledger à CHAQUE accès + event `plume-operator-access` NON
         // DÉSACTIVABLE dans la base du tenant visité, DEBOUNCÉ (1 par fenêtre).
-        let cp = mk_test_control();
+        let (cp, _cptmp) = mk_test_control();
         let p = mk_tmp_path("op-read.db");
         {
             let c = cp.conn.lock();
-            c.execute("INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES('opread','R','',?1,?2,0)", params![p, now()]).unwrap();
+            c.execute("INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES('opread','R','',?1,?2,0)", params![p.as_str(), now()]).unwrap();
             // super-admin plateforme SANS grant sur 'opread' (opérateur ESN).
             c.execute("INSERT INTO platform_user(id,name,hash,is_superadmin,created) VALUES('sa','op-reader',NULL,1,?1)", params![now()]).unwrap();
         }
@@ -121,11 +121,11 @@
     fn mode1_superadmin_write_breakglass() {
         // #2b/D3 : une MUTATION cross-tenant par un super-admin exige le break-glass explicite. SANS le flag
         // -> 403 (jamais d'écriture cross-tenant silencieuse) ; AVEC -> autorisée (admin borné) + auditée 2x.
-        let cp = mk_test_control();
+        let (cp, _cptmp) = mk_test_control();
         let p = mk_tmp_path("op-write.db");
         {
             let c = cp.conn.lock();
-            c.execute("INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES('opwrite','W','',?1,?2,0)", params![p, now()]).unwrap();
+            c.execute("INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES('opwrite','W','',?1,?2,0)", params![p.as_str(), now()]).unwrap();
             c.execute("INSERT INTO platform_user(id,name,hash,is_superadmin,created) VALUES('sa','op-writer',NULL,1,?1)", params![now()]).unwrap();
             // un non-superadmin sans grant -> ne peut JAMAIS écrire cross-tenant, même avec un flag.
             c.execute("INSERT INTO platform_user(id,name,hash,is_superadmin,created) VALUES('nb','nobody',NULL,0,?1)", params![now()]).unwrap();
@@ -302,7 +302,7 @@
         assert!(!ingest_disk_reject(512, Some(512)), "pile au seuil -> autorisé (strictement inférieur)");
         assert!(!ingest_disk_reject(512, Some(10_000)), "disque sain -> autorisé");
         // fs_free_mb mesure un volume RÉEL : le répertoire temp existe et a de l'espace libre (>0).
-        let tmp = std::env::temp_dir();
+        let tmp = crate::tmp_possede::TmpPossede::neuf("statvfs-free");
         let free = fs_free_mb(tmp.to_str().unwrap());
         assert!(free.map(|f| f > 0).unwrap_or(false), "statvfs du répertoire temp -> espace libre > 0 ({free:?})");
         assert_eq!(fs_free_mb("/chemin/inexistant/plume-xyz"), None, "chemin absent -> None (fail-open)");
@@ -321,7 +321,7 @@
         assert!(disk_health_should_warn(94, 80), "94% -> warn (scénario incident VPS)");
         assert!(!disk_health_should_warn(99, 0), "seuil 0 = garde désactivé");
         // fs_total_avail_mb mesure un volume RÉEL (répertoire temp) : total>0 et total>=dispo.
-        let tmp = std::env::temp_dir();
+        let tmp = crate::tmp_possede::TmpPossede::neuf("statvfs-total");
         if let Some((total, avail)) = fs_total_avail_mb(tmp.to_str().unwrap()) {
             assert!(total > 0 && total >= avail, "statvfs cohérent (total={total}, avail={avail})");
         }
@@ -333,7 +333,7 @@
     #[test]
     fn disk_health_emit_rate_limited_hourly() {
         let conn = test_db();
-        let tmp = std::env::temp_dir();
+        let tmp = crate::tmp_possede::TmpPossede::neuf("disk-health");
         let p = tmp.to_string_lossy().into_owned();
         let cnt = |c: &Connection| c.query_row("SELECT COUNT(*) FROM event WHERE source='plume-disk'", [], |r| r.get::<_, i64>(0)).unwrap();
         // seuil 0 = désactivé -> jamais d'event.
@@ -398,8 +398,8 @@
         // un parseur overlay orphelin (aucun fichier parsers/) -> doit être élagué aussi.
         conn.execute("INSERT INTO parser(name,source,pattern,enabled,builtin,managed) VALUES('ov-parser','*','x',1,0,1)", []).unwrap();
         // config.d temporaire avec SEULEMENT rules/kept.json (adosse 'ov-kept').
-        let mut root = std::env::temp_dir();
-        root.push(format!("plume-cfgd-{}-{}", std::process::id(), now()));
+        let _tmpg1 = crate::tmp_possede::TmpPossede::neuf("cfgd");
+        let root = _tmpg1.racine().chemin().to_path_buf();
         std::fs::create_dir_all(root.join("rules")).unwrap();
         std::fs::write(root.join("rules").join("kept.json"), br#"{"name":"ov-kept","query":"search | stats count","is_soql":true}"#).unwrap();
         let counts = prune_orphan_overlays(&conn, &root).unwrap();
@@ -883,7 +883,7 @@ fn router_viewer_self_service(path: &str) -> bool {
 
 /// AppState file-backed avec un mot de passe admin POSÉ (sinon `auth_guard` est en mode SETUP et répond
 /// 401 partout pour une raison qui n'est PAS l'authentification) + un compte `viewer` réel.
-fn router_test_state(tag: &str) -> (AppState, String) {
+fn router_test_state(tag: &str) -> (AppState, crate::tmp_possede::TmpDb) {
     let path = ff_tmp_path(tag);
     {
         let conn = open_db(&path).unwrap();
@@ -906,7 +906,10 @@ fn router_test_state(tag: &str) -> (AppState, String) {
 
 /// Sert le routeur RÉEL (toutes ses couches) sur 127.0.0.1:0 et renvoie l'adresse liée.
 async fn router_serve(st: AppState) -> std::net::SocketAddr {
-    let app = build_router(st, std::env::temp_dir().join("plume-router-test-webdir").to_string_lossy().into_owned());
+    // Répertoire web VOLONTAIREMENT inexistant (ServeDir doit 404) : RIEN n'y est jamais créé, donc
+    // il n'y a rien à posséder. On passe par le coffre pour que ce cas reste visible en un seul point.
+    let webdir = crate::tmp_possede::racine_systeme().join("plume-router-test-webdir-inexistant");
+    let app = build_router(st, webdir.to_string_lossy().into_owned());
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
     tokio::spawn(async move {

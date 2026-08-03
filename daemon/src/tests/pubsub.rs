@@ -24,11 +24,11 @@
             "subscription": "projects/acme/subscriptions/plume-push"
         }).to_string())
     }
-    fn ps_state_with_spool() -> (AppState, std::path::PathBuf) {
+    // Spool RENDU avec sa propriété (cf. `fh_state_with_spool`).
+    fn ps_state_with_spool() -> (AppState, crate::tmp_possede::TmpPossede) {
         static PS_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let uniq = PS_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let spool = std::env::temp_dir().join(format!("plume-ps-{}-{}-{}", std::process::id(), now(), uniq));
-        std::fs::create_dir_all(&spool).unwrap();
+        let spool = crate::tmp_possede::TmpPossede::neuf(&format!("ps-{uniq}"));
         let mut st = sso_test_state("plume-admin", "plume-editor", "admins");
         st.spool = Arc::new(spool.to_string_lossy().to_string());
         (st, spool)

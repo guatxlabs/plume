@@ -194,8 +194,9 @@
             let mut conf = std::collections::HashMap::new();
             conf.insert("PLUME_BACKUP_INTERVAL".to_string(), bad.to_string());
             conf.insert("PLUME_AUTOVACUUM_INTERVAL".to_string(), bad.to_string());
-            conf.insert("PLUME_BACKUP_DEST".to_string(), dest.clone());
-            crate::server::spawn_backup_scheduler(conf.clone(), mk_tmp_path("adv-off-src.db"));
+            conf.insert("PLUME_BACKUP_DEST".to_string(), dest.as_str().to_string());
+            let src_off = mk_tmp_path("adv-off-src");
+            crate::server::spawn_backup_scheduler(conf.clone(), src_off.as_str().to_string());
             let dummy = std::sync::Arc::new(parking_lot::Mutex::new(rusqlite::Connection::open_in_memory().unwrap()));
             crate::server::spawn_autovacuum_loop(conf, dummy);
             std::thread::sleep(std::time::Duration::from_millis(60));

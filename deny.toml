@@ -41,12 +41,30 @@ wildcards = "warn"
 # lui-même la sémantique « ou ultérieure ». PROUVÉ par mutation — en retirant la seule
 # entrée `AGPL-3.0`, le contrôle échoue en nommant `plume-daemon v0.1.0`
 # (« rejected: license is not explicitly allowed »). L'entrée porte donc réellement.
+#   · `CDLA-Permissive-2.0` : licence du JEU DE DONNÉES `webpki-roots` (le paquet de
+#     certificats racine de Mozilla, embarqué par l'agent pour ne pas dépendre du
+#     magasin système). MESURÉ le 2026-08-03 : tant que la CI ne vérifiait que
+#     `daemon/`, cette licence n'était vue par personne ; en couvrant les quatre
+#     crates, `agent` ÉCHOUE (`cargo-deny ... --manifest-path agent/Cargo.toml`,
+#     code de sortie 4, `rejected: webpki-roots@1.0.8, license = CDLA-Permissive-2.0`).
+#     Elle est ajoutée ICI, nommément et avec sa raison, plutôt que masquée : la CDLA
+#     (Community Data License Agreement) Permissive 2.0 est une licence de DONNÉES
+#     permissive, sans copyleft ni obligation sur l'œuvre combinée — le paquet est une
+#     liste de certificats, pas du code lié. Elle n'élargit donc rien pour le CODE.
 allow = [
   "AGPL-3.0", "LGPL-3.0",
   "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "MPL-2.0",
   "Unicode-DFS-2016", "Unicode-3.0", "CC0-1.0",
+  "CDLA-Permissive-2.0",
 ]
+
+# Une licence autorisée mais absente du graphe d'UN crate donné n'est pas un défaut :
+# les quatre crates ont des arbres de dépendances différents, et la liste ci-dessus est
+# commune aux quatre. Sans ce réglage, couvrir les quatre crates produirait des dizaines
+# d'avertissements `license-not-encountered` purement mécaniques — du bruit qui finit par
+# faire ignorer la sortie entière, donc par masquer un VRAI rejet.
+unused-allowed-license = "allow"
 
 [sources]
 unknown-registry = "deny"

@@ -6088,7 +6088,13 @@ fn p4a_row(base: i64, i: i64) -> ColdRow {
 }
 
 struct P4aFix {
-    root: PathBuf,
+    /// La fixture POSSÈDE sa racine temporaire — champ `TmpPossede`, pas `PathBuf`.
+    /// Le correctif que suggère `rustc` sur l'erreur E0308 (`root: root.to_path_buf()`)
+    /// serait FAUX : il laisse tomber le garde à la fin du constructeur, donc le
+    /// répertoire est effacé pendant que le test s'en sert encore. Le type porte
+    /// l'invariant : la racine vit exactement aussi longtemps que la fixture.
+    /// `Deref`/`AsRef<Path>` rendent l'usage identique à celui d'un `PathBuf`.
+    root: crate::tmp_possede::TmpPossede,
     db: Arc<Mutex<Connection>>,
     dbp: String,
     conf: HashMap<String, String>,

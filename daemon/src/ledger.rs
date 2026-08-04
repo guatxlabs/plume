@@ -267,6 +267,7 @@ pub(crate) fn verify_ledger(db_path: &str) -> Result<(usize, i64, i64, Option<i6
     let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("ouverture {db_path}: {e}"))?;
     apply_key(&conn); // clé SQLCipher (PLUME_DB_KEY) — mirroir de open_db/ledger-export ; DOIT précéder toute requête
+    let _ = conn.execute_batch(sqlite_plafond::pragmas_memoire());
     // v134 (#11) — applique le PIN escrow (PLUME_LEDGER_PUBKEY) s'il est configuré (sinon None -> comportement
     // historique : on fait confiance au pubkey IN-BAND de chaque checkpoint).
     let pinned = ledger_pinned_pubkey();

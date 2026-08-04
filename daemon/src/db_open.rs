@@ -197,7 +197,7 @@ pub(crate) fn open_db_keyed(path: &str, key: Option<&str>) -> rusqlite::Result<C
 }
 
 #[cfg(test)]
-mod door_tests {
+pub(crate) mod door_tests {
     use super::*;
     use std::path::{Path, PathBuf};
 
@@ -210,7 +210,7 @@ mod door_tests {
     // Un fichier ajouté demain est couvert le jour où il est ajouté, sans que personne ne le déclare.
 
     /// Tous les `.rs` sous `daemon/src`, en profondeur.
-    fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    pub(crate) fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
         let mut entries: Vec<_> = std::fs::read_dir(dir)
             .unwrap_or_else(|e| panic!("lecture de {}: {e}", dir.display()))
             .filter_map(Result::ok)
@@ -230,7 +230,7 @@ mod door_tests {
     /// déclaration de module FICHIER (`mod x;`) désigne `x.rs` ou `x/` — et tout ce qu'il contient.
     /// `#[cfg(test)] mod tests;` (main.rs, cold_store/mod.rs) tombe ici tout seul ; un futur
     /// `#[cfg(test)] mod autres_tests;` aussi.
-    fn fichiers_de_test(files: &[PathBuf]) -> std::collections::BTreeSet<PathBuf> {
+    pub(crate) fn fichiers_de_test(files: &[PathBuf]) -> std::collections::BTreeSet<PathBuf> {
         let mut out = std::collections::BTreeSet::new();
         for f in files {
             let src = std::fs::read_to_string(f).unwrap();
@@ -254,7 +254,7 @@ mod door_tests {
         out
     }
 
-    fn est_test(p: &Path, marques: &std::collections::BTreeSet<PathBuf>) -> bool {
+    pub(crate) fn est_test(p: &Path, marques: &std::collections::BTreeSet<PathBuf>) -> bool {
         marques.iter().any(|m| p == m || p.starts_with(m))
     }
 
@@ -262,7 +262,7 @@ mod door_tests {
     /// retiré — module inline, fonction, `use`, `impl`, peu importe : la règle est la MÊME (sauter
     /// jusqu'au `;` ou jusqu'au `}` de la colonne 0), donc un item d'un genre inédit ne demande aucune
     /// ligne de plus. FAIL-CLOSED : un item qu'aucune des deux fins ne referme fait ÉCHOUER le test.
-    fn texte_de_production(f: &Path, src: &str) -> Vec<(usize, String)> {
+    pub(crate) fn texte_de_production(f: &Path, src: &str) -> Vec<(usize, String)> {
         let lignes: Vec<&str> = src.lines().collect();
         let mut out = Vec::new();
         let mut i = 0usize;

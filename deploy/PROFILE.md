@@ -47,6 +47,8 @@ Principe : *moteur générique + spécifique-infra en CONFIG, jamais en dur* ; c
 | `PLUME_USER` / `PLUME_PASS_HASH` | auth native (argon2) — sinon mode SETUP | — |
 | `PLUME_SSO_HEADER_SECRET` + `PLUME_SSO_GROUP_*` | SSO trusted-header (Authentik/forward-auth) | — |
 | `PLUME_HOST` | hôte(s) autorisé(s) (anti-DNS-rebinding) | — |
+| `PLUME_SQLITE_BUDGET_MB` | budget RAM total concédé à SQLite ; réparti automatiquement entre les porteurs (connexions du pool + tris en vol), d'où `cache_size` | `1088` (= 17 × 64 Mio, reproduit à l'octet le dimensionnement historique) |
+| `PLUME_SQLITE_DEVERSEMENT` | **échange confidentialité ↔ mémoire.** À `0`, les tris restent en RAM : rien d'un événement ne touche le disque en clair, mais **une agrégation assez large peut épuiser la mémoire** (SQLite n'a aucun mécanisme de déversement dans ce mode). À `1`, les gros tris débordent sur disque **en clair, hors de la base SQLCipher** — n'activez que si votre modèle de menace exclut le vol du volume, et pointez alors `SQLITE_TMPDIR` sur un support chiffré (jamais un tmpfs : ce serait de la RAM au même cgroup). | `0` |
 
 ## Inputs custom (scripted inputs) — ajouter une source SANS code
 Le collecteur générique `custom.sh` (OPT-IN, `PLUME_EXTRA_COLLECTORS="… custom"` + `plume-custom.timer`)

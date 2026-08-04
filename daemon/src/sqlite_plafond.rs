@@ -36,7 +36,18 @@
 //!
 //! CE QUE CE MODULE POSE — DEUX RÉGLAGES QUI NE JOUENT PAS LE MÊME RÔLE, et les confondre mène tout droit
 //! à la conclusion fausse « FILE ralentit tout » :
-//!   * `temp_store=FILE` est l'INTERRUPTEUR D'EXISTENCE du plafond, PAS un ralentisseur global : tant que
+//!   * `temp_store` est l'INTERRUPTEUR D'EXISTENCE du plafond. Il est livré sur `MEMORY` (cf.
+//!     `mot_temp_store`) : LE DÉFAUT N'A DONC PAS DE PLAFOND DE TRI, et l'OOM décrit plus haut RESTE
+//!     OUVERT au défaut. Ce n'est pas un oubli, c'est un arbitrage assumé et écrit : `FILE` échange la
+//!     mort du processus contre des VALEURS D'ÉVÉNEMENT EN CLAIR sur le disque, hors de la base
+//!     SQLCipher (mesuré le 2026-08-04 : 323 occurrences lisibles de deux aiguilles du jeu de test dans
+//!     16 Mio lus, contrôle négatif à 0). Une base chiffrée qui laisse fuir ses valeurs par le trieur
+//!     n'est pas chiffrée. `PLUME_SQLITE_DEVERSEMENT=1` prend cet échange EXPLICITEMENT, pour un
+//!     déploiement dont le modèle de menace exclut le vol du volume. La fermeture RÉELLE de l'OOM ne
+//!     passe donc pas par ce module mais par « moins d'octets à trier » — compression au repos et
+//!     agrégation bornée native (P10.2/P10.3), qui n'échangent AUCUNE confidentialité.
+//!     CE QUI SUIT NE VAUT DONC QUE POUR LE CHEMIN OPT-IN — et l'y lire évite la conclusion fausse
+//!     « FILE ralentit tout » si un jour on l'évalue à nouveau. Tant que
 //!     le tri tient sous le budget, `bFlush` est FAUX à chaque ligne — AUCUN octet n'est écrit, aucune
 //!     fusion n'a lieu. Le prix n'est payé QUE par les tris qui DÉPASSENT le budget. (L'accumulation ne
 //!     suit pas exactement le même code des deux côtés : en mémoire, un `sqlite3Malloc` PAR
@@ -60,30 +71,34 @@
 //!
 //! LE DÉFAUT NE CHANGE RIEN AU DIMENSIONNEMENT, ET C'EST VOULU. `BUDGET_DEFAUT_MO` n'est pas CHOISI, il est
 //! CONSTATÉ : c'est ce que la configuration actuelle consomme au pire (`17 × 64 Mio`), de sorte que
-//! `cache_size` vaut exactement `-65536` comme avant. Le SEUL changement de comportement livré ici est
-//! l'EXISTENCE du plafond — donc tout écart mesuré lui est attribuable. Ce que la dérivation apporte
-//! immédiatement, c'est que ce pire cas a maintenant un NOM et un seul nombre pour le réduire.
+//! `cache_size` vaut exactement `-65536` comme avant, ET `temp_store` reste en mémoire comme avant. Le
+//! SEUL changement de comportement au DÉFAUT est donc l'EXISTENCE d'un auteur unique pour ce budget —
+//! aucun écart de mémoire ni de temps n'est attendu, et tout écart mesuré serait une régression, pas un
+//! effet. Ce que la dérivation apporte immédiatement : ce pire cas a maintenant un NOM et un seul nombre
+//! pour le réduire.
 //!
 //! CE QUE CE MODULE NE FERME PAS, ÉCRIT POUR ÊTRE OPPOSABLE :
-//!   - CONFIDENTIALITÉ. Un tri qui déverse écrit des VALEURS D'ÉVÉNEMENT EN CLAIR hors de la base
-//!     SQLCipher. C'est un ÉCHANGE, pas un gain sec : avant, ces mêmes octets étaient en RAM et le
-//!     processus mourait. Ce qui est fait : le répertoire est CHOISI (à côté de la base, `0700`, jamais un
-//!     `/tmp` hérité) et SQLite DÉLIE le fichier aussitôt après l'avoir ouvert (`unixOpen` :
-//!     `if( isDelete ) osUnlink(zName)`), donc il n'a aucun nom dans l'arborescence et disparaît à la
-//!     fermeture, y compris si le processus meurt. Ce qui N'EST PAS fait : les octets touchent le
-//!     périphérique. Un déploiement dont le modèle de menace inclut le vol du VOLUME doit poser
-//!     `SQLITE_TMPDIR` sur un support chiffré — c'est respecté ici (cf. `repertoire_temporaire_init`),
-//!     c'est une décision d'exploitation, et elle s'écrit dans la doc de déploiement.
-//!   - AUCUN QUOTA ne borne la TAILLE du déversement : un tri sur une très grande fenêtre écrit l'ordre de
-//!     grandeur des données triées. C'est du disque, pas de la RAM, c'est mesuré au banc, et rien ici
-//!     n'empêche de remplir le volume.
+//!   - L'OOM LUI-MÊME, AU DÉFAUT. Le plafond n'existe que si `PLUME_SQLITE_DEVERSEMENT=1`. Sans lui, le
+//!     trieur reste sans mécanisme de déversement et une requête assez large tue toujours le processus.
+//!     Ce qui est acquis ici est la CAUSE (établie, plus haut) et l'endroit unique où agir — pas le
+//!     correctif. La clé P6.1-b reste OUVERTE et ce module ne doit pas être lu comme la fermant.
+//!   - CONFIDENTIALITÉ DU CHEMIN OPT-IN. Un tri qui déverse écrit des valeurs en clair hors de la base
+//!     SQLCipher. Ce qui est fait pour en limiter la portée : le répertoire est CHOISI (à côté de la
+//!     base, `0700`, jamais un `/tmp` hérité) et SQLite DÉLIE le fichier aussitôt après l'avoir ouvert
+//!     (`unixOpen` : `if( isDelete ) osUnlink(zName)`), donc il n'a aucun nom dans l'arborescence et
+//!     disparaît à la fermeture, y compris si le processus meurt. Ce qui N'EST PAS fait : les octets
+//!     touchent le périphérique. Qui active ce drapeau doit poser `SQLITE_TMPDIR` sur un support chiffré
+//!     (cf. `repertoire_temporaire_init`) — décision d'exploitation, écrite dans la doc de déploiement.
+//!   - AUCUN QUOTA ne borne la TAILLE du déversement quand il est activé : un tri sur une très grande
+//!     fenêtre écrit l'ordre de grandeur des données triées. C'est du disque, pas de la RAM, c'est mesuré
+//!     au banc, et rien ici n'empêche de remplir le volume.
 //!   - `mmap_size` est conservé TEL QUEL (256 Mio). Son effet réel sous SQLCipher n'a pas été mesuré : il
 //!     n'est ni revendiqué ni modifié ici.
 use crate::*;
 
 /// Budget RAM total concédé à SQLite (Mio). Le défaut REPRODUIT EXACTEMENT le dimensionnement d'avant —
-/// `1088 = 17 × 64` — pour que le SEUL changement de comportement soit l'EXISTENCE du plafond, et donc
-/// que tout écart mesuré lui soit attribuable. Ce n'est pas une cible, c'est un CONSTAT : c'est ce que la
+/// `1088 = 17 × 64` — pour qu'AUCUN écart de comportement ne soit livré avec la dérivation, et donc que
+/// tout écart mesuré soit une régression à corriger. Ce n'est pas une cible, c'est un CONSTAT : c'est ce que la
 /// configuration livrée consommait déjà au pire, sauf qu'auparavant rien ne l'y tenait. Le réduire est une
 /// décision SÉPARÉE, qui se prend avec la courbe (mémoire, temps) publiée au banc.
 const BUDGET_DEFAUT_MO: i64 = 1088;
@@ -143,11 +158,45 @@ fn porteurs_pour(interactif: i64, refresh: i64) -> i64 {
 /// fois (le budget ne change pas en cours de vie du processus) et posés IDENTIQUEMENT sur toute connexion,
 /// lecture comme écriture : un `GROUP BY` lancé sur la connexion d'écriture a le même trieur que sur une
 /// connexion de lecture, donc le même besoin de plafond.
+/// LE DÉVERSEMENT EST UN CHOIX D'EXPLOITANT, PAS UN DÉFAUT — parce qu'il échange de la mémoire
+/// contre de la CONFIDENTIALITÉ, et que ce n'est pas à nous de faire cet arbitrage à sa place.
+///
+/// `temp_store=FILE` donne à SQLite le seul mécanisme qui borne son trieur (mesuré : plateau
+/// 1 236 → 749 Mio). Mais **SQLCipher chiffre le FICHIER DE BASE, pas les fichiers temporaires de
+/// SQLite** : un tri qui déverse écrit les données d'événements EN CLAIR sur le disque. Mesuré le
+/// 2026-08-04 : 323 occurrences de deux aiguilles du jeu de test dans 16 Mio lus, extrait lisible,
+/// contrôle négatif (aiguille absente) à 0. Le fichier est délié immédiatement et le répertoire est
+/// en 0700, mais il n'est PAS chiffré, et AUCUN quota n'en borne la taille (797 Mio mesurés).
+///
+/// DÉFAUT = `MEMORY` : c'est ce qui tourne en production, et c'est la recommandation de SQLCipher
+/// pour cette raison exacte. Le prix est connu et assumé : sans mécanisme de déversement, un tri
+/// non couvert par un index croît jusqu'à la limite du cgroup. En production ce plafond n'est pas
+/// atteint (RSS 225 Mio pour 2 Gio) ; il l'a été sur un banc dont les événements sont 4,4× plus gros.
+///
+/// `PLUME_SQLITE_DEVERSEMENT=1` l'active pour qui préfère la borne mémoire — et doit alors placer
+/// `SQLITE_TMPDIR` sur un support chiffré. La vraie sortie n'est ni l'un ni l'autre : c'est une
+/// agrégation NATIVE à état borné, où plume décide lui-même combien de mémoire, quand déverser, et
+/// sous quelle forme (cf. roadmap P10.3).
+fn deversement_actif() -> bool {
+    let conf = load_config();
+    matches!(
+        cfg(&conf, "PLUME_SQLITE_DEVERSEMENT", "0").trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// PUR, donc testable dans les DEUX sens sans toucher à l'environnement ni au `OnceLock`.
+/// `false` = pas de déversement = rien en clair sur le disque (le défaut, et la production).
+fn mot_temp_store(deversement: bool) -> &'static str {
+    if deversement { "FILE" } else { "MEMORY" }
+}
+
 pub(crate) fn pragmas_memoire() -> &'static str {
     static P: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     P.get_or_init(|| {
         format!(
-            "PRAGMA temp_store=FILE; PRAGMA mmap_size=268435456; PRAGMA cache_size={};",
+            "PRAGMA temp_store={}; PRAGMA mmap_size=268435456; PRAGMA cache_size={};",
+            mot_temp_store(deversement_actif()),
             -cache_ko_pour(budget_ko(), porteurs())
         )
     })
@@ -166,7 +215,61 @@ pub(crate) fn rapport() -> String {
     )
 }
 
-/// Le répertoire où SQLite déversera. DOIT être appelé AVANT le premier appel SQLite du processus :
+/// CE QUE LE PROCESSUS FERA DE SES TRIS. Trois cas, et ils sont EXCLUSIFS — d'où un type plutôt qu'un
+/// `Result`, dont le `Err` avait déjà servi à dire deux choses différentes.
+pub(crate) enum Deversement {
+    /// LE DÉFAUT. Pas de déversement : rien d'un événement ne touche le disque en clair, et il n'existe
+    /// aucun plafond de tri (cf. l'en-tête du module — c'est un arbitrage, pas un oubli).
+    Desactive,
+    /// Demandé par `PLUME_SQLITE_DEVERSEMENT=1` ET obtenu : ce répertoire recevra du clair.
+    Vers(std::path::PathBuf),
+    /// Demandé et NON obtenu — le cas qui mérite l'alerte, parce que SQLite retombera silencieusement.
+    Indisponible(String),
+}
+
+/// LE SEUL point qui décide ET rapporte. La bannière était écrite dans `server.rs`, qui n'a pas accès au
+/// mode : elle annonçait « déversement des tris : <chemin> » À CHAQUE DÉMARRAGE, y compris quand rien ne
+/// déverse — une phrase fausse dans le journal, et la branche d'erreur alertait sur un plafond inexistant.
+/// La rendre ICI ferme l'écart par construction : le `match` est EXHAUSTIF (aucun bras `_`), donc un mode
+/// ajouté demain ne compile pas tant que sa phrase n'est pas écrite.
+///
+/// PURE, et c'est délibéré : elle prend le mode DÉJÀ résolu au lieu de le résoudre elle-même, donc les
+/// TROIS branches se testent sans toucher au disque ni à l'environnement.
+pub(crate) fn banniere(mode: Deversement) -> String {
+    let r = rapport();
+    match mode {
+        Deversement::Desactive => format!(
+            "{r} — déversement des tris DÉSACTIVÉ (défaut) : aucune valeur d'événement en clair hors de \
+             la base chiffrée, et donc AUCUN plafond de tri — une agrégation assez large épuise la RAM. \
+             PLUME_SQLITE_DEVERSEMENT=1 prend l'échange."
+        ),
+        Deversement::Vers(d) => format!(
+            "{r} — déversement des tris ACTIVÉ vers {} : ce répertoire reçoit des VALEURS D'ÉVÉNEMENT EN \
+             CLAIR, hors de la base SQLCipher. Il doit être sur un support chiffré.",
+            d.display()
+        ),
+        Deversement::Indisponible(e) => format!(
+            "{r} — déversement des tris DEMANDÉ mais répertoire INDISPONIBLE ({e}) : SQLite retombera sur \
+             TMPDIR/var/tmp/tmp, qui est un tmpfs (donc de la RAM) sur la plupart des hôtes systemd -> le \
+             plafond n'y borne RIEN"
+        ),
+    }
+}
+
+/// Prépare le déversement SI et SEULEMENT SI il est demandé. Au défaut, on ne crée même pas le répertoire :
+/// un `sqltmp` présent sur le volume laisserait croire que des tris y passent.
+pub(crate) fn deversement_init(db_path: &str) -> Deversement {
+    if !deversement_actif() {
+        return Deversement::Desactive;
+    }
+    match repertoire_temporaire_init(db_path) {
+        Ok(d) => Deversement::Vers(d),
+        Err(e) => Deversement::Indisponible(e),
+    }
+}
+
+/// Le répertoire où SQLite déversera. PRIVÉ : on passe par `deversement_init`, sinon un appelant peut
+/// préparer un déversement que le mode n'autorise pas. DOIT être appelé AVANT le premier appel SQLite du processus :
 /// `sqlite3_os_init()` lit `getenv("SQLITE_TMPDIR")` UNE SEULE FOIS, à l'initialisation de SQLite. D'où
 /// l'appel unique en tête de `main`, avant tout branchement de sous-commande — un appel par sous-commande
 /// serait une ÉNUMÉRATION, et c'est précisément ce genre de liste qui a déjà lâché dans ce dépôt.
@@ -178,7 +281,7 @@ pub(crate) fn rapport() -> String {
 /// Un `SQLITE_TMPDIR` posé EXPLICITEMENT par l'exploitant est RESPECTÉ (et seulement contrôlé) : c'est le
 /// levier par lequel un déploiement place le déversement sur un support chiffré. On ne remplace que le
 /// SILENCE — et le silence, ici, vaut `/tmp`.
-pub(crate) fn repertoire_temporaire_init(db_path: &str) -> Result<std::path::PathBuf, String> {
+fn repertoire_temporaire_init(db_path: &str) -> Result<std::path::PathBuf, String> {
     if let Ok(explicite) = std::env::var("SQLITE_TMPDIR") {
         if !explicite.trim().is_empty() {
             let dir = std::path::PathBuf::from(explicite);
@@ -224,6 +327,42 @@ mod plafond_tests {
     // quatre `temp_store` que ce module vient de réunir.
     use crate::db_open::door_tests::{est_test, fichiers_de_test, rs_files, texte_de_production};
     use std::path::PathBuf;
+
+    /// LE DÉFAUT NE DÉVERSE PAS — donc n'écrit RIEN EN CLAIR sur le disque.
+    ///
+    /// Ce n'est pas une préférence de réglage, c'est une propriété du produit : SQLCipher chiffre le
+    /// fichier de base, PAS les fichiers temporaires de SQLite. Mesuré le 2026-08-04 : un tri qui
+    /// déverse laisse 323 occurrences lisibles de deux aiguilles du jeu de test dans 16 Mio lus
+    /// (contrôle négatif à 0). Basculer ce défaut retire une garantie de confidentialité — ce test
+    /// est là pour que ça ne puisse pas se faire par inadvertance.
+    ///
+    /// LA BANNIÈRE NE PEUT PAS ANNONCER UN DÉVERSEMENT QUI N'A PAS LIEU. C'est le défaut RÉEL corrigé
+    /// ici : `server.rs` imprimait « déversement des tris : <chemin> » à CHAQUE démarrage, sans accès au
+    /// mode. Un journal qui décrit autre chose que ce qui se passe est pire qu'un journal muet — c'est sur
+    /// lui qu'on s'appuiera le jour d'un incident de confidentialité.
+    ///
+    /// MUTATION : faire rendre le texte de `Vers` au bras `Desactive` ⇒ la 2ᵉ assertion passe au ROUGE.
+    #[test]
+    fn la_banniere_dit_le_mode_reel() {
+        let eteint = banniere(Deversement::Desactive);
+        assert!(eteint.contains("DÉSACTIVÉ"), "le mode doit être LISIBLE, pas déduit : {eteint}");
+        assert!(
+            !eteint.contains("/") ,
+            "AUCUN chemin ne doit apparaître quand rien ne déverse — c'est exactement ce qui mentait : {eteint}"
+        );
+        let allume = banniere(Deversement::Vers(std::path::PathBuf::from("/x/sqltmp")));
+        assert!(allume.contains("/x/sqltmp"), "le chemin qui reçoit du clair doit être NOMMÉ : {allume}");
+        assert!(allume.contains("EN CLAIR"), "et ce qu'il reçoit doit être dit : {allume}");
+        let casse = banniere(Deversement::Indisponible("montage RO".into()));
+        assert!(casse.contains("INDISPONIBLE") && casse.contains("montage RO"), "la cause doit remonter : {casse}");
+    }
+
+    /// MUTATION : inverser `mot_temp_store` fait passer la 1re assertion de `MEMORY` à `FILE`.
+    #[test]
+    fn le_defaut_ne_deverse_pas_en_clair() {
+        assert_eq!(mot_temp_store(false), "MEMORY", "DÉFAUT : aucun déversement, rien en clair sur disque");
+        assert_eq!(mot_temp_store(true), "FILE", "opt-in explicite : borne la RAM, au prix du clair sur disque");
+    }
 
     /// La dérivation MORD : à budget constant, doubler le nombre de porteurs DIVISE le cache. Sans cette
     /// mutation, « le budget est dérivé du pool » ne serait qu'une phrase de commentaire.

@@ -827,9 +827,10 @@ pub(crate) fn hydrate_cold(
 //
 // BORNE RAM (budget 2 Gio) : l'ensemble cold hydraté est PLAFONNÉ (`cold_hydrate_row_cap` = PLUME_QUERY_MAX) et
 // copié dans une TABLE TEMP -> l'union tourne sur (event HOT indexé par ts) ∪ (table temp bornée) sous le budget
-// interactif existant. Le support des objets TEMP et du trieur est celui de `sqlite_plafond` (déversement au-delà
-// du budget, plus de matérialisation illimitée en RAM). `truncated` REMONTE au caller (jamais un cold∪hot
-// tronqué présenté comme complet).
+// interactif existant. Le support des objets TEMP et du trieur est celui décidé par `sqlite_plafond` — et ce
+// support est la RAM AU DÉFAUT (`temp_store=MEMORY`, cf. `mot_temp_store`) : ce n'est donc PAS lui qui borne
+// l'ensemble ici, c'est `cold_hydrate_row_cap`. Ne pas s'appuyer sur un déversement qui n'existe qu'en opt-in.
+// `truncated` REMONTE au caller (jamais un cold∪hot tronqué présenté comme complet).
 
 /// Colonnes de `event`/`cold_event` (ORDRE FIXE) exposées par la VUE d'union — sur-ensemble de tout ce que le
 /// SQL compilé peut référencer (projection de base + WHERE + json_extract(fields)). Miroir EXACT du schéma live.

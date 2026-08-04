@@ -957,7 +957,9 @@ fn main() {
     // Ici, avant tout branchement de sous-commande — un appel par sous-commande serait une ÉNUMÉRATION.
     // SILENCIEUX : c'est `server::run` qui RAPPORTE (il sait qu'il est le daemon) ; `hashpw`/`--help`,
     // qui n'ouvrent aucune base, n'ont pas à imprimer un avertissement de plafond.
-    let _ = sqlite_plafond::repertoire_temporaire_init(&cfg(&load_config(), "PLUME_DB", "/var/lib/plume/db/plume.db"));
+    // AU DÉFAUT, CET APPEL NE FAIT RIEN : pas de déversement demandé -> pas de répertoire créé, pas de
+    // `SQLITE_TMPDIR` posé. Un `sqltmp` présent sur le volume laisserait croire que des tris y passent.
+    let _ = sqlite_plafond::deversement_init(&cfg(&load_config(), "PLUME_DB", "/var/lib/plume/db/plume.db"));
     if args.get(1).map(String::as_str) == Some("hashpw") {
         let pw = match args.get(2) {
             Some(p) => p.clone(),

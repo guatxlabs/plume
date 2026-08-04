@@ -610,7 +610,8 @@ pub(crate) async fn ingest_journal_post(State(st): State<AppState>, Extension(au
         return StatusCode::NO_CONTENT.into_response();
     }
     // L1 — GARDE DISQUE (avant écriture spool) : 503 explicite en pré-saturation, l'agent réémet ses NDJSON.
-    // La taille du corps est déjà bornée par DefaultBodyLimit (8 Mio) -> cardinalité par-fichier bornée.
+    // La taille du corps est déjà bornée par la couche `limite_corps` du sous-routeur d'ingestion
+    // (`PLUME_INGEST_MAX_BODY_MB`, défaut 8 Mio) -> cardinalité par-fichier bornée.
     if let Some(resp) = ingest_disk_guard(&st) {
         return resp;
     }

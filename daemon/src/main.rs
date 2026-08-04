@@ -51,6 +51,7 @@ mod ingest;
 pub(crate) use ingest::*;
 mod query_exec;
 pub(crate) use query_exec::*;
+mod limite_corps; // LE PLAFOND DE TAILLE D'UN CORPS INGERE : la limite qui MORD comptait des octets et ne le disait pas -> un seul auteur pour ce plafond ET pour son message
 mod sqlite_plafond; // LE PLAFOND MÉMOIRE D'UNE LECTURE : sous `temp_store` en mémoire, SQLite n'a AUCUN chemin de code pour déverser un tri -> un seul auteur pour ce budget
 mod query_timing; // LE DÉCOUPAGE DU TEMPS D'UNE REQUÊTE : l'attente d'un permit n'est fabricable QUE par l'acquisition
 pub(crate) use query_timing::*;

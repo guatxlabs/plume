@@ -14,7 +14,7 @@
 //!   - SPOOL / INGEST : enveloppe `{kind:events, env_id, events:[…]}` -> spool atomique 0600 -> la boucle de
 //!     fond `ingest_events_batch(_env)` (parsers, extracteur, threat-intel, RBA, masquage) — IDENTIQUE au HEC.
 //!   - BORNES DoS : `ingest_disk_guard`, permis `ingest_sem`, cap de décompression `otlp_gunzip_capped`,
-//!     `ingest_max_events`, + limite de corps 8 Mio (DefaultBodyLimit, layer serveur) + rate_limit (layer).
+//!     `ingest_max_events`, + limite de corps `PLUME_INGEST_MAX_BODY_MB` (défaut 8 Mio, couche `limite_corps`) + rate_limit (layer).
 //!
 //! AUTH HORS auth_guard (comme /services/collector/health) : la route est EXEMPTÉE du choke-point auth_guard et
 //! s'AUTO-AUTHENTIFIE ICI (clé -> tenant + connecteur). Une clé absente/mauvaise -> 403 IMMÉDIAT, AVANT tout
@@ -29,7 +29,7 @@ const FIREHOSE_MAX_RECORDS: usize = 10_000;
 /// Plafond DUR d'events matérialisés par requête (une enveloppe CloudTrail `{"Records":[…]}` peut multiplier).
 /// Combiné avec `st.ingest_max_events` (le plus petit gagne) -> 413 au-delà. Miroir de `HEC_MAX_EVENTS`.
 const FIREHOSE_MAX_EVENTS: usize = 50_000;
-/// Cap de DÉCOMPRESSION gzip du corps Firehose (défaut 16 Mio) — anti-bombe : un corps ≤8 Mio (DefaultBodyLimit)
+/// Cap de DÉCOMPRESSION gzip du corps Firehose (défaut 16 Mio) — anti-bombe : un corps sous le plafond de `limite_corps` (défaut 8 Mio)
 /// peut se décompresser en centaines de Mio -> OOM du pod 2 Gio. MÊME borne prudente que le récepteur OTLP
 /// (JSON matérialisé entier avant les caps records/events). Env-override `PLUME_FIREHOSE_MAX_DECOMPRESS` (>=1).
 const FIREHOSE_MAX_DECOMPRESS_DEFAULT: usize = 16 * 1024 * 1024;
@@ -96,7 +96,7 @@ pub(crate) async fn firehose_ingest_post(
 ) -> Response {
     // 1) AUTH EN PREMIER : clé de livraison -> tenant + connecteur lié, AVANT tout travail COÛTEUX (inflate gzip,
     //    parse JSON, décodage base64, spool). LOW#1 (précision) : l'extracteur `Bytes` d'axum a DÉJÀ bufferisé le
-    //    corps (≤8 Mio, borné par DefaultBodyLimit + rate_limit en amont) avant cette vérification in-handler ; ce
+    //    corps (borné par `limite_corps`, défaut 8 Mio, + rate_limit en amont) avant cette vérification in-handler ; ce
     //    qui est GARDÉ derrière l'auth n'est pas la lecture du corps mais son TRAITEMENT coûteux. Clé absente/
     //    mauvaise/hors mode 0 -> 403 IMMÉDIAT, avant tout parse/décompression/spool.
     let key = headers.get("x-amz-firehose-access-key").and_then(|v| v.to_str().ok()).unwrap_or("");
@@ -116,7 +116,7 @@ pub(crate) async fn firehose_ingest_post(
         Ok(p) => p,
         Err(_) => return firehose_err(StatusCode::SERVICE_UNAVAILABLE, &hdr_request_id, "server busy (ingest concurrency)"),
     };
-    // 4) gzip optionnel (cap anti-bombe AVANT le parse). Corps NON-gzip : borné par DefaultBodyLimit (8 Mio) mais
+    // 4) gzip optionnel (cap anti-bombe AVANT le parse). Corps NON-gzip : borné par `limite_corps` (défaut 8 Mio) mais
     //    on applique le cap par cohérence. RÉUTILISE `otlp_gunzip_capped` (flate2 déjà dans l'arbre).
     let ce = headers.get(axum::http::header::CONTENT_ENCODING).and_then(|v| v.to_str().ok()).unwrap_or("");
     let raw: Vec<u8> = if ce.contains("gzip") {

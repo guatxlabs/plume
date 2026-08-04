@@ -18,7 +18,7 @@
 //!   - SPOOL / INGEST : enveloppe `{kind:events, env_id, events:[…]}` -> spool atomique 0600 -> boucle de fond
 //!     `ingest_events_batch(_env)` — IDENTIQUE au Firehose/HEC.
 //!   - BORNES DoS : `ingest_disk_guard`, permis `ingest_sem`, cap `otlp_gunzip_capped` (`firehose_max_decompress`),
-//!     `ingest_max_events`, + limite de corps 8 Mio (DefaultBodyLimit) + rate_limit (layers).
+//!     `ingest_max_events`, + limite de corps `PLUME_INGEST_MAX_BODY_MB` (défaut 8 Mio, couche `limite_corps`) + rate_limit (layers).
 //!
 //! SÉMANTIQUE D'ACK Pub/Sub (OPPOSÉE à Firehose sur le message-poison) : Pub/Sub considère TOUT 2xx comme ACK
 //! et REJOUE sur non-2xx / timeout (jusqu'à l'ack-deadline de l'abonnement). D'où :
@@ -86,7 +86,7 @@ pub(crate) async fn pubsub_ingest_post(
     body: axum::body::Bytes,
 ) -> Response {
     // 1) AUTH EN PREMIER — la clé de livraison (query `?token=`) est vérifiée AVANT tout travail COÛTEUX (gzip,
-    //    parse JSON, base64, spool). Le corps ≤8 Mio a déjà été bufferisé par l'extracteur Bytes (borné par
+    //    parse JSON, base64, spool). Le corps, borné par `limite_corps` (défaut 8 Mio), a déjà été bufferisé (borné par
     //    DefaultBodyLimit + rate_limit en amont) mais AUCUN parse/décompression/écriture n'a lieu avant ce point.
     //    Absente/mauvaise -> 401 IMMÉDIAT (Pub/Sub rejoue : l'opérateur corrige le token de l'abonnement).
     let key = pubsub_query_token(query.as_deref());

@@ -1707,14 +1707,7 @@ pub(crate) async fn run() {
     let BootConfig { conf, db_path, spool, addr, user, pass, webdir, host, host_strict, sso_secret, public_demo, metrics_token, sso_group_admin, sso_group_editor, sso_group_superadmin, sso_header_user, sso_header_groups, tls_cert, tls_key, tls_on, lock_threshold, lock_base_s, lock_max_s, rl_ip_max, rl_auth_max, rl_global_max, session_ttl_s, session_secret, ingest_min_free_mb, ingest_max_events, search_limit_default, search_limit_max, query_sem, refresh_sem, bound } = boot_config();
     // PLAFOND MÉMOIRE : on RAPPORTE ce que le processus va faire, et on le rappelle (idempotent — l'effet
     // a déjà eu lieu en tête de `main`, seul endroit assez tôt pour que SQLite le voie).
-    match sqlite_plafond::repertoire_temporaire_init(&db_path) {
-        Ok(d) => eprintln!("[plafond] {} — déversement des tris : {}", sqlite_plafond::rapport(), d.display()),
-        Err(e) => eprintln!(
-            "[plafond] {} — répertoire de déversement INDISPONIBLE ({e}) : SQLite retombera sur TMPDIR/var/tmp/tmp, \
-             qui est un tmpfs (donc de la RAM) sur la plupart des hôtes systemd -> le plafond n'y borne RIEN",
-            sqlite_plafond::rapport()
-        ),
-    }
+    eprintln!("[plafond] {}", sqlite_plafond::banniere(sqlite_plafond::deversement_init(&db_path)));
     let conn = open_and_migrate_db(db_path.clone(), spool.clone(), conf.clone());
     let db = Arc::new(Mutex::new(conn));
     // L2 — EPOCH de session persistant (meta) chargé au boot -> mint/verify_session le mélangent au HMAC.

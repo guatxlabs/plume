@@ -1432,18 +1432,30 @@ fn fleet_integrations_freshness_routes() -> Router<AppState> {
 }
 
 fn ingest_routes() -> Router<AppState> {
+    ingest_routes_brut()
+        // LE PLAFOND DE CORPS DES ROUTES D'INGESTION EST DECIDE ICI, POUR TOUTES A LA FOIS.
+        // `disable()` retire le plafond GLOBAL d'axum sur ce sous-routeur : sans lui, un
+        // `PLUME_INGEST_MAX_BODY_MB` superieur a 8 serait rattrape par le plafond global, qui
+        // rendrait de nouveau le message muet -> le levier ne servirait a rien (cle P4.1-o).
+        .layer(axum::extract::DefaultBodyLimit::disable())
+        .layer(middleware::from_fn(crate::limite_corps::borne_le_corps))
+}
+
+/// Les routes elles-memes. Separees pour que le PLAFOND ci-dessus s'applique a l'ENSEMBLE et non
+/// route par route : une route ajoutee ici demain est couverte sans qu'on ait a y penser.
+fn ingest_routes_brut() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/api/ingest", post(ingest_post))
         .route("/api/ingest/minio", post(ingest_minio_post)) // Option C étape 1 : audit_webhook MinIO natif (mTLS direct)
         .route("/api/ingest/journal", post(ingest_journal_post))
         // P-HEC — récepteur PUSH AWS Kinesis Firehose (CloudTrail/GuardDuty). Auth = clé de livraison
         // `X-Amz-Firehose-Access-Key` vérifiée DANS le handler (EXEMPTÉ d'auth_guard, comme /collector/health) ->
-        // tenant + connecteur push lié, ingest-only. Body-cap 8 Mio + rate_limit (layers) s'appliquent quand même.
+        // tenant + connecteur push lié, ingest-only. Body-cap `limite_corps` + rate_limit (layers) s'appliquent quand même.
         // INERTE tant qu'aucune source push n'existe (firehose_token_lookup -> None -> 403) -> mode 0 byte-identique.
         .route("/api/ingest/firehose", post(firehose_ingest_post))
         // P-HEC — récepteur PUSH GCP Pub/Sub (Cloud Audit Logs). Auth = clé de livraison en query `?token=`
         // vérifiée DANS le handler (EXEMPTÉ d'auth_guard, EXACT match) -> tenant + connecteur push lié, ingest-only.
-        // Body-cap 8 Mio + rate_limit (layers) s'appliquent. INERTE tant qu'aucune source push gcp_pubsub n'existe
+        // Body-cap `limite_corps` + rate_limit (layers) s'appliquent. INERTE tant qu'aucune source push gcp_pubsub n'existe
         // (pubsub_token_lookup -> None -> 401) -> mode 0 byte-identique. Ack Pub/Sub : 2xx=ACK, poison=204 ack-drop.
         .route("/api/ingest/pubsub", post(pubsub_ingest_post))
         // HEC (#16) — endpoint WIRE-COMPATIBLE Splunk HTTP Event Collector (bring-your-own-forwarder).

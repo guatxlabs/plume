@@ -31,7 +31,7 @@ pub(crate) fn otlp_traces_enabled() -> bool {
 }
 
 /// Plafond DUR de spans matérialisés PAR requête (garde-fou anti-OOM). Bien au-delà d'un batch OTLP légitime
-/// (borné de fait par la limite de corps 8 Mio + le cap de décompression). Au-delà -> 413 (batch pathologique
+/// (borné de fait par `limite_corps`, défaut 8 Mio, + le cap de décompression). Au-delà -> 413 (batch pathologique
 /// refusé, jamais une troncature muette). Combiné avec `ingest_max_events` (le plus petit gagne).
 const OTLP_MAX_SPANS: usize = 50_000;
 /// Plafond d'attributs FLATTENÉS retenus par span (resource + scope + span). Au-delà -> ignorés (borne le
@@ -45,7 +45,7 @@ const OTLP_MAX_VALUE_DEPTH: usize = 6;
 /// cap d'ingest PARTAGÉ `INGEST_MAX_DECOMPRESS` (64 Mio, metrics/loki). RAISON (anti-DoS) : OTLP/JSON
 /// n'a AUCUN decode protobuf structuré pour amortir le coût — `serde_json::from_slice` MATÉRIALISE l'arbre
 /// `Value` ENTIER (plusieurs× la taille texte en heap) AVANT que les caps span/attr/depth ne s'appliquent.
-/// Un corps gzip ≤8 Mio (DefaultBodyLimit) NON-OTLP (ex. array plat géant) pouvait gonfler jusqu'à 64 Mio
+/// Un corps gzip sous le plafond de `limite_corps` (défaut 8 Mio) NON-OTLP (ex. array plat géant) pouvait gonfler jusqu'à 64 Mio
 /// puis exploser le heap du pod 2 Gio. On borne donc le gonflement OTLP plus tôt. Env-override (>=1 octet) :
 /// `PLUME_OTLP_MAX_DECOMPRESS`. Ne touche PAS le cap 64 Mio de metrics/loki (decode protobuf borné, hors scope).
 const OTLP_MAX_DECOMPRESS_DEFAULT: usize = 16 * 1024 * 1024;
@@ -381,7 +381,7 @@ pub(crate) fn otlp_request_to_events(root: &Value, max_spans: usize) -> Result<V
     Ok(out)
 }
 
-/// Décompresse un corps gzip en BORNANT la taille de sortie (anti-bombe : un corps ≤8 Mio peut se
+/// Décompresse un corps gzip en BORNANT la taille de sortie (anti-bombe : un corps sous le plafond de `limite_corps` (défaut 8 Mio) peut se
 /// décompresser en centaines de Mio -> OOM du pod 2 Gio). Lit par tranches jusqu'au cap ; au-delà -> Err.
 /// Corps NON-gzip -> renvoyé tel quel. `flate2` est DÉJÀ dans l'arbre (transitif via tower-http) : aucune
 /// crate compilée nouvelle.
@@ -459,7 +459,7 @@ pub(crate) async fn otlp_traces_post(
             Err(_) => return (StatusCode::PAYLOAD_TOO_LARGE, "decompressed body too large").into_response(),
         }
     } else {
-        // corps non-gzip : borné par DefaultBodyLimit (8 Mio) < cap OTLP, mais on applique le cap par cohérence.
+        // corps non-gzip : borné par `limite_corps` (défaut 8 Mio) < cap OTLP, mais on applique le cap par cohérence.
         if body.len() > otlp_max_decompress() {
             return (StatusCode::PAYLOAD_TOO_LARGE, "body too large").into_response();
         }

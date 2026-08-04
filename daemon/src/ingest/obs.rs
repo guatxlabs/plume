@@ -89,7 +89,7 @@ pub(crate) async fn metrics_prom(State(st): State<AppState>, Extension(au): Exte
 }
 
 // GARDE-FOUS DoS des récepteurs remote_write / loki push :
-//  - INGEST_MAX_DECOMPRESS : plafond de la taille DÉCOMPRESSÉE (anti-bombe snappy : un corps ≤8 Mio — cf.
+//  - INGEST_MAX_DECOMPRESS : plafond de la taille DÉCOMPRESSÉE (anti-bombe snappy : un corps sous le plafond de `limite_corps` (`PLUME_INGEST_MAX_BODY_MB`, défaut 8 Mio) — cf.
 //    DefaultBodyLimit — pouvait se décompresser en centaines de Mio -> OOM du pod 2 Gio). Au-delà -> 413.
 //  - INGEST_MAX_SAMPLES / INGEST_MAX_ENTRIES : plafond du nombre de samples/entrées matérialisés PAR requête.
 //    Volontairement TRÈS haut (bien au-delà d'un batch Alloy/Prometheus légitime, borné de fait par le cap de

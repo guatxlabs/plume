@@ -826,8 +826,9 @@ pub(crate) fn hydrate_cold(
 // = COMPLET, jamais un résultat tronqué à la seule fenêtre couverte par les rollups.
 //
 // BORNE RAM (budget 2 Gio) : l'ensemble cold hydraté est PLAFONNÉ (`cold_hydrate_row_cap` = PLUME_QUERY_MAX) et
-// copié dans une TABLE TEMP en mémoire (`temp_store=MEMORY`) -> l'union tourne sur (event HOT indexé par ts) ∪
-// (table temp bornée) sous le budget interactif existant. `truncated` REMONTE au caller (jamais un cold∪hot
+// copié dans une TABLE TEMP -> l'union tourne sur (event HOT indexé par ts) ∪ (table temp bornée) sous le budget
+// interactif existant. Le support des objets TEMP et du trieur est celui de `sqlite_plafond` (déversement au-delà
+// du budget, plus de matérialisation illimitée en RAM). `truncated` REMONTE au caller (jamais un cold∪hot
 // tronqué présenté comme complet).
 
 /// Colonnes de `event`/`cold_event` (ORDRE FIXE) exposées par la VUE d'union — sur-ensemble de tout ce que le
@@ -919,12 +920,13 @@ pub(crate) fn open_cold_union(
 ) -> Result<ColdUnionConn, String> {
     use rusqlite::types::Value as SqlVal;
 
-    // (1) HOT conn RO + clé DU TENANT. `temp_store=MEMORY` (table/vue TEMP bornées en RAM). PAS de
-    // `query_only=ON` : les objets TEMP doivent pouvoir être créés ; `main` ouvert READ_ONLY -> le HOT reste
-    // PHYSIQUEMENT immuable (aucune écriture possible sur la base tenant).
+    // (1) HOT conn RO + clé DU TENANT. Budget mémoire par `sqlite_plafond` : la table TEMP d'hydratation
+    // est bornée par `cold_hydrate_row_cap`, mais les AGRÉGATS exécutés sur la vue d'union ont le même
+    // trieur que partout ailleurs — donc le même besoin de plafond. PAS de `query_only=ON` : les objets
+    // TEMP doivent pouvoir être créés ; `main` ouvert READ_ONLY -> le HOT reste PHYSIQUEMENT immuable.
     let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(pe)?;
     apply_key_for(&conn, db_path);
-    let _ = conn.execute_batch("PRAGMA busy_timeout=3000; PRAGMA temp_store=MEMORY; PRAGMA mmap_size=268435456; PRAGMA cache_size=-65536;");
+    let _ = conn.execute_batch(&format!("PRAGMA busy_timeout=3000; {}", sqlite_plafond::pragmas_memoire()));
 
     // (2) Colonnes sous DENY (#45) de CE tenant -> NULLifiées dans la vue (parité HOT).
     let deny: std::collections::HashSet<String> =

@@ -51,6 +51,7 @@ mod ingest;
 pub(crate) use ingest::*;
 mod query_exec;
 pub(crate) use query_exec::*;
+mod sqlite_plafond; // LE PLAFOND MÉMOIRE D'UNE LECTURE : sous `temp_store` en mémoire, SQLite n'a AUCUN chemin de code pour déverser un tri -> un seul auteur pour ce budget
 mod query_timing; // LE DÉCOUPAGE DU TEMPS D'UNE REQUÊTE : l'attente d'un permit n'est fabricable QUE par l'acquisition
 pub(crate) use query_timing::*;
 mod soql_glue;
@@ -951,6 +952,12 @@ fn usage() -> String {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // LE RÉPERTOIRE DE DÉVERSEMENT, POSÉ AVANT TOUT. `sqlite3_os_init()` lit `getenv("SQLITE_TMPDIR")`
+    // UNE SEULE FOIS, à la première initialisation de SQLite : le poser plus tard n'aurait AUCUN effet.
+    // Ici, avant tout branchement de sous-commande — un appel par sous-commande serait une ÉNUMÉRATION.
+    // SILENCIEUX : c'est `server::run` qui RAPPORTE (il sait qu'il est le daemon) ; `hashpw`/`--help`,
+    // qui n'ouvrent aucune base, n'ont pas à imprimer un avertissement de plafond.
+    let _ = sqlite_plafond::repertoire_temporaire_init(&cfg(&load_config(), "PLUME_DB", "/var/lib/plume/db/plume.db"));
     if args.get(1).map(String::as_str) == Some("hashpw") {
         let pw = match args.get(2) {
             Some(p) => p.clone(),
@@ -1438,6 +1445,7 @@ fn main() {
                 std::process::exit(2);
             }
         };
+        let _ = conn.execute_batch(sqlite_plafond::pragmas_memoire());
         let live = read_schema_version(&conn);
         if live < CODE_SCHEMA_MAX {
             eprintln!("[migrate-check] schema LIVE={live} < CODE_SCHEMA_MAX={CODE_SCHEMA_MAX} -> migration EN ATTENTE (snapshot pre-migrate REQUIS) [exit 0]");
@@ -1457,6 +1465,7 @@ fn main() {
             Ok(c) => { apply_key(&c); c }
             Err(e) => { eprintln!("db-stats: ouverture read-only {db_path}: {e}"); std::process::exit(2); }
         };
+        let _ = conn.execute_batch(sqlite_plafond::pragmas_memoire());
         let q = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap_or(-1) };
         let page_size = q("PRAGMA page_size").max(0);
         let page_count = q("PRAGMA page_count").max(0);

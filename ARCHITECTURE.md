@@ -374,6 +374,40 @@ simultanées — chacune coûte de la RAM), `PLUME_FTS_FIELDS=0` (défaut : pas 
 `event_fields_fts`, la plus grosse économie disponible). La stratégie tient aux **rollups
 par-dimension** + au **cache SWR** — pas à l'index seul. CPU : 2 cœurs suffisent.
 
+**Plafond mémoire d'une lecture.** Un `stats … by` ou un `dc()` dont la clé n'est pas ordonnée par un
+index fait **trier** SQLite. Tant que `temp_store` valait `MEMORY`, ce tri n'avait **aucun mécanisme de
+déversement** — pas un réglage trop généreux, une absence de mécanisme : dans SQLite,
+`sqlite3VdbeSorterInit` ne renseigne `mxPmaSize` que si `temp_store=FILE`, et `sqlite3VdbeSorterWrite`
+enferme tout le calcul de déversement dans `if( mxPmaSize )`. Le trieur matérialisait donc un
+enregistrement **par ligne balayée**. Mesuré sur 3 648 003 événements, crête de RSS du processus
+(daemon neuf par cellule, `interactive:true`, moyenne de 2 tirs) :
+
+| requête | avant | après | déversé sur disque |
+|---|---:|---:|---:|
+| `stats count by action,source \| sort -count \| head 50` | 1 134 Mio | **425 Mio** | 676 Mio |
+| `stats dc(message)` | 1 106 Mio | **576 Mio** | 797 Mio |
+| `stats count by severity` (servie par index) | 309 Mio | 311 Mio | 0 |
+
+Le budget est désormais décidé en **un seul endroit** (`daemon/src/sqlite_plafond.rs`) et **dérivé** des
+bornes existantes : `cache_size = PLUME_SQLITE_BUDGET_MB / (READ_POOL_CAP + PLUME_QUERY_CONCURRENCY +
+PLUME_PANEL_REFRESH_CONCURRENCY + 2)`. Le défaut (1088 Mio) **reproduit exactement** l'ancien
+`cache_size=-65536` : le seul changement de comportement est l'**existence** du plafond. Le daemon
+imprime au démarrage `[plafond] budget … = … porteurs × … Mio — déversement des tris : <chemin>`.
+
+**Ce que ça coûte, et où.** Une requête qui tient sous le budget ne paie **rien** (aucun octet écrit).
+Une requête qui le dépasse paie du **temps**, et ce temps est une propriété du **support de
+déversement**, pas du correctif — `dc(message)` mesuré à ×1,7 sur tmpfs, ×3,4 sur btrfs, ×8,6 sur un
+montage `fuse.gocryptfs`. **Les réponses sont identiques** dans toutes les configurations mesurées
+(`dc(message)` = 2 234 123 partout).
+
+**Deux points d'exploitation.** (1) Les fichiers de déversement portent des valeurs d'événement **en
+clair**, hors de la base SQLCipher ; ils vivent dans `<répertoire de la base>/sqltmp` en `0700` et SQLite
+les **délie dès l'ouverture** (donc sans nom, et effacés même si le processus meurt), mais les octets
+touchent le périphérique — si votre modèle de menace inclut le vol du volume, pointez `SQLITE_TMPDIR`
+sur un support chiffré (il est respecté s'il est défini). (2) Ne le pointez **pas** sur un tmpfs (`/tmp`
+en est un sur la plupart des hôtes systemd) : ce serait de la RAM comptée au même cgroup, et le plafond
+ne bornerait plus rien.
+
 ## 12. Configuration (`PLUME_*` uniquement)
 
 Tout le spécifique-infra passe par des variables `PLUME_*` (l'ancien préfixe `SOC_*` a été **retiré**).

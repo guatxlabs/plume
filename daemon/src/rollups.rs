@@ -417,7 +417,7 @@ pub(crate) fn compute_cold_rollup(
     let rconn = Connection::open_with_flags(&real_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| e.to_string())?;
     apply_key_for(&rconn, db_path);
-    let _ = rconn.execute_batch("PRAGMA query_only=ON; PRAGMA busy_timeout=3000; PRAGMA temp_store=MEMORY;");
+    let _ = rconn.execute_batch(&format!("PRAGMA query_only=ON; PRAGMA busy_timeout=3000; {}", sqlite_plafond::pragmas_memoire()));
 
     let cond = cold_rollup_cond(env_id, day, max_id);
     let (min_sev, topn, dim_topn) = cold_rollup_caps();

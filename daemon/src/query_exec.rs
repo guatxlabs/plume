@@ -13,7 +13,7 @@ use crate::*;
 // GLOBAL (total de connexions idle TOUTES bases confondues, PAS par base : 6×8 handles chiffrés
 // feraient exploser le budget 2 Go) avec éviction LRU INTER-bases au-delà du cap. En mono-tenant : une
 // seule base -> exactement READ_POOL_CAP handles idle fongibles (identique à l'ancien plafond de 8).
-const READ_POOL_CAP: usize = 8;
+pub(crate) const READ_POOL_CAP: usize = 8;
 struct ReadPool {
     by_path: HashMap<String, Vec<(u64, Connection)>>, // db_path -> [(seq de rendu, connexion idle)]
     total: usize,                                     // nb total de connexions idle (toutes bases)
@@ -63,9 +63,10 @@ fn read_conn_open(db_path: &str) -> Result<Connection, String> {
     let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| e.to_string())?;
     apply_key_for(&conn, db_path);   // #2a-3 : clé DU TENANT (registre keyé db_path), pas db_key() global.
                                      // SQLCipher : la clé doit précéder toute requête. Non enregistré -> db_key() (mode 0).
-    // cache_size NÉGATIF = Ko (ici 64 Mo) : SQLCipher garde les pages DÉCHIFFRÉES en cache -> les
-    // requêtes chaudes/répétées (panneaux) ne re-déchiffrent pas tout depuis le disque. cf perf chiffrement.
-    let _ = conn.execute_batch("PRAGMA query_only=ON; PRAGMA busy_timeout=3000; PRAGMA temp_store=MEMORY; PRAGMA mmap_size=268435456; PRAGMA cache_size=-65536;");
+    // Le BUDGET MÉMOIRE (temp_store/cache_size/mmap_size) est décidé par `sqlite_plafond` et NULLE PART
+    // ailleurs : quatre sites le posaient, ils avaient déjà divergé, et sous `temp_store` en mémoire le
+    // trieur de SQLite n'a AUCUN chemin de déversement (cf. la démonstration dans ce module).
+    let _ = conn.execute_batch(&format!("PRAGMA query_only=ON; PRAGMA busy_timeout=3000; {}", sqlite_plafond::pragmas_memoire()));
     // WIRING SÉCU RÉUTILISABLE (#18 P3) — les UDF de requête, le HASH de masquage (#45) et l'AUTHORIZER DENY
     // sont installés par des helpers PARTAGÉS : le chemin HOT (ici) ET le chemin d'UNION hot∪cold du tier cold
     // (query_exec::run_on_conn via cold_store::open_cold_union) posent EXACTEMENT le même wiring -> le masquage

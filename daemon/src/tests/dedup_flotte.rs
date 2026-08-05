@@ -468,10 +468,22 @@
     ///
     /// L'« allègement » ne allégeait rien : il payait un rebuild complet à chaque redémarrage.
     ///
-    /// LA GARDE EST DÉRIVÉE DU CODE, PAS D'UNE LISTE. Elle LIT les `DROP INDEX IF EXISTS idx_…` de
-    /// `maintenance.rs` et vérifie qu'aucun de ces noms n'est recréé par `db/schema.sql`. Un
-    /// troisième index ajouté demain à la réconciliation est couvert sans que personne y pense — là
-    /// où une liste recopiée aurait divergé exactement comme l'allégation a divergé du fichier.
+    /// LA GARDE EST DÉRIVÉE DU CODE, PAS D'UNE LISTE. Elle LIT dans `maintenance.rs` les noms d'index
+    /// que la réconciliation SUPPRIME et vérifie qu'aucun de ces noms n'est recréé par `db/schema.sql`.
+    /// Un index ajouté demain à la réconciliation est couvert sans que personne y pense — là où une
+    /// liste recopiée aurait divergé exactement comme l'allégation a divergé du fichier.
+    ///
+    /// L'EXTRACTEUR A DEUX RÈGLES, PARCE QUE LE CODE A DEUX FORMES (repris le 2026-08-05, P10.2-d — et
+    /// c'est L'ANTI-ROT CI-DESSOUS QUI L'A EXIGÉ : il est passé au ROUGE dès que la mécanique de DROP a
+    /// été extraite dans un helper, exactement comme il promettait de le faire) :
+    ///   R1 — le `DROP INDEX IF EXISTS <nom>` ÉCRIT EN DUR (réconciliation FTS/expr/auto-index, où le nom
+    ///        est construit par préfixe : `idx_ev_f_`, `idx_ev_auto_`).
+    ///   R2 — le NOM PASSÉ AU DROPPER générique `drop_subsumed_index`, depuis que la mécanique (has_index
+    ///        + DROP + journal + garde) est EXTRAITE et que le SQL s'écrit `format!("DROP INDEX IF EXISTS
+    ///        {redondant}")` — plus aucun nom littéral n'y suit `DROP INDEX IF EXISTS`, donc R1 seule ne
+    ///        voyait plus RIEN de ces onze index. Deux points d'ancrage, tous deux stables :
+    ///          • `drop_subsumed_index(&conn, "<nom>"` — les retraits nommés un par un ;
+    ///          • une entrée d'inventaire, ligne commençant par `("idx_` — les retraits en table.
     ///
     /// MUTATION : remettre `CREATE INDEX IF NOT EXISTS idx_event_sev ON event(severity);` dans
     /// `db/schema.sql` ⇒ ROUGE, en nommant l'index fautif.
@@ -483,22 +495,50 @@
 
         // Les noms que la réconciliation SUPPRIME, extraits du source lui-même.
         let mut supprimes: Vec<String> = Vec::new();
+        let ident = |reste: &str| -> String { reste.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect() };
+        // La fonction ENGLOBANTE, suivie ligne à ligne : une TABLE de noms d'index n'est un inventaire de
+        // SUPPRESSIONS que dans une fonction qui SUPPRIME. Sans ce contexte, R2b ramassait aussi
+        // l'inventaire de CRÉATION de `ensure_host_rollup_scan_indexes_background` (idx_metric_ts /
+        // idx_snapshot_ts, forme textuelle IDENTIQUE) — un faux positif qui aurait accusé `db/schema.sql`
+        // de « recréer » un index qu'il a parfaitement le droit de déclarer. Vérifié le 2026-08-05.
+        let mut fonction = String::new();
         for l in maint.lines() {
             let code = l.split("//").next().unwrap_or("");
+            if let Some(p) = code.find("fn ") {
+                fonction = ident(&code[p + "fn ".len()..]);
+            }
+            // R1 : le nom écrit EN DUR derrière le DROP (le `{redondant}` interpolé ne rend rien -> ignoré).
+            let mut noms: Vec<String> = Vec::new();
             if let Some(p) = code.find("DROP INDEX IF EXISTS ") {
-                let reste = &code[p + "DROP INDEX IF EXISTS ".len()..];
-                let nom: String = reste.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                noms.push(ident(&code[p + "DROP INDEX IF EXISTS ".len()..]));
+            }
+            // R2a : le nom passé nommément au dropper générique.
+            if let Some(p) = code.find("drop_subsumed_index(&conn, \"") {
+                noms.push(ident(&code[p + "drop_subsumed_index(&conn, \"".len()..]));
+            }
+            // R2b : une entrée de l'inventaire des index subsumés (ligne `("idx_…", "…"),`), DANS une
+            //       fonction dont le nom dit qu'elle droppe.
+            if fonction.starts_with("drop_") {
+                if let Some(reste) = code.trim_start().strip_prefix("(\"idx_") {
+                    noms.push(format!("idx_{}", ident(reste)));
+                }
+            }
+            for nom in noms {
                 if !nom.is_empty() && !supprimes.contains(&nom) {
                     supprimes.push(nom);
                 }
             }
         }
         // ANTI-ROT : si l'extracteur ne reconnaît plus les DROP, la garde serait VACUE — verte en ne
-        // regardant rien. On fixe donc CE QU'ELLE DOIT VOIR (mesuré le 2026-08-05 : 3 familles).
+        // regardant rien. On fixe donc CE QU'ELLE DOIT VOIR (RE-MESURÉ le 2026-08-05 après P10.2-d :
+        // 2 familles construites par préfixe (R1) + 11 index nommés (R2) = 13 ; borne en `>=` pour ne pas
+        // se re-casser au prochain ajout, mais elle MORD si une des deux règles cesse de voir).
         assert!(
-            supprimes.len() >= 3,
-            "ANTI-ROT : l'extracteur ne voit plus les DROP de maintenance.rs ({supprimes:?}) — \
-             réparer l'EXTRACTEUR, sinon cette garde passe au vert sans rien vérifier"
+            supprimes.len() >= 13,
+            "ANTI-ROT : l'extracteur ne voit plus tous les DROP de maintenance.rs ({} vu(s) : {supprimes:?}) — \
+             réparer l'EXTRACTEUR (ses deux règles sont documentées au-dessus), sinon cette garde passe au \
+             vert sans rien vérifier",
+            supprimes.len()
         );
 
         let recrees: Vec<&String> = supprimes

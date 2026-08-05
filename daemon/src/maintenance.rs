@@ -207,28 +207,129 @@ pub(crate) fn ensure_event_category_index_background(db: &Arc<Mutex<Connection>>
 ///      suivant). idx_event_src_srcip(source, src_ip) reste un filet supplémentaire de toute façon.
 pub(crate) fn drop_redundant_event_indexes_background(db: &Arc<Mutex<Connection>>) {
     let conn = db.lock();
-    let has_index = |name: &str| -> bool {
+    // 1) severity-seul : subsumé INCONDITIONNELLEMENT par le composite (severity, src_ip) [v31].
+    drop_subsumed_index(&conn, "idx_event_sev", Subsumant::ParConstruction("idx_event_sev_srcip(severity, src_ip) [v31]"), "P5 v110");
+    // 2) source-seul : droppé SEULEMENT si le remplaçant (source, ts) existe -> zéro fenêtre de scan.
+    drop_subsumed_index(&conn, "idx_event_src", Subsumant::Explicite("idx_event_src_ts"), "P5 v110");
+}
+
+/// CE QUI SUBSUME un index redondant — et, par là, CE QU'IL FAUT VÉRIFIER AVANT DE LE DROPPER. La
+/// distinction n'est pas cosmétique : elle décide s'il existe ou non une FENÊTRE pendant laquelle la
+/// base n'aurait plus AUCUN index de tête sur la colonne.
+enum Subsumant<'a> {
+    /// Le subsumant existe PAR CONSTRUCTION, donc rien à confirmer. Deux cas :
+    ///  - l'AUTO-INDEX d'une contrainte `UNIQUE(...)` / `PRIMARY KEY(...)` : SQLite le crée AVEC la table
+    ///    (`sqlite_autoindex_<table>_N`) et il ne peut pas en être séparé — si la table est là, il est là ;
+    ///  - un index explicite posé par une migration ANTÉRIEURE et donc garanti sur toute base ayant passé
+    ///    cette version (cas idx_event_sev_srcip / v31).
+    /// Le `&str` porté est la DESCRIPTION lisible du subsumant, pour le journal — jamais un nom à chercher.
+    ParConstruction(&'a str),
+    /// Le subsumant est un index EXPLICITE dont la présence n'est PAS garantie à cet instant (il peut être
+    /// créé par une autre tâche de fond, elle-même retentée au boot suivant). Le `&str` est son NOM, et il
+    /// est CONFIRMÉ dans `sqlite_master` avant tout DROP — doctrine v110 : « jamais droppé avant que son
+    /// remplaçant existe » -> ZÉRO fenêtre de scan sur les gros flux.
+    Explicite(&'a str),
+}
+
+/// UN retrait d'index redondant, avec sa garde et son journal. Mécanique COMMUNE aux droppers de fond
+/// (`drop_redundant_event_indexes_background` v110 et `drop_prefix_subsumed_indexes_background`) : elle est
+/// EXTRAITE plutôt que recopiée, pour que la règle « on confirme le subsumant explicite, jamais l'auto-index »
+/// n'existe qu'à UN endroit.
+///
+/// POURQUOI UN DROP EST SÛR EN TÂCHE DE FOND ALORS QU'UN CREATE NE L'EST PAS. `DROP INDEX` ne fait que rendre
+/// au freelist les pages du btree de l'index : il NE LIT NI NE DÉCHIFFRE la table (aucune page de `event` /
+/// `alert` n'est touchée), donc son coût ne dépend PAS du volume de lignes. `CREATE INDEX`, lui, doit
+/// DÉCHIFFRER et trier la totalité de la table SQLCipher : sur des millions de lignes (auditd ~4M) il tient le
+/// verrou d'écriture assez longtemps pour retarder le bind -> la liveness probe k8s échoue -> CrashLoopBackOff
+/// (leçon idx_event_category / idx_event_src_ts). La doctrine anti-crashloop qui interdit un CREATE synchrone
+/// ne s'applique donc PAS à un DROP.
+///
+/// Idempotent : court-circuit si l'index n'est plus là (aucune prise du writer inutile), `IF EXISTS` sinon.
+/// Un échec n'est jamais fatal — il est NOMMÉ et retenté au boot suivant.
+fn drop_subsumed_index(conn: &Connection, redondant: &str, subsumant: Subsumant<'_>, origine: &str) {
+    let present = |name: &str| -> bool {
         conn.query_row("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1", params![name], |_| Ok(()))
             .is_ok()
     };
-    // 1) severity-seul : subsumé INCONDITIONNELLEMENT par le composite (severity, src_ip) [v31].
-    if has_index("idx_event_sev") {
-        match conn.execute("DROP INDEX IF EXISTS idx_event_sev", []) {
-            Ok(_) => eprintln!("[reconcile-bg] idx_event_sev DROPPÉ (préfixe de idx_event_sev_srcip ; seek severity préservé ; P5 v110)"),
-            Err(e) => eprintln!("[reconcile-bg] DROP INDEX idx_event_sev ÉCHEC ({e}) — retry au prochain boot"),
-        }
+    if !present(redondant) {
+        return; // déjà droppé (ou base neuve : plus aucune migration ne le crée) -> rien à faire
     }
-    // 2) source-seul : droppé SEULEMENT si le remplaçant (source, ts) existe -> zéro fenêtre de scan.
-    if has_index("idx_event_src") {
-        if has_index("idx_event_src_ts") {
-            match conn.execute("DROP INDEX IF EXISTS idx_event_src", []) {
-                Ok(_) => eprintln!("[reconcile-bg] idx_event_src DROPPÉ (préfixe de idx_event_src_ts ; seek source=X servi par le composite ; P5 v110)"),
-                Err(e) => eprintln!("[reconcile-bg] DROP INDEX idx_event_src ÉCHEC ({e}) — retry au prochain boot"),
+    let quoi = match subsumant {
+        Subsumant::ParConstruction(desc) => desc,
+        Subsumant::Explicite(nom) => {
+            if !present(nom) {
+                eprintln!(
+                    "[reconcile-bg] {redondant} CONSERVÉ ce boot : son subsumant {nom} n'est pas encore \
+                     présent (drop différé -> zéro fenêtre de scan ; retry au prochain boot)"
+                );
+                return;
             }
-        } else {
-            eprintln!("[reconcile-bg] idx_event_src CONSERVÉ ce boot : idx_event_src_ts pas encore présent (drop différé -> zéro fenêtre de scan ; retry au prochain boot)");
+            nom
         }
+    };
+    match conn.execute(&format!("DROP INDEX IF EXISTS {redondant}"), []) {
+        Ok(_) => eprintln!("[reconcile-bg] {redondant} DROPPÉ (subsumé par {quoi} ; seek préservé sur la colonne de tête ; {origine})"),
+        Err(e) => eprintln!("[reconcile-bg] DROP INDEX {redondant} ÉCHEC ({e}) — retry au prochain boot"),
     }
+}
+
+/// P10.2-d (ALLÈGEMENT INDEX, SUITE) — DROP EN TÂCHE DE FOND des NEUF index redondants que le schéma migré
+/// posait encore, sur la base LIVE qui les porte déjà (une base neuve ne les crée plus : les `CREATE INDEX`
+/// ont été RETIRÉS de `migrate.rs` à leur source, cf. les notes « P10.2-d » qui y sont laissées).
+///
+/// POURQUOI UNE FONCTION VOISINE ET PAS UNE EXTENSION DE `drop_redundant_event_indexes_background`. Ce nom-là
+/// dit « event_indexes », et SEPT de ces neuf index ne sont PAS sur `event` (ils sont sur `alert`, `banned_ip`,
+/// `case_link`, `dashboard_snapshot`, `data_model_field`, `data_model_object`, `net_ban`, `ueba_baseline_obs`,
+/// `event_rollup`). Y verser neuf entrées aurait fabriqué exactement la classe fourre-tout que la règle du
+/// dépôt interdit, et rendu FAUX un nom qui est aujourd'hui EXACT pour les deux index de v110. La règle
+/// « extraire plutôt qu'allonger » est appliquée à la MÉCANIQUE, pas à la liste : le `has_index` + DROP +
+/// journal + garde vit désormais dans `drop_subsumed_index`, et les DEUX droppers l'appellent. Chacun garde
+/// un nom qui décrit exactement son périmètre, et la campagne v110 garde son identité (son marqueur, son
+/// rollback documenté). ASSUMÉ : deux fonctions, zéro mécanique dupliquée.
+///
+/// LE CRITÈRE, UNIFORME : chaque index retiré est un PRÉFIXE (au sens SQLite : mêmes colonnes, dans le MÊME
+/// ORDRE, en tête) d'un index qui le subsume -> tout seek que le redondant servait, le subsumant le sert avec
+/// la MÊME colonne de tête. Le doublon EXACT est le cas dégénéré du préfixe (une liste est un préfixe
+/// d'elle-même). AUCUNE requête ne change de RÉSULTAT (un index ne détermine qu'un PLAN) ; prouvé par mutation
+/// (2026-08-05) : après DROP, aucun passage en SCAN et le planificateur NOMME l'index subsumant.
+///
+/// 1) DOUBLONS EXACTS d'une contrainte — l'auto-index existe PAR CONSTRUCTION avec la table -> INCONDITIONNEL :
+///      idx_dashboard_snapshot_tok(token)                = UNIQUE(token) de dashboard_snapshot [v90]
+///      idx_baseline_obs(baseline_id, entity, bucket)    = PRIMARY KEY(baseline_id, entity, bucket) [v84]
+/// 2) PRÉFIXES STRICTS d'un auto-index de contrainte — même garantie de construction -> INCONDITIONNEL :
+///      idx_banned_ip_srcip(src_ip)   ⊂ PK(src_ip, source)                          de banned_ip        [v52]
+///      idx_case_link_src(src_id)     ⊂ UNIQUE(src_id, dst_id, kind)                de case_link        [v28]
+///      idx_dm_field_object(object_id)⊂ UNIQUE(object_id, name)                     de data_model_field [v45]
+///      idx_dm_object_model(model_id) ⊂ UNIQUE(model_id, name)                      de data_model_object[v45]
+///      idx_event_rollup(bucket)      ⊂ PK(bucket, source, severity, action, src_ip, host, env_id)      [v33/v67]
+///      idx_net_ban_ip(ip)            ⊂ PK(ip, env_id)                              de net_ban          [v111]
+/// 3) PRÉFIXE STRICT d'un index EXPLICITE — le SEUL cas gardé, car son subsumant peut manquer sur une base
+///    donnée (il vient d'une migration, pas d'une contrainte) :
+///      idx_alert_mitre(mitre) ⊂ idx_alert_mitre_ts(mitre, ts) [v72] -> DROP UNIQUEMENT si idx_alert_mitre_ts
+///      est CONFIRMÉ présent dans sqlite_master. Sinon on CONSERVE mitre-seul ce boot et on retente au suivant :
+///      `/api/alerts?mitre=` et `coverage_detections` ne doivent jamais traverser une fenêtre sans index de tête
+///      sur `mitre`.
+///
+/// NE SONT PAS ICI, et c'est délibéré : les index PARTIELS (`idx_event_health_beat` WHERE category='health',
+/// `idx_incident_active`, `idx_incident_notmerged`). Un index partiel n'est JAMAIS subsumé par un index plein
+/// de mêmes colonnes de tête — il est plus petit et sert un prédicat que l'autre ne porte pas. La garde dérivée
+/// (`tests/index_redondance.rs`) les EXCLUT par la colonne `partial` de `PRAGMA index_list`, pour la même raison.
+pub(crate) fn drop_prefix_subsumed_indexes_background(db: &Arc<Mutex<Connection>>) {
+    let conn = db.lock();
+    for (redondant, contrainte) in [
+        ("idx_dashboard_snapshot_tok", "l'auto-index de UNIQUE(token) de dashboard_snapshot"),
+        ("idx_baseline_obs", "l'auto-index de PRIMARY KEY(baseline_id, entity, bucket) de ueba_baseline_obs"),
+        ("idx_banned_ip_srcip", "l'auto-index de PRIMARY KEY(src_ip, source) de banned_ip"),
+        ("idx_case_link_src", "l'auto-index de UNIQUE(src_id, dst_id, kind) de case_link"),
+        ("idx_dm_field_object", "l'auto-index de UNIQUE(object_id, name) de data_model_field"),
+        ("idx_dm_object_model", "l'auto-index de UNIQUE(model_id, name) de data_model_object"),
+        ("idx_event_rollup", "l'auto-index de PRIMARY KEY(bucket, source, severity, action, src_ip, host, env_id) de event_rollup"),
+        ("idx_net_ban_ip", "l'auto-index de PRIMARY KEY(ip, env_id) de net_ban"),
+    ] {
+        drop_subsumed_index(&conn, redondant, Subsumant::ParConstruction(contrainte), "P10.2-d");
+    }
+    // Le SEUL dont le subsumant est un index EXPLICITE (v72) et non un auto-index -> garde obligatoire.
+    drop_subsumed_index(&conn, "idx_alert_mitre", Subsumant::Explicite("idx_alert_mitre_ts"), "P10.2-d");
 }
 
 /// v108 (PERF recherche raw haut-volume) — crée l'index COMPOSITE MANQUANT idx_event_src_ts(source, ts) EN

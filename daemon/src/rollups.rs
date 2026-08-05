@@ -1173,7 +1173,10 @@ pub(crate) fn load_index_policies(conn: &Connection) -> Vec<IndexPolicy> {
 pub(crate) fn retention_prune_table(db: &Arc<Mutex<Connection>>, table: &str, tscol: &str, extra: &str, global_cutoff: i64, n: i64, policies: &[IndexPolicy]) {
     let guard = if extra.is_empty() { String::new() } else { format!(" AND {extra}") };
     let batch = retention_purge_batch();
-    // 1) per-index (fenêtre propre) — borné par idx_event_ts / idx_event_rollup (range sur tscol), env_id filtré.
+    // 1) per-index (fenêtre propre) — borné par un index de TÊTE sur `tscol` : idx_event_ts pour `event`, et
+    //    pour `event_rollup` l'AUTO-INDEX de sa PK (bucket, source, severity, action, src_ip, host, env_id),
+    //    dont `bucket` est la colonne de tête (P10.2-d : idx_event_rollup(bucket), doublon de ce préfixe, a été
+    //    retiré — le range sur tscol reste servi à l'identique). env_id filtré.
     //    #23 F3 : CHUNKÉ (verrou relâché entre lots) ; même prédicat, mêmes lignes finales supprimées.
     for p in policies.iter().filter(|p| p.retention_days > 0) {
         let cutoff = n - p.retention_days * 86400;

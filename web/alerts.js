@@ -35,7 +35,8 @@ function alertDrill(a) {
   if ($('#sql')) { $('#sql').value = q; runQuery(); }
 }
 // PURPLE — filtre actif sur les alertes par technique MITRE (pivot depuis le panneau couverture ou un
-// chip d'alerte). '' = aucun filtre (toutes les alertes). Cf. ?mitre= côté daemon (index idx_alert_mitre).
+// chip d'alerte). '' = aucun filtre (toutes les alertes). Cf. ?mitre= côté daemon (index idx_alert_mitre_ts,
+// dont `mitre` est la colonne de TÊTE ; le idx_alert_mitre(mitre) seul, préfixe strict, a été retiré P10.2-d).
 /* state: alertMitreFilter -> S (state.js) */
 // BATCH 1 : la vue MITRE « tous statuts » (historique de détection, potentiellement grande) est PAGINÉE
 // côté serveur (LIMIT/OFFSET + total). Page courante remise à 0 dès qu'un filtre change.

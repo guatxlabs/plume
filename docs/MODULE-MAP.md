@@ -85,7 +85,7 @@ is annotated with its feature #). Large but flat: `query`, `search`, `soql_meta`
 ### Server / state / entry
 | Path | Purpose | Ownable? |
 |------|---------|----------|
-| `server.rs` | `run()` boot: config → open/migrate DB → seed_* → background jobs → router (~340 routes) | Guarded — the boot god-function; changes here are deploy-gated |
+| `server.rs` | `run()` boot: config → open/migrate DB → seed_* → background jobs → router (**245 routes**, mesuré 2026-08-06 : `sed 's\|//.*\|\|' server.rs \| grep -c '\.route('` — chaque route peut porter plusieurs méthodes HTTP, le nombre de handlers est donc plus élevé) | Guarded — the boot god-function; changes here are deploy-gated |
 | `state.rs` | `AppState` (config carrier + shared handles) | See caveat below |
 | `main.rs` | CLI subcommands (backup/restore/…), glue | — |
 | `metrics.rs`, `knowledge.rs`, `seeds.rs`, `ledger.rs`, `sigma.rs` | Metrics, knowledge objects, seed data, audit ledger, Sigma→GXQL importer | Mostly yes |

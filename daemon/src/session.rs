@@ -169,42 +169,113 @@ pub(crate) fn load_session_secret(conf: &HashMap<String, String>) -> Vec<u8> {
             }
         }
     }
-    use std::io::Read;
-    let mut b = [0u8; 32];
-    if std::fs::File::open("/dev/urandom").ok().and_then(|mut f| f.read_exact(&mut b).ok()).is_some() {
-        let _ = std::fs::write(&path, hex_encode(&b));
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        return b.to_vec();
-    }
-    // dernier recours (jamais attendu sous Linux) : dérive non vide -> les sessions restent signées.
-    sha256_hex(format!("plume-session-fallback-{}", now()).as_bytes()).into_bytes()
+    // MÊME DOCTRINE QUE LE TOKEN D'INSTALLATION, et pour la même raison : cette clé SIGNE les cookies de
+    // session. Le « dernier recours » qui vivait ici la dérivait de l'horloge de boot
+    // (`sha256("plume-session-fallback-{now}")`) — qui devine la seconde de démarrage FORGE une session
+    // admin. Sans entropie il n'y a pas de clé, donc pas de service : exit 78 (EX_CONFIG), le fail-closed
+    // de boot déjà employé par `db_key`/`cfg_secret`. L'exploitant peut toujours poser PLUME_SESSION_SECRET.
+    let Some(b) = os_entropy::<32>() else {
+        eprintln!(
+            "[session] FATAL : aucune source d'entropie (ni /dev/urandom ni getrandom) — impossible de \
+             fabriquer la clé de signature des sessions. AUCUNE clé dérivée d'une horloge ne sera émise. \
+             Répare l'entropie de l'hôte, ou pose PLUME_SESSION_SECRET."
+        );
+        std::process::exit(78);
+    };
+    let _ = std::fs::write(&path, hex_encode(&b));
+    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    b.to_vec()
 }
 
 // ---------- wizard / admin (auth modifiable depuis l'UI) ----------
+
+/// LONGUEUR MINIMALE d'un mot de passe POSÉ par plume — UN SEUL auteur pour la politique (item 3), pour
+/// que le serveur, l'UI et l'aide ne puissent plus annoncer trois chiffres différents. N'affecte QUE la
+/// DÉFINITION d'un mot de passe (setup, reset admin, création/màj de compte) ; les mdp existants marchent.
+pub(crate) const PASSWORD_MIN_CHARS: usize = 12;
+
+/// Nombre d'octets ALÉATOIRES d'un token d'installation (-> 2× en hex).
+pub(crate) const SETUP_TOKEN_BYTES: usize = 18;
+
+/// Matière aléatoire du token d'installation. `/dev/urandom` d'abord (chemin nominal), puis le CSPRNG de
+/// l'OS SANS descripteur de fichier (`getrandom(2)` via `OsRng`, déjà utilisé par `hash_pw`) — ce second
+/// essai couvre le cas où `/dev` n'est pas monté (chroot/conteneur minimal), qui est EXACTEMENT le cas où
+/// le premier échoue. Les DEUX en échec -> `None` : il n'y a pas de troisième voie.
+pub(crate) fn setup_token_entropy() -> Option<[u8; SETUP_TOKEN_BYTES]> {
+    os_entropy::<SETUP_TOKEN_BYTES>()
+}
+
+/// LE PRODUCTEUR UNIQUE de matière secrète des chemins d'installation. `/dev/urandom` d'abord (chemin
+/// nominal), puis le CSPRNG de l'OS SANS descripteur de fichier (`getrandom(2)` via `OsRng`, déjà utilisé
+/// par `hash_pw`) — ce second essai couvre le cas où `/dev` n'est pas monté (chroot/conteneur minimal),
+/// qui est EXACTEMENT le cas où le premier échoue. Les DEUX en échec -> `None`, et il n'y a pas de
+/// troisième voie : un secret « de repli » dérivé d'une horloge ou d'un pid est ÉNUMÉRABLE, donc il est
+/// pire que pas de secret du tout — il donne l'apparence de la protection. L'appelant REFUSE.
+pub(crate) fn os_entropy<const N: usize>() -> Option<[u8; N]> {
+    use std::io::Read;
+    let mut buf = [0u8; N];
+    if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut buf)).is_ok() {
+        return Some(buf);
+    }
+    use argon2::password_hash::rand_core::{OsRng, RngCore};
+    OsRng.try_fill_bytes(&mut buf).ok().map(|()| buf)
+}
+
+/// Formate le token d'installation À PARTIR DE la matière aléatoire fournie. `None` en entrée -> `None` en
+/// sortie : PAS de token, donc `/api/setup` refuse tout (fail-closed). Il n'existe AUCUN repli dérivé d'une
+/// horloge ou d'un pid — un tel « token » s'énumère en quelques milliers d'essais et il ouvre le compte
+/// ADMIN du SIEM à un anonyme.
+pub(crate) fn setup_token_from_entropy(raw: Option<[u8; SETUP_TOKEN_BYTES]>) -> Option<String> {
+    raw.map(|b| hex_encode(&b))
+}
+
+/// Clé de comptage anti-rafale de `/api/setup`. Les chevrons sont HORS du charset d'un nom de compte
+/// (`platform_user_name_ok`) -> ce principal ne peut collisionner avec aucun utilisateur réel.
+pub(crate) const SETUP_LOCK_PRINCIPAL: &str = "<installation>";
+
+/// Le token d'installation VAUT un mot de passe d'administrateur : sa vérification est FAIL-CLOSED sur un
+/// secret attendu VIDE (hors mode setup, `st.setup_token` est vide — rien ne doit alors matcher, pas même
+/// un corps sans champ `token`) et à TEMPS CONSTANT (même discipline que la signature de session et le
+/// jeton de scrape `/metrics`).
+pub(crate) fn setup_token_matches(expected: &str, provided: &str) -> bool {
+    !expected.is_empty() && ct_eq(provided.as_bytes(), expected.as_bytes())
+}
+
 pub(crate) fn hash_pw(pw: &str) -> Option<String> {
     use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
     let salt = SaltString::generate(&mut OsRng);
     argon2::Argon2::default().hash_password(pw.as_bytes(), &salt).ok().map(|h| h.to_string())
 }
 
-pub(crate) fn set_admin(st: &AppState, user: &str, hash: &str) {
+/// Pose l'admin — ET DIT SI ELLE A ÉTÉ ÉCRITE. Les trois écritures forment UN SEUL état (le nom dans `meta`,
+/// la purge du hash hérité, le compte dans `user`) : elles passent donc par une TRANSACTION, et l'état EN
+/// MÉMOIRE (`st.admin`, cache d'auth) n'est touché QU'APRÈS le commit. Sans cela, une base non inscriptible
+/// (volume RO, disque plein, migration ratée) laissait un admin vivant dans le process, absent de la base :
+/// l'appelant répondait « installé », et le redémarrage suivant repartait en mode setup.
+pub(crate) fn set_admin(st: &AppState, user: &str, hash: &str) -> Result<(), String> {
     {
         let c = st.db.lock();
-        let _ = c.execute("INSERT INTO meta(key,value) VALUES('admin_user',?1) ON CONFLICT(key) DO UPDATE SET value=?1", params![user]);
+        let tx = c.unchecked_transaction().map_err(|e| format!("transaction : {e}"))?;
+        tx.execute("INSERT INTO meta(key,value) VALUES('admin_user',?1) ON CONFLICT(key) DO UPDATE SET value=?1", params![user])
+            .map_err(|e| format!("meta.admin_user : {e}"))?;
         // ANTI-FUITE PAR EXPORT — on NE STOCKE PLUS le hash admin en CLAIR dans meta : il y était
         // exfiltrable via /api/export ou /api/query en SQL brut admin (`SELECT value FROM meta WHERE
         // key='admin_hash'`), l'authorizer read-pool ne pouvant pas filtrer meta PAR CLÉ (déni de meta.value
         // casserait schema_version/plume_mode). La SOURCE DE VÉRITÉ du hash = user.hash (déjà DÉNIÉ par
         // l'authorizer, écrit juste dessous). On purge toute copie héritée (bases pré-fix) — idempotent.
-        let _ = c.execute("DELETE FROM meta WHERE key='admin_hash'", []);
+        tx.execute("DELETE FROM meta WHERE key='admin_hash'", [])
+            .map_err(|e| format!("purge meta.admin_hash : {e}"))?;
         // l'admin est aussi un compte de la table user (rôle admin)
-        let _ = c.execute(
+        tx.execute(
             "INSERT INTO user(name,hash,role) VALUES(?1,?2,'admin') ON CONFLICT(name) DO UPDATE SET hash=?2, role='admin'",
             params![user, hash],
-        );
+        )
+        .map_err(|e| format!("compte admin : {e}"))?;
+        tx.commit().map_err(|e| format!("commit : {e}"))?;
     }
     *st.admin.lock() = Some((user.to_string(), hash.to_string()));
     st.auth_cache.lock().clear(); // invalide les creds en cache (l'ancien défaut ne marche plus)
+    Ok(())
 }
 
 pub(crate) async fn setup_status(State(st): State<AppState>) -> Json<Value> {
@@ -212,29 +283,68 @@ pub(crate) async fn setup_status(State(st): State<AppState>) -> Json<Value> {
     Json(json!({ "configured": configured }))
 }
 
-pub(crate) async fn setup_post(State(st): State<AppState>, Json(b): Json<Value>) -> Response {
+pub(crate) async fn setup_post(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    Json(b): Json<Value>,
+) -> Response {
     if st.admin.lock().is_some() || !st.pass_hash.is_empty() {
         return err_json(StatusCode::CONFLICT, "déjà configuré (utilise Réglages > changer le mot de passe)");
     }
+    // ANTI-RAFALE : `/api/setup` est la SEULE route qu'un anonyme atteint au premier boot, et le seul secret
+    // qui la garde vaut le compte admin. On réutilise TEL QUEL le compteur brute-force de `/api/login`
+    // (couple (principal, IP), backoff exponentiel, AUTO-INGEST source=plume-auth) : un martèlement du token
+    // d'installation est donc freiné ET visible dans le SIEM — un SOC doit voir ses propres échecs d'auth.
+    let ip = peer.ip().to_string();
+    if let Some(retry) = auth_lock_check(&st, SETUP_LOCK_PRINCIPAL, &ip) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, retry.to_string())],
+            Json(json!({ "error": "trop d'échecs sur le token d'installation — réessayez plus tard" })),
+        )
+            .into_response();
+    }
     let token = b.str_field("token");
-    if st.setup_token.is_empty() || token != st.setup_token.as_str() {
+    if !setup_token_matches(st.setup_token.as_str(), token) {
+        let _ = auth_record_failure(&st, SETUP_LOCK_PRINCIPAL, &ip);
         return forbidden("token d'installation invalide (voir le log du daemon ou /var/lib/plume/db/setup-token.txt)");
     }
+    auth_record_success(&st, SETUP_LOCK_PRINCIPAL, &ip);
     let user = b.trimmed("user");
     let pw = b.str_field("password");
-    // POLITIQUE MDP ≥ 12 (item 3) — n'affecte QUE la DÉFINITION ; les mdp existants continuent de marcher.
-    if user.is_empty() || pw.chars().count() < 12 {
-        return bad_req("utilisateur requis + mot de passe ≥ 12 caractères");
+    // POLITIQUE MDP (item 3) — n'affecte QUE la DÉFINITION ; les mdp existants continuent de marcher.
+    if user.is_empty() || pw.chars().count() < PASSWORD_MIN_CHARS {
+        return bad_req(format!("utilisateur requis + mot de passe ≥ {PASSWORD_MIN_CHARS} caractères"));
     }
-    match hash_pw(pw) {
-        Some(h) => {
-            set_admin(&st, &user, &h);
-            let _ = std::fs::remove_file(std::path::Path::new(st.db_path.as_str()).with_file_name("setup-token.txt"));
-            ledger_append(&st.db.lock(), "setup", &format!("admin défini : {user}"));
-            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+    let Some(h) = hash_pw(pw) else { return server_err("hash échoué") };
+    // FAIL-CLOSED : tant que la pose de l'admin n'est pas ÉCRITE, il n'y a PAS d'installation — donc pas de
+    // 200, pas d'effacement du token (l'exploitant doit pouvoir réessayer après réparation), pas de ledger.
+    if let Err(e) = set_admin(&st, &user, &h) {
+        eprintln!("[setup] pose de l'admin REFUSÉE (base non inscriptible) : {e}");
+        return server_err(format!("installation NON effectuée (rien n'a été écrit) : {e}"));
+    }
+    // Le fichier de token porte le secret EN CLAIR : on l'écrase puis on RELIT le disque. S'il survit, on le
+    // DIT — au journal, au registre et dans la réponse — au lieu de rendre un succès nu.
+    let residu = erase_setup_token_file(st.db_path.as_str());
+    let detail = match &residu {
+        None => format!("admin défini : {user}"),
+        Some(p) => {
+            eprintln!("[setup] ATTENTION : {p} n'a PAS pu être effacé — le token d'installation y reste EN CLAIR ; efface-le à la main.");
+            format!("admin défini : {user} — token d'installation NON effacé ({p})")
         }
-        None => server_err("hash échoué"),
-    }
+    };
+    ledger_append(&st.db.lock(), "setup", &detail);
+    (StatusCode::OK, Json(json!({ "ok": true, "setup_token_file_removed": residu.is_none() }))).into_response()
+}
+
+/// Efface le `setup-token.txt` voisin de la base et DIT si le fichier a réellement disparu. Le token y est
+/// en CLAIR : on ÉCRASE avant de délier (`shred_file`, même traitement que le résidu effacé au boot dans
+/// `run()`), puis on RELIT le système de fichiers — l'appelant ne peut pas déclarer une installation propre
+/// sur la foi d'un `remove_file` dont personne n'a regardé le résultat.
+pub(crate) fn erase_setup_token_file(db_path: &str) -> Option<String> {
+    let tp = std::path::Path::new(db_path).with_file_name("setup-token.txt");
+    shred_file(&tp.to_string_lossy());
+    tp.exists().then(|| tp.display().to_string())
 }
 
 pub(crate) async fn password_post(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
@@ -244,14 +354,20 @@ pub(crate) async fn password_post(State(st): State<AppState>, Extension(au): Ext
     if let Err(r) = require_admin(&au) { return r; }
     // l'appelant est déjà authentifié (auth_guard) ; on garde le même nom d'admin
     let new = b.str_field("new");
-    // POLITIQUE MDP ≥ 12 (item 3) — ne valide qu'au CHANGEMENT ; l'ancien mdp reste valide tant qu'inchangé.
-    if new.chars().count() < 12 {
-        return bad_req("mot de passe ≥ 12 caractères");
+    // POLITIQUE MDP (item 3) — ne valide qu'au CHANGEMENT ; l'ancien mdp reste valide tant qu'inchangé.
+    if new.chars().count() < PASSWORD_MIN_CHARS {
+        return bad_req(format!("mot de passe ≥ {PASSWORD_MIN_CHARS} caractères"));
     }
     let user = st.admin.lock().clone().map(|(u, _)| u).unwrap_or_else(|| st.user.as_ref().clone());
     match hash_pw(new) {
         Some(h) => {
-            set_admin(&st, &user, &h);
+            // MÊME FAIL-CLOSED QUE `/api/setup` : si l'écriture n'a pas eu lieu, on ne bumpe SURTOUT PAS
+            // l'epoch (cela déconnecterait tout le monde pour un mot de passe resté l'ancien) et on ne
+            // certifie rien au registre.
+            if let Err(e) = set_admin(&st, &user, &h) {
+                eprintln!("[password] changement REFUSÉ (base non inscriptible) : {e}");
+                return server_err(format!("mot de passe NON changé (rien n'a été écrit) : {e}"));
+            }
             // L2 : un changement de mot de passe INVALIDE toutes les sessions antérieures (bump d'epoch) —
             // un attaquant tenant un ancien cookie/mdp est déconnecté par le reset, pas seulement au TTL.
             bump_session_epoch(&st);

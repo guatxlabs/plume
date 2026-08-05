@@ -1167,7 +1167,7 @@ async function loadSettings() {
 if ($('#setup-form')) $('#setup-form').addEventListener('submit', async e => {
   e.preventDefault();
   const pw = $('#set-pw').value, res = $('#set-result');
-  if (pw.length < 6) { res.textContent = 'mot de passe >= 6 caractères'; return; }
+  if (pw.length < 12) { res.textContent = 'mot de passe >= 12 caractères'; return; }
   let configured = true;
   try { ({ configured } = await api('/setup-status')); } catch (e) {}
   if (configured && !await confirmModal('Changer le mot de passe ? Tu devras te reconnecter avec le nouveau.', { okText: 'Changer', danger: true })) return;

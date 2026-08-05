@@ -1849,18 +1849,23 @@ pub(crate) async fn run() {
         }
     };
     let setup_token = if admin0.is_none() && pass.is_empty() {
-        use std::io::Read;
         use std::os::unix::fs::PermissionsExt;
-        let mut rb = [0u8; 18];
-        let tok = std::fs::File::open("/dev/urandom").ok()
-            .and_then(|mut f| f.read_exact(&mut rb).ok())
-            .map(|_| hex_encode(&rb))
-            .unwrap_or_else(|| format!("setup{}", now()));
-        let tp = std::path::Path::new(&db_path).with_file_name("setup-token.txt");
-        let _ = std::fs::write(&tp, &tok);
-        let _ = std::fs::set_permissions(&tp, std::fs::Permissions::from_mode(0o600));
-        eprintln!("\n===== SETUP MODE — token d'installation (usage unique) =====\n  {tok}\n  -> ouvre la page, ⚙️ Réglages : colle ce token + définis tes identifiants.\n  (aussi dans : {})\n===========================================================\n", tp.display());
-        tok
+        // Le token d'installation ouvre le compte ADMIN à un anonyme : il n'est FABRIQUÉ qu'à partir
+        // d'entropie réelle (cf. `setup_token_from_entropy`). Aucune entropie -> aucun token -> `/api/setup`
+        // refuse tout (fail-closed) et on le DIT, au lieu de servir un secret énumérable.
+        match setup_token_from_entropy(setup_token_entropy()) {
+            Some(tok) => {
+                let tp = std::path::Path::new(&db_path).with_file_name("setup-token.txt");
+                let _ = std::fs::write(&tp, &tok);
+                let _ = std::fs::set_permissions(&tp, std::fs::Permissions::from_mode(0o600));
+                eprintln!("\n===== SETUP MODE — token d'installation (usage unique) =====\n  {tok}\n  -> ouvre la page, ⚙️ Réglages : colle ce token + définis tes identifiants.\n  (aussi dans : {})\n===========================================================\n", tp.display());
+                tok
+            }
+            None => {
+                eprintln!("\n===== SETUP IMPOSSIBLE — aucune source d'entropie (ni /dev/urandom ni getrandom) =====\n  AUCUN token d'installation n'est émis : /api/setup REFUSERA tout appel.\n  Répare l'entropie de l'hôte et redémarre, ou pose PLUME_PASS_HASH (plume-daemon hashpw).\n=====================================================================================\n");
+                String::new()
+            }
+        }
     } else {
         // F4 — plus en mode setup (un admin existe / pass défini) : on efface tout `setup-token.txt`
         // RÉSIDUEL d'un premier boot (inerte car la route setup est gated sur admin0.is_none(), mais c'est

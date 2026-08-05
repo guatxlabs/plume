@@ -38,7 +38,7 @@ async function loadUsers() {
     const editor = document.createElement('div'); editor.className = 'ueditor hidden';
     const rsel = document.createElement('select'); rsel.className = 'ue-role';
     ['admin', 'editor', 'viewer'].forEach(r => { const o = document.createElement('option'); o.value = r; o.textContent = r; if (r === u.role) o.selected = true; rsel.appendChild(o); });
-    const pw = document.createElement('input'); pw.type = 'password'; pw.className = 'ue-pw'; pw.placeholder = 'nouveau mdp (optionnel, ≥6)'; pw.autocomplete = 'new-password';
+    const pw = document.createElement('input'); pw.type = 'password'; pw.className = 'ue-pw'; pw.placeholder = 'nouveau mdp (optionnel, ≥12)'; pw.autocomplete = 'new-password';
     const save = document.createElement('button'); save.textContent = 'Enregistrer';
     save.onclick = async () => {
       const body = { role: rsel.value }; if (pw.value) body.password = pw.value;

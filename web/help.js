@@ -376,12 +376,12 @@ Time stored in UTC ; display follows the time-zone selector.` },
     fr: { title: `Compte / Réglages`, body:
 `Configuration initiale et gestion de votre compte.
 • 1re installation : coller le token d'installation (log du daemon /
-  setup-token.txt) puis définir l'utilisateur admin + mot de passe (≥ 6).
+  setup-token.txt) puis définir l'utilisateur admin + mot de passe (≥ 12).
 • Ensuite : changer votre mot de passe.` },
     en: { title: `Account / Settings`, body:
 `Initial setup and management of your account.
 • First install: paste the install token (daemon log / setup-token.txt)
-  then set the admin user + password (≥ 6).
+  then set the admin user + password (≥ 12).
 • Afterwards: change your password.` },
   },
   users: {

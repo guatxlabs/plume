@@ -36,9 +36,9 @@ pub(crate) async fn user_create(State(st): State<AppState>, Extension(au): Exten
     if name.starts_with(ENG_CRED_PREFIX) {
         return (StatusCode::BAD_REQUEST, "préfixe 'eng-cred-' réservé aux credentials d'engagement").into_response();
     }
-    // POLITIQUE MDP ≥ 12 (item 3) — à la CRÉATION du compte uniquement (les comptes existants intacts).
-    if pw.chars().count() < 12 {
-        return (StatusCode::BAD_REQUEST, "mot de passe trop court (≥ 12 caractères)").into_response();
+    // POLITIQUE MDP (item 3) — à la CRÉATION du compte uniquement (les comptes existants intacts).
+    if pw.chars().count() < PASSWORD_MIN_CHARS {
+        return (StatusCode::BAD_REQUEST, format!("mot de passe trop court (≥ {PASSWORD_MIN_CHARS} caractères)")).into_response();
     }
     let hash = hash_pw(pw);
     crate::req_conn!(st, au, conn);
@@ -139,7 +139,7 @@ pub(crate) async fn user_update(State(st): State<AppState>, Extension(au): Exten
         Some(role)
     } else { None };
     if let Some(pw) = new_pw {
-        if pw.chars().count() < 12 { return (StatusCode::BAD_REQUEST, "mot de passe trop court (≥ 12 caractères)").into_response(); } // POLITIQUE MDP ≥ 12 (item 3) — reset admin uniquement
+        if pw.chars().count() < PASSWORD_MIN_CHARS { return (StatusCode::BAD_REQUEST, format!("mot de passe trop court (≥ {PASSWORD_MIN_CHARS} caractères)")).into_response(); } // POLITIQUE MDP (item 3) — reset admin uniquement
     }
     // AUDIT D'IDENTITÉ : changement de rôle ET/OU reset mdp = mutations d'identité -> AUDIT fail-closed transactionnel
     // (un audit PAR type de changement : role_change / password_reset). Un reset mdp ou une escalade vers admin

@@ -78,7 +78,7 @@ const I18N_EN = {
   "Résumé (optionnel)": "Summary (optional)", "créé": "created", "assigné": "assignee", "statut": "status",
   "priorité": "priority", "alerte": "alert", "event": "event", "action": "action",
   // réglages / comptes
-  "nom d'utilisateur admin": "admin username", "mot de passe (>= 6 caractères)": "password (>= 6 chars)",
+  "nom d'utilisateur admin": "admin username", "mot de passe (>= 12 caractères)": "password (>= 12 chars)",
   "+ Nouveau compte": "+ New account", "Rôle": "Role", "editor - lecture + écriture": "editor - read + write",
   "viewer - lecture seule": "viewer - read only", "admin - tout + gestion des comptes": "admin - everything + account management",
   "nom d'utilisateur (a-z, . _ -)": "username (a-z, . _ -)",

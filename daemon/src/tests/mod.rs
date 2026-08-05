@@ -41,3 +41,4 @@ include!("transport_liaison.rs"); // TRANSPORT + LIAISON : autorité de la requ�
 include!("panneau_bibliotheque.rs"); // P7.13-a : la porte « SQL brut = admin » du panneau et la définition de bibliothèque
 include!("index_redondance.rs"); // P10.2-d : garde DÉRIVÉE des index subsumés — on DEMANDE à SQLite, on n'énumère pas
 include!("autoindex_retire.rs"); // P6.8-b : le mécanisme d'auto-index adaptatif est RETIRÉ — garde dérivée anti-zombie + purge de la dette prouvée par mutation
+include!("onboarding.rs"); // ONBOARDING /api/setup : d'où sort le token, comment il est comparé/compté, et ce que rend le serveur quand la pose de l'admin N'A PAS été écrite

@@ -617,7 +617,7 @@
     <form id="setup-form" class="ruleform">
       <input id="set-token" placeholder="token d'installation (log du daemon / setup-token.txt)" autocomplete="off">
       <input id="set-user" placeholder="nom d'utilisateur admin" autocomplete="username">
-      <input id="set-pw" type="password" placeholder="mot de passe (>= 6 caractères)" autocomplete="new-password">
+      <input id="set-pw" type="password" placeholder="mot de passe (>= 12 caractères)" autocomplete="new-password">
       <div class="rf-actions"><button type="submit">Enregistrer</button><span id="set-result" class="muted"></span></div>
     </form>
     <!-- MFA TOTP self-service (#44) — tout compte local peut activer une 2e étape (RFC 6238). L'enrôlement
@@ -637,7 +637,7 @@
     </div>
     <form id="user-form" class="ruleform hidden">
       <input id="uf-name" placeholder="nom d'utilisateur (a-z, . _ -)" autocomplete="off">
-      <input id="uf-pw" type="password" placeholder="mot de passe (>= 6 caractères)" autocomplete="new-password">
+      <input id="uf-pw" type="password" placeholder="mot de passe (>= 12 caractères)" autocomplete="new-password">
       <div class="rf-row">
         <label>Rôle <select id="uf-role">
           <option value="editor">editor - lecture + écriture</option>

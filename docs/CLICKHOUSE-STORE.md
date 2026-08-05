@@ -174,7 +174,12 @@ The scale tier is **not** a drop-in with the same guarantees as the SMB hot tier
   should stay on the hot tier. The recommended multi-node story (per-tenant `database` + volume/KMS
   encryption, RGPD erasure = `DROP DATABASE`) is operator/KMS-grade, **not** SQLCipher app-held-key-grade
   — and it is **not built** here.
-- **No exactly-once dedup.** SQLite's `event.dedup UNIQUE` + `INSERT OR IGNORE` gives exactly-once. The
+- **No exactly-once dedup.** SQLite's `event.dedup UNIQUE` + `INSERT OR IGNORE` gives exactly-once
+  **for the surfaces whose sender supplies a `dedup` key** (agent batches, journald `__CURSOR`, …).
+  A surface whose protocol carries **no per-entry identifier** — the **Loki push** endpoint — leaves
+  `dedup` NULL and is therefore **at-least-once even on SQLite**; deriving a key from the *content*
+  would silently drop legitimately repeated identical lines, i.e. turn a visible duplicate into an
+  invisible loss. The
   `MergeTree` DDL here has **no unique constraint** — duplicates are possible. Eventual dedup via
   `ReplacingMergeTree(ts)` keyed on `dedup` is the documented (OPEN) prod option, deferred.
 - **Wider raw-data blast radius.** A compromised daemon holds cluster credentials for the data it serves

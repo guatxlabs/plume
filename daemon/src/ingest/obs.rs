@@ -308,17 +308,50 @@ pub(crate) async fn loki_push(State(st): State<AppState>, Extension(au): Extensi
     if rows.is_empty() {
         return StatusCode::NO_CONTENT.into_response();
     }
+    // P3.6-b — CE CHEMIN PASSE PAR LE POINT DE PASSAGE UNIQUE, COMME TOUTES LES AUTRES SURFACES.
+    //
+    // AVANT, il écrivait en DIRECT (`INSERT INTO event(...7 colonnes...)`), donc il SAUTAIT
+    // `ingest_events_batch` : les processeurs d'ingestion — DROP (rétention par politique), **MASK
+    // (redaction PII : message/host/src_ip/dst_ip/url/fields)** et ROUTE (`env_id`) — ne
+    // s'appliquaient PAS aux logs entrés par Loki. Et `processors.rs` affirmait le contraire, en
+    // nommant Loki parmi les surfaces couvertes : un exploitant qui posait une règle MASK croyait
+    // caviarder toutes ses surfaces et laissait passer celle-ci en clair. La fausse allégation
+    // était plus grave que le trou, parce qu'elle arrêtait l'enquête du relecteur suivant.
+    //
+    // La sémantique visible ne change pas : même transaction unique, même réponse 204, et le host
+    // lié à l'agent GAGNE toujours sur celui des labels — c'est exactement ce que `forced_host`
+    // signifie dans le pipeline, au lieu d'être recalculé ici.
+    //
+    // `dedup` reste ABSENT, et c'est DÉLIBÉRÉ (P3.6-a) : le protocole Loki ne porte aucun
+    // identifiant par entrée. Une clé dérivée du CONTENU ferait disparaître en silence des lignes
+    // identiques légitimement répétées à la même seconde — elle transformerait un doublon VISIBLE
+    // en PERTE INVISIBLE. Cette surface est donc at-least-once, et la doc le DIT désormais.
+    let evenements: Vec<Value> = rows
+        .iter()
+        .map(|(ts, source, sev, host, line, fields)| {
+            json!({
+                "ts": ts,
+                "source": source.as_ref(),
+                "category": "log",
+                "severity": sev,
+                "message": line,
+                "host": host.as_deref(),
+                // `fields` est déjà du JSON SÉRIALISÉ ici ; le pipeline attend une VALEUR. Le
+                // repasser tel quel en chaîne produirait un champ doublement échappé.
+                "fields": serde_json::from_str::<Value>(fields.as_ref()).unwrap_or_else(|_| json!({})),
+            })
+        })
+        .collect();
+    let db_path = req_db_path(&st, &au);
     crate::req_conn!(st, au, conn);
-    let _ = conn.execute_batch("BEGIN IMMEDIATE");
-    // NB : écriture data-plane SUR LE CHEMIN DIRECT (exception documentée dans l'en-tête STORE SPI,
-    // non encore derrière `store().insert_event` — migration différée : 7 col vs 14 col `OR IGNORE`).
-    if let Ok(mut stmt) = conn.prepare("INSERT INTO event(ts,source,category,severity,host,message,fields) VALUES(?1,?2,'log',?3,?4,?5,?6)") {
-        for (ts, source, sev, host, line, fields) in &rows {
-            // M2 : host lié à l'agent GAGNE sur le host des labels.
-            let eff_host = bind_host.as_deref().or_else(|| host.as_deref());
-            let _ = stmt.execute(params![ts, source.as_ref(), sev, eff_host, line, fields.as_ref()]);
-        }
+    match ingest_events_batch(&conn, &db_path, &evenements, now_ts, None, bind_host.as_deref()) {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        // Le batch a été ANNULÉ (disque plein, verrou) : rendre 204 annoncerait une ingestion qui
+        // n'a pas eu lieu. L'ancien code ignorait chaque échec de ligne (`let _ = stmt.execute`) —
+        // une perte silencieuse, ligne par ligne, que rien ne remontait à l'émetteur.
+        Err(_) => err_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "ingestion Loki ANNULÉE (transaction rejetée) : aucune entrée de ce lot n'a été écrite — réémettez",
+        ),
     }
-    let _ = conn.execute_batch("COMMIT");
-    StatusCode::NO_CONTENT.into_response()
 }

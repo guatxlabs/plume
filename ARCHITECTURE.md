@@ -181,6 +181,11 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
 
 - **Pipeline** : collecteur → enveloppe JSON dans le spool → `ship.sh` → `POST /api/ingest` (réponse
   **202**) → normalisation (timestamp epoch, sévérité 0-4, mapping source) → INSERT idempotent (dédup).
+  **L'idempotence suppose que l'émetteur fournisse une clé `dedup`** (l'agent le fait ; `__CURSOR` pour
+  journald). Une surface dont le protocole ne porte **aucun identifiant par entrée** — c'est le cas du
+  **push Loki** — est **at-least-once** : `dedup` y est NULL, donc l'index unique partiel ne s'applique
+  pas. C'est délibéré : une clé dérivée du CONTENU ferait disparaître en silence des lignes identiques
+  légitimement répétées, transformant un doublon visible en perte invisible.
   Le journald brut va sur `/api/ingest/journal` (parsing **côté daemon**, sans `jq` côté agent).
 - **Registre de parsers** : après insertion, les **parsers** (gérés dans l'UI) enrichissent les
   events en champs groupables (`fields`). Reparse possible (`/api/parsers/reparse`).

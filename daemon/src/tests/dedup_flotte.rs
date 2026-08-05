@@ -456,3 +456,77 @@
         );
     }
 
+    /// GARDE P3.6-b — AUCUNE SURFACE D'INGESTION N'ÉCRIT DANS `event` EN DIRECT.
+    ///
+    /// LE DÉFAUT QU'ELLE FERME, VÉRIFIÉ LE 2026-08-04 : `loki_push` écrivait un `INSERT` à 7 colonnes
+    /// directement dans `event`, donc il SAUTAIT `ingest_events_batch`. Conséquence RÉELLE : les
+    /// processeurs d'ingestion — DROP, **MASK (redaction PII)** et ROUTE — ne s'appliquaient PAS aux
+    /// logs entrés par Loki, pendant que `processors.rs` affirmait le contraire en nommant Loki parmi
+    /// les surfaces couvertes.
+    ///
+    /// POURQUOI LA GARDE VOISINE NE POUVAIT PAS LE VOIR (P3.6-c) : `event_dedup_toujours_cloisonne`
+    /// ne se déclenche QUE si l'ordre MENTIONNE la colonne `dedup`. Elle contrôle **la FORME de la
+    /// clé**, jamais **la PRÉSENCE du mécanisme** — un chemin qui omet tout lui est invisible.
+    ///
+    /// LA PARTITION EST FERMÉE PAR LE RÉPERTOIRE, PAS PAR UNE LISTE DE FICHIERS : tout `.rs` de
+    /// production sous `src/ingest/` est concerné, donc une surface ajoutée demain est couverte sans
+    /// que personne ait à s'en souvenir. L'EXEMPTION est STRUCTURELLE et non nominative : seul un
+    /// fichier qui IMPLÉMENTE le SPI (`EventStore for`) a le droit d'écrire — c'est sa définition
+    /// même. Un backend ajouté demain est donc exempté par construction ; une surface d'ingestion qui
+    /// écrit en direct ne l'est jamais.
+    ///
+    /// SCANNER RÉUTILISÉ (`db_open::door_tests`) plutôt que recopié : il retire AUSSI les
+    /// commentaires, ce que `dedup_texte_prod` ne fait pas — sans quoi un commentaire citant
+    /// `INTO event(` (il y en a un, qui documente précisément ce défaut) ferait rougir la garde.
+    #[test]
+    fn aucune_surface_dingestion_necrit_dans_event_en_direct() {
+        use crate::db_open::door_tests::{est_test, fichiers_de_test, rs_files, texte_de_production};
+        let racine = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src").join("ingest");
+        let mut fichiers = Vec::new();
+        rs_files(&racine, &mut fichiers);
+        assert!(fichiers.len() > 5, "précondition : le scanner voit src/ingest ({})", fichiers.len());
+
+        let marques = fichiers_de_test(&fichiers);
+        let (mut ecrivains, mut violations) = (Vec::<String>::new(), Vec::<String>::new());
+        for f in &fichiers {
+            if est_test(f, &marques) {
+                continue;
+            }
+            let src = std::fs::read_to_string(f).unwrap();
+            let txt: String = texte_de_production(f, &src)
+                .into_iter()
+                .map(|(_, l)| l)
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !txt.contains("INTO event(") {
+                continue;
+            }
+            let nom = f.file_name().unwrap().to_string_lossy().to_string();
+            ecrivains.push(nom.clone());
+            if !txt.contains("EventStore for") {
+                violations.push(nom);
+            }
+        }
+
+        // ANTI-ROT : sans ce contrôle, la garde serait VACUE le jour où le scanner ne reconnaît plus
+        // les `INSERT` — `violations` vide parce qu'on n'a rien regardé, et le vert ne voudrait rien
+        // dire. Mesuré le 2026-08-04 : SEULES les trois implémentations du SPI écrivent.
+        ecrivains.sort();
+        assert_eq!(
+            ecrivains,
+            vec!["clickhouse_store.rs", "duckdb_store.rs", "store.rs"],
+            "ANTI-ROT : l'ensemble des fichiers de `src/ingest` qui écrivent dans `event` a changé. \
+             (a) si un `INSERT` n'est plus reconnu -> réparer l'EXTRACTEUR, sinon la garde passe au \
+             vert en ne regardant rien ; (b) si un BACKEND a été ajouté légitimement -> il doit \
+             implémenter `EventStore` et cette liste se met à jour."
+        );
+        assert!(
+            violations.is_empty(),
+            "une SURFACE D'INGESTION écrit dans `event` SANS passer par le point de passage unique : \
+             les processeurs (DROP / MASK-redaction-PII / ROUTE) ne s'y appliqueront PAS, et \
+             `processors.rs` affirme pourtant qu'ils couvrent toutes les surfaces. Passez par \
+             `ingest_events_batch(_env)` — ou, s'il s'agit d'un backend de store, implémentez \
+             `EventStore`. Fichiers fautifs : {violations:?}"
+        );
+    }
+

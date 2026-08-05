@@ -7,6 +7,14 @@
 //! `store().insert_event`. Point de passage UNIQUE : `/api/ingest`, spool, journal, HEC, Loki et
 //! connecteurs y convergent tous -> une seule couture couvre toutes les surfaces d'ingest.
 //!
+//! CETTE PHRASE A ÉTÉ FAUSSE, ET RIEN NE L'ATTRAPAIT (clé P3.6-b, mesuré le 2026-08-04) : `loki_push`
+//! écrivait un `INSERT` à 7 colonnes DIRECTEMENT dans `event`, donc DROP / **MASK (redaction PII)** /
+//! ROUTE ne s'appliquaient pas aux logs Loki — pendant que la ligne ci-dessus affirmait le contraire.
+//! Une allégation fausse arrête l'enquête du relecteur suivant : elle coûte plus que le trou.
+//! Elle est désormais TENUE PAR UNE GARDE, pas par la mémoire de qui la lit :
+//! `aucune_surface_dingestion_necrit_dans_event_en_direct` (src/tests/dedup_flotte.rs) rougit si un
+//! fichier de `src/ingest/` écrit dans `event` sans implémenter le SPI `EventStore`.
+//!
 //! MODÈLE DE RÈGLE (admin-managed, ordonné, par-tenant, table `ingest_rule`) :
 //!   prédicat  (champ CIM normalisé, allowlisté)  ->  action
 //!     DROP    : l'event n'est PAS indexé (compté « dropped-by-policy », JAMAIS une perte silencieuse).

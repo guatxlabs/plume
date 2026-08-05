@@ -10,12 +10,18 @@ controls is a serious bug, and we want to hear about it.
 
 **Do not open a public issue for a security vulnerability.**
 
-Report privately through **GitHub Security Advisories** — the "Report a vulnerability" button on
-the repository's **Security** tab. It keeps the report and the fix coordinated and private, and it
-is the only reporting channel we monitor.
+**Preferred:** report privately through **GitHub Security Advisories** — the "Report a
+vulnerability" button on the repository's **Security** tab. It keeps the report and the fix
+coordinated and private, and it lets you attach details to a thread that is private by default.
+
+**Alternative:** if you cannot use GitHub Security Advisories — no account, the repository is
+mirrored elsewhere, or you would rather not create one — email **security@guatx.com**. Both
+channels are monitored; the advisory flow is preferred only because it keeps the report and the
+fix in one private place.
 
 Please include: affected version/commit, a description, reproduction steps or a PoC, and the
-impact. The advisory thread is private, so you can attach details there directly.
+impact. If you email us and the report is sensitive, say so and we will move the exchange into a
+private advisory before you send details.
 
 We aim to **acknowledge within 3 business days** and to agree on a remediation timeline with
 you. We practise **coordinated disclosure** and will credit you (unless you prefer to remain

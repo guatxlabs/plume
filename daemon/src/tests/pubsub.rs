@@ -319,23 +319,110 @@
             "supprimer la source push firehose révoque DURABLEMENT sa clé de livraison");
     }
 
-    /// BONUS ING-5 (v121) — un message Pub/Sub DROPPÉ pour dépassement de TAILLE (corps non compressé > cap)
-    /// incrémente PUSH_ZERO_MAP_TOTAL -> la perte est OBSERVABLE (comme le chemin zero-map), pas un ack-drop
-    /// muet. ACK 2xx conservé (poison permanent, jamais un rejeu infini).
+    /// P4.1-p — un message DROPPÉ pour dépassement de TAILLE compte sur SA raison, et PAS sur `zero_map`.
+    ///
+    /// CE TEST NE TOUCHE PLUS À L'ENVIRONNEMENT, ET C'EST UN CORRECTIF EN SOI. Il abaissait le plafond à 50
+    /// octets via `PLUME_FIREHOSE_MAX_DECOMPRESS` — une variable GLOBALE AU PROCESSUS, posée pendant que les
+    /// tests voisins s'exécutent en parallèle. Le temps de la fenêtre, TOUT message de plus de 50 octets était
+    /// acquitté-jeté : `pubsub_e2e_valid_token_ingests_cim_with_env` recevait 204 au lieu de 200 et rougissait
+    /// AU HASARD. Mesuré sur l'état d'avant ce lot : 1 passe rouge sur 10, sans aucune modification de ma part.
+    /// Une suite qui rougit au hasard apprend à ignorer le rouge — c'est le même défaut que celui qu'on corrige
+    /// ici, appliqué à l'outil de vérification lui-même. On DÉPASSE donc le plafond par défaut (16 Mio) au lieu
+    /// de l'abaisser : plus aucune donnée partagée entre tests, donc plus rien à synchroniser.
+    ///
+    /// CE TEST A CHANGÉ DE VERDICT, ET C'EST LE CORRECTIF. Il exigeait auparavant que ce drop incrémente
+    /// `PUSH_ZERO_MAP_TOTAL` — le seul compteur qui existait. Il épinglait donc un compteur qui DÉSIGNAIT MAL
+    /// ce qu'il comptait : l'exploitant voyant « zero_map » grimper allait inspecter son `field_map` alors que
+    /// la cause était une bombe gzip ou un corps trop gros. La perte était observable, mais mal attribuée.
+    /// La seconde assertion est celle qui compte : `zero_map` ne bouge PLUS sur ce chemin.
     #[tokio::test]
     async fn pubsub_oversize_drop_bumps_metric() {
         use std::sync::atomic::Ordering;
         let (st, spool) = ps_state_with_spool();
         let (_cid, token) = ps_mk_push_source(&st, "prod").await;
-        std::env::set_var("PLUME_FIREHOSE_MAX_DECOMPRESS", "50");
-        let before = PUSH_ZERO_MAP_TOTAL.load(Ordering::Relaxed);
-        // corps NON compressé plus grand que le cap (50 o) -> poison TAILLE -> ACK-DROP + compteur (ING-5).
-        let body = axum::body::Bytes::from("x".repeat(500));
+        let avant_taille = PUBSUB_ACKDROP[AckDrop::CorpsTropGros.rang()].load(Ordering::Relaxed);
+        // Corps NON compressé au-delà du plafond PAR DÉFAUT (16 Mio) -> poison TAILLE -> ACK-DROP + compteur.
+        // On DÉPASSE le défaut au lieu d'ABAISSER le plafond : voir la note sur l'environnement ci-dessous.
+        let body = axum::body::Bytes::from("x".repeat(17 * 1024 * 1024));
         let r = pubsub_ingest_post(State(st.clone()), axum::http::HeaderMap::new(), ps_query(&token), body).await;
-        std::env::remove_var("PLUME_FIREHOSE_MAX_DECOMPRESS");
         assert!(r.status().is_success(), "corps trop gros -> 2xx ACK-DROP (poison)");
-        let after = PUSH_ZERO_MAP_TOTAL.load(Ordering::Relaxed);
-        assert!(after >= before + 1, "PUSH_ZERO_MAP_TOTAL incrémenté sur drop TAILLE ({before} -> {after})");
+        let apres_taille = PUBSUB_ACKDROP[AckDrop::CorpsTropGros.rang()].load(Ordering::Relaxed);
+        assert!(
+            apres_taille >= avant_taille + 1,
+            "le drop de TAILLE doit compter sur SA raison ({avant_taille} -> {apres_taille})"
+        );
         assert_eq!(ps_spool_count(&spool), 0, "rien de spoolé");
         let _ = std::fs::remove_dir_all(&spool);
+    }
+
+    /// P4.1-p — LES TROIS CHEMINS QUI JETAIENT EN SILENCE. Mesuré le 2026-08-05 : sur six sites d'ACK-DROP,
+    /// trois répondaient 204 — pour Pub/Sub, « je l'ai pris » — en ne laissant AUCUNE trace. Un exploitant ne
+    /// pouvait pas distinguer « la source n'émet rien » de « tout est jeté à l'entrée ».
+    ///
+    /// Ce test parcourt les trois, chacun avec le corps qui le déclenche, et exige que le compteur de SA
+    /// raison — et lui seul — bouge. Vérifier un total agrégé ne suffirait pas : trois raisons confondues dans
+    /// un seul chiffre redonneraient exactement le défaut qu'on corrige.
+    ///
+    /// MUTATION : faire retourner à `pubsub_ackdrop` un 204 sans compter ⇒ les assertions rougissent.
+    /// L'oubli d'un argument, lui, ne se teste pas ici : il NE COMPILE PAS (E0061, vérifié).
+    ///
+    /// POURQUOI CE TEST NE COMPARE QUE SA PROPRE CASE, ET EN `>=`. Les compteurs sont des atomiques GLOBAUX au
+    /// processus, et les tests tournent en PARALLÈLE : une égalité exacte, ou une assertion « les autres cases
+    /// n'ont pas bougé », rougit dès qu'un test voisin acquitte au même instant. Écrite ainsi, elle passait
+    /// seule et en série et échouait en parallèle — un test qui n'est vert qu'en série apprend à ignorer le
+    /// rouge. La propriété d'ANTI-COLLISION entre raisons est donc prouvée à part, sans état global, par
+    /// `deux_raisons_dackdrop_ne_partagent_jamais_une_case`.
+    #[tokio::test]
+    async fn pubsub_chaque_raison_dackdrop_compte_sur_sa_propre_case() {
+        use std::sync::atomic::Ordering;
+        let (st, spool) = ps_state_with_spool();
+        let (_cid, token) = ps_mk_push_source(&st, "prod").await;
+        // (raison attendue, corps qui la déclenche) — les TROIS chemins qui étaient muets avant P4.1-p.
+        let cas: [(AckDrop, &str); 3] = [
+            (AckDrop::EnveloppeIndecodable, "{ceci n'est pas du JSON"),
+            (AckDrop::DonneeAbsente, r#"{"message":{"attributes":{}}}"#),
+            (AckDrop::DonneeAbsente, r#"{"message":{"data":""}}"#),
+        ];
+        for (raison, corps) in cas {
+            let avant = PUBSUB_ACKDROP[raison.rang()].load(Ordering::Relaxed);
+            let r = pubsub_ingest_post(
+                State(st.clone()),
+                axum::http::HeaderMap::new(),
+                ps_query(&token),
+                axum::body::Bytes::from(corps),
+            )
+            .await;
+            assert_eq!(r.status(), axum::http::StatusCode::NO_CONTENT, "{} -> 204 ACK-DROP", raison.libelle());
+            let apres = PUBSUB_ACKDROP[raison.rang()].load(Ordering::Relaxed);
+            assert!(
+                apres >= avant + 1,
+                "« {} » doit compter sur SA case ({avant} -> {apres}) — ce chemin jetait le message en SILENCE",
+                raison.libelle()
+            );
+        }
+        assert_eq!(ps_spool_count(&spool), 0, "aucun de ces messages n'est ingéré");
+        let _ = std::fs::remove_dir_all(&spool);
+    }
+
+    /// P4.1-p — DEUX RAISONS NE PARTAGENT JAMAIS UNE CASE, ni un libellé. C'est la propriété qui donne son
+    /// sens au comptage par raison : si deux raisons tombaient au même rang, le tableau de bord afficherait
+    /// une somme en la présentant comme une cause, et l'exploitant enquêterait à côté — exactement le défaut
+    /// que `push_zero_map_total` produisait en confondant TAILLE et mapping.
+    ///
+    /// PUR : aucune requête, aucun état global, donc AUCUNE course avec les tests voisins. La vérification est
+    /// DÉRIVÉE de `AckDrop::TOUTES` — une raison ajoutée demain y entre sans qu'on touche ce test.
+    #[test]
+    fn deux_raisons_dackdrop_ne_partagent_jamais_une_case() {
+        let mut rangs: Vec<usize> = AckDrop::TOUTES.iter().map(|r| r.rang()).collect();
+        let n = rangs.len();
+        rangs.sort_unstable();
+        rangs.dedup();
+        assert_eq!(rangs.len(), n, "deux raisons d'AckDrop partagent le même rang : leurs pertes seraient confondues");
+
+        let mut libelles: Vec<&str> = AckDrop::TOUTES.iter().map(|r| r.libelle()).collect();
+        libelles.sort_unstable();
+        libelles.dedup();
+        assert_eq!(libelles.len(), n, "deux raisons d'AckDrop portent le même libellé : /metrics en perdrait une");
+
+        assert_eq!(PUBSUB_ACKDROP.len(), n, "il manque une case de compteur pour une raison déclarée");
     }

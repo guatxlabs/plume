@@ -22,6 +22,20 @@ pub(crate) static INGEST_FILES_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// ou field_map/records_path mal configuré). Rend OBSERVABLE un misconfig de source push qui, sinon, serait
 /// silencieusement ACK-droppé (200/204) : un compteur qui grimpe sans `ingest_events_total` correspondant.
 pub(crate) static PUSH_ZERO_MAP_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// P4.1-p — un compteur PAR RAISON d'ACK-DROP Pub/Sub. Pourquoi pas un seul total : `push_zero_map_total`
+/// était incrémenté aussi bien par un `field_map` mal configuré que par une bombe gzip. L'exploitant qui le
+/// voyait grimper allait donc inspecter son mapping alors que la cause pouvait être une TAILLE. Un compteur
+/// qui NOMME mal ce qu'il compte oriente l'enquête à côté ; il vaut à peine mieux que pas de compteur.
+///
+/// La longueur est VÉRIFIÉE À LA COMPILATION contre `AckDrop::TOUTES` (assertion sous la déclaration de
+/// l'énumération, ingest/pubsub.rs) : une raison ajoutée demain sans sa case NE COMPILE PAS.
+pub(crate) static PUBSUB_ACKDROP: [AtomicU64; 5] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
 /// Recherches interactives (query/search) servies.
 pub(crate) static SEARCH_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// Ticks du scheduler de règles + horodatage (unix s) du dernier tick — santé « détection ».
@@ -271,6 +285,13 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
     let alerts_open: i64 = conn.query_row("SELECT COUNT(*) FROM alert WHERE status='new'", [], |r| r.get(0)).unwrap_or(0);
     let components = component_health(conn, spool, db_path, disk_warn_pct);
     let posture = worst_state(&components);
+    // ACK-DROP Pub/Sub : la surface est DÉRIVÉE de `AckDrop::TOUTES`, jamais réécrite ici. Une raison ajoutée
+    // demain apparaît dans `/metrics` sans qu'on y pense — l'oubli d'exposition n'est pas une option offerte.
+    let pubsub_ackdrop_par_raison: serde_json::Map<String, Value> = crate::ingest::pubsub::AckDrop::TOUTES
+        .iter()
+        .map(|r| (r.libelle().to_string(), json!(PUBSUB_ACKDROP[r.rang()].load(Ordering::Relaxed))))
+        .collect();
+    let pubsub_ackdrop_total: u64 = PUBSUB_ACKDROP.iter().map(|c| c.load(Ordering::Relaxed)).sum();
     json!({
         "ts": now_ts,
         "version": env!("CARGO_PKG_VERSION"),
@@ -287,6 +308,8 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
             "events_1h": events_1h,
             "queue_depth": spool_queue_depth(spool),
             "push_zero_map_total": PUSH_ZERO_MAP_TOTAL.load(Ordering::Relaxed),
+            "pubsub_ackdrop_total": pubsub_ackdrop_total,
+            "pubsub_ackdrop_par_raison": pubsub_ackdrop_par_raison,
         },
         "search": { "requests_total": SEARCH_TOTAL.load(Ordering::Relaxed), "p50_ms": p50, "p95_ms": p95, "samples": lat_n },
         "scheduler": {

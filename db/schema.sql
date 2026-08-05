@@ -50,8 +50,16 @@ CREATE TABLE IF NOT EXISTS event(
   engagement_id TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_event_ts  ON event(ts);
-CREATE INDEX IF NOT EXISTS idx_event_sev ON event(severity);
-CREATE INDEX IF NOT EXISTS idx_event_src ON event(source);
+-- idx_event_sev(severity) et idx_event_src(source) NE SONT PLUS DÉCLARÉS ICI (P10.2-c, 2026-08-05).
+-- Ils sont REDONDANTS : préfixes gauches de idx_event_sev_srcip(severity, src_ip) et de
+-- idx_event_src_ts(source, ts), que le planner choisit déjà. `maintenance.rs` les SUPPRIME en tâche
+-- de fond depuis v110 en affirmant « une base neuve ne les crée plus : db/schema.sql ne les DÉCLARE
+-- PLUS » — or ce fichier les déclarait ENCORE, et `prepare_schema()` le rejoue à CHAQUE ouverture
+-- d'écriture. Résultat MESURÉ par lecture : chaque démarrage les RECONSTRUISAIT sur toute la table
+-- `event` (synchronement, AVANT le bind), la tâche de fond les supprimait 29 s plus tard, et le
+-- démarrage suivant recommençait. Une boucle sans fin, sur 1,49 M de lignes chiffrées en production.
+-- La garde `schema_ne_recree_pas_ce_que_la_reconciliation_supprime` (daemon/src/tests) LIT les DROP
+-- de maintenance.rs et rougit si ce fichier en recrée un : l'allégation ne peut plus diverger du code.
 -- (v108) COMPOSITE (source, ts) : la recherche brute `search source=X earliest=-Nd` compile en
 -- `... FROM event WHERE source=? AND ts>=?` -> ce btree SEEK source PUIS range-prune ts en index-only
 -- (COUNT pagination borné = zéro déchiffrement de la table grasse ; page = walk borné). Sur base MIGRÉE il

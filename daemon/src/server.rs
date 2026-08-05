@@ -614,6 +614,17 @@ fn spawn_background_jobs(conf: HashMap<String, String>, spool: String, db_path: 
         spawn_drop_redundant_event_indexes(db.clone());
     }
 
+    // P10.2-d (ALLÈGEMENT INDEX, SUITE) — DROP EN FOND après le bind des NEUF index redondants que le schéma
+    // migré posait encore, sur la base LIVE qui les porte déjà (les `CREATE INDEX` ont été retirés de
+    // migrate.rs -> une base neuve ne les crée plus). Huit sont subsumés par l'AUTO-INDEX d'une contrainte
+    // UNIQUE/PRIMARY KEY (présent par construction avec la table) -> DROP inconditionnel ; le neuvième
+    // (idx_alert_mitre) est subsumé par un index EXPLICITE (idx_alert_mitre_ts, v72) -> DROP gardé par sa
+    // présence confirmée, zéro fenêtre sans index de tête sur `mitre`. Même doctrine que v110 : DROP INDEX ne
+    // déchiffre pas la table -> sûr en fond (un CREATE ne le serait pas).
+    {
+        spawn_drop_prefix_subsumed_indexes(db.clone());
+    }
+
     // v108 (PERF recherche raw haut-volume) — CREATE de l'index COMPOSITE idx_event_src_ts(source,ts) EN FOND
     // après le bind (jamais synchrone : CREATE INDEX sur des millions de lignes chiffrées bloquerait le bind).
     // schema.sql le déclare (bases neuves) mais aucune migration ne le crée -> la base live en manque. Une fois
@@ -1062,6 +1073,13 @@ fn spawn_drop_redundant_event_indexes(db: Arc<Mutex<Connection>>) {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(29)); // après le bind + la liveness probe
             drop_redundant_event_indexes_background(&db);
+        });
+}
+
+fn spawn_drop_prefix_subsumed_indexes(db: Arc<Mutex<Connection>>) {
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(30)); // après le bind + la liveness probe (P10.2-d)
+            drop_prefix_subsumed_indexes_background(&db);
         });
 }
 

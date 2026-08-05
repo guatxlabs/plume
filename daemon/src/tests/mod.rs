@@ -39,3 +39,4 @@ include!("snapshot_flotte.rs"); // LA FLOTTE (2) : la voie SNAPSHOT — la séri
 include!("sondes_cout.rs"); // P3.7-a : CE QUE COÛTE une sonde de fraîcheur — invariance sous mutation du volume, avec son contre-exemple
 include!("transport_liaison.rs"); // TRANSPORT + LIAISON : autorité de la requête (h1/h2), hôte d'une ligne ingérée, portée d'un jeton
 include!("panneau_bibliotheque.rs"); // P7.13-a : la porte « SQL brut = admin » du panneau et la définition de bibliothèque
+include!("index_redondance.rs"); // P10.2-d : garde DÉRIVÉE des index subsumés — on DEMANDE à SQLite, on n'énumère pas

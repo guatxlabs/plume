@@ -446,6 +446,38 @@ fn migrate(conn: &Connection) -> bool {
 /// porte ses objets » — une base estampillée `CODE_SCHEMA_MAX` par un binaire antérieur au correctif
 /// S4 peut être à 111 SANS `net_ban`, et aucune garde `if v < N` ne la re-touchera jamais. C'est
 /// `prepare_schema` qui ajoute ce contrôle-là (`schema_gaps`).
+///
+/// ────────────────────────────────────────────────────────────────────────────────────────────────────
+/// P10.2-d — POURQUOI ON PEUT RETIRER UN `CREATE INDEX` REDONDANT *ICI*, ALORS QUE LE RETIRER DE
+/// `db/schema.sql` AVAIT DEMANDÉ UN CORRECTIF (P10.2-c, commit d211d00). Onze `CREATE INDEX` ont été
+/// retirés de ce fichier (neuf index, dont `idx_event_rollup` posé à TROIS endroits) ; chaque site porte
+/// une note « P10.2-d » qui renvoie ici. La différence tient à UN point, et il est structurel :
+///
+///   • `db/schema.sql` est REJOUÉ à CHAQUE ouverture de base (`prepare_schema` l'exécute en préambule,
+///     inconditionnellement). Un index qu'il DÉCLARE et qu'une tâche de fond DROPPE est donc RECRÉÉ au
+///     démarrage suivant, puis re-droppé, puis recréé : c'est la boucle create/drop de P10.2-c, qui
+///     payait un rebuild d'index COMPLET à chaque démarrage. Retirer un index là-bas est la SEULE façon
+///     de la casser, et c'est ce que P10.2-c a fait pour idx_event_sev/idx_event_src.
+///   • Un `migrate_vNN`, lui, NE REJOUE PAS. Il est gardé par `if v < NN` sur `meta.schema_version`, et
+///     la version n'est bumpée QU'UNE FOIS (`migrate_step`, transaction unique bump inclus). Une base
+///     estampillée >= NN ne repassera JAMAIS par cette fonction. Retirer le `CREATE INDEX` d'un
+///     `migrate_vNN` ne peut donc PAS créer de boucle : il n'y a aucun ré-armement possible.
+///
+/// CONSÉQUENCE, DANS LES DEUX SENS. (1) Une base NEUVE ne créera jamais ces index : elle traverse la
+/// chaîne une seule fois, et le `CREATE` n'y est plus. (2) Une base LIVE, déjà estampillée au-delà de ces
+/// versions, les PORTE ENCORE et rien ici ne les enlèvera — ce retrait est donc STRICTEMENT sans effet sur
+/// elle. C'est exactement pourquoi il a un pendant obligatoire côté exploitation :
+/// `maintenance::drop_prefix_subsumed_indexes_background`, lancé EN FOND après le bind, qui les droppe sur
+/// la base vivante (et qui documente le critère de subsomption index par index).
+///
+/// CE QUE ÇA NE CASSE PAS. `schema_gaps`/`declared_shape` ne contrôlent QUE tables, vues, triggers et
+/// colonnes — jamais les index (cf. `declared_shape`, et le compteur « index HORS périmètre » imprimé par
+/// `the_reference_is_derived_from_this_binary_not_from_a_list`). Un index en TROP sur une base live n'a
+/// donc jamais empêché un démarrage, et un index en MOINS sur une base neuve non plus. La garde qui
+/// surveille CE terrain-là est dérivée, pas énumérée : `tests/index_redondance.rs` reconstruit le schéma
+/// migré et DEMANDE à SQLite quels index sont redondants, pour que le dixième doublon introduit demain soit
+/// attrapé par construction.
+/// ────────────────────────────────────────────────────────────────────────────────────────────────────
 #[must_use]
 fn migrate_chain(conn: &Connection) -> bool {
     let v: i64 = conn
@@ -524,7 +556,9 @@ fn migrate_chain(conn: &Connection) -> bool {
             conn.execute(&rollup_insert_sql_into("event_rollup_new", &format!("ts >= {cutoff}"), min_sev, topn), [])?;
             conn.execute("DROP TABLE IF EXISTS event_rollup", [])?;
             conn.execute("ALTER TABLE event_rollup_new RENAME TO event_rollup", [])?;
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_event_rollup ON event_rollup(bucket)", [])?;
+            // P10.2-d — le `CREATE INDEX idx_event_rollup ON event_rollup(bucket)` qui suivait est RETIRÉ :
+            // `bucket` est la colonne de TÊTE de la PK ci-dessus, donc son auto-index sert déjà tout seek/range
+            // sur bucket (cf. migrate_chain, section P10.2-d, et drop_prefix_subsumed_indexes_background).
             Ok(())
         })();
         match repop {
@@ -593,7 +627,11 @@ fn migrate_chain(conn: &Connection) -> bool {
         // (sur base neuve, event_rollup porte déjà env_id via la v33 mise à jour -> seule event_dim_rollup est
         // recréée). Sur ÉCHEC : version NON bumpée -> re-tentée au prochain boot (event_rollup_v67 droppée à
         // blanc à chaque essai) ; on ABANDONNE le reste de migrate() (v67 est la dernière migration).
-        let recreate = |conn: &Connection, tbl: &str, cols: &str, tail_cols: &str, pk: &str, idx: &str| -> Result<(), rusqlite::Error> {
+        // `idx` = l'index SECONDAIRE à re-poser après le swap, s'il en reste un. `None` depuis P10.2-d pour
+        // event_rollup : son idx_event_rollup(bucket) était un PRÉFIXE de la PK recréée juste au-dessus, donc
+        // un doublon de son auto-index (cf. migrate_chain, section P10.2-d). event_dim_rollup, elle, garde le
+        // sien : (source, dim, bucket) n'est PAS un préfixe de sa PK (bucket, source, dim, val, env_id).
+        let recreate = |conn: &Connection, tbl: &str, cols: &str, tail_cols: &str, pk: &str, idx: Option<&str>| -> Result<(), rusqlite::Error> {
             if col_exists(conn, tbl, "env_id") {
                 return Ok(()); // déjà porteur (base neuve via v33, ou re-run terminé) -> no-op
             }
@@ -607,7 +645,9 @@ fn migrate_chain(conn: &Connection) -> bool {
             // strictement IDENTIQUE (fresh-install atteint le même schéma).
             if !table_exists(conn, tbl) && table_exists(conn, &tmp) {
                 conn.execute(&format!("ALTER TABLE {tmp} RENAME TO {tbl}"), [])?;
-                conn.execute(idx, [])?;
+                if let Some(idx) = idx {
+                    conn.execute(idx, [])?;
+                }
                 return Ok(());
             }
             conn.execute(&format!("DROP TABLE IF EXISTS {tmp}"), [])?; // table staging propre à chaque tentative
@@ -620,7 +660,9 @@ fn migrate_chain(conn: &Connection) -> bool {
             ), [])?;
             conn.execute(&format!("DROP TABLE {tbl}"), [])?;
             conn.execute(&format!("ALTER TABLE {tmp} RENAME TO {tbl}"), [])?;
-            conn.execute(idx, [])?;
+            if let Some(idx) = idx {
+                conn.execute(idx, [])?;
+            }
             Ok(())
         };
         let done = (|| -> Result<(), rusqlite::Error> {
@@ -631,7 +673,7 @@ fn migrate_chain(conn: &Connection) -> bool {
                  n INTEGER NOT NULL DEFAULT 0, last_ts INTEGER NOT NULL DEFAULT 0",
                 "bucket,source,severity,action,src_ip,host,n,last_ts",
                 "bucket,source,severity,action,src_ip,host,env_id",
-                "CREATE INDEX IF NOT EXISTS idx_event_rollup ON event_rollup(bucket)",
+                None, // P10.2-d : idx_event_rollup(bucket) = préfixe de la PK ci-dessus -> plus re-posé
             )?;
             recreate(
                 conn, "event_dim_rollup",
@@ -639,7 +681,7 @@ fn migrate_chain(conn: &Connection) -> bool {
                  val TEXT NOT NULL DEFAULT '', n INTEGER NOT NULL DEFAULT 0",
                 "bucket,source,dim,val,n",
                 "bucket,source,dim,val,env_id",
-                "CREATE INDEX IF NOT EXISTS idx_event_dim_rollup_q ON event_dim_rollup(source, dim, bucket)",
+                Some("CREATE INDEX IF NOT EXISTS idx_event_dim_rollup_q ON event_dim_rollup(source, dim, bucket)"),
             )?;
             Ok(())
         })();
@@ -1023,7 +1065,9 @@ fn migrate_v111(conn: &MigTx) {
          created_by TEXT, env_id TEXT NOT NULL DEFAULT 'prod', PRIMARY KEY(ip, env_id))",
         [],
     );
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_net_ban_ip ON net_ban(ip)", []);
+    // P10.2-d — `CREATE INDEX idx_net_ban_ip ON net_ban(ip)` RETIRÉ : PRÉFIXE STRICT de
+    // `PRIMARY KEY(ip, env_id)` ci-dessus, dont l'auto-index est créé AVEC la table -> le guard de ban
+    // (`WHERE ip=?`, chemin CHAUD de chaque requête HTTP) reste un seek. Cf. migrate_chain, section P10.2-d.
     let _ = conn.execute("UPDATE meta SET value='111' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v111 (net_ban : ban natif HTTP plume, live-store DISTINCT de banned_ip analytique — chantier ② Phase 1)");
 }
@@ -1534,7 +1578,10 @@ fn migrate_v98(conn: &MigTx) {
             created_by TEXT NOT NULL DEFAULT '',
             UNIQUE(src_id, dst_id, kind)
          );
-         CREATE INDEX IF NOT EXISTS idx_case_link_src ON case_link(src_id);
+         -- P10.2-d : `idx_case_link_src ON case_link(src_id)` RETIRÉ — PRÉFIXE STRICT de
+         -- UNIQUE(src_id, dst_id, kind) ci-dessus, dont l'auto-index est créé AVEC la table. Le read
+         -- symétrique (« src OU dst ») garde donc un seek des DEUX côtés : src_id par l'auto-index de la
+         -- contrainte, dst_id par l'index explicite ci-dessous — qui, lui, n'est préfixe de RIEN.
          CREATE INDEX IF NOT EXISTS idx_case_link_dst ON case_link(dst_id);",
     );
     // 3) Colonnes ADDITIVES sur `incident` (idempotent via col_exists) :
@@ -1730,7 +1777,9 @@ fn migrate_v95(conn: &MigTx) {
             updated INTEGER NOT NULL DEFAULT 0,
             UNIQUE(model_id, name)
          );
-         CREATE INDEX IF NOT EXISTS idx_dm_object_model ON data_model_object(model_id);
+         -- P10.2-d : `idx_dm_object_model ON data_model_object(model_id)` RETIRÉ — PRÉFIXE STRICT de
+         -- UNIQUE(model_id, name) ci-dessus, dont l'auto-index est créé AVEC la table (« les objets d'un
+         -- modèle » reste un seek sur model_id).
          CREATE TABLE IF NOT EXISTS data_model_field(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             object_id INTEGER NOT NULL,
@@ -1740,7 +1789,9 @@ fn migrate_v95(conn: &MigTx) {
             created INTEGER NOT NULL DEFAULT 0,
             UNIQUE(object_id, name)
          );
-         CREATE INDEX IF NOT EXISTS idx_dm_field_object ON data_model_field(object_id);
+         -- P10.2-d : `idx_dm_field_object ON data_model_field(object_id)` RETIRÉ — PRÉFIXE STRICT de
+         -- UNIQUE(object_id, name) ci-dessus, dont l'auto-index est créé AVEC la table (« les champs d'un
+         -- objet » reste un seek sur object_id).
          CREATE TABLE IF NOT EXISTS dataset(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
@@ -1965,7 +2016,9 @@ fn migrate_v90(conn: &MigTx) {
            created INTEGER, created_by TEXT, role_at_capture TEXT, expires_at INTEGER NOT NULL DEFAULT 0)",
         [],
     );
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_dashboard_snapshot_tok ON dashboard_snapshot(token)", []);
+    // P10.2-d — `CREATE INDEX idx_dashboard_snapshot_tok ON dashboard_snapshot(token)` RETIRÉ : DOUBLON EXACT
+    // de `token TEXT NOT NULL UNIQUE` ci-dessus, dont SQLite dérive un auto-index sur (token) créé AVEC la
+    // table. Le lookup par jeton d'un snapshot partagé reste un seek indexé. Cf. migrate_chain, section P10.2-d.
     let _ = conn.execute("UPDATE meta SET value='90' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v90 (#54 ergonomie dashboards : library_panel + panel.library_panel_id / playlist / dashboard_snapshot ; additif, vide/NULL -> mode 0 byte-identique)");
 }
@@ -2230,7 +2283,9 @@ fn migrate_v84(conn: &MigTx) {
            PRIMARY KEY(baseline_id, entity, bucket))",
         [],
     );
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_baseline_obs ON ueba_baseline_obs(baseline_id, entity, bucket)", []);
+    // P10.2-d — `CREATE INDEX idx_baseline_obs ON ueba_baseline_obs(baseline_id, entity, bucket)` RETIRÉ :
+    // DOUBLON EXACT de `PRIMARY KEY(baseline_id, entity, bucket)` ci-dessus (mêmes colonnes, MÊME ordre), dont
+    // l'auto-index est créé AVEC la table. Cf. migrate_chain, section P10.2-d.
     let _ = conn.execute("UPDATE meta SET value='84' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v84 (#37 détection avancée : tables `correlation` + `ueba_baseline`/`ueba_baseline_obs` ; corrélation stateful de séquence + baselining statistique UEBA, INERTES tant qu'aucune corrélation/baseline définie -> mode 0 byte-identique)");
 }
@@ -2619,7 +2674,9 @@ fn migrate_v30(conn: &MigTx) {
          PRIMARY KEY(bucket,source,severity,action))",
         [],
     );
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_event_rollup ON event_rollup(bucket)", []);
+    // P10.2-d — `CREATE INDEX idx_event_rollup ON event_rollup(bucket)` RETIRÉ : `bucket` est la colonne de
+    // TÊTE de la PK ci-dessus, donc l'auto-index de la PK sert déjà tout seek/range sur bucket. Idem aux deux
+    // autres sites qui posaient cet index (v33, v67). Cf. migrate_chain, section P10.2-d.
     let _ = conn.execute("UPDATE meta SET value='30' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v30 (rollups d'events)");
 }
@@ -2724,7 +2781,12 @@ fn migrate_v39(conn: &MigTx) {
     // déjà appliqué -> « duplicate column » ignoré).
     let _ = conn.execute("ALTER TABLE rule ADD COLUMN mitre TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE alert ADD COLUMN mitre TEXT NOT NULL DEFAULT ''", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_mitre ON alert(mitre)", []);
+    // P10.2-d — `CREATE INDEX idx_alert_mitre ON alert(mitre)` RETIRÉ : PRÉFIXE STRICT de
+    // idx_alert_mitre_ts(mitre, ts), posé par v72 — donc tout seek `mitre=?` garde la même colonne de tête.
+    // SEUL des neuf dont le subsumant est un index EXPLICITE (pas l'auto-index d'une contrainte) : sur base
+    // LIVE son DROP est GARDÉ par la présence confirmée de idx_alert_mitre_ts
+    // (drop_prefix_subsumed_indexes_background). Ici, rien à garder : v39 < v72, donc toute base qui traverse
+    // la chaîne neuve atteint v72 dans le MÊME `migrate()` et repart avec le composite. Cf. section P10.2-d.
     let _ = conn.execute("UPDATE meta SET value='39' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v39 (tag MITRE ATT&CK sur règles + alertes : mesure de couverture de détection)");
 }
@@ -3066,7 +3128,9 @@ fn migrate_v52(conn: &MigTx) {
          first_seen INTEGER, last_seen INTEGER, PRIMARY KEY(src_ip, source))",
         [],
     );
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_banned_ip_srcip ON banned_ip(src_ip)", []);
+    // P10.2-d — `CREATE INDEX idx_banned_ip_srcip ON banned_ip(src_ip)` RETIRÉ : PRÉFIXE STRICT de
+    // `PRIMARY KEY(src_ip, source)` ci-dessus, dont l'auto-index est créé AVEC la table -> le join cheap
+    // `banned_ip.src_ip = ?` reste un seek. Cf. migrate_chain, section P10.2-d.
     // RÈGLE v52 sur l'instance DÉJÀ déployée — MÊME mécanique EXACTE que v50/v51 : on n'INSÈRE QUE si le
     // seed a déjà tourné (flag seeded_detection_rules présent = instance live, où seed_detection_rules ne
     // re-crée plus). Sur PVC NEUF migrate() précède les seeds -> flag absent -> on SKIP, et

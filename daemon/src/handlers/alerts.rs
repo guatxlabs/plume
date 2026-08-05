@@ -32,7 +32,7 @@ pub(crate) fn alert_group_expr_for(col: &str, prefix: &str) -> String {
 pub(crate) fn alert_group_expr(col: &str) -> String { alert_group_expr_for(col, "alert") }
 
 /// WHERE dynamique PARTAGÉ par les trois chemins de lecture d'alertes (liste plate, liste groupée, expansion
-/// d'un groupe) : filtre statut (sauf all/any/*) + technique MITRE (idx_alert_mitre) + uncased (backlog non
+/// d'un groupe) : filtre statut (sauf all/any/*) + technique MITRE (idx_alert_mitre_ts) + uncased (backlog non
 /// encaissé) + un filtre d'ÉGALITÉ OPTIONNEL sur UNE colonne DÉJÀ whitelistée (`group_col`, résolu via
 /// `alert_group_col` AVANT d'arriver ici -> interpolation sûre) = scoping à un groupe. Renvoie (where_clause,
 /// bind_vals OWNED) : les valeurs liées sont COPIÉES en `String` -> le Vec survit à l'appel (pas de lifetime
@@ -115,7 +115,9 @@ pub(crate) async fn alerts(State(st): State<AppState>, Extension(au): Extension<
     let all_status = matches!(status.as_str(), "all" | "any" | "*");
     // PURPLE — filtre optionnel par technique MITRE (?mitre=Txxxx[.yyy]) : pivot par technique sans
     // toucher au langage soql. Vide -> comportement actuel. Normalisé (trim+upper) pour matcher
-    // l'idx_alert_mitre, qui stocke la casse haute. ADDITIF, rétro-compat.
+    // l'idx_alert_mitre_ts (mitre en colonne de TÊTE), qui stocke la casse haute. ADDITIF, rétro-compat.
+    // (P10.2-d : idx_alert_mitre(mitre) — préfixe strict de ce composite v72 — a été retiré ; le seek
+    // `mitre=?` passe désormais par idx_alert_mitre_ts, ce que la casse haute conditionne exactement pareil.)
     let mitre = norm_mitre(q.get("mitre").map(|s| s.as_str()).unwrap_or("")).unwrap_or_default();
     let uncased = q.get("uncased").map(|s| s == "1").unwrap_or(false);
     // TRIAGE GROUPÉ — EXPANSION D'UN GROUPE : `?gkey=rule&gval=rule.38` -> les OCCURRENCES d'un seul groupe,

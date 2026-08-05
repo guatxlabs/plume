@@ -580,7 +580,7 @@ fn spawn_background_jobs(conf: HashMap<String, String>, spool: String, db_path: 
             g.op_sql, g.self_sql
         );
     }
-    // CREATE des 7 index expression EN FOND après le bind (jamais synchrone : un CREATE
+    // CREATE des index expression (un par entrée d'EXPR_INDEX_FIELDS) EN FOND après le bind (jamais synchrone : un CREATE
     // INDEX sur 1,24M lignes bloquerait le bind -> liveness k8s -> CrashLoopBackOff). 1 index à la fois,
     // lock writer borné par index. No-op si PLUME_EXPRINDEX!=1 (le DROP est synchrone au boot) ou si
     // déjà créés. Réconcilie réellement le toggle ON à chaque boot (idempotent, IF NOT EXISTS).

@@ -50,9 +50,11 @@ officially representing the community in public spaces.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the
 community leaders responsible for enforcement by opening a **private report** on the repository —
-use GitHub's *Report abuse* / private-reporting flow rather than a public issue. All complaints
-will be reviewed and investigated promptly and fairly. All community leaders are obligated to
-respect the privacy and security of the reporter of any incident.
+use GitHub's *Report abuse* / private-reporting flow rather than a public issue — or by emailing
+**security@guatx.com**. Use whichever you are more comfortable with; the email reaches the same
+people and does not require a GitHub account. All complaints will be reviewed and investigated
+promptly and fairly. All community leaders are obligated to respect the privacy and security of
+the reporter of any incident.
 
 ## Enforcement Guidelines
 

@@ -190,8 +190,33 @@ pub(crate) async fn ingest_minio_post(State(st): State<AppState>, Extension(au):
         if !rec.is_object() { continue; }
         if let Some(ev) = minio_record_to_event(&rec, &buckets, &drop_apis) {
             events.push(ev);
-            if events.len() >= MINIO_MAX_EVENTS { break; }
         }
+    }
+    // P4.1-p — REFUS EXPLICITE, PLUS DE TRONCATURE SILENCIEUSE.
+    //
+    // AVANT, cette boucle faisait `if events.len() >= MINIO_MAX_EVENTS { break; }` puis rendait
+    // `202 {"queued": true, "events": events.len()}`. Ce n'était pas une troncature « silencieuse » :
+    // c'était PIRE. La réponse portait un nombre qui RESSEMBLE à un total alors qu'il comptait ce qui
+    // avait été RETENU. MinIO recevait un SUCCÈS, ne rejouait rien, et tout enregistrement au-delà du
+    // 500ᵉ disparaissait sans compteur, sans journal, sans en-tête. Le cap mordait à ~265 Kio, soit
+    // 31,6x AVANT le plafond de corps — donc en pratique TOUJOURS avant lui.
+    //
+    // Le chemin générique, vingt lignes plus bas, applique déjà la bonne doctrine, et son commentaire
+    // l'énonce : « Refus 413 EXPLICITE (l'agent SCINDE et réémet) -> jamais une troncature
+    // silencieuse. » Ce chemin-ci la contredisait en silence.
+    //
+    // La borne est désormais COMBINÉE avec `st.ingest_max_events` comme sur tous les autres chemins :
+    // `PLUME_INGEST_MAX_EVENTS` n'avait AUCUN effet ici, ce qui rendait le levier documenté inopérant
+    // sur cette route. Vérifié le 2026-08-05.
+    let plafond = MINIO_MAX_EVENTS.min(st.ingest_max_events);
+    if events.len() > plafond {
+        return (StatusCode::PAYLOAD_TOO_LARGE, Json(json!({
+            "error": format!(
+                "trop d'events dans une seule requête ({} > plafond {plafond}) — scindez le lot et \
+                 réémettez, ou relevez PLUME_INGEST_MAX_EVENTS",
+                events.len()
+            )
+        }))).into_response();
     }
     if events.is_empty() {
         // batch entièrement filtré (bruit/hors scope) : MinIO n'a rien à rejouer -> 204.

@@ -710,8 +710,12 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
                 // ALLOW-LIST : ne ré-émettre QUE les clés de descripteur connues (jamais un champ inattendu).
                 let f = suppression_fields_allowlist(&raw);
                 // PROVENANCE SERVEUR (origin) — `attested` seulement si le report vient d'un token
-                // AGENT lié (host non-forgeable). Un report `unverified` (host auto-déclaré) ou `contested`
-                // (>1 hôte pour la même source) NE peut plus se faire passer pour la vérité terrain en silence.
+                // AGENT lié (host non-forgeable). Un report `unverified` (host auto-déclaré) NE peut plus se
+                // faire passer pour la vérité terrain en silence.
+                // ⚠️ `contested` (>1 hôte pour la même source) N'EST PAS un signal d'usurpation sur un PARC :
+                // c'est le cas NORMAL dès que deux machines font tourner le même collecteur. Le lire comme une
+                // suspicion ferait chercher une attaque là où il n'y a qu'une flotte. Ce qui compte est le
+                // DÉNOMINATEUR (`hosts_total`), pas le drapeau.
                 let attested = origin == "agent";
                 let contested = host_counts.get(&src).copied().unwrap_or(1) > 1;
                 let age_s = (now() - ts).max(0);
@@ -719,6 +723,13 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
                     "source": src, "ts": ts, "host": host, "message": msg,
                     "type": etype, "fields": f, "editable": false,
                     "attested": attested, "contested": contested, "age_s": age_s,
+                    // LE DÉNOMINATEUR, pas seulement le drapeau. `contested` seul répond « oui/non » à
+                    // une question que l'exploitant ne se pose pas ; ce qu'il lui faut est « la ligne
+                    // affichée est celle d'UN hôte sur N ». Sans ce nombre, un parc de 50 machines
+                    // rendait UNE ligne qui se lisait comme l'état du parc — exactement la faute
+                    // mesurée et corrigée pour le pare-feu vingt lignes plus bas (« 1 hôte rendu pour
+                    // 50 »). Le drapeau restait vrai, mais un booléen ne dit pas l'ampleur.
+                    "hosts_total": host_counts.get(&src).copied().unwrap_or(1),
                     "provenance": if attested { "agent (host lié au token)" } else { "auto-déclaré (non attesté)" },
                     "guarantee": "collecte/règles NON modifiées",
                 }));

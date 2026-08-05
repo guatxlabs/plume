@@ -174,9 +174,11 @@ pub(crate) trait SqlcipherEventStore {
 //     — `host` compris — est posé). Cloisonner ça par hôte DÉTRUIRAIT une décision, au lieu d'en
 //     réparer une (cf. `dedup_alert_reste_global_par_decision`).
 //   - la voie SNAPSHOT (`kind=firewall`/`controls` -> `snapshot` + alertes `fw-lockdown-<jour>` /
-//     `controls-<hash>-<jour>`) n'est PAS cloisonnée : elle compare au DERNIER snapshot du `kind`
-//     TOUS HÔTES CONFONDUS. C'est un défaut VOISIN et RÉEL sur un parc, mais c'est un autre défaut
-//     (table `snapshot`, table `alert`), pas celui-ci ; il est nommé ici pour ne pas être cru couvert.
+//     `controls-<hash>-<jour>`) ÉTAIT non cloisonnée — elle comparait au dernier snapshot du `kind`
+//     TOUS HÔTES CONFONDUS. ✅ CORRIGÉ depuis (`SnapshotSeries`) : `dernier_hash` et
+//     `toucher_le_dernier` filtrent sur `host`, `cle_alerte` cloisonne la clé, et les lectures
+//     passent par `dernier_instantane_par_hote`. Ce bandeau décrivait donc un trou DÉJÀ FERMÉ, ce qui
+//     est pire qu'un silence : un relecteur y aurait cherché un défaut inexistant. Corrigé le 2026-08-05.
 //   - `event.dedup` reste UNIQUE-au-niveau-base : on ne change PAS le schéma. Passer à
 //     `UNIQUE(host, dedup)` exigerait de reconstruire la table (SQLite ne sait pas retirer un index
 //     UNIQUE implicite) sur une base de production de plusieurs millions de lignes, et ferait pire :

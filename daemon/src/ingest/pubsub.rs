@@ -51,10 +51,96 @@ fn pubsub_ok() -> Response {
     (StatusCode::OK, Json(json!({ "status": "ok" }))).into_response()
 }
 
-/// ACK-AND-DROP Pub/Sub : HTTP 204 (2xx -> ACK) SANS corps. Utilisé pour un message POISON (indécodable /
-/// non mappable / expansion > cap) — l'ACK évite un rejeu infini du message empoisonné. Compté via
-/// `PUSH_ZERO_MAP_TOTAL` quand un batch VALIDE mappe 0 event (misconfig field_map/records_path observable).
-fn pubsub_ackdrop() -> Response {
+/// POURQUOI un message Pub/Sub a été ACQUITTÉ SANS AVOIR ÉTÉ INGÉRÉ.
+///
+/// CE QUE CETTE ÉNUMÉRATION RÉPARE. Un ACK-DROP répond 204 — pour Pub/Sub, « je l'ai pris » — alors que la
+/// donnée est JETÉE. C'est le bon choix (un message pathologique ne guérit jamais, le rejouer boucle à
+/// l'infini), mais il n'est tenable qu'à une condition : que la perte soit COMPTÉE. Mesuré le 2026-08-05,
+/// elle ne l'était pas : sur SIX sites d'ACK-DROP, TROIS jetaient le message sans laisser la moindre trace —
+/// enveloppe JSON indécodable, `message.data` absent, et expansion au-delà du plafond (ce dernier jetant même
+/// les événements DÉJÀ correctement mappés). Un exploitant n'avait aucun moyen de distinguer « rien n'arrive »
+/// de « tout est jeté à l'entrée ».
+///
+/// POURQUOI UN ARGUMENT ET PAS UN DRAPEAU. Le correctif ne consiste pas à ajouter un compteur à côté des trois
+/// sites fautifs : demain, un septième site oublierait à son tour. `pubsub_ackdrop` EXIGE désormais une raison,
+/// et compte lui-même. Acquitter en silence n'est plus une négligence possible : c'est une ERREUR DE
+/// COMPILATION. MUTATION : retirer l'argument d'un seul appel ⇒ le fichier ne compile pas.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum AckDrop {
+    /// Corps (compressé ou non) au-delà de `firehose_max_decompress` — TAILLE, pas mapping.
+    CorpsTropGros,
+    /// L'enveloppe Pub/Sub n'est pas du JSON décodable.
+    EnveloppeIndecodable,
+    /// Enveloppe valide mais `message.data` absent ou vide : rien à décoder.
+    DonneeAbsente,
+    /// Un message unique s'est expansé au-delà du plafond d'événements : le message ENTIER est jeté.
+    ExpansionAuDelaDuPlafond,
+    /// Batch valide, décodé, mais mappé à ZÉRO événement : `field_map`/`records_path` mal configuré.
+    ZeroEvenementMappe,
+}
+
+impl AckDrop {
+    /// Toutes les raisons, dans l'ordre de leur rang. Sert à EXPOSER les compteurs sans les énumérer une
+    /// seconde fois dans metrics.rs : la surface d'observabilité se DÉRIVE d'ici.
+    pub(crate) const TOUTES: [AckDrop; 5] = [
+        AckDrop::CorpsTropGros,
+        AckDrop::EnveloppeIndecodable,
+        AckDrop::DonneeAbsente,
+        AckDrop::ExpansionAuDelaDuPlafond,
+        AckDrop::ZeroEvenementMappe,
+    ];
+
+    /// Rang dans `PUBSUB_ACKDROP`. Le `match` est EXHAUSTIF : une variante ajoutée demain ne compile pas tant
+    /// qu'on ne lui a pas donné sa case — elle ne peut donc pas atterrir en silence dans celle d'une autre.
+    pub(crate) const fn rang(self) -> usize {
+        match self {
+            AckDrop::CorpsTropGros => 0,
+            AckDrop::EnveloppeIndecodable => 1,
+            AckDrop::DonneeAbsente => 2,
+            AckDrop::ExpansionAuDelaDuPlafond => 3,
+            AckDrop::ZeroEvenementMappe => 4,
+        }
+    }
+
+    /// Nom exposé dans `/metrics`. Exhaustif lui aussi : pas de raison sans libellé.
+    pub(crate) const fn libelle(self) -> &'static str {
+        match self {
+            AckDrop::CorpsTropGros => "corps_trop_gros",
+            AckDrop::EnveloppeIndecodable => "enveloppe_indecodable",
+            AckDrop::DonneeAbsente => "donnee_absente",
+            AckDrop::ExpansionAuDelaDuPlafond => "expansion_au_dela_du_plafond",
+            AckDrop::ZeroEvenementMappe => "zero_evenement_mappe",
+        }
+    }
+}
+
+/// LA TABLE DES RANGS FERME — vérifié à la COMPILATION, pas à l'exécution. Trois façons de la casser, les
+/// trois arrêtées ici : une variante sans rang (le `match` de `rang` refuse), une variante absente de `TOUTES`
+/// ou mal ordonnée (l'assertion ci-dessous), un tableau de compteurs de mauvaise taille (l'égalité de
+/// longueur). Sans cette fermeture, une raison ajoutée demain incrémenterait la case d'une autre et le
+/// tableau de bord mentirait sans jamais échouer.
+const _: () = {
+    assert!(
+        PUBSUB_ACKDROP.len() == AckDrop::TOUTES.len(),
+        "PUBSUB_ACKDROP (metrics.rs) n'a pas une case par raison d'AckDrop"
+    );
+    let mut i = 0;
+    while i < AckDrop::TOUTES.len() {
+        assert!(AckDrop::TOUTES[i].rang() == i, "AckDrop::TOUTES n'est pas rangé dans l'ordre des rangs");
+        i += 1;
+    }
+};
+
+/// ACK-AND-DROP Pub/Sub : HTTP 204 (2xx -> ACK) SANS corps, pour un message qui ne guérira jamais. L'ACK évite
+/// le rejeu infini ; le COMPTAGE, ici et non chez l'appelant, évite que la perte soit invisible.
+///
+/// `PUSH_ZERO_MAP_TOTAL` n'est plus incrémenté que par la raison qui porte son nom. Il comptait auparavant
+/// aussi les rejets de TAILLE, ce qui envoyait l'exploitant enquêter sur un `field_map` innocent.
+fn pubsub_ackdrop(raison: AckDrop) -> Response {
+    PUBSUB_ACKDROP[raison.rang()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if matches!(raison, AckDrop::ZeroEvenementMappe) {
+        PUSH_ZERO_MAP_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -111,29 +197,22 @@ pub(crate) async fn pubsub_ingest_post(
     let raw: Vec<u8> = if ce.contains("gzip") {
         match otlp_gunzip_capped(body.as_ref(), firehose_max_decompress()) {
             Ok(r) => r,
-            Err(_) => {
-                // BONUS ING-5 : un message trop volumineux DROPPÉ doit être OBSERVABLE (comme le chemin zéro-map),
-                // sinon la perte est silencieuse. On incrémente le MÊME compteur avant l'ACK-DROP.
-                PUSH_ZERO_MAP_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                return pubsub_ackdrop(); // décompressé > cap = poison -> ACK-DROP
-            }
+            Err(_) => return pubsub_ackdrop(AckDrop::CorpsTropGros), // décompressé > cap = poison -> ACK-DROP
         }
     } else {
         if body.len() > firehose_max_decompress() {
-            // BONUS ING-5 : idem — corps non compressé trop gros DROPPÉ = observable (pas de perte silencieuse).
-            PUSH_ZERO_MAP_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            return pubsub_ackdrop(); // corps trop gros = poison -> ACK-DROP
+            return pubsub_ackdrop(AckDrop::CorpsTropGros); // corps trop gros = poison -> ACK-DROP
         }
         body.to_vec()
     };
     // 5) parse l'enveloppe Pub/Sub. Indécodable / `message.data` absent = POISON -> ACK-DROP (jamais un rejeu).
     let root: Value = match serde_json::from_slice::<Value>(&raw) {
         Ok(v) => v,
-        Err(_) => return pubsub_ackdrop(),
+        Err(_) => return pubsub_ackdrop(AckDrop::EnveloppeIndecodable),
     };
     let data_b64 = match root.get("message").and_then(|m| m.get("data")).and_then(|d| d.as_str()) {
         Some(d) if !d.is_empty() => d.to_string(),
-        _ => return pubsub_ackdrop(), // pas de message.data exploitable -> ACK-DROP
+        _ => return pubsub_ackdrop(AckDrop::DonneeAbsente), // pas de message.data exploitable -> ACK-DROP
     };
     // 6) charge le connecteur push LIÉ (field_map + env_id + type) depuis la base du tenant (mode 0 = st.db).
     //    RE-VÉRIFIE type='gcp_pubsub' : une clé ne peut être honorée que si son binding pointe une source push
@@ -164,15 +243,14 @@ pub(crate) async fn pubsub_ingest_post(
         if let Some(ev) = httppull_map_record(&decoded, &cfg, ident.connector_id) {
             events.push(ev);
             if events.len() > max_events {
-                return pubsub_ackdrop(); // expansion > cap = poison -> ACK-DROP
+                return pubsub_ackdrop(AckDrop::ExpansionAuDelaDuPlafond); // expansion > cap = poison -> ACK-DROP
             }
         }
     }
     if events.is_empty() {
         // batch ACCEPTÉ mais mappé à 0 event (base64/JSON indécodable, ou field_map/records_path mal configuré) :
         // ACK-DROP + COMPTEUR (LOW#2 : un misconfig est OBSERVABLE au lieu d'un 200 silencieux). Poison compris.
-        PUSH_ZERO_MAP_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        return pubsub_ackdrop();
+        return pubsub_ackdrop(AckDrop::ZeroEvenementMappe);
     }
     // 8) spool enveloppe events + `env_id` + marqueur tenant (mode 0 = "") -> boucle de fond (parsers/extracteur/
     //    threat-intel/masquage UNIFORMES). Écriture spool en échec = TRANSITOIRE -> 5xx (Pub/Sub rejoue).

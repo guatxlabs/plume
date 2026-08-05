@@ -259,11 +259,14 @@
         h.insert(axum::http::header::CONTENT_ENCODING, axum::http::HeaderValue::from_static("gzip"));
         let gz = axum::body::Bytes::from(fh_gzip(&raw));
         assert_eq!(firehose_ingest_post(State(st.clone()), h.clone(), gz).await.status(), StatusCode::OK, "gzip décodé -> 200");
-        // (413) décompressé au-delà du cap (abaissé à 1 Kio) -> refus décompression.
-        std::env::set_var("PLUME_FIREHOSE_MAX_DECOMPRESS", "1024");
-        let big = axum::body::Bytes::from(fh_gzip("a".repeat(50_000).as_bytes()));
+        // (413) décompressé au-delà du cap PAR DÉFAUT (16 Mio) -> refus décompression. On DÉPASSE le plafond
+        // au lieu de l'ABAISSER : `PLUME_FIREHOSE_MAX_DECOMPRESS` est une variable GLOBALE AU PROCESSUS, et la
+        // poser ici la posait pour TOUS les tests s'exécutant en parallèle — le temps de la fenêtre, un message
+        // parfaitement valide dépassait le cap et se faisait refuser, faisant rougir des tests voisins AU
+        // HASARD (mesuré : 1 passe sur 10 côté Pub/Sub). Un gzip de 17 Mio d'un octet répété pèse quelques Kio
+        // sur le fil : le coût de ce test ne change pas, seule la donnée partagée disparaît.
+        let big = axum::body::Bytes::from(fh_gzip("a".repeat(17 * 1024 * 1024).as_bytes()));
         assert_eq!(firehose_ingest_post(State(st.clone()), h.clone(), big).await.status(), StatusCode::PAYLOAD_TOO_LARGE, "décompressé > cap -> 413");
-        std::env::remove_var("PLUME_FIREHOSE_MAX_DECOMPRESS");
         // (413) trop de records (> FIREHOSE_MAX_RECORDS=10000).
         let many: Vec<String> = (0..10_001).map(|_| fh_b64("{}")).collect();
         assert_eq!(firehose_ingest_post(State(st.clone()), fh_headers(&key), fh_body("rmany", &many)).await.status(),

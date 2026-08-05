@@ -102,8 +102,17 @@ Every overlay-able table carries a `managed` flag with the **repo-wide** semanti
 
 - **Loading** (boot, after all `seed_*`, inside `load_overlays_dir`): each object is UPSERTed **keyed by
   `name`** with `managed=1`. Re-running gives the same state (idempotent).
-- **Override-safe.** An overlay **never clobbers a user object**: if a row of the same `name` already
-  exists with `managed=2`, the loader **skips it and warns** (rename one of the two). Conversely, the UI
+- **Override-safe — for `managed=2` only, and the distinction matters.** An overlay never clobbers a
+  **user** object: if a row of the same `name` already exists with `managed=2`, the loader **skips it
+  and warns** (rename one of the two). Every other case takes the `Update` branch — including
+  `managed=0`. A **seeded/builtin** object whose `name` collides with an overlay file is therefore
+  **overwritten and flipped to `managed=1`**, which moves it out of the "never pruned" row of the
+  table above and into the prunable one: removing that overlay file later exposes the original line
+  to `POST /api/config-overlays/prune`. Measured 2026-08-06 (`overlays_oac.rs`, `plan_upsert`:
+  `managed == 2 → SkipUser`, everything else → `Update(id)`).
+  Impact is bounded — seeds are idempotent and re-applied at every boot, so the row comes back — but
+  the table said "never" and the code says otherwise. Practical rule: **do not give an overlay file
+  the `name` of a seeded object** unless you intend to take ownership of it. Conversely, the UI
   refuses to delete/mutate a `managed=1` object (`delete_managed_row_tx` returns `409` — "managed by
   config.d, remove it in git"). A `managed=1` lock is surfaced in the UI exactly like a managed rule.
 - **Lifecycle / prune (#26).** Removing an overlay file leaves its `managed=1` row behind (load only

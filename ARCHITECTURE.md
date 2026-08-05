@@ -409,7 +409,20 @@ trier » — compression au repos et agrégation bornée native — pas le déve
 Ce que le défaut apporte quand même : le budget est décidé en **un seul endroit**
 (`daemon/src/sqlite_plafond.rs`) et **dérivé** des bornes existantes :
 `cache_size = PLUME_SQLITE_BUDGET_MB / (READ_POOL_CAP + PLUME_QUERY_CONCURRENCY +
-PLUME_PANEL_REFRESH_CONCURRENCY + 2)`. Le défaut (1088 Mio = 17 porteurs × 64 Mio) **reproduit
+PLUME_PANEL_REFRESH_CONCURRENCY + 4)`.
+
+> **Le terme constant est 4, pas 2**, et la raison est écrite dans le code : les deux connexions
+> HORS pool (l'écrivain du daemon et celle des rollups, `CONNEXIONS_HORS_POOL = 2`) portent CHACUNE
+> un cache de pages **et** peuvent exécuter un tri — elles comptent donc dans les **deux** familles
+> de porteurs (`porteurs_pour`, `daemon/src/sqlite_plafond.rs`) :
+> `(READ_POOL_CAP + 2) + (interactif + refresh + 2)`. Aux défauts : `(8+2) + (3+2+2) = 17`.
+> Cette page a publié `+ 2` jusqu'au 2026-08-06 — soit 15 porteurs au lieu de 17 — tout en donnant
+> le bon total (« 17 porteurs ») à la phrase suivante. Conséquence réelle, et elle est plus étroite
+> que ce qu'on pourrait craindre : le budget TOTAL reste respecté puisque le daemon divise par le
+> vrai compte ; c'est la prédiction du cache **par porteur** qui était fausse, l'exploitant en
+> attendant ~13 % de plus qu'il n'en reçoit. Aucune exposition supplémentaire à l'OOM.
+
+Le défaut (1088 Mio = 17 porteurs × 64 Mio) **reproduit
 exactement** l'ancien `cache_size=-65536` ⇒ **aucun écart de comportement n'est livré** ; doubler le pool
 de lecture divise maintenant le cache tout seul, au lieu de dépasser le budget en silence.
 

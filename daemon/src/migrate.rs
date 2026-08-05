@@ -4690,9 +4690,26 @@ mod schema_contract_tests {
     /// ZÉRO FAUX POSITIF SUR CE QUE FAIT LE PRODUIT EN FONCTIONNEMENT NORMAL. On ne simule pas les
     /// suppressions d'objets : on appelle LE CODE DE PRODUCTION qui les fait (le dropper d'index
     /// redondants de v110 et la réconciliation d'index/vtable du boot), puis on redemande le contrat.
+    ///
+    /// DEPUIS P10.2-c, une base FRAÎCHE ne crée plus `idx_event_sev`/`idx_event_src` (schema.sql ne les
+    /// déclare plus) : le dropper n'aurait donc RIEN à supprimer et ce test deviendrait vacue. Or le
+    /// scénario RÉEL que ce test protège est celui d'une base EXISTANTE, provisionnée AVANT le correctif,
+    /// qui porte encore les deux index — c'est SUR ELLE que le dropper de v110 continue de tourner en
+    /// production. On amène donc d'abord la base à cette « vieille forme » (les deux `CREATE`), PUIS on
+    /// appelle le code de production : la précondition `apres < avant` retrouve son sens, et on vérifie
+    /// que la suppression par le produit lui-même ne casse jamais le démarrage.
     #[test]
     fn routine_index_maintenance_does_not_trip_the_guard() {
         let db = std::sync::Arc::new(parking_lot::Mutex::new(fresh_migrated()));
+        {
+            // Vieille forme : une base d'avant P10.2-c porte encore les deux index redondants.
+            let c = db.lock();
+            c.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_event_sev ON event(severity); \
+                 CREATE INDEX IF NOT EXISTS idx_event_src ON event(source);",
+            )
+            .unwrap();
+        }
         let avant = {
             let c = db.lock();
             c.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index'", [], |r| r.get::<_, i64>(0)).unwrap()

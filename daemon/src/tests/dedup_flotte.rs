@@ -456,6 +456,80 @@
         );
     }
 
+    /// GARDE P10.2-c — LE SCHÉMA NE RECRÉE JAMAIS CE QUE LA RÉCONCILIATION SUPPRIME.
+    ///
+    /// LE DÉFAUT QU'ELLE FERME, VÉRIFIÉ LE 2026-08-05. `maintenance.rs` supprime en tâche de fond
+    /// deux index redondants de `event` en affirmant : « une base neuve ne les crée plus :
+    /// `db/schema.sql` ne les DÉCLARE PLUS ». **C'était FAUX** — `schema.sql` les déclarait encore.
+    /// Or `prepare_schema()` rejoue `schema.sql` à CHAQUE ouverture de connexion d'écriture (boot,
+    /// CLI, purge, provisionnement de tenant…). Chaque démarrage RECONSTRUISAIT donc les deux index
+    /// sur toute la table `event`, **synchronement, avant le bind**, et la tâche de fond les
+    /// supprimait 29 s plus tard : une boucle sans fin, sur 1,49 M de lignes chiffrées en prod.
+    ///
+    /// L'« allègement » ne allégeait rien : il payait un rebuild complet à chaque redémarrage.
+    ///
+    /// LA GARDE EST DÉRIVÉE DU CODE, PAS D'UNE LISTE. Elle LIT les `DROP INDEX IF EXISTS idx_…` de
+    /// `maintenance.rs` et vérifie qu'aucun de ces noms n'est recréé par `db/schema.sql`. Un
+    /// troisième index ajouté demain à la réconciliation est couvert sans que personne y pense — là
+    /// où une liste recopiée aurait divergé exactement comme l'allégation a divergé du fichier.
+    ///
+    /// MUTATION : remettre `CREATE INDEX IF NOT EXISTS idx_event_sev ON event(severity);` dans
+    /// `db/schema.sql` ⇒ ROUGE, en nommant l'index fautif.
+    #[test]
+    fn schema_ne_recree_pas_ce_que_la_reconciliation_supprime() {
+        let racine = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let maint = std::fs::read_to_string(racine.join("src").join("maintenance.rs")).unwrap();
+        let schema = std::fs::read_to_string(racine.join("..").join("db").join("schema.sql")).unwrap();
+
+        // Les noms que la réconciliation SUPPRIME, extraits du source lui-même.
+        let mut supprimes: Vec<String> = Vec::new();
+        for l in maint.lines() {
+            let code = l.split("//").next().unwrap_or("");
+            if let Some(p) = code.find("DROP INDEX IF EXISTS ") {
+                let reste = &code[p + "DROP INDEX IF EXISTS ".len()..];
+                let nom: String = reste.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                if !nom.is_empty() && !supprimes.contains(&nom) {
+                    supprimes.push(nom);
+                }
+            }
+        }
+        // ANTI-ROT : si l'extracteur ne reconnaît plus les DROP, la garde serait VACUE — verte en ne
+        // regardant rien. On fixe donc CE QU'ELLE DOIT VOIR (mesuré le 2026-08-05 : 3 familles).
+        assert!(
+            supprimes.len() >= 3,
+            "ANTI-ROT : l'extracteur ne voit plus les DROP de maintenance.rs ({supprimes:?}) — \
+             réparer l'EXTRACTEUR, sinon cette garde passe au vert sans rien vérifier"
+        );
+
+        let recrees: Vec<&String> = supprimes
+            .iter()
+            .filter(|n| {
+                schema.lines().any(|l| {
+                    let code = l.split("--").next().unwrap_or("");
+                    if !code.contains("CREATE INDEX") {
+                        return false;
+                    }
+                    // NOM ENTIER, JAMAIS UNE SOUS-CHAÎNE. Première version : `code.contains(nom)` —
+                    // `idx_event_src` matchait à l'intérieur de `idx_event_src_ts` et la garde
+                    // accusait un fichier innocent. Le dépôt avait DÉJÀ résolu ce piège et l'avait
+                    // écrit (`ecrit_la_colonne_dedup` : « une sous-chaîne quelconque ne suffit pas »).
+                    // On exige donc que le caractère suivant ne prolonge pas l'identifiant.
+                    code.match_indices(n.as_str()).any(|(i, _)| {
+                        let apres = code[i + n.len()..].chars().next();
+                        !matches!(apres, Some(c) if c.is_alphanumeric() || c == '_')
+                    })
+                })
+            })
+            .collect();
+        assert!(
+            recrees.is_empty(),
+            "`db/schema.sql` RECRÉE un index que la réconciliation SUPPRIME : {recrees:?}. \
+             `prepare_schema()` rejouant schema.sql à CHAQUE ouverture d'écriture, c'est une BOUCLE \
+             création/suppression payée à chaque démarrage — un rebuild complet AVANT le bind. \
+             Retirer la déclaration de schema.sql, ou cesser de le supprimer."
+        );
+    }
+
     /// GARDE P3.6-b — AUCUNE SURFACE D'INGESTION N'ÉCRIT DANS `event` EN DIRECT.
     ///
     /// LE DÉFAUT QU'ELLE FERME, VÉRIFIÉ LE 2026-08-04 : `loki_push` écrivait un `INSERT` à 7 colonnes

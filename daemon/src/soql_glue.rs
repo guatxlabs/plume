@@ -90,6 +90,47 @@ const _: () = {
     );
 };
 
+/// Égalité de deux listes de chaînes À LA COMPILATION. Sert à rendre INEXPRIMABLE une divergence
+/// entre une constante de plume et son miroir dans le crate `guatx-core` — même geste que
+/// l'assertion `CIM_CONFIG_VERSION` ci-dessus.
+const fn const_slice_str_eq(a: &[&str], b: &[&str]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if !const_str_eq(a[i], b[i]) {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// HOT_FIELDS EST DUPLIQUÉ DANS DEUX CRATES, ET LA DIVERGENCE ÉTAIT SILENCIEUSE (clé P10.2-c).
+///
+/// LE MÉCANISME, ÉTABLI LE 2026-08-05. plume crée dix index d'expression `idx_ev_f_{champ}` sur
+/// `json_extract(fields,'$.{champ}')`, un par entrée de cette liste. Le compilateur GXQL, lui, vit
+/// dans `guatx-core` (git-dep ÉPINGLÉE) et décide d'envelopper ou non d'un `CAST` selon SA propre
+/// copie de `HOT_FIELDS` (`Schema::events().indexed_fields`). Les dix index ne sont appariables que
+/// parce que les deux listes sont AUJOURD'HUI byte-identiques.
+///
+/// Retirer un champ d'un côté seulement — ou en ajouter un — ferait émettre `CAST(json_extract(…))`
+/// là où l'index porte la forme canonique : **les dix index deviendraient inutilisables en
+/// recherche, SANS AUCUNE ERREUR DE BUILD**, et la seule trace serait une lenteur inexpliquée.
+/// (Mesuré ailleurs sur ce même sujet : la forme castée dégénère de SEARCH en SCAN, ×5.)
+///
+/// L'assertion ci-dessous rend cette dérive IMPOSSIBLE À COMPILER. C'est la même dérivation que
+/// partout ici : on ne se souvient pas de synchroniser, on est empêché de désynchroniser.
+const _: () = {
+    assert!(
+        const_slice_str_eq(HOT_FIELDS, guatx_core::soql::HOT_FIELDS),
+        "HOT_FIELDS a DIVERGÉ entre plume et guatx-core : les index d'expression idx_ev_f_* \
+         deviendraient inutilisables en recherche SANS erreur de build (le compilateur émettrait un \
+         CAST que l'index ne peut pas apparier). Aligner les deux listes, ou retirer les index."
+    );
+};
+
 // whitelist FERMÉE des champs chauds indexés par index expression (Phase 2 v41 : les 7 premiers ;
 // v49 : +verb,resource,operation). Cardinalité bornée (énumérés/identités d'un parc borné), tous TEXTUELS.
 //   v49 — FILTRES chauds des sources d'audit (kube-audit/vault-audit), validés EXPLAIN SCAN->SEARCH sur

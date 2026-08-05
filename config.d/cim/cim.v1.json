@@ -81,7 +81,7 @@
   },
   "extended_hot_fields": {
     "_comment": "Dimensions ETENDUES chaudes (HOT_FIELDS) : cles de `fields` indexees/groupables, cardinalite bornee. C'est le 'coeur etendu' du CIM sur lequel les detections filtrent/groupent en plus des colonnes.",
-    "fields": ["action", "user", "owner", "kind", "ns", "role", "scope", "verb", "resource", "operation"]
+    "fields": ["action", "user", "owner", "kind", "ns", "role", "scope", "verb", "resource", "operation", "dir", "risk"]
   },
   "action_vocab": [
     "success",

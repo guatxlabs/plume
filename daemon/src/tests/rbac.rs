@@ -787,7 +787,8 @@
 
     #[test]
     fn reconcile_expr_index_off_drops_indexes() {
-        // PLUME_EXPRINDEX=0 -> les 7 index expression sont droppés (kill-switch dur). On en crée un à la
+        // PLUME_EXPRINDEX=0 -> TOUS les index expression (un par EXPR_INDEX_FIELDS) sont droppés
+        // (kill-switch dur). On en crée un à la
         // main (comme le ferait le background ON) puis on vérifie que le reconcile OFF le retire.
         let conn = test_db();
         conn.execute(

@@ -12,9 +12,10 @@ LES AXES SONT DÉRIVÉS DU CHEMIN D'EXÉCUTION, PAS CHOISIS
   Chaque axe correspond à une DÉCISION du daemon dont la donnée — et non la requête — décide :
 
   `--ext-card-scale S`   Multiplie la CARDINALITÉ des clés étendues (le JSON `fields`).
-                         Décision visée : `soql_glue.rs` n'émet un accès indexé que pour les 10
+                         Décision visée : `soql_glue.rs` n'émet un accès indexé que pour les 12
                          clés de `HOT_FIELDS` (`action, user, owner, kind, ns, role, scope, verb,
-                         resource, operation`) ; toute autre clé se lit par `json_extract` en scan.
+                         resource, operation, dir, risk`) ; toute autre clé se lit par
+                         `json_extract` en scan.
                          La cardinalité décide, elle, la SÉLECTIVITÉ de l'accès indexé et le nombre
                          de groupes d'un `group by`. Mesuré chez nous : `action` a une cardinalité
                          de 4 et `user` de 1008 — un client dont le vocabulaire d'action est large
@@ -84,11 +85,12 @@ import sys
 # profil qui bougerait les deux à la fois ne permettrait d'attribuer l'écart à aucun des deux.
 PROMOTED_KEYS = {"src_ip", "dst_ip", "url", "rhost"}
 
-# Les 10 clés étendues qui reçoivent un index d'expression (soql_glue.rs::HOT_FIELDS, créés par
+# Les 12 clés étendues qui reçoivent un index d'expression (soql_glue.rs::HOT_FIELDS, créés par
 # maintenance.rs sous PLUME_EXPRINDEX=1). Recopiées ici POUR ÊTRE PUBLIÉES dans le profil, pas pour
 # décider quoi que ce soit : le script ne les traite pas autrement que les autres.
+# `dir`/`risk` ajoutés le 2026-08-05 (des règles livrées les filtrent — cf. docs/CIM.md §4b).
 HOT_FIELDS = ["action", "user", "owner", "kind", "ns", "role", "scope", "verb",
-              "resource", "operation"]
+              "resource", "operation", "dir", "risk"]
 
 
 def scale_ext_cardinality(p, scale):

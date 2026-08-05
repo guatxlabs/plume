@@ -108,14 +108,14 @@ const fn const_slice_str_eq(a: &[&str], b: &[&str]) -> bool {
 
 /// HOT_FIELDS EST DUPLIQUÉ DANS DEUX CRATES, ET LA DIVERGENCE ÉTAIT SILENCIEUSE (clé P10.2-c).
 ///
-/// LE MÉCANISME, ÉTABLI LE 2026-08-05. plume crée dix index d'expression `idx_ev_f_{champ}` sur
-/// `json_extract(fields,'$.{champ}')`, un par entrée de cette liste. Le compilateur GXQL, lui, vit
-/// dans `guatx-core` (git-dep ÉPINGLÉE) et décide d'envelopper ou non d'un `CAST` selon SA propre
-/// copie de `HOT_FIELDS` (`Schema::events().indexed_fields`). Les dix index ne sont appariables que
-/// parce que les deux listes sont AUJOURD'HUI byte-identiques.
+/// LE MÉCANISME, ÉTABLI LE 2026-08-05. plume crée UN index d'expression `idx_ev_f_{champ}` sur
+/// `json_extract(fields,'$.{champ}')` PAR ENTRÉE de cette liste (aujourd'hui douze). Le compilateur
+/// GXQL, lui, vit dans `guatx-core` (git-dep ÉPINGLÉE) et décide d'envelopper ou non d'un `CAST`
+/// selon SA propre copie de `HOT_FIELDS` (`Schema::events().indexed_fields`). Ces index ne sont
+/// appariables que parce que les deux listes sont AUJOURD'HUI byte-identiques, ORDRE COMPRIS.
 ///
 /// Retirer un champ d'un côté seulement — ou en ajouter un — ferait émettre `CAST(json_extract(…))`
-/// là où l'index porte la forme canonique : **les dix index deviendraient inutilisables en
+/// là où l'index porte la forme canonique : **tous les index deviendraient inutilisables en
 /// recherche, SANS AUCUNE ERREUR DE BUILD**, et la seule trace serait une lenteur inexpliquée.
 /// (Mesuré ailleurs sur ce même sujet : la forme castée dégénère de SEARCH en SCAN, ×5.)
 ///
@@ -131,7 +131,9 @@ const _: () = {
 };
 
 // whitelist FERMÉE des champs chauds indexés par index expression (Phase 2 v41 : les 7 premiers ;
-// v49 : +verb,resource,operation). Cardinalité bornée (énumérés/identités d'un parc borné), tous TEXTUELS.
+// v49 : +verb,resource,operation ; v50 : +dir,risk). Cardinalité bornée (énumérés/identités d'un parc
+// borné), tous TEXTUELS. ORDRE SIGNIFICATIF : l'assertion const ci-dessus compare ÉLÉMENT PAR ÉLÉMENT
+// avec la copie de `guatx-core` -> tout ajout se fait EN QUEUE, des deux côtés, dans le même ordre.
 //   v49 — FILTRES chauds des sources d'audit (kube-audit/vault-audit), validés EXPLAIN SCAN->SEARCH sur
 //   l'instance : `verb` (RBAC : verb=delete/deletecollection), `resource` (qui touche secrets : resource=
 //   secrets), `operation` (vault : operation=delete/create). Petits index partiels (kube-audit ~60k,
@@ -144,16 +146,68 @@ const _: () = {
 //   recherche devient SILENCIEUSEMENT VIDE. Et path/exe/key (haute cardinalité / firehose auditd 2,6M
 //   -> ~73 Mo/index, budget 2 Go) — leur GROUP-BY est servi par les rollups v49.
 //
-//   `dir` (conntrack/portscan : inbound|outbound) N'EST INDEXÉ PAR RIEN. Ce commentaire affirmait
-//   « exclu : déjà auto-indexé (idx_ev_auto_dir) » — c'était FAUX. Le mécanisme d'auto-index adaptatif
-//   qui aurait promu cet index N'A JAMAIS PROMU UN SEUL INDEX (chaîne coupée par une frontière de
-//   crate) et il a été RETIRÉ ; aucun `idx_ev_auto_*` n'existe ni ne peut naître. `dir` est TEXTUEL et
-//   de cardinalité 2 -> l'inscrire ici est une OPTION OUVERTE, pas un interdit : c'est une décision de
-//   perf dont le COÛT RAM RESTE À MESURER (un index d'expression par champ, budget 2 Go), et qui oblige
-//   à modifier AUSSI la copie de `HOT_FIELDS` dans `guatx-core` (cf. l'assertion const ci-dessus).
+//   v50 (2026-08-05) — `dir` ET `risk` ENTRENT, ET C'EST UNE RÉPARATION, PAS UN AJOUT DE CONFORT.
+//   Ce commentaire a dit DEUX choses fausses de suite sur `dir`, dans deux directions opposées, et
+//   il faut que la troisième version dise ce qui a été VÉRIFIÉ :
+//     1. il a d'abord affirmé « exclu : déjà auto-indexé (idx_ev_auto_dir) » — faux comme
+//        JUSTIFICATION : depuis que le compilateur GXQL a migré dans `guatx-core`, les crochets de
+//        comptage de chaleur sont du code mort (`warning: function autoindex_note is never used`),
+//        donc le mécanisme ne POUVAIT PLUS rien promouvoir. S'appuyer sur lui, c'était s'appuyer sur
+//        un entretien qui n'avait plus lieu ;
+//     2. il a ensuite affirmé, au retrait de ce mécanisme (P6.8), que `dir` « N'EST INDEXÉ PAR RIEN »
+//        et qu'aucun `idx_ev_auto_*` n'existait — faux comme CONSTAT : `idx_ev_auto_dir`,
+//        `idx_ev_auto_risk` et `idx_ev_auto_vtype` existaient RÉELLEMENT en production (ils sont
+//        RELEVÉS, avec leur taille, dans `bench/profile-prod.json`, `provenance: measured`,
+//        2026-07-30) et la purge de fond du retrait les a droppés. L'instrument qui avait servi à
+//        conclure à leur absence (`db-stats --par-objet`, top 10) ne montre rien sous ~22 Mio : il ne
+//        pouvait pas prouver une absence. Ne pas voir n'est pas mesurer — d'autant que le relevé qui
+//        les montrait était DÉJÀ dans le dépôt.
+//     La leçon commune aux deux : « le mécanisme est cassé AUJOURD'HUI » et « il n'a JAMAIS rien
+//     produit » ne sont pas la même phrase. La première est prouvée ; la seconde ne l'est pas, et
+//     trois index portant très exactement le nom qu'il émet la contredisent.
+//   CE QUI LES FAIT ENTRER ICI, ET PAS AILLEURS. Deux de ces trois champs sont interrogés par du
+//   contenu LIVRÉ, donc leur chaleur est DÉMONTRÉE et non supposée. Et la preuve la plus forte n'est
+//   PAS le catalogue : les règles de `config.d/rules/catalog/` sont livrées `enabled=false` (une
+//   bibliothèque qu'un exploitant active). Ce qui TOURNE sans que personne n'active rien, c'est le
+//   contenu SEEDÉ, et il filtre sur ces deux champs :
+//     `dir`  — règles d'alerte seedées, ACTIVES, ré-évaluées périodiquement : « Port-scan détecté
+//              (nft PORTSCAN) » et la règle RBA « reconnaissance / port-scan » (`source=portscan
+//              dir=inbound`, T1046, seeds.rs) ; « Egress externe sur port inhabituel (>1024) » et
+//              « Égress: beaconing C2 probable » (`dir=outbound`, T1071) ; PLUS trois panneaux seedés
+//              (« Destinations externes », « Processus sortants », « Ports de destination ») et des
+//              migrations qui ré-écrivent ces requêtes (migrate.rs). PLUS trois règles du catalogue.
+//     `risk` — le panneau seedé « Buckets exposés (PUBLIC) » (`source=minio kind=bucket risk=public`,
+//              seeds.rs) PLUS la règle de catalogue `cl-minio-public-bucket.json`.
+//   Un champ que du contenu livré ET ACTIF filtre appartient à la liste FERMÉE, MAINTENUE et vérifiée
+//   par l'assertion ci-dessus — pas à un mécanisme piloté par la chaleur d'usage, qui n'existe plus et
+//   n'a jamais rien produit. `vtype` n'a AUCUN usage livré : il n'est délibérément PAS restauré (on ne
+//   paie pas un index pour un champ que rien n'interroge).
+//   CONFORMES À LA RÈGLE CI-DESSUS (ce n'est pas une exception) : tous deux sont TEXTUELS et de
+//   cardinalité bornée — `dir` vaut inbound|outbound (posé en CHAÎNE JSON par `collectors/conntrack.sh`
+//   et `collectors/portscan.sh`), `risk` vaut admin|rw|ro|diag|public (`minio.sh`, `dataacl.sh`,
+//   `kube-rbac.sh`). Aucun émetteur livré ne les écrit en NOMBRE, donc la suppression du
+//   `CAST(... AS REAL)` qu'entraîne leur présence ici ne peut pas rendre une recherche silencieusement
+//   vide — c'est le mode d'échec qui interdit les champs numériques ci-dessus, et il ne s'applique pas.
+//   COÛT — MESURÉ, PAS ESTIMÉ. `EXPR_INDEX_FIELDS` (maintenance.rs) EST un alias de cette liste -> ces
+//   deux entrées font naître `idx_ev_f_dir` et `idx_ev_f_risk` en tâche de fond au prochain boot. Leur
+//   DDL est celle des `idx_ev_auto_*` droppés AU NOM PRÈS — même table, même expression, même prédicat
+//   partiel `WHERE json_extract(…) IS NOT NULL` — et elle n'a jamais varié sur toute la vie du
+//   mécanisme retiré. On recrée donc le MÊME objet, dont la taille A ÉTÉ RELEVÉE en production dans
+//   `bench/profile-prod.json` (`provenance: measured`, 2026-07-30, 1 397 446 événements) :
+//       idx_ev_auto_dir   4 616 192 o = 4,40 Mio   (`dir`  sur 234 519 lignes, soit 16,8 %, card. 2)
+//       idx_ev_auto_risk     12 288 o = 0,01 Mio   (`risk` sur 452 lignes, card. 7)
+//   soit 4,41 Mio à restaurer, = 1,5 % des 291,5 Mio d'index sur `event` du même relevé. C'est le
+//   partiel qui rend `dir` bon marché : 234 519 lignes indexées et non les 1,4 M de la table.
+//   POURQUOI L'INSTRUMENT NE LES VOYAIT PAS : le 10e objet du classement est `idx_event_ts` à
+//   22,75 Mio — le top 10 de `db-stats --par-objet` a un PLANCHER autour de 22 Mio, et `idx_ev_auto_dir`
+//   était CINQ FOIS dessous. Le relevé par objet existait pourtant déjà : c'est le mauvais instrument
+//   qui a été interrogé, pas une donnée manquante.
+//   ET `vtype` : mesuré à 733 184 o pour une CARDINALITÉ DE 1 — un index sur une colonne mono-valuée
+//   n'a aucune sélectivité. Deuxième raison, indépendante de l'absence d'usage, de ne pas le restaurer.
 pub(crate) const HOT_FIELDS: &[&str] = &[
     "action", "user", "owner", "kind", "ns", "role", "scope",
     "verb", "resource", "operation",
+    "dir", "risk",
 ];
 
 /// Toggle maître Phase 1 (PLUME_FTS_FIELDS) mis en cache au boot — le search libre bascule sur

@@ -181,8 +181,22 @@ borné). C'est le cœur étendu du CIM sur lequel les détections filtrent/group
 colonnes :
 
 ```
-action  user  owner  kind  ns  role  scope  verb  resource  operation
+action  user  owner  kind  ns  role  scope  verb  resource  operation  dir  risk
 ```
+
+> **`dir` et `risk` (2026‑08‑05) — entrés par ce que du contenu LIVRÉ interroge, pas par prédiction.**
+> Ces deux clés étaient censées être servies par un mécanisme d'auto‑indexation piloté par la chaleur
+> d'usage. Ce mécanisme **ne pouvait plus rien promouvoir** — ses crochets de comptage sont devenus du
+> code mort quand le compilateur GXQL a migré dans `guatx-core` — et il a été retiré (P6.8‑b) ; sa
+> purge de fond a droppé les index `idx_ev_auto_dir` / `idx_ev_auto_risk` / `idx_ev_auto_vtype` qui,
+> eux, **existaient réellement en production** (relevés avec leur taille dans `bench/profile-prod.json`,
+> `provenance: measured`, 2026‑07‑30 : 4,40 Mio pour `dir`, 12 Ko pour `risk`). Le critère d'entrée
+> dans cette liste est donc devenu explicite
+> et vérifiable : **une règle livrée filtre‑t‑elle sur ce champ ?** — `dir=outbound` : trois règles du
+> catalogue (`ex-egress-fanout-external`, `lm-conntrack-internal-ssh`, `di-conntrack-internal-sweep`) ;
+> `risk=public` : une (`cl-minio-public-bucket`). `vtype`, qu'aucun contenu livré n'interroge, n'a
+> **pas** été restauré. La liste est **ordonnée** et dupliquée dans `guatx-core` ; une assertion de
+> compilation refuse toute divergence entre les deux (`daemon/src/soql_glue.rs`).
 
 ### 4c. Vocabulaire NEUTRE de `action` (outcome normalisé — CIM v29)
 

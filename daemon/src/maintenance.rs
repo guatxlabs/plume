@@ -9,14 +9,22 @@ use crate::*;
 // RÉCONCILIATION D'ÉTAT D'INDEX (le VRAI kill-switch, env-driven, IDEMPOTENT).
 //
 // Les migrations v40/v41 ne font QUE bumper schema_version (cf. supra). Tout le pilotage d'état
-// (créer/dropper la vtable+triggers FTS et les 7 index expression) vit ICI et est appelé À CHAQUE
+// (créer/dropper la vtable+triggers FTS et les index expression, UN par entrée d'EXPR_INDEX_FIELDS)
+// vit ICI et est appelé À CHAQUE
 // boot après migrate(). Conséquence : poser PLUME_FTS_FIELDS=0 (resp. PLUME_EXPRINDEX=0) + redeploy
 // APPLIQUE réellement le DROP (pas de fuite, pas de coût ingest résiduel), et =1 re-crée si absent.
 // Idempotent : CREATE/DROP ... IF [NOT] EXISTS -> re-jouable sans erreur.
 // =====================================================================================
 
-/// Les champs chauds indexés par index expression partiel (7 Phase 2 v41 + 3 v49). Source unique de vérité
-/// partagée par reconcile_index_state, le background CREATE et la doc (= HOT_FIELDS).
+/// Les champs chauds indexés par index expression partiel (7 Phase 2 v41 + 3 v49 + 2 v50 : dir,risk).
+/// Source unique de vérité partagée par reconcile_index_state, le background CREATE et la doc (= HOT_FIELDS).
+///
+/// C'EST UN ALIAS, PAS UNE COPIE — et c'est la propriété qui compte : ajouter un champ à `HOT_FIELDS`
+/// (`soql_glue.rs`) SUFFIT à faire naître son `idx_ev_f_{champ}` en tâche de fond au boot suivant, et à
+/// le soumettre au même kill-switch `PLUME_EXPRINDEX`. Il n'y a RIEN à synchroniser ici, donc rien qui
+/// puisse dériver. Corollaire à ne pas perdre : la liste indexée et la liste que le compilateur GXQL
+/// considère comme « chaude » sont LA MÊME — un champ ne peut pas être indexé sans que le compilateur
+/// le sache (ce qui casserait l'appariement de l'index), ni l'inverse.
 const EXPR_INDEX_FIELDS: &[&str] = HOT_FIELDS;
 
 /// Version d'exécution réelle de la SQLite liée (SQLCipher vendoré). On la lit au lieu

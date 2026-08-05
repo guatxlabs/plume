@@ -3,12 +3,15 @@
 
 LE TROU QU'IL BOUCHE
   Le daemon crée des index d'expression sur les champs étendus (`PLUME_EXPRINDEX`, défaut **1**),
-  mais UNIQUEMENT sur une liste ÉCRITE EN DUR de dix noms (`soql_glue.rs`, `HOT_FIELDS`) :
-  `action, user, owner, kind, ns, role, scope, verb, resource, operation`.
-  L'indexation ADAPTATIVE pilotée par l'usage existe (`maintenance.rs`, `autoindex_tick`) mais
-  `PLUME_AUTOINDEX` vaut **0** par défaut (`server.rs`) : elle est INACTIVE hors configuration.
+  mais UNIQUEMENT sur une liste ÉCRITE EN DUR de douze noms (`soql_glue.rs`, `HOT_FIELDS`) :
+  `action, user, owner, kind, ns, role, scope, verb, resource, operation, dir, risk`.
+  Il n'y a AUCUN autre chemin : l'indexation ADAPTATIVE pilotée par l'usage a été RETIRÉE (P6.8-b),
+  ses crochets de comptage étant devenus du code mort quand le compilateur a migré dans `guatx-core`.
+  Cette version du fichier affirmait qu'elle « existe (`maintenance.rs`, `autoindex_tick`) mais est
+  inactive par défaut » — c'est faux depuis le retrait : ni `autoindex_tick` ni `PLUME_AUTOINDEX`
+  n'existent, et aucune configuration ne peut plus faire indexer un champ hors de la liste ci-dessus.
 
-  Conséquence : hors configuration, un exploitant n'a d'index que sur ces dix noms. Celui dont le
+  Conséquence : un exploitant n'a d'index que sur ces douze noms. Celui dont le
   champ discriminant s'appelle `process_name`, `dst_port` ou `rule_name` tombe en SCAN — et rien ne
   le lui dit. C'est la même forme que le constat sur les noms de sources : notre profil coïncide
   avec une table en dur, donc notre banc mesure le MEILLEUR CAS.
@@ -38,8 +41,11 @@ import time
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from measure import Client  # noqa: E402
 
+# Miroir de `soql_glue.rs::HOT_FIELDS` — DÉCISIONNEL ICI : la sonde choisit sa clé « non chaude »
+# par exclusion de cette liste. Un nom manquant ici ferait comparer deux clés INDEXÉES et rendrait
+# une mesure d'écart nulle, présentée comme un résultat. `dir`/`risk` ajoutés le 2026-08-05.
 HOT_FIELDS = ["action", "user", "owner", "kind", "ns", "role", "scope",
-              "verb", "resource", "operation"]
+              "verb", "resource", "operation", "dir", "risk"]
 PROMOTED = {"src_ip", "dst_ip", "url", "rhost"}
 
 

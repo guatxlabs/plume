@@ -549,7 +549,47 @@ pub(crate) fn daemon_excl_registry(conn: &Connection, conf: &HashMap<String, Str
         etype: ExclType::DisplayOnly,
         value: HOT_FIELDS.join(","),
         detail: json!({ "items": HOT_FIELDS, "note": "perf uniquement — un champ hors liste reste STOCKÉ et requêtable" }),
-        source: "const HOT_FIELDS / field_is_indexed",
+        // P7.15-a — LA PROVENANCE ANNONCÉE ÉTAIT À MOITIÉ FAUSSE : elle citait `field_is_indexed`,
+        // une fonction qui n'est JAMAIS APPELÉE. L'opérateur croyait lire un état d'indexation À
+        // L'EXÉCUTION ; il lit une CONSTANTE. Une provenance fausse est pire qu'une provenance
+        // absente : elle fait cesser de chercher.
+        source: "const HOT_FIELDS (liste FIGÉE à la compilation)",
+        editable: false,
+        edit_key: "",
+    });
+    // A6bis — L'ÉTAT RÉEL DE L'AUTO-INDEX, lu dans la table, pas déduit d'une constante. Sans cette
+    // entrée, rien dans l'UI ne disait si `PLUME_AUTOINDEX` était actif ni quels champs avaient été
+    // indexés à chaud — et le panneau ci-dessus laissait croire le contraire.
+    let auto_actif = crate::soql_glue::autoindex_enabled();
+    let mut auto_champs: Vec<String> = Vec::new();
+    if let Ok(mut st) = conn.prepare("SELECT field FROM autoindex WHERE indexed=1 ORDER BY field") {
+        if let Ok(rows) = st.query_map([], |r| r.get::<_, String>(0)) {
+            auto_champs.extend(rows.flatten());
+        }
+    }
+    out.push(ExclEntry {
+        name: "autoindex_actifs",
+        label: "Champs indexés à chaud (auto-index)",
+        scope: "index expression (perf, adaptatif)",
+        etype: ExclType::DisplayOnly,
+        value: if !auto_actif {
+            "PLUME_AUTOINDEX inactif — aucun index adaptatif".to_string()
+        } else if auto_champs.is_empty() {
+            // « pour l'instant » aurait laissé croire qu'il suffit d'attendre. MESURÉ le 2026-08-05 :
+            // le tampon de chaleur n'est JAMAIS alimenté en production, donc rien ne sera jamais
+            // promu. On dit ce qui est, pas ce qui devrait être (clé P6.8-b).
+            "ACTIF MAIS SANS EFFET — le compteur de chaleur n'est pas alimenté (P6.8-b) : aucun champ ne sera indexé".to_string()
+        } else {
+            auto_champs.join(",")
+        },
+        detail: json!({
+            "autoindex_actif": auto_actif,
+            "champs": auto_champs,
+            // Dit à l'opérateur ce qu'il ne peut pas deviner, et qui change sa décision.
+            "mecanisme_inerte_2026_08_05": "MESURÉ à l'exécution : 30/30 requêtes servies filtrant un champ JSON, PLUME_AUTOINDEX=1, tick forcé -> table `autoindex` VIDE, 0 index créé. Le tampon de chaleur n'est jamais écrit en production (`autoindex_note` et `autoindex_note_filter` n'ont aucun appelant hors tests) -> AUCUN index adaptatif n'est jamais promu. Le réglage promet une fonctionnalité qui ne s'exécute pas (clé P6.8-b).",
+            "avertissement_mesure_2026_08_05": "un champ indexé à chaud n'est PAS compilé comme un HOT_FIELD : comparé à un NOMBRE, la requête porte un CAST que l'index d'expression ne peut pas apparier -> le plan dégénère de SEARCH en SCAN (mesuré x5 sur 200 000 lignes). Les comparaisons de CHAÎNE ne sont pas touchées. Activer l'auto-index n'apporte donc pas le gain d'un HOT_FIELD sur un champ numérique (clé P6.8-a).",
+        }),
+        source: "table `autoindex` (indexed=1) + PLUME_AUTOINDEX — état LU, pas déduit",
         editable: false,
         edit_key: "",
     });

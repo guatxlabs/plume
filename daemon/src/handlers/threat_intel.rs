@@ -9,7 +9,7 @@
 use crate::*;
 
 // ============================================================================================
-// CACHE DE MATCH EN MÉMOIRE (keyé par db_path — MT-KEY, comme AUTOINDEX_SET). value NORMALISÉE ->
+// CACHE DE MATCH EN MÉMOIRE (keyé par db_path — MT-KEY, comme PARSERS). value NORMALISÉE ->
 // métadonnées de l'IOC. Rechargé périodiquement (rollup loop, ~120 s) + après chaque mutation admin.
 // Le match-on-ingest LIT ce cache en O(1) (HashMap) : JAMAIS de SELECT par event (discipline
 // host_rollup : « jamais scanner event par requête au volume »).

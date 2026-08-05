@@ -385,7 +385,6 @@ pub(crate) fn per_db_registries_reload(conn: &Connection, db_path: &str) {
     processors_reload(conn, db_path);
     field_filters_reload(conn, db_path);
     knowledge_reload(conn, db_path);
-    autoindex_reload(conn, db_path);
 }
 
 #[allow(dead_code)]

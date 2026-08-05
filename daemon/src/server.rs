@@ -443,7 +443,7 @@ fn open_and_migrate_db(db_path: String, spool: String, conf: HashMap<String, Str
 
 /// Lance toutes les boucles de fond (ingest, ordonnanceur de règles, connecteurs, destinations,
 /// rétention, rapports, rollups, refresh panneaux, ANALYZE/index en fond) + applique les toggles mis
-/// en cache au boot (FTS/autoindex/engagement/exclusions). MÊME ordre, MÊME cadence qu'avant.
+/// en cache au boot (FTS/engagement/exclusions). MÊME ordre, MÊME cadence qu'avant.
 fn spawn_background_jobs(conf: HashMap<String, String>, spool: String, db_path: String, db: Arc<Mutex<Connection>>, tenants: TenantDbManager, refresh_sem: Arc<tokio::sync::Semaphore>, bound: Arc<std::sync::atomic::AtomicBool>) {
     {
         // ROUTING PER-TENANT de l'ingest (R8) : le manager résout la base cible PAR fichier spool (tenant
@@ -558,17 +558,12 @@ fn spawn_background_jobs(conf: HashMap<String, String>, spool: String, db_path: 
         spawn_analyze_full(db.clone(), bound.clone());
     }
 
-    // PHASES 1-3 — toggles mis en cache AU BOOT (atomics lus sur le chemin chaud de compilation/recherche
-    // sans load_config()). Défauts PRUDENTS : FTS-fields OFF, auto-index OFF. cfg() couvre PLUME_* (canonical).
+    // PHASE 1 — toggle mis en cache AU BOOT (atomic lu sur le chemin chaud de compilation/recherche
+    // sans load_config()). Défaut PRUDENT : FTS-fields OFF. cfg() couvre PLUME_* (canonical).
     FTS_FIELDS_ON.store(cfg(&conf, "PLUME_FTS_FIELDS", "0") == "1", std::sync::atomic::Ordering::Relaxed);
-    AUTOINDEX_ON.store(cfg(&conf, "PLUME_AUTOINDEX", "0") == "1", std::sync::atomic::Ordering::Relaxed);
     // v75 — MODE ENGAGEMENT (pentest natif) : drapeau mis en cache AU BOOT (lu sur le chemin chaud ingest/ban
     // sans load_config). Défaut OFF -> tout le sous-système engagement INERTE (byte-identique).
     set_engagement_mode(engagement_enabled_in(&conf));
-    AUTOINDEX_SLOW_MS.store(
-        cfg(&conf, "PLUME_AUTOINDEX_SLOW_MS", "800").parse().unwrap_or(800),
-        std::sync::atomic::Ordering::Relaxed,
-    );
     // DEBRUITAGE self/opérateur — clauses d'exclusion (`__OPERATOR_EXCL__` / `__SELF_EXCL__`) compilées et
     // MISES EN CACHE AU BOOT (lues sur le chemin chaud de compilation sans load_config). Chantier
     // whitelists→webui : la valeur résout DÉSORMAIS un override `setting` éditable+audité (repli BYTE-IDENTIQUE
@@ -585,12 +580,6 @@ fn spawn_background_jobs(conf: HashMap<String, String>, spool: String, db_path: 
             g.op_sql, g.self_sql
         );
     }
-    // Charge le cache des index auto déjà présents (la garde anti-CAST doit les connaître même si OFF).
-    {
-        let conn = db.lock();
-        autoindex_reload(&conn, &db_path);
-    }
-
     // CREATE des 7 index expression EN FOND après le bind (jamais synchrone : un CREATE
     // INDEX sur 1,24M lignes bloquerait le bind -> liveness k8s -> CrashLoopBackOff). 1 index à la fois,
     // lock writer borné par index. No-op si PLUME_EXPRINDEX!=1 (le DROP est synchrone au boot) ou si
@@ -625,6 +614,16 @@ fn spawn_background_jobs(conf: HashMap<String, String>, spool: String, db_path: 
         spawn_drop_prefix_subsumed_indexes(db.clone());
     }
 
+    // P6.8-b — DROP EN FOND après le bind des index `idx_ev_auto_*` ORPHELINS du mécanisme d'auto-index
+    // adaptatif RETIRÉ. Son mainteneur était le SEUL code qui savait les dropper ; sans ceci ils seraient
+    // des orphelins permanents (coût disque + un insert btree par ligne ingérée, que plus personne ne peut
+    // retirer). La liste est DEMANDÉE à sqlite_master, jamais écrite en dur. En fond et NON en migration :
+    // un bump de schéma rendrait la base illisible par le binaire précédent -> le rollback automatique de
+    // la porte de déploiement deviendrait un cul-de-sac. Même doctrine que v110/P10.2-d.
+    {
+        spawn_drop_orphan_auto_field_indexes(db.clone());
+    }
+
     // v108 (PERF recherche raw haut-volume) — CREATE de l'index COMPOSITE idx_event_src_ts(source,ts) EN FOND
     // après le bind (jamais synchrone : CREATE INDEX sur des millions de lignes chiffrées bloquerait le bind).
     // schema.sql le déclare (bases neuves) mais aucune migration ne le crée -> la base live en manque. Une fois
@@ -657,13 +656,6 @@ fn spawn_background_jobs(conf: HashMap<String, String>, spool: String, db_path: 
         spawn_fts_backfill(db.clone());
     }
 
-    // PHASE 3 — maintenance auto-index adaptatif EN FOND. Gère la PURGE éventuelle, recharge le cache,
-    // puis (si PLUME_AUTOINDEX=1) boucle de création/éviction plafonnée. OFF -> ne crée rien.
-    {
-        // #2a-2c : maintenance auto-index PAR TENANT (mode 0 = 1 itération `default`=st.db).
-        spawn_autoindex_maintain(tenants.clone());
-    }
-
     // #23 — PRÉ-CHAUFFAGE au boot (cold-read fix) : le 1er /api/integrations (~12 s FROID) / /api/overview
     // payait tout le déchiffrement SQLCipher à froid. On exécute UNE fois, APRÈS le bind + la liveness, un petit
     // lot BORNÉ de lectures (intégrations + fraîcheur + qq agrégats overview) sur le READ POOL pour peupler le
@@ -677,7 +669,7 @@ fn spawn_background_jobs(conf: HashMap<String, String>, spool: String, db_path: 
 // Chaque std::thread::spawn de spawn_background_jobs() extrait en un helper spawn_<job>(...) prenant ses
 // clones/valeurs PAR VALEUR. INVARIANT : ordre de creation des threads inchange, clone AU SITE D'APPEL
 // (jamais dans le helper), intervalles/flags passes en parametres (aucun load_config re-lu), atomics de
-// tick conserves DANS les closures, et les statements de boot synchrones (toggles/excl_clauses/autoindex)
+// tick conserves DANS les closures, et les statements de boot synchrones (toggles/excl_clauses)
 // restent inline dans spawn_background_jobs a leur place exacte.
 fn spawn_ingest_loop(mgr: TenantDbManager, spool: String) {
         std::thread::spawn(move || {
@@ -1083,6 +1075,13 @@ fn spawn_drop_prefix_subsumed_indexes(db: Arc<Mutex<Connection>>) {
         });
 }
 
+fn spawn_drop_orphan_auto_field_indexes(db: Arc<Mutex<Connection>>) {
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(32)); // après le bind + la liveness probe (P6.8-b)
+            drop_orphan_auto_field_indexes_background(&db);
+        });
+}
+
 fn spawn_ensure_host_rollup_scan_indexes(db: Arc<Mutex<Connection>>) {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(31)); // après le bind + la liveness probe
@@ -1108,12 +1107,6 @@ fn spawn_fts_backfill(db: Arc<Mutex<Connection>>) {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(30)); // laisse passer bind + liveness avant l'IO de fond
             fts_backfill_background(&db);
-        });
-}
-
-fn spawn_autoindex_maintain(tenants: TenantDbManager) {
-        std::thread::spawn(move || {
-            autoindex_maintain_background(&tenants);
         });
 }
 

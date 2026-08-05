@@ -476,8 +476,13 @@
     /// L'EXTRACTEUR A DEUX RÈGLES, PARCE QUE LE CODE A DEUX FORMES (repris le 2026-08-05, P10.2-d — et
     /// c'est L'ANTI-ROT CI-DESSOUS QUI L'A EXIGÉ : il est passé au ROUGE dès que la mécanique de DROP a
     /// été extraite dans un helper, exactement comme il promettait de le faire) :
-    ///   R1 — le `DROP INDEX IF EXISTS <nom>` ÉCRIT EN DUR (réconciliation FTS/expr/auto-index, où le nom
-    ///        est construit par préfixe : `idx_ev_f_`, `idx_ev_auto_`).
+    ///   R1 — le `DROP INDEX IF EXISTS <nom>` ÉCRIT EN DUR (réconciliation FTS/expr, où le nom est
+    ///        construit par préfixe : `idx_ev_f_`). Cette règle voyait une SECONDE famille, `idx_ev_auto_`,
+    ///        jusqu'au retrait du mécanisme d'auto-index adaptatif (P6.8-b). Cette famille est désormais
+    ///        purgée par `drop_orphan_auto_field_indexes_background`, qui n'écrit AUCUN nom : elle demande
+    ///        sa liste à `sqlite_master`. R1, qui cherche un nom LITTÉRAL derrière le DROP, ne peut donc
+    ///        plus la voir — d'où 12 et non 13. Ce n'est pas l'extracteur qui a faibli, c'est la forme du
+    ///        code qui a changé, et c'est l'anti-rot ci-dessous qui a exigé qu'on vienne le constater.
     ///   R2 — le NOM PASSÉ AU DROPPER générique `drop_subsumed_index`, depuis que la mécanique (has_index
     ///        + DROP + journal + garde) est EXTRAITE et que le SQL s'écrit `format!("DROP INDEX IF EXISTS
     ///        {redondant}")` — plus aucun nom littéral n'y suit `DROP INDEX IF EXISTS`, donc R1 seule ne
@@ -530,11 +535,17 @@
             }
         }
         // ANTI-ROT : si l'extracteur ne reconnaît plus les DROP, la garde serait VACUE — verte en ne
-        // regardant rien. On fixe donc CE QU'ELLE DOIT VOIR (RE-MESURÉ le 2026-08-05 après P10.2-d :
-        // 2 familles construites par préfixe (R1) + 11 index nommés (R2) = 13 ; borne en `>=` pour ne pas
-        // se re-casser au prochain ajout, mais elle MORD si une des deux règles cesse de voir).
+        // regardant rien. On fixe donc CE QU'ELLE DOIT VOIR (RE-MESURÉ le 2026-08-05 après P6.8-b :
+        // 1 famille construite par préfixe (R1, `idx_ev_f_`) + 11 index nommés (R2) = 12 ; borne en `>=`
+        // pour ne pas se re-casser au prochain ajout, mais elle MORD si une des deux règles cesse de voir).
+        //
+        // ELLE A MORDU, ET C'ÉTAIT JUSTE. La borne valait 13 : 2 familles R1, dont `idx_ev_auto_`. Le
+        // retrait du mécanisme d'auto-index adaptatif (P6.8-b) a retiré de `maintenance.rs` les DEUX seuls
+        // `DROP INDEX IF EXISTS idx_ev_auto_…` du dépôt -> 12 vus, ROUGE. Ce n'est PAS l'extracteur qui
+        // s'est cassé : c'est le code qui a légitimement perdu une famille, et la borne a exigé qu'on
+        // vienne le CONSTATER au lieu de laisser la garde se vider en silence. Baissée à 12 sur MESURE.
         assert!(
-            supprimes.len() >= 13,
+            supprimes.len() >= 12,
             "ANTI-ROT : l'extracteur ne voit plus tous les DROP de maintenance.rs ({} vu(s) : {supprimes:?}) — \
              réparer l'EXTRACTEUR (ses deux règles sont documentées au-dessus), sinon cette garde passe au \
              vert sans rien vérifier",

@@ -1,6 +1,6 @@
     // ============================================================================================
     // FONDATION MULTI-TENANT #2a-1 — TEST D'ISOLATION : deux db_path distincts NE PARTAGENT PAS l'état
-    // process-global re-clé (R1 READ_POOL, R4 AUTOINDEX_BUF, R4 PARSERS). Preuve directe que la re-clé
+    // process-global re-clé (R1 READ_POOL, R4 PARSERS). Preuve directe que la re-clé
     // par db_path borne l'état au-dessus du handle DB. En mono-tenant (un seul db_path) tout ce code
     // n'a qu'UNE clé -> comportement STRICTEMENT identique ; ici on exerce 2 clés pour prouver la garde.
     // ============================================================================================
@@ -27,23 +27,6 @@
         let va: String = ca2.query_row("SELECT v FROM marker", [], |r| r.get(0)).unwrap();
         assert_eq!(va, "AAA", "R1 : le pool de A ne sert que des connexions ouvertes sur A");
         read_conn_put(&a, ca2);
-
-        // ---- R4 AUTOINDEX_BUF ---- : un hit noté sous A ne doit PAS apparaître sous B.
-        {
-            let _g = AUTOINDEX_TEST_LOCK.lock();
-            AUTOINDEX_ON.store(true, std::sync::atomic::Ordering::Relaxed);
-            autoindex_buf().lock().clear();
-            autoindex_note(&a, "iso_field");
-            {
-                let top = autoindex_buf().lock();
-                assert!(top.get(a.as_str()).and_then(|m| m.get("iso_field")).is_some(),
-                        "R4 : le hit noté sous A doit exister sous la clé A");
-                assert!(top.get(b.as_str()).and_then(|m| m.get("iso_field")).is_none(),
-                        "R4 : le hit noté sous A ne doit JAMAIS apparaître sous la clé B");
-            }
-            autoindex_buf().lock().clear();
-            AUTOINDEX_ON.store(false, std::sync::atomic::Ordering::Relaxed);
-        }
 
         // ---- R4 PARSERS ---- : un registre chargé sous A ne s'applique pas à une ingestion sous B.
         {

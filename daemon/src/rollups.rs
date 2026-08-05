@@ -104,7 +104,7 @@ pub(crate) fn rollup_select_sql(cond: &str, min_sev: i64, topn: i64) -> String {
 /// `verdict=*` ≡ `verdict IS NOT NULL` ≡ `val<>''` côté rollup (cf. dim_panel_sql non_empty=true).
 /// ⚠️ N'INSCRIRE QUE des dims BASSE-CARDINALITÉ (level, status, verb, ns...). JAMAIS `msg`/`trace_id`/
 /// `time` : le rollup matérialiserait une explosion de valeurs (cap top-N/bucket les tronquerait de
-/// toute façon -> chiffres faux) — ces clés sont au surplus dans AUTOINDEX_DENY.
+/// toute façon -> chiffres faux).
 const DIM_ROLLUP_SPECS: &[(&str, &[&str])] = &[
     ("web", &["status", "vhost", "path"]),
     ("mail", &["verdict"]),
@@ -183,7 +183,7 @@ pub(crate) fn merge_rollup_dims(specs: &mut Vec<(String, Vec<String>)>, raw: &st
 /// FUSIONNÉS avec l'env `PLUME_ROLLUP_DIMS` (cf. merge_rollup_dims). Calculée UNE fois (OnceLock) :
 /// coût nul sur le chemin chaud (try_rollup_route, appelé par requête) et état STABLE partagé avec le
 /// job de matérialisation (rollup_events). Un changement de `PLUME_ROLLUP_DIMS` exige un redémarrage,
-/// comme les autres toggles mis en cache au boot (PLUME_AUTOINDEX, etc.). PAS de recompilation requise.
+/// comme les autres toggles mis en cache au boot (PLUME_FTS_FIELDS, etc.). PAS de recompilation requise.
 pub(crate) fn dim_rollup_specs() -> &'static [(String, Vec<String>)] {
     static SPECS: std::sync::OnceLock<Vec<(String, Vec<String>)>> = std::sync::OnceLock::new();
     SPECS.get_or_init(|| {

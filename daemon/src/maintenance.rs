@@ -2,8 +2,7 @@
 //! version SQLite (`sqlite_runtime_version`), pilotage FTS-fields (`reconcile_fts_fields` + DDL vtable/
 //! triggers) et index expression (`EXPR_INDEX_FIELDS`/`reconcile_expr_indexes_*`/`reconcile_index_state`),
 //! CREATE lourds en tâche de fond post-bind (`ensure_*_index_background`/`analyze_full_background`/
-//! `fts_backfill_background`), auto-indexation Phase 3 (`autoindex_maintain_background`/`autoindex_tick`/
-//! `autoindex_create`, churn borné + éviction LRU) et `host_self`. Extrait de main.rs (refactor split #25 — byte-identique).
+//! `fts_backfill_background`) et `host_self`. Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
 
 // =====================================================================================
@@ -332,6 +331,77 @@ pub(crate) fn drop_prefix_subsumed_indexes_background(db: &Arc<Mutex<Connection>
     drop_subsumed_index(&conn, "idx_alert_mitre", Subsumant::Explicite("idx_alert_mitre_ts"), "P10.2-d");
 }
 
+/// P6.8-b — DROP EN TÂCHE DE FOND des index `idx_ev_auto_*` ORPHELINS laissés par le mécanisme
+/// d'auto-index adaptatif RETIRÉ.
+///
+/// POURQUOI CETTE FONCTION EXISTE. Le mécanisme (registre `autoindex` de v42, mainteneur de fond, tampon
+/// de chaleur, promotion d'un `idx_ev_auto_<champ>`) était INERTE — il n'a JAMAIS promu un seul index, sa
+/// chaîne de collecte étant coupée par une frontière de crate, et le compilateur le disait. Il a été
+/// supprimé. Mais SON MAINTENEUR ÉTAIT LE SEUL CODE QUI SAVAIT DROPPER CES INDEX : le réconciliateur
+/// d'index ne connaît que la famille `idx_ev_f_*` (`EXPR_INDEX_FIELDS`), et les deux droppers voisins ne
+/// connaissent que des noms figés. Sans cette fonction, un `idx_ev_auto_*` présent sur une base live
+/// deviendrait un ORPHELIN PERMANENT : il continuerait à coûter du disque ET un insert btree PAR LIGNE
+/// INGÉRÉE, et plus personne ne pourrait le retirer. Retirer le mainteneur sans le remplacer ici
+/// laisserait la base dans un état PIRE qu'avant le retrait.
+///
+/// POURQUOI EN TÂCHE DE FOND ET PAS EN MIGRATION — c'est le point qui a été tranché, et il ne l'a pas été
+/// pour des raisons d'élégance. Une migration exige de bumper `CODE_SCHEMA_MAX` ; or `schema_downgrade_guard`
+/// REFUSE d'ouvrir une base dont la version dépasse celle du binaire (`db_open.rs` ->
+/// `PlusRecenteQueCeBinaire`), et la migration tourne AVANT le bind. La séquence « nouveau build -> base
+/// estampillée v115 -> la porte de déploiement échoue pour une raison quelconque -> rollback automatique
+/// vers l'image précédente (max=114) -> ce binaire REFUSE la base » met la production à terre ET tue le
+/// chemin de secours. On ne brûle pas le rollback pour de l'hygiène d'index. Le motif ÉTABLI du dépôt est
+/// exactement celui-ci : v110 et P10.2-d droppent des index en fond, APRÈS le bind, sans aucun bump.
+///
+/// LA TABLE `autoindex` N'EST PAS DROPPÉE, ET C'EST DÉLIBÉRÉ. Le contrat de démarrage compare la forme de
+/// RÉFÉRENCE (construite en mémoire par CE binaire : `db/schema.sql` + toute la chaîne de migrations, donc
+/// `migrate_v42` INCLUSE, qui crée la table) à la base réelle, et il le fait dans UN SEUL SENS : ce qui
+/// MANQUE à la base. Dropper la table à l'exécution ferait donc MANQUER à toute base live un objet que la
+/// référence déclare -> gap -> refus de démarrer (fail-closed). La retirer proprement suppose de la retirer
+/// AUSSI de la référence, donc une migration, donc le bump à sens unique ci-dessus. Une table VIDE de
+/// quelques kilo-octets ne justifie pas ça. Elle est donc VESTIGIALE et ASSUMÉE : plus une ligne de code ne
+/// la lit ni ne l'écrit, elle pourra partir dans un futur lot où un bump de schéma est de toute façon
+/// justifié pour d'autres raisons.
+///
+/// LA LISTE N'EST PAS ÉCRITE ICI : ELLE EST DEMANDÉE À SQLITE. On ne SAIT PAS quels `idx_ev_auto_*`
+/// existent — mesuré en production le 2026-08-05, aucun n'apparaît dans les 10 plus gros objets, mais cet
+/// instrument ne voit rien SOUS 21,9 Mio. On ÉNUMÈRE donc depuis `sqlite_master` et on droppe ce qui est
+/// LÀ. `ESCAPE '\'` n'est pas décoratif : dans un motif LIKE, `_` signifie « un caractère quelconque » —
+/// sans échappement le motif attraperait aussi `idxXevXautoX…`, donc des index d'AUTRES familles.
+/// Idempotent (au boot suivant il n'y a plus rien à voir), non fatal, retenté à chaque boot.
+pub(crate) fn drop_orphan_auto_field_indexes_background(db: &Arc<Mutex<Connection>>) {
+    let conn = db.lock();
+    let orphelins: Vec<String> = match conn.prepare(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx\\_ev\\_auto\\_%' ESCAPE '\\'",
+    ) {
+        Ok(mut st) => match st.query_map([], |r| r.get::<_, String>(0)) {
+            Ok(rows) => rows.flatten().collect(),
+            Err(e) => {
+                eprintln!("[reconcile-bg] énumération des idx_ev_auto_* ÉCHEC ({e}) — retry au prochain boot");
+                return;
+            }
+        },
+        Err(e) => {
+            eprintln!("[reconcile-bg] énumération des idx_ev_auto_* ÉCHEC ({e}) — retry au prochain boot");
+            return;
+        }
+    };
+    for nom in &orphelins {
+        // Le nom vient de sqlite_master (jamais d'une entrée utilisateur) ; il est EN OUTRE re-validé par
+        // le même prédicat d'identifiant que partout ailleurs -> aucune interpolation non contrôlée.
+        if !soql_ident_ok(nom) {
+            continue;
+        }
+        match conn.execute(&format!("DROP INDEX IF EXISTS {nom}"), []) {
+            Ok(_) => eprintln!(
+                "[reconcile-bg] {nom} DROPPÉ (orphelin du mécanisme d'auto-index adaptatif retiré ; plus \
+                 aucun code ne le maintenait ni ne pouvait le retirer ; P6.8-b)"
+            ),
+            Err(e) => eprintln!("[reconcile-bg] DROP INDEX {nom} ÉCHEC ({e}) — retry au prochain boot"),
+        }
+    }
+}
+
 /// v108 (PERF recherche raw haut-volume) — crée l'index COMPOSITE MANQUANT idx_event_src_ts(source, ts) EN
 /// TÂCHE DE FOND sur la base MIGRÉE. La recherche brute `search source=X earliest=-Nd` compile en `... FROM event
 /// WHERE source=? AND ts>=?` : idx_event_src (source-seul) SEEK source mais doit LIRE chaque ligne pour ts, et le
@@ -600,225 +670,6 @@ pub(crate) fn fts_backfill_background(db: &Arc<Mutex<Connection>>) {
         );
     }
     eprintln!("[fts-backfill] backfill event_fields_fts TERMINÉ (historique indexé)");
-}
-
-/// PHASE 3 — AUTO-INDEX ADAPTATIF PLAFONNÉ (OFF par défaut). Détecte à l'usage les champs `fields.X`
-/// réellement filtrés/groupés ET lents, et crée un index expression pour eux EN FOND, plafonné, sans
-/// churn, éviction LRU. Modèle analyze_full_background : thread spawn après bind, sleep initial 120s
-/// puis boucle toutes les PLUME_AUTOINDEX_INTERVAL. Tout sous lock writer BORNÉ (1 CREATE/DROP par
-/// tick max). Si désactivé (PLUME_AUTOINDEX!=1), la boucle ne crée RIEN (les index déjà créés restent
-/// et servent ; PLUME_AUTOINDEX_PURGE=1 pour les purger). Aucun travail dans migrate() -> pas de
-/// crashloop : un échec de CREATE est loggé (`let _ =`), retry au tick suivant.
-// #2a-2c : maintenance auto-index PAR TENANT. `mgr` -> for_each_active_tenant : mode 0 = 1 passe sur la base
-// unique (comportement STRICTEMENT identique), mode 1 = setup + tick sur CHAQUE base tenant (chaque tenant
-// gère ses propres index adaptatifs ; buffers/set d'index keyés db_path #2a-1). Itération SÉQUENTIELLE (pas
-// de fan-out : budget 2 Go). Les tunables (seuils/intervalle/décroissance) sont globaux (config), une seule
-// lecture pour tous les tenants.
-pub(crate) fn autoindex_maintain_background(mgr: &TenantDbManager) {
-    let conf = load_config();
-    let purge = cfg(&conf, "PLUME_AUTOINDEX_PURGE", "0") == "1";
-    // SETUP PAR TENANT (une fois au boot) : PURGE éventuelle (reset propre : DROP idx_ev_auto_* + vide la
-    // table autoindex) PUIS chargement du set des champs déjà indexés (utile même si OFF : la garde anti-CAST
-    // doit les connaître). En mode 0 : une seule passe sur la base unique = comportement identique.
-    for_each_active_tenant(mgr, |_tid, db, db_path| {
-        if purge {
-            { let conn = db.lock();
-                let fields: Vec<String> = conn
-                    .prepare("SELECT field FROM autoindex WHERE indexed=1")
-                    .and_then(|mut st| {
-                        st.query_map([], |r| r.get::<_, String>(0)).map(|rows| rows.flatten().collect())
-                    })
-                    .unwrap_or_default();
-                for f in &fields {
-                    if soql_ident_ok(f) {
-                        let _ = conn.execute(&format!("DROP INDEX IF EXISTS idx_ev_auto_{f}"), []);
-                    }
-                }
-                let _ = conn.execute("DELETE FROM autoindex", []);
-                autoindex_reload(&conn, db_path);
-                eprintln!("[autoindex] PURGE effectuée ({} index auto droppés)", fields.len());
-            }
-        }
-        { let conn = db.lock();
-            autoindex_reload(&conn, db_path);
-        }
-    });
-
-    if cfg(&conf, "PLUME_AUTOINDEX", "0") != "1" {
-        return; // Phase 3 OFF : pas de tâche de maintenance (les index existants restent actifs).
-    }
-    let interval: u64 = cfg(&conf, "PLUME_AUTOINDEX_INTERVAL", "300").parse().unwrap_or(300).max(10);
-    let min_hits: u32 = cfg(&conf, "PLUME_AUTOINDEX_MIN_HITS", "10").parse().unwrap_or(10);
-    let min_slow: u32 = cfg(&conf, "PLUME_AUTOINDEX_MIN_SLOW", "3").parse().unwrap_or(3);
-    let cap: i64 = cfg(&conf, "PLUME_AUTOINDEX_MAX", "8").parse().unwrap_or(8).max(0);
-    let ttl: i64 = cfg(&conf, "PLUME_AUTOINDEX_TTL", "604800").parse().unwrap_or(604_800);
-    // FACTEUR TEMPS (decay) : à chaque tick on multiplie hits/slow_hits par ce facteur (∈ ]0,1]) ->
-    // les champs FROIDS (plus de trafic) retombent sous les seuils et sortent (purge anti-bloat).
-    // DÉFAUT CONSERVATEUR 0.9 (oubli DOUX : ~10 ticks pour diviser par ~3) -> ne casse pas brutalement
-    // le comportement cumulatif actuel. 1.0 = aucun oubli (comportement historique exact, kill-switch).
-    let decay: f64 = cfg(&conf, "PLUME_AUTOINDEX_DECAY", "0.9").parse::<f64>().unwrap_or(0.9).clamp(0.0, 1.0);
-
-    std::thread::sleep(Duration::from_secs(120)); // laisse le boot + le 1er trafic se faire
-    loop {
-        for_each_active_tenant(mgr, |_tid, db, db_path| {
-            autoindex_tick(db, db_path, min_hits, min_slow, cap, ttl, decay);
-        });
-        std::thread::sleep(Duration::from_secs(interval));
-    }
-}
-
-/// Un tick de maintenance auto-index : flush du buffer mémoire -> table, sélection d'1 candidat,
-/// création OU éviction LRU (1 op max), sous lock writer borné. Tunables passés en arguments.
-pub(crate) fn autoindex_tick(db: &Arc<Mutex<Connection>>, db_path: &str, min_hits: u32, min_slow: u32, cap: i64, ttl: i64, decay: f64) {
-    let now_s = now();
-    // 1) FLUSH du buffer mémoire -> UPSERT autoindex(hits+=, slow_hits+=, last_seen=now). On VIDE le
-    //    buffer en une fois (drain) pour ne pas tenir le lock buffer pendant l'IO DB.
-    //    MT-KEY : on ne draine QUE le buffer de CE db_path (les autres bases gardent le leur intact).
-    let drained: Vec<(String, u32, u32)> = {
-        let mut top = autoindex_buf().lock();
-        top.get_mut(db_path).map(|b| b.drain().map(|(k, (h, s))| (k, h, s)).collect()).unwrap_or_default()
-    };
-    {
-        let conn = db.lock();
-
-        // 0) FACTEUR TEMPS (decay) : on multiplie d'ABORD les compteurs STOCKÉS par `decay` (∈ ]0,1[),
-        //    PUIS on ajoute les increments frais de ce tick (EWMA) -> un champ qui ne reçoit plus de
-        //    trafic décroît géométriquement et finit par repasser sous les seuils PUIS atteindre 0.
-        //    decay>=1.0 = no-op (comportement cumulatif historique, kill-switch). On TRONQUE vers le bas
-        //    (CAST sans biais) pour garantir une convergence STRICTE vers 0 (un +0.5 créerait un point
-        //    fixe à 1 -> jamais purgé). last_seen n'est PAS touché ici (l'éviction LRU s'en sert).
-        if decay < 1.0 {
-            let _ = conn.execute(
-                "UPDATE autoindex SET \
-                   hits = CAST(hits * ?1 AS INTEGER), \
-                   slow_hits = CAST(slow_hits * ?1 AS INTEGER)",
-                params![decay],
-            );
-        }
-
-        for (field, h, s) in &drained {
-            // field validé (alphanum+_) avant toute interpolation SQL ultérieure.
-            if !soql_ident_ok(field) {
-                continue;
-            }
-            let _ = conn.execute(
-                "INSERT INTO autoindex(field, hits, slow_hits, last_seen) VALUES(?1, ?2, ?3, ?4) \
-                 ON CONFLICT(field) DO UPDATE SET hits=hits+?2, slow_hits=slow_hits+?3, last_seen=?4",
-                params![field, *h as i64, *s as i64, now_s],
-            );
-        }
-
-        // 1bis) PURGE ANTI-BLOAT : les lignes dont les compteurs ont décru ~0 ET qui ne portent PAS
-        //       d'index (indexed=0) ne servent plus à rien -> on les retire pour borner la table.
-        //       On NE TOUCHE JAMAIS une ligne indexed=1 (l'éviction LRU des index reste seule maîtresse
-        //       du cycle de vie des index, anti-régression). No-op si decay désactivé (rien ne décroît).
-        if decay < 1.0 {
-            let _ = conn.execute(
-                "DELETE FROM autoindex WHERE indexed=0 AND hits=0 AND slow_hits=0",
-                [],
-            );
-        }
-
-        // 2) Meilleur CANDIDAT : assez chaud + assez lent, non déjà indexé, hors whitelist figée, hors
-        //    denylist cardinalité. Trié par chaleur décroissante (slow puis hits).
-        let deny: Vec<String> = AUTOINDEX_DENY.iter().map(|s| s.to_string()).collect();
-        let hot: Vec<String> = HOT_FIELDS.iter().map(|s| s.to_string()).collect();
-        let is_excluded = |f: &str| deny.iter().any(|d| d == f) || hot.iter().any(|h| h == f);
-
-        let candidate: Option<(String, i64)> = conn
-            .prepare(
-                "SELECT field, last_seen FROM autoindex \
-                 WHERE indexed=0 AND slow_hits>=?1 AND hits>=?2 \
-                 ORDER BY slow_hits DESC, hits DESC LIMIT 8",
-            )
-            .ok()
-            .and_then(|mut st| {
-                st.query_map(params![min_slow as i64, min_hits as i64], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-                })
-                .ok()
-                .map(|rows| {
-                    rows.flatten()
-                        .find(|(f, _)| soql_ident_ok(f) && !is_excluded(f))
-                })
-                .flatten()
-            });
-
-        let candidate = match candidate {
-            Some(c) => c,
-            None => {
-                drop(conn);
-                return; // rien de chaud à indexer ce tick
-            }
-        };
-
-        let count_idx: i64 = conn
-            .query_row("SELECT COUNT(*) FROM autoindex WHERE indexed=1", [], |r| r.get(0))
-            .unwrap_or(0);
-
-        if cap == 0 {
-            return; // CAP 0 = création désactivée (équivaut à OFF pour la création)
-        }
-
-        if count_idx < cap {
-            // 3) Sous le CAP : créer l'index pour le candidat (1 SEUL par tick -> pas de pic d'écriture).
-            autoindex_create(&conn, &candidate.0, now_s);
-        } else {
-            // 4) Au CAP : ÉVICTION LRU. On ne remplace QUE si le moins récemment chaud est plus vieux
-            //    que le candidat ET plus vieux que TTL (anti-churn).
-            if let Ok((victim, vlast)) = conn.query_row(
-                "SELECT field, last_seen FROM autoindex WHERE indexed=1 ORDER BY last_seen ASC LIMIT 1",
-                [],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-            ) {
-                if vlast < candidate.1 && (now_s - vlast) > ttl && soql_ident_ok(&victim) {
-                    let _ = conn.execute(&format!("DROP INDEX IF EXISTS idx_ev_auto_{victim}"), []);
-                    let _ = conn.execute(
-                        "UPDATE autoindex SET indexed=0 WHERE field=?1",
-                        params![victim],
-                    );
-                    eprintln!("[autoindex] éviction LRU '{victim}' (last_seen trop ancien) -> place pour '{}'", candidate.0);
-                    autoindex_create(&conn, &candidate.0, now_s);
-                }
-            }
-        }
-        autoindex_reload(&conn, db_path);
-    }
-}
-
-/// Crée l'index auto partiel pour `field` (même forme canonique que Phase 2 -> matché automatiquement
-/// par le compilo) et marque indexed=1. `field` DOIT être validé par soql_ident_ok par l'appelant.
-///
-/// NB : ce CREATE INDEX tourne en TÂCHE DE FOND (autoindex_maintain_background,
-/// hors hot path), JAMAIS au boot. Il tient le lock writer LE TEMPS d'UN index (one-time, partiel
-/// WHERE expr IS NOT NULL -> petit) puis le relâche. Borné par construction : autoindex_tick n'appelle
-/// autoindex_create qu'UNE FOIS par tick (1 seul CREATE INDEX à la fois, jamais en boucle), plafonné
-/// par PLUME_AUTOINDEX_MAX (cap dur) avec éviction LRU anti-churn (pas de drop/recreate en boucle).
-/// Donc : lock writer ponctuel one-time par index, jamais O(lignes) tenu en continu.
-fn autoindex_create(conn: &Connection, field: &str, now_s: i64) {
-    if !soql_ident_ok(field) {
-        return; // garde anti-injection (défense en profondeur)
-    }
-    let r = conn.execute(
-        &format!(
-            "CREATE INDEX IF NOT EXISTS idx_ev_auto_{field} ON event(json_extract(fields,'$.{field}')) \
-             WHERE json_extract(fields,'$.{field}') IS NOT NULL"
-        ),
-        [],
-    );
-    match r {
-        Ok(_) => {
-            let _ = conn.execute(
-                "UPDATE autoindex SET indexed=1, created=?2 WHERE field=?1",
-                params![field, now_s],
-            );
-            eprintln!("[autoindex] index auto créé pour '{field}' (idx_ev_auto_{field})");
-        }
-        Err(e) => {
-            // indexed reste 0 -> retry au tick suivant. Pas d'abandon, pas de blocage.
-            eprintln!("[autoindex] CREATE index '{field}' ÉCHEC ({e}) — retry au prochain tick");
-        }
-    }
 }
 
 /// Nom de l'hôte courant (central) : /etc/hostname, sinon $HOSTNAME, sinon "localhost".

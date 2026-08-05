@@ -233,15 +233,24 @@ plus. Ce qui reste **exigible** :
 > d'identifiants d'une **table `identifiant → issue`**, donc collecter sans déclarer l'issue n'est plus
 > exprimable (garde de CI `check_windows_collector_is_honest.py`).
 
-### 4d. Denylist d'auto-index (cardinalité)
+### 4d. Champs à FORTE cardinalité — ne comptez pas les indexer
 
-Champs **jamais** éligibles à l'auto-index (budget RAM 2 Go) — leur agrégation passe par les
-rollups, pas par un index (`AUTOINDEX_DENY`) :
+Guidance de mapping, pas un réglage. Ces champs coûtent ~73 Mo d'index d'expression sur 2,6 M lignes,
+hors budget RAM (2 Gio) : **leur agrégation passe par les rollups**, jamais par un index.
 
 ```
 path  src_ip  uid  pid  url  message  dedup  remote_address
 msg  time  logSource  request_id  trace_id  span_id  latency  duration  thread
 ```
+
+> **Ce que cette section disait avant, et pourquoi c'était trompeur.** Elle s'intitulait « denylist
+> d'auto-index » et citait une constante `AUTOINDEX_DENY`, ce qui laissait entendre qu'il existait un
+> mécanisme d'auto-indexation *dont ces champs étaient exclus* — donc que les **autres** champs, eux,
+> finiraient par être indexés à l'usage. C'était faux. Ce mécanisme adaptatif n'a **jamais promu un seul
+> index** et il a été retiré (P6.8-b). La seule indexation de champs JSON qui existe est la liste FERMÉE
+> `HOT_FIELDS` (§4b) ; **tout champ qui n'y figure pas est scanné**, qu'il soit dans le bloc ci-dessus ou
+> non. Le bloc ci-dessus reste utile pour une raison plus modeste et exacte : ce sont les champs qu'il ne
+> faut même pas *envisager* d'ajouter à `HOT_FIELDS`.
 
 ### 4e. Familles de champs SÉCURITÉ ENDPOINT (#57 — BYO-agent)
 

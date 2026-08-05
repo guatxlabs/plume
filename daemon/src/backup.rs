@@ -619,7 +619,7 @@ fn collect_dump_plan(conn: &Connection) -> Result<DumpPlan, PlanErr> {
                     plan.tables.push(td);
                 }
             }
-            "index" => { if !sql.is_empty() { indexes.push(sql.clone()); } } // autoindex -> sql vide -> skip
+            "index" => { if !sql.is_empty() { indexes.push(sql.clone()); } } // sqlite_autoindex_* -> sql vide -> skip
             "trigger" => { if !sql.is_empty() { triggers.push(sql.clone()); } }
             "view" => { if !sql.is_empty() { views.push(sql.clone()); } }
             _ => {}

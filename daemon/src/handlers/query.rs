@@ -746,7 +746,6 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         let res = tokio::task::spawn_blocking(move || run_query_ex(&dbp, &ks_page, budget_ms, qid.as_deref())).await;
         return match res {
             Ok(inner) => {
-                autoindex_mark_slow_if(req_db_path(&st, &au).as_str(), &inner); // Phase 3 : chaleur lente (no-op si OFF)
                 match inner {
                     Ok(mut v) => {
                         keyset_finalize(&mut v, keyset_lim);
@@ -912,9 +911,6 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         let total = if total_capped { PAGINATION_COUNT_CAP } else { raw_total };
         return match page {
             Ok(inner) => {
-                if from_soql {
-                    autoindex_mark_slow_if(req_db_path(&st, &au).as_str(), &inner); // Phase 3 : marque la chaleur lente (no-op si OFF)
-                }
                 match inner {
                     Ok(mut v) => {
                         v["total"] = json!(total);
@@ -938,11 +934,6 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     let res = tokio::task::spawn_blocking(move || run_query_ex(&db_path, &sql, budget_ms, qid_c.as_deref())).await;
     match res {
         Ok(inner) => {
-            // PHASE 3 : si la requête venait de soql, marque LENTS les champs json touchés ce cycle
-            // (instrumentation cheap, no-op si auto-index OFF).
-            if from_soql {
-                autoindex_mark_slow_if(req_db_path(&st, &au).as_str(), &inner);
-            }
             match inner {
                 Ok(mut v) => {
                     timings.stamp(&mut v);

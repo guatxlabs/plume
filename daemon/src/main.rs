@@ -667,7 +667,7 @@ fn soql_ident_ok(s: &str) -> bool {
 // `unavailable_tenant_db`), où toute écriture et toute lecture échouent bruyamment.
 //
 // #2a-2c (FAIT, PAS un vecteur de fuite) : les JOBS DE FOND (run_due_rules / run_playbooks / retention_run /
-// rollup_events / materialize_banned_ip / cache_refresh_all_panels / freshness périodique / autoindex)
+// rollup_events / materialize_banned_ip / cache_refresh_all_panels / freshness périodique)
 // ITÈRENT désormais les tenants actifs via `for_each_active_tenant` (ci-dessous) : chaque tenant reçoit
 // l'évaluation de SES règles, SA rétention (lue de SA base), SES rollups. Mode 0 = une seule itération
 // `default`=st.db (cadence + comportement STRICTEMENT identiques) ; itération SÉQUENTIELLE (pas de fan-out,
@@ -761,8 +761,8 @@ fn soql_ident_ok(s: &str) -> bool {
 // En multi-tenant (futur, PLUME_MULTI_TENANT=1) le routing per-tenant fournit le db_path courant.
 // NE JAMAIS réintroduire un singleton `static …Cache/Pool/Set/Registry` NON clé au-dessus du handle DB :
 // l'état vit AU-DESSUS du chiffrement SQLCipher, il fuiterait donc inter-tenant MALGRÉ la crypto par
-// tenant. Les 6 points re-clés ici : READ_POOL, EVENTS_COUNT_CACHE,
-// FRESHNESS_CACHE, PARSERS, AUTOINDEX_SET/BUF, QUERY_CANCEL.
+// tenant. Les 5 points re-clés ici : READ_POOL, EVENTS_COUNT_CACHE,
+// FRESHNESS_CACHE, PARSERS, QUERY_CANCEL.
 // ================================================================================================
 
 

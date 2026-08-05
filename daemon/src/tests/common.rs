@@ -9,7 +9,6 @@
     #[cfg(feature = "cold_tier")]
     static COLD_CAPS_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
     static ENGAGEMENT_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-    static AUTOINDEX_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
     static CUSTOM_ROLES_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
     // Sérialise les tests qui mutent PLUME_ROLLUP_DIM_TOPN (plafond du rollup par dimension) — env
     // process-global, lu à CHAQUE tick par `rollup_events`.

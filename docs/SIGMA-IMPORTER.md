@@ -285,8 +285,13 @@ infalsifiable.
 | `\|lt \|lte \|gt \|gte` | `field< <= > >= n` | numérique |
 
 > **Casse.** Les comparaisons string sont **casse-insensibles** (`(?i)`, conforme au défaut Sigma — et
-> sûr : sur-match plutôt que sous-match). **Exception** : une liste OU en `in(...)` compare avec `=`
-> (**sensible à la casse**) — signalé par un **avertissement** (membres à casse variable à vérifier).
+> sûr : sur-match plutôt que sous-match). La liste OU en `in(...)` **ne fait pas exception** : le compilo
+> du cœur (v0.2.2) émet ce filtre `COLLATE NOCASE` dès lors qu'il est **positif**, posé dans le **filtre
+> de base** du `search` (pas dans une étape `| where`) et que sa liste n'est **pas entièrement numérique**
+> — critère porté par les **valeurs**, jamais par le type déclaré du champ. Les tokens de l'importeur
+> atterrissant tous dans ce filtre de base (§4e), c'est bien cette forme qui s'applique : **pas** de
+> sous-match silencieux sur des membres à casse variable (`cmd.exe` vs `CMD.EXE`). La **négation**
+> `not in (…)`, elle, reste **BINARY** (casse-sensible) : elle **sur-inclut**, jamais un angle mort.
 
 ### 4d. Valeurs
 

@@ -51,6 +51,7 @@ mod ingest;
 pub(crate) use ingest::*;
 mod query_exec;
 pub(crate) use query_exec::*;
+mod db_ventilation; // OÙ PARTENT LES OCTETS : ventilation par objet, DÉRIVÉE du schéma (opt-in, dbstat parcourt tout)
 mod limite_corps; // LE PLAFOND DE TAILLE D'UN CORPS INGERE : la limite qui MORD comptait des octets et ne le disait pas -> un seul auteur pour ce plafond ET pour son message
 mod sqlite_plafond; // LE PLAFOND MÉMOIRE D'UNE LECTURE : sous `temp_store` en mémoire, SQLite n'a AUCUN chemin de code pour déverser un tri -> un seul auteur pour ce budget
 mod query_timing; // LE DÉCOUPAGE DU TEMPS D'UNE REQUÊTE : l'attente d'un permit n'est fabricable QUE par l'acquisition
@@ -1470,6 +1471,19 @@ fn main() {
         };
         let _ = conn.execute_batch(sqlite_plafond::pragmas_memoire());
         let q = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap_or(-1) };
+        // FAIL-CLOSED : une base ILLISIBLE (clé absente/incorrecte -> SQLCipher rend « file is not a
+        // database » à la PREMIÈRE lecture) rendait jusqu'ici un rapport de ZÉROS — qui se lit
+        // « base vide », pas « je n'ai rien pu lire ». Un instrument qui ne peut pas mesurer doit le
+        // DIRE : c'est exactement la famille de défauts que cette campagne ferme. (Constaté le
+        // 2026-08-05 en lançant db-stats sans la clé.)
+        if let Err(e) = conn.query_row("PRAGMA page_count", [], |r| r.get::<_, i64>(0)) {
+            eprintln!(
+                "db-stats: base ILLISIBLE ({db_path}) : {e}\n  \
+                 Cause la plus fréquente : PLUME_DB_KEY absente ou incorrecte (base SQLCipher).\n  \
+                 AUCUN chiffre n'est publié — un rapport de zéros se lirait comme une base vide."
+            );
+            std::process::exit(2);
+        }
         let page_size = q("PRAGMA page_size").max(0);
         let page_count = q("PRAGMA page_count").max(0);
         let freelist = q("PRAGMA freelist_count").max(0);
@@ -1485,6 +1499,19 @@ fn main() {
         println!("  freelist = {:.1} MiB ({free} o, {pct:.1}% RÉCUPÉRABLE par VACUUM)", mib(free));
         println!("  live     = {:.1} MiB", mib(total - free));
         println!("  events   = {events}");
+        // VENTILATION OPT-IN. `dbstat` PARCOURT toutes les pages (~49 s mesurées sur 3,9 Gio) : le
+        // `db-stats` par défaut, celui qu'un exploitant lance en prod pour décider d'un reclaim,
+        // reste INSTANTANÉ. On ne rend pas une commande d'exploitation lente par surprise.
+        if args.iter().any(|a| a == "--par-objet") {
+            match db_ventilation::ventiler(&conn, page_size, page_count, freelist) {
+                Ok(v) => print!("{v}"),
+                // Un échec est DIT, jamais avalé : sans ventilation, l'exploitant doit savoir qu'il
+                // n'a PAS la mesure, au lieu de croire qu'il n'y a rien à voir.
+                Err(e) => eprintln!("  ventilation INDISPONIBLE : {e}"),
+            }
+        } else {
+            println!("  (ventilation par objet : relancer avec --par-objet — parcourt TOUTES les pages, comptez ~15 s/Gio)");
+        }
         return;
     }
     // ─────────────────────────────────────────────────────────────────────────────────────────────

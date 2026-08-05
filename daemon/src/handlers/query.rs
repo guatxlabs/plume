@@ -629,7 +629,15 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     // OPTIONNEL continue une page précédente : `{ts:<i64>, id:<i64>}`. SÉCURITÉ : `ts`/`id` sont parsés en i64
     // STRICT (`as_i64()` -> None si non entier) puis formatés dans le SQL -> injection IMPOSSIBLE (jamais de
     // texte non fiable interpolé). Curseur mal formé / absent -> première page (pas d'erreur).
-    let do_keyset = keyset && from_soql;
+    // P7.14-a — LE DRAPEAU EST CONSULTÉ, SINON LE REPLI DOCUMENTÉ N'EXISTE PAS.
+    // Le commentaire ~80 lignes plus haut promet : « on RETOMBE sur le compilé non-keyset et on
+    // DÉSARME LE CURSEUR -> la réponse est celle d'avant (offset + COUNT borné), JAMAIS une erreur ».
+    // Or `do_keyset` ne lisait pas `keyset_compile_failed` : le curseur restait ARMÉ sur un SQL de
+    // repli dont la projection n'a ni `id` ni `ts`, et le wrap keyset (`ORDER BY ts DESC, id DESC`)
+    // s'appliquait quand même -> erreur SQL sur colonne absente -> HTTP 400. Le filet annoncé
+    // n'existait pas, et le drapeau était mort (déclaré, écrit une fois, JAMAIS lu) : c'est ce qui a
+    // rendu la promesse invérifiable. Vérifié le 2026-08-05.
+    let do_keyset = keyset && from_soql && !keyset_compile_failed;
     let cursor: Option<(i64, i64)> = if do_keyset {
         body.get("cursor").and_then(|c| Some((c.get("ts")?.as_i64()?, c.get("id")?.as_i64()?)))
     } else {

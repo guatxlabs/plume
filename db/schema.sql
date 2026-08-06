@@ -71,9 +71,10 @@ CREATE INDEX IF NOT EXISTS idx_event_src_ts ON event(source, ts);
 -- idx_event_src_ts, SQLite remonte la plage de la source ligne par ligne jusqu'à trouver un
 -- battement -> coût = 5 VM steps x (lignes de la source depuis le dernier battement), donc O(N)
 -- exactement quand le collecteur est MORT (mesuré le 2026-08-03 : x4 pour x4 lignes). PARTIEL et pas
--- (source, category, ts) : le composite plein indexe TOUTE ligne ingérée (~250 Mio sur 9,8 M lignes,
--- + un insert btree sur le chemin d'ingest CHAUD) là où le partiel n'indexe que les battements
--- (~1,5 Mio, un insert toutes les ~37 s). `category='health'` doit rester LITTÉRAL côté requête,
+-- (source, category, ts) : le composite plein indexe TOUTE ligne ingérée (25,5 o/ligne mesurés sur banc,
+-- soit ~38 Mio extrapolés sur les 1 554 295 lignes de la production mesurée le 2026-08-05 par
+-- `db-stats --par-objet`, + un insert btree sur le chemin d'ingest CHAUD) là où le partiel n'indexe que
+-- les battements (~1,5 Mio, un insert toutes les ~37 s). `category='health'` doit rester LITTÉRAL côté requête,
 -- sinon SQLite ne peut pas prouver l'implication et ignore l'index en SILENCE (cf. daemon/src/sondes.rs).
 -- Sur base MIGRÉE il est créé EN FOND après bind (ensure_event_health_beat_index_background) ; ici
 -- (base neuve, event VIDE) il est instantané. MÊME nom -> jamais en double.

@@ -1134,11 +1134,13 @@ fn migrate_v113(conn: &MigTx) {
 /// la source, lui, continue) : panne AUTO-AMPLIFIANTE, et ce qu'elle consomme sous le verrou, l'ingestion
 /// ne l'a pas.
 ///
-/// POURQUOI PARTIEL et pas (source, category, ts) : MESURÉ, le composite plein coûte 25,5 o/LIGNE INGÉRÉE
-/// (~250 Mio sur 9,8 M lignes) + un insert btree sur le CHEMIN D'INGEST CHAUD ; le partiel coûte 21,8 o par
-/// LIGNE DE BATTEMENT (~1,5 Mio pour 8 collecteurs battant toutes les 5 min sur 30 j de rétention) + un
-/// insert toutes les ~37 s. 166x moins de disque (budget 2 Go), et l'objection d'amplification d'écriture
-/// consignée en v104 dans handlers/freshness.rs ne portait que sur le composite plein.
+/// POURQUOI PARTIEL et pas (source, category, ts) : MESURÉ sur banc, le composite plein coûte 25,5 o/LIGNE
+/// INGÉRÉE, soit ~38 Mio EXTRAPOLÉS sur la production (1 554 295 événements / 1 276,4 Mio, mesurés le
+/// 2026-08-05 par `db-stats --par-objet`) + un insert btree sur le CHEMIN D'INGEST CHAUD ; le partiel coûte
+/// 21,8 o par LIGNE DE BATTEMENT (~1,5 Mio pour 8 collecteurs battant toutes les 5 min sur 30 j de
+/// rétention) + un insert toutes les ~37 s. 26x moins de disque — cet écart-là SUIT LE VOLUME (166x sous
+/// l'hypothèse réfutée d'une prod à 9,8 M lignes), l'écart d'INSERTIONS non ; et l'objection d'amplification
+/// d'écriture consignée en v104 dans handlers/freshness.rs ne portait que sur le composite plein.
 ///
 /// `db/schema.sql` le déclare (bases NEUVES : `event` VIDE -> CREATE instantané) mais AUCUNE migration ne
 /// peut le créer ICI : un `CREATE INDEX` sur des MILLIONS de lignes chiffrées SQLCipher au boot déchiffre

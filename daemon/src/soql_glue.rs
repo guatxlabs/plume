@@ -179,8 +179,13 @@ const _: () = {
 //     `risk` — le panneau seedé « Buckets exposés (PUBLIC) » (`source=minio kind=bucket risk=public`,
 //              seeds.rs) PLUS la règle de catalogue `cl-minio-public-bucket.json`.
 //   Un champ que du contenu livré ET ACTIF filtre appartient à la liste FERMÉE, MAINTENUE et vérifiée
-//   par l'assertion ci-dessus — pas à un mécanisme piloté par la chaleur d'usage, qui n'existe plus et
-//   n'a jamais rien produit. `vtype` n'a AUCUN usage livré : il n'est délibérément PAS restauré (on ne
+//   par l'assertion ci-dessus — pas à un mécanisme piloté par la chaleur d'usage, qui N'EXISTE PLUS et
+//   qui, SURTOUT, ne pouvait plus rien promouvoir depuis que le compilateur GXQL a migré dans
+//   `guatx-core` (ses crochets y sont devenus du code mort). Formulation choisie AVEC SOIN : ce
+//   paragraphe a d'abord écrit « n'a jamais rien produit », c'est-à-dire exactement la phrase que le
+//   point 2 ci-dessus vient de DÉMONTER vingt lignes plus haut — trois `idx_ev_auto_*` sont relevés
+//   dans `bench/profile-prod.json`. Ce qui est PROUVÉ est plus étroit que l'absolu, et c'est la
+//   version étroite qui doit être écrite. `vtype` n'a AUCUN usage livré : il n'est délibérément PAS restauré (on ne
 //   paie pas un index pour un champ que rien n'interroge).
 //   CONFORMES À LA RÈGLE CI-DESSUS (ce n'est pas une exception) : tous deux sont TEXTUELS et de
 //   cardinalité bornée — `dir` vaut inbound|outbound (posé en CHAÎNE JSON par `collectors/conntrack.sh`

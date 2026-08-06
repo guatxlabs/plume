@@ -1,4 +1,21 @@
-//! PURGE EXPLICITE D'ÉVÉNEMENTS — la seule suppression de `event` qui ne soit pas la rétention temporelle.
+//! PURGE EXPLICITE D'ÉVÉNEMENTS — la seule suppression de `event` DEMANDÉE PAR UN HUMAIN.
+//!
+//! CETTE LIGNE A ÉTÉ FAUSSE JUSQU'AU 2026-08-06, et le défaut mérite d'être laissé visible parce qu'il
+//! porte sur une garantie d'INTÉGRITÉ. Elle annonçait « la seule suppression de `event` qui ne soit pas
+//! la rétention temporelle » — donc, pour qui lit l'en-tête du module de référence : une porte unique.
+//! Mesuré : il y en a QUATRE autres, toutes de production, aucune temporelle.
+//!   `rollups.rs` (plafond `max_rows`)  — DELETE … WHERE id NOT IN (SELECT … ORDER BY ts DESC LIMIT ?)
+//!   `rollups.rs` (plafond `max_bytes`) — même figure, sur la taille cumulée
+//!     Ces deux-là NE SONT PAS du code mort : le job de rétention horaire les appelle, et leurs seuils
+//!     s'éditent par l'API (`handlers/index_policies.rs`). Le critère est un NOMBRE DE LIGNES ou un
+//!     VOLUME D'OCTETS, jamais un horodatage.
+//!   `migrate.rs` ×2 (`migrate_v102`, `migrate_v48`) — DELETE … WHERE source=?1, au boot, sur des
+//!     sources de test/sonde héritées ; ni registre de purge, ni ledger.
+//!
+//! L'affirmation EXACTE est celle que porte déjà `rbac.rs` : ce module est la seule surface qui détruit
+//! des preuves **À LA DEMANDE**. Les quatre autres sont automatiques et bornées par une politique. La
+//! nuance n'est pas cosmétique : « une seule porte » laisserait croire qu'auditer ce fichier suffit à
+//! savoir tout ce qui efface un événement. Ce n'est pas le cas.
 //!
 //! POURQUOI CE MODULE EXISTE. Mesuré pendant un onboarding : nettoyer quelques events de test exigeait du SQL
 //! direct sur une base SQLCipher, depuis une image qui ne contient que le daemon. Il n'y avait NI sous-commande

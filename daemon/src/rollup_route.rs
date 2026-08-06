@@ -51,7 +51,12 @@ pub(crate) fn rollup_source_ok(s: &str) -> bool {
 
 // =====================================================================================
 // B2 (fix#2) — GROUP-BY MULTI-DIM HOT sur le grain EXACT d'`event_rollup`. Un `stats count by
-// source,severity,action` sur le HOT (SQLite, ~10 M lignes) scanne+agrège en ~32 s ; ROUTE A-multi le
+// source,severity,action` sur le HOT (SQLite) scanne+agrège en ~32 s : MESURÉ sur la production AU PLUS
+// TARD le 2026-07-23 (date du commit c784f75 qui consigne la mesure ; la date de la mesure elle-même
+// n'est pas consignée). ATTENTION à ce que cette mesure dit et ne dit pas — le volume que portait
+// la base à cet instant n'a PAS été relevé (le « ~10 M lignes » qui accompagnait ce chiffre était une
+// ESTIMATION, jamais une mesure, et la production mesurée le 2026-08-05 par `db-stats --par-objet` porte
+// 1 554 295 événements / 1 276,4 Mio) ; la latence n'a pas été re-mesurée depuis. ROUTE A-multi le
 // réécrit vers les compteurs PRÉ-AGRÉGÉS d'`event_rollup` (réponse en ms). GÉNÉRALISE la ROUTE A
 // single-`source` existante à un SOUS-ENSEMBLE du grain exact.
 //
@@ -72,7 +77,7 @@ pub(crate) fn rollup_source_ok(s: &str) -> bool {
 //     tout `by`-set les incluant DÉCLINE -> scan raw (correct, NULL préservé), jamais un faux compte.
 //   - `src_ip` est CAPPÉ top-N/bucket (le reste lumpé '') -> un `by src_ip` SOUS-COMPTERAIT -> EXCLU aussi.
 // LIMITATION ASSUMÉE (correction > couverture) : B2 n'accélère QUE `count by source,severity` (± filtre
-// `source=`). Le cas douloureux mesuré en prod `count by source,severity,action` (~32 s) N'EST PAS accéléré
+// `source=`). Le cas douloureux `count by source,severity,action` (~32 s, mesuré en prod le 2026-07-23) N'EST PAS accéléré
 // tant que la sémantique NULL/'' d'`action` n'est pas résolue proprement -> follow-up scopé : soit le rollup
 // PRÉSERVE NULL (pas de COALESCE, distinct de ''), soit il DÉCLINE honnêtement ces dims (état actuel).
 // GATE STRICT (correction > vitesse) : dès qu'UNE dim n'est pas dans ce grain (action/host/JSON hors-grain,

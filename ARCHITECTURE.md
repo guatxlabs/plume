@@ -216,7 +216,9 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
   count by <dim>`, `count by source,severity`) est réécrit vers les compteurs **pré-agrégés**
   d'`event_rollup`/`event_dim_rollup` → réponse en quelques millisecondes **parce qu'elle ne lit pas les
   events brutes** : les 92 panneaux semés répondent en **1 à 7 ms** en lisant **~62 000 lignes de rollup
-  pré-agrégé**, pas les 9,8 M events. Chaque réponse porte `served_from: rollup|raw` + `approx` +
+  pré-agrégé**, pas les **1 554 295 events** de la production (mesurés le 2026-08-05 par
+  `plume-daemon db-stats --par-objet` : 1 554 295 événements / 1 276,4 Mio). Chaque réponse porte
+  `served_from: rollup|raw` + `approx` +
   `truncated` — l'analyste voit **toujours** si le chiffre est exact ou agrégé.
   **Et quand il est tronqué, il porte DE COMBIEN** : le plafond top-N par dimension écarte de x1,0 à
   **x16,4** selon la dimension (mesuré 2026-08-01, banc 1 436 026 events, `daemon/src/topn_cap.rs`), ce
@@ -226,9 +228,15 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
   Buckets sans ligne de reste (agrégés par un binaire antérieur) → l'ampleur est **avouée inconnue**,
   jamais remplacée par 0. **Ce qui n'est PAS routé
   l'est délibérément** : un `count by source,severity,action` (ou `host`, ou `src_ip`) retombe sur le
-  **scan brut et coûte ~32 s sur 9,8 M lignes**, parce que le rollup fusionne `NULL` et `''` sur ces
+  **scan brut**, mesuré à **~32 s** sur la production **au plus tard le 2026-07-23** (date du commit
+  `c784f75` qui consigne la mesure ; la date de la mesure elle-même n'est pas consignée) — sur une topologie
+  que la rétention a depuis purgée ; **le nombre de lignes que portait la base à cet instant n'a jamais été
+  relevé**, et la latence n'a **pas** été re-mesurée depuis sur la production actuelle (1 554 295 events,
+  2026-08-05). Ce n'est donc pas un coût courant, c'est une mesure datée. Le refus de router tient à la
+  correction, pas à la latence : le rollup fusionne `NULL` et `''` sur ces
   dimensions et rendrait un group-by **faux** sous une étiquette « approximatif ». Nous refusons de servir
-  une réponse approchée comme si elle était exacte : **32 s exactes plutôt que 30 ms fausses**. La route
+  une réponse approchée comme si elle était exacte : **32 s (mesure ≤ 2026-07-23) exactes plutôt que 30 ms
+  fausses**. La route
   n'est jamais tentée quand un **masque de champ** est actif (`event_rollup` porte source/host/severity/
   action en clair) — tous les chiffres ci-dessus sont mesurés **masquage inactif**.
 - **Cache SWR des panneaux** : `panel_cache` + classification **adaptative LIVE/SWR par coût mesuré**

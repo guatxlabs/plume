@@ -76,7 +76,9 @@ mod governance; // #59 GOUVERNANCE ENTREPRISE : legal-hold (rétention-lock fail
 pub(crate) use governance::*;
 mod rollups;
 pub(crate) use rollups::*;
-// PURGE EXPLICITE D'ÉVÉNEMENTS — la seule suppression de `event` qui ne soit pas la rétention temporelle.
+// PURGE EXPLICITE D'ÉVÉNEMENTS — la seule suppression de `event` DEMANDÉE PAR UN HUMAIN. Il en existe
+// QUATRE autres, automatiques (2 plafonds volumétriques dans `rollups`, 2 migrations par source) :
+// l'en-tête de `purge.rs` les nomme, après avoir annoncé le contraire jusqu'au 2026-08-06.
 // Déclaré APRÈS `rollups` (il consomme `retention_nonpurge_for`/`rollup_insert_sql_into`) et APRÈS
 // `governance` (legal-hold). Les TYPES du pipeline (`PurgeWindow`/`PurgeScope`/`PurgePlan`/`ConfirmedPurge`/
 // `PurgeInscribed`) ont des champs PRIVÉS : ce `use` réexporte les NOMS, jamais de quoi les fabriquer

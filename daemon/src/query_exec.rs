@@ -537,7 +537,11 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
 
     let result = (|| -> Result<Value, String> {
         let t0 = Instant::now();
-        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        // TOUTE erreur de ce corps passe par `sqlite_plafond::message_erreur` : elle est rendue TELLE
+        // QUELLE, sauf `SQLITE_NOMEM` — le seul code que le franchissement du budget mémoire peut
+        // produire — qui devient un refus d'exploitant (ce qui s'est passé, ce qui n'a PAS été rendu, quoi
+        // faire). Sans ça l'analyste lit « out of memory » et n'a aucune action.
+        let mut stmt = conn.prepare(sql).map_err(|e| sqlite_plafond::message_erreur(&e))?;
         if !stmt.readonly() {
             return Err("seules les requêtes en lecture (SELECT/WITH) sont autorisées".into());
         }
@@ -548,7 +552,7 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
         let max_rows: usize = std::env::var("PLUME_QUERY_MAX").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 0 && n <= 100_000).unwrap_or(5000);
         let mut out: Vec<Value> = Vec::new();
         let mut truncated = false;
-        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        let mut rows = stmt.query([]).map_err(|e| sqlite_plafond::message_erreur(&e))?;
         loop {
             match rows.next() {
                 Ok(Some(row)) => {
@@ -558,7 +562,7 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
                     }
                     let mut r = Vec::with_capacity(ncol);
                     for i in 0..ncol {
-                        let v = match row.get_ref(i).map_err(|e| e.to_string())? {
+                        let v = match row.get_ref(i).map_err(|e| sqlite_plafond::message_erreur(&e))? {
                             rusqlite::types::ValueRef::Null => Value::Null,
                             rusqlite::types::ValueRef::Integer(n) => json!(n),
                             rusqlite::types::ValueRef::Real(f) => json!(f),
@@ -579,7 +583,11 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
                         }
                         return Err(format!("requête interrompue (budget {} s dépassé)", budget / 1000));
                     }
-                    return Err(msg);
+                    // Le franchissement du budget MÉMOIRE tombe ici : c'est `rows.next()` qui porte le
+                    // `SQLITE_NOMEM` d'un trieur/btree éphémère qui n'a plus le droit d'allouer. On sort en
+                    // ERREUR — `out` est ABANDONNÉ, jamais rendu : un agrégat interrompu serait un chiffre
+                    // faux présenté comme un total.
+                    return Err(sqlite_plafond::message_erreur(&e));
                 }
             }
         }

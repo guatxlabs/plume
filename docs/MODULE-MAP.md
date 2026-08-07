@@ -81,6 +81,7 @@ is annotated with its feature #). Large but flat: `query`, `search`, `soql_meta`
 | `maintenance.rs`, `disk.rs` | Retention, disk-pressure guard (statvfs), housekeeping | Yes |
 | `backup.rs` | Compressed+encrypted backup `age(zstd(plaintext))`; symmetric (SQLCipher key) or asymmetric recipient | Guarded — scrypt lockstep with cold crypto |
 | `cold_store/` | Opt-in cold Parquet tier — see submodule map below | Reader path **now yes** (post-split); writer/aging guarded |
+| `cold_banniere.rs` | The `[cold]` startup line: which of three states this binary is in — capability **not compiled in**, compiled but runtime-disabled, or active (root dir, hot window, cold retention, day-file count + volume). **Deliberately NOT feature-gated**: the "not compiled in" case cannot be spoken by `cold_store/`, which does not exist in that build — and that is the case that left production believing in a cold tier the binary no longer carried. Only the state *harvest* has two `cfg` bodies. | Yes — pure phrases + a bounded `readdir`; no `event` scan |
 
 ### Server / state / entry
 | Path | Purpose | Ownable? |

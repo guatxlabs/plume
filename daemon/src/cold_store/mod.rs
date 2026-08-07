@@ -80,7 +80,7 @@ use vectorized::*;
 
 // FAÇADE `pub(crate)` — surface consommée par les AUTRES modules du daemon (rollups, handlers, query_exec, main)
 // via `crate::cold_store::X`. Re-exporte EXACTEMENT les symboles que les call-sites importent (grep), rien de plus.
-pub(crate) use aging::{cold_age_run, cold_retention_days, reparse_lower_bound};
+pub(crate) use aging::{cold_age_run, cold_hot_window_days, cold_retention_days, reparse_lower_bound};
 pub(crate) use paths::cold_root;
 pub(crate) use backup::cold_backup_plan;
 pub(crate) use reader::{cold_query_boundary, cold_tier_runtime_on, cold_union_query};

@@ -139,9 +139,15 @@ pub(crate) fn cold_retention_days(conf: &HashMap<String, String>, retention_days
 /// l'aging (via `clamp_hot_window`/`max_retention`) et le clamp reparse (H2) -> les deux voient EXACTEMENT la
 /// même frontière hot/cold. `conn` sert à charger les policies per-index (#49).
 pub(crate) fn cold_hot_cutoff(conn: &Connection, conf: &HashMap<String, String>, n: i64, retention_days: i64) -> i64 {
-    let policies = load_index_policies(conn);
-    let max_ret = max_retention(&policies, retention_days);
-    n - clamp_hot_window(conf, max_ret) * SECS_PER_DAY
+    n - cold_hot_window_days(conn, conf, retention_days) * SECS_PER_DAY
+}
+
+/// LA FENÊTRE CHAUDE EFFECTIVE (jours) — la valeur RÉELLEMENT appliquée, CLAMP COMPRIS. Extraite de
+/// `cold_hot_cutoff` (qui en dérive désormais son cutoff, donc aucune divergence possible) parce que la
+/// bannière de démarrage doit publier ce que le processus APPLIQUE : annoncer `PLUME_COLD_HOT_WINDOW_DAYS`
+/// brut annoncerait une fenêtre que le clamp peut contredire.
+pub(crate) fn cold_hot_window_days(conn: &Connection, conf: &HashMap<String, String>, retention_days: i64) -> i64 {
+    clamp_hot_window(conf, max_retention(&load_index_policies(conn), retention_days))
 }
 
 /// H2 — BORNE BASSE EFFECTIVE d'un reparse/backfill admin quand le tier cold est ON. Dans le modèle cold, une

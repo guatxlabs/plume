@@ -91,6 +91,15 @@ pub(crate) use purge::*;
 // `PLUME_COLD_TIER` (dans cold_age_run) le rend en plus inerte tant qu'il n'est pas explicitement activé.
 #[cfg(feature = "cold_tier")]
 mod cold_store;
+// CE QUE LE DÉMON DIT DE SON TIER FROID AU DÉMARRAGE. DÉLIBÉRÉMENT NON GATÉ, et c'est tout l'intérêt : le
+// cas « la capacité n'est PAS dans ce binaire » ne peut, par construction, pas être dit par `cold_store`
+// (qui n'existe pas alors) — or c'est LE cas qui a laissé trois jours de production croire à un tier froid
+// inexistant. Seule la RÉCOLTE de l'état a deux corps `cfg`. `allow(dead_code)` : un binaire donné
+// n'ATTEINT que deux des trois états (sans la feature, `Inactif`/`Actif` ne sont jamais construits ; avec
+// elle, `NonCompile` ne l'est jamais), mais les TROIS phrases doivent exister des deux côtés — c'est ce qui
+// permet de les distinguer.
+#[allow(dead_code)]
+mod cold_banniere;
 mod maintenance;
 pub(crate) use maintenance::*;
 mod sondes; // LES SONDES DE FRAÎCHEUR : ce qu'une sonde OBSERVE, la requête DÉRIVÉE, et CE QUI BORNE SON COÛT — une sonde dont personne ne sait ce qu'elle coûte ne compile pas (P3.7-a)

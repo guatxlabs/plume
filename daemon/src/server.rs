@@ -1733,6 +1733,11 @@ pub(crate) async fn run() {
     eprintln!("[plafond] {}", sqlite_plafond::banniere(sqlite_plafond::deversement_init(&db_path)));
     let conn = open_and_migrate_db(db_path.clone(), spool.clone(), conf.clone());
     let db = Arc::new(Mutex::new(conn));
+    // TIER FROID : ce que ce binaire SAIT faire, et ce qu'il FAIT. Un composant qui travaille sans le dire
+    // est indistinguable d'un composant ABSENT — c'est ce qui a laissé la production croire trois jours à
+    // un tier froid que le binaire ne portait plus. APRÈS l'ouverture de la base, délibérément : la fenêtre
+    // chaude et la rétention cold sont des SETTINGS clampés, les publier sans les lire serait les inventer.
+    eprintln!("[cold] {}", cold_banniere::banniere(cold_banniere::etat(&db.lock(), &conf, &db_path)));
     // L2 — EPOCH de session persistant (meta) chargé au boot -> mint/verify_session le mélangent au HMAC.
     // Survit au redémarrage : un logout/reset AVANT un crash reste effectif après relance.
     let session_epoch = Arc::new(std::sync::atomic::AtomicI64::new(load_session_epoch(&db.lock())));

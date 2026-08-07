@@ -41,7 +41,7 @@ WORKDIR /build/daemon
 # `ring` déjà tiré par rustls/age -> pas de cc1plus/OOM (contraste avec `duckdb`, laissé opt-in). INERTE tant
 # qu'aucun provider LDAP n'est configuré (aucun endpoint ouvert, aucune surface active par défaut).
 # --locked : le build ÉCHOUE si Cargo.lock devait bouger (lock présent, deps figées, builds reproductibles).
-RUN cargo build --release --locked --features ldap
+RUN cargo build --release --locked --features ldap,cold_tier
 # Purge les artefacts du crate LOCAL issu du stub (plume-daemon) pour forcer sa recompilation depuis
 # les VRAIES sources — sans invalider le cache des deps tierces ci-dessus (dont guatx-core, git-dep).
 RUN rm -rf target/release/deps/plume_daemon* \
@@ -73,7 +73,7 @@ COPY docs/soql-templates ./docs/soql-templates
 # changement d'UNE ligne, pas une chasse au chemin manquant.
 COPY docs/ai-presets ./docs/ai-presets
 WORKDIR /build/daemon
-RUN cargo build --release --locked --features ldap
+RUN cargo build --release --locked --features ldap,cold_tier
 
 # runtime (minimal) — image de base épinglée par digest (cf. note ci-dessus).
 FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df

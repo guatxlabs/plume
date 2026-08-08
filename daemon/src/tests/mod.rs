@@ -31,6 +31,7 @@ include!("rollup_dim_coverage.rs"); // le JUMEAU : couverture du rollup PAR DIME
 include!("topn_ampleur.rs"); // L'AMPLEUR du plafond top-N (ligne de reste, sonde, aveu) + la rétention qui ferme le résidu ROUTE A
 include!("route_a_portes.rs"); // ROUTE A : par quelle porte le sur-compte s'atteindrait — la rétention la ferme, et on le prouve
 include!("backup_retention_adverse.rs"); // scheduler backup natif + rétention KEEP-N — tests-only
+include!("backup_streaming.rs"); // LE CLAIR SUR DISQUE : staging vide sous surveillance, RAM sous gros BLOB, taille/temps des deux formats
 include!("netban.rs"); // chantier ② Phase 1 — ban natif HTTP (IP réelle, store net_ban, guard, API admin)
 include!("purge.rs"); // PURGE EXPLICITE d'événements — refus (legal-hold/tier froid/case/FTS), caducité du jeton, registre, dérivés
 include!("query_timing.rs"); // la métrique d'attente : garde SANS SEUIL (S permis >= N clients -> attente NULLE) + un seul écrivain

@@ -1247,7 +1247,8 @@ fn main() {
     if args.get(1).map(String::as_str) == Some("backup") {
         let conf = load_config();
         let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
-        // `backup --compress [dest]` -> format age(zstd(sqlite clair)), ~5-10x plus petit (voir backup_compressed).
+        // `backup --compress [dest]` -> enveloppe age(zstd(charge)) ; la CHARGE est un dump typé streaming
+        // (défaut, aucun clair sur disque) ou une copie SQLite complète (chemin historique) — cf. backup.rs.
         // `backup [dest]`            -> mode HISTORIQUE : VACUUM INTO (copie SQLCipher chiffrée, incompressible).
         let compress = args.iter().skip(2).any(|a| a == "--compress" || a == "-z");
         // premier argument positionnel (non-flag) après le sous-commande = destination.
@@ -1273,8 +1274,15 @@ fn main() {
                         Err(e) => eprintln!("[backup] signal de posture NON émis (la base n'a pas passé le contrat de schéma : {e})"),
                     }
                     let ratio = if st.dest_bytes > 0 { st.plaintext_bytes as f64 / st.dest_bytes as f64 } else { 0.0 };
+                    // La ligne DIT quel chemin a tourné : c'est la seule façon pour l'opérateur de savoir si ce
+                    // cycle a posé une copie EN CLAIR de la base sur un disque (chemin historique) ou non (dump).
+                    let (charge, clair) = if st.wrote_plaintext_to_disk {
+                        ("age(zstd(sqlite))", "OUI — copie en clair matérialisée dans le staging le temps du cycle")
+                    } else {
+                        ("age(zstd(dump))", "non — aucun fichier en clair écrit")
+                    };
                     println!(
-                        "backup (compressé+chiffré) -> {dest}  plaintext={} o  dest={} o  ratio={:.1}x  format=age(zstd(sqlite))",
+                        "backup (compressé+chiffré) -> {dest}  charge={} o  dest={} o  ratio={:.1}x  format={charge}  clair-sur-disque={clair}",
                         st.plaintext_bytes, st.dest_bytes, ratio);
                 }
                 Err(e) => {
@@ -1299,7 +1307,8 @@ fn main() {
         return;
     }
     if args.get(1).map(String::as_str) == Some("restore") {
-        // `restore <src.age> [dest_db] [--force]` : déchiffre+décompresse <src> (format age(zstd(sqlite)))
+        // `restore <src.age> [dest_db] [--force]` : déchiffre+décompresse <src> (age(zstd(charge)), les DEUX
+        // charges reconnues à leur marqueur de tête — dump typé ou copie SQLite)
         // puis re-chiffre en SQLCipher vers [dest_db] (défaut = PLUME_DB). REFUSE d'écraser sans --force.
         let conf = load_config();
         let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");

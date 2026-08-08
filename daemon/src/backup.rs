@@ -6,31 +6,38 @@ use crate::*;
 // SAUVEGARDE COMPRESSÉE + CHIFFRÉE  (CLI : `backup --compress` / `restore`)
 // ----------------------------------------------------------------------------
 // PROBLÈME : la DB SQLCipher est chiffrée at-rest -> INCOMPRESSIBLE (~2 GiB).
-// SOLUTION : on EXPORTE le PLAINTEXT (sqlcipher_export -> DB SQLite en clair, fichier
-//   temporaire sur /data car > limite RAM 2 GiB), on le COMPRESSE (zstd) PUIS on le
-//   CHIFFRE (age, passphrase = clé SQLCipher) — le tout EN FLUX. ~5-10x plus petit.
+// SOLUTION : compresser (zstd) puis chiffrer (age) EN FLUX. Reste la question de CE QU'ON
+//   fait passer dans le flux, et c'est là que les DEUX chemins de ce module diffèrent.
 //
-// FORMAT du fichier de sortie <dest> :
-//     age( zstd( <DB SQLite EN CLAIR> ) )
-//   - couche EXTERNE : conteneur age v1 (en-tête « age-encryption.org/v1 »,
-//     destinataire scrypt/passphrase) -> chiffrement authentifié, streaming.
-//   - couche INTERNE : frame zstd (magic 28 B5 2F FD).
-//   - charge utile   : un fichier DB SQLite standard EN CLAIR (« SQLite format 3\0 »).
-//   Propriété de secours : hors de ce binaire, `age -d -p < dest | zstd -d > soc.plain.db`
-//   redonne le plaintext (outils standard) ; puis re-chiffrer via `restore`.
+// DEUX CHEMINS, UNE SEULE ENVELOPPE. Le fichier produit est TOUJOURS `age( zstd( charge ) )` :
+//   - couche EXTERNE : conteneur age v1 (en-tête « age-encryption.org/v1 », destinataire
+//     scrypt/passphrase ou X25519) -> chiffrement authentifié, streaming ;
+//   - couche INTERNE : frame zstd (magic 28 B5 2F FD) ;
+//   - CHARGE : c'est elle qui change, et le restore la RECONNAÎT à son marqueur de tête —
+//     JAMAIS au nom du fichier (les deux s'appellent `plume-<TS>.db.age`) :
+//       * `PLUMEDUMP1\n`      -> DUMP TYPÉ STREAMING (défaut depuis B1, cf. section B1)
+//       * `SQLite format 3\0` -> copie SQLite EN CLAIR (chemin HISTORIQUE)
+//     Les sauvegardes en séquestre produites avant B1 sont donc toujours restaurables : c'est
+//     le marqueur, pas une convention de nom, qui aiguille (`restore_compressed`).
+//   Propriété de secours, valable pour les DEUX : hors de ce binaire,
+//   `age -d -p < dest | zstd -d` redonne la charge avec des outils standard ; c'est une DB
+//   SQLite directement ouvrable pour l'ancien format, le dump typé pour le nouveau.
 //
-// RAM BORNÉE : copie par buffers de 1 MiB ; sqlcipher_export passe par le pager SQLite
-//   (cache borné) — JAMAIS 2 GiB en heap. Le PLAINTEXT temporaire atterrit sur DISQUE
-//   (à côté de <dest>, donc /data), JAMAIS en RAM/tmpfs (dépasserait la limite 2 GiB).
-//
-// PLAINTEXT TEMPORAIRE : fichier `.<dest>.plain.tmp.*` créé à côté de <dest>. Il contient
-//   la DB EN CLAIR -> effacé (écrasement zéros best-effort + remove) par un garde RAII
-//   (Drop) qui se déclenche sur TOUTE sortie (succès, erreur, panique, early-return) :
-//   il ne subsiste JAMAIS.
+// CE QUE LE CHEMIN HISTORIQUE COÛTE, ET POURQUOI IL N'EST PLUS LE DÉFAUT. `sqlcipher_export`
+//   réécrit la base ENTIÈRE EN CLAIR dans un fichier temporaire de staging avant de la
+//   compresser : pendant toute la durée du backup, une copie déchiffrée de tout le SOC est
+//   posée sur un disque. Un garde RAII l'efface à la sortie et un balayage réape les orphelins
+//   d'un SIGKILL — mais la fenêtre existe, et c'est elle que le streaming supprime.
+//   Il reste joignable pour deux raisons : (1) REPLI AUTOMATIQUE sur les schémas que le dump
+//   typé ne peut pas représenter fidèlement (cf. section B1) ; (2) ÉCHAPPATOIRE opérateur
+//   explicite `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT=1`.
 //
 // CLÉ : la passphrase age = la clé SQLCipher (db_key()/PLUME_DB_KEY). UN seul secret.
 //   Le scrypt d'age dérive sa propre clé (KDF) à partir de cette passphrase -> pas de
 //   réutilisation directe de la clé brute. Requise (non vide) pour backup ET restore.
+//
+// RAM BORNÉE dans les deux cas : buffers de 1 MiB, pager SQLite à cache borné — JAMAIS la
+//   base en heap. Le streaming n'ajoute au plus qu'UNE ligne à la fois (cf. section B1).
 // ============================================================================
 
 /// Buffer de copie en flux (1 MiB) -> RAM bornée quelle que soit la taille de la DB.
@@ -187,6 +194,18 @@ pub(crate) fn backup_require_asymmetric() -> bool {
     )
 }
 
+/// ÉCHAPPATOIRE OPÉRATEUR — `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT` vrai (1/true/yes/on) force le CHEMIN
+/// HISTORIQUE (`sqlcipher_export` -> fichier SQLite EN CLAIR dans le staging, puis zstd+age) au lieu du dump
+/// STREAMING. DÉFAUT OFF : le streaming est le défaut (cf. « DÉFAUT, PAS OPT-IN » dans l'en-tête de section B1).
+/// Le nom dit le PRIX qu'on repaie en la posant : la base ENTIÈRE est réécrite EN CLAIR sur disque le temps du
+/// backup. À ne poser que pour reproduire un incident sur le chemin historique, jamais en régime.
+pub(crate) fn backup_force_plaintext_export() -> bool {
+    matches!(
+        std::env::var("PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT").ok().as_deref().map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
+}
+
 /// v134 (#7) — SIGNAL SOC NON-PURGEABLE : les backups tombent en SYMÉTRIQUE (déchiffrables par le nœud, aucun
 /// escrow hors-cluster) car `PLUME_BACKUP_AGE_RECIPIENT` n'est pas configuré. Miroir EXACT du pattern
 /// `emit_disk_health`/`emit_ledger_unsigned` : source managée `plume-config`, category=health, origin='daemon'
@@ -251,8 +270,22 @@ pub(crate) fn parse_age_identity_str(s: &str) -> Option<age::x25519::Identity> {
         .find_map(|l| l.parse::<age::x25519::Identity>().ok())
 }
 
-/// Tailles mesurées d'une sauvegarde compressée (log + assertion de ratio du test).
-pub(crate) struct BackupStats { pub(crate) plaintext_bytes: u64, pub(crate) dest_bytes: u64 }
+/// Ce qu'une sauvegarde compressée a réellement produit (log opérateur + assertions de test).
+///
+/// `plaintext_bytes` porte un nom HISTORIQUE, antérieur au chemin streaming, et il faut le lire pour ce
+/// qu'il mesure aujourd'hui : la taille de la CHARGE SÉRIALISÉE avant zstd — la copie SQLite en clair sur
+/// le chemin historique (où elle correspond bien à un fichier), le dump typé sur le chemin streaming (où
+/// elle ne correspond à AUCUN fichier : rien n'est écrit en clair). Les deux valeurs ne se comparent donc
+/// pas d'un chemin à l'autre sans savoir lequel a tourné — d'où le champ suivant.
+///
+/// `wrote_plaintext_to_disk` répond à la seule question que l'opérateur se pose vraiment : « ce cycle
+/// a-t-il posé une copie EN CLAIR de la base sur un disque ? ». C'est lui, pas le nom du champ précédent,
+/// qui porte la propriété.
+pub(crate) struct BackupStats {
+    pub(crate) plaintext_bytes: u64,
+    pub(crate) dest_bytes: u64,
+    pub(crate) wrote_plaintext_to_disk: bool,
+}
 
 /// SAUVEGARDE COMPRESSÉE+CHIFFRÉE — **CHEMIN LEGACY** (repli de B1, cf. `backup_compressed`).
 /// Étapes (toutes en RAM bornée) :
@@ -261,7 +294,7 @@ pub(crate) struct BackupStats { pub(crate) plaintext_bytes: u64, pub(crate) dest
 ///     (snapshot cohérent même si la DB de prod est ouverte ailleurs).
 ///  2. STREAM : `<tmp_plain>` -> zstd::Encoder -> age(passphrase=key) -> `<dest>` (buffers 1 MiB).
 ///  3. Le garde RAII efface `<tmp_plain>` (succès comme erreur/panique).
-/// Requiert une clé non vide (passphrase age). Renvoie {plaintext_bytes, dest_bytes}.
+/// Requiert une clé non vide (passphrase age). Renvoie {plaintext_bytes, dest_bytes, wrote_plaintext_to_disk=true}.
 /// NB : ce chemin MATÉRIALISE la DB entière EN CLAIR dans un fichier temporaire (~2,4 Gio) — c'est
 /// PRÉCISÉMENT ce que B1 (`backup_compressed_stream`) élimine. Il reste comme REPLI pour les schémas
 /// que le dump typé B1 ne peut pas représenter fidèlement (FTS contentless/régulière, etc.).
@@ -283,14 +316,10 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
                     l'exigence pour un backup symétrique de dev.".into());
     }
 
-    // BALAYAGE DE DÉMARRAGE : chaque backup réape d'abord les plaintext orphelins d'un run
-    // antérieur crashé/OOM-killé (Drop ne tourne pas sur SIGKILL). Cible le répertoire de STAGING
-    // (PLUME_BACKUP_STAGING_DIR = emptyDir éphémère si posé, sinon dossier de <dest>), seuil 1 h ->
-    // épargne un backup concurrent en vol. On s'assure que le répertoire existe (mount neuf / CLI).
-    let stage_dir = staging_dir(dest);
-    let _ = std::fs::create_dir_all(&stage_dir);
-    let n = sweep_orphan_temps(&stage_dir, std::time::Duration::from_secs(BACKUP_ORPHAN_MAX_AGE_SECS));
-    if n > 0 { eprintln!("backup : {n} plaintext temporaire(s) orphelin(s) réapé(s) dans {}", stage_dir.display()); }
+    // Le BALAYAGE des orphelins vit chez l'appelant (`backup_compressed`) : il doit tourner à CHAQUE backup,
+    // y compris quand le streaming réussit et que ce chemin-ci n'est jamais emprunté (sinon un plaintext
+    // orphelin d'un crash antérieur ne serait plus JAMAIS réapé). Ici on se contente de créer le staging.
+    let _ = std::fs::create_dir_all(staging_dir(dest));
 
     let tmp_guard = PlaintextTempGuard(plain_temp_path(dest));
     let tmp_plain = tmp_guard.path().to_string_lossy().into_owned();
@@ -353,7 +382,7 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
 
     let dest_bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
     // tmp_guard est droppé ici -> efface le plaintext temporaire.
-    Ok(BackupStats { plaintext_bytes, dest_bytes })
+    Ok(BackupStats { plaintext_bytes, dest_bytes, wrote_plaintext_to_disk: true })
 }
 
 // ============================================================================
@@ -402,6 +431,54 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
 // dans le flux zstd -> au plus 1 ligne + buffers en RAM, JAMAIS toute la DB, JAMAIS de clair sur
 // disque. Snapshot cohérent : lecture sous transaction ouverte (BEGIN) -> vue figée même si la DB
 // de prod est écrite en parallèle.
+// Le PLANCHER est structurel, pas espéré : `write_value_ref` sérialise la cellule EMPRUNTÉE au pager
+// (`ValueRef`) sans la recopier, rien n'est retenu d'une ligne à l'autre, et aucun tampon ne grandit
+// avec le nombre de lignes. Une LIGNE énorme coûte donc sa propre taille, pas celle de sa table :
+// mesuré (`backup_streaming_carries_multi_mib_blobs_within_a_bounded_memory_delta`, 2026-08-08) sur
+// 16 BLOB de 4 Mio = 64 Mio de charge -> PIC RSS à +20 Mio au-dessus de la référence, soit l'ordre de
+// grandeur d'UNE ligne plus les tampons, pas celui de la base. La borne restante est le champ unique :
+// `rd_bytes` alloue la valeur entière à la relecture, donc une cellule de 1 Gio coûterait 1 Gio.
+//
+// ----------------------------------------------------------------------------
+// CE QUE LE DUMP N'EMPORTE PAS — l'échange, nommé et mesuré.
+// ----------------------------------------------------------------------------
+// L'ancien format était une DB SQLite COMPLÈTE : il emportait donc AUSSI les index B-tree, les tables
+// shadow FTS5 (`*_data`/`*_idx`/`*_docsize`/`*_config`), les `sqlite_stat*` et les pages libres de la
+// fragmentation. Le dump typé n'emporte QUE le DDL et les LIGNES ; tout le reste est DÉRIVÉ et se
+// reconstruit à la restauration (`CREATE INDEX` rejoués, `INSERT INTO <fts>(<fts>) VALUES('rebuild')`).
+// Ce n'est pas une perte de données — c'est un déplacement de coût de la sauvegarde vers la restauration.
+//
+// MESURE (`backup_streaming_is_smaller_than_the_plaintext_export_on_the_same_db`, 2026-08-08), MÊME base
+// au schéma RÉEL de plume : 20 000 événements, `event_fts` peuplée, base SQLCipher de 7 221 248 o.
+//     chemin        charge sérialisée   `.age` produit
+//     streaming        3 714 129 o         321 017 o
+//     historique       6 758 400 o         780 941 o
+// Soit un `.age` 2,4x PLUS PETIT. La TAILLE est stable d'une exécution à l'autre ; le TEMPS de
+// restauration, lui, ne l'est pas, et il faut le dire ainsi plutôt que de citer un chiffre unique :
+//     suite en série (machine au repos)   : streaming 2 640 ms  vs historique 2 366 ms   (+12 %)
+//     suite complète en parallèle         : streaming 4 614 ms  vs historique 1 936 ms   (+138 %)
+// La reconstruction des index et de la FTS est du CPU pur : sous contention elle se dégrade bien plus
+// vite que la simple recopie de pages du chemin historique. L'ORDRE est constant (le streaming restaure
+// toujours plus lentement), l'AMPLEUR dépend de la charge de la machine — à provisionner dans le RTO
+// comme un facteur pouvant approcher 2,5x, pas comme un surcoût de 20 %.
+// Sur la base de PRODUCTION l'écart de TAILLE est structurellement plus grand encore : index + FTS y
+// pesaient 644 Mio sur 1 494 Mio mesurés le 2026-08-08, soit 43 % du fichier — exactement la part que le
+// dump n'emporte pas. La contrepartie grandit dans le même sens : plus il y a d'index à ne pas
+// transporter, plus il y en a à reconstruire au restore.
+//
+// ----------------------------------------------------------------------------
+// DÉFAUT, PAS OPT-IN — et pourquoi ce sens-là.
+// ----------------------------------------------------------------------------
+// Le streaming est le chemin par DÉFAUT ; l'ancien reste joignable par
+// `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT=1` (`backup_force_plaintext_export`). Trois raisons de ne pas
+// avoir laissé le défaut sur l'ancien : (1) la propriété achetée — pas de clair sur disque — ne vaut
+// que si elle est prise par le chemin réellement emprunté en production, et un opt-in ne l'est jamais ;
+// (2) le seul risque du streaming est une infidélité de représentation, et il est FERMÉ AVANT ÉCRITURE
+// par le repli automatique (`PlanErr::Unsupported`) : un schéma ou une valeur qu'il ne sait pas rendre
+// bit-à-bit ne produit pas un backup dégradé, il produit un backup de l'ANCIEN format ; (3) la
+// restauration lit les DEUX formats au marqueur, donc basculer le défaut ne périme aucune sauvegarde
+// déjà en séquestre. Le sens inverse — laisser l'ancien par défaut — aurait gardé la fenêtre de clair
+// ouverte en échange d'aucune sécurité supplémentaire.
 // ============================================================================
 
 /// Marqueur de tête du DUMP B1 (11 octets). NE COLLISIONNE PAS avec `SQLite format 3\0` (les octets
@@ -693,7 +770,7 @@ fn dump_stream<W: std::io::Write>(conn: &Connection, plan: &DumpPlan, w: &mut W)
 
 /// B1 — SAUVEGARDE STREAMING (zéro clair transitoire). Ouvre la DB SQLCipher, fige un snapshot lecture
 /// (BEGIN), collecte le plan (repli `Unsupported` AVANT toute écriture si schéma non-B1) puis dump ->
-/// zstd -> age -> dest. Renvoie {plaintext_bytes(=taille dump), dest_bytes}.
+/// zstd -> age -> dest. Renvoie {plaintext_bytes(=taille du dump), dest_bytes, wrote_plaintext_to_disk=false}.
 fn backup_compressed_stream(db_path: &str, dest: &str, pass: &str, recipient: Option<&str>) -> Result<BackupStats, PlanErr> {
     let conn = open_db_keyed_without_schema_contract(db_path, Some(pass)).map_err(|e| PlanErr::Fatal(format!("ouverture DB source : {e}")))?;
     conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
@@ -731,14 +808,14 @@ fn backup_compressed_stream(db_path: &str, dest: &str, pass: &str, recipient: Op
     let _ = conn.execute_batch("COMMIT"); // fin du snapshot (lecture seule).
 
     let dest_bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
-    Ok(BackupStats { plaintext_bytes, dest_bytes })
+    Ok(BackupStats { plaintext_bytes, dest_bytes, wrote_plaintext_to_disk: false })
 }
 
 /// SAUVEGARDE COMPRESSÉE+CHIFFRÉE — B1 par défaut (dump STREAMING, ZÉRO clair transitoire) avec REPLI
 /// automatique sur le legacy (sqlcipher_export -> plaintext temporaire éphémère) pour les schémas non
 /// représentables en dump typé (FTS contentless/régulière...). Format de sortie IDENTIQUE dans les
 /// deux cas : age(zstd(<charge>)) ; le restore distingue via le marqueur de tête. Requiert une clé non
-/// vide. Renvoie {plaintext_bytes, dest_bytes}.
+/// vide. Renvoie {plaintext_bytes, dest_bytes, wrote_plaintext_to_disk}.
 pub(crate) fn backup_compressed(db_path: &str, dest: &str, key: Option<&str>, recipient: Option<&str>) -> Result<BackupStats, String> {
     let pass = match key {
         Some(k) if !k.is_empty() => k.to_string(),
@@ -759,6 +836,21 @@ pub(crate) fn backup_compressed(db_path: &str, dest: &str, key: Option<&str>, re
              passphrase (= clé SQLCipher, présente sur le nœud). Ce backup est DÉCHIFFRABLE PAR LE NŒUD : PAS \
              d'escrow hors-cluster. Configurez une clé publique age (asymétrique, encrypt-only) pour un escrow \
              hors-cluster, ou posez PLUME_BACKUP_REQUIRE_ASYMMETRIC=1 pour refuser ce repli.");
+    }
+    // BALAYAGE DES ORPHELINS — à CHAQUE backup, quel que soit le chemin pris ensuite. Réape les plaintext
+    // laissés par un run antérieur crashé/OOM-killé (Drop ne tourne pas sur SIGKILL). Cible le répertoire de
+    // STAGING (PLUME_BACKUP_STAGING_DIR = volume éphémère si posé, sinon dossier de <dest>), seuil 1 h ->
+    // épargne un backup concurrent en vol. Ne CRÉE rien : il ne fait que supprimer (la garde de staging vide
+    // reste donc vraie pendant le chemin streaming).
+    let stage_dir = staging_dir(dest);
+    let n = sweep_orphan_temps(&stage_dir, std::time::Duration::from_secs(BACKUP_ORPHAN_MAX_AGE_SECS));
+    if n > 0 { eprintln!("backup : {n} plaintext temporaire(s) orphelin(s) réapé(s) dans {}", stage_dir.display()); }
+
+    // ÉCHAPPATOIRE OPÉRATEUR : retour explicite au chemin historique (plaintext matérialisé) sans rebuild.
+    if backup_force_plaintext_export() {
+        eprintln!("[backup] PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT posé -> chemin HISTORIQUE (sqlcipher_export) : \
+                   la base ENTIÈRE est réécrite EN CLAIR dans le staging le temps du backup.");
+        return backup_compressed_legacy(db_path, dest, key, recipient);
     }
     // B1 streaming d'abord ; repli legacy si le schéma n'est pas représentable en dump typé.
     match backup_compressed_stream(db_path, dest, &pass, recipient) {

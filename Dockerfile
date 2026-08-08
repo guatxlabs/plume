@@ -25,6 +25,38 @@ WORKDIR /build
 ENV CARGO_BUILD_JOBS=2
 
 # ---------------------------------------------------------------------------------------------------
+# ─── LE JEU DE FEATURES DE L'IMAGE, DÉCLARÉ UNE SEULE FOIS ─────────────────────────────────────
+#
+# POURQUOI UN ARG PLUTÔT QUE LA LISTE ÉCRITE DEUX FOIS. Ce Dockerfile compile en DEUX étages — la
+# couche de cache des dépendances (crate factice) puis les vraies sources — et les deux DOIVENT
+# demander exactement le même jeu de features. Sinon le cache est bâti pour un graphe de deps et
+# réutilisé pour un autre : au mieux tout se recompile en silence, au pire on livre une couche qui
+# ne correspond pas.
+#
+# CE N'EST PAS UNE PRÉCAUTION THÉORIQUE. Le 2026-08-04, une consolidation a fait passer la
+# production sur ce Dockerfile, qui portait `--features ldap` là où l'image précédente était bâtie
+# `ldap,cold_tier`. Le tier froid a disparu du binaire pendant TROIS JOURS pendant que le
+# Deployment continuait de déclarer cinq variables PLUME_COLD_* — mesuré : `grep -c cold_store`
+# rend 7 sur fde5c9c, 0 sur 37a3530, 7 sur 6dac62e (clé P4.5-a). Deux lignes à tenir d'accord, ce
+# sont deux occasions de diverger ; une seule n'en est plus une.
+#
+# BRING-YOUR-OWN-BUILD : un intégrateur qui ne veut pas du tier froid, ou qui veut `ai`, surcharge
+# sans toucher au fichier —
+#   docker build --build-arg PLUME_FEATURES=ldap .
+#   docker build --build-arg PLUME_FEATURES=ldap,cold_tier,ai .
+# La garde de capacités du déploiement (tools/plume-capacites.sh) REFUSE ensuite tout binaire dont
+# les features ne couvrent pas ce que le manifeste déclare : le paramètre est libre, l'incohérence
+# entre le build et le déploiement ne l'est pas.
+#
+# UNE SEULE DÉCLARATION, ET PAS DE REDÉCLARATION NUE. Les deux `RUN` vivent dans le MÊME étage : cet
+# `ARG` leur suffit. MESURÉ le 2026-08-08 (docker 29.6.2 / buildx 0.36.0) plutôt que supposé —
+# `--build-arg` absent : les deux RUN voient `ldap,cold_tier` ; `--build-arg PLUME_FEATURES=ldap` :
+# les deux voient `ldap`. Vérifié aussi, et CONTRAIRE à ce que je croyais : une redéclaration nue
+# (`ARG PLUME_FEATURES` seul) dans le même étage n'efface PAS le défaut sur cette version — elle est
+# donc redondante, pas dangereuse. On n'en met quand même aucune : une ligne dont l'effet dépend de
+# la version du moteur de build n'a rien à faire ici.
+ARG PLUME_FEATURES=ldap,cold_tier
+
 # COUCHE CACHE DE DÉPENDANCES (motif « dummy-crate »). On copie D'ABORD uniquement les manifestes +
 # le lockfile, avec des sources FACTICES (lib vide + `fn main(){}`), et on compile pour CACHER tout le
 # graphe de deps tierces (axum/tokio/rusqlite-sqlcipher-vendored/age/…, le plus long du build). Une
@@ -41,7 +73,7 @@ WORKDIR /build/daemon
 # `ring` déjà tiré par rustls/age -> pas de cc1plus/OOM (contraste avec `duckdb`, laissé opt-in). INERTE tant
 # qu'aucun provider LDAP n'est configuré (aucun endpoint ouvert, aucune surface active par défaut).
 # --locked : le build ÉCHOUE si Cargo.lock devait bouger (lock présent, deps figées, builds reproductibles).
-RUN cargo build --release --locked --features ldap,cold_tier
+RUN cargo build --release --locked --features "$PLUME_FEATURES"
 # Purge les artefacts du crate LOCAL issu du stub (plume-daemon) pour forcer sa recompilation depuis
 # les VRAIES sources — sans invalider le cache des deps tierces ci-dessus (dont guatx-core, git-dep).
 RUN rm -rf target/release/deps/plume_daemon* \
@@ -73,7 +105,7 @@ COPY docs/soql-templates ./docs/soql-templates
 # changement d'UNE ligne, pas une chasse au chemin manquant.
 COPY docs/ai-presets ./docs/ai-presets
 WORKDIR /build/daemon
-RUN cargo build --release --locked --features ldap,cold_tier
+RUN cargo build --release --locked --features "$PLUME_FEATURES"
 
 # runtime (minimal) — image de base épinglée par digest (cf. note ci-dessus).
 FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df

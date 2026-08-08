@@ -1,7 +1,7 @@
 # DR — Restauration des backups Plume (SQLCipher)
 
-Ce runbook couvre la restauration d'un backup Plume `plume-<TS>.db.age` (format
-`age(zstd(SQLite en clair))`) depuis votre stockage objet (`<votre-bucket>/plume/`), et les **deux
+Ce runbook couvre la restauration d'un backup Plume `plume-<TS>.db.age` (enveloppe
+`age(zstd(…))`) depuis votre stockage objet (`<votre-bucket>/plume/`), et les **deux
 modes** de chiffrement de backup proposés par le produit.
 
 ## D'abord : quel backup avez-vous ? Le produit en écrit DEUX formats différents
@@ -11,7 +11,7 @@ de la même façon.
 
 | Produit par | Nom du fichier | Format | Restauration |
 |---|---|---|---|
-| **Scheduler natif in‑daemon** (`PLUME_BACKUP_INTERVAL` > 0 — activé par le `docker-compose.yml` et `deploy/k3s.yaml` livrés) | `plume-<TS>.db.age` | `age(zstd(SQLite en clair))` | **ce runbook** (`plume-daemon restore`) |
+| **Scheduler natif in‑daemon** (`PLUME_BACKUP_INTERVAL` > 0 — activé par le `docker-compose.yml` et `deploy/k3s.yaml` livrés) | `plume-<TS>.db.age` | enveloppe `age(zstd(…))` — pour la CHARGE qu'elle contient, voir « quelle charge dans le `.age` ? » plus bas | **ce runbook** (`plume-daemon restore`) |
 | **Timer hôte** `plume-backup.timer` (installé par `bootstrap.sh`, quotidien 04:00) | `plume-<TS>.db` | **copie SQLite compacte** (`VACUUM INTO`), *chiffrée SQLCipher si et seulement si la base l'était* — **jamais** d'enveloppe age | *voir ci‑dessous*, pas `restore` |
 
 **Restaurer une copie du timer hôte** (`.db`, sans `.age`) : c'est un fichier SQLite ordinaire, donc
@@ -34,6 +34,76 @@ qu'à un déploiement qui pousse ensuite vers un stockage objet. Le sink `s3://`
 implémenté** — le daemon le **refuse explicitement** et se désactive plutôt que d'écrire un faux
 backup local. **Un backup qui reste sur le même volume que la base ne protège que de la corruption
 logique, pas de la perte du volume** : copiez-le hors de la machine.
+
+## Ensuite : quelle CHARGE dans le `.age` ? (reconnue au marqueur, jamais au nom du fichier)
+
+Distinction **indépendante** de la précédente : celle du dessus dit *quel outil* a produit l'artefact,
+celle-ci dit *ce qu'il y a dedans*. Deux charges différentes voyagent sous la même enveloppe et sous le
+**même nom de fichier** `plume-<TS>.db.age` — il n'existe **aucun suffixe, aucune convention de nom** qui
+les distingue. C'est le **marqueur en tête de la charge décompressée** qui tranche, et
+`plume-daemon restore` le lit tout seul : **vous n'avez ni à savoir lequel vous tenez, ni à passer
+d'option.**
+
+| Marqueur en tête de charge | Ce que c'est | D'où il vient |
+|---|---|---|
+| `PLUMEDUMP1\n` | **dump typé streaming** (DDL + lignes) — le **défaut** | sauvegarde qui n'écrit **aucun fichier en clair sur disque** |
+| `SQLite format 3\0` | **copie SQLite complète en clair** | chemin **historique** : sauvegardes antérieures au streaming, schémas hors de son périmètre (FTS5 *contentless*), ou `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT=1` |
+
+Pour lire le marqueur à la main, si vous voulez savoir avant de restaurer :
+
+```sh
+age -d -p < plume-<TS>.db.age | zstd -d | head -c 16 | xxd    # mode passphrase
+# -> "PLUMEDUMP1."      = dump typé
+# -> "SQLite format 3." = copie SQLite complète
+```
+
+Conséquences pratiques, à connaître **avant** un DR chronométré :
+
+- **Les sauvegardes déjà en séquestre restent restaurables** — aucune migration, aucune conversion, le
+  basculement du défaut ne périme rien.
+- Le dump typé **n'emporte ni les index ni les tables shadow FTS5** : ils sont **reconstruits** à la
+  restauration. Le `.age` est donc nettement plus petit (mesuré : **×2,4** sur une base de test au schéma
+  réel ; l'écart grandit avec la masse d'index — index + FTS pesaient **43 %** du fichier de production
+  le 2026-08-08).
+- **En contrepartie, la restauration est plus longue** — et l'ampleur dépend de la charge de la machine,
+  parce que reconstruire index et FTS est du **CPU pur**. Mesuré sur la même base : **+12 %** machine au
+  repos, **+138 %** machine chargée. **Provisionnez dans le RTO un facteur pouvant approcher 2,5×**, et
+  restaurez sur une machine peu chargée si le temps compte. L'ordre, lui, ne s'inverse jamais.
+
+## Le tier froid : ce qu'une restauration du backup chaud ne rend PAS
+
+Depuis l'aging Phase 2 (`daemon/src/cold_store/aging.rs`), une journée scellée en Parquet voit ses
+lignes `event` **supprimées de la base chaude**. La base chaude ne porte donc plus que la fenêtre
+`PLUME_COLD_HOT_WINDOW_DAYS` (**7 jours** en production au 2026-08-08) ; le reste de la rétention
+(`PLUME_COLD_RETENTION_DAYS=365`) vit **uniquement** sous `PLUME_COLD_DIR=/data/cold`.
+
+**Il n'y a pas de perte de données.** Les fichiers-jour froids sont séquestrés à chaque cycle du
+sidecar `backup` par `plume-daemon cold-backup-plan`, en copie verbatim incrémentale vers
+`<votre-bucket>/plume/cold/<tenant>/<env>/<AAAA-MM-JJ>-<NNNN>.parquet`. Ils sont déjà zstd+age-chiffrés
+et immuables : aucun re-wrap, aucun clair.
+
+**Ce qu'il faut en retenir pour un DR :**
+
+1. Restaurer `plume-<TS>.db.age` seul rend un SOC **fonctionnel mais amputé** : la recherche répondra,
+   et ne verra que les 7 derniers jours. Un incident daté d'il y a trois semaines sera **absent sans le
+   moindre message d'erreur**.
+2. Une restauration complète a **deux composants** : le `.db.age` chaud **et** l'arborescence `cold/` du
+   même bucket, remise sous `PLUME_COLD_DIR` avant le démarrage du daemon.
+3. **L'ordre compte** : déposer les fichiers-jour froids *avant* le premier boot. Le daemon lit
+   `cold_seal` dans la base restaurée ; un jour scellé dont le fichier Parquet est absent est un trou
+   silencieux, pas une erreur de boot.
+4. **Le binaire doit porter la feature.** Un `plume-daemon` construit sans `--features cold_tier` ignore
+   `/data/cold` et déclare quand même les variables `PLUME_COLD_*` — c'est le défaut P4.5-b, resté trois
+   jours en production. Contrôle : la garde de capacités de `bootstrap/plume-deploy.sh`.
+5. **Ce que le restore-test quotidien prouve, et ce qu'il ne prouve pas.** Il vérifie structurellement le
+   **dernier backup chaud** et refuse de conclure s'il est plus vieux que 3× la cadence observée. Il
+   **compte** les fichiers-jour froids de l'escrow et les nomme, mais **ne les vérifie pas** : quand il y
+   en a, son verdict est `SUCCES PARTIEL — PORTEE : base CHAUDE seule`. La vérification des deux étages
+   reste un **drill DR hors-cluster** avec l'identité age d'escrow.
+
+**État mesuré le 2026-08-08** : 60 fichiers-jour sur le disque, **60 séquestrés** (témoin positif : 102
+objets sous le préfixe `plume/` ; témoin négatif : 0 sous un préfixe inexistant), couvrant
+2026-06-23 → 2026-07-31, ~163 Mio.
 
 ## Deux modes de chiffrement de backup
 

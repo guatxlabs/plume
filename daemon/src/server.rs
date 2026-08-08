@@ -952,8 +952,9 @@ pub(crate) fn scheduled_backup_cycle(db_path: &str, dest_dir: &str, keep: usize,
                 }
                 let ratio = if st.dest_bytes > 0 { st.plaintext_bytes as f64 / st.dest_bytes as f64 } else { 0.0 };
                 eprintln!(
-                    "[backup-sched] écrit {final_path}  plaintext={} o  dest={} o  ratio={:.1}x",
-                    st.plaintext_bytes, st.dest_bytes, ratio);
+                    "[backup-sched] écrit {final_path}  charge={} o  dest={} o  ratio={:.1}x  clair-sur-disque={}",
+                    st.plaintext_bytes, st.dest_bytes, ratio,
+                    if st.wrote_plaintext_to_disk { "OUI (chemin historique)" } else { "non" });
             }
             Err(e) => {
                 eprintln!("[backup-sched] backup B1 échoué : {e} (best-effort -> on continue)");

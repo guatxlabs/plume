@@ -1583,5 +1583,15 @@ fn main() {
         .block_on(run());
 }
 
+// INSTRUMENT DE MESURE MÉMOIRE DE LA SUITE — `cfg(test)` STRICT : `cargo build` ne pose pas
+// `cfg(test)`, donc ni cet allocateur ni ce compteur n'existent dans le binaire de production
+// (mode 0 byte-identique). Il remplace la lecture du RSS PROCESSUS, qui n'est pas mesurable
+// depuis un test parallèle — cf. l'en-tête de `tas_du_fil.rs`.
+#[cfg(test)]
+mod tas_du_fil;
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATEUR_DE_TEST: tas_du_fil::AllocateurQuiCompte = tas_du_fil::AllocateurQuiCompte;
+
 #[cfg(test)]
 mod tests;

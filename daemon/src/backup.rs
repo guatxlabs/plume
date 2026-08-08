@@ -36,8 +36,11 @@ use crate::*;
 //   Le scrypt d'age dérive sa propre clé (KDF) à partir de cette passphrase -> pas de
 //   réutilisation directe de la clé brute. Requise (non vide) pour backup ET restore.
 //
-// RAM BORNÉE dans les deux cas : buffers de 1 MiB, pager SQLite à cache borné — JAMAIS la
-//   base en heap. Le streaming n'ajoute au plus qu'UNE ligne à la fois (cf. section B1).
+// RAM BORNÉE PAR LA TAILLE DE LA BASE dans les deux cas : buffers de 1 MiB, pager SQLite à cache
+//   borné — JAMAIS la base en heap. Le streaming n'ajoute au plus qu'UNE ligne à la fois (cf.
+//   section B1). Ce qui N'EST PAS borné, et qui domine le pic, c'est le KDF scrypt du chiffrement
+//   PAR PASSPHRASE : `age` en choisit la taille au CHRONO (2^(10+log_n) octets, mesuré 8 à 16 Mio
+//   ici, 256 Mio sur une machine rapide au repos) — cf. « LE TERME QUI DOMINE » en section B1.
 // ============================================================================
 
 /// Buffer de copie en flux (1 MiB) -> RAM bornée quelle que soit la taille de la DB.
@@ -433,11 +436,29 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
 // de prod est écrite en parallèle.
 // Le PLANCHER est structurel, pas espéré : `write_value_ref` sérialise la cellule EMPRUNTÉE au pager
 // (`ValueRef`) sans la recopier, rien n'est retenu d'une ligne à l'autre, et aucun tampon ne grandit
-// avec le nombre de lignes. Une LIGNE énorme coûte donc sa propre taille, pas celle de sa table :
-// mesuré (`backup_streaming_carries_multi_mib_blobs_within_a_bounded_memory_delta`, 2026-08-08) sur
-// 16 BLOB de 4 Mio = 64 Mio de charge -> PIC RSS à +20 Mio au-dessus de la référence, soit l'ordre de
-// grandeur d'UNE ligne plus les tampons, pas celui de la base. La borne restante est le champ unique :
-// `rd_bytes` alloue la valeur entière à la relecture, donc une cellule de 1 Gio coûterait 1 Gio.
+// avec le nombre de lignes. Une LIGNE énorme coûte donc sa propre taille, pas celle de sa table, et ce
+// n'est pas un seuil mais une INVARIANCE, mesurée par
+// `backup_streaming_peak_live_heap_follows_row_width_not_row_count` (2026-08-08) : à largeur de cellule
+// CONSTANTE (4 Mio), 2 lignes puis 16 -> pic de tas vivant 1 147 968 o puis 1 147 600 o, soit 368 o
+// d'écart pour 56 Mio de charge ajoutée. Le test porte ses deux mutations : faire accumuler le dump
+// entier écarte les pics de 58 722 184 o (ROUGE), recopier chaque cellule avant écriture déplace les
+// DEUX pics à ~5,34 Mio sans les écarter (VERT — c'est la borne connue, pas un défaut).
+// La borne restante est le champ unique : `rd_bytes` alloue la valeur entière à la relecture, donc une
+// cellule de 1 Gio coûterait 1 Gio.
+//
+// LE TERME QUI DOMINE RÉELLEMENT LE PIC N'EST PAS LE DUMP, C'EST LE KDF (mesuré 2026-08-08). Sur le
+// chemin par PASSPHRASE — le DÉFAUT quand `PLUME_BACKUP_AGE_RECIPIENT` n'est pas configuré — `age`
+// choisit son facteur de travail scrypt par un ÉTALONNAGE AU CHRONO à chaque sauvegarde (age 0.11
+// `target_scrypt_work_factor` : viser ~1 s de CPU), et scrypt alloue 128·r·2^log_n = 2^(10+log_n)
+// octets. Six sauvegardes consécutives de la MÊME base ont donné log_n = 13 puis 14, soit 8 Mio puis
+// 16 Mio de tampon — le pic de la sauvegarde passe de 9,4 Mio à 17,8 Mio sans qu'aucune ligne ne
+// change. Le reste est DÉDUIT, pas mesuré : le seuil de l'ancienne version de ce test valait 32 Mio,
+// donc toute machine assez rapide pour choisir log_n >= 16 le faisait rougir à coup sûr ; age donne
+// lui-même 18 comme « ~1 s sur une machine moderne », soit 256 Mio — l'ordre de grandeur des
+// « +247 Mio » qui ont fait refuser le build de 8618753 en accusant le streaming à tort. CONSÉQUENCE
+// OPÉRATIONNELLE, à ne pas confondre avec le dump : sous la contrainte 2 Gio, un backup par passphrase
+// peut demander des CENTAINES de Mio le temps du KDF, et ce montant n'est ni configurable ni borné
+// ici ; le destinataire ASYMÉTRIQUE (x25519), déjà recommandé pour l'escrow, n'a PAS ce terme.
 //
 // ----------------------------------------------------------------------------
 // CE QUE LE DUMP N'EMPORTE PAS — l'échange, nommé et mesuré.

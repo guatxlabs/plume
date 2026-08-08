@@ -9,7 +9,7 @@
     // du cycle. Les quatre tests de ce module éprouvent CETTE différence :
     //   - `..._leaves_the_staging_dir_empty_under_watch`      : surveillance CONTINUE, avec contrôle
     //   - `..._survives_an_unusable_staging_dir`              : la même garde SANS COURSE
-    //   - `..._carries_multi_mib_blobs_within_a_bounded_memory_delta` : la RAM sous une ligne énorme
+    //   - `..._peak_live_heap_follows_row_width_not_row_count` : le dump est O(la ligne), pas O(la table)
     //   - `..._is_smaller_than_the_plaintext_export_on_the_same_db`   : taille et temps, deux formats
     // La FIDÉLITÉ du dump (types, BLOB, FTS, sqlite_sequence) et le REPLI sur schéma non représentable
     // sont éprouvés ailleurs, par `backup_b1_parity_roundtrip` et
@@ -198,96 +198,187 @@
         std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    /// Pages résidentes du processus (RSS, en octets) lues dans `/proc/self/statm` — 2e champ × taille de
-    /// page. Sans dépendance. `None` hors Linux/procfs indisponible (l'appelant dégrade alors le test en
-    /// vérification de FIDÉLITÉ seule plutôt que de mentir sur une mesure absente).
-    fn bkst_rss_bytes() -> Option<u64> {
-        let s = std::fs::read_to_string("/proc/self/statm").ok()?;
-        let resident: u64 = s.split_whitespace().nth(1)?.parse().ok()?;
-        Some(resident * 4096) // taille de page = 4 KiB sur les cibles supportées
+    /// Base à LIGNES LARGES : `lignes` lignes portant chacune UNE cellule BLOB de `octets_par_cellule`
+    /// octets. Motif dépendant de la ligne -> contenu compressible (zstd rapide) mais DISTINCT d'une ligne
+    /// à l'autre, donc une restauration infidèle se voit. Renvoie l'empreinte de chaque ligne.
+    fn bkst_seed_lignes_larges(path: &str, key: &str, lignes: usize, octets_par_cellule: usize) -> Vec<u64> {
+        let empreinte = |b: &[u8]| b.iter().fold(0u64, |a, &x| a.wrapping_mul(31).wrapping_add(x as u64));
+        let mut sommes = Vec::with_capacity(lignes);
+        let w = open_db_keyed(path, Some(key)).unwrap();
+        w.execute_batch("CREATE TABLE gros(id INTEGER PRIMARY KEY, charge BLOB NOT NULL);").unwrap();
+        for k in 0..lignes {
+            let motif: Vec<u8> = (0..256u32).map(|b| (b as u8) ^ (k as u8)).collect();
+            let b: Vec<u8> = motif.iter().cycle().take(octets_par_cellule).copied().collect();
+            sommes.push(empreinte(&b));
+            w.execute("INSERT INTO gros(id,charge) VALUES(?,?)", params![k as i64, b]).unwrap();
+        }
+        sommes
     }
 
-    /// UNE LIGNE ÉNORME NE DOIT PAS FAIRE ENFLER LA MÉMOIRE. 16 BLOB de 4 Mio (64 Mio de charge utile)
-    /// traversent le dump : on échantillonne le RSS PENDANT la sauvegarde et on exige que le PIC reste
-    /// très en dessous de la charge — si le code accumulait la base, la table, ou une chaîne qui grandit,
-    /// le delta vaudrait au moins les 64 Mio. On vérifie en plus que les octets ressortent EXACTS.
+    /// LE DUMP EST O(LA LIGNE), PAS O(LA TABLE) — et c'est CETTE propriété-là qui tient la contrainte dure
+    /// de 2 Gio, pas un chiffre de mémoire.
     ///
-    /// CE QUE LA MESURE NE DIT PAS : le RSS est PROCESS-global et la suite tourne en parallèle — le delta
-    /// mesuré MAJORE donc la consommation réelle de la sauvegarde (bruit des tests voisins inclus). Le seuil
-    /// est choisi en conséquence : il discrimine « une ligne à la fois » de « toute la base », pas « 8 Mio »
-    /// de « 12 Mio ». Le PLANCHER structurel reste une ligne + les tampons : `write_value_ref` écrit la
-    /// cellule empruntée au pager SQLite sans la copier, et rien n'est retenu d'une ligne à l'autre.
+    /// COMMENT ON LA PROUVE. On sauvegarde DEUX bases de MÊME LARGEUR de ligne (cellule de 4 Mio) et de
+    /// NOMBRE de lignes différent (2 puis 16), et on exige que le PIC DE TAS VIVANT du fil ne BOUGE PAS.
+    /// C'est une PROPRIÉTÉ (invariance en N), pas un seuil : la valeur du pic n'a pas à être devinée, seule
+    /// sa STABILITÉ compte. Un code qui accumulerait la table écarterait les deux pics d'exactement la
+    /// charge ajoutée — 56 Mio ici, presque trois ordres de grandeur au-dessus de la marge admise.
+    ///
+    /// POURQUOI PAS LE RSS. Le RSS est PROCESS-global : mesuré depuis un test qui tourne EN PARALLÈLE des
+    /// 948 autres, il compte les allocations des voisins et son verdict dépend du nombre de cœurs, de
+    /// l'ordonnancement et de l'allocateur. C'est ce qui a fait REFUSER un build de production le
+    /// 2026-08-08 (+247 Mio observés pour 64 Mio de charge) alors que rien du chemin testé n'avait changé.
+    /// L'instrument d'ici (`crate::tas_du_fil`) compte les octets Rust alloués moins libérés PAR CE FIL :
+    /// un entier, insensible aux voisins, qui rend le même verdict partout.
+    ///
+    /// LA BORNE CONNUE, QUI RESTE. Le pic par ligne est intrinsèquement O(la plus grosse CELLULE) : côté
+    /// restore, `rd_bytes` alloue la valeur entière, donc une cellule de 1 Gio coûte 1 Gio. Ce test ne
+    /// prétend PAS l'exclure — il fait varier N à largeur CONSTANTE, donc il sépare exactement O(cellule),
+    /// qu'on assume, de O(table), qu'on refuse.
+    ///
+    /// L'AUTRE TERME, CELUI QUI A FAIT ROUGIR LA PORTE — le KDF, pas le dump. Sur le chemin par
+    /// PASSPHRASE, `age` choisit le facteur de travail scrypt par un ÉTALONNAGE AU CHRONO à CHAQUE
+    /// sauvegarde (`target_scrypt_work_factor`, age 0.11 : viser ~1 s de CPU) et scrypt alloue
+    /// 128·r·2^log_n octets, r=8 chez age (`primitives::scrypt` -> `ScryptParams::new(log_n, 8, 1, 32)`),
+    /// soit 2^(10+log_n). MESURÉ le 2026-08-08 sur cette machine, six sauvegardes de
+    /// suite : log_n a valu 13 PUIS 14 sans que rien change, soit un pic de tas de 9 439 995 o puis
+    /// 17 828 603 o — un écart de 8 Mio dû au SEUL KDF, sur la MÊME base et le MÊME code. Ce qui suit
+    /// est alors DÉDUIT, pas mesuré ici : le seuil de l'ancien test valait 32 Mio (charge/2), donc
+    /// TOUTE machine assez rapide pour choisir log_n >= 16 le faisait rougir à coup sûr, sans qu'aucune
+    /// ligne ne change ; age lui-même donne 18 comme « ~1 s sur une machine moderne », soit 256 Mio —
+    /// l'ordre de grandeur des « +247 Mio » qui ont fait refuser 8618753. Ce terme est CONSTANT en N —
+    /// il ne dit RIEN du streaming — mais il est ALÉATOIRE, donc
+    /// l'invariance se mesure avec un DESTINATAIRE age asymétrique (x25519, pas de KDF). Le chemin de
+    /// dump est le MÊME dans les deux modes : seul l'enveloppement de la clé de fichier change. Le bloc
+    /// « LE TERME KDF, NOMMÉ » ci-dessous le mesure quand même, sur le chemin par défaut, en LISANT
+    /// log_n dans l'en-tête du fichier produit — donc sans rien deviner.
+    ///
+    /// CE QUE L'INSTRUMENT NE VOIT PAS : les `malloc` du C lié. Le tampon de ligne du pager SQLite — donc
+    /// la cellule qu'emprunte `ValueRef` — et les tampons internes de zstd ne sont pas du tas Rust. Une
+    /// accumulation écrite en Rust (tampon qui grandit, lignes retenues, dump matérialisé avant écriture)
+    /// est vue ; une accumulation qu'on délèguerait à SQLite (un `group_concat` dans le SELECT du plan)
+    /// ne le serait pas.
     #[test]
-    fn backup_streaming_carries_multi_mib_blobs_within_a_bounded_memory_delta() {
-        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-        use std::sync::Arc;
-        const BLOB: usize = 4 << 20;   // 4 Mio par ligne
-        const ROWS: usize = 16;        // 64 Mio de charge utile
-        let _tmpg = crate::tmp_possede::TmpPossede::neuf("bkst-blob");
+    fn backup_streaming_peak_live_heap_follows_row_width_not_row_count() {
+        // LARGEUR de ligne, CONSTANTE entre les deux mesures — et plus grande que TOUS les tampons de la
+        // chaîne (BufWriter 1 Mio, chunks age 64 Kio, fenêtre zstd) : une ligne ne peut pas s'y cacher.
+        const CELLULE: usize = 4 << 20;
+        const PEU: usize = 2;        //  8 Mio de charge
+        const BEAUCOUP: usize = 16;  // 64 Mio de charge — 8x plus de LIGNES, MÊME largeur
+        // Marge admise sur l'INVARIANCE. Elle n'est pas devinée : l'écart MESURÉ entre les deux pics vaut
+        // 368 o, et les DEUX pics sont sortis BIT-À-BIT identiques (1 147 968 o / 1 147 600 o) sur dix
+        // exécutions du 2026-08-08 — cinq machine au repos, cinq sous douze boucles CPU. La MÊME charge
+        // faisait pourtant passer le facteur scrypt de log_n=14 à log_n=12, soit 12 Mio de moins sur le
+        // pic du chemin par défaut : c'est très exactement la sensibilité que cette mesure-ci n'a pas.
+        // 64 Kio est 178x l'écart observé, et 900x SOUS les (BEAUCOUP-PEU)*CELLULE = 56 Mio qu'une
+        // accumulation de la table produirait.
+        const MARGE: u64 = 64 << 10;
+
+        // LE VERROU, QUE LA VERSION RSS DE CE TEST N'AVAIT PAS : `backup_compressed` LIT
+        // `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT` (env PROCESS-global) et trois tests de ce module le POSENT.
+        // Sans le verrou, un voisin peut faire prendre à CETTE sauvegarde le chemin HISTORIQUE au milieu de
+        // la mesure — un deuxième canal de non-déterminisme, indépendant du RSS.
+        let _env = BACKUP_PATH_ENV_LOCK.lock();
+        let _tmpg = crate::tmp_possede::TmpPossede::neuf("bkst-largeur");
         let root = _tmpg.racine().chemin().to_path_buf();
-        let key = "gros-blob-passphrase";
-        let src = root.join("src.db").to_string_lossy().into_owned();
-        let dest = root.join("bk.age").to_string_lossy().into_owned();
+        let key = "largeur-de-ligne-passphrase";
+        let src_peu = root.join("peu.db").to_string_lossy().into_owned();
+        let src_beaucoup = root.join("beaucoup.db").to_string_lossy().into_owned();
+        let dest_peu = root.join("peu.age").to_string_lossy().into_owned();
+        let dest_beaucoup = root.join("beaucoup.age").to_string_lossy().into_owned();
         let restored = root.join("restored.db").to_string_lossy().into_owned();
+        let sommes_peu = bkst_seed_lignes_larges(&src_peu, key, PEU, CELLULE);
+        bkst_seed_lignes_larges(&src_beaucoup, key, BEAUCOUP, CELLULE);
 
-        // Contenu compressible mais NON trivial (motif dépendant de la ligne) -> zstd rapide, octets distincts.
-        let mk_blob = |k: usize| -> Vec<u8> {
-            let pat: Vec<u8> = (0..256u32).map(|b| (b as u8) ^ (k as u8)).collect();
-            pat.iter().cycle().take(BLOB).copied().collect()
+        // DESTINATAIRE asymétrique jetable : supprime le terme KDF aléatoire de la mesure (cf. en-tête).
+        let identite = age::x25519::Identity::generate();
+        let destinataire = identite.to_public().to_string();
+
+        // --- LA MESURE : le pic de tas VIVANT pendant chaque sauvegarde, sur le fil du test. -------------
+        let (r_peu, pic_peu) = crate::tas_du_fil::pic_vivant_pendant(
+            || backup_compressed(&src_peu, &dest_peu, Some(key), Some(&destinataire)));
+        let st_peu = r_peu.expect("sauvegarde OK (peu de lignes)");
+        let (r_beaucoup, pic_beaucoup) = crate::tas_du_fil::pic_vivant_pendant(
+            || backup_compressed(&src_beaucoup, &dest_beaucoup, Some(key), Some(&destinataire)));
+        let st_beaucoup = r_beaucoup.expect("sauvegarde OK (beaucoup de lignes)");
+        eprintln!("[largeur-de-ligne] cellule={} Mio | {PEU} lignes : charge={} Mio dump={} o pic tas={} o \
+                   | {BEAUCOUP} lignes : charge={} Mio dump={} o pic tas={} o",
+            CELLULE >> 20, (PEU * CELLULE) >> 20, st_peu.plaintext_bytes, pic_peu,
+            (BEAUCOUP * CELLULE) >> 20, st_beaucoup.plaintext_bytes, pic_beaucoup);
+
+        // LE CHEMIN PRIS EST BIEN CELUI QU'ON MESURE : le streaming, jamais le repli historique (qui, lui,
+        // matérialise la base en clair et n'a pas du tout le même profil mémoire).
+        assert!(!st_peu.wrote_plaintext_to_disk && !st_beaucoup.wrote_plaintext_to_disk,
+            "les deux mesures doivent porter sur le chemin STREAMING, pas sur le repli historique");
+        // les deux dumps ont RÉELLEMENT transporté leur charge (sinon on comparerait deux non-événements).
+        assert!(st_peu.plaintext_bytes as usize >= PEU * CELLULE,
+            "le dump de {PEU} lignes doit transporter {} o (mesuré : {} o)", PEU * CELLULE, st_peu.plaintext_bytes);
+        assert!(st_beaucoup.plaintext_bytes as usize >= BEAUCOUP * CELLULE,
+            "le dump de {BEAUCOUP} lignes doit transporter {} o (mesuré : {} o)", BEAUCOUP * CELLULE, st_beaucoup.plaintext_bytes);
+
+        // LA SONDE A BIEN VU CETTE SAUVEGARDE : le BufWriter de sortie (`BACKUP_BUF` = 1 Mio) est une
+        // allocation Rust vivante pendant tout le dump. Un pic en dessous voudrait dire qu'on n'a rien mesuré.
+        assert!(pic_peu >= BACKUP_BUF as u64 && pic_beaucoup >= BACKUP_BUF as u64,
+            "la sonde doit avoir vu la sauvegarde allouer (au moins le tampon de sortie de {} o) ; pics = {pic_peu} o / {pic_beaucoup} o",
+            BACKUP_BUF);
+
+        // --- LA PROPRIÉTÉ : 8x plus de lignes, MÊME pic. -------------------------------------------------
+        let ecart = pic_beaucoup.abs_diff(pic_peu);
+        assert!(ecart <= MARGE,
+            "le pic de tas doit suivre la LARGEUR de ligne, pas leur NOMBRE : {PEU} lignes -> {pic_peu} o, \
+             {BEAUCOUP} lignes -> {pic_beaucoup} o (écart {ecart} o > marge {MARGE} o). Accumuler la table \
+             aurait écarté les deux pics de {} o",
+            (BEAUCOUP - PEU) * CELLULE);
+
+        // --- CONTRÔLE — VALIDATION DE L'INSTRUMENT : la MÊME sonde, sur le MÊME fil, autour d'un code qui
+        // accumule VOLONTAIREMENT N x CELLULE octets. Elle DOIT le voir, et le voir GRANDIR avec N. Sans ce
+        // contrôle, « le pic n'a pas bougé » se lirait « la sonde est aveugle » aussi bien que « ça streame ».
+        let accumule = |n: usize| -> usize {
+            let retenu: Vec<Vec<u8>> = (0..n).map(|k| vec![k as u8; CELLULE]).collect();
+            retenu.iter().map(|v| v.len()).sum()
         };
-        let mut orig_sums: Vec<u64> = Vec::new();
-        {
-            let w = open_db_keyed(&src, Some(key)).unwrap();
-            w.execute_batch("CREATE TABLE gros(id INTEGER PRIMARY KEY, charge BLOB NOT NULL);").unwrap();
-            for k in 0..ROWS {
-                let b = mk_blob(k);
-                orig_sums.push(b.iter().fold(0u64, |a, &x| a.wrapping_mul(31).wrapping_add(x as u64)));
-                w.execute("INSERT INTO gros(id,charge) VALUES(?,?)", params![k as i64, b]).unwrap();
-            }
-        }
+        let (octets_temoin, pic_temoin_peu) = crate::tas_du_fil::pic_vivant_pendant(|| accumule(PEU));
+        assert_eq!(octets_temoin, PEU * CELLULE, "le témoin doit avoir retenu ce qu'il annonce");
+        let (_, pic_temoin_beaucoup) = crate::tas_du_fil::pic_vivant_pendant(|| accumule(BEAUCOUP));
+        let croissance_temoin = pic_temoin_beaucoup.saturating_sub(pic_temoin_peu);
+        eprintln!("[largeur-de-ligne] témoin qui ACCUMULE : {PEU} lignes -> {pic_temoin_peu} o, \
+                   {BEAUCOUP} lignes -> {pic_temoin_beaucoup} o (croissance {croissance_temoin} o)");
+        assert!(croissance_temoin >= ((BEAUCOUP - PEU) * CELLULE) as u64,
+            "l'instrument est INVALIDE s'il ne voit pas une accumulation délibérée : {PEU} -> {pic_temoin_peu} o, \
+             {BEAUCOUP} -> {pic_temoin_beaucoup} o, croissance {croissance_temoin} o < {} o attendus",
+            (BEAUCOUP - PEU) * CELLULE);
 
-        // Sonde RSS : PIC observé pendant la sauvegarde (référence prise juste avant, base fermée).
-        let base_rss = bkst_rss_bytes();
-        let peak = Arc::new(AtomicU64::new(base_rss.unwrap_or(0)));
-        let stop = Arc::new(AtomicBool::new(false));
-        let h = {
-            let (peak, stop) = (peak.clone(), stop.clone());
-            std::thread::spawn(move || {
-                while !stop.load(Ordering::Relaxed) {
-                    if let Some(r) = bkst_rss_bytes() { peak.fetch_max(r, Ordering::Relaxed); }
-                }
-            })
-        };
-        let stats = backup_compressed(&src, &dest, Some(key), None).expect("sauvegarde des gros BLOB OK");
-        stop.store(true, Ordering::Relaxed);
-        h.join().unwrap();
+        // --- LE TERME KDF, NOMMÉ — la MÊME base, le chemin PAR DÉFAUT (passphrase). Le pic y grossit du
+        // tampon scrypt, dont la taille est ANNONCÉE par l'en-tête age du fichier qu'on vient de produire
+        // (`-> scrypt <sel> <log_n>`) : on ne devine rien, on lit. C'est ce terme — pas le dump — que la
+        // mesure de RSS d'avant prenait pour une fuite du streaming.
+        let dest_kdf = root.join("kdf.age").to_string_lossy().into_owned();
+        let (r_kdf, pic_kdf) = crate::tas_du_fil::pic_vivant_pendant(
+            || backup_compressed(&src_peu, &dest_kdf, Some(key), None));
+        r_kdf.expect("sauvegarde OK (chemin par défaut, passphrase)");
+        let tete = std::fs::read(&dest_kdf).expect("relecture de l'en-tête age");
+        let log_n: u32 = String::from_utf8_lossy(&tete[..128.min(tete.len())])
+            .lines().find_map(|l| l.strip_prefix("-> scrypt ").and_then(|a| a.split_whitespace().nth(1)).and_then(|n| n.parse().ok()))
+            .expect("le chemin par défaut doit produire une strophe scrypt annonçant son log_n");
+        let tampon_scrypt: u64 = 1u64 << (10 + log_n); // 128 · r(=8) · 2^log_n
+        eprintln!("[largeur-de-ligne] KDF du chemin par défaut : log_n={log_n} -> tampon scrypt {tampon_scrypt} o ; \
+                   pic tas={pic_kdf} o (contre {pic_peu} o pour la MÊME base avec un destinataire asymétrique)");
+        assert!(pic_kdf >= tampon_scrypt,
+            "le chemin par passphrase doit allouer AU MOINS le tampon scrypt que son propre en-tête annonce \
+             (log_n={log_n} -> {tampon_scrypt} o) ; pic mesuré {pic_kdf} o");
 
-        assert!(stats.plaintext_bytes as usize >= BLOB * ROWS,
-            "le dump doit avoir réellement transporté les {} Mio (mesuré : {} o)", (BLOB * ROWS) >> 20, stats.plaintext_bytes);
-        if let Some(base) = base_rss {
-            let delta = peak.load(Ordering::Relaxed).saturating_sub(base);
-            eprintln!("[gros-blob] charge={} Mio  dump={} o  dest={} o  pic RSS - référence = {} Mio",
-                (BLOB * ROWS) >> 20, stats.plaintext_bytes, stats.dest_bytes, delta >> 20);
-            assert!(delta < (BLOB * ROWS / 2) as u64,
-                "le pic RSS ({} Mio au-dessus de la référence) doit rester très inférieur à la charge de {} Mio — \
-                 accumuler la base ou la table coûterait au moins autant",
-                delta >> 20, (BLOB * ROWS) >> 20);
-        } else {
-            eprintln!("[gros-blob] /proc/self/statm indisponible : mesure mémoire NON faite (fidélité seule)");
-        }
-
-        // FIDÉLITÉ : les octets ressortent EXACTS après restauration.
-        restore_compressed(&dest, &restored, Some(key), true, None).expect("restauration des gros BLOB OK");
+        // --- FIDÉLITÉ : les octets ressortent EXACTS après restauration. ---------------------------------
+        restore_compressed(&dest_peu, &restored, Some(key), true, Some(&identite)).expect("restauration OK");
         let c = open_db_keyed(&restored, Some(key)).unwrap();
         let mut stmt = c.prepare("SELECT id, charge FROM gros ORDER BY id").unwrap();
         let got: Vec<(i64, u64)> = stmt.query_map([], |r| {
             let b: Vec<u8> = r.get(1)?;
             Ok((r.get::<_, i64>(0)?, b.iter().fold(0u64, |a, &x| a.wrapping_mul(31).wrapping_add(x as u64))))
         }).unwrap().map(|x| x.unwrap()).collect();
-        assert_eq!(got.len(), ROWS, "toutes les lignes restaurées");
-        for (k, (id, sum)) in got.iter().enumerate() {
+        assert_eq!(got.len(), PEU, "toutes les lignes restaurées");
+        for (k, (id, somme)) in got.iter().enumerate() {
             assert_eq!(*id, k as i64, "rowid préservé");
-            assert_eq!(*sum, orig_sums[k], "les {} Mio de la ligne {k} ressortent octet pour octet", BLOB >> 20);
+            assert_eq!(*somme, sommes_peu[k], "les {} Mio de la ligne {k} ressortent octet pour octet", CELLULE >> 20);
         }
     }
 

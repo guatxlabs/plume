@@ -80,7 +80,11 @@ permissions:
 # diverger en silence — bumper l'une laissait l'autre comparer à un nombre périmé. Une seule ici,
 # consommée par les deux jobs.
 env:
-  EXPECTED_TESTS: "937"
+  # 949 : MESURÉ le 2026-08-08 sur 4762cb1 (`cargo test --offline`, 163 s, rc=0). 937 datait du 08-06 ;
+  # la dérive vient de 1b2423f (+9 tests) et 4762cb1 (+4), attribuée par `git show <sha> | grep -c
+  # '^+.*#\[test\]'`. Personne ne l'a vue pendant un jour parce que CE GARDE NE S'EXÉCUTE QU'À
+  # L'OUVERTURE D'UNE PR, et qu'on pousse directement sur main — cf. P8.5-a dans docs/ROADMAP.md.
+  EXPECTED_TESTS: "949"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -233,7 +237,9 @@ jobs:
       - name: cargo test (daemon, --features cold_tier) + assert the cold test count
         working-directory: daemon
         env:
-          EXPECTED_COLD_TESTS: "1132"
+          # 1144 : MESURÉ le 2026-08-08 sur 4762cb1 (`cargo test --offline --features cold_tier`,
+          # 2362 s, rc=0), rejoué par moi et non recopié d'un rapport. 1132 datait du 08-06.
+          EXPECTED_COLD_TESTS: "1144"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

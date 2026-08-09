@@ -124,7 +124,27 @@ env:
   # verrou local n'aurait rien fermé (le partage est entre CELUI qui mute et TOUS ceux qui ouvrent une
   # base) : `ensure_encrypted` prend désormais la `conf` de son appelant. C'est la suite complète qui
   # a trouvé ça — pas le filtre `-- p87b`, qui était vert.
-  EXPECTED_TESTS: "968"
+  #
+  # 979 : MESURÉ le 2026-08-09 (`cargo test --offline --locked`, rc=0, **175 s** de bout en bout dont
+  # 158,85 s de suite, 12 cœurs, TMPDIR sur disque). 968 datait du même jour ; +11 viennent du lot
+  # P10.7-a — `tests/barre_fts_vide_silencieux.rs` : la barre `/api/search` envoyait les tokens BRUTS à
+  # `MATCH` et AVALAIT l'erreur du moteur, donc `10.0.0.1` (comme quatre autres saisies d'analyste
+  # ordinaires) rendait `{"results": []}` — « rien ne correspond » là où le moteur disait « je refuse ».
+  # Les 11 : le CONSTAT (le moteur refuse bien les cinq saisies, avec son témoin positif), leur
+  # FERMETURE, un balayage DÉRIVÉ des 95 ASCII imprimables sous 4 formes (380 cas, refait à chaque
+  # exécution contre le moteur LIÉ — c'est lui qui a trouvé `a^b`, accepté sans erreur et pourtant
+  # introuvable), la règle d'échappement vérifiée contre le moteur, le terme sans token d'index (dit,
+  # jamais servi), la non-régression des opérateurs, la requête de phrase RENDUE, le miroir qui suit le
+  # tokenizer et les colonnes de la base vivante, l'abstention quand il n'y a pas d'oracle, le filet
+  # d'erreur, et un bout-en-bout à travers le routeur RÉEL.
+  #
+  # ⚠ CE LOT A FAIT ROUGIR UN TEST QU'IL N'A PAS ÉCRIT, ET C'ÉTAIT JUSTE. `day2_search_metric_updates`
+  # (`tests/misc.rs`) assertait le p50 du réservoir de latences COMMUN au processus depuis un test
+  # PARALLÈLE : toute requête `/api/search` y verse ses millisecondes, et le bout-en-bout ci-dessus en
+  # émet sept. Mesuré : « p50 dans la plage observée: 2 ». Le couplage existait déjà (les balayages de
+  # routeur passent par la même route) ; il n'était pas visible. La mesure est désormais rendue
+  # INSENSIBLE à l'interférence en saturant le réservoir borné — pas de test retiré, pas de seuil relâché.
+  EXPECTED_TESTS: "979"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -306,7 +326,19 @@ jobs:
           # DURÉE, dite honnêtement : 2471 s contre 2317 s le matin même, sur une machine qui portait
           # d'autres travaux pendant la mesure (un navigateur à 117 % CPU en continu). Cette machine ne
           # permet pas d'attribuer l'écart au contenu, et le lot ne prétend rien ralentir ni accélérer.
-          EXPECTED_COLD_TESTS: "1164"
+          #
+          # 1175 : MESURÉ le 2026-08-09 (`cargo test --offline --locked --features cold_tier`, rc=0,
+          # **2019 s** de bout en bout dont 2000,76 s de suite, 12 cœurs, TMPDIR sur disque). 1164
+          # datait du même jour ; +11 viennent du lot P10.7-a — les MÊMES 11 que la suite par défaut
+          # (`tests/barre_fts_vide_silencieux.rs`, la barre `/api/search` qui rendait « aucun résultat »
+          # quand le moteur FTS5 disait « je refuse »). La feature n'en ajoute AUCUN : la garde vit dans
+          # le chemin CHAUD (`event_fts`/`event_fields_fts`), que `cold_tier` ne change pas — l'écart
+          # cold−défaut reste donc **196**, inchangé depuis P8.7-b.
+          # DURÉE, dite honnêtement : 2019 s contre 2471 s le 08-09 pour le lot précédent. Cette machine
+          # porte d'autres travaux selon les moments et ne permet pas d'attribuer l'écart au contenu ;
+          # le lot ne prétend rien accélérer (il AJOUTE ~0,3 à 0,8 ms par recherche plein-texte, mesuré
+          # en `release` — cf. le bloc P10.7-a de `daemon/src/soql_glue.rs`).
+          EXPECTED_COLD_TESTS: "1175"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

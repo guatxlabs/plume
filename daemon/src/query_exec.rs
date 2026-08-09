@@ -416,7 +416,7 @@ pub(crate) fn budget_guard(interrupt: rusqlite::InterruptHandle, budget_ms: u64)
 /// Budget des lectures de LISTE/PANNEAU passant par `read_with_watchdog` (alertes, cases, fraîcheur,
 /// /api/search…). Nommé ici plutôt qu'en littéral au milieu de la fonction : c'est un seuil, pas une
 /// constante de boucle.
-const READ_WATCHDOG_BUDGET_MS: u64 = 5000;
+pub(crate) const READ_WATCHDOG_BUDGET_MS: u64 = 5000;
 
 // Comme read_with mais sous GARDE DE BUDGET (5 s) : interrompt un scan trop long (anti-DoS, cf
 // /api/search : regex/FTS full-scan sans filtre = ~0.8s@1M, linéaire). À appeler depuis

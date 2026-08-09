@@ -66,6 +66,33 @@ pub(crate) fn search_cold_coverage(conn: &Connection, conf: &HashMap<String, Str
     }))
 }
 
+/// (c) LE FILET — une erreur du MOTEUR ne devient JAMAIS `{"results": []}`.
+///
+/// Les six sites d'erreur de ce handler (`prepare`, `query_map`, la collecte des lignes, sur la
+/// branche FTS comme sur la branche structurée) rendaient tous le MÊME tableau vide qu'une recherche
+/// légitimement infructueuse. « Je refuse », « j'ai été coupé » et « il n'y a rien » sont trois
+/// réponses différentes, et les confondre est le défaut que ce dépôt combat : une saisie que le
+/// moteur rejette (`10.0.0.1`, `regex=(` — motif regex invalide -> `UserFunctionError`) faisait
+/// conclure à l'analyste qu'il n'y a rien.
+///
+/// L'INTERRUPTION EST NOMMÉE À PART parce que la conduite à tenir diffère : ce n'est ni une saisie
+/// fautive ni une absence, c'est un budget dépassé — et le seuil est LU (`READ_WATCHDOG_BUDGET_MS`),
+/// jamais recopié dans le texte.
+pub(crate) fn search_engine_error(e: &rusqlite::Error) -> Value {
+    let msg = if matches!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::OperationInterrupted)) {
+        format!(
+            "recherche INTERROMPUE : le budget de lecture de {} ms a été dépassé — ce n'est PAS « aucun \
+             résultat », la recherche n'est pas allée au bout. Resserrez la fenêtre (`from`/`to`) ou \
+             ajoutez un filtre structuré (`host:`, `source:`, `severity:`) ; pour une exploration \
+             délibérément longue, passez par /api/query (budget interactif séparé).",
+            READ_WATCHDOG_BUDGET_MS
+        )
+    } else {
+        format!("le moteur de recherche a REFUSÉ cette requête (ce n'est pas « aucun résultat ») : {e}")
+    };
+    json!({ "results": [], "error": msg })
+}
+
 pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
     let _mt = crate::search_timer(); // #51 DAY-2 OPS : latence recherche (p50/p95) enregistrée à la sortie (Drop)
     // MÉTRIQUE (cf. `query_timing`) — LA BARRE PREND UN PERMIT SUR LE MÊME SÉMAPHORE QUE /api/query,
@@ -149,10 +176,12 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
     // N -> anti-OOM ; un scan FTS/REGEXP déchiffre des pages). Il ne rejette jamais sous charge -> pas de
     // branche « saturation » : comportement IDENTIQUE à panel_data + /api/query (avant, /api/search
     // renvoyait 200 + error là où les autres « rejetaient » -> incohérent). Seule erreur
-    // possible = sémaphore fermé (shutdown) -> on sert vide. Relâché en fin de handler.
+    // possible = sémaphore fermé (shutdown). Relâché en fin de handler.
+    // On le DIT (P10.7-a) : « le service s'arrête » n'est pas « aucun résultat ». Ce n'est pas la
+    // branche « saturation » d'autrefois — acquire_owned attend toujours, il ne rejette pas sous charge.
     let (_permit, timings) = match clock.permit(&st.query_sem).await {
         Ok(x) => x,
-        Err(_) => return Json(json!({ "results": [] })),
+        Err(_) => return Json(json!({ "results": [], "error": "recherche NON EXÉCUTÉE : le service se ferme (sémaphore de lecture clos)" })),
     };
     // FIELD FILTERS (#45) : /api/search NE PASSE PAS par run_query_ex (lignes construites à la main dans
     // map_row) -> on masque APRÈS coup les champs de chaque résultat (message/host/src_ip...) avec le jeu
@@ -178,7 +207,10 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
     }
     let db_path = req_db_path(&st, &au);
     let res = tokio::task::spawn_blocking(move || {
-        read_with_watchdog(&db_path, json!({ "results": [] }), move |conn| {
+        // Le DÉFAUT de `read_with_watchdog` = ce qu'on rend quand la connexion de lecture n'a pas pu
+        // être obtenue. Un tableau vide y était indiscernable d'une absence de résultat : il DIT
+        // désormais que la recherche n'a pas eu lieu (P10.7-a, même règle que les erreurs du moteur).
+        read_with_watchdog(&db_path, json!({ "results": [], "error": "recherche NON EXÉCUTÉE : aucune connexion de lecture disponible sur cette base" }), move |conn| {
             // #18 — COUVERTURE : ce qui n'a PAS été cherché est dit, jamais tu. Calculée sur la MÊME
             // connexion que la recherche (l'index `cold_seal` vit dans la base du tenant).
             #[allow(unused_mut)]
@@ -201,6 +233,10 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
                 }))
             };
             const COLS: &str = "e.ts,e.source,e.severity,e.message,e.host,e.src_ip";
+            // Termes que la garde a dû rendre LITTÉRAUX pour que le moteur les accepte. Publiés avec la
+            // réponse : réparer la requête d'un analyste sans le lui dire, c'est répondre à une AUTRE
+            // question que la sienne — le contraire exact de ce que ferme P10.7-a.
+            let mut literal: Vec<String> = Vec::new();
             let out: Vec<Value> = if fts_terms.is_empty() {
                 if where_extra.is_empty() {
                     return with_coverage(json!({ "results": [] }));
@@ -208,17 +244,40 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
                 let sql = format!("SELECT {COLS} FROM event e WHERE {} ORDER BY e.ts DESC LIMIT ?1", where_extra.join(" AND "));
                 let mut stmt = match conn.prepare(&sql) {
                     Ok(s) => s,
-                    Err(_) => return with_coverage(json!({ "results": [] })),
+                    Err(e) => return with_coverage(search_engine_error(&e)),
                 };
                 let rows: Vec<Value> = match stmt.query_map(params![limit], map_row) {
                     // collect en Result : s'ARRÊTE à la 1re erreur (interruption watchdog) au lieu de la
                     // swallow + re-step (ce que faisait .flatten() -> le watchdog ne coupait pas le scan).
-                    Ok(r) => match r.collect::<rusqlite::Result<Vec<Value>>>() { Ok(v) => v, Err(_) => return with_coverage(json!({ "results": [] })) },
-                    Err(_) => return with_coverage(json!({ "results": [] })),
+                    // L'erreur est DITE (cf. `search_engine_error`) : un `regex=` au motif invalide
+                    // échoue ICI, et il rendait un tableau vide indiscernable d'une absence.
+                    Ok(r) => match r.collect::<rusqlite::Result<Vec<Value>>>() { Ok(v) => v, Err(e) => return with_coverage(search_engine_error(&e)) },
+                    Err(e) => return with_coverage(search_engine_error(&e)),
                 };
                 rows
             } else {
-                let match_q = fts_terms.join(" ");
+                // P10.7-a — LA GARDE, DÉRIVÉE DU MOTEUR (cf. `fts_plan` / `FtsMirror` dans soql_glue).
+                // AVANT : `fts_terms.join(" ")` partait BRUT au MATCH ; `10.0.0.1`, `/usr/bin/dash`,
+                // `kube-audit`, `user:root`, `exec(1)` étaient tous des erreurs FTS5, avalées ici même,
+                // rendues « aucun résultat ». Les miroirs sont dérivés de la base VIVANTE (colonnes +
+                // tokenizer réels) et des tables RÉELLEMENT interrogées ci-dessous — donc la garde suit
+                // le toggle `PLUME_FTS_FIELDS` au lieu de le supposer.
+                let mirrors = fts_bar_mirrors(conn, fts_fields_enabled());
+                let match_q = match fts_plan(&fts_terms, &mirrors) {
+                    FtsPlan::Match { expr, literal: lit } => { literal = lit; expr }
+                    // Le seul cas que l'échappement ne sauve pas : un terme dont le tokenizer ne tire
+                    // AUCUN token. On le DIT et on oriente, au lieu de servir un vide (ou pire, de
+                    // l'ignorer silencieusement et d'élargir la réponse — les deux sont mesurés).
+                    FtsPlan::Unindexable { token } => {
+                        return with_coverage(json!({ "results": [], "error": format!(
+                            "terme non cherchable en plein-texte : « {token} » ne produit AUCUN token \
+                             d'index (le tokenizer de l'index l'efface entièrement) — l'index ne peut \
+                             ni le trouver ni prouver son absence, et ce n'est donc PAS « aucun \
+                             résultat ». Voie EXACTE sur le texte brut : `regex=<motif>` dans cette \
+                             même barre, ou /api/query en GXQL (`search message=~<motif>`), en bornant \
+                             la fenêtre pour rester sous le budget de lecture.") }));
+                    }
+                };
                 let extra = if where_extra.is_empty() { String::new() } else { format!(" AND {}", where_extra.join(" AND ")) };
                 // PHASE 1 : si PLUME_FTS_FIELDS=1, on étend le MATCH au flat des valeurs de `fields`
                 // (event_fields_fts) en UNION avec event_fts (message/source/category). Un seul ?1
@@ -238,19 +297,31 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
                 };
                 let mut stmt = match conn.prepare(&sql) {
                     Ok(s) => s,
-                    Err(_) => return with_coverage(json!({ "results": [] })),
+                    Err(e) => return with_coverage(search_engine_error(&e)),
                 };
                 let rows: Vec<Value> = match stmt.query_map(params![match_q, limit], map_row) {
                     // collect en Result : s'ARRÊTE à la 1re erreur (interruption watchdog) au lieu de la
                     // swallow + re-step (ce que faisait .flatten() -> le watchdog ne coupait pas le scan).
-                    Ok(r) => match r.collect::<rusqlite::Result<Vec<Value>>>() { Ok(v) => v, Err(_) => return with_coverage(json!({ "results": [] })) },
-                    Err(_) => return with_coverage(json!({ "results": [] })),
+                    // FILET (c) : même si un jour la garde laissait passer une expression que le moteur
+                    // refuse, l'analyste verrait le refus — jamais un tableau vide à sa place.
+                    Ok(r) => match r.collect::<rusqlite::Result<Vec<Value>>>() { Ok(v) => v, Err(e) => return with_coverage(search_engine_error(&e)) },
+                    Err(e) => return with_coverage(search_engine_error(&e)),
                 };
                 rows
             };
-            with_coverage(json!({ "results": out }))
+            let mut v = with_coverage(json!({ "results": out }));
+            if !literal.is_empty() {
+                v["literal"] = json!({
+                    "terms": literal,
+                    "notice": "termes cherchés LITTÉRALEMENT (phrase) : le moteur plein-texte refuse ces \
+                               caractères comme syntaxe. Conséquence à connaître : leurs séparateurs sont \
+                               ceux de l'index — `10.0.0.1` est cherché comme la suite de mots 10·0·0·1, \
+                               et un `*`/`OR` qu'ils contiendraient n'y est plus un opérateur."
+                });
+            }
+            v
         })
-    }).await.unwrap_or_else(|_| json!({ "results": [] }));
+    }).await.unwrap_or_else(|_| json!({ "results": [], "error": "recherche NON EXÉCUTÉE : la tâche de lecture a échoué (panique ou annulation du pool bloquant)" }));
     // FIELD FILTERS (#45) : caviarde les champs masqués de chaque résultat pour le rôle appelant (no-op si
     // aucun masque -> byte-identique mode 0).
     let mut res = res;

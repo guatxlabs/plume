@@ -45,3 +45,4 @@ include!("autoindex_retire.rs"); // P6.8-b : le mécanisme d'auto-index adaptati
 include!("onboarding.rs"); // ONBOARDING /api/setup : d'où sort le token, comment il est comparé/compté, et ce que rend le serveur quand la pose de l'admin N'A PAS été écrite
 include!("partition_config.rs"); // P8.7-a : UNE seule voie de lecture des réglages — garde DÉRIVÉE (scanner de sources) + l'annonce de bascule, pure
 include!("cle_at_rest_voie_unique.rs"); // P8.7-b : la clé SQLCipher lue par UNE voie — preuve sur les octets (SQLite format 3\0 ou non) + précédence + annonce
+include!("barre_fts_vide_silencieux.rs"); // P10.7-a : la barre /api/search rendait « aucun résultat » quand le moteur DISAIT « je refuse » — garde DÉRIVÉE du moteur (balayage ASCII), pas une liste

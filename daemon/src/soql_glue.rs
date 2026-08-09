@@ -235,13 +235,266 @@ pub(crate) fn soql_prune_message() -> bool {
         matches!(cfg(&conf, "PLUME_SOQL_PRUNE_MESSAGE", "").trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
     })
 }
-/// Un token est-il SÛR comme requête FTS5 MATCH (un seul terme) ? On rejette les caractères qui sont
-/// des opérateurs/syntaxe FTS5 (guillemets, parenthèses, étoile, `:`, `-`, `^`, `%`...) -> dans ce cas
-/// on RETOMBE sur le LIKE classique (fallback automatique, jamais d'erreur FTS5 « malformed MATCH »).
-pub(crate) fn fts_safe(tok: &str) -> bool {
-    !tok.is_empty()
-        && tok.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '/' | '@'))
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  P10.7-a — LA BARRE `/api/search` MENTAIT PAR SILENCE, ET LA GARDE ÉCRITE POUR ÇA N'ÉTAIT PAS CÂBLÉE.
+//
+//  LE DÉFAUT, MESURÉ le 2026-08-09 contre un moteur FTS5 (saisie -> ce que rend le moteur) :
+//      10.0.0.1       -> fts5: syntax error near "."        /usr/bin/dash -> fts5: syntax error near "/"
+//      kube-audit     -> no such column: audit              user:root     -> no such column: user
+//      exec(1)        -> fts5: syntax error near "exec"
+//  `handlers/search.rs` AVALAIT l'erreur et renvoyait `{"results": []}`. Un analyste qui cherche une
+//  adresse IP dans son SOC lisait « rien ne correspond » là où le moteur avait dit « je refuse ».
+//
+//  CE QUI EST SUPPRIMÉ ICI, ET POURQUOI. `fts_safe(tok)` listait À LA MAIN les caractères « sûrs »
+//  (`alphanumérique | _ | . | / | @`) et promettait en commentaire un repli LIKE. Elle n'avait AUCUN
+//  appelant (`grep -rn fts_safe daemon/src/ web/` = 1 occurrence, sa définition ; témoin positif :
+//  `search_tokens` = 5). Elle était AUSSI fausse : elle autorisait `.`, `/` et `@` — que le moteur
+//  REFUSE — et interdisait `*`, `+`, `^` — qu'il ACCEPTE.
+//
+//  POURQUOI AUCUNE LISTE DE CARACTÈRES NE PEUT ÊTRE JUSTE. Balayage des 95 ASCII imprimables sous la
+//  forme `a<c>b` (2026-08-09) : 28 refusés (`! " # $ % & ' ( ) , - . / : ; < = > ? @ [ \ ] ` { | } ~`),
+//  67 acceptés. Mais l'appartenance DÉPEND DE LA POSITION — `^exec` est accepté, `exec^` est un
+//  « syntax error » ; `a*b` passe, `*` seul est « unknown special query » — et elle dépend du SCHÉMA :
+//  `message:x` est valide sur `event_fts` (qui a cette colonne) et invalide sur `event_fields_fts`
+//  (qui ne l'a pas), donc la MÊME saisie est acceptable ou non selon le toggle `PLUME_FTS_FIELDS`.
+//  Une liste ne peut pas porter ça. On DEMANDE donc au moteur, on n'énumère pas — et le balayage
+//  ci-dessus n'est cité que comme CONSTAT : il est REFAIT à chaque exécution des tests, contre le
+//  moteur LIÉ (SQLCipher vendoré, SQLite 3.39.4), pas contre le `sqlite3` de la machine qui l'a servi.
+//
+//  L'ARBITRAGE. (b) ÉCHAPPER d'abord : entre guillemets doubles, FTS5 lit une PHRASE et plus une
+//  expression -> la capacité est PRÉSERVÉE au lieu d'être dégradée, et le coût est celui de l'index
+//  (mesuré 2026-08-09, 1 M de lignes, base EN CLAIR, cache chaud : phrase citée 0,020 s contre
+//  0,49 s pour le `LIKE '%…%'` équivalent, ×24). (a) PAS de repli LIKE : `/api/query` en GXQL EST
+//  déjà ce repli (le cœur compile un terme libre en `message LIKE '%pat%'`) et il tourne sous un
+//  budget interactif de 60 s, là où cette route est bornée à 5 s (`READ_WATCHDOG_BUDGET_MS`) — un
+//  repli aveugle ici convertirait « aucun résultat » en « interrompu ». (c) TOUJOURS : le handler
+//  remonte l'erreur brute du moteur au lieu de la manger.
+//
+//  CE QUE LA GARDE COÛTE, MESURÉ le 2026-08-09 (12 cœurs, profil `release`, moyenne sur 200 appels ;
+//  le profil `debug` est ~4× plus lent, ce qui est le régime des tests, pas celui de la production) :
+//      dérivation des miroirs   279 µs  (une fois par recherche portant du plein-texte)
+//      plan, 1 terme accepté     58 µs      plan, 1 terme littéralisé  139 µs
+//      plan, 3 termes           550 µs
+//  soit 0,34 ms à 0,83 ms ajoutés à une route dont le budget de lecture est de 5 000 ms et dont la
+//  requête FTS elle-même se compte en dizaines de millisecondes sur la base de production. La sonde
+//  est une base EN MÉMOIRE d'UNE ligne : elle ne touche ni le disque, ni le pool de lecture, ni le
+//  sémaphore de concurrence.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/// Nom de la table du miroir. Fixe : le miroir est une base à lui tout seul.
+const FTS_MIRROR_TABLE: &str = "sonde_fts";
+
+/// MIROIR EN MÉMOIRE d'un index FTS5 RÉEL — l'ORACLE de la garde. Mêmes colonnes, même tokenizer que
+/// la table interrogée, lus DANS LA BASE VIVANTE : le jour où l'une des deux change, le miroir change
+/// avec elle, sans que personne n'ait à réécrire une liste.
+pub(crate) struct FtsMirror {
+    conn: Connection,
+    doc_col: String,
 }
+
+impl FtsMirror {
+    /// Dérive le miroir de la table FTS5 `table`. Colonnes : `PRAGMA table_info` (les VRAIES, dans
+    /// l'ordre déclaré). Tokenizer : la clause `tokenize=…` du DDL de `sqlite_master`, RECOPIÉE
+    /// verbatim — on ne l'interprète pas. `None` = table absente/illisible : l'appelant n'a alors pas
+    /// d'oracle et doit le DIRE (cf. `fts_plan`), jamais deviner.
+    pub(crate) fn derive(src: &Connection, table: &str) -> Option<Self> {
+        let qtable = format!("\"{}\"", table.replace('"', "\"\""));
+        let ddl: String = src
+            .query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name=?1", params![table], |r| r.get(0))
+            .ok()?;
+        let cols: Vec<String> = {
+            let mut st = src.prepare(&format!("PRAGMA table_info({qtable})")).ok()?;
+            let it = st.query_map([], |r| r.get::<_, String>(1)).ok()?;
+            it.collect::<rusqlite::Result<Vec<_>>>().ok()?
+        };
+        let doc_col = cols.first()?.clone();
+        let decl = cols.iter().map(|c| format!("\"{}\"", c.replace('"', "\"\""))).collect::<Vec<_>>().join(",");
+        let tok = fts_tokenize_clause(&ddl).map(|t| format!(",{t}")).unwrap_or_default();
+        let conn = Connection::open_in_memory().ok()?;
+        // Miroir à contenu PROPRE (ni `content=`, ni `prefix=`) : il doit accepter un INSERT/DELETE
+        // pour la sonde de tokenisation, et ces deux options ne changent NI la grammaire de requête
+        // NI le découpage en tokens — seulement où le contenu est lu et quels index annexes existent.
+        conn.execute_batch(&format!("CREATE VIRTUAL TABLE {FTS_MIRROR_TABLE} USING fts5({decl}{tok})")).ok()?;
+        Some(Self { conn, doc_col })
+    }
+
+    /// Le moteur ACCEPTE-t-il cette expression MATCH sur ce jeu de colonnes ? C'est le parseur FTS5
+    /// LIÉ qui répond. `Err` porte son message BRUT (celui qu'on remontera à l'analyste).
+    pub(crate) fn accepts(&self, expr: &str) -> Result<(), String> {
+        // `prepare_cached` : la sonde est appelée plusieurs fois par recherche (un étage × un token) et
+        // le SQL est CONSTANT — le recompiler à chaque appel doublait le coût de la garde (mesuré).
+        self.conn
+            .prepare_cached(&format!("SELECT count(*) FROM {FTS_MIRROR_TABLE} WHERE {FTS_MIRROR_TABLE} MATCH ?1"))
+            .and_then(|mut st| st.query_row(params![expr], |r| r.get::<_, i64>(0)))
+            .map(|_: i64| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Cette expression RETROUVE-T-ELLE le texte dont elle est censée être la traduction ? On indexe
+    /// `texte` seul — il est donc en TÊTE de son document, la position la plus FAVORABLE — puis on lui
+    /// soumet `expr`. C'est la question qui compte : « le moteur accepte » n'a jamais voulu dire « le
+    /// moteur peut le trouver », et c'est cette confusion qui laissait passer un vide silencieux.
+    ///
+    /// DEUX CAS MESURÉS QUE L'ACCEPTATION SEULE NE VOIT PAS (2026-08-09) :
+    ///   • la PHRASE VIDE. Un terme dont le tokenizer ne tire aucun token (`...`, `-`, `_`) devient
+    ///     `""`, syntaxiquement valide : seule, elle rend 0 ligne (« rien ne correspond ») ; EN
+    ///     CONJONCTION (`"..." execve`), elle est purement IGNORÉE et la réponse est ÉLARGIE en
+    ///     silence à ce que rend `execve` seul. Deux mensonges pour un même terme.
+    ///   • l'OPÉRATEUR ATTRAPÉ AU MILIEU D'UN MOT. `a^b` est ACCEPTÉ sans la moindre erreur, mais `^`
+    ///     y est l'ancre « premier token de la colonne » : l'expression demande « b en tête » et ne
+    ///     retrouve donc JAMAIS une ligne contenant `a^b`. Aucune liste de caractères refusés n'aurait
+    ///     pu l'attraper — le moteur ne refuse rien ici. C'est le balayage ASCII des tests qui l'a vu.
+    pub(crate) fn retrieves(&self, expr: &str, texte: &str) -> bool {
+        let ins = format!("INSERT INTO {FTS_MIRROR_TABLE}(\"{}\") VALUES(?1)", self.doc_col.replace('"', "\"\""));
+        let pose = self
+            .conn
+            .prepare_cached(&format!("DELETE FROM {FTS_MIRROR_TABLE}"))
+            .and_then(|mut st| st.execute([]))
+            .and_then(|_| self.conn.prepare_cached(&ins).and_then(|mut st| st.execute(params![texte])));
+        if pose.is_err() {
+            return false;
+        }
+        self.conn
+            .prepare_cached(&format!("SELECT count(*) FROM {FTS_MIRROR_TABLE} WHERE {FTS_MIRROR_TABLE} MATCH ?1"))
+            .and_then(|mut st| st.query_row(params![expr], |r| r.get::<_, i64>(0)))
+            .map(|n: i64| n == 1)
+            .unwrap_or(false)
+    }
+}
+
+/// Extrait la clause `tokenize=…` d'un DDL FTS5, VERBATIM (guillemets compris), ou `None` si la table
+/// s'en remet au tokenizer par défaut. On la RECOPIE au lieu de la relire : `unicode61
+/// remove_diacritics 2 tokenchars '_-.:/@'` porte des quotes imbriquées qu'aucune réécriture n'a de
+/// raison de traverser.
+pub(crate) fn fts_tokenize_clause(ddl: &str) -> Option<String> {
+    let at = ddl.to_ascii_lowercase().find("tokenize")?;
+    let rest = &ddl[at..];
+    let after = rest[rest.find('=')? + 1..].trim_start();
+    let chars: Vec<char> = after.chars().collect();
+    let q = *chars.first()?;
+    if q != '\'' && q != '"' {
+        return None; // fts5 exige une chaîne ; autre chose = DDL qu'on ne sait pas lire -> pas de miroir
+    }
+    let mut i = 1;
+    while i < chars.len() {
+        if chars[i] == q {
+            if chars.get(i + 1) == Some(&q) {
+                i += 2; // guillemet DOUBLÉ = littéral, la clause continue
+                continue;
+            }
+            return Some(format!("tokenize={}", chars[..=i].iter().collect::<String>()));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Rend un terme LITTÉRAL pour FTS5. VÉRIFIÉ contre le moteur (`fts5_quoting_is_a_literal_phrase`),
+/// pas supposé : entre guillemets doubles, FTS5 lit une PHRASE (suite de tokens adjacents) et plus
+/// une expression — aucun caractère n'y est un opérateur — et un `"` interne se DOUBLE.
+pub(crate) fn fts_quote(tok: &str) -> String {
+    format!("\"{}\"", tok.replace('"', "\"\""))
+}
+
+/// Ce que la barre peut demander au moteur pour une saisie donnée.
+pub(crate) enum FtsPlan {
+    /// Expression MATCH à émettre. `literal` = les termes qui ont dû être rendus LITTÉRAUX pour que
+    /// le moteur les accepte : leurs caractères de syntaxe ne sont plus des opérateurs, et l'analyste
+    /// doit l'apprendre par la réponse (sinon on aurait « réparé » sa requête dans son dos).
+    Match { expr: String, literal: Vec<String> },
+    /// AUCUNE expression MATCH ne peut porter ce terme : même en phrase citée — la forme la plus
+    /// littérale qui existe — il ne retrouve pas son propre texte, parce que le tokenizer de tous les
+    /// index interrogés n'en tire aucun token. C'est le seul cas que l'échappement ne sauve pas, et il
+    /// doit être DIT : servir un tableau vide serait le mensonge que P10.7-a ferme.
+    Unindexable { token: String },
+}
+
+/// LA GARDE. Traduit les tokens de la barre en une expression que le moteur ACCEPTE, en préservant au
+/// maximum ce que l'analyste a écrit. Trois étages, du plus fidèle au plus littéral ; l'oracle de
+/// chaque décision est `mirrors`, c'est-à-dire le moteur lui-même :
+///   1. VERBATIM — l'expression telle quelle. Tout ce qui marche aujourd'hui (`a OR b`, `err*`,
+///      `(x OR y)`, `NEAR(…)`) continue de marcher, à l'octet près.
+///   2. LITTÉRALISATION SÉLECTIVE — seuls les termes que le moteur refuse SEULS sont mis entre
+///      guillemets. C'est ce qui garde `fail*` opérant dans `10.0.0.1 fail*`.
+///   3. LITTÉRALISATION TOTALE — filet, pour les saisies dont les morceaux ne sont fautifs qu'ensemble.
+/// Une saisie ENTRE GUILLEMETS reste une PHRASE à tous les étages : un token porteur d'un blanc ne
+/// peut venir que de là (`search_tokens` ne coupe sur un blanc que HORS guillemets), c'est donc une
+/// propriété DÉRIVÉE du tokeniseur de la barre, pas une devinette.
+pub(crate) fn fts_plan(tokens: &[String], mirrors: &[FtsMirror]) -> FtsPlan {
+    let phrase = |t: &String| t.chars().any(char::is_whitespace);
+    let build = |lit: &dyn Fn(&String) -> bool| -> (String, Vec<String>) {
+        let mut literal = Vec::new();
+        let mut parts = Vec::with_capacity(tokens.len());
+        for t in tokens {
+            if lit(t) {
+                literal.push(t.clone());
+                parts.push(fts_quote(t));
+            } else {
+                parts.push(t.clone());
+            }
+        }
+        (parts.join(" "), literal)
+    };
+    // PAS D'ORACLE (aucun index FTS5 lisible) -> on ne DÉCIDE rien : verbatim, et l'erreur du moteur
+    // remontera telle quelle. Une garde qui devine sans mesurer est exactement ce qu'on retire ici.
+    if mirrors.is_empty() {
+        let (expr, literal) = build(&phrase);
+        return FtsPlan::Match { expr, literal };
+    }
+    let accepts = |e: &str| mirrors.iter().all(|m| m.accepts(e).is_ok());
+    // Une pièce de GRAMMAIRE (`(`, `a)`, `OR`, `AND`…) n'est acceptée par AUCUN index isolément —
+    // mesuré, pas énuméré. Elle ne porte pas de texte : c'est l'expression d'ensemble qui la valide.
+    let grammaire = |r: &str| mirrors.iter().all(|m| m.accepts(r).is_err());
+    // Un TERME, lui, doit retrouver son propre texte dans AU MOINS un des index interrogés (les deux
+    // sont en UNION dans le SQL : trouvable dans l'un suffit).
+    let porte = |r: &str, raw: &str| mirrors.iter().any(|m| m.retrieves(r, raw));
+    let stages: [Box<dyn Fn(&String) -> bool>; 3] = [
+        Box::new(&phrase),
+        Box::new(|t| phrase(t) || !accepts(t) || !porte(t, t)),
+        Box::new(|_| true),
+    ];
+    let dernier = stages.len() - 1;
+    for (i, stage) in stages.iter().enumerate() {
+        let (expr, literal) = build(&**stage);
+        if !accepts(&expr) {
+            continue;
+        }
+        // CHAQUE terme doit pouvoir retrouver son propre texte tel qu'il sera émis. Un étage qui
+        // échoue ici n'est pas une erreur : c'est le signal qu'il faut littéraliser davantage.
+        let fautif = tokens.iter().find(|t| {
+            let rendu = if stage(t) { fts_quote(t) } else { (*t).clone() };
+            !grammaire(&rendu) && !porte(&rendu, t)
+        });
+        match fautif {
+            None => return FtsPlan::Match { expr, literal },
+            // Dernier étage : même en phrase citée, ce terme ne se retrouve pas lui-même. Rien ne peut
+            // le chercher — on le DIT.
+            Some(t) if i == dernier => return FtsPlan::Unindexable { token: t.clone() },
+            Some(_) => continue,
+        }
+    }
+    // Le moteur refuse jusqu'au littéral total (inatteignable à notre connaissance : une phrase citée
+    // est toujours grammaticale). On rend le verbatim ; le filet (c) du handler dira SON message.
+    let (expr, literal) = build(&phrase);
+    FtsPlan::Match { expr, literal }
+}
+
+/// Les miroirs des index que la barre interroge VRAIMENT. `fields` = toggle Phase 1
+/// (`event_fields_fts` en UNION) : quand il est ON, une expression doit être acceptable par LES DEUX
+/// schémas, et c'est cette fonction qui fait que la garde le sait.
+pub(crate) fn fts_bar_mirrors(conn: &Connection, fields: bool) -> Vec<FtsMirror> {
+    let mut v = Vec::new();
+    if let Some(m) = FtsMirror::derive(conn, "event_fts") {
+        v.push(m);
+    }
+    if fields {
+        if let Some(m) = FtsMirror::derive(conn, "event_fields_fts") {
+            v.push(m);
+        }
+    }
+    v
+}
+
 // Colonnes RÉELLES de la table event (le reste vit dans le JSON `fields`).
 pub(crate) const EVENT_COLS: &[&str] = &["ts", "host", "source", "category", "severity", "src_ip", "dst_ip", "url", "xff", "message", "fields", "dedup", "id"];
 

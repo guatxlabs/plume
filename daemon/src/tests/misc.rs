@@ -557,14 +557,26 @@
     }
 
     /// SELF-MÉTRIQUE : une recherche enregistrée met à jour p50/p95 et le compteur.
+    ///
+    /// CE TEST ASSERTAIT SUR UN ÉTAT GLOBAL AU PROCESSUS depuis un test PARALLÈLE. Il posait cinq
+    /// points puis lisait le p50 du réservoir COMMUN à tout le binaire : n'importe quelle autre
+    /// recherche exécutée en même temps y verse ses propres millisecondes et déplace la médiane. Toute
+    /// requête `/api/search` chronomètre (`search_timer`, RAII posé en tête de handler), y compris
+    /// celles des tests de routeur — le couplage existait donc déjà, il ne se voyait pas. MESURÉ le
+    /// 2026-08-09, quand un test bout-en-bout de la barre s'est ajouté : « p50 dans la plage
+    /// observée: 2 » (les points du voisin, pas les nôtres).
+    /// LA CORRECTION rend la mesure INSENSIBLE à l'interférence au lieu de la supposer absente : on
+    /// SATURE le réservoir borné avec notre propre valeur, ce qui évince tout point antérieur et rend
+    /// la médiane déterministe (il faudrait 256 points concurrents dans la fenêtre pour la bouger).
     #[test]
     fn day2_search_metric_updates() {
         let before = SEARCH_TOTAL.load(MOrd::Relaxed);
         for ms in [10u32, 20, 30, 40, 100] { record_search(ms); }
         assert!(SEARCH_TOTAL.load(MOrd::Relaxed) >= before + 5, "compteur de recherches incrémenté");
+        for _ in 0..SEARCH_LAT_CAP { record_search(30); }
         let (p50, p95, n) = search_quantiles();
         assert!(n >= 5);
-        assert!(p50 >= 10 && p50 <= 40, "p50 dans la plage observée: {p50}");
+        assert_eq!(p50, 30, "p50 de NOTRE échantillon (réservoir saturé, capacité {SEARCH_LAT_CAP}) : {p50}");
         assert!(p95 >= p50, "p95 >= p50: {p95} >= {p50}");
     }
 

@@ -112,6 +112,39 @@ P10.2-d a retiré 9 index inutiles, P6.8 l'auto-index. Reste, mesuré : `dedup U
 prouvé douloureusement — ne PAS retoucher sans mesurer l'usage). Peu de gras restant ; **ne pas
 sur-optimiser un poste déjà nettoyé**.
 
+### Levier E — COMPACTER L'INDEX PLEIN-TEXTE (P10.7-b, construit le 2026-08-09) · le seul gratuit
+
+**Ce levier manquait à la liste ci-dessus, et son absence était mesurable.** Les quatre leviers A–D
+supposent tous que l'index plein-texte grossit avec les données. **C'est faux : il grossit AUSSI avec
+les SUPPRESSIONS.** Une table FTS5 à contenu externe ne peut pas retirer un posting en place — le
+déclencheur `event_ad` en écrit un de SUPPRESSION, qui s'AJOUTE — et l'espace n'est rendu qu'à la
+FUSION DES SEGMENTS, que plume ne déclenchait **jamais**. C'est une part de l'écart entre les 8,1 %
+du banc ci-dessus et les 17,9 % relevés en production : de la **trace d'aging**, pas de la croissance.
+
+Mesuré le 2026-08-09 sur la SQLite exacte du produit (SQLCipher 4.5.3 / SQLite 3.39.4 vendorée,
+PRAGMA de `server::tune`), base au profil de `bench/profile-prod.json`, 1 200 000 événements puis un
+`DELETE` réel de 58,4 % :
+
+| grandeur | avant purge | après purge | après compaction |
+|---|---|---|---|
+| `event_fts_docsize` | 14,11 Mio | **5,88 Mio** (−58,3 %, il SUIT) | 5,88 Mio |
+| `event_fts_data` | 135,27 Mio | **185,69 Mio** (+37,3 %, il GROSSIT) | **56,53 Mio** (−69,6 %) |
+
+**Le comment compte autant que le combien.** `optimize` et `merge` atteignent le même plancher, mais
+`optimize` le fait en **17,08 s d'un seul tenant sous le verrou d'écriture, avec 192,6 Mio de rafale
+WAL**, et une interruption perd tout ; `merge` à budget **NÉGATIF** (`-500` pages/passe) le fait en
+25 passes de **1,04 s au pire**, avec **13,4 Mio de WAL**, et chaque passe committée survit à un
+`SIGKILL` — la reprise converge à l'octet près. Le budget POSITIF, lui, ne rend **rien du tout** sur
+cet index (aucun niveau n'atteint `usermerge`) : c'est le piège du levier. Ces deux dépenses (verrou,
+WAL) sont fixées par le budget de passe et **ne grandissent pas avec l'index** — vérifié au double du
+volume. La RAM est celle du `cache_size` et rien d'autre (66,3 Mio, identique pour les deux bras).
+
+Livré : `daemon/src/compactage_fts.rs`, appelé en fin de `retention_run` (là où le poids mort vient
+d'être créé) et par `plume-daemon fts-compact`. Réglages `PLUME_FTS_COMPACT`(=1) /
+`_PAGES`(=500) / `_PASSES`(=8) / `_REPOS_MS`(=200), tous par `cfg()`. **Ce que ce levier ne fait
+pas** : rétrécir le fichier. Les pages vont à la freelist et sont réemployées par l'ingestion ;
+`page_count` ne bouge pas.
+
 ## 4. LA CIBLE, ET LA FRONTIÈRE CHAUD/FROID
 
 Décodée des chiffres : **le chaud doit être petit et indexé ; le froid, minuscule et pruné.**

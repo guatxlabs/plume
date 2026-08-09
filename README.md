@@ -128,7 +128,12 @@ Il installe le daemon, les collecteurs et leurs units/timers — dont **`plume-b
 diffère de celui du mode Docker/k3s* : le timer produit une copie `.db` non compressée, le scheduler
 in‑daemon produit une archive `age(zstd(...))` — voir [`docs/DR-plume-restore.md`](docs/DR-plume-restore.md).
 Pour aligner l'hôte sur le scheduler natif, posez `PLUME_BACKUP_INTERVAL` dans `/etc/plume/soc.conf` et
-désactivez le timer (`systemctl disable --now plume-backup.timer`).
+désactivez le timer (`systemctl disable --now plume-backup.timer`). **Tous** les réglages `PLUME_BACKUP_*`
+— dont le destinataire d'escrow `PLUME_BACKUP_AGE_RECIPIENT` et le fail-closed
+`PLUME_BACKUP_REQUIRE_ASYMMETRIC` — se lisent depuis ce même fichier (précédence `env > soc.conf > défaut`,
+identique dans les trois modes de déploiement). *Ce n'était pas vrai avant le 2026-08-09 : ces deux-là
+étaient lues dans l'environnement seul, donc ignorées en silence sur un hôte — cf. P8.7-a dans
+[`docs/ROADMAP.md`](docs/ROADMAP.md).*
 
 Enrôlez une autre machine comme agent qui pousse vers le central :
 ```sh

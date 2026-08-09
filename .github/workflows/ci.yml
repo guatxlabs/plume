@@ -102,7 +102,12 @@ env:
   # LOCAL, `.github/scripts/compter-les-tests.sh` (2 s : il ÉNUMÈRE les tests, il ne les exécute
   # pas), installable en hook via `git config core.hooksPath .githooks`. Cf. P8.5-a dans
   # docs/ROADMAP.md.
-  EXPECTED_TESTS: "954"
+  #
+  # 961 : MESURÉ le 2026-08-09 (`cargo test --offline --locked`, rc=0, 166 s, 12 cœurs, TMPDIR sur
+  # disque). 954 datait du même jour ; +7 viennent du lot P8.7-a — `tests/partition_config.rs` : le
+  # scanner qui ferme la partition de lecture de la configuration (2 tests dérivés) et l'annonce de
+  # bascule des réglages de sauvegarde (5 tests PURS, aucun ne touche l'environnement du processus).
+  EXPECTED_TESTS: "961"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -263,7 +268,17 @@ jobs:
           # test ORPHELIN d'une exécution précédemment interrompue tournait encore (28 min, 215 % CPU,
           # son propre TMPDIR) et se disputait la machine. La durée qu'il a produite ne mesurait pas la
           # suite. Relancée machine vide.
-          EXPECTED_COLD_TESTS: "1149"
+          #
+          # 1156 : MESURÉ le 2026-08-09 (`cargo test --offline --locked --features cold_tier`, rc=0,
+          # 2317 s, 12 cœurs, TMPDIR sur DISQUE — pas /tmp, qui est un tmpfs sur cette machine).
+          # 1149 datait du même jour ; +7 = les mêmes sept tests que la suite par défaut (lot P8.7-a,
+          # `tests/partition_config.rs`) — la feature n'en ajoute aucun, l'écart cold−défaut reste 195.
+          # DEUX exécutions, et je consigne la SECONDE : la première (2411 s) avait été compilée avant
+          # une dernière retouche du scanner, donc elle ne mesurait pas l'arbre livré ; celle-ci, si.
+          # NB sur la DURÉE : 2317 s contre 2627 s le 08-09 au matin, mais la première exécution a
+          # partagé ses cœurs avec un autre `cargo`. Cette machine ne permet pas d'attribuer l'écart
+          # au contenu, et le lot ne prétend rien accélérer.
+          EXPECTED_COLD_TESTS: "1156"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

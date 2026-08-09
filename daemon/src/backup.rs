@@ -196,12 +196,140 @@ pub(crate) fn scrypt_log_n_depuis(brut: &str) -> u8 {
     }
 }
 
-/// L'EFFET : la même décision, appliquée à ce que porte l'environnement. Seule couche qui lit
-/// `PLUME_BACKUP_SCRYPT_LOG_N` — comme `backup_age_recipient` / `backup_require_asymmetric`, la
-/// variable est relue à chaque sauvegarde (pas de `OnceLock`) : un opérateur qui la corrige n'a pas à
-/// redémarrer le démon pour que le cycle suivant en tienne compte.
+// ============================================================================
+// P8.7-a — LA VOIE UNIQUE DE LECTURE DES RÉGLAGES DE SAUVEGARDE
+// ----------------------------------------------------------------------------
+// CE QUI ÉTAIT CASSÉ, ET CE QUE ÇA COÛTAIT. L'ordonnanceur lit `PLUME_BACKUP_INTERVAL` / `DEST` /
+// `KEEP` / `ON_START` par `cfg()` — donc `env > fichier PLUME_CONFIG > défaut`. Les réglages
+// ci-dessous, eux, lisaient `std::env::var` : JAMAIS le fichier. Or `systemd/plume-daemon.service`
+// ne porte AUCUN `EnvironmentFile` : sur un hôte, un opérateur qui écrit son destinataire d'escrow
+// dans `/etc/plume/soc.conf` voyait l'ordonnanceur DÉMARRER depuis ce fichier puis produire des
+// archives SYMÉTRIQUES — déchiffrables par quiconque tient la clé du nœud, l'exact contraire de ce
+// que l'escrow existe pour garantir. Et `PLUME_BACKUP_REQUIRE_ASYMMETRIC=1`, le fail-closed prévu
+// pour interdire ce cas, était muet pour la MÊME raison. MESURÉ le 2026-08-09, hors-processus, avec
+// le binaire de `6afe2ce` : `soc.conf` portant `PLUME_DB` + `PLUME_BACKUP_AGE_RECIPIENT` +
+// `PLUME_BACKUP_REQUIRE_ASYMMETRIC=1`, environnement vide -> la base est TROUVÉE (donc le fichier
+// est bien lu) et l'archive sort en `-> scrypt` (`backup-verify … kind=Symmetric`), pendant que le
+// démon affiche « PLUME_BACKUP_AGE_RECIPIENT non configuré ».
+//
+// L'ARBITRAGE : `cfg()` PARTOUT, PAS D'`EnvironmentFile`. `cfg()` interroge l'environnement AVANT le
+// fichier — router ces lectures par `cfg()` est donc un SUR-ENSEMBLE STRICT : toute valeur posée en
+// `env` continue de gagner, octet pour octet. Docker et k3s posent `PLUME_CONFIG=/nonexistent` et
+// passent tout par `env:` -> la carte de fichier est VIDE et le résultat est inchangé par
+// construction. La voie inverse (`EnvironmentFile=/etc/plume/soc.conf` dans l'unité) aurait corrigé
+// UN SEUL des trois modes et RÉGRESSÉ la confidentialité : elle exporterait dans l'environnement du
+// processus TOUT ce que porte `soc.conf` — `PLUME_PASS_HASH` et `PLUME_DB_KEY` compris — c'est-à-dire
+// qu'elle rendrait lisibles via `/proc/<pid>/environ` des secrets qu'aujourd'hui seul le parseur
+// in-process lit dans un fichier 0640. C'est précisément ce que le provider fichier (`_FILE`/`_REF`)
+// a été construit pour éviter. Elle ajouterait en prime un SECOND parseur (les règles de
+// guillemets/échappement de systemd ne sont pas celles de `load_config`) sur le même fichier.
+//
+// RELU À CHAQUE SAUVEGARDE (pas de `OnceLock`) : un opérateur qui corrige son réglage n'a pas à
+// redémarrer le démon pour que le cycle suivant en tienne compte. Le coût est une lecture de fichier
+// par sauvegarde — jamais par ligne.
+
+/// Les réglages de sauvegarde qui, jusqu'au 2026-08-09, ne se lisaient QUE dans l'environnement.
+/// Cette liste est la SOURCE des noms utilisés par les lecteurs ci-dessous ET par l'annonce de
+/// bascule (`cles_sauvegarde_devenues_effectives`) : les deux ne peuvent pas diverger.
+pub(crate) const CLE_BACKUP_AGE_RECIPIENT: &str = "PLUME_BACKUP_AGE_RECIPIENT";
+pub(crate) const CLE_BACKUP_REQUIRE_ASYMMETRIC: &str = "PLUME_BACKUP_REQUIRE_ASYMMETRIC";
+pub(crate) const CLE_BACKUP_FORCE_PLAINTEXT_EXPORT: &str = "PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT";
+pub(crate) const CLE_BACKUP_SCRYPT_LOG_N: &str = "PLUME_BACKUP_SCRYPT_LOG_N";
+pub(crate) const CLE_BACKUP_STAGING_DIR: &str = "PLUME_BACKUP_STAGING_DIR";
+pub(crate) const CLE_BACKUP_AGE_IDENTITY: &str = "PLUME_BACKUP_AGE_IDENTITY";
+pub(crate) const CLE_BACKUP_AGE_IDENTITY_FILE: &str = "PLUME_BACKUP_AGE_IDENTITY_FILE";
+
+/// Les réglages de sauvegarde repliés sur `cfg()` par P8.7-a, dans l'ordre où un opérateur les
+/// rencontre. `PLUME_BACKUP_AGE_IDENTITY[_FILE]` en fait partie : c'est le seul du lot dont la
+/// valeur est un SECRET (clé privée d'escrow) — elle ne doit JAMAIS être journalisée, seulement son
+/// NOM (cf. `annonce_bascule_sauvegarde`).
+pub(crate) const CLES_SAUVEGARDE_PAR_FICHIER: &[&str] = &[
+    CLE_BACKUP_AGE_RECIPIENT,
+    CLE_BACKUP_REQUIRE_ASYMMETRIC,
+    CLE_BACKUP_FORCE_PLAINTEXT_EXPORT,
+    CLE_BACKUP_SCRYPT_LOG_N,
+    CLE_BACKUP_STAGING_DIR,
+    CLE_BACKUP_AGE_IDENTITY,
+    CLE_BACKUP_AGE_IDENTITY_FILE,
+];
+
+/// LA voie unique : `env > fichier PLUME_CONFIG > ""`, exactement la précédence de `cfg()`, la même
+/// que celle de `PLUME_BACKUP_INTERVAL`. Aucun lecteur de ce module ne doit plus appeler
+/// `std::env::var` sur une clé `PLUME_*` — c'est vérifié par un test qui SCANNE ce fichier
+/// (`p87a_backup_ne_lit_plus_aucun_reglage_dans_l_environnement`), pas par relecture humaine.
+pub(crate) fn reglage_sauvegarde(cle: &str) -> String {
+    cfg(&load_config(), cle, "")
+}
+
+/// Les clés de sauvegarde qui étaient IGNORÉES et deviennent EFFECTIVES : présentes (non vides) dans
+/// le fichier de configuration, absentes de l'environnement. PURE — l'environnement est injecté, donc
+/// testable sans jamais toucher à un état global du processus.
+pub(crate) fn cles_sauvegarde_devenues_effectives(
+    fichier: &HashMap<String, String>,
+    dans_env: impl Fn(&str) -> bool,
+) -> Vec<&'static str> {
+    CLES_SAUVEGARDE_PAR_FICHIER.iter().copied()
+        .filter(|c| fichier.get(*c).is_some_and(|v| !v.trim().is_empty()))
+        .filter(|c| !dans_env(c))
+        .collect()
+}
+
+/// LE MESSAGE DE BASCULE — ce que ② exige : la transition ne doit pas se découvrir par un échec.
+/// Nomme les clés concernées et DIT ce qui change pour chacune. Ne journalise JAMAIS de valeur (l'une
+/// d'elles est une clé privée d'escrow). `None` = rien n'a changé pour cet hôte -> aucun bruit.
+pub(crate) fn annonce_bascule_sauvegarde(cles: &[&str]) -> Option<String> {
+    if cles.is_empty() { return None; }
+    let mut s = String::from(
+        "[backup] CHANGEMENT DE COMPORTEMENT (P8.7-a) : des réglages de sauvegarde écrits dans votre \
+         fichier de configuration étaient jusqu'ici IGNORÉS (lus dans l'environnement seul) et \
+         deviennent EFFECTIFS à partir de ce démarrage :");
+    for c in cles {
+        let effet = match *c {
+            CLE_BACKUP_AGE_RECIPIENT =>
+                "les archives passent du chiffrement SYMÉTRIQUE (passphrase = clé SQLCipher, présente \
+                 sur ce nœud, donc déchiffrable ICI) au chiffrement ASYMÉTRIQUE vers ce destinataire \
+                 (escrow hors-hôte). Les archives DÉJÀ produites restent symétriques.",
+            CLE_BACKUP_REQUIRE_ASYMMETRIC =>
+                "FAIL-CLOSED : si aucun destinataire age n'est résolu, la sauvegarde sera désormais \
+                 REFUSÉE au lieu de retomber en symétrique. Vérifiez qu'un destinataire est bien posé, \
+                 sinon les sauvegardes s'arrêteront.",
+            CLE_BACKUP_FORCE_PLAINTEXT_EXPORT =>
+                "la sauvegarde reprend le chemin HISTORIQUE : la base ENTIÈRE est réécrite EN CLAIR \
+                 dans le staging le temps du cycle.",
+            CLE_BACKUP_SCRYPT_LOG_N =>
+                "le facteur de travail scrypt du chiffrement par passphrase change -> le tampon scrypt \
+                 (RAM) change avec lui.",
+            CLE_BACKUP_STAGING_DIR =>
+                "le clair temporaire du chemin historique change de répertoire.",
+            CLE_BACKUP_AGE_IDENTITY | CLE_BACKUP_AGE_IDENTITY_FILE =>
+                "une identité age privée devient utilisable pour DÉCHIFFRER (restore/backup-verify). \
+                 Sa valeur n'est pas journalisée.",
+            _ => "devient effectif.",
+        };
+        s.push_str(&format!("\n  - {c} : {effet}"));
+    }
+    s.push_str(
+        "\n  Ces clés suivent désormais la MÊME précédence que PLUME_BACKUP_INTERVAL : env > fichier \
+         PLUME_CONFIG > défaut. Pour revenir au comportement précédent, retirez-les du fichier.");
+    Some(s)
+}
+
+/// L'ADAPTATEUR de ② : confronte le fichier RÉEL à l'environnement RÉEL et journalise l'annonce si
+/// quelque chose change pour cet hôte. Appelé au démarrage du démon (avant l'ordonnanceur) et sur le
+/// chemin CLI `backup`, c'est-à-dire aux DEUX endroits où un opérateur pourrait sinon découvrir la
+/// bascule par un échec. Silencieux quand rien ne change (Docker/k3s : tout est en `env` -> jamais
+/// d'annonce). `stderr`, comme tous les autres logs d'exploitation du démon.
+pub(crate) fn annoncer_bascule_sauvegarde(conf: &HashMap<String, String>) {
+    let cles = cles_sauvegarde_devenues_effectives(conf, |c| std::env::var_os(c).is_some());
+    if let Some(msg) = annonce_bascule_sauvegarde(&cles) {
+        eprintln!("{msg}");
+    }
+}
+
+/// L'EFFET : la même décision, appliquée à ce que porte la configuration. Seule couche qui lit
+/// `PLUME_BACKUP_SCRYPT_LOG_N`.
 pub(crate) fn backup_scrypt_log_n() -> u8 {
-    scrypt_log_n_depuis(&std::env::var("PLUME_BACKUP_SCRYPT_LOG_N").unwrap_or_default())
+    scrypt_log_n_depuis(&reglage_sauvegarde(CLE_BACKUP_SCRYPT_LOG_N))
 }
 
 /// L'ENCRYPTEUR age des deux chemins de sauvegarde (streaming B1 ET repli legacy), écrit UNE fois.
@@ -347,15 +475,15 @@ pub(crate) fn stream_copy<R: std::io::Read, W: std::io::Write>(r: &mut R, w: &mu
 // retirerait l'outil de diagnostic au moment précis où il sert — et la destination d'un backup n'est
 // pas une base plume servie.
 
-/// RÉPERTOIRE DE STAGING du plaintext temporaire. Priorité à l'env `PLUME_BACKUP_STAGING_DIR`
-/// (orientez-le vers un volume ÉPHÉMÈRE, HORS du stockage durable/sauvegardé, de sorte qu'un crash ne
-/// puisse JAMAIS laisser la DB EN CLAIR sur du stockage persistant) ;
+/// RÉPERTOIRE DE STAGING du plaintext temporaire. Priorité à `PLUME_BACKUP_STAGING_DIR` (lu
+/// `env > fichier PLUME_CONFIG`, cf. P8.7-a ; orientez-le vers un volume ÉPHÉMÈRE, HORS du stockage
+/// durable/sauvegardé, de sorte qu'un crash ne puisse JAMAIS laisser la DB EN CLAIR sur du stockage
+/// persistant) ;
 /// sinon repli sur le répertoire de `dest` (comportement historique, rétrocompat CLI/test). Découple
 /// l'emplacement du CLEARTEXT (qui DOIT être éphémère) de celui du `.age` chiffré (indifférent).
 pub(crate) fn staging_dir(dest: &str) -> std::path::PathBuf {
-    if let Ok(d) = std::env::var("PLUME_BACKUP_STAGING_DIR") {
-        if !d.is_empty() { return std::path::PathBuf::from(d); }
-    }
+    let d = reglage_sauvegarde(CLE_BACKUP_STAGING_DIR);
+    if !d.is_empty() { return std::path::PathBuf::from(d); }
     std::path::Path::new(dest).parent()
         .filter(|d| !d.as_os_str().is_empty())
         .map(|d| d.to_path_buf())
@@ -376,20 +504,24 @@ pub(crate) fn plain_temp_path(beside: &str) -> std::path::PathBuf {
 }
 
 /// DESTINATAIRE age asymétrique (clé PUBLIQUE `age1...`) si `PLUME_BACKUP_AGE_RECIPIENT` est posé.
-/// Une clé PUBLIQUE n'est PAS un secret : peut vivre en clair dans l'env/ConfigMap du pod. Non posé ->
+/// Une clé PUBLIQUE n'est PAS un secret : peut vivre en clair dans l'env/ConfigMap du pod, ou dans
+/// `/etc/plume/soc.conf` sur un hôte (P8.7-a : `env > fichier PLUME_CONFIG`). Non posé ->
 /// `None` -> repli sur le chiffrement SYMÉTRIQUE par passphrase (= clé SQLCipher) = comportement historique.
 pub(crate) fn backup_age_recipient() -> Option<String> {
-    std::env::var("PLUME_BACKUP_AGE_RECIPIENT").ok().filter(|s| !s.is_empty())
+    Some(reglage_sauvegarde(CLE_BACKUP_AGE_RECIPIENT)).filter(|s| !s.is_empty())
 }
 
 /// v134 (#7) — EXIGENCE OPT-IN d'un backup ASYMÉTRIQUE (escrow hors-cluster). `PLUME_BACKUP_REQUIRE_ASYMMETRIC`
 /// vrai (1/true/yes/on) -> `backup_compressed` REFUSE de produire un backup symétrique (node-déchiffrable).
 /// DÉFAUT OFF -> warn-only (comportement historique préservé pour l'usage symétrique/dev intentionnel).
 pub(crate) fn backup_require_asymmetric() -> bool {
-    matches!(
-        std::env::var("PLUME_BACKUP_REQUIRE_ASYMMETRIC").ok().as_deref().map(str::trim).map(str::to_ascii_lowercase).as_deref(),
-        Some("1") | Some("true") | Some("yes") | Some("on")
-    )
+    drapeau_sauvegarde(&reglage_sauvegarde(CLE_BACKUP_REQUIRE_ASYMMETRIC))
+}
+
+/// Lecture PURE d'un drapeau de sauvegarde (`1/true/yes/on`, insensible à la casse et aux espaces).
+/// Extraite pour que les deux drapeaux partagent EXACTEMENT la même grammaire — elle était recopiée.
+pub(crate) fn drapeau_sauvegarde(brut: &str) -> bool {
+    matches!(brut.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
 }
 
 /// ÉCHAPPATOIRE OPÉRATEUR — `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT` vrai (1/true/yes/on) force le CHEMIN
@@ -398,10 +530,7 @@ pub(crate) fn backup_require_asymmetric() -> bool {
 /// Le nom dit le PRIX qu'on repaie en la posant : la base ENTIÈRE est réécrite EN CLAIR sur disque le temps du
 /// backup. À ne poser que pour reproduire un incident sur le chemin historique, jamais en régime.
 pub(crate) fn backup_force_plaintext_export() -> bool {
-    matches!(
-        std::env::var("PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT").ok().as_deref().map(str::trim).map(str::to_ascii_lowercase).as_deref(),
-        Some("1") | Some("true") | Some("yes") | Some("on")
-    )
+    drapeau_sauvegarde(&reglage_sauvegarde(CLE_BACKUP_FORCE_PLAINTEXT_EXPORT))
 }
 
 /// v134 (#7) — SIGNAL SOC NON-PURGEABLE : les backups tombent en SYMÉTRIQUE (déchiffrables par le nœud, aucun
@@ -450,13 +579,15 @@ pub(crate) fn signal_backup_symmetric_if_needed(conn: &Connection, recipient: Op
 /// moment du DR depuis l'escrow HORS-cluster : fichier (`PLUME_BACKUP_AGE_IDENTITY_FILE`, prioritaire —
 /// mount secret) puis valeur directe (`PLUME_BACKUP_AGE_IDENTITY`, DR ad-hoc). Normalement ABSENTE en
 /// cluster (c'est tout l'intérêt : une compromission de pod ne donne pas la clé de déchiffrement).
+/// P8.7-a — les deux se lisent `env > fichier PLUME_CONFIG` : au DR sur un hôte, l'identité peut donc
+/// être déposée dans un `soc.conf` 0640 plutôt que dans l'environnement (lisible via `/proc/<pid>/environ`).
+/// Sa VALEUR n'est jamais journalisée, ni ici ni par l'annonce de bascule.
 pub(crate) fn backup_age_identity() -> Option<age::x25519::Identity> {
-    if let Ok(p) = std::env::var("PLUME_BACKUP_AGE_IDENTITY_FILE") {
-        if !p.is_empty() {
-            return std::fs::read_to_string(&p).ok().and_then(|s| parse_age_identity_str(&s));
-        }
+    let p = reglage_sauvegarde(CLE_BACKUP_AGE_IDENTITY_FILE);
+    if !p.is_empty() {
+        return std::fs::read_to_string(&p).ok().and_then(|s| parse_age_identity_str(&s));
     }
-    std::env::var("PLUME_BACKUP_AGE_IDENTITY").ok().and_then(|s| parse_age_identity_str(&s))
+    parse_age_identity_str(&reglage_sauvegarde(CLE_BACKUP_AGE_IDENTITY))
 }
 
 /// Extrait et parse la 1re ligne `AGE-SECRET-KEY-...` (ignore les commentaires `# public key:` d'un fichier
@@ -1254,21 +1385,26 @@ pub(crate) struct GfsParams {
 }
 
 impl GfsParams {
-    /// Charge depuis l'env avec les défauts validés par l'opérateur (DENSE=2j, DAILY=14j, WEEKLY=90j,
-    /// PREMIGRATE_KEEP=2). Une valeur illisible/négative -> DÉFAUT (fail-safe : jamais de palier
-    /// dégénéré silencieux).
-    pub(crate) fn from_env() -> Self {
-        fn env_i64(k: &str, d: i64) -> i64 {
-            std::env::var(k).ok().and_then(|v| v.trim().parse::<i64>().ok()).filter(|&n| n >= 0).unwrap_or(d)
-        }
-        fn env_usize(k: &str, d: usize) -> usize {
-            std::env::var(k).ok().and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(d)
-        }
+    /// Charge depuis la CONFIGURATION (`env > fichier PLUME_CONFIG > défaut`) avec les défauts validés
+    /// par l'opérateur (DENSE=2j, DAILY=14j, WEEKLY=90j, PREMIGRATE_KEEP=2). Une valeur illisible/négative
+    /// -> DÉFAUT (fail-safe : jamais de palier dégénéré silencieux).
+    ///
+    /// P8.7-a — ces quatre paliers lisaient l'environnement par un helper `env_i64`/`env_usize` : la clé
+    /// n'y était pas un littéral passé à `env::var`, donc la première mesure du défaut (qui cherchait
+    /// `env::var("PLUME_…")`) NE LES AVAIT PAS VUS. C'est la raison d'être du scanner `③` : il suit aussi
+    /// les aiguilleurs indirects, pour qu'un réglage ne puisse pas se soustraire au fichier en passant par
+    /// une fonction intermédiaire.
+    pub(crate) fn depuis_la_configuration() -> Self {
+        let conf = load_config();
+        let i64_de = |k: &str, d: i64| {
+            cfg(&conf, k, "").trim().parse::<i64>().ok().filter(|&n| n >= 0).unwrap_or(d)
+        };
+        let usize_de = |k: &str, d: usize| cfg(&conf, k, "").trim().parse::<usize>().unwrap_or(d);
         GfsParams {
-            dense_days: env_i64("PLUME_BACKUP_DENSE_DAYS", 2),
-            daily_days: env_i64("PLUME_BACKUP_DAILY_DAYS", 14),
-            weekly_days: env_i64("PLUME_BACKUP_WEEKLY_DAYS", 90),
-            premigrate_keep: env_usize("PLUME_BACKUP_PREMIGRATE_KEEP", 2),
+            dense_days: i64_de("PLUME_BACKUP_DENSE_DAYS", 2),
+            daily_days: i64_de("PLUME_BACKUP_DAILY_DAYS", 14),
+            weekly_days: i64_de("PLUME_BACKUP_WEEKLY_DAYS", 90),
+            premigrate_keep: usize_de("PLUME_BACKUP_PREMIGRATE_KEEP", 2),
         }
     }
 }

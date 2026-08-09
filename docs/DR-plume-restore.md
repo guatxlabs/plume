@@ -176,7 +176,12 @@ passphrase** (comportement par défaut, byte-pour-byte inchangé). Séquence :
 
 1. `age-keygen` → escrow la clé **privée** hors-ligne (+ copie de secours). Vérifier qu'elle est lisible.
 2. Poser `PLUME_BACKUP_AGE_RECIPIENT: age1…` (clé **publique**) dans le déploiement (conteneur/sidecar
-   qui exécute le backup).
+   qui exécute le backup) — ou, en **systemd host-natif**, dans `/etc/plume/soc.conf` : depuis le
+   **2026-08-09** (P8.7-a) tous les réglages `PLUME_BACKUP_*` suivent la même précédence
+   `env > PLUME_CONFIG > défaut`. *Avant cette date, ce destinataire écrit dans `soc.conf` était ignoré
+   en silence et les archives repartaient en mode passphrase* : si vous exploitez un hôte configuré ainsi,
+   vos archives antérieures sont **symétriques** — vérifiez-les avec `backup-verify` avant de compter
+   dessus. Le démon nomme les clés concernées à son démarrage.
 3. Appliquer (votre dépôt GitOps → redémarrage du pod). Le prochain backup est chiffré au destinataire
    (vérifier `backup-verify` → `Asymmetric`).
 4. Faire un **DR drill** (ci-dessous) avec la clé privée escrow pour PROUVER que le nouveau backup se

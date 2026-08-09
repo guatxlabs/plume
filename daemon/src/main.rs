@@ -1246,6 +1246,9 @@ fn main() {
     }
     if args.get(1).map(String::as_str) == Some("backup") {
         let conf = load_config();
+        // P8.7-a ② — la bascule est DITE avant d'agir, y compris hors du démon : un opérateur qui
+        // lance la sauvegarde à la main ne doit pas la découvrir par un refus (cf. backup.rs).
+        annoncer_bascule_sauvegarde(&conf);
         let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
         // `backup --compress [dest]` -> enveloppe age(zstd(charge)) ; la CHARGE est un dump typé streaming
         // (défaut, aucun clair sur disque) ou une copie SQLite complète (chemin historique) — cf. backup.rs.
@@ -1359,9 +1362,10 @@ fn main() {
         // sidecar garde `mc`). Lit les NOMS d'objets sur STDIN (un par ligne — le sidecar y pipe la sortie
         // `mc ls`), écrit sur STDOUT UNIQUEMENT les noms à SUPPRIMER (un par ligne -> `mc rm` un-par-un côté
         // sidecar = un seul DeleteObject, jamais récursif/multi -> pas de faux T1490). Tous les logs -> STDERR.
-        // Paramètres env : PLUME_BACKUP_{DENSE,DAILY,WEEKLY}_DAYS + PLUME_BACKUP_PREMIGRATE_KEEP (défauts 2/14/90/2).
+        // Paramètres (P8.7-a : `env > fichier PLUME_CONFIG > défaut`, comme tout le reste) :
+        // PLUME_BACKUP_{DENSE,DAILY,WEEKLY}_DAYS + PLUME_BACKUP_PREMIGRATE_KEEP (défauts 2/14/90/2).
         use std::io::BufRead;
-        let params = GfsParams::from_env();
+        let params = GfsParams::depuis_la_configuration();
         let names: Vec<String> = std::io::stdin().lock().lines()
             .map_while(Result::ok)
             .map(|l| l.trim().to_string())

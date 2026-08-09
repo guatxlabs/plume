@@ -87,6 +87,13 @@ label de VOTRE ingress controller) — aucun autre pod ne peut atteindre le daem
   temporaire sur disque** — cf. deploy/CONFIDENTIALITE.md).
 - **Config** : **`PLUME_*` uniquement** (l'ancien préfixe `SOC_*` n'existe plus). En conteneur,
   `PLUME_CONFIG=/nonexistent` → config purement par env ; sur hôte, l'unit lit `PLUME_CONFIG=/etc/plume/soc.conf`.
+  **Une seule voie de lecture** : `cfg()` → `env > fichier PLUME_CONFIG > défaut`. Un réglage lu par
+  `std::env::var` échappe au fichier et n'a donc d'effet qu'en conteneur — c'est le défaut P8.7-a, qui a
+  annulé en silence un destinataire d'escrow de sauvegarde sur hôte. La partition est tenue fermée par un
+  scanner de sources (`tests/partition_config.rs`) : il dérive qui lit l'environnement, y compris via une
+  fonction intermédiaire, et refuse toute variable nouvelle qui ne soit pas inscrite au registre de dette.
+  Ce registre n'a le droit que de rétrécir. `plume-daemon.service` **ne porte volontairement pas**
+  d'`EnvironmentFile` : il exporterait `PLUME_PASS_HASH`/`PLUME_DB_KEY` dans `/proc/<pid>/environ`.
 - **Image** : `Dockerfile` multi-stage. **Contexte de build = la racine de ce dépôt** (clone
   standalone) : `guatx-core` est résolu via une git-dep publique (tag `v0.2.1`, récupérée au build),
   `../../db/schema.sql` est copié depuis `db/` sibling de `daemon/`. Runtime `debian:bookworm-slim`,

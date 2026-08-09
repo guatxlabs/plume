@@ -540,6 +540,7 @@ fn spawn_background_jobs(conf: HashMap<String, String>, spool: String, db_path: 
     // spawné -> comportement byte-identique). k3s/prod INCHANGÉ : leur daemon ne pose PAS cette var (leur
     // sidecar shell garde l'orchestration mc/S3). Sur host/Docker : monte un volume, pose la var -> self-backup.
     {
+        annoncer_bascule_sauvegarde(&conf);
         spawn_backup_scheduler(conf.clone(), db_path.clone());
     }
     // OPS NATIVE #2 — AUTO-VACUUM INCRÉMENTAL IN-DAEMON (best-effort, NON-BLOQUANT). GATÉ sur

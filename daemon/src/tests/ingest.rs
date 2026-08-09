@@ -1359,3 +1359,127 @@
         assert!(published_nd.exists(), "fichier spool `.ndjson` publié JAMAIS touché");
         let _ = std::fs::remove_dir_all(&spool);
     }
+
+    // ============================================================================================
+    // P4.1-p — LA LIMITE QUI ARRÊTE DOIT DIRE **LAQUELLE** ELLE EST.
+    //
+    // LE DÉFAUT, MESURÉ. `/api/ingest/minio` combinait `MINIO_MAX_EVENTS` (500) et
+    // `st.ingest_max_events` (50 000 par défaut) par un `min`, puis conseillait « relevez
+    // PLUME_INGEST_MAX_EVENTS ». Dans la configuration par défaut c'est la CONSTANTE qui lie : le
+    // levier nommé était INOPÉRANT, et l'intégrateur qui le suivait recevait le même 413.
+    // ============================================================================================
+
+    /// LE VERDICT EST DÉRIVÉ DE LA COMPARAISON, PAS ÉCRIT — et le message change de levier avec lui.
+    ///
+    /// La preuve est portée par le test lui-même : on prend la MÊME route (plafond 500) et on fait
+    /// varier LA SEULE configuration, de part et d'autre de 500. Le levier nommé doit basculer. Un
+    /// message figé passerait le premier cas et échouerait le second ; un message qui nommerait
+    /// toujours la constante ferait l'inverse.
+    #[test]
+    fn le_refus_de_cardinalite_nomme_le_plafond_qui_lie_et_le_bon_levier() {
+        use crate::disk::{PlafondQuiLie, RefusCardinalite};
+        const ROUTE: usize = 500; // = MINIO_MAX_EVENTS
+
+        // (a) CONFIGURATION AU-DESSUS (le défaut réel : 50 000) -> c'est la CONSTANTE qui lie.
+        let haut = RefusCardinalite::evaluer(501, ROUTE, crate::disk::INGEST_MAX_EVENTS_DEFAUT, "minio")
+            .expect("501 > 500 : il doit y avoir refus");
+        assert_eq!(haut.qui_lie(), PlafondQuiLie::Route);
+        assert_eq!(haut.plafond(), ROUTE);
+        let m_haut = haut.message();
+        eprintln!("[plafond-qui-lie] conf=50000 : {m_haut}");
+        assert!(m_haut.contains("501 > plafond 500"), "le refus doit chiffrer reçu et plafond : {m_haut}");
+        assert!(m_haut.contains("ne changerait RIEN ici"),
+            "quand la constante lie, le refus doit DIRE que relever la variable est sans effet : {m_haut}");
+
+        // (b) CONFIGURATION EN DESSOUS -> c'est la VARIABLE qui lie, et là elle est le bon geste.
+        let bas = RefusCardinalite::evaluer(101, ROUTE, 100, "minio").expect("101 > 100 : refus");
+        assert_eq!(bas.qui_lie(), PlafondQuiLie::Configuration);
+        assert_eq!(bas.plafond(), 100);
+        let m_bas = bas.message();
+        eprintln!("[plafond-qui-lie] conf=100   : {m_bas}");
+        assert!(m_bas.contains("101 > plafond 100"), "reçu et plafond chiffrés : {m_bas}");
+        assert!(m_bas.contains("vous pouvez le relever"),
+            "quand la variable lie, le refus doit proposer de la relever : {m_bas}");
+        assert!(m_bas.contains("jusqu'au plafond de la route minio (500)"),
+            "…et dire jusqu'où ça sert : {m_bas}");
+
+        // LA BASCULE ELLE-MÊME : les deux messages ne disent pas la même chose du même levier.
+        assert_ne!(m_haut, m_bas, "abaisser la configuration sous la constante DOIT changer le message");
+
+        // (c) EX ÆQUO : relever la variable seule ne déplacerait rien.
+        let ex = RefusCardinalite::evaluer(7, 5, 5, "hec").expect("7 > 5 : refus");
+        assert_eq!(ex.qui_lie(), PlafondQuiLie::ExAequo);
+        assert!(ex.message().contains("relever la variable SEULE ne déplacerait rien"),
+            "l'ex æquo doit être dit : {}", ex.message());
+
+        // (d) RIEN N'EST NOMMÉ EN DUR — une FAMILLE de plafonds, pas trois cas choisis. Pour chaque
+        //     couple, le verdict et le plafond imprimé doivent suivre la comparaison.
+        for route in [1usize, 7, 500, 50_000] {
+            for conf in [1usize, 7, 500, 50_000] {
+                let attendu = match route.cmp(&conf) {
+                    std::cmp::Ordering::Less => PlafondQuiLie::Route,
+                    std::cmp::Ordering::Greater => PlafondQuiLie::Configuration,
+                    std::cmp::Ordering::Equal => PlafondQuiLie::ExAequo,
+                };
+                let plus_petit = route.min(conf);
+                // AU PLAFOND : pas de refus. UN DE PLUS : refus, et il nomme le bon.
+                assert!(RefusCardinalite::evaluer(plus_petit, route, conf, "r").is_none(),
+                    "route={route} conf={conf} : {plus_petit} événements tiennent EXACTEMENT sous le plafond");
+                let r = RefusCardinalite::evaluer(plus_petit + 1, route, conf, "r")
+                    .unwrap_or_else(|| panic!("route={route} conf={conf} : {} doit être refusé", plus_petit + 1));
+                assert_eq!(r.qui_lie(), attendu, "route={route} conf={conf}");
+                assert_eq!(r.plafond(), plus_petit, "route={route} conf={conf}");
+                assert!(r.message().contains(&format!("> plafond {plus_petit}")),
+                    "route={route} conf={conf} : le message doit imprimer le plafond EFFECTIF ; il dit {}", r.message());
+            }
+        }
+
+        // (e) `0` = plafond DÉSACTIVÉ (même convention que `ingest_events_over_cap`) : il ne participe
+        //     pas au `min`, sinon poser 0 refuserait TOUT au lieu de ne rien limiter.
+        assert!(RefusCardinalite::evaluer(1_000_000, 0, 0, "r").is_none(), "les deux désactivés -> aucun plafond");
+        assert_eq!(RefusCardinalite::evaluer(11, 0, 10, "r").map(|r| r.qui_lie()), Some(PlafondQuiLie::Configuration));
+        assert_eq!(RefusCardinalite::evaluer(11, 10, 0, "r").map(|r| r.qui_lie()), Some(PlafondQuiLie::Route));
+        // ...et le message ne raconte pas « jusqu'au plafond de la route (0) » quand la route n'en a pas.
+        let sans_route = RefusCardinalite::evaluer(11, 0, 10, "r").unwrap().message();
+        assert!(sans_route.contains("n'a pas de plafond propre"), "route désactivée : {sans_route}");
+        assert!(!sans_route.contains("(0)"), "un plafond « 0 » ne doit jamais être imprimé comme une cible : {sans_route}");
+    }
+
+    /// LE SURVOL, RENDU EXÉCUTABLE : sur CHACUNE des cinq routes d'ingestion qui combinent une constante
+    /// de route avec `PLUME_INGEST_MAX_EVENTS` par un `min`, lequel des deux lie dans la configuration
+    /// PAR DÉFAUT ?
+    ///
+    /// MESURÉ LE 2026-08-09 : `minio` = 500 contre 50 000 -> la ROUTE lie (c'est P4.1-p) ; `hec`, `otlp`,
+    /// `firehose` et `pubsub` valent tous 50 000, soit EXACTEMENT le défaut de la variable -> EX ÆQUO.
+    /// Autrement dit : sur les CINQ routes, relever `PLUME_INGEST_MAX_EVENTS` au-dessus de 50 000 ne
+    /// déplace RIEN. Seul MinIO le disait de travers (il nommait ce levier comme remède) ; les quatre
+    /// autres ne nomment aucun levier, donc ils ne mentent pas — mais le fait reste, et il est ici
+    /// verrouillé plutôt que raconté. Changer une de ces constantes fait rougir ce test avec la valeur.
+    #[test]
+    fn le_plafond_qui_lie_est_mesure_sur_les_cinq_routes_d_ingestion() {
+        use crate::disk::{PlafondQuiLie, RefusCardinalite, INGEST_MAX_EVENTS_DEFAUT};
+        let defaut = INGEST_MAX_EVENTS_DEFAUT;
+        let routes: [(&'static str, usize, PlafondQuiLie); 5] = [
+            ("minio",    crate::ingest::minio::MINIO_MAX_EVENTS,       PlafondQuiLie::Route),
+            ("hec",      crate::ingest::hec::HEC_MAX_EVENTS,           PlafondQuiLie::ExAequo),
+            ("otlp",     crate::ingest::otlp::OTLP_MAX_SPANS,          PlafondQuiLie::ExAequo),
+            ("firehose", crate::ingest::firehose::FIREHOSE_MAX_EVENTS, PlafondQuiLie::ExAequo),
+            ("pubsub",   crate::ingest::pubsub::PUBSUB_MAX_EVENTS,     PlafondQuiLie::ExAequo),
+        ];
+        for (nom, plafond_route, attendu) in routes {
+            let r = RefusCardinalite::evaluer(plafond_route.min(defaut) + 1, plafond_route, defaut, nom)
+                .unwrap_or_else(|| panic!("{nom} : un lot d'un événement de trop doit être refusé"));
+            eprintln!("[survol-plafonds] {nom:9} route={plafond_route:6} conf={defaut} -> {:?}", r.qui_lie());
+            assert_eq!(r.qui_lie(), attendu,
+                "{nom} : constante de route {plafond_route} contre défaut {defaut} — le verdict a changé, \
+                 relisez P4.1-p avant de suivre ce nombre");
+        }
+        // LE FAIT QUI RÉSUME LE SURVOL : aucune de ces routes n'accepte plus de 50 000 événements, quoi
+        // qu'on pose dans `PLUME_INGEST_MAX_EVENTS`. Témoin NÉGATIF de l'assertion : la voir échouer
+        // exigerait une constante de route > 50 000, ce qu'aucune des cinq n'a.
+        for (nom, plafond_route, _) in routes {
+            assert!(plafond_route <= defaut,
+                "{nom} : une constante de route ({plafond_route}) au-dessus du défaut ({defaut}) rendrait \
+                 enfin `PLUME_INGEST_MAX_EVENTS` opérant à la hausse — et invaliderait ce survol");
+        }
+    }

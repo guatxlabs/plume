@@ -248,7 +248,8 @@ fn boot_config() -> BootConfig {
     // (512 Mo libres, 50 000 events/req) : ne coupent QU'un flux pathologique / un disque saturé, jamais la
     // collecte réelle. PLUME_INGEST_MIN_FREE_MB=0 désactive le garde disque ; PLUME_INGEST_MAX_EVENTS borné >=1.
     let ingest_min_free_mb: u64 = cfg(&conf, "PLUME_INGEST_MIN_FREE_MB", "512").parse().unwrap_or(512);
-    let ingest_max_events: usize = cfg(&conf, "PLUME_INGEST_MAX_EVENTS", "50000").parse().unwrap_or(50000).max(1);
+    let ingest_max_events: usize = cfg(&conf, "PLUME_INGEST_MAX_EVENTS", &INGEST_MAX_EVENTS_DEFAUT.to_string())
+        .parse().unwrap_or(INGEST_MAX_EVENTS_DEFAUT).max(1);
     let search_limit_default: i64 = cfg(&conf, "PLUME_SEARCH_LIMIT", "100").parse().unwrap_or(100).max(1);
     let search_limit_max: i64 = cfg(&conf, "PLUME_SEARCH_MAX", "5000").parse().unwrap_or(5000).max(1);
     // sémaphore de concurrence de l'INTERACTIF (/api/query / /api/search) : au moins 1.

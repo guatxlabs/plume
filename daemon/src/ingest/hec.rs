@@ -18,7 +18,7 @@
 use crate::*;
 
 /// Garde-fou events/req du chemin HEC (miroir de la borne minio ; l'appelant renvoie 413 HEC au-delà).
-const HEC_MAX_EVENTS: usize = 50_000;
+pub(crate) const HEC_MAX_EVENTS: usize = 50_000;
 
 /// Routes collector d'events (défaut FERMÉ) : SEULES ces routes acceptent le schéma d'auth HEC (Splunk/
 /// token=). `/services/collector/health` en est EXCLU (public, sans token — cf. exemption auth_guard).
@@ -273,6 +273,11 @@ pub(crate) async fn hec_event_post(State(st): State<AppState>, Extension(au): Ex
     }
     let recs = hec_parse_body(&body);
     // PLAFOND DUR de cardinalité : refus 413 HEC (le client scinde et réémet) -> jamais de troncature muette.
+    // NB (P4.1-p, survol du 2026-08-09) : ce texte est wire-compatible Splunk et ne nomme AUCUN levier —
+    // il ne peut donc pas en nommer un qui n'agit pas, ce qui était le défaut de MinIO. Le verdict
+    // « qui lie » de cette route est mesuré par
+    // `le_plafond_qui_lie_est_mesure_sur_les_cinq_routes_d_ingestion` (ex æquo dans la configuration par
+    // défaut : la constante vaut exactement le défaut de `PLUME_INGEST_MAX_EVENTS`).
     if recs.len() > HEC_MAX_EVENTS.min(st.ingest_max_events) {
         return hec_err(StatusCode::PAYLOAD_TOO_LARGE, 5, "Batch too large — split and resend");
     }

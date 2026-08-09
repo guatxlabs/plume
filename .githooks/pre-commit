@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# P8.5-a — LA MESURE REVIENT LÀ OÙ LA DÉCISION SE PREND.
+#
+# POURQUOI UN HOOK ET PAS UN DÉCLENCHEUR DE CI DE PLUS. `ci.yml` s'exécute DÉJÀ sur
+# `push: branches: ["**"]` (depuis sa création — le bloc `on:` n'a jamais changé) et tous les
+# commits sont poussés. La garde `EXPECTED_TESTS` a donc bel et bien tourné, et bel et bien vu la
+# dérive 937 -> 945 du 2026-08-07. Ce qui a manqué n'est pas une exécution de plus, c'est de LIRE
+# son verdict avant de recommencer. Un rouge sur une page qu'on n'ouvre pas ne fait rien changer.
+#
+# CE QU'IL COÛTE, MESURÉ LE 2026-08-09 : ~2 s quand `target/` est déjà dans le bon jeu de features,
+# jusqu'à ~46 s s'il doit rebasculer entre le profil par défaut et `cold_tier`. Contre 47 minutes
+# pour exécuter les deux suites. Et il ne se déclenche QUE si le commit touche le démon — un commit
+# de ROADMAP ou de manifeste ne paie rien du tout.
+#
+# INSTALLATION (une fois par clone, non versionnable autrement — git n'installe jamais de hook seul) :
+#     git config core.hooksPath .githooks
+# CONTOURNEMENT ASSUMÉ : `git commit --no-verify`. Le hook est une boucle de retour, pas une
+# frontière de sécurité — la frontière reste la CI, qui exécute vraiment les suites.
+set -euo pipefail
+
+racine="$(git rev-parse --show-toplevel)"
+
+# PORTÉE DÉRIVÉE DU DIFF, PAS D'UNE LISTE À TENIR : seuls les commits qui touchent au code ou au
+# verrou de dépendances du démon peuvent déplacer le compte de tests.
+if ! git diff --cached --name-only | grep -qE '^daemon/(src/|Cargo\.(toml|lock)$)'; then
+    exit 0
+fi
+
+echo "[pre-commit] le démon est touché -> vérification du compte de tests (aucun test exécuté)"
+exec "$racine/.github/scripts/compter-les-tests.sh"

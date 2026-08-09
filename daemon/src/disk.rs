@@ -42,6 +42,118 @@ pub(crate) fn ingest_events_over_cap(v: &Value, max: usize) -> bool {
     max != 0 && v.get("events").and_then(|e| e.as_array()).map(|a| a.len() > max).unwrap_or(false)
 }
 
+// ------------------------------------------------------------------------------------------------
+// P4.1-p — QUAND DEUX PLAFONDS GARDENT LA MÊME ROUTE, LE REFUS DOIT DIRE **LEQUEL** A MORDU.
+//
+// LE DÉFAUT, MESURÉ LE 2026-08-05 SUR `/api/ingest/minio`. La route combinait sa constante
+// (`MINIO_MAX_EVENTS = 500`) avec la variable d'environnement (`ingest_max_events`, défaut 50 000)
+// par un `min`, puis rendait : « trop d'events (… > plafond 500) — scindez le lot, ou relevez
+// PLUME_INGEST_MAX_EVENTS ». Dans la configuration PAR DÉFAUT c'est la CONSTANTE qui lie, donc le
+// levier nommé n'a AUCUN effet : l'intégrateur relève la variable de 50 000 à 200 000, réémet, et
+// reçoit exactement le même 413. Même famille que P4.1-o (`limite_corps`) : la limite qui arrête
+// doit dire ce qu'elle est.
+//
+// CE QUI EST DÉRIVÉ, ET POURQUOI ÇA COMPTE. Le verdict ne nomme pas un plafond écrit en dur : il
+// COMPARE les deux et nomme le gagnant. Changer `MINIO_MAX_EVENTS`, ou poser une autre valeur
+// d'environnement, change donc le message SANS toucher au message. Un texte figé aurait recommencé
+// à mentir au premier ajustement.
+//
+// LE CAS EX ÆQUO N'EST PAS UN DÉTAIL : sur `hec`, `otlp`, `firehose` et `pubsub` la constante de
+// route vaut 50 000 — exactement le défaut de `PLUME_INGEST_MAX_EVENTS`. « Relevez la variable » y
+// serait donc trompeur AUSSI (la constante prendrait le relais à la même valeur), mais pour une
+// raison différente de celle de MinIO. Trois variantes plutôt que deux, et un `match` exhaustif :
+// une quatrième situation inventée demain ne compilera pas tant que sa phrase ne sera pas écrite.
+// ------------------------------------------------------------------------------------------------
+
+/// Défaut de `PLUME_INGEST_MAX_EVENTS`, décidé ICI et nulle part ailleurs (`boot_config` le lit).
+/// Il vivait en littéral `"50000"` dans `server.rs` ; le survol P4.1-p en avait besoin pour comparer
+/// les plafonds de route à la configuration PAR DÉFAUT, et deux littéraux auraient pu diverger — le
+/// test aurait alors mesuré une configuration que personne ne déploie.
+pub(crate) const INGEST_MAX_EVENTS_DEFAUT: usize = 50_000;
+
+/// LEQUEL des deux plafonds d'événements a arrêté la requête — DÉDUIT de la comparaison, jamais écrit.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum PlafondQuiLie {
+    /// La constante de la route est STRICTEMENT plus petite -> `PLUME_INGEST_MAX_EVENTS` est inopérant ici.
+    Route,
+    /// La configuration est STRICTEMENT plus petite -> la relever est le bon geste (jusqu'à la constante).
+    Configuration,
+    /// Les deux valent la même chose -> relever la configuration SEULE ne déplace rien.
+    ExAequo,
+}
+
+/// LE REFUS DE CARDINALITÉ, avec de quoi le comprendre : combien on a reçu, quel plafond a mordu,
+/// lequel des deux c'était, et quoi faire. Construit UNIQUEMENT quand le lot dépasse (`evaluer`
+/// rend `None` sinon) -> il n'existe pas de refus sans dépassement.
+#[derive(Debug, Clone)]
+pub(crate) struct RefusCardinalite {
+    /// Nombre d'événements REÇUS (pas retenus : c'est la confusion que P4.1-p a fermée).
+    pub(crate) recu: usize,
+    /// Plafond PROPRE À LA ROUTE (constante compilée, miroir du relais amont).
+    pub(crate) route: usize,
+    /// Plafond de CONFIGURATION (`PLUME_INGEST_MAX_EVENTS`, `st.ingest_max_events`).
+    pub(crate) configuration: usize,
+    /// Nom de la route, pour que l'intégrateur sache DE QUELLE constante on parle.
+    pub(crate) nom_route: &'static str,
+}
+
+impl RefusCardinalite {
+    /// `None` tant que le lot tient sous le plus petit des deux plafonds. Un plafond à `0` est
+    /// « désactivé » (même convention que `ingest_events_over_cap`) : il ne participe pas au `min`.
+    pub(crate) fn evaluer(recu: usize, route: usize, configuration: usize, nom_route: &'static str) -> Option<Self> {
+        let effectif = match (route, configuration) {
+            (0, 0) => return None,      // les deux désactivés -> aucun plafond
+            (0, c) => c,
+            (r, 0) => r,
+            (r, c) => r.min(c),
+        };
+        (recu > effectif).then_some(Self { recu, route, configuration, nom_route })
+    }
+
+    /// Le plafond qui a EFFECTIVEMENT arrêté la requête.
+    pub(crate) fn plafond(&self) -> usize {
+        match (self.route, self.configuration) {
+            (0, c) => c,
+            (r, 0) => r,
+            (r, c) => r.min(c),
+        }
+    }
+
+    /// LEQUEL a lié — la comparaison elle-même, jamais une valeur en dur.
+    pub(crate) fn qui_lie(&self) -> PlafondQuiLie {
+        match (self.route, self.configuration) {
+            (0, _) => PlafondQuiLie::Configuration,
+            (_, 0) => PlafondQuiLie::Route,
+            (r, c) if r < c => PlafondQuiLie::Route,
+            (r, c) if c < r => PlafondQuiLie::Configuration,
+            _ => PlafondQuiLie::ExAequo,
+        }
+    }
+
+    /// CE QUE LE REFUS DIT. Le geste TOUJOURS possible (scinder) vient en premier parce qu'il ne
+    /// dépend d'aucun droit d'administration ; le levier n'est proposé QUE quand il agit.
+    pub(crate) fn message(&self) -> String {
+        let (recu, plafond, route, conf, nom) = (self.recu, self.plafond(), self.route, self.configuration, self.nom_route);
+        let leviers = match self.qui_lie() {
+            PlafondQuiLie::Route => format!(
+                "c'est le plafond PROPRE À LA ROUTE {nom} ({route}) qui lie, pas PLUME_INGEST_MAX_EVENTS \
+                 ({conf}) : relever cette variable ne changerait RIEN ici"),
+            // `route == 0` = la route n'a pas de plafond propre (convention « 0 = désactivé »). Écrire
+            // « jusqu'au plafond de la route (0) » serait absurde : on dit alors qu'il n'y en a pas.
+            PlafondQuiLie::Configuration if route == 0 => format!(
+                "c'est PLUME_INGEST_MAX_EVENTS ({conf}) qui lie, et la route {nom} n'a pas de plafond \
+                 propre : le relever suffit"),
+            PlafondQuiLie::Configuration => format!(
+                "c'est PLUME_INGEST_MAX_EVENTS ({conf}) qui lie : vous pouvez le relever jusqu'au plafond \
+                 de la route {nom} ({route}), au-delà duquel il n'aurait plus d'effet"),
+            PlafondQuiLie::ExAequo => format!(
+                "les deux plafonds valent {plafond} (route {nom} et PLUME_INGEST_MAX_EVENTS) : relever la \
+                 variable SEULE ne déplacerait rien, la constante de route prendrait le relais"),
+        };
+        format!("trop d'events dans une seule requête ({recu} > plafond {plafond}) — scindez le lot et réémettez ; {leviers}")
+    }
+}
+
 /// GARDE DISQUE (effet) — à appeler AVANT toute écriture spool. Renvoie `Some(503 + Retry-After)` si le
 /// volume du spool est en pré-saturation (refus EXPLICITE, l'agent réémet), `None` sinon (ingest autorisé).
 pub(crate) fn ingest_disk_guard(st: &AppState) -> Option<Response> {

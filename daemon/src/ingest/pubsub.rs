@@ -44,7 +44,7 @@ use crate::*;
 /// Plafond DUR d'events matérialisés par requête Pub/Sub (une push livre normalement UNE LogEntry ; un array/
 /// ND-JSON défensif peut multiplier). Combiné avec `st.ingest_max_events` (le plus petit gagne) -> ACK-DROP
 /// au-delà (message unique pathologique = poison, jamais un 413-rejoue). Miroir de `FIREHOSE_MAX_EVENTS`.
-const PUBSUB_MAX_EVENTS: usize = 50_000;
+pub(crate) const PUBSUB_MAX_EVENTS: usize = 50_000;
 
 /// ACK Pub/Sub de SUCCÈS (données spoolées) : HTTP 200 `{"status":"ok"}` (petit corps). 2xx -> ACK, pas de rejeu.
 fn pubsub_ok() -> Response {

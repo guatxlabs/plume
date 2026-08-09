@@ -81,6 +81,12 @@ spec:
             # Mets PLUME_BACKUP_REQUIRE_ASYMMETRIC=1 pour REFUSER ce repli.
             # - { name: PLUME_BACKUP_AGE_RECIPIENT, value: "age1..." }
             # - { name: PLUME_BACKUP_REQUIRE_ASYMMETRIC, value: "1" }
+            # Facteur de travail scrypt du repli par passphrase, borné [10, 20]. Défaut 12 =
+            # 4 194 304 octets de tampon — FIXE, donc la sauvegarde ne dépend plus de la vitesse du
+            # nœud (avant le 2026-08-09, `age` l'étalonnait au chrono : 19 à 20 mesurés en release,
+            # soit 512 Mio à 1 Gio sous un budget de 2 Gio). À ne relever QUE si PLUME_DB_KEY est une
+            # phrase tapée par un humain — le tier froid protège déjà le même secret à log_n=12.
+            # - { name: PLUME_BACKUP_SCRYPT_LOG_N, value: "12" }
             #
             # Auto-vacuum incrémental (non bloquant). INOPÉRANT — avec un warn honnête, jamais de
             # VACUUM plein bloquant — si la base n'est pas en `auto_vacuum=INCREMENTAL` (`db-stats`).

@@ -123,6 +123,36 @@ tenir un escrow hors-ligne.
   identité privée si fournie) et age apparie selon le stanza de l'en-tête. Aucune option à choisir
   manuellement.
 
+### Le facteur de travail scrypt du mode passphrase (à lire AVANT un DR sur une vieille archive)
+
+Depuis le **2026-08-09** (P8.6-b) plume écrit un facteur **FIXE**, `log_n = 12` → **4 194 304 octets**
+de tampon, et accepte à la lecture jusqu'à **`log_n = 20` → 1 073 741 824 octets**.
+
+**Avant cette date, `age` choisissait ce facteur par un étalonnage au chronomètre à chaque
+sauvegarde.** Mesuré le 2026-08-09 sur une machine 12 cœurs, trois appels de suite : `13, 14, 14` en
+binaire *debug* mais **`19, 19, 20` en *release*** — soit **512 Mio à 1 Gio** de RAM réclamés par le
+seul KDF, sous un budget de 2 Gio, et tirés au sort d'une sauvegarde à l'autre.
+
+Ce que ça change pour un DR :
+
+- **Vos archives symétriques d'avant le 2026-08-09 restent restaurables** — le plafond de 20 est
+  précisément dimensionné pour elles — mais la restauration **allouera jusqu'à 1 Gio** le temps du
+  KDF. Prévoyez la RAM sur la machine de restauration.
+- Un `.age` exigeant **plus** de `log_n = 20` est **refusé**, et le refus le dit : facteur exigé,
+  octets exigés, plafond, octets du plafond, et le fait que **la passphrase n'est pas en cause**.
+  Recours : déchiffrer hors-ligne avec l'outil `age` sur une machine dotée de la RAM, puis
+  re-sauvegarder avec la version courante.
+- Le refus symétrique était auparavant **fonction de la machine de restauration** : `age` plafonnait
+  à `target_scrypt_work_factor() + 4`, recalculé au chrono là où l'on déchiffre. Mesuré : une archive
+  à `log_n = 19` était **REFUSÉE** (`Excessive work parameter for passphrase`) par un binaire debug et
+  **ACCEPTÉE** par le même code avec le plafond fixe. La restaurabilité est désormais une propriété
+  du **fichier**, plus de la machine.
+- `PLUME_BACKUP_SCRYPT_LOG_N` (borné `[10, 20]`) permet de remonter ce facteur. **Ce n'est utile que
+  si vous savez que votre `PLUME_DB_KEY` est une phrase tapée par un humain** : le même secret protège
+  déjà le tier froid à `log_n = 12` (et ses jours-files partent à l'escrow **en copie verbatim**),
+  donc monter le seul backup ne relève aucun plancher d'attaque.
+- Le **mode destinataire age n'a aucun terme KDF** : c'est aussi pour ça qu'il reste le mode recommandé.
+
 ## Pré-requis d'escrow (HORS-cluster — responsabilité opérateur)
 
 1. **Clé SQLCipher** (`PLUME_DB_KEY`) — à escrow. Requise pour **tout** restore (le restore

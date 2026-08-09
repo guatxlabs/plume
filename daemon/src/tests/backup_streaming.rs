@@ -25,9 +25,274 @@
     // qui lit précisément l'ABSENCE de cette variable.
     // ============================================================================================
 
-    /// Sérialise les tests qui posent `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT` (env PROCESS-global, lu à
-    /// chaque backup). Cette variable n'est touchée QUE par ce module -> le verrou suffit.
+    /// Sérialise les tests qui posent `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT` (env PROCESS-global, relu à
+    /// CHAQUE backup). Cette variable n'est touchée QUE par ce module -> le verrou suffit. Tout test qui
+    /// la LIT — y compris indirectement, en appelant `backup_compressed` — doit le prendre : sinon un
+    /// voisin peut faire basculer le chemin au milieu de la mesure.
+    ///
+    /// `PLUME_BACKUP_SCRYPT_LOG_N` n'apparaît volontairement PAS ici : AUCUN test ne la pose. La
+    /// décision qu'elle pilote est une fonction PURE (`scrypt_log_n_depuis`) qu'on éprouve en lui
+    /// passant la chaîne. Poser la vraie variable aurait imposé son facteur de travail à la trentaine de
+    /// tests voisins qui sauvegardent par passphrase SANS ce verrou — jusqu'à 1 073 741 824 octets de
+    /// scrypt chacun. Une borne ne s'éprouve pas en armant la bombe.
     static BACKUP_PATH_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    /// Le `log_n` ANNONCÉ par la strophe `-> scrypt <sel> <log_n>` de l'en-tête age d'un fichier.
+    /// `None` s'il n'y a pas de strophe scrypt (cas d'un fichier chiffré à un destinataire x25519) :
+    /// c'est ce `None` qui sert de TÉMOIN NÉGATIF — un lecteur qui rendrait toujours une valeur ne
+    /// prouverait rien. L'en-tête age v1 est du texte ASCII en tête de fichier, donc 512 octets suffisent
+    /// très largement (la strophe est en 2ᵉ ligne).
+    fn bkst_log_n_annonce(chemin: &str) -> Option<u32> {
+        let octets = std::fs::read(chemin).expect("relecture de l'en-tête age");
+        String::from_utf8_lossy(&octets[..512.min(octets.len())])
+            .lines()
+            .find_map(|l| l.strip_prefix("-> scrypt ").and_then(|a| a.split_whitespace().nth(1)).and_then(|n| n.parse().ok()))
+    }
+
+    /// Réécrit le `log_n` de la strophe scrypt d'un `.age` EXISTANT, sans rien rechiffrer. Sert à
+    /// FABRIQUER un fichier qui EXIGE un facteur de travail donné pour un coût nul : `age` compare
+    /// `log_n` au plafond de l'identité AVANT d'exécuter le moindre tour de scrypt
+    /// (`age-0.11.3/src/scrypt.rs`, le `if log_n > self.max_work_factor` précède l'appel à `scrypt`).
+    /// Produire pour de vrai un fichier à log_n=21 coûterait 2 Gio et des minutes ; le forger coûte un
+    /// `replace`. Le fichier résultant est évidemment INDÉCHIFFRABLE (la clé dérivée ne correspondra
+    /// plus) — c'est sans importance : on n'éprouve que la borne, et le témoin ci-dessous montre
+    /// justement qu'un log_n SOUS le plafond échoue d'une AUTRE manière.
+    fn bkst_forge_log_n(source: &str, dest: &str, nouveau_log_n: u32) {
+        let octets = std::fs::read(source).expect("lecture du backup source");
+        let tete_len = 512.min(octets.len());
+        let tete = String::from_utf8_lossy(&octets[..tete_len]).into_owned();
+        let ligne = tete.lines().find(|l| l.starts_with("-> scrypt "))
+            .expect("le fichier source doit porter une strophe scrypt").to_string();
+        let sel = ligne.split_whitespace().nth(2).expect("sel de la strophe").to_string();
+        let remplacee = format!("-> scrypt {sel} {nouveau_log_n}");
+        let mut sortie = tete.replacen(&ligne, &remplacee, 1).into_bytes();
+        sortie.extend_from_slice(&octets[tete_len..]);
+        std::fs::write(dest, &sortie).expect("écriture du backup forgé");
+        assert_eq!(bkst_log_n_annonce(dest), Some(nouveau_log_n),
+            "la forge doit avoir réellement changé le log_n annoncé (sinon le test ne mesure rien)");
+    }
+
+    /// Base SQLCipher MINUSCULE (une table, une ligne) : de quoi produire un `.age` valide sans payer
+    /// une seconde de dump. Les tests de KDF n'éprouvent que l'enveloppe, jamais la charge.
+    fn bkst_seed_minuscule(path: &str, key: &str) {
+        let w = open_db_keyed(path, Some(key)).unwrap();
+        w.execute_batch("CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT NOT NULL);").unwrap();
+        w.execute("INSERT INTO t(id,v) VALUES(1,'kdf')", []).unwrap();
+    }
+
+    /// LE FACTEUR DE TRAVAIL SCRYPT ÉCRIT EST FIXE, BORNÉ, ET NE DÉPEND PLUS DE LA MACHINE (P8.6-b).
+    ///
+    /// CE QU'IL Y AVAIT AVANT, MESURÉ LE 2026-08-09 sur cette machine (12 cœurs), en appelant trois fois
+    /// de suite `age::Encryptor::with_user_passphrase` et en RELISANT le `log_n` de l'en-tête produit :
+    ///     profil `debug`   (= ce que compile `cargo test`) : 13, 14, 14   ->   8 Mio /  16 Mio
+    ///     profil `release` (= LA PRODUCTION)               : 19, 19, 20   -> 512 Mio / 1024 Mio
+    /// Le même code, la même machine, la même base : le tampon scrypt variait d'un facteur 128 selon le
+    /// profil de compilation, et d'un facteur 2 d'un appel à l'autre. Sous un budget de 2 Gio, le chemin
+    /// par DÉFAUT pouvait donc réclamer LA MOITIÉ DU BUDGET sur un coup de dé.
+    ///
+    /// CE QUE CE TEST VERROUILLE : le `.age` produit annonce TOUJOURS le même facteur, ce facteur est
+    /// celui que le code déclare, et son tampon tient sous une borne écrite EN DUR ICI (donc relever la
+    /// constante sans relire ce raisonnement fait ROUGIR ce test — la borne n'est pas dérivée de la
+    /// constante qu'elle surveille).
+    ///
+    /// VALIDATION DE L'INSTRUMENT, dans les deux sens :
+    ///   - TÉMOIN POSITIF : le lecteur de strophe voit AUSSI le facteur d'un fichier qu'on n'a pas
+    ///     produit — celui qu'`age` choisit tout seul — et on l'IMPRIME (sans l'asserter : c'est
+    ///     précisément la valeur non déterministe que le correctif retire) ;
+    ///   - TÉMOIN NÉGATIF : sur un backup chiffré à un destinataire x25519, il n'y a AUCUNE strophe
+    ///     scrypt et le lecteur rend `None`. Un lecteur qui rendrait toujours quelque chose ne prouverait
+    ///     rien.
+    ///
+    /// CE TEST NE POSE AUCUNE VARIABLE D'ENVIRONNEMENT, et c'est la leçon du 2026-08-08 appliquée en
+    /// amont : il compare le facteur observé à ce que le résolveur DÉCIDE ici et maintenant
+    /// (`backup_scrypt_log_n()`), et vérifie SÉPARÉMENT, par la fonction PURE, que le défaut vaut bien
+    /// 12. Un opérateur qui aurait posé `PLUME_BACKUP_SCRYPT_LOG_N` dans son shell ne le fait donc pas
+    /// rougir à tort — et surtout, aucun voisin ne se voit imposer un facteur de travail par ce test.
+    #[test]
+    fn le_facteur_scrypt_ecrit_est_fixe_borne_et_independant_de_la_machine() {
+        let _env = BACKUP_PATH_ENV_LOCK.lock();
+        let _tmpg = crate::tmp_possede::TmpPossede::neuf("bkst-kdf-fixe");
+        let root = _tmpg.racine().chemin().to_path_buf();
+        let key = "facteur-scrypt-fixe-passphrase";
+        let src = root.join("src.db").to_string_lossy().into_owned();
+        bkst_seed_minuscule(&src, key);
+
+        // --- LA PROPRIÉTÉ : trois sauvegardes, trois fois le MÊME facteur, et c'est le nôtre. ---------
+        let mut vus = Vec::new();
+        for i in 0..3 {
+            let dest = root.join(format!("bk-{i}.age")).to_string_lossy().into_owned();
+            backup_compressed(&src, &dest, Some(key), None).expect("sauvegarde par passphrase OK");
+            vus.push(bkst_log_n_annonce(&dest).expect("le chemin par passphrase doit produire une strophe scrypt"));
+        }
+        eprintln!("[kdf-fixe] log_n annoncés par trois sauvegardes consécutives : {vus:?} \
+                   (tampon {} o chacun)", crate::backup::scrypt_tampon_octets(vus[0] as u8));
+        assert!(vus.iter().all(|n| *n == vus[0]),
+            "le facteur écrit doit être le MÊME à chaque sauvegarde ; observé {vus:?}");
+        assert_eq!(vus[0], crate::backup::backup_scrypt_log_n() as u32,
+            "le facteur écrit doit être celui que le résolveur DÉCIDE ({}) ; observé {}",
+            crate::backup::backup_scrypt_log_n(), vus[0]);
+        // ...et le DÉFAUT (réglage absent) est 12 — établi par la fonction PURE, sans toucher à l'env.
+        assert_eq!(crate::backup::scrypt_log_n_depuis(""), crate::backup::BACKUP_SCRYPT_LOG_N_DEFAUT);
+        assert_eq!(crate::backup::BACKUP_SCRYPT_LOG_N_DEFAUT, 12,
+            "le défaut du chemin par passphrase doit rester 12 (cf. section « FACTEUR DE TRAVAIL SCRYPT »)");
+
+        // --- LA BORNE, ÉCRITE EN DUR (pas dérivée de la constante surveillée) : 4 194 304 octets, soit
+        // 0,2 % du budget de 2 Gio, contre les 1 073 741 824 o (50 % du budget) mesurés avant. Relever
+        // `BACKUP_SCRYPT_LOG_N_DEFAUT` fait rougir ICI, en nommant les deux nombres.
+        let tampon = crate::backup::scrypt_tampon_octets(crate::backup::BACKUP_SCRYPT_LOG_N_DEFAUT);
+        assert_eq!(tampon, 4_194_304,
+            "le tampon scrypt par défaut doit valoir 4 194 304 o (log_n=12) ; il vaut {tampon} o \
+             (log_n={}) — si c'est voulu, c'est le raisonnement de la section « FACTEUR DE TRAVAIL \
+             SCRYPT » de backup.rs qu'il faut rouvrir, pas ce nombre qu'il faut suivre",
+            crate::backup::BACKUP_SCRYPT_LOG_N_DEFAUT);
+
+        // --- TÉMOIN POSITIF de l'instrument : il lit aussi un facteur qu'on n'a PAS écrit. ------------
+        let temoin = root.join("temoin-age.age").to_string_lossy().into_owned();
+        {
+            let e = age::Encryptor::with_user_passphrase(age::secrecy::SecretString::from(key.to_string()));
+            let f = std::fs::File::create(&temoin).unwrap();
+            let mut w = e.wrap_output(f).unwrap();
+            std::io::Write::write_all(&mut w, b"charge").unwrap();
+            w.finish().unwrap();
+        }
+        let calibre = bkst_log_n_annonce(&temoin)
+            .expect("l'instrument doit voir la strophe scrypt d'un fichier produit par le défaut d'age");
+        eprintln!("[kdf-fixe] TÉMOIN — `age` livré à lui-même a choisi log_n={calibre} sur CE binaire \
+                   (tampon {} o). C'est cette valeur-là qui n'est plus utilisée.",
+                  crate::backup::scrypt_tampon_octets(calibre as u8));
+
+        // --- TÉMOIN NÉGATIF : pas de strophe scrypt du tout sur le chemin asymétrique. ----------------
+        let identite = age::x25519::Identity::generate();
+        let asym = root.join("bk-asym.age").to_string_lossy().into_owned();
+        backup_compressed(&src, &asym, Some(key), Some(&identite.to_public().to_string()))
+            .expect("sauvegarde asymétrique OK");
+        assert_eq!(bkst_log_n_annonce(&asym), None,
+            "un backup à destinataire x25519 n'a AUCUNE strophe scrypt : l'instrument doit rendre None \
+             (sinon il rend n'importe quoi et les assertions ci-dessus ne valent rien)");
+    }
+
+    /// LE PLAFOND DE LECTURE EST FIXE, IL COUVRE L'HISTORIQUE, ET IL REFUSE EN LE DISANT (P8.6-b).
+    ///
+    /// POURQUOI UN PLAFOND FIXE. `age::scrypt::Identity::new` pose `target_scrypt_work_factor() + 4`,
+    /// c'est-à-dire un plafond RECALCULÉ AU CHRONO sur la machine qui déchiffre. La restaurabilité d'un
+    /// backup dépendait donc de la machine du DR : produit en release sur ce poste (log_n=20 mesuré), il
+    /// aurait été REFUSÉ par un binaire debug du même poste (target=13 -> plafond 17).
+    ///
+    /// CE QUE CE TEST VERROUILLE :
+    ///   1. le plafond couvre TOUT ce que le défaut au chrono a pu écrire avant le correctif — 18 documenté
+    ///      par age pour « une machine moderne », 19 et 20 MESURÉS ici en release le 2026-08-09 ;
+    ///   2. il refuse ce qui ne tient pas dans le budget (log_n=21 -> 2 147 483 648 o = le budget entier) ;
+    ///   3. quand il refuse, il DIT quoi : le facteur exigé, son prix en octets, le plafond et son prix.
+    ///      Sans cela, un DR reçoit « passphrase incorrecte ? » pour une passphrase parfaitement bonne.
+    ///
+    /// LE TÉMOIN QUI EMPÊCHE DE SE MENTIR : le même fichier forgé à un log_n SOUS le plafond échoue lui
+    /// aussi (la clé dérivée ne correspond plus), mais d'une AUTRE manière — sans le mot « plafonne ».
+    /// Sans ce témoin, « ça échoue » se lirait « la borne a mordu » aussi bien que « la forge casse tout ».
+    #[test]
+    fn le_plafond_scrypt_de_lecture_est_fixe_couvre_l_historique_et_refuse_au_dela() {
+        let _env = BACKUP_PATH_ENV_LOCK.lock(); // `backup_compressed` lit PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT
+        use crate::backup::{scrypt_tampon_octets, BACKUP_SCRYPT_MAX_LOG_N};
+
+        // (1) LA COUVERTURE HISTORIQUE, en dur : abaisser le plafond sous 20 rendrait illisibles des
+        //     backups que plume a réellement produits.
+        assert!(BACKUP_SCRYPT_MAX_LOG_N >= 20,
+            "le plafond de lecture ({BACKUP_SCRYPT_MAX_LOG_N}) doit couvrir les facteurs que le défaut au \
+             chrono produisait : 18 documenté par age, 19 et 20 MESURÉS en release le 2026-08-09. \
+             L'abaisser rend des backups légitimes indéchiffrables — c'est une perte de données.");
+        // (2) ...et le budget, en dur aussi : à 21 le tampon vaut à lui seul les 2 Gio du démon.
+        assert!(scrypt_tampon_octets(BACKUP_SCRYPT_MAX_LOG_N) <= 1_073_741_824,
+            "le plafond de lecture ({BACKUP_SCRYPT_MAX_LOG_N} -> {} o) doit rester sous 1 073 741 824 o : \
+             au cran suivant, le KDF seul consomme le budget de 2 Gio et un fichier hostile devient un OOM",
+            scrypt_tampon_octets(BACKUP_SCRYPT_MAX_LOG_N));
+
+        // (3) LE REFUS, ET CE QU'IL DIT.
+        let _tmpg = crate::tmp_possede::TmpPossede::neuf("bkst-kdf-plafond");
+        let root = _tmpg.racine().chemin().to_path_buf();
+        let key = "plafond-scrypt-passphrase";
+        let src = root.join("src.db").to_string_lossy().into_owned();
+        bkst_seed_minuscule(&src, key);
+        let bon = root.join("bon.age").to_string_lossy().into_owned();
+        backup_compressed(&src, &bon, Some(key), None).expect("sauvegarde par passphrase OK");
+
+        let au_dela = (BACKUP_SCRYPT_MAX_LOG_N as u32) + 1;
+        let forge_haut = root.join("forge-haut.age").to_string_lossy().into_owned();
+        bkst_forge_log_n(&bon, &forge_haut, au_dela);
+        let dest_db = root.join("restaure.db").to_string_lossy().into_owned();
+        let err_haut = restore_compressed(&forge_haut, &dest_db, Some(key), true, None)
+            .expect_err("un backup exigeant plus que le plafond doit être REFUSÉ");
+        eprintln!("[kdf-plafond] refus à log_n={au_dela} : {err_haut}");
+        for attendu in [&format!("log_n={au_dela}"), &scrypt_tampon_octets(au_dela as u8).to_string(),
+                        &format!("log_n={BACKUP_SCRYPT_MAX_LOG_N}"), &"passphrase n'est PAS en cause".to_string()] {
+            assert!(err_haut.contains(attendu.as_str()),
+                "le refus doit contenir {attendu:?} — il dit : {err_haut}");
+        }
+
+        // (4) LE TÉMOIN : SOUS le plafond, la forge échoue AUTREMENT (pas sur la borne). 13 est choisi
+        //     parce qu'il coûte ~1 s en debug (8 Mio) : le test paie un vrai tour de scrypt pour prouver
+        //     que la borne a bien été FRANCHIE, et pas seulement que le fichier est cassé.
+        let forge_bas = root.join("forge-bas.age").to_string_lossy().into_owned();
+        bkst_forge_log_n(&bon, &forge_bas, 13);
+        let err_bas = restore_compressed(&forge_bas, &dest_db, Some(key), true, None)
+            .expect_err("un fichier forgé reste indéchiffrable : la clé dérivée ne correspond plus");
+        eprintln!("[kdf-plafond] TÉMOIN — échec à log_n=13 (sous le plafond) : {err_bas}");
+        assert!(!err_bas.contains("plume plafonne"),
+            "à log_n=13 la borne n'a PAS mordu : l'échec doit venir du déchiffrement, pas du plafond. \
+             Il dit : {err_bas}");
+    }
+
+    /// LE FACTEUR EST RÉGLABLE, ET LES RÉGLAGES ABSURDES SONT REFUSÉS EN LE DISANT.
+    ///
+    /// `PLUME_BACKUP_SCRYPT_LOG_N` existe pour l'opérateur qui SAIT que sa `PLUME_DB_KEY` est un mot de
+    /// passe tapé par un humain et veut racheter de l'étirement. Il est borné des DEUX côtés : en bas par
+    /// le point de départ de l'étalonnage d'age (10), en haut par ce que plume sait relire
+    /// (`BACKUP_SCRYPT_MAX_LOG_N`) — sinon plume écrirait un fichier qu'il refuserait lui-même.
+    /// Une valeur hors bornes n'est pas silencieusement écrêtée : elle est IGNORÉE et DITE.
+    ///
+    /// Test PUR au sens FORT : il n'exécute aucun scrypt **et ne touche à AUCUNE variable
+    /// d'environnement**. Ce second point est la leçon du 2026-08-08 (P8.6-a) appliquée en amont —
+    /// poser `PLUME_BACKUP_SCRYPT_LOG_N=20` pour éprouver la borne haute l'aurait posé pour TOUT le
+    /// processus, et la trentaine de tests voisins qui sauvegardent par passphrase sans verrou auraient
+    /// payé un scrypt de 1 073 741 824 octets. La décision est PURE, donc elle se lit sans rien poser.
+    #[test]
+    fn le_facteur_scrypt_est_reglable_et_ses_bornes_sont_dites() {
+        use crate::backup::{scrypt_log_n_depuis, scrypt_tampon_octets,
+                            BACKUP_SCRYPT_LOG_N_DEFAUT, BACKUP_SCRYPT_MAX_LOG_N, BACKUP_SCRYPT_MIN_LOG_N};
+        let defaut = BACKUP_SCRYPT_LOG_N_DEFAUT;
+
+        assert_eq!(scrypt_log_n_depuis(""), defaut, "absente -> le défaut");
+        assert_eq!(scrypt_log_n_depuis("  "), defaut, "vide/espaces -> le défaut");
+        assert_eq!(scrypt_log_n_depuis(" 14 "), 14, "les espaces autour d'une valeur valide sont tolérés");
+
+        // ACCEPTÉES : les deux bornes elles-mêmes, et une valeur intermédiaire. Les bornes sont INCLUSES —
+        // un test qui n'éprouverait que l'intérieur laisserait passer un `<` mis pour un `<=`.
+        for n in [BACKUP_SCRYPT_MIN_LOG_N, defaut + 1, BACKUP_SCRYPT_MAX_LOG_N] {
+            assert_eq!(scrypt_log_n_depuis(&n.to_string()), n,
+                "log_n={n} est dans [{BACKUP_SCRYPT_MIN_LOG_N}, {BACKUP_SCRYPT_MAX_LOG_N}] : il doit être retenu");
+        }
+        // REFUSÉES : sous le plancher, au-dessus du plafond, non numérique. Toutes -> le défaut.
+        for brut in [(BACKUP_SCRYPT_MIN_LOG_N - 1).to_string(), (BACKUP_SCRYPT_MAX_LOG_N + 1).to_string(),
+                     "0".to_string(), "63".to_string(), "quatorze".to_string(), "12.5".to_string(),
+                     "-1".to_string(), "999".to_string()] {
+            assert_eq!(scrypt_log_n_depuis(&brut), defaut,
+                "PLUME_BACKUP_SCRYPT_LOG_N={brut:?} est hors bornes ou illisible : le défaut doit rester");
+        }
+        // JAMAIS plume n'écrit ce qu'il refuserait de relire : la borne haute du réglage EST le plafond
+        // de lecture. Sans cette égalité, un opérateur pourrait produire des archives illisibles.
+        assert_eq!(scrypt_log_n_depuis(&BACKUP_SCRYPT_MAX_LOG_N.to_string()), BACKUP_SCRYPT_MAX_LOG_N);
+        assert_eq!(scrypt_log_n_depuis(&(BACKUP_SCRYPT_MAX_LOG_N + 1).to_string()), defaut);
+
+        // Le calcul du tampon est celui d'age (128·r·2^log_n, r=8), pas une approximation : il porte les
+        // chiffres que les messages de refus impriment.
+        assert_eq!(scrypt_tampon_octets(10), 1_048_576);
+        assert_eq!(scrypt_tampon_octets(12), 4_194_304);
+        assert_eq!(scrypt_tampon_octets(20), 1_073_741_824);
+        // ...et il est TOTAL : `age` accepte log_n jusqu'à 63 dans une strophe, et 2^(10+54) ne tient
+        // plus dans un u64. C'est précisément la valeur la plus hostile qui atteint le message de refus :
+        // il doit la chiffrer, pas paniquer dessus. (Défaut trouvé par ce test avant d'être corrigé.)
+        assert_eq!(scrypt_tampon_octets(53), 1u64 << 63, "dernière valeur représentable");
+        assert_eq!(scrypt_tampon_octets(54), u64::MAX, "au-delà : saturation, jamais de débordement");
+        assert_eq!(scrypt_tampon_octets(63), u64::MAX, "le maximum qu'une strophe age puisse annoncer");
+    }
 
     /// Base SQLCipher au SCHÉMA RÉEL de plume (`db/schema.sql` + toute la chaîne de migrations, donc la
     /// FTS5 à contenu externe `event_fts` et ses déclencheurs) peuplée de `n` événements. C'est la base

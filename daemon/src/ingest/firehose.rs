@@ -28,7 +28,7 @@ use crate::*;
 const FIREHOSE_MAX_RECORDS: usize = 10_000;
 /// Plafond DUR d'events matérialisés par requête (une enveloppe CloudTrail `{"Records":[…]}` peut multiplier).
 /// Combiné avec `st.ingest_max_events` (le plus petit gagne) -> 413 au-delà. Miroir de `HEC_MAX_EVENTS`.
-const FIREHOSE_MAX_EVENTS: usize = 50_000;
+pub(crate) const FIREHOSE_MAX_EVENTS: usize = 50_000;
 /// Cap de DÉCOMPRESSION gzip du corps Firehose (défaut 16 Mio) — anti-bombe : un corps sous le plafond de `limite_corps` (défaut 8 Mio)
 /// peut se décompresser en centaines de Mio -> OOM du pod 2 Gio. MÊME borne prudente que le récepteur OTLP
 /// (JSON matérialisé entier avant les caps records/events). Env-override `PLUME_FIREHOSE_MAX_DECOMPRESS` (>=1).
@@ -176,6 +176,12 @@ pub(crate) async fn firehose_ingest_post(
         for decoded in firehose_decode_record_data(data, &records_path) {
             if let Some(ev) = httppull_map_record(&decoded, &cfg, ident.connector_id) {
                 events.push(ev);
+                // NB (P4.1-p, survol du 2026-08-09) : ce refus ne nomme AUCUN levier, et c'est
+                // volontairement laissé tel quel — contrairement à MinIO, il ne peut pas mentir sur le
+                // remède puisqu'il n'en propose pas. Il ne peut pas non plus chiffrer ce qu'il a reçu :
+                // la boucle s'ARRÊTE au plafond (pour ne pas mapper au-delà), donc `events.len()` vaut
+                // le plafond + 1, pas le total émis. Le verdict « qui lie » est en revanche mesuré et
+                // verrouillé par `le_plafond_qui_lie_est_mesure_sur_les_cinq_routes_d_ingestion`.
                 if events.len() > max_events {
                     return firehose_err(StatusCode::PAYLOAD_TOO_LARGE, &request_id, "too many events in one request — reduce Firehose buffer and resend");
                 }

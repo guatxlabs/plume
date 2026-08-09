@@ -318,7 +318,10 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
             "rollup_ticks_total": SCHED_ROLLUP_TICKS.load(Ordering::Relaxed),
             "rollup_last_tick": SCHED_ROLLUP_LAST_TS.load(Ordering::Relaxed),
         },
-        "db": { "size_bytes": db_size_bytes(db_path) },
+        // `ventilation` = la DERNIÈRE tentative du tick lent, servie DEPUIS LE CACHE : lire /metrics ou
+        // le panneau Système ne déclenche JAMAIS un parcours dbstat (35,4 s mesurés en production).
+        // `null` = jamais mesuré ; `{"mesuree":false,…}` = mesure REFUSÉE (jamais un objet de zéros).
+        "db": { "size_bytes": db_size_bytes(db_path), "ventilation": ventilation_serie::json(&ventilation_serie::derniere(), now_ts) },
         "alerts_open": alerts_open,
         "posture": posture,
         "components": components,
@@ -368,6 +371,11 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     g(&mut o, "plume_scheduler_rule_ticks_total", "counter", "Ticks du scheduler de règles", "/scheduler/rule_ticks_total");
     g(&mut o, "plume_scheduler_rollup_ticks_total", "counter", "Ticks de la boucle de rollup", "/scheduler/rollup_ticks_total");
     g(&mut o, "plume_db_size_bytes", "gauge", "Taille de la base (db + wal, octets)", "/db/size_bytes");
+    // VENTILATION PAR POSTE — servie depuis le CACHE du tick lent, jamais recalculée ici (un scrape ne
+    // peut pas déclencher 35 s de parcours dbstat). Le rendu N'EST PAS passé par `g()` : ce helper
+    // n'imprime que ce qu'il trouve, mais il ne sait pas dire « refusé » — or ici l'ABSENCE des jauges
+    // d'octets EST le message quand la comptabilité n'a pas fermé. Cf. `ventilation_serie`.
+    o.push_str(&ventilation_serie::exposition_prom(&ventilation_serie::derniere(), now()));
     g(&mut o, "plume_alerts_open", "gauge", "Alertes ouvertes (status=new)", "/alerts_open");
     // santé par composant : jauge 1/0.5/0 (V/J/R) étiquetée par composant (constantes).
     o.push_str("# HELP plume_component_up Santé par composant (1=vert, 0.5=jaune, 0=rouge)\n# TYPE plume_component_up gauge\n");

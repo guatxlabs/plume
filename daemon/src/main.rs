@@ -52,6 +52,7 @@ pub(crate) use ingest::*;
 mod query_exec;
 pub(crate) use query_exec::*;
 mod db_ventilation; // OÙ PARTENT LES OCTETS : ventilation par objet, DÉRIVÉE du schéma (opt-in, dbstat parcourt tout)
+mod ventilation_serie; // LA MÊME MESURE, DANS LE TEMPS : tick lent -> table `metric` -> `metric_rollup` (90 j) -> SOQL `metric`. Un refus de publier reste un TROU, jamais un zéro
 mod limite_corps; // LE PLAFOND DE TAILLE D'UN CORPS INGERE : la limite qui MORD comptait des octets et ne le disait pas -> un seul auteur pour ce plafond ET pour son message
 mod sqlite_plafond; // LE PLAFOND MÉMOIRE D'UNE LECTURE : sous `temp_store` en mémoire, SQLite n'a AUCUN chemin de code pour déverser un tri -> un seul auteur pour ce budget
 mod query_timing; // LE DÉCOUPAGE DU TEMPS D'UNE REQUÊTE : l'attente d'un permit n'est fabricable QUE par l'acquisition
@@ -1564,9 +1565,13 @@ fn main() {
         println!("  freelist = {:.1} MiB ({free} o, {pct:.1}% RÉCUPÉRABLE par VACUUM)", mib(free));
         println!("  live     = {:.1} MiB", mib(total - free));
         println!("  events   = {events}");
-        // VENTILATION OPT-IN. `dbstat` PARCOURT toutes les pages (~49 s mesurées sur 3,9 Gio) : le
-        // `db-stats` par défaut, celui qu'un exploitant lance en prod pour décider d'un reclaim,
-        // reste INSTANTANÉ. On ne rend pas une commande d'exploitation lente par surprise.
+        // VENTILATION OPT-IN. `dbstat` PARCOURT toutes les pages : MESURÉ le 2026-08-09 sur la
+        // production, **35,4 s pour 1 586,8 Mio, soit 22,9 s/Gio** (SQLCipher, pod limité à 2 cœurs ;
+        // 35,9 s au 1er appel contre 35,4 s au 2ᵉ -> le coût est CPU, pas disque). Le `db-stats` par
+        // défaut, celui qu'un exploitant lance en prod pour décider d'un reclaim, reste INSTANTANÉ
+        // (1,3 s mesurées au même moment). On ne rend pas une commande d'exploitation lente par
+        // surprise. Pour SUIVRE la ventilation sans la relancer à la main : le tick lent de
+        // `ventilation_serie` l'écrit dans `metric` -> `metric plume_db_poste_bytes by poste`.
         if args.iter().any(|a| a == "--par-objet") {
             match db_ventilation::ventiler(&conn, page_size, page_count, freelist) {
                 Ok(v) => print!("{v}"),
@@ -1575,7 +1580,9 @@ fn main() {
                 Err(e) => eprintln!("  ventilation INDISPONIBLE : {e}"),
             }
         } else {
-            println!("  (ventilation par objet : relancer avec --par-objet — parcourt TOUTES les pages, comptez ~15 s/Gio)");
+            println!("  (ventilation par objet : relancer avec --par-objet — parcourt TOUTES les pages, comptez ~23 s/Gio,");
+            println!("   mesuré le 2026-08-09 en production : 35,4 s pour 1 586,8 Mio. Pour la SUIVRE sans relever à la");
+            println!("   main : `metric plume_db_poste_bytes by poste | timechart span=1d avg(value)`)");
         }
         return;
     }

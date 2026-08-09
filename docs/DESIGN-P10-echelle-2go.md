@@ -20,35 +20,51 @@ levier :
   à état borné. **La compression au repos ne réduit PAS la RAM de tri** — une page compressée est
   déchiffrée+décompressée en RAM avant d'être triée. Il faut les deux leviers.
 
-## 1. LA MESURE — où partent les octets (2026-08-06)
+## 1. LA MESURE — où partent les octets
 
-**Production** (`db-stats`, pod live, lecture seule) : **1 276 MiB** pour **1 573 752 événements** ⇒
-**~850 o/événement** sur disque · freelist **0,8 %** (VACUUM ne rendrait rien, base dense) ·
-auto_vacuum=none. *La base est déjà bien plus petite qu'avant : les retraits d'index P10.2-d + P6.8
-ont payé.*
+> ⚠ **CE TABLEAU A DÉJÀ MENTI UNE FOIS, ET IL FAUT SAVOIR POURQUOI.** Sa première version venait du
+> BANC (3,65 M év., base non chiffrée) et annonçait que « les PROPORTIONS sont indépendantes de
+> l'échelle ». La production l'a contredit : **index 32,8 % → 25,4 %**, **FTS5 8,1 % → 18,9 %**. Une
+> proportion de banc n'est pas une loi. **Et un relevé ne fait pas une série** : entre le 08-08
+> (FTS 18,9 %) et le 08-09 (FTS 10,7 %) l'écart pourrait venir de la compaction `4ca6339`, de
+> l'aging, ou d'un creux de trafic — **deux points ne le disent pas**. C'est ce trou qui est
+> désormais fermé : la MÊME mesure est écrite chaque heure dans `metric` par `ventilation_serie`, et
+> le tableau ci-dessous se **re-dérive sans relever quoi que ce soit** :
+>
+> ```
+> metric plume_db_poste_bytes by poste | timechart span=1d avg(value) by poste
+> ```
+>
+> Les parts se calculent depuis cette série SEULE (la somme des seaux EST le fichier — c'est ce que
+> la comptabilité fermée garantit). Quand la mesure ne peut pas être prise, la série porte un TROU et
+> `plume_db_ventilation_ok` passe à 0 avec sa cause — jamais un zéro d'octets.
 
-**Ventilation par-objet** (banc 3,65 M év., `db-stats --par-objet`, comptabilité FERMÉE ✓ ; les
-PROPORTIONS sont indépendantes de l'échelle) :
+**Production** (`plume-daemon db-stats --par-objet`, pod live, lecture seule, **2026-08-09**) :
+**1 586,8 MiB** / 406 213 pages pour **1 715 910 événements** ⇒ **~970 o/événement** sur disque ·
+freelist **7,3 %** · auto_vacuum=none · comptabilité FERMÉE ✓ · parcours **35,4 s** (22,9 s/Gio).
 
 | poste | part | objets dominants |
 |---|---:|---|
-| **données (tables)** | **56,8 %** | `event` **51,0 %** · `event_rollup` 5,1 % |
-| **index b-tree** | **32,8 %** | `dedup UNIQUE` 6,2 % · rollup-autoindex 5,3 % · `idx_event_host` 3,7 % · `src_srcip`/`sev_srcip`/`src_ts`/`srcip` 4×~2-3 % |
-| **FTS5 (shadow)** | **8,1 %** | `event_fts_data` 6,9 % |
-| freelist | 2,3 % | — |
+| **données (tables)** | **55,7 %** | `event` **53,4 %** |
+| **index b-tree** | **26,3 %** | `sqlite_autoindex_event_1` 4,6 % · `idx_event_src_srcip` 3,1 % · `idx_event_src_ts` 2,6 % · `idx_event_host` 2,6 % · `idx_event_sev_srcip` 2,1 % · `idx_event_srcip` 2,0 % · `idx_event_ts` 1,6 % · `idx_event_category` 1,6 % |
+| **FTS5 (shadow)** | **10,7 %** | `event_fts_data` 9,3 % |
+| NON CLASSÉ | 0,0 % | — |
+| pages libres | 7,3 % | — |
 
 **Trois faits qui commandent la conception :**
 
 1. **La table `event` est la MOITIÉ de la base, et elle est stockée EN CLAIR-PAGE** (SQLCipher
    chiffre la page, mais ne la COMPRESSE pas). Les valeurs sont du log SIEM — `message`, `fields`
    JSON — qui compressent **×10 à ×40** au zstd. C'est le plus gros levier unique, et il est intact.
-2. **Un TIERS de la base est de l'index b-tree.** La compression n'y peut presque rien (ce sont des
+2. **Un QUART de la base est de l'index b-tree** (26,3 % en production ; 32,8 % au banc — l'écart
+   est réel, la part de banc était trop haute). La compression n'y peut presque rien (ce sont des
    clés déjà compactes). Mais un **tier froid colonnaire les ÉLIMINE** : le froid ne porte pas de
    b-tree, il prune par **bloom + zone-maps** (quelques bits par valeur vs une entrée d'index par
    ligne).
-3. **FTS = 8 %**, entièrement **droppable au froid** (une requête froide scanne un row-group borné
-   ou s'appuie sur le bloom ; pas besoin du shadow FTS sur des données rarement fouillées en plein
-   texte).
+3. **FTS ≈ 11 % en production** (contre 8 % annoncés depuis le banc), entièrement **droppable au
+   froid** (une requête froide scanne un row-group borné ou s'appuie sur le bloom ; pas besoin du
+   shadow FTS sur des données rarement fouillées en plein texte). C'est le poste le plus VOLATIL des
+   trois — d'où la série.
 
 ## 2. CE QUI EST DÉJÀ CONSTRUIT (ne pas réinventer)
 
@@ -120,6 +136,13 @@ les SUPPRESSIONS.** Une table FTS5 à contenu externe ne peut pas retirer un pos
 déclencheur `event_ad` en écrit un de SUPPRESSION, qui s'AJOUTE — et l'espace n'est rendu qu'à la
 FUSION DES SEGMENTS, que plume ne déclenchait **jamais**. C'est une part de l'écart entre les 8,1 %
 du banc ci-dessus et les 17,9 % relevés en production : de la **trace d'aging**, pas de la croissance.
+
+> **CE QUE LE RELEVÉ SUIVANT DIT — ET CE QU'IL NE DIT PAS.** Le 2026-08-09, au lendemain du
+> déploiement de ce levier, la production mesure **FTS5 = 10,7 %** (`event_fts_data` 9,3 % sur
+> 1 586,8 Mio). C'est cohérent avec un gain de compaction. **Ce n'est pas une preuve** : trois relevés
+> manuels espacés de jours ne distinguent pas un gain de compaction d'un creux d'ingestion ou d'un
+> aging moins actif. La preuve viendra de la série (`plume_db_poste_bytes{poste="fts"}`, un point par
+> heure depuis ce lot) — c'est exactement la question qu'elle a été construite pour trancher.
 
 Mesuré le 2026-08-09 sur la SQLite exacte du produit (SQLCipher 4.5.3 / SQLite 3.39.4 vendorée,
 PRAGMA de `server::tune`), base au profil de `bench/profile-prod.json`, 1 200 000 événements puis un

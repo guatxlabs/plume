@@ -107,7 +107,24 @@ env:
   # disque). 954 datait du même jour ; +7 viennent du lot P8.7-a — `tests/partition_config.rs` : le
   # scanner qui ferme la partition de lecture de la configuration (2 tests dérivés) et l'annonce de
   # bascule des réglages de sauvegarde (5 tests PURS, aucun ne touche l'environnement du processus).
-  EXPECTED_TESTS: "961"
+  #
+  # 968 : MESURÉ le 2026-08-09 (`cargo test --offline --locked`, rc=0, **167 s**, 12 cœurs, TMPDIR sur
+  # disque, machine partagée avec d'autres travaux — cf. la note de durée ci-dessus, cette machine ne
+  # permet pas d'attribuer un écart de durée au contenu). 961 datait du même jour ; +7 viennent du lot
+  # P8.7-b — `tests/cle_at_rest_voie_unique.rs` : la preuve SUR LES OCTETS qu'une clé écrite dans le
+  # fichier de configuration chiffre désormais la base chaude (1 test, avec son témoin négatif dans le
+  # même corps) et la précédence/annonce (6 tests PURS). Le 8e test du lot est sous `cold_tier`
+  # (`cold_store/tests.rs`) : c'est la moitié FROIDE, elle n'existe pas dans le build par défaut.
+  #
+  # ⚠ CE COMPTE A ÉTÉ MESURÉ DEUX FOIS, ET LA PREMIÈRE ÉTAIT ROUGE. 966 passés / 2 ÉCHOUÉS
+  # (`p3a_advanced_rule_captures_src_ip_and_wizard_prefills_ban_ip`,
+  # `p3a_ambiguous_groupby_leaves_structured_null`, tous deux sur `file is not a database`) : la
+  # première version du lot faisait lire la clé at-rest dans la configuration AMBIANTE, et le test qui
+  # posait `PLUME_CONFIG` faisait appliquer un `PRAGMA key` aux bases EN CLAIR de tests voisins. Un
+  # verrou local n'aurait rien fermé (le partage est entre CELUI qui mute et TOUS ceux qui ouvrent une
+  # base) : `ensure_encrypted` prend désormais la `conf` de son appelant. C'est la suite complète qui
+  # a trouvé ça — pas le filtre `-- p87b`, qui était vert.
+  EXPECTED_TESTS: "968"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -278,7 +295,18 @@ jobs:
           # NB sur la DURÉE : 2317 s contre 2627 s le 08-09 au matin, mais la première exécution a
           # partagé ses cœurs avec un autre `cargo`. Cette machine ne permet pas d'attribuer l'écart
           # au contenu, et le lot ne prétend rien accélérer.
-          EXPECTED_COLD_TESTS: "1156"
+          #
+          # 1164 : MESURÉ le 2026-08-09 (`cargo test --offline --locked --features cold_tier`, rc=0,
+          # **2471 s** de bout en bout dont 2455 s de suite, 12 cœurs, TMPDIR sur DISQUE). 1156 datait
+          # du même jour ; +8 viennent du lot P8.7-b — les 7 de la suite par défaut
+          # (`tests/cle_at_rest_voie_unique.rs`) PLUS UN que la feature ajoute vraiment :
+          # `cold_store::tests::p87b_les_deux_moities_at_rest_derivent_du_meme_appel`, qui compare le
+          # secret de la moitié FROIDE à celui de l'ouverture — il n'a de sens QUE sous `cold_tier`.
+          # L'écart cold−défaut passe donc de 195 à **196**, et c'est la première fois qu'il bouge.
+          # DURÉE, dite honnêtement : 2471 s contre 2317 s le matin même, sur une machine qui portait
+          # d'autres travaux pendant la mesure (un navigateur à 117 % CPU en continu). Cette machine ne
+          # permet pas d'attribuer l'écart au contenu, et le lot ne prétend rien ralentir ni accélérer.
+          EXPECTED_COLD_TESTS: "1164"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

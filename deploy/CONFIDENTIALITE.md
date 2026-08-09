@@ -43,6 +43,12 @@ S'authentifier n'est pas être autorisé : l'autorisation reste `route_min_role`
   `PLUME_DB_KEY=<passphrase>` (lisible via `/proc/<pid>/environ`). Une base neuve est créée chiffrée
   d'office ; une base en clair existante est convertie au boot (idempotent).
   **Sans clé, la base est EN CLAIR** — c'est le défaut. **Perte de la clé = perte de la base.**
+  Les deux variables se lisent **dans l'environnement OU dans `PLUME_CONFIG`** (`/etc/plume/soc.conf`,
+  0640, sur un hôte systemd) — l'environnement gagne. **P8.7-b, 2026-08-09** : avant cette date la voie
+  qui OUVRE la base ne lisait que l'environnement, alors que le tier froid lisait aussi le fichier ; une
+  clé posée dans `soc.conf` seul chiffrait donc les jours-files Parquet et laissait la base chaude — les
+  derniers jours, donc les incidents récents — **en clair sur le disque, sans un mot**. Une seule voie
+  désormais, et la bascule est annoncée au démarrage sur les hôtes concernés.
 - **Complémentaire** : placer `/var/lib/plume` sur un volume chiffré (LUKS, gocryptfs) protège aussi les
   fichiers *autour* de la base (spool, backups en clair, journaux). Les deux se combinent.
 

@@ -179,6 +179,11 @@ Par défaut **la base est en clair sur le disque**. SQLCipher est compilé dans 
 qu'avec une clé : `PLUME_DB_KEY_FILE=/chemin/vers/la/cle` (préféré — un fichier monté en lecture seule,
 **fail‑closed** s'il est absent) ou `PLUME_DB_KEY=<passphrase>` (lisible via `/proc/<pid>/environ`).
 Une base neuve est créée chiffrée d'office ; une base en clair existante est convertie au boot (idempotent).
+Les deux se posent indifféremment **dans l'environnement ou dans le fichier de configuration**
+(`/etc/plume/soc.conf` sur un hôte, 0640 — c'est même l'endroit le plus discret : le fichier n'est pas
+lisible via `/proc/<pid>/environ`) ; l'environnement gagne s'il porte la même clé. *Avant le 2026‑08‑09
+(P8.7‑b) une clé écrite dans le fichier ne chiffrait que le tier froid et laissait la base chaude en
+clair, sans le dire ; si vous êtes dans ce cas, le démon l'annonce au démarrage et convertit la base.*
 **Perte de la clé = perte de la base** : conservez‑la hors de la machine.
 
 ### Désinstallation (hôte)

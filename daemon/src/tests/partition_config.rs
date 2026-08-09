@@ -47,9 +47,14 @@
 ///   - `backup.rs` (1) : la SONDE DE PRÉSENCE de l'annonce de bascule ②
 ///     (`env::var_os(c).is_some()`) : elle ne résout aucune valeur, elle constate si une clé est déjà
 ///     portée par l'environnement pour savoir s'il faut prévenir l'opérateur.
+///   - `crypto/mod.rs` (1) : la MÊME sonde de présence, pour l'annonce de bascule P8.7-b
+///     (`bascule_at_rest(conf, |c| std::env::var(c).ok())`). Elle ne résout aucun réglage : elle
+///     compare ce que l'environnement porte à ce que le fichier porte, pour savoir si la clé at-rest
+///     change d'effet à ce démarrage. La DÉCISION, elle, est une fonction PURE testée sans env.
 const SITES_LECTURE_ENV_NON_LITTERALE: &[(&str, usize)] = &[
     ("ai/mod.rs", 1),
     ("backup.rs", 1),
+    ("crypto/mod.rs", 1),
     ("main.rs", 1),
     ("overlays_oac.rs", 2),
 ];
@@ -66,22 +71,28 @@ const SITES_LECTURE_ENV_NON_LITTERALE: &[(&str, usize)] = &[
 /// `FORCE_PLAINTEXT_EXPORT`, `SCRYPT_LOG_N`, `STAGING_DIR`, `AGE_IDENTITY`, `AGE_IDENTITY_FILE` —
 /// ni les quatre paliers GFS, repliés dans le même lot.
 ///
-/// LE LOT SUIVANT, ET IL EST PIRE QUE CELUI-CI : **`PLUME_DB_KEY`**. C'est la SEULE clé lue par les
-/// DEUX voies, et elles ne s'accordent pas — `crypto::db_key()` (qui ouvre la base) la lit dans
-/// l'environnement SEUL, tandis que `cold_store::crypto` la lit par `cfg()`. MESURÉ le 2026-08-09 sur
-/// une vraie base SQLCipher : la même clé, écrite dans `soc.conf` seulement, donne
-/// `db-stats: base ILLISIBLE … file is not a database` (rc=2) ; posée dans l'environnement, la même
-/// commande rend ses chiffres (rc=0). Un opérateur d'hôte qui met sa clé dans `soc.conf` n'obtient donc
-/// pas une base chiffrée : il obtient une base qu'il ne peut pas ouvrir — pendant que le tier froid,
-/// lui, chiffrerait avec cette clé-là. Ce n'est PAS corrigé ici parce que `db_key()` est appelée depuis
-/// des chemins sans configuration en main et qu'un fail-closed y a sa propre sémantique (`_FILE`/`_REF`,
-/// `exit(78)`) : ça se traite en propre, pas en marge d'un correctif de sauvegarde.
+/// **`PLUME_DB_KEY` ET `PLUME_DB_KEY_FILE` N'Y SONT PLUS (P8.7-b, 2026-08-09).** C'étaient les deux
+/// pires : la clé était lue par les DEUX voies, qui ne s'accordaient pas. Ce que le lot précédent
+/// annonçait ici (« la base devient illisible ») n'était que la MOITIÉ du défaut, et pas la pire — le
+/// cas VRAIMENT coûteux a été reproduit le 2026-08-09 sur le binaire `38a23da` : base chaude **EN
+/// CLAIR** (`SQLite format 3\0`, relisible par un `sqlite3` nu) pendant que le tier froid chiffrait
+/// ses jours-files (`age-encryption.org/v1`) avec la clé écrite dans `soc.conf`, le tout annoncé par
+/// « rétention OK ». Les deux clés passent désormais par `cfg()` (`crypto::db_key_depuis`), et le
+/// tier froid n'a plus de lecture à lui : il appelle la même fonction. La prémisse qui avait fait
+/// écarter le lot — « `db_key()` est appelée sans configuration en main, avant le chargement » —
+/// était FAUSSE : `load_config()` est une fonction pure appelée à la demande, dès la première ligne
+/// de `main()` ; il n'existe aucune phase de chargement à réordonner. Garde :
+/// `tests/cle_at_rest_voie_unique.rs` (preuve sur les octets) + la moitié froide dans
+/// `cold_store/tests.rs`.
 ///
 /// Le reste attend un découpage : la famille `PLUME_CLICKHOUSE_*`/`DUCKDB` (stores optionnels), la
 /// famille `PLUME_QUERY_*`/`PLUME_*_MAX` (plafonds), et le solde. Ce sont des lots séparés parce que
 /// chacun a ses propres tests et ses propres documents à corriger — pas parce qu'ils sont moins vrais.
-/// 25 des 55 sont DOCUMENTÉES quelque part (mesuré le 2026-08-09) : ce sont les leviers qu'un
-/// opérateur d'hôte croit avoir, et qui n'agissent pas.
+/// Le registre en compte **53** après P8.7-b (il en comptait 55 ; `PLUME_DB_KEY` et
+/// `PLUME_DB_KEY_FILE` en sont sortis). « 25 sur 55 sont DOCUMENTÉES quelque part » datait du
+/// 2026-08-09 AVANT ce lot et n'a PAS été re-mesuré depuis : la part documentée du solde reste donc
+/// inconnue à cette date. Ce qui est sûr, c'est que ce sont les leviers qu'un opérateur d'hôte croit
+/// avoir, et qui n'agissent pas.
 const DETTE_LECTURE_ENV_SEULE: &[&str] = &[
     "PLUME_AI_ALLOW_CLOUD",
     "PLUME_AI_ENABLE",
@@ -98,8 +109,6 @@ const DETTE_LECTURE_ENV_SEULE: &[&str] = &[
     "PLUME_COMPLIANCE_FRAMEWORKS",
     "PLUME_CONFIG",
     "PLUME_CONTROL_KEY",
-    "PLUME_DB_KEY",
-    "PLUME_DB_KEY_FILE",
     "PLUME_DEFENDER_MAX_PAGES",
     "PLUME_DEMO",
     "PLUME_DETECT_CONCURRENCY",

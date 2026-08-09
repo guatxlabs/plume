@@ -345,7 +345,13 @@ fn open_and_migrate_db(db_path: String, spool: String, conf: HashMap<String, Str
 
     rename_legacy_db(&db_path); // ④ : self-heal legacy soc.db -> plume.db (portable docker/host), AVANT ouverture
 
-    ensure_encrypted(&db_path);   // SQLCipher : chiffre la base en clair existante si PLUME_DB_KEY posé (idempotent, backup auto)
+    // P8.7-b ② — LA BASCULE EST DITE AVANT D'AGIR. Sur un hôte systemd, une clé écrite dans
+    // `/etc/plume/soc.conf` était IGNORÉE par la voie qui ouvre la base : elle ne chiffrait que le
+    // tier froid. Elle chiffre désormais les deux moitiés — et la ligne suivante peut donc RÉÉCRIRE
+    // une base existante. On le dit d'abord, avec le verdict de la base et ce qu'il faut prévoir.
+    // Silencieux quand rien ne change (Docker/k3s : tout est en `env:` -> aucune annonce).
+    annoncer_bascule_at_rest(&conf, &db_path);
+    ensure_encrypted(&conf, &db_path);   // SQLCipher : chiffre la base en clair existante si PLUME_DB_KEY posé (idempotent, backup auto)
     // LA PORTE (`db_open`) : ouverture, garde ANTI-DOWNGRADE, `tune` (prélude), puis contrat de schéma —
     // dans CET ordre, qui est celui d'avant, ligne pour ligne. Le daemon n'est plus le seul chemin à
     // l'appliquer : c'est la porte qui le fait, pour tout ce qui obtient une connexion d'écriture.

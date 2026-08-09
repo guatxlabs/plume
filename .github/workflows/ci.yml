@@ -144,7 +144,27 @@ env:
   # émet sept. Mesuré : « p50 dans la plage observée: 2 ». Le couplage existait déjà (les balayages de
   # routeur passent par la même route) ; il n'était pas visible. La mesure est désormais rendue
   # INSENSIBLE à l'interférence en saturant le réservoir borné — pas de test retiré, pas de seuil relâché.
-  EXPECTED_TESTS: "979"
+  #
+  # 989 : MESURÉ le 2026-08-09 (`cargo test --offline --locked`, rc=0, **181,93 s** de suite / 3 min 15 s
+  # de bout en bout, 12 cœurs). 979 datait du même jour ; **+10 viennent du lot P10.7-b**
+  # (`tests/compactage_fts.rs`) — la compaction de l'index plein-texte. Le lot ferme un défaut que
+  # personne ne regardait : **une purge de rétention fait GROSSIR `event_fts_data`** (mesuré sur le
+  # schéma réel : 135,27 → 185,69 Mio en supprimant 58,4 % des documents), parce qu'une table FTS5 à
+  # contenu externe ne retire pas un posting — elle en écrit un de SUPPRESSION — et que plume ne
+  # fusionnait JAMAIS ses segments.
+  # Les 10 : le DÉFAUT lui-même (le test échoue si l'index rétrécissait tout seul — sans quoi tout le
+  # reste serait du poids mort ajouté pour rien) et sa fermeture nommée en octets ; la MUTATION du
+  # kill-switch (`PLUME_FTS_COMPACT=0` ⇒ l'index reste gonflé AU MÊME OCTET) ; le SIGNE du budget
+  # (`merge` à N POSITIF ne rend rien sur cet index — c'est le piège, et c'est la garde qui attrape la
+  # « simplification » consistant à retirer le moins) ; la propriété portée par le TYPE (aucune issue
+  # hors `Rendue` ne peut annoncer d'octets) ; le budget de tick épuisé DIT comme tel et la reprise qui
+  # converge au même plancher que la compaction d'un seul tenant ; une erreur SQLite qui ne se déguise
+  # PAS en budget épuisé ; les index DÉRIVÉS du schéma (une vtable FTS5 inventée demain est trouvée) ;
+  # le compte de segments lu dans l'enregistrement de structure de FTS5 (et non dans `%_idx`, qui
+  # sous-évalue en silence) ; les bornes du réglage ; la base sans index plein-texte.
+  # DURÉE, dite honnêtement : 181,93 s contre 182,69 s pour le même arbre sans ces 10 tests, mesurés à
+  # 20 min d'intervalle sur la même machine — l'écart est du bruit, le lot ne prétend rien accélérer.
+  EXPECTED_TESTS: "989"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -338,7 +358,21 @@ jobs:
           # porte d'autres travaux selon les moments et ne permet pas d'attribuer l'écart au contenu ;
           # le lot ne prétend rien accélérer (il AJOUTE ~0,3 à 0,8 ms par recherche plein-texte, mesuré
           # en `release` — cf. le bloc P10.7-a de `daemon/src/soql_glue.rs`).
-          EXPECTED_COLD_TESTS: "1175"
+          #
+          # 1185 : MESURÉ le 2026-08-09 (`cargo test --offline --locked --features cold_tier`, rc=0,
+          # **2139,05 s** de suite / 35 min 59 s de bout en bout, 12 cœurs, TMPDIR sur disque ; une
+          # première passe du même lot avait rendu 2130,16 s). 1175 datait du même jour ; **+10
+          # viennent du lot P10.7-b** — les MÊMES 10 que la suite par défaut
+          # (`tests/compactage_fts.rs`, la compaction de l'index plein-texte). La feature n'en ajoute
+          # AUCUN, et ce n'est pas un hasard : le défaut vit dans le chemin CHAUD (une purge de
+          # rétention fait grossir `event_fts`), que `cold_tier` ne change pas — l'écart cold−défaut
+          # reste donc **196**, inchangé depuis P8.7-b.
+          # ⚠ CE QUE LE TIER FROID CHANGE QUAND MÊME, ET QUI N'EST PAS MESURÉ ICI : sous
+          # `PLUME_COLD_TIER=1`, l'aging SUPPRIME du chaud les lignes archivées — donc il FABRIQUE
+          # exactement le poids mort FTS5 que ce lot compacte, et à un rythme bien plus soutenu que la
+          # purge de rétention. La compaction s'exécute au même endroit dans les deux cas (fin de
+          # `retention_run`, après l'aging), mais son GAIN sous tier froid n'a pas été chiffré.
+          EXPECTED_COLD_TESTS: "1185"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

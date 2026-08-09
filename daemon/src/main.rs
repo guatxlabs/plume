@@ -102,6 +102,7 @@ mod cold_store;
 mod cold_banniere;
 mod maintenance;
 pub(crate) use maintenance::*;
+mod compactage_fts; // P10.7-b : LA FUSION DES SEGMENTS FTS5 — une purge fait GROSSIR l'index plein-texte, et plume ne fusionnait JAMAIS. Budget NÉGATIF (le positif ne rend rien), verrou relâché par passe, issue TYPÉE (aucune variante hors `Rendue` ne peut annoncer d'octets)
 mod sondes; // LES SONDES DE FRAÎCHEUR : ce qu'une sonde OBSERVE, la requête DÉRIVÉE, et CE QUI BORNE SON COÛT — une sonde dont personne ne sait ce qu'elle coûte ne compile pas (P3.7-a)
 // Import EXPLICITE et non `sondes::*` : `topn_cap` exporte AUSSI un type `Sonde` (l'ampleur d'un
 // plafond top-N, sans rapport). Tant que `Sonde` était défini DANS la racine, l'item local primait sur
@@ -925,7 +926,7 @@ const SUBCOMMANDS_COLD: [(&str, &str); 1] = [(
 /// détection d'une sous-commande INCONNUE, elle, n'est PAS une comparaison à cette liste (cf. la
 /// garde en bas de `main`). La liste est tenue alignée sur le code par
 /// `aide_cli_liste_les_memes_sous_commandes_que_le_dispatch` (elle lit `main.rs`).
-const SUBCOMMANDS: [(&str, &str); 16] = [
+const SUBCOMMANDS: [(&str, &str); 17] = [
     ("hashpw", "hashpw [<mdp>] — hash argon2 d'un mot de passe (stdin si omis)"),
     ("respond", "respond — boucle du moteur de réponse (service séparé)"),
     ("verify", "verify — vérifie la chaîne d'intégrité du ledger"),
@@ -942,6 +943,7 @@ const SUBCOMMANDS: [(&str, &str); 16] = [
     ("backup-prune-plan", "backup-prune-plan — plan de purge des sauvegardes (lecture seule)"),
     ("migrate-check", "migrate-check — compare le schéma live au code (lecture seule)"),
     ("db-stats", "db-stats — occupation disque SQLite (lecture seule)"),
+    ("fts-compact", "fts-compact — fusionne les segments de l'index plein-texte (rend les octets morts des purges)"),
 ];
 
 fn usage() -> String {
@@ -1227,6 +1229,45 @@ fn main() {
         let db = Arc::new(Mutex::new(conn.into_connection()));
         retention_run(&db);
         println!("rétention OK");
+        return;
+    }
+    // P10.7-b — COMPACTION DE L'INDEX PLEIN-TEXTE, À LA DEMANDE.
+    //
+    // POURQUOI UNE SOUS-COMMANDE À ELLE, alors que `retention` compacte déjà. Parce que `retention`
+    // DÉTRUIT : un exploitant qui veut seulement rendre les octets morts d'un index gonflé n'a pas à
+    // passer par une purge pour l'obtenir. Celle-ci n'efface RIEN — elle ne fait que fusionner des
+    // segments (aucune ligne de `event` n'est touchée, aucun résultat de recherche ne change : vérifié
+    // par mutation, `MATCH` rend le MÊME compte avant et après).
+    //
+    // LE DÉFAUT DE PASSES N'EST PAS LE MÊME QUE CELUI DU TICK, ET C'EST DÉLIBÉRÉ. La boucle horaire
+    // veut être discrète (8 passes, ~7 s de verrou cumulé) ; un opérateur qui lance la commande veut
+    // que ce soit FAIT. On ne pose donc qu'un DÉFAUT différent, par la MÊME clé et le MÊME résolveur :
+    // `entry().or_insert` ne réécrit rien si `/etc/plume/soc.conf` porte déjà la clé, et `cfg()` laisse
+    // de toute façon l'environnement primer. Une seule voie de lecture, deux intentions.
+    //
+    // `PLUME_FTS_COMPACT=0` est RESPECTÉ ICI AUSSI : un kill-switch qu'une sous-commande contourne
+    // n'est pas un kill-switch. Dans ce cas la commande le DIT et ne fusionne rien.
+    if args.get(1).map(String::as_str) == Some("fts-compact") {
+        let mut conf = load_config();
+        conf.entry("PLUME_FTS_COMPACT_PASSES".to_string()).or_insert_with(|| "5000".to_string());
+        let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
+        // MÊME PORTE que la rétention : la compaction ÉCRIT (elle réécrit des segments d'index), donc
+        // elle passe par le contrat de schéma. Une base que le daemon refuse de servir ne se fait pas
+        // compacter en douce par la CLI.
+        let conn = match PreparedDb::open(&db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[schema] {e} — AUCUNE compaction appliquée. Arrêt propre.");
+                std::process::exit(1);
+            }
+        };
+        let db = Arc::new(Mutex::new(conn.into_connection()));
+        let issues = compactage_fts::compacter_et_journaliser(&db, &conf);
+        // Le WAL de la fusion est drainé ici comme il l'est en fin de `retention_run` — sinon la
+        // commande laisserait derrière elle le fichier `-wal` qu'elle vient de gonfler.
+        { let c = db.lock(); let _ = c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);"); }
+        let rendus: i64 = issues.iter().filter_map(compactage_fts::Issue::octets_rendus).sum();
+        println!("fts-compact : {rendus} octets rendus à la freelist (VACUUM non exécuté — le fichier ne rétrécit pas, la base réutilise)");
         return;
     }
     // PURGE EXPLICITE D'ÉVÉNEMENTS — sous-commande DEUX TEMPS. Sans `--confirm`, elle SIMULE : elle rend le

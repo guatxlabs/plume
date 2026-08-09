@@ -1404,6 +1404,27 @@ pub(crate) fn retention_run_tenant(db: &Arc<Mutex<Connection>>, db_path: &str) {
         }
     }
     chunked_purge(db, "metric_rollup", "ts < ?1", &[&(n - metric * 86400)], batch);
+    // P10.7-b — COMPACTION DE L'INDEX PLEIN-TEXTE, ICI ET PAS AILLEURS.
+    //
+    // POURQUOI À CET ENDROIT PRÉCIS. Les lignes au-dessus VIENNENT de supprimer des `event`, et c'est
+    // exactement ce qui fabrique le poids mort : sur une table FTS5 à contenu externe, le déclencheur
+    // `event_ad` ne RETIRE pas les postings, il écrit un posting de SUPPRESSION qui S'AJOUTE. Mesuré
+    // (2026-08-09, base au schéma réel, 700 800 lignes supprimées sur 1 200 000) : `event_fts_docsize`
+    // SUIT la purge (-58,3 %) tandis que `event_fts_data` GROSSIT de +37,3 %. Compacter ailleurs qu'ici
+    // reviendrait à traiter la conséquence loin de sa cause, et à devoir deviner s'il y a du travail ;
+    // ici, on sait qu'il vient d'en être créé.
+    //
+    // TROIS PROPRIÉTÉS DE PLACEMENT, TOUTES VOULUES :
+    //  1) APRÈS les purges -> le poids mort à rendre est celui de CE tick, pas celui du précédent ;
+    //  2) AVANT le `wal_checkpoint(TRUNCATE)` du bloc suivant -> la rafale WAL de la fusion (mesurée
+    //     13,4 Mio à 500 pages/passe) est DRAINÉE par un checkpoint qui existait DÉJÀ, sans en ajouter ;
+    //  3) HORS de tout verrou tenu par ce tick -> `compacter_et_journaliser` prend et REND le mutex
+    //     writer PAR PASSE (jamais sur la séquence), comme `chunked_purge` juste au-dessus.
+    //
+    // La rétention est par-tenant (`retention_run_tenant`) : chaque base a donc SON index compacté avec
+    // SES réglages. Coût quand il n'y a rien à faire : UNE lecture de l'enregistrement de structure
+    // FTS5 (35 à 110 octets) par index, puis retour immédiat — la sonde ne parcourt rien.
+    compactage_fts::compacter_et_journaliser(db, &conf);
     // v105 (STEP 2) — signe le checkpoint si la clé est disponible ; sinon, sur un chemin Secret non-legacy
     // (clé absente/vide -> checkpoints NON signés, ex. Vault re-scellé), émet un signal SOC NON-PURGEABLE de
     // signature dégradée. DÉDUP HORAIRE (emit_ledger_health) -> 1 signal/heure malgré un tick retention_run

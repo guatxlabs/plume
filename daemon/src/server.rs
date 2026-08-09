@@ -555,6 +555,15 @@ fn spawn_background_jobs(conf: HashMap<String, String>, spool: String, db_path: 
     {
         spawn_autovacuum_loop(conf.clone(), db.clone());
     }
+    // LA SÉRIE DU BUDGET (P10.2-a suite) — la ventilation par poste, ÉCRITE DANS LE TEMPS au lieu
+    // d'être relevée à la main. Tick lent (défaut horaire = la résolution de `metric_rollup`), parcours
+    // `dbstat` sur le POOL DE LECTURE (jamais le mutex writer), publication dans `metric` -> lue par la
+    // commande SOQL `metric`, qui UNIONNE `metric` et `metric_rollup` (90 j). Coût MESURÉ en production
+    // le 2026-08-09 : 35,4 s par parcours sur 1 586,8 Mio = 0,98 % d'un cœur au tick horaire, et borné à
+    // 5 % par `prochain_sommeil` si la base grossit. `PLUME_VENTILATION_INTERVAL_S=0` -> aucun thread.
+    {
+        ventilation_serie::spawn_boucle(conf.clone(), db_path.clone(), db.clone(), bound.clone());
+    }
     // #32 : ANALYZE COMPLET en TÂCHE DE FOND (jamais dans migrate()) -> boot non bloquant.
     // Le boot est désormais STRUCTURELLEMENT : migrate -> bind :7000 -> (fond) ANALYZE. On n'attend plus
     // un sleep « au jugé » (course : si le bind traînait, le ANALYZE fenêtrait quand même) : on ATTEND le

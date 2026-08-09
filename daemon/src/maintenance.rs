@@ -41,7 +41,7 @@ fn sqlite_runtime_version(conn: &Connection) -> (i64, i64, i64) {
 /// DDL de la vtable FTS5 contentless sur les valeurs aplaties de `fields` (1 colonne `v`). Inchangé
 /// (partie VALIDÉE : contentless 1 colonne, tokenizer identités/chemins/IP/emails). `contentless_delete=1`
 /// N'EST PAS ajouté car la SQLite liée est 3.39.4 (< 3.43) — cf. sqlite_runtime_version.
-const FTS_FIELDS_VTABLE_DDL: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS event_fields_fts USING fts5(\
+pub(crate) const FTS_FIELDS_VTABLE_DDL: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS event_fields_fts USING fts5(\
      v, content='', tokenize=\"unicode61 remove_diacritics 2 tokenchars '_-.:/@'\", prefix='2 3')";
 
 /// Trigger AFTER INSERT : 1 doc FTS par event = group_concat des valeurs scalaires de `fields`.

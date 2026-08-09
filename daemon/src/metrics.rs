@@ -52,7 +52,7 @@ pub(crate) static READY: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 /// Réservoir borné des dernières latences de recherche (ms) pour p50/p95. Petit (cap 512) : lock trivial,
 /// aucune allocation par point après remplissage. Jamais un vecteur de fuite (que des durées).
 static SEARCH_LAT: std::sync::OnceLock<Mutex<std::collections::VecDeque<u32>>> = std::sync::OnceLock::new();
-const SEARCH_LAT_CAP: usize = 512;
+pub(crate) const SEARCH_LAT_CAP: usize = 512;
 fn search_lat() -> &'static Mutex<std::collections::VecDeque<u32>> {
     SEARCH_LAT.get_or_init(|| Mutex::new(std::collections::VecDeque::with_capacity(SEARCH_LAT_CAP)))
 }

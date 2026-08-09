@@ -8460,3 +8460,45 @@ fn search_declares_what_it_did_not_search_only_when_cold_history_exists() {
     drop(c);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// ── P8.7-b : LES DEUX MOITIÉS DU CHIFFREMENT AT-REST DÉRIVENT DU MÊME APPEL ──────────────────────
+// Ce test vit ICI parce que `cold_base_secret` est `pub(super)` : c'est le seul endroit d'où la
+// moitié FROIDE s'observe sans ouvrir une porte dans la frontière du module.
+
+/// LA GARDE DU LOT. Une clé écrite dans le fichier de configuration SEUL doit rendre le MÊME secret
+/// aux deux moitiés : celle qui OUVRE la base chaude (`db_key_depuis`) et celle dont le tier froid
+/// dérive sa clé AEAD (`cold_base_secret`). C'est exactement la conf qui FABRIQUAIT la divergence
+/// mesurée le 2026-08-09 — jour-file `age-encryption.org/v1` d'un côté, `SQLite format 3\0` de
+/// l'autre, et « rétention OK » pour tout commentaire.
+#[test]
+fn p87b_les_deux_moities_at_rest_derivent_du_meme_appel() {
+    assert!(
+        std::env::var("PLUME_DB_KEY").map(|v| v.is_empty()).unwrap_or(true),
+        "environnement muet exigé : sinon c'est LUI qu'on mesure (il gagne, par construction)"
+    );
+    let mut conf = HashMap::new();
+    conf.insert("PLUME_DB_KEY".to_string(), "cle-ecrite-dans-soc-conf-p87b".to_string());
+    let ouverture = db_key_depuis(&conf);
+    assert_eq!(
+        ouverture,
+        Some("cle-ecrite-dans-soc-conf-p87b".to_string()),
+        "la voie d'OUVERTURE doit voir la clé du fichier — c'est tout le lot P8.7-b"
+    );
+    assert_eq!(
+        cold_base_secret(&conf, ""),
+        ouverture,
+        "DIVERGENCE DES DEUX MOITIÉS : le tier froid et l'ouverture de la base chaude ne dérivent \
+         pas du même secret. C'est l'état d'avant le 2026-08-09 — la moitié froide chiffrée, la \
+         moitié chaude (les 7 derniers jours, donc les incidents récents) EN CLAIR, sans un mot."
+    );
+    // Le REGISTRE par-tenant reste PLUS SPÉCIFIQUE que la conf, et les deux moitiés le consultent :
+    // un tenant enregistré EN CLAIR (`None`) fait fail-closer le froid au lieu de le faire chiffrer
+    // avec une clé que la base chaude n'utilise pas. C'est la même règle, vérifiée sur l'autre voie.
+    register_db_key("/p87b/tenant-en-clair.db", None);
+    assert_eq!(
+        cold_base_secret(&conf, "/p87b/tenant-en-clair.db"),
+        None,
+        "un tenant enregistré EN CLAIR ne doit JAMAIS voir le froid chiffrer avec la clé globale"
+    );
+    unregister_db_key("/p87b/tenant-en-clair.db");
+}

@@ -10,26 +10,159 @@ use crate::*;
 /// avec cette clé (`PRAGMA key`, qui DOIT précéder toute requête). Vide/absent -> base en clair
 /// (rétrocompat total). La clé vient typiquement de Vault -> ExternalSecret -> env PLUME_DB_KEY.
 pub(crate) fn db_key() -> Option<String> {
-    // F1 — PRIORITÉ au FICHIER monté RO (`PLUME_DB_KEY_FILE`), modèle de `ledger.key` : la clé SQLCipher
-    // (crown-jewel) ne transite plus par /proc/1/environ (lisible via `kubectl exec`, ps e, crash-dump,
-    // héritage enfant). FAIL-CLOSED : si `PLUME_DB_KEY_FILE` est posé mais que le fichier est absent/
-    // illisible/vide -> on REFUSE de démarrer plutôt que de retomber EN SILENCE sur l'env (qui pourrait
-    // être absent -> base ouverte/écrite EN CLAIR = corruption/perte). Non posé -> repli rétrocompat sur
-    // l'env `PLUME_DB_KEY` (mode historique). Vide/absent partout -> None (base en clair, rétrocompat).
-    if let Ok(path) = std::env::var("PLUME_DB_KEY_FILE") {
-        if !path.is_empty() {
-            match db_key_from_file(&path) {
-                Ok(k) => return Some(k),
-                Err(e) => {
-                    eprintln!("[FATAL] {e} — refus de démarrer (fail-closed ; ne retombe PAS sur PLUME_DB_KEY env)");
-                    std::process::exit(78); // EX_CONFIG
-                }
+    db_key_depuis(&load_config())
+}
+
+// ================================================================================================
+// P8.7-b — LA CLÉ SQLCIPHER SE LIT PAR UNE SEULE VOIE
+// ------------------------------------------------------------------------------------------------
+// CE QUI ÉTAIT CASSÉ, ET CE QUE ÇA COÛTAIT. `PLUME_DB_KEY` était la SEULE clé lue par les DEUX voies
+// de configuration du démon, et elles ne s'accordaient pas : `db_key()` — celle qui OUVRE la base
+// chaude — la lisait dans l'environnement SEUL, tandis que `cold_store::crypto` la lisait par
+// `cfg()`, donc AUSSI dans `/etc/plume/soc.conf`. Or `systemd/plume-daemon.service` ne porte AUCUN
+// `EnvironmentFile` (délibérément : il exporterait `PLUME_PASS_HASH`/`PLUME_DB_KEY` dans
+// `/proc/<pid>/environ`) et pose `PLUME_CONFIG=/etc/plume/soc.conf` : sur un hôte, le fichier 0640
+// est LE bon endroit pour cette clé, et c'est le seul endroit où elle n'agissait pas.
+//
+// LE CAS QUE ÇA FABRIQUAIT, REPRODUIT PAR EXÉCUTION LE 2026-08-09 (binaire `38a23da`, `--features
+// cold_tier`, environnement VIDE hormis `PLUME_CONFIG`) : `soc.conf` portant `PLUME_DB_KEY` +
+// `PLUME_COLD_TIER=1` -> le jour-file froid `cold/prod/2026-07-30-0000.parquet` commence par
+// `age-encryption.org/v1` (CHIFFRÉ ; déchiffré hors-processus avec HKDF(clé de soc.conf) -> `PAR1`),
+// pendant que `db/plume.db` commence par `53 51 4c 69 74 65 20 66 6f 72 6d 61 74 20 33 00`
+// (`SQLite format 3\0`, EN CLAIR : `sqlite3` nu y relit les messages d'événement). Le processus n'a
+// dit qu'une chose de tout ça : « rétention OK ». La moitié FROIDE était chiffrée, la moitié CHAUDE
+// — les 7 derniers jours, donc les incidents récents — ne l'était pas, sans un mot.
+//
+// L'ARBITRAGE : `cfg()`, comme P8.7-a, PAS une garde. Une garde qui refuse aurait NOMMÉ le silence
+// sans donner à l'opérateur d'hôte ce qu'il demandait ; `cfg()` interroge l'environnement AVANT le
+// fichier -> c'est un SUR-ENSEMBLE STRICT (Docker/k3s posent `PLUME_CONFIG=/nonexistent` et tout en
+// `env:` : la carte de fichier est VIDE, le résultat est inchangé par construction — MESURÉ, cf.
+// `tests/cle_at_rest_voie_unique.rs`). Et la prémisse qui avait fait écarter ce lot — « `db_key()` est
+// appelée sans configuration en main, avant le chargement » — est FAUSSE : il n'existe aucune phase
+// de chargement dans ce démon. `load_config()` est une fonction PURE (lit `PLUME_CONFIG`, lit un
+// fichier, rend une `HashMap`) appelée à la demande une trentaine de fois dans l'arbre, dès la
+// PREMIÈRE ligne de `main()`. Il n'y a donc aucun ordre d'initialisation à changer.
+//
+// LE FAIL-CLOSED N'EST PAS TOUCHÉ : la branche `PLUME_DB_KEY_FILE` reste PREMIÈRE et garde son
+// `exit(78)`. Elle passe elle aussi par `cfg()` — sinon on aurait déplacé le même défaut d'un cran
+// (un `PLUME_DB_KEY_FILE` écrit dans `soc.conf` aurait été ignoré, et avec lui le fail-closed censé
+// l'attraper : exactement la faute que `38a23da` vient de corriger pour l'escrow de sauvegarde).
+//
+// RELU À CHAQUE APPEL (pas de `OnceLock`) : `db_key()` est appelée à l'OUVERTURE d'une connexion,
+// pas par ligne ni par requête (le read-pool plafonne à `READ_POOL_CAP` = 8 handles réutilisés) ->
+// une lecture de fichier par ouverture, comme `reglage_sauvegarde()` en fait une par sauvegarde.
+// ================================================================================================
+
+/// Les deux noms de ce lot, écrits UNE fois : ils alimentent le LECTEUR et l'ANNONCE de bascule, qui
+/// ne peuvent donc pas diverger. L'ordre du tableau est l'ordre de PRÉCÉDENCE (le fichier de clé
+/// monté RO gagne sur la passphrase).
+pub(crate) const CLE_DB_KEY_FILE: &str = "PLUME_DB_KEY_FILE";
+pub(crate) const CLE_DB_KEY: &str = "PLUME_DB_KEY";
+pub(crate) const CLES_AT_REST: [&str; 2] = [CLE_DB_KEY_FILE, CLE_DB_KEY];
+
+/// LA voie unique de résolution de la clé SQLCipher, `env > fichier PLUME_CONFIG > aucune clé`.
+///
+/// F1 — PRIORITÉ au FICHIER monté RO (`PLUME_DB_KEY_FILE`), modèle de `ledger.key` : la clé SQLCipher
+/// (crown-jewel) ne transite pas par /proc/1/environ (lisible via `kubectl exec`, ps e, crash-dump,
+/// héritage enfant). FAIL-CLOSED : si `PLUME_DB_KEY_FILE` est posé mais que le fichier est absent/
+/// illisible/vide -> on REFUSE de démarrer plutôt que de retomber EN SILENCE sur la passphrase (qui
+/// pourrait être absente -> base ouverte/écrite EN CLAIR = corruption/perte). Non posé -> repli sur
+/// `PLUME_DB_KEY`. Vide/absent partout -> `None` (base en clair, rétrocompat).
+///
+/// `conf` EXPLICITE : les appelants qui tiennent déjà la configuration (démarrage, rétention, tier
+/// froid) passent LA LEUR — la clé qui ouvre la base et celle dont le tier froid dérive son AEAD
+/// viennent alors littéralement du même `HashMap`, plus seulement du même fichier.
+pub(crate) fn db_key_depuis(conf: &HashMap<String, String>) -> Option<String> {
+    let chemin = cfg(conf, CLE_DB_KEY_FILE, "");
+    if !chemin.is_empty() {
+        match db_key_from_file(&chemin) {
+            Ok(k) => return Some(k),
+            Err(e) => {
+                eprintln!("[FATAL] {e} — refus de démarrer (fail-closed ; ne retombe PAS sur PLUME_DB_KEY)");
+                std::process::exit(78); // EX_CONFIG
             }
         }
     }
-    std::env::var("PLUME_DB_KEY")
-        .ok()
-        .filter(|k| !k.is_empty())
+    let k = cfg(conf, CLE_DB_KEY, "");
+    if k.is_empty() { None } else { Some(k) }
+}
+
+/// PURE — LA BASCULE : le nom de la clé at-rest qui devient EFFECTIVE à ce démarrage, c'est-à-dire
+/// celle qui gagne la précédence APRÈS P8.7-b alors que la lecture d'AVANT (environnement SEUL) en
+/// aurait pris une autre (ou aucune). `None` = rien ne change pour cet hôte -> AUCUN bruit (c'est le
+/// cas de Docker et de k3s, où tout arrive par `env:` : mesuré, 0 annonce).
+///
+/// Les deux clés sont évaluées dans l'ORDRE DE PRÉCÉDENCE, sur les DEUX lectures : un
+/// `PLUME_DB_KEY_FILE` écrit dans le fichier prend le pas sur un `PLUME_DB_KEY` posé dans
+/// l'environnement, et ce changement-là doit être annoncé aussi (il change la clé, pas seulement sa
+/// provenance).
+pub(crate) fn bascule_at_rest(
+    fichier: &HashMap<String, String>,
+    env: impl Fn(&str) -> Option<String>,
+) -> Option<&'static str> {
+    let gagnante = |lire: &dyn Fn(&'static str) -> String| -> Option<&'static str> {
+        CLES_AT_REST.into_iter().find(|c| !lire(c).is_empty())
+    };
+    // AVANT : l'environnement SEUL (le fichier était invisible pour ces deux clés).
+    let avant = gagnante(&|c| env(c).unwrap_or_default());
+    // APRÈS : `cfg()` — env PRÉSENT (même vide) gagne, sinon le fichier. Miroir exact de `cfg`.
+    let apres = gagnante(&|c| env(c).unwrap_or_else(|| fichier.get(c).cloned().unwrap_or_default()));
+    if avant == apres { None } else { apres }
+}
+
+/// PURE — LE MESSAGE DE BASCULE. Il doit dire trois choses qu'un opérateur ne peut pas deviner : que
+/// sa clé était ignorée par la voie qui ouvre la base, ce qui va arriver à la base EXISTANTE (le
+/// verdict de `probe_db`, calculé AVANT toute écriture), et comment revenir en arrière. Ne
+/// journalise JAMAIS de valeur — seulement le NOM de la clé.
+pub(crate) fn annonce_bascule_at_rest(cle: Option<&str>, verdict: DbProbe) -> Option<String> {
+    let cle = cle?;
+    let effet = match verdict {
+        DbProbe::Plaintext =>
+            "la base EXISTANTE est EN CLAIR sur le disque : elle va être RÉÉCRITE chiffrée maintenant \
+             (copie de sécurité, export SQLCipher, échange atomique, puis effacement de la copie en \
+             clair). Prévoyez ~2× sa taille en espace libre et la durée d'une réécriture complète.",
+        DbProbe::WrongKeyOrCorrupt =>
+            "la base EXISTANTE ne s'ouvre PAS avec cette clé : le démarrage va être REFUSÉ \
+             (fail-closed, exit 78) et la base ne sera PAS modifiée. Posez la clé qui l'a chiffrée.",
+        DbProbe::Fresh =>
+            "aucune base existante (absente ou vide) : elle sera créée chiffrée d'office.",
+        DbProbe::OpensWithKey =>
+            "la base EXISTANTE s'ouvre déjà avec cette clé : rien à réécrire.",
+        DbProbe::Locked =>
+            "la base est VERROUILLÉE (SQLITE_BUSY) : son état n'a pas pu être classé maintenant ; la \
+             réécriture éventuelle sera retentée.",
+        DbProbe::Unopenable =>
+            "la base est présente mais non ouvrable (I/O ou permission) : elle ne sera PAS touchée.",
+    };
+    Some(format!(
+        "[sqlcipher] CHANGEMENT DE COMPORTEMENT (P8.7-b) : {cle}, écrite dans votre fichier de \
+         configuration, était jusqu'ici IGNORÉE par la voie qui OUVRE la base — la base CHAUDE \
+         restait donc EN CLAIR sur le disque (et si le tier froid était actif, LUI chiffrait ses \
+         jours-files avec CETTE clé : une moitié protégée, l'autre non). À partir de ce démarrage \
+         elle suit la MÊME précédence que tous les autres réglages (env > fichier PLUME_CONFIG) et \
+         couvre les DEUX moitiés.\n  - {effet}\n  \
+         Aucune valeur n'est journalisée. Les sous-commandes (backup, retention, db-stats) exigent \
+         désormais cette clé elles aussi. Pour revenir au comportement précédent, retirez {cle} du \
+         fichier — mais si la base a déjà été réécrite chiffrée, elle deviendrait ILLISIBLE : \
+         restaurez-la d'abord."
+    ))
+}
+
+/// L'ADAPTATEUR : confronte le fichier RÉEL à l'environnement RÉEL et journalise l'annonce si quelque
+/// chose change pour cet hôte. Appelé au démarrage du démon, AVANT `ensure_encrypted` — c'est-à-dire
+/// avant la réécriture qu'il annonce. Silencieux quand rien ne change.
+pub(crate) fn annoncer_bascule_at_rest(conf: &HashMap<String, String>, db_path: &str) {
+    let Some(cle) = bascule_at_rest(conf, |c| std::env::var(c).ok()) else { return };
+    // Le verdict est calculé avec la clé EFFECTIVE (celle que `db_key_depuis` vient de rendre).
+    // `None` est inatteignable ici (une bascule implique une clé non vide) ; `Fresh` est le repli
+    // le plus neutre si elle survenait quand même.
+    let verdict = match db_key_depuis(conf) {
+        Some(k) => probe_db(db_path, &k),
+        None => DbProbe::Fresh,
+    };
+    if let Some(msg) = annonce_bascule_at_rest(Some(cle), verdict) {
+        eprintln!("{msg}");
+    }
 }
 
 /// Lecture PURE et TESTABLE de la clé SQLCipher depuis un FICHIER (secret mount RO). `Err` (FATAL, à
@@ -189,8 +322,16 @@ pub(crate) fn probe_db_with_busy(path: &str, key: &str, busy: std::time::Duratio
     DbProbe::WrongKeyOrCorrupt
 }
 
-pub(crate) fn ensure_encrypted(path: &str) {
-    let key = match db_key() { Some(k) => k, None => return };
+/// P8.7-b — `conf` EXPLICITE. L'appelant unique (`open_and_migrate_db`) tient déjà la configuration :
+/// la lui prendre supprime une lecture AMBIANTE sur le chemin qui DÉCIDE du chiffrement at-rest, et
+/// rend la fonction mesurable sans toucher à `PLUME_CONFIG` — donc testable en parallèle. (Ce n'est
+/// pas cosmétique : la première version de ce lot testait via `PLUME_CONFIG`, et la suite complète a
+/// rendu ROUGE deux tests d'incidents sans rapport — un `PRAGMA key` appliqué à leur base en clair
+/// par un `db_key()` qui voyait la configuration d'un test voisin. La mesure a nommé le défaut de
+/// conception : un chemin qui décide du chiffrement ne doit pas lire un état global du processus
+/// quand son appelant tient déjà la valeur.)
+pub(crate) fn ensure_encrypted(conf: &HashMap<String, String>, path: &str) {
+    let key = match db_key_depuis(conf) { Some(k) => k, None => return };
     if !std::path::Path::new(path).exists() { return; }              // base neuve -> créée chiffrée d'office
     let bak = format!("{path}.plaintext.bak");
     // BALAYAGE au démarrage — un `.plaintext.bak` résiduel (run précédent interrompu APRÈS le swap

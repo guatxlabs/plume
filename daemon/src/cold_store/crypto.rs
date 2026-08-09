@@ -52,19 +52,22 @@ const COLD_AEAD_INFO: &[u8] = b"plume-cold-aead-v1";
 
 /// Résout le SECRET DE BASE (la clé SQLCipher du tenant) dont on DÉRIVE la clé cold. Ordre (le plus SPÉCIFIQUE
 /// d'abord) : (1) REGISTRE par-tenant (frontière crypto multi-tenant #2a-3 : entrée `Some(k)` = clé du tenant ;
-/// `None` = tenant EN CLAIR -> pas de clé -> cold fail-closed) ; (2) `db_key()` pour le tenant DÉFAUT / mode 0
-/// (fichier monté RO F1 -> env `PLUME_DB_KEY`) ; (3) repli `PLUME_DB_KEY` via `cfg` (env > conf) pour la config
-/// par-env et les tests. `None` -> l'appelant FAIL-CLOSE (cold ON EXIGE le chiffrement ; JAMAIS de cold en
-/// clair). NB : `db_key()` lu AVANT le repli conf -> le chemin FICHIER sécurisé (F1) gagne toujours en prod.
+/// `None` = tenant EN CLAIR -> pas de clé -> cold fail-closed) ; (2) `db_key_depuis(conf)` pour le tenant DÉFAUT
+/// / mode 0. `None` -> l'appelant FAIL-CLOSE (cold ON EXIGE le chiffrement ; JAMAIS de cold en clair).
+///
+/// P8.7-b — IL N'Y A PLUS DE TROISIÈME BRANCHE, ET C'EST LE CORRECTIF. Il y en avait une :
+/// `cfg(conf, "PLUME_DB_KEY", "")`, atteinte quand `db_key()` (qui ne lisait QUE l'environnement) rendait
+/// `None`. C'est PAR ELLE que le tier froid chiffrait avec une clé écrite dans `soc.conf` pendant que la base
+/// chaude, ouverte par `db_key()`, restait EN CLAIR. `db_key_depuis(conf)` FINIT par cette même lecture -> la
+/// branche est devenue littéralement redondante et sa suppression rend la divergence IMPOSSIBLE À ÉCRIRE : les
+/// deux moitiés du chiffrement at-rest ne dérivent plus de deux lectures, mais d'un seul appel sur le MÊME
+/// `HashMap` que celui de l'ouverture. Les tests qui fournissent leur clé par une conf explicite passent par
+/// exactement le même chemin (`cfg` env > conf), inchangés.
 pub(super) fn cold_base_secret(conf: &HashMap<String, String>, db_path: &str) -> Option<String> {
     if let Some(entry) = db_key_registry().lock().get(db_path).cloned() {
         return entry; // tenant enregistré : Some(clé)=chiffré / None=en clair (-> cold fail-closed, pas de clé)
     }
-    if let Some(k) = db_key() {
-        return Some(k); // tenant défaut / mode 0 : fichier monté RO puis env (fail-closed géré par db_key)
-    }
-    let c = cfg(conf, "PLUME_DB_KEY", "");
-    if c.is_empty() { None } else { Some(c) }
+    db_key_depuis(conf) // tenant défaut / mode 0 : fichier monté RO (fail-closed) -> env -> fichier de conf
 }
 
 /// Dérive la PASSPHRASE age du tier cold : HKDF-SHA256(ikm = clé SQLCipher, salt = ∅, info = `plume-cold-aead-v1`)

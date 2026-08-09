@@ -44,3 +44,4 @@ include!("index_redondance.rs"); // P10.2-d : garde DÉRIVÉE des index subsumé
 include!("autoindex_retire.rs"); // P6.8-b : le mécanisme d'auto-index adaptatif est RETIRÉ — garde dérivée anti-zombie + purge de la dette prouvée par mutation
 include!("onboarding.rs"); // ONBOARDING /api/setup : d'où sort le token, comment il est comparé/compté, et ce que rend le serveur quand la pose de l'admin N'A PAS été écrite
 include!("partition_config.rs"); // P8.7-a : UNE seule voie de lecture des réglages — garde DÉRIVÉE (scanner de sources) + l'annonce de bascule, pure
+include!("cle_at_rest_voie_unique.rs"); // P8.7-b : la clé SQLCipher lue par UNE voie — preuve sur les octets (SQLite format 3\0 ou non) + précédence + annonce

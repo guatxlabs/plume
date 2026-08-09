@@ -94,6 +94,12 @@ label de VOTRE ingress controller) — aucun autre pod ne peut atteindre le daem
   fonction intermédiaire, et refuse toute variable nouvelle qui ne soit pas inscrite au registre de dette.
   Ce registre n'a le droit que de rétrécir. `plume-daemon.service` **ne porte volontairement pas**
   d'`EnvironmentFile` : il exporterait `PLUME_PASS_HASH`/`PLUME_DB_KEY` dans `/proc/<pid>/environ`.
+  **P8.7-b (2026-08-09)** a réglé le pire cas de cette partition : `PLUME_DB_KEY` était lue par les
+  DEUX voies, qui ne s'accordaient pas — l'ouverture de la base par `env::var` seul, le tier froid par
+  `cfg()`. Une clé écrite dans `soc.conf` chiffrait donc la moitié FROIDE et laissait la moitié CHAUDE
+  en clair, en silence (reproduit sur les octets : `age-encryption.org/v1` d'un côté,
+  `SQLite format 3\0` de l'autre). `crypto::db_key_depuis(conf)` est désormais la voie unique, et
+  `cold_store` l'appelle au lieu d'avoir la sienne.
 - **Image** : `Dockerfile` multi-stage. **Contexte de build = la racine de ce dépôt** (clone
   standalone) : `guatx-core` est résolu via une git-dep publique (tag `v0.2.1`, récupérée au build),
   `../../db/schema.sql` est copié depuis `db/` sibling de `daemon/`. Runtime `debian:bookworm-slim`,

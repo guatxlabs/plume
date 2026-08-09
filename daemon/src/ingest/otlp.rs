@@ -33,7 +33,7 @@ pub(crate) fn otlp_traces_enabled() -> bool {
 /// Plafond DUR de spans matérialisés PAR requête (garde-fou anti-OOM). Bien au-delà d'un batch OTLP légitime
 /// (borné de fait par `limite_corps`, défaut 8 Mio, + le cap de décompression). Au-delà -> 413 (batch pathologique
 /// refusé, jamais une troncature muette). Combiné avec `ingest_max_events` (le plus petit gagne).
-const OTLP_MAX_SPANS: usize = 50_000;
+pub(crate) const OTLP_MAX_SPANS: usize = 50_000;
 /// Plafond d'attributs FLATTENÉS retenus par span (resource + scope + span). Au-delà -> ignorés (borne le
 /// travail par span ; un span légitime en a une poignée). Anti-cardinalité (explosion de clés attaquant).
 const OTLP_MAX_ATTRS_PER_SPAN: usize = 256;

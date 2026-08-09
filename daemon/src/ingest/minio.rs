@@ -35,7 +35,7 @@ use crate::*;
 //   PLUME_MINIO_AUDIT_DROP_APIS (défaut = liste List*/Head*/GetBucket*/GetObjectTagging/StatObject)
 // AUTH : MÊME garde que l'ingest agent (Bearer token + mTLS attendu via la route plume-ingest) — ce
 //   path est ajouté à l'allowlist Bearer de `auth_guard` à côté de `/api/ingest`.
-const MINIO_MAX_EVENTS: usize = 500; // garde-fou evts/req (= PLUME_MINIO_AUDIT_MAXEVENTS du relais)
+pub(crate) const MINIO_MAX_EVENTS: usize = 500; // garde-fou evts/req (= PLUME_MINIO_AUDIT_MAXEVENTS du relais)
 
 fn minio_is_delete_api(api: &str) -> bool {
     matches!(api,
@@ -205,18 +205,17 @@ pub(crate) async fn ingest_minio_post(State(st): State<AppState>, Extension(au):
     // l'énonce : « Refus 413 EXPLICITE (l'agent SCINDE et réémet) -> jamais une troncature
     // silencieuse. » Ce chemin-ci la contredisait en silence.
     //
-    // La borne est désormais COMBINÉE avec `st.ingest_max_events` comme sur tous les autres chemins :
+    // La borne est COMBINÉE avec `st.ingest_max_events` comme sur tous les autres chemins :
     // `PLUME_INGEST_MAX_EVENTS` n'avait AUCUN effet ici, ce qui rendait le levier documenté inopérant
     // sur cette route. Vérifié le 2026-08-05.
-    let plafond = MINIO_MAX_EVENTS.min(st.ingest_max_events);
-    if events.len() > plafond {
-        return (StatusCode::PAYLOAD_TOO_LARGE, Json(json!({
-            "error": format!(
-                "trop d'events dans une seule requête ({} > plafond {plafond}) — scindez le lot et \
-                 réémettez, ou relevez PLUME_INGEST_MAX_EVENTS",
-                events.len()
-            )
-        }))).into_response();
+    //
+    // …ET LE MESSAGE LE DISAIT MAL, ce qui est le second temps du même défaut (corrigé le 2026-08-09).
+    // Il nommait `PLUME_INGEST_MAX_EVENTS` comme remède alors que dans la configuration PAR DÉFAUT
+    // c'est `MINIO_MAX_EVENTS` (500) qui lie, contre 50 000 pour la variable : l'intégrateur relevait
+    // le levier, réémettait, et recevait le même 413. `RefusCardinalite` DÉDUIT lequel des deux a mordu
+    // en les comparant — le message suit donc la constante si elle change un jour.
+    if let Some(refus) = RefusCardinalite::evaluer(events.len(), MINIO_MAX_EVENTS, st.ingest_max_events, "minio") {
+        return (StatusCode::PAYLOAD_TOO_LARGE, Json(json!({ "error": refus.message() }))).into_response();
     }
     if events.is_empty() {
         // batch entièrement filtré (bruit/hors scope) : MinIO n'a rien à rejouer -> 204.

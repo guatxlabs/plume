@@ -38,9 +38,9 @@ use crate::*;
 //
 // RAM BORNÉE PAR LA TAILLE DE LA BASE dans les deux cas : buffers de 1 MiB, pager SQLite à cache
 //   borné — JAMAIS la base en heap. Le streaming n'ajoute au plus qu'UNE ligne à la fois (cf.
-//   section B1). Ce qui N'EST PAS borné, et qui domine le pic, c'est le KDF scrypt du chiffrement
-//   PAR PASSPHRASE : `age` en choisit la taille au CHRONO (2^(10+log_n) octets, mesuré 8 à 16 Mio
-//   ici, 256 Mio sur une machine rapide au repos) — cf. « LE TERME QUI DOMINE » en section B1.
+//   section B1). Le KDF scrypt du chiffrement PAR PASSPHRASE dominait ce pic tant qu'`age` en
+//   choisissait la taille AU CHRONO ; il est désormais FIXÉ et BORNÉ ici — cf. la section
+//   « FACTEUR DE TRAVAIL SCRYPT » juste en dessous, qui porte la mesure et le raisonnement.
 // ============================================================================
 
 /// Buffer de copie en flux (1 MiB) -> RAM bornée quelle que soit la taille de la DB.
@@ -60,6 +60,201 @@ pub(crate) const BACKUP_TEMP_MARKER: &str = ".plain.tmp.";
 /// temp (journal de rollback / WAL / shm). Ils contiennent aussi des pages EN CLAIR : à effacer
 /// avec le temp. (Le nom du sidecar contient le marqueur -> le balayage les capte aussi.)
 pub(crate) const TEMP_SIDECARS: [&str; 3] = ["-journal", "-wal", "-shm"];
+
+// ============================================================================
+// FACTEUR DE TRAVAIL SCRYPT DU CHEMIN PAR PASSPHRASE (P8.6-b)
+// ----------------------------------------------------------------------------
+// CE QUI SE PASSAIT, MESURÉ. `Encryptor::with_user_passphrase` construit un `scrypt::Recipient`
+// dont le facteur de travail est choisi par un ÉTALONNAGE AU CHRONOMÈTRE **à chaque sauvegarde**
+// (`age-0.11.3/src/scrypt.rs::target_scrypt_work_factor` : chronomètre scrypt à log_n=10 puis
+// EXTRAPOLE en doublant jusqu'à viser ~1 s de CPU). scrypt alloue alors `128·r·2^log_n` octets,
+// r=8 chez age (`age-0.11.3/src/primitives.rs:65`), soit `2^(10+log_n)`.
+//
+// LA MESURE QUI TRANCHE (2026-08-09, 12 cœurs, MÊME machine, MÊME code, `age::Encryptor::
+// with_user_passphrase` trois fois de suite, log_n RELU dans la strophe `-> scrypt <sel> <log_n>`
+// de l'en-tête produit) :
+//     compilé en `debug` (opt-level 0, = ce que compile `cargo test`) : log_n = 13, 14, 14
+//                                                                       ->   8 Mio /  16 Mio
+//     compilé en `release` (opt-level 3, = LA PRODUCTION)             : log_n = 19, 19, 20
+//                                                                       -> 512 Mio / 1024 Mio
+// Le facteur ne dépend donc pas seulement de la machine : il dépend du PROFIL DE COMPILATION, et
+// il varie d'un appel à l'autre sur la MÊME machine. Sous un budget de 2 Gio, le chemin par
+// DÉFAUT réclamait jusqu'à **1 073 741 824 octets — la moitié du budget — sur un coup de dé.**
+// (Le « 256 Mio » qu'age documente comme « ~1 s sur une machine moderne » était une SOUS-estimation
+// de deux crans ici.)
+//
+// POURQUOI LE BORNER N'EST PAS UN COMPROMIS DE SÉCURITÉ — l'argument est un PLANCHER, pas une
+// opinion sur l'entropie. La passphrase de ce chemin n'est pas saisie par un humain au moment du
+// backup : c'est `db_key()`, c'est-à-dire `PLUME_DB_KEY_FILE` sinon `PLUME_DB_KEY` — la clé
+// SQLCipher — dans les DEUX seuls appelants de production (`main.rs` sous-commande `backup`, et
+// `server.rs::run_scheduled_backup`). Or ce MÊME secret est déjà protégé AILLEURS, sur PLUS de
+// données, par un étirement PLUS FAIBLE :
+//   * le TIER FROID chiffre ses jours-files avec `COLD_SCRYPT_LOG_N = 12` (4 Mio) sur une
+//     passphrase HKDF-dérivée de `PLUME_DB_KEY` — HKDF ne CRÉE pas d'entropie, donc deviner
+//     `PLUME_DB_KEY` casse ces fichiers au coût de scrypt-12 ;
+//   * ces jours-files partent à l'escrow HORS-CLUSTER en **COPIE VERBATIM** (cf. l'en-tête de
+//     `cold_store/backup.rs` : « escrow symétrique », le destinataire age ne les couvre pas) —
+//     ils sont donc DÉJÀ hors du nœud, à log_n=12 ;
+//   * la base CHAUDE elle-même est protégée par le KDF de SQLCipher (PBKDF2-HMAC-SHA512), qui
+//     n'est PAS memory-hard et se parallélise sur GPU bien mieux que scrypt.
+// Le coût d'attaque sur `PLUME_DB_KEY` est donc le MINIMUM sur tous ses porteurs, et ce minimum
+// vaut au plus scrypt-12. Écrire un backup à log_n=15 ou 19 ne relève pas ce plancher d'un bit :
+// l'attaquant vise le porteur le moins cher, qui n'est pas le backup. **Ce qu'on retire ici est
+// un coût, pas une résistance.**
+// EN OUTRE le mode par passphrase est, par définition dans plume, le mode NON séquestré : la
+// passphrase « est présente sur le nœud » et le backup est « DÉCHIFFRABLE PAR LE NŒUD » (c'est
+// mot pour mot ce que `emit_backup_symmetric_signal` écrit dans un événement SOC non-purgeable, et
+// ce que `PLUME_BACKUP_REQUIRE_ASYMMETRIC=1` permet d'interdire). Le mode recommandé pour un
+// backup qui VOYAGE est le destinataire x25519 — qui n'a aucun terme KDF.
+//
+// CE QUE CETTE DÉCISION SUPPOSE, ET QUI N'EST PAS VÉRIFIÉ PAR LE CODE : que `PLUME_DB_KEY` soit du
+// MATÉRIEL DE CLÉ et non un mot de passe tapé. Rien dans plume ne mesure ni n'impose l'entropie de
+// cette valeur — `deploy/k3s.yaml` se contente d'écrire « mets une passphrase forte ici ». Cette
+// hypothèse est déjà celle du tier froid ; elle est ici NOMMÉE au lieu d'être tacite, et
+// `PLUME_BACKUP_SCRYPT_LOG_N` existe précisément pour l'opérateur qui sait qu'elle est fausse chez
+// lui (le message de refus lui chiffre le prix en octets).
+//
+// DÉTERMINISME — la seconde raison, indépendante de la mémoire. Un facteur choisi au chrono rend le
+// fichier dépendant de la machine qui l'a écrit : `age::scrypt::Identity` refuse (`ExcessiveWork`)
+// tout `log_n` supérieur à `target+4` recalculé sur la machine qui DÉCHIFFRE. Un backup produit en
+// release sur ce poste (log_n=20) présenté à un binaire debug du même poste (target=13 -> plafond
+// 17) est REFUSÉ. C'est exactement le piège que `cold_store` avait déjà nommé et fermé.
+// ----------------------------------------------------------------------------
+
+/// Facteur de travail scrypt (log2(N)) ÉCRIT par défaut sur le chemin par passphrase.
+/// **12 = 4 194 304 octets de tampon** (`2^(10+12)`), 10,4 ms mesurés en release / 555 ms en debug
+/// le 2026-08-09 sur 12 cœurs. La valeur est celle du tier froid (`COLD_SCRYPT_LOG_N`) parce que
+/// c'est le PLANCHER réel d'attaque de `PLUME_DB_KEY` (cf. le raisonnement ci-dessus) : au-dessus,
+/// on paie sans rien acheter. Ce n'est PAS le défaut d'age (13 à 20 mesurés selon le profil et le
+/// tirage) : ici la valeur est FIXE, donc le fichier produit ne dépend plus de la machine.
+pub(crate) const BACKUP_SCRYPT_LOG_N_DEFAUT: u8 = 12;
+
+/// Plancher admis pour `PLUME_BACKUP_SCRYPT_LOG_N`. 10 = 1 Mio : c'est le point de départ de
+/// l'étalonnage d'age lui-même, donc la plus petite valeur qu'un `age` non modifié ait jamais pu
+/// écrire. En dessous, on ne parlerait plus le même dialecte que l'outil de secours.
+pub(crate) const BACKUP_SCRYPT_MIN_LOG_N: u8 = 10;
+
+/// Facteur de travail scrypt MAXIMAL **accepté à la lecture** — et par construction plafond de ce
+/// qu'on accepte d'écrire, pour que plume relise toujours ce qu'il a écrit.
+/// **20 = 1 073 741 824 octets** (`2^(10+20)`). Le chiffre n'est pas choisi pour la beauté :
+///   - il faut couvrir TOUT ce que le défaut au chrono a pu produire avant ce correctif, sinon un
+///     backup légitime devient illisible (perte de données) : **19, 19 et 20 MESURÉS en release le
+///     2026-08-09**, contre 18 qu'age documente pour « une machine moderne » ;
+///   - il faut refuser ce qui ne tient pas dans le budget : à log_n=21 le tampon vaut 2 147 483 648
+///     octets, soit le budget de 2 Gio à lui seul -> un fichier hostile deviendrait un OOM.
+/// L'écart de 8 crans avec `BACKUP_SCRYPT_LOG_N_DEFAUT` (là où `cold_store` s'impose <= 2) N'EST PAS
+/// un relâchement : c'est exactement la dette historique qu'on ferme — on n'écrit plus que 12, on
+/// doit encore SAVOIR LIRE jusqu'à 20.
+pub(crate) const BACKUP_SCRYPT_MAX_LOG_N: u8 = 20;
+
+/// Octets de tampon qu'un facteur `log_n` fait allouer à scrypt : `128 · r · 2^log_n` avec r=8
+/// (age fixe r=8, p=1 — `age-0.11.3/src/primitives.rs:65`), soit `2^(10+log_n)`. DÉRIVÉ, jamais
+/// écrit en dur : c'est ce qui permet à un message de refus de chiffrer son propre prix.
+/// TOTALE : `age` accepte `log_n` jusqu'à 63 dans une strophe, et `2^(10+54)` ne tient plus dans un
+/// `u64`. On SATURE plutôt que de déborder — un message de refus ne doit jamais paniquer sur la
+/// valeur qu'il refuse (c'est justement la valeur la plus hostile qui l'atteint).
+pub(crate) fn scrypt_tampon_octets(log_n: u8) -> u64 {
+    1u64.checked_shl(10 + log_n as u32).unwrap_or(u64::MAX)
+}
+
+/// DÉCISION PURE du facteur à écrire, à partir de la valeur BRUTE du réglage. `PLUME_BACKUP_SCRYPT_LOG_N`
+/// permet à l'opérateur qui SAIT que sa `PLUME_DB_KEY` est un mot de passe humain de racheter de
+/// l'étirement ; il est BORNÉ à [`BACKUP_SCRYPT_MIN_LOG_N`, `BACKUP_SCRYPT_MAX_LOG_N`] pour que plume ne
+/// puisse jamais écrire un fichier qu'il refuserait de relire, ni un tampon plus gros que son propre
+/// budget. Une valeur hors bornes ou illisible n'est pas avalée en silence : elle est DITE, avec son prix
+/// en octets.
+///
+/// PURE, ET C'EST DÉLIBÉRÉ : la décision se teste sans jamais TOUCHER à l'environnement du processus.
+/// Un test qui poserait `PLUME_BACKUP_SCRYPT_LOG_N=20` pour éprouver la borne haute le poserait pour
+/// TOUS les fils, y compris la trentaine de tests voisins qui appellent `backup_compressed` sans verrou
+/// — ils paieraient un scrypt de 1 073 741 824 octets au lieu de 4 194 304. C'est la règle déjà apprise
+/// le 2026-08-08 (P8.6-a), appliquée en amont : on ne met pas un réglage global dans un test, on rend la
+/// fonction pure et on lui passe la chaîne.
+pub(crate) fn scrypt_log_n_depuis(brut: &str) -> u8 {
+    let brut = brut.trim();
+    if brut.is_empty() {
+        return BACKUP_SCRYPT_LOG_N_DEFAUT;
+    }
+    match brut.parse::<u8>() {
+        Ok(n) if (BACKUP_SCRYPT_MIN_LOG_N..=BACKUP_SCRYPT_MAX_LOG_N).contains(&n) => n,
+        Ok(n) => {
+            eprintln!(
+                "[backup] PLUME_BACKUP_SCRYPT_LOG_N={n} hors bornes [{BACKUP_SCRYPT_MIN_LOG_N}, \
+                 {BACKUP_SCRYPT_MAX_LOG_N}] ({} octets de tampon scrypt demandés, plafond {} octets) \
+                 -> valeur IGNORÉE, on garde {BACKUP_SCRYPT_LOG_N_DEFAUT} ({} octets).",
+                scrypt_tampon_octets(n), scrypt_tampon_octets(BACKUP_SCRYPT_MAX_LOG_N),
+                scrypt_tampon_octets(BACKUP_SCRYPT_LOG_N_DEFAUT));
+            BACKUP_SCRYPT_LOG_N_DEFAUT
+        }
+        Err(_) => {
+            eprintln!(
+                "[backup] PLUME_BACKUP_SCRYPT_LOG_N={brut:?} n'est pas un entier -> valeur IGNORÉE, \
+                 on garde {BACKUP_SCRYPT_LOG_N_DEFAUT} ({} octets de tampon scrypt).",
+                scrypt_tampon_octets(BACKUP_SCRYPT_LOG_N_DEFAUT));
+            BACKUP_SCRYPT_LOG_N_DEFAUT
+        }
+    }
+}
+
+/// L'EFFET : la même décision, appliquée à ce que porte l'environnement. Seule couche qui lit
+/// `PLUME_BACKUP_SCRYPT_LOG_N` — comme `backup_age_recipient` / `backup_require_asymmetric`, la
+/// variable est relue à chaque sauvegarde (pas de `OnceLock`) : un opérateur qui la corrige n'a pas à
+/// redémarrer le démon pour que le cycle suivant en tienne compte.
+pub(crate) fn backup_scrypt_log_n() -> u8 {
+    scrypt_log_n_depuis(&std::env::var("PLUME_BACKUP_SCRYPT_LOG_N").unwrap_or_default())
+}
+
+/// L'ENCRYPTEUR age des deux chemins de sauvegarde (streaming B1 ET repli legacy), écrit UNE fois.
+/// ASYMÉTRIQUE (destinataire public `age1...`, escrow hors-cluster, AUCUN terme KDF) si un
+/// destinataire est posé ; sinon SYMÉTRIQUE par passphrase (= clé SQLCipher) à facteur scrypt FIXÉ.
+/// Les deux chemins partageaient jusqu'ici le MÊME `match` recopié : une borne posée sur l'un aurait
+/// pu manquer l'autre.
+pub(crate) fn backup_encryptor(pass: &str, recipient: Option<&str>) -> Result<age::Encryptor, String> {
+    match recipient {
+        Some(rcpt) if !rcpt.is_empty() => {
+            let recipient = rcpt.parse::<age::x25519::Recipient>()
+                .map_err(|e| format!("destinataire age invalide (clé publique age1... attendue) : {e}"))?;
+            age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
+                .map_err(|e| format!("age with_recipients : {e}"))
+        }
+        _ => {
+            let mut rcpt = age::scrypt::Recipient::new(age::secrecy::SecretString::from(pass.to_string()));
+            rcpt.set_work_factor(backup_scrypt_log_n());
+            age::Encryptor::with_recipients(std::iter::once(&rcpt as &dyn age::Recipient))
+                .map_err(|e| format!("age with_recipients (scrypt) : {e}"))
+        }
+    }
+}
+
+/// L'IDENTITÉ passphrase de la LECTURE, à plafond FIXE. `age::scrypt::Identity::new` pose sinon
+/// `target_scrypt_work_factor() + 4`, donc un plafond RECALCULÉ sur la machine qui déchiffre : le
+/// même fichier serait lisible ici et refusé là. Fixé -> la restaurabilité est une propriété du
+/// FICHIER, plus de la machine.
+pub(crate) fn backup_scrypt_identity(pass: &str) -> age::scrypt::Identity {
+    let mut id = age::scrypt::Identity::new(age::secrecy::SecretString::from(pass.to_string()));
+    id.set_max_work_factor(BACKUP_SCRYPT_MAX_LOG_N);
+    id
+}
+
+/// CE QUE LE REFUS DIT quand age rend `ExcessiveWork` : le facteur EXIGÉ par le fichier, ce qu'il
+/// coûterait en octets, notre plafond et son coût — puis le geste. Sans cela l'opérateur reçoit
+/// « passphrase incorrecte ? » pour un fichier dont la passphrase est parfaitement bonne, et
+/// cherche au mauvais endroit pendant un DR. Même doctrine que `limite_corps` (P4.1-o) : la limite
+/// qui arrête doit dire ce qu'elle est.
+fn message_dechiffrement_age(e: &age::DecryptError) -> String {
+    if let age::DecryptError::ExcessiveWork { required, .. } = e {
+        return format!(
+            "déchiffrement age REFUSÉ : ce backup exige un facteur de travail scrypt log_n={required} \
+             ({} octets de tampon) alors que plume plafonne à log_n={BACKUP_SCRYPT_MAX_LOG_N} ({} octets) \
+             — au-delà, le KDF seul dépasse le budget mémoire du démon. La passphrase n'est PAS en cause. \
+             Ce fichier a été produit par une version qui laissait `age` étalonner ce facteur au chrono \
+             (cf. P8.6-b) : déchiffrez-le hors-ligne avec l'outil `age` sur une machine qui a la RAM, \
+             puis re-sauvegardez avec cette version (qui écrit log_n={}).",
+            scrypt_tampon_octets(*required), scrypt_tampon_octets(BACKUP_SCRYPT_MAX_LOG_N),
+            backup_scrypt_log_n());
+    }
+    format!("déchiffrement age (passphrase / identité age incorrecte ou absente ?) : {e}")
+}
 
 /// Garde RAII : efface un plaintext temporaire ET ses sidecars SQLite (`-journal`/`-wal`/`-shm`)
 /// sur N'IMPORTE quelle sortie de portée (succès, erreur, panique, early-return). Le plaintext
@@ -363,16 +558,8 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
     let out = std::io::BufWriter::with_capacity(BACKUP_BUF, out);
     // CHIFFREMENT : ASYMÉTRIQUE (destinataire public age1..., encrypt-only) si PLUME_BACKUP_AGE_RECIPIENT
     // est posé -> le pod ne détient PAS la clé de déchiffrement (escrow hors-cluster). Sinon SYMÉTRIQUE par
-    // passphrase (= clé SQLCipher) = comportement HISTORIQUE (ship INERTE tant que le destinataire est absent).
-    let encryptor = match recipient {
-        Some(rcpt) if !rcpt.is_empty() => {
-            let recipient = rcpt.parse::<age::x25519::Recipient>()
-                .map_err(|e| format!("destinataire age invalide (clé publique age1... attendue) : {e}"))?;
-            age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
-                .map_err(|e| format!("age with_recipients : {e}"))?
-        }
-        _ => age::Encryptor::with_user_passphrase(age::secrecy::SecretString::from(pass.clone())),
-    };
+    // passphrase (= clé SQLCipher) à facteur scrypt FIXÉ (cf. section « FACTEUR DE TRAVAIL SCRYPT »).
+    let encryptor = backup_encryptor(&pass, recipient)?;
     let age_w = encryptor.wrap_output(out).map_err(|e| format!("age wrap_output : {e}"))?;
     let mut z = zstd::Encoder::new(age_w, BACKUP_ZSTD_LEVEL).map_err(|e| format!("init zstd : {e}"))?;
     {
@@ -455,10 +642,18 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
 // change. Le reste est DÉDUIT, pas mesuré : le seuil de l'ancienne version de ce test valait 32 Mio,
 // donc toute machine assez rapide pour choisir log_n >= 16 le faisait rougir à coup sûr ; age donne
 // lui-même 18 comme « ~1 s sur une machine moderne », soit 256 Mio — l'ordre de grandeur des
-// « +247 Mio » qui ont fait refuser le build de 8618753 en accusant le streaming à tort. CONSÉQUENCE
-// OPÉRATIONNELLE, à ne pas confondre avec le dump : sous la contrainte 2 Gio, un backup par passphrase
-// peut demander des CENTAINES de Mio le temps du KDF, et ce montant n'est ni configurable ni borné
-// ici ; le destinataire ASYMÉTRIQUE (x25519), déjà recommandé pour l'escrow, n'a PAS ce terme.
+// « +247 Mio » qui ont fait refuser le build de 8618753 en accusant le streaming à tort.
+//
+// CE QUI ÉTAIT « DÉDUIT » CI-DESSUS EST MAINTENANT MESURÉ, ET C'ÉTAIT PIRE (2026-08-09) : le facteur
+// dépend aussi du PROFIL DE COMPILATION. Le même appel, sur la même machine, choisit log_n = 13/14/14
+// en `debug` (ce que compile `cargo test`) mais **19/19/20 en `release` — 512 Mio puis 1 Gio**, la
+// moitié du budget de 2 Gio, tirée au sort à chaque sauvegarde. Les mesures 13/14 de la veille
+// venaient donc d'un binaire de test, pas du profil de production.
+// CE TERME EST DÉSORMAIS BORNÉ : le chemin par passphrase écrit un facteur FIXE
+// (`BACKUP_SCRYPT_LOG_N_DEFAUT`, 4 194 304 octets) et la lecture plafonne à `BACKUP_SCRYPT_MAX_LOG_N`
+// — voir la section « FACTEUR DE TRAVAIL SCRYPT » en tête de fichier pour pourquoi cette borne ne
+// coûte AUCUNE résistance au brute-force. Le destinataire ASYMÉTRIQUE (x25519), recommandé pour
+// l'escrow, n'a de toute façon pas ce terme du tout.
 //
 // ----------------------------------------------------------------------------
 // CE QUE LE DUMP N'EMPORTE PAS — l'échange, nommé et mesuré.
@@ -805,16 +1000,9 @@ fn backup_compressed_stream(db_path: &str, dest: &str, pass: &str, recipient: Op
     let out = std::fs::File::create(dest).map_err(|e| PlanErr::Fatal(format!("création dest : {e}")))?;
     let out = std::io::BufWriter::with_capacity(BACKUP_BUF, out);
     // Chiffrement : ASYMÉTRIQUE (destinataire public age1..., escrow hors-cluster) si posé, sinon SYMÉTRIQUE
-    // par passphrase (= clé SQLCipher) — IDENTIQUE au legacy.
-    let encryptor = match recipient {
-        Some(rcpt) if !rcpt.is_empty() => {
-            let recipient = rcpt.parse::<age::x25519::Recipient>()
-                .map_err(|e| PlanErr::Fatal(format!("destinataire age invalide (clé publique age1... attendue) : {e}")))?;
-            age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
-                .map_err(|e| PlanErr::Fatal(format!("age with_recipients : {e}")))?
-        }
-        _ => age::Encryptor::with_user_passphrase(age::secrecy::SecretString::from(pass.to_string())),
-    };
+    // par passphrase (= clé SQLCipher) à facteur scrypt FIXÉ — MÊME fonction que le legacy (`backup_encryptor`),
+    // pour qu'aucun des deux chemins ne puisse diverger de l'autre sur la borne.
+    let encryptor = backup_encryptor(pass, recipient).map_err(PlanErr::Fatal)?;
     let age_w = encryptor.wrap_output(out).map_err(|e| PlanErr::Fatal(format!("age wrap_output : {e}")))?;
     let mut z = zstd::Encoder::new(age_w, BACKUP_ZSTD_LEVEL).map_err(|e| PlanErr::Fatal(format!("init zstd : {e}")))?;
     let plaintext_bytes = {
@@ -975,12 +1163,14 @@ pub(crate) fn restore_compressed(src: &str, dest_db: &str, key: Option<&str>, ov
     // AUTO-DÉTECTION : on présente à age DEUX identités et il apparie selon le stanza de l'en-tête :
     //   (1) scrypt/passphrase (= clé SQLCipher) -> anciens backups SYMÉTRIQUES (rétrocompat) ;
     //   (2) x25519 (identité PRIVÉE escrow, si PLUME_BACKUP_AGE_IDENTITY[_FILE] fournie) -> backups ASYMÉTRIQUES.
-    let scrypt_id = age::scrypt::Identity::new(age::secrecy::SecretString::from(pass.clone()));
+    // Plafond de travail scrypt FIXE (`backup_scrypt_identity`) : sans lui, age recalcule
+    // `target+4` sur la machine qui déchiffre -> un backup restaurable ici serait refusé ailleurs.
+    let scrypt_id = backup_scrypt_identity(&pass);
     let mut ids: Vec<&dyn age::Identity> = vec![&scrypt_id as &dyn age::Identity];
     if let Some(x) = identity { ids.push(x as &dyn age::Identity); }
     let reader = decryptor
         .decrypt(ids.into_iter())
-        .map_err(|e| format!("déchiffrement age (passphrase / identité age incorrecte ou absente ?) : {e}"))?;
+        .map_err(|e| message_dechiffrement_age(&e))?;
     let mut zd = zstd::Decoder::new(reader).map_err(|e| format!("init zstd : {e}"))?;
 
     // 2) MARQUEUR de format : lit les 1ers octets de la charge décompressée pour aiguiller B1 vs legacy.

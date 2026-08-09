@@ -209,6 +209,14 @@ The **shell collectors** (43 tracked scripts) get a `bash -n` parse gate (`shell
 3. Include tests. Preserve or improve coverage; keep the default count CONSTANT — the value lives
    in `EXPECTED_TESTS` (`.github/workflows/ci.yml`) and nowhere else, so read it there.
    If you touch `cold_store`, `EXPECTED_COLD_TESTS` is asserted the same way.
+   **Check it in 2 seconds instead of 47 minutes** with `.github/scripts/compter-les-tests.sh`: it
+   asks the harness to *list* its tests (`cargo test -- --list`) rather than run them, and compares
+   both counts against `ci.yml` itself — no second copy of the numbers. Install it as a pre-commit
+   hook with `git config core.hooksPath .githooks` (it stays silent unless the commit touches
+   `daemon/`). It does **not** tell you the tests pass — only CI, which actually runs them, does.
+   *(Why a local check and not another CI trigger: `ci.yml` already runs on `push` to every branch,
+   and has since the file was created. The 937 → 945 drift of 2026-08-07 was caught by CI on the
+   push and simply not read. Measured 2026-08-09: listing both suites ≈ 2 s warm; running them = 187 s + 2627 s ≈ 47 min.)*
    <!-- Ces deux lignes ont porté « 758 » et « 949 » jusqu'au 2026-08-02, quand les compteurs vivants
         valaient 866 et 1061 : 108 et 112 de retard, dans le fichier même qui INTERDIT de recopier la
         valeur. La garde `check_no_duplicated_test_count.py` restait verte — c'est son résidu

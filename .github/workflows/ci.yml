@@ -80,11 +80,29 @@ permissions:
 # diverger en silence — bumper l'une laissait l'autre comparer à un nombre périmé. Une seule ici,
 # consommée par les deux jobs.
 env:
-  # 949 : MESURÉ le 2026-08-08 sur 4762cb1 (`cargo test --offline`, 163 s, rc=0). 937 datait du 08-06 ;
-  # la dérive vient de 1b2423f (+9 tests) et 4762cb1 (+4), attribuée par `git show <sha> | grep -c
-  # '^+.*#\[test\]'`. Personne ne l'a vue pendant un jour parce que CE GARDE NE S'EXÉCUTE QU'À
-  # L'OUVERTURE D'UNE PR, et qu'on pousse directement sur main — cf. P8.5-a dans docs/ROADMAP.md.
-  EXPECTED_TESTS: "949"
+  # 954 : MESURÉ le 2026-08-09 (`cargo test --offline --locked`, rc=0, 12 cœurs), sur DEUX exécutions
+  # de l'arbre final. 949 datait du 08-08 ; +5 viennent du lot P8.6-b / P4.1-p de ce jour (3 tests de
+  # KDF scrypt dans `tests/backup_streaming.rs`, 2 de plafond d'ingestion dans `tests/ingest.rs`).
+  # DURÉE, dite honnêtement : 219 s puis 187 s, contre 170 s pour l'arbre d'avant — l'écart entre deux
+  # exécutions du MÊME arbre (32 s) est du même ordre que l'écart avec l'arbre d'avant, donc cette
+  # machine ne permet pas d'attribuer la différence au contenu. Ce qui EST attribuable, parce que
+  # mesuré isolément : borner le facteur scrypt à log_n=12 fait payer 555 ms au lieu de 974 à 1998 ms
+  # à chaque KDF par passphrase, et il y en a une trentaine dans la suite.
+  #
+  # ⚠ RECTIFICATION D'UNE ALLÉGATION FAUSSE QUI A VÉCU ICI. Cette ligne a porté, du 2026-08-08 au
+  # 2026-08-09 : « CE GARDE NE S'EXÉCUTE QU'À L'OUVERTURE D'UNE PR, et on pousse directement sur
+  # main ». C'est FAUX, et le fichier lui-même le contredit vingt lignes plus haut : `on:` porte
+  # `push: branches: ["**"]`, et ce bloc n'a JAMAIS été modifié depuis la création du fichier
+  # (`git log -p --follow .github/workflows/ci.yml` : une seule apparition, dans le commit initial).
+  # `git rev-list --count github/main..main` vaut 0 : rien n'est resté local. La garde a donc bien
+  # tourné sur chaque push, et bien vu la dérive 937 -> 945 du 2026-08-07.
+  # LE TROU RÉEL est la BOUCLE DE RETOUR, pas le déclencheur : le verdict s'affiche sur une page
+  # qu'on n'ouvre pas au moment de commiter. Aucun déclencheur supplémentaire ne ferme ça — un
+  # `push` de plus produirait le même rouge, au même endroit, ignoré pareil. Fermé par un contrôle
+  # LOCAL, `.github/scripts/compter-les-tests.sh` (2 s : il ÉNUMÈRE les tests, il ne les exécute
+  # pas), installable en hook via `git config core.hooksPath .githooks`. Cf. P8.5-a dans
+  # docs/ROADMAP.md.
+  EXPECTED_TESTS: "954"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -237,9 +255,15 @@ jobs:
       - name: cargo test (daemon, --features cold_tier) + assert the cold test count
         working-directory: daemon
         env:
-          # 1144 : MESURÉ le 2026-08-08 sur 4762cb1 (`cargo test --offline --features cold_tier`,
-          # 2362 s, rc=0), rejoué par moi et non recopié d'un rapport. 1132 datait du 08-06.
-          EXPECTED_COLD_TESTS: "1144"
+          # 1149 : MESURÉ le 2026-08-09 (`cargo test --offline --locked --features cold_tier`, 2627 s,
+          # rc=0, 12 cœurs, machine autrement au repos), rejoué par moi et non recopié d'un rapport.
+          # 1144 datait du 08-08 (2362 s) ; +5 = les mêmes cinq tests que la suite par défaut (lot
+          # P8.6-b / P4.1-p) — la feature n'en ajoute aucun, l'écart cold−défaut reste 195.
+          # ⚠ UNE PREMIÈRE MESURE A ÉTÉ JETÉE, et c'est pour ça qu'elle est mentionnée : un binaire de
+          # test ORPHELIN d'une exécution précédemment interrompue tournait encore (28 min, 215 % CPU,
+          # son propre TMPDIR) et se disputait la machine. La durée qu'il a produite ne mesurait pas la
+          # suite. Relancée machine vide.
+          EXPECTED_COLD_TESTS: "1149"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

@@ -82,6 +82,68 @@ non compressées.
 construit. C'est : (a) qu'est-ce qui EMPÊCHE de l'activer par défaut, et (b) que reste-t-il pour le
 chaud qui, lui, ne bouge pas.**
 
+## 2 bis. RE-DÉRIVATION DE L'ORDRE DEPUIS LES PARTS DE PRODUCTION (2026-08-09 22:38 UTC)
+
+Les leviers ci-dessous ont été ordonnés sur une ventilation de **banc** (3,65 M événements), publiée
+avec l'affirmation « les proportions sont indépendantes de l'échelle ». **La production l'a
+contredite.** Relevé pris par `db-stats --par-objet` (lecture seule vérifiée) sur le pod
+`plume-6d64b9685b-l4rgr` : **1 586,8 Mio · 406 213 pages · 1 767 118 événements**, comptabilité
+FERMÉE. *(Le premier appel a REFUSÉ de publier — « écart de 1 page » sous écriture concurrente. Le
+fail-closed fonctionne, et il révèle que le chemin CLI n'a pas le `BEGIN DEFERRED` que
+`ventilation_serie.rs` s'est donné.)*
+
+| poste | Mio | part du fichier | part des octets **vivants** | ce que le texte des §3-§5 dit encore |
+|---|---:|---:|---:|---|
+| données (tables) | 908,6 | **57,3 %** | 60,2 % | « 51 % » — **périmé** |
+| — dont `event` | 871,9 | 55,0 % | 57,7 % | 5,8× l'objet suivant |
+| **index b-tree** | **428,0** | **27,0 %** | 28,3 % | « 33 % » — **périmé** |
+| FTS5 (shadow) | 173,4 | 10,9 % | 11,5 % | levier E, livré le 08-09 |
+| pages libres | 76,6 | 4,8 % | — | — |
+
+**LE PIÈGE DE LECTURE, à ne pas refaire.** Entre 16:07 et 22:38, `page_count` est **identique**
+(406 213) alors que **+51 208 événements** sont entrés : la croissance se paie sur la **freelist**
+(7,3 % → 4,8 %), pas sur le fichier. Rapportée aux octets **vivants**, la composition est **plate**
+(60,1/28,4/11,5 → 60,2/28,3/11,5). Qui comparerait les pourcentages **bruts** « découvrirait » que
+données et index grossissent : ce serait un **artefact de la consommation de freelist**, pas un
+mouvement structurel. Marge restante à ce rythme : ~12,8 h.
+
+**Composition MARGINALE**, dérivée des deux relevés, comptabilité fermée à 0,1 % près :
+données +24,83 Mio · index +10,72 Mio · FTS +3,60 Mio = +39,15 Mio, contre −39,19 Mio de freelist.
+Soit pour 51 208 événements nets : **~509 o / ~220 o / ~74 o ≈ 802 o par événement, réparti
+63 / 27 / 9 %**. **Le marginal reproduit le stock.** Incertitude : ±3 % (données), ±7 % (index),
+**±22 % (FTS)**.
+
+**L'ORDRE RE-DÉRIVÉ, et ce qui change :**
+
+| levier | poste visé, **re-mesuré** | ce qui change |
+|---|---|---|
+| **A** — activer le froid | 60,2 + 28,3 + 11,5 % de ce qu'il sort du chaud | **reste #1**, mais son arithmétique doit être réécrite (51/33 → 57,3/27,0). Sa tâche reste une **mesure** |
+| **D** — index b-tree | **428,0 Mio · 27,0 %** | **LE VRAI CHANGEMENT.** Second gisement, 27 % du stock **et** 27 % du marginal |
+| **B** — compression du chaud | **57,3 %**, pas 51 % | vise **plus** que la carte ne le dit |
+| **C** — agrégation bornée | orthogonal à la taille | inchangé : sa priorité tient à l'OOM, pas aux octets |
+| **E** — compaction FTS | 10,9 % | livré (`4ca6339`) ; maintient le poste à son plancher |
+
+**CE QUE LA MESURE IMPOSE, et c'est la conclusion de cette section.** Le §5.4 dit « ne PAS toucher
+les index restants sans mesure d'usage » — et **personne ne l'a mesuré**. Or ce poste pèse
+**428,0 Mio, plus que tout le FTS (173,4) + la freelist (76,6) réunis**. `sqlite_autoindex_event_1`
+(75,5 Mio) porte l'exactly-once de la dédup : hors de question. **Mais les 7 autres pèsent
+253,6 Mio, soit 16,0 % du fichier**, derrière un panneau « ne pas toucher » sans mesure derrière.
+À comparer : le levier E, un vrai effort d'ingénierie, gouverne 10,9 %.
+⇒ **la mesure d'usage des index doit être promue à côté de l'étape 1**, pas rester une note de bas
+de page en étape 4. Les deux sont des mesures, les deux sont bon marché, et le poste de D est 2,5×
+celui de E.
+Trois voies faisables, par fidélité croissante : (1) rejeu de `EXPLAIN QUERY PLAN` sur le corpus
+**fermé** (panneaux de `seeds.rs`, table `rule`, `templates.json`, SQL du moteur de détection) —
+énumérable, mais ne couvre pas l'ad hoc analyste ; (2) échantillonnage `1/N` des plans au point de
+passage unique (`run_query_ex`/`soql_glue`), compté dans `metric` **par la machinerie de
+`ventilation_serie` livrée le 08-09** — tick lent, borné, survit au redémarrage, aucune sonde neuve
+dans le vide ; (3) *drop-and-watch*, que le dépôt fait déjà (`drop_redundant_event_indexes_background`),
+mais dont **P6.8-c est la cicatrice** de l'avoir fait sans mesure.
+
+**NON ÉTABLI, et le doc ne le revendique pas** : la chute FTS 18,9 % → 10,9 % est **cohérente** avec
+la compaction et rien de plus. Trois relevés manuels ne distinguent pas un gain d'un creux
+d'ingestion. C'est la série de ventilation (`c4c20f4`) qui tranchera.
+
 ## 3. LES QUATRE LEVIERS, ordonnés par (impact mesuré ÷ code neuf)
 
 ### Levier A — ACTIVER l'aging froid (construit, OFF) · impact ÉNORME, code neuf ~0

@@ -22,9 +22,17 @@ racine="$(git rev-parse --show-toplevel)"
 
 # PORTÉE DÉRIVÉE DU DIFF, PAS D'UNE LISTE À TENIR : seuls les commits qui touchent au code ou au
 # verrou de dépendances du démon peuvent déplacer le compte de tests.
-if ! git diff --cached --name-only | grep -qE '^daemon/(src/|Cargo\.(toml|lock)$)'; then
+#
+# TROU FERMÉ LE 2026-08-10, trouvé en éprouvant ce hook au lieu de le croire. La portée ne
+# couvrait QUE `daemon/` — donc éditer le compteur DANS `ci.yml` seul (faute de frappe, mauvaise
+# fusion, chiffre recopié à la main) passait sans contrôle, alors que c'est précisément là que le
+# chiffre vit. Mesuré : `EXPECTED_TESTS` faussé de 1007 à 999, `ci.yml` seul indexé -> hook rc=0,
+# aucune sortie. Le même diff avec un vrai changement dans `daemon/src/` -> rc=1, dérive nommée.
+# La portée couvre donc les DEUX faces : ce qui peut déplacer le compte, ET ce qui le DÉCLARE.
+if ! git diff --cached --name-only \
+     | grep -qE '^(daemon/(src/|Cargo\.(toml|lock)$)|\.github/workflows/ci\.yml$)'; then
     exit 0
 fi
 
-echo "[pre-commit] le démon est touché -> vérification du compte de tests (aucun test exécuté)"
+echo "[pre-commit] démon ou compteur touché -> vérification du compte de tests (aucun test exécuté)"
 exec "$racine/.github/scripts/compter-les-tests.sh"

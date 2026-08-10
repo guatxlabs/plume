@@ -211,7 +211,7 @@ env:
   # DURÉE, dite honnêtement : les 5 tests s'exécutent en 47,4 s quand on les tire seuls, dont 42,6 s
   # pour la seule ablation (9 bras × 20 000 insertions par la porte d'ingest réelle). C'est le lot le
   # plus cher au test unitaire de ce fichier, et il l'est parce qu'il ÉCRIT vraiment.
-  EXPECTED_TESTS: "1012"
+  EXPECTED_TESTS: "1027"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -445,7 +445,7 @@ jobs:
           # ⚠ CE QUE CE CHIFFRE NE PROUVE PAS, ET IL FAUT LE REDIRE : il compte des tests DÉCLARÉS,
           # pas des tests VERTS. La suite `cold_tier` n'a PAS été exécutée pour ce lot ; seule la
           # suite par défaut l'a été (rc=0, 1012/1012, 217,84 s). La CI, elle, les exécute vraiment.
-          EXPECTED_COLD_TESTS: "1208"
+          EXPECTED_COLD_TESTS: "1230"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

@@ -199,6 +199,11 @@ pub(super) fn fsync_dir(dir: &Path) -> Result<(), String> {
 /// intégral + identité (env,day,seq) + fenêtre ts) + rename + fsync(dir). Autrement dit : un seal EXISTANT ⟹ le
 /// fichier est durable, complet, déchiffrable et décodable. Ne JAMAIS déplacer l'écriture du seal AVANT le VERIFY :
 /// c'est l'ancre qui autorise plus tard `delete_file_rows`/`phase2_delete` à supprimer le hot. À préserver au refactor.
+///
+/// COMPTE (`P10.5-a`) : chaque fichier scellé incrémente `compte` IMMÉDIATEMENT — fichiers, lignes, et OCTETS
+/// RELEVÉS SUR DISQUE après le `rename` (donc après compression ET chiffrement : la taille que le froid coûte
+/// vraiment). Incrémenter au fur et à mesure, et non à la fin, est ce qui fait qu'un échec au fichier k+1
+/// conserve la trace des k fichiers réellement écrits — un compte « à la fin » perdrait exactement ce cas.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn write_day_files(
     db: &Arc<Mutex<Connection>>,
@@ -213,6 +218,7 @@ pub(super) fn write_day_files(
     file_cap: usize,
     rg_rows: usize,
     pass: &str,
+    compte: &mut crate::vieillissement_serie::Compte,
 ) -> Result<(), String> {
     let dir = day_dir(cold_dir, env_id);
     let mut seq = start_seq;
@@ -249,6 +255,14 @@ pub(super) fn write_day_files(
                 params![env_id, day, seq, meta.row_count as i64, now(), max_id, meta.ts_min, meta.ts_max, lo_ts, lo_id, meta.hi_id, meta.dim_stats.encode()],
             )
             .map_err(pe)?;
+        }
+        // COMPTE (`P10.5-a`) : le fichier est scellé -> il est ACQUIS. Sa taille est relue SUR DISQUE (elle
+        // n'est déductible d'aucun compte de lignes : compression zstd + surcoût du chiffrement age). Une
+        // taille illisible ne fabrique pas de zéro — elle n'ajoute rien, et le fichier reste compté.
+        compte.fichiers_ecrits += 1;
+        compte.lignes_ecrites += meta.row_count as i64;
+        if let Ok(md) = std::fs::metadata(&final_path) {
+            compte.octets_froid += md.len() as i64;
         }
         // Curseur keyset HAUT de ce fichier -> curseur BAS (exclusif) du suivant. Fenêtres DISJOINTES + CONTIGUËS.
         lo_ts = meta.ts_max;

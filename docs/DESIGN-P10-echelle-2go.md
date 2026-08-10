@@ -73,7 +73,12 @@ writer colonnaire **Parquet + ZSTD** (row-groups ~256K, RAM d'écriture bornée 
 branche d'**aging** hot→froid par jour, **lecteur hot∪cold masqué**, **bloom filters**
 (`crypto.rs`/`reader.rs`/`planner.rs`/`vectorized.rs`), scellé crypto par jour, décodage
 **vectorisé** (×2,7 mesuré, cf. horizon OLAP). **OPT-IN de bout en bout** : gate compile
-`#[cfg(feature="cold_tier")]` + gate runtime `PLUME_COLD_TIER`. **OFF en production.**
+`#[cfg(feature="cold_tier")]` + gate runtime `PLUME_COLD_TIER`. ~~**OFF en production.**~~
+**FAUX — corrigé le 2026-08-10 : il est ACTIF en production** (`PLUME_COLD_TIER=1`, 62 fichiers
+Parquet, 170,2 Mio, 41 jours). Cette phrase contredisait le §3 du MÊME fichier vingt lignes plus
+bas, et elle a survécu à la correction du levier A faite le matin même : voir `P10.10-a`. Elle est
+barrée et non effacée, parce que c'est elle qui a fait classer le levier A en tête pendant
+quatre jours.
 
 Le **chaud** n'a **AUCUNE compression au repos** aujourd'hui : la table `event` est en pages b-tree
 non compressées.

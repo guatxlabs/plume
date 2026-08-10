@@ -1107,16 +1107,24 @@ pub(crate) fn retention_purge_batch() -> i64 {
 /// placeholders `?k` du where_sql). `batch` inliné (constante interne, jamais utilisateur -> injection-safe).
 /// Erreur transitoire d'un lot -> arrêt du lot (les lignes restantes seront purgées au tick suivant : même
 /// philosophie « swallow & continue » que les `let _ = execute` d'origine). Le verrou est repris à chaque lot.
-pub(crate) fn chunked_purge(db: &Arc<Mutex<Connection>>, table: &str, where_sql: &str, binds: &[&dyn rusqlite::ToSql], batch: i64) {
+///
+/// REND LE NOMBRE DE LIGNES RÉELLEMENT SUPPRIMÉES (somme des lots) — la seule source honnête de ce chiffre :
+/// l'espéré d'un seal ou le compte d'un `SELECT` préalable ne dit PAS ce que le `DELETE` a fait (une purge
+/// idempotente rejouée en supprime zéro). Les appelants qui n'en ont pas l'usage l'ignorent : le comportement,
+/// les lignes supprimées et l'ordre des lots sont INCHANGÉS.
+pub(crate) fn chunked_purge(db: &Arc<Mutex<Connection>>, table: &str, where_sql: &str, binds: &[&dyn rusqlite::ToSql], batch: i64) -> i64 {
     let sql = format!(
         "DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {where_sql} LIMIT {batch})"
     );
+    let mut total: i64 = 0;
     loop {
-        let affected = { db.lock().execute(&sql, binds).unwrap_or(0) };
-        if (affected as i64) < batch {
+        let affected = { db.lock().execute(&sql, binds).unwrap_or(0) } as i64;
+        total += affected;
+        if affected < batch {
             break; // dernier lot (partiel ou vide) -> toutes les lignes matchantes sont supprimées.
         }
     }
+    total
 }
 
 /// Plancher/plafond DURS de la rétention PER-INDEX (#49) — MÊME borne que la rétention globale `event`

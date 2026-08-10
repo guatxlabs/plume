@@ -189,7 +189,29 @@ env:
   # ci-dessus NE SONT PAS comparables aux 181,93 s de la ligne précédente : la machine était partagée
   # avec d'autres travaux pendant la mesure, et je n'ai pas contrôlé cette charge. La CI, elle, mesure
   # sur son propre runner.
-  EXPECTED_TESTS: "1007"
+  #
+  # 1012 : MESURÉ le 2026-08-10 (`cargo test --offline --locked`, rc=0, 12 cœurs), sur DEUX
+  # exécutions de l'arbre final : **217,84 s** puis **225,72 s** de suite (3 min 39 s puis 3 min 47 s
+  # de bout en bout). L'écart entre deux exécutions du MÊME arbre est de 7,9 s : c'est l'ordre de
+  # grandeur du bruit de cette machine, et aucune comparaison plus fine n'est justifiable avec elle.
+  # 1007 datait du 08-09 ; **+5 viennent du lot « usage des
+  # index de `event` »** (`tests/index_usage_event.rs`). Le lot ne corrige aucun défaut : il MESURE
+  # celui que `docs/DESIGN-P10-echelle-2go.md` §5.4 avait interdit de toucher sans mesure — « qui se
+  # sert des index b-tree de `event` ? » — sur un poste qui pèse **428,0 Mio, 27,0 % du fichier** en
+  # production (relevé du 2026-08-09), dont 253,6 Mio hors de l'index de dédup.
+  # Les 5 : le LECTEUR DE PLAN validé par témoin positif DÉRIVÉ (chaque index du catalogue, forcé par
+  # `INDEXED BY`, doit être relu — l'index ajouté demain est couvert le jour où il est ajouté) ET par
+  # témoin négatif (`NOT INDEXED` doit rendre VIDE, sinon un vide ne serait pas une mesure) ; le REFUS
+  # DE PUBLIER si la base d'épreuve ne porte pas les index que la production porte (mutation : retirer
+  # un seul appel de réconciliation de fond nomme l'index absent) ; la CLÔTURE DE LA PARTITION du
+  # corpus, dérivée de `server.rs`/`tenants.rs` et du catalogue de colonnes porteuses — deux mutations
+  # la font rougir, dont celle qui a révélé que l'extracteur ne lisait pas les lignes à commentaire de
+  # fin ; la MESURE elle-même (230 objets livrés, rejoués en `EXPLAIN QUERY PLAN` sous trois régimes de
+  # statistiques) ; et l'ABLATION qui chiffre l'autre moitié du devis, le coût d'ÉCRITURE par index.
+  # DURÉE, dite honnêtement : les 5 tests s'exécutent en 47,4 s quand on les tire seuls, dont 42,6 s
+  # pour la seule ablation (9 bras × 20 000 insertions par la porte d'ingest réelle). C'est le lot le
+  # plus cher au test unitaire de ce fichier, et il l'est parce qu'il ÉCRIT vraiment.
+  EXPECTED_TESTS: "1012"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -408,7 +430,22 @@ jobs:
           # des tests VERTS. La suite `cold_tier` n'a PAS été exécutée pour ce lot (≈36 min sur une
           # machine partagée) ; seule la suite par défaut l'a été (rc=0, 1007/1007). La CI, elle,
           # les exécute vraiment — c'est elle qui tranchera.
-          EXPECTED_COLD_TESTS: "1203"
+          #
+          # 1208 : MESURÉ le 2026-08-10 par ÉNUMÉRATION (`cargo test --offline --locked --features
+          # cold_tier -- --list`, **47,2 s**, 12 cœurs, les DEUX lectures du script de comptage
+          # concordant à 1208) — pas par exécution. 1203 datait du 08-09 ; **+5 viennent du lot
+          # « usage des index de `event` »**, les MÊMES 5 que la suite par défaut
+          # (`tests/index_usage_event.rs`). La feature n'en ajoute AUCUN, et c'est attendu : le banc
+          # interroge le catalogue et le planificateur de la base CHAUDE, que `cold_tier` ne change
+          # pas — l'écart cold−défaut reste donc **196**, inchangé depuis P8.7-b.
+          # ⚠ CE QUE LA MESURE D'USAGE NE COUVRE PAS SOUS TIER FROID : avec `PLUME_COLD_TIER=1`, une
+          # part des lectures part vers le lecteur hot∪cold, qui prune par bloom et zone-maps et ne
+          # porte AUCUN b-tree. L'usage des index chauds y serait donc MÉCANIQUEMENT plus faible que
+          # ce que ce lot mesure. Non chiffré : le froid est OFF en production.
+          # ⚠ CE QUE CE CHIFFRE NE PROUVE PAS, ET IL FAUT LE REDIRE : il compte des tests DÉCLARÉS,
+          # pas des tests VERTS. La suite `cold_tier` n'a PAS été exécutée pour ce lot ; seule la
+          # suite par défaut l'a été (rc=0, 1012/1012, 217,84 s). La CI, elle, les exécute vraiment.
+          EXPECTED_COLD_TESTS: "1208"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

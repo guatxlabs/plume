@@ -79,7 +79,18 @@ CI = ".github/workflows/ci.yml"
 # de RFC. Les frontières excluent `T1595.002`, `169.254.169.254`, `v0.2.2`, `4624/4625`.
 NUM_CORE = r"(?<![\w./\-])(?<!RFC )%s(?![\w./\-])"
 # Mots qui font d'un nombre une AFFIRMATION sur la taille de la suite.
-WORDS = r"(?:tests?|passed|pass[ée]s|green|verte?)"
+#
+# CALIBRAGE, SUITE — une classe de faux positif NEUVE, trouvée le 2026-08-10 par la garde
+# elle-même. La forme précédente écrivait `pass[ée]s`, une classe de caractères qui accepte
+# l'accent OU son absence : elle matchait donc « 758 passés » (des tests) MAIS AUSSI
+# « 500 passes » (des passes de fusion FTS5, `daemon/src/tests/compactage_fts.rs`). En français
+# les deux mots ne diffèrent que par un accent, et seul l'accentué parle de tests. Conséquence
+# mesurée : la CI publique était ROUGE depuis `4ca6339` sur un compte d'itérations qui n'a rien
+# d'une taille de suite. Une garde qui crie à tort est désarmée le premier jour — le fichier le
+# disait déjà pour les ID d'événements Windows, et l'a réappris ici.
+# L'accent est donc EXIGÉ côté français ; `passed` reste accepté sans condition (l'anglais n'a
+# pas l'ambiguïté).
+WORDS = r"(?:tests?|passed|pass(?:és|ées)|green|verte?)"
 
 
 def claim_re(value: str) -> re.Pattern[str]:

@@ -146,7 +146,60 @@ d'ingestion. C'est la série de ventilation (`c4c20f4`) qui tranchera.
 
 ## 3. LES QUATRE LEVIERS, ordonnés par (impact mesuré ÷ code neuf)
 
-### Levier A — ACTIVER l'aging froid (construit, OFF) · impact ÉNORME, code neuf ~0
+### ~~Levier A — ACTIVER l'aging froid (construit, OFF)~~ → **CLOS : IL N'A JAMAIS ÉTÉ « OFF » PAR DÉCISION, ET IL TOURNE** *(re-mesuré 2026-08-10)*
+
+> **⚠ LA PRÉMISSE DE CE LEVIER ÉTAIT FAUSSE LE JOUR OÙ IL A ÉTÉ ÉCRIT — et la date le prouve.**
+> Ce titre date de `5de5ccd`, **2026-08-06 00:54**. Le tier froid n'a cessé d'écrire que du
+> **2026-08-05 au 2026-08-06** inclus, à cause d'un `Dockerfile` bâti `--features ldap` au lieu de
+> `ldap,cold_tier`. Ces deux jours sont **le seul moment de toute l'histoire du dépôt** où
+> l'observation « le froid ne produit rien » était vraie. **Un défaut de build de trois jours a été
+> promu en état permanent de conception, et l'ORDRE DES QUATRE LEVIERS en a été dérivé.**
+> La cause a été mesurée et écrite **le lendemain** (`6dac62e`, 2026-08-07 11:30) ; ni ce document
+> ni la roadmap n'ont été rectifiés pendant quatre jours.
+>
+> **AUCUNE des quatre hypothèses listées ci-dessous n'a jamais eu à être éprouvée : aucune n'était
+> la cause.** Elles sont conservées telles quelles, barrées, parce qu'effacer une hypothèse fausse
+> effacerait la leçon.
+>
+> **ÉTAT MESURÉ EN PRODUCTION LE 2026-08-10** (vérifié deux fois, indépendamment) :
+> `PLUME_COLD_TIER=1` + 4 autres variables en `env:` du Deployment (aucun ConfigMap ne les porte) ·
+> bannière `[cold] tier froid ACTIF — 61 fichier(s)-jour, 166,5 Mio` · symboles dans le binaire QUI
+> TOURNE : `cold_store` **7**, `parquet` **32**, contre un témoin négatif à **0** · **62 fichiers
+> Parquet, 170,2 Mio, 41 jours** du 2026-06-23 au 2026-08-02.
+> **La fenêtre d'amputation est lisible dans les dates d'écriture** — 2 fichiers/jour du 07-23 au
+> 08-04, **RIEN les 08-05 et 08-06**, puis **3 fichiers le 08-07**, jour du correctif, en rattrapage.
+> C'est une preuve par mutation que l'histoire a jouée d'elle-même : feature retirée → 0 écrit ;
+> feature rendue → rattrapage le jour même.
+>
+> **CE QUE LE LEVIER A RAPPORTE, MESURÉ ET NON PLUS ESPÉRÉ** (série de ventilation horaire, N=1
+> vieillissement observé, 2026-08-10 00:26 UTC) : données −77 Mio · index −27 Mio · **FTS5 −16 Mio**
+> · freelist **+120 Mio** · fichier **inchangé à 1586 Mio**. Comptabilité fermée aux deux bornes.
+> Le jour sorti pèse **3,70 Mio** au froid. **Un jour vieilli = 120 Mio rendus pour 3,70 Mio écrits,
+> ratio 32,5×** — et il emporte bien les trois postes, ce qui **confirme `P10.2-a`** (l'aging emporte
+> la quote-part FTS) sur la production.
+>
+> **ET VOICI LE VRAI PROBLÈME, QUE PERSONNE NE REGARDAIT** : la freelist se reconsomme à
+> **134–152 Mio/j** (deux fenêtres indépendantes) contre **120 Mio/j** rendus par l'aging →
+> **déficit net de 14 à 32 Mio/j**. Avec 112 Mio de libres au dernier point, elle s'épuise en
+> **3,5 à 8 jours**, après quoi le fichier de 1586 Mio recommence à croître. **L'aging freine la
+> croissance, il ne l'annule pas.** Ce qui reste sur la table est donc ce qui réduit les octets PAR
+> ÉVÉNEMENT CHAUD — le **levier B** — et non le levier A.
+>
+> **CE QUI RESTE NON MESURÉ, ET C'EST NOMMÉ** : la crête RAM *imputable* au vieillissement.
+> `memory.peak` du cgroup vaut 1486,6 Mio (72,6 % de la limite) et `VmHWM` 643,1 Mio, mais ce sont
+> des maxima **cumulés et non horodatés** sur 20,9 h — rien ne dit s'ils tombent pendant l'aging ou
+> pendant une requête. Idem pour la durée, le CPU et l'effet sur la latence chaude : **le
+> vieillissement est totalement MUET** (120 Mio libérés sans une ligne de journal), ce qui est
+> exactement `P10.5-a`, toujours ouvert. **LA mesure qui débloque les quatre axes d'un coup** : une
+> ligne de succès par `cold_age_run` portant jour, lignes, octets, durée et crête RSS. ~10 lignes,
+> et trois des quatre axes deviennent observables sans banc ni copie de production.
+>
+> Bornes de conception, lues dans le code et confrontées au réel : écriture plafonnée à un seul
+> row-group (`ROW_GROUP_ROWS = 262 144`) — un jour énorme fait PLUS de fichiers, pas de plus gros ;
+> lecture = `degré × un fichier déchiffré`, soit `min(6−2,4) = 4 × 4,57 Mio ≈ 18,3 Mio` en vol,
+> négligeable devant 2 Gio.
+
+### ~~Levier A (texte d'origine, conservé barré)~~ · impact ÉNORME, code neuf ~0
 Déplacer les jours anciens vers Parquet/ZSTD/bloom retire d'un coup **leurs lignes `event`** (part
 du 51 %) **ET leur quote-part des 33 % d'index** (le froid n'en porte pas) **ET leur FTS**. Sur une
 rétention de 30 j où ~90 % des événements ont plus de N jours, la base chaude fond.
@@ -244,11 +297,15 @@ Décodée des chiffres : **le chaud doit être petit et indexé ; le froid, minu
 
 ## 5. ORDRE D'ATTAQUE RECOMMANDÉ (chacun se valide seul, aucun ne bloque le suivant)
 
-1. **MESURER pourquoi le froid est OFF** (levier A) — banc réel : activer `PLUME_COLD_TIER` sur une
-   copie, mesurer taille chaude après aging, coût des requêtes froides sous charge, crête RSS d'un
-   `stats by` sur la fenêtre chaude réduite. **C'est la mesure fondatrice suivante.** Si le froid
-   tient ses promesses, **l'activer par défaut ferme l'essentiel de la taille ET soulage l'OOM** —
-   sans une ligne neuve.
+1. ~~**MESURER pourquoi le froid est OFF** (levier A)~~ → **FAIT, ET LE LEVIER EST CLOS**
+   *(2026-08-10)*. Il n'était pas OFF : la ligne ci-dessus a été écrite **pendant** une panne de
+   build de trois jours, la seule fenêtre où elle était vraie. Il tourne, il rend **120 Mio/j** au
+   chaud pour 3,70 Mio écrits au froid, et **ce gain est déjà DANS la ligne de base de 1586 Mio** —
+   ce n'est pas un gain à venir. **Ce qui prend sa place en tête n'est pas un des quatre leviers** :
+   c'est **une ligne de succès sur `cold_age_run`** (`P10.5-a`), ~10 lignes, qui rend mesurables
+   d'un coup la durée, le CPU, la crête RAM imputable et l'effet sur la latence — aujourd'hui tous
+   les quatre inconnus parce que le vieillissement est MUET. **Puis le levier B**, seul à attaquer
+   le déficit net de freelist de 14–32 Mio/j que la mesure fait apparaître.
 2. **CONSTRUIRE l'agrégation bornée native** (levier C / P10.3) — ferme l'OOM par le haut, quelle
    que soit la taille de la fenêtre chaude. Indépendant, confidentialité-neutre.
 3. **CONSTRUIRE la compression au repos du chaud** (levier B1 par-valeur) — attaque les 51 % qui

@@ -279,21 +279,31 @@ pub(crate) fn mesurer_une_fois(db_path: &str, ts: i64) -> Mesure {
     })
 }
 
-/// ÉCRIT les points dans `metric`. `host` est volontairement `None` : la ventilation décrit LA BASE,
-/// pas une machine — lui donner un hôte l'inscrirait dans l'inventaire de flotte (`host_rollup`, bâti
-/// depuis `metric WHERE host IS NOT NULL`) et inventerait une machine qui n'existe pas.
+/// LA VOIE D'ÉCRITURE D'UNE SÉRIE DANS `metric` — partagée par toutes les séries que le démon publie
+/// sur lui-même (la ventilation ici, le vieillissement froid dans `vieillissement_serie`). `host` est
+/// volontairement `None` : ces séries décrivent LA BASE, pas une machine — leur donner un hôte les
+/// inscrirait dans l'inventaire de flotte (`host_rollup`, bâti depuis `metric WHERE host IS NOT NULL`)
+/// et inventerait une machine qui n'existe pas. UNE seule copie de cette décision, donc un seul endroit
+/// à corriger : une deuxième boucle d'`INSERT` ailleurs finirait par diverger sur ce `None`.
 ///
 /// Prend `&Connection` (donc le mutex d'écriture est tenu par l'APPELANT, et seulement pour ces
-/// quelques `INSERT`) : la publication ne peut pas s'étaler sur la durée du parcours.
-pub(crate) fn publier(conn: &Connection, m: &Mesure) -> usize {
+/// quelques `INSERT`) : la publication ne peut pas s'étaler sur la durée d'un travail.
+pub(crate) fn ecrire_points(conn: &Connection, ts: i64, points: &[Point]) -> usize {
     let mut n = 0;
-    for p in points(m) {
-        let row = MetricRow { ts: m.ts(), name: p.nom.to_string(), labels: p.etiquettes, value: p.valeur, host: None };
+    for p in points {
+        let row =
+            MetricRow { ts, name: p.nom.to_string(), labels: p.etiquettes.clone(), value: p.valeur, host: None };
         if store().insert_metric(conn, &row).is_ok() {
             n += 1;
         }
     }
     n
+}
+
+/// ÉCRIT les points de la ventilation. L'horodatage est celui de la MESURE (pas de l'écriture) : une
+/// publication retardée par le verrou ne doit pas décaler le point dans la série.
+pub(crate) fn publier(conn: &Connection, m: &Mesure) -> usize {
+    ecrire_points(conn, m.ts(), &points(m))
 }
 
 /// Prend le verrou d'écriture — et le rend — POUR LES SEULS `INSERT`. C'est le seul endroit du module

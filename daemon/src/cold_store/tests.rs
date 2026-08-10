@@ -60,7 +60,37 @@ fn mkdb(root: &Path) -> Arc<Mutex<Connection>> {
            engagement_id TEXT NOT NULL DEFAULT '', src_ip TEXT, dst_ip TEXT, url TEXT, xff TEXT)",
     )
     .unwrap();
+    // `P10.5-a` — la table où le vieillissement REND COMPTE de ce qu'il a fait (`vieillissement_serie`).
+    // Colonnes MIROIR du schéma live (`db/schema.sql`) : c'est le même `INSERT` (le DTO d'ingestion) qui
+    // écrit ici et en production. Sans elle, la publication échouerait silencieusement et les tests de
+    // série ci-dessous ne prouveraient rien.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS metric(ts INTEGER NOT NULL, name TEXT NOT NULL, labels TEXT, \
+           value REAL NOT NULL, host TEXT, env_id TEXT NOT NULL DEFAULT 'prod')",
+    )
+    .unwrap();
     Arc::new(Mutex::new(conn))
+}
+
+/// La valeur d'UN point de la série du vieillissement, relue depuis `metric` (le dernier écrit gagne :
+/// les tests qui relancent une passe veulent la DERNIÈRE). `None` = série ABSENTE — ce qui est une
+/// réponse à part entière ici (un trou n'est pas un zéro).
+fn serie(db: &Arc<Mutex<Connection>>, nom: &str, labels: Option<&str>) -> Option<f64> {
+    let conn = db.lock();
+    match labels {
+        Some(l) => conn
+            .query_row(
+                "SELECT value FROM metric WHERE name=?1 AND labels=?2 ORDER BY rowid DESC LIMIT 1",
+                params![nom, l],
+                |r| r.get(0),
+            )
+            .ok(),
+        None => conn
+            .query_row("SELECT value FROM metric WHERE name=?1 ORDER BY rowid DESC LIMIT 1", params![nom], |r| {
+                r.get(0)
+            })
+            .ok(),
+    }
 }
 
 fn insert_event(db: &Arc<Mutex<Connection>>, r: &ColdRow) {
@@ -8501,4 +8531,293 @@ fn p87b_les_deux_moities_at_rest_derivent_du_meme_appel() {
         "un tenant enregistré EN CLAIR ne doit JAMAIS voir le froid chiffrer avec la clé globale"
     );
     unregister_db_key("/p87b/tenant-en-clair.db");
+}
+
+// =====================================================================================================
+// `P10.5-a` — LE VIEILLISSEMENT REND COMPTE. Mesuré en production le 2026-08-10 : une passe libérait
+// 120 Mio de base chaude et écrivait 3,70 Mio de Parquet SANS ÉMETTRE UNE LIGNE, et quatre axes de coût
+// (durée, CPU, crête RAM, latence) étaient inconnus POUR CETTE SEULE RAISON. Ces tests portent sur le
+// CÂBLAGE : ce que la vraie passe écrit vraiment dans `metric`. La FORME de ce qui est publié (trou vs
+// zéro, causes, bornes, instrument de crête) est prouvée dans le profil PAR DÉFAUT
+// (`tests/vieillissement_serie.rs`) — ici on vérifie que les chiffres décrivent le travail RÉEL.
+// =====================================================================================================
+
+use crate::vieillissement_serie::{
+    CAUSE_CLE_ABSENTE, NOM_CRETE_OK, NOM_DUREE, NOM_FICHIERS, NOM_JOURS, NOM_LIGNES, NOM_OCTETS_FROID, NOM_OK,
+};
+
+/// LA PASSE DIT CE QU'ELLE A FAIT — jours, lignes ÉCRITES, lignes RETIRÉES DU CHAUD, fichiers, et OCTETS.
+/// Chaque chiffre est confronté à la réalité qu'il prétend décrire : le compte de lignes agées, la taille
+/// du fichier SUR DISQUE, le vidage effectif du chaud. Sans ce test, la série pourrait publier n'importe
+/// quoi de plausible — c'est exactement le risque quand on remplace un silence par des chiffres.
+///
+/// MUTATION : publier `f.expected` (l'espéré du seal) au lieu du retour de `delete_file_rows` ⇒ ce test
+/// reste VERT (les deux valent 40 au premier passage). Celui qui rougit est
+/// `un_seal_rejoue_ne_compte_que_les_lignes_reellement_supprimees` — le seul scénario où les deux nombres
+/// DIVERGENT (vérifié le 2026-08-10 : 0 attendu, 25 publiés sous mutation).
+#[test]
+fn un_vieillissement_reussi_rend_compte_de_ce_quil_a_fait() {
+    let root = tmp_root("serie-travail");
+    let cold = root.join("cold");
+    let db = mkdb(&root);
+    let day = M - 10;
+    let base = day * SECS_PER_DAY;
+    for i in 0..40 {
+        insert_event(&db, &rich_row(base + i, i));
+    }
+    insert_recent_tail_holder(&db); // garde H1 : le tail est tenu ailleurs, le jour est agéable
+    assert_eq!(count_hot(&db), 41);
+
+    cold_age_run(&db, "", &conf_on(&cold, HOT_WIN), n_now(), RET_DAYS);
+
+    // Le travail a bien eu lieu (précondition : sans ça, ce test mesurerait une série de zéros).
+    assert_eq!(count_hot_day(&db, "prod", day), 0, "précondition : le jour doit avoir été agé");
+    let p = day_path(&cold, "prod", day);
+    let taille = std::fs::metadata(&p).expect("le fichier cold doit exister").len() as f64;
+
+    assert_eq!(serie(&db, NOM_OK, Some("{\"cause\":\"aucune\"}")), Some(1.0), "la passe s'annonce réussie");
+    assert_eq!(serie(&db, NOM_JOURS, Some("{\"issue\":\"candidat\"}")), Some(1.0));
+    assert_eq!(serie(&db, NOM_JOURS, Some("{\"issue\":\"age\"}")), Some(1.0));
+    assert_eq!(serie(&db, NOM_JOURS, Some("{\"issue\":\"differe\"}")), Some(0.0));
+    assert_eq!(
+        serie(&db, NOM_LIGNES, Some("{\"sens\":\"ecrites\"}")),
+        Some(40.0),
+        "la série n'annonce pas les 40 lignes réellement columnarisées"
+    );
+    assert_eq!(
+        serie(&db, NOM_LIGNES, Some("{\"sens\":\"retirees_du_chaud\"}")),
+        Some(40.0),
+        "la série n'annonce pas les 40 lignes réellement supprimées du chaud"
+    );
+    assert_eq!(serie(&db, NOM_FICHIERS, Some("{\"etat\":\"ecrits\"}")), Some(1.0));
+    assert_eq!(serie(&db, NOM_FICHIERS, Some("{\"etat\":\"purges\"}")), Some(1.0));
+    assert_eq!(
+        serie(&db, NOM_OCTETS_FROID, None),
+        Some(taille),
+        "les octets publiés ne sont pas ceux que le fichier pèse SUR DISQUE ({taille} o) -> le chiffre \
+         serait une reconstruction, pas une mesure"
+    );
+    assert!(serie(&db, NOM_DUREE, None).is_some(), "la durée d'une passe doit être publiée");
+    // La crête RSS : mesurée ou NOMMÉE, jamais absente en silence.
+    let conn = db.lock();
+    let n_crete: i64 = conn
+        .query_row("SELECT COUNT(*) FROM metric WHERE name=?1", params![NOM_CRETE_OK], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n_crete, 1, "l'état de l'instrument de crête doit être publié à chaque passe");
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// UN RE-RUN NE RÉCLAME PAS D'AVOIR DÉPLACÉ DES LIGNES. Le jour est déjà scellé ET purgé : la seconde
+/// passe est un NO-OP. Si la série publiait l'ESPÉRÉ du seal (`expected_rows`) au lieu du compte rendu
+/// par le `DELETE`, elle annoncerait 40 lignes drainées à CHAQUE tick horaire — un drainage imaginaire,
+/// et la « quantité de données déplacées par jour » serait fausse d'un facteur 24.
+///
+/// CE QUE CE TEST NE PROUVE PAS — mesuré, pas supposé. J'ai cru qu'il serait la garde du choix « compte
+/// RÉEL du DELETE plutôt qu'espéré du seal » : FAUX. Mutation exécutée le 2026-08-10 (publier `f.expected`)
+/// ⇒ ce test reste VERT, parce que la 2e passe ne découvre AUCUN jour candidat (le chaud est vide) et
+/// n'atteint donc jamais la phase 2. La garde de ce choix est le test SUIVANT, qui construit le seul
+/// scénario où les deux nombres divergent.
+#[test]
+fn un_re_run_ne_reclame_pas_davoir_deplace_des_lignes() {
+    let root = tmp_root("serie-rerun");
+    let cold = root.join("cold");
+    let db = mkdb(&root);
+    let day = M - 6;
+    let base = day * SECS_PER_DAY;
+    for i in 0..25 {
+        insert_event(&db, &rich_row(base + i, i));
+    }
+    insert_recent_tail_holder(&db);
+    let conf = conf_on(&cold, HOT_WIN);
+    cold_age_run(&db, "", &conf, n_now(), RET_DAYS);
+    assert_eq!(serie(&db, NOM_LIGNES, Some("{\"sens\":\"retirees_du_chaud\"}")), Some(25.0), "précondition");
+
+    cold_age_run(&db, "", &conf, n_now(), RET_DAYS); // 2e passe : le jour est drainé, il n'y a plus rien
+
+    assert_eq!(
+        serie(&db, NOM_LIGNES, Some("{\"sens\":\"retirees_du_chaud\"}")),
+        Some(0.0),
+        "la 2e passe prétend avoir retiré des lignes d'un jour DÉJÀ drainé -> le chiffre publié est \
+         l'espéré du seal, pas ce que le DELETE a fait"
+    );
+    assert_eq!(
+        serie(&db, NOM_LIGNES, Some("{\"sens\":\"ecrites\"}")),
+        Some(0.0),
+        "la 2e passe prétend avoir écrit du Parquet alors qu'aucun fichier n'a été produit"
+    );
+    // ... et elle reste une passe RÉUSSIE : le jour drainé n'a plus de ligne chaude, donc plus rien à
+    // découvrir. « 0 candidat » est un résultat publié, pas un silence.
+    assert_eq!(serie(&db, NOM_OK, Some("{\"cause\":\"aucune\"}")), Some(1.0));
+    assert_eq!(serie(&db, NOM_JOURS, Some("{\"issue\":\"candidat\"}")), Some(0.0));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// UNE PASSE QUI N'A RIEN À FAIRE PUBLIE DES ZÉROS — pas rien. C'est l'invariant du chantier vu depuis
+/// la production : « le vieillissement n'a rien trouvé cette heure-ci » et « le vieillissement ne tourne
+/// plus depuis trois jours » doivent avoir des signatures DIFFÉRENTES dans la série.
+///
+/// MUTATION : ne publier que si `jours_candidats > 0` ⇒ la table reste vide et la 1re assertion rougit.
+#[test]
+fn une_passe_sans_rien_a_faire_publie_des_zeros_pas_un_silence() {
+    let root = tmp_root("serie-vide");
+    let cold = root.join("cold");
+    let db = mkdb(&root); // AUCUN event : rien n'est éligible
+    cold_age_run(&db, "", &conf_on(&cold, HOT_WIN), n_now(), RET_DAYS);
+
+    assert_eq!(
+        serie(&db, NOM_JOURS, Some("{\"issue\":\"candidat\"}")),
+        Some(0.0),
+        "une passe qui n'a rien trouvé n'a rien publié -> elle est indiscernable d'un démon qui ne \
+         vieillit plus (le défaut mesuré le 2026-08-10)"
+    );
+    assert_eq!(serie(&db, NOM_OK, Some("{\"cause\":\"aucune\"}")), Some(1.0));
+    assert_eq!(serie(&db, NOM_OCTETS_FROID, None), Some(0.0));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// UNE SUSPENSION EST DITE, ET NE PUBLIE AUCUN COMPTEUR. Clé absente = fail-closed : rien n'est agé, le
+/// chaud est intact. La série porte un TROU NOMMÉ (`ok{cause=cle_absente}=0`) et surtout AUCUN zéro de
+/// travail — un `jours{candidat}=0` ici mentirait : la passe n'a jamais regardé la base.
+///
+/// MUTATION : rendre `Issue::Balaye` sur le chemin clé-absente ⇒ la série publie des compteurs de
+/// travail pour une passe qui n'a rien regardé, et les deux dernières assertions rougissent.
+#[test]
+fn une_suspension_par_cle_absente_est_dite_et_ne_publie_aucun_compteur() {
+    let root = tmp_root("serie-sanscle");
+    let cold = root.join("cold");
+    let db = mkdb(&root);
+    let day = M - 10;
+    for i in 0..10 {
+        insert_event(&db, &rich_row(day * SECS_PER_DAY + i, i));
+    }
+    insert_recent_tail_holder(&db);
+    // Conf cold ON mais SANS PLUME_DB_KEY -> aucune passphrase dérivable (fail-closed, hot intact).
+    let mut conf = conf_on(&cold, HOT_WIN);
+    conf.remove("PLUME_DB_KEY");
+
+    cold_age_run(&db, "", &conf, n_now(), RET_DAYS);
+
+    assert_eq!(count_hot_day(&db, "prod", day), 10, "précondition : fail-closed, le chaud reste intact");
+    assert_eq!(
+        serie(&db, NOM_OK, Some(&format!("{{\"cause\":\"{CAUSE_CLE_ABSENTE}\"}}"))),
+        Some(0.0),
+        "la suspension n'est pas publiée -> un vieillissement qui ne draine plus resterait invisible"
+    );
+    assert_eq!(
+        serie(&db, NOM_JOURS, Some("{\"issue\":\"candidat\"}")),
+        None,
+        "une passe qui n'a JAMAIS regardé la base publie des jours -> elle se lirait « rien à faire »"
+    );
+    assert_eq!(serie(&db, NOM_OCTETS_FROID, None), None, "aucun octet ne peut être annoncé par une passe suspendue");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// TIER FROID ÉTEINT = AUCUNE SÉRIE. L'absence totale de point dit « ça ne tourne pas ici » ; un `0`
+/// dirait « ça tourne et ça ne fait rien ». C'est aussi la garde de mode 0 : gate runtime OFF, la base
+/// n'est pas touchée — pas même par la mesure.
+#[test]
+fn le_tier_froid_eteint_ne_publie_aucune_serie() {
+    let root = tmp_root("serie-off");
+    let cold = root.join("cold");
+    let db = mkdb(&root);
+    for i in 0..5 {
+        insert_event(&db, &rich_row((M - 10) * SECS_PER_DAY + i, i));
+    }
+    let mut conf = conf_on(&cold, HOT_WIN);
+    conf.remove("PLUME_COLD_TIER"); // gate RUNTIME absent
+
+    cold_age_run(&db, "", &conf, n_now(), RET_DAYS);
+
+    let n: i64 = db.lock().query_row("SELECT COUNT(*) FROM metric", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 0, "le tier froid éteint a écrit dans `metric` -> mode 0 n'est plus byte-identique");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// UNE DÉCOUVERTE QUI ÉCHOUE NE SE LIT PAS « RIEN À FAIRE ». C'est la forme la plus coûteuse du défaut
+/// que ce chantier ferme, et elle n'apparaît QU'UNE FOIS la passe instrumentée : la requête qui liste les
+/// jours agéables avalait ses erreurs (`if let Ok(..)` + `flatten()`) et rendait une liste VIDE. Sans
+/// série, ça ressemblait à un tick sans travail ; AVEC une série naïve, ça publierait « 0 jour candidat »
+/// — un ZÉRO MESURÉ affirmant qu'on a regardé. Ici la table `event` est retirée sous les pieds de la
+/// passe : elle doit le DIRE, pas compter zéro.
+///
+/// MUTATION : revenir au `if let Ok(mut st) = conn.prepare(&sql)` silencieux ⇒ `ok{cause=aucune}` vaut 1,
+/// `jours{issue=candidat}` vaut 0, et les deux assertions rougissent.
+#[test]
+fn une_decouverte_impossible_ne_se_publie_pas_comme_zero_jour() {
+    let root = tmp_root("serie-decouverte");
+    let cold = root.join("cold");
+    let db = mkdb(&root);
+    db.lock().execute_batch("DROP TABLE event").unwrap(); // la découverte ne PEUT plus regarder
+
+    cold_age_run(&db, "", &conf_on(&cold, HOT_WIN), n_now(), RET_DAYS);
+
+    assert_eq!(
+        serie(&db, NOM_OK, Some("{\"cause\":\"decouverte_impossible\"}")),
+        Some(0.0),
+        "la découverte a échoué et la série ne le dit pas -> l'échec est indiscernable d'un tick sans travail"
+    );
+    assert_eq!(
+        serie(&db, NOM_JOURS, Some("{\"issue\":\"candidat\"}")),
+        None,
+        "un `0 candidat` publié ici AFFIRMERAIT qu'on a regardé la base : c'est un zéro pour une mesure \
+         qui n'a pas eu lieu"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// UN SEAL REJOUÉ NE COMPTE QUE LES LIGNES RÉELLEMENT SUPPRIMÉES. C'est le SEUL scénario où « ce que le
+/// seal espérait » et « ce que le DELETE a fait » divergent, et il est réel : un crash entre le DELETE et
+/// le `purged=1` laisse un seal à rejouer sur un chaud déjà vidé. On le reconstruit exactement — jour agé,
+/// seal remis à `purged=0`, puis des lignes BACKDATÉES ingérées après coup (des stragglers : leur `id` est
+/// au-dessus du `max_id` scellé, donc le DELETE borné ne peut pas les prendre). La phase 2 rejoue, VERIFY
+/// passe, le DELETE ne supprime RIEN — et c'est ce ZÉRO que la série doit publier.
+///
+/// Sans ça, un déploiement qui rejoue des seals publierait à chaque tick horaire les milliers de lignes
+/// que le seal ANNONCE : la question « combien de données le vieillissement déplace-t-il par jour ? »
+/// serait fausse d'un facteur égal au nombre de rejeux, et fausse VERS LE HAUT (le sens qui rassure).
+///
+/// MUTATION (exécutée le 2026-08-10) : `compte.lignes_retirees += f.expected` ⇒ la série publie 25 lignes
+/// « retirées du chaud » alors que le DELETE en a supprimé 0, et l'assertion rougit.
+#[test]
+fn un_seal_rejoue_ne_compte_que_les_lignes_reellement_supprimees() {
+    let root = tmp_root("serie-rejeu");
+    let cold = root.join("cold");
+    let db = mkdb(&root);
+    let day = M - 8;
+    let base = day * SECS_PER_DAY;
+    for i in 0..25 {
+        insert_event(&db, &rich_row(base + i, i));
+    }
+    insert_recent_tail_holder(&db);
+    let conf = conf_on(&cold, HOT_WIN);
+    cold_age_run(&db, "", &conf, n_now(), RET_DAYS);
+    assert_eq!(count_hot_day(&db, "prod", day), 0, "précondition : le jour est agé et purgé");
+
+    // CRASH SIMULÉ entre le DELETE et le `purged=1` : le seal est à rejouer.
+    db.lock().execute("UPDATE cold_seal SET purged=0 WHERE day=?1", params![day]).unwrap();
+    // Des lignes BACKDATÉES arrivent après le scellement : leur id dépasse le max_id scellé -> le DELETE
+    // borné `id<=max_id` ne peut pas les prendre (stragglers, sémantique P1 : pas de perte, pas de cold).
+    for i in 0..10 {
+        insert_event(&db, &rich_row(base + 100 + i, i));
+    }
+
+    cold_age_run(&db, "", &conf, n_now(), RET_DAYS);
+
+    assert_eq!(
+        count_hot_day(&db, "prod", day), 10,
+        "précondition : les stragglers survivent (sinon ce test ne mesure pas le rejeu qu'il annonce)"
+    );
+    assert_eq!(
+        serie(&db, NOM_FICHIERS, Some("{\"etat\":\"purges\"}")),
+        Some(1.0),
+        "précondition : la phase 2 a bien REJOUÉ le fichier (sans ça, la ligne mutée n'est pas atteinte)"
+    );
+    assert_eq!(
+        serie(&db, NOM_LIGNES, Some("{\"sens\":\"retirees_du_chaud\"}")),
+        Some(0.0),
+        "le rejeu publie l'ESPÉRÉ du seal au lieu de ce que le DELETE a fait -> « combien de données le \
+         vieillissement déplace-t-il ? » devient faux, et faux vers le HAUT"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }

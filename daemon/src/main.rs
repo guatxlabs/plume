@@ -101,6 +101,13 @@ mod cold_store;
 // permet de les distinguer.
 #[allow(dead_code)]
 mod cold_banniere;
+// CE QUE COÛTE UN VIEILLISSEMENT FROID, DANS LE TEMPS. NON GATÉ pour la MÊME raison que `cold_banniere` :
+// la logique (ce qui se publie, ce qui reste un trou) et l'INSTRUMENT de mesure (crête RSS ramenée à la
+// fenêtre, CPU du fil) doivent être testables dans le build PAR DÉFAUT, sinon la garde ne s'exécuterait que
+// derrière `--features cold_tier`. Seul l'APPELANT (`cold_store::aging`) est gaté. `allow(dead_code)` : sans
+// la feature, rien n'ouvre de fenêtre ni ne publie -> mode 0 byte-identique (aucun appel, aucune écriture).
+#[allow(dead_code)]
+mod vieillissement_serie;
 mod maintenance;
 pub(crate) use maintenance::*;
 mod compactage_fts; // P10.7-b : LA FUSION DES SEGMENTS FTS5 — une purge fait GROSSIR l'index plein-texte, et plume ne fusionnait JAMAIS. Budget NÉGATIF (le positif ne rend rien), verrou relâché par passe, issue TYPÉE (aucune variante hors `Rendue` ne peut annoncer d'octets)

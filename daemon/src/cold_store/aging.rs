@@ -31,6 +31,9 @@
 
 use super::*;
 use std::path::Path;
+// `P10.5-a` — l'instrumentation de la passe. Importée EXPLICITEMENT (pas par le glob) : c'est une
+// dépendance vers un module NON gaté, et la nommer ici dit d'où viennent `Compte`, `Issue` et la fenêtre.
+use crate::vieillissement_serie::{self, Compte, Fenetre, Issue};
 
 /// Lit UNE page (au plus `limit` lignes) du jour (env_id, day) STRICTEMENT après le curseur keyset `(lo_ts, lo_id)`,
 /// bornée `id <= max_id` (FIX #1) + NONPURGE, ordonnée `(ts, id)`. Verrou writer COURT (relâché après la lecture).
@@ -180,8 +183,12 @@ pub(crate) fn reparse_lower_bound(conn: &Connection, conf: &HashMap<String, Stri
 /// ET scellé durablement AVANT que ce delete ne s'exécute. Le delete est borné `id<=max_id` (FIX #1) + la fenêtre
 /// keyset DU fichier. Le compilateur n'imposera JAMAIS verify-avant-delete par-delà une frontière de module : la
 /// précondition doit rester écrite. NE JAMAIS appeler cette fonction sur un fichier non vérifié = perte de hot.
+///
+/// REND LE NOMBRE DE LIGNES RÉELLEMENT SUPPRIMÉES (`P10.5-a`). Ce n'est PAS `expected_rows` du seal : un
+/// re-run idempotent en supprime zéro alors que le seal en annonce des milliers. Publier l'espéré ferait
+/// croire à un drainage à chaque tick — exactement le genre de chiffre faux qu'un trou vaut mieux que.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn delete_file_rows(db: &Arc<Mutex<Connection>>, env_id: &str, day: i64, max_id: i64, lo_ts: i64, lo_id: i64, ts_max: i64, hi_id: i64) {
+pub(super) fn delete_file_rows(db: &Arc<Mutex<Connection>>, env_id: &str, day: i64, max_id: i64, lo_ts: i64, lo_id: i64, ts_max: i64, hi_id: i64) -> i64 {
     let day_start = day * SECS_PER_DAY;
     let day_end = day_start + SECS_PER_DAY;
     let batch = retention_purge_batch();
@@ -195,7 +202,7 @@ pub(super) fn delete_file_rows(db: &Arc<Mutex<Connection>>, env_id: &str, day: i
         ),
         &[&env, &day_start, &day_end, &max_id, &lo_ts, &lo_id, &ts_max, &hi_id],
         batch,
-    );
+    )
 }
 
 /// AGING vers le tier COLD Parquet (#18 Phase 1). Appelée depuis `retention_run` DERRIÈRE le gate compile
@@ -254,13 +261,46 @@ pub(super) fn delete_file_rows(db: &Arc<Mutex<Connection>>, env_id: &str, day: i
 ///
 /// HOLDS/CONTRÔLE : si un legal-hold est actif (enforcement != NoHolds) -> aging SUSPENDU ce tick (les
 /// preuves restent hot, fail-safe). Les events de contrôle (RETENTION_NONPURGE) ne sont JAMAIS agés/supprimés.
+///
+/// CE QUE LA PASSE RACONTE (`P10.5-a`) — mesuré en production le 2026-08-10 : un vieillissement libérait
+/// 120 Mio de base chaude et écrivait 3,70 Mio de Parquet SANS ÉMETTRE UNE LIGNE. Le corps de la passe est
+/// donc désormais `balayer`, encadré ICI par une fenêtre de mesure (durée, CPU du fil, crête RSS ramenée à la
+/// fenêtre) : à chaque exécution, UNE ligne de journal ET une série dans `metric`
+/// (`vieillissement_serie`). L'encadrement est TOTAL — tous les retours de `balayer` passent par le même
+/// point de publication, donc aucune sortie ne peut redevenir muette sans qu'on le voie. Seul le gate
+/// RUNTIME reste AVANT la fenêtre : tier froid éteint = pas de passe, donc pas de point (l'absence de série
+/// dit « ça ne tourne pas », un `0` dirait « ça tourne et ça ne fait rien »).
 pub(crate) fn cold_age_run(db: &Arc<Mutex<Connection>>, db_path: &str, conf: &HashMap<String, String>, n: i64, retention_days: i64) {
     // --- GATE RUNTIME : sans PLUME_COLD_TIER=1, retour immédiat (retention_run byte-identique). ---
     if cfg(conf, "PLUME_COLD_TIER", "") != "1" {
         return;
     }
+    let fenetre = Fenetre::ouvrir();
+    let mut compte = Compte::default();
+    let issue = balayer(db, db_path, conf, n, retention_days, &mut compte);
+    let bilan = fenetre.clore(issue, compte);
+    // Les DEUX sorties : la phrase (lisible dans `kubectl logs`, sans requête à écrire) ET la série (lisible
+    // 90 jours plus tard, en SOQL). L'une ne remplace pas l'autre — c'est le défaut mesuré qui l'a montré.
+    eprintln!("{}", vieillissement_serie::phrase(&bilan));
+    vieillissement_serie::publier(db, n, &bilan);
+}
+
+/// LE CORPS DE LA PASSE — tout ce que faisait `cold_age_run` avant l'instrumentation, à l'identique, plus
+/// l'accumulation du `compte`. Rend l'ISSUE (balayée / suspendue-et-pourquoi) au lieu de `()` : c'est ce
+/// typage qui interdit qu'une sortie redevienne silencieuse (le compilateur exige une issue sur CHAQUE
+/// chemin, et l'appelant en fait toujours une ligne + un point de série).
+fn balayer(
+    db: &Arc<Mutex<Connection>>,
+    db_path: &str,
+    conf: &HashMap<String, String>,
+    n: i64,
+    retention_days: i64,
+    compte: &mut Compte,
+) -> Issue {
     if retention_days <= 1 {
-        return; // rétention globale trop courte pour distinguer une fenêtre chaude ; rien à ager.
+        // Rétention globale trop courte pour distinguer une fenêtre chaude ; rien à ager. C'ÉTAIT un retour
+        // muet : le tier froid déclaré actif ne columnarisait rien et rien ne le disait.
+        return Issue::Suspendu(vieillissement_serie::CAUSE_RETENTION_COURTE);
     }
 
     // #18 P1.5 — RÉTENTION COLD ÉTENDUE. `cold_ret` = rétention TOTALE (défaut = retention_days -> byte-
@@ -278,7 +318,7 @@ pub(crate) fn cold_age_run(db: &Arc<Mutex<Connection>>, db_path: &str, conf: &Ha
         HoldEnforce::NoHolds => {}
         _ => {
             eprintln!("[cold] legal-hold actif/indéterminé -> aging cold SUSPENDU ce tick (fail-safe)");
-            return;
+            return Issue::Suspendu(vieillissement_serie::CAUSE_LEGAL_HOLD);
         }
     }
 
@@ -317,7 +357,7 @@ pub(crate) fn cold_age_run(db: &Arc<Mutex<Connection>>, db_path: &str, conf: &Ha
             if cold_ret > retention_days {
                 detect_aging_stall(db, n, hot_window, cold_ret);
             }
-            return;
+            return Issue::Suspendu(vieillissement_serie::CAUSE_CLE_ABSENTE);
         }
     };
 
@@ -341,6 +381,14 @@ pub(crate) fn cold_age_run(db: &Arc<Mutex<Connection>>, db_path: &str, conf: &Ha
     // Borne basse LARGE : rétention la plus longue (ceil). La borne PAR-ENV (plus stricte) filtre ensuite.
     let broad_lo_day = (n - max_ret * SECS_PER_DAY + SECS_PER_DAY - 1).div_euclid(SECS_PER_DAY);
 
+    // `P10.5-a` — LA DÉCOUVERTE PEUT ÉCHOUER, ET SON ÉCHEC RESSEMBLAIT À « RIEN À FAIRE ». Les `if let
+    // Ok(..)`/`flatten()` d'origine avalaient une erreur de `prepare`, de `query_map` ou de ligne : la liste
+    // sortait VIDE et la passe se comportait exactement comme un tick sans travail. Une fois la passe
+    // instrumentée ce serait PIRE qu'avant — la série publierait « 0 jour candidat », un ZÉRO MESURÉ, là où
+    // la vérité est « je n'ai pas pu regarder ». On garde le comportement (aucune interruption : l'expiry et
+    // les détecteurs de fin de passe doivent tourner) mais on RETIENT l'échec, et l'issue le portera.
+    let mut decouverte_ok = true;
+
     if hi_day_excl > broad_lo_day {
         // Découverte des (env_id, day) candidats sur la bande LARGE (STABLE : jours passés). EXCLUT les events
         // de contrôle (RETENTION_NONPURGE) -> jamais agés.
@@ -354,18 +402,42 @@ pub(crate) fn cold_age_run(db: &Arc<Mutex<Connection>>, db_path: &str, conf: &Ha
             let lo = broad_lo_day * SECS_PER_DAY;
             let hi = hi_day_excl * SECS_PER_DAY;
             let mut out = Vec::new();
-            if let Ok(mut st) = conn.prepare(&sql) {
-                if let Ok(rows) = st.query_map(params![lo, hi], |r| {
+            match conn.prepare(&sql) {
+                Ok(mut st) => match st.query_map(params![lo, hi], |r| {
                     Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
                 }) {
-                    out = rows.flatten().collect();
+                    Ok(rows) => {
+                        for ligne in rows {
+                            match ligne {
+                                Ok(g) => out.push(g),
+                                // Une ligne illisible SOUS-COMPTERAIT les candidats sans le dire.
+                                Err(e) => {
+                                    decouverte_ok = false;
+                                    eprintln!("[cold] découverte des jours agéables : ligne illisible ({e})");
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        decouverte_ok = false;
+                        eprintln!("[cold] découverte des jours agéables IMPOSSIBLE ({e}) -> aucun jour examiné ce tick");
+                    }
+                },
+                Err(e) => {
+                    decouverte_ok = false;
+                    eprintln!("[cold] découverte des jours agéables IMPOSSIBLE ({e}) -> aucun jour examiné ce tick");
                 }
             }
             out
         };
 
+        // Chaque candidat suit EXACTEMENT une des quatre suites (écarté / différé / échoué / agé) — c'est la
+        // comptabilité que `Compte::comptabilite_jours_fermee` exige, et qui refuse de publier si un chemin
+        // ajouté plus tard oubliait de se compter.
+        compte.jours_candidats += groups.len() as i64;
         for (env_id, day) in groups {
             if !env_id_ok(&env_id) {
+                compte.jours_ecartes += 1;
                 continue; // fail-safe : env_id non conforme -> pas de composant de chemin, on n'âge pas.
             }
             // Borne basse PAR-ENV (FIX #4) : n'âge un jour que s'il est ENCORE dans la rétention de SON index.
@@ -374,10 +446,16 @@ pub(crate) fn cold_age_run(db: &Arc<Mutex<Connection>>, db_path: &str, conf: &Ha
             let r = eff_ret(&env_id);
             let env_lo_day = (n - r * SECS_PER_DAY + SECS_PER_DAY - 1).div_euclid(SECS_PER_DAY); // ceil
             if day < env_lo_day {
+                compte.jours_ecartes += 1;
                 continue;
             }
-            if let Err(e) = age_one_day(db, db_path, &cold_dir, &env_id, day, file_cap, rg_rows, &pass) {
-                eprintln!("[cold] aging {env_id}/{} échoué (lignes conservées hot): {e}", ymd_from_day(day));
+            match age_one_day(db, db_path, &cold_dir, &env_id, day, file_cap, rg_rows, &pass, compte) {
+                Ok(Journee::Agee) => compte.jours_ages += 1,
+                Ok(Journee::Differee) => compte.jours_differes += 1,
+                Err(e) => {
+                    compte.jours_echoues += 1;
+                    eprintln!("[cold] aging {env_id}/{} échoué (lignes conservées hot): {e}", ymd_from_day(day));
+                }
             }
         }
     }
@@ -410,6 +488,14 @@ pub(crate) fn cold_age_run(db: &Arc<Mutex<Connection>>, db_path: &str, conf: &Ha
     // signal (et donc byte-identique : les tests existants, knob non posé, ne l'activent JAMAIS).
     if cold_ret > retention_days {
         detect_aging_stall(db, n, hot_window, cold_ret);
+    }
+
+    // L'ISSUE EN DERNIER, et elle porte l'échec de découverte : « 0 candidat » n'est publiable que si on a
+    // VRAIMENT regardé. Sinon la passe est suspendue avec sa cause, et la série a un trou NOMMÉ.
+    if decouverte_ok {
+        Issue::Balaye
+    } else {
+        Issue::Suspendu(vieillissement_serie::CAUSE_DECOUVERTE)
     }
 }
 
@@ -562,11 +648,21 @@ fn emit_cold_seal_stuck(conn: &Connection, now_ts: i64, files: i64, days: i64, o
         > 0
 }
 
+/// CE QU'UN JOUR EST DEVENU — deux issues SANS erreur, qui ne doivent pas se confondre dans la série : un jour
+/// DIFFÉRÉ (garde H1) n'a rien columnarisé et reviendra ; un jour AGÉ est traité. Les compter ensemble ferait
+/// passer un report permanent (ingest arrêté) pour un drainage sain.
+enum Journee {
+    Agee,
+    Differee,
+}
+
 /// Traite UN (env_id, day) selon la machine à états seal DEUX PHASES multi-fichiers (cf. doc de `cold_age_run`).
 /// `file_cap` = plafond de lignes par fichier (split) ; `rg_rows` = taille de row-group intra-fichier. Renvoie
 /// Err si l'aging n'a pas pu se compléter proprement (l'appelant journalise ; les lignes restent hot -> pas de perte).
+/// `compte` (`P10.5-a`) est incrémenté PAR FICHIER au fil de l'eau (jamais à la fin) -> un échec au milieu du jour
+/// conserve la trace de ce qui a réellement été écrit et supprimé.
 #[allow(clippy::too_many_arguments)]
-fn age_one_day(db: &Arc<Mutex<Connection>>, db_path: &str, cold_dir: &Path, env_id: &str, day: i64, file_cap: usize, rg_rows: usize, pass: &str) -> Result<(), String> {
+fn age_one_day(db: &Arc<Mutex<Connection>>, db_path: &str, cold_dir: &Path, env_id: &str, day: i64, file_cap: usize, rg_rows: usize, pass: &str, compte: &mut Compte) -> Result<Journee, String> {
     let seals = { let conn = db.lock(); file_seals(&conn, env_id, day) };
     let write_done = seals.iter().any(|s| s.last_file);
 
@@ -580,7 +676,9 @@ fn age_one_day(db: &Arc<Mutex<Connection>>, db_path: &str, cold_dir: &Path, env_
                 (n_rows, max_id, event_table_max_id(&conn)?)
             };
             if n_rows == 0 {
-                return Ok(()); // défensif : rien d'agéable (aucune ligne non-contrôle) -> pas de fichier, pas de seal.
+                // Défensif : rien d'agéable (aucune ligne non-contrôle) -> pas de fichier, pas de seal. C'est
+                // un jour TRAITÉ (0 ligne écrite), pas un jour différé : la série le dira comme tel.
+                return Ok(Journee::Agee);
             }
             // H1 — TAIL GUARD (anti-réutilisation de rowid), inchangé et appliqué au NIVEAU JOUR (la Phase 2 supprime
             // TOUT le jour `id<=max_id`). Le DELETE borne `id <= max_id` ; il n'est dangereux que si SQLite peut
@@ -597,23 +695,24 @@ fn age_one_day(db: &Arc<Mutex<Connection>>, db_path: &str, cold_dir: &Path, env_
                     "[cold] {env_id}/{} détient le tail du compteur rowid (max_id={max_id}) -> aging DIFFÉRÉ ce tick (anti-réutilisation, reste hot sans perte)",
                     ymd_from_day(day)
                 );
-                return Ok(());
+                return Ok(Journee::Differee);
             }
             let dir = day_dir(cold_dir, env_id);
             std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
-            write_day_files(db, db_path, cold_dir, env_id, day, max_id, 0, i64::MIN, i64::MIN, file_cap, rg_rows, pass)?;
+            write_day_files(db, db_path, cold_dir, env_id, day, max_id, 0, i64::MIN, i64::MIN, file_cap, rg_rows, pass, compte)?;
         } else {
             // RESUME ÉCRITURE (crash EN Phase 1 : préfixe 0..k scellé, AUCUN last_file). Hot INTACT. On REPREND
             // depuis le curseur keyset du plus HAUT seq scellé, avec le max_id RELU des seals (JAMAIS re-dérivé du
             // hot — FIX #1). Les fichiers 0..k ne sont ni ré-écrits ni re-vérifiés (préfixe durable). H1 déjà passé.
             let last = seals.last().expect("seals non vide");
             let max_id = last.max_id;
-            write_day_files(db, db_path, cold_dir, env_id, day, max_id, last.seq + 1, last.ts_max, last.hi_id, file_cap, rg_rows, pass)?;
+            write_day_files(db, db_path, cold_dir, env_id, day, max_id, last.seq + 1, last.ts_max, last.hi_id, file_cap, rg_rows, pass, compte)?;
         }
     }
 
     // ---- PHASE 2 (SUPPRESSION) : write done (fresh/resume ci-dessus ont posé last_file, ou il l'était déjà). ----
-    phase2_delete(db, cold_dir, env_id, day, pass)
+    phase2_delete(db, cold_dir, env_id, day, pass, compte)?;
+    Ok(Journee::Agee)
 }
 
 /// PHASE 2 (suppression) d'un jour : pour chaque FICHIER scellé non purgé, VERIFY (identité (env,day,seq) +
@@ -628,7 +727,7 @@ fn age_one_day(db: &Arc<Mutex<Connection>>, db_path: &str, cold_dir: &Path, env_
 /// `verify_parquet_rows`) et scellé durablement AVANT tout delete. Cette fonction RE-VÉRIFIE au delete (défense en
 /// profondeur), puis borne le delete `id<=max_id` (FIX #1) + fenêtre keyset. Après un futur découpage en modules,
 /// le compilateur n'imposera plus verify-avant-delete par-delà les frontières : ce contrat doit rester écrit.
-fn phase2_delete(db: &Arc<Mutex<Connection>>, cold_dir: &Path, env_id: &str, day: i64, pass: &str) -> Result<(), String> {
+fn phase2_delete(db: &Arc<Mutex<Connection>>, cold_dir: &Path, env_id: &str, day: i64, pass: &str, compte: &mut Compte) -> Result<(), String> {
     let seals = { let conn = db.lock(); file_seals(&conn, env_id, day) };
     for f in seals {
         if f.purged {
@@ -638,7 +737,10 @@ fn phase2_delete(db: &Arc<Mutex<Connection>>, cold_dir: &Path, env_id: &str, day
         let ident = FileIdent { env_id, day, seq: f.seq, ts_min: f.ts_min, ts_max: f.ts_max };
         verify_parquet_rows(&path, f.expected as usize, Some(ident), pass)
             .map_err(|e| format!("fichier scellé seq {} invalide au delete (SUSPENDU): {e}", f.seq))?;
-        delete_file_rows(db, env_id, day, f.max_id, f.lo_ts, f.lo_id, f.ts_max, f.hi_id);
+        // COMPTE (`P10.5-a`) : le chiffre publié est celui que le DELETE a RENDU, jamais `f.expected` — un
+        // re-run idempotent supprime zéro ligne pour un seal qui en annonce des milliers.
+        compte.lignes_retirees += delete_file_rows(db, env_id, day, f.max_id, f.lo_ts, f.lo_id, f.ts_max, f.hi_id);
+        compte.fichiers_purges += 1;
         let conn = db.lock();
         let _ = conn.execute(
             "UPDATE cold_seal SET purged=1 WHERE env_id=?1 AND day=?2 AND seq=?3",

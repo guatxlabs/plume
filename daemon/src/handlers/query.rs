@@ -645,7 +645,11 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     };
     // KEYSET — taille de page par défaut si le client n'a pas fourni `limit` (il l'envoie normalement = pageSize).
     let keyset_lim = limit.unwrap_or(100);
-    // KEYSET (#28) — CHEMIN COLD hot∪cold par curseur. cold_tier OFF en prod : le HOT ci-dessous est prioritaire.
+    // KEYSET (#28) — CHEMIN COLD hot∪cold par curseur.
+    // ⚠ CE COMMENTAIRE DISAIT « cold_tier OFF en prod : le HOT ci-dessous est prioritaire » — FAUX,
+    // corrigé le 2026-08-10. Le tier froid est ACTIF en production (`PLUME_COLD_TIER=1`, 62 fichiers
+    // Parquet, 170,2 Mio, 41 jours) : ce chemin est VIVANT et non un repli théorique. Cf. `P10.10-a` —
+    // la phrase venait d'une panne de build de trois jours prise pour un état permanent.
     // On applique le MÊME wrap keyset (`page_sql`) sur l'union hydratée + le MÊME masquage/authorizer que
     // le hot (via `cold_union_query`). Pas de COUNT (le curseur pilote le parcours). CAVEAT documenté : si
     // l'hydratation cold PLAFONNE (meta.truncated), on le surface et on garde `has_more` -> jamais présenté complet.

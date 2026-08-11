@@ -3,11 +3,17 @@
 //!
 //! POURQUOI CE MODULE EXISTE. `P10.13-a` : la passe horaire de vieillissement lit **968,1 Mio** et tient
 //! `db.lock()` **17–22 s** pour découvrir **≤ 478 lignes** de travail (relevé en production les
-//! 2026-08-10/11). LA CAUSE N'EST PAS ÉTABLIE : une réplique locale fidèle (1 775 400 lignes, mêmes 7
-//! index, même distribution, 62 seals) planifie `SEARCH event USING INDEX idx_event_ts` et rend en
-//! < 0,6 s, avec ET sans `ANALYZE` — elle ne reproduit donc PAS le plan de production. Lire le plan sur
-//! la base VIVANTE est le préalable ; « corriger » avant de l'avoir lu serait exactement le défaut que
-//! cette campagne ferme.
+//! 2026-08-10/11). L'INSTRUMENT A TRANCHÉ le 2026-08-11 : `cold-aging-plan` a montré que ce coût est porté
+//! par UN SEUL énoncé — le dead-man's-switch de retard (n° 5), `SCAN e`, 1 720 594 lignes balayées,
+//! 27 705 ms — et que les huit autres totalisent **< 60 ms**, la découverte (n° 1, longtemps accusée)
+//! comprise, à **10,1 ms** et INDEXÉE. Le soupçon portait donc sur le mauvais énoncé, et c'est la mesure,
+//! pas la relecture, qui l'a dit. Ce qui reste NON établi est plus étroit : pourquoi le planificateur
+//! refuse `idx_event_ts` à CET énoncé alors qu'il l'accorde aux autres — la réplique locale
+//! (1 775 400 lignes, mêmes 7 index, 41 seals) ne reproduit ce refus sous AUCUNE des variantes essayées
+//! (sans stats, `ANALYZE` complet, `analysis_limit` 400/2000, `sqlite_stat4` retiré, nombre de lignes
+//! truqué de 100 à 800 000, littéraux vs paramètres liés) — sauf une : `idx_event_ts` ABSENT, cas exclu
+//! en production parce que `premiere_page_froide` et `compte_et_max_id_du_jour`, qui s'effondrent sans lui
+//! (mesuré : 1 544 -> 15 978 223 pas de machine), tiennent dans les 60 ms.
 //!
 //! CE QUE CE MODULE GARANTIT, ET COMMENT. La sonde de lecture seule (`sonde`) doit rejouer LES ÉNONCÉS
 //! DE LA PASSE, pas des copies retapées qui pourriront à la première évolution. La garantie n'est pas
@@ -76,14 +82,49 @@ pub(super) fn sql_page_froide() -> String {
     )
 }
 
-/// (5) LE DEAD-MAN'S-SWITCH « aging cold en RETARD » — `COUNT(*)` sur `event` avec un `NOT EXISTS`
-/// corrélé sur `cold_seal`. Second énoncé qui BALAIE potentiellement `event` ; la passe ne l'exécute que
-/// si la rétention cold est ÉTENDUE (`cold_ret > retention_days`), et la sonde le dit.
+/// (5) LE DEAD-MAN'S-SWITCH « aging cold en RETARD » — `COUNT(*)` sur `event` ANTI-JOINT à `cold_seal`.
+/// Second énoncé qui BALAIE potentiellement `event` ; la passe ne l'exécute que si la rétention cold est
+/// ÉTENDUE (`cold_ret > retention_days`), et la sonde le dit.
+///
+/// CE QUE LA PRODUCTION A DIT DE LUI (`P10.13-a`, `cold-aging-plan` du 2026-08-11). Il planifiait `SCAN e`
+/// — un balayage COMPLET de `event` : **1 720 594 lignes, ~968 Mio, 27 705 ms**, à lui seul la TOTALITÉ du
+/// coût de la passe (les huit autres énoncés : < 60 ms). Et il balayait pour RIEN : la bande ne contient
+/// que quelques centaines de lignes. C'est ARITHMÉTIQUE, pas une impression — 8 605 602 pas de machine /
+/// 1 720 594 lignes balayées = **5,0016**, or une ligne REJETÉE sur `ts` coûte EXACTEMENT 5 pas et une
+/// ligne RETENUE en coûte 20 (les deux mesurés sur réplique) : au plus ~500 lignes ont dépassé le filtre
+/// `ts`. LE COÛT N'ÉTAIT DONC PAS LA SOUS-REQUÊTE CORRÉLÉE — elle ne s'est exécutée que quelques centaines
+/// de fois, pas 1,7 M. C'était le PLAN.
+///
+/// POURQUOI CE TEXTE-LÀ. La DÉCOUVERTE (énoncé 1) a le MÊME `FROM`, le MÊME prédicat `ts`, le MÊME
+/// `RETENTION_NONPURGE`, sur une bande de MÊME largeur — et la production la planifie INDEXÉE, en 10,1 ms.
+/// La SEULE différence textuelle était le `NOT EXISTS` corrélé DANS le `WHERE` de la boucle `event`.
+/// L'anti-jointure l'en sort : la boucle `event` porte désormais exactement le prédicat de la découverte,
+/// et l'appariement `cold_seal` est une boucle SÉPARÉE sur 63 lignes en index couvrant. Le pari est nommé,
+/// et la prochaine `cold-aging-plan` le tranche. S'il reste `SCAN e`, la cause n'est pas le terme corrélé
+/// et le levier MESURÉ est un index PARTIEL COUVRANT `event(ts, env_id) WHERE <RETENTION_NONPURGE>`
+/// (mesuré sur la réplique, sur le plan EXACT de la production : balayage 1 775 399 -> **0**, pas de
+/// machine 8 886 209 -> **5 119**, octets lus 110,8 Mio -> **0,09 Mio** ; prix : **-8 % de débit d'ingest**
+/// et **+30 à 70 Mio**).
+///
+/// L'ÉQUIVALENCE EST STRUCTURELLE, PAS ESPÉRÉE — et elle survit aux deux pièges de l'anti-jointure :
+///   * **MULTIPLICITÉ.** Un jour à PLUSIEURS seals (`seq` 0..k) produit k lignes jointes, toutes NON-NULL,
+///     donc toutes écartées par `s.env_id IS NULL` ; un jour SANS seal produit exactement UNE ligne NULL.
+///     Le compte ne peut donc ni gonfler ni manquer une ligne.
+///   * **NULL.** `s.env_id IS NULL` ne peut désigner QUE l'absence d'appariement : une ligne de `cold_seal`
+///     dont `env_id` serait NULL n'apparie AUCUN jour (`s.env_id=e.env_id` est UNKNOWN), donc elle est
+///     invisible ici — exactement comme sous le `NOT EXISTS`. La variante `(env_id, day) NOT IN (…)`, elle,
+///     rendrait **0 pour toujours** au premier NULL rencontré : MESURÉ, et c'est pourquoi elle est écartée
+///     malgré son plan plus court. Un dead-man's-switch ne se paie pas en fragilité de trois-valeurs.
+///
+/// `RETENTION_NONPURGE` est ici QUALIFIÉ (`e.`) : l'énoncé joint désormais une SECONDE table, et une colonne
+/// nue redeviendrait ambiguë le jour où `cold_seal` gagnerait un `source`/`origin` — SQLite refuserait alors
+/// l'énoncé, et le détecteur se tairait. Même raison, même fonction que la purge explicite.
 pub(super) fn sql_retard_de_vieillissement() -> String {
     format!(
         "SELECT COUNT(*) FROM event e \
-         WHERE e.ts >= ?1 AND e.ts < ?2 AND {RETENTION_NONPURGE} \
-           AND NOT EXISTS (SELECT 1 FROM cold_seal s WHERE s.env_id=e.env_id AND s.day=e.ts/{SECS_PER_DAY})"
+         LEFT JOIN cold_seal s ON s.env_id=e.env_id AND s.day=e.ts/{SECS_PER_DAY} \
+         WHERE e.ts >= ?1 AND e.ts < ?2 AND {} AND s.env_id IS NULL",
+        retention_nonpurge_for("e")
     )
 }
 

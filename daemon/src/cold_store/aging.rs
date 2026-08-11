@@ -471,8 +471,13 @@ pub(super) const COLD_SEAL_STUCK_GRACE_S: i64 = 6 * 3600;
 /// #18 P1.5 — DÉTECTE un aging cold EN RETARD et émet (si besoin) le signal de santé. Non-fatal ; best-effort.
 /// Compte les lignes non-NONPURGE HOT dont le jour est plus vieux que `hot_window + COLD_STALL_GRACE_DAYS` et
 /// dont le (env_id, jour) N'A PAS de seal (ni écrit, ni en cours) — c.-à-d. des lignes qui auraient dû être
-/// columnarisées mais ne l'ont pas été. > 0 -> signal (dédupé à l'heure). Requête bornée par idx_event_ts
-/// (range sur `ts`) ; la sous-requête `cold_seal` est sur une PETITE table. Aucune écriture si compte == 0.
+/// columnarisées mais ne l'ont pas été. > 0 -> signal (dédupé à l'heure). Aucune écriture si compte == 0.
+///
+/// LA PHRASE QUI ÉTAIT ICI DISAIT « requête bornée par idx_event_ts (range sur `ts`) » : c'était FAUX, et
+/// mesuré faux le 2026-08-11 sur la production — `SCAN e`, 1 720 594 lignes balayées, 27 705 ms, pour une
+/// bande qui contient au plus ~500 lignes. Elle est retirée plutôt que corrigée : le plan ne se DÉCLARE
+/// pas dans un commentaire, il se LIT avec `cold-aging-plan`. Ce que cet énoncé coûte est écrit là où il
+/// vit, avec les chiffres qui le disent (`enonces::sql_retard_de_vieillissement`).
 pub(super) fn detect_aging_stall(db: &Arc<Mutex<Connection>>, n: i64, hot_window: i64, cold_ret: i64) {
     // `P10.13-a` — BORNES DÉRIVÉES de `enonces` (source unique, cf. `bornes_du_retard`) : la sonde doit
     // planifier CET énoncé sur CETTE fenêtre, et un `None` veut dire « rien à surveiller » (la fenêtre
@@ -481,11 +486,26 @@ pub(super) fn detect_aging_stall(db: &Arc<Mutex<Connection>>, n: i64, hot_window
         return;
     };
     let conn = db.lock();
-    // NOT EXISTS (seal du (env_id, jour)) : exclut tout jour columnarisé/en-cours (drainé OU straggler-porteur).
-    // `P10.13-a` — texte UNIQUE dans `enonces` : c'est le SECOND énoncé qui peut balayer `event`, et la sonde
-    // doit pouvoir le lire avec le MÊME texte.
+    // ANTI-JOINTURE sur le seal du (env_id, jour) : exclut tout jour columnarisé/en-cours (drainé OU
+    // straggler-porteur). `P10.13-a` — texte UNIQUE dans `enonces` : c'est le SECOND énoncé qui peut balayer
+    // `event`, et la sonde doit pouvoir le lire avec le MÊME texte.
     let sql = sql_retard_de_vieillissement();
-    let lingering: i64 = conn.query_row(&sql, params![stall_lo, stall_hi], |r| r.get(0)).unwrap_or(0);
+    let lingering: i64 = match conn.query_row(&sql, params![stall_lo, stall_hi], |r| r.get(0)) {
+        Ok(v) => v,
+        // FAIL-LOUD. Le `unwrap_or(0)` qui était ici rendait « 0 » — c.-à-d. « aucun retard » — quand la
+        // REQUÊTE avait échoué. Un dead-man's-switch qui répond « tout va bien » parce qu'il n'a rien pu
+        // lire est précisément le mode de panne qu'il existe pour fermer, et il le faisait EN SILENCE.
+        // On ne peut pas émettre le signal (on ne sait pas s'il y a retard) : on refuse le verdict, et on
+        // le dit sur le canal où les autres échecs de la passe sont déjà écrits.
+        Err(e) => {
+            eprintln!(
+                "[cold] dead-man's-switch de RETARD inopérant ce tick — la requête a échoué ({e}). AUCUN \
+                 verdict rendu (ni « en retard », ni « à jour »). Le prochain tick réessaie ; si cela dure, \
+                 lire le plan avec `plume-daemon cold-aging-plan`."
+            );
+            return;
+        }
+    };
     if lingering > 0 {
         emit_cold_aging_stall(&conn, n, lingering, hot_window, cold_ret);
     }

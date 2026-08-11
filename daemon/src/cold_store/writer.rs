@@ -124,8 +124,9 @@ pub(super) fn write_one_file(
     let day_start = day * SECS_PER_DAY;
     let day_end = day_start + SECS_PER_DAY;
     // 1re page AVANT toute création de fichier : si le jour est épuisé au-delà du curseur -> Ok(None) (jamais de
-    // fichier vide sur disque, jamais de seal orphelin). LIMIT = min(rg_rows, file_cap) (borne double : RAM + taille).
-    let first_lim = rg_rows.min(file_cap).max(1);
+    // fichier vide sur disque, jamais de seal orphelin). LIMIT = min(rg_rows, file_cap) (borne double : RAM +
+    // taille) — calculée dans `enonces` pour que la sonde de lecture seule mesure la MÊME page (`P10.13-a`).
+    let first_lim = limite_premiere_page(rg_rows, file_cap);
     let mut page = read_cold_page(db, env_id, day_start, day_end, max_id, lo_ts, lo_id, first_lim)?;
     if page.is_empty() {
         return Ok(None);
@@ -305,11 +306,7 @@ pub(super) fn write_day_files(
             Some(m) => crate::rollups::apply_cold_rollup(&conn, env_id, day, m)?,
             None => crate::rollups::seal_cold_rollup(&conn, env_id, day, max_id)?,
         }
-        conn.execute(
-            "UPDATE cold_seal SET last_file=1 WHERE env_id=?1 AND day=?2 AND seq=(SELECT MAX(seq) FROM cold_seal WHERE env_id=?1 AND day=?2)",
-            params![env_id, day],
-        )
-        .map_err(pe)?;
+        conn.execute(SQL_SCELLER_DERNIER_FICHIER, params![env_id, day]).map_err(pe)?;
         conn.execute_batch("COMMIT").map_err(pe)?;
         Ok(())
     })();

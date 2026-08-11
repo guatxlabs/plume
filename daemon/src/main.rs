@@ -922,13 +922,15 @@ impl JsonBody for serde_json::Value {
 /// (« indisponible » plutôt que de la promettre), et le rejet doit le dire aussi — sinon un
 /// opérateur qui suit la doc du tier froid lit « argument inconnu » et croit à une faute de frappe.
 #[cfg(feature = "cold_tier")]
-const SUBCOMMANDS_COLD: [(&str, &str); 1] =
-    [("cold-backup-plan", "cold-backup-plan — plan de sauvegarde du tier froid (lecture seule)")];
+const SUBCOMMANDS_COLD: [(&str, &str); 2] = [
+    ("cold-backup-plan", "cold-backup-plan — plan de sauvegarde du tier froid (lecture seule)"),
+    ("cold-aging-plan", "cold-aging-plan — plan d'exécution + chronométrage de la passe de vieillissement (lecture seule)"),
+];
 #[cfg(not(feature = "cold_tier"))]
-const SUBCOMMANDS_COLD: [(&str, &str); 1] = [(
-    "cold-backup-plan",
-    "cold-backup-plan — INDISPONIBLE dans ce binaire (compilé sans `--features cold_tier`)",
-)];
+const SUBCOMMANDS_COLD: [(&str, &str); 2] = [
+    ("cold-backup-plan", "cold-backup-plan — INDISPONIBLE dans ce binaire (compilé sans `--features cold_tier`)"),
+    ("cold-aging-plan", "cold-aging-plan — INDISPONIBLE dans ce binaire (compilé sans `--features cold_tier`)"),
+];
 
 /// LES SOUS-COMMANDES DU DAEMON, avec leur ligne d'aide. Sert UNIQUEMENT à l'affichage : la
 /// détection d'une sous-commande INCONNUE, elle, n'est PAS une comparaison à cette liste (cf. la
@@ -1487,6 +1489,50 @@ fn main() {
             out.push('\n');
         }
         print!("{out}");
+        return;
+    }
+    // `P10.13-a` — L'INSTRUMENT QUI MANQUAIT. La passe horaire de vieillissement lit 968,1 Mio et tient
+    // `db.lock()` 17-22 s pour découvrir <= 478 lignes de travail (mesuré en production les 2026-08-10/11),
+    // et LA CAUSE N'EST PAS ÉTABLIE : une réplique locale fidèle rend le même travail en < 0,6 s avec un
+    // plan indexé, donc elle ne reproduit PAS le plan de production. Cette sous-commande sert à LIRE ce
+    // plan sur la base VIVANTE — avant toute « correction », qui serait sinon un remède sans diagnostic.
+    //
+    // ELLE N'ACCEPTE AUCUN SQL (ce serait une surface d'attaque neuve, et le projet a déjà une clé
+    // là-dessus : le SQL brut est gaté admin + authorizer). Elle rejoue LES ÉNONCÉS DE LA PASSE, DÉRIVÉS
+    // DU MÊME CODE (`cold_store::enonces`), avec les bornes que la passe calcule (`Bande`) — un énoncé de
+    // lecture qui réapparaîtrait en dur dans `aging`/`seal`/`writer` fait rougir un scanner de source.
+    //
+    // LECTURE SEULE PROUVÉE : `SQLITE_OPEN_READ_ONLY` + authorizer DÉFAUT-DENY (Read/Select/Function
+    // seuls), aucun `ANALYZE` (il écrirait `sqlite_stat1` et changerait le plan qu'on mesure), aucun
+    // `PRAGMA` d'écriture, aucun `EXPLAIN` qui exécute. Processus SÉPARÉ ouvrant sa PROPRE connexion en
+    // lecture seule : en WAL, il ne prend pas le verrou d'écriture et ne gèle pas l'ingest — même posture
+    // que `db-stats`. Gaté `#[cfg(feature = "cold_tier")]` -> sans la feature, la branche N'EXISTE PAS.
+    #[cfg(feature = "cold_tier")]
+    if args.get(1).map(String::as_str) == Some("cold-aging-plan") {
+        if args.iter().skip(2).any(|a| a == "-h" || a == "--help") {
+            println!(
+                "usage : plume-daemon cold-aging-plan\n  \
+                 Rend, pour CHAQUE enonce que la passe de vieillissement execute : son EXPLAIN QUERY PLAN,\n  \
+                 sa duree, le nombre de lignes rendues et les compteurs SQLITE_STMTSTATUS (balayage, tris,\n  \
+                 index transitoires, pas de machine virtuelle).\n  \
+                 LECTURE SEULE : SQLITE_OPEN_READ_ONLY + authorizer defaut-deny. Aucun SQL en argument :\n  \
+                 les enonces sont DERIVES du code de la passe, jamais retapes.\n  \
+                 Base = $PLUME_DB (defaut /var/lib/plume/db/plume.db).\n  \
+                 Codes de sortie : 0 = rapport rendu · 2 = base illisible (aucun chiffre publie)."
+            );
+            return;
+        }
+        let conf = load_config();
+        let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
+        match cold_store::cold_aging_plan(&conf, &db_path) {
+            Ok(rapport) => print!("{rapport}"),
+            // FAIL-CLOSED : un rapport vide se lirait « il n'y a rien à voir » au lieu de « je n'ai rien
+            // pu mesurer » — c'est exactement la famille de défauts que cette campagne ferme.
+            Err(e) => {
+                eprintln!("cold-aging-plan: {e}");
+                std::process::exit(2);
+            }
+        }
         return;
     }
     if args.get(1).map(String::as_str) == Some("migrate-check") {

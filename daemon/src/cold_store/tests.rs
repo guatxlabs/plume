@@ -8577,7 +8577,8 @@ fn un_vieillissement_reussi_rend_compte_de_ce_quil_a_fait() {
 
     assert_eq!(serie(&db, NOM_OK, Some("{\"cause\":\"aucune\"}")), Some(1.0), "la passe s'annonce réussie");
     assert_eq!(serie(&db, NOM_JOURS, Some("{\"issue\":\"candidat\"}")), Some(1.0));
-    assert_eq!(serie(&db, NOM_JOURS, Some("{\"issue\":\"age\"}")), Some(1.0));
+    assert_eq!(serie(&db, NOM_JOURS, Some("{\"issue\":\"columnarise\"}")), Some(1.0));
+    assert_eq!(serie(&db, NOM_JOURS, Some("{\"issue\":\"sans_travail\"}")), Some(0.0));
     assert_eq!(serie(&db, NOM_JOURS, Some("{\"issue\":\"differe\"}")), Some(0.0));
     assert_eq!(
         serie(&db, NOM_LIGNES, Some("{\"sens\":\"ecrites\"}")),
@@ -8819,5 +8820,334 @@ fn un_seal_rejoue_ne_compte_que_les_lignes_reellement_supprimees() {
         "le rejeu publie l'ESPÉRÉ du seal au lieu de ce que le DELETE a fait -> « combien de données le \
          vieillissement déplace-t-il ? » devient faux, et faux vers le HAUT"
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// =====================================================================================================
+// `P10.13-a` — L'INSTRUMENT QUI MANQUAIT : la sonde `cold-aging-plan`. Elle rejoue LES ÉNONCÉS DE LA
+// PASSE (dérivés de `enonces`, cf. la garde de source `aucun_enonce_de_lecture_ne_vit_hors_du_module_enonces`
+// qui tourne dans le profil PAR DÉFAUT) en LECTURE SEULE, et rend leur plan + leur chronométrage. Ce
+// bloc prouve les trois propriétés qu'on ne peut pas se contenter de promettre : elle N'ÉCRIT PAS, elle
+// REFUSE d'écrire même si on le lui demandait, et elle mesure bien la requête de la passe.
+// =====================================================================================================
+
+use super::sonde_vieillissement::{brider_en_lecture_seule, executer_et_chronometrer, ouvrir_en_lecture_seule};
+
+/// L'AUTHORIZER DE SONDE REFUSE TOUT CE QUI N'EST PAS UNE LECTURE — prouvé SUR UNE CONNEXION ÉCRIVABLE,
+/// et c'est le point : sur une connexion déjà ouverte en `SQLITE_OPEN_READ_ONLY`, un refus ne prouverait
+/// pas QUI a refusé, les deux gardes se couvriraient l'une l'autre et aucune mutation ne pourrait les
+/// départager. Ici l'écriture EST possible ; seul l'authorizer l'empêche.
+///
+/// MUTATION (exécutée le 2026-08-11) : remplacer le bras `_ => Authorization::Deny` par
+/// `_ => Authorization::Allow` ⇒ les 6 écritures passent, les 6 assertions de refus rougissent
+/// (`INSERT`, `UPDATE`, `DELETE`, `CREATE TABLE`, `ANALYZE`, `PRAGMA user_version=1`), et le témoin
+/// positif reste vert (il ne masque donc pas la régression).
+#[test]
+fn l_authorizer_de_sonde_refuse_tout_ce_qui_n_est_pas_une_lecture() {
+    let root = tmp_root("sonde-authz");
+    let db = mkdb(&root);
+    insert_event(&db, &rich_row(1_700_000_000, 1));
+    let conn = db.lock();
+
+    // TÉMOIN POSITIF, AVANT l'authorizer : sur CETTE connexion, écrire est parfaitement possible.
+    conn.execute_batch("CREATE TABLE temoin_avant(x)").expect("précondition : la connexion écrit");
+
+    brider_en_lecture_seule(&conn);
+
+    // Les lectures dont la sonde a besoin passent : `Read` + `Select` + `Function` (COUNT/MAX/COALESCE).
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*), COALESCE(MAX(id),0) FROM event", [], |r| r.get(0))
+        .expect("une LECTURE doit rester possible : sinon la sonde ne mesure plus rien");
+    assert_eq!(n, 1);
+    conn.prepare("EXPLAIN QUERY PLAN SELECT env_id, ts/86400 FROM event GROUP BY env_id")
+        .expect("EXPLAIN QUERY PLAN doit rester possible : c'est l'objet même de la sonde");
+
+    // On les essaie TOUTES avant de conclure : un `expect_err` s'arrêterait à la première et une
+    // mutation ne dirait plus COMBIEN d'écritures elle rouvre.
+    let mut acceptees: Vec<&str> = Vec::new();
+    let mut mauvaise_raison: Vec<String> = Vec::new();
+    for interdit in [
+        "INSERT INTO event(ts,source,severity) VALUES(1,'x',0)",
+        "UPDATE event SET severity=9",
+        "DELETE FROM event",
+        "CREATE TABLE apres(x)",
+        // `ANALYZE` écrirait `sqlite_stat1` -> il CHANGERAIT les plans qu'on est venu mesurer.
+        "ANALYZE",
+        "PRAGMA user_version=1",
+    ] {
+        match conn.execute_batch(interdit) {
+            Ok(()) => acceptees.push(interdit),
+            Err(e) if !e.to_string().to_lowercase().contains("not authorized") => {
+                mauvaise_raison.push(format!("{interdit} -> {e}"));
+            }
+            Err(_) => {}
+        }
+    }
+    assert!(
+        acceptees.is_empty(),
+        "{} écriture(s) ACCEPTÉE(s) par la connexion de sonde -> l'instrument peut muter la base qu'il \
+         prétend seulement observer : {acceptees:?}",
+        acceptees.len()
+    );
+    assert!(
+        mauvaise_raison.is_empty(),
+        "des refus viennent d'AUTRE CHOSE que l'authorizer -> la garde testée n'est pas celle qui a \
+         mordu : {mauvaise_raison:?}"
+    );
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// LA CONNEXION DE LA SONDE EST READ-ONLY AU NIVEAU DU DESCRIPTEUR — verdict de SQLite lui-même
+/// (`sqlite3_db_readonly`), indépendant de l'authorizer. Les deux gardes sont ainsi prouvées SÉPARÉMENT :
+/// celle-ci tient même si l'authorizer disparaissait.
+///
+/// MUTATION (exécutée le 2026-08-11) : retirer `SQLITE_OPEN_READ_ONLY` de `ouvrir_en_lecture_seule`
+/// (`Connection::open(db_path)`) ⇒ `is_readonly` rend `false` et l'assertion rougit, alors que TOUS les
+/// autres tests de la sonde restent verts (l'authorizer les couvre) — c'est exactement pour ça qu'il
+/// faut cette assertion-là.
+#[test]
+fn une_connexion_de_sonde_refuse_d_ecrire() {
+    let root = tmp_root("sonde-ro");
+    let chemin = root.join("plume.db");
+    {
+        let db = mkdb(&root);
+        insert_event(&db, &rich_row(1_700_000_000, 1));
+    }
+    let conn = ouvrir_en_lecture_seule(&chemin.to_string_lossy()).expect("la base de test doit s'ouvrir");
+    assert!(
+        conn.is_readonly(rusqlite::DatabaseName::Main).expect("verdict de SQLite lisible"),
+        "SQLite considère la base OUVERTE EN ÉCRITURE -> le descripteur de la sonde n'est pas read-only"
+    );
+    // Et la lecture, elle, fonctionne (sans ça, « read-only » serait trivialement vrai sur une base
+    // qu'on n'a pas su ouvrir).
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM event", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 1);
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// LA SONDE MESURE LA PASSE, ET NE TOUCHE PAS LA BASE. Deux propriétés en un scénario, parce qu'elles
+/// n'ont de valeur qu'ensemble : un instrument qui n'écrit pas mais ne mesure rien est inutile, et un
+/// instrument qui mesure en écrivant est dangereux.
+///   * CE QU'ELLE MESURE : le rapport doit porter le plan ET le chronométrage de la requête de
+///     DÉCOUVERTE (l'énoncé sous suspicion), plus les énoncés PAR-JOUR du premier candidat retenu.
+///   * CE QU'ELLE NE TOUCHE PAS : le fichier de base est comparé OCTET POUR OCTET avant/après. C'est la
+///     preuve la plus large disponible — elle couvre aussi bien un `INSERT` qu'un `ANALYZE` (qui aurait
+///     créé `sqlite_stat1`, donc CHANGÉ les plans qu'on vient lire).
+///
+/// La fixture est datée sur l'HORLOGE RÉELLE (la sonde appelle `now()`, comme la passe) : un jour à
+/// `now-10 j` tombe dans la bande [now-30 j, now-2 j) que la conf de test produit.
+///
+/// CE QUE LA MUTATION A RÉFUTÉ, ET CE QU'ELLE A CONFIRMÉ (exécuté le 2026-08-11 — la première version de
+/// ce commentaire annonçait autre chose, et la mesure l'a démentie). J'ai cru qu'ajouter un `ANALYZE` dans
+/// `ouvrir_en_lecture_seule` suffirait à faire rougir l'octet-pour-octet : **FAUX, le test reste VERT**.
+/// `ANALYZE` sur un descripteur `SQLITE_OPEN_READ_ONLY` ÉCHOUE — la première garde l'avale avant qu'il
+/// n'écrive. Retirer SEULEMENT le drapeau read-only laisse le test vert AUSSI (le code, lui, n'écrit
+/// vraiment rien). Cette assertion est donc un FILET DE SÉCURITÉ de bout en bout, pas la garde de l'une
+/// des deux épaisseurs : sa bite exige la mutation COMPOSÉE — descripteur écrivable **et** une écriture —
+/// et celle-là, mesurée, la fait rougir en nommant les octets : « LA SONDE A MODIFIÉ LA BASE
+/// (45 056 o -> 53 248 o) », les 8 192 o de `sqlite_stat1`. C'est ce qu'elle garde réellement : qu'un
+/// futur remaniement qui rendrait la connexion écrivable ET ajouterait une écriture ne passe pas.
+#[test]
+fn la_sonde_rejoue_les_enonces_de_la_passe_sans_toucher_la_base() {
+    let root = tmp_root("sonde-plan");
+    let cold = root.join("cold");
+    let chemin = root.join("plume.db");
+    let jour = crate::now().div_euclid(SECS_PER_DAY) - 10; // dans la bande, hors fenêtre chaude
+    let base_ts = jour * SECS_PER_DAY;
+    {
+        let db = mkdb(&root);
+        for i in 0..30 {
+            insert_event(&db, &rich_row(base_ts + i, i));
+        }
+        // Tail-holder RÉCENT (comme en production : la fenêtre chaude est toujours alimentée) -> la
+        // garde H1 ne diffère pas le jour, et `cold_seal` existe après la passe.
+        let mut r = rich_row(crate::now(), 99_999);
+        r.row.source = "recent-tail".to_string();
+        insert_event(&db, &r);
+        // On fait TOURNER la vraie passe une fois : elle crée `cold_seal` (que la sonde, read-only, ne
+        // peut pas créer) et laisse un état réaliste. Les stragglers ci-dessous rendront ensuite le jour
+        // à nouveau candidat, ce que la sonde doit voir.
+        cold_age_run(&db, "", &conf_on(&cold, HOT_WIN), crate::now(), RET_DAYS);
+        for i in 0..5 {
+            insert_event(&db, &rich_row(base_ts + 500 + i, i)); // stragglers : id > max_id scellé
+        }
+    }
+
+    let avant = std::fs::read(&chemin).expect("la base de test doit être lisible");
+    let rapport = crate::cold_store::cold_aging_plan(&conf_on(&cold, HOT_WIN), &chemin.to_string_lossy())
+        .expect("la sonde doit rendre un rapport sur une base lisible");
+    let apres = std::fs::read(&chemin).expect("la base de test doit être lisible");
+
+    assert_eq!(
+        avant, apres,
+        "LA SONDE A MODIFIÉ LA BASE ({} o -> {} o) — un instrument de diagnostic qui écrit sur la \
+         production est pire que pas d'instrument",
+        avant.len(),
+        apres.len()
+    );
+
+    // Elle a bien LU le plan de l'énoncé sous suspicion, et l'a CHRONOMÉTRÉ (pas seulement affiché).
+    for attendu in [
+        "decouverte_des_jours",
+        "SELECT env_id, ts/86400 AS day FROM event",
+        "seals_du_jour",
+        "compte_et_max_id_du_jour",
+        "premiere_page_froide",
+        "tail_du_compteur_de_rowid",
+        "LECTURE SEULE",
+    ] {
+        assert!(rapport.contains(attendu), "le rapport ne porte pas `{attendu}` :\n{rapport}");
+    }
+    assert!(
+        rapport.matches("exécution ").count() >= 6,
+        "seulement {} énoncé(s) CHRONOMÉTRÉ(s) -> la sonde affiche des plans sans les mesurer, et un \
+         plan indexé qui met 17 s se lirait comme un plan sain :\n{rapport}",
+        rapport.matches("exécution ").count()
+    );
+    assert!(
+        rapport.contains("balayage="),
+        "les compteurs SQLITE_STMTSTATUS manquent -> rien ne départage « plan indexé lent » de \
+         « balayage complet » :\n{rapport}"
+    );
+    // Le candidat est celui que la PASSE aurait retenu (même prédicat `Bande::retenu`).
+    assert!(
+        rapport.contains("1 découvert(s), 1 retenu(s)"),
+        "la sonde n'a pas retenu le jour que la passe traiterait :\n{rapport}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// CHAQUE ÉNONCÉ SE PRÉPARE, SE PLANIFIE ET S'EXÉCUTE. Une erreur de nombre de paramètres, un `?7`
+/// oublié ou une colonne renommée ne se voit pas à la compilation : ce test exerce TOUS les énoncés que
+/// la sonde construit, sur une base réelle, et refuse le moindre `MESURE IMPOSSIBLE` — sans quoi la
+/// sonde rendrait un rapport d'excuses qu'on lirait comme « il n'y a rien à voir ».
+#[test]
+fn aucun_enonce_de_la_sonde_ne_rend_une_mesure_impossible() {
+    let root = tmp_root("sonde-enonces");
+    let cold = root.join("cold");
+    let chemin = root.join("plume.db");
+    let jour = crate::now().div_euclid(SECS_PER_DAY) - 5;
+    {
+        let db = mkdb(&root);
+        for i in 0..12 {
+            insert_event(&db, &rich_row(jour * SECS_PER_DAY + i, i));
+        }
+        let mut r = rich_row(crate::now(), 77_777);
+        r.row.source = "recent-tail".to_string();
+        insert_event(&db, &r);
+        // `cold_seal` doit exister : la sonde est read-only, elle ne peut pas la créer.
+        db.lock().execute_batch(
+            "CREATE TABLE cold_seal(env_id TEXT NOT NULL, day INTEGER NOT NULL, seq INTEGER NOT NULL, \
+             expected_rows INTEGER NOT NULL, sealed_ts INTEGER NOT NULL, purged INTEGER NOT NULL DEFAULT 0, \
+             max_id INTEGER NOT NULL, ts_min INTEGER NOT NULL, ts_max INTEGER NOT NULL, lo_ts INTEGER NOT NULL, \
+             lo_id INTEGER NOT NULL, hi_id INTEGER NOT NULL, last_file INTEGER NOT NULL DEFAULT 0, \
+             dim_stats BLOB, PRIMARY KEY(env_id, day, seq))",
+        ).unwrap();
+    }
+    let rapport = crate::cold_store::cold_aging_plan(&conf_on(&cold, HOT_WIN), &chemin.to_string_lossy()).unwrap();
+    assert!(
+        !rapport.contains("MESURE IMPOSSIBLE"),
+        "un énoncé de la sonde ne se prépare/n'exécute pas — le rapport porte une excuse là où on \
+         attend une mesure :\n{rapport}"
+    );
+    // Et l'exécution directe, énoncé par énoncé, sur la connexion de la sonde : la même vérité, sans
+    // passer par le rendu (si le rapport changeait de forme, cette assertion tiendrait quand même).
+    let conn = ouvrir_en_lecture_seule(&chemin.to_string_lossy()).unwrap();
+    let conf = conf_on(&cold, HOT_WIN);
+    let n = crate::now();
+    let bande = Bande::calculer(&conn, &conf, n, RET_DAYS);
+    let mut vus = 0usize;
+    for e in enonces_sans_candidat(&bande, n, RET_DAYS) {
+        executer_et_chronometrer(&conn, &e).unwrap_or_else(|err| panic!("énoncé `{}` : {err}", e.nom));
+        vus += 1;
+    }
+    for e in enonces_du_candidat(&bande, "prod", jour) {
+        executer_et_chronometrer(&conn, &e).unwrap_or_else(|err| panic!("énoncé `{}` : {err}", e.nom));
+        vus += 1;
+    }
+    let page = enonce_de_la_page(&bande, "prod", jour, i64::MAX);
+    executer_et_chronometrer(&conn, &page).unwrap_or_else(|err| panic!("énoncé `{}` : {err}", page.nom));
+    vus += 1;
+    assert_eq!(vus, 8, "le nombre d'énoncés rejoués a changé -> relire ce que la sonde couvre RÉELLEMENT");
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// =====================================================================================================
+// `P10.12-a` (résiduel) — LE MOT « AGÉ » MENTAIT PAR OMISSION. En production le 2026-08-10, la passe a
+// publié `plume_cold_aging_jours{issue="age"} = 10` pour DIX JOURS SANS AUCUN TRAVAIL. Le comportement
+// (compromis « stragglers », verrouillé par `fix1_straggler_in_sealed_day_stays_hot_no_loss`) ne change
+// PAS ; ce que la série en DIT, si.
+// =====================================================================================================
+
+/// UN JOUR NO-OP NE SE COMPTE PAS COMME COLUMNARISÉ. Le scénario est EXACTEMENT celui de la production :
+/// un jour entièrement scellé ET purgé, qui redevient candidat parce que des lignes BACKDATÉES y ont
+/// atterri après le scellement (des stragglers : leur `id` dépasse le `max_id` scellé, donc aucune
+/// fenêtre keyset ne les couvre — elles restent chaudes, sans perte). La passe le « traite » : elle
+/// relit ses seals, traverse une phase 2 où tout est déjà `purged=1`, et ne fait RIEN.
+///
+/// TÉMOIN POSITIF INTÉGRÉ : la PREMIÈRE passe, elle, columnarise vraiment. Sans lui, une implémentation
+/// qui compterait TOUT en « sans travail » passerait ce test.
+///
+/// MUTATION (exécutée le 2026-08-11) : faire rendre `Journee::Columnarisee` inconditionnellement à
+/// `Journee::selon_le_travail` ⇒ la 2e passe publie `columnarise=1` / `sans_travail=0` et les deux
+/// assertions de la seconde moitié rougissent (le témoin positif, lui, reste vert).
+#[test]
+fn un_jour_sans_travail_ne_se_compte_pas_comme_columnarise() {
+    let root = tmp_root("serie-sanstravail");
+    let cold = root.join("cold");
+    let db = mkdb(&root);
+    let day = M - 9;
+    let base = day * SECS_PER_DAY;
+    for i in 0..20 {
+        insert_event(&db, &rich_row(base + i, i));
+    }
+    insert_recent_tail_holder(&db);
+    let conf = conf_on(&cold, HOT_WIN);
+
+    // ---- 1re passe : du VRAI travail. ----
+    cold_age_run(&db, "", &conf, n_now(), RET_DAYS);
+    assert_eq!(count_hot_day(&db, "prod", day), 0, "précondition : le jour doit avoir été drainé");
+    assert_eq!(
+        serie(&db, NOM_JOURS, Some("{\"issue\":\"columnarise\"}")),
+        Some(1.0),
+        "TÉMOIN POSITIF : un jour réellement columnarisé doit être compté comme tel"
+    );
+    assert_eq!(serie(&db, NOM_JOURS, Some("{\"issue\":\"sans_travail\"}")), Some(0.0));
+
+    // ---- Des stragglers rendent le jour à nouveau CANDIDAT, sans qu'il y ait quoi que ce soit à faire. ----
+    for i in 0..7 {
+        insert_event(&db, &rich_row(base + 300 + i, i));
+    }
+    cold_age_run(&db, "", &conf, n_now(), RET_DAYS);
+
+    assert_eq!(
+        serie(&db, NOM_JOURS, Some("{\"issue\":\"candidat\"}")),
+        Some(1.0),
+        "précondition : les stragglers doivent bien re-rendre le jour CANDIDAT (sinon ce test ne mesure \
+         pas le no-op qu'il annonce)"
+    );
+    assert_eq!(
+        serie(&db, NOM_LIGNES, Some("{\"sens\":\"retirees_du_chaud\"}")),
+        Some(0.0),
+        "précondition : la 2e passe ne doit RIEN retirer du chaud"
+    );
+    assert_eq!(
+        serie(&db, NOM_JOURS, Some("{\"issue\":\"columnarise\"}")),
+        Some(0.0),
+        "un jour NO-OP est publié comme COLUMNARISÉ -> c'est le chiffre faux mesuré en production le \
+         2026-08-10 (« 10 jour(s) agé(s) » pour 10 jours qui n'ont rien fait)"
+    );
+    assert_eq!(
+        serie(&db, NOM_JOURS, Some("{\"issue\":\"sans_travail\"}")),
+        Some(1.0),
+        "le jour no-op n'est comptabilisé nulle part -> la comptabilité des jours ne fermerait plus et \
+         AUCUN compteur de travail ne serait publié"
+    );
+    // La comptabilité FERME toujours : sinon `verdict` refuserait de publier et les assertions
+    // ci-dessus auraient rendu `None`, pas `Some(0.0)`.
+    assert_eq!(serie(&db, NOM_OK, Some("{\"cause\":\"aucune\"}")), Some(1.0));
     let _ = std::fs::remove_dir_all(&root);
 }

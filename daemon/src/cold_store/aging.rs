@@ -48,11 +48,9 @@ pub(super) fn read_cold_page(
     lo_id: i64,
     limit: usize,
 ) -> Result<Vec<(i64, ColdRow)>, String> {
-    let sql = format!(
-        "SELECT id,ts,severity,source,category,host,src_ip,dst_ip,url,xff,dedup,engagement_id,origin,env_id,message,fields \
-         FROM event WHERE env_id=?1 AND ts>=?2 AND ts<?3 AND id<=?4 AND {RETENTION_NONPURGE} \
-           AND (ts>?5 OR (ts=?5 AND id>?6)) ORDER BY ts, id LIMIT ?7",
-    );
+    // `P10.13-a` — TEXTE UNIQUE dans `enonces` : la sonde de lecture seule rejoue CET énoncé, elle n'en
+    // recopie pas une variante qui divergerait au premier changement de colonne ou de borne.
+    let sql = sql_page_froide();
     let conn = db.lock();
     let mut st = conn.prepare(&sql).map_err(pe)?;
     let it = st
@@ -94,7 +92,7 @@ pub(super) fn read_cold_page(
 
 /// Rétention la PLUS LONGUE applicable (policies per-index #49 à retention_days>0 ∪ globale). Borne basse LARGE
 /// de découverte (aucun jour éligible d'un index long ne doit être manqué) ET base du clamp de fenêtre chaude.
-fn max_retention(policies: &[IndexPolicy], retention_days: i64) -> i64 {
+pub(super) fn max_retention(policies: &[IndexPolicy], retention_days: i64) -> i64 {
     policies
         .iter()
         .filter(|p| p.retention_days > 0)
@@ -107,7 +105,7 @@ fn max_retention(policies: &[IndexPolicy], retention_days: i64) -> i64 {
 /// Fenêtre chaude (jours) — SOURCE UNIQUE du clamp (partagée par l'aging ET le clamp reparse H2, jamais
 /// dupliquée). Défaut 7 ; clampée [1, max_ret-1] (le hot ne peut couvrir toute la rétention la plus longue ;
 /// max_ret>=retention_days>1 côté aging -> borne haute >=1, clamp valide).
-fn clamp_hot_window(conf: &HashMap<String, String>, max_ret: i64) -> i64 {
+pub(super) fn clamp_hot_window(conf: &HashMap<String, String>, max_ret: i64) -> i64 {
     cfg(conf, "PLUME_COLD_HOT_WINDOW_DAYS", "7")
         .parse()
         .unwrap_or(7)
@@ -303,15 +301,6 @@ fn balayer(
         return Issue::Suspendu(vieillissement_serie::CAUSE_RETENTION_COURTE);
     }
 
-    // #18 P1.5 — RÉTENTION COLD ÉTENDUE. `cold_ret` = rétention TOTALE (défaut = retention_days -> byte-
-    // identique). C'est la rétention GLOBALE effective consommée ci-dessous : eff_ret d'un env SANS policy
-    // per-index retombe sur `cold_ret` (au lieu de retention_days), la découverte d'aging s'étend jusqu'à
-    // `cold_ret`, et l'expiry cold retient les jour-files jusqu'à `cold_ret`. Le hard-purge hot de `event`
-    // est repoussé au MÊME `cold_ret` par rollups (source unique `cold_retention_days`) -> aucune ligne
-    // non-NONPURGE n'est supprimée (hot OU cold) avant SA rétention effective. Calculée TÔT : gouverne aussi
-    // le seuil du dead-man's-switch (detect_aging_stall) qui doit rester joignable même si la clé manque.
-    let cold_ret = cold_retention_days(conf, retention_days);
-
     // Legal-hold : suspension DÉLIBÉRÉE -> on s'abstient d'ager ce tick ET on NE déclenche PAS le signal de
     // retard (ce n'est PAS un stall silencieux : le hold est lui-même visible/audité). Preuves conservées hot.
     match { let conn = db.lock(); legal_hold_enforcement(&conn) } {
@@ -322,24 +311,19 @@ fn balayer(
         }
     }
 
-    // Policies per-index (#49, FIX #4) + fenêtre chaude, calculées AVANT la dérivation de clé : elles doivent
-    // rester disponibles pour le dead-man's-switch même sur le chemin fail-closed (clé absente). Table absente
-    // -> Vec vide -> tout retombe sur la rétention globale. ensure_cold_seal_table (idempotent) crée la table
-    // de seals interrogée par detect_aging_stall. GATE COLD OFF n'atteint JAMAIS ici -> base inchangée (mode 0).
-    let policies = { let conn = db.lock(); ensure_cold_seal_table(&conn); load_index_policies(&conn) };
-    // Rétention EFFECTIVE d'un env_id : sa policy per-index (>0) si définie, sinon la GLOBALE ÉTENDUE (cold_ret).
-    // Un index à policy propre garde EXACTEMENT sa fenêtre (jamais élargie par cold_ret ni raccourcie) ; seul
-    // l'env SANS policy bénéficie de l'extension -> per-index SHORTER expire à sa policy, LONGER est honoré.
-    let eff_ret = |env: &str| -> i64 {
-        policies.iter().find(|p| p.retention_days > 0 && p.name == env).map(|p| p.retention_days).unwrap_or(cold_ret)
-    };
-    // Rétention la PLUS LONGUE applicable (GLOBALE ÉTENDUE ∪ policies) -> borne basse LARGE de découverte
-    // (aucun jour éligible d'un index long NI de la bande globale étendue [retention_days..cold_ret] ne doit
-    // être manqué : sans cette extension, les jours globaux entre retention_days et cold_ret ne seraient
-    // jamais columnarisés et resteraient hot jusqu'au filet de sécurité à cold_ret).
-    let max_ret = max_retention(&policies, cold_ret);
-    // Fenêtre chaude (jours) — MÊME clamp que le reparse (H2) via `clamp_hot_window` (source unique).
-    let hot_window: i64 = clamp_hot_window(conf, max_ret);
+    // `P10.13-a` — LA BANDE DE CE TICK, calculée UNE FOIS et PARTAGÉE avec la sonde de lecture seule
+    // (`cold-aging-plan`). Elle porte tout ce qui était dérivé en ligne ici : rétention cold étendue
+    // (#18 P1.5, défaut = `retention_days` -> byte-identique), policies per-index (#49, FIX #4 ; table
+    // absente -> Vec vide -> tout retombe sur la globale), rétention la plus LONGUE applicable (borne
+    // basse LARGE : aucun jour d'un index long ni de la bande étendue ne doit être manqué), fenêtre
+    // chaude clampée (MÊME clamp que le reparse H2, source unique), bornes de découverte, et les deux
+    // plafonds de split. La partager plutôt que la recalculer est ce qui interdit à l'instrument de
+    // mesurer d'AUTRES bornes que celles de la passe. `ensure_cold_seal_table` (idempotent, ÉCRITURE)
+    // reste ICI, hors de `Bande::calculer` : c'est ce qui rend la même fonction appelable depuis une
+    // connexion ouverte en LECTURE SEULE. GATE COLD OFF n'atteint JAMAIS ici -> base inchangée (mode 0).
+    let bande = { let conn = db.lock(); ensure_cold_seal_table(&conn); Bande::calculer(&conn, conf, n, retention_days) };
+    let cold_ret = bande.cold_ret;
+    let hot_window = bande.hot_window;
 
     // CLÉ COLD (chiffrement at-rest, #18) — dérivée (HKDF domaine séparé `plume-cold-aead-v1`) de la clé
     // SQLCipher DU TENANT. FAIL-CLOSED : sans clé (PLUME_DB_KEY indisponible), on N'ÂGE RIEN ce tick — aucun
@@ -364,23 +348,6 @@ fn balayer(
     // Racine cold PAR-TENANT (FIX #2) — dérivée du db_path du tenant, jamais du PLUME_COLD_DIR global partagé.
     let cold_dir = cold_root(conf, db_path);
 
-    // Taille de row-group (STREAM, FIX #3). Réglable ops/tests ; défaut ROW_GROUP_ROWS ; borné.
-    let rg_rows: usize = cfg(conf, "PLUME_COLD_ROWGROUP_ROWS", &ROW_GROUP_ROWS.to_string())
-        .parse::<usize>()
-        .unwrap_or(ROW_GROUP_ROWS)
-        .clamp(1, ROW_GROUP_ROWS);
-    // #18 P2b — PLAFOND de lignes PAR FICHIER (split du jour). Réglable ops/tests ; défaut COLD_FILE_MAX_ROWS ;
-    // borné [1, COLD_FILE_MAX_ROWS]. Un jour de > file_cap lignes produit plusieurs fichiers séquencés bornés.
-    let file_cap: usize = cfg(conf, "PLUME_COLD_FILE_MAX_ROWS", &COLD_FILE_MAX_ROWS.to_string())
-        .parse::<usize>()
-        .unwrap_or(COLD_FILE_MAX_ROWS)
-        .clamp(1, COLD_FILE_MAX_ROWS);
-
-    let hot_cutoff = n - hot_window * SECS_PER_DAY;
-    let hi_day_excl = hot_cutoff.div_euclid(SECS_PER_DAY); // floor : jours >= celui-ci sont dans la fenêtre chaude.
-    // Borne basse LARGE : rétention la plus longue (ceil). La borne PAR-ENV (plus stricte) filtre ensuite.
-    let broad_lo_day = (n - max_ret * SECS_PER_DAY + SECS_PER_DAY - 1).div_euclid(SECS_PER_DAY);
-
     // `P10.5-a` — LA DÉCOUVERTE PEUT ÉCHOUER, ET SON ÉCHEC RESSEMBLAIT À « RIEN À FAIRE ». Les `if let
     // Ok(..)`/`flatten()` d'origine avalaient une erreur de `prepare`, de `query_map` ou de ligne : la liste
     // sortait VIDE et la passe se comportait exactement comme un tick sans travail. Une fois la passe
@@ -389,18 +356,14 @@ fn balayer(
     // les détecteurs de fin de passe doivent tourner) mais on RETIENT l'échec, et l'issue le portera.
     let mut decouverte_ok = true;
 
-    if hi_day_excl > broad_lo_day {
+    if bande.ouverte() {
         // Découverte des (env_id, day) candidats sur la bande LARGE (STABLE : jours passés). EXCLUT les events
-        // de contrôle (RETENTION_NONPURGE) -> jamais agés.
+        // de contrôle (RETENTION_NONPURGE) -> jamais agés. `P10.13-a` : texte ET bornes viennent de `enonces`,
+        // donc la sonde de lecture seule mesure CETTE requête-ci, sur CES bornes-ci.
         let groups: Vec<(String, i64)> = {
             let conn = db.lock();
-            let sql = format!(
-                "SELECT env_id, ts/{SECS_PER_DAY} AS day FROM event \
-                 WHERE ts>=?1 AND ts<?2 AND {RETENTION_NONPURGE} \
-                 GROUP BY env_id, ts/{SECS_PER_DAY} ORDER BY env_id, day",
-            );
-            let lo = broad_lo_day * SECS_PER_DAY;
-            let hi = hi_day_excl * SECS_PER_DAY;
+            let sql = sql_decouverte_des_jours();
+            let (lo, hi) = bande.bornes_de_decouverte();
             let mut out = Vec::new();
             match conn.prepare(&sql) {
                 Ok(mut st) => match st.query_map(params![lo, hi], |r| {
@@ -431,26 +394,21 @@ fn balayer(
             out
         };
 
-        // Chaque candidat suit EXACTEMENT une des quatre suites (écarté / différé / échoué / agé) — c'est la
-        // comptabilité que `Compte::comptabilite_jours_fermee` exige, et qui refuse de publier si un chemin
-        // ajouté plus tard oubliait de se compter.
+        // Chaque candidat suit EXACTEMENT une des CINQ suites (écarté / différé / échoué / columnarisé /
+        // sans travail) — c'est la comptabilité que `Compte::comptabilite_jours_fermee` exige, et qui refuse
+        // de publier si un chemin ajouté plus tard oubliait de se compter.
         compte.jours_candidats += groups.len() as i64;
         for (env_id, day) in groups {
-            if !env_id_ok(&env_id) {
-                compte.jours_ecartes += 1;
-                continue; // fail-safe : env_id non conforme -> pas de composant de chemin, on n'âge pas.
-            }
-            // Borne basse PAR-ENV (FIX #4) : n'âge un jour que s'il est ENCORE dans la rétention de SON index.
-            // Un jour au-delà (day < env_lo_day) est hors rétention -> laissé au hard-purge / à l'expiry (jamais
-            // columnarisé pour être supprimé aussitôt).
-            let r = eff_ret(&env_id);
-            let env_lo_day = (n - r * SECS_PER_DAY + SECS_PER_DAY - 1).div_euclid(SECS_PER_DAY); // ceil
-            if day < env_lo_day {
+            // ÉCARTÉ : `env_id` non conforme (fail-safe, pas de composant de chemin) OU jour au-delà de la
+            // rétention de SON index (FIX #4 : laissé au hard-purge / à l'expiry, jamais columnarisé pour
+            // être supprimé aussitôt). Le prédicat vit dans `Bande` -> la sonde retient les MÊMES jours.
+            if !bande.retenu(&env_id, day, n) {
                 compte.jours_ecartes += 1;
                 continue;
             }
-            match age_one_day(db, db_path, &cold_dir, &env_id, day, file_cap, rg_rows, &pass, compte) {
-                Ok(Journee::Agee) => compte.jours_ages += 1,
+            match age_one_day(db, db_path, &cold_dir, &env_id, day, bande.file_cap, bande.rg_rows, &pass, compte) {
+                Ok(Journee::Columnarisee) => compte.jours_columnarises += 1,
+                Ok(Journee::SansTravail) => compte.jours_sans_travail += 1,
                 Ok(Journee::Differee) => compte.jours_differes += 1,
                 Err(e) => {
                     compte.jours_echoues += 1;
@@ -461,8 +419,9 @@ fn balayer(
     }
 
     // NETTOYAGE des jours-Parquet au-delà de la rétention de LEUR index (FIX #4). day_end <= now - eff_ret,
-    // fallback GLOBAL = `cold_ret` (#18 P1.5 : un cold-file d'un env sans policy survit jusqu'à cold_ret).
-    expire_cold_days(db, &cold_dir, n, cold_ret, &policies);
+    // fallback GLOBAL = `cold_ret` (#18 P1.5 : un cold-file d'un env sans policy survit jusqu'à cold_ret) —
+    // MÊME `Bande::eff_ret` que la découverte, donc jamais deux définitions de la rétention par-env.
+    expire_cold_days(db, &cold_dir, n, &bande);
 
     // #18 — SIGNAL « seal cold BLOQUÉ » (phase-2 délete-side stall). Complémentaire de detect_aging_stall :
     // celui-ci attrape un jour DÉJÀ scellé mais dont le fichier reste perpétuellement CORROMPU
@@ -502,7 +461,7 @@ fn balayer(
 /// #18 P1.5 — grâce (jours) au-delà de la fenêtre chaude avant de crier au retard d'aging. Une valeur > 0
 /// absorbe le jour-frontière tout juste sorti de la fenêtre chaude (que l'aging va columnariser au tick même)
 /// -> le signal ne se déclenche que sur un retard NET, jamais sur le régime drainé normal.
-const COLD_STALL_GRACE_DAYS: i64 = 2;
+pub(super) const COLD_STALL_GRACE_DAYS: i64 = 2;
 
 /// #18 — grâce (secondes) avant de crier au « seal cold BLOQUÉ ». Un tick sain scelle purged=0 PUIS purge
 /// (purged=1) DANS le même tick ~horaire ; un purged=0 qui SURVIT des heures = phase2 coincée (VERIFY échoue
@@ -515,22 +474,17 @@ pub(super) const COLD_SEAL_STUCK_GRACE_S: i64 = 6 * 3600;
 /// columnarisées mais ne l'ont pas été. > 0 -> signal (dédupé à l'heure). Requête bornée par idx_event_ts
 /// (range sur `ts`) ; la sous-requête `cold_seal` est sur une PETITE table. Aucune écriture si compte == 0.
 pub(super) fn detect_aging_stall(db: &Arc<Mutex<Connection>>, n: i64, hot_window: i64, cold_ret: i64) {
-    let stall_hi = n - (hot_window + COLD_STALL_GRACE_DAYS) * SECS_PER_DAY; // plus vieux que la fenêtre chaude + grâce
-    // BORNE BASSE = now - cold_ret : au-delà de cold_ret la donnée est HORS rétention (filet de sécurité du
-    // hard-purge hot, PAS le rôle de l'aging) -> on ne la compte PAS comme « aurait dû être columnarisée »
-    // (sinon un straggler résiduel près/au-delà de cold_ret, dont le seal a été expiré, ferait un faux positif).
-    // La bande [now-cold_ret, now-(hot_window+grâce)) est EXACTEMENT la zone où la donnée DEVRAIT être en cold.
-    let stall_lo = n - cold_ret * SECS_PER_DAY;
-    if stall_hi <= stall_lo {
-        return; // fenêtre chaude+grâce couvre déjà toute la rétention (cold_ret trop court) -> rien à surveiller.
-    }
+    // `P10.13-a` — BORNES DÉRIVÉES de `enonces` (source unique, cf. `bornes_du_retard`) : la sonde doit
+    // planifier CET énoncé sur CETTE fenêtre, et un `None` veut dire « rien à surveiller » (la fenêtre
+    // chaude + grâce couvre déjà toute la rétention).
+    let Some((stall_lo, stall_hi)) = bornes_du_retard(hot_window, cold_ret, n) else {
+        return;
+    };
     let conn = db.lock();
     // NOT EXISTS (seal du (env_id, jour)) : exclut tout jour columnarisé/en-cours (drainé OU straggler-porteur).
-    let sql = format!(
-        "SELECT COUNT(*) FROM event e \
-         WHERE e.ts >= ?1 AND e.ts < ?2 AND {RETENTION_NONPURGE} \
-           AND NOT EXISTS (SELECT 1 FROM cold_seal s WHERE s.env_id=e.env_id AND s.day=e.ts/{SECS_PER_DAY})"
-    );
+    // `P10.13-a` — texte UNIQUE dans `enonces` : c'est le SECOND énoncé qui peut balayer `event`, et la sonde
+    // doit pouvoir le lire avec le MÊME texte.
+    let sql = sql_retard_de_vieillissement();
     let lingering: i64 = conn.query_row(&sql, params![stall_lo, stall_hi], |r| r.get(0)).unwrap_or(0);
     if lingering > 0 {
         emit_cold_aging_stall(&conn, n, lingering, hot_window, cold_ret);
@@ -592,12 +546,7 @@ pub(super) fn detect_cold_seal_stuck(db: &Arc<Mutex<Connection>>, n: i64) {
     // COUNT(*) = fichiers-seals bloqués ; COUNT(DISTINCT env/day) = jours distincts ; MIN(sealed_ts) = le plus
     // ancien seal coincé. Requête sur la PETITE table cold_seal, bornée par purged=0 (rare en régime sain).
     let row: Option<(i64, i64, i64)> = conn
-        .query_row(
-            "SELECT COUNT(*), COUNT(DISTINCT env_id||'/'||day), COALESCE(MIN(sealed_ts),0) \
-             FROM cold_seal WHERE purged=0 AND sealed_ts < ?1",
-            params![cutoff],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
+        .query_row(SQL_SEAL_BLOQUE, params![cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .ok();
     if let Some((files, days, oldest_ts)) = row {
         if files > 0 {
@@ -648,12 +597,40 @@ fn emit_cold_seal_stuck(conn: &Connection, now_ts: i64, files: i64, days: i64, o
         > 0
 }
 
-/// CE QU'UN JOUR EST DEVENU — deux issues SANS erreur, qui ne doivent pas se confondre dans la série : un jour
-/// DIFFÉRÉ (garde H1) n'a rien columnarisé et reviendra ; un jour AGÉ est traité. Les compter ensemble ferait
-/// passer un report permanent (ingest arrêté) pour un drainage sain.
+/// CE QU'UN JOUR EST DEVENU — TROIS issues SANS erreur, qui ne doivent pas se confondre dans la série.
+///
+/// `P10.12-a` (résiduel) — POURQUOI IL Y EN A TROIS ET PLUS DEUX. `Ok(Journee::Agee) => jours_ages += 1`
+/// était atteint par DEUX situations SANS AUCUN TRAVAIL : le retour défensif « rien d'agéable » (aucune ligne
+/// non-contrôle dans le jour) et le no-op « déjà scellé, phase 2 déjà drainée ». La série publiait donc
+/// `plume_cold_aging_jours{issue="age"} = 10` pour **10 jours no-op** — mesuré en production le 2026-08-10,
+/// un chiffre faux dans la série même qui existe pour supprimer les chiffres faux. Le COMPORTEMENT (compromis
+/// « stragglers » assumé et verrouillé par `fix1_straggler_in_sealed_day_stays_hot_no_loss`) est INCHANGÉ ;
+/// seul ce que la série en DIT change.
+///
+/// LA DISTINCTION EST DÉRIVÉE, JAMAIS ÉNUMÉRÉE (cf. `Journee::selon_le_travail`) : elle se lit dans le DELTA
+/// des compteurs de travail du `Compte`, pas dans le chemin de retour emprunté. Une troisième situation
+/// no-op ajoutée demain tombera du bon côté sans que personne n'y pense.
 enum Journee {
-    Agee,
+    /// Le jour a réellement columnarisé : au moins un fichier écrit et/ou une tranche chaude retirée.
+    Columnarisee,
+    /// Le jour a été TRAITÉ SANS ERREUR mais SANS TRAVAIL : rien d'agéable, ou déjà scellé et déjà drainé.
+    SansTravail,
+    /// Différé par la garde H1 (le jour détient le tail du compteur de rowid) — sans perte, reviendra.
     Differee,
+}
+
+impl Journee {
+    /// LE VERDICT, DÉRIVÉ DU TRAVAIL RÉELLEMENT COMPTABILISÉ entre l'entrée et la sortie de `age_one_day`.
+    /// `Compte::a_travaille_depuis` compare la PROJECTION « tout sauf la comptabilité des jours » : un
+    /// compteur de travail ajouté demain (octets, fichiers, lignes…) est donc pris en compte le jour où il
+    /// est ajouté, sans qu'aucune liste ne soit tenue ici.
+    fn selon_le_travail(avant: &Compte, apres: &Compte) -> Journee {
+        if apres.a_travaille_depuis(avant) {
+            Journee::Columnarisee
+        } else {
+            Journee::SansTravail
+        }
+    }
 }
 
 /// Traite UN (env_id, day) selon la machine à états seal DEUX PHASES multi-fichiers (cf. doc de `cold_age_run`).
@@ -661,8 +638,14 @@ enum Journee {
 /// Err si l'aging n'a pas pu se compléter proprement (l'appelant journalise ; les lignes restent hot -> pas de perte).
 /// `compte` (`P10.5-a`) est incrémenté PAR FICHIER au fil de l'eau (jamais à la fin) -> un échec au milieu du jour
 /// conserve la trace de ce qui a réellement été écrit et supprimé.
+///
+/// `P10.12-a` (résiduel) — L'ISSUE « SANS ERREUR » EST DÉRIVÉE, PAS DÉCLARÉE. Le `Compte` est photographié à
+/// l'entrée ; chaque sortie `Ok` passe par `Journee::selon_le_travail`, qui compare la photo à l'état final.
+/// Un chemin qui rendrait `Ok` sans avoir rien columnarisé est donc compté SANS TRAVAIL même si son auteur ne
+/// l'avait pas prévu — c'est ce qui a manqué aux deux chemins no-op que la production a exhibés le 2026-08-10.
 #[allow(clippy::too_many_arguments)]
 fn age_one_day(db: &Arc<Mutex<Connection>>, db_path: &str, cold_dir: &Path, env_id: &str, day: i64, file_cap: usize, rg_rows: usize, pass: &str, compte: &mut Compte) -> Result<Journee, String> {
+    let avant = *compte; // la PHOTO d'entrée : tout le verdict « columnarisé ou non » en dérive.
     let seals = { let conn = db.lock(); file_seals(&conn, env_id, day) };
     let write_done = seals.iter().any(|s| s.last_file);
 
@@ -676,9 +659,10 @@ fn age_one_day(db: &Arc<Mutex<Connection>>, db_path: &str, cold_dir: &Path, env_
                 (n_rows, max_id, event_table_max_id(&conn)?)
             };
             if n_rows == 0 {
-                // Défensif : rien d'agéable (aucune ligne non-contrôle) -> pas de fichier, pas de seal. C'est
-                // un jour TRAITÉ (0 ligne écrite), pas un jour différé : la série le dira comme tel.
-                return Ok(Journee::Agee);
+                // Défensif : rien d'agéable (aucune ligne non-contrôle) -> pas de fichier, pas de seal. Jour
+                // TRAITÉ, mais SANS AUCUN TRAVAIL — et c'est le verdict dérivé qui le dit, pas cette ligne :
+                // elle rend le MÊME appel que la sortie normale, le delta de compteurs tranche.
+                return Ok(Journee::selon_le_travail(&avant, compte));
             }
             // H1 — TAIL GUARD (anti-réutilisation de rowid), inchangé et appliqué au NIVEAU JOUR (la Phase 2 supprime
             // TOUT le jour `id<=max_id`). Le DELETE borne `id <= max_id` ; il n'est dangereux que si SQLite peut
@@ -712,7 +696,9 @@ fn age_one_day(db: &Arc<Mutex<Connection>>, db_path: &str, cold_dir: &Path, env_
 
     // ---- PHASE 2 (SUPPRESSION) : write done (fresh/resume ci-dessus ont posé last_file, ou il l'était déjà). ----
     phase2_delete(db, cold_dir, env_id, day, pass, compte)?;
-    Ok(Journee::Agee)
+    // Un jour dont TOUS les fichiers étaient déjà `purged=1` traverse la phase 2 sans rien faire (les
+    // stragglers `id > max_id` restent hot, compromis assumé) : le delta de compteurs est nul -> SANS TRAVAIL.
+    Ok(Journee::selon_le_travail(&avant, compte))
 }
 
 /// PHASE 2 (suppression) d'un jour : pour chaque FICHIER scellé non purgé, VERIFY (identité (env,day,seq) +
@@ -755,14 +741,11 @@ fn phase2_delete(db: &Arc<Mutex<Connection>>, cold_dir: &Path, env_id: &str, day
 /// jour partagent le MÊME (env_id, day) -> UN index -> rétention effective NETTE. Un index à rétention plus LONGUE
 /// que la globale n'est donc JAMAIS expiré prématurément (pas de perte) ; un index plus COURT n'est pas sur-retenu.
 /// Bon marché (unlink par fichier). Best-effort ; une erreur d'unlink est journalisée, pas fatale.
-fn expire_cold_days(db: &Arc<Mutex<Connection>>, cold_dir: &Path, n: i64, global_ret: i64, policies: &[IndexPolicy]) {
-    let eff_ret = |env: &str| -> i64 {
-        policies.iter().find(|p| p.retention_days > 0 && p.name == env).map(|p| p.retention_days).unwrap_or(global_ret)
-    };
+fn expire_cold_days(db: &Arc<Mutex<Connection>>, cold_dir: &Path, n: i64, bande: &Bande) {
     // On lit TOUS les seals par-FICHIER (petite table) : (env_id, day, seq). Un jour = plusieurs lignes (une/seq).
     let all: Vec<(String, i64, i64)> = { let conn = db.lock(); all_sealed_files(&conn) };
     for (env_id, day, seq) in all {
-        let r = eff_ret(&env_id);
+        let r = bande.eff_ret(&env_id);
         // Expire seulement quand le jour est ENTIÈREMENT au-delà de la rétention de son index :
         // (day+1)*SECS_PER_DAY <= n - r*SECS_PER_DAY  <=>  day <= (n - r*SECS_PER_DAY)/SECS_PER_DAY - 1.
         let max_expire_day = (n - r * SECS_PER_DAY).div_euclid(SECS_PER_DAY) - 1;

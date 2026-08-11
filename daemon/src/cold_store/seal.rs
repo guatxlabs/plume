@@ -68,18 +68,13 @@ pub(super) fn ensure_cold_seal_table(conn: &Connection) {
 /// La table `cold_seal` porte-t-elle la colonne `col` ? (PRAGMA table_info -> aucune écriture). Sert à la
 /// migration paresseuse ADD COLUMN idempotente (#28 Phase B).
 fn cold_seal_has_col(conn: &Connection, col: &str) -> bool {
-    conn.prepare("SELECT 1 FROM pragma_table_info('cold_seal') WHERE name=?1")
-        .and_then(|mut s| s.exists(params![col]))
-        .unwrap_or(false)
+    conn.prepare(SQL_COLONNE_DE_SEAL).and_then(|mut s| s.exists(params![col])).unwrap_or(false)
 }
 
 /// Toutes les lignes de seal d'un (env_id, day), TRIÉES par `seq` croissant (prefixe de fichiers scellés).
 pub(super) fn file_seals(conn: &Connection, env_id: &str, day: i64) -> Vec<FileSeal> {
     let mut out = Vec::new();
-    if let Ok(mut st) = conn.prepare(
-        "SELECT seq, expected_rows, purged, max_id, ts_min, ts_max, lo_ts, lo_id, hi_id, last_file, dim_stats \
-         FROM cold_seal WHERE env_id=?1 AND day=?2 ORDER BY seq",
-    ) {
+    if let Ok(mut st) = conn.prepare(SQL_SEALS_DU_JOUR) {
         if let Ok(rows) = st.query_map(params![env_id, day], |r| {
             // dim_stats : BLOB nullable (Phase B). NULL / blob illisible -> None (« pas d'élagage possible »).
             let dim_stats = r.get::<_, Option<Vec<u8>>>(10)?.as_deref().and_then(DimStats::decode);
@@ -129,10 +124,8 @@ pub(super) fn seal_state(conn: &Connection, env_id: &str, day: i64) -> Option<(i
 pub(super) fn count_and_max_id(conn: &Connection, env_id: &str, day: i64) -> Result<(i64, i64), String> {
     let day_start = day * SECS_PER_DAY;
     let day_end = day_start + SECS_PER_DAY;
-    let sql = format!(
-        "SELECT COUNT(*), COALESCE(MAX(id),0) FROM event \
-         WHERE env_id=?1 AND ts>=?2 AND ts<?3 AND {RETENTION_NONPURGE}",
-    );
+    // `P10.13-a` — texte UNIQUE dans `enonces` (la sonde de lecture seule rejoue CET énoncé).
+    let sql = sql_compte_et_max_id_du_jour();
     conn.query_row(&sql, params![env_id, day_start, day_end], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
         .map_err(pe)
 }
@@ -144,7 +137,7 @@ pub(super) fn count_and_max_id(conn: &Connection, env_id: &str, day: i64) -> Res
 /// compter comme « tail-holder ». H1 (tail guard, cf. `age_one_day`) : c'est la borne dont dépend la preuve
 /// qu'aucun rowid réutilisé <= max_id ne peut apparaître pendant un DELETE d'aging.
 pub(super) fn event_table_max_id(conn: &Connection) -> Result<i64, String> {
-    conn.query_row("SELECT COALESCE(MAX(id),0) FROM event", [], |r| r.get::<_, i64>(0)).map_err(pe)
+    conn.query_row(SQL_MAX_ID_DE_LA_TABLE, [], |r| r.get::<_, i64>(0)).map_err(pe)
 }
 
 /// Énumère TOUS les fichiers scellés de l'index `cold_seal` (une ligne PAR fichier séquencé) : `(env_id, day, seq)`.
@@ -155,7 +148,7 @@ pub(super) fn event_table_max_id(conn: &Connection) -> Result<i64, String> {
 /// (élagage) et `cold_backup_plan` (tier froid 2-tier #18) — source unique de « quels fichiers cold existent ».
 pub(super) fn all_sealed_files(conn: &Connection) -> Vec<(String, i64, i64)> {
     let mut out = Vec::new();
-    if let Ok(mut st) = conn.prepare("SELECT env_id, day, seq FROM cold_seal") {
+    if let Ok(mut st) = conn.prepare(SQL_TOUS_LES_SEALS) {
         if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) {
             out = rows.flatten().collect();
         }

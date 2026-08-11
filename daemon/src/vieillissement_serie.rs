@@ -103,8 +103,21 @@ use crate::ventilation_serie::{ecrire_points, Point};
 
 /// 1 = la passe a eu lieu et ses compteurs sont publiés ; 0 = elle ne l'a pas été (étiquette `cause`).
 pub(crate) const NOM_OK: &str = "plume_cold_aging_ok";
-/// Jours, par `issue` : `candidat` / `age` / `differe` / `echoue` / `ecarte`. La somme des quatre
-/// derniers FAIT le premier — c'est la comptabilité qui doit fermer.
+/// Jours, par `issue` : `candidat` / `columnarise` / `sans_travail` / `differe` / `echoue` / `ecarte`.
+/// La somme des CINQ derniers FAIT le premier — c'est la comptabilité qui doit fermer.
+///
+/// `P10.12-a` (résiduel) — RUPTURE D'ÉTIQUETTE ASSUMÉE ET DÉCLARÉE : `issue="age"` A DISPARU, remplacée
+/// par `columnarise` + `sans_travail`. Ce n'est pas un renommage cosmétique. `age` était atteinte par
+/// deux situations SANS travail (« rien d'agéable » et « déjà scellé, phase 2 vide ») : la production a
+/// publié `…{issue="age"} = 10` pour **10 jours no-op** le 2026-08-10. GARDER le nom en corrigeant le
+/// sens en aurait fait un chiffre SILENCIEUSEMENT redéfini — la pire forme de faux. Le retirer fait
+/// qu'une requête ou une règle qui filtrait `issue="age"` ne rend PLUS RIEN : un TROU VISIBLE, qui est
+/// précisément ce que ce module préfère à un chiffre faux. Portée de la casse, MESURÉE (grep du dépôt le
+/// 2026-08-11) : AUCUN panneau, AUCUNE règle, AUCUN overlay `config.d` ne cite cette étiquette — les
+/// seuls porteurs sont les tests de ce module et la ROADMAP. La série a 1 jour d'historique en
+/// production (première passe le 2026-08-10) ; `metric_rollup` en gardera la trace 90 jours sous
+/// l'ancienne étiquette, et c'est bien ainsi : l'ancienne valeur était fausse, elle ne doit pas se
+/// prolonger dans la nouvelle.
 pub(crate) const NOM_JOURS: &str = "plume_cold_aging_jours";
 /// Lignes, par `sens` : `ecrites` (dans le Parquet, phase 1) / `retirees_du_chaud` (phase 2, compte
 /// RÉEL des lignes supprimées, pas l'espéré du seal).
@@ -174,18 +187,27 @@ pub(crate) enum Issue {
     Suspendu(&'static str),
 }
 
-/// LES COMPTEURS D'UNE PASSE — taille FIXE (dix `i64`), jamais une ligne retenue en mémoire : c'est ce
+/// LES COMPTEURS D'UNE PASSE — taille FIXE (onze `i64`), jamais une ligne retenue en mémoire : c'est ce
 /// qui rend l'instrumentation compatible avec le budget de 2 Gio quel que soit le volume agé.
 ///
 /// ILS S'INCRÉMENTENT AU FUR ET À MESURE, jamais à la fin : un échec au milieu d'un jour conserve ce qui
 /// a RÉELLEMENT été fait avant lui (fichiers scellés, lignes déjà retirées du chaud). Un compte calculé
 /// « à la fin » perdrait exactement les cas qu'on cherche à voir.
+///
+/// DEUX FAMILLES DE CHAMPS, et la distinction est LOAD-BEARING (cf. `a_travaille_depuis`) : la
+/// COMPTABILITÉ DES JOURS (les cinq `jours_*` autres que `jours_candidats`, plus lui) décrit COMBIEN de
+/// jours ont pris quelle suite ; le TRAVAIL (tout le reste) décrit CE QUI a été fait. C'est le second
+/// groupe, et lui seul, qui départage un jour columnarisé d'un jour no-op.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Compte {
     /// (env_id, jour) découverts dans la bande éligible.
     pub(crate) jours_candidats: i64,
-    /// Jours traités sans erreur (y compris « rien à écrire » et « déjà scellé, seule la phase 2 restait »).
-    pub(crate) jours_ages: i64,
+    /// Jours qui ont RÉELLEMENT columnarisé : au moins un fichier écrit et/ou une tranche chaude retirée.
+    pub(crate) jours_columnarises: i64,
+    /// Jours traités SANS ERREUR mais SANS TRAVAIL : rien d'agéable, ou déjà scellé et déjà drainé (les
+    /// stragglers `id > max_id` restent chauds — compromis assumé). Séparés de `jours_columnarises`
+    /// depuis `P10.12-a` : les compter ensemble faisait publier « 10 jours agés » pour 10 jours no-op.
+    pub(crate) jours_sans_travail: i64,
     /// Jours DIFFÉRÉS par la garde H1 (le jour détient le tail du compteur de rowid) — sans perte.
     pub(crate) jours_differes: i64,
     /// Jours dont le traitement a rendu une erreur (lignes conservées chaudes, retenté au tick suivant).
@@ -206,11 +228,41 @@ pub(crate) struct Compte {
 }
 
 impl Compte {
-    /// LA COMPTABILITÉ DES JOURS FERME-T-ELLE ? Tout jour candidat est dans EXACTEMENT une des quatre
+    /// LA COMPTABILITÉ DES JOURS FERME-T-ELLE ? Tout jour candidat est dans EXACTEMENT une des CINQ
     /// suites possibles. Si ce n'est pas le cas, un chemin a été ajouté sans être compté : les
     /// compteurs ne sont plus une description de la passe, et on refuse de les publier.
     pub(crate) fn comptabilite_jours_fermee(&self) -> bool {
-        self.jours_candidats == self.jours_ages + self.jours_differes + self.jours_echoues + self.jours_ecartes
+        self.jours_candidats
+            == self.jours_columnarises
+                + self.jours_sans_travail
+                + self.jours_differes
+                + self.jours_echoues
+                + self.jours_ecartes
+    }
+
+    /// LE TRAVAIL SEUL — la PROJECTION du compte débarrassée de la comptabilité des jours. Ce n'est pas
+    /// une liste de compteurs de travail : c'est le COMPLÉMENT de la comptabilité des jours, obtenu en
+    /// remettant celle-ci à zéro. Un compteur de TRAVAIL ajouté demain (un autre volume, un autre
+    /// décompte de fichiers) entre donc dans la comparaison le jour où il est ajouté, sans que personne
+    /// ne pense à cette fonction. Seule l'addition d'un compteur de JOURS demande d'y revenir — et elle
+    /// demande de toute façon de revenir à `comptabilite_jours_fermee`, qui refuse de publier sinon.
+    fn travail_seul(&self) -> Compte {
+        Compte {
+            jours_candidats: 0,
+            jours_columnarises: 0,
+            jours_sans_travail: 0,
+            jours_differes: 0,
+            jours_echoues: 0,
+            jours_ecartes: 0,
+            ..*self
+        }
+    }
+
+    /// DU TRAVAIL A-T-IL ÉTÉ FAIT depuis la photo `avant` ? C'est ce qui départage, pour un jour donné,
+    /// « columnarisé » de « traité sans rien faire » — DÉRIVÉ du delta, jamais du chemin de retour
+    /// emprunté par `age_one_day` (`P10.12-a` : deux chemins rendaient « agé » sans avoir rien fait).
+    pub(crate) fn a_travaille_depuis(&self, avant: &Compte) -> bool {
+        self.travail_seul() != avant.travail_seul()
     }
 }
 
@@ -275,7 +327,10 @@ pub(crate) fn points(b: &Bilan) -> Vec<Point> {
         let c = &b.compte;
         for (issue, v) in [
             ("candidat", c.jours_candidats),
-            ("age", c.jours_ages),
+            // `columnarise` REMPLACE `age` (rupture déclarée, cf. `NOM_JOURS`) : « agé » englobait les
+            // jours no-op et publiait donc un chiffre faux.
+            ("columnarise", c.jours_columnarises),
+            ("sans_travail", c.jours_sans_travail),
             ("differe", c.jours_differes),
             ("echoue", c.jours_echoues),
             ("ecarte", c.jours_ecartes),
@@ -351,12 +406,16 @@ pub(crate) fn phrase(b: &Bilan) -> String {
         ),
         Ok(()) => {
             let c = &b.compte;
+            // `P10.12-a` : la phrase disait « 10 jour(s) agé(s) sur 10 candidat(s) » pour 10 jours NO-OP.
+            // Le mot « columnarisé » n'est pas un synonyme choisi pour la forme : il ne peut être écrit
+            // que par un jour dont le delta de compteurs de travail est non nul.
             format!(
-                "[cold] vieillissement : {} jour(s) agé(s) sur {} candidat(s) ({} différé(s), {} échoué(s), \
-                 {} écarté(s)) — {} ligne(s) / {} fichier(s) / {} Mio écrits au froid, {} ligne(s) retirée(s) \
-                 du chaud ({} fichier(s) purgé(s)) — {cout}",
-                c.jours_ages,
+                "[cold] vieillissement : {} jour(s) columnarisé(s) sur {} candidat(s) ({} sans travail, \
+                 {} différé(s), {} échoué(s), {} écarté(s)) — {} ligne(s) / {} fichier(s) / {} Mio écrits \
+                 au froid, {} ligne(s) retirée(s) du chaud ({} fichier(s) purgé(s)) — {cout}",
+                c.jours_columnarises,
                 c.jours_candidats,
+                c.jours_sans_travail,
                 c.jours_differes,
                 c.jours_echoues,
                 c.jours_ecartes,

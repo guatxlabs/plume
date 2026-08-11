@@ -47,11 +47,14 @@ mod vieillissement_serie_tests {
         (tmp, conn)
     }
 
-    /// Un compte de passe PLEINE dont la comptabilité des jours FERME (4 = 2 + 1 + 1 + 0).
+    /// Un compte de passe PLEINE dont la comptabilité des jours FERME (5 = 2 + 1 + 1 + 1 + 0). Le
+    /// `jours_sans_travail` n'est pas décoratif : c'est la suite que `P10.12-a` a ajoutée parce que
+    /// « agé » recouvrait DEUX situations sans travail, et la production a publié 10 pour 10 no-op.
     fn compte_plein() -> Compte {
         Compte {
-            jours_candidats: 4,
-            jours_ages: 2,
+            jours_candidats: 5,
+            jours_columnarises: 2,
+            jours_sans_travail: 1,
             jours_differes: 1,
             jours_echoues: 1,
             jours_ecartes: 0,
@@ -161,7 +164,14 @@ mod vieillissement_serie_tests {
     fn la_phrase_dit_le_travail_et_la_suspension() {
         let faite = phrase(&bilan(Issue::Balaye, compte_plein(), crete_typique()));
         assert!(faite.starts_with("[cold] "), "la ligne doit porter le préfixe que les exploitants grepent");
-        for attendu in ["2 jour(s) agé(s) sur 4", "12345 ligne(s)", "3,70 Mio", "4210 ms", "CPU fil 3980 ms"] {
+        for attendu in [
+            "2 jour(s) columnarisé(s) sur 5",
+            "1 sans travail",
+            "12345 ligne(s)",
+            "3,70 Mio",
+            "4210 ms",
+            "CPU fil 3980 ms",
+        ] {
             assert!(faite.contains(attendu), "la phrase ne dit pas `{attendu}` :\n{faite}");
         }
         let arretee = phrase(&bilan(Issue::Suspendu(CAUSE_RETENTION_COURTE), compte_plein(), crete_typique()));
@@ -208,7 +218,14 @@ mod vieillissement_serie_tests {
         // refuserait TOUT passerait ce test.
         let sain = bilan(Issue::Balaye, compte_plein(), crete_typique());
         assert_eq!(verdict(&sain), Ok(()));
-        assert_eq!(valeur(&points(&sain), NOM_JOURS, Some("{\"issue\":\"age\"}")), Some(2.0));
+        assert_eq!(valeur(&points(&sain), NOM_JOURS, Some("{\"issue\":\"columnarise\"}")), Some(2.0));
+        assert_eq!(valeur(&points(&sain), NOM_JOURS, Some("{\"issue\":\"sans_travail\"}")), Some(1.0));
+        assert_eq!(
+            valeur(&points(&sain), NOM_JOURS, Some("{\"issue\":\"age\"}")),
+            None,
+            "l'étiquette `age` est REVENUE : elle recouvrait deux situations sans travail, et un nom \
+             gardé pour un sens changé est un chiffre faux SILENCIEUX (cf. `NOM_JOURS`)"
+        );
     }
 
     /// CHAQUE CAUSE PORTE UNE CLÉ STABLE ET UNIQUE. Une cause vide, traduite, ou partagée avec une autre
@@ -271,14 +288,14 @@ mod vieillissement_serie_tests {
             .unwrap();
         assert_eq!(v, 3_879_731.0, "les octets écrits au froid n'arrivent pas intacts dans la série");
         assert!(host.is_none(), "la série décrit LA BASE : lui donner un hôte inventerait une machine");
-        let jours_ages: f64 = conn
+        let jours_columnarises: f64 = conn
             .query_row(
                 "SELECT value FROM metric WHERE name=?1 AND labels=?2",
-                rusqlite::params![NOM_JOURS, "{\"issue\":\"age\"}"],
+                rusqlite::params![NOM_JOURS, "{\"issue\":\"columnarise\"}"],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(jours_ages, 2.0);
+        assert_eq!(jours_columnarises, 2.0);
     }
 
     /// LA SÉRIE NE PUBLIE QUE SES PROPRES NOMS. Une ligne inattendue dans `metric` polluerait
@@ -611,12 +628,82 @@ mod vieillissement_serie_tests {
     /// LE NOMBRE DE POINTS PAR PASSE EST CE QU'ON CROIT. La borne disque ci-dessus en dépend : si la
     /// publication se mettait à écrire dix fois plus de séries, la borne devrait être rediscutée, pas subie.
     #[test]
-    fn une_passe_publie_seize_points() {
+    fn une_passe_publie_dix_sept_points() {
         assert_eq!(
             points(&bilan(Issue::Balaye, compte_plein(), crete_typique())).len(),
-            16, // 5 jours + 2 lignes + 2 fichiers + octets + durée + CPU + ok + crête_ok + crête + surcroît
+            17, // 6 jours + 2 lignes + 2 fichiers + octets + durée + CPU + ok + crête_ok + crête + surcroît
             "le nombre de points par passe a changé -> relire `le_cout_disque_de_la_serie_est_mesure_et_borne`"
         );
+    }
+
+    /// LE TRAVAIL SE DÉRIVE DU COMPTE, IL NE SE DÉCLARE PAS (`P10.12-a`). C'est la fonction qui
+    /// départage « jour columnarisé » de « jour traité sans rien faire ». Elle ne regarde PAS une liste
+    /// de compteurs de travail : elle compare le compte MOINS la comptabilité des jours. Un compteur de
+    /// travail ajouté demain entre donc dans la comparaison sans que personne n'y pense — et c'est
+    /// exactement ce que ce test vérifie, en bougeant CHAQUE compteur l'un après l'autre.
+    ///
+    /// MUTATION (exécutée le 2026-08-11) : faire rendre `false` à `a_travaille_depuis` ⇒ les 5 cas de
+    /// travail rougissent. La faire rendre `true` ⇒ les 6 cas « comptabilité des jours seule » rougissent.
+    #[test]
+    fn le_travail_dun_jour_se_derive_du_compte_pas_du_chemin_de_retour() {
+        let base = Compte::default();
+        assert!(!base.a_travaille_depuis(&base), "un compte identique ne peut pas décrire du travail");
+
+        // BOUGER UN COMPTEUR DE TRAVAIL = du travail. Les cinq, un par un.
+        let travaux: [(&str, fn(&mut Compte)); 5] = [
+            ("fichiers_ecrits", |c| c.fichiers_ecrits += 1),
+            ("fichiers_purges", |c| c.fichiers_purges += 1),
+            ("lignes_ecrites", |c| c.lignes_ecrites += 1),
+            ("lignes_retirees", |c| c.lignes_retirees += 1),
+            ("octets_froid", |c| c.octets_froid += 1),
+        ];
+        for (nom, bouge) in travaux {
+            let mut apres = base;
+            bouge(&mut apres);
+            assert!(
+                apres.a_travaille_depuis(&base),
+                "`{nom}` a bougé et le jour n'est pas compté comme columnarisé -> un vrai drainage \
+                 serait publié comme un no-op"
+            );
+        }
+
+        // BOUGER LA COMPTABILITÉ DES JOURS N'EST PAS DU TRAVAIL. C'est la moitié qui compte : sans elle,
+        // le premier jour d'une passe rendrait « columnarisé » simplement parce qu'un compteur de JOURS
+        // a bougé entre-temps.
+        let jours: [(&str, fn(&mut Compte)); 6] = [
+            ("jours_candidats", |c| c.jours_candidats += 1),
+            ("jours_columnarises", |c| c.jours_columnarises += 1),
+            ("jours_sans_travail", |c| c.jours_sans_travail += 1),
+            ("jours_differes", |c| c.jours_differes += 1),
+            ("jours_echoues", |c| c.jours_echoues += 1),
+            ("jours_ecartes", |c| c.jours_ecartes += 1),
+        ];
+        for (nom, bouge) in jours {
+            let mut apres = base;
+            bouge(&mut apres);
+            assert!(
+                !apres.a_travaille_depuis(&base),
+                "`{nom}` (comptabilité des JOURS) est lu comme du TRAVAIL -> tout jour traité passerait \
+                 pour columnarisé, et le défaut de `P10.12-a` serait rouvert"
+            );
+        }
+    }
+
+    /// LA COMPTABILITÉ FERME AVEC CINQ SUITES, PAS QUATRE. Ajouter `sans_travail` sans l'ajouter à
+    /// `comptabilite_jours_fermee` aurait fait REFUSER toute publication dès le premier jour no-op :
+    /// la série serait passée d'un chiffre faux à un TROU permanent, ce qui n'est pas mieux.
+    #[test]
+    fn la_comptabilite_ferme_avec_les_jours_sans_travail() {
+        let c = compte_plein();
+        assert!(c.comptabilite_jours_fermee(), "le compte de référence doit fermer : {c:?}");
+        let mut sans = c;
+        sans.jours_sans_travail -= 1; // le jour no-op « disparaît » de la comptabilité
+        assert!(
+            !sans.comptabilite_jours_fermee(),
+            "un jour no-op peut s'évaporer sans que la comptabilité ne s'en aperçoive -> les jours \
+             sans travail ne sont PAS dans l'invariant, et un chemin no-op ajouté demain passerait"
+        );
+        assert_eq!(verdict(&bilan(Issue::Balaye, sans, crete_typique())), Err(CAUSE_COMPTABILITE));
     }
 
     /// LA PUBLICATION N'EST PAS CONTOURNABLE. Le défaut fermé ici est un SILENCE : la régression

@@ -43,7 +43,15 @@ mod identity;
 mod paths;
 mod seal;
 mod writer;
+// `P10.13-a` — LES ÉNONCÉS SQL DU VIEILLISSEMENT, écrits UNE SEULE FOIS (+ la `Bande` qui en calcule les
+// bornes). C'est ce qui permet à la SONDE de rejouer ce que la PASSE exécute au lieu d'en recopier le
+// texte : un scanner de source (`aucun_enonce_de_lecture_ne_vit_hors_du_module_enonces`) refuse la
+// récidive. Cf. l'en-tête du module.
+mod enonces;
 mod aging;
+// `P10.13-a` — L'INSTRUMENT DE LECTURE SEULE (`cold-aging-plan`) : plan + chronomètre des énoncés
+// ci-dessus, sur la base VIVANTE. Aucun SQL arbitraire, aucune écriture (cf. l'en-tête du module).
+mod sonde_vieillissement;
 mod reader;
 // #18 P2 — moteur de requête VECTORISÉ (kernels sur ColumnBatch). Pas encore câblé au routeur live (P4) ->
 // ses items sont exercés par le harnais de PARITÉ + le BENCH (module `tests`, cfg(test)). `allow(dead_code)`
@@ -67,6 +75,7 @@ use identity::*;
 use paths::*;
 use seal::*;
 use writer::*;
+use enonces::*;
 use aging::*;
 // `reader` et `backup` ne sont référencés par AUCUN sibling en build de production (leaf-consumers) : leur seule
 // surface non-façade (hydrate_cold, PARQUET_COLS, …) est consommée par le module `tests` -> glob gaté `#[cfg(test)]`
@@ -83,6 +92,8 @@ use vectorized::*;
 pub(crate) use aging::{cold_age_run, cold_hot_window_days, cold_retention_days, reparse_lower_bound};
 pub(crate) use paths::cold_root;
 pub(crate) use backup::cold_backup_plan;
+// `P10.13-a` — la sonde de lecture seule, consommée par le dispatch `cold-aging-plan` de `main`.
+pub(crate) use sonde_vieillissement::cold_aging_plan;
 pub(crate) use reader::{cold_query_boundary, cold_tier_runtime_on, cold_union_query};
 // #18 — l'invariant de correction, consommé par les handlers : ils reçoivent une `ColdAnswer` (jamais un
 // `Value` nu) et DOIVENT la `render(AnswerShape)`. `AnswerShape` n'a pas de constructeur littéral -> un

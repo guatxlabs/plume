@@ -1806,6 +1806,79 @@ fn fix18_seal_stuck_complementary_to_aging_stall() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+// `P10.13-a` — CE QUE LE DEAD-MAN'S-SWITCH COMPTE, ET SUR QUELLE CLÉ. Le test ci-dessus n'assertait que la
+// PRÉSENCE du signal (`health_aging == 1`) : MESURÉ, il reste VERT si l'énoncé oublie la corrélation sur
+// `env_id` (faux négatif multi-env) ET s'il oublie l'anti-jointure (faux positif permanent) — dans les deux
+// cas un signal part quand même, et la dédup horaire écrase la différence. Deux angles morts, donc, sur le
+// seul énoncé qui garde le tier cold d'un bloat silencieux. Celui-ci ferme les deux en assertant la VALEUR
+// (`lingering_rows`) sur un jeu MULTI-ENV, plus les trois exclusions que l'en-tête de `detect_aging_stall`
+// promet : jour à seal EN COURS (purged=0), events de CONTRÔLE, et jour hors bande.
+#[test]
+fn le_retard_compte_les_lignes_par_couple_env_et_jour() {
+    let root = tmp_root("retard-par-env");
+    let db = mkdb(&root);
+    let n = n_now(); // bande du retard = [n-365 j, n-(HOT_WIN+2) j) = jours [M-365 .. M-5]
+    let pose = |ts: i64, i: i64, env: &str, controle: bool| {
+        let mut r = rich_row(ts, i);
+        r.row.env_id = Some(env.to_string());
+        if controle {
+            r.row.origin = "daemon".to_string(); // + source de contrôle -> RETENTION_NONPURGE
+            r.row.source = "plume-config".to_string();
+        }
+        insert_event(&db, &r);
+    };
+    // (a) jour M-50 : 'prod' NON scellé (6) + 'staging' SCELLÉ (4). Le seal de staging ne doit PAS masquer
+    //     prod -> +6. (b) jour M-40 : la situation SYMÉTRIQUE -> +3. Les deux sens, parce qu'une corrélation
+    //     qui aurait perdu `env_id` passerait encore l'un des deux.
+    for i in 0..6 { pose((M - 50) * SECS_PER_DAY + i, i, "prod", false); }
+    for i in 0..4 { pose((M - 50) * SECS_PER_DAY + 100 + i, 100 + i, "staging", false); }
+    seal_at(&db, "staging", M - 50, 0, 1, n);
+    for i in 0..5 { pose((M - 40) * SECS_PER_DAY + i, 200 + i, "prod", false); }
+    for i in 0..3 { pose((M - 40) * SECS_PER_DAY + 100 + i, 300 + i, "staging", false); }
+    seal_at(&db, "prod", M - 40, 0, 1, n);
+    // (c) jour M-30 : seal EN COURS (purged=0) -> phase 2 non terminée, PAS un retard -> +0.
+    for i in 0..7 { pose((M - 30) * SECS_PER_DAY + i, 400 + i, "prod", false); }
+    seal_at(&db, "prod", M - 30, 0, 0, n);
+    // (d) jour M-20 : events de CONTRÔLE seulement (jamais agés) -> +0.
+    for i in 0..5 { pose((M - 20) * SECS_PER_DAY + i, 500 + i, "prod", true); }
+    // (e) jour M-10 : TROIS seals pour le même jour. L'anti-jointure produit 3 lignes appariées par event :
+    //     si la multiplicité fuyait dans le compte, ce jour l'y ferait exploser -> +0.
+    for i in 0..9 { pose((M - 10) * SECS_PER_DAY + i, 600 + i, "prod", false); }
+    for seq in 0..3 { seal_at(&db, "prod", M - 10, seq, 1, n); }
+    // (f) jour M-3 : DANS la fenêtre chaude + grâce -> hors bande -> +0.
+    for i in 0..8 { pose((M - 3) * SECS_PER_DAY + i, 700 + i, "prod", false); }
+
+    let signaux = |db: &Arc<Mutex<Connection>>| -> Vec<String> {
+        db.lock()
+            .prepare("SELECT fields FROM event WHERE dedup LIKE '%'||char(1)||'plume-cold-aging-stall-%' ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+
+    detect_aging_stall(&db, n, HOT_WIN, 365);
+    let s = signaux(&db);
+    assert_eq!(s.len(), 1, "un signal et un seul : {s:?}");
+    // 6 (prod du jour M-50) + 3 (staging du jour M-40) et RIEN d'autre. C'est la valeur qui prouve la clé de
+    // corrélation : oublier `env_id` rendrait 0, oublier l'anti-jointure rendrait 34.
+    assert!(
+        s[0].contains("\"lingering_rows\":9"),
+        "le retard doit valoir EXACTEMENT 9 lignes (6 prod/M-50 + 3 staging/M-40) : {}",
+        s[0]
+    );
+
+    // RÉGIME DRAINÉ : on scelle les deux couples restants. Une heure plus tard (la dédup est HORAIRE, sinon
+    // le silence ne prouverait rien), le détecteur doit rester MUET — « zéro faux positif en régime drainé »
+    // est une propriété écrite, on la mesure.
+    seal_at(&db, "prod", M - 50, 0, 1, n);
+    seal_at(&db, "staging", M - 40, 0, 1, n);
+    detect_aging_stall(&db, n + 3600, HOT_WIN, 365);
+    assert_eq!(signaux(&db).len(), 1, "régime drainé : aucun signal NOUVEAU ne doit être émis");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 // P1.5 (test 6) — BANDES DISJOINTES sous extension : aucun jour n'est À LA FOIS agé ET hard-purgé, et aucun
 // trou. On sème 1 ligne/jour à travers les frontières (hot | cold [hot_window..cold_ret] | purge > cold_ret),
 // on lance l'aging PUIS le hard-purge hot étendu, et on vérifie que chaque jour atterrit dans EXACTEMENT une

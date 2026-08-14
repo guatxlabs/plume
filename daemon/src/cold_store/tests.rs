@@ -69,6 +69,11 @@ fn mkdb(root: &Path) -> Arc<Mutex<Connection>> {
            value REAL NOT NULL, host TEXT, env_id TEXT NOT NULL DEFAULT 'prod')",
     )
     .unwrap();
+    // `P10.13-a` levier ① — la table où le dead-man's-switch de retard mémorise SON DERNIER TIR (clé
+    // `cold_aging_stall_last_ts`). Schéma MIROIR du live (`key TEXT PRIMARY KEY, value TEXT`, cf. la
+    // chaîne de migrations). Sans elle, la lecture rendrait `None` à chaque passe et la CADENCE ne
+    // serait jamais exercée : les tests passeraient tous, en ne prouvant rien de ce qui a changé.
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)").unwrap();
     Arc::new(Mutex::new(conn))
 }
 
@@ -1405,6 +1410,26 @@ fn conf_ext(cold_dir: &Path, cold_ret: i64) -> HashMap<String, String> {
     c
 }
 
+/// `P10.13-a` levier ① — LA BANDE QU'UN TICK VERRAIT avec cette conf. Depuis le levier ①,
+/// `detect_aging_stall` ne prend plus ses bornes en vrac : il prend la `Bande`, qui porte À LA FOIS la
+/// fenêtre, le gate d'armement (`cold_ret > retention_days`) et la CADENCE. Les tests qui appellent le
+/// détecteur directement passent donc par le MÊME objet que la passe — ils ne peuvent plus exercer une
+/// combinaison que la production ne produit pas.
+fn bande_de(db: &Arc<Mutex<Connection>>, conf: &HashMap<String, String>, n: i64) -> Bande {
+    let conn = db.lock();
+    Bande::calculer(&conn, conf, n, RET_DAYS)
+}
+
+/// La MÊME chose, mais CADENCE DÉSARMÉE (`PLUME_COLD_STALL_CHECK_INTERVAL_S=0` -> tir à chaque appel).
+/// Les tests qui prouvent ce que le détecteur COMPTE ne doivent pas rester verts parce qu'il n'a pas
+/// tiré : sans ce désarmement, un second appel silencieux passerait pour un « régime drainé » et
+/// l'assertion ne garderait plus rien. La cadence, elle, a ses propres tests.
+fn bande_sans_cadence(db: &Arc<Mutex<Connection>>, cold_dir: &Path, cold_ret: i64, n: i64) -> Bande {
+    let mut c = conf_ext(cold_dir, cold_ret);
+    c.insert("PLUME_COLD_STALL_CHECK_INTERVAL_S".to_string(), "0".to_string());
+    bande_de(db, &c, n)
+}
+
 /// Pré-place un cold-file scellé+purgé (k lignes) SANS event hot -> seule l'expiry agira dessus.
 fn place_sealed_cold(db: &Arc<Mutex<Connection>>, cold: &Path, env: &str, day: i64, k: i64) -> PathBuf {
     let p = day_path(cold, env, day);
@@ -1772,6 +1797,7 @@ fn fix18_seal_stuck_hourly_dedup() {
 #[test]
 fn fix18_seal_stuck_complementary_to_aging_stall() {
     let root = tmp_root("seal-stuck-complement");
+    let cold = root.join("cold");
     let db = mkdb(&root);
     let n = n_now();
     let base_stuck = (M - 100) * SECS_PER_DAY; // jour scellé-bloqué (avec events hot POUR prouver l'exclusion)
@@ -1791,7 +1817,7 @@ fn fix18_seal_stuck_complementary_to_aging_stall() {
             .unwrap()
     };
     detect_cold_seal_stuck(&db, n);
-    detect_aging_stall(&db, n, HOT_WIN, 365);
+    detect_aging_stall(&db, &bande_sans_cadence(&db, &cold, 365, n), n);
     // seal-stuck : compte UNIQUEMENT le jour scellé-bloqué (1 fichier, 1 jour) ; le jour hot jamais-scellé n'a
     // pas de ligne cold_seal -> ignoré.
     assert_eq!(health_seal_stuck(&db), 1, "seal-stuck tire sur le jour scellé-bloqué");
@@ -1816,6 +1842,7 @@ fn fix18_seal_stuck_complementary_to_aging_stall() {
 #[test]
 fn le_retard_compte_les_lignes_par_couple_env_et_jour() {
     let root = tmp_root("retard-par-env");
+    let cold = root.join("cold");
     let db = mkdb(&root);
     let n = n_now(); // bande du retard = [n-365 j, n-(HOT_WIN+2) j) = jours [M-365 .. M-5]
     let pose = |ts: i64, i: i64, env: &str, controle: bool| {
@@ -1858,7 +1885,10 @@ fn le_retard_compte_les_lignes_par_couple_env_et_jour() {
             .unwrap()
     };
 
-    detect_aging_stall(&db, n, HOT_WIN, 365);
+    // CADENCE DÉSARMÉE ICI : ce test prouve ce que le détecteur COMPTE, pas quand il tire. Avec la
+    // cadence par défaut, le SECOND appel ci-dessous serait silencieux et l'assertion « régime drainé »
+    // resterait verte même si l'énoncé rendait n'importe quoi — le test ne garderait plus rien.
+    detect_aging_stall(&db, &bande_sans_cadence(&db, &cold, 365, n), n);
     let s = signaux(&db);
     assert_eq!(s.len(), 1, "un signal et un seul : {s:?}");
     // 6 (prod du jour M-50) + 3 (staging du jour M-40) et RIEN d'autre. C'est la valeur qui prouve la clé de
@@ -1874,8 +1904,404 @@ fn le_retard_compte_les_lignes_par_couple_env_et_jour() {
     // est une propriété écrite, on la mesure.
     seal_at(&db, "prod", M - 50, 0, 1, n);
     seal_at(&db, "staging", M - 40, 0, 1, n);
-    detect_aging_stall(&db, n + 3600, HOT_WIN, 365);
+    let n2 = n + 3600;
+    detect_aging_stall(&db, &bande_sans_cadence(&db, &cold, 365, n2), n2);
     assert_eq!(signaux(&db).len(), 1, "régime drainé : aucun signal NOUVEAU ne doit être émis");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// =====================================================================================================
+// `P10.13-a` LEVIER ① — LE DÉTECTEUR DE RETARD TIRE UNE FOIS PAR JOUR, PAS À CHAQUE PASSE.
+//
+// LE CHIFFRE QUI L'A DÉCIDÉ, relevé en production le 2026-08-13 sur 44 h et 45 passes : **2 passes
+// utiles, 43 sans le moindre travail** — 95,6 % de gaspillage, soit **20,0 min de `db.lock()` pour rien
+// sur 20,9 min au total**. La columnarisation n'a lieu qu'UNE FOIS PAR JOUR (un jour franchit la fenêtre
+// chaude) ; les 23 autres passes horaires ne peuvent rien faire PAR CONSTRUCTION. Et cet énoncé porte la
+// TOTALITÉ du coût de chaque passe (`SCAN e`, 27,9 s, 1,78 M lignes balayées).
+//
+// CE LEVIER NE SUPPRIME AUCUN TRAVAIL : il supprime des passes qui n'en avaient aucun.
+// =====================================================================================================
+
+/// LA DÉCISION DE TIR EST PURE, ET TOUT CE QUI N'EST PAS « TROP RÉCENT » TIRE. C'est la propriété qui
+/// protège le dead-man's-switch : jamais tiré, cadence désarmée, horodatage dans le FUTUR (horloge
+/// revenue en arrière, base restaurée, valeur corrompue) — chacun de ces cas doit TIRER, pas se taire.
+/// Un `unwrap_or` qui aurait rendu « trop tôt » sur une valeur illisible aurait muselé la garde EN
+/// SILENCE, ce qui est littéralement le mode de panne qu'elle existe pour fermer.
+///
+/// MUTATION : dans `tir_du_retard`, remplacer `n.saturating_sub(t) < periode` par
+/// `n.saturating_sub(t) <= periode` ⇒ le cas « exactement à l'échéance » rougit (il faut TIRER à
+/// l'échéance, pas au tick d'après). Remplacer le bras `_ => TirDuRetard::Du { lo, hi }` par
+/// `_ => TirDuRetard::Ajourne(RETARD_CADENCE)` ⇒ les quatre cas dégradés rougissent d'un coup.
+#[test]
+fn la_decision_de_tir_du_retard_est_pure_et_faillit_vers_le_tir() {
+    const HW: i64 = 2;
+    const RET: i64 = 30;
+    const EXT: i64 = 365; // rétention cold ÉTENDUE -> détecteur ARMÉ
+    let n = n_now();
+    let du = |periode: i64, dernier: Option<i64>| {
+        matches!(tir_du_retard(HW, EXT, RET, periode, n, dernier), TirDuRetard::Du { .. })
+    };
+    let cause = |cold_ret: i64, periode: i64, dernier: Option<i64>| -> Option<&'static str> {
+        match tir_du_retard(HW, cold_ret, RET, periode, n, dernier) {
+            TirDuRetard::Ajourne(c) => Some(c),
+            TirDuRetard::Du { .. } => None,
+        }
+    };
+
+    // ---- LES TROIS REFUS, chacun avec sa cause (= l'étiquette que la série publiera). ----
+    assert_eq!(cause(RET, 86_400, None), Some(RETARD_NON_ARME), "cold_ret == retention_days -> pas armé");
+    assert_eq!(
+        cause(RET - 1, 86_400, None),
+        Some(RETARD_NON_ARME),
+        "cold_ret < retention_days (défensif) -> pas armé non plus"
+    );
+    // Fenêtre VIDE : hot_window + grâce couvre déjà toute la rétention cold.
+    assert_eq!(
+        match tir_du_retard(400, EXT, RET, 86_400, n, None) {
+            TirDuRetard::Ajourne(c) => Some(c),
+            TirDuRetard::Du { .. } => None,
+        },
+        Some(RETARD_FENETRE_VIDE)
+    );
+    assert_eq!(cause(EXT, 86_400, Some(n - 3600)), Some(RETARD_CADENCE), "1 h après le dernier tir -> trop tôt");
+
+    // ---- ET TOUT LE RESTE TIRE. ----
+    assert!(du(86_400, None), "jamais tiré (base neuve/démarrage) -> il DOIT tirer");
+    assert!(du(0, Some(n - 1)), "cadence désarmée (0) -> comportement historique : tir à chaque passe");
+    assert!(du(-5, Some(n - 1)), "période négative (défensif) -> tir, jamais silence");
+    assert!(du(86_400, Some(n + 50_000)), "horodatage dans le FUTUR (horloge/restauration) -> tir");
+    assert!(du(86_400, Some(n - 86_400)), "EXACTEMENT à l'échéance -> tir (pas au tick d'après)");
+    assert!(du(86_400, Some(n - 90_000)), "au-delà de l'échéance -> tir");
+
+    // ---- LA FENÊTRE RENDUE EST CELLE DE `bornes_du_retard`, jamais une variante. ----
+    let TirDuRetard::Du { lo, hi } = tir_du_retard(HW, EXT, RET, 86_400, n, None) else {
+        panic!("précondition : ce cas doit tirer");
+    };
+    assert_eq!(
+        (lo, hi),
+        bornes_du_retard(HW, EXT, n).expect("fenêtre non vide"),
+        "la porte a rendu d'AUTRES bornes que la source unique -> la sonde mesurerait une autre fenêtre"
+    );
+}
+
+/// LA PÉRIODE EST PLAFONNÉE PAR LA GRÂCE, ET CE PLAFOND EST DÉRIVÉ. Un knob capable de rendre la cadence
+/// PLUS LONGUE que la grâce que le détecteur s'accorde déjà annulerait la garde qu'il est censé régler.
+/// Le plafond suit `COLD_STALL_GRACE_DAYS` : le relever demain relève le plafond, sans que personne n'y
+/// pense. Et une valeur ILLISIBLE retombe sur le DÉFAUT — ni sur `0` (on reprendrait les 20 min/jour),
+/// ni sur une valeur hors plafond.
+///
+/// MUTATION : remplacer le `.clamp(0, COLD_STALL_GRACE_DAYS * SECS_PER_DAY)` par `.max(0)` ⇒ l'assertion
+/// du plafond rougit en nommant la valeur acceptée.
+#[test]
+fn la_periode_de_tir_est_plafonnee_par_la_grace_du_detecteur() {
+    let avec = |v: &str| {
+        let mut c: HashMap<String, String> = HashMap::new();
+        if !v.is_empty() {
+            c.insert("PLUME_COLD_STALL_CHECK_INTERVAL_S".to_string(), v.to_string());
+        }
+        periode_de_tir(&c)
+    };
+    let plafond = COLD_STALL_GRACE_DAYS * SECS_PER_DAY;
+    assert_eq!(avec(""), PERIODE_TIR_RETARD_DEFAUT_S, "knob non posé -> 24 h");
+    assert_eq!(avec("   "), PERIODE_TIR_RETARD_DEFAUT_S, "knob vide -> 24 h");
+    assert_eq!(avec("pas-un-nombre"), PERIODE_TIR_RETARD_DEFAUT_S, "illisible -> DÉFAUT, jamais 0");
+    assert_eq!(avec("3600"), 3600, "un exploitant peut racheter la latence d'origine, à chaud");
+    assert_eq!(avec("0"), 0, "0 = cadence DÉSARMÉE (comportement d'avant P10.13-a)");
+    assert_eq!(avec("-1"), 0, "négatif -> désarmé (tir à chaque passe), jamais un silence");
+    assert_eq!(
+        avec(&(plafond * 10).to_string()),
+        plafond,
+        "une configuration ne doit PAS pouvoir rendre la cadence plus longue que la grâce de {COLD_STALL_GRACE_DAYS} j"
+    );
+    assert!(
+        PERIODE_TIR_RETARD_DEFAUT_S < plafond,
+        "le défaut ({PERIODE_TIR_RETARD_DEFAUT_S} s) doit rester STRICTEMENT sous le plafond ({plafond} s) : \
+         sinon il n'y a plus de marge entre la cadence et la grâce"
+    );
+}
+
+/// Compte les LIGNES d'une série dans `metric` — pas sa dernière valeur. C'est ce qu'il faut pour
+/// prouver un TROU : `serie()` rendrait la valeur de la passe PRÉCÉDENTE et on ne verrait pas que la
+/// passe courante n'a rien publié.
+fn compte_serie(db: &Arc<Mutex<Connection>>, nom: &str) -> i64 {
+    db.lock()
+        .query_row("SELECT COUNT(*) FROM metric WHERE name=?1", params![nom], |r| r.get(0))
+        .unwrap()
+}
+
+/// LE LEVIER, DE BOUT EN BOUT, SUR LA VRAIE PASSE (site de FIN DE PASSE) — et l'état SURVIT AU
+/// REDÉMARRAGE.
+///
+/// Quatre passes : la première tire (aucun horodatage), les deux suivantes NON (dont une APRÈS
+/// réouverture du FICHIER de base — c'est ce qui prouve que l'état n'est pas dans le handle), la
+/// quatrième à +24 h tire de nouveau. La SÉRIE doit distinguer les deux situations : un compte de
+/// retard n'est publié QUE lorsqu'un verdict a été rendu ; sinon la cause NOMME le trou.
+///
+/// LES ASSERTIONS PORTENT SUR LE NOMBRE DE LIGNES DE SÉRIE, PAS SUR LEUR VALEUR — et ce n'est pas une
+/// précaution, c'est une CORRECTION. Première rédaction : j'assertais « 20 lignes en retard » à la
+/// passe 4 aussi. FAUX, et le mécanisme vaut d'être écrit : le signal de santé émis à la passe 1 est un
+/// `event` de plus, donc un `MAX(id)` PLUS HAUT que celui du jour bloqué — la garde H1, qui ne différait
+/// ce jour QUE parce qu'il détenait le tail du compteur de rowid, le laisse passer dès la passe 2 et le
+/// jour se columnarise. **Le dead-man's-switch DÉBLOQUE lui-même le defer H1 qu'il signale.** Le compte
+/// de lignes, lui, dit exactement ce qu'on veut savoir : combien de fois le détecteur a rendu un verdict.
+///
+/// MUTATION : faire rendre `None` à `dernier_tir_du_retard` (état de cadence illisible) ⇒ les trois
+/// assertions « 1 seule mesure » rougissent d'un coup — la cadence n'a plus d'état à consulter, donc le
+/// détecteur retire à chaque passe, ce qui est exactement le comportement d'avant ce lot.
+#[test]
+fn le_detecteur_de_retard_ne_tire_quune_fois_par_jour_et_son_etat_survit_au_redemarrage() {
+    let root = tmp_root("retard-cadence");
+    let cold = root.join("cold");
+    let chemin = root.join("plume.db");
+    let db = mkdb(&root);
+    let conf = conf_ext(&cold, 365); // extension -> détecteur ARMÉ ; cadence au DÉFAUT (24 h)
+    let day = M - 50;
+    // 20 lignes anciennes et AUCUNE donnée récente -> le jour détient le tail -> H1 DIFFÈRE à la passe 1
+    // -> aucun seal -> le dead-man's-switch a de quoi tirer.
+    for i in 0..20 {
+        insert_event(&db, &rich_row(day * SECS_PER_DAY + i, i));
+    }
+    let n = n_now();
+
+    // ---- PASSE 1 (aucun horodatage) : LE DÉTECTEUR TIRE. ----
+    cold_age_run(&db, "", &conf, n, RET_DAYS);
+    assert_eq!(serie(&db, NOM_RETARD_OK, Some("{\"cause\":\"aucune\"}")), Some(1.0), "passe 1 : verdict rendu");
+    assert_eq!(serie(&db, NOM_RETARD_LIGNES, None), Some(20.0), "passe 1 : 20 lignes en retard, MESURÉES");
+    assert_eq!(compte_serie(&db, NOM_RETARD_LIGNES), 1);
+    assert_eq!(
+        { let c = db.lock(); dernier_tir_du_retard(&c) },
+        Some(n),
+        "le tir doit être HORODATÉ dans `meta` — sinon la cadence n'a aucun état à consulter"
+    );
+
+    // ---- PASSE 2, une heure plus tard : PAS DUE. Un TROU NOMMÉ, jamais un zéro. ----
+    cold_age_run(&db, "", &conf, n + 3600, RET_DAYS);
+    assert_eq!(
+        serie(&db, NOM_RETARD_OK, Some(&format!("{{\"cause\":\"{RETARD_CADENCE}\"}}"))),
+        Some(0.0),
+        "la passe qui saute le détecteur doit le DIRE, avec sa cause"
+    );
+    assert_eq!(
+        compte_serie(&db, NOM_RETARD_LIGNES),
+        1,
+        "un SECOND compte de retard a été publié alors que le détecteur n'a pas tiré -> la série \
+         affirmerait un verdict qui n'a pas été rendu"
+    );
+
+    // ---- PASSE 3, APRÈS REDÉMARRAGE : toujours pas due. C'EST LE POINT DE LA PERSISTANCE. ----
+    // On rouvre le FICHIER (nouvelle connexion, nouveau handle) : c'est tout ce qu'un redémarrage de pod
+    // change pour ce module. Un état rangé dans la connexion — ou reconstruit au démarrage — retirerait ici.
+    drop(db);
+    let db = Arc::new(Mutex::new(rusqlite::Connection::open(&chemin).unwrap()));
+    cold_age_run(&db, "", &conf, n + 7200, RET_DAYS);
+    assert_eq!(
+        compte_serie(&db, NOM_RETARD_LIGNES),
+        1,
+        "le détecteur a RETIRÉ après un redémarrage -> l'état de cadence n'a pas survécu, et un pod qui \
+         redémarre souvent paierait les 27,9 s PLUS souvent qu'avant le levier"
+    );
+
+    // ---- PASSE 4, à +24 h EXACTEMENT : le détecteur retire. ----
+    cold_age_run(&db, "", &conf, n + SECS_PER_DAY, RET_DAYS);
+    assert_eq!(
+        compte_serie(&db, NOM_RETARD_LIGNES),
+        2,
+        "à l'échéance le détecteur DOIT retirer : une cadence qui ne se rouvre jamais serait un \
+         dead-man's-switch mort"
+    );
+    assert_eq!(
+        { let c = db.lock(); dernier_tir_du_retard(&c) },
+        Some(n + SECS_PER_DAY),
+        "l'horodatage doit AVANCER au tir, sinon la cadence se déclencherait à chaque passe ensuite"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// LA PORTE COUVRE AUSSI L'AUTRE SITE D'APPEL — celui de la CLÉ ABSENTE (`aging.rs`, fail-closed), qui
+/// portait sa PROPRE copie du gate d'armement avant ce lot. C'est le site le plus important à couvrir :
+/// c'est celui où la passe est SUSPENDUE et où le détecteur tire quand même, parce que « plus de clé »
+/// veut dire « plus aucun drainage ».
+///
+/// Et il donne un stall PERMANENT et déterministe : sans clé, rien n'est jamais columnarisé, donc le
+/// compte reste à 20 d'une passe à l'autre — ce que le site de fin de passe ne permet pas (cf. le
+/// déblocage H1 décrit au-dessus).
+///
+/// MUTATION : remettre un `if bande.cold_ret > bande.retention_days` autour de CE site seulement, et
+/// retirer la cadence de `detect_aging_stall` ⇒ la seconde passe retire et l'assertion « 1 seule
+/// mesure » rougit. C'est la démonstration que la porte est bien UNE, et pas deux qui se ressemblent.
+#[test]
+fn la_cadence_couvre_aussi_le_site_de_la_cle_absente() {
+    let root = tmp_root("retard-cadence-clef");
+    let cold = root.join("cold");
+    let db = mkdb(&root);
+    let mut conf = conf_ext(&cold, 365);
+    conf.remove("PLUME_DB_KEY"); // fail-closed : la passe se suspend AVANT d'ager quoi que ce soit
+    let day = M - 50;
+    for i in 0..20 {
+        insert_event(&db, &rich_row(day * SECS_PER_DAY + i, i));
+    }
+    let n = n_now();
+
+    // PASSE 1 : passe SUSPENDUE (`cle_absente`) et détecteur TIRÉ — les deux à la fois.
+    cold_age_run(&db, "", &conf, n, RET_DAYS);
+    assert_eq!(
+        serie(&db, NOM_OK, Some(&format!("{{\"cause\":\"{CAUSE_CLE_ABSENTE}\"}}"))),
+        Some(0.0),
+        "précondition : la passe doit bien être suspendue par l'absence de clé"
+    );
+    assert_eq!(
+        serie(&db, NOM_RETARD_LIGNES, None),
+        Some(20.0),
+        "le détecteur DOIT tirer sur ce chemin : c'est précisément la panne qu'il surveille"
+    );
+    assert_eq!(compte_serie(&db, NOM_RETARD_LIGNES), 1);
+
+    // PASSE 2, une heure plus tard : la CADENCE s'applique ICI AUSSI (rien n'a été columnarisé
+    // entre-temps -> le retard est toujours là, et pourtant le détecteur ne le recompte pas).
+    cold_age_run(&db, "", &conf, n + 3600, RET_DAYS);
+    assert_eq!(
+        compte_serie(&db, NOM_RETARD_LIGNES),
+        1,
+        "le site `cle_absente` a échappé à la cadence -> la porte est en DEUX exemplaires, et le \
+         troisième site ajouté demain en oubliera un"
+    );
+    assert_eq!(
+        serie(&db, NOM_RETARD_OK, Some(&format!("{{\"cause\":\"{RETARD_CADENCE}\"}}"))),
+        Some(0.0)
+    );
+
+    // PASSE 3, à +24 h : il retire, et le retard n'a pas bougé (rien n'a jamais pu être drainé).
+    cold_age_run(&db, "", &conf, n + SECS_PER_DAY, RET_DAYS);
+    assert_eq!(compte_serie(&db, NOM_RETARD_LIGNES), 2);
+    assert_eq!(serie(&db, NOM_RETARD_LIGNES, None), Some(20.0), "sans clé, rien n'a pu être columnarisé");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// UNE REQUÊTE EN ÉCHEC NE CONSOMME PAS LE TIR — et c'est CE LOT qui rend la propriété critique.
+///
+/// AVANT la cadence, un échec de la requête du dead-man's-switch coûtait au pire UNE HEURE : le tick
+/// suivant réessayait. DEPUIS la cadence, si l'échec consommait le tir, ce serait **24 H DE SILENCE** sur
+/// un dead-man's-switch inopérant — le lot AGGRAVE la portée du trou qu'il n'a pas créé. Le
+/// `unwrap_or(0)` retiré en `P10.13-a` était déjà exactement ce mode de panne : une garde qui répond
+/// « tout va bien » parce qu'elle n'a rien pu lire.
+///
+/// LE TROU ÉTAIT RÉEL ET IL A ÉTÉ MESURÉ (2026-08-14) : déplacer l'écriture de l'horodatage AVANT le
+/// `return Retard::NonMesure(RETARD_REQUETE)` laissait la suite **VERTE (6 passed, 0 failed)**. Le
+/// commentaire de `detect_aging_stall` promettait pourtant « marqué APRÈS le verdict, donc jamais sur un
+/// échec » : une promesse en prose, que rien n'opposait. Ce test l'oppose.
+///
+/// COMMENT L'ÉCHEC EST PROVOQUÉ, ET POURQUOI AINSI. La table `cold_seal` est ABSENTE de la fixture
+/// (`mkdb` ne la crée pas) : l'anti-jointure de l'énoncé n° 5 la référence, donc `query_row` échoue à la
+/// PRÉPARATION (« no such table: cold_seal »). C'est le moyen le plus propre disponible — il n'exige ni
+/// corruption de fichier, ni verrou concurrent, ni monkey-patch, et il exerce le chemin d'erreur RÉEL de
+/// `conn.query_row`. On appelle `detect_aging_stall` DIRECTEMENT plutôt que `cold_age_run` parce que la
+/// passe complète appelle `ensure_cold_seal_table` en tête et recréerait la table qu'on veut absente.
+///
+/// TROIS FAITS, ET LE TROISIÈME EST SON PROPRE TÉMOIN POSITIF : (1) la cause publiée est
+/// `requete_echouee` ; (2) `meta` n'a PAS été écrite ; (3) le tick suivant, UNE HEURE plus tard,
+/// RÉESSAIE — et comme il réussit cette fois, il écrit l'horodatage. Sans (3), « meta non écrite »
+/// pourrait être vrai parce que l'écriture n'a jamais lieu du tout.
+///
+/// MUTATION (exécutée le 2026-08-14) : déplacer l'`INSERT … ON CONFLICT` sur `META_DERNIER_TIR_DU_RETARD`
+/// AVANT le `return Retard::NonMesure(...)` du bras `Err` ⇒ 2 assertions rougissent dans ce test —
+/// « l'échec a CONSOMMÉ le tir » (`left: Some(...)`, `right: None`) puis, si on la laisse passer, le
+/// retir devient `NonMesure("cadence")` au lieu de `Mesure(20)`. Aucun autre test ne bouge : c'est bien
+/// celui-ci, et lui seul, qui garde cet axe.
+#[test]
+fn une_requete_de_retard_en_echec_ne_consomme_pas_le_tir() {
+    let root = tmp_root("retard-requete-ko");
+    let cold = root.join("cold");
+    let db = mkdb(&root);
+    let conf = conf_ext(&cold, 365); // détecteur ARMÉ, cadence au DÉFAUT (24 h)
+    let day = M - 50;
+    for i in 0..20 {
+        insert_event(&db, &rich_row(day * SECS_PER_DAY + i, i));
+    }
+    let n = n_now();
+
+    // PRÉCONDITION, VÉRIFIÉE : `cold_seal` est bien ABSENTE. Sans cette assertion, une fixture qui la
+    // créerait un jour ferait passer ce test pour une preuve alors qu'il n'exercerait plus l'échec.
+    let table_existe = |db: &Arc<Mutex<Connection>>| -> bool {
+        db.lock()
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='cold_seal'", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+            > 0
+    };
+    assert!(!table_existe(&db), "précondition : `cold_seal` doit être ABSENTE pour que l'énoncé échoue");
+
+    // ---- (1) LA CAUSE. Aucun verdict n'est rendu, et le trou est NOMMÉ. ----
+    let bande = bande_de(&db, &conf, n);
+    assert_eq!(
+        detect_aging_stall(&db, &bande, n),
+        Retard::NonMesure(RETARD_REQUETE),
+        "une requête en échec doit rendre un TROU NOMMÉ — ni « en retard », ni « à jour »"
+    );
+
+    // ---- (2) LE CŒUR : `meta` N'A PAS ÉTÉ ÉCRITE. Le tir n'est pas consommé par un échec. ----
+    assert_eq!(
+        { let c = db.lock(); dernier_tir_du_retard(&c) },
+        None,
+        "l'échec a CONSOMMÉ le tir : le dead-man's-switch, déjà inopérant, se tairait maintenant 24 H \
+         au lieu de réessayer dans l'heure. C'est le lot de cadence qui transforme ce trou d'une heure \
+         perdue en une journée de silence"
+    );
+
+    // ---- (3) LE TICK SUIVANT RÉESSAIE — une heure plus tard, PAS vingt-quatre. ----
+    // On rend la requête exécutable (la table revient, comme un `ensure_cold_seal_table` de la passe
+    // réelle l'aurait fait) : le détecteur doit rendre un VERDICT, pas `NonMesure("cadence")`.
+    ensure_cold_seal_table(&db.lock());
+    assert!(table_existe(&db), "validation de l'instrument : la table doit être revenue");
+    let n2 = n + 3600;
+    let bande2 = bande_de(&db, &conf, n2);
+    assert_eq!(
+        detect_aging_stall(&db, &bande2, n2),
+        Retard::Mesure(20),
+        "le tick suivant est BLOQUÉ par la cadence alors que le précédent n'avait rendu AUCUN verdict"
+    );
+    // TÉMOIN POSITIF de (2) : le tir RÉUSSI, lui, écrit bien l'horodatage. Sans lui, « meta non écrite »
+    // ci-dessus pourrait être vrai simplement parce que l'écriture n'existe pas.
+    assert_eq!(
+        { let c = db.lock(); dernier_tir_du_retard(&c) },
+        Some(n2),
+        "un tir RÉUSSI doit horodater — sinon l'assertion (2) ne prouverait rien"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// SANS EXTENSION (le DÉFAUT de tous les déploiements), LE DÉTECTEUR N'EST PAS ARMÉ — ET LA SÉRIE LE
+/// DIT. Avant `P10.13-a`, ce cas laissait un SILENCE : rien dans la série ne distinguait « le détecteur
+/// n'a pas lieu d'être » de « il n'a rien trouvé ». Et il n'écrit RIEN dans `meta` : le chemin par
+/// défaut reste sans effet de bord, comme il l'a toujours été.
+///
+/// MUTATION : rendre `Retard::Mesure(0)` au lieu de `NonMesure(RETARD_NON_ARME)` quand le gate est
+/// fermé ⇒ la série publie un « 0 ligne de retard » pour un détecteur qui n'a jamais regardé.
+#[test]
+fn sans_extension_le_detecteur_nest_pas_arme_et_la_serie_le_nomme() {
+    let root = tmp_root("retard-non-arme");
+    let cold = root.join("cold");
+    let db = mkdb(&root);
+    let day = M - 10;
+    for i in 0..20 {
+        insert_event(&db, &rich_row(day * SECS_PER_DAY + i, i));
+    }
+    cold_age_run(&db, "", &conf_on(&cold, HOT_WIN), n_now(), RET_DAYS); // knob d'extension NON posé
+    assert_eq!(
+        serie(&db, NOM_RETARD_OK, Some(&format!("{{\"cause\":\"{RETARD_NON_ARME}\"}}"))),
+        Some(0.0),
+        "sans extension, la série doit NOMMER le trou au lieu de le laisser muet"
+    );
+    assert_eq!(
+        compte_serie(&db, NOM_RETARD_LIGNES),
+        0,
+        "un compte de retard publié par un détecteur NON ARMÉ serait un chiffre que personne n'a mesuré"
+    );
+    assert_eq!(
+        { let c = db.lock(); dernier_tir_du_retard(&c) },
+        None,
+        "le chemin par défaut (sans extension) ne doit RIEN écrire dans `meta`"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -3033,13 +3459,16 @@ fn p3_hash_masking_over_cold_matches_hot() {
     let conf = conf_union(HOT_WIN);
     // SEL de masque RÉEL posé sur main.meta (migrate_v86 le pose immuable en prod) -> la connexion d'union le
     // lit sur `main` (= hot) via install_fmask_udf ; le HASH cold devient byte-identique au HASH hot pour la
-    // même entrée. (Sans cette table, install_fmask_udf tomberait sur un sel vide par défaut — ici on prouve
+    // même entrée. (Sans ce sel, install_fmask_udf tomberait sur un sel vide par défaut — ici on prouve
     // que le sel de main.meta est BIEN celui utilisé.)
+    //
+    // `P10.13-a` — LA TABLE N'EST PLUS CRÉÉE ICI : `mkdb` la pose, comme la chaîne de migrations la pose sur
+    // TOUS les déploiements. Ce test la créait lui-même parce que la fixture ne l'avait pas ; garder ce
+    // `CREATE TABLE` nu le faisait échouer sur « table meta already exists » — MESURÉ, deux tests rouges.
     const SALT: &str = "p3-hash-salt-2f9c";
     db.lock()
         .execute_batch(&format!(
-            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT); \
-             INSERT INTO meta(key,value) VALUES('field_mask_salt','{SALT}');"
+            "INSERT OR REPLACE INTO meta(key,value) VALUES('field_mask_salt','{SALT}');"
         ))
         .unwrap();
     let day = M - 10; // cold (ts < B)
@@ -3153,8 +3582,7 @@ fn p3_masked_aggregate_over_cold() {
     const SALT: &str = "p3-agg-salt-71bd";
     db.lock()
         .execute_batch(&format!(
-            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT); \
-             INSERT INTO meta(key,value) VALUES('field_mask_salt','{SALT}');"
+            "INSERT OR REPLACE INTO meta(key,value) VALUES('field_mask_salt','{SALT}');"
         ))
         .unwrap();
     let day = M - 10;
@@ -8617,6 +9045,8 @@ fn p87b_les_deux_moities_at_rest_derivent_du_meme_appel() {
 
 use crate::vieillissement_serie::{
     CAUSE_CLE_ABSENTE, NOM_CRETE_OK, NOM_DUREE, NOM_FICHIERS, NOM_JOURS, NOM_LIGNES, NOM_OCTETS_FROID, NOM_OK,
+    NOM_RETARD_LIGNES, NOM_RETARD_OK, RETARD_CADENCE, RETARD_FENETRE_VIDE, RETARD_NON_ARME, RETARD_REQUETE,
+    Retard,
 };
 
 /// LA PASSE DIT CE QU'ELLE A FAIT — jours, lignes ÉCRITES, lignes RETIRÉES DU CHAUD, fichiers, et OCTETS.
@@ -9131,8 +9561,9 @@ fn aucun_enonce_de_la_sonde_ne_rend_une_mesure_impossible() {
     let conf = conf_on(&cold, HOT_WIN);
     let n = crate::now();
     let bande = Bande::calculer(&conn, &conf, n, RET_DAYS);
+    let tir = bande.tir_du_retard(n, dernier_tir_du_retard(&conn));
     let mut vus = 0usize;
-    for e in enonces_sans_candidat(&bande, n, RET_DAYS) {
+    for e in enonces_sans_candidat(&bande, n, &tir) {
         executer_et_chronometrer(&conn, &e).unwrap_or_else(|err| panic!("énoncé `{}` : {err}", e.nom));
         vus += 1;
     }
@@ -9145,6 +9576,87 @@ fn aucun_enonce_de_la_sonde_ne_rend_une_mesure_impossible() {
     vus += 1;
     assert_eq!(vus, 8, "le nombre d'énoncés rejoués a changé -> relire ce que la sonde couvre RÉELLEMENT");
     drop(conn);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `P10.13-a` LEVIER ① — LA SONDE DIT LA CADENCE, ET MESURE QUAND MÊME. Deux exigences opposées, et
+/// aucune des deux n'est négociable :
+///   * elle doit DIRE que la passe ne paie plus cet énoncé qu'une fois par jour — sinon la durée affichée
+///     se lirait « à chaque passe », c'est-à-dire ×24 ;
+///   * elle doit CONTINUER de le chronométrer — c'est le SEUL instrument capable d'attribuer un coût à
+///     UN énoncé (la série ne donne que la durée totale de la passe), et le rendre aveugle 23 h sur 24 à
+///     l'énoncé même que le levier change ferait de la re-mesure une impossibilité.
+/// L'énoncé n'est déclaré « NON EXÉCUTÉ » que quand un gate de CONFIGURATION est fermé (non armé,
+/// fenêtre vide) — là, la passe ne l'exécuterait à AUCUNE heure.
+///
+/// MUTATION : rendre `ParLaPasse::Jamais` sur la cause `cadence` ⇒ l'assertion « toujours chronométré »
+/// rougit en montrant « NON EXÉCUTÉ PAR LA PASSE » à la place de la durée.
+#[test]
+fn la_sonde_annonce_la_cadence_du_detecteur_sans_cesser_de_le_mesurer() {
+    let root = tmp_root("sonde-cadence");
+    let cold = root.join("cold");
+    let chemin = root.join("plume.db");
+    let jour = crate::now().div_euclid(SECS_PER_DAY) - 50;
+    let db = mkdb(&root);
+    for i in 0..10 {
+        insert_event(&db, &rich_row(jour * SECS_PER_DAY + i, i));
+    }
+    // `cold_seal` doit exister (la sonde est read-only et l'anti-jointure la référence).
+    db.lock()
+        .execute_batch(
+            "CREATE TABLE cold_seal(env_id TEXT NOT NULL, day INTEGER NOT NULL, seq INTEGER NOT NULL, \
+             expected_rows INTEGER NOT NULL, sealed_ts INTEGER NOT NULL, purged INTEGER NOT NULL DEFAULT 0, \
+             max_id INTEGER NOT NULL, ts_min INTEGER NOT NULL, ts_max INTEGER NOT NULL, lo_ts INTEGER NOT NULL, \
+             lo_id INTEGER NOT NULL, hi_id INTEGER NOT NULL, last_file INTEGER NOT NULL DEFAULT 0, \
+             dim_stats BLOB, PRIMARY KEY(env_id, day, seq))",
+        )
+        .unwrap();
+    let conf = conf_ext(&cold, 365); // extension -> détecteur ARMÉ
+    let chemin_s = chemin.to_string_lossy().to_string();
+
+    /// Le bloc de rapport de l'énoncé n° 5, isolé — les assertions doivent porter sur LUI, pas sur un
+    /// mot qui traînerait ailleurs dans le rapport.
+    fn bloc_du_retard(rapport: &str) -> String {
+        let d = rapport.find("── retard_de_vieillissement").expect("le rapport doit porter l'énoncé n° 5");
+        let reste = &rapport[d..];
+        match reste[3..].find("\n── ") {
+            Some(f) => reste[..f + 3].to_string(),
+            None => reste.to_string(),
+        }
+    }
+
+    // ---- (a) AUCUN horodatage -> le tick TIRERAIT, et la sonde le dit ET le mesure. ----
+    let a = bloc_du_retard(&crate::cold_store::cold_aging_plan(&conf, &chemin_s).unwrap());
+    assert!(a.contains("cadence :"), "la sonde n'annonce pas la cadence :\n{a}");
+    assert!(a.contains("TIRE"), "sans horodatage, CE tick tirerait :\n{a}");
+    assert!(a.contains("exécution "), "l'énoncé n'est plus chronométré :\n{a}");
+
+    // ---- (b) Horodatage RÉCENT -> le tick NE tirerait PAS... et la sonde le mesure QUAND MÊME. ----
+    db.lock()
+        .execute(
+            "INSERT INTO meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![META_DERNIER_TIR_DU_RETARD, crate::now().to_string()],
+        )
+        .unwrap();
+    let b = bloc_du_retard(&crate::cold_store::cold_aging_plan(&conf, &chemin_s).unwrap());
+    assert!(b.contains("NE TIRE PAS"), "avec un tir tout juste passé, CE tick ne tire pas :\n{b}");
+    assert!(
+        b.contains("exécution "),
+        "la sonde a CESSÉ de chronométrer l'énoncé sous cadence -> elle devient aveugle 23 h sur 24 à \
+         l'énoncé même que le levier ① change, et la re-mesure devient impossible :\n{b}"
+    );
+    assert!(
+        !b.contains("NON EXÉCUTÉ PAR LA PASSE"),
+        "« NON EXÉCUTÉ » est réservé aux gates de CONFIGURATION : la passe exécute bel et bien cet \
+         énoncé, une fois par jour :\n{b}"
+    );
+
+    // ---- (c) SANS extension : là, c'est bien « NON EXÉCUTÉ » (gate de configuration fermé). ----
+    let c = bloc_du_retard(&crate::cold_store::cold_aging_plan(&conf_on(&cold, HOT_WIN), &chemin_s).unwrap());
+    assert!(
+        c.contains("NON EXÉCUTÉ PAR LA PASSE") && !c.contains("cadence :"),
+        "gate de configuration fermé -> plan montré, durée NON mesurée, et aucune cadence à annoncer :\n{c}"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 

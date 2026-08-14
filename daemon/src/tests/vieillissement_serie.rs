@@ -66,8 +66,14 @@ mod vieillissement_serie_tests {
         }
     }
 
+    /// Un bilan de référence. `P10.13-a` : le dead-man's-switch y a TIRÉ et n'a rien trouvé
+    /// (`Retard::Mesure(0)`) — c'est le régime normal d'une passe où le détecteur était dû.
     fn bilan(issue: Issue, compte: Compte, crete: Crete) -> Bilan {
-        Bilan { issue, compte, duree_ms: 4_210, cpu_ms: Some(3_980), crete }
+        bilan_retard(issue, compte, crete, Retard::Mesure(0))
+    }
+
+    fn bilan_retard(issue: Issue, compte: Compte, crete: Crete, retard: Retard) -> Bilan {
+        Bilan { issue, compte, duree_ms: 4_210, cpu_ms: Some(3_980), crete, retard }
     }
 
     /// Une crête MESURÉE plausible : 700 Mio de pic sur une base de 580 Mio (+120 Mio — l'ordre de
@@ -320,6 +326,8 @@ mod vieillissement_serie_tests {
             NOM_CRETE,
             NOM_CRETE_SURCROIT,
             NOM_CRETE_OK,
+            NOM_RETARD_OK,
+            NOM_RETARD_LIGNES,
         ];
         for nom in &vus {
             assert!(connus.contains(&nom.as_str()), "série inattendue dans `metric` : {nom}");
@@ -366,9 +374,9 @@ mod vieillissement_serie_tests {
 
         let f = Fenetre::ouvrir();
         toucher(64 * 1024 * 1024); // alloué ET libéré À L'INTÉRIEUR de la fenêtre
-        let a = f.clore(Issue::Balaye, Compte::default());
+        let a = f.clore(Issue::Balaye, Compte::default(), Retard::Mesure(0));
         // Fenêtre B : la plus courte possible, sans rien allouer.
-        let b = Fenetre::ouvrir().clore(Issue::Balaye, Compte::default());
+        let b = Fenetre::ouvrir().clore(Issue::Balaye, Compte::default(), Retard::Mesure(0));
 
         let (pic_a, base_a) = match a.crete {
             Crete::Mesuree { pic, base } => (pic, base),
@@ -444,18 +452,18 @@ mod vieillissement_serie_tests {
     fn deux_fenetres_qui_se_chevauchent_ne_mesurent_pas_deux_fois() {
         let _serialise = FENETRES.lock();
         let externe = Fenetre::ouvrir();
-        let interne = Fenetre::ouvrir().clore(Issue::Balaye, Compte::default());
+        let interne = Fenetre::ouvrir().clore(Issue::Balaye, Compte::default(), Retard::Mesure(0));
         assert_eq!(
             interne.crete,
             Crete::NonMesuree(CRETE_FENETRE_CONCURRENTE),
             "la fenêtre imbriquée a rendu une crête -> les deux se sont volé leur ligne de base"
         );
-        let dehors = externe.clore(Issue::Balaye, Compte::default());
+        let dehors = externe.clore(Issue::Balaye, Compte::default(), Retard::Mesure(0));
         if !cfg!(target_os = "linux") {
             return; // le reste porte sur `/proc`, absent ailleurs
         }
         assert!(matches!(dehors.crete, Crete::Mesuree { .. }), "la fenêtre EXTERNE, elle, doit mesurer");
-        let apres = Fenetre::ouvrir().clore(Issue::Balaye, Compte::default());
+        let apres = Fenetre::ouvrir().clore(Issue::Balaye, Compte::default(), Retard::Mesure(0));
         assert!(
             matches!(apres.crete, Crete::Mesuree { .. }),
             "le drapeau d'exclusivité n'a pas été rendu -> toutes les mesures suivantes seraient muettes"
@@ -482,7 +490,7 @@ mod vieillissement_serie_tests {
         });
         let f = Fenetre::ouvrir();
         std::thread::sleep(Duration::from_millis(300));
-        let dormeur = f.clore(Issue::Balaye, Compte::default());
+        let dormeur = f.clore(Issue::Balaye, Compte::default(), Retard::Mesure(0));
         stop.store(true, Ordering::Relaxed);
         brûleur.join().unwrap();
 
@@ -493,7 +501,7 @@ mod vieillissement_serie_tests {
             x = x.wrapping_add(black_box(1));
         }
         black_box(x);
-        let travailleur = f.clore(Issue::Balaye, Compte::default());
+        let travailleur = f.clore(Issue::Balaye, Compte::default(), Retard::Mesure(0));
 
         let cpu_dormeur = dormeur.cpu_ms.expect("le CPU du fil doit être mesurable sous Linux");
         let cpu_travailleur = travailleur.cpu_ms.expect("le CPU du fil doit être mesurable sous Linux");
@@ -538,11 +546,11 @@ mod vieillissement_serie_tests {
             return;
         }
         // Chauffe : le tout premier accès à `/proc/self/status` paie le cache de dentry.
-        let _ = Fenetre::ouvrir().clore(Issue::Balaye, Compte::default());
+        let _ = Fenetre::ouvrir().clore(Issue::Balaye, Compte::default(), Retard::Mesure(0));
         const N: u32 = 200;
         let t0 = Instant::now();
         for _ in 0..N {
-            let _ = Fenetre::ouvrir().clore(Issue::Balaye, Compte::default());
+            let _ = Fenetre::ouvrir().clore(Issue::Balaye, Compte::default(), Retard::Mesure(0));
         }
         let par_fenetre = t0.elapsed() / N;
         assert!(
@@ -628,12 +636,96 @@ mod vieillissement_serie_tests {
     /// LE NOMBRE DE POINTS PAR PASSE EST CE QU'ON CROIT. La borne disque ci-dessus en dépend : si la
     /// publication se mettait à écrire dix fois plus de séries, la borne devrait être rediscutée, pas subie.
     #[test]
-    fn une_passe_publie_dix_sept_points() {
+    fn une_passe_publie_dix_neuf_points() {
         assert_eq!(
             points(&bilan(Issue::Balaye, compte_plein(), crete_typique())).len(),
-            17, // 6 jours + 2 lignes + 2 fichiers + octets + durée + CPU + ok + crête_ok + crête + surcroît
+            // 6 jours + 2 lignes + 2 fichiers + octets + durée + CPU + ok + crête_ok + crête + surcroît
+            // + retard_ok + retard_lignes (`P10.13-a` : deux points de plus, et le second est ABSENT
+            // quand le détecteur n'a pas tiré — c'est ce que l'assertion suivante mesure).
+            19,
             "le nombre de points par passe a changé -> relire `le_cout_disque_de_la_serie_est_mesure_et_borne`"
         );
+        assert_eq!(
+            points(&bilan_retard(
+                Issue::Balaye,
+                compte_plein(),
+                crete_typique(),
+                Retard::NonMesure(RETARD_CADENCE)
+            ))
+            .len(),
+            18,
+            "une passe qui n'a PAS tiré le détecteur doit publier UN point de moins (le compte de \
+             retard manque) — sinon le trou ne serait pas un trou"
+        );
+    }
+
+    /// `P10.13-a` LEVIER ① — UN TROU DE RETARD NE SE LIT PAS « PAS DE RETARD ». Le dead-man's-switch ne
+    /// tire plus à chaque passe (une fois par jour) : la série DOIT donc distinguer « mesuré, et il n'y
+    /// a pas de retard » de « pas mesuré ». Les deux ont la même valeur intuitive (« rien à signaler »)
+    /// et des conséquences opposées : la première dit que la garde a fonctionné, la seconde ne dit RIEN
+    /// de l'état du tier froid. Un panneau qui somme `retard_lignes` sans regarder `retard_ok` verrait
+    /// 23 h de calme là où il n'y a eu qu'une seule mesure.
+    ///
+    /// MUTATION : publier `NOM_RETARD_LIGNES` à `0.0` aussi dans la branche `NonMesure` ⇒ les deux
+    /// dernières assertions rougissent (la série devient indiscernable d'une passe à jour).
+    #[test]
+    fn un_retard_non_mesure_ne_publie_pas_de_compte() {
+        // MESURÉ ET À JOUR : le zéro est un RÉSULTAT, il sort.
+        let a_jour = points(&bilan_retard(Issue::Balaye, compte_plein(), crete_typique(), Retard::Mesure(0)));
+        assert_eq!(valeur(&a_jour, NOM_RETARD_OK, Some("{\"cause\":\"aucune\"}")), Some(1.0));
+        assert_eq!(
+            valeur(&a_jour, NOM_RETARD_LIGNES, None),
+            Some(0.0),
+            "« j'ai regardé, il n'y a pas de retard » doit être un ZÉRO PUBLIÉ, pas un silence"
+        );
+
+        // EN RETARD : la valeur passe telle quelle.
+        let retard = points(&bilan_retard(Issue::Balaye, compte_plein(), crete_typique(), Retard::Mesure(9)));
+        assert_eq!(valeur(&retard, NOM_RETARD_LIGNES, None), Some(9.0));
+
+        // PAS TIRÉ (cadence) : AUCUN compte, et la cause NOMME le trou.
+        for cause in [RETARD_CADENCE, RETARD_NON_ARME, RETARD_FENETRE_VIDE, RETARD_REQUETE, RETARD_PASSE_SUSPENDUE] {
+            let pts = points(&bilan_retard(Issue::Balaye, compte_plein(), crete_typique(), Retard::NonMesure(cause)));
+            assert!(
+                !noms(&pts).contains(&NOM_RETARD_LIGNES),
+                "`{NOM_RETARD_LIGNES}` publié alors que le détecteur n'a pas tiré ({cause}) -> un trou \
+                 se lirait « aucun retard », ce qui est une AUTRE affirmation, et non vérifiée"
+            );
+            assert_eq!(
+                valeur(&pts, NOM_RETARD_OK, Some(&format!("{{\"cause\":\"{cause}\"}}"))),
+                Some(0.0),
+                "le trou doit être NOMMÉ par `{NOM_RETARD_OK}{{cause=\"{cause}\"}}`"
+            );
+        }
+    }
+
+    /// LE RETARD SE PUBLIE MÊME QUAND LA PASSE EST SUSPENDUE — et ce n'est PAS une exception cosmétique.
+    /// Sur le chemin `cle_absente`, la passe s'arrête ET le détecteur tire : c'est exactement la panne
+    /// qu'il surveille (plus de clé -> plus de drainage -> le hot grossit vers la rétention étendue).
+    /// Aligner le retard sur la crête (« rien si la passe est suspendue ») aurait tu le seul verdict qui
+    /// compte dans ce cas-là.
+    ///
+    /// MUTATION : déplacer la publication du retard sous `if travail.is_ok()` ⇒ ce test rougit, et lui
+    /// seul.
+    #[test]
+    fn le_retard_se_publie_meme_sur_une_passe_suspendue() {
+        let b = bilan_retard(
+            Issue::Suspendu(CAUSE_CLE_ABSENTE),
+            Compte::default(),
+            crete_typique(),
+            Retard::Mesure(1_234),
+        );
+        let pts = points(&b);
+        assert_eq!(valeur(&pts, NOM_RETARD_OK, Some("{\"cause\":\"aucune\"}")), Some(1.0));
+        assert_eq!(
+            valeur(&pts, NOM_RETARD_LIGNES, None),
+            Some(1_234.0),
+            "la passe `cle_absente` est SUSPENDUE mais le détecteur a tiré : taire son verdict reviendrait \
+             à taire précisément la panne qu'il surveille"
+        );
+        // Et la phrase le dit aussi — c'est la ligne que quelqu'un lira dans `kubectl logs`.
+        let ph = phrase(&b);
+        assert!(ph.contains("NON EXÉCUTÉ") && ph.contains("RETARD : 1234 ligne(s)"), "{ph}");
     }
 
     /// LE TRAVAIL SE DÉRIVE DU COMPTE, IL NE SE DÉCLARE PAS (`P10.12-a`). C'est la fonction qui

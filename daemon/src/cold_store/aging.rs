@@ -33,7 +33,7 @@ use super::*;
 use std::path::Path;
 // `P10.5-a` — l'instrumentation de la passe. Importée EXPLICITEMENT (pas par le glob) : c'est une
 // dépendance vers un module NON gaté, et la nommer ici dit d'où viennent `Compte`, `Issue` et la fenêtre.
-use crate::vieillissement_serie::{self, Compte, Fenetre, Issue};
+use crate::vieillissement_serie::{self, Compte, Fenetre, Issue, Retard};
 
 /// Lit UNE page (au plus `limit` lignes) du jour (env_id, day) STRICTEMENT après le curseur keyset `(lo_ts, lo_id)`,
 /// bornée `id <= max_id` (FIX #1) + NONPURGE, ordonnée `(ts, id)`. Verrou writer COURT (relâché après la lecture).
@@ -275,8 +275,8 @@ pub(crate) fn cold_age_run(db: &Arc<Mutex<Connection>>, db_path: &str, conf: &Ha
     }
     let fenetre = Fenetre::ouvrir();
     let mut compte = Compte::default();
-    let issue = balayer(db, db_path, conf, n, retention_days, &mut compte);
-    let bilan = fenetre.clore(issue, compte);
+    let (issue, retard) = balayer(db, db_path, conf, n, retention_days, &mut compte);
+    let bilan = fenetre.clore(issue, compte, retard);
     // Les DEUX sorties : la phrase (lisible dans `kubectl logs`, sans requête à écrire) ET la série (lisible
     // 90 jours plus tard, en SOQL). L'une ne remplace pas l'autre — c'est le défaut mesuré qui l'a montré.
     eprintln!("{}", vieillissement_serie::phrase(&bilan));
@@ -287,6 +287,11 @@ pub(crate) fn cold_age_run(db: &Arc<Mutex<Connection>>, db_path: &str, conf: &Ha
 /// l'accumulation du `compte`. Rend l'ISSUE (balayée / suspendue-et-pourquoi) au lieu de `()` : c'est ce
 /// typage qui interdit qu'une sortie redevienne silencieuse (le compilateur exige une issue sur CHAQUE
 /// chemin, et l'appelant en fait toujours une ligne + un point de série).
+///
+/// `P10.13-a` levier ① — ELLE REND AUSSI LE `Retard`, ET SUR CHAQUE CHEMIN. Le dead-man's-switch ne tire
+/// plus à toutes les passes : une passe qui ne l'a pas tiré ne doit surtout pas se lire comme une passe
+/// où il n'y avait pas de retard. Le TUPLE est ce qui rend l'oubli impossible — un chemin de sortie
+/// ajouté demain ne compile pas tant qu'il n'a pas dit ce que le détecteur a fait.
 fn balayer(
     db: &Arc<Mutex<Connection>>,
     db_path: &str,
@@ -294,11 +299,14 @@ fn balayer(
     n: i64,
     retention_days: i64,
     compte: &mut Compte,
-) -> Issue {
+) -> (Issue, Retard) {
     if retention_days <= 1 {
         // Rétention globale trop courte pour distinguer une fenêtre chaude ; rien à ager. C'ÉTAIT un retour
         // muet : le tier froid déclaré actif ne columnarisait rien et rien ne le disait.
-        return Issue::Suspendu(vieillissement_serie::CAUSE_RETENTION_COURTE);
+        return (
+            Issue::Suspendu(vieillissement_serie::CAUSE_RETENTION_COURTE),
+            Retard::NonMesure(vieillissement_serie::RETARD_PASSE_SUSPENDUE),
+        );
     }
 
     // Legal-hold : suspension DÉLIBÉRÉE -> on s'abstient d'ager ce tick ET on NE déclenche PAS le signal de
@@ -307,7 +315,10 @@ fn balayer(
         HoldEnforce::NoHolds => {}
         _ => {
             eprintln!("[cold] legal-hold actif/indéterminé -> aging cold SUSPENDU ce tick (fail-safe)");
-            return Issue::Suspendu(vieillissement_serie::CAUSE_LEGAL_HOLD);
+            return (
+                Issue::Suspendu(vieillissement_serie::CAUSE_LEGAL_HOLD),
+                Retard::NonMesure(vieillissement_serie::RETARD_PASSE_SUSPENDUE),
+            );
         }
     }
 
@@ -322,8 +333,6 @@ fn balayer(
     // reste ICI, hors de `Bande::calculer` : c'est ce qui rend la même fonction appelable depuis une
     // connexion ouverte en LECTURE SEULE. GATE COLD OFF n'atteint JAMAIS ici -> base inchangée (mode 0).
     let bande = { let conn = db.lock(); ensure_cold_seal_table(&conn); Bande::calculer(&conn, conf, n, retention_days) };
-    let cold_ret = bande.cold_ret;
-    let hot_window = bande.hot_window;
 
     // CLÉ COLD (chiffrement at-rest, #18) — dérivée (HKDF domaine séparé `plume-cold-aead-v1`) de la clé
     // SQLCipher DU TENANT. FAIL-CLOSED : sans clé (PLUME_DB_KEY indisponible), on N'ÂGE RIEN ce tick — aucun
@@ -338,10 +347,13 @@ fn balayer(
         Some(p) => p,
         None => {
             eprintln!("[cold] PLUME_DB_KEY indisponible -> chiffrement at-rest impossible : aging cold SUSPENDU ce tick (fail-closed ; hot intact, aucun fichier écrit)");
-            if cold_ret > retention_days {
-                detect_aging_stall(db, n, hot_window, cold_ret);
-            }
-            return Issue::Suspendu(vieillissement_serie::CAUSE_CLE_ABSENTE);
+            // `P10.13-a` — PLUS DE GATE POSÉ ICI. Le `if cold_ret > retention_days` qui l'entourait vivait
+            // en DEUX exemplaires (ici et en fin de passe) ; il est descendu DANS le détecteur, avec la
+            // cadence, via `Bande`. Ce site ne peut donc plus diverger de l'autre, ni en oublier un.
+            return (
+                Issue::Suspendu(vieillissement_serie::CAUSE_CLE_ABSENTE),
+                detect_aging_stall(db, &bande, n),
+            );
         }
     };
 
@@ -444,29 +456,44 @@ fn balayer(
     // ou defer H1 permanent sur ingest mort = bloat réel à signaler). Zéro faux positif en régime drainé.
     // GATE `cold_ret > retention_days` : le risque de bloat est INTRODUIT par l'extension (le hard-purge hot
     // passe à cold_ret). Sans extension (défaut), le hot reste plafonné à retention_days comme avant -> aucun
-    // signal (et donc byte-identique : les tests existants, knob non posé, ne l'activent JAMAIS).
-    if cold_ret > retention_days {
-        detect_aging_stall(db, n, hot_window, cold_ret);
-    }
+    // signal (et donc byte-identique : les tests existants, knob non posé, ne l'activent JAMAIS). Ce gate,
+    // comme la CADENCE de `P10.13-a`, vit maintenant DANS `detect_aging_stall` (via `Bande`) : il n'y a plus
+    // rien à poser ici, donc plus rien qu'un troisième site d'appel puisse oublier.
+    let retard = detect_aging_stall(db, &bande, n);
 
     // L'ISSUE EN DERNIER, et elle porte l'échec de découverte : « 0 candidat » n'est publiable que si on a
     // VRAIMENT regardé. Sinon la passe est suspendue avec sa cause, et la série a un trou NOMMÉ.
-    if decouverte_ok {
+    let issue = if decouverte_ok {
         Issue::Balaye
     } else {
         Issue::Suspendu(vieillissement_serie::CAUSE_DECOUVERTE)
-    }
+    };
+    (issue, retard)
 }
 
 /// #18 P1.5 — grâce (jours) au-delà de la fenêtre chaude avant de crier au retard d'aging. Une valeur > 0
 /// absorbe le jour-frontière tout juste sorti de la fenêtre chaude (que l'aging va columnariser au tick même)
 /// -> le signal ne se déclenche que sur un retard NET, jamais sur le régime drainé normal.
+///
+/// `P10.13-a` — ELLE PLAFONNE AUSSI LA CADENCE DE TIR (`enonces::periode_de_tir`). La cadence ne peut
+/// jamais dépasser la grâce que le détecteur s'accorde déjà : une configuration ne doit pas pouvoir
+/// émousser la garde au-delà de ce que sa propre conception admet. Relever cette constante relève le
+/// plafond AUTOMATIQUEMENT — le lien est dérivé, pas recopié.
 pub(super) const COLD_STALL_GRACE_DAYS: i64 = 2;
 
 /// #18 — grâce (secondes) avant de crier au « seal cold BLOQUÉ ». Un tick sain scelle purged=0 PUIS purge
 /// (purged=1) DANS le même tick ~horaire ; un purged=0 qui SURVIT des heures = phase2 coincée (VERIFY échoue
 /// en boucle sur un fichier corrompu). 6 h couvre plusieurs ticks -> aucun faux positif sur le tick frontière.
 pub(super) const COLD_SEAL_STUCK_GRACE_S: i64 = 6 * 3600;
+
+/// L'HORODATAGE DU DERNIER TIR du dead-man's-switch, relu dans `meta`. `None` = jamais tiré, base neuve,
+/// table absente, ou valeur illisible — et TOUS ces cas font TIRER (cf. `tir_du_retard`). Partagé avec la
+/// sonde de lecture seule, qui doit lire le MÊME état que la passe pour ne pas décrire une autre cadence.
+pub(super) fn dernier_tir_du_retard(conn: &Connection) -> Option<i64> {
+    conn.query_row(SQL_DERNIER_TIR_DU_RETARD, params![META_DERNIER_TIR_DU_RETARD], |r| r.get::<_, String>(0))
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+}
 
 /// #18 P1.5 — DÉTECTE un aging cold EN RETARD et émet (si besoin) le signal de santé. Non-fatal ; best-effort.
 /// Compte les lignes non-NONPURGE HOT dont le jour est plus vieux que `hot_window + COLD_STALL_GRACE_DAYS` et
@@ -478,14 +505,51 @@ pub(super) const COLD_SEAL_STUCK_GRACE_S: i64 = 6 * 3600;
 /// bande qui contient au plus ~500 lignes. Elle est retirée plutôt que corrigée : le plan ne se DÉCLARE
 /// pas dans un commentaire, il se LIT avec `cold-aging-plan`. Ce que cet énoncé coûte est écrit là où il
 /// vit, avec les chiffres qui le disent (`enonces::sql_retard_de_vieillissement`).
-pub(super) fn detect_aging_stall(db: &Arc<Mutex<Connection>>, n: i64, hot_window: i64, cold_ret: i64) {
-    // `P10.13-a` — BORNES DÉRIVÉES de `enonces` (source unique, cf. `bornes_du_retard`) : la sonde doit
-    // planifier CET énoncé sur CETTE fenêtre, et un `None` veut dire « rien à surveiller » (la fenêtre
-    // chaude + grâce couvre déjà toute la rétention).
-    let Some((stall_lo, stall_hi)) = bornes_du_retard(hot_window, cold_ret, n) else {
-        return;
-    };
+///
+/// `P10.13-a` LEVIER ① — CETTE FONCTION EST LA PORTE, ET C'EST LA SEULE. Elle ne prend plus `hot_window`,
+/// `cold_ret` ni `retention_days` : elle prend la `Bande`, et EN DÉRIVE les trois conditions de tir (armé /
+/// fenêtre non vide / cadence, cf. `tir_du_retard`). Deux sites d'appel — clé absente et fin de passe — et
+/// aucun des deux ne pose plus rien. Un troisième ajouté demain hérite des trois gates SANS y penser :
+/// c'est la différence entre « on a mis la condition aux deux endroits » et « la condition n'a qu'un
+/// endroit où être ».
+///
+/// CE QUE LA CADENCE COÛTE EN LATENCE DE DÉTECTION, CHIFFRÉ. La condition surveillée met **1 jour** à
+/// naître (la première ligne d'un jour non columnarisé franchit `hi` à `(jour + hot_window + 2)·86400`,
+/// alors que ce jour aurait dû être agé dès `(jour + hot_window + 1)·86400`) et **2 jours** à être
+/// entièrement comptée. Détection AVANT : ≤ 1 h après la naissance (tick horaire). APRÈS : ≤ 24 h + 1 h de
+/// désalignement de tick, soit **≤ 25 h**. Total pire cas : **~49 h -> ~73 h**. C'est ACCEPTABLE pour
+/// trois raisons MESURABLES, pas par confort :
+///   1. **la condition est de NIVEAU, pas de FRONT.** Le compte est monotone non décroissant tant que le
+///      stall dure — un tir sauté ne peut pas MANQUER l'alarme, seulement la retarder. C'est ce qui
+///      distingue ce détecteur d'un compteur d'événements, où espacer les tirs perdrait de l'information.
+///   2. **le dommage est du BLOAT, pas de la PERTE** (écrit noir sur blanc dans le message émis : « le hot
+///      grossit vers la rétention étendue […] bloat RAM/disque, PAS de perte »). Un jour de latence de plus
+///      coûte au plus UN jour d'ingest resté chaud, sur un horizon d'extension qui se compte en centaines
+///      de jours.
+///   3. **le plafond est DÉRIVÉ de la grâce**, pas choisi : `periode_de_tir` est clampée à
+///      `COLD_STALL_GRACE_DAYS` jours. Aucune configuration ne peut donc rendre la cadence plus longue que
+///      la grâce que le détecteur s'accorde déjà — le knob ne peut pas annuler la garde qu'il règle.
+/// ET SI 25 H NE CONVENAIT PAS À UN DÉPLOIEMENT : `PLUME_COLD_STALL_CHECK_INTERVAL_S=3600` (ou `0`) rachète
+/// la latence d'origine contre le CPU, à chaud, sans rebuild.
+///
+/// L'HORODATAGE N'EST ÉCRIT QUE SUR VERDICT RENDU — délibérément. Si la requête ÉCHOUE, on ne marque rien :
+/// le tick suivant réessaie tout de suite, exactement comme avant, au lieu d'attendre 24 h avec un
+/// dead-man's-switch inopérant. Et ça ne rouvre pas le coût qu'on ferme : les 27,9 s sont le prix d'un
+/// balayage RÉUSSI ; une requête qui échoue échoue à la préparation, sans balayer.
+pub(super) fn detect_aging_stall(db: &Arc<Mutex<Connection>>, bande: &Bande, n: i64) -> Retard {
+    // CE QUE LE POINT UNIQUE COÛTE, ET POURQUOI ON LE PAIE. Le verrou est pris AVANT même de savoir si le
+    // détecteur est armé — donc le cas par DÉFAUT (rétention non étendue, qui n'exécutait rien) prend
+    // désormais une acquisition de mutex `parking_lot` NON CONTENDUE de plus par passe HORAIRE : quelques
+    // dizaines de nanosecondes, contre des secondes de passe. Trancher les gates avant le verrou aurait
+    // exigé de RESSORTIR une partie de la décision de `tir_du_retard` — c'est-à-dire de recréer
+    // exactement les deux exemplaires que ce lot supprime. Le point unique vaut plus que ces nanosecondes.
     let conn = db.lock();
+    // LA PORTE. Trois refus possibles, une seule expression, et la clé de refus EST l'étiquette que la
+    // série publiera -> aucune traduction entre « pourquoi ça n'a pas tourné » et « ce qu'on en dit ».
+    let (stall_lo, stall_hi) = match bande.tir_du_retard(n, dernier_tir_du_retard(&conn)) {
+        TirDuRetard::Ajourne(cause) => return Retard::NonMesure(cause),
+        TirDuRetard::Du { lo, hi } => (lo, hi),
+    };
     // ANTI-JOINTURE sur le seal du (env_id, jour) : exclut tout jour columnarisé/en-cours (drainé OU
     // straggler-porteur). `P10.13-a` — texte UNIQUE dans `enonces` : c'est le SECOND énoncé qui peut balayer
     // `event`, et la sonde doit pouvoir le lire avec le MÊME texte.
@@ -503,12 +567,22 @@ pub(super) fn detect_aging_stall(db: &Arc<Mutex<Connection>>, n: i64, hot_window
                  verdict rendu (ni « en retard », ni « à jour »). Le prochain tick réessaie ; si cela dure, \
                  lire le plan avec `plume-daemon cold-aging-plan`."
             );
-            return;
+            return Retard::NonMesure(vieillissement_serie::RETARD_REQUETE);
         }
     };
+    // LE TIR EST CONSOMMÉ : on le marque AVANT toute émission (l'émission est déjà dédupée à l'heure, elle
+    // ne dépend pas de ça) et APRÈS le verdict, donc jamais sur un échec. `INSERT … ON CONFLICT` : une
+    // seule ligne, jamais deux, quel que soit l'état antérieur. Best-effort comme le reste du détecteur —
+    // une écriture refusée (`meta` absente, base en lecture seule) laisse la cadence DÉSARMÉE, c'est-à-dire
+    // le comportement d'avant : on paie, on ne se tait pas.
+    let _ = conn.execute(
+        "INSERT INTO meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![META_DERNIER_TIR_DU_RETARD, n.to_string()],
+    );
     if lingering > 0 {
-        emit_cold_aging_stall(&conn, n, lingering, hot_window, cold_ret);
+        emit_cold_aging_stall(&conn, n, lingering, bande.hot_window, bande.cold_ret);
     }
+    Retard::Mesure(lingering)
 }
 
 /// #18 P1.5 — SIGNAL DE SANTÉ « aging cold en RETARD » (dead-man's-switch). RÉUTILISE le canal existant de

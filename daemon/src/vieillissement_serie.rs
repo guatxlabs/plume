@@ -31,6 +31,15 @@
 //!     est une autre affirmation, et fausse.
 //!   * absence totale de point -> le tick n'a pas eu lieu (démon arrêté, tier froid éteint). Un trou
 //!     veut dire « pas mesuré », JAMAIS « zéro ».
+//! LE DEAD-MAN'S-SWITCH DE RETARD A DÉSORMAIS SA PROPRE PAIRE DE LIGNES, ET C'EST `P10.13-a` QUI L'EXIGE.
+//! Depuis le levier ①, ce détecteur ne tourne plus à CHAQUE passe mais une fois par jour (`RETARD_CADENCE`) —
+//! parce que la production a mesuré, sur 44 h et 45 passes le 2026-08-13, **2 passes utiles et 43 sans le
+//! moindre travail**, dont **20,0 min de `db.lock()` pour rien sur 20,9 min au total**, portées EN TOTALITÉ
+//! par son énoncé (`SCAN e`, 27,9 s, 1,78 M lignes balayées). Une passe qui ne l'a pas tiré ne doit surtout
+//! pas se lire comme une passe où il n'y avait pas de retard : `NOM_RETARD_LIGNES` n'est publiée QUE
+//! lorsqu'un verdict a été rendu, et `NOM_RETARD_OK{cause}` nomme le trou sinon. Lire l'une sans l'autre
+//! est une faute de lecture, pas une approximation.
+//!
 //! Et la comptabilité des jours doit FERMER (`candidats == agés + différés + échoués + écartés`) : si
 //! elle ne ferme pas, les compteurs de travail ne sont PAS publiés et la cause est nommée. Un compteur
 //! faux serait pire que pas de compteur — c'est la même règle que le refus de `db_ventilation`.
@@ -132,6 +141,17 @@ pub(crate) const NOM_DUREE: &str = "plume_cold_aging_duree_ms";
 pub(crate) const NOM_CPU: &str = "plume_cold_aging_cpu_fil_ms";
 /// Crête RSS du PROCESSUS pendant la fenêtre (octets) — borne SUPÉRIEURE du coût du vieillissement.
 pub(crate) const NOM_CRETE: &str = "plume_cold_aging_crete_rss_processus_octets";
+/// `P10.13-a` — 1 = le dead-man's-switch de RETARD a rendu un verdict à cette passe ; 0 = il ne l'a pas
+/// rendu, et `cause` dit pourquoi. Cette ligne existe parce que le détecteur ne tourne plus à CHAQUE
+/// passe (cf. `NOM_RETARD_LIGNES`) : sans elle, un trou dans le compte de retard serait indiscernable
+/// d'une passe où il n'y avait pas de retard — exactement l'ambiguïté que ce module ferme partout ailleurs.
+pub(crate) const NOM_RETARD_OK: &str = "plume_cold_aging_retard_ok";
+/// Lignes chaudes qui AURAIENT DÛ être columnarisées, au verdict de CETTE passe (0 = à jour). Publiée
+/// UNIQUEMENT quand le détecteur a tiré. Un `0` veut donc dire « mesuré, et il n'y a pas de retard » ;
+/// un TROU veut dire « pas mesuré », jamais « zéro ». C'est la SEULE lecture correcte de cette série
+/// depuis que le détecteur tire à cadence réduite : un `timechart` doit lire `retard_lignes` **avec**
+/// `retard_ok`, jamais seul.
+pub(crate) const NOM_RETARD_LIGNES: &str = "plume_cold_aging_retard_lignes";
 /// Surcroît de cette crête au-dessus de la ligne de base prise à l'ouverture de la fenêtre (octets).
 pub(crate) const NOM_CRETE_SURCROIT: &str = "plume_cold_aging_crete_rss_surcroit_octets";
 /// 1 = la crête a été mesurée ; 0 = elle ne l'a pas été, et `cause` dit pourquoi. Sans cette ligne, un
@@ -165,6 +185,33 @@ pub(crate) const CRETE_FENETRE_CONCURRENTE: &str = "fenetre_concurrente";
 /// La passe a été suspendue : une crête décrirait une fenêtre où RIEN n'a été agé, et se lirait comme un
 /// coût de vieillissement très bas. On ne la publie pas.
 pub(crate) const CRETE_SUSPENDU: &str = "aging_suspendu";
+
+// ---- POURQUOI LE DÉTECTEUR DE RETARD A (OU N'A PAS) RENDU DE VERDICT -----------------------------
+// `P10.13-a`. Ces clés sont les étiquettes de `NOM_RETARD_OK`. Elles vivent ICI, avec les autres
+// causes de la série, et PAS dans `cold_store::enonces` qui les consomme : `cold_store` n'est pas
+// compilé dans le profil par défaut, et une étiquette de série qui n'existerait que sous une feature
+// serait invisible aux tests qui gardent la FORME de la série.
+/// `P10.13-a` levier ① — LA CADENCE. Le détecteur ne tire qu'une fois par `PLUME_COLD_STALL_CHECK_INTERVAL_S`
+/// (défaut 24 h) : cette passe-ci n'était pas due. MESURE qui l'a décidé (production, 44 h / 45 passes,
+/// 2026-08-13) : 2 passes utiles, 43 sans le moindre travail, 20,0 min de `db.lock()` pour rien sur
+/// 20,9 min au total — la columnarisation n'a lieu qu'UNE FOIS PAR JOUR, et cet énoncé (`SCAN e`,
+/// 27,9 s, 1,78 M lignes balayées) portait la TOTALITÉ du coût des 23 autres passes.
+pub(crate) const RETARD_CADENCE: &str = "cadence";
+/// Le détecteur n'est pas ARMÉ : la rétention cold n'est pas étendue (`cold_ret == retention_days`),
+/// donc le hot reste plafonné comme avant et il n'y a AUCUN bloat nouveau à surveiller. C'est le cas
+/// par DÉFAUT de tous les déploiements qui n'ont pas posé `PLUME_COLD_RETENTION_DAYS`.
+pub(crate) const RETARD_NON_ARME: &str = "non_arme";
+/// La fenêtre de surveillance est VIDE (fenêtre chaude + grâce couvre déjà toute la rétention cold) —
+/// il n'y a rien à surveiller, ce qui n'est pas la même chose que « rien trouvé ».
+pub(crate) const RETARD_FENETRE_VIDE: &str = "fenetre_vide";
+/// La REQUÊTE du détecteur a échoué. AUCUN verdict n'est rendu (ni « en retard », ni « à jour ») — le
+/// `unwrap_or(0)` qui rendait « tout va bien » sur une requête cassée est le mode de panne que ce
+/// dead-man's-switch existe pour fermer, et il le faisait EN SILENCE.
+pub(crate) const RETARD_REQUETE: &str = "requete_echouee";
+/// La passe s'est arrêtée AVANT d'atteindre le détecteur (rétention trop courte, legal-hold). Le
+/// legal-hold en particulier est une abstention DÉLIBÉRÉE : le hold est lui-même visible et audité, ce
+/// n'est pas un stall silencieux — mais la série doit le DIRE plutôt que laisser un trou anonyme.
+pub(crate) const RETARD_PASSE_SUSPENDUE: &str = "passe_suspendue";
 
 /// Écart toléré entre la ligne de base relue et le RSS courant juste après le reset. Il couvre ce que le
 /// processus peut allouer ENTRE les deux lectures (quelques microsecondes). Au-delà, on conclut que le
@@ -275,6 +322,18 @@ pub(crate) enum Crete {
     NonMesuree(&'static str),
 }
 
+/// `P10.13-a` — CE QUE LE DEAD-MAN'S-SWITCH DE RETARD A FAIT DE CETTE PASSE. MÊME FORME que `Crete`, et
+/// pour la MÊME raison : le détecteur ne rend pas toujours un verdict, et « pas de verdict » ne doit
+/// jamais pouvoir se lire « verdict = 0 ». Deux variantes, pas trois — « le tick n'a pas eu lieu » reste
+/// l'absence totale de point.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Retard {
+    /// Le détecteur a TIRÉ et a compté : lignes chaudes qui auraient dû être columnarisées (0 = à jour).
+    Mesure(i64),
+    /// Il n'a pas tiré (ou n'a pas pu conclure) ; la clé NOMME la raison, jamais un zéro.
+    NonMesure(&'static str),
+}
+
 /// LE BILAN D'UNE PASSE — tout ce qui sera publié, et rien d'autre. Sans horloge ni global : les
 /// fonctions qui le transforment sont PURES, donc testables sans processus.
 #[derive(Clone, PartialEq, Debug)]
@@ -285,6 +344,10 @@ pub(crate) struct Bilan {
     /// `None` = non imputable (fil changé, `/proc` illisible) -> trou, jamais un zéro.
     pub(crate) cpu_ms: Option<u64>,
     pub(crate) crete: Crete,
+    /// `P10.13-a` — l'état du dead-man's-switch de retard À CETTE PASSE. Il est INDÉPENDANT de l'issue
+    /// de la passe (contrairement à la crête) : sur le chemin `cle_absente` la passe est SUSPENDUE et le
+    /// détecteur tire quand même — c'est justement le cas où le hot cesse de drainer.
+    pub(crate) retard: Retard,
 }
 
 // =================================================================================================
@@ -364,6 +427,19 @@ pub(crate) fn points(b: &Bilan) -> Vec<Point> {
             out.push(Point { nom: NOM_CRETE_OK, etiquettes: etiquette("cause", CRETE_SUSPENDU), valeur: 0.0 });
         }
     }
+    // LE RETARD, PUBLIÉ DANS TOUS LES CAS — et surtout PAS gaté sur `travail.is_ok()` comme la crête.
+    // La passe `cle_absente` est SUSPENDUE et tire pourtant le détecteur : c'est exactement la panne que
+    // le dead-man's-switch surveille (plus aucune clé -> plus aucun drainage -> le hot grossit vers la
+    // rétention étendue). Le taire là serait taire le seul verdict qui compte.
+    match b.retard {
+        Retard::Mesure(lignes) => {
+            out.push(Point { nom: NOM_RETARD_OK, etiquettes: etiquette("cause", CAUSE_AUCUNE), valeur: 1.0 });
+            out.push(Point { nom: NOM_RETARD_LIGNES, etiquettes: None, valeur: lignes as f64 });
+        }
+        Retard::NonMesure(cause) => {
+            out.push(Point { nom: NOM_RETARD_OK, etiquettes: etiquette("cause", cause), valeur: 0.0 });
+        }
+    }
     out
 }
 
@@ -399,10 +475,18 @@ pub(crate) fn phrase(b: &Bilan) -> String {
             Crete::NonMesuree(cause) => format!("crête RSS NON MESURÉE ({cause})"),
         }
     );
+    // LE RETARD SE DIT DANS LES DEUX BRANCHES, comme il se publie dans les deux cas. Sur la passe
+    // `cle_absente` c'est la SEULE information utile de la ligne, et elle manquerait au journal si on
+    // l'attachait au bloc de compteurs.
+    let retard = match b.retard {
+        Retard::Mesure(0) => " — retard : AUCUN (0 ligne, mesuré)".to_string(),
+        Retard::Mesure(l) => format!(" — RETARD : {l} ligne(s) chaude(s) non columnarisée(s)"),
+        Retard::NonMesure(cause) => format!(" — retard NON MESURÉ ({cause})"),
+    };
     match verdict(b) {
         Err(cause) => format!(
             "[cold] vieillissement NON EXÉCUTÉ ({cause}) — {temps} ; aucun compteur publié, la série \
-             porte un trou NOMMÉ (jamais un zéro)"
+             porte un trou NOMMÉ (jamais un zéro){retard}"
         ),
         Ok(()) => {
             let c = &b.compte;
@@ -412,7 +496,7 @@ pub(crate) fn phrase(b: &Bilan) -> String {
             format!(
                 "[cold] vieillissement : {} jour(s) columnarisé(s) sur {} candidat(s) ({} sans travail, \
                  {} différé(s), {} échoué(s), {} écarté(s)) — {} ligne(s) / {} fichier(s) / {} Mio écrits \
-                 au froid, {} ligne(s) retirée(s) du chaud ({} fichier(s) purgé(s)) — {cout}",
+                 au froid, {} ligne(s) retirée(s) du chaud ({} fichier(s) purgé(s)) — {cout}{retard}",
                 c.jours_columnarises,
                 c.jours_candidats,
                 c.jours_sans_travail,
@@ -486,7 +570,12 @@ impl Fenetre {
     }
 
     /// FERME la fenêtre et rend le bilan. `self` est consommé -> le drapeau est rendu ici (via `Drop`).
-    pub(crate) fn clore(self, issue: Issue, compte: Compte) -> Bilan {
+    ///
+    /// `P10.13-a` — `retard` est un PARAMÈTRE et non un champ que la fenêtre irait chercher : la fenêtre
+    /// mesure le PROCESSUS (durée, CPU, crête), elle ne connaît ni la base ni les détecteurs. Le passer
+    /// ici force la passe à en produire un sur CHAQUE chemin — le compilateur refuse `clore` sans lui,
+    /// donc un chemin ajouté demain ne peut pas laisser la série muette sur le dead-man's-switch.
+    pub(crate) fn clore(self, issue: Issue, compte: Compte, retard: Retard) -> Bilan {
         let duree_ms = self.t0.elapsed().as_millis().min(u64::MAX as u128) as u64;
         // Le CPU d'un AUTRE fil ne dit rien du nôtre : si la fenêtre change de fil, on ne publie pas.
         let meme_fil = std::thread::current().id() == self.fil;
@@ -504,7 +593,7 @@ impl Fenetre {
             // plutôt que `unreachable!()` : une mesure ne doit jamais faire tomber le démon.
             (None, None) => Crete::NonMesuree(CRETE_PROC_ABSENT),
         };
-        Bilan { issue, compte, duree_ms, cpu_ms, crete }
+        Bilan { issue, compte, duree_ms, cpu_ms, crete, retard }
     }
 }
 

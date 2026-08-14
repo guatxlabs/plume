@@ -2270,6 +2270,104 @@ fn une_requete_de_retard_en_echec_ne_consomme_pas_le_tir() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// `P10.14-a` — UNE PASSE SUSPENDUE DIT AUSSI CE QUE LE DÉTECTEUR DE RETARD A FAIT, ET SUR SES DEUX
+/// CHEMINS. La prose de `RETARD_PASSE_SUSPENDUE` promet que la série DISE la suspension « plutôt que
+/// laisser un trou anonyme » ; rien ne l'opposait. Le test voisin `le_retard_se_publie_meme_sur_une_passe_
+/// suspendue` couvre le cas INVERSE (passe suspendue ET détecteur qui TIRE, sur `cle_absente`), et
+/// `legal_hold_suspends_aging` n'assertait NI la ligne de retard NI même la série — seulement que le
+/// chaud reste plein et qu'aucun fichier n'est écrit (relevé le 2026-08-14 : AUCUN test de ce module ne
+/// citait `legal_hold` en étiquette). Déplacer ou supprimer le second membre du tuple rendu par `balayer` était donc
+/// invisible : la paire `retard_ok`/`retard_lignes` aurait disparu SANS QU'UN TEST NE BOUGE, et un
+/// `timechart` aurait lu le trou comme « pas de retard » — l'ambiguïté exacte que `P10.13-a` a fermée.
+///
+/// LES DEUX ÉMETTEURS SONT COUVERTS, parce qu'ils sont deux retours DISTINCTS de `balayer` :
+/// `aging.rs` sur `retention_days <= 1`, et `aging.rs` sur legal-hold actif. Un seul des deux laisserait
+/// l'autre libre de redevenir muet.
+///
+/// TROIS FAITS PAR CHEMIN, ET LE PREMIER EST LE TÉMOIN POSITIF DU TROISIÈME : (1) la passe est bien
+/// SUSPENDUE et le dit (`plume_cold_aging_ok{cause}`) — sans quoi le reste porterait sur une passe qui
+/// n'a pas eu lieu ; (2) `plume_cold_aging_retard_ok{cause="passe_suspendue"}` = 0, le trou est NOMMÉ ;
+/// (3) `plume_cold_aging_retard_lignes` est ABSENTE — un zéro s'y lirait « mesuré, et il n'y a pas de
+/// retard », alors que le détecteur n'a jamais regardé. (2) prouve que la publication a bien eu lieu,
+/// donc l'absence de (3) n'est pas celle d'une série qui n'écrit rien.
+///
+/// TROIS MUTATIONS, exécutées le 2026-08-14, parce que Rust s'arrête au PREMIER panic : supposer que
+/// les assertions suivantes mordent aussi serait exactement la promesse en prose que ce lot remplace.
+///   1. chemin `retention_days <= 1` -> `Retard::Mesure(0)` ⇒ rouge sur l'ÉMETTEUR 1,
+///      `left: None / right: Some(0.0)` (la cause n'est plus publiée) ; l'émetteur 2 reste vert.
+///   2. chemin legal-hold -> `Retard::Mesure(0)` ⇒ rouge sur l'ÉMETTEUR 2, `left: None`, et lui seul.
+///      Les deux émetteurs sont donc gardés INDÉPENDAMMENT.
+///   3. `points()` publiant `NOM_RETARD_LIGNES` à `0.0` dans la branche `NonMesure` ⇒ rouge sur la
+///      TROISIÈME assertion, `left: Some(0.0) / right: None` — le trou devenu zéro. Sans cette
+///      mutation-là, rien ne prouverait que l'assertion d'ABSENCE mord.
+#[test]
+fn une_passe_suspendue_nomme_le_trou_du_detecteur_de_retard() {
+    let etiquette_du_trou = format!("{{\"cause\":\"{RETARD_PASSE_SUSPENDUE}\"}}");
+
+    // ---- ÉMETTEUR 1 : RÉTENTION GLOBALE TROP COURTE (`retention_days <= 1`) ----
+    {
+        let root = tmp_root("retard-susp-retention");
+        let cold = root.join("cold");
+        let db = mkdb(&root);
+        cold_age_run(&db, "", &conf_on(&cold, HOT_WIN), n_now(), 1);
+
+        assert_eq!(
+            serie(&db, NOM_OK, Some("{\"cause\":\"retention_courte\"}")),
+            Some(0.0),
+            "précondition : la passe doit être SUSPENDUE pour rétention courte, sinon ce test regarde \
+             autre chose que le chemin visé"
+        );
+        assert_eq!(
+            serie(&db, NOM_RETARD_OK, Some(&etiquette_du_trou)),
+            Some(0.0),
+            "le trou du dead-man's-switch doit être NOMMÉ `{RETARD_PASSE_SUSPENDUE}` — sinon la série ne \
+             distingue plus « le détecteur n'a pas tourné » de « il n'a pas tourné DEPUIS QUAND »"
+        );
+        assert_eq!(
+            serie(&db, NOM_RETARD_LIGNES, None),
+            None,
+            "un compte de retard publié sur une passe qui n'a jamais atteint le détecteur se lirait \
+             « à jour » — c'est précisément le mensonge que `P10.13-a` a fermé"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- ÉMETTEUR 2 : LEGAL-HOLD ACTIF (abstention DÉLIBÉRÉE, mais qui doit rester DITE) ----
+    {
+        let root = tmp_root("retard-susp-hold");
+        let cold = root.join("cold");
+        let db = mkdb(&root);
+        let day = M - 11;
+        let base = day * SECS_PER_DAY;
+        for i in 0..10 {
+            insert_event(&db, &rich_row(base + i, i));
+        }
+        {
+            let c = db.lock();
+            c.execute_batch("CREATE TABLE legal_hold(id INTEGER PRIMARY KEY, active INTEGER NOT NULL DEFAULT 0)")
+                .unwrap();
+            c.execute("INSERT INTO legal_hold(active) VALUES(1)", []).unwrap();
+        }
+
+        cold_age_run(&db, "", &conf_on(&cold, HOT_WIN), n_now(), RET_DAYS);
+
+        assert_eq!(
+            serie(&db, NOM_OK, Some("{\"cause\":\"legal_hold\"}")),
+            Some(0.0),
+            "précondition : le hold doit bien avoir suspendu la passe"
+        );
+        assert_eq!(count_hot_day(&db, "prod", day), 10, "précondition : le hold conserve les preuves chaudes");
+        assert_eq!(
+            serie(&db, NOM_RETARD_OK, Some(&etiquette_du_trou)),
+            Some(0.0),
+            "un hold est une abstention VISIBLE et auditée, pas un stall — mais la série doit le DIRE, \
+             sinon son trou est indiscernable d'un démon arrêté"
+        );
+        assert_eq!(serie(&db, NOM_RETARD_LIGNES, None), None, "aucun verdict rendu -> aucun compte publié");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
 /// SANS EXTENSION (le DÉFAUT de tous les déploiements), LE DÉTECTEUR N'EST PAS ARMÉ — ET LA SÉRIE LE
 /// DIT. Avant `P10.13-a`, ce cas laissait un SILENCE : rien dans la série ne distinguait « le détecteur
 /// n'a pas lieu d'être » de « il n'a rien trouvé ». Et il n'écrit RIEN dans `meta` : le chemin par
@@ -9045,7 +9143,8 @@ fn p87b_les_deux_moities_at_rest_derivent_du_meme_appel() {
 
 use crate::vieillissement_serie::{
     CAUSE_CLE_ABSENTE, NOM_CRETE_OK, NOM_DUREE, NOM_FICHIERS, NOM_JOURS, NOM_LIGNES, NOM_OCTETS_FROID, NOM_OK,
-    NOM_RETARD_LIGNES, NOM_RETARD_OK, RETARD_CADENCE, RETARD_FENETRE_VIDE, RETARD_NON_ARME, RETARD_REQUETE,
+    NOM_RETARD_LIGNES, NOM_RETARD_OK, RETARD_CADENCE, RETARD_FENETRE_VIDE, RETARD_NON_ARME,
+    RETARD_PASSE_SUSPENDUE, RETARD_REQUETE,
     Retard,
 };
 

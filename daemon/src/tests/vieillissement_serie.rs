@@ -441,6 +441,64 @@ mod vieillissement_serie_tests {
         assert!(!reset_effectif(2 * rss, rss), "un pic de vie entière doit être refusé sans hésiter");
     }
 
+    /// `P10.14-a` — UN RESET DE `VmHWM` QUI N'A PAS PRIS NE PUBLIE AUCUNE CRÊTE, ET LA CAUSE LE DIT.
+    /// Cette propriété n'était tenue QUE PAR UNE PHRASE : la prose de `CRETE_RESET_REFUSE` promettait
+    /// « la crête aurait été celle de TOUTE la vie du processus : on ne la publie pas », et
+    /// `reset_effectif` n'était éprouvé que comme PRÉDICAT PUR — rien n'opposait la CONSÉQUENCE. Publier
+    /// quand même la crête aurait rendu un pic ANTÉRIEUR à la fenêtre : un chiffre faux là où la série
+    /// promet un trou nommé, et le piège EXACT dans lequel la mesure du 2026-08-10 était tombée
+    /// (319 Mio rapportés pour une fenêtre qui en avait coûté 120).
+    ///
+    /// LES DEUX MOITIÉS SONT ASSERTÉES, ET LA SECONDE EST LE CŒUR. (1) la cause SORT, donc le trou est
+    /// NOMMÉ ; (2) `plume_cold_aging_crete_rss_processus_octets` et son surcroît sont ABSENTS — un zéro
+    /// s'y lirait « ce vieillissement n'a rien coûté », qui est une AUTRE affirmation, et fausse.
+    /// Le TÉMOIN POSITIF tient la troisième : sur une crête MESURÉE, ces deux mêmes séries sortent. Sans
+    /// lui, « absente » serait aussi vrai d'une publication qui n'écrit jamais rien.
+    ///
+    /// MUTATION (exécutée le 2026-08-14) : dans `points`, faire pousser `NOM_CRETE` (valeur `0.0`) dans
+    /// la branche `(true, Crete::NonMesuree(cause))` ⇒ 1 assertion rougit, ICI, sur `NOM_CRETE` — et elle
+    /// seule dans les deux suites.
+    #[test]
+    fn une_crete_dont_le_reset_a_ete_refuse_nest_pas_publiee_et_la_cause_le_dit() {
+        // LA PRÉMISSE DU CAS, opposée au prédicat qui la décide : un `VmHWM` resté très au-dessus du RSS
+        // courant n'est pas un reset, c'est un pic de vie entière qui a survécu.
+        let rss = 12_164 * 1024;
+        assert!(
+            !reset_effectif(rss + TOLERANCE_RESET_OCTETS + 1, rss),
+            "prémisse : au-delà de la tolérance, le reset est réputé NON pris"
+        );
+
+        let pts = points(&bilan(Issue::Balaye, compte_plein(), Crete::NonMesuree(CRETE_RESET_REFUSE)));
+        assert_eq!(
+            valeur(&pts, NOM_CRETE_OK, Some("{\"cause\":\"reset_refuse\"}")),
+            Some(0.0),
+            "le refus doit être NOMMÉ : un trou anonyme ne dit pas si l'instrument est cassé ou la passe absente"
+        );
+        let sortis = noms(&pts);
+        for interdit in [NOM_CRETE, NOM_CRETE_SURCROIT] {
+            assert!(
+                !sortis.contains(&interdit),
+                "`{interdit}` publiée alors que le reset n'a pas pris -> la série rendrait le pic de TOUTE \
+                 la vie du processus, et un lecteur y verrait le coût de CE vieillissement"
+            );
+        }
+
+        // TÉMOIN POSITIF — les deux séries interdites ci-dessus sortent bel et bien quand la crête EST
+        // mesurée : l'absence prouvée plus haut porte donc sur le REFUS, pas sur une publication muette.
+        let mesuree =
+            points(&bilan(Issue::Balaye, compte_plein(), Crete::Mesuree { pic: 135_024 * 1024, base: rss }));
+        let sortis = noms(&mesuree);
+        assert!(
+            sortis.contains(&NOM_CRETE) && sortis.contains(&NOM_CRETE_SURCROIT),
+            "témoin positif : une crête MESURÉE doit publier les deux séries, sinon ce test ne prouve rien"
+        );
+        assert_eq!(
+            valeur(&mesuree, NOM_CRETE_SURCROIT, None),
+            Some(((135_024 - 12_164) * 1024) as f64),
+            "le surcroît est le pic MOINS la ligne de base — c'est lui qui est imputable à la fenêtre"
+        );
+    }
+
     /// DEUX FENÊTRES QUI SE CHEVAUCHENT NE MESURENT PAS DEUX FOIS. Le reset est PROCESSUS : la seconde
     /// fenêtre volerait sa ligne de base à la première. Elle ne mesure donc pas — et le dit. Et le
     /// drapeau est RENDU à la fermeture : sans ça, une seule imbrication condamnerait silencieusement

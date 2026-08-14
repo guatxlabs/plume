@@ -300,7 +300,7 @@ pub(crate) mod door_tests {
     /// Retire le commentaire de fin de ligne. FAIL-CLOSED sur les cas douteux : une ligne portant une
     /// chaîne BRUTE (`r"`/`r#"`) n'est PAS tronquée (on préfère un faux positif bruyant à une
     /// troncature qui masquerait du code), et `://` (URL) n'ouvre pas un commentaire.
-    fn sans_commentaire(l: &str) -> String {
+    pub(crate) fn sans_commentaire(l: &str) -> String {
         if l.contains("r\"") || l.contains("r#\"") {
             return l.to_string();
         }

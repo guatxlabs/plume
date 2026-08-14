@@ -15,7 +15,17 @@
 //! en production parce que `premiere_page_froide` et `compte_et_max_id_du_jour`, qui s'effondrent sans lui
 //! (mesuré : 1 544 -> 15 978 223 pas de machine), tiennent dans les 60 ms.
 //!
-//! CE QUE CE MODULE GARANTIT, ET COMMENT. La sonde de lecture seule (`sonde`) doit rejouer LES ÉNONCÉS
+//! CE QUE LE LEVIER ① A CHANGÉ, ET CE QU'IL N'A PAS CHANGÉ (2026-08-14). L'énoncé n° 5 est INTACT —
+//! même texte, mêmes bornes, même chose détectée. Ce qui change est QUAND la passe l'exécute : une fois
+//! par jour au lieu de vingt-quatre. Le chiffre, relevé en production le 2026-08-13 sur 44 h et
+//! 45 passes : **2 passes utiles, 43 sans le moindre travail** — **20,0 min de `db.lock()` pour rien sur
+//! 20,9 min au total**. La columnarisation n'a lieu qu'UNE FOIS PAR JOUR (un jour franchit la fenêtre
+//! chaude) ; les 23 autres passes horaires ne peuvent rien faire PAR CONSTRUCTION. Ce module porte donc
+//! aussi la DÉCISION DE TIR (`tir_du_retard`, `periode_de_tir`, `TirDuRetard`), pour la même raison qu'il
+//! porte déjà les bornes : la passe et la sonde doivent lire la MÊME cadence, ou la sonde décrirait une
+//! passe qui n'existe pas.
+//!
+//! CE QUE ce module GARANTIT, ET COMMENT. La sonde de lecture seule (`sonde`) doit rejouer LES ÉNONCÉS
 //! DE LA PASSE, pas des copies retapées qui pourriront à la première évolution. La garantie n'est pas
 //! une convention de revue, elle est STRUCTURELLE, en trois épaisseurs :
 //!   1. **UNE SEULE DÉFINITION.** Chaque énoncé est ici, et NULLE PART AILLEURS. La passe
@@ -128,6 +138,37 @@ pub(super) fn sql_retard_de_vieillissement() -> String {
     )
 }
 
+/// `P10.13-a` levier ① — LA CLÉ `meta` OÙ VIT L'HORODATAGE DU DERNIER TIR du dead-man's-switch.
+///
+/// POURQUOI `meta` ET PAS AILLEURS — mesuré, pas préféré :
+///   * **pas en mémoire.** Un compteur de processus ferait tirer le détecteur à CHAQUE démarrage : un pod
+///     qui redémarre souvent paierait les 27,9 s plus souvent qu'aujourd'hui, ce qui INVERSERAIT le gain.
+///   * **pas dans `metric`.** La série y vit, mais elle est PURGÉE (`metric_raw_hours`, 48 h par défaut,
+///     puis bucket horaire 90 j) et la fenêtre brute est CONFIGURABLE. Une cadence quotidienne dont
+///     l'état s'efface au bout de `metric_raw_hours` cesserait de fonctionner dès qu'un exploitant
+///     descend cette rétention sous 24 h — un couplage silencieux entre une politique de rétention et
+///     une garde de sûreté. `metric_rollup` moyennerait en plus l'horodatage par bucket.
+///   * **pas une table neuve.** Elle coûterait un schéma, une migration et une rétention, pour une ligne.
+///   * **`meta` convient et existe** : `key TEXT PRIMARY KEY, value TEXT`, créée par la chaîne de
+///     migrations sur TOUS les déploiements, et déjà le siège des watermarks de jobs de
+///     fond (`event_rollup_wm`, `dim_rollup_cov`) — c'est exactement le même objet : « où en était ce
+///     job la dernière fois ». Une ligne, une clé primaire, survit au redémarrage et à la restauration.
+///     **LA PROPRIÉTÉ EXACTE, mesurée le 2026-08-14 — et « jamais purgée » serait FAUX** : `meta` porte
+///     **14 `DELETE`**, mais **TOUS ciblent une clé nommée** (`WHERE key='…'`, retraits de watermarks à
+///     la migration). Ce qui porte le raisonnement, c'est qu'il n'existe **aucune suppression non
+///     filtrée** et **aucune suppression temporelle** — là où `metric` a bien un
+///     `DELETE FROM metric WHERE ts < ?`. C'est cette absence-là qui rend la clé sûre, pas une immunité
+///     générale qu'on lui prêterait à tort.
+/// La clé est en `snake_case` anglais comme ses voisines dans `meta` : un exploitant qui fait
+/// `SELECT * FROM meta` ne doit pas y trouver deux langues.
+pub(super) const META_DERNIER_TIR_DU_RETARD: &str = "cold_aging_stall_last_ts";
+
+/// (5 bis) L'HORODATAGE DU DERNIER TIR du dead-man's-switch de retard, relu dans la table `meta`.
+/// C'est une LECTURE : elle vit donc ici, comme toutes les autres (la règle du scanner est textuelle et
+/// fail-closed). Son ÉCRITURE, elle, reste chez son appelant — `enonces` ne centralise pas les écritures
+/// pures (cf. l'en-tête) : la sonde de lecture seule ne les rejouera jamais.
+pub(super) const SQL_DERNIER_TIR_DU_RETARD: &str = "SELECT value FROM meta WHERE key=?1";
+
 /// (6) LES SEALS D'UN JOUR, triés par `seq` (préfixe de fichiers scellés). Petite table.
 pub(super) const SQL_SEALS_DU_JOUR: &str =
     "SELECT seq, expected_rows, purged, max_id, ts_min, ts_max, lo_ts, lo_id, hi_id, last_file, dim_stats \
@@ -168,6 +209,11 @@ pub(super) fn limite_premiere_page(rg_rows: usize, file_cap: usize) -> usize {
 /// d'autres bornes ne mesure pas la même chose — c'est pourquoi la dérivation ne peut pas s'arrêter au
 /// texte des requêtes.
 pub(super) struct Bande {
+    /// Rétention GLOBALE effective de CE tick, telle que `retention_run` l'a résolue. Portée ICI pour
+    /// que le gate d'ARMEMENT du dead-man's-switch (`cold_ret > retention_days`) soit DÉRIVABLE de la
+    /// bande seule : sans elle, chaque site d'appel devait re-poser la condition à la main — et c'est
+    /// exactement ce qu'un troisième site oublierait.
+    pub(super) retention_days: i64,
     /// Rétention TOTALE visée quand le tier cold est ON (#18 P1.5 ; défaut = `retention_days`).
     pub(super) cold_ret: i64,
     /// Rétention la PLUS LONGUE applicable (globale étendue ∪ policies) -> borne basse LARGE.
@@ -184,6 +230,9 @@ pub(super) struct Bande {
     pub(super) rg_rows: usize,
     /// Policies per-index actives (#49) — la borne basse PAR-ENV en dérive.
     pub(super) policies: Vec<IndexPolicy>,
+    /// `P10.13-a` levier ① — PÉRIODE MINIMALE (s) entre deux tirs du dead-man's-switch de retard.
+    /// Résolue et CLAMPÉE une fois ici (cf. `periode_de_tir`) : la passe et la sonde lisent la même.
+    pub(super) periode_de_tir: i64,
 }
 
 impl Bande {
@@ -206,7 +255,18 @@ impl Bande {
             .parse::<usize>()
             .unwrap_or(COLD_FILE_MAX_ROWS)
             .clamp(1, COLD_FILE_MAX_ROWS);
-        Bande { cold_ret, max_ret, hot_window, hi_day_excl, broad_lo_day, file_cap, rg_rows, policies }
+        Bande {
+            retention_days,
+            cold_ret,
+            max_ret,
+            hot_window,
+            hi_day_excl,
+            broad_lo_day,
+            file_cap,
+            rg_rows,
+            policies,
+            periode_de_tir: periode_de_tir(conf),
+        }
     }
 
     /// Y A-T-IL UNE BANDE À BALAYER ? (fenêtre chaude + rétention peuvent se recouvrir entièrement.)
@@ -246,6 +306,104 @@ impl Bande {
     pub(super) fn bornes_du_retard(&self, n: i64) -> Option<(i64, i64)> {
         bornes_du_retard(self.hot_window, self.cold_ret, n)
     }
+
+    /// LE DÉTECTEUR DE RETARD TIRE-T-IL À CETTE PASSE, ET SUR QUELLE FENÊTRE ? Délègue à la fonction
+    /// PURE ci-dessous en lui donnant TOUS les termes depuis la bande — c'est ce qui fait qu'il n'y a
+    /// plus rien à poser au site d'appel, donc plus rien à oublier.
+    pub(super) fn tir_du_retard(&self, n: i64, dernier_tir: Option<i64>) -> TirDuRetard {
+        tir_du_retard(self.hot_window, self.cold_ret, self.retention_days, self.periode_de_tir, n, dernier_tir)
+    }
+}
+
+/// `P10.13-a` levier ① — PÉRIODE PAR DÉFAUT (s) entre deux tirs du dead-man's-switch de retard : **24 h**.
+///
+/// POURQUOI 24 H, ET PAS UN CHIFFRE ROND. Parce que la columnarisation n'a lieu qu'UNE FOIS PAR JOUR (un
+/// jour franchit la fenêtre chaude), et que les 23 autres passes horaires ne peuvent rien faire PAR
+/// CONSTRUCTION. Mesuré en production sur 44 h et 45 passes le 2026-08-13 : **2 passes utiles, 43 sans le
+/// moindre travail** — **20,0 min de `db.lock()` pour rien sur 20,9 min au total**, portées EN TOTALITÉ
+/// par l'énoncé n° 5 (`SCAN e`, 27,9 s, 1,78 M lignes balayées, relevé à `cold-aging-plan`). Ce levier ne
+/// supprime AUCUN travail : il supprime des passes qui n'en avaient aucun.
+pub(super) const PERIODE_TIR_RETARD_DEFAUT_S: i64 = 24 * 3600;
+
+/// PÉRIODE EFFECTIVE (s) entre deux tirs, CLAMPÉE `[0, COLD_STALL_GRACE_DAYS jours]`.
+///
+/// LE PLAFOND N'EST PAS DÉCORATIF, ET IL EST DÉRIVÉ. Le détecteur a une GRÂCE (`COLD_STALL_GRACE_DAYS`)
+/// : la condition qu'il surveille met ce temps-là à naître. Autoriser une cadence PLUS LONGUE que cette
+/// grâce laisserait une configuration ÉMOUSSER le dead-man's-switch au-delà de ce que sa propre
+/// conception admet — un knob capable d'annuler la garde qu'il règle. Le plafond suit donc la grâce
+/// automatiquement : relever `COLD_STALL_GRACE_DAYS` relève le plafond, sans que personne n'y pense.
+/// `0` (ou une valeur négative, clampée à `0`) DÉSARME la cadence -> tir à CHAQUE passe, c'est-à-dire le
+/// comportement d'avant ce lot, rachetable à chaud sans rebuild. Une valeur ILLISIBLE, elle, retombe sur
+/// le DÉFAUT et non sur `0` : un typo ne doit pas rendre au démon les ~20 min de verrou quotidien qu'on
+/// vient de lui retirer.
+pub(super) fn periode_de_tir(conf: &HashMap<String, String>) -> i64 {
+    let brut = cfg(conf, "PLUME_COLD_STALL_CHECK_INTERVAL_S", "");
+    if brut.trim().is_empty() {
+        return PERIODE_TIR_RETARD_DEFAUT_S;
+    }
+    // Une valeur ILLISIBLE retombe sur le DÉFAUT et non sur `0` : un typo ne doit ni désarmer la
+    // cadence (on reprendrait les 20 min/jour) ni allonger la latence au-delà du plafond.
+    brut.trim()
+        .parse::<i64>()
+        .unwrap_or(PERIODE_TIR_RETARD_DEFAUT_S)
+        .clamp(0, COLD_STALL_GRACE_DAYS * SECS_PER_DAY)
+}
+
+/// CE QUE LA PASSE FAIT DU DÉTECTEUR DE RETARD À CE TICK — un TYPE, pas trois `if` recopiés.
+///
+/// C'EST LE POINT UNIQUE EXIGÉ PAR LE LEVIER ①. Avant, la décision « le détecteur tourne-t-il ? » était
+/// écrite TROIS fois : deux `if cold_ret > retention_days` dans `balayer` (sites clé-absente et
+/// fin-de-passe) et un troisième dans `enonces_sans_candidat` pour la sonde. Trois copies d'une même
+/// condition, dont un quatrième site aurait fatalement divergé. Elles sont maintenant DÉRIVÉES d'ici :
+/// `detect_aging_stall` ne prend plus ni `hot_window`, ni `cold_ret`, ni `retention_days` — il prend la
+/// `Bande`, et il n'y a plus rien à poser à l'appel.
+pub(super) enum TirDuRetard {
+    /// Il tire, sur cette fenêtre `ts` `[lo, hi)`.
+    Du { lo: i64, hi: i64 },
+    /// Il ne tire pas ; la clé (étiquette de série, cf. `vieillissement_serie::RETARD_*`) dit pourquoi.
+    Ajourne(&'static str),
+}
+
+/// LA DÉCISION, PURE — donc testable sans base, sans horloge et sans tier froid compilé.
+///
+/// TROIS REFUS, ET LEUR ORDRE EST LOAD-BEARING :
+///   1. **PAS ARMÉ** (`cold_ret <= retention_days`) : sans extension de rétention, le hot reste plafonné
+///      comme avant, il n'y a AUCUN bloat nouveau à surveiller. C'est le cas par défaut, et il vient en
+///      premier parce qu'aucun des deux suivants n'a de sens si le détecteur n'existe pas.
+///   2. **FENÊTRE VIDE** : la fenêtre chaude + grâce couvre déjà toute la rétention cold -> rien à
+///      surveiller (et pas « rien trouvé »).
+///   3. **CADENCE** : le tir précédent est trop récent.
+///
+/// ET TOUT LE RESTE TIRE — c'est la propriété qui protège le dead-man's-switch. Jamais tiré (`None`,
+/// base neuve ou démarrage), période désarmée (`<= 0`), horodatage dans le FUTUR (horloge revenue en
+/// arrière, base restaurée, valeur corrompue) : chacun de ces cas rend `Du`. Un `unwrap_or` qui aurait
+/// rendu « trop tôt » sur une valeur illisible aurait SILENCIEUSEMENT muselé la garde — c'est
+/// littéralement le mode de panne que ce détecteur existe pour fermer, et il l'a déjà eu une fois
+/// (`unwrap_or(0)` sur le compte, retiré en `P10.13-a`).
+pub(super) fn tir_du_retard(
+    hot_window: i64,
+    cold_ret: i64,
+    retention_days: i64,
+    periode: i64,
+    n: i64,
+    dernier_tir: Option<i64>,
+) -> TirDuRetard {
+    if cold_ret <= retention_days {
+        return TirDuRetard::Ajourne(crate::vieillissement_serie::RETARD_NON_ARME);
+    }
+    let Some((lo, hi)) = bornes_du_retard(hot_window, cold_ret, n) else {
+        return TirDuRetard::Ajourne(crate::vieillissement_serie::RETARD_FENETRE_VIDE);
+    };
+    match dernier_tir {
+        // `saturating_sub` : l'horodatage vient d'une COLONNE TEXTE de `meta`, donc d'une valeur qu'un
+        // opérateur (ou une corruption) peut rendre absurde. Un `i64::MIN` ferait déborder la
+        // soustraction et PANIQUER le démon en debug — une mesure ne doit jamais faire tomber ce
+        // qu'elle mesure, et surtout pas depuis une donnée non contrôlée.
+        Some(t) if periode > 0 && t <= n && n.saturating_sub(t) < periode => {
+            TirDuRetard::Ajourne(crate::vieillissement_serie::RETARD_CADENCE)
+        }
+        _ => TirDuRetard::Du { lo, hi },
+    }
 }
 
 /// FENÊTRE `ts` [lo, hi) DU DEAD-MAN'S-SWITCH DE RETARD — PURE, et SEULE définition. `None` = fenêtre vide
@@ -279,6 +437,30 @@ pub(super) fn bornes_du_retard(hot_window: i64, cold_ret: i64, n: i64) -> Option
 /// supprimer un énoncé casse le build là où sa clé est encore citée.
 pub(super) const NOM_DECOUVERTE: &str = "decouverte_des_jours";
 pub(super) const NOM_COMPTE_ET_MAX_ID: &str = "compte_et_max_id_du_jour";
+/// `P10.13-a` — l'énoncé du dead-man's-switch de retard. Clé citée par le rendu de la sonde (qui lui
+/// attache sa phrase de cadence) : une chaîne, un seul endroit.
+pub(super) const NOM_RETARD: &str = "retard_de_vieillissement";
+
+/// CE QUE LA PASSE FAIT D'UN ÉNONCÉ — TROIS états depuis `P10.13-a` levier ①, et plus deux.
+///
+/// LE BOOLÉEN NE SUFFISAIT PLUS, ET LE TROISIÈME ÉTAT N'EST PAS UN DÉTAIL DE RENDU. « La passe
+/// l'exécute-t-elle ? » avait deux réponses tant que la seule alternative était un gate de
+/// CONFIGURATION. Le dead-man's-switch de retard en a maintenant une troisième : la passe l'exécute
+/// bel et bien, mais **une fois par jour** au lieu de vingt-quatre. Les confondre coûterait dans les
+/// deux sens — le déclarer « non exécuté » rendrait la sonde AVEUGLE 23 h sur 24 à l'énoncé même que le
+/// levier change (or elle est le SEUL instrument qui sache attribuer un coût à UN énoncé ; la série, elle,
+/// ne donne que la durée totale de la passe) ; le déclarer « exécuté à chaque tick » facturerait 24 fois
+/// un coût payé une fois.
+pub(super) enum ParLaPasse {
+    /// Exécuté à CHAQUE tick de la passe.
+    ChaqueTick,
+    /// Exécuté à CADENCE RÉDUITE. La phrase dit laquelle, où en est le compteur, et si CE tick tirerait.
+    /// La sonde le mesure QUAND MÊME — et l'annonce, pour qu'aucune durée ne se lise « par tick ».
+    ACadence(String),
+    /// PAS exécuté dans cet état de configuration : plan montré, durée NON mesurée (la facturer serait
+    /// un chiffre faux).
+    Jamais,
+}
 
 /// UN ÉNONCÉ PRÊT À ÊTRE MESURÉ : son texte, ses paramètres RÉELS, et ce que la passe en fait. `nom` est
 /// une clé stable (elle apparaît dans le rapport de la sonde) ; `role` est la phrase qu'un exploitant lit.
@@ -287,10 +469,7 @@ pub(super) struct Enonce {
     pub(super) role: &'static str,
     pub(super) sql: String,
     pub(super) params: Vec<rusqlite::types::Value>,
-    /// La passe l'exécute-t-elle DANS L'ÉTAT ACTUEL de la configuration ? `false` = énoncé conditionnel
-    /// dont le gate est fermé (le dead-man's-switch de retard) : la sonde le montre mais NE le chronomètre
-    /// PAS — mesurer une requête que la passe n'exécute pas rendrait un coût qu'elle ne paie pas.
-    pub(super) execute_par_la_passe: bool,
+    pub(super) par_la_passe: ParLaPasse,
 }
 
 fn ent(v: i64) -> rusqlite::types::Value {
@@ -302,50 +481,86 @@ fn txt(v: &str) -> rusqlite::types::Value {
 }
 
 /// LES ÉNONCÉS QUE LA PASSE EXÉCUTE AVANT DE CONNAÎTRE UN CANDIDAT — dans l'ordre où elle les exécute.
-/// `retention_days` sert UNIQUEMENT à décider si le dead-man's-switch de retard est armé (même gate que
-/// `balayer` : `cold_ret > retention_days`).
-pub(super) fn enonces_sans_candidat(bande: &Bande, n: i64, retention_days: i64) -> Vec<Enonce> {
+///
+/// `tir` est la décision de tir du dead-man's-switch, calculée par l'appelant avec `Bande::tir_du_retard`
+/// et le `dernier_tir` relu dans `meta` — c'est-à-dire EXACTEMENT ce que `detect_aging_stall` calcule.
+/// Le passer plutôt que le recalculer ici est ce qui interdit à la sonde de décrire une cadence que la
+/// passe n'applique pas.
+pub(super) fn enonces_sans_candidat(bande: &Bande, n: i64, tir: &TirDuRetard) -> Vec<Enonce> {
     let (lo, hi) = bande.bornes_de_decouverte();
     let mut out = vec![Enonce {
         nom: NOM_DECOUVERTE,
         role: "liste les (env_id, jour) candidats de la bande éligible — l'énoncé sous suspicion P10.13-a",
         sql: sql_decouverte_des_jours(),
         params: vec![ent(lo), ent(hi)],
-        execute_par_la_passe: bande.ouverte(),
+        par_la_passe: if bande.ouverte() { ParLaPasse::ChaqueTick } else { ParLaPasse::Jamais },
     }];
     out.push(Enonce {
         nom: "tail_du_compteur_de_rowid",
         role: "garde H1 : MAX(id) sur TOUTE la table, une fois par jour candidat frais",
         sql: SQL_MAX_ID_DE_LA_TABLE.to_string(),
         params: vec![],
-        execute_par_la_passe: true,
+        par_la_passe: ParLaPasse::ChaqueTick,
     });
     out.push(Enonce {
         nom: "tous_les_seals",
         role: "énumération de l'index cold_seal — parcourue par l'expiry à chaque passe",
         sql: SQL_TOUS_LES_SEALS.to_string(),
         params: vec![],
-        execute_par_la_passe: true,
+        par_la_passe: ParLaPasse::ChaqueTick,
     });
     out.push(Enonce {
         nom: "seal_bloque",
         role: "détecteur de phase-2 coincée (cold_seal.purged=0 au-delà de la grâce)",
         sql: SQL_SEAL_BLOQUE.to_string(),
         params: vec![ent(n - COLD_SEAL_STUCK_GRACE_S)],
-        execute_par_la_passe: true,
+        par_la_passe: ParLaPasse::ChaqueTick,
     });
-    // Le dead-man's-switch de RETARD : DEUX gates, et la sonde les respecte tous les deux — le gate de
-    // configuration (`cold_ret > retention_days`) et la fenêtre vide. Sinon la sonde facturerait à la
-    // passe un balayage de `event` qu'elle ne fait pas.
+    // Le dead-man's-switch de RETARD. La sonde respecte les MÊMES gates que la passe parce qu'elle
+    // consomme la MÊME décision (`TirDuRetard`) : gate d'armement, fenêtre vide, ET cadence. Les bornes
+    // affichées sont celles du tir quand il a lieu ; sinon celles que la fenêtre RENDRAIT (le plan reste
+    // lisible même quand l'énoncé ne tourne pas).
     let (lo_retard, hi_retard) = bande.bornes_du_retard(n).unwrap_or((0, 0));
     out.push(Enonce {
-        nom: "retard_de_vieillissement",
+        nom: NOM_RETARD,
         role: "dead-man's-switch : lignes chaudes qui auraient dû être columnarisées (gate : rétention cold ÉTENDUE)",
         sql: sql_retard_de_vieillissement(),
         params: vec![ent(lo_retard), ent(hi_retard)],
-        execute_par_la_passe: bande.cold_ret > retention_days && bande.bornes_du_retard(n).is_some(),
+        par_la_passe: match tir {
+            // ARMÉ et cadencé : la passe le paie, mais UNE FOIS PAR `periode_de_tir`. La sonde le mesure
+            // (c'est le seul instrument qui sait ce que CET énoncé coûte) et dit l'amortissement.
+            TirDuRetard::Du { .. } => ParLaPasse::ACadence(phrase_de_cadence(bande, true)),
+            TirDuRetard::Ajourne(cause)
+                if *cause == crate::vieillissement_serie::RETARD_CADENCE =>
+            {
+                ParLaPasse::ACadence(phrase_de_cadence(bande, false))
+            }
+            // Non armé / fenêtre vide : gate de CONFIGURATION fermé -> la passe ne l'exécuterait
+            // JAMAIS dans cet état, quelle que soit l'heure. Plan montré, durée NON mesurée.
+            TirDuRetard::Ajourne(_) => ParLaPasse::Jamais,
+        },
     });
     out
+}
+
+/// LA PHRASE DE CADENCE lue par l'exploitant sous l'énoncé du dead-man's-switch. `du` = ce tick-ci
+/// tirerait. Elle dit l'AMORTISSEMENT explicitement : sans ça, la durée mesurée juste en dessous se
+/// lirait « à chaque passe » — ce qu'elle n'est plus.
+fn phrase_de_cadence(bande: &Bande, du: bool) -> String {
+    if bande.periode_de_tir <= 0 {
+        return "CADENCE DÉSARMÉE (PLUME_COLD_STALL_CHECK_INTERVAL_S=0) -> tiré à CHAQUE passe, \
+                comportement d'avant P10.13-a"
+            .to_string();
+    }
+    format!(
+        "CADENCE : au plus 1 tir / {} s ({} passes horaires sur {} le sautent). CE tick : {} — la durée \
+         mesurée ci-dessous est donc payée UNE FOIS PAR {} s, pas à chaque passe.",
+        bande.periode_de_tir,
+        (bande.periode_de_tir / 3600 - 1).max(0),
+        (bande.periode_de_tir / 3600).max(1),
+        if du { "TIRE" } else { "NE TIRE PAS (trop récent)" },
+        bande.periode_de_tir
+    )
 }
 
 /// LES ÉNONCÉS D'UN CANDIDAT QUI NE DÉPENDENT QUE DU JOUR — dans l'ordre où `age_one_day` les exécute
@@ -360,14 +575,14 @@ pub(super) fn enonces_du_candidat(bande: &Bande, env_id: &str, day: i64) -> Vec<
             role: "état des fichiers scellés de ce jour (machine à états deux phases)",
             sql: SQL_SEALS_DU_JOUR.to_string(),
             params: vec![txt(env_id), ent(day)],
-            execute_par_la_passe: true,
+            par_la_passe: ParLaPasse::ChaqueTick,
         },
         Enonce {
             nom: NOM_COMPTE_ET_MAX_ID,
             role: "compte + borne d'identité de l'ensemble agéable (sous le verrou writer)",
             sql: sql_compte_et_max_id_du_jour(),
             params: vec![txt(env_id), ent(day_start), ent(day_end)],
-            execute_par_la_passe: true,
+            par_la_passe: ParLaPasse::ChaqueTick,
         },
     ]
 }
@@ -392,6 +607,6 @@ pub(super) fn enonce_de_la_page(bande: &Bande, env_id: &str, day: i64, max_id: i
             ent(i64::MIN),
             ent(limite_premiere_page(bande.rg_rows, bande.file_cap) as i64),
         ],
-        execute_par_la_passe: true,
+        par_la_passe: ParLaPasse::ChaqueTick,
     }
 }

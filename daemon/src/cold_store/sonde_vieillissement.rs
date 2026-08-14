@@ -263,6 +263,11 @@ fn rendre(out: &mut String, e: &Enonce, m: &Result<Mesure, String>) {
             .collect();
         let _ = writeln!(out, "   params  : [{}]", p.join(", "));
     }
+    // La CADENCE se dit AVANT les chiffres : un lecteur qui s'arrête à la première ligne chiffrée ne
+    // doit pas repartir avec une durée qu'il croit payée à chaque passe.
+    if let ParLaPasse::ACadence(phrase) = &e.par_la_passe {
+        let _ = writeln!(out, "   cadence : {phrase}");
+    }
     match m {
         Err(err) => {
             let _ = writeln!(out, "   MESURE IMPOSSIBLE : {err}");
@@ -274,23 +279,26 @@ fn rendre(out: &mut String, e: &Enonce, m: &Result<Mesure, String>) {
             for (i, l) in m.plan.iter().enumerate() {
                 let _ = writeln!(out, "   {} {l}", if i == 0 { "plan    :" } else { "         " });
             }
-            if e.execute_par_la_passe {
-                let _ = writeln!(
-                    out,
-                    "   mesuré  : compilation {:.1} ms · exécution {:.1} ms · {} ligne(s) rendue(s)",
-                    m.compilation_ms, m.execution_ms, m.lignes
-                );
-                let _ = writeln!(
-                    out,
-                    "   travail : balayage={} tris={} pas_de_machine={}",
-                    m.balayage, m.tris, m.pas_de_machine
-                );
-            } else {
-                let _ = writeln!(
-                    out,
-                    "   NON EXÉCUTÉ PAR LA PASSE dans cette configuration -> plan montré, durée NON \
-                     mesurée (la facturer serait un chiffre faux)"
-                );
+            match e.par_la_passe {
+                ParLaPasse::Jamais => {
+                    let _ = writeln!(
+                        out,
+                        "   NON EXÉCUTÉ PAR LA PASSE dans cette configuration -> plan montré, durée NON \
+                         mesurée (la facturer serait un chiffre faux)"
+                    );
+                }
+                ParLaPasse::ChaqueTick | ParLaPasse::ACadence(_) => {
+                    let _ = writeln!(
+                        out,
+                        "   mesuré  : compilation {:.1} ms · exécution {:.1} ms · {} ligne(s) rendue(s)",
+                        m.compilation_ms, m.execution_ms, m.lignes
+                    );
+                    let _ = writeln!(
+                        out,
+                        "   travail : balayage={} tris={} pas_de_machine={}",
+                        m.balayage, m.tris, m.pas_de_machine
+                    );
+                }
             }
         }
     }
@@ -353,14 +361,35 @@ pub(crate) fn cold_aging_plan(conf: &HashMap<String, String>, db_path: &str) -> 
         bande.rg_rows,
         bande.policies.len()
     );
+    // `P10.13-a` levier ① — LA CADENCE DU DEAD-MAN'S-SWITCH, DITE AVEC SON ÉTAT RÉEL. Le `dernier_tir`
+    // est relu dans `meta` PAR LA MÊME FONCTION que la passe : la sonde ne décrit donc pas une cadence
+    // théorique, elle lit celle qui s'applique à cette base à cette seconde. `SELECT` sur `meta` :
+    // l'authorizer défaut-deny l'autorise (Read + Select), et rien n'est écrit.
+    let dernier_tir = dernier_tir_du_retard(&conn);
+    let tir = bande.tir_du_retard(n, dernier_tir);
+    let _ = writeln!(
+        out,
+        "  retard  : période de tir {} s · dernier tir {} · verdict de CE tick : {}",
+        bande.periode_de_tir,
+        match dernier_tir {
+            // `saturating_sub` : la valeur vient d'une colonne TEXTE de `meta`, donc d'une donnée non
+            // contrôlée. Un instrument de diagnostic ne panique pas sur ce qu'il est venu diagnostiquer.
+            Some(t) => format!("ts={t} (il y a {} s)", n.saturating_sub(t)),
+            None => "JAMAIS (aucun horodatage dans `meta`) -> le prochain tick tire".to_string(),
+        },
+        match &tir {
+            TirDuRetard::Du { lo, hi } => format!("TIRE sur ts [{lo} .. {hi})"),
+            TirDuRetard::Ajourne(cause) => format!("N'EXÉCUTE PAS l'énoncé n° 5 (cause `{cause}`)"),
+        }
+    );
 
     // ---- Les énoncés SANS candidat, dans l'ordre de la passe. ----
     // La découverte est chronométrée UNE SEULE FOIS et sa récolte (plafonnée) sert à choisir le candidat :
     // la rejouer aurait fait payer deux fois les 17-22 s qu'on est venu mesurer.
     let mut candidats: Vec<(String, i64)> = Vec::new();
     let mut decouverts = 0i64;
-    for e in enonces_sans_candidat(&bande, n, retention_days) {
-        if !e.execute_par_la_passe {
+    for e in enonces_sans_candidat(&bande, n, &tir) {
+        if matches!(e.par_la_passe, ParLaPasse::Jamais) {
             let m = plan_seul(&conn, &e);
             rendre(&mut out, &e, &m);
             continue;

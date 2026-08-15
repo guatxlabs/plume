@@ -9982,9 +9982,11 @@ fn le_verdict_de_cache_separe_ce_que_le_cache_absorbe_de_ce_qu_il_n_absorbe_pas(
 
     let muet = fabriquer(12.0, Chaud::NonMesure(CHAUD_REJEU_EN_ECHEC)).verdict_de_cache();
     assert!(
-        muet.contains("NON DÉPARTAGÉ") && muet.contains("BORNE HAUTE"),
-        "sans second passage, la sonde doit dire qu'elle N'A PAS départagé — pas laisser le froid passer \
-         pour le prix de la passe : {muet}"
+        muet.contains("NON DÉPARTAGÉ") && muet.contains("rien ne dit ce que le cache en absorbe"),
+        "sans second passage, la sonde doit dire qu'elle N'A PAS départagé — pas laisser la durée sur \
+         connexion neuve passer pour le prix de la passe. (Le mot « BORNE HAUTE » a été RETIRÉ le \
+         2026-08-15 : la vérification en production a montré que ce n'en était pas une — même énoncé, \
+         10,1 / 3 847 / 11,3 ms selon l'état du cache de l'OS.) : {muet}"
     );
 }
 
@@ -10045,10 +10047,28 @@ fn le_rapport_ne_publie_aucune_duree_sans_dire_de_quel_cache_elle_vient() {
          rien, et passerait au vert sur une sonde devenue muette"
     );
     // Et la mise en garde est dans la SORTIE, là où l'opérateur la lit.
+    // `P10.15-a` RÉSIDUEL — CE QUE LE RAPPORT DOIT DIRE A CHANGÉ, ET EN MIEUX. La première version
+    // annonçait le passage froid comme une « BORNE HAUTE ». La vérification en production l'a REFUTÉ : le
+    // même énoncé a rendu 10,1 ms, 3 847 ms puis 11,3 ms selon le jour, parce que le cache de l'OS n'est
+    // pas remis à zéro et que la sonde ne le mesure pas. Un majorant qui varie de ×341 n'en est pas un.
+    // La garde suit donc la propriété RÉELLE : le rapport doit annoncer la double mesure, nommer le CHAUD
+    // comme PLANCHER, et NIER explicitement que le froid soit un majorant.
     assert!(
-        rapport.contains("MESURÉ DEUX FOIS") && rapport.contains("BORNE HAUTE"),
-        "le rapport ne dit pas à son lecteur que ses durées sont encadrées : la nuance est retournée dans \
-         le code, invisible depuis `kubectl exec`\n{rapport}"
+        rapport.contains("MESURÉ DEUX FOIS"),
+        "le rapport ne dit pas à son lecteur que ses durées sont mesurées deux fois : la nuance est \
+         retournée dans le code, invisible depuis `kubectl exec`\n{rapport}"
+    );
+    assert!(
+        rapport.contains("PLANCHER"),
+        "le rapport ne nomme pas le passage CHAUD comme un plancher — or c'est la seule des deux valeurs \
+         qui borne vraiment quelque chose\n{rapport}"
+    );
+    assert!(
+        rapport.contains("n'est PAS un majorant"),
+        "LE RAPPORT LAISSE CROIRE QUE LE FROID MAJORE LA PASSE. Mesuré le 2026-08-15 : le même énoncé rend \
+         10,1 ms, 3 847 ms ou 11,3 ms selon l'état du cache de l'OS, que cette sonde ne remet pas à zéro \
+         et ne mesure pas. Annoncer une borne qu'on n'a pas est exactement le défaut que `P10.15-a` \
+         ferme\n{rapport}"
     );
     drop(db);
     let _ = std::fs::remove_dir_all(&root);

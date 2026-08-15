@@ -295,6 +295,24 @@ mod cles_de_cause_gardees_tests {
         // texte de test : une clé citée ICI (ne serait-ce que dans un message d'échec) se compterait comme
         // sa propre garde. Le chemin est pris de `file!()`, jamais écrit à la main, et l'exclusion est
         // VÉRIFIÉE : si elle ne désigne plus un fichier balayé, la garde refuse de conclure.
+        //
+        // `P10.14-a` (résiduel) — CE QU'ELLE VAUT AUJOURD'HUI, MESURÉ LE 2026-08-15 PAR MUTATION.
+        // Les trois lignes `if *f == moi { continue; }` retirées ⇒ le test passe QUAND MÊME. Elle est donc
+        // **INERTE en l'état** : ce fichier ne cite aujourd'hui aucune clé en dur — ses messages d'échec
+        // CONSTRUISENT les noms depuis le corpus au lieu de les écrire. Elle est gardée comme ASSURANCE et
+        // non comme garde active : la première personne qui écrira un nom de clé littéral ici la rendra
+        // porteuse sans y penser, et c'est justement le geste qu'on ne veut pas avoir à surveiller.
+        //
+        // CE QUE JE N'AI PAS PROUVÉ, ET JE LE DIS PLUTÔT QUE DE LAISSER CROIRE : qu'elle SAURAIT mordre.
+        // Le démontrer demanderait de fabriquer une clé factice dépourvue de garde ailleurs puis de la
+        // citer ici — un test du test, pour une branche que la mesure dit sans objet. Ce qui EST vérifié à
+        // chaque exécution, en revanche, c'est sa PRÉCONDITION : l'`assert!` ci-dessous refuse de conclure
+        // si `file!()` cesse de désigner un fichier réellement balayé. Une assurance qui pointerait à côté
+        // serait pire que pas d'assurance du tout.
+        //
+        // Contrôlé au passage, hors dépôt, parce que je le soupçonnais d'être la cause de l'inertie : dans
+        // un fichier tiré par `include!`, `file!()` rend bien le chemin du fichier INCLUS et non celui de
+        // l'incluant. Ce n'est donc PAS l'explication — l'inertie vient de l'absence de citations, point.
         let moi = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(file!());
         assert!(
             fichiers.iter().any(|f| *f == moi),

@@ -9433,7 +9433,10 @@ fn un_seal_rejoue_ne_compte_que_les_lignes_reellement_supprimees() {
 // REFUSE d'écrire même si on le lui demandait, et elle mesure bien la requête de la passe.
 // =====================================================================================================
 
-use super::sonde_vieillissement::{brider_en_lecture_seule, executer_et_chronometrer, ouvrir_en_lecture_seule};
+use super::sonde_vieillissement::{
+    brider_en_lecture_seule, executer_et_chronometrer, ouvrir_en_lecture_seule, Chaud, Mesure,
+    CHAUD_REJEU_EN_ECHEC,
+};
 
 /// L'AUTHORIZER DE SONDE REFUSE TOUT CE QUI N'EST PAS UNE LECTURE — prouvé SUR UNE CONNEXION ÉCRIVABLE,
 /// et c'est le point : sur une connexion déjà ouverte en `SQLITE_OPEN_READ_ONLY`, un refus ne prouverait
@@ -9833,5 +9836,220 @@ fn un_jour_sans_travail_ne_se_compte_pas_comme_columnarise() {
     // La comptabilité FERME toujours : sinon `verdict` refuserait de publier et les assertions
     // ci-dessus auraient rendu `None`, pas `Some(0.0)`.
     assert_eq!(serie(&db, NOM_OK, Some("{\"cause\":\"aucune\"}")), Some(1.0));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// =================================================================================================
+// `P10.15-a` — LA SONDE PRÉSENTAIT DES DURÉES À FROID COMME LE PRIX DE LA PASSE
+// =================================================================================================
+
+/// `P10.15-a` — LE PIÈGE QUE LE REJEU A FAILLI OUVRIR, ET QUI EST LE VRAI DANGER DE CE CORRECTIF.
+///
+/// `sqlite3_stmt_status(..., resetFlg=0)` — ce que fait `Statement::get_status` — rend un CUMUL sur la
+/// durée de vie de l'INSTRUCTION PRÉPARÉE, pas le coût de la dernière exécution. Ajouter un second passage
+/// sans déplacer la lecture des compteurs aurait donc DOUBLÉ `balayage`, `tris` et `pas_de_machine` — en
+/// silence, et dans le rapport même dont on est en train de réparer l'honnêteté. Les 1 708 241 balayages
+/// relevés en production le 2026-08-15 seraient devenus ~3,4 M sans qu'une seule ligne ne change de forme.
+///
+/// LE TÉMOIN NÉGATIF EST DANS LE TEST : on prouve d'abord que le compteur DOUBLE VRAIMENT quand on exécute
+/// deux fois la même instruction. Sans cette moitié-là, l'égalité vérifiée ensuite pourrait tenir parce
+/// que le compteur ne cumule pas du tout — et le test passerait au vert en ne gardant rien.
+///
+/// MUTATION : déplacer la lecture des trois compteurs APRÈS `rejouer_a_chaud` dans
+/// `executer_recolter_et_chronometrer` ⇒ `pas_de_machine` passe de la valeur d'UNE exécution à celle de
+/// DEUX, et l'assertion finale rougit en nommant les deux nombres.
+#[test]
+fn les_compteurs_ne_comptent_que_le_passage_froid() {
+    let root = tmp_root("sonde-compteurs");
+    let chemin = root.join("plume.db");
+    let jour = crate::now().div_euclid(SECS_PER_DAY) - 5;
+    {
+        let db = mkdb(&root);
+        for i in 0..40 {
+            insert_event(&db, &rich_row(jour * SECS_PER_DAY + i, i));
+        }
+    }
+    let conn = ouvrir_en_lecture_seule(&chemin.to_string_lossy()).unwrap();
+
+    // Un énoncé qui BALAIE (pas d'index sur `source`) : sans balayage, `FullscanStep` resterait à 0 et
+    // l'égalité vérifiée plus bas serait vraie pour la mauvaise raison.
+    let sql = "SELECT COUNT(*) FROM event WHERE source LIKE '%o%'";
+
+    // ---- TÉMOIN NÉGATIF : le compteur CUMULE bien d'une exécution à l'autre. ----
+    let (apres_une, apres_deux) = {
+        let mut st = conn.prepare(sql).unwrap();
+        let compter = |st: &mut rusqlite::Statement<'_>| {
+            let mut rows = st.query([]).unwrap();
+            while rows.next().unwrap().is_some() {}
+        };
+        compter(&mut st);
+        let une = i64::from(st.get_status(rusqlite::StatementStatus::VmStep));
+        compter(&mut st);
+        (une, i64::from(st.get_status(rusqlite::StatementStatus::VmStep)))
+    };
+    assert!(apres_une > 0, "l'énoncé témoin n'exécute rien : le test ne garderait rien");
+    assert!(
+        apres_deux >= apres_une * 2 - 2,
+        "PRÉMISSE DU TEST FAUSSE : `VmStep` ne cumule pas d'une exécution à l'autre ({apres_une} puis \
+         {apres_deux}). Alors l'égalité vérifiée ensuite ne prouve plus rien — c'est le test qu'il faut \
+         refaire, pas le code."
+    );
+
+    // ---- CE QUE LA SONDE PUBLIE : la valeur d'UNE exécution, malgré ses deux passages. ----
+    let e = Enonce {
+        nom: "temoin_de_comptage",
+        role: "énoncé fabriqué pour ce test — il balaie `event`",
+        sql: sql.to_string(),
+        params: Vec::new(),
+        par_la_passe: ParLaPasse::ChaqueTick,
+    };
+    let m = executer_et_chronometrer(&conn, &e).unwrap();
+    assert_eq!(
+        m.pas_de_machine, apres_une,
+        "la sonde publie {} pas de machine là où UNE exécution en coûte {apres_une} : le second passage \
+         (`P10.15-a`) est compté dans les compteurs, donc tous les chiffres de travail du rapport sont \
+         doublés en silence.",
+        m.pas_de_machine
+    );
+    assert!(m.balayage > 0, "l'énoncé témoin devait balayer -> `FullscanStep` ne peut pas être nul");
+    assert_eq!(
+        m.balayage,
+        apres_une.min(m.balayage), // borne : jamais au-delà d'une exécution
+        "même vérité sur `balayage` : {} publié pour une seule exécution",
+        m.balayage
+    );
+    // Et la mesure a bien EU LIEU deux fois : sinon on aurait « corrigé » le doublement en supprimant le
+    // rejeu, ce qui remettrait exactement le défaut d'origine.
+    assert!(
+        matches!(m.execution_chaud, Chaud::Mesure(_)),
+        "aucun passage chaud mesuré -> la sonde est revenue à une durée unique, sans dire de quel cache \
+         elle vient : c'est le défaut `P10.15-a` réintroduit"
+    );
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `P10.15-a` — LE VERDICT DÉPARTAGE, ET IL NE DIT PAS LA MÊME CHOSE DANS LES DEUX CAS.
+///
+/// Les couples ne sont pas inventés : ce sont les DEUX relevés de production du 2026-08-15.
+///   * `decouverte_des_jours` : 3 847 ms à froid, tandis que la passe VIVANTE bouclait tout entière en
+///     12 à 31 ms -> le cache absorbe l'essentiel, le froid ne décrit PAS la passe ;
+///   * `retard_de_vieillissement` : 37 471 ms pour la sonde contre 38 836 ms pour la passe -> aucun cache
+///     n'absorbe un balayage de 1,7 M lignes, le froid DÉCRIT la passe.
+/// Un verdict qui rendrait la même phrase pour ces deux couples ne servirait à rien : c'est ce que la
+/// dernière assertion refuse.
+#[test]
+fn le_verdict_de_cache_separe_ce_que_le_cache_absorbe_de_ce_qu_il_n_absorbe_pas() {
+    let fabriquer = |froid: f64, chaud: Chaud| Mesure {
+        plan: vec!["SCAN event".to_string()],
+        compilation_ms: 0.1,
+        execution_froid_ms: froid,
+        execution_chaud: chaud,
+        lignes: 1,
+        balayage: 0,
+        tris: 0,
+        pas_de_machine: 0,
+    };
+
+    let absorbe = fabriquer(3847.1, Chaud::Mesure(21.0)).verdict_de_cache();
+    assert!(
+        absorbe.contains("SURESTIME") && absorbe.contains("21.0 ms"),
+        "le couple mesuré en prod (3847 ms à froid, 21 ms chauds) doit être annoncé comme surestimé, et \
+         nommer la valeur que la passe paie vraiment : {absorbe}"
+    );
+
+    let reel = fabriquer(37470.6, Chaud::Mesure(36000.0)).verdict_de_cache();
+    assert!(
+        reel.contains("DÉCRIT la passe"),
+        "un balayage que le cache n'absorbe pas doit être annoncé comme décrivant la passe : {reel}"
+    );
+    assert_ne!(
+        absorbe, reel,
+        "le verdict rend la MÊME phrase pour un énoncé surestimé ×183 et pour un énoncé exact à 3,5 % : \
+         il ne départage rien et la ligne `cache` du rapport est décorative"
+    );
+
+    let court = fabriquer(0.2, Chaud::Mesure(0.1)).verdict_de_cache();
+    assert!(
+        court.contains("trop court"),
+        "sous le plancher, un rapport ×2 n'est que du bruit d'ordonnancement -> on ne conclut pas : {court}"
+    );
+    assert!(
+        !court.contains("SURESTIME"),
+        "un énoncé à 0,2 ms est annoncé comme « surestimant la passe » : le plancher ne joue pas, et le \
+         rapport criera au cache sur chaque énoncé trivial : {court}"
+    );
+
+    let muet = fabriquer(12.0, Chaud::NonMesure(CHAUD_REJEU_EN_ECHEC)).verdict_de_cache();
+    assert!(
+        muet.contains("NON DÉPARTAGÉ") && muet.contains("BORNE HAUTE"),
+        "sans second passage, la sonde doit dire qu'elle N'A PAS départagé — pas laisser le froid passer \
+         pour le prix de la passe : {muet}"
+    );
+}
+
+/// `P10.15-a` — AUCUNE DURÉE N'EST PUBLIÉE SANS SA LIGNE `cache`. La garde porte sur le RAPPORT RÉEL, pas
+/// sur `verdict_de_cache` en isolation : le défaut d'origine n'était pas que la sonde ignorait la nuance
+/// (elle l'écrivait, mot pour mot, en tête du module) — c'est qu'elle ne la METTAIT PAS DANS SA SORTIE.
+/// Une garde qui ne testerait que la fonction pure raterait exactement le défaut qu'on ferme.
+///
+/// La règle est DÉRIVÉE du texte rendu, pas d'une liste d'énoncés : tout bloc qui contient `exécution `
+/// doit contenir `cache   :`. Un énoncé ajouté demain y est soumis sans que personne n'y pense.
+///
+/// MUTATION : retirer la ligne `cache   :` de `rendre` ⇒ le test nomme les blocs fautifs.
+#[test]
+fn le_rapport_ne_publie_aucune_duree_sans_dire_de_quel_cache_elle_vient() {
+    let root = tmp_root("sonde-cache-rapport");
+    let cold = root.join("cold");
+    let chemin = root.join("plume.db");
+    let jour = crate::now().div_euclid(SECS_PER_DAY) - 50;
+    let db = mkdb(&root);
+    for i in 0..10 {
+        insert_event(&db, &rich_row(jour * SECS_PER_DAY + i, i));
+    }
+    db.lock()
+        .execute_batch(
+            "CREATE TABLE cold_seal(env_id TEXT NOT NULL, day INTEGER NOT NULL, seq INTEGER NOT NULL, \
+             expected_rows INTEGER NOT NULL, sealed_ts INTEGER NOT NULL, purged INTEGER NOT NULL DEFAULT 0, \
+             max_id INTEGER NOT NULL, ts_min INTEGER NOT NULL, ts_max INTEGER NOT NULL, lo_ts INTEGER NOT NULL, \
+             lo_id INTEGER NOT NULL, hi_id INTEGER NOT NULL, last_file INTEGER NOT NULL DEFAULT 0, \
+             dim_stats BLOB, PRIMARY KEY(env_id, day, seq))",
+        )
+        .unwrap();
+    let rapport =
+        crate::cold_store::cold_aging_plan(&conf_ext(&cold, 365), &chemin.to_string_lossy()).unwrap();
+
+    // Découpage en blocs d'énoncé, sur le SEUL séparateur que `rendre` émet.
+    let blocs: Vec<&str> = rapport.split("\n── ").skip(1).collect();
+    assert!(blocs.len() >= 5, "le rapport ne porte que {} bloc(s) -> le découpage a changé", blocs.len());
+    let mut chronometres = 0usize;
+    for b in &blocs {
+        if !b.contains("exécution ") {
+            continue;
+        }
+        chronometres += 1;
+        let nom = b.lines().next().unwrap_or("<sans nom>");
+        assert!(
+            b.contains("cache   :"),
+            "l'énoncé `{nom}` publie une durée SANS dire si elle décrit la passe ou un cache vide — c'est \
+             le défaut `P10.15-a` (mesuré : ×183 d'écart sur `decouverte_des_jours`) :\n{b}"
+        );
+        assert!(
+            b.contains("FROID") && b.contains("CHAUD"),
+            "l'énoncé `{nom}` ne publie plus les DEUX bornes : un seul nombre redevient indéchiffrable\n{b}"
+        );
+    }
+    assert!(
+        chronometres >= 4,
+        "seulement {chronometres} énoncé(s) chronométré(s) dans le rapport -> la garde ne couvre presque \
+         rien, et passerait au vert sur une sonde devenue muette"
+    );
+    // Et la mise en garde est dans la SORTIE, là où l'opérateur la lit.
+    assert!(
+        rapport.contains("MESURÉ DEUX FOIS") && rapport.contains("BORNE HAUTE"),
+        "le rapport ne dit pas à son lecteur que ses durées sont encadrées : la nuance est retournée dans \
+         le code, invisible depuis `kubectl exec`\n{rapport}"
+    );
+    drop(db);
     let _ = std::fs::remove_dir_all(&root);
 }

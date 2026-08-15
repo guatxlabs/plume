@@ -445,7 +445,7 @@ jobs:
           # ⚠ CE QUE CE CHIFFRE NE PROUVE PAS, ET IL FAUT LE REDIRE : il compte des tests DÉCLARÉS,
           # pas des tests VERTS. La suite `cold_tier` n'a PAS été exécutée pour ce lot ; seule la
           # suite par défaut l'a été (rc=0, 1012/1012, 217,84 s). La CI, elle, les exécute vraiment.
-          EXPECTED_COLD_TESTS: "1254"
+          EXPECTED_COLD_TESTS: "1257"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

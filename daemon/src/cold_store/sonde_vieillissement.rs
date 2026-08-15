@@ -35,25 +35,44 @@
 //!      `PRAGMA` émis (clé SQLCipher, budget mémoire) le sont AVANT que l'authorizer ne soit posé, et
 //!      aucun d'eux n'écrit dans le fichier.
 //!
-//! CE QU'ELLE NE PERTURBE PAS. Processus SÉPARÉ, connexion SÉPARÉE ouverte en lecture seule : en WAL un
-//! lecteur ne prend PAS le verrou d'écriture et ne bloque pas l'ingest (même posture que `db-stats`, qui
-//! tourne déjà en production). Elle ne prend jamais `db.lock()` : ce mutex appartient au PROCESSUS daemon,
-//! il n'existe pas ici.
+//! CE QU'ELLE PERTURBE, ET CE QU'ELLE NE PERTURBE PAS. Processus SÉPARÉ, connexion SÉPARÉE ouverte en
+//! lecture seule : en WAL un lecteur ne prend PAS le verrou d'écriture et ne bloque pas l'ingest (même
+//! posture que `db-stats`, qui tourne déjà en production). Elle ne prend jamais `db.lock()` : ce mutex
+//! appartient au PROCESSUS daemon, il n'existe pas ici. EN REVANCHE elle tire par le cache de pages de
+//! l'OS tout ce qu'elle lit, et ce n'est pas gratuit sur un budget de 2 Gio : relevé le 2026-08-15 sur la
+//! production, `MemAvailable` est passé de **1 195 Mio à 986 Mio** pendant une exécution (–209 Mio), aux
+//! dépens de ce que le daemon y avait chaud. Une sonde qui se disait « sans perturbation » se trompait
+//! d'axe : elle ne perturbe pas les VERROUS, elle perturbe la MÉMOIRE.
+//!
+//! `P10.15-a` — POURQUOI CHAQUE ÉNONCÉ EST EXÉCUTÉ **DEUX FOIS** (et pourquoi la version précédente
+//! mentait). La connexion de la sonde est neuve : son cache de pages est VIDE, alors que le daemon tourne
+//! sur une connexion vieille de plusieurs heures. Le rapport publiait UNE durée, sans dire laquelle des
+//! deux situations elle décrivait. Ce n'était pas une nuance : mesuré le 2026-08-15 en production, la
+//! sonde attribuait **3 847 ms** à `decouverte_des_jours` là où la passe VIVANTE bouclait — découverte
+//! comprise, journal à l'appui — en **12 à 31 ms**. Soit un facteur ≥ 183 sur l'énoncé le plus regardé de
+//! la campagne. Le même relevé confirmait l'autre énoncé au contraire : **37 471 ms** pour la sonde contre
+//! **38 836 ms** pour la passe, 3,5 % d'écart — parce qu'un balayage de 1,7 M lignes ne tient dans aucun
+//! cache. LES DEUX CAS EXISTENT DONC, ET RIEN DANS LA SORTIE NE PERMETTAIT DE LES DISTINGUER.
+//!
+//! La correction ne devine pas quels énoncés sont sensibles au cache : elle les REJOUE TOUS
+//! immédiatement et publie LE COUPLE (froid, chaud). Le second passage n'est pas une redondance, c'est LA
+//! mesure — l'écart entre les deux EST la part que le cache absorbe. Le prix est assumé et dit dans le
+//! rapport : la sonde coûte désormais environ le double de ce qu'elle lisait. Un outil qui coûte deux fois
+//! est préférable à un outil qui se trompe de deux ordres de grandeur. (La justification écrite ici avant
+//! le 2026-08-15 — « les rejouer aurait fait payer DEUX FOIS les 17-22 s » — parlait d'un rejeu qui
+//! n'apportait AUCUNE information, celui qui servait à relire un résultat ; elle ne couvrait pas celui-ci.)
 //!
 //! CE QU'ELLE NE MESURE PAS, ÉCRIT POUR ÊTRE OPPOSABLE :
-//!   * **sa connexion n'est pas CELLE du daemon** : cache de pages neuf, pas de WAL chaud accumulé par
-//!     l'ingest, cache de fichiers de l'OS dans un autre état. Une durée mesurée ici dit le PLAN et
-//!     l'ORDRE DE GRANDEUR, pas la milliseconde du tick horaire ;
 //!   * elle ne mesure **aucune contention** : la passe réelle tient le verrou writer pendant la
 //!     découverte, ce que la sonde ne peut pas imiter sans devenir intrusive ;
 //!   * elle n'exécute NI la phase 2 (le `DELETE` chunké) NI l'écriture Parquet — elles ÉCRIVENT ;
 //!   * elle mesure le PREMIER candidat retenu, pas les N que la passe traiterait : les énoncés par-jour
 //!     se paient une fois PAR JOUR, et le rapport dit combien de jours seraient traités ;
-//!   * CHAQUE ÉNONCÉ N'EST EXÉCUTÉ QU'UNE FOIS. La sonde a besoin du RÉSULTAT de deux d'entre eux (la
-//!     découverte, pour la liste des candidats ; le snapshot, pour le `max_id` qui borne la page) : elle
-//!     les RÉCOLTE PENDANT la mesure, plafonnés (`RECOLTE_MAX`), au lieu de les rejouer — les rejouer
-//!     aurait fait payer DEUX FOIS les 17-22 s en production, sur un outil dont tout l'argument est de ne
-//!     pas déranger. Quand la récolte est tronquée, le COMPTE reste exact et le rapport le dit.
+//!   * le passage CHAUD est chaud du cache de LA SONDE, pas de celui du daemon. Il donne la borne BASSE
+//!     (« voilà ce que coûte cet énoncé quand ses pages sont là »), le passage froid la borne HAUTE. La
+//!     passe réelle est entre les deux, et le rapport dit exactement cela plutôt que de choisir ;
+//!   * la RÉCOLTE (candidats, `max_id`) est prise pendant le passage FROID, plafonnée (`RECOLTE_MAX`) :
+//!     quand elle est tronquée, le COMPTE reste exact et le rapport le dit.
 
 use super::*;
 use std::fmt::Write as _;
@@ -108,6 +127,35 @@ pub(super) fn ouvrir_en_lecture_seule(db_path: &str) -> Result<Connection, Strin
 /// CE QU'UN ÉNONCÉ A COÛTÉ. `plan` vient de `EXPLAIN QUERY PLAN` (compilation seule) ; tout le reste vient
 /// de l'exécution réelle. Les compteurs `SQLITE_STMTSTATUS_*` sont là parce qu'UN PLAN INDEXÉ QUI MET 17 s
 /// DIRAIT AUTRE CHOSE QU'UN BALAYAGE : le texte du plan ne suffit pas à trancher, ces nombres si.
+/// `P10.15-a` — LE SECOND PASSAGE, ou la CAUSE NOMMÉE de son absence. Jamais un `Option<f64>` nu : un
+/// `None` se lit « zéro » ou « pas important » selon l'humeur du lecteur, une cause se lit.
+pub(super) enum Chaud {
+    /// L'énoncé a été rejoué et voici sa durée, cache chaud.
+    Mesure(f64),
+    /// Pas de second passage — et on dit POURQUOI.
+    NonMesure(&'static str),
+}
+
+/// L'énoncé n'est PAS exécuté par la passe dans cette configuration : on montre son plan, jamais une durée
+/// (cf. `plan_seul`). Il n'y a donc pas plus de passage chaud que de passage froid.
+pub(super) const CHAUD_JAMAIS_EXECUTE: &str = "énoncé non exécuté par la passe — aucune durée mesurée";
+
+/// Le rejeu a échoué là où le premier passage avait réussi (base fermée sous les pieds, E/S). On refuse de
+/// publier le froid tout seul comme s'il était le prix de la passe.
+pub(super) const CHAUD_REJEU_EN_ECHEC: &str = "rejeu en échec — la durée à froid reste une BORNE HAUTE non départagée";
+
+/// AU-DELÀ DE CE FACTEUR entre froid et chaud, la durée à froid ne décrit plus ce que la passe paie : le
+/// cache absorbe l'essentiel. En deçà, les deux chiffres sont du même ordre et le froid est utilisable.
+///
+/// CE SEUIL NE CACHE RIEN — et c'est ce qui le rend peu risqué : les DEUX durées sont imprimées dans tous
+/// les cas, il ne choisit que la PHRASE qui les accompagne. Un lecteur en désaccord avec la valeur a les
+/// nombres sous les yeux pour trancher lui-même.
+pub(super) const FACTEUR_CACHE_DETERMINANT: f64 = 2.0;
+
+/// PLANCHER D'INTERPRÉTATION. Sous cette durée, un rapport froid/chaud n'est que du bruit d'ordonnancement
+/// (un énoncé à 0,1 ms peut « doubler » sans que rien de réel ne se soit passé). On ne conclut pas.
+pub(super) const PLANCHER_INTERPRETABLE_MS: f64 = 5.0;
+
 pub(super) struct Mesure {
     pub(super) plan: Vec<String>,
     /// Durée de la COMPILATION du plan : un plan coûteux à compiler ne se voit nulle part ailleurs.
@@ -117,8 +165,14 @@ pub(super) struct Mesure {
     /// Ce qu'on mesure ici n'est pas une requête servie, et lui emprunter ses noms rendrait les deux
     /// familles de chiffres confondables — exactement le défaut que cette garde a fermé.
     pub(super) compilation_ms: f64,
-    /// Durée de l'EXÉCUTION complète (premier `step` -> dernière ligne consommée).
-    pub(super) execution_ms: f64,
+    /// Durée de l'EXÉCUTION complète (premier `step` -> dernière ligne consommée) sur une connexion dont
+    /// le cache de pages est VIDE — c'est la BORNE HAUTE de ce que la passe peut payer.
+    pub(super) execution_froid_ms: f64,
+    /// `P10.15-a` — LA MÊME EXÉCUTION, REJOUÉE IMMÉDIATEMENT, donc sur un cache chaud : BORNE BASSE. Ce
+    /// n'est PAS un champ optionnel de confort. Le type force chaque site de rendu à dire ce qu'il en est,
+    /// exactement comme `Crete::NonMesuree` et `Retard::NonMesure` : sans lui, on retombe sur une seule
+    /// durée dont le lecteur ne sait pas si elle décrit la passe (mesuré : elle peut la surestimer ×183).
+    pub(super) execution_chaud: Chaud,
     pub(super) lignes: i64,
     /// `FULLSCAN_STEP` : pas de balayage complet de table. C'est LE discriminant cherché.
     pub(super) balayage: i64,
@@ -133,6 +187,41 @@ pub(super) struct Mesure {
     // sites). Y faire une exception affaiblirait une garde utile pour un chiffre REDONDANT : le plan
     // rendu ci-dessus porte déjà « USING AUTOMATIC COVERING INDEX » quand le cas se produit. On lit
     // donc le plan, pas le compteur.
+}
+
+impl Mesure {
+    /// `P10.15-a` — LA PHRASE QUI DÉPARTAGE LES DEUX PASSAGES. PURE (aucune E/S, aucune base) : c'est ce
+    /// qui la rend testable sur des couples fabriqués, y compris ceux qu'on ne saurait pas provoquer en
+    /// production. Elle ne CHOISIT jamais un chiffre à la place du lecteur — les deux sont imprimés par
+    /// `rendre` juste au-dessus ; elle dit seulement lequel décrit la passe.
+    pub(super) fn verdict_de_cache(&self) -> String {
+        let froid = self.execution_froid_ms;
+        let chaud = match self.execution_chaud {
+            Chaud::NonMesure(cause) => return format!("NON DÉPARTAGÉ — {cause}"),
+            Chaud::Mesure(c) => c,
+        };
+        if froid < PLANCHER_INTERPRETABLE_MS && chaud < PLANCHER_INTERPRETABLE_MS {
+            return format!(
+                "les DEUX passages sont sous {PLANCHER_INTERPRETABLE_MS:.0} ms — trop court pour \
+                 conclure, et cet énoncé ne pèse de toute façon rien dans la passe"
+            );
+        }
+        // Plancher au dénominateur : un chaud à 0,0 ms (énoncé entièrement servi par le cache) ne doit pas
+        // produire un rapport infini dans un rapport que quelqu'un lit.
+        let rapport = froid / chaud.max(0.001);
+        if rapport > FACTEUR_CACHE_DETERMINANT {
+            format!(
+                "LE FROID SURESTIME LA PASSE (×{rapport:.0}) — le cache absorbe l'essentiel, et la passe \
+                 tourne sur une connexion vieille de plusieurs heures : elle paie de l'ordre de \
+                 {chaud:.1} ms, PAS {froid:.1} ms"
+            )
+        } else {
+            format!(
+                "le froid DÉCRIT la passe (écart ×{rapport:.1}, sous {FACTEUR_CACHE_DETERMINANT:.0}) — \
+                 aucun cache n'absorbe ce travail, la passe paie bien de cet ordre"
+            )
+        }
+    }
 }
 
 /// LIT LE PLAN d'un énoncé. `EXPLAIN QUERY PLAN` COMPILE, il n'exécute pas : c'est ce qui rend cette
@@ -213,20 +302,49 @@ pub(super) fn executer_recolter_et_chronometrer<T>(
             }
         }
     }
-    let execution_ms = t_execution.elapsed().as_secs_f64() * 1000.0;
+    let execution_froid_ms = t_execution.elapsed().as_secs_f64() * 1000.0;
+
+    // `P10.15-a` — LES COMPTEURS SE LISENT **AVANT** LE REJEU, ET C'EST LOAD-BEARING.
+    // `sqlite3_stmt_status(..., resetFlg=0)` — ce que fait `Statement::get_status` — rend un CUMUL sur la
+    // durée de vie de l'instruction préparée, pas le coût de la dernière exécution. Les lire après le
+    // second passage aurait DOUBLÉ `balayage`, `tris` et `pas_de_machine` en silence : les 1 708 241
+    // balayages et 8 544 099 pas relevés en production le 2026-08-15 seraient devenus ~3,4 M et ~17 M,
+    // sans qu'aucune ligne du rapport ne signale le changement d'unité. Corriger un instrument en
+    // falsifiant ses autres chiffres aurait été le défaut qu'on est en train de fermer, retourné contre
+    // lui-même. Témoin : `les_compteurs_ne_comptent_que_le_passage_froid`.
     use rusqlite::StatementStatus as S;
+    let (balayage, tris, pas_de_machine) = (
+        i64::from(st.get_status(S::FullscanStep)),
+        i64::from(st.get_status(S::Sort)),
+        i64::from(st.get_status(S::VmStep)),
+    );
+
+    // LE SECOND PASSAGE, IMMÉDIATEMENT, sur la MÊME instruction déjà compilée : ce qui reste entre les
+    // deux mesures n'est donc que l'état du cache, ni la compilation ni un autre plan. Rien n'est récolté
+    // ici (le `cap` est déjà consommé) et rien n'est retenu : que le chronomètre.
+    let execution_chaud = rejouer_a_chaud(&mut st, e);
+
     Ok((
-        Mesure {
-            plan,
-            compilation_ms,
-            execution_ms,
-            lignes,
-            balayage: i64::from(st.get_status(S::FullscanStep)),
-            tris: i64::from(st.get_status(S::Sort)),
-            pas_de_machine: i64::from(st.get_status(S::VmStep)),
-        },
+        Mesure { plan, compilation_ms, execution_froid_ms, execution_chaud, lignes, balayage, tris, pas_de_machine },
         recoltees,
     ))
+}
+
+/// `P10.15-a` — REJOUE l'énoncé DÉJÀ COMPILÉ et rend sa durée cache chaud, ou la CAUSE de son absence. Un
+/// échec ici n'est jamais fatal : la sonde publie alors le froid en le déclarant NON DÉPARTAGÉ, ce qui est
+/// exactement l'état de connaissance — et non un froid présenté comme le prix de la passe.
+fn rejouer_a_chaud(st: &mut rusqlite::Statement<'_>, e: &Enonce) -> Chaud {
+    let t = Instant::now();
+    let Ok(mut rows) = st.query(rusqlite::params_from_iter(e.params.iter())) else {
+        return Chaud::NonMesure(CHAUD_REJEU_EN_ECHEC);
+    };
+    loop {
+        match rows.next() {
+            Ok(Some(_)) => {}
+            Ok(None) => return Chaud::Mesure(t.elapsed().as_secs_f64() * 1000.0),
+            Err(_) => return Chaud::NonMesure(CHAUD_REJEU_EN_ECHEC),
+        }
+    }
 }
 
 /// LE PLAN SEUL, SANS EXÉCUTION — pour un énoncé que la passe N'EXÉCUTE PAS dans l'état actuel de la
@@ -236,7 +354,8 @@ fn plan_seul(conn: &Connection, e: &Enonce) -> Result<Mesure, String> {
     Ok(Mesure {
         plan: plan_de(conn, e)?,
         compilation_ms: 0.0,
-        execution_ms: 0.0,
+        execution_froid_ms: 0.0,
+        execution_chaud: Chaud::NonMesure(CHAUD_JAMAIS_EXECUTE),
         lignes: -1,
         balayage: -1,
         tris: -1,
@@ -288,14 +407,27 @@ fn rendre(out: &mut String, e: &Enonce, m: &Result<Mesure, String>) {
                     );
                 }
                 ParLaPasse::ChaqueTick | ParLaPasse::ACadence(_) => {
+                    // `P10.15-a` — LES DEUX DURÉES, TOUJOURS, SUR LA MÊME LIGNE. Publier le froid seul
+                    // était le défaut : mesuré en production le 2026-08-15, il surestimait la découverte
+                    // d'un facteur ≥ 183. Le couple ne se sépare pas, et le verdict qui suit ne fait
+                    // qu'aider à le lire — il ne remplace aucun des deux nombres.
                     let _ = writeln!(
                         out,
-                        "   mesuré  : compilation {:.1} ms · exécution {:.1} ms · {} ligne(s) rendue(s)",
-                        m.compilation_ms, m.execution_ms, m.lignes
+                        "   mesuré  : compilation {:.1} ms · exécution FROID {:.1} ms / CHAUD {} · {} \
+                         ligne(s) rendue(s)",
+                        m.compilation_ms,
+                        m.execution_froid_ms,
+                        match m.execution_chaud {
+                            Chaud::Mesure(c) => format!("{c:.1} ms"),
+                            Chaud::NonMesure(_) => "non mesuré".to_string(),
+                        },
+                        m.lignes
                     );
+                    let _ = writeln!(out, "   cache   : {}", m.verdict_de_cache());
                     let _ = writeln!(
                         out,
-                        "   travail : balayage={} tris={} pas_de_machine={}",
+                        "   travail : balayage={} tris={} pas_de_machine={} (comptés sur le SEUL passage \
+                         froid — ces compteurs cumulent sur l'instruction, pas sur l'exécution)",
                         m.balayage, m.tris, m.pas_de_machine
                     );
                 }
@@ -321,6 +453,23 @@ pub(crate) fn cold_aging_plan(conf: &HashMap<String, String>, db_path: &str) -> 
         out,
         "  LECTURE SEULE : SQLITE_OPEN_READ_ONLY + authorizer défaut-deny (Read/Select/Function seuls) — \
          aucun ANALYZE, aucun PRAGMA d'écriture, aucun verrou d'écriture pris."
+    );
+    // `P10.15-a` — LA MISE EN GARDE SE LIT DANS LA SORTIE, PAS DANS LE CODE. Elle existait déjà, mot pour
+    // mot, en tête de ce module — donc invisible à l'opérateur qui lit `kubectl exec ... cold-aging-plan`.
+    // Une garantie écrite là où le lecteur concerné ne passe jamais n'est pas une garantie : c'est la même
+    // famille de défaut que « fail-loud » écrit en commentaire au-dessus d'un `unwrap_or(0)`.
+    let _ = writeln!(
+        out,
+        "  CHAQUE ÉNONCÉ EST MESURÉ DEUX FOIS : une passe FROIDE (cache de pages vide — cette connexion \
+         vient de naître, c'est la BORNE HAUTE) puis une passe CHAUDE immédiate (BORNE BASSE). Le daemon, \
+         lui, tourne sur une connexion vieille de plusieurs heures : le prix réel de sa passe est ENTRE \
+         les deux. La ligne `cache` de chaque énoncé dit de quel côté il tombe."
+    );
+    let _ = writeln!(
+        out,
+        "  CE QUE CETTE SONDE COÛTE : deux lectures complètes au lieu d'une, et elle tire par le cache de \
+         l'OS tout ce qu'elle lit — relevé du 2026-08-15 en production, MemAvailable 1 195 -> 986 Mio \
+         (-209) sur un budget de 2 Gio. Elle ne prend aucun verrou ; elle prend de la MÉMOIRE."
     );
     let _ = writeln!(out, "  maintenant = {n}");
     // LES DEUX GATES DE LA PASSE, DITS AVANT LES CHIFFRES : sans eux, un rapport de plans se lirait comme

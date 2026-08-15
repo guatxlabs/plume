@@ -56,7 +56,17 @@
 //!
 //! La correction ne devine pas quels énoncés sont sensibles au cache : elle les REJOUE TOUS
 //! immédiatement et publie LE COUPLE (froid, chaud). Le second passage n'est pas une redondance, c'est LA
-//! mesure — l'écart entre les deux EST la part que le cache absorbe. Le prix est assumé et dit dans le
+//! mesure — l'écart entre les deux EST la part que le cache absorbe.
+//!
+//! `P10.15-a` (RÉSIDUEL, mesuré le 2026-08-15 EN VÉRIFIANT CE CORRECTIF) — **« FROID » N'EST PAS UNE
+//! BORNE HAUTE, et le dire serait refaire la faute d'un cran plus haut.** La connexion de la sonde est
+//! neuve, donc son cache de pages SQLite est vide ; mais le cache de pages de l'OS, lui, est dans un état
+//! que la sonde **ne contrôle ni ne mesure**. Preuve par les chiffres, même énoncé (`decouverte_des_jours`)
+//! sur la même base : **10,1 ms** le 08-10, **3 847 ms** le 08-15 à 00:20Z, **11,3 ms** le 08-15 à 05:05Z.
+//! Un « majorant » qui varie de ×341 d'une exécution à l'autre n'est pas un majorant : c'est un
+//! ÉCHANTILLON. Ce qui tient : **CHAUD est un plancher** (tout est en cache, la passe ne peut pas faire
+//! mieux) et l'ÉCART entre les deux dit si le cache absorbe. La passe réelle est **au-dessus du chaud** ;
+//! au-dessous du froid seulement si l'OS était aussi froid ce jour-là, ce que personne ne sait. Le prix est assumé et dit dans le
 //! rapport : la sonde coûte désormais environ le double de ce qu'elle lisait. Un outil qui coûte deux fois
 //! est préférable à un outil qui se trompe de deux ordres de grandeur. (La justification écrite ici avant
 //! le 2026-08-15 — « les rejouer aurait fait payer DEUX FOIS les 17-22 s » — parlait d'un rejeu qui
@@ -142,7 +152,8 @@ pub(super) const CHAUD_JAMAIS_EXECUTE: &str = "énoncé non exécuté par la pas
 
 /// Le rejeu a échoué là où le premier passage avait réussi (base fermée sous les pieds, E/S). On refuse de
 /// publier le froid tout seul comme s'il était le prix de la passe.
-pub(super) const CHAUD_REJEU_EN_ECHEC: &str = "rejeu en échec — la durée à froid reste une BORNE HAUTE non départagée";
+pub(super) const CHAUD_REJEU_EN_ECHEC: &str =
+    "rejeu en échec — la durée sur connexion neuve reste SEULE, et rien ne dit ce que le cache en absorbe";
 
 /// AU-DELÀ DE CE FACTEUR entre froid et chaud, la durée à froid ne décrit plus ce que la passe paie : le
 /// cache absorbe l'essentiel. En deçà, les deux chiffres sont du même ordre et le froid est utilisable.
@@ -166,7 +177,9 @@ pub(super) struct Mesure {
     /// familles de chiffres confondables — exactement le défaut que cette garde a fermé.
     pub(super) compilation_ms: f64,
     /// Durée de l'EXÉCUTION complète (premier `step` -> dernière ligne consommée) sur une connexion dont
-    /// le cache de pages est VIDE — c'est la BORNE HAUTE de ce que la passe peut payer.
+    /// le cache de pages SQLite est VIDE. `P10.15-a` résiduel : ce n'est PAS un majorant — le cache de
+    /// l'OS, lui, n'est pas remis à zéro et n'est pas mesuré ici (même énoncé : 10,1 / 3 847 / 11,3 ms
+    /// selon le jour). C'est un ÉCHANTILLON, dont l'écart au rejeu chaud est ce qui informe.
     pub(super) execution_froid_ms: f64,
     /// `P10.15-a` — LA MÊME EXÉCUTION, REJOUÉE IMMÉDIATEMENT, donc sur un cache chaud : BORNE BASSE. Ce
     /// n'est PAS un champ optionnel de confort. Le type force chaque site de rendu à dire ce qu'il en est,
@@ -460,10 +473,11 @@ pub(crate) fn cold_aging_plan(conf: &HashMap<String, String>, db_path: &str) -> 
     // famille de défaut que « fail-loud » écrit en commentaire au-dessus d'un `unwrap_or(0)`.
     let _ = writeln!(
         out,
-        "  CHAQUE ÉNONCÉ EST MESURÉ DEUX FOIS : une passe FROIDE (cache de pages vide — cette connexion \
-         vient de naître, c'est la BORNE HAUTE) puis une passe CHAUDE immédiate (BORNE BASSE). Le daemon, \
-         lui, tourne sur une connexion vieille de plusieurs heures : le prix réel de sa passe est ENTRE \
-         les deux. La ligne `cache` de chaque énoncé dit de quel côté il tombe."
+        "  CHAQUE ÉNONCÉ EST MESURÉ DEUX FOIS : une passe sur connexion NEUVE (cache SQLite vide) puis un \
+         REJEU immédiat (tout en cache). Le CHAUD est un PLANCHER : la passe ne peut pas faire mieux. Le \
+         FROID n'est PAS un majorant — le cache de l'OS n'est pas remis à zéro et cette sonde ne le \
+         mesure pas : le même énoncé a rendu 10,1 ms, 3 847 ms et 11,3 ms selon le jour. C'est l'ÉCART \
+         entre les deux qui informe, et la ligne `cache` de chaque énoncé le dit."
     );
     let _ = writeln!(
         out,

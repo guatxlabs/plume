@@ -510,3 +510,83 @@ pub(crate) mod door_tests {
         let _ = std::fs::remove_file(&base);
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// P10.17-a — LE CHECKPOINT WAL DIT S'IL A ÉCHOUÉ, AU LIEU DE SE TAIRE
+// ═══════════════════════════════════════════════════════════════════════════════════════
+//
+// CE QUI ÉTAIT AVEUGLE. `PRAGMA wal_checkpoint(TRUNCATE)` ne rend PAS son verdict par un
+// code d'erreur : il rend une LIGNE de trois colonnes `(busy, log, checkpointed)`. Un
+// `busy` à 1 signifie que le checkpoint N'A PAS EU LIEU — un lecteur tenait le WAL. Or
+// `execute_batch` ne lit aucune ligne de résultat : il rend `Ok(())` que la troncature ait
+// eu lieu ou non. Les CINQ sites de production du démon appelaient tous `execute_batch`,
+// et tous jetaient même ce `Ok` (`let _ =`).
+//
+// Le démon croyait donc tronquer son WAL après un backup, une fusion de rollups, un
+// démarrage, un arrêt et une bascule SQLCipher — sans jamais distinguer « tronqué » de
+// « refusé ». C'est la famille de défaut que cette campagne poursuit partout : un composant
+// qui SAIT que son résultat est incomplet et le présente comme complet.
+//
+// POURQUOI UNE FONCTION UNIQUE ET NON CINQ CORRECTIFS. Corriger cinq appels laisse le
+// sixième, écrit demain, aveugle. La garde `checkpoint_wal_passe_par_la_voie_unique`
+// REFUSE tout `wal_checkpoint` en dehors d'ici : la couverture est acquise par
+// CONSTRUCTION, pas par vigilance.
+//
+// CE QUE ÇA NE FAIT PAS : aucun changement de COMPORTEMENT. On ne réessaie pas, on ne
+// bloque pas, on ne force pas de verrou — la base d'un SOC ne doit pas geler parce qu'une
+// troncature a été refusée. On RAPPORTE, c'est tout. Le remède de fond (moins d'octets
+// dans le WAL, via `journal_size_limit`) reste OUVERT sous `P10.16-a` : c'est un vrai
+// changement de comportement sur une machine à 2 Gio, il ne se glisse pas dans ce lot.
+
+/// Verdict d'un `wal_checkpoint(TRUNCATE)`, tel que SQLite le rend vraiment.
+///
+/// PAS `Copy` : la variante `Impossible` porte le message d'erreur. Le premier jet l'avait
+/// dérivé et le compilateur a refusé — un `String` n'est pas copiable. Garder le message
+/// plutôt que le type copiable : une panne muette ne vaut pas une commodité d'appel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Checkpoint {
+    /// Le WAL a été replié ET tronqué. `pages` = pages recopiées dans la base.
+    Tronque { pages: i64 },
+    /// SQLite a rendu `busy=1` : un lecteur tenait le WAL, la troncature N'A PAS eu lieu.
+    Refuse { restant_pages: i64 },
+    /// Le PRAGMA lui-même a échoué (base fermée, E/S) — on nomme la cause au lieu de la taire.
+    Impossible(String),
+}
+
+impl Checkpoint {
+    pub(crate) fn a_tronque(&self) -> bool { matches!(self, Checkpoint::Tronque { .. }) }
+}
+
+/// Exécute `wal_checkpoint(TRUNCATE)` et LIT sa ligne de résultat.
+///
+/// `contexte` nomme l'appelant dans le journal : un « checkpoint refusé » sans savoir
+/// lequel n'est pas exploitable.
+pub(crate) fn checkpoint_wal_tronque(conn: &Connection, contexte: &str) -> Checkpoint {
+    // `query_row` et NON `execute_batch` : c'est TOUT le correctif. Les trois colonnes sont
+    // (busy, log, checkpointed) — cf. https://sqlite.org/pragma.html#pragma_wal_checkpoint
+    let lu = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+    });
+    match lu {
+        // HORS MODE WAL, SQLite rend `busy=0` et `log = checkpointed = -1`. Le premier jet
+        // tombait dans la branche nominale et annonçait « tronqué » avec `pages: -1` — un
+        // succès pour une opération qui n'a pas eu lieu, c'est-à-dire le défaut même que
+        // cette fonction existe pour fermer. Trouvé en ÉCRIVANT le témoin négatif du test.
+        Ok((0, log, _)) if log < 0 => {
+            Checkpoint::Impossible("base pas en mode WAL : il n'y a rien a tronquer".into())
+        }
+        Ok((0, _log, pages)) => Checkpoint::Tronque { pages },
+        Ok((_busy, log, _)) => {
+            eprintln!(
+                "[wal] checkpoint TRUNCATE REFUSE ({contexte}) : un lecteur tient le WAL, \
+                 {log} page(s) y restent. Rien n'a ete tronque — ce n'est pas une erreur, \
+                 c'est un etat, et il est desormais VISIBLE."
+            );
+            Checkpoint::Refuse { restant_pages: log }
+        }
+        Err(e) => {
+            eprintln!("[wal] checkpoint TRUNCATE IMPOSSIBLE ({contexte}) : {e}");
+            Checkpoint::Impossible(e.to_string())
+        }
+    }
+}

@@ -1777,7 +1777,7 @@ pub(crate) async fn run() {
         for legacy in &legacy_candidates {
             if ledger_key_cutover_check(&active_key_path, legacy) == LedgerKeyCutover::Mismatch {
                 let _ = emit_ledger_key_mismatch(&conn, now(), &active_key_path, legacy);
-                let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);"); // durcit la trace avant exit
+                crate::db_open::checkpoint_wal_tronque(&conn, "arret-cle-ledger"); // durcit la trace avant exit
                 eprintln!(
                     "[ledger] REFUS DE DÉMARRER : clé ledger Vault active '{active_key_path}' ≠ clé legacy \
                      résiduelle '{legacy}'. Escrow le BON hex (celui qui a signé la chaîne) avant le cutover, \

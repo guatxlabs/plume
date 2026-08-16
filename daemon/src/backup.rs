@@ -661,7 +661,7 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
         // garde-fou : la source doit être lisible AVEC la clé (sinon clé fausse / DB illisible).
         conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
             .map_err(|e| format!("DB source illisible (clé PLUME_DB_KEY incorrecte ?) : {e}"))?;
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        crate::db_open::checkpoint_wal_tronque(&conn, "backup");
         let sql = format!(
             "ATTACH DATABASE '{}' AS plain KEY ''; SELECT sqlcipher_export('plain'); DETACH DATABASE plain;",
             tmp_plain.replace('\'', "''"));

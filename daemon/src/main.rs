@@ -1275,7 +1275,7 @@ fn main() {
         let issues = compactage_fts::compacter_et_journaliser(&db, &conf);
         // Le WAL de la fusion est drainé ici comme il l'est en fin de `retention_run` — sinon la
         // commande laisserait derrière elle le fichier `-wal` qu'elle vient de gonfler.
-        { let c = db.lock(); let _ = c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);"); }
+        { let c = db.lock(); crate::db_open::checkpoint_wal_tronque(&c, "boot"); }
         let rendus: i64 = issues.iter().filter_map(compactage_fts::Issue::octets_rendus).sum();
         println!("fts-compact : {rendus} octets rendus à la freelist (VACUUM non exécuté — le fichier ne rétrécit pas, la base réutilise)");
         return;

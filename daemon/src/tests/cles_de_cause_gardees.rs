@@ -53,6 +53,33 @@
 // CE QUE LA GARDE NE PROUVE PAS, écrit pour être opposable. Elle prouve qu'un test NOMME la cause seule ;
 // elle ne prouve pas que ce test exerce le chemin de production qui l'émet — aucun scanner de source ne
 // peut le faire. C'est une condition NÉCESSAIRE, et c'est exactement celle qui manquait deux fois de suite.
+//
+// ET CE QU'ON A MESURÉ LE 2026-08-16, PARCE QUE « NÉCESSAIRE » INVITE À CONCLURE TROP VITE. J'avais
+// consigné SIX clés « glace mince » — une seule citation spécifique chacune, donc « à un test de retomber
+// dans le rouge ». La MUTATION dit autre chose : les huit sites d'émission de ces six causes remplacés par
+// des littéraux distincts, la suite par défaut (1039) tombe à 1037 et la suite `cold_tier` (1259) rend
+// CINQ échecs. Autrement dit **5 des 6 sont bel et bien pilotées** par un test qui exerce le chemin :
+//   CRETE_FENETRE_CONCURRENTE  <- deux_fenetres_qui_se_chevauchent_ne_mesurent_pas_deux_fois
+//   CRETE_SUSPENDU             <- une_passe_suspendue_ne_publie_aucun_compteur_de_travail
+//   CAUSE_DECOUVERTE           <- une_decouverte_impossible_ne_se_publie_pas_comme_zero_jour
+//   RETARD_FENETRE_VIDE        <- la_decision_de_tir_du_retard_est_pure_et_faillit_vers_le_tir
+//   RETARD_REQUETE             <- une_requete_de_retard_en_echec_ne_consomme_pas_le_tir
+// La SIXIÈME, `CRETE_PROC_ABSENT`, ne fait rien tomber — et ce n'est PAS un trou de couverture : ses
+// quatre sites sont les chemins d'échec de `/proc`, dont un porte déjà le commentaire « inatteignable par
+// construction ». Sur un Linux où `/proc` répond, aucun test ne peut les atteindre sans truquer le noyau.
+// Une cause STRUCTURELLEMENT non pilotable n'est pas une cause mal testée : c'est une cause dont la seule
+// citation possible est synthétique, et il vaut mieux le nommer que le compter comme une dette.
+//
+// POURQUOI LE COMPTEUR N'EST **PAS** ÉTENDU AUX LITTÉRAUX, alors qu'il les rate. Deux causes sont ancrées
+// une seconde fois par leur VALEUR et non par leur identifiant — `CAUSE_DECOUVERTE` via un JSON à
+// guillemets échappés (`\"cause\":\"decouverte_impossible\"`), `CRETE_SUSPENDU` via `aging_suspendu`.
+// Ces ancrages-là épinglent le CONTRAT DE FIL (l'étiquette que lisent les tableaux de bord), ce que la
+// citation par identifiant ne fait pas. Tentant, donc, de les compter aussi. MESURE CONTRE : la valeur de
+// `CAUSE_AUCUNE` est le mot « aucune », qui apparaît **119 fois** dans le corpus de test. Un compteur qui
+// accepte les littéraux passerait au vert sur du bruit pour toute cause au nom courant — il serait plus
+// faible, pas plus fort. Le compteur reste donc sur l'IDENTIFIANT, et la couverture réelle se mesure par
+// MUTATION, pas par lecture de source. C'est écrit ici pour que le prochain lecteur (moi) ne redéduise pas
+// la même inquiétude à partir du même angle mort.
 
 #[cfg(test)]
 mod cles_de_cause_gardees_tests {

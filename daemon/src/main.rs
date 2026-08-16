@@ -1338,6 +1338,24 @@ fn main() {
                     println!(
                         "backup (compressé+chiffré) -> {dest}  charge={} o  dest={} o  ratio={:.1}x  format={charge}  clair-sur-disque={clair}",
                         st.plaintext_bytes, st.dest_bytes, ratio);
+                        // P8.4-a — POURQUOI `dest` EST BIEN PLUS PETIT QUE LA BASE, DIT SUR PLACE.
+                        // Le `ratio` ci-dessus est honnête : il compare la CHARGE à sa sortie. Mais
+                        // l'exploitant, lui, compare `dest` au FICHIER de base qu'il voit sur son
+                        // disque — 40 Mio face a ~1445 Mio le 2026-08-08. Sans un mot, cet ecart se
+                        // lit comme « il manque des donnees ». L'explication existait deja dans
+                        // `db_ventilation.rs`, mais a un endroit ou l'exploitant ne passe jamais :
+                        // « promesse en prose ». On la RAPPROCHE du lecteur concerne.
+                        // AUCUN ratio de reference n'est publie ici : il depend de la part d'index et
+                        // de FTS, donc il varierait d'une installation a l'autre — et un chiffre
+                        // grave dans le binaire perimerait sans que personne le voie.
+                        if !st.wrote_plaintext_to_disk {
+                            println!(
+                                "  NB : la charge est un dump LOGIQUE — lignes + DDL, mais SANS le contenu \
+des index, les tables shadow FTS5 ni les pages libres, tous RECONSTRUITS a la restauration. \
+`dest` sera donc bien plus petit que le fichier de base : ce n'est pas une perte. Comparer les \
+deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
+                            );
+                        }
                 }
                 Err(e) => {
                     eprintln!("backup --compress : {e}");

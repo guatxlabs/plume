@@ -380,7 +380,7 @@ pub(crate) fn ensure_encrypted(conf: &HashMap<String, String>, path: &str) {
     // SANS CONTRAT, assumé : ce chemin CHIFFRE une base at-rest, il tourne AVANT `prepare_schema` (le
     // daemon l'appelle juste avant d'ouvrir) et il doit fonctionner sur une base au schéma quelconque.
     let plain = match open_db_keyed_without_schema_contract(path, None) { Ok(c) => c, Err(_) => return };
-    let _ = plain.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    crate::db_open::checkpoint_wal_tronque(&plain, "sqlcipher");
     if std::fs::copy(path, &bak).is_err() { eprintln!("[sqlcipher] backup impossible -> abandon (base en clair intacte)"); return; }
     let enc = format!("{path}.enc.tmp");
     let _ = std::fs::remove_file(&enc);

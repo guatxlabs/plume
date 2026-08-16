@@ -1450,6 +1450,6 @@ pub(crate) fn retention_run_tenant(db: &Arc<Mutex<Connection>>, db_path: &str) {
                 }
             }
         }
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        crate::db_open::checkpoint_wal_tronque(&conn, "rollups");
     }
 }

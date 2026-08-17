@@ -6,7 +6,7 @@
 
 ## 0. Ce qu'on cherche, et pourquoi c'est DEUX problèmes, pas un
 
-Hugo, formulé plusieurs fois : « que la base tienne très peu de place, presque autant qu'un zstd,
+L'exigence, formulée plusieurs fois par le mainteneur : « que la base tienne très peu de place, presque autant qu'un zstd,
 tout en assurant fiabilité, confidentialité et sécurité **nativement** — sans dump clair puis zstd
 puis age ». Et : tourner sous **2 Go de RAM** en host-natif / Docker / k3s, tout paramétrable, le
 **défaut = ce qui est en prod**.
@@ -223,7 +223,7 @@ page. **Compresser NATIVEMENT les colonnes volumineuses** (`fields` JSON, `messa
 les VALEURS — au zstd, transparent au moteur. Deux formes, à départager par mesure :
 - **B1 — par-valeur** : chaque `fields`/`message` stocké zstd (dictionnaire partagé par source pour
   les petits blobs, sinon zstd simple). Simple, local, réversible ; le prix est un
-  décompresse-à-la-lecture que **Hugo a explicitement pointé** (« la décompression peut se coûter si
+  décompresse-à-la-lecture que le besoin **pointe explicitement** (« la décompression peut se coûter si
   mal fait »). ⇒ mesurer le coût lecture AVANT de généraliser ; garder les colonnes filtrées/
   indexées (host, src_ip, severity, ts) EN CLAIR pour que l'index et le WHERE ne paient rien.
 - **B2 — par-page** (VFS de compression sous SQLCipher, type `sqlite_zstd`/`cvfs`) : transparent

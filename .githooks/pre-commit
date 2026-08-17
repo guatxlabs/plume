@@ -20,6 +20,36 @@ set -euo pipefail
 
 racine="$(git rev-parse --show-toplevel)"
 
+# ── IDENTITÉ PUBLIQUE — DÉRIVÉE DU `.mailmap`, PAS RECOPIÉE ICI ─────────────────────────
+# CE QUI S'EST PASSÉ. L'identité git GLOBALE de la machine de dev est un compte GitHub
+# PERSONNEL. Tout dépôt sans réglage LOCAL en hérite : l'historique public portait donc
+# deux auteurs pour une seule personne, dont un compte perso sur la vitrine d'un projet
+# open source. Le `.mailmap` répare l'AFFICHAGE ; il ne peut pas empêcher le prochain
+# commit de repartir sous la mauvaise identité — un `git clone` frais perd la config
+# locale et retombe sur le global.
+#
+# LE CANONIQUE N'EST PAS ÉCRIT DEUX FOIS. Il est LU dans `.mailmap` (première entrée), qui
+# reste la source unique. Recopier l'adresse ici créerait deux vérités qui divergeraient.
+#
+# CE N'EST PAS UNE FRONTIÈRE DE SÉCURITÉ : `--no-verify` la contourne, et c'est assumé —
+# c'est une boucle de retour, comme la garde de compte ci-dessous.
+if [ -f "$racine/.mailmap" ]; then
+    canonique="$(sed -n 's/^\([^<#][^<]*<[^>]*>\).*/\1/p' "$racine/.mailmap" | head -1)"
+    if [ -n "$canonique" ]; then
+        # `git var` rend l'identité que le commit VA porter, avec l'horodatage : on le retire.
+        actuel="$(git var GIT_AUTHOR_IDENT | sed 's/ [0-9]\{9,\} [+-][0-9]\{4\}$//')"
+        if [ "$actuel" != "$canonique" ]; then
+            echo "[pre-commit] REFUS : ce commit partirait sous « $actuel »." >&2
+            echo "             Ce dépôt est public et publie sous « $canonique » (source : .mailmap)." >&2
+            echo "             Cause la plus fréquente : la config git GLOBALE de la machine, héritée" >&2
+            echo "             faute de réglage local — un clone frais y retombe systématiquement." >&2
+            echo "             Geste :  git config user.name \"${canonique%% <*}\"" >&2
+            echo "                      git config user.email \"$(printf '%s' "$canonique" | sed 's/.*<\(.*\)>/\1/')\"" >&2
+            exit 1
+        fi
+    fi
+fi
+
 # PORTÉE DÉRIVÉE DU DIFF, PAS D'UNE LISTE À TENIR : seuls les commits qui touchent au code ou au
 # verrou de dépendances du démon peuvent déplacer le compte de tests.
 #

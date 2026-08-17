@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ── CE QU'UN MESSAGE PUBLIC NE DOIT PAS PORTER ──────────────────────────────────────────
+# Un message de commit s'adresse au LECTEUR FUTUR DU CODE : il dit ce qui change et
+# pourquoi. Il ne s'adresse ni a une personne, ni a une conversation. Trois familles sont
+# refusees ici parce qu'elles sont OBJECTIVES et sans faux positif :
+#   * un chemin machine `/home/<user>` — il nomme le compte de la machine de dev ;
+#   * le pseudo GitHub personnel — la vitrine publie sous le collectif ;
+#   * une adresse e-mail hors du domaine du projet et hors noreply connus.
+# CE QUI N'EST PAS MECANISE, ET POURQUOI : le STYLE (« j'ai », « hier », citer un echange
+# prive) releve du jugement. Une garde qui tenterait de le decider produirait du bruit et
+# finirait desarmee. La regle est ecrite dans CONTRIBUTING.md, elle se tient a la relecture.
+msg_file="${1:-}"
+if [ -n "$msg_file" ] && [ -f "$msg_file" ]; then
+    fautifs=""
+    grep -qE "/home/[a-z][a-z0-9_-]*" "$msg_file" && fautifs="$fautifs chemin-machine"
+    grep -qi "xguatx" "$msg_file" && fautifs="$fautifs pseudo-personnel"
+    grep -qoE "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}" "$msg_file" 2>/dev/null \
+      | grep -qvE "@(guatx\.com|anthropic\.com|users\.noreply\.github\.com)$" && fautifs="$fautifs adresse-etrangere"
+    if [ -n "$fautifs" ]; then
+        echo "[commit-msg] REFUS : ce message porte$fautifs." >&2
+        echo "             Un message public s'adresse au lecteur du code, pas a une personne :" >&2
+        echo "             il dit CE QUI CHANGE et POURQUOI. Pas de chemin machine, pas de compte" >&2
+        echo "             personnel, pas d'adresse tierce. Detail : CONTRIBUTING.md." >&2
+        exit 1
+    fi
+fi

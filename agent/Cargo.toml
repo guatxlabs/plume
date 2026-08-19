@@ -20,7 +20,7 @@ serde_json = "1"
 toml = "0.5"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
-base64 = "0.22"
+base64 = "0.23"
 # Parseur de champs des sources DÉCLARATIVES (#66/#67) : `parser.regex` à groupes nommés
 # `(?P<champ>…)`. MÊME crate (même version) que le daemon (`daemon/Cargo.toml`) — donc déjà audité
 # et vert en CI supply-chain. Un parseur `delimiter`/`fields` zéro-dép couvre le cas simple sans regex.

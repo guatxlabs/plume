@@ -19,4 +19,17 @@ ignore = [
   # suite par défaut ; son compte vivant est `EXPECTED_TESTS` dans ci.yml, pas recopié ici).
   # Lever dès migration vers yaml-rust2.
   "RUSTSEC-2024-0320",
+  # rkyv 0.7.46 — RUSTSEC-2026-0235 (validation d'archive insuffisante -> lectures hors-bornes sur les
+  # archives contenant Rc/Arc). Correctif annoncé >= 0.8.17 : INATTEIGNABLE par update. Chaîne mesurée
+  # le 2026-08-19 : plume-daemon -> duckdb 1.10504.0 (feature `duckdb`, OFF par défaut) -> rust_decimal
+  # 1.42.1 -> rkyv. rust_decimal, JUSQU'À SA DERNIÈRE VERSION (1.42.1), déclare `rkyv = "^0.7.46"` en
+  # dépendance NORMALE optionnelle (rkyv 0.8 n'y est que dev-dependency) ; 0.7.46 est la dernière 0.7.x,
+  # donc la branche 0.7 n'a AUCUN correctif. `cargo update -p rkyv --precise 0.8.17` échoue :
+  # « failed to select a version for the requirement `rkyv = "^0.7.46"` ... required by rust_decimal ».
+  # Surface RÉELLE = NULLE : la feature `rkyv` de rust_decimal (`rkyv = ["dep:rkyv"]`) n'est activée par
+  # PERSONNE — ses défauts sont `["serde","std"]` et duckdb la tire avec `features = []`. Mesuré :
+  # `cargo tree -i rkyv --all-features` rend « nothing to print » -> rkyv n'est JAMAIS compilé ni linké,
+  # il n'existe que comme entrée du Cargo.lock que cargo-audit scanne. Aucune archive rkyv n'est donc
+  # désérialisée par plume. Lever dès que rust_decimal passe sa dép normale à rkyv 0.8.
+  "RUSTSEC-2026-0235",
 ]

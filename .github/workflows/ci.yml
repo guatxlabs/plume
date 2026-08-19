@@ -718,7 +718,9 @@ jobs:
       # advisory cluster (ring 0.16, rustls 0.21, rustls-webpki 0.101, rustls-pemfile 1.0 — RUSTSEC-2025-0009/
       # -0010, -2026-0098/-0099/-0104, -2025-0134) and the anyhow unsound-downcast (RUSTSEC-2026-0190) were
       # FIXED BY UPDATE (ldap3 0.11->0.12 pulls the patched rustls 0.23/ring 0.17 stack; anyhow -> 1.0.104) —
-      # NOT ignored. The four accepted advisories with no fix-by-update live in daemon/.cargo/audit.toml
+      # NOT ignored; so was the h2 unbounded-empty-DATA-frames advisory (RUSTSEC-2026-0258, h2 0.4.15 ->
+      # 0.4.16 via `cargo update -p h2`, transitive through hyper). The accepted advisories with no
+      # fix-by-update live in daemon/.cargo/audit.toml
       # (family convention, cf forge console/.cargo/audit.toml) — read automatically by cargo-audit from
       # working-directory: daemon. Each is transitive/build-time or off-by-default and justified there:
       #
@@ -737,6 +739,16 @@ jobs:
       #     front-end (YAML -> serde_json::Value) on operator-supplied rule files. "Unmaintained" != vulnerable;
       #     the successor `yaml-rust2` is a DIFFERENT crate (API break, migration risk to the whole default suite),
       #     so there is no in-place fix-by-update. Revisit if a real yaml-rust CVE lands.
+      #   RUSTSEC-2026-0235 (rkyv 0.7.46, insufficient archive validation -> OOB reads on Rc/Arc archives) —
+      #     the announced fix is >=0.8.17, which is UNREACHABLE by update: rust_decimal, up to and including
+      #     its latest release 1.42.1, declares `rkyv = "^0.7.46"` as its NORMAL optional dep (0.8 is only a
+      #     dev-dependency there), and 0.7.46 is the last 0.7.x — so `cargo update -p rkyv --precise 0.8.17`
+      #     hard-fails on that requirement. Chain measured 2026-08-19: plume-daemon -> duckdb (off-by-default
+      #     feature) -> rust_decimal -> rkyv. Real surface is NIL: nobody enables rust_decimal's `rkyv`
+      #     feature (its defaults are serde+std, duckdb takes it with `features = []`), and
+      #     `cargo tree -i rkyv --all-features` prints "nothing to print" — rkyv is never compiled or
+      #     linked, it exists only as a Cargo.lock entry that cargo-audit scans. Lift when rust_decimal
+      #     moves its normal dep to rkyv 0.8.
       - name: cargo audit (daemon crate — deny warnings)
         working-directory: daemon
         run: cargo audit --deny warnings

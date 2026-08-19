@@ -222,7 +222,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout plume
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust toolchain (pinned)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)
@@ -329,7 +329,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout plume
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust toolchain (pinned)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)
@@ -489,7 +489,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout plume
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Le compteur de la suite est écrit ICI et NULLE PART AILLEURS. Il l'a été dans quatre
       # fichiers, et CONTRIBUTING prescrivait même de mettre les quatre à jour ; relevé le
@@ -620,7 +620,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout plume
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust toolchain (pinned)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)
@@ -692,7 +692,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout plume
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # full history so gitleaks can scan past commits, not just the tip.
 
@@ -861,7 +861,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout plume
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust toolchain (pinned) + rustfmt/clippy
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)

@@ -711,8 +711,31 @@ jobs:
         with:
           toolchain: "1.96.0"
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+      # VERSION ÉPINGLÉE — et c'est le point, pas un détail. `cargo install cargo-audit --locked`
+      # SANS `--version` installe « la dernière publiée du jour », donc le verdict de cette porte
+      # pouvait changer sans qu'une ligne du dépôt ait bougé : une release amont suffisait.
+      #
+      # Le mode de panne à connaître est un ÉCHEC AU CHARGEMENT, pas un findings de plus. `--locked`
+      # fait construire cargo-audit avec SON Cargo.lock, donc avec une version FIGÉE de la crate
+      # `cvss` qui analyse les scores de la base d'avis. Mesuré le 2026-08-19 (Cargo.lock des .crate
+      # publiés) : cargo-audit 0.21.2 verrouille cvss 2.0.0, dont `src/` n'a QUE le module `v3` ;
+      # cvss 2.1.0+ ajoute `v4`, et 0.22.0/0.22.1/0.22.2 verrouillent tous cvss 2.2.0. Face à une
+      # advisory notée en CVSS 4.0 — RUSTSEC-2026-0066 (astral-tokio-tar), entrée dans la base le
+      # 2026-03-17 — cvss 2.0.0 rend `unsupported CVSS version: 4.0` PENDANT le chargement de la
+      # base : l'outil n'atteint alors NI la liste d'ignore de daemon/.cargo/audit.toml NI le scan,
+      # et aucun correctif de vulnérabilité ne peut rendre ce job vert. 0.22.2 charge les 1217
+      # advisories et scanne les 541 deps (mesuré).
+      #
+      # POUR RELEVER cette version, deux conditions à VÉRIFIER, pas à supposer :
+      #   1. le Cargo.lock de la release visée épingle cvss >= 2.1.0 (sinon retour du même mur) ;
+      #   2. son `rust-version` est <= la toolchain épinglée ci-dessus (0.22.2 exige 1.88 ; 1.96.0 OK).
+      #
+      # La base d'avis (advisory-db), elle, n'est VOLONTAIREMENT pas épinglée : la figer rendrait
+      # cette porte aveugle à toute advisory publiée après la révision choisie — ce serait désarmer
+      # le contrôle. On épingle l'OUTIL (son comportement doit être reproductible), pas la BASE
+      # (son contenu doit être frais).
+      - name: Install cargo-audit (version épinglée — lit le CVSS 4.0)
+        run: cargo install cargo-audit --locked --version 0.22.2
 
       # `--deny warnings` = unmaintained/unsound/yanked/vuln advisories FAIL the job. The TLS/crypto
       # advisory cluster (ring 0.16, rustls 0.21, rustls-webpki 0.101, rustls-pemfile 1.0 — RUSTSEC-2025-0009/
@@ -771,6 +794,9 @@ jobs:
           #   2. shell references to environment variables in the collectors (`-u "${PLUME_USER:?}:${PLUME_PASS:?}"`,
           #      `Authorization: Bearer $PLUME_TOKEN`): the value never appears, only the variable name.
           #   3. two documented test placeholders that live in production files.
+          #   4. the FTS-compaction benchmark's own SQLCipher key, which encrypts only the scratch
+          #      databases that benchmark builds for itself.
+          #   5. the purge test's canary string, which that test asserts is ABSENT from the ledger.
           regexTarget = "line"
           regexes = [
             '''REPLACE\(query,'key=soc_\w+','key=plume_\w+'\)''',
@@ -778,6 +804,20 @@ jobs:
             '''Bearer \$\{?[A-Z0-9_]+''',
             '''pentest-secret-''',
             '''env-token-xyz''',
+            # 4. `bench/fts-compaction/banc_fts.c` line 27 — the literal SQLCipher key of the FTS5 compaction
+            #    harness. It is handed to `PRAGMA key=` on the throwaway databases that harness BUILDS itself
+            #    (ref.db, purge.db, arme-*.db, all created by `bench/fts-compaction/mesurer.sh` in a scratch
+            #    directory); it opens no production database and is read from no configuration. The exact
+            #    VALUE is allowlisted, never the file: a real secret added elsewhere in that benchmark — or
+            #    anywhere under bench/ — still trips the scan.
+            '''banc-fts-cle-sqlcipher-32-octets''',
+            # 5. `daemon/src/tests/purge.rs` line 581 — the canary of the test
+            #    `purge_ledger_entry_leaks_no_purged_content`. The test INSERTS this string into a throwaway
+            #    event, then asserts it is ABSENT from the purge ledger and from the SOC mirror event: it is
+            #    the probe of a confidentiality guard, not a credential to anything. The exact VALUE is
+            #    allowlisted, never the file — the rest of purge.rs stays scanned (that path is deliberately
+            #    NOT in the `paths` list below).
+            '''MOTDEPASSE-ULTRA-SENSIBLE-9f3a''',
           ]
           # PATH-scoped allowlist — TEST FILES ONLY (never a production path). Each holds documented, offline-generated
           # fixtures: the OIDC/SAML unit-test PEM keys live under `daemon/src/idp/` (a directory module) and in

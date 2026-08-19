@@ -54,7 +54,32 @@ message avant de committer :
 git log -1 --format=%B > /tmp/m && ./.github/scripts/verifier-message-de-commit.sh /tmp/m
 ```
 
-## 4. Ce que la garde ne fait pas
+## 4. Ce qui ne se publie pas
+
+Ce depot est public, et deux categories de contenu n'y ont pas leur place. Aucune garde
+mecanique ne les attrape : elles tiennent a la relecture, et c'est pourquoi elles sont
+ecrites ici.
+
+**LES CHIFFRES D'EXPLOITATION D'UN DEPLOIEMENT REEL.** Taille de base, nombre d'evenements,
+occupation disque ou memoire observee, duree mesuree sur une machine donnee, date de mesure,
+nom d'hote, adresse IP, nom de conteneur ou de namespace. Un chiffre de conception se publie
+(le budget memoire de 2 Gio est une contrainte du projet) ; un chiffre releve sur une
+installation ne se publie pas. Il renseigne un attaquant sur une cible et n'apprend rien a
+un lecteur du code.
+
+**LE JOURNAL DE TRAVAIL.** docs/ROADMAP.md, dans ce depot, est un INDEX PUBLIC : une ligne
+par cle, son etat, ce qu'un lecteur a besoin de savoir, et les limites connues nommees
+franchement. Ce n'est pas un journal de campagne. Le journal detaille — hypotheses refutees,
+mesures d'exploitation, deroulement du travail — vit sur le depot interne, branche
+journal-interne-avant-sommaire, et n'est jamais pousse ici.
+
+POURQUOI L'INDEX SURVIT ALORS QUE LE JOURNAL PART : les messages de commit de ce depot
+CITENT des cles de roadmap. Une cle citee dont l'index public ne contiendrait pas l'entree
+serait une reference dans le vide. Le test daemon/src/tests/cles_de_roadmap_uniques.rs lit
+ce fichier et refuse une cle en double ; il suppose des lignes de tableau Markdown
+commencant par une barre verticale. Changer la forme du document casse cette garde.
+
+## 5. Ce que la garde ne fait pas
 
 Elle ne juge que des familles **objectives**. Elle ne peut pas décider si une phrase
 « s'adresse au public » : une garde qui prétendrait le faire produirait du bruit et

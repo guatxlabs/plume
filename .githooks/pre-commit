@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+_r="$(git rev-parse --show-toplevel)"
+"$_r/.github/scripts/verifier-identite.sh" --index || exit 1
 # P8.5-a — LA MESURE REVIENT LÀ OÙ LA DÉCISION SE PREND.
 #
 # POURQUOI UN HOOK ET PAS UN DÉCLENCHEUR DE CI DE PLUS. `ci.yml` s'exécute DÉJÀ sur

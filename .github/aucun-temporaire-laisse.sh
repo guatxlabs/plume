@@ -23,11 +23,19 @@ motif='plume-*'
 echo "── garde « aucun temporaire laissé » — ${suite}"
 echo "   TMPDIR observé : ${TMPDIR}"
 
+# `-mindepth 1` N'EST PAS UN DETAIL. Sans lui, `find <rep>` rend AUSSI le repertoire
+# lui-meme, et le job nomme son TMPDIR avec le prefixe que ce motif cherche : la garde se
+# comptait donc elle-meme comme residu, a chaque execution. Le defaut est reste invisible
+# tant qu'un echec anterieur empechait d'atteindre cette etape.
+#
+# ET LE CONTROLE POSITIF CHERCHE SON TEMOIN PAR SON NOM, au lieu de compter les
+# correspondances : le comptage le faisait passer grace au meme faux positif, si bien que
+# l'instrument se validait avec le defaut qu'il devait justement exclure.
 # VALIDER L'INSTRUMENT AVANT DE CROIRE SA SORTIE. Sans contrôle positif, un « 0 » d'une
 # sonde cassée (mauvais chemin, mauvais motif, find muet) est indiscernable d'un vrai 0.
 temoin="${TMPDIR}/plume-temoin-instrument-$$"
 : > "${temoin}"
-vus=$(find "${TMPDIR}" -maxdepth 1 -name "${motif}" | wc -l)
+vus=$(find "${TMPDIR}" -mindepth 1 -maxdepth 1 -name "$(basename "${temoin}")" | wc -l)
 rm -f "${temoin}"
 if [ "${vus}" -lt 1 ]; then
   echo "::error::sonde CASSÉE : elle ne voit pas son propre témoin dans ${TMPDIR} — le résultat ne veut rien dire"
@@ -36,13 +44,13 @@ fi
 echo "   contrôle positif : OK (la sonde voit ce qu'elle doit voir)"
 
 # LA MESURE.
-restes=$(find "${TMPDIR}" -maxdepth 1 -name "${motif}" | wc -l)
+restes=$(find "${TMPDIR}" -mindepth 1 -maxdepth 1 -name "${motif}" | wc -l)
 if [ "${restes}" -ne 0 ]; then
-  octets=$(find "${TMPDIR}" -maxdepth 1 -name "${motif}" -printf '%s\n' | awk '{s+=$1} END{print s+0}')
+  octets=$(find "${TMPDIR}" -mindepth 1 -maxdepth 1 -name "${motif}" -printf '%s\n' | awk '{s+=$1} END{print s+0}')
   echo "::error::${suite} : ${restes} temporaire(s) laissé(s) dans \$TMPDIR (${octets} octets) — attendu 0"
   echo "::error::un temporaire de test doit être POSSÉDÉ (daemon/src/tmp_possede.rs) : il naît dans un"
   echo "::error::répertoire à lui, effacé récursivement à la destruction du garde — sidecars compris."
-  find "${TMPDIR}" -maxdepth 1 -name "${motif}" -printf '  %10s  %f\n' | sort -k2 | head -40
+  find "${TMPDIR}" -mindepth 1 -maxdepth 1 -name "${motif}" -printf '  %10s  %f\n' | sort -k2 | head -40
   exit 1
 fi
 echo "   résidu : 0 — ${suite} ne laisse rien derrière elle"

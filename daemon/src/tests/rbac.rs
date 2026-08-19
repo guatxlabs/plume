@@ -923,18 +923,45 @@ async fn router_serve(st: AppState) -> std::net::SocketAddr {
 /// parle le protocole à la main sur une TcpStream (et c'est CE chemin-là qu'on veut, pas un appel direct
 /// au handler : le but est justement de traverser les 6 couches du routeur).
 async fn router_probe(addr: std::net::SocketAddr, method: &str, path: &str, authz: Option<&str>) -> u16 {
+    router_probe_h(addr, method, path, authz, &[]).await
+}
+
+/// La MÊME sonde, avec des en-têtes libres — la couche `net_ban_guard` décide sur l'IP RÉELLE, qui se
+/// présente justement dans un en-tête posé par le proxy. UNE seule implémentation du dialogue HTTP : deux
+/// sondes divergeraient, et la famille de tests qui défend la COMPOSITION du routeur doit interroger le
+/// routeur de la même façon partout.
+async fn router_probe_h(addr: std::net::SocketAddr, method: &str, path: &str, authz: Option<&str>, headers: &[(&str, &str)]) -> u16 {
+    router_probe_corps(addr, method, path, authz, headers).await.0
+}
+
+/// La MÊME sonde, qui rend AUSSI le début de la réponse (borné à 4 Kio). MESURÉ : deux couches
+/// différentes rendent le MÊME code — `POST /api/ingest/firehose` répond 403 sur une clé de livraison
+/// invalide, exactement comme le gate de ban. Un test qui ne lit que le code compte alors un refus de
+/// handler comme la preuve d'un blocage qu'il n'a pas observé. Ce que la couche ÉCRIT, lui, la nomme.
+async fn router_probe_corps(addr: std::net::SocketAddr, method: &str, path: &str, authz: Option<&str>, headers: &[(&str, &str)]) -> (u16, String) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut req = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Length: 0\r\n");
     if let Some(a) = authz { req.push_str(&format!("Authorization: {a}\r\n")); }
+    for (k, v) in headers { req.push_str(&format!("{k}: {v}\r\n")); }
     req.push_str("\r\n");
     let fut = async {
         let mut s = tokio::net::TcpStream::connect(addr).await.ok()?;
         s.write_all(req.as_bytes()).await.ok()?;
-        let mut buf = vec![0u8; 64];
-        let n = s.read(&mut buf).await.ok()?;
-        String::from_utf8_lossy(&buf[..n]).split_whitespace().nth(1)?.parse::<u16>().ok()
+        // Lecture BORNÉE : le serveur ferme après la réponse (`Connection: close`), mais une réponse
+        // longue (exposition Prometheus, page servie) ne doit pas faire lire la sonde sans limite.
+        let mut brut: Vec<u8> = Vec::with_capacity(1024);
+        let mut buf = [0u8; 1024];
+        while brut.len() < 4096 {
+            match s.read(&mut buf).await.ok()? {
+                0 => break,
+                n => brut.extend_from_slice(&buf[..n]),
+            }
+        }
+        let texte = String::from_utf8_lossy(&brut).into_owned();
+        let code = texte.split_whitespace().nth(1)?.parse::<u16>().ok()?;
+        Some((code, texte))
     };
-    tokio::time::timeout(Duration::from_secs(20), fut).await.ok().flatten().unwrap_or(0)
+    tokio::time::timeout(Duration::from_secs(20), fut).await.ok().flatten().unwrap_or((0, String::new()))
 }
 
 fn viewer_authz() -> String {

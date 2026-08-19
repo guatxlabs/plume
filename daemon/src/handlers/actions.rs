@@ -200,7 +200,12 @@ pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Ex
             // Canonicalise (mirror `real_client_ip`) ; les gardes protected/engagement ont déjà tourné à la création.
             let canon = target.trim().parse::<std::net::IpAddr>().map(|i| i.to_string()).unwrap_or_else(|_| target.trim().to_string());
             if kind == "ban_ip" && !dry && !ip_is_protected(&canon) {
-                netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: action ban_ip", &au.name, "prod");
+                // REFUS SUR STORE PLEIN (`NETBAN_CACHE_CAP`) : tracé au ledger. L'action reste approuvée —
+                // l'enforcement réseau délégué (CrowdSec/fail2ban/nft) n'est pas concerné par ce plafond,
+                // qui ne borne que la banlist HTTP in-process.
+                if !netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: action ban_ip", &au.name, "prod") {
+                    ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (action {id})"));
+                }
             } else if kind == "unban_ip" {
                 netban_remove(&conn, &canon);
             }
@@ -268,7 +273,17 @@ pub(crate) async fn netban_list(State(st): State<AppState>, Extension(au): Exten
         .map(|m| m.flatten().collect())
         .unwrap_or_default();
     let active = bans.iter().filter(|b| b["active"].as_bool().unwrap_or(false)).count();
-    Json(json!({ "bans": bans, "active": active }))
+    // CE QUE LA BORNE MÉMOIRE FAIT, DIT ICI. `charges` = entrées réellement portées par le store live
+    // (ce qui bloque), `cap` = son plafond, `tronque` = la base porte plus de bans que le cache n'en
+    // charge, donc certains ne bloquent PAS. Sans ces trois valeurs, un opérateur ne peut pas
+    // distinguer « mon ban est actif » de « mon ban est enregistré ».
+    Json(json!({
+        "bans": bans,
+        "active": active,
+        "charges": netban_cache().read().len(),
+        "cap": NETBAN_CACHE_CAP,
+        "tronque": netban_store_tronque(),
+    }))
 }
 
 /// POST /api/netban `{ip, ttl_s?, reason?}` — pose/rafraîchit un ban HTTP. `ttl_s` absent/≤0 = PERMANENT.
@@ -284,7 +299,15 @@ pub(crate) async fn netban_add(State(st): State<AppState>, Extension(au): Extens
     let expires = ttl.map(|t| now() + t);
     let reason = b.str_field("reason");
     crate::req_conn!(st, au, conn);
-    netban_upsert(&conn, &ip, expires, reason, &au.name, "prod");
+    // STORE PLEIN -> REFUS EXPLICITE, jamais un 200 sur un ban qui ne bloquera rien. 507 (Insufficient
+    // Storage) nomme la ressource épuisée : c'est le plafond du store live, pas la requête qui est fautive.
+    if !netban_upsert(&conn, &ip, expires, reason, &au.name, "prod") {
+        ledger_append(&conn, "netban.plafond", &format!("{ip} refusé : store live plein by={}", au.name));
+        return err_json(
+            StatusCode::INSUFFICIENT_STORAGE,
+            format!("store de bans plein ({NETBAN_CACHE_CAP} IP) — libérer par DELETE /api/netban/:ip, ou bloquer en amont (pare-feu/CDN)"),
+        );
+    }
     ledger_append(&conn, "netban.add", &format!("{ip} ttl={} by={}", ttl.map(|t| t.to_string()).unwrap_or_else(|| "permanent".into()), au.name));
     Json(json!({ "ok": true, "ip": ip, "expires_ts": expires })).into_response()
 }
@@ -657,7 +680,11 @@ pub(crate) fn respond_run() {
         if netban_from_actions_enabled() && status == "done" && !dry {
             let canon = target.trim().parse::<std::net::IpAddr>().map(|i| i.to_string()).unwrap_or_else(|_| target.trim().to_string());
             if kind == "ban_ip" && !ip_is_protected(&canon) {
-                netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: responder ban_ip", "responder", "prod");
+                // REFUS SUR STORE PLEIN : tracé au ledger. L'enforcement RÉSEAU vient d'aboutir (`done`) —
+                // seul le miroir HTTP manque, et c'est précisément ce que l'exploitant doit pouvoir lire.
+                if !netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: responder ban_ip", "responder", "prod") {
+                    ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (responder, action {id})"));
+                }
             } else if kind == "unban_ip" {
                 netban_remove(&conn, &canon);
             }

@@ -271,7 +271,11 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) {
                 if netban_from_actions_enabled() && status == "approved" && dry == 0 {
                     let canon = target.trim().parse::<std::net::IpAddr>().map(|i| i.to_string()).unwrap_or_else(|_| target.trim().to_string());
                     if kind == "ban_ip" && !ip_is_protected(&canon) {
-                        netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: playbook ban_ip", "playbook", "prod");
+                        // REFUS SUR STORE PLEIN : tracé au ledger (tamper-evident). Un chemin automatique qui
+                        // avale un refus laisserait croire à un blocage qui n'existe pas.
+                        if !netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: playbook ban_ip", "playbook", "prod") {
+                            ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (playbook:{name})"));
+                        }
                     } else if kind == "unban_ip" {
                         netban_remove(&conn, &canon);
                     }

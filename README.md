@@ -325,6 +325,7 @@ Les fichiers de `config.d/` sont chargés au démarrage de façon **idempotente*
 
 ## Sécurité (intégrée)
 - **Authentification** : argon2id (+bcrypt) + **RBAC** (viewer/editor/admin) ; tokens d'agent **liés à l'hôte** ; vérification du `Host` (anti‑rebinding) ; en‑têtes + rate‑limit par IP.
+- **Ban IP natif** : une adresse bannie prend un 403 sur **toutes** les routes d'un coup — UI, API, ingestion, fichiers statiques — *avant* la vérification d'hôte et l'authentification ; derrière un proxy ou un CDN, le blocage porte sur l'**IP réelle du client**, jamais sur celle du proxy. **Réversible** sans redémarrage (TTL ou retrait), avec une **valve de récupération** pour l'opérateur qui se bannirait lui-même, et une banlist **bornée en mémoire** dont le plafond et la saturation sont publiés en métrique.
 - **Base de données** : les requêtes de l'API sont **en lecture seule**, validées, à budget temps. Le SQL brut est réservé aux admins ; un autorisateur refuse les colonnes de mot de passe/token, même aux admins.
 - **Réponse** : les actions sont **déléguées** aux exécuteurs, en **dry‑run par défaut** + approbation + liste blanche + **ledger en chaîne de hachage** (vérifiable par `plume-daemon verify` ; voir la réserve sur l'épinglage de clé dans ARCHITECTURE §14).
 - **Au repos** : chiffrement optionnel **SQLCipher par tenant**. **Conteneur** : non‑root, rootfs en lecture seule, `no‑new‑privileges`, capabilities supprimées, NetworkPolicy d'egress.

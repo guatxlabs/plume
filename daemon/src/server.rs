@@ -901,8 +901,9 @@ fn spawn_panel_refresh_loop(tenants: TenantDbManager, refresh_sem: Arc<tokio::sy
 //     bornée, 2 Go-safe) vers un fichier TEMP dans DEST puis RENAME ATOMIQUE en `plume-<TS>.db.age` -> rétention
 //     KEEP-N (`backup_keep_recent_plan`) -> log. BEST-EFFORT : toute erreur logge + continue (jamais de crash).
 // Sink LOCAL par défaut (`PLUME_BACKUP_DEST`, défaut `<dir(db)>/backups`) = le besoin host/Docker (monter un
-// volume suffit). `s3://…` = FOLLOW-UP natif-Rust : DÉTECTÉ et REFUSÉ avec un log clair (jamais de faux backup
-// silencieux ; pour S3 aujourd'hui : sidecar mc ou monter un bucket via un CSI/gateway comme volume local).
+// volume suffit). `s3://…` : voir le bloc « DESTINATION OBJET » ci-dessous — implémenté SOUS LA FEATURE
+// `s3_backup` (OFF par défaut), refusé avec un log clair sans elle. Dans les deux cas, JAMAIS un faux backup
+// local silencieux sous un nom de destination distante.
 pub(crate) fn spawn_backup_scheduler(conf: HashMap<String, String>, db_path: String) {
         let interval: u64 = cfg(&conf, "PLUME_BACKUP_INTERVAL", "0").parse().unwrap_or(0);
         if interval == 0 { return; } // DÉSACTIVÉ (défaut) -> aucun thread -> byte-identique (prod/k3s inchangé).
@@ -916,13 +917,48 @@ pub(crate) fn spawn_backup_scheduler(conf: HashMap<String, String>, db_path: Str
         let keep: usize = cfg(&conf, "PLUME_BACKUP_KEEP", "24").parse().unwrap_or(24).max(1);
         let on_start = cfg(&conf, "PLUME_BACKUP_ON_START", "0") == "1";
 
-        // S3 = follow-up natif-Rust : on REFUSE tôt et clairement plutôt que produire un faux backup local trompeur.
+        // ─── DESTINATION OBJET (`s3://…`) ────────────────────────────────────────────────────────────
+        // SANS la feature `s3_backup` : le module `sink_s3` n'existe pas dans ce binaire, et la branche
+        // ci-dessous est celle qui a toujours été là — refus explicite, scheduler désactivé. C'est ce qui
+        // rend le profil par défaut inchangé (aucun `s3://` accepté, aucune socket, aucun thread).
+        #[cfg(not(feature = "s3_backup"))]
         if dest.starts_with("s3://") {
             eprintln!(
-                "[backup-sched] PLUME_BACKUP_DEST={dest} : sink S3 natif-Rust NON IMPLÉMENTÉ (follow-up) ; \
-                 utilisez un répertoire LOCAL (volume monté) ou le sidecar mc pour S3 -> scheduler DÉSACTIVÉ.");
+                "[backup-sched] PLUME_BACKUP_DEST={dest} : sink S3 natif-Rust NON COMPILÉ dans ce binaire \
+                 (feature `s3_backup`, OFF par défaut) ; utilisez un répertoire LOCAL (volume monté), \
+                 recompilez avec `--features s3_backup`, ou passez par un dépôt objet externe \
+                 -> scheduler DÉSACTIVÉ.");
             return;
         }
+        // AVEC la feature : la destination objet est RÉSOLUE MAINTENANT, au démarrage, pas au premier cycle.
+        // Une configuration incomplète arrête l'ordonnanceur ici avec sa cause NOMMÉE — elle ne le laisse
+        // JAMAIS écrire en local sous un nom de destination distante, ce qui ferait croire à des sauvegardes
+        // hors du nœud alors qu'il n'y en aurait aucune. Les identifiants passent par `cfg_secret` (donc
+        // `_FILE`/`_REF` -> `vault:`/`file:`/`env:`) et aucune de leurs valeurs n'entre dans une ligne de
+        // journal (cf. le type `Matiere` de `sink_s3`).
+        #[cfg(feature = "s3_backup")]
+        let sink_objet: Option<std::sync::Arc<sink_s3::CibleS3>> = if dest.starts_with("s3://") {
+            match sink_s3::depuis_reglages(&conf, &dest) {
+                Ok(c) => {
+                    eprintln!("[backup-sched] destination OBJET résolue : {c:?}");
+                    Some(std::sync::Arc::new(c))
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[backup-sched] PLUME_BACKUP_DEST={dest} : {e} -> scheduler DÉSACTIVÉ (fail-closed ; \
+                         aucune sauvegarde locale ne sera écrite sous ce nom).");
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        // ZONE DE PRÉPARATION LOCALE : un dépôt objet envoie un FICHIER, il faut donc l'écrire quelque part
+        // d'abord. Ce répertoire porte aussi la rétention KEEP-N locale, qui reste le filet quand le dépôt
+        // distant échoue. La rétention DISTANTE, elle, n'est pas implémentée : c'est une règle de cycle de vie
+        // du bucket, mécanisme natif de tous les fournisseurs (cf. l'en-tête de `sink_s3`).
+        #[cfg(feature = "s3_backup")]
+        let dest = if sink_objet.is_some() { cfg(&conf, sink_s3::CLE_S3_STAGING, &default_dest) } else { dest };
 
         std::thread::spawn(move || {
             eprintln!(
@@ -933,10 +969,19 @@ pub(crate) fn spawn_backup_scheduler(conf: HashMap<String, String>, db_path: Str
                 return;
             }
             std::thread::sleep(Duration::from_secs(90)); // laisse passer le bind + la liveness (comme les autres boucles)
-            if on_start { run_scheduled_backup(&db_path, &dest, keep); } // backup-on-start optionnel (comme le sidecar)
+            // UN SEUL point d'appel du cycle, quel que soit le sink -> le chemin local et le chemin objet ne
+            // peuvent pas diverger sur la cadence, le démarrage à chaud ou la rétention.
+            #[cfg(feature = "s3_backup")]
+            let cycle = |db: &str, d: &str, k: usize| match sink_objet.as_deref() {
+                Some(cible) => run_scheduled_backup_objet(db, d, k, cible),
+                None => run_scheduled_backup(db, d, k),
+            };
+            #[cfg(not(feature = "s3_backup"))]
+            let cycle = |db: &str, d: &str, k: usize| run_scheduled_backup(db, d, k);
+            if on_start { cycle(&db_path, &dest, keep); } // backup-on-start optionnel (comme le sidecar)
             loop {
                 std::thread::sleep(Duration::from_secs(interval));
-                run_scheduled_backup(&db_path, &dest, keep);
+                cycle(&db_path, &dest, keep);
             }
         });
 }
@@ -948,6 +993,33 @@ fn run_scheduled_backup(db_path: &str, dest_dir: &str, keep: usize) {
         scheduled_backup_cycle(db_path, dest_dir, keep, db_key().as_deref(), recipient.as_deref());
 }
 
+/// MÊME cycle, suivi du DÉPÔT sur la destination objet. Trois propriétés, toutes portées par le code et non
+/// par cette phrase :
+///   1. si le cycle ne PUBLIE rien (backup échoué, rename impossible), il n'y a rien à déposer et on le DIT —
+///      on ne dépose surtout pas l'artefact d'un cycle PRÉCÉDENT, ce qui rendrait une ligne verte pour une
+///      sauvegarde qui n'a pas été prise ;
+///   2. le verdict du dépôt est celui du type `IssueDepot` (déposé et confirmé / refusé / impossible) — cette
+///      fonction ne le résume pas, elle l'imprime ;
+///   3. l'archive locale n'est PAS supprimée quand le dépôt n'aboutit pas : la rétention KEEP-N locale reste
+///      le filet, et un dépôt raté ne coûte pas la sauvegarde.
+#[cfg(feature = "s3_backup")]
+fn run_scheduled_backup_objet(db_path: &str, staging: &str, keep: usize, cible: &sink_s3::CibleS3) {
+        let recipient = backup_age_recipient();
+        let Some(nom) = scheduled_backup_cycle(db_path, staging, keep, db_key().as_deref(), recipient.as_deref())
+        else {
+            eprintln!("[backup-sched-objet] aucun artefact publié par ce cycle -> RIEN n'est déposé \
+                       (un dépôt annoncé sans sauvegarde prise serait un faux succès)");
+            return;
+        };
+        let chemin = std::path::Path::new(staging).join(&nom);
+        let issue = sink_s3::deposer_fichier(cible, &nom, &chemin, &fmt_backup_ts(now()));
+        eprintln!("[backup-sched-objet] {nom} -> {issue}");
+        if !issue.est_depose() {
+            eprintln!("[backup-sched-objet] l'archive locale {} est CONSERVÉE (rétention KEEP-N) — elle est \
+                       la seule copie de ce cycle", chemin.display());
+        }
+}
+
 /// CŒUR d'un cycle du scheduler natif : backup B1 -> rename ATOMIQUE -> rétention KEEP-N. BEST-EFFORT de bout
 /// en bout (tout échec logge + retourne ; JAMAIS de panic/crash daemon). Réutilise VERBATIM `backup_compressed`
 /// (même code B1 que la CLI et le sidecar -> même fidélité round-trip, même chiffrement age asym/sym) et
@@ -955,7 +1027,13 @@ fn run_scheduled_backup(db_path: &str, dest_dir: &str, keep: usize) {
 /// `classify_backup_name`=Unparseable) -> il n'est NI servi NI pruné tant que le rename atomique n'a pas publié
 /// le nom canonique `plume-<TS>.db.age` -> zéro backup partiel exposé. `key`/`recipient` passés explicitement
 /// (testable hermétiquement, sans dépendance à l'env global).
-pub(crate) fn scheduled_backup_cycle(db_path: &str, dest_dir: &str, keep: usize, key: Option<&str>, recipient: Option<&str>) {
+///
+/// REND LE NOM DE L'ARTEFACT PUBLIÉ par ce cycle, `None` si aucun ne l'a été. Ce n'est pas un ornement : un
+/// consommateur en aval (le dépôt sur destination objet) doit pouvoir distinguer « ce cycle a produit CET
+/// artefact » de « ce cycle n'a rien produit » sans relire le répertoire, où l'artefact d'un cycle PRÉCÉDENT
+/// le ferait conclure au succès. Le chemin local ignore cette valeur, et son comportement — journaux
+/// compris — est inchangé.
+pub(crate) fn scheduled_backup_cycle(db_path: &str, dest_dir: &str, keep: usize, key: Option<&str>, recipient: Option<&str>) -> Option<String> {
         let ts = fmt_backup_ts(now());
         let final_path = format!("{dest_dir}/plume-{ts}.db.age");
         // TEMP dans le MÊME répertoire que la cible finale -> rename ATOMIQUE (même filesystem, jamais cross-device).
@@ -965,7 +1043,7 @@ pub(crate) fn scheduled_backup_cycle(db_path: &str, dest_dir: &str, keep: usize,
                 if let Err(e) = std::fs::rename(&tmp_path, &final_path) {
                     eprintln!("[backup-sched] rename {tmp_path} -> {final_path} : {e} (cycle ABANDONNÉ)");
                     let _ = std::fs::remove_file(&tmp_path); // pas de temp orphelin.
-                    return;
+                    return None;
                 }
                 let ratio = if st.dest_bytes > 0 { st.plaintext_bytes as f64 / st.dest_bytes as f64 } else { 0.0 };
                 eprintln!(
@@ -976,7 +1054,7 @@ pub(crate) fn scheduled_backup_cycle(db_path: &str, dest_dir: &str, keep: usize,
             Err(e) => {
                 eprintln!("[backup-sched] backup B1 échoué : {e} (best-effort -> on continue)");
                 let _ = std::fs::remove_file(&tmp_path); // pas de temp partiel/orphelin.
-                return;
+                return None;
             }
         }
         // RÉTENTION KEEP-N : liste DEST, calcule les plus vieux à supprimer (fonction pure), supprime un par un.
@@ -1004,6 +1082,9 @@ pub(crate) fn scheduled_backup_cycle(db_path: &str, dest_dir: &str, keep: usize,
             }
             Err(e) => eprintln!("[backup-sched] rétention : lecture DEST {dest_dir} échouée : {e} (on continue)"),
         }
+        // L'artefact a été PUBLIÉ (le rename a réussi) et le garde-fou clock-skew interdit à la rétention de
+        // ce cycle de le supprimer -> le nommer ici ne peut pas désigner un fichier absent.
+        Some(format!("plume-{ts}.db.age"))
 }
 
 // OPS NATIVE #2 — AUTO-VACUUM INCRÉMENTAL IN-DAEMON (best-effort, NON-BLOQUANT). Gaté sur

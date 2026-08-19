@@ -207,6 +207,56 @@
         }
     }
 
+    /// VECTEUR 4 bis — UNE DESTINATION OBJET QU'ON NE PEUT PAS HONORER NE DOIT JAMAIS DEVENIR UNE
+    /// ÉCRITURE LOCALE. C'est le défaut que ce vecteur rend impossible : un exploitant qui écrit
+    /// `PLUME_BACKUP_DEST=s3://…` croit ses sauvegardes HORS du nœud. Si le binaire ne sait pas les y
+    /// mettre, la seule issue acceptable est l'arrêt de l'ordonnanceur — pas un répertoire local
+    /// silencieusement rempli sous un nom de destination distante, qui ferait croire à un escrow
+    /// inexistant jusqu'au jour du sinistre.
+    ///
+    /// LE TEST VAUT DANS LES DEUX PROFILS, et c'est délibéré — il n'a AUCUN `cfg` :
+    ///   · sans la feature `s3_backup`, le module de dépôt n'existe pas dans ce binaire et la
+    ///     destination est refusée à la lecture de la configuration ;
+    ///   · avec la feature, elle est refusée par la résolution (aucun service objet n'est configuré
+    ///     ici, et un `_ENDPOINT` ne se devine pas).
+    /// Deux causes, une seule conséquence observable — c'est ELLE qui est le contrat, et c'est elle
+    /// que ce test fixe. Il est donc aussi la preuve, exécutée par la suite PAR DÉFAUT, que la
+    /// fonctionnalité éteinte ne change pas le comportement.
+    #[test]
+    fn adverse_destination_objet_non_honorable_ne_devient_jamais_une_ecriture_locale() {
+        assert!(std::env::var("PLUME_BACKUP_S3_ENDPOINT").is_err(),
+            "aucun service objet ne doit être configuré dans l'environnement de test");
+        for dest in ["s3://sauvegardes", "s3://sauvegardes/plume/noeud-1", "s3://X", "s3://"] {
+            // Le répertoire par défaut du scheduler est `<dossier de la base>/backups` : s'il apparaît,
+            // c'est qu'une écriture locale a eu lieu sous un nom de destination distante.
+            let src = mk_tmp_path("adv-objet-src");
+            let local = std::path::Path::new(src.as_str()).parent().unwrap().join("backups");
+            assert!(!local.exists(), "pré-condition : le répertoire local n'existe pas encore");
+            let mut conf = std::collections::HashMap::new();
+            conf.insert("PLUME_BACKUP_INTERVAL".to_string(), "1".to_string()); // ACTIF, donc rien ne masque le refus
+            conf.insert("PLUME_BACKUP_ON_START".to_string(), "1".to_string());
+            conf.insert("PLUME_BACKUP_DEST".to_string(), dest.to_string());
+            crate::server::spawn_backup_scheduler(conf, src.as_str().to_string());
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            assert!(!local.exists(),
+                "destination objet {dest:?} non honorable -> AUCUNE écriture locale ne doit apparaître ({})",
+                local.display());
+        }
+        // TÉMOIN POSITIF de l'instrument : la MÊME mécanique, avec une destination LOCALE, crée bien le
+        // répertoire. Sans lui, les quatre assertions ci-dessus seraient satisfaites par un scheduler qui
+        // ne ferait jamais rien, et ce vecteur ne prouverait rien du tout.
+        let src = mk_tmp_path("adv-objet-temoin");
+        let dest_local = mk_tmp_path("adv-objet-dest");
+        let mut conf = std::collections::HashMap::new();
+        conf.insert("PLUME_BACKUP_INTERVAL".to_string(), "1".to_string());
+        conf.insert("PLUME_BACKUP_DEST".to_string(), dest_local.as_str().to_string());
+        crate::server::spawn_backup_scheduler(conf, src.as_str().to_string());
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(std::path::Path::new(dest_local.as_str()).exists(),
+            "témoin positif : une destination LOCALE fait bien créer le répertoire — sinon l'instrument \
+             ne distingue pas « refusé » de « rien ne tourne »");
+    }
+
     /// VECTEUR 6 — fmt_backup_ts est l'INVERSE EXACT de parse_backup_ts sur des dates DURES : epoch 0,
     /// AVANT l'epoch (négatif), fin d'année/mois à 23:59:59, années bissextiles (dont séculaires : 2000
     /// bissextile, 1900 NON), et un BALAYAGE dense. Prouve aussi que le nom trie lexicalement ==

@@ -377,6 +377,12 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     // d'octets EST le message quand la comptabilité n'a pas fermé. Cf. `ventilation_serie`.
     o.push_str(&ventilation_serie::exposition_prom(&ventilation_serie::derniere(), now()));
     g(&mut o, "plume_alerts_open", "gauge", "Alertes ouvertes (status=new)", "/alerts_open");
+    // BAN NATIF HTTP — la BORNE et son SATURATION. Lu depuis le store live en mémoire (aucune requête SQL :
+    // un scrape ne doit rien coûter à la base). `store_tronque=1` dit que des bans posés en base ne sont PAS
+    // enforcés faute de place : c'est l'alerte à câbler, une borne muette ne valant pas mieux qu'aucune borne.
+    prom_line(&mut o, "plume_netban_entries", "gauge", "IP bloquées par le ban natif HTTP (store live)", netban_cache().read().len().to_string());
+    prom_line(&mut o, "plume_netban_cap", "gauge", "Plafond du store live du ban natif (entrées)", NETBAN_CACHE_CAP.to_string());
+    prom_line(&mut o, "plume_netban_store_tronque", "gauge", "1 si la base porte plus de bans que le store live n'en charge", u8::from(netban_store_tronque()).to_string());
     // santé par composant : jauge 1/0.5/0 (V/J/R) étiquetée par composant (constantes).
     o.push_str("# HELP plume_component_up Santé par composant (1=vert, 0.5=jaune, 0=rouge)\n# TYPE plume_component_up gauge\n");
     if let Some(cs) = j.get("components").and_then(|c| c.as_array()) {

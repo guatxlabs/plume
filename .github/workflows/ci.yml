@@ -211,7 +211,18 @@ env:
   # DURÉE, dite honnêtement : les 5 tests s'exécutent en 47,4 s quand on les tire seuls, dont 42,6 s
   # pour la seule ablation (9 bras × 20 000 insertions par la porte d'ingest réelle). C'est le lot le
   # plus cher au test unitaire de ce fichier, et il l'est parce qu'il ÉCRIT vraiment.
-  EXPECTED_TESTS: "1042"
+  #
+  # +1 le 2026-08-19 (lot « destination objet de la sauvegarde », clé P8.22-a), MESURÉ par ÉNUMÉRATION
+  # (`cargo test --offline --locked -- --list`). UN SEUL test entre dans la suite PAR DÉFAUT, et c'est
+  # voulu : le sink objet est derrière la feature `s3_backup`, donc ses douze tests à lui sont hors de
+  # ce profil (leur compteur vit dans le job `features`). Celui qui entre ici est le seul qui parle du
+  # profil par défaut — une destination `s3://` que ce binaire ne peut pas honorer ne devient JAMAIS
+  # une écriture locale. Il n'a aucun `cfg` et passe donc dans les DEUX profils, ce qui est
+  # exactement ce qu'on veut d'une garde de mode 0 : elle ne peut pas être vraie « seulement quand la
+  # feature est éteinte ».
+  # CONTRÔLE DE L'ÉCART, fait le même jour et par la même énumération : la feature ajoute EXACTEMENT
+  # douze noms, tous ceux de `daemon/src/tests/sink_s3.rs`, et pas un de plus.
+  EXPECTED_TESTS: "1048"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -323,9 +334,23 @@ jobs:
   cold-tier:
     name: cold-tier (daemon — cargo test --features cold_tier)
     runs-on: ubuntu-24.04
-    # Measured locally at ~34 min for the test run alone (the cold_store suite does real
-    # Parquet + crypto round-trips); the ceiling is deliberately generous so a slow runner
-    # reports a REAL failure rather than an ambiguous timeout.
+    # WHERE THIS JOB'S TIME GOES — measured 2026-08-20 (12 cores, `-j 4`, TMPDIR on real disk),
+    # because the answer was NOT the one everybody guesses. The usual suspect is the cache: enabling
+    # a feature is assumed to invalidate it and rebuild the world. REFUTED, by measurement — a build
+    # of the ENTIRE graph from an EMPTY target dir (247 crates, `cargo build --tests --features
+    # cold_tier`) costs 279 s and produces a 2.2 GB target dir; a warm no-op costs 20 s and a rebuild
+    # after touching a source file 27 s. Even a TOTAL cache miss is a small minority of this job.
+    # The test RUN is the job: 2392,76 s of the same measurement, ~90 % of the wall clock. It is
+    # dominated by a tail — 52 tests of this suite each exceed 60 s, the heaviest (parallel Parquet
+    # decode parity) taking 398 s ALONE. Those tests spend their time inside `parquet`/`zstd`/
+    # SQLCipher, which `cargo test` used to build at `opt-level = 0`; `[profile.dev.package."*"]`
+    # in daemon/Cargo.toml now builds dependencies (and ONLY dependencies) optimized. Same command,
+    # EXPECTED_COLD_TESTS passing in both arms, rc=0: 2392,76 s -> 589,91 s. That block carries the A/B and the
+    # per-test numbers — read it before reverting the profile to "simplify" the manifest.
+    #
+    # The ceiling stays deliberately generous so a slow runner reports a REAL failure rather than an
+    # ambiguous timeout. It is NOT tightened to track the new duration: a timeout tuned close to the
+    # measured time turns runner variance into red builds that say nothing about the code.
     timeout-minutes: 90
     steps:
       - name: Checkout plume
@@ -445,7 +470,13 @@ jobs:
           # ⚠ CE QUE CE CHIFFRE NE PROUVE PAS, ET IL FAUT LE REDIRE : il compte des tests DÉCLARÉS,
           # pas des tests VERTS. La suite `cold_tier` n'a PAS été exécutée pour ce lot ; seule la
           # suite par défaut l'a été (rc=0, 1012/1012, 217,84 s). La CI, elle, les exécute vraiment.
-          EXPECTED_COLD_TESTS: "1262"
+          #
+          # 1268 : +1 le 2026-08-19 par ÉNUMÉRATION (lot P8.22-a) — le MÊME que la suite par défaut
+          # (`adverse_destination_objet_non_honorable_ne_devient_jamais_une_ecriture_locale`). La
+          # feature `cold_tier` n'en ajoute aucun, et c'est attendu : le sink objet dépose une archive
+          # déjà produite par le chemin CHAUD, que le tier froid ne change pas — l'écart cold−défaut
+          # est donc inchangé.
+          EXPECTED_COLD_TESTS: "1268"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -671,6 +702,57 @@ jobs:
       - name: cargo check --features duckdb (warm tier)
         working-directory: daemon
         run: cargo check --features duckdb --locked --verbose
+
+      # `s3_backup` — object-storage sink of the backup scheduler. Adds ZERO crates to the graph
+      # (SigV4 is HMAC-SHA256 + SHA-256, both already in `util::hexcrypto`; the transport reuses
+      # `util::http_client` and the rustls/ring roots already linked).
+      - name: cargo check --features s3_backup (sink objet de sauvegarde)
+        working-directory: daemon
+        run: cargo check --features s3_backup --locked --verbose
+
+      # ...AND THEN ACTUALLY RUN ITS TESTS. A `cargo check` proves the feature compiles; it proves
+      # NOTHING about the property this module exists for — that a failed upload can never come back
+      # as a success. Four of its tests script a local fake object service into answering the exact
+      # ways an upload can go wrong (refusal, silent close, a re-read that reports a DIFFERENT size,
+      # nothing listening), and each asserts the verdict is not a deposit. Those are the tests whose
+      # absence would be expensive, so they run here rather than only on a contributor's machine.
+      #
+      # FILTERED ON PURPOSE. `cargo test --features s3_backup` alone would also re-run the whole
+      # default suite on this runner — the same work the `test` job already does, for no added
+      # signal. The name filter keeps only what the feature adds; the test-binary build (the
+      # expensive part) is shared with the `cargo check` step above via the same target dir.
+      #
+      # THE COUNT IS ASSERTED, like every other suite in this file, with its OWN counter. Same awk,
+      # same failure mode. A feature-gated test that silently stopped being compiled would otherwise
+      # leave this step cheerfully green on zero tests — which is exactly the shape of rot the
+      # cold-tier job's anti-no-op check was added to catch.
+      - name: cargo test --features s3_backup (tests du sink objet) + assert the count
+        working-directory: daemon
+        env:
+          # MESURÉ le 2026-08-19 (`cargo test --offline --locked --features s3_backup sink_s3_`,
+          # rc=0, 1,82 s de suite filtrée). Ce compte est celui des tests que la FEATURE ajoute ; il
+          # est indépendant de EXPECTED_TESTS et n'a pas à bouger quand la suite par défaut bouge.
+          # La feature n'ajoute AUCUN test à la suite par défaut — vérifié par ÉNUMÉRATION le même
+          # jour (`-- --list` avec et sans la feature : l'écart vaut exactement ce nombre, et les
+          # noms de l'écart sont tous ceux de `tests/sink_s3.rs`).
+          EXPECTED_S3_TESTS: "12"
+        run: |
+          set -euo pipefail
+          export TMPDIR="$RUNNER_TEMP/plume-tmp-s3"
+          rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"
+          cargo test --features s3_backup --locked --verbose sink_s3_ 2>&1 | tee /tmp/s3-tests.log
+          total=$(awk '/^test result: ok\. [0-9]+ passed/{s+=$4} END{print s+0}' /tmp/s3-tests.log)
+          echo "s3_backup tests passed: $total (expected $EXPECTED_S3_TESTS)"
+          if [ "$total" != "$EXPECTED_S3_TESTS" ]; then
+            echo "::error::s3_backup suite test count is $total, expected $EXPECTED_S3_TESTS."
+            echo "::error::If the change legitimately adds or removes s3_backup tests, update"
+            echo "::error::EXPECTED_S3_TESTS HERE, from your own measurement — and nowhere else."
+            exit 1
+          fi
+          if [ "$total" -eq 0 ]; then
+            echo "::error::zero test ran: the filter or the feature gate stopped matching — this step is a no-op."
+            exit 1
+          fi
 
   # ---------------------------------------------------------------------------
   # security — supply-chain + secret hygiene. Independent gate: runs in parallel with

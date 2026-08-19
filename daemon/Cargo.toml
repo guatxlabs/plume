@@ -162,6 +162,19 @@ ldap = ["dep:ldap3"]
 # SAML 2.0 SP (#44). OFF par défaut : opt-in de compilation. Tire `samlify`/`saml-rs`/`bergshamra`
 # (pur-Rust, RustCrypto). Sans cette feature, les routes SAML renvoient 501 (code présent, non linké).
 saml = ["dep:samlify"]
+# SINK OBJET COMPATIBLE S3 POUR L'ORDONNANCEUR DE SAUVEGARDE. OFF PAR DÉFAUT + **ZÉRO CAISSE NOUVELLE**.
+# Feature de COMPILATION PURE : sans elle, `sink_s3.rs` n'est PAS compilé et l'ordonnanceur REFUSE une
+# destination `s3://` exactement comme avant (mode 0 inchangé). Avec elle, aucune dépendance ne s'ajoute au
+# graphe — la signature v4 est de l'arithmétique HMAC-SHA256 + SHA-256, et les deux primitives sont DÉJÀ
+# compilées dans le profil par défaut (`util::hexcrypto`, bâti sur `sha2`, dépendance directe existante) ;
+# le transport réutilise `util::http_client` + les racines rustls/ring déjà liées.
+# MESURE QUI A TRANCHÉ (2026-08-19, `cargo tree --prefix none | sort -u`, résolution seule) — graphe du
+# démon en profil par défaut = 211 caisses ; `aws-sdk-s3`+`aws-config` en ajouteraient **103** (dont
+# `aws-lc-sys` et `cmake`, outillage que ce fichier déclare ailleurs ABSENT de l'hôte de compilation visé),
+# `rust-s3` en ajouterait **44**. Écrire la signature ici en ajoute **0**.
+# CE QU'ELLE NE FAIT PAS : ni multipart (donc plafond du PUT simple), ni rétention côté bucket, ni
+# restauration/listage, ni identifiants par rôle d'instance. Détail dans l'en-tête de `src/sink_s3.rs`.
+s3_backup = []
 # COUCHE IA CONSEIL (#16, advisory NL→SOQL). OFF PAR DÉFAUT + RAM-NEUTRE. Feature de COMPILATION PURE côté
 # daemon : AUCUNE crate nouvelle (l'égress réutilise le client HTTP interne `http_call`/rustls-ring déjà
 # lié ; le JSON = `serde_json` déjà là). Active `guatx-core/ai` : le cœur ne porte QUE le CONTRAT `AiProvider`
@@ -170,6 +183,46 @@ saml = ["dep:samlify"]
 # COMPILATION -> build/test DÉFAUT byte-identiques (0 dep IA). L'inférence est DISTANTE (Ollama/vLLM/
 # OpenAI-compat/Anthropic) -> budget 2 Go intact (aucun modèle/tokenizer/vecteur local).
 ai = ["guatx-core/ai"]
+
+# LES DÉPENDANCES SONT OPTIMISÉES EN TEST, LE CRATE NE L'EST PAS.
+# `cargo test` bâtit ses dépendances avec le profil `dev`, donc à `opt-level = 0` par défaut — dont
+# le décodeur `parquet`, `zstd`, `snap`, `thrift` et le SQLCipher vendoré, c'est-à-dire EXACTEMENT le
+# code où la suite `--features cold_tier` passe son temps (décodage colonnaire, chiffrement, allers-
+# retours SQLite). Le sélecteur `"*"` ne porte QUE sur les dépendances : le crate local reste à
+# `opt-level = 0`, donc la compilation qui se refait à CHAQUE commit n'est pas alourdie.
+# VÉRIFIÉ PAR LES DEUX TÉMOINS (`cargo build --tests -v`, 2026-08-20) : les caisses tierces reçoivent
+# `-C opt-level=2`, la ligne `--crate-name plume_daemon --test` ne reçoit AUCUN `-C opt-level`.
+# `[profile.release]` n'est PAS touché : l'artefact livré et l'invariant « mode 0 byte-identique »
+# restent au même octet. `debug-assertions` et `overflow-checks` restent ACTIFS (l'override ne porte
+# que `opt-level`) — un dépassement d'entier dans une dépendance panique toujours sous test.
+#
+# MESURÉ les 2026-08-19 et 2026-08-20 (12 cœurs, `-j 4`, TMPDIR sur DISQUE, arbre bâti d'avance,
+# MÊME arbre source dans les deux bras, seul l'`opt-level` des dépendances change) :
+#   suite `--features cold_tier` ... 2392,76 s -> 589,91 s   rc=0, EXPECTED_COLD_TESTS passés
+#                                                            dans les DEUX bras
+#   suite par défaut ...............  197,63 s -> 144,28 s   rc=0, EXPECTED_TESTS passés
+#                                                            dans les DEUX bras
+#   compilation À FROID du graphe ..  279 s    -> 364 s      (247 caisses ; +85 s, payés une fois
+#                                                             par clé de cache, pas par commit)
+# (les deux compteurs vivent dans .github/workflows/ci.yml et NULLE PART AILLEURS ; les citer par
+#  leur NOM plutôt que par leur valeur est ce qui empêche cette mesure de pourrir quand la suite
+#  grossit — une garde de la CI refuse la copie)
+# Les cinq tests les plus chers, chronométrés SEULS (`--exact --test-threads=1`), avant -> après :
+#   cold_store::tests::p6_parity_parallel_eq_sequential_eq_oracle .. 398,1 s ->  16,4 s
+#   cold_store::tests::p6_bench_parallel_vs_sequential_decode ...... 330,3 s ->  37,6 s
+#   cold_store::tests::p6_ram_bounded_peak_concurrency_le_degree ... 208,8 s ->  14,9 s
+#   cold_store::tests::p6_adv_multirun_parity_overlapping_keys ..... 190,7 s ->   9,3 s
+#   cold_store::tests::parity_hot_vs_cold_over_the_row_cap ......... 102,1 s ->  10,0 s
+# 52 tests de cette suite dépassaient 60 s ; l'ordre de FIN dans la sortie du harnais n'est PAS un
+# classement de durée — le tout dernier test à rendre `ok` coûte 3,2 s seul, il attendait un fil.
+#
+# CE QUE ÇA NE FAIT PAS : aucun test retiré, ignoré, filtré ni sharding ; aucun seuil relâché. Les
+# compteurs asservis de la CI (EXPECTED_TESTS / EXPECTED_COLD_TESTS) sont INCHANGÉS, et c'est la
+# preuve que la couverture est la même — un gain obtenu en gardant moins les ferait chuter. Ça ne
+# rend pas non plus le tier froid plus rapide EN PRODUCTION : `[profile.release]` compile déjà ce
+# code optimisé, le défaut ne vivait que dans le profil de test.
+[profile.dev.package."*"]
+opt-level = 2
 
 [profile.release]
 opt-level = "z"

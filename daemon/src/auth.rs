@@ -302,18 +302,71 @@ pub(crate) fn netban_cache() -> &'static parking_lot::RwLock<HashMap<String, Opt
     NETBAN_CACHE.get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
 }
 
-/// Charge le store `net_ban` d'une base -> map `ip -> Option<expires_ts>`. PUR (prend `conn`, ne touche pas le
-/// cache global) -> testable. Agrège tous les env_id d'une même IP : un ban PERMANENT (expires NULL) l'emporte ;
-/// sinon on garde l'expiry MAX (bloque le plus longtemps). Une IP est bloquée si AU MOINS un ban actif la vise.
+/// PLAFOND DU STORE LIVE, en ENTRÉES (borne anti-OOM, même rôle qu'`AUTH_FAIL_CAP` pour la map d'échecs
+/// d'auth). Le cache est une structure de recherche EN MÉMOIRE dont la taille suit le nombre d'IP bannies ;
+/// sans borne, un chemin d'auto-ban (opt-in `PLUME_NETBAN_FROM_ACTIONS`) rend la croissance mémoire
+/// PILOTABLE PAR L'ATTAQUANT — un botnet suffit à poser une entrée par adresse source.
+///
+/// BUDGET, dérivé de la structure et non d'une observation : une entrée = la clé texte (45 octets au pire,
+/// une IPv6 en forme longue) + son `String` (24) + `Option<i64>` (16) + l'emplacement de la table de hachage
+/// et son octet de contrôle, soit ~120 octets ; 50 000 entrées ≈ 6 Mio. Borné, et négligeable devant le
+/// budget de conception de 2 Gio — tout en couvrant très largement une banlist manuelle ou automatique
+/// légitime (au-delà, le blocage par adresse n'est plus le bon outil : c'est un préfixe ou un pare-feu).
+pub(crate) const NETBAN_CACHE_CAP: usize = 50_000;
+
+/// LE PLAFOND EST-IL ATTEINT ? `true` = la base porte plus de bans que le cache n'en charge, donc des bans
+/// posés ne sont PAS enforcés. Une borne qui ne se dit pas est indistinguable d'une borne absente : ce
+/// témoin est exposé par `/metrics` (`plume_netban_store_tronque`) et par `GET /api/netban` (`tronque`).
+static NETBAN_TRONQUE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(crate) fn netban_store_tronque() -> bool {
+    NETBAN_TRONQUE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Charge le store `net_ban` d'une base -> (map `ip -> Option<expires_ts>`, plafond atteint). PUR (prend
+/// `conn`, ne touche pas le cache global) -> testable. Agrège tous les env_id d'une même IP : un ban
+/// PERMANENT (expires NULL) l'emporte ; sinon on garde l'expiry MAX (bloque le plus longtemps). Une IP est
+/// bloquée si AU MOINS un ban actif la vise.
 /// TENTE de charger le store (None = ÉCHEC de LECTURE de la table : base verrouillée/corrompue/absente ; distinct
 /// d'une table VIDE = Some(map vide)). Sert le fail-STATIC de `netban_reload` : on ne
 /// remplace le cache que sur un chargement RÉUSSI -> une erreur DB transitoire au tick ne VIDE PAS les bans actifs.
-fn netban_try_load(conn: &Connection) -> Option<HashMap<String, Option<i64>>> {
+///
+/// BORNÉ PAR CONSTRUCTION, des deux côtés : `LIMIT` borne les lignes LUES (une base gonflée par un autre
+/// écrivain ne fait pas travailler ce chargement sans fin) et l'arrêt à `NETBAN_CACHE_CAP` borne la map
+/// CONSTRUITE. L'ordre de priorité est celui de l'enforcement, pas celui de l'insertion : les bans
+/// PERMANENTS d'abord, puis les échéances les plus lointaines (`ip` en départage, pour que deux
+/// chargements de la même base rendent le MÊME instantané). Ce qui tombe au-delà du plafond est le ban le
+/// plus proche d'expirer — et sa chute est DITE, jamais silencieuse.
+fn netban_try_load(conn: &Connection) -> Option<(HashMap<String, Option<i64>>, bool)> {
+    netban_try_load_cap(conn, NETBAN_CACHE_CAP)
+}
+
+/// Cœur PUR du chargement, PLAFOND INJECTÉ -> la borne se teste sur quelques lignes au lieu d'en fabriquer
+/// cinquante mille (même patron que `real_client_ip_ctx`, dont la config est injectée). La production
+/// passe TOUJOURS par `netban_try_load`, qui pose `NETBAN_CACHE_CAP`.
+pub(crate) fn netban_try_load_cap(conn: &Connection, cap: usize) -> Option<(HashMap<String, Option<i64>>, bool)> {
     use std::collections::hash_map::Entry;
-    let mut stmt = conn.prepare("SELECT ip, expires_ts FROM net_ban").ok()?;
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?))).ok()?;
+    // Une ligne ne peut créer qu'UNE entrée : lire `cap + 1` lignes suffit à remplir la map jusqu'au
+    // plafond, et la (cap+1)-ième dit qu'il reste de la matière en base.
+    let mut stmt = conn
+        .prepare(
+            "SELECT ip, expires_ts FROM net_ban \
+             ORDER BY (expires_ts IS NULL) DESC, expires_ts DESC, ip LIMIT ?1",
+        )
+        .ok()?;
+    let rows = stmt
+        .query_map(params![(cap + 1) as i64], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?))
+        })
+        .ok()?;
     let mut map: HashMap<String, Option<i64>> = HashMap::new();
+    let mut tronque = false;
     for (ip, exp) in rows.flatten() {
+        // Le plafond porte sur le NOMBRE D'ENTRÉES de la map, pas sur les lignes lues : une ligne qui
+        // enrichit une IP déjà chargée (autre `env_id`) ne consomme rien et passe toujours.
+        if map.len() >= cap && !map.contains_key(&ip) {
+            tronque = true;
+            break;
+        }
         match map.entry(ip) {
             Entry::Vacant(e) => {
                 e.insert(exp);
@@ -332,7 +385,7 @@ fn netban_try_load(conn: &Connection) -> Option<HashMap<String, Option<i64>>> {
             }
         }
     }
-    Some(map)
+    Some((map, tronque))
 }
 
 /// Charge le store `net_ban` d'une base -> map `ip -> Option<expires_ts>`. PUR + test-facing (map VIDE sur échec).
@@ -340,7 +393,7 @@ fn netban_try_load(conn: &Connection) -> Option<HashMap<String, Option<i64>>> {
 /// tests d'agrégation -> `#[cfg(test)]` (pas de warning never-used en release).
 #[cfg(test)]
 pub(crate) fn netban_load(conn: &Connection) -> HashMap<String, Option<i64>> {
-    netban_try_load(conn).unwrap_or_default()
+    netban_try_load(conn).map(|(m, _)| m).unwrap_or_default()
 }
 
 /// Recharge le cache global depuis la base (REMPLACE l'instantané). Appelé après chaque mutation + au tick de
@@ -350,8 +403,9 @@ pub(crate) fn netban_reload(conn: &Connection) {
     // FAIL-STATIC : on ne REMPLACE le cache que si le chargement a RÉUSSI. Une erreur
     // de lecture transitoire (base verrouillée) -> `None` -> on GARDE le dernier bon instantané (les bans actifs
     // ne sautent pas). Une table réellement VIDE -> `Some(map vide)` -> remplace normalement (unban légitime).
-    if let Some(map) = netban_try_load(conn) {
+    if let Some((map, tronque)) = netban_try_load(conn) {
         *netban_cache().write() = map;
+        NETBAN_TRONQUE.store(tronque, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -385,19 +439,37 @@ pub(crate) fn net_ban_is_blocked(ip: &str, now_ts: i64) -> bool {
 /// EN AVAL par `auth_guard`+RBAC admin-only -> un attaquant banni SANS session admin y prend 401/403 (il ne gagne
 /// aucune route utile) ; seul un admin authentifié peut lever son propre ban. Un ban ne doit jamais masquer la
 /// supervision ni se rendre irréversible depuis l'UI.
+/// EXEMPTION EXACTE, jamais par préfixe ouvert : `/api/netban` et ses sous-chemins, RIEN d'autre. Un
+/// `starts_with("/api/netban")` nu exempterait une future `/api/netban-import` — une route qui n'a pas
+/// été jugée digne de la valve de récupération y échapperait au gate par la seule ressemblance de son nom.
 fn net_ban_exempt_path(p: &str) -> bool {
-    p.starts_with("/api/netban") || matches!(p, "/healthz" | "/readyz" | "/metrics")
+    p == "/api/netban" || p.starts_with("/api/netban/") || matches!(p, "/healthz" | "/readyz" | "/metrics")
 }
 
 /// Upsert d'un ban live (`net_ban`) + refresh du cache in-process. `expires` None = permanent. `env` défaut
 /// 'prod'. Ne JAMAIS bannir une IP protégée : les appelants valident en amont (`action_valid`/`ip_is_protected`).
-pub(crate) fn netban_upsert(conn: &Connection, ip: &str, expires: Option<i64>, reason: &str, by: &str, env: &str) {
+///
+/// Rend `false` quand le ban est REFUSÉ parce que le store live est plein (`NETBAN_CACHE_CAP`) : la borne
+/// mémoire est tenue À L'ÉCRITURE, sur l'UNIQUE voie de pose, et pas seulement au chargement — sinon la
+/// base grossirait indéfiniment pendant que le cache, lui, plafonnerait, et l'écart (des bans posés qui ne
+/// bloquent rien) ne se verrait nulle part. RAFRAÎCHIR un ban DÉJÀ posé reste toujours permis : cela ne
+/// fait pas croître la map. L'appelant DOIT rendre le refus visible (réponse HTTP, ledger) — un ban qu'on
+/// croit posé et qui ne bloque pas est pire que pas de ban.
+#[must_use = "un ban REFUSÉ (store plein) doit être rapporté à l'appelant, jamais avalé"]
+pub(crate) fn netban_upsert(conn: &Connection, ip: &str, expires: Option<i64>, reason: &str, by: &str, env: &str) -> bool {
+    {
+        let c = netban_cache().read();
+        if c.len() >= NETBAN_CACHE_CAP && !c.contains_key(ip) {
+            return false;
+        }
+    }
     let _ = conn.execute(
         "INSERT INTO net_ban(ip,reason,created_ts,expires_ts,created_by,env_id) VALUES(?1,?2,?3,?4,?5,?6) \
          ON CONFLICT(ip,env_id) DO UPDATE SET reason=?2, expires_ts=?4, created_by=?5",
         params![ip, reason, now(), expires, by, env],
     );
     netban_reload(conn);
+    true
 }
 
 /// Retire un ban live (TOUS les env_id de l'IP -> l'unban est GLOBAL en Phase 1) + refresh du cache.

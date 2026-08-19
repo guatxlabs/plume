@@ -1040,6 +1040,7 @@
     /// (c) la restauration n'est lisible QU'AVEC la clé (chiffrée at-rest).
     #[test]
     fn backup_restore_roundtrip_compressed() {
+        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "test-backup-passphrase-correct-horse-battery-staple";
         let marker = "MARKER_NEEDLE_DO_NOT_LEAK_7Q";
         let src = mk_tmp_path("src.db");
@@ -1227,6 +1228,7 @@
     /// classe de stockage), FTS fonctionnelle, compteur AUTOINCREMENT exact. Échoue si UNE valeur diffère.
     #[test]
     fn backup_b1_parity_roundtrip() {
+        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "b1-parity-passphrase-correct-horse-battery-staple";
         let src = mk_tmp_path("b1src.db");
         let dest = mk_tmp_path("b1dest.age");
@@ -1355,6 +1357,7 @@
     /// survit via la copie bit-à-bit). -> zéro perte pour les schémas hors périmètre B1.
     #[test]
     fn backup_b1_falls_back_to_legacy_for_contentless_fts() {
+        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "b1-fallback-passphrase-xyz";
         let src = mk_tmp_path("b1fbsrc.db");
         let dest = mk_tmp_path("b1fbdest.age");
@@ -1628,6 +1631,7 @@
     /// Et INERTE : recipient=None -> chiffrement SYMÉTRIQUE historique, full-verify EN cluster (aucun changement).
     #[test]
     fn f3_asymmetric_roundtrip_and_symmetric_inert() {
+        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let _tmpg23 = crate::tmp_possede::TmpPossede::neuf("f3");
         let dir = _tmpg23.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
@@ -1673,10 +1677,15 @@
     /// v134 (#7) — repli SYMÉTRIQUE (backup node-déchiffrable) : (a) NON-CASSANT par DÉFAUT (recipient=None ->
     /// backup symétrique produit, warn-only) ; (b) OPT-IN FAIL-CLOSED `PLUME_BACKUP_REQUIRE_ASYMMETRIC=1` ->
     /// REFUS ; (c) destinataire asymétrique -> toujours OK ; (d) signal SOC NON-PURGEABLE (source managée
-    /// plume-config, origin=daemon, dedup horaire idempotent). PLUME_BACKUP_REQUIRE_ASYMMETRIC n'est touché que
-    /// par ce test -> pas de course.
+    /// plume-config, origin=daemon, dedup horaire idempotent).
     #[test]
     fn v134_backup_require_asymmetric_gate_and_signal() {
+        // Ce test POSE `PLUME_BACKUP_REQUIRE_ASYMMETRIC`, que TOUTE sauvegarde du binaire relit : verrou en
+        // ÉCRITURE. Sans lui, la mesure du 2026-08-19 a montré un voisin
+        // (`backup_streaming_survives_an_unusable_staging_dir`) voir SA sauvegarde REFUSÉE par cette
+        // exigence-ci — l'énoncé « n'est touché que par ce test -> pas de course » confondait « qui l'écrit »
+        // avec « qui la lit ».
+        let _reglages = BACKUP_ENV_LOCK.write();
         let _tmpg24 = crate::tmp_possede::TmpPossede::neuf("v134bk");
         let dir = _tmpg24.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
@@ -1688,22 +1697,28 @@
         }
         let dest = dir.join("bk.age").to_string_lossy().into_owned();
 
-        let save = std::env::var("PLUME_BACKUP_REQUIRE_ASYMMETRIC").ok();
-        std::env::remove_var("PLUME_BACKUP_REQUIRE_ASYMMETRIC");
-        assert!(!crate::backup::backup_require_asymmetric(), "non posé -> OFF (défaut)");
-        // (a) DÉFAUT (OFF) : recipient=None -> backup SYMÉTRIQUE produit (non-cassant, comportement historique).
-        crate::backup::backup_compressed(&src, &dest, Some(key), None).expect("défaut OFF -> backup symétrique OK");
-        // (b) OPT-IN : REQUIRE=1 + recipient=None -> REFUS fail-closed (aucun backup node-déchiffrable silencieux).
-        std::env::set_var("PLUME_BACKUP_REQUIRE_ASYMMETRIC", "1");
-        assert!(crate::backup::backup_require_asymmetric(), "=1 -> ON");
-        let _ = std::fs::remove_file(&dest);
-        assert!(crate::backup::backup_compressed(&src, &dest, Some(key), None).is_err(),
-            "REQUIRE=1 + pas de destinataire -> backup REFUSÉ (fail-closed)");
-        assert!(!std::path::Path::new(&dest).exists(), "aucun backup produit sur refus (fail-closed AVANT écriture)");
-        // (c) REQUIRE=1 + destinataire asymétrique -> OK (l'exigence est satisfaite).
-        let rcpt = age::x25519::Identity::generate().to_public().to_string();
-        crate::backup::backup_compressed(&src, &dest, Some(key), Some(&rcpt)).expect("REQUIRE=1 + destinataire -> OK");
-        match save { Some(v) => std::env::set_var("PLUME_BACKUP_REQUIRE_ASYMMETRIC", v), None => std::env::remove_var("PLUME_BACKUP_REQUIRE_ASYMMETRIC") }
+        // Les deux états du réglage sont posés par un garde RAII : la valeur ambiante est restaurée à la
+        // sortie de CHAQUE portée, y compris quand une assertion panique — un `remove_var` en ligne droite,
+        // lui, serait sauté par le déroulement de la pile et laisserait l'exigence posée pour tout le reste
+        // du binaire (parking_lot n'empoisonne pas : le verrou serait relâché, mais l'env resterait sale).
+        {
+            let _off = ReglageBackupPose::retire(crate::backup::CLE_BACKUP_REQUIRE_ASYMMETRIC);
+            assert!(!crate::backup::backup_require_asymmetric(), "non posé -> OFF (défaut)");
+            // (a) DÉFAUT (OFF) : recipient=None -> backup SYMÉTRIQUE produit (non-cassant, comportement historique).
+            crate::backup::backup_compressed(&src, &dest, Some(key), None).expect("défaut OFF -> backup symétrique OK");
+        }
+        {
+            // (b) OPT-IN : REQUIRE=1 + recipient=None -> REFUS fail-closed (aucun backup node-déchiffrable silencieux).
+            let _on = ReglageBackupPose::neuf(crate::backup::CLE_BACKUP_REQUIRE_ASYMMETRIC, "1");
+            assert!(crate::backup::backup_require_asymmetric(), "=1 -> ON");
+            let _ = std::fs::remove_file(&dest);
+            assert!(crate::backup::backup_compressed(&src, &dest, Some(key), None).is_err(),
+                "REQUIRE=1 + pas de destinataire -> backup REFUSÉ (fail-closed)");
+            assert!(!std::path::Path::new(&dest).exists(), "aucun backup produit sur refus (fail-closed AVANT écriture)");
+            // (c) REQUIRE=1 + destinataire asymétrique -> OK (l'exigence est satisfaite).
+            let rcpt = age::x25519::Identity::generate().to_public().to_string();
+            crate::backup::backup_compressed(&src, &dest, Some(key), Some(&rcpt)).expect("REQUIRE=1 + destinataire -> OK");
+        }
 
         // (d) SIGNAL SOC NON-PURGEABLE (miroir de emit_ledger_unsigned/emit_disk_health) : source managée
         //     plume-config, category=health, severity 4, origin=daemon, dedup HORAIRE (idempotent).
@@ -4475,6 +4490,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     /// KEEP-N effective (les anciens backups synthétiques en trop sont supprimés).
     #[test]
     fn native_scheduler_cycle_roundtrip_and_retention() {
+        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "test-native-scheduler-passphrase-xyzzy";
         let marker = "NATIVE_SCHED_MARKER_5Z";
         let src = mk_tmp_path("sched-src.db");
@@ -4592,6 +4608,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     /// legacy — mais un backup RESTAURABLE. Si ça casse : backup produit mais IRRESTAURABLE (perte totale à DR).
     #[test]
     fn adv_b1_generated_columns_roundtrip_or_fallback() {
+        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "adv-gencol-key";
         let src = mk_tmp_path("advgcsrc.db");
         let dest = mk_tmp_path("advgcdest.age");
@@ -4628,6 +4645,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     /// Ce test ÉCHOUE tant que le fix prod n'est pas appliqué — c'est la preuve du défaut.
     #[test]
     fn adv_b1_non_utf8_text_falls_back_to_legacy() {
+        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "adv-nonutf8-key";
         let src = mk_tmp_path("advnu8src.db");
         let dest = mk_tmp_path("advnu8dest.age");
@@ -4661,6 +4679,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     /// schéma et les données (dont classes de stockage) round-trippent, et que le schéma survit VERBATIM.
     #[test]
     fn adv_b1_without_rowid_and_constraints_roundtrip() {
+        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "adv-worid-key";
         let src = mk_tmp_path("advwrsrc.db");
         let dest = mk_tmp_path("advwrdest.age");
@@ -4696,6 +4715,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     /// d'index doit être re-créé EXACTEMENT et rester fonctionnel après restore.
     #[test]
     fn adv_b1_expression_and_partial_index_roundtrip() {
+        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "adv-idx-key";
         let src = mk_tmp_path("advidxsrc.db");
         let dest = mk_tmp_path("advidxdest.age");
@@ -4734,6 +4754,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     /// C'est le cas de production qui compte le plus.
     #[test]
     fn adv_b1_real_plume_schema_roundtrip() {
+        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "adv-realschema-key";
         let src = mk_tmp_path("advrssrc.db");
         let dest = mk_tmp_path("advrsdest.age");

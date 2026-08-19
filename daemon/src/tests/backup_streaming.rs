@@ -25,17 +25,18 @@
     // qui lit précisément l'ABSENCE de cette variable.
     // ============================================================================================
 
-    /// Sérialise les tests qui posent `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT` (env PROCESS-global, relu à
-    /// CHAQUE backup). Cette variable n'est touchée QUE par ce module -> le verrou suffit. Tout test qui
-    /// la LIT — y compris indirectement, en appelant `backup_compressed` — doit le prendre : sinon un
-    /// voisin peut faire basculer le chemin au milieu de la mesure.
-    ///
-    /// `PLUME_BACKUP_SCRYPT_LOG_N` n'apparaît volontairement PAS ici : AUCUN test ne la pose. La
-    /// décision qu'elle pilote est une fonction PURE (`scrypt_log_n_depuis`) qu'on éprouve en lui
-    /// passant la chaîne. Poser la vraie variable aurait imposé son facteur de travail à la trentaine de
-    /// tests voisins qui sauvegardent par passphrase SANS ce verrou — jusqu'à 1 073 741 824 octets de
-    /// scrypt chacun. Une borne ne s'éprouve pas en armant la bombe.
-    static BACKUP_PATH_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    // LE VERROU DES RÉGLAGES DE SAUVEGARDE vit désormais dans `common.rs` (`BACKUP_ENV_LOCK`), avec le
+    // garde RAII `ReglageBackupPose` qui restaure la valeur antérieure même sous panic. Il y a été déplacé
+    // parce que l'énoncé « cette variable n'est touchée QUE par ce module » était FAUX de deux manières :
+    // `PLUME_BACKUP_REQUIRE_ASYMMETRIC` est posée par un test de `detection.rs`, et une douzaine de tests
+    // d'autres fichiers déclenchent une sauvegarde — donc LISENT ces réglages — sans prendre le verrou.
+    // Un verrou local à ce fichier ne pouvait pas porter une propriété qui est celle du binaire entier.
+    //
+    // `PLUME_BACKUP_SCRYPT_LOG_N` n'est toujours posée par AUCUN test, et c'est délibéré : la décision
+    // qu'elle pilote est une fonction PURE (`scrypt_log_n_depuis`) qu'on éprouve en lui passant la chaîne.
+    // Poser la vraie variable aurait imposé son facteur de travail à la trentaine de tests voisins qui
+    // sauvegardent par passphrase — jusqu'à 1 073 741 824 octets de scrypt chacun. Une borne ne s'éprouve
+    // pas en armant la bombe.
 
     /// Le `log_n` ANNONCÉ par la strophe `-> scrypt <sel> <log_n>` de l'en-tête age d'un fichier.
     /// `None` s'il n'y a pas de strophe scrypt (cas d'un fichier chiffré à un destinataire x25519) :
@@ -110,7 +111,7 @@
     /// rougir à tort — et surtout, aucun voisin ne se voit imposer un facteur de travail par ce test.
     #[test]
     fn le_facteur_scrypt_ecrit_est_fixe_borne_et_independant_de_la_machine() {
-        let _env = BACKUP_PATH_ENV_LOCK.lock();
+        let _reglages = BACKUP_ENV_LOCK.read(); // sauvegarde -> LIT les réglages posés par d'autres tests
         let _tmpg = crate::tmp_possede::TmpPossede::neuf("bkst-kdf-fixe");
         let root = _tmpg.racine().chemin().to_path_buf();
         let key = "facteur-scrypt-fixe-passphrase";
@@ -190,7 +191,7 @@
     /// Sans ce témoin, « ça échoue » se lirait « la borne a mordu » aussi bien que « la forge casse tout ».
     #[test]
     fn le_plafond_scrypt_de_lecture_est_fixe_couvre_l_historique_et_refuse_au_dela() {
-        let _env = BACKUP_PATH_ENV_LOCK.lock(); // `backup_compressed` lit PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT
+        let _reglages = BACKUP_ENV_LOCK.read(); // `backup_compressed` LIT les réglages portés par l'env
         use crate::backup::{scrypt_tampon_octets, BACKUP_SCRYPT_MAX_LOG_N};
 
         // (1) LA COUVERTURE HISTORIQUE, en dur : abaisser le plafond sous 20 rendrait illisibles des
@@ -360,7 +361,7 @@
     /// cas nominal.
     #[test]
     fn backup_streaming_leaves_the_staging_dir_empty_under_watch() {
-        let _env = BACKUP_PATH_ENV_LOCK.lock();
+        let _reglages = BACKUP_ENV_LOCK.write(); // ce test POSE un réglage -> exclut les lecteurs
         let _tmpg = crate::tmp_possede::TmpPossede::neuf("bkst-watch");
         let root = _tmpg.racine().chemin().to_path_buf();
         let key = "staging-watch-passphrase";
@@ -387,9 +388,10 @@
         let d_hist = root.join("sortie-historique");
         std::fs::create_dir_all(&d_hist).unwrap();
         let dest_hist = d_hist.join("plume-x.db.age").to_string_lossy().into_owned();
-        std::env::set_var("PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT", "1");
-        let (res2, seen2, samples2) = bkst_watch_dir(&d_hist, || backup_compressed(&src, &dest_hist, Some(key), None));
-        std::env::remove_var("PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT");
+        let (res2, seen2, samples2) = {
+            let _force = ReglageBackupPose::neuf(crate::backup::CLE_BACKUP_FORCE_PLAINTEXT_EXPORT, "1");
+            bkst_watch_dir(&d_hist, || backup_compressed(&src, &dest_hist, Some(key), None))
+        };
         let st2 = res2.expect("sauvegarde historique OK");
         eprintln!("[staging-watch] historique : {samples2} échantillons, noms vus = {seen2:?}");
         assert!(st2.wrote_plaintext_to_disk, "le cycle historique DOIT se déclarer écrivain de clair");
@@ -414,7 +416,7 @@
     #[test]
     fn backup_streaming_survives_an_unusable_staging_dir() {
         use std::os::unix::fs::PermissionsExt;
-        let _env = BACKUP_PATH_ENV_LOCK.lock();
+        let _reglages = BACKUP_ENV_LOCK.write(); // ce test POSE un réglage -> exclut les lecteurs
         let _tmpg = crate::tmp_possede::TmpPossede::neuf("bkst-ro");
         let root = _tmpg.racine().chemin().to_path_buf();
         let key = "staging-non-inscriptible-passphrase";
@@ -453,9 +455,10 @@
             "aucun fichier NOUVEAU dans le staging ; trouvé : {restant:?}");
 
         // (2) CONTRÔLE : le chemin historique, lui, ÉCHOUE — il ne peut pas créer son clair.
-        std::env::set_var("PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT", "1");
-        let hist = backup_compressed(&src, &dest_hist, Some(key), None);
-        std::env::remove_var("PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT");
+        let hist = {
+            let _force = ReglageBackupPose::neuf(crate::backup::CLE_BACKUP_FORCE_PLAINTEXT_EXPORT, "1");
+            backup_compressed(&src, &dest_hist, Some(key), None)
+        };
         assert!(hist.is_err(),
             "le chemin historique DOIT échouer quand son temporaire n'est pas créable — sinon le test ne prouve rien du streaming");
 
@@ -542,8 +545,9 @@
         // LE VERROU, QUE LA VERSION RSS DE CE TEST N'AVAIT PAS : `backup_compressed` LIT
         // `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT` (env PROCESS-global) et trois tests de ce module le POSENT.
         // Sans le verrou, un voisin peut faire prendre à CETTE sauvegarde le chemin HISTORIQUE au milieu de
-        // la mesure — un deuxième canal de non-déterminisme, indépendant du RSS.
-        let _env = BACKUP_PATH_ENV_LOCK.lock();
+        // la mesure — un deuxième canal de non-déterminisme, indépendant du RSS. Ce test ne POSE rien : il
+        // lui suffit d'exclure les poseurs, donc la LECTURE.
+        let _reglages = BACKUP_ENV_LOCK.read();
         let _tmpg = crate::tmp_possede::TmpPossede::neuf("bkst-largeur");
         let root = _tmpg.racine().chemin().to_path_buf();
         let key = "largeur-de-ligne-passphrase";
@@ -654,7 +658,7 @@
     /// les deux durées — c'est de ces chiffres que vient le tableau de l'en-tête de `backup.rs`.
     #[test]
     fn backup_streaming_is_smaller_than_the_plaintext_export_on_the_same_db() {
-        let _env = BACKUP_PATH_ENV_LOCK.lock();
+        let _reglages = BACKUP_ENV_LOCK.write(); // ce test POSE un réglage -> exclut les lecteurs
         let _tmpg = crate::tmp_possede::TmpPossede::neuf("bkst-taille");
         let root = _tmpg.racine().chemin().to_path_buf();
         let key = "taille-comparee-passphrase";
@@ -671,9 +675,10 @@
         assert!(backup_payload_head(&dest_stream, key).starts_with(b"PLUMEDUMP1\n"), "format streaming attendu");
         assert!(!st_stream.wrote_plaintext_to_disk, "le streaming n'écrit aucun clair");
 
-        std::env::set_var("PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT", "1");
-        let st_hist = backup_compressed(&src, &dest_hist, Some(key), None).expect("sauvegarde historique OK");
-        std::env::remove_var("PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT");
+        let st_hist = {
+            let _force = ReglageBackupPose::neuf(crate::backup::CLE_BACKUP_FORCE_PLAINTEXT_EXPORT, "1");
+            backup_compressed(&src, &dest_hist, Some(key), None).expect("sauvegarde historique OK")
+        };
         assert!(backup_payload_head(&dest_hist, key).starts_with(b"SQLite format 3"), "format historique attendu");
         assert!(st_hist.wrote_plaintext_to_disk, "le chemin historique écrit bien un clair");
 
@@ -702,4 +707,153 @@
             let f: i64 = c.query_row("SELECT count(*) FROM event_fts WHERE event_fts MATCH 'password'", [], |r| r.get(0)).unwrap();
             assert_eq!(f, 20_000, "restauration {label} : l'index FTS5 est présent et requêtable");
         }
+    }
+
+    // ============================================================================================
+    // LA GARDE QUI EMPÊCHE LA RÉCIDIVE — DÉRIVÉE DES SOURCES, JAMAIS UNE LISTE.
+    // --------------------------------------------------------------------------------------------
+    // Le verrou `BACKUP_ENV_LOCK` ne vaut que si TOUS ceux qui lisent les réglages le prennent. Tant
+    // que cette obligation n'était qu'une phrase de commentaire, elle a été manquée par douze tests
+    // répartis dans trois fichiers, et le prix s'est payé en rougeurs INTERMITTENTES (mesuré le
+    // 2026-08-19 : 2 exécutions sur 5 du binaire filtré `backup`, alors que chacun des tests concernés
+    // passait SEUL). Le test ci-dessous relit les sources et refuse qu'un test déclenche une
+    // sauvegarde sans prendre le verrou.
+    // ============================================================================================
+
+    /// GARDE DÉRIVÉE : aucun `#[test]` ne déclenche une sauvegarde sans prendre `BACKUP_ENV_LOCK`.
+    ///
+    /// Rien n'est énuméré. Les DÉCLENCHEURS sont dérivés des sources de PRODUCTION : `backup_compressed`
+    /// (la fonction qui relit les réglages) plus toute fonction de production qui l'appelle — c'est ce
+    /// second terme qui fait apparaître `scheduled_backup_cycle`, par lequel trois tests de
+    /// `backup_retention_adverse.rs` sauvegardent sans jamais écrire le mot `backup_compressed`. Une
+    /// simple recherche textuelle du nom de la fonction les aurait laissés passer.
+    ///
+    /// L'INSTRUMENT EST VALIDÉ AVANT DE CONCLURE, dans les deux sens :
+    ///   - il doit avoir TROUVÉ des tests déclencheurs (sinon « aucune infraction » ne dit rien) ;
+    ///   - il doit avoir dérivé `scheduled_backup_cycle` (sinon la dérivation est inerte) ;
+    ///   - le même prédicat doit ACCUSER un corps synthétique sans verrou et ACQUITTER le même corps
+    ///     avec — un prédicat qui n'accuse jamais rien serait vert pour de mauvaises raisons.
+    #[test]
+    fn aucune_sauvegarde_de_test_ne_lit_les_reglages_sans_le_verrou() {
+        use crate::db_open::door_tests::{rs_files, sans_commentaire};
+        use std::path::PathBuf;
+
+        const VERROU: &str = "BACKUP_ENV_LOCK";
+        const RACINE: &str = "backup_compressed"; // la fonction qui RELIT les réglages, à chaque appel
+
+        /// Un en-tête de fonction d'indentation 0 (production) ou 4 (module de tests), avec sa VISIBILITÉ.
+        /// Plus profond (méthode d'`impl`, fonction imbriquée) -> pas une frontière : le corps courant
+        /// l'absorbe. La visibilité n'est pas un détail : une fonction PRIVÉE de son module ne peut pas
+        /// être appelée depuis un test, donc elle ne peut pas être un déclencheur. C'est ce qui écarte
+        /// `fn main` — que la dérivation trouve (il sauvegarde), mais qu'aucun test ne peut appeler —
+        /// sans avoir à l'exclure nommément.
+        fn nom_de_fn(l: &str) -> Option<(bool, String)> {
+            let indent = l.len() - l.trim_start().len();
+            if indent != 0 && indent != 4 { return None; }
+            let t0 = l.trim_start();
+            let (publique, apres) = match t0.strip_prefix("pub") {
+                Some(r) => {
+                    let r = if r.starts_with('(') { &r[r.find(')')? + 1..] } else { r };
+                    (true, r.trim_start())
+                }
+                None => (false, t0),
+            };
+            let reste = apres.strip_prefix("fn ").or_else(|| apres.strip_prefix("async fn "))?;
+            let nom: String = reste.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            (!nom.is_empty()).then_some((publique, nom))
+        }
+
+        /// Découpe un fichier en unités (nom, appelable de l'extérieur, porte `#[test]`, corps).
+        fn unites(src: &str) -> Vec<(String, bool, bool, String)> {
+            let mut out: Vec<(String, bool, bool, String)> = Vec::new();
+            let mut marque_test = false;
+            for l in src.lines() {
+                let t = l.trim_start();
+                if let Some((publique, nom)) = nom_de_fn(l) {
+                    out.push((nom, publique, marque_test, String::new()));
+                    marque_test = false;
+                } else if t.starts_with("#[") {
+                    // `#[test]` ET `#[tokio::test]` ; `#[cfg(test)]` finit par `test)]` -> exclu.
+                    marque_test |= t.trim_end().ends_with("test]");
+                } else if !t.is_empty() && !t.starts_with("///") && !t.starts_with("//") {
+                    marque_test = false; // une ligne ordinaire referme la fenêtre d'attributs
+                }
+                if let Some(u) = out.last_mut() { u.3.push_str(l); u.3.push('\n'); }
+            }
+            out
+        }
+
+        /// APPEL de `nom`, pas simple occurrence : le caractère qui précède ne doit pas être un
+        /// caractère de nom (sinon `domain(` compterait pour un appel à `main`), et les commentaires
+        /// sont retirés ligne à ligne.
+        fn appelle(corps: &str, nom: &str) -> bool {
+            let motif = format!("{nom}(");
+            corps.lines().map(sans_commentaire).any(|l| {
+                l.match_indices(&motif).any(|(i, _)| {
+                    !l[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_')
+                })
+            })
+        }
+
+        let racine = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut fichiers = Vec::new();
+        rs_files(&racine, &mut fichiers);
+        let dossier_tests = racine.join("tests");
+
+        // --- (1) LES DÉCLENCHEURS, DÉRIVÉS DE LA PRODUCTION -------------------------------------
+        let mut declencheurs: Vec<String> = vec![RACINE.to_string()];
+        for f in fichiers.iter().filter(|f| !f.starts_with(&dossier_tests)) {
+            let src = std::fs::read_to_string(f).unwrap();
+            for (nom, publique, _, corps) in unites(&src) {
+                if publique && nom != RACINE && appelle(&corps, RACINE) && !declencheurs.contains(&nom) {
+                    declencheurs.push(nom);
+                }
+            }
+        }
+        declencheurs.sort();
+        eprintln!("[verrou-reglages-backup] déclencheurs dérivés de la production : {declencheurs:?}");
+        assert!(declencheurs.iter().any(|d| d == "scheduled_backup_cycle"),
+            "la dérivation est INERTE : elle n'a pas retrouvé `scheduled_backup_cycle`, par lequel des tests \
+             sauvegardent sans nommer `{RACINE}`. Une garde qui ne dérive plus rien ne garde plus rien.");
+        assert!(!declencheurs.iter().any(|d| d == "main"),
+            "`fn main` sauvegarde aussi, mais il est PRIVÉ : aucun test ne peut l'appeler. Le laisser \
+             entrer accuse à tort tout test dont un message d'assertion mentionne `main()` — mesuré une \
+             fois sur `misc.rs`, avant que le filtre de visibilité n'existe.");
+
+        // --- (2) LES TESTS QUI DÉCLENCHENT UNE SAUVEGARDE, ET CE QU'ILS PRENNENT ------------------
+        let (mut gardes, mut nus) = (Vec::<String>::new(), Vec::<String>::new());
+        for f in fichiers.iter().filter(|f| f.starts_with(&dossier_tests)) {
+            let src = std::fs::read_to_string(f).unwrap();
+            for (nom, _, est_test, corps) in unites(&src) {
+                if !est_test || nom == "aucune_sauvegarde_de_test_ne_lit_les_reglages_sans_le_verrou" { continue; }
+                if !declencheurs.iter().any(|d| appelle(&corps, d)) { continue; }
+                let ou = format!("{}::{nom}", f.file_name().unwrap().to_string_lossy());
+                if corps.contains(VERROU) { gardes.push(ou) } else { nus.push(ou) }
+            }
+        }
+
+        // --- (3) VALIDATION DE L'INSTRUMENT, puis seulement la propriété -------------------------
+        eprintln!("[verrou-reglages-backup] tests qui déclenchent une sauvegarde : {} gardés, {} nus",
+            gardes.len(), nus.len());
+        assert!(gardes.len() >= 15,
+            "l'instrument n'a trouvé que {} test(s) gardé(s) : il ne voit plus les corps de test, et son \
+             « aucune infraction » ne prouverait rien (mesuré le 2026-08-19 : 20)", gardes.len());
+        let temoin_nu = "    fn t() { scheduled_backup_cycle(a, b, 1, None, None); }";
+        let temoin_garde = "    fn t() { let _g = BACKUP_ENV_LOCK.read(); scheduled_backup_cycle(a, b, 1, None, None); }";
+        assert!(declencheurs.iter().any(|d| appelle(temoin_nu, d)) && !temoin_nu.contains(VERROU),
+            "le prédicat n'ACCUSE pas un corps synthétique qui sauvegarde sans verrou : il n'accuserait rien");
+        assert!(declencheurs.iter().any(|d| appelle(temoin_garde, d)) && temoin_garde.contains(VERROU),
+            "le prédicat n'ACQUITTE pas un corps synthétique qui prend le verrou : il accuserait tout");
+        assert!(!appelle("    let d = domain(x);", "main"),
+            "`domain(` ne doit pas compter pour un appel à `main` : la borne de mot est ce qui rend le \
+             prédicat utilisable sur des noms courts");
+
+        assert!(nus.is_empty(),
+            "ces tests déclenchent une sauvegarde SANS prendre `{VERROU}` :\n  {}\n\
+             `backup_compressed` RELIT `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT` et \
+             `PLUME_BACKUP_REQUIRE_ASYMMETRIC` dans l'environnement PROCESS-global à chaque appel, et des \
+             voisins les POSENT : sans le verrou, la sauvegarde mesurée ici peut prendre le chemin \
+             HISTORIQUE, ou être REFUSÉE, à cause d'un test qui tourne à côté. Ajouter \
+             `let _reglages = {VERROU}.read();` en tête (ou `.write()` si le test POSE un réglage).",
+            nus.join("\n  "));
     }

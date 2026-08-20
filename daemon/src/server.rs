@@ -255,6 +255,9 @@ fn boot_config() -> BootConfig {
     // sémaphore de concurrence de l'INTERACTIF (/api/query / /api/search) : au moins 1.
     let query_concurrency: usize = cfg(&conf, "PLUME_QUERY_CONCURRENCY", "3").parse().unwrap_or(3).max(1);
     let query_sem = Arc::new(tokio::sync::Semaphore::new(query_concurrency));
+    // P7.8-a : la BORNE est publiée (jamais modifiée ici). « 3 permis détenus » ne dit rien sans
+    // « sur 3 » : `plume_query_permits_held` ne se lit que contre `plume_query_permits_limit`.
+    semaphore_interactif::poser_borne(query_concurrency);
     // CHANGEMENT 1 — sémaphore SÉPARÉ du refresh ASYNC des panneaux (SWR + cache_refresh_all_panels) :
     // le refresh ne partage PLUS la borne de l'interactif -> sem_wait interactif ~0 même sous rafale de
     // rafraîchissement (14 panneaux). Taille via PLUME_PANEL_REFRESH_CONCURRENCY (défaut 2), au moins 1.
@@ -1805,6 +1808,13 @@ pub(crate) fn build_router(state: AppState, webdir: String) -> Router {
         .merge(governance_retention_ledger_routes())
         .merge(playbooks_cases_routes())
         .merge(tenants_routes())
+        // P7.8-a — ÉTIQUETAGE DE LA ROUTE POUR LA MESURE DE LA BORNE INTERACTIVE. `route_layer` (et non
+        // `layer`) : la couche ne s'exécute QUE si une route a été appariée, donc APRÈS l'appariement
+        // (le gabarit `MatchedPath` existe) et JAMAIS sur le `fallback_service` (fichiers statiques, qui
+        // ne prennent aucun permit). Posée ICI, après tous les `.merge()` et avant le repli, elle couvre
+        // toute la table matchit : aucune route ne s'étiquette elle-même, et une route ajoutée demain
+        // est mesurée sans qu'on y pense. Additive : aucun en-tête, aucun statut, aucun corps changé.
+        .route_layer(middleware::from_fn(semaphore_interactif::etiqueter_route))
         .fallback_service(ServeDir::new(&webdir))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state.clone(), auth_guard))

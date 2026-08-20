@@ -271,6 +271,12 @@
     /// exactement ce qu'était `/api/search`, qui consommait les mêmes permis sans publier un seul
     /// chiffre. La garde est dérivée du NOM du sémaphore : une route ajoutée demain hérite de la
     /// contrainte sans qu'on ait à l'énumérer ici.
+    ///
+    /// P7.8-a A ÉLARGI L'ENJEU. Cette même porte publie maintenant, PAR ROUTE, l'attente du permit
+    /// et le temps passé à occuper la borne (`semaphore_interactif`). Une acquisition qui la
+    /// contourne ne perd donc plus seulement son champ `stats` : elle disparaît aussi de
+    /// l'exposition d'exploitation, c'est-à-dire de la seule vue qui dit QUI sature la ressource la
+    /// plus contrainte du projet.
     #[test]
     fn the_interactive_semaphore_is_only_acquired_through_the_timed_gate() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -290,24 +296,50 @@
                     continue;
                 }
                 let rel = p.strip_prefix(&root).unwrap().to_string_lossy().to_string();
-                for line in std::fs::read_to_string(&p).unwrap().lines() {
+                // DÉCLARATION et CÂBLAGE du sémaphore : `state.rs` porte le champ, `server.rs` le
+                // construit et le transporte. Ces deux fichiers-là NOMMENT donc légitimement le
+                // sémaphore sans l'acquérir — et le test le vérifie plus bas, au lieu de leur faire
+                // confiance.
+                let porteur = rel == "state.rs" || rel == "server.rs";
+                for (n, line) in std::fs::read_to_string(&p).unwrap().lines().enumerate() {
                     let l = line.trim();
                     if l.starts_with("//") || l.starts_with("//!") {
                         continue;
                     }
-                    if l.contains("query_sem") && l.contains("acquire") {
-                        sites.push((rel.clone(), l.to_string()));
+                    // LE CRITÈRE EST « NOMMER LE SÉMAPHORE », PAS « NOMMER `acquire` SUR LA MÊME
+                    // LIGNE ». L'ancien critère exigeait les deux mots ENSEMBLE : il suffisait donc
+                    // de couper en deux lignes (`let s = st.query_sem.clone();` puis
+                    // `s.acquire_owned().await`) pour prendre un permit sous le radar — la seconde
+                    // ligne ne nomme plus le sémaphore. On refuse maintenant l'ACCÈS lui-même : sans
+                    // pouvoir nommer `query_sem`, aucune ligne ne peut en obtenir un permit.
+                    // La part CODE seulement : `handlers/dashboards.rs` porte un
+                    // `let refresh_sem = …; // … (jamais query_sem)`, et un commentaire ne prend pas
+                    // de permit. Lire la ligne entière ferait accuser la route qui dit justement ne
+                    // pas toucher à la borne interactive.
+                    let code = l.split("//").next().unwrap_or("");
+                    if code.contains("query_sem") {
+                        if porteur {
+                            assert!(
+                                !code.contains("acquire"),
+                                "{rel}:{} acquiert un permit dans le câblage du sémaphore, où aucune \
+                                 route ne le verra passer : {l}",
+                                n + 1
+                            );
+                            continue;
+                        }
+                        sites.push((format!("{rel}:{}", n + 1), code.trim().to_string()));
                     }
                 }
             }
         }
         assert!(!sites.is_empty(), "invariant vide = invariant mort : plus aucune acquisition trouvée");
-        for (file, line) in &sites {
+        for (site, line) in &sites {
             assert!(
-                line.contains("acquire_query_permit(") || line.contains("clock.permit(") || line.contains(".permit(&st.query_sem)"),
-                "{file} prend un permit sur le sémaphore interactif hors de l'acquisition chronométrée : \
-                 son attente ne sera mesurée nulle part, et la route pèsera sur la concurrence sans \
-                 apparaître dans aucune courbe. {line}"
+                line.contains("acquire_query_permit(&st.query_sem)") || line.contains(".permit(&st.query_sem)"),
+                "{site} touche au sémaphore interactif hors de l'acquisition chronométrée : son attente ne \
+                 sera mesurée nulle part, la route pèsera sur la concurrence sans apparaître dans aucune \
+                 courbe (P7.8-a), et rien ne publiera le temps pendant lequel elle occupe la borne. \
+                 Passer par `acquire_query_permit(&st.query_sem)` ou `clock.permit(&st.query_sem)`. {line}"
             );
         }
     }

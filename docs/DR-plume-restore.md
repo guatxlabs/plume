@@ -212,7 +212,10 @@ plume-daemon restore /restore/plume-<TS>.db.age /data/plume.db --force
 Le restore-test **in-cluster** ne peut PAS détenir l'identité privée (la mettre en cluster ruinerait le
 modèle du mode destinataire). Comportement de `plume-daemon backup-verify <obj>` :
 
-- **Mode passphrase** : `PLUME_DB_KEY` est disponible → **vérif COMPLÈTE** (déchiffre + ouvre la DB).
+- **Mode passphrase** : `PLUME_DB_KEY` est disponible → **vérif COMPLÈTE** : déchiffre, rejoue dans une
+  base jetable, **la rouvre avec sa clé et en compte le contenu** (tables de données et lignes). Une
+  archive qui se déchiffre et se rejoue mais ne rend **aucune ligne** est un **ÉCHEC** — c'est
+  précisément le cas qu'un contrôle « pas d'erreur » laissait passer.
 - **Mode destinataire** : identité privée **absente** → **vérif STRUCTURELLE** : valide l'en-tête
   age v1, le stanza destinataire (`X25519`), et une taille plausible — **sans déchiffrer**. Sortie 0 =
   structurellement sain ; le log indique clairement que la vérif complète exige l'identité escrow.
@@ -228,6 +231,60 @@ plume-daemon backup-verify /restore/plume-<TS>.db.age   # -> full_decrypt_verifi
 
 **NE JAMAIS** stocker l'identité privée dans un Secret k8s pour automatiser ce drill : c'est
 précisément l'exposition que le mode destinataire élimine.
+
+## L'exercice de restauration : sa trace, et ce qui rend son absence visible
+
+Une sauvegarde dont **aucune ligne n'a jamais été restaurée** est une garantie non éprouvée. Le drill
+ci-dessus a lieu hors ligne, sur une machine que la production ne voit pas : sans trace, rien ne
+distingue « exercice fait le mois dernier » de « jamais fait depuis l'installation ».
+
+**Une vérification complète réussie émet une ATTESTATION** — une ligne sur la sortie standard, qui ne
+porte que des faits produits par l'exercice (archive, taille, mode de chiffrement, tables et lignes
+restaurées) et **aucun secret** :
+
+```
+PLUME-EXERCICE-RESTAURATION-1 {"ts":…,"archive":"plume-<TS>.db.age","archive_octets":…,
+                               "chiffrement":"asymmetric","tables":…,"lignes":…}
+```
+
+Cette ligne se ramène sur le nœud — copier-coller, clé USB, `ssh` — **sans qu'aucune identité privée ne
+fasse le voyage inverse** :
+
+```sh
+# sur la machine d'exercice (isolée, avec l'identité d'escrow)
+plume-daemon backup-verify /restore/plume-<TS>.db.age > /media/attestation.txt
+
+# sur le nœud (qui n'a jamais vu l'identité privée)
+plume-daemon restore-drill record < /media/attestation.txt
+plume-daemon restore-drill status     # sortie 0 = éprouvé récemment ; 3 = un exercice est DÛ
+```
+
+`record` **refuse** une attestation datée dans le futur (au-delà d'une heure de tolérance d'horloge),
+une attestation plus ancienne que celle déjà enregistrée, et une attestation qui n'atteste rien
+(zéro table ou zéro ligne).
+
+**Ce que l'exploitant lit sans rien lancer**, une fois l'attestation posée :
+
+| Où | Quoi |
+|---|---|
+| `/api/system/health`, panneau Système | composant `restauration` — `jamais` / `frais` / `perime` / `mode_non_eprouve`, avec l'âge |
+| `/metrics` | `plume_restore_drill_overdue` (1 = un exercice est dû), `plume_restore_drill_age_seconds` et `plume_restore_drill_last_success_timestamp_seconds` — **absentes tant qu'aucun exercice n'a eu lieu**, parce qu'un âge de 0 se lirait « restauré à l'instant » |
+| SOC | événement `health` **non purgeable** émis par le chemin de sauvegarde (dédup quotidienne) tant qu'un exercice est dû |
+
+Deux règles portées par le mécanisme, et pas par une phrase :
+
+1. **`PLUME_RESTORE_DRILL_MAX_AGE_DAYS`** (défaut **31**, `0` = suivi désactivé et affiché comme tel)
+   fixe à partir de quand un exercice est périmé. L'état **vieillit** : il passe seul de `frais` à
+   `perime`.
+2. **Un exercice mené sur le chemin symétrique ne clôt pas l'obligation d'une installation qui
+   séquestre en asymétrique** (`PLUME_BACKUP_AGE_RECIPIENT` posé) : l'état est alors
+   `mode_non_eprouve`, parce que le chemin qui servira au sinistre — l'identité privée hors cluster —
+   n'a pas été emprunté.
+
+**Ce que cela ne prouve pas**, et c'est dit ici pour être opposable : l'attestation défend contre
+l'**oubli**, pas contre une falsification délibérée — une ligne peut être recopiée à la main. Le
+séquestre, lui, reste intact : aucune identité privée ne vit dans le dépôt, dans un test, ni dans
+l'intégration continue.
 
 ## Rotation
 

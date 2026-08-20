@@ -413,7 +413,16 @@ pub(crate) mod door_tests {
         // `open_db_without_schema_contract` ne fait rougir AUCUN autre test. Le compte est une MESURE,
         // reproductible hors du test :
         //   grep -rn 'without_schema_contract(' daemon/src --include=*.rs | grep -v /tests/ | grep -v db_open.rs | wc -l
-        const SANS_CONTRAT_ATTENDUS: usize = 11;
+        // 13 depuis P8.3-a (exercice de restauration), et les DEUX ajouts sont des lectures qui
+        // doivent aboutir PRÉCISÉMENT quand le schéma n'est pas celui de ce binaire :
+        //   - `backup.rs` — la vérification d'une archive rouvre la base RESTAURÉE pour en compter le
+        //     contenu. Une archive peut être plus ANCIENNE que le binaire qui la vérifie ; lui opposer
+        //     le contrat transformerait un exercice de restauration réussi en échec, exactement quand
+        //     il rend le plus service ;
+        //   - `main.rs` — `restore-drill status` LIT une ligne `meta` et n'écrit rien. Passer par la
+        //     porte la ferait MIGRER la base pour répondre à une question de lecture, et refuserait de
+        //     dire depuis quand rien n'a été restauré au moment où cette réponse compte le plus.
+        const SANS_CONTRAT_ATTENDUS: usize = 13;
         assert_eq!(
             sans_contrat.len(),
             SANS_CONTRAT_ATTENDUS,

@@ -24,6 +24,10 @@ mod db_open; // LA PORTE : seule détentrice d'une ouverture SQLite nue -> écri
 pub(crate) use db_open::*;
 mod backup;
 pub(crate) use backup::*;
+// P8.3-a — L'EXERCICE DE RESTAURATION : l'attestation d'une remise en service réussie, son
+// vieillissement, et ce qu'un exploitant en lit. PAS de `use …::*` : les noms restent qualifiés, pour
+// qu'une lecture de `metrics.rs` ou de `main.rs` voie d'où sort chaque pièce du suivi.
+mod exercice_de_restauration;
 // SINK OBJET COMPATIBLE S3 DE L'ORDONNANCEUR DE SAUVEGARDE. GATE DE COMPILATION `s3_backup` : sans la
 // feature ce module n'existe PAS, et l'ordonnanceur refuse une destination `s3://` comme il le faisait
 // déjà -> mode 0 inchangé. La feature n'ajoute AUCUNE caisse au graphe (signature v4 = HMAC-SHA256 +
@@ -65,6 +69,11 @@ mod limite_corps; // LE PLAFOND DE TAILLE D'UN CORPS INGERE : la limite qui MORD
 mod sqlite_plafond; // LE PLAFOND MÉMOIRE D'UNE LECTURE : sous `temp_store` en mémoire, SQLite n'a AUCUN chemin de code pour déverser un tri -> un seul auteur pour ce budget
 mod query_timing; // LE DÉCOUPAGE DU TEMPS D'UNE REQUÊTE : l'attente d'un permit n'est fabricable QUE par l'acquisition
 pub(crate) use query_timing::*;
+// P7.8-a : CE QUE COÛTE LA BORNE INTERACTIVE, PAR ROUTE — attente du permit ET travail permit en main,
+// séparés (un total confond les deux et désigne le mauvais levier), saturation publiée, cardinalité
+// plafonnée. Noms QUALIFIÉS (pas de `use ... ::*`) : une lecture de `query_timing`/`server` doit voir
+// d'où sort la mesure, comme pour `sink_s3`.
+mod semaphore_interactif;
 mod soql_glue;
 pub(crate) use soql_glue::*;
 mod field_filter; // #45 FIELD FILTERS : registre de masquage par champ (rôle/tenant/env), résolu en FieldMaskSet
@@ -944,7 +953,7 @@ const SUBCOMMANDS_COLD: [(&str, &str); 2] = [
 /// détection d'une sous-commande INCONNUE, elle, n'est PAS une comparaison à cette liste (cf. la
 /// garde en bas de `main`). La liste est tenue alignée sur le code par
 /// `aide_cli_liste_les_memes_sous_commandes_que_le_dispatch` (elle lit `main.rs`).
-const SUBCOMMANDS: [(&str, &str); 17] = [
+const SUBCOMMANDS: [(&str, &str); 18] = [
     ("hashpw", "hashpw [<mdp>] — hash argon2 d'un mot de passe (stdin si omis)"),
     ("respond", "respond — boucle du moteur de réponse (service séparé)"),
     ("verify", "verify — vérifie la chaîne d'intégrité du ledger"),
@@ -957,7 +966,8 @@ const SUBCOMMANDS: [(&str, &str); 17] = [
     ("purge", "purge — purge ciblée (cf. docs/PURGE.md)"),
     ("backup", "backup [--out <f>] — sauvegarde chiffrée"),
     ("restore", "restore <f> — restaure une sauvegarde"),
-    ("backup-verify", "backup-verify <f> — vérifie une sauvegarde sans restaurer"),
+    ("backup-verify", "backup-verify <f> — vérifie une sauvegarde (structure ; restauration complète si la clé de lecture est fournie)"),
+    ("restore-drill", "restore-drill <status|record> — exercice de restauration : depuis quand aucun n'a eu lieu, ou enregistre une attestation"),
     ("backup-prune-plan", "backup-prune-plan — plan de purge des sauvegardes (lecture seule)"),
     ("migrate-check", "migrate-check — compare le schéma live au code (lecture seule)"),
     ("db-stats", "db-stats — occupation disque SQLite (lecture seule)"),
@@ -1332,7 +1342,15 @@ fn main() {
                     // DEUX SENS : un contrat non satisfait ne casse pas le backup DÉJÀ produit, mais il
                     // n'écrit rien non plus — il le DIT, au lieu d'écrire sur un schéma inconnu.
                     match PreparedDb::open(&db_path) {
-                        Ok(conn) => { let _ = signal_backup_symmetric_if_needed(&conn, recipient.as_deref(), now()); }
+                        Ok(conn) => {
+                            let _ = signal_backup_symmetric_if_needed(&conn, recipient.as_deref(), now());
+                            // P8.3-a — UNE ARCHIVE VIENT D'ÊTRE ÉCRITE : c'est l'instant où « depuis quand
+                            // n'a-t-on rien restauré ? » se pose. Le signal part d'ICI, et pas du démon, pour
+                            // la raison qui avait fait déplacer celui de v135 : une installation qui ne
+                            // sauvegarde pas n'a rien à éprouver, et ne doit donc rien recevoir.
+                            let _ = exercice_de_restauration::signal_apres_sauvegarde(
+                                &conn, recipient.as_deref().is_some_and(|r| !r.is_empty()), now());
+                        }
                         Err(e) => eprintln!("[backup] signal de posture NON émis (la base n'a pas passé le contrat de schéma : {e})"),
                     }
                     let ratio = if st.dest_bytes > 0 { st.plaintext_bytes as f64 / st.dest_bytes as f64 } else { 0.0 };
@@ -1426,11 +1444,90 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
         };
         let identity = backup_age_identity();
         match verify_backup(&src, db_key().as_deref(), identity.as_ref()) {
-            Ok((kind, full)) => {
-                println!("backup-verify -> {src}  kind={kind:?}  full_decrypt_verified={full}{}",
-                    if full { "" } else { "  (structurel-seul ; vérif complète = DRILL DR avec identité escrow)" });
+            Ok((kind, contenu)) => {
+                println!("backup-verify -> {src}  kind={kind:?}  full_decrypt_verified={}{}",
+                    contenu.is_some(),
+                    if contenu.is_some() { "" } else { "  (structurel-seul ; vérif complète = DRILL DR avec identité escrow)" });
+                // P8.3-a — UNE VÉRIFICATION COMPLÈTE EST UN EXERCICE DE RESTAURATION, et elle en émet
+                // l'ATTESTATION. Une ligne, sur la sortie standard, qui traverse l'isolement de la machine
+                // d'exercice sans qu'aucune clé ne fasse le voyage inverse :
+                //   plume-daemon backup-verify <archive>   (hors ligne, avec l'identité d'escrow)
+                //   … | plume-daemon restore-drill record  (sur le nœud, qui n'a jamais vu l'identité)
+                if let Some(c) = contenu {
+                    println!("contenu restauré : {} table(s), {} ligne(s){}{}",
+                        c.tables, c.lignes,
+                        c.plus_grande.as_ref().map(|(t, n)| format!(", plus grande `{t}` ({n})")).unwrap_or_default(),
+                        c.schema_version.as_ref().map(|v| format!(", schema_version={v}")).unwrap_or_default());
+                    let octets = std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
+                    let archive = std::path::Path::new(&src).file_name()
+                        .map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| src.clone());
+                    let ex = exercice_de_restauration::Exercice {
+                        ts: now(), archive, archive_octets: octets, chiffrement: kind,
+                        tables: c.tables, lignes: c.lignes,
+                    };
+                    println!("{}", ex.attestation());
+                }
             }
             Err(e) => { eprintln!("backup-verify : {e}"); std::process::exit(1); }
+        }
+        return;
+    }
+    // P8.3-a — LE SUIVI DE L'EXERCICE DE RESTAURATION. Deux gestes, aucun secret :
+    //   `restore-drill record`  lit une attestation sur STDIN (ligne `PLUME-EXERCICE-RESTAURATION-1 {…}`,
+    //                           produite par une vérification COMPLÈTE réussie) et l'enregistre ;
+    //   `restore-drill status`  dit l'état et SORT EN 3 si un exercice est dû — un code de sortie, pas une
+    //                           phrase, pour qu'une tâche planifiée puisse en faire un dead-man's switch.
+    if args.get(1).map(String::as_str) == Some("restore-drill") {
+        let conf = load_config();
+        let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
+        // L'installation séquestre-t-elle hors du nœud ? C'est ce qui décide si un exercice SYMÉTRIQUE
+        // (déchiffrable ici) clôt l'obligation ou non — dérivé du réglage qui produit les archives, jamais
+        // d'une déclaration séparée qui pourrait diverger.
+        let escrow = backup_age_recipient().is_some();
+        match args.get(2).map(String::as_str) {
+            Some("record") => {
+                use std::io::Read;
+                let mut txt = String::new();
+                if let Err(e) = std::io::stdin().read_to_string(&mut txt) {
+                    eprintln!("restore-drill record : lecture de l'attestation sur stdin : {e}");
+                    std::process::exit(2);
+                }
+                let ex = match exercice_de_restauration::Exercice::depuis_texte(&txt) {
+                    Ok(x) => x,
+                    Err(e) => { eprintln!("restore-drill record : {e}"); std::process::exit(1); }
+                };
+                // L'attestation ÉCRIT dans la base : elle passe par la porte, comme tout le reste.
+                let conn = match PreparedDb::open(&db_path) {
+                    Ok(c) => c,
+                    Err(e) => { eprintln!("[schema] {e} — attestation NON enregistrée."); std::process::exit(1); }
+                };
+                match exercice_de_restauration::enregistrer(&conn, &ex, now()) {
+                    Ok(()) => println!(
+                        "exercice de restauration enregistré : archive={} chiffrement={} tables={} lignes={}",
+                        ex.archive, exercice_de_restauration::mot_du_chiffrement(ex.chiffrement), ex.tables, ex.lignes),
+                    Err(e) => { eprintln!("restore-drill record : {e}"); std::process::exit(1); }
+                }
+            }
+            Some("status") | None => {
+                let conn = match open_db_without_schema_contract(&db_path) {
+                    Ok(c) => c,
+                    Err(e) => { eprintln!("restore-drill status : ouverture {db_path} : {e}"); std::process::exit(1); }
+                };
+                let dernier = exercice_de_restauration::dernier_exercice(&conn);
+                let etat = exercice_de_restauration::etat(
+                    dernier.as_ref(), escrow, now(), exercice_de_restauration::age_max_s());
+                println!("restore-drill : {} — {}", etat.mot(), etat.detail());
+                if let Some(d) = &dernier {
+                    println!("dernier exercice : archive={} chiffrement={} tables={} lignes={}",
+                        d.archive, exercice_de_restauration::mot_du_chiffrement(d.chiffrement), d.tables, d.lignes);
+                }
+                // Le VERDICT est le code de sortie : 0 = éprouvé récemment, 3 = un exercice est dû.
+                if etat.en_retard() { std::process::exit(3); }
+            }
+            Some(autre) => {
+                eprintln!("restore-drill : sous-commande inconnue {autre:?} — usage : plume-daemon restore-drill <status|record>");
+                std::process::exit(2);
+            }
         }
         return;
     }

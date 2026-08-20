@@ -9,6 +9,9 @@
 # Garde le PRUNE conteneur (anti-bruit snapshots buildkit/rancher/containerd). Borne le volume : baseline
 # + DELTA (comm), pas de re-scan complet emis. ROOT (CAP_DAC_READ_SEARCH) ; ProtectHome=read-only requis
 # pour lire authorized_keys. Lecture seule.
+#   (d) COUVERTURE ANNONCEE vs COUVERTURE ATTEINTE : le bac a sable de l'unit peut RETIRER une famille
+#       annoncee sans un mot (un glob qui ne matche rien ne previent personne). Ce capteur VERIFIE donc
+#       la portee des racines dont depend la famille `authkeys` et AVOUE quand elles sont masquees.
 set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 FILES="${PLUME_FIM_FILES:-/etc/passwd /etc/group /etc/shadow /etc/gshadow /etc/sudoers /etc/crontab /etc/hosts /etc/ssh/sshd_config}"
@@ -46,6 +49,45 @@ for f in /etc/sudoers.d/*;            do emit_hash sudoersd "$f"; done
 for f in /etc/cron.d/*;               do emit_hash crond "$f"; done
 for f in /etc/pam.d/*;                do emit_hash pamd "$f"; done
 for f in /etc/systemd/system/*.service /etc/systemd/system/*.timer; do emit_hash unit "$f"; done
+# --- (d) la famille `authkeys` est ANNONCEE : si ses racines sont hors de portee, on le DIT ----------
+# systemd `ProtectHome=` ne rend pas /home et /root illisibles : il REMPLACE le point de montage par un
+# repertoire vide (`/systemd/inaccessible/dir`, ou un tmpfs neuf pour `ProtectHome=tmpfs`). Le glob
+# ci-dessous ne matche alors RIEN, et une baseline amputee est indiscernable d'un hote sans cle SSH.
+# MESURE le 2026-08-20 (systemd 261, sonde differentielle a une seule variable, ce script execute TEL
+# QUEL) : sous `ProtectHome=yes` la baseline perd EXACTEMENT une famille -- 86 lignes au lieu de 87,
+# 0 entree `authkeys` au lieu de 1 ; tout le reste est identique.
+# ON LE LIT DANS LE NOYAU, ON NE LE DEVINE PAS d'un repertoire vide (un /root vide est plausible) : le
+# montage qui COUVRE un chemin est celui de mountpoint le plus long, et le DERNIER a ce mountpoint (un
+# BindReadOnlyPaths= plus profond re-expose par dessus). Sonde validee le meme jour avec ses temoins
+# POSITIF et NEGATIF : `yes` et `tmpfs` -> /home et /root masques ; `read-only` et absence de directive
+# -> visibles ; /etc visible dans les quatre cas (temoin de non-degenerescence).
+# LIMITE DECLAREE : un tmpfs monte par l'exploitant lui-meme sur /home serait signale de la meme facon
+# -- ce qui reste vrai, le FIM n'y verrait pas davantage les vraies cles.
+# awk REND UN MOT, il ne rend pas un code de sortie : `exit` dans le programme awk se lit comme une
+# sortie du CAPTEUR pour la garde de CI qui interdit les sorties non classees (et un lecteur pourrait
+# faire la meme confusion). Le verdict est donc une chaine, comparee ici.
+fim_chemin_masque() {  # vrai = le montage qui COUVRE $1 est un masque de bac a sable
+  [ "$(awk -v P="$1" '
+    { i = index($0, " - "); if (i == 0) next
+      split(substr($0, 1, i - 1), g, " "); split(substr($0, i + 3), d, " ")
+      m = g[5]
+      if (m == P || m == "/" || index(P, m "/") == 1) {
+        if (length(m) >= length(mm)) { mm = m; racine = g[4]; type = d[1]; src = d[2] } } }
+    END { if (type == "tmpfs" && (racine ~ /^\/systemd\/inaccessible/ || (racine == "/" && src == "tmpfs")))
+            print "masque" }' /proc/self/mountinfo 2>/dev/null)" = masque ]
+}
+fim_hors_portee=""
+for _racine in /root/.ssh /home; do
+  if fim_chemin_masque "$_racine"; then fim_hors_portee="$fim_hors_portee $_racine"; fi
+done
+if [ -n "$fim_hors_portee" ]; then
+  # PAS `plume_unavailable` : le capteur n'est pas incapable, il est PARTIELLEMENT aveugle et continue
+  # de rendre les neuf autres familles. On emet l'aveu et on poursuit. `missing-source` est le
+  # vocabulaire ferme existant (cf. collectors/lib.sh) : la source annoncee n'est pas la.
+  plume_report_availability integrity unavailable missing-source \
+    "famille authkeys ANNONCEE mais hors de portee : le bac a sable de l'unit remplace$fim_hors_portee (ProtectHome=). Les cles SSH autorisees ne sont PAS surveillees sur cet hote ; les autres familles du FIM le restent." \
+    2 2>/dev/null || true
+fi
 for f in /root/.ssh/authorized_keys /root/.ssh/authorized_keys2 /home/*/.ssh/authorized_keys /home/*/.ssh/authorized_keys2; do emit_hash authkeys "$f"; done
 # ports TCP en écoute (kind=port, pas de hash)
 if command -v ss >/dev/null 2>&1; then

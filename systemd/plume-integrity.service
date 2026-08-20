@@ -9,10 +9,27 @@ ExecStart=/usr/local/lib/plume/collectors/integrity.sh
 
 NoNewPrivileges=true
 ProtectSystem=strict
-# read-only (et non `true`) : le FIM doit LIRE ~/.ssh/authorized_keys (vecteur de backdoor SSH).
-# ProtectHome=true SURMONTE /home et /root (invisible) -> meme CAP_DAC_READ_SEARCH ne peut les lire.
-# read-only garde l'ecriture interdite tout en autorisant la lecture (hash) -> sandbox quasi inchange.
+# read-only (et non `true`) : le FIM doit LIRE ~/.ssh/authorized_keys (vecteur de backdoor SSH),
+# que ce collecteur ANNONCE surveiller (integrity.sh, en-tete point (b), et docs/DETECTION-CATALOG.md).
+# ProtectHome=true REMPLACE /home et /root par un repertoire vide -> meme CAP_DAC_READ_SEARCH n'y peut
+# rien : il n'y a plus rien a lire. L'ECART ENTRE L'ANNONCE ET LA COUVERTURE EST MESURE, pas suppose --
+# 2026-08-20, systemd 261, sonde differentielle A UNE SEULE VARIABLE, collecteur execute TEL QUEL :
+#   ProtectHome=yes ......... baseline de 86 lignes, 0 entree `authkeys`  (famille perdue, en silence)
+#   ProtectHome=read-only ... baseline de 87 lignes, 1 entree `authkeys`  (temoin : la seule difference)
+# CE QUE read-only OUVRE, dit franchement : ce collecteur (root + CAP_DAC_READ_SEARCH) peut LIRE tout
+# /home et tout /root, pas seulement ~/.ssh -- systemd ne sait pas re-exposer un sous-chemin sous
+# ProtectHome=true (mesure le meme jour : ni ReadWritePaths=, ni ReadOnlyPaths=, ni BindReadOnlyPaths=
+# ne rendent /home lisible sous `yes`). L'ECRITURE reste refusee (mesure : « Read-only file system »).
+# CET ARBITRAGE APPARTIENT A L'EXPLOITANT : qui refuse cette lecture repose `ProtectHome=true` dans son
+# propre drop-in -- et le collecteur le DIRA alors dans sa sortie (category=config,
+# collect_status=unavailable) au lieu de rendre une baseline amputee sans un mot.
 ProtectHome=read-only
+# /run/user n'entre dans AUCUN chemin annonce par le FIM, et il porte des sockets d'agent SSH/GPG et des
+# trousseaux de session : on l'y REMET en inaccessible. Mesure le 2026-08-20 : 0 entree visible sous
+# /run/user contre 1 sans la directive, `authkeys` toujours a 1. InaccessiblePaths= est de type LISTE,
+# donc un drop-in partage l'UNIONNE au lieu de l'ecraser -- contrairement au scalaire ProtectHome=,
+# qui est exactement ce qui avait fait disparaitre la famille `authkeys` (cf. plume-collector-common.conf).
+InaccessiblePaths=-/run/user
 PrivateTmp=true
 ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH

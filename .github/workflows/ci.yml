@@ -222,7 +222,20 @@ env:
   # feature est éteinte ».
   # CONTRÔLE DE L'ÉCART, fait le même jour et par la même énumération : la feature ajoute EXACTEMENT
   # douze noms, tous ceux de `daemon/src/tests/sink_s3.rs`, et pas un de plus.
-  EXPECTED_TESTS: "1048"
+  # 1060 : MESURÉ le 2026-08-20 par ÉNUMÉRATION (`cargo test -- --list`, deux lectures concordantes),
+  # arbre de travail complet. +6 pour le lot « exercice de restauration » (clé P8.3-a,
+  # `daemon/src/tests/exercice_de_restauration.rs`) : une restauration menée de bout en bout sur le
+  # chemin symétrique avec comparaison du contenu table par table, l'attestation, l'état daté du
+  # dernier exercice et son vieillissement, les refus d'enregistrement, le composant de santé et ses
+  # jauges, le signal SOC. Le reste de l'écart avec 1048 vient des autres lots du même arbre — ce
+  # nombre est celui de l'arbre, pas d'un lot.
+  # Six de ces « autres tests » sont ceux de la borne interactive (clé P7.8-a,
+  # `daemon/src/tests/semaphore_interactif.rs`) : le décompte DÉRIVÉ des routes qui consomment le
+  # sémaphore interactif, l'interdiction du permit nu hors du module qui mesure sa détention, la file
+  # VUE et la file ABSENTE (les deux sens), le plafond de cardinalité qu'on fait mordre, et
+  # l'étiquette prise sur le GABARIT de route et non sur l'URL. Contre-mesuré le 2026-08-20 par la
+  # même énumération, sur le même arbre : 1060 par défaut, 1280 avec `cold_tier`.
+  EXPECTED_TESTS: "1060"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -476,7 +489,16 @@ jobs:
           # feature `cold_tier` n'en ajoute aucun, et c'est attendu : le sink objet dépose une archive
           # déjà produite par le chemin CHAUD, que le tier froid ne change pas — l'écart cold−défaut
           # est donc inchangé.
-          EXPECTED_COLD_TESTS: "1268"
+          #
+          # 1280 : MESURÉ le 2026-08-20 par ÉNUMÉRATION (`cargo test --features cold_tier -- --list`,
+          # deux lectures concordantes à 1280) — pas par exécution. Les six tests du lot « exercice de
+          # restauration » (P8.3-a) sont les MÊMES que ceux de la suite par défaut : la feature n'en
+          # ajoute aucun, et c'est attendu — la sauvegarde chaude, sa vérification et le suivi de
+          # l'exercice ne dépendent pas du tier froid. L'écart cold−défaut reste donc **220**,
+          # inchangé. Même constat pour les six tests de la borne interactive (P7.8-a) : ils portent
+          # sur le sémaphore des routes CHAUDES, que le tier froid ne change pas — ils sont donc les
+          # mêmes des deux côtés et ne déplacent pas l'écart.
+          EXPECTED_COLD_TESTS: "1280"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -560,6 +582,21 @@ jobs:
       # actions/runner-images) ; s'il manquait, la garde ÉCHOUE au lieu de passer.
       - name: Le collecteur Windows ne peut ni mentir ni oublier (AST PowerShell)
         run: python3 .github/scripts/check_windows_collector_is_honest.py
+
+      # MÊME FAMILLE, AUTRE CAUSE : ici le capteur n'est pas muet, il ANNONCE une couverture que son
+      # propre bac à sable lui retire. MESURÉ le 2026-08-20 (systemd 261, sonde différentielle à une
+      # seule variable, `collectors/integrity.sh` exécuté TEL QUEL) : sous le `ProtectHome=true` que
+      # le drop-in de durcissement partagé posait — un SCALAIRE, donc last-wins sur le
+      # `ProtectHome=read-only` que l'unit posait exprès — la baseline FIM perd EXACTEMENT une
+      # famille : 86 lignes au lieu de 87, zéro entrée `authkeys` au lieu de 1. Les clés SSH
+      # autorisées, vecteur de persistance annoncé par l'en-tête du capteur ET livré comme détection
+      # (docs/DETECTION-CATALOG.md, T1098.004), n'étaient donc pas surveillées sur un hôte agent —
+      # sans erreur, sans avertissement, et alors qu'un central, lui, les surveillait.
+      # La garde n'énumère aucun chemin : elle EXTRAIT la liste annoncée du capteur, recompose le bac
+      # à sable effectif (unit + drop-in, scalaires écrasés / listes unionnées) et refuse tout chemin
+      # annoncé devenu injoignable. Elle porte ses propres témoins positif et négatif.
+      - name: La couverture ANNONCÉE par un capteur doit être ATTEIGNABLE sous son bac à sable
+        run: python3 .github/scripts/check_fim_coverage_is_reachable.py
 
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
       # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —

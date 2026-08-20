@@ -70,7 +70,9 @@
 
 use crate::*;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore, TryAcquireError};
+// `OwnedSemaphorePermit` n'est PLUS nommé ici : le permit nu ne quitte plus ce fichier, il repart
+// enveloppé dans `semaphore_interactif::PermitMesure` (qui publie sa détention à la libération).
+use tokio::sync::{AcquireError, Semaphore, TryAcquireError};
 
 /// L'ATTENTE D'UN PERMIT, et rien d'autre. Microsecondes.
 ///
@@ -110,11 +112,18 @@ impl PermitWait {
 /// ÉQUITÉ PRÉSERVÉE : le sémaphore de tokio remet les permits libérés AUX ATTENDEURS déjà en file
 /// (sous son propre verrou), et non au compteur. `try_acquire_owned` ne peut donc pas doubler une
 /// requête qui attend : il ne réussit que lorsqu'il reste de la capacité VRAIMENT libre.
+///
+/// CE POINT DE PASSAGE PUBLIE AUSSI (P7.8-a). Toute acquisition passe ici — c'est donc ici, et
+/// nulle part ailleurs, que la borne interactive est comptée pour l'exploitant
+/// (`semaphore_interactif` : attente, travail permit en main, saturation, par gabarit de route).
+/// Aucune route ne porte de ligne de mesure, et une route ajoutée demain est mesurée sans que
+/// personne y pense. Le permit rendu est le permit MESURÉ : le permit nu ne ressort pas d'ici, donc
+/// une détention non comptée n'est pas représentable.
 pub(crate) async fn acquire_query_permit(
     sem: &Arc<Semaphore>,
-) -> Result<(OwnedSemaphorePermit, PermitWait), AcquireError> {
+) -> Result<(crate::semaphore_interactif::PermitMesure, PermitWait), AcquireError> {
     match sem.clone().try_acquire_owned() {
-        Ok(p) => return Ok((p, PermitWait::none())),
+        Ok(p) => return Ok((crate::semaphore_interactif::permis_pris(p, None), PermitWait::none())),
         Err(TryAcquireError::NoPermits) => {}
         Err(TryAcquireError::Closed) => {
             // Sémaphore fermé (arrêt) : on rend l'erreur CANONIQUE de tokio plutôt qu'une erreur
@@ -130,7 +139,11 @@ pub(crate) async fn acquire_query_permit(
     }
     let t = Instant::now();
     let p = sem.clone().acquire_owned().await?;
-    Ok((p, PermitWait(t.elapsed().as_micros() as u64)))
+    // UNE seule lecture d'horloge sert les deux publications (le champ `stats` de l'appelant et la
+    // série d'exploitation) : deux lectures pourraient diverger, et la question « pourquoi la
+    // réponse et /metrics ne disent-ils pas la même attente ? » n'a pas de bonne réponse.
+    let attente = t.elapsed();
+    Ok((crate::semaphore_interactif::permis_pris(p, Some(attente)), PermitWait(attente.as_micros() as u64)))
 }
 
 /// LE TEMPS PASSÉ À OBTENIR LE VERROU DE LA CONNEXION PARTAGÉE — la sérialisation que personne ne
@@ -195,7 +208,7 @@ impl QueryClock {
     pub(crate) async fn permit(
         self,
         sem: &Arc<Semaphore>,
-    ) -> Result<(OwnedSemaphorePermit, QueryTimings), AcquireError> {
+    ) -> Result<(crate::semaphore_interactif::PermitMesure, QueryTimings), AcquireError> {
         let prepare = self.entry.elapsed();
         let (permit, wait) = acquire_query_permit(sem).await?;
         // Le compteur de verrous est DÉPLACÉ, pas recopié : un verrou pris APRÈS le permit compte

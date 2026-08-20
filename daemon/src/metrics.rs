@@ -156,7 +156,7 @@ pub(crate) fn health_score(state: &str) -> f64 {
     }
 }
 
-/// SNAPSHOT complet des composants (ingest / détection / rollups / store / forwarder) sous forme de valeurs
+/// SNAPSHOT complet des composants (ingest / détection / rollups / store / forwarder / restauration) sous forme de valeurs
 /// JSON {component, state, detail, ...}. Lecture SEULE, sur PETITES tables (rollup/alert/destination) +
 /// atomics + statvfs : jamais un scan de `event`. Appelé par /metrics, /api/system/health et le diag-bundle.
 pub(crate) fn component_health(conn: &Connection, spool: &str, db_path: &str, disk_warn_pct: u8) -> Vec<Value> {
@@ -216,6 +216,15 @@ pub(crate) fn component_health(conn: &Connection, spool: &str, db_path: &str, di
     // (last_error non vide) -> jaune. Sinon vert. Table absente (schéma < v92) -> idle.
     let (fstate, fdetail) = destination_health(conn);
     out.push(json!({ "component": "forwarder", "state": fstate, "detail": fdetail }));
+
+    // RESTAURATION (P8.3-a) : depuis quand une archive n'a-t-elle pas été REMISE EN SERVICE ? Lecture
+    // d'UNE ligne `meta`, jamais un scan. Le composant est le seul du lot dont l'état ne décrit pas un
+    // sous-système en marche mais une PREUVE MANQUANTE — et c'est précisément ce qui, sans lui, ne se
+    // lisait nulle part : une sauvegarde dont aucune ligne n'a jamais été restaurée reste une garantie
+    // non éprouvée, et rien ne le disait. Le mode d'escrow est dérivé du réglage qui PRODUIT les
+    // archives (`PLUME_BACKUP_AGE_RECIPIENT`), pour qu'un exercice mené sur le chemin symétrique ne
+    // puisse pas passer pour un exercice du chemin d'escrow.
+    out.push(crate::exercice_de_restauration::composant(conn, crate::backup_age_recipient().is_some(), now_ts));
 
     out
 }
@@ -376,6 +385,11 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     // n'imprime que ce qu'il trouve, mais il ne sait pas dire « refusé » — or ici l'ABSENCE des jauges
     // d'octets EST le message quand la comptabilité n'a pas fermé. Cf. `ventilation_serie`.
     o.push_str(&ventilation_serie::exposition_prom(&ventilation_serie::derniere(), now()));
+    // P7.8-a — LA BORNE INTERACTIVE, PAR ROUTE : attente du permit et travail permit en main SÉPARÉS
+    // (un total confond les deux et désigne le mauvais levier), plus la saturation. Rendu par le module
+    // qui TIENT les compteurs, jamais réécrit ici : la cardinalité (plafonnée) et le nommage ont un seul
+    // auteur. Lecture d'atomiques uniquement — un scrape ne coûte rien à la base.
+    o.push_str(&crate::semaphore_interactif::exposition_prom());
     g(&mut o, "plume_alerts_open", "gauge", "Alertes ouvertes (status=new)", "/alerts_open");
     // BAN NATIF HTTP — la BORNE et son SATURATION. Lu depuis le store live en mémoire (aucune requête SQL :
     // un scrape ne doit rien coûter à la base). `store_tronque=1` dit que des bans posés en base ne sont PAS
@@ -391,6 +405,31 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
                 let st = c.get("state").and_then(|s| s.as_str()).unwrap_or("red");
                 o.push_str(&format!("plume_component_up{{component=\"{name}\"}} {}\n", health_score(st)));
             }
+        }
+    }
+    // EXERCICE DE RESTAURATION (P8.3-a) — DÉRIVÉ de l'entrée de composant ci-dessus, jamais recalculé :
+    // deux calculs de la même chose finissent par diverger, et c'est alors la jauge qui ment.
+    //
+    // `overdue` EST LA JAUGE SUR LAQUELLE UNE ALERTE SE CÂBLE : elle vaut 1 quand aucun exercice n'a
+    // JAMAIS eu lieu, quand le dernier a vieilli au-delà de son âge maximal, et quand le seul exercice
+    // enregistré portait sur une archive symétrique alors que la reprise réelle passera par l'escrow.
+    // Les DEUX autres jauges sont ABSENTES tant qu'aucun exercice n'a eu lieu, et cette absence est le
+    // message : publier `age_seconds 0` ferait lire « restauré à l'instant » là où il faut lire « jamais
+    // restauré ». C'est la même règle que la ventilation par poste — une jauge qui ne sait pas se taire
+    // finit par affirmer.
+    if let Some(c) = j.get("components").and_then(|a| a.as_array()).and_then(|a| {
+        a.iter().find(|c| c.get("component").and_then(|s| s.as_str()) == Some(crate::exercice_de_restauration::COMPOSANT))
+    }) {
+        prom_line(&mut o, "plume_restore_drill_overdue", "gauge",
+            "1 si un exercice de restauration est dû (jamais fait, périmé, ou mené hors du chemin d'escrow)",
+            u8::from(c.get("overdue").and_then(Value::as_bool).unwrap_or(true)).to_string());
+        if let Some(ts) = c.get("last_success_ts").and_then(Value::as_i64) {
+            prom_line(&mut o, "plume_restore_drill_last_success_timestamp_seconds", "gauge",
+                "Horodatage du dernier exercice de restauration réussi (unix s ; absent = jamais)", ts.to_string());
+        }
+        if let Some(age) = c.get("age_s").and_then(Value::as_i64) {
+            prom_line(&mut o, "plume_restore_drill_age_seconds", "gauge",
+                "Âge du dernier exercice de restauration réussi (s ; absent = jamais)", age.to_string());
         }
     }
     o

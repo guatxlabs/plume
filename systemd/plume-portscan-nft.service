@@ -5,6 +5,12 @@ Wants=network-pre.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# `nft -f` ne lit qu'un fichier de /etc/plume : aucun repertoire personnel n'entre dans son travail.
+# La directive est ici, et pas dans le drop-in partage, parce qu'un SCALAIRE de drop-in ECRASE la
+# valeur de l'unit (last-wins) -- c'est ainsi que la famille `authkeys` du FIM avait disparu en
+# silence, cf. systemd/plume-collector-common.conf. Chaque unit possede donc son ProtectHome=, et
+# .github/scripts/check_fim_coverage_is_reachable.py refuse une unit qui n'en declare pas.
+ProtectHome=true
 ExecStart=/usr/sbin/nft -f /etc/plume/plume-portscan.nft
 ExecReload=/usr/sbin/nft -f /etc/plume/plume-portscan.nft
 [Install]

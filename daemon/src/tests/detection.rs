@@ -1649,9 +1649,12 @@
         crate::backup::backup_compressed(&src, &dest, Some(key), Some(&rcpt_str)).expect("backup asym OK");
         let (kind, full) = crate::backup::verify_backup(&dest, Some(key), Some(&identity)).expect("verify OK");
         assert_eq!(kind, crate::backup::BackupKind::Asymmetric);
-        assert!(full, "avec identité privée -> full decrypt vérifié");
+        let contenu = full.expect("avec identité privée -> full decrypt vérifié");
+        // P8.3-a — la vérif complète COMPTE ce qui est revenu : « pas d'erreur » n'est pas « des lignes ».
+        assert_eq!((contenu.tables, contenu.lignes), (1, 1), "1 table, 1 ligne restaurées : {contenu:?}");
+        assert_eq!(contenu.plus_grande.as_ref().map(|(t, n)| (t.as_str(), *n)), Some(("t", 1)));
         let (_, full_nokey) = crate::backup::verify_backup(&dest, Some(key), None).expect("verify structurel OK");
-        assert!(!full_nokey, "sans identité privée -> DÉGRADE en structurel-seul");
+        assert!(full_nokey.is_none(), "sans identité privée -> DÉGRADE en structurel-seul");
 
         // (2) RESTORE avec identité -> données intactes.
         let restored = dir.join("restored.db").to_string_lossy().into_owned();
@@ -1669,8 +1672,10 @@
         // (4) INERTE : recipient=None -> symétrique (scrypt), full-verify EN cluster (comportement historique).
         let dest_sym = dir.join("sym.age").to_string_lossy().into_owned();
         crate::backup::backup_compressed(&src, &dest_sym, Some(key), None).expect("backup sym OK");
-        assert_eq!(crate::backup::verify_backup(&dest_sym, Some(key), None).unwrap(),
-            (crate::backup::BackupKind::Symmetric, true));
+        let (kind_sym, contenu_sym) = crate::backup::verify_backup(&dest_sym, Some(key), None).unwrap();
+        assert_eq!(kind_sym, crate::backup::BackupKind::Symmetric);
+        assert_eq!(contenu_sym.map(|c| (c.tables, c.lignes)), Some((1, 1)),
+            "chemin symétrique : full-verify EN cluster, et il COMPTE les lignes restaurées");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

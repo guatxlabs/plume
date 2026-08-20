@@ -50,11 +50,16 @@ size=$(wc -c < "$LOG" 2>/dev/null || echo 0)
 prev=$(cat "$OFF" 2>/dev/null || echo 0)
 case "$prev" in *[!0-9]*) prev=0 ;; esac
 [ "$prev" -gt "$size" ] && prev=0
-if [ "$prev" -ge "$size" ]; then printf '%s' "$size" > "$OFF"; plume_exit_nodata; fi
+# S30 — l'offset est MIS EN ATTENTE, jamais ecrit ici : il ne l'est qu'apres la publication de
+# l'enveloppe d'events (ou par `plume_exit_nodata`, ou rien n'a ete publie donc rien n'est acquitte).
+# Avant, il avancait des la lecture du chunk : une coupure entre les deux perdait execve et TAMPER
+# de la tranche, en silence. Ces events ne portent PAS de cle de dedoublonnage -> le rejeu apres
+# coupure produit des doublons VISIBLES la ou il y avait une perte muette.
+if [ "$prev" -ge "$size" ]; then state_stage "$OFF" "$size"; plume_exit_nodata; fi
 
 new=$(mktemp)
 tail -c +"$((prev + 1))" "$LOG" 2>/dev/null > "$new" || true
-printf '%s' "$size" > "$OFF"
+state_stage "$OFF" "$size"
 
 # clés de WATCH tamper (file-integrity) que l'on shippe en plus des execve/auth/comptes.
 TAMPER_KEYS="${PLUME_AUDIT_TAMPER_KEYS:-plume_etc|plume_creds|plume_data|shadow_changes|sudoers|plume_sensitive|plume_persist|boot_integrity}"
@@ -251,4 +256,4 @@ spool_write "config-auditd-$ts.json" "$(emit_event "$cfg_event")"
 
 [ -z "$events" ] && plume_exit_nodata
 
-spool_write "auditd-$ts.json" "$(emit_event "$events")"
+spool_write_then_ack "auditd-$ts.json" "$(emit_event "$events")"

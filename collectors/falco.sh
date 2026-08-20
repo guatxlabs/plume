@@ -12,7 +12,11 @@ last=$(cat "$OFF" 2>/dev/null || echo 0)
 size=$(wc -c < "$LOG" 2>/dev/null || echo 0)
 [ "$size" -lt "$last" ] && last=0   # rotation -> on repart du début
 new=$(tail -c "+$((last + 1))" "$LOG" 2>/dev/null || true)
-printf '%s' "$size" > "$OFF"
+# S30 — l'offset est MIS EN ATTENTE ici et n'est ecrit qu'apres la publication (cf. lib.sh). Avant,
+# il avancait des la lecture : une coupure avant le `spool_write` final perdait la tranche en
+# silence. Les events falco ne portent PAS de cle de dedoublonnage -> le rejeu produit des DOUBLONS
+# visibles la ou il y avait une perte muette. Arbitrage assume.
+state_stage "$OFF" "$size"
 [ -z "$new" ] && plume_exit_nodata
 
 tmpf=$(mktemp)
@@ -32,4 +36,4 @@ done < "$tmpf"
 rm -f "$tmpf"
 [ -z "$events" ] && plume_exit_nodata
 
-spool_write "falco-$ts.json" "$(emit_event "$events")"
+spool_write_then_ack "falco-$ts.json" "$(emit_event "$events")"

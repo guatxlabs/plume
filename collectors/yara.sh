@@ -29,7 +29,8 @@ RULES=$(find "$RULES_DIR" -type f \( -name '*.yar' -o -name '*.yara' \) 2>/dev/n
 [ -n "$RULES" ] || plume_unavailable yara missing-config "aucune regle *.yar/*.yara dans $RULES_DIR"
 
 STAMP="$STATE_DIR/yara.stamp"           # watermark incremental (ne re-scanne que le nouveau, cf. clamav)
-SEEN="$STATE_DIR/yara.seen"; touch "$SEEN"  # dedup persistant par (rule|file|mtime)
+SEEN="$STATE_DIR/yara.seen"                 # dedup persistant par (rule|file|mtime) ; cree par
+                                            # l'ajout DIFFERE (S30), sa lecture tolere son absence
 MAX="${PLUME_YARA_MAX:-5000}"           # plafond de fichiers listes par passage
 MAXE="${PLUME_YARA_MAX_EVENTS:-200}"    # plafond d'events emis par passage (anti-flood)
 TIMEOUT="${PLUME_YARA_TIMEOUT:-120}"    # borne le temps de scan (s)
@@ -46,7 +47,11 @@ for p in $PATHS; do
   [ -e "$p" ] || continue
   find "$p" -xdev $prune_expr -type f $findnew ! -size +"$MAXSZ" -print 2>/dev/null
 done | head -n "$MAX" > "$list"
-touch "$STAMP"
+# S30 — meme forme que clamav : le repere incremental (`find -newer`) est cree sur un temporaire et ne
+# remplace `$STAMP` qu'APRES publication. Une coupure entre l'ancienne avance et la publication rendait
+# les fichiers deja listes invisibles au passage suivant — un match YARA pouvait disparaitre sans trace.
+_stamp_tmp=$(mktemp "$STATE_DIR/.yara.stamp.XXXXXX")
+state_stage_file "$_stamp_tmp" "$STAMP"
 if [ ! -s "$list" ]; then rm -f "$list"; plume_exit_nodata; fi
 
 # --- scan : yara une fois (--scan-list lit la liste ; -g imprime les tags). timeout borne le run. ---
@@ -82,8 +87,11 @@ while IFS="$TAB" read -r rule tags file; do
   [ "$ne" -ge "$MAXE" ] && break
   mtime=$(stat -c %Y "$file" 2>/dev/null || echo 0)
   key="$rule|$file|$mtime"
-  grep -qxF "$key" "$SEEN" 2>/dev/null && continue          # deja signale (meme rule/file/mtime) -> skip
-  printf '%s\n' "$key" >> "$SEEN"
+  # S30 — le registre « deja signale » est un ACQUITTEMENT : l'ajout est donc MIS EN ATTENTE et n'est
+  # ecrit qu'apres publication. `state_marker_seen` interroge le fichier ET les lignes en attente, sans
+  # quoi un meme constat serait signale deux fois dans le MEME passage.
+  state_marker_seen "$SEEN" "$key" && continue               # deja signale (meme rule/file/mtime) -> skip
+  state_stage_append "$SEEN" "$key"
   ne=$((ne + 1))
   sha=$(sha256sum "$file" 2>/dev/null | cut -d' ' -f1); [ -n "$sha" ] || sha="?"
   rj=$(json_escape "$rule")
@@ -97,4 +105,4 @@ $parsed
 EOF
 [ -z "$events" ] && plume_exit_nodata
 
-spool_write "yara-$ts.json" "$(emit_event "$events")"
+spool_write_then_ack "yara-$ts.json" "$(emit_event "$events")"

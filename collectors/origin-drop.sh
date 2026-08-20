@@ -39,12 +39,15 @@ while IFS= read -r line; do
   events="$events${events:+,}{\"ts\":$ts,\"source\":\"origin-drop\",\"category\":\"firewall\",\"severity\":2,\"message\":\"$m\",\"src_ip\":\"$src\",\"dst_ip\":\"${dst:-}\",\"dir\":\"inbound\",\"dport\":\"${dpt:-}\",\"dedup\":\"origindrop-$src-$((ts / 60))\",\"fields\":$fields}"
 done < "$tmpf"
 rm -f "$tmpf"
-state_write "$WM" "$ts"
+# S30 — filigrane MIS EN ATTENTE (ecrit apres la publication de l'enveloppe d'events, cf. lib.sh).
+# Cle `origindrop-<src>-<seau 1 min>` : le seau est court, donc un rejeu produira souvent un doublon
+# VISIBLE plutot qu'une absorption — ce qui reste preferable a la perte muette d'avant.
+state_stage "$WM" "$ts"
 
 # DEAD-MAN'S-SWITCH (calque portscan.sh/crowdsec.sh) : battement de SANTE a CHAQUE run MEME a 0 hit ->
 # Plume distingue « aucun acces direct (normal, event_based) » de « collecteur origin-drop mort ». PAS de
 # dedup (event.dedup est UNIQUE -> un dedup constant bloquerait l'INSERT OR IGNORE et figerait MAX(ts)) ->
 # chaque battement S'INSERE -> MAX(ts) avance -> heartbeat vivant.
 events="$events${events:+,}$(heartbeat origin-drop "origin-drop sante: $n hit(s) ce passage" "{\"hits_seen\":$n}")"
-spool_write "origin-drop-$ts.json" "$(emit_event "$events")" nl
+spool_write_then_ack "origin-drop-$ts.json" "$(emit_event "$events")" nl
 spool_write "origin-dropm-$ts.json" "$(printf '{"ts":%s,"host":"%s","kind":"metrics","data":{"metrics":[{"name":"origin_drops_seen","value":%s}]}}' "$ts" "$host" "$n")" nl

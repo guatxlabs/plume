@@ -97,8 +97,11 @@ END{
   print maxts
 }')
 
-if [ -s "$tmp" ]; then spool_publish_file "$tmp" "mail-$now.json"; else rm -f "$tmp"; fi
-state_write "$WM" "${newwm:-$last}"
+# S30 — l'ordre etait DEJA le bon ; le filigrane est MIS EN ATTENTE et ecrit par la publication
+# elle-meme. Quand il n'y a aucune ligne a publier, c'est l'enveloppe de config de fin — toujours
+# emise — qui l'ecrit : un capteur n'a jamais le geste d'acquitter a sa disposition.
+state_stage "$WM" "${newwm:-$last}"
+if [ -s "$tmp" ]; then spool_publish_then_ack "$tmp" "mail-$now.json"; else rm -f "$tmp"; fi
 
 # --- CHANTIER whitelists->webui : AUTO-REPORT de config (source=mail category=config) --------------
 # Surface PLUME_MAIL_SKIP_IP dans le panneau read-only « Suppressions & whitelists actives ». VISIBILITE
@@ -106,5 +109,5 @@ state_write "$WM" "${newwm:-$last}"
 cfg_fields=$(printf '{"type":"collection-reducing","collector":"mail","filters":{"skip_ip":"%s","max":"%s"},"note":"ignore les events mail de SKIP_IP (probes internes/self) — postscreen HANGUP deja exclu. collecte reduite"}' \
   "$(json_escape "$SKIPIP")" "$(json_escape "$MAX")")
 cfg_dd="cfg-mail-$(printf '%s' "$cfg_fields" | cksum | cut -d' ' -f1)"
-spool_write "config-mail-$now.json" "$(printf '{"ts":%s,"host":"%s","kind":"events","events":[{"ts":%s,"source":"mail","category":"config","severity":0,"message":"config collecteur mail (filtres de collecte)","dedup":"%s","fields":%s}]}' \
+spool_write_then_ack "config-mail-$now.json" "$(printf '{"ts":%s,"host":"%s","kind":"events","events":[{"ts":%s,"source":"mail","category":"config","severity":0,"message":"config collecteur mail (filtres de collecte)","dedup":"%s","fields":%s}]}' \
   "$now" "$host" "$now" "$cfg_dd" "$cfg_fields")"

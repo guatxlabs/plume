@@ -51,11 +51,14 @@ if [ -f "$PREV" ]; then
   net_rx_bps=$(awk "BEGIN{d=($nrx-$p_rx)/$dt; printf \"%.0f\", (d<0?0:d)}")
   net_tx_bps=$(awk "BEGIN{d=($ntx-$p_tx)/$dt; printf \"%.0f\", (d<0?0:d)}")
 fi
-printf '%s %s %s %s %s\n' "$ts" "$ctot" "$cidle" "$nrx" "$ntx" > "$PREV"
+# S30 — meme figure que les filigranes d'events, enjeu different : ce repere ancre le CALCUL DE
+# DELTA du passage suivant. Ecrit avant la publication, une coupure entre les deux faisait disparaitre
+# le point de la serie sans que rien ne le compte. Mis en attente, il n'est ecrit qu'apres.
+state_stage "$PREV" "$ts $ctot $cidle $nrx $ntx"
 
 m(){ printf '{"name":"%s","value":%s}' "$1" "$2"; }
 # temp_c : pas de sonde thermique (VM/conteneur = aucun hwmon/thermal_zone) -> temp_c reste 0
 # -> on NE l'émet PAS (sinon faux « 0 °C » trompeur). Émis seulement si une vraie sonde existe.
 tpart=""; [ "$temp_c" != "0" ] && tpart="$(m temp_c "$temp_c"),"
 items="$(m cpu_pct "$cpu_pct"),$(m load1 "$load1"),$(m mem_pct "$mem_pct"),$(m swap_pct "$swap_pct"),$(m disk_root_pct "$disk_pct"),${tpart}$(m net_rx_bps "$net_rx_bps"),$(m net_tx_bps "$net_tx_bps"),$(m mem_slab_mb "$mem_slab_mb")"
-spool_write "resources-$ts.json" "$(printf '{"ts":%s,"host":"%s","kind":"metrics","data":{"metrics":[%s]}}' "$ts" "$host" "$items")"
+spool_write_then_ack "resources-$ts.json" "$(printf '{"ts":%s,"host":"%s","kind":"metrics","data":{"metrics":[%s]}}' "$ts" "$host" "$items")"

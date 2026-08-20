@@ -46,12 +46,15 @@ plume_init() {
 # le filigrane durable AVANT l'événement transformerait une perte improbable en perte garantie :
 # c'est exactement la direction interdite. Le seul sens sûr est « l'événement d'abord ».
 #
-# CE QUE CETTE ASYMÉTRIE NE FERME PAS, ET IL FAUT LE DIRE : cinq capteurs livrés avancent leur
-# filigrane AVANT de publier leurs événements (`journal`, `origin-drop`, `portscan`, `ufw`,
-# `pod-logs` — le filigrane y est écrit dans la boucle de lecture, l'enveloppe n'est composée
-# qu'ensuite). Pour eux, une coupure entre les deux perd la tranche, et aucune synchronisation ne
-# peut y remédier : c'est l'ORDRE qui est faux, pas la durabilité. Ne PAS rendre `state_write`
-# durable maintient ce risque au niveau qu'il a toujours eu au lieu de le porter à la certitude.
+# CE QUE CETTE ASYMÉTRIE NE FERMAIT PAS, ET QUI EST FERMÉ DEPUIS (S30) : des capteurs livrés
+# avançaient leur filigrane AVANT de publier leurs événements — le filigrane écrit dans la boucle de
+# lecture, l'enveloppe composée seulement ensuite. Une coupure entre les deux perdait la tranche, et
+# aucune synchronisation ne pouvait y remédier : c'était l'ORDRE, pas la durabilité. LE COMPTE ANNONCÉ
+# ICI ÉTAIT FAUX — cinq, dérivés d'un `grep state_write` ; le motif en dénombre DIX-SEPT (les douze
+# autres marquaient par redirection brute, `touch` d'un repère daté, ajout dans un registre,
+# renommage d'une base de référence, ou point de reprise avancé par un outil externe). L'ordre est
+# désormais tenu par construction : voir le bandeau S30 plus bas. Ne PAS rendre `state_write` durable
+# reste la bonne décision, et pour la même raison qu'avant.
 #
 # COÛT — MESURÉ le 2026-08-20 (NVMe, btrfs sur LVM, 100 publications par variante, sh POSIX) :
 # publication sans synchronisation 8,5 ms ; avec les deux synchronisations 21,2 ms — soit +12,7 ms.
@@ -142,6 +145,143 @@ state_write() {
   _st_tmp=$(mktemp "$_st_dir/.st.XXXXXX")
   printf '%s' "$2" > "$_st_tmp"
   mv -f "$_st_tmp" "$1"
+}
+
+# =================================================================================================
+# ACQUITTER APRÈS AVOIR PUBLIÉ, JAMAIS AVANT (S30)
+# -------------------------------------------------------------------------------------------------
+# S27 a rendu la PUBLICATION durable et laissé le FILIGRANE volatil, en notant au passage que cinq
+# capteurs avançaient tout de même leur filigrane AVANT de publier. LE COMPTE ÉTAIT FAUX, et pour la
+# raison exacte que S27 avait elle-même nommée à propos du sien : il avait été dérivé du SYMBOLE
+# `state_write`, pas du MOTIF. Recherche refaite sur le motif « un site qui marque la progression et
+# un site qui publie, dans le même flot » : DIX-SEPT capteurs, pas cinq. Les douze manquants marquent
+# leur progression autrement — redirection brute (`printf '%s' "$size" > "$OFF"`), `touch` d'un
+# fichier-repère relu ensuite en `find -newer`, ajout d'une ligne dans un registre « déjà signalé »,
+# renommage d'une base de référence. Aucune de ces quatre formes n'apparaît dans un `grep state_write`.
+#
+# L'ORDRE EST LE SUJET, ET IL NE PENCHE QUE D'UN CÔTÉ.
+#   MARQUER PUIS PUBLIER — une coupure entre les deux PERD les événements, et rien ne le signale :
+#   le marqueur affirme qu'ils sont acquittés, donc personne ne les relira jamais. Aucune
+#   synchronisation ne répare ça ; rendre le marqueur DURABLE ne ferait qu'en garantir la perte.
+#   PUBLIER PUIS MARQUER — la même coupure produit un REJEU : le passage suivant relit la même
+#   tranche et la republie. Un rejeu se voit, se compte et se corrige ; une perte est silencieuse.
+#
+# CE QUE LE REJEU DEVIENT AU CENTRAL — SANS L'EMBELLIR. `event.dedup` est UNIQUE (`INSERT OR IGNORE`,
+# cloisonné par hôte), mais il n'absorbe QUE les événements qui PORTENT une clé. Trois cas :
+#   ABSORBÉ INTÉGRALEMENT, parce que la clé porte une IDENTITÉ DE CONTENU indépendante du temps :
+#     `journal` (le daemon prend `__CURSOR`, identité de la ligne), `imgdrift` (`update-<image>-
+#     <digest>`), `vuln` (`vuln-<image|cve|paquet>`), `clamav` (`clamav-<fichier>-<signature>`),
+#     `yara` (`yara-<règle|fichier|mtime>`), `cloudflare*` (`cf-<rayName>`).
+#   ABSORBÉ SEULEMENT SI LE PASSAGE SUIVANT TOMBE DANS LE MÊME SEAU DE TEMPS, parce que la clé porte
+#     un seau et non une identité : `ufw` (seau horaire), `portscan` (5 min), `origin-drop` (1 min),
+#     `kube-audit` (empreinte + seau de 10 min).
+#   PAS ABSORBÉ DU TOUT, parce que leurs événements ne portent AUCUNE clé : `falco`, `suricata`,
+#     `auditd`, `audit`, `pod-logs`, `integrity`, `containerd`.
+# Pour ce dernier groupe, inverser l'ordre ÉCHANGE une perte silencieuse contre des DOUBLONS VISIBLES.
+# C'est un arbitrage assumé, pas un détail : un doublon se compte dans un tableau et se ferme en
+# ajoutant une clé de dédoublonnage ; une perte ne laisse rien à compter, et c'est ce qui la rend pire.
+# La voie de sortie propre est nommée — donner une clé d'identité à ces sept capteurs — et elle
+# n'appartient pas à cette clé-ci.
+#
+# COMBIEN AU PIRE. Le rejeu porte sur UN passage de collecte, borné par le plafond du capteur (limites
+# de conception, pas d'exploitation) : `PLUME_AUDIT_MAX`/`PLUME_KUBE_AUDIT_MAX` 4000 lignes,
+# `PLUME_SURICATA_*` 400, `PLUME_POD_LOG_MAX` 200 lignes, `falco` 200, `portscan`/`origin-drop` 300,
+# `imgdrift` 80 images. Deux capteurs rejouent un LOT et non une enveloppe : `pod-logs` marque un
+# offset PAR FICHIER de pod dans sa boucle de lecture et ne publie qu'ensuite (le rejeu porte sur tous
+# les fichiers du passage), et les registres « déjà signalé » (`vuln`, `yara`, `containerd`) accumulent
+# une ligne par constat avant la publication unique de fin.
+#
+# COMMENT L'ORDRE EST TENU — PAR CONSTRUCTION, PAS PAR CONVENTION. Un capteur n'a PAS les deux gestes
+# à sa disposition : il MET EN ATTENTE (`state_stage`, `state_stage_append`, `state_stage_file`), il
+# n'écrit pas. Les SEULS points d'écriture sont `spool_write_then_ack` / `spool_publish_then_ack`
+# (publient PUIS écrivent) et `plume_exit_nodata` (rien n'a été publié, donc rien n'est acquitté, donc
+# les marqueurs en attente sont sans danger). L'ordre est INTERNE à ces fonctions, donc un appelant ne
+# peut pas s'y tromper. C'est la forme déjà retenue côté Windows (`Stage-Watermark` / `Complete-Run`)
+# et côté binaire d'agent (`CursorStore::save`, appelé seulement après ship+ack).
+# `.github/scripts/check_watermark_follows_publication.py` refuse toute écriture directe d'un marqueur
+# hors de cette bibliothèque, et NOMME le capteur fautif.
+# =================================================================================================
+
+# Marqueurs MIS EN ATTENTE pendant le passage. Trois formes, parce que les capteurs marquent leur
+# progression de trois façons — une VALEUR (offset, curseur, horodatage), une LIGNE ajoutée à un
+# registre, un FICHIER entier (base de référence, ou repère daté relu en `find -newer`).
+# Séparateur : tabulation + fin de ligne. Une valeur de marqueur n'en contient jamais (offsets,
+# curseurs journald, dates ISO, sommes) ; le commit ignore les enregistrements malformés plutôt que
+# d'écrire n'importe où.
+_plume_ack_valeurs=""
+_plume_ack_lignes=""
+_plume_ack_fichiers=""
+_PLUME_TAB=$(printf '\t')
+
+# state_stage <fichier> <valeur> — met en attente une VALEUR de marqueur. N'écrit rien.
+state_stage() {
+  _plume_ack_valeurs="$_plume_ack_valeurs$1$_PLUME_TAB$2
+"
+}
+
+# state_stage_append <registre> <ligne> — met en attente l'AJOUT d'une ligne à un registre. N'écrit rien.
+state_stage_append() {
+  _plume_ack_lignes="$_plume_ack_lignes$1$_PLUME_TAB$2
+"
+}
+
+# state_stage_file <temporaire> <fichier-d-état> — met en attente le REMPLACEMENT d'un fichier d'état
+# par un temporaire DÉJÀ constitué (base de référence, repère `touch`é dont c'est la DATE qui compte —
+# le renommage la préserve). Le temporaire doit être sur le même système de fichiers que la cible.
+state_stage_file() {
+  _plume_ack_fichiers="$_plume_ack_fichiers$1$_PLUME_TAB$2
+"
+}
+
+# state_marker_seen <registre> <ligne> — vrai si la ligne est DÉJÀ dans le registre sur disque, OU
+# déjà mise en attente ce passage. Remplace le `grep -qxF <registre>` que faisaient les capteurs à
+# registre : depuis que l'ajout est DIFFÉRÉ, interroger le seul fichier ferait re-signaler deux fois
+# le même constat DANS LE MÊME passage.
+state_marker_seen() {
+  grep -qxF "$2" "$1" 2>/dev/null && return 0
+  case "$_plume_ack_lignes" in *"$1$_PLUME_TAB$2
+"*) return 0 ;; esac
+  return 1
+}
+
+# Écrit les marqueurs en attente. PRIVÉE : les seuls appelants sont les publications qui acquittent
+# et `plume_exit_nodata`. L'appeler ailleurs, c'est réintroduire le défaut.
+_plume_ack_commit() {
+  while IFS="$_PLUME_TAB" read -r _ac_f _ac_v; do
+    [ -n "${_ac_f:-}" ] || continue
+    state_write "$_ac_f" "$_ac_v"
+  done <<EOF
+$_plume_ack_valeurs
+EOF
+  while IFS="$_PLUME_TAB" read -r _ac_f _ac_l; do
+    [ -n "${_ac_f:-}" ] || continue
+    printf '%s\n' "$_ac_l" >> "$_ac_f"
+  done <<EOF
+$_plume_ack_lignes
+EOF
+  while IFS="$_PLUME_TAB" read -r _ac_t _ac_f; do
+    [ -n "${_ac_t:-}" ] || continue
+    [ -n "${_ac_f:-}" ] || continue
+    mv -f "$_ac_t" "$_ac_f"
+  done <<EOF
+$_plume_ack_fichiers
+EOF
+  _plume_ack_valeurs=""
+  _plume_ack_lignes=""
+  _plume_ack_fichiers=""
+}
+
+# spool_write_then_ack <basename> <content> [nl] — PUBLIE l'enveloppe (voie durable de S27), PUIS
+# écrit les marqueurs mis en attente. L'ordre est ici, et nulle part ailleurs.
+spool_write_then_ack() {
+  spool_write "$1" "$2" "${3:-}"
+  _plume_ack_commit
+}
+
+# spool_publish_then_ack <tempfile> <basename> — idem pour un temporaire déjà rempli par l'appelant.
+spool_publish_then_ack() {
+  spool_publish_file "$1" "$2"
+  _plume_ack_commit
 }
 
 # json_escape <str> — escape a string for embedding inside a JSON "..." literal.
@@ -314,7 +454,13 @@ plume_disabled() {
 # plume_exit_nodata — cas (III) : rien de neuf à remonter. Sortie 0 NUE, volontairement sans event :
 # zéro octet de plus, comportement inchangé. La fonction n'existe QUE pour porter un NOM : c'est ce nom
 # qui prouve à la relecture (et à la CI) que le silence est ici un CHOIX et non un oubli.
-plume_exit_nodata() { exit 0; }
+#
+# ELLE ÉCRIT LES MARQUEURS EN ATTENTE, ET C'EST LE SEUL AUTRE ENDROIT QUI LE FASSE (S30). Sortir par
+# ici veut dire qu'AUCUNE enveloppe n'a été publiée ce passage : les marqueurs mis en attente
+# n'acquittent donc RIEN, et les écrire ne peut faire disparaître aucun événement. Sans ce commit, un
+# capteur incrémental qui ne trouve rien à signaler ne mémoriserait jamais sa progression et
+# re-scannerait la même tranche indéfiniment (`clamav`/`yara` relisent leur liste par `find -newer`).
+plume_exit_nodata() { _plume_ack_commit; exit 0; }
 
 # ====================================================================================================
 # LE SECRET NE PASSE PAS PAR argv (P5.5-a).

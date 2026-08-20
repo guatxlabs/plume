@@ -185,7 +185,18 @@ pub enum Acces {
 }
 
 impl Acces {
-    /// L'opérateur `test(1)` correspondant — POSIX, donc tenu par le `/bin/sh` de n'importe quel hôte.
+    /// L'opérateur `test(1)` que la sonde fait exécuter, dans le bac à sable de l'unité, pour ce mode
+    /// d'accès.
+    ///
+    /// CETTE LIGNE A PORTÉ UNE PROMESSE QU'AUCUN MÉCANISME NE POUVAIT TENIR : « POSIX, donc tenu par le
+    /// `/bin/sh` de n'importe quel hôte ». Le shell d'un hôte qu'on n'a pas sous la main ne se vérifie
+    /// pas depuis ici, et une propriété d'environnement affirmée en prose n'a aucun moyen de vieillir :
+    /// le jour où elle cesse d'être vraie, rien ne rougit. CE QUI EST RÉELLEMENT SU, et qui suffit à la
+    /// décision : `systemd::sonde_le_bac_a_sable` ne lit un verdict que si la sonde rend l'indice d'un
+    /// chemin. TOUTE autre sortie — opérateur absent, shell qui ne l'implémente pas, sonde qui n'a pas
+    /// pu tourner — devient `Sonde::PasDeMesure`, c'est-à-dire un aveu NOMMÉ, jamais un « tous les
+    /// chemins sont utilisables ». La propriété tenue n'est donc pas « ces opérateurs existent
+    /// partout », c'est « leur absence se dit au lieu de passer pour un succès ».
     pub fn test_posix(self) -> &'static str {
         match self {
             Acces::Execute => "-x",

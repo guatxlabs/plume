@@ -10,7 +10,9 @@ command -v trivy >/dev/null 2>&1 || plume_unavailable vuln missing-dependency "t
 SEV="${PLUME_VULN_MIN_SEVERITY:-HIGH,CRITICAL}"
 MAXI="${PLUME_VULN_MAX_IMAGES:-60}"
 MAXE="${PLUME_VULN_MAX_EVENTS:-500}"
-SEEN="$STATE_DIR/vuln.seen"; touch "$SEEN"
+# S30 — plus de `touch` : le registre est cree par l'ajout DIFFERE (apres publication), et sa lecture
+# (`state_marker_seen`) tolere son absence. Le creer d'avance n'apporterait qu'un fichier vide.
+SEEN="$STATE_DIR/vuln.seen"
 TAB=$(printf '\t')
 # template trivy : 1 ligne TSV par vuln (severite, cve, paquet, installee, corrigee) -> pas de jq
 TPL='{{ range . }}{{ range .Vulnerabilities }}{{ .Severity }}{{"\t"}}{{ .VulnerabilityID }}{{"\t"}}{{ .PkgName }}{{"\t"}}{{ .InstalledVersion }}{{"\t"}}{{ if .FixedVersion }}{{ .FixedVersion }}{{ else }}-{{ end }}{{"\n"}}{{ end }}{{ end }}'
@@ -42,8 +44,12 @@ events=""; ne=0
 while IFS="$TAB" read -r sev cve pkg inst fixed img; do
   [ -z "${cve:-}" ] && continue
   key="$img|$cve|$pkg"
-  grep -qxF "$key" "$SEEN" 2>/dev/null && continue        # deja signale -> incremental
-  printf '%s\n' "$key" >> "$SEEN"
+  # S30 — le registre « deja signale » est un ACQUITTEMENT : l'ajout est MIS EN ATTENTE et n'est ecrit
+  # qu'apres publication. Avant, une coupure entre l'ajout et le `spool_write` de fin enterrait la CVE
+  # pour toujours (elle etait « deja signalee » sans jamais avoir ete emise). `state_marker_seen` lit
+  # aussi les lignes en attente, sans quoi la meme CVE serait emise deux fois dans le MEME passage.
+  state_marker_seen "$SEEN" "$key" && continue            # deja signale -> incremental
+  state_stage_append "$SEEN" "$key"
   ne=$((ne + 1)); [ "$ne" -gt "$MAXE" ] && break
   s=$(sevmap "$sev")
   m=$(json_escape "$(printf '%s dans %s %s (corrige: %s) image %s' "$cve" "$pkg" "$inst" "$fixed" "$img")")
@@ -52,4 +58,4 @@ done < "$all"
 rm -f "$all"
 [ -z "$events" ] && plume_exit_nodata
 
-spool_write "vuln-$ts.json" "$(emit_event "$events")"
+spool_write_then_ack "vuln-$ts.json" "$(emit_event "$events")"

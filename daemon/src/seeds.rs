@@ -697,6 +697,12 @@ pub(crate) fn seed_purple_rules(conn: &Connection) {
 ///      ajoute une unité lève donc une alerte severity 4 « vecteur de persistance ajouté » sur le SOC
 ///      lui-même. Le premier boot, lui, ne la lève pas (le 1er run d'`integrity.sh` construit la
 ///      baseline APRÈS l'installation, donc les unités y sont déjà).
+///      CE QUE LE CAPTEUR SURVEILLE EST DÉSORMAIS TENU, PAS AFFIRMÉ (S29). Cette règle ne vaut que si
+///      `collectors/integrity.sh` hache toujours `/etc/systemd/system/*.service` et `*.timer` sous le
+///      genre `unit` : si cette ligne disparaissait, la règle continuerait de s'exécuter sur zéro ligne
+///      et ne lèverait PLUS JAMAIS d'alerte — un angle mort qui a l'apparence exacte d'un hôte sain, et
+///      que rien ne signale. `tests::allegations_d_environnement` lit le script DÉPOUILLÉ de ses
+///      commentaires (l'en-tête nomme ce même répertoire ; une phrase ne doit pas satisfaire la garde).
 ///      CE QU'ON N'A PAS FAIT, ET POURQUOI. Aucune exemption par NOM (`plume-*`) n'a été posée : elle
 ///      créerait un angle mort qu'un attaquant occupe en nommant son unité `plume-quelquechose.service`.
 ///      Pour un SOC, un angle mort taillé sur mesure est PIRE que du bruit de maintenance. La garde

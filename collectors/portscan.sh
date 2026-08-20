@@ -40,7 +40,9 @@ while IFS= read -r line; do
   events="$events,{\"ts\":$ts,\"source\":\"nft\",\"message\":\"$nftmsg\",\"dedup\":\"nftscan-$src-$((ts / 300))\"}"
 done < "$tmpf"
 rm -f "$tmpf"
-state_write "$WM" "$ts"
+# S30 — filigrane MIS EN ATTENTE (ecrit apres la publication de l'enveloppe d'events, cf. lib.sh).
+# Cle `portscan-<src>-<seau 5 min>` -> un rejeu tombant dans le meme seau est absorbe.
+state_stage "$WM" "$ts"
 
 # DEAD-MAN'S-SWITCH (calque crowdsec.sh/pod-logs.sh) : battement de SANTÉ à CHAQUE run MÊME quand 0 scan
 # détecté -> Plume distingue « aucun scan (normal, event_based) » de « collecteur portscan mort ». PAS de
@@ -49,7 +51,7 @@ state_write "$WM" "$ts"
 # l'alerte MUET (collecteur CONTINU portscan-health, cf. main.rs). Le ship de l'enveloppe events est rendu
 # INCONDITIONNEL (events porte toujours ce battement) ; la métrique portscans_seen reste inchangée.
 events="$events${events:+,}$(heartbeat portscan "portscan santé: $n scan(s) ce passage" "{\"scans_seen\":$n}")"
-spool_write "portscan-$ts.json" "$(emit_event "$events")" nl
+spool_write_then_ack "portscan-$ts.json" "$(emit_event "$events")" nl
 spool_write "portscanm-$ts.json" "$(printf '{"ts":%s,"host":"%s","kind":"metrics","data":{"metrics":[{"name":"portscans_seen","value":%s}]}}' "$ts" "$host" "$n")" nl
 
 # --- CHANTIER whitelists->webui : AUTO-REPORT de config (source=portscan category=config) ----------

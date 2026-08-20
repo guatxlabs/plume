@@ -23,6 +23,15 @@ pub(crate) fn db_key() -> Option<String> {
 // `EnvironmentFile` (délibérément : il exporterait `PLUME_PASS_HASH`/`PLUME_DB_KEY` dans
 // `/proc/<pid>/environ`) et pose `PLUME_CONFIG=/etc/plume/soc.conf` : sur un hôte, le fichier 0640
 // est LE bon endroit pour cette clé, et c'est le seul endroit où elle n'agissait pas.
+// CES DEUX FAITS SUR L'UNITÉ SONT TENUS PAR UNE GARDE (S29), PAS PAR CE PARAGRAPHE. Ajouter
+// `EnvironmentFile=` à l'unité est le geste ORDINAIRE pour lui donner sa configuration : le démon
+// démarrerait, servirait à l'identique, aucun test ne rougirait — la seule chose qui changerait est
+// que la clé SQLCipher deviendrait lisible dans l'environnement du processus. Personne ne
+// l'apprendrait. `tests::allegations_d_environnement` relit l'unité livrée (commentaires retirés :
+// une directive commentée n'est pas une directive) et exige les deux moitiés — pas d'`EnvironmentFile`,
+// et un `Environment=PLUME_CONFIG=` qui désigne bien le fichier. Son témoin positif est que 29 des
+// unités livrées PORTENT cette directive (mesuré le 2026-08-20) : le détecteur sait donc la voir, et
+// son silence sur celle du démon est une preuve, pas une cécité.
 //
 // LE CAS QUE ÇA FABRIQUAIT, REPRODUIT PAR EXÉCUTION LE 2026-08-09 (binaire `38a23da`, `--features
 // cold_tier`, environnement VIDE hormis `PLUME_CONFIG`) : `soc.conf` portant `PLUME_DB_KEY` +
@@ -289,7 +298,22 @@ pub(crate) fn probe_db(path: &str, key: &str) -> DbProbe {
 pub(crate) fn probe_db_with_busy(path: &str, key: &str, busy: std::time::Duration) -> DbProbe {
     // FRESH = fichier absent OU 0 octet. Une base 0-octet est « neuve » : s'ouvre avec toute clé (SQLCipher la
     // matérialise au 1er write) -> ne JAMAIS la classer WrongKey (pas de faux positif install/premier boot).
-    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    //
+    // S32 — « ABSENT » ET « PAS INTERROGEABLE » NE SE CONFONDENT PLUS. `unwrap_or(0)` rendait `Fresh` —
+    // le verdict le PLUS RASSURANT du type — dès que `metadata` échouait pour un motif autre que
+    // l'absence : droits sur le répertoire, erreur d'entrée-sortie, chemin dont un composant n'est pas
+    // un répertoire. L'exploitant lisait alors « aucune base existante : elle sera créée chiffrée
+    // d'office » au moment précis où une base est peut-être là, intacte, et simplement injoignable.
+    // La variante juste EXISTAIT DÉJÀ et n'était pas atteinte par ce chemin : `Unopenable` — « présente
+    // mais non ouvrable : elle ne sera PAS touchée ». Les deux verdicts laissent le fichier intact ;
+    // c'est ce qui est ANNONCÉ qui change, et c'est justement ce qu'un exploitant lit avant de décider.
+    let len = match std::fs::metadata(path) {
+        Ok(m) => m.len(),
+        // Le fichier n'est pas là : c'est une LECTURE réussie, et son résultat est « rien ».
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+        // Tout le reste : on n'a rien pu établir, et on ne prétend rien.
+        Err(_) => return DbProbe::Unopenable,
+    };
     if len == 0 { return DbProbe::Fresh; }
     let kesc = key.replace('\'', "''");
     // Un verrou vu sur N'IMPORTE laquelle des deux ouvertures rend le verdict clé/corruption INDÉCIDABLE :

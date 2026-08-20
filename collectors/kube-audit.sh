@@ -31,7 +31,11 @@ case "$OFF" in ''|*[!0-9]*) OFF=0 ;; esac
 
 # Nouveau chunk (depuis l'offset), borné aux MAX dernières lignes (anti-flood 1er run).
 chunk=$(mktemp); tail -c +$((OFF + 1)) "$LOG" 2>/dev/null | tail -n "$MAX" > "$chunk" || true
-echo "$SIZE" > "$OFFF"                       # avance l'offset (le brut reste la trace complète)
+# S30 — l'offset est MIS EN ATTENTE ; il n'est ecrit qu'APRES la publication (le brut reste la trace
+# complete). Avant, il avancait des la lecture du chunk : une coupure avant le `spool_write` de fin
+# perdait la tranche. Cle `kaudit-<empreinte>-<seau 10 min>` -> le rejeu n'est absorbe que si le
+# passage suivant tombe dans le meme seau ; sinon il produit un doublon visible.
+state_stage "$OFFF" "$SIZE"
 
 events=""
 while IFS= read -r line; do
@@ -87,4 +91,4 @@ done < "$chunk"
 rm -f "$chunk"
 
 [ -z "$events" ] && plume_exit_nodata
-spool_write "kubeaudit-$ts.json" "$(emit_event "$events")"
+spool_write_then_ack "kubeaudit-$ts.json" "$(emit_event "$events")"

@@ -18,6 +18,32 @@ function fmtBytes(n) {
   return (n / 1073741824).toFixed(2) + ' Go';
 }
 
+// S32 — UNE MESURE NON LISIBLE N'EST PAS UN ZÉRO, ET LE PANNEAU NE DOIT PAS LA RENDRE COMME TEL.
+// Le serveur OMET le nombre quand sa source n'a pas pu être lue et pose à côté `<clé>_verdict` +
+// `<clé>_cause`. Un `?? 0` ou un `fmtBytes(undefined)` reconstruirait ici, côté client, exactement le
+// zéro rassurant que le serveur vient de retirer : c'est pourquoi ces tuiles passent par ce lecteur.
+// Valeur absente -> tiret cadratin + la cause en sous-titre, jamais « 0 ».
+const CAUSE_LBL = {
+  aucune: '',
+  source_absente: 'source absente',
+  source_refusee: 'accès refusé',
+  source_illisible: 'source illisible',
+  forme_inconnue: 'forme non reconnue',
+};
+
+// Le verdict est cherché d'abord PAR CLÉ (`queue_depth_verdict`), puis SUR L'OBJET (`verdict`) : une
+// même lecture peut porter plusieurs valeurs — le couple processeur/mémoire vient d'une seule lecture
+// de `/proc`, et son verdict est celui de l'objet entier.
+function mesureTile(label, obj, cle, fmt, sub) {
+  const v = obj[cle];
+  if (v == null) {
+    const brute = obj[cle + '_cause'] ?? obj.cause;
+    const cause = CAUSE_LBL[brute] || brute || 'cause inconnue';
+    return tile(label, '—', 'non mesuré : ' + cause);
+  }
+  return tile(label, fmt(v), sub);
+}
+
 function tile(label, value, sub) {
   const d = document.createElement('div');
   d.className = 'sys-tile';
@@ -66,15 +92,15 @@ async function loadSystemView() {
   const grid = document.createElement('div'); grid.className = 'sys-grid';
   const p = m.process || {}, ing = m.ingest || {}, se = m.search || {}, sc = m.scheduler || {}, db = m.db || {};
   grid.append(
-    tile('CPU cumulé', (p.cpu_seconds != null ? p.cpu_seconds.toFixed(1) : '—') + ' s'),
-    tile('RSS mémoire', fmtBytes(p.rss_bytes)),
+    mesureTile('CPU cumulé', p, 'cpu_seconds', v => v.toFixed(1) + ' s'),
+    mesureTile('RSS mémoire', p, 'rss_bytes', fmtBytes),
     tile('Ingest / h', String(ing.events_1h ?? 0), 'total ' + (ing.events_total ?? 0)),
-    tile('File spool', String(ing.queue_depth ?? 0), 'fichiers en attente'),
+    mesureTile('File spool', ing, 'queue_depth', String, 'fichiers en attente'),
     tile('Recherche p50', (se.p50_ms ?? 0) + ' ms', 'p95 ' + (se.p95_ms ?? 0) + ' ms'),
     tile('Recherches', String(se.requests_total ?? 0), se.samples ? se.samples + ' échantillons' : ''),
     tile('Scheduler', String(sc.rule_ticks_total ?? 0) + ' ticks', sc.rule_last_tick ? 'règles : ' + humanAge(Math.max(0, (m.ts || 0) - sc.rule_last_tick)) : 'démarrage'),
     tile('Rollups', String(sc.rollup_ticks_total ?? 0) + ' ticks', sc.rollup_last_tick ? humanAge(Math.max(0, (m.ts || 0) - sc.rollup_last_tick)) : 'démarrage'),
-    tile('Taille base', fmtBytes(db.size_bytes)),
+    mesureTile('Taille base', db, 'size_bytes', fmtBytes),
     tile('Alertes ouvertes', String(m.alerts_open ?? 0)),
     tile('Requêtes HTTP', String((m.http && m.http.requests_total) ?? 0), 'dont 5xx : ' + ((m.http && m.http.responses_5xx_total) ?? 0)),
   );

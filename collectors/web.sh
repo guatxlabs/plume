@@ -74,8 +74,11 @@ BEGIN{ n=0; buf=""; maxts=last+0 }
 }
 END{ if(n>0) printf "{\"ts\":%d,\"host\":\"%s\",\"kind\":\"events\",\"events\":[%s]}\n", now, host, buf > out; print maxts }')
 
-if [ -s "$tmp" ]; then spool_publish_file "$tmp" "web-$now.json"; else rm -f "$tmp"; fi
-state_write "$WM" "${newwm:-$last}"
+# S30 — l'ordre etait DEJA le bon ; le filigrane est MIS EN ATTENTE et ecrit par la publication
+# elle-meme. Quand il n'y a aucune ligne a publier, c'est l'enveloppe de config de fin — toujours
+# emise — qui l'ecrit : un capteur n'a jamais le geste d'acquitter a sa disposition.
+state_stage "$WM" "${newwm:-$last}"
+if [ -s "$tmp" ]; then spool_publish_then_ack "$tmp" "web-$now.json"; else rm -f "$tmp"; fi
 
 # --- CHANTIER whitelists->webui : AUTO-REPORT de config (source=web category=config) --------------
 # Surface les filtres de CE collecteur dans le panneau read-only « Suppressions & whitelists actives ».
@@ -84,5 +87,5 @@ state_write "$WM" "${newwm:-$last}"
 cfg_fields=$(printf '{"type":"collection-reducing","collector":"web","filters":{"skip_host":"%s","skip_path":"%s","skip_router":"%s","max_lines":"%s","src":"%s"},"note":"drops <500 matching host/path/router — collecte reduite, controle a la frontiere hote"}' \
   "$(json_escape "$SKIP_HOST")" "$(json_escape "$SKIP_PATH")" "$(json_escape "$SKIP_ROUTER")" "$(json_escape "$MAX")" "$(json_escape "$WEBSRC")")
 cfg_dd="cfg-web-$(printf '%s' "$cfg_fields" | cksum | cut -d' ' -f1)"
-spool_write "config-web-$now.json" "$(printf '{"ts":%s,"host":"%s","kind":"events","events":[{"ts":%s,"source":"web","category":"config","severity":0,"message":"config collecteur web (filtres de collecte)","dedup":"%s","fields":%s}]}' \
+spool_write_then_ack "config-web-$now.json" "$(printf '{"ts":%s,"host":"%s","kind":"events","events":[{"ts":%s,"source":"web","category":"config","severity":0,"message":"config collecteur web (filtres de collecte)","dedup":"%s","fields":%s}]}' \
   "$now" "$host" "$now" "$cfg_dd" "$cfg_fields")"

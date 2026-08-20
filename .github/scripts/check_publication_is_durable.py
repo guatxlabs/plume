@@ -78,6 +78,10 @@ ENFORCERS_SANS_LIB = ("collectors/engagement-adapter.sh",)
 # cassée qui ne lit RIEN et rapporte un vert joyeux.
 # MESURÉ le 2026-08-20 : `git ls-files '*.sh' '*.bash'` = 54 fichiers ; 59 appels de la voie unique
 # (`spool_write` + `spool_publish_file`), dont les 7 que cette clé a ramenés dans la bibliothèque.
+# RE-MESURÉ le 2026-08-20 après `S30` : 71 occurrences, dont les emballages `spool_write_then_ack` /
+# `spool_publish_then_ack` (publier PUIS acquitter) et leur définition. Le motif les inclut parce
+# qu'ils DÉLÈGUENT à la voie unique ; les compter comme des contournements aurait fait chuter le
+# plancher sous un déplacement qui ne retire aucune publication.
 MIN_SCRIPTS = 45
 MIN_APPELS_VOIE_UNIQUE = 45
 
@@ -153,7 +157,12 @@ def jambe_statique(scripts):
             src = open(f, encoding="utf-8", errors="replace").read()
         except OSError as e:
             echec(f"lecture impossible de {f} : {e}")
-        appels_voie_unique += len(re.findall(r"\bspool_(?:write|publish_file)\b", src))
+        # `spool_write_then_ack` / `spool_publish_then_ack` (S30) DÉLÈGUENT aux deux fonctions
+        # ci-dessus : ce sont les mêmes publications, vues par leur emballage qui acquitte ensuite.
+        # Les compter est obligatoire, sans quoi le plancher lirait une chute là où rien n'a bougé.
+        appels_voie_unique += len(
+            re.findall(r"\bspool_(?:write_then_ack|publish_then_ack|publish_file|write)\b", src)
+        )
         if f == LIB or f in ENFORCERS_SANS_LIB:
             continue
         for i, ligne in enumerate(src.splitlines(), 1):

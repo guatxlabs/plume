@@ -25,7 +25,10 @@ for f in "$DIR"/*/*/*.log; do
   last=$(cat "$off" 2>/dev/null || echo 0)
   size=$(wc -c < "$f" 2>/dev/null || echo 0)
   [ "$size" -lt "$last" ] && last=0
-  state_write "$off" "$size"
+  # S30 — offset MIS EN ATTENTE, PAR FICHIER, ecrit seulement apres la publication de l'unique
+  # enveloppe de fin. C'est le site qui rejoue le plus : le lot porte TOUS les fichiers du passage,
+  # pas une enveloppe. Les events k8s-log ne portent pas de cle -> le rejeu est visible en doublons.
+  state_stage "$off" "$size"
   [ "$size" -le "$last" ] && continue
   pod=$(printf '%s' "$f" | sed -E 's#.*/pods/([^/]+)/.*#\1#')
   # le conteneur = répertoire juste au-dessus du fichier .log (/pods/<ns_pod_uid>/<CONTENEUR>/N.log)
@@ -73,7 +76,7 @@ hmsg="pod-logs santé: $fscan fichiers, $lscan lignes scannées, $n lignes expé
 hfields="{\"files_scanned\":$fscan,\"lines_scanned\":$lscan,\"sev3_shipped\":$n}"
 events="$events${events:+,}$(heartbeat k8s-log "$hmsg" "$hfields")"
 
-spool_write "podlogs-$ts.json" "$(emit_event "$events")"
+spool_write_then_ack "podlogs-$ts.json" "$(emit_event "$events")"
 
 # --- CHANTIER whitelists->webui : AUTO-REPORT de config (source=k8s-log category=config) -----------
 # Surface FILTER/SKIP/MIN_SEV dans le panneau read-only « Suppressions & whitelists actives » (VISIBILITE

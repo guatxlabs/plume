@@ -62,5 +62,9 @@ spool_write "journal-health-$ts.json" \
 if [ ! -s "$tmp" ]; then rm -f "$tmp"; plume_exit_nodata; fi
 # nouveau curseur = __CURSOR de la dernière entrée (sans jq)
 newcur=$(tail -n1 "$tmp" | grep -oP '"__CURSOR"\s*:\s*"\K[^"]+' || true)
-[ -n "$newcur" ] && state_write "$CUR" "$newcur"
-spool_publish_file "$tmp" "journal-$(date +%s).ndjson"
+# S30 — PUBLIER D'ABORD, ACQUITTER ENSUITE. Le curseur etait ecrit AVANT la publication du NDJSON :
+# une coupure entre les deux perdait la tranche pour toujours (journald ne rend que ce qui suit le
+# curseur). Le rejeu que l'inversion produit est absorbe INTEGRALEMENT au central — le daemon prend
+# `__CURSOR` comme cle de dedoublonnage, soit l'identite exacte de la ligne.
+[ -n "$newcur" ] && state_stage "$CUR" "$newcur"
+spool_publish_then_ack "$tmp" "journal-$(date +%s).ndjson"

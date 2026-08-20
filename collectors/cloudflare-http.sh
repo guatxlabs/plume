@@ -102,11 +102,17 @@ envj=$(printf '%s' "$json" | jq -c --arg host "$host" --argjson ts "$ts" '
         } ) )
     }')
 
+# avance le watermark a now-LAG (recouvrement borne : jamais de trou face au lag CF ; dedup+dc absorbent).
+# S30 — l'ordre etait DEJA le bon ; le filigrane est desormais MIS EN ATTENTE et ecrit par la
+# publication elle-meme. Quand la fenetre ne rend aucun evenement, il n'y a rien a publier et donc
+# rien a acquitter : `plume_exit_nodata` ecrit le filigrane et sort. Ne PAS l'ecrire dans ce cas
+# ferait grandir la fenetre interrogee sans fin.
+adv=$(date -u -d "@$((ts - LAG))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$nowiso")
+state_stage "$WM" "$adv"
+
 n=$(printf '%s' "$envj" | jq -r '.events | length' 2>/dev/null || echo 0)
 if [ "${n:-0}" -gt 0 ]; then
-  spool_write "cloudflare-http-$ts.json" "$envj" nl
+  spool_write_then_ack "cloudflare-http-$ts.json" "$envj" nl
+else
+  plume_exit_nodata
 fi
-
-# avance le watermark a now-LAG (recouvrement borne : jamais de trou face au lag CF ; dedup+dc absorbent).
-adv=$(date -u -d "@$((ts - LAG))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$nowiso")
-state_write "$WM" "$adv"

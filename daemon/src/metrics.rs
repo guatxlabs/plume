@@ -99,50 +99,32 @@ pub(crate) fn search_quantiles() -> (u32, u32, usize) {
     (quantile_sorted(&v, 0.50).unwrap_or(0), quantile_sorted(&v, 0.95).unwrap_or(0), v.len())
 }
 
-// ---------- lecture /proc/self (CPU + RSS) — cheap, sans dépendance, sans scan ----------
-/// (cpu_seconds cumulés, rss_bytes) du process via /proc/self. None si /proc indisponible (non-Linux/CI).
-pub(crate) fn proc_self_cpu_rss() -> Option<(f64, u64)> {
-    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
-    // Le champ `comm` (2e) peut contenir des espaces/parenthèses -> on repart APRÈS la dernière ')'.
-    let rest = &stat[stat.rfind(')')? + 1..];
-    let f: Vec<&str> = rest.split_whitespace().collect();
-    // Après la ')': index 0 = state (champ 3). utime=champ 14 -> index 11 ; stime=champ 15 -> index 12.
-    let utime: u64 = f.get(11)?.parse().ok()?;
-    let stime: u64 = f.get(12)?.parse().ok()?;
-    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-    let hz = if hz > 0 { hz as f64 } else { 100.0 };
-    let cpu = (utime + stime) as f64 / hz;
-    // RSS = champ 2 (pages résidentes) de /proc/self/statm × taille de page.
-    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
-    let rss_pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
-    let pg = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    let pg = if pg > 0 { pg as u64 } else { 4096 };
-    Some((cpu, rss_pages * pg))
+// ---------- lectures d'environnement — cheap, sans scan, et JAMAIS un zéro faute de savoir ----------
+// S32 — les trois lectures ci-dessous rendaient la valeur la plus RASSURANTE quand elles échouaient :
+// `unwrap_or((0.0, 0))` sur `/proc/self`, `Err(_) => 0` sur le répertoire de spool, `unwrap_or(0)` sur
+// la taille de la base. Un tableau de bord y voyait « processus au repos », « file vide », « base
+// vide » — c'est-à-dire « rien à signaler » — précisément quand la mesure avait disparu. Elles sont
+// désormais TYPÉES (`mesure_environnement::Mesure`) et paramétrées sur leurs chemins, donc exerçables
+// sans dépendre de l'hôte. Ce module ne fait plus que les APPELER et décider de leur PUBLICATION.
+
+/// (temps processeur cumulé, mémoire résidente) du processus. `Illisible` quand `/proc` ne répond pas
+/// ou que sa forme n'est pas comprise — jamais `(0, 0)`.
+pub(crate) fn proc_self_cpu_rss() -> mesure_environnement::Mesure<(f64, u64)> {
+    mesure_environnement::cpu_rss()
 }
 
-/// Nombre de fichiers en attente dans le spool (profondeur de file d'ingest) — read_dir borné, no-op si absent.
-pub(crate) fn spool_queue_depth(spool: &str) -> u64 {
-    match std::fs::read_dir(spool) {
-        Ok(rd) => rd
-            .flatten()
-            .filter(|e| {
-                let n = e.file_name();
-                let n = n.to_string_lossy();
-                !n.starts_with('.') && (n.ends_with(".json") || n.ends_with(".ndjson"))
-            })
-            .count() as u64,
-        Err(_) => 0,
-    }
+/// Nombre de fichiers en attente dans le spool (profondeur de file d'ingest). `Illisible` quand le
+/// répertoire est absent ou que son parcours s'interrompt — un répertoire disparu N'EST PAS une file
+/// vide.
+pub(crate) fn spool_queue_depth(spool: &str) -> mesure_environnement::Mesure<u64> {
+    mesure_environnement::profondeur_file_depuis(std::path::Path::new(spool))
 }
 
-/// Taille de la base (fichier principal + WAL) en octets — stat cheap, jamais un COUNT(*).
-pub(crate) fn db_size_bytes(db_path: &str) -> u64 {
-    if db_path.is_empty() {
-        return 0;
-    }
-    let main = std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0);
-    let wal = std::fs::metadata(format!("{db_path}-wal")).map(|m| m.len()).unwrap_or(0);
-    main + wal
+/// Taille de la base (fichier principal + journal d'écriture) en octets — `stat` seulement, jamais un
+/// `COUNT(*)`. Le journal ABSENT vaut zéro (c'est un vrai zéro) ; le fichier principal injoignable
+/// rend `Illisible`.
+pub(crate) fn db_size_bytes(db_path: &str) -> mesure_environnement::Mesure<u64> {
+    mesure_environnement::taille_base_depuis(std::path::Path::new(db_path))
 }
 
 // ---------- santé par composant (R/J/V) ----------
@@ -174,16 +156,31 @@ pub(crate) fn component_health(conn: &Connection, spool: &str, db_path: &str, di
         )
         .ok()
         .flatten();
-    let (istate, idetail) = if queue > 500 {
-        ("yellow", format!("backlog spool : {queue} fichiers en attente"))
-    } else if had_data.is_none() {
-        ("idle", "aucune donnée encore ingérée".to_string())
-    } else if fresh {
-        ("green", "données fraîches (< 10 min)".to_string())
-    } else {
-        ("yellow", "aucune donnée récente (source calme ou collecte arrêtée)".to_string())
+    // S32 — LE CAS ILLISIBLE EST TRAITÉ EN PREMIER, ET IL NE PEUT PAS ÊTRE VERT. Une file dont le
+    // répertoire a disparu se lisait ici comme une file VIDE : le composant retombait sur la fraîcheur
+    // et pouvait annoncer « données fraîches » alors que la voie spool était peut-être morte sans que
+    // rien ne puisse le dire. Ce n'est pas ROUGE (la voie HTTP d'ingest, elle, continue peut-être de
+    // servir) : c'est JAUNE, l'état qui appelle un regard. La cause est nommée dans le détail.
+    let (istate, idetail) = match queue.valeur() {
+        None => (
+            "yellow",
+            format!(
+                "profondeur de la file d'ingest NON LISIBLE ({}) : ce n'est PAS « file vide », c'est \
+                 « pas de mesure » — un retard d'ingest ne serait pas visible ici.",
+                queue.detail().unwrap_or("cause non renseignée")
+            ),
+        ),
+        Some(&n) if n > 500 => ("yellow", format!("backlog spool : {n} fichiers en attente")),
+        Some(_) if had_data.is_none() => ("idle", "aucune donnée encore ingérée".to_string()),
+        Some(_) if fresh => ("green", "données fraîches (< 10 min)".to_string()),
+        Some(_) => ("yellow", "aucune donnée récente (source calme ou collecte arrêtée)".to_string()),
     };
-    out.push(json!({ "component": "ingest", "state": istate, "detail": idetail, "queue_depth": queue }));
+    let mut ingest = serde_json::Map::new();
+    ingest.insert("component".into(), json!("ingest"));
+    ingest.insert("state".into(), json!(istate));
+    ingest.insert("detail".into(), json!(idetail));
+    queue.poser_dans(&mut ingest, "queue_depth");
+    out.push(Value::Object(ingest));
 
     // DÉTECTION : le scheduler de règles tick-t-il ? (SCHED_RULE_LAST_TS). 0 = pas encore tické (boot) -> idle.
     let rule_last = SCHED_RULE_LAST_TS.load(Ordering::Relaxed);
@@ -202,15 +199,47 @@ pub(crate) fn component_health(conn: &Connection, spool: &str, db_path: &str, di
         .filter(|d| !d.as_os_str().is_empty())
         .map(|d| d.to_string_lossy().into_owned())
         .unwrap_or_else(|| ".".to_string());
-    let (sstate, sdetail, used_pct) = match fs_total_avail_mb(&dir).and_then(|(t, a)| disk_used_pct(t, a).map(|p| (p, t, a))) {
-        Some((pct, total, avail)) => {
+    // S32 — MÊME FIGURE QUE LA FILE D'INGEST, et elle était PIRE ICI : une mesure `statvfs` en échec
+    // rendait l'état VERT *et* publiait `disk_used_pct: 0`, c'est-à-dire « disque vide, tout va bien »
+    // au moment précis où plus rien n'était mesuré. Le pourcentage est désormais ABSENT quand il n'a
+    // pas été mesuré, et l'état est JAUNE : ne pas savoir si le volume de données sature n'est pas un
+    // état sain. Ce n'est pas rouge — la base répond, on vient d'y lire.
+    let mesure_disque = match fs_total_avail_mb(&dir).and_then(|(t, a)| disk_used_pct(t, a).map(|p| (p, t, a))) {
+        Some(x) => mesure_environnement::Mesure::Lue(x),
+        None => mesure_environnement::Mesure::Illisible {
+            cause: mesure_environnement::CAUSE_SOURCE_ILLISIBLE,
+            detail: format!("statvfs({dir}) : usage disque indisponible"),
+        },
+    };
+    let (sstate, sdetail) = match mesure_disque.valeur() {
+        Some(&(pct, total, avail)) => {
             let warn = if disk_warn_pct == 0 { 85 } else { disk_warn_pct };
             let st = if pct > 95 { "red" } else if pct > warn { "yellow" } else { "green" };
-            (st, format!("disque données {pct}% utilisé ({avail} Mo libres / {total} Mo)"), pct)
+            (st, format!("disque données {pct}% utilisé ({avail} Mo libres / {total} Mo)"))
         }
-        None => ("green", "usage disque indisponible (statvfs)".to_string(), 0),
+        None => (
+            "yellow",
+            format!(
+                "usage disque NON LISIBLE ({}) : impossible de dire si le volume de données sature.",
+                mesure_disque.detail().unwrap_or("cause non renseignée")
+            ),
+        ),
     };
-    out.push(json!({ "component": "store", "state": sstate, "detail": sdetail, "disk_used_pct": used_pct, "db_size_bytes": db_size_bytes(db_path) }));
+    let mut store = serde_json::Map::new();
+    store.insert("component".into(), json!("store"));
+    store.insert("state".into(), json!(sstate));
+    store.insert("detail".into(), json!(sdetail));
+    // Le pourcentage SEUL (pas le triplet) part dans le JSON : c'est lui que le panneau lit. Le
+    // verdict et la cause voyagent avec, donc « 0 % » et « pas mesuré » ne se ressemblent plus.
+    let pourcentage = match mesure_disque {
+        mesure_environnement::Mesure::Lue((pct, _, _)) => mesure_environnement::Mesure::Lue(pct as u64),
+        mesure_environnement::Mesure::Illisible { cause, detail } => {
+            mesure_environnement::Mesure::Illisible { cause, detail }
+        }
+    };
+    pourcentage.poser_dans(&mut store, "disk_used_pct");
+    db_size_bytes(db_path).poser_dans(&mut store, "db_size_bytes");
+    out.push(Value::Object(store));
 
     // FORWARDER (#50 outputs/destinations) : table vide -> idle (mode 0). Une destination ACTIVE en erreur
     // (last_error non vide) -> jaune. Sinon vert. Table absente (schéma < v92) -> idle.
@@ -285,7 +314,22 @@ pub(crate) fn worst_state(components: &[Value]) -> &'static str {
 /// /metrics (texte Prometheus) ET /api/system/metrics (JSON du panneau UI). Lecture SEULE, tables petites.
 pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_version: i64, disk_warn_pct: u8) -> Value {
     let now_ts = now();
-    let (cpu, rss) = proc_self_cpu_rss().unwrap_or((0.0, 0));
+    // S32 — LE COUPLE PROCESSEUR/MÉMOIRE N'EST PLUS DÉPLIÉ SUR UN ZÉRO. `unwrap_or((0.0, 0))` publiait
+    // « processus au repos, aucune mémoire résidente » quand `/proc` était illisible : les deux valeurs
+    // les plus calmes de la série, indiscernables d'un vrai repos. Les deux nombres sont maintenant
+    // ABSENTS du JSON quand ils n'ont pas été lus (donc absents de `/metrics`, cf. `g()` plus bas), et
+    // l'objet `process` porte le verdict et la cause.
+    let processeur_memoire = proc_self_cpu_rss();
+    let mut process = serde_json::Map::new();
+    if let Some(&(cpu, rss)) = processeur_memoire.valeur() {
+        process.insert("cpu_seconds".into(), json!(cpu));
+        process.insert("rss_bytes".into(), json!(rss));
+    }
+    process.insert("verdict".into(), json!(processeur_memoire.verdict()));
+    process.insert("cause".into(), json!(processeur_memoire.cause()));
+    if let Some(d) = processeur_memoire.detail() {
+        process.insert("detail".into(), json!(d));
+    }
     let (p50, p95, lat_n) = search_quantiles();
     // ingest « dernière heure » depuis event_rollup (pré-agrégé, ~ms) -> débit sans scanner `event`.
     let events_1h: i64 = conn
@@ -301,25 +345,35 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
         .map(|r| (r.libelle().to_string(), json!(PUBSUB_ACKDROP[r.rang()].load(Ordering::Relaxed))))
         .collect();
     let pubsub_ackdrop_total: u64 = PUBSUB_ACKDROP.iter().map(|c| c.load(Ordering::Relaxed)).sum();
+    // S32 — les deux objets qui portent une mesure d'environnement sont construits en `Map` plutôt
+    // qu'écrits littéralement : c'est `poser_dans` qui décide d'écrire ou non le nombre, et lui seul.
+    // Un littéral `"queue_depth": …` obligerait à produire une valeur dans tous les cas — c'est-à-dire
+    // à réinventer le zéro que ce lot retire.
+    let mut ingest = serde_json::Map::new();
+    ingest.insert("events_total".into(), json!(INGEST_EVENTS_TOTAL.load(Ordering::Relaxed)));
+    ingest.insert("files_total".into(), json!(INGEST_FILES_TOTAL.load(Ordering::Relaxed)));
+    ingest.insert("events_1h".into(), json!(events_1h));
+    spool_queue_depth(spool).poser_dans(&mut ingest, "queue_depth");
+    ingest.insert("push_zero_map_total".into(), json!(PUSH_ZERO_MAP_TOTAL.load(Ordering::Relaxed)));
+    ingest.insert("pubsub_ackdrop_total".into(), json!(pubsub_ackdrop_total));
+    ingest.insert("pubsub_ackdrop_par_raison".into(), Value::Object(pubsub_ackdrop_par_raison));
+    let mut db = serde_json::Map::new();
+    db_size_bytes(db_path).poser_dans(&mut db, "size_bytes");
+    // `ventilation` = la DERNIÈRE tentative du tick lent, servie DEPUIS LE CACHE : lire /metrics ou le
+    // panneau Système ne déclenche JAMAIS un parcours dbstat. `null` = jamais mesuré ;
+    // `{"mesuree":false,…}` = mesure REFUSÉE (jamais un objet de zéros).
+    db.insert("ventilation".into(), ventilation_serie::json(&ventilation_serie::derniere(), now_ts));
     json!({
         "ts": now_ts,
         "version": env!("CARGO_PKG_VERSION"),
         "schema_version": schema_version,
         "uptime_s": (now_ts - START_TS.load(Ordering::Relaxed)).max(0),
-        "process": { "cpu_seconds": cpu, "rss_bytes": rss },
+        "process": process,
         "http": {
             "requests_total": HTTP_REQUESTS_TOTAL.load(Ordering::Relaxed),
             "responses_5xx_total": HTTP_5XX_TOTAL.load(Ordering::Relaxed),
         },
-        "ingest": {
-            "events_total": INGEST_EVENTS_TOTAL.load(Ordering::Relaxed),
-            "files_total": INGEST_FILES_TOTAL.load(Ordering::Relaxed),
-            "events_1h": events_1h,
-            "queue_depth": spool_queue_depth(spool),
-            "push_zero_map_total": PUSH_ZERO_MAP_TOTAL.load(Ordering::Relaxed),
-            "pubsub_ackdrop_total": pubsub_ackdrop_total,
-            "pubsub_ackdrop_par_raison": pubsub_ackdrop_par_raison,
-        },
+        "ingest": ingest,
         "search": { "requests_total": SEARCH_TOTAL.load(Ordering::Relaxed), "p50_ms": p50, "p95_ms": p95, "samples": lat_n },
         "scheduler": {
             "rule_ticks_total": SCHED_RULE_TICKS.load(Ordering::Relaxed),
@@ -327,10 +381,7 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
             "rollup_ticks_total": SCHED_ROLLUP_TICKS.load(Ordering::Relaxed),
             "rollup_last_tick": SCHED_ROLLUP_LAST_TS.load(Ordering::Relaxed),
         },
-        // `ventilation` = la DERNIÈRE tentative du tick lent, servie DEPUIS LE CACHE : lire /metrics ou
-        // le panneau Système ne déclenche JAMAIS un parcours dbstat (35,4 s mesurés en production).
-        // `null` = jamais mesuré ; `{"mesuree":false,…}` = mesure REFUSÉE (jamais un objet de zéros).
-        "db": { "size_bytes": db_size_bytes(db_path), "ventilation": ventilation_serie::json(&ventilation_serie::derniere(), now_ts) },
+        "db": db,
         "alerts_open": alerts_open,
         "posture": posture,
         "components": components,
@@ -361,8 +412,21 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
             prom_line(o, name, typ, help, s);
         }
     };
+    // S32 — L'INDICATEUR DE LISIBILITÉ D'UNE MESURE D'ENVIRONNEMENT, à côté d'une série de valeur qui
+    // est ABSENTE quand elle n'a pas été lue (c'est `g()` qui l'omet : il n'imprime que ce qu'il
+    // trouve). DÉRIVÉ du verdict écrit par `gather_json`, jamais recalculé : la jauge et le champ JSON
+    // ne peuvent pas diverger. Les deux ensemble, parce qu'une série absente ne distingue pas « la
+    // lecture a échoué » d'un scrape manqué, et qu'un indicateur seul laisserait le zéro en place.
+    // CARDINALITÉ : l'étiquette `cause` ne prend ses valeurs que dans `CAUSES` (5 clés fermées), et une
+    // seule à la fois puisque les cas sont exclusifs -> au plus 5 séries de sortie par jauge, 1 en régime.
+    let lisible = |o: &mut String, nom: &str, quoi: &str, ptr_verdict: &str, ptr_cause: &str| {
+        let mot = j.pointer(ptr_verdict).and_then(|v| v.as_str()).unwrap_or(mesure_environnement::VERDICT_ILLISIBLE);
+        let cause = j.pointer(ptr_cause).and_then(|v| v.as_str()).unwrap_or(mesure_environnement::CAUSE_SOURCE_ILLISIBLE);
+        o.push_str(&mesure_environnement::exposition_prom_lisible(nom, quoi, mot, cause));
+    };
     g(&mut o, "plume_process_cpu_seconds_total", "counter", "Temps CPU cumulé du process (s)", "/process/cpu_seconds");
     g(&mut o, "plume_process_resident_memory_bytes", "gauge", "RSS du process (octets)", "/process/rss_bytes");
+    lisible(&mut o, "plume_process_mesure_lisible", "la mesure processeur/mémoire du processus", "/process/verdict", "/process/cause");
     prom_line(&mut o, "plume_process_start_time_seconds", "gauge", "Horodatage de démarrage (unix s)", START_TS.load(Ordering::Relaxed).to_string());
     g(&mut o, "plume_http_requests_total", "counter", "Requêtes HTTP servies", "/http/requests_total");
     g(&mut o, "plume_http_responses_5xx_total", "counter", "Réponses 5xx", "/http/responses_5xx_total");
@@ -370,6 +434,7 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     g(&mut o, "plume_ingest_files_total", "counter", "Fichiers spool consommés", "/ingest/files_total");
     g(&mut o, "plume_ingest_events_1h", "gauge", "Events ingérés sur la dernière heure (rollup)", "/ingest/events_1h");
     g(&mut o, "plume_spool_queue_files", "gauge", "Fichiers en attente dans le spool", "/ingest/queue_depth");
+    lisible(&mut o, "plume_spool_queue_lisible", "la profondeur de la file d'ingest", "/ingest/queue_depth_verdict", "/ingest/queue_depth_cause");
     g(&mut o, "plume_push_zero_map_total", "counter", "Batches push acceptés mais mappés à 0 event (misconfig source push)", "/ingest/push_zero_map_total");
     g(&mut o, "plume_search_requests_total", "counter", "Recherches interactives servies", "/search/requests_total");
     // quantiles de latence de recherche (résumé pré-calculé côté serveur).
@@ -380,6 +445,7 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     g(&mut o, "plume_scheduler_rule_ticks_total", "counter", "Ticks du scheduler de règles", "/scheduler/rule_ticks_total");
     g(&mut o, "plume_scheduler_rollup_ticks_total", "counter", "Ticks de la boucle de rollup", "/scheduler/rollup_ticks_total");
     g(&mut o, "plume_db_size_bytes", "gauge", "Taille de la base (db + wal, octets)", "/db/size_bytes");
+    lisible(&mut o, "plume_db_size_lisible", "la taille de la base", "/db/size_bytes_verdict", "/db/size_bytes_cause");
     // VENTILATION PAR POSTE — servie depuis le CACHE du tick lent, jamais recalculée ici (un scrape ne
     // peut pas déclencher 35 s de parcours dbstat). Le rendu N'EST PAS passé par `g()` : ce helper
     // n'imprime que ce qu'il trouve, mais il ne sait pas dire « refusé » — or ici l'ABSENCE des jauges

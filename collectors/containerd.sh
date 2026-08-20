@@ -18,8 +18,11 @@ events=""
 process_file() {  # $1=fichier_lignes  $2=fichier_etat  $3=first(0/1)  $4=severite
   while IFS="$TAB" read -r idv msg; do
     [ -z "${idv:-}" ] && continue
-    grep -qxF "$idv" "$2" 2>/dev/null && continue
-    printf '%s\n' "$idv" >> "$2"
+    # S30 — le registre des ids deja vus est un ACQUITTEMENT : l'ajout est MIS EN ATTENTE et n'est
+    # ecrit qu'apres la publication de fin. Avant, un pull d'image enregistre puis perdu par une
+    # coupure n'etait plus jamais signale. Ces events ne portent pas de cle -> rejeu = doublons visibles.
+    state_marker_seen "$2" "$idv" && continue
+    state_stage_append "$2" "$idv"
     [ "$3" = "1" ] && continue
     [ -z "${msg:-}" ] && continue
     mj=$(json_escape "$msg")
@@ -27,9 +30,11 @@ process_file() {  # $1=fichier_lignes  $2=fichier_etat  $3=first(0/1)  $4=severi
   done < "$1"
 }
 
+# S30 — plus de `touch` : les registres sont crees par l'ajout DIFFERE (apres publication), et leur
+# lecture tolere leur absence. Les creer d'avance vides ne changeait rien au diff, et l'ecriture d'un
+# chemin d'etat avant publication est desormais refusee par la garde.
 first_img=0; [ -f "$IMG_STATE" ] || first_img=1
 first_ctr=0; [ -f "$CTR_STATE" ] || first_ctr=1
-touch "$IMG_STATE" "$CTR_STATE"
 
 # IMAGES (table, sans jq) : colonnes <repo> <tag> <image-id> <size> ; on saute l'entete.
 imgs_f=$(mktemp)
@@ -46,4 +51,4 @@ if command -v jq >/dev/null 2>&1; then
 fi
 
 [ -z "$events" ] && plume_exit_nodata
-spool_write "containerd-$ts.json" "$(emit_event "$events")"
+spool_write_then_ack "containerd-$ts.json" "$(emit_event "$events")"

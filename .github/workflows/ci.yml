@@ -311,7 +311,12 @@ env:
   # PROXIMITÉ devenue redondante (`aucune_lecture_sur_fichier_sans_plafond`, bornée aux ouvertures en
   # lecture seule) que la garde de VOIE UNIQUE couvre désormais en entier : +7 −1 sur ce module, et le
   # total reste celui de l'ARBRE, jamais une somme de lots.
-  EXPECTED_TESTS: "1125"
+  # RÉ-ÉNUMÉRÉ le 2026-08-20 (`cargo test -- --list`, jamais une somme de lots) sur l'arbre qui porte
+  # le lot S32 — une lecture d'environnement qui échoue ne rend plus la valeur la plus rassurante
+  # (`daemon/src/mesure_environnement.rs`, `daemon/src/tests/mesure_environnement.rs`) : dix-huit tests
+  # SANS `cfg` de feature, présents dans les DEUX profils. L'arbre énuméré porte aussi des tests
+  # d'autres lots en vol ; le total est celui de l'ARBRE, pas la somme d'un lot et d'une valeur d'avant.
+  EXPECTED_TESTS: "1148"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -595,7 +600,10 @@ jobs:
           # RÉ-ÉNUMÉRÉ le 2026-08-20 par la MÊME double lecture, sur l'arbre qui porte aussi le lot S26
           # (tri en mémoire LU et non supposé, sept tests sans `cfg`, moins une garde de proximité
           # devenue redondante) : 1345 avec `cold_tier` pour 1125 par défaut — l'écart reste **220**.
-          EXPECTED_COLD_TESTS: "1345"
+          # RÉ-ÉNUMÉRÉ le 2026-08-20 par la MÊME double lecture, sur l'arbre qui porte aussi le lot S32
+          # (lectures d'environnement séparant « lu » de « pas lisible », dix-huit tests sans `cfg`) :
+          # 1368 avec `cold_tier` pour 1148 par défaut — l'écart reste **220**.
+          EXPECTED_COLD_TESTS: "1368"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -726,6 +734,26 @@ jobs:
       # ne prouve pas : que les appels sont faits, jamais la survie à une coupure d'alimentation.
       - name: Une publication dans le spool doit être DURABLE, pas seulement atomique
         run: python3 .github/scripts/check_publication_is_durable.py
+
+      # LE DÉFAUT VOISIN, ET PLUS GRAVE : la garde ci-dessus rend DURABLE ce qui est publié ; celle-ci
+      # refuse qu'un capteur ACQUITTE ce qu'il n'a pas encore publié. Un capteur incrémental marque sa
+      # progression (filigrane, offset, curseur, repère daté, registre « déjà signalé », base de
+      # référence) ; marquer AVANT de publier rend le marqueur menteur — une coupure entre les deux
+      # perd les événements, et rien ne le signale, puisque le marqueur affirme qu'ils sont acquittés.
+      # Aucune synchronisation n'y remédie : c'est l'ORDRE. `S27` annonçait CINQ capteurs fautifs ; le
+      # compte venait d'un `grep state_write`, pas du motif. Recherche refaite sur le MOTIF le
+      # 2026-08-20 : DIX-SEPT — les douze manquants marquaient par redirection brute, par `touch` d'un
+      # repère relu en `find -newer`, par ajout dans un registre, par renommage d'une base de
+      # référence, ou via un point de reprise avancé par un outil externe au moment de la lecture.
+      # La garde n'énumère aucun capteur : elle refuse toute écriture directe de marqueur hors de la
+      # bibliothèque (un capteur MET EN ATTENTE, il n'a pas le geste d'écrire), puis SOURCE la
+      # bibliothèque et vérifie l'ORDRE réel, et enfin SIMULE une coupure entre les deux gestes :
+      # l'enveloppe publiée doit être là et le marqueur absent — donc rejeu, jamais perte. Elle dit
+      # aussi ce qu'elle ne prouve pas : que le rejeu soit sans conséquence (sept capteurs n'ont
+      # aucune clé de dédoublonnage, leurs doublons seront VISIBLES) ni la survie à une coupure
+      # d'alimentation.
+      - name: Un filigrane doit SUIVRE la publication qu'il acquitte, jamais la précéder
+        run: python3 .github/scripts/check_watermark_follows_publication.py
 
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
       # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —

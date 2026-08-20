@@ -72,5 +72,8 @@ BEGIN{ n=0; buf=""; maxep=last+0 }
 }
 END{ if(n>0) printf "{\"ts\":%d,\"host\":\"%s\",\"kind\":\"events\",\"events\":[%s]}\n", now, host, buf > out; print maxep }' "$rec")
 
-if [ -s "$tmp" ]; then spool_publish_file "$tmp" "dataaccess-$ts.json"; else rm -f "$tmp"; fi
-printf '%s' "${newwm:-$last}" > "$WM"
+# S30 — l'ordre etait DEJA le bon, mais l'ecriture du filigrane etait BRUTE (fenetre d'ecriture
+# dechiree apres coupure, que S27 avait fermee ailleurs via `state_write`). Mise en attente : elle
+# passe par la voie unique, apres la publication.
+state_stage "$WM" "${newwm:-$last}"
+if [ -s "$tmp" ]; then spool_publish_then_ack "$tmp" "dataaccess-$ts.json"; else rm -f "$tmp"; plume_exit_nodata; fi

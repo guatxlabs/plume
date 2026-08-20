@@ -981,8 +981,13 @@ pub(crate) fn spool_file_host(name: &str) -> Option<String> {
 /// /api/ingest, journal, loki push) qui usurpe ce préfixe est renommée `ext:<source>` — elle ne peut donc ni
 /// (a) polluer la vue d'audit (`search source=plume-config`), ni (b), combinée au marqueur `origin`, se faire
 /// passer pour une ligne de contrôle non-purgeable. Aucun collecteur légitime n'émet de source `plume-*`
-/// (vérifié : collectors/*, bootstrap-agent) -> la COLLECTE LÉGITIME est INTACTE ; seul le namespace de
-/// contrôle est protégé. Fast-path : source normale -> renvoyée telle quelle (allocation identique à avant).
+/// -> la COLLECTE LÉGITIME est INTACTE ; seul le namespace de contrôle est protégé. CE « AUCUN » N'EST PLUS UN
+/// « (vérifié) » SANS DATE (S29) : `tests::allegations_d_environnement` relit les collecteurs livrés et les deux
+/// amorceurs, y cherche les DEUX formes par lesquelles un nom de source y naît (le littéral JSON, le premier
+/// argument des fabriques de `lib.sh`), et lit le préfixe ICI plutôt que de le recopier. La raison du silence
+/// que cette garde ferme : un collecteur qui usurperait le préfixe verrait tous ses événements renommés SANS
+/// erreur ni rejet — son panneau resterait vide, indistinguable d'un capteur qui n'a rien à dire.
+/// Fast-path : source normale -> renvoyée telle quelle (allocation identique à avant).
 pub(crate) fn ext_ingest_source(source: &str) -> String {
     if source.starts_with("plume-") {
         format!("ext:{source}")

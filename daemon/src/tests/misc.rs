@@ -588,15 +588,22 @@
         SCHED_RULE_LAST_TS.store(now(), MOrd::Relaxed);
         SCHED_ROLLUP_LAST_TS.store(now(), MOrd::Relaxed);
         c.execute("INSERT INTO event(ts,source,category,severity,message) VALUES(?1,'sshd','auth',1,'x')", params![now()]).unwrap();
-        let comps = component_health(&c, "/nonexistent-spool", "", 80);
+        // S32 — le spool est un répertoire RÉEL et vide. Ce test portait sur la fraîcheur, les ticks et
+        // les destinations ; il passait un chemin inexistant parce que la profondeur de file y valait
+        // alors zéro comme une file vide. Ces deux faits sont désormais distincts (un répertoire
+        // disparu rend le composant `ingest` JAUNE), et le témoin de fraîcheur exige donc un vrai
+        // répertoire — sans quoi ce test mesurerait la panne de mesure au lieu de la fraîcheur.
+        let spool = crate::tmp_possede::TmpPossede::neuf("day2-sante-spool");
+        let spool = spool.to_str().unwrap();
+        let comps = component_health(&c, spool, "", 80);
         let get = |name: &str| comps.iter().find(|v| v["component"] == name).cloned().unwrap();
-        assert_eq!(get("ingest")["state"], "green", "event frais -> ingest vert");
+        assert_eq!(get("ingest")["state"], "green", "event frais + spool vide LISIBLE -> ingest vert");
         assert_eq!(get("detection")["state"], "green", "tick règles récent -> détection verte");
         assert_eq!(get("rollups")["state"], "green", "tick rollup récent -> rollups verts");
         assert_eq!(get("forwarder")["state"], "idle", "aucune destination -> forwarder idle");
         // détection en retard : tick ancien -> jaune/rouge (pas vert).
         SCHED_RULE_LAST_TS.store(now() - 1000, MOrd::Relaxed);
-        let comps2 = component_health(&c, "/nonexistent-spool", "", 80);
+        let comps2 = component_health(&c, spool, "", 80);
         let det = comps2.iter().find(|v| v["component"] == "detection").unwrap();
         assert_ne!(det["state"], "green", "tick règles ancien -> détection non verte ({})", det["state"]);
         // posture globale = pire état.

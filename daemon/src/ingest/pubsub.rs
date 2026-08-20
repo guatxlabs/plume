@@ -37,8 +37,13 @@
 //!
 //! NOTE SÉCURITÉ (`?token=` en clair dans l'URL) : un secret en query PEUT fuiter dans des access-logs. plume ne
 //! journalise JAMAIS la query-string (ni l'URI complète) : `security_headers` et `auth_guard` n'utilisent que
-//! `req.uri().path()`, et aucun TraceLayer/access-log n'est monté (vérifié). À FLAGGER pour la revue : si un
-//! logging de requêtes journalisant l'URI complète est un jour ajouté, il DEVRA redacter la query de cette route.
+//! `req.uri().path()`, et aucun TraceLayer/access-log n'est monté. CETTE DERNIÈRE PROPRIÉTÉ N'EST PLUS TENUE PAR
+//! CETTE PHRASE (S29) : elle l'était par un « À FLAGGER pour la revue », c'est-à-dire par la vigilance — or monter
+//! un journal de requêtes ne casse RIEN, ne change aucune réponse et ne fait rougir aucun test ; la fuite serait
+//! dans un fichier d'apparence normale, et personne ne l'apprendrait. `tests::allegations_d_environnement` ferme
+//! les trois portes : la fonctionnalité `trace` de `tower-http` n'est pas compilée, aucun code exécuté ne monte de
+//! couche de trace, et aucune ligne exécutée ne journalise l'URI ou la query. Si l'une des trois s'ouvre un jour,
+//! la garde le dit — et la query de cette route DEVRA être rédigée avant journalisation.
 use crate::*;
 
 /// Plafond DUR d'events matérialisés par requête Pub/Sub (une push livre normalement UNE LogEntry ; un array/

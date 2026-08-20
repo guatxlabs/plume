@@ -45,7 +45,10 @@ while IFS= read -r line; do
   events="$events${events:+,}{\"ts\":$ts,\"source\":\"ufw\",\"category\":\"firewall\",\"severity\":1,\"message\":\"$m\",\"src_ip\":\"$src\",\"dedup\":\"ufw-$src-${dpt:-x}-$((ts / 3600))\",\"fields\":$fields}"
 done < "$tmpf"
 rm -f "$tmpf"
-state_write "$WM" "$ts"
+# S30 — filigrane MIS EN ATTENTE : il n'est ecrit qu'apres la publication de l'enveloppe d'events.
+# Avant, il avancait ici et une coupure perdait les blocs UFW de la tranche. Cle `ufw-<src>-<port>-
+# <seau horaire>` -> un rejeu tombant dans le meme seau est absorbe par le central.
+state_stage "$WM" "$ts"
 
 # (2) métriques (toujours) + (1) events (battement de santé TOUJOURS présent -> ship inconditionnel)
 allow=$(printf '%s\n' "$st" | grep -c ALLOW || true)
@@ -55,5 +58,5 @@ allow=$(printf '%s\n' "$st" | grep -c ALLOW || true)
 # avance -> heartbeat vivant. Le SILENCE de ce battement (>~25 min) lève l'alerte MUET (collecteur CONTINU
 # ufw-health, cf. main.rs). $allow est calculé JUSTE au-dessus -> disponible pour le battement.
 events="$events${events:+,}$(heartbeat ufw "UFW santé: $n bloc(s) vus, $allow règle(s) allow" "{\"blocks_seen\":$n,\"rules_allow\":$allow}")"
-spool_write "ufw-$ts.json" "$(emit_event "$events")" nl
+spool_write_then_ack "ufw-$ts.json" "$(emit_event "$events")" nl
 spool_write "ufwm-$ts.json" "$(printf '{"ts":%s,"host":"%s","kind":"metrics","data":{"metrics":[{"name":"ufw_rules_allow","value":%s},{"name":"ufw_blocks_seen","value":%s}]}}' "$ts" "$host" "$allow" "$n")" nl

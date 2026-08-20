@@ -17,11 +17,14 @@ size=$(wc -c < "$EVE" 2>/dev/null || echo 0)
 prev=$(cat "$OFF" 2>/dev/null || echo 0)
 case "$prev" in *[!0-9]*) prev=0 ;; esac
 [ "$prev" -gt "$size" ] && prev=0
-if [ "$prev" -ge "$size" ]; then printf '%s' "$size" > "$OFF"; plume_exit_nodata; fi
+# S30 — l'offset est MIS EN ATTENTE (ecrit apres publication, ou par `plume_exit_nodata` quand rien
+# n'a ete publie donc rien n'est acquitte). Les events suricata ne portent pas de cle de
+# dedoublonnage : le rejeu apres coupure produit des doublons visibles, plus une perte muette.
+if [ "$prev" -ge "$size" ]; then state_stage "$OFF" "$size"; plume_exit_nodata; fi
 
 new=$(mktemp)
 tail -c +"$((prev + 1))" "$EVE" 2>/dev/null > "$new" || true
-printf '%s' "$size" > "$OFF"
+state_stage "$OFF" "$size"
 
 parsed=$(awk -v types="$TYPES_RE" '
   function sval(key){ if (match($0, "\"" key "\":\"[^\"]*\"")) return substr($0, RSTART+length(key)+4, RLENGTH-length(key)-5); return "" }
@@ -50,4 +53,4 @@ $parsed
 EOF
 [ -z "$events" ] && plume_exit_nodata
 
-spool_write "suricata-$ts.json" "$(emit_event "$events")"
+spool_write_then_ack "suricata-$ts.json" "$(emit_event "$events")"

@@ -149,6 +149,7 @@ mod imputation; // S7 : À QUELLE SOURCE UNE ALERTE SE RAPPORTE — lue dans la 
 pub(crate) use imputation::*;
 mod maj_corroboree; // P5.7-b : LE SOC S'ALERTE SUR SA PROPRE MISE À JOUR — un dépôt d'unité systemd n'est reclassé que si son CONTENU est celui d'une unité livrée par ce build ET qu'un déploiement daté vient d'avoir lieu ; jamais sur un nom, et l'événement n'est jamais effacé
 pub(crate) use maj_corroboree::*;
+mod mesure_environnement; // S32 : une lecture d'environnement qui échoue n'est PAS un zéro — un type à deux cas, des fonctions paramétrées sur leurs chemins (donc exerçables hors machine), et une jauge de LISIBILITÉ à côté d'une série de valeur ABSENTE
 mod metrics; // #51 DAY-2 OPS : self-métriques process-globales + santé par composant + exposition Prometheus
 pub(crate) use metrics::*;
 mod handlers;

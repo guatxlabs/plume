@@ -7,7 +7,8 @@ set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 plume_init
 command -v skopeo >/dev/null 2>&1 || plume_unavailable update missing-dependency "skopeo absent : derive d image non verifiable"
-SEEN="$STATE_DIR/imgdrift.digests"; touch "$SEEN"   # lignes: <image:tag>\t<digest>
+SEEN="$STATE_DIR/imgdrift.digests"   # lignes: <image:tag>\t<digest> ; cree par le remplacement
+                                     # DIFFERE (S30) — sa lecture tolere deja son absence
 MAXI="${PLUME_IMGDRIFT_MAX_IMAGES:-80}"
 TAB=$(printf '\t')
 
@@ -21,6 +22,12 @@ elif command -v k3s >/dev/null 2>&1; then
 fi | sort -u | grep -v ':<none>$' > "$imgs_f"
 [ -s "$imgs_f" ] || { rm -f "$imgs_f"; plume_exit_nodata; }
 
+# S30 — les mises a jour du registre de digests sont ACCUMULEES ici et n'y sont appliquees qu'APRES
+# publication. Avant, le registre etait reecrit dans la boucle : une coupure avant le `spool_write` de
+# fin enterrait la derive pour toujours (le digest etait deja « connu » sans avoir ete signale). Le
+# rejeu est absorbe integralement au central — la cle `update-<image>-<digest>` est une identite de
+# contenu, pas un seau de temps.
+upd=$(mktemp "$STATE_DIR/.imgdrift.upd.XXXXXX")
 events=""; ni=0
 while IFS= read -r img; do
   [ -z "$img" ] && continue
@@ -29,15 +36,27 @@ while IFS= read -r img; do
   [ -z "$dig" ] && continue
   prev=$(grep -F "$img$TAB" "$SEEN" 2>/dev/null | head -1 | cut -f2)
   if [ -z "$prev" ]; then
-    printf '%s\t%s\n' "$img" "$dig" >> "$SEEN"; continue          # baseline (1er passage)
+    printf '%s\t%s\n' "$img" "$dig" >> "$upd"; continue           # baseline (1er passage) — differee aussi
   fi
   [ "$prev" = "$dig" ] && continue                                 # inchange
-  grep -vF "$img$TAB" "$SEEN" > "$SEEN.tmp" 2>/dev/null || true    # remplace l'ancien digest
-  printf '%s\t%s\n' "$img" "$dig" >> "$SEEN.tmp"; mv -f "$SEEN.tmp" "$SEEN"
+  printf '%s\t%s\n' "$img" "$dig" >> "$upd"                        # remplacement MIS EN ATTENTE
   m=$(json_escape "$(printf 'MAJ dispo: nouveau build pour %s (digest change)' "$img")")
   events="$events${events:+,}{\"ts\":$ts,\"source\":\"update\",\"category\":\"update\",\"severity\":1,\"message\":\"$m\",\"dedup\":\"update-$img-$dig\"}"
 done < "$imgs_f"
 rm -f "$imgs_f"
+
+# Registre reconstruit : les images dont le digest a change sont retirees, les nouvelles lignes
+# ajoutees. Le fichier obtenu ne remplace `$SEEN` qu'apres publication (cf. `state_stage_file`).
+if [ -s "$upd" ]; then
+  _led=$(mktemp "$STATE_DIR/.imgdrift.led.XXXXXX")
+  _keys=$(mktemp "$STATE_DIR/.imgdrift.keys.XXXXXX")
+  awk -F"$TAB" '{ print $1 "\t" }' "$upd" > "$_keys"
+  grep -vF -f "$_keys" "$SEEN" > "$_led" 2>/dev/null || true
+  cat "$upd" >> "$_led"
+  rm -f "$_keys"
+  state_stage_file "$_led" "$SEEN"
+fi
+rm -f "$upd"
 [ -z "$events" ] && plume_exit_nodata
 
-spool_write "imgdrift-$ts.json" "$(emit_event "$events")"
+spool_write_then_ack "imgdrift-$ts.json" "$(emit_event "$events")"

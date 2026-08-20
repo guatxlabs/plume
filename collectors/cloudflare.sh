@@ -100,8 +100,10 @@ envj=$(printf '%s' "$json" | jq -c --arg host "$host" --argjson ts "$ts" '
 
 n=$(printf '%s' "$envj" | jq -r '.events | length' 2>/dev/null || echo 0)
 if [ "${n:-0}" -gt 0 ]; then
-  spool_write "cloudflare-$ts.json" "$envj" nl
   # avance le watermark au max(datetime) ingere (datetime_gt strict ; dedup cf-<rayName> couvre tout chevauchement)
+  # S30 — l'ordre etait DEJA le bon ici ; la mise en attente le rend tenu par construction plutot que
+  # par la position de la ligne, et c'est la forme que la garde de CI exige de tout capteur.
   maxdt=$(printf '%s' "$json" | jq -r '[ .data.viewer.zones[0].firewallEventsAdaptive[]?.datetime ] | max // empty' 2>/dev/null || true)
-  [ -n "${maxdt:-}" ] && state_write "$WM" "$maxdt"
+  [ -n "${maxdt:-}" ] && state_stage "$WM" "$maxdt"
+  spool_write_then_ack "cloudflare-$ts.json" "$envj" nl
 fi

@@ -17,7 +17,9 @@ set -eu
 FILES="${PLUME_FIM_FILES:-/etc/passwd /etc/group /etc/shadow /etc/gshadow /etc/sudoers /etc/crontab /etc/hosts /etc/ssh/sshd_config}"
 plume_init
 BASE="$STATE/integrity.base"
-cur="$(mktemp)"
+# S30 — le temporaire de la nouvelle base de reference vit dans `$STATE` (meme systeme de fichiers que
+# la cible) : le remplacement differe reste alors un renommage, pas une copie.
+cur="$(mktemp "$STATE/.integrity.base.XXXXXX")"
 
 # scope d'un chemin : container si sous un store conteneur (normalement PRUNE -> host en pratique).
 scope_of() {
@@ -124,7 +126,14 @@ if [ -f "$BASE" ]; then
   done < "$STATE/.int.added"
   rm -f "$STATE/.int.added"
 fi
-mv -f "$cur" "$BASE"
+# S30 — PUBLIER D'ABORD, ACQUITTER ENSUITE. La base de reference EST l'acquittement de ce capteur :
+# ce qu'elle contient ne sera plus jamais signale. Ecrite avant la publication, une coupure entre les
+# deux faisait disparaitre DEFINITIVEMENT le constat — un binaire SUID nouveau ou modifie in-place
+# entrait dans la reference sans avoir jamais ete emis. Elle est donc MISE EN ATTENTE et n'est posee
+# qu'apres la publication de l'enveloppe d'events (ou par `plume_exit_nodata` au 1er run et aux runs
+# sans changement, ou elle n'acquitte rien). Ces events ne portent pas de cle de dedoublonnage : le
+# rejeu apres coupure produit des doublons VISIBLES, la ou il y avait une perte muette.
+state_stage_file "$cur" "$BASE"
 
 # DEAD-MAN'S-SWITCH (battement de santé AUTONOME) : ce FIM sort tôt au 1er run (baseline) et aux runs sans
 # changement -> son silence serait indistinguable d'un collecteur mort. On écrit donc un petit .json kind:events
@@ -135,4 +144,4 @@ spool_write "integrity-health-$ts.json" \
   "$(emit_event "$(heartbeat integrity 'integrity santé: FIM actif' '{"alive":1}')")" nl
 
 [ -z "$events" ] && plume_exit_nodata   # 1er run (baseline) ou aucun changement -> rien à signaler
-spool_write "integrity-$ts.json" "$(emit_event "$events")"
+spool_write_then_ack "integrity-$ts.json" "$(emit_event "$events")"

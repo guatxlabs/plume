@@ -22,7 +22,13 @@ for p in $PATHS; do
   [ -e "$p" ] || continue
   find "$p" -type f $findnew 2>/dev/null
 done | head -n "$MAX" > "$list"
-touch "$STAMP"
+# S30 — le repere incremental est cree sur un TEMPORAIRE et ne remplace `$STAMP` qu'APRES publication
+# (c'est sa DATE qui fait office de filigrane pour `find -newer`, et le renommage la preserve). Avant,
+# il avancait avant meme le scan : une coupure entre l'avance et la publication rendait les fichiers
+# deja listes invisibles au passage suivant, et un verdict `malware` pouvait disparaitre sans trace.
+# La cle `clamav-<fichier>-<signature>` est une identite de contenu -> le rejeu est absorbe au central.
+_stamp_tmp=$(mktemp "$STATE_DIR/.clamav.stamp.XXXXXX")
+state_stage_file "$_stamp_tmp" "$STAMP"
 
 if [ ! -s "$list" ]; then rm -f "$list"; plume_exit_nodata; fi
 
@@ -43,4 +49,4 @@ done < "$res"
 rm -f "$res"
 [ -z "$events" ] && plume_exit_nodata
 
-spool_write "clamav-$ts.json" "$(emit_event "$events")"
+spool_write_then_ack "clamav-$ts.json" "$(emit_event "$events")"

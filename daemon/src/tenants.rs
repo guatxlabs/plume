@@ -5,23 +5,36 @@
 //! `grant_delete`). Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
 
-/// Génère une clé SQLCipher ALÉATOIRE FORTE : 256 bits d'entropie du CSPRNG du noyau (/dev/urandom,
-/// identique à getrandom sur Linux) -> hex 64 chars. Utilisée à l'onboarding d'un tenant.
+/// Nombre d'octets d'une clé SQLCipher de tenant (-> 2x en hex). 256 bits, la taille attendue par
+/// `PRAGMA key` sous forme hexadécimale.
+pub(crate) const TENANT_KEY_BYTES: usize = 32;
+
+/// Clé SQLCipher d'un tenant : 256 bits tirés du CSPRNG de l'OS via le PRODUCTEUR UNIQUE `os_entropy`
+/// (`/dev/urandom`, puis `getrandom(2)` sans descripteur de fichier) -> hex 64 chars. `None` si l'hôte
+/// n'offre AUCUNE source d'entropie : l'appelant REFUSE de créer le tenant.
+///
+/// MÊME DOCTRINE QUE LE SECRET D'INSTALLATION, et pour la même raison. Le « filet anti-panique » qui
+/// vivait ici hachait `now() | pid | adresse de pile | SystemTime::now()` : qui connaît la minute de
+/// création d'un tenant énumère l'espace restant, et cette clé chiffre TOUTE la base du tenant, pour
+/// toute la durée de rétention de la donnée. Un avertissement au journal ne referme pas cela — il se
+/// lit une fois, la clé reste faible aussi longtemps que la donnée vit.
+///
+/// CE QUE LE REPLI COUVRAIT est SERVI, pas perdu : le cas réel visé (`/dev` non monté — chroot,
+/// conteneur minimal) est exactement celui que la SECONDE source d'`os_entropy` traite, `getrandom(2)`
+/// n'ayant besoin d'aucun descripteur. Les trois modes de déploiement revendiqués (systemd hôte-natif,
+/// Docker, k3s) sont Linux, où cet appel existe depuis 3.17. Reste le noyau SANS CSPRNG : il n'y a pas
+/// de bonne réponse à ce cas, et surtout pas une clé fabriquée à partir d'une horloge.
 #[allow(dead_code)]
-pub(crate) fn tenant_generate_key() -> String {
-    use std::io::Read;
-    let mut buf = [0u8; 32];
-    match std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut buf)) {
-        Ok(()) => {}
-        Err(_) => {
-            // Filet anti-panique (jamais le chemin nominal sur Linux) : graine multi-sources hashée SHA-256.
-            eprintln!("[multi-tenant] /dev/urandom indisponible -> clé de repli (entropie potentiellement dégradée)");
-            use sha2::{Digest, Sha256};
-            let seed = format!("{}|{}|{:p}|{:?}", now(), std::process::id(), &buf as *const _, std::time::SystemTime::now());
-            buf.copy_from_slice(&Sha256::digest(seed.as_bytes())[..32]);
-        }
-    }
-    hex_encode(&buf)
+pub(crate) fn tenant_generate_key() -> Option<String> {
+    tenant_key_from_entropy(os_entropy::<TENANT_KEY_BYTES>())
+}
+
+/// Formate la clé de tenant À PARTIR DE la matière aléatoire fournie — la clé EST cette matière, rien
+/// d'autre. `None` en entrée -> `None` en sortie : il n'existe AUCUNE troisième voie, donc aucun repli
+/// dérivé d'une horloge, d'un pid ou d'un compteur. Cœur PUR : c'est lui qui rend la mutation
+/// « entropie indisponible » mesurable sans démonter l'hôte.
+pub(crate) fn tenant_key_from_entropy(raw: Option<[u8; TENANT_KEY_BYTES]>) -> Option<String> {
+    raw.map(|b| hex_encode(&b))
 }
 
 /// ONBOARDING : crée l'entrée control-plane `tenant` (id, name, key_ref, db_path) PUIS la base tenant vide
@@ -262,12 +275,24 @@ pub(crate) async fn tenant_create(State(st): State<AppState>, Extension(au): Ext
     let name = if name.is_empty() { id.clone() } else { name };
     // key_ref explicite (ex. vault:...) sinon clé fraîche générée, stockée en literal: dans le control-plane
     // (lui-même chiffré at-rest par PLUME_CONTROL_KEY). tenant_provision est FAIL-CLOSED si key_ref ne résout pas.
-    let key_ref = b
-        .get("key_ref")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| format!("literal:{}", tenant_generate_key()));
+    // Et la GÉNÉRATION l'est aussi : sans entropie de l'OS, AUCUN tenant n'est créé — plutôt aucun tenant
+    // qu'un tenant dont la base entière est chiffrée par une clé énumérable. L'exploitant garde la voie
+    // explicite (`key_ref` pré-approvisionné : `env:`, `literal:`, `vault:`), qui ne dépend pas de l'entropie locale.
+    let key_ref = match b.get("key_ref").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        Some(explicite) => explicite,
+        None => match tenant_generate_key() {
+            Some(k) => format!("literal:{k}"),
+            None => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "aucune source d'entropie (ni /dev/urandom ni getrandom) : tenant NON créé. Aucune clé \
+                     dérivée d'une horloge ou d'un pid n'est émise. Répare l'entropie de l'hôte, ou fournis \
+                     un `key_ref` pré-approvisionné.",
+                )
+                    .into_response()
+            }
+        },
+    };
     let db_path = tenant_db_path(&st, &id);
     // Provisioning HORS de l'exécuteur async (schéma + seeds = plusieurs ms). TenantDbManager est Clone (Arc).
     let mgr = st.tenants.clone();

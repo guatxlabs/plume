@@ -38,15 +38,18 @@ use crate::*;
 //      nommer sa source laisse l'exploitant décider. Un « inconnu » nommé vaut mieux qu'une imputation
 //      fausse, et il vaut mieux qu'un zéro muet.
 //
-// CE QUE ÇA NE FERME PAS, ÉCRIT POUR ÊTRE OPPOSABLE. Neuf endroits du daemon insèrent une alerte ;
-// DEUX passent par ici — l'ordonnanceur de règles et le dead-man's-switch des capteurs, c'est-à-dire
-// les deux qui portaient le défaut S7. Les SEPT autres (alerting avancé, corrélations, scoring par
-// risque, pression disque à l'ingest, alerte semée) laissent la colonne VIDE et retombent donc sur le
-// chemin textuel : leur comportement est byte-identique à avant, ni meilleur ni pire. C'est un
-// périmètre assumé et non un oubli — imputer depuis la donnée demande, à chaque producteur, de savoir
-// QUELLES lignes ont fait tirer, et cela ne se devine pas depuis ici. Ce qui est garanti, c'est qu'un
-// HUITIÈME producteur ne pourra pas rejoindre cette liste en silence : `imputation_tout_producteur_
-// d_alerte_declare_son_choix` compte les sites en LISANT LA SOURCE et refuse un nombre qui bouge.
+// CE QUE ÇA NE FERME PAS, ÉCRIT POUR ÊTRE OPPOSABLE. Dix endroits du daemon insèrent une alerte ;
+// TROIS passent par ici — l'ordonnanceur de règles et le dead-man's-switch des capteurs, c'est-à-dire
+// les deux qui portaient le défaut S7, plus la sonde de FLOTTE (P3.2-a). Les SEPT autres (alerting
+// avancé, corrélations, scoring par risque, pression disque à l'ingest, alerte semée) laissent la
+// colonne VIDE et retombent donc sur le chemin textuel : leur comportement est byte-identique à avant,
+// ni meilleur ni pire. C'est un périmètre assumé et non un oubli — imputer depuis la donnée demande, à
+// chaque producteur, de savoir QUELLES lignes ont fait tirer, et cela ne se devine pas depuis ici. Ce
+// qui est garanti, c'est qu'un ONZIÈME producteur ne pourra pas rejoindre cette liste en silence :
+// `imputation_tout_producteur_d_alerte_declare_son_choix` compte les sites en LISANT LA SOURCE et
+// refuse un nombre qui bouge. C'est d'ailleurs cette garde qui a arrêté la sonde de flotte, écrite
+// sans y penser : son alerte se rapporte à des HÔTES et à AUCUN feed, donc elle impute à l'INCONNU
+// NOMMÉ. Un « inconnu » assumé vaut mieux qu'une pastille de source allumée à tort.
 //
 // CE QUE ÇA NE CHANGE PAS. Aucune alerte n'est créée, supprimée, re-titrée ni re-sévérisée : l'alerte
 // GLOBALE d'une règle reste UNE alerte par règle, avec sa clé `rule-{id}`, son titre et son `detail`

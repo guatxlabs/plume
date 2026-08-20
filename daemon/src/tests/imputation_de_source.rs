@@ -440,9 +440,15 @@
         );
     }
 
-    /// GARDE DÉRIVÉE — AUCUN PRODUCTEUR D'ALERTE NE REJOINT LA LISTE EN SILENCE. Le périmètre de ce lot
-    /// est DEUX producteurs sur neuf ; les sept autres retombent volontairement sur le chemin textuel, à
+    /// GARDE DÉRIVÉE — AUCUN PRODUCTEUR D'ALERTE NE REJOINT LA LISTE EN SILENCE. Le périmètre est TROIS
+    /// producteurs sur dix ; les sept autres retombent volontairement sur le chemin textuel, à
     /// l'identique. Ce qui doit tenir, ce n'est pas ce partage — c'est qu'il soit un CHOIX à chaque fois.
+    ///
+    /// LE TROISIÈME, AJOUTÉ PAR P3.2-a, EST CELUI QUI PROUVE QUE LA GARDE SERT. La sonde de flotte
+    /// (`verifier_flotte_muette`) a été écrite sans penser à l'imputation ; ce test l'a arrêtée. Elle
+    /// impute — mais à l'INCONNU NOMMÉ, et c'est le choix qu'elle DIT ici : son alerte se rapporte à des
+    /// HÔTES et à aucun feed. Lui attribuer une source ferait basculer la pastille d'une source qui n'a
+    /// rien fait ; laisser la colonne VIDE la ferait retomber en silence sur l'extraction textuelle.
     ///
     /// Le corpus n'est pas énuméré : il est LU DANS LA SOURCE (`daemon/src/**/*.rs`, tests exclus), site
     /// par site, en découpant la liste de colonnes de chaque `INSERT … INTO alert(…)`. Un huitième
@@ -481,7 +487,7 @@
         let imputent: Vec<&(String, bool)> = sites.iter().filter(|(_, ok)| *ok).collect();
         assert_eq!(
             sites.len(),
-            9,
+            10,
             "le nombre de producteurs d'alerte a bougé ({} trouvés) : chaque producteur doit dire s'il \
              impute depuis la DONNÉE (colonne `sources`) ou s'il retombe sur le texte de la règle. \
              Sites : {:?}",
@@ -490,7 +496,7 @@
         );
         assert_eq!(
             imputent.len(),
-            2,
+            3,
             "le partage a bougé : {} producteur(s) imputent depuis la donnée. Si c'est voulu, le bandeau \
              de daemon/src/imputation.rs doit le dire aussi. Sites : {:?}",
             imputent.len(),
@@ -501,7 +507,9 @@
             "l'ordonnanceur de règles impute : {imputent:?}"
         );
         assert!(
-            imputent.iter().any(|(f, _)| f.ends_with("freshness.rs")),
-            "le dead-man's-switch des capteurs impute : {imputent:?}"
+            imputent.iter().filter(|(f, _)| f.ends_with("freshness.rs")).count() == 2,
+            "les DEUX dead-man's-switches de `freshness.rs` imputent — celui des CAPTEURS (au feed de sa \
+             sonde) et celui de la FLOTTE (à l'inconnu NOMMÉ : une alerte d'hôtes ne se rapporte à aucun \
+             feed) : {imputent:?}"
         );
     }

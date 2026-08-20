@@ -33,29 +33,41 @@ pub const UNIT_PATH: &str = "/etc/systemd/system/plume-agent.service";
 /// `/usr/bin` reste exécutable — c'est le CONTRÔLE de la sonde différentielle, mesuré depuis
 /// `/usr/bin` (et `/usr/local/bin` relève de la même directive).
 ///
-/// DEUX FAÇONS DE MASQUER, ET ELLES NE SE CORRIGENT PAS PAREIL — mesuré, contre l'intuition.
-/// `ReadWritePaths=` (que l'unité pose sur spool+state) RE-EXPOSE un chemin protégé par `ProtectHome`
-/// mais NE PEUT RIEN pour `PrivateTmp`, qui REMPLACE le point de montage par un tmpfs neuf où le
-/// chemin n'existe simplement pas. MESURÉ le 2026-08-02, quatre unités, une seule variable :
-///   - `ReadWritePaths=$HOME/…` + `ProtectHome=yes` -> `active/running` : le service tourne ;
-///   - `ReadWritePaths=/tmp/…`  + `PrivateTmp=yes`  -> `status=226/NAMESPACE`, service mort ;
-///   - `ExecStart` sous `$HOME` + `ProtectHome=yes` (pas dans ReadWritePaths) -> `203/EXEC` ;
-///   - contrôle sans la directive -> `active/running`, `ExecMainStatus=0`.
-/// D'où la distinction ci-dessous, qui est la SEULE façon de ne pas refuser un déploiement légitime
-/// (spool sous /home) tout en refusant ceux qui ne peuvent pas marcher.
+/// IL N'Y A QU'UNE FAÇON DE MASQUER — et AUCUNE directive de l'unité ne la défait. Ce bloc a porté
+/// l'affirmation inverse, datée et donc crédible : « `ReadWritePaths=` RE-EXPOSE un chemin protégé
+/// par `ProtectHome` ». RÉFUTÉ à la re-mesure du 2026-08-20 (systemd 261, unités transitoires, une
+/// seule variable à la fois, témoin positif ET négatif) :
+///   - `ExecStart` sous un répertoire personnel, sans protection             -> `0`, le service tourne ;
+///   - le même + `ProtectHome=yes`                                          -> `203/EXEC` ;
+///   - le même + `ReadWritePaths=` sur son répertoire, ou sur le fichier     -> `203/EXEC`, INCHANGÉ ;
+///   - le même + `BindPaths=`, `BindReadOnlyPaths=` ou `ReadOnlyPaths=`      -> `203/EXEC`, INCHANGÉ ;
+///   - `ExecStart` joignable + `ReadWritePaths=` sur un spool ainsi protégé  -> `0`, ET le service
+///     lit « Permission denied » sur ce spool : AUCUNE panne au démarrage, une écriture impossible.
+///
+/// Vu du service, le répertoire personnel porte un dernier montage `tmpfs` sur
+/// `/systemd/inaccessible/dir`, posé APRÈS les directives candidates : `ProtectHome=` REMPLACE le
+/// point de montage, exactement comme `PrivateTmp=`. Les deux variantes qu'on distinguait n'en
+/// faisaient donc qu'une, et la variante « re-exposable » est retirée faute de membre.
+/// (`collectors/integrity.sh` mesurait déjà ce montage-là, et le LIT dans `/proc/self/mountinfo`
+/// au lieu de le déduire d'un répertoire vide.)
+///
+/// CE QUE CETTE PROSE N'A PLUS LE DROIT DE PROMETTRE. Le dernier cas est le pire : rien n'échoue au
+/// démarrage, et une sonde qui regarde l'unité tourner la déclare saine. Aucun commentaire ne peut
+/// tenir une propriété pareille — `sonde_le_bac_a_sable` la MESURE, sur l'hôte, au moment où la
+/// décision d'installer est prise. La table ci-dessous n'est plus qu'un refus CONSERVATEUR de ce
+/// qu'on sait impossible, sans échappatoire ; c'est la mesure qui tranche le reste.
 enum Masquage {
     /// Ne cache rien (lecture seule, filtres d'appels système, capacités…).
     Rien,
-    /// Cache ces préfixes — mais `ReadWritePaths=` les RE-EXPOSE (mesuré).
-    Chemins(&'static [&'static str]),
-    /// REMPLACE ces points de montage : `ReadWritePaths=` n'y peut rien (mesuré, 226/NAMESPACE).
+    /// REMPLACE ces points de montage par un répertoire vide : le chemin n'existe plus pour le
+    /// service, et AUCUNE des quatre directives de re-exposition candidates ne le ramène (mesuré).
     Remplace(&'static [&'static str]),
 }
 
 const HARDENING: [(&str, Masquage); 13] = [
     ("NoNewPrivileges=yes", Masquage::Rien),
     ("ProtectSystem=strict", Masquage::Rien),
-    ("ProtectHome=yes", Masquage::Chemins(&["/home", "/root", "/run/user"])),
+    ("ProtectHome=yes", Masquage::Remplace(&["/home", "/root", "/run/user"])),
     ("PrivateTmp=yes", Masquage::Remplace(&["/tmp", "/var/tmp"])),
     ("ProtectKernelTunables=yes", Masquage::Rien),
     ("ProtectKernelModules=yes", Masquage::Rien),
@@ -72,24 +84,21 @@ const HARDENING: [(&str, Masquage); 13] = [
 ];
 
 /// Le préfixe qui rend ce chemin INUTILISABLE par le service, s'il y en a un, avec la directive
-/// responsable. `reexpose` = ce chemin figure-t-il dans `ReadWritePaths=` de l'unité ? Si oui, seul
-/// un `Remplace` est fatal (mesuré). Comparaison PAR COMPOSANTS (`Path::starts_with`) :
+/// responsable. Verdict SANS ÉCHAPPATOIRE : aucune autre directive de l'unité ne défait un masquage
+/// de la table (mesuré, quatre candidates). Comparaison PAR COMPOSANTS (`Path::starts_with`) :
 /// `/homeless-binary` n'est PAS sous `/home`.
-pub fn chemin_cache_par(p: &Path, reexpose: bool) -> Option<(&'static str, &'static str)> {
-    // Best-effort : on résout les liens quand c'est possible (un binaire lancé via un symlink de
+///
+/// CE QU'ELLE NE PEUT PAS SAVOIR — et ce qui le sait à sa place. Elle raisonne sur des préfixes
+/// ÉCRITS ICI, pas sur le bac à sable réel de l'hôte : elle refuse ce qui est connu impossible, elle
+/// ne CONFIRME rien. Un `None` ne veut donc pas dire « ce chemin est joignable », mais « la table
+/// n'a pas de raison de le refuser » — la joignabilité, elle, se mesure (`sonde_le_bac_a_sable`).
+pub fn chemin_cache_par(p: &Path) -> Option<(&'static str, &'static str)> {
+    // Best-effort : les liens sont résolus quand c'est possible (un binaire lancé via un symlink de
     // /usr/local/bin vers /home reste, lui, sous /home du point de vue du noyau).
     let reel = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     for (directive, masquage) in HARDENING.iter() {
         let prefixes: &[&str] = match masquage {
             Masquage::Rien => &[],
-            // Re-exposé par ReadWritePaths -> ce masquage-là n'est plus un problème.
-            Masquage::Chemins(pfx) => {
-                if reexpose {
-                    &[]
-                } else {
-                    pfx
-                }
-            }
             Masquage::Remplace(pfx) => pfx,
         };
         for c in prefixes {
@@ -99,6 +108,131 @@ pub fn chemin_cache_par(p: &Path, reexpose: bool) -> Option<(&'static str, &'sta
         }
     }
     None
+}
+
+/// LA DÉCISION DE PRÉ-VOL — extraite d'`install` pour être EXERÇABLE sans root ni systemd.
+///
+/// POURQUOI ELLE N'EST PAS RESTÉE DANS `install`. Le prédicat `chemin_cache_par` était testé, mais
+/// la décision qui s'en sert, non : c'est là que l'allégation réfutée agissait, sous la forme d'un
+/// argument passé au prédicat pour lui faire dire « non caché ». Un prédicat correct appelé avec une
+/// échappatoire reste un défaut, et aucun test ne le voyait. Cette fonction met la décision à portée
+/// de test ; `prevol_refuse_ce_qui_ne_pourrait_pas_demarrer` la ré-exerce sur les QUATRE chemins.
+///
+/// Elle refuse ce qui est connu impossible et ne CONFIRME rien : ce qu'elle laisse passer est ensuite
+/// MESURÉ sur l'hôte par `sonde_le_bac_a_sable`.
+pub fn prevol(spec: &ServiceSpec) -> Result<(), String> {
+    for (role, p, _) in spec.paths() {
+        if let Some((directive, prefixe)) = chemin_cache_par(p) {
+            return Err(format!(
+                "REFUS d'installer une unité qui ne pourrait pas fonctionner : {role} = {} est \
+                 sous {prefixe}, dont l'unité elle-même REMPLACE le point de montage par un \
+                 répertoire vide ({directive}) — le service n'y trouverait rien, et aucune \
+                 directive de re-exposition ne l'en sort (mesuré le 2026-08-20, systemd 261, \
+                 quatre candidates). Selon le rôle du chemin, cela se voit en 203/EXEC, en \
+                 226/NAMESPACE, ou PAS DU TOUT — l'unité démarre et l'écriture est refusée \
+                 ensuite. Place ce chemin hors de {prefixe} : le binaire dans /usr/local/bin \
+                 (`sudo install -m0755 <bin> /usr/local/bin/plume-agent`), la config dans \
+                 /etc/plume, le spool et l'état sous /var/lib/plume-agent.",
+                p.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// L'unité TRANSITOIRE de la sonde — distincte de l'unité posée, et `--collect` la retire qu'elle
+/// réussisse ou non : la mesure ne laisse rien derrière elle.
+const UNITE_SONDE: &str = "plume-agent-sonde-bac-a-sable";
+
+/// CE QUE LA MESURE SUR PLACE A RENDU. Trois issues, et la troisième n'est PAS un succès.
+pub enum Sonde {
+    /// MESURÉ : depuis le bac à sable de l'unité, tous les chemins de la spec sont utilisables.
+    Utilisables,
+    /// MESURÉ : le chemin de cet indice dans `spec.paths()` ne l'est pas.
+    Inutilisable(usize),
+    /// La mesure n'a PAS pu être faite, avec sa raison. Refuser de conclure et le dire — une sonde
+    /// muette qu'on lirait comme un feu vert serait exactement le défaut que cette sonde corrige.
+    PasDeMesure(String),
+}
+
+/// LA COMMANDE DE LA SONDE — CONSTRUITE depuis les mêmes sources que l'unité, jamais écrite à la
+/// main (pure, donc testable sans systemd). Elle rejoue le bac à sable de l'unité — MÊME table
+/// `HARDENING`, MÊME `ReadWritePaths=` — et y fait exécuter un `test(1)` par chemin de la spec, avec
+/// le mode d'accès que ce chemin exige. Une directive ajoutée à la table entre donc dans la mesure
+/// sans que personne y pense, et un chemin ajouté à `ServiceSpec` aussi.
+///
+/// LE SCRIPT REND UN INDICE, PAS UN TEXTE : rien à citer, donc aucune question de quoting, et les
+/// chemins passent en ARGUMENTS (`$1`…) plutôt que dans le corps du script — un chemin avec un
+/// espace, une apostrophe ou un `$` ne peut pas changer ce qui est exécuté.
+fn commande_de_sonde(spec: &ServiceSpec) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "--wait".into(),
+        "--quiet".into(),
+        "--collect".into(),
+        "--pipe".into(),
+        format!("--unit={UNITE_SONDE}"),
+    ];
+    for (directive, _) in HARDENING.iter() {
+        args.push(format!("--property={directive}"));
+    }
+    args.push(format!(
+        "--property=ReadWritePaths={} {}",
+        spec.spool_dir.display(),
+        spec.state_dir.display()
+    ));
+    let chemins = spec.paths();
+    let mut script = String::new();
+    for (i, (_, _, acces)) in chemins.iter().enumerate() {
+        script.push_str(&format!(
+            "test {} \"${}\" || {{ echo {}; exit 1; }}; ",
+            acces.test_posix(),
+            i + 1,
+            i + 1
+        ));
+    }
+    script.push_str("exit 0");
+    args.push("/bin/sh".into());
+    args.push("-c".into());
+    args.push(script);
+    args.push("sonde-plume-agent".into()); // $0 du script
+    for (_, p, _) in chemins {
+        args.push(p.display().to_string());
+    }
+    args
+}
+
+/// LA VÉRIFICATION SUR PLACE — la seule chose qui puisse tenir une propriété de bac à sable.
+///
+/// POURQUOI ELLE EXISTE, ET CE QUE LA GARDE DE PRÉFIXES NE VOIT PAS. Mesuré le 2026-08-20 : une
+/// unité dont le spool est sous un répertoire personnel protégé DÉMARRE — `ExecMainStatus=0`, aucun
+/// `203/EXEC`, aucun `226/NAMESPACE` — et le service reçoit « Permission denied » à la première
+/// écriture. Ni le code de retour de `systemctl`, ni l'observation du service en train de tourner,
+/// ni une table de préfixes écrite d'avance ne peuvent attraper cela : il faut EXÉCUTER quelque
+/// chose dans le bac à sable et regarder. C'est ce que fait cette fonction, à l'instant où la
+/// décision d'installer est prise, sur l'hôte où elle est prise.
+pub fn sonde_le_bac_a_sable(spec: &ServiceSpec) -> Sonde {
+    let sortie = match Command::new("systemd-run").args(commande_de_sonde(spec)).output() {
+        Ok(o) => o,
+        Err(e) => return Sonde::PasDeMesure(format!("`systemd-run` n'a pas pu être lancé : {e}")),
+    };
+    if sortie.status.success() {
+        return Sonde::Utilisables;
+    }
+    // Le script rend l'indice (1-based) du premier chemin inutilisable. TOUTE autre sortie signifie
+    // que la sonde elle-même n'a pas tourné (bus injoignable, systemd-run trop ancien, unité déjà
+    // là) : cela ne se lit pas comme un verdict sur les chemins.
+    let dit = String::from_utf8_lossy(&sortie.stdout).trim().to_string();
+    match dit.parse::<usize>() {
+        Ok(i) if (1..=spec.paths().len()).contains(&i) => Sonde::Inutilisable(i - 1),
+        _ => Sonde::PasDeMesure(format!(
+            "`systemd-run` a rendu {:?} sans désigner de chemin ({})",
+            sortie.status.code(),
+            {
+                let err = String::from_utf8_lossy(&sortie.stderr).trim().to_string();
+                if err.is_empty() { format!("sortie standard : {dit:?}") } else { err }
+            }
+        )),
+    }
 }
 
 pub struct Systemd {
@@ -286,31 +420,23 @@ impl ServiceManager for Systemd {
 
     /// POSE OBSERVÉE, pas annoncée — jumeau exact de `uninstall` ci-dessous, et pour la même raison.
     ///
-    /// 1. PRÉ-VOL : on refuse d'écrire une unité qui SE CONTREDIT (un chemin de la spec masqué par le
-    ///    durcissement que cette même unité impose). AUCUNE unité n'est écrite, AUCUN service n'est
-    ///    touché, et le message dit quoi faire. (Le fichier de config, lui, a pu être généré plus tôt
-    ///    par `cmd_install --endpoint` : c'est écrit ici pour qu'on ne lise pas « rien n'est écrit ».)
-    ///    C'est ce que le README demandait à l'humain de vérifier à la main.
+    /// 1. PRÉ-VOL EN DEUX TEMPS, et le second est une MESURE. (a) La table refuse ce qu'on sait
+    ///    impossible d'avance — un chemin de la spec sous un point de montage que le durcissement de
+    ///    cette même unité remplace. (b) Puis, une fois spool et état créés, le bac à sable de
+    ///    l'unité est RÉELLEMENT monté (`sonde_le_bac_a_sable`) et l'on regarde si le service peut
+    ///    se servir de chaque chemin. Le (b) existe parce que le (a) ne peut pas tout voir : il
+    ///    raisonne sur des préfixes écrits d'avance, alors que le bac à sable réel dépend de l'hôte —
+    ///    et le pire cas mesuré (spool protégé, unité qui DÉMARRE, écriture refusée ensuite) ne
+    ///    produit aucun code d'erreur à observer. AUCUNE unité n'est écrite tant que les deux n'ont
+    ///    pas conclu, et le message dit quoi faire. (Le fichier de config, lui, a pu être généré plus
+    ///    tôt par `cmd_install --endpoint` : c'est écrit ici pour qu'on ne lise pas « rien n'est
+    ///    écrit ».) C'est ce que le README demandait à l'humain de vérifier à la main.
     /// 2. Chaque artefact est SONDÉ avant, agi, puis RE-SONDÉ (cf. `Outcome`) : le service n'est dit
     ///    « posé » que si `tourne_vraiment()` l'a vu actif ET STABLE, et `is_enabled()` activé.
     fn install(&self, spec: &ServiceSpec) -> anyhow::Result<Outcome> {
-        // 1. PRÉ-VOL dérivé de HARDENING × ServiceSpec::paths() (destructuration exhaustive).
-        for (role, p, reexpose) in spec.paths() {
-            if let Some((directive, prefixe)) = chemin_cache_par(p, reexpose) {
-                // La panne annoncée est CELLE QU'ON A MESURÉE pour ce cas-là : un chemin que le
-                // service doit EXÉCUTER/LIRE meurt en 203/EXEC ; un chemin listé dans
-                // `ReadWritePaths=` dont le point de montage est remplacé meurt en 226/NAMESPACE.
-                let panne = if reexpose { "226/NAMESPACE" } else { "203/EXEC" };
-                anyhow::bail!(
-                    "REFUS d'installer une unité qui ne pourrait pas fonctionner : {role} = {} est \
-                     sous {prefixe}, que l'unité elle-même masque au service ({directive}) — le \
-                     service ne pourrait pas s'en servir (échec systemd {panne} en boucle de \
-                     redémarrage, mesuré). Place ce chemin hors de {prefixe} : le binaire dans \
-                     /usr/local/bin (`sudo install -m0755 <bin> /usr/local/bin/plume-agent`), la \
-                     config dans /etc/plume, le spool et l'état sous /var/lib/plume-agent.",
-                    p.display()
-                );
-            }
+        // 1a. PRÉ-VOL dérivé de HARDENING × ServiceSpec::paths() (destructuration exhaustive).
+        if let Err(refus) = prevol(spec) {
+            anyhow::bail!("{refus}");
         }
 
         let mut r = Outcome::pose();
@@ -335,6 +461,36 @@ impl ServiceManager for Systemd {
             // Sans spool/state, l'unité ne pourrait pas démarrer : ne pas laisser un fichier
             // d'unité ORPHELIN dans /etc/systemd/system sur un échec qu'on connaît déjà.
             return Ok(r);
+        }
+
+        // 1b. LA MESURE SUR PLACE — après les répertoires (`test -w` exige qu'ils existent) et AVANT
+        //     d'écrire l'unité. Elle monte le bac à sable de l'unité pour de vrai et regarde.
+        match sonde_le_bac_a_sable(spec) {
+            Sonde::Utilisables => {}
+            Sonde::Inutilisable(i) => {
+                let (role, p, acces) = spec.paths().swap_remove(i);
+                anyhow::bail!(
+                    "REFUS d'installer une unité qui ne pourrait pas fonctionner : MESURÉ à \
+                     l'instant, depuis le bac à sable que cette unité impose, {role} = {} n'est pas \
+                     utilisable en `test {}`. Le durcissement de l'unité et ce chemin se \
+                     contredisent sur cet hôte. Selon le rôle, le service mourrait en 203/EXEC, en \
+                     226/NAMESPACE — ou DÉMARRERAIT en échouant à la première écriture, sans rien \
+                     signaler. Chemins sûrs : binaire dans /usr/local/bin, config dans /etc/plume, \
+                     spool et état sous /var/lib/plume-agent.",
+                    p.display(),
+                    acces.test_posix()
+                );
+            }
+            // Ni un feu vert ni un motif de refus : la mesure n'a pas eu lieu, et le dire est la
+            // seule chose honnête. L'installation se poursuit sur la garde de préfixes seule —
+            // c'est-à-dire sur strictement ce qui existait avant cette sonde, sans le prétendre
+            // vérifié.
+            Sonde::PasDeMesure(raison) => eprintln!(
+                "plume-agent: AVERTISSEMENT — la vérification sur place du bac à sable n'a PAS pu \
+                 être faite ({raison}). Les chemins n'ont donc PAS été mesurés depuis l'intérieur \
+                 de l'unité : seule la garde de préfixes a statué. Après `install`, vérifier que le \
+                 service écrit bien dans son spool (`journalctl -u {UNIT_NAME} -n 20`)."
+            ),
         }
 
         // 3. L'unité sur le disque — re-sonde par RELECTURE : le fichier doit contenir CE QU'ON A
@@ -485,8 +641,9 @@ mod tests {
     }
 
     /// LA GARDE DÉRIVÉE. Un chemin est refusé PARCE QUE la table dit qu'une directive le masque —
-    /// pas parce que quelqu'un a listé /home et /tmp dans un `if`. Mesuré le 2026-08-02 : sous
-    /// `ProtectHome=yes` un exécutable de `$HOME` meurt en 203/EXEC, idem `/tmp` sous `PrivateTmp`.
+    /// pas parce que quelqu'un a listé /home et /tmp dans un `if`. Mesuré le 2026-08-20 (systemd
+    /// 261) : sous `ProtectHome=yes` un exécutable d'un répertoire personnel meurt en 203/EXEC,
+    /// idem `/tmp` sous `PrivateTmp`.
     #[test]
     fn chemins_masques_par_le_durcissement_sont_refuses() {
         for (p, directive) in [
@@ -495,47 +652,134 @@ mod tests {
             ("/tmp/plume-agent", "PrivateTmp=yes"),
             ("/var/tmp/plume-agent", "PrivateTmp=yes"),
         ] {
-            let got = chemin_cache_par(Path::new(p), false);
+            let got = chemin_cache_par(Path::new(p));
             assert_eq!(got.map(|(d, _)| d), Some(directive), "{p} doit être refusé");
         }
-        // Les chemins d'installation NORMAUX passent — sinon la garde serait inutilisable.
+        // TÉMOIN — les chemins d'installation NORMAUX passent. Une garde qui refuse tout n'est pas
+        // une garde : sans cette moitié, le test resterait vert sur un `Some` inconditionnel.
         for p in ["/usr/local/bin/plume-agent", "/etc/plume/agent.toml", "/var/lib/plume-agent/spool"] {
-            assert_eq!(chemin_cache_par(Path::new(p), false), None, "{p} doit passer");
+            assert_eq!(chemin_cache_par(Path::new(p)), None, "{p} doit passer");
         }
         // Frontière de COMPOSANT : /homeless-clown n'est pas sous /home.
-        assert_eq!(chemin_cache_par(Path::new("/homeless-clown/bin/plume-agent"), false), None);
-
-        // RE-EXPOSITION PAR `ReadWritePaths=` — mesuré le 2026-08-02 : un chemin listé dans
-        // ReadWritePaths échappe à ProtectHome (le service TOURNE) mais PAS à PrivateTmp
-        // (226/NAMESPACE). La garde doit donc laisser passer un spool sous /home et refuser le
-        // même spool sous /tmp — sans quoi elle interdirait un déploiement qui marche.
-        assert_eq!(chemin_cache_par(Path::new("/home/soc/plume/spool"), true), None,
-            "spool re-exposé par ReadWritePaths : ProtectHome ne le masque plus (mesuré)");
-        assert_eq!(chemin_cache_par(Path::new("/tmp/plume/spool"), true).map(|(d, _)| d),
-            Some("PrivateTmp=yes"),
-            "PrivateTmp REMPLACE /tmp : ReadWritePaths n'y peut rien (mesuré, 226/NAMESPACE)");
+        assert_eq!(chemin_cache_par(Path::new("/homeless-clown/bin/plume-agent")), None);
     }
 
-    /// TOUS les chemins de la spec sont couverts, pas seulement l'ExecStart : une config sous /home
-    /// est illisible au service exactement comme le binaire, et un spool sous /tmp casse le
-    /// namespace. `ServiceSpec::paths()` destructure exhaustivement -> un champ ajouté demain ne
-    /// compile pas sans être classé.
+    /// L'ALLÉGATION RÉFUTÉE, FIGÉE PAR UN TEST — c'est-à-dire la mutation qui a produit le défaut.
+    ///
+    /// La garde a laissé passer, pendant tout le temps où ce commentaire a été cru, un spool ou un
+    /// état sous un répertoire personnel : la table portait une échappatoire (« ce chemin est dans
+    /// `ReadWritePaths=`, donc `ProtectHome` ne le concerne plus »), affirmée en prose avec sa date.
+    /// RE-MESURÉ le 2026-08-20, systemd 261 : la re-exposition n'a PAS lieu — le service reçoit
+    /// « Permission denied » sur ce spool, et l'unité DÉMARRE quand même. Ré-introduire
+    /// l'échappatoire fait échouer ce test-ci, en nommant le chemin qu'elle laisserait passer.
+    #[test]
+    fn aucun_chemin_de_donnees_n_echappe_a_protecthome() {
+        for p in ["/home/soc/plume/spool", "/root/plume/state", "/run/user/1000/plume/spool"] {
+            assert_eq!(
+                chemin_cache_par(Path::new(p)).map(|(d, _)| d),
+                Some("ProtectHome=yes"),
+                "{p} : AUCUNE directive de l'unité ne re-expose un chemin ainsi protégé (mesuré le \
+                 2026-08-20 sur systemd 261 : ReadWritePaths=, BindPaths=, BindReadOnlyPaths= et \
+                 ReadOnlyPaths= laissent le montage inaccessible en place). Un spool laissé passer \
+                 ici produit une unité qui DÉMARRE et n'écrit rien."
+            );
+        }
+    }
+
+    /// TOUS les chemins de la spec sont couverts, pas seulement l'ExecStart : une config sous un
+    /// répertoire personnel est illisible au service exactement comme le binaire, et un spool sous
+    /// /tmp casse le namespace. `ServiceSpec::paths()` destructure exhaustivement -> un champ ajouté
+    /// demain ne compile pas sans être classé.
     #[test]
     fn la_garde_couvre_tous_les_chemins_de_la_spec() {
         let s = ServiceSpec {
             exec_path: PathBuf::from("/usr/local/bin/plume-agent"),
             config_path: PathBuf::from("/home/tech/agent.toml"),
             spool_dir: PathBuf::from("/var/lib/plume-agent/spool"),
-            state_dir: PathBuf::from("/var/lib/plume-agent/state"),
+            state_dir: PathBuf::from("/home/tech/plume/state"),
         };
         let refuses: Vec<&str> = s
             .paths()
             .iter()
-            .filter(|(_, p, reexpose)| chemin_cache_par(p, *reexpose).is_some())
+            .filter(|(_, p, _)| chemin_cache_par(p).is_some())
             .map(|(role, _, _)| *role)
             .collect();
-        assert_eq!(refuses, vec!["--config (fichier de configuration)"]);
+        // Le state_dir est dans la liste : c'est EXACTEMENT ce que l'échappatoire laissait passer.
+        assert_eq!(refuses, vec!["--config (fichier de configuration)", "state_dir"]);
         assert_eq!(s.paths().len(), 4, "les 4 chemins de la spec sont vérifiés");
+        // TÉMOIN : la même spec, chemins conventionnels -> plus rien n'est refusé.
+        assert!(
+            spec().paths().iter().all(|(_, p, _)| chemin_cache_par(p).is_none()),
+            "une spec conventionnelle doit rester installable"
+        );
+    }
+
+    /// LA DÉCISION, PAS SEULEMENT LE PRÉDICAT. C'est ici que l'allégation réfutée agissait : le
+    /// prédicat était juste, et la décision lui passait de quoi rendre « non caché ». Chacun des
+    /// QUATRE chemins de la spec est donc ré-exercé à travers `prevol`, et le refus doit NOMMER le
+    /// rôle fautif — un refus qui ne dit pas lequel n'aide personne à corriger.
+    ///
+    /// TÉMOIN : la spec conventionnelle passe. Sans lui, un `prevol` qui refuserait tout serait vert.
+    #[test]
+    fn prevol_refuse_ce_qui_ne_pourrait_pas_demarrer() {
+        assert!(prevol(&spec()).is_ok(), "une spec conventionnelle doit rester installable");
+        for (role, deplace) in [
+            ("ExecStart (binaire de l'agent)", 0usize),
+            ("--config (fichier de configuration)", 1),
+            ("spool_dir", 2),
+            ("state_dir", 3),
+        ] {
+            let mut s = spec();
+            // Le MÊME chemin protégé pour les quatre rôles : seul le rôle change d'un cas à l'autre.
+            let sous_home = PathBuf::from("/home/soc/plume-agent");
+            match deplace {
+                0 => s.exec_path = sous_home,
+                1 => s.config_path = sous_home,
+                2 => s.spool_dir = sous_home,
+                _ => s.state_dir = sous_home,
+            }
+            // `expect_err` prendrait un littéral : le rôle n'y serait PAS interpolé, et l'échec ne
+            // nommerait pas le chemin laissé passer. Le `match` le nomme.
+            let refus = match prevol(&s) {
+                Err(m) => m,
+                Ok(()) => panic!(
+                    "{role} sous un répertoire personnel a été ACCEPTÉ : l'unité démarrerait sans \
+                     pouvoir s'en servir"
+                ),
+            };
+            assert!(refus.contains(role), "le refus doit nommer {role} — lu : {refus}");
+            assert!(refus.contains("/home"), "le refus doit nommer le préfixe fautif");
+        }
+    }
+
+    /// LA MESURE SUR PLACE EST DÉRIVÉE, pas écrite à la main. La commande de la sonde doit porter
+    /// TOUTE la table de durcissement (sinon elle mesure un autre bac à sable que celui de l'unité),
+    /// le `ReadWritePaths=` de l'unité, et UN `test(1)` par chemin de la spec avec le mode d'accès
+    /// que ce chemin exige. Retirer une directive de la sonde, ou oublier un chemin, fait échouer
+    /// ici — c'est ce qui empêche la sonde de dériver silencieusement de l'unité qu'elle imite.
+    #[test]
+    fn la_sonde_rejoue_le_bac_a_sable_de_l_unite() {
+        let s = spec();
+        let cmd = commande_de_sonde(&s);
+        for (directive, _) in HARDENING.iter() {
+            assert!(
+                cmd.iter().any(|a| a == &format!("--property={directive}")),
+                "la sonde doit imposer {directive} comme l'unité le fait"
+            );
+        }
+        assert!(cmd.iter().any(|a| a
+            == "--property=ReadWritePaths=/var/lib/plume-agent/spool /var/lib/plume-agent/state"));
+        let script = cmd.iter().find(|a| a.starts_with("test ")).expect("script de la sonde");
+        assert_eq!(script.matches("test ").count(), s.paths().len(), "un test par chemin");
+        assert!(script.contains("test -x \"$1\""), "l'ExecStart se teste en exécutable");
+        assert!(script.contains("test -r \"$2\""), "la config se teste en lecture");
+        assert!(script.contains("test -w \"$3\"") && script.contains("test -w \"$4\""));
+        // Les chemins passent en ARGUMENTS, jamais dans le corps du script : rien à échapper.
+        for (_, p, _) in s.paths() {
+            let t = p.display().to_string();
+            assert!(cmd.contains(&t), "{t} doit être un argument");
+            assert!(!script.contains(&t), "{t} n'a rien à faire dans le corps du script");
+        }
     }
 
     #[test]
@@ -557,3 +801,4 @@ mod tests {
         ));
     }
 }
+

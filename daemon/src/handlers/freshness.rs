@@ -170,7 +170,7 @@ pub(crate) async fn integrations(State(st): State<AppState>, Extension(au): Exte
     let dbp = db_path.clone();
     let nv = tokio::task::spawn_blocking(move || compute_integrations(&dbp))
         .await
-        .unwrap_or_else(|_| json!({ "collectors": [], "hosts": [] }));
+        .unwrap_or_else(|_| json!({ "collectors": [], "hosts": [], "flotte": null }));
     integrations_map().lock().insert(ckey, (Instant::now(), nv.clone()));
     Json(nv)
 }
@@ -181,7 +181,7 @@ pub(crate) async fn integrations(State(st): State<AppState>, Extension(au): Exte
 /// rollup pré-agrégé `host_rollup` (v77, cf. rollup_hosts) : AUCUN scan de event∪metric∪snapshot.
 pub(crate) fn compute_integrations(db_path: &str) -> Value {
     let now_ts = now();
-    read_with_watchdog(db_path, json!({ "collectors": [], "hosts": [] }), move |conn| {
+    read_with_watchdog(db_path, json!({ "collectors": [], "hosts": [], "flotte": null }), move |conn| {
         // FIX #2 — capteurs ÉVÉNEMENTIELS : leur statut suit la SANTÉ DU PIPELINE global, pas leur propre
         // intervalle (sinon hôte calme = faux MUET permanent). Calculé une fois pour tous les collecteurs.
         let pipe_fresh = pipeline_is_fresh(conn, now_ts);
@@ -204,12 +204,24 @@ pub(crate) fn compute_integrations(db_path: &str) -> Value {
                     now_ts,
                 )
                 .label();
-                json!({ "id": id, "label": label, "interval_s": interval, "last_seen": ls, "status": status, "event_based": event_based })
+                // P3.2-a — LA PORTÉE EST RENDUE, PAS DEVINÉE. `status: "actif"` ne veut pas dire la même
+                // chose selon que la sonde juge la machine la plus EN RETARD ou la plus FRAÎCHE du parc,
+                // et cet écart n'était lisible que dans le SQL dérivé. Champ ADDITIF : dérivé du même
+                // descripteur typé que la requête, donc affichage et exécution ne peuvent pas diverger.
+                json!({ "id": id, "label": label, "interval_s": interval, "last_seen": ls, "status": status, "event_based": event_based, "portee": sonde.portee().etiquette() })
             })
             .collect();
         // INVENTAIRE d'hôtes = host_rollup pré-agrégé (cf. rollup_hosts) : AUCUN scan de event∪metric∪snapshot.
         let hosts = host_inventory_simple(conn);
-        json!({ "collectors": collectors, "hosts": hosts })
+        // P3.2-a — LE VERDICT DE FLOTTE, en COMPTE et non en série par hôte (cf. `sonde_de_flotte.rs`).
+        // C'est le seul chiffre de ce panneau qui parle des machines MUETTES ; les 21 sondes à portée
+        // « tous hôtes confondus » ci-dessus ne peuvent pas le dire, par construction. `None` (lecture
+        // impossible) rend `null` — jamais un zéro rassurant fabriqué à la place d'une observation.
+        let flotte = match flotte_muette(conn, now_ts) {
+            Some(f) => json!({ "attendus": f.attendus, "muets": f.muets, "seuil_s": FLEET_STALE_S }),
+            None => Value::Null,
+        };
+        json!({ "collectors": collectors, "hosts": hosts, "flotte": flotte })
     })
 }
 /// Fraîcheur PAR SOURCE (data-driven, pas la liste figée des collecteurs) : pour chaque feed —
@@ -559,4 +571,49 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) {
             );
         }
     }
+    verifier_flotte_muette(&conn, now_ts);
+}
+
+/// P3.2-a — LE DEAD-MAN'S-SWITCH DU PARC : un hôte qui se tait ENTIÈREMENT lève un signal.
+///
+/// POURQUOI ICI ET PAS DANS LA BOUCLE CI-DESSUS. Les 23 entrées de `COLLECTORS` répondent « ce CAPTEUR
+/// parle-t-il ? » ; aucune ne peut répondre « ce PARC parle-t-il ? », parce que 21 d'entre elles ont une
+/// portée « tous hôtes confondus » et que les 2 autres ne voient que `snapshot`. Une 24ᵉ entrée aurait
+/// donc menti sur ce qu'elle est. C'est une sonde à part, de portée `ParHote`, et elle le DIT.
+///
+/// UN ÉPISODE PAR ENSEMBLE MUET, ET UN SEUL OUVERT. La clé de déduplication porte l'EMPREINTE de
+/// l'ensemble : tant qu'il ne bouge pas, rien ne se répète ; dès qu'une machine s'y ajoute, l'épisode
+/// précédent est RÉSOLU et un neuf s'ouvre. Sans ça, la première machine décommissionnée — que
+/// `host_rollup` garde muette pour toujours, cette table n'étant jamais prunée — laisserait une alerte
+/// ouverte qui avalerait en silence la mort de toutes les suivantes.
+fn verifier_flotte_muette(conn: &Connection, now_ts: i64) {
+    // `None` = la lecture a ÉCHOUÉ. On ne lève rien ET on ne résout rien : résoudre serait affirmer un
+    // parc sain qu'on n'a pas observé, ce qui est exactement le défaut que ce chantier ferme.
+    let Some(f) = flotte_muette(conn, now_ts) else { return };
+    let ouverte = f.cle_dedup();
+    // RÉSOLUTION de tout épisode de la famille qui n'est PAS l'ensemble courant. Couvre les deux cas
+    // d'un seul geste : plus aucun hôte muet (`ouverte` = None -> tout est résolu), et ensemble CHANGÉ.
+    let _ = conn.execute(
+        "UPDATE alert SET status='resolved', dedup=NULL \
+         WHERE dedup LIKE ?1 || '%' AND dedup IS NOT ?2 AND status IN ('new','ack')",
+        params![DEDUP_FLOTTE_MUETTE, ouverte],
+    );
+    let Some(dedup) = ouverte else { return };
+    // Le TITRE ne porte que des NOMBRES (il remonte dans le bulletin de support, cf. `system.rs`, qui
+    // sélectionne `rule LIKE 'heartbeat.%'`) ; les NOMS de machines vivent dans le détail, qui n'y va pas.
+    // `sources` = l'INCONNU NOMMÉ : cette alerte se rapporte à des HÔTES, pas à un feed — lui imputer une
+    // source ferait basculer la pastille d'une source qui n'a rien fait, et la colonne VIDE la ferait
+    // retomber en silence sur l'extraction textuelle (cf. `imputation.rs`).
+    let sources = imputation_encoder(&[SOURCE_INDETERMINABLE.to_string()]);
+    let _ = conn.execute(
+        "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,sources) VALUES(?1,?2,2,?3,?4,?5,?6)",
+        params![
+            now_ts,
+            "heartbeat.flotte-hotes-muets",
+            format!("Hôtes muets : {} sur {}", f.muets, f.attendus),
+            detail_flotte_muette(&f, now_ts),
+            dedup,
+            sources
+        ],
+    );
 }

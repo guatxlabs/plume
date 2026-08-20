@@ -98,7 +98,7 @@
 //!   * la SÉRIE est par-tenant, comme la base : en mode multi-tenant chaque base porte la sienne, et
 //!     rien n'agrège les tenants.
 use crate::*;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 // UNE seule définition de ce qu'est un point de série, UNE seule voie d'écriture dans `metric` : celles
 // que `ventilation_serie` a posées en `P10.8-a`. Les redéclarer ici dupliquerait la décision « `host`
@@ -541,9 +541,69 @@ pub(crate) struct Fenetre {
     exclusive: bool,
 }
 
+// -------------------------------------------------------------------------------------------------
+// `P10.11-a` — QUAND LA PASSE TOURNAIT, SUR L'ÉCHELLE DE TEMPS DE QUI LA SUBIT
+//
+// POURQUOI CE COMPTEUR EXISTE ICI ET PAS AILLEURS. `NOM_DUREE` dit déjà combien de temps une passe a
+// duré — mais elle est écrite UNE FOIS, à l'horodatage de la passe. Pour répondre à « cette requête
+// était-elle lente parce qu'une passe tournait ? », il faut savoir quelle PART d'une fenêtre
+// d'observation arbitraire la passe couvrait, et personne d'autre que la fenêtre elle-même ne le
+// sait. Le compteur est donc posé au seul endroit qui connaît les deux bords, et il est lu par
+// `attente_serie` qui, lui, ne connaît ni le tier froid ni ses passes.
+//
+// SEULE LA FENÊTRE EXCLUSIVE COMPTE. Une seconde fenêtre imbriquée ne mesure déjà rien (elle n'a pas
+// de ligne de base) : la faire compter DOUBLERAIT le temps couvert sur la même seconde de mur.
+//
+// CE QUE CE COMPTEUR N'EST PAS : ce n'est pas le temps pendant lequel la passe TENAIT le verrou
+// d'écriture. La passe le prend et le relâche plusieurs fois (découverte, scellement, suppression
+// chunkée). C'est donc une BORNE SUPÉRIEURE de l'exposition, et un indicateur de PRÉSENCE — ce qui
+// est exactement ce qu'une corrélation demande, et rien de plus. Le dire est le travail de la série
+// qui le publie, qui l'écrit dans son `# HELP`.
+
+/// L'origine monotone du processus. Un `Instant` ne se convertit pas en nombre : on mesure donc tout
+/// depuis une origine posée une fois, ce qui rend l'état stockable dans des atomiques.
+static ORIGINE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+/// Microsecondes CUMULÉES des fenêtres déjà fermées.
+static CHEVAUCHEMENT_CUMUL_US: AtomicU64 = AtomicU64::new(0);
+/// Instant d'ouverture (µs depuis `ORIGINE`) de la fenêtre COURANTE ; `0` = aucune fenêtre ouverte.
+/// La valeur stockée est plancherée à 1 pour que « ouverte à l'instant zéro » ne se lise pas
+/// « fermée » — un cas rare, mais qui aurait rendu le compteur muet sur la toute première passe.
+static CHEVAUCHEMENT_OUVERTE_US: AtomicU64 = AtomicU64::new(0);
+
+fn horloge_us() -> u64 {
+    ORIGINE.get_or_init(Instant::now).elapsed().as_micros().min(u64::MAX as u128) as u64
+}
+
+fn ouvrir_le_chevauchement() {
+    CHEVAUCHEMENT_OUVERTE_US.store(horloge_us().max(1), Ordering::Relaxed);
+}
+
+fn fermer_le_chevauchement() {
+    let depuis = CHEVAUCHEMENT_OUVERTE_US.swap(0, Ordering::Relaxed);
+    if depuis != 0 {
+        CHEVAUCHEMENT_CUMUL_US.fetch_add(horloge_us().saturating_sub(depuis), Ordering::Relaxed);
+    }
+}
+
+/// TEMPS CUMULÉ (µs) PENDANT LEQUEL UNE FENÊTRE DE VIEILLISSEMENT A ÉTÉ OUVERTE, part en cours
+/// COMPRISE. Compris : une passe qui dure encore fait déjà monter cette valeur, sinon une passe plus
+/// longue que la fenêtre d'observation n'apparaîtrait dans AUCUNE fenêtre avant sa toute dernière.
+/// Monotone croissante par construction — un consommateur en prend la différence.
+pub(crate) fn chevauchement_us() -> u64 {
+    let cumul = CHEVAUCHEMENT_CUMUL_US.load(Ordering::Relaxed);
+    match CHEVAUCHEMENT_OUVERTE_US.load(Ordering::Relaxed) {
+        0 => cumul,
+        depuis => cumul.saturating_add(horloge_us().saturating_sub(depuis)),
+    }
+}
+
 impl Drop for Fenetre {
     fn drop(&mut self) {
         if self.exclusive {
+            // L'ORDRE COMPTE : on ferme le chevauchement AVANT de rendre l'exclusivité. L'inverse
+            // laisserait une passe suivante ouvrir sa fenêtre et écraser l'instant d'ouverture de
+            // celle-ci — le temps de cette passe-ci serait perdu, pas décalé.
+            fermer_le_chevauchement();
             FENETRE_ACTIVE.store(false, Ordering::Release);
         }
     }
@@ -557,6 +617,9 @@ impl Fenetre {
         let exclusive = FENETRE_ACTIVE
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok();
+        if exclusive {
+            ouvrir_le_chevauchement();
+        }
         let (base, cause_crete) =
             if exclusive { armer_crete() } else { (None, Some(CRETE_FENETRE_CONCURRENTE)) };
         Fenetre {

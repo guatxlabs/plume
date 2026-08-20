@@ -288,15 +288,19 @@ pub(crate) fn validate_engagement_scope(scope: &[String], protected: &[(String, 
     Ok(())
 }
 
-/// Identifiant d'engagement aléatoire (128 bits CSPRNG). Repli horodaté si /dev/urandom indisponible.
-pub(crate) fn engagement_new_id() -> String {
+/// Identifiant d'engagement aléatoire (128 bits CSPRNG). `None` si l'entropie noyau est indisponible -> la
+/// création ÉCHOUE, comme le mint du secret trois lignes plus bas (`engagement_rand_hex`).
+///
+/// Le repli `eng_{horodatage}` retiré ici n'était pas un secret — mais il était la MÊME FIGURE que celle
+/// fermée sur la clé de tenant et sur le secret d'installation, DANS une fonction dont le voisin immédiat
+/// refuse déjà de servir sans entropie : la même requête aurait rendu un identifiant horodaté et zéro
+/// credential. Il portait en plus une collision réelle — deux engagements créés dans la même seconde
+/// visaient la même clé primaire `engagement.id`.
+pub(crate) fn engagement_new_id() -> Option<String> {
     use std::io::Read;
     let mut b = [0u8; 16];
-    if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).is_ok() {
-        format!("eng_{}", hex_encode(&b))
-    } else {
-        format!("eng_{}", now())
-    }
+    std::fs::File::open("/dev/urandom").ok()?.read_exact(&mut b).ok()?;
+    Some(format!("eng_{}", hex_encode(&b)))
 }
 
 /// Cœur TESTABLE de l'auto-expiry : passe en 'expired' les engagements ACTIFS dont la fenêtre est écoulée,
@@ -539,7 +543,10 @@ pub(crate) async fn engagement_create(State(st): State<AppState>, Extension(au):
     let window_end = window_end_req.min(cap);
     let capped = window_end < window_end_req;
     let status = if window_start > now_i { "scheduled" } else { "active" };
-    let id = engagement_new_id();
+    let id = match engagement_new_id() {
+        Some(i) => i,
+        None => return server_err("entropie noyau indisponible : engagement NON créé (aucun identifiant dérivé d'une horloge n'est émis)"),
+    };
     let scope_json = serde_json::to_string(&scope).unwrap_or_else(|_| "[]".into());
     let grant_kinds = engagement_grant_kinds_for_box(&box_kind);
 

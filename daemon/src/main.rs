@@ -132,6 +132,7 @@ mod cold_banniere;
 // la feature, rien n'ouvre de fenêtre ni ne publie -> mode 0 byte-identique (aucun appel, aucune écriture).
 #[allow(dead_code)]
 mod vieillissement_serie;
+mod attente_serie; // P10.11-a : CE QU'UNE PASSE DE VIEILLISSEMENT COÛTE À UN ANALYSTE — l'attente du permit ET celle du verrou partagé, en SEAUX et en MAXIMUM (une moyenne masque une exposition rare et concentrée, un p99 aussi), sur la même échelle de temps que la fenêtre de la passe
 mod maintenance;
 pub(crate) use maintenance::*;
 mod compactage_fts; // P10.7-b : LA FUSION DES SEGMENTS FTS5 — une purge fait GROSSIR l'index plein-texte, et plume ne fusionnait JAMAIS. Budget NÉGATIF (le positif ne rend rien), verrou relâché par passe, issue TYPÉE (aucune variante hors `Rendue` ne peut annoncer d'octets)
@@ -141,7 +142,9 @@ mod sondes; // LES SONDES DE FRAÎCHEUR : ce qu'une sonde OBSERVE, la requête D
 // les glob imports ; extrait dans un module, un glob le mettrait à égalité avec `topn_cap::Sonde` ->
 // E0659 sur les 23 sites d'appel. Un import nommé prime sur tout glob : la résolution redevient
 // EXACTEMENT celle d'avant l'extraction.
-pub(crate) use sondes::{Cout, Sonde, COLLECTORS, DDL_IDX_BATTEMENT_SANTE, IDX_BATTEMENT_SANTE};
+pub(crate) use sondes::{Cout, Portee, Sonde, COLLECTORS, DDL_IDX_BATTEMENT_SANTE, IDX_BATTEMENT_SANTE};
+mod sonde_de_flotte; // P3.2-a : LA SONDE DE FLOTTE — un hôte qui se tait ENTIÈREMENT lève un signal, rendu comme un COMPTE et non comme une série par hôte (la portée par hôte des 21 sondes multiplierait la cardinalité par la taille du parc)
+pub(crate) use sonde_de_flotte::*;
 mod imputation; // S7 : À QUELLE SOURCE UNE ALERTE SE RAPPORTE — lue dans la DONNÉE (colonne `event.source`, descripteur de sonde), plus dans la prose de la règle ; et un INCONNU NOMMÉ quand elle n'est pas déterminable
 pub(crate) use imputation::*;
 mod metrics; // #51 DAY-2 OPS : self-métriques process-globales + santé par composant + exposition Prometheus

@@ -168,22 +168,48 @@ pub struct ServiceSpec {
     pub state_dir: std::path::PathBuf,
 }
 
+/// COMMENT le service doit pouvoir se servir d'un chemin. Ce troisième champ portait autrefois une
+/// AFFIRMATION (« ce chemin est re-exposé par `ReadWritePaths=`, donc le masquage ne le concerne
+/// pas ») que rien ne vérifiait et qui s'est révélée FAUSSE à la re-mesure ; il porte désormais un
+/// fait EXERCÉ : `systemd::sonde_le_bac_a_sable` exécute ce `test(1)`-là sur ce chemin-là, depuis
+/// l'intérieur du bac à sable de l'unité, au moment de l'installation. Une classification erronée ne
+/// rend donc plus un verdict optimiste : elle rend une mesure fausse, qui échoue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Acces {
+    /// Le service doit EXÉCUTER ce chemin (l'`ExecStart`).
+    Execute,
+    /// Le service doit LIRE ce chemin.
+    Lu,
+    /// Le service doit ÉCRIRE dans ce chemin.
+    Ecrit,
+}
+
+impl Acces {
+    /// L'opérateur `test(1)` correspondant — POSIX, donc tenu par le `/bin/sh` de n'importe quel hôte.
+    pub fn test_posix(self) -> &'static str {
+        match self {
+            Acces::Execute => "-x",
+            Acces::Lu => "-r",
+            Acces::Ecrit => "-w",
+        }
+    }
+}
+
 impl ServiceSpec {
     /// TOUS les chemins que l'unité fera manipuler au service : le rôle qui les nomme dans un message
-    /// d'erreur, le chemin, et S'IL EST RE-EXPOSÉ par le `ReadWritePaths=` que l'unité pose (ce
-    /// dernier point n'est pas cosmétique : mesuré le 2026-08-02, un chemin listé dans
-    /// `ReadWritePaths` échappe à `ProtectHome` mais pas à `PrivateTmp`).
+    /// d'erreur, le chemin, et le MODE D'ACCÈS dont le service a besoin.
     ///
     /// DESTRUCTURATION EXHAUSTIVE (aucun `..`) : un champ ajouté demain à `ServiceSpec` NE COMPILE
-    /// PAS tant qu'il n'a pas été classé ici — c'est ce qui rend la vérification de joignabilité
-    /// (`systemd::chemin_cache_par`) close par construction plutôt qu'énumérée à la main.
-    pub fn paths(&self) -> Vec<(&'static str, &std::path::Path, bool)> {
+    /// PAS tant qu'il n'a pas été classé ici — c'est ce qui rend la garde de préfixes
+    /// (`systemd::chemin_cache_par`) ET la mesure sur place (`systemd::sonde_le_bac_a_sable`) closes
+    /// par construction plutôt qu'énumérées à la main.
+    pub fn paths(&self) -> Vec<(&'static str, &std::path::Path, Acces)> {
         let ServiceSpec { exec_path, config_path, spool_dir, state_dir } = self;
         vec![
-            ("ExecStart (binaire de l'agent)", exec_path.as_path(), false),
-            ("--config (fichier de configuration)", config_path.as_path(), false),
-            ("spool_dir", spool_dir.as_path(), true),
-            ("state_dir", state_dir.as_path(), true),
+            ("ExecStart (binaire de l'agent)", exec_path.as_path(), Acces::Execute),
+            ("--config (fichier de configuration)", config_path.as_path(), Acces::Lu),
+            ("spool_dir", spool_dir.as_path(), Acces::Ecrit),
+            ("state_dir", state_dir.as_path(), Acces::Ecrit),
         ]
     }
 }

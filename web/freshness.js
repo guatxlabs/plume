@@ -38,17 +38,32 @@ async function renderIntegrations() {
   const waitPill = waiting.length ? pill('attente', 'en attente', waiting.length) + withNames(waiting) : '';
   // « branché(s) » = pastille NEUTRE (pas de couleur santé) : c'est de la COUVERTURE, pas de la fraîcheur
   // (le vert=frais reste réservé à Fraîcheur) -> l'opérateur ne confond plus les deux compteurs.
-  const capsum = `<div class="capsum"><span class="capsum-pill"><b>${total}</b>&nbsp;capteurs déclarés</span>${connected ? `<span class="capsum-pill">${connected} branché(s)</span>` : ''}${mutePill}${waitPill}` +
+  // P3.2-a — LA PORTÉE D'UNE SONDE SE LIT, ELLE NE SE DEVINE PAS. Une sonde « tous hôtes confondus »
+  // rend la donnée la plus FRAÎCHE du parc : elle reste verte tant qu'UNE machine parle encore. Le champ
+  // `portee` vient du serveur (dérivé du type de la sonde) — on le COMPTE ici plutôt que de le déduire
+  // d'une liste locale, qui aurait dérivé du jour où une sonde change de portée.
+  const confondues = collectors.filter(c => c.portee === 'tous hôtes confondus').length;
+  const porteePill = confondues ? `<span class="capsum-pill" title="Ces sondes rendent la donnée la plus FRAÎCHE du parc : elles restent vertes tant qu'une seule machine parle encore. Les machines entièrement muettes sont comptées à part (Hôtes).">${confondues} à portée « tous hôtes confondus »</span>` : '';
+  const capsum = `<div class="capsum"><span class="capsum-pill"><b>${total}</b>&nbsp;capteurs déclarés</span>${connected ? `<span class="capsum-pill">${connected} branché(s)</span>` : ''}${mutePill}${waitPill}${porteePill}` +
     `<a class="capsum-link" href="#freshness-view" title="Santé par source (frais/calme/dégradé/muet) : Données → Fraîcheur">santé des sources →</a>` +
     `<a class="capsum-link" href="#sources" title="Inventaire complet des sources (Données → Sources)">inventaire →</a></div>`;
   const hosts = (d.hosts || []).length
     ? d.hosts.map(h => `<div class="kv"><span>${ic('server')} ${esc(h.host)}</span><span class="muted">${fmtTs(h.last_seen)}</span></div>`).join('')
     : '<div class="muted">hôte local uniquement — aucun agent distant n\'a encore poussé de logs.</div>';
+  // P3.2-a — LE COMPTE D'HÔTES MUETS, seul chiffre de ce panneau qui parle des machines qui se sont tues
+  // (les sondes ci-dessus ne le peuvent pas : leur portée les en empêche). `flotte` absent/null = la
+  // lecture de l'inventaire a échoué -> on l'ÉCRIT au lieu d'afficher un zéro rassurant.
+  const fl = d.flotte;
+  const flotteLigne = fl === undefined ? ''
+    : fl === null ? '<div class="kv"><span class="muted">hôtes muets : inventaire illisible (aucun verdict rendu)</span></div>'
+    : fl.muets > 0
+      ? `<div class="kv"><span class="fdot muet"></span><span><b>${fl.muets}</b> hôte(s) muet(s) sur ${fl.attendus} — aucun signal depuis plus de ${Math.round(fl.seuil_s / 60)} min</span></div>`
+      : `<div class="kv"><span class="muted">${fl.attendus} hôte(s) inventoriés, aucun muet</span></div>`;
   // caption : sépare EXPLICITEMENT les 2 axes (couverture de sondes vs endpoints) et renvoie la SANTÉ à Fraîcheur.
   const cap = `<div class="muted intplug" style="font-size:11px">Capteurs = <b>couverture</b> (types de sondes déclarés ; un capteur mort est signalé <b>muet</b> ici) · Hôtes = <b>endpoints</b> (où les agents poussent). La santé fine par source (frais/calme/dégradé) vit dans Fraîcheur.</div>`;
   // lien de découverte -> la Flotte (inventaire détaillé des hôtes : statut/enrôlement/dernier signal, paginé + export).
   const hostsHdr = `Hôtes (endpoints) <a class="capsum-link" href="#fleet" title="Flotte d'agents : inventaire détaillé (statut, enrôlement, dernier signal) — Données → Flotte">flotte →</a>`;
-  b.innerHTML = `<div class="intgrid"><div><div class="fldname">Capteurs (couverture)</div>${capsum}</div><div><div class="fldname">${hostsHdr}</div>${hosts}</div></div>${cap}`;
+  b.innerHTML = `<div class="intgrid"><div><div class="fldname">Capteurs (couverture)</div>${capsum}</div><div><div class="fldname">${hostsHdr}</div>${flotteLigne}${hosts}</div></div>${cap}`;
 }
 // fraîcheur PAR SOURCE : âge du dernier point + statut (cadence estimée côté serveur). "Est-ce live ?"
 /* state: freshnessRepollTimer -> S (state.js) */   // re-poll rapproché quand le serveur calcule encore (warming)

@@ -450,8 +450,8 @@
     #[test]
     fn mode1_per_tenant_distinct_key_crypto_frontier() {
         // Deux clés fortes DISTINCTES (exerce aussi tenant_generate_key).
-        let key_a = tenant_generate_key();
-        let key_b = tenant_generate_key();
+        let key_a = tenant_generate_key().expect("l'hôte de test fournit de l'entropie");
+        let key_b = tenant_generate_key().expect("l'hôte de test fournit de l'entropie");
         assert_ne!(key_a, key_b, "deux clés générées sont distinctes");
         assert_eq!(key_a.len(), 64, "clé = 256 bits en hex (64 chars)");
 
@@ -548,7 +548,7 @@
     ///   (3) base tenant estampillée au maximum mais AMPUTÉE D'UNE COLONNE -> writer REFUSÉ aussi.
     #[test]
     fn mode1_tenant_writer_applies_the_schema_contract() {
-        let key = tenant_generate_key();
+        let key = tenant_generate_key().expect("l'hôte de test fournit de l'entropie");
         let (cp, _cptmp) = mk_test_control();
         let st = tenant_test_state("plume-admin", "plume-editor", "admins", Some(cp));
         let path = mk_tmp_path("writer-contract.db");

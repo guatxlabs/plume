@@ -887,6 +887,15 @@ fn spawn_rollup_loop(tenants: TenantDbManager, rollup_interval: u64, disk_warn_p
                         emit_disk_health(&c, &dir, disk_warn_pct, now());
                     }
                 }
+                // P10.11-a — CE QUE LES REQUÊTES ONT ATTENDU PENDANT CE TICK, et quelle part du tick
+                // une passe de vieillissement couvrait. UNE fois par tick (l'accumulateur est de
+                // PROCESSUS, pas par-tenant) et dans la base par défaut : exactement la posture
+                // host-wide de l'alerte de saturation disque ci-dessus, pour la même raison. Écrire
+                // le même accumulateur dans chaque base compterait le même temps d'attente autant de
+                // fois qu'il y a de tenants. Onze `INSERT` au plus, verrou tenu pour eux seuls.
+                { let c = tenants.default_writer.lock();
+                    crate::attente_serie::publier_fenetre(&c, now());
+                }
                 // #51 DAY-2 OPS : marque le tick de rollup (santé « rollups » = ce tick récent).
                 SCHED_ROLLUP_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 SCHED_ROLLUP_LAST_TS.store(now(), std::sync::atomic::Ordering::Relaxed);

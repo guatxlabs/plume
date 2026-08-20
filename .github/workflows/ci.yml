@@ -275,7 +275,19 @@ env:
   # n'autorise qu'un seul auteur au seuil d'auto-checkpoint. Ces six noms sont SANS `cfg` de feature :
   # ils entrent dans les DEUX profils, donc ils ne déplacent pas l'écart cold−défaut de 220. La suite
   # par défaut a été EXÉCUTÉE sur l'arbre courant, pas seulement énumérée : 1086/1086, rc=0, 181,60 s.
-  EXPECTED_TESTS: "1086"
+  # +3 pour le lot « la clé d'un tenant ne se fabrique pas à partir d'une horloge » (clé S4,
+  # `daemon/src/tests/tenants.rs`) : la mutation (aucune matière d'entropie -> AUCUNE clé) avec son
+  # témoin inverse (la source réelle de l'hôte rend de la matière, et la clé EST cette matière), le
+  # contrôle de structure sur un lot de clés avec le témoin qui prouve qu'il DÉNONCE un générateur à
+  # compteur, et la garde DÉRIVÉE dont la partition est une PROPRIÉTÉ — toute fonction de production qui
+  # puise à une source d'entropie de l'OS et rend de la matière — plutôt qu'une liste de noms. Ces trois
+  # noms sont SANS `cfg` de feature : ils entrent dans les DEUX profils et ne déplacent pas l'écart
+  # cold−défaut de 220. RÉ-ÉNUMÉRÉ le 2026-08-20 sur l'arbre courant, qui porte aussi les lots arrivés
+  # entre-temps : **1109** par défaut, **1329** avec `cold_tier`, écart **220** inchangé. Ces nombres
+  # sont ceux de l'ARBRE, jamais d'un lot : le lot suivant RÉ-ÉNUMÈRE, il n'additionne pas son écart à
+  # la valeur posée ici. Deux énumérations du même jour, à quelques minutes d'écart, ont rendu 1098
+  # puis 1109 — c'est exactement pourquoi la règle est de ré-énumérer plutôt que de reporter.
+  EXPECTED_TESTS: "1109"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -550,7 +562,10 @@ jobs:
           # d'écriture » (clé P10.16-a). Ces six-là n'ont AUCUN `cfg` de feature : ils portent sur la
           # politique de journal de la base CHAUDE, que le tier froid ne change pas — ils sont donc les
           # mêmes des deux côtés, et l'écart cold−défaut reste **220** (1306 − 1086).
-          EXPECTED_COLD_TESTS: "1306"
+          # RÉ-ÉNUMÉRÉ le 2026-08-20 par la MÊME double lecture, sur l'arbre qui porte aussi le lot S4
+          # (clé de tenant sans repli horodaté, trois tests sans `cfg`) : 1329 avec `cold_tier` pour 1109
+          # par défaut — l'écart reste **220**.
+          EXPECTED_COLD_TESTS: "1329"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

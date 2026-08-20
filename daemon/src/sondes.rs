@@ -94,24 +94,58 @@ use crate::*;
 // style : c'est la condition d'usage de l'index, et le test de coût la tient.
 //
 // CE QUE ÇA NE FERME PAS (écrit pour être opposable, pas pour rassurer) : les 20 sondes d'EVENTS et
-// celle des MÉTRIQUES gardent leur portée « tous hôtes confondus » — dont 12 sont CONTINUES, donc leur
-// statut dépend VRAIMENT de la valeur (les 9 autres sont événementielles : leur statut suit
-// `pipeline_is_fresh`, la valeur ne sert qu'au texte du détail). C'est le MÊME défaut de famille —
+// celle des MÉTRIQUES gardent leur portée « tous hôtes confondus ». C'est le MÊME défaut de famille —
 // mesuré identique — mais il n'a PAS le même coût : `snapshot` ne garde qu'une ligne vivante par
 // (kind, hôte) (le heartbeat la TOUCHE au lieu d'en insérer une), donc son `GROUP BY host` porte sur
 // la cardinalité de la FLOTTE ; `event` compte 1 554 295 lignes en production (mesuré le 2026-08-05 par
-// `db-stats --par-objet`). La portée est donc DÉCLARÉE
-// (et comptée par `snapshot_sonde_instantanee_ancrage_de_portee`) au lieu d'être accidentelle : c'est
-// une dette nommée, pas un angle mort. (Chantier séparé — cf. le rapport P3.2-a.)
+// `db-stats --par-objet`). La portée est donc DÉCLARÉE — par le type (`Sonde::portee`, match exhaustif),
+// comptée par `snapshot_sonde_instantanee_ancrage_de_portee`, et LISIBLE par l'exploitant (champ
+// `portee` de `/api/integrations`) — au lieu d'être accidentelle : c'est une dette nommée.
+//
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+// P3.2-a — DEUX ALLÉGATIONS DE CE BANDEAU ÉTAIENT FAUSSES, ET C'EST L'UNE D'ELLES QUI TENAIT LE
+// CHANTIER FERMÉ. Elles sont corrigées ici plutôt qu'effacées : c'est leur contenu qui explique
+// pourquoi la voie retenue n'est pas celle que ce texte annonçait.
+//
+// (1) « dont 12 sont CONTINUES, donc leur statut dépend VRAIMENT de la valeur (les 9 autres sont
+//     événementielles) » — le COMPTE 12/9 est juste, l'ATTRIBUTION ne l'est pas. Ce qui décide, c'est
+//     le drapeau `event_based` du tuple, PAS la variante de `Sonde` : `statut_capteur` tire le statut
+//     de la VALEUR quand `event_based=false`, et de `pipeline_is_fresh` sinon. Or les 8 sondes de
+//     BATTEMENT sont toutes `event_based=false` (ce sont des dead-man's-switches : c'est leur raison
+//     d'être) et 9 des 12 sondes de FLUX sont `event_based=true`. Les 12 « tirées de la valeur » sont
+//     donc 8 battements + 3 flux (`audit`, `web`, `kube-audit`) + la métrique — pas les 12 flux. Deux
+//     partitions différentes qui rendent le même nombre : c'est exactement le genre de coïncidence
+//     qu'un compte ancré sans son AXE laisse passer. L'axe est désormais ancré lui aussi.
+//
+// (2) « les 9 autres … leur statut suit `pipeline_is_fresh` [donc elles ne masquent pas] » — RÉFUTÉ
+//     par lecture de `pipeline_is_fresh` : c'est `MAX(ts)` sur event∪metric∪snapshot SANS filtre
+//     d'hôte, c'est-à-dire un agrégat « tous hôtes confondus » de plus. Sur un parc dont une seule
+//     machine parle encore, il rend `true` — donc les sondes événementielles rendent « actif » elles
+//     aussi. Les 21 sondes à portée flotte confondue masquent, les unes par leur propre agrégat, les
+//     autres par celui du pipeline. Il n'y avait pas de moitié saine.
+//
+// CE QUI A ÉTÉ CONSTRUIT, ET CE QUI NE L'A PAS ÉTÉ. Repasser ces 21 sondes PAR HÔTE multiplierait la
+// cardinalité par la taille de la flotte (des centaines à des milliers de machines) : 21 séries
+// deviendraient des dizaines de milliers, et chaque sonde d'event perdrait son index — `GROUP BY host`
+// n'est servi par AUCUN index de `event`, donc le coût redeviendrait celui de P3.7-a, multiplié par le
+// nombre de sondes, sous le verrou d'écriture, toutes les 20 s. La mesure est dans
+// `daemon/src/tests/hotes_muets.rs` (mutation du volume x4). La voie retenue est donc l'AUTRE : une
+// SEULE sonde de FLOTTE (`sonde_de_flotte.rs`) qui rend un COMPTE d'hôtes muets et non une série par
+// hôte, servie par l'inventaire pré-agrégé `host_rollup` dont la cardinalité EST la flotte.
+// CE QU'ELLE NE COUVRE PAS : elle voit un hôte qui se tait ENTIÈREMENT, jamais un hôte dont UN
+// collecteur est mort pendant que les autres parlent. Ce trou-là reste ouvert, et il reste ouvert
+// exprès — le fermer est précisément la multiplication de cardinalité ci-dessus.
 //
 // RÉSIDU ASSUMÉ, écrit parce qu'il compte : une machine DÉCOMMISSIONNÉE continue de tirer la sonde vers
 // le retard tant que ses lignes `snapshot` n'ont pas expiré (`snapshot_days`, 30 j par défaut) — donc une
 // alerte « capteur muet » qui NOMME cette machine reste ouverte jusque-là. L'échange est délibéré et il
 // est asymétrique : le coût est une alerte bruyante mais VRAIE (« une machine qui rapportait ne rapporte
 // plus ») et auto-résorbable, contre un angle mort silencieux qui, lui, ne se résorbe jamais. Le retirer
-// exigerait un INVENTAIRE DÉCLARÉ des machines attendues, que Plume n'a pas (l'inventaire `host_rollup`
-// est DÉCOUVERT : une machine qui se tait entièrement en sortirait, ce qui rouvrirait exactement le trou
-// qu'on ferme).
+// exigerait un INVENTAIRE DÉCLARÉ des machines attendues, que Plume n'a pas. (La phrase qui suivait —
+// « l'inventaire `host_rollup` est DÉCOUVERT : une machine qui se tait entièrement en sortirait » — est
+// RÉFUTÉE par `rollup_hosts` : cette table n'est JAMAIS prunée et son `last_ts` COLLE, donc un hôte
+// muet y reste visible indéfiniment. C'est ce qui rend la sonde de flotte possible ; et c'est aussi
+// pourquoi son résidu à elle n'est PAS auto-résorbable — cf. `sonde_de_flotte.rs`.)
 // ====================================================================================================
 
 /// L'index PARTIEL qui sert les sondes de BATTEMENT DE SANTÉ. Nommé ICI, à côté des sondes qui en
@@ -143,6 +177,37 @@ pub(crate) enum Cout {
     /// `db-stats --par-objet` ; invariance vérifiée par mutation du
     /// volume dans `sonde_cout_independant_du_volume`). Dette DÉCLARÉE, pas angle mort.
     BorneParLaTable(&'static str),
+}
+
+/// CE QUE LA SONDE COUVRE — LA PORTÉE, DÉCLARÉE PLUTÔT QUE DEVINÉE (P3.2-a).
+///
+/// Une sonde de fraîcheur rend un âge. Sur un parc, cet âge peut vouloir dire deux choses très
+/// différentes : « la machine la plus en retard a cet âge » ou « la machine la plus FRAÎCHE a cet âge ».
+/// La seconde déclare la source vivante tant qu'UNE machine parle encore. L'écart n'était lisible
+/// qu'en lisant le SQL dérivé — donc invisible à l'exploitant qui regarde un panneau ou reçoit une
+/// alerte. Il devient une PROPRIÉTÉ du type, rendue à toutes les surfaces (`/api/integrations`).
+///
+/// Il n'existe PAS de variante « ça dépend » : comme `Cout`, une 5ᵉ sonde ne compile pas tant qu'elle
+/// n'a pas dit ce qu'elle couvre (match exhaustif -> E0004).
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum Portee {
+    /// Chaque machine est jugée séparément et la sonde rend la PLUS EN RETARD. Une machine qui se tait
+    /// fait donc vieillir la sonde, même si tout le reste du parc parle.
+    ParHote,
+    /// Tous hôtes confondus : la sonde rend la donnée la plus FRAÎCHE du parc. Un parc dont une seule
+    /// machine parle encore est vu comme sain. DETTE DÉCLARÉE — cf. le bandeau P3.2-a.
+    FlotteConfondue,
+}
+
+impl Portee {
+    /// Le jeton STABLE rendu aux surfaces (JSON, détail d'alerte). En toutes lettres et non un booléen :
+    /// un booléen `par_hote: false` se lit « pas par hôte » et n'apprend pas ce qui EST couvert.
+    pub(crate) fn etiquette(&self) -> &'static str {
+        match self {
+            Portee::ParHote => "par-hôte",
+            Portee::FlotteConfondue => "tous hôtes confondus",
+        }
+    }
 }
 
 /// LA REQUÊTE D'UNE SONDE — indissociable de ce qui borne son coût : c'est le MÊME objet.
@@ -228,6 +293,19 @@ impl Sonde {
                 binds: Vec::new(),
                 cout: Cout::IndexCouvrant("idx_metric_ts"),
             },
+        }
+    }
+
+    /// CE QUE CETTE SONDE COUVRE. Dérivée du même descripteur typé que la requête et que le coût — donc
+    /// une sonde ne peut pas AFFICHER une portée et en EXÉCUTER une autre : `Instantane` est la seule
+    /// variante dont `requete()` pose un `GROUP BY host`, et c'est la seule qui répond `ParHote`.
+    /// Le `match` est EXHAUSTIF (E0004) : une 5ᵉ variante ne compile pas tant qu'elle n'a pas répondu.
+    pub(crate) fn portee(&self) -> Portee {
+        match self {
+            Sonde::Instantane { .. } => Portee::ParHote,
+            Sonde::EventFlux { .. } | Sonde::EventBattementSante { .. } | Sonde::MetriqueFlotteConfondue => {
+                Portee::FlotteConfondue
+            }
         }
     }
 

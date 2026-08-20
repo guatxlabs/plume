@@ -432,13 +432,19 @@
     #[test]
     fn snapshot_sonde_instantanee_ancrage_de_portee() {
         let mut instantanes: Vec<&str> = Vec::new();
-        let (mut ev, mut me, mut continues) = (0usize, 0usize, 0usize);
-        for (_, _, _, sonde, _) in COLLECTORS.iter() {
+        let (mut ev, mut me, mut flux) = (0usize, 0usize, 0usize);
+        // P3.2-a — L'AXE QUI DÉCIDE VRAIMENT, compté À PART de la variante de `Sonde` : `statut_capteur`
+        // tire le verdict de la VALEUR quand `event_based=false`, et de `pipeline_is_fresh` sinon.
+        let (mut par_valeur, mut par_pipeline) = (0usize, 0usize);
+        for (_, _, _, sonde, event_based) in COLLECTORS.iter() {
+            if sonde.portee() == Portee::FlotteConfondue {
+                if *event_based { par_pipeline += 1 } else { par_valeur += 1 }
+            }
             match sonde {
                 Sonde::Instantane { kind } => instantanes.push(kind),
                 // P3.7-a : la famille « event » s'est SCINDÉE (flux réel vs battement de santé) sans que
                 // la dette déclarée change de taille — c'est la MÊME portée « flotte confondue ».
-                Sonde::EventFlux { .. } => { ev += 1; continues += 1 }
+                Sonde::EventFlux { .. } => { ev += 1; flux += 1 }
                 Sonde::EventBattementSante { .. } => ev += 1,
                 Sonde::MetriqueFlotteConfondue => me += 1,
             }
@@ -459,25 +465,47 @@
         // P3.2-a — LA RÉPARTITION AUSSI EST ANCRÉE, PAS SEULEMENT LE TOTAL.
         // Le « dont 12 CONTINUES » ne vivait que dans un COMMENTAIRE de `sondes.rs`, daté du
         // 2026-08-02 et jamais revérifié. MESURÉ le 2026-08-17 sur les bornes DÉRIVÉES du tableau —
-        // et non sur une fenêtre `sed` devinée, qui m'avait d'abord rendu 18 pour 23 : 12 `EventFlux`
+        // et non sur une fenêtre `sed` devinée, laquelle avait d'abord rendu 18 pour 23 : 12 `EventFlux`
         // + 8 `EventBattementSante` + 2 `Instantane` + 1 métrique = 23, exactement `COLLECTORS.len()`.
         // Le chiffre était donc VRAI. Mais un chiffre vrai SANS instrument périme sans bruit : c'est
         // la seule raison pour laquelle il est ancré ici.
         //
-        // POURQUOI LA DISTINCTION COMPTE, ET N'EST PAS UNE NUANCE. Une sonde CONTINUE (`EventFlux`)
-        // tire son statut de la VALEUR : sa portée « tous hôtes confondus » peut donc rendre SAIN un
-        // parc où une seule machine parle encore. Une sonde de BATTEMENT (`EventBattementSante`) suit
-        // `pipeline_is_fresh` ; la valeur ne sert qu'au texte du détail. Seul le PREMIER groupe peut
-        // MASQUER une panne — c'est lui qu'il faut repasser par hôte en priorité.
+        // CE QUE CETTE RÉPARTITION DIT, ET CE QU'ELLE NE DIT PAS. Elle compte des VARIANTES de `Sonde`
+        // (flux réel vs battement de santé), rien d'autre. Sa formulation d'origine ajoutait que les 12
+        // `EventFlux` seraient « celles dont le statut est tiré de la VALEUR » et les 8 battements
+        // « celles qui suivent `pipeline_is_fresh` » : c'est FAUX, et c'est l'assertion suivante qui le
+        // montre. Le compte 12/8 reste juste, l'attribution ne l'était pas.
         //
         // MÊME SENS QUE L'ANCRAGE CI-DESSUS : ce compte doit BAISSER, jamais monter en silence.
         assert_eq!(
-            (continues, ev - continues), (12, 8),
+            (flux, ev - flux), (12, 8),
             "ANCRAGE DE LA RÉPARTITION : parmi les sondes d'events à portée « flotte confondue », 12 \
-             sont CONTINUES (`EventFlux`, statut tiré de la VALEUR — celles qui peuvent MASQUER une \
-             panne de parc) et 8 sont des BATTEMENTS (`EventBattementSante`, statut tiré de \
-             `pipeline_is_fresh`). Une CONTINUE ajoutée AGGRAVE la dette : elle doit passer par ici."
+             observent un FLUX réel (`EventFlux`) et 8 un BATTEMENT DE SANTÉ (`EventBattementSante`, \
+             les dead-man's-switches de P3.7-a). Une sonde ajoutée AGGRAVE la dette : elle passe par ici."
         );
+        // P3.2-a — L'AXE QUI DÉCIDE SI UNE SONDE PEUT MASQUER UNE PANNE DE PARC, ANCRÉ POUR LUI-MÊME.
+        //
+        // CE QUI ÉTAIT FAUX, ET POURQUOI ÇA N'A PAS FAIT DE BRUIT. La répartition ci-dessus rend 12 et 8.
+        // Le drapeau `event_based`, lui, rend 12 et 9 sur les 21 sondes à portée confondue — et ce ne sont
+        // PAS les mêmes 12. Les 8 battements sont TOUS `event_based=false` (c'est leur définition : un
+        // dead-man's-switch juge son propre silence), et 9 des 12 flux sont `event_based=true`. Les 12
+        // « tirées de la valeur » sont donc 8 battements + 3 flux (`audit`, `web`, `kube-audit`) + la
+        // métrique. Deux partitions distinctes qui rendent le même nombre : un compte ancré SANS son axe
+        // ne pouvait pas attraper l'erreur, et ne l'a pas attrapée.
+        //
+        // CE QUE LA MESURE A AUSSI RÉFUTÉ. « Celles qui suivent `pipeline_is_fresh` ne présentent pas ce
+        // risque » — non : `pipeline_is_fresh` est un `MAX(ts)` sur event∪metric∪snapshot SANS filtre
+        // d'hôte, donc une seule machine vivante le rend vrai. Les 21 masquent, les unes par leur propre
+        // agrégat, les autres par celui du pipeline. La preuve par mutation est dans `hotes_muets.rs`
+        // (`hotes_muets_un_seul_hote_parle_et_les_21_sondes_restent_vertes`), qui exige les DEUX familles.
+        assert_eq!(
+            (par_valeur, par_pipeline), (12, 9),
+            "ANCRAGE DE L'AXE : parmi les 21 sondes à portée « tous hôtes confondus », 12 tirent leur \
+             statut de la VALEUR (`event_based=false`) et 9 de `pipeline_is_fresh` (`event_based=true`). \
+             AUCUNE des deux familles n'échappe au défaut de portée — `pipeline_is_fresh` est lui aussi \
+             un agrégat sans hôte. Ce compte doit BAISSER, jamais monter en silence."
+        );
+        assert_eq!(par_valeur + par_pipeline, ev + me, "l'axe couvre EXACTEMENT les sondes à portée confondue");
         assert_eq!(instantanes.len() + ev + me, COLLECTORS.len(), "toute sonde est classée");
     }
 

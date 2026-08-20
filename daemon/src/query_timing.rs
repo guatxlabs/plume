@@ -227,6 +227,27 @@ pub(crate) struct QueryTimings {
     db: SharedDbWait,
 }
 
+/// LA FIN D'UNE REQUÊTE EST UNE OBSERVATION (`P10.11-a`). Le découpage part dans la réponse — donc
+/// vers UN client, une fois ; il part AUSSI, ici, dans une série d'exploitation qui, elle, se corrèle
+/// avec la fenêtre de vieillissement.
+///
+/// POURQUOI `Drop` ET PAS UN APPEL EN FIN DE HANDLER : c'est la même raison qui a fait de
+/// `PermitMesure` un type. Un handler a autant de sorties que de `return` et de `?` ; huit sites
+/// écrivent aujourd'hui le découpage dans une réponse, et une requête qui échoue après avoir attendu
+/// n'en écrit aucune — son attente a pourtant eu lieu. Ici la libération de la valeur EST la fin de
+/// la requête, sur tous les chemins de retour, par construction.
+///
+/// LES DEUX TERMES PARTENT ENSEMBLE, jamais l'un sans l'autre : l'attente du permit et l'attente du
+/// verrou partagé sont deux files que la même tâche traverse l'une APRÈS l'autre, donc deux
+/// intervalles disjoints dont la somme est le coût d'attente de cette requête. Publier le seul
+/// verrou rendrait une fraction du coût réel — et c'est le terme MINORITAIRE dès que la borne
+/// interactive sature derrière la passe.
+impl Drop for QueryTimings {
+    fn drop(&mut self) {
+        crate::attente_serie::observer(self.permit.0, self.db.micros());
+    }
+}
+
 impl QueryTimings {
     /// L'attente du PERMIT. `0.0` exact quand un permit était libre.
     #[allow(dead_code)]

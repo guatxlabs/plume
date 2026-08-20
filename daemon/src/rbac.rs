@@ -652,8 +652,12 @@ pub(crate) fn platform_user_name_ok(name: &str) -> bool {
 }
 
 /// (#2c) Identifiant TEXT aléatoire pour une nouvelle ligne control-plane (platform_user). 96 bits hex.
-pub(crate) fn gen_control_id(prefix: &str) -> String {
-    format!("{prefix}{}", &tenant_generate_key()[..24])
+/// TIRE SA MATIÈRE DU MÊME PRODUCTEUR que la clé de tenant -> il en hérite le fail-closed : `None` sans
+/// entropie de l'OS, et l'appelant n'écrit RIEN. Un identifiant de control-plane n'est pas un secret, mais
+/// il était fabriqué par la fonction qui fabrique les clés : le repli horodaté retiré de celle-ci se
+/// déversait ici sans que rien ne le dise.
+pub(crate) fn gen_control_id(prefix: &str) -> Option<String> {
+    Some(format!("{prefix}{}", &tenant_generate_key()?[..24]))
 }
 
 /// (#2c) Résout l'id d'un `platform_user` par nom, en le CRÉANT (SSO-only, hash NULL, is_superadmin=0) s'il
@@ -664,7 +668,7 @@ pub(crate) fn ensure_platform_user(cp: &ControlPlane, name: &str) -> Option<Stri
     if let Ok(id) = conn.query_row("SELECT id FROM platform_user WHERE name=?1", params![name], |r| r.get::<_, String>(0)) {
         return Some(id);
     }
-    let id = gen_control_id("pu_");
+    let id = gen_control_id("pu_")?;
     conn.execute(
         "INSERT INTO platform_user(id,name,hash,is_superadmin,created) VALUES(?1,?2,NULL,0,?3)",
         params![id, name, now()],

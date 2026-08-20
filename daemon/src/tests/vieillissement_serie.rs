@@ -34,7 +34,13 @@ mod vieillissement_serie_tests {
     /// « fenêtre concurrente » au hasard. Ce verrou les met en file — il ne masque rien, il rend les
     /// tests DÉTERMINISTES. (Les autres fils du binaire de test, eux, ne font qu'AJOUTER de la RSS :
     /// toutes les assertions ci-dessous sont écrites pour rester vraies sous cette inflation.)
-    static FENETRES: Mutex<()> = Mutex::new(());
+    ///
+    /// `P10.11-a` — IL EST `pub(super)`, ET CE N'EST PAS UN DÉTAIL DE PORTÉE. La ressource sérialisée
+    /// est de PROCESSUS, donc le verrou doit couvrir TOUT test qui ouvre une `Fenetre`, où qu'il vive.
+    /// Un second fichier de tests a ouvert une fenêtre sans lui, et ce test-ci est tombé au hasard de
+    /// l'ordonnancement (rouge sous filtre, vert en suite complète) : un verrou dont la portée s'arrête
+    /// au fichier ne sérialise pas la ressource, il sérialise ses voisins de palier.
+    pub(super) static FENETRES: Mutex<()> = Mutex::new(());
 
     /// Une base au schéma RÉEL du produit — la série finit dans `metric`, dont les index comptent autant
     /// que les lignes dès qu'on parle de coût disque. (Helper local : chaque module de test porte les

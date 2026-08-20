@@ -216,6 +216,18 @@ sudo plume-agent uninstall
 > « service installé et démarré » et sortait 0 sur une machine qui ne collectait rien et redémarrait
 > en boucle toutes les 5 s.* La commande refuse maintenant d'écrire une unité qui se contredit, et dit
 > quoi faire (copier le binaire dans `/usr/local/bin`, la config dans `/etc/plume`).
+> **1 bis. Le refus vaut pour les QUATRE chemins, et il est MESURÉ sur l'hôte (2026‑08‑20).** Le spool
+> et l'état étaient exemptés, sur la foi d'un commentaire daté affirmant que le `ReadWritePaths=` de
+> l'unité les re‑exposait malgré `ProtectHome=`. *Re‑mesuré le 2026‑08‑20 (systemd 261, unités
+> transitoires, une seule variable) : cela ne se reproduit pas — ni `ReadWritePaths=`, ni `BindPaths=`,
+> ni `BindReadOnlyPaths=`, ni `ReadOnlyPaths=` ne ramènent un chemin ainsi protégé. Pire que 203 :
+> l'unité DÉMARRE (`ExecMainStatus=0`, aucun 203, aucun 226) et le service reçoit « Permission
+> denied » à la première écriture dans son spool.* Un spool ou un état sous `/home`, `/root` ou
+> `/run/user` est donc refusé comme le binaire. Et parce qu'aucune table écrite d'avance ne peut
+> décrire le bac à sable de tous les hôtes, `install` **monte réellement** ce bac à sable avant
+> d'écrire l'unité (une unité transitoire portant le même durcissement) et y teste chaque chemin dans
+> le mode dont le service a besoin. Si cette mesure ne peut pas être faite, elle le **dit** au lieu de
+> passer pour un feu vert.
 > **2. Ce qu'`install` affirme est RE‑OBSERVÉ, et sur une DURÉE.** *Mesuré le 2026‑08‑02, 3 fois sur
 > 3 : l'échantillon pris juste après le démarrage d'une unité dont l'`ExecStart` est injoignable dit
 > `active/running/ExecMainStatus=0` — le SUCCÈS —, et la même unité est en `auto-restart/203` 1,2 s

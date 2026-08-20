@@ -112,14 +112,19 @@ pub(crate) async fn rate_limit(State(st): State<AppState>, req: Request, next: N
 pub(crate) fn tune(conn: &Connection) {
     // Le budget mémoire vient de `sqlite_plafond` (un seul auteur) : un `GROUP BY` lancé sur la
     // connexion d'ÉCRITURE a exactement le même trieur que sur une connexion de lecture.
+    // LA POLITIQUE DE JOURNAL vient de `wal_empreinte` (un seul auteur) : le seuil d'auto-checkpoint ET
+    // la borne du RÉSIDU en sont DÉRIVÉS l'un de l'autre, donc les écrire ici séparément les laisserait
+    // diverger. Le fragment vient APRÈS `journal_mode=WAL` : `journal_size_limit` ne borne le WAL qu'en
+    // mode WAL (hors WAL il borne le journal de rollback, qui n'est pas le sujet).
     let _ = conn.execute_batch(&format!(
         "PRAGMA journal_mode=WAL;\
          PRAGMA synchronous=NORMAL;\
          PRAGMA busy_timeout=5000;\
          {}\
-         PRAGMA wal_autocheckpoint=1000;\
+         {}\
          PRAGMA foreign_keys=ON;",
-        sqlite_plafond::pragmas_memoire()
+        sqlite_plafond::pragmas_memoire(),
+        wal_empreinte::pragmas_journal(wal_empreinte::page_size_de(conn))
     ));
 }
 
@@ -557,6 +562,13 @@ fn spawn_background_jobs(conf: HashMap<String, String>, spool: String, db_path: 
     // honnête, jamais de VACUUM plein bloquant) si la base n'est pas en auto_vacuum=INCREMENTAL.
     {
         spawn_autovacuum_loop(conf.clone(), db.clone());
+    }
+    // P10.9-a — L'OBSERVATOIRE D'USAGE DES INDEX. Réglé ICI, depuis la configuration RÉSOLUE, et non
+    // par une lecture d'environnement nue : sinon la clé écrite dans le fichier de configuration d'un
+    // déploiement host-natif n'aurait aucun effet. `PLUME_INDEX_USAGE_SAMPLE_N=0` (défaut) -> aucun
+    // plan lu, aucune série publiée, `/metrics` inchangé octet pour octet.
+    {
+        index_usage::configurer(&conf);
     }
     // LA SÉRIE DU BUDGET (P10.2-a suite) — la ventilation par poste, ÉCRITE DANS LE TEMPS au lieu
     // d'être relevée à la main. Tick lent (défaut horaire = la résolution de `metric_rollup`), parcours
@@ -1847,6 +1859,10 @@ pub(crate) async fn run() {
     // un tier froid que le binaire ne portait plus. APRÈS l'ouverture de la base, délibérément : la fenêtre
     // chaude et la rétention cold sont des SETTINGS clampés, les publier sans les lire serait les inventer.
     eprintln!("[cold] {}", cold_banniere::banniere(cold_banniere::etat(&db.lock(), &conf, &db_path)));
+    // JOURNAL D'ÉCRITURE ANTICIPÉE (P10.16-a) : une borne d'espace qu'un exploitant ne peut pas LIRE au
+    // démarrage n'est pas opposable — et celle-ci doit surtout dire ce qu'elle ne borne PAS, sinon elle
+    // laisserait croire que la crête d'une rafale est tenue alors que seul le RÉSIDU l'est.
+    eprintln!("[wal] {}", wal_empreinte::borne_courante().phrase());
     // L2 — EPOCH de session persistant (meta) chargé au boot -> mint/verify_session le mélangent au HMAC.
     // Survit au redémarrage : un logout/reset AVANT un crash reste effectif après relance.
     let session_epoch = Arc::new(std::sync::atomic::AtomicI64::new(load_session_epoch(&db.lock())));

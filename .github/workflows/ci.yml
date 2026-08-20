@@ -235,7 +235,47 @@ env:
   # VUE et la file ABSENTE (les deux sens), le plafond de cardinalité qu'on fait mordre, et
   # l'étiquette prise sur le GABARIT de route et non sur l'URL. Contre-mesuré le 2026-08-20 par la
   # même énumération, sur le même arbre : 1060 par défaut, 1280 avec `cold_tier`.
-  EXPECTED_TESTS: "1060"
+  # +11 pour le lot « imputation d'une alerte à ses sources » (clé S7,
+  # `daemon/src/tests/imputation_de_source.rs`) : l'ampleur DÉRIVÉE du contenu livré (combien de règles
+  # livrées le texte d'une règle sait nommer, et le fait qu'AUCUN des capteurs ne l'était), la mutation
+  # dans les deux sens (une source muette -> SA pastille et aucune autre ; deux muettes -> deux
+  # pastilles), le même couple pour le chemin RÈGLE, l'alerte globale prouvée intacte champ par champ,
+  # le repli des alertes antérieures à la migration, l'inconnu NOMMÉ, la forme stockée, et la garde
+  # DÉRIVÉE qui refuse qu'un producteur d'alerte de plus rejoigne la liste sans dire lequel des deux
+  # chemins d'imputation il prend. RE-MESURÉ le
+  # 2026-08-20 par la MÊME énumération, sur l'arbre courant : 1079 par défaut, 1299 avec `cold_tier`
+  # (l'arbre a reçu d'autres lots pendant la mesure ; ces deux nombres sont ceux de l'arbre, pas d'un
+  # lot — c'est la même règle que pour l'écart avec 1048 plus haut, et c'est la raison pour laquelle
+  # une contre-mesure est refaite ici plutôt qu'un chiffre reporté d'un rapport).
+  # +9 pour le lot « observatoire d'usage des index » (clé P10.9-a,
+  # `daemon/src/tests/index_usage_observatoire.rs`) : les DEUX témoins de mutation (un énoncé forcé sur
+  # un index fait bouger SON compteur et aucun autre ; un balayage non indexé n'en bouge AUCUN — sans
+  # ce second, un compteur qui monte toujours ne prouverait rien), l'extinction par défaut prouvée par
+  # une exposition VIDE, le coût mesuré et imprimé, le pas d'échantillonnage, le plafond de cardinalité
+  # qu'on fait mordre, la déduction de la classe de consommateur, les trois crans du régime de
+  # statistiques, et la garde qui exige que la portée de la série voyage dans son `# HELP`. Ces neuf
+  # noms sont SANS `cfg` : ils entrent dans les DEUX profils, d'où le même +9 sur les deux compteurs.
+  # RE-MESURÉ le 2026-08-20 par la MÊME énumération, sur l'arbre courant (qui porte aussi les lots
+  # ci-dessus) : 1079 par défaut, 1299 avec `cold_tier` — les valeurs déjà posées.
+  # RE-MESURÉ une dernière fois le 2026-08-20, par la MÊME énumération et sur le MÊME arbre, après la
+  # garde dérivée des producteurs d'alerte (S7) et les lots arrivés entre-temps : 1086 par défaut,
+  # 1306 avec `cold_tier`. Trois énumérations successives du même jour ont rendu 1070, 1079 puis 1086 :
+  # ces nombres sont ceux de l'ARBRE, jamais d'un lot — un lot qui atterrit après celui-ci doit donc
+  # RÉ-ÉNUMÉRER, et surtout pas additionner son propre écart à la valeur trouvée ici.
+  # DONT +6 pour le lot « empreinte du journal d'écriture » (clé P10.16-a,
+  # `daemon/src/tests/wal_empreinte.rs`), inclus dans le 1086 ci-dessus : la formule de la borne
+  # exercée sur chacune de ses entrées (plafond d'événements, taille de page, en-tête de trame), les
+  # trois états de la borne distingués (dérivée / imposée / désactivée) avec l'exigence que chaque
+  # phrase AVOUE ce qu'elle ne borne pas, la couverture d'une VRAIE transaction d'ingest mesurée sur
+  # `db/schema.sql` plus la chaîne de migrations — avec le témoin qui fait porter le terme du lot (la
+  # réserve d'auto-checkpoint SEULE ne couvre pas cette transaction) —, le résidu mesuré dans les DEUX
+  # bras (borné et témoin sans borne : sans le second on aurait mesuré un fichier petit sans savoir
+  # pourquoi), le verdict de la voie unique de troncature exercé SOUS la borne dans ses deux états
+  # (refusé quand un lecteur tient le journal, tronqué après relâche), et la garde dérivée qui
+  # n'autorise qu'un seul auteur au seuil d'auto-checkpoint. Ces six noms sont SANS `cfg` de feature :
+  # ils entrent dans les DEUX profils, donc ils ne déplacent pas l'écart cold−défaut de 220. La suite
+  # par défaut a été EXÉCUTÉE sur l'arbre courant, pas seulement énumérée : 1086/1086, rc=0, 181,60 s.
+  EXPECTED_TESTS: "1086"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -498,7 +538,19 @@ jobs:
           # inchangé. Même constat pour les six tests de la borne interactive (P7.8-a) : ils portent
           # sur le sémaphore des routes CHAUDES, que le tier froid ne change pas — ils sont donc les
           # mêmes des deux côtés et ne déplacent pas l'écart.
-          EXPECTED_COLD_TESTS: "1280"
+          # +11 pour le lot « imputation d'une alerte à ses sources » (S7) : ces tests n'ont AUCUN `cfg`
+          # de feature — ils portent sur le chemin d'alerte CHAUD, que le tier froid ne change pas — donc
+          # ils sont les mêmes des deux côtés et l'écart cold−défaut reste **220**. RE-MESURÉ le
+          # 2026-08-20 par la MÊME énumération, sur l'arbre courant : 1306 (l'arbre a reçu d'autres lots
+          # pendant la mesure ; l'écart cold−défaut vaut toujours 220 — le lot S7 n'a AUCUN `cfg` de
+          # feature, il porte sur le chemin d'alerte CHAUD, donc il compte pareil des deux côtés).
+          # 1306 CONTRE-MESURÉ le 2026-08-20 par la MÊME énumération (`cargo test --features cold_tier
+          # -- --list`, deux lectures concordantes : le compte des lignes `: test` et le total que cargo
+          # imprime lui-même), sur l'arbre qui porte aussi les six tests du lot « empreinte du journal
+          # d'écriture » (clé P10.16-a). Ces six-là n'ont AUCUN `cfg` de feature : ils portent sur la
+          # politique de journal de la base CHAUDE, que le tier froid ne change pas — ils sont donc les
+          # mêmes des deux côtés, et l'écart cold−défaut reste **220** (1306 − 1086).
+          EXPECTED_COLD_TESTS: "1306"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -597,6 +649,23 @@ jobs:
       # annoncé devenu injoignable. Elle porte ses propres témoins positif et négatif.
       - name: La couverture ANNONCÉE par un capteur doit être ATTEIGNABLE sous son bac à sable
         run: python3 .github/scripts/check_fim_coverage_is_reachable.py
+
+      # MÊME FAMILLE, APPLIQUÉE À LA DOCUMENTATION : ici ce n'est pas une couverture annoncée qui est
+      # injoignable, c'est le DOCUMENT lui-même. Un document à jour que rien ne référence est
+      # invisible, donc inexistant pour le lecteur. MESURÉ le 2026-08-20 : 11 des 45 documents suivis
+      # n'étaient la cible d'AUCUN lien Markdown — dont le document de conception portant l'état le
+      # plus frais des travaux d'échelle, l'agent d'endpoint, le récepteur syslog et le harnais de
+      # mesure. Aucun n'était brouillon ; chacun était introuvable.
+      # La garde n'énumère aucun document : elle découvre les documents suivis par `git ls-files` et
+      # exige un CHEMIN DE LIENS depuis `README.md`. Une MENTION en texte brut ne compte pas — c'est
+      # exactement sous cette forme que le document d'échelle était « référencé », et une garde qui
+      # l'aurait acceptée serait passée au vert sur le défaut qu'elle doit attraper. Elle porte ses
+      # deux témoins (formes de liens qu'elle DOIT reconnaître, mentions qu'elle NE DOIT PAS compter)
+      # et un plancher de liens résolus sur l'arbre réel, pour ne pas rendre vert en ne voyant rien.
+      # UN DOCUMENT AJOUTÉ SANS ENTRÉE D'INDEX FAIT ROUGIR CE PAS, ET C'EST L'OBJET : l'index se tient
+      # au moment où le document est écrit, pas lors d'un futur audit.
+      - name: Un document suivi doit être ATTEIGNABLE depuis la page d'accueil
+        run: python3 .github/scripts/check_every_doc_is_reachable.py
 
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
       # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —

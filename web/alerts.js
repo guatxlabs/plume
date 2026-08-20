@@ -58,13 +58,25 @@ function alert_group_axis(g) { return g === 'rule' || g === 'host' || g === 'mit
 function setAlertMitreFilter(m) { S.alertMitreFilter = (m || '').trim().toUpperCase(); S.alertSourceFilter = ''; S.alertHistPage = 0; location.hash = 'alerts'; renderAlerts(true); }
 // FIX 2 — filtre actif sur les alertes par SOURCE (pivot depuis la cloche d'un feed « chaud » de la
 // fraîcheur). '' = aucun filtre. Il n'existe PAS de filtre source côté serveur : on récupère les alertes
-// 'new' et on les filtre CÔTÉ CLIENT sur les jetons `source=<x>` de leur `detail` (la requête de la règle),
-// exactement comme extract_query_sources côté daemon le fait pour le compteur active_alerts du feed.
+// 'new' et on les filtre CÔTÉ CLIENT — sur `a.sources`, l'imputation que le daemon a DÉRIVÉE DE LA DONNÉE
+// (cf. alertSourcesOf ci-dessous), c'est-à-dire exactement ce qui a fabriqué le compteur `active_alerts`
+// du feed dont on vient de cliquer la cloche. Les deux surfaces lisent donc le MÊME verdict.
 /* state: alertSourceFilter -> S (state.js) */
 function alertSources(detail) {
   const out = [], re = /source\s*=\s*(?:'([^']*)'|"([^"]*)"|([^\s|'"]+))/g; let m;
   while ((m = re.exec(detail || ''))) out.push(m[1] || m[2] || m[3]);
   return out;
+}
+// S7 — LES SOURCES D'UNE ALERTE, DANS L'ORDRE DE PRÉFÉRENCE DU SERVEUR. `a.sources` est l'imputation
+// DÉRIVÉE DE LA DONNÉE, écrite par le daemon à la levée de l'alerte (colonne `event.source` des événements
+// appariés ; descripteur de sonde pour un capteur muet) : c'est elle qui alimente le compteur
+// `active_alerts` d'un feed, donc c'est elle que ce filtre doit lire — sinon la cloche d'un feed « chaud »
+// ouvrirait une liste VIDE pour toute alerte que le texte de la règle ne sait pas nommer (le défaut S7,
+// ressorti une couche plus haut). Vide -> alerte antérieure à v115 (ou daemon antérieur) : repli sur les
+// jetons `source=` du texte, comportement historique.
+function alertSourcesOf(a) {
+  const s = (a && a.sources) || '';
+  return s ? s.split('\n').map(x => x.trim()).filter(Boolean) : alertSources(a && a.detail);
 }
 function setAlertSourceFilter(src) { S.alertSourceFilter = (src || '').trim(); S.alertMitreFilter = ''; S.alertHistPage = 0; location.hash = 'alerts'; renderAlerts(true); }
 // « voir les events » d'une technique sans alerte : recherche plein-texte du tag MITRE (best-effort, les
@@ -179,7 +191,7 @@ async function renderAlerts(loading) {
   try { const resp = await api(url); alerts = resp.alerts || []; alertTotal = resp.total; } catch (e) { b.classList.remove('reloading'); b.innerHTML = '<div class="bad">alertes indisponibles : ' + esc(e.message) + '</div>'; return; }
   b.classList.remove('reloading');
   // filtre SOURCE (pas de filtre serveur) : on ne garde que les alertes dont la règle vise cette source.
-  if (S.alertSourceFilter && !S.alertMitreFilter) alerts = alerts.filter(a => alertSources(a.detail).includes(S.alertSourceFilter));
+  if (S.alertSourceFilter && !S.alertMitreFilter) alerts = alerts.filter(a => alertSourcesOf(a).includes(S.alertSourceFilter));
   // Le toggle de vue n'apparaît QUE sur la file par défaut (pas dans un drill mitre/source).
   const viewControls = (!S.alertMitreFilter && !S.alertSourceFilter) ? alertViewControls('') : '';
   // bandeau retirable quand un filtre (technique MITRE ou source) est actif

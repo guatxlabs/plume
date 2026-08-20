@@ -593,6 +593,15 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
         }
         let row_count = out.len();
         let elapsed_ms = (t0.elapsed().as_secs_f64() * 1_000_000.0).round() / 1000.0;
+        // P10.9-a — L'OBSERVATOIRE D'USAGE DES INDEX, au POINT DE PASSAGE UNIQUE de toute lecture
+        // (chemin chaud ET union chaud∪froid, qui empruntent tous deux ce cœur). ÉTEINT par défaut :
+        // c'est alors un chargement atomique et rien d'autre. APRÈS `elapsed_ms`, délibérément — un
+        // instrument de mesure ne doit pas gonfler la durée que l'analyste lit dans `stats`.
+        index_usage::observatoire().observer(
+            conn,
+            sql,
+            index_usage::Consommateur::deduit(budget_ms, qid, query_budget_interactive_ms()),
+        );
         Ok(json!({
             "columns": cols,
             "rows": out,

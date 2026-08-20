@@ -96,8 +96,8 @@
     "session_open",
     "session_close"
   ],
-  "autoindex_deny": {
-    "_comment": "Champs JAMAIS eligibles a l'auto-index (haute cardinalite -> budget RAM 2 Go). Guidance de mapping : ne comptez pas indexer ces cles ; leur agregation passe par les rollups.",
+  "high_cardinality_fields": {
+    "_comment": "Champs a FORTE cardinalite : ne comptez pas les indexer (budget RAM 2 Go). Guidance de mapping, PAS un reglage. Cette cle s'appelait `autoindex_deny`, ce qui laissait entendre qu'un mecanisme indexait les AUTRES champs a l'usage : c'etait faux, ce mecanisme n'a jamais promu un seul index et il a ete retire (P6.8-b). La seule indexation de champs JSON qui existe est la liste FERMEE HOT_FIELDS ; tout champ hors de cette liste est scanne, qu'il figure ou non ci-dessous. Cf. docs/CIM.md section 4d.",
     "fields": ["path", "src_ip", "uid", "pid", "url", "message", "dedup", "remote_address", "msg", "time", "logSource", "request_id", "trace_id", "span_id", "latency", "duration", "thread"]
   }
 }

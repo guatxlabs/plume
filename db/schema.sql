@@ -120,7 +120,14 @@ CREATE TABLE IF NOT EXISTS alert(
   env_id TEXT NOT NULL DEFAULT 'prod',       -- v66 : environnement intra-tenant (#2a-2a), INERTE en mode 0
   -- v75 (MODE ENGAGEMENT) — TAG engagement de l'alerte (fondation du rapport de couverture scopé
   -- `/api/coverage/detections?engagement=<id>`). DEFAULT '' = INERTE en mode 0/off. MIROIR de la migration v75.
-  engagement_id TEXT NOT NULL DEFAULT ''
+  engagement_id TEXT NOT NULL DEFAULT '',
+  -- v115 (S7) — À QUELLE(S) SOURCE(S) CETTE ALERTE SE RAPPORTE. Liste séparée par des sauts de ligne,
+  -- ÉCRITE au moment où l'alerte est levée et DÉRIVÉE DE LA DONNÉE (colonne `event.source` des événements
+  -- appariés ; descripteur typé de la sonde pour un capteur muet) — jamais du texte de la règle, qui est
+  -- de la prose. `(source indéterminée)` = l'inconnu NOMMÉ (cf. daemon/src/imputation.rs). DEFAULT ''
+  -- = alerte ANTÉRIEURE à la migration : le lecteur retombe alors sur l'extraction textuelle historique.
+  -- MIROIR de la migration v115.
+  sources TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_alert_status ON alert(status,ts);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_dedup ON alert(dedup) WHERE dedup IS NOT NULL;

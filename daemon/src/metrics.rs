@@ -390,6 +390,12 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     // qui TIENT les compteurs, jamais réécrit ici : la cardinalité (plafonnée) et le nommage ont un seul
     // auteur. Lecture d'atomiques uniquement — un scrape ne coûte rien à la base.
     o.push_str(&crate::semaphore_interactif::exposition_prom());
+    // P10.9-a — USAGE DES INDEX, PAR INDEX ET PAR CLASSE DE CONSOMMATEUR. Lecture d'atomiques
+    // uniquement (un scrape ne coûte rien à la base) ; cardinalité bornée par le plafond du registre
+    // × l'énumération FERMÉE des classes. Rendu par le module qui TIENT les compteurs : le texte de
+    // ce que la série NE PROUVE PAS part dans son `# HELP`, donc sous les yeux de qui lit le verdict.
+    // Chaîne VIDE tant qu'aucun plan n'a été lu -> observatoire éteint = `/metrics` inchangé.
+    o.push_str(&crate::index_usage::observatoire().exposition_prom());
     g(&mut o, "plume_alerts_open", "gauge", "Alertes ouvertes (status=new)", "/alerts_open");
     // BAN NATIF HTTP — la BORNE et son SATURATION. Lu depuis le store live en mémoire (aucune requête SQL :
     // un scrape ne doit rien coûter à la base). `store_tronque=1` dit que des bans posés en base ne sont PAS

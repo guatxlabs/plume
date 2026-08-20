@@ -67,6 +67,7 @@ mod db_ventilation; // OÙ PARTENT LES OCTETS : ventilation par objet, DÉRIVÉE
 mod ventilation_serie; // LA MÊME MESURE, DANS LE TEMPS : tick lent -> table `metric` -> `metric_rollup` (90 j) -> SOQL `metric`. Un refus de publier reste un TROU, jamais un zéro
 mod limite_corps; // LE PLAFOND DE TAILLE D'UN CORPS INGERE : la limite qui MORD comptait des octets et ne le disait pas -> un seul auteur pour ce plafond ET pour son message
 mod sqlite_plafond; // LE PLAFOND MÉMOIRE D'UNE LECTURE : sous `temp_store` en mémoire, SQLite n'a AUCUN chemin de code pour déverser un tri -> un seul auteur pour ce budget
+mod wal_empreinte; // P10.16-a : L'EMPREINTE DU JOURNAL D'ÉCRITURE — la CRÊTE n'est pas bornable (elle dépend des lecteurs qui refusent le checkpoint), le RÉSIDU l'est, et c'est lui qu'on porte au budget
 mod query_timing; // LE DÉCOUPAGE DU TEMPS D'UNE REQUÊTE : l'attente d'un permit n'est fabricable QUE par l'acquisition
 pub(crate) use query_timing::*;
 // P7.8-a : CE QUE COÛTE LA BORNE INTERACTIVE, PAR ROUTE — attente du permit ET travail permit en main,
@@ -74,6 +75,12 @@ pub(crate) use query_timing::*;
 // plafonnée. Noms QUALIFIÉS (pas de `use ... ::*`) : une lecture de `query_timing`/`server` doit voir
 // d'où sort la mesure, comme pour `sink_s3`.
 mod semaphore_interactif;
+// P10.9-a : QUELS INDEX SERVENT VRAIMENT, ET À QUELLE CLASSE DE CONSOMMATEUR — le lecteur de plan
+// (une seule copie, partagée avec le rejeu du corpus fermé) et l'observatoire d'exécution, ÉTEINT par
+// défaut. Il publie AUSSI le régime de statistiques sous lequel il a lu : un plan choisi sans
+// statistiques d'index détaillées n'est pas représentatif, et un verdict qui tairait ce régime
+// laisserait retirer un index sur une mesure qui ne pouvait pas trancher. Noms QUALIFIÉS.
+mod index_usage;
 mod soql_glue;
 pub(crate) use soql_glue::*;
 mod field_filter; // #45 FIELD FILTERS : registre de masquage par champ (rôle/tenant/env), résolu en FieldMaskSet
@@ -135,6 +142,8 @@ mod sondes; // LES SONDES DE FRAÎCHEUR : ce qu'une sonde OBSERVE, la requête D
 // E0659 sur les 23 sites d'appel. Un import nommé prime sur tout glob : la résolution redevient
 // EXACTEMENT celle d'avant l'extraction.
 pub(crate) use sondes::{Cout, Sonde, COLLECTORS, DDL_IDX_BATTEMENT_SANTE, IDX_BATTEMENT_SANTE};
+mod imputation; // S7 : À QUELLE SOURCE UNE ALERTE SE RAPPORTE — lue dans la DONNÉE (colonne `event.source`, descripteur de sonde), plus dans la prose de la règle ; et un INCONNU NOMMÉ quand elle n'est pas déterminable
+pub(crate) use imputation::*;
 mod metrics; // #51 DAY-2 OPS : self-métriques process-globales + santé par composant + exposition Prometheus
 pub(crate) use metrics::*;
 mod handlers;

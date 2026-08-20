@@ -52,13 +52,14 @@ BENCH_RETENTION_DAYS="${BENCH_RETENTION_DAYS:-30}"
 # doit chiffrer l'échange concurrence <-> RAM en la faisant varier. Le défaut 3 laisse toutes les
 # autres phases STRICTEMENT identiques à ce qu'elles étaient.
 BENCH_QUERY_CONCURRENCY="${BENCH_QUERY_CONCURRENCY:-3}"
-# INDEXATION DES CHAMPS ÉTENDUS. Ces deux valeurs sont les DÉFAUTS DU PRODUIT, vérifiés dans le code
-# (`maintenance.rs` : PLUME_EXPRINDEX défaut "1" ; `server.rs` : PLUME_AUTOINDEX défaut "0"). Elles
-# étaient écrites en dur ici ; elles deviennent des paramètres pour que la sonde `hotfields` puisse
-# mesurer CE QUE CHANGE le fait d'activer l'auto-indexation — la question que se pose un exploitant.
-# Les défauts laissent TOUTES les autres passes strictement identiques à ce qu'elles étaient.
+# INDEXATION DES CHAMPS ÉTENDUS. Valeur = le DÉFAUT DU PRODUIT, vérifié dans le code
+# (`maintenance.rs` : PLUME_EXPRINDEX défaut "1"). Elle était écrite en dur ici ; c'est un paramètre
+# pour que la sonde `hotfields` puisse mesurer CE QUE CHANGE l'index d'expression sur un champ.
+# LE SEUL LEVIER D'INDEXATION DES CHAMPS ÉTENDUS EST CELUI-CI : l'indexation ADAPTATIVE pilotée par
+# l'usage a été RETIRÉE (P6.8-b, elle n'avait jamais promu un seul index), donc aucun réglage ne peut
+# faire indexer un champ hors de la liste en dur `HOT_FIELDS`. Le défaut laisse TOUTES les autres
+# passes strictement identiques à ce qu'elles étaient.
 BENCH_EXPRINDEX="${BENCH_EXPRINDEX:-1}"
-BENCH_AUTOINDEX="${BENCH_AUTOINDEX:-0}"
 # Les valeurs de sémaphore balayées par la phase `concurrency`. 3 = le défaut livré ; 8 = la valeur
 # d'AVANT la baisse faite comme levier de RAM. Mesurer les deux, c'est chiffrer ce que cette baisse a
 # coûté en concurrence et rapporté en mémoire.
@@ -120,7 +121,6 @@ export PLUME_DB_KEY='$BENCH_DB_KEY'
 export PLUME_FTS_FIELDS=$1
 export PLUME_FTS_FIELDS_BACKFILL=1
 export PLUME_EXPRINDEX=$BENCH_EXPRINDEX
-export PLUME_AUTOINDEX=$BENCH_AUTOINDEX
 export PLUME_QUERY_CONCURRENCY=$BENCH_QUERY_CONCURRENCY
 export PLUME_RETENTION_DAYS=$BENCH_RETENTION_DAYS
 export PLUME_COLD_TIER=$BENCH_COLD
@@ -447,9 +447,12 @@ fi
 # `BENCH_PHASES=hotfields` : deux clés étendues APPARIÉES (même type, même cardinalité, même taux de
 # présence, dérivées du profil), dont une seule est dans la liste EN DUR `HOT_FIELDS`. Même jeu,
 # même opérateur : la seule différence structurelle est l'existence d'un index.
-#   BENCH_PHASES=hotfields BENCH_AUTOINDEX=1 ...  mesure ce que l'auto-indexation REFERME
+# CE QUE CETTE PHASE NE PEUT PLUS FAIRE, ET POURQUOI C'EST LE FOND DE LA MESURE : il n'existe aucun
+# réglage qui ferait indexer la clé non chaude. L'indexation ADAPTATIVE pilotée par l'usage a été
+# RETIRÉE (P6.8-b) ; l'écart mesuré ici est donc l'écart PERMANENT que subit un exploitant dont le
+# champ discriminant n'est pas dans `HOT_FIELDS`, pas un écart qu'un tick de fond finirait par refermer.
 if [ "$BENCH_PHASES" = "hotfields" ]; then
-  say "sonde CHAMPS INDEXÉS — PLUME_EXPRINDEX=$BENCH_EXPRINDEX PLUME_AUTOINDEX=$BENCH_AUTOINDEX"
+  say "sonde CHAMPS INDEXÉS — PLUME_EXPRINDEX=$BENCH_EXPRINDEX"
   start_daemon 0
   NEV="$(count_events)"
   echo "base : $NEV événements"
@@ -461,27 +464,6 @@ if [ "$BENCH_PHASES" = "hotfields" ]; then
     --profile "$BENCH_PROFILE" --end-ts "$BENCH_END_TS" --span-days "$BENCH_SPAN_DAYS" \
     --reps "$BENCH_REPS" --config-id "${BENCH_CONFIG_ID:-hotfields}" \
     --phase-label "${BENCH_HF_LABEL:-défaut livré}" -o "$BENCH_DIR/hotfields.jsonl"
-  # L'AUTO-INDEXATION NE PEUT PAS RÉPONDRE INSTANTANÉMENT : elle exige `MIN_HITS`(10) et
-  # `MIN_SLOW`(3) puis un tick (120 s d'amorçage + `INTERVAL`, défaut 300 s). Mesurer juste après
-  # l'avoir activée ne mesurerait donc QUE le fait qu'elle n'a pas encore tourné. On lui donne le
-  # trafic qu'elle attend, puis le temps qu'elle demande, avec SES valeurs par défaut.
-  if [ "$BENCH_AUTOINDEX" = "1" ]; then
-    say "auto-index : génération du trafic (>= MIN_HITS) puis attente d'un tick, réglages par défaut"
-    for _ in $(seq 1 14); do
-      python3 "$REPO/bench/probe_hot_fields.py" --base "http://127.0.0.1:$BENCH_PORT" \
-        --host-header localhost --user benchviewer --password "$BENCH_VIEWER_PW" \
-        --profile "$BENCH_PROFILE" --end-ts "$BENCH_END_TS" --span-days "$BENCH_SPAN_DAYS" \
-        --reps 1 --config-id "chauffe" --phase-label "chauffe" -o /dev/null >/dev/null 2>&1
-    done
-    sleep 460
-    grep -a '\[autoindex\]' "$LOG" | tail -5 || echo "  (aucune ligne [autoindex] dans le journal)"
-    python3 "$REPO/bench/probe_hot_fields.py" --base "http://127.0.0.1:$BENCH_PORT" \
-      --host-header localhost --user benchviewer --password "$BENCH_VIEWER_PW" \
-      --admin-user benchadmin --admin-password "$BENCH_ADMIN_PW" \
-      --profile "$BENCH_PROFILE" --end-ts "$BENCH_END_TS" --span-days "$BENCH_SPAN_DAYS" \
-      --reps "$BENCH_REPS" --config-id "${BENCH_CONFIG_ID:-hotfields}-apres-tick" \
-      --phase-label "auto-index ACTIF, après un tick" -o "$BENCH_DIR/hotfields.jsonl"
-  fi
   oom_report
   stop_daemon
 fi

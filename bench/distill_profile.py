@@ -172,6 +172,12 @@ def main():
               for f in rows(s.get("DBSTAT_BY_NAME", []), 3)]
     by_name = {d["name"]: d["bytes"] for d in dbstat}
     ev_tbl = by_name.get("event", 0)
+    # `idx_ev_auto_` DÉCRIT LE PASSÉ, ET LE PRÉFIXE RESTE EXPRÈS. L'indexation adaptative qui posait
+    # ces index a été retirée (P6.8-b) et le daemon les DROPPE en fond ; une base distillée après ce
+    # passage n'en porte plus aucun. Mais la purge est de FOND : une base distillée AVANT qu'elle
+    # tourne en porte encore, et les oublier ferait SOUS-COMPTER le poids des index de `event` — un
+    # profil plus flatteur que la base qu'il décrit. Le préfixe ne fait rien exister ; il empêche de
+    # perdre des pages qui existent.
     ev_idx = sum(b for n, b in by_name.items()
                  if (n.startswith(("idx_event_", "idx_ev_f_", "idx_ev_auto_")) or n == "sqlite_autoindex_event_1"))
     ev_fts = sum(b for n, b in by_name.items() if n.startswith("event_fts"))

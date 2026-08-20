@@ -15,6 +15,41 @@ import time
 
 BUDGET_BYTES = 2 * 1024**3
 
+# --------------------------------------------------------------------------------------------
+# LA LISTE DES CHAMPS INDEXÉS EST LUE DANS LE CODE, JAMAIS RECOPIÉE ICI.
+#
+# POURQUOI : elle l'a été, et elle a pourri. Le document a publié « dix champs » et les a
+# énumérés, alors que le code en portait douze — `dir` et `risk` y sont entrés au moment où
+# l'indexation adaptative a été retirée (P6.8-c) pour que deux détections cessent de dépendre
+# d'index orphelins. Un lecteur qui suit une énumération périmée conclut, à tort, que son champ
+# n'est pas indexé. Une liste recopiée dans un document GÉNÉRÉ est la pire des deux : elle a
+# l'autorité de la mesure et la fraîcheur d'un commentaire.
+#
+# L'EXTRACTION ÉCHOUE PLUTÔT QUE DE DEVINER : sans la constante, pas de rendu. Un rendu qui se
+# rabattrait sur une liste par défaut republierait le défaut qu'on vient de retirer.
+_HOT_FIELDS_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "daemon", "src", "soql_glue.rs")
+
+
+def hot_fields():
+    """Les champs JSON portant un index d'expression, LUS dans `HOT_FIELDS` (daemon/src/soql_glue.rs)."""
+    import re
+    try:
+        src = open(_HOT_FIELDS_SRC, encoding="utf-8").read()
+    except OSError as e:
+        raise SystemExit(f"report.py : impossible de lire {_HOT_FIELDS_SRC} ({e}) — la liste des "
+                         "champs indexés se LIT dans le code, elle ne se recopie pas. Rendu refusé.")
+    m = re.search(r"HOT_FIELDS\s*:\s*&\[&str\]\s*=\s*&\[(.*?)\];", src, re.S)
+    if not m:
+        raise SystemExit(f"report.py : `HOT_FIELDS` introuvable dans {_HOT_FIELDS_SRC} — la constante "
+                         "a été renommée ou déplacée. Rendu refusé plutôt que rendu avec une liste "
+                         "périmée.")
+    champs = re.findall(r'"([^"]+)"', m.group(1))
+    if not champs:
+        raise SystemExit("report.py : `HOT_FIELDS` a été trouvée mais ne rend aucun nom — le motif "
+                         "d'extraction est faux. Rendu refusé.")
+    return champs
+
 
 def mib(b):
     return None if b is None else b / 2**20
@@ -2335,20 +2370,22 @@ def main():
 
     # L5 — regex sur champ étendu non indexé
     a, b = cell(base, "C5b-regex-json-cold", "all"), cell(base, "C5c-eq-json-hot", "all")
+    _hf = hot_fields()
     if a and a.get("wall_p50_ms") is not None:
         lev.append((a["wall_p50_ms"] - ((b or {}).get("wall_p50_ms") or 0),
                     "Le champ étendu non indexé n'a aucun chemin d'accès",
                     f"regex sur `fields.object` (aucun index) : **{fmt_dur(a['wall_p50_ms'])}**"
                     + (f" contre **{fmt_dur(b['wall_p50_ms'])}** pour une égalité sur "
                        f"`fields.user`, qui a un index d'expression partiel." if b and b.get("wall_p50_ms") else "")
-                    + " Dix champs seulement sont indexés (`HOT_FIELDS` : action, user, owner, kind, "
-                    "ns, role, scope, verb, resource, operation) sur les **241 clés distinctes "
-                    "mesurées en production**. Pour les 231 autres, toute recherche est un scan avec "
-                    "`json_extract` par ligne. C'est exactement la promesse « sur tous les champs » "
-                    "qui est en jeu. Voies : `event_fields_fts` (déjà écrit, voir le levier sur le coût de `PLUME_FTS_FIELDS`), ou "
+                    + f" {len(_hf)} champs seulement sont indexés (`HOT_FIELDS`, lu dans "
+                    f"`daemon/src/soql_glue.rs` : {', '.join(_hf)}) sur les **241 clés distinctes "
+                    f"mesurées en production**. Pour les {241 - len(_hf)} autres, toute recherche est "
+                    "un scan avec `json_extract` par ligne. C'est exactement la promesse « sur tous "
+                    "les champs » qui est en jeu. Voies : `event_fields_fts` (déjà écrit, voir le levier sur le coût de `PLUME_FTS_FIELDS`), ou "
                     "des index d'expression sur demande, ou un stockage colonnaire des champs. "
-                    "**Coût RAM : un index d'expression par champ**, à arbitrer — c'est pour ça que "
-                    "`PLUME_AUTOINDEX_MAX` existe.",
+                    "**Coût RAM : un index d'expression par champ**, à arbitrer — et cet arbitrage "
+                    "n'a aujourd'hui aucun automate : le mécanisme qui promettait de le rendre à "
+                    "l'usage a été retiré (P6.8-b) sans avoir jamais promu un seul index.",
                     "C5b vs C5c"))
 
     # L6 — le curseur DEMANDÉ mais pas servi. COMPARAISON LIKE-FOR-LIKE : C4d et C4c posent la MÊME
@@ -2465,8 +2502,11 @@ def main():
     W("- **La fidélité du texte** : le corps des messages est synthétique. Les chiffres FTS5, `LIKE`")
     W("  et `REGEXP` dépendent directement de ce vocabulaire ; c'est la limite la plus sérieuse du")
     W("  banc et elle est décrite dans `bench/gen_events.py` (`VOCAB`).")
-    W("- **`PLUME_AUTOINDEX`** est à 0 (le défaut livré) alors que notre production le met à 1 : les")
-    W("  index d'expression auto-créés par l'usage ne sont donc pas dans le tableau.")
+    W("- **L'indexation des champs étendus** : `PLUME_EXPRINDEX=1` (le défaut livré) est le SEUL")
+    W("  levier, et il n'indexe que les noms de `HOT_FIELDS`. Aucun mécanisme n'indexe plus un champ")
+    W("  à l'usage — celui qui le promettait a été retiré (P6.8-b) sans avoir jamais promu un index.")
+    W("  Ce tableau ne peut donc PAS montrer un champ étendu hors de cette liste servi par un index :")
+    W("  ce n'est pas une case non mesurée, c'est une case qu'aucune configuration ne remplirait.")
     W("")
 
     W("## Reproduire, et contredire")

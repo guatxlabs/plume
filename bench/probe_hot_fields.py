@@ -7,9 +7,11 @@ LE TROU QU'IL BOUCHE
   `action, user, owner, kind, ns, role, scope, verb, resource, operation, dir, risk`.
   Il n'y a AUCUN autre chemin : l'indexation ADAPTATIVE pilotée par l'usage a été RETIRÉE (P6.8-b),
   ses crochets de comptage étant devenus du code mort quand le compilateur a migré dans `guatx-core`.
-  Cette version du fichier affirmait qu'elle « existe (`maintenance.rs`, `autoindex_tick`) mais est
-  inactive par défaut » — c'est faux depuis le retrait : ni `autoindex_tick` ni `PLUME_AUTOINDEX`
-  n'existent, et aucune configuration ne peut plus faire indexer un champ hors de la liste ci-dessus.
+  DÉCISION CONSIGNÉE, AU PASSÉ — elle est ici pour qu'on ne la reprenne pas pour un réglage vivant :
+  il a existé un mécanisme (`autoindex_tick`, `PLUME_AUTOINDEX`, seuils `MIN_HITS`/`MIN_SLOW` et un
+  tick de fond) qui promettait d'indexer à l'usage les champs chauds et lents. Mesuré avec contrôle
+  positif, il n'a JAMAIS promu un seul index. Ni la fonction ni les variables n'existent plus, et
+  aucune configuration ne peut faire indexer un champ hors de la liste ci-dessus.
 
   Conséquence : un exploitant n'a d'index que sur ces douze noms. Celui dont le
   champ discriminant s'appelle `process_name`, `dst_port` ou `rule_name` tombe en SCAN — et rien ne
@@ -153,14 +155,17 @@ def main():
     # LE RÉGLAGE EFFECTIF, DEMANDÉ AU DAEMON — jamais supposé depuis le code ni depuis l'étiquette
     # de la passe. C'est précisément le piège que cette sonde doit éviter : « le mécanisme existe »
     # n'est pas « le mécanisme est actif ».
+    # UNE SEULE CLÉ, ET C'EST LE FOND DU CONSTAT : `PLUME_EXPRINDEX` est le SEUL réglage qui décide
+    # d'un index sur un champ étendu. Relever ici des clés que le daemon ne connaît plus rendrait un
+    # `null` que rien ne distingue d'un daemon qui n'aurait pas répondu — un réglage mort relevé est
+    # pire qu'un réglage absent, parce qu'il se lit comme une mesure.
     applied = {}
     if a.admin_user:
         acli = Client(a.base, a.admin_user, a.admin_password, a.host_header)
         st, body = acli.call("/api/system/diag")
         if st == 200 and isinstance(body, dict):
             blob = json.dumps(body)
-            for k in ("PLUME_AUTOINDEX", "PLUME_EXPRINDEX", "PLUME_AUTOINDEX_MIN_HITS",
-                      "PLUME_AUTOINDEX_MIN_SLOW", "PLUME_AUTOINDEX_INTERVAL"):
+            for k in ("PLUME_EXPRINDEX",):
                 i = blob.find(k)
                 applied[k] = blob[i:i + 80] if i >= 0 else None
 

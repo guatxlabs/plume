@@ -126,11 +126,49 @@ pub(crate) fn eval_value_budget(db_path: &str, sql: &str, budget_ms: u64) -> Opt
 pub(crate) fn detect_concurrency() -> usize {
     std::env::var("PLUME_DETECT_CONCURRENCY").ok().and_then(|v| v.parse().ok()).filter(|&n: &usize| n > 0).unwrap_or(3)
 }
+/// S7 — L'IMPUTATION DES RÈGLES QUI TIRENT, en parallélisme BORNÉ et HORS VERROU D'ÉCRITURE.
+///
+/// UNE requête de plus par TIR (jamais par évaluation) : le jeu est restreint à `qui_tire`, qui vaut
+/// l'ensemble VIDE dans le cas nominal d'un balayage où rien ne franchit son seuil — l'ordonnanceur ne
+/// paie donc rien tant qu'il n'y a rien à imputer. Le tranchage réutilise `detect_concurrency` (le MÊME
+/// plafond que la phase 2, pas un second réglage à tenir) : au plus N connexions de lecture en vol.
+/// Un worker EMPOISONNÉ est simplement ABSENT de la carte -> l'appelant pose l'inconnu NOMMÉ, jamais un
+/// silence. `due` est la liste telle que la phase 1 l'a lue : c'est elle qui porte `is_soql` et
+/// `window_s`, que la phase 2 ne recopie pas.
+type RegleDue = (i64, String, String, bool, String, f64, i64, i64, String);
+fn imputations_des_regles_qui_tirent(
+    db_path: &str,
+    due: &[RegleDue],
+    qui_tire: &std::collections::HashSet<i64>,
+    cc: usize,
+) -> HashMap<i64, String> {
+    let mut out: HashMap<i64, String> = HashMap::new();
+    if qui_tire.is_empty() {
+        return out;
+    }
+    let tirs: Vec<&RegleDue> = due.iter().filter(|d| qui_tire.contains(&d.0)).collect();
+    for chunk in tirs.chunks(cc.max(1)) {
+        let part: Vec<(i64, String)> = std::thread::scope(|s| {
+            chunk
+                .iter()
+                .map(|(id, _name, query, is_soql, _op, _th, _sev, window_s, _mitre)| {
+                    s.spawn(move || (*id, imputer_alerte_de_regle(db_path, query, *is_soql, *window_s)))
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .filter_map(|h| h.join().ok())
+                .collect()
+        });
+        out.extend(part);
+    }
+    out
+}
+
 /// Évalue les règles dues (enabled + intervalle écoulé) -> alerte si le seuil est franchi.
 pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) {
     let now_ts = now();
     // mitre porté en queue du tuple -> hérité par l'alerte (mesure de couverture de détection, purple-team)
-    let due: Vec<(i64, String, String, bool, String, f64, i64, i64, String)> = {
+    let due: Vec<RegleDue> = {
         let conn = db.lock();
         // #24 (RBA) : les règles en MODE RISK (risk_score>0) sont exclues ICI — elles ne lèvent PAS d'alerte
         // scalaire par tir ; elles CONTRIBUENT du risque via run_risk_rules (« instead of »). COALESCE défensif
@@ -201,6 +239,13 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) {
         });
         results.extend(chunk_res);
     }
+    // Phase 2 bis (S7) — À QUOI LES ALERTES DE CE TIR SE RAPPORTENT. Calculée ICI, entre l'évaluation et
+    // l'écriture : hors du verrou d'écriture (comme la phase 2) et SEULEMENT pour les règles qui vont
+    // lever une alerte — le prédicat de tir est le MÊME que celui de la phase 3 (`cmp_op`), écrit une
+    // fois et partagé, pour qu'une imputation ne puisse pas exister sans son alerte ni l'inverse.
+    let qui_tire: std::collections::HashSet<i64> =
+        results.iter().filter(|(_, _, op, th, val, _, _, _, _, ok)| *ok && cmp_op(*val, op, *th)).map(|r| r.0).collect();
+    let imputations = imputations_des_regles_qui_tirent(db_path, &due, &qui_tire, cc);
     // Phase 3 : ecritures groupees sous un seul verrou
     let conn = db.lock();
     for (id, name, op, threshold, val, severity, _window_s, query, mitre, ok) in results {
@@ -215,17 +260,23 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) {
         if cmp_op(val, &op, threshold) {
             let _ = conn.execute("UPDATE rule SET last_fired=?1 WHERE id=?2", params![now_ts, id]);
             let title = format!("{name} : {val} {op} {threshold}");
+            // S7 — L'IMPUTATION, calculée en phase 2 bis. `unwrap_or_else` NE pose PAS la chaîne vide :
+            // vide voudrait dire « alerte d'avant la migration » et ferait retomber le lecteur sur le
+            // texte de la règle EN SILENCE. Un tir sans imputation calculable porte l'inconnu NOMMÉ.
+            let sources = imputations.get(&id).cloned().unwrap_or_else(|| imputation_encoder(&[]));
             // l'alerte hérite du tag MITRE de la règle -> /api/coverage/detections joint sur `mitre`.
             // no-op si une alerte ouverte porte déjà la clé -> plus de renotif à chaque fenêtre.
             let _ = conn.execute(
-                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                params![now_ts, format!("rule.{id}"), severity, title, query, dedup, mitre],
+                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,sources) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![now_ts, format!("rule.{id}"), severity, title, query, dedup, mitre, sources],
             );
             // rafraîchit l'affichage (ts/valeur/sévérité — utile pour les gauges type CPU dont la valeur bouge)
-            // SANS toucher `notified` -> pas de renotif.
+            // SANS toucher `notified` -> pas de renotif. S7 : l'imputation est RAFRAÎCHIE ici aussi — sur un
+            // épisode déjà ouvert (l'INSERT ci-dessus est un no-op), une SECONDE source devenue muette
+            // doit faire basculer SA pastille sans attendre la résolution de l'épisode.
             let _ = conn.execute(
-                "UPDATE alert SET ts=?1, title=?2, severity=?3 WHERE dedup=?4 AND status IN ('new','ack')",
-                params![now_ts, title, severity, dedup],
+                "UPDATE alert SET ts=?1, title=?2, severity=?3, sources=?5 WHERE dedup=?4 AND status IN ('new','ack')",
+                params![now_ts, title, severity, dedup, sources],
             );
         } else {
             // retour SOUS le seuil -> résout l'alerte ouverte et libère la clé (ré-arme un futur épisode)

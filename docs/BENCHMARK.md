@@ -3832,7 +3832,7 @@ le MÊME `stats count by host`, la MÊME base : **102 ms** sans borne de temps c
 
 *Gain mesuré : **6.1 s** au p50 sur la cellule la plus parlante (C5b vs C5c). Ce n'est pas une promesse de gain : c'est l'écart QUE LA MESURE MONTRE aujourd'hui entre le chemin lent et un chemin rapide déjà existant ou atteignable.*
 
-regex sur `fields.object` (aucun index) : **6.1 s** contre **1.1 ms** pour une égalité sur `fields.user`, qui a un index d'expression partiel. Dix champs seulement sont indexés (`HOT_FIELDS` : action, user, owner, kind, ns, role, scope, verb, resource, operation) sur les **241 clés distinctes mesurées en production**. Pour les 231 autres, toute recherche est un scan avec `json_extract` par ligne. C'est exactement la promesse « sur tous les champs » qui est en jeu. Voies : `event_fields_fts` (déjà écrit, voir le levier sur le coût de `PLUME_FTS_FIELDS`), ou des index d'expression sur demande, ou un stockage colonnaire des champs. **Coût RAM : un index d'expression par champ**, à arbitrer — c'est pour ça que `PLUME_AUTOINDEX_MAX` existe.
+regex sur `fields.object` (aucun index) : **6.1 s** contre **1.1 ms** pour une égalité sur `fields.user`, qui a un index d'expression partiel. 12 champs seulement sont indexés (`HOT_FIELDS`, lu dans `daemon/src/soql_glue.rs` : action, user, owner, kind, ns, role, scope, verb, resource, operation, dir, risk) sur les **241 clés distinctes mesurées en production**. Pour les 229 autres, toute recherche est un scan avec `json_extract` par ligne. C'est exactement la promesse « sur tous les champs » qui est en jeu. Voies : `event_fields_fts` (déjà écrit, voir le levier sur le coût de `PLUME_FTS_FIELDS`), ou des index d'expression sur demande, ou un stockage colonnaire des champs. **Coût RAM : un index d'expression par champ**, à arbitrer — et cet arbitrage n'a aujourd'hui aucun automate : le mécanisme qui promettait de le rendre à l'usage a été retiré (P6.8-b) sans avoir jamais promu un seul index.
 
 ### L5. Câbler FTS5 sur le chemin GXQL
 
@@ -3866,8 +3866,11 @@ activer `PLUME_FTS_FIELDS=1` a fait passer la base de **1434 Mio à 1401 Mio** (
 - **La fidélité du texte** : le corps des messages est synthétique. Les chiffres FTS5, `LIKE`
   et `REGEXP` dépendent directement de ce vocabulaire ; c'est la limite la plus sérieuse du
   banc et elle est décrite dans `bench/gen_events.py` (`VOCAB`).
-- **`PLUME_AUTOINDEX`** est à 0 (le défaut livré) alors que notre production le met à 1 : les
-  index d'expression auto-créés par l'usage ne sont donc pas dans le tableau.
+- **L'indexation des champs étendus** : `PLUME_EXPRINDEX=1` (le défaut livré) est le SEUL
+  levier, et il n'indexe que les noms de `HOT_FIELDS`. Aucun mécanisme n'indexe plus un champ
+  à l'usage — celui qui le promettait a été retiré (P6.8-b) sans avoir jamais promu un index.
+  Ce tableau ne peut donc PAS montrer un champ étendu hors de cette liste servi par un index :
+  ce n'est pas une case non mesurée, c'est une case qu'aucune configuration ne remplirait.
 
 ## Reproduire, et contredire
 

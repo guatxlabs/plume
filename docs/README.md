@@ -38,6 +38,20 @@ explicitement plutôt que laissé à la surprise de l'opérateur.
 | [ENDPOINT-SECURITY.md](ENDPOINT-SECURITY.md) | ✅ | Sécurité endpoint en BYO-agent. |
 | [OTLP-TRACES.md](OTLP-TRACES.md) | ✅ | Récepteur OpenTelemetry (traces). |
 
+## Collecter aux extrémités (postes, équipements, boîtes aux lettres)
+
+Là où les événements NAISSENT. Chacun de ces chemins finit sur le même contrat de fil que l'ingest —
+c'est ce qui permet d'en ajouter un sans toucher au central.
+
+| Document | État | Pour quoi |
+|---|---|---|
+| [../agent/README.md](../agent/README.md) | ✅ | **Agent d'endpoint cross-OS** : lit les sources natives de l'OS, tamponne sur disque (spool borné, *au moins une fois*), POST vers l'ingest. |
+| [../agent/CI.md](../agent/CI.md) | ✅ | Comment cet agent est **validé** : ce que la CI exécute réellement par plateforme, et ce qu'elle ne fait que compiler. |
+| [../collectors/windows/README.md](../collectors/windows/README.md) | ✅ | **Collecteur Windows** PowerShell, un seul fichier, sans agent ni spool : POST direct sur `/api/ingest`. |
+| [../deploy/SYSLOG.md](../deploy/SYSLOG.md) | ✅ | **Récepteur syslog** (RFC 5424 + RFC 3164, UDP et TCP) et parseurs vendeur enfichables : un équipement réseau devient un collecteur de plus. |
+| [../deploy/MAIL.md](../deploy/MAIL.md) | ✅ | **Détection mail** lue sur le maildir de l'hôte : motifs curés (IOC, hameçonnage, URL), événements minimaux. |
+| [../deploy/EBPF-SIGMA.md](../deploy/EBPF-SIGMA.md) | ✅ | Brancher la détection runtime **eBPF** (sortie JSON Falco) et des règles **Sigma** sur l'ingest. |
+
 ## Interopérer
 
 | Document | État | Pour quoi |
@@ -59,6 +73,7 @@ explicitement plutôt que laissé à la surprise de l'opérateur.
 | Document | État | Pour quoi |
 |---|---|---|
 | [BENCHMARK.md](BENCHMARK.md) | ✅ | **La référence chiffrée, et l'instrument pour la contredire.** La matrice (classes de requêtes × fenêtres × masquage × FTS × tier froid × taille de flotte) sur une base synthétique au profil de production, daemon sous cgroup `MemoryMax=2G` **appliqué** — pas observé. Dit ce qui est **lent** avec la même franchise que ce qui est rapide, publie les leviers restants par gain mesuré, et NOMME les cellules qu'il n'a pas mesurées. Le harnais (`../bench/`) rejoue la matrice par une commande unique et publie ses données brutes, pour qu'un tiers puisse refaire — ou contredire — la mesure. **Lisez ses qualificatifs avant d'en citer un chiffre** : aucun compte n'est recopié ici (il pourrirait), le volume de référence n'est pas 10 M — le débit d'ingest réel et la CAUSE MESURÉE de sa dégradation sont publiés à la place — et la base tenait dans le cache de pages, donc les latences sont un **meilleur cas** borné par le CPU. |
+| [../bench/README.md](../bench/README.md) | ✅ | **L'INSTRUMENT** qui produit le document ci-dessus : ce que chaque passe mesure, ce que chaque fichier de résultats contient, et les pièges de lecture nommés un par un. À lire avant de contredire un chiffre — ou d'en citer un. |
 
 ## Direction et internes
 
@@ -66,6 +81,7 @@ explicitement plutôt que laissé à la surprise de l'opérateur.
 |---|---|---|
 | [MODULE-MAP.md](MODULE-MAP.md) | ✅ | **Carte des sous-systèmes + invariants de sécurité.** Le document à lire avant une première contribution. |
 | [AI-ML-DIRECTION.md](AI-ML-DIRECTION.md) | 📐 | Direction IA/ML : optionnelle, neutre vis-à-vis du fournisseur, neutre en RAM, OFF par défaut. |
+| [DESIGN-P10-echelle-2go.md](DESIGN-P10-echelle-2go.md) | 📐 | **Tenir sous 2 Gio à l'échelle** — la carte du terrain MESURÉ (où partent les octets, où part la RAM de tri) et l'ordre des leviers qui en découle : chaud/froid, colonnaire, bloom, compression. C'est le document qui porte l'état le plus frais de ces travaux ; les clés `P10.*` de [ROADMAP.md](ROADMAP.md) y renvoient. Brainstorm ancré sur mesure, **pas** une décision figée. |
 
 ## Ressources non narratives
 

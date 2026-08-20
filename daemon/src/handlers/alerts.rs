@@ -81,7 +81,8 @@ pub(crate) fn alerts_query_page(conn: &Connection, all_status: bool, status: &st
                 COALESCE(alert.detail,''),\
                 (SELECT incident_id FROM incident_item WHERE ref='alert:'||alert.id LIMIT 1),\
                 COALESCE(alert.mitre,''),r.window_s,\
-                COALESCE(alert.acked_at,0),COALESCE(alert.acked_by,'') \
+                COALESCE(alert.acked_at,0),COALESCE(alert.acked_by,''),\
+                COALESCE(alert.sources,'') \
                 FROM alert LEFT JOIN rule r ON ('rule.'||r.id)=alert.rule";
     // limit/offset = i64 déjà validés (clamp) -> injection impossible ; interpolés (pas de bind supplémentaire).
     let sql = format!("{base}{where_clause} ORDER BY alert.ts DESC LIMIT {limit} OFFSET {offset}");
@@ -97,7 +98,13 @@ pub(crate) fn alerts_query_page(conn: &Connection, all_status: bool, status: &st
             "detail": r.get::<_, String>(6)?, "case_id": r.get::<_, Option<i64>>(7)?,
             "mitre": r.get::<_, String>(8)?,
             "window_s": r.get::<_, Option<i64>>(9)?,
-            "acked_at": r.get::<_, i64>(10)?, "acked_by": r.get::<_, String>(11)?
+            "acked_at": r.get::<_, i64>(10)?, "acked_by": r.get::<_, String>(11)?,
+            // S7 — les sources auxquelles l'alerte est IMPUTÉE, telles qu'elles ont été DÉRIVÉES DE LA
+            // DONNÉE à sa levée. Le front en a besoin pour le pivot « voir les N alertes de <source> »
+            // depuis la cloche d'un feed : sans ce champ il refiltrerait le TEXTE de `detail` et
+            // n'afficherait rien pour les alertes que ce même texte ne sait pas nommer — le défaut S7
+            // ressorti une couche plus haut. Vide = alerte antérieure à la migration v115.
+            "sources": r.get::<_, String>(12)?
         }))
     }) {
         Ok(r) => r.flatten().collect(),

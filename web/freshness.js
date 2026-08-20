@@ -114,9 +114,17 @@ async function renderFreshness(loading) {
   feeds.sort((a, c) => ((SRANK[freshState(a)] ?? 9) - (SRANK[freshState(c)] ?? 9)) || a.name.localeCompare(c.name));
   const age = s => s < 90 ? s + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : s < 172800 ? Math.round(s / 3600) + ' h' : Math.round(s / 86400) + ' j';
   // le STATUT = santé de collecte : muet seulement si l'ingestion est en panne ; sinon l'âge est INFORMATIF
-  const head = !d.pipeline_fresh
+  const head0 = !d.pipeline_fresh
     ? `<div class="bad" style="font-weight:600;margin-bottom:8px">${ic('warn')} Ingestion en panne — aucune donnée reçue récemment</div>`
     : `<div class="muted" style="margin-bottom:8px">Collecte OK. L'âge = temps depuis la dernière donnée (dépend de l'activité de la source — ce n'est pas un retard).</div>`;
+  // S7 — L'INCONNU NOMMÉ. Une alerte active dont le serveur n'a pas su déterminer la source ne bascule la
+  // pastille d'AUCUN feed. La taire reviendrait à laisser croire que tout est imputé ; on la COMPTE ici,
+  // à côté des feeds, pour que l'exploitant sache qu'il reste des alertes à rattacher à la main. Absent /
+  // zéro -> rien n'est affiché (un daemon antérieur ne renvoie pas ce champ : aucune ligne fantôme).
+  const orph = Number(d.unattributed_alerts) || 0;
+  const head = head0 + (orph > 0
+    ? `<div class="fwarn" style="margin-bottom:8px">${ic('bell')} ${orph} alerte(s) active(s) sans source déterminée — aucune pastille de source ne les porte.</div>`
+    : '');
   // batch-2 item 2 — une SÉRIE métrique (sous le feed agrégé déplié) : même modèle d'état que les sources.
   const seriesRow = s => {
     const ss = freshState({ status: s.status, age_s: s.age_s, expected_s: 0, active_alerts: 0 });

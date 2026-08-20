@@ -302,10 +302,18 @@ pub(crate) async fn freshness(State(st): State<AppState>, Extension(au): Extensi
     Json(json!({ "warming": true, "feeds": [], "ts": now() }))
 }
 
-/// FIX #5 — extrait les valeurs `source=<x>` d'une requête de règle (stockée dans alert.detail par
+/// Extrait les valeurs `source=<x>` d'une requête de règle (stockée dans alert.detail par
 /// run_due_rules). Gère la forme GXQL `source=foo` ET la forme SQL `source='foo'` / `source="foo"`.
-/// Sert à corréler une alerte ACTIVE à la SOURCE qu'elle surveille -> surlignage des feeds « chauds ».
 /// Tolérant : token lu jusqu'au prochain séparateur (espace/tab/newline/pipe ou guillemet fermant).
+///
+/// S7 — CE N'EST PLUS LA VOIE PRINCIPALE, ET IL EST IMPORTANT DE SAVOIR POURQUOI ELLE RESTE. Cette
+/// fonction lit de la PROSE : elle ne peut nommer que ce que l'auteur de la règle a bien voulu écrire,
+/// donc elle est aveugle à toute règle volontairement générique — c'est le défaut S7. L'imputation
+/// principale vient désormais de la DONNÉE (`daemon/src/imputation.rs`, colonne `alert.sources`).
+/// Cette voie-ci garde DEUX emplois, tous deux réels : (1) les alertes levées AVANT la migration v115,
+/// dont la colonne est vide — les effacer d'un revers ferait disparaître des pastilles aujourd'hui
+/// justes ; (2) les règles en SQL BRUT, opaques au compilateur GXQL, où `source='cloudflare'` reste la
+/// seule chose de lisible. C'est aussi le repli en dernier ressort de l'imputation elle-même.
 pub(crate) fn extract_query_sources(detail: &str) -> Vec<String> {
     let bytes = detail.as_bytes();
     let needle = b"source=";
@@ -357,16 +365,37 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
             &format!("SELECT MAX(m) FROM (SELECT MAX(ts) m FROM event{wenv} UNION ALL SELECT MAX(ts) FROM metric{wenv} UNION ALL SELECT MAX(ts) FROM snapshot{wenv})"),
             [], |r| r.get::<_, Option<i64>>(0)).ok().flatten();
         let pipeline_fresh = global_last.map(|m| now_ts - m < 600).unwrap_or(false);
-        // FIX #5 — alertes ACTIVES (status='new') corrélées à chaque SOURCE, pour que le front surligne les
-        // feeds « chauds ». Corrélation au mieux : l'alerte d'une règle stocke la requête de la règle dans
-        // `detail` (run_due_rules) ; on en extrait les jetons `source=<x>` -> tally par source. Les alertes
-        // sans jeton source (heartbeat.*, règles filtrant par category/host plutôt que source) ne comptent
-        // pour aucun feed -> active_alerts=0 (limite assumée, cf tâche : version simple).
+        // ALERTES ACTIVES (status='new') imputées à chaque SOURCE, pour que le front surligne les feeds
+        // « chauds » — et, surtout, pour que la pastille de la source FAUTIVE bascule.
+        //
+        // S7 — D'OÙ VIENT LE NOM DE LA SOURCE. De `alert.sources` (migration v115), ÉCRIT au moment où
+        // l'alerte a été levée et DÉRIVÉ DE LA DONNÉE (colonne `source` des événements appariés ;
+        // descripteur typé de la sonde pour un capteur muet). Le lecteur ne devine plus rien : c'est le
+        // producteur, qui a la donnée sous la main, qui a répondu — cf. daemon/src/imputation.rs.
+        //
+        // REPLI TEXTUEL, CONSERVÉ ET BORNÉ : `sources` VIDE signifie « alerte antérieure à la migration ».
+        // Pour celles-là, on relit les jetons `source=<x>` du texte de la règle recopié dans `detail`
+        // (`extract_query_sources`) — comportement byte-identique à l'historique. Aucune alerte NEUVE ne
+        // passe par là : le producteur écrit toujours au moins l'inconnu NOMMÉ.
+        //
+        // L'INCONNU NOMMÉ NE VOTE POUR PERSONNE. `SOURCE_INDETERMINABLE` ne correspond au nom d'aucun feed :
+        // il est compté à part et RESSORT dans la charge utile (`unattributed_alerts`), au lieu d'être un
+        // zéro muet réparti sur tout le monde ou une imputation prise au hasard.
+        //
+        // BASE NON MIGRÉE : la colonne n'existe pas -> le `prepare` échoue. On NE tombe PAS à zéro (ce
+        // serait perdre en silence un surlignage qui marchait avant) : on rejoue l'énoncé HISTORIQUE,
+        // qui ne lit que `detail`. Un seul décodeur pour les deux chemins -> aucune sémantique en double.
         let mut alert_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-        if let Ok(mut s) = conn.prepare(&format!("SELECT COALESCE(detail,'') FROM alert WHERE status='new'{envp}")) {
-            if let Ok(rows) = s.query_map([], |r| r.get::<_, String>(0)) {
-                for d in rows.flatten() {
-                    for src in extract_query_sources(&d) { *alert_counts.entry(src).or_insert(0) += 1; }
+        let mut unattributed: i64 = 0;
+        let avec_colonne = format!("SELECT COALESCE(sources,''), COALESCE(detail,'') FROM alert WHERE status='new'{envp}");
+        let sans_colonne = format!("SELECT '', COALESCE(detail,'') FROM alert WHERE status='new'{envp}");
+        if let Ok(mut s) = conn.prepare(&avec_colonne).or_else(|_| conn.prepare(&sans_colonne)) {
+            if let Ok(rows) = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+                for (srcs, d) in rows.flatten() {
+                    let imputees = if srcs.is_empty() { extract_query_sources(&d) } else { imputation_decoder(&srcs) };
+                    for src in imputees {
+                        if src == SOURCE_INDETERMINABLE { unattributed += 1; } else { *alert_counts.entry(src).or_insert(0) += 1; }
+                    }
                 }
             }
         }
@@ -448,7 +477,11 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
             if let Some(o) = mf.as_object_mut() { o.insert("series".into(), json!(series_list)); }
             feeds.push(mf);
         }
-        json!({ "feeds": feeds, "ts": now_ts, "pipeline_fresh": pipeline_fresh })
+        // S7 — `unattributed_alerts` : le nombre d'alertes actives qui ne SAVENT PAS nommer leur source.
+        // Il est publié même à zéro : une surface qui n'affiche un compteur que lorsqu'il est non nul ne
+        // permet pas de distinguer « aucune alerte orpheline » de « ce compteur n'existe pas ». Ce chiffre
+        // est le prix HONNÊTE de l'imputation : ce qu'elle n'a pas su rattacher est DIT, pas dilué.
+        json!({ "feeds": feeds, "ts": now_ts, "pipeline_fresh": pipeline_fresh, "unattributed_alerts": unattributed })
     })
 }
 
@@ -499,9 +532,24 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) {
                     if retard.len() > 5 { ", …" } else { "" }
                 ));
             }
+            // S7 — QUELLE SOURCE, ET PAS « UNE » SOURCE. L'imputation vient du DESCRIPTEUR DE LA SONDE
+            // (`Sonde::EventFlux { sources }`, `Sonde::Instantane { kind }`…), c'est-à-dire de la même
+            // donnée typée dont la requête de fraîcheur est dérivée — jamais du libellé `label`, qui est
+            // de la prose (« journald (auth) »). C'est ce qui fait basculer la pastille de CETTE source
+            // dans /api/freshness : le `detail` de cette alerte ne porte aucun jeton `source=`, donc
+            // l'extraction textuelle historique n'imputait RIEN pour AUCUN des 23 capteurs.
+            let sources = imputation_encoder(&imputer_alerte_de_capteur(sonde));
             let _ = conn.execute(
-                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup) VALUES(?1,?2,2,?3,?4,?5)",
-                params![now_ts, format!("heartbeat.{id}"), format!("Capteur muet : {label}"), detail, dedup],
+                "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,sources) VALUES(?1,?2,2,?3,?4,?5,?6)",
+                params![now_ts, format!("heartbeat.{id}"), format!("Capteur muet : {label}"), detail, dedup, sources],
+            );
+            // Épisode DÉJÀ ouvert (l'INSERT ci-dessus est un no-op) : l'imputation est tout de même
+            // rafraîchie, pour la même raison que côté règles — la liste des sources d'un capteur peut
+            // changer entre deux versions du binaire, et une pastille ne doit pas rester accrochée à
+            // une imputation périmée pour toute la durée de l'épisode.
+            let _ = conn.execute(
+                "UPDATE alert SET sources=?1 WHERE dedup=?2 AND status IN ('new','ack')",
+                params![sources, dedup],
             );
         } else {
             // capteur de nouveau actif (ou jamais vu / pipeline frais) -> résout l'alerte ouverte et libère la clé

@@ -155,6 +155,6 @@ est alors servi depuis la table de rollup (réponse en ms) au lieu de scanner la
 - **Sémantique** : ADDITIVE (union avec les défauts compilés) — n'enlève jamais une dim built-in ; crée les
   sources nouvelles. Plafond **6 dims/source**. Idents invalides ignorés silencieusement.
 - ⚠️ **BASSE cardinalité UNIQUEMENT** (`level`, `status`, `verb`, `ns`…). **JAMAIS** `msg`/`time`/`trace_id` :
-  le cap top-N/bucket tronquerait les chiffres ET ces clés explosent la RAM (elles sont dans la denylist d'auto-index).
+  le cap top-N/bucket tronquerait les chiffres ET ces clés explosent la RAM (elles sont listées comme champs à FORTE cardinalité dans `cim/cim.v1.json`, à ne pas envisager d'indexer).
 - **Défaut** : `k8s-log` inclut déjà `ns,pod,level` -> `search source=k8s-log | stats count by level` instantané.
 - Un changement de `PLUME_ROLLUP_DIMS` est pris en compte au **redémarrage** (valeur mise en cache au boot).

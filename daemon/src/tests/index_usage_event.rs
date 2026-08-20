@@ -123,55 +123,14 @@ fn index_de_event(conn: &Connection) -> Vec<IndexEvent> {
 
 // ---------------------------------------------------------------------------------------------
 // L'INSTRUMENT : lire les index NOMMÉS par un plan d'exécution.
+//
+// LE LECTEUR N'EST PLUS ÉCRIT ICI (P10.9-a, suite). Il vit dans `crate::index_usage`, avec
+// l'observatoire d'exécution qui l'emploie sur le chemin réel. Une règle de lecture écrite deux fois
+// finit par diverger, et c'est alors le tableau d'usage qui ment. Conséquence recherchée : les deux
+// témoins ci-dessous — chaque index forcé par `INDEXED BY` doit être LU, un balayage `NOT INDEXED`
+// ne doit RIEN rendre — valident désormais le lecteur que la PRODUCTION emploie, et non une copie.
 // ---------------------------------------------------------------------------------------------
-
-/// Ce qu'un plan d'exécution NOMME. Les index nommés d'un côté ; de l'autre les mentions SANS nom
-/// (`AUTOMATIC ...` = index transitoire construit pour la requête, `INTEGER PRIMARY KEY` = le rowid),
-/// qu'il serait faux de compter comme un index du schéma et faux de jeter en silence.
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
-struct PlanLu {
-    index: BTreeSet<String>,
-    sans_nom: BTreeSet<String>,
-}
-
-/// Extrait d'un `detail` d'`EXPLAIN QUERY PLAN` ce qui suit chaque ` USING `. Écrit à la main plutôt
-/// qu'en regex parce que la forme est fixée par SQLite et tient en quatre cas :
-///   `SEARCH event USING INDEX <nom> (…)` · `… USING COVERING INDEX <nom> (…)` ·
-///   `… USING AUTOMATIC COVERING INDEX (…)` · `… USING INTEGER PRIMARY KEY (rowid=?)`.
-fn lire_detail(detail: &str, dans: &mut PlanLu) {
-    let mut reste = detail;
-    while let Some(p) = reste.find(" USING ") {
-        let apres = &reste[p + 7..];
-        reste = apres;
-        let apres = apres.strip_prefix("COVERING ").unwrap_or(apres);
-        if let Some(q) = apres.strip_prefix("INDEX ") {
-            let nom: String = q.chars().take_while(|c| !c.is_whitespace() && *c != '(').collect();
-            if !nom.is_empty() {
-                dans.index.insert(nom);
-            }
-        } else {
-            // `AUTOMATIC COVERING INDEX`, `INTEGER PRIMARY KEY`, `ROWID SEARCH`… : pas un index du schéma.
-            let jeton: String = apres.chars().take_while(|c| *c != '(').collect();
-            dans.sans_nom.insert(jeton.trim().to_string());
-        }
-    }
-}
-
-/// Le plan de `sql`, LU. `Err` porte le refus de SQLite tel quel (une requête que le planificateur
-/// refuse est un objet dont on NE PEUT PAS CONCLURE — jamais un objet « sans index »).
-fn plan_de(conn: &Connection, sql: &str) -> Result<PlanLu, String> {
-    let mut st = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).map_err(|e| e.to_string())?;
-    let lignes: Vec<String> = st
-        .query_map([], |r| r.get::<_, String>(3))
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-    let mut lu = PlanLu::default();
-    for l in &lignes {
-        lire_detail(l, &mut lu);
-    }
-    Ok(lu)
-}
+use crate::index_usage::{lire_detail, plan_de, PlanLu};
 
 // ---------------------------------------------------------------------------------------------
 // LA BASE D'ÉPREUVE : le schéma RÉEL, réconciliations de fond comprises.
@@ -349,6 +308,32 @@ enum RegimeStats {
     /// PAR ACCIDENT DE NOTRE DÉPLOIEMENT. L'invariant de généricité (P6.2-a) exige de savoir si le
     /// verdict d'un index tient au CORPUS ou à NOTRE flotte : ce régime le tranche, et lui seul.
     FlotteDe200Hotes,
+    /// LE TROU NOMMÉ PAR `P10.9-a`, COMBLÉ : des statistiques d'index **DÉTAILLÉES**, et RÉELLES.
+    ///
+    /// Les trois régimes ci-dessus partagent un défaut que le second déclare lui-même : ils
+    /// SYNTHÉTISENT un `sqlite_stat1` — des moyennes d'égalité — et n'écrivent AUCUN `sqlite_stat4`.
+    /// Or `sqlite_stat4` est ce qui estime le rendement d'une BORNE. Tant qu'il manque, le verdict
+    /// d'un index dont la colonne de tête n'est interrogée QUE par bornes ne peut pas être qualifié
+    /// de représentatif — et c'est précisément le cas du seul candidat que la mesure fait ressortir.
+    ///
+    /// CE RÉGIME NE SYNTHÉTISE RIEN. Il PEUPLE `event`, par la porte d'ingestion du produit, avec des
+    /// lignes dont les distributions sont celles du profil MESURÉ (`bench/profile-prod.json`) — pas
+    /// seulement les cardinalités, mais les PROPORTIONS (la sévérité est très déséquilibrée, la
+    /// catégorie aussi) et les TAUX DE NUL (deux tiers des lignes n'ont pas d'adresse source). Puis
+    /// il lance un `ANALYZE` COMPLET, celui-là même que le démon lance en tâche de fond après le
+    /// bind : SQLite produit alors ses propres `sqlite_stat1` ET `sqlite_stat4`. Enfin il MET À
+    /// L'ÉCHELLE les compteurs de ces deux tables jusqu'au volume de production, la forme des
+    /// distributions étant conservée telle quelle.
+    ///
+    /// LES DEUX APPROXIMATIONS, DITES PLUTÔT QUE TUES :
+    ///   * la mise à l'échelle suppose la FORME des distributions invariante avec le volume. C'est
+    ///     une hypothèse, pas une mesure ; elle est raisonnable pour un flux de journaux dont la
+    ///     composition est stable, et elle est fausse le jour où une source neuve domine le flux.
+    ///   * les valeurs elles-mêmes sont fabriquées (aucune valeur de production n'existe dans ce
+    ///     dépôt, et c'est délibéré) : ce sont leurs DISTRIBUTIONS qui viennent de la mesure.
+    /// Ce que ce régime établit, il l'établit donc pour une base dont la forme est celle du profil —
+    /// pas pour une base quelconque, et pas pour un autre déploiement.
+    StatsDetailleesReelles,
 }
 
 /// Le profil de production, LU (jamais recopié). Renvoie (lignes, cardinalité par colonne).
@@ -441,20 +426,230 @@ struct Usage {
     cite_la_colonne_de_tete: Vec<String>,
 }
 
-fn mesurer(regime: RegimeStats) -> (Vec<IndexEvent>, BTreeMap<String, Usage>, Vec<(String, String)>, usize) {
+// ---------------------------------------------------------------------------------------------
+// LE RÉGIME DES STATISTIQUES DÉTAILLÉES : PEUPLER, ANALYSER POUR DE VRAI, METTRE À L'ÉCHELLE.
+// ---------------------------------------------------------------------------------------------
+
+/// Lignes écrites avant l'`ANALYZE` réel. Assez pour que SQLite prenne ses échantillons par index
+/// (il en garde une vingtaine par index) sur des distributions RECONNAISSABLES, assez peu pour que le
+/// bras tienne quelques secondes. Le chiffre publié n'est pas ce nombre : c'est le VERDICT une fois
+/// les compteurs remis à l'échelle du volume du profil.
+const EVENEMENTS_DU_REGIME_DETAILLE: i64 = 30_000;
+
+/// UNE DISTRIBUTION MESURÉE, LUE dans le profil : paires (valeur, effectif) et leur total.
+fn distribution_mesuree(v: &serde_json::Value, chemin: &str) -> (Vec<(String, i64)>, i64) {
+    let obj = v["distribution"][chemin].as_object().unwrap_or_else(|| {
+        panic!("bench/profile-prod.json : `distribution.{chemin}` absent — le régime détaillé ne peut pas être bâti sur une distribution qu'on inventerait")
+    });
+    let paires: Vec<(String, i64)> =
+        obj.iter().filter_map(|(k, n)| n.as_i64().map(|n| (k.clone(), n.max(0)))).collect();
+    let total: i64 = paires.iter().map(|(_, n)| *n).sum();
+    assert!(total > 0, "distribution.{chemin} vide : rien à reproduire");
+    (paires, total)
+}
+
+/// La valeur du rang `i` dans une distribution mesurée. DÉTERMINISTE (aucun aléa : un banc qui change
+/// de résultat d'une exécution à l'autre n'est pas un instrument) et DÉ-CORRÉLÉ des rangs voisins par
+/// un mélange multiplicatif — des valeurs posées en blocs contigus donneraient un b-tree et des
+/// échantillons que la production n'a pas.
+fn valeur_au_rang(paires: &[(String, i64)], total: i64, i: i64) -> String {
+    let mut pos = (i.wrapping_mul(2_654_435_761)).rem_euclid(total);
+    for (v, n) in paires {
+        if pos < *n {
+            return v.clone();
+        }
+        pos -= *n;
+    }
+    paires.last().map(|(v, _)| v.clone()).unwrap_or_default()
+}
+
+/// PEUPLE `event` PAR LA PORTE D'INGESTION DU PRODUIT (`store().insert_event`, donc le même
+/// `INSERT OR IGNORE` qui sonde la contrainte de dédoublonnage), avec des lignes dont les
+/// DISTRIBUTIONS sont celles du profil mesuré : proportions de sévérité et de catégorie, cardinalités
+/// de source/hôte/adresse, et TAUX DE NUL (ce dernier point n'est pas un détail — les deux tiers des
+/// lignes n'ont pas d'adresse source, et un index qui mène par cette colonne ne porte donc pas toutes
+/// les lignes). Aucune valeur de production n'est recopiée : seules leurs distributions le sont.
+fn peupler_event_au_profil(conn: &Connection, combien: i64) {
+    let brut = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("bench").join("profile-prod.json"),
+    )
+    .expect("bench/profile-prod.json lisible");
+    let v: serde_json::Value = serde_json::from_str(&brut).expect("profil JSON valide");
+    let (sev, sev_total) = distribution_mesuree(&v, "by_severity");
+    let (cat, cat_total) = distribution_mesuree(&v, "by_category");
+    let lignes_prod = v["volume"]["events"].as_i64().expect("volume.events mesuré").max(1);
+    let card = |c: &str| v["columns"]["cardinality"][c].as_i64().unwrap_or(1).max(1);
+    let nuls = |c: &str| v["columns"]["nulls"][c].as_i64().unwrap_or(0).max(0);
+    let n_source = card("source");
+    let n_host = card("host");
+    let n_srcip = card("src_ip");
+    let n_dedup = card("dedup");
+    // Taux de nul MESURÉS, ramenés à `combien` lignes : `srcip` et `dedup` sont majoritairement nuls.
+    let seuil_srcip = (nuls("srcip") as f64 / lignes_prod as f64 * combien as f64) as i64;
+    let seuil_dedup = (nuls("dedup") as f64 / lignes_prod as f64 * combien as f64) as i64;
+    let base_ts = v["volume"]["min_ts"].as_i64().unwrap_or(1_782_897_564);
+    let etendue = ((v["volume"]["span_days"].as_f64().unwrap_or(29.07)) * 86_400.0) as i64;
+
+    let mut i = 0_i64;
+    while i < combien {
+        conn.execute_batch("BEGIN IMMEDIATE").expect("transaction");
+        for _ in 0..1000.min(combien - i) {
+            let melange = i.wrapping_mul(2_654_435_761).rem_euclid(combien.max(1));
+            let severity: i64 = valeur_au_rang(&sev, sev_total, i).parse().unwrap_or(0);
+            let category = valeur_au_rang(&cat, cat_total, i);
+            let src_ip = if melange < seuil_srcip {
+                None
+            } else {
+                let x = i.rem_euclid(n_srcip);
+                Some(format!("10.{}.{}.{}", (x / 65536) % 256, (x / 256) % 256, x % 256))
+            };
+            let dedup = if melange < seuil_dedup { None } else { Some(format!("d-{}", i.rem_euclid(n_dedup))) };
+            store()
+                .insert_event(
+                    conn,
+                    &EventRow {
+                        // Les horodatages sont répartis sur la fenêtre mesurée, pas séquentiels : un
+                        // `ts` strictement croissant ferait un index parfaitement ordonné que la
+                        // production n'a pas.
+                        ts: base_ts + (i.wrapping_mul(7_919)).rem_euclid(etendue.max(1)),
+                        source: format!("source-{}", i.rem_euclid(n_source)),
+                        category,
+                        severity,
+                        message: format!("evenement {i} — {}", "x".repeat(170)),
+                        host: Some(format!("host-{}", i.rem_euclid(n_host))),
+                        src_ip,
+                        dst_ip: None,
+                        url: None,
+                        dedup,
+                        fields: Some(format!("{{\"action\":\"a{}\",\"user\":\"u{}\"}}", i % 7, i % 97)),
+                        engagement_id: String::new(),
+                        origin: String::new(),
+                        env_id: Some("prod".into()),
+                    },
+                )
+                .expect("insertion d'événement");
+            i += 1;
+        }
+        conn.execute_batch("COMMIT").expect("commit");
+    }
+}
+
+/// MET À L'ÉCHELLE les compteurs de `sqlite_stat1`/`sqlite_stat4` d'un facteur `k`, en préservant la
+/// FORME des distributions. Les deux tables sont mises à l'échelle ENSEMBLE : `sqlite_stat4` porte des
+/// comptes de LIGNES (combien sont inférieures / égales à un échantillon) que le planificateur combine
+/// au nombre de lignes de `sqlite_stat1` — n'en mettre qu'une à l'échelle produirait des estimations
+/// incohérentes, donc un plan qui ne serait celui d'aucun volume.
+///
+/// Les jetons NON numériques de `sqlite_stat1.stat` (`unordered`, `sz=…`, `noskipscan`) sont recopiés
+/// VERBATIM : ce sont des drapeaux, pas des comptes, et les mettre à l'échelle les détruirait.
+/// Rend (lignes de stat1 touchées, lignes de stat4 touchées).
+fn mettre_les_statistiques_a_lechelle(conn: &Connection, k: f64) -> (usize, usize) {
+    let mise = |s: &str| -> String {
+        s.split_whitespace()
+            .map(|t| match t.parse::<f64>() {
+                Ok(n) => format!("{}", ((n * k).round() as i64).max(1)),
+                Err(_) => t.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut n1 = 0usize;
+    let lignes1: Vec<(i64, String)> = {
+        let mut st = conn.prepare("SELECT rowid, stat FROM sqlite_stat1").expect("sqlite_stat1 lisible");
+        let it = st
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .expect("sqlite_stat1 lisible");
+        it.map(|r| r.expect("ligne stat1")).collect()
+    };
+    for (rid, stat) in lignes1 {
+        if conn.execute("UPDATE sqlite_stat1 SET stat=?1 WHERE rowid=?2", params![mise(&stat), rid]).is_ok() {
+            n1 += 1;
+        }
+    }
+    let mut n4 = 0usize;
+    let existe4: i64 = conn
+        .query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='sqlite_stat4')", [], |r| {
+            r.get(0)
+        })
+        .unwrap_or(0);
+    if existe4 == 1 {
+        let lignes4: Vec<(i64, String, String, String)> = {
+            let mut st =
+                conn.prepare("SELECT rowid, neq, nlt, ndlt FROM sqlite_stat4").expect("sqlite_stat4 lisible");
+            let it = st
+                .query_map([], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+                })
+                .expect("sqlite_stat4 lisible");
+            it.map(|r| r.expect("ligne stat4")).collect()
+        };
+        for (rid, neq, nlt, ndlt) in lignes4 {
+            if conn
+                .execute(
+                    "UPDATE sqlite_stat4 SET neq=?1, nlt=?2, ndlt=?3 WHERE rowid=?4",
+                    params![mise(&neq), mise(&nlt), mise(&ndlt), rid],
+                )
+                .is_ok()
+            {
+                n4 += 1;
+            }
+        }
+    }
+    // Recharge les statistiques SANS les recalculer — sinon l'`ANALYZE` écraserait la mise à l'échelle.
+    conn.execute_batch("ANALYZE sqlite_master").expect("rechargement des statistiques");
+    (n1, n4)
+}
+
+/// LE RÉGIME DÉTAILLÉ, POSÉ. Rend la phrase qui décrit CE QUI A ÉTÉ FAIT — publiée à côté du tableau,
+/// parce qu'un régime qui n'a pas pu produire de statistiques détaillées doit se lire comme tel et
+/// non comme un quatrième avis.
+fn poser_stats_detaillees_reelles(conn: &Connection) -> String {
+    let (lignes_prod, _) = profil_de_production();
+    peupler_event_au_profil(conn, EVENEMENTS_DU_REGIME_DETAILLE);
+    // Le MÊME `ANALYZE` que le démon lance en tâche de fond après le bind (`maintenance.rs`).
+    conn.execute_batch("PRAGMA analysis_limit=0; ANALYZE;").expect("ANALYZE complet");
+    let compile = crate::index_usage::statistiques_detaillees_compilees(conn);
+    let k = lignes_prod as f64 / EVENEMENTS_DU_REGIME_DETAILLE as f64;
+    let (n1, n4) = mettre_les_statistiques_a_lechelle(conn, k);
+    let regime = crate::index_usage::regime_statistiques(conn, "event");
+    if regime != crate::index_usage::RegimeStatistiques::Detaillees {
+        return format!(
+            "RÉGIME DÉGRADÉ — AUCUNE statistique d'index détaillée n'a pu être produite (statistiques \
+             détaillées compilées dans SQLite : {compile} ; régime constaté : {regime:?}). La colonne \
+             `stats-détaillées` ci-dessous vaut alors exactement `stats-prod` et ne tranche RIEN : le \
+             trou nommé par P10.9-a reste OUVERT."
+        );
+    }
+    format!(
+        "{EVENEMENTS_DU_REGIME_DETAILLE} lignes écrites au profil MESURÉ (proportions de sévérité et de \
+         catégorie, taux de nul), `ANALYZE` complet RÉEL, puis compteurs mis à l'échelle ×{k:.1} \
+         jusqu'au volume du profil : {n1} ligne(s) de statistiques agrégées et {n4} d'échantillons \
+         détaillés. Régime constaté : {regime:?}."
+    )
+}
+
+fn mesurer(regime: RegimeStats) -> (Vec<IndexEvent>, BTreeMap<String, Usage>, Vec<(String, String)>, usize, String) {
     let etiquette = match regime {
         RegimeStats::SansStats => "idxusage-sans-stats",
         RegimeStats::StatsDeProduction => "idxusage-stats-prod",
         RegimeStats::FlotteDe200Hotes => "idxusage-flotte-200",
+        RegimeStats::StatsDetailleesReelles => "idxusage-stats-detaillees",
     };
     let (_chemin, db) = base_au_schema_reel(etiquette);
     let conn = db.lock();
     semer_le_corpus(&conn);
-    match regime {
-        RegimeStats::SansStats => {}
-        RegimeStats::StatsDeProduction => poser_stats_de_production(&conn, &[]),
-        RegimeStats::FlotteDe200Hotes => poser_stats_de_production(&conn, &[("host", 200)]),
-    }
+    let note = match regime {
+        RegimeStats::SansStats => String::new(),
+        RegimeStats::StatsDeProduction => {
+            poser_stats_de_production(&conn, &[]);
+            String::new()
+        }
+        RegimeStats::FlotteDe200Hotes => {
+            poser_stats_de_production(&conn, &[("host", 200)]);
+            String::new()
+        }
+        RegimeStats::StatsDetailleesReelles => poser_stats_detaillees_reelles(&conn),
+    };
 
     let index = index_de_event(&conn);
     let mut usage: BTreeMap<String, Usage> = index.iter().map(|i| (i.nom.clone(), Usage::default())).collect();
@@ -509,7 +704,7 @@ fn mesurer(regime: RegimeStats) -> (Vec<IndexEvent>, BTreeMap<String, Usage>, Ve
         }
     }
     drop(conn);
-    (index, usage, indecidables, total)
+    (index, usage, indecidables, total, note)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -750,13 +945,15 @@ fn la_partition_du_corpus_est_close() {
 /// Rejouable : `cargo test --offline --locked usage_des_index -- --nocapture --test-threads=1`
 #[test]
 fn usage_des_index_de_event_par_le_corpus_ferme() {
-    let (index_sans, usage_sans, indec_sans, total_sans) = mesurer(RegimeStats::SansStats);
-    let (index_prod, usage_prod, indec_prod, total_prod) = mesurer(RegimeStats::StatsDeProduction);
-    let (_, usage_f200, indec_f200, total_f200) = mesurer(RegimeStats::FlotteDe200Hotes);
+    let (index_sans, usage_sans, indec_sans, total_sans, _) = mesurer(RegimeStats::SansStats);
+    let (index_prod, usage_prod, indec_prod, total_prod, _) = mesurer(RegimeStats::StatsDeProduction);
+    let (_, usage_f200, indec_f200, total_f200, _) = mesurer(RegimeStats::FlotteDe200Hotes);
+    let (_, usage_det, indec_det, total_det, note_det) = mesurer(RegimeStats::StatsDetailleesReelles);
 
     assert!(total_sans > 0, "CORPUS VIDE : rien n'a été mesuré (un filtre qui ne rend rien n'est pas une mesure)");
     assert_eq!(total_sans, total_prod, "les deux régimes doivent voir le MÊME corpus");
     assert_eq!(total_sans, total_f200, "les trois régimes doivent voir le MÊME corpus");
+    assert_eq!(total_sans, total_det, "les quatre régimes doivent voir le MÊME corpus");
     let noms_sans: BTreeSet<&str> = index_sans.iter().map(|i| i.nom.as_str()).collect();
     let noms_prod: BTreeSet<&str> = index_prod.iter().map(|i| i.nom.as_str()).collect();
     assert_eq!(noms_sans, noms_prod, "les deux régimes doivent voir le MÊME schéma");
@@ -770,40 +967,77 @@ fn usage_des_index_de_event_par_le_corpus_ferme() {
 
     println!("\n=== USAGE DES INDEX DE `event` PAR LE CORPUS FERMÉ ===");
     println!(
-        "corpus : {total_sans} objets · schéma : {} index sur `event` · indécidables : {} (régime prod : {}, flotte-200 : {})",
+        "corpus : {total_sans} objets · schéma : {} index sur `event` · indécidables : {} (régime prod : {}, flotte-200 : {}, détaillé : {})",
         index_sans.len(),
         indec_sans.len(),
         indec_prod.len(),
-        indec_f200.len()
+        indec_f200.len(),
+        indec_det.len()
     );
     println!("colonnes = nombre d'objets du corpus dont le PLAN nomme l'index, par régime de statistiques");
+    println!("régime `stats-détail` : {note_det}");
     println!(
-        "{:<28} {:<6} {:<8} {:>11} {:>11} {:>12} {:>10}   {}",
-        "index", "orig.", "partiel", "sans-stats", "stats-prod", "flotte-200", "cite-tête", "colonnes-clés"
+        "{:<28} {:<6} {:<8} {:>11} {:>11} {:>12} {:>12} {:>10}   {}",
+        "index",
+        "orig.",
+        "partiel",
+        "sans-stats",
+        "stats-prod",
+        "flotte-200",
+        "stats-détail",
+        "cite-tête",
+        "colonnes-clés"
     );
     for ix in &index_sans {
         let u_sans = usage_sans.get(&ix.nom);
         let a = u_sans.map(|u| u.objets.len()).unwrap_or(0);
         let b = usage_prod.get(&ix.nom).map(|u| u.objets.len()).unwrap_or(0);
         let c = usage_f200.get(&ix.nom).map(|u| u.objets.len()).unwrap_or(0);
+        let d = usage_det.get(&ix.nom).map(|u| u.objets.len()).unwrap_or(0);
         // Les quasi-manqués sont lus sous le régime de PRODUCTION (le seul qui approche le réel).
         let n = usage_prod.get(&ix.nom).map(|u| u.cite_la_colonne_de_tete.len()).unwrap_or(0);
         println!(
-            "{:<28} {:<6} {:<8} {:>11} {:>11} {:>12} {:>10}   [{}]",
+            "{:<28} {:<6} {:<8} {:>11} {:>11} {:>12} {:>12} {:>10}   [{}]",
             ix.nom,
             ix.origine,
             if ix.partiel { "oui" } else { "non" },
             a,
             b,
             c,
+            d,
             n,
             ix.cles.join(", ")
         );
+    }
+    // CE QUE LE RÉGIME DÉTAILLÉ CHANGE, ISOLÉ. C'est la seule ligne qui répond à la question que
+    // `P10.9-a` laissait ouverte : le verdict d'un index tient-il au corpus, ou au fait que le rejeu
+    // ne savait pas estimer une borne ? Un index qui passe de 0 à non-nul ICI n'était pas inutile —
+    // il était invisible faute de statistiques.
+    println!("\n--- CE QUE LES STATISTIQUES DÉTAILLÉES CHANGENT (stats-prod -> stats-détail) ---");
+    let mut aucun_changement = true;
+    for ix in &index_sans {
+        let b = usage_prod.get(&ix.nom).map(|u| u.objets.len()).unwrap_or(0);
+        let d = usage_det.get(&ix.nom).map(|u| u.objets.len()).unwrap_or(0);
+        if b != d {
+            aucun_changement = false;
+            let sens = if b == 0 && d > 0 {
+                "APPARAÎT — l'absence de statistiques détaillées le rendait invisible"
+            } else if d == 0 && b > 0 {
+                "DISPARAÎT — les statistiques agrégées le faisaient choisir à tort"
+            } else {
+                "change d'ampleur"
+            };
+            println!("  {:<28} {b} -> {d}   {sens}", ix.nom);
+        }
+    }
+    if aucun_changement {
+        println!("  (aucun) — le verdict de chaque index est le MÊME sous statistiques agrégées et détaillées");
     }
     for (etiquette, usage) in [
         ("SANS STATS", &usage_sans),
         ("STATS DE PRODUCTION", &usage_prod),
         ("CONTREFACTUEL FLOTTE DE 200 HÔTES", &usage_f200),
+        ("STATISTIQUES DÉTAILLÉES RÉELLES", &usage_det),
     ] {
         println!("\n--- objets qui NOMMENT un index ({etiquette}) ---");
         for (nom, u) in usage.iter() {
@@ -827,6 +1061,22 @@ fn usage_des_index_de_event_par_le_corpus_ferme() {
     for (etiquette, motif) in indec_sans.iter().take(40) {
         println!("  {etiquette} : {motif}");
     }
+    // CE QUE CE TABLEAU NE PROUVE PAS — imprimé SOUS le verdict, pas rangé dans un commentaire de
+    // source. Un chiffre lu sans sa portée finit cité sans elle, et c'est ainsi qu'un index se retire.
+    println!("\n--- CE QUE CE TABLEAU NE PROUVE PAS ---");
+    println!("  * LE CORPUS EST FERMÉ : il ne contient que ce que le produit LIVRE (règles, panneaux,");
+    println!("    gabarits, étapes de runbook). Une requête d'analyste, une route non-GXQL, un rollup,");
+    println!("    une purge n'y figurent pas — un index à zéro peut être celui du chemin interactif.");
+    println!("    Ce que le corpus ne peut pas voir se mesure À L'EXÉCUTION : `crate::index_usage`,");
+    println!("    série `plume_index_usage_total` (par index × classe de consommateur), ÉTEINTE par défaut.");
+    println!("  * UN PLAN N'EST PAS UNE DURÉE : « nommé par le planificateur » ne dit rien du temps");
+    println!("    gagné, ni de ce que coûterait le balayage qui remplacerait l'index.");
+    println!("  * LE RÉGIME DÉTAILLÉ REPOSE SUR DEUX APPROXIMATIONS DÉCLARÉES : la forme des");
+    println!("    distributions est supposée invariante avec le volume, et les valeurs sont fabriquées");
+    println!("    (seules leurs distributions viennent d'une mesure).");
+    println!("  * AUCUNE LIGNE DE CE TABLEAU N'AUTORISE À RETIRER UN INDEX. Le devis de suppression");
+    println!("    demande aussi son coût d'écriture (banc d'ablation ci-dessous) et une observation");
+    println!("    d'exécution sur la charge RÉELLE du déploiement concerné.");
     println!("=== fin ===\n");
 }
 

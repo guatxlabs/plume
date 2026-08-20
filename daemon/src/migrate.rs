@@ -90,7 +90,7 @@ impl Drop for MigrationLogSilencer {
 /// rien (toutes ses gardes `v < N` sont fausses) et OPÈRE À L'AVEUGLE sur un schéma qu'il ne connaît pas
 /// -> risque de corruption (survivable AUJOURD'HUI car migrations additives, mais non gardé). On REFUSE
 /// d'ouvrir : arrêt PROPRE (exit non-zéro), JAMAIS un panic, JAMAIS un « proceed » silencieux.
-pub(crate) const CODE_SCHEMA_MAX: i64 = 114;
+pub(crate) const CODE_SCHEMA_MAX: i64 = 115;
 
 /// Lit `meta.schema_version` (défaut 1 si table/lignes absentes ou illisibles) — MÊME lecture que `migrate()`.
 /// Une base NEUVE (pas encore de table meta) renvoie 1 -> jamais refusée par la garde.
@@ -813,6 +813,7 @@ fn migrate_chain(conn: &Connection) -> bool {
     if v < 112 && !migrate_step(conn, 112, migrate_v112) { return false; }
     if v < 113 && !migrate_step(conn, 113, migrate_v113) { return false; }
     if v < 114 && !migrate_step(conn, 114, migrate_v114) { return false; }
+    if v < 115 && !migrate_step(conn, 115, migrate_v115) { return false; }
     true
 }
 
@@ -1158,6 +1159,33 @@ fn migrate_v113(conn: &MigTx) {
 fn migrate_v114(conn: &MigTx) {
     let _ = conn.execute("UPDATE meta SET value='114' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v114 (P3.7-a, marqueur : idx_event_health_beat(source,ts) WHERE category='health' créé EN FOND après bind, anti-crashloop ; re-ANALYZE ; les 8 sondes dead-man's-switch cessent de remonter la plage de leur source sous le verrou d'écriture)");
+}
+
+/// v115 (S7 — L'IMPUTATION D'UNE ALERTE). COLONNE `alert.sources TEXT NOT NULL DEFAULT ''`, MÊME pattern
+/// que `engagement_id` v75 / `env_id` v66 : ALTER metadata-only (la DEFAULT est SERVIE À LA LECTURE,
+/// SQLite NE réécrit PAS les lignes existantes -> cheap quel que soit le volume d'alertes), guardé par
+/// `col_exists` -> re-jouable ; sur base NEUVE la colonne vient de `db/schema.sql` et l'ALTER est sauté.
+///
+/// CE QU'ELLE PORTE : les sources auxquelles l'alerte se rapporte, DÉRIVÉES DE LA DONNÉE au moment où
+/// elle est levée (`daemon/src/imputation.rs`) — la colonne `source` des événements appariés pour une
+/// alerte de règle, le descripteur typé de la sonde pour un capteur muet. Avant, la fraîcheur par-source
+/// cherchait un jeton `source=<nom>` dans le TEXTE de la requête recopié dans `alert.detail` : une règle
+/// volontairement générique (11 des 47 règles livrées, dont 4 actives) et TOUTES les alertes de capteur
+/// muet (23 capteurs) n'imputaient rien, donc aucune pastille de source ne basculait.
+///
+/// RÉTRO-COMPAT STRICTE : `''` sur les lignes existantes -> le lecteur retombe sur l'extraction textuelle
+/// historique -> comportement byte-identique pour les alertes déjà en base. ADDITIF : aucune donnée
+/// modifiée, aucune alerte créée ni supprimée.
+///
+/// ROLLBACK — bumpe le schéma à 115 : un binaire max=114 REFUSE d'ouvrir une base v115 (server.rs
+/// open_and_migrate_db, `v > CODE_SCHEMA_MAX` -> Err). Rollback = RESTAURER le SNAPSHOT pré-migrate
+/// (initContainer). Forward-only, idempotent.
+fn migrate_v115(conn: &MigTx) {
+    if !conn.col_exists("alert", "sources") {
+        let _ = conn.execute("ALTER TABLE alert ADD COLUMN sources TEXT NOT NULL DEFAULT ''", []);
+    }
+    let _ = conn.execute("UPDATE meta SET value='115' WHERE key='schema_version'", []);
+    mig_log!("[migration] schéma -> v115 (S7 : alert.sources — l'imputation d'une alerte à ses sources, DÉRIVÉE DE LA DONNÉE et non du texte de la règle ; '' sur les lignes existantes = repli textuel historique)");
 }
 
 /// v108 (PERF — RECHERCHE RAW HAUT-VOLUME source=X sur fenêtre longue). MARQUEUR PUR (aucune DDL lourde

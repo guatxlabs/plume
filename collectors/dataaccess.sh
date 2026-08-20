@@ -72,5 +72,5 @@ BEGIN{ n=0; buf=""; maxep=last+0 }
 }
 END{ if(n>0) printf "{\"ts\":%d,\"host\":\"%s\",\"kind\":\"events\",\"events\":[%s]}\n", now, host, buf > out; print maxep }' "$rec")
 
-if [ -s "$tmp" ]; then chmod 0640 "$tmp"; mv -f "$tmp" "$SPOOL/dataaccess-$ts.json"; else rm -f "$tmp"; fi
+if [ -s "$tmp" ]; then spool_publish_file "$tmp" "dataaccess-$ts.json"; else rm -f "$tmp"; fi
 printf '%s' "${newwm:-$last}" > "$WM"

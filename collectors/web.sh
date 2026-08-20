@@ -74,7 +74,7 @@ BEGIN{ n=0; buf=""; maxts=last+0 }
 }
 END{ if(n>0) printf "{\"ts\":%d,\"host\":\"%s\",\"kind\":\"events\",\"events\":[%s]}\n", now, host, buf > out; print maxts }')
 
-if [ -s "$tmp" ]; then chmod 0640 "$tmp"; mv -f "$tmp" "$SPOOL/web-$now.json"; else rm -f "$tmp"; fi
+if [ -s "$tmp" ]; then spool_publish_file "$tmp" "web-$now.json"; else rm -f "$tmp"; fi
 state_write "$WM" "${newwm:-$last}"
 
 # --- CHANTIER whitelists->webui : AUTO-REPORT de config (source=web category=config) --------------

@@ -41,4 +41,4 @@ BEGIN{ FS="|"; n=0; buf=""; m=split(sec,A,"\n"); for(i=1;i<=m;i++) if(A[i]!="") 
   }
 }
 END{ if(n>0) printf "{\"ts\":%d,\"host\":\"%s\",\"kind\":\"events\",\"events\":[%s]}\n", ts, host, buf > out }'
-if [ -s "$tmp" ]; then chmod 0640 "$tmp"; mv -f "$tmp" "$SPOOL/kube-rbac-$ts.json"; else rm -f "$tmp"; fi
+if [ -s "$tmp" ]; then spool_publish_file "$tmp" "kube-rbac-$ts.json"; else rm -f "$tmp"; fi

@@ -97,7 +97,7 @@ END{
   print maxts
 }')
 
-if [ -s "$tmp" ]; then chmod 0640 "$tmp"; mv -f "$tmp" "$SPOOL/mail-$now.json"; else rm -f "$tmp"; fi
+if [ -s "$tmp" ]; then spool_publish_file "$tmp" "mail-$now.json"; else rm -f "$tmp"; fi
 state_write "$WM" "${newwm:-$last}"
 
 # --- CHANTIER whitelists->webui : AUTO-REPORT de config (source=mail category=config) --------------

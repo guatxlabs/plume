@@ -1,7 +1,10 @@
 //! Tampon disque (at-least-once) : spool en anneau borné + backoff + persistance des curseurs.
 //!
 //! Modèle : une source lit un lot -> on écrit UNE `SpoolEntry` (endpoint + corps + source_id + curseur)
-//! ATOMIQUEMENT dans le spool. Le shipper draine le spool ; sur ACK (202/204) il SUPPRIME l'entrée ET
+//! dans le spool par la voie unique `durable::publier` — ATOMIQUE (un lecteur ne voit jamais un fichier
+//! à moitié écrit) ET DURABLE (contenu synchronisé avant le renommage, répertoire après ; sans le
+//! second, après coupure l'entrée de répertoire peut manquer alors que le fichier existe, et le spool
+//! est parcouru PAR NOM). Le shipper draine le spool ; sur ACK (202/204) il SUPPRIME l'entrée ET
 //! persiste `cursor` de la source. Le curseur n'est donc JAMAIS avancé sur disque avant ship+ack ->
 //! un crash rejoue (dédup côté daemon via `dedup`/`__CURSOR`). Anneau BORNÉ : au-delà de `cap`, on
 //! évince les entrées les plus VIEILLES (le poste ne peut pas remplir son disque si le central est down).
@@ -41,7 +44,12 @@ impl Spool {
         Ok(Self { dir, cap: cap.max(1) })
     }
 
-    /// Publie une entrée ATOMIQUEMENT (tmp + rename), puis applique le plafond (évince les plus vieilles).
+    /// Publie une entrée DURABLEMENT, puis applique le plafond (évince les plus vieilles).
+    ///
+    /// La publication passe par la voie unique `durable::publier` : le renommage ne donne que
+    /// l'atomicité du CONTENU, la survie à une coupure exige en plus que les octets soient sur le
+    /// disque avant le renommage et l'entrée de répertoire après (cf. le bandeau de `durable`).
+    /// C'est ce qui distingue un tampon at-least-once d'un tampon qui l'affirme.
     pub fn push(&self, entry: &SpoolEntry) -> std::io::Result<()> {
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
         let millis = std::time::SystemTime::now()
@@ -51,15 +59,10 @@ impl Spool {
         // nom = <millis 013>-<seq 016>.spool -> tri lexicographique == ordre FIFO.
         let name = format!("{millis:013}-{seq:016}.spool");
         let dst = self.dir.join(&name);
-        let tmp = self.dir.join(format!(".{name}.tmp"));
         let bytes = serde_json::to_vec(entry)?;
-        std::fs::write(&tmp, &bytes)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-        }
-        std::fs::rename(&tmp, &dst)?;
+        // 0600 posé À LA CRÉATION : l'ancienne forme écrivait puis faisait `set_permissions`, ce qui
+        // laissait l'entrée de spool lisible selon l'umask pendant l'écriture.
+        crate::durable::publier(&dst, &bytes, Some(0o600))?;
         self.enforce_cap();
         Ok(())
     }
@@ -151,14 +154,20 @@ impl CursorStore {
             .filter(|s| !s.is_empty())
     }
 
-    /// Persiste ATOMIQUEMENT le curseur d'une source (tmp + rename). No-op si `cursor` est None.
+    /// Persiste DURABLEMENT le curseur d'une source. No-op si `cursor` est None.
+    ///
+    /// L'ASYMÉTRIE EST VOULUE, ET ELLE PENCHE DU BON CÔTÉ : le curseur n'est écrit qu'APRÈS ship+ack,
+    /// donc après que l'entrée correspondante a été acceptée par le central ET retirée du spool. Un
+    /// curseur perdu fait REJOUER un lot déjà accepté — le daemon dédoublonne. Un curseur qui
+    /// survivrait à une entrée de spool perdue ferait, lui, DISPARAÎTRE des événements ; c'est cette
+    /// direction-là qui est interdite, et c'est pourquoi le spool est publié durablement lui aussi.
+    ///
+    /// Le temporaire est désormais dérivé du nom FINAL (donc assaini) : l'ancienne forme composait
+    /// `.{source_id}.cursor.tmp` à partir du `source_id` BRUT alors que le nom final, lui, était
+    /// assaini — un `source_id` porteur d'un séparateur visait donc un temporaire hors répertoire.
     pub fn save(&self, source_id: &str, cursor: &Option<String>) -> std::io::Result<()> {
         let Some(c) = cursor else { return Ok(()) };
-        let dst = self.path(source_id);
-        let tmp = self.dir.join(format!(".{source_id}.cursor.tmp"));
-        std::fs::write(&tmp, c.as_bytes())?;
-        std::fs::rename(&tmp, &dst)?;
-        Ok(())
+        crate::durable::publier(&self.path(source_id), c.as_bytes(), None)
     }
 }
 

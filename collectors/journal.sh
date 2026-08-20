@@ -63,5 +63,4 @@ if [ ! -s "$tmp" ]; then rm -f "$tmp"; plume_exit_nodata; fi
 # nouveau curseur = __CURSOR de la dernière entrée (sans jq)
 newcur=$(tail -n1 "$tmp" | grep -oP '"__CURSOR"\s*:\s*"\K[^"]+' || true)
 [ -n "$newcur" ] && state_write "$CUR" "$newcur"
-chmod 0640 "$tmp"
-mv -f "$tmp" "$SPOOL/journal-$(date +%s).ndjson"
+spool_publish_file "$tmp" "journal-$(date +%s).ndjson"

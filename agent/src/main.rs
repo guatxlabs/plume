@@ -8,6 +8,7 @@
 
 mod buffer;
 mod config;
+mod durable;
 mod ship;
 mod source;
 mod service;

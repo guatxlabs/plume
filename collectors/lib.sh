@@ -26,9 +26,77 @@ plume_init() {
   mkdir -p "$STATE" 2>/dev/null || true
 }
 
+# =================================================================================================
+# PUBLIER, C'EST AUSSI SURVIVRE À UNE COUPURE (S27)
+# -------------------------------------------------------------------------------------------------
+# DEUX PROPRIÉTÉS QU'ON CONFOND, ET DONT UNE SEULE ÉTAIT TENUE.
+#   ATOMICITÉ DU CONTENU — après `mv`, un lecteur voit l'ANCIEN fichier ou le NOUVEAU, jamais un
+#   fichier à moitié écrit. Le renommage la donne, seul. C'est ce que ce fichier faisait déjà.
+#   DURABILITÉ — après une coupure d'alimentation ou du noyau, la publication SURVIT. Le renommage
+#   ne la donne PAS : il faut que le CONTENU du temporaire soit sur le disque AVANT (sinon on
+#   publie un nom qui désigne des octets jamais écrits, donc un fichier vide au redémarrage) et que
+#   le RÉPERTOIRE le soit APRÈS (sinon l'entrée de répertoire peut manquer alors que le fichier
+#   existe : les octets sont là, leur NOM n'y est pas, et `ship.sh` parcourt le spool PAR NOM).
+# La promesse de livraison au moins une fois tenait donc par convention, pas par mécanisme.
+#
+# L'ASYMÉTRIE EST DÉLIBÉRÉE — `spool_write` est DURABLE, `state_write` ne l'est PAS.
+# Un filigrane perdu fait RELIRE une tranche déjà collectée : le central dédoublonne (`event.dedup`,
+# `INSERT OR IGNORE`), donc au pire des doublons. Un filigrane qui SURVIVRAIT à des événements
+# perdus fait, lui, disparaître ces événements DÉFINITIVEMENT, sans que rien ne les compte. Rendre
+# le filigrane durable AVANT l'événement transformerait une perte improbable en perte garantie :
+# c'est exactement la direction interdite. Le seul sens sûr est « l'événement d'abord ».
+#
+# CE QUE CETTE ASYMÉTRIE NE FERME PAS, ET IL FAUT LE DIRE : cinq capteurs livrés avancent leur
+# filigrane AVANT de publier leurs événements (`journal`, `origin-drop`, `portscan`, `ufw`,
+# `pod-logs` — le filigrane y est écrit dans la boucle de lecture, l'enveloppe n'est composée
+# qu'ensuite). Pour eux, une coupure entre les deux perd la tranche, et aucune synchronisation ne
+# peut y remédier : c'est l'ORDRE qui est faux, pas la durabilité. Ne PAS rendre `state_write`
+# durable maintient ce risque au niveau qu'il a toujours eu au lieu de le porter à la certitude.
+#
+# COÛT — MESURÉ le 2026-08-20 (NVMe, btrfs sur LVM, 100 publications par variante, sh POSIX) :
+# publication sans synchronisation 8,5 ms ; avec les deux synchronisations 21,2 ms — soit +12,7 ms.
+# Un capteur publie une à trois enveloppes par passage et les unités tournent à la minute : le prix
+# se paie en dizaines de millisecondes par minute et par hôte. Il ne serait PAS le même arbitrage
+# sur une surface appelée à chaque requête, et ce fichier ne prétend rien pour celles-là.
+# =================================================================================================
+
+# plume_sync_path <chemin> — force l'écriture SUR DISQUE d'un fichier ou d'un répertoire.
+#
+# VALIDATION DE L'INSTRUMENT, AVANT DE S'EN SERVIR. `sync <chemin>` (fsync ciblé) n'existe pas
+# partout : GNU coreutils l'accepte depuis 8.24, busybox depuis 1.28, et certains `sync` plus
+# anciens ACCEPTENT l'opérande en l'IGNORANT — ils rendent 0 sans rien synchroniser du chemin
+# demandé. Croire ce 0 serait croire un instrument non validé, et publier « durablement » ce qui ne
+# l'est pas. On tranche donc par DEUX témoins :
+#   NÉGATIF : `sync` sur un chemin qui N'EXISTE PAS doit ÉCHOUER. S'il rend 0, il n'a pas ouvert le
+#             chemin — il ignore son opérande, et son succès ne prouve rien.
+#   POSITIF : `sync` sur le chemin RÉEL doit rendre 0.
+# Le verdict est mémoïsé pour le processus (un capteur publie peu, mais il publie plusieurs fois).
+#
+# REPLI HONNÊTE PLUTÔT QUE SILENCE : si la forme ciblée n'est pas utilisable, on exécute `sync` NU,
+# qui est POSIX et présent partout. Il vide TOUS les systèmes de fichiers — plus cher, parfois
+# beaucoup — mais il DONNE la propriété demandée. On ne rend jamais la main en laissant croire à
+# une durabilité qu'on n'a pas obtenue.
+plume_sync_path() {
+  if [ -z "${_plume_sync_cible:-}" ]; then
+    if sync "$1.plume-sonde-absente-$$" 2>/dev/null; then
+      _plume_sync_cible=non          # a rendu 0 sur un chemin ABSENT -> il ignore l'opérande
+    elif sync "$1" 2>/dev/null; then
+      _plume_sync_cible=oui          # échoue sur l'absent, réussit sur le réel -> il synchronise
+      return 0
+    else
+      _plume_sync_cible=non
+    fi
+  fi
+  if [ "$_plume_sync_cible" = oui ] && sync "$1" 2>/dev/null; then
+    return 0
+  fi
+  sync
+}
+
 # spool_write <basename> <content> [nl]
-# Atomic, group-readable (0640) publish into $SPOOL — the exact umask/mktemp/chmod/mv
-# sequence ~35 collectors inline today. Content is written VERBATIM (printf '%s');
+# DURABLE, group-readable (0640) publish into $SPOOL — the exact umask/mktemp/chmod/mv
+# sequence ~35 collectors inline today, plus the two syncs the header above explains.
+# Content is written VERBATIM (printf '%s');
 # pass a third arg "nl" to append exactly one trailing newline (for the collectors
 # whose hand-written printf format ended in \n). The transient temp name is a hidden
 # dotfile (ship.sh globs *.json and skips dotfiles) so a single generic template is
@@ -41,8 +109,23 @@ spool_write() {
   else
     printf '%s' "$2" > "$_sw_tmp"
   fi
-  chmod 0640 "$_sw_tmp"
-  mv -f "$_sw_tmp" "$SPOOL/$1"
+  spool_publish_file "$_sw_tmp" "$1"
+}
+
+# spool_publish_file <tempfile> <basename>
+# Same DURABLE publication, for the collectors that build their temp file themselves (streaming
+# into it line by line, then publishing only if it is non-empty) instead of passing a string to
+# spool_write. It exists so those callers have somewhere to go: before it, seven of them inlined
+# `chmod 0640 "$tmp"; mv -f "$tmp" "$SPOOL/<name>"` and therefore re-invented the write-temp-then-
+# rename motif — each one a site where the missing syncs had to be noticed separately.
+# The temp file MUST already live in $SPOOL (same filesystem — a rename across filesystems is a
+# copy, hence no longer atomic) and MUST be a dotfile (ship.sh must not pick it up mid-write).
+# `.github/scripts/check_publication_is_durable.py` refuses any new inline publication.
+spool_publish_file() {
+  chmod 0640 "$1"
+  plume_sync_path "$1"       # le CONTENU est sur le disque AVANT que le nom n'existe
+  mv -f "$1" "$SPOOL/$2"
+  plume_sync_path "$SPOOL"   # l'ENTRÉE DE RÉPERTOIRE l'est APRÈS le renommage
 }
 
 # state_write <file> <content>
@@ -50,6 +133,9 @@ spool_write() {
 # non-atomic `printf '%s' "$x" > "$WM"` the collectors do today (fixes a torn-write
 # window on crash). State files are NEVER shipped, so this changes no spool bytes;
 # the file content is byte-identical, only the write is now crash-safe.
+# DELIBERATELY NOT DURABLE — see the asymmetry paragraph in the header above: a watermark that
+# outlives the events it acknowledges is how events vanish, whereas a watermark that is lost only
+# costs a replay the central deduplicates. Do not "fix" this by adding a sync here.
 state_write() {
   umask 077
   _st_dir=$(dirname "$1")

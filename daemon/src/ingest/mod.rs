@@ -562,6 +562,16 @@ pub(crate) fn ingest_events_batch_env(
             // connecteur passe son env_id PAR-CONNECTEUR (routage environnement, comme le chemin direct).
             env_id: env_id.map(|s| s.to_string()),
         };
+        // P5.7-b — RECLASSEMENT D'UN DÉPÔT D'UNITÉ CORROBORÉ PAR UNE MISE À JOUR DU PRODUIT. Le SOC écrit
+        // dans le répertoire d'unités qu'il surveille à chaque déploiement ; une alerte par déploiement
+        // apprend à l'exploitant à ne plus lire ce capteur. On ne pose PAS d'exemption par nom (elle
+        // fabriquerait l'angle mort qu'un attaquant occupe en nommant son unité comme le produit) : on
+        // exige le CONTENU d'une unité livrée par CE build ET un déploiement daté récent. La ligne n'est
+        // jamais droppée — elle descend en `SEVERITE_RECLASSEE` et GAGNE `reclasse` + `severite_origine`.
+        // Court-circuit sur la source AVANT tout verrou : un event non-`integrity` ne paie rien.
+        if row.source == SOURCE_INTEGRITE {
+            reclasser_depot_dunite_corrobore(&mut row, fait_de_deploiement(db_path));
+        }
         // PROCESSEUR D'INGEST (#40) : filtre/masque/route/échantillonne l'event NORMALISÉ AVANT indexation.
         // MODE 0 : aucune règle sur ce db_path -> `processors_apply` renvoie Keep en un read()+get() (ligne
         // stockée BYTE-IDENTIQUE). DROP (ou SAMPLE-out) -> event NON indexé mais COMPTÉ (dropped-by-policy,

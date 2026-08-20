@@ -541,7 +541,8 @@ struct Sel {
 fn open_seal_conn(db_path: &str) -> Result<Connection, String> {
     let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(pe)?;
     apply_key_for(&conn, db_path);
-    let _ = conn.execute_batch(&format!("PRAGMA busy_timeout=3000; {}", sqlite_plafond::pragmas_memoire()));
+    let _ = conn.execute_batch("PRAGMA busy_timeout=3000;");
+    let _ = sqlite_plafond::armer(&conn);
     Ok(conn)
 }
 

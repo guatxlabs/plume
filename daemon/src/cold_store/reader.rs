@@ -927,7 +927,8 @@ pub(crate) fn open_cold_union(
     // TEMP doivent pouvoir être créés ; `main` ouvert READ_ONLY -> le HOT reste PHYSIQUEMENT immuable.
     let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(pe)?;
     apply_key_for(&conn, db_path);
-    let _ = conn.execute_batch(&format!("PRAGMA busy_timeout=3000; {}", sqlite_plafond::pragmas_memoire()));
+    let _ = conn.execute_batch("PRAGMA busy_timeout=3000;");
+    let _ = sqlite_plafond::armer(&conn);
 
     // (2) Colonnes sous DENY (#45) de CE tenant -> NULLifiées dans la vue (parité HOT).
     let deny: std::collections::HashSet<String> =

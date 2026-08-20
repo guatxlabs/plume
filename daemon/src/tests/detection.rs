@@ -4987,9 +4987,14 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     //
     // ON NE POSE PAS D'EXEMPTION PAR NOM. Exclure `plume-*` du FIM fabriquerait un angle mort qu'un
     // attaquant occupe en nommant son unité `plume-quelquechose.service` : pour un SOC, un angle mort
-    // taillé sur mesure est PIRE que du bruit de maintenance. Ce qu'on ferme, c'est la CROISSANCE
+    // taillé sur mesure est PIRE que du bruit de maintenance. Ce qu'on ferme ICI, c'est la CROISSANCE
     // SILENCIEUSE du recouvrement : la garde le DÉRIVE des fichiers livrés et le confronte au compte
     // DÉCLARÉ. Ajouter une unité au bootstrap sans le savoir n'est plus possible.
+    //
+    // CE QUE CETTE GARDE NE FAIT PAS, ET OÙ C'EST FAIT. Elle épingle le recouvrement, elle ne le réduit
+    // pas : le bruit de mise à jour est traité par CORROBORATION dans `maj_corroboree.rs` (contenu livré
+    // + déploiement daté, jamais un nom), dont les mutations vivent dans `tests/maj_corroboree.rs`. Les
+    // deux gardes sont complémentaires — celle-ci mesure l'AMPLEUR, l'autre décide du TRAITEMENT.
     // ================================================================================================
 
     /// Nombre de chemins `/etc/systemd/system/*.service|*.timer` que `bootstrap.sh` installe et que le

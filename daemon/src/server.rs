@@ -410,6 +410,12 @@ fn open_and_migrate_db(db_path: String, spool: String, conf: HashMap<String, Str
     // PLUME_EXPRINDEX. INSTANTANÉ (DDL pur, pas de scan) -> ne retarde pas le bind. Le CREATE INDEX
     // lourd des 7 champs est lancé EN FOND plus bas (anti-crashloop).
     reconcile_index_state(&conn, &conf);
+    // P5.7-b — LE FAIT DE DÉPLOIEMENT, DATÉ ET AUDITÉ. Compare le jeu d'unités systemd que CE binaire
+    // livre à celui noté sur la base : s'il a changé, un autre build tourne. Le fait est écrit au ledger
+    // + `plume-config` AVANT d'ouvrir quoi que ce soit, et il ouvre une fenêtre BORNÉE pendant laquelle un
+    // dépôt d'unité au CONTENU livré est reclassé en informationnel (jamais effacé, cf. maj_corroboree.rs).
+    // Signature inchangée -> aucune fenêtre ; base neuve -> pose silencieuse. Fail-closed des deux côtés.
+    noter_le_build_en_cours(&conn, &db_path);
     seed_default_dashboard(&conn);
     seed_example_rules(&conn);
     seed_purple_rules(&conn);   // règles ATT&CK purple (flag dédié -> arrivent sur DB déjà seedée)
@@ -1860,7 +1866,10 @@ pub(crate) async fn run() {
     let BootConfig { conf, db_path, spool, addr, user, pass, webdir, host, host_strict, sso_secret, public_demo, metrics_token, sso_group_admin, sso_group_editor, sso_group_superadmin, sso_header_user, sso_header_groups, tls_cert, tls_key, tls_on, lock_threshold, lock_base_s, lock_max_s, rl_ip_max, rl_auth_max, rl_global_max, session_ttl_s, session_secret, ingest_min_free_mb, ingest_max_events, search_limit_default, search_limit_max, query_sem, refresh_sem, bound } = boot_config();
     // PLAFOND MÉMOIRE : on RAPPORTE ce que le processus va faire, et on le rappelle (idempotent — l'effet
     // a déjà eu lieu en tête de `main`, seul endroit assez tôt pour que SQLite le voie).
-    eprintln!("[plafond] {}", sqlite_plafond::banniere(sqlite_plafond::deversement_init(&db_path)));
+    eprintln!(
+        "[plafond] {}",
+        sqlite_plafond::banniere(sqlite_plafond::deversement_init(&db_path), sqlite_plafond::tri_dune_connexion_nue())
+    );
     let conn = open_and_migrate_db(db_path.clone(), spool.clone(), conf.clone());
     let db = Arc::new(Mutex::new(conn));
     // TIER FROID : ce que ce binaire SAIT faire, et ce qu'il FAIT. Un composant qui travaille sans le dire

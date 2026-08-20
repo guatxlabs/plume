@@ -353,3 +353,32 @@ Le curseur d'une source n'est persisté sur disque **qu'après** ship+ACK. Un cr
 lot non acké ; la déduplication côté daemon (`dedup` / `__CURSOR` journald, `INSERT OR IGNORE`) absorbe
 les doublons. Le spool est un **anneau borné** : si le central est indisponible, les entrées les plus
 vieilles sont évincées au-delà de `spool_cap` (le poste ne peut pas saturer son disque).
+
+### Ce que « publié » veut dire, exactement
+
+Deux propriétés se confondent souvent, et la promesse ci-dessus a besoin des deux :
+
+- **Atomicité du contenu** — après le renommage, un lecteur voit l'ancien fichier ou le nouveau,
+  jamais un fichier à moitié écrit. Le renommage la donne, seul.
+- **Durabilité** — après une coupure d'alimentation ou du noyau, la publication survit. Le renommage
+  ne la donne **pas** : il faut que les octets du temporaire soient sur le disque **avant**, et que
+  l'entrée de répertoire y soit **après**. Sans le second point, le fichier peut exister sans que son
+  **nom** existe : les octets sont là, personne ne les trouvera, et rien ne comptera ce qui manque.
+
+Toute publication de ce binaire — entrée de spool, curseur de source, base de référence FIM — passe
+par une **voie unique** (`src/durable.rs`) qui fait les deux synchronisations, et un test dérivé
+refuse qu'un nouveau site réinvente le motif à la main.
+
+**Ce que cela garantit, par cible** — une promesse non bornée est une promesse fausse :
+
+| Cible | Contenu synchronisé avant | Répertoire synchronisé après |
+|---|---|---|
+| Linux, macOS | oui | oui |
+| Windows | oui | **non** — un descripteur de répertoire n'y est pas ouvrable par la bibliothèque standard ; la publication y est atomique et son contenu durable, sans garantie sur l'entrée de répertoire |
+
+**Ce que les tests prouvent, et ce qu'ils ne prouvent pas** : ils prouvent que les appels de
+synchronisation sont **faits**, au bon endroit du chemin de publication (compteur par fil
+d'exécution, plus une preuve par mutation : retirer un appel fait échouer un test qui nomme la
+surface). Ils ne prouvent **pas** la survie à une coupure d'alimentation — cela demanderait de
+couper le courant d'une vraie machine à l'instant exact. Le défaut réellement fermé est qu'aucun
+appel n'existait ; un matériel qui ment sur son propre *flush* reste hors de portée.

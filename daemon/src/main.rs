@@ -147,6 +147,8 @@ mod sonde_de_flotte; // P3.2-a : LA SONDE DE FLOTTE — un hôte qui se tait ENT
 pub(crate) use sonde_de_flotte::*;
 mod imputation; // S7 : À QUELLE SOURCE UNE ALERTE SE RAPPORTE — lue dans la DONNÉE (colonne `event.source`, descripteur de sonde), plus dans la prose de la règle ; et un INCONNU NOMMÉ quand elle n'est pas déterminable
 pub(crate) use imputation::*;
+mod maj_corroboree; // P5.7-b : LE SOC S'ALERTE SUR SA PROPRE MISE À JOUR — un dépôt d'unité systemd n'est reclassé que si son CONTENU est celui d'une unité livrée par ce build ET qu'un déploiement daté vient d'avoir lieu ; jamais sur un nom, et l'événement n'est jamais effacé
+pub(crate) use maj_corroboree::*;
 mod metrics; // #51 DAY-2 OPS : self-métriques process-globales + santé par composant + exposition Prometheus
 pub(crate) use metrics::*;
 mod handlers;
@@ -1015,6 +1017,20 @@ fn main() {
     // AU DÉFAUT, CET APPEL NE FAIT RIEN : pas de déversement demandé -> pas de répertoire créé, pas de
     // `SQLITE_TMPDIR` posé. Un `sqltmp` présent sur le volume laisserait croire que des tris y passent.
     let _ = sqlite_plafond::deversement_init(&cfg(&load_config(), "PLUME_DB", "/var/lib/plume/db/plume.db"));
+    // S26 — CE QUE LE MOTEUR FAIT D'UN TRI EST LU, PAS SUPPOSÉ, ET LE REFUS EST ICI.
+    // SQLCipher chiffre les pages de la base, PAS les fichiers temporaires de SQLite : un tri qui
+    // déverse écrit des VALEURS D'ÉVÉNEMENT EN CLAIR. Toute la garantie tient donc à ce qu'une connexion
+    // qui ne pose aucun réglage trie EN MÉMOIRE — propriété de la LIAISON SQLite, pas de ce dépôt, et
+    // qui n'était jusqu'ici qu'affirmée en commentaire. Elle est désormais INTERROGÉE sur une connexion
+    // nue, et un désaccord ARRÊTE le processus : un avertissement ne servirait à rien, quand on le
+    // lirait la fuite serait déjà écrite.
+    // AU MÊME ENDROIT QUE `deversement_init`, ET POUR LA MÊME RAISON : la propriété mesurée est celle du
+    // PROCESSUS (valeur compilée du moteur + mot d'exploitation), pas celle d'une sous-commande — une
+    // garde par sous-commande serait une ÉNUMÉRATION, et c'est ce genre de liste qui a déjà lâché ici.
+    if let Err(refus) = sqlite_plafond::garde_du_tri_en_memoire() {
+        eprintln!("[plafond] {refus}");
+        std::process::exit(1);
+    }
     if args.get(1).map(String::as_str) == Some("hashpw") {
         let pw = match args.get(2) {
             Some(p) => p.clone(),
@@ -1703,7 +1719,7 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
                 std::process::exit(2);
             }
         };
-        let _ = conn.execute_batch(sqlite_plafond::pragmas_memoire());
+        let _ = sqlite_plafond::armer(&conn);
         let live = read_schema_version(&conn);
         if live < CODE_SCHEMA_MAX {
             eprintln!("[migrate-check] schema LIVE={live} < CODE_SCHEMA_MAX={CODE_SCHEMA_MAX} -> migration EN ATTENTE (snapshot pre-migrate REQUIS) [exit 0]");
@@ -1723,7 +1739,7 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
             Ok(c) => { apply_key(&c); c }
             Err(e) => { eprintln!("db-stats: ouverture read-only {db_path}: {e}"); std::process::exit(2); }
         };
-        let _ = conn.execute_batch(sqlite_plafond::pragmas_memoire());
+        let _ = sqlite_plafond::armer(&conn);
         let q = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap_or(-1) };
         // FAIL-CLOSED : une base ILLISIBLE (clé absente/incorrecte -> SQLCipher rend « file is not a
         // database » à la PREMIÈRE lecture) rendait jusqu'ici un rapport de ZÉROS — qui se lit

@@ -66,7 +66,8 @@ fn read_conn_open(db_path: &str) -> Result<Connection, String> {
     // Le BUDGET MÉMOIRE (temp_store/cache_size/mmap_size) est décidé par `sqlite_plafond` et NULLE PART
     // ailleurs : quatre sites le posaient, ils avaient déjà divergé, et sous `temp_store` en mémoire le
     // trieur de SQLite n'a AUCUN chemin de déversement (cf. la démonstration dans ce module).
-    let _ = conn.execute_batch(&format!("PRAGMA query_only=ON; PRAGMA busy_timeout=3000; {}", sqlite_plafond::pragmas_memoire()));
+    let _ = conn.execute_batch("PRAGMA query_only=ON; PRAGMA busy_timeout=3000;");
+    let _ = sqlite_plafond::armer(&conn);
     // WIRING SÉCU RÉUTILISABLE (#18 P3) — les UDF de requête, le HASH de masquage (#45) et l'AUTHORIZER DENY
     // sont installés par des helpers PARTAGÉS : le chemin HOT (ici) ET le chemin d'UNION hot∪cold du tier cold
     // (query_exec::run_on_conn via cold_store::open_cold_union) posent EXACTEMENT le même wiring -> le masquage

@@ -287,7 +287,31 @@ env:
   # sont ceux de l'ARBRE, jamais d'un lot : le lot suivant RÉ-ÉNUMÈRE, il n'additionne pas son écart à
   # la valeur posée ici. Deux énumérations du même jour, à quelques minutes d'écart, ont rendu 1098
   # puis 1109 — c'est exactement pourquoi la règle est de ré-énumérer plutôt que de reporter.
-  EXPECTED_TESTS: "1109"
+  # RÉ-ÉNUMÉRÉ le 2026-08-20 sur l'arbre courant, qui porte aussi les lots arrivés entre-temps :
+  # **1125** par défaut, **1345** avec `cold_tier`, écart **220** inchangé. Le lot S28 — la lecture de
+  # la limite mémoire du groupe de contrôle, cinq tests SANS `cfg` de feature, donc présents dans les
+  # DEUX profils — est compris dedans. L'INSTRUMENT A ÉTÉ VALIDÉ avant d'être cru, par un témoin
+  # positif et un témoin négatif : le compte des lignes `: test` et le total que cargo imprime
+  # lui-même concordent, et `-- --list --ignored` rend **0 test**. Le total énuméré est donc bien le
+  # total qui PASSE, et non un total dont il faudrait retrancher des tests ignorés.
+  # CONFIRMÉ le 2026-08-20 par une ÉNUMÉRATION INDÉPENDANTE du même arbre — **1125** par défaut,
+  # **1345** avec `cold_tier`, écart **220**, `--list --ignored` toujours **0** — donc AUCUN chiffre
+  # n'est déplacé ici. Cette énumération porte le lot P5.7-b (le SOC s'alerte sur sa propre mise à
+  # jour : `daemon/src/tests/maj_corroboree.rs`), cinq tests SANS `cfg` de feature, présents dans les
+  # DEUX profils, déjà compris dans le total ci-dessus : la table d'empreintes re-hachée depuis
+  # `systemd/`, la couverture des unités que les installeurs déposent, la mise à jour légitime
+  # reclassée avec son témoin négatif, le dépôt hostile sous six formes qui reste détecté, et le fait
+  # de déploiement daté-audité. Aucun n'est un producteur d'alerte : la garde d'imputation
+  # (`imputation_tout_producteur_d_alerte_declare_son_choix`) compte toujours les mêmes sites.
+  # RÉ-ÉNUMÉRÉ le 2026-08-20 par une TROISIÈME lecture indépendante du même arbre — **1125** par
+  # défaut, **1345** avec `cold_tier`, écart **220** — donc aucun chiffre n'est déplacé ici. Cette
+  # énumération porte le lot S26 (clé S26 : ce que le moteur fait d'un tri est LU et non supposé —
+  # `daemon/src/tests/tri_en_memoire_voie_unique.rs`), sept tests SANS `cfg` de feature, présents dans
+  # les DEUX profils et déjà compris dans le total ci-dessus. Le lot RETIRE aussi une garde de
+  # PROXIMITÉ devenue redondante (`aucune_lecture_sur_fichier_sans_plafond`, bornée aux ouvertures en
+  # lecture seule) que la garde de VOIE UNIQUE couvre désormais en entier : +7 −1 sur ce module, et le
+  # total reste celui de l'ARBRE, jamais une somme de lots.
+  EXPECTED_TESTS: "1125"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -565,7 +589,13 @@ jobs:
           # RÉ-ÉNUMÉRÉ le 2026-08-20 par la MÊME double lecture, sur l'arbre qui porte aussi le lot S4
           # (clé de tenant sans repli horodaté, trois tests sans `cfg`) : 1329 avec `cold_tier` pour 1109
           # par défaut — l'écart reste **220**.
-          EXPECTED_COLD_TESTS: "1329"
+          # RÉ-ÉNUMÉRÉ le 2026-08-20 par la MÊME double lecture, sur l'arbre qui porte aussi le lot S28
+          # (lecture de la limite mémoire du groupe de contrôle, cinq tests sans `cfg`) : 1345 avec
+          # `cold_tier` pour 1125 par défaut — l'écart reste **220**.
+          # RÉ-ÉNUMÉRÉ le 2026-08-20 par la MÊME double lecture, sur l'arbre qui porte aussi le lot S26
+          # (tri en mémoire LU et non supposé, sept tests sans `cfg`, moins une garde de proximité
+          # devenue redondante) : 1345 avec `cold_tier` pour 1125 par défaut — l'écart reste **220**.
+          EXPECTED_COLD_TESTS: "1345"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -681,6 +711,21 @@ jobs:
       # au moment où le document est écrit, pas lors d'un futur audit.
       - name: Un document suivi doit être ATTEIGNABLE depuis la page d'accueil
         run: python3 .github/scripts/check_every_doc_is_reachable.py
+
+      # MÊME FAMILLE, APPLIQUÉE À LA PROMESSE CENTRALE DU PRODUIT : une garantie AFFIRMÉE que le code
+      # ne tient que par convention. La livraison au moins une fois repose sur « écrire un temporaire
+      # puis renommer ». Ce motif donne l'ATOMICITÉ DU CONTENU et rien d'autre : après une coupure,
+      # l'entrée de répertoire peut manquer alors que le fichier existe — les octets sont là, leur NOM
+      # n'y est pas, et `ship.sh` parcourt le spool PAR NOM. MESURÉ le 2026-08-20 : aucune
+      # synchronisation nulle part, et le motif recopié à la main dans SEPT capteurs en plus de la
+      # bibliothèque. Coût de la correction, mesuré le même jour (NVMe, 100 publications) : +12,7 ms
+      # par publication en shell — payable pour un capteur cadencé à la minute, et dit comme tel.
+      # La garde n'énumère aucun capteur : elle refuse toute publication dans `$SPOOL` écrite hors de
+      # `spool_write`/`spool_publish_file`, puis SOURCE la bibliothèque avec un `sync` instrumenté et
+      # vérifie l'ORDRE réel (contenu AVANT le renommage, répertoire APRÈS). Elle dit aussi ce qu'elle
+      # ne prouve pas : que les appels sont faits, jamais la survie à une coupure d'alimentation.
+      - name: Une publication dans le spool doit être DURABLE, pas seulement atomique
+        run: python3 .github/scripts/check_publication_is_durable.py
 
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
       # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —

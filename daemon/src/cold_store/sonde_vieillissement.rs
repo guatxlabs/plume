@@ -115,7 +115,7 @@ pub(super) fn ouvrir_en_lecture_seule(db_path: &str) -> Result<Connection, Strin
     let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("ouverture read-only {db_path} : {e}"))?;
     apply_key(&conn);
-    let _ = conn.execute_batch(crate::sqlite_plafond::pragmas_memoire());
+    let _ = crate::sqlite_plafond::armer(&conn);
     // FAIL-CLOSED, même leçon que `db-stats` (2026-08-05) : une base illisible (clé absente/incorrecte ->
     // SQLCipher rend « file is not a database » à la PREMIÈRE lecture) rendrait un rapport de plans vides,
     // qui se lit « il n'y a rien à voir » au lieu de « je n'ai rien pu lire ».

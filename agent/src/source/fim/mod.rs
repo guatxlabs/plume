@@ -491,7 +491,14 @@ impl Baseline {
         }
     }
 
-    /// Persiste si modifiée (écriture atomique via tmp+rename, perms 0600 sur unix). Best-effort.
+    /// Persiste si modifiée (publication DURABLE, perms 0600 sur unix). Best-effort.
+    ///
+    /// La baseline contient des empreintes et des chemins sensibles : le fichier temporaire NE DOIT
+    /// JAMAIS exister avec des perms plus larges que 0600, même transitoirement — `durable::publier`
+    /// pose donc le mode À LA CRÉATION, jamais par un `chmod` après coup. `dirty` n'est levé que si
+    /// la publication est allée jusqu'au bout, synchronisation du répertoire comprise : une baseline
+    /// qu'on croirait écrite alors que son entrée de répertoire n'a pas survécu ferait repartir le
+    /// FIM d'une référence vide, donc SANS signaler les modifications survenues entre-temps.
     pub fn save(&mut self, path: &Path) {
         if !self.dirty {
             return;
@@ -502,37 +509,8 @@ impl Baseline {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let tmp = path.with_extension("tmp");
-        // La baseline contient des hash/chemins sensibles -> le fichier temporaire NE DOIT JAMAIS exister
-        // avec des perms plus larges que 0600, même transitoirement. On le crée DIRECTEMENT en 0600 (unix)
-        // au lieu d'écrire-puis-chmod (fenêtre umask-large). On retire un éventuel tmp résiduel d'abord
-        // (O_CREAT n'abaisse pas les perms d'un fichier préexistant).
-        let _ = std::fs::remove_file(&tmp);
-        let write_ok = {
-            #[cfg(unix)]
-            {
-                use std::io::Write;
-                use std::os::unix::fs::OpenOptionsExt;
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&tmp)
-                    .and_then(|mut f| f.write_all(body.as_bytes()))
-                    .is_ok()
-            }
-            #[cfg(not(unix))]
-            {
-                std::fs::write(&tmp, body.as_bytes()).is_ok()
-            }
-        };
-        if write_ok {
-            if std::fs::rename(&tmp, path).is_ok() {
-                self.dirty = false;
-            } else {
-                let _ = std::fs::remove_file(&tmp);
-            }
+        if crate::durable::publier(path, body.as_bytes(), Some(0o600)).is_ok() {
+            self.dirty = false;
         }
     }
 }

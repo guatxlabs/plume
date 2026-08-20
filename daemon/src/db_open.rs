@@ -56,12 +56,21 @@
 use crate::*;
 
 /// Ouverture NUE, clé SQLCipher de l'ENVIRONNEMENT. PRIVÉE au module — c'est tout le mécanisme.
-/// Corps VERBATIM de l'ancien `crypto::open_db` (`apply_key` avale son erreur et pose le
-/// `busy_timeout` de 5 s UNIQUEMENT dans la branche « une clé existe » : une base EN CLAIR n'en a
-/// toujours aucun, cf. la doc de `prepare_schema`).
+/// Corps de l'ancien `crypto::open_db` (`apply_key` avale son erreur et pose le `busy_timeout` de 5 s
+/// UNIQUEMENT dans la branche « une clé existe » : une base EN CLAIR n'en a toujours aucun, cf. la doc
+/// de `prepare_schema`), PLUS l'armement du tri (S26, ci-dessous).
+///
+/// S26 — LE TRI EST ARMÉ ICI, POUR TOUS LES APPELANTS DE LA PORTE. Mesuré avant correctif : sur les 24
+/// chemins d'ouverture de production qui passent par la porte, UN SEUL posait les réglages mémoire (le
+/// daemon, via le prélude `server::tune`). Les 23 autres — sauvegarde, restauration, `VACUUM INTO`,
+/// rétention, purge, provisioning de tenant, sondes de chiffrement, CLI — ouvraient une connexion qui ne
+/// dit RIEN, et dont les tris ne tenaient en mémoire que par la valeur COMPILÉE du moteur. Armer les
+/// deux ouvertures nues les couvre TOUTES d'un seul geste, et un appelant écrit demain l'est le jour où
+/// il est écrit — sans qu'aucune liste ne soit tenue.
 fn raw_env(path: &str) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
     apply_key(&conn);
+    let _ = sqlite_plafond::armer(&conn);
     Ok(conn)
 }
 
@@ -76,6 +85,10 @@ fn raw_keyed(path: &str, key: Option<&str>) -> rusqlite::Result<Connection> {
             conn.execute_batch(&format!("PRAGMA key = '{}';", k.replace('\'', "''")))?;
         }
     }
+    // S26 — APRÈS la clé : sur une base SQLCipher, tout PRAGMA qui touche le fichier avant `key`
+    // échouerait. L'armement RELIT ce qu'il a posé (cf. `sqlite_plafond::armer`), donc un batch refusé
+    // — sur une base chiffrée qu'une sonde ouvre SANS clé, par exemple — ne peut plus passer inaperçu.
+    let _ = sqlite_plafond::armer(&conn);
     Ok(conn)
 }
 

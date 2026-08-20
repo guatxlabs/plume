@@ -701,7 +701,17 @@ pub(crate) fn seed_purple_rules(conn: &Connection) {
 ///      créerait un angle mort qu'un attaquant occupe en nommant son unité `plume-quelquechose.service`.
 ///      Pour un SOC, un angle mort taillé sur mesure est PIRE que du bruit de maintenance. La garde
 ///      `plume_own_units_that_trip_the_persistence_rule_are_declared` ÉPINGLE le compte : il ne peut
-///      plus grandir en silence. Cf. la section P5.7-b du rapport de lot.
+///      plus grandir en silence.
+///      CE QUI EST FAIT À LA PLACE (`maj_corroboree.rs`) : le dépôt est RECLASSÉ — jamais effacé —
+///      quand DEUX faits tiennent ensemble, dont aucun n'est un nom. (a) Le CONTENU déposé est, octet
+///      pour octet, l'une des 88 unités que ce build livre (`systemd/*.service|*.timer`, posées par
+///      `install` sans substitution), sous le nom de fichier sous lequel elle est livrée — le nom ne
+///      peut donc que RESTREINDRE, jamais accorder. (b) Un DÉPLOIEMENT a eu lieu et il est daté : au
+///      démarrage, le daemon compare la signature du jeu d'unités que son binaire livre à celle notée
+///      sur la base, audite le changement (ledger + `plume-config`) et ouvre une fenêtre BORNÉE. Hors
+///      de cette fenêtre, un dépôt isolé au contenu pourtant authentique reste alerté. L'événement
+///      d'intégrité est toujours écrit : il descend en severity 1 et GAGNE `reclasse=maj-produit` +
+///      `severite_origine`, donc `search source=integrity kind=unit` rend la même ligne qu'avant.
 ///   6. conntrack flux : MÊME (proc,dst_ip) externe sortant répété > 10 ticks = cadence beacon. La liste
 ///      d'exclusion `proc!=…` de la requête et le seuil de ticks sont des EXEMPLES / PLACEHOLDERS — à
 ///      REMPLACER par les gros causeurs d'égress légitime de VOTRE hôte (orchestrateur, runtime de conteneurs,

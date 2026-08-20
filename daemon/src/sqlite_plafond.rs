@@ -18,7 +18,9 @@
 //! qui se chaînent, et c'est le troisième qui décide :
 //!   1. `sqlite3TempInMemory(db)` rend `db->temp_store != 1`. SEUL `PRAGMA temp_store=FILE` (valeur 1)
 //!      le met à FAUX. `MEMORY` (2) le laisse vrai — et le DÉFAUT DE COMPILATION aussi : ce binaire porte
-//!      `SQLITE_TEMP_STORE=2`, donc une connexion qui ne dit RIEN trie en mémoire. Le silence est le cas
+//!      `SQLITE_TEMP_STORE=2` — LU au démarrage et non supposé (cf. la section S26 en fin de module :
+//!      le processus INTERROGE le moteur sur une connexion nue et REFUSE de servir si la réponse est
+//!      l'autre) —, donc une connexion qui ne dit RIEN trie en mémoire. Le silence est le cas
 //!      dangereux, pas un réglage explicite.
 //!   2. `sqlite3VdbeSorterInit` ne renseigne `pSorter->mxPmaSize` QUE dans la branche
 //!      `if( !sqlite3TempInMemory(db) )`. Ailleurs il reste 0 (la structure est allouée à zéro).
@@ -288,85 +290,256 @@ fn plafond_pour(actif: bool, octets: i64) -> Plafond {
     if actif { Plafond::Applique(octets) } else { Plafond::Aucun }
 }
 
+/// CE QUE L'INTERFACE DE GROUPES DE CONTRÔLE A DIT — trois verdicts EXCLUSIFS, et c'est LA correction que
+/// ce bloc porte. « il n'y a PAS de limite » et « la lecture N'A PAS ABOUTI » étaient tous deux rendus `None`,
+/// donc rendus par la même phrase « NON LISIBLE ». La confusion coûte des DEUX côtés : sur un hôte sans
+/// limite — le cas ordinaire d'un service système natif sans `MemoryMax=` — la bannière accusait
+/// l'instrument alors que l'instrument allait bien ; et sur un hôte où le chemin a changé de forme, elle
+/// laissait croire à une propriété du déploiement alors que rien n'avait été mesuré. Un `match` exhaustif
+/// (aucun bras `_`) interdit qu'un quatrième cas se glisse silencieusement dans l'un des trois.
+#[derive(Debug, PartialEq)]
+enum LimiteCgroup {
+    /// Une limite EXISTE et vaut N octets : c'est ce nombre-là qui déclenche l'OOM-kill.
+    Octets(i64),
+    /// L'interface a été LUE et COMPRISE, et elle dit qu'il n'y a AUCUNE limite (v2 : le mot `max` ;
+    /// v1 : la sentinelle « illimitée »). L'instrument va bien — c'est le déploiement qui ne borne rien.
+    Aucune,
+    /// L'interface n'a pas pu être lue, ou sa forme n'a pas été reconnue. Porte CE QUI A ÉTÉ TENTÉ : un
+    /// aveu qui ne nomme pas le chemin essayé n'est pas actionnable.
+    Illisible(String),
+}
+
+/// Au-delà de ce seuil, un nombre n'est plus un budget : c'est la façon dont cgroup v1 écrit « pas de
+/// limite » (`i64::MAX` arrondi au multiple de page, et `u64::MAX` sur d'autres configurations — cette
+/// seconde forme ne rentrait même pas dans un `i64`, donc elle était comptée comme illisible). 1 Pio est
+/// des ordres de grandeur au-dessus de toute limite qu'un exploitant pose réellement ; publier « plafond
+/// de 8 Eio » serait pire que se taire.
+const SEUIL_SANS_LIMITE: u128 = 1 << 50;
+
+/// LA FORME DU CONTENU D'UN FICHIER DE LIMITE — PURE, donc exerçable sur chaque variante connue sans
+/// aucun groupe de contrôle sous la main. Les deux versions de l'interface écrivent « pas de limite »
+/// différemment (v2 : le mot `max` ; v1 : un entier énorme) et c'est le SEUL endroit qui le sait.
+/// Une forme qui n'est ni l'une ni l'autre rend `Illisible` — jamais `Aucune` : confondre les deux est
+/// précisément le défaut fermé ici.
+fn valeur_limite(txt: &str) -> LimiteCgroup {
+    let t = txt.trim();
+    if t.eq_ignore_ascii_case("max") {
+        return LimiteCgroup::Aucune;
+    }
+    match t.parse::<u128>() {
+        Ok(n) if n >= SEUIL_SANS_LIMITE => LimiteCgroup::Aucune,
+        // `n < SEUIL_SANS_LIMITE` (2^50) : la conversion ne peut pas déborder un i64.
+        Ok(n) => LimiteCgroup::Octets(n as i64),
+        Err(_) => LimiteCgroup::Illisible(format!(
+            "forme non reconnue ({:?})",
+            t.chars().take(24).collect::<String>()
+        )),
+    }
+}
+
+/// LA LIGNÉE cgroup v2, isolée. Rend `None` quand AUCUN fichier de limite n'a pu être lu — c'est-à-dire
+/// exactement le cas où le repli v1 a encore quelque chose à dire ; tout autre cas est déjà un verdict.
+///
+/// UN `memory.max` ABSENT À UN NIVEAU N'EST PAS UNE PANNE : le noyau n'expose pas le contrôleur mémoire
+/// sur le cgroup RACINE, donc la dernière itération de la remontée ne trouve normalement rien. Un
+/// `memory.max` PRÉSENT dont la forme n'est pas reconnue, lui, EN EST une, et il remonte au lieu d'être
+/// avalé par le `if let Ok(...)` qui l'ignorait.
+///
+/// FAIL-CLOSED SUR UNE LIGNÉE PARTIELLEMENT LISIBLE : si un niveau est incompris, on ne conclut PAS sur le
+/// minimum des autres. Un niveau qu'on n'a pas su lire peut porter une limite PLUS SERRÉE, et annoncer
+/// « protégé » sur la foi des niveaux lisibles serait revendiquer une couverture qu'on n'a pas établie.
+fn lignee_v2(racine: &std::path::Path, chemin: &str) -> Option<LimiteCgroup> {
+    let mut ici = racine.join(chemin.trim_start_matches('/'));
+    let (mut mini, mut lus, mut incomprises) = (None::<i64>, 0usize, Vec::new());
+    loop {
+        let f = ici.join("memory.max");
+        if let Ok(v) = std::fs::read_to_string(&f) {
+            match valeur_limite(&v) {
+                LimiteCgroup::Octets(n) => {
+                    lus += 1;
+                    mini = Some(mini.map_or(n, |m: i64| m.min(n)));
+                }
+                LimiteCgroup::Aucune => lus += 1,
+                LimiteCgroup::Illisible(quoi) => incomprises.push(format!("{} : {quoi}", f.display())),
+            }
+        }
+        if ici == racine {
+            break;
+        }
+        match ici.parent() {
+            Some(p) if p.starts_with(racine) => ici = p.to_path_buf(),
+            _ => break,
+        }
+    }
+    if !incomprises.is_empty() {
+        return Some(LimiteCgroup::Illisible(format!(
+            "{}{}",
+            incomprises.join(" ; "),
+            mini.map_or(String::new(), |n| format!(
+                " (un niveau lisible annonce {n} o, mais un niveau ILLISIBLE peut être plus serré)"
+            ))
+        )));
+    }
+    if let Some(n) = mini {
+        return Some(LimiteCgroup::Octets(n));
+    }
+    if lus > 0 {
+        return Some(LimiteCgroup::Aucune);
+    }
+    None
+}
+
+/// LA LIMITE QUI NOUS TUE, LUE SUR LE SYSTÈME — jamais supposée. PARAMÉTRÉE sur ses deux chemins, et
+/// c'est ce qui la rend EXERÇABLE : les tests lui présentent une arborescence fabriquée dans un
+/// temporaire possédé, donc chaque forme connue de l'interface se joue sans dépendre de l'hôte qui
+/// exécute la suite. Un test qui n'aurait passé que sous conteneur aurait rougi en intégration continue,
+/// et un test qui n'aurait passé que sur un hôte sans limite n'aurait rien prouvé du cas conteneurisé.
+///
+/// LES FORMES RECENSÉES, et pourquoi chacune existe :
+///   1. cgroup v2 (hiérarchie unifiée) — `/proc/self/cgroup` porte une ligne `0::<chemin>`. La limite
+///      EFFECTIVE est la PLUS PETITE de la lignée : un parent plus serré tue avant la feuille, d'où la
+///      remontée jusqu'à la racine du montage.
+///   2. cgroup v2, valeur `max` — la limite est ABSENTE, et le fichier le DIT en toutes lettres. C'est le
+///      cas ordinaire d'un hôte systemd sans `MemoryMax=`, et c'est celui qui était pris pour une panne.
+///   3. cgroup v2, RACINE du montage — la racine n'expose PAS `memory.max` (le noyau ne pose pas le
+///      contrôleur mémoire sur le cgroup racine). Un fichier manquant à ce niveau est donc NORMAL, et ne
+///      doit pas à lui seul faire conclure à l'illisibilité.
+///   4. conteneur AVEC espace de noms de cgroup (défaut des moteurs récents) — `/proc/self/cgroup` rend
+///      `0::/` et le montage EST le cgroup du conteneur : `memory.max` à la racine VISIBLE porte alors la
+///      limite. C'est l'exception à (3), et c'est pourquoi la racine est lue elle aussi.
+///   5. conteneur SANS espace de noms (moteurs anciens, `--cgroupns=host`) — `/proc/self/cgroup` rend le
+///      chemin de l'HÔTE alors que le montage est la feuille : le chemin joint n'existe pas, aucun fichier
+///      n'est lu. C'est une vraie ABSENCE DE MESURE, et elle doit se dire AVEC le chemin tenté.
+///   6. cgroup v1 — aucune ligne `0::` porteuse, et le fichier historique
+///      `<racine>/memory/memory.limit_in_bytes`. « Pas de limite » y est un entier énorme, pas un mot.
+///   7. hybride v1+v2 — la ligne `0::` existe mais la hiérarchie unifiée ne porte pas le contrôleur
+///      mémoire ; aucun `memory.max` n'est trouvé sous la racine v2, et le repli v1 tranche.
+///   8. ni l'un ni l'autre (`/proc` masqué, système non Linux) — rien n'est lisible, et on le dit.
+fn limite_cgroup_depuis(racine: &std::path::Path, proc_self_cgroup: &std::path::Path) -> LimiteCgroup {
+    let mut tentes: Vec<String> = Vec::new();
+    match std::fs::read_to_string(proc_self_cgroup) {
+        Ok(txt) => match txt.lines().find_map(|l| l.strip_prefix("0::")) {
+            Some(chemin) => match lignee_v2(racine, chemin.trim()) {
+                Some(verdict) => return verdict,
+                None => tentes.push(format!(
+                    "aucun memory.max lisible sous {}",
+                    racine.join(chemin.trim().trim_start_matches('/')).display()
+                )),
+            },
+            None => tentes.push(format!(
+                "{} ne porte aucune ligne `0::` (hiérarchie v1 ou hybride)",
+                proc_self_cgroup.display()
+            )),
+        },
+        Err(e) => tentes.push(format!("{} : {e}", proc_self_cgroup.display())),
+    }
+    let v1 = racine.join("memory").join("memory.limit_in_bytes");
+    match std::fs::read_to_string(&v1) {
+        Ok(txt) => match valeur_limite(&txt) {
+            LimiteCgroup::Illisible(quoi) => tentes.push(format!("{} : {quoi}", v1.display())),
+            verdict => return verdict,
+        },
+        Err(e) => tentes.push(format!("{} : {e}", v1.display())),
+    }
+    LimiteCgroup::Illisible(tentes.join(" ; "))
+}
+
+/// Les chemins RÉELS. Le seul endroit du module qui les nomme — tout le reste travaille sur une racine
+/// passée en paramètre, donc s'exerce.
+fn limite_cgroup() -> LimiteCgroup {
+    limite_cgroup_depuis(
+        std::path::Path::new("/sys/fs/cgroup"),
+        std::path::Path::new("/proc/self/cgroup"),
+    )
+}
+
 /// UN PLAFOND NE PROTÈGE QUE S'IL EST SOUS CE QUI NOUS TUE. Un budget de 1088 Mio dans un conteneur limité
 /// à 1 Gio est une protection IMAGINAIRE : l'OOM-killer arrive avant l'allocateur. La bannière ne peut donc
-/// pas se contenter d'annoncer le budget — elle doit le CONFRONTER à la limite réelle, ou avouer qu'elle
-/// ne la lit pas. Trois cas EXCLUSIFS, `match` exhaustif : c'est la seule façon que le cas « je ne sais
-/// pas » ne se déguise pas en « tout va bien ».
+/// pas se contenter d'annoncer le budget — elle doit le CONFRONTER à la limite réelle, ou dire lequel des
+/// deux empêchements l'en prive. QUATRE cas EXCLUSIFS, `match` exhaustif : c'est la seule façon que « je
+/// ne sais pas » ne se déguise ni en « tout va bien », ni en « il n'y a pas de limite ».
+///
+/// CE QUI SE PASSE QUAND LA LECTURE ÉCHOUE — décision, et sa raison. NI refus de démarrage, NI défaut
+/// prudent : FONCTIONNEMENT DÉGRADÉ ANNONCÉ.
+///   * REFUSER DE DÉMARRER serait faux au regard des modes de déploiement revendiqués. Un service système
+///     natif sans `MemoryMax=` n'a légitimement AUCUNE limite ; faire d'une lecture impossible une panne
+///     transformerait des installations correctes en incidents.
+///   * UN DÉFAUT PRUDENT (supposer une limite basse) INVENTERAIT un nombre. Il ferait refuser des requêtes
+///     qui tiennent, et surtout il PRÉTENDRAIT une mesure : c'est exactement la faute que ce bloc ferme.
+///   * CE QUI RESTE TENU SANS CETTE LECTURE, et c'est pourquoi le dégradé est acceptable : le plafond dur
+///     de SQLite ne dépend PAS d'elle — il est posé, et une requête qui le franchit refuse, lecture du
+///     cgroup ou pas. Ce que la lecture apporte est la CONFRONTATION : savoir si ce plafond est SOUS ce
+///     qui tue. Sans elle, la protection interne survit ; c'est sa VÉRIFICATION qui manque, et c'est
+///     exactement cela qui est annoncé — ni plus, ni moins.
 enum Couverture {
     /// Le budget tient sous la limite mesurée : le refus arrive AVANT l'OOM-killer.
     Protege { limite: i64 },
     /// La limite existe et le budget ne tient pas dessous. Le processus mourra avant de refuser.
     Depasse { limite: i64 },
-    /// Aucune limite lisible (pas de cgroup, montage absent, `max`). On ne prétend rien.
-    Inconnue,
+    /// L'interface a été LUE : il n'y a AUCUNE limite de cgroup. Rien d'extérieur ne borne le processus.
+    SansLimite,
+    /// La lecture a échoué ou n'a pas été comprise. On ne prétend RIEN, et on dit ce qui a été tenté.
+    Illisible(String),
 }
 
-/// LA LIMITE QUI NOUS TUE, LUE SUR LE SYSTÈME — jamais supposée. cgroup v2 : le chemin du processus dans
-/// `/proc/self/cgroup`, et la limite EFFECTIVE est la PLUS PETITE de la lignée (un parent plus serré tue
-/// avant la feuille) -> on remonte jusqu'à la racine. cgroup v1 : le fichier historique. Rien de lisible
-/// -> `None`, et l'appelant l'AVOUE.
-fn limite_cgroup_octets() -> Option<i64> {
-    let racine = std::path::Path::new("/sys/fs/cgroup");
-    let mut mini: Option<i64> = None;
-    if let Ok(txt) = std::fs::read_to_string("/proc/self/cgroup") {
-        if let Some(chemin) = txt.lines().find_map(|l| l.strip_prefix("0::")) {
-            let mut ici = racine.join(chemin.trim_start_matches('/'));
-            loop {
-                if let Ok(v) = std::fs::read_to_string(ici.join("memory.max")) {
-                    if let Ok(n) = v.trim().parse::<i64>() {
-                        mini = Some(mini.map_or(n, |m: i64| m.min(n)));
-                    }
-                }
-                if ici == racine {
-                    break;
-                }
-                match ici.parent() {
-                    Some(p) if p.starts_with(racine) => ici = p.to_path_buf(),
-                    _ => break,
-                }
-            }
-        }
-    }
-    if mini.is_none() {
-        // cgroup v1 : une valeur « illimitée » y est un entier ÉNORME (i64::MAX arrondi à la page), pas un
-        // mot-clef. On la traite comme absente plutôt que de publier un plafond de 8 Eio.
-        if let Ok(v) = std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes") {
-            if let Ok(n) = v.trim().parse::<i64>() {
-                if n < (1 << 50) {
-                    mini = Some(n);
-                }
-            }
-        }
-    }
-    mini
-}
-
-/// PURE : la confrontation, séparée de la LECTURE, donc exerçable dans les trois états sans cgroup sous la
-/// main. `limite` vient de `limite_cgroup_octets`.
-fn couverture_pour(budget: i64, limite: Option<i64>) -> Couverture {
+/// PURE : la confrontation, séparée de la LECTURE, donc exerçable dans les quatre états sans cgroup sous
+/// la main. `limite` vient de `limite_cgroup`.
+fn couverture_pour(budget: i64, limite: LimiteCgroup) -> Couverture {
     match limite {
-        Some(l) if budget < l => Couverture::Protege { limite: l },
-        Some(l) => Couverture::Depasse { limite: l },
-        None => Couverture::Inconnue,
+        LimiteCgroup::Octets(l) if budget < l => Couverture::Protege { limite: l },
+        LimiteCgroup::Octets(l) => Couverture::Depasse { limite: l },
+        LimiteCgroup::Aucune => Couverture::SansLimite,
+        LimiteCgroup::Illisible(pourquoi) => Couverture::Illisible(pourquoi),
     }
 }
 
 impl Couverture {
-    fn phrase(&self) -> String {
+    /// LE MOT DE VERDICT — stable, sans espace, un par cas : c'est LUI le signal. La bascule d'une
+    /// protection annoncée à une protection absente change ce mot dans la ligne `[plafond]` du démarrage,
+    /// donc une supervision qui l'observe la VOIT ; une phrase en prose, elle, se relit à l'œil et ne se
+    /// surveille pas. Ces quatre valeurs sont un contrat : les renommer casse ce qui les observe.
+    fn verdict(&self) -> &'static str {
         match self {
+            Couverture::Protege { .. } => "protege",
+            Couverture::Depasse { .. } => "depasse",
+            Couverture::SansLimite => "sans-limite",
+            Couverture::Illisible(_) => "illisible",
+        }
+    }
+
+    /// Le plafond protège-t-il RÉELLEMENT de ce qui tue ? Un seul des quatre verdicts le permet. DÉRIVÉ,
+    /// jamais énuméré une seconde fois : c'est ce prédicat qui décide du mot d'alerte de la phrase, donc
+    /// un cas ajouté demain est bruyant par défaut au lieu d'être silencieusement rangé du bon côté.
+    fn protege(&self) -> bool {
+        matches!(self, Couverture::Protege { .. })
+    }
+
+    fn phrase(&self) -> String {
+        let alerte = if self.protege() { "" } else { "AVERTISSEMENT " };
+        let verdict = self.verdict();
+        let corps = match self {
             Couverture::Protege { limite } => {
-                format!(", sous la limite mémoire du cgroup ({} Mio)", limite / 1048576)
+                format!("sous la limite mémoire du cgroup ({} Mio)", limite / 1048576)
             }
             Couverture::Depasse { limite } => format!(
-                ", MAIS la limite mémoire du cgroup est {} Mio : LE PLAFOND NE PROTÈGE PAS — l'OOM-killer \
+                "la limite mémoire du cgroup est {} Mio : LE PLAFOND NE PROTÈGE PAS — l'OOM-killer \
                  arrivera avant le refus. Baisser PLUME_SQLITE_BUDGET_MB sous cette limite.",
                 limite / 1048576
             ),
-            Couverture::Inconnue => ", limite mémoire du cgroup NON LISIBLE : impossible de dire si ce \
-                                     budget protège de l'OOM-killer"
-                .to_string(),
-        }
+            Couverture::SansLimite =>
+                "AUCUNE limite mémoire de cgroup n'est posée — l'interface a été LUE, et elle ne borne \
+                 rien. Ce n'est PAS une panne de mesure : le plafond ci-dessus borne SQLite, mais RIEN \
+                 n'arrête le processus avant la RAM de l'hôte, et le budget de 2 Gio du produit n'est \
+                 alors qu'une intention. Le poser : MemoryMax= (unité systemd), --memory (conteneur), \
+                 limits.memory (orchestrateur)."
+                    .to_string(),
+            Couverture::Illisible(pourquoi) => format!(
+                "limite mémoire du cgroup NON LISIBLE ({pourquoi}) : impossible de dire si ce budget \
+                 protège de l'OOM-killer. Ce n'est PAS « il n'y a pas de limite », c'est « il n'y a pas \
+                 de mesure » — le plafond SQLite reste appliqué, sa couverture n'est pas vérifiée."
+            ),
+        };
+        format!(", {alerte}[couverture={verdict}] {corps}")
     }
 }
 
@@ -410,7 +583,7 @@ pub(crate) fn rapport() -> String {
         c / 1024,
         -c,
         plafond_courant().phrase(),
-        couverture_pour(plafond_dur_octets(), limite_cgroup_octets()).phrase()
+        couverture_pour(plafond_dur_octets(), limite_cgroup()).phrase()
     )
 }
 
@@ -471,20 +644,35 @@ pub(crate) enum Deversement {
 /// La rendre ICI ferme l'écart par construction : le `match` est EXHAUSTIF (aucun bras `_`), donc un mode
 /// ajouté demain ne compile pas tant que sa phrase n'est pas écrite.
 ///
-/// PURE, et c'est délibéré : elle prend le mode DÉJÀ résolu au lieu de le résoudre elle-même, donc les
-/// TROIS branches se testent sans toucher au disque ni à l'environnement.
-pub(crate) fn banniere(mode: Deversement) -> String {
+/// PURE, et c'est délibéré : elle prend le mode DÉJÀ résolu ET le verdict DÉJÀ lu au lieu de les
+/// résoudre elle-même, donc les branches se testent sans toucher au disque ni à l'environnement.
+///
+/// S26 — ELLE DIT CE QUI EST MESURÉ, JAMAIS CE QUI EST SUPPOSÉ. Le mode n'est qu'une DEMANDE : ce que
+/// le moteur fait vraiment d'un tri se lit (`tri_dune_connexion_nue`). Quand les deux s'accordent, la
+/// bannière publie les chiffres LUS ; quand ils divergent, elle annonce le risque RÉEL et non la
+/// promesse — une bannière qui annoncerait « déversement désactivé » pendant qu'il a lieu serait pire
+/// qu'une bannière absente.
+pub(crate) fn banniere(mode: Deversement, tri: Tri) -> String {
     let r = rapport();
     match mode {
-        Deversement::Desactive => format!(
-            "{r} — déversement des tris DÉSACTIVÉ (défaut) : aucune valeur d'événement en clair hors de \
-             la base chiffrée. Un tri trop large ne déverse donc pas : il ÉCHOUE au plafond ci-dessus. \
-             PLUME_SQLITE_DEVERSEMENT=1 échange cette confidentialité contre des tris qui aboutissent."
-        ),
+        Deversement::Desactive => match desaccord_pour(&tri, false) {
+            None => format!(
+                "{r} — déversement des tris DÉSACTIVÉ (défaut), et c'est MESURÉ : {}. Aucune valeur \
+                 d'événement en clair hors de la base chiffrée. Un tri trop large ne déverse donc pas : \
+                 il ÉCHOUE au plafond ci-dessus. PLUME_SQLITE_DEVERSEMENT=1 échange cette \
+                 confidentialité contre des tris qui aboutissent.",
+                constat_de_tri(&tri)
+            ),
+            Some(d) => format!("{r} — déversement des tris DÉSACTIVÉ (demandé), MAIS LA MESURE DIT AUTRE CHOSE : {d}"),
+        },
         Deversement::Vers(d) => format!(
             "{r} — déversement des tris ACTIVÉ vers {} : ce répertoire reçoit des VALEURS D'ÉVÉNEMENT EN \
-             CLAIR, hors de la base SQLCipher. Il doit être sur un support chiffré.",
-            d.display()
+             CLAIR, hors de la base SQLCipher. Il doit être sur un support chiffré. {}",
+            d.display(),
+            match desaccord_pour(&tri, true) {
+                None => format!("MESURÉ : {}.", constat_de_tri(&tri)),
+                Some(x) => format!("MAIS LA MESURE DIT AUTRE CHOSE : {x}"),
+            }
         ),
         Deversement::Indisponible(e) => format!(
             "{r} — déversement des tris DEMANDÉ mais répertoire INDISPONIBLE ({e}) : SQLite retombera sur \
@@ -556,6 +744,203 @@ fn controle_positif(dir: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════
+// S26 — CE QUE LE MOTEUR FAIT D'UN TRI : LU, JAMAIS SUPPOSÉ
+// ═══════════════════════════════════════════════════════════════════════════════════
+//
+// CE QUI ÉTAIT AFFIRMÉ. L'en-tête de ce module écrit que la construction livrée porte
+// `SQLITE_TEMP_STORE=2`, donc qu'une connexion qui ne dit RIEN trie en mémoire. C'est VRAI dans la
+// construction livrée — et ça l'était par AFFIRMATION : aucun code ne le relisait. La valeur ne vient
+// pas de ce dépôt mais de la liaison Rust, qui ne la pose que dans la branche SQLCipher de sa
+// compilation. Une version future qui livrerait `=1` ferait DÉVERSER toute connexion muette — des
+// valeurs d'événement EN CLAIR hors de la base SQLCipher, cf. l'en-tête — pendant que la bannière
+// continuerait d'annoncer « déversement DÉSACTIVÉ ». Une bannière qui annonce l'inverse de ce qui se
+// passe est pire qu'une bannière absente : c'est sur elle qu'on s'appuiera le jour d'un incident de
+// confidentialité.
+//
+// POURQUOI `PRAGMA temp_store` NE RÉPOND PAS À LA QUESTION, et c'est tout le piège. Il rend le réglage
+// LOCAL de la connexion (`sqlite3.c` 3.39.4, l. 16931 : « 1: file 2: memory 0: default »). Sur une
+// connexion muette il vaut 0 — la MÊME valeur, que le tri finisse en mémoire ou sur le disque. Le lire
+// et le trouver à 0 ne prouve donc RIEN. La décision réelle est prise par `sqlite3TempInMemory`
+// (l. 178609-178624), qui CROISE ce réglage local avec la valeur COMPILÉE ; et cette valeur-là ne se lit
+// que dans `PRAGMA compile_options` (`TEMP_STORE=N`, que `ctime.c` émet inconditionnellement puisque
+// `sqliteInt.h` définit toujours la macro, à 1 par défaut). C'est cette lecture-là qui manquait.
+//
+// CE QUE LE LOT POSE, DANS CET ORDRE :
+//   1. `armer` — LA VOIE UNIQUE : poser les réglages ET RELIRE ce qu'ils valent sur la connexion.
+//      Toute connexion de production sur un FICHIER y passe (garde
+//      `toute_connexion_sur_fichier_est_armee`), soit directement, soit par la porte (`db_open`), qui
+//      arme ses deux ouvertures nues — donc les 24 appelants de la porte d'un seul geste. Mesuré avant
+//      correctif : 10 sites d'ouverture, dont les 2 de la porte qui ne posaient RIEN, et par eux 23 des
+//      24 chemins d'ouverture de production (seul le daemon posait ces réglages, via son prélude).
+//   2. `garde_du_tri_en_memoire` — LE REFUS, en tête de `main`, sur une connexion NUE : si le moteur
+//      livré faisait déverser le silence alors que l'exploitant n'a rien demandé, le processus ne
+//      démarre pas. Un avertissement ne suffirait pas : quand on le lirait, la fuite serait écrite.
+//   3. la bannière ne DÉCRIT plus un réglage attendu, elle RAPPORTE la lecture — dans les deux sens.
+
+/// CE QU'UNE CONNEXION FAIT DE SES TRIS. Trois cas EXCLUSIFS, d'où un type et des `match` EXHAUSTIFS :
+/// « je ne sais pas » ne doit jamais pouvoir se déguiser en « tout va bien ».
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Tri {
+    /// Le trieur n'a AUCUN chemin de déversement : rien d'un événement ne peut toucher le disque.
+    EnMemoire { compile: i64, local: i64 },
+    /// Le trieur PEUT déverser : des valeurs d'événement partiraient en clair hors de SQLCipher.
+    SurDisque { compile: i64, local: i64 },
+    /// Le réglage ne se LIT pas. On ne prétend rien — et l'appelant refuse.
+    Illisible(String),
+}
+
+/// MIROIR EXACT de `sqlite3TempInMemory` (`sqlite3.c` 3.39.4, l. 178609-178624) : la TABLE que SQLite
+/// documente lui-même, pas une intuition. PURE, donc exerçable sur toutes les combinaisons — y compris
+/// celles qu'aucune construction ne produit aujourd'hui, qui sont précisément le sujet.
+pub(crate) fn tri_en_memoire(compile: i64, local: i64) -> bool {
+    match compile {
+        1 => local == 2,  // défaut de SQLite : seul un `temp_store=MEMORY` EXPLICITE sauve le silence
+        2 => local != 1,  // ce que porte la construction SQLCipher livrée
+        3 => true,        // « jamais de fichier temporaire », compilé en dur
+        _ => false,       // 0 ou hors bornes : SQLite rend 0 — FICHIER, quel que soit le réglage local
+    }
+}
+
+/// LA DÉRIVATION, séparée de la LECTURE pour être exerçable sans moteur sous la main.
+pub(crate) fn tri_pour(compile: Option<i64>, local: Option<i64>) -> Tri {
+    match (compile, local) {
+        (Some(c), Some(l)) if tri_en_memoire(c, l) => Tri::EnMemoire { compile: c, local: l },
+        (Some(c), Some(l)) => Tri::SurDisque { compile: c, local: l },
+        (None, _) => Tri::Illisible("`PRAGMA compile_options` ne nomme aucun TEMP_STORE".into()),
+        (Some(_), None) => Tri::Illisible("`PRAGMA temp_store` ne se relit pas".into()),
+    }
+}
+
+/// LA VALEUR COMPILÉE, LUE DANS LE MOTEUR. C'est la seule chose qui réponde à « que fait une connexion
+/// qui ne dit rien » : `PRAGMA temp_store` rendrait 0, qui ne distingue pas les deux mondes.
+fn temp_store_compile(conn: &Connection) -> Option<i64> {
+    let mut st = conn.prepare("PRAGMA compile_options").ok()?;
+    let mut lignes = st.query([]).ok()?;
+    while let Ok(Some(r)) = lignes.next() {
+        if let Ok(o) = r.get::<_, String>(0) {
+            if let Some(v) = o.trim().strip_prefix("TEMP_STORE=") {
+                return v.trim().parse().ok();
+            }
+        }
+    }
+    None
+}
+
+/// CE QUE CETTE CONNEXION-CI fera de ses tris, LU sur elle.
+pub(crate) fn lire_tri(conn: &Connection) -> Tri {
+    tri_pour(
+        temp_store_compile(conn),
+        conn.query_row("PRAGMA temp_store", [], |r| r.get::<_, i64>(0)).ok(),
+    )
+}
+
+/// CE QUE FAIT UNE CONNEXION QUI NE DIT RIEN — la mesure dont dépend toute la garantie.
+///
+/// `open_in_memory` est DÉLIBÉRÉ et ne restreint pas la portée : `sqlite3TempInMemory` ne regarde que
+/// la valeur compilée (une constante du PROCESSUS) et le réglage local de la connexion. Le fichier
+/// n'entre pas dans la décision, et sonder un fichier créerait une base pour poser une question de
+/// configuration.
+///
+/// INSTRUMENT VALIDÉ : une sonde dont le réglage local n'est pas 0 n'est PAS nue — elle ne mesure alors
+/// pas le silence, et un instrument qui ne peut pas voir son sujet doit le DIRE, pas rendre vert.
+pub(crate) fn tri_dune_connexion_nue() -> Tri {
+    match Connection::open_in_memory() {
+        Ok(c) => match lire_tri(&c) {
+            Tri::EnMemoire { local, .. } | Tri::SurDisque { local, .. } if local != 0 => {
+                Tri::Illisible(format!("la sonde n'est pas NUE (temp_store local={local})"))
+            }
+            verdict => verdict,
+        },
+        Err(e) => Tri::Illisible(format!("connexion de sonde impossible : {e}")),
+    }
+}
+
+/// CE QUE LA LECTURE CONTREDIT. PURE, donc exerçable dans les DEUX sens sans toucher à l'environnement.
+/// `None` = la lecture CONFIRME ce que le mode promet ; une garde qui alerterait toujours ne prouverait
+/// rien.
+pub(crate) fn desaccord_pour(tri: &Tri, deversement: bool) -> Option<String> {
+    match (tri, deversement) {
+        (Tri::EnMemoire { .. }, false) | (Tri::SurDisque { .. }, true) => None,
+        (Tri::SurDisque { compile, local }, false) => Some(format!(
+            "LE TRI DÉVERSE ALORS QUE RIEN NE L'A DEMANDÉ (LU : temp_store local={local}, \
+             TEMP_STORE={compile} dans compile_options) : des VALEURS D'ÉVÉNEMENT partent EN CLAIR hors \
+             de la base SQLCipher, qui ne chiffre PAS les fichiers temporaires de SQLite. \
+             PLUME_SQLITE_DEVERSEMENT vaut 0 : cet échange n'a pas été pris."
+        )),
+        (Tri::EnMemoire { compile, local }, true) => Some(format!(
+            "LE DÉVERSEMENT A ÉTÉ DEMANDÉ MAIS LE TRI RESTE EN MÉMOIRE (LU : temp_store local={local}, \
+             TEMP_STORE={compile} dans compile_options) : la borne mémoire attendue du trieur n'existe \
+             pas, un tri trop large ÉCHOUERA au plafond au lieu de déverser."
+        )),
+        (Tri::Illisible(e), _) => Some(format!(
+            "CE QUE LE MOTEUR FAIT DE SES TRIS N'EST PAS LISIBLE ({e}) : impossible de dire si des \
+             valeurs d'événement peuvent partir en clair hors de la base chiffrée."
+        )),
+    }
+}
+
+/// LE CONSTAT, EN CHIFFRES LUS — ce que la bannière publie quand la mesure confirme le mode.
+pub(crate) fn constat_de_tri(tri: &Tri) -> String {
+    match tri {
+        Tri::EnMemoire { compile, local } => format!(
+            "un tri reste en MÉMOIRE (temp_store local={local}, TEMP_STORE={compile} dans compile_options)"
+        ),
+        Tri::SurDisque { compile, local } => format!(
+            "un tri DÉVERSE sur le disque (temp_store local={local}, TEMP_STORE={compile} dans compile_options)"
+        ),
+        Tri::Illisible(e) => format!("réglage NON LISIBLE ({e})"),
+    }
+}
+
+/// LE REFUS DE DÉMARRER. UNE SEULE des deux directions arrête le processus, et la dissymétrie se dit :
+/// un déversement demandé et non obtenu coûte une requête qui échoue, un déversement obtenu sans avoir
+/// été demandé coûte la confidentialité — et une fuite ne se rattrape pas.
+/// PUR (prend le verdict déjà lu) → les deux sens se testent sans toucher à l'environnement.
+pub(crate) fn refus_de_demarrage_pour(tri: &Tri, deversement: bool) -> Option<String> {
+    if deversement {
+        return None;
+    }
+    desaccord_pour(tri, deversement).map(|quoi| {
+        format!(
+            "REFUS DE DÉMARRER — {quoi} Reconstruire la liaison SQLite avec SQLITE_TEMP_STORE=2 (le \
+             moteur trie alors en mémoire même pour une connexion muette), ou poser \
+             PLUME_SQLITE_DEVERSEMENT=1 pour prendre cet échange EXPLICITEMENT — et placer alors \
+             SQLITE_TMPDIR sur un support chiffré."
+        )
+    })
+}
+
+/// LA GARDE DE DÉMARRAGE, appelée UNE FOIS en tête de `main` — avant tout branchement de sous-commande,
+/// pour la même raison que `deversement_init` : un appel par sous-commande serait une ÉNUMÉRATION, et
+/// c'est ce genre de liste qui a déjà lâché dans ce dépôt. La propriété mesurée est celle du PROCESSUS
+/// (valeur compilée + mot d'exploitation), pas celle d'une commande.
+pub(crate) fn garde_du_tri_en_memoire() -> Result<(), String> {
+    match refus_de_demarrage_pour(&tri_dune_connexion_nue(), deversement_actif()) {
+        Some(refus) => Err(refus),
+        None => Ok(()),
+    }
+}
+
+/// LA VOIE UNIQUE D'ARMEMENT D'UNE CONNEXION — POSER LES RÉGLAGES, PUIS RELIRE CE QU'ILS VALENT.
+///
+/// Les sites de production posaient `pragmas_memoire()` par `let _ = execute_batch(...)` : un batch
+/// REFUSÉ (base chiffrée ouverte sans clé, nom de pragma erroné) laissait la connexion NUE sans que rien
+/// ne le dise, et la garantie retombait alors sur la seule valeur compilée — c'est-à-dire sur
+/// l'affirmation que ce lot remplace. Ici le verdict est RELU sur la connexion et rendu à l'appelant.
+///
+/// L'ALERTE EST BORNÉE À UNE LIGNE PAR PROCESSUS : le pool de lecture ouvre des connexions en continu,
+/// une ligne par ouverture noierait le journal — et un journal noyé n'est pas lu.
+pub(crate) fn armer(conn: &Connection) -> Tri {
+    let _ = conn.execute_batch(pragmas_memoire());
+    let verdict = lire_tri(conn);
+    if let Some(desaccord) = desaccord_pour(&verdict, deversement_actif()) {
+        static UNE_FOIS: std::sync::Once = std::sync::Once::new();
+        UNE_FOIS.call_once(|| eprintln!("[plafond] {desaccord}"));
+    }
+    verdict
+}
+
 #[cfg(test)]
 mod plafond_tests {
     use super::*;
@@ -582,16 +967,26 @@ mod plafond_tests {
     /// MUTATION : faire rendre le texte de `Vers` au bras `Desactive` ⇒ la 2ᵉ assertion passe au ROUGE.
     #[test]
     fn la_banniere_dit_le_mode_reel() {
-        let eteint = banniere(Deversement::Desactive);
+        let memoire = Tri::EnMemoire { compile: 2, local: 0 };
+        let eteint = banniere(Deversement::Desactive, memoire.clone());
         assert!(eteint.contains("DÉSACTIVÉ"), "le mode doit être LISIBLE, pas déduit : {eteint}");
+        // L'assertion porte sur le SEGMENT du déversement, pas sur la bannière entière : le rapport de
+        // plafond qui la précède peut légitimement nommer un chemin système (`/proc/self/cgroup` quand la
+        // limite n'est pas lisible), et le sujet de ce test n'a jamais été celui-là. Bornée ainsi, elle
+        // reste exactement aussi forte sur ce qu'elle garde — et elle ne dépend plus de l'hôte qui exécute
+        // la suite, alors qu'un `contains("/")` sur le tout aurait rougi selon la machine.
+        let segment = eteint
+            .split_once("— déversement")
+            .unwrap_or_else(|| panic!("la bannière ne porte plus de segment de déversement : {eteint}"))
+            .1;
         assert!(
-            !eteint.contains("/") ,
+            !segment.contains("/"),
             "AUCUN chemin ne doit apparaître quand rien ne déverse — c'est exactement ce qui mentait : {eteint}"
         );
-        let allume = banniere(Deversement::Vers(std::path::PathBuf::from("/x/sqltmp")));
+        let allume = banniere(Deversement::Vers(std::path::PathBuf::from("/x/sqltmp")), Tri::SurDisque { compile: 2, local: 1 });
         assert!(allume.contains("/x/sqltmp"), "le chemin qui reçoit du clair doit être NOMMÉ : {allume}");
         assert!(allume.contains("EN CLAIR"), "et ce qu'il reçoit doit être dit : {allume}");
-        let casse = banniere(Deversement::Indisponible("montage RO".into()));
+        let casse = banniere(Deversement::Indisponible("montage RO".into()), memoire);
         assert!(casse.contains("INDISPONIBLE") && casse.contains("montage RO"), "la cause doit remonter : {casse}");
     }
 
@@ -664,49 +1059,6 @@ mod plafond_tests {
             violations.is_empty(),
             "le budget mémoire SQLite se décide dans sqlite_plafond.rs et NULLE PART ailleurs. \
              Sites hors module :\n{violations:#?}"
-        );
-    }
-
-    /// TOUTE CONNEXION DE LECTURE SUR UN FICHIER PORTE LE PLAFOND. Dérivé de ce qui rend un trieur non
-    /// borné : le SILENCE. Une connexion qui ne pose aucun `temp_store` hérite du défaut de compilation
-    /// (`SQLITE_TEMP_STORE=2` -> en mémoire -> `mxPmaSize=0` -> aucun déversement possible). Le test exige
-    /// donc que le plafond soit posé À PROXIMITÉ de l'ouverture.
-    ///
-    /// PÉRIMÈTRE, écrit pour ne pas être surestimé : la règle est la PROXIMITÉ (15 lignes de production),
-    /// pas le flot de données — un chemin qui ouvrirait ici et poserait le plafond très loin échouerait,
-    /// et c'est voulu (on préfère un refus bruyant à une lecture sans plafond).
-    #[test]
-    fn aucune_lecture_sur_fichier_sans_plafond() {
-        const FENETRE: usize = 15;
-        let racine = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut fichiers = Vec::new();
-        rs_files(&racine, &mut fichiers);
-        let marques = fichiers_de_test(&fichiers);
-        let (mut ouvertures, mut violations) = (0usize, Vec::new());
-        for f in &fichiers {
-            if est_test(f, &marques) {
-                continue;
-            }
-            let src = std::fs::read_to_string(f).unwrap();
-            let lignes = texte_de_production(f, &src);
-            for (i, (n, l)) in lignes.iter().enumerate() {
-                if !l.contains("SQLITE_OPEN_READ_ONLY") || !l.contains("Connection::open") {
-                    continue;
-                }
-                ouvertures += 1;
-                let couvert = lignes[i..lignes.len().min(i + FENETRE)]
-                    .iter()
-                    .any(|(_, s)| s.contains("sqlite_plafond::pragmas_memoire()"));
-                if !couvert {
-                    violations.push(format!("{}:{n}: {}", f.display(), l.trim()));
-                }
-            }
-        }
-        assert!(ouvertures >= 4, "précondition : le scanner voit bien les ouvertures read-only ({ouvertures})");
-        assert!(
-            violations.is_empty(),
-            "ouverture(s) de lecture SANS plafond mémoire — le trieur y est NON BORNÉ (défaut SQLite = \
-             tri en mémoire). Poser `sqlite_plafond::pragmas_memoire()` sur la connexion :\n{violations:#?}"
         );
     }
 
@@ -833,7 +1185,7 @@ mod plafond_tests {
     /// assertion passe au ROUGE.
     #[test]
     fn la_banniere_ne_se_contredit_pas_sur_le_plafond() {
-        let b = banniere(Deversement::Desactive);
+        let b = banniere(Deversement::Desactive, Tri::EnMemoire { compile: 2, local: 0 });
         // Ce test ne vaut que si le plafond est bien APPLIQUÉ au défaut — sinon il passerait sans rien
         // prouver. La précondition est donc EXPLICITE.
         assert!(b.contains("APPLIQUÉ par l'allocateur"), "précondition : le défaut applique le plafond : {b}");
@@ -855,24 +1207,55 @@ mod plafond_tests {
     /// Annoncer « plafond APPLIQUÉ » sans confronter les deux nombres serait exactement le genre de phrase
     /// vraie et trompeuse que la bannière de déversement a déjà coûté.
     ///
-    /// LE TROISIÈME CAS EST LE PLUS IMPORTANT : ne pas savoir doit se DIRE, jamais se taire.
+    /// LES DEUX DERNIERS CAS SONT LES PLUS IMPORTANTS, ET ILS SONT DEUX : « je n'ai pas pu lire » et « il
+    /// n'y a pas de limite » ne sont PAS le même verdict. Les confondre — ce que faisait un `Option`
+    /// unique — accuse l'instrument sur un hôte parfaitement lisible qui ne borne simplement rien, et
+    /// laisse croire à une propriété du déploiement sur un hôte dont on n'a rien mesuré.
     ///
-    /// MUTATION : faire rendre `Protege` au cas `budget >= limite` ⇒ la 2ᵉ assertion passe au ROUGE.
+    /// MUTATION : faire rendre `Protege` au cas `budget >= limite` ⇒ la 2ᵉ assertion passe au ROUGE ;
+    /// faire rendre `SansLimite` au bras `Illisible` de `couverture_pour` ⇒ la 4ᵉ passe au ROUGE.
     #[test]
     fn la_couverture_confronte_le_budget_a_la_limite_qui_tue() {
         let gio = 1024 * 1024 * 1024;
-        let p = couverture_pour(512 * 1024 * 1024, Some(gio)).phrase();
+        let p = couverture_pour(512 * 1024 * 1024, LimiteCgroup::Octets(gio)).phrase();
         assert!(p.contains("sous la limite") && p.contains("1024 Mio"), "{p}");
-        let d = couverture_pour(1088 * 1024 * 1024, Some(gio)).phrase();
+        assert!(p.contains("[couverture=protege]") && !p.contains("AVERTISSEMENT"), "seul ce cas est calme : {p}");
+        let d = couverture_pour(1088 * 1024 * 1024, LimiteCgroup::Octets(gio)).phrase();
         assert!(
             d.contains("NE PROTÈGE PAS") && d.contains("PLUME_SQLITE_BUDGET_MB"),
             "un budget au-dessus de la limite doit être dénoncé, avec le levier pour le corriger : {d}"
         );
-        let i = couverture_pour(1088 * 1024 * 1024, None).phrase();
-        assert!(i.contains("NON LISIBLE"), "l'ignorance s'avoue : {i}");
+        assert!(d.contains("AVERTISSEMENT [couverture=depasse]"), "et la bascule doit être un SIGNAL : {d}");
+        let s = couverture_pour(1088 * 1024 * 1024, LimiteCgroup::Aucune).phrase();
+        assert!(
+            s.contains("AUCUNE limite") && !s.contains("NON LISIBLE"),
+            "« pas de limite » est une LECTURE RÉUSSIE, pas une panne d'instrument : {s}"
+        );
+        assert!(
+            s.contains("AVERTISSEMENT [couverture=sans-limite]") && s.contains("MemoryMax="),
+            "une protection absente doit crier, et dire par quoi la poser dans les trois modes : {s}"
+        );
+        let i = couverture_pour(1088 * 1024 * 1024, LimiteCgroup::Illisible("montage absent".into())).phrase();
+        assert!(i.contains("NON LISIBLE") && i.contains("montage absent"), "l'ignorance s'avoue, AVEC sa cause : {i}");
+        assert!(
+            i.contains("AVERTISSEMENT [couverture=illisible]") && !i.contains("AUCUNE limite"),
+            "et elle ne se déguise pas en « pas de limite » : {i}"
+        );
+        // LES QUATRE VERDICTS SONT DISTINCTS DEUX À DEUX — sans ça, deux d'entre eux pourraient partager
+        // un mot et une supervision ne les séparerait pas.
+        let mots = [
+            couverture_pour(1, LimiteCgroup::Octets(gio)).verdict(),
+            couverture_pour(gio, LimiteCgroup::Octets(gio)).verdict(),
+            couverture_pour(1, LimiteCgroup::Aucune).verdict(),
+            couverture_pour(1, LimiteCgroup::Illisible(String::new())).verdict(),
+        ];
+        let mut uniques = mots.to_vec();
+        uniques.sort_unstable();
+        uniques.dedup();
+        assert_eq!(uniques.len(), 4, "les mots de verdict doivent être DISTINCTS : {mots:?}");
         // Le cas limite EXACT : budget == limite ne protège pas non plus (il ne reste rien pour le reste
         // du processus). La comparaison est STRICTE, et ce contrôle interdit de la relâcher en `<=`.
-        let e = couverture_pour(gio, Some(gio)).phrase();
+        let e = couverture_pour(gio, LimiteCgroup::Octets(gio)).phrase();
         assert!(e.contains("NE PROTÈGE PAS"), "budget == limite ne protège pas : {e}");
     }
 
@@ -902,5 +1285,225 @@ mod plafond_tests {
         // serait une régression déguisée en correctif.
         let cache: i64 = conn.query_row("PRAGMA cache_size", [], |r| r.get(0)).expect("relecture du cache");
         assert_eq!(cache, -cache_ko_pour(budget_ko(), porteurs()), "le cache_size du même batch doit être posé");
+    }
+
+    /// FABRIQUE une arborescence de groupes de contrôle DANS un temporaire possédé : la racine du
+    /// montage, le fichier qui joue `/proc/self/cgroup`, et les fichiers de limite demandés. AUCUN chemin
+    /// de la machine hôte n'entre ici — c'est ce qui rend les tests ci-dessous indépendants de la machine
+    /// qui les exécute : ils rendent le même verdict sur un poste sans limite et dans un conteneur borné.
+    fn faux_cgroup(tmp: &crate::tmp_possede::TmpPossede, proc_txt: &str, fichiers: &[(&str, &str)]) -> (PathBuf, PathBuf) {
+        let racine = tmp.join("cgroup");
+        std::fs::create_dir_all(&racine).expect("fixture : racine de cgroup");
+        for (rel, contenu) in fichiers {
+            let f = racine.join(rel);
+            std::fs::create_dir_all(f.parent().expect("fixture : parent")).expect("fixture : niveau");
+            std::fs::write(&f, contenu).expect("fixture : fichier de limite");
+        }
+        let proc_f = tmp.join("proc-self-cgroup");
+        std::fs::write(&proc_f, proc_txt).expect("fixture : /proc/self/cgroup");
+        (racine, proc_f)
+    }
+
+    /// « PAS DE LIMITE » ET « PAS LISIBLE » NE S'ÉCRIVENT PAS PAREIL, ET NE SE CONCLUENT PAS PAREIL. Les
+    /// deux versions de l'interface disent « pas de limite » différemment : v2 écrit le mot `max`, v1
+    /// écrit un entier énorme. Une forme qui n'est NI l'une NI l'autre est une IGNORANCE, jamais une
+    /// absence de limite — c'est tout le défaut que ce module ferme.
+    ///
+    /// LA SENTINELLE `u64::MAX` EST LE CAS QUI MANQUAIT : elle ne rentre pas dans un `i64`, donc l'ancien
+    /// `parse::<i64>()` la comptait comme illisible et la bannière annonçait une panne de mesure là où
+    /// l'interface avait parfaitement répondu « aucune limite ».
+    ///
+    /// MUTATION DANS LES DEUX SENS : faire rendre `Aucune` au bras `Err` ⇒ la dernière boucle passe au
+    /// ROUGE (une forme inconnue serait prise pour une absence de limite) ; retirer le test du mot `max`
+    /// ⇒ la 1re assertion passe au ROUGE (une absence de limite serait prise pour une panne).
+    #[test]
+    fn la_valeur_de_limite_distingue_pas_de_limite_et_pas_lisible() {
+        assert_eq!(valeur_limite("max\n"), LimiteCgroup::Aucune, "cgroup v2 écrit `max` pour « aucune limite »");
+        assert_eq!(valeur_limite("  max  "), LimiteCgroup::Aucune, "les espaces du fichier ne décident de rien");
+        assert_eq!(valeur_limite("1073741824\n"), LimiteCgroup::Octets(1073741824), "une limite se lit telle quelle");
+        assert_eq!(
+            valeur_limite("9223372036854771712"),
+            LimiteCgroup::Aucune,
+            "cgroup v1 : `i64::MAX` arrondi à la page EST la façon d'écrire « aucune limite »"
+        );
+        assert_eq!(
+            valeur_limite("18446744073709551615"),
+            LimiteCgroup::Aucune,
+            "et `u64::MAX` aussi — cette forme ne rentrait pas dans un i64 et passait donc pour illisible"
+        );
+        for forme in ["", "   ", "unlimited", "max 0", "-1", "1073741824 extra", "0x40000000"] {
+            assert!(
+                matches!(valeur_limite(forme), LimiteCgroup::Illisible(_)),
+                "une forme non reconnue ({forme:?}) est une IGNORANCE, jamais une absence de limite"
+            );
+        }
+    }
+
+    /// LA LIGNÉE cgroup v2 EST VRAIMENT PARCOURUE, ET LE PLUS SERRÉ GAGNE. Un parent plus serré tue avant
+    /// la feuille : ne lire que la feuille annoncerait une couverture qui n'existe pas. Les quatre formes
+    /// jouées ici sont celles que le module recense (1) à (4).
+    ///
+    /// MUTATION : ne lire QUE la feuille (retirer la remontée) ⇒ la 1re assertion passe au ROUGE (elle
+    /// rendrait la limite large du niveau feuille au lieu de la limite serrée du parent).
+    #[test]
+    fn la_lecture_du_cgroup_v2_parcourt_la_lignee() {
+        let tmp = crate::tmp_possede::TmpPossede::neuf("cgroup-v2");
+
+        // (1) le PARENT est plus serré que la feuille : c'est lui qui tue.
+        let (racine, proc_f) = faux_cgroup(
+            &tmp,
+            "0::/parent/feuille\n",
+            &[("parent/memory.max", "268435456\n"), ("parent/feuille/memory.max", "1073741824\n")],
+        );
+        assert_eq!(
+            limite_cgroup_depuis(&racine, &proc_f),
+            LimiteCgroup::Octets(268435456),
+            "la limite EFFECTIVE est la plus petite de la lignée, pas celle de la feuille"
+        );
+
+        // (2)+(3) tous les niveaux disent `max`, et la RACINE n'a pas de `memory.max` du tout — ce qui est
+        // le comportement normal du noyau. Verdict : AUCUNE limite, et surtout PAS « illisible ».
+        let tmp2 = crate::tmp_possede::TmpPossede::neuf("cgroup-v2-max");
+        let (racine2, proc2) = faux_cgroup(
+            &tmp2,
+            "0::/tranche/service\n",
+            &[("tranche/memory.max", "max\n"), ("tranche/service/memory.max", "max\n")],
+        );
+        assert_eq!(
+            limite_cgroup_depuis(&racine2, &proc2),
+            LimiteCgroup::Aucune,
+            "une lignée entièrement lue qui ne borne rien est une ABSENCE DE LIMITE, pas une panne de mesure"
+        );
+
+        // (4) conteneur avec espace de noms de cgroup : le chemin est `/`, et la limite est à la RACINE
+        // visible. C'est l'exception à (3) — si la racine n'était pas lue, la limite du conteneur, qui est
+        // exactement celle qui tue, serait manquée.
+        let tmp3 = crate::tmp_possede::TmpPossede::neuf("cgroup-v2-ns");
+        let (racine3, proc3) = faux_cgroup(&tmp3, "0::/\n", &[("memory.max", "536870912\n")]);
+        assert_eq!(
+            limite_cgroup_depuis(&racine3, &proc3),
+            LimiteCgroup::Octets(536870912),
+            "conteneur namespacé : la racine VISIBLE porte la limite"
+        );
+    }
+
+    /// LE REPLI cgroup v1, ET L'HYBRIDE. Forme (6) : aucune ligne `0::` porteuse, la limite vit dans le
+    /// fichier historique. Forme (7) : la ligne `0::` existe mais la hiérarchie unifiée ne porte pas le
+    /// contrôleur mémoire — aucun `memory.max` nulle part, et c'est le repli qui tranche.
+    ///
+    /// MUTATION : supprimer le repli v1 ⇒ les deux assertions passent au ROUGE en rendant `Illisible` là
+    /// où l'interface répondait.
+    #[test]
+    fn la_lecture_du_cgroup_v1_et_hybride_tranchent() {
+        let tmp = crate::tmp_possede::TmpPossede::neuf("cgroup-v1");
+        let (racine, proc_f) = faux_cgroup(
+            &tmp,
+            "7:memory:/plume\n1:name=systemd:/plume\n",
+            &[("memory/memory.limit_in_bytes", "2147483648\n")],
+        );
+        assert_eq!(limite_cgroup_depuis(&racine, &proc_f), LimiteCgroup::Octets(2147483648), "v1 pur");
+
+        // v1 « illimité » : la sentinelle est une LECTURE RÉUSSIE.
+        let tmp2 = crate::tmp_possede::TmpPossede::neuf("cgroup-v1-illimite");
+        let (racine2, proc2) = faux_cgroup(
+            &tmp2,
+            "7:memory:/\n",
+            &[("memory/memory.limit_in_bytes", "9223372036854771712\n")],
+        );
+        assert_eq!(limite_cgroup_depuis(&racine2, &proc2), LimiteCgroup::Aucune, "v1 sans limite");
+
+        // hybride : la ligne `0::` existe, son arborescence ne porte aucun `memory.max`, le v1 tranche.
+        let tmp3 = crate::tmp_possede::TmpPossede::neuf("cgroup-hybride");
+        let (racine3, proc3) = faux_cgroup(
+            &tmp3,
+            "0::/unifie\n7:memory:/plume\n",
+            &[("memory/memory.limit_in_bytes", "1073741824\n")],
+        );
+        assert_eq!(limite_cgroup_depuis(&racine3, &proc3), LimiteCgroup::Octets(1073741824), "hybride v1+v2");
+    }
+
+    /// CE QUI N'A PAS ÉTÉ LU SE DIT, AVEC LE CHEMIN TENTÉ. Trois façons de ne rien savoir : le chemin du
+    /// processus ne correspond à rien sous le montage (forme 5 : conteneur SANS espace de noms), le
+    /// fichier qui décrit le processus n'existe pas (forme 8), et un fichier de limite PRÉSENT dont la
+    /// forme n'est pas reconnue — le cas que l'ancien `if let Ok(...)` avalait en silence.
+    ///
+    /// FAIL-CLOSED SUR UNE LIGNÉE PARTIELLE : un niveau illisible interdit de conclure sur le minimum des
+    /// autres, parce qu'il pourrait porter une limite PLUS SERRÉE. Annoncer « protégé » sur la foi des
+    /// niveaux lisibles, ce serait revendiquer une couverture non établie.
+    ///
+    /// MUTATION DANS LES DEUX SENS : c'est ce test-ci qui prouve le sens « forme inconnue ⇒ ILLISIBLE » ;
+    /// le test de la lignée ci-dessus prouve l'autre sens, « forme valide ⇒ limite lue » — sans quoi une
+    /// fonction qui rendrait TOUJOURS `Illisible` passerait celui-ci sans rien prouver.
+    #[test]
+    fn la_lecture_du_cgroup_avoue_au_lieu_de_conclure() {
+        // (5) le chemin vient de l'HÔTE, le montage est la feuille : rien à lire sous la racine.
+        let tmp = crate::tmp_possede::TmpPossede::neuf("cgroup-hors-ns");
+        let (racine, proc_f) = faux_cgroup(&tmp, "0::/moteur/conteneur-absent\n", &[]);
+        match limite_cgroup_depuis(&racine, &proc_f) {
+            LimiteCgroup::Illisible(pourquoi) => assert!(
+                pourquoi.contains("conteneur-absent") && pourquoi.contains("memory.limit_in_bytes"),
+                "l'aveu doit NOMMER ce qui a été tenté, des deux côtés : {pourquoi}"
+            ),
+            autre => panic!("un chemin qui ne mène à rien doit rendre ILLISIBLE, pas {autre:?}"),
+        }
+
+        // (8) rien du tout : ni description du processus, ni fichier historique.
+        let tmp2 = crate::tmp_possede::TmpPossede::neuf("cgroup-neant");
+        let racine2 = tmp2.join("cgroup-inexistant");
+        let proc2 = tmp2.join("proc-inexistant");
+        match limite_cgroup_depuis(&racine2, &proc2) {
+            LimiteCgroup::Illisible(pourquoi) => {
+                assert!(pourquoi.contains("proc-inexistant"), "le fichier manquant se nomme : {pourquoi}")
+            }
+            autre => panic!("sans aucune interface, le verdict est ILLISIBLE, pas {autre:?}"),
+        }
+
+        // UNE FORME PRÉSENTE MAIS NON RECONNUE — le cœur de la clé : elle ne doit surtout pas se ranger
+        // du côté « pas de limite ». Le niveau parent porte une limite parfaitement lisible : le verdict
+        // reste ILLISIBLE quand même, et il le dit.
+        let tmp3 = crate::tmp_possede::TmpPossede::neuf("cgroup-forme-inconnue");
+        let (racine3, proc3) = faux_cgroup(
+            &tmp3,
+            "0::/parent/feuille\n",
+            &[("parent/memory.max", "1073741824\n"), ("parent/feuille/memory.max", "illimité\n")],
+        );
+        match limite_cgroup_depuis(&racine3, &proc3) {
+            LimiteCgroup::Illisible(pourquoi) => assert!(
+                pourquoi.contains("forme non reconnue") && pourquoi.contains("plus serré"),
+                "un niveau illisible interdit de conclure sur les autres, et l'aveu le DIT : {pourquoi}"
+            ),
+            autre => panic!("une forme non reconnue rend ILLISIBLE, jamais {autre:?}"),
+        }
+
+        // ET LE MÊME CAS, VU PAR LA BANNIÈRE : c'est la propriété qui compte pour l'exploitant.
+        let dite = couverture_pour(1088 * 1024 * 1024, limite_cgroup_depuis(&racine3, &proc3)).phrase();
+        assert!(
+            dite.contains("[couverture=illisible]") && !dite.contains("[couverture=sans-limite]"),
+            "la bascule se lit dans le mot de verdict : {dite}"
+        );
+    }
+
+    /// LA LECTURE RÉELLE EST EXERCÉE, ET SON VERDICT EST L'UN DES QUATRE. Les tests ci-dessus jouent des
+    /// arborescences fabriquées ; celui-ci appelle la fonction telle que la production l'appelle, sur la
+    /// machine qui exécute la suite. Il n'ASSERTE PAS un verdict particulier — ce serait un test qui ne
+    /// passerait que sur un hôte donné — mais il exige que le verdict soit CONSTRUIT, NOMMÉ, et cohérent
+    /// avec la phrase publiée. Un `panic` de la lecture, une phrase muette ou un mot de verdict absent
+    /// rougiraient ici quelle que soit la machine.
+    #[test]
+    fn la_lecture_reelle_rend_un_verdict_nomme() {
+        let c = couverture_pour(plafond_dur_octets(), limite_cgroup());
+        let mot = c.verdict();
+        assert!(
+            ["protege", "depasse", "sans-limite", "illisible"].contains(&mot),
+            "verdict hors contrat : {mot}"
+        );
+        let phrase = c.phrase();
+        assert!(phrase.contains(&format!("[couverture={mot}]")), "la phrase doit PORTER le verdict : {phrase}");
+        assert_eq!(
+            c.protege(),
+            !phrase.contains("AVERTISSEMENT"),
+            "le mot d'alerte est DÉRIVÉ du verdict : seul « protégé » est calme ({phrase})"
+        );
+        assert!(rapport().contains(&format!("[couverture={mot}]")), "et le rapport de démarrage la publie");
     }
 }

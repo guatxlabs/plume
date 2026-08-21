@@ -41,26 +41,59 @@ prune_expr=""; for _d in $PRUNE; do prune_expr="$prune_expr -path $_d -prune -o"
 
 # --- liste BORNEE de fichiers a scanner : incremental (>= watermark), pruned, < MAXSZ, plafonnee. ---
 list=$(mktemp)
+brut=$(mktemp)
 if [ -f "$STAMP" ]; then findnew="-newer $STAMP"; else findnew=""; fi
+# S36 — le `for` alimentait un TUBE, donc tournait dans un sous-shell : le verdict de chaque `find`
+# s'y perdait. Un chemin devenu illisible rendait une liste vide, indiscernable de « rien de neuf »,
+# et le repere avancait sur cette lecture ratee : les fichiers modifies dans l'intervalle n'etaient
+# plus jamais soumis aux regles. Plus de tube, le code de retour reste lisible.
+_liste_ko=""
 # shellcheck disable=SC2086  ($prune_expr/$findnew = tokens a eclater ; expansion voulue)
 for p in $PATHS; do
   [ -e "$p" ] || continue
-  find "$p" -xdev $prune_expr -type f $findnew ! -size +"$MAXSZ" -print 2>/dev/null
-done | head -n "$MAX" > "$list"
+  find "$p" -xdev $prune_expr -type f $findnew ! -size +"$MAXSZ" -print >> "$brut" 2>/dev/null || _liste_ko="$_liste_ko $p"
+done
+head -n "$MAX" "$brut" > "$list"
+rm -f "$brut"
 # S30 — meme forme que clamav : le repere incremental (`find -newer`) est cree sur un temporaire et ne
 # remplace `$STAMP` qu'APRES publication. Une coupure entre l'ancienne avance et la publication rendait
 # les fichiers deja listes invisibles au passage suivant — un match YARA pouvait disparaitre sans trace.
+# S36 — le temporaire est CREE ici, parce que c'est sa DATE qui fera office de filigrane et qu'elle
+# doit precéder le scan (sans quoi les fichiers modifies PENDANT le scan seraient sautes au passage
+# suivant). Sa MISE EN ATTENTE, elle, attend de savoir si la lecture a abouti : voir plus bas.
 _stamp_tmp=$(mktemp "$STATE_DIR/.yara.stamp.XXXXXX")
-state_stage_file "$_stamp_tmp" "$STAMP"
-if [ ! -s "$list" ]; then rm -f "$list"; plume_exit_nodata; fi
+if [ ! -s "$list" ]; then
+  rm -f "$list"
+  if [ -n "$_liste_ko" ]; then
+    rm -f "$_stamp_tmp"
+    plume_lecture_echouee yara source_illisible "listage des fichiers a scanner en echec sous :$_liste_ko — aucun repere avance, la tranche sera relue"
+  fi
+  state_stage_file "$_stamp_tmp" "$STAMP"
+  plume_exit_nodata
+fi
 
 # --- scan : yara une fois (--scan-list lit la liste ; -g imprime les tags). timeout borne le run. ---
 # Format de sortie yara -g : "<rule> [<tags>] <fichier>" (1 ligne par match).
 TO=""; if command -v timeout >/dev/null 2>&1; then TO="timeout $TIMEOUT"; fi
 res=$(mktemp)
+# S36 — le scan EST la lecture, et son echec etait avale par `|| true` : `res` sortait vide, et la
+# sortie « rien a signaler » acquittait un repere alors que les fichiers listes n'avaient jamais ete
+# soumis aux regles. Le code de retour est desormais lu ; un depassement du `timeout` (124) en fait
+# partie, et c'est un cas frequent sur une arborescence qui grossit.
+_scan_rc=0
 # shellcheck disable=SC2086  ($TO/$RULES = listes de tokens ; "$list" = cible (dernier positionnel)).
-$TO yara -g --scan-list $RULES "$list" 2>/dev/null > "$res" || true
+$TO yara -g --scan-list $RULES "$list" 2>/dev/null > "$res" || _scan_rc=$?
 rm -f "$list"
+# LA MISE EN ATTENTE DU REPERE EST ICI, adossee a ce que la lecture a REELLEMENT couvert. Quand le
+# listage ou le scan a lache, le capteur publie quand meme les correspondances qu'il tient (elles
+# sont reelles) mais N'AVANCE PAS son repere : la tranche sera relue, et le registre « deja
+# signale » empechera de re-signaler deux fois le meme constat.
+if [ -z "$_liste_ko" ] && [ "$_scan_rc" = 0 ]; then
+  state_stage_file "$_stamp_tmp" "$STAMP"
+else
+  rm -f "$_stamp_tmp"
+  plume_lecture_partielle yara source_illisible "scan incomplet (code $_scan_rc, listage en echec sous :${_liste_ko:- aucun}) — le repere incremental n'avance pas"
+fi
 if [ ! -s "$res" ]; then rm -f "$res"; plume_exit_nodata; fi
 
 # parse -> TSV "rule \t tags \t file" (file = reste de la ligne ; tags = contenu des [] s'il y en a).

@@ -31,8 +31,16 @@ progression écrit ailleurs que par la bibliothèque est nécessairement un marq
 mauvais ordre.** `collectors/lib.sh` porte la voie unique — un capteur MET EN ATTENTE
 (`state_stage`, `state_stage_append`, `state_stage_file`) et n'a pas le geste d'écrire ; les seuls
 points d'écriture sont `spool_write_then_ack` / `spool_publish_then_ack` (publient PUIS écrivent) et
-`plume_exit_nodata` (rien n'a été publié, donc rien n'est acquitté). L'ordre est INTERNE à ces
-fonctions. Un capteur écrit demain est couvert par construction.
+`plume_exit_nodata`. L'ordre est INTERNE à ces fonctions. Un capteur écrit demain est couvert par
+construction.
+
+LA JUSTIFICATION DONNÉE ICI POUR `plume_exit_nodata` — « rien n'a été publié, donc rien n'est
+acquitté » — ÉTAIT FAUSSE SUR UNE MOITIÉ DU DOMAINE, et `S36` l'a refermée : elle ne vaut que pour un
+marqueur CALCULÉ À PARTIR de ce qui a été lu. Un marqueur qui ne doit rien à la lecture (offset pris
+sur la taille du fichier, repère daté, instant du passage) est en attente AVANT elle, et cette sortie
+l'écrit alors même que la lecture a échoué. Ce que cette garde-ci vérifie reste exact — l'ORDRE des
+deux gestes — mais elle ne dit rien de la porte de sortie : c'est
+`check_read_failure_is_not_acknowledged.py` qui l'exige, et les deux se tiennent.
 
 DEUX JAMBES, PARCE QU'UNE GARDE STATIQUE NE PROUVE QUE LA FORME
 ---------------------------------------------------------------

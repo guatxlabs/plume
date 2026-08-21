@@ -26,13 +26,21 @@ last=$(cat "$WM" 2>/dev/null || echo 0)
 spool_write "dataaccess-health-$ts.json" \
   "$(emit_event "$(heartbeat dataaccess 'dataaccess santé: collecteur actif' '{"alive":1}')")" nl
 
-ids=$(mktemp); rec=$(mktemp)
-trap 'rm -f "$ids" "$rec"' EXIT
+ids=$(mktemp); rec=$(mktemp); syscalls=$(mktemp)
+trap 'rm -f "$ids" "$rec" "$syscalls"' EXIT
 
 # Pass 1 : event-ids (token "audit(EPOCH.ms:SERIAL)") des SYSCALL data NOUVEAUX (epoch > watermark).
-grep -h -E 'type=SYSCALL.*key="(plume_data|plume_etc|plume_creds)"' $LOGS 2>/dev/null | awk -v last="$last" '
+# S36 — LE VERDICT DU TUBE ETAIT CELUI DE `sort`, qui reussit sur une entree vide : des journaux
+# d'audit devenus illisibles rendaient une liste vide, indiscernable de « aucun acces nouveau ».
+# `grep` distingue les deux — 1 = aucune correspondance (cas normal), >=2 = erreur de lecture — a
+# condition de lire SON code de retour, donc de le sortir du tube.
+_ga_rc=0
+# shellcheck disable=SC2086  ($LOGS = liste de chemins a eclater ; expansion voulue)
+grep -h -E 'type=SYSCALL.*key="(plume_data|plume_etc|plume_creds)"' $LOGS > "$syscalls" 2>/dev/null || _ga_rc=$?
+[ "$_ga_rc" -le 1 ] || plume_lecture_echouee dataaccess source_illisible "journaux d'audit illisibles ($LOGS) : aucun acces aux donnees n'a pu etre relu, le filigrane n'avance pas"
+awk -v last="$last" '
 { if(!match($0,/audit\([0-9]+\.[0-9]+:[0-9]+\)/)) next; idt=substr($0,RSTART,RLENGTH);
-  ep=idt; sub(/audit\(/,"",ep); sub(/\..*/,"",ep); if(ep+0<=last) next; print idt }' | sort -u > "$ids"
+  ep=idt; sub(/audit\(/,"",ep); sub(/\..*/,"",ep); if(ep+0<=last) next; print idt }' "$syscalls" | sort -u > "$ids"
 [ -s "$ids" ] || plume_exit_nodata
 
 # Pass 2 : toutes les lignes (SYSCALL + PATH) de ces events uniquement.

@@ -10,6 +10,7 @@
 
 mod fortigate;
 mod framing;
+mod lisibilite;
 mod parser;
 mod spool;
 
@@ -27,11 +28,39 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 fn env_or(k: &str, d: &str) -> String {
     std::env::var(k).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| d.to_string())
 }
-fn env_usize(k: &str, d: usize) -> usize {
-    std::env::var(k).ok().and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(d)
+
+/// UN REGLAGE NON POSE EST LE CAS NOMINAL ; UN REGLAGE POSE ET NON COMPRIS EST UN ECHEC (`S36`).
+///
+/// LE DEFAUT FERME ICI. Ces lecteurs enchainaient `.ok().and_then(parse).unwrap_or(defaut)` : une
+/// variable ABSENTE et une variable posee a `"10 Mio"` ou `"trente"` tombaient sur la MEME valeur,
+/// celle du defaut. Un exploitant qui croit avoir releve un plafond ne l'a pas releve, et rien ne le
+/// lui dit — la valeur qui sort est plausible, et c'est precisement ce qui la rend muette. Le cas
+/// NOMINAL reste intact : ne rien poser garde le defaut, sans un mot.
+///
+/// `min` EST UN PARAMETRE, ET CE N'EST PAS UN DETAIL. L'ancien `env_usize` filtrait `n > 0` : poser
+/// `PLUME_SYSLOG_SPOOL_MAX_FILES=0` retombait donc sur 20000 alors que la documentation du champ dit
+/// « 0 = illimite ». Le reglage documente etait inatteignable, en silence. Les plafonds de spool ont
+/// desormais `min = 0`, les autres `min = 1`.
+fn env_nombre_u64(k: &str, d: u64, min: u64, fautes: &mut Vec<String>) -> u64 {
+    match std::env::var(k) {
+        // Variable non posee, ou posee vide : rien n'a ete demande, le defaut est le cas nominal.
+        Err(_) => d,
+        Ok(v) if v.trim().is_empty() => d,
+        Ok(v) => match v.trim().parse::<u64>() {
+            Ok(n) if n >= min => n,
+            // POSEE et non exploitable : on garde le defaut pour cet appel, mais la faute est
+            // COLLECTEE — le demarrage refusera de continuer sous un reglage que personne n'a ecrit.
+            _ => {
+                fautes.push(format!("{k}={v:?} n'est pas un entier >= {min}"));
+                d
+            }
+        },
+    }
 }
-fn env_u64(k: &str, d: u64) -> u64 {
-    std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+
+/// Meme regle, en `usize` (les plafonds de taille et de compte du recepteur).
+fn env_nombre_usize(k: &str, d: usize, min: usize, fautes: &mut Vec<String>) -> usize {
+    env_nombre_u64(k, d as u64, min as u64, fautes) as usize
 }
 
 // --- Allowlist source-IP (CIDR v4/v6) : borne l'injection d'events sur un :514 non authentifie. ---
@@ -79,27 +108,69 @@ fn cidr_contains(c: &Cidr, ip: &IpAddr) -> bool {
         _ => false, // familles differentes -> pas de match
     }
 }
-/// Parse `PLUME_SYSLOG_ALLOW` (CIDR/IP separes par virgule/espace). Entrees invalides ignorees (warn).
-fn parse_allowlist(s: &str) -> Vec<Cidr> {
-    s.split([',', ' ', '\t', '\n'])
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .filter_map(|t| {
-            let c = parse_cidr(t);
-            if c.is_none() {
-                eprintln!("collector-syslog: entree allowlist invalide ignoree: {t:?}");
-            }
-            c
-        })
-        .collect()
+/// LA LISTE D'ADRESSES AUTORISEES, LUE OU REFUSEE — jamais rabotee en silence (`S36`).
+///
+/// LE DEFAUT FERME ICI EST LE PLUS GRAVE DE CETTE SURFACE, ET IL N'EST PAS UN SILENCE DE DETECTION :
+/// c'est une PORTE. L'ancienne forme jetait les entrees invalides UNE PAR UNE (`filter_map` + un
+/// avertissement sur la sortie d'erreur), et rendait la liste des rescapees. Deux consequences, et
+/// la seconde est fatale :
+///   * une liste PARTIELLEMENT fautive devenait une liste PLUS PETITE que celle qui avait ete ecrite
+///     — un appareil que l'exploitant croyait autorise etait refuse, sans que rien ne le relie a la
+///     faute de frappe ;
+///   * une liste ENTIEREMENT fautive (`10.0.0/8` : trois octets au lieu de quatre) devenait une liste
+///     VIDE. Or une liste vide veut dire « aucun perimetre demande, on accepte tout » : le port :514,
+///     qui n'est authentifie par rien, s'ouvrait au monde entier. L'exploitant, lui, venait justement
+///     d'ecrire une regle pour l'en empecher.
+///
+/// LA REGLE APPLIQUEE, LA MEME QUE SUR LES AUTRES SURFACES DE CE LOT : un chemin par DEFAUT absent
+/// reste le cas nominal — ne rien poser, c'est ne rien demander, et le demarrage le dit deja tres
+/// fort ; mais une valeur POSEE par l'exploitant et non comprise est un REFUS. On ne devine pas ce
+/// qu'il a voulu ecrire, et on ne se rabat sur AUCUNE des deux approximations : ni plus large (la
+/// porte ouverte), ni plus etroite (la perte d'evenements attribuee a rien).
+///
+/// PURE ET PARAMETREE SUR SON TEXTE : la suite l'exerce sans variable d'environnement, donc sans
+/// dependre de l'environnement de qui l'execute.
+fn parse_allowlist(s: &str) -> lisibilite::Lecture<Vec<Cidr>> {
+    let jetons: Vec<&str> = s.split([',', ' ', '\t', '\n']).map(str::trim).filter(|t| !t.is_empty()).collect();
+    // AUCUN jeton : la liste n'a pas ete posee. C'est LU, et la valeur est un VRAI vide — sans ce
+    // bras, un recepteur sans perimetre demande refuserait de demarrer, ce qui est le defaut
+    // symetrique et tout aussi faux.
+    if jetons.is_empty() {
+        return lisibilite::Lecture::Lue(Vec::new());
+    }
+    let mut out = Vec::with_capacity(jetons.len());
+    let mut fautives = Vec::new();
+    for t in jetons {
+        match parse_cidr(t) {
+            Some(c) => out.push(c),
+            None => fautives.push(format!("{t:?}")),
+        }
+    }
+    if !fautives.is_empty() {
+        return lisibilite::Lecture::Illisible {
+            cause: lisibilite::CAUSE_FORME_INCONNUE,
+            detail: format!(
+                "{} entree(s) de PLUME_SYSLOG_ALLOW ne sont pas des CIDR/IP : {}. Une liste posee et \
+                 non comprise n'est ni elargie ni retrecie : elle est REFUSEE (les ignorer rendrait \
+                 une liste plus petite que celle qui a ete ecrite, et une liste entierement fautive \
+                 rendrait une liste VIDE, c'est-a-dire un :514 ouvert a tout le monde)",
+                fautives.len(),
+                fautives.join(", ")
+            ),
+        };
+    }
+    lisibilite::Lecture::Lue(out)
 }
 fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
-fn hostname() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "unknown".to_string())
+/// L'IDENTITE DE CET HOTE, LUE OU AVOUEE — jamais inventee (`S36`). La lecture vit dans
+/// `lisibilite::identite_hote_depuis`, parametree sur ses sources ; ce qui sort ici est un VERDICT.
+fn identite_hote() -> lisibilite::Lecture<String> {
+    lisibilite::identite_hote_depuis(
+        std::path::Path::new("/proc/sys/kernel/hostname"),
+        std::env::var("HOSTNAME").ok().as_deref(),
+    )
 }
 
 /// Configuration figee, partagee (Arc) par tous les threads.
@@ -122,14 +193,25 @@ struct Config {
     max_conns_per_ip: usize,
 }
 impl Config {
-    /// L'IP `ip` est-elle acceptee ? (allowlist vide -> tout accepte). Peer inconnu (None) -> accepte.
+    /// L'IP `ip` est-elle acceptee ?
+    ///
+    /// DEUX CAS, ET LE SECOND A CHANGE (`S36`). Allowlist VIDE : aucun perimetre n'a ete demande, on
+    /// accepte — le demarrage le dit deja en toutes lettres, et c'est le cas nominal d'un recepteur
+    /// borne par un pare-feu. Allowlist POSEE : l'appartenance doit etre ETABLIE, pas presumee.
+    ///
+    /// L'ANCIEN TROISIEME CAS ETAIT UN FAIL-OPEN. Un pair dont l'adresse n'a pas pu etre lue
+    /// (`peer_addr()` en echec sur une connexion TCP qui se ferme aussitot) etait ACCEPTE, avec pour
+    /// justification « ne devrait pas arriver ». Une adresse qu'on n'a pas su lire ne peut pas etre
+    /// montree dans la liste : la traiter comme un membre, c'est ouvrir la porte sur un echec de
+    /// lecture. Elle est desormais REFUSEE quand un perimetre est en vigueur, et le refus est COMPTE
+    /// (`DROPPED_ALLOW`) — jamais silencieux.
     fn ip_allowed(&self, ip: Option<IpAddr>) -> bool {
         if self.allow.is_empty() {
             return true;
         }
         match ip {
             Some(ip) => self.allow.iter().any(|c| cidr_contains(c, &ip)),
-            None => true, // pas d'info peer (ne devrait pas arriver) -> ne pas bloquer a l'aveugle
+            None => false,
         }
     }
 }
@@ -169,39 +251,121 @@ impl Batcher {
 
 fn main() {
     let parser_name = env_or("PLUME_SYSLOG_PARSER", "fortigate");
+    // LES REGLAGES POSES ET NON COMPRIS SONT COLLECTES ICI, PAS AVALES (`S36`). On les lit tous avant
+    // de conclure : un exploitant qui a fait deux fautes de frappe doit les voir toutes les deux.
+    let mut fautes: Vec<String> = Vec::new();
     // <= cap events/req du daemon (PLUME_INGEST_MAX_EVENTS, defaut 50000) ; defaut prudent.
-    let batch_max = env_usize("PLUME_SYSLOG_BATCH_MAX", 500).min(50000);
-    let flush_ms = env_usize("PLUME_SYSLOG_FLUSH_MS", 2000) as u64;
+    let batch_max = env_nombre_usize("PLUME_SYSLOG_BATCH_MAX", 500, 1, &mut fautes).min(50000);
+    let flush_ms = env_nombre_u64("PLUME_SYSLOG_FLUSH_MS", 2000, 1, &mut fautes);
     let udp_addr = env_or("PLUME_SYSLOG_UDP", "0.0.0.0:514");
     let tcp_addr = env_or("PLUME_SYSLOG_TCP", "0.0.0.0:514");
 
     // Offset tz par defaut (device sans champ `tz`) : rend l'hypothese UTC explicite/configurable.
     fortigate::set_default_tz(std::env::var("PLUME_SYSLOG_TZ").ok().as_deref());
 
-    let allow = parse_allowlist(&env_or("PLUME_SYSLOG_ALLOW", ""));
+    // LA PORTE AVANT TOUT LE RESTE. Une liste POSEE et non comprise n'ouvre pas le :514 : elle
+    // empeche le demarrage. C'est le seul resultat ou rien ne tourne sous une regle que personne n'a
+    // ecrite — ni plus large que la regle voulue (la porte ouverte), ni plus etroite (des evenements
+    // perdus sans que rien ne les relie a la faute de frappe).
+    let demande_allow = env_or("PLUME_SYSLOG_ALLOW", "");
+    let allow = match parse_allowlist(&demande_allow) {
+        lisibilite::Lecture::Lue(a) => a,
+        lisibilite::Lecture::Illisible { cause, detail } => {
+            eprintln!(
+                "collector-syslog: PLUME_SYSLOG_ALLOW NON EXPLOITABLE ({cause}) : {detail}\n\
+                 collector-syslog: ARRET. Un perimetre a ete DEMANDE et n'a pas pu etre etabli ; \
+                 demarrer sans lui ouvrirait :514 — qui n'est authentifie par rien — a toute source. \
+                 Corrige la liste (CIDR ou IP separes par des virgules), ou retire la variable pour \
+                 accepter deliberement toute source."
+            );
+            std::process::exit(2);
+        }
+    };
+
+    // L'IDENTITE DE L'HOTE : lue, ou AVOUEE. `PLUME_HOST` est une identite DECLAREE par un
+    // exploitant, elle n'a rien a prouver ; sinon on lit, et si la lecture echoue on publie le
+    // VERDICT a la place du nom. `unknown` etait un nom PLAUSIBLE : toutes les machines en echec s'y
+    // confondaient, et une machine reellement nommee ainsi recevait leurs evenements.
+    let declare = std::env::var("PLUME_HOST").ok().filter(|v| !v.is_empty());
+    let identite = match declare {
+        Some(h) => lisibilite::Lecture::Lue(h),
+        None => identite_hote(),
+    };
+    let host = identite.valeur().cloned().unwrap_or_else(|| lisibilite::HOTE_NON_LU.to_string());
+
     let cfg = Arc::new(Config {
         spool: env_or("PLUME_SPOOL", "/var/lib/plume/spool"),
-        host: env_or("PLUME_HOST", &hostname()),
+        host,
         source: env_or("PLUME_SYSLOG_SOURCE", parser::default_source(&parser_name)),
         // cap dur d'une trame TCP + datagramme UDP (anti-DoS ; FortiGate en TCP peut depasser 1 Ko).
-        max_frame: env_usize("PLUME_SYSLOG_MAX_FRAME", 65536),
-        max_conns: env_usize("PLUME_SYSLOG_MAX_CONNS", 128),
-        udp_recv_buf: env_usize("PLUME_SYSLOG_UDP_BUF", 16384),
+        max_frame: env_nombre_usize("PLUME_SYSLOG_MAX_FRAME", 65536, 1, &mut fautes),
+        max_conns: env_nombre_usize("PLUME_SYSLOG_MAX_CONNS", 128, 1, &mut fautes),
+        udp_recv_buf: env_nombre_usize("PLUME_SYSLOG_UDP_BUF", 16384, 1, &mut fautes),
         allow,
-        // budget disque du spool (backpressure) : 0 = illimite. Defaut 512 Mio / 20000 fichiers.
-        spool_max_bytes: env_u64("PLUME_SYSLOG_SPOOL_MAX_BYTES", 512 * 1024 * 1024),
-        spool_max_files: env_usize("PLUME_SYSLOG_SPOOL_MAX_FILES", 20000),
+        // budget disque du spool (backpressure) : 0 = illimite -> `min` vaut 0 pour ces deux-la.
+        spool_max_bytes: env_nombre_u64("PLUME_SYSLOG_SPOOL_MAX_BYTES", 512 * 1024 * 1024, 0, &mut fautes),
+        spool_max_files: env_nombre_usize("PLUME_SYSLOG_SPOOL_MAX_FILES", 20000, 0, &mut fautes),
         // anti-slowloris : inactivite 60s / vie max 1h ; 16 connexions concurrentes max par IP.
-        tcp_idle_secs: env_u64("PLUME_SYSLOG_TCP_IDLE", 60),
-        tcp_maxlife_secs: env_u64("PLUME_SYSLOG_TCP_MAXLIFE", 3600),
-        max_conns_per_ip: env_usize("PLUME_SYSLOG_MAX_CONNS_PER_IP", 16),
+        tcp_idle_secs: env_nombre_u64("PLUME_SYSLOG_TCP_IDLE", 60, 1, &mut fautes),
+        tcp_maxlife_secs: env_nombre_u64("PLUME_SYSLOG_TCP_MAXLIFE", 3600, 1, &mut fautes),
+        max_conns_per_ip: env_nombre_usize("PLUME_SYSLOG_MAX_CONNS_PER_IP", 16, 1, &mut fautes),
     });
+
+    // MEME REGLE QUE POUR LA LISTE : un reglage POSE et non compris arrete le demarrage. C'est le
+    // moment le moins couteux et le plus visible pour le dire ; continuer sous le defaut laisserait
+    // l'exploitant croire que son plafond s'applique.
+    if !fautes.is_empty() {
+        eprintln!(
+            "collector-syslog: {} reglage(s) POSE(s) et non exploitable(s) : {}\n\
+             collector-syslog: ARRET. Ces valeurs ont ete ECRITES par un exploitant ; retomber en \
+             silence sur le defaut ferait tourner le recepteur sous un reglage que personne n'a voulu.",
+            fautes.len(),
+            fautes.join(" ; ")
+        );
+        std::process::exit(2);
+    }
 
     std::fs::create_dir_all(&cfg.spool).ok();
 
+    // L'AVEU D'IDENTITE part AVANT la premiere trame : sans lui, des evenements arriveraient au
+    // central sous un VERDICT sans que rien n'explique pourquoi. Il emprunte le canal
+    // d'indisponibilite deja livre, sur lequel une regle ALERTE deja.
+    if let lisibilite::Lecture::Illisible { cause, detail } = &identite {
+        let ts = now();
+        let ev = lisibilite::event_indisponibilite(
+            lisibilite::HOTE_NON_LU,
+            lisibilite::RAISON_CONFIG_ABSENTE,
+            cause,
+            &format!(
+                "identite de l'hote non lue : {detail}. Les evenements de ce recepteur partent sous \
+                 un VERDICT et non sous un nom ; pose PLUME_HOST=<nom>."
+            ),
+            ts,
+        );
+        eprintln!("collector-syslog: IDENTITE NON LUE ({cause}) : {detail}");
+        if let Err(e) = spool::write_events(&cfg.spool, &cfg.host, ts, std::slice::from_ref(&ev)) {
+            eprintln!("collector-syslog: aveu d'identite NON ecrit ({e}) — le trou reste invisible");
+        }
+    }
+
     let parser: Arc<dyn VendorParser> = Arc::from(parser::select(&parser_name));
     // tampon memoire borne : ~40x le lot (bien sous le cap cgroup 192Mi), surchargeable.
-    let max_buf = env_usize("PLUME_SYSLOG_QUEUE_MAX", batch_max.saturating_mul(40).max(20000));
+    // Le tampon memoire est lu APRES le controle des reglages ci-dessus ; une faute ici est donc
+    // rapportee au meme endroit que les autres (le vecteur est encore vide a ce stade).
+    let mut fautes_tampon: Vec<String> = Vec::new();
+    let max_buf = env_nombre_usize(
+        "PLUME_SYSLOG_QUEUE_MAX",
+        batch_max.saturating_mul(40).max(20000),
+        1,
+        &mut fautes_tampon,
+    );
+    if !fautes_tampon.is_empty() {
+        eprintln!(
+            "collector-syslog: reglage POSE et non exploitable : {}\ncollector-syslog: ARRET.",
+            fautes_tampon.join(" ; ")
+        );
+        std::process::exit(2);
+    }
     let batcher = Arc::new(Batcher {
         buf: Mutex::new(Vec::new()),
         cv: Condvar::new(),
@@ -682,10 +846,176 @@ mod tests {
     fn allowlist_empty_accepts_all_but_set_filters() {
         let open = cfg_with_allow(vec![]);
         assert!(open.ip_allowed(Some(ip("203.0.113.9")))); // vide -> tout accepte
-        let scoped = cfg_with_allow(parse_allowlist("10.0.0.0/8, 192.168.1.5"));
+        let scoped = cfg_with_allow(lue("10.0.0.0/8, 192.168.1.5"));
         assert!(scoped.ip_allowed(Some(ip("10.9.9.9"))));
         assert!(scoped.ip_allowed(Some(ip("192.168.1.5"))));
         assert!(!scoped.ip_allowed(Some(ip("203.0.113.9")))); // hors liste -> refuse
+    }
+
+    /// Raccourci de suite : une liste que l'on SAIT bien formee. Toute autre issue est une faute du
+    /// test lui-meme, pas du code exerce.
+    fn lue(s: &str) -> Vec<Cidr> {
+        match parse_allowlist(s) {
+            lisibilite::Lecture::Lue(v) => v,
+            lisibilite::Lecture::Illisible { cause, detail } => {
+                panic!("liste supposee valide refusee ({cause}) : {detail}")
+            }
+        }
+    }
+
+    // =============================================================================================
+    // `S36` — LA PORTE : UNE LISTE D'ADRESSES POSEE ET NON COMPRISE N'OUVRE PAS LE :514
+    // =============================================================================================
+
+    /// LA GARDE DERIVEE DE CETTE SURFACE, ET ELLE N'ENUMERE AUCUNE ENTREE FAUTIVE.
+    ///
+    /// LA PROPRIETE TENUE : pour TOUT texte de liste, si l'analyse rend une liste, alors cette liste
+    /// a EXACTEMENT autant d'entrees que l'exploitant en a ecrit. Une seule phrase, et elle ferme les
+    /// deux defauts d'un coup — le rabotage silencieux (liste plus petite que l'ecrit) et le cas
+    /// fatal qui en decoule (liste entierement fautive -> liste VIDE -> « aucun perimetre demande »,
+    /// c'est-a-dire un port d'ingestion non authentifie ouvert a tout le monde).
+    ///
+    /// LES ENTREES FAUTIVES SONT DERIVEES DES VALIDES PAR MUTATION, pas choisies a la main : on prend
+    /// le corpus des formes que l'analyseur ACCEPTE et on les abime mecaniquement. Une forme
+    /// d'adresse acceptee demain entre donc d'office dans le corpus, et ses mutations avec elle.
+    #[test]
+    fn une_liste_posee_ne_peut_jamais_produire_une_liste_vide() {
+        // Le corpus des formes VALIDES — c'est le seul endroit ou quelque chose est enumere, et ce
+        // sont les formes du contrat, pas des cas de defaut.
+        let valides = ["10.0.0.0/8", "192.168.1.5", "2001:db8::/32", "::1", "172.16.0.0/12"];
+
+        // ② LE TEMOIN NOMINAL, D'ABORD : chaque forme valide est LUE, et la liste rendue a
+        //    exactement le nombre d'entrees ecrites. Sans lui, un analyseur qui refuserait TOUT
+        //    passerait le temoin ① sans rien prouver — et il fermerait le recepteur en permanence.
+        for v in valides {
+            let r = parse_allowlist(v);
+            assert_eq!(r.verdict(), lisibilite::VERDICT_LU, "forme valide refusee : {v}");
+            assert_eq!(r.valeur().map(Vec::len), Some(1), "{v} : une entree ecrite, une entree lue");
+        }
+        let toutes = valides.join(", ");
+        let r = parse_allowlist(&toutes);
+        assert_eq!(
+            r.valeur().map(Vec::len),
+            Some(valides.len()),
+            "une liste entierement valide rend AUTANT d'entrees qu'il en a ete ecrit"
+        );
+
+        // ① LES MUTATIONS : chaque abimage d'une forme valide doit etre REFUSE, seul comme melange
+        //    a des formes valides. Aucune ne doit donner une liste — et surtout pas une liste vide.
+        let abimages: [fn(&str) -> String; 4] = [
+            // un octet en moins (`10.0.0/8` : la faute de frappe qui ouvrait la porte)
+            |v| v.replacen(".0", "", 1),
+            // un caractere qui n'appartient a aucune notation d'adresse
+            |v| format!("{v}x"),
+            // un prefixe hors bornes
+            |v| format!("{}/999", v.split('/').next().unwrap_or(v)),
+            // un separateur interne casse
+            |v| v.replace('.', ",").replace(':', ";"),
+        ];
+        let mut mutations_exercees = 0usize;
+        for v in valides {
+            for abimer in abimages {
+                let abime = abimer(v);
+                // Une mutation qui rend par hasard une forme encore valide n'apprend rien : on ne la
+                // compte pas, plutot que de la declarer couverte.
+                if parse_cidr(&abime).is_some() {
+                    continue;
+                }
+                mutations_exercees += 1;
+                let seule = parse_allowlist(&abime);
+                assert_eq!(
+                    seule.verdict(),
+                    lisibilite::VERDICT_ILLISIBLE,
+                    "liste POSEE et fautive acceptee : {abime:?} — c'est le :514 ouvert au monde"
+                );
+                assert!(seule.valeur().is_none(), "{abime:?} : une liste refusee ne rend AUCUNE valeur");
+                assert_eq!(seule.cause(), lisibilite::CAUSE_FORME_INCONNUE);
+
+                // Melangee a des formes valides : la liste ne doit pas non plus etre RABOTEE.
+                let melange = format!("10.0.0.0/8, {abime}, 192.168.1.5");
+                let m = parse_allowlist(&melange);
+                assert_eq!(
+                    m.verdict(),
+                    lisibilite::VERDICT_ILLISIBLE,
+                    "liste partiellement fautive rabotee en silence : {melange:?}"
+                );
+            }
+        }
+        // PLANCHER DE NON-DEGENERESCENCE : sous ce seuil, ce sont les mutations qui ne mordent plus.
+        assert!(
+            mutations_exercees >= 12,
+            "seulement {mutations_exercees} mutation(s) exercee(s) — l'instrument ne voit plus rien"
+        );
+    }
+
+    /// ② LE CAS NOMINAL RESTE INTACT : ne RIEN poser n'est pas une faute, c'est l'absence de demande.
+    /// Sans ce temoin, la correction transformerait chaque deploiement sans perimetre en refus de
+    /// demarrage — le defaut symetrique, et tout aussi faux.
+    #[test]
+    fn une_liste_non_posee_reste_le_cas_nominal() {
+        for vide in ["", "   ", ",", " , \t\n"] {
+            let r = parse_allowlist(vide);
+            assert_eq!(r.verdict(), lisibilite::VERDICT_LU, "{vide:?} : rien de pose, rien a refuser");
+            assert_eq!(r.valeur().map(Vec::len), Some(0), "{vide:?} : un VRAI vide");
+        }
+        // Et une liste vide accepte bien tout le monde — c'est ce que veut dire « aucun perimetre ».
+        assert!(cfg_with_allow(Vec::new()).ip_allowed(Some(ip("203.0.113.9"))));
+    }
+
+    /// LE TROISIEME TROU, INDEPENDANT DES DEUX AUTRES : un pair dont l'adresse n'a PAS pu etre lue.
+    /// Il etait ACCEPTE (« ne devrait pas arriver -> ne pas bloquer a l'aveugle »), c'est-a-dire que
+    /// l'echec d'une lecture ouvrait la porte. Une adresse inconnue ne peut pas etre montree dans la
+    /// liste ; quand un perimetre est en vigueur, elle est refusee. Quand il n'y en a pas, il n'y a
+    /// rien a etablir et elle passe, comme tout le monde.
+    #[test]
+    fn un_pair_dont_l_adresse_est_illisible_ne_franchit_pas_un_perimetre_pose() {
+        let scoped = cfg_with_allow(lue("10.0.0.0/8"));
+        assert!(!scoped.ip_allowed(None), "adresse non lue + perimetre pose -> REFUS");
+        assert!(scoped.ip_allowed(Some(ip("10.1.2.3"))), "et le cas nominal passe toujours");
+        let ouvert = cfg_with_allow(Vec::new());
+        assert!(ouvert.ip_allowed(None), "sans perimetre, il n'y a rien a etablir");
+    }
+
+    // =============================================================================================
+    // `S36` — LES REGLAGES POSES ET NON COMPRIS
+    // =============================================================================================
+
+    /// LA PAIRE. ① une valeur POSEE et non exploitable est COMPTEE comme faute (le demarrage
+    /// s'arrete dessus) ; ② une valeur absente garde le defaut SANS faute, et une valeur valide est
+    /// prise telle quelle. Le `min` parametre est exerce dans les deux sens : `0` est atteignable la
+    /// ou il veut dire « illimite », et refuse la ou il n'a pas de sens.
+    #[test]
+    fn un_reglage_pose_et_non_compris_ne_retombe_pas_en_silence_sur_le_defaut() {
+        let cle = "PLUME_SYSLOG_TEST_S36";
+        let mut fautes = Vec::new();
+
+        // ② absent -> defaut, AUCUNE faute.
+        std::env::remove_var(cle);
+        assert_eq!(env_nombre_u64(cle, 42, 1, &mut fautes), 42);
+        assert!(fautes.is_empty(), "ne rien poser n'est pas une faute");
+
+        // ② pose et valide -> la valeur ecrite.
+        std::env::set_var(cle, "7");
+        assert_eq!(env_nombre_u64(cle, 42, 1, &mut fautes), 7);
+        assert!(fautes.is_empty());
+
+        // ① pose et non exploitable -> faute COMPTEE (et le defaut rendu pour cet appel seulement).
+        std::env::set_var(cle, "10 Mio");
+        assert_eq!(env_nombre_u64(cle, 42, 1, &mut fautes), 42);
+        assert_eq!(fautes.len(), 1, "une valeur posee et incomprise doit etre COMPTEE");
+        assert!(fautes[0].contains(cle), "la faute nomme la variable : {:?}", fautes[0]);
+
+        // ① bis — sous le minimum : c'est aussi une valeur qui ne fera pas ce qui est ecrit.
+        fautes.clear();
+        std::env::set_var(cle, "0");
+        assert_eq!(env_nombre_u64(cle, 42, 1, &mut fautes), 42);
+        assert_eq!(fautes.len(), 1);
+
+        // ② bis — et `0` EST atteignable la ou il veut dire quelque chose (« illimite »).
+        fautes.clear();
+        assert_eq!(env_nombre_u64(cle, 42, 0, &mut fautes), 0, "0 = illimite doit etre atteignable");
+        assert!(fautes.is_empty());
+        std::env::remove_var(cle);
     }
 
     #[test]

@@ -3,6 +3,10 @@
 # Modele pull (pas d'entree reseau sur l'agent) : GET /api/actions/pending?host=... -> applique -> POST result.
 # OPT-IN (PLUME_RESPONDER=1). DRY-RUN par defaut (PLUME_RESPONDER_APPLY=1 pour appliquer reellement).
 # Delegue l'enforcement a l'IPS existant : CrowdSec (cscli) > fail2ban > nft (fallback). Portable (sh + curl).
+# LISTE D EPARGNE, FAIL-CLOSED SUR LE BAN : les IP a NE JAMAIS bannir sont une PROTECTION. Quand
+# cette liste n est pas lisible, aucun ban n est applique et le refus est NOMME au central (cause
+# dans l ensemble ferme source_absente / source_refusee / source_illisible). Un `unban_ip` n y est
+# PAS soumis : il ne baisse aucune defense, et le refuser verrouillerait l operateur.
 set -eu
 
 # P5.5-a — L'AUTH NE PASSE PAS PAR argv. Un argument de processus est public : mesure du 2026-08-02,
@@ -35,6 +39,10 @@ BACKEND="${PLUME_BAN_BACKEND:-auto}"
 JAIL="${PLUME_FAIL2BAN_JAIL:-sshd}"
 DUR="${PLUME_BAN_DURATION:-4h}"
 ALLOWFILE="${PLUME_RESPONDER_ALLOW:-/etc/plume/responder.allow}"   # IP a NE JAMAIS bannir (1/ligne)
+# Un chemin POSE par l operateur et un chemin par DEFAUT ne portent pas la meme promesse : le
+# premier absent est une liste promise qui manque, le second absent est un hote qui ne tient
+# simplement pas de liste. `verdict_liste_epargne` en tire deux verdicts differents.
+ALLOW_CONFIGUREE=0; [ -n "${PLUME_RESPONDER_ALLOW:-}" ] && ALLOW_CONFIGUREE=1
 # PLUME_HOST_HEADER : override Host (central in-cluster atteint par ClusterIP). Sans espace -> split sh-safe.
 HH=""; [ -n "${PLUME_HOST_HEADER:-}" ] && HH="-H Host:$PLUME_HOST_HEADER"
 # mTLS optionnel (cert client agent) vers le central : mêmes variables PLUME_TLS_* que ship.sh.
@@ -46,16 +54,68 @@ CENTRAL_HOST=$(printf '%s' "$CENTRAL" | sed -e 's#^[a-z]*://##' -e 's#[:/].*$##'
 esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n\r\t' '   '; }
 
 is_ip() { printf '%s' "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$|^[0-9a-fA-F:]+:[0-9a-fA-F:]*$'; }
-protected() {            # 0 = IP protegee (ne pas bannir) : loopback/RFC1918/lien-local/central/allowlist
-  ip="$1"
+protected() {            # 0 = IP reservee/centrale (ne pas bannir) : loopback/RFC1918/lien-local/central
+  ip="$1"                # la LISTE D EPARGNE, elle, se lit par `verdict_liste_epargne` (trois cas)
   case "$ip" in
     127.*|10.*|192.168.*|169.254.*|0.*|255.*) return 0 ;;
     172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) return 0 ;;
     ::1|fe80:*|fc[0-9a-fA-F]*:*|fd[0-9a-fA-F]*:*) return 0 ;;
   esac
   [ -n "$CENTRAL_HOST" ] && [ "$ip" = "$CENTRAL_HOST" ] && return 0
-  [ -r "$ALLOWFILE" ] && grep -qxF "$ip" "$ALLOWFILE" 2>/dev/null && return 0
   return 1
+}
+
+# ================================================================================================
+# LA LISTE D EPARGNE EST UNE PROTECTION : SA LECTURE NE PEUT PAS ECHOUER EN SILENCE.
+# ------------------------------------------------------------------------------------------------
+# FORME PRECEDENTE : `[ -r "$F" ] && grep -qxF "$ip" "$F" 2>/dev/null && return 0`, puis `return 1`.
+# QUATRE faits distincts y tombaient sur la MEME branche — celle qui autorise le ban : (a) la liste
+# a ete lue et l IP n y est pas, (b) le fichier n existe pas, (c) il existe mais l acces est refuse,
+# (d) la recherche elle-meme a echoue (un REPERTOIRE a la place du fichier, une erreur d E/S : `-r`
+# les passe, et sous root il passe meme un mode 000). Seul (a) est un fait ; les trois autres sont
+# des NON-REPONSES, et elles rendaient la reponse la plus permissive — le ban partait, et son
+# resultat remontait au central comme un succes ordinaire. La protection disparaissait donc
+# exactement au moment ou quelque chose n allait deja pas.
+#
+# VOCABULAIRE FERME DES CAUSES, LES MEMES MOTS QUE LE RESTE DU PRODUIT (cote demon comme cote
+# capteurs). Il est REECRIT ici et non emprunte : cet enforcer ne depend d AUCUNE bibliotheque
+# (cf. l en-tete), et une garde de CI verifie qu il n en depend toujours pas. Trois lignes de
+# duplication coutent moins qu une garde affaiblie.
+RESP_CAUSES="source_absente source_refusee source_illisible"
+
+# _resp_illisible <cause> — LA CARDINALITE EST BORNEE ICI : une cause hors de l ensemble ferme est
+# ramenee a `source_illisible` plutot que de devenir une surface libre. Le detail non borne (chemin
+# tente, message du systeme) ne vit que dans le texte du refus, lu par un humain.
+_resp_illisible() {
+  case " $RESP_CAUSES " in
+    *" $1 "*) printf 'illisible:%s' "$1" ;;
+    *)        printf 'illisible:source_illisible' ;;
+  esac
+}
+
+# verdict_liste_epargne <fichier> <configuree:0|1> <ip> — rend UN mot d un ensemble a TROIS cas, sur
+# la sortie standard, SANS valeur par defaut :
+#   epargnee           l IP figure dans la liste                     -> ne pas bannir
+#   hors-liste         la liste a ete LUE et ne contient pas l IP    -> le ban peut suivre son cours
+#                      (liste vide, et hote sans liste, sont ce cas : ce sont de VRAIS faits)
+#   illisible:<cause>  la liste n a PAS pu etre lue                  -> l appelant DOIT trancher
+# PARAMETREE sur son fichier : exercable contre une arborescence fabriquee, sans /etc ni privilege.
+verdict_liste_epargne() {
+  _vle_f="$1"; _vle_cfg="$2"; _vle_ip="$3"
+  [ -n "$_vle_f" ] || { printf 'hors-liste'; return 0; }
+  if [ ! -e "$_vle_f" ]; then
+    [ "$_vle_cfg" = 1 ] && { _resp_illisible source_absente; return 0; }
+    printf 'hors-liste'; return 0
+  fi
+  [ -r "$_vle_f" ] || { _resp_illisible source_refusee; return 0; }
+  # `-r` ne suffit pas : root le voit vrai sur un mode 000, et un repertoire le passe. Seul le CODE
+  # DE RETOUR de la recherche separe « lue, absente » (1) d une erreur de lecture (>1).
+  if grep -qxF "$_vle_ip" "$_vle_f" 2>/dev/null; then _vle_rc=0; else _vle_rc=$?; fi
+  case "$_vle_rc" in
+    0) printf 'epargnee' ;;
+    1) printf 'hors-liste' ;;
+    *) _resp_illisible source_illisible ;;
+  esac
 }
 
 backend="$BACKEND"
@@ -131,7 +191,28 @@ printf '%s\n' "$list" | while IFS='	' read -r id kind target dry; do
   [ -n "${id:-}" ] || continue
   case "$id" in *[!0-9]*) continue ;; esac          # id doit etre numerique
   if ! is_ip "$target"; then post_result "$id" failed "cible non-IP: $target"; continue; fi
-  if protected "$target"; then post_result "$id" failed "IP protegee (allowlist/RFC1918/central): $target"; continue; fi
+  if protected "$target"; then post_result "$id" failed "IP protegee (reservee/centrale): $target"; continue; fi
+  verdict=$(verdict_liste_epargne "$ALLOWFILE" "$ALLOW_CONFIGUREE" "$target")
+  case "$verdict" in
+    epargnee) post_result "$id" failed "IP protegee (liste d epargne): $target"; continue ;;
+    illisible:*)
+      # FAIL-CLOSED, ET L ARBITRAGE EST ECRIT. Refuser coute une action de reponse non appliquee :
+      # elle reste visible au central en `failed` avec sa cause, et se rejoue des la liste relue.
+      # Laisser passer coute un ban pose sur une IP que l operateur avait declaree a NE JAMAIS
+      # bannir — typiquement sa propre sortie, un rebond d administration, un partenaire — c est
+      # a dire une panne qu il s inflige et qui peut lui retirer l acces par lequel il la leverait.
+      # Le cout du refus est BORNE : les plages reservees et l hote central restent protegees par
+      # `protected`, donc seul le ban d une IP PUBLIQUE est suspendu le temps de la panne.
+      if [ "$kind" != unban_ip ]; then
+        post_result "$id" failed "REFUS (fail-closed): liste d epargne non lue (cause=${verdict#illisible:}) sur $ALLOWFILE — aucun ban applique tant que la liste des IP a NE JAMAIS bannir n est pas lisible"
+        echo "respond: #$id REFUS fail-closed (liste d epargne ${verdict#illisible:}: $ALLOWFILE)" >&2
+        continue
+      fi
+      # `unban_ip` ne BAISSE aucune defense : il en leve une. Lui appliquer le refus transformerait
+      # une panne de lecture en ban qu on ne peut plus lever, c est a dire en verrouillage.
+      echo "respond: #$id liste d epargne ${verdict#illisible:} ($ALLOWFILE) — unban poursuivi (ne baisse aucune defense)" >&2
+      ;;
+  esac
   cmd=$(plan "$kind" "$target")
   if [ "$APPLY" != "1" ] || [ "${dry:-1}" = "1" ]; then
     post_result "$id" dryrun "[dry-run] $cmd"

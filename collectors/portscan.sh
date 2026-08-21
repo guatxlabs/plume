@@ -15,7 +15,14 @@ umask 027
 WM="$STATE_DIR/portscan.watermark"
 last=$(cat "$WM" 2>/dev/null || echo $((ts - 3600)))
 tmpf=$(mktemp)
-journalctl -k --since "@$last" --no-pager -o short-unix 2>/dev/null | grep 'PORTSCAN' > "$tmpf" 2>/dev/null || true
+# S36 — UN TUBE N'A QU'UN CODE DE RETOUR, celui de `grep`, pour qui « aucune ligne » vaut 1 : le cas
+# NORMAL. L'echec de `journalctl` etait donc invisible, et le filigrane avancait jusqu'a `$ts` sur
+# une lecture qui n'avait rien lu — un scan de ports pouvait disparaitre sans un mot. Deux etages.
+kraw=$(mktemp)
+_jrnl_ok=1
+journalctl -k --since "@$last" --no-pager -o short-unix > "$kraw" 2>/dev/null || _jrnl_ok=0
+grep 'PORTSCAN' "$kraw" > "$tmpf" 2>/dev/null || true
+rm -f "$kraw"
 events=""; n=0; seen=" "
 while IFS= read -r line; do
   [ -n "$line" ] || continue
@@ -42,7 +49,14 @@ done < "$tmpf"
 rm -f "$tmpf"
 # S30 — filigrane MIS EN ATTENTE (ecrit apres la publication de l'enveloppe d'events, cf. lib.sh).
 # Cle `portscan-<src>-<seau 5 min>` -> un rejeu tombant dans le meme seau est absorbe.
-state_stage "$WM" "$ts"
+# S36 — et il n'est mis en attente QUE si le journal a ete lu : sa valeur est l'instant du passage,
+# elle ne doit rien a la lecture, donc rien ne l'empechait d'acquitter une fenetre jamais lue. Le
+# battement de sante part quand meme — son silence dirait « collecteur mort » la ou il est aveugle.
+if [ "$_jrnl_ok" = 1 ]; then
+  state_stage "$WM" "$ts"
+else
+  plume_lecture_partielle portscan source_illisible "journal du noyau non lu depuis @$last : le filigrane n'avance pas, la fenetre sera relue au passage suivant. La serie portscans_seen n'est PAS publiee ce passage — un 0 y rendrait INERTE la regle de detection de scan"
+fi
 
 # DEAD-MAN'S-SWITCH (calque crowdsec.sh/pod-logs.sh) : battement de SANTÉ à CHAQUE run MÊME quand 0 scan
 # détecté -> Plume distingue « aucun scan (normal, event_based) » de « collecteur portscan mort ». PAS de
@@ -50,9 +64,23 @@ state_stage "$WM" "$ts"
 # chaque battement S'INSÈRE -> MAX(ts) avance -> heartbeat vivant. Le SILENCE de ce battement (>~25 min) lève
 # l'alerte MUET (collecteur CONTINU portscan-health, cf. main.rs). Le ship de l'enveloppe events est rendu
 # INCONDITIONNEL (events porte toujours ce battement) ; la métrique portscans_seen reste inchangée.
-events="$events${events:+,}$(heartbeat portscan "portscan santé: $n scan(s) ce passage" "{\"scans_seen\":$n}")"
+# S36 — LE BATTEMENT ET LA METRIQUE NE COMPTENT PAS CE QU'ILS N'ONT PAS LU. Le filigrane est tenu
+# juste au-dessus, mais la phrase la plus rassurante du capteur — « 0 scan ce passage » — et la serie
+# `portscans_seen` partaient encore, a 0, quand le journal n'avait pas ete lu : une regle a seuil qui
+# consomme cette serie n'est alors pas en retard, elle est INERTE, et un tableau de bord y lit « rien
+# a signaler » la ou il n'y a plus aucune mesure. La serie DISPARAIT donc de l'enveloppe (S33), et
+# l'aveu deja emis ci-dessus la NOMME — un seul evenement pour un seul fait, sur le canal
+# d'indisponibilite ou une regle livree alerte deja. Le battement, lui, part TOUJOURS : son silence
+# leverait l'alerte MUET, et un capteur aveugle n'est pas un capteur mort.
+if [ "$_jrnl_ok" = 1 ]; then
+  events="$events${events:+,}$(heartbeat portscan "portscan santé: $n scan(s) ce passage" "{\"scans_seen\":$n}")"
+else
+  events="$events${events:+,}$(heartbeat portscan "portscan santé: journal du noyau NON LU ce passage — aucun compte de scan (l'absence de scan ne peut PAS en etre conclue)" "{}")"
+fi
 spool_write_then_ack "portscan-$ts.json" "$(emit_event "$events")" nl
-spool_write "portscanm-$ts.json" "$(printf '{"ts":%s,"host":"%s","kind":"metrics","data":{"metrics":[{"name":"portscans_seen","value":%s}]}}' "$ts" "$host" "$n")" nl
+if [ "$_jrnl_ok" = 1 ]; then
+  spool_write "portscanm-$ts.json" "$(printf '{"ts":%s,"host":"%s","kind":"metrics","data":{"metrics":[{"name":"portscans_seen","value":%s}]}}' "$ts" "$host" "$n")" nl
+fi
 
 # --- CHANTIER whitelists->webui : AUTO-REPORT de config (source=portscan category=config) ----------
 # ETAT HOTE (type=host) : detecteur nft 'plume-portscan' (le SIGNAL est deja « un scan detecte »).

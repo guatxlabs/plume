@@ -51,14 +51,20 @@ prev=$(cat "$OFF" 2>/dev/null || echo 0)
 case "$prev" in *[!0-9]*) prev=0 ;; esac
 [ "$prev" -gt "$size" ] && prev=0
 # S30 — l'offset est MIS EN ATTENTE, jamais ecrit ici : il ne l'est qu'apres la publication de
-# l'enveloppe d'events (ou par `plume_exit_nodata`, ou rien n'a ete publie donc rien n'est acquitte).
-# Avant, il avancait des la lecture du chunk : une coupure entre les deux perdait execve et TAMPER
-# de la tranche, en silence. Ces events ne portent PAS de cle de dedoublonnage -> le rejeu apres
-# coupure produit des doublons VISIBLES la ou il y avait une perte muette.
+# l'enveloppe d'events, ou par `plume_exit_nodata`. Avant, il avancait des la lecture du chunk : une
+# coupure entre les deux perdait execve et TAMPER de la tranche, en silence. Ces events ne portent PAS
+# de cle de dedoublonnage -> le rejeu apres coupure produit des doublons VISIBLES la ou il y avait une
+# perte muette.
+# S36 — et cette seconde porte n'est atteignable que si la lecture a ABOUTI : l'offset vaut la TAILLE
+# du fichier, il ne doit rien a la lecture, donc il acquittait sans cela une tranche jamais lue.
 if [ "$prev" -ge "$size" ]; then state_stage "$OFF" "$size"; plume_exit_nodata; fi
 
 new=$(mktemp)
-tail -c +"$((prev + 1))" "$LOG" 2>/dev/null > "$new" || true
+# S36 — le code de retour de la lecture est LU. Avant, `|| true` confondait « aucun octet neuf » et
+# « le `tail` a echoue » : l'offset etait deja en attente, `parsed` sortait vide, et la sortie « rien
+# a signaler » acquittait une tranche d'execve et de TAMPER que personne ne relirait jamais.
+tail -c +"$((prev + 1))" "$LOG" 2>/dev/null > "$new" \
+  || plume_lecture_echouee auditd "$(plume_cause_lecture "$LOG")" "$LOG : la tranche a partir de l'octet $((prev + 1)) n'a pas pu etre lue"
 state_stage "$OFF" "$size"
 
 # clés de WATCH tamper (file-integrity) que l'on shippe en plus des execve/auth/comptes.

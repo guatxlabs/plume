@@ -122,9 +122,18 @@ envj=$(printf '%s' "$json" | jq -c --arg host "$host" --argjson ts "$ts" --arg s
 # rien a acquitter : `plume_exit_nodata` ecrit le filigrane et sort. Ne PAS l'ecrire dans ce cas
 # ferait grandir la fenetre interrogee sans fin.
 adv=$(date -u -d "@$((ts - LAG))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$nowiso")
+
+# S36 — LE FILIGRANE NE DOIT RIEN A LA REPONSE : il vaut « maintenant moins le lag », donc il avance
+# meme quand rien n'a ete compris de ce qui a ete recu. Il etait mis en attente ICI, avant que la
+# reponse ne soit exploitee, et `|| echo 0` rendait 0 aussi bien pour une fenetre reellement calme
+# que pour une reponse illisible : la sortie « rien a signaler » avancait alors la fenetre PAR-DESSUS
+# des requetes en erreur qui ne seraient plus jamais interrogees. Le code de retour de `jq` est
+# desormais lu, et la mise en attente ne vient qu'apres.
+if ! n=$(printf '%s' "$envj" | jq -r '.events | length' 2>/dev/null); then
+  plume_lecture_echouee cloudflare-http forme_inconnue "reponse GraphQL recue mais non exploitable : la fenetre depuis $since n'a pas ete lue, le filigrane N'AVANCE PAS"
+fi
 state_stage "$WM" "$adv"
 
-n=$(printf '%s' "$envj" | jq -r '.events | length' 2>/dev/null || echo 0)
 if [ "${n:-0}" -gt 0 ]; then
   spool_write_then_ack "cloudflare-http-$ts.json" "$envj" nl
 else

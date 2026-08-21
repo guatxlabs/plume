@@ -148,42 +148,76 @@ impl SourceReader for FileReader {
         };
     }
 
-    fn next_batch(&mut self, max: usize) -> Vec<NativeRecord> {
+    /// `S36` — UN FICHIER QU'ON NE SAIT PAS LIRE N'EST PAS UN FICHIER SANS NOUVELLE LIGNE.
+    ///
+    /// QUATRE CHEMINS MENAIENT AU MÊME LOT VIDE : le `stat` en échec (le commentaire disait
+    /// « fichier absent -> inerte », mais un accès REFUSÉ tombait dans la même branche), l'ouverture
+    /// refusée, le positionnement impossible, et la lecture coupée en cours de lot. Un lot vide, ici,
+    /// est exactement ce que rend un journal applicatif calme — et c'est ce que le SOC lisait pendant
+    /// qu'une source de détection avait cessé d'être lisible.
+    fn next_batch(&mut self, max: usize) -> crate::lisibilite::Releve {
+        use crate::lisibilite::{cause_io, Releve, CAUSE_SOURCE_ILLISIBLE, RAISON_SOURCE_ABSENTE};
         use std::io::{BufRead, BufReader, Seek, SeekFrom};
         if max == 0 {
-            return Vec::new();
+            return Releve::rien_a_faire();
         }
         let mut off = self.offset.unwrap_or(0);
         let size = match std::fs::metadata(&self.cfg.path) {
             Ok(m) => m.len(),
-            Err(_) => return Vec::new(), // fichier absent -> inerte (pas d'erreur fatale)
+            Err(e) => {
+                return Releve::illisible(
+                    RAISON_SOURCE_ABSENTE,
+                    cause_io(&e),
+                    format!("[file:{}] {} : {e}", self.cfg.name, self.cfg.path),
+                )
+            }
         };
         if size < off {
             off = 0; // rotation / troncature : on repart du début du nouveau fichier
         }
         if size == off {
+            // LU, ET RÉELLEMENT RIEN DE NEUF. C'est le cas nominal, et il doit rester distinct du
+            // précédent : sans ce bras, un fichier lisible et calme lèverait un aveu à chaque cycle.
             self.offset = Some(off);
-            return Vec::new();
+            return Releve::lu(Vec::new());
         }
-        let mut f = match std::fs::File::open(&self.cfg.path) {
+        let f = match std::fs::File::open(&self.cfg.path) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("[file:{}] ouverture {} échouée : {e}", self.cfg.name, self.cfg.path);
-                return Vec::new();
+                return Releve::illisible(
+                    RAISON_SOURCE_ABSENTE,
+                    cause_io(&e),
+                    format!("[file:{}] ouverture de {} refusée : {e}", self.cfg.name, self.cfg.path),
+                )
             }
         };
-        if f.seek(SeekFrom::Start(off)).is_err() {
-            return Vec::new();
+        let mut f = f;
+        if let Err(e) = f.seek(SeekFrom::Start(off)) {
+            return Releve::illisible(
+                RAISON_SOURCE_ABSENTE,
+                cause_io(&e),
+                format!("[file:{}] positionnement à l'offset {off} impossible : {e}", self.cfg.name),
+            );
         }
         let mut reader = BufReader::new(f);
         let mut out = Vec::with_capacity(max.min(1024));
         let mut buf = String::new();
+        let mut interrompu: Option<String> = None;
         loop {
             buf.clear();
             let n = match reader.read_line(&mut buf) {
                 Ok(0) => break, // EOF
                 Ok(n) => n,
-                Err(_) => break,
+                // Le fichier a cessé d'être lisible EN COURS de lot (E/S, encodage, démontage).
+                // Ce qui a été lu part quand même ; la troncature est avouée.
+                Err(e) => {
+                    interrompu = Some(format!(
+                        "[file:{}] lecture interrompue à l'offset {off} après {} ligne(s) : {e}",
+                        self.cfg.name,
+                        out.len()
+                    ));
+                    break;
+                }
             };
             // Ligne partielle en fin de fichier (pas de \n final) : on l'attend au prochain tour.
             if !buf.ends_with('\n') {
@@ -197,7 +231,10 @@ impl SourceReader for FileReader {
             }
         }
         self.offset = Some(off);
-        out
+        match interrompu {
+            Some(d) => Releve::partiel(out, RAISON_SOURCE_ABSENTE, CAUSE_SOURCE_ILLISIBLE, d),
+            None => Releve::lu(out),
+        }
     }
 
     fn cursor(&self) -> Cursor {
@@ -245,11 +282,23 @@ impl SourceReader for CommandReader {
     fn wire(&self) -> Wire { Wire::Events }
     fn open(&mut self, _cursor: Cursor) {}
 
-    fn next_batch(&mut self, max: usize) -> Vec<NativeRecord> {
+    /// `S36` — UNE COMMANDE QUI N'A PAS TOURNÉ N'EST PAS UNE COMMANDE SANS RÉSULTAT.
+    ///
+    /// TROIS CHEMINS MENAIENT AU LOT VIDE : le binaire introuvable ou non exécutable, la sortie
+    /// coupée en cours de lecture, et — le plus discret — le CODE DE RETOUR jeté. Une commande qui
+    /// échoue écrit sur l'erreur standard (redirigée vers le néant ici) et n'écrit RIEN sur sa sortie
+    /// standard : le lecteur en tirait « aucun résultat », c'est-à-dire la valeur la plus calme.
+    ///
+    /// LE STATUT N'EST CONSULTÉ QUE SI LE PLAFOND DU LOT N'A PAS ÉTÉ ATTEINT : au-delà, c'est nous
+    /// qui tuons l'enfant, et lire notre propre signal comme un échec produirait un aveu FAUX à
+    /// chaque lot plein.
+    fn next_batch(&mut self, max: usize) -> crate::lisibilite::Releve {
+        use crate::lisibilite::{cause_io, Releve, CAUSE_SOURCE_ILLISIBLE, RAISON_DEPENDANCE_ABSENTE, RAISON_SOURCE_ABSENTE};
         use std::io::{BufRead, BufReader};
         use std::process::{Command, Stdio};
         if max == 0 || !self.due() {
-            return Vec::new();
+            // Cadence non échue : la source n'a pas été INTERROGÉE, donc rien n'a échoué.
+            return Releve::rien_a_faire();
         }
         self.last_run = Some(Instant::now());
         let cap = max.min(self.cfg.max_lines);
@@ -261,13 +310,29 @@ impl SourceReader for CommandReader {
         {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[command:{}] spawn `{}` échoué : {e}", self.cfg.name, self.cfg.cmd);
-                return Vec::new();
+                return Releve::illisible(
+                    RAISON_DEPENDANCE_ABSENTE,
+                    cause_io(&e),
+                    format!("[command:{}] `{}` non exécutable : {e}", self.cfg.name, self.cfg.cmd),
+                )
             }
         };
         let mut out = Vec::with_capacity(cap.min(1024));
+        let mut interrompu: Option<String> = None;
         if let Some(stdout) = child.stdout.take() {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            for ligne in BufReader::new(stdout).lines() {
+                let line = match ligne {
+                    Ok(l) => l,
+                    Err(e) => {
+                        interrompu = Some(format!(
+                            "[command:{}] sortie de `{}` interrompue après {} ligne(s) : {e}",
+                            self.cfg.name,
+                            self.cfg.cmd,
+                            out.len()
+                        ));
+                        break;
+                    }
+                };
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -277,9 +342,29 @@ impl SourceReader for CommandReader {
                 }
             }
         }
+        let plafond_atteint = out.len() >= cap;
         let _ = child.kill();
-        let _ = child.wait();
-        out
+        let statut = child.wait();
+        if let Some(d) = interrompu {
+            return Releve::partiel(out, RAISON_SOURCE_ABSENTE, CAUSE_SOURCE_ILLISIBLE, d);
+        }
+        if !plafond_atteint {
+            if let Ok(st) = statut {
+                if !st.success() {
+                    return Releve::partiel(
+                        out,
+                        RAISON_SOURCE_ABSENTE,
+                        CAUSE_SOURCE_ILLISIBLE,
+                        format!(
+                            "[command:{}] `{}` a terminé en échec ({st}) — un lot vide ne veut alors \
+                             pas dire qu'il n'y avait rien à collecter",
+                            self.cfg.name, self.cfg.cmd
+                        ),
+                    );
+                }
+            }
+        }
+        Releve::lu(out)
     }
 
     fn cursor(&self) -> Cursor { Cursor(None) }
@@ -334,22 +419,50 @@ impl SourceReader for HttpReader {
     fn wire(&self) -> Wire { Wire::Events }
     fn open(&mut self, _cursor: Cursor) {}
 
-    fn next_batch(&mut self, max: usize) -> Vec<NativeRecord> {
+    /// `S36` — UN POINT D'ACCÈS QUI NE RÉPOND PAS N'EST PAS UN POINT D'ACCÈS SANS DONNÉE.
+    ///
+    /// TROIS CHEMINS MENAIENT AU LOT VIDE, dont le plus durable : un transport TLS qu'on n'a PAS SU
+    /// CONSTRUIRE (CA interne illisible, certificat client absent) rendait le lecteur inerte POUR
+    /// TOUTE LA VIE DU PROCESSUS, avec un unique avertissement à la construction — après quoi la
+    /// source se lisait « calme » à chaque cycle, sans rien dire. Les deux autres : l'échec réseau et
+    /// la réponse hors 2xx, tous deux réduits à « aucune ligne ».
+    fn next_batch(&mut self, max: usize) -> crate::lisibilite::Releve {
+        use crate::lisibilite::{
+            Releve, CAUSE_FORME_INCONNUE, CAUSE_SOURCE_ILLISIBLE, RAISON_CONFIG_ABSENTE, RAISON_INJOIGNABLE,
+        };
         if max == 0 || !self.due() {
-            return Vec::new();
+            return Releve::rien_a_faire();
         }
-        let Some(transport) = &self.transport else { return Vec::new() };
+        let Some(transport) = &self.transport else {
+            return Releve::illisible(
+                RAISON_CONFIG_ABSENTE,
+                CAUSE_SOURCE_ILLISIBLE,
+                format!(
+                    "[http:{}] transport TLS non construit au démarrage : cette source ne collectera \
+                     RIEN tant que le processus vivra",
+                    self.cfg.name
+                ),
+            );
+        };
         self.last_run = Some(Instant::now());
         let resp = match transport.get(&self.cfg.url, &[]) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("[http:{}] GET {} échoué : {e}", self.cfg.name, self.cfg.url);
-                return Vec::new();
+                return Releve::illisible(
+                    RAISON_INJOIGNABLE,
+                    CAUSE_SOURCE_ILLISIBLE,
+                    format!("[http:{}] GET {} échoué : {e}", self.cfg.name, self.cfg.url),
+                )
             }
         };
         if !(200..300).contains(&resp.status) {
-            eprintln!("[http:{}] GET {} -> HTTP {} (ignoré)", self.cfg.name, self.cfg.url, resp.status);
-            return Vec::new();
+            // Le point d'accès a RÉPONDU, mais hors contrat : la source a été jointe et n'est pas
+            // exploitable. C'est `forme_inconnue`, pas une absence — et surtout pas « rien à lire ».
+            return Releve::illisible(
+                RAISON_INJOIGNABLE,
+                CAUSE_FORME_INCONNUE,
+                format!("[http:{}] GET {} -> HTTP {}", self.cfg.name, self.cfg.url, resp.status),
+            );
         }
         let cap = max.min(self.cfg.max_lines);
         let mut out = Vec::with_capacity(cap.min(1024));
@@ -362,7 +475,7 @@ impl SourceReader for HttpReader {
                 break;
             }
         }
-        out
+        Releve::lu(out)
     }
 
     fn cursor(&self) -> Cursor { Cursor(None) }
@@ -486,19 +599,19 @@ mod tests {
         // from_start=true -> lit tout depuis le début.
         let mut r = FileReader::new(file_cfg(&p, None, true), "h".into(), Parser::None);
         r.open(Cursor(None));
-        let batch = r.next_batch(100);
+        let batch = r.next_batch(100).records;
         assert_eq!(batch.len(), 2, "les 2 lignes existantes sont lues");
         assert_eq!(batch[0].raw, "ligne une");
         let cur = r.cursor();
         assert!(cur.0.is_some(), "curseur = offset d'octet");
         // rien de neuf -> lot vide.
-        assert!(r.next_batch(100).is_empty());
+        assert!(r.next_batch(100).records.is_empty());
         // append -> seule la nouvelle ligne est lue, curseur repris.
         {
             let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
             writeln!(f, "ligne trois").unwrap();
         }
-        let batch2 = r.next_batch(100);
+        let batch2 = r.next_batch(100).records;
         assert_eq!(batch2.len(), 1);
         assert_eq!(batch2[0].raw, "ligne trois");
         // mapping event via to_event.
@@ -522,12 +635,12 @@ mod tests {
         // from_start=false (défaut tail) -> l'historique est ignoré, seul le nouveau est lu.
         let mut r = FileReader::new(file_cfg(&p, None, false), "h".into(), Parser::None);
         r.open(Cursor(None));
-        assert!(r.next_batch(100).is_empty(), "tail : historique ignoré");
+        assert!(r.next_batch(100).records.is_empty(), "tail : historique ignoré");
         {
             let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
             writeln!(f, "neuf").unwrap();
         }
-        let b = r.next_batch(100);
+        let b = r.next_batch(100).records;
         assert_eq!(b.len(), 1);
         assert_eq!(b[0].raw, "neuf");
         let _ = std::fs::remove_file(&path);
@@ -541,7 +654,7 @@ mod tests {
             Parser::None,
         );
         r.open(Cursor(None));
-        assert!(r.next_batch(100).is_empty(), "fichier absent -> aucun event, pas de panic");
+        assert!(r.next_batch(100).records.is_empty(), "fichier absent -> aucun event, pas de panic");
         assert_eq!(r.wire(), Wire::Events);
     }
 
@@ -566,11 +679,11 @@ mod tests {
         };
         let mut r = CommandReader::new(cfg, "h".into(), Parser::None);
         r.open(Cursor(None));
-        let batch = r.next_batch(100);
+        let batch = r.next_batch(100).records;
         assert_eq!(batch.len(), 2, "2 lignes stdout -> 2 records");
         assert_eq!(batch[0].raw, "a");
         // interval non écoulé -> 2e appel vide (cadence respectée).
-        assert!(r.next_batch(100).is_empty(), "interval non écoulé -> pas de ré-exécution");
+        assert!(r.next_batch(100).records.is_empty(), "interval non écoulé -> pas de ré-exécution");
         let ev = r.to_event(&batch[1]).unwrap();
         assert_eq!(ev.source, "echosrc");
         assert_eq!(ev.message, "b");

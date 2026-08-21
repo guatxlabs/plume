@@ -40,7 +40,9 @@ read_log() {
   esac
 }
 
-raw=$(read_log) || plume_unavailable mail missing-source "source de log mail illisible (PLUME_MAIL_SRC=$MAILSRC) : ni fichier lisible, ni pod joignable"
+# S36 — meme distinction, dite avec le mot de la famille (cf. `web.sh`) : le routage etait deja le
+# bon, la primitive y ajoute le rejet des marqueurs en attente.
+raw=$(read_log) || plume_lecture_echouee mail source_illisible "source de log mail illisible (PLUME_MAIL_SRC=$MAILSRC) : ni fichier lisible, ni pod joignable"
 [ -n "$raw" ] || plume_exit_nodata
 
 now=$(date +%s)

@@ -445,19 +445,73 @@ impl Baseline {
         Self { map: BTreeMap::new(), dirty: false }
     }
 
-    /// Charge depuis un fichier JSON. Absent/corrompu -> baseline vide (traitée comme 1er run).
-    pub fn load(path: &Path) -> Self {
-        let mut b = Baseline::new();
-        if let Ok(s) = std::fs::read_to_string(path) {
-            if let Ok(Value::Object(o)) = serde_json::from_str::<Value>(&s) {
-                for (k, v) in o {
-                    if let Some(m) = meta_from_json(&v) {
-                        b.map.insert(k, m);
-                    }
+    /// LA RÉFÉRENCE, LUE OU AVOUÉE — jamais remplacée en silence par une page blanche (`S36`).
+    ///
+    /// LE DÉFAUT FERMÉ ICI, ET C'EST LE PLUS COÛTEUX DE CETTE SURFACE. L'ancienne forme disait
+    /// « absent/corrompu -> baseline vide (traitée comme 1er run) », et le 1er run SÈME EN SILENCE :
+    /// aucun événement n'est émis, l'état courant du disque DEVIENT la référence. Une référence
+    /// devenue illisible — droits changés, fichier tronqué par un arrêt brutal, contenu réécrit —
+    /// effaçait donc d'un coup TOUT ce qui avait été modifié depuis la dernière référence valide, et
+    /// le faisait sans un mot. Un attaquant qui touche à la référence supprime ainsi la détection de
+    /// ses propres modifications ; et il n'a même pas besoin de la lire ni de la comprendre, il lui
+    /// suffit de la casser.
+    ///
+    /// TROIS CAS, ET LE PREMIER DOIT RESTER INTACT :
+    ///   * fichier ABSENT -> `Lue` d'une référence vide. C'est un VRAI premier passage (installation
+    ///     neuve, source ajoutée) et il doit continuer de semer sans bruit — sans ce bras, chaque
+    ///     déploiement lèverait un aveu, et la correction produirait le défaut symétrique ;
+    ///   * fichier présent mais NON LISIBLE (droits, E/S) -> `Illisible` avec la cause système ;
+    ///   * fichier présent, LU, mais dont la forme n'est pas comprise -> `Illisible{forme_inconnue}`.
+    ///     La distinction se répare différemment : l'une par des droits, l'autre en repartant d'une
+    ///     référence neuve — décidé par un opérateur, pas par le lecteur.
+    pub fn load(path: &Path) -> crate::lisibilite::Lecture<Self> {
+        use crate::lisibilite::{cause_io, Lecture, CAUSE_FORME_INCONNUE};
+        let texte = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            // Une référence qui n'a jamais existé est un vrai premier passage.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Lecture::Lue(Baseline::new()),
+            Err(e) => {
+                return Lecture::Illisible {
+                    cause: cause_io(&e),
+                    detail: format!("{} : {e}", path.display()),
                 }
             }
+        };
+        let Ok(Value::Object(o)) = serde_json::from_str::<Value>(&texte) else {
+            return Lecture::Illisible {
+                cause: CAUSE_FORME_INCONNUE,
+                detail: format!(
+                    "{} : présent et lu, mais ce n'est pas une référence d'intégrité ({} octets)",
+                    path.display(),
+                    texte.len()
+                ),
+            };
+        };
+        let mut b = Baseline::new();
+        let mut refusees = 0usize;
+        for (k, v) in o {
+            match meta_from_json(&v) {
+                Some(m) => {
+                    b.map.insert(k, m);
+                }
+                // Une entrée dont la forme n'est pas comprise ne peut pas être comparée : la sauter
+                // rendrait une référence PLUS PETITE que la vraie, donc des « créations » fausses et
+                // des modifications invisibles. Une référence partielle n'est pas une référence.
+                None => refusees += 1,
+            }
         }
-        b
+        if refusees > 0 {
+            return Lecture::Illisible {
+                cause: CAUSE_FORME_INCONNUE,
+                detail: format!(
+                    "{} : {refusees} entrée(s) de référence illisibles sur {} — une référence \
+                     partielle produirait de fausses créations et masquerait de vraies modifications",
+                    path.display(),
+                    b.map.len() + refusees
+                ),
+            };
+        }
+        Lecture::Lue(b)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -600,6 +654,11 @@ pub struct FimReader {
     over_cap: std::collections::HashSet<String>,
     /// Instant du dernier rescan complet FORCÉ -> borne la cadence des marches récursives (fix #4).
     last_rescan: Option<std::time::Instant>,
+    /// `S36` — L'INCAPACITÉ ÉTABLIE À L'INITIALISATION, à ré-affirmer à chaque lot tant qu'elle dure :
+    /// référence illisible, racine annoncée injoignable, aucun chemin configuré. Elle est COLLANTE
+    /// parce que la condition l'est : un opérateur doit agir pour qu'elle cesse. Le cycle appelant la
+    /// publie par le canal d'indisponibilité, où elle est dédoublonnée à l'heure.
+    incapacite: Option<(&'static str, &'static str, String)>,
 }
 
 /// Plafond dur du set `over_cap` (fix #5) et du map `last_emit` (fix #3) — anti-OOM si un attaquant fait
@@ -638,6 +697,7 @@ impl FimReader {
             last_emit: std::collections::HashMap::new(),
             over_cap: std::collections::HashSet::new(),
             last_rescan: None,
+            incapacite: None,
         }
     }
 
@@ -666,6 +726,7 @@ impl FimReader {
             last_emit: std::collections::HashMap::new(),
             over_cap: std::collections::HashSet::new(),
             last_rescan: None,
+            incapacite: None,
         }
     }
 
@@ -681,26 +742,87 @@ impl FimReader {
         let configured: Vec<PathBuf> = self.cfg.paths.iter().map(PathBuf::from).collect();
         if configured.is_empty() {
             self.inert = true;
-            eprintln!("[fim:{}] aucune `paths` -> source inerte (mode 0)", self.cfg.id);
+            // Une source d'intégrité qui ne surveille RIEN est une source déclarée pour rien : c'est
+            // un réglage manquant, pas un calme. Elle le dit au lieu de se taire pour toujours.
+            self.incapacite = Some((
+                crate::lisibilite::RAISON_CONFIG_ABSENTE,
+                crate::lisibilite::CAUSE_SOURCE_ABSENTE,
+                format!("[fim:{}] aucune `paths` déclarée : cette source ne surveillera rien", self.cfg.id),
+            ));
             return;
         }
 
         // Canonicalise chaque racine (résout les symlinks des racines mêmes -> confinement stable).
+        // UNE RACINE ANNONCÉE ET INJOIGNABLE EST UN TROU DE COUVERTURE, pas un détail de démarrage :
+        // la configuration promet de surveiller ce chemin, et il sort de la surveillance en silence.
+        let mut racines_perdues: Vec<String> = Vec::new();
         for p in &configured {
             match std::fs::canonicalize(p) {
                 Ok(c) => self.roots.push(c),
-                Err(e) => eprintln!("[fim:{}] racine ignorée {} : {e}", self.cfg.id, p.display()),
+                Err(e) => racines_perdues.push(format!("{} ({e})", p.display())),
             }
         }
         if self.roots.is_empty() {
             self.inert = true;
-            eprintln!("[fim:{}] aucune racine valide -> source inerte", self.cfg.id);
+            self.incapacite = Some((
+                crate::lisibilite::RAISON_SOURCE_ABSENTE,
+                crate::lisibilite::CAUSE_SOURCE_ABSENTE,
+                format!(
+                    "[fim:{}] aucune des {} racine(s) annoncée(s) n'est joignable : {}",
+                    self.cfg.id,
+                    configured.len(),
+                    racines_perdues.join(" ; ")
+                ),
+            ));
             return;
         }
+        if !racines_perdues.is_empty() {
+            self.warned_cap = true; // marque les events `fim_coverage=partial`
+            self.incapacite = Some((
+                crate::lisibilite::RAISON_SOURCE_ABSENTE,
+                crate::lisibilite::CAUSE_SOURCE_ABSENTE,
+                format!(
+                    "[fim:{}] couverture PARTIELLE : {} racine(s) annoncée(s) sur {} sont injoignables : {}",
+                    self.cfg.id,
+                    racines_perdues.len(),
+                    configured.len(),
+                    racines_perdues.join(" ; ")
+                ),
+            ));
+        }
 
-        // Baseline : charge l'existante, sinon 1er run -> seed silencieux (aucun event de démarrage).
-        self.baseline = Baseline::load(&self.baseline_path);
+        // LA RÉFÉRENCE : lue, ou avouée. Un fichier ABSENT est un vrai premier passage et sème en
+        // silence, comme avant. Un fichier PRÉSENT et illisible ne l'est PAS : le re-semer en silence
+        // effacerait tout ce qui a changé depuis la dernière référence valide.
+        let mut reference_perdue: Option<String> = None;
+        self.baseline = match Baseline::load(&self.baseline_path) {
+            crate::lisibilite::Lecture::Lue(b) => b,
+            crate::lisibilite::Lecture::Illisible { cause, detail } => {
+                // CE QUI ARRIVE À L'ANCIENNE RÉFÉRENCE, ET POURQUOI. Elle n'est pas mise de côté :
+                // une seule voie publie dans ce paquet (`durable::publier`), et une garde du crate
+                // refuse tout autre renommage — l'affaiblir pour ranger un fichier coûterait plus
+                // que ce que ce rangement rapporte. La nouvelle référence l'écrasera donc à la
+                // prochaine publication, ce qui est aussi la seule façon de se remettre d'un
+                // fichier corrompu ; si l'illisibilité venait des DROITS, la publication échouera de
+                // la même façon et l'aveu se ré-affirmera. La perte est dite, pas masquée.
+                reference_perdue = Some(format!(
+                    "[fim:{}] référence d'intégrité NON LISIBLE ({cause}) : {detail}. Une nouvelle \
+                     référence est semée : tout ce qui a changé depuis la dernière référence valide \
+                     est ABSORBÉ et ne sera PAS signalé.",
+                    self.cfg.id
+                ));
+                self.incapacite = Some((
+                    crate::lisibilite::RAISON_SOURCE_ABSENTE,
+                    cause,
+                    reference_perdue.clone().unwrap_or_default(),
+                ));
+                Baseline::new()
+            }
+        };
         let first_run = self.baseline.is_empty();
+        if let Some(m) = &reference_perdue {
+            eprintln!("{m}");
+        }
 
         // Backend noyau (Linux fanotify->inotify ; sinon None -> repli scan planifié).
         self.backend = build_backend(&self.cfg);
@@ -737,8 +859,25 @@ impl FimReader {
     /// Parcours initial des racines -> remplit la baseline SANS émettre (état de référence).
     fn seed_baseline(&mut self) {
         let mut files = Vec::new();
+        let mut illisibles = 0usize;
         for r in &self.roots.clone() {
-            walk_root(r, self.cfg.recursive, self.cfg.max_files, &self.cfg.exclude, &mut files);
+            illisibles +=
+                walk_root(r, self.cfg.recursive, self.cfg.max_files, &self.cfg.exclude, &mut files);
+        }
+        // UNE RÉFÉRENCE SEMÉE SUR UN PARCOURS PARTIEL EST UNE FAUSSE RÉFÉRENCE : les fichiers qu'on
+        // n'a pas su lire n'y entrent pas, et leur première lecture réussie ressortira en « créé »
+        // alors qu'ils étaient là depuis toujours. Le trou est donc dit dès le semis.
+        if illisibles > 0 && self.incapacite.is_none() {
+            self.warned_cap = true;
+            self.incapacite = Some((
+                crate::lisibilite::RAISON_SOURCE_ABSENTE,
+                crate::lisibilite::CAUSE_SOURCE_REFUSEE,
+                format!(
+                    "[fim:{}] semis de référence sur un parcours PARTIEL : {illisibles} point(s) de \
+                     l'arborescence n'ont pas pu être lus",
+                    self.cfg.id
+                ),
+            ));
         }
         for p in files {
             if let Some(m) = self.probe.probe(&p) {
@@ -784,9 +923,12 @@ impl FimReader {
 
     /// Collecte les chemins candidats de ce cycle (events backend + rescan si overflow/repli scan),
     /// filtrés (allowlist + exclude), dédupliqués, bornés à `max`.
-    fn collect_candidates(&mut self, max: usize) -> Vec<PathBuf> {
+    fn collect_candidates(&mut self, max: usize) -> (Vec<PathBuf>, usize) {
         use std::collections::BTreeSet;
         let mut set: BTreeSet<PathBuf> = BTreeSet::new();
+        // Points de l'arborescence que le parcours n'a pas su lire pendant CE cycle. Chacun retire un
+        // fichier, ou un sous-arbre entier, de la surveillance — sans erreur et sans avertissement.
+        let mut illisibles = 0usize;
         let mut need_rescan = self.backend.is_none(); // pas de backend -> scan planifié systématique
 
         if let Some(b) = &mut self.backend {
@@ -799,7 +941,13 @@ impl FimReader {
                 // les fichiers déjà créés dedans avant la pose du watch (fenêtre de course).
                 if ev.kind == FsEventKind::DirCreated {
                     let mut kids = Vec::new();
-                    walk_root(&ev.path, self.cfg.recursive, self.cfg.max_files, &self.cfg.exclude, &mut kids);
+                    illisibles += walk_root(
+                        &ev.path,
+                        self.cfg.recursive,
+                        self.cfg.max_files,
+                        &self.cfg.exclude,
+                        &mut kids,
+                    );
                     for k in kids {
                         if path_allowed(&k, &self.roots, &self.cfg.exclude) {
                             set.insert(k);
@@ -830,7 +978,13 @@ impl FimReader {
             // Union(fichiers présents, chemins baseline) -> capte aussi les SUPPRESSIONS.
             for r in &self.roots.clone() {
                 let mut files = Vec::new();
-                walk_root(r, self.cfg.recursive, self.cfg.max_files, &self.cfg.exclude, &mut files);
+                illisibles += walk_root(
+                    r,
+                    self.cfg.recursive,
+                    self.cfg.max_files,
+                    &self.cfg.exclude,
+                    &mut files,
+                );
                 for f in files {
                     set.insert(f);
                 }
@@ -844,7 +998,7 @@ impl FimReader {
             }
         }
 
-        set.into_iter().take(max).collect()
+        (set.into_iter().take(max).collect(), illisibles)
     }
 }
 
@@ -865,13 +1019,34 @@ impl SourceReader for FimReader {
         }
     }
 
-    fn next_batch(&mut self, max: usize) -> Vec<NativeRecord> {
+    /// `S36` — UNE SURVEILLANCE D'INTÉGRITÉ QUI NE COUVRE PAS CE QU'ELLE ANNONCE DOIT LE DIRE.
+    ///
+    /// Ce lecteur rendait `Vec::new()` dans les trois cas où il ne pouvait RIEN garantir : aucune
+    /// racine configurée, aucune racine joignable, et — le plus grave — référence d'intégrité
+    /// devenue illisible, re-semée en silence. Un lot vide est ici la valeur la PLUS rassurante :
+    /// « aucun fichier surveillé n'a changé ». Elle était publiée précisément quand plus rien n'était
+    /// surveillé. Le verdict de lisibilité accompagne désormais le lot, et le parcours qui n'a pas pu
+    /// tout lire l'avoue AUSSI — un parcours partiel ne voit pas les modifications qu'il n'atteint pas.
+    fn next_batch(&mut self, max: usize) -> crate::lisibilite::Releve {
+        use crate::lisibilite::Releve;
         self.ensure_init();
-        if self.inert || max == 0 {
-            return Vec::new();
+        if max == 0 {
+            return Releve::rien_a_faire();
+        }
+        if self.inert {
+            return match &self.incapacite {
+                Some((raison, cause, detail)) => Releve::illisible(raison, cause, detail.clone()),
+                // Inerte sans incapacité établie ne devrait pas exister : `ensure_init` pose toujours
+                // l'une avec l'autre. Le cas est traité plutôt que supposé impossible.
+                None => Releve::illisible(
+                    crate::lisibilite::RAISON_CONFIG_ABSENTE,
+                    crate::lisibilite::CAUSE_SOURCE_ABSENTE,
+                    format!("[fim:{}] source inerte sans cause établie", self.cfg.id),
+                ),
+            };
         }
         let ts = super::now_secs();
-        let candidates = self.collect_candidates(max);
+        let (candidates, illisibles) = self.collect_candidates(max);
         let mut out = Vec::new();
         // Fix #6 : couverture DÉGRADÉE (plafond max_files déjà atteint OU plafond watches/marks noyau)
         // -> on marque les events `fim_coverage=partial` pour que la troncature soit VISIBLE côté SOC,
@@ -943,7 +1118,26 @@ impl SourceReader for FimReader {
         }
         self.sweep_last_emit(); // fix #3 : borne la croissance de last_emit
         self.baseline.save(&self.baseline_path);
-        out
+        // L'incapacité établie au démarrage est COLLANTE : elle est ré-affirmée à chaque lot tant
+        // qu'un opérateur n'a pas agi (le central la dédoublonne à l'heure). Le parcours partiel de
+        // CE cycle, lui, ne vaut que pour ce cycle.
+        if let Some((raison, cause, detail)) = self.incapacite.clone() {
+            return Releve::partiel(out, raison, cause, detail);
+        }
+        if illisibles > 0 {
+            return Releve::partiel(
+                out,
+                crate::lisibilite::RAISON_SOURCE_ABSENTE,
+                crate::lisibilite::CAUSE_SOURCE_REFUSEE,
+                format!(
+                    "[fim:{}] {illisibles} point(s) de l'arborescence surveillée n'ont pas pu être \
+                     lus ce cycle : ce qui s'y trouve n'est PAS surveillé, et aucune modification \
+                     n'y sera signalée",
+                    self.cfg.id
+                ),
+            );
+        }
+        Releve::lu(out)
     }
 
     fn cursor(&self) -> Cursor {
@@ -992,16 +1186,27 @@ fn sanitize_id(id: &str) -> String {
 
 /// Parcours récursif d'une racine (borné par `max_files`), SANS suivre les symlinks (anti-évasion) et
 /// en élaguant les répertoires exclus tôt. Ajoute les FICHIERS réguliers retenus à `out`.
-pub fn walk_root(root: &Path, recursive: bool, max_files: usize, exclude: &[String], out: &mut Vec<PathBuf>) {
+///
+/// REND LE NOMBRE DE POINTS QU'IL N'A PAS PU LIRE (`S36`). Quatre replis rendaient ce parcours
+/// SILENCIEUSEMENT partiel : un `stat` de répertoire en échec, un `read_dir` refusé, une entrée
+/// illisible en cours d'énumération (`flatten()`), et un `stat` d'entrée en échec. Chacun retire un
+/// fichier — ou un SOUS-ARBRE entier — de la surveillance, sans erreur et sans avertissement : la
+/// couverture annoncée par la configuration cesse d'être la couverture réelle. Le parcours continue
+/// (une branche refusée ne doit pas faire perdre les autres), mais il COMPTE, et l'appelant avoue.
+pub fn walk_root(root: &Path, recursive: bool, max_files: usize, exclude: &[String], out: &mut Vec<PathBuf>) -> usize {
     // Pile explicite -> pas de récursion profonde (arbres hostiles). Borne dure via max_files.
     let mut stack = vec![root.to_path_buf()];
+    let mut illisibles = 0usize;
     while let Some(dir) = stack.pop() {
         if out.len() >= max_files {
-            return;
+            return illisibles;
         }
         let md = match std::fs::symlink_metadata(&dir) {
             Ok(m) => m,
-            Err(_) => continue,
+            Err(_) => {
+                illisibles += 1; // un sous-arbre entier peut disparaître ici
+                continue;
+            }
         };
         if md.file_type().is_symlink() {
             continue; // ne JAMAIS suivre un lien (dir ou fichier)
@@ -1022,16 +1227,29 @@ pub fn walk_root(root: &Path, recursive: bool, max_files: usize, exclude: &[Stri
         }
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
-            Err(_) => continue,
-        };
-        for ent in entries.flatten() {
-            if out.len() >= max_files {
-                return;
+            Err(_) => {
+                illisibles += 1; // tout le contenu de ce répertoire sort de la surveillance
+                continue;
             }
+        };
+        for ent in entries {
+            if out.len() >= max_files {
+                return illisibles;
+            }
+            let ent = match ent {
+                Ok(e) => e,
+                Err(_) => {
+                    illisibles += 1;
+                    continue;
+                }
+            };
             let p = ent.path();
             let emd = match std::fs::symlink_metadata(&p) {
                 Ok(m) => m,
-                Err(_) => continue,
+                Err(_) => {
+                    illisibles += 1;
+                    continue;
+                }
             };
             if emd.file_type().is_symlink() {
                 continue;
@@ -1048,6 +1266,7 @@ pub fn walk_root(root: &Path, recursive: bool, max_files: usize, exclude: &[Stri
             }
         }
     }
+    illisibles
 }
 
 #[cfg(test)]

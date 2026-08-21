@@ -51,10 +51,21 @@ if [ -s "$upd" ]; then
   _led=$(mktemp "$STATE_DIR/.imgdrift.led.XXXXXX")
   _keys=$(mktemp "$STATE_DIR/.imgdrift.keys.XXXXXX")
   awk -F"$TAB" '{ print $1 "\t" }' "$upd" > "$_keys"
-  grep -vF -f "$_keys" "$SEEN" > "$_led" 2>/dev/null || true
-  cat "$upd" >> "$_led"
+  # S36 — LE CODE DE RETOUR EST LU, ET SES DEUX SENS SONT DISTINGUES. `grep` rend 1 quand il ne
+  # garde AUCUNE ligne (cas normal : toutes les images du registre sont remplacees) et >=2 sur
+  # ERREUR (registre illisible). `|| true` les confondait : sur erreur, le registre reconstruit ne
+  # contenait plus que les nouveautes, les digests deja connus etaient oublies, et la derive
+  # suivante sur ces images-la repassait en silence pour une simple mise en reference.
+  _reg_rc=0
+  grep -vF -f "$_keys" "$SEEN" > "$_led" 2>/dev/null || _reg_rc=$?
   rm -f "$_keys"
-  state_stage_file "$_led" "$SEEN"
+  if [ "$_reg_rc" -le 1 ]; then
+    cat "$upd" >> "$_led"
+    state_stage_file "$_led" "$SEEN"
+  else
+    rm -f "$_led"
+    plume_lecture_partielle update source_illisible "registre des digests deja vus illisible : il N'EST PAS reconstruit, les images seront reexaminees au passage suivant"
+  fi
 fi
 rm -f "$upd"
 [ -z "$events" ] && plume_exit_nodata

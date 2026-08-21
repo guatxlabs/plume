@@ -44,17 +44,33 @@ first_img=0; [ -f "$IMG_STATE" ] || first_img=1
 first_ctr=0; [ -f "$CTR_STATE" ] || first_ctr=1
 
 # IMAGES (table, sans jq) : colonnes <repo> <tag> <image-id> <size> ; on saute l'entete.
-imgs_f=$(mktemp)
-$CRICTL images 2>/dev/null | awk 'NR>1 && $3!="" {print $3 "\t image: " $1 ":" $2}' > "$imgs_f" || true
-process_file "$imgs_f" "$IMG_STATE" "$first_img" 1 image
-rm -f "$imgs_f"
+# S36 — LE VERDICT DU TUBE ETAIT CELUI D'`awk`, qui reussit sur une entree vide : un runtime qui ne
+# repond pas rendait le meme inventaire VIDE qu'un hote sans aucune image. Le registre n'enregistre
+# que ce qui a ete lu, donc rien n'etait acquitte a tort — mais l'aveuglement etait indiscernable du
+# calme. L'interrogation et le filtre sont separes, et l'echec est dit.
+imgs_f=$(mktemp); imgs_raw=$(mktemp)
+# shellcheck disable=SC2086  ($CRICTL = binaire eventuellement en deux mots ; expansion voulue)
+if $CRICTL images > "$imgs_raw" 2>/dev/null; then
+  awk 'NR>1 && $3!="" {print $3 "\t image: " $1 ":" $2}' "$imgs_raw" > "$imgs_f"
+  process_file "$imgs_f" "$IMG_STATE" "$first_img" 1 image
+else
+  plume_lecture_partielle containerd source_illisible "inventaire des images du runtime non lu : aucune image n'est marquee « deja vue », l'inventaire sera relu au passage suivant"
+fi
+rm -f "$imgs_f" "$imgs_raw"
 
 # CONTENEURS (bonus, seulement si jq) : id + name + pod + image + state
 if command -v jq >/dev/null 2>&1; then
-  ctrs_f=$(mktemp)
-  $CRICTL ps -a -o json 2>/dev/null | jq -r '.containers[]? | [.id, "conteneur: " + (.metadata.name // "?") + " pod=" + (.labels["io.kubernetes.pod.name"] // "-") + " image=" + (.image.image // "?") + " (" + (.state // "?") + ")"] | @tsv' > "$ctrs_f" 2>/dev/null || true
-  process_file "$ctrs_f" "$CTR_STATE" "$first_ctr" 1 conteneur
-  rm -f "$ctrs_f"
+  ctrs_f=$(mktemp); ctrs_raw=$(mktemp)
+  # S36 — meme separation que pour les images : le verdict lu etait celui de `jq`.
+  # shellcheck disable=SC2086  ($CRICTL = binaire eventuellement en deux mots ; expansion voulue)
+  if $CRICTL ps -a -o json > "$ctrs_raw" 2>/dev/null; then
+    jq -r '.containers[]? | [.id, "conteneur: " + (.metadata.name // "?") + " pod=" + (.labels["io.kubernetes.pod.name"] // "-") + " image=" + (.image.image // "?") + " (" + (.state // "?") + ")"] | @tsv' < "$ctrs_raw" > "$ctrs_f" 2>/dev/null \
+      || plume_lecture_partielle containerd forme_inconnue "inventaire des conteneurs recu mais non exploitable : aucun conteneur n'est marque « deja vu »"
+    process_file "$ctrs_f" "$CTR_STATE" "$first_ctr" 1 conteneur
+  else
+    plume_lecture_partielle containerd source_illisible "inventaire des conteneurs non lu : aucun conteneur n'est marque « deja vu », l'inventaire sera relu au passage suivant"
+  fi
+  rm -f "$ctrs_f" "$ctrs_raw"
 fi
 
 [ -z "$events" ] && plume_exit_nodata

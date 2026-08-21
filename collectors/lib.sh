@@ -216,9 +216,14 @@ state_write() {
 # COMMENT L'ORDRE EST TENU — PAR CONSTRUCTION, PAS PAR CONVENTION. Un capteur n'a PAS les deux gestes
 # à sa disposition : il MET EN ATTENTE (`state_stage`, `state_stage_append`, `state_stage_file`), il
 # n'écrit pas. Les SEULS points d'écriture sont `spool_write_then_ack` / `spool_publish_then_ack`
-# (publient PUIS écrivent) et `plume_exit_nodata` (rien n'a été publié, donc rien n'est acquitté, donc
-# les marqueurs en attente sont sans danger). L'ordre est INTERNE à ces fonctions, donc un appelant ne
-# peut pas s'y tromper. C'est la forme déjà retenue côté Windows (`Stage-Watermark` / `Complete-Run`)
+# (publient PUIS écrivent) et `plume_exit_nodata`. L'ordre est INTERNE à ces fonctions, donc un
+# appelant ne peut pas s'y tromper.
+# LA JUSTIFICATION DONNÉE ICI POUR `plume_exit_nodata` — « rien n'a été publié, donc rien n'est
+# acquitté, donc les marqueurs en attente sont sans danger » — ÉTAIT FAUSSE POUR UNE MOITIÉ DES
+# MARQUEURS, et `S36` l'a refermée : elle ne vaut que pour un marqueur calculé À PARTIR de ce qui a
+# été lu. Un marqueur qui ne doit rien à la lecture (offset pris sur la taille, repère daté, instant
+# du passage) est en attente AVANT elle, et cette sortie l'écrit alors même que la lecture a échoué.
+# Le raisonnement complet, et la porte de sortie qui manquait, sont à `plume_exit_nodata`. C'est la forme déjà retenue côté Windows (`Stage-Watermark` / `Complete-Run`)
 # et côté binaire d'agent (`CursorStore::save`, appelé seulement après ship+ack).
 # `.github/scripts/check_watermark_follows_publication.py` refuse toute écriture directe d'un marqueur
 # hors de cette bibliothèque, et NOMME le capteur fautif.
@@ -477,12 +482,94 @@ plume_disabled() {
 # zéro octet de plus, comportement inchangé. La fonction n'existe QUE pour porter un NOM : c'est ce nom
 # qui prouve à la relecture (et à la CI) que le silence est ici un CHOIX et non un oubli.
 #
-# ELLE ÉCRIT LES MARQUEURS EN ATTENTE, ET C'EST LE SEUL AUTRE ENDROIT QUI LE FASSE (S30). Sortir par
-# ici veut dire qu'AUCUNE enveloppe n'a été publiée ce passage : les marqueurs mis en attente
-# n'acquittent donc RIEN, et les écrire ne peut faire disparaître aucun événement. Sans ce commit, un
-# capteur incrémental qui ne trouve rien à signaler ne mémoriserait jamais sa progression et
-# re-scannerait la même tranche indéfiniment (`clamav`/`yara` relisent leur liste par `find -newer`).
+# ELLE ÉCRIT LES MARQUEURS EN ATTENTE, ET C'EST LE SEUL AUTRE ENDROIT QUI LE FASSE (S30). Sans ce
+# commit, un capteur incrémental qui ne trouve rien à signaler ne mémoriserait jamais sa progression
+# et re-scannerait la même tranche indéfiniment (`clamav`/`yara` relisent leur liste par
+# `find -newer`).
+#
+# L'HYPOTHÈSE QUE `S30` AVAIT ÉCRITE ICI ÉTAIT VRAIE SUR UNE MOITIÉ DU DOMAINE SEULEMENT, ET C'EST
+# ELLE QUI A ROUVERT LE DÉFAUT QUE `S30` FERMAIT (S36). Elle disait : « sortir par ici veut dire
+# qu'AUCUNE enveloppe n'a été publiée, donc les marqueurs en attente n'acquittent RIEN ».
+#   VRAI pour un marqueur CALCULÉ À PARTIR DE CE QUI A ÉTÉ LU. Un curseur journald tiré de la
+#   dernière ligne obtenue n'existe pas tant que la lecture n'a pas abouti : il n'y a rien à mettre
+#   en attente, donc rien à écrire, donc rien à perdre.
+#   FAUX pour un marqueur dont la valeur ne doit RIEN à la lecture — un offset pris sur la TAILLE du
+#   fichier, un repère daté, l'instant du passage. Celui-là est en attente AVANT que la lecture
+#   n'aboutisse. Si elle échoue, le capteur n'a effectivement rien à signaler, il sort par ici, et
+#   cette sortie ACQUITTE une tranche qui n'a jamais été publiée. C'est mot pour mot la perte
+#   SILENCIEUSE que `S30` existait pour empêcher, réintroduite par la porte de sortie.
+#
+# CE QUI EST VRAI, ET C'EST LA SEULE FORMULATION À REPRENDRE : cette fonction ACQUITTE, et elle n'a
+# le droit d'être atteinte que lorsque la source a été LUE et s'est révélée vide. « La lecture n'a
+# pas abouti » n'est pas une sortie propre : c'est un ÉCHEC, il se dit, et il n'acquitte rien. C'est
+# `plume_lecture_echouee`, juste en dessous.
 plume_exit_nodata() { _plume_ack_commit; exit 0; }
+
+# =================================================================================================
+# « LA SOURCE ÉTAIT VIDE » N'EST PAS « JE N'AI PAS PU LA LIRE » (S36)
+# -------------------------------------------------------------------------------------------------
+# LE DÉFAUT. Un capteur incrémental met son marqueur en attente, tente sa lecture, et route l'échec
+# vers la même branche que le vide : `tail … 2>/dev/null || true`, puis « si c'est vide, rien à
+# signaler ». Les deux mots d'un tube qui a échoué et d'une source réellement calme sont le même mot
+# — la chaîne vide — et la sortie propre acquitte alors un offset que rien n'a jamais publié. Le
+# passage suivant repart APRÈS la tranche perdue : les événements ne reviendront jamais, et rien ne
+# les compte, puisque rien ne compte ce qui manque.
+#
+# CE N'EST PAS UN QUATRIÈME CAS DE LA PARTITION. C'est le cas (I) — INCAPACITÉ — survenu APRÈS la
+# mise en attente de marqueurs : même vocabulaire de `reason`, même sévérité, même canal d'aveu, et
+# donc la même alerte livrée. Ce qu'il y a EN PLUS est une seule garantie : JETER ce qui est en
+# attente, pour que la sortie ne puisse pas acquitter ce qu'elle n'a pas publié. La partition reste
+# fermée à trois cas.
+#
+# LA CAUSE SE DIT DANS LE VOCABULAIRE FERMÉ DÉJÀ POSÉ (`PLUME_CAUSES_MESURE`, S32/S33) et non en
+# prose : `source_absente`, `source_refusee`, `source_illisible`, `forme_inconnue`. Un capteur qui
+# lit un CHEMIN n'a pas à choisir — `plume_cause_lecture` dérive la cause de l'état du fichier.
+#
+# DEUX PORTES, PARCE QU'IL Y A DEUX SITUATIONS ET QU'UNE SEULE N'AURAIT PAS COUVERT LES DEUX :
+#   `plume_lecture_echouee`  — la lecture ratée était TOUTE la collecte du passage : on jette, on
+#                              avoue, on sort. Elle porte son propre `exit`, comme les trois autres.
+#   `plume_lecture_partielle`— le capteur a autre chose à publier (une autre source, un battement de
+#                              santé dont le silence lèverait une alerte MUET). Il avoue et
+#                              CONTINUE ; ce qui protège la tranche est qu'il n'a PAS mis en attente
+#                              le marqueur de la lecture ratée. C'est la forme d'`integrity`.
+# =================================================================================================
+
+# _plume_ack_abandonner — JETTE les marqueurs mis en attente, et les temporaires qu'ils désignaient.
+# PRIVÉE. Le seul appelant qui sort le fait juste après, si bien que remettre les variables à vide
+# pourrait passer pour superflu : c'est écrit quand même, parce qu'une garde peut alors MESURER la
+# propriété (« après un échec de lecture, plus rien n'est en attente ») au lieu de la supposer.
+_plume_ack_abandonner() {
+  while IFS="$_PLUME_TAB" read -r _ab_t _ab_f; do
+    [ -n "${_ab_t:-}" ] || continue
+    rm -f "$_ab_t"
+  done <<EOF
+$_plume_ack_fichiers
+EOF
+  _plume_ack_valeurs=""
+  _plume_ack_lignes=""
+  _plume_ack_fichiers=""
+}
+
+# plume_lecture_echouee <capteur> <cause> <détail> — cas (I) survenu pendant la collecte. Jette les
+# marqueurs en attente, avoue, sort 0. À appeler à l'endroit exact où le code de retour de la
+# lecture est encore lisible : un `| grep` ou un `|| true` interposé le remplace par le sien, et
+# c'est précisément ainsi que l'échec s'était déguisé en source vide.
+plume_lecture_echouee() {
+  _plume_ack_abandonner
+  plume_report_availability "$1" unavailable missing-source \
+    "LECTURE DE LA SOURCE IMPOSSIBLE ($(plume_cause_fermee "$2")) : aucun marqueur acquitté, la tranche sera relue au passage suivant. ${3:-}" \
+    2 2>/dev/null || true
+  exit 0
+}
+
+# plume_lecture_partielle <capteur> <cause> <détail> — même distinction, capteur PARTIELLEMENT
+# aveugle : il publie ce qu'il a et rend la main. Elle n'écrit ni ne jette rien — c'est l'appelant
+# qui, en s'abstenant de mettre le marqueur en attente, garantit que la tranche sera relue.
+plume_lecture_partielle() {
+  plume_report_availability "$1" unavailable missing-source \
+    "LECTURE PARTIELLE ($(plume_cause_fermee "$2")) : le marqueur correspondant N'AVANCE PAS, la tranche sera relue au passage suivant. ${3:-}" \
+    2 2>/dev/null || true
+}
 
 # ====================================================================================================
 # LE SECRET NE PASSE PAS PAR argv (P5.5-a).
@@ -587,6 +674,26 @@ plume_cause_mesure() {
   if [ -n "$_pcm" ]; then printf '%s' "$_pcm"; else printf 'forme_inconnue'; fi
 }
 
+# plume_cause_fermee <mot> — ramène <mot> dans l'ensemble fermé, `forme_inconnue` sinon. La borne de
+# cardinalité était écrite en ligne dans `plume_mesure_absente` ; elle est ici parce que `S36` lui a
+# donné un second appelant, et que deux endroits qui contraignent le même vocabulaire divergent.
+plume_cause_fermee() {
+  case " $PLUME_CAUSES_MESURE " in
+    *" $1 "*) printf '%s' "$1" ;;
+    *) printf 'forme_inconnue' ;;
+  esac
+}
+
+# plume_cause_lecture <chemin> — la cause à retenir quand la LECTURE de <chemin> a échoué : l'état du
+# fichier s'il l'explique, `source_illisible` sinon — la source est là, elle est ouvrable, et la
+# lecture a tout de même lâché (tube coupé, entrée/sortie, fichier remplacé sous le lecteur).
+# `plume_cause_mesure` conclut `forme_inconnue` dans ce dernier cas parce qu'elle parle du CONTENU
+# d'une mesure ; ici c'est l'ACCÈS qui a lâché, et le vocabulaire fermé portait déjà le mot.
+plume_cause_lecture() {
+  _pcl=$(plume_cause_source "$1")
+  if [ -n "$_pcl" ]; then printf '%s' "$_pcl"; else printf 'source_illisible'; fi
+}
+
 # plume_mesure_absente <clé> <cause> <détail> — enregistre qu'une mesure NE SERA PAS publiée, et
 # pourquoi. N'émet rien : l'aveu part en UNE fois (cf. `plume_mesures_avouer`), sans quoi un hôte dont
 # `/proc` est masqué produirait sept événements par passage pour un seul et même fait.
@@ -595,10 +702,7 @@ plume_cause_mesure() {
 # ramenée à `forme_inconnue` plutôt que de devenir une surface libre. Le `détail` (chemin tenté,
 # message du système) n'a lui AUCUNE borne : il ne vit que dans le texte de l'aveu, lu par un humain.
 plume_mesure_absente() {
-  case " $PLUME_CAUSES_MESURE " in
-    *" $2 "*) _pma_cause="$2" ;;
-    *) _pma_cause="forme_inconnue" ;;
-  esac
+  _pma_cause=$(plume_cause_fermee "$2")
   _plume_mesures_absentes="${_plume_mesures_absentes:-}${_plume_mesures_absentes:+ }$1=$_pma_cause"
   _plume_mesures_details="${_plume_mesures_details:-}${_plume_mesures_details:+ ; }$1 ($_pma_cause) : $3"
 }

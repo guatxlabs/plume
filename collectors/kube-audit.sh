@@ -30,7 +30,16 @@ case "$OFF" in ''|*[!0-9]*) OFF=0 ;; esac
 [ "$SIZE" -eq "$OFF" ] && plume_exit_nodata            # rien de neuf
 
 # Nouveau chunk (depuis l'offset), borné aux MAX dernières lignes (anti-flood 1er run).
-chunk=$(mktemp); tail -c +$((OFF + 1)) "$LOG" 2>/dev/null | tail -n "$MAX" > "$chunk" || true
+# S36 — LA LECTURE EST FAITE EN DEUX TEMPS PARCE QU'UN TUBE N'A QU'UN SEUL CODE DE RETOUR : celui de
+# sa DERNIÈRE commande. `tail -c | tail -n … || true` rendait donc le verdict du second `tail`, qui
+# réussit sur une entrée vide — l'échec du premier était invisible, l'offset était mis en attente
+# quand même, `events` sortait vide et la sortie « rien de neuf » acquittait la tranche perdue.
+brut=$(mktemp); chunk=$(mktemp)
+tail -c +$((OFF + 1)) "$LOG" 2>/dev/null > "$brut" \
+  || plume_lecture_echouee kube-audit "$(plume_cause_lecture "$LOG")" "$LOG : la tranche a partir de l'octet $((OFF + 1)) n'a pas pu etre lue"
+tail -n "$MAX" "$brut" > "$chunk" \
+  || plume_lecture_echouee kube-audit source_illisible "$LOG : la tranche lue n'a pas pu etre bornee aux $MAX dernieres lignes"
+rm -f "$brut"
 # S30 — l'offset est MIS EN ATTENTE ; il n'est ecrit qu'APRES la publication (le brut reste la trace
 # complete). Avant, il avancait des la lecture du chunk : une coupure avant le `spool_write` de fin
 # perdait la tranche. Cle `kaudit-<empreinte>-<seau 10 min>` -> le rejeu n'est absorbe que si le

@@ -34,7 +34,11 @@ read_log() {
   esac
 }
 
-raw=$(read_log) || plume_unavailable web missing-source "source de log web illisible (PLUME_WEB_SRC=$WEBSRC) : ni fichier lisible, ni pod joignable"
+# S36 — meme distinction, dite avec le mot de la famille : une lecture qui echoue n'est pas une
+# source vide. Le routage etait deja le bon ; `plume_lecture_echouee` y ajoute la seule garantie qui
+# manquait a la forme generique — JETER ce qui serait en attente, pour qu'aucune sortie ne puisse
+# acquitter ce qu'elle n'a pas publie.
+raw=$(read_log) || plume_lecture_echouee web source_illisible "source de log web illisible (PLUME_WEB_SRC=$WEBSRC) : ni fichier lisible, ni pod joignable"
 [ -n "$raw" ] || plume_exit_nodata
 umask 027
 tmp=$(mktemp "$SPOOL/.web.XXXXXX")

@@ -98,12 +98,18 @@ impl SourceReader for OsLogReader {
         self.cursor = cursor.0;
     }
 
-    fn next_batch(&mut self, max: usize) -> Vec<NativeRecord> {
+    /// `S36` — MÊME FIGURE QUE LE LECTEUR JOURNALD, MÊME REMÈDE. `log show` absent ou refusé, flux
+    /// coupé en cours de lot, code de retour jeté : trois chemins vers le lot vide, c'est-à-dire vers
+    /// « cet hôte n'a rien à dire ». Le statut n'est consulté que si le plafond du lot n'a PAS été
+    /// atteint (sinon c'est notre propre signal qu'on lirait comme un échec de la source).
+    fn next_batch(&mut self, max: usize) -> crate::lisibilite::Releve {
+        use crate::lisibilite::Releve;
         if max == 0 {
-            return Vec::new();
+            return Releve::rien_a_faire();
         }
         #[cfg(target_os = "macos")]
         {
+            use crate::lisibilite::{cause_io, CAUSE_SOURCE_ILLISIBLE, RAISON_DEPENDANCE_ABSENTE, RAISON_SOURCE_ABSENTE};
             use std::io::{BufRead, BufReader};
             use std::process::{Command, Stdio};
 
@@ -115,15 +121,29 @@ impl SourceReader for OsLogReader {
             {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("[oslog:{}] spawn `log` échoué : {e}", self.cfg.id);
-                    return Vec::new();
+                    return Releve::illisible(
+                        RAISON_DEPENDANCE_ABSENTE,
+                        cause_io(&e),
+                        format!("[oslog:{}] exécution de `log` impossible : {e}", self.cfg.id),
+                    )
                 }
             };
             let mut out = Vec::with_capacity(max.min(1024));
+            let mut interrompu: Option<String> = None;
             if let Some(stdout) = child.stdout.take() {
                 let reader = BufReader::new(stdout);
-                for line in reader.lines().map_while(Result::ok) {
-                    let line = line.trim().to_string();
+                for ligne in reader.lines() {
+                    let line = match ligne {
+                        Ok(l) => l.trim().to_string(),
+                        Err(e) => {
+                            interrompu = Some(format!(
+                                "[oslog:{}] flux de `log` interrompu après {} ligne(s) : {e}",
+                                self.cfg.id,
+                                out.len()
+                            ));
+                            break;
+                        }
+                    };
                     // `log show --style ndjson` peut préfixer/suffixer avec `[` / `]` selon la version.
                     if line.is_empty() || line == "[" || line == "]" {
                         continue;
@@ -136,17 +156,44 @@ impl SourceReader for OsLogReader {
                     }
                 }
             }
+            let plafond_atteint = out.len() >= max;
             let _ = child.kill();
-            let _ = child.wait();
+            let statut = child.wait();
             if let Some(last) = out.iter().rev().find_map(|r| r.cursor.clone()) {
                 self.cursor = Some(last);
             }
-            out
+            if let Some(detail) = interrompu {
+                return Releve::partiel(out, RAISON_SOURCE_ABSENTE, CAUSE_SOURCE_ILLISIBLE, detail);
+            }
+            if !plafond_atteint {
+                if let Ok(st) = statut {
+                    if !st.success() {
+                        return Releve::partiel(
+                            out,
+                            RAISON_SOURCE_ABSENTE,
+                            CAUSE_SOURCE_ILLISIBLE,
+                            format!(
+                                "[oslog:{}] `log show` a terminé en échec ({st}) — prédicat refusé, \
+                                 borne de reprise invalide ou accès interdit ; un lot vide ne veut alors \
+                                 pas dire que le journal l'est",
+                                self.cfg.id
+                            ),
+                        );
+                    }
+                }
+            }
+            Releve::lu(out)
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = max;
-            Vec::new()
+            // Ce lecteur n'est construit QUE sur macOS ; ailleurs c'est `UnsupportedReader` qui répond
+            // et qui avoue. Ce bras n'existe que pour la compilation croisée, et il ne prétend pas
+            // avoir lu.
+            Releve::illisible(
+                crate::lisibilite::RAISON_SOUS_SYSTEME_ABSENT,
+                crate::lisibilite::CAUSE_SOURCE_ABSENTE,
+                "l'unified log n'existe que sur macOS",
+            )
         }
     }
 
@@ -338,6 +385,6 @@ mod tests {
         r.open(Cursor(Some("2026-06-28 12:00:00Z".into())));
         assert_eq!(r.cursor(), Cursor(Some("2026-06-28 12:00:00Z".into())));
         #[cfg(not(target_os = "macos"))]
-        assert!(r.next_batch(5).is_empty());
+        assert!(r.next_batch(5).records.is_empty());
     }
 }

@@ -32,13 +32,26 @@ sevmap() { case "$1" in CRITICAL) echo 4 ;; HIGH) echo 3 ;; MEDIUM) echo 2 ;; LO
 
 # --- scan : on agrege "sev cve pkg inst fixed img" dans un fichier (pas de pipe vers la boucle) ---
 all=$(mktemp); ni=0
+# S36 — LE VERDICT DU TUBE ETAIT CELUI DE `awk`, qui reussit sur une entree vide : une image que le
+# scanner n'a pas pu examiner rendait exactement ce que rend une image SANS vulnerabilite. Le
+# registre « deja signale » n'enregistre que ce qui a ete vu, donc rien n'etait acquitte a tort —
+# mais un scan qui echoue en boucle se lisait « parc sain », et c'est le meme silence. Le scanner et
+# le filtre sont donc separes, et les images non examinees sont NOMMEES.
+_scan_ko=""
 while IFS= read -r img; do
   [ -z "$img" ] && continue
   ni=$((ni + 1)); [ "$ni" -gt "$MAXI" ] && break
-  trivy image --quiet --scanners vuln --severity "$SEV" --format template --template "$TPL" ${PLUME_TRIVY_OPTS:-} "$img" 2>/dev/null \
-    | awk -v img="$img" -F'\t' 'NF>=5 && $2!="" {print $0 "\t" img}' >> "$all" || true
+  tv=$(mktemp)
+  # shellcheck disable=SC2086  (PLUME_TRIVY_OPTS = liste d'options a eclater ; expansion voulue)
+  if trivy image --quiet --scanners vuln --severity "$SEV" --format template --template "$TPL" ${PLUME_TRIVY_OPTS:-} "$img" > "$tv" 2>/dev/null; then
+    awk -v img="$img" -F'\t' 'NF>=5 && $2!="" {print $0 "\t" img}' "$tv" >> "$all"
+  else
+    _scan_ko="$_scan_ko $img"
+  fi
+  rm -f "$tv"
 done < "$imgs_f"
 rm -f "$imgs_f"
+[ -n "$_scan_ko" ] && plume_lecture_partielle vuln source_illisible "images NON scannees ce passage (leurs CVE ne sont pas marquees « deja signalees », elles seront reexaminees) :$_scan_ko"
 
 events=""; ne=0
 while IFS="$TAB" read -r sev cve pkg inst fixed img; do

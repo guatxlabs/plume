@@ -38,10 +38,20 @@
 #      encore. TTL natif (cscli -e) RAFRAÎCHI si la fenêtre change (raccourcie
 #      OU allongée). Timer dead-man séparé (revert-expired) : nft+f2b n'ont PAS
 #      de TTL natif -> ils expirent via ce timer même si CE process meurt/OOM.
-#   6. FAIL-CLOSED (l'INVERSE du responder) : si /active échoue (injoignable /
-#      non-200) N cycles consécutifs -> REVERT-ALL. Une exemption = une défense
-#      BAISSÉE : son mode de panne DOIT être re-arm, jamais laisser-ouvert.
+#   6. FAIL-CLOSED : si /active échoue (injoignable / non-200) N cycles
+#      consécutifs -> REVERT-ALL. Une exemption = une défense BAISSÉE : son mode
+#      de panne DOIT être re-arm, jamais laisser-ouvert. (Sens INVERSE de celui
+#      du responder face au central : lui, ne rien appliquer laisse les défenses
+#      en place ; ici, ne rien faire les laisse BAISSÉES.)
 #      État (set appliqué) persisté sur disque -> revert survit aux redémarrages.
+#      ET L'ÉTAT D'ARMEMENT SE LIT LUI-MÊME FAIL-CLOSED, sans quoi la phrase
+#      ci-dessus est fausse : un compteur d'échecs qu'on ne sait plus lire ne
+#      franchit JAMAIS son seuil, et le REVERT-ALL promis ne part jamais. Les
+#      trois lectures d'état — compteur d'échecs, battement, set appliqué — ne
+#      valent donc PLUS zéro/vide quand elles échouent : elles valent « au
+#      seuil » (revert-all), « horloge indécidable » (aucune nouvelle exemption)
+#      et « ce qui est tenu n'est pas prouvé » (revert-all + découverte live).
+#      Un fichier ABSENT reste, lui, un vrai zéro : c'est le premier cycle.
 #   7. Robuste : set -euo pipefail, log journald (tag engagement-adapter),
 #      jamais de fuite du token, heartbeat dead-man + garde monotonique horloge.
 #
@@ -94,14 +104,82 @@ NOW="$(date +%s)"
 
 log() { printf '%s engagement-adapter: %s\n' "$(date -u +%FT%TZ)" "$*" >&2; }   # -> journald (SyslogIdentifier)
 
+# =============================================================================
+# LIRE SON PROPRE ÉTAT D'ARMEMENT — SANS VALEUR PAR DÉFAUT.
+# -----------------------------------------------------------------------------
+# L'en-tête de ce fichier écrit un invariant FAIL-CLOSED : « une exemption est une
+# défense BAISSÉE : son mode de panne DOIT être re-arm, jamais laisser-ouvert ».
+# Trois lectures faisaient l'INVERSE de cette phrase, et toujours de la même
+# façon : `x="$(cat "$F" 2>/dev/null || echo 0)"`. Le zéro est ici la valeur la
+# plus RASSURANTE de chaque série — compteur d'échecs à zéro = rien à ré-armer,
+# battement à zéro = aucune horloge suspecte — et une lecture qui échoue la
+# rendait telle quelle. Un compteur d'échecs qu'on ne sait plus lire ne franchit
+# JAMAIS son seuil : le REVERT-ALL promis ne se déclenchait plus, et les
+# exemptions tenaient indéfiniment pendant que le central était injoignable.
+#
+# VOCABULAIRE FERMÉ DES CAUSES — LES MÊMES MOTS que le démon et que les capteurs.
+# Réécrit ici et non emprunté : cet adaptateur est un ENFORCER et ne dépend
+# d'AUCUNE bibliothèque (cf. l'en-tête) ; une garde de CI vérifie qu'il n'en
+# dépend toujours pas. Quelques lignes de duplication valent mieux qu'une garde
+# affaiblie. La cardinalité est bornée par `cause_fermee`.
+EA_CAUSES="source_absente source_refusee source_illisible forme_inconnue"
+cause_fermee() {   # <cause> -> une cause de l'ensemble FERMÉ, jamais une surface libre
+  case " $EA_CAUSES " in
+    *" $1 "*) printf '%s' "$1" ;;
+    *)        printf 'forme_inconnue' ;;
+  esac
+}
+
+# etat_source <fichier> — l'état d'une source de fichier, en UN mot : `lisible`, ou
+# une cause de l'ensemble fermé. `-r` NE SUFFIT PAS : root le voit vrai sur un mode
+# 000, et un RÉPERTOIRE le passe — c'est l'ouverture réelle qui tranche.
+etat_source() {
+  if [ ! -e "$1" ]; then cause_fermee source_absente
+  elif [ ! -r "$1" ]; then cause_fermee source_refusee
+  elif ! cat "$1" >/dev/null 2>&1; then cause_fermee source_illisible
+  else printf 'lisible'; fi
+}
+
+# lecture_compteur <fichier> — un compteur d'ARMEMENT persisté, en TROIS cas et sans
+# valeur par défaut : `absent` (jamais écrit — c'est un VRAI zéro, premier cycle),
+# `<n>` (lu, entier), `illisible:<cause>` (l'appelant DOIT trancher). PARAMÉTRÉE sur
+# son fichier : exerçable contre une arborescence fabriquée, hors de toute machine.
+lecture_compteur() {
+  local _lc_etat _lc_val
+  _lc_etat="$(etat_source "$1")"
+  case "$_lc_etat" in
+    source_absente) printf 'absent'; return 0 ;;
+    lisible) ;;
+    *) printf 'illisible:%s' "$_lc_etat"; return 0 ;;
+  esac
+  _lc_val="$(cat "$1" 2>/dev/null || true)"
+  case "$_lc_val" in
+    ''|*[!0-9]*) printf 'illisible:%s' "$(cause_fermee forme_inconnue)"; return 0 ;;
+  esac
+  printf '%s' "$_lc_val"
+}
+
+# ÉTAT APPLIQUÉ : la liste de CE QUI DOIT ÊTRE RÉVOQUÉ. Lu UNE fois, ici, et tranché
+# à chaque endroit qui s'en sert — un `while ... done < "$APPLIED"` sur un fichier
+# non ouvrable interrompait le cycle AVANT la réconciliation, donc laissait les
+# exemptions en place : la panne de lecture devenait un laisser-ouvert silencieux.
+ETAT_APPLIQUE="$(etat_source "$APPLIED")"
+
 # ---- garde monotonique horloge (anti backward-skew, finding wall-clock) ------
 # Une horloge qui RECULE gonfle ttl (window_end - now) ET le TTL natif cscli
 # dans le même sens : sur recul suspect, on REFUSE d'ajouter/étendre (fail-safe
 # vers le revert) et on laisse les TTL natifs pré-recul tenir. Le fix complet
 # (référence de temps 'server_now' dans le payload /active) nécessite le daemon.
 SKEW_SUSPECT=0
-last_hb="$(cat "$HEARTBEAT" 2>/dev/null || echo 0)"; case "$last_hb" in ''|*[!0-9]*) last_hb=0 ;; esac
-if [ "$last_hb" -gt 0 ] && [ "$NOW" -lt "$((last_hb - SKEW_TOL))" ]; then
+last_hb=0
+etat_hb="$(lecture_compteur "$HEARTBEAT")"
+case "$etat_hb" in
+  absent)      last_hb=0 ;;                       # premier cycle : aucun passage antérieur, fait RÉEL
+  illisible:*) SKEW_SUSPECT=1
+               log "FAIL-CLOSED horloge: battement NON LU (${etat_hb#illisible:}) sur $HEARTBEAT -> un recul d'horloge devient INDÉCIDABLE ; aucune nouvelle exemption ni extension ce cycle, expiry/révocation maintenus" ;;
+  *)           last_hb="$etat_hb" ;;
+esac
+if [ "$SKEW_SUSPECT" = 0 ] && [ "$last_hb" -gt 0 ] && [ "$NOW" -lt "$((last_hb - SKEW_TOL))" ]; then
   SKEW_SUSPECT=1
   log "WARN horloge: NOW=$NOW < dernier heartbeat=$last_hb - ${SKEW_TOL}s (recul suspect) -> pas de nouvelle exemption/extension ce cycle (fail-safe); expiry/révocation maintenus"
 fi
@@ -325,11 +403,24 @@ exempt_remove() { nft_remove "$1"; f2b_remove "$1"; cs_remove "$1"; }         # 
 if [ "${1:-}" = "revert-expired" ]; then
   f2b_load_ledger
   reverted=0
-  while IFS=$'\t' read -r cidr eid wend; do
-    [ -n "$cidr" ] || continue
-    case "$wend" in ''|*[!0-9]*) wend=0 ;; esac
-    if [ "$wend" -le "$NOW" ]; then nft_remove "$cidr"; f2b_remove "$cidr"; reverted=$((reverted + 1)); fi
-  done < "$APPLIED"
+  if [ "$ETAT_APPLIQUE" = lisible ]; then
+    while IFS=$'\t' read -r cidr eid wend; do
+      [ -n "$cidr" ] || continue
+      case "$wend" in ''|*[!0-9]*) wend=0 ;; esac
+      if [ "$wend" -le "$NOW" ]; then nft_remove "$cidr"; f2b_remove "$cidr"; reverted=$((reverted + 1)); fi
+    done < "$APPLIED"
+  else
+    # FAIL-CLOSED. Sans cet état, aucune fenêtre n'est connue : on ne peut pas dire
+    # laquelle est écoulée. On révoque donc TOUT ce que la découverte live attribue à
+    # l'adaptateur (self-tag nft + ledger f2b). Coût si l'engagement est encore actif :
+    # UN cycle sans exemption, que la réconciliation déclarative repose d'elle-même dès
+    # que /active répond. Coût de l'inverse : une défense baissée sans terme.
+    log "FAIL-CLOSED dead-man: état appliqué NON LU ($ETAT_APPLIQUE) sur $APPLIED -> révocation de TOUTE exemption adapter découverte (nft + ledger f2b) ; elle sera reposée au prochain /active si l'engagement est toujours actif"
+    while read -r cidr; do
+      [ -n "$cidr" ] || continue
+      nft_remove "$cidr"; f2b_remove "$cidr"; reverted=$((reverted + 1))
+    done < <(nft_discover; f2b_discover)
+  fi
   f2b_save_ledger
   [ "$reverted" -gt 0 ] && log "dead-man revert-expired: $reverted exemption(s) expirée(s) révoquée(s) (leviers locaux nft+f2b ; cscli = TTL natif)"
   exit 0
@@ -357,7 +448,16 @@ body="$(cat "$BODY_TMP" 2>/dev/null || true)"
 ok=0
 if [ "$http" = "200" ] && printf '%s' "$body" | jq -e 'type=="array"' >/dev/null 2>&1; then ok=1; fi
 
-fails="$(cat "$FAILF" 2>/dev/null || echo 0)"; case "$fails" in ''|*[!0-9]*) fails=0 ;; esac
+# LA LECTURE QUI ARME LE FAIL-CLOSED. Sans valeur par défaut : un compteur qu'on ne
+# sait plus lire est présumé AU SEUIL, jamais à zéro. Le fichier ABSENT, lui, est un
+# vrai zéro (premier cycle) et reste le cas nominal.
+etat_fails="$(lecture_compteur "$FAILF")"
+case "$etat_fails" in
+  absent)      fails=0 ;;
+  illisible:*) fails="$NFAIL"
+               log "FAIL-CLOSED: compteur d'échecs NON LU (${etat_fails#illisible:}) sur $FAILF -> armement présumé ATTEINT. Une exemption est une défense BAISSÉE : son mode de panne est le re-arm, jamais le laisser-ouvert." ;;
+  *)           fails="$etat_fails" ;;
+esac
 
 # =============================================================================
 # 2) DESIRED  (validation stricte + canon + expiry/borne wall-clock) + fail-closed
@@ -367,7 +467,12 @@ MODE=""
 refused=0
 
 if [ "$ok" = 1 ]; then
-  echo 0 > "$FAILF"; MODE="reconcile"
+  # Une remise à zéro qui échoue laisse l'armement EN PLACE (fail-safe vers le revert) —
+  # elle n'interrompt pas le cycle, et elle se dit.
+  if ! printf '%s\n' 0 > "$FAILF" 2>/dev/null; then
+    log "WARN: compteur d'échecs non réinitialisé ($FAILF) — l'armement en place tient (fail-safe vers le revert)"
+  fi
+  MODE="reconcile"
   while IFS=$'\t' read -r cidr eid wend; do
     [ -n "$cidr" ] || continue
     eid="$(safe_id "$eid")"
@@ -382,19 +487,29 @@ if [ "$ok" = 1 ]; then
     DESIRED_ID["$canon"]="$eid"; DESIRED_END["$canon"]="$wend"
   done < <(printf '%s' "$body" | jq -r '.[]? | . as $e | ($e.scope[]?) | [ ., ($e.engagement_id//""), (($e.window_end//0)|tostring) ] | @tsv' 2>/dev/null || true)
 else
-  fails=$((fails + 1)); echo "$fails" > "$FAILF"
+  fails=$((fails + 1))
+  if ! printf '%s\n' "$fails" > "$FAILF" 2>/dev/null; then
+    log "WARN: compteur d'échecs non persisté ($FAILF) — le cycle suivant le relira comme NON LU, donc ARMÉ (fail-closed)"
+  fi
   if [ "$fails" -ge "$NFAIL" ]; then
     MODE="revert-all"   # DESIRED reste vide -> tout le set appliqué sera révoqué
     log "FAIL-CLOSED: /active KO (http=$http) x$fails >= $NFAIL -> REVERT-ALL (re-arme les défenses)"
   else
-    MODE="hold"         # tolère un blip : garde le set, mais applique quand même l'expiry/borne wall-clock
-    log "WARN: /active KO (http=$http) x$fails < $NFAIL -> HOLD (expiry-only, exemptions conservées)"
-    while IFS=$'\t' read -r cidr eid wend; do
-      [ -n "$cidr" ] || continue
-      case "$wend" in ''|*[!0-9]*) continue ;; esac
-      [ "$wend" -gt "$((NOW + MAXW))" ] && wend="$((NOW + MAXW))"
-      [ "$wend" -gt "$NOW" ] && { DESIRED_ID["$cidr"]="$eid"; DESIRED_END["$cidr"]="$wend"; }
-    done < "$APPLIED"
+    if [ "$ETAT_APPLIQUE" = lisible ]; then
+      MODE="hold"       # tolère un blip : garde le set, mais applique quand même l'expiry/borne wall-clock
+      log "WARN: /active KO (http=$http) x$fails < $NFAIL -> HOLD (expiry-only, exemptions conservées)"
+      while IFS=$'\t' read -r cidr eid wend; do
+        [ -n "$cidr" ] || continue
+        case "$wend" in ''|*[!0-9]*) continue ;; esac
+        [ "$wend" -gt "$((NOW + MAXW))" ] && wend="$((NOW + MAXW))"
+        [ "$wend" -gt "$NOW" ] && { DESIRED_ID["$cidr"]="$eid"; DESIRED_END["$cidr"]="$wend"; }
+      done < "$APPLIED"
+    else
+      # TENIR un set qu'on ne peut pas LIRE, c'est le tenir sur la foi de rien. DESIRED reste
+      # vide -> revert-all, et la découverte live dit quoi révoquer.
+      MODE="revert-all"
+      log "FAIL-CLOSED: /active KO (http=$http) ET état appliqué NON LU ($ETAT_APPLIQUE) sur $APPLIED -> HOLD impossible -> REVERT-ALL"
+    fi
   fi
 fi
 
@@ -405,11 +520,15 @@ fi
 # de fenêtre (raccourcie OU allongée).
 # =============================================================================
 declare -A APPLIED_ID APPLIED_END
-while IFS=$'\t' read -r cidr eid wend; do
-  [ -n "$cidr" ] || continue
-  APPLIED_ID["$cidr"]="$eid"
-  case "$wend" in ''|*[!0-9]*) : ;; *) APPLIED_END["$cidr"]="$wend" ;; esac
-done < "$APPLIED"
+if [ "$ETAT_APPLIQUE" = lisible ]; then
+  while IFS=$'\t' read -r cidr eid wend; do
+    [ -n "$cidr" ] || continue
+    APPLIED_ID["$cidr"]="$eid"
+    case "$wend" in ''|*[!0-9]*) : ;; *) APPLIED_END["$cidr"]="$wend" ;; esac
+  done < "$APPLIED"
+else
+  log "état appliqué NON LU ($ETAT_APPLIQUE) sur $APPLIED -> la réconciliation se rabat sur la DÉCOUVERTE live (nft self-tag + cscli + ledger f2b) ; rien n'est tenu sur la foi d'un fichier non lu"
+fi
 while read -r cidr; do [ -n "$cidr" ] && : "${APPLIED_ID[$cidr]:=?}"; done < <(nft_discover)
 while read -r cidr; do [ -n "$cidr" ] && : "${APPLIED_ID[$cidr]:=?}"; done < <(cs_discover)
 while read -r cidr; do [ -n "$cidr" ] && : "${APPLIED_ID[$cidr]:=?}"; done < <(f2b_discover)
@@ -470,7 +589,11 @@ mv -f "$STATE_TMP" "$APPLIED"
 # =============================================================================
 # 6) HEARTBEAT dead-man + résumé journald (jamais de token dans les logs)
 # =============================================================================
-printf '%s' "$NOW" > "$HEARTBEAT"
+# Le battement est une SOURCE du cycle suivant : son écriture ne doit pas interrompre celui-ci, et
+# son échec ne doit pas passer inaperçu — au cycle suivant, il sera lu comme NON LU, donc armé.
+if ! printf '%s' "$NOW" > "$HEARTBEAT" 2>/dev/null; then
+  log "WARN: battement non persisté ($HEARTBEAT) — le cycle suivant traitera le recul d'horloge comme INDÉCIDABLE (fail-closed)"
+fi
 NFT_ON=0; nft_avail && NFT_ON=1
 log "cycle mode=$MODE http=$http desired=$DESIRED_N applied_prev=$APPLIED_N ensured=$ensured removed=$removed refused=$refused nft_fail=$nft_fail skew=$SKEW_SUSPECT fails=$(cat "$FAILF" 2>/dev/null || echo 0) levers=cs:$CSCLI_OK,f2b:$F2B_OK,nft:$NFT_ON"
 

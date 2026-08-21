@@ -95,7 +95,10 @@ pub fn list_account_emails(root: &str, mail_domain: &str) -> Result<Vec<String>>
 }
 
 /// Chemins (dossier, fichier) des messages cur+new ; folder "*"/"all" = tous les dossiers.
-pub fn message_paths(root: &str, email: &str, folder: &str) -> Result<Vec<(String, PathBuf)>> {
+/// Chemins des messages, ET le nombre de points d'enumeration que le parcours n'a pas su lire.
+/// Ce second nombre n'est pas cosmetique : chaque point perdu est un ou plusieurs messages qui ne
+/// seront JAMAIS analyses, et dont l'absence se lit « 0 alerte ».
+pub fn message_paths(root: &str, email: &str, folder: &str) -> Result<(Vec<(String, PathBuf)>, usize)> {
     let base = account_path(root, email)?;
     if !base.exists() {
         return Err(anyhow!("compte introuvable: {}", email));
@@ -122,25 +125,35 @@ pub fn message_paths(root: &str, email: &str, folder: &str) -> Result<Vec<(Strin
     };
 
     let mut out = Vec::new();
+    let mut illisibles = 0usize;
     for (folder_name, folder_dir) in folder_dirs {
         for sub in ["cur", "new"] {
             let d = folder_dir.join(sub);
             if !d.exists() {
                 continue;
             }
-            for entry in WalkDir::new(&d).max_depth(1).into_iter().flatten() {
-                if entry.file_type().is_file() {
-                    out.push((folder_name.clone(), entry.path().to_path_buf()));
+            // UN PARCOURS INTERROMPU N'EST PAS UN PARCOURS COMPLET (`S36`). `flatten()` sautait en
+            // silence toute entree que l'enumeration refuse : la liste rendue etait alors PLUS PETITE
+            // que la boite reelle, et les messages manquants n'etaient jamais analyses. Le compte est
+            // remonte a l'appelant, qui l'avoue.
+            for entry in WalkDir::new(&d).max_depth(1) {
+                match entry {
+                    Ok(entry) => {
+                        if entry.file_type().is_file() {
+                            out.push((folder_name.clone(), entry.path().to_path_buf()));
+                        }
+                    }
+                    Err(_) => illisibles += 1,
                 }
             }
         }
     }
-    Ok(out)
+    Ok((out, illisibles))
 }
 
 /// Localise un message par son id de fichier (egal ou prefixe). Pour le body-fetch gate.
 pub fn find_message(root: &str, email: &str, folder: &str, id: &str) -> Result<(String, PathBuf)> {
-    for (fname, p) in message_paths(root, email, folder)? {
+    for (fname, p) in message_paths(root, email, folder)?.0 {
         if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
             if name == id || name.starts_with(id) {
                 return Ok((fname, p));
@@ -167,6 +180,10 @@ pub const RELEVANT_HEADERS: [&str; 8] = [
 /// Champs parses d'un message. `text_body`/`html_body` ne sont retournes au central
 /// QUE par le chemin body-fetch gate+audite ; le scan local ne shippe que des samples.
 pub struct Parsed {
+    /// `false` quand le decodeur MIME a REFUSE le message : les champs ci-dessous sont alors tous
+    /// vides, et aucun motif ne peut s'y appliquer. Sans ce drapeau, ce cas est indiscernable d'un
+    /// message parfaitement anodin (`S36`).
+    pub decode: bool,
     pub from: String,
     pub to: String,
     pub subject: String,
@@ -177,6 +194,24 @@ pub struct Parsed {
     pub headers: Vec<(String, String)>,
 }
 
+/// UN MESSAGE QUE LE DECODEUR REFUSE N'EST PAS UN MESSAGE VIDE (`S36`).
+///
+/// LE DEFAUT FERME ICI. Quand le decodeur MIME rendait `None`, cette fonction fabriquait un `Parsed`
+/// entierement VIDE : ni expediteur, ni sujet, ni corps. Les motifs de detection s'appliquent ensuite
+/// a ces champs — et un champ vide ne declenche RIEN. « Aucune alerte » etait donc la reponse a un
+/// message qu'on n'avait pas su ouvrir.
+///
+/// PORTEE MESUREE, ET ELLE EST PLUS ETROITE QUE LA FIGURE. Sonde du decodeur livre (`mail-parser`
+/// 0.10, sonde ecrite pour ce lot) : il n'a REFUSE qu'une entree VIDE — des octets arbitraires, des
+/// blancs seuls, une ligne sans en-tete sont tous acceptes. Le cas reel couvert ici est donc celui
+/// d'un fichier de message a ZERO octet : une ecriture tronquee, un fichier cree dans `new/` avant
+/// d'etre rempli, un disque plein. Ce n'est pas une forme qu'un expediteur choisit, et il ne faut pas
+/// promettre le contraire ; c'est en revanche exactement le genre de fichier qu'une panne laisse
+/// derriere elle, et il se lisait « message sain ». Un decodeur plus strict demain elargira ce cas
+/// sans qu'aucun appelant n'ait a changer.
+///
+/// `decode` PORTE LE FAIT, et l'appelant l'AVOUE. Le champ est le seul moyen de distinguer un message
+/// reellement anodin (decode, aucun motif) d'un message jamais examine.
 pub fn parse_msg(raw: &[u8]) -> Parsed {
     use mail_parser::MessageParser;
     match MessageParser::default().parse(raw) {
@@ -200,6 +235,7 @@ pub fn parse_msg(raw: &[u8]) -> Parsed {
                 })
                 .collect();
             Parsed {
+                decode: true,
                 from,
                 to,
                 subject: m.subject().unwrap_or("").to_string(),
@@ -211,6 +247,7 @@ pub fn parse_msg(raw: &[u8]) -> Parsed {
             }
         }
         None => Parsed {
+            decode: false,
             from: String::new(),
             to: String::new(),
             subject: String::new(),
@@ -222,3 +259,4 @@ pub fn parse_msg(raw: &[u8]) -> Parsed {
         },
     }
 }
+

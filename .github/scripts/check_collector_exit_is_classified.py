@@ -17,7 +17,9 @@ la seule chose qui soit close : les RAISONS de s'arrêter tôt. Il y en a exacte
 (I) incapacité (un prérequis manque), (II) désactivé (interrupteur opérateur), (III) rien de neuf.
 Seuls (I) et (II) sont des mensonges quand ils sont muets ; (III) est un silence honnête.
 `collectors/lib.sh` porte une fonction par cas — `plume_unavailable`, `plume_disabled`,
-`plume_exit_nodata` — et CHACUNE porte son propre `exit`.
+`plume_exit_nodata` — et CHACUNE porte son propre `exit`. `S36` y a ajouté `plume_lecture_echouee`,
+qui n'est PAS un quatrième cas : c'est le cas (I) survenu APRÈS la mise en attente de marqueurs, avec
+la garantie en plus de les JETER (une sortie ne doit jamais acquitter ce qu'elle n'a pas publié).
 
 D'où la règle, qui est la contraposée : **si toute sortie anticipée légitime passe par l'une des
 trois fonctions, alors un `exit 0` NU dans un capteur est nécessairement une sortie NON CLASSÉE.**
@@ -43,7 +45,7 @@ import subprocess
 import sys
 
 # Fonctions de lib.sh qui PORTENT un exit — la partition fermée, une fonction par cas.
-PRIMITIVES = ("plume_unavailable", "plume_disabled", "plume_exit_nodata")
+PRIMITIVES = ("plume_unavailable", "plume_disabled", "plume_exit_nodata", "plume_lecture_echouee")
 
 # Vocabulaire FERMÉ de `reason`. Il existe pour que l'incapacité soit REQUÊTABLE
 # (`search category=config reason=missing-dependency`) plutôt que de la prose libre qui dérive.
@@ -159,7 +161,9 @@ def main() -> int:
         # (rc=127) et fait ÉCHOUER l'unit systemd — on remplacerait un capteur muet par un capteur
         # cassé. Attrapé en vrai pendant la remédiation : `prom-scrape.sh` n'était pas lib-based, la
         # réécriture mécanique y avait posé un `plume_exit_nodata` qui ne pouvait pas exister.
-        if re.search(r"\bplume_(unavailable|disabled|exit_nodata)\b", src) and not re.search(
+        if re.search(
+            r"\bplume_(unavailable|disabled|exit_nodata|lecture_echouee|lecture_partielle)\b", src
+        ) and not re.search(
             r"PLUME_LIB|/lib\.sh", src
         ):
             errs.append(
@@ -176,7 +180,8 @@ def main() -> int:
                     f"      Un capteur qui s'arrête doit DIRE POURQUOI. Choisissez le cas :\n"
                     f"        prérequis absent .......... plume_unavailable <source> <reason> \"<détail>\"\n"
                     f"        coupé par l'opérateur ..... plume_disabled <source> \"<détail>\"\n"
-                    f"        rien de neuf (silence OK) . plume_exit_nodata"
+                    f"        rien de neuf (silence OK) . plume_exit_nodata\n"
+                    f"        lecture en échec .......... plume_lecture_echouee <source> <cause> \"<détail>\""
                 )
             for m in re.finditer(r"plume_unavailable\s+\S+\s+(\S+)", code):
                 if m.group(1) not in REASONS:

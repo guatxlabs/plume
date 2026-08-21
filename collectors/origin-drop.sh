@@ -20,7 +20,14 @@ plume_init; umask 027
 WM="$STATE_DIR/origin-drop.watermark"
 last=$(cat "$WM" 2>/dev/null || echo $((ts - 3600)))
 tmpf=$(mktemp)
-journalctl -k --since "@$last" --no-pager -o short-unix 2>/dev/null | grep 'ORIGIN-DROP:' > "$tmpf" 2>/dev/null || true
+# S36 — UN TUBE N'A QU'UN CODE DE RETOUR, celui de `grep`, pour qui « aucune ligne » vaut 1 : le cas
+# NORMAL. L'echec de `journalctl` etait donc invisible, et le filigrane avancait jusqu'a `$ts` sur
+# une lecture qui n'avait rien lu — un acces direct a l'origine pouvait disparaitre sans un mot.
+kraw=$(mktemp)
+_jrnl_ok=1
+journalctl -k --since "@$last" --no-pager -o short-unix > "$kraw" 2>/dev/null || _jrnl_ok=0
+grep 'ORIGIN-DROP:' "$kraw" > "$tmpf" 2>/dev/null || true
+rm -f "$kraw"
 events=""; n=0; seen=" "
 while IFS= read -r line; do
   [ -n "$line" ] || continue
@@ -42,12 +49,33 @@ rm -f "$tmpf"
 # S30 — filigrane MIS EN ATTENTE (ecrit apres la publication de l'enveloppe d'events, cf. lib.sh).
 # Cle `origindrop-<src>-<seau 1 min>` : le seau est court, donc un rejeu produira souvent un doublon
 # VISIBLE plutot qu'une absorption — ce qui reste preferable a la perte muette d'avant.
-state_stage "$WM" "$ts"
+# S36 — et il n'est mis en attente QUE si le journal a ete lu : sa valeur est l'instant du passage,
+# elle ne doit rien a la lecture, donc rien ne l'empechait d'acquitter une fenetre jamais lue. Le
+# battement de sante part quand meme — son silence dirait « collecteur mort » la ou il est aveugle.
+if [ "$_jrnl_ok" = 1 ]; then
+  state_stage "$WM" "$ts"
+else
+  plume_lecture_partielle origin-drop source_illisible "journal du noyau non lu depuis @$last : le filigrane n'avance pas, la fenetre sera relue au passage suivant. La serie origin_drops_seen n'est PAS publiee ce passage — un 0 y ferait lire « aucun acces direct a l origine » sur une lecture qui n a rien lu"
+fi
 
 # DEAD-MAN'S-SWITCH (calque portscan.sh/crowdsec.sh) : battement de SANTE a CHAQUE run MEME a 0 hit ->
 # Plume distingue « aucun acces direct (normal, event_based) » de « collecteur origin-drop mort ». PAS de
 # dedup (event.dedup est UNIQUE -> un dedup constant bloquerait l'INSERT OR IGNORE et figerait MAX(ts)) ->
 # chaque battement S'INSERE -> MAX(ts) avance -> heartbeat vivant.
-events="$events${events:+,}$(heartbeat origin-drop "origin-drop sante: $n hit(s) ce passage" "{\"hits_seen\":$n}")"
+# S36 — LE BATTEMENT ET LA METRIQUE NE COMPTENT PAS CE QU'ILS N'ONT PAS LU. Le filigrane est tenu
+# juste au-dessus, mais la phrase la plus rassurante du capteur — « 0 hit ce passage » — et la serie
+# `origin_drops_seen` partaient encore, a 0, quand le journal n'avait pas ete lu : une regle a seuil qui
+# consomme cette serie n'est alors pas en retard, elle est INERTE, et un tableau de bord y lit « rien
+# a signaler » la ou il n'y a plus aucune mesure. La serie DISPARAIT donc de l'enveloppe (S33), et
+# l'aveu deja emis ci-dessus la NOMME — un seul evenement pour un seul fait, sur le canal
+# d'indisponibilite ou une regle livree alerte deja. Le battement, lui, part TOUJOURS : son silence
+# leverait l'alerte MUET, et un capteur aveugle n'est pas un capteur mort.
+if [ "$_jrnl_ok" = 1 ]; then
+  events="$events${events:+,}$(heartbeat origin-drop "origin-drop sante: $n hit(s) ce passage" "{\"hits_seen\":$n}")"
+else
+  events="$events${events:+,}$(heartbeat origin-drop "origin-drop sante: journal du noyau NON LU ce passage — aucun compte de hit (l'absence d acces direct ne peut PAS en etre conclue)" "{}")"
+fi
 spool_write_then_ack "origin-drop-$ts.json" "$(emit_event "$events")" nl
-spool_write "origin-dropm-$ts.json" "$(printf '{"ts":%s,"host":"%s","kind":"metrics","data":{"metrics":[{"name":"origin_drops_seen","value":%s}]}}' "$ts" "$host" "$n")" nl
+if [ "$_jrnl_ok" = 1 ]; then
+  spool_write "origin-dropm-$ts.json" "$(printf '{"ts":%s,"host":"%s","kind":"metrics","data":{"metrics":[{"name":"origin_drops_seen","value":%s}]}}' "$ts" "$host" "$n")" nl
+fi

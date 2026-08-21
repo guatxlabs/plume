@@ -18,6 +18,7 @@ mkdir -p "$STATE/podoff" 2>/dev/null || true
 
 raw=$(mktemp)
 fscan=0   # fichiers réellement scannés ce run (existants, nouveaux octets, hors pods SKIP) -> battement de santé
+_pl_ko=""  # journaux dont la LECTURE a échoué ce passage -> leur offset ne bouge pas, et on le DIT (S36)
 for f in "$DIR"/*/*/*.log; do
   [ -e "$f" ] || continue
   key=$(printf '%s' "$f" | cksum | cut -d' ' -f1)
@@ -29,19 +30,38 @@ for f in "$DIR"/*/*/*.log; do
   # enveloppe de fin. C'est le site qui rejoue le plus : le lot porte TOUS les fichiers du passage,
   # pas une enveloppe. S34 — ce rejeu est desormais ABSORBE : chaque ligne expediee porte une cle
   # batie sur son propre horodatage CRI (cf. plus bas), donc republier le lot n'ajoute aucune ligne.
-  state_stage "$off" "$size"
-  [ "$size" -le "$last" ] && continue
+  # S36 — L'OFFSET N'EST MIS EN ATTENTE QU'UNE FOIS LA TRANCHE LUE. Il l'etait avant meme d'essayer,
+  # et sa valeur (la TAILLE du fichier) ne doit rien a la lecture : un `tail` qui echouait sur un
+  # journal supprime sous le lecteur, ou dont les droits venaient de changer, ne rendait aucune ligne
+  # — indiscernable d'un journal calme — et l'unique publication de fin (le battement de sante part a
+  # CHAQUE passage) acquittait cet offset. La tranche etait perdue, pour ce fichier seulement, donc
+  # sans que rien ne le montre. Un echec ne fait plus avancer QUE le fichier concerne, et il est dit.
+  # Les deux sorties de boucle ci-dessous acquittent, elles, une lecture qui n'avait pas lieu d'etre :
+  # aucun octet neuf, ou pod couvert par un collecteur dedie.
+  if [ "$size" -le "$last" ]; then state_stage "$off" "$size"; continue; fi
   pod=$(printf '%s' "$f" | sed -E 's#.*/pods/([^/]+)/.*#\1#')
   # le conteneur = répertoire juste au-dessus du fichier .log (/pods/<ns_pod_uid>/<CONTENEUR>/N.log)
   # -> distingue les conteneurs d'un même pod (app vs sidecar/init) ; perdu auparavant.
   cont=${f%/*}; cont=${cont##*/}
   skip=0; for s in $(printf '%s' "$SKIP" | tr '|' ' '); do case "$pod" in *"$s"*) skip=1; break ;; esac; done
-  [ "$skip" = 1 ] && continue   # pod listé dans SKIP (déjà couvert par un collecteur dédié) : pas de double collecte
+  if [ "$skip" = 1 ]; then state_stage "$off" "$size"; continue; fi   # pod listé dans SKIP (déjà couvert par un collecteur dédié) : pas de double collecte
   fscan=$((fscan + 1))   # ce fichier est effectivement scanné (compteur du battement de santé)
-  tail -c "+$((last + 1))" "$f" 2>/dev/null | grep -iE "$FILTER" | head -n 80 | while IFS= read -r l; do
-    printf '%s\t%s\t%s\n' "$pod" "$cont" "$l"
-  done >> "$raw"
+  # Le `tail` est SORTI du tube : son code de retour y etait remplace par celui du `grep` final, pour
+  # qui « aucune ligne notable » vaut 1 — c'est-a-dire le cas normal d'un pod tranquille.
+  tranche=$(mktemp)
+  if tail -c "+$((last + 1))" "$f" > "$tranche" 2>/dev/null; then
+    state_stage "$off" "$size"
+    grep -iE "$FILTER" "$tranche" 2>/dev/null | head -n 80 | while IFS= read -r l; do
+      printf '%s\t%s\t%s\n' "$pod" "$cont" "$l"
+    done >> "$raw"
+  else
+    _pl_ko="$_pl_ko $f"
+  fi
+  rm -f "$tranche"
 done
+# Un journal illisible ne rend pas le capteur incapable — les autres pods sont collectes. Il est donc
+# AVOUE et le passage continue ; ce qui protege la tranche est que son offset n'a pas ete mis en attente.
+[ -n "$_pl_ko" ] && plume_lecture_partielle k8s-log source_illisible "journaux de pod non lus ce passage (leur offset n'avance pas, ils seront relus) :$_pl_ko"
 
 events=""
 n=0

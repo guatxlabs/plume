@@ -9,6 +9,7 @@
 mod buffer;
 mod config;
 mod durable;
+mod lisibilite;
 mod ship;
 mod source;
 mod service;
@@ -18,7 +19,7 @@ use buffer::{Backoff, CursorStore, Spool, SpoolEntry};
 use clap::{Parser, Subcommand};
 use config::Config;
 use ship::{HttpTransport, Shipper};
-use source::{build_reader, events_envelope, hostname, now_secs, Cursor, Event, SourceReader, Wire};
+use source::{build_reader, events_envelope, now_secs, Cursor, Event, SourceReader, Wire};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -102,6 +103,48 @@ fn shipper_for(cfg: &Config) -> Result<Shipper<HttpTransport>> {
     ))
 }
 
+/// LA CADENCE DES AVEUX D'INDISPONIBILITÉ — un par source et par heure, pas un par cycle.
+///
+/// L'aveu est dédoublonné à l'heure PAR LE CENTRAL (clé à seau horaire, comme `plume_unavailable`).
+/// Sans une borne LOCALE en plus, une source aveugle écrirait une entrée de spool par cycle — à la
+/// cadence de rinçage, des centaines par heure — et l'anneau borné du spool ÉVINCERAIT des
+/// événements réels pour faire place à des aveux redondants. Un aveu ne doit jamais coûter la donnée
+/// qu'il signale.
+type AveuxEmis = std::collections::HashMap<String, i64>;
+
+/// Publie l'aveu d'une source illisible dans le spool, au plus une fois par seau horaire.
+/// Renvoie `true` si un aveu a été écrit.
+fn avouer_indisponibilite(
+    source: &str,
+    host: &str,
+    raison: &'static str,
+    cause: &'static str,
+    detail: &str,
+    spool: &Spool,
+    deja: &mut AveuxEmis,
+) -> bool {
+    let ts = now_secs();
+    let seau = ts / 3600;
+    if deja.get(source) == Some(&seau) {
+        return false;
+    }
+    deja.insert(source.to_string(), seau);
+    let ev = lisibilite::event_indisponibilite(source, host, raison, cause, detail, ts);
+    eprintln!("[{source}] INDISPONIBLE ({cause}/{raison}) : {detail}");
+    let entry = SpoolEntry {
+        endpoint: Wire::Events.endpoint().to_string(),
+        body: events_envelope(host, ts, std::slice::from_ref(&ev)).to_string(),
+        source_id: source.to_string(),
+        // UN AVEU N'ACQUITTE RIEN. Le curseur reste `None` : sans cela, la publication d'un aveu
+        // ferait avancer la position de lecture d'une source qu'on n'a justement pas su lire.
+        cursor: None,
+    };
+    if let Err(e) = spool.push(&entry) {
+        eprintln!("[{source}] aveu d'indisponibilité NON écrit ({e}) — le trou reste invisible du central");
+    }
+    true
+}
+
 /// Un cycle : lit chaque source (batch borné), spool, draine. Renvoie les stats de drainage.
 fn run_cycle(
     host: &str,
@@ -111,9 +154,23 @@ fn run_cycle(
     shipper: &Shipper<HttpTransport>,
     cursors: &CursorStore,
     backoff: &mut Backoff,
+    aveux: &mut AveuxEmis,
 ) -> ship::DrainStats {
     for r in readers.iter_mut() {
-        let recs = r.next_batch(batch_size);
+        let releve = r.next_batch(batch_size);
+        // `S36` — UNE SOURCE QU'ON N'A PAS SU LIRE N'EST PAS UNE SOURCE CALME. Le lot vide était
+        // jusqu'ici la seule chose que le cycle voyait : il ne distinguait pas « rien de neuf » de
+        // « plus rien n'arrive à être lu ». Le verdict accompagne désormais le lot, et l'aveu part
+        // par le canal d'indisponibilité déjà livré — celui sur lequel une règle ALERTE déjà.
+        if let lisibilite::Lecture::Illisible { cause, detail } = &releve.lisibilite {
+            let id = r.source_id().to_string();
+            avouer_indisponibilite(&id, host, releve.raison, cause, detail, spool, aveux);
+        } else {
+            // La source est redevenue lisible : le prochain trou sera avoué immédiatement, sans
+            // attendre le seau horaire suivant.
+            aveux.remove(r.source_id());
+        }
+        let recs = releve.records;
         if recs.is_empty() {
             continue;
         }
@@ -169,21 +226,72 @@ fn cmd_run(cpath: &std::path::Path, once: bool) -> Result<()> {
 /// (SCM), qui lève `stop` sur SERVICE_CONTROL_STOP pour un arrêt propre.
 pub(crate) fn run_loop(cpath: &std::path::Path, once: bool, stop: Arc<AtomicBool>) -> Result<()> {
     let cfg = Config::load(cpath)?;
-    let host = cfg.host.clone().unwrap_or_else(hostname);
+    // `S36` — L'IDENTITÉ DE CET HÔTE, LUE OU AVOUÉE, JAMAIS INVENTÉE. `host` de la config est une
+    // identité DÉCLARÉE par un opérateur : elle n'a rien à prouver. Sinon on lit, et si la lecture
+    // échoue on publie le VERDICT à la place du nom — puis on l'avoue par le canal d'indisponibilité.
+    let identite = match &cfg.host {
+        Some(h) => lisibilite::Lecture::Lue(h.clone()),
+        None => lisibilite::identite_hote(),
+    };
+    let host = match identite.valeur() {
+        Some(h) => h.clone(),
+        None => lisibilite::HOTE_NON_LU.to_string(),
+    };
     let spool = Spool::open(&cfg.spool_dir, cfg.spool_cap)?;
     let cursors = CursorStore::open(&cfg.state_dir)?;
     let shipper = shipper_for(&cfg)?;
+    // Les aveux déjà publiés, par source et par seau horaire — déclaré ICI parce que l'ouverture des
+    // curseurs, juste en dessous, peut déjà en produire un.
+    let mut aveux: AveuxEmis = AveuxEmis::new();
 
     // Construit les lecteurs et les ouvre sur leur dernier curseur ACKÉ (reprise).
     let mut readers: Vec<Box<dyn SourceReader>> =
         cfg.source.iter().map(|s| build_reader(s, &host, &cfg.state_dir, &cfg.tls)).collect();
     for r in &mut readers {
-        let c = cursors.load(r.source_id());
-        r.open(Cursor(c));
+        // `S36` — UN CURSEUR QU'ON NE SAIT PAS LIRE N'EST PAS UN PREMIER DÉMARRAGE. La reprise part
+        // alors d'où elle veut (`--since` pour le journal, la fin du fichier pour un suivi), et tout
+        // ce qui s'est produit depuis le dernier acquittement est sauté. On ouvre quand même — refuser
+        // de collecter serait pire — mais on l'AVOUE, et l'aveu nomme la source concernée.
+        let lu = cursors.load(r.source_id());
+        if let lisibilite::Lecture::Illisible { cause, detail } = &lu {
+            let id = r.source_id().to_string();
+            avouer_indisponibilite(
+                &id,
+                &host,
+                lisibilite::RAISON_SOURCE_ABSENTE,
+                cause,
+                &format!(
+                    "position de reprise NON LUE : {detail} — cette source repart de sa position par \
+                     défaut, et ce qui s'est produit depuis le dernier acquittement ne sera PAS collecté",
+                ),
+                &spool,
+                &mut aveux,
+            );
+        }
+        r.open(Cursor(lu.valeur().cloned().flatten()));
     }
 
     let flush = Duration::from_secs(cfg.flush_interval_secs.max(1));
     let mut backoff = Backoff::new(flush, Duration::from_secs(300));
+
+    // L'aveu d'identité est publié AVANT le premier cycle : sans lui, des événements partiraient sous
+    // le verdict `hote-illisible` sans que rien n'explique pourquoi. La source de l'aveu porte ce nom
+    // parce que c'est LUI que l'exploitant verra dans la colonne `source`.
+    if let lisibilite::Lecture::Illisible { cause, detail } = &identite {
+        avouer_indisponibilite(
+            lisibilite::HOTE_NON_LU,
+            &host,
+            lisibilite::RAISON_CONFIG_ABSENTE,
+            cause,
+            &format!(
+                "identité de l'hôte non lue : {detail}. Les événements de cet agent partent sous un \
+                 VERDICT et non sous un nom ; pose `host = \"…\"` dans la configuration, ou lie le \
+                 jeton de cet agent (le central écrase alors le champ par l'hôte attesté)."
+            ),
+            &spool,
+            &mut aveux,
+        );
+    }
 
     println!(
         "plume-agent: run host={host} endpoint={} sources={} batch={} flush={}s spool={} (cap {})",
@@ -204,6 +312,7 @@ pub(crate) fn run_loop(cpath: &std::path::Path, once: bool, stop: Arc<AtomicBool
             &shipper,
             &cursors,
             &mut backoff,
+            &mut aveux,
         );
         if st.acked > 0 || st.poisoned > 0 || st.retried {
             eprintln!(
@@ -350,8 +459,16 @@ fn cmd_status(cpath: &std::path::Path) -> Result<()> {
         if let Ok(cursors) = CursorStore::open(&cfg.state_dir) {
             for s in &cfg.source {
                 let id = source_id_of(s);
-                let cur = cursors.load(&id).unwrap_or_else(|| "(aucun)".into());
-                println!("source {id}: curseur = {cur}");
+                // Trois états DISTINCTS, et c'est le troisième qui manquait : « aucun » (jamais
+                // acquitté) n'est pas « illisible » (présent, et la reprise va sauter du contenu).
+                match cursors.load(&id) {
+                    lisibilite::Lecture::Lue(Some(c)) => println!("source {id}: curseur = {c}"),
+                    lisibilite::Lecture::Lue(None) => println!("source {id}: curseur = (aucun)"),
+                    lisibilite::Lecture::Illisible { cause, detail } => println!(
+                        "source {id}: curseur ILLISIBLE ({cause}) — {detail}. Ce n'est PAS « aucun \
+                         curseur » : la reprise repartira de sa position par défaut."
+                    ),
+                }
             }
         }
     }
@@ -372,7 +489,23 @@ fn source_id_of(s: &config::SourceCfg) -> String {
 
 fn cmd_test_ship(cpath: &std::path::Path) -> Result<()> {
     let cfg = Config::load(cpath)?;
-    let host = cfg.host.clone().unwrap_or_else(hostname);
+    // Diagnostic : l'identité est DITE, pas devinée. Un technicien qui voit partir un événement sous
+    // un verdict plutôt que sous un nom doit savoir pourquoi ICI, à l'écran, et pas seulement dans un
+    // événement que le central recevra plus tard.
+    let identite = match &cfg.host {
+        Some(h) => lisibilite::Lecture::Lue(h.clone()),
+        None => lisibilite::identite_hote(),
+    };
+    if let lisibilite::Lecture::Illisible { cause, detail } = &identite {
+        println!(
+            "identité de l'hôte NON LUE ({cause}) : {detail}\n\
+             -> l'événement partira sous « {} » et non sous un nom de machine. Pose `host = \"…\"` \
+             dans la configuration, ou lie le jeton de cet agent (le central écrase alors ce champ \
+             par l'hôte attesté).",
+            lisibilite::HOTE_NON_LU
+        );
+    }
+    let host = identite.valeur().cloned().unwrap_or_else(|| lisibilite::HOTE_NON_LU.to_string());
     let ts = now_secs();
     let ev = Event {
         ts,

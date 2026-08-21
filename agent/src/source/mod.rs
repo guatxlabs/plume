@@ -14,6 +14,9 @@
 use serde_json::{json, Value};
 
 pub mod fim;
+/// `S36` — la garde dérivée de cette surface (suite seulement) : aucune forme de source ne peut
+/// rendre un lot vide sans dire si elle a lu.
+mod garde_lisibilite;
 pub mod generic;
 pub mod linux;
 pub mod macos;
@@ -95,8 +98,20 @@ pub trait SourceReader {
     fn wire(&self) -> Wire;
     /// (Ré)ouvre la source à partir d'un curseur persisté (reprise après redémarrage/ack).
     fn open(&mut self, cursor: Cursor);
-    /// Lit le prochain lot (au plus `max` records), en avançant le curseur INTERNE de la source.
-    fn next_batch(&mut self, max: usize) -> Vec<NativeRecord>;
+    /// Lit le prochain lot (au plus `max` records), en avançant le curseur INTERNE de la source, ET
+    /// DIT SI LA SOURCE A PU ÊTRE LUE (`S36`).
+    ///
+    /// LE TYPE DE RETOUR EST LA GARDE. Cette méthode rendait un `Vec<NativeRecord>` : chacun de ses
+    /// chemins d'échec — binaire de collecte absent, journal refusé, fichier illisible, poll en
+    /// erreur, flux coupé en cours de lot — rendait alors `Vec::new()`, c'est-à-dire EXACTEMENT ce
+    /// que rend une source lue dont il ne s'est rien passé. Le cycle appelant lisait « rien à
+    /// signaler » au moment précis où la source cessait d'être lisible, et les règles armées par
+    /// cette source devenaient inertes sans qu'aucune alerte ne le dise.
+    ///
+    /// `Releve` n'a ni `Default` ni conversion depuis un `Vec` : un lecteur écrit demain ne PEUT PAS
+    /// rendre un lot vide sans choisir entre `lu`, `illisible` et `partiel`. C'est la garde dérivée
+    /// de cette surface — elle ne nomme aucun lecteur, elle ferme l'écriture du défaut.
+    fn next_batch(&mut self, max: usize) -> crate::lisibilite::Releve;
     /// Curseur courant (dernier record consommé) — c'est CE curseur qui sera persisté après ship+ack.
     fn cursor(&self) -> Cursor;
     /// Mappe un record natif en Event (contrat d'enveloppe). `None` = record ignoré.
@@ -133,7 +148,18 @@ impl SourceReader for UnsupportedReader {
     fn open(&mut self, _c: Cursor) {
         eprintln!("[source:{}] non supportée sur cet OS : {} (ignorée)", self.id, self.reason);
     }
-    fn next_batch(&mut self, _max: usize) -> Vec<NativeRecord> { Vec::new() }
+    /// UNE SOURCE DÉCLARÉE QUE CET OS NE SAIT PAS SERVIR EST UNE INCAPACITÉ, PAS UN CALME. Elle ne
+    /// produira RIEN tant qu'un opérateur n'agit pas (retirer la source, ou l'installer sur le bon
+    /// OS) : c'est le cas (I) de la partition de `collectors/lib.sh`, et il DOIT se dire. L'aveu est
+    /// dédoublonné à l'heure côté central, donc une source mal déclarée écrit ~24 lignes par jour —
+    /// pas 1440 — tout en ré-affirmant le trou.
+    fn next_batch(&mut self, _max: usize) -> crate::lisibilite::Releve {
+        crate::lisibilite::Releve::illisible(
+            crate::lisibilite::RAISON_SOUS_SYSTEME_ABSENT,
+            crate::lisibilite::CAUSE_SOURCE_ABSENTE,
+            format!("source déclarée mais non servie sur cet OS : {}", self.reason),
+        )
+    }
     fn cursor(&self) -> Cursor { Cursor(None) }
     fn to_event(&self, _r: &NativeRecord) -> Option<Event> { None }
 }
@@ -290,24 +316,14 @@ pub(crate) fn parse_epoch(s: &str) -> Option<i64> {
     Some(days_from_civil(y, mo, d) * 86400 + hh * 3600 + mm * 60 + ss - off)
 }
 
-/// Hostname de la machine (même source que lib.sh sur Linux : /proc/sys/kernel/hostname), avec repli
-/// sur $HOSTNAME/$COMPUTERNAME puis "unknown".
-pub fn hostname() -> String {
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(h) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
-            let h = h.trim();
-            if !h.is_empty() {
-                return h.to_string();
-            }
-        }
-    }
-    std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
-}
+// L'IDENTITÉ DE CETTE MACHINE NE SE LIT PLUS ICI (`S36`).
+//
+// Ce module portait un `hostname()` qui rendait `"unknown"` quand aucune de ses deux sources n'était
+// lisible. La fonction a été RETIRÉE, et pas seulement corrigée : tant qu'elle existait, elle restait
+// disponible pour le prochain site qui aurait besoin d'un nom d'hôte, et il aurait hérité du repli
+// sans même savoir qu'il en héritait. La lecture vit désormais dans `lisibilite::identite_hote`, qui
+// rend un VERDICT ; chaque appelant doit donc décider quoi faire quand la source n'est pas lisible,
+// et les trois qui existent AVOUENT par le canal d'indisponibilité.
 
 #[cfg(test)]
 mod tests {

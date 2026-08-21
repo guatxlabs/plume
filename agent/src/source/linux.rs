@@ -65,14 +65,30 @@ impl SourceReader for JournaldReader {
         self.cursor = cursor.0;
     }
 
-    fn next_batch(&mut self, max: usize) -> Vec<NativeRecord> {
+    /// `S36` — UN JOURNAL QU'ON NE SAIT PAS LIRE N'EST PAS UN JOURNAL CALME.
+    ///
+    /// TROIS CHEMINS MENAIENT AU MÊME LOT VIDE, et un lot vide est ce que rend un hôte au repos :
+    ///   * `journalctl` absent ou non exécutable (conteneur minimal, profil de confinement) ;
+    ///   * une lecture interrompue EN COURS de lot (`map_while(Result::ok)` sautait la fin en silence,
+    ///     ce qui rend un lot PLUS PETIT que la réalité) ;
+    ///   * le CODE DE RETOUR du sous-processus, jeté (`let _ = child.wait()`). C'est le cas le plus
+    ///     coûteux : un curseur que journald ne connaît plus (rotation, `--vacuum`, machine
+    ///     réinstallée) fait sortir `journalctl` en ERREUR avec ZÉRO ligne. L'agent lisait alors
+    ///     « rien de neuf » à chaque cycle, indéfiniment, sans qu'aucune alerte ne le dise.
+    ///
+    /// LE CODE DE RETOUR N'EST CONSULTÉ QUE S'IL VEUT DIRE QUELQUE CHOSE : quand le lot a atteint son
+    /// plafond, on TUE l'enfant sans avoir drainé sa sortie — le statut est alors celui du signal
+    /// qu'on vient d'envoyer, et le lire comme un échec de la source serait un aveu FAUX à chaque
+    /// lot plein. Sans cette distinction, la correction produirait le défaut symétrique.
+    fn next_batch(&mut self, max: usize) -> crate::lisibilite::Releve {
         #[cfg(target_os = "linux")]
         {
+            use crate::lisibilite::{cause_io, Releve, CAUSE_SOURCE_ILLISIBLE, RAISON_DEPENDANCE_ABSENTE, RAISON_SOURCE_ABSENTE};
             use std::io::{BufRead, BufReader};
             use std::process::{Command, Stdio};
 
             if max == 0 {
-                return Vec::new();
+                return Releve::rien_a_faire();
             }
             let mut child = match Command::new("journalctl")
                 .args(self.args())
@@ -82,15 +98,30 @@ impl SourceReader for JournaldReader {
             {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("[journald:{}] spawn journalctl échoué : {e}", self.cfg.id);
-                    return Vec::new();
+                    return Releve::illisible(
+                        RAISON_DEPENDANCE_ABSENTE,
+                        cause_io(&e),
+                        format!("[journald:{}] exécution de `journalctl` impossible : {e}", self.cfg.id),
+                    )
                 }
             };
             let mut out = Vec::with_capacity(max.min(1024));
+            let mut interrompu: Option<String> = None;
             if let Some(stdout) = child.stdout.take() {
                 let reader = BufReader::new(stdout);
-                for line in reader.lines().map_while(Result::ok) {
-                    let line = line.trim().to_string();
+                for ligne in reader.lines() {
+                    let line = match ligne {
+                        Ok(l) => l.trim().to_string(),
+                        // Le flux s'est coupé : ce qui a été lu part, et la troncature est AVOUÉE.
+                        Err(e) => {
+                            interrompu = Some(format!(
+                                "[journald:{}] flux de `journalctl` interrompu après {} ligne(s) : {e}",
+                                self.cfg.id,
+                                out.len()
+                            ));
+                            break;
+                        }
+                    };
                     if line.is_empty() {
                         continue;
                     }
@@ -101,19 +132,49 @@ impl SourceReader for JournaldReader {
                     }
                 }
             }
+            // Le plafond du lot a-t-il été atteint ? Si oui, c'est NOUS qui coupons — le statut qui
+            // suit est celui de notre propre signal, pas un verdict sur la source.
+            let plafond_atteint = out.len() >= max;
             // Tue l'enfant (on n'a peut-être pas drainé tout stdout) puis reap -> pas de zombie.
             let _ = child.kill();
-            let _ = child.wait();
+            let statut = child.wait();
             // Avance le curseur interne au dernier record consommé.
             if let Some(last) = out.iter().rev().find_map(|r| r.cursor.clone()) {
                 self.cursor = Some(last);
             }
-            out
+            if let Some(detail) = interrompu {
+                return Releve::partiel(out, RAISON_SOURCE_ABSENTE, CAUSE_SOURCE_ILLISIBLE, detail);
+            }
+            if !plafond_atteint {
+                if let Ok(st) = statut {
+                    if !st.success() {
+                        return Releve::partiel(
+                            out,
+                            RAISON_SOURCE_ABSENTE,
+                            CAUSE_SOURCE_ILLISIBLE,
+                            format!(
+                                "[journald:{}] `journalctl` a terminé en échec ({st}) — curseur refusé, \
+                                 journal absent ou accès interdit ; le lot rendu est peut-être vide sans \
+                                 que le journal le soit",
+                                self.cfg.id
+                            ),
+                        );
+                    }
+                }
+            }
+            Releve::lu(out)
         }
         #[cfg(not(target_os = "linux"))]
         {
             let _ = max;
-            Vec::new()
+            // Ce lecteur n'est construit QUE sur Linux (cf. `build_reader`) ; ailleurs, c'est
+            // `UnsupportedReader` qui répond — et qui avoue. Ce bras existe pour la compilation
+            // croisée seulement, et il ne prétend donc pas avoir lu.
+            crate::lisibilite::Releve::illisible(
+                crate::lisibilite::RAISON_SOUS_SYSTEME_ABSENT,
+                crate::lisibilite::CAUSE_SOURCE_ABSENTE,
+                "journald n'existe que sur Linux",
+            )
         }
     }
 

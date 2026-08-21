@@ -724,6 +724,41 @@ jobs:
       - name: Une mesure d'hôte qui n'a pas pu être prise n'est pas publiée comme un zéro
         run: python3 .github/scripts/check_host_measures_are_honest.py
 
+      # LA MÊME FIGURE, PORTÉE À LA SURFACE ENTIÈRE : la garde ci-dessus tient UNE mesure d'hôte sur
+      # UN capteur ; celle-ci tient tout capteur shell qui publie des NOMBRES. Sa portée est
+      # DÉCOUVERTE (le capteur publie une enveloppe `kind:"metrics"`), jamais listée — un capteur de
+      # métriques ajouté demain est contrôlé d'office. Elle exécute chaque capteur TEL QU'IL EST
+      # LIVRÉ contre un PATH fabriqué où ses commandes externes sont des stubs, et mute UN SEUL BIT :
+      # au témoin (1) tous rendent 0 avec une sortie vide (une source LUE, réellement vide) ; au
+      # témoin (2) une seule commande rend 1 (cette lecture-là a échoué). Ce qu'elle exige est que la
+      # sortie PUBLIÉE change avec ce bit, que l'aveu NOMME les séries perdues, et qu'il n'en nomme
+      # aucune qui soit encore publiée. Les clés ne sont pas énumérées : celles du témoin (2) sont
+      # découvertes dans la sortie du témoin (1). Elle valide son propre instrument avant de croire
+      # son verdict — fragments témoins pour la part statique, extracteur de commandes contrôlé dans
+      # les deux sens, et mutation déclarée INCONCLUANTE plutôt que verte quand une sortie vide n'est
+      # pas une lecture nominale. Sous deux capteurs exerçables, elle ÉCHOUE au lieu de conclure.
+      - name: Un capteur shell ne publie pas un nombre qu'il n'a pas pu lire
+        run: python3 .github/scripts/check_collector_reads_are_honest.py
+
+      # MÊME FAMILLE, PORTÉE SUR UN MÉCANISME DE SÉCURITÉ, ET C'EST LÀ QU'ELLE COÛTE LE PLUS : un
+      # enforcer qui ne peut pas lire sa LISTE DE PROTECTION prenait la branche la plus permissive,
+      # et rien ne le disait. `respond.sh` lisait la liste des IP à NE JAMAIS bannir par
+      # `[ -r "$F" ] && grep -qxF ...` : fichier manquant, accès refusé et recherche en erreur (un
+      # RÉPERTOIRE — `-r` le passe, et sous root il passe même un mode 000) tombaient sur la même
+      # branche que « lue, l'IP n'y est pas », c'est-à-dire sur « bannis ». `engagement-adapter.sh`
+      # faisait pire : son en-tête ÉCRIT l'invariant inverse (« une exemption est une défense
+      # BAISSÉE : son mode de panne DOIT être re-arm »), et son compteur d'armement se lisait
+      # `"$(cat "$F" 2>/dev/null || echo 0)"` — un compteur illisible ne franchit JAMAIS son seuil,
+      # donc le REVERT-ALL promis ne partait plus tant que le central restait injoignable.
+      # La garde n'écrit AUCUNE liste d'enforcers : elle la DÉRIVE de la garde ci-dessus (dont le
+      # critère est déjà auto-invalidant), et rougit tant qu'un enforcer ajouté là-bas n'a pas ici
+      # ses DEUX témoins. Chaque enforcer est exécuté TEL QU'IL EST LIVRÉ, dans un PATH fabriqué où
+      # `curl`/`nft` sont des bouchons : liste illisible -> la protection REFUSE et le refus est
+      # NOMMÉ (cause de l'ensemble fermé) ; liste lisible et RÉELLEMENT vide -> comportement normal,
+      # sans refus. Sans ce second témoin, un enforcer qui refuserait toujours passerait le premier.
+      - name: Un enforcer qui ne peut pas lire sa liste de protection REFUSE (fail-closed)
+        run: python3 .github/scripts/check_enforcer_lists_fail_closed.py
+
       # MÊME FAMILLE, APPLIQUÉE À LA DOCUMENTATION : ici ce n'est pas une couverture annoncée qui est
       # injoignable, c'est le DOCUMENT lui-même. Un document à jour que rien ne référence est
       # invisible, donc inexistant pour le lecteur. MESURÉ le 2026-08-20 : 11 des 45 documents suivis
@@ -795,6 +830,30 @@ jobs:
       # publication paraîtrait stable.
       - name: Un rejeu doit être ABSORBÉ par le central, pas seulement visible
         run: python3 .github/scripts/check_replay_is_absorbable.py
+
+      # LA MÊME FAMILLE, PAR LA PORTE DE SORTIE — et c'est un défaut de CORRECTION, pas un oubli.
+      # `S30` a posé « publier d'abord, acquitter ensuite » en s'appuyant sur une hypothèse ÉCRITE :
+      # « sortir par la porte propre veut dire qu'aucune enveloppe n'a été publiée, donc rien n'est
+      # acquitté ». Vraie pour un curseur CALCULÉ À PARTIR de ce qui a été lu (il n'existe pas tant
+      # que la lecture n'a pas abouti) ; FAUSSE pour un marqueur qui ne doit rien à la lecture — un
+      # offset pris sur la TAILLE du fichier, un repère daté, l'instant du passage. La lecture échoue,
+      # le capteur n'a effectivement rien à signaler, il sort par la porte propre, et cette sortie
+      # ACQUITTE une tranche jamais publiée : la perte silencieuse que `S30` fermait, revenue par la
+      # sortie. Ce qui la rend invisible : le mot d'une lecture ratée et celui d'une source calme sont
+      # le MÊME mot — la chaîne vide — et un `| grep` derrière la lecture remplace son code de retour
+      # par le sien, pour qui « rien trouvé » vaut 1, c'est-à-dire le cas NORMAL.
+      # MESURÉ le 2026-08-21 sur la PROPRIÉTÉ, pas sur un symbole : 22 capteurs mettent un marqueur en
+      # attente ; NEUF pouvaient acquitter une lecture ratée par la sortie propre (falco, suricata,
+      # auditd, kube-audit, audit, clamav, yara, cloudflare-http, integrity) et QUATRE par une
+      # publication inconditionnelle (ufw, portscan, origin-drop, pod-logs).
+      # La garde n'énumère aucun capteur : elle découvre la population sur le motif, exige de chacun
+      # l'une des DEUX preuves (nommer le chemin d'échec de lecture, ou ne mettre en attente que sur
+      # le chemin qui publie), puis LANCE de vrais capteurs avec la lecture relayée pour qu'elle
+      # échoue. Deux témoins en sens inverse, et le second est le cœur : lecture en échec -> marqueur
+      # figé, aveu émis, tranche rejouée ; source LUE sans rien à signaler -> marqueur écrit et aucun
+      # aveu, sans quoi on aurait troqué une perte silencieuse contre un rejeu permanent.
+      - name: Une lecture qui ÉCHOUE ne doit rien acquitter
+        run: python3 .github/scripts/check_read_failure_is_not_acknowledged.py
 
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
       # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —
@@ -1259,6 +1318,87 @@ jobs:
         continue-on-error: true
 
   # ---------------------------------------------------------------------------
+  # collectors — `cargo test --locked` pour les DEUX collecteurs compilés.
+  #
+  # POURQUOI CE JOB EXISTE. Ces deux crates étaient bâtis par leur Dockerfile et
+  # vérifiés en licences/bans par le job `security` (qui découvre TOUS les
+  # Cargo.toml), mais leur SUITE n'était exécutée nulle part : `test` et
+  # `cold-tier` ne connaissent que `daemon/`, `agent-ci.yml` ne connaît que
+  # `agent/`. Les gardes que ces crates portent — une liste d'adresses posée et
+  # non comprise ne doit pas ouvrir le :514 ; une boîte qu'on ne sait pas
+  # examiner ne se conclut pas par « 0 alerte » — n'auraient donc jamais tourné
+  # en intégration, et une garde qui ne tourne pas est une garde en nom seulement.
+  #
+  # LES COMPTES SONT EXACTS, PAS DES PLANCHERS, et c'est la discipline de ce
+  # dépôt : la CONSTANCE du compte est ce qui attrape une garde qui aurait cessé
+  # d'être énumérée (un `#[cfg]` mal posé, un module de test décroché). Ils sont
+  # écrits ICI et nulle part ailleurs.
+  # ---------------------------------------------------------------------------
+  collectors:
+    name: collectors (syslog + mail — cargo test)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout plume
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)
+        with:
+          toolchain: "1.96.0"
+
+      - name: Cache cargo (registry + target)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            collector-syslog/target
+            collector-mail/target
+          key: ${{ runner.os }}-cargo-collectors-${{ hashFiles('collector-syslog/Cargo.lock', 'collector-mail/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-collectors-
+
+      # 49 : MESURÉ le 2026-08-21 par ÉNUMÉRATION (`cargo test -- --list`, deux lectures
+      # concordantes : le compte des lignes `: test` et le total annoncé par cargo). Le lot `S36` a
+      # ajouté à ce crate la garde de la liste d'adresses (une liste POSÉE ne peut jamais produire
+      # une liste vide), le refus d'un pair dont l'adresse n'est pas lue, la paire sur l'identité de
+      # l'hôte et la parité de vocabulaire avec le module du démon.
+      - name: cargo test (collector-syslog) + assert the test count
+        working-directory: collector-syslog
+        env:
+          EXPECTED_SYSLOG_TESTS: "49"
+        run: |
+          set -euo pipefail
+          cargo test --locked --verbose 2>&1 | tee /tmp/syslog-tests.log
+          total=$(grep -oP 'test result: ok\. \K[0-9]+' /tmp/syslog-tests.log | paste -sd+ | bc)
+          echo "collector-syslog tests passed: $total (expected $EXPECTED_SYSLOG_TESTS)"
+          if [ "$total" != "$EXPECTED_SYSLOG_TESTS" ]; then
+            echo "::error::collector-syslog test count is $total, expected $EXPECTED_SYSLOG_TESTS."
+            echo "::error::If the change legitimately adds or removes tests, update EXPECTED_SYSLOG_TESTS"
+            echo "::error::HERE, from your own RE-ENUMERATION (cargo test -- --list) — never from a sum."
+            exit 1
+          fi
+
+      # 5 : MESURÉ le 2026-08-21 par la MÊME énumération. Ce crate n'avait AUCUN test avant le lot
+      # `S36` ; les cinq sont la paire sur l'identité, le contrat d'aveu, la parité de vocabulaire et
+      # la garde dérivée qui exécute le collecteur contre une arborescence de courrier fabriquée.
+      - name: cargo test (collector-mail) + assert the test count
+        working-directory: collector-mail
+        env:
+          EXPECTED_MAIL_TESTS: "5"
+        run: |
+          set -euo pipefail
+          cargo test --locked --verbose 2>&1 | tee /tmp/mail-tests.log
+          total=$(grep -oP 'test result: ok\. \K[0-9]+' /tmp/mail-tests.log | paste -sd+ | bc)
+          echo "collector-mail tests passed: $total (expected $EXPECTED_MAIL_TESTS)"
+          if [ "$total" != "$EXPECTED_MAIL_TESTS" ]; then
+            echo "::error::collector-mail test count is $total, expected $EXPECTED_MAIL_TESTS."
+            echo "::error::If the change legitimately adds or removes tests, update EXPECTED_MAIL_TESTS"
+            echo "::error::HERE, from your own RE-ENUMERATION (cargo test -- --list) — never from a sum."
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
   # ci-ok — SINGLE required status-check context for the `main` branch ruleset.
   # The name `CI` is STABLE: it does not depend on any matrix or on the set of
   # upstream jobs, so evolving test/security/lint never breaks the "required
@@ -1270,7 +1410,7 @@ jobs:
   ci-ok:
     name: CI
     if: always() # otherwise a failed upstream job SKIPS this one instead of failing it
-    needs: [test, cold-tier, shell, features, security, lint]
+    needs: [test, cold-tier, shell, features, security, lint, collectors]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

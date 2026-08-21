@@ -49,7 +49,12 @@ else
   echo "journal: journalctl sans --output-fields (systemd < 236) -> expedition NON minimisee (_CMDLINE inclus)" >&2
 fi
 # shellcheck disable=SC2086  ($SEL/$OF = un seul token chacun ; le ';' du curseur reste littéral)
-journalctl $SEL $OF -o json --no-pager _COMM=sshd _COMM=sshd-session _COMM=sudo _COMM=su 2>/dev/null > "$tmp" || true
+# S36 — l'echec de `journalctl` etait avale par `|| true` : `$tmp` sortait vide, exactement comme
+# une periode sans aucune authentification, et le capteur se taisait. Le curseur, lui, ne bouge
+# qu'a partir de ce qui a ete lu (c'est le cas ou l'hypothese de `S30` tient), donc rien n'etait
+# ACQUITTE a tort — mais l'aveuglement restait indiscernable du calme, et c'est le meme defaut.
+journalctl $SEL $OF -o json --no-pager _COMM=sshd _COMM=sshd-session _COMM=sudo _COMM=su 2>/dev/null > "$tmp" \
+  || plume_lecture_echouee journal source_illisible "journal systemd non lisible : aucune ligne d'authentification n'a pu etre relue ce passage, le curseur n'avance pas"
 # DEAD-MAN'S-SWITCH — CAS SPÉCIAL : journal.sh shippe du NDJSON BRUT (journal-*.ndjson) routé vers
 # /api/ingest/journal, où le daemon FORCE category='auth' en dur -> un battement category=health NE PEUT PAS
 # transiter par le .ndjson. On écrit donc une enveloppe kind:events .json SÉPARÉE (journal-health-*.json),

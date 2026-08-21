@@ -17,13 +17,20 @@ size=$(wc -c < "$EVE" 2>/dev/null || echo 0)
 prev=$(cat "$OFF" 2>/dev/null || echo 0)
 case "$prev" in *[!0-9]*) prev=0 ;; esac
 [ "$prev" -gt "$size" ] && prev=0
-# S30 — l'offset est MIS EN ATTENTE (ecrit apres publication, ou par `plume_exit_nodata` quand rien
-# n'a ete publie donc rien n'est acquitte). S34 — le rejeu que cet ordre produit est desormais
-# ABSORBE : chaque event porte une cle prise dans le record lui-meme (cf. `dd` dans l'awk).
+# S30 — l'offset est MIS EN ATTENTE : il est ecrit apres la publication, ou par `plume_exit_nodata`.
+# S36 — ET CETTE SECONDE PORTE N'EST ATTEIGNABLE QUE SI LA LECTURE A ABOUTI. La justification d'alors
+# (« rien n'a ete publie, donc rien n'est acquitte ») ne vaut pas ici : cet offset vaut la TAILLE du
+# fichier, il ne doit rien a la lecture, donc il acquittait une tranche que le `tail` n'avait pas lue.
+# S34 — le rejeu que cet ordre produit est desormais ABSORBE : chaque event porte une cle prise dans
+# le record lui-meme (cf. `dd` dans l'awk).
 if [ "$prev" -ge "$size" ]; then state_stage "$OFF" "$size"; plume_exit_nodata; fi
 
 new=$(mktemp)
-tail -c +"$((prev + 1))" "$EVE" 2>/dev/null > "$new" || true
+# S36 — le code de retour de la lecture est LU. Avant, `|| true` confondait « eve.json n'a rien de
+# neuf » et « le `tail` a echoue » : l'offset etait deja en attente, `parsed` sortait vide, et la
+# sortie « rien a signaler » acquittait une tranche jamais publiee.
+tail -c +"$((prev + 1))" "$EVE" 2>/dev/null > "$new" \
+  || plume_lecture_echouee suricata "$(plume_cause_lecture "$EVE")" "$EVE : la tranche a partir de l'octet $((prev + 1)) n'a pas pu etre lue"
 state_stage "$OFF" "$size"
 
 # S34 — CLE D'IDENTITE. Elle est prise DANS LE RECORD : `timestamp` est l'horodatage microseconde

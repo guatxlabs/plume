@@ -132,8 +132,16 @@ add_ev() {  # $1=severity $2=message $3=fields-json $4=cle d'identite (vide = au
   _dd=""; [ -n "${4:-}" ] && _dd=",\"dedup\":\"$(json_escape "$4")\""
   events="$events${events:+,}{\"ts\":$ts,\"source\":\"integrity\",\"category\":\"integrity\",\"severity\":$1,\"message\":\"$em\"$_dd,\"fields\":$3}"
 }
+# S36 — LE DIFF EST LA LECTURE DE CE CAPTEUR, et c'est lui que la promotion de la reference
+# acquitte : ce qui entre dans la reference ne sera plus jamais signale. Son code de retour etait
+# avale par `|| true`, si bien qu'un `comm` en echec (une reference ecrite avec un autre ordre de
+# tri suffit : il refuse une entree non triee) rendait un diff VIDE — indiscernable d'un hote sans
+# changement. La sortie « rien a signaler » promouvait alors la reference, et les modifications
+# constatees ce passage y entraient sans avoir jamais ete emises : un binaire SUID modifie in-place
+# devenait « connu ». C'est exactement la perte que `S30` fermait, par la porte de sortie.
+_diff_ok=1
 if [ -f "$BASE" ]; then
-  comm -13 "$BASE" "$cur" > "$STATE/.int.added" 2>/dev/null || true
+  comm -13 "$BASE" "$cur" > "$STATE/.int.added" 2>/dev/null || _diff_ok=0
   while IFS='|' read -r kind path sha scope; do
     [ -z "${kind:-}" ] && continue
     # ajout vs modif : le chemin existait-il deja dans la baseline (hash different) ?
@@ -176,11 +184,21 @@ fi
 # ce qu'elle contient ne sera plus jamais signale. Ecrite avant la publication, une coupure entre les
 # deux faisait disparaitre DEFINITIVEMENT le constat — un binaire SUID nouveau ou modifie in-place
 # entrait dans la reference sans avoir jamais ete emis. Elle est donc MISE EN ATTENTE et n'est posee
-# qu'apres la publication de l'enveloppe d'events (ou par `plume_exit_nodata` au 1er run et aux runs
-# sans changement, ou elle n'acquitte rien). S34 — le rejeu que cet ordre produit est desormais
+# qu'apres la publication de l'enveloppe d'events, ou par `plume_exit_nodata` au 1er run et aux runs
+# sans changement — ou elle acquitte bel et bien la reference, et c'est LEGITIME parce que le diff a
+# abouti et n'a rien trouve. S36 : quand ce diff ECHOUE, la reference n'est plus mise en attente du
+# tout, sans quoi cette sortie ferait entrer dans le connu des constats jamais emis. S34 — le rejeu que cet ordre produit est desormais
 # ABSORBE pour les constats portant sur un FICHIER (cle (genre, chemin, empreinte, mtime)) ; les
 # ports en ecoute n'en portent pas, faute d'identite sure, et leur rejeu reste visible.
-state_stage_file "$cur" "$BASE"
+# S36 — la reference n'est mise en attente QUE si le diff a abouti. Sinon elle est jetee : le
+# capteur publie ce qu'il a (rien, ou les constats deja bâtis) et la comparaison sera refaite au
+# passage suivant contre la MEME reference — une relecture, jamais un oubli.
+if [ "$_diff_ok" = 1 ]; then
+  state_stage_file "$cur" "$BASE"
+else
+  rm -f "$cur"
+  plume_lecture_partielle integrity forme_inconnue "comparaison a la reference d'integrite en echec : la reference N'EST PAS promue, aucun constat n'entre en silence dans le connu"
+fi
 
 # DEAD-MAN'S-SWITCH (battement de santé AUTONOME) : ce FIM sort tôt au 1er run (baseline) et aux runs sans
 # changement -> son silence serait indistinguable d'un collecteur mort. On écrit donc un petit .json kind:events

@@ -57,9 +57,13 @@ impl SourceReader for WinEventReader {
         self.cursor = cursor.0;
     }
 
-    fn next_batch(&mut self, max: usize) -> Vec<NativeRecord> {
+    /// `S36` — UN JOURNAL D'ÉVÉNEMENTS QU'ON N'INTERROGE PAS N'EST PAS UN JOURNAL VIDE. `EvtQuery`
+    /// refusé (canal absent, droits insuffisants sur `Security`, requête XPath invalide) rendait le
+    /// même lot vide qu'un poste au repos ; `EvtNext` en erreur tronquait le lot en silence.
+    fn next_batch(&mut self, max: usize) -> crate::lisibilite::Releve {
+        use crate::lisibilite::Releve;
         if max == 0 {
-            return Vec::new();
+            return Releve::rien_a_faire();
         }
         #[cfg(target_os = "windows")]
         {
@@ -68,7 +72,13 @@ impl SourceReader for WinEventReader {
         #[cfg(not(target_os = "windows"))]
         {
             let _ = max;
-            Vec::new()
+            // Ce lecteur n'est construit QUE sur Windows ; ailleurs c'est `UnsupportedReader` qui
+            // répond et qui avoue. Ce bras n'existe que pour la compilation croisée.
+            Releve::illisible(
+                crate::lisibilite::RAISON_SOUS_SYSTEME_ABSENT,
+                crate::lisibilite::CAUSE_SOURCE_ABSENTE,
+                "le journal d'événements Windows n'existe que sur Windows",
+            )
         }
     }
 
@@ -423,9 +433,13 @@ pub fn winxml_to_event(xml: &str, host: &str) -> Option<Event> {
 // --- lecture FFI (Windows uniquement) ------------------------------------------------------------
 #[cfg(target_os = "windows")]
 impl WinEventReader {
-    fn read_batch(&mut self, max: usize) -> Vec<NativeRecord> {
+    fn read_batch(&mut self, max: usize) -> crate::lisibilite::Releve {
         use core::ffi::c_void;
         use windows::core::PCWSTR;
+        // `ERROR_NO_MORE_ITEMS` est la FIN NORMALE d'`EvtNext` : c'est le SEUL code qui autorise à
+        // conclure « plus rien à lire ». Sans lui, on ne peut pas distinguer la fin d'un flux d'une
+        // lecture interrompue — et c'est cette confusion qui tronquait le lot en silence.
+        use windows::Win32::Foundation::ERROR_NO_MORE_ITEMS;
         use windows::Win32::System::EventLog::{
             EvtClose, EvtCreateBookmark, EvtNext, EvtQuery, EvtQueryChannelPath,
             EvtQueryForwardDirection, EvtQueryTolerateQueryErrors, EvtRender, EvtRenderBookmark,
@@ -466,6 +480,7 @@ impl WinEventReader {
         }
 
         let mut out: Vec<NativeRecord> = Vec::new();
+        let mut interrompu: Option<String> = None;
         unsafe {
             let query = wide(&build_query_xml(&self.cfg.channels, &self.cfg.query));
             let flags = (EvtQueryChannelPath.0
@@ -473,9 +488,18 @@ impl WinEventReader {
                 | EvtQueryTolerateQueryErrors.0) as u32;
             let results = match EvtQuery(null_h, PCWSTR::null(), PCWSTR(query.as_ptr()), flags) {
                 Ok(h) => h,
+                // La requête n'a même pas été ouverte : on ne sait RIEN de ce que le journal
+                // contient. L'ancienne forme rendait le lot vide déjà construit, indiscernable d'un
+                // poste sans activité.
                 Err(e) => {
-                    eprintln!("[wineventlog:{}] EvtQuery échoué : {e}", self.cfg.id);
-                    return out;
+                    return crate::lisibilite::Releve::illisible(
+                        crate::lisibilite::RAISON_SOURCE_ABSENTE,
+                        crate::lisibilite::CAUSE_SOURCE_REFUSEE,
+                        format!(
+                            "[wineventlog:{}] EvtQuery refusé : {e} — canal absent, droits                              insuffisants ou requête invalide",
+                            self.cfg.id
+                        ),
+                    )
                 }
             };
 
@@ -506,8 +530,25 @@ impl WinEventReader {
             'outer: while out.len() < max {
                 let want = (max - out.len()).min(events.len());
                 let mut returned = 0u32;
-                if EvtNext(results, &mut events[..want], 0, 0, &mut returned).is_err() {
-                    break; // ERROR_NO_MORE_ITEMS ou fin
+                if let Err(e) = EvtNext(results, &mut events[..want], 0, 0, &mut returned) {
+                    // `ERROR_NO_MORE_ITEMS` est la FIN NORMALE d'une énumération : c'est le seul code
+                    // qui autorise à conclure « plus rien à lire ». Tout autre code est une lecture
+                    // interrompue, et un lot tronqué en silence est plus petit que la réalité.
+                    //
+                    // LA CONVERSION EST ÉCRITE PLUTÔT QU'APPELÉE. Le transport d'un code Win32 dans
+                    // un HRESULT est figé depuis toujours (`0x8007_0000 | code`) ; les AIDES qui le
+                    // font portent des noms qui changent d'une version de liaison à l'autre, et une
+                    // dépendance à ce nom-là casserait un build dont la cible ne se compile que sur
+                    // un autre système. Les deux champs employés ici sont publics et de type stable.
+                    let fin_normale = (0x8007_0000u32 | ERROR_NO_MORE_ITEMS.0) as i32;
+                    if e.code().0 != fin_normale {
+                        interrompu = Some(format!(
+                            "[wineventlog:{}] EvtNext interrompu après {} enregistrement(s) : {e}",
+                            self.cfg.id,
+                            out.len()
+                        ));
+                    }
+                    break;
                 }
                 if returned == 0 {
                     break;
@@ -536,7 +577,15 @@ impl WinEventReader {
         if let Some(last) = out.iter().rev().find_map(|r| r.cursor.clone()) {
             self.cursor = Some(last);
         }
-        out
+        match interrompu {
+            Some(detail) => crate::lisibilite::Releve::partiel(
+                out,
+                crate::lisibilite::RAISON_SOURCE_ABSENTE,
+                crate::lisibilite::CAUSE_SOURCE_ILLISIBLE,
+                detail,
+            ),
+            None => crate::lisibilite::Releve::lu(out),
+        }
     }
 }
 
@@ -727,7 +776,7 @@ mod tests {
         assert_eq!(r.cursor(), Cursor(Some("<BookmarkList/>".into())));
         // Sur une cible non-Windows, next_batch est un no-op (pas de FFI Event Log).
         #[cfg(not(target_os = "windows"))]
-        assert!(r.next_batch(10).is_empty());
+        assert!(r.next_batch(10).records.is_empty());
     }
 
     fn d_channels() -> Vec<String> {

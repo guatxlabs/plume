@@ -23,7 +23,15 @@ if ufw status numbered > "$DUMP.tmp" 2>/dev/null; then mv -f "$DUMP.tmp" "$DUMP"
 WM="$STATE_DIR/ufw.watermark"
 last=$(cat "$WM" 2>/dev/null || echo $((ts - 3600)))      # 1re fois : 1 h en arrière
 tmpf=$(mktemp)
-journalctl -k --since "@$last" --no-pager -o short-unix 2>/dev/null | grep 'UFW BLOCK' > "$tmpf" 2>/dev/null || true
+# S36 — UN TUBE N'A QU'UN CODE DE RETOUR, celui de sa DERNIERE commande, et pour `grep` « aucune
+# ligne trouvee » vaut 1 : c'est le cas NORMAL d'un pare-feu calme. L'echec de `journalctl` etait
+# donc invisible, et le filigrane avancait jusqu'a `$ts` sur une lecture qui n'avait rien lu — la
+# fenetre etait perdue en silence. Les deux etages sont separes pour que chaque verdict soit lisible.
+kraw=$(mktemp)
+_jrnl_ok=1
+journalctl -k --since "@$last" --no-pager -o short-unix > "$kraw" 2>/dev/null || _jrnl_ok=0
+grep 'UFW BLOCK' "$kraw" > "$tmpf" 2>/dev/null || true
+rm -f "$kraw"
 events=""; n=0; seen=" "
 while IFS= read -r line; do
   [ -n "$line" ] || continue
@@ -48,7 +56,15 @@ rm -f "$tmpf"
 # S30 — filigrane MIS EN ATTENTE : il n'est ecrit qu'apres la publication de l'enveloppe d'events.
 # Avant, il avancait ici et une coupure perdait les blocs UFW de la tranche. Cle `ufw-<src>-<port>-
 # <seau horaire>` -> un rejeu tombant dans le meme seau est absorbe par le central.
-state_stage "$WM" "$ts"
+# S36 — et il n'est mis en attente QUE si le journal a ete lu. Sa valeur est l'instant du passage :
+# elle ne doit rien a la lecture, donc rien ne l'empechait d'acquitter une fenetre jamais lue. Le
+# capteur publie tout de meme (son battement de sante ne doit pas disparaitre : son silence leve une
+# alerte MUET, qui dirait « collecteur mort » la ou il est vivant et aveugle).
+if [ "$_jrnl_ok" = 1 ]; then
+  state_stage "$WM" "$ts"
+else
+  plume_lecture_partielle ufw source_illisible "journal du noyau non lu depuis @$last : le filigrane n'avance pas, la fenetre sera relue au passage suivant. La serie ufw_blocks_seen n'est PAS publiee ce passage — un 0 y ferait lire « aucun paquet bloque » sur une lecture qui n a rien lu ; ufw_rules_allow, qui vient de `ufw status` et non du journal, reste publiee"
+fi
 
 # (2) métriques (toujours) + (1) events (battement de santé TOUJOURS présent -> ship inconditionnel)
 allow=$(printf '%s\n' "$st" | grep -c ALLOW || true)
@@ -57,6 +73,22 @@ allow=$(printf '%s\n' "$st" | grep -c ALLOW || true)
 # un dedup constant bloquerait l'INSERT OR IGNORE et figerait MAX(ts)) -> chaque battement S'INSÈRE -> MAX(ts)
 # avance -> heartbeat vivant. Le SILENCE de ce battement (>~25 min) lève l'alerte MUET (collecteur CONTINU
 # ufw-health, cf. main.rs). $allow est calculé JUSTE au-dessus -> disponible pour le battement.
-events="$events${events:+,}$(heartbeat ufw "UFW santé: $n bloc(s) vus, $allow règle(s) allow" "{\"blocks_seen\":$n,\"rules_allow\":$allow}")"
+# S36 — LE BATTEMENT ET LA METRIQUE NE COMPTENT PAS CE QU'ILS N'ONT PAS LU. Le filigrane est tenu
+# juste au-dessus, mais la phrase la plus rassurante du capteur — « 0 bloc vu » — et la serie
+# `ufw_blocks_seen` partaient encore, a 0, quand le journal n'avait pas ete lu : une regle a seuil qui
+# consomme cette serie n'est alors pas en retard, elle est INERTE, et un tableau de bord y lit « rien
+# a signaler » la ou il n'y a plus aucune mesure. La serie DISPARAIT donc de l'enveloppe (S33), et
+# l'aveu deja emis ci-dessus la NOMME — un seul evenement pour un seul fait, sur le canal
+# d'indisponibilite ou une regle livree alerte deja. Le battement, lui, part TOUJOURS : son silence
+# leverait l'alerte MUET, et un capteur aveugle n'est pas un capteur mort.
+if [ "$_jrnl_ok" = 1 ]; then
+  events="$events${events:+,}$(heartbeat ufw "UFW santé: $n bloc(s) vus, $allow règle(s) allow" "{\"blocks_seen\":$n,\"rules_allow\":$allow}")"
+else
+  events="$events${events:+,}$(heartbeat ufw "UFW santé: journal du noyau NON LU ce passage — aucun compte de bloc ; $allow règle(s) allow" "{\"rules_allow\":$allow}")"
+fi
 spool_write_then_ack "ufw-$ts.json" "$(emit_event "$events")" nl
-spool_write "ufwm-$ts.json" "$(printf '{"ts":%s,"host":"%s","kind":"metrics","data":{"metrics":[{"name":"ufw_rules_allow","value":%s},{"name":"ufw_blocks_seen","value":%s}]}}' "$ts" "$host" "$allow" "$n")" nl
+if [ "$_jrnl_ok" = 1 ]; then
+  spool_write "ufwm-$ts.json" "$(printf '{"ts":%s,"host":"%s","kind":"metrics","data":{"metrics":[{"name":"ufw_rules_allow","value":%s},{"name":"ufw_blocks_seen","value":%s}]}}' "$ts" "$host" "$allow" "$n")" nl
+else
+  spool_write "ufwm-$ts.json" "$(printf '{"ts":%s,"host":"%s","kind":"metrics","data":{"metrics":[{"name":"ufw_rules_allow","value":%s}]}}' "$ts" "$host" "$allow")" nl
+fi

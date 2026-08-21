@@ -35,8 +35,17 @@ CKPT_WORK=$(mktemp "$STATE/.audit.ckpt.XXXXXX")
 if [ -s "$CKPT" ]; then cp "$CKPT" "$CKPT_WORK"; else rm -f "$CKPT_WORK"; fi
 
 out="$(ausearch --checkpoint "$CKPT_WORK" --start checkpoint --format text 2>/dev/null || true)"
-if [ -s "$CKPT_WORK" ]; then state_stage_file "$CKPT_WORK" "$CKPT"; else rm -f "$CKPT_WORK"; fi
-[ -z "$out" ] && plume_exit_nodata
+# S36 — LE POINT DE REPRISE N'EST MIS EN ATTENTE QUE SUR LE CHEMIN QUI PUBLIE (plus bas). Il etait
+# mis en attente ICI, donc AVANT de savoir s'il y aurait quelque chose a publier, et la sortie « rien
+# de neuf » l'ecrivait : `ausearch` avait pourtant deja AVANCE ce point pendant sa lecture, si bien
+# qu'une lecture qui n'aboutissait a rien de publiable acquittait des enregistrements que personne ne
+# relirait — et les events `audit` ne portent pas de cle qui aurait pu les rattraper.
+# LE CODE DE RETOUR D'`ausearch` N'EST PAS L'INSTRUMENT ICI, et c'est dit plutot que suppose : il ne
+# distingue pas « aucun enregistrement ne correspond » d'une erreur, et s'en servir ferait avouer une
+# indisponibilite a chaque passage calme. Ce qui est tenu est plus simple et ne suppose rien : ne
+# promouvoir la copie de travail que lorsqu'une enveloppe part. Le prix est nomme — quand la tranche
+# lue ne rend aucun texte exploitable, elle sera relue au passage suivant.
+if [ -z "$out" ]; then rm -f "$CKPT_WORK"; plume_exit_nodata; fi
 
 tmpf=$(mktemp)
 printf '%s\n' "$out" > "$tmpf"
@@ -54,6 +63,9 @@ while IFS= read -r line; do
   events="$events${events:+,}{\"ts\":$ts,\"source\":\"auditd\",\"category\":\"audit\",\"severity\":$sev,\"message\":\"$em\",\"dedup\":\"$dd\"}"
 done < "$tmpf"
 rm -f "$tmpf"
-[ -z "$events" ] && plume_exit_nodata
+if [ -z "$events" ]; then rm -f "$CKPT_WORK"; plume_exit_nodata; fi
 
+# S36 — la mise en attente est ICI, adossee a la publication qui suit : le point de reprise n'est
+# promu que si l'enveloppe part (l'ordre PUBLIER-PUIS-ACQUITTER reste interne a `spool_write_then_ack`).
+if [ -s "$CKPT_WORK" ]; then state_stage_file "$CKPT_WORK" "$CKPT"; else rm -f "$CKPT_WORK"; fi
 spool_write_then_ack "audit-$ts.json" "$(emit_event "$events")"

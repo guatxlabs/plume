@@ -181,12 +181,42 @@ impl CursorStore {
         self.dir.join(format!("{safe}.cursor"))
     }
 
-    /// Charge le dernier curseur persisté (acké) d'une source.
-    pub fn load(&self, source_id: &str) -> Option<String> {
-        std::fs::read_to_string(self.path(source_id))
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
+    /// LE DERNIER CURSEUR ACQUITTÉ, LU OU AVOUÉ — jamais « pas encore de curseur » par défaut (`S36`).
+    ///
+    /// LE DÉFAUT FERMÉ ICI. Cette lecture enchaînait `.ok()` : un fichier de curseur PRÉSENT mais
+    /// illisible (droits changés, E/S, système de fichiers monté en lecture seule sous un profil de
+    /// confinement) rendait `None`, exactement comme un premier démarrage. Or `None` ne veut pas dire
+    /// « reprends où tu en étais » : il veut dire « pars d'où tu veux ». Le journal repart alors à
+    /// `--since`, le fichier suivi repart en fin de fichier, et TOUT ce qui s'est produit entre le
+    /// dernier acquittement et cet instant est sauté — sans erreur, sans trou visible, et à chaque
+    /// redémarrage tant que le fichier reste illisible.
+    ///
+    /// TROIS CAS, ET LE PREMIER DOIT RESTER MUET : un fichier ABSENT est un vrai premier démarrage
+    /// (source neuve, état effacé volontairement) et n'a rien à avouer — sans ce bras, chaque
+    /// première mise en service lèverait un aveu. Un fichier PRÉSENT et illisible est un échec. Un
+    /// fichier présent et VIDE a été lu, et ce qu'il porte n'est pas une position : `forme_inconnue`.
+    pub fn load(&self, source_id: &str) -> crate::lisibilite::Lecture<Option<String>> {
+        use crate::lisibilite::{cause_io, Lecture, CAUSE_FORME_INCONNUE};
+        let chemin = self.path(source_id);
+        match std::fs::read_to_string(&chemin) {
+            Ok(t) => {
+                let t = t.trim().to_string();
+                if t.is_empty() {
+                    return Lecture::Illisible {
+                        cause: CAUSE_FORME_INCONNUE,
+                        detail: format!(
+                            "{} : présent et lu, mais ne porte aucune position de reprise",
+                            chemin.display()
+                        ),
+                    };
+                }
+                Lecture::Lue(Some(t))
+            }
+            // Jamais écrit : premier démarrage de cette source. C'est LU, et la valeur est un vrai
+            // « aucune position », que l'appelant traite comme il l'a toujours fait.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Lecture::Lue(None),
+            Err(e) => Lecture::Illisible { cause: cause_io(&e), detail: format!("{} : {e}", chemin.display()) },
+        }
     }
 
     /// Persiste DURABLEMENT le curseur d'une source. No-op si `cursor` est None.
@@ -344,11 +374,44 @@ mod tests {
     fn cursor_store_only_after_save() {
         let dir = tmpdir("cursor");
         let cs = CursorStore::open(&dir).unwrap();
-        assert_eq!(cs.load("s"), None, "rien avant save");
+        assert_eq!(cs.load("s").valeur().cloned().flatten(), None, "rien avant save");
         cs.save("s", &None).unwrap();
-        assert_eq!(cs.load("s"), None, "save(None) = no-op");
+        assert_eq!(cs.load("s").valeur().cloned().flatten(), None, "save(None) = no-op");
         cs.save("s", &Some("cur-9".into())).unwrap();
-        assert_eq!(cs.load("s").as_deref(), Some("cur-9"));
+        assert_eq!(cs.load("s").valeur().cloned().flatten().as_deref(), Some("cur-9"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `S36` — UNE POSITION DE REPRISE QU'ON NE SAIT PAS LIRE N'EST PAS UN PREMIER DÉMARRAGE.
+    ///
+    /// ① SENS « ILLISIBLE » : un fichier de curseur PRÉSENT dont le contenu n'est pas une position
+    ///    rend un VERDICT, jamais « aucun curseur ». L'ancienne forme (`.ok()`) les confondait, et la
+    ///    reprise repartait alors de sa position par défaut : tout ce qui s'est produit depuis le
+    ///    dernier acquittement était sauté, sans erreur et à chaque redémarrage.
+    /// ② SENS « LU, AUCUNE POSITION » : un fichier JAMAIS ÉCRIT est un vrai premier démarrage — il
+    ///    est LU, il vaut « aucune position », et il n'avoue RIEN. Sans ce témoin, chaque mise en
+    ///    service neuve lèverait un aveu, ce qui est le défaut symétrique.
+    #[test]
+    fn un_curseur_illisible_ne_se_lit_pas_comme_un_premier_demarrage() {
+        use crate::lisibilite::{Lecture, CAUSE_FORME_INCONNUE, VERDICT_ILLISIBLE, VERDICT_LU};
+        let dir = tmpdir("curseur-verdict");
+        let cs = CursorStore::open(&dir).unwrap();
+
+        // ② le cas nominal d'abord : jamais écrit -> LU, aucune position, aucun aveu.
+        let v = cs.load("neuve");
+        assert_eq!(v.verdict(), VERDICT_LU, "une source neuve n'a rien à avouer");
+        assert_eq!(v.valeur().cloned().flatten(), None);
+
+        // ② bis : une position écrite est lue telle quelle.
+        cs.save("neuve", &Some("cur-42".into())).unwrap();
+        assert_eq!(cs.load("neuve").valeur().cloned().flatten().as_deref(), Some("cur-42"));
+
+        // ① présent, lu, mais ne porte aucune position.
+        std::fs::write(dir.join("vide.cursor"), b"  \n").unwrap();
+        let v = cs.load("vide");
+        assert_eq!(v.verdict(), VERDICT_ILLISIBLE, "un fichier vide n'est pas « aucun curseur »");
+        assert_eq!(v.cause(), CAUSE_FORME_INCONNUE);
+        assert!(matches!(v, Lecture::Illisible { .. }));
         std::fs::remove_dir_all(&dir).ok();
     }
 

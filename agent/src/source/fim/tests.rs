@@ -247,7 +247,7 @@ fn reader_end_to_end_lifecycle() {
     // 1) création d'un fichier -> event added
     h.files.borrow_mut().insert(PathBuf::from("/w/a"), meta(Some("aaa"), 3, 0o644));
     h.q.borrow_mut().push_back(PollResult { events: vec![ev("/w/a", FsEventKind::Created)], overflowed: false });
-    let recs = h.reader.next_batch(100);
+    let recs = h.reader.next_batch(100).records;
     let e = one(&h.reader, &recs);
     assert_eq!(e.source, "integrity");
     assert_eq!(e.fields["fim_event"], "added");
@@ -257,7 +257,7 @@ fn reader_end_to_end_lifecycle() {
     // 2) modification (hash change) -> modified + before/after
     h.files.borrow_mut().insert(PathBuf::from("/w/a"), meta(Some("bbb"), 4, 0o644));
     h.q.borrow_mut().push_back(PollResult { events: vec![ev("/w/a", FsEventKind::Modified)], overflowed: false });
-    let recs = h.reader.next_batch(100);
+    let recs = h.reader.next_batch(100).records;
     let e = one(&h.reader, &recs);
     assert_eq!(e.fields["fim_event"], "modified");
     assert_eq!(e.fields["fim_sha256"], "bbb");
@@ -266,12 +266,12 @@ fn reader_end_to_end_lifecycle() {
 
     // 3) event spurieux sans changement réel -> AUCUN event (baseline à jour)
     h.q.borrow_mut().push_back(PollResult { events: vec![ev("/w/a", FsEventKind::Modified)], overflowed: false });
-    assert!(h.reader.next_batch(100).is_empty(), "pas de changement -> pas de ré-alarme");
+    assert!(h.reader.next_batch(100).records.is_empty(), "pas de changement -> pas de ré-alarme");
 
     // 4) suppression -> deleted
     h.files.borrow_mut().remove(&PathBuf::from("/w/a"));
     h.q.borrow_mut().push_back(PollResult { events: vec![ev("/w/a", FsEventKind::Deleted)], overflowed: false });
-    let recs = h.reader.next_batch(100);
+    let recs = h.reader.next_batch(100).records;
     let e = one(&h.reader, &recs);
     assert_eq!(e.fields["fim_event"], "deleted");
     assert_eq!(e.severity, 3);
@@ -279,7 +279,7 @@ fn reader_end_to_end_lifecycle() {
     // 5) event pour un chemin HORS racine -> filtré (allowlist)
     h.files.borrow_mut().insert(PathBuf::from("/other/z"), meta(Some("zzz"), 1, 0o644));
     h.q.borrow_mut().push_back(PollResult { events: vec![ev("/other/z", FsEventKind::Created)], overflowed: false });
-    assert!(h.reader.next_batch(100).is_empty(), "hors racine -> ignoré");
+    assert!(h.reader.next_batch(100).records.is_empty(), "hors racine -> ignoré");
 }
 
 #[test]
@@ -296,12 +296,12 @@ fn debounce_suppresses_rapid_reemit() {
 
     files.borrow_mut().insert(PathBuf::from("/w/a"), meta(Some("v1"), 2, 0o644));
     q.borrow_mut().push_back(PollResult { events: vec![ev("/w/a", FsEventKind::Created)], overflowed: false });
-    assert_eq!(r.next_batch(100).len(), 1, "1re émission passe");
+    assert_eq!(r.next_batch(100).records.len(), 1, "1re émission passe");
 
     // changement réel immédiat (nouveau hash) mais dans la fenêtre debounce -> supprimé
     files.borrow_mut().insert(PathBuf::from("/w/a"), meta(Some("v2"), 2, 0o644));
     q.borrow_mut().push_back(PollResult { events: vec![ev("/w/a", FsEventKind::Modified)], overflowed: false });
-    assert!(r.next_batch(100).is_empty(), "2e changement rapproché absorbé par le debounce");
+    assert!(r.next_batch(100).records.is_empty(), "2e changement rapproché absorbé par le debounce");
 }
 
 // ---- INVARIANT MODE 0 : paths vide -> reader totalement inerte ------------------------------------
@@ -322,7 +322,7 @@ fn mode_zero_empty_paths_is_inert() {
     r.open(Cursor(None));
     // Plusieurs cycles : toujours vide, jamais de probe, jamais de fichier baseline écrit.
     for _ in 0..3 {
-        assert!(r.next_batch(100).is_empty(), "mode 0 : aucun event");
+        assert!(r.next_batch(100).records.is_empty(), "mode 0 : aucun event");
     }
     let baseline = state_dir.join("fim-integrity.baseline.json");
     assert!(!baseline.exists(), "mode 0 : aucune baseline écrite (aucun accès disque)");
@@ -400,14 +400,14 @@ fn last_emit_evicted_on_delete_and_not_leaked() {
 
     files.borrow_mut().insert(PathBuf::from("/w/a"), meta(Some("v1"), 2, 0o644));
     q.borrow_mut().push_back(PollResult { events: vec![ev("/w/a", FsEventKind::Created)], overflowed: false });
-    assert_eq!(r.next_batch(100).len(), 1);
+    assert_eq!(r.next_batch(100).records.len(), 1);
     assert!(r.last_emit.contains_key("/w/a"), "émission -> clé présente");
 
     // Suppression : la purge de `last_emit` a lieu dans TOUS les cas (même si l'event `deleted` est lui
     // absorbé par la fenêtre debounce en cours) -> la clé disparaît, pas de fuite.
     files.borrow_mut().remove(&PathBuf::from("/w/a"));
     q.borrow_mut().push_back(PollResult { events: vec![ev("/w/a", FsEventKind::Deleted)], overflowed: false });
-    let _ = r.next_batch(100);
+    let _ = r.next_batch(100).records;
     assert!(!r.last_emit.contains_key("/w/a"), "suppression -> clé purgée (pas de fuite)");
     assert!(r.baseline.get("/w/a").is_none(), "suppression -> entrée baseline retirée");
 }
@@ -420,7 +420,7 @@ fn last_emit_not_populated_when_debounce_disabled() {
         let p = format!("/w/f{i}");
         h.files.borrow_mut().insert(PathBuf::from(&p), meta(Some("x"), 1, 0o644));
         h.q.borrow_mut().push_back(PollResult { events: vec![ev(&p, FsEventKind::Created)], overflowed: false });
-        assert_eq!(h.reader.next_batch(100).len(), 1);
+        assert_eq!(h.reader.next_batch(100).records.len(), 1);
     }
     assert!(h.reader.last_emit.is_empty(), "debounce=0 -> last_emit reste vide (croissance bornée)");
 }
@@ -451,11 +451,11 @@ fn forced_rescan_is_throttled_across_cycles() {
     let mut r = FimReader::with_fakes(cfg, "h".into(), vec![PathBuf::from("/w")], backend, probe);
 
     q.borrow_mut().push_back(PollResult { events: vec![], overflowed: true });
-    let _ = r.next_batch(100);
+    let _ = r.next_batch(100).records;
     let first = r.last_rescan.expect("1er overflow -> rescan effectué (last_rescan posé)");
 
     q.borrow_mut().push_back(PollResult { events: vec![], overflowed: true });
-    let _ = r.next_batch(100);
+    let _ = r.next_batch(100).records;
     assert_eq!(r.last_rescan, Some(first), "2e overflow immédiat -> marche complète sautée (throttle)");
 }
 
@@ -479,19 +479,19 @@ fn over_cap_does_not_reemit_added_storm() {
         events: vec![ev("/w/a", FsEventKind::Created), ev("/w/b", FsEventKind::Created)],
         overflowed: false,
     });
-    assert_eq!(r.next_batch(100).len(), 2, "1er passage : a et b signalés une fois");
+    assert_eq!(r.next_batch(100).records.len(), 2, "1er passage : a et b signalés une fois");
     assert!(r.over_cap.contains("/w/b"), "b marqué over-cap (borné)");
     assert_eq!(r.over_cap.len(), 1);
 
     // cycle 2 : b re-signalé -> exclu du diff -> AUCUNE ré-émission (storm supprimé).
     q.borrow_mut().push_back(PollResult { events: vec![ev("/w/b", FsEventKind::Created)], overflowed: false });
-    assert!(r.next_batch(100).is_empty(), "over-cap -> pas de ré-émission `added` (storm éteint)");
+    assert!(r.next_batch(100).records.is_empty(), "over-cap -> pas de ré-émission `added` (storm éteint)");
     assert_eq!(r.over_cap.len(), 1, "over_cap reste borné (pas de croissance)");
 
     // suppression de b -> purge de l'ensemble over_cap.
     files.borrow_mut().remove(&PathBuf::from("/w/b"));
     q.borrow_mut().push_back(PollResult { events: vec![ev("/w/b", FsEventKind::Deleted)], overflowed: false });
-    let _ = r.next_batch(100);
+    let _ = r.next_batch(100).records;
     assert!(!r.over_cap.contains("/w/b"), "suppression -> retiré de over_cap");
 }
 
@@ -509,7 +509,7 @@ fn degraded_backend_marks_coverage_partial() {
 
     files.borrow_mut().insert(PathBuf::from("/w/a"), meta(Some("aaa"), 3, 0o644));
     q.borrow_mut().push_back(PollResult { events: vec![ev("/w/a", FsEventKind::Created)], overflowed: false });
-    let recs = r.next_batch(100);
+    let recs = r.next_batch(100).records;
     let e = one(&r, &recs);
     assert_eq!(e.fields["fim_coverage"], "partial", "backend dégradé -> fim_coverage=partial (visible SOC)");
     // Le contrat #57 reste intact (added, severity 1) — on n'a fait qu'AJOUTER un champ.

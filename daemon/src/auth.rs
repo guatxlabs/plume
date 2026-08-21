@@ -397,8 +397,9 @@ pub(crate) fn netban_load(conn: &Connection) -> HashMap<String, Option<i64>> {
 }
 
 /// Recharge le cache global depuis la base (REMPLACE l'instantané). Appelé après chaque mutation + au tick de
-/// maintenance. Best-effort : si la base est illisible, `netban_load` renvoie une map VIDE -> fail-open (aucune
-/// IP bloquée) plutôt que de figer un vieil instantané potentiellement faux.
+/// maintenance. Ce commentaire a décrit l'INVERSE du code pendant un temps — « base illisible -> map VIDE ->
+/// fail-open » — alors que le corps est FAIL-STATIC depuis. Un invariant écrit qui ment sur un mécanisme de
+/// protection est aussi coûteux que le défaut lui-même : le lecteur cesse de vérifier.
 pub(crate) fn netban_reload(conn: &Connection) {
     // FAIL-STATIC : on ne REMPLACE le cache que si le chargement a RÉUSSI. Une erreur
     // de lecture transitoire (base verrouillée) -> `None` -> on GARDE le dernier bon instantané (les bans actifs

@@ -11,7 +11,13 @@ OFF="$STATE/falco.offset"
 last=$(cat "$OFF" 2>/dev/null || echo 0)
 size=$(wc -c < "$LOG" 2>/dev/null || echo 0)
 [ "$size" -lt "$last" ] && last=0   # rotation -> on repart du début
-new=$(tail -c "+$((last + 1))" "$LOG" 2>/dev/null || true)
+# S36 — LE CODE DE RETOUR DE LA LECTURE EST LU, ET LA SORTIE VIDE NE SUFFIT PLUS A CONCLURE. Avant,
+# `|| true` rendait une chaine vide aussi bien pour un journal sans nouvel octet que pour un `tail`
+# qui avait echoue ; l'offset etait deja en attente, et la sortie « rien a signaler » l'acquittait.
+# La tranche non lue etait alors perdue pour toujours, sans un mot.
+if ! new=$(tail -c "+$((last + 1))" "$LOG" 2>/dev/null); then
+  plume_lecture_echouee falco "$(plume_cause_lecture "$LOG")" "$LOG : la tranche a partir de l'octet $((last + 1)) n'a pas pu etre lue"
+fi
 # S30 — l'offset est MIS EN ATTENTE ici et n'est ecrit qu'apres la publication (cf. lib.sh). Avant,
 # il avancait des la lecture : une coupure avant le `spool_write` final perdait la tranche en silence.
 # S34 — le rejeu que cet ordre produit est desormais ABSORBE : chaque event porte une cle d'identite

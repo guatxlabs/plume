@@ -6,7 +6,7 @@
 use super::*;
 use crate::config::FimCfg;
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -16,11 +16,20 @@ fn meta(sha: Option<&str>, size: u64, mode: u32) -> FileMeta {
 
 // ---- backend + probe factices --------------------------------------------------------------------
 
+/// Probe factice à TROIS états, comme la vraie : ce qu'elle sait lire, ce qu'elle a lu et qui n'est
+/// pas là, et ce qu'elle n'a PAS pu lire (`illisibles`). Sans ce troisième cas, le témoin qui prouve
+/// qu'une lecture ratée ne s'annonce pas « supprimée » ne serait pas exerçable.
 #[derive(Clone)]
-struct FakeProbe(Rc<RefCell<HashMap<PathBuf, FileMeta>>>);
+struct FakeProbe(Rc<RefCell<HashMap<PathBuf, FileMeta>>>, Rc<RefCell<HashSet<PathBuf>>>);
 impl FsProbe for FakeProbe {
-    fn probe(&self, path: &Path) -> Option<FileMeta> {
-        self.0.borrow().get(path).cloned()
+    fn probe(&self, path: &Path) -> crate::lisibilite::Lecture<Option<FileMeta>> {
+        if self.1.borrow().contains(path) {
+            return crate::lisibilite::Lecture::Illisible {
+                cause: crate::lisibilite::CAUSE_SOURCE_REFUSEE,
+                detail: format!("{} : illisible (témoin)", path.display()),
+            };
+        }
+        crate::lisibilite::Lecture::Lue(self.0.borrow().get(path).cloned())
     }
 }
 
@@ -219,19 +228,21 @@ fn baseline_set_get_remove_and_cap() {
 struct Harness {
     reader: FimReader,
     files: Rc<RefCell<HashMap<PathBuf, FileMeta>>>,
+    illisibles: Rc<RefCell<HashSet<PathBuf>>>,
     q: Rc<RefCell<VecDeque<PollResult>>>,
 }
 
 fn harness() -> Harness {
     let files = Rc::new(RefCell::new(HashMap::new()));
+    let illisibles = Rc::new(RefCell::new(HashSet::new()));
     let q = Rc::new(RefCell::new(VecDeque::new()));
     let watched = Rc::new(RefCell::new(Vec::new()));
-    let probe = Box::new(FakeProbe(files.clone()));
+    let probe = Box::new(FakeProbe(files.clone(), illisibles.clone()));
     let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: false });
     // debounce_ms=0 : tests déterministes (les cycles s'enchaînent en < 200 ms sinon supprimés).
     let cfg = FimCfg { paths: vec!["/w".into()], debounce_ms: 0, ..FimCfg::default() };
     let reader = FimReader::with_fakes(cfg, "h".into(), vec![PathBuf::from("/w")], backend, probe);
-    Harness { reader, files, q }
+    Harness { reader, files, illisibles, q }
 }
 
 /// Parse le 1er (unique) NativeRecord d'un batch en Event via to_event.
@@ -289,7 +300,7 @@ fn debounce_suppresses_rapid_reemit() {
     let files = Rc::new(RefCell::new(HashMap::new()));
     let q = Rc::new(RefCell::new(VecDeque::new()));
     let watched = Rc::new(RefCell::new(Vec::new()));
-    let probe = Box::new(FakeProbe(files.clone()));
+    let probe = Box::new(FakeProbe(files.clone(), Rc::new(RefCell::new(HashSet::new()))));
     let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: false });
     let cfg = FimCfg { paths: vec!["/w".into()], debounce_ms: 60_000, ..FimCfg::default() };
     let mut r = FimReader::with_fakes(cfg, "h".into(), vec![PathBuf::from("/w")], backend, probe);
@@ -311,7 +322,7 @@ fn mode_zero_empty_paths_is_inert() {
     // probe/backend qui EXPLOSENT s'ils sont sollicités -> prouve que rien n'est touché en mode 0.
     struct BoomProbe;
     impl FsProbe for BoomProbe {
-        fn probe(&self, _p: &Path) -> Option<FileMeta> {
+        fn probe(&self, _p: &Path) -> crate::lisibilite::Lecture<Option<FileMeta>> {
             panic!("mode 0 : la probe ne doit JAMAIS être appelée");
         }
     }
@@ -347,6 +358,19 @@ fn hash_reader_hard_stops_on_unbounded_stream() {
     assert_eq!(got, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
 }
 
+/// Déballe une lecture ABOUTIE ; fait tomber le test si la probe s'est déclarée illisible. Un
+/// `unwrap_or(None)` ferait passer un `Illisible` pour une absence, c'est-à-dire exactement la
+/// confusion que ce lot ferme.
+#[cfg(unix)]
+fn lue(l: crate::lisibilite::Lecture<Option<FileMeta>>) -> Option<FileMeta> {
+    match l {
+        crate::lisibilite::Lecture::Lue(m) => m,
+        crate::lisibilite::Lecture::Illisible { cause, detail } => {
+            panic!("lecture attendue ABOUTIE, obtenu illisible ({cause}) : {detail}")
+        }
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn probe_never_follows_symlink_and_skips_nonregular() {
@@ -360,25 +384,31 @@ fn probe_never_follows_symlink_and_skips_nonregular() {
     let secret = dir.join("secret");
     let mut f = std::fs::File::create(&secret).unwrap();
     f.write_all(b"abc").unwrap();
-    let m = probe_real(&secret, 10 * 1024 * 1024).expect("régulier -> Some");
+    let m = lue(probe_real(&secret, 10 * 1024 * 1024)).expect("régulier -> Lue(Some)");
     assert_eq!(m.size, 3);
     assert_eq!(m.sha256.as_deref(), Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
 
     // 2) LE cœur du CRITICAL : un lien symbolique vers `secret` NE DOIT JAMAIS être suivi ni hashé.
     let link = dir.join("link");
     std::os::unix::fs::symlink(&secret, &link).unwrap();
-    assert!(probe_real(&link, 10 * 1024 * 1024).is_none(), "lien -> jamais suivi (O_NOFOLLOW) -> None");
+    assert!(
+        lue(probe_real(&link, 10 * 1024 * 1024)).is_none(),
+        "lien -> jamais suivi (O_NOFOLLOW) -> LU, et aucun fichier régulier ici"
+    );
 
     // 3) FIFO : ouvert O_NONBLOCK, rejeté sur S_ISREG -> None, sans bloquer (pas d'écrivain).
     let fifo = dir.join("pipe");
     let cp = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
     assert_eq!(unsafe { libc::mkfifo(cp.as_ptr(), 0o600) }, 0, "mkfifo");
-    assert!(probe_real(&fifo, 10 * 1024 * 1024).is_none(), "fifo -> non régulier -> None (aucun hang)");
+    assert!(
+        lue(probe_real(&fifo, 10 * 1024 * 1024)).is_none(),
+        "fifo -> non régulier -> LU, aucun fichier régulier (aucun hang)"
+    );
 
     // 4) fichier plus gros que le cap -> taille seule (sha None), jamais de lecture non bornée.
     let big = dir.join("big");
     std::fs::write(&big, vec![7u8; 4096]).unwrap();
-    let m = probe_real(&big, 1024).expect("gros régulier -> Some (taille)");
+    let m = lue(probe_real(&big, 1024)).expect("gros régulier -> Lue(Some) (taille)");
     assert_eq!(m.size, 4096);
     assert!(m.sha256.is_none(), "au-delà de hash_max_bytes -> taille seule");
 
@@ -393,7 +423,7 @@ fn last_emit_evicted_on_delete_and_not_leaked() {
     let files = Rc::new(RefCell::new(HashMap::new()));
     let q = Rc::new(RefCell::new(VecDeque::new()));
     let watched = Rc::new(RefCell::new(Vec::new()));
-    let probe = Box::new(FakeProbe(files.clone()));
+    let probe = Box::new(FakeProbe(files.clone(), Rc::new(RefCell::new(HashSet::new()))));
     let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: false });
     let cfg = FimCfg { paths: vec!["/w".into()], debounce_ms: 60_000, ..FimCfg::default() };
     let mut r = FimReader::with_fakes(cfg, "h".into(), vec![PathBuf::from("/w")], backend, probe);
@@ -444,7 +474,7 @@ fn forced_rescan_is_throttled_across_cycles() {
     let files = Rc::new(RefCell::new(HashMap::new()));
     let q = Rc::new(RefCell::new(VecDeque::new()));
     let watched = Rc::new(RefCell::new(Vec::new()));
-    let probe = Box::new(FakeProbe(files.clone()));
+    let probe = Box::new(FakeProbe(files.clone(), Rc::new(RefCell::new(HashSet::new()))));
     let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: false });
     // min_rescan_interval par défaut = 60s -> les deux cycles tombent dans la même fenêtre.
     let cfg = FimCfg { paths: vec!["/w".into()], debounce_ms: 0, ..FimCfg::default() };
@@ -466,7 +496,7 @@ fn over_cap_does_not_reemit_added_storm() {
     let files = Rc::new(RefCell::new(HashMap::new()));
     let q = Rc::new(RefCell::new(VecDeque::new()));
     let watched = Rc::new(RefCell::new(Vec::new()));
-    let probe = Box::new(FakeProbe(files.clone()));
+    let probe = Box::new(FakeProbe(files.clone(), Rc::new(RefCell::new(HashSet::new()))));
     let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: false });
     // plafond = 1 fichier suivi.
     let cfg = FimCfg { paths: vec!["/w".into()], debounce_ms: 0, max_files: 1, ..FimCfg::default() };
@@ -502,7 +532,7 @@ fn degraded_backend_marks_coverage_partial() {
     let files = Rc::new(RefCell::new(HashMap::new()));
     let q = Rc::new(RefCell::new(VecDeque::new()));
     let watched = Rc::new(RefCell::new(Vec::new()));
-    let probe = Box::new(FakeProbe(files.clone()));
+    let probe = Box::new(FakeProbe(files.clone(), Rc::new(RefCell::new(HashSet::new()))));
     let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: true }); // plafond watches atteint
     let cfg = FimCfg { paths: vec!["/w".into()], debounce_ms: 0, ..FimCfg::default() };
     let mut r = FimReader::with_fakes(cfg, "h".into(), vec![PathBuf::from("/w")], backend, probe);
@@ -526,4 +556,118 @@ fn default_config_still_only_journald() {
     let c = crate::config::Config::from_toml(r#"endpoint = "https://x""#).unwrap();
     assert_eq!(c.source.len(), 1);
     assert!(matches!(c.source[0], crate::config::SourceCfg::Journald(_)));
+}
+
+// ---- `S36`, rang « du BRUIT au lieu du silence » : ne pas lire n'est pas « supprimé » -------------
+//
+// LA PREUVE EST UN COUPLE, ET LE SECOND TÉMOIN EST LE PLUS IMPORTANT. Le premier montre qu'une
+// lecture impossible ne produit plus de constat de suppression ; SEUL, il serait satisfait par une
+// version qui n'émettrait plus JAMAIS `deleted` — c'est-à-dire par un angle mort, pire que le défaut
+// de départ. Le second exige donc qu'une suppression RÉELLE parte exactement comme avant.
+
+#[test]
+fn lecture_impossible_n_est_pas_une_suppression() {
+    let mut h = harness();
+    // 1) le fichier existe et entre en référence.
+    h.files.borrow_mut().insert(PathBuf::from("/w/a"), meta(Some("aaa"), 3, 0o644));
+    h.q.borrow_mut().push_back(PollResult {
+        events: vec![ev("/w/a", FsEventKind::Created)],
+        overflowed: false,
+    });
+    assert_eq!(h.reader.next_batch(100).records.len(), 1, "création -> 1 event `added`");
+
+    // 2) MUTATION : le fichier est TOUJOURS là, mais il n'est plus lisible (droits, plafond de
+    //    descripteurs, entrée/sortie). L'ancienne forme rendait `None` -> `deleted`.
+    h.illisibles.borrow_mut().insert(PathBuf::from("/w/a"));
+    h.q.borrow_mut().push_back(PollResult {
+        events: vec![ev("/w/a", FsEventKind::Modified)],
+        overflowed: false,
+    });
+    let releve = h.reader.next_batch(100);
+    assert!(
+        releve.records.is_empty(),
+        "lecture impossible -> AUCUN constat (surtout pas `deleted`)"
+    );
+    assert_eq!(releve.lisibilite.verdict(), crate::lisibilite::VERDICT_ILLISIBLE, "l'aveu part");
+    assert_eq!(releve.lisibilite.cause(), crate::lisibilite::CAUSE_SOURCE_REFUSEE);
+    assert_eq!(releve.raison, crate::lisibilite::RAISON_SOURCE_ABSENTE);
+    assert!(
+        releve.lisibilite.detail().unwrap().contains("suppression"),
+        "l'aveu NOMME ce qui n'a pas été déduit"
+    );
+    // 3) LA RÉFÉRENCE EST CONSERVÉE : sans cela, la lecture réussie suivante repartirait en `added`.
+    assert_eq!(
+        h.reader.baseline.get("/w/a").and_then(|m| m.sha256.clone()).as_deref(),
+        Some("aaa"),
+        "référence intacte -> la comparaison sera refaite, pas recommencée"
+    );
+
+    // 4) LA LECTURE REDEVIENT POSSIBLE, CONTENU INCHANGÉ -> aucun event (pas de 2e vague `added`).
+    h.illisibles.borrow_mut().remove(&PathBuf::from("/w/a"));
+    h.q.borrow_mut().push_back(PollResult {
+        events: vec![ev("/w/a", FsEventKind::Modified)],
+        overflowed: false,
+    });
+    let releve = h.reader.next_batch(100);
+    assert!(releve.records.is_empty(), "retour à la normale -> aucune ré-alarme");
+    assert_eq!(releve.lisibilite.verdict(), crate::lisibilite::VERDICT_LU);
+}
+
+#[test]
+fn suppression_reelle_reste_signalee() {
+    let mut h = harness();
+    h.files.borrow_mut().insert(PathBuf::from("/w/a"), meta(Some("aaa"), 3, 0o644));
+    h.q.borrow_mut().push_back(PollResult {
+        events: vec![ev("/w/a", FsEventKind::Created)],
+        overflowed: false,
+    });
+    assert_eq!(h.reader.next_batch(100).records.len(), 1);
+
+    // TÉMOIN INVERSE : le fichier disparaît POUR DE BON (la probe a LU, il n'y a rien).
+    h.files.borrow_mut().remove(&PathBuf::from("/w/a"));
+    h.q.borrow_mut().push_back(PollResult {
+        events: vec![ev("/w/a", FsEventKind::Deleted)],
+        overflowed: false,
+    });
+    let releve = h.reader.next_batch(100);
+    let e = one(&h.reader, &releve.records);
+    assert_eq!(e.fields["fim_event"], "deleted", "suppression réelle -> `deleted`, comme avant");
+    assert_eq!(e.severity, 3);
+    assert_eq!(e.fields["action"], "delete");
+    assert_eq!(releve.lisibilite.verdict(), crate::lisibilite::VERDICT_LU, "rien n'a échoué");
+    assert!(h.reader.baseline.get("/w/a").is_none(), "supprimé -> entrée retirée de la référence");
+}
+
+#[test]
+fn modification_survenue_pendant_l_illisibilite_est_signalee_au_retour() {
+    // L'AUTRE MOITIÉ DU SECOND TÉMOIN : conserver la référence ne doit pas AVALER un vrai
+    // changement. Le fichier est modifié pendant qu'il est illisible ; dès qu'il redevient lisible,
+    // la comparaison se fait contre la référence CONSERVÉE et le constat part.
+    let mut h = harness();
+    h.files.borrow_mut().insert(PathBuf::from("/w/a"), meta(Some("aaa"), 3, 0o644));
+    h.q.borrow_mut().push_back(PollResult {
+        events: vec![ev("/w/a", FsEventKind::Created)],
+        overflowed: false,
+    });
+    assert_eq!(h.reader.next_batch(100).records.len(), 1);
+
+    h.illisibles.borrow_mut().insert(PathBuf::from("/w/a"));
+    h.q.borrow_mut().push_back(PollResult {
+        events: vec![ev("/w/a", FsEventKind::Modified)],
+        overflowed: false,
+    });
+    assert!(h.reader.next_batch(100).records.is_empty());
+
+    // Le contenu a changé PENDANT l'aveuglement, puis la lecture redevient possible.
+    h.files.borrow_mut().insert(PathBuf::from("/w/a"), meta(Some("bbb"), 9, 0o644));
+    h.illisibles.borrow_mut().remove(&PathBuf::from("/w/a"));
+    h.q.borrow_mut().push_back(PollResult {
+        events: vec![ev("/w/a", FsEventKind::Modified)],
+        overflowed: false,
+    });
+    let releve = h.reader.next_batch(100);
+    let e = one(&h.reader, &releve.records);
+    assert_eq!(e.fields["fim_event"], "modified", "le vrai changement n'est PAS avalé");
+    assert_eq!(e.fields["fim_sha256_before"], "aaa", "comparé à la référence CONSERVÉE");
+    assert_eq!(e.fields["fim_sha256"], "bbb");
 }

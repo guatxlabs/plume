@@ -25,9 +25,21 @@ KUBE=""
 if command -v k3s >/dev/null 2>&1; then KUBE="k3s kubectl"
 elif command -v kubectl >/dev/null 2>&1; then KUBE="kubectl"; fi
 AGENT_REF=""
+_cs_ko=""    # lectures PRESENTES mais en echec ce passage, avouees en une fois a la fin
+# S36 — « JE N'AI PAS TROUVE L'AGENT » ET « JE N'AI PAS PU LE CHERCHER » RENDAIENT LE MEME MOT.
+# Quand aucun outil kube n'est la, `KUBE` est vide et il n'y a rien a chercher : c'est le mode hote,
+# nominal, et on se tait. Mais quand un outil kube EST la et que ni le DaemonSet ni le Deployment ne
+# repondent, le chemin du LOG de l'agent est perdu — or ce log est le SEUL signal fiable d'un
+# scenario qui echoue a charger (l'en-tete de ce fichier le dit et le mesure). Le capteur publiait
+# alors `scenarios_broken: -1` a la severite 0 : un inconnu presente comme du calme. L'inconnu reste
+# publie tel quel — une regle livree en depend — mais il est desormais ACCOMPAGNE d'un aveu.
+# LE COUT EST NOMME : un hote portant `kubectl` ET un CrowdSec natif avouera ce trou a chaque
+# passage. Ce n'est pas une fausse alerte — sur cet hote, les erreurs de chargement de scenarios ne
+# sont effectivement PAS mesurees — et la dedup horaire du canal en borne le volume.
 if [ -n "$KUBE" ]; then
   if $KUBE -n "$NS" get ds "$AGENT" >/dev/null 2>&1; then AGENT_REF="ds/$AGENT"
-  elif $KUBE -n "$NS" get deploy "$AGENT" >/dev/null 2>&1; then AGENT_REF="deploy/$AGENT"; fi
+  elif $KUBE -n "$NS" get deploy "$AGENT" >/dev/null 2>&1; then AGENT_REF="deploy/$AGENT"
+  else _cs_ko="$_cs_ko journal/agent"; fi
 fi
 ALOG_C="${PLUME_CROWDSEC_AGENT_CONTAINER:-crowdsec-agent}"   # conteneur agent (exec/logs ciblés)
 if [ -n "${PLUME_CSCLI:-}" ]; then cscli_agent() { $PLUME_CSCLI "$@"; }
@@ -49,13 +61,28 @@ command -v jq >/dev/null 2>&1 || plume_unavailable crowdsec missing-dependency "
 plume_init
 
 # ── 1) ALERTES (chemin existant) : ne SORT PLUS si vide -> le battement de santé ci-dessous part TOUJOURS.
-raw=$(cscli_cmd alerts list --limit 0 -o json 2>/dev/null || echo '')
-lapi_ok=0; [ -n "$raw" ] && lapi_ok=1     # `alerts list` a répondu -> LAPI joignable
+# S36 — `|| echo ''` REMPLACAIT LE STATUT DE LA LECTURE PAR CELUI D'UN `echo`, c'est-a-dire par un
+# succes. `lapi_ok` etait ensuite deduit du fait que la sortie soit NON VIDE : une LAPI joignable
+# n'ayant aucune alerte rend `[]` — non vide — donc le drapeau restait juste par accident de format.
+# Il est desormais tire du CODE DE RETOUR, qui est ce qu'on voulait dire, et l'echec est AVOUE :
+# `agent_ready` seul decidait de la severite du battement, si bien qu'un agent interrogeable et une
+# LAPI muette produisaient le message « CrowdSec santé », rassurant, sur une lecture qui avait rate.
+if raw=$(cscli_cmd alerts list --limit 0 -o json 2>/dev/null); then
+  lapi_ok=1
+else
+  lapi_ok=0; raw=''; _cs_ko="$_cs_ko alertes/LAPI"
+fi
 [ -z "$raw" ] && raw='[]'
 events=""
 n=0
 tmpf=$(mktemp)
-if printf '%s' "$raw" | jq -r '.[] | [ (.id|tostring), (.source.value // "-"), (.scenario // "-") ] | @tsv' > "$tmpf" 2>/dev/null; then
+# S36 — L'ECHEC DU DECODAGE ETAIT LA MEME CHOSE QUE « AUCUNE ALERTE ». La branche `else` de ce test
+# ne faisait RIEN : un `jq` absent, casse, ou une reponse LAPI dont la forme a change produisaient
+# zero event, exactement comme une periode sans la moindre alerte. Le `else` DIT maintenant ce qu'il
+# constate ; l'aveu part plus bas, avec les autres, en une fois.
+if ! printf '%s' "$raw" | jq -r '.[] | [ (.id|tostring), (.source.value // "-"), (.scenario // "-") ] | @tsv' > "$tmpf" 2>/dev/null; then
+  _cs_ko="$_cs_ko alertes/forme"
+else
   TAB=$(printf '\t')
   while IFS="$TAB" read -r id ip scen; do
     [ -z "$id" ] && continue
@@ -74,7 +101,13 @@ rm -f "$tmpf"
 # CHARGEMENT lues dans le LOG agent (seul signal fiable, cf. ci-dessus). agent_ready = hub interrogeable ;
 # lapi_ok = `alerts list` a répondu ci-dessus ; last_alert_age_s informatif.
 agent_ready=0; scen_loaded=-1; scen_broken=-1
-hub=$(cscli_agent hub list -o json 2>/dev/null || echo '')
+# S36 — meme correction, meme raison : le statut du `hub list` etait remplace par celui d'un `echo`.
+# Une sortie vide se lisait « agent non interrogeable », ce qui est le bon verdict, mais il n'etait
+# accompagne d'AUCUN aveu : le battement disait « INJOIGNABLE » a la severite 3 et rien ne remontait
+# par le canal de couverture, la ou une regle livree alerte deja.
+if ! hub=$(cscli_agent hub list -o json 2>/dev/null); then
+  hub=''; _cs_ko="$_cs_ko hub/agent"
+fi
 if [ -n "$hub" ]; then
   agent_ready=1
   scen_loaded=$(printf '%s' "$hub" | jq -r '(.scenarios // []) | length' 2>/dev/null || echo -1)
@@ -108,6 +141,14 @@ fi
 hfields="{\"scenarios_loaded\":$scen_loaded,\"scenarios_broken\":$scen_broken,\"agent_ready\":$ar,\"lapi_ok\":$lo,\"last_alert_age_s\":$last_age}"
 # PAS de dedup (event.dedup est UNIQUE) -> chaque battement S'INSÈRE -> MAX(ts) avance -> heartbeat vivant.
 events="$events${events:+,}$(heartbeat crowdsec "$hmsg" "$hfields" "$hsev")"
+
+# S36 — L'AVEU PART PAR LE CANAL DEJA LIVRE, ET APRES le battement : le battement doit partir quoi
+# qu'il arrive (son silence leve l'alerte MUET du capteur CONTINU), l'aveu s'y ajoute sans le
+# remplacer. `plume_lecture_partielle` n'ecrit ni ne jette aucun marqueur — ce capteur n'en a pas —
+# elle nomme la lecture ratee, et `de-collector-unavailable` (severite 2) alerte dessus.
+if [ -n "$_cs_ko" ]; then
+  plume_lecture_partielle crowdsec source_illisible "lecture(s) CrowdSec en echec ce passage :$_cs_ko. Les alertes et l'etat du moteur de cette portee ne sont PAS observes ; l'absence d'attaque ne peut PAS en etre conclue."
+fi
 
 # ── 3) SHIP : un seul spool par run (alertes éventuelles + battement de santé TOUJOURS présent).
 [ -z "$events" ] && plume_exit_nodata

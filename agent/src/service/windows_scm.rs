@@ -107,7 +107,7 @@ pub fn dispatch_if_service(config_path: &std::path::Path) -> anyhow::Result<bool
 #[cfg(target_os = "windows")]
 mod imp {
     use super::{DISPLAY_NAME, SERVICE_NAME};
-    use crate::service::{Outcome, ServiceSpec};
+    use crate::service::{Constat, Outcome, ServiceSpec};
     use std::ffi::OsString;
     use std::path::Path;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -143,7 +143,7 @@ mod imp {
         for d in [&spec.spool_dir, &spec.state_dir] {
             let existait = d.is_dir();
             let res = std::fs::create_dir_all(d);
-            r.observe(format!("répertoire {}", d.display()), existait, || match res {
+            r.observe(format!("répertoire {}", d.display()), Constat::mesure(existait), || match res {
                 Ok(()) if d.is_dir() => Ok(()),
                 Ok(()) => Err("créé sans erreur mais absent à la re-sonde".into()),
                 Err(e) => Err(format!("{e} (élévation requise ?)")),
@@ -172,12 +172,17 @@ mod imp {
             account_password: None,
         };
         let acces = ServiceAccess::START | ServiceAccess::QUERY_STATUS | ServiceAccess::CHANGE_CONFIG;
-        // Existait-il DÉJÀ, et tournait-il ? (les deux observations « avant », prises avant d'agir)
-        let existait = manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS).is_ok();
         let tournait = etat_courant(&manager) == Some(ServiceState::Running);
 
+        // EXISTAIT-IL DÉJÀ ? C'EST L'ACTION ELLE-MÊME QUI LE MESURE (`S36`), et non une interrogation
+        // de plus : `CreateService` réussit quand le service n'existait pas, et échoue
+        // (ERROR_SERVICE_EXISTS) quand il existait — auquel cas `OpenService` reprend la main. La
+        // forme précédente posait la question à un `open_service(…).is_ok()` séparé, dont l'échec —
+        // accès refusé, SCM qui ne répond pas — valait « il n'existait pas ». On sautait alors l'arrêt
+        // du processus VIVANT (plus bas), si bien que le service continuait de tourner sur l'ANCIENNE
+        // ligne de commande pendant que le rapport annonçait « posé ».
         let cree = match manager.create_service(&info, acces) {
-            Ok(s) => Ok(s),
+            Ok(s) => Ok((s, false)),
             // Déjà enregistré -> on reprend la main sur l'existant (ré-installation idempotente) ET
             // on RÉÉCRIT sa configuration : sans `change_config`, une ré-installation qui change le
             // chemin du binaire ou du `--config` laisserait le SCM lancer l'ANCIENNE ligne de
@@ -192,24 +197,34 @@ mod imp {
                 })
                 .and_then(|s| {
                     s.change_config(&info)
-                        .map(|()| s)
+                        .map(|()| (s, true))
                         .map_err(|e3| anyhow::anyhow!("ChangeServiceConfig : {e3}"))
                 }),
         };
-        let service = match cree {
-            Ok(s) => s,
+        let (service, existait) = match cree {
+            Ok(v) => v,
             Err(e) => {
-                r.observe(format!("service SCM {SERVICE_NAME}"), existait, || Err(format!("{e}")));
+                // Ni créé, ni ouvert : l'état ANTÉRIEUR n'a pas été établi non plus, et le constat
+                // le dit au lieu de choisir celle des deux affirmations qui arrange.
+                let constat = Constat::NonObserve {
+                    cause: crate::lisibilite::CAUSE_SOURCE_ILLISIBLE,
+                    detail: format!("{e}"),
+                };
+                r.observe(format!("service SCM {SERVICE_NAME}"), constat, || Err(format!("{e}")));
                 return Ok(r);
             }
         };
-        r.observe(format!("service SCM {SERVICE_NAME} (enregistré, démarrage auto)"), existait, || {
-            if manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS).is_ok() {
-                Ok(())
-            } else {
-                Err("absent du SCM juste après CreateService".into())
-            }
-        });
+        r.observe(
+            format!("service SCM {SERVICE_NAME} (enregistré, démarrage auto)"),
+            Constat::mesure(existait),
+            || {
+                if manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS).is_ok() {
+                    Ok(())
+                } else {
+                    Err("absent du SCM juste après CreateService".into())
+                }
+            },
+        );
         let _ = service.set_description(
             "Lit les journaux Windows Event Log natifs et les expédie vers le endpoint d'ingest Plume.",
         );
@@ -233,34 +248,47 @@ mod imp {
         // un changement, et prétendre « déjà conforme » serait une affirmation non observée.
         // `tournait` reste sondé : il sert au diagnostic, pas au verdict.
         let _ = tournait;
-        let deja_conforme = false;
-        r.observe(format!("service SCM {SERVICE_NAME} (en cours d'exécution)"), deja_conforme, || {
-            // RE-SONDE D'ABORD : `start()` rend une erreur si le service tourne DÉJÀ
-            // (ERROR_SERVICE_ALREADY_RUNNING) — ce n'est pas un échec, c'est l'état voulu. Le code de
-            // retour ne sert donc qu'à EXPLIQUER un état qu'on n'a pas obtenu.
-            let limite = std::time::Instant::now() + Duration::from_secs(10);
-            let contexte = |quoi: &str| match &demarre {
-                Err(e) => format!("{quoi} — StartService : {e} (1053 = le processus n'a pas \
-                                   répondu : binaire qui ne démarre pas ? config illisible ?)"),
-                Ok(()) => quoi.to_string(),
-            };
-            loop {
-                match etat_courant(&manager) {
-                    Some(ServiceState::Running) => return Ok(()),
-                    Some(ServiceState::Stopped) => {
-                        return Err(contexte(
-                            "ARRÊTÉ juste après le démarrage (Observateur d'événements : journal \
-                             Système, source « Service Control Manager »)",
-                        ))
+        r.observe(
+            format!("service SCM {SERVICE_NAME} (en cours d'exécution)"),
+            Constat::NonConforme,
+            || {
+                // RE-SONDE D'ABORD : `start()` rend une erreur si le service tourne DÉJÀ
+                // (ERROR_SERVICE_ALREADY_RUNNING) — ce n'est pas un échec, c'est l'état voulu. Le code de
+                // retour ne sert donc qu'à EXPLIQUER un état qu'on n'a pas obtenu.
+                let limite = std::time::Instant::now() + Duration::from_secs(10);
+                let contexte = |quoi: &str| match &demarre {
+                    Err(e) => format!("{quoi} — StartService : {e} (1053 = le processus n'a pas \
+                                       répondu : binaire qui ne démarre pas ? config illisible ?)"),
+                    Ok(()) => quoi.to_string(),
+                };
+                loop {
+                    match etat_courant(&manager) {
+                        Some(ServiceState::Running) => return Ok(()),
+                        Some(ServiceState::Stopped) => {
+                            return Err(contexte(
+                                "ARRÊTÉ juste après le démarrage (Observateur d'événements : journal \
+                                 Système, source « Service Control Manager »)",
+                            ))
+                        }
+                        _ if std::time::Instant::now() >= limite => {
+                            return Err(contexte("pas RUNNING au bout de 10 s (état instable)"))
+                        }
+                        _ => std::thread::sleep(Duration::from_millis(250)),
                     }
-                    _ if std::time::Instant::now() >= limite => {
-                        return Err(contexte("pas RUNNING au bout de 10 s (état instable)"))
-                    }
-                    _ => std::thread::sleep(Duration::from_millis(250)),
                 }
-            }
-        });
+            },
+        );
         Ok(r)
+    }
+
+    /// ERROR_SERVICE_DOES_NOT_EXIST — le SEUL code de l'ouverture d'un service qui MESURE une
+    /// absence. Tous les autres (élévation manquante, SCM qui ne répond pas, nom refusé) disent
+    /// qu'on n'a pas pu regarder, et cela ne se confond pas avec « il n'y a rien à retirer ».
+    const ERROR_SERVICE_DOES_NOT_EXIST: i32 = 1060;
+
+    fn service_absent(e: &windows_service::Error) -> bool {
+        matches!(e, windows_service::Error::Winapi(io)
+            if io.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST))
     }
 
     /// État SCM courant, ou `None` si le service ne s'ouvre pas / ne répond pas.
@@ -272,10 +300,15 @@ mod imp {
             .map(|st| st.current_state)
     }
 
-    /// RETRAIT OBSERVÉ (cf. `Outcome`). DEUX pièges Windows sont dits ici plutôt que devinés :
+    /// RETRAIT OBSERVÉ (cf. `Outcome`). TROIS pièges Windows sont dits ici plutôt que devinés :
     ///  1. `open_service` ÉCHOUE si le service n'existe pas — c'est le seul backend qui, avant ce
     ///     correctif, était déjà BRUYANT sur « rien à retirer » (erreur, code de retour non nul).
     ///     Il devient maintenant HONNÊTE : « absent », rendu 0, sans prétendre avoir retiré.
+    ///  0. MAIS IL ÉCHOUE AUSSI QUAND ON N'A PAS LE DROIT DE REGARDER (`S36`). `Err(_)` valait
+    ///     « absent », donc « rien à retirer », donc un code de sortie NUL : sans élévation, un
+    ///     opérateur qui retire l'agent d'un poste compromis lisait un succès pendant que le service
+    ///     continuait de tourner. SEUL ERROR_SERVICE_DOES_NOT_EXIST mesure une absence ; tout autre
+    ///     code est un aveu, et le retrait ÉCHOUE au lieu de se féliciter.
     ///  2. `DeleteService` marque le service pour suppression ; s'il tourne encore (arrêt lent, ou
     ///     handle ouvert par un autre outil), il ne DISPARAÎT qu'ensuite. On re-sonde donc l'état
     ///     après `stop()`+`delete()` et on ne dit `Removed` que si le service ne s'ouvre plus.
@@ -290,8 +323,25 @@ mod imp {
         );
         let service = match opened {
             Ok(s) => s,
-            Err(_) => {
-                r.observe(format!("service SCM {SERVICE_NAME}"), true, || Ok(()));
+            // MESURÉ absent : il n'y a réellement rien à retirer, et c'est dit ainsi.
+            Err(ref e) if service_absent(e) => {
+                r.observe(format!("service SCM {SERVICE_NAME}"), Constat::Conforme, || Ok(()));
+                return Ok(r);
+            }
+            // PAS mesuré : on ne sait pas si le service est là, et on refuse de conclure.
+            Err(e) => {
+                let constat = Constat::NonObserve {
+                    cause: crate::lisibilite::CAUSE_SOURCE_REFUSEE,
+                    detail: format!("OpenService : {e}"),
+                };
+                r.observe(format!("service SCM {SERVICE_NAME}"), constat, || {
+                    Err(format!(
+                        "le service n'a PAS pu être ouvert ({e}) — ce n'est PAS « absent » : sans \
+                         élévation, ou avec un SCM qui ne répond pas, l'ouverture échoue exactement \
+                         de la même façon qu'un service qui n'existe pas. RIEN n'a été retiré et \
+                         rien n'est affirmé. Relancer depuis une console élevée."
+                    ))
+                });
                 return Ok(r);
             }
         };
@@ -300,16 +350,23 @@ mod imp {
         drop(service);
         // RE-SONDE : le service ne doit plus s'ouvrir. S'il s'ouvre encore, la suppression est
         // seulement EN ATTENTE — le dire, plutôt que de l'appeler « retiré ».
-        r.observe(format!("service SCM {SERVICE_NAME}"), false, || {
+        r.observe(format!("service SCM {SERVICE_NAME}"), Constat::NonConforme, || {
             if let Err(e) = supprime {
                 return Err(format!("DeleteService : {e} (élévation requise ?)"));
             }
-            if manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS).is_ok() {
-                Err("suppression EN ATTENTE : le service est encore enregistré (processus vivant ou \
-                     handle ouvert) — il partira à l'arrêt du service ou au redémarrage"
-                    .into())
-            } else {
-                Ok(())
+            // MÊME DISTINCTION QU'À L'OUVERTURE : seule l'absence MESURÉE autorise à écrire
+            // « retiré ». Un `is_ok()` faux se lisait « il n'est plus là », alors qu'il peut aussi
+            // dire « je n'ai plus le droit de regarder ».
+            match manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS) {
+                Err(ref e) if service_absent(e) => Ok(()),
+                Ok(_) => Err("suppression EN ATTENTE : le service est encore enregistré (processus \
+                              vivant ou handle ouvert) — il partira à l'arrêt du service ou au \
+                              redémarrage"
+                    .into()),
+                Err(e) => Err(format!(
+                    "le retrait n'a PAS pu être vérifié ({e}) — DeleteService n'a pas rendu \
+                     d'erreur, mais l'absence du service n'est pas CONSTATÉE"
+                )),
             }
         });
         Ok(r)

@@ -427,7 +427,13 @@ fn conclure(rapport: service::Outcome) -> Result<()> {
             failed.join(", ")
         );
     }
-    if !rapport.a_change() && rapport.operation() == service::Operation::Retrait {
+    // « il n'était pas installé ici » est une AFFIRMATION, et elle exige que l'état antérieur ait
+    // été observé (`S36`) : un artefact dont l'interrogation n'a pas abouti l'interdit, même quand
+    // l'état voulu est vérifié. Le rapport dit alors ce qu'il a vu, et cette ligne-là se tait.
+    if !rapport.a_change()
+        && rapport.sans_avant().is_empty()
+        && rapport.operation() == service::Operation::Retrait
+    {
         println!("plume-agent n'était pas installé ici : AUCUN retrait effectué.");
     }
     Ok(())

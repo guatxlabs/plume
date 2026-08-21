@@ -218,9 +218,17 @@ async function renderControls() {
   const total = hs.length > 1
     ? ` · parc : ${parc} manquant(s) sur ${enDefaut}/${hs.length} machine(s)`
     : '';
-  b.innerHTML = r.data.controls.map(c =>
-    `<div class="kv"><span>${esc(c.id)}</span><b class="${c.ok ? 'ok' : 'bad'}">${c.ok ? 'OK ' + ic('check') : 'MANQUANT ' + ic('warn')}</b></div>`
-  ).join('') + `<div class="muted">${r.data.failed || 0} manquant(s) - ${fmtTs(r.ts)}${sc ? ' · ' + sc : ''}${total}</div>`;
+  // S36 — TROIS VERDICTS, PAS DEUX. `ok === null` veut dire « la sonde n'a pas pu conclure » (verrou
+  // xtables, /proc masqué, pas de gestionnaire de services joignable). Le rendre ROUGE comme un
+  // contrôle manquant, c'est afficher une alerte que le capteur n'a pas émise — et c'est exactement
+  // ce que fait un `c.ok ? … : …` sur `null`. L'indéterminé se lit comme tel, et ne compte pas dans
+  // le total de manquants (le capteur ne l'y compte pas non plus).
+  b.innerHTML = r.data.controls.map(c => {
+    const ind = (c.ok === null || c.ok === undefined);
+    const cls = ind ? 'muted' : (c.ok ? 'ok' : 'bad');
+    const txt = ind ? 'NON ÉTABLI ' + ic('warn') : (c.ok ? 'OK ' + ic('check') : 'MANQUANT ' + ic('warn'));
+    return `<div class="kv"><span>${esc(c.id)}</span><b class="${cls}" title="${esc(ind ? ('non établi : ' + (c.cause || 'cause non dite')) : (c.detail || ''))}">${txt}</b></div>`;
+  }).join('') + `<div class="muted">${r.data.failed || 0} manquant(s) - ${fmtTs(r.ts)}${sc ? ' · ' + sc : ''}${total}</div>`;
 }
 
 

@@ -271,6 +271,29 @@ state_marker_seen() {
   return 1
 }
 
+# plume_registre_illisible <registre> — vrai quand le registre « déjà signalé » EXISTE mais ne peut
+# pas être interrogé.
+#
+# S36, RANG « DU BRUIT AU LIEU DU SILENCE ». `state_marker_seen` ne peut pas distinguer ses deux
+# échecs : `grep` rend 1 quand la ligne n'y est pas (le cas normal) et >=2 quand le fichier n'a pas pu
+# être lu — les deux se lisent « jamais signalé ». Un registre devenu illisible fait donc RE-SIGNALER
+# tout ce qu'il contenait : pour `yara` c'est un événement `severity 4` par correspondance déjà vue,
+# pour `vuln` une CVE `CRITICAL` par ligne. L'exploitant reçoit une vague d'alertes maximales qui ne
+# décrivent AUCUN fait nouveau, et c'est ainsi qu'une famille d'alertes cesse d'être lue.
+#
+# CE QUI N'EST SURTOUT PAS FAIT : se taire. Ne rien émettre quand le registre est illisible
+# transformerait ce faux positif en angle mort — une correspondance RÉELLEMENT nouvelle disparaîtrait
+# avec les re-signalements. Le lot part donc en entier, et ce qui change est qu'il est ACCOMPAGNÉ :
+# l'appelant avoue que son registre n'était pas interrogeable, de sorte qu'un lot volumineux se lise
+# pour ce qu'il est. Un registre ABSENT n'est PAS ce cas : c'est le premier passage, et il est normal.
+# Le test est en O(1) — un octet — et non un balayage : il est fait une fois par passage, et un
+# registre de plusieurs milliers de lignes ne doit pas se payer deux fois.
+plume_registre_illisible() {
+  [ -e "$1" ] || return 1          # absent = premier passage, cas nominal
+  head -c 1 "$1" >/dev/null 2>&1 && return 1
+  return 0
+}
+
 # Écrit les marqueurs en attente. PRIVÉE : les seuls appelants sont les publications qui acquittent
 # et `plume_exit_nodata`. L'appeler ailleurs, c'est réintroduire le défaut.
 _plume_ack_commit() {
@@ -455,7 +478,16 @@ plume_report_availability() {
   _av_dd="avail-$1-$(printf '%s' "$_av_fields" | cksum | cut -d' ' -f1)-$((ts / 3600))"
   _av_ev=$(printf '{"ts":%s,"source":"%s","category":"config","severity":%s,"message":"%s","dedup":"%s","fields":%s}' \
     "$ts" "$(json_escape "$1")" "$5" "$(json_escape "capteur $1 $2 : $3 — ${4:-}")" "$_av_dd" "$_av_fields")
-  spool_write "config-availability-$1-$ts.json" "$(emit_event "$_av_ev")"
+  # S36 — LE NOM DE L'ENVELOPPE PORTE L'EMPREINTE DU CONTENU, ET PAS SEULEMENT LA SECONDE. Il valait
+  # `config-availability-<source>-<ts>.json` : deux aveux DISTINCTS emis par la meme source pendant le
+  # meme passage ecrivaient le MEME fichier, et le second EFFACAIT le premier. Mesure sur un capteur
+  # d'integrite exerce contre des bouchons : deux aveux emis, UN SEUL fichier dans le spool. Le
+  # dedoublonnage du central n'y pouvait rien — il ne voit que ce qui lui est expedie, et l'un des deux
+  # n'a jamais quitte l'hote. C'etait un aveu perdu par un aveu, c'est-a-dire le defaut meme que ce
+  # canal existe pour empecher. `_av_dd` porte deja l'empreinte du contenu et le seau horaire : un
+  # aveu REPETE a l'identique garde donc le meme nom (aucun fichier de plus), deux aveux DIFFERENTS en
+  # prennent deux.
+  spool_write "config-availability-$1-$ts-${_av_dd#avail-$1-}.json" "$(emit_event "$_av_ev")"
 }
 
 # plume_unavailable <source> <reason> <detail> — cas (I) : PRÉREQUIS ABSENT. Émet puis sort 0.

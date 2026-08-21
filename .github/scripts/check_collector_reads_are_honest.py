@@ -15,8 +15,14 @@ STRUCTURELLEMENT INERTE, et rien ne le dit.
 LA GARDE NE CORRIGE PAS UN CAPTEUR : ELLE TIENT LA SURFACE
 ----------------------------------------------------------
 Sa portée est DÉCOUVERTE, jamais listée : tout `collectors/*.sh` dont le CODE EXÉCUTÉ publie une
-enveloppe `kind:"metrics"`. Un capteur de métriques ajouté demain est donc contrôlé d'office, et
-retirer un capteur de la portée demande de cesser de publier des nombres — pas d'éditer une liste.
+AFFIRMATION que ses sources soient lisibles ou non — une enveloppe `kind:"metrics"`, ou un BATTEMENT
+DE SANTÉ. La seconde forme a été ajoutée par `S36` parce que la première laissait dehors des capteurs
+qui ne se taisaient pas mais AFFIRMAIENT : un battement partant à chaque passage avec « 0 ban actif »
+ou « 0 scan vu » publie la valeur la plus calme de sa série sur une lecture qui a pu échouer. Un
+capteur qui n'émet QUE ce qu'il a vu reste hors portée, et c'est délibéré : ses deux témoins seraient
+identiques, et lui réclamer un aveu reviendrait à lui faire crier à chaque période calme.
+Un capteur ajouté demain est donc contrôlé d'office, et retirer un capteur de la portée demande de
+cesser d'affirmer — pas d'éditer une liste.
 Le code COMMENTÉ est exclu par une machine à états sur les guillemets : une publication qui
 n'existe que dans un commentaire n'en est pas une, et un témoin le vérifie.
 
@@ -82,8 +88,18 @@ RACINE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 CAPTEURS = os.path.join(RACINE, "collectors")
 LIB = os.path.join(CAPTEURS, "lib.sh")
 
-# Marque de publication d'une enveloppe de nombres : c'est elle qui met un capteur dans la portée.
+# CE QUI MET UN CAPTEUR DANS LA PORTÉE : il PUBLIE UNE AFFIRMATION même quand ses sources n'ont rien
+# rendu. Deux formes, et une seule raison commune — dans les deux cas le capteur dit quelque chose
+# qu'un lecteur en aval croira, alors qu'il n'a peut-être rien mesuré ; c'est ce qui rend la
+# différence entre les deux témoins MESURABLE. Un capteur dont le silence est légitime (il n'émet que
+# lorsqu'il a vu quelque chose) n'est pas dans la portée : ses deux témoins seraient identiques, et
+# exiger un aveu de lui reviendrait à lui demander de crier à chaque période calme.
+#   (a) une enveloppe de NOMBRES — la série publiée est lue par des règles à seuil ;
+#   (b) un BATTEMENT DE SANTÉ — il part à chaque passage par construction (son silence lève une
+#       alerte MUET), et il porte souvent un compteur (« 0 ban actif », « 0 scan vu ») qui est
+#       exactement la valeur la plus calme de sa série.
 PUBLIE_DES_NOMBRES = re.compile(r'kind"\s*:\s*"metrics"')
+PUBLIE_UN_BATTEMENT = re.compile(r'(?<![A-Za-z0-9_])heartbeat\s+[A-Za-z0-9_"$-]')
 
 # Les trois portes du canal d'aveu (toutes trois passent par `plume_report_availability`).
 PORTES_D_AVEU = ("plume_mesures_avouer", "plume_lecture_partielle", "plume_lecture_echouee")
@@ -208,7 +224,8 @@ def commandes_externes(code, connues):
 def verdict_statique(texte):
     """Rend (dans_la_portee, a_un_chemin_d_aveu) pour le TEXTE d'un capteur."""
     code = code_execute(texte)
-    return bool(PUBLIE_DES_NOMBRES.search(code)), any(p in code for p in PORTES_D_AVEU)
+    dans_la_portee = bool(PUBLIE_DES_NOMBRES.search(code)) or bool(PUBLIE_UN_BATTEMENT.search(code))
+    return dans_la_portee, any(p in code for p in PORTES_D_AVEU)
 
 
 def valider_l_instrument():
@@ -216,10 +233,14 @@ def valider_l_instrument():
     coupable = 'spool_write "x-$ts.json" "$(printf \'{"kind":"metrics","data":{}}\')"\n'
     innocent = coupable + "plume_mesures_avouer x\n"
     commente = "# " + coupable
+    battement = 'spool_write "x-$ts.json" "$(emit_event "$(heartbeat x \'vivant\' \'{}\')")"\n'
+    hors_portee = 'events="$events,{\"ts\":$ts}"\nspool_write "x-$ts.json" "$(emit_event "$events")"\n'
     for nom, fragment, portee_attendue, aveu_attendu in (
         ("témoin POSITIF (publie sans aveu)", coupable, True, False),
         ("témoin NÉGATIF (publie et avoue)", innocent, True, True),
         ("témoin NÉGATIF (publication COMMENTÉE)", commente, False, False),
+        ("témoin POSITIF (battement de santé sans aveu)", battement, True, False),
+        ("témoin NÉGATIF (n'émet que ce qu'il a vu)", hors_portee, False, False),
     ):
         portee, aveu = verdict_statique(fragment)
         if portee != portee_attendue or aveu != aveu_attendu:
@@ -277,8 +298,13 @@ def executer(capteur, commandes, en_echec):
             PLUME_STATE=etat,
         )
         r = subprocess.run(["sh", capteur], env=env, capture_output=True, text=True, timeout=120)
-        mesures, aveux = set(), []
+        mesures, battements, aveux = set(), set(), []
         for nom in sorted(os.listdir(spool)):
+            # LES TEMPORAIRES NE SONT PAS DES PUBLICATIONS. `spool_publish_file` compose l'enveloppe
+            # dans un `.nom.XXXXXX` puis la RENOMME ; `ship.sh` ne parcourt que les noms visibles.
+            # Lire un temporaire ferait échouer la garde sur un fichier que personne n'expédie.
+            if nom.startswith("."):
+                continue
             chemin = os.path.join(spool, nom)
             try:
                 import json
@@ -288,6 +314,11 @@ def executer(capteur, commandes, en_echec):
             for m in doc.get("data", {}).get("metrics", []):
                 mesures.add(m["name"])
             for ev in doc.get("events", []):
+                if ev.get("fields", {}).get("type") != "collector-availability":
+                    # IDENTITÉ DE CE QUI EST AFFIRMÉ, pas son contenu : un battement porte un
+                    # horodatage et un compteur qui bougent d'une exécution à l'autre, et comparer
+                    # des contenus ferait conclure « ça a changé » à chaque fois.
+                    battements.add("%s/%s" % (ev.get("source", "?"), ev.get("category", "?")))
                 if ev.get("fields", {}).get("type") == "collector-availability":
                     # Le chemin du répertoire fabriqué change à chaque exécution et apparaît dans le
                     # texte des aveux ; sans le neutraliser, deux aveux IDENTIQUES seraient comparés
@@ -297,7 +328,7 @@ def executer(capteur, commandes, en_echec):
         appelees = set()
         if os.path.exists(trace):
             appelees = {l.strip() for l in open(trace, encoding="utf-8") if l.strip()}
-        return r, mesures, aveux, appelees
+        return r, mesures, aveux, appelees, battements
 
 
 def main():
@@ -323,12 +354,13 @@ def main():
 
     if not portee:
         echec(
-            "AUCUN capteur ne publie d'enveloppe `kind:\"metrics\"` — la portée est vide, donc "
-            "l'instrument est cassé : la garde refuse de conclure au lieu de rendre vert."
+            "AUCUN capteur ne publie d'enveloppe `kind:\"metrics\"` ni de battement de santé — la "
+            "portée est vide, donc l'instrument est cassé : la garde refuse de conclure au lieu de "
+            "rendre vert."
         )
     if sans_aveu:
         echec(
-            f"ces capteurs publient des NOMBRES sans aucun chemin vers le canal d'aveu {PORTES_D_AVEU} : "
+            f"ces capteurs AFFIRMENT (nombres ou battement) sans aucun chemin vers le canal d'aveu {PORTES_D_AVEU} : "
             f"{sans_aveu}. Un capteur qui ne peut pas dire qu'une mesure manque ne peut publier qu'une "
             "valeur rassurante à sa place."
         )
@@ -342,11 +374,11 @@ def main():
             rapport.append(f"{nom} : aucune commande externe extraite -> NON EXERÇABLE")
             continue
 
-        r1, m1, a1, appelees = executer(chemin, commandes, en_echec=None)
+        r1, m1, a1, appelees, b1 = executer(chemin, commandes, en_echec=None)
         if r1.returncode != 0:
             echec(f"{nom} (témoin 1, sources lues et vides) : sortie {r1.returncode} — {r1.stderr.strip()[:300]}")
-        if not m1:
-            rapport.append(f"{nom} : témoin (1) ne publie aucun nombre -> NON EXERÇABLE ({commandes})")
+        if not m1 and not b1:
+            rapport.append(f"{nom} : témoin (1) ne publie RIEN -> NON EXERÇABLE ({commandes})")
             continue
         incoherents = sorted(k for k in m1 if any(k in t for t in a1))
         if incoherents:
@@ -361,10 +393,18 @@ def main():
 
         concluantes = 0
         for c in sorted(appelees):
-            r2, m2, a2, _ = executer(chemin, commandes, en_echec=c)
+            r2, m2, a2, _, b2 = executer(chemin, commandes, en_echec=c)
             if r2.returncode != 0:
                 echec(f"{nom} (témoin 2, `{c}` en échec) : sortie {r2.returncode} — {r2.stderr.strip()[:300]}")
-            if m2 == m1:
+            # CE QUE LA MUTATION DOIT CHANGER : ou bien une série publiée DISPARAÎT, ou bien un AVEU
+            # apparaît. Exiger la seule disparition serait faux pour un capteur dont la publication
+            # est un BATTEMENT : il doit continuer de battre (son silence lève une alerte MUET) et
+            # c'est l'aveu qui porte la différence. Exiger le seul aveu serait faux pour une série de
+            # nombres : un aveu laisserait le nombre en place, et c'est le nombre que la règle lit.
+            # « Un aveu apparaît » se mesure sur le TEXTE, pas sur le compte : un capteur qui avoue
+            # déjà autre chose (une source hors mutation) doit quand même NOMMER la lecture qui vient
+            # d'échouer, sans quoi deux causes distinctes se diraient du même mot.
+            if m2 == m1 and b2 == b1 and sorted(a2) == sorted(a1):
                 # UN STUB À SORTIE VIDE N'EST PAS UNE LECTURE NOMINALE POUR TOUTE COMMANDE. Pour
                 # celles dont la sortie vide EST déjà un échec (une occupation de disque, un état),
                 # le capteur avoue DÉJÀ au témoin (1) : la mutation ne change alors rien parce qu'il
@@ -386,9 +426,9 @@ def main():
             concluantes += 1
             if not a2:
                 echec(
-                    f"{nom} : `{c}` en échec fait disparaître {sorted(m1 - m2)} SANS aucun aveu "
-                    "`collector-availability`. L'absence seule ne distingue pas « la lecture a échoué » "
-                    "d'un relevé manqué."
+                    f"{nom} : `{c}` en échec fait disparaître {sorted((m1 - m2) | (b1 - b2))} SANS aucun "
+                    "aveu `collector-availability`. L'absence seule ne distingue pas « la lecture a "
+                    "échoué » d'un relevé manqué."
                 )
             texte_aveu = " ".join(a2)
             if m2:
@@ -403,7 +443,8 @@ def main():
                     echec(
                         f"{nom} : `{c}` en échec avoue {menteuses} alors que ces séries sont PUBLIÉES."
                     )
-            rapport.append(f"{nom} : `{c}` en échec -> {sorted(m1 - m2) or 'plus rien de publié'}, avoué")
+            perdu = sorted((m1 - m2) | (b1 - b2))
+            rapport.append(f"{nom} : `{c}` en échec -> {perdu or 'même publication, mais AVOUÉE'}, avoué")
 
         if concluantes:
             exercables += 1
@@ -417,7 +458,8 @@ def main():
             "la garde refuse de conclure. " + " | ".join(rapport)
         )
 
-    print(f"OK — {len(portee)} capteur(s) publiant des nombres, {exercables} exercé(s) de bout en bout :")
+    print(f"OK — {len(portee)} capteur(s) qui AFFIRMENT (nombres ou battement), {exercables} exercé(s) "
+          "de bout en bout :")
     for ligne in rapport:
         print(f"   {ligne}")
 

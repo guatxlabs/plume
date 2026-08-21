@@ -105,9 +105,26 @@ pub trait FimBackend {
 }
 
 /// Lecture des métadonnées+empreinte d'un chemin. Abstraite -> la logique diff/CIM se teste sans disque.
+///
+/// `S36`, RANG « DU BRUIT AU LIEU DU SILENCE » — CE QUE CE TYPE DE RETOUR REND NON-ÉCRIVABLE.
+/// La probe rendait `Option<FileMeta>`, et `None` confondait DEUX faits opposés : « il n'y a plus de
+/// fichier régulier ici » (un constat, vrai) et « je n'ai pas pu lire » (une incapacité). Le diff
+/// traduit `None` en `deleted` — sévérité 3, `fim_event=deleted`, et la règle livrée
+/// `config.d/rules/catalog/im-fim-mass-delete.json` (sévérité 4) compte ces `deleted` par agent. Un
+/// répertoire dont les droits changent, un profil de confinement resserré, un plafond de descripteurs
+/// atteint : la lecture échoue sur BEAUCOUP de chemins d'un coup, et l'agent annonce une suppression
+/// de masse qui n'a pas eu lieu. Le coût ne s'arrête pas là — l'entrée quittait aussi la référence,
+/// si bien que la première lecture RÉUSSIE suivante ressortait en `added`. Une seule panne de lecture
+/// produisait donc DEUX vagues de faux constats.
+///
+/// LA CORRECTION N'EST PAS DE SE TAIRE : `Lue(None)` reste un constat plein (le fichier régulier
+/// n'est plus là -> `deleted` part exactement comme avant), et `Illisible` dit l'autre phrase, par le
+/// canal d'aveu déjà livré. Ce qui disparaît est le VERDICT fabriqué, pas le signal.
 pub trait FsProbe {
-    /// `None` = le chemin n'existe pas / n'est pas un fichier régulier suivi (symlink, socket, dir…).
-    fn probe(&self, path: &Path) -> Option<FileMeta>;
+    /// `Lue(Some(m))` = fichier régulier lu. `Lue(None)` = LU, et il n'y a pas de fichier régulier
+    /// suivi à ce chemin (absent, remplacé par un lien / une socket / un répertoire) — c'est un
+    /// CONSTAT. `Illisible` = la lecture a échoué : aucun constat n'en sort.
+    fn probe(&self, path: &Path) -> crate::lisibilite::Lecture<Option<FileMeta>>;
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -120,7 +137,7 @@ pub struct RealProbe {
 }
 
 impl FsProbe for RealProbe {
-    fn probe(&self, path: &Path) -> Option<FileMeta> {
+    fn probe(&self, path: &Path) -> crate::lisibilite::Lecture<Option<FileMeta>> {
         probe_real(path, self.hash_max_bytes)
     }
 }
@@ -134,24 +151,49 @@ impl FsProbe for RealProbe {
 /// `/etc/shadow` entre le lstat et l'open (la faille corrigée). La lecture est bornée EN DUR à
 /// `hash_max_bytes` DANS la boucle : un fichier qui grossit pendant la lecture (ou `/dev/zero`-like)
 /// ne peut jamais faire lire l'agent à l'infini.
+/// LES DEUX SENS DE L'ÉCHEC D'OUVERTURE, SÉPARÉS (`S36`). `ENOENT`/`ENOTDIR` disent que le chemin
+/// n'est plus là : c'est le CONSTAT `deleted`, il part. `ELOOP` dit que le dernier composant est
+/// devenu un lien symbolique — le fichier régulier surveillé n'existe donc plus non plus, et c'est
+/// aussi un constat. TOUT LE RESTE — droits retirés, plafond de descripteurs, entrée/sortie — est une
+/// INCAPACITÉ : la vérité est « je n'ai pas pu lire », et elle ne se dit pas « supprimé ».
 #[cfg(unix)]
-fn probe_real(path: &Path, hash_max_bytes: u64) -> Option<FileMeta> {
+fn probe_real(path: &Path, hash_max_bytes: u64) -> crate::lisibilite::Lecture<Option<FileMeta>> {
+    use crate::lisibilite::Lecture;
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::io::AsRawFd;
-    let f = std::fs::OpenOptions::new()
+    let f = match std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
-        .ok()?; // ELOOP (lien) / ENXIO / EACCES … -> on dégrade en "non suivi" (skip)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            return match e.raw_os_error() {
+                // ELOOP : le dernier composant est un lien -> plus de fichier régulier ici (constat).
+                Some(v) if v == libc::ELOOP => Lecture::Lue(None),
+                _ if e.kind() == std::io::ErrorKind::NotFound => Lecture::Lue(None),
+                _ => Lecture::Illisible {
+                    cause: crate::lisibilite::cause_io(&e),
+                    detail: format!("{} : ouverture impossible ({e})", path.display()),
+                },
+            };
+        }
+    };
     let fd = f.as_raw_fd();
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstat(fd, &mut st) } != 0 {
-        return None;
+        let e = std::io::Error::last_os_error();
+        return Lecture::Illisible {
+            cause: crate::lisibilite::cause_io(&e),
+            detail: format!("{} : fstat du descripteur ouvert a échoué ({e})", path.display()),
+        };
     }
     // Seuls les fichiers RÉGULIERS sont suivis/hashés. Tout le reste (fifo/socket/device/dir/lien) est
     // ignoré sans lecture -> pas de blocage sur un FIFO sans écrivain, pas de lecture d'un device.
+    // C'est un CONSTAT (`Lue(None)`), pas une incapacité : il n'y a réellement plus de fichier
+    // régulier à ce chemin, et un fichier surveillé remplacé par une socket DOIT ressortir.
     if (st.st_mode & libc::S_IFMT) != libc::S_IFREG {
-        return None;
+        return Lecture::Lue(None);
     }
     let size = if st.st_size > 0 { st.st_size as u64 } else { 0 };
     let mode = (st.st_mode & 0o7777) as u32;
@@ -163,15 +205,25 @@ fn probe_real(path: &Path, hash_max_bytes: u64) -> Option<FileMeta> {
     } else {
         None // déjà trop gros -> taille+attributs seuls (borne CPU/RAM)
     };
-    Some(FileMeta { sha256, size, mode, uid, gid, mtime })
+    Lecture::Lue(Some(FileMeta { sha256, size, mode, uid, gid, mtime }))
 }
 
 /// Probe non-unix (repli scan planifié) : `symlink_metadata` ne suit pas le lien, lecture bornée en dur.
 #[cfg(not(unix))]
-fn probe_real(path: &Path, hash_max_bytes: u64) -> Option<FileMeta> {
-    let md = std::fs::symlink_metadata(path).ok()?;
+fn probe_real(path: &Path, hash_max_bytes: u64) -> crate::lisibilite::Lecture<Option<FileMeta>> {
+    use crate::lisibilite::Lecture;
+    let md = match std::fs::symlink_metadata(path) {
+        Ok(md) => md,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Lecture::Lue(None),
+        Err(e) => {
+            return Lecture::Illisible {
+                cause: crate::lisibilite::cause_io(&e),
+                detail: format!("{} : métadonnées illisibles ({e})", path.display()),
+            }
+        }
+    };
     if !md.is_file() {
-        return None;
+        return Lecture::Lue(None);
     }
     let size = md.len();
     let (mode, uid, gid) = meta_perms(&md);
@@ -181,7 +233,7 @@ fn probe_real(path: &Path, hash_max_bytes: u64) -> Option<FileMeta> {
     } else {
         None
     };
-    Some(FileMeta { sha256, size, mode, uid, gid, mtime })
+    Lecture::Lue(Some(FileMeta { sha256, size, mode, uid, gid, mtime }))
 }
 
 #[cfg(not(unix))]
@@ -864,6 +916,10 @@ impl FimReader {
             illisibles +=
                 walk_root(r, self.cfg.recursive, self.cfg.max_files, &self.cfg.exclude, &mut files);
         }
+        // `S36` — un fichier ÉNUMÉRÉ par le parcours mais dont la PROBE échoue n'entre pas non plus
+        // dans la référence, et sa première lecture réussie ressortirait en `added`. Il compte donc
+        // dans le même trou, pour la même raison, plutôt que d'être perdu entre les deux étapes.
+        let mut illisibles_probe = 0usize;
         // UNE RÉFÉRENCE SEMÉE SUR UN PARCOURS PARTIEL EST UNE FAUSSE RÉFÉRENCE : les fichiers qu'on
         // n'a pas su lire n'y entrent pas, et leur première lecture réussie ressortira en « créé »
         // alors qu'ils étaient là depuis toujours. Le trou est donc dit dès le semis.
@@ -880,13 +936,31 @@ impl FimReader {
             ));
         }
         for p in files {
-            if let Some(m) = self.probe.probe(&p) {
-                let key = p.to_string_lossy().to_string();
-                if !self.baseline.set(key, m, self.cfg.max_files) {
-                    self.warn_cap();
-                    break;
+            match self.probe.probe(&p) {
+                crate::lisibilite::Lecture::Lue(Some(m)) => {
+                    let key = p.to_string_lossy().to_string();
+                    if !self.baseline.set(key, m, self.cfg.max_files) {
+                        self.warn_cap();
+                        break;
+                    }
                 }
+                // LU, et il n'y a pas de fichier régulier ici (lien, socket, disparu entre le
+                // parcours et la probe) : rien à mettre en référence, et rien à avouer.
+                crate::lisibilite::Lecture::Lue(None) => {}
+                crate::lisibilite::Lecture::Illisible { .. } => illisibles_probe += 1,
             }
+        }
+        if illisibles_probe > 0 && self.incapacite.is_none() {
+            self.warned_cap = true;
+            self.incapacite = Some((
+                crate::lisibilite::RAISON_SOURCE_ABSENTE,
+                crate::lisibilite::CAUSE_SOURCE_REFUSEE,
+                format!(
+                    "[fim:{}] semis de référence INCOMPLET : {illisibles_probe} fichier(s) énuméré(s) \
+                     n'ont pas pu être lus et ne sont donc PAS en référence",
+                    self.cfg.id
+                ),
+            ));
         }
     }
 
@@ -1048,6 +1122,15 @@ impl SourceReader for FimReader {
         let ts = super::now_secs();
         let (candidates, illisibles) = self.collect_candidates(max);
         let mut out = Vec::new();
+        // `S36`, RANG « DU BRUIT AU LIEU DU SILENCE » — CE QUE CE COMPTEUR EMPÊCHE D'ANNONCER.
+        // Une probe en échec valait `None`, et `diff(Some(prev), None)` dit `deleted` : une lecture
+        // impossible s'annonçait comme une SUPPRESSION (sévérité 3, `fim_event=deleted`, comptée par
+        // la règle livrée `im-fim-mass-delete`, sévérité 4). L'entrée quittait de surcroît la
+        // référence, si bien que la lecture réussie suivante repartait en `added`. On ne se tait pas
+        // pour autant : on n'émet aucun verdict, on GARDE la référence intacte (la comparaison sera
+        // refaite au cycle suivant contre le même état) et on AVOUE par le canal déjà livré.
+        let mut illisibles_probe = 0usize;
+        let mut cause_probe: Option<(&'static str, String)> = None;
         // Fix #6 : couverture DÉGRADÉE (plafond max_files déjà atteint OU plafond watches/marks noyau)
         // -> on marque les events `fim_coverage=partial` pour que la troncature soit VISIBLE côté SOC,
         // pas seulement un warning stderr d'hôte. Calculé une fois par cycle.
@@ -1055,7 +1138,16 @@ impl SourceReader for FimReader {
             self.warned_cap || self.backend.as_ref().map_or(false, |b| b.degraded());
         for path in candidates {
             let key = path.to_string_lossy().to_string();
-            let cur = self.probe.probe(&path);
+            let cur = match self.probe.probe(&path) {
+                crate::lisibilite::Lecture::Lue(m) => m,
+                crate::lisibilite::Lecture::Illisible { cause, detail } => {
+                    illisibles_probe += 1;
+                    if cause_probe.is_none() {
+                        cause_probe = Some((cause, detail));
+                    }
+                    continue; // ni verdict, ni mise à jour de la référence
+                }
+            };
             let prev = self.baseline.get(&key).cloned();
             // Fix #5 : chemin déjà refusé par le plafond `max_files` et absent de la baseline -> exclu du
             // diff. Sans ça, diff(None, Some)=Added se ré-émettrait à CHAQUE rescan (storm sans fin). Il
@@ -1124,15 +1216,23 @@ impl SourceReader for FimReader {
         if let Some((raison, cause, detail)) = self.incapacite.clone() {
             return Releve::partiel(out, raison, cause, detail);
         }
-        if illisibles > 0 {
+        if illisibles > 0 || illisibles_probe > 0 {
+            // LA CAUSE VIENT DE L'ERREUR SYSTÈME quand la probe en a rendu une ; le parcours, lui,
+            // ne rend qu'un compte, et son mot reste celui qu'il a toujours eu.
+            let (cause, detail_probe) = match &cause_probe {
+                Some((c, d)) => (*c, format!(" (1re cause : {d})")),
+                None => (crate::lisibilite::CAUSE_SOURCE_REFUSEE, String::new()),
+            };
             return Releve::partiel(
                 out,
                 crate::lisibilite::RAISON_SOURCE_ABSENTE,
-                crate::lisibilite::CAUSE_SOURCE_REFUSEE,
+                cause,
                 format!(
-                    "[fim:{}] {illisibles} point(s) de l'arborescence surveillée n'ont pas pu être \
-                     lus ce cycle : ce qui s'y trouve n'est PAS surveillé, et aucune modification \
-                     n'y sera signalée",
+                    "[fim:{}] {illisibles} point(s) de l'arborescence surveillée et \
+                     {illisibles_probe} fichier(s) suivi(s) n'ont pas pu être lus ce cycle : ce qui \
+                     s'y trouve n'est PAS surveillé, aucune modification n'y sera signalée, et AUCUN \
+                     constat de suppression n'en est déduit — la référence de ces fichiers est \
+                     conservée telle quelle{detail_probe}",
                     self.cfg.id
                 ),
             );

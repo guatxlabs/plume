@@ -53,6 +53,15 @@ done < "$imgs_f"
 rm -f "$imgs_f"
 [ -n "$_scan_ko" ] && plume_lecture_partielle vuln source_illisible "images NON scannees ce passage (leurs CVE ne sont pas marquees « deja signalees », elles seront reexaminees) :$_scan_ko"
 
+# S36, RANG « DU BRUIT AU LIEU DU SILENCE » — MEME DEFAUT QUE `yara`, MEME REMEDE (cf. lib.sh) :
+# un registre « deja signale » present mais non interrogeable fait repartir CHAQUE CVE deja connue,
+# jusqu'a `severity 4` pour les CRITICAL. Le lot part quand meme (une CVE reellement nouvelle ne doit
+# pas disparaitre avec les doublons), mais il est AVOUE.
+if plume_registre_illisible "$SEEN"; then
+  plume_lecture_partielle vuln source_refusee \
+    "le registre des CVE DEJA SIGNALEES ($SEEN) existe mais n'est pas interrogeable : les CVE de ce lot peuvent avoir deja ete signalees."
+fi
+
 events=""; ne=0
 while IFS="$TAB" read -r sev cve pkg inst fixed img; do
   [ -z "${cve:-}" ] && continue

@@ -54,7 +54,11 @@ fi
 # qu'a partir de ce qui a ete lu (c'est le cas ou l'hypothese de `S30` tient), donc rien n'etait
 # ACQUITTE a tort — mais l'aveuglement restait indiscernable du calme, et c'est le meme defaut.
 journalctl $SEL $OF -o json --no-pager _COMM=sshd _COMM=sshd-session _COMM=sudo _COMM=su 2>/dev/null > "$tmp" \
-  || plume_lecture_echouee journal source_illisible "journal systemd non lisible : aucune ligne d'authentification n'a pu etre relue ce passage, le curseur n'avance pas"
+  || { rm -f "$tmp"; plume_lecture_echouee journal source_illisible "journal systemd non lisible : aucune ligne d'authentification n'a pu etre relue ce passage, le curseur n'avance pas"; }
+# Le temporaire est retire AVANT de sortir : `plume_lecture_echouee` porte son propre `exit`, si bien
+# que le `.jrnl.XXXXXX` cree dans le SPOOL survivait a chaque passage en echec et s'y accumulait. Il
+# n'etait pas expedie (`ship.sh` ne parcourt que `*.json` / `*.ndjson`), donc rien ne le signalait :
+# une fuite silencieuse dans le repertoire meme que le capteur remplit.
 # DEAD-MAN'S-SWITCH — CAS SPÉCIAL : journal.sh shippe du NDJSON BRUT (journal-*.ndjson) routé vers
 # /api/ingest/journal, où le daemon FORCE category='auth' en dur -> un battement category=health NE PEUT PAS
 # transiter par le .ndjson. On écrit donc une enveloppe kind:events .json SÉPARÉE (journal-health-*.json),

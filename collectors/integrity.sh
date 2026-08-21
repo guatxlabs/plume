@@ -29,19 +29,77 @@ scope_of() {
   esac
 }
 # emet une ligne baseline "kind|path|sha256|scope" pour un FICHIER (hash sha256).
+#
+# S36, RANG « DU BRUIT AU LIEU DU SILENCE » — L'EMPREINTE `?` ETAIT UN VERDICT FABRIQUE.
+# `sha256sum … | cut` rend le statut de `cut`, jamais celui de `sha256sum` : un fichier present mais
+# NON LISIBLE (droits retires, capacite DAC droppee, entree/sortie) donnait une empreinte vide, et la
+# ligne partait quand meme avec `?` a la place. `?` appartient au DOMAINE NORMAL du champ : le `comm`
+# la voyait differente de la reference, `grep` retrouvait le chemin, et le capteur concluait `modif` —
+# c'est-a-dire `add_ev 4` pour `authkeys`, `preload`, `sudoersd`, `pamd`, `rclocal`, `crit`+shadow et
+# un SUID modifie in-place. Les regles livrees `ca-ssh-authkeys-persistence` et `pe-new-suid-added`
+# (severite 4 toutes deux) s'arment de ces constats. Le cout ne s'arretait pas la : `?` entrait dans la
+# reference promue, si bien que la lecture REUSSIE suivante ressortait une SECONDE fois en `modif`.
+# Une seule panne de droits produisait donc deux vagues d'alertes de severite 4 qui ne decrivaient
+# rien. C'est l'usure du capteur : l'exploitant apprend a ignorer la famille entiere.
+#
+# CE QUI EST FAIT A LA PLACE, ET POURQUOI CE N'EST PAS SE TAIRE. Le code de retour de `sha256sum` est
+# lu (plus de tube), et une lecture ratee ne produit AUCUNE empreinte. Omettre la ligne ne suffirait
+# pas : la reference promue perdrait le chemin, et le passage suivant le ressortirait en `ajout` — le
+# meme faux constat, decale d'un cran. La ligne de la REFERENCE est donc REPORTEE telle quelle, de
+# sorte que la comparaison de ce passage ne dit rien de ce chemin et que celle du passage suivant se
+# fera contre l'etat qui a REELLEMENT ete constate la derniere fois. Un vrai changement survenu
+# pendant l'aveuglement n'est donc pas perdu : il ressort des que le fichier redevient lisible.
+# Et le trou est DIT — les chemins collectes dans `$_fim_ko` sont avoues plus bas par le canal deja livre.
 emit_hash() {  # $1=kind $2=path
   [ -f "$2" ] || return 0
-  _h=$(sha256sum "$2" 2>/dev/null | cut -d' ' -f1); [ -n "$_h" ] || _h="?"
+  if _hs=$(sha256sum "$2" 2>/dev/null); then
+    _h=$(printf '%s' "$_hs" | cut -d' ' -f1)
+  else
+    _h=""
+  fi
+  if [ -z "$_h" ]; then
+    # UN FICHIER, PAS UNE VARIABLE : la boucle des binaires SUID est alimentee par un TUBE, donc elle
+    # tourne dans un SOUS-SHELL — une variable qu'on y poserait serait perdue au retour, et le trou
+    # ne serait jamais avoue. C'est la meme forme de piege que celle que `S36` a fermee ailleurs.
+    printf '%s\n' "$2" >> "$_fim_ko"
+    # Report de la ligne de reference, s'il y en a une. Sinon RIEN : un chemin jamais empreinte ne
+    # doit pas entrer dans la reference sur une lecture qui a echoue.
+    _ref=$(grep -F "$1|$2|" "$BASE" 2>/dev/null | head -1)
+    [ -n "$_ref" ] && printf '%s\n' "$_ref" >> "$cur"
+    return 0
+  fi
   printf '%s|%s|%s|%s\n' "$1" "$2" "$_h" "$(scope_of "$2")" >> "$cur"
 }
+_fim_ko="$STATE/.int.ko.$$"
+: > "$_fim_ko"
 
 # (a) binaires SUID/SGID + SHA256 (modif in-place detectee par changement de hash). PRUNE conteneurs.
 PRUNE="${PLUME_FIM_PRUNE:-/var/lib/buildkit /var/lib/rancher /var/lib/containerd /var/lib/docker /var/lib/kubelet}"
 prune_expr=""; for _d in $PRUNE; do prune_expr="$prune_expr -path $_d -prune -o"; done
+# S36 — L'ENUMERATION DES SUID ETAIT BRANCHEE SUR UN TUBE, DONC SON STATUT ETAIT CELUI DU `while`.
+# Un `find` qui ne demarre pas — binaire absent, racine refusee, systeme de fichiers en erreur —
+# rendait alors EXACTEMENT ce que rend un hote sans aucun binaire SUID : rien. La famille `suid`
+# disparaissait de la nouvelle reference, la reference etait promue quand meme, et ce qui n'avait
+# jamais ete lu entrait dans le CONNU. La regle livree `pe-new-suid-added` (severite 4,
+# `kind=suid change=ajout`) perdait son entree, et le passage suivant la noyait sous une
+# re-declaration de TOUS les binaires SUID en « ajout ».
+# CE QUI EST TENU, ET CE QUI NE L'EST PAS — la distinction tient a une propriete de `find` qu'il faut
+# dire plutot que supposer : son code de retour vaut 1 AUSSI BIEN pour « un sous-arbre etait
+# illisible » — banal sur un hote reel, et le reste de l'enumeration est valable — que pour « la
+# lecture n'a pas eu lieu ». S'en servir seul ferait avouer une indisponibilite a chaque passage.
+# CE QUI EST CONCLU ICI est donc la seule conjonction qui ne soit pas ambigue : code de retour non
+# nul ET AUCUNE ligne rendue. Le cas PARTIEL — des lignes rendues et un code non nul — reste NON
+# COUVERT, et il est nomme : y conclure demanderait un second signal (la liste des racines refusees),
+# que `find` n'expose pas separement.
+_suid_liste=$(mktemp "$STATE/.integrity.suid.XXXXXX")
+_fim_famille_ko=""
 # shellcheck disable=SC2086
-find / -xdev $prune_expr -type f \( -perm -4000 -o -perm -2000 \) -print 2>/dev/null | while IFS= read -r b; do
+find / -xdev $prune_expr -type f \( -perm -4000 -o -perm -2000 \) -print > "$_suid_liste" 2>/dev/null \
+  || { [ -s "$_suid_liste" ] || _fim_famille_ko=" suid"; }
+while IFS= read -r b; do
   emit_hash suid "$b"
-done
+done < "$_suid_liste"
+rm -f "$_suid_liste"
 # fichiers critiques (identite/comptes/sshd)
 for f in $FILES; do emit_hash crit "$f"; done
 # (b) FIM ETENDU — vecteurs de persistance (hash + ajout/modif via le diff baseline)
@@ -126,6 +184,19 @@ if command -v ss >/dev/null 2>&1; then
 fi
 sort -o "$cur" "$cur"
 
+# S36 — LE TROU EST DIT, PAR LE CANAL DEJA LIVRE. Un fichier annonce surveille dont l'empreinte n'a
+# pas pu etre prise n'est PAS surveille ce passage : aucune modification de son contenu n'y sera vue.
+# `plume_lecture_partielle` : le capteur n'est pas incapable — les autres familles restent rendues —
+# et la regle livree `de-collector-unavailable` alerte deja sur ce canal. AUCUN marqueur n'est jete
+# ici : la reference reportee EST l'etat constate la derniere fois, elle reste promouvable.
+if [ -s "$_fim_ko" ]; then
+  _fim_n=$(wc -l < "$_fim_ko" | tr -d ' ')
+  _fim_liste=$(head -n 20 "$_fim_ko" | tr '\n' ' ')
+  plume_lecture_partielle integrity "$(plume_cause_lecture "$(head -1 "$_fim_ko")")" \
+    "$_fim_n fichier(s) annonce(s) surveille(s) N'ONT PAS pu etre empreintes ce passage : aucune empreinte fabriquee, aucun constat de modification n'en est deduit, et la ligne de reference de chacun est reportee telle quelle. Chemins (20 max) : $_fim_liste"
+fi
+rm -f "$_fim_ko"
+
 events=""
 add_ev() {  # $1=severity $2=message $3=fields-json $4=cle d'identite (vide = aucune)
   em=$(json_escape "$2")
@@ -193,11 +264,19 @@ fi
 # S36 — la reference n'est mise en attente QUE si le diff a abouti. Sinon elle est jetee : le
 # capteur publie ce qu'il a (rien, ou les constats deja bâtis) et la comparaison sera refaite au
 # passage suivant contre la MEME reference — une relecture, jamais un oubli.
-if [ "$_diff_ok" = 1 ]; then
-  state_stage_file "$cur" "$BASE"
-else
+# S36 — UNE FAMILLE QUI N'A PAS PU ETRE ENUMEREE INTERDIT LA PROMOTION AU MEME TITRE QU'UN DIFF
+# RATE, et pour la meme raison : promouvoir une reference amputee fait entrer dans le connu ce que
+# personne n'a lu. Un seul aveu part par passage — `plume_report_availability` nomme son enveloppe
+# d'apres la source et la seconde, donc deux aveux de la meme source dans le meme passage
+# s'ecraseraient. Les deux causes sont donc exclusives et la plus grave est dite en premier.
+if [ "$_diff_ok" != 1 ]; then
   rm -f "$cur"
   plume_lecture_partielle integrity forme_inconnue "comparaison a la reference d'integrite en echec : la reference N'EST PAS promue, aucun constat n'entre en silence dans le connu"
+elif [ -n "$_fim_famille_ko" ]; then
+  rm -f "$cur"
+  plume_lecture_partielle integrity source_illisible "famille(s)$_fim_famille_ko NON ENUMEREE(S) ce passage (lecture en echec et aucune entree rendue) : la reference N'EST PAS promue. L'absence de binaire SUID/SGID nouveau ne peut PAS en etre conclue."
+else
+  state_stage_file "$cur" "$BASE"
 fi
 
 # DEAD-MAN'S-SWITCH (battement de santé AUTONOME) : ce FIM sort tôt au 1er run (baseline) et aux runs sans

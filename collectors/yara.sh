@@ -112,6 +112,19 @@ parsed=$(awk '
 rm -f "$res"
 [ -z "$parsed" ] && plume_exit_nodata
 
+# S36, RANG « DU BRUIT AU LIEU DU SILENCE » — UN REGISTRE ILLISIBLE RE-SIGNALE TOUT.
+# `state_marker_seen` ne distingue pas « cette correspondance n'a jamais ete signalee » de « le
+# registre n'a pas pu etre interroge » : `grep` rend 1 dans le premier cas et >=2 dans le second, et
+# les deux se lisaient pareil. Chaque correspondance deja connue repartait alors en `severity 4`.
+# ON NE SE TAIT PAS POUR AUTANT : le lot part en entier — une correspondance REELLEMENT nouvelle
+# disparaitrait avec les re-signalements, et ce serait un angle mort, pire que le bruit. Ce qui
+# change est qu'il est ACCOMPAGNE d'un aveu, de sorte qu'une vague d'alertes se lise pour ce
+# qu'elle est.
+if plume_registre_illisible "$SEEN"; then
+  plume_lecture_partielle yara source_refusee \
+    "le registre des correspondances DEJA SIGNALEES ($SEEN) existe mais n'est pas interrogeable : les correspondances de ce lot peuvent avoir deja ete signalees. Aucune n'est retenue pour autant — une correspondance reellement nouvelle ne doit pas disparaitre avec les doublons."
+fi
+
 # here-doc (PAS un pipe) -> la boucle tourne dans le shell COURANT : $events/$ne persistent (cf. auditd.sh).
 events=""; ne=0
 while IFS="$TAB" read -r rule tags file; do

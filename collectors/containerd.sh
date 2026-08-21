@@ -15,7 +15,13 @@ TAB=$(printf '\t')
 events=""
 
 # Lit "<id>\t<message>" depuis $1 et ajoute 1 event par id NOUVEAU (hors baseline). Pas de pipe -> $events persiste.
-process_file() {  # $1=fichier_lignes  $2=fichier_etat  $3=first(0/1)  $4=severite
+# S34 — CLE D'IDENTITE : l'id CRI lui-meme. Une image est identifiee par son digest, un conteneur
+# par son id de runtime — deux valeurs que le runtime attribue au contenu, pas au passage qui les
+# lit. Ni `$ts`, ni le PID n'entrent dans la cle : republier apres coupure reproduit donc la MEME
+# cle. Le genre est joint parce que deux registres distincts sont tenus (images / conteneurs). La
+# cle ne peut pas confondre deux constats reels : le registre « deja signale » garantit qu'un id
+# n'est emis QU'UNE FOIS, donc une cle repetee ne peut designer que le rejeu du meme constat.
+process_file() {  # $1=fichier_lignes  $2=fichier_etat  $3=first(0/1)  $4=severite  $5=genre
   while IFS="$TAB" read -r idv msg; do
     [ -z "${idv:-}" ] && continue
     # S30 — le registre des ids deja vus est un ACQUITTEMENT : l'ajout est MIS EN ATTENTE et n'est
@@ -26,7 +32,8 @@ process_file() {  # $1=fichier_lignes  $2=fichier_etat  $3=first(0/1)  $4=severi
     [ "$3" = "1" ] && continue
     [ -z "${msg:-}" ] && continue
     mj=$(json_escape "$msg")
-    events="$events${events:+,}{\"ts\":$ts,\"source\":\"containerd\",\"category\":\"container\",\"severity\":$4,\"message\":\"$mj\"}"
+    ddj=",\"dedup\":\"containerd-$5-$(json_escape "$idv")\""
+    events="$events${events:+,}{\"ts\":$ts,\"source\":\"containerd\",\"category\":\"container\",\"severity\":$4,\"message\":\"$mj\"$ddj}"
   done < "$1"
 }
 
@@ -39,14 +46,14 @@ first_ctr=0; [ -f "$CTR_STATE" ] || first_ctr=1
 # IMAGES (table, sans jq) : colonnes <repo> <tag> <image-id> <size> ; on saute l'entete.
 imgs_f=$(mktemp)
 $CRICTL images 2>/dev/null | awk 'NR>1 && $3!="" {print $3 "\t image: " $1 ":" $2}' > "$imgs_f" || true
-process_file "$imgs_f" "$IMG_STATE" "$first_img" 1
+process_file "$imgs_f" "$IMG_STATE" "$first_img" 1 image
 rm -f "$imgs_f"
 
 # CONTENEURS (bonus, seulement si jq) : id + name + pod + image + state
 if command -v jq >/dev/null 2>&1; then
   ctrs_f=$(mktemp)
   $CRICTL ps -a -o json 2>/dev/null | jq -r '.containers[]? | [.id, "conteneur: " + (.metadata.name // "?") + " pod=" + (.labels["io.kubernetes.pod.name"] // "-") + " image=" + (.image.image // "?") + " (" + (.state // "?") + ")"] | @tsv' > "$ctrs_f" 2>/dev/null || true
-  process_file "$ctrs_f" "$CTR_STATE" "$first_ctr" 1
+  process_file "$ctrs_f" "$CTR_STATE" "$first_ctr" 1 conteneur
   rm -f "$ctrs_f"
 fi
 

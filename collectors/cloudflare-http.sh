@@ -69,8 +69,22 @@ fi
 
 # Map CF -> enveloppe Plume kind:events. status/path/method/vhost = STRING (calque web.sh -> la regle
 # 'status=404 | stats dc(path)' s'applique a l'identique). severity 1 (telemetrie ; la DETECTION = regle).
-# dedup cfhttp-<ip>-<path>-<status>-<ts/60> : le recouvrement (LAG) reinsere -> dc(path) INSENSIBLE aux doublons.
-envj=$(printf '%s' "$json" | jq -c --arg host "$host" --argjson ts "$ts" '
+# S34 — CLE D'IDENTITE, ANCREE SUR LA FENETRE INTERROGEE ET NON SUR L'INSTANT DU PASSAGE.
+# CE QUI ETAIT FAUX, ET COMMENT LE DECOMPTE S'EN EST TROUVE FAUSSE : la cle valait
+# `cfhttp-<ip>-<path>-<status>-<$ts/60>`, ou `$ts` est l'INSTANT DE COLLECTE. Un capteur cadence a la
+# minute change donc de seau a presque chaque passage : une tranche republiee apres coupure portait
+# des cles NEUVES et n'etait absorbee par rien. Ce capteur figurait pourtant parmi ceux annonces
+# « absorbes par identite de contenu » — le classement venait du prefixe de la cle, pas de ce qui la
+# compose. Une cle qui contient l'instant de publication ne dedoublonne rien : c'est le piege meme.
+# CE QUI EST STABLE ICI : `since`, la borne basse de la fenetre GraphQL. Elle est lue dans le
+# filigrane AVANT le passage, et le filigrane n'avance qu'APRES la publication (S30) — republier
+# apres coupure reinterroge donc la MEME fenetre et reproduit les MEMES cles. Elle avance d'un
+# passage a l'autre, donc deux passages distincts ne se confondent pas. Les dimensions du groupe
+# (ip, chemin, statut, methode) completent l'identite : deux groupes distincts d'une meme fenetre
+# ont des cles distinctes. Le groupe n'ayant PAS de dimension temporelle, il n'existe rien de plus
+# fin a mettre dans la cle — le recouvrement volontaire (LAG) reinsere donc toujours, et la regle
+# `dc(path)` reste INSENSIBLE a ces doublons-la, comme avant.
+envj=$(printf '%s' "$json" | jq -c --arg host "$host" --argjson ts "$ts" --arg since "$since" '
   ( .data.viewer.zones[0].httpRequestsAdaptiveGroups // [] ) as $g
   | { ts:$ts, host:$host, kind:"events",
       events: ( $g | map(
@@ -88,7 +102,7 @@ envj=$(printf '%s' "$json" | jq -c --arg host "$host" --argjson ts "$ts" '
           severity: 1,
           src_ip: $ip,
           message: ( "CF-HTTP " + $me + " " + $vh + $pa + " -> " + $st + " (x" + ($c|tostring) + ")" ),
-          dedup: ( "cfhttp-" + $ip + "-" + $pa + "-" + $st + "-" + (($ts / 60) | floor | tostring) ),
+          dedup: ( "cfhttp-" + $since + "-" + $ip + "-" + $pa + "-" + $st + "-" + $me ),
           fields: {
             src_ip: $ip,
             vhost:  $vh,

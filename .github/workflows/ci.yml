@@ -316,7 +316,13 @@ env:
   # (`daemon/src/mesure_environnement.rs`, `daemon/src/tests/mesure_environnement.rs`) : dix-huit tests
   # SANS `cfg` de feature, présents dans les DEUX profils. L'arbre énuméré porte aussi des tests
   # d'autres lots en vol ; le total est celui de l'ARBRE, pas la somme d'un lot et d'une valeur d'avant.
-  EXPECTED_TESTS: "1148"
+  # RÉ-ÉNUMÉRÉ (`cargo test -- --list`, JAMAIS une somme) sur l'arbre qui porte le lot S33 — les
+  # mesures d'HÔTE, la contre-pression et l'identité qui décide des actions locales
+  # (`daemon/src/mesure_environnement.rs`, `daemon/src/handlers/actions.rs`,
+  # `daemon/src/tests/mesure_environnement.rs`) : QUATRE tests de plus, sans `cfg` de feature, donc
+  # présents dans les DEUX profils. La valeur d'avant cette ré-énumération avait elle-même bougé sous
+  # un autre lot en vol : c'est précisément pourquoi le total est celui de l'ARBRE et jamais une somme.
+  EXPECTED_TESTS: "1155"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -603,7 +609,7 @@ jobs:
           # RÉ-ÉNUMÉRÉ le 2026-08-20 par la MÊME double lecture, sur l'arbre qui porte aussi le lot S32
           # (lectures d'environnement séparant « lu » de « pas lisible », dix-huit tests sans `cfg`) :
           # 1368 avec `cold_tier` pour 1148 par défaut — l'écart reste **220**.
-          EXPECTED_COLD_TESTS: "1368"
+          EXPECTED_COLD_TESTS: "1375"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -703,6 +709,21 @@ jobs:
       - name: La couverture ANNONCÉE par un capteur doit être ATTEIGNABLE sous son bac à sable
         run: python3 .github/scripts/check_fim_coverage_is_reachable.py
 
+      # MÊME FAMILLE ENCORE, ET C'EST LA PLUS COÛTEUSE : ici le capteur n'est ni muet ni amputé — il
+      # PUBLIE, et ce qu'il publie est la valeur la plus rassurante de sa série. `collectors/resources.sh`
+      # alimente QUATRE règles à seuil (mémoire, fuite slab noyau, processeur, occupation du disque
+      # racine). Une règle dont l'entrée vaut 0 n'est pas en retard : elle est STRUCTURELLEMENT INERTE,
+      # et rien ne le dit. Quatre chemins y menaient — un bloc `END` d'awk qui imprime 0 quand le motif
+      # n'a jamais matché, le code de retour de `df` avalé par le tube, un motif de noms d'interface
+      # qui ne matche aucune convention usuelle (`ens3`, `eno1`, `wlp3s0`), et une variable vide
+      # interpolée DANS un programme awk. La garde exécute le capteur TEL QU'IL EST LIVRÉ contre une
+      # arborescence fabriquée et un `df` stubé : rien de la machine de CI n'entre dans le verdict.
+      # Elle exige les DEUX témoins et n'énumère aucune mesure (les clés du second sont découvertes
+      # dans la sortie du premier) : source lisible valant réellement zéro -> la mesure est PUBLIÉE
+      # à 0 ; source non exploitable -> AUCUN nombre, et un aveu qui NOMME la clé et sa cause.
+      - name: Une mesure d'hôte qui n'a pas pu être prise n'est pas publiée comme un zéro
+        run: python3 .github/scripts/check_host_measures_are_honest.py
+
       # MÊME FAMILLE, APPLIQUÉE À LA DOCUMENTATION : ici ce n'est pas une couverture annoncée qui est
       # injoignable, c'est le DOCUMENT lui-même. Un document à jour que rien ne référence est
       # invisible, donc inexistant pour le lecteur. MESURÉ le 2026-08-20 : 11 des 45 documents suivis
@@ -754,6 +775,26 @@ jobs:
       # d'alimentation.
       - name: Un filigrane doit SUIVRE la publication qu'il acquitte, jamais la précéder
         run: python3 .github/scripts/check_watermark_follows_publication.py
+
+      # LA MOITIÉ MANQUANTE DE LA GARDE PRÉCÉDENTE. Publier avant d'acquitter transforme une perte
+      # SILENCIEUSE en rejeu VISIBLE — c'est un progrès, et il est incomplet : le central n'absorbe ce
+      # rejeu que si l'événement PORTE de quoi être reconnu. Le mécanisme est unique et il se dérive :
+      # `event.dedup` porte un index UNIQUE, toute écriture est un `INSERT OR IGNORE`, la clé est
+      # cloisonnée par l'hôte au point d'écriture, et une clé ABSENTE vaut NULL — or SQLite tient deux
+      # NULL pour DISTINCTS, donc sans clé il n'y a pas de dédoublonnage du tout. Le décompte annoncé
+      # (six / quatre / sept) portait sur DIX-SEPT capteurs parce qu'il avait hérité de la liste de
+      # `S30`, celle des capteurs dont l'ORDRE était fautif ; la population qui REJOUE en compte
+      # VINGT-DEUX (mesuré le 2026-08-21) — `web`, `mail`, `dataaccess` et `resources` avaient déjà le
+      # bon ordre et rejouent tout autant. La garde n'énumère aucun capteur : elle refuse tout objet
+      # événement sans clé chez un capteur qui publie-puis-acquitte, puis LANCE VRAIMENT sept capteurs
+      # avec une coupure simulée juste après la publication et exige trois choses — la tranche
+      # republiée rend les MÊMES clés, des enregistrements DIFFÉRENTS n'en partagent aucune (sans ce
+      # témoin-là, une clé constante passerait le premier en effaçant toutes les données), et un
+      # enregistrement neuf ne réemploie jamais une clé déjà vue. L'horloge est décalée entre les
+      # passes, faute de quoi elles tomberaient dans la même seconde et une clé bâtie sur l'instant de
+      # publication paraîtrait stable.
+      - name: Un rejeu doit être ABSORBÉ par le central, pas seulement visible
+        run: python3 .github/scripts/check_replay_is_absorbable.py
 
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
       # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —

@@ -655,3 +655,180 @@
         );
     }
 
+
+    // ================================================================================================
+    // `S34` — LE REJEU EST-IL ABSORBÉ, OU SEULEMENT VISIBLE ?
+    //
+    // `S30` a inversé l'ordre des deux gestes d'un capteur : publier d'abord, acquitter ensuite. Une
+    // coupure ne perd donc plus rien — elle REJOUE. Ces tests mesurent ce que ce rejeu devient de
+    // l'autre côté, par le VRAI chemin d'ingestion, et ils le mesurent DANS LES DEUX SENS :
+    //   1. avec une clé d'identité, la tranche republiée n'ajoute AUCUNE ligne ;
+    //   2. sans clé, elle en ajoute autant qu'elle en republie (la colonne vaut NULL, et SQLite tient
+    //      deux NULL pour DISTINCTS : sans clé il n'y a pas de dédoublonnage du tout) ;
+    //   3. une clé CONSTANTE absorbe le rejeu à merveille — en effaçant des événements RÉELS. C'est le
+    //      risque symétrique, et le plus grave : un doublon se voit dans un tableau, un événement
+    //      perdu ne laisse rien à compter. Un test qui ne mesurerait que (1) laisserait passer (3).
+    //   4. le régime intermédiaire — une clé bâtie sur un SEAU DE TEMPS — absorbe tant que le passage
+    //      suivant tombe dans le même seau, et cesse d'absorber dès qu'une coupure enjambe la
+    //      frontière. C'est le régime le plus subtil des trois, parce qu'il marche jusqu'à ce qu'il
+    //      ne marche plus.
+    // La moitié amont — la clé émise par le capteur ne dépend NI de l'instant de publication, NI du
+    // numéro de passage, NI du processus — est tenue par `.github/scripts/check_replay_is_absorbable.py`,
+    // qui lance les capteurs pour de vrai avec une coupure simulée. Les deux moitiés se tiennent ;
+    // aucune ne suffit seule.
+    // ================================================================================================
+
+    /// Une enveloppe spool `kind=events` telle qu'un capteur de DONNÉES en publie une. `dedup` à
+    /// `None` reproduit exactement ce que les capteurs sans clé émettaient : la colonne reste NULL.
+    fn enveloppe_capteur(host: &str, ts: i64, message: &str, dedup: Option<&str>) -> String {
+        let mut ev = json!({
+            "ts": ts, "source": "falco", "category": "ebpf", "severity": 3, "message": message
+        });
+        if let Some(d) = dedup {
+            ev["dedup"] = json!(d);
+        }
+        json!({ "ts": ts, "host": host, "kind": "events", "events": [ev] }).to_string()
+    }
+
+    fn compte_ebpf(conn: &Connection) -> i64 {
+        compte(conn, "SELECT COUNT(*) FROM event WHERE category='ebpf'")
+    }
+
+    /// (S34-1) LE REJEU AVEC CLÉ D'IDENTITÉ EST ABSORBÉ — ET LE CONTRE-TÉMOIN MONTRE CE QU'IL COÛTE
+    /// SANS ELLE. Deux publications du MÊME événement, par le MÊME hôte, à des instants DIFFÉRENTS
+    /// (c'est le propre d'un rejeu : le passage suivant a lieu plus tard). Avec la clé, une ligne ;
+    /// sans elle, deux. Le contre-témoin est ce qui prouve que la mesure porte sur la CLÉ et non sur
+    /// une autre propriété de l'enveloppe.
+    #[test]
+    fn s34_rejeu_du_meme_evenement_est_absorbe_par_sa_cle() {
+        let (st, spool) = ing_state_with_spool();
+        let ts = 1_785_600_000i64;
+        // La clé est celle que produit le capteur : l'horodatage NANOSECONDE du record, pas l'instant
+        // du passage. Les deux publications ont lieu à 47 s d'écart et portent donc la MÊME clé.
+        let cle = "falco-2026-08-21T10:00:00.123456789Z-1";
+        depose_spool(&spool, "web01", 1, &enveloppe_capteur("web01", ts, "detection", Some(cle)));
+        ingest_once(&st.tenants, &st.spool);
+        depose_spool(&spool, "web01", 2, &enveloppe_capteur("web01", ts + 47, "detection", Some(cle)));
+        ingest_once(&st.tenants, &st.spool);
+        let conn = st.db.lock();
+        assert_eq!(
+            compte_ebpf(&conn), 1,
+            "le MÊME événement republié après coupure doit rendre UNE ligne : c'est tout l'objet de \
+             la clé d'identité. Deux lignes = le rejeu est visible dans les tableaux et les alertes."
+        );
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&spool);
+
+        // CONTRE-TÉMOIN : le même scénario, clé retirée. `event.dedup` vaut NULL, et deux NULL sont
+        // DISTINCTS pour SQLite -> l'`INSERT OR IGNORE` n'ignore rien. C'est l'état d'avant.
+        let (st2, spool2) = ing_state_with_spool();
+        depose_spool(&spool2, "web01", 1, &enveloppe_capteur("web01", ts, "detection", None));
+        ingest_once(&st2.tenants, &st2.spool);
+        depose_spool(&spool2, "web01", 2, &enveloppe_capteur("web01", ts + 47, "detection", None));
+        ingest_once(&st2.tenants, &st2.spool);
+        let conn2 = st2.db.lock();
+        assert_eq!(
+            compte_ebpf(&conn2), 2,
+            "SANS clé, le rejeu doit bien produire DEUX lignes. Si ce contre-témoin rendait 1, le \
+             dédoublonnage viendrait d'ailleurs que de la clé et le premier volet ne prouverait rien."
+        );
+        drop(conn2);
+        let _ = std::fs::remove_dir_all(&spool2);
+    }
+
+    /// (S34-2) DEUX ÉVÉNEMENTS RÉELLEMENT DIFFÉRENTS NE SONT JAMAIS CONFONDUS — ET UNE CLÉ CONSTANTE
+    /// MONTRE CE QUE COÛTERAIT L'ERREUR SYMÉTRIQUE.
+    ///
+    /// C'est le témoin indispensable : une clé constante passe le test précédent brillamment, tout en
+    /// effaçant toutes les données. Ici, trois détections distinctes d'un même passage. Avec des clés
+    /// distinctes -> trois lignes. Avec la MÊME clé pour les trois -> UNE ligne, donc DEUX constats
+    /// réels détruits, en silence et sans rien à compter. Perdre un événement est pire qu'en afficher
+    /// deux : c'est pourquoi un capteur sans identité sûre doit rester SANS clé plutôt qu'en inventer.
+    #[test]
+    fn s34_deux_evenements_differents_ne_partagent_jamais_une_cle() {
+        let (st, spool) = ing_state_with_spool();
+        let ts = 1_785_600_000i64;
+        let distinctes = [
+            "falco-2026-08-21T10:00:00.111111111Z-1",
+            "falco-2026-08-21T10:00:00.222222222Z-1",
+            "falco-2026-08-21T10:00:00.333333333Z-1",
+        ];
+        for (i, cle) in distinctes.iter().enumerate() {
+            let m = format!("detection {i}");
+            depose_spool(&spool, "web01", i as u32, &enveloppe_capteur("web01", ts, &m, Some(cle)));
+        }
+        ingest_once(&st.tenants, &st.spool);
+        let conn = st.db.lock();
+        assert_eq!(
+            compte_ebpf(&conn), 3,
+            "trois détections DIFFÉRENTES -> trois lignes. Moins, et la clé confond des constats \
+             réels : le dédoublonnage aurait cessé d'être une économie pour devenir une perte."
+        );
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&spool);
+
+        // CONTRE-TÉMOIN : la même chose avec une clé CONSTANTE — ce qu'une clé mal choisie produit.
+        let (st2, spool2) = ing_state_with_spool();
+        for i in 0..3u32 {
+            let m = format!("detection {i}");
+            depose_spool(&spool2, "web01", i, &enveloppe_capteur("web01", ts, &m, Some("falco-constante")));
+        }
+        ingest_once(&st2.tenants, &st2.spool);
+        let conn2 = st2.db.lock();
+        assert_eq!(
+            compte_ebpf(&conn2), 1,
+            "une clé CONSTANTE réduit trois constats à un seul : deux événements réels sont détruits. \
+             Ce contre-témoin est la raison d'être du volet précédent — sans lui, une clé qui ne \
+             discrimine rien passerait le test d'absorption sans qu'on le voie."
+        );
+        drop(conn2);
+        let _ = std::fs::remove_dir_all(&spool2);
+    }
+
+    /// (S34-3) LE RÉGIME INTERMÉDIAIRE — UNE CLÉ À SEAU DE TEMPS N'ABSORBE QUE DANS SON SEAU.
+    ///
+    /// Quatre capteurs bâtissent leur clé sur un SEAU de l'instant de collecte (`ufw` seau horaire,
+    /// `portscan` 5 min, `origin-drop` 1 min, `kube-audit` empreinte + 10 min). Ce n'est pas un
+    /// défaut : le seau EST l'agrégation voulue — un même scanneur ne doit pas remplir un tableau de
+    /// bord. Mais il a un coût qu'il vaut mieux mesurer que supposer : une coupure dont le passage de
+    /// rattrapage tombe de l'autre côté de la frontière n'est PAS absorbée. Ce test tient les deux
+    /// moitiés, pour qu'aucune ne se perde : dans le seau, une ligne ; à cheval, deux.
+    #[test]
+    fn s34_cle_a_seau_de_temps_nabsorbe_pas_une_coupure_qui_enjambe_la_frontiere() {
+        let ts = 1_785_600_000i64; // multiple exact de 3600 -> début d'un seau horaire
+        let cle_du_seau = |t: i64| format!("ufw-198.51.100.7-22-{}", t / 3600);
+
+        // (a) DANS LE MÊME SEAU : le rattrapage a lieu 90 s plus tard -> même seau -> UNE ligne.
+        let (st, spool) = ing_state_with_spool();
+        depose_spool(&spool, "web01", 1, &enveloppe_capteur("web01", ts, "UFW BLOCK", Some(&cle_du_seau(ts))));
+        ingest_once(&st.tenants, &st.spool);
+        depose_spool(&spool, "web01", 2, &enveloppe_capteur("web01", ts + 90, "UFW BLOCK", Some(&cle_du_seau(ts + 90))));
+        ingest_once(&st.tenants, &st.spool);
+        let conn = st.db.lock();
+        assert_eq!(
+            compte_ebpf(&conn), 1,
+            "rejeu dans le MÊME seau -> une ligne. C'est ce qui rend ce régime acceptable la plupart \
+             du temps, et c'est aussi ce qui le rend trompeur."
+        );
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&spool);
+
+        // (b) À CHEVAL SUR LA FRONTIÈRE : la coupure a duré, le rattrapage tombe dans le seau suivant.
+        // L'événement est le MÊME ; la clé, non. DEUX lignes — le doublon que le régime laisse passer.
+        let (st2, spool2) = ing_state_with_spool();
+        let tard = ts + 3600 + 30;
+        depose_spool(&spool2, "web01", 1, &enveloppe_capteur("web01", ts + 3570, "UFW BLOCK", Some(&cle_du_seau(ts + 3570))));
+        ingest_once(&st2.tenants, &st2.spool);
+        depose_spool(&spool2, "web01", 2, &enveloppe_capteur("web01", tard, "UFW BLOCK", Some(&cle_du_seau(tard))));
+        ingest_once(&st2.tenants, &st2.spool);
+        let conn2 = st2.db.lock();
+        assert_eq!(
+            compte_ebpf(&conn2), 2,
+            "rejeu ENJAMBANT la frontière du seau -> DEUX lignes pour un seul événement. Ce n'est pas \
+             une régression : c'est la limite EXACTE du régime intermédiaire, écrite plutôt que tue. \
+             Si ce test rendait 1, la clé aurait cessé de porter un seau et le compte-rendu de la \
+             garde de CI, qui annonce quatre clés à seau, serait devenu faux."
+        );
+        drop(conn2);
+        let _ = std::fs::remove_dir_all(&spool2);
+    }

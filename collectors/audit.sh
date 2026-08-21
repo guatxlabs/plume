@@ -14,6 +14,23 @@ CKPT="$STATE/audit.ckpt"
 # publication. Quand aucun point de reprise n'existe encore, la copie n'existe pas non plus : ausearch
 # voit exactement ce qu'il voyait avant. LIMITE : l'ecriture du point de reprise par ausearch reste la
 # sienne — ce qui est tenu ici est le MOMENT ou elle devient visible, pas son atomicite.
+# S34 — CLE D'IDENTITE : ICI, ELLE NE PEUT PAS VENIR DU RECORD, ET C'EST MESURE. `ausearch
+# --format text` rend des phrases (« At <heure> <date> <utilisateur> ... ») dont la resolution
+# temporelle est la SECONDE et qui ne portent NI le serial du noyau NI aucun identifiant : deux
+# enregistrements d'une meme seconde y rendent deux phrases indiscernables. Une cle batie sur ce
+# texte confondrait donc deux evenements reels — exactement le risque qu'il ne faut pas prendre.
+# CE QUI EST STABLE ICI, c'est la BORNE BASSE DE LA TRANCHE : le point de reprise d'`ausearch` porte
+# `output=<noeud> <sec>.<msec>:<serial>`, c'est-a-dire le dernier evenement DEJA acquitte. Il
+# n'avance qu'APRES la publication (S30) — donc une tranche republiee apres coupure repart de la
+# MEME borne, dans le MEME ordre, et reproduit les MEMES cles. Il croit strictement d'un passage a
+# l'autre, donc deux passages distincts ne partagent jamais de cle. La cle est donc
+# `audit-<borne>-<rang>`, ou le rang est la position dans la tranche.
+# CE QUE CETTE FORME NE COUVRE PAS, dit franchement : si le repertoire d'etat est efface, le point
+# de reprise disparait et la borne redevient `debut` — la relecture complete du journal reproduit
+# alors les cles du tout premier passage, et le central absorbe ces lignes. C'est le comportement
+# voulu (ce sont les memes evenements), mais il tient a une hypothese, et elle est ecrite.
+ANCRE=$(sed -n 's/^output=[^ ]* \([0-9][0-9]*\.[0-9][0-9]*:[0-9][0-9]*\) .*/\1/p' "$CKPT" 2>/dev/null | head -1)
+[ -n "$ANCRE" ] || ANCRE=debut
 CKPT_WORK=$(mktemp "$STATE/.audit.ckpt.XXXXXX")
 if [ -s "$CKPT" ]; then cp "$CKPT" "$CKPT_WORK"; else rm -f "$CKPT_WORK"; fi
 
@@ -33,7 +50,8 @@ while IFS= read -r line; do
     *shadow*|*sudoers*|*ld.so.preload*|*sudo*|*" su "*|*passwd*|*useradd*|*usermod*|*setuid*|*sshd_config*) sev=3 ;;
   esac
   em=$(json_escape "$(printf '%s' "$line" | cut -c1-400)")
-  events="$events${events:+,}{\"ts\":$ts,\"source\":\"auditd\",\"category\":\"audit\",\"severity\":$sev,\"message\":\"$em\"}"
+  dd="audit-$(json_escape "$ANCRE")-$n"
+  events="$events${events:+,}{\"ts\":$ts,\"source\":\"auditd\",\"category\":\"audit\",\"severity\":$sev,\"message\":\"$em\",\"dedup\":\"$dd\"}"
 done < "$tmpf"
 rm -f "$tmpf"
 [ -z "$events" ] && plume_exit_nodata

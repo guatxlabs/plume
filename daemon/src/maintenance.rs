@@ -683,14 +683,30 @@ pub(crate) fn fts_backfill_background(db: &Arc<Mutex<Connection>>) {
     eprintln!("[fts-backfill] backfill event_fields_fts TERMINÉ (historique indexé)");
 }
 
-/// Nom de l'hôte courant (central) : /etc/hostname, sinon $HOSTNAME, sinon "localhost".
-/// Sert à savoir quelles actions le central applique lui-même (host local) vs déléguées aux agents.
+/// L'IDENTITÉ DE CET HÔTE, LUE OU AVOUÉE (`S33`) — /etc/hostname, sinon $HOSTNAME, sinon un AVEU.
+/// Le seul endroit du démon qui nomme ces deux sources ; tout le reste passe par la fonction
+/// paramétrée de `mesure_environnement`, donc s'exerce sans dépendre du nom de la machine de test.
+pub(crate) fn identite_hote() -> crate::mesure_environnement::Mesure<String> {
+    crate::mesure_environnement::identite_hote_depuis(
+        std::path::Path::new("/etc/hostname"),
+        std::env::var("HOSTNAME").ok().as_deref(),
+    )
+}
+
+/// Nom de l'hôte courant (central), avec un repli `localhost` — RÉSERVÉ À L'ÉTIQUETAGE.
+///
+/// LA DISTINCTION AVEC `identite_hote` EST LE SUJET, PAS UN DÉTAIL. Ce nom sert à ÉTIQUETER
+/// l'enveloppe des récepteurs poussés (`host` d'un lot HEC/OTLP/Firehose/Pub/Sub/MinIO), où il faut
+/// bien écrire quelque chose et où une valeur de repli ne DÉCIDE de rien. Il ne doit PAS servir à
+/// décider quelles actions s'exécutent localement : là, un nom d'hôte plausible inventé fait
+/// exécuter des actions destinées à une autre machine, ou fait dormir indéfiniment celles qui
+/// visaient celle-ci. Ce chemin-là passe par `identite_hote`, qui n'a pas de troisième valeur.
+/// LIMITE NOMMÉE : deux hôtes dont l'identité est illisible s'étiquettent tous deux `localhost` et
+/// se confondent dans le cloisonnement par hôte du dédoublonnage. C'est la part que ce repli garde,
+/// et elle est écrite ici plutôt que tue.
 pub(crate) fn host_self() -> String {
-    std::fs::read_to_string("/etc/hostname")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("HOSTNAME").ok())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "localhost".into())
+    match identite_hote() {
+        crate::mesure_environnement::Mesure::Lue(h) => h,
+        crate::mesure_environnement::Mesure::Illisible { .. } => "localhost".into(),
+    }
 }

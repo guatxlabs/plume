@@ -13,9 +13,9 @@ size=$(wc -c < "$LOG" 2>/dev/null || echo 0)
 [ "$size" -lt "$last" ] && last=0   # rotation -> on repart du début
 new=$(tail -c "+$((last + 1))" "$LOG" 2>/dev/null || true)
 # S30 — l'offset est MIS EN ATTENTE ici et n'est ecrit qu'apres la publication (cf. lib.sh). Avant,
-# il avancait des la lecture : une coupure avant le `spool_write` final perdait la tranche en
-# silence. Les events falco ne portent PAS de cle de dedoublonnage -> le rejeu produit des DOUBLONS
-# visibles la ou il y avait une perte muette. Arbitrage assume.
+# il avancait des la lecture : une coupure avant le `spool_write` final perdait la tranche en silence.
+# S34 — le rejeu que cet ordre produit est desormais ABSORBE : chaque event porte une cle d'identite
+# (cf. le bloc `dedup` de la boucle ci-dessous), donc republier la meme tranche n'ajoute aucune ligne.
 state_stage "$OFF" "$size"
 [ -z "$new" ] && plume_exit_nodata
 
@@ -31,7 +31,22 @@ while IFS= read -r line; do
   [ -z "$out" ] && continue
   pri=$(printf '%s' "$line" | grep -oP '"priority":"\K[^"]+' | head -1)
   case "$pri" in Emergency|Alert|Critical) sev=4 ;; Error|Warning) sev=3 ;; Notice) sev=2 ;; *) sev=1 ;; esac
-  events="$events${events:+,}{\"ts\":$ts,\"source\":\"falco\",\"category\":\"ebpf\",\"severity\":$sev,\"message\":\"$out\"}"
+  # S34 — CLE D'IDENTITE. Elle est prise DANS LE RECORD (`time`, horodatage nanoseconde pose par
+  # Falco au moment de la detection), jamais dans le passage : ni `$ts`, ni l'offset, ni le PID n'y
+  # entrent, sans quoi la meme detection republiee produirait une cle differente et ne serait pas
+  # absorbee. Le rang `k` ne compte QUE les records partageant le MEME `time` (le journal est ecrit
+  # dans l'ordre du temps, les egaux sont donc contigus) : il n'est PAS un rang global dans la
+  # tranche. La difference compte — un rang global se decalerait si la tranche suivante commencait
+  # ailleurs (le journal peut grossir entre la mesure de taille et la lecture), et le recouvrement
+  # cesserait d'etre absorbe. Sans `time` exploitable, AUCUNE cle n'est posee : une cle inventee
+  # confondrait deux detections distinctes, ce qui est pire qu'un doublon visible.
+  ftime=$(printf '%s' "$line" | grep -oP '"time":"\K[^"]+' | head -1)
+  dd=""
+  if [ -n "$ftime" ]; then
+    if [ "$ftime" = "${prev_ftime:-}" ]; then k=$((${k:-1} + 1)); else prev_ftime="$ftime"; k=1; fi
+    dd=",\"dedup\":\"falco-$(json_escape "$ftime")-$k\""
+  fi
+  events="$events${events:+,}{\"ts\":$ts,\"source\":\"falco\",\"category\":\"ebpf\",\"severity\":$sev,\"message\":\"$out\"$dd}"
 done < "$tmpf"
 rm -f "$tmpf"
 [ -z "$events" ] && plume_exit_nodata

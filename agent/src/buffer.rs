@@ -69,7 +69,16 @@ impl Spool {
 
     /// Liste les entrées présentes, triées FIFO (chemin + entrée désérialisée). Ignore le corrompu.
     pub fn entries(&self) -> Vec<(PathBuf, SpoolEntry)> {
-        let mut paths = self.spool_files();
+        let mut paths = match self.spool_files() {
+            Ok(p) => p,
+            Err(e) => {
+                // Rien à expédier n'est PAS la même chose que « je ne sais pas ce qu'il y a à
+                // expédier ». Le drain reste vide (on ne peut pas envoyer ce qu'on n'a pas lu), mais
+                // le fait est dit — sans quoi un spool devenu illisible se lit comme un spool drainé.
+                eprintln!("[spool] {} illisible ({e}) — AUCUNE entrée énumérée ce cycle (file de profondeur INCONNUE, pas vide)", self.dir.display());
+                Vec::new()
+            }
+        };
         paths.sort();
         let mut out = Vec::with_capacity(paths.len());
         for p in paths {
@@ -90,29 +99,55 @@ impl Spool {
         let _ = std::fs::remove_file(path);
     }
 
-    /// Nombre d'entrées en attente.
-    pub fn len(&self) -> usize {
-        self.spool_files().len()
+    /// Nombre d'entrées en attente, OU l'échec de la mesure — jamais un zéro par défaut (`S33`).
+    ///
+    /// L'ancienne forme rendait `0` quand le répertoire du spool n'était pas lisible. Zéro est la
+    /// valeur la plus calme de cette série : une file qu'on ne sait plus lire s'y affichait
+    /// « aucune entrée en attente », c'est-à-dire le contraire du fait à signaler.
+    pub fn len(&self) -> std::io::Result<usize> {
+        self.spool_files().map(|f| f.len())
     }
 
     #[allow(dead_code)] // utilisé par les tests + appelants futurs
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
+    pub fn is_empty(&self) -> std::io::Result<bool> {
+        self.len().map(|n| n == 0)
     }
 
-    fn spool_files(&self) -> Vec<PathBuf> {
-        let rd = match std::fs::read_dir(&self.dir) {
-            Ok(rd) => rd,
-            Err(_) => return Vec::new(),
-        };
-        rd.filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().map(|x| x == "spool").unwrap_or(false))
-            .collect()
+    /// LES ENTRÉES DU SPOOL, OU RIEN — ET UN PARCOURS INTERROMPU N'EST PAS UN PARCOURS COMPLET.
+    /// Trois replis menaient au même sous-compte : un `read_dir` en échec rendait la liste VIDE, une
+    /// entrée illisible en cours de route était sautée (`filter_map(|e| e.ok())`), et une entrée dont
+    /// l'extension n'était pas lisible l'était aussi. Un compte PLUS PETIT que la file réelle est,
+    /// pour le plafond de l'anneau, exactement aussi dangereux qu'un zéro : il ne mord pas.
+    fn spool_files(&self) -> std::io::Result<Vec<PathBuf>> {
+        let mut out = Vec::new();
+        for entree in std::fs::read_dir(&self.dir)? {
+            let p = entree?.path();
+            if p.extension().map(|x| x == "spool").unwrap_or(false) {
+                out.push(p);
+            }
+        }
+        Ok(out)
     }
 
     /// Applique le plafond : tant que len > cap, supprime le plus vieux (nom lexicographiquement min).
+    ///
+    /// LE PLAFOND EST UNE GARDE, ET UNE GARDE QUI NE SAIT PAS COMPTER NE GARDE RIEN. Quand la mesure
+    /// échoue, l'ancienne forme lisait « 0 entrée », concluait « sous le plafond » et rendait la main :
+    /// le poste pouvait alors remplir son disque précisément parce qu'on ne savait plus lire le
+    /// répertoire. On ne peut pas évincer ce qu'on n'a pas su énumérer — mais on le DIT, au lieu de
+    /// laisser croire que la borne s'applique.
     fn enforce_cap(&self) {
-        let mut files = self.spool_files();
+        let mut files = match self.spool_files() {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!(
+                    "[spool] plafond de l'anneau NON APPLIQUÉ : {} illisible ({e}) — le nombre \
+                     d'entrées n'a pas pu être établi, aucune éviction n'a eu lieu",
+                    self.dir.display()
+                );
+                return;
+            }
+        };
         if files.len() <= self.cap {
             return;
         }
@@ -240,8 +275,39 @@ mod tests {
         assert_eq!(es[2].1.body, "c");
         // remove le premier -> reste 2
         s.remove(&es[0].0);
-        assert_eq!(s.len(), 2);
+        assert_eq!(s.len().expect("spool lisible"), 2);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `S33` — UNE FILE QU'ON NE SAIT PAS LIRE N'EST PAS UNE FILE VIDE, ET UN PLAFOND QUI NE SAIT PAS
+    /// COMPTER NE PLAFONNE RIEN.
+    ///
+    /// ① SENS « ILLISIBLE » : le répertoire du spool disparaît -> `len()` rend une ERREUR, jamais 0.
+    ///    L'ancienne forme rendait `Vec::new()`, donc « 0 entrée en attente » : la valeur la plus calme
+    ///    de la série, publiée précisément quand la file cesse d'être mesurable. Et comme
+    ///    `enforce_cap` en dérivait, la borne de l'anneau s'éteignait au même instant — le poste
+    ///    pouvait remplir son disque exactement quand plus personne ne pouvait le voir.
+    /// ② SENS « LU, VALEUR ZÉRO » : un répertoire qui EXISTE et ne contient rien rend `Ok(0)`. Sans ce
+    ///    témoin, une version qui rendrait TOUJOURS une erreur passerait ① sans rien prouver, et elle
+    ///    ferait disparaître le cas nominal — un agent à jour, dont la file est réellement vide.
+    #[test]
+    fn une_file_illisible_ne_se_lit_pas_comme_une_file_vide() {
+        let dir = tmpdir("profondeur");
+        let s = Spool::open(&dir, 3).unwrap();
+
+        // ② le cas nominal, d'abord : lu, et la valeur est un VRAI zéro.
+        assert_eq!(s.len().expect("un répertoire présent se lit"), 0, "file réellement vide -> 0");
+        assert!(s.is_empty().expect("un répertoire présent se lit"));
+
+        s.push(&entry("a", Some("c1"))).unwrap();
+        assert_eq!(s.len().expect("un répertoire présent se lit"), 1);
+
+        // ① la source disparaît sous les pieds du processus.
+        std::fs::remove_dir_all(&dir).unwrap();
+        let v = s.len();
+        assert!(v.is_err(), "une file qu'on ne sait pas lire ne rend PAS 0 : {v:?}");
+        // Et le plafond ne conclut pas « sous la borne » : il ne peut évincer que ce qu'il a énuméré.
+        s.enforce_cap(); // ne panique pas, ne prétend pas avoir appliqué la borne
     }
 
     #[test]
@@ -251,7 +317,7 @@ mod tests {
         for i in 0..10 {
             s.push(&entry(&format!("e{i}"), Some(&format!("c{i}")))).unwrap();
         }
-        assert_eq!(s.len(), 3, "borné au cap");
+        assert_eq!(s.len().expect("spool lisible"), 3, "borné au cap");
         let es = s.entries();
         // les 3 plus RÉCENTES survivent (e7,e8,e9), les vieilles sont évincées.
         assert_eq!(es[0].1.body, "e7");

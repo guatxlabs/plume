@@ -138,6 +138,10 @@ impl Config {
 static DROPPED_QUEUE: AtomicU64 = AtomicU64::new(0); // debordement du tampon memoire
 static DROPPED_SPOOL: AtomicU64 = AtomicU64::new(0); // shed sur budget disque
 static DROPPED_ALLOW: AtomicU64 = AtomicU64::new(0); // datagrammes/connexions hors allowlist
+// S33 — cycles de flush pendant lesquels la taille du spool n'a PAS pu etre mesuree : la borne disque
+// n'a alors ete appliquee ni dans un sens ni dans l'autre. Ce n'est pas une perte, c'est une GARDE
+// ETEINTE, et c'est precisement ce qui se lisait « sous le budget ».
+static BUDGET_AVEUGLE: AtomicU64 = AtomicU64::new(0);
 
 /// Tampon d'agregation : les producteurs (UDP/TCP) poussent, le flusher draine par lots.
 /// BORNE (`max_buf`) : sous flood, si le flusher ne suit pas, on JETTE le nouvel event (compte) plutot
@@ -272,7 +276,7 @@ fn main() {
 /// Boucle du flusher : attend jusqu'a flush_ms (ou reveil early sur cap), draine, ecrit par chunks.
 fn flusher_loop(batcher: Arc<Batcher>, cfg: Arc<Config>, flush_ms: u64) {
     let mut last_report = Instant::now();
-    let mut last_reported: (u64, u64, u64) = (0, 0, 0);
+    let mut last_reported: (u64, u64, u64, u64) = (0, 0, 0, 0);
     loop {
         let drained: Vec<Value> = {
             let mut guard = batcher.buf.lock().unwrap();
@@ -292,9 +296,18 @@ fn flusher_loop(batcher: Arc<Batcher>, cfg: Arc<Config>, flush_ms: u64) {
         // BACKPRESSURE DISQUE : UDP ne se regule pas ; si le spool depasse son budget (shipper a la
         // traine / /api/ingest lent ou down / flood), on JETTE ce lot plutot que de remplir le disque
         // sans borne (cf. incident disk-pressure). Perte bornee et COMPTEE (jamais silencieuse).
-        if spool_over_budget(&cfg) {
-            DROPPED_SPOOL.fetch_add(drained.len() as u64, Ordering::Relaxed);
-            continue;
+        match spool_budget(&cfg) {
+            Budget::Depasse => {
+                DROPPED_SPOOL.fetch_add(drained.len() as u64, Ordering::Relaxed);
+                continue;
+            }
+            // La contre-pression est AVEUGLE, pas satisfaite. On ecrit quand meme (cf. le bandeau de
+            // `spool_budget`), et on le COMPTE : sans ce compteur, l'extinction de la borne serait
+            // indiscernable d'une file qui tient largement dans son budget.
+            Budget::NonMesurable => {
+                BUDGET_AVEUGLE.fetch_add(1, Ordering::Relaxed);
+            }
+            Budget::Sous => {}
         }
         // 1 enveloppe par chunk <= batch_max (borne aussi le cap events/req du daemon).
         for chunk in drained.chunks(batcher.batch_max) {
@@ -305,37 +318,69 @@ fn flusher_loop(batcher: Arc<Batcher>, cfg: Arc<Config>, flush_ms: u64) {
     }
 }
 
-/// Le spool depasse-t-il son budget (octets OU nombre de fichiers) ? Un `read_dir` par cycle de flush
-/// (~toutes les flush_ms) : bon marche tant que le spool draine ; ne mord que sous accumulation.
-fn spool_over_budget(cfg: &Config) -> bool {
+/// CE QUE PESE LE SPOOL — TROIS REPONSES, PAS DEUX (`S33`).
+///
+/// LE DEFAUT FERME ICI. L'ancienne forme rendait un booleen, et un `read_dir` en echec y valait
+/// `false` : « sous le budget ». La contre-pression disque s'eteignait donc SILENCIEUSEMENT au
+/// moment precis ou l'on ne savait plus mesurer le disque — c'est-a-dire, souvent, quand il va mal.
+/// Deux replis de plus poussaient dans la meme direction A L'INTERIEUR d'une mesure reussie :
+/// `rd.flatten()` sautait les entrees illisibles et `if let Ok(md)` sautait celles dont le `stat`
+/// echouait. Un parcours interrompu n'est pas un parcours complet : le total qui en sort est PLUS
+/// PETIT que la file reelle, donc plus rassurant, exactement comme un zero.
+///
+/// LA DIRECTION RESTE FAIL-OPEN, ET C'EST UN CHOIX ECRIT : un recepteur syslog qui jetterait tout
+/// parce qu'il n'arrive pas a lire son propre repertoire transformerait une panne de MESURE en perte
+/// d'evenements, dont l'UDP n'est rejouable par personne. Ce qui change est que ce cas a desormais un
+/// NOM, un compteur, et une ligne dans le rapport periodique — au lieu d'etre indiscernable de
+/// « tout va bien ».
+enum Budget {
+    /// Mesure prise, la file tient dans son budget.
+    Sous,
+    /// Mesure prise, le budget est franchi -> shed.
+    Depasse,
+    /// La file n'a PAS pu etre mesuree (repertoire illisible, parcours interrompu, `stat` refuse).
+    /// Aucun budget n'est applique, et ce fait est compte.
+    NonMesurable,
+}
+
+/// Un `read_dir` par cycle de flush (~toutes les flush_ms) : bon marche tant que le spool draine ; ne
+/// mord que sous accumulation.
+fn spool_budget(cfg: &Config) -> Budget {
     if cfg.spool_max_bytes == 0 && cfg.spool_max_files == 0 {
-        return false;
+        return Budget::Sous; // aucune borne demandee : il n'y a rien a mesurer, ce n'est pas un echec
     }
     let rd = match std::fs::read_dir(&cfg.spool) {
         Ok(rd) => rd,
-        Err(_) => return false, // spool illisible -> ne pas bloquer l'ecriture a l'aveugle
+        Err(_) => return Budget::NonMesurable,
     };
     let (mut bytes, mut files) = (0u64, 0usize);
-    for ent in rd.flatten() {
-        if let Ok(md) = ent.metadata() {
-            if md.is_file() {
+    for ent in rd {
+        let ent = match ent {
+            Ok(e) => e,
+            // Un compte partiel serait plus petit que la file reelle : on ne le rend pas.
+            Err(_) => return Budget::NonMesurable,
+        };
+        match ent.metadata() {
+            Ok(md) if md.is_file() => {
                 bytes = bytes.saturating_add(md.len());
                 files += 1;
             }
+            Ok(_) => {}
+            Err(_) => return Budget::NonMesurable,
         }
         if cfg.spool_max_bytes != 0 && bytes > cfg.spool_max_bytes {
-            return true;
+            return Budget::Depasse;
         }
         if cfg.spool_max_files != 0 && files > cfg.spool_max_files {
-            return true;
+            return Budget::Depasse;
         }
     }
-    false
+    Budget::Sous
 }
 
 /// Journalise (au plus toutes les 30 s, et seulement si ca a bouge) les compteurs de perte. Une perte
 /// est ainsi OBSERVABLE (log de l'operateur) au lieu d'etre silencieuse.
-fn report_drops(last: &mut Instant, last_reported: &mut (u64, u64, u64)) {
+fn report_drops(last: &mut Instant, last_reported: &mut (u64, u64, u64, u64)) {
     if last.elapsed() < Duration::from_secs(30) {
         return;
     }
@@ -344,11 +389,13 @@ fn report_drops(last: &mut Instant, last_reported: &mut (u64, u64, u64)) {
         DROPPED_QUEUE.load(Ordering::Relaxed),
         DROPPED_SPOOL.load(Ordering::Relaxed),
         DROPPED_ALLOW.load(Ordering::Relaxed),
+        BUDGET_AVEUGLE.load(Ordering::Relaxed),
     );
     if now != *last_reported {
         eprintln!(
-            "collector-syslog: pertes cumulees — queue={} spool={} allowlist={} (events jetes sous pression/filtre)",
-            now.0, now.1, now.2
+            "collector-syslog: pertes cumulees — queue={} spool={} allowlist={} (events jetes sous pression/filtre) ; \
+             cycles ou la taille du spool n'a PAS pu etre mesuree (borne disque INAPPLIQUEE, ni shed ni garantie)={}",
+            now.0, now.1, now.2, now.3
         );
         *last_reported = now;
     }
@@ -570,6 +617,48 @@ mod tests {
         assert!(parse_cidr("not-an-ip").is_none());
         assert!(parse_cidr("10.0.0.0/33").is_none()); // > 32 bits
         assert!(parse_cidr("::1/129").is_none()); // > 128 bits
+    }
+
+    /// `S33` — UNE CONTRE-PRESSION QUI NE SAIT PLUS MESURER N'EST PAS UNE CONTRE-PRESSION SATISFAITE.
+    ///
+    /// ① SENS « NON MESURABLE » : le repertoire du spool n'existe pas -> `NonMesurable`, jamais
+    ///    `Sous`. L'ancienne forme rendait `false` — « sous le budget » — donc la borne disque
+    ///    s'eteignait SILENCIEUSEMENT au moment precis ou l'on ne savait plus mesurer le disque.
+    /// ② SENS « MESURE, SOUS LA BORNE » : un repertoire qui EXISTE et tient dans son budget rend
+    ///    `Sous`. Sans ce temoin, une version qui rendrait TOUJOURS `NonMesurable` passerait ① sans
+    ///    rien prouver — et elle eteindrait la borne en permanence, ce qui est le meme defaut.
+    /// ③ Et la borne MORD quand elle est franchie : sans ce troisieme point, ① et ② seraient
+    ///    satisfaits par une fonction qui ne dirait jamais `Depasse`.
+    #[test]
+    fn un_spool_illisible_ne_se_lit_pas_comme_un_spool_sous_le_budget() {
+        let base = std::env::temp_dir().join(format!("plume-s33-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let mut c = cfg_with_allow(Vec::new());
+        c.spool = base.join("spool").to_string_lossy().into_owned();
+        c.spool_max_files = 2;
+
+        // ① la source n'est pas la : on ne SAIT PAS, et on le dit.
+        assert!(matches!(spool_budget(&c), Budget::NonMesurable),
+            "un spool absent ne doit pas se lire « sous le budget »");
+
+        // ② le cas nominal : mesure prise, la file tient.
+        std::fs::create_dir_all(&c.spool).unwrap();
+        assert!(matches!(spool_budget(&c), Budget::Sous), "un spool vide et lisible EST sous le budget");
+        std::fs::write(std::path::Path::new(&c.spool).join("a.json"), b"x").unwrap();
+        assert!(matches!(spool_budget(&c), Budget::Sous));
+
+        // ③ et la borne mord vraiment.
+        for n in 0..4 {
+            std::fs::write(std::path::Path::new(&c.spool).join(format!("b{n}.json")), b"x").unwrap();
+        }
+        assert!(matches!(spool_budget(&c), Budget::Depasse), "au-dela du plafond de fichiers, on jette");
+
+        // AUCUNE BORNE DEMANDEE n'est PAS un echec de mesure : il n'y a rien a mesurer.
+        c.spool_max_files = 0;
+        c.spool_max_bytes = 0;
+        assert!(matches!(spool_budget(&c), Budget::Sous));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     fn cfg_with_allow(allow: Vec<Cidr>) -> Config {

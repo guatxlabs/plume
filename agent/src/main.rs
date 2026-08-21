@@ -211,7 +211,12 @@ pub(crate) fn run_loop(cpath: &std::path::Path, once: bool, stop: Arc<AtomicBool
                 st.acked,
                 st.poisoned,
                 st.retried,
-                spool.len()
+                // `S33` — la profondeur n'est pas rendue à zéro faute de savoir : un spool illisible
+                // s'affiche INCONNU, ce qui est le fait à voir, et non « plus rien en attente ».
+                match spool.len() {
+                    Ok(n) => n.to_string(),
+                    Err(e) => format!("inconnu ({e})"),
+                }
             );
         }
         if once || stop.load(Ordering::SeqCst) {
@@ -334,7 +339,13 @@ fn cmd_status(cpath: &std::path::Path) -> Result<()> {
     // Profondeur du spool + curseurs (best-effort : ne pas échouer si la config manque).
     if let Ok(cfg) = Config::load(cpath) {
         if let Ok(spool) = Spool::open(&cfg.spool_dir, cfg.spool_cap) {
-            println!("spool: {} entrée(s) en attente ({})", spool.len(), cfg.spool_dir.display());
+            match spool.len() {
+                Ok(n) => println!("spool: {} entrée(s) en attente ({})", n, cfg.spool_dir.display()),
+                Err(e) => println!(
+                    "spool: profondeur INCONNUE — {} illisible ({e}). Ce n'est pas une file vide.",
+                    cfg.spool_dir.display()
+                ),
+            }
         }
         if let Ok(cursors) = CursorStore::open(&cfg.state_dir) {
             for s in &cfg.source {

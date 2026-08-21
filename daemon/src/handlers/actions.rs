@@ -574,6 +574,51 @@ pub(crate) fn ensure_nft_blocklist() {
         let _ = Command::new("nft").args(r).status(); // idempotent : « File exists » ignoré
     }
 }
+/// LES ACTIONS QUE CE RESPONDER RÉCLAME — UN SEUL AUTEUR POUR CET ÉNONCÉ (`S33`).
+///
+/// `?1` = l'identité de cet hôte, `?2` = 1 si elle a été LUE. Les actions NON CIBLÉES (`host` NULL ou
+/// vide) disent « n'importe quel hôte », et cette phrase reste vraie même quand on ne sait pas son
+/// propre nom : elles sont réclamées dans les deux cas. Les actions CIBLÉES exigent une identité
+/// LUE — sans quoi elles seraient appariées à un nom inventé, et exécutées sur la mauvaise machine.
+///
+/// La constante existe pour que le test exerce l'énoncé du PRODUIT et non une recopie : une paraphrase
+/// resterait verte le jour où celui-ci changerait.
+pub(crate) const ACTIONS_A_RECLAMER_ICI: &str = "SELECT id,kind,target,dry_run FROM action \
+     WHERE status='approved' AND (host IS NULL OR host='' OR (?2 = 1 AND host = ?1))";
+
+/// QUELLE IDENTITÉ CE RESPONDER OPPOSE AUX ACTIONS CIBLÉES, ET S'IL EN A UNE — pur, donc exerçable.
+///
+/// L'étiquette posée par l'exploitant (`PLUME_HOST_LABEL`) prime : c'est une décision explicite, elle
+/// n'a pas à être mesurée. À défaut, l'identité vient de la mesure — et si celle-ci n'a rien pu
+/// établir, il n'y a PAS de troisième valeur. L'ancienne forme repliait sur `localhost` : un nom
+/// d'hôte plausible ment mieux qu'un zéro, car il est indiscernable d'une lecture réussie. Deux
+/// conséquences, opposées et toutes deux muettes : les actions visant le VRAI nom de cette machine
+/// dormaient indéfiniment en `approved` — une réponse décidée par un analyste ne s'exécutait jamais —
+/// pendant que celles visant une AUTRE machine réellement nommée `localhost` s'exécutaient ici. Une
+/// action appliquée au mauvais hôte est un incident, pas un manque de signal.
+///
+/// L'aveu part sur la sortie d'erreur ET dans `/metrics`, où `plume_host_identity_lisible` porte la
+/// cause : une garde éteinte doit se voir, sans quoi elle est indiscernable d'une garde satisfaite.
+pub(crate) fn identite_pour_reclamation(
+    etiquette: &str,
+    mesure: crate::mesure_environnement::Mesure<String>,
+) -> (String, bool) {
+    if !etiquette.is_empty() {
+        return (etiquette.to_string(), true);
+    }
+    match mesure {
+        crate::mesure_environnement::Mesure::Lue(h) => (h, true),
+        crate::mesure_environnement::Mesure::Illisible { cause, detail } => {
+            eprintln!(
+                "[responder] identité de l'hôte ILLISIBLE ({cause}) : {detail} — les actions CIBLÉES ne \
+                 sont pas réclamées ici (les apparier sans identité les appliquerait peut-être au mauvais \
+                 hôte) ; les actions non ciblées restent traitées"
+            );
+            (String::new(), false)
+        }
+    }
+}
+
 
 /// Sous-commande `plume-daemon respond` (exécutée en ROOT par plume-respond) : n'exécute QUE les actions
 /// approuvées + allowlistées + validées ; dry-run -> aucune modif ; tout est journalisé dans `action`.
@@ -616,12 +661,25 @@ pub(crate) fn respond_run() {
     // BYTE-IDENTIQUE. Un responder tournant sur/pour un endpoint non-linux pose PLUME_EXEC_PLATFORM ;
     // le vocab reste FERMÉ, seule la commande native change (cf platform_command).
     let platform = cfg(&conf, "PLUME_EXEC_PLATFORM", "linux");
-    let me = cfg(&conf, "PLUME_HOST_LABEL", &host_self());
-    let pending: Vec<(i64, String, String, bool)> = match conn.prepare(
-        "SELECT id,kind,target,dry_run FROM action WHERE status='approved' AND (host IS NULL OR host='' OR host=?1)",
-    ) {
+    // S33 — QUI SUIS-JE ? C'EST CETTE RÉPONSE QUI DÉCIDE CE QUI S'EXÉCUTE ICI, et elle ne s'invente pas.
+    // L'ancienne forme repliait sur `localhost` quand `/etc/hostname` n'était pas lisible et que
+    // `$HOSTNAME` n'était pas posé. Un nom d'hôte plausible ment mieux qu'un zéro : les actions
+    // ciblant le VRAI nom de cette machine dormaient indéfiniment en `approved` — une réponse décidée
+    // par un analyste ne s'exécutait jamais, et rien ne le comptait — pendant que celles visant une
+    // AUTRE machine réellement nommée `localhost` s'exécutaient ici. Une action appliquée au mauvais
+    // hôte est un incident, pas un manque de signal.
+    // CE QU'ON FAIT À LA PLACE, et l'arbitrage est écrit : les actions NON CIBLÉES (`host` NULL ou
+    // vide) restent exécutées — elles disent « n'importe quel hôte », et cette phrase reste vraie
+    // quand on ne sait pas son propre nom. Les actions CIBLÉES sont laissées intactes : elles ne
+    // peuvent pas être appariées sans identité, et les apparier au hasard serait précisément le
+    // défaut. Elles restent `approved`, donc réclamables plus tard, y compris par l'agent de l'hôte
+    // visé via /api/actions/pending. L'aveu part sur la sortie d'erreur ET dans /metrics, où la jauge
+    // `plume_host_identity_lisible` porte la cause.
+    let (me, identite_lue) =
+        identite_pour_reclamation(&cfg(&conf, "PLUME_HOST_LABEL", ""), crate::maintenance::identite_hote());
+    let pending: Vec<(i64, String, String, bool)> = match conn.prepare(ACTIONS_A_RECLAMER_ICI) {
         Ok(mut s) => s
-            .query_map(params![me], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0)))
+            .query_map(params![me, i64::from(identite_lue)], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0)))
             .map(|x| x.flatten().collect())
             .unwrap_or_default(),
         Err(_) => return,

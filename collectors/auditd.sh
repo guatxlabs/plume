@@ -122,7 +122,16 @@ AUDIT_EXEC_DROP_LIST="$AUDIT_EXEC_DROP_LIST_TIER1"
 [ -n "$AUDIT_EXEC_DROP_RECON" ] && AUDIT_EXEC_DROP_LIST="$AUDIT_EXEC_DROP_LIST_TIER1 $AUDIT_EXEC_DROP_LIST_TIER2"
 # ================================================================================================
 
-# TSV : <sev> <cat> <fields> <message>  (auid sorti en champ -> filtre/agrege dans l'UI)
+# S34 — CLE D'IDENTITE, PRISE DANS LE RECORD DU NOYAU. Chaque enregistrement auditd porte
+# `audit(<sec>.<msec>:<serial>)` : le `serial` est le numero que le NOYAU attribue a l'evenement, et
+# le couple (horodatage, serial) l'identifie de facon unique sur un hote. C'est la seule composante
+# de la cle — ni l'instant du passage (`$ts`), ni l'offset, ni le PID n'y entrent, sans quoi la meme
+# tranche republiee apres coupure produirait des cles neuves et ne serait pas absorbee. La categorie
+# est jointe parce qu'un MEME evenement noyau peut donner deux events Plume de natures differentes
+# (un execve sur un chemin surveille produit `exec` ET `tamper`) : les confondre effacerait un
+# constat reel. Un enregistrement sans identifiant `audit(...)` ne recoit AUCUNE cle : mieux vaut un
+# doublon visible qu'une cle inventee qui confondrait deux enregistrements distincts.
+# TSV : <sev> <cat> <fields> <dedup> <message>  (auid sorti en champ -> filtre/agrege dans l'UI)
 parsed=$(awk -v realonly="${PLUME_AUDIT_REAL_USER_ONLY:-0}" -v tk="$TAMPER_KEYS" \
              -v exdrop="$AUDIT_EXEC_DROP" -v dropexe="$AUDIT_EXEC_DROP_LIST" '
   function val(key){
@@ -130,6 +139,8 @@ parsed=$(awk -v realonly="${PLUME_AUDIT_REAL_USER_ONLY:-0}" -v tk="$TAMPER_KEYS"
     if (match($0, key "=[^ ]+"))      { return substr($0, RSTART+length(key)+1, RLENGTH-length(key)-1) }
     return ""
   }
+  # S34 : identifiant du record noyau, extrait de audit(<sec>.<msec>:<serial>).
+  function idc(x){ if (match(x, /[0-9]+\.[0-9]+:[0-9]+/)) return substr(x, RSTART, RLENGTH); return "" }
   function af(k,v){ if(v!=""&&v!="(null)"){ gsub(/[\\"\t]/,"",v); F=F (F==""?"":",") "\"" k "\":\"" v "\"" } }
   function mapsys(n){
     if(n=="2")return "open"; if(n=="257")return "openat"; if(n=="437")return "openat2";
@@ -184,24 +195,27 @@ parsed=$(awk -v realonly="${PLUME_AUDIT_REAL_USER_ONLY:-0}" -v tk="$TAMPER_KEYS"
     if (k!="" && k!="(null)") msg=msg " key=" k;
     gsub(/[\\"]/,"",msg);
     F=""; af("auid",auid); af("uid",uid); af("exe",exe); af("comm",comm); af("key",k); af("success",succ); af("syscall","execve"); af("action",(succ=="no")?"failure":"success");
-    print sev "\texec\t" F "\t" msg; next
+    dd=(idc(id)!="")?("auditd-exec-" idc(id)):"";
+    print sev "\texec\t" F "\t" dd "\t" msg; next
   }
   /type=ADD_USER/ || /type=DEL_USER/ || /type=USER_CHAUTHTOK/ || /type=USER_MGMT/ || /type=ROLE_ASSIGN/ || /type=ADD_GROUP/ {
     t=$1; sub(/type=/,"",t); acct=val("acct"); auid=val("auid"); uid=val("uid");
     msg="compte: " t " acct=" acct " auid=" auid; gsub(/[\\"]/,"",msg);
     F=""; af("auid",auid); af("uid",uid); af("acct",acct); af("atype",t); af("action","success");
-    print 2 "\taccount\t" F "\t" msg; next
+    dd=(idc(id)!="")?("auditd-account-" idc(id) "-" t):"";
+    print 2 "\taccount\t" F "\t" dd "\t" msg; next
   }
   /type=USER_AUTH/ && /res=failed/ {
     acct=val("acct"); exe=val("exe"); auid=val("auid"); addr=val("addr");
     msg="auth echouee: acct=" acct " via " exe; gsub(/[\\"]/,"",msg);
     F=""; af("auid",auid); af("acct",acct); af("exe",exe); af("addr",addr); af("res","failed"); af("action","failure");
-    print 2 "\tauth\t" F "\t" msg; next
+    dd=(idc(id)!="")?("auditd-auth-" idc(id)):"";
+    print 2 "\tauth\t" F "\t" dd "\t" msg; next
   }
   END {
     # EXEC-DROP self-report : sentinelle best-effort (interceptée par le shell, jamais émise
     # comme event) portant le nb d execve droppes ce run -> expose dans l event config collection-reducing.
-    if (DROPPED>0) print "0\t__auditd_dropcount__\t" DROPPED "\tdrop";
+    if (DROPPED>0) print "0\t__auditd_dropcount__\t" DROPPED "\t\tdrop";
     for (id in TID) {
       key=TKEY[id]; path=(id in TPATH)?TPATH[id]:""; sy=mapsys(TSY[id]);
       exe=TEXE[id]; auid=TAUID[id]; uid=TUID[id]; succ=TSUCC[id];
@@ -212,7 +226,8 @@ parsed=$(awk -v realonly="${PLUME_AUDIT_REAL_USER_ONLY:-0}" -v tk="$TAMPER_KEYS"
       msg="tamper[" key "]: " (path!=""?path:"?") " syscall=" sy " exe=" exe " auid=" auid; if (succ=="no") msg=msg " ECHEC";
       gsub(/[\\"]/,"",msg);
       F=""; af("key",key); af("path",path); af("syscall",sy); af("exe",exe); af("comm",TCOMM[id]); af("auid",auid); af("uid",uid); af("success",succ); af("action",(succ=="no")?"failure":"success");
-      print sev "\ttamper\t" F "\t" msg;
+      dd=(idc(id)!="")?("auditd-tamper-" idc(id)):"";
+      print sev "\ttamper\t" F "\t" dd "\t" msg;
     }
   }
 ' "$new" | head -"${PLUME_AUDIT_MAX:-4000}")
@@ -220,14 +235,15 @@ rm -f "$new"
 [ -z "$parsed" ] && plume_exit_nodata
 
 events=""; EXEC_DROPPED=0; TAB=$(printf '\t')
-while IFS="$TAB" read -r sev cat fields msg; do
+while IFS="$TAB" read -r sev cat fields dd msg; do
   # EXEC-DROP self-report : capte la sentinelle du nb droppé -> event config, PAS un event.
   if [ "${cat:-}" = "__auditd_dropcount__" ]; then EXEC_DROPPED="${fields:-0}"; continue; fi
   [ -z "${msg:-}" ] && continue
   mj=$(json_escape "$msg")
   fj=""; [ -n "${fields:-}" ] && fj=",\"fields\":{$fields}"
   sip=""; case "${fields:-}" in *'"addr":"'*) ip=$(printf '%s' "$fields" | sed -n 's/.*"addr":"\([0-9.]*\)".*/\1/p'); [ -n "$ip" ] && sip=",\"src_ip\":\"$ip\"" ;; esac
-  events="$events${events:+,}{\"ts\":$ts,\"source\":\"auditd\",\"category\":\"$cat\",\"severity\":$sev,\"message\":\"$mj\"$sip$fj}"
+  ddj=""; [ -n "${dd:-}" ] && ddj=",\"dedup\":\"$(json_escape "$dd")\""
+  events="$events${events:+,}{\"ts\":$ts,\"source\":\"auditd\",\"category\":\"$cat\",\"severity\":$sev,\"message\":\"$mj\"$ddj$sip$fj}"
 done <<EOF
 $parsed
 EOF

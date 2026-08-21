@@ -643,7 +643,7 @@ mod tests {
 
         assert_eq!(st.acked, 2);
         assert!(!st.retried);
-        assert!(spool.is_empty(), "spool drainé");
+        assert!(spool.is_empty().expect("spool lisible"), "spool drainé");
         assert_eq!(cursors.load("s1").as_deref(), Some("cur-1"), "curseur persisté APRÈS ack");
         assert_eq!(cursors.load("s2").as_deref(), Some("cur-2"));
 
@@ -676,7 +676,7 @@ mod tests {
         assert_eq!(st.acked, 0);
         assert!(st.retried, "503 -> réessai");
         assert_eq!(st.delay, Some(Duration::from_secs(30)), "503 -> recul maximal");
-        assert_eq!(spool.len(), 2, "les deux entrées conservées (rien perdu)");
+        assert_eq!(spool.len().expect("spool lisible"), 2, "les deux entrées conservées (rien perdu)");
         assert_eq!(cursors.load("s1"), None, "curseur NON avancé sans ack");
         // un seul POST tenté (drain s'arrête au 1er retry).
         assert_eq!(shipper.transport.calls.lock().unwrap().len(), 1);
@@ -701,7 +701,7 @@ mod tests {
 
         assert_eq!(st.poisoned, 1);
         assert_eq!(st.acked, 1);
-        assert!(spool.is_empty(), "poison supprimé + 2e ackée");
+        assert!(spool.is_empty().expect("spool lisible"), "poison supprimé + 2e ackée");
         assert_eq!(cursors.load("s1").as_deref(), Some("cur-2"));
         std::fs::remove_dir_all(&sdir).ok();
         std::fs::remove_dir_all(&cdir).ok();

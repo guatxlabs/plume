@@ -68,20 +68,49 @@ for f in /etc/systemd/system/*.service /etc/systemd/system/*.timer; do emit_hash
 # awk REND UN MOT, il ne rend pas un code de sortie : `exit` dans le programme awk se lit comme une
 # sortie du CAPTEUR pour la garde de CI qui interdit les sorties non classees (et un lecteur pourrait
 # faire la meme confusion). Le verdict est donc une chaine, comparee ici.
-fim_chemin_masque() {  # vrai = le montage qui COUVRE $1 est un masque de bac a sable
-  [ "$(awk -v P="$1" '
+# S33 — LA SONDE D'AVEUGLEMENT S'AVEUGLAIT ELLE-MEME. Elle rendait DEUX verdicts (masque / pas
+# masque), et l'echec de lecture de `/proc/self/mountinfo` tombait du cote « pas masque » — c'est-a-dire
+# du cote « couvert ». Le capteur se declarait alors integralement couvert precisement quand il n'avait
+# RIEN pu etablir, et l'aveu ci-dessous n'etait jamais emis. Le remede est celui de tout ce lot : un
+# TROISIEME verdict, `indetermine`, distinct des deux autres et avoue a son tour.
+# `visible` est imprime EXPLICITEMENT plutot que deduit d'une sortie vide : sans lui, un awk qui
+# echoue et un awk qui conclut « ce chemin n'est pas masque » rendraient la meme chose — rien — et on
+# aurait reconstruit le defaut d'un cran plus bas.
+# PARAMETRE SUR SA SOURCE : une garde peut lui presenter un `mountinfo` fabrique et obtenir le meme
+# verdict sur n'importe quelle machine, y compris une machine dont le bac a sable est reel.
+FIM_MOUNTINFO="${PLUME_MOUNTINFO:-/proc/self/mountinfo}"
+fim_verdict_portee() {  # imprime : masque | visible | indetermine
+  if [ ! -r "$FIM_MOUNTINFO" ]; then printf 'indetermine'; return 0; fi
+  _fv=$(awk -v P="$1" '
     { i = index($0, " - "); if (i == 0) next
       split(substr($0, 1, i - 1), g, " "); split(substr($0, i + 3), d, " ")
       m = g[5]
       if (m == P || m == "/" || index(P, m "/") == 1) {
         if (length(m) >= length(mm)) { mm = m; racine = g[4]; type = d[1]; src = d[2] } } }
-    END { if (type == "tmpfs" && (racine ~ /^\/systemd\/inaccessible/ || (racine == "/" && src == "tmpfs")))
-            print "masque" }' /proc/self/mountinfo 2>/dev/null)" = masque ]
+    END { if (mm == "") print "indetermine"
+          else if (type == "tmpfs" && (racine ~ /^\/systemd\/inaccessible/ || (racine == "/" && src == "tmpfs")))
+            print "masque"
+          else print "visible" }' "$FIM_MOUNTINFO" 2>/dev/null || true)
+  case "$_fv" in
+    masque|visible) printf '%s' "$_fv" ;;
+    *) printf 'indetermine' ;;
+  esac
 }
 fim_hors_portee=""
+fim_portee_inconnue=""
 for _racine in /root/.ssh /home; do
-  if fim_chemin_masque "$_racine"; then fim_hors_portee="$fim_hors_portee $_racine"; fi
+  case "$(fim_verdict_portee "$_racine")" in
+    masque)      fim_hors_portee="$fim_hors_portee $_racine" ;;
+    indetermine) fim_portee_inconnue="$fim_portee_inconnue $_racine" ;;
+  esac
 done
+if [ -n "$fim_portee_inconnue" ]; then
+  # NI couvert NI aveugle : INDETERMINE. La couverture annoncee de la famille `authkeys` n'a pas pu
+  # etre verifiee sur$fim_portee_inconnue, et se taire reviendrait a affirmer qu'elle est atteinte.
+  plume_report_availability integrity unavailable missing-source \
+    "portee de la famille authkeys NON VERIFIABLE sur$fim_portee_inconnue : $FIM_MOUNTINFO n'est pas lisible. Le FIM ne peut PAS affirmer que les cles SSH autorisees sont surveillees sur cet hote — ni qu'elles ne le sont pas." \
+    2 2>/dev/null || true
+fi
 if [ -n "$fim_hors_portee" ]; then
   # PAS `plume_unavailable` : le capteur n'est pas incapable, il est PARTIELLEMENT aveugle et continue
   # de rendre les neuf autres familles. On emet l'aveu et on poursuit. `missing-source` est le
@@ -98,9 +127,10 @@ fi
 sort -o "$cur" "$cur"
 
 events=""
-add_ev() {  # $1=severity $2=message $3=fields-json
+add_ev() {  # $1=severity $2=message $3=fields-json $4=cle d'identite (vide = aucune)
   em=$(json_escape "$2")
-  events="$events${events:+,}{\"ts\":$ts,\"source\":\"integrity\",\"category\":\"integrity\",\"severity\":$1,\"message\":\"$em\",\"fields\":$3}"
+  _dd=""; [ -n "${4:-}" ] && _dd=",\"dedup\":\"$(json_escape "$4")\""
+  events="$events${events:+,}{\"ts\":$ts,\"source\":\"integrity\",\"category\":\"integrity\",\"severity\":$1,\"message\":\"$em\"$_dd,\"fields\":$3}"
 }
 if [ -f "$BASE" ]; then
   comm -13 "$BASE" "$cur" > "$STATE/.int.added" 2>/dev/null || true
@@ -110,18 +140,34 @@ if [ -f "$BASE" ]; then
     if grep -qF "$kind|$path|" "$BASE" 2>/dev/null; then change=modif; else change=ajout; fi
     pj=$(json_escape "$path")
     fields="{\"kind\":\"$kind\",\"path\":\"$pj\",\"sha256\":\"$sha\",\"scope\":\"${scope:-host}\",\"change\":\"$change\"}"
+    # S34 — CLE D'IDENTITE : (genre, chemin, empreinte, date de derniere modification). Les trois
+    # premieres composantes decrivent le CONSTAT, la quatrieme le rend RE-SIGNALABLE. Sans elle, un
+    # fichier retire de la reference puis remis a l'identique — une cle SSH replacee apres avoir ete
+    # nettoyee, par exemple — porterait la cle deja vue, et le second constat, pourtant REEL, serait
+    # efface. C'est la forme deja retenue par le capteur `yara`, pour cette raison exacte.
+    # Ni `$ts`, ni le PID n'y entrent : une reference non promue (coupure apres publication) fait
+    # relire le MEME diff, avec les MEMES empreintes et les MEMES dates, donc les MEMES cles.
+    # LES PORTS EN ECOUTE N'EN RECOIVENT AUCUNE, et c'est dit plutot que bricole : un port n'est ni
+    # un fichier ni un contenu, il n'a ni empreinte ni date, et sa seule composante stable — le
+    # numero — se repete legitimement quand un service est arrete puis relance. Une cle batie
+    # dessus effacerait cette reapparition, qui est precisement le constat a voir.
+    dd=""
+    if [ "$kind" != port ] && [ -f "$path" ]; then
+      mt=$(stat -c %Y "$path" 2>/dev/null || echo "")
+      [ -n "$mt" ] && dd="integrity-$kind-$path-$sha-$mt"
+    fi
     case "$kind" in
-      suid)     [ "$change" = modif ] && add_ev 4 "SUID/SGID MODIFIE in-place (hash) : $path" "$fields" || add_ev 3 "nouveau binaire SUID/SGID : $path" "$fields" ;;
-      preload)  add_ev 4 "/etc/ld.so.preload $change (persistance LD) : $path" "$fields" ;;
-      sudoersd) add_ev 4 "sudoers.d $change (privilege) : $path" "$fields" ;;
-      authkeys) add_ev 4 "authorized_keys $change (acces SSH) : $path" "$fields" ;;
-      pamd)     add_ev 4 "pam.d $change (auth) : $path" "$fields" ;;
-      rclocal)  add_ev 4 "rc.local $change (boot persistance) : $path" "$fields" ;;
-      unit)     add_ev 3 "unit systemd $change (persistance) : $path" "$fields" ;;
-      crond)    add_ev 3 "cron.d $change : $path" "$fields" ;;
-      crit)     case "$path" in *shadow*) add_ev 4 "fichier critique $change : $path" "$fields" ;; *) add_ev 3 "fichier critique $change : $path" "$fields" ;; esac ;;
-      port)     add_ev 2 "nouveau port en écoute : $path" "$fields" ;;
-      *)        add_ev 1 "$kind $change : $path" "$fields" ;;
+      suid)     [ "$change" = modif ] && add_ev 4 "SUID/SGID MODIFIE in-place (hash) : $path" "$fields" "$dd" || add_ev 3 "nouveau binaire SUID/SGID : $path" "$fields" "$dd" ;;
+      preload)  add_ev 4 "/etc/ld.so.preload $change (persistance LD) : $path" "$fields" "$dd" ;;
+      sudoersd) add_ev 4 "sudoers.d $change (privilege) : $path" "$fields" "$dd" ;;
+      authkeys) add_ev 4 "authorized_keys $change (acces SSH) : $path" "$fields" "$dd" ;;
+      pamd)     add_ev 4 "pam.d $change (auth) : $path" "$fields" "$dd" ;;
+      rclocal)  add_ev 4 "rc.local $change (boot persistance) : $path" "$fields" "$dd" ;;
+      unit)     add_ev 3 "unit systemd $change (persistance) : $path" "$fields" "$dd" ;;
+      crond)    add_ev 3 "cron.d $change : $path" "$fields" "$dd" ;;
+      crit)     case "$path" in *shadow*) add_ev 4 "fichier critique $change : $path" "$fields" "$dd" ;; *) add_ev 3 "fichier critique $change : $path" "$fields" "$dd" ;; esac ;;
+      port)     add_ev 2 "nouveau port en écoute : $path" "$fields" "$dd" ;;
+      *)        add_ev 1 "$kind $change : $path" "$fields" "$dd" ;;
     esac
   done < "$STATE/.int.added"
   rm -f "$STATE/.int.added"
@@ -131,8 +177,9 @@ fi
 # deux faisait disparaitre DEFINITIVEMENT le constat — un binaire SUID nouveau ou modifie in-place
 # entrait dans la reference sans avoir jamais ete emis. Elle est donc MISE EN ATTENTE et n'est posee
 # qu'apres la publication de l'enveloppe d'events (ou par `plume_exit_nodata` au 1er run et aux runs
-# sans changement, ou elle n'acquitte rien). Ces events ne portent pas de cle de dedoublonnage : le
-# rejeu apres coupure produit des doublons VISIBLES, la ou il y avait une perte muette.
+# sans changement, ou elle n'acquitte rien). S34 — le rejeu que cet ordre produit est desormais
+# ABSORBE pour les constats portant sur un FICHIER (cle (genre, chemin, empreinte, mtime)) ; les
+# ports en ecoute n'en portent pas, faute d'identite sure, et leur rejeu reste visible.
 state_stage_file "$cur" "$BASE"
 
 # DEAD-MAN'S-SWITCH (battement de santé AUTONOME) : ce FIM sort tôt au 1er run (baseline) et aux runs sans

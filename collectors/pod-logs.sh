@@ -27,7 +27,8 @@ for f in "$DIR"/*/*/*.log; do
   [ "$size" -lt "$last" ] && last=0
   # S30 — offset MIS EN ATTENTE, PAR FICHIER, ecrit seulement apres la publication de l'unique
   # enveloppe de fin. C'est le site qui rejoue le plus : le lot porte TOUS les fichiers du passage,
-  # pas une enveloppe. Les events k8s-log ne portent pas de cle -> le rejeu est visible en doublons.
+  # pas une enveloppe. S34 — ce rejeu est desormais ABSORBE : chaque ligne expediee porte une cle
+  # batie sur son propre horodatage CRI (cf. plus bas), donc republier le lot n'ajoute aucune ligne.
   state_stage "$off" "$size"
   [ "$size" -le "$last" ] && continue
   pod=$(printf '%s' "$f" | sed -E 's#.*/pods/([^/]+)/.*#\1#')
@@ -46,6 +47,16 @@ events=""
 n=0
 lscan=0   # lignes candidates (post-filtre FILTER) examinées ce run -> battement de santé
 TAB=$(printf '\t')
+# S34 — CLE D'IDENTITE, PRISE DANS LA LIGNE. Le format de journal CRI prefixe chaque ligne de son
+# horodatage RFC3339 a la nanoseconde, pose par le runtime au moment de l'ecriture : c'est
+# l'identite de la ligne, et elle est INDEPENDANTE du passage qui la lit. La cle joint le pod, le
+# conteneur et cet horodatage — le pod seul ne suffirait pas (un pod a plusieurs conteneurs, dont
+# les flux sont independants et peuvent partager une nanoseconde). Ni `$ts`, ni l'offset, ni le PID
+# n'y entrent : republier le lot reproduit donc les MEMES cles. `k` ne departage que des lignes
+# CONSECUTIVES du meme flux portant le meme horodatage, cas que le format autorise sans le garantir
+# unique. Une ligne dont le premier jeton n'est pas un horodatage ne recoit AUCUNE cle : mieux vaut
+# un doublon visible qu'une cle qui confondrait deux lignes distinctes.
+# Le battement de sante de fin reste DELIBEREMENT sans cle (voir son propre commentaire).
 while IFS="$TAB" read -r pod cont l; do
   [ -z "${l:-}" ] && continue
   lscan=$((lscan + 1))
@@ -61,7 +72,15 @@ while IFS="$TAB" read -r pod cont l; do
   nsj=$(json_escape "$ns"); pnj=$(json_escape "$pn")
   cj=$(json_escape "${cont:-}")
   fj="{\"ns\":\"$nsj\",\"pod\":\"$pnj\",\"container\":\"$cj\"}"
-  events="$events${events:+,}{\"ts\":$ts,\"source\":\"k8s-log\",\"category\":\"k8s\",\"severity\":$sev,\"message\":\"$em\",\"fields\":$fj}"
+  lts=${l%% *}
+  case "$lts" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*) : ;; *) lts="" ;; esac
+  ddj=""
+  if [ -n "$lts" ]; then
+    dk="$pod|$cont|$lts"
+    if [ "$dk" = "${prev_dk:-}" ]; then dkn=$((${dkn:-1} + 1)); else prev_dk="$dk"; dkn=1; fi
+    ddj=",\"dedup\":\"k8slog-$(json_escape "$dk")-$dkn\""
+  fi
+  events="$events${events:+,}{\"ts\":$ts,\"source\":\"k8s-log\",\"category\":\"k8s\",\"severity\":$sev,\"message\":\"$em\"$ddj,\"fields\":$fj}"
 done < "$raw"
 rm -f "$raw"
 

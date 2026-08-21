@@ -166,22 +166,44 @@ state_write() {
 #   PUBLIER PUIS MARQUER — la même coupure produit un REJEU : le passage suivant relit la même
 #   tranche et la republie. Un rejeu se voit, se compte et se corrige ; une perte est silencieuse.
 #
-# CE QUE LE REJEU DEVIENT AU CENTRAL — SANS L'EMBELLIR. `event.dedup` est UNIQUE (`INSERT OR IGNORE`,
-# cloisonné par hôte), mais il n'absorbe QUE les événements qui PORTENT une clé. Trois cas :
-#   ABSORBÉ INTÉGRALEMENT, parce que la clé porte une IDENTITÉ DE CONTENU indépendante du temps :
-#     `journal` (le daemon prend `__CURSOR`, identité de la ligne), `imgdrift` (`update-<image>-
-#     <digest>`), `vuln` (`vuln-<image|cve|paquet>`), `clamav` (`clamav-<fichier>-<signature>`),
-#     `yara` (`yara-<règle|fichier|mtime>`), `cloudflare*` (`cf-<rayName>`).
-#   ABSORBÉ SEULEMENT SI LE PASSAGE SUIVANT TOMBE DANS LE MÊME SEAU DE TEMPS, parce que la clé porte
-#     un seau et non une identité : `ufw` (seau horaire), `portscan` (5 min), `origin-drop` (1 min),
-#     `kube-audit` (empreinte + seau de 10 min).
-#   PAS ABSORBÉ DU TOUT, parce que leurs événements ne portent AUCUNE clé : `falco`, `suricata`,
-#     `auditd`, `audit`, `pod-logs`, `integrity`, `containerd`.
-# Pour ce dernier groupe, inverser l'ordre ÉCHANGE une perte silencieuse contre des DOUBLONS VISIBLES.
-# C'est un arbitrage assumé, pas un détail : un doublon se compte dans un tableau et se ferme en
-# ajoutant une clé de dédoublonnage ; une perte ne laisse rien à compter, et c'est ce qui la rend pire.
-# La voie de sortie propre est nommée — donner une clé d'identité à ces sept capteurs — et elle
-# n'appartient pas à cette clé-ci.
+# CE QUE LE REJEU DEVIENT AU CENTRAL — S34, ET LE DÉCOMPTE PRÉCÉDENT ÉTAIT FAUX DEUX FOIS.
+# LE MÉCANISME, D'ABORD, parce que c'est de lui que la partition se dérive : `event.dedup` porte un
+# index UNIQUE au niveau de la base et toute écriture est un `INSERT OR IGNORE` ; le daemon
+# CLOISONNE la clé par l'hôte de la ligne au point d'écriture (`dedup_scoped_by_host`). Une clé
+# ABSENTE vaut NULL, et SQLite tient deux NULL pour DISTINCTS : sans clé, il n'y a pas de dédup du
+# tout. La question n'est donc pas « quel capteur a été converti » mais « qu'est-ce que l'événement
+# PORTE, et cette valeur est-elle la même quand on le republie ».
+# LA POPULATION EXACTE est celle des capteurs qui peuvent REJOUER — ceux qui publient puis
+# acquittent, soit les VINGT-DEUX qui appellent `spool_write_then_ack` / `spool_publish_then_ack`.
+# Le décompte annoncé la portait à dix-sept parce qu'il avait hérité de la liste `S30`, qui recensait
+# les capteurs dont l'ORDRE était fautif ; `web`, `mail` et `dataaccess` avaient déjà le bon ordre et
+# rejouent tout autant, `resources` aussi. C'est la même faute qu'avant, d'un cran plus haut : une
+# liste reprise au lieu d'une propriété redérivée.
+#   ABSORBÉ INTÉGRALEMENT — la clé est une IDENTITÉ DE CONTENU, indépendante du passage qui la lit,
+#     et le rejeu n'ajoute aucune ligne. NEUF, et non six : `journal` (le daemon prend `__CURSOR`),
+#     `imgdrift` (`update-<image>-<digest>`), `vuln`, `clamav`, `yara` (`<règle|fichier|mtime>`),
+#     `cloudflare` (`cf-<rayName>`), plus les trois oubliés — `web` (`web-<StartUTC>` de la requête),
+#     `mail` (horodatage de la ligne de journal, IP, action) et `dataaccess` (identifiant de
+#     l'enregistrement auditd). Depuis `S34` s'y ajoutent les huit corrigés ci-dessous.
+#   ABSORBÉ SEULEMENT DANS LE MÊME SEAU DE TEMPS — la clé porte un SEAU DE L'INSTANT DE COLLECTE, pas
+#     une identité : `ufw` (seau horaire), `portscan` (5 min), `origin-drop` (1 min), `kube-audit`
+#     (empreinte + 10 min). Ces quatre seaux sont une AGRÉGATION VOULUE (un même scanneur ne remplit
+#     pas un tableau de bord), et ils ne sont pas touchés — mais il faut voir ce qu'ils coûtent : une
+#     coupure qui enjambe la frontière du seau n'est PAS absorbée, et c'est le régime le plus subtil
+#     des trois, parce qu'il marche jusqu'à ce qu'il ne marche plus.
+#   PAS ABSORBÉ DU TOUT — c'était le cas de SEPT capteurs dont les événements ne portaient aucune
+#     clé (`falco`, `suricata`, `auditd`, `audit`, `pod-logs`, `integrity`, `containerd`), et d'un
+#     HUITIÈME que le décompte précédent rangeait à tort dans l'identité de contenu : `cloudflare-http`
+#     bâtissait sa clé sur `<instant de collecte>/60`, donc sur le moment de la PUBLICATION. Une clé
+#     qui contient l'instant de publication ne dédoublonne rien.
+# CE QUE `S34` A POSÉ : chacun de ces huit porte désormais une clé prise dans ce qu'il OBSERVE —
+# l'horodatage nanoseconde du record (`falco`, `pod-logs`), l'horodatage microseconde (`suricata`),
+# le serial du noyau (`auditd`), l'identifiant d'image ou de conteneur (`containerd`), le triplet
+# (chemin, empreinte, date) du constat (`integrity`), ou, quand le record lui-même n'offre aucune
+# identité, la BORNE BASSE DE LA TRANCHE, qui n'avance qu'après la publication (`audit`,
+# `cloudflare-http`). Ce qui reste SANS clé est nommé plutôt que bricolé : les ports en écoute
+# d'`integrity` (leur seule composante stable se répète légitimement), et tout record privé de son
+# horodatage. Le détail et la raison sont écrits dans chaque capteur, au point d'émission.
 #
 # COMBIEN AU PIRE. Le rejeu porte sur UN passage de collecte, borné par le plafond du capteur (limites
 # de conception, pas d'exploitation) : `PLUME_AUDIT_MAX`/`PLUME_KUBE_AUDIT_MAX` 4000 lignes,
@@ -510,4 +532,100 @@ plume_curlcfg_escape() {
 # & co, dont le secret n'est pas PLUME_TOKEN). Même règle, même raison : un secret ne s'écrit pas en argv.
 plume_curlcfg_header_auth() {
   printf 'header = "Authorization: Bearer %s"\n' "$(plume_curlcfg_escape "$1")"
+}
+
+# ====================================================================================================
+# UNE MESURE D'HÔTE QUI ÉCHOUE N'EST PAS PUBLIÉE COMME UN ZÉRO (S33)
+# ----------------------------------------------------------------------------------------------------
+# LE DÉFAUT. Un capteur qui n'arrive pas à lire une source d'environnement publiait quand même un
+# nombre — et ce nombre était le plus CALME de sa série. `mem_pct` valait 0 quand `/proc/meminfo` ne
+# portait plus la clé cherchée, `disk_root_pct` valait 0 quand `df` échouait (son code de retour était
+# avalé par le tube vers `awk`), `mem_slab_mb` valait 0 sur tout noyau qui n'expose pas `SUnreclaim`, et
+# le débit réseau valait 0 dès que le nom de l'interface sortait du motif codé en dur.
+#
+# CE QUE CE ZÉRO COÛTE, ET POURQUOI IL EST PIRE QU'UNE ABSENCE. Ces séries ARMENT des règles à seuil
+# (« mémoire > 90 % », « disque / > 90 % », « fuite slab > 2,5 Go », « CPU > 90 % »). Une règle dont
+# l'entrée vaut 0 n'est pas en retard : elle est STRUCTURELLEMENT INERTE, et rien ne le dit. Un tableau
+# de bord y lit « rien à signaler » précisément là où il n'y a plus aucune mesure.
+#
+# LA RÈGLE, ET ELLE N'EST PAS NOUVELLE : `resources.sh` la tenait DÉJÀ pour la température — « pas de
+# sonde thermique -> on NE l'émet PAS (sinon faux 0 °C trompeur) ». Ces fonctions ne font que la rendre
+# disponible aux autres mesures, et exigible par une garde plutôt que par la relecture.
+#   1. la mesure DISPARAÎT de l'enveloppe (jamais un nombre inventé) ;
+#   2. un AVEU l'accompagne, nommant la clé et la CAUSE. L'absence seule ne distingue pas « la lecture a
+#      échoué » d'un relevé manqué ; l'aveu seul laisserait le zéro en place. Il faut les deux.
+#
+# ON RÉUTILISE LE CANAL D'AVEU EXISTANT, ON N'EN CRÉE PAS UN SECOND. `plume_report_availability` porte
+# déjà le vocabulaire fermé de `reason`, la clé de dédoublonnage horaire, et — c'est le point — la règle
+# livrée `config.d/rules/catalog/de-collector-unavailable.json` ALERTE déjà dessus. Une mesure d'hôte
+# perdue lève donc une alerte au lieu de se lire comme du calme. Aucune métrique nouvelle n'est inventée
+# pour porter l'indicateur : ce serait une série de plus par mesure, et le SOC a déjà où regarder.
+# C'est la forme que `integrity.sh` emploie pour sa couverture partielle — aveu, puis on continue.
+#
+# LES CAUSES SONT LES MÊMES MOTS QUE CÔTÉ DÉMON (`daemon/src/mesure_environnement.rs`, S32). Un
+# vocabulaire par langage aurait fait diverger deux moitiés du même produit ; ces quatre clés sont
+# celles-là, moins `aucune` qui ne décrit pas une absence.
+PLUME_CAUSES_MESURE="source_absente source_refusee source_illisible forme_inconnue"
+
+# plume_cause_source <chemin> — traduit l'état d'une source de fichier en une clé de l'ensemble fermé,
+# ou la chaîne VIDE quand le fichier est là et lisible (l'échec vient alors de son CONTENU, pas de son
+# accès : c'est `forme_inconnue`, et c'est `plume_cause_mesure` qui le conclut).
+plume_cause_source() {
+  if [ ! -e "$1" ]; then
+    printf 'source_absente'
+  elif [ ! -r "$1" ]; then
+    printf 'source_refusee'
+  fi
+}
+
+# plume_cause_mesure <chemin> — la cause à retenir quand une mesure tirée de <chemin> n'a pas pu être
+# établie : l'état du FICHIER s'il explique l'échec, `forme_inconnue` sinon. `S28` a montré que ce
+# dernier cas est celui qui se perd le plus facilement — un fichier présent dont le format a changé
+# était ignoré en silence, et l'appelant concluait comme si de rien n'était.
+plume_cause_mesure() {
+  _pcm=$(plume_cause_source "$1")
+  if [ -n "$_pcm" ]; then printf '%s' "$_pcm"; else printf 'forme_inconnue'; fi
+}
+
+# plume_mesure_absente <clé> <cause> <détail> — enregistre qu'une mesure NE SERA PAS publiée, et
+# pourquoi. N'émet rien : l'aveu part en UNE fois (cf. `plume_mesures_avouer`), sans quoi un hôte dont
+# `/proc` est masqué produirait sept événements par passage pour un seul et même fait.
+#
+# LA CARDINALITÉ EST BORNÉE ICI. `cause` est CONTRAINTE à l'ensemble fermé — une clé inventée est
+# ramenée à `forme_inconnue` plutôt que de devenir une surface libre. Le `détail` (chemin tenté,
+# message du système) n'a lui AUCUNE borne : il ne vit que dans le texte de l'aveu, lu par un humain.
+plume_mesure_absente() {
+  case " $PLUME_CAUSES_MESURE " in
+    *" $2 "*) _pma_cause="$2" ;;
+    *) _pma_cause="forme_inconnue" ;;
+  esac
+  _plume_mesures_absentes="${_plume_mesures_absentes:-}${_plume_mesures_absentes:+ }$1=$_pma_cause"
+  _plume_mesures_details="${_plume_mesures_details:-}${_plume_mesures_details:+ ; }$1 ($_pma_cause) : $3"
+}
+
+# plume_mesure_est_absente <clé> — vrai si <clé> a été déclarée absente ce passage. Sert aux mesures
+# DÉRIVÉES d'une autre (un débit dérive d'un compteur) : dériver d'une mesure manquante ne produit pas
+# une valeur, cela propage l'absence.
+plume_mesure_est_absente() {
+  case " ${_plume_mesures_absentes:-} " in *" $1="*) return 0 ;; esac
+  return 1
+}
+
+# plume_mesures_resume — le récapitulatif des mesures manquantes (clés=causes, puis détails), pour un
+# appelant qui doit composer son propre message — typiquement `plume_unavailable` quand AUCUNE mesure
+# n'a pu être prise. Existe pour qu'un capteur n'ait pas à lire les variables internes de cette
+# bibliothèque : le jour où leur forme change, un seul endroit bouge.
+plume_mesures_resume() {
+  printf '%s' "${_plume_mesures_absentes:-aucune} — ${_plume_mesures_details:-}"
+}
+
+# plume_mesures_avouer <capteur> — émet l'aveu s'il y a au moins une mesure manquante, et rend la main
+# (le capteur n'est pas incapable, il est PARTIELLEMENT aveugle et publie le reste). Sans appelant,
+# rien n'est émis : c'est la raison pour laquelle une garde de CI vérifie que le capteur l'appelle.
+# Sévérité 2 : ce n'est pas une attaque, c'est un TROU DE COUVERTURE — il doit se voir.
+plume_mesures_avouer() {
+  [ -n "${_plume_mesures_absentes:-}" ] || return 0
+  plume_report_availability "$1" unavailable missing-source \
+    "mesures d'hôte NON PUBLIÉES faute de source exploitable ($_plume_mesures_absentes) — une règle à seuil qui les consomme est INERTE tant que c'est le cas. Détail : $_plume_mesures_details" \
+    2 2>/dev/null || true
 }

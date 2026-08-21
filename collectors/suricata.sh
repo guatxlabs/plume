@@ -18,14 +18,23 @@ prev=$(cat "$OFF" 2>/dev/null || echo 0)
 case "$prev" in *[!0-9]*) prev=0 ;; esac
 [ "$prev" -gt "$size" ] && prev=0
 # S30 — l'offset est MIS EN ATTENTE (ecrit apres publication, ou par `plume_exit_nodata` quand rien
-# n'a ete publie donc rien n'est acquitte). Les events suricata ne portent pas de cle de
-# dedoublonnage : le rejeu apres coupure produit des doublons visibles, plus une perte muette.
+# n'a ete publie donc rien n'est acquitte). S34 — le rejeu que cet ordre produit est desormais
+# ABSORBE : chaque event porte une cle prise dans le record lui-meme (cf. `dd` dans l'awk).
 if [ "$prev" -ge "$size" ]; then state_stage "$OFF" "$size"; plume_exit_nodata; fi
 
 new=$(mktemp)
 tail -c +"$((prev + 1))" "$EVE" 2>/dev/null > "$new" || true
 state_stage "$OFF" "$size"
 
+# S34 — CLE D'IDENTITE. Elle est prise DANS LE RECORD : `timestamp` est l'horodatage microseconde
+# que Suricata pose sur l'evenement, pas l'instant du passage. Ni `$ts`, ni l'offset, ni le PID n'y
+# entrent — republier la meme tranche reproduit donc la MEME cle, et le central l'absorbe.
+# `k` ne compte QUE les records partageant le meme `timestamp` (plusieurs signatures peuvent alerter
+# sur le meme paquet, a la microseconde pres). C'est un rang PAR HORODATAGE et non un rang dans la
+# tranche : un rang global se decalerait des que la tranche suivante recouvre la precedente (le
+# journal peut grossir entre la mesure de taille et la lecture), et le recouvrement cesserait d'etre
+# absorbe. Sans `timestamp` exploitable, AUCUNE cle n'est posee : une cle inventee confondrait deux
+# alertes distinctes, ce qui est pire qu'un doublon visible.
 parsed=$(awk -v types="$TYPES_RE" '
   function sval(key){ if (match($0, "\"" key "\":\"[^\"]*\"")) return substr($0, RSTART+length(key)+4, RLENGTH-length(key)-5); return "" }
   function nval(key){ if (match($0, "\"" key "\":[0-9]+"))     return substr($0, RSTART+length(key)+3, RLENGTH-length(key)-3); return "" }
@@ -37,17 +46,21 @@ parsed=$(awk -v types="$TYPES_RE" '
     else if (et=="tls")     { sev=0; msg="tls: SNI=" sval("sni") " (" dst ")" }
     else if (et=="dns")     { sev=0; msg="dns: " sval("rrname") }
     else next;
-    gsub(/[\\"]/,"",msg); print sev "\t" et "\t" msg
+    # S34 : cle prise DANS LE RECORD (voir le bandeau au-dessus). k = rang PAR HORODATAGE.
+    tsv=sval("timestamp"); dd="";
+    if (tsv!="") { k=++C[tsv]; dd="suricata-" tsv "-" k }
+    gsub(/[\\"]/,"",msg); print sev "\t" et "\t" dd "\t" msg
   }
 ' "$new" | head -400)
 rm -f "$new"
 [ -z "$parsed" ] && plume_exit_nodata
 
 events=""; TAB=$(printf '\t')
-while IFS="$TAB" read -r sev cat msg; do
+while IFS="$TAB" read -r sev cat dd msg; do
   [ -z "${msg:-}" ] && continue
   mj=$(json_escape "$msg")
-  events="$events${events:+,}{\"ts\":$ts,\"source\":\"suricata\",\"category\":\"$cat\",\"severity\":$sev,\"message\":\"$mj\"}"
+  ddj=""; [ -n "${dd:-}" ] && ddj=",\"dedup\":\"$(json_escape "$dd")\""
+  events="$events${events:+,}{\"ts\":$ts,\"source\":\"suricata\",\"category\":\"$cat\",\"severity\":$sev,\"message\":\"$mj\"$ddj}"
 done <<EOF
 $parsed
 EOF

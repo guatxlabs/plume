@@ -403,4 +403,138 @@ mod mesure_environnement_tests {
             "les deux séries de valeur sont présentes SI ET SEULEMENT SI la mesure a été lue : {prom}"
         );
     }
+
+    // =============================================================================================
+    // `S33` — L'IDENTITÉ DE L'HÔTE, QUI DÉCIDE QUELLES ACTIONS DE RÉPONSE S'EXÉCUTENT ICI
+    // =============================================================================================
+    //
+    // POURQUOI CETTE MESURE-LÀ EST TRAITÉE À PART DES SÉRIES. Les autres nourrissent un graphique :
+    // une valeur perdue y est un trou. Celle-ci choisit un COMPORTEMENT. Le repli d'origine rendait
+    // `localhost` quand la source n'était pas lisible, et un nom d'hôte plausible ment mieux qu'un
+    // zéro — il est indiscernable d'une lecture réussie, y compris pour qui relit le code.
+
+    /// ① SENS « ILLISIBLE ». Aucune des deux sources ne porte d'identité -> verdict `illisible`,
+    /// cause nommée, et AUCUN nom. Les deux formes d'échec sont distinguées, parce qu'elles ne se
+    /// réparent pas pareil : un fichier ABSENT se crée, un fichier VIDE s'écrit.
+    #[test]
+    fn une_identite_d_hote_qu_on_ne_sait_pas_lire_n_est_pas_remplacee_par_un_nom_plausible() {
+        let tmp = TmpPossede::neuf("s33-identite-illisible");
+
+        let absent = identite_hote_depuis(&tmp.join("pas-de-fichier"), None);
+        assert_eq!(absent.verdict(), VERDICT_ILLISIBLE, "source absente et aucun repli : rien n'a été lu");
+        assert_eq!(absent.cause(), CAUSE_SOURCE_ABSENTE);
+        assert_eq!(absent.valeur(), None, "aucun nom ne doit sortir d'une lecture qui a échoué");
+
+        let vide = tmp.join("hostname-vide");
+        std::fs::write(&vide, "   \n").unwrap();
+        let m = identite_hote_depuis(&vide, None);
+        assert_eq!(m.verdict(), VERDICT_ILLISIBLE, "un fichier lu qui ne porte aucun nom n'est pas une identité");
+        assert_eq!(m.cause(), CAUSE_FORME_INCONNUE,
+            "lu mais incompréhensible : la cause n'est PAS `source_absente`, et la distinction décide du geste de réparation");
+        assert_eq!(m.valeur(), None);
+
+        // La variable de repli vide ne sauve pas davantage : elle ne porte pas d'identité non plus.
+        assert_eq!(identite_hote_depuis(&vide, Some("   ")).verdict(), VERDICT_ILLISIBLE);
+    }
+
+    /// ② SENS « LU ». C'est le témoin sans lequel tout le reste ne prouverait rien : une fonction qui
+    /// rendrait TOUJOURS `illisible` passerait le test ① sans difficulté, et elle serait le défaut
+    /// symétrique — elle empêcherait tout hôte d'exécuter la moindre action ciblée. La précédence
+    /// (fichier d'abord, variable ensuite) est celle d'avant, et elle est vérifiée telle quelle.
+    #[test]
+    fn une_identite_d_hote_reellement_lisible_est_lue_et_la_precedence_est_conservee() {
+        let tmp = TmpPossede::neuf("s33-identite-lue");
+        let f = tmp.join("hostname");
+        std::fs::write(&f, "cible-a\n").unwrap();
+
+        let m = identite_hote_depuis(&f, None);
+        assert_eq!(m.verdict(), VERDICT_LU);
+        assert_eq!(m.cause(), CAUSE_AUCUNE);
+        assert_eq!(m.valeur().map(String::as_str), Some("cible-a"), "le nom est rendu tel quel, sans blancs");
+
+        assert_eq!(identite_hote_depuis(&f, Some("cible-b")).valeur().map(String::as_str), Some("cible-a"),
+            "le FICHIER prime sur la variable : la précédence livrée n'est pas modifiée par ce lot");
+        assert_eq!(identite_hote_depuis(&tmp.join("absent"), Some("cible-b")).valeur().map(String::as_str), Some("cible-b"),
+            "la variable sert bien de repli quand le fichier n'est pas là");
+    }
+
+    /// CE QUE LE CONSOMMATEUR FAIT DE L'UN ET DE L'AUTRE — la propriété qui compte vraiment, jouée sur
+    /// le PRÉDICAT que le responder exécute, et non sur une paraphrase de ce prédicat.
+    ///
+    /// TROIS ACTIONS APPROUVÉES : une non ciblée, une ciblée sur cette machine, une ciblée sur une
+    /// machine qui s'appelle `localhost`. Identité LUE -> les deux premières sont réclamées, jamais la
+    /// troisième. Identité ILLISIBLE -> SEULE la non ciblée l'est : l'ancienne forme, elle, repliait
+    /// sur `localhost` et exécutait donc ICI une action destinée à une AUTRE machine, pendant que
+    /// celle qui visait celle-ci dormait indéfiniment.
+    #[test]
+    fn une_identite_illisible_ne_reclame_plus_aucune_action_ciblee() {
+        let c = base_en_memoire();
+        c.execute_batch(
+            "INSERT INTO action(ts,kind,target,status,host,dry_run) VALUES
+               (1,'ban_ip','1.2.3.4','approved',NULL,1),
+               (1,'ban_ip','1.2.3.5','approved','cible-a',1),
+               (1,'ban_ip','1.2.3.6','approved','localhost',1);",
+        )
+        .unwrap();
+        // L'ÉNONCÉ EXERCÉ EST CELUI DU PRODUIT, jamais une recopie : `ACTIONS_A_RECLAMER_ICI` est la
+        // constante que `respond_run` prépare, et le couple (identité, lue) sort de la fonction que
+        // `respond_run` appelle. Une paraphrase resterait VERTE le jour où la production changerait —
+        // c'est-à-dire exactement le jour où l'on aurait besoin qu'elle rougisse.
+        let reclamees = |etiquette: &str, mesure: Mesure<String>| -> Vec<String> {
+            let (me, lue) = crate::handlers::actions::identite_pour_reclamation(etiquette, mesure);
+            let mut st = c.prepare(crate::handlers::actions::ACTIONS_A_RECLAMER_ICI).unwrap();
+            let mut v: Vec<String> = st
+                .query_map(rusqlite::params![me, i64::from(lue)], |r| r.get::<_, String>(2))
+                .unwrap()
+                .flatten()
+                .collect();
+            v.sort();
+            v
+        };
+        let illisible = || Mesure::Illisible {
+            cause: CAUSE_SOURCE_ABSENTE,
+            detail: "aucune des deux sources ne porte d'identité".into(),
+        };
+
+        assert_eq!(
+            reclamees("", Mesure::Lue("cible-a".into())),
+            vec!["1.2.3.4", "1.2.3.5"],
+            "identité LUE : la non ciblée et celle qui vise cette machine — jamais celle d'une autre"
+        );
+        assert_eq!(
+            reclamees("", illisible()),
+            vec!["1.2.3.4"],
+            "identité ILLISIBLE : seules les actions non ciblées, qui disent « n'importe quel hôte ». \
+             Le repli `localhost` d'avant aurait ajouté 1.2.3.6 — une action appliquée au mauvais hôte, \
+             et il aurait en même temps laissé dormir celle qui visait le vrai nom de cette machine."
+        );
+        assert_eq!(
+            reclamees("localhost", illisible()),
+            vec!["1.2.3.4", "1.2.3.6"],
+            "TÉMOIN INVERSE : une étiquette POSÉE par l'exploitant est une décision, pas une lecture — \
+             elle réclame donc bien ses actions ciblées, mesure en échec ou non. Sans ce témoin, une \
+             version qui ne réclamerait JAMAIS rien de ciblé passerait le témoin précédent sans rien prouver."
+        );
+    }
+
+    /// L'INDICATEUR ACCOMPAGNE LA DÉCISION, comme il accompagne les séries : la jauge est publiée dans
+    /// les DEUX cas (une jauge absente quand tout va bien ne se distinguerait pas d'un scrape manqué),
+    /// et la VALEUR — le nom de la machine — n'y figure jamais : ce n'est pas un nombre, et l'emporter
+    /// en étiquette ferait de chaque hôte une série de plus.
+    #[test]
+    fn l_indicateur_de_l_identite_d_hote_porte_le_verdict_et_jamais_le_nom() {
+        let c = base_en_memoire();
+        let tmp = TmpPossede::neuf("s33-prom-identite");
+        let prom = gather_prom(&c, tmp.to_str().unwrap(), "", 1, 80);
+        assert_eq!(prom.matches("plume_host_identity_lisible{").count(), 1,
+            "l'indicateur est publié dans les deux cas : {prom}");
+        assert!(!prom.contains("plume_host_identity_lisible{host="),
+            "le nom d'hôte ne part JAMAIS en étiquette : {prom}");
+        let j = gather_json(&c, tmp.to_str().unwrap(), "", 1, 80);
+        let hote = j.get("host").and_then(|h| h.as_object()).expect("l'objet `host` est publié");
+        assert!(hote.contains_key("identity_verdict") && hote.contains_key("identity_cause"),
+            "le verdict et sa cause sont là : {hote:?}");
+        assert!(!hote.contains_key("identity"),
+            "la VALEUR n'est pas publiée — seul son verdict l'est : {hote:?}");
+    }
 }

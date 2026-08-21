@@ -357,6 +357,12 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
     ingest.insert("push_zero_map_total".into(), json!(PUSH_ZERO_MAP_TOTAL.load(Ordering::Relaxed)));
     ingest.insert("pubsub_ackdrop_total".into(), json!(pubsub_ackdrop_total));
     ingest.insert("pubsub_ackdrop_par_raison".into(), Value::Object(pubsub_ackdrop_par_raison));
+    // S33 — L'IDENTITÉ DE L'HÔTE PORTE SON VERDICT, PAS SA VALEUR. Elle décide quelles actions de
+    // réponse s'exécutent localement ; quand elle n'est pas lisible, les actions CIBLÉES ne sont plus
+    // réclamées ici, et c'est un fait qu'un exploitant doit pouvoir voir. Le NOM, lui, ne part pas :
+    // ce n'est pas un nombre, et le mettre en étiquette ferait de chaque machine une série de plus.
+    let mut hote = serde_json::Map::new();
+    crate::maintenance::identite_hote().poser_verdict_dans(&mut hote, "identity");
     let mut db = serde_json::Map::new();
     db_size_bytes(db_path).poser_dans(&mut db, "size_bytes");
     // `ventilation` = la DERNIÈRE tentative du tick lent, servie DEPUIS LE CACHE : lire /metrics ou le
@@ -382,6 +388,7 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
             "rollup_last_tick": SCHED_ROLLUP_LAST_TS.load(Ordering::Relaxed),
         },
         "db": db,
+        "host": hote,
         "alerts_open": alerts_open,
         "posture": posture,
         "components": components,
@@ -446,6 +453,14 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     g(&mut o, "plume_scheduler_rollup_ticks_total", "counter", "Ticks de la boucle de rollup", "/scheduler/rollup_ticks_total");
     g(&mut o, "plume_db_size_bytes", "gauge", "Taille de la base (db + wal, octets)", "/db/size_bytes");
     lisible(&mut o, "plume_db_size_lisible", "la taille de la base", "/db/size_bytes_verdict", "/db/size_bytes_cause");
+    lisible(
+        &mut o,
+        "plume_host_identity_lisible",
+        "l'identité de cet hôte — elle décide quelles actions de réponse CIBLÉES s'exécutent localement ; \
+         illisible, les actions ciblées ne sont plus réclamées ici (les non ciblées le restent)",
+        "/host/identity_verdict",
+        "/host/identity_cause",
+    );
     // VENTILATION PAR POSTE — servie depuis le CACHE du tick lent, jamais recalculée ici (un scrape ne
     // peut pas déclencher 35 s de parcours dbstat). Le rendu N'EST PAS passé par `g()` : ce helper
     // n'imprime que ce qu'il trouve, mais il ne sait pas dire « refusé » — or ici l'ABSENCE des jauges

@@ -140,6 +140,20 @@ impl<T> Mesure<T> {
     }
 }
 
+impl<T> Mesure<T> {
+    /// LE VERDICT ET SA CAUSE, SANS LA VALEUR — pour une mesure dont la valeur n'a pas sa place dans
+    /// une sortie de supervision. L'identité de l'hôte en est le cas : ce n'est pas un nombre, et la
+    /// porter en étiquette ferait de CHAQUE machine une série de plus. Ce qu'un exploitant doit voir
+    /// ici, c'est que la lecture a échoué et pourquoi ; le nom lui-même, il le connaît.
+    pub(crate) fn poser_verdict_dans(&self, objet: &mut serde_json::Map<String, Value>, cle: &str) {
+        objet.insert(format!("{cle}_verdict"), json!(self.verdict()));
+        objet.insert(format!("{cle}_cause"), json!(self.cause()));
+        if let Some(d) = self.detail() {
+            objet.insert(format!("{cle}_detail"), json!(d));
+        }
+    }
+}
+
 /// L'INDICATEUR DE LISIBILITÉ, en Prometheus : une jauge 1/0 étiquetée par la cause. Publiée dans les
 /// DEUX cas — une jauge qui n'apparaîtrait qu'en panne serait elle-même absente quand tout va bien, et
 /// on ne saurait pas la distinguer d'un scrape manqué.
@@ -325,4 +339,57 @@ pub(crate) fn taille_base_depuis(chemin: &std::path::Path) -> Mesure<u64> {
         }
     };
     Mesure::Lue(principal + journal)
+}
+
+// =================================================================================================
+// L'IDENTITÉ DE L'HÔTE — `S33`
+// =================================================================================================
+
+/// L'IDENTITÉ DE CET HÔTE, LUE OU AVOUÉE — jamais inventée.
+///
+/// POURQUOI CETTE LECTURE-LÀ EST À PART. Les autres mesures de ce module nourrissent une SÉRIE : une
+/// valeur perdue y est un trou. Celle-ci décide d'une ACTION — c'est elle qui dit quelles actions de
+/// réponse approuvées (bannir une adresse, arrêter un service) s'exécutent LOCALEMENT, par
+/// `host IS NULL OR host = '' OR host = <cette identité>`. Le repli d'origine rendait `localhost`
+/// quand la source n'était pas lisible, et un nom d'hôte plausible ment mieux qu'un zéro :
+///   * les actions ciblant le VRAI nom de cette machine restaient `approved` indéfiniment — une
+///     réponse décidée par un analyste ne s'exécutait jamais, et rien ne le comptait ;
+///   * les actions ciblant une AUTRE machine réellement nommée `localhost` s'exécutaient ICI. Une
+///     action appliquée au mauvais hôte n'est pas un manque de signal, c'est un incident.
+///
+/// PARAMÉTRÉE SUR SES DEUX SOURCES — le fichier ET la variable d'environnement arrivent en argument.
+/// Une suite de tests exerce donc les quatre combinaisons sans dépendre du nom de la machine qui
+/// l'exécute, ce qu'une fonction lisant `/etc/hostname` en dur n'aurait su faire dans aucun cas.
+///
+/// LA PRÉCÉDENCE EST CELLE D'AVANT, à la lettre : le fichier d'abord, la variable ensuite. Ce qui
+/// change est le TROISIÈME cas — il n'y a plus de troisième valeur, il y a un aveu.
+///
+/// UN FICHIER PRÉSENT MAIS VIDE N'EST PAS UNE IDENTITÉ. Il est lu, il est compris, et ce qu'il porte
+/// n'est pas un nom d'hôte : c'est `forme_inconnue`, pas `source_absente`. La distinction n'est pas
+/// cosmétique — la première se répare en écrivant le fichier, la seconde en le créant.
+pub(crate) fn identite_hote_depuis(chemin: &std::path::Path, variable: Option<&str>) -> Mesure<String> {
+    let (contenu, echec_fichier) = match std::fs::read_to_string(chemin) {
+        Ok(t) => (t.trim().to_string(), None),
+        Err(e) => (String::new(), Some((cause_io(&e), format!("{} : {e}", chemin.display())))),
+    };
+    if !contenu.is_empty() {
+        return Mesure::Lue(contenu);
+    }
+    if let Some(v) = variable.map(str::trim).filter(|v| !v.is_empty()) {
+        return Mesure::Lue(v.to_string());
+    }
+    match echec_fichier {
+        Some((cause, detail)) => Mesure::Illisible {
+            cause,
+            detail: format!("{detail} ; et aucune variable d'environnement de repli renseignée"),
+        },
+        None => Mesure::Illisible {
+            cause: CAUSE_FORME_INCONNUE,
+            detail: format!(
+                "{} : lu, mais ne porte aucun nom d'hôte (vide ou blancs) ; et aucune variable \
+                 d'environnement de repli renseignée",
+                chemin.display()
+            ),
+        },
+    }
 }

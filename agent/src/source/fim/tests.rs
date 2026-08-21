@@ -37,6 +37,8 @@ struct FakeBackend {
     q: Rc<RefCell<VecDeque<PollResult>>>,
     watched: Rc<RefCell<Vec<PathBuf>>>,
     degraded: bool,
+    /// `P4.1-q` — ce que ce backend ABANDONNE par racine (points jamais mis sous surveillance).
+    abandons_par_racine: usize,
 }
 impl FimBackend for FakeBackend {
     fn name(&self) -> &'static str {
@@ -45,8 +47,9 @@ impl FimBackend for FakeBackend {
     fn degraded(&self) -> bool {
         self.degraded
     }
-    fn watch_root(&mut self, root: &Path) {
+    fn watch_root(&mut self, root: &Path) -> usize {
         self.watched.borrow_mut().push(root.to_path_buf());
+        self.abandons_par_racine
     }
     fn poll(&mut self, _max: usize) -> PollResult {
         self.q.borrow_mut().pop_front().unwrap_or_default()
@@ -238,7 +241,7 @@ fn harness() -> Harness {
     let q = Rc::new(RefCell::new(VecDeque::new()));
     let watched = Rc::new(RefCell::new(Vec::new()));
     let probe = Box::new(FakeProbe(files.clone(), illisibles.clone()));
-    let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: false });
+    let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: false, abandons_par_racine: 0 });
     // debounce_ms=0 : tests déterministes (les cycles s'enchaînent en < 200 ms sinon supprimés).
     let cfg = FimCfg { paths: vec!["/w".into()], debounce_ms: 0, ..FimCfg::default() };
     let reader = FimReader::with_fakes(cfg, "h".into(), vec![PathBuf::from("/w")], backend, probe);
@@ -301,7 +304,7 @@ fn debounce_suppresses_rapid_reemit() {
     let q = Rc::new(RefCell::new(VecDeque::new()));
     let watched = Rc::new(RefCell::new(Vec::new()));
     let probe = Box::new(FakeProbe(files.clone(), Rc::new(RefCell::new(HashSet::new()))));
-    let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: false });
+    let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: false, abandons_par_racine: 0 });
     let cfg = FimCfg { paths: vec!["/w".into()], debounce_ms: 60_000, ..FimCfg::default() };
     let mut r = FimReader::with_fakes(cfg, "h".into(), vec![PathBuf::from("/w")], backend, probe);
 
@@ -424,7 +427,7 @@ fn last_emit_evicted_on_delete_and_not_leaked() {
     let q = Rc::new(RefCell::new(VecDeque::new()));
     let watched = Rc::new(RefCell::new(Vec::new()));
     let probe = Box::new(FakeProbe(files.clone(), Rc::new(RefCell::new(HashSet::new()))));
-    let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: false });
+    let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: false, abandons_par_racine: 0 });
     let cfg = FimCfg { paths: vec!["/w".into()], debounce_ms: 60_000, ..FimCfg::default() };
     let mut r = FimReader::with_fakes(cfg, "h".into(), vec![PathBuf::from("/w")], backend, probe);
 
@@ -475,7 +478,7 @@ fn forced_rescan_is_throttled_across_cycles() {
     let q = Rc::new(RefCell::new(VecDeque::new()));
     let watched = Rc::new(RefCell::new(Vec::new()));
     let probe = Box::new(FakeProbe(files.clone(), Rc::new(RefCell::new(HashSet::new()))));
-    let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: false });
+    let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: false, abandons_par_racine: 0 });
     // min_rescan_interval par défaut = 60s -> les deux cycles tombent dans la même fenêtre.
     let cfg = FimCfg { paths: vec!["/w".into()], debounce_ms: 0, ..FimCfg::default() };
     let mut r = FimReader::with_fakes(cfg, "h".into(), vec![PathBuf::from("/w")], backend, probe);
@@ -497,7 +500,7 @@ fn over_cap_does_not_reemit_added_storm() {
     let q = Rc::new(RefCell::new(VecDeque::new()));
     let watched = Rc::new(RefCell::new(Vec::new()));
     let probe = Box::new(FakeProbe(files.clone(), Rc::new(RefCell::new(HashSet::new()))));
-    let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: false });
+    let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: false, abandons_par_racine: 0 });
     // plafond = 1 fichier suivi.
     let cfg = FimCfg { paths: vec!["/w".into()], debounce_ms: 0, max_files: 1, ..FimCfg::default() };
     let mut r = FimReader::with_fakes(cfg, "h".into(), vec![PathBuf::from("/w")], backend, probe);
@@ -525,6 +528,139 @@ fn over_cap_does_not_reemit_added_storm() {
     assert!(!r.over_cap.contains("/w/b"), "suppression -> retiré de over_cap");
 }
 
+// ---- `P4.1-q` : une pose de couverture PARTIELLE se dit, une pose COMPLÈTE se tait ---------------
+//
+// LA FAMILLE : une détection qui S'ÉTEINT, sans trace. Le backend démarre, le mode annoncé reste
+// « realtime », les racines annoncées restent celles de la configuration — et un sous-arbre entier
+// n'est jamais mis sous surveillance. Aucun événement, aucun avertissement, aucun aveu.
+//
+// LES DEUX TÉMOINS VONT EN SENS INVERSE, et le second est indispensable : sans lui, un backend qui
+// n'aurait plus JAMAIS rien surveillé (ou un lecteur qui avouerait TOUJOURS) passerait le premier
+// brillamment, et on aurait troqué une perte silencieuse contre un bruit permanent.
+
+#[test]
+fn pose_de_couverture_partielle_est_avouee_et_marque_les_events() {
+    let files = Rc::new(RefCell::new(HashMap::new()));
+    let q = Rc::new(RefCell::new(VecDeque::new()));
+    let watched = Rc::new(RefCell::new(Vec::new()));
+    let probe = Box::new(FakeProbe(files.clone(), Rc::new(RefCell::new(HashSet::new()))));
+    // Le backend POSE la couverture et rend 2 points abandonnés par racine (stat refusé, read_dir
+    // refusé : chacun retire un chemin — ou un sous-arbre entier — de la surveillance).
+    let backend =
+        Box::new(FakeBackend { q: q.clone(), watched, degraded: false, abandons_par_racine: 2 });
+    let cfg = FimCfg { paths: vec!["/w".into()], debounce_ms: 0, ..FimCfg::default() };
+    let mut r = FimReader::with_fakes(cfg, "h".into(), vec![PathBuf::from("/w")], backend, probe);
+
+    files.borrow_mut().insert(PathBuf::from("/w/a"), meta(Some("aaa"), 3, 0o644));
+    q.borrow_mut().push_back(PollResult {
+        events: vec![ev("/w/a", FsEventKind::Created)],
+        overflowed: false,
+    });
+    let releve = r.next_batch(100);
+    // 1) L'AVEU PART, et il NOMME ce qui est perdu (le compte de points non surveillés).
+    assert_eq!(
+        releve.lisibilite.verdict(),
+        crate::lisibilite::VERDICT_ILLISIBLE,
+        "une couverture posée partiellement doit être AVOUÉE, pas déduite d'un silence"
+    );
+    assert_eq!(releve.lisibilite.cause(), crate::lisibilite::CAUSE_SOURCE_REFUSEE);
+    let detail = releve.lisibilite.detail().unwrap().to_string();
+    assert!(
+        detail.contains('2') && detail.contains("surveillance"),
+        "l'aveu doit NOMMER combien de points ne sont pas surveillés : {detail}"
+    );
+    // 2) LES ÉVÉNEMENTS QUI PARTENT QUAND MÊME LE DISENT : `fim_coverage=partial` côté SOC.
+    let recs = releve.records;
+    let e = one(&r, &recs);
+    assert_eq!(
+        e.fields["fim_coverage"], "partial",
+        "pose partielle -> les events le portent, comme pour un plafond de watches"
+    );
+}
+
+#[test]
+fn pose_de_couverture_complete_ne_dit_rien_de_particulier() {
+    // TÉMOIN INVERSE. Un lecteur qui avouerait TOUJOURS, ou un backend qui aurait cessé de surveiller
+    // pour ne plus rien avoir à perdre, passerait le témoin précédent sans rien mesurer. Ici la pose
+    // aboutit entièrement : AUCUN aveu, et AUCUN `fim_coverage` sur les événements.
+    let files = Rc::new(RefCell::new(HashMap::new()));
+    let q = Rc::new(RefCell::new(VecDeque::new()));
+    let watched = Rc::new(RefCell::new(Vec::new()));
+    let probe = Box::new(FakeProbe(files.clone(), Rc::new(RefCell::new(HashSet::new()))));
+    let backend =
+        Box::new(FakeBackend { q: q.clone(), watched, degraded: false, abandons_par_racine: 0 });
+    let cfg = FimCfg { paths: vec!["/w".into()], debounce_ms: 0, ..FimCfg::default() };
+    let mut r = FimReader::with_fakes(cfg, "h".into(), vec![PathBuf::from("/w")], backend, probe);
+
+    files.borrow_mut().insert(PathBuf::from("/w/a"), meta(Some("aaa"), 3, 0o644));
+    q.borrow_mut().push_back(PollResult {
+        events: vec![ev("/w/a", FsEventKind::Created)],
+        overflowed: false,
+    });
+    let releve = r.next_batch(100);
+    assert_eq!(
+        releve.lisibilite.verdict(),
+        crate::lisibilite::VERDICT_LU,
+        "pose complète -> rien à avouer ; sinon l'aveu serait du bruit permanent"
+    );
+    let recs = releve.records;
+    let e = one(&r, &recs);
+    assert!(
+        e.fields.get("fim_coverage").is_none(),
+        "pose complète -> aucun marquage de couverture partielle"
+    );
+}
+
+/// `P4.1-q` — LE VRAI BACKEND NOYAU COMPTE CE QU'IL ABANDONNE, ET NE COMPTE RIEN QUAND TOUT VA BIEN.
+///
+/// Ce test touche le DISQUE et le noyau (contrairement au reste de ce fichier), parce que c'est le
+/// seul moyen d'établir que le compte vient d'un vrai refus et pas d'une constante. Il n'exige AUCUN
+/// privilège : la racine du témoin positif n'existe pas, ce qui fait échouer `symlink_metadata` pour
+/// n'importe quel utilisateur — un `chmod 000` ne prouverait rien sous root.
+///
+/// LIMITE ÉCRITE : `fanotify_init` exige CAP_SYS_ADMIN. Quand il n'est pas disponible, seul inotify
+/// est exercé — le test le DIT dans son message d'échec plutôt que de faire croire aux deux.
+#[test]
+#[cfg(target_os = "linux")]
+fn la_pose_noyau_compte_ce_qu_elle_abandonne() {
+    use super::linux::{FanotifyBackend, InotifyBackend};
+    let cfg = FimCfg { recursive: true, max_watches: 4096, ..FimCfg::default() };
+    let base = std::env::temp_dir().join(format!("plume-p41q-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("sous")).expect("le témoin a besoin d'un répertoire lisible");
+    let absente = base.join("jamais-creee");
+
+    let mut exerces: Vec<&str> = Vec::new();
+
+    // --- inotify : disponible sans aucune capability -----------------------------------------
+    let mut b = InotifyBackend::try_new(&cfg).expect("inotify_init1 doit réussir sur Linux");
+    // TÉMOIN NÉGATIF D'ABORD : une racine parfaitement lisible n'abandonne RIEN et ne dégrade RIEN.
+    assert_eq!(b.watch_root(&base), 0, "[inotify] une racine lisible n'abandonne rien");
+    assert!(!b.degraded(), "[inotify] rien d'abandonné -> couverture NON dégradée");
+    // TÉMOIN POSITIF : une racine dont les métadonnées ne se lisent pas est COMPTÉE, pas avalée.
+    assert_eq!(
+        b.watch_root(&absente),
+        1,
+        "[inotify] une racine illisible retire un sous-arbre entier de la surveillance : ça se COMPTE"
+    );
+    assert!(b.degraded(), "[inotify] un point abandonné -> couverture DÉGRADÉE, donc visible au SOC");
+    exerces.push("inotify");
+
+    // --- fanotify : seulement si le noyau nous laisse l'ouvrir -------------------------------
+    if let Some(mut f) = FanotifyBackend::try_new(&cfg) {
+        assert_eq!(f.watch_root(&base), 0, "[fanotify] une racine lisible n'abandonne rien");
+        assert!(!f.degraded(), "[fanotify] rien d'abandonné -> couverture NON dégradée");
+        assert_eq!(f.watch_root(&absente), 1, "[fanotify] une racine illisible est COMPTÉE");
+        assert!(f.degraded(), "[fanotify] un point abandonné -> couverture DÉGRADÉE");
+        exerces.push("fanotify");
+    }
+    std::fs::remove_dir_all(&base).ok();
+    assert!(
+        exerces.contains(&"inotify"),
+        "aucun backend noyau exercé : ce test n'aurait rien mesuré ({exerces:?})"
+    );
+}
+
 // ---- fix #6 : couverture dégradée visible côté SOC (fim_coverage=partial) -------------------------
 
 #[test]
@@ -533,7 +669,7 @@ fn degraded_backend_marks_coverage_partial() {
     let q = Rc::new(RefCell::new(VecDeque::new()));
     let watched = Rc::new(RefCell::new(Vec::new()));
     let probe = Box::new(FakeProbe(files.clone(), Rc::new(RefCell::new(HashSet::new()))));
-    let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: true }); // plafond watches atteint
+    let backend = Box::new(FakeBackend { q: q.clone(), watched, degraded: true, abandons_par_racine: 0 }); // plafond watches atteint
     let cfg = FimCfg { paths: vec!["/w".into()], debounce_ms: 0, ..FimCfg::default() };
     let mut r = FimReader::with_fakes(cfg, "h".into(), vec![PathBuf::from("/w")], backend, probe);
 

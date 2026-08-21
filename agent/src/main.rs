@@ -449,20 +449,46 @@ fn cmd_uninstall() -> Result<()> {
     conclure(service::current().uninstall()?)
 }
 
+/// `P4.1-q` — UNE GRANDEUR ANNONCÉE NE DISPARAÎT PAS DE L'AFFICHAGE : elle se dit INCONNUE.
+///
+/// `S33` avait déjà rendu honnête le cas d'un spool ouvert mais illisible. Restait, une couche plus
+/// haut, exactement le même défaut sous une forme que la relecture ne voit pas : un `if let Ok(…)`
+/// SANS `else`. Une configuration illisible, un répertoire de spool qu'on ne peut pas ouvrir, un
+/// répertoire d'état refusé — et la ligne « spool : … » ou les lignes « source … : curseur = … »
+/// n'étaient tout simplement PAS IMPRIMÉES. L'opérateur ne lit pas une valeur fausse : il ne lit
+/// RIEN, et il conclut que la commande n'avait rien à dire. C'est la même famille que la détection
+/// qui s'éteint sans trace, du côté de la surface d'état : l'absence de ligne se lit comme une
+/// absence de problème. Chaque alternative rend donc désormais les DEUX branches.
 fn cmd_status(cpath: &std::path::Path) -> Result<()> {
     println!("{}", service::current().status()?);
-    // Profondeur du spool + curseurs (best-effort : ne pas échouer si la config manque).
-    if let Ok(cfg) = Config::load(cpath) {
-        if let Ok(spool) = Spool::open(&cfg.spool_dir, cfg.spool_cap) {
-            match spool.len() {
-                Ok(n) => println!("spool: {} entrée(s) en attente ({})", n, cfg.spool_dir.display()),
-                Err(e) => println!(
-                    "spool: profondeur INCONNUE — {} illisible ({e}). Ce n'est pas une file vide.",
-                    cfg.spool_dir.display()
-                ),
-            }
+    // Profondeur du spool + curseurs (best-effort : ne pas échouer si la config manque — mais LE DIRE).
+    let cfg = match Config::load(cpath) {
+        Ok(c) => c,
+        Err(e) => {
+            println!(
+                "spool: profondeur INCONNUE et curseurs INCONNUS — configuration {} illisible ({e}). \
+                 Ce n'est ni une file vide ni une absence de curseur : cette commande ne sait pas où \
+                 regarder.",
+                cpath.display()
+            );
+            return Ok(());
         }
-        if let Ok(cursors) = CursorStore::open(&cfg.state_dir) {
+    };
+    match Spool::open(&cfg.spool_dir, cfg.spool_cap) {
+        Ok(spool) => match spool.len() {
+            Ok(n) => println!("spool: {} entrée(s) en attente ({})", n, cfg.spool_dir.display()),
+            Err(e) => println!(
+                "spool: profondeur INCONNUE — {} illisible ({e}). Ce n'est pas une file vide.",
+                cfg.spool_dir.display()
+            ),
+        },
+        Err(e) => println!(
+            "spool: profondeur INCONNUE — {} non ouvrable ({e}). Ce n'est pas une file vide.",
+            cfg.spool_dir.display()
+        ),
+    }
+    match CursorStore::open(&cfg.state_dir) {
+        Ok(cursors) => {
             for s in &cfg.source {
                 let id = source_id_of(s);
                 // Trois états DISTINCTS, et c'est le troisième qui manquait : « aucun » (jamais
@@ -477,6 +503,11 @@ fn cmd_status(cpath: &std::path::Path) -> Result<()> {
                 }
             }
         }
+        Err(e) => println!(
+            "curseurs INCONNUS — répertoire d'état {} non ouvrable ({e}). Ce n'est PAS « aucun \
+             curseur » : la reprise de chaque source repartira de sa position par défaut.",
+            cfg.state_dir.display()
+        ),
     }
     Ok(())
 }

@@ -855,6 +855,32 @@ jobs:
       - name: Une lecture qui ÉCHOUE ne doit rien acquitter
         run: python3 .github/scripts/check_read_failure_is_not_acknowledged.py
 
+      # `P4.1-q` — LA MÊME FAMILLE, MAIS RIEN N'EST PUBLIÉ DU TOUT. `S32`/`S33`/`S36` ferment le cas
+      # où un chiffre RASSURANT part quand même. Ici la détection s'ÉTEINT : un repli d'erreur du
+      # parcours qui pose les watches d'intégrité abandonne la branche courante, un SOUS-ARBRE ENTIER
+      # sort de la surveillance — aucun événement, aucun avertissement, aucun aveu — et `fim_mode`
+      # continue d'annoncer « realtime » pendant que la couverture annoncée reste celle de la
+      # configuration. Le même défaut existe du côté de la SURFACE : la commande d'état enveloppait
+      # ses lignes dans des `if let Ok(…)` sans `else`, si bien qu'une configuration illisible faisait
+      # DISPARAÎTRE la profondeur de file au lieu de la dire inconnue — et une ligne absente se lit
+      # comme une absence de problème.
+      # CE QUI REND LE DÉFAUT INVISIBLE À LA RELECTURE : la forme fautive est la forme IDIOMATIQUE de
+      # Rust — `Err(_) => continue`, `if let Ok(x) = …` sans `else`, `entries.flatten()`. Aucune de
+      # ces lignes ne ressemble à une perte.
+      # MESURÉ le 2026-08-21 sur la PROPRIÉTÉ (une branche d'échec qui ABANDONNE sans laisser de
+      # trace), pas sur un symbole : 8 fonctions posent ou énumèrent de la surveillance, 5 écrivent la
+      # surface d'état, et SEIZE sites étaient muets — onze dans le backend Linux, trois grandeurs
+      # effacées dans la commande d'état, deux dans le backend Windows. Le constat d'origine en
+      # annonçait TROIS et ne voyait pas Windows : il est réfuté par cette mesure. Hors du crate
+      # `agent`, le même critère en mesure 32 de plus : ils ne sont pas exigés ici, et c'est écrit.
+      # La garde n'énumère ni fichier ni symbole : la population de couverture est dérivée du CONTRAT
+      # `FimBackend` (la méthode qui POSE) et de l'énumération de répertoire, celle de la surface de
+      # l'écriture sur la sortie standard. Elle valide son propre instrument sur sept témoins en SENS
+      # INVERSE — dont la pose DÉGÉNÉRÉE qui ne surveille plus rien, et un scrutin sous bloc `unsafe`
+      # qu'une lecture naïve des accolades ne voit pas.
+      - name: Une couverture qu'on n'a pas pu poser ne s'éteint pas en silence
+        run: python3 .github/scripts/check_coverage_loss_is_never_silent.py
+
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
       # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —
       # the odd one out is `collectors/lib.sh`, a SOURCED library with no shebang, which the

@@ -93,7 +93,15 @@ pub trait FimBackend {
     fn name(&self) -> &'static str;
     /// Pose un watch (récursif si demandé à la construction) sur `root`. Idempotent, best-effort :
     /// journalise et continue sur ENOSPC/EPERM (dégradation, jamais crash).
-    fn watch_root(&mut self, root: &Path);
+    ///
+    /// `P4.1-q` — REND LE NOMBRE DE POINTS DE COUVERTURE ABANDONNÉS, comme `walk_root` rend le nombre
+    /// de points illisibles. Le type de retour porte la perte parce qu'un backend qui rendait `()` ne
+    /// POUVAIT rien dire : un `stat` refusé, un `read_dir` refusé, un watch refusé par le noyau
+    /// faisaient sortir un chemin — ou un SOUS-ARBRE ENTIER — de la surveillance sans erreur, sans
+    /// avertissement et sans événement, pendant que la couverture annoncée restait celle de la
+    /// configuration. Un backend qui n'abandonne rien rend 0 ; rendre 0 en ayant abandonné est un
+    /// mensonge que le type ne peut pas empêcher, et que la suite du crate éprouve.
+    fn watch_root(&mut self, root: &Path) -> usize;
     /// Draine SANS BLOQUER jusqu'à `max` events disponibles. `overflowed=true` -> demander un rescan.
     fn poll(&mut self, max: usize) -> PollResult;
     /// Couverture DÉGRADÉE côté noyau : le plafond de watches/marks (`max_watches` ou ENOSPC noyau) a été
@@ -762,7 +770,7 @@ impl FimReader {
         backend: Box<dyn FimBackend>,
         probe: Box<dyn FsProbe>,
     ) -> Self {
-        Self {
+        let mut r = Self {
             cfg,
             host,
             baseline_path: PathBuf::from("/dev/null/never"),
@@ -779,6 +787,42 @@ impl FimReader {
             over_cap: std::collections::HashSet::new(),
             last_rescan: None,
             incapacite: None,
+        };
+        // Le chemin de test POSE la couverture par la MÊME voie que le vrai : sans quoi la suite ne
+        // pourrait rien prouver de ce que la pose avoue ou tait.
+        r.poser_la_couverture();
+        r
+    }
+
+    /// `P4.1-q` — POSE la couverture sur les racines, et AVOUE ce qu'elle n'a pas pu poser.
+    ///
+    /// UN POINT QU'ON N'A PAS PU METTRE SOUS SURVEILLANCE NE SIGNALERA JAMAIS RIEN, et c'est la forme
+    /// la plus discrète de la panne : le backend démarre, le mode annoncé reste « realtime », les
+    /// racines annoncées restent celles de la configuration, et un sous-arbre entier est simplement
+    /// absent de la surveillance — aucun événement, aucun avertissement, aucun aveu. Le trou est donc
+    /// DIT dès la pose, et il marque les événements `fim_coverage=partial` comme le fait un plafond.
+    fn poser_la_couverture(&mut self) {
+        let mut abandons = 0usize;
+        if let Some(b) = &mut self.backend {
+            for r in &self.roots.clone() {
+                abandons += b.watch_root(r);
+            }
+        }
+        if abandons == 0 {
+            return;
+        }
+        self.warned_cap = true; // marque les events `fim_coverage=partial`
+        if self.incapacite.is_none() {
+            self.incapacite = Some((
+                crate::lisibilite::RAISON_SOURCE_ABSENTE,
+                crate::lisibilite::CAUSE_SOURCE_REFUSEE,
+                format!(
+                    "[fim:{}] pose de couverture PARTIELLE (backend={}) : {abandons} point(s) de \
+                     l'arborescence n'ont pas pu être mis sous surveillance et ne produiront AUCUN \
+                     événement",
+                    self.cfg.id, self.backend_name
+                ),
+            ));
         }
     }
 
@@ -878,16 +922,14 @@ impl FimReader {
 
         // Backend noyau (Linux fanotify->inotify ; sinon None -> repli scan planifié).
         self.backend = build_backend(&self.cfg);
-        if let Some(b) = &mut self.backend {
+        if let Some(b) = &self.backend {
             self.mode_label = "realtime";
             self.backend_name = b.name();
-            for r in &self.roots.clone() {
-                b.watch_root(r);
-            }
         } else {
             self.mode_label = "scheduled";
             self.backend_name = "scan";
         }
+        self.poser_la_couverture();
 
         if first_run {
             eprintln!(

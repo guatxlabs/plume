@@ -220,21 +220,25 @@ mod ffi {
             self.degraded // plafond max_watches atteint -> sous-arbres non surveillés
         }
 
-        fn watch_root(&mut self, root: &Path) {
+        fn watch_root(&mut self, root: &Path) -> usize {
             if self.watches.len() >= self.max_watches {
                 if !self.degraded {
                     self.degraded = true;
                     eprintln!("[fim] ReadDirectoryChangesW : plafond max_watches atteint -> couverture partielle");
                 }
-                return;
+                return 0; // le plafond a son propre drapeau : ne pas annoncer deux fois la même perte
             }
             // Anti-évasion : ne surveille PAS une racine qui est un point de reparse (symlink/jonction) ->
             // n'ouvre pas de HANDLE vers une cible hors allowlist. Exige un répertoire (l'API en a besoin).
             match std::fs::symlink_metadata(root) {
-                Ok(m) if m.file_type().is_symlink() => return,
-                Ok(m) if !m.is_dir() => return,
+                Ok(m) if m.file_type().is_symlink() => return 0,
+                // `P4.1-q` — cette API ne surveille que des RÉPERTOIRES : une racine fichier annoncée
+                // par la configuration reste hors surveillance ici (Linux, lui, la couvre). Ce n'est
+                // pas une erreur de lecture, mais c'est bien une couverture annoncée qui n'existe pas.
+                Ok(m) if !m.is_dir() => return 1,
                 Ok(_) => {}
-                Err(_) => return,
+                // Racine dont les métadonnées ne se lisent pas : elle ne sera JAMAIS surveillée.
+                Err(_) => return 1,
             }
             let wide: Vec<u16> = root.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
             let handle = match unsafe {
@@ -254,7 +258,7 @@ mod ffi {
                         "[fim] ReadDirectoryChangesW : ouverture racine échouée {} (best-effort, ignorée)",
                         root.display()
                     );
-                    return;
+                    return 1;
                 }
             };
             // Associe le HANDLE au port ; clé = index du watch (STABLE : jamais retiré en cours de run).
@@ -263,7 +267,7 @@ mod ffi {
                 unsafe {
                     let _ = CloseHandle(handle);
                 }
-                return;
+                return 1; // racine ouverte mais jamais raccordée au port : elle ne signalera rien
             }
             let mut w = Watch {
                 handle,
@@ -274,6 +278,7 @@ mod ffi {
             };
             arm(&mut w);
             self.watches.push(w);
+            0 // racine effectivement sous surveillance : rien d'abandonné
         }
 
         fn poll(&mut self, max: usize) -> PollResult {

@@ -75,6 +75,13 @@ pub struct InotifyBackend {
     exclude: Vec<String>,
     wds: HashMap<i32, PathBuf>,
     warned_space: bool,
+    /// `P4.1-q` — POINTS DE COUVERTURE ABANDONNÉS, comptés. Un `stat` refusé, un `read_dir` refusé,
+    /// une entrée illisible, un chemin qu'on ne peut pas convertir, un watch refusé par le noyau :
+    /// chacun retire de la surveillance un chemin — ou un SOUS-ARBRE ENTIER — sans que rien ne se
+    /// passe. La couverture annoncée par la configuration cesse alors d'être la couverture réelle,
+    /// et la détection s'éteint là SANS TRACE. Le parcours continue (une branche refusée ne doit pas
+    /// faire perdre les autres), mais il COMPTE, `watch_root` rend le compte, et le lecteur avoue.
+    perdus: usize,
 }
 
 impl InotifyBackend {
@@ -90,6 +97,7 @@ impl InotifyBackend {
             exclude: cfg.exclude.clone(),
             wds: HashMap::new(),
             warned_space: false,
+            perdus: 0,
         })
     }
 
@@ -104,12 +112,21 @@ impl InotifyBackend {
             self.warn_space("max_watches");
             return;
         }
-        let Some(cp) = cpath(path) else { return };
+        let Some(cp) = cpath(path) else {
+            // Un chemin qui ne se convertit pas (octet NUL) ne pourra JAMAIS être surveillé.
+            self.perdus += 1;
+            return;
+        };
         let wd = unsafe { libc::inotify_add_watch(self.fd, cp.as_ptr(), IN_MASK) };
         if wd < 0 {
             let e = last_errno();
             if e == libc::ENOSPC {
+                // Le plafond a déjà son drapeau (`warned_space`) : il n'entre pas dans `perdus`,
+                // sans quoi la même dégradation serait annoncée deux fois.
                 self.warn_space("ENOSPC noyau (fs.inotify.max_user_watches)");
+            } else {
+                // Refus du noyau (droits, chemin disparu) : ce point sort de la surveillance.
+                self.perdus += 1;
             }
             return;
         }
@@ -128,7 +145,10 @@ impl InotifyBackend {
     fn add_recursive(&mut self, root: &Path) {
         let md = match std::fs::symlink_metadata(root) {
             Ok(m) => m,
-            Err(_) => return,
+            Err(_) => {
+                self.perdus += 1; // racine (ou sous-arbre) entière : elle ne sera JAMAIS surveillée
+                return;
+            }
         };
         if md.file_type().is_symlink() {
             return;
@@ -155,15 +175,28 @@ impl InotifyBackend {
             }
             let entries = match std::fs::read_dir(&dir) {
                 Ok(e) => e,
-                Err(_) => continue,
+                Err(_) => {
+                    self.perdus += 1; // tout le contenu de ce répertoire sort de la surveillance
+                    continue;
+                }
             };
-            for ent in entries.flatten() {
+            for ent in entries {
+                let ent = match ent {
+                    Ok(e) => e,
+                    Err(_) => {
+                        self.perdus += 1; // une entrée non énumérée est une entrée non surveillée
+                        continue;
+                    }
+                };
                 let p = ent.path();
                 match std::fs::symlink_metadata(&p) {
                     Ok(m) if m.is_dir() && !m.file_type().is_symlink() && !self.excluded(&p) => {
                         stack.push(p);
                     }
-                    _ => {}
+                    // LU : ce n'est pas un répertoire à descendre, ou c'est un lien qu'on ne suit
+                    // jamais, ou il est exclu. Un constat, pas une incapacité — rien à compter.
+                    Ok(_) => {}
+                    Err(_) => self.perdus += 1,
                 }
             }
         }
@@ -176,11 +209,15 @@ impl FimBackend for InotifyBackend {
     }
 
     fn degraded(&self) -> bool {
-        self.warned_space // plafond max_watches ou ENOSPC noyau atteint -> sous-arbres non surveillés
+        // Plafond atteint, OU points abandonnés faute d'avoir pu lire / faire accepter un watch :
+        // dans les deux cas des sous-arbres ne sont PAS surveillés.
+        self.warned_space || self.perdus > 0
     }
 
-    fn watch_root(&mut self, root: &Path) {
+    fn watch_root(&mut self, root: &Path) -> usize {
+        let avant = self.perdus;
         self.add_recursive(root);
+        self.perdus - avant
     }
 
     fn poll(&mut self, max: usize) -> PollResult {
@@ -191,7 +228,14 @@ impl FimBackend for InotifyBackend {
                 libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
             };
             if n < 0 {
-                // EAGAIN/EWOULDBLOCK = plus rien à lire (fd non bloquant) -> fin normale.
+                // EAGAIN (= EWOULDBLOCK sur Linux) = plus rien à lire (fd non bloquant) -> fin
+                // NORMALE, et EINTR se rejoue au prochain cycle. Toute AUTRE erreur veut dire que ce
+                // backend n'entendra plus jamais rien : elle est COMPTÉE, jamais confondue avec du
+                // calme (`P4.1-q` — une détection qui s'éteint doit laisser une trace).
+                let e = last_errno();
+                if e != libc::EAGAIN && e != libc::EINTR {
+                    self.perdus += 1;
+                }
                 break;
             }
             if n == 0 {
@@ -293,6 +337,8 @@ pub struct FanotifyBackend {
     exclude: Vec<String>,
     marks: usize,
     warned_space: bool,
+    /// `P4.1-q` — POINTS DE COUVERTURE ABANDONNÉS (même rôle que dans `InotifyBackend`).
+    perdus: usize,
 }
 
 impl FanotifyBackend {
@@ -314,6 +360,7 @@ impl FanotifyBackend {
             exclude: cfg.exclude.clone(),
             marks: 0,
             warned_space: false,
+            perdus: 0,
         })
     }
 
@@ -322,15 +369,23 @@ impl FanotifyBackend {
         self.exclude.iter().any(|pat| super::glob_match(pat, &s))
     }
 
+    fn warn_space(&mut self) {
+        if !self.warned_space {
+            self.warned_space = true;
+            eprintln!("[fim] fanotify : plafond de marks atteint -> couverture partielle");
+        }
+    }
+
     fn mark_one(&mut self, dir: &Path) {
         if self.marks >= self.max_watches {
-            if !self.warned_space {
-                self.warned_space = true;
-                eprintln!("[fim] fanotify : plafond de marks atteint -> couverture partielle");
-            }
+            self.warn_space();
             return;
         }
-        let Some(cp) = cpath(dir) else { return };
+        let Some(cp) = cpath(dir) else {
+            // Un chemin qui ne se convertit pas (octet NUL) ne pourra JAMAIS être marqué.
+            self.perdus += 1;
+            return;
+        };
         // FAN_MARK_DONT_FOLLOW : si `dir` est (devenu) un lien symbolique, NE PAS le déréférencer -> un
         // répertoire substitué par un lien ne peut pas faire marquer une cible HORS des racines (miroir
         // de IN_DONT_FOLLOW côté inotify). Anti-évasion symlink au niveau de la pose de mark.
@@ -345,13 +400,19 @@ impl FanotifyBackend {
         };
         if r == 0 {
             self.marks += 1;
+        } else {
+            // Le noyau a refusé la marque : ce répertoire ne signalera rien. Compté, jamais avalé.
+            self.perdus += 1;
         }
     }
 
     fn mark_recursive(&mut self, root: &Path) {
         let md = match std::fs::symlink_metadata(root) {
             Ok(m) => m,
-            Err(_) => return,
+            Err(_) => {
+                self.perdus += 1; // racine (ou sous-arbre) entière : elle ne sera JAMAIS marquée
+                return;
+            }
         };
         if md.file_type().is_symlink() {
             return;
@@ -359,8 +420,10 @@ impl FanotifyBackend {
         // fanotify marque des répertoires (les events enfants remontent via FAN_EVENT_ON_CHILD). Pour un
         // fichier racine isolé, on marque son répertoire parent.
         if md.is_file() {
-            if let Some(parent) = root.parent() {
-                self.mark_one(parent);
+            match root.parent() {
+                Some(parent) => self.mark_one(parent),
+                // Un fichier sans parent ne peut pas être marqué : il sort de la surveillance.
+                None => self.perdus += 1,
             }
             return;
         }
@@ -370,21 +433,35 @@ impl FanotifyBackend {
         let mut stack = vec![root.to_path_buf()];
         while let Some(dir) = stack.pop() {
             if self.marks >= self.max_watches {
+                self.warn_space(); // le plafond se DIT ici aussi, pas seulement dans `mark_one`
                 return;
             }
             self.mark_one(&dir);
             if !self.recursive {
                 continue;
             }
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for ent in entries.flatten() {
-                    let p = ent.path();
-                    if let Ok(m) = std::fs::symlink_metadata(&p) {
-                        if m.is_dir() && !m.file_type().is_symlink() && !self.excluded(&p) {
-                            stack.push(p);
+            match std::fs::read_dir(&dir) {
+                Ok(entries) => {
+                    for ent in entries {
+                        let ent = match ent {
+                            Ok(e) => e,
+                            Err(_) => {
+                                self.perdus += 1; // entrée non énumérée = entrée non surveillée
+                                continue;
+                            }
+                        };
+                        let p = ent.path();
+                        match std::fs::symlink_metadata(&p) {
+                            Ok(m) => {
+                                if m.is_dir() && !m.file_type().is_symlink() && !self.excluded(&p) {
+                                    stack.push(p);
+                                }
+                            }
+                            Err(_) => self.perdus += 1,
                         }
                     }
                 }
+                Err(_) => self.perdus += 1, // tout le contenu de ce répertoire sort de la surveillance
             }
         }
     }
@@ -396,11 +473,15 @@ impl FimBackend for FanotifyBackend {
     }
 
     fn degraded(&self) -> bool {
-        self.warned_space // plafond de marks (max_watches) atteint -> sous-arbres non marqués
+        // Plafond de marks atteint, OU points abandonnés faute d'avoir pu lire / faire accepter une
+        // marque : dans les deux cas des sous-arbres ne sont PAS surveillés.
+        self.warned_space || self.perdus > 0
     }
 
-    fn watch_root(&mut self, root: &Path) {
+    fn watch_root(&mut self, root: &Path) -> usize {
+        let avant = self.perdus;
         self.mark_recursive(root);
+        self.perdus - avant
     }
 
     fn poll(&mut self, _max: usize) -> PollResult {
@@ -414,7 +495,16 @@ impl FimBackend for FanotifyBackend {
                 libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
             };
             if n <= 0 {
-                break; // EAGAIN (rien) ou fin
+                // EAGAIN (= EWOULDBLOCK sur Linux) = rien à lire, EINTR se rejoue : fin NORMALE.
+                // Toute AUTRE erreur veut dire que la sonnette ne sonnera plus jamais — c'est une
+                // détection qui s'éteint, et elle est COMPTÉE au lieu de passer pour du calme.
+                if n < 0 {
+                    let e = last_errno();
+                    if e != libc::EAGAIN && e != libc::EINTR {
+                        self.perdus += 1;
+                    }
+                }
+                break;
             }
             res.overflowed = true; // activité détectée -> demander le rescan
         }

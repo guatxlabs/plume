@@ -18,11 +18,14 @@ function fmtBytes(n) {
   return (n / 1073741824).toFixed(2) + ' Go';
 }
 
-// S32 — UNE MESURE NON LISIBLE N'EST PAS UN ZÉRO, ET LE PANNEAU NE DOIT PAS LA RENDRE COMME TEL.
-// Le serveur OMET le nombre quand sa source n'a pas pu être lue et pose à côté `<clé>_verdict` +
-// `<clé>_cause`. Un `?? 0` ou un `fmtBytes(undefined)` reconstruirait ici, côté client, exactement le
-// zéro rassurant que le serveur vient de retirer : c'est pourquoi ces tuiles passent par ce lecteur.
-// Valeur absente -> tiret cadratin + la cause en sous-titre, jamais « 0 ».
+// S32 / S37 — UNE MESURE NON LISIBLE N'EST PAS UN ZÉRO, ET LE PANNEAU NE DOIT PAS LA RENDRE COMME TEL.
+// Le serveur OMET le nombre quand sa source n'a pas pu être lue et pose à côté `<clé>_verdict`,
+// `<clé>_cause` et `<clé>_detail` (convention d'un seul auteur : `mesure_environnement::Mesure`). Un
+// `?? 0` ou un `fmtBytes(undefined)` reconstruirait ici, côté client, exactement le zéro rassurant que
+// le serveur vient de retirer. Toute lecture d'une grandeur à verdict passe donc par `lireMesure`, et
+// le verdict y est LU, jamais déduit de l'absence du nombre : un verdict autre que `lu` l'emporte sur
+// une valeur qui serait tout de même présente, et l'absence des deux est un TROISIÈME état (« non
+// publié » : pas encore de tick, serveur qui ne publie pas cette clé) distinct de « non lisible ».
 const CAUSE_LBL = {
   aucune: '',
   source_absente: 'source absente',
@@ -30,28 +33,117 @@ const CAUSE_LBL = {
   source_illisible: 'source illisible',
   forme_inconnue: 'forme non reconnue',
 };
+const VERDICT_LU = 'lu';
+const VERDICT_ILLISIBLE = 'illisible';
 
 // Le verdict est cherché d'abord PAR CLÉ (`queue_depth_verdict`), puis SUR L'OBJET (`verdict`) : une
 // même lecture peut porter plusieurs valeurs — le couple processeur/mémoire vient d'une seule lecture
 // de `/proc`, et son verdict est celui de l'objet entier.
-function mesureTile(label, obj, cle, fmt, sub) {
-  const v = obj[cle];
-  if (v == null) {
-    const brute = obj[cle + '_cause'] ?? obj.cause;
-    const cause = CAUSE_LBL[brute] || brute || 'cause inconnue';
-    return tile(label, '—', 'non mesuré : ' + cause);
-  }
-  return tile(label, fmt(v), sub);
+// Rend { verdict, valeur, cause, detail } où `verdict` vaut `lu`, `illisible`, un mot inconnu du
+// serveur (traité comme NON lu : un verdict ajouté demain est bruyant par défaut, jamais rangé du bon
+// côté par inadvertance), ou `null` quand rien n'est publié.
+function lireMesure(obj, cle) {
+  const verdict = obj[cle + '_verdict'] ?? obj.verdict ?? null;
+  const valeur = obj[cle];
+  const brute = obj[cle + '_cause'] ?? obj.cause;
+  const cause = CAUSE_LBL[brute] ?? (brute || 'cause non dite');
+  const detail = obj[cle + '_detail'] ?? obj.detail ?? '';
+  if (verdict === VERDICT_LU) return { verdict, valeur, cause, detail };
+  if (verdict !== null) return { verdict, valeur: undefined, cause: cause || 'cause non dite', detail };
+  // Pas de verdict : un serveur qui ne le publie pas. La valeur seule vaut « lue » ; rien = « non publié ».
+  if (valeur != null) return { verdict: VERDICT_LU, valeur, cause: '', detail: '' };
+  return { verdict: null, valeur: undefined, cause: '', detail: '' };
 }
 
-function tile(label, value, sub) {
+// Le mot d'état affiché à la place du nombre — jamais un zéro, jamais une case vide.
+function motDeVerdict(verdict) {
+  return verdict === VERDICT_ILLISIBLE ? 'NON LISIBLE' : verdict === null ? 'non publié' : String(verdict).toUpperCase();
+}
+
+// Tuile d'une grandeur à verdict. `fmt` ne reçoit la valeur que si le verdict est `lu` (elle peut
+// alors être absente : l'identité de l'hôte publie son verdict SANS sa valeur).
+function mesureTile(label, obj, cle, fmt, sub) {
+  const m = lireMesure(obj, cle);
+  if (m.verdict === VERDICT_LU) return tile(label, fmt(m.valeur), sub);
+  const t = tile(label, motDeVerdict(m.verdict), m.verdict === null ? 'aucune mesure publiée' : m.cause, m.detail);
+  t.classList.add(m.verdict === null ? 'sys-absent' : 'sys-illisible');
+  return t;
+}
+
+function tile(label, value, sub, title) {
   const d = document.createElement('div');
   d.className = 'sys-tile';
   const v = document.createElement('div'); v.className = 'sys-tile-v'; v.textContent = value;
   const l = document.createElement('div'); l.className = 'sys-tile-l'; l.textContent = label;
   d.append(v, l);
   if (sub) { const s = document.createElement('div'); s.className = 'sys-tile-s muted'; s.textContent = sub; d.appendChild(s); }
+  if (title) d.title = title;
   return d;
+}
+
+// P4.1-r / S37 — LE BILAN DU DERNIER TICK DE CHAQUE BOUCLE DE FOND : n abandons, ou un tick AVEUGLE.
+// Les boucles sont DÉCOUVERTES dans ce que le serveur publie (`<boucle>_abandons_verdict`), jamais
+// énumérées ici : une boucle ajoutée au démon paraît d'office. Un zéro est un VRAI zéro (tout ce qui
+// était dû a été évalué) et se lit comme tel ; des abandons sont en alerte ; un tick aveugle est en
+// panne, avec sa cause. Aucun bilan publié = démarrage, et c'est dit.
+const SUFFIXE_BILAN = '_abandons_verdict';
+function bilansDeTicks(sc) {
+  const box = document.createElement('div'); box.className = 'sys-bilans';
+  const h = document.createElement('div'); h.className = 'sys-tile-l'; h.textContent = 'Abandons au dernier tick, par boucle de fond'; box.appendChild(h);
+  const cles = Object.keys(sc).filter(k => k.endsWith(SUFFIXE_BILAN)).sort();
+  if (!cles.length) { box.appendChild(muted('aucun bilan publié (pas encore de tick)')); return box; }
+  for (const k of cles) {
+    const base = k.slice(0, -'_verdict'.length);
+    const m = lireMesure(sc, base);
+    const row = document.createElement('div'); row.className = 'kv';
+    const nom = document.createElement('span'); nom.textContent = base.slice(0, -'_abandons'.length);
+    const val = document.createElement('b');
+    if (m.verdict === VERDICT_LU) {
+      const n = Number(m.valeur) || 0;
+      val.textContent = n ? `${n} abandon(s)` : '0';
+      val.className = n ? 'warn' : 'ok';
+    } else {
+      val.textContent = 'TICK AVEUGLE — ' + m.cause;
+      val.className = 'bad';
+      if (m.detail) val.title = m.detail;
+    }
+    row.append(nom, val);
+    box.appendChild(row);
+  }
+  return box;
+}
+
+// S37 — CE QU'UN COMPOSANT PORTE À CÔTÉ DE SON ÉTAT : toute grandeur à verdict posée sur l'objet
+// (`<clé>_verdict`) est lue ; une grandeur NON LISIBLE ou des abandons > 0 sont dits à côté de la
+// pastille, même quand l'état du composant ne les reflète pas (la taille de la base n'entre pas dans
+// l'état du stockage). Les clés sont découvertes sur l'objet ; le libellé est nommé quand il est connu.
+const COMPOSANT_LBL = {
+  queue_depth: 'file spool',
+  disk_used_pct: 'usage disque',
+  db_size_bytes: 'taille base',
+  abandons_dernier_passage: 'abandons du dernier passage',
+  abandons_dernier_tick: 'abandons du dernier tick',
+};
+function verdictsDuComposant(c) {
+  const out = [];
+  for (const k of Object.keys(c).filter(k => k.endsWith('_verdict')).sort()) {
+    const base = k.slice(0, -'_verdict'.length);
+    const m = lireMesure(c, base);
+    const lbl = COMPOSANT_LBL[base] || base;
+    const s = document.createElement('span'); s.className = 'sys-comp-v';
+    if (m.verdict !== VERDICT_LU) {
+      s.textContent = lbl + ' : ' + motDeVerdict(m.verdict) + (m.cause ? ' (' + m.cause + ')' : '');
+      s.classList.add('bad');
+      if (m.detail) s.title = m.detail;
+    } else if (base.startsWith('abandons') && Number(m.valeur) > 0) {
+      s.textContent = lbl + ' : ' + m.valeur;
+      s.classList.add('warn');
+    } else {
+      continue;
+    }
+    out.push(s);
+  }
+  return out;
 }
 
 function componentRow(c) {
@@ -62,7 +154,7 @@ function componentRow(c) {
   const name = document.createElement('b'); name.className = 'sys-comp-n'; name.textContent = c.component;
   const badge = document.createElement('span'); badge.className = 'sys-comp-b sys-' + st; badge.textContent = STATE_LBL[st] || st;
   const detail = document.createElement('span'); detail.className = 'sys-comp-d muted'; detail.textContent = c.detail || '';
-  row.append(dot, name, badge, detail);
+  row.append(dot, name, badge, ...verdictsDuComposant(c), detail);
   return row;
 }
 
@@ -71,6 +163,12 @@ async function loadSystemView() {
   let m, h;
   try { [m, h] = await Promise.all([api('/system/metrics'), api('/system/health')]); }
   catch (e) { wrap.replaceChildren(muted('erreur : ' + e.message)); return; }
+  rendreSysteme(wrap, m, h);
+}
+
+// Le rendu, séparé du chargement : il prend les DEUX réponses telles que le serveur les publie, et c'est
+// lui que le témoin de CI exerce sur des objets fabriqués (verdict `illisible`, puis `lu`).
+function rendreSysteme(wrap, m, h) {
   wrap.replaceChildren();
 
   // posture globale
@@ -90,7 +188,7 @@ async function loadSystemView() {
 
   // tuiles self-métriques
   const grid = document.createElement('div'); grid.className = 'sys-grid';
-  const p = m.process || {}, ing = m.ingest || {}, se = m.search || {}, sc = m.scheduler || {}, db = m.db || {};
+  const p = m.process || {}, ing = m.ingest || {}, se = m.search || {}, sc = m.scheduler || {}, db = m.db || {}, hote = m.host || {};
   grid.append(
     mesureTile('CPU cumulé', p, 'cpu_seconds', v => v.toFixed(1) + ' s'),
     mesureTile('RSS mémoire', p, 'rss_bytes', fmtBytes),
@@ -101,10 +199,13 @@ async function loadSystemView() {
     tile('Scheduler', String(sc.rule_ticks_total ?? 0) + ' ticks', sc.rule_last_tick ? 'règles : ' + humanAge(Math.max(0, (m.ts || 0) - sc.rule_last_tick)) : 'démarrage'),
     tile('Rollups', String(sc.rollup_ticks_total ?? 0) + ' ticks', sc.rollup_last_tick ? humanAge(Math.max(0, (m.ts || 0) - sc.rollup_last_tick)) : 'démarrage'),
     mesureTile('Taille base', db, 'size_bytes', fmtBytes),
+    // S33 — l'identité de l'hôte publie son VERDICT sans sa valeur : lue, ou pourquoi pas.
+    mesureTile('Identité hôte', hote, 'identity', () => 'lue', 'décide des actions ciblées'),
     tile('Alertes ouvertes', String(m.alerts_open ?? 0)),
     tile('Requêtes HTTP', String((m.http && m.http.requests_total) ?? 0), 'dont 5xx : ' + ((m.http && m.http.responses_5xx_total) ?? 0)),
   );
   wrap.appendChild(grid);
+  wrap.appendChild(bilansDeTicks(sc));
 
   // ADMIN : bulletin/MOTD + bundle de diagnostic.
   if (socIsAdmin()) {
@@ -169,4 +270,4 @@ async function loadBulletin() {
   el.hidden = false;
 }
 
-export { loadSystemView, loadBulletin };
+export { loadSystemView, loadBulletin, rendreSysteme, lireMesure };

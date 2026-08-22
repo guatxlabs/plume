@@ -724,6 +724,20 @@ jobs:
       - name: Une mesure d'hôte qui n'a pas pu être prise n'est pas publiée comme un zéro
         run: python3 .github/scripts/check_host_measures_are_honest.py
 
+      # LA MÊME CHAÎNE, À SON DERNIER MAILLON (`S37`) : le démon publie `<clé>_verdict` / `_cause` /
+      # `_detail` à côté de chaque grandeur qu'il n'a pas pu lire (`S32`, `P4.1-r`), et tout s'arrête à
+      # la frontière du navigateur si la surface ne LIT pas le verdict — une grandeur illisible s'y
+      # rend alors comme un zéro, un tiret ou une case vide. La garde DÉRIVE du code du démon
+      # l'ensemble des clés émises (appels à `poser_dans` / `poser_verdict_dans` / `poser_bilan`,
+      # gabarit `{boucle}_abandons` résolu sur la table des boucles) et exige qu'un module web lise
+      # chacune dans son CODE — une clé citée en commentaire ne compte pas. Elle valide son instrument
+      # dans les deux sens, refuse de conclure sous trois clés ou sans sa clé témoin, puis lance le
+      # harnais ESM (`web_esm_harnais.mjs`, shim DOM sans réseau) qui lie les modules de `web/` et
+      # rend le panneau Système sur des objets fabriqués : état « NON LISIBLE » avec sa cause, abandons
+      # visibles, et la valeur — vrai zéro compris — quand le verdict est « lu ».
+      - name: La surface web lit chaque verdict que le démon publie, et le rend comme un état
+        run: python3 .github/scripts/check_web_reads_every_verdict.py
+
       # LA MÊME FIGURE, PORTÉE À LA SURFACE ENTIÈRE : la garde ci-dessus tient UNE mesure d'hôte sur
       # UN capteur ; celle-ci tient tout capteur shell qui publie des NOMBRES. Sa portée est
       # DÉCOUVERTE (le capteur publie une enveloppe `kind:"metrics"`), jamais listée — un capteur de

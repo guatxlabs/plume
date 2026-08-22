@@ -997,6 +997,12 @@ body:not(.role-admin) #sigma-import-btn{display:none!important}
 .sys-tile-v{font-size:20px;font-weight:700;line-height:1.1}
 .sys-tile-l{font-size:12px;color:var(--mut);margin-top:2px}
 .sys-tile-s{font-size:11px;margin-top:1px}
+/* S37 — une grandeur dont le verdict n'est pas « lu » porte un ÉTAT, pas un nombre : NON LISIBLE en rouge, non publié en gris */
+.sys-tile.sys-illisible .sys-tile-v{color:var(--bad);font-size:14px;text-transform:uppercase;letter-spacing:.04em}
+.sys-tile.sys-absent .sys-tile-v{color:var(--mut);font-size:14px}
+.sys-comp-v{font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid var(--bd);white-space:nowrap}
+.sys-comp-v.bad{border-color:color-mix(in srgb,var(--bad) 50%,transparent)} .sys-comp-v.warn{color:#d29922;border-color:color-mix(in srgb,#d29922 55%,transparent)}
+.sys-bilans{margin:14px 0;padding:10px 12px;border:1px solid var(--bd);border-radius:8px;background:var(--card)} .sys-bilans .kv span{text-transform:capitalize} .sys-bilans b.warn{color:#d29922}
 .sys-admin{margin-top:18px;padding-top:14px;border-top:1px solid var(--bd)}
 .sys-admin h3{font-size:14px;margin:0 0 8px}
 .sys-bulletin{display:flex;flex-direction:column;gap:6px;max-width:640px;margin-bottom:14px}

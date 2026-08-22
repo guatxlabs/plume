@@ -111,6 +111,9 @@ const document = {
   addEventListener() {}, removeEventListener() {},
   execCommand: () => false,
 };
+// Les observateurs de mutations restent INERTES (le shim ne mute rien de lui-même), mais chaque pose est
+// enregistrée : le témoin 15 juge celle de l'amorçage du lexique (cible, options, rappel).
+const observateursPoses = [];
 const fenetre = {
   document,
   localStorage: stockage(),
@@ -126,7 +129,7 @@ const fenetre = {
   innerWidth: 1280, innerHeight: 800, devicePixelRatio: 1, scrollY: 0,
   scrollTo() {}, alert() {}, confirm: () => false, prompt: () => null, open() { return null; }, print() {},
   HTMLElement: Element, Element, Node: Element, Image: Element,
-  MutationObserver: class { observe() {} disconnect() {} },
+  MutationObserver: class { constructor(rappel) { this.rappel = rappel; } observe(cible, options) { observateursPoses.push({ rappel: this.rappel, cible, options }); } disconnect() {} },
   ResizeObserver: class { observe() {} disconnect() {} unobserve() {} },
   IntersectionObserver: class { observe() {} disconnect() {} unobserve() {} },
   EventSource: class { constructor() { this.readyState = 0; } close() {} addEventListener() {} },
@@ -159,6 +162,8 @@ if (liens.length) {
   console.error(`\n${liens.length} module(s) sur ${modules.length} ne se chargent pas : l'interface serait VIDE.`);
   process.exit(1);
 }
+// Relevé ICI, avant toute instance sous `LANG='en'` : ce que la liaison française a posé sur le corps du document.
+const observateursSurLeCorpsApresLiaison = observateursPoses.filter((o) => o.cible === document.body).length;
 const PLANCHER_MODULES = 20;
 if (modules.length < PLANCHER_MODULES) {
   console.error(`::error::seulement ${modules.length} modules découverts sous web/, plancher ${PLANCHER_MODULES} : la découverte est cassée, le harnais refuse de conclure.`);
@@ -1057,9 +1062,49 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[aide] ${ouvreurs.length} ouvreurs de modale : bouton « Fermer » sous fr, « Close » sous en après la marche du lexique ; guide : ${7 * 2} libellés rendus dans la langue de l'instance, nom accessible du sommaire traduit`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 15. L'OBSERVATEUR DU LEXIQUE EST POSÉ PAR L'AMORÇAGE, ET IL TRADUIT CE QUI ARRIVE APRÈS COUP (`P11.8-a`).
+//     Le témoin 10 appelle `i18nWalk` à la main ; il ne dit pas que l'amorçage POSE l'observateur, ni sur
+//     quoi. Ici `app.js` est chargé sous `LANG='en'` pendant que le shim enregistre la pose : la cible est le
+//     corps du document, les options couvrent les enfants, le sous-arbre et les quatre attributs affichés
+//     (`title`, `placeholder`, `aria-label`, `label`) ; puis le rappel reçoit des mutations fabriquées — un
+//     nœud TEXTE ajouté seul (ce que `textContent = '…'` produit sur un élément déjà attaché), un élément
+//     ajouté, un attribut `title` posé après coup — et c'est le résultat qui est jugé. Témoin inverse : la
+//     liaison du graphe sous `LANG='fr'` (relevée avant toute instance anglaise) n'a rien posé sur le corps.
+//     L'instance `app.js?plume-lang=en` est souvent déjà chargée par les témoins 10 et 14 (les modules qui
+//     importent `app.js` la tirent) ; l'import ici la garantit sans la dédoubler.
+// ---------------------------------------------------------------------------------------------
+{
+  const SUFFIXE = "?plume-lang=en";
+  const urlWeb = (f, suffixe = "") => pathToFileURL(path.join(WEB, f)).href + suffixe;
+  const surLeCorps = () => observateursPoses.filter((o) => o.cible === document.body);
+  exiger(observateursSurLeCorpsApresLiaison === 0, `(15) LANG='fr' : ${observateursSurLeCorpsApresLiaison} observateur(s) posé(s) sur le corps du document par la liaison — l'amorçage français n'observe rien`);
+  localStorage.setItem("soc_lang", "en");
+  await import(urlWeb("app.js", SUFFIXE));
+  localStorage.removeItem("soc_lang");
+  const poses = surLeCorps();
+  exiger(poses.length === 1, `(15) LANG='en' : ${poses.length} observateur(s) posé(s) sur le corps du document, un seul attendu`);
+  const pose = poses[0] || { options: {}, rappel: () => {} };
+  const options = pose.options || {};
+  exiger(options.childList === true && options.subtree === true && options.attributes === true, `(15) options de l'observateur : ${JSON.stringify(options)} — enfants, sous-arbre et attributs attendus`);
+  exiger(JSON.stringify(options.attributeFilter) === JSON.stringify(["title", "placeholder", "aria-label", "label"]), `(15) filtre d'attributs de l'observateur : ${JSON.stringify(options.attributeFilter)}`);
+  const statut = new Element("span"); const texteSeul = document.createTextNode("connecté"); statut.appendChild(texteSeul);
+  const libelle = new Element("span"); libelle._text = "Rafraîchir ce dashboard";
+  const bouton = new Element("button"); bouton.setAttribute("title", "Rafraîchir ce panneau");
+  pose.rappel([
+    { type: "childList", addedNodes: [texteSeul], target: statut },
+    { type: "childList", addedNodes: [libelle], target: document.body },
+    { type: "attributes", attributeName: "title", target: bouton },
+  ]);
+  exiger(texteSeul.nodeValue === "connected", `(15) un nœud texte ajouté seul n'est pas traduit par l'observateur (« ${texteSeul.nodeValue} »)`);
+  exiger(libelle._text === "Refresh this dashboard", `(15) un élément ajouté n'est pas traduit par l'observateur (« ${libelle._text} »)`);
+  exiger(bouton.getAttribute("title") === "Refresh this panel", `(15) un attribut \`title\` posé après coup n'est pas traduit par l'observateur (« ${bouton.getAttribute("title")} »)`);
+  console.log(`[lexique] observateur posé par l'amorçage sous LANG='en' : corps du document, ${Object.keys(options).length} options, ${(options.attributeFilter || []).length} attributs ; nœud texte, élément et attribut posés après coup traduits`);
+}
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module.`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup.`);

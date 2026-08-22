@@ -4,7 +4,7 @@ import {
   socIsAdmin, managedBadge, formMsg, contentDelete,
   confirmWithConsequence, disclosure
 } from './core.js';
-import { i18nWalk } from './i18n.js';
+import { installI18nObserver } from './i18n_observer.js';
 import { S } from './state.js';
 import { banIp, clearDrillCrumb, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, qHistGo, queryCount, renderViz, runQ, runQuery, setZoom, stopExplore, tableEl, updateZoomBadge, vizElement } from './viz.js';
 import { loadFleetView } from './fleet.js';
@@ -1884,18 +1884,7 @@ initOverviewLayout();
   inp.addEventListener('keydown', e => { if (e.key === 'Escape') hide(); });
 })();
 
-if (LANG === 'en') {
-  i18nWalk(document.body);
-  // bloc d'intro Parsers (HTML riche, trop fragmenté pour le walk) -> version EN dédiée
-  const pi = $('#parsers-intro');
-  if (pi) pi.innerHTML = 'Extracts fields (regex named groups <code>(?&lt;name&gt;…)</code>) from the message <b>at ingestion, for all sources</b> (k3s / host / container — parsing is central, mode-independent). Built-in defaults (toggleable) + your custom parsers. <code>source=*</code> = all.<br><b>When?</b> a parser is <b>effective on save</b>, for <b>new</b> events. For <b>old</b> ones: <b>↻ Re-apply</b> (retroactive, with confirmation) — or <code>| rex</code> on the fly in a search.<br><b>IP direction:</b> name <code>src_ip</code> = the <b>initiator</b> (the attacker when inbound), <code>dst_ip</code> = the <b>target</b>. <code>src_ip</code>/<code>rhost</code> are promoted to a searchable column; an IP of uncertain direction → leave it in a neutral field (e.g. <code>ip</code>), never <code>src_ip</code>.';
-  // P11.8-a : les nœuds TEXTE comptent (un `textContent = '…'` sur un élément déjà attaché ajoute un nœud Text, pas un
-  // élément), et un attribut posé APRÈS attachement est re-traduit — la garde anti-boucle vit dans `i18nWalk`.
-  new MutationObserver(ms => ms.forEach(m => {
-    if (m.type === 'attributes') { i18nWalk(m.target); return; }
-    m.addedNodes.forEach(nd => { if (nd.nodeType === 1 || nd.nodeType === 3) i18nWalk(nd); });
-  })).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['title', 'placeholder', 'aria-label', 'label'] });
-}
+installI18nObserver();   // amorçage du lexique sous LANG='en' : marche initiale + observateur des nœuds/attributs ajoutés après coup (i18n_observer.js)
 if ($('#lang')) { $('#lang').value = LANG; $('#lang').onchange = () => { localStorage.setItem('soc_lang', $('#lang').value); location.reload(); }; }
 
 // ============ tous les fuseaux IANA (Intl) — favoris en tête, le reste ajouté dynamiquement ============

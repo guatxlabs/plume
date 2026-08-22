@@ -1102,9 +1102,40 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[lexique] observateur posé par l'amorçage sous LANG='en' : corps du document, ${Object.keys(options).length} options, ${(options.attributeFilter || []).length} attributs ; nœud texte, élément et attribut posés après coup traduits`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 16. LE PANNEAU D'ACCÈS DONNÉES REND SES CARTES, SA FENÊTRE ET SON PÉRIMÈTRE. Le rendu vit dans
+//     `dataaccess.js` (extrait d'`app.js` par déplacement pur) ; il est exercé ici sur le shim, sans réseau :
+//     cinq cartes titrées, dont chaque corps dit l'absence de données AVEC la fenêtre d'analyse (la requête
+//     ne peut pas partir, le placeholder est remplacé par l'aveu, jamais laissé à « ... ») ; un sélecteur de
+//     fenêtre à trois choix avec son nom accessible ; la note de périmètre et ses sept chemins surveillés.
+// ---------------------------------------------------------------------------------------------
+{
+  const { renderDataAccess } = await import(pathToFileURL(path.join(WEB, "dataaccess.js")).href);
+  const hote = new Element("div");
+  const qsOrigine = document.querySelector;
+  document.querySelector = (sel) => (sel === "#da-body" ? hote : qsOrigine(sel));
+  try { await renderDataAccess(); await new Promise((r) => setTimeout(r, 0)); } finally { document.querySelector = qsOrigine; }
+  const h2De = (el) => { const h = el.children.find((x) => x.tagName === "H2"); return h ? h.textContent : null; };
+  const cartes = hote.children.filter((c) => c.tagName === "SECTION" && c.dataset.da);
+  exiger(cartes.length === 5, `(16) ${cartes.length} carte(s) d'accès données rendue(s), cinq attendues`);
+  const titres = cartes.map(h2De);
+  for (const t of ["Qui touche quoi (accès données)", "Intégrité (FIM)", "RBAC Kubernetes (kube-rbac)"]) exiger(titres.includes(t), `(16) carte « ${t} » absente — titres : ${titres.join(" | ")}`);
+  const corps = cartes.map((c) => { const b = c.children.find((x) => x.classList.contains("body")); return b ? b.textContent : "(pas de corps)"; });
+  exiger(corps.every((t) => t.startsWith("Aucun changement récent (toute la rétention")), `(16) sans réseau, un corps de carte ne dit pas l'absence de données avec sa fenêtre : ${corps.join(" | ")}`);
+  const barre = hote.children.find((c) => c.classList.contains("da-winbar"));
+  const selecteur = barre && barre.children.find((c) => c.tagName === "SELECT");
+  exiger(!!selecteur && selecteur.children.length === 3 && selecteur.getAttribute("aria-label") === "Fenêtre d'analyse (DLP)", `(16) sélecteur de fenêtre : ${selecteur ? selecteur.children.length + " option(s), nom « " + selecteur.getAttribute("aria-label") + " »" : "absent"}`);
+  exiger(!!barre && barre.children.some((c) => c.tagName === "SPAN" && c.textContent.startsWith("Fenêtre : toute la rétention")), "(16) le libellé de fenêtre n'annonce pas « toute la rétention »");
+  const note = hote.children.find((c) => c.classList.contains("da-note"));
+  exiger(!!note && h2De(note) === "Périmètre surveillé (hôte)", `(16) note de périmètre : ${note ? "titre « " + h2De(note) + " »" : "absente"}`);
+  const puces = note ? note.children.flatMap((c) => c.children || []).filter((c) => c.classList.contains("plugchip")) : [];
+  exiger(puces.length === 7 && puces.some((c) => c.textContent === "/etc/shadow"), `(16) ${puces.length} chemin(s) surveillé(s) rendu(s), sept attendus`);
+  console.log(`[accès données] ${cartes.length} cartes, ${corps.length} corps disant l'absence de données avec la fenêtre, sélecteur à ${selecteur ? selecteur.children.length : 0} choix, ${puces.length} chemins surveillés`);
+}
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup.`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés.`);

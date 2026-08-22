@@ -41,8 +41,11 @@ Requetes (PromQL -> GXQL) :
 ```
 metric node_load1 | timechart span=1m avg(value)
 metric node_network_receive_bytes_total by device | rate | timechart span=1m avg(rate) by device
-metric kube_pod_status_phase phase=Running | stats count by namespace
+metric kube_pod_status_phase phase=Running by namespace | stats count by namespace
 ```
+Un label de metrique (`namespace`, `device`) se declare sur la base, `metric <nom> by <label>`, avant
+d'etre une cle de `stats … by` : le compilateur refuse un nom qui n'est ni une colonne ni un label
+declare. Pour une serie « par heure » ou « par jour », c'est `timechart span=1h` / `span=1d`, pas `by hour`.
 
 ### Variante recommandee pour le CLUSTER : Alloy POUSSE (remote_write)
 Le scrape (pull) ne joint pas les ClusterIP internes. Pour TOUTES les metriques (hote + cluster),

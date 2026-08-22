@@ -152,6 +152,7 @@ mod maj_corroboree; // P5.7-b : LE SOC S'ALERTE SUR SA PROPRE MISE À JOUR — u
 pub(crate) use maj_corroboree::*;
 mod overlays_adossement; // P4.1-r : CE QUI ADOSSE UN OVERLAY À UN FICHIER — le listing de config.d lu ou AVOUÉ (jamais « vide » faute de savoir), le bilan d'un chargement, et le REFUS d'élaguer sur un adossement illisible (un dossier de règles momentanément illisible supprimait TOUTES les règles livrées)
 mod bilan_de_tick; // P4.1-r : CE QU'UN TICK DE FOND REND — le compte des éléments dus ABANDONNÉS, ou l'aveu que la liste n'a pas pu être lue ; le planificateur l'absorbe et la surface d'état le lit (un tick qui n'évalue rien n'est plus « vert »)
+mod detection_aveugle; // P3.9-a : UNE RÈGLE ABANDONNÉE À RÉPÉTITION EST UNE DÉTECTION ÉTEINTE — la cause de l'abandon conservée (ensemble fermé), un compte consécutif par règle qui persiste, et au seuil dérivé de l'intervalle une alerte de cécité par le chemin des alertes de capteur muet, résolue à la première évaluation réussie
 mod mesure_environnement; // S32 : une lecture d'environnement qui échoue n'est PAS un zéro — un type à deux cas, des fonctions paramétrées sur leurs chemins (donc exerçables hors machine), et une jauge de LISIBILITÉ à côté d'une série de valeur ABSENTE
 mod metrics; // #51 DAY-2 OPS : self-métriques process-globales + santé par composant + exposition Prometheus
 pub(crate) use metrics::*;

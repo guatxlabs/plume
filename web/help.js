@@ -131,6 +131,9 @@ FILTRES (search) — champs : source, category|cat, severity|sev,
 TRANSFORMATIONS (après un |) :
   stats / timechart   agréger : count, sum, avg, min, max, dc,
                       values, list  [by champs]
+                      by n'accepte qu'un champ en portée (colonne, label
+                      déclaré par metric … by, clé JSON de fields) ; « par
+                      heure / par jour » = timechart span=1h / span=1d
   where               filtrer APRÈS agrégat (gère in / not in)
   sort [-]f           trier ( - = décroissant )
   head N / limit N    garder les N premières lignes
@@ -173,6 +176,9 @@ FILTERS (search) — fields: source, category|cat, severity|sev,
 TRANSFORMS (after a |) :
   stats / timechart   aggregate: count, sum, avg, min, max, dc,
                       values, list  [by fields]
+                      by only takes a field in scope (column, label declared
+                      by metric … by, JSON key of fields); "per hour / per
+                      day" is timechart span=1h / span=1d
   where               filter AFTER aggregate (supports in / not in)
   sort [-]f           sort ( - = descending )
   head N / limit N    keep the first N rows

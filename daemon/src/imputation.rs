@@ -1,6 +1,7 @@
 //! L'IMPUTATION D'UNE ALERTE — À QUELLE(S) SOURCE(S) ELLE SE RAPPORTE, ET D'OÙ VIENT CE NOM.
 //! Un seul auteur pour la question « quelles sources cette alerte concerne-t-elle ? », appelé par les
-//! DEUX producteurs d'alertes (`run_due_rules`, `check_heartbeats`) et lu par la fraîcheur par-source.
+//! producteurs d'alertes qui imputent (`run_due_rules`, `check_heartbeats`, la sonde de flotte, la
+//! détection aveugle) et lu par la fraîcheur par-source.
 use crate::*;
 
 // ====================================================================================================
@@ -38,14 +39,16 @@ use crate::*;
 //      nommer sa source laisse l'exploitant décider. Un « inconnu » nommé vaut mieux qu'une imputation
 //      fausse, et il vaut mieux qu'un zéro muet.
 //
-// CE QUE ÇA NE FERME PAS, ÉCRIT POUR ÊTRE OPPOSABLE. Dix endroits du daemon insèrent une alerte ;
-// TROIS passent par ici — l'ordonnanceur de règles et le dead-man's-switch des capteurs, c'est-à-dire
-// les deux qui portaient le défaut S7, plus la sonde de FLOTTE (P3.2-a). Les SEPT autres (alerting
+// CE QUE ÇA NE FERME PAS, ÉCRIT POUR ÊTRE OPPOSABLE. Onze endroits du daemon insèrent une alerte ;
+// QUATRE passent par ici — l'ordonnanceur de règles et le dead-man's-switch des capteurs, c'est-à-dire
+// les deux qui portaient le défaut S7, plus la sonde de FLOTTE (P3.2-a), plus l'alerte de DÉTECTION
+// AVEUGLE (P3.9-a, `detection_aveugle`), qui se rapporte à une RÈGLE et à aucun feed et impute donc,
+// comme la flotte, à l'INCONNU NOMMÉ. Les SEPT autres (alerting
 // avancé, corrélations, scoring par risque, pression disque à l'ingest, alerte semée) laissent la
 // colonne VIDE et retombent donc sur le chemin textuel : leur comportement est byte-identique à avant,
 // ni meilleur ni pire. C'est un périmètre assumé et non un oubli — imputer depuis la donnée demande, à
 // chaque producteur, de savoir QUELLES lignes ont fait tirer, et cela ne se devine pas depuis ici. Ce
-// qui est garanti, c'est qu'un ONZIÈME producteur ne pourra pas rejoindre cette liste en silence :
+// qui est garanti, c'est qu'un DOUZIÈME producteur ne pourra pas rejoindre cette liste en silence :
 // `imputation_tout_producteur_d_alerte_declare_son_choix` compte les sites en LISANT LA SOURCE et
 // refuse un nombre qui bouge. C'est d'ailleurs cette garde qui a arrêté la sonde de flotte, écrite
 // sans y penser : son alerte se rapporte à des HÔTES et à AUCUN feed, donc elle impute à l'INCONNU

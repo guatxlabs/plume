@@ -440,9 +440,13 @@
         );
     }
 
-    /// GARDE DÉRIVÉE — AUCUN PRODUCTEUR D'ALERTE NE REJOINT LA LISTE EN SILENCE. Le périmètre est TROIS
-    /// producteurs sur dix ; les sept autres retombent volontairement sur le chemin textuel, à
+    /// GARDE DÉRIVÉE — AUCUN PRODUCTEUR D'ALERTE NE REJOINT LA LISTE EN SILENCE. Le périmètre est QUATRE
+    /// producteurs sur onze ; les sept autres retombent volontairement sur le chemin textuel, à
     /// l'identique. Ce qui doit tenir, ce n'est pas ce partage — c'est qu'il soit un CHOIX à chaque fois.
+    ///
+    /// LE QUATRIÈME (P3.9-a) est l'alerte de DÉTECTION AVEUGLE : elle se rapporte à une RÈGLE qui ne
+    /// peut plus être évaluée, et à aucun feed — elle impute à l'inconnu NOMMÉ, pour la même raison que
+    /// la flotte. Cette garde l'a arrêtée à son tour, et c'est ici que son choix est dit.
     ///
     /// LE TROISIÈME, AJOUTÉ PAR P3.2-a, EST CELUI QUI PROUVE QUE LA GARDE SERT. La sonde de flotte
     /// (`verifier_flotte_muette`) a été écrite sans penser à l'imputation ; ce test l'a arrêtée. Elle
@@ -487,7 +491,7 @@
         let imputent: Vec<&(String, bool)> = sites.iter().filter(|(_, ok)| *ok).collect();
         assert_eq!(
             sites.len(),
-            10,
+            11,
             "le nombre de producteurs d'alerte a bougé ({} trouvés) : chaque producteur doit dire s'il \
              impute depuis la DONNÉE (colonne `sources`) ou s'il retombe sur le texte de la règle. \
              Sites : {:?}",
@@ -496,7 +500,7 @@
         );
         assert_eq!(
             imputent.len(),
-            3,
+            4,
             "le partage a bougé : {} producteur(s) imputent depuis la donnée. Si c'est voulu, le bandeau \
              de daemon/src/imputation.rs doit le dire aussi. Sites : {:?}",
             imputent.len(),
@@ -505,6 +509,10 @@
         assert!(
             imputent.iter().any(|(f, _)| f.ends_with("detection.rs")),
             "l'ordonnanceur de règles impute : {imputent:?}"
+        );
+        assert!(
+            imputent.iter().any(|(f, _)| f.ends_with("detection_aveugle.rs")),
+            "l'alerte de détection aveugle impute (à l'inconnu NOMMÉ : une règle éteinte n'accuse aucun feed) : {imputent:?}"
         );
         assert!(
             imputent.iter().filter(|(f, _)| f.ends_with("freshness.rs")).count() == 2,

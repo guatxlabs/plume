@@ -90,7 +90,7 @@ impl Drop for MigrationLogSilencer {
 /// rien (toutes ses gardes `v < N` sont fausses) et OPÈRE À L'AVEUGLE sur un schéma qu'il ne connaît pas
 /// -> risque de corruption (survivable AUJOURD'HUI car migrations additives, mais non gardé). On REFUSE
 /// d'ouvrir : arrêt PROPRE (exit non-zéro), JAMAIS un panic, JAMAIS un « proceed » silencieux.
-pub(crate) const CODE_SCHEMA_MAX: i64 = 115;
+pub(crate) const CODE_SCHEMA_MAX: i64 = 116;
 
 /// Lit `meta.schema_version` (défaut 1 si table/lignes absentes ou illisibles) — MÊME lecture que `migrate()`.
 /// Une base NEUVE (pas encore de table meta) renvoie 1 -> jamais refusée par la garde.
@@ -814,6 +814,7 @@ fn migrate_chain(conn: &Connection) -> bool {
     if v < 113 && !migrate_step(conn, 113, migrate_v113) { return false; }
     if v < 114 && !migrate_step(conn, 114, migrate_v114) { return false; }
     if v < 115 && !migrate_step(conn, 115, migrate_v115) { return false; }
+    if v < 116 && !migrate_step(conn, 116, migrate_v116) { return false; }
     true
 }
 
@@ -1186,6 +1187,25 @@ fn migrate_v115(conn: &MigTx) {
     }
     let _ = conn.execute("UPDATE meta SET value='115' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v115 (S7 : alert.sources — l'imputation d'une alerte à ses sources, DÉRIVÉE DE LA DONNÉE et non du texte de la règle ; '' sur les lignes existantes = repli textuel historique)");
+}
+
+/// v116 (`P3.9-a` — UNE RÈGLE ABANDONNÉE À RÉPÉTITION). COLONNE `rule.abandons_consecutifs INTEGER NOT NULL
+/// DEFAULT 0` : le nombre d'évaluations CONSÉCUTIVES de la règle que l'ordonnanceur a abandonnées
+/// (compilation refusée, requête en échec, budget dépassé, cellule non numérique, fil en panique), remis à
+/// zéro à la première évaluation réussie. PERSISTANT parce qu'un redémarrage du démon ne change rien à la
+/// cause : un compte en mémoire repartirait de zéro à chaque relance et une règle aveugle depuis des
+/// heures ne franchirait jamais son seuil sur un nœud qui redémarre. MÊME pattern que v115 : ADDITIF, `col_exists`
+/// idempotent, DEFAULT 0 -> une base migrée est byte-identique dans son comportement tant qu'aucune règle
+/// n'est abandonnée ; MIROIR dans `db/schema.sql` (base neuve) -> les deux CONVERGENT (`schema_gaps`).
+///
+/// ROLLBACK — bumpe le schéma à 116 : un binaire max=115 REFUSE d'ouvrir une base v116 (`db_open`,
+/// `v > CODE_SCHEMA_MAX` -> Err). Rollback = RESTAURER le SNAPSHOT pré-migrate. Forward-only, idempotent.
+fn migrate_v116(conn: &MigTx) {
+    if !conn.col_exists("rule", "abandons_consecutifs") {
+        let _ = conn.execute("ALTER TABLE rule ADD COLUMN abandons_consecutifs INTEGER NOT NULL DEFAULT 0", []);
+    }
+    let _ = conn.execute("UPDATE meta SET value='116' WHERE key='schema_version'", []);
+    mig_log!("[migration] schéma -> v116 (P3.9-a : rule.abandons_consecutifs — le compte persistant des évaluations consécutives abandonnées d'une règle, remis à zéro à la première réussie ; au seuil dérivé de l'intervalle, une alerte de cécité)");
 }
 
 /// v108 (PERF — RECHERCHE RAW HAUT-VOLUME source=X sur fenêtre longue). MARQUEUR PUR (aucune DDL lourde

@@ -4,6 +4,7 @@
 //! `delete_managed_row*`, CRUD règles/parseurs et tests (`rule_test`/`rule_test_adhoc`/`parser_test`/
 //! `parser_reparse`). Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
+use crate::detection_aveugle::AbandonDEvaluation;
 
 // ---------- moteur de règles de détection (P4) ----------
 pub(crate) fn cmp_op(a: f64, op: &str, b: f64) -> bool {
@@ -177,10 +178,10 @@ pub(crate) fn eval_value(db_path: &str, sql: &str) -> Option<f64> {
 /// watchdog -> Err -> None. run_due_rules NE convertit PLUS ce None en 0.0 « tout va bien » (cf. la garde
 /// d'échec) : sinon une erreur/timeout transitoire RÉSOUDRAIT une détection réelle = angle mort SILENCIEUX
 /// que le dry-run (rule_test, isolé, qui SURFACE l'erreur « évaluation échouée ») ne montrait jamais.
+/// La projection en `Option` de `detection_aveugle::evaluer_valeur_de_regle`, pour les appelants qui
+/// n'ont pas d'usage de la CAUSE de l'abandon. L'ordonnanceur des règles simples, lui, la conserve.
 pub(crate) fn eval_value_budget(db_path: &str, sql: &str, budget_ms: u64) -> Option<f64> {
-    let v = run_query_ex(db_path, sql, budget_ms, None).ok()?;
-    let cell = v.get("rows")?.as_array()?.first()?.as_array()?.last()?.clone();
-    cell.as_f64().or_else(|| cell.as_i64().map(|n| n as f64))
+    crate::detection_aveugle::evaluer_valeur_de_regle(db_path, sql, budget_ms).ok()
 }
 /// CONCURRENCE ORDONNANCEUR (#detect) — nombre MAX de règles évaluées EN PARALLÈLE par `run_due_rules`.
 /// Miroir de la discipline `PLUME_QUERY_CONCURRENCY` (=3) : chaque éval déchiffre SQLCipher sur sa propre
@@ -237,7 +238,9 @@ fn imputations_des_regles_qui_tirent(
 /// est alors AVEUGLE et le planificateur le publie, au lieu de marquer un tick « vert » qui n'a rien
 /// évalué ; `Lue(n)` sinon, `n` étant le nombre de règles dues ABANDONNÉES (ligne indécodable,
 /// compilation refusée, évaluation en échec). Chacune est re-tentée au prochain intervalle, comme
-/// avant ; ce qui change est qu'elle est comptée.
+/// avant ; ce qui change est qu'elle est comptée — et, depuis `P3.9-a`, CONSIGNÉE PAR RÈGLE avec sa
+/// cause (`detection_aveugle`) : au seuil dérivé de son intervalle, une règle abandonnée à répétition
+/// lève une alerte de cécité, résolue à sa première évaluation réussie.
 pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
     let mut abandonnees = 0u32;
@@ -287,37 +290,44 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
     // traite par TRANCHES de `detect_concurrency()` (défaut 3, miroir de query_sem) : au plus N évals en vol.
     // Le résultat est indépendant de l'ordre/tranchage (phase 3 écrit par id de règle) -> sémantique préservée.
     let cc = detect_concurrency();
-    let mut results: Vec<(i64, String, String, f64, f64, i64, i64, String, String, bool)> = Vec::with_capacity(due.len());
+    // Le VERDICT d'une évaluation : la valeur, ou l'abandon AVEC SA CAUSE (`P3.9-a`). Un seul `None`
+    // fondait erreur de requête, budget dépassé, cellule non numérique et panique du fil ; la cause
+    // est désormais conservée jusqu'à la phase 3, qui la consigne par règle.
+    let mut results: Vec<(i64, String, String, f64, i64, i64, String, String, Result<f64, AbandonDEvaluation>)> =
+        Vec::with_capacity(due.len());
     for chunk in due.chunks(cc) {
         let chunk_res: Vec<_> = std::thread::scope(|s| {
-            chunk.iter()
+            let fils: Vec<_> = chunk.iter()
                 .map(|(id, name, query, is_soql, op, threshold, severity, window_s, mitre)| {
                     s.spawn(move || match rule_sql(query, *is_soql, *window_s) {
                         // BUDGET INTERACTIF (pas le budget auto 5 s) : la détection est un balayage de FOND,
                         // hors lock d'écriture, sur sa propre connexion read-only -> tolère un scan brut de
                         // corrélation plus long. Le budget 5 s coupait ces scans sous charge parallèle -> None -> 0.0.
-                        Ok(sql) => match eval_value_budget(db_path, &sql, query_budget_interactive_ms()) {
-                            // succès -> valeur RÉELLE, ok=true (comparée au seuil en phase 3). Un 0 GÉNUINE
-                            // (la requête a tourné, agrégat=0) est un Some(0.0) -> ok=true -> résout normalement.
-                            Some(v) => (*id, name.clone(), op.clone(), *threshold, v, *severity, *window_s, query.clone(), mitre.clone(), true),
-                            // ÉCHEC D'ÉVAL (erreur SQL / watchdog budget / non-numérique) : ok=false. On NE
-                            // fabrique PAS un 0.0 « tout va bien ». Traité EXACTEMENT comme un échec de compilation
-                            // -> phase 3 avance seulement last_run (re-tentera au prochain intervalle) SANS écrire
-                            // last_value=0.0 NI résoudre une alerte ouverte. Ferme l'angle mort SILENCIEUX où une
-                            // erreur transitoire de l'ordonnanceur passait pour un « tout clair » (que le dry-run,
-                            // qui surface l'erreur, n'exhibait jamais -> les deux chemins re-symétrisés).
-                            None => (*id, name.clone(), op.clone(), *threshold, 0.0, *severity, *window_s, query.clone(), mitre.clone(), false),
-                        },
-                        Err(_) => (*id, name.clone(), op.clone(), *threshold, 0.0, *severity, *window_s, query.clone(), mitre.clone(), false),
+                        // succès -> valeur RÉELLE (comparée au seuil en phase 3). Un 0 GÉNUINE (la requête a
+                        // tourné, agrégat=0) est un Ok(0.0) -> résout normalement. ÉCHEC D'ÉVAL (erreur SQL /
+                        // watchdog budget / non-numérique) : Err(cause). On NE fabrique PAS un 0.0 « tout va
+                        // bien » : la phase 3 re-planifie (re-tentera au prochain intervalle) SANS écrire
+                        // last_value=0.0 NI résoudre une alerte ouverte, et CONSIGNE l'abandon par règle.
+                        Ok(sql) => (*id, name.clone(), op.clone(), *threshold, *severity, *window_s, query.clone(), mitre.clone(),
+                                    crate::detection_aveugle::evaluer_valeur_de_regle(db_path, &sql, query_budget_interactive_ms())),
+                        Err(e) => (*id, name.clone(), op.clone(), *threshold, *severity, *window_s, query.clone(), mitre.clone(),
+                                   Err(AbandonDEvaluation::compilation_refusee(&e))),
                     })
                 })
-                .collect::<Vec<_>>()
-                .into_iter()
+                .collect();
+            fils.into_iter()
+                .zip(chunk.iter())
                 // DURCISSEMENT (#25) : un worker EMPOISONNÉ (panic dans rule_sql/eval) ne doit PAS avorter
-                // TOUT le balayage. On le traite comme un ÉCHEC D'ÉVAL (ok=false, id=0 -> UPDATE no-op en
-                // phase 3) : aucune alerte fabriquée, aucun last_value=0.0 « tout clair », la règle re-tentée
-                // au prochain tick. Même garantie fail-closed que les branches None/Err ci-dessus.
-                .map(|h| h.join().unwrap_or_else(|_| (0, String::new(), String::new(), 0.0, 0.0, 0, 0, String::new(), String::new(), false)))
+                // TOUT le balayage. On le traite comme un ÉCHEC D'ÉVAL ATTRIBUÉ À SA RÈGLE (la règle est
+                // relue dans `chunk`, pas dans le fil qui a paniqué) : aucune alerte fabriquée, aucun
+                // last_value=0.0 « tout clair », la règle re-tentée au prochain tick et son abandon consigné
+                // avec sa cause. Même garantie fail-closed que les branches Err ci-dessus.
+                .map(|(h, (id, name, query, _is_soql, op, threshold, severity, window_s, mitre))| {
+                    h.join().unwrap_or_else(|_| {
+                        (*id, name.clone(), op.clone(), *threshold, *severity, *window_s, query.clone(), mitre.clone(),
+                         Err(AbandonDEvaluation::evaluateur_en_panne()))
+                    })
+                })
                 .collect()
         });
         results.extend(chunk_res);
@@ -326,18 +336,27 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
     // l'écriture : hors du verrou d'écriture (comme la phase 2) et SEULEMENT pour les règles qui vont
     // lever une alerte — le prédicat de tir est le MÊME que celui de la phase 3 (`cmp_op`), écrit une
     // fois et partagé, pour qu'une imputation ne puisse pas exister sans son alerte ni l'inverse.
-    let qui_tire: std::collections::HashSet<i64> =
-        results.iter().filter(|(_, _, op, th, val, _, _, _, _, ok)| *ok && cmp_op(*val, op, *th)).map(|r| r.0).collect();
+    let qui_tire: std::collections::HashSet<i64> = results
+        .iter()
+        .filter(|(_, _, op, th, _, _, _, _, verdict)| verdict.as_ref().map_or(false, |val| cmp_op(*val, op, *th)))
+        .map(|r| r.0)
+        .collect();
     let imputations = imputations_des_regles_qui_tirent(db_path, &due, &qui_tire, cc);
     // Phase 3 : ecritures groupees sous un seul verrou
     let conn = db.lock();
-    for (id, name, op, threshold, val, severity, _window_s, query, mitre, ok) in results {
-        if !ok {
-            abandonnees += 1;
-            let _ = conn.execute("UPDATE rule SET last_run=?1 WHERE id=?2", params![now_ts, id]);
-            continue;
-        }
-        let _ = conn.execute("UPDATE rule SET last_run=?1, last_value=?2 WHERE id=?3", params![now_ts, val, id]);
+    for (id, name, op, threshold, severity, _window_s, query, mitre, verdict) in results {
+        let val = match verdict {
+            Ok(val) => val,
+            Err(abandon) => {
+                // `P3.9-a` — COMPTÉ pour le bilan du tick (`P4.1-r`), et CONSIGNÉ par règle : re-planifiée
+                // comme avant, son compte consécutif incrémenté, et l'alerte de cécité posée au seuil.
+                abandonnees += 1;
+                let _ = crate::detection_aveugle::consigner_abandon(&conn, id, &name, severity, now_ts, &abandon);
+                continue;
+            }
+        };
+        // Évaluée : `last_run`/`last_value` comme avant, compte consécutif à zéro, épisode de cécité résolu.
+        crate::detection_aveugle::consigner_evaluation_reussie(&conn, id, now_ts, val);
         // Clé dedup STABLE par règle (PAS de bucket /window) -> une seule alerte+notif par épisode,
         // calquée sur check_heartbeats : INSERT OR IGNORE (no-op si déjà ouverte) + résolution au retour normal.
         let dedup = format!("rule-{id}");

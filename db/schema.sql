@@ -170,7 +170,12 @@ CREATE TABLE IF NOT EXISTS rule(
   window_s INTEGER NOT NULL DEFAULT 3600,
   -- 0 = builtin/seed | 1 = overlay-file (config.d, versionné git) | 2 = ad-hoc UI (CRUD)
   managed INTEGER NOT NULL DEFAULT 0,
-  last_run INTEGER, last_value REAL, last_fired INTEGER
+  last_run INTEGER, last_value REAL, last_fired INTEGER,
+  -- v116 (P3.9-a) — évaluations CONSÉCUTIVES abandonnées par l'ordonnanceur (compilation refusée, requête en
+  -- échec, budget dépassé, cellule non numérique, fil en panique) ; remis à 0 à la première évaluation
+  -- réussie. Au seuil dérivé de `interval_s` (une heure d'horizon, plancher 2), une alerte « détection
+  -- aveugle » est posée, résolue au retour. MIROIR de la migration v116.
+  abandons_consecutifs INTEGER NOT NULL DEFAULT 0
 );
 
 -- Tables d'enrichissement (lookup, v61) : l'opérateur SOQL `lookup <name> <keyfield> [OUTPUT cols]`

@@ -826,6 +826,17 @@ jobs:
       - name: Un document suivi doit être ATTEIGNABLE depuis la page d'accueil
         run: python3 .github/scripts/check_every_doc_is_reachable.py
 
+      # MÊME FAMILLE, APPLIQUÉE AU PLAN DES MODULES : un document que rien ne relit dérive. Le plan
+      # (`docs/MODULE-MAP.md`) nommait encore `idp.rs` et `compliance.rs` alors que l'un était devenu
+      # un répertoire et l'autre n'avait jamais vécu qu'en handler, et un module de premier niveau sur
+      # trois n'y avait aucune entrée (mesuré le 2026-08-22 : 2 chemins absents, 26 modules sans
+      # entrée sur 79). La garde n'énumère aucun répertoire : elle lit la ligne `Scope:` du plan, puis
+      # relit dans les DEUX sens — tout chemin cité en première cellule d'un tableau du périmètre
+      # existe dans l'arbre SUIVI, et tout module de premier niveau du périmètre a une entrée. Elle
+      # porte ses témoins, un plancher d'entrées, et refuse de conclure si `git ls-files` se tait.
+      - name: Le plan des modules dit vrai sur l'arbre suivi, dans les deux sens (P7.18-a)
+        run: python3 .github/scripts/check_module_map_matches_tree.py
+
       # MÊME FAMILLE, APPLIQUÉE À LA PROMESSE CENTRALE DU PRODUIT : une garantie AFFIRMÉE que le code
       # ne tient que par convention. La livraison au moins une fois repose sur « écrire un temporaire
       # puis renommer ». Ce motif donne l'ATOMICITÉ DU CONTENU et rien d'autre : après une coupure,

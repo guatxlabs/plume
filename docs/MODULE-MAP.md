@@ -9,6 +9,14 @@ Ownership verdicts ("safely ownable independently?") reflect a modularity review
 codebase is modular with clean handler↔service↔store layering; the caveats below are the
 few real cross-module tentacles.
 
+Scope: `daemon/src/`, `daemon/src/cold_store/` — except `tests`.
+
+The line above is read by a CI guard (`.github/scripts/check_module_map_matches_tree.py`): every
+first-level module of each directory it names — a `name.rs` file or a `name/` directory, the
+excepted names aside — must have a row in a table of a section whose heading names that
+directory, and every path a row's first cell cites must exist in the tracked tree. A plan that
+nothing re-reads drifts; this one is re-read on every push.
+
 ---
 
 ## The `guatx-core` boundary
@@ -29,7 +37,7 @@ type-erased `StoreHandle::Parquet` variant — no `parquet` dep reaches the core
 
 ---
 
-## Daemon subsystems
+## Daemon subsystems — `daemon/src/`
 
 `daemon/src/`. "Ownable independently?" = can a new contributor take this box without
 tripping a cross-module invariant.
@@ -41,15 +49,18 @@ tripping a cross-module invariant.
 | `ingest/{hec,minio,otlp,pubsub,firehose,obs,federated,endpoint}.rs` | Alternate receivers (Splunk HEC, S3/MinIO, OTLP traces, pub/sub, …) | Each gated by a `PLUME_*` runtime flag (mode 0 when off) — **except `federated.rs`, which is an inert scaffold: no route/handler calls it and no flag gates it** | Yes, per-receiver |
 | `ingest/{duckdb,clickhouse}_store.rs`, `ingest/clickhouse_ha.rs` | Feature-gated alternate backends behind the `EventStore` SPI | `#[cfg(feature=…)]`; absent from default build | Yes (isolated by feature) |
 | `parsers.rs`, `processors.rs`, `datamodels.rs`, `overlays*.rs` | Parse/normalize/enrich; config.d overlays | CIM contract (see `CIM.md`) | Mostly — respect CIM stamping |
+| `limite_corps.rs` | The ingest body-size cap, and **what it says when it bites**: the byte cap fires before the event-count cap, so the refusal names the limit, its unit and the lever (`P4.1-o`) | Wraps the router's body limit | Yes |
 
 ### Handlers (HTTP surface) — `handlers/`
 Handler↔service↔store layering is clean. `handlers/mod.rs` is the module registry (each entry
 is annotated with its feature #). Large but flat: `query`, `search`, `soql_meta`, `cases`,
 `caseops`, `incidents`, `alerting`, `alerts`, `detection`, `detection_advanced`, `dashboards`,
-`datamodels`, `governance`, `compliance`, `idp`, `field_filters`, `rba`, `threat_intel`,
-`tokens`, `engagement`, `freshness`, `fleet`, `system`, `destinations`, `notifiers`,
-`scheduled_reports`, `saved_queries`, `knowledge`, `playbooks`, `actions`, `workflow_actions`,
-`index_policies`, `prefs`, `users_lookups`, `admin_ui`, `overview`, `datasource`.
+`dash_ergonomics`, `panneau_resolu`, `datamodels`, `governance`, `compliance`, `idp`,
+`field_filters`, `rba`, `threat_intel`, `tokens`, `engagement`, `freshness`, `fleet`, `system`,
+`destinations`, `notifiers`, `scheduled_reports`, `saved_queries`, `knowledge`, `playbooks`,
+`actions`, `workflow_actions`, `index_policies`, `prefs`, `users_lookups`, `admin_ui`, `overview`,
+`datasource`, `sources`, `processors`, `purge`, `ai`. (This list is prose: the guard does not
+re-read it, only the table rows below.)
 
 | Group | Purpose | Ownable? |
 |-------|---------|----------|
@@ -58,19 +69,36 @@ is annotated with its feature #). Large but flat: `query`, `search`, `soql_meta`
 | `handlers/query.rs`, `handlers/soql_meta.rs`, `handlers/search.rs` | Query surface | Guarded — sits on the GXQL/masking choke-points (see invariants). |
 | `imputation.rs` | **Which sources an alert is about, and where that name comes from (S7).** One author for the question, called by BOTH alert producers (`run_due_rules`, `check_heartbeats`) and read by per-source freshness. The answer comes from the **data** — the `source` column of the matched events, the typed probe descriptor for a mute sensor — never from the rule's prose: a deliberately generic rule (the ones the vendor-agnostic principle asks for) names no source in its text, so the old text scan imputed nothing and no source badge ever flipped. Preference order is written once, here: data, then the historical text fallback (the only path for opaque raw SQL), then a **named unknown** — never a silent nothing. The verdict is written onto the alert (`alert.sources`, v115) at raise time, so the read path (watchdog-bounded) guesses nothing. | Yes — pure encode/decode + one bounded read per firing rule |
 
+### Detection evaluators & catalogue (background, not HTTP)
+| Path | Purpose | Ownable? |
+|------|---------|----------|
+| `bilan_de_tick.rs` | **What a background tick renders (`P4.1-r`)**: the count of due items it ABANDONED, or the admission that it could not read its list — so the "detection" health cannot stay green while no rule is evaluated | Yes — one value type, written by every periodic evaluator |
+| `detection_aveugle.rs` | **A rule that cannot be evaluated is an extinguished detection, and says so (`P3.9-a`)**: the cause of each abandon is kept (typed, not folded into `None`), and a rule abandoned tick after tick is surfaced as blind, not as calm | Yes |
+| `collected.rs` | The **inertia oracle**: what the shipped collectors and agent really write into `fields.<X>` — deliberately separate from the Sigma field-alias table, because widening a translation must never silence an inertia warning | Yes — a table plus pure lookups |
+| `attack_names.rs` | ATT&CK technique NAMES, served next to the identifier by the coverage matrix (`P11.6-a`); kept out of the shared core (a presentation datum) and held in lockstep with `guatx_core::attack::CATALOG` by a test | Yes |
+| `maj_corroboree.rs` | **The SOC alerts on its own update (`P5.7-b`)**: the integrity collector watches the unit directory that `bootstrap.sh` writes into, so a deployment is told apart from a drop-in by corroboration, not by muting the rule | Yes — pure derivation over the shipped unit list |
+
+### Feature-gated providers (absent from the default build)
+| Path | Purpose | Ownable? |
+|------|---------|----------|
+| `ai/` (`mod`, `presets`) | Advisory AI layer (feature `ai`, OFF): feature gate (501 stub, mirror of the LDAP/SAML stub), cloud/local endpoint classification through the SSRF guard, call budget, and the HTTP provider impls; the daemon never executes generated text — the closed GXQL compiler disposes | Yes — behind `#[cfg(feature = "ai")]` |
+| `sink_s3.rs` | S3-compatible object sink for the backup scheduler (feature `s3_backup`, OFF): SigV4 signing, streamed `PUT`, then `HEAD` read-back so "deposited" means "confirmed" — no SDK, no sidecar | Yes — behind `#[cfg(feature = "s3_backup")]` |
+
 ### Query execution & aggregation
 | Path | Purpose | Ownable? |
 |------|---------|----------|
 | `query_exec.rs` | Bounded read executor: per-`db_path` read pool (LRU, cross-DB cap 8), watchdog budgets, in-flight cancel registry, `stmt.readonly()` guard, DENY authorizer | Guarded — the enforcement point for read safety + budgets |
 | `soql_glue.rs` | Wires the daemon into `guatx_core::soql` (schema/dialect/mask injection) | Guarded — masking injection lives here |
+| `rollup_coverage.rs` | **What the rollup covers, made undeclarable by a call site**: the right to serve a body from `event_rollup` is derived from what the job actually aggregated over the served range, not from the watermark alone (a late row written under the watermark was a permanent hole) | Yes — derivation only |
+| `sqlite_plafond.rs` | **The memory ceiling of a single read**: what stops one query from taking the whole process. Three settings that do not play the same role — `temp_store` decides whether a sort can spill at all (shipped on `MEMORY`, a stated trade-off against plaintext temporaries), `cache_size` is the per-holder budget, `hard_heap_limit` is the ceiling that actually stops anything — and the per-holder value is DERIVED from the budget and the number of simultaneous holders, never written next to a constant it cannot see | Guarded — sits on the read path |
 | `rollups.rs`, `rollup_route.rs`, `topn_cap.rs` | Precomputed aggregates + transparent rollup routing (the 2 GB strategy). `topn_cap` owns **a top-N cap is never declared without its magnitude**: `truncated` is a type, not a bool — the only way to declare a cap is `Cap::top_n(probe)`, which *requires* the query that quantifies it, and `apply_rollup_stats` takes the *measured* value, so declaring truncation without measuring it does not compile. | Mostly yes |
 
 ### Auth / identity / governance
 | Path | Purpose | Ownable? |
 |------|---------|----------|
 | `auth.rs`, `session.rs`, `rbac.rs` | Password/session/RBAC. `rbac.rs::route_min_role` is a flat policy `match`; `rbac_gate` is fail-closed default-deny | Guarded — the RBAC allowlist is security-critical |
-| `idp.rs`, `handlers/idp.rs`, `scim.rs` | Native IdP (OIDC/JWT/TOTP), SCIM provisioning; LDAP/SAML feature-gated | Mostly — pure fns un- gated, network bind gated |
-| `governance.rs`, `handlers/governance.rs`, `compliance.rs` | Legal-hold, ledger export, composable roles, compliance mapping | Yes |
+| `idp/` (`mod`, `oidc`, `ldap`, `saml`, `totp`), `handlers/idp.rs`, `scim.rs` | Native IdP (OIDC/JWT/TOTP), SCIM provisioning; LDAP/SAML feature-gated | Mostly — pure fns un- gated, network bind gated |
+| `governance.rs`, `handlers/governance.rs`, `handlers/compliance.rs` | Legal-hold, ledger export, composable roles, compliance mapping | Yes |
 | `purge.rs`, `handlers/purge.rs` | Explicit **event purge** (beyond time-based retention): typed scope (mandatory time window + named identifiers, no free predicate), two-phase plan→token→apply, refusals (legal hold, cold tier, case-cited, FTS desync), mandatory hash-chained ledger inscription | **Guarded — the only non-retention DELETE on `event`.** See [PURGE.md](PURGE.md) |
 | `tenants.rs` | Multi-tenant routing/key/RBAC (mode `PLUME_MULTI_TENANT`, default OFF) | Guarded — per-tenant isolation invariant |
 | `field_filter.rs`, `handlers/field_filters.rs` | Field-level masking (#45); resolves caller → `FieldMaskSet`; arms SQLite authorizer for DENY on real columns | **Guarded — the masking choke-point.** |
@@ -78,8 +106,13 @@ is annotated with its feature #). Large but flat: `query`, `search`, `soql_meta`
 ### Storage / lifecycle
 | Path | Purpose | Ownable? |
 |------|---------|----------|
+| `db_open.rs` | **THE door to a write connection on a plume database**: every production path that prepares a database goes through it (two shipped paths were outside and wrote to a base the daemon refused to serve) | Guarded — the single schema-convergence point |
+| `crypto/` (`mod`) | SQLCipher open (`db_key`/`open_db`/`ensure_encrypted`), per-database key registry, Vault key resolution and TLS roots; the SQLCipher key is read by ONE path (`P8.7-b`) | Guarded — key handling |
 | `migrate.rs` | Append-only migration registry (exemplary; convergence with `db/schema.sql` guarded by tests) | Yes — append only, never edit history |
 | `maintenance.rs`, `disk.rs` | Retention, disk-pressure guard (statvfs), housekeeping | Yes |
+| `db_ventilation.rs`, `ventilation_serie.rs` | **Where the bytes of the database go** (`P10.2-a`): the per-object breakdown (`db-stats --par-objet`), and the same breakdown as a SERIES over time, so a trend and a one-off relief are no longer mistaken for each other | Yes |
+| `wal_empreinte.rs` | The write-ahead log's **residue** is bounded (what the file keeps after a burst); its **peak** is not, and the module says so rather than promising it | Yes |
+| `tmp_possede.rs` | **The vault of the temporary directory**: the only holder of the system temp root; `build.rs` refuses to compile a direct call elsewhere, so fixtures own their container instead of enumerating what to delete | Yes — compile-time companion in `build.rs` |
 | `compactage_fts.rs` | **FTS5 segment compaction (P10.7-b)** — a retention purge makes the full-text index *grow* (an external-content FTS5 table cannot remove a posting; the `event_ad` trigger writes a *delete* posting that ADDs), and nothing in the daemon ever merged segments. Runs at the end of `retention_run` and from `plume-daemon fts-compact`, in bounded passes (`merge` with a **negative** budget — the positive one never reaches the floor) with the writer lock released between passes. The outcome is a TYPE: no variant other than `Rendue` can report reclaimed bytes | Yes — but keep the budget negative and the outcome typed |
 | `backup/` | Compressed+encrypted backup `age(zstd(charge))`, split into one façade and three submodules (below); callers keep the `crate::backup::X` paths through `pub(crate)` re-exports | Guarded — scrypt lockstep with cold crypto |
 | `backup/mod.rs` | Façade: the envelope `age(zstd(charge))` — symmetric (SQLCipher key) or asymmetric recipient; fixed scrypt work factor; single configuration path for backup settings (`cfg()`, never bare `env::var`); plaintext-temp guard and orphan sweep; the legacy full-SQLite-copy path (`sqlcipher_export`); submodule decls and `pub(crate)` re-exports | Guarded — scrypt lockstep with cold crypto |
@@ -97,6 +130,10 @@ is annotated with its feature #). Large but flat: `query`, `search`, `soql_meta`
 | `server.rs` | `run()` boot: config → open/migrate DB → seed_* → background jobs → router (**245 routes**, mesuré 2026-08-06 : `sed 's\|//.*\|\|' server.rs \| grep -c '\.route('` — chaque route peut porter plusieurs méthodes HTTP, le nombre de handlers est donc plus élevé) | Guarded — the boot god-function; changes here are deploy-gated |
 | `state.rs` | `AppState` (config carrier + shared handles) | See caveat below |
 | `main.rs` | CLI subcommands (backup/restore/…), glue | — |
+| `util/` (`mod`, `hexcrypto`, `http_client`) | Pure primitives with no `AppState` dependency: hex/sha256/hmac/constant-time compare, and the minimal HTTP/1.1 client (raw TCP + rustls) used by Vault, the Defender connector and the notifiers | Yes |
+| `sondes.rs`, `sonde_de_flotte.rs` | **Freshness probes**: what a probe OBSERVES is typed, its query is DERIVED, and what bounds its cost is stated where the probe is born (`P3.7-a`); the fleet probe answers "is the PARK talking?" as a count, separate from the per-sensor probes (`P3.2-a`) | Yes |
+| `mesure_environnement.rs` | **A measurement that fails does not render the most reassuring value (`S32`)**: process CPU/RSS and ingest-queue depth are `Mesure<T>` — read, or unreadable with a cause — never a zero | Yes |
+| `tas_du_fil.rs` | Deterministic per-thread live-heap peak — a test-only allocator instrument (`#[cfg(test)]`, absent from the shipped binary) so memory properties are proven without the process RSS | Yes — test only |
 | `metrics.rs`, `knowledge.rs`, `seeds.rs`, `ledger.rs`, `sigma.rs` | Metrics, knowledge objects, seed data, audit ledger, Sigma→GXQL importer | Mostly yes |
 | `index_usage.rs` | **Which indexes actually serve, and whom (P10.9-a).** Owns the single plan reader (the closed-corpus replay in `tests/index_usage_event.rs` uses *this* one — a reading rule written twice diverges, and then the usage table lies) and the runtime observatory: at the single read passage point (`run_on_conn`, shared by the hot path and the hot∪cold union) it samples one `EXPLAIN QUERY PLAN` every N statements and counts, **per index × consumer class**, who named it. Label is an index name, never a query, and the registry is capped, so `/metrics` cardinality cannot grow with traffic or with the schema. It also publishes the **statistics regime** it read under (`none` / aggregated `sqlite_stat1` / **detailed** `sqlite_stat1+sqlite_stat4`), because a plan chosen without detailed index statistics is not representative for an index whose leading column is only probed by range — the named hole this key exists for. OFF by default (`PLUME_INDEX_USAGE_SAMPLE_N=0`, read through `cfg()`), and off means the exposition is the **empty string**, so `/metrics` is byte-identical. What the series does *not* prove travels in its `# HELP`, not only in a source comment | Yes — atomics + a capped registry; one extra *prepare* per sampled statement, after the caller's own elapsed time has been stopped |
 | `query_timing.rs`, `semaphore_interactif.rs` | **The interactive concurrency bound, and what it costs (P7.8-a).** `query_timing` is the single gate that hands out a `query_sem` permit and splits a request's time (`prepare`/`sem_wait`/`exec`/`db_lock_wait`); `semaphore_interactif` publishes, per **route template**, the *wait* for a permit and the *work* done holding it — two series, because one total confounds "slow route" with "queued route" and the two have opposite levers. Route labels come from a `route_layer` reading `MatchedPath` (never the URL), and the label registry is capped, so `/metrics` cardinality cannot grow with traffic. Derived guards refuse an acquisition outside the gate and a naked permit outside the measuring module | Yes — atomics + a few dozen registry entries; no DB access |
@@ -122,6 +159,10 @@ submodule owns exactly one invariant, stated at the top of its file:
 | `aging` | **Two-phase state machine + crash-safety (H1/H2).** Tail guard H1 (rowid-reuse), cold-immutability vs reparse H2, verify-before-delete, retention math. |
 | `reader` | **Masking deferred to P3.** `hydrate_cold` produces raw unmasked rows in an ephemeral in-mem table — **never wired into a user query path**. Cold rows become user-reachable only through the *same* compiled GXQL + `FieldMaskSet` + authorizer as hot (a temp `event` view shadowing `main.event`). |
 | `backup` | Incremental verbatim escrow of sealed day-files (plan only; sidecar runs `mc cp`). Symmetric by design; daemon never deletes remote objects. |
+| `enonces` | **The SQL statements of aging, written once**, with their bounds — and the FIRING decision (`tir_du_retard`): the one full-scan statement (the lateness dead-man's-switch) is left intact but fired once a day instead of every hour, because columnarisation can only happen once a day by construction; the pass and the read-only probe read the same cadence here (`P10.13-a`). |
+| `sonde_vieillissement` | The instrument that was missing: the PLAN and the stopwatch of each aging statement, on the live database, read-only (`plume-daemon cold-aging-plan`). |
+| `vectorized` | Vectorised query engine over typed column batches, streaming row-group by row-group, never through SQLite; reuses the SAME `FieldMaskSet` masking as hot. |
+| `planner` | Router: a query that is pure-cold AND vectorisable runs on `vectorized`; anything else returns `None` and the caller falls back VERBATIM on `cold_union_query` — the fallback is never duplicated. |
 
 ---
 

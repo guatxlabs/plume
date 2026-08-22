@@ -44,7 +44,7 @@
 ///     de secret : la lire dans le fichier de config n'aurait aucun sens (le secret y serait EN CLAIR,
 ///     ce que `resolve_secret_ref` refuse explicitement).
 ///   - `ai/mod.rs` (1) : `env_flag` — aiguilleur, alimente 2 clés (dans la dette ci-dessous).
-///   - `backup.rs` (1) : la SONDE DE PRÉSENCE de l'annonce de bascule ②
+///   - `backup/mod.rs` (1) : la SONDE DE PRÉSENCE de l'annonce de bascule ②
 ///     (`env::var_os(c).is_some()`) : elle ne résout aucune valeur, elle constate si une clé est déjà
 ///     portée par l'environnement pour savoir s'il faut prévenir l'opérateur.
 ///   - `crypto/mod.rs` (1) : la MÊME sonde de présence, pour l'annonce de bascule P8.7-b
@@ -53,7 +53,7 @@
 ///     change d'effet à ce démarrage. La DÉCISION, elle, est une fonction PURE testée sans env.
 const SITES_LECTURE_ENV_NON_LITTERALE: &[(&str, usize)] = &[
     ("ai/mod.rs", 1),
-    ("backup.rs", 1),
+    ("backup/mod.rs", 1),
     ("crypto/mod.rs", 1),
     ("main.rs", 1),
     ("overlays_oac.rs", 2),
@@ -327,15 +327,22 @@ fn p87a_partition_de_lecture_de_la_configuration_fermee() {
 }
 
 /// ③ (moitié locale) — LA PARTITION DE LA SAUVEGARDE EST FERMÉE, ET SANS LISTE. On n'énumère pas les
-/// sept clés : on exige que `backup.rs` ne lise AUCUN réglage `PLUME_*` dans l'environnement. Une
-/// huitième ajoutée demain par `env::var` échoue ici, à l'endroit exact où le mal s'est produit.
+/// sept clés : on exige qu'AUCUN fichier du module `backup/` (façade ET sous-modules) ne lise un réglage
+/// `PLUME_*` dans l'environnement. Une huitième ajoutée demain par `env::var` échoue ici, à l'endroit
+/// exact où le mal s'est produit. DÉRIVÉ du préfixe de répertoire, pas d'une liste de fichiers : un
+/// sous-module ajouté demain est couvert sans que personne y pense.
 #[test]
 fn p87a_backup_ne_lit_plus_aucun_reglage_dans_l_environnement() {
     let vu = scanner_lectures_env();
-    let lus = vu.noms_par_fichier.get("backup.rs").cloned().unwrap_or_default();
+    let lus: std::collections::BTreeSet<String> = vu
+        .noms_par_fichier
+        .iter()
+        .filter(|(fichier, _)| fichier.starts_with("backup/"))
+        .flat_map(|(_, noms)| noms.iter().cloned())
+        .collect();
     assert!(
         lus.is_empty(),
-        "`backup.rs` lit {lus:?} dans l'environnement SEUL. Sur un hôte systemd ces clés sont \
+        "`backup/` lit {lus:?} dans l'environnement SEUL. Sur un hôte systemd ces clés sont \
          invisibles depuis `/etc/plume/soc.conf` (l'unité n'a pas d'`EnvironmentFile`) : c'est \
          exactement le défaut P8.7-a — un destinataire d'escrow age écrit par l'opérateur, ignoré, et \
          des archives qui repartent en chiffrement symétrique déchiffrable par le nœud. \
@@ -345,7 +352,7 @@ fn p87a_backup_ne_lit_plus_aucun_reglage_dans_l_environnement() {
     assert!(
         vu.noms_par_fichier.contains_key("ai/mod.rs"),
         "l'instrument est INVALIDE : il ne voit aucune lecture d'environnement dans `ai/mod.rs`, qui \
-         en a. Un `backup.rs` vide ne prouverait alors rien."
+         en a. Un `backup/` vide ne prouverait alors rien."
     );
 }
 

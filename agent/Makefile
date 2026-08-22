@@ -18,7 +18,7 @@ CARGO ?= cargo
         linux linux-musl \
         win-msvc win-gnu \
         mac-x64 mac-arm \
-        cross-check-win cross-check-mac clean
+        cross-check-win cross-check-win-fim-native cross-check-mac clean
 
 # --- natif (Linux dev box) -----------------------------------------------------------------------
 all: linux
@@ -74,12 +74,22 @@ cross-check-win:
 	rustup target add x86_64-pc-windows-msvc
 	$(CARGO) xwin check --target x86_64-pc-windows-msvc
 
+# La fonctionnalité `fim_windows_native` (backend FIM `ReadDirectoryChangesW`, éteinte par défaut)
+# n'existe pour le compilateur que sous `cfg(all(windows, feature = "fim_windows_native"))` : le
+# check ci-dessus ne la voit PAS, et une régression de compilation y resterait invisible (mesuré
+# le 2026-08-21 : une erreur de type sous ce `cfg` rend rc=101 avec la fonctionnalité, rc=0 sans).
+# MÊME répertoire cible, MÊME profil, aucune dépendance en plus : seul le crate de l'agent est
+# re-vérifié (0,83 s mesurées le 2026-08-21 après `cross-check-win`). Ce qui N'EST PAS prouvé ici :
+# le lien et l'exécution sur un hôte Windows (cf. le commentaire de la fonctionnalité dans Cargo.toml).
+cross-check-win-fim-native: cross-check-win
+	$(CARGO) xwin check --target x86_64-pc-windows-msvc --features fim_windows_native
+
 cross-check-mac:
 	rustup target add aarch64-apple-darwin
 	$(CARGO) zigbuild --target aarch64-apple-darwin
 
 # Tout cross-checker d'un coup (à lancer en CI).
-check-all: cross-check-win cross-check-mac
+check-all: cross-check-win-fim-native cross-check-mac
 	$(CARGO) build --release
 	$(CARGO) test
 

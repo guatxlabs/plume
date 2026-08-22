@@ -51,9 +51,15 @@ Chaque job publie le binaire natif en artefact (`plume-agent-<OS>`).
 
 [`.github/workflows/agent-cross.yml`](../.github/workflows/agent-cross.yml)
 donne à un contributeur **sans Mac ni Windows** un cross-CHECK depuis Linux :
-`make cross-check-win` (cargo-xwin, MSVC) et `make cross-check-mac`
-(cargo-zigbuild + zig, darwin). Ça **compile/lie** le code cfg-gated Win/Mac mais
-ne l'**exécute pas** — la validation runtime reste la matrice `agent-ci`.
+`make cross-check-win` (cargo-xwin, MSVC), `make cross-check-win-fim-native`
+(même cible, fonctionnalité `fim_windows_native` activée — le backend FIM
+`ReadDirectoryChangesW` n'existe pour le compilateur que sous cette fonctionnalité,
+aucun autre job ne le compile) et `make cross-check-mac` (cargo-zigbuild + zig,
+darwin). Ça **compile/lie** le code cfg-gated Win/Mac mais ne l'**exécute pas** —
+la validation runtime reste la matrice `agent-ci`. La garde
+`.github/scripts/check_every_feature_is_compiled_somewhere.py` (job `shell` de
+`ci.yml`) exige qu'une fonctionnalité déclarée dans un `Cargo.toml` soit activée
+par au moins une commande cargo bloquante d'un workflow.
 
 ## Hypothèses des tests sur l'hôte CI (ce qui pourrait échouer sur un runner nu)
 
@@ -83,5 +89,6 @@ make            # build release natif (Linux)
 make test       # cargo test natif
 # cross-check depuis Linux (nécessite cargo-xwin / cargo-zigbuild + zig) :
 make cross-check-win
+make cross-check-win-fim-native   # + feature fim_windows_native (backend FIM Windows)
 make cross-check-mac
 ```

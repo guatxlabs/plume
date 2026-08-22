@@ -100,6 +100,17 @@ jobs:
         working-directory: agent
         run: make cross-check-win
 
+      # Windows-MSVC, fonctionnalité `fim_windows_native` (backend FIM ReadDirectoryChangesW, éteinte
+      # par défaut). Le check précédent ne compile PAS ce code : il n'existe que sous
+      # `cfg(all(windows, feature = "fim_windows_native"))`, et aucun autre job ne l'active —
+      # `P8.24-a`. Même répertoire cible, même profil, aucune dépendance supplémentaire : seul le
+      # crate de l'agent est re-vérifié. La garde `check_every_feature_is_compiled_somewhere.py`
+      # (job `shell` de ci.yml) dérive cette exigence des manifestes : retirer cette étape la fait
+      # rougir en nommant la fonctionnalité.
+      - name: cross-check Windows + fim_windows_native (make cross-check-win-fim-native)
+        working-directory: agent
+        run: make cross-check-win-fim-native
+
       # macOS aarch64 : compilation/lien du lecteur unified-log depuis Linux.
       - name: cross-check macOS (make cross-check-mac)
         working-directory: agent

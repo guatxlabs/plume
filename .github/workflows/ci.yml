@@ -881,6 +881,27 @@ jobs:
       - name: Une couverture qu'on n'a pas pu poser ne s'éteint pas en silence
         run: python3 .github/scripts/check_coverage_loss_is_never_silent.py
 
+      # DU CODE LIVRÉ QU'AUCUN JOB NE COMPILE (`P8.24-a`). Une fonctionnalité cargo éteinte par défaut
+      # met du code derrière un `cfg` que seule une commande `--features` rend vrai ; si aucune
+      # commande bloquante de la CI ne l'active, une régression de compilation y passe au VERT. MESURÉ
+      # le 2026-08-21 sur les QUATRE manifestes : 9 fonctionnalités déclarées, 8 compilées — l'écart
+      # était exactement `fim_windows_native` (agent), prouvé par mutation (`cargo xwin check` : une
+      # erreur de type sous ce `cfg` rend 101 avec la fonctionnalité, 0 sans). Le constat tenait pour
+      # ce qu'il annonçait : il ne cachait pas un écart plus large. Même famille que `S36`.
+      # La garde n'énumère ni fonctionnalité ni job : elle DÉRIVE un côté des manifestes `Cargo.toml`
+      # (parseur TOML, dépendances optionnelles implicites comprises) et l'autre des blocs `run:` de
+      # TOUS les workflows (recettes `make` suivies ; étapes consultatives ou conditionnelles exclues
+      # — elles ne gardent rien), et REFUSE l'écart. Elle refuse aussi de CONCLURE sous un plancher de
+      # population ou devant un `--features $VAR` qu'elle ne sait pas résoudre, et elle valide son
+      # instrument sur des témoins dans les deux sens avant tout verdict. Une exception doit porter
+      # sa raison et sa condition de levée, et pourrit si sa fonctionnalité disparaît ou se compile.
+      # `yaml` vient du paquet de la distribution (signé par apt), jamais de pip.
+      - name: Toute fonctionnalité cargo déclarée est compilée par un job bloquant
+        run: |
+          set -euo pipefail
+          python3 -c 'import yaml' 2>/dev/null || sudo apt-get install -y python3-yaml
+          python3 .github/scripts/check_every_feature_is_compiled_somewhere.py
+
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
       # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —
       # the odd one out is `collectors/lib.sh`, a SOURCED library with no shebang, which the

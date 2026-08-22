@@ -8,7 +8,7 @@ import { LANG } from './core.js';
 // Non traduit = reste en FR (dégradation gracieuse ; le dico s'étoffe). Actif seulement si LANG='en'.
 const I18N_EN = {
   // navigation
-  "Vue d'ensemble": "Overview", "Recherche & Explore": "Search & Explore", "Dashboards": "Dashboards",
+  "Vue d'ensemble": "Overview", "Recherche": "Search", "Cas": "Cases", "Dashboards": "Dashboards",
   "Détection": "Detection", "Parsers": "Parsers", "Réponse": "Response", "Cases": "Cases", "Réglages": "Settings",
   "Navigation": "Navigation", "Menu": "Menu",
   // sections / titres
@@ -42,7 +42,7 @@ const I18N_EN = {
   "Enregistrer la requête comme panneau": "Save query as a panel", "Revenir à la requête précédente (drilldown)": "Back to previous query (drilldown)",
   "Aide : syntaxe des requêtes (GXQL)": "Help: query syntax (GXQL)",
   "Événements par page": "Events per page", "Événements par page (pagination)": "Events per page (pagination)",
-  "Fenêtre temporelle (Explore)": "Time window (Explore)",
+  "Fenêtre temporelle (Recherche)": "Time window (Search)", "Aide : Recherche": "Help: Search",
   "Fenêtre temporelle de la recherche — glissante depuis maintenant (perf)": "Search time window — sliding from now (perf)",
   "Arrêter la requête en cours": "Stop the running query",
   "Annulé": "Cancelled", "Trop lourd même sur 60s — resserre la fenêtre": "Too heavy even at 60s — narrow the window",
@@ -62,7 +62,25 @@ const I18N_EN = {
   "Réappliquer les parsers actifs aux events déjà stockés (30 j)": "Re-apply active parsers to stored events (30 d)",
   "Nom du parser": "Parser name", "Nom (ex: nginx access)": "Name (e.g. nginx access)", "Source": "Source",
   "Motif regex": "Regex pattern", "Ligne d'exemple": "Sample line", "coller une ligne d'exemple pour tester…": "paste a sample line to test…",
-  "basculer": "switch", "+ Playbook": "+ Playbook", "Nom du playbook": "Playbook name",
+  "basculer": "switch", "+ Playbook (règle de réponse)": "+ Playbook (response rule)", "Nom du playbook": "Playbook name",
+  // P11.2-c — deux familles sous l'onglet Playbooks : règle de réponse (condition -> action) et guide d'incident (étapes attachées à un cas)
+  "Playbooks — règles de réponse": "Playbooks — response rules", "Runbooks — guides d'incident": "Runbooks — incident guides",
+  "+ Runbook (guide d'incident)": "+ Runbook (incident guide)", "Nouveau runbook (guide d'incident)": "New runbook (incident guide)",
+  "Éditer le runbook (guide d'incident)": "Edit the runbook (incident guide)", "Nom du runbook": "Runbook name",
+  "Un playbook est une règle de réponse : une condition (la requête, dont la 1re colonne = la cible), une action, un interrupteur. Évalué à intervalle régulier. Il n'exécute RÉELLEMENT que lorsque le mode ci-dessus est": "A playbook is a response rule: a condition (the query, whose 1st column = the target), an action, a switch. Evaluated on an interval. It only REALLY executes when the mode above is",
+  ", il ne fait que proposer. Ce n'est pas un guide d'incident : pour une checklist attachée à un cas, voir les runbooks ci-dessous.": ", it only proposes. It is not an incident guide: for a checklist attached to a case, see the runbooks below.",
+  "Un runbook est un guide d'incident : des étapes phasées, attachées à un cas élevé en incident. Aucune condition, aucun exécuteur : rien ne se déclenche seul. Les": "A runbook is an incident guide: phased steps, attached to a case raised to incident. No condition, no executor: nothing fires on its own. The",
+  "livrés": "shipped ones", "sont immuables en place — activez/désactivez ou": "are immutable in place — enable/disable or",
+  "Ce que la règle déclenche sur chaque cible ; la durée du ban est celle que posent les exécuteurs": "What the rule triggers on each target; the ban duration is the one the executors set",
+  "ON à l'enregistrement": "ON on save",
+  "Coché : la règle est ON dès l'enregistrement (première évaluation à l'intervalle) ; décoché : elle est créée OFF et s'active dans la liste, avec confirmation": "Checked: the rule is ON as soon as it is saved (first evaluation at the interval); unchecked: it is created OFF and is enabled from the list, with confirmation",
+  "Coché : le guide est proposé dans les cas dès l'enregistrement ; décoché : créé OFF, à activer dans la liste": "Checked: the guide is proposed in cases as soon as it is saved; unchecked: created OFF, to be enabled from the list",
+  // P11.7-a — deux espaces : Recherche (l'éditeur de requête) et Cas (alertes -> cas) ; « Explore » n'est plus un nom d'onglet
+  "appliquée à TOUTE recherche (Recherche, panneaux, règles, export, Pivot) :": "applied to EVERY search (Search, panels, rules, export, Pivot):",
+  "Exécuter le Pivot (chemin masqué comme la Recherche)": "Run the Pivot (masked path, like Search)",
+  ". Les hits dans le temps se requêtent dans la Recherche (GXQL).": ". Hits over time are queried in Search (GXQL).",
+  "que la Recherche (le masquage de champ de votre rôle s'applique). Enregistrez un Pivot comme": "as Search (your role's field masking applies). Save a Pivot as",
+  "(tous rôles, admin compris). Le masque est appliqué DANS le SQL compilé : Recherche/GXQL, panneaux, export, recherche et timeline de cas en héritent AUTOMATIQUEMENT, agrégations comprises (": "(all roles, admin included). The mask is applied INSIDE the compiled SQL: Search/GXQL, panels, export, search and case timeline inherit it AUTOMATICALLY, aggregations included (",
   "Nom (ex: SSH bruteforce -> ban)": "Name (e.g. SSH bruteforce -> ban)", "Action": "Action",
   "+ Nouvelle action": "+ New action", "Cible": "Target", "raison (optionnel)": "reason (optional)",
   "Créer (en attente d'approbation)": "Create (pending approval)", "Créer": "Create",

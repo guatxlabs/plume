@@ -255,7 +255,7 @@ footer{padding:12px 20px;color:var(--mut);font-size:12px;border-top:1px solid va
 .qb-trunc{background:color-mix(in srgb,var(--bad) 14%,transparent);color:var(--bad);border-color:color-mix(in srgb,var(--bad) 40%,transparent);font-weight:700}
 .qresult{overflow:auto;max-height:72vh}   /* PAS de border-radius : un conteneur scrollable arrondi CLIPPE l'en-tête sticky aux coins -> effet "décroche de qlq mm" au défilement */
 /* Explore : la requête + résultats occupent toute la largeur (sections explore-only) -> pas de vide */
-#query,#search-results{grid-column:1/-1}
+#query{grid-column:1/-1}
 /* en-tête Explore : flèches d'historique (◀ ▶) à GAUCHE du titre */
 .qhead{display:flex;align-items:center;gap:10px;margin:0 0 12px}
 .qhead h2{margin:0}
@@ -457,6 +457,7 @@ tr.rowdetail>td{background:var(--card2);padding:10px 14px;white-space:normal;max
 
 /* formulaires */
 .ruleform{display:flex;flex-direction:column;gap:9px;margin:10px 0;padding:14px;border:1px solid var(--bd);border-radius:12px;background:var(--card2)}
+#rb-editor{margin-bottom:12px} /* éditeur de runbook : masqué par la classe .hidden, jamais par un style en ligne */
 .ruleform input,.ruleform textarea,.ruleform select{background:var(--card);border:1px solid var(--bd);border-radius:8px;color:var(--fg);padding:7px 9px;font-size:13px}
 .ruleform input:focus,.ruleform textarea:focus,.ruleform select:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
 .ruleform textarea{font-family:var(--font-mono);width:100%}

@@ -1,8 +1,7 @@
 // viz.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
-import { $, CSSV, LOC, SEV, api, apiSend, colComparator, confirmModal, esc, flashStopped, fmtTs, ic, makePager, muted, sev, socIsAdmin, toast, tzOpts, withBusy } from './core.js';
+import { $, CSSV, LOC, SEV, api, apiSend, colComparator, confirmModal, esc, flashStopped, fmtTs, ic, makePager, muted, sev, socIsAdmin, toast, tzOpts } from './core.js';
 import { S } from './state.js';
-import { addToCase, canEditCases } from './cases.js';
 import { currentViewName, loadActions, loadDashboard, refresh, updateQRangeBtn, updateRangeBtn } from './app.js';
 import { recordRecentQuery } from './savedqueries.js';   // historique récent client-only (localStorage) : enregistré à chaque exécution
 
@@ -124,83 +123,6 @@ function fmtVal(key, v) {
   return u ? `${v} ${u}` : String(v);
 }
 
-async function doSearch(q) {
-  const sec = $('#search-results');
-  if (!q) { sec.classList.add('hidden'); return; }
-  S.lastSearchQ = q;
-  sec.classList.remove('hidden');
-  let results = [];
-  try { ({ results } = await api('/search?q=' + encodeURIComponent(q) + '&limit=500&from=' + exploreFrom() + '&to=' + exploreTo())); }
-  catch (e) { $('#events').innerHTML = '<div class="bad">erreur : ' + esc(e.message) + '</div>'; return; }
-  $('#timeline').replaceChildren(results.length ? timelineEl(results) : muted('aucun événement sur la fenêtre'));
-  const fw = $('#fields'); fw.replaceChildren(Object.assign(document.createElement('div'), { className: 'fldcount', textContent: `${results.length} événement(s)` }));
-  // facettes = TOUS les champs présents (cœur d'abord, puis l'union des autres clés) — même logique que renderEvents.
-  const SFLAB = { source: 'source', host: 'hôte', severity: 'sévérité', src_ip: 'IP source', dst_ip: 'IP dest', category: 'catégorie' };
-  const SFSKIP = new Set(['ts', '_time', 'bucket', 'message', 'fields', 'id', 'dedup', 'raw']);
-  const SFCORE = ['source', 'host', 'severity', 'src_ip'];
-  const ffSeen = new Set(), ffKeys = [];
-  const ffHas = k => results.some(r => r[k] != null && r[k] !== '');
-  SFCORE.forEach(k => { if (!ffSeen.has(k) && ffHas(k)) { ffSeen.add(k); ffKeys.push(k); } });
-  results.forEach(r => Object.keys(r).forEach(k => { if (!ffSeen.has(k) && !SFSKIP.has(k) && ffHas(k)) { ffSeen.add(k); ffKeys.push(k); } }));
-  ffKeys.slice(0, 50).forEach(f =>
-    fw.appendChild(fieldBlock(results, f, SFLAB[f] || f, v => { $('#q').value = `${q} ${f}:${v}`.trim(); doSearch($('#q').value); })));
-  const caseCan = canEditCases();   // #4a : bouton « ajouter au case » depuis l'Explore (editor/admin ; le viewer voit sans action)
-  $('#events').innerHTML = results.length
-    ? results.map((r, i) => `<div class="logline sev-${r.severity}" data-i="${i}" title="Cliquer pour voir tous les détails"><time>${fmtTs(r.ts)}</time><span class="src">${esc(r.source)}</span><span class="logmeta">${r.host ? `<span class="hostchip" title="hôte">${esc(r.host)}</span>` : ''}${r.src_ip ? `<span class="ipwrap"><span class="ipchip" title="${esc(r.src_ip)}">${esc(r.src_ip)}</span><button class="banbtn" data-ip="${esc(r.src_ip)}" data-host="${esc(r.host || '')}" title="Créer une action ban_ip (en attente, dry-run)">${ic('ban')}</button><button class="unbanbtn" data-ip="${esc(r.src_ip)}" data-host="${esc(r.host || '')}" title="Créer une action unban_ip (lève le ban, best-effort)">🔓</button></span>` : ''}<span class="logmsg">${esc(r.message)}</span>${caseCan ? `<button class="casebtn logcase" data-cidx="${i}" title="Ajouter cet évènement à un case">${ic('case')}</button>` : ''}</span></div>`).join('')
-    : '<div class="muted">aucun résultat</div>';
-  $('#events').querySelectorAll('.banbtn').forEach(b => { b.onclick = () => banIp(b.dataset.ip, b.dataset.host); });
-  $('#events').querySelectorAll('.unbanbtn').forEach(b => { b.onclick = () => unbanIp(b.dataset.ip, b.dataset.host); });
-  $('#events').querySelectorAll('.logcase').forEach(b => { b.onclick = () => { const r = results[Number(b.dataset.cidx)]; if (!r) return; const body = ('[' + (r.source || '') + (r.host ? '@' + r.host : '') + '] ' + (r.message || '')).slice(0, 200); withBusy(b, () => addToCase('event', body, undefined)); }; });
-  // clic sur une ligne d'événement (recherche FTS #q) -> déplie/replie le DÉTAIL COMPLET sous la ligne
-  // (tous les champs de l'événement + `fields` JSON aplati). `.onclick=` (pas addEventListener) -> pas de
-  // fuite de listener sur l'élément #events PERSISTANT (chaque recherche remplace le handler + son closure).
-  $('#events').onclick = e => {
-    if (e.target.closest('button, a')) return;
-    const line = e.target.closest('.logline'); if (!line || !$('#events').contains(line)) return;
-    const nx = line.nextElementSibling;
-    if (nx && nx.classList && nx.classList.contains('logdetail')) { nx.remove(); line.classList.remove('open'); return; }
-    $('#events').querySelectorAll('.logdetail').forEach(d => d.remove());
-    $('#events').querySelectorAll('.logline.open').forEach(l => l.classList.remove('open'));
-    const r = results[Number(line.dataset.i)]; if (!r) return;
-    const pairs = [];
-    Object.keys(r).forEach(k => {
-      if (k === 'fields') { try { const o = typeof r.fields === 'string' ? JSON.parse(r.fields) : r.fields; if (o && typeof o === 'object' && !Array.isArray(o)) for (const fk of Object.keys(o)) pairs.push([fk, o[fk]]); } catch (err) {} return; }
-      pairs.push([k, r[k]]);
-    });
-    const det = document.createElement('div'); det.className = 'logdetail';
-    const dl = document.createElement('dl'); dl.className = 'kvdetail';
-    let nHidden = 0;
-    pairs.forEach(([k, v]) => {
-      const sv = v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v)).trim();
-      if (sv === '' || sv === '-') { nHidden++; return; }
-      const disp = (k === 'ts' || k === '_time' || k === 'bucket') && Number(v) > 1e9 && Number(v) < 2e10 ? fmtTs(Number(v)) : (k === 'severity' ? sev(v) : sv);
-      const dt = document.createElement('dt'); dt.textContent = k;
-      const dd = document.createElement('dd'); dd.textContent = disp;
-      dl.append(dt, dd);
-    });
-    det.appendChild(dl);
-    if (nHidden) { const note = document.createElement('div'); note.className = 'muted'; note.style.cssText = 'font-size:11px;margin-top:6px'; note.textContent = '(' + nHidden + ' champ(s) vide(s) masqué(s))'; det.appendChild(note); }
-    line.classList.add('open'); line.after(det);
-  };
-}
-
-function fieldBlock(results, field, label, onPick) {
-  const counts = {};
-  results.forEach(r => { const raw = r[field]; const v = (raw == null || raw === '') ? '-' : (field === 'severity' ? sev(raw) : raw); counts[v] = (counts[v] || 0) + 1; });
-  const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 6);
-  const mx = Math.max(1, ...top.map(e => e[1]));
-  const block = document.createElement('div'); block.className = 'fldblock';
-  block.appendChild(Object.assign(document.createElement('div'), { className: 'fldname', textContent: label }));
-  top.forEach(([v, c]) => {
-    const row = document.createElement('button'); row.className = 'fldval';
-    row.style.setProperty('--w', (c / mx * 100).toFixed(1) + '%');   // barre de distribution proportionnelle (façon Splunk)
-    const sv = document.createElement('span'); sv.className = 'fldlabel'; sv.textContent = v;
-    const cc = document.createElement('span'); cc.className = 'fldc'; cc.textContent = c;
-    row.append(sv, cc); row.onclick = () => onPick(v); block.appendChild(row);
-  });
-  return block;
-}
-
 function timelineEl(results) {
   const NS = 'http://www.w3.org/2000/svg', mk = t => document.createElementNS(NS, t);
   const span = 3600, map = new Map();
@@ -231,16 +153,6 @@ async function banIp(ip, host) {
   if (host) body.host = host;
   const j = await apiSend('/actions', 'POST', body);
   toast(j.error ? ('Erreur : ' + j.error) : "Action créée (en attente) - onglet Réponse pour l'approuver.", j.error ? 'bad' : 'ok');
-  if (!j.error && typeof loadActions === 'function') loadActions();
-}
-
-// crée une action unban_ip (le responder lève le ban : fail2ban tous jails / CrowdSec / nft, best-effort)
-async function unbanIp(ip, host) {
-  if (!ip || !(await confirmModal(`Créer une action unban_ip ${ip} ?${host ? ' (hôte ' + host + ')' : ''} (le responder lèvera le ban : fail2ban / CrowdSec / nft)`, { okText: 'Débannir' }))) return;
-  const body = { kind: 'unban_ip', target: ip, dry_run: true, reason: 'depuis la recherche/bans' };
-  if (host) body.host = host;
-  const j = await apiSend('/actions', 'POST', body);
-  toast(j.error ? ('Erreur : ' + j.error) : "Action unban créée (en attente) - onglet Réponse pour l'approuver.", j.error ? 'bad' : 'ok');
   if (!j.error && typeof loadActions === 'function') loadActions();
 }
 
@@ -299,7 +211,6 @@ function clearZoom() { S.zoomRange = null; updateZoomBadge(); rerenderZoom(); if
 
 function rerenderZoom() {
   refresh(); loadDashboard();
-  if (S.lastSearchQ) doSearch(S.lastSearchQ);
   if (S.lastResult && $('#sql') && $('#sql').value.trim()) runQuery();
 }
 
@@ -1280,4 +1191,4 @@ async function runQuery() {
 function showQExport(has) { const el = $('#qexport'); if (el) el.hidden = !has; }
 
 
-export { banIp, clearDrillCrumb, currentFrom, currentTo, doSearch, evLoad, exploreFrom, exploreTo, qHistGo, queryCount, renderViz, runQ, runQuery, setZoom, stopExplore, tableEl, updateZoomBadge, vizElement, truncationBadge };
+export { banIp, clearDrillCrumb, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, qHistGo, queryCount, renderViz, runQ, runQuery, setZoom, stopExplore, tableEl, updateZoomBadge, vizElement, truncationBadge };

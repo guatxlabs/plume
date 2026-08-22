@@ -85,26 +85,26 @@ Affichage SEUL : la console ne pilote pas l'hôte (enrôlement/config = lecture)
 Display ONLY : the console never controls the host (enrollment/config are read-only).` },
   },
   explore: {
-    fr: { title: `Recherche & Explore (Plume panel)`, body:
-`Le cœur de l'investigation : une requête = une recherche dans les logs.
+    fr: { title: `Recherche (éditeur de requête, Plume panel)`, body:
+`L'espace Recherche : une requête = une recherche dans les logs. La barre de l'en-tête est un raccourci : son texte est recopié dans l'éditeur, puis exécuté — il n'y a qu'un seul moteur de résultats.
 • Champ requête : GXQL (search … | … ) ou SQL brut (admin). Bouton « ? Aide ».
 • Fenêtre temporelle propre (presets jusqu'à 1 an + intervalle précis).
 • Visualisation : Table / Barres / Courbe / Stat ; pagination (n/page).
-• Résultats : timeline, « champs intéressants » (à gauche), liste d'events.
+• Résultats (vue événements) : timeline, « champs intéressants » (à gauche), liste d'événements dépliables.
 • Drilldown : cliquer une valeur relance la recherche filtrée (fil d'Ariane).
-• Sur une IP : puces bannir / débannir ; sur un event : ouvrir un case.
+• Sur une IP : puce bannir (action en attente d'approbation). Le flux alerte -> cas vit dans l'espace Cas.
 • « Modèles » : mes modèles (enregistrés par « Enregistrer », modifiables, supprimables) et les modèles livrés (copiables) ; charger remplit la barre sans exécuter.
 • « Récentes » : les dernières requêtes exécutées dans ce navigateur.
 • Feuilleter : ◀ / ▶ parcourent tout le résultat par curseur ; un saut direct à un numéro de page lointain peut rendre une page PARTIELLE (le badge le dit) — revenir avec ◀ rétablit le parcours complet.
 • « Panneau » enregistre la requête (réutilisable dans un Dashboard).` },
-    en: { title: `Search & Explore (Plume panel)`, body:
-`The heart of investigation: one query = one search across the logs.
+    en: { title: `Search (query editor, Plume panel)`, body:
+`The Search space: one query = one search across the logs. The header bar is a shortcut: its text is copied into the editor, then run — there is a single results engine.
 • Query box: GXQL (search … | … ) or raw SQL (admin). "? Help" button.
 • Its own time window (presets up to 1 year + precise interval).
 • Visualization: Table / Bar / Line / Stat ; pagination (n/page).
-• Results: timeline, "interesting fields" (left), event list.
+• Results (events view): timeline, "interesting fields" (left), expandable event list.
 • Drilldown: click a value to re-run the search filtered (breadcrumb).
-• On an IP: ban / unban chips ; on an event: open a case.
+• On an IP: a ban chip (action pending approval). The alert -> case flow lives in the Cases space.
 • "Templates": my templates (saved with "Save", editable, deletable) and the shipped templates (copyable); loading fills the bar without running.
 • "Recent": the last queries run in this browser.
 • Paging: ◀ / ▶ walk the whole result by cursor; a direct jump to a far page number can render a PARTIAL page (the badge says so) — going back with ◀ restores the complete walk.
@@ -202,7 +202,7 @@ Time stored in UTC ; display follows the time-zone selector.` },
 • Une alerte a un statut : « nouveau » puis « acquittée » (jamais supprimée).
 • UNE liste, plusieurs TRIS (Plate / Règle / Hôte / Technique), une PORTÉE (actives / tous statuts), un filtre « hors case », des FACETTES (technique, source). La barre d'actions est la même sur tous les tris ; une action impossible reste visible, désactivée, avec sa raison.
 • Acquitter : sans facette, « Tout acquitter » acquitte TOUTES les alertes actives (au-delà de la page) ; sous une facette, seules les alertes affichées.
-• Cliquer le titre d'une alerte ouvre l'Explore sur CE QUE LA RÈGLE A COMPTÉ : la requête de la règle sans son agrégat final, sur la fenêtre exacte de l'évaluation — le nombre de lignes reproduit le compte de l'alerte (règle en SQL brut : le SQL lui-même, réservé à l'administrateur).
+• Cliquer le titre d'une alerte ouvre la Recherche sur CE QUE LA RÈGLE A COMPTÉ : la requête de la règle sans son agrégat final, sur la fenêtre exacte de l'évaluation — le nombre de lignes reproduit le compte de l'alerte (règle en SQL brut : le SQL lui-même, réservé à l'administrateur).
 • La cloche d'une source (Données → Fraîcheur) mène ici avec la facette source : ses alertes non acquittées, cases comprises, toutes dates — sans lien avec la fraîcheur de la source.
 • Le titre « Alertes » ramène à la liste plate sans filtre.
 • Puces : ouvrir un case depuis l'alerte, ou bannir l'IP en cause.` },
@@ -211,7 +211,7 @@ Time stored in UTC ; display follows the time-zone selector.` },
 • An alert has a status: "new" then "acknowledged" (never deleted).
 • ONE list, several SORTS (Flat / Rule / Host / Technique), one SCOPE (active / all statuses), an "outside any case" filter, FACETS (technique, source). The action bar is the same on every sort; an impossible action stays visible, disabled, with its reason.
 • Acknowledge: without a facet, "Ack all" acknowledges EVERY active alert (beyond the page); under a facet, only the alerts shown.
-• Clicking an alert title opens Explore on WHAT THE RULE COUNTED: the rule query without its final aggregate, on the exact evaluation window — the row count reproduces the alert count (raw-SQL rule: the SQL itself, admin only).
+• Clicking an alert title opens Search on WHAT THE RULE COUNTED: the rule query without its final aggregate, on the exact evaluation window — the row count reproduces the alert count (raw-SQL rule: the SQL itself, admin only).
 • A source bell (Data → Freshness) lands here with the source facet: its unacknowledged alerts, cases included, all dates — unrelated to the source freshness.
 • The "Alerts" title goes back to the flat, unfiltered list.
 • Chips: open a case from the alert, or ban the offending IP.` },
@@ -236,12 +236,12 @@ Time stored in UTC ; display follows the time-zone selector.` },
     fr: { title: `Dashboards`, body:
 `Tableaux de bord composés de panneaux (une requête GXQL enregistrée).
 • Vue = un regroupement de dashboards (créer / renommer / supprimer une vue).
-• + Dashboard ajoute un tableau ; + Panneau (depuis Explore) ajoute une tuile.
+• + Dashboard ajoute un tableau ; + Panneau (depuis la Recherche) ajoute une tuile.
 • Édition : glisser / redimensionner les panneaux ; Rafraîchir recharge tout.` },
     en: { title: `Dashboards`, body:
 `Boards made of panels (a saved GXQL query).
 • View = a grouping of dashboards (create / rename / delete a view).
-• + Dashboard adds a board ; + Panel (from Explore) adds a tile.
+• + Dashboard adds a board ; + Panel (from Search) adds a tile.
 • Edit: drag / resize panels ; Refresh reloads everything.` },
   },
   coverage: {
@@ -297,23 +297,25 @@ Time stored in UTC ; display follows the time-zone selector.` },
 • Where it lands: its alerts in the Alerts tab (or Risk when the rule is in risk mode). The form and the list say so, with the link.` },
   },
   response: {
-    fr: { title: `Réponse (playbooks & actions)`, body:
+    fr: { title: `Réponse (playbooks, runbooks & actions)`, body:
 `Automatiser ou déclencher des ripostes. Enum FERMÉ des actions :
   ban_ip, unban_ip, kill_pid, stop_service.
+• Deux familles sous l'onglet Playbooks, nommées dans leur en-tête : « Playbooks — règles de réponse » (une condition, une action, un interrupteur) et « Runbooks — guides d'incident » (des étapes, attachées à un cas). Un playbook se déclenche seul ; un runbook jamais.
 • Mode Observation (vert) = propositions seulement, rien n'est exécuté.
 • Mode ACTIF (rouge) = les playbooks exécutent la riposte automatiquement.
-• Playbook = une règle de réponse : condition (requête dont la 1re colonne = la cible) -> action (ban / kill / stop), évaluée à intervalle régulier. Pas besoin d'un runbook autour.
+• Playbook = une règle de réponse : condition (requête dont la 1re colonne = la cible) -> action (ban / kill / stop), évaluée à intervalle régulier. Pas besoin d'un runbook autour. Le choix d'action dit ce qu'il fait, et la durée du ban est celle que posent les exécuteurs (servie, jamais écrite dans l'interface).
 • L'interrupteur de chaque playbook dit ON ou OFF et, à côté, ce qu'il arme (ex. « bannit l'IP source pendant N h … ») ; l'activation demande confirmation, car elle touche le réseau ou un processus. Repasser sur OFF arrête les nouvelles actions.
 • Où ça arrive : les actions posées dans l'onglet Actions (en attente / dry-run en Observation ; exécutées en Actif).
 • Runbook = guide d'incident (checklist phasée, manuelle), proposé dans un Cas élevé en incident ; ses étapes « response » préparent une action soumise à approbation. Les livrés se lisent (« Étapes ») et se clonent ; seuls les custom s'éditent.
 • Action manuelle : cible (IP / PID / service) + dry-run (simulation) ou RÉEL.
 • dry-run coché par défaut ; les actions passent par une file d'approbation.` },
-    en: { title: `Response (playbooks & actions)`, body:
+    en: { title: `Response (playbooks, runbooks & actions)`, body:
 `Automate or trigger responses. CLOSED enum of actions:
   ban_ip, unban_ip, kill_pid, stop_service.
+• Two families under the Playbooks tab, named in their header: "Playbooks — response rules" (a condition, an action, a switch) and "Runbooks — incident guides" (steps, attached to a case). A playbook fires on its own; a runbook never does.
 • Observe mode (green) = proposals only, nothing is executed.
 • ACTIVE mode (red) = playbooks run the response automatically.
-• Playbook = a response rule: condition (a query whose 1st column = the target) -> action (ban / kill / stop), evaluated on an interval. No runbook needed around it.
+• Playbook = a response rule: condition (a query whose 1st column = the target) -> action (ban / kill / stop), evaluated on an interval. No runbook needed around it. The action choice says what it does, and the ban duration is the one the executors set (served, never written in the interface).
 • Each playbook's switch reads ON or OFF and, next to it, what it arms (e.g. "bans the source IP for N h …"); enabling asks for confirmation, since it touches the network or a process. Switching back to OFF stops new actions.
 • Where it lands: the actions it posts in the Actions tab (pending / dry-run in Observe; executed in Active).
 • Runbook = incident guide (phased manual checklist), proposed in a Case raised to incident; its "response" steps prepare an action subject to approval. Shipped ones can be read ("Steps") and cloned; only custom ones are edited.
@@ -537,11 +539,14 @@ const HELP_INDEX = [
     { k: 'integrations', fr: 'Intégrations & hôtes', en: 'Integrations & hosts' },
     { k: 'freshness', fr: 'Fraîcheur des sources', en: 'Source freshness' },
   ] },
-  { fr: 'Investigation', en: 'Investigation', icon: 'search', items: [
-    { k: 'explore', fr: 'Recherche & Explore', en: 'Search & Explore' },
+  // P11.7-a — deux espaces : Recherche (l'éditeur de requête) et Cas (le flux alerte -> cas).
+  { fr: 'Recherche', en: 'Search', icon: 'search', items: [
+    { k: 'explore', fr: 'Recherche (éditeur de requête)', en: 'Search (query editor)' },
     { k: 'soql', fr: 'GXQL (référence)', en: 'GXQL (reference)' },
+  ] },
+  { fr: 'Cas', en: 'Cases', icon: 'folder', items: [
     { k: 'alerts', fr: 'Alertes', en: 'Alerts' },
-    { k: 'cases', fr: 'Cases', en: 'Cases' },
+    { k: 'cases', fr: 'Cas', en: 'Cases' },
   ] },
   { fr: 'Dashboards', en: 'Dashboards', icon: 'layout', items: [
     { k: 'dashboards', fr: 'Dashboards', en: 'Dashboards' },
@@ -550,7 +555,7 @@ const HELP_INDEX = [
     { k: 'coverage', fr: 'Couverture ATT&CK', en: 'ATT&CK coverage' },
     { k: 'attack', fr: 'Matrice ATT&CK', en: 'ATT&CK matrix' },
     { k: 'rules', fr: 'Règles de détection', en: 'Detection rules' },
-    { k: 'response', fr: 'Réponse (playbooks & actions)', en: 'Response (playbooks & actions)' },
+    { k: 'response', fr: 'Réponse (playbooks, runbooks & actions)', en: 'Response (playbooks, runbooks & actions)' },
   ] },
   { fr: 'Données', en: 'Data', icon: 'database', items: [
     { k: 'sources', fr: 'Sources', en: 'Sources' },
@@ -629,8 +634,8 @@ const GLOSSARY = [
 // C9 — raccourcis clavier/UI RÉELS (vérifiés dans le code : #q Enter, #sql Ctrl/⌘+Enter, Échap ferme les
 // modales, bouton ? d'en-tête). Statique — documente le comportement existant, n'ajoute aucune fonctionnalité.
 const HELP_SHORTCUTS = [
-  { key: 'Entrée', fr: `Barre de recherche (en-tête) : lance la recherche dans l'Explore.`, en: `Header search bar: run the search in Explore.` },
-  { key: 'Ctrl / ⌘ + Entrée', fr: `Dans l'éditeur de requête (Explore) : exécute la requête.`, en: `In the query editor (Explore): run the query.` },
+  { key: 'Entrée', fr: `Barre de recherche (en-tête) : recopie le texte dans l'éditeur de l'espace Recherche et exécute.`, en: `Header search bar: copies the text into the Search space editor and runs it.` },
+  { key: 'Ctrl / ⌘ + Entrée', fr: `Dans l'éditeur de requête (Recherche) : exécute la requête.`, en: `In the query editor (Search): run the query.` },
   { key: 'Échap', fr: `Ferme la fenêtre d'aide, une modale ou un formulaire ouvert.`, en: `Close the help window, a modal or an open form.` },
   { key: '?', fr: `Bouton dans chaque en-tête de vue : ouvre l'aide de cette vue.`, en: `Button in each view header: opens that view's help.` },
 ];
@@ -652,7 +657,7 @@ function renderHelpGuide() {
     ? "In-app guide to Plume. Click a topic to open its help, or use the “?” on any view header. Everything below is static — no query is run."
     : "Guide intégré de Plume. Cliquez un sujet pour ouvrir son aide, ou utilisez le “?” dans l'en-tête de chaque vue. Tout ici est statique — aucune requête n'est exécutée.";
   host.appendChild(intro);
-  // ESPACES — sommaire groupé par les 6 espaces, avec l'ICÔNE de la sidebar (respecte admin/mtOnly, comme la nav)
+  // ESPACES — sommaire groupé par espace, avec l'ICÔNE de la sidebar (respecte admin/mtOnly, comme la nav)
   const idxT = document.createElement('div'); idxT.className = 'fldname hg-anchor'; idxT.id = 'hg-espaces'; idxT.textContent = en ? 'Spaces & views' : 'Espaces & vues';
   host.appendChild(idxT);
   const idx = document.createElement('div'); idx.className = 'hg-idx hg-sec';

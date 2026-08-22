@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, mitreName, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, formMsg, socIsAdmin, lsSet, collapsibleGroup, SEVCOL } from './core.js';
+import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, mitreName, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, formMsg, socIsAdmin, lsSet, collapsibleGroup, SEVCOL } from './core.js';
 import { S } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
 import { loadAttackMatrix } from './attack.js';
@@ -477,10 +477,28 @@ if ($('#mode-toggle')) $('#mode-toggle').onclick = async () => {
 // --- playbooks (détection -> réponse) ---
 const PB = { name: '#pb-name', query: '#pb-query', issoql: '#pb-issoql', kind: '#pb-kind', interval: '#pb-interval', window: '#pb-window', enabled: '#pb-enabled' };
 /* state: editingPb -> S (state.js) */
+// Libellé humain d'une option du `<select id="pb-kind">` : le nom technique (la valeur envoyée) suivi de ce que
+// l'action fait sur chaque cible. La durée du ban n'est JAMAIS écrite ici : elle est `ban_duration_s`, servie par
+// le démon avec la liste (la même que posent les exécuteurs). Sans valeur servie, le libellé ne dit pas de durée.
+function actionKindOptionLabel(kind, banDurationS) {
+  const en = LANG === 'en';
+  const heures = Number(banDurationS) > 0 ? Math.round(Number(banDurationS) / 3600) : null;
+  const effet = {
+    ban_ip: heures == null ? (en ? 'bans the source IP' : "bannit l'IP source") : (en ? 'bans the source IP for ' + heures + ' h' : "bannit l'IP source " + heures + ' h'),
+    kill_pid: en ? 'terminates the target process' : 'termine le processus cible',
+    stop_service: en ? 'stops the target service' : 'arrête le service cible',
+  }[kind];
+  return effet ? kind + ' — ' + effet : kind;
+}
+function labelActionKindOptions(banDurationS) {
+  const sel = $('#pb-kind'); if (!sel || !sel.options) return;
+  [...sel.options].forEach(o => { o.textContent = actionKindOptionLabel(o.value, banDurationS); });
+}
 async function loadPlaybooks() {
   const wrap = $('#pb-list'); if (!wrap) return;
-  let playbooks = [], mode = 'observe';
-  try { ({ playbooks, mode = 'observe' } = await api('/playbooks')); } catch (e) { return; }
+  let playbooks = [], mode = 'observe', ban_duration_s = null;
+  try { ({ playbooks, mode = 'observe', ban_duration_s = null } = await api('/playbooks')); } catch (e) { return; }
+  labelActionKindOptions(ban_duration_s);
   wrap.replaceChildren();
   const note = takePendingNote('playbooks'); if (note) wrap.appendChild(note); // P11.1-e
   if (!playbooks.length) { wrap.appendChild(muted('aucun playbook')); return; }
@@ -548,4 +566,4 @@ if ($('#pb-form')) $('#pb-form').addEventListener('submit', async e => {
 loadPlaybooks();
 loadMode();
 
-export { renderCoverage, loadRules, loadNotifiers, loadParsers, loadActions, loadMode, loadPlaybooks, ruleRowModel, playbookRowModel, pbRow };
+export { renderCoverage, loadRules, loadNotifiers, loadParsers, loadActions, loadMode, loadPlaybooks, ruleRowModel, playbookRowModel, pbRow, actionKindOptionLabel };

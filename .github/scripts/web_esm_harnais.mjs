@@ -19,7 +19,7 @@
 // Le shim ne rend pas de mise en page : il enregistre l'arbre que les modules construisent, et
 // c'est le TEXTE de cet arbre qui est jugé. `fetch` est absent par construction — une surface qui
 // appellerait le réseau au chargement d'un module est une erreur, et elle se voit ici.
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 
@@ -651,9 +651,57 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger((await p3) === null, "(confirmation) avec champs, écartée, ne rend pas null");
 }
 
+// ---------------------------------------------------------------------------------------------
+// 8. DEUX ESPACES « RECHERCHE » ET « CAS », ET DEUX FAMILLES NOMMÉES SOUS L'ONGLET PLAYBOOKS
+//    (`P11.7-a`, `P11.2-c`, `P11.2-a`). Le modèle de navigation (`SPACES`, app.js) et la sidebar
+//    (`index.html`) sont tenus ÉGAUX dans les deux sens : chaque espace du modèle a son lien, chaque lien
+//    a son espace ; chaque section qu'un onglet mappe EXISTE dans `<main>` — une section retirée
+//    d'index.html mais encore mappée (ou l'inverse) se voit ici. L'onglet des alertes vit sous « Cas »,
+//    l'éditeur de requête seul sous « Recherche ». L'ancienne section de résultats n'existe plus, et un
+//    import de `doSearch` serait une erreur de lien en tête de ce harnais — c'est la preuve du retrait.
+//    Le libellé d'option d'action ne porte une durée que si le démon l'a SERVIE, et la suit (mutation).
+// ---------------------------------------------------------------------------------------------
+{
+  const { SPACES } = await import(pathToFileURL(path.join(WEB, "app.js")).href);
+  const html = readFileSync(path.join(WEB, "index.html"), "utf8");
+  const nav = html.slice(html.indexOf('<nav class="sidebar"'), html.indexOf("</nav>"));
+  const liens = [...nav.matchAll(/data-space="([a-z-]+)"[^>]*>[\s\S]*?<span>([^<]*)<\/span>/g)].map((m) => ({ space: m[1], label: m[2].trim() }));
+  exiger(liens.length >= 5, `(8) instrument : ${liens.length} lien(s) d'espace lus dans la sidebar, la lecture est cassée`);
+  const idsNav = new Set(liens.map((l) => l.space)), idsModele = new Set(SPACES.map((sp) => sp.id));
+  exiger([...idsModele].every((id) => idsNav.has(id)) && [...idsNav].every((id) => idsModele.has(id)), `(8) espaces du modèle ≠ liens de la sidebar : modèle [${[...idsModele].join(", ")}] / sidebar [${[...idsNav].join(", ")}]`);
+  const libelle = (id) => (liens.find((l) => l.space === id) || {}).label;
+  exiger(libelle("search") === "Recherche", `(8) l'espace de l'éditeur de requête ne s'appelle pas « Recherche » (« ${libelle("search")} »)`);
+  exiger(libelle("cases") === "Cas", `(8) l'espace du flux alerte -> cas ne s'appelle pas « Cas » (« ${libelle("cases")} »)`);
+  exiger(!liens.some((l) => /Investigation|Explore/.test(l.label)), "(8) un espace porte encore le nom « Investigation » ou « Explore »");
+  const espaceDe = (tab) => SPACES.find((sp) => sp.tabs.some((t) => t.id === tab));
+  exiger(espaceDe("alerts") && espaceDe("alerts").id === "cases", `(8) l'onglet des alertes vit sous « ${espaceDe("alerts") && espaceDe("alerts").id} » au lieu de « cases »`);
+  exiger(espaceDe("cases") && espaceDe("cases").id === "cases", "(8) l'onglet des cas ne vit pas sous l'espace Cas");
+  const recherche = espaceDe("explore");
+  exiger(recherche && recherche.id === "search" && recherche.tabs.length === 1 && recherche.tabs[0].sections.join(",") === "query", `(8) l'espace Recherche doit porter le seul onglet de l'éditeur, section « query » seule : ${JSON.stringify(recherche && recherche.tabs)}`);
+  const sections = new Set([...html.matchAll(/<section id="([^"]+)"/g)].map((m) => m[1]));
+  const manquantes = SPACES.flatMap((sp) => sp.tabs).flatMap((t) => t.sections).filter((id) => !sections.has(id));
+  exiger(manquantes.length === 0, `(8) section(s) mappée(s) par un onglet mais absente(s) d'index.html : ${manquantes.join(", ")}`);
+  exiger(!sections.has("search-results"), "(8) la section « résultats de recherche » (code mort mesuré) est encore dans index.html");
+  // Deux familles nommées dans leurs en-têtes et leurs boutons de création ; l'interrupteur de création dit ON.
+  const h2 = (id) => (html.match(new RegExp(`<h2 id="${id}">([^<]*)`)) || [])[1] || "";
+  exiger(/Playbooks — règles de réponse/.test(h2("pb-h")) && /Runbooks — guides d'incident/.test(h2("rb-h")), `(8) les en-têtes ne nomment pas les deux familles : « ${h2("pb-h").trim()} » / « ${h2("rb-h").trim()} »`);
+  const bouton = (id) => (html.match(new RegExp(`<button id="${id}"[^>]*>([^<]*)`)) || [])[1] || "";
+  exiger(/règle de réponse/.test(bouton("pb-new")) && /guide d'incident/.test(bouton("rb-new")), `(8) les boutons de création ne nomment pas la famille : « ${bouton("pb-new")} » / « ${bouton("rb-new")} »`);
+  exiger(/id="pb-enabled"[^>]*>\s*ON à l'enregistrement/.test(html), "(8) la case du formulaire playbook ne dit pas « ON à l'enregistrement »");
+  exiger(!/id="rb-editor"[^>]*style=/.test(html), "(8) #rb-editor porte encore un style en ligne");
+  // Libellés d'option : la durée vient du démon, et elle SUIT la valeur servie.
+  const { actionKindOptionLabel } = await import(pathToFileURL(path.join(WEB, "detection_admin.js")).href);
+  const l4 = actionKindOptionLabel("ban_ip", 4 * 3600), l6 = actionKindOptionLabel("ban_ip", 6 * 3600), l0 = actionKindOptionLabel("ban_ip", null);
+  exiger(l4.startsWith("ban_ip — ") && /\b4 h\b/.test(l4), `(8) libellé ban_ip pour une durée servie de 4 h : « ${l4} »`);
+  exiger(/\b6 h\b/.test(l6) && !/\b4 h\b/.test(l6), `(8) mutation : la durée servie passe à 6 h, le libellé dit « ${l6} »`);
+  exiger(!/\d/.test(l0) && /bannit/.test(l0), `(8) sans durée servie, le libellé ne doit porter AUCUN chiffre : « ${l0} »`);
+  exiger(/processus/.test(actionKindOptionLabel("kill_pid")) && /service/.test(actionKindOptionLabel("stop_service")), "(8) kill_pid / stop_service ne disent pas leur effet");
+  exiger(actionKindOptionLabel("format_disk") === "format_disk", "(8) une action hors vocabulaire doit rester nue, jamais recevoir une phrase rassurante");
+}
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée.`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie.`);

@@ -6,7 +6,7 @@ import {
 } from './core.js';
 import { i18nWalk } from './i18n.js';
 import { S } from './state.js';
-import { banIp, clearDrillCrumb, currentFrom, currentTo, doSearch, evLoad, exploreFrom, exploreTo, qHistGo, queryCount, renderViz, runQ, runQuery, setZoom, stopExplore, tableEl, updateZoomBadge, vizElement } from './viz.js';
+import { banIp, clearDrillCrumb, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, qHistGo, queryCount, renderViz, runQ, runQuery, setZoom, stopExplore, tableEl, updateZoomBadge, vizElement } from './viz.js';
 import { loadFleetView } from './fleet.js';
 import { loadSourcesView } from './sources.js';
 import { loadSystemView, loadBulletin } from './system.js'; // #51 DAY-2 OPS — console d'opérabilité + bandeau MOTD
@@ -310,7 +310,9 @@ function applyDaOrder(){ const host=$('#da-body'); if(!host) return; const note=
 function saveDaDrop(from,to){ const ids=[...$('#da-body').querySelectorAll('.card[data-da]')].map(c=>c.dataset.da); let o=daOrder().filter(x=>ids.includes(x)); ids.forEach(x=>{if(!o.includes(x))o.push(x);}); o.splice(o.indexOf(from),1); o.splice(o.indexOf(to),0,from); localStorage.setItem('soc_da_order',JSON.stringify(o)); applyDaOrder(); }
 function initDaLayout(){ $('#da-body').querySelectorAll('.card[data-da]').forEach(card=>{ const id=card.dataset.da; const grip=document.createElement('span'); grip.className='ovgrip'; grip.title='Glisser pour réorganiser'; grip.innerHTML=ic('grip'); grip.draggable=true; grip.addEventListener('dragstart',e=>{e.dataTransfer.setData(DA_DT,id); e.dataTransfer.effectAllowed='move'; card.classList.add('ovdragging');}); grip.addEventListener('dragend',()=>card.classList.remove('ovdragging')); card.addEventListener('dragover',e=>{ if(e.dataTransfer.types.includes(DA_DT)){e.preventDefault(); card.classList.add('ovdragover');} }); card.addEventListener('dragleave',()=>card.classList.remove('ovdragover')); card.addEventListener('drop',e=>{ if(!e.dataTransfer.types.includes(DA_DT))return; e.preventDefault(); card.classList.remove('ovdragover'); const from=e.dataTransfer.getData(DA_DT); if(from&&from!==id) saveDaDrop(from,id); }); card.appendChild(grip); }); applyDaOrder(); }
 
-// --- recherche style Splunk : timeline + fields sidebar + events ---
+// --- barre de recherche de l'en-tête : un RACCOURCI vers l'éditeur de requête de l'espace Recherche ---
+// (P11.7-a) Elle recopie le texte dans l'éditeur, ouvre l'onglet, exécute. Il n'y a qu'un seul moteur de
+// résultats : celui de l'éditeur (`#qresult`). L'ancienne section « résultats de recherche » était inatteignable.
 $('#q').addEventListener('keydown', e => {
   if (e.key !== 'Enter') return;
   const v = e.target.value.trim(); if (!v) return;
@@ -336,7 +338,6 @@ $('#q').addEventListener('keydown', e => {
 
 // --- panneau requête ad hoc ---
 /* state: lastResult -> S (state.js) */
-/* state: lastSearchQ -> S (state.js) */ // derniere recherche FTS (pour re-render au zoom)
 /* state: evState -> S (state.js) */
 // HISTORIQUE de requêtes Explore (en mémoire) : pile {sql, win} des requêtes exécutées + position
 // courante. Modèle back/forward de navigateur — une NOUVELLE requête tronque la branche « avant ».
@@ -357,7 +358,6 @@ if ($('#qrange')) $('#qrange').addEventListener('change', () => {     // changer
   if (S.zoomRange) { S.zoomRange = null; updateZoomBadge(); if (typeof updateRangeBtn === 'function') updateRangeBtn(); }   // une fenêtre relative annule le zoom figé
   if (typeof updateQRangeBtn === 'function') updateQRangeBtn();
   if ($('#sql') && $('#sql').value.trim()) runQuery();
-  if (S.lastSearchQ) doSearch(S.lastSearchQ);   // le picker LOCAL pilote AUSSI la recherche FTS (#q) — une seule fenêtre Explore
 });
 
 // --- dashboards (P3) ---
@@ -1463,20 +1463,24 @@ if ($('#tenant-form')) $('#tenant-form').addEventListener('submit', async e => {
 if ($('#opaccess-refresh')) $('#opaccess-refresh').onclick = loadOperatorAudit;
 if ($('#opaccess-src')) $('#opaccess-src').addEventListener('change', loadOperatorAudit);
 
-// --- navigation à 2 niveaux : 6 ESPACES (1er niveau) -> SOUS-ONGLETS (2e niveau) -> sections <main> ---
+// --- navigation à 2 niveaux : ESPACES (1er niveau, sidebar) -> SOUS-ONGLETS (2e niveau) -> sections <main> ---
 // Chaque espace regroupe des sous-onglets ; chaque sous-onglet mappe une/des sections existantes (ids PRÉSERVÉS).
 // Le hash = l'id du sous-onglet (unique sur tous les espaces) -> deep-link conservé. Espace à 1 seul onglet
-// = pas de barre de sous-onglets (Vue d'ensemble, Dashboards). admin:true sur un ESPACE => espace entier
-// réservé admin (Administration) ; admin:true sur un ONGLET => onglet réservé admin mais espace visible
-// (Lookups dans Données). 1er onglet = onglet par défaut de l'espace.
+// = pas de barre de sous-onglets (Vue d'ensemble, Recherche, Dashboards). admin:true sur un ESPACE => espace
+// entier réservé admin (Administration) ; admin:true sur un ONGLET => onglet réservé admin mais espace visible
+// (Lookups dans Données). 1er onglet = onglet par défaut de l'espace. Chaque id d'espace a son lien
+// `data-space` dans la sidebar d'index.html (le harnais ESM tient les deux listes égales).
+// P11.7-a : « Recherche » = l'éditeur de requête et ses résultats ; « Cas » = le flux alerte -> cas.
 const SPACES = [
   { id: 'overview', tabs: [
     { id: 'overview', label: "Vue d'ensemble", sections: ['firewall', 'controls', 'integrations', 'freshness'] },
   ] },
-  { id: 'investigation', tabs: [
-    { id: 'explore', label: 'Recherche & Explore', sections: ['query', 'search-results'] },
+  { id: 'search', tabs: [
+    { id: 'explore', label: 'Recherche', sections: ['query'] },
+  ] },
+  { id: 'cases', tabs: [
     { id: 'alerts', label: 'Alertes', sections: ['alerts'] },
-    { id: 'cases', label: 'Cases', sections: ['cases'] },
+    { id: 'cases', label: 'Cas', sections: ['cases'] },
   ] },
   { id: 'dashboards', tabs: [
     { id: 'dashboards', label: 'Dashboards', sections: ['dashboards'] },
@@ -1699,7 +1703,7 @@ function refreshCurrentView() {
   if (v === 'detection') renderCoverage();
   else if (v === 'cases') loadCases();
   else if (v === 'dashboards') loadDashboard();
-  else if (v === 'explore') { if (S.lastSearchQ) doSearch(S.lastSearchQ); if ($('#sql') && $('#sql').value.trim()) runQuery(); }
+  else if (v === 'explore') { if ($('#sql') && $('#sql').value.trim()) runQuery(); }
 }
 if ($('#manual-refresh')) $('#manual-refresh').onclick = refreshCurrentView;
 // toggle Stop/Start de l'auto-refresh + état visuel (pastille verte = actif, grise = en pause).
@@ -2008,4 +2012,4 @@ async function doLogout() {
 })();
 
 /* ==== exports consumed by seam modules (auto-managed) ==== */
-export { ROLE_LABEL, applyRoleClass, currentTab, currentViewName, fetchMe, loadActions, loadDashboard, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAlertMitreFilter, setAlertSourceFilter, setAuthUI, updateQRangeBtn, updateRangeBtn };
+export { ROLE_LABEL, SPACES, applyRoleClass, currentTab, currentViewName, fetchMe, loadActions, loadDashboard, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAlertMitreFilter, setAlertSourceFilter, setAuthUI, updateQRangeBtn, updateRangeBtn };

@@ -138,11 +138,13 @@
      aucun bulletin posé -> reste caché (invariant mode 0 : aucun bandeau). Niveau info/warn/critical -> classe. -->
 <div id="bulletin-banner" class="bulletin-banner" role="status" aria-live="polite" hidden></div>
 <div class="layout">
-  <!-- NIVEAU 1 : les 6 espaces. data-space = id d'espace (cf. SPACES dans app.js) ; href = 1er sous-onglet
-       (onglet par défaut de l'espace). L'état actif est piloté par data-space (renderNav), pas par href. -->
+  <!-- NIVEAU 1 : les espaces. data-space = id d'espace (cf. SPACES dans app.js) ; href = 1er sous-onglet
+       (onglet par défaut de l'espace). L'état actif est piloté par data-space (renderNav), pas par href.
+       Recherche = l'éditeur de requête et ses résultats ; Cas = le flux alerte -> cas (P11.7-a). -->
   <nav class="sidebar" id="nav" aria-label="Navigation">
     <a href="#overview" data-space="overview"><svg class="ic" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8M5 10v10h5v-6h4v6h5V10"/></svg> <span>Vue d'ensemble</span></a>
-    <a href="#explore" data-space="investigation"><svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg> <span>Investigation</span></a>
+    <a href="#explore" data-space="search"><svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg> <span>Recherche</span></a>
+    <a href="#alerts" data-space="cases"><svg class="ic" viewBox="0 0 24 24"><path d="M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></svg> <span>Cas</span></a>
     <a href="#dashboards" data-space="dashboards"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg> <span>Dashboards</span></a>
     <a href="#detection" data-space="detresp"><svg class="ic" viewBox="0 0 24 24"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg> <span>Détection &amp; Réponse</span></a>
     <a href="#sources" data-space="data"><svg class="ic" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg> <span>Données</span></a>
@@ -167,15 +169,15 @@
         <button id="qprev" class="picon" type="button" title="Requête précédente (historique)" disabled></button>
         <button id="qnext" class="picon" type="button" title="Requête suivante (historique)" disabled></button>
       </div>
-      <h2 id="query-h">Plume panel <button class="ihelp vhelp" data-help="explore" type="button" title="Aide : Recherche & Explore">?</button></h2>
+      <h2 id="query-h">Plume panel <button class="ihelp vhelp" data-help="explore" type="button" title="Aide : Recherche">?</button></h2>
       <span id="qcrumb" class="qcrumb" role="status" aria-live="polite" hidden></span>
     </div>
     <div class="qsub">Requête GXQL ou SQL — les drilldowns atterrissent ici</div>
     <div class="qbar">
       <textarea id="sql" rows="3" aria-label="Requête GXQL ou SQL" spellcheck="false"
         placeholder="GXQL:  search (tous les events · '*' aussi)  ·  search source=sudo | stats count by source | sort -count        -ou-        SQL:  SELECT * FROM event ORDER BY ts DESC LIMIT 20"></textarea>
-      <!-- #qrange = état (fenêtre Explore relative) caché ; l'UI est le modal ouvert par #qrangepick — même design que le picker Dashboard (presets jusqu'à 1 an + intervalle précis). -->
-      <select id="qrange" aria-label="Fenêtre temporelle (Explore)" title="Fenêtre temporelle (Explore)" style="display:none">
+      <!-- #qrange = état (fenêtre Recherche relative) caché ; l'UI est le modal ouvert par #qrangepick — même design que le picker Dashboard (presets jusqu'à 1 an + intervalle précis). -->
+      <select id="qrange" aria-label="Fenêtre temporelle (Recherche)" title="Fenêtre temporelle (Recherche)" style="display:none">
         <option value="300">5 min</option>
         <option value="900">15 min</option>
         <option value="1800">30 min</option>
@@ -191,7 +193,7 @@
         <option value="31536000">1 an</option>
         <option value="0">Tout</option>
       </select>
-      <button id="qrangepick" class="k-theme rangebtn" type="button" aria-label="Fenêtre temporelle (Explore)" title="Fenêtre temporelle de la recherche (presets jusqu'à 1 an + intervalle précis)"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg><span id="qrangelbl">24 h</span></button>
+      <button id="qrangepick" class="k-theme rangebtn" type="button" aria-label="Fenêtre temporelle (Recherche)" title="Fenêtre temporelle de la recherche (presets jusqu'à 1 an + intervalle précis)"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg><span id="qrangelbl">24 h</span></button>
       <button id="run" type="button">Exécuter </button>
       <button id="qstop" class="stopbtn picon" type="button" title="Arrêter la requête en cours" hidden><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg></button>
       <button id="qhelp" type="button" title="Aide : syntaxe des requêtes (GXQL)">? Aide</button>
@@ -394,26 +396,26 @@
        AUTOMATIQUE des playbooks. Tous les ids sont préservés (loadPlaybooks/loadActions/loadMode inchangés). -->
   <section id="playbooks-panel" class="card span2" aria-labelledby="pb-h">
     <div class="panelhead">
-      <h2 id="pb-h">Playbooks <button class="ihelp vhelp" data-help="response" type="button" title="Aide : Réponse">?</button></h2>
+      <h2 id="pb-h">Playbooks — règles de réponse <button class="ihelp vhelp" data-help="response" type="button" title="Aide : Réponse">?</button></h2>
       <div class="hdtools">
         <span class="qbar modeswitch" title="Mode global : Observation = propositions seulement ; Actif = les playbooks exécutent les réponses AUTOMATIQUEMENT.">
           <span id="mode-badge" class="modestate" role="status">...</span>
           <button id="mode-toggle" type="button" role="switch" aria-checked="false" aria-label="Mode réponse (observation / actif)">basculer</button>
         </span>
-        <button id="pb-new" type="button">+ Playbook</button>
+        <button id="pb-new" type="button">+ Playbook (règle de réponse)</button>
       </div>
     </div>
-    <p class="muted" style="margin:0 0 9px;font-size:12px">Détection &rarr; réponse automatique (la 1re colonne de la requête = la cible). Ils ne s'exécutent RÉELLEMENT que lorsque le mode ci-dessus est <b>Actif</b> ; en <b>Observation</b>, ils ne font que proposer.</p>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Un playbook est une règle de réponse : une condition (la requête, dont la 1re colonne = la cible), une action, un interrupteur. Évalué à intervalle régulier. Il n'exécute RÉELLEMENT que lorsque le mode ci-dessus est <b>Actif</b> ; en <b>Observation</b>, il ne fait que proposer. Ce n'est pas un guide d'incident : pour une checklist attachée à un cas, voir les runbooks ci-dessous.</p>
     <form id="pb-form" class="ruleform hidden">
       <input id="pb-name" placeholder="Nom (ex: SSH bruteforce -> ban)" aria-label="Nom du playbook">
       <textarea id="pb-query" rows="2" spellcheck="false" aria-label="Requête (1re colonne = cible)"
         placeholder="requête dont la 1re colonne = la cible - ex: search source=sshd severity>=3 | stats count by src_ip | where count > 10"></textarea>
       <div class="rf-row">
         <label class="rawsql-toggle" title="SQL brut réservé à l'administrateur (les éditeurs utilisent GXQL)">Type <select id="pb-issoql"><option value="1">GXQL</option><option value="0">SQL</option></select></label>
-        <label>Action <select id="pb-kind"><option value="ban_ip">ban_ip</option><option value="kill_pid">kill_pid</option><option value="stop_service">stop_service</option></select></label>
+        <label>Action <select id="pb-kind" title="Ce que la règle déclenche sur chaque cible ; la durée du ban est celle que posent les exécuteurs"><option value="ban_ip">ban_ip</option><option value="kill_pid">kill_pid</option><option value="stop_service">stop_service</option></select></label>
         <label>Intervalle(s) <input id="pb-interval" type="number" value="300"></label>
         <label>Fenêtre(s) <input id="pb-window" type="number" value="3600"></label>
-        <label><input id="pb-enabled" type="checkbox" checked> actif</label>
+        <label title="Coché : la règle est ON dès l'enregistrement (première évaluation à l'intervalle) ; décoché : elle est créée OFF et s'active dans la liste, avec confirmation"><input id="pb-enabled" type="checkbox" checked> ON à l'enregistrement</label>
       </div>
       <div class="rf-actions">
         <button type="submit">Enregistrer</button>
@@ -429,13 +431,13 @@
        L'exécution d'une réponse reste /api/actions (INCHANGÉ) — un runbook ne fait que RÉFÉRENCER une action. -->
   <section id="runbooks-panel" class="card span2" aria-labelledby="rb-h" style="display:none">
     <div class="panelhead">
-      <h2 id="rb-h">Runbooks (guides d'incident)</h2>
+      <h2 id="rb-h">Runbooks — guides d'incident</h2>
       <div class="hdtools">
-        <button id="rb-new" type="button">+ Runbook</button>
+        <button id="rb-new" type="button">+ Runbook (guide d'incident)</button>
       </div>
     </div>
-    <p class="muted" style="margin:0 0 9px;font-size:12px">Gabarits de réponse guidée attachés aux incidents (wizard de cases). Les <b>managés</b> (baseline git) sont immuables en place — activez/désactivez ou <b>clonez</b> pour personnaliser. Les <b>custom</b> sont pleinement éditables. Une étape <b>search</b> passe par le compilateur GXQL fermé ; une étape <b>response</b> ne référence que l'enum d'action (exécution via /api/actions, approbation + ledger).</p>
-    <div id="rb-editor" style="display:none;margin-bottom:12px"></div>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Un runbook est un guide d'incident : des étapes phasées, attachées à un cas élevé en incident. Aucune condition, aucun exécuteur : rien ne se déclenche seul. Les <b>livrés</b> sont immuables en place — activez/désactivez ou <b>clonez</b> pour personnaliser ; les <b>custom</b> sont pleinement éditables. Une étape <b>search</b> passe par le compilateur GXQL fermé ; une étape <b>response</b> ne référence que l'enum d'action (exécution via /api/actions, approbation + ledger).</p>
+    <div id="rb-editor" class="hidden"></div>
     <div id="rb-list"></div>
   </section>
   <section id="actions-panel" class="card span2" aria-labelledby="act-h">
@@ -480,7 +482,7 @@
     <div class="panelhead">
       <h2 id="knowledge-h">Objets de savoir</h2>
     </div>
-    <p class="muted" style="margin:0 0 9px;font-size:12px">Couche de <b>savoir « search-time »</b> appliquée à TOUTE recherche (Explore, panneaux, règles, export, Pivot) : <b>alias de champ</b> (harmonise des noms hétérogènes, ex. <code>client_ip</code> &rarr; <code>src_ip</code>), <b>champs calculés</b> (dérivés réutilisables, ex. <code>sev_up = upper(severity)</code>), <b>event types</b> (classes d'événements nommées, ex. <code>eventtype=web_attack</code>) et <b>tags</b> (étiquettes sur <code>champ=valeur</code>). Chaque objet est <b>compile-vérifié</b> avant enregistrement (fail-closed). <b>Lecture ouverte à tous ; création/suppression réservées à l'éditeur+</b> (la vraie garde reste serveur).</p>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Couche de <b>savoir « search-time »</b> appliquée à TOUTE recherche (Recherche, panneaux, règles, export, Pivot) : <b>alias de champ</b> (harmonise des noms hétérogènes, ex. <code>client_ip</code> &rarr; <code>src_ip</code>), <b>champs calculés</b> (dérivés réutilisables, ex. <code>sev_up = upper(severity)</code>), <b>event types</b> (classes d'événements nommées, ex. <code>eventtype=web_attack</code>) et <b>tags</b> (étiquettes sur <code>champ=valeur</code>). Chaque objet est <b>compile-vérifié</b> avant enregistrement (fail-closed). <b>Lecture ouverte à tous ; création/suppression réservées à l'éditeur+</b> (la vraie garde reste serveur).</p>
     <div class="panelhead" style="margin-top:4px"><h3 class="subh" style="margin:0">Alias de champ</h3><button id="ko-alias-new" class="picon crud-btn" type="button">+ Alias</button></div>
     <div id="ko-alias-list"><div class="muted">chargement…</div></div>
     <div class="panelhead" style="margin-top:16px"><h3 class="subh" style="margin:0">Champs calculés</h3><button id="ko-calc-new" class="picon crud-btn" type="button">+ Champ calculé</button></div>
@@ -498,7 +500,7 @@
     <div class="panelhead">
       <h2 id="datamodels-h">Modèles de données &amp; Pivot</h2>
     </div>
-    <p class="muted" style="margin:0 0 9px;font-size:12px">Une <b>couche sémantique</b> (<b>modèle</b> &rarr; <b>objets</b> hiérarchiques avec contrainte GXQL &rarr; <b>champs</b> typés) qui pilote le <b>Pivot</b> : un <b>report-builder</b> — découpe (split-by), agrégats et filtres au clic, <b>sans écrire une ligne de GXQL/SPL</b>. Le Pivot compile un GXQL et l'exécute par le <b>même chemin masqué</b> que l'Explore (le masquage de champ de votre rôle s'applique). Enregistrez un Pivot comme <b>dataset</b> réutilisable. <b>Lecture &amp; exécution ouvertes à tous ; création/suppression réservées à l'éditeur+.</b></p>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Une <b>couche sémantique</b> (<b>modèle</b> &rarr; <b>objets</b> hiérarchiques avec contrainte GXQL &rarr; <b>champs</b> typés) qui pilote le <b>Pivot</b> : un <b>report-builder</b> — découpe (split-by), agrégats et filtres au clic, <b>sans écrire une ligne de GXQL/SPL</b>. Le Pivot compile un GXQL et l'exécute par le <b>même chemin masqué</b> que la Recherche (le masquage de champ de votre rôle s'applique). Enregistrez un Pivot comme <b>dataset</b> réutilisable. <b>Lecture &amp; exécution ouvertes à tous ; création/suppression réservées à l'éditeur+.</b></p>
     <div class="panelhead" style="margin-top:4px"><h3 class="subh" style="margin:0">Modèles</h3><button id="dm-model-new" class="picon crud-btn" type="button">+ Modèle</button></div>
     <div id="dm-models-list"><div class="muted">chargement…</div></div>
     <div class="panelhead" style="margin-top:16px"><h3 class="subh" style="margin:0">Objets <span id="dm-obj-ctx" class="muted" style="font-weight:400;font-size:12px"></span></h3><button id="dm-obj-new" class="picon crud-btn" type="button" disabled>+ Objet</button></div>
@@ -519,7 +521,7 @@
       </div>
       <div class="pv-actions">
         <button id="dm-pivot-compile" class="picon" type="button" title="Afficher le GXQL généré (transparence, sans exécuter)">Compiler</button>
-        <button id="dm-pivot-run" class="picon" type="button" title="Exécuter le Pivot (chemin masqué comme l'Explore)">Exécuter</button>
+        <button id="dm-pivot-run" class="picon" type="button" title="Exécuter le Pivot (chemin masqué comme la Recherche)">Exécuter</button>
         <button id="dm-pivot-save" class="picon crud-btn" type="button" title="Enregistrer ce Pivot comme dataset réutilisable">Enregistrer comme dataset</button>
       </div>
       <pre id="dm-pivot-soql" class="pv-soql" hidden></pre>
@@ -678,7 +680,7 @@
       <h2 id="field-filter-h">Field filters (masquage PII)</h2>
       <button id="field-filter-new" type="button">+ Règle</button>
     </div>
-    <p class="muted" style="margin:0 0 9px;font-size:12px">Masque un champ d'événement (ex <b>src_user</b>, <b>email</b>, <b>message</b>, <b>src_ip</b>) pour les rôles bas. Actions : <b>masquer</b> (***), <b>partiel</b> (***+4 derniers, ex PAN), <b>hacher</b> (déterministe salé — corrélation préservée, non réversible), <b>supprimer</b> (NULL) ou <b>interdire</b> (tous rôles, admin compris). Le masque est appliqué DANS le SQL compilé : Explore/GXQL, panneaux, export, recherche et timeline de cas en héritent AUTOMATIQUEMENT, agrégations comprises (<code>| stats values(src_user)</code> ne fuit pas), et le filtrage sur un champ masqué est refusé (pas d'oracle). Par défaut l'admin voit en clair ; « interdire » s'applique à tous. <b>Portée d'« interdire » en SQL brut :</b> sur une <b>colonne réelle</b> (host, src_ip, dst_ip, url, message, source, category), l'interdiction est aussi imposée par l'authorizer SQLite — bloquée même en SQL brut admin ; sur une <b>clé du sac JSON</b> (src_user, email, pan, fields.*), un <b>admin</b> peut encore la lire en SQL brut via <code>json_extract(fields,'$.pan')</code>. Pour un blocage PCI dur d'un tel champ, pose l'« interdire » sur une colonne réelle, ou masque à l'ingestion (processeur #40). Tant qu'aucune règle n'existe, toute lecture est inchangée. Réservé admin.</p>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Masque un champ d'événement (ex <b>src_user</b>, <b>email</b>, <b>message</b>, <b>src_ip</b>) pour les rôles bas. Actions : <b>masquer</b> (***), <b>partiel</b> (***+4 derniers, ex PAN), <b>hacher</b> (déterministe salé — corrélation préservée, non réversible), <b>supprimer</b> (NULL) ou <b>interdire</b> (tous rôles, admin compris). Le masque est appliqué DANS le SQL compilé : Recherche/GXQL, panneaux, export, recherche et timeline de cas en héritent AUTOMATIQUEMENT, agrégations comprises (<code>| stats values(src_user)</code> ne fuit pas), et le filtrage sur un champ masqué est refusé (pas d'oracle). Par défaut l'admin voit en clair ; « interdire » s'applique à tous. <b>Portée d'« interdire » en SQL brut :</b> sur une <b>colonne réelle</b> (host, src_ip, dst_ip, url, message, source, category), l'interdiction est aussi imposée par l'authorizer SQLite — bloquée même en SQL brut admin ; sur une <b>clé du sac JSON</b> (src_user, email, pan, fields.*), un <b>admin</b> peut encore la lire en SQL brut via <code>json_extract(fields,'$.pan')</code>. Pour un blocage PCI dur d'un tel champ, pose l'« interdire » sur une colonne réelle, ou masque à l'ingestion (processeur #40). Tant qu'aucune règle n'existe, toute lecture est inchangée. Réservé admin.</p>
     <div id="field-filter-form-host"></div>
     <div id="field-filter-list"><div class="muted">chargement…</div></div>
   </section>
@@ -701,14 +703,6 @@
       </div>
     </form>
     <div id="lookup-list"></div>
-  </section>
-  <section id="search-results" class="card span2 hidden" aria-labelledby="sr-h">
-    <h2 id="sr-h">Résultats <button class="ihelp vhelp" data-help="explore" type="button" title="Aide : Recherche & Explore">?</button></h2>
-    <div id="timeline" class="timeline"></div>
-    <div class="srchbody">
-      <aside id="fields" class="fields" aria-label="Champs intéressants"></aside>
-      <div id="events" class="events"></div>
-    </div>
   </section>
   <!-- Accès données (DLP Phase 1) : gouvernance d'accès LECTURE SEULE — rempli par renderDataAccess() -->
   <section id="dataaccess-view" class="span2" aria-labelledby="da-h" hidden>
@@ -1036,7 +1030,7 @@
         <button id="ti-import-toggle" type="button">Import…</button>
       </div>
     </div>
-    <p class="muted" style="margin:0 0 9px;font-size:12px">Magasin d'<b>indicateurs de compromission</b> (IOC) du tenant. Le <b>match-on-ingest</b> enrichit les events qui matchent (<code>fields.threat_intel</code>, <code>ti_match=1</code>) — il n'écrase ni ne supprime rien. Types : <code>ip · domain · url · hash_md5 · hash_sha1 · hash_sha256 · email</code>. Ajout manuel, import d'une <b>liste</b> (<code>type,valeur</code> par ligne) ou d'un <b>bundle STIX 2.1</b>. Les hits dans le temps se requêtent dans Explore (GXQL). <b>Ajout / import réservés à l'administrateur</b> (la vraie garde reste serveur).</p>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Magasin d'<b>indicateurs de compromission</b> (IOC) du tenant. Le <b>match-on-ingest</b> enrichit les events qui matchent (<code>fields.threat_intel</code>, <code>ti_match=1</code>) — il n'écrase ni ne supprime rien. Types : <code>ip · domain · url · hash_md5 · hash_sha1 · hash_sha256 · email</code>. Ajout manuel, import d'une <b>liste</b> (<code>type,valeur</code> par ligne) ou d'un <b>bundle STIX 2.1</b>. Les hits dans le temps se requêtent dans la Recherche (GXQL). <b>Ajout / import réservés à l'administrateur</b> (la vraie garde reste serveur).</p>
     <div id="ti-coverage" class="ti-cov"><div class="muted">chargement…</div></div>
     <form id="ti-import-form" class="ruleform hidden" style="margin-top:12px">
       <div class="rf-row">

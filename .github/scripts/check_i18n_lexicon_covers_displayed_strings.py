@@ -82,13 +82,15 @@ MIN_CLES = 150
 # du savoir — ceux-là sont à ZÉRO. Les autres portent leur dette mesurée : elle ne peut que
 # baisser. Un module absent d'ici est rendu, pas jugé ; l'y inscrire est le geste attendu quand
 # on le traduit. Relever un plafond exige une raison écrite à côté.
+# Abaissés le 2026-08-22 (index.html 513 -> 496, runbooks.js 16 -> 15) : les en-têtes et boutons des deux
+# familles de l'onglet Playbooks et les libellés de l'espace Recherche sont entrés au lexique (`P11.2-c`, `P11.7-a`).
 PLAFOND_DE_TROUS = {
     "admin_users.js": 29, "ai.js": 3, "alerting.js": 7, "alerts.js": 13, "app.js": 143, "attack.js": 0,
     "audit.js": 3, "cases.js": 0, "connectors.js": 49, "core.js": 2, "datamodels.js": 0, "destinations.js": 19,
     "detadv.js": 37, "detection_admin.js": 35, "fieldfilters.js": 8, "fleet.js": 16, "freshness.js": 31,
-    "idp.js": 23, "index.html": 513, "index_policies.js": 15, "keys.js": 0, "knowledge.js": 0,
+    "idp.js": 23, "index.html": 496, "index_policies.js": 15, "keys.js": 0, "knowledge.js": 0,
     "multitenant.js": 19, "prefs.js": 0, "processors.js": 15, "producer_ui.js": 6, "retention.js": 30,
-    "risk.js": 14, "runbooks.js": 16, "savedqueries.js": 0, "sigmaimport.js": 27, "soql_complete.js": 0,
+    "risk.js": 14, "runbooks.js": 15, "savedqueries.js": 0, "sigmaimport.js": 27, "soql_complete.js": 0,
     "sources.js": 26, "state.js": 0, "system.js": 12, "threatintel.js": 13, "viz.js": 0,
 }
 

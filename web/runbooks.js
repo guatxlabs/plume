@@ -117,9 +117,9 @@ async function openEditor(id) {
   const box = $('#rb-editor'); if (!box) return;
   let data = { name: '', match_kind: '*', match_key: '', description: '', step_list: [], active: true };
   if (id != null) { try { data = await api('/runbooks/' + id); } catch (e) { toast('chargement échoué', 'bad'); return; } }
-  box.replaceChildren(); box.style.display = '';
+  box.replaceChildren(); box.classList.remove('hidden');
   const form = document.createElement('form'); form.className = 'ruleform';
-  form.appendChild(Object.assign(document.createElement('div'), { textContent: id != null ? 'Éditer le runbook custom' : 'Nouveau runbook custom', style: 'font-weight:700' }));
+  form.appendChild(Object.assign(document.createElement('div'), { textContent: id != null ? 'Éditer le runbook (guide d\'incident)' : 'Nouveau runbook (guide d\'incident)', style: 'font-weight:700' }));
 
   const row1 = document.createElement('div'); row1.className = 'rf-row';
   const nameI = mkInput('Nom du runbook', data.name); nameI.setAttribute('aria-label', 'Nom du runbook'); nameI.style.flex = '1'; nameI.style.minWidth = '220px';
@@ -133,10 +133,10 @@ async function openEditor(id) {
   };
   mkindS.onchange = rebuildMkey; rebuildMkey();
   row1.append(mkLabel('Nom', nameI), mkLabel('Match', mkindS), mkeyWrap);
-  // « actif » à la création, comme le formulaire des playbooks (l'API accepte `active`) ; en édition, la
-  // bascule vit sur la ligne (override d'activation), le champ n'est pas réécrit.
+  // « ON à l'enregistrement » à la création, comme le formulaire des playbooks (l'API accepte `active`) ; en
+  // édition, la bascule vit sur la ligne (override d'activation), le champ n'est pas réécrit.
   let activeCb = null;
-  if (id == null) { activeCb = document.createElement('input'); activeCb.type = 'checkbox'; activeCb.checked = true; const l = document.createElement('label'); l.append(activeCb, document.createTextNode(' actif')); row1.appendChild(l); }
+  if (id == null) { activeCb = document.createElement('input'); activeCb.type = 'checkbox'; activeCb.checked = true; const l = document.createElement('label'); l.title = 'Coché : le guide est proposé dans les cas dès l\'enregistrement ; décoché : créé OFF, à activer dans la liste'; l.append(activeCb, document.createTextNode(' ON à l\'enregistrement')); row1.appendChild(l); }
   form.appendChild(row1);
 
   const descI = document.createElement('textarea'); descI.rows = 2; descI.placeholder = 'Description / quand appliquer ce runbook'; descI.value = data.description || '';
@@ -151,7 +151,7 @@ async function openEditor(id) {
   const acts = document.createElement('div'); acts.className = 'rf-actions';
   const addBtn = rowButton('+ Étape', { onClick: () => addStep() });
   const saveBtn = document.createElement('button'); saveBtn.type = 'submit'; saveBtn.textContent = 'Enregistrer';
-  const cancelBtn = rowButton('Annuler', { onClick: () => { box.style.display = 'none'; box.replaceChildren(); } });
+  const cancelBtn = rowButton('Annuler', { onClick: () => { box.classList.add('hidden'); box.replaceChildren(); } });
   const result = document.createElement('span'); result.className = 'muted';
   result.appendChild(destinationNote('cases', '', '')); // P11.1-e : la destination est dite AVANT d'enregistrer
   acts.append(addBtn, saveBtn, cancelBtn, result);
@@ -172,7 +172,7 @@ async function openEditor(id) {
     if (!steps.length) { toast('au moins une étape', 'bad'); return; }
     const path = id != null ? '/runbooks/' + id : '/runbooks';
     try { await apiSend(path, 'POST', body); } catch (e) { result.textContent = 'Enregistrement refusé : ' + ((e && e.message) || e); toast('Enregistrement refusé : ' + ((e && e.message) || e), 'bad'); return; }
-    box.style.display = 'none'; box.replaceChildren();
+    box.classList.add('hidden'); box.replaceChildren();
     announceCreated('runbooks', 'cases', body.name, body.active === false ? 'OFF : activez-le dans la liste' : ''); // P11.1-e
     loadRunbooks();
   };

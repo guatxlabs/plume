@@ -45,7 +45,6 @@ export const S = {
   _colsMenuClose: null,
   _colsMenuOwner: null,
   lastResult: null,
-  lastSearchQ: '',
   evState: { q: '', isSoql: false, page: 0, pageSize: 100, total: 0, shown: 0, totalCapped: false },
   qHist: [],
   qHistIdx: -1,

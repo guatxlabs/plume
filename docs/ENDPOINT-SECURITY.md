@@ -156,10 +156,10 @@ search source=auditd category=exec | stats count by host
 disque bien avant 30 jours. Sur un parc de build, `execve` large **doit** être réduit (voir plus bas) ;
 ce n'est pas une opinion, c'est ce que dit le calcul.
 
-**À l'échelle d'un parc.** Une mesure interne de la semaine du 2026-07-25 donne un facteur **×43** en
-volume total en passant de **1 à 50 hôtes** (les hôtes ne sont pas identiques ; ce n'est pas ×50). Sur
-ce facteur, 50 postes dev à 171 Mio/30 j donnent **≈ 7,3 Gio / 30 j** pour le seul flux `exec`. À
-comparer à votre volume actuel avant de généraliser.
+**À l'échelle d'un parc.** Une mesure interne sur une flotte de quelques dizaines d'hôtes donne un facteur
+de volume total **un peu inférieur au nombre d'hôtes** (les hôtes ne sont pas identiques ; ce n'est pas
+linéaire). Sur ce facteur, 50 postes dev à 171 Mio/30 j donnent **≈ 7,3 Gio / 30 j** pour le seul flux
+`exec`. À comparer à votre volume actuel avant de généraliser.
 
 **Le budget 2 Gio de RAM n'est pas le facteur limitant ici, le DISQUE l'est.** Le flux `exec` grossit
 la base, pas le working set : la lecture reste paginée (keyset) et passe par les rollups. Ce qu'il faut

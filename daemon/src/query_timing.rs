@@ -18,8 +18,8 @@
 //! (`concurrency-2026-08-01.jsonl`). REPRODUIT le jour du correctif sur la même base, même
 //! binaire d'avant : **16,5 s en solo** (`concurrency-reproduction-2026-08-01.jsonl`). Une valeur
 //! structurellement impossible : avec un permit libre, une requête ne peut pas attendre son tour.
-//! La métrique désignait donc précisément le levier qu'il ne fallait pas toucher — la même campagne
-//! mesure qu'à `query_sem=8` contre 3, sur le MÊME travail, le débit tombe (×0,46), le p95 passe de
+//! La métrique désignait donc précisément le levier qu'il ne fallait pas toucher — la même campagne de
+//! banc mesure qu'à `query_sem=8` contre 3, sur le MÊME travail, le débit tombe (×0,46), le p95 passe de
 //! 27 s à 50 s, la RSS crête gagne 725 Mio, et le daemon est TUÉ par le noyau à 10 analystes.
 //!
 //! CE QUE C'ÉTAIT, MESURÉ (`concurrency-attribution-2026-08-01.jsonl`, binaire à découpage, verrou

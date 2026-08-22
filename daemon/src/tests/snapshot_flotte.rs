@@ -457,8 +457,8 @@
         assert_eq!(
             (ev, me), (20, 1),
             "ANCRAGE DE LA DETTE DÉCLARÉE : 20 sondes d'events + 1 de métriques gardent la portée « flotte \
-             confondue » — MÊME défaut de famille, coût DIFFÉRENT (`event` 1 554 295 lignes en production, \
-             mesurées le 2026-08-05 par `db-stats --par-objet`, sondé sous le \
+             confondue » — MÊME défaut de famille, coût DIFFÉRENT (`event` compte plus d'un million de \
+             lignes sur une base réelle, relevé du 2026-08-05 par `db-stats --par-objet`, sondé sous le \
              verrou d'écriture, contre une ligne vivante par (kind,hôte) pour `snapshot`). Ce compte doit \
              BAISSER, jamais monter en silence."
         );

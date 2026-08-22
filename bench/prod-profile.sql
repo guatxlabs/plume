@@ -23,7 +23,8 @@
 --   * `mode=ro` interdit toute écriture ; le daemon continue d'ingérer pendant l'extraction.
 --   * MAIS un lecteur SQLite tient un instantané : tant qu'une passe tourne, le WAL ne peut pas
 --     être checkpointé et il GROSSIT. Les passes sont donc découpées et courtes (la plus longue
---     mesurée : 68 s sur 1,4 M d'événements ; croissance du WAL observée : 4,4 -> 10,9 Mio).
+--     mesurée : de l'ordre de la minute sur une base d'un million et plus d'événements ; croissance
+--     du WAL observée : quelques Mio).
 --     Sur une base beaucoup plus grosse, lancer les sections UNE PAR UNE.
 --   * Coût CPU : un cœur saturé le temps de la passe (déchiffrement SQLCipher + scan).
 

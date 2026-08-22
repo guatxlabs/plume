@@ -464,7 +464,8 @@
     /// Or `prepare_schema()` rejoue `schema.sql` à CHAQUE ouverture de connexion d'écriture (boot,
     /// CLI, purge, provisionnement de tenant…). Chaque démarrage RECONSTRUISAIT donc les deux index
     /// sur toute la table `event`, **synchronement, avant le bind**, et la tâche de fond les
-    /// supprimait 29 s plus tard : une boucle sans fin, sur 1,49 M de lignes chiffrées en prod.
+    /// supprimait quelques dizaines de secondes plus tard : une boucle sans fin, sur le million et plus
+    /// de lignes chiffrées d'une base réelle.
     ///
     /// L'« allègement » ne allégeait rien : il payait un rebuild complet à chaque redémarrage.
     ///

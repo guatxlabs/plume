@@ -1,9 +1,10 @@
 //! CE QUE LE DÉMON DIT DE SON TIER FROID AU DÉMARRAGE — trois états, dont celui que rien ne disait.
 //!
-//! LE DÉFAUT QU'IL FERME, MESURÉ LE 2026-08-05. En production le démon gère **157 Mio répartis en 59
-//! fichiers-jour Parquet** et n'en dit RIEN au démarrage : `kubectl logs … | grep -i cold` rend ZÉRO
-//! ligne, AVANT comme APRÈS l'activation de la fonctionnalité. C'est ce mutisme qui a rendu invisible
-//! pendant TROIS JOURS le fait que la capacité avait disparu du binaire : la production déclarait
+//! LE DÉFAUT QU'IL FERME, MESURÉ LE 2026-08-05. Sur une installation réelle le démon gérait **des
+//! dizaines de fichiers-jour Parquet, des centaines de Mio** et n'en disait RIEN au démarrage :
+//! `kubectl logs … | grep -i cold` rendait ZÉRO ligne, AVANT comme APRÈS l'activation de la
+//! fonctionnalité. C'est ce mutisme qui a rendu invisible pendant TROIS JOURS le fait que la capacité
+//! avait disparu du binaire : l'installation déclarait
 //! `PLUME_COLD_TIER=1` et quatre autres variables, le démon ne les honorait pas, et absolument rien ne
 //! le disait. Un composant qui travaille sans le dire est INDISTINGUABLE d'un composant ABSENT — et
 //! c'est exactement ce qui s'est produit.
@@ -30,7 +31,8 @@
 //! CE QUE ÇA COÛTE AU DÉMARRAGE, sous la contrainte dure de 2 Gio : un `readdir` de la racine cold et
 //! d'un niveau de sous-répertoires, plus un `stat` par fichier `.parquet` — BORNÉ à `PLAFOND_ENTREES`.
 //! AUCUNE lecture de la table `event`, AUCUN déchiffrement Parquet, AUCUNE requête sur l'index
-//! `cold_seal`. À la volumétrie de production (59 fichiers) c'est une poignée de syscalls ; au plafond
+//! `cold_seal`. À la volumétrie d'une installation réelle (quelques dizaines de fichiers-jour) c'est une
+//! poignée de syscalls ; au plafond
 //! l'inventaire est PARTIEL et il le DIT, plutôt que de ralentir le démarrage (cf. `Inventaire`).
 //!
 //! CE QUE CE MODULE NE FERME PAS, écrit pour être opposable :

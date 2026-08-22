@@ -181,8 +181,9 @@ static int message(char *buf, int cap, int cible) {
     return n;
 }
 
-/* Histogramme des longueurs de `message` MESURÉ en production (colonne message_len_hist du profil,
- * 1 395 968 lignes). On tire la classe, puis une longueur uniforme dans la classe. */
+/* Histogramme des longueurs de `message` relevé sur une base réelle (colonne message_len_hist du
+ * profil distillé ; la borne ci-dessous est le nombre de lignes de ce profil). On tire la classe, puis
+ * une longueur uniforme dans la classe. */
 static int longueur_cible(void) {
     uint32_t r = borne(1395968);
     if ((r -= 45855) > 3000000000u) return 24 + borne(9);        /* 0-32    :   45 855 */

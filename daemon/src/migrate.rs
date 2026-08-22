@@ -1136,11 +1136,11 @@ fn migrate_v113(conn: &MigTx) {
 /// ne l'a pas.
 ///
 /// POURQUOI PARTIEL et pas (source, category, ts) : MESURÉ sur banc, le composite plein coûte 25,5 o/LIGNE
-/// INGÉRÉE, soit ~38 Mio EXTRAPOLÉS sur la production (1 554 295 événements / 1 276,4 Mio, mesurés le
-/// 2026-08-05 par `db-stats --par-objet`) + un insert btree sur le CHEMIN D'INGEST CHAUD ; le partiel coûte
-/// 21,8 o par LIGNE DE BATTEMENT (~1,5 Mio pour 8 collecteurs battant toutes les 5 min sur 30 j de
-/// rétention) + un insert toutes les ~37 s. 26x moins de disque — cet écart-là SUIT LE VOLUME (166x sous
-/// l'hypothèse réfutée d'une prod à 9,8 M lignes), l'écart d'INSERTIONS non ; et l'objection d'amplification
+/// INGÉRÉE, soit quelques dizaines de Mio EXTRAPOLÉS au million et demi de lignes d'une base réelle (volume
+/// relevé le 2026-08-05 par `db-stats --par-objet`) + un insert btree sur le CHEMIN D'INGEST CHAUD ; le
+/// partiel coûte 21,8 o par LIGNE DE BATTEMENT (~1,5 Mio pour 8 collecteurs battant toutes les 5 min sur
+/// 30 j de rétention) + un insert toutes les ~37 s. 26x moins de disque — cet écart-là SUIT LE VOLUME (166x
+/// sous l'hypothèse réfutée d'une base six fois plus grosse), l'écart d'INSERTIONS non ; et l'objection d'amplification
 /// d'écriture consignée en v104 dans handlers/freshness.rs ne portait que sur le composite plein.
 ///
 /// `db/schema.sql` le déclare (bases NEUVES : `event` VIDE -> CREATE instantané) mais AUCUNE migration ne

@@ -7,7 +7,7 @@
 //! y entrent, et le verdict devient fonction du nombre de cœurs, de l'ordonnancement et de
 //! l'allocateur. Un test qui n'est vert que sur certaines machines est PIRE qu'absent — il apprend
 //! à ignorer le rouge. (Précédent : `backup_streaming_..._bounded_memory_delta` a refusé un build
-//! de production le 2026-08-08 en mesurant +247 Mio de RSS pour une charge de 64 Mio, alors que le
+//! du binaire livré le 2026-08-08 en mesurant, en CI, +247 Mio de RSS pour une charge de 64 Mio, alors que le
 //! chemin testé n'avait pas changé.)
 //!
 //! CE QU'IL MESURE, EXACTEMENT. La somme des octets Rust ALLOUÉS MOINS LIBÉRÉS **par le fil

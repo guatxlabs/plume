@@ -488,8 +488,8 @@ mod tests {
     /// Sans CRT statique, l'exe MSVC importe `VCRUNTIME140.dll`, absente d'un Windows fraîchement
     /// installé -> 0xC0000135 avant la première instruction de notre code (donc AUCUN diagnostic
     /// possible depuis le programme : la seule correction est de supprimer la dépendance). MESURÉ le
-    /// 2026-08-02 en lisant la table d'imports PE des deux binaires produits ici : sans le drapeau,
-    /// 3 259 392 o AVEC `VCRUNTIME140.dll` ; avec, 3 359 744 o SANS elle.
+    /// 2026-08-02 en lisant la table d'imports PE sur le binaire produit ici, dans les deux configurations :
+    /// sans le drapeau, 3 259 392 o AVEC `VCRUNTIME140.dll` ; avec, 3 359 744 o SANS elle.
     ///
     /// Ce test lit `.cargo/config.toml` — le SEUL endroit où le drapeau est posé — et tourne sur les
     /// TROIS OS de `agent-ci`. Il ne peut pas remplacer une exécution sur Windows ; il empêche la

@@ -1,8 +1,9 @@
 //! CE QUE COÛTE UN VIEILLISSEMENT FROID — la série, parce qu'un succès muet n'est pas une mesure.
 //!
-//! CE QUI ÉTAIT CASSÉ, ET CE QUE ÇA A COÛTÉ. Relevé sur la PRODUCTION le 2026-08-10 : un vieillissement
-//! libère **120 Mio** dans la base chaude (données −77, index −27, FTS5 −16, freelist +120) et écrit
-//! **3,70 Mio** de Parquet — **sans émettre une seule ligne de journal**. Le seul message `[cold]` de
+//! CE QUI ÉTAIT CASSÉ, ET CE QUE ÇA A COÛTÉ. Relevé sur une base RÉELLE le 2026-08-10 : un vieillissement
+//! libère **de l'ordre de la centaine de Mio** dans la base chaude (données, index et FTS5 rendus à la
+//! freelist, à parts inégales) et écrit **quelques Mio** de Parquet — **sans émettre une seule ligne de
+//! journal**. Le seul message `[cold]` de
 //! tout le journal est la bannière de DÉMARRAGE. Le code n'est pourtant pas muet : il parle quand il
 //! ÉCHOUE (legal-hold, clé absente, jour différé par la garde H1, `age_one_day` en erreur, unlink raté)
 //! et il émet deux signaux de santé (`aging-stall`, `seal-stuck`). Il ne dit RIEN quand il RÉUSSIT, et
@@ -33,9 +34,10 @@
 //!     veut dire « pas mesuré », JAMAIS « zéro ».
 //! LE DEAD-MAN'S-SWITCH DE RETARD A DÉSORMAIS SA PROPRE PAIRE DE LIGNES, ET C'EST `P10.13-a` QUI L'EXIGE.
 //! Depuis le levier ①, ce détecteur ne tourne plus à CHAQUE passe mais une fois par jour (`RETARD_CADENCE`) —
-//! parce que la production a mesuré, sur 44 h et 45 passes le 2026-08-13, **2 passes utiles et 43 sans le
-//! moindre travail**, dont **20,0 min de `db.lock()` pour rien sur 20,9 min au total**, portées EN TOTALITÉ
-//! par son énoncé (`SCAN e`, 27,9 s, 1,78 M lignes balayées). Une passe qui ne l'a pas tiré ne doit surtout
+//! parce qu'une base réelle a mesuré, sur près de deux jours de passes horaires le 2026-08-13, **deux passes
+//! utiles et toutes les autres sans le moindre travail**, soit plus de 95 % du temps de `db.lock()` tenu
+//! pour rien, porté EN TOTALITÉ par son énoncé (`SCAN e`, un balayage complet de `event`). Une passe qui
+//! ne l'a pas tiré ne doit surtout
 //! pas se lire comme une passe où il n'y avait pas de retard : `NOM_RETARD_LIGNES` n'est publiée QUE
 //! lorsqu'un verdict a été rendu, et `NOM_RETARD_OK{cause}` nomme le trou sinon. Lire l'une sans l'autre
 //! est une faute de lecture, pas une approximation.
@@ -56,8 +58,8 @@
 //! d'il y a trois jours. On le RAMÈNE donc à la fenêtre : `echo 5 > /proc/self/clear_refs` remet
 //! `VmHWM` au RSS courant (proc(5), noyau >= 4.0) ; la valeur relue à la fin est alors le maximum
 //! atteint PENDANT la fenêtre, tenu par le noyau (aucun échantillonnage, donc aucun pic manqué).
-//! VALIDÉ, le 2026-08-10, par une lecture directe de `/proc/self/status` autour d'allocations touchées
-//! page par page (noyau 7.1.4-zen) : après un transitoire de 300 Mio, `VmHWM` = 319 256 kio ; après le
+//! VALIDÉ, le 2026-08-10, sur un poste de développement, par une lecture directe de `/proc/self/status`
+//! autour d'allocations touchées page par page : après un transitoire de 300 Mio, `VmHWM` = 319 256 kio ; après le
 //! reset, 12 164 kio (= `VmRSS`) ; puis 120 Mio alloués DANS la fenêtre rendent `VmHWM` = 135 024 kio
 //! alors que `VmRSS` était retombé à 12 164 kio. Sans le reset, cette fenêtre aurait été rapportée à
 //! 319 Mio. Le test `la_crete_rss_est_bornee_a_la_fenetre` REJOUE cette validation à chaque suite (avec
@@ -117,14 +119,14 @@ pub(crate) const NOM_OK: &str = "plume_cold_aging_ok";
 ///
 /// `P10.12-a` (résiduel) — RUPTURE D'ÉTIQUETTE ASSUMÉE ET DÉCLARÉE : `issue="age"` A DISPARU, remplacée
 /// par `columnarise` + `sans_travail`. Ce n'est pas un renommage cosmétique. `age` était atteinte par
-/// deux situations SANS travail (« rien d'agéable » et « déjà scellé, phase 2 vide ») : la production a
-/// publié `…{issue="age"} = 10` pour **10 jours no-op** le 2026-08-10. GARDER le nom en corrigeant le
+/// deux situations SANS travail (« rien d'agéable » et « déjà scellé, phase 2 vide ») : une base réelle a
+/// publié `…{issue="age"} = <n>` pour **n jours no-op** le 2026-08-10. GARDER le nom en corrigeant le
 /// sens en aurait fait un chiffre SILENCIEUSEMENT redéfini — la pire forme de faux. Le retirer fait
 /// qu'une requête ou une règle qui filtrait `issue="age"` ne rend PLUS RIEN : un TROU VISIBLE, qui est
 /// précisément ce que ce module préfère à un chiffre faux. Portée de la casse, MESURÉE (grep du dépôt le
 /// 2026-08-11) : AUCUN panneau, AUCUNE règle, AUCUN overlay `config.d` ne cite cette étiquette — les
-/// seuls porteurs sont les tests de ce module et la ROADMAP. La série a 1 jour d'historique en
-/// production (première passe le 2026-08-10) ; `metric_rollup` en gardera la trace 90 jours sous
+/// seuls porteurs sont les tests de ce module et la ROADMAP. La série n'avait qu'un jour d'historique
+/// au moment du retrait (première passe le 2026-08-10) ; `metric_rollup` en gardera la trace 90 jours sous
 /// l'ancienne étiquette, et c'est bien ainsi : l'ancienne valeur était fausse, elle ne doit pas se
 /// prolonger dans la nouvelle.
 pub(crate) const NOM_JOURS: &str = "plume_cold_aging_jours";
@@ -192,10 +194,10 @@ pub(crate) const CRETE_SUSPENDU: &str = "aging_suspendu";
 // compilé dans le profil par défaut, et une étiquette de série qui n'existerait que sous une feature
 // serait invisible aux tests qui gardent la FORME de la série.
 /// `P10.13-a` levier ① — LA CADENCE. Le détecteur ne tire qu'une fois par `PLUME_COLD_STALL_CHECK_INTERVAL_S`
-/// (défaut 24 h) : cette passe-ci n'était pas due. MESURE qui l'a décidé (production, 44 h / 45 passes,
-/// 2026-08-13) : 2 passes utiles, 43 sans le moindre travail, 20,0 min de `db.lock()` pour rien sur
-/// 20,9 min au total — la columnarisation n'a lieu qu'UNE FOIS PAR JOUR, et cet énoncé (`SCAN e`,
-/// 27,9 s, 1,78 M lignes balayées) portait la TOTALITÉ du coût des 23 autres passes.
+/// (défaut 24 h) : cette passe-ci n'était pas due. MESURE qui l'a décidé (installation de référence, près de deux jours
+/// de passes horaires, 2026-08-13) : deux passes utiles, toutes les autres sans le moindre travail, plus de
+/// 95 % du temps de `db.lock()` tenu pour rien — la columnarisation n'a lieu qu'UNE FOIS PAR JOUR, et cet
+/// énoncé (`SCAN e`, un balayage complet de `event`) portait la TOTALITÉ du coût des 23 autres passes.
 pub(crate) const RETARD_CADENCE: &str = "cadence";
 /// Le détecteur n'est pas ARMÉ : la rétention cold n'est pas étendue (`cold_ret == retention_days`),
 /// donc le hot reste plafonné comme avant et il n'y a AUCUN bloat nouveau à surveiller. C'est le cas

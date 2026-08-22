@@ -555,10 +555,11 @@ fn spawn_background_jobs(conf: HashMap<String, String>, spool: String, db_path: 
         let refresh_s: u64 = cfg(&conf, "PLUME_PANEL_REFRESH_S", "10").parse().unwrap_or(10).max(1);
         spawn_panel_refresh_loop(tenants.clone(), refresh_sem.clone(), refresh_s);
     }
-    // OPS NATIVE #1 — SCHEDULER DE BACKUP IN-DAEMON (déploiement portable host-natif/Docker turnkey, HORS
-    // orchestration k3s). GATÉ sur PLUME_BACKUP_INTERVAL (secondes ; 0/absent = DÉSACTIVÉ -> AUCUN thread
-    // spawné -> comportement byte-identique). k3s/prod INCHANGÉ : leur daemon ne pose PAS cette var (leur
-    // sidecar shell garde l'orchestration mc/S3). Sur host/Docker : monte un volume, pose la var -> self-backup.
+    // OPS NATIVE #1 — SCHEDULER DE BACKUP IN-DAEMON (host-natif, Docker ET k3s : `deploy/k3s.yaml` pose
+    // `PLUME_BACKUP_INTERVAL` dans son unique conteneur, il n'y a plus de sidecar shell). GATÉ sur
+    // PLUME_BACKUP_INTERVAL (secondes ; 0/absent = DÉSACTIVÉ -> AUCUN thread spawné -> comportement
+    // byte-identique). Sur host/Docker : monte un volume, pose la var -> self-backup. Chaque cycle qui publie
+    // une archive sans destinataire d'escrow émet le signal SOC de posture (P8.25-a).
     {
         annoncer_bascule_sauvegarde(&conf);
         spawn_backup_scheduler(conf.clone(), db_path.clone());
@@ -579,8 +580,9 @@ fn spawn_background_jobs(conf: HashMap<String, String>, spool: String, db_path: 
     // LA SÉRIE DU BUDGET (P10.2-a suite) — la ventilation par poste, ÉCRITE DANS LE TEMPS au lieu
     // d'être relevée à la main. Tick lent (défaut horaire = la résolution de `metric_rollup`), parcours
     // `dbstat` sur le POOL DE LECTURE (jamais le mutex writer), publication dans `metric` -> lue par la
-    // commande SOQL `metric`, qui UNIONNE `metric` et `metric_rollup` (90 j). Coût MESURÉ en production
-    // le 2026-08-09 : 35,4 s par parcours sur 1 586,8 Mio = 0,98 % d'un cœur au tick horaire, et borné à
+    // commande SOQL `metric`, qui UNIONNE `metric` et `metric_rollup` (90 j). Coût MESURÉ sur une base
+    // réelle le 2026-08-09 : une vingtaine de secondes par Gio parcouru, soit moins de 1 % d'un cœur au
+    // tick horaire sur une base de l'ordre du Gio, et borné à
     // 5 % par `prochain_sommeil` si la base grossit. `PLUME_VENTILATION_INTERVAL_S=0` -> aucun thread.
     {
         ventilation_serie::spawn_boucle(conf.clone(), db_path.clone(), db.clone(), bound.clone());
@@ -962,7 +964,7 @@ fn spawn_panel_refresh_loop(tenants: TenantDbManager, refresh_sem: Arc<tokio::sy
 // local silencieux sous un nom de destination distante.
 pub(crate) fn spawn_backup_scheduler(conf: HashMap<String, String>, db_path: String) {
         let interval: u64 = cfg(&conf, "PLUME_BACKUP_INTERVAL", "0").parse().unwrap_or(0);
-        if interval == 0 { return; } // DÉSACTIVÉ (défaut) -> aucun thread -> byte-identique (prod/k3s inchangé).
+        if interval == 0 { return; } // DÉSACTIVÉ (défaut) -> aucun thread -> byte-identique.
 
         // DEST par défaut = `<dir(db_path)>/backups` : À CÔTÉ de la base -> déjà sur le volume monté, zéro config.
         let default_dest = std::path::Path::new(&db_path).parent()
@@ -1082,6 +1084,24 @@ fn run_scheduled_backup_objet(db_path: &str, staging: &str, keep: usize, cible: 
         Some(nom)
 }
 
+/// P8.25-a — LE SIGNAL DE POSTURE DU CYCLE NATIF. Le cycle n'a pas de connexion sous la main : il reçoit un
+/// chemin et une clé EXPLICITE (`key`, jamais l'environnement — c'est ce qui le rend testable hermétiquement),
+/// et `backup_compressed` ouvre et referme la sienne. Le signal, lui, ÉCRIT un événement SOC : il passe donc
+/// par la porte (`PreparedDb`), avec la clé du cycle et non celle de l'env, et avec `busy_timeout` posé en
+/// PRÉLUDE parce que ce fil tourne à côté de l'écrivain du démon (le contrat, avant toute lecture, attendrait
+/// sinon zéro seconde sur un verrou transitoire). Best-effort DANS LES DEUX SENS, comme dans `main.rs` : un
+/// contrat non satisfait ne casse pas l'archive déjà publiée, mais il n'écrit rien non plus — il le DIT.
+/// Rend vrai si un signal a été écrit (faux : destinataire présent, dédup horaire, ou porte fermée).
+fn signaler_la_posture_de_l_archive_publiee(db_path: &str, key: Option<&str>, recipient: Option<&str>) -> bool {
+        match PreparedDb::open_keyed_with_prelude(db_path, key, |c| { let _ = c.busy_timeout(Duration::from_secs(5)); }) {
+            Ok(conn) => signal_backup_symmetric_if_needed(&conn, recipient, now()),
+            Err(e) => {
+                eprintln!("[backup-sched] signal de posture NON émis (la base n'a pas passé le contrat de schéma : {e})");
+                false
+            }
+        }
+}
+
 /// CŒUR d'un cycle du scheduler natif : backup B1 -> rename ATOMIQUE -> rétention KEEP-N. BEST-EFFORT de bout
 /// en bout (tout échec logge + retourne ; JAMAIS de panic/crash daemon). Réutilise VERBATIM `backup_compressed`
 /// (même code B1 que la CLI et le sidecar -> même fidélité round-trip, même chiffrement age asym/sym) et
@@ -1107,6 +1127,11 @@ pub(crate) fn scheduled_backup_cycle(db_path: &str, dest_dir: &str, keep: usize,
                     let _ = std::fs::remove_file(&tmp_path); // pas de temp orphelin.
                     return None;
                 }
+                // P8.25-a — L'ARCHIVE EST PUBLIÉE (le rename a réussi) : c'est ICI, et pas avant, que ce cycle
+                // SAIT qu'une sauvegarde existe. Un `backup_compressed` réussi suivi d'un rename raté n'a rien
+                // publié, et la branche ci-dessus sort sans passer ici. Même sémantique que la sous-commande
+                // `backup` (`main.rs`) : destinataire absent -> signal SOC non purgeable, dédupliqué à l'heure.
+                signaler_la_posture_de_l_archive_publiee(db_path, key, recipient);
                 let ratio = if st.dest_bytes > 0 { st.plaintext_bytes as f64 / st.dest_bytes as f64 } else { 0.0 };
                 eprintln!(
                     "[backup-sched] écrit {final_path}  charge={} o  dest={} o  ratio={:.1}x  clair-sur-disque={}",
@@ -1994,11 +2019,12 @@ pub(crate) async fn run() {
         }
         // v135 (#7) — CORRECTIF FAUX POSITIF : la posture backup N'EST PLUS asserted ICI. Le check de boot v134
         // émettait un signal SOC NON-PURGEABLE « posture backup dégradée » à CHAQUE restart, sans qu'aucun backup
-        // ait été produit. Le signal vit désormais dans le chemin qui PRODUIT le backup (backup.rs : warn + gate
-        // fail-closed PLUME_BACKUP_REQUIRE_ASYMMETRIC ; main.rs : signal SOC de la sous-commande `backup`).
-        // CE QUE CE CORRECTIF SUPPOSAIT N'EST PLUS VRAI (lu le 2026-08-22 dans `deploy/k3s.yaml`) : ce processus
-        // PRODUIT des backups, par `spawn_backup_scheduler`, dans l'unique conteneur du manifeste livré — et ce
-        // chemin-là n'émet pas le signal. Voir la note de `signal_backup_symmetric_if_needed`.
+        // ait été produit. Le signal vit dans les chemins qui PRODUISENT une archive (backup.rs : warn + gate
+        // fail-closed PLUME_BACKUP_REQUIRE_ASYMMETRIC ; main.rs : la sous-commande `backup` ;
+        // `scheduled_backup_cycle` ci-dessous : le cycle natif, après le rename qui publie — P8.25-a). Ce
+        // processus PRODUIT des backups, par `spawn_backup_scheduler`, dans l'unique conteneur du manifeste
+        // livré (lu le 2026-08-22 dans `deploy/k3s.yaml`) : le signal part de ce cycle-là, pas du démarrage.
+        // Voir la note de `signal_backup_symmetric_if_needed`.
     }
 
     // MULTI-TENANT (#2a-2a) — IDENTITÉ & CATALOGUE, INERTE en mode 0. Le control-plane est ouvert/initialisé

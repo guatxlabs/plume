@@ -39,9 +39,10 @@ levier :
 > la comptabilité fermée garantit). Quand la mesure ne peut pas être prise, la série porte un TROU et
 > `plume_db_ventilation_ok` passe à 0 avec sa cause — jamais un zéro d'octets.
 
-**Production** (`plume-daemon db-stats --par-objet`, pod live, lecture seule, **2026-08-09**) :
-**1 586,8 MiB** / 406 213 pages pour **1 715 910 événements** ⇒ **~970 o/événement** sur disque ·
-freelist **7,3 %** · auto_vacuum=none · comptabilité FERMÉE ✓ · parcours **35,4 s** (22,9 s/Gio).
+**Base réelle** (`plume-daemon db-stats --par-objet`, pod live, lecture seule, **2026-08-09**) : une base
+de l'ordre du Gio pour un peu moins de deux millions d'événements ⇒ **de l'ordre du Kio par événement**
+sur disque · freelist **7,3 %** · auto_vacuum=none · comptabilité FERMÉE ✓ · parcours en **une vingtaine
+de secondes par Gio**.
 
 | poste | part | objets dominants |
 |---|---:|---|
@@ -74,8 +75,9 @@ branche d'**aging** hot→froid par jour, **lecteur hot∪cold masqué**, **bloo
 (`crypto.rs`/`reader.rs`/`planner.rs`/`vectorized.rs`), scellé crypto par jour, décodage
 **vectorisé** (×2,7 mesuré, cf. horizon OLAP). **OPT-IN de bout en bout** : gate compile
 `#[cfg(feature="cold_tier")]` + gate runtime `PLUME_COLD_TIER`. ~~**OFF en production.**~~
-**FAUX — corrigé le 2026-08-10 : il est ACTIF en production** (`PLUME_COLD_TIER=1`, 62 fichiers
-Parquet, 170,2 Mio, 41 jours). Cette phrase contredisait le §3 du MÊME fichier vingt lignes plus
+**FAUX — corrigé le 2026-08-10 : il est ACTIF sur l'installation de référence** (`PLUME_COLD_TIER=1`,
+des dizaines de fichiers-jour Parquet, des centaines de Mio, plus d'un mois de profondeur). Cette phrase
+contredisait le §3 du MÊME fichier vingt lignes plus
 bas, et elle a survécu à la correction du levier A faite le matin même : voir `P10.10-a`. Elle est
 barrée et non effacée, parce que c'est elle qui a fait classer le levier A en tête pendant
 quatre jours.
@@ -87,35 +89,34 @@ non compressées.
 construit. C'est : (a) qu'est-ce qui EMPÊCHE de l'activer par défaut, et (b) que reste-t-il pour le
 chaud qui, lui, ne bouge pas.**
 
-## 2 bis. RE-DÉRIVATION DE L'ORDRE DEPUIS LES PARTS DE PRODUCTION (2026-08-09 22:38 UTC)
+## 2 bis. RE-DÉRIVATION DE L'ORDRE DEPUIS LES PARTS D'UNE BASE RÉELLE (second relevé du 2026-08-09)
 
 Les leviers ci-dessous ont été ordonnés sur une ventilation de **banc** (3,65 M événements), publiée
-avec l'affirmation « les proportions sont indépendantes de l'échelle ». **La production l'a
-contredite.** Relevé pris par `db-stats --par-objet` (lecture seule vérifiée) sur le pod
-`plume-6d64b9685b-l4rgr` : **1 586,8 Mio · 406 213 pages · 1 767 118 événements**, comptabilité
-FERMÉE. *(Le premier appel a REFUSÉ de publier — « écart de 1 page » sous écriture concurrente. Le
+avec l'affirmation « les proportions sont indépendantes de l'échelle ». **Une base réelle l'a
+contredite.** Relevé pris par `db-stats --par-objet` (lecture seule vérifiée) sur le pod vivant :
+une base de l'ordre du Gio, un peu moins de deux millions d'événements, comptabilité FERMÉE. *(Le premier appel a REFUSÉ de publier — « écart de 1 page » sous écriture concurrente. Le
 fail-closed fonctionne, et il révèle que le chemin CLI n'a pas le `BEGIN DEFERRED` que
 `ventilation_serie.rs` s'est donné.)*
 
-| poste | Mio | part du fichier | part des octets **vivants** | ce que le texte des §3-§5 dit encore |
-|---|---:|---:|---:|---|
-| données (tables) | 908,6 | **57,3 %** | 60,2 % | « 51 % » — **périmé** |
-| — dont `event` | 871,9 | 55,0 % | 57,7 % | 5,8× l'objet suivant |
-| **index b-tree** | **428,0** | **27,0 %** | 28,3 % | « 33 % » — **périmé** |
-| FTS5 (shadow) | 173,4 | 10,9 % | 11,5 % | levier E, livré le 08-09 |
-| pages libres | 76,6 | 4,8 % | — | — |
+| poste | part du fichier | part des octets **vivants** | ce que le texte des §3-§5 dit encore |
+|---|---:|---:|---|
+| données (tables) | **57,3 %** | 60,2 % | « 51 % » — **périmé** |
+| — dont `event` | 55,0 % | 57,7 % | 5,8× l'objet suivant |
+| **index b-tree** | **27,0 %** | 28,3 % | « 33 % » — **périmé** |
+| FTS5 (shadow) | 10,9 % | 11,5 % | levier E, livré le 08-09 |
+| pages libres | 4,8 % | — | — |
 
-**LE PIÈGE DE LECTURE, à ne pas refaire.** Entre 16:07 et 22:38, `page_count` est **identique**
-(406 213) alors que **+51 208 événements** sont entrés : la croissance se paie sur la **freelist**
+**LE PIÈGE DE LECTURE, à ne pas refaire.** Entre deux relevés du même jour à six heures d'écart,
+`page_count` est **identique** alors que des dizaines de milliers d'événements sont entrés : la
+croissance se paie sur la **freelist**
 (7,3 % → 4,8 %), pas sur le fichier. Rapportée aux octets **vivants**, la composition est **plate**
 (60,1/28,4/11,5 → 60,2/28,3/11,5). Qui comparerait les pourcentages **bruts** « découvrirait » que
 données et index grossissent : ce serait un **artefact de la consommation de freelist**, pas un
-mouvement structurel. Marge restante à ce rythme : ~12,8 h.
+mouvement structurel. Marge restante à ce rythme : moins d'une journée.
 
-**Composition MARGINALE**, dérivée des deux relevés, comptabilité fermée à 0,1 % près :
-données +24,83 Mio · index +10,72 Mio · FTS +3,60 Mio = +39,15 Mio, contre −39,19 Mio de freelist.
-Soit pour 51 208 événements nets : **~509 o / ~220 o / ~74 o ≈ 802 o par événement, réparti
-63 / 27 / 9 %**. **Le marginal reproduit le stock.** Incertitude : ±3 % (données), ±7 % (index),
+**Composition MARGINALE**, dérivée des deux relevés, comptabilité fermée à 0,1 % près (l'accroissement
+des trois postes égale, au dixième de pour cent, la freelist consommée) : **~509 o / ~220 o / ~74 o ≈
+802 o par événement net, réparti 63 / 27 / 9 %**. **Le marginal reproduit le stock.** Incertitude : ±3 % (données), ±7 % (index),
 **±22 % (FTS)**.
 
 **L'ORDRE RE-DÉRIVÉ, et ce qui change :**
@@ -123,16 +124,16 @@ Soit pour 51 208 événements nets : **~509 o / ~220 o / ~74 o ≈ 802 o par év
 | levier | poste visé, **re-mesuré** | ce qui change |
 |---|---|---|
 | **A** — activer le froid | 60,2 + 28,3 + 11,5 % de ce qu'il sort du chaud | **reste #1**, mais son arithmétique doit être réécrite (51/33 → 57,3/27,0). Sa tâche reste une **mesure** |
-| **D** — index b-tree | **428,0 Mio · 27,0 %** | **LE VRAI CHANGEMENT.** Second gisement, 27 % du stock **et** 27 % du marginal |
+| **D** — index b-tree | **27,0 %** | **LE VRAI CHANGEMENT.** Second gisement, 27 % du stock **et** 27 % du marginal |
 | **B** — compression du chaud | **57,3 %**, pas 51 % | vise **plus** que la carte ne le dit |
 | **C** — agrégation bornée | orthogonal à la taille | inchangé : sa priorité tient à l'OOM, pas aux octets |
 | **E** — compaction FTS | 10,9 % | livré (`4ca6339`) ; maintient le poste à son plancher |
 
 **CE QUE LA MESURE IMPOSE, et c'est la conclusion de cette section.** Le §5.4 dit « ne PAS toucher
 les index restants sans mesure d'usage » — et **personne ne l'a mesuré**. Or ce poste pèse
-**428,0 Mio, plus que tout le FTS (173,4) + la freelist (76,6) réunis**. `sqlite_autoindex_event_1`
-(75,5 Mio) porte l'exactly-once de la dédup : hors de question. **Mais les 7 autres pèsent
-253,6 Mio, soit 16,0 % du fichier**, derrière un panneau « ne pas toucher » sans mesure derrière.
+**27 % du fichier, plus que tout le FTS (10,9 %) + la freelist (4,8 %) réunis**. `sqlite_autoindex_event_1`
+(un peu moins de 5 % du fichier) porte l'exactly-once de la dédup : hors de question. **Mais les 7 autres
+pèsent 16,0 % du fichier**, derrière un panneau « ne pas toucher » sans mesure derrière.
 À comparer : le levier E, un vrai effort d'ingénierie, gouverne 10,9 %.
 ⇒ **la mesure d'usage des index doit être promue à côté de l'étape 1**, pas rester une note de bas
 de page en étape 4. Les deux sont des mesures, les deux sont bon marché, et le poste de D est 2,5×
@@ -166,42 +167,42 @@ d'ingestion. C'est la série de ventilation (`c4c20f4`) qui tranchera.
 > la cause.** Elles sont conservées telles quelles, barrées, parce qu'effacer une hypothèse fausse
 > effacerait la leçon.
 >
-> **ÉTAT MESURÉ EN PRODUCTION LE 2026-08-10** (vérifié deux fois, indépendamment) :
+> **ÉTAT MESURÉ SUR L'INSTALLATION DE RÉFÉRENCE LE 2026-08-10** (vérifié deux fois, indépendamment) :
 > `PLUME_COLD_TIER=1` + 4 autres variables en `env:` du Deployment (aucun ConfigMap ne les porte) ·
-> bannière `[cold] tier froid ACTIF — 61 fichier(s)-jour, 166,5 Mio` · symboles dans le binaire QUI
-> TOURNE : `cold_store` **7**, `parquet` **32**, contre un témoin négatif à **0** · **62 fichiers
-> Parquet, 170,2 Mio, 41 jours** du 2026-06-23 au 2026-08-02.
-> **La fenêtre d'amputation est lisible dans les dates d'écriture** — 2 fichiers/jour du 07-23 au
-> 08-04, **RIEN les 08-05 et 08-06**, puis **3 fichiers le 08-07**, jour du correctif, en rattrapage.
+> bannière `[cold] tier froid ACTIF — <n> fichier(s)-jour, <taille>` · symboles dans le binaire QUI
+> TOURNE : `cold_store` **7**, `parquet` **32**, contre un témoin négatif à **0** · des dizaines de
+> fichiers-jour Parquet, des centaines de Mio, plus d'un mois de profondeur.
+> **La fenêtre d'amputation est lisible dans les dates d'écriture** — deux fichiers par jour avant la
+> panne, **RIEN pendant ses deux jours**, puis un rattrapage le jour du correctif.
 > C'est une preuve par mutation que l'histoire a jouée d'elle-même : feature retirée → 0 écrit ;
 > feature rendue → rattrapage le jour même.
 >
 > **CE QUE LE LEVIER A RAPPORTE, MESURÉ ET NON PLUS ESPÉRÉ** (série de ventilation horaire, N=1
-> vieillissement observé, 2026-08-10 00:26 UTC) : données −77 Mio · index −27 Mio · **FTS5 −16 Mio**
-> · freelist **+120 Mio** · fichier **inchangé à 1586 Mio**. Comptabilité fermée aux deux bornes.
-> Le jour sorti pèse **3,70 Mio** au froid. **Un jour vieilli = 120 Mio rendus pour 3,70 Mio écrits,
-> ratio 32,5×** — et il emporte bien les trois postes, ce qui **confirme `P10.2-a`** (l'aging emporte
-> la quote-part FTS) sur la production.
+> vieillissement observé, 2026-08-10) : un jour vieilli rend **de l'ordre de la centaine de Mio** à la
+> freelist — données, index et **FTS5** à parts inégales (environ 64 / 22 / 14 %) · fichier **inchangé**.
+> Comptabilité fermée aux deux bornes. Le jour sorti pèse **quelques Mio** au froid. **Un jour vieilli =
+> un ratio d'environ 30× entre octets rendus au chaud et octets écrits au froid** — et il emporte bien
+> les trois postes, ce qui **confirme `P10.2-a`** (l'aging emporte la quote-part FTS) sur une base réelle.
 >
 > **ET VOICI LE VRAI PROBLÈME, QUE PERSONNE NE REGARDAIT** : la freelist se reconsomme à
-> **134–152 Mio/j** (deux fenêtres indépendantes) contre **120 Mio/j** rendus par l'aging →
-> **déficit net de 14 à 32 Mio/j**. Avec 112 Mio de libres au dernier point, elle s'épuise en
-> **3,5 à 8 jours**, après quoi le fichier de 1586 Mio recommence à croître. **L'aging freine la
+> un rythme **supérieur de 10 à 25 %** à ce que l'aging rend par jour (deux fenêtres indépendantes) →
+> **un déficit net, de l'ordre du dixième de ce que rend l'aging**. Au rythme du dernier point, les
+> pages libres s'épuisent en **quelques jours**, après quoi le fichier recommence à croître. **L'aging freine la
 > croissance, il ne l'annule pas.** Ce qui reste sur la table est donc ce qui réduit les octets PAR
 > ÉVÉNEMENT CHAUD — le **levier B** — et non le levier A.
 >
 > **CE QUI RESTE NON MESURÉ, ET C'EST NOMMÉ** : la crête RAM *imputable* au vieillissement.
-> `memory.peak` du cgroup vaut 1486,6 Mio (72,6 % de la limite) et `VmHWM` 643,1 Mio, mais ce sont
-> des maxima **cumulés et non horodatés** sur 20,9 h — rien ne dit s'ils tombent pendant l'aging ou
+> `memory.peak` du cgroup vaut près des trois quarts de la limite et `VmHWM` environ le tiers, mais ce
+> sont des maxima **cumulés et non horodatés** sur près d'une journée — rien ne dit s'ils tombent pendant l'aging ou
 > pendant une requête. Idem pour la durée, le CPU et l'effet sur la latence chaude : **le
-> vieillissement est totalement MUET** (120 Mio libérés sans une ligne de journal), ce qui est
+> vieillissement est totalement MUET** (une centaine de Mio libérés sans une ligne de journal), ce qui est
 > exactement `P10.5-a`, toujours ouvert. **LA mesure qui débloque les quatre axes d'un coup** : une
 > ligne de succès par `cold_age_run` portant jour, lignes, octets, durée et crête RSS. ~10 lignes,
 > et trois des quatre axes deviennent observables sans banc ni copie de production.
 >
 > Bornes de conception, lues dans le code et confrontées au réel : écriture plafonnée à un seul
 > row-group (`ROW_GROUP_ROWS = 262 144`) — un jour énorme fait PLUS de fichiers, pas de plus gros ;
-> lecture = `degré × un fichier déchiffré`, soit `min(6−2,4) = 4 × 4,57 Mio ≈ 18,3 Mio` en vol,
+> lecture = `degré × un fichier déchiffré`, soit quatre fichiers-jour de quelques Mio chacun en vol,
 > négligeable devant 2 Gio.
 
 ### ~~Levier A (texte d'origine, conservé barré)~~ · impact ÉNORME, code neuf ~0
@@ -255,11 +256,11 @@ supposent tous que l'index plein-texte grossit avec les données. **C'est faux :
 les SUPPRESSIONS.** Une table FTS5 à contenu externe ne peut pas retirer un posting en place — le
 déclencheur `event_ad` en écrit un de SUPPRESSION, qui s'AJOUTE — et l'espace n'est rendu qu'à la
 FUSION DES SEGMENTS, que plume ne déclenchait **jamais**. C'est une part de l'écart entre les 8,1 %
-du banc ci-dessus et les 17,9 % relevés en production : de la **trace d'aging**, pas de la croissance.
+du banc ci-dessus et les 17,9 % relevés sur une base réelle : de la **trace d'aging**, pas de la croissance.
 
 > **CE QUE LE RELEVÉ SUIVANT DIT — ET CE QU'IL NE DIT PAS.** Le 2026-08-09, au lendemain du
-> déploiement de ce levier, la production mesure **FTS5 = 10,7 %** (`event_fts_data` 9,3 % sur
-> 1 586,8 Mio). C'est cohérent avec un gain de compaction. **Ce n'est pas une preuve** : trois relevés
+> déploiement de ce levier, la base réelle mesure **FTS5 = 10,7 %** (`event_fts_data` 9,3 % du
+> fichier). C'est cohérent avec un gain de compaction. **Ce n'est pas une preuve** : trois relevés
 > manuels espacés de jours ne distinguent pas un gain de compaction d'un creux d'ingestion ou d'un
 > aging moins actif. La preuve viendra de la série (`plume_db_poste_bytes{poste="fts"}`, un point par
 > heure depuis ce lot) — c'est exactement la question qu'elle a été construite pour trancher.
@@ -304,13 +305,14 @@ Décodée des chiffres : **le chaud doit être petit et indexé ; le froid, minu
 
 1. ~~**MESURER pourquoi le froid est OFF** (levier A)~~ → **FAIT, ET LE LEVIER EST CLOS**
    *(2026-08-10)*. Il n'était pas OFF : la ligne ci-dessus a été écrite **pendant** une panne de
-   build de trois jours, la seule fenêtre où elle était vraie. Il tourne, il rend **120 Mio/j** au
-   chaud pour 3,70 Mio écrits au froid, et **ce gain est déjà DANS la ligne de base de 1586 Mio** —
+   build de trois jours, la seule fenêtre où elle était vraie. Il tourne, il rend **de l'ordre de la
+   centaine de Mio par jour** au chaud pour quelques Mio écrits au froid, et **ce gain est déjà DANS la
+   ligne de base relevée** —
    ce n'est pas un gain à venir. **Ce qui prend sa place en tête n'est pas un des quatre leviers** :
    c'est **une ligne de succès sur `cold_age_run`** (`P10.5-a`), ~10 lignes, qui rend mesurables
    d'un coup la durée, le CPU, la crête RAM imputable et l'effet sur la latence — aujourd'hui tous
    les quatre inconnus parce que le vieillissement est MUET. **Puis le levier B**, seul à attaquer
-   le déficit net de freelist de 14–32 Mio/j que la mesure fait apparaître.
+   le déficit net de freelist que la mesure fait apparaître.
 2. **CONSTRUIRE l'agrégation bornée native** (levier C / P10.3) — ferme l'OOM par le haut, quelle
    que soit la taille de la fenêtre chaude. Indépendant, confidentialité-neutre.
 3. **CONSTRUIRE la compression au repos du chaud** (levier B1 par-valeur) — attaque les 51 % qui

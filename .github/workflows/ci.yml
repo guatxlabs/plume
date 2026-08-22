@@ -169,7 +169,7 @@ env:
   # 989 datait du même jour ; **+18 viennent du lot « série du budget »** — 16 dans
   # `tests/ventilation_serie.rs`, 2 dans `db_ventilation.rs`. Le lot ferme le défaut RACINE derrière
   # trois autres : la ventilation par poste n'existait qu'en RELEVÉ PONCTUEL (`db-stats --par-objet`,
-  # 35,4 s mesurées en production le 2026-08-09 pour 1 586,8 Mio), donc aucune question de tendance —
+  # une vingtaine de secondes par Gio sur une base réelle le 2026-08-09), donc aucune question de tendance —
   # « la part FTS5 a-t-elle baissé depuis la compaction `4ca6339` ? » — n'était répondable sans
   # relever à la main. La MÊME mesure est désormais écrite par un tick lent dans `metric`, que la
   # commande GXQL `metric` unionne avec `metric_rollup` (90 j).
@@ -197,8 +197,8 @@ env:
   # 1007 datait du 08-09 ; **+5 viennent du lot « usage des
   # index de `event` »** (`tests/index_usage_event.rs`). Le lot ne corrige aucun défaut : il MESURE
   # celui que `docs/DESIGN-P10-echelle-2go.md` §5.4 avait interdit de toucher sans mesure — « qui se
-  # sert des index b-tree de `event` ? » — sur un poste qui pèse **428,0 Mio, 27,0 % du fichier** en
-  # production (relevé du 2026-08-09), dont 253,6 Mio hors de l'index de dédup.
+  # sert des index b-tree de `event` ? » — sur un poste qui pèse **plus du quart du fichier** sur une
+  # base réelle (relevé du 2026-08-09), dont plus de la moitié hors de l'index de dédup.
   # Les 5 : le LECTEUR DE PLAN validé par témoin positif DÉRIVÉ (chaque index du catalogue, forcé par
   # `INDEXED BY`, doit être relu — l'index ajouté demain est couvert le jour où il est ajouté) ET par
   # témoin négatif (`NOT INDEXED` doit rendre VIDE, sinon un vide ne serait pas une mesure) ; le REFUS
@@ -322,7 +322,7 @@ env:
   # `daemon/src/tests/mesure_environnement.rs`) : QUATRE tests de plus, sans `cfg` de feature, donc
   # présents dans les DEUX profils. La valeur d'avant cette ré-énumération avait elle-même bougé sous
   # un autre lot en vol : c'est précisément pourquoi le total est celui de l'ARBRE et jamais une somme.
-  EXPECTED_TESTS: "1172"
+  EXPECTED_TESTS: "1176"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -609,7 +609,7 @@ jobs:
           # RÉ-ÉNUMÉRÉ le 2026-08-20 par la MÊME double lecture, sur l'arbre qui porte aussi le lot S32
           # (lectures d'environnement séparant « lu » de « pas lisible », dix-huit tests sans `cfg`) :
           # 1368 avec `cold_tier` pour 1148 par défaut — l'écart reste **220**.
-          EXPECTED_COLD_TESTS: "1392"
+          EXPECTED_COLD_TESTS: "1396"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -901,6 +901,22 @@ jobs:
           set -euo pipefail
           python3 -c 'import yaml' 2>/dev/null || sudo apt-get install -y python3-yaml
           python3 .github/scripts/check_every_feature_is_compiled_somewhere.py
+
+      # `P7.17-a` — UN CHIFFRE D'EXPLOITATION NE SE PUBLIE PAS (AGENTS.md §4). Un chiffre de CONCEPTION (un
+      # plafond, une borne, un ordre de grandeur qui décrit le produit) se publie ; un chiffre RELEVÉ sur
+      # une installation (taille de base, débit, compteur, horodatage d'incident, nom d'objet) renseigne
+      # sur une cible et n'apprend rien au lecteur du code. La roadmap publique avait été expurgée, pas
+      # les commentaires ni la documentation : un filtre grossier en rendait déjà des dizaines. Ce qui
+      # sépare les deux classes est L'OBJET MESURÉ — le produit (banc, harnais, arbre, suite) ou une
+      # installation — et la garde ne lit pas une liste de mots : elle reconnaît la FORME d'un relevé
+      # (une grandeur attribuée à une installation réelle ; un volume daté sans contexte de banc ou
+      # d'arbre déclaré ; un hôte sous le domaine de l'éditeur, DÉRIVÉ de l'identité canonique ; un objet
+      # Kubernetes nommé). La règle d'écriture qu'elle tient : « tout chiffre daté dit d'où il vient ».
+      # Elle valide son instrument dans les deux sens avant tout verdict, refuse de conclure sous ses
+      # planchers, et dit ce qu'elle ne voit pas : un relevé sans forme reconnaissable, les fichiers de
+      # données, et l'historique déjà poussé — elle tient la version servie, pas le passé.
+      - name: Un chiffre d'exploitation ne se publie pas (AGENTS.md §4)
+        run: python3 .github/scripts/check_no_operational_figure_is_published.py
 
       # Discovery is by EXTENSION **and** by first-line SHEBANG, deliberately: today all 43
       # tracked scripts carry a `.sh` extension (measured), and 42 of them a sh/bash shebang —

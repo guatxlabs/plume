@@ -68,7 +68,7 @@ mod vieillissement_serie_tests {
             fichiers_purges: 2,
             lignes_ecrites: 12_345,
             lignes_retirees: 12_000,
-            octets_froid: 3_879_731, // 3,70 Mio : l'ordre de grandeur MESURÉ en production le 2026-08-10
+            octets_froid: 3_879_731, // 3,70 Mio : l'ordre de grandeur de ce qu'un jour écrit au froid
         }
     }
 
@@ -83,7 +83,7 @@ mod vieillissement_serie_tests {
     }
 
     /// Une crête MESURÉE plausible : 700 Mio de pic sur une base de 580 Mio (+120 Mio — l'ordre de
-    /// grandeur de ce qu'un vieillissement libère, mesuré en production le 2026-08-10).
+    /// grandeur de ce qu'un vieillissement libère dans la base chaude).
     fn crete_typique() -> Crete {
         Crete::Mesuree { pic: 700 * 1024 * 1024, base: 580 * 1024 * 1024 }
     }

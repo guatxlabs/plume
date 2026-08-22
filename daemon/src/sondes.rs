@@ -75,14 +75,13 @@ use crate::*;
 //
 // L'INDEX QUI FERME LES 8. `idx_event_health_beat ON event(source, ts) WHERE category='health'` —
 // PARTIEL À DESSEIN. Le composite plein `(source, category, ts)` ferme les mêmes 8, mais il indexe
-// TOUTE ligne ingérée : MESURÉ 25,5 o/ligne (5 537 792 o pour 217 280 lignes de banc), soit ~38 Mio
-// EXTRAPOLÉS sur les 1 554 295 lignes de la production (mesurée le 2026-08-05 par `db-stats
-// --par-objet` : 1 554 295 événements / 1 276,4 Mio), plus une insertion btree sur le CHEMIN D'INGEST
-// CHAUD. Le partiel n'indexe que les battements : MESURÉ 21,8 o/ligne de battement (376 832 o pour
+// TOUTE ligne ingérée : MESURÉ 25,5 o/ligne (5 537 792 o pour 217 280 lignes de banc), soit quelques
+// dizaines de Mio EXTRAPOLÉS au million et demi de lignes de l'installation de référence (volume relevé
+// le 2026-08-05 par `db-stats --par-objet`), plus une insertion btree sur le CHEMIN D'INGEST CHAUD. Le partiel n'indexe que les battements : MESURÉ 21,8 o/ligne de battement (376 832 o pour
 // 17 280), soit ~1,5 Mio pour 8 collecteurs battant toutes les 5 min sur 30 j de rétention — 26x moins,
 // et une insertion btree toutes les ~37 s au lieu d'une par event. NOTER LEQUEL DES DEUX ÉCARTS PORTE
-// LA DÉCISION : celui du DISQUE dépend du volume (il valait 166x quand on croyait la prod à 9,8 M
-// lignes ; il vaut 26x sur le volume mesuré, soit 2,0 % du budget 2 Go au lieu de 12,5 %), tandis que
+// LA DÉCISION : celui du DISQUE dépend du volume (il valait 166x sous l'hypothèse, réfutée, d'une base
+// six fois plus grosse ; il vaut 26x sur le volume mesuré, soit 2,0 % du budget 2 Go au lieu de 12,5 %), tandis que
 // celui des INSERTIONS — une par event contre une toutes les ~37 s — n'en dépend PAS. C'est l'objection
 // qui avait fait ÉCARTER le correctif en v104 (cf. `handlers/freshness.rs`, « amplification d'écriture
 // sur le chemin d'ingest chaud ») : elle visait juste, elle ne visait que le composite plein.
@@ -97,8 +96,8 @@ use crate::*;
 // celle des MÉTRIQUES gardent leur portée « tous hôtes confondus ». C'est le MÊME défaut de famille —
 // mesuré identique — mais il n'a PAS le même coût : `snapshot` ne garde qu'une ligne vivante par
 // (kind, hôte) (le heartbeat la TOUCHE au lieu d'en insérer une), donc son `GROUP BY host` porte sur
-// la cardinalité de la FLOTTE ; `event` compte 1 554 295 lignes en production (mesuré le 2026-08-05 par
-// `db-stats --par-objet`). La portée est donc DÉCLARÉE — par le type (`Sonde::portee`, match exhaustif),
+// la cardinalité de la FLOTTE ; `event` compte plus d'un million de lignes sur une base réelle (relevé
+// du 2026-08-05 par `db-stats --par-objet`). La portée est donc DÉCLARÉE — par le type (`Sonde::portee`, match exhaustif),
 // comptée par `snapshot_sonde_instantanee_ancrage_de_portee`, et LISIBLE par l'exploitant (champ
 // `portee` de `/api/integrations`) — au lieu d'être accidentelle : c'est une dette nommée.
 //
@@ -173,8 +172,8 @@ pub(crate) enum Cout {
     /// le planificateur n'utilise PAS idx_snapshot(kind, ts), le `GROUP BY host` l'en empêche). Ce n'est
     /// PAS le défaut P3.7-a : `snapshot` ne garde qu'une ligne vivante par (kind, hôte) — le heartbeat
     /// TOUCHE le `ts` au lieu d'insérer — et la rétention (`snapshot_days`, 30 j) borne le reste. Le coût
-    /// suit donc la FLOTTE, jamais les 1 554 295 lignes d'`event` (production, mesuré le 2026-08-05 par
-    /// `db-stats --par-objet` ; invariance vérifiée par mutation du
+    /// suit donc la FLOTTE, jamais le million et plus de lignes d'`event` d'une base réelle (relevé du
+    /// 2026-08-05 par `db-stats --par-objet` ; invariance vérifiée par mutation du
     /// volume dans `sonde_cout_independant_du_volume`). Dette DÉCLARÉE, pas angle mort.
     BorneParLaTable(&'static str),
 }

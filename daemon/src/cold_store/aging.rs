@@ -260,8 +260,9 @@ pub(super) fn delete_file_rows(db: &Arc<Mutex<Connection>>, env_id: &str, day: i
 /// HOLDS/CONTRÔLE : si un legal-hold est actif (enforcement != NoHolds) -> aging SUSPENDU ce tick (les
 /// preuves restent hot, fail-safe). Les events de contrôle (RETENTION_NONPURGE) ne sont JAMAIS agés/supprimés.
 ///
-/// CE QUE LA PASSE RACONTE (`P10.5-a`) — mesuré en production le 2026-08-10 : un vieillissement libérait
-/// 120 Mio de base chaude et écrivait 3,70 Mio de Parquet SANS ÉMETTRE UNE LIGNE. Le corps de la passe est
+/// CE QUE LA PASSE RACONTE (`P10.5-a`) — mesuré sur une base réelle le 2026-08-10 : un vieillissement
+/// libérait une centaine de Mio de base chaude et écrivait quelques Mio de Parquet SANS ÉMETTRE UNE LIGNE.
+/// Le corps de la passe est
 /// donc désormais `balayer`, encadré ICI par une fenêtre de mesure (durée, CPU du fil, crête RSS ramenée à la
 /// fenêtre) : à chaque exécution, UNE ligne de journal ET une série dans `metric`
 /// (`vieillissement_serie`). L'encadrement est TOTAL — tous les retours de `balayer` passent par le même
@@ -501,8 +502,8 @@ pub(super) fn dernier_tir_du_retard(conn: &Connection) -> Option<i64> {
 /// columnarisées mais ne l'ont pas été. > 0 -> signal (dédupé à l'heure). Aucune écriture si compte == 0.
 ///
 /// LA PHRASE QUI ÉTAIT ICI DISAIT « requête bornée par idx_event_ts (range sur `ts`) » : c'était FAUX, et
-/// mesuré faux le 2026-08-11 sur la production — `SCAN e`, 1 720 594 lignes balayées, 27 705 ms, pour une
-/// bande qui contient au plus ~500 lignes. Elle est retirée plutôt que corrigée : le plan ne se DÉCLARE
+/// mesuré faux le 2026-08-11 sur une base réelle — `SCAN e`, toute la table balayée en dizaines de secondes,
+/// pour une bande qui contient au plus quelques centaines de lignes. Elle est retirée plutôt que corrigée : le plan ne se DÉCLARE
 /// pas dans un commentaire, il se LIT avec `cold-aging-plan`. Ce que cet énoncé coûte est écrit là où il
 /// vit, avec les chiffres qui le disent (`enonces::sql_retard_de_vieillissement`).
 ///
@@ -696,8 +697,8 @@ fn emit_cold_seal_stuck(conn: &Connection, now_ts: i64, files: i64, days: i64, o
 /// `P10.12-a` (résiduel) — POURQUOI IL Y EN A TROIS ET PLUS DEUX. `Ok(Journee::Agee) => jours_ages += 1`
 /// était atteint par DEUX situations SANS AUCUN TRAVAIL : le retour défensif « rien d'agéable » (aucune ligne
 /// non-contrôle dans le jour) et le no-op « déjà scellé, phase 2 déjà drainée ». La série publiait donc
-/// `plume_cold_aging_jours{issue="age"} = 10` pour **10 jours no-op** — mesuré en production le 2026-08-10,
-/// un chiffre faux dans la série même qui existe pour supprimer les chiffres faux. Le COMPORTEMENT (compromis
+/// `plume_cold_aging_jours{issue="age"} = <n>` pour **n jours no-op** — mesuré sur une base réelle le
+/// 2026-08-10, un chiffre faux dans la série même qui existe pour supprimer les chiffres faux. Le COMPORTEMENT (compromis
 /// « stragglers » assumé et verrouillé par `fix1_straggler_in_sealed_day_stays_hot_no_loss`) est INCHANGÉ ;
 /// seul ce que la série en DIT change.
 ///

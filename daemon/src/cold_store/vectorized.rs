@@ -508,7 +508,8 @@ pub(super) type GroupKey = Vec<Option<String>>;
 
 /// GROUP-BY vectorisé sur `dims` (1..N colonnes PHYSIQUES) avec agrégat COUNT, filtré par `pred`. Balayage
 /// colonnaire des lignes SÉLECTIONNÉES -> `HashMap<clé, count>` accumulé cross-batch. RAM bornée aux GROUPES
-/// DISTINCTS (agrégat), jamais aux lignes. C'est LA cible du group-by multi-dim (32s SQLite en prod).
+/// DISTINCTS (agrégat), jamais aux lignes. C'est LA cible du group-by multi-dim (des dizaines de secondes en
+/// SQLite sur une base réelle).
 pub(super) fn vec_group_count(
     reader: &dyn FileReader,
     pred: &Pred,

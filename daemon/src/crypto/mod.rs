@@ -291,7 +291,7 @@ pub(crate) fn probe_db(path: &str, key: &str) -> DbProbe {
 }
 
 /// (v108) Cœur testable de `probe_db` avec `busy` paramétrable. `busy=0` -> `SQLITE_BUSY` IMMÉDIAT si un verrou
-/// tient (tests déterministes, sans attente). En prod `probe_db` fixe 5 s. On CLASSE les erreurs de lecture :
+/// tient (tests déterministes, sans attente). Hors tests `probe_db` fixe 5 s. On CLASSE les erreurs de lecture :
 /// un verrou (`SQLITE_BUSY`/`SQLITE_LOCKED`) sur l'une OU l'autre ouverture -> `Locked` (transitoire, on ne peut
 /// PAS conclure sur la clé) ; sinon (p.ex. `SQLITE_NOTADB`) -> `WrongKeyOrCorrupt`. Ainsi une MAUVAISE clé sur
 /// une base NON verrouillée reste fail-closed (exit 78), et un verrou ne déclenche PAS de faux fail-closed.

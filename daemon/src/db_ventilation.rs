@@ -4,8 +4,8 @@
 //! qui remplit sa propre base**. `db-stats` rendait un TOTAL et une freelist ; toute décision
 //! d'optimisation du stockage se prenait donc sur une estimation. Mesuré le 2026-08-05, l'écart
 //! entre ce qu'on croyait et ce qui est :
-//!   * la référence « base 2 518 Mio / ~9,8 M événements » de la roadmap valait en réalité
-//!     **1 239,6 Mio / 1 473 271 événements** ;
+//!   * la référence de volume que portait la roadmap était **six fois trop grande** par rapport au
+//!     relevé (une base de l'ordre du Gio et du million d'événements, pas de la dizaine de millions) ;
 //!   * une freelist annoncée à **44,3 %** (profil vieux de 6 jours) valait **0,0 %** ;
 //!   * et sur le banc, **32,8 % du fichier sont des INDEX** — le plus gros poste après les données,
 //!     alors que personne ne le regardait.
@@ -29,11 +29,11 @@
 //! Un nouveau backend FTS ou un nouvel index sont donc classés correctement sans qu'on y pense.
 //!
 //! LE COÛT EST RÉEL, DONC LA VENTILATION EST OPT-IN. `dbstat` PARCOURT TOUTES LES PAGES : mesuré
-//! ~49 s sur 3,9 Gio au banc (12,6 s/Gio, base NON chiffrée), et **35,4 s sur 1 586,8 Mio en
-//! production le 2026-08-09, soit 22,9 s/Gio** — le banc sous-estimait de moitié, parce que la
-//! production déchiffre chaque page (SQLCipher) sur un pod limité à 2 cœurs. Le `db-stats` par défaut
-//! — celui qu'un exploitant lance en production pour décider d'un reclaim — reste donc INCHANGÉ et
-//! instantané (1,3 s mesurées au même moment). La ventilation s'obtient par `db-stats --par-objet`,
+//! ~49 s sur 3,9 Gio au banc (12,6 s/Gio, base NON chiffrée), et **une vingtaine de secondes par Gio
+//! sur une base réelle le 2026-08-09** — le banc sous-estimait de moitié, parce qu'une base réelle
+//! déchiffre chaque page (SQLCipher) sur un pod limité à deux cœurs. Le `db-stats` par défaut — celui
+//! qu'un exploitant lance pour décider d'un reclaim — reste donc INCHANGÉ et instantané (de l'ordre de
+//! la seconde, mesuré au même moment). La ventilation s'obtient par `db-stats --par-objet`,
 //! et le message le dit.
 //!
 //! UN RELEVÉ NE FAIT PAS UNE SÉRIE. Ce module rend UN POINT, à l'instant où on le lui demande — et
@@ -181,9 +181,9 @@ impl Echec {
 /// LA MESURE. Rend `Err` si la COMPTABILITÉ NE FERME PAS — une ventilation qui ne somme pas au fichier
 /// n'est pas une mesure, c'est un tableau plausible. Mieux vaut refuser que publier un total faux.
 ///
-/// COÛT : `dbstat` PARCOURT TOUTES LES PAGES. MESURÉ le 2026-08-09 sur la production (1 586,8 Mio,
-/// SQLCipher, pod limité à 2 cœurs) : **35,4 s, soit 22,9 s/Gio** — et 35,9 s au premier appel contre
-/// 35,4 s au second, donc le coût est CPU (déchiffrement des pages), pas disque. Le contournement
+/// COÛT : `dbstat` PARCOURT TOUTES LES PAGES. MESURÉ le 2026-08-09 sur une base réelle (de l'ordre du
+/// Gio, SQLCipher, pod limité à deux cœurs) : **une vingtaine de secondes par Gio** — et la même durée au
+/// premier et au second appel, donc le coût est CPU (déchiffrement des pages), pas disque. Le contournement
 /// naturel a été essayé et MESURÉ le même jour sur une base locale de 319,5 Mio (sqlite3 3.53.4, non
 /// chiffrée) : retirer la sous-requête corrélée sur `sqlite_master` (1,85 s -> 1,49 s) ou passer au
 /// `dbstat(main,1)` agrégé (1,49 s) ne change RIEN — c'est le parcours des pages qui coûte, pas la

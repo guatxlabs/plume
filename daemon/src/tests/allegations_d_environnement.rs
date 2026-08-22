@@ -737,7 +737,8 @@ mod allegations_d_environnement_tests {
     /// est « posé UNIQUEMENT sur le SIDECAR `plume-daemon backup` » — et c'est sur ce fait qu'ils ont
     /// retiré le signal de posture du démarrage du serveur. Lu le 2026-08-22, `deploy/k3s.yaml` n'a
     /// QU'UN conteneur, et lui pose `PLUME_BACKUP_INTERVAL` : l'ordonnanceur NATIF du serveur sauvegarde,
-    /// sans destinataire, et ce chemin-là n'émet aucun signal. Ce que cette garde tient est ce que le
+    /// sans destinataire — et ce chemin-là n'émettait alors aucun signal (branché depuis, P8.25-a :
+    /// `posture_de_sauvegarde_native.rs` le tient). Ce que cette garde tient est ce que le
     /// manifeste dit de lui-même : « sans cette variable, ce déploiement NE SAUVEGARDE RIEN » — et rien
     /// ne le dirait, le pod démarre et sert à l'identique. Elle tient aussi ce que le même manifeste
     /// livre comme secret : une clé SQLCipher VIDE (chiffrement opt-in), jamais une valeur par défaut

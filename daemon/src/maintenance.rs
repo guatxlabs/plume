@@ -372,8 +372,9 @@ pub(crate) fn drop_prefix_subsumed_indexes_background(db: &Arc<Mutex<Connection>
 /// justifié pour d'autres raisons.
 ///
 /// LA LISTE N'EST PAS ÉCRITE ICI : ELLE EST DEMANDÉE À SQLITE. On ne SAIT PAS quels `idx_ev_auto_*`
-/// existent — mesuré en production le 2026-08-05, aucun n'apparaît dans les 10 plus gros objets, mais cet
-/// instrument ne voit rien SOUS 21,9 Mio. On ÉNUMÈRE donc depuis `sqlite_master` et on droppe ce qui est
+/// existent — mesuré sur une base réelle le 2026-08-05, aucun n'apparaît dans les 10 plus gros objets, mais
+/// cet instrument a un plancher (la taille du 10e objet, des dizaines de Mio). On ÉNUMÈRE donc depuis
+/// `sqlite_master` et on droppe ce qui est
 /// LÀ. `ESCAPE '\'` n'est pas décoratif : dans un motif LIKE, `_` signifie « un caractère quelconque » —
 /// sans échappement le motif attraperait aussi `idxXevXautoX…`, donc des index d'AUTRES familles.
 /// Idempotent (au boot suivant il n'y a plus rien à voir), non fatal, retenté à chaque boot.
@@ -457,11 +458,11 @@ pub(crate) fn ensure_event_src_ts_index_background(db: &Arc<Mutex<Connection>>) 
 /// consomme sous le verrou, l'ingestion ne l'a pas.
 ///
 /// POURQUOI PARTIEL et pas (source, category, ts) : MESURÉ sur banc, le composite plein coûte 25,5 o/LIGNE
-/// INGÉRÉE, soit ~38 Mio EXTRAPOLÉS sur la production (1 554 295 événements / 1 276,4 Mio, mesurés le
-/// 2026-08-05 par `db-stats --par-objet`) + un insert btree sur le CHEMIN D'INGEST CHAUD ; le partiel coûte
-/// 21,8 o/LIGNE DE BATTEMENT (~1,5 Mio pour 8 collecteurs battant toutes les 5 min sur 30 j) + un insert
-/// toutes les ~37 s. 26x moins de disque — l'écart de disque SUIT LE VOLUME (il valait 166x sous
-/// l'hypothèse, réfutée, d'une prod à 9,8 M lignes, et pèse 2,0 % du budget 2 Go au lieu de 12,5 %),
+/// INGÉRÉE, soit quelques dizaines de Mio EXTRAPOLÉS au million et demi de lignes d'une base réelle (volume
+/// relevé le 2026-08-05 par `db-stats --par-objet`) + un insert btree sur le CHEMIN D'INGEST CHAUD ; le
+/// partiel coûte 21,8 o/LIGNE DE BATTEMENT (~1,5 Mio pour 8 collecteurs battant toutes les 5 min sur 30 j)
+/// + un insert toutes les ~37 s. 26x moins de disque — l'écart de disque SUIT LE VOLUME (il valait 166x
+/// sous l'hypothèse, réfutée, d'une base six fois plus grosse, et pèse 2,0 % du budget 2 Go au lieu de 12,5 %),
 /// tandis que l'écart d'INSERTIONS n'en dépend pas. L'objection d'amplification d'écriture qui avait fait
 /// écarter le correctif (cf. handlers/freshness.rs) ne porte que sur le composite plein.
 ///

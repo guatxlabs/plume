@@ -74,7 +74,7 @@ Conséquences pratiques, à connaître **avant** un DR chronométré :
 
 Depuis l'aging Phase 2 (`daemon/src/cold_store/aging.rs`), une journée scellée en Parquet voit ses
 lignes `event` **supprimées de la base chaude**. La base chaude ne porte donc plus que la fenêtre
-`PLUME_COLD_HOT_WINDOW_DAYS` (**7 jours** en production au 2026-08-08) ; le reste de la rétention
+`PLUME_COLD_HOT_WINDOW_DAYS` (**7 jours** par défaut) ; le reste de la rétention
 (`PLUME_COLD_RETENTION_DAYS=365`) vit **uniquement** sous `PLUME_COLD_DIR=/data/cold`.
 
 **Il n'y a pas de perte de données.** Les fichiers-jour froids sont séquestrés à chaque cycle du
@@ -101,9 +101,9 @@ et immuables : aucun re-wrap, aucun clair.
    en a, son verdict est `SUCCES PARTIEL — PORTEE : base CHAUDE seule`. La vérification des deux étages
    reste un **drill DR hors-cluster** avec l'identité age d'escrow.
 
-**État mesuré le 2026-08-08** : 60 fichiers-jour sur le disque, **60 séquestrés** (témoin positif : 102
-objets sous le préfixe `plume/` ; témoin négatif : 0 sous un préfixe inexistant), couvrant
-2026-06-23 → 2026-07-31, ~163 Mio.
+**État mesuré le 2026-08-08 sur l'installation de référence** : tous les fichiers-jour présents sur le
+disque étaient **séquestrés** (témoin positif : les objets sous le préfixe `plume/` les couvrent tous ;
+témoin négatif : 0 sous un préfixe inexistant), sur plus d'un mois de profondeur.
 
 ## Deux modes de chiffrement de backup
 

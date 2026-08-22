@@ -4,7 +4,7 @@
 //! seulement à l'instant où quelqu'un tape `db-stats --par-objet` — un RELEVÉ PONCTUEL, à la main, qui
 //! périme en quelques heures. Trois dégâts MESURÉS, et ils viennent tous de la même absence :
 //!   * une carte de leviers (`docs/DESIGN-P10-echelle-2go.md`) bâtie sur une ventilation de BANC
-//!     publiée comme « indépendante de l'échelle », que la production a contredite (index 32,8 % ->
+//!     publiée comme « indépendante de l'échelle », qu'une base réelle a contredite (index 32,8 % ->
 //!     25,4 % ; FTS5 8,1 % -> 18,9 %) ;
 //!   * une roadmap dont 17 chiffres étaient périmés ou non datés ;
 //!   * et une hausse du FTS lue comme de la croissance organique alors que c'était la trace de
@@ -14,14 +14,14 @@
 //!
 //! OÙ LA SÉRIE VIT, ET POURQUOI PAS AILLEURS. Le piège à éviter est la jauge que personne ne collecte.
 //! Il a déjà coûté deux fois ici (des timers d'hôte qui écrivaient dans le textfile-collector d'un
-//! node-exporter DÉCOMMISSIONNÉ). Ce qui a tranché est une mesure, pas une préférence — relevée sur la
-//! production le 2026-08-09 :
-//!   * **AUCUN Prometheus ne tourne** dans le cluster. Une jauge `/metrics` de plus, SEULE, ne serait
-//!     lue par personne : c'est le piège, pas la sortie.
-//!   * En revanche `plume-prom-scrape.timer` est `enabled` + `active`, cadence 30 s — et il a tourné
-//!     **9 364 fois depuis le 2026-08-06T06:11:42Z sans jamais joindre UNE SEULE de ses 2 cibles**
-//!     (deux ClusterIP morts, absents de `kubectl get svc -A`). Le collecteur existe et tourne ; ce
-//!     sont ses cibles qui sont mortes. Le faire pointer sur notre propre `/metrics` ferait transiter
+//! node-exporter DÉCOMMISSIONNÉ). Ce qui a tranché est une mesure, pas une préférence — relevée sur une
+//! installation réelle le 2026-08-09 :
+//!   * **AUCUN Prometheus n'y tournait**. Une jauge `/metrics` de plus, SEULE, ne serait lue par
+//!     personne : c'est le piège, pas la sortie.
+//!   * En revanche `plume-prom-scrape.timer` y était `enabled` + `active`, à sa cadence de quelques
+//!     dizaines de secondes — et il avait tourné **des milliers de fois, pendant des jours, sans jamais
+//!     joindre UNE SEULE de ses cibles** (des services que le cluster ne portait plus). Le collecteur
+//!     existe et tourne ; ce sont ses cibles qui sont mortes. Le faire pointer sur notre propre `/metrics` ferait transiter
 //!     une mesure INTERNE par l'hôte, HTTP, un jeton et le CHEMIN D'INGEST — pour une valeur qui ne
 //!     change qu'une fois par heure et qu'il scraperait 120 fois. Et ça dépendrait d'un fichier
 //!     (`/etc/plume/prom-targets`) que le dépôt ne contrôle pas.
@@ -40,10 +40,10 @@
 //!     Les mêmes lignes alimentent les panneaux (`handlers/datasource.rs`) et les règles
 //!     (`seeds.rs`) — donc `alert` -> ntfy si on veut un seuil.
 //!
-//! LA CADENCE EST LE COÛT, ET LE COÛT EST MESURÉ. `dbstat` parcourt TOUTES les pages : **35,4 s sur la
-//! production (1 586,8 Mio, SQLCipher, pod à 2 cœurs), soit 22,9 s/Gio** (mesuré le 2026-08-09 ; la
-//! valeur « ~15 s/Gio » qui traînait dans `db-stats` venait d'un banc NON chiffré et sous-estimait de
-//! moitié). Au tick HORAIRE retenu, ça fait **0,98 % d'un cœur**. L'heure n'est pas un chiffre rond :
+//! LA CADENCE EST LE COÛT, ET LE COÛT EST MESURÉ. `dbstat` parcourt TOUTES les pages : **une vingtaine
+//! de secondes par Gio sur une base réelle** (SQLCipher, pod à deux cœurs ; mesuré le 2026-08-09 — la
+//! valeur d'une quinzaine de secondes par Gio qui traînait dans `db-stats` venait d'un banc NON chiffré et sous-estimait de
+//! moitié). Au tick HORAIRE retenu, sur une base de l'ordre du Gio, ça fait **moins de 1 % d'un cœur**. L'heure n'est pas un chiffre rond :
 //! c'est la RÉSOLUTION DE STOCKAGE de la destination — `metric_rollup` agrège par `ts/3600`, donc tout
 //! point plus fin est moyenné et perdu au bout de 48 h. Mesurer plus souvent coûterait du CPU pour
 //! produire des points que la base jette.
@@ -309,7 +309,7 @@ pub(crate) fn publier(conn: &Connection, m: &Mesure) -> usize {
 /// Prend le verrou d'écriture — et le rend — POUR LES SEULS `INSERT`. C'est le seul endroit du module
 /// qui verrouille : `tour` ne verrouille pas lui-même, et le test `le_tour_ne_verrouille_pas_lui_meme`
 /// refuse qu'il se remette à le faire. La « simplification » consistant à ouvrir le verrou en tête du
-/// tour tiendrait l'ingestion pendant TOUT le parcours (35,4 s mesurés en production) — c'est
+/// tour tiendrait l'ingestion pendant TOUT le parcours (des dizaines de secondes sur une base réelle) — c'est
 /// exactement la régression que la séparation empêche.
 fn publier_sous_verrou(db: &Arc<Mutex<Connection>>, m: &Mesure) -> usize {
     let conn = db.lock();
@@ -341,7 +341,7 @@ pub(crate) fn tour(db: &Arc<Mutex<Connection>>, db_path: &str) -> Duration {
 }
 
 /// LA BOUCLE. Gatée sur `PLUME_VENTILATION_INTERVAL_S` (0 = aucun thread). Défaut : horaire — la
-/// résolution de `metric_rollup`, pour 0,98 % d'un cœur sur la production mesurée.
+/// résolution de `metric_rollup`, pour moins de 1 % d'un cœur sur une base réelle mesurée.
 pub(crate) fn spawn_boucle(
     conf: HashMap<String, String>,
     db_path: String,

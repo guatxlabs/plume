@@ -7,7 +7,7 @@ use crate::*;
 /// Les panneaux metric utilisent le jeton __FROM__ (remplacé par la fenêtre temporelle).
 /// Données de DÉMO (PLUME_DEMO=1 uniquement) : peuple une instance FRAÎCHE pour la voir vivante en une
 /// commande (`docker compose up`) — events/metrics/alertes d'exemple sur 24 h, sans agent ni setup.
-/// OFF par défaut ; flag `seeded_demo` (une seule fois). Jamais en prod (n'active pas PLUME_DEMO).
+/// OFF par défaut ; flag `seeded_demo` (une seule fois). Jamais hors démo (n'active pas PLUME_DEMO).
 pub(crate) fn seed_demo(conn: &Connection) {
     // Plume CANONICAL (PLUME_-only) : PLUME_DEMO uniquement.
     let demo = std::env::var("PLUME_DEMO").ok();
@@ -66,7 +66,7 @@ pub(crate) fn seed_demo(conn: &Connection) {
     // ---- CASES de démo (PLUME_DEMO=1) : 2 incidents SYNTHÉTIQUES pour illustrer la vue case-detail (README).
     // 100% synthétiques : host `demo-host`, IPs déjà dans `ips` (RFC-5737/TEST-NET), aucun agent réel. Events
     // narratifs dédiés (dedup 'democase-*') liés en timeline pour que les chips alert/event se résolvent. Sous le
-    // flag `seeded_demo` déjà posé -> idempotent (une seule fois). JAMAIS en prod (n'active pas PLUME_DEMO).
+    // flag `seeded_demo` déjà posé -> idempotent (une seule fois). JAMAIS hors démo (n'active pas PLUME_DEMO).
     let ev = |ts: i64, src: &str, cat: &str, sev: i64, msg: &str, ip: Option<&str>, dk: &str| -> i64 {
         // CLOISONNEMENT PAR HÔTE (cf. ci-dessus) : la clé STOCKÉE est cloisonnée, DONC la relecture qui
         // résout l'id de l'event narratif l'est aussi — sinon la timeline de la case de démo casserait.

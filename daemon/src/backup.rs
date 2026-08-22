@@ -654,20 +654,21 @@ pub(crate) fn emit_backup_symmetric_signal(conn: &Connection, now_ts: i64) -> bo
     n > 0
 }
 
-/// v135 (#7) — émet le signal SOC de posture backup symétrique DEPUIS LE VRAI CHEMIN BACKUP (sidecar `plume-daemon
-/// backup`), et UNIQUEMENT si le backup vient d'être produit SANS destinataire asymétrique (`recipient` None/"" ->
+/// v135 (#7) — émet le signal SOC de posture backup symétrique DEPUIS LE CHEMIN QUI VIENT D'ÉCRIRE UNE ARCHIVE,
+/// et UNIQUEMENT si le backup vient d'être produit SANS destinataire asymétrique (`recipient` None/"" ->
 /// node-déchiffrable, pas d'escrow hors-cluster). Remplace le check de boot v134 mal placé dans `server::run`, qui
 /// émettait un faux signal « posture dégradée » à chaque restart sans qu'aucun backup ait été produit. Destinataire
 /// présent -> aucun signal (posture saine). `now_ts` injecté pour la testabilité. Renvoie true si un signal a été écrit.
 ///
-/// CE QUI N'EST PLUS VRAI, ET LE TROU QUE ÇA LAISSE (lu le 2026-08-22 dans `deploy/k3s.yaml`). Le retrait du
-/// check de boot reposait sur « le conteneur PRINCIPAL ne fait JAMAIS de backup ; le destinataire est posé
-/// UNIQUEMENT sur le SIDECAR ». Le manifeste livré n'a QU'UN conteneur, et lui pose `PLUME_BACKUP_INTERVAL` :
-/// c'est l'ordonnanceur NATIF (`server::scheduled_backup_cycle`) qui sauvegarde, sans destinataire — et ce chemin
-/// n'appelle PAS cette fonction. Le déploiement livré produit donc des archives déchiffrables par le nœud toutes
-/// les six heures avec, pour seul témoin, une ligne sur la sortie d'erreur. Le seul appelant reste la
-/// sous-commande `backup` (`main.rs`). La garde `le_manifeste_k3s_livre_sauvegarde_depuis_son_unique_conteneur`
-/// tient le fait de déploiement ; brancher ce signal sur le cycle natif est ouvert sous `S29`.
+/// DEUX APPELANTS, UN PAR CHEMIN QUI ÉCRIT UNE ARCHIVE — et c'est une propriété DÉRIVÉE, pas une liste : la garde
+/// `toute_ecriture_d_archive_en_production_emet_le_signal_de_posture` relit les appelants de `backup_compressed`
+/// et refuse qu'un chemin de production écrive une archive sans passer ici. (1) La sous-commande `backup`
+/// (`main.rs`), sur une connexion ouverte avec la clé de l'environnement. (2) Le cycle NATIF
+/// (`server::scheduled_backup_cycle`), celui que `deploy/k3s.yaml` active dans son unique conteneur, après le
+/// rename qui PUBLIE l'archive et avec la clé EXPLICITE du cycle (P8.25-a ; avant ce branchement, lu le
+/// 2026-08-22, ce chemin produisait des archives déchiffrables par le nœud avec pour seul témoin une ligne sur
+/// la sortie d'erreur). Le retrait du check de boot reposait sur « le conteneur principal ne fait jamais de
+/// backup » ; ce n'est plus vrai, et le signal suit désormais l'archive au lieu de supposer qui la produit.
 pub(crate) fn signal_backup_symmetric_if_needed(conn: &Connection, recipient: Option<&str>, now_ts: i64) -> bool {
     let symmetric_fallback = recipient.map_or(true, |r| r.is_empty());
     symmetric_fallback && emit_backup_symmetric_signal(conn, now_ts)
@@ -770,10 +771,11 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
     // v134 (#7) — LOUD WARN à chaque repli symétrique (backup DÉCHIFFRABLE PAR LE NŒUD : passphrase = clé
     // SQLCipher, présente sur le pod ; PAS d'escrow hors-cluster). Non-cassant (warn-only) : l'exigence
     // fail-closed a déjà été évaluée EN TÊTE (avant l'export plaintext). Le signal SOC NON-PURGEABLE est émis
-    // par l'appelant, UNIQUEMENT depuis la sous-commande `backup` (main.rs -> signal_backup_symmetric_if_needed)
-    // une fois le backup symétrique effectivement produit ; ici on n'a pas de conn writer dédiée. L'ordonnanceur
-    // NATIF (`server::scheduled_backup_cycle`), que `deploy/k3s.yaml` active dans son unique conteneur, passe
-    // ici SANS émettre ce signal : cette ligne d'avertissement est alors le seul témoin (cf. la note de
+    // par l'APPELANT, une fois le backup symétrique effectivement produit — ici on n'a pas de conn writer
+    // dédiée, et un signal posé avant l'écriture avouerait une posture sur une archive qui n'existe pas encore.
+    // Les deux appelants de production l'émettent : la sous-commande `backup` (main.rs) et l'ordonnanceur NATIF
+    // (`server::scheduled_backup_cycle`, après le rename qui publie l'archive — P8.25-a). Une garde dérivée des
+    // appelants de `backup_compressed` refuse un troisième chemin qui écrirait sans émettre (cf. la note de
     // `signal_backup_symmetric_if_needed`).
     if symmetric_fallback {
         eprintln!(
@@ -855,14 +857,14 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
 // Le PLANCHER est structurel, pas espéré : `write_value_ref` sérialise la cellule EMPRUNTÉE au pager
 // (`ValueRef`) sans la recopier, rien n'est retenu d'une ligne à l'autre, et aucun tampon ne grandit
 // avec le nombre de lignes. Une LIGNE énorme coûte donc sa propre taille, pas celle de sa table, et ce
-// n'est pas un seuil mais une INVARIANCE, mesurée par
-// `backup_streaming_peak_live_heap_follows_row_width_not_row_count` (2026-08-08) : à largeur de cellule
+// n'est pas un seuil mais une INVARIANCE, mesurée au banc par le test
+// `backup_streaming_peak_live_heap_follows_row_width_not_row_count` (2026-08-08, au banc) : à largeur de cellule
 // CONSTANTE (4 Mio), 2 lignes puis 16 -> pic de tas vivant 1 147 968 o puis 1 147 600 o, soit 368 o
 // d'écart pour 56 Mio de charge ajoutée. Le test porte ses deux mutations : faire accumuler le dump
 // entier écarte les pics de 58 722 184 o (ROUGE), recopier chaque cellule avant écriture déplace les
 // DEUX pics à ~5,34 Mio sans les écarter (VERT — c'est la borne connue, pas un défaut).
 // La borne restante est le champ unique : `rd_bytes` alloue la valeur entière à la relecture, donc une
-// cellule de 1 Gio coûterait 1 Gio.
+// cellule de 1 Gio coûterait 1 Gio (pire cas, par construction).
 //
 // LE TERME QUI DOMINE RÉELLEMENT LE PIC N'EST PAS LE DUMP, C'EST LE KDF (mesuré 2026-08-08). Sur le
 // chemin par PASSPHRASE — le DÉFAUT quand `PLUME_BACKUP_AGE_RECIPIENT` n'est pas configuré — `age`
@@ -873,7 +875,7 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
 // change. Le reste est DÉDUIT, pas mesuré : le seuil de l'ancienne version de ce test valait 32 Mio,
 // donc toute machine assez rapide pour choisir log_n >= 16 le faisait rougir à coup sûr ; age donne
 // lui-même 18 comme « ~1 s sur une machine moderne », soit 256 Mio — l'ordre de grandeur des
-// « +247 Mio » qui ont fait refuser le build de 8618753 en accusant le streaming à tort.
+// « +247 Mio » mesurés en CI qui ont fait refuser le build de 8618753 en accusant le streaming à tort.
 //
 // CE QUI ÉTAIT « DÉDUIT » CI-DESSUS EST MAINTENANT MESURÉ, ET C'ÉTAIT PIRE (2026-08-09) : le facteur
 // dépend aussi du PROFIL DE COMPILATION. Le même appel, sur la même machine, choisit log_n = 13/14/14
@@ -896,7 +898,7 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
 // Ce n'est pas une perte de données — c'est un déplacement de coût de la sauvegarde vers la restauration.
 //
 // MESURE (`backup_streaming_is_smaller_than_the_plaintext_export_on_the_same_db`, 2026-08-08), MÊME base
-// au schéma RÉEL de plume : 20 000 événements, `event_fts` peuplée, base SQLCipher de 7 221 248 o.
+// de test au schéma RÉEL de plume : 20 000 événements, `event_fts` peuplée, base SQLCipher de 7 221 248 o.
 //     chemin        charge sérialisée   `.age` produit
 //     streaming        3 714 129 o         321 017 o
 //     historique       6 758 400 o         780 941 o
@@ -908,8 +910,8 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
 // vite que la simple recopie de pages du chemin historique. L'ORDRE est constant (le streaming restaure
 // toujours plus lentement), l'AMPLEUR dépend de la charge de la machine — à provisionner dans le RTO
 // comme un facteur pouvant approcher 2,5x, pas comme un surcoût de 20 %.
-// Sur la base de PRODUCTION l'écart de TAILLE est structurellement plus grand encore : index + FTS y
-// pesaient 644 Mio sur 1 494 Mio mesurés le 2026-08-08, soit 43 % du fichier — exactement la part que le
+// Sur une base RÉELLE l'écart de TAILLE est structurellement plus grand encore : index + FTS y
+// pesaient plus de 40 % du fichier (relevé du 2026-08-08) — exactement la part que le
 // dump n'emporte pas. La contrepartie grandit dans le même sens : plus il y a d'index à ne pas
 // transporter, plus il y en a à reconstruire au restore.
 //

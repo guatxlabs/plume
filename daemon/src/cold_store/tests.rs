@@ -1913,11 +1913,11 @@ fn le_retard_compte_les_lignes_par_couple_env_et_jour() {
 // =====================================================================================================
 // `P10.13-a` LEVIER ① — LE DÉTECTEUR DE RETARD TIRE UNE FOIS PAR JOUR, PAS À CHAQUE PASSE.
 //
-// LE CHIFFRE QUI L'A DÉCIDÉ, relevé en production le 2026-08-13 sur 44 h et 45 passes : **2 passes
-// utiles, 43 sans le moindre travail** — 95,6 % de gaspillage, soit **20,0 min de `db.lock()` pour rien
-// sur 20,9 min au total**. La columnarisation n'a lieu qu'UNE FOIS PAR JOUR (un jour franchit la fenêtre
-// chaude) ; les 23 autres passes horaires ne peuvent rien faire PAR CONSTRUCTION. Et cet énoncé porte la
-// TOTALITÉ du coût de chaque passe (`SCAN e`, 27,9 s, 1,78 M lignes balayées).
+// LE CHIFFRE QUI L'A DÉCIDÉ, relevé sur une base réelle le 2026-08-13 sur près de deux jours de passes
+// horaires : **deux passes utiles, toutes les autres sans le moindre travail** — plus de 95 % de
+// gaspillage du temps de `db.lock()`. La columnarisation n'a lieu qu'UNE FOIS PAR JOUR (un jour franchit
+// la fenêtre chaude) ; les 23 autres passes horaires ne peuvent rien faire PAR CONSTRUCTION. Et cet énoncé
+// porte la TOTALITÉ du coût de chaque passe (`SCAN e`, un balayage complet de `event`).
 //
 // CE LEVIER NE SUPPRIME AUCUN TRAVAIL : il supprime des passes qui n'en avaient aucun.
 // =====================================================================================================
@@ -5437,7 +5437,7 @@ fn p2_vectorized_parity_no_mask() {
     assert_eq!(gb_host_vec, oracle_gb1(&oracle, "", "host"), "group-by host (NULL inclus)");
     assert!(gb_host_vec.contains_key(&vec![None]), "le groupe NULL (host absent) doit exister");
 
-    // (6) group-by MULTI-DIM source×severity×category — LA cible (32s SQLite prod). Parité exacte.
+    // (6) group-by MULTI-DIM source×severity×category — LA cible (des dizaines de secondes en SQLite sur une base réelle). Parité exacte.
     let gb3_vec = vec_group_count(&reader, &Pred::True, &["source", "severity", "category"], &deny).unwrap();
     let mut st = oracle
         .prepare("SELECT source, severity, category, COUNT(*) FROM mev GROUP BY source, severity, category")
@@ -5620,7 +5620,7 @@ fn p2_fallback_gate_rejects_nonphysical() {
 }
 
 // BENCH P2 : 800k lignes. Compare END-TO-END (décode + requête) VECTORISÉ vs HYDRATE-SQLITE pour (a) group-by
-// multi-dim (la cible 32s prod), (b) filtre regex, (c) count. Imprime timings + facteur (eprintln --nocapture).
+// multi-dim (la cible : des dizaines de secondes en SQLite sur une base réelle), (b) filtre regex, (c) count. Imprime timings + facteur (eprintln --nocapture).
 #[test]
 #[cfg(feature = "cold_tier")]
 fn p2_vectorized_bench() {
@@ -9133,8 +9133,8 @@ fn p87b_les_deux_moities_at_rest_derivent_du_meme_appel() {
 }
 
 // =====================================================================================================
-// `P10.5-a` — LE VIEILLISSEMENT REND COMPTE. Mesuré en production le 2026-08-10 : une passe libérait
-// 120 Mio de base chaude et écrivait 3,70 Mio de Parquet SANS ÉMETTRE UNE LIGNE, et quatre axes de coût
+// `P10.5-a` — LE VIEILLISSEMENT REND COMPTE. Mesuré sur une base réelle le 2026-08-10 : une passe libérait
+// une centaine de Mio de base chaude et écrivait quelques Mio de Parquet SANS ÉMETTRE UNE LIGNE, et quatre axes de coût
 // (durée, CPU, crête RAM, latence) étaient inconnus POUR CETTE SEULE RAISON. Ces tests portent sur le
 // CÂBLAGE : ce que la vraie passe écrit vraiment dans `metric`. La FORME de ce qui est publié (trou vs
 // zéro, causes, bornes, instrument de crête) est prouvée dans le profil PAR DÉFAUT
@@ -9824,8 +9824,8 @@ fn un_jour_sans_travail_ne_se_compte_pas_comme_columnarise() {
     assert_eq!(
         serie(&db, NOM_JOURS, Some("{\"issue\":\"columnarise\"}")),
         Some(0.0),
-        "un jour NO-OP est publié comme COLUMNARISÉ -> c'est le chiffre faux mesuré en production le \
-         2026-08-10 (« 10 jour(s) agé(s) » pour 10 jours qui n'ont rien fait)"
+        "un jour NO-OP est publié comme COLUMNARISÉ -> c'est le chiffre faux constaté le 2026-08-10 \
+         (« n jour(s) agé(s) » pour n jours qui n'ont rien fait)"
     );
     assert_eq!(
         serie(&db, NOM_JOURS, Some("{\"issue\":\"sans_travail\"}")),
@@ -9848,8 +9848,8 @@ fn un_jour_sans_travail_ne_se_compte_pas_comme_columnarise() {
 /// `sqlite3_stmt_status(..., resetFlg=0)` — ce que fait `Statement::get_status` — rend un CUMUL sur la
 /// durée de vie de l'INSTRUCTION PRÉPARÉE, pas le coût de la dernière exécution. Ajouter un second passage
 /// sans déplacer la lecture des compteurs aurait donc DOUBLÉ `balayage`, `tris` et `pas_de_machine` — en
-/// silence, et dans le rapport même dont on est en train de réparer l'honnêteté. Les 1 708 241 balayages
-/// relevés en production le 2026-08-15 seraient devenus ~3,4 M sans qu'une seule ligne ne change de forme.
+/// silence, et dans le rapport même dont on est en train de réparer l'honnêteté. Les millions de balayages
+/// relevés sur une base réelle le 2026-08-15 auraient été publiés au double sans qu'une seule ligne ne change de forme.
 ///
 /// LE TÉMOIN NÉGATIF EST DANS LE TEST : on prouve d'abord que le compteur DOUBLE VRAIMENT quand on exécute
 /// deux fois la même instruction. Sans cette moitié-là, l'égalité vérifiée ensuite pourrait tenir parce
@@ -9931,11 +9931,14 @@ fn les_compteurs_ne_comptent_que_le_passage_froid() {
 
 /// `P10.15-a` — LE VERDICT DÉPARTAGE, ET IL NE DIT PAS LA MÊME CHOSE DANS LES DEUX CAS.
 ///
-/// Les couples ne sont pas inventés : ce sont les DEUX relevés de production du 2026-08-15.
-///   * `decouverte_des_jours` : 3 847 ms à froid, tandis que la passe VIVANTE bouclait tout entière en
-///     12 à 31 ms -> le cache absorbe l'essentiel, le froid ne décrit PAS la passe ;
-///   * `retard_de_vieillissement` : 37 471 ms pour la sonde contre 38 836 ms pour la passe -> aucun cache
-///     n'absorbe un balayage de 1,7 M lignes, le froid DÉCRIT la passe.
+/// Les couples ne sont pas inventés : ils reprennent les deux relevés faits sur une base réelle le
+/// 2026-08-15.
+///   * `decouverte_des_jours` : plusieurs secondes à froid, tandis que la passe VIVANTE bouclait tout
+///     entière en quelques dizaines de millisecondes -> le cache absorbe l'essentiel, le froid ne décrit
+///     PAS la passe ;
+///   * `retard_de_vieillissement` : sonde et passe à quelques pour cent d'écart sur des dizaines de
+///     secondes -> aucun cache
+///     n'absorbe un balayage de toute la table, le froid DÉCRIT la passe.
 /// Un verdict qui rendrait la même phrase pour ces deux couples ne servirait à rien : c'est ce que la
 /// dernière assertion refuse.
 #[test]
@@ -9954,7 +9957,7 @@ fn le_verdict_de_cache_separe_ce_que_le_cache_absorbe_de_ce_qu_il_n_absorbe_pas(
     let absorbe = fabriquer(3847.1, Chaud::Mesure(21.0)).verdict_de_cache();
     assert!(
         absorbe.contains("SURESTIME") && absorbe.contains("21.0 ms"),
-        "le couple mesuré en prod (3847 ms à froid, 21 ms chauds) doit être annoncé comme surestimé, et \
+        "le couple (3847 ms à froid, 21 ms chauds) doit être annoncé comme surestimé, et \
          nommer la valeur que la passe paie vraiment : {absorbe}"
     );
 
@@ -9985,8 +9988,9 @@ fn le_verdict_de_cache_separe_ce_que_le_cache_absorbe_de_ce_qu_il_n_absorbe_pas(
         muet.contains("NON DÉPARTAGÉ") && muet.contains("rien ne dit ce que le cache en absorbe"),
         "sans second passage, la sonde doit dire qu'elle N'A PAS départagé — pas laisser la durée sur \
          connexion neuve passer pour le prix de la passe. (Le mot « BORNE HAUTE » a été RETIRÉ le \
-         2026-08-15 : la vérification en production a montré que ce n'en était pas une — même énoncé, \
-         10,1 / 3 847 / 11,3 ms selon l'état du cache de l'OS.) : {muet}"
+         2026-08-15 : la vérification sur une base vivante a montré que ce n'en était pas une — même \
+         énoncé, tantôt une dizaine de millisecondes, tantôt plusieurs secondes selon l'état du cache \
+         de l'OS.) : {muet}"
     );
 }
 
@@ -10048,9 +10052,10 @@ fn le_rapport_ne_publie_aucune_duree_sans_dire_de_quel_cache_elle_vient() {
     );
     // Et la mise en garde est dans la SORTIE, là où l'opérateur la lit.
     // `P10.15-a` RÉSIDUEL — CE QUE LE RAPPORT DOIT DIRE A CHANGÉ, ET EN MIEUX. La première version
-    // annonçait le passage froid comme une « BORNE HAUTE ». La vérification en production l'a REFUTÉ : le
-    // même énoncé a rendu 10,1 ms, 3 847 ms puis 11,3 ms selon le jour, parce que le cache de l'OS n'est
-    // pas remis à zéro et que la sonde ne le mesure pas. Un majorant qui varie de ×341 n'en est pas un.
+    // annonçait le passage froid comme une « BORNE HAUTE ». La vérification sur une base réelle l'a REFUTÉ :
+    // le même énoncé a rendu tantôt une dizaine de millisecondes, tantôt plusieurs secondes selon le jour,
+    // parce que le cache de l'OS n'est pas remis à zéro et que la sonde ne le mesure pas. Un majorant qui
+    // varie de plus de deux ordres de grandeur n'en est pas un.
     // La garde suit donc la propriété RÉELLE : le rapport doit annoncer la double mesure, nommer le CHAUD
     // comme PLANCHER, et NIER explicitement que le froid soit un majorant.
     assert!(
@@ -10065,8 +10070,8 @@ fn le_rapport_ne_publie_aucune_duree_sans_dire_de_quel_cache_elle_vient() {
     );
     assert!(
         rapport.contains("n'est PAS un majorant"),
-        "LE RAPPORT LAISSE CROIRE QUE LE FROID MAJORE LA PASSE. Mesuré le 2026-08-15 : le même énoncé rend \
-         10,1 ms, 3 847 ms ou 11,3 ms selon l'état du cache de l'OS, que cette sonde ne remet pas à zéro \
+        "LE RAPPORT LAISSE CROIRE QUE LE FROID MAJORE LA PASSE. Constaté le 2026-08-15 : le même énoncé rend \
+         tantôt une dizaine de millisecondes, tantôt plusieurs secondes selon l'état du cache de l'OS, que cette sonde ne remet pas à zéro \
          et ne mesure pas. Annoncer une borne qu'on n'a pas est exactement le défaut que `P10.15-a` \
          ferme\n{rapport}"
     );

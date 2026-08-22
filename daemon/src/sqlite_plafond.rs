@@ -122,8 +122,8 @@
 //!     ÉCHOUER là où il tuait le processus. C'est un échange assumé et il va dans le bon sens, mais NON
 //!     MESURÉ ici : ni le seuil d'occupation à partir duquel l'ingest voit des échecs, ni la taille de
 //!     base à partir de laquelle `VACUUM INTO` franchit le budget.
-//!   - LE PLAFOND NE PROTÈGE QUE S'IL EST SOUS LA LIMITE QUI TUE (cf. `Couverture`). MESURÉ le 2026-08-06 :
-//!     dans un cgroup de 1 Gio avec le budget LIVRÉ (1088 Mio), `stats dc(message)` tue toujours le
+//!   - LE PLAFOND NE PROTÈGE QUE S'IL EST SOUS LA LIMITE QUI TUE (cf. `Couverture`). MESURÉ au banc le
+//!     2026-08-06 : dans un cgroup de 1 Gio avec le budget LIVRÉ (1088 Mio), `stats dc(message)` tue toujours le
 //!     processus — l'OOM-killer arrive avant l'allocateur. Le même cgroup avec `PLUME_SQLITE_BUDGET_MB=384`
 //!     refuse proprement. La bannière confronte donc les deux nombres au démarrage au lieu d'annoncer une
 //!     protection qu'elle ne peut pas tenir.
@@ -213,10 +213,11 @@ fn porteurs_pour(interactif: i64, refresh: i64) -> i64 {
 /// contrôle négatif (aiguille absente) à 0. Le fichier est délié immédiatement et le répertoire est
 /// en 0700, mais il n'est PAS chiffré, et AUCUN quota n'en borne la taille (797 Mio mesurés).
 ///
-/// DÉFAUT = `MEMORY` : c'est ce qui tourne en production, et c'est la recommandation de SQLCipher
+/// DÉFAUT = `MEMORY` : c'est ce qui tourne hors tests, et c'est la recommandation de SQLCipher
 /// pour cette raison exacte. Le prix est connu et assumé : sans mécanisme de déversement, un tri
-/// non couvert par un index croît jusqu'à la limite du cgroup. En production ce plafond n'est pas
-/// atteint (RSS 225 Mio pour 2 Gio) ; il l'a été sur un banc dont les événements sont 4,4× plus gros.
+/// non couvert par un index croît jusqu'à la limite du cgroup. Sur une base réelle ce plafond n'est pas
+/// atteint (la RSS observée reste à une petite fraction du budget) ; il l'a été sur un banc dont les
+/// événements sont 4,4× plus gros.
 ///
 /// `PLUME_SQLITE_DEVERSEMENT=1` l'active pour qui préfère la borne mémoire — et doit alors placer
 /// `SQLITE_TMPDIR` sur un support chiffré. La vraie sortie n'est ni l'un ni l'autre : c'est une

@@ -1380,10 +1380,11 @@ fn main() {
                     // v135 (#7) — SIGNAL SOC NON-PURGEABLE émis depuis la sous-commande `backup` UNIQUEMENT quand un
                     // backup SYMÉTRIQUE a réellement été produit (recipient absent). Anciennement (v134) le signal
                     // partait à tort au boot du serveur, sans qu'aucun backup ait été produit -> faux positif
-                    // « posture dégradée » à chaque restart. L'ordonnanceur NATIF du serveur, lui, produit des backups
-                    // sans passer ici (cf. la note de `signal_backup_symmetric_if_needed`). Ici le repli est PROUVÉ (le
-                    // backup vient d'aboutir sans destinataire) -> signal légitime. Best-effort : un échec d'ouverture
-                    // DB writer ne bloque pas le backup déjà produit.
+                    // « posture dégradée » à chaque restart. L'ordonnanceur NATIF du serveur émet le MÊME signal
+                    // depuis son propre cycle, après le rename qui publie l'archive (P8.25-a,
+                    // `server::signaler_la_posture_de_l_archive_publiee`). Ici le repli est PROUVÉ (le backup vient
+                    // d'aboutir sans destinataire) -> signal légitime. Best-effort : un échec d'ouverture DB writer
+                    // ne bloque pas le backup déjà produit.
                     // Ce signal ÉCRIT (un événement SOC) -> il passe par la porte. Best-effort DANS LES
                     // DEUX SENS : un contrat non satisfait ne casse pas le backup DÉJÀ produit, mais il
                     // n'écrit rien non plus — il le DIT, au lieu d'écrire sur un schéma inconnu.
@@ -1413,7 +1414,8 @@ fn main() {
                         // P8.4-a — POURQUOI `dest` EST BIEN PLUS PETIT QUE LA BASE, DIT SUR PLACE.
                         // Le `ratio` ci-dessus est honnête : il compare la CHARGE à sa sortie. Mais
                         // l'exploitant, lui, compare `dest` au FICHIER de base qu'il voit sur son
-                        // disque — 40 Mio face a ~1445 Mio le 2026-08-08. Sans un mot, cet ecart se
+                        // disque — une archive de quelques dizaines de Mio face a une base de l'ordre du
+                        // Gio (constate le 2026-08-08 sur une base reelle). Sans un mot, cet ecart se
                         // lit comme « il manque des donnees ». L'explication existait deja dans
                         // `db_ventilation.rs`, mais a un endroit ou l'exploitant ne passe jamais :
                         // « promesse en prose ». On la RAPPROCHE du lecteur concerne.
@@ -1667,10 +1669,11 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
         print!("{out}");
         return;
     }
-    // `P10.13-a` — L'INSTRUMENT QUI MANQUAIT. La passe horaire de vieillissement lit 968,1 Mio et tient
-    // `db.lock()` 17-22 s pour découvrir <= 478 lignes de travail (mesuré en production les 2026-08-10/11),
-    // et LA CAUSE N'EST PAS ÉTABLIE : une réplique locale fidèle rend le même travail en < 0,6 s avec un
-    // plan indexé, donc elle ne reproduit PAS le plan de production. Cette sous-commande sert à LIRE ce
+    // `P10.13-a` — L'INSTRUMENT QUI MANQUAIT. La passe horaire de vieillissement lisait presque toute la
+    // base (près d'un Gio) et tenait `db.lock()` des dizaines de secondes pour découvrir quelques centaines
+    // de lignes de travail (mesuré sur une base réelle les 2026-08-10/11), et LA CAUSE N'EST PAS ÉTABLIE :
+    // une réplique locale fidèle rend le même travail en moins d'une seconde avec un plan indexé, donc
+    // elle ne reproduit PAS le plan observé. Cette sous-commande sert à LIRE ce
     // plan sur la base VIVANTE — avant toute « correction », qui serait sinon un remède sans diagnostic.
     //
     // ELLE N'ACCEPTE AUCUN SQL (ce serait une surface d'attaque neuve, et le projet a déjà une clé
@@ -1794,11 +1797,11 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
         println!("  freelist = {:.1} MiB ({free} o, {pct:.1}% RÉCUPÉRABLE par VACUUM)", mib(free));
         println!("  live     = {:.1} MiB", mib(total - free));
         println!("  events   = {events}");
-        // VENTILATION OPT-IN. `dbstat` PARCOURT toutes les pages : MESURÉ le 2026-08-09 sur la
-        // production, **35,4 s pour 1 586,8 Mio, soit 22,9 s/Gio** (SQLCipher, pod limité à 2 cœurs ;
-        // 35,9 s au 1er appel contre 35,4 s au 2ᵉ -> le coût est CPU, pas disque). Le `db-stats` par
-        // défaut, celui qu'un exploitant lance en prod pour décider d'un reclaim, reste INSTANTANÉ
-        // (1,3 s mesurées au même moment). On ne rend pas une commande d'exploitation lente par
+        // VENTILATION OPT-IN. `dbstat` PARCOURT toutes les pages : MESURÉ le 2026-08-09 sur une base
+        // réelle, **une vingtaine de secondes par Gio** (SQLCipher, pod limité à deux cœurs ; même durée
+        // au 1er et au 2ᵉ appel -> le coût est CPU, pas disque). Le `db-stats` par défaut, celui qu'un
+        // exploitant lance pour décider d'un reclaim, reste INSTANTANÉ (de l'ordre de la seconde, mesuré
+        // au même moment). On ne rend pas une commande d'exploitation lente par
         // surprise. Pour SUIVRE la ventilation sans la relancer à la main : le tick lent de
         // `ventilation_serie` l'écrit dans `metric` -> `metric plume_db_poste_bytes by poste`.
         if args.iter().any(|a| a == "--par-objet") {
@@ -1809,8 +1812,8 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
                 Err(e) => eprintln!("  ventilation INDISPONIBLE : {e}"),
             }
         } else {
-            println!("  (ventilation par objet : relancer avec --par-objet — parcourt TOUTES les pages, comptez ~23 s/Gio,");
-            println!("   mesuré le 2026-08-09 en production : 35,4 s pour 1 586,8 Mio. Pour la SUIVRE sans relever à la");
+            println!("  (ventilation par objet : relancer avec --par-objet — parcourt TOUTES les pages, comptez une");
+            println!("   vingtaine de secondes par Gio sous SQLCipher (ordre de grandeur de conception). Pour la SUIVRE sans relever à la");
             println!("   main : `metric plume_db_poste_bytes by poste | timechart span=1d avg(value)`)");
         }
         return;

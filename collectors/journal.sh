@@ -19,8 +19,8 @@ tmp=$(mktemp "$SPOOL/.jrnl.XXXXXX")
 #
 # `journalctl -o json` rend TOUT ce que journald a stocké sur chaque entrée. Le daemon, lui, n'en lit
 # que NEUF champs (`ingest_journal_lines` : __REALTIME_TIMESTAMP, __CURSOR, _COMM, MESSAGE, PRIORITY,
-# _PID, _UID, _SYSTEMD_UNIT, _HOSTNAME). MESURÉ le 2026-08-02 sur 200 entrées réelles `_COMM=sudo|su|
-# sshd|sshd-session` : 32 champs distincts émis, 31-32 par entrée, 285 223 octets — dont 23 champs
+# _PID, _UID, _SYSTEMD_UNIT, _HOSTNAME). MESURÉ le 2026-08-02 sur 200 entrées du journal d'un
+# poste de développement, `_COMM=sudo|su|sshd|sshd-session` : 32 champs distincts émis, 31-32 par entrée, 285 223 octets — dont 23 champs
 # JAMAIS lus, expédiés sur le réseau et écrits dans le spool pour rien.
 #
 # CE N'EST PAS QU'UN VOLUME. `_CMDLINE` fait partie des champs jamais lus : c'est l'ARGV COMPLÈTE du

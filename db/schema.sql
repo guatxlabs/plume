@@ -57,7 +57,8 @@ CREATE INDEX IF NOT EXISTS idx_event_ts  ON event(ts);
 -- PLUS » — or ce fichier les déclarait ENCORE, et `prepare_schema()` le rejoue à CHAQUE ouverture
 -- d'écriture. Résultat MESURÉ par lecture : chaque démarrage les RECONSTRUISAIT sur toute la table
 -- `event` (synchronement, AVANT le bind), la tâche de fond les supprimait 29 s plus tard, et le
--- démarrage suivant recommençait. Une boucle sans fin, sur 1,49 M de lignes chiffrées en production.
+-- démarrage suivant recommençait. Une boucle sans fin, sur le million et plus de lignes chiffrées d'une
+-- base réelle.
 -- La garde `schema_ne_recree_pas_ce_que_la_reconciliation_supprime` (daemon/src/tests) LIT les DROP
 -- de maintenance.rs et rougit si ce fichier en recrée un : l'allégation ne peut plus diverger du code.
 -- (v108) COMPOSITE (source, ts) : la recherche brute `search source=X earliest=-Nd` compile en
@@ -72,8 +73,8 @@ CREATE INDEX IF NOT EXISTS idx_event_src_ts ON event(source, ts);
 -- battement -> coût = 5 VM steps x (lignes de la source depuis le dernier battement), donc O(N)
 -- exactement quand le collecteur est MORT (mesuré le 2026-08-03 : x4 pour x4 lignes). PARTIEL et pas
 -- (source, category, ts) : le composite plein indexe TOUTE ligne ingérée (25,5 o/ligne mesurés sur banc,
--- soit ~38 Mio extrapolés sur les 1 554 295 lignes de la production mesurée le 2026-08-05 par
--- `db-stats --par-objet`, + un insert btree sur le chemin d'ingest CHAUD) là où le partiel n'indexe que
+-- soit quelques dizaines de Mio extrapolés au million et demi de lignes d'une base réelle, volume relevé
+-- le 2026-08-05 par `db-stats --par-objet`, + un insert btree sur le chemin d'ingest CHAUD) là où le partiel n'indexe que
 -- les battements (~1,5 Mio, un insert toutes les ~37 s). `category='health'` doit rester LITTÉRAL côté requête,
 -- sinon SQLite ne peut pas prouver l'implication et ignore l'index en SILENCE (cf. daemon/src/sondes.rs).
 -- Sur base MIGRÉE il est créé EN FOND après bind (ensure_event_health_beat_index_background) ; ici

@@ -21,7 +21,7 @@ Le compilo de recherche est **partagé** avec le crate public `guatx-core`.
 - **Recherche type Splunk** sur les logs sans Elastic : un langage **GXQL** (search-like) compilé en
   SQL read-only.
 - **Léger par conception** : un binaire `axum` + `rusqlite` (~4 Mo), confortable en peu de RAM.
-  L'instance de référence **mesure ~310 Mio de RSS** et est bornée à **2 Gi** (host comme k3s) — cf. §11
+  Le profil de référence **mesure de l'ordre de trois cents Mio de RSS** et est borné à **2 Gi** (host comme k3s) — cf. §11
   pour les conditions de mesure et la réserve (aucune garde CI ne défend ce plafond).
 - **Exposition maîtrisée** : le daemon ne s'expose **jamais** seul sur Internet — il vit derrière une
   chaîne reverse-proxy (Cloudflare → Traefik → Authentik forward-auth), et l'ingest agent passe par
@@ -228,9 +228,9 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
 - **Rollup-route** : un GXQL au **motif exact** (`… | stats count by source`, `search source=X | stats
   count by <dim>`, `count by source,severity`) est réécrit vers les compteurs **pré-agrégés**
   d'`event_rollup`/`event_dim_rollup` → réponse en quelques millisecondes **parce qu'elle ne lit pas les
-  events brutes** : les 92 panneaux semés répondent en **1 à 7 ms** en lisant **~62 000 lignes de rollup
-  pré-agrégé**, pas les **1 554 295 events** de la production (mesurés le 2026-08-05 par
-  `plume-daemon db-stats --par-objet` : 1 554 295 événements / 1 276,4 Mio). Chaque réponse porte
+  events brutes** : les 92 panneaux semés répondent en **quelques millisecondes** en lisant **quelques dizaines de
+  milliers de lignes de rollup pré-agrégé**, pas le **million et plus d'événements** d'une base réelle (relevé du
+  2026-08-05 par `plume-daemon db-stats --par-objet`). Chaque réponse porte
   `served_from: rollup|raw` + `approx` +
   `truncated` — l'analyste voit **toujours** si le chiffre est exact ou agrégé.
   **Et quand il est tronqué, il porte DE COMBIEN** : le plafond top-N par dimension écarte de x1,0 à
@@ -241,15 +241,15 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
   Buckets sans ligne de reste (agrégés par un binaire antérieur) → l'ampleur est **avouée inconnue**,
   jamais remplacée par 0. **Ce qui n'est PAS routé
   l'est délibérément** : un `count by source,severity,action` (ou `host`, ou `src_ip`) retombe sur le
-  **scan brut**, mesuré à **~32 s** sur la production **au plus tard le 2026-07-23** (date du commit
+  **scan brut**, mesuré à **une trentaine de secondes** sur une base réelle **au plus tard le 2026-07-23** (date du commit
   `c784f75` qui consigne la mesure ; la date de la mesure elle-même n'est pas consignée) — sur une topologie
   que la rétention a depuis purgée ; **le nombre de lignes que portait la base à cet instant n'a jamais été
-  relevé**, et la latence n'a **pas** été re-mesurée depuis sur la production actuelle (1 554 295 events,
-  2026-08-05). Ce n'est donc pas un coût courant, c'est une mesure datée. Le refus de router tient à la
+  relevé**, et la latence n'a **pas** été re-mesurée depuis (relevé du volume courant : 2026-08-05). Ce n'est
+  donc pas un coût courant, c'est une mesure datée. Le refus de router tient à la
   correction, pas à la latence : le rollup fusionne `NULL` et `''` sur ces
   dimensions et rendrait un group-by **faux** sous une étiquette « approximatif ». Nous refusons de servir
-  une réponse approchée comme si elle était exacte : **32 s (mesure ≤ 2026-07-23) exactes plutôt que 30 ms
-  fausses**. La route
+  une réponse approchée comme si elle était exacte : **des dizaines de secondes (mesure ≤ 2026-07-23) exactes plutôt
+  que des millisecondes fausses**. La route
   n'est jamais tentée quand un **masque de champ** est actif (`event_rollup` porte source/host/severity/
   action en clair) — tous les chiffres ci-dessus sont mesurés **masquage inactif**.
 - **Cache SWR des panneaux** : `panel_cache` + classification **adaptative LIVE/SWR par coût mesuré**
@@ -386,11 +386,11 @@ Trois cibles, **même binaire** (mode-aware) :
 
 | Cible | RAM |
 |---|---|
-| k3s / conteneur (profil de référence « SMB », SQLCipher) | **~310 Mio de RSS mesurés** · requests 256Mi-768Mi selon la charge / **limit 2Gi** |
+| k3s / conteneur (profil de référence « SMB », SQLCipher) | **de l'ordre de trois cents Mio de RSS mesurés** · requests 256Mi-768Mi selon la charge / **limit 2Gi** |
 | Hôte nu (systemd) | même binaire, même budget : `MemoryMax=2G` / `MemoryHigh=1800M` (cf. `systemd/plume-daemon.service`). **256 Mo et 200 Mo OOM-aient le daemon au boot** — ne descendez pas sous ~512 Mo. |
 
-Le profil de référence est **mesuré à ~310 Mio de RSS** sur l'instance de production de référence
-(**9 844 503 events en base, 2 vCPU, plafond mémoire 2 Gio, masquage de champs inactif**), et le plafond
+Le profil de référence est **mesuré à quelques centaines de Mio de RSS** sur une installation réelle
+(**près de dix millions d'événements en base, 2 vCPU, plafond mémoire 2 Gio, masquage de champs inactif**), et le plafond
 de 2 Gio est **appliqué à l'exécution** (`limits.memory: 2Gi` en k3s, `MemoryMax=2G` en systemd) — mais
 **aucun job de CI ne vérifie ce plafond** : c'est une mesure et une borne d'exécution, pas une garantie
 re-prouvée à chaque commit. La consommation dépend surtout de la **concurrence de requêtes**, pas de la

@@ -247,8 +247,8 @@ pas de doublon) au lieu de changer de graine.
 
 Sorties sous `$BENCH_DIR` (par défaut `../.bench`, **hors dépôt**) : `results.jsonl` (une ligne
 JSON par cellule, c'est la donnée brute), `manifest.json` (aiguilles et taux), `daemon.log`,
-`db/plume.db`. Compter **~1 Kio de base par événement** (mesuré en production : 1 053 o/événement,
-index et FTS compris) : 10 M d'événements ≈ 10 Gio.
+`db/plume.db`. Compter **environ un Kio de base par événement**, index et FTS compris (ordre de
+grandeur relevé sur une base réelle) : dix millions d'événements font une dizaine de Gio.
 
 ## Les règles qui rendent le banc publiable
 

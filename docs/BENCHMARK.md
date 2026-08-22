@@ -2995,7 +2995,7 @@ l'étiquette de configuration). **11 cellules sont TRONQUÉES** : le chemin d'un
 
 ## Le nombre de machines — ce que le profil mono-hôte cachait
 
-La production profilée est **mono-nœud** : ses 32 sources ont `distinct_hosts: 1`. `host`
+La base profilée est **mono-nœud** : toutes ses sources ont `distinct_hosts: 1`. `host`
 étant l'une des six colonnes indexées, toute cellule qui filtre ou groupe par hôte y porte
 sur un cas **dégénéré de cardinalité 1**. Les passes ci-dessous rejouent les mêmes classes
 sur des profils FLOTTE dérivés (`bench/make_fleet_profile.py`), **à volume d'événements
@@ -3010,7 +3010,7 @@ dans la requête : celles-là isolent la cardinalité, et ce sont elles qu'il fa
 juger du trou de généricité.
 
 **Ce que la taille de flotte change en VOLUME** — dérivé (`bench/make_fleet_profile.py`)
-des distributions MESURÉES par source, sur la fenêtre de la production profilée :
+des distributions MESURÉES par source, sur la fenêtre de la base profilée :
 
 | Hôtes | Sources host-locales | Événements mono-hôte (mesuré) | Événements flotte (dérivé) | Facteur |
 |---:|---:|---:|---:|---:|
@@ -3814,31 +3814,31 @@ dit ce que le levier ajouterait au budget de 2 Gio ; quand il est nul, c'est éc
 
 *Gain mesuré : **36.2 s** au p50 sur la cellule la plus parlante (C3b masqué vs non masqué). Ce n'est pas une promesse de gain : c'est l'écart QUE LA MESURE MONTRE aujourd'hui entre le chemin lent et un chemin rapide déjà existant ou atteignable.*
 
-le MÊME group-by, le MÊME rôle : **141 ms** masque vide (servi depuis `rollup`, 63 lignes) contre **36.3 s** masque non vide (servi depuis `raw`, 70 lignes — les comptes diffèrent parce que la route de rollups est APPROCHÉE, `stats.approx=true` : c'est le prix de sa vitesse), soit **257.8x plus lent**. Le rempart de confidentialité est donc aussi un frein de performance : un masque non vide désarme la route de rollups (`handlers/query.rs:282`) parce que `event_rollup` stocke `src_ip`/`host` en clair. Deux voies : masquer à la lecture du rollup, ou matérialiser un rollup par classe de masque. **Coût RAM : celui d'un jeu de rollups supplémentaire** (mesuré en production : `event_rollup` = 4,4 Mio pour 1,4 M d'événements, donc marginal), plus le masquage au vol. **Réserve** : la passe masquée porte 1 440 003 événements contre 1 440 007 pour la passe non masquée — l'écart de volume est négligeable devant le facteur mesuré, mais les deux chiffres ne viennent pas de la MÊME passe.
+le MÊME group-by, le MÊME rôle : **141 ms** masque vide (servi depuis `rollup`, 63 lignes) contre **36.3 s** masque non vide (servi depuis `raw`, 70 lignes — les comptes diffèrent parce que la route de rollups est APPROCHÉE, `stats.approx=true` : c'est le prix de sa vitesse), soit **257.8x plus lent**. Le rempart de confidentialité est donc aussi un frein de performance : un masque non vide désarme la route de rollups (`handlers/query.rs:282`) parce que `event_rollup` stocke `src_ip`/`host` en clair. Deux voies : masquer à la lecture du rollup, ou matérialiser un rollup par classe de masque. **Coût RAM : celui d'un jeu de rollups supplémentaire** (sur l'installation de référence, `event_rollup` pèse de l'ordre du Mio par million d'événements, donc marginal), plus le masquage au vol. **Réserve** : la passe masquée porte 1 440 003 événements contre 1 440 007 pour la passe non masquée — l'écart de volume est négligeable devant le facteur mesuré, mais les deux chiffres ne viennent pas de la MÊME passe.
 
 ### L2. Rendre l'index d'hôte utilisable AVEC une borne temporelle
 
 *Gain mesuré : **22.1 s** au p50 sur la cellule la plus parlante (C6b 7d vs all). Ce n'est pas une promesse de gain : c'est l'écart QUE LA MESURE MONTRE aujourd'hui entre le chemin lent et un chemin rapide déjà existant ou atteignable.*
 
-le MÊME `stats count by host`, la MÊME base : **102 ms** sans borne de temps contre **22.2 s** borné à la fenêtre chaude du produit (`7d`), soit **217x plus lent**. Sans borne, le group-by est servi par un parcours d'index seul (`idx_event_host` couvre la requête). Dès qu'une borne `ts` entre, l'index d'hôte ne suffit plus — il faut ouvrir chaque ligne pour lire son `ts` — et la requête redevient un scan. Or la borne temporelle est le cas NORMAL : un tableau de bord regarde toujours une fenêtre. Voie : un index composite `(host, ts)`, qui rend le prédicat de temps satisfiable dans l'index. **Coût RAM : nul ; coût DISQUE : un index de plus** (mesuré en production : `idx_event_host` pèse 35,8 Mio pour 1,4 M d'événements). À noter : cette cellule est déjà à 64 hôtes ; sur une flotte, le nombre de groupes ne fait que grandir.
+le MÊME `stats count by host`, la MÊME base : **102 ms** sans borne de temps contre **22.2 s** borné à la fenêtre chaude du produit (`7d`), soit **217x plus lent**. Sans borne, le group-by est servi par un parcours d'index seul (`idx_event_host` couvre la requête). Dès qu'une borne `ts` entre, l'index d'hôte ne suffit plus — il faut ouvrir chaque ligne pour lire son `ts` — et la requête redevient un scan. Or la borne temporelle est le cas NORMAL : un tableau de bord regarde toujours une fenêtre. Voie : un index composite `(host, ts)`, qui rend le prédicat de temps satisfiable dans l'index. **Coût RAM : nul ; coût DISQUE : un index de plus** (sur l'installation de référence, `idx_event_host` pèse quelques dizaines de Mio par million d'événements). À noter : cette cellule est déjà à 64 hôtes ; sur une flotte, le nombre de groupes ne fait que grandir.
 
 ### L3. Étendre la route de rollups aux dimensions à haute cardinalité
 
 *Gain mesuré : **14.1 s** au p50 sur la cellule la plus parlante (C3-groupby-hi / all). Ce n'est pas une promesse de gain : c'est l'écart QUE LA MESURE MONTRE aujourd'hui entre le chemin lent et un chemin rapide déjà existant ou atteignable.*
 
-`stats count by src_ip,host,source` sur tout l'historique : **14.2 s**, servi par `raw`. Seules les formes `by` dont TOUTES les dimensions tiennent dans `{source, severity}` sont routables (`rollup_route.rs:349-366`) ; dès qu'une dimension à haute cardinalité entre, on retombe sur le scan. **Coût RAM : celui du grain choisi** — un rollup à grain `src_ip` est borné en production par `PLUME_ROLLUP_SRCIP_TOPN` (50) précisément pour ne pas exploser, ce qui rend le résultat approché. Le compromis exactitude/mémoire doit être décidé, pas subi.
+`stats count by src_ip,host,source` sur tout l'historique : **14.2 s**, servi par `raw`. Seules les formes `by` dont TOUTES les dimensions tiennent dans `{source, severity}` sont routables (`rollup_route.rs:349-366`) ; dès qu'une dimension à haute cardinalité entre, on retombe sur le scan. **Coût RAM : celui du grain choisi** — un rollup à grain `src_ip` est borné à l'exécution par `PLUME_ROLLUP_SRCIP_TOPN` (50) précisément pour ne pas exploser, ce qui rend le résultat approché. Le compromis exactitude/mémoire doit être décidé, pas subi.
 
 ### L4. Le champ étendu non indexé n'a aucun chemin d'accès
 
 *Gain mesuré : **6.1 s** au p50 sur la cellule la plus parlante (C5b vs C5c). Ce n'est pas une promesse de gain : c'est l'écart QUE LA MESURE MONTRE aujourd'hui entre le chemin lent et un chemin rapide déjà existant ou atteignable.*
 
-regex sur `fields.object` (aucun index) : **6.1 s** contre **1.1 ms** pour une égalité sur `fields.user`, qui a un index d'expression partiel. 12 champs seulement sont indexés (`HOT_FIELDS`, lu dans `daemon/src/soql_glue.rs` : action, user, owner, kind, ns, role, scope, verb, resource, operation, dir, risk) sur les **241 clés distinctes mesurées en production**. Pour les 229 autres, toute recherche est un scan avec `json_extract` par ligne. C'est exactement la promesse « sur tous les champs » qui est en jeu. Voies : `event_fields_fts` (déjà écrit, voir le levier sur le coût de `PLUME_FTS_FIELDS`), ou des index d'expression sur demande, ou un stockage colonnaire des champs. **Coût RAM : un index d'expression par champ**, à arbitrer — et cet arbitrage n'a aujourd'hui aucun automate : le mécanisme qui promettait de le rendre à l'usage a été retiré (P6.8-b) sans avoir jamais promu un seul index.
+regex sur `fields.object` (aucun index) : **6.1 s** contre **1.1 ms** pour une égalité sur `fields.user`, qui a un index d'expression partiel. 12 champs seulement sont indexés (`HOT_FIELDS`, lu dans `daemon/src/soql_glue.rs` : action, user, owner, kind, ns, role, scope, verb, resource, operation, dir, risk) sur les **241 clés distinctes du profil mesuré**. Pour les 229 autres, toute recherche est un scan avec `json_extract` par ligne. C'est exactement la promesse « sur tous les champs » qui est en jeu. Voies : `event_fields_fts` (déjà écrit, voir le levier sur le coût de `PLUME_FTS_FIELDS`), ou des index d'expression sur demande, ou un stockage colonnaire des champs. **Coût RAM : un index d'expression par champ**, à arbitrer — et cet arbitrage n'a aujourd'hui aucun automate : le mécanisme qui promettait de le rendre à l'usage a été retiré (P6.8-b) sans avoir jamais promu un seul index.
 
 ### L5. Câbler FTS5 sur le chemin GXQL
 
 *Gain mesuré : **3.1 s** au p50 sur la cellule la plus parlante (C2c vs C2d). Ce n'est pas une promesse de gain : c'est l'écart QUE LA MESURE MONTRE aujourd'hui entre le chemin lent et un chemin rapide déjà existant ou atteignable.*
 
-la même aiguille, le même nombre de lignes rendues : **3.1 s** par GXQL (`message LIKE '%…%'`, scan complet) contre **3.7 ms** par `/api/search` (index FTS5 `event_fts`). L'index EXISTE et est déjà payé — mesuré en production : 389 Mio, soit 0,61 fois le poids de la table — mais il n'est câblé que sur `/api/search`. Sur le chemin GXQL, un terme libre devient `col LIKE '%motif%'` (`core/src/soql/dialect.rs:65-67`, appelé depuis `soql/mod.rs:881-891`), donc un scan complet. **Coût RAM : nul** — l'index est déjà construit et déjà en base.
+la même aiguille, le même nombre de lignes rendues : **3.1 s** par GXQL (`message LIKE '%…%'`, scan complet) contre **3.7 ms** par `/api/search` (index FTS5 `event_fts`). L'index EXISTE et est déjà payé — sur l'installation de référence il pèse environ six dixièmes du poids de la table — mais il n'est câblé que sur `/api/search`. Sur le chemin GXQL, un terme libre devient `col LIKE '%motif%'` (`core/src/soql/dialect.rs:65-67`, appelé depuis `soql/mod.rs:881-891`), donc un scan complet. **Coût RAM : nul** — l'index est déjà construit et déjà en base.
 
 ### L6. Le coût de `PLUME_FTS_FIELDS=1`, et à qui il profite
 

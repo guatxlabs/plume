@@ -1847,7 +1847,7 @@ def main():
             W("")
             if ha > hb:
                 W("> La base chaude n'a pas RÉTRÉCI : SQLite ne rend pas les pages au système, il les")
-                W("> met en liste libre (`auto_vacuum=0`, comme en production). L'espace est réutilisé")
+                W("> met en liste libre (`auto_vacuum=0`, le réglage par défaut). L'espace est réutilisé")
                 W("> par les écritures suivantes, il n'est pas rendu au disque. C'est mesuré, pas supposé.")
                 W("")
         for d in [x for x in ingest if str(x.get("phase") or "").startswith("cold_parity")]:
@@ -2028,7 +2028,7 @@ def main():
     if len(host_vals) >= 2:
         W("## Le nombre de machines — ce que le profil mono-hôte cachait")
         W("")
-        W("La production profilée est **mono-nœud** : ses 32 sources ont `distinct_hosts: 1`. `host`")
+        W("La base profilée est **mono-nœud** : toutes ses sources ont `distinct_hosts: 1`. `host`")
         W("étant l'une des six colonnes indexées, toute cellule qui filtre ou groupe par hôte y porte")
         W("sur un cas **dégénéré de cardinalité 1**. Les passes ci-dessous rejouent les mêmes classes")
         W("sur des profils FLOTTE dérivés (`bench/make_fleet_profile.py`), **à volume d'événements")
@@ -2062,7 +2062,7 @@ def main():
                                 len(fl.get("per_host_sources") or [])))
         if fl_rows:
             W("**Ce que la taille de flotte change en VOLUME** — dérivé (`bench/make_fleet_profile.py`)")
-            W("des distributions MESURÉES par source, sur la fenêtre de la production profilée :")
+            W("des distributions MESURÉES par source, sur la fenêtre de la base profilée :")
             W("")
             W("| Hôtes | Sources host-locales | Événements mono-hôte (mesuré) | Événements flotte (dérivé) | Facteur |")
             W("|---:|---:|---:|---:|---:|")
@@ -2291,8 +2291,8 @@ def main():
                     f"la même aiguille, le même nombre de lignes rendues : **{fmt_dur(a['wall_p50_ms'])}** "
                     f"par GXQL (`message LIKE '%…%'`, scan complet) contre "
                     f"**{fmt_dur(b['wall_p50_ms'])}** par `/api/search` (index FTS5 `event_fts`). "
-                    "L'index EXISTE et est déjà payé — mesuré en production : 389 Mio, soit 0,61 fois "
-                    "le poids de la table — mais il n'est câblé que sur `/api/search`. Sur le chemin "
+                    "L'index EXISTE et est déjà payé — sur l'installation de référence il pèse environ six dixièmes "
+                    "du poids de la table — mais il n'est câblé que sur `/api/search`. Sur le chemin "
                     "GXQL, un terme libre devient `col LIKE '%motif%'` "
                     "(`core/src/soql/dialect.rs:65-67`, appelé depuis `soql/mod.rs:881-891`), donc un "
                     "scan complet. **Coût RAM : nul** — l'index est déjà construit et déjà en base.",
@@ -2319,8 +2319,8 @@ def main():
                         "scan. Or la borne temporelle est le cas NORMAL : un tableau de bord regarde "
                         "toujours une fenêtre. Voie : un index composite `(host, ts)`, qui rend le "
                         "prédicat de temps satisfiable dans l'index. **Coût RAM : nul ; coût DISQUE : "
-                        "un index de plus** (mesuré en production : `idx_event_host` pèse 35,8 Mio "
-                        "pour 1,4 M d'événements). À noter : cette cellule est déjà à 64 hôtes ; sur "
+                        "un index de plus** (sur l'installation de référence, `idx_event_host` pèse quelques "
+                        "dizaines de Mio par million d'événements). À noter : cette cellule est déjà à 64 hôtes ; sur "
                         "une flotte, le nombre de groupes ne fait que grandir.",
                         f"C6b {_hotw} vs all"))
 
@@ -2342,8 +2342,8 @@ def main():
                         "masque non vide désarme la route de rollups (`handlers/query.rs:282`) parce "
                         "que `event_rollup` stocke `src_ip`/`host` en clair. Deux voies : masquer à "
                         "la lecture du rollup, ou matérialiser un rollup par classe de masque. "
-                        "**Coût RAM : celui d'un jeu de rollups supplémentaire** (mesuré en "
-                        "production : `event_rollup` = 4,4 Mio pour 1,4 M d'événements, donc "
+                        "**Coût RAM : celui d'un jeu de rollups supplémentaire** (sur l'installation "
+                        "de référence, `event_rollup` pèse de l'ordre du Mio par million d'événements, donc "
                         "marginal), plus le masquage au vol."
                         + ("" if nev(masked) == vol else
                            f" **Réserve** : la passe masquée porte {fmt_n(nev(masked))} événements "
@@ -2363,7 +2363,7 @@ def main():
                     "les formes `by` dont TOUTES les dimensions tiennent dans `{source, severity}` "
                     "sont routables (`rollup_route.rs:349-366`) ; dès qu'une dimension à haute "
                     "cardinalité entre, on retombe sur le scan. **Coût RAM : celui du grain choisi** "
-                    "— un rollup à grain `src_ip` est borné en production par "
+                    "— un rollup à grain `src_ip` est borné à l'exécution par "
                     "`PLUME_ROLLUP_SRCIP_TOPN` (50) précisément pour ne pas exploser, ce qui rend le "
                     "résultat approché. Le compromis exactitude/mémoire doit être décidé, pas subi.",
                     "C3-groupby-hi / all"))
@@ -2379,7 +2379,7 @@ def main():
                        f"`fields.user`, qui a un index d'expression partiel." if b and b.get("wall_p50_ms") else "")
                     + f" {len(_hf)} champs seulement sont indexés (`HOT_FIELDS`, lu dans "
                     f"`daemon/src/soql_glue.rs` : {', '.join(_hf)}) sur les **241 clés distinctes "
-                    f"mesurées en production**. Pour les {241 - len(_hf)} autres, toute recherche est "
+                    f"du profil mesuré**. Pour les {241 - len(_hf)} autres, toute recherche est "
                     "un scan avec `json_extract` par ligne. C'est exactement la promesse « sur tous "
                     "les champs » qui est en jeu. Voies : `event_fields_fts` (déjà écrit, voir le levier sur le coût de `PLUME_FTS_FIELDS`), ou "
                     "des index d'expression sur demande, ou un stockage colonnaire des champs. "

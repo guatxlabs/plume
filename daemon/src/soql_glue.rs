@@ -143,8 +143,8 @@ const _: () = {
 //   nombre), donc `json_extract` rend du TEXT ; le `CAST(... AS REAL)` que le compilateur émet pour un
 //   champ ABSENT de cette liste est CE QUI REND `search dport=443` JUSTE. Inscrire un champ numérique
 //   ici retire ce CAST et, l'ordre inter-types de SQLite étant NULL < INTEGER/REAL < TEXT < BLOB, la
-//   recherche devient SILENCIEUSEMENT VIDE. Et path/exe/key (haute cardinalité / firehose auditd 2,6M
-//   -> ~73 Mo/index, budget 2 Go) — leur GROUP-BY est servi par les rollups v49.
+//   recherche devient SILENCIEUSEMENT VIDE. Et path/exe/key (haute cardinalité : au banc firehose auditd,
+//   2,6 M d'événements -> ~73 Mo/index, budget 2 Go) — leur GROUP-BY est servi par les rollups v49.
 //
 //   v50 (2026-08-05) — `dir` ET `risk` ENTRENT, ET C'EST UNE RÉPARATION, PAS UN AJOUT DE CONFORT.
 //   Ce commentaire a dit DEUX choses fausses de suite sur `dir`, dans deux directions opposées, et
@@ -197,18 +197,18 @@ const _: () = {
 //   deux entrées font naître `idx_ev_f_dir` et `idx_ev_f_risk` en tâche de fond au prochain boot. Leur
 //   DDL est celle des `idx_ev_auto_*` droppés AU NOM PRÈS — même table, même expression, même prédicat
 //   partiel `WHERE json_extract(…) IS NOT NULL` — et elle n'a jamais varié sur toute la vie du
-//   mécanisme retiré. On recrée donc le MÊME objet, dont la taille A ÉTÉ RELEVÉE en production dans
-//   `bench/profile-prod.json` (`provenance: measured`, 2026-07-30, 1 397 446 événements) :
-//       idx_ev_auto_dir   4 616 192 o = 4,40 Mio   (`dir`  sur 234 519 lignes, soit 16,8 %, card. 2)
-//       idx_ev_auto_risk     12 288 o = 0,01 Mio   (`risk` sur 452 lignes, card. 7)
-//   soit 4,41 Mio à restaurer, = 1,5 % des 291,5 Mio d'index sur `event` du même relevé. C'est le
-//   partiel qui rend `dir` bon marché : 234 519 lignes indexées et non les 1,4 M de la table.
-//   POURQUOI L'INSTRUMENT NE LES VOYAIT PAS : le 10e objet du classement est `idx_event_ts` à
-//   22,75 Mio — le top 10 de `db-stats --par-objet` a un PLANCHER autour de 22 Mio, et `idx_ev_auto_dir`
-//   était CINQ FOIS dessous. Le relevé par objet existait pourtant déjà : c'est le mauvais instrument
-//   qui a été interrogé, pas une donnée manquante.
-//   ET `vtype` : mesuré à 733 184 o pour une CARDINALITÉ DE 1 — un index sur une colonne mono-valuée
-//   n'a aucune sélectivité. Deuxième raison, indépendante de l'absence d'usage, de ne pas le restaurer.
+//   mécanisme retiré. On recrée donc le MÊME objet, dont la taille A ÉTÉ RELEVÉE sur une base réelle dans
+//   le profil distillé `bench/profile-prod.json` (`provenance: measured`, 2026-07-30) :
+//       idx_ev_auto_dir    quelques Mio       (`dir` présent sur environ un sixième des lignes, card. 2)
+//       idx_ev_auto_risk   quelques Kio       (`risk` présent sur quelques centaines de lignes, card. 7)
+//   soit de l'ordre de 1,5 % des index sur `event` du même relevé. C'est le partiel qui rend `dir` bon
+//   marché : un sixième des lignes indexées et non toute la table.
+//   POURQUOI L'INSTRUMENT NE LES VOYAIT PAS : le top 10 de `db-stats --par-objet` a un PLANCHER (la taille
+//   du 10e objet, des dizaines de Mio sur ce relevé), et `idx_ev_auto_dir` était CINQ FOIS dessous. Le
+//   relevé par objet existait pourtant déjà : c'est le mauvais instrument qui a été interrogé, pas une
+//   donnée manquante.
+//   ET `vtype` : mesuré à quelques centaines de Kio pour une CARDINALITÉ DE 1 — un index sur une colonne
+//   mono-valuée n'a aucune sélectivité. Deuxième raison, indépendante de l'absence d'usage, de ne pas le restaurer.
 pub(crate) const HOT_FIELDS: &[&str] = &[
     "action", "user", "owner", "kind", "ns", "role", "scope",
     "verb", "resource", "operation",
@@ -263,7 +263,7 @@ pub(crate) fn soql_prune_message() -> bool {
 //
 //  L'ARBITRAGE. (b) ÉCHAPPER d'abord : entre guillemets doubles, FTS5 lit une PHRASE et plus une
 //  expression -> la capacité est PRÉSERVÉE au lieu d'être dégradée, et le coût est celui de l'index
-//  (mesuré 2026-08-09, 1 M de lignes, base EN CLAIR, cache chaud : phrase citée 0,020 s contre
+//  (mesuré 2026-08-09, base de banc de 1 M de lignes EN CLAIR, cache chaud : phrase citée 0,020 s contre
 //  0,49 s pour le `LIKE '%…%'` équivalent, ×24). (a) PAS de repli LIKE : `/api/query` en GXQL EST
 //  déjà ce repli (le cœur compile un terme libre en `message LIKE '%pat%'`) et il tourne sous un
 //  budget interactif de 60 s, là où cette route est bornée à 5 s (`READ_WATCHDOG_BUDGET_MS`) — un
@@ -271,12 +271,12 @@ pub(crate) fn soql_prune_message() -> bool {
 //  remonte l'erreur brute du moteur au lieu de la manger.
 //
 //  CE QUE LA GARDE COÛTE, MESURÉ le 2026-08-09 (12 cœurs, profil `release`, moyenne sur 200 appels ;
-//  le profil `debug` est ~4× plus lent, ce qui est le régime des tests, pas celui de la production) :
+//  le profil `debug` est ~4× plus lent, ce qui est le régime des tests, pas celui du binaire livré) :
 //      dérivation des miroirs   279 µs  (une fois par recherche portant du plein-texte)
 //      plan, 1 terme accepté     58 µs      plan, 1 terme littéralisé  139 µs
 //      plan, 3 termes           550 µs
 //  soit 0,34 ms à 0,83 ms ajoutés à une route dont le budget de lecture est de 5 000 ms et dont la
-//  requête FTS elle-même se compte en dizaines de millisecondes sur la base de production. La sonde
+//  requête FTS elle-même se compte en dizaines de millisecondes sur une base réelle. La sonde
 //  est une base EN MÉMOIRE d'UNE ligne : elle ne touche ni le disque, ni le pool de lecture, ni le
 //  sémaphore de concurrence.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════

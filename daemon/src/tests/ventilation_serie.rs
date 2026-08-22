@@ -322,7 +322,7 @@ mod ventilation_serie_tests {
             verdict.ok(),
             Some(true),
             "la mesure n'aboutit pas tant que le verrou d'écriture est tenu -> elle le prend, donc \
-             l'ingestion attendrait la durée du parcours (35,4 s mesurés en production)"
+             l'ingestion attendrait la durée du parcours (des dizaines de secondes sur une base réelle)"
         );
     }
 
@@ -406,14 +406,16 @@ mod ventilation_serie_tests {
 
     /// LA BORNE CPU. Le sommeil ne descend jamais sous `PART_MAX_INVERSE` fois la durée du dernier
     /// parcours : quelle que soit la taille de la base, la mesure ne peut pas dépasser 1/20 = 5 % d'un
-    /// cœur. À la taille de la production (35,4 s mesurés le 2026-08-09), le tick reste horaire.
+    /// cœur. Pour un parcours de quelques dizaines de secondes (une base de l'ordre du Gio), le tick
+    /// reste horaire.
     ///
     /// MUTATION : remplacer le `max` par l'intervalle nu ⇒ le cas « base énorme » rougit, et il rougit
     /// en NOMMANT la part de cœur consommée.
     #[test]
     fn le_parcours_ne_peut_pas_depasser_sa_part_de_coeur() {
         let heure = Duration::from_secs(3600);
-        // Production mesurée : 35,4 s -> le tick horaire n'est pas repoussé (0,98 % d'un cœur).
+        // Un parcours de 35,4 s (valeur de fixture : l'ordre de grandeur d'une base de l'ordre du Gio)
+        // -> le tick horaire n'est pas repoussé (moins de 1 % d'un cœur).
         assert_eq!(prochain_sommeil(heure, Duration::from_millis(35_433)), heure);
         // Une base 10x plus grosse (354 s) -> le sommeil s'allonge TOUT SEUL. La grandeur ASSERTÉE est
         // la PART DE CŒUR, pas le sommeil : c'est elle que la borne promet, et c'est elle qui doit être

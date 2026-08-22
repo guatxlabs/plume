@@ -79,10 +79,10 @@ vers le endpoint d'ingest Plume — le même contrat de fil que les collecteurs 
 ## Configuration (TOML)
 
 ```toml
-endpoint = "https://soc.guatx.com"
+endpoint = "https://soc.example.com"
 token = "…"                 # Bearer (recommandé) ; ou username/password (Basic)
 # host = "web01"            # override (défaut = hostname machine)
-# host_header = "soc.guatx.com"
+# host_header = "soc.example.com"
 batch_size = 500
 flush_interval_secs = 10
 spool_cap = 10000

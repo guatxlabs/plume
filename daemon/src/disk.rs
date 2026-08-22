@@ -176,7 +176,8 @@ pub(crate) fn ingest_disk_guard(st: &AppState) -> Option<Response> {
 // plancher d'espace LIBRE (512 Mo) : c'est un dernier rempart, invisible tant qu'il ne coupe pas. Ici on
 // rend le RISQUE de disk-pressure VISIBLE DANS LE SOC bien avant : un EVENT santé (source=plume-disk,
 // category=health) quand l'usage du volume de données dépasse un seuil %, RATE-LIMITÉ (dedup horaire ->
-// au plus 1 warn/heure). Réponse directe à l'incident VPS (/ à 94% -> kubelet image-GC -> SOC+plume down) :
+// au plus 1 warn/heure). Réponse directe à un incident réel (volume racine presque plein -> kubelet
+// image-GC -> SOC+plume down) :
 // le SOC se prévient LUI-MÊME de sa propre pré-saturation. INERTE si seuil=0 (désactivé) ou mesure
 // indisponible (fail-open, comme fs_free_mb). Émis depuis la boucle rollup (periodique, sous lock writer).
 // ================================================================================================

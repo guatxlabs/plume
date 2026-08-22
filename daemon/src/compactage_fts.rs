@@ -1,7 +1,7 @@
 //! LA COMPACTION DE L'INDEX PLEIN-TEXTE — rendre les octets qu'une PURGE a rendus MORTS.
 //!
 //! LE DÉFAUT, MESURÉ (P10.7-b, 2026-08-09). Sortir un événement de la fenêtre chaude fait **GROSSIR**
-//! l'index plein-texte. Sur une base au schéma RÉEL de plume (1 200 000 événements, puis un vrai
+//! l'index plein-texte. Sur une base de banc au schéma RÉEL de plume (1 200 000 événements, puis un vrai
 //! `DELETE FROM event` de 700 800 lignes = 58,4 %), avec la SQLite EXACTE du produit (SQLCipher 4.5.3 /
 //! SQLite 3.39.4, les PRAGMA de `server::tune`) :
 //!

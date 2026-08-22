@@ -190,7 +190,7 @@ action  user  owner  kind  ns  role  scope  verb  resource  operation  dir  risk
 > code mort quand le compilateur GXQL a migré dans `guatx-core` — et il a été retiré (P6.8‑b) ; sa
 > purge de fond a droppé les index `idx_ev_auto_dir` / `idx_ev_auto_risk` / `idx_ev_auto_vtype` qui,
 > eux, **existaient réellement en production** (relevés avec leur taille dans `bench/profile-prod.json`,
-> `provenance: measured`, 2026‑07‑30 : 4,40 Mio pour `dir`, 12 Ko pour `risk`). Le critère d'entrée
+> `provenance: measured`, 2026‑07‑30 : quelques Mio pour `dir`, quelques Kio pour `risk`). Le critère d'entrée
 > dans cette liste est donc devenu explicite
 > et vérifiable : **une règle livrée filtre‑t‑elle sur ce champ ?** — `dir=outbound` : trois règles du
 > catalogue (`ex-egress-fanout-external`, `lm-conntrack-internal-ssh`, `di-conntrack-internal-sweep`) ;
@@ -211,7 +211,7 @@ success  failure  allowed  blocked  ban  read  modify  delete  sudo  session_ope
 Ce paragraphe listait un vocabulaire sans jamais dire **où** `action` s'applique, ni ce que son
 absence signifie. Deux relevés du 2026‑08‑02 montrent que la question n'est pas cosmétique :
 
-- **Production réelle** (extraction lecture seule `bench/prod-profile.sql`, ~1,4 M d'événements) :
+- **Base réelle** (extraction lecture seule `bench/prod-profile.sql`, de l'ordre du million d'événements) :
   `fields.action` est présent sur **68,7 %** des lignes, cardinalité 18.
 - **Hôte Linux avec les collecteurs livrés** (base de labo peuplée par `collectors/*.sh` + journald
   réel) : absent sur **12,6 %** des lignes — et ces lignes-là sont **exactement** les catégories
@@ -396,7 +396,7 @@ n'élague pas sur `category` pour une requête aliasée (`extract_cold_dim_preds
 moteur colonnaire **décline** de vectoriser ces requêtes — l'oracle SQL les sert, donc une seule réponse
 possible quelle que soit la route.
 
-**Retrait.** Dernier événement `process` émis le 2026-07-23 ; rétention 365 jours ⇒ le dernier Parquet le
+**Retrait.** Dernier événement `process` connu (bascule du schéma) le 2026-07-23 ; rétention 365 jours ⇒ le dernier Parquet le
 portant sort de rétention le **2027-07-23**. Après cette date (purge passée), supprimer le bloc
 `cim_read_alias_exec` de `soql_glue.rs`, ses 4 sites d'appel (`ingest/store.rs` ×3, `handlers/search.rs`),
 la garde `carries_cim_read_alias` du planner froid, et les tests `cim_read_alias_*` / `cim_aliased_*`.

@@ -1,8 +1,8 @@
 // P10.D — QUI SE SERT DES INDEX B-TREE DE `event`, DANS CE QUE LE PRODUIT LIVRE ?
 //
 // POURQUOI CE FICHIER EXISTE. `docs/DESIGN-P10-echelle-2go.md` §5.4 dit « ne PAS toucher les index
-// restants sans mesure d'usage » — et cette mesure n'avait jamais été faite. Le poste pèse 428,0 Mio
-// (27,0 % du fichier, relevé de production du 2026-08-09 22:38 UTC), dont 253,6 Mio derrière ce
+// restants sans mesure d'usage » — et cette mesure n'avait jamais été faite. Le poste pèse plus du
+// quart du fichier (relevé du 2026-08-09 sur une base réelle), dont plus de la moitié derrière ce
 // panneau. Ce fichier fait la première des trois voies décrites au §2 bis : le REJEU de
 // `EXPLAIN QUERY PLAN` sur le corpus FERMÉ.
 //
@@ -44,9 +44,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Les index que la PRODUCTION porte réellement sur `event`, relevés par
-/// `plume-daemon db-stats --par-objet` le 2026-08-09 (16:07 UTC, 1 586,8 Mio / 406 213 pages,
-/// comptabilité FERMÉE ✓) et publiés dans `docs/DESIGN-P10-echelle-2go.md` §1 et `docs/ROADMAP.md`.
+/// Les index qu'une base RÉELLE porte sur `event`, relevés par `plume-daemon db-stats --par-objet`
+/// le 2026-08-09 (comptabilité FERMÉE ✓) et publiés dans `docs/DESIGN-P10-echelle-2go.md` §1 et
+/// `docs/ROADMAP.md`.
 ///
 /// CE N'EST PAS LA LISTE MESURÉE ICI — c'est le TÉMOIN qui autorise à publier. La base d'épreuve doit
 /// porter AU MOINS ces index : si elle en manque un, elle n'est pas au schéma de la production et
@@ -291,8 +291,9 @@ enum RegimeStats {
     /// lignes par table et une sélectivité par défaut). C'est le régime d'une instance fraîche.
     SansStats,
     /// `sqlite_stat1` SYNTHÉTISÉ depuis `bench/profile-prod.json` — cardinalités MESURÉES en lecture
-    /// seule sur la production le 2026-07-30 (1 397 446 événements, source=32, category=19, host=2,
-    /// src_ip=21 140, dedup=536 293 distincts). Ce n'est PAS un `ANALYZE` de production : c'est la
+    /// seule sur une base réelle le 2026-07-30 (valeurs dans le profil : quelques dizaines de sources et
+    /// de catégories, deux hôtes, des dizaines de milliers d'adresses, des centaines de milliers de clés
+    /// de dédup distinctes). Ce n'est PAS un `ANALYZE` d'installation : c'est la
     /// meilleure approximation qu'on puisse poser sans y accéder, et les approximations sont dites.
     ///
     /// ⚠ LA LIMITE PRINCIPALE DE CE RÉGIME, ET ELLE PORTE SUR LES BORNES. La SQLite vendorée du

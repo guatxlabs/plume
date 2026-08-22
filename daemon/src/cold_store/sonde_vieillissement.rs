@@ -1,12 +1,13 @@
 //! cold_store::sonde_vieillissement — L'INSTRUMENT QUI MANQUAIT : le PLAN et le CHRONOMÈTRE des énoncés
 //! du vieillissement, sur la base VIVANTE, en LECTURE SEULE.
 //!
-//! CE QU'ON SAIT, ET CE QU'ON NE SAIT PAS (`P10.13-a`, relevé en production les 2026-08-10/11). La passe
-//! horaire lit **968,1 Mio** et tient `db.lock()` **17–22 s** pour découvrir **≤ 478 lignes** de travail —
-//! soit ~23 Gio de lectures et **7–9 min de base gelée par jour**, pour zéro ligne columnarisée. LA CAUSE
-//! N'EST PAS ÉTABLIE. Une réplique locale fidèle (1 775 400 lignes, mêmes 7 index, même distribution,
-//! 62 seals) planifie `SEARCH event USING INDEX idx_event_ts` et rend en **< 0,6 s, avec ET sans
-//! `ANALYZE`** : elle ne reproduit donc PAS le plan de production. « Corriger » un plan qu'on n'a pas lu
+//! CE QU'ON SAIT, ET CE QU'ON NE SAIT PAS (`P10.13-a`, relevé sur une base réelle les 2026-08-10/11). La
+//! passe horaire lisait **presque toute la base** (près d'un Gio) et tenait `db.lock()` **des dizaines de
+//! secondes** pour découvrir **quelques centaines de lignes** de travail — soit des dizaines de Gio de
+//! lectures et **plusieurs minutes de base gelée par jour**, pour zéro ligne columnarisée. LA CAUSE
+//! N'EST PAS ÉTABLIE. Une réplique locale fidèle (même volume, mêmes 7 index, même distribution, mêmes
+//! seals) planifie `SEARCH event USING INDEX idx_event_ts` et rend en **moins d'une seconde, avec ET sans
+//! `ANALYZE`** : elle ne reproduit donc PAS le plan observé. « Corriger » un plan qu'on n'a pas lu
 //! serait exactement le défaut que cette campagne ferme. Cet outil sert à le LIRE.
 //!
 //! POURQUOI IL N'ACCEPTE PAS DE SQL. Une sous-commande « donne-moi le plan de CETTE requête » serait une
@@ -37,22 +38,22 @@
 //!
 //! CE QU'ELLE PERTURBE, ET CE QU'ELLE NE PERTURBE PAS. Processus SÉPARÉ, connexion SÉPARÉE ouverte en
 //! lecture seule : en WAL un lecteur ne prend PAS le verrou d'écriture et ne bloque pas l'ingest (même
-//! posture que `db-stats`, qui tourne déjà en production). Elle ne prend jamais `db.lock()` : ce mutex
+//! posture que `db-stats`, qui tourne déjà en exploitation). Elle ne prend jamais `db.lock()` : ce mutex
 //! appartient au PROCESSUS daemon, il n'existe pas ici. EN REVANCHE elle tire par le cache de pages de
-//! l'OS tout ce qu'elle lit, et ce n'est pas gratuit sur un budget de 2 Gio : relevé le 2026-08-15 sur la
-//! production, `MemAvailable` est passé de **1 195 Mio à 986 Mio** pendant une exécution (–209 Mio), aux
+//! l'OS tout ce qu'elle lit, et ce n'est pas gratuit sur un budget de 2 Gio : relevé le 2026-08-15 sur une
+//! base réelle, `MemAvailable` a reculé **d'environ un dixième du budget** pendant une exécution, aux
 //! dépens de ce que le daemon y avait chaud. Une sonde qui se disait « sans perturbation » se trompait
 //! d'axe : elle ne perturbe pas les VERROUS, elle perturbe la MÉMOIRE.
 //!
 //! `P10.15-a` — POURQUOI CHAQUE ÉNONCÉ EST EXÉCUTÉ **DEUX FOIS** (et pourquoi la version précédente
 //! mentait). La connexion de la sonde est neuve : son cache de pages est VIDE, alors que le daemon tourne
 //! sur une connexion vieille de plusieurs heures. Le rapport publiait UNE durée, sans dire laquelle des
-//! deux situations elle décrivait. Ce n'était pas une nuance : mesuré le 2026-08-15 en production, la
-//! sonde attribuait **3 847 ms** à `decouverte_des_jours` là où la passe VIVANTE bouclait — découverte
-//! comprise, journal à l'appui — en **12 à 31 ms**. Soit un facteur ≥ 183 sur l'énoncé le plus regardé de
-//! la campagne. Le même relevé confirmait l'autre énoncé au contraire : **37 471 ms** pour la sonde contre
-//! **38 836 ms** pour la passe, 3,5 % d'écart — parce qu'un balayage de 1,7 M lignes ne tient dans aucun
-//! cache. LES DEUX CAS EXISTENT DONC, ET RIEN DANS LA SORTIE NE PERMETTAIT DE LES DISTINGUER.
+//! deux situations elle décrivait. Ce n'était pas une nuance : mesuré le 2026-08-15 sur une base réelle,
+//! la sonde attribuait **plusieurs secondes** à `decouverte_des_jours` là où la passe VIVANTE bouclait —
+//! découverte comprise, journal à l'appui — en **quelques dizaines de millisecondes**. Soit plus de deux
+//! ordres de grandeur sur l'énoncé le plus regardé de la campagne. Le même relevé confirmait l'autre énoncé
+//! au contraire : sonde et passe à **3,5 % d'écart** sur des dizaines de secondes — parce qu'un balayage de
+//! toute la table ne tient dans aucun cache. LES DEUX CAS EXISTENT DONC, ET RIEN DANS LA SORTIE NE PERMETTAIT DE LES DISTINGUER.
 //!
 //! La correction ne devine pas quels énoncés sont sensibles au cache : elle les REJOUE TOUS
 //! immédiatement et publie LE COUPLE (froid, chaud). Le second passage n'est pas une redondance, c'est LA
@@ -62,14 +63,16 @@
 //! BORNE HAUTE, et le dire serait refaire la faute d'un cran plus haut.** La connexion de la sonde est
 //! neuve, donc son cache de pages SQLite est vide ; mais le cache de pages de l'OS, lui, est dans un état
 //! que la sonde **ne contrôle ni ne mesure**. Preuve par les chiffres, même énoncé (`decouverte_des_jours`)
-//! sur la même base : **10,1 ms** le 08-10, **3 847 ms** le 08-15 à 00:20Z, **11,3 ms** le 08-15 à 05:05Z.
-//! Un « majorant » qui varie de ×341 d'une exécution à l'autre n'est pas un majorant : c'est un
+//! sur la même base : **une dizaine de millisecondes** un jour, **plusieurs secondes** cinq jours plus tard,
+//! **une dizaine de millisecondes** de nouveau quelques heures après. Un « majorant » qui varie de plus de
+//! deux ordres de grandeur d'une exécution à l'autre n'est pas un majorant : c'est un
 //! ÉCHANTILLON. Ce qui tient : **CHAUD est un plancher** (tout est en cache, la passe ne peut pas faire
 //! mieux) et l'ÉCART entre les deux dit si le cache absorbe. La passe réelle est **au-dessus du chaud** ;
 //! au-dessous du froid seulement si l'OS était aussi froid ce jour-là, ce que personne ne sait. Le prix est assumé et dit dans le
 //! rapport : la sonde coûte désormais environ le double de ce qu'elle lisait. Un outil qui coûte deux fois
 //! est préférable à un outil qui se trompe de deux ordres de grandeur. (La justification écrite ici avant
-//! le 2026-08-15 — « les rejouer aurait fait payer DEUX FOIS les 17-22 s » — parlait d'un rejeu qui
+//! le 2026-08-15 — « les rejouer aurait fait payer DEUX FOIS les dizaines de secondes de la découverte » —
+//! parlait d'un rejeu qui
 //! n'apportait AUCUNE information, celui qui servait à relire un résultat ; elle ne couvrait pas celui-ci.)
 //!
 //! CE QU'ELLE NE MESURE PAS, ÉCRIT POUR ÊTRE OPPOSABLE :
@@ -287,8 +290,8 @@ pub(super) fn executer_et_chronometrer(conn: &Connection, e: &Enonce) -> Result<
 ///
 /// POURQUOI CETTE VARIANTE EXISTE, ET CE QU'ELLE ÉVITE. La sonde a besoin du RÉSULTAT de deux énoncés pour
 /// enchaîner comme la passe enchaîne (la découverte donne les candidats ; le snapshot donne le `max_id` qui
-/// borne la page). La première version les REJOUAIT après les avoir chronométrés — ce qui, en production,
-/// aurait fait payer DEUX FOIS les 17-22 s de la découverte, soit ~40 s de lecture pour un outil dont tout
+/// borne la page). La première version les REJOUAIT après les avoir chronométrés — ce qui, sur une base
+/// réelle, aurait fait payer DEUX FOIS les dizaines de secondes de la découverte, pour un outil dont tout
 /// l'argument est de ne pas déranger. Ici l'exécution est UNIQUE : on compte TOUTES les lignes (le
 /// chronométrage reste celui de l'énoncé complet) et on n'en RETIENT que `cap`.
 ///
@@ -320,8 +323,8 @@ pub(super) fn executer_recolter_et_chronometrer<T>(
     // `P10.15-a` — LES COMPTEURS SE LISENT **AVANT** LE REJEU, ET C'EST LOAD-BEARING.
     // `sqlite3_stmt_status(..., resetFlg=0)` — ce que fait `Statement::get_status` — rend un CUMUL sur la
     // durée de vie de l'instruction préparée, pas le coût de la dernière exécution. Les lire après le
-    // second passage aurait DOUBLÉ `balayage`, `tris` et `pas_de_machine` en silence : les 1 708 241
-    // balayages et 8 544 099 pas relevés en production le 2026-08-15 seraient devenus ~3,4 M et ~17 M,
+    // second passage aurait DOUBLÉ `balayage`, `tris` et `pas_de_machine` en silence : les millions de
+    // balayages et de pas relevés sur une base réelle le 2026-08-15 auraient été publiés au double,
     // sans qu'aucune ligne du rapport ne signale le changement d'unité. Corriger un instrument en
     // falsifiant ses autres chiffres aurait été le défaut qu'on est en train de fermer, retourné contre
     // lui-même. Témoin : `les_compteurs_ne_comptent_que_le_passage_froid`.
@@ -421,8 +424,8 @@ fn rendre(out: &mut String, e: &Enonce, m: &Result<Mesure, String>) {
                 }
                 ParLaPasse::ChaqueTick | ParLaPasse::ACadence(_) => {
                     // `P10.15-a` — LES DEUX DURÉES, TOUJOURS, SUR LA MÊME LIGNE. Publier le froid seul
-                    // était le défaut : mesuré en production le 2026-08-15, il surestimait la découverte
-                    // d'un facteur ≥ 183. Le couple ne se sépare pas, et le verdict qui suit ne fait
+                    // était le défaut : mesuré sur une base réelle le 2026-08-15, il surestimait la
+                    // découverte de plus de deux ordres de grandeur. Le couple ne se sépare pas, et le verdict qui suit ne fait
                     // qu'aider à le lire — il ne remplace aucun des deux nombres.
                     let _ = writeln!(
                         out,
@@ -482,8 +485,8 @@ pub(crate) fn cold_aging_plan(conf: &HashMap<String, String>, db_path: &str) -> 
     let _ = writeln!(
         out,
         "  CE QUE CETTE SONDE COÛTE : deux lectures complètes au lieu d'une, et elle tire par le cache de \
-         l'OS tout ce qu'elle lit — relevé du 2026-08-15 en production, MemAvailable 1 195 -> 986 Mio \
-         (-209) sur un budget de 2 Gio. Elle ne prend aucun verrou ; elle prend de la MÉMOIRE."
+         l'OS tout ce qu'elle lit — de l'ordre d'un dixième d'un budget de 2 Gio de MemAvailable pendant \
+         une exécution (constaté le 2026-08-15). Elle ne prend aucun verrou ; elle prend de la MÉMOIRE."
     );
     let _ = writeln!(out, "  maintenant = {n}");
     // LES DEUX GATES DE LA PASSE, DITS AVANT LES CHIFFRES : sans eux, un rapport de plans se lirait comme
@@ -548,7 +551,7 @@ pub(crate) fn cold_aging_plan(conf: &HashMap<String, String>, db_path: &str) -> 
 
     // ---- Les énoncés SANS candidat, dans l'ordre de la passe. ----
     // La découverte est chronométrée UNE SEULE FOIS et sa récolte (plafonnée) sert à choisir le candidat :
-    // la rejouer aurait fait payer deux fois les 17-22 s qu'on est venu mesurer.
+    // la rejouer aurait fait payer deux fois les dizaines de secondes qu'on est venu mesurer.
     let mut candidats: Vec<(String, i64)> = Vec::new();
     let mut decouverts = 0i64;
     for e in enonces_sans_candidat(&bande, n, &tir) {

@@ -3,9 +3,9 @@
 `bench/profile-prod.json`, le profil que lit le générateur.
 
     python3 bench/distill_profile.py dump1.txt [dump2.txt ...] \
-        --measured-at 2026-07-30T10:50:00Z \
-        --host "VPS OVH mono-noeud (6 vCPU, 11,4 Gio)"  # DESCRIPTION, pas le nom d hote \
-        --image guatx-plume:fde5c9c \
+        --measured-at <horodatage ISO du relevé> \
+        --host "<description de la machine : vCPU, RAM>"  # DESCRIPTION, pas le nom d hote \
+        --image <image:tag> \
         -o bench/profile-prod.json
 
 Le JSON produit porte, pour CHAQUE section, sa provenance : `measured` (sortie du SQL ci-dessus,
@@ -340,10 +340,12 @@ def main():
                 "une entropie et une répétitivité que le banc n'imite pas. Conséquence : les "
                 "chiffres FTS5 et LIKE dépendent de ce vocabulaire — c'est le point le plus faible "
                 "du banc et il est explicitement borné (voir bench/gen_events.py, VOCAB).",
-                "dedup : prod a 62 % de NULL et 536 k valeurs distinctes ; le banc met un dedup "
-                "unique sur 100 % des lignes pour que le rejeu soit idempotent. Conséquence : "
-                "l'index UNIQUE sur dedup est PLUS gros au banc qu'en prod (mesuré en prod : 46,9 Mio).",
-                "cold tier : la prod a 130 Mio de Parquet froid. Le banc génère du CHAUD uniquement.",
+                "dedup : la base réelle a une majorité de NULL et des centaines de milliers de valeurs "
+                "distinctes ; le banc met un dedup unique sur 100 % des lignes pour que le rejeu soit "
+                "idempotent. Conséquence : l'index UNIQUE sur dedup est PLUS gros au banc que sur la base "
+                "réelle (quelques dizaines de Mio).",
+                "cold tier : la base réelle porte un tier froid Parquet (quelques centaines de Mio). "
+                "Le banc génère du CHAUD uniquement.",
             ],
         },
 
@@ -351,7 +353,7 @@ def main():
             "provenance": "measured",
             "field_filter_rows": int(s.get("FIELD_FILTER_ROWS", ["0"])[0].split("|")[0]),
             "_note": (
-                "0 ligne dans `field_filter` = ENSEMBLE DE MASQUAGE VIDE. La production mesurée ici "
+                "0 ligne dans `field_filter` = ENSEMBLE DE MASQUAGE VIDE. La base mesurée ici "
                 "tourne SANS masquage : tous ses chiffres historiques valent pour l'état masque-vide, "
                 "celui où la route de rollups et le moteur vectorisé sont ARMÉS."
             ),

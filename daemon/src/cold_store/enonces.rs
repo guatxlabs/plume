@@ -1,25 +1,27 @@
 //! cold_store::enonces — LES ÉNONCÉS SQL DU VIEILLISSEMENT, ÉCRITS UNE SEULE FOIS, ET LA BANDE QU'ILS
 //! INTERROGENT.
 //!
-//! POURQUOI CE MODULE EXISTE. `P10.13-a` : la passe horaire de vieillissement lit **968,1 Mio** et tient
-//! `db.lock()` **17–22 s** pour découvrir **≤ 478 lignes** de travail (relevé en production les
-//! 2026-08-10/11). L'INSTRUMENT A TRANCHÉ le 2026-08-11 : `cold-aging-plan` a montré que ce coût est porté
-//! par UN SEUL énoncé — le dead-man's-switch de retard (n° 5), `SCAN e`, 1 720 594 lignes balayées,
-//! 27 705 ms — et que les huit autres totalisent **< 60 ms**, la découverte (n° 1, longtemps accusée)
-//! comprise, à **10,1 ms** et INDEXÉE. Le soupçon portait donc sur le mauvais énoncé, et c'est la mesure,
-//! pas la relecture, qui l'a dit. Ce qui reste NON établi est plus étroit : pourquoi le planificateur
-//! refuse `idx_event_ts` à CET énoncé alors qu'il l'accorde aux autres — la réplique locale
-//! (1 775 400 lignes, mêmes 7 index, 41 seals) ne reproduit ce refus sous AUCUNE des variantes essayées
+//! POURQUOI CE MODULE EXISTE. `P10.13-a` : la passe horaire de vieillissement lisait **presque toute la
+//! base** (près d'un Gio) et tenait `db.lock()` **des dizaines de secondes** pour découvrir **quelques
+//! centaines de lignes** de travail (relevé sur une base réelle les 2026-08-10/11). L'INSTRUMENT A TRANCHÉ
+//! le 2026-08-11 : `cold-aging-plan` a montré que ce coût est porté par UN SEUL énoncé — le dead-man's-switch
+//! de retard (n° 5), `SCAN e`, un balayage complet de `event` — et que les huit autres totalisent **quelques
+//! dizaines de millisecondes**, la découverte (n° 1, longtemps accusée) comprise, INDEXÉE. Le soupçon
+//! portait donc sur le mauvais énoncé, et c'est la mesure, pas la relecture, qui l'a dit. Ce qui reste NON
+//! établi est plus étroit : pourquoi le planificateur refuse `idx_event_ts` à CET énoncé alors qu'il
+//! l'accorde aux autres — une réplique locale au même volume (mêmes 7 index, même distribution, quelques
+//! dizaines de seals) ne reproduit ce refus sous AUCUNE des variantes essayées
 //! (sans stats, `ANALYZE` complet, `analysis_limit` 400/2000, `sqlite_stat4` retiré, nombre de lignes
 //! truqué de 100 à 800 000, littéraux vs paramètres liés) — sauf une : `idx_event_ts` ABSENT, cas exclu
-//! en production parce que `premiere_page_froide` et `compte_et_max_id_du_jour`, qui s'effondrent sans lui
-//! (mesuré : 1 544 -> 15 978 223 pas de machine), tiennent dans les 60 ms.
+//! sur la base réelle parce que `premiere_page_froide` et `compte_et_max_id_du_jour`, qui s'effondrent sans
+//! lui (mesuré sur la réplique : quatre ordres de grandeur de pas de machine en plus), y tiennent dans
+//! les dizaines de millisecondes.
 //!
 //! CE QUE LE LEVIER ① A CHANGÉ, ET CE QU'IL N'A PAS CHANGÉ (2026-08-14). L'énoncé n° 5 est INTACT —
 //! même texte, mêmes bornes, même chose détectée. Ce qui change est QUAND la passe l'exécute : une fois
-//! par jour au lieu de vingt-quatre. Le chiffre, relevé en production le 2026-08-13 sur 44 h et
-//! 45 passes : **2 passes utiles, 43 sans le moindre travail** — **20,0 min de `db.lock()` pour rien sur
-//! 20,9 min au total**. La columnarisation n'a lieu qu'UNE FOIS PAR JOUR (un jour franchit la fenêtre
+//! par jour au lieu de vingt-quatre. Le chiffre, relevé sur une base réelle le 2026-08-13 sur près de
+//! deux jours de passes horaires : **deux passes utiles, toutes les autres sans le moindre travail** — plus
+//! de 95 % du temps de `db.lock()` tenu pour rien. La columnarisation n'a lieu qu'UNE FOIS PAR JOUR (un jour franchit la fenêtre
 //! chaude) ; les 23 autres passes horaires ne peuvent rien faire PAR CONSTRUCTION. Ce module porte donc
 //! aussi la DÉCISION DE TIR (`tir_du_retard`, `periode_de_tir`, `TirDuRetard`), pour la même raison qu'il
 //! porte déjà les bornes : la passe et la sonde doivent lire la MÊME cadence, ou la sonde décrirait une
@@ -96,25 +98,26 @@ pub(super) fn sql_page_froide() -> String {
 /// Second énoncé qui BALAIE potentiellement `event` ; la passe ne l'exécute que si la rétention cold est
 /// ÉTENDUE (`cold_ret > retention_days`), et la sonde le dit.
 ///
-/// CE QUE LA PRODUCTION A DIT DE LUI (`P10.13-a`, `cold-aging-plan` du 2026-08-11). Il planifiait `SCAN e`
-/// — un balayage COMPLET de `event` : **1 720 594 lignes, ~968 Mio, 27 705 ms**, à lui seul la TOTALITÉ du
-/// coût de la passe (les huit autres énoncés : < 60 ms). Et il balayait pour RIEN : la bande ne contient
-/// que quelques centaines de lignes. C'est ARITHMÉTIQUE, pas une impression — 8 605 602 pas de machine /
-/// 1 720 594 lignes balayées = **5,0016**, or une ligne REJETÉE sur `ts` coûte EXACTEMENT 5 pas et une
-/// ligne RETENUE en coûte 20 (les deux mesurés sur réplique) : au plus ~500 lignes ont dépassé le filtre
-/// `ts`. LE COÛT N'ÉTAIT DONC PAS LA SOUS-REQUÊTE CORRÉLÉE — elle ne s'est exécutée que quelques centaines
-/// de fois, pas 1,7 M. C'était le PLAN.
+/// CE QU'UNE BASE RÉELLE A DIT DE LUI (`P10.13-a`, `cold-aging-plan` du 2026-08-11). Il planifiait `SCAN e`
+/// — un balayage COMPLET de `event` : **toute la table, près d'un Gio lu, des dizaines de secondes**, à lui
+/// seul la TOTALITÉ du coût de la passe (les huit autres énoncés : quelques dizaines de millisecondes). Et
+/// il balayait pour RIEN : la bande ne contient que quelques centaines de lignes. C'est ARITHMÉTIQUE, pas
+/// une impression — pas de machine / lignes balayées = **5,0016**, or une ligne REJETÉE sur `ts` coûte
+/// EXACTEMENT 5 pas et une ligne RETENUE en coûte 20 (les deux mesurés sur réplique) : au plus quelques
+/// centaines de lignes ont dépassé le filtre `ts`. LE COÛT N'ÉTAIT DONC PAS LA SOUS-REQUÊTE CORRÉLÉE — elle
+/// ne s'est exécutée que quelques centaines de fois, pas une par ligne de la table. C'était le PLAN.
 ///
 /// POURQUOI CE TEXTE-LÀ. La DÉCOUVERTE (énoncé 1) a le MÊME `FROM`, le MÊME prédicat `ts`, le MÊME
-/// `RETENTION_NONPURGE`, sur une bande de MÊME largeur — et la production la planifie INDEXÉE, en 10,1 ms.
+/// `RETENTION_NONPURGE`, sur une bande de MÊME largeur — et la même base la planifie INDEXÉE, en une
+/// dizaine de millisecondes.
 /// La SEULE différence textuelle était le `NOT EXISTS` corrélé DANS le `WHERE` de la boucle `event`.
 /// L'anti-jointure l'en sort : la boucle `event` porte désormais exactement le prédicat de la découverte,
-/// et l'appariement `cold_seal` est une boucle SÉPARÉE sur 63 lignes en index couvrant. Le pari est nommé,
+/// et l'appariement `cold_seal` est une boucle SÉPARÉE sur quelques dizaines de lignes en index couvrant. Le pari est nommé,
 /// et la prochaine `cold-aging-plan` le tranche. S'il reste `SCAN e`, la cause n'est pas le terme corrélé
 /// et le levier MESURÉ est un index PARTIEL COUVRANT `event(ts, env_id) WHERE <RETENTION_NONPURGE>`
-/// (mesuré sur la réplique, sur le plan EXACT de la production : balayage 1 775 399 -> **0**, pas de
-/// machine 8 886 209 -> **5 119**, octets lus 110,8 Mio -> **0,09 Mio** ; prix : **-8 % de débit d'ingest**
-/// et **+30 à 70 Mio**).
+/// (mesuré sur la réplique, sur le plan EXACT observé : balayage de toute la table -> **0 ligne**, pas de
+/// machine divisés par plus de mille, octets lus d'une centaine de Mio -> **moins d'un dixième de Mio** ;
+/// prix : **-8 % de débit d'ingest** et **quelques dizaines de Mio d'index**).
 ///
 /// L'ÉQUIVALENCE EST STRUCTURELLE, PAS ESPÉRÉE — et elle survit aux deux pièges de l'anti-jointure :
 ///   * **MULTIPLICITÉ.** Un jour à PLUSIEURS seals (`seq` 0..k) produit k lignes jointes, toutes NON-NULL,
@@ -319,9 +322,10 @@ impl Bande {
 ///
 /// POURQUOI 24 H, ET PAS UN CHIFFRE ROND. Parce que la columnarisation n'a lieu qu'UNE FOIS PAR JOUR (un
 /// jour franchit la fenêtre chaude), et que les 23 autres passes horaires ne peuvent rien faire PAR
-/// CONSTRUCTION. Mesuré en production sur 44 h et 45 passes le 2026-08-13 : **2 passes utiles, 43 sans le
-/// moindre travail** — **20,0 min de `db.lock()` pour rien sur 20,9 min au total**, portées EN TOTALITÉ
-/// par l'énoncé n° 5 (`SCAN e`, 27,9 s, 1,78 M lignes balayées, relevé à `cold-aging-plan`). Ce levier ne
+/// CONSTRUCTION. Mesuré sur une base réelle le 2026-08-13, sur près de deux jours de passes horaires :
+/// **deux passes utiles, toutes les autres sans le moindre travail** — plus de 95 % du temps de `db.lock()`
+/// tenu pour rien, porté EN TOTALITÉ par l'énoncé n° 5 (`SCAN e`, un balayage complet de `event`, relevé
+/// à `cold-aging-plan`). Ce levier ne
 /// supprime AUCUN travail : il supprime des passes qui n'en avaient aucun.
 pub(super) const PERIODE_TIR_RETARD_DEFAUT_S: i64 = 24 * 3600;
 

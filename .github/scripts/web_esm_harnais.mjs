@@ -1167,9 +1167,52 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[lookups] ligne rendue (nom, badge, clé, ${2} colonnes, bouton habillé), CSV lu (${lu.length} lignes, guillemets), refus nommé sans données, liste silencieuse sans réseau`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 18. UNE TUILE DE DASHBOARD REND SON EN-TÊTE, SES OUTILS SELON LE DROIT, ET AVOUE L'ERREUR DE SA GRILLE.
+//     Le rendu vit dans `dashboards.js` (extrait d'`app.js` par déplacement pur) ; il est exercé ici sur le shim,
+//     sans réseau : le titre et le compte de panneaux avec la mention « privé » ; la largeur en colonnes
+//     reportée sur la tuile et le sélecteur ; les outils d'un éditeur (favori, rafraîchir, ajouter, PDF,
+//     instantané, renommer, largeur, supprimer — chacun avec son infobulle, aucun bouton nu) contre ceux d'un
+//     lecteur (quatre, sans coin de redimensionnement) ; une grille dont la liste de panneaux ne peut pas
+//     être lue rend « erreur : … », jamais le placeholder ; une tuile repliée ne demande rien.
+// ---------------------------------------------------------------------------------------------
+{
+  const { renderDashboard } = await import(pathToFileURL(path.join(WEB, "dashboards.js")).href);
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const cueillir = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir(c, pred, acc)); return acc; };
+  const tuile = renderDashboard({ id: 7, name: "Posture", panels: 2, cols: 3, visibility: "private", collapsed: false, editable: true });
+  await tick();
+  exiger(tuile.tagName === "SECTION" && tuile.classList.contains("dashtile") && tuile.dataset.id === 7, `(18) la tuile : ${tuile.tagName} « ${tuile.className} » id=${tuile.dataset.id}`);
+  exiger(tuile.style.flexBasis === "calc(75% - 12px)", `(18) largeur de trois colonnes non reportée : « ${tuile.style.flexBasis} »`);
+  const h3 = cueillir(tuile, (e) => e.tagName === "H3", [])[0];
+  exiger(!!h3 && h3.textContent === "Posture", `(18) titre « ${h3 ? h3.textContent : "(absent)"} »`);
+  const meta = cueillir(tuile, (e) => e.classList.contains("dashmeta"), [])[0];
+  exiger(!!meta && meta.textContent === "2 panneau(x) - prive", `(18) compte de panneaux « ${meta ? meta.textContent : "(absent)"} »`);
+  const outils = cueillir(tuile, (e) => e.classList.contains("paneltools"), [])[0];
+  const boutons = outils ? outils.children.filter((e) => e.tagName === "BUTTON") : [];
+  const titres = boutons.map((b) => b.title);
+  for (const t of ["Ajouter aux favoris", "Rafraîchir ce dashboard", "Ajouter un panneau", "Imprimer / exporter ce dashboard en PDF", "Renommer le dashboard", "Supprimer le dashboard"]) exiger(titres.includes(t), `(18) outil « ${t} » absent — ${titres.join(" | ")}`);
+  exiger(boutons.every((b) => b.type === "button" && b.classList.contains("picon") && b.title), `(18) un outil est nu (sans type, classe ou infobulle) : ${boutons.map((b) => b.type + "/" + b.className + "/" + b.title).join(" | ")}`);
+  const largeur = outils ? outils.children.find((e) => e.tagName === "SELECT") : null;
+  exiger(!!largeur && largeur.children.length === 4 && largeur.value === "3", `(18) sélecteur de largeur : ${largeur ? largeur.children.length + " options, valeur « " + largeur.value + " »" : "absent"}`);
+  const grille = cueillir(tuile, (e) => e.classList.contains("dashgrid"), [])[0];
+  exiger(!!grille && grille.children.length === 1 && grille.children[0].classList.contains("bad") && grille.children[0].textContent.startsWith("erreur : "), `(18) sans réseau, la grille rend « ${grille ? grille.textContent : "(absente)"} » au lieu d'avouer l'erreur`);
+  exiger(tuile.children.some((e) => e.classList.contains("dcorner")), "(18) l'éditeur n'a pas de coin de redimensionnement");
+  const lecteur = renderDashboard({ id: 8, name: "Lecture", panels: 0, cols: 1, editable: false });
+  await tick();
+  const outilsL = cueillir(lecteur, (e) => e.classList.contains("paneltools"), [])[0];
+  exiger(!!outilsL && outilsL.children.length === 4 && !outilsL.children.some((e) => e.classList.contains("editonly")), `(18) un lecteur voit ${outilsL ? outilsL.children.length : 0} outil(s), quatre attendus sans outil d'édition`);
+  exiger(!lecteur.children.some((e) => e.classList.contains("dcorner")) && lecteur.style.flexBasis === "calc(25% - 12px)", "(18) un lecteur a un coin de redimensionnement, ou une colonne n'est pas reportée");
+  const repliee = renderDashboard({ id: 9, name: "Repliée", panels: 1, cols: 2, collapsed: true });
+  await tick();
+  const grilleR = cueillir(repliee, (e) => e.classList.contains("dashgrid"), [])[0];
+  exiger(repliee.classList.contains("collapsed") && !!grilleR && grilleR.textContent === "..." && typeof grilleR._deferredLoad === "function", `(18) une tuile repliée a demandé sa grille : « ${grilleR ? grilleR.textContent : "(absente)"} »`);
+  console.log(`[dashboards] tuile d'éditeur : ${boutons.length} outils habillés, largeur ${largeur ? largeur.value : "?"} col, grille qui avoue l'erreur ; lecteur : ${outilsL ? outilsL.children.length : 0} outils ; repliée : différée`);
+}
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données.`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau.`);

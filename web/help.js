@@ -3,7 +3,8 @@
 // (HELP / HELP_INDEX / GLOSSARY / HELP_SHORTCUTS), les modales d'aide (openHelpBox / openHelpModal /
 // openFreshnessHelp), la page « Aide » (renderHelpGuide) et le handler délégué .vhelp. Code relocalisé
 // VERBATIM depuis app.js -> comportement identique. app.js importe renderHelpGuide + openHelpModal +
-// openFreshnessHelp (le câblage #qhelp / #fresh-help et la route 'help' restent dans app.js).
+// openFreshnessHelp (le câblage #qhelp / #fresh-help et la route 'help' restent dans app.js) ; openHelp est
+// exporté pour le harnais ESM, qui vérifie qu'une clé sans section rend un aveu et non le silence.
 import { $, LANG, ic } from './core.js';
 import { uiIsAdmin, multiTenantMode } from './multitenant.js';
 
@@ -382,6 +383,40 @@ Time stored in UTC ; display follows the time-zone selector.` },
 • IP direction: src_ip = initiator (attacker), dst_ip = target.
 • "Test" checks the pattern against a sample line.` },
   },
+  processors: {
+    fr: { title: `Processeur d'ingest`, body:
+`Des règles ORDONNÉES évaluées AVANT l'indexation : décider ce que l'on n'indexe PAS
+(premier levier de rétention). Réservé admin.
+• Une règle = un prédicat « champ opérateur valeur » (champs : category, source,
+  severity, host, src_ip, dst_ip, url, message, fields.<clé> ; opérateurs : eq, ne,
+  contains, regex, any = tout événement) → une action :
+  - drop : n'indexe pas (compté « non-indexé (policy) ») ;
+  - mask : masque un champ (argument = le champ, ex. message ou fields.<clé>) ;
+  - route : pose l'environnement / la classe de rétention (argument = la cible) ;
+  - sample : garde 1 événement sur N (argument = N).
+• L'ordre (#) est l'ordre d'évaluation ; chaque règle a son interrupteur « active ».
+• NON-SILENCE : la barre compte non-indexés, droppés, masqués, routés, échantillonnés ;
+  chaque règle porte ses compteurs (matched / drop / mask / route / sample-out).
+• Une règle invalide est IGNORÉE et signalée (fail-safe : les événements concernés sont
+  indexés inchangés). Supprimer une règle est confirmé : ce qu'elle filtrait revient.
+• Sans règle, l'ingestion est inchangée (tout événement est indexé).` },
+    en: { title: `Ingest processor`, body:
+`ORDERED rules evaluated BEFORE indexing: decide what NOT to index (the first
+retention lever). Admin only.
+• A rule = a predicate "field operator value" (fields: category, source, severity,
+  host, src_ip, dst_ip, url, message, fields.<key>; operators: eq, ne, contains,
+  regex, any = every event) → an action:
+  - drop: do not index (counted "not indexed (policy)");
+  - mask: mask a field (argument = the field, e.g. message or fields.<key>);
+  - route: set the environment / retention class (argument = the target);
+  - sample: keep 1 event out of N (argument = N).
+• The order (#) is the evaluation order; each rule has its own "active" switch.
+• NON-SILENCE: the bar counts not-indexed, dropped, masked, routed, sampled-out;
+  each rule carries its counters (matched / drop / mask / route / sample-out).
+• An invalid rule is IGNORED and flagged (fail-safe: the events it targets are indexed
+  unchanged). Deleting a rule is confirmed: what it filtered comes back.
+• Without any rule, ingest is unchanged (every event is indexed).` },
+  },
   lookups: {
     fr: { title: `Lookups (tables d'enrichissement)`, body:
 `Table de référence nommée : clé -> colonnes, pour enrichir les events.
@@ -437,6 +472,50 @@ Principe fail-closed : un rôle inconnu est traité en lecture seule.` },
 • editor : read + write content (detection, cases, lookups…).
 • viewer : read only.
 Fail-closed: an unknown role is treated as read-only.` },
+  },
+  tokens: {
+    fr: { title: `Jetons (agent & HEC)`, body:
+`Un jeton authentifie une MACHINE (Bearer) sans mot de passe partagé. Réservé admin :
+la garde est serveur (GET/POST/DELETE /api/tokens), la console n'est qu'un pendant
+du CLI « plume-daemon token ».
+• Créer (« + Nouveau jeton ») : la fenêtre nomme la conséquence AVANT les champs —
+  une crédence d'accès naît, tout porteur du secret pourra écrire des événements.
+  - nom : lettres, chiffres, . _ - uniquement ;
+  - type : agent (ingestion + réponse, Bearer) ou HEC (forwarder compatible Splunk
+    HTTP Event Collector → POST /services/collector, en-tête « Authorization: Splunk <jeton> ») ;
+  - portée : machine = lié à UN hôte attesté (le responder n'agit que sur lui) ;
+    relais = forwarder multi-hôtes, l'hôte est DÉCLARÉ par l'émetteur, NON attesté,
+    et le jeton peut écrire sous n'importe quel nom d'hôte — à choisir les yeux ouverts ;
+  - hôte lié : requis pour « machine », vide pour « relais » (le serveur refuse
+    « ni hôte ni relais »).
+• Le SECRET est montré UNE SEULE FOIS, à la création (boîte de copie ; pour HEC, un
+  extrait curl prêt à coller). Seule son empreinte SHA-256 est conservée : la fenêtre
+  fermée, il est irrécupérable — il faut alors créer un autre jeton.
+• La liste montre nom, type, hôte lié (ou « relais — hôte non attesté »), création et
+  dernier usage.
+• Révoquer (✕, confirmé) : l'agent ou le forwarder porteur perd l'accès immédiatement ;
+  un jeton révoqué ne se réactive pas, on en provisionne un autre.` },
+    en: { title: `Tokens (agent & HEC)`, body:
+`A token authenticates a MACHINE (Bearer) without a shared password. Admin only:
+the guard is server-side (GET/POST/DELETE /api/tokens); the console mirrors the
+« plume-daemon token » CLI.
+• Create ("+ New token"): the dialog names the consequence BEFORE the fields —
+  an access credential is born, any holder of the secret can write events.
+  - name: letters, digits, . _ - only;
+  - kind: agent (ingest + response, Bearer) or HEC (Splunk-compatible HTTP Event
+    Collector forwarder → POST /services/collector, header "Authorization: Splunk <token>");
+  - scope: machine = bound to ONE attested host (the responder only acts on it);
+    relay = multi-host forwarder, the host is DECLARED by the sender, NOT attested,
+    and the token may write under any host name — choose it with open eyes;
+  - bound host: required for "machine", empty for "relay" (the server refuses
+    "neither host nor relay").
+• The SECRET is shown ONCE, at creation (copy box; for HEC, a ready-to-paste curl
+  snippet). Only its SHA-256 fingerprint is stored: once the dialog is closed it is
+  unrecoverable — create another token instead.
+• The list shows name, kind, bound host (or "relay — host not attested"), creation
+  and last use.
+• Revoke (✕, confirmed): the agent or forwarder holding it loses access immediately;
+  a revoked token is never re-enabled, provision another one.` },
   },
   notifiers: {
     fr: { title: `Canaux de notification`, body:
@@ -523,8 +602,16 @@ older data is purged on the next hourly cycle.
 • Tab visible in multi-tenant mode only (hidden in mode 0).` },
   },
 };
+// Une clé sans section ouvre un AVEU qui la nomme — jamais le silence, jamais un panneau vide (P11.4-e) :
+// le bouton existe, la page qu'il promet n'a pas été écrite, et c'est un défaut de la console, pas du geste.
+function aveuSansSection(key) {
+  return LANG === 'en'
+    ? `No help section exists for "${key}".\nThe button is there, the page it promises was never written — a console defect, not yours.\nThe build guard refuses this state; report it with that key name.`
+    : `Aucune section d'aide n'existe pour « ${key} ».\nLe bouton existe, la page qu'il promet n'a pas été écrite — défaut de la console, pas de votre geste.\nLa garde de construction refuse cet état ; le signaler avec ce nom de clé.`;
+}
 function openHelp(key) {
-  const e = HELP[key]; if (!e) return;
+  const e = HELP[key];
+  if (!e) { openHelpBox(LANG === 'en' ? 'Help unavailable' : 'Aide indisponible', aveuSansSection(String(key))); return; }
   if (e.fn) { e.fn(); return; }
   const d = (LANG === 'en' && e.en) ? e.en : e.fr;
   openHelpBox(d.title, d.body);
@@ -865,4 +952,4 @@ function openFreshnessHelp() {
   btn.onclick = close;
 }
 
-export { renderHelpGuide, openHelpModal, openFreshnessHelp };
+export { renderHelpGuide, openHelpModal, openFreshnessHelp, openHelp };

@@ -53,7 +53,6 @@ button{font:inherit}
 
 /* icones SVG inline (remplacent tous les emoji) */
 .ic{display:inline-block;width:1.05em;height:1.05em;vertical-align:-.16em;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
-.ic-lg{width:1.35em;height:1.35em}
 .ic.ok{color:var(--ok)} .ic.bad{color:var(--bad)}
 b.ok .ic{color:var(--ok)} b.bad .ic{color:var(--bad)}
 .sidebar a .ic{width:18px;height:18px}
@@ -73,10 +72,10 @@ header h1{display:flex;align-items:center;gap:8px;font-size:17px;font-weight:800
 #q::placeholder{color:var(--mut)}
 #q:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
 .hdr-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
-.hdr-tools select,#dash{background:var(--card);border:1px solid var(--bd);border-radius:var(--pill);color:var(--fg);padding:7px 12px;font-size:12px;cursor:pointer}
+.hdr-tools select{background:var(--card);border:1px solid var(--bd);border-radius:var(--pill);color:var(--fg);padding:7px 12px;font-size:12px;cursor:pointer}
 .tzwrap{display:inline-flex;align-items:center;gap:5px}   /* icône horloge SVG + sélecteur de fuseau */
 .tzic{width:15px;height:15px;color:var(--mut);flex:0 0 auto}
-.hdr-tools select:hover,#dash:hover{border-color:var(--acc)}
+.hdr-tools select:hover{border-color:var(--acc)}
 .navtoggle{background:transparent;border:0;color:var(--fg);cursor:pointer;line-height:1;padding:4px 6px;border-radius:8px;display:inline-flex}
 .navtoggle:hover{color:var(--acc)}
 .navtoggle .ic{width:22px;height:22px}
@@ -106,7 +105,6 @@ main{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:
 
 /* placeholders « À venir — chantier #1b » (Données -> Sources, Administration -> Rétention) */
 .soon{padding:28px 24px;text-align:center;border:1px dashed var(--bd);border-radius:var(--radius);background:var(--card2)}
-.soon-badge{display:inline-block;font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--acc);background:var(--acc-bg);border:1px solid color-mix(in srgb,var(--acc) 30%,transparent);border-radius:var(--pill);padding:4px 12px}
 .soon p{margin:10px 0 0;color:var(--mut);font-size:13px}
 
 /* bouton refresh de la carte Fraîcheur : même chrome bordé que les autres boutons-icônes (cf. .qhistnav .picon) */
@@ -124,8 +122,6 @@ b.ok,.ok{color:var(--ok)} b.bad,.bad{color:var(--bad)} b.mut{color:var(--mut)}
 
 /* alertes */
 .alerthead{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;font-size:12px;color:var(--mut)}
-#ack-all{background:var(--acc-bg);color:var(--acc);border:1px solid color-mix(in srgb,var(--acc) 30%,transparent);border-radius:var(--pill);padding:5px 12px;cursor:pointer;font-weight:600;font-size:12px;display:inline-flex;align-items:center;gap:5px}
-#ack-all:hover{background:var(--acc);color:var(--acc-ink)}
 .alert{display:grid;grid-template-columns:78px 1fr auto auto;gap:12px;align-items:center;padding:9px 12px;border-radius:10px;background:var(--card2);border:1px solid var(--bd);border-left:3px solid var(--bd);margin-bottom:7px}
 .alert .sev{font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:.04em;font-weight:700;padding:2px 8px;border-radius:var(--pill);text-align:center;background:var(--acc-bg);color:var(--mut)}
 .alert .title{color:var(--fg)}
@@ -188,15 +184,14 @@ footer{padding:12px 20px;color:var(--mut);font-size:12px;border-top:1px solid va
 /* accessibilite */
 :focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
-.visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);border:0}
 
 /* boutons (secondaires = contour, primaire = accent) — P11.4-b : LE JEU DE CLASSES PARTAGÉ.
    `.btn` (secondaire), `.btn-primary` (accent), `.btn-danger` (destructif), `.btn-link` (= .linklike).
    Les sélecteurs de CONTEXTE (.panelhead button, .rf-actions button, .rulerow button…) restent : ils
    produisent LE MÊME chrome par la même déclaration. Un bouton créé hors de ces contextes porte une classe. */
-.btn,.btn-primary,.btn-danger,.panelhead button,.rf-actions button,.ruleform button,.subh button,#rule-new,#notif-new,#act-new,#mode-toggle,#save-panel,#dash-new,#dash-del,.paneltools .picon,.viewbar button,.dashtile-head .chev,.emptystate button{
+.btn,.btn-primary,.btn-danger,.panelhead button,.rf-actions button,.ruleform button,.subh button,#rule-new,#notif-new,#act-new,#mode-toggle,#dash-new,.paneltools .picon,.viewbar button,.dashtile-head .chev,.emptystate button{
   background:var(--card);color:var(--fg);border:1px solid var(--bd);border-radius:9px;padding:6px 13px;cursor:pointer;font-size:13px;font-family:inherit;transition:border-color .15s,color .15s,background .15s}
-.btn:hover,.panelhead button:hover,.rf-actions button:hover,.ruleform button:hover,.subh button:hover,#rule-new:hover,#notif-new:hover,#act-new:hover,#mode-toggle:hover,#save-panel:hover,#dash-new:hover,#dash-del:hover,.paneltools .picon:hover,.viewbar button:hover,.dashtile-head .chev:hover,.emptystate button:hover{border-color:var(--acc);color:var(--acc)}
+.btn:hover,.panelhead button:hover,.rf-actions button:hover,.ruleform button:hover,.subh button:hover,#rule-new:hover,#notif-new:hover,#act-new:hover,#mode-toggle:hover,#dash-new:hover,.paneltools .picon:hover,.viewbar button:hover,.dashtile-head .chev:hover,.emptystate button:hover{border-color:var(--acc);color:var(--acc)}
 .btn-primary,.rf-actions button[type=submit]{background:var(--acc);color:var(--acc-ink);border-color:var(--acc);font-weight:700}
 .btn-primary:hover,.rf-actions button[type=submit]:hover{filter:brightness(1.08)}
 .btn-danger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,var(--bd))}
@@ -243,8 +238,8 @@ footer{padding:12px 20px;color:var(--mut);font-size:12px;border-top:1px solid va
 #viz{background:var(--card);border:1px solid var(--bd);border-radius:9px;color:var(--fg);padding:0 10px}
 /* contrôles de la qbar : hauteur uniforme (sinon ils s'étirent à la hauteur du textarea) + style cohérent */
 .qbar>button,.qbar>select{height:38px;align-self:flex-start}
-#qback,#qhelp,#qsize,#qtemplates,#qsave,#qsaved,#qrecent{background:var(--card);border:1px solid var(--bd);border-radius:9px;color:var(--fg);padding:0 12px;cursor:pointer;font-size:13px}
-#qback:hover,#qhelp:hover,#qsize:hover,#qtemplates:hover,#qsave:hover,#qsaved:hover,#qrecent:hover{border-color:var(--acc);color:var(--acc)}
+#qhelp,#qsize,#qtemplates,#qsave,#qsaved,#qrecent{background:var(--card);border:1px solid var(--bd);border-radius:9px;color:var(--fg);padding:0 12px;cursor:pointer;font-size:13px}
+#qhelp:hover,#qsize:hover,#qtemplates:hover,#qsave:hover,#qsaved:hover,#qrecent:hover{border-color:var(--acc);color:var(--acc)}
 /* Explore : Exécuter grisé pendant l'exécution + bouton STOP (rouge) pour annuler la requête en vol */
 #run.running{opacity:.55;cursor:progress}
 .stopbtn{background:var(--card);color:var(--mut);border:1px solid var(--bd);border-radius:9px;cursor:pointer;display:inline-flex;align-items:center}
@@ -393,7 +388,6 @@ tr.rowdetail>td{background:var(--card2);padding:10px 14px;white-space:normal;max
 /* barre de distribution proportionnelle (largeur via --w posée en JS) -- façon "interesting fields" Splunk */
 .fldval::before{content:"";position:absolute;left:0;top:0;bottom:0;width:var(--w,0);background:color-mix(in srgb,var(--acc) 20%,transparent);border-radius:6px;z-index:0}
 .fldval>span{position:relative;z-index:1}
-.fldlabel{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:72%}
 .fldval:hover{background:var(--acc-bg)}
 .fldc{color:var(--mut)}
 .events{max-height:440px;overflow:auto}
@@ -409,8 +403,6 @@ tr.rowdetail>td{background:var(--card2);padding:10px 14px;white-space:normal;max
 .logline .banbtn:hover{opacity:1}
 .banbtn{background:transparent;border:0;cursor:pointer;padding:0 4px;opacity:.6;color:var(--bad)}
 .banbtn:hover{opacity:1}
-.unbanbtn{background:transparent;border:0;cursor:pointer;padding:0 2px;opacity:.55;font-size:12px;line-height:1}
-.unbanbtn:hover{opacity:1}
 .mailbtn{background:transparent;border:0;cursor:pointer;padding:0 4px;opacity:.6;color:var(--acc)}
 .mailbtn:hover{opacity:1}
 .mailbtn .ic{width:15px;height:15px}
@@ -436,10 +428,6 @@ tr.rowdetail>td{background:var(--card2);padding:10px 14px;white-space:normal;max
 .caserow .casetitle{font-weight:600;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .caserow .casemeta{font-size:11px;color:var(--mut);white-space:nowrap;min-width:0;flex-shrink:1;overflow:hidden;text-overflow:ellipsis}   /* BATCH 2 (B5) : peut rétrécir/ellipsis -> ne déborde plus dans la colonne de grille voisine (minmax 360px) */
 .casest{font-size:10px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.06em;padding:2px 8px;border-radius:var(--pill);border:1px solid var(--bd);color:var(--mut)}
-.casest.st-open{color:var(--acc);border-color:color-mix(in srgb,var(--acc) 40%,transparent)}
-.casest.st-investigating{color:#e0a13a;border-color:#e0a13a55}
-.casest.st-contained{color:#3aa0e0;border-color:#3aa0e055}
-.casest.st-closed{color:var(--mut)}
 .badge[class*=sevb-]{font-size:10px;font-family:var(--font-mono);padding:2px 7px;border-radius:var(--pill);background:var(--card);border:1px solid var(--bd)}
 .modal.caseview{max-width:min(900px,92vw);width:900px}
 .caseview .caserowtop{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin:-2px 0 8px}
@@ -530,7 +518,6 @@ tr.rowdetail>td{background:var(--card2);padding:10px 14px;white-space:normal;max
 .act-dryrun{background:var(--acc-bg);color:var(--acc)}
 .act-failed,.act-blocked{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
 .act-cancelled{background:var(--card2);color:var(--mut)}
-.modebadge{font-family:var(--font-mono);font-size:12px;padding:4px 11px;border-radius:var(--pill);border:1px solid var(--bd);color:var(--mut)}
 /* ITEM 8 : état du responder rendu comme en Vue d'ensemble (pastille .fdot + libellé), pas un faux bouton (pilule) */
 .modestate{display:inline-flex;align-items:center;font-family:var(--font-mono);font-size:12px}
 /* D13 — INTERRUPTEUR ON/OFF du mode réponse (observe/actif). Color-codé : vert=Observation (sûr),
@@ -567,7 +554,7 @@ tr.rowdetail>td{background:var(--card2);padding:10px 14px;white-space:normal;max
 
 /* role viewer : masque les controles d'ecriture (le serveur les refuse aussi) */
 body.role-viewer .paneltools .picon,
-body.role-viewer #dash-new,body.role-viewer #dash-del,body.role-viewer #save-panel,
+body.role-viewer #dash-new,
 body.role-viewer #rule-new,body.role-viewer #notif-new,body.role-viewer #pb-new,
 body.role-viewer #act-new,body.role-viewer #mode-toggle{display:none!important}
 
@@ -868,7 +855,7 @@ h2 .ihelp,h3 .ihelp{vertical-align:middle;margin-left:6px;position:relative;top:
   header,#nav,footer,#netprog,#toasts,.modal-ov,
   .noprint,.export-actions,.minimenu,
   .ihelp,.vhelp,.picon,.paneltools,.qhistnav,.qbar,#sqlhint,
-  .alertview,.agseg,.agscope,#ack-all,.caserowtop,.c-noteform,.banbtn,.casebtn,
+  .alertview,.agseg,.agscope,.caserowtop,.c-noteform,.banbtn,.casebtn,
   .rangebtn,.stopbtn,.tableprog{display:none !important}
   /* si une surface précise a demandé l'impression (data-print), n'imprimer QUE celle-là */
   body[data-print] main>section{display:none !important}

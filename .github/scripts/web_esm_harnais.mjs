@@ -751,17 +751,13 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const sansClasse = [...barre.matchAll(/<button\b([^>]*)>/g)].filter((m) => !/\bclass="/.test(m[1]));
   exiger(sansClasse.length === 0, `(9) ${sansClasse.length} bouton(s) de la barre des alertes sans classe : ${sansClasse.map((m) => m[1].trim().slice(0, 40)).join(" | ")}`);
   exiger(/<button[^>]*class="btn[^"]*"[^>]*data-act="ack-all"/.test(barre), "(9) le bouton « Tout acquitter » ne porte pas la classe partagée");
-  const html = readFileSync(path.join(WEB, "index.html"), "utf8"), aide = readFileSync(path.join(WEB, "help.js"), "utf8");
+  const html = readFileSync(path.join(WEB, "index.html"), "utf8");
   exiger(/<div id="mfa-block">/.test(html) && !/id="mfa-(block|status|actions|enroll)"[^>]*style=/.test(html), "(9) le bloc MFA d'index.html porte encore un style en ligne");
   exiger(/<button id="airun"[^>]*class="btn"/.test(html), "(9) le bouton de l'assistant IA (#airun) est nu");
   const clesAide = [...html.matchAll(/data-help="([a-z-]+)"/g)].map((m) => m[1]);
   exiger(clesAide.length >= 20 && clesAide.includes("suppressions"), `(9) ${clesAide.length} bouton(s) d'aide lus dans index.html ; la section Suppressions doit en porter un`);
-  // Trou CONNU, hors de cette clé : le bouton d'aide « Jetons » (`data-help="tokens"`) n'a aucune section — un clic
-  // n'ouvre rien. Nommé ici pour qu'aucun AUTRE trou ne s'ajoute ; le retirer de cette liste quand la section existe.
-  const TROUS_CONNUS = ["tokens"];
-  const sansEntree = [...new Set(clesAide)].filter((k) => !TROUS_CONNUS.includes(k) && !new RegExp(`^  ${k}: \\{`, "m").test(aide));
-  exiger(sansEntree.length === 0, `(9) bouton(s) d'aide sans section dans help.js : ${sansEntree.join(", ")}`);
-  exiger(TROUS_CONNUS.every((k) => !new RegExp(`^  ${k}: \\{`, "m").test(aide)), "(9) un trou « connu » de l'aide a été comblé : retirer son nom de TROUS_CONNUS");
+  // Qu'une section existe pour CHAQUE déclencheur (HTML et JS) est dérivé par `check_every_help_trigger_has_a_section.py` ;
+  // ce que rend l'ouvreur sur une clé sans section est le témoin 11.
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -867,9 +863,85 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(h2FR._text === enTete && boutonFR.getAttribute("title") === infobulle, "(10) LANG='fr' : l'en-tête ou son infobulle ont été modifiés");
 }
 
+// ---------------------------------------------------------------------------------------------
+// 11. L'OUVREUR D'AIDE NE SE TAIT JAMAIS (`P11.4-e`). Un bouton `data-help` dont la clé n'a pas de section
+//     rendait RIEN : `openHelp` retournait sans un mot (mesuré ici avant correction : zéro nœud ajouté au
+//     corps du document). Témoins : la section « Jetons » s'ouvre et dit ce que le panneau fait (secret montré
+//     une seule fois, révocation) ; une clé sans section ouvre un AVEU qui nomme la clé — jamais un panneau
+//     vide, jamais le silence. L'existence d'une section pour chaque déclencheur est DÉRIVÉE par la garde
+//     `check_every_help_trigger_has_a_section.py` ; ici, c'est le RENDU.
+// ---------------------------------------------------------------------------------------------
+{
+  const { openHelp } = await import(pathToFileURL(path.join(WEB, "help.js")).href);
+  const corps = document.body;
+  const rendu = (cle) => { const avant = corps.children.length; openHelp(cle); const ajoutes = corps.children.slice(avant); return { ajoutes, texte: ajoutes.map(texte).join("\n") }; };
+  const jetons = rendu("tokens");
+  exiger(jetons.ajoutes.length === 1 && jetons.ajoutes[0].classList.contains("modal-ov"), `(11) openHelp('tokens') ajoute ${jetons.ajoutes.length} nœud(s) au corps : la section « Jetons » ne s'ouvre pas`);
+  for (const mot of ["jetons", "une seule fois", "hec", "révoqu"]) exiger(jetons.texte.toLowerCase().includes(mot), `(11) l'aide « Jetons » ne dit pas « ${mot} »`);
+  const inconnue = rendu("cle-sans-section-temoin");
+  exiger(inconnue.ajoutes.length === 1, `(11) openHelp sur une clé sans section ajoute ${inconnue.ajoutes.length} nœud(s) : l'ouvreur se tait (aucun aveu)`);
+  exiger(inconnue.texte.includes("cle-sans-section-temoin") && /aucune section|no help section/i.test(inconnue.texte), `(11) l'aveu sur une clé sans section ne nomme pas la clé ou ne dit pas l'absence : « ${inconnue.texte.slice(0, 120)} »`);
+  exiger(!/^\s*$/.test(inconnue.texte), "(11) l'aveu est un panneau VIDE");
+  console.log(`[aide] openHelp('tokens') : ${jetons.ajoutes.length} nœud(s) rendus ; clé sans section : ${inconnue.ajoutes.length} nœud(s) rendus, texte « ${inconnue.texte.replace(/\s+/g, " ").slice(0, 100)} »`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 12. LE VOILE DE RECHARGEMENT NE RESTE PAS POSÉ (`P11.4-f`). `.reloading` (opacité réduite, clics coupés) est
+//     posé sur le corps des alertes et de la fraîcheur avant `api()`, et retiré après. Hypothèse éprouvée ici,
+//     pas supposée : existe-t-il un chemin qui le laisse ? (a) `api()` échoue ; (b) `api()` réussit et le RENDU
+//     lève ; (c) deux rechargements se chevauchent (l'analyste quitte et revient pendant une requête lente).
+//     L'instrument se valide lui-même : la classe DOIT être vue posée PENDANT la requête (sinon le témoin
+//     « absente après » ne prouverait rien), et le rendu poison DOIT lever.
+// ---------------------------------------------------------------------------------------------
+{
+  const { renderAlerts } = await import(pathToFileURL(path.join(WEB, "alerts.js")).href);
+  const { renderFreshness } = await import(pathToFileURL(path.join(WEB, "freshness.js")).href);
+  const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const corps = { "#alerts .body": new Element("div"), "#freshness-panel .body": new Element("div") };
+  const querySelectorOrig = document.querySelector;
+  document.querySelector = (sel) => corps[sel] ?? new Element("div");
+  const reponse = (obj) => ({ ok: true, status: 200, text: async () => JSON.stringify(obj) });
+  const cas = [
+    { nom: "alertes (plate)", corps: corps["#alerts .body"], rendre: () => { S.alertGroupBy = ""; return renderAlerts(true); }, poison: { alerts: [null], total: 1 }, sain: { alerts: [], total: 0 } },
+    { nom: "alertes (groupes)", corps: corps["#alerts .body"], rendre: () => { S.alertGroupBy = "rule"; return renderAlerts(true); }, poison: { groups: [null], total: 1 }, sain: { groups: [], total: 0 } },
+    { nom: "fraîcheur", corps: corps["#freshness-panel .body"], rendre: () => renderFreshness(true), poison: { feeds: [null, null], pipeline_fresh: true }, sain: { feeds: [], pipeline_fresh: true } },
+  ];
+  const bilan = [];
+  for (const c of cas) {
+    // (a) api() échoue — la classe est vue posée PENDANT, absente APRÈS.
+    let poseePendant = null;
+    globalThis.fetch = async () => { poseePendant = c.corps.classList.contains("reloading"); throw new Error("réseau coupé (témoin)"); };
+    let levee = null; try { await c.rendre(); } catch (e) { levee = e; }
+    exiger(poseePendant === true, `(12) instrument : ${c.nom} — la classe .reloading n'est pas posée pendant la requête, le témoin ne prouve rien`);
+    exiger(levee === null, `(12) ${c.nom} — un échec d'api() remonte jusqu'à l'appelant : ${levee && levee.message}`);
+    exiger(!c.corps.classList.contains("reloading"), `(12) ${c.nom} — .reloading reste posée après un échec d'api()`);
+    // (b) api() réussit, le rendu lève — la classe est déjà retirée quand le rendu commence.
+    globalThis.fetch = async () => reponse(c.poison);
+    levee = null; try { await c.rendre(); } catch (e) { levee = e; }
+    exiger(levee !== null, `(12) instrument : ${c.nom} — le rendu poison n'a pas levé, le témoin ne prouve rien`);
+    exiger(!c.corps.classList.contains("reloading"), `(12) ${c.nom} — .reloading reste posée quand le rendu lève après une requête réussie`);
+    // (c) deux rechargements se chevauchent : le second (rapide) retire le voile AVANT que le premier (lent) ne
+    //     rende — mesuré et nommé, ce n'est pas « reste posée » mais « retiré tôt ».
+    let liberer; const lent = new Promise((r) => { liberer = r; });
+    globalThis.fetch = async () => reponse(c.sain);
+    const fetchSain = globalThis.fetch;
+    globalThis.fetch = async () => { globalThis.fetch = fetchSain; await lent; return reponse(c.sain); };
+    const premier = c.rendre();
+    await new Promise((r) => setTimeout(r, 0));
+    const poseeAvantSecond = c.corps.classList.contains("reloading");
+    await c.rendre();
+    const poseeApresSecond = c.corps.classList.contains("reloading");
+    liberer(); await premier;
+    exiger(poseeAvantSecond === true && poseeApresSecond === false && !c.corps.classList.contains("reloading"), `(12) ${c.nom} — chevauchement : posée avant le second ${poseeAvantSecond}, après ${poseeApresSecond}, à la fin ${c.corps.classList.contains("reloading")}`);
+    bilan.push(`${c.nom} : posée pendant, retirée après échec, retirée avant un rendu qui lève, retirée par le second d'un chevauchement`);
+  }
+  globalThis.fetch = undefined; document.querySelector = querySelectorOrig; S.alertGroupBy = "";
+  console.log(`[voile] ${bilan.join(" ; ")}`);
+}
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section.`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme.`);

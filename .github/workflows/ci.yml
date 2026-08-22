@@ -741,6 +741,19 @@ jobs:
       - { name: "Toute route sensible du démon (détruit / élève un droit / arme une réponse — DÉRIVÉE du routeur) a ses appelants web derrière la confirmation partagée (P11.5-b)", run: python3 .github/scripts/check_sensitive_routes_are_confirmed.py }
       - { name: "Aucun bouton de la surface web sans classe partagée ni contexte stylant — contextes et classes DÉRIVÉS de style.css, sites dérivés des modules (P11.4-b)", run: python3 .github/scripts/check_every_button_wears_shared_chrome.py }
 
+      # `P11.4-d` — AUCUNE RÈGLE DE STYLE SANS CIBLE. Les sélecteurs d'identifiant et de classe sont DÉRIVÉS de
+      # `style.css`, le corpus où un nom peut être posé est DÉRIVÉ de `web/` (code sans commentaires) ; un nom
+      # construit par concaténation ou gabarit est « indécidable » et nommé, jamais compté orphelin. Mesuré le
+      # 2026-08-22 : 521 noms distincts, 15 orphelins (dont `#ack-all`, mort depuis le chrome partagé), tous
+      # retirés ; plafond zéro. L'instrument se valide (une règle `#inexistant{}` rougit, `.btn` non).
+      - { name: "Chaque identifiant ou classe ciblé par style.css est posé quelque part dans web/ — dérivé, plafond d'orphelins à zéro (P11.4-d)", run: python3 .github/scripts/check_every_style_selector_has_a_target.py }
+      # `P11.4-e` — CHAQUE DÉCLENCHEUR D'AIDE OUVRE UNE SECTION. Déclencheurs DÉRIVÉS de `web/` (`data-help`
+      # en HTML et dans les gabarits, `dataset.help`, `openHelp('…')`, entrées du sommaire du guide), sections
+      # DÉRIVÉES de l'objet `HELP` de `help.js` ; une section sans déclencheur est une information. Mesuré le
+      # 2026-08-22 : deux déclencheurs sans section (« tokens » en HTML, « processors » au sommaire du guide) ;
+      # l'ouvreur se taisait (harnais : zéro nœud rendu), il rend désormais un aveu qui nomme la clé.
+      - { name: "Chaque déclencheur d'aide de la console (HTML et JS) ouvre une section de help.js — dérivé dans les deux sens (P11.4-e)", run: python3 .github/scripts/check_every_help_trigger_has_a_section.py }
+
       # `P11.8-a` — LE LEXIQUE FR/EN COUVRE CE QUE CHAQUE MODULE AFFICHE. La console traduit par dictionnaire
       # (`i18n.js`, correspondance EXACTE d'un nœud texte ou d'un attribut affiché) : une chaîne sans clé
       # reste en français, en silence. MESURÉ le 2026-08-22 sur la propriété « chaîne posée dans un puits de

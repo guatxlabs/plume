@@ -91,11 +91,12 @@ function enabledSwitch(opts) {
   return lbl;
 }
 
-// --- bouton de ligne : même classe partout (`.rulerow button` porte le style ; `crud-btn` = masqué au viewer).
+// --- bouton de ligne : la classe partagée TOUJOURS (P11.4-b — un bouton porte son chrome, même hors d'un
+//     `.rulerow` ; dans la ligne, `.rulerow button` produit le même chrome) ; `crud-btn` = masqué au viewer.
 function rowButton(label, opts = {}) {
   const b = document.createElement('button'); b.type = 'button';
   if (opts.icon) b.innerHTML = opts.icon; else b.textContent = label; // `icon` = SVG statique de `ic()` (core), jamais une donnée
-  if (opts.cls) b.className = opts.cls;
+  b.className = 'btn btn-sm' + (opts.cls ? ' ' + opts.cls : '');
   if (opts.title) b.title = opts.title;
   if (opts.disabled) b.disabled = true;
   if (opts.onClick) b.onclick = opts.onClick;

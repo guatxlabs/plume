@@ -190,14 +190,19 @@ def injoignables(annonces, masques, reexposes):
 
 def annonces_de(src: str):
     """Les chemins que le capteur ANNONCE empreinter — DÉRIVÉS de son code, jamais recopiés.
-    Trois formes, qui sont toutes celles qu'un capteur FIM peut écrire :
+    Quatre formes, qui sont toutes celles qu'un capteur FIM peut écrire :
       `FILES="${PLUME_FIM_FILES:-…}"`  la liste de fichiers critiques (défaut livré)
       `emit_hash <kind> /chemin`        un chemin littéral
       `for f in /a/* /b/*; do … emit_hash` une famille de chemins (le préfixe du glob suffit)
       `find / -xdev`                    la racine balayée pour les binaires SUID/SGID
+      `UNIT_DIRS_DOC="/a /b …"`         la table de repli des répertoires d'unités systemd (P3.8-a) —
+                                        la liste DÉRIVÉE à l'exécution n'est pas lisible ici, la
+                                        table documentée en est le plancher annoncé
     """
     chemins = set()
     for m in re.finditer(r'PLUME_FIM_FILES:-([^}"]*)[}"]', src):
+        chemins |= {w for w in m.group(1).split() if w.startswith("/")}
+    for m in re.finditer(r'^\s*UNIT_DIRS_DOC="([^"]*)"', src, re.M):
         chemins |= {w for w in m.group(1).split() if w.startswith("/")}
     for m in re.finditer(r"^\s*emit_hash\s+\w+\s+(/\S+)", src, re.M):
         chemins.add(m.group(1).strip('"'))

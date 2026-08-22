@@ -70,36 +70,24 @@ function setAlertMitreFilter(m) {
   if (S.alertMitreFilter) { S.alertGroupAll = true; S.alertUncased = false; }
   location.hash = 'alerts'; renderAlerts(true);
 }
-// FIX 2 — filtre actif sur les alertes par SOURCE (pivot depuis la cloche d'un feed « chaud » de la
-// fraîcheur). '' = aucun filtre. Il n'existe PAS de filtre source côté serveur : on récupère les alertes
-// 'new' et on les filtre CÔTÉ CLIENT — sur `a.sources`, l'imputation que le daemon a DÉRIVÉE DE LA DONNÉE
-// (cf. alertSourcesOf ci-dessous), c'est-à-dire exactement ce qui a fabriqué le compteur `active_alerts`
-// du feed dont on vient de cliquer la cloche. Les deux surfaces lisent donc le MÊME verdict.
+// FIX 2 / P11.1-b — filtre actif sur les alertes par SOURCE (pivot depuis la cloche d'un feed « chaud » de
+// la fraîcheur). '' = aucun filtre. Le filtre est SERVI par le démon (`?source=` sur /api/alerts et
+// /api/alerts/groups) : un prédicat d'imputation EXACT sur `alert.sources`, l'imputation DÉRIVÉE DE LA
+// DONNÉE à la levée de l'alerte — exactement ce qui fabrique le compteur `active_alerts` du feed dont on
+// vient de cliquer la cloche. Les deux surfaces lisent le MÊME verdict, et la facette se combine avec tous
+// les tris et les deux portées. Limite nommée : une alerte levée AVANT que l'imputation soit stockée (colonne
+// vide) n'est appariée à aucune source par ce filtre, alors que la cloche la compte encore par le texte de
+// sa règle.
 /* state: alertSourceFilter -> S (state.js) */
-function alertSources(detail) {
-  const out = [], re = /source\s*=\s*(?:'([^']*)'|"([^"]*)"|([^\s|'"]+))/g; let m;
-  while ((m = re.exec(detail || ''))) out.push(m[1] || m[2] || m[3]);
-  return out;
-}
-// S7 — LES SOURCES D'UNE ALERTE, DANS L'ORDRE DE PRÉFÉRENCE DU SERVEUR. `a.sources` est l'imputation
-// DÉRIVÉE DE LA DONNÉE, écrite par le daemon à la levée de l'alerte (colonne `event.source` des événements
-// appariés ; descripteur de sonde pour un capteur muet) : c'est elle qui alimente le compteur
-// `active_alerts` d'un feed, donc c'est elle que ce filtre doit lire — sinon la cloche d'un feed « chaud »
-// ouvrirait une liste VIDE pour toute alerte que le texte de la règle ne sait pas nommer (le défaut S7,
-// ressorti une couche plus haut). Vide -> alerte antérieure à v115 (ou daemon antérieur) : repli sur les
-// jetons `source=` du texte, comportement historique.
-function alertSourcesOf(a) {
-  const s = (a && a.sources) || '';
-  return s ? s.split('\n').map(x => x.trim()).filter(Boolean) : alertSources(a && a.detail);
-}
 // P11.1-c — la cloche d'une source pose la facette SOURCE sur la liste, avec la portée EXACTE du compteur de
 // la cloche : alertes ACTIVES (status=new), cases comprises, TOUTES DATES (le compteur `active_alerts` de
 // /api/freshness n'a pas de fenêtre de temps : il compte toute alerte non acquittée imputée à la source, quel
 // que soit son âge — et il est indépendant de la fraîcheur de la source). La vue cible le DIT (cf. le chip
-// de facette) et montre l'étendue réelle des dates des alertes listées.
+// de facette) et montre l'étendue réelle des dates des alertes listées. Le tri courant est conservé, comme
+// pour le pivot technique.
 function setAlertSourceFilter(src) {
   S.alertSourceFilter = (src || '').trim(); S.alertMitreFilter = ''; S.alertHistPage = 0; S.alertGroupPage = 0;
-  if (S.alertSourceFilter) { S.alertGroupAll = false; S.alertUncased = false; S.alertGroupBy = ''; }
+  if (S.alertSourceFilter) { S.alertGroupAll = false; S.alertUncased = false; }
   location.hash = 'alerts'; renderAlerts(true);
 }
 // « voir les events » d'une technique sans alerte : recherche plein-texte du tag MITRE (best-effort, les
@@ -158,14 +146,18 @@ function alertListModel() {
     view: S.alertGroupBy || '',               // '' plate | 'rule' | 'host' | 'mitre' (tri)
     scopeAll: !!S.alertGroupAll,              // false = actives (status=new) | true = tous statuts
     uncased: S.alertUncased !== false,        // alertes hors case seulement (défaut : oui)
-    mitre: S.alertMitreFilter || '',          // facette technique (serveur)
-    source: S.alertSourceFilter || '',        // facette source (CLIENT : le serveur n'offre pas ce filtre)
+    mitre: S.alertMitreFilter || '',          // facette technique (serveur, `?mitre=`)
+    source: S.alertSourceFilter || '',        // facette source (serveur, `?source=`, imputation exacte)
   };
 }
-// LIMITE NOMMÉE du filtre source : /api/alerts n'a pas de filtre `source` ; il est évalué côté client sur
-// `a.sources` (imputation dérivée de la donnée). Conséquence : pas de regroupement serveur ni d'historique
-// paginé sous cette facette. La barre le dit au lieu de retirer les boutons.
-const RAISON_FACETTE_SOURCE = 'indisponible sous le filtre source : ce filtre est évalué côté client sur les alertes actives (le serveur n\'offre pas de filtre par source)';
+// Les deux facettes sont servies par le démon et s'appliquent à tous les tris et aux deux portées : aucune
+// action n'est désactivée au motif d'une facette. L'URL d'une vue est dérivée du modèle par UNE fonction.
+function alertFacetParams(m) {
+  const p = [];
+  if (m.mitre) p.push('mitre=' + encodeURIComponent(m.mitre));
+  if (m.source) p.push('source=' + encodeURIComponent(m.source));
+  return p;
+}
 const ALERT_VIEWS = [
   ['', 'Plate', 'Liste plate (chaque alerte)'],
   ['rule', 'Règle', 'Trier par règle — 1 groupe = N occurrences'],
@@ -180,18 +172,17 @@ const ALERT_VIEWS = [
 function alertActionBarHtml(m, loaded) {
   loaded = loaded || {};
   const dis = (cond, reason) => cond ? ` disabled aria-disabled="true" title="${esc(reason)}"` : '';
-  const views = ALERT_VIEWS.map(([g, label, title]) => {
-    const offSource = !!m.source && g !== '';
-    return `<button type="button" class="agseg${m.view === g ? ' on' : ''}" data-g="${g}"${offSource ? dis(true, RAISON_FACETTE_SOURCE) : ` title="${esc(title)}"`}>${label}</button>`;
-  }).join('');
-  const scope = `<button type="button" class="agscope${m.scopeAll ? ' on' : ''}" data-act="scope"${m.source ? dis(true, RAISON_FACETTE_SOURCE) : ` title="${m.scopeAll ? 'Tous statuts (historique) — cliquer pour ne voir que les alertes actives' : 'Alertes actives (status=new) — cliquer pour voir tous les statuts'}"`}>${m.scopeAll ? 'Tous statuts' : 'Actives'}</button>`;
+  const views = ALERT_VIEWS.map(([g, label, title]) => `<button type="button" class="agseg${m.view === g ? ' on' : ''}" data-g="${g}" title="${esc(title)}">${label}</button>`).join('');
+  const scope = `<button type="button" class="agscope${m.scopeAll ? ' on' : ''}" data-act="scope" title="${m.scopeAll ? 'Tous statuts (historique) — cliquer pour ne voir que les alertes actives' : 'Alertes actives (status=new) — cliquer pour voir tous les statuts'}">${m.scopeAll ? 'Tous statuts' : 'Actives'}</button>`;
   const uncased = `<button type="button" class="agscope${m.uncased ? ' on' : ''}" data-act="uncased" title="${m.uncased ? 'Hors case : les alertes déjà rattachées à un case sont masquées — cliquer pour les inclure' : 'Toutes : cases comprises — cliquer pour masquer les alertes déjà rattachées à un case'}">${m.uncased ? 'hors case' : 'cases comprises'}</button>`;
   const facets = [];
   if (m.mitre) facets.push(`<span class="mitrefilter">Technique : <span class="mitrechip">${esc(m.mitre)}</span><button type="button" data-act="clear-mitre" title="Retirer le filtre technique">${ic('x')}</button></span>`);
   if (m.source) {
     const span = loaded.sourceSpan && loaded.sourceSpan.from ? ` (du ${fmtTs(loaded.sourceSpan.from)} au ${fmtTs(loaded.sourceSpan.to)})` : '';
     const n = typeof loaded.count === 'number' ? loaded.count : 0;
-    facets.push(`<span class="mitrefilter" title="Le compteur de la cloche d'une source compte ses alertes non acquittées, cases comprises, sans fenêtre de temps — il ne dépend pas de la fraîcheur de la source.">Source : <span class="mitrechip">${esc(m.source)}</span> <span class="muted">${n} alerte(s) active(s) imputée(s) à cette source, toutes dates${span} — sans lien avec sa fraîcheur</span><button type="button" data-act="clear-source" title="Retirer le filtre source">${ic('x')}</button></span>`);
+    // L'objet compté suit le tri et la portée : alertes en vue plate, groupes sinon ; actives ou tous statuts.
+    const objet = m.view ? `${n} groupe(s) d'alertes ${m.scopeAll ? '(tous statuts)' : 'actives'}` : `${n} alerte(s) ${m.scopeAll ? '(tous statuts)' : 'active(s)'}`;
+    facets.push(`<span class="mitrefilter" title="Le compteur de la cloche d'une source compte ses alertes non acquittées, cases comprises, sans fenêtre de temps — il ne dépend pas de la fraîcheur de la source.">Source : <span class="mitrechip">${esc(m.source)}</span> <span class="muted">${objet} imputée(s) à cette source, toutes dates${span} — sans lien avec sa fraîcheur</span><button type="button" data-act="clear-source" title="Retirer le filtre source">${ic('x')}</button></span>`);
   }
   // ACQUITTER — même bouton partout, sémantique DÉRIVÉE : sans facette et sur les actives, l'acquittement
   // GLOBAL (/alerts/ack-all acquitte TOUTE alerte active, y compris hors de la page) ; sinon, les alertes
@@ -199,9 +190,9 @@ function alertActionBarHtml(m, loaded) {
   const filtered = !!(m.mitre || m.source) || m.scopeAll;
   const nAck = (loaded.ackableIds || []).length;
   let ack;
-  if (!filtered) ack = `<button type="button" data-act="ack-all"${dis(!(loaded.count > 0), 'aucune alerte active')} title="Acquitter TOUTES les alertes actives (y compris celles hors de cette page)">${ic('check')} Tout acquitter</button>`;
-  else if (nAck > 0) ack = `<button type="button" data-act="ack-shown" title="Acquitter les ${nAck} alerte(s) active(s) affichée(s) — et seulement celles-là">${ic('check')} Acquitter les ${nAck} affichée(s)</button>`;
-  else ack = `<button type="button" data-act="ack-shown"${dis(true, m.view ? 'acquittement par liste : dépliez un groupe (acquittement par occurrence) ou passez en vue plate' : 'aucune alerte active affichée')}>${ic('check')} Acquitter</button>`;
+  if (!filtered) ack = `<button type="button" class="btn btn-sm" data-act="ack-all"${dis(!(loaded.count > 0), 'aucune alerte active')} title="Acquitter TOUTES les alertes actives (y compris celles hors de cette page)">${ic('check')} Tout acquitter</button>`;
+  else if (nAck > 0) ack = `<button type="button" class="btn btn-sm" data-act="ack-shown" title="Acquitter les ${nAck} alerte(s) active(s) affichée(s) — et seulement celles-là">${ic('check')} Acquitter les ${nAck} affichée(s)</button>`;
+  else ack = `<button type="button" class="btn btn-sm" data-act="ack-shown"${dis(true, m.view ? 'acquittement par liste : dépliez un groupe (acquittement par occurrence) ou passez en vue plate' : 'aucune alerte active affichée')}>${ic('check')} Acquitter</button>`;
   return `<div class="alertview alertbar" role="toolbar" aria-label="Liste des alertes : tri, portée, filtres, actions">`
     + `<span class="muted">Tri</span>${views}<span class="muted">Portée</span>${scope}${uncased}${facets.join('')}</div>`
     + `<div class="alerthead"><span>${esc(loaded.countLabel || '')}</span><span class="alertbar-actions">${ack}<span class="alertbar-export"></span></span></div>`;
@@ -285,15 +276,15 @@ function alertGroupsExportBar(groups, total) {
 async function renderAlerts(loading) {
   wireAlertsTitle();
   const m = alertListModel();
-  // Un TRI groupé est servi par /api/alerts/groups ; la facette source (client) force la vue plate.
-  if (m.view && !m.source) return renderAlertGroups(loading);
-  // LA MÊME URL DÉRIVÉE DU MÊME MODÈLE : portée (status=new | all), « hors case » (uncased=1), facette
-  // technique (mitre=). La portée « tous statuts » est PAGINÉE serveur (limit/offset + total) ; la portée
+  // Un TRI groupé est servi par /api/alerts/groups, facettes comprises.
+  if (m.view) return renderAlertGroups(loading);
+  // LA MÊME URL DÉRIVÉE DU MÊME MODÈLE : portée (status=new | all), « hors case » (uncased=1), facettes
+  // (mitre=, source=). La portée « tous statuts » est PAGINÉE serveur (limit/offset + total) ; la portée
   // « actives » reste bornée (200, sans total) — contrat inchangé de /api/alerts.
   const params = [];
   params.push(m.scopeAll ? 'status=all' : 'status=new');
   if (m.uncased) params.push('uncased=1');
-  if (m.mitre) params.push('mitre=' + encodeURIComponent(m.mitre));
+  params.push(...alertFacetParams(m));
   if (m.scopeAll) params.push('limit=' + ALERT_HIST_PS + '&offset=' + (S.alertHistPage * ALERT_HIST_PS));
   const url = '/alerts?' + params.join('&');
   const b = $('#alerts .body'); if (!b) return;
@@ -301,13 +292,10 @@ async function renderAlerts(loading) {
   let alerts, alertTotal;
   try { const resp = await api(url); alerts = resp.alerts || []; alertTotal = resp.total; } catch (e) { b.classList.remove('reloading'); b.innerHTML = '<div class="bad">alertes indisponibles : ' + esc(e.message) + '</div>'; return; }
   b.classList.remove('reloading');
-  // Facette SOURCE (client) : sur `a.sources`, l'imputation DÉRIVÉE DE LA DONNÉE — exactement ce qui a
-  // fabriqué le compteur de la cloche (cf. alertSourcesOf).
+  // Facette SOURCE : filtrée par le serveur ; l'étendue des dates des alertes LISTÉES (la page courante sous
+  // la portée « tous statuts ») est affichée à côté du chip.
   let sourceSpan = null;
-  if (m.source) {
-    alerts = alerts.filter(a => alertSourcesOf(a).includes(m.source));
-    if (alerts.length) { const ts = alerts.map(a => a.ts).filter(Boolean); sourceSpan = { from: Math.min(...ts), to: Math.max(...ts) }; }
-  }
+  if (m.source && alerts.length) { const ts = alerts.map(a => a.ts).filter(Boolean); sourceSpan = { from: Math.min(...ts), to: Math.max(...ts) }; }
   const count = (m.scopeAll && typeof alertTotal === 'number') ? alertTotal : alerts.length;
   const portee = (m.scopeAll ? 'tous statuts' : 'actives') + (m.uncased ? ' · hors case' : ' · cases comprises');
   const loaded = {
@@ -323,7 +311,7 @@ async function renderAlerts(loading) {
       // 0 alerte même TOUS statuts -> on propose de voir les events de la technique (pas de cul-de-sac)
       vide = `<div class="muted">Aucune alerte (${esc(portee)}) pour cette technique. <button id="mitre-events" type="button" class="linklike">Voir les events ${esc(m.mitre)}</button></div>`;
     } else if (m.source) {
-      vide = `<div class="muted">Aucune alerte active imputée à la source <b>${esc(m.source)}</b>${m.uncased ? ' hors case' : ''}.</div>`;
+      vide = `<div class="muted">Aucune alerte (${esc(portee)}) imputée à la source <b>${esc(m.source)}</b>.</div>`;
     } else {
       vide = `<div class="ok">Aucune alerte ${m.scopeAll ? '' : 'active '}${m.uncased ? 'hors case ' : ''}</div>`;
     }
@@ -351,7 +339,7 @@ async function renderAlerts(loading) {
 
 // TRIAGE GROUPÉ — vue de GROUPES repliables (« 1 groupe = N occurrences »). Groupes paginés serveur
 // (/api/alerts/groups) ; chaque groupe déplié charge ses occurrences à la demande (chemin plat gkey/gval,
-// paginé). Le modèle (portée / hors case / facette technique) est le MÊME que celui de la vue plate, et
+// paginé). Le modèle (portée / hors case / facettes technique et source) est le MÊME que celui de la vue plate, et
 // s'applique À LA FOIS au groupement et à l'expansion -> le compteur `n` du groupe et le `total` des
 // occurrences restent COHÉRENTS.
 async function renderAlertGroups(loading) {
@@ -359,7 +347,7 @@ async function renderAlertGroups(loading) {
   const m = alertListModel();
   const url = '/alerts/groups?group=' + encodeURIComponent(m.view) + '&status=' + (m.scopeAll ? 'all' : 'new')
             + (m.uncased ? '&uncased=1' : '')
-            + (m.mitre ? '&mitre=' + encodeURIComponent(m.mitre) : '')
+            + alertFacetParams(m).map(p => '&' + p).join('')
             + '&limit=' + ALERT_GROUP_PS + '&offset=' + (S.alertGroupPage * ALERT_GROUP_PS);
   if (loading) { let prog = b.querySelector(':scope > .tableprog'); if (!prog) { prog = document.createElement('div'); prog.className='tableprog'; b.insertBefore(prog, b.firstChild); } prog.hidden=false; b.classList.add('reloading'); }
   let groups, total;
@@ -369,10 +357,10 @@ async function renderAlertGroups(loading) {
   const axisLabel = { rule: 'règle', host: 'hôte', mitre: 'technique' }[m.view] || m.view;
   const count = typeof total === 'number' ? total : groups.length;
   const portee = (m.scopeAll ? 'tous statuts' : 'actives') + (m.uncased ? ' · hors case' : ' · cases comprises');
-  const loaded = { count, countLabel: `${count} groupe(s) · par ${axisLabel} · ${portee}${m.mitre ? ' · technique ' + m.mitre : ''}`, ackableIds: [] };
+  const loaded = { count, countLabel: `${count} groupe(s) · par ${axisLabel} · ${portee}${m.mitre ? ' · technique ' + m.mitre : ''}${m.source ? ' · source ' + m.source : ''}`, ackableIds: [] };
   const bar = alertActionBarHtml(m, loaded);
   if (!groups.length) {
-    b.innerHTML = bar + `<div class="ok">Aucune alerte ${m.scopeAll ? '' : 'active '}à trier</div>`;
+    b.innerHTML = bar + `<div class="ok">Aucune alerte ${m.scopeAll ? '' : 'active '}à trier${m.source ? ` pour la source ${esc(m.source)}` : ''}</div>`;
     wireAlertActionBar(b, loaded); return;
   }
   // ui-regression — l'auto-refresh (30 s) reconstruit ce conteneur : on MÉMORISE les groupes
@@ -445,7 +433,7 @@ async function loadGroupOccurrences(body, g, opage) {
   const m = alertListModel();
   // MÊME modèle que le groupement (renderAlertGroups) -> `total` des occurrences cohérent avec `n`.
   const url = '/alerts?status=' + (m.scopeAll ? 'all' : 'new') + (m.uncased ? '&uncased=1' : '')
-            + (m.mitre ? '&mitre=' + encodeURIComponent(m.mitre) : '')
+            + alertFacetParams(m).map(p => '&' + p).join('')
             + '&gkey=' + encodeURIComponent(m.view)
             + '&gval=' + encodeURIComponent(g.gkey || '') + '&limit=' + ALERT_OCC_PS + '&offset=' + (opage * ALERT_OCC_PS);
   body.innerHTML = '<div class="tableprog"></div>';

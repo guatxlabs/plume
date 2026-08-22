@@ -4,7 +4,8 @@
 #   (a) SHA256 des binaires SUID/SGID -> detecte la MODIF IN-PLACE (binaire systeme trojanise au MEME
 #       chemin : 0 event avant car on ne suivait que le CHEMIN). suid modifie in-place = severity 4.
 #   (b) FIM ETENDU sur les vecteurs de persistance : /etc/sudoers.d, /etc/cron.d, authorized_keys,
-#       units systemd (/etc/systemd/system), /etc/pam.d, /etc/ld.so.preload, /etc/rc.local (hash + ajout/modif).
+#       unites systemd (tout le chemin de recherche, cf. (e)), /etc/pam.d, /etc/ld.so.preload, /etc/rc.local
+#       (hash + ajout/modif).
 #   (c) champs STRUCTURES {kind, path, sha256, scope:host|container, change:ajout|modif}.
 # Garde le PRUNE conteneur (anti-bruit snapshots buildkit/rancher/containerd). Borne le volume : baseline
 # + DELTA (comm), pas de re-scan complet emis. ROOT (CAP_DAC_READ_SEARCH) ; ProtectHome=read-only requis
@@ -12,6 +13,20 @@
 #   (d) COUVERTURE ANNONCEE vs COUVERTURE ATTEINTE : le bac a sable de l'unit peut RETIRER une famille
 #       annoncee sans un mot (un glob qui ne matche rien ne previent personne). Ce capteur VERIFIE donc
 #       la portee des racines dont depend la famille `authkeys` et AVOUE quand elles sont masquees.
+#   (e) P3.8-a — LA FAMILLE `unit` COUVRAIT UNE LIGNE : `/etc/systemd/system/*.service` et `*.timer`.
+#       Ni `/run/systemd/system`, ni `/usr/local/lib/systemd/system`, ni les drop-ins `*.d/*.conf`, ni les
+#       `.socket`/`.path`. Un drop-in qui ajoute un `ExecStartPre=` a une unite existante est une persistance
+#       ORDINAIRE et ne produisait AUCUN evenement : la regle livree « vecteur de persistance ajoute » (T1543)
+#       tournait sur une liste qui ne contenait pas le fichier. Silence complet, pas allegation fausse.
+#       La liste des repertoires est desormais DERIVEE du chemin de recherche de systemd (`systemd-analyze
+#       unit-paths`), avec un repli sur la table de `systemd.unit(5)` ecrite UNE fois ; l'evenement dit quelle
+#       voie a servi (`unit_dirs_from`). Types couverts : ceux qui executent ou declenchent quelque chose
+#       (`service timer socket path mount automount`) et les drop-ins, avec le nom de l'unite parente (`unit`).
+#       Un repertoire ABSENT n'est rien (un hote sans `/usr/local/lib/systemd/system` est ordinaire) ; un
+#       repertoire ILLISIBLE est un aveu et interdit la promotion de la reference, comme une famille non
+#       enumeree. `PLUME_UNIT_ROOT` prefixe chaque repertoire derive : les temoins posent un drop-in sous un
+#       repertoire temporaire sans toucher l'hote. NON COUVERT, et dit : les liens d'activation
+#       `*.wants/` / `*.requires/` (activer une unite deja presente), et les `.scope`/`.slice`/`.target`.
 set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 FILES="${PLUME_FIM_FILES:-/etc/passwd /etc/group /etc/shadow /etc/gshadow /etc/sudoers /etc/crontab /etc/hosts /etc/ssh/sshd_config}"
@@ -26,6 +41,15 @@ scope_of() {
   case "$1" in
     /var/lib/buildkit/*|/var/lib/rancher/*|/var/lib/containerd/*|/var/lib/docker/*|/var/lib/kubelet/*|*/overlay2/*|/run/containerd/*) echo container ;;
     *) echo host ;;
+  esac
+}
+# nom de l'unite que designe un chemin de la famille `unit` : le fichier lui-meme, ou, pour un drop-in
+# `<unite>.d/<fragment>.conf`, l'UNITE PARENTE (`service.d/` type-wide rend `service`).
+fim_unit_name() {  # $1=path
+  _fun_dir=${1%/*}
+  case "$_fun_dir" in
+    *.d) _fun_parent=${_fun_dir##*/}; printf '%s' "${_fun_parent%.d}" ;;
+    *)   printf '%s' "${1##*/}" ;;
   esac
 }
 # emet une ligne baseline "kind|path|sha256|scope" pour un FICHIER (hash sha256).
@@ -93,9 +117,10 @@ prune_expr=""; for _d in $PRUNE; do prune_expr="$prune_expr -path $_d -prune -o"
 # que `find` n'expose pas separement.
 _suid_liste=$(mktemp "$STATE/.integrity.suid.XXXXXX")
 _fim_famille_ko=""
+_fim_famille_cause=""
 # shellcheck disable=SC2086
 find / -xdev $prune_expr -type f \( -perm -4000 -o -perm -2000 \) -print > "$_suid_liste" 2>/dev/null \
-  || { [ -s "$_suid_liste" ] || _fim_famille_ko=" suid"; }
+  || { [ -s "$_suid_liste" ] || { _fim_famille_ko=" suid"; _fim_famille_cause="source_illisible"; }; }
 while IFS= read -r b; do
   emit_hash suid "$b"
 done < "$_suid_liste"
@@ -108,7 +133,71 @@ emit_hash rclocal /etc/rc.local
 for f in /etc/sudoers.d/*;            do emit_hash sudoersd "$f"; done
 for f in /etc/cron.d/*;               do emit_hash crond "$f"; done
 for f in /etc/pam.d/*;                do emit_hash pamd "$f"; done
-for f in /etc/systemd/system/*.service /etc/systemd/system/*.timer; do emit_hash unit "$f"; done
+# (e) UNITES SYSTEMD — LE CHEMIN DE RECHERCHE EST DERIVE, PAS ECRIT (P3.8-a).
+# Types retenus : ceux qui EXECUTENT ou DECLENCHENT quelque chose. Un `.target` ou un `.slice` n'a pas
+# de `Exec*=` et ne peut rien lancer par lui-meme.
+UNIT_TYPES="service timer socket path mount automount"
+# REPLI, ecrit UNE fois, avec sa source : systemd.unit(5), table « Load path when running in system mode
+# (--system) », relue le 2026-08-22 sur un systemd 261 — et `/lib/systemd/system`, que la meme page reserve
+# aux systemes dont `/usr` n'est pas fusionne ; sur les autres il designe le meme repertoire que
+# `/usr/lib/systemd/system` et la deduplication par chemin canonique ci-dessous l'ecarte.
+UNIT_DIRS_DOC="/etc/systemd/system.control /run/systemd/system.control /run/systemd/transient /run/systemd/generator.early /etc/systemd/system /etc/systemd/system.attached /run/systemd/system /run/systemd/system.attached /run/systemd/generator /usr/local/lib/systemd/system /usr/lib/systemd/system /lib/systemd/system /run/systemd/generator.late"
+# LA VOIE QUI A SERVI EST DITE DANS L'EVENEMENT. Deux valeurs, et elles sont les deux seules :
+#   `systemd-analyze` — la liste vient du gestionnaire de cet hote (son chemin compile, ses generateurs) ;
+#   `systemd.unit(5)`  — la table documentee, parce que l'outil est absent (un hote sans systemd n'a
+#                        rien a deriver : ce n'est pas un defaut), ou parce qu'il a ECHOUE ou rendu une
+#                        sortie sans chemin — et ces deux derniers cas sont AVOUES : l'outil est la, donc
+#                        systemd est la, et la derivation n'a pas eu lieu.
+UNIT_DIRS_FROM="systemd.unit(5)"
+_ud_liste=""
+_ud_anomalie=""
+if command -v systemd-analyze >/dev/null 2>&1; then
+  if _ud_sortie=$(systemd-analyze unit-paths 2>/dev/null); then
+    # Seules les lignes qui designent un chemin absolu comptent ; le reste n'est pas un repertoire.
+    while IFS= read -r _ud; do
+      case "$_ud" in /*) _ud_liste="$_ud_liste$_ud
+" ;; esac
+    done <<EOF
+$_ud_sortie
+EOF
+    if [ -n "$_ud_liste" ]; then UNIT_DIRS_FROM="systemd-analyze"; else _ud_anomalie="forme_inconnue"; fi
+  else
+    _ud_anomalie="source_illisible"
+  fi
+fi
+if [ -n "$_ud_anomalie" ]; then
+  plume_report_availability integrity unavailable missing-dependency \
+    "chemin de recherche des unites systemd NON DERIVE ($_ud_anomalie : systemd-analyze unit-paths present mais sans chemin rendu) : repli sur la table de systemd.unit(5). Les unites d'un repertoire propre a cet hote, hors de cette table, ne sont PAS surveillees ce passage." \
+    2 2>/dev/null || true
+fi
+[ -n "$_ud_liste" ] || _ud_liste=$(printf '%s\n' $UNIT_DIRS_DOC)
+# `PLUME_UNIT_ROOT` : prefixe de chaque repertoire derive. Vide en production ; un temoin y met un
+# repertoire temporaire et le capteur ne lit alors RIEN de l'hote.
+UNIT_ROOT="${PLUME_UNIT_ROOT:-}"
+# Deduplication par chemin CANONIQUE (`cd -P` + `pwd -P`, deux primitives du shell) : `/lib/systemd/system`
+# et `/usr/lib/systemd/system` sont le meme repertoire sur un `/usr` fusionne, et le hacher deux fois
+# produirait deux constats pour un seul fichier.
+_ud_vus=" "
+while IFS= read -r _ud; do
+  [ -n "$_ud" ] || continue
+  _ud="$UNIT_ROOT$_ud"
+  [ -d "$_ud" ] || continue
+  _ud_canon=$(cd -P "$_ud" 2>/dev/null && pwd -P) || _ud_canon="$_ud"
+  case "$_ud_vus" in *" $_ud_canon "*) continue ;; esac
+  _ud_vus="$_ud_vus$_ud_canon "
+  if [ ! -r "$_ud" ] || [ ! -x "$_ud" ]; then
+    # PRESENT MAIS ILLISIBLE : ce n'est pas « rien a hacher », c'est « pas pu lire ». Meme traitement
+    # qu'une famille non enumeree (S36) : aveu, et la reference n'est pas promue — sans quoi ce que
+    # personne n'a lu entrerait dans le connu, et ressortirait en « ajout » une fois le droit rendu.
+    _fim_famille_ko="$_fim_famille_ko unit:$_ud"
+    _fim_famille_cause="${_fim_famille_cause:-$(plume_cause_lecture "$_ud")}"
+    continue
+  fi
+  for _ut in $UNIT_TYPES; do for f in "$_ud"/*."$_ut"; do emit_hash unit "$f"; done; done
+  for f in "$_ud"/*.d/*.conf; do emit_hash unit "$f"; done
+done <<EOF
+$_ud_liste
+EOF
 # --- (d) la famille `authkeys` est ANNONCEE : si ses racines sont hors de portee, on le DIT ----------
 # systemd `ProtectHome=` ne rend pas /home et /root illisibles : il REMPLACE le point de montage par un
 # repertoire vide (`/systemd/inaccessible/dir`, ou un tmpfs neuf pour `ProtectHome=tmpfs`). Le glob
@@ -235,6 +324,15 @@ if [ -f "$BASE" ]; then
       mt=$(stat -c %Y "$path" 2>/dev/null || echo "")
       [ -n "$mt" ] && dd="integrity-$kind-$path-$sha-$mt"
     fi
+    # P3.8-a — UN DROP-IN PORTE LE NOM DE SON UNITE PARENTE. `x.service.d/zz.conf` configure `x.service` :
+    # c'est ce nom que l'analyste cherche, pas celui du fragment. Une unite ordinaire porte le sien.
+    # `unit_dirs_from` dit par quelle voie la liste des repertoires a ete obtenue ce passage.
+    _usur=""
+    if [ "$kind" = unit ]; then
+      _un=$(fim_unit_name "$path")
+      case "$path" in *.d/*.conf) _uform="drop-in"; _usur=" sur $_un (drop-in)" ;; *) _uform="unit" ;; esac
+      fields="${fields%?},\"unit\":\"$(json_escape "$_un")\",\"unit_form\":\"$_uform\",\"unit_dirs_from\":\"$UNIT_DIRS_FROM\"}"
+    fi
     case "$kind" in
       suid)     [ "$change" = modif ] && add_ev 4 "SUID/SGID MODIFIE in-place (hash) : $path" "$fields" "$dd" || add_ev 3 "nouveau binaire SUID/SGID : $path" "$fields" "$dd" ;;
       preload)  add_ev 4 "/etc/ld.so.preload $change (persistance LD) : $path" "$fields" "$dd" ;;
@@ -242,7 +340,7 @@ if [ -f "$BASE" ]; then
       authkeys) add_ev 4 "authorized_keys $change (acces SSH) : $path" "$fields" "$dd" ;;
       pamd)     add_ev 4 "pam.d $change (auth) : $path" "$fields" "$dd" ;;
       rclocal)  add_ev 4 "rc.local $change (boot persistance) : $path" "$fields" "$dd" ;;
-      unit)     add_ev 3 "unit systemd $change (persistance) : $path" "$fields" "$dd" ;;
+      unit)     add_ev 3 "unit systemd $change (persistance)$_usur : $path" "$fields" "$dd" ;;
       crond)    add_ev 3 "cron.d $change : $path" "$fields" "$dd" ;;
       crit)     case "$path" in *shadow*) add_ev 4 "fichier critique $change : $path" "$fields" "$dd" ;; *) add_ev 3 "fichier critique $change : $path" "$fields" "$dd" ;; esac ;;
       port)     add_ev 2 "nouveau port en écoute : $path" "$fields" "$dd" ;;
@@ -274,7 +372,7 @@ if [ "$_diff_ok" != 1 ]; then
   plume_lecture_partielle integrity forme_inconnue "comparaison a la reference d'integrite en echec : la reference N'EST PAS promue, aucun constat n'entre en silence dans le connu"
 elif [ -n "$_fim_famille_ko" ]; then
   rm -f "$cur"
-  plume_lecture_partielle integrity source_illisible "famille(s)$_fim_famille_ko NON ENUMEREE(S) ce passage (lecture en echec et aucune entree rendue) : la reference N'EST PAS promue. L'absence de binaire SUID/SGID nouveau ne peut PAS en etre conclue."
+  plume_lecture_partielle integrity "${_fim_famille_cause:-source_illisible}" "famille(s)$_fim_famille_ko NON ENUMEREE(S) ce passage (lecture en echec et aucune entree rendue, ou repertoire present mais illisible) : la reference N'EST PAS promue. L'absence de constat nouveau dans ces familles ne peut PAS en etre conclue."
 else
   state_stage_file "$cur" "$BASE"
 fi

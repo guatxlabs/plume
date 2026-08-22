@@ -210,7 +210,11 @@ footer{padding:12px 20px;color:var(--mut);font-size:12px;border-top:1px solid va
 .field:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
 /* boîte d'un SECRET à recopier (clé MFA, codes de secours, clé de livraison) : lisible dans LES DEUX thèmes
    (fond = carte, texte = fg) et sélectionnable d'un clic. P11.4-c : l'ancien fond était une couleur en dur. */
-#mfa-block{border-top-color:var(--bd)!important} /* P11.4-c : le séparateur du bloc MFA (index.html) cite une variable inexistante avec un repli sombre en dur */
+/* bloc MFA des réglages (index.html) — P11.4-b : plus aucun style en ligne ; le séparateur cite la variable du thème */
+#mfa-block{margin-top:16px;border-top:1px solid var(--bd);padding-top:12px}
+#mfa-block h3{margin:0 0 6px;font-size:14px}
+#mfa-status{font-size:12px}
+#mfa-actions,#mfa-enroll{margin-top:8px}
 .secretbox{display:block;font-family:var(--font-mono);font-size:13px;color:var(--fg);background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:8px 10px;word-break:break-all;user-select:all;letter-spacing:.04em}
 /* BATCH 2 (B3) — chrome global des boutons-icônes : sans ça, un .picon nu (edit/suppr comptes, refresh
    sources/connecteurs/ledger/rétention/tenant/opaccess, plier règles/parseurs, aide) tombait sur le rendu

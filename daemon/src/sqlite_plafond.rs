@@ -562,14 +562,20 @@ fn plafond_courant() -> Plafond {
 
 pub(crate) fn pragmas_memoire() -> &'static str {
     static P: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    P.get_or_init(|| {
-        format!(
-            "PRAGMA temp_store={}; PRAGMA mmap_size=268435456; PRAGMA cache_size={};{}",
-            mot_temp_store(deversement_actif()),
-            -cache_ko_pour(budget_ko(), porteurs()),
-            plafond_courant().pragma()
-        )
-    })
+    P.get_or_init(|| pragmas_memoire_pour(deversement_actif()))
+}
+
+/// LE BATCH, PARAMÉTRÉ SUR LE MODE (forme de `S32`). Le processus n'a qu'un mode, et `pragmas_memoire`
+/// le fige une fois pour toutes ; cette forme-ci laisse une suite de tests armer une connexion sous
+/// l'AUTRE mode — c'est le seul moyen de jouer le couple « déversement demandé, connexion armée » sans
+/// relancer un processus, et sans lui ce couple ne s'est jamais joué (`S38`).
+fn pragmas_memoire_pour(deversement: bool) -> String {
+    format!(
+        "PRAGMA temp_store={}; PRAGMA mmap_size=268435456; PRAGMA cache_size={};{}",
+        mot_temp_store(deversement),
+        -cache_ko_pour(budget_ko(), porteurs()),
+        plafond_courant().pragma()
+    )
 }
 
 /// CE QUE LE PLAFOND VAUT, EN CLAIR, POUR LE JOURNAL DE DÉMARRAGE. Un plafond qu'on ne peut pas LIRE en
@@ -653,37 +659,62 @@ pub(crate) enum Deversement {
 /// résoudre elle-même, donc les branches se testent sans toucher au disque ni à l'environnement.
 ///
 /// S26 — ELLE DIT CE QUI EST MESURÉ, JAMAIS CE QUI EST SUPPOSÉ. Le mode n'est qu'une DEMANDE : ce que
-/// le moteur fait vraiment d'un tri se lit (`tri_dune_connexion_nue`). Quand les deux s'accordent, la
-/// bannière publie les chiffres LUS ; quand ils divergent, elle annonce le risque RÉEL et non la
-/// promesse — une bannière qui annoncerait « déversement désactivé » pendant qu'il a lieu serait pire
-/// qu'une bannière absente.
-pub(crate) fn banniere(mode: Deversement, tri: Tri) -> String {
+/// le moteur fait vraiment d'un tri se lit. Quand les deux s'accordent, la bannière publie les chiffres
+/// LUS ; quand ils divergent, elle annonce le risque RÉEL et non la promesse — une bannière qui
+/// annoncerait « déversement désactivé » pendant qu'il a lieu serait pire qu'une bannière absente.
+///
+/// S38 — LA MESURE PORTE SUR UNE CONNEXION ARMÉE, JAMAIS SUR UNE SONDE NUE. La première forme lisait
+/// `tri_dune_connexion_nue()`, sur laquelle `temp_store=FILE` n'est posé par personne : sous
+/// `PLUME_SQLITE_DEVERSEMENT=1` elle disait TOUJOURS « demandé mais tri en mémoire », quel que soit ce
+/// que les connexions qui servent faisaient de leurs tris. Une garde qui alerte toujours ne prouve rien,
+/// et elle apprend à ne plus la lire. La lecture arrive désormais sous la forme de `S32` : `Lue` quand
+/// elle a été prise sur la connexion qui sert, `Illisible` quand aucune connexion armée n'était sous la
+/// main — et la bannière dit alors « NON MESURÉ » au lieu de mesurer autre chose.
+pub(crate) fn banniere(mode: Deversement, tri: crate::mesure_environnement::Mesure<Tri>) -> String {
     let r = rapport();
     match mode {
-        Deversement::Desactive => match desaccord_pour(&tri, false) {
-            None => format!(
-                "{r} — déversement des tris DÉSACTIVÉ (défaut), et c'est MESURÉ : {}. Aucune valeur \
-                 d'événement en clair hors de la base chiffrée. Un tri trop large ne déverse donc pas : \
-                 il ÉCHOUE au plafond ci-dessus. PLUME_SQLITE_DEVERSEMENT=1 échange cette \
-                 confidentialité contre des tris qui aboutissent.",
-                constat_de_tri(&tri)
+        Deversement::Desactive => match &tri {
+            crate::mesure_environnement::Mesure::Lue(t) if desaccord_pour(t, false).is_none() => format!(
+                "{r} — déversement des tris DÉSACTIVÉ (défaut), et c'est MESURÉ sur la connexion qui sert : \
+                 {}. Aucune valeur d'événement en clair hors de la base chiffrée. Un tri trop large ne \
+                 déverse donc pas : il ÉCHOUE au plafond ci-dessus. PLUME_SQLITE_DEVERSEMENT=1 échange \
+                 cette confidentialité contre des tris qui aboutissent.",
+                constat_de_tri(t)
             ),
-            Some(d) => format!("{r} — déversement des tris DÉSACTIVÉ (demandé), MAIS LA MESURE DIT AUTRE CHOSE : {d}"),
+            _ => format!("{r} — déversement des tris DÉSACTIVÉ (demandé), {}", mesure_de_tri(&tri, false)),
         },
         Deversement::Vers(d, residus) => format!(
             "{r} — déversement des tris ACTIVÉ vers {} : ce répertoire reçoit des VALEURS D'ÉVÉNEMENT EN \
              CLAIR, hors de la base SQLCipher. Il doit être sur un support chiffré. {} {}",
             d.display(),
-            match desaccord_pour(&tri, true) {
-                None => format!("MESURÉ : {}.", constat_de_tri(&tri)),
-                Some(x) => format!("MAIS LA MESURE DIT AUTRE CHOSE : {x}"),
-            },
+            mesure_de_tri(&tri, true),
             constat_de_residus(&residus)
         ),
         Deversement::Indisponible(e) => format!(
             "{r} — déversement des tris DEMANDÉ mais répertoire INDISPONIBLE ({e}) : SQLite retombera sur \
              TMPDIR/var/tmp/tmp, qui est un tmpfs (donc de la RAM) sur la plupart des hôtes systemd -> le \
-             déversement n'y borne RIEN"
+             déversement n'y borne RIEN. {}",
+            mesure_de_tri(&tri, true)
+        ),
+    }
+}
+
+/// LE SEGMENT DE MESURE DE LA BANNIÈRE, avec ses trois mots stables : « MESURÉ » quand la lecture
+/// confirme le mode (sous déversement : « demandé et TENU »), « MAIS LA MESURE DIT AUTRE CHOSE » quand
+/// elle le contredit, « NON MESURÉ » quand aucune connexion armée n'était là pour la prendre. Le
+/// troisième n'est pas un « tout va bien » : il porte la cause, et dit ce que personne ne sait.
+fn mesure_de_tri(tri: &crate::mesure_environnement::Mesure<Tri>, deversement: bool) -> String {
+    use crate::mesure_environnement::Mesure;
+    match tri {
+        Mesure::Lue(t) => match desaccord_pour(t, deversement) {
+            None if deversement => format!("Déversement demandé et TENU, MESURÉ sur la connexion qui sert : {}.", constat_de_tri(t)),
+            None => format!("MESURÉ sur la connexion qui sert : {}.", constat_de_tri(t)),
+            Some(x) => format!("MAIS LA MESURE DIT AUTRE CHOSE : {x}"),
+        },
+        Mesure::Illisible { cause, detail } => format!(
+            "NON MESURÉ ({cause} : {detail}) : aucune connexion armée n'était disponible pour lire ce que \
+             le moteur fait d'un tri, et une sonde nue ne porte pas ce réglage. Rien ne dit ici {}.",
+            if deversement { "que le tri déverse bien" } else { "qu'aucune valeur d'événement ne part en clair" }
         ),
     }
 }
@@ -823,6 +854,10 @@ fn controle_positif(dir: &std::path::Path) -> Result<(), String> {
 //      livré faisait déverser le silence alors que l'exploitant n'a rien demandé, le processus ne
 //      démarre pas. Un avertissement ne suffirait pas : quand on le lirait, la fuite serait écrite.
 //   3. la bannière ne DÉCRIT plus un réglage attendu, elle RAPPORTE la lecture — dans les deux sens.
+//      ET LA LECTURE QU'ELLE RAPPORTE EST CELLE D'UNE CONNEXION ARMÉE (`S38`) : la sonde nue mesure
+//      le silence, ce qui est la question du REFUS ; la bannière, elle, répond à « que font les
+//      connexions qui servent » — et sur une sonde nue, sous déversement, la réponse était toujours
+//      fausse.
 
 /// CE QU'UNE CONNEXION FAIT DE SES TRIS. Trois cas EXCLUSIFS, d'où un type et des `match` EXHAUSTIFS :
 /// « je ne sais pas » ne doit jamais pouvoir se déguiser en « tout va bien ».
@@ -902,6 +937,22 @@ pub(crate) fn tri_dune_connexion_nue() -> Tri {
     }
 }
 
+/// CE QUE LA CONNEXION QUI SERT FERA DE SES TRIS — la mesure que la bannière publie (`S38`).
+///
+/// Lue sur la connexion que la porte a ARMÉE, donc celle dont `PRAGMA temp_store` vaut ce que `armer`
+/// a posé : 1 sous déversement, 2 au défaut — et 0 si l'armement n'a PAS eu lieu, auquel cas c'est la
+/// contradiction qui se dit (sous déversement : « demandé mais le tri reste en mémoire »), pas un
+/// « tout va bien ». Une sonde nue (`tri_dune_connexion_nue`) ne peut PAS répondre à cette question :
+/// personne n'y pose `temp_store=FILE`, donc sous déversement elle contredisait le mode à chaque
+/// démarrage, et une garde qui alerte toujours ne prouve rien.
+///
+/// Rendue sous la forme de `S32` parce que la bannière doit pouvoir dire « NON MESURÉ » : un appelant
+/// qui n'a pas encore de connexion armée sous la main passe `Mesure::Illisible` avec sa cause, jamais
+/// la lecture d'une autre connexion.
+pub(crate) fn tri_de_la_connexion_qui_sert(conn: &Connection) -> crate::mesure_environnement::Mesure<Tri> {
+    crate::mesure_environnement::Mesure::Lue(lire_tri(conn))
+}
+
 /// CE QUE LA LECTURE CONTREDIT. PURE, donc exerçable dans les DEUX sens sans toucher à l'environnement.
 /// `None` = la lecture CONFIRME ce que le mode promet ; une garde qui alerterait toujours ne prouverait
 /// rien.
@@ -978,9 +1029,23 @@ pub(crate) fn garde_du_tri_en_memoire() -> Result<(), String> {
 /// L'ALERTE EST BORNÉE À UNE LIGNE PAR PROCESSUS : le pool de lecture ouvre des connexions en continu,
 /// une ligne par ouverture noierait le journal — et un journal noyé n'est pas lu.
 pub(crate) fn armer(conn: &Connection) -> Tri {
-    let _ = conn.execute_batch(pragmas_memoire());
+    armer_avec(conn, pragmas_memoire(), deversement_actif())
+}
+
+/// LA MÊME VOIE, PARAMÉTRÉE SUR LE MODE (`S38`). Le processus n'a qu'un mode et `armer` le fige ; une
+/// suite de tests tourne au défaut et ne pouvait donc JAMAIS armer une connexion sous déversement —
+/// c'est pour cela que le couple « déversement demandé, connexion armée » n'avait pas de témoin. Le batch
+/// est DÉRIVÉ du mode par la même fonction que celle qui sert `armer`, pas recopié. Réservée aux
+/// suites : en production le mode est celui du processus, et `armer` est la seule voie.
+#[cfg(test)]
+pub(crate) fn armer_pour(conn: &Connection, deversement: bool) -> Tri {
+    armer_avec(conn, &pragmas_memoire_pour(deversement), deversement)
+}
+
+fn armer_avec(conn: &Connection, pragmas: &str, deversement: bool) -> Tri {
+    let _ = conn.execute_batch(pragmas);
     let verdict = lire_tri(conn);
-    if let Some(desaccord) = desaccord_pour(&verdict, deversement_actif()) {
+    if let Some(desaccord) = desaccord_pour(&verdict, deversement) {
         static UNE_FOIS: std::sync::Once = std::sync::Once::new();
         UNE_FOIS.call_once(|| eprintln!("[plafond] {desaccord}"));
     }
@@ -1013,7 +1078,8 @@ mod plafond_tests {
     /// MUTATION : faire rendre le texte de `Vers` au bras `Desactive` ⇒ la 2ᵉ assertion passe au ROUGE.
     #[test]
     fn la_banniere_dit_le_mode_reel() {
-        let memoire = Tri::EnMemoire { compile: 2, local: 0 };
+        // La lecture d'une connexion ARMÉE au défaut : `temp_store=MEMORY` posé, relu à 2 (`S38`).
+        let memoire = crate::mesure_environnement::Mesure::Lue(Tri::EnMemoire { compile: 2, local: 2 });
         let eteint = banniere(Deversement::Desactive, memoire.clone());
         assert!(eteint.contains("DÉSACTIVÉ"), "le mode doit être LISIBLE, pas déduit : {eteint}");
         // L'assertion porte sur le SEGMENT du déversement, pas sur la bannière entière : le rapport de
@@ -1031,7 +1097,7 @@ mod plafond_tests {
         );
         let allume = banniere(
             Deversement::Vers(std::path::PathBuf::from("/x/sqltmp"), crate::mesure_environnement::Mesure::Lue(vec![])),
-            Tri::SurDisque { compile: 2, local: 1 },
+            crate::mesure_environnement::Mesure::Lue(Tri::SurDisque { compile: 2, local: 1 }),
         );
         assert!(allume.contains("/x/sqltmp"), "le chemin qui reçoit du clair doit être NOMMÉ : {allume}");
         assert!(allume.contains("EN CLAIR"), "et ce qu'il reçoit doit être dit : {allume}");
@@ -1234,7 +1300,10 @@ mod plafond_tests {
     /// assertion passe au ROUGE.
     #[test]
     fn la_banniere_ne_se_contredit_pas_sur_le_plafond() {
-        let b = banniere(Deversement::Desactive, Tri::EnMemoire { compile: 2, local: 0 });
+        let b = banniere(
+            Deversement::Desactive,
+            crate::mesure_environnement::Mesure::Lue(Tri::EnMemoire { compile: 2, local: 2 }),
+        );
         // Ce test ne vaut que si le plafond est bien APPLIQUÉ au défaut — sinon il passerait sans rien
         // prouver. La précondition est donc EXPLICITE.
         assert!(b.contains("APPLIQUÉ par l'allocateur"), "précondition : le défaut applique le plafond : {b}");

@@ -431,14 +431,14 @@ function presetRow(p, mode) {
   desc.textContent = (p.description || '').slice(0, 160); desc.title = p.description || '';
   row.append(vendor, label, auth, desc);
   if (mode === 'usable') {
-    const use = document.createElement('button'); use.type = 'button'; use.textContent = 'Utiliser ce preset';
+    const use = document.createElement('button'); use.type = 'button'; use.className = 'btn btn-sm'; use.textContent = 'Utiliser ce preset'; // P11.4-b : classe partagée
     use.title = 'Pré-remplit le formulaire (tu saisis le secret + les valeurs manquantes, puis crées désactivé)';
     use.onclick = () => instantiatePreset(p);
     row.append(use);
   } else if (mode === 'push') {
-    const note = document.createElement('span'); note.className = 'rulemeta'; note.style.cssText = 'color:var(--muted)';
+    const note = document.createElement('span'); note.className = 'rulemeta muted'; // P11.4-b : `--muted` n'existe pas ; la classe du thème
     note.textContent = (p.note || '').slice(0, 120); note.title = p.note || '';
-    const use = document.createElement('button'); use.type = 'button'; use.textContent = 'Créer source push';
+    const use = document.createElement('button'); use.type = 'button'; use.className = 'btn btn-sm'; use.textContent = 'Créer source push'; // P11.4-b : classe partagée
     use.title = 'Crée un connecteur push + minte une clé de livraison (montrée une seule fois). Plume ne stocke AUCUNE clé cloud.';
     use.onclick = () => createPushSource(p);
     row.append(note, use);

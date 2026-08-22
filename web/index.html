@@ -215,7 +215,7 @@
     <div id="aiassist" class="qbar" style="display:none">
       <input id="ainl" type="text" aria-label="Assistant IA — question en langage naturel" spellcheck="false"
         placeholder="Assistant IA : décrivez la recherche en langage naturel (ex : échecs d'authentification par hôte sur 1 h)…" />
-      <button id="airun" type="button" title="Proposer une requête GXQL (l'IA propose, vous révisez dans la barre puis exécutez)">Proposer GXQL</button>
+      <button id="airun" type="button" class="btn" title="Proposer une requête GXQL (l'IA propose, vous révisez dans la barre puis exécutez)">Proposer GXQL</button>
       <span id="aistat" class="muted" role="status" aria-live="polite"></span>
     </div>
     <div id="sqlhint" class="achint" aria-label="Suggestions"></div>
@@ -623,11 +623,11 @@
     <!-- MFA TOTP self-service (#44) — tout compte local peut activer une 2e étape (RFC 6238). L'enrôlement
          montre le secret/URI otpauth UNE fois ; la vérif d'un 1er code active la MFA et révèle les codes de
          secours (show-once). La vraie garde reste serveur (/api/mfa/* borné à `au.name`). -->
-    <div id="mfa-block" style="margin-top:16px;border-top:1px solid var(--line,#2c3550);padding-top:12px">
-      <h3 style="margin:0 0 6px;font-size:14px">Double authentification (TOTP)</h3>
-      <div id="mfa-status" class="muted" style="font-size:12px">chargement…</div>
-      <div id="mfa-actions" class="rf-actions" style="margin-top:8px"></div>
-      <div id="mfa-enroll" hidden style="margin-top:8px"></div>
+    <div id="mfa-block">
+      <h3>Double authentification (TOTP)</h3>
+      <div id="mfa-status" class="muted">chargement…</div>
+      <div id="mfa-actions" class="rf-actions"></div>
+      <div id="mfa-enroll" hidden></div>
     </div>
   </section>
   <section id="users" class="card span2" aria-labelledby="users-h" hidden>
@@ -933,7 +933,7 @@
        est éditable (PUT /api/suppressions, confirmée + auditée sev3) ; tout le reste est mirror-only. -->
   <section id="suppressions-panel" class="card span2" aria-labelledby="suppressions-h" hidden>
     <div class="panelhead">
-      <h2 id="suppressions-h">Suppressions &amp; whitelists actives</h2>
+      <h2 id="suppressions-h">Suppressions &amp; whitelists actives <button class="ihelp vhelp" data-help="suppressions" type="button" title="Aide : Suppressions &amp; whitelists">?</button></h2>
       <button id="suppressions-refresh" class="picon" type="button" title="Recharger l'affichage (ne modifie ni la collecte ni les règles)"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
     </div>
     <p class="muted" style="margin:0 0 9px;font-size:12px">Vue unique de TOUS les filtres/suppressions/whitelists actifs, quel que soit leur périmètre — <b>collecte et règles NON modifiées</b> depuis cette console. Chaque entrée porte son <b>type</b> : <b>display-only</b> (de-bruite un panneau seul, jamais la détection) · <b>collection-reducing</b> (réduit l'ingestion — <b>read-only</b>, contrôle à la frontière hôte) · <b>host</b> (état firewall/enforcement — <b>read-only</b>). <b>Seule</b> l'exclusion d'affichage <b>opérateur / self</b> (prouvée display-only) est éditable ici (confirmée + auditée) ; elle ne peut créer aucun angle mort. Un seul écran → aucune suppression cachée.</p>

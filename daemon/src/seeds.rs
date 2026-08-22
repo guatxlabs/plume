@@ -698,8 +698,8 @@ pub(crate) fn seed_purple_rules(conn: &Connection) {
 ///      P5.7-b — CETTE RÈGLE SE DÉCLENCHE SUR L'INSTALLATION DE PLUME LUI-MÊME, ET C'EST MESURÉ.
 ///      `bootstrap.sh` installe les unités du SOC dans `/etc/systemd/system/` (27 chemins
 ///      `plume-*.service|.timer` distincts sur l'arbre du 2026-08-02, pour 88 unités livrées :
-///      activer un collecteur optionnel en ajoute) ; `collectors/integrity.sh` surveille précisément
-///      `/etc/systemd/system/*.service` et `*.timer` et rend `kind=unit change=ajout severity=3`.
+///      activer un collecteur optionnel en ajoute) ; `collectors/integrity.sh` surveille ce répertoire
+///      et rend `kind=unit change=ajout severity=3`.
 ///      PREUVE DYNAMIQUE (2026-08-02, une ligne `unit|…` retirée de la baseline puis re-run du
 ///      collecteur LIVRÉ) : l'événement produit est
 ///      `{"source":"integrity","category":"integrity","severity":3,"fields":{"kind":"unit",
@@ -707,12 +707,24 @@ pub(crate) fn seed_purple_rules(conn: &Connection) {
 ///      ajoute une unité lève donc une alerte severity 4 « vecteur de persistance ajouté » sur le SOC
 ///      lui-même. Le premier boot, lui, ne la lève pas (le 1er run d'`integrity.sh` construit la
 ///      baseline APRÈS l'installation, donc les unités y sont déjà).
-///      CE QUE LE CAPTEUR SURVEILLE EST DÉSORMAIS TENU, PAS AFFIRMÉ (S29). Cette règle ne vaut que si
-///      `collectors/integrity.sh` hache toujours `/etc/systemd/system/*.service` et `*.timer` sous le
-///      genre `unit` : si cette ligne disparaissait, la règle continuerait de s'exécuter sur zéro ligne
-///      et ne lèverait PLUS JAMAIS d'alerte — un angle mort qui a l'apparence exacte d'un hôte sain, et
-///      que rien ne signale. `tests::allegations_d_environnement` lit le script DÉPOUILLÉ de ses
+///      CE QUE LE CAPTEUR SURVEILLE EST DÉSORMAIS TENU, PAS AFFIRMÉ (S29, élargi par P3.8-a). La
+///      couverture de la famille `unit` tenait une ligne — `/etc/systemd/system/*.service` et `*.timer`
+///      — et un drop-in `x.service.d/zz.conf` posant un `ExecStartPre=`, un `.socket` ou une unité sous
+///      `/run/systemd/system` ne produisaient AUCUN événement : la règle tournait sur une liste qui ne
+///      contenait pas le fichier. Le capteur hache désormais le chemin de recherche DÉRIVÉ de
+///      `systemd-analyze unit-paths` (repli : la table de `systemd.unit(5)`, et l'événement dit la voie
+///      dans `unit_dirs_from`), sur `service timer socket path mount automount` et sur les drop-ins
+///      `*.d/*.conf`, dont l'événement porte l'unité PARENTE (`unit`, `unit_form=drop-in`). La requête
+///      de cette règle ne filtre ni sur `kind` ni sur une extension : un drop-in ajouté la satisfait,
+///      et `.github/scripts/verifier-fim-couvre-les-unites-systemd.sh` le prouve en exécutant le capteur
+///      contre un répertoire temporaire et en jugeant l'événement contre CETTE requête, lue ici. Si la
+///      ligne des drop-ins disparaissait, la règle continuerait de s'exécuter sur zéro ligne et ne
+///      lèverait PLUS JAMAIS d'alerte — un angle mort qui a l'apparence exacte d'un hôte sain, et que
+///      rien ne signale. `tests::allegations_d_environnement` lit le script DÉPOUILLÉ de ses
 ///      commentaires (l'en-tête nomme ce même répertoire ; une phrase ne doit pas satisfaire la garde).
+///      CE QUE LA CORROBORATION NE COUVRE PAS, ET C'EST DIT : les drop-ins de durcissement que
+///      `bootstrap-agent.sh` pose (`<unité>.service.d/50-plume-hardening.conf`) ne sont pas des unités
+///      livrées au sens de `maj_corroboree.rs` ; leur dépôt reste alerté en severity 4. Fail-closed.
 ///      CE QU'ON N'A PAS FAIT, ET POURQUOI. Aucune exemption par NOM (`plume-*`) n'a été posée : elle
 ///      créerait un angle mort qu'un attaquant occupe en nommant son unité `plume-quelquechose.service`.
 ///      Pour un SOC, un angle mort taillé sur mesure est PIRE que du bruit de maintenance. La garde

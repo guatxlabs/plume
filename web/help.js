@@ -203,7 +203,7 @@ Time stored in UTC ; display follows the time-zone selector.` },
 • UNE liste, plusieurs TRIS (Plate / Règle / Hôte / Technique), une PORTÉE (actives / tous statuts), un filtre « hors case », des FACETTES (technique, source). La barre d'actions est la même sur tous les tris ; une action impossible reste visible, désactivée, avec sa raison.
 • Acquitter : sans facette, « Tout acquitter » acquitte TOUTES les alertes actives (au-delà de la page) ; sous une facette, seules les alertes affichées.
 • Cliquer le titre d'une alerte ouvre la Recherche sur CE QUE LA RÈGLE A COMPTÉ : la requête de la règle sans son agrégat final, sur la fenêtre exacte de l'évaluation — le nombre de lignes reproduit le compte de l'alerte (règle en SQL brut : le SQL lui-même, réservé à l'administrateur).
-• La cloche d'une source (Données → Fraîcheur) mène ici avec la facette source : ses alertes non acquittées, cases comprises, toutes dates — sans lien avec la fraîcheur de la source.
+• La cloche d'une source (Données → Fraîcheur) mène ici avec la facette source : ses alertes non acquittées, cases comprises, toutes dates — sans lien avec la fraîcheur de la source. Le filtre est appliqué par le serveur sur l'imputation exacte de chaque alerte (« k8s » ne retient pas « k8s-audit ») ; il se combine avec tous les tris et les deux portées. Limite : une alerte levée avant que l'imputation soit enregistrée n'y figure pas, alors que la cloche la compte encore d'après le texte de sa règle.
 • Le titre « Alertes » ramène à la liste plate sans filtre.
 • Puces : ouvrir un case depuis l'alerte, ou bannir l'IP en cause.` },
     en: { title: `Alerts`, body:
@@ -212,7 +212,7 @@ Time stored in UTC ; display follows the time-zone selector.` },
 • ONE list, several SORTS (Flat / Rule / Host / Technique), one SCOPE (active / all statuses), an "outside any case" filter, FACETS (technique, source). The action bar is the same on every sort; an impossible action stays visible, disabled, with its reason.
 • Acknowledge: without a facet, "Ack all" acknowledges EVERY active alert (beyond the page); under a facet, only the alerts shown.
 • Clicking an alert title opens Search on WHAT THE RULE COUNTED: the rule query without its final aggregate, on the exact evaluation window — the row count reproduces the alert count (raw-SQL rule: the SQL itself, admin only).
-• A source bell (Data → Freshness) lands here with the source facet: its unacknowledged alerts, cases included, all dates — unrelated to the source freshness.
+• A source bell (Data → Freshness) lands here with the source facet: its unacknowledged alerts, cases included, all dates — unrelated to the source freshness. The filter is applied by the server on each alert's exact attribution ("k8s" does not match "k8s-audit"); it combines with every sort and both scopes. Limit: an alert raised before attribution was recorded is not listed, while the bell still counts it from its rule text.
 • The "Alerts" title goes back to the flat, unfiltered list.
 • Chips: open a case from the alert, or ban the offending IP.` },
   },

@@ -25,15 +25,25 @@ hors du dénominateur, et rendue pour information. Une chaîne composée UNIQUEM
 minuscules ASCII, chiffres et `_ . : / -` (`src_ip`, `count`, `/api/x`) est un identifiant
 technique, identique dans les deux langues : hors population ; de même un code en MAJUSCULES
 sans espace qui porte un chiffre ou tient en quatre signes (`T1110`, `CSV`, `OK`). Une chaîne
-sans lettre (un symbole, un nombre) est hors population.
+sans lettre (un symbole, un nombre) est hors population. Le texte d'un ÉCHANTILLON DE CODE
+(`<code>`, `<kbd>`, `<pre>`, `<samp>`) est montré tel quel dans les deux langues : hors population,
+comme un `<script>`. Une chaîne choisie par `LANG === 'en' ? … : …` ou posée dans un bloc
+`if (LANG === 'en') { … }` est bilingue PAR CONSTRUCTION (son pendant FR est ailleurs) : couverte
+sans passer par le lexique. Les attributs affichés sont `title`, `placeholder`, `aria-label` et
+`label` (groupe d'options) — ce sont ceux que `i18nWalk` traduit.
 
 CE QUE LA GARDE NE VOIT PAS — DIT FRANCHEMENT
 ---------------------------------------------
-Un puits propre à un module (`opt(...)` dans alerts.js, `kv(...)` ailleurs) n'est pas reconnu :
-les chaînes qui y passent ne sont PAS comptées. Un mot en minuscules ASCII (`frais`, `statut`)
-est exclu par le critère d'identifiant alors qu'il peut être un libellé. Les deux biais vont
+Un puits propre à un module (`opt(...)` dans alerts.js, `tile(...)` / `mesureTile(...)` dans
+system.js, `kv(...)` ailleurs) n'est pas reconnu : les chaînes qui y passent ne sont PAS comptées
+(les libellés des tuiles Système sont au lexique sans être comptés ici). Un mot en minuscules
+ASCII (`frais`, `statut`) est exclu par le critère d'identifiant alors qu'il peut être un libellé,
+et un fragment de phrase riche en minuscules (`) du message`, `puis`) l'est de même : le lexique
+les porte pour que la phrase ANGLAISE se lise entière, la garde ne les exige pas. Les biais vont
 dans le sens d'un SOUS-compte des trous ; la garde mesure donc un plancher de la dette, jamais
 son plafond. Un texte posé par un nœud puis RETRAITÉ par une concaténation n'est pas suivi.
+Elle ne juge pas non plus si le MÉCANISME applique le lexique : c'est le harnais ESM
+(`web_esm_harnais.mjs`, témoin 10) qui rend un panneau sous `LANG='en'` et lit le texte.
 
 LA GARDE REFUSE UNE RÉGRESSION, PAS UN ÉTAT
 -------------------------------------------
@@ -69,29 +79,31 @@ WEB = os.path.join(RACINE, "web")
 LEXIQUE = os.path.join(WEB, "i18n.js")
 
 # Plancher de population sur l'arbre réel : en dessous, c'est l'extraction qui est cassée.
-# Relevé le 2026-08-22 : 1 568 chaînes statiques affichées, tous modules confondus.
+# Relevé le 2026-08-22 : 1 579 chaînes statiques affichées, tous modules confondus (échantillons de code et
+# blocs `if (LANG === 'en')` retirés de la population).
 MIN_POPULATION = 1000
 # Une clé dont on SAIT qu'elle est affichée par `web/index.html` (bouton d'exécution de la barre).
 CLE_TEMOIN = "Exécuter"
-# Plancher de clés du lexique : relevé le 2026-08-22, 223 clés avant complément.
+# Plancher de clés du lexique : relevé le 2026-08-22, 223 clés avant complément, 1 594 après.
 MIN_CLES = 150
 
-# PLAFOND DE TROUS PAR MODULE (chaînes affichées statiques sans entrée au lexique), RELEVÉ le
-# 2026-08-22 par `--mesure`, après complément du lexique pour les modules de la recherche
-# (modèles, complétion, résultats), de la couverture ATT&CK, des cas, des modèles de données et
-# du savoir — ceux-là sont à ZÉRO. Les autres portent leur dette mesurée : elle ne peut que
-# baisser. Un module absent d'ici est rendu, pas jugé ; l'y inscrire est le geste attendu quand
-# on le traduit. Relever un plafond exige une raison écrite à côté.
-# Abaissés le 2026-08-22 (index.html 513 -> 496, runbooks.js 16 -> 15) : les en-têtes et boutons des deux
-# familles de l'onglet Playbooks et les libellés de l'espace Recherche sont entrés au lexique (`P11.2-c`, `P11.7-a`).
+# PLAFOND DE TROUS PAR MODULE (chaînes affichées statiques sans entrée au lexique). Relevé le 2026-08-22 par
+# `--mesure` : chaque module suivi est à ZÉRO après complément du lexique (1 579 chaînes affichées, toutes
+# couvertes ; 1 594 clés). Le cliquet est donc au plancher : toute chaîne affichée neuve entre au lexique ou
+# rougit. Un module absent d'ici est rendu, pas jugé ; l'y inscrire est le geste attendu quand on le crée.
+# Relever un plafond exige une raison écrite à côté.
+# Historique du cliquet : 2026-08-22, index.html 513 -> 496 (`P11.2-c`, `P11.7-a`), puis 496 -> 0 ; app.js 143 -> 0 ;
+# connectors.js 49 -> 0 ; detadv.js 37 -> 0 ; detection_admin.js 35 -> 0 ; freshness.js 31 -> 0 ; retention.js 30 -> 0 ;
+# admin_users.js 29 -> 0 ; sigmaimport.js 27 -> 0 ; sources.js 26 -> 0 ; idp.js 23 -> 0 ; suppressions.js inscrit à 0
+# (41 trous avant, module jusque-là rendu sans être jugé) ; les quinze modules sous 20 trous à 0 (`P11.8-a`).
 PLAFOND_DE_TROUS = {
-    "admin_users.js": 29, "ai.js": 3, "alerting.js": 7, "alerts.js": 13, "app.js": 143, "attack.js": 0,
-    "audit.js": 3, "cases.js": 0, "connectors.js": 49, "core.js": 2, "datamodels.js": 0, "destinations.js": 19,
-    "detadv.js": 37, "detection_admin.js": 35, "fieldfilters.js": 8, "fleet.js": 16, "freshness.js": 31,
-    "idp.js": 23, "index.html": 496, "index_policies.js": 15, "keys.js": 0, "knowledge.js": 0,
-    "multitenant.js": 19, "prefs.js": 0, "processors.js": 15, "producer_ui.js": 6, "retention.js": 30,
-    "risk.js": 14, "runbooks.js": 15, "savedqueries.js": 0, "sigmaimport.js": 27, "soql_complete.js": 0,
-    "sources.js": 26, "state.js": 0, "system.js": 12, "threatintel.js": 13, "viz.js": 0,
+    "admin_users.js": 0, "ai.js": 0, "alerting.js": 0, "alerts.js": 0, "app.js": 0, "attack.js": 0,
+    "audit.js": 0, "cases.js": 0, "connectors.js": 0, "core.js": 0, "datamodels.js": 0, "destinations.js": 0,
+    "detadv.js": 0, "detection_admin.js": 0, "fieldfilters.js": 0, "fleet.js": 0, "freshness.js": 0,
+    "idp.js": 0, "index.html": 0, "index_policies.js": 0, "keys.js": 0, "knowledge.js": 0,
+    "multitenant.js": 0, "prefs.js": 0, "processors.js": 0, "producer_ui.js": 0, "retention.js": 0,
+    "risk.js": 0, "runbooks.js": 0, "savedqueries.js": 0, "sigmaimport.js": 0, "soql_complete.js": 0,
+    "sources.js": 0, "state.js": 0, "suppressions.js": 0, "system.js": 0, "threatintel.js": 0, "viz.js": 0,
 }
 
 # Modules qui portent LEURS DEUX LANGUES dans leurs propres objets : `i18nWalk` n'y intervient pas,
@@ -106,7 +118,10 @@ RE_CHOIX_PAR_LANG = re.compile(r"\bLANG\b[^;]*\?")
 SINKS_AFFECTATION = ("textContent", "innerText", "title", "placeholder", "ariaLabel")
 SINKS_CLE = ("label", "title", "placeholder", "okText", "hint", "text")
 SINKS_APPEL = ("createTextNode", "muted", "toast", "showErr", "confirmModal", "append", "prepend", "emptyRow")
-ATTRS_HTML = ("title", "placeholder", "aria-label")
+ATTRS_HTML = ("title", "placeholder", "aria-label", "label")
+# Le texte d'un échantillon de code (`<code>`, `<kbd>`, `<pre>`, `<samp>`) est montré tel quel dans les deux
+# langues : hors population, comme le contenu d'un `<script>`.
+TAGS_HORS_POPULATION = ("script", "style", "code", "kbd", "pre", "samp")
 
 # Un identifiant technique : minuscules ASCII, chiffres, ponctuation de chemin. Identique en FR et EN.
 RE_IDENTIFIANT = re.compile(r"^[a-z0-9_.:/\-+*%#@&=?|,;<>()\[\]{}!~^$\\' ]*$")
@@ -168,6 +183,14 @@ def _lire_chaine(src: str, i: int) -> tuple[str, int]:
         c = src[i]
         if c == "\\":
             nxt = src[i + 1] if i + 1 < n else ""
+            # `\uXXXX` / `\xXX` : une clé qui porte une espace insécable s'écrit ainsi pour rester lisible
+            if nxt in ("u", "x"):
+                largeur = 4 if nxt == "u" else 2
+                hexa = src[i + 2 : i + 2 + largeur]
+                if len(hexa) == largeur and all(ch in "0123456789abcdefABCDEF" for ch in hexa):
+                    out.append(chr(int(hexa, 16)))
+                    i += 2 + largeur
+                    continue
             out.append({"n": "\n", "t": "\t", "'": "'", '"': '"', "\\": "\\"}.get(nxt, nxt))
             i += 2
             continue
@@ -248,8 +271,25 @@ def chaines_js(src: str) -> list[tuple[str, str, str]]:
         if k >= 0:
             avant = avant[k + 1 :]
         apres = texte_code[p + 2 : p + 12]
-        out.append((s, avant, apres))
+        out.append((s, avant, apres, _dans_bloc_lang_en(texte_code, p)))
     return out
+
+
+# Un bloc `if (LANG === 'en') { … }` (le littéral 'en' est déjà remplacé par `""` dans le code réduit).
+RE_BLOC_LANG_EN = re.compile(r"\bif\s*\(\s*LANG\s*===\s*\"\"\s*\)\s*\{")
+
+
+def _dans_bloc_lang_en(texte_code: str, p: int) -> bool:
+    """Vrai si la position `p` est à l'intérieur du dernier bloc `if (LANG === 'en') {` ouvert avant elle :
+    les accolades ouvertes entre l'ouverture du bloc et `p` (littéraux et regex déjà réduits) n'ont pas
+    toutes été refermées."""
+    ouvert = None
+    for m in RE_BLOC_LANG_EN.finditer(texte_code, 0, p):
+        ouvert = m.end()
+    if ouvert is None:
+        return False
+    corps = texte_code[ouvert:p]
+    return corps.count("{") - corps.count("}") >= 0
 
 
 RE_SINK_AFFECT = re.compile(r"\.(%s)\s*=\s*$" % "|".join(SINKS_AFFECTATION))
@@ -320,14 +360,14 @@ def _textes_html(fragment: str) -> tuple[list[str], list[str]]:
             self.skip = 0
 
         def handle_starttag(self, tag, attrs):
-            if tag in ("script", "style"):
+            if tag in TAGS_HORS_POPULATION:
                 self.skip += 1
             for k, v in attrs:
                 if k in ATTRS_HTML and v:
                     (dyn if SENTINELLE in v else stat).append(v)
 
         def handle_endtag(self, tag):
-            if tag in ("script", "style") and self.skip:
+            if tag in TAGS_HORS_POPULATION and self.skip:
                 self.skip -= 1
 
         def handle_data(self, data):
@@ -346,9 +386,14 @@ def _textes_html(fragment: str) -> tuple[list[str], list[str]]:
 def extraire_module(src: str) -> tuple[list[str], list[str]]:
     """(statiques affichées, dynamiques affichées, bilingues par construction) d'un module JS."""
     statiques, dynamiques, par_construction = [], [], []
-    for s, avant, apres in chaines_js(src):
+    for s, avant, apres, bloc_en in chaines_js(src):
         if RE_HTML.search(s):
             st, dy = _textes_html(s)
+            if bloc_en:
+                # version EN dédiée d'un bloc riche (`if (LANG === 'en') { el.innerHTML = '…' }`) : bilingue par
+                # construction, son pendant FR est dans index.html
+                par_construction += [x for x in st if _candidat(x)]
+                continue
             statiques += [x for x in st if _candidat(x)]
             dynamiques += [x for x in dy if _candidat(x.replace(SENTINELLE, ""))]
             continue
@@ -358,7 +403,7 @@ def extraire_module(src: str) -> tuple[list[str], list[str]]:
             continue
         if _dynamique(s, avant, apres):
             dynamiques.append(s)
-        elif RE_CHOIX_PAR_LANG.search(avant):
+        elif bloc_en or RE_CHOIX_PAR_LANG.search(avant):
             par_construction.append(s)
         else:
             statiques.append(s)
@@ -376,7 +421,7 @@ def cles_du_lexique(src: str) -> set[str]:
         return set()
     corps = m.group(1)
     cles = set()
-    for s, avant, _ in chaines_js(corps):
+    for s, avant, _, _ in chaines_js(corps):
         # une CLÉ est un littéral suivi de `:` ; la tokenisation remplace les littéraux par `""`,
         # donc on regarde le code qui PRÉCÈDE : une clé est précédée de `{`, `,` ou d'un début de ligne.
         a = avant.rstrip()
@@ -408,20 +453,26 @@ i.textContent = 'src_ip';
 j.textContent = 'T1110';
 k.textContent = '…';
 l.textContent = LANG === 'en' ? 'Bilingual' : 'Bilingue';
+if (LANG === 'en') { m.textContent = 'English only'; if (x) { n.innerHTML = '<b>English rich</b>'; } }
+o.textContent = 'Affiché quatorze';
+el.innerHTML = '<p>Affiché quinze <code>pas_un_libellé(x)</code> <kbd>Ctrl</kbd></p><optgroup label="Affiché seize"></optgroup>';
 """
 ATTENDUS_STATIQUES = {"Affiché un", "Affiché deux", "Affiché trois", "Affiché quatre", "Affiché cinq",
                       "Affiché six", "Affiché sept", "Affiché huit", "Affiché neuf", "Affiché dix",
-                      "Affiché onze", "Affiché douze", "Affiché treize"}
+                      "Affiché onze", "Affiché douze", "Affiché treize", "Affiché quatorze", "Affiché quinze",
+                      "Affiché seize"}
 ATTENDUS_DYNAMIQUES = 2
-INTERDITS = {"Pas affiché", "pas-une-chaine affichée", "valeur_technique", "pas une chaîne", "src_ip", "T1110", "…", "x"}
+INTERDITS = {"Pas affiché", "pas-une-chaine affichée", "valeur_technique", "pas une chaîne", "src_ip", "T1110", "…", "x",
+             "English only", "English rich", "pas_un_libellé(x)", "Ctrl"}
 
 
 def valider_instrument() -> list[str]:
     errs = []
     st, dy, pc = extraire_module(CORPUS_TEMOIN)
     sst = {s.strip() for s in st}
-    if {x.strip() for x in pc} != {"Bilingual", "Bilingue"}:
-        errs.append(f"témoin : le choix par LANG n'est pas reconnu comme bilingue par construction : {pc}")
+    if {x.strip() for x in pc} != {"Bilingual", "Bilingue", "English only", "English rich"}:
+        errs.append(f"témoin : le choix par LANG (ternaire ou bloc `if (LANG === 'en')`) n'est pas reconnu comme "
+                    f"bilingue par construction : {pc}")
     manquants = ATTENDUS_STATIQUES - sst
     if manquants:
         errs.append(f"témoin : chaînes affichées NON reconnues : {sorted(manquants)}")
@@ -430,8 +481,8 @@ def valider_instrument() -> list[str]:
         errs.append(f"témoin : chaînes comptées alors qu'elles ne sont pas affichées : {sorted(trop)}")
     if len(dy) != ATTENDUS_DYNAMIQUES:
         errs.append(f"témoin : {len(dy)} chaîne(s) dynamique(s) vue(s) au lieu de {ATTENDUS_DYNAMIQUES}")
-    lex = cles_du_lexique('const I18N_EN = {\n  "Clé un": "Key one", "Clé deux": "Key two",\n  // c\n  "Clé trois": "Key three",\n};')
-    if lex != {"Clé un", "Clé deux", "Clé trois"}:
+    lex = cles_du_lexique('const I18N_EN = {\n  "Clé un": "Key one", "Clé deux": "Key two",\n  // c\n  "Clé trois": "Key three",\n  "Clé\\u00a0quatre": "Key four",\n};')
+    if lex != {"Clé un", "Clé deux", "Clé trois", "Clé\xa0quatre"}:
         errs.append(f"témoin : lecture du lexique fausse : {sorted(lex)}")
     return errs
 

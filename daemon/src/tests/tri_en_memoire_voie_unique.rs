@@ -29,6 +29,7 @@
 
 #[cfg(test)]
 mod tri_en_memoire_voie_unique_tests {
+    use crate::mesure_environnement::Mesure;
     use crate::sqlite_plafond::{
         armer, banniere, constat_de_tri, lire_tri, refus_de_demarrage_pour, tri_dune_connexion_nue,
         tri_en_memoire, tri_pour, Deversement, Tri,
@@ -104,7 +105,8 @@ mod tri_en_memoire_voie_unique_tests {
     /// toujours ne prouverait rien non plus.
     #[test]
     fn la_banniere_dit_ce_qui_est_mesure_pas_ce_qui_est_promis() {
-        let sure = banniere(Deversement::Desactive, Tri::EnMemoire { compile: 2, local: 0 });
+        // La lecture est celle d'une connexion ARMÉE (`S38`) : au défaut, `temp_store=MEMORY` relu à 2.
+        let sure = banniere(Deversement::Desactive, Mesure::Lue(Tri::EnMemoire { compile: 2, local: 2 }));
         assert!(sure.contains("MESURÉ"), "la garantie doit être présentée comme une MESURE : {sure}");
         assert!(sure.contains("TEMP_STORE=2"), "et les chiffres LUS doivent y être : {sure}");
         assert!(sure.contains("Aucune valeur d'événement en clair"), "{sure}");
@@ -113,7 +115,7 @@ mod tri_en_memoire_voie_unique_tests {
         // ce que rendrait une liaison livrant `SQLITE_TEMP_STORE=1` sur une connexion muette. Un premier
         // jet posait `Tri::EnMemoire { compile: 1, .. }` — une valeur que la table de SQLite ne peut PAS
         // produire, donc un test qui aurait prouvé quelque chose sur un monde inexistant.
-        let dangereuse = banniere(Deversement::Desactive, tri_pour(Some(1), Some(0)));
+        let dangereuse = banniere(Deversement::Desactive, Mesure::Lue(tri_pour(Some(1), Some(0))));
         // Le MÊME mode, la MÊME bannière : c'est la MESURE qui a changé.
         assert!(
             !dangereuse.contains("Aucune valeur d'événement en clair"),
@@ -125,7 +127,7 @@ mod tri_en_memoire_voie_unique_tests {
         );
 
         // Et l'ignorance s'avoue, au lieu de se taire.
-        let muette = banniere(Deversement::Desactive, Tri::Illisible("compile_options muet".into()));
+        let muette = banniere(Deversement::Desactive, Mesure::Lue(Tri::Illisible("compile_options muet".into())));
         assert!(muette.contains("N'EST PAS LISIBLE"), "{muette}");
         assert!(!muette.contains("Aucune valeur d'événement en clair"), "{muette}");
     }

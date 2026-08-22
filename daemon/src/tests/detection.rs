@@ -4984,7 +4984,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     // P5.7-b — LE SOC S'ALERTE SUR SA PROPRE INSTALLATION, ET ÇA NE PEUT PLUS GRANDIR EN SILENCE.
     // ------------------------------------------------------------------------------------------------
     // `bootstrap.sh` installe les unités de plume dans /etc/systemd/system/ ; `collectors/integrity.sh`
-    // surveille exactement ce répertoire (`*.service`, `*.timer`) et rend `kind=unit change=ajout
+    // surveille ce répertoire (entre autres, depuis P3.8-a : `*.service`, `*.timer`…) et rend `kind=unit change=ajout
     // severity=3` ; la règle semée « vecteur de persistance ajouté » (T1543, severity 4, activée)
     // interroge `source=integrity change=ajout severity>=3`. Les trois se recouvrent EXACTEMENT.
     //
@@ -5012,14 +5012,26 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         let fim = std::fs::read_to_string(racine.join("collectors/integrity.sh")).expect("integrity.sh");
 
         // (1) Le FIM surveille-t-il TOUJOURS ce répertoire ? Si non, cette garde ne mesure plus rien.
+        //     P3.8-a : la liste des répertoires est DÉRIVÉE à l'exécution ; ce qui est lisible ici est la
+        //     table de repli `UNIT_DIRS_DOC=` (qui doit porter ce répertoire) et les types `UNIT_TYPES=`
+        //     (qui doivent porter `service` et `timer`). La garde 3 d'`allegations_d_environnement` tient
+        //     la forme complète ; celle-ci ne relit que ce dont son compte dépend.
+        let valeur = |cle: &str| -> String {
+            fim.lines()
+                .find(|l| l.starts_with(cle))
+                .and_then(|l| l.split('"').nth(1))
+                .unwrap_or_default()
+                .to_string()
+        };
         assert!(
-            fim.contains("/etc/systemd/system/*.service") && fim.contains("/etc/systemd/system/*.timer"),
-            "integrity.sh ne surveille plus /etc/systemd/system/*.service|*.timer : le recouvrement \
-             mesuré ici a changé de nature, re-mesurez avant de toucher la constante."
+            valeur("UNIT_DIRS_DOC=").split_whitespace().any(|d| d == "/etc/systemd/system")
+                && ["service", "timer"].iter().all(|t| valeur("UNIT_TYPES=").split_whitespace().any(|u| u == *t)),
+            "integrity.sh ne surveille plus /etc/systemd/system/*.service|*.timer (table de repli ou types) : \
+             le recouvrement mesuré ici a changé de nature, re-mesurez avant de toucher la constante."
         );
         // (2) …et le fait-il en severity >= 3 avec change=ajout ? (c'est ce que la règle interroge)
         assert!(
-            fim.contains("unit)     add_ev 3 \"unit systemd $change (persistance) : $path\""),
+            fim.contains("unit)     add_ev 3 \"unit systemd $change (persistance)"),
             "integrity.sh n'émet plus l'unité systemd en severity 3 : la règle T1543 ne la verrait plus \
              — vérifiez que le recouvrement décrit ici tient encore."
         );

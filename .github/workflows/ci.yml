@@ -322,7 +322,7 @@ env:
   # `daemon/src/tests/mesure_environnement.rs`) : QUATRE tests de plus, sans `cfg` de feature, donc
   # présents dans les DEUX profils. La valeur d'avant cette ré-énumération avait elle-même bougé sous
   # un autre lot en vol : c'est précisément pourquoi le total est celui de l'ARBRE et jamais une somme.
-  EXPECTED_TESTS: "1206"
+  EXPECTED_TESTS: "1217"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -609,7 +609,7 @@ jobs:
           # RÉ-ÉNUMÉRÉ le 2026-08-20 par la MÊME double lecture, sur l'arbre qui porte aussi le lot S32
           # (lectures d'environnement séparant « lu » de « pas lisible », dix-huit tests sans `cfg`) :
           # 1368 avec `cold_tier` pour 1148 par défaut — l'écart reste **220**.
-          EXPECTED_COLD_TESTS: "1426"
+          EXPECTED_COLD_TESTS: "1437"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -708,6 +708,7 @@ jobs:
       # annoncé devenu injoignable. Elle porte ses propres témoins positif et négatif.
       - name: La couverture ANNONCÉE par un capteur doit être ATTEIGNABLE sous son bac à sable
         run: python3 .github/scripts/check_fim_coverage_is_reachable.py
+      - { name: "Le capteur d'intégrité voit un drop-in systemd et les types d'unités du chemin de recherche DÉRIVÉ, dit la voie, et avoue un répertoire illisible (P3.8-a)", run: .github/scripts/verifier-fim-couvre-les-unites-systemd.sh }
 
       # MÊME FAMILLE ENCORE, ET C'EST LA PLUS COÛTEUSE : ici le capteur n'est ni muet ni amputé — il
       # PUBLIE, et ce qu'il publie est la valeur la plus rassurante de sa série. `collectors/resources.sh`
@@ -738,6 +739,7 @@ jobs:
       - name: La surface web lit chaque verdict que le démon publie, et le rend comme un état
         run: python3 .github/scripts/check_web_reads_every_verdict.py
       - { name: "Toute route sensible du démon (détruit / élève un droit / arme une réponse — DÉRIVÉE du routeur) a ses appelants web derrière la confirmation partagée (P11.5-b)", run: python3 .github/scripts/check_sensitive_routes_are_confirmed.py }
+      - { name: "Aucun bouton de la surface web sans classe partagée ni contexte stylant — contextes et classes DÉRIVÉS de style.css, sites dérivés des modules (P11.4-b)", run: python3 .github/scripts/check_every_button_wears_shared_chrome.py }
 
       # `P11.8-a` — LE LEXIQUE FR/EN COUVRE CE QUE CHAQUE MODULE AFFICHE. La console traduit par dictionnaire
       # (`i18n.js`, correspondance EXACTE d'un nœud texte ou d'un attribut affiché) : une chaîne sans clé

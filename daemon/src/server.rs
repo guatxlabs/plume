@@ -1956,14 +1956,20 @@ pub(crate) fn build_router(state: AppState, webdir: String) -> Router {
 
 pub(crate) async fn run() {
     let BootConfig { conf, db_path, spool, addr, user, pass, webdir, host, host_strict, sso_secret, public_demo, metrics_token, sso_group_admin, sso_group_editor, sso_group_superadmin, sso_header_user, sso_header_groups, tls_cert, tls_key, tls_on, lock_threshold, lock_base_s, lock_max_s, rl_ip_max, rl_auth_max, rl_global_max, session_ttl_s, session_secret, ingest_min_free_mb, ingest_max_events, search_limit_default, search_limit_max, query_sem, refresh_sem, bound } = boot_config();
-    // PLAFOND MÉMOIRE : on RAPPORTE ce que le processus va faire, et on le rappelle (idempotent — l'effet
-    // a déjà eu lieu en tête de `main`, seul endroit assez tôt pour que SQLite le voie).
-    eprintln!(
-        "[plafond] {}",
-        sqlite_plafond::banniere(sqlite_plafond::deversement_init(&db_path), sqlite_plafond::tri_dune_connexion_nue())
-    );
     let conn = open_and_migrate_db(db_path.clone(), spool.clone(), conf.clone());
     let db = Arc::new(Mutex::new(conn));
+    // PLAFOND MÉMOIRE : on RAPPORTE ce que le processus va faire, et on le rappelle (idempotent — l'effet
+    // a déjà eu lieu en tête de `main`, seul endroit assez tôt pour que SQLite le voie).
+    // APRÈS l'ouverture, délibérément (`S38`) : la mesure que la bannière publie est LUE sur la connexion
+    // qui sert, armée par la porte — une sonde nue ne porte pas `temp_store=FILE`, et sous déversement
+    // la bannière contredisait le mode à chaque démarrage.
+    eprintln!(
+        "[plafond] {}",
+        sqlite_plafond::banniere(
+            sqlite_plafond::deversement_init(&db_path),
+            sqlite_plafond::tri_de_la_connexion_qui_sert(&db.lock())
+        )
+    );
     // TIER FROID : ce que ce binaire SAIT faire, et ce qu'il FAIT. Un composant qui travaille sans le dire
     // est indistinguable d'un composant ABSENT — c'est ce qui a laissé la production croire trois jours à
     // un tier froid que le binaire ne portait plus. APRÈS l'ouverture de la base, délibérément : la fenêtre

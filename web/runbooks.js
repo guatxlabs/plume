@@ -150,7 +150,7 @@ async function openEditor(id) {
 
   const acts = document.createElement('div'); acts.className = 'rf-actions';
   const addBtn = rowButton('+ Étape', { onClick: () => addStep() });
-  const saveBtn = document.createElement('button'); saveBtn.type = 'submit'; saveBtn.textContent = 'Enregistrer';
+  const saveBtn = document.createElement('button'); saveBtn.type = 'submit'; saveBtn.className = 'btn-primary'; saveBtn.textContent = 'Enregistrer'; // P11.4-b : classe partagée (primaire)
   const cancelBtn = rowButton('Annuler', { onClick: () => { box.classList.add('hidden'); box.replaceChildren(); } });
   const result = document.createElement('span'); result.className = 'muted';
   result.appendChild(destinationNote('cases', '', '')); // P11.1-e : la destination est dite AVANT d'enregistrer

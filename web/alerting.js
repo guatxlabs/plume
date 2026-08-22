@@ -43,7 +43,7 @@ async function loadPolicies() {
     const m = document.createElement('code'); m.className = 'rulecond'; m.textContent = matchersText(p.matchers);
     const arrow = document.createElement('span'); arrow.textContent = ' → canaux [' + (p.contact_points || []).join(', ') + ']' + (p.continue ? ' + continue' : '') + (p.enabled ? '' : ' (désactivée)');
     desc.append(m, arrow);
-    const del = document.createElement('button'); del.innerHTML = ic('x'); del.title = 'Supprimer la route';
+    const del = document.createElement('button'); del.type = 'button'; del.className = 'btn btn-sm'; del.innerHTML = ic('x'); del.title = 'Supprimer la route'; // P11.4-b : classe partagée
     del.onclick = async () => { if (await confirmModal('Supprimer la politique #' + p.id + ' ?', { danger: true })) { try { await apiSend('/notification-policies/' + p.id, 'DELETE'); toast('route supprimée', 'ok'); loadPolicies(); } catch (e) { toast('échec : ' + e.message, 'bad'); } } };
     row.append(desc, del);
     wrap.appendChild(row);
@@ -66,7 +66,7 @@ async function loadSilences() {
     meta.textContent = (s.active ? ' actif' : ' expiré') + ' · expire ' + fmtTs(s.expires_at) + (s.reason ? ' · ' + s.reason : '') + (s.created_by ? ' · par ' + s.created_by : '');
     meta.className = s.active ? '' : 'muted';
     desc.append(m, meta);
-    const del = document.createElement('button'); del.innerHTML = ic('x'); del.title = 'Lever le silence';
+    const del = document.createElement('button'); del.type = 'button'; del.className = 'btn btn-sm'; del.innerHTML = ic('x'); del.title = 'Lever le silence'; // P11.4-b : classe partagée
     del.onclick = async () => { if (await confirmModal('Lever le silence #' + s.id + ' ?', { danger: true })) { try { await apiSend('/silences/' + s.id, 'DELETE'); toast('silence levé', 'ok'); loadSilences(); } catch (e) { toast('échec : ' + e.message, 'bad'); } } };
     row.append(desc, del);
     wrap.appendChild(row);

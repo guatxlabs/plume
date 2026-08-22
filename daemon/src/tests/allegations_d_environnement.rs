@@ -596,7 +596,8 @@ mod allegations_d_environnement_tests {
     }
 
     // --------------------------------------------------------------------------------------------
-    // GARDE 3 — « `collectors/integrity.sh` surveille /etc/systemd/system/*.service et *.timer »
+    // GARDE 3 — « `collectors/integrity.sh` hache le chemin de recherche d'unités systemd, DÉRIVÉ,
+    //            sur les types qui exécutent quelque chose et sur les drop-ins »
     // --------------------------------------------------------------------------------------------
 
     /// L'ALLÉGATION TENUE : `seeds.rs` sème une règle « vecteur de persistance ajouté » (T1543) qui
@@ -605,9 +606,20 @@ mod allegations_d_environnement_tests {
     /// SQL semée ; rien ne les relie.
     ///
     /// CE QUE SON VIEILLISSEMENT PRODUIRAIT — et c'est le pire silence de tout le recensement : si le
-    /// script cessait de hacher ce répertoire, la règle continuerait de s'exécuter, sur zéro ligne, et
+    /// script cessait de hacher ces répertoires, la règle continuerait de s'exécuter, sur zéro ligne, et
     /// ne lèverait JAMAIS d'alerte. Un SOC sans alerte de persistance a exactement l'apparence d'un SOC
     /// sain. Le mode de panne ne produit ni erreur, ni journal, ni chiffre anormal : il produit du calme.
+    ///
+    /// CE QUE LA PROPRIÉTÉ EST DEVENUE (P3.8-a). Elle tenait UNE ligne — `/etc/systemd/system/*.service`
+    /// et `*.timer` — et c'était un trou de couverture : ni `/run/systemd/system`, ni
+    /// `/usr/local/lib/systemd/system`, ni les drop-ins `*.d/*.conf`, ni les `.socket`/`.path`. Un drop-in
+    /// qui ajoute un `ExecStartPre=` est une persistance ordinaire, et il ne produisait rien. La liste des
+    /// répertoires est désormais DÉRIVÉE (`systemd-analyze unit-paths`) avec un repli documenté écrit une
+    /// fois ; la garde tient donc QUATRE choses dans le code exécuté : la dérivation, la table de repli
+    /// (qui doit contenir les trois répertoires que la clé nommait), les six types d'unités, et le glob
+    /// des drop-ins — chacune sur une ligne qui hache sous le genre `unit`. Le témoin dynamique
+    /// (`.github/scripts/verifier-fim-couvre-les-unites-systemd.sh`) exécute le capteur contre un
+    /// répertoire temporaire et exige l'événement ; cette garde tient la SOURCE, lui tient le COMPORTEMENT.
     #[test]
     fn le_capteur_d_integrite_surveille_toujours_le_repertoire_d_unites() {
         let script = racine_du_depot().join("collectors/integrity.sh");
@@ -636,17 +648,73 @@ mod allegations_d_environnement_tests {
              satisfaite par une phrase au lieu d'une ligne exécutée"
         );
 
-        let surveille = code.lines().any(|l| {
-            l.contains(&format!("{repertoire}/*.service"))
-                && l.contains(&format!("{repertoire}/*.timer"))
-                && l.contains("emit_hash unit")
-        });
+        // L'INSTRUMENT DE CETTE GARDE, VALIDÉ DANS LES DEUX SENS sur des fragments fabriqués : la ligne
+        // des drop-ins est reconnue quand elle est exécutée, et ignorée quand elle est commentée. Sans
+        // ces deux témoins, une ligne commentée pourrait satisfaire la substance ci-dessous.
+        let hache_les_dropins = |texte: &str| {
+            texte.lines().any(|l| l.contains("*.d/*.conf") && l.contains("emit_hash unit"))
+        };
+        let fragment = "for f in \"$_ud\"/*.d/*.conf; do emit_hash unit \"$f\"; done\n";
+        assert!(hache_les_dropins(&code_execute_shell(fragment)), "INSTRUMENT : la ligne des drop-ins exécutée n'est pas reconnue");
         assert!(
-            surveille,
-            "aucune ligne EXÉCUTÉE de {} ne hache `{repertoire}/*.service` ET `{repertoire}/*.timer` \
-             sous le genre `unit`.\nLa règle semée « vecteur de persistance ajouté » (T1543) interroge \
-             `source=integrity change=ajout severity>=3` : sans cette ligne elle ne lèvera plus jamais \
-             d'alerte, et un SOC muet ressemble à un SOC sain.",
+            !hache_les_dropins(&code_execute_shell(&format!("# {fragment}"))),
+            "INSTRUMENT : la ligne des drop-ins COMMENTÉE est reconnue — une phrase satisferait la garde"
+        );
+
+        // (1) LA DÉRIVATION : le chemin de recherche est demandé au gestionnaire, pas écrit.
+        assert!(
+            code.lines().any(|l| l.contains("systemd-analyze unit-paths")),
+            "aucune ligne EXÉCUTÉE de {} ne dérive le chemin de recherche par `systemd-analyze unit-paths` : \
+             la liste des répertoires d'unités est redevenue une liste écrite, qui vieillit sans le dire.",
+            relatif(&script)
+        );
+        // (2) LA TABLE DE REPLI, écrite une fois, et qui contient au moins les trois répertoires que la
+        //     clé P3.8-a nommait comme absents de l'ancienne couverture.
+        let repli = code
+            .lines()
+            .find_map(|l| litteral_sur_la_ligne(l, 0, 0).filter(|_| l.trim_start().starts_with("UNIT_DIRS_DOC=")))
+            .unwrap_or_default();
+        let repli: Vec<&str> = repli.split_whitespace().collect();
+        for attendu in ["/etc/systemd/system", "/run/systemd/system", "/usr/local/lib/systemd/system"] {
+            assert!(
+                repli.contains(&attendu),
+                "la table de repli `UNIT_DIRS_DOC=` de {} ne contient plus `{attendu}` (trouvé : {repli:?}) : \
+                 sans `systemd-analyze`, ce répertoire ne serait plus haché et la règle T1543 n'y verrait rien.",
+                relatif(&script)
+            );
+        }
+        // (3) LES TYPES : ceux qui exécutent ou déclenchent quelque chose, et ils sont hachés sous `unit`.
+        let types = code
+            .lines()
+            .find_map(|l| litteral_sur_la_ligne(l, 0, 0).filter(|_| l.trim_start().starts_with("UNIT_TYPES=")))
+            .unwrap_or_default();
+        let types: Vec<&str> = types.split_whitespace().collect();
+        for attendu in ["service", "timer", "socket", "path", "mount", "automount"] {
+            assert!(
+                types.contains(&attendu),
+                "`UNIT_TYPES=` de {} ne couvre plus `.{attendu}` (trouvé : {types:?}) : une unité de ce type \
+                 déposée sur l'hôte ne produirait aucun événement.",
+                relatif(&script)
+            );
+        }
+        assert!(
+            code.lines().any(|l| l.contains("$UNIT_TYPES") && l.contains("emit_hash unit")),
+            "aucune ligne EXÉCUTÉE de {} ne hache les types de `$UNIT_TYPES` sous le genre `unit`.",
+            relatif(&script)
+        );
+        // (4) LES DROP-INS : `<unité>.d/*.conf`, hachés sous `unit` — c'est le silence que la clé fermait.
+        assert!(
+            hache_les_dropins(&code),
+            "aucune ligne EXÉCUTÉE de {} ne hache les drop-ins `*.d/*.conf` sous le genre `unit`.\nUn drop-in \
+             qui ajoute un `ExecStartPre=` à une unité existante est une persistance ordinaire : sans cette \
+             ligne la règle semée « vecteur de persistance ajouté » (T1543, `source=integrity change=ajout \
+             severity>=3`) ne le verra jamais, et un SOC muet ressemble à un SOC sain.",
+            relatif(&script)
+        );
+        // (5) LA VOIE EST DITE dans l'événement : un lecteur distingue la liste dérivée de la liste écrite.
+        assert!(
+            code.contains("unit_dirs_from"),
+            "l'événement `kind=unit` de {} ne porte plus `unit_dirs_from` : la voie de dérivation n'est plus dite.",
             relatif(&script)
         );
     }
@@ -999,10 +1067,11 @@ mod allegations_d_environnement_tests {
     // d'intégrité a raison de surveiller `/etc/systemd/system` : y déposer une unité est un vecteur de
     // persistance » (`maj_corroboree.rs`) — faiseur : le chemin de recherche d'unités de systemd, compilé
     // dans le gestionnaire et documenté (`systemd.unit(5)`). Issue (iii) : laissée, parce que ce chemin
-    // n'a jamais changé de forme et que le démon ne tourne pas sur l'hôte du capteur ; ce qui n'est PAS
-    // tenu est autre chose — les AUTRES répertoires du même chemin de recherche (`/run/systemd/system`,
-    // `/usr/local/lib/systemd/system`, les drop-ins `*.d/*.conf`, les `.socket`/`.path`) que le capteur
-    // ne hache pas, et c'est un trou de COUVERTURE, pas une allégation fausse.
+    // n'a jamais changé de forme et que le démon ne tourne pas sur l'hôte du capteur. Les AUTRES
+    // répertoires du même chemin de recherche (`/run/systemd/system`, `/usr/local/lib/systemd/system`), les
+    // drop-ins `*.d/*.conf` et les `.socket`/`.path` étaient un trou de COUVERTURE, pas une allégation
+    // fausse ; `P3.8-a` l'a fermé (liste dérivée de `systemd-analyze unit-paths`, repli documenté), et la
+    // garde 3 ci-dessus tient désormais la dérivation, la table de repli, les types et les drop-ins.
     //
     // TROIS PHRASES FAUSSES AU MOT PRÈS, sans dépendant, réécrites pour dire ce qui est su : « le silence
     // vaut `/tmp` » (le moteur vendoré essaie `TMPDIR`, `/var/tmp`, `/usr/tmp`, `/tmp`, `.` dans cet
@@ -1058,7 +1127,7 @@ mod allegations_d_environnement_tests {
         // Et le mot traverse la bannière réelle, dans le segment du déversement.
         let b = banniere(
             Deversement::Vers(std::path::PathBuf::from("/x/sqltmp"), Mesure::Lue(vec!["etilqs_4f2a9c".to_string()])),
-            Tri::SurDisque { compile: 2, local: 1 },
+            Mesure::Lue(Tri::SurDisque { compile: 2, local: 1 }),
         );
         let segment = b.split_once("— déversement").expect("segment de déversement").1;
         assert!(segment.contains("residus-en-clair=1") && segment.contains("etilqs_4f2a9c"), "{b}");

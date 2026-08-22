@@ -547,7 +547,8 @@ def capteurs_exercables(base):
             # 1er passage : la référence se pose, rien n'est signalé. Les 3 suivants sont le constat.
             subprocess.run(
                 ["sh", os.path.abspath("collectors/integrity.sh")],
-                env=bac.env({"PLUME_FIM_FILES": " ".join(fichiers), "PLUME_LIB": os.path.abspath(LIB)}),
+                env=bac.env({"PLUME_FIM_FILES": " ".join(fichiers), "PLUME_LIB": os.path.abspath(LIB),
+                             "PLUME_UNIT_ROOT": bac.gab}),
                 capture_output=True,
                 text=True,
             )
@@ -561,7 +562,10 @@ def capteurs_exercables(base):
             reference,
             lambda: ecrire(fichiers[0], "contenu modifie\n"),
             3,
-            {"PLUME_FIM_FILES": " ".join(fichiers)},
+            # `PLUME_UNIT_ROOT` (P3.8-a) : la famille `unit` dérive ses répertoires du chemin de recherche
+            # systemd de la machine ; préfixés par le gabarit, ils n'existent pas et rien de l'hôte n'entre
+            # dans le compte de clés attendu.
+            {"PLUME_FIM_FILES": " ".join(fichiers), "PLUME_UNIT_ROOT": bac.gab},
         )
 
     # --- audit : point de reprise tenu par un outil externe, relais d'`ausearch` -----------------

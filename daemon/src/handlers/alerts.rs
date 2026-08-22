@@ -31,22 +31,74 @@ pub(crate) fn alert_group_expr_for(col: &str, prefix: &str) -> String {
 }
 pub(crate) fn alert_group_expr(col: &str) -> String { alert_group_expr_for(col, "alert") }
 
+/// LES PRÉDICATS PARTAGÉS par les trois chemins de lecture d'alertes (liste plate, liste groupée, expansion
+/// d'un groupe) : statut, technique, « hors case », source imputée. Construit UNE fois depuis la requête
+/// (`depuis_requete`) : la lecture des paramètres n'est plus recopiée d'un handler à l'autre, et une valeur
+/// refusée l'est au même endroit pour `/api/alerts` et `/api/alerts/groups`. `Default` = aucun prédicat
+/// (tous statuts, toute technique, cases comprises, toute source) — c'est la fixture naturelle des tests.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct FiltreAlertes {
+    /// `None` = tous statuts (`?status=all|any|*`) ; `Some(s)` = `alert.status=s`. Défaut de route : `new`.
+    pub(crate) statut: Option<String>,
+    /// Technique ATT&CK normalisée (`norm_mitre`, casse haute = idx_alert_mitre_ts) ; vide = pas de filtre.
+    pub(crate) mitre: String,
+    /// `?uncased=1` : alertes pas encore rattachées à un cas.
+    pub(crate) uncased: bool,
+    /// P11.1-b — source IMPUTÉE (`alert.sources`, cf. `imputation.rs`) ; vide = pas de filtre. Appariement
+    /// sur un NOM ENTIER de la liste stockée (`imputation_predicat_sql`), jamais sur un préfixe.
+    pub(crate) source: String,
+}
+
+impl FiltreAlertes {
+    /// Lit les paramètres de requête communs aux deux routes. `status` absent -> `new` (rétro-compat) ;
+    /// `all|any|*` -> aucun filtre statut. Une technique non reconnue est ignorée (comportement historique
+    /// de `norm_mitre(..).unwrap_or_default()`). Une `source` hors borne est REFUSÉE (`Err`) : l'appelant
+    /// répond 400 au lieu de rendre une liste vide qui ressemblerait à « aucune alerte ».
+    pub(crate) fn depuis_requete(q: &HashMap<String, String>) -> Result<Self, &'static str> {
+        let status = q.get("status").map(|s| s.as_str()).unwrap_or("new");
+        let statut = if matches!(status, "all" | "any" | "*") { None } else { Some(status.to_string()) };
+        let mitre = norm_mitre(q.get("mitre").map(|s| s.as_str()).unwrap_or("")).unwrap_or_default();
+        let uncased = q.get("uncased").map(|s| s == "1").unwrap_or(false);
+        let source = filtre_source_de_requete(q.get("source").map(|s| s.as_str()).unwrap_or(""))?;
+        Ok(Self { statut, mitre, uncased, source })
+    }
+    pub(crate) fn tous_statuts(&self) -> bool { self.statut.is_none() }
+}
+
+/// BORNE du paramètre `source` (P11.1-b). La valeur est LIÉE (`?`), jamais interpolée : la borne ne tient pas
+/// l'injection, elle tient le SENS. Un nom de source imputée est un identifiant de flux (`k8s-audit`,
+/// `ext:plume-config`) ou l'inconnu nommé (`(source indéterminée)`, espaces et parenthèses compris) : court
+/// et imprimable. Une valeur qui porte un caractère de contrôle — dont le séparateur de la liste stockée —
+/// ne peut correspondre à AUCUN nom ; elle est refusée plutôt que de rendre une liste vide.
+pub(crate) const SOURCE_FILTRE_MAX_OCTETS: usize = 128;
+pub(crate) fn filtre_source_de_requete(brut: &str) -> Result<String, &'static str> {
+    let s = brut.trim();
+    if s.is_empty() { return Ok(String::new()); }
+    if s.len() > SOURCE_FILTRE_MAX_OCTETS { return Err("source : 128 octets au plus"); }
+    if s.chars().any(char::is_control) { return Err("source : caractère de contrôle refusé"); }
+    Ok(s.to_string())
+}
+
 /// WHERE dynamique PARTAGÉ par les trois chemins de lecture d'alertes (liste plate, liste groupée, expansion
-/// d'un groupe) : filtre statut (sauf all/any/*) + technique MITRE (idx_alert_mitre_ts) + uncased (backlog non
-/// encaissé) + un filtre d'ÉGALITÉ OPTIONNEL sur UNE colonne DÉJÀ whitelistée (`group_col`, résolu via
-/// `alert_group_col` AVANT d'arriver ici -> interpolation sûre) = scoping à un groupe. Renvoie (where_clause,
-/// bind_vals OWNED) : les valeurs liées sont COPIÉES en `String` -> le Vec survit à l'appel (pas de lifetime
-/// gymnastique) ; l'appelant les recoerce en `&dyn ToSql` via `.iter().map(|s| s as &dyn ToSql)` (`&String:
-/// ToSql`). Ordre des `?` = ordre des conditions (statut, mitre, group_val) -> mêmes binds COUNT et SELECT.
-pub(crate) fn alert_where(all_status: bool, status: &str, mitre: &str, uncased: bool, group_col: Option<&str>, group_val: &str) -> (String, Vec<String>) {
+/// d'un groupe) : les prédicats de `FiltreAlertes` (statut sauf all/any/*, technique MITRE via
+/// idx_alert_mitre_ts, uncased = backlog non encaissé, source imputée) + un filtre d'ÉGALITÉ OPTIONNEL sur UNE
+/// colonne DÉJÀ whitelistée (`group_col`, résolu via `alert_group_col` AVANT d'arriver ici -> interpolation
+/// sûre) = scoping à un groupe. Renvoie (where_clause, bind_vals OWNED) : les valeurs liées sont COPIÉES en
+/// `String` -> le Vec survit à l'appel ; l'appelant les recoerce en `&dyn ToSql` via `.iter().map(|s| s as
+/// &dyn ToSql)`. Ordre des `?` = ordre des conditions (statut, mitre, source, group_val) -> mêmes binds COUNT
+/// et SELECT, et le MÊME ordre que la réplique sur `a2` dans `alert_groups_query_page`.
+pub(crate) fn alert_where(f: &FiltreAlertes, group_col: Option<&str>, group_val: &str) -> (String, Vec<String>) {
     let mut conds: Vec<String> = Vec::new();
     let mut binds: Vec<String> = Vec::new();
-    if !all_status { conds.push("alert.status=?".to_string()); binds.push(status.to_string()); }
-    if !mitre.is_empty() { conds.push("alert.mitre=?".to_string()); binds.push(mitre.to_string()); }
+    if let Some(s) = &f.statut { conds.push("alert.status=?".to_string()); binds.push(s.clone()); }
+    if !f.mitre.is_empty() { conds.push("alert.mitre=?".to_string()); binds.push(f.mitre.clone()); }
     // ?uncased=1 -> backlog : alertes PAS ENCORE rattachées à un cas (sans param lié, pas de `?`).
-    if uncased {
+    if f.uncased {
         conds.push("NOT EXISTS (SELECT 1 FROM incident_item ii WHERE ii.ref='alert:'||alert.id)".to_string());
     }
+    // P11.1-b — source IMPUTÉE : un nom ENTIER de `alert.sources` (prédicat dérivé du séparateur stocké,
+    // cf. imputation.rs) ; la valeur est liée, jamais interpolée.
+    if !f.source.is_empty() { conds.push(imputation_predicat_sql("alert")); binds.push(f.source.clone()); }
     // Expansion/scoping d'un groupe : `<expr>=?` où `<expr>` = alert_group_expr (COALESCE pour les colonnes
     // nullables -> round-trip du groupe '' avec les lignes NULL). `col` est un littéral whitelisté
     // (alert_group_col), JAMAIS le texte brut du client ; seule la VALEUR (group_val) est liée en `?`.
@@ -58,14 +110,13 @@ pub(crate) fn alert_where(all_status: bool, status: &str, mitre: &str, uncased: 
     (where_clause, binds)
 }
 
-/// Page d'alertes (BATCH 1) : construit le WHERE dynamique (statut/mitre/uncased + `group_col`/`group_val`
+/// Page d'alertes (BATCH 1) : construit le WHERE dynamique (`FiltreAlertes` + `group_col`/`group_val`
 /// optionnels = expansion d'un groupe), renvoie la fenêtre LIMIT/OFFSET (ordre ts décroissant) + un `total`
 /// OPTIONNEL. `want_total` -> COUNT sous le même WHERE (vue « tous statuts » paginée / occurrences d'un
 /// groupe) ; le backlog (borné) le laisse à None. Fonction pure sur &Connection -> testable sans AppState.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn alerts_query_page(conn: &Connection, all_status: bool, status: &str, mitre: &str, uncased: bool, group_col: Option<&str>, group_val: &str, limit: i64, offset: i64, want_total: bool) -> (Vec<Value>, Option<i64>) {
+pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col: Option<&str>, group_val: &str, limit: i64, offset: i64, want_total: bool) -> (Vec<Value>, Option<i64>) {
     // WHERE + binds partagés COUNT/SELECT (mêmes conditions, même ordre) — cf. alert_where (chemin unique).
-    let (where_clause, bind_vals) = alert_where(all_status, status, mitre, uncased, group_col, group_val);
+    let (where_clause, bind_vals) = alert_where(f, group_col, group_val);
     let binds: Vec<&dyn rusqlite::ToSql> = bind_vals.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
     // total : COUNT sous le même WHERE (COUNT(*) FROM alert — le WHERE ne touche que `alert.*`, pas besoin du JOIN).
     let total = if want_total {
@@ -123,20 +174,22 @@ pub(crate) fn alerts_query_page(conn: &Connection, all_status: bool, status: &st
     (out, total)
 }
 
-pub(crate) async fn alerts(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
-    let status = q.get("status").cloned().unwrap_or_else(|| "new".into());
-    // FIX #1 — pivot MITRE TOUS STATUTS : ?status=all|any|* -> AUCUN filtre statut (le front demande
-    // /alerts?mitre=Txxxx&status=all et voit les N alertes HISTORIQUES d'une technique, pas seulement les
-    // 'new'). coverage_detections compte déjà tous statuts ; ce pivot s'aligne dessus. Défaut INCHANGÉ =
-    // 'new' (rétro-compat : /alerts sans param se comporte comme avant).
-    let all_status = matches!(status.as_str(), "all" | "any" | "*");
-    // PURPLE — filtre optionnel par technique MITRE (?mitre=Txxxx[.yyy]) : pivot par technique sans
-    // toucher au langage soql. Vide -> comportement actuel. Normalisé (trim+upper) pour matcher
-    // l'idx_alert_mitre_ts (mitre en colonne de TÊTE), qui stocke la casse haute. ADDITIF, rétro-compat.
-    // (P10.2-d : idx_alert_mitre(mitre) — préfixe strict de ce composite v72 — a été retiré ; le seek
-    // `mitre=?` passe désormais par idx_alert_mitre_ts, ce que la casse haute conditionne exactement pareil.)
-    let mitre = norm_mitre(q.get("mitre").map(|s| s.as_str()).unwrap_or("")).unwrap_or_default();
-    let uncased = q.get("uncased").map(|s| s == "1").unwrap_or(false);
+/// GET /api/alerts?status=&mitre=&uncased=&source=&gkey=&gval=&limit=&offset= — liste plate, ou les
+/// occurrences d'un groupe. Paramètres communs aux deux routes : `FiltreAlertes::depuis_requete`.
+///   - `status` : FIX #1 — pivot MITRE TOUS STATUTS : `all|any|*` -> AUCUN filtre statut (le front demande
+///     /alerts?mitre=Txxxx&status=all et voit les N alertes HISTORIQUES d'une technique, pas seulement les
+///     'new') ; coverage_detections compte déjà tous statuts. Défaut INCHANGÉ = 'new' (rétro-compat).
+///   - `mitre` : PURPLE — pivot par technique (`Txxxx[.yyy]`) sans toucher au langage soql ; normalisé
+///     (trim+upper) pour matcher idx_alert_mitre_ts (mitre en colonne de TÊTE, casse haute). P10.2-d :
+///     idx_alert_mitre(mitre), préfixe strict de ce composite v72, a été retiré ; le seek `mitre=?` passe
+///     par idx_alert_mitre_ts, ce que la casse haute conditionne exactement pareil.
+///   - `source` : P11.1-b — source IMPUTÉE, nom entier (`k8s` ne prend pas `k8s-audit`) ; hors borne -> 400.
+pub(crate) async fn alerts(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let filtre = match FiltreAlertes::depuis_requete(&q) {
+        Ok(f) => f,
+        Err(e) => return err_json(StatusCode::BAD_REQUEST, e),
+    };
+    let all_status = filtre.tous_statuts();
     // TRIAGE GROUPÉ — EXPANSION D'UN GROUPE : `?gkey=rule&gval=rule.38` -> les OCCURRENCES d'un seul groupe,
     // via le MÊME chemin paginé que la liste plate (une seule requête d'occurrences). `gkey` est whitelisté
     // (alert_group_col) -> None si absent/inconnu = liste plate classique (rétro-compat totale). `gval` = la
@@ -161,13 +214,13 @@ pub(crate) async fn alerts(State(st): State<AppState>, Extension(au): Extension<
     // (v72) évitent le tri complet. Le backlog borné (LIMIT 200) profite du même chemin sans surcoût.
     let _permit = match acquire_query_permit(&st.query_sem).await {
         Ok((p, _wait)) => p,
-        Err(_) => return Json(json!({ "alerts": [] })),
+        Err(_) => return Json(json!({ "alerts": [] })).into_response(),
     };
     let db_path = req_db_path(&st, &au);
     let gval = gval.to_string();
     let res = tokio::task::spawn_blocking(move || {
         read_with_watchdog(&db_path, json!({ "alerts": [] }), move |conn| {
-            let (out, total) = alerts_query_page(conn, all_status, &status, &mitre, uncased, group_col, &gval, limit, offset, paged);
+            let (out, total) = alerts_query_page(conn, &filtre, group_col, &gval, limit, offset, paged);
             let mut resp = json!({ "alerts": out });
             if let Some(t) = total {
                 resp["total"] = json!(t);
@@ -177,7 +230,7 @@ pub(crate) async fn alerts(State(st): State<AppState>, Extension(au): Extension<
     })
     .await
     .unwrap_or_else(|_| json!({ "alerts": [] }));
-    Json(res)
+    Json(res).into_response()
 }
 
 /// TRIAGE GROUPÉ — page de GROUPES d'alertes (« 1 groupe = N occurrences »), rend la file gérable au volume
@@ -194,9 +247,8 @@ pub(crate) async fn alerts(State(st): State<AppState>, Extension(au): Extension<
 /// Elle est volontairement NON re-filtrée par statut (aperçu best-effort : le titre de la dernière alerte du
 /// groupe, tous statuts) -> aucun bind supplémentaire, aucune fuite (le titre n'est pas un secret ; l'autorizer
 /// SQLite bloque de toute façon user.hash/token.token_hash, absents de `alert`).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn alert_groups_query_page(conn: &Connection, group_col: &str, all_status: bool, status: &str, mitre: &str, uncased: bool, limit: i64, offset: i64) -> (Vec<Value>, Option<i64>) {
-    let (where_clause, bind_vals) = alert_where(all_status, status, mitre, uncased, None, "");
+pub(crate) fn alert_groups_query_page(conn: &Connection, group_col: &str, f: &FiltreAlertes, limit: i64, offset: i64) -> (Vec<Value>, Option<i64>) {
+    let (where_clause, bind_vals) = alert_where(f, None, "");
     let binds: Vec<&dyn rusqlite::ToSql> = bind_vals.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
     // Expression de clé (COALESCE pour host/dedup nullables -> round-trip du groupe '' avec les lignes NULL,
     // cohérent avec l'EXPANSION dans alert_where). `col` est whitelisté (alert_group_col) -> interpolation sûre.
@@ -205,16 +257,18 @@ pub(crate) fn alert_groups_query_page(conn: &Connection, group_col: &str, all_st
     // total = nombre de GROUPES distincts sous le même WHERE (borne le pager serveur).
     let csql = format!("SELECT COUNT(DISTINCT {gexpr}) FROM alert{where_clause}");
     let total = conn.query_row(&csql, binds.as_slice(), |r| r.get::<_, i64>(0)).ok();
-    // COHÉRENCE D'APERÇU — l'aperçu échantillon est RE-SCOPÉ au MÊME filtre (statut/mitre/uncased)
+    // COHÉRENCE D'APERÇU — l'aperçu échantillon est RE-SCOPÉ au MÊME filtre (statut/mitre/uncased/source)
     // que le groupe. Sinon en scope « Actives » un groupe dont la plus récente TOUS statuts est 'closed'
     // affichait ce titre closed à côté d'un last_ts/n qui, eux, ne reflètent que le set filtré (incohérent).
     // On réplique les prédicats sur a2 -> l'aperçu = la plus récente DANS le set filtré. L'égalité corrélée
-    // {g2expr}={gexpr} n'a AUCUN bind ; seuls status/mitre ajoutent un `?` (uncased = NOT EXISTS, sans bind).
+    // {g2expr}={gexpr} n'a AUCUN bind ; status/mitre/source ajoutent chacun un `?` (uncased = NOT EXISTS,
+    // sans bind), dans le MÊME ordre que alert_where.
     let mut sub_extra = String::new();
     let mut sub_binds: Vec<String> = Vec::new();
-    if !all_status { sub_extra.push_str(" AND a2.status=?"); sub_binds.push(status.to_string()); }
-    if !mitre.is_empty() { sub_extra.push_str(" AND a2.mitre=?"); sub_binds.push(mitre.to_string()); }
-    if uncased { sub_extra.push_str(" AND NOT EXISTS (SELECT 1 FROM incident_item ii WHERE ii.ref='alert:'||a2.id)"); }
+    if let Some(s) = &f.statut { sub_extra.push_str(" AND a2.status=?"); sub_binds.push(s.clone()); }
+    if !f.mitre.is_empty() { sub_extra.push_str(" AND a2.mitre=?"); sub_binds.push(f.mitre.clone()); }
+    if f.uncased { sub_extra.push_str(" AND NOT EXISTS (SELECT 1 FROM incident_item ii WHERE ii.ref='alert:'||a2.id)"); }
+    if !f.source.is_empty() { sub_extra.push_str(&format!(" AND {}", imputation_predicat_sql("a2"))); sub_binds.push(f.source.clone()); }
     // Binds du SELECT DANS L'ORDRE DU TEXTE SQL : sous-requête sample_title, puis sample_id (elles précèdent le
     // FROM/WHERE), puis le WHERE externe. Chaque sous-requête réplique sub_binds.
     let mut sel_bind_vals: Vec<String> = Vec::with_capacity(sub_binds.len() * 2 + bind_vals.len());
@@ -256,29 +310,29 @@ pub(crate) fn alert_groups_query_page(conn: &Connection, group_col: &str, all_st
     (out, total)
 }
 
-/// GET /api/alerts/groups?group=rule|mitre|host|dedup&status=&mitre=&uncased=&limit=&offset= — liste GROUPÉE
-/// (triage au volume). Non-mutant -> route_min_role case 6 -> MinRole::Read (viewer+), aucune modif de gating.
-/// Même régime d'exécution que /api/alerts : permit query_sem (borne les déchiffrements concurrents) +
+/// GET /api/alerts/groups?group=rule|mitre|host|dedup&status=&mitre=&uncased=&source=&limit=&offset= — liste
+/// GROUPÉE (triage au volume). Non-mutant -> route_min_role case 6 -> MinRole::Read (viewer+), aucune modif de
+/// gating. Même régime d'exécution que /api/alerts : permit query_sem (borne les déchiffrements concurrents) +
 /// spawn_blocking (n'occupe pas un worker async) + read_with_watchdog (pool read-only + interruption anti-scan).
-pub(crate) async fn alert_groups(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
+/// Mêmes paramètres de filtre que /api/alerts (`FiltreAlertes::depuis_requete`, défaut statut 'new').
+pub(crate) async fn alert_groups(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Response {
     // Colonne de groupement WHITELISTÉE (défaut 'rule' = axe de triage principal). Inconnue -> 'rule'.
     let group_col = alert_group_col(q.get("group").map(|s| s.as_str()).unwrap_or("rule")).unwrap_or("rule");
-    let status = q.get("status").cloned().unwrap_or_else(|| "new".into());
-    // Miroir de /api/alerts : status=all|any|* -> aucun filtre statut (groupes tous statuts). Défaut = 'new'.
-    let all_status = matches!(status.as_str(), "all" | "any" | "*");
-    let mitre = norm_mitre(q.get("mitre").map(|s| s.as_str()).unwrap_or("")).unwrap_or_default();
-    let uncased = q.get("uncased").map(|s| s == "1").unwrap_or(false);
+    let filtre = match FiltreAlertes::depuis_requete(&q) {
+        Ok(f) => f,
+        Err(e) => return err_json(StatusCode::BAD_REQUEST, e),
+    };
     let limit = q.get("limit").and_then(|s| s.trim().parse::<i64>().ok()).unwrap_or(50).clamp(1, 500);
     let offset = q.get("offset").and_then(|s| s.trim().parse::<i64>().ok()).unwrap_or(0).clamp(0, 100_000);
     let _permit = match acquire_query_permit(&st.query_sem).await {
         Ok((p, _wait)) => p,
-        Err(_) => return Json(json!({ "groups": [], "group": group_col })),
+        Err(_) => return Json(json!({ "groups": [], "group": group_col })).into_response(),
     };
     let db_path = req_db_path(&st, &au);
     let gc = group_col.to_string();
     let res = tokio::task::spawn_blocking(move || {
         read_with_watchdog(&db_path, json!({ "groups": [] }), move |conn| {
-            let (groups, total) = alert_groups_query_page(conn, &gc, all_status, &status, &mitre, uncased, limit, offset);
+            let (groups, total) = alert_groups_query_page(conn, &gc, &filtre, limit, offset);
             let mut resp = json!({ "groups": groups, "group": gc });
             if let Some(t) = total {
                 resp["total"] = json!(t);
@@ -288,7 +342,7 @@ pub(crate) async fn alert_groups(State(st): State<AppState>, Extension(au): Exte
     })
     .await
     .unwrap_or_else(|_| json!({ "groups": [] }));
-    Json(res)
+    Json(res).into_response()
 }
 
 /// v75 — détections SCOPÉES à un engagement pour la matrice purple `/api/coverage/detections?engagement=<id>`.

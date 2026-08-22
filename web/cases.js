@@ -53,10 +53,8 @@ function mkLabel(text) { const l = document.createElement('label'); l.appendChil
 
 function caseBtn(label, kind) {
   const b = document.createElement('button'); b.type = 'button'; b.textContent = label;
-  const base = 'border-radius:8px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;';
-  if (kind === 'primary') b.style.cssText = base + 'border:1px solid var(--acc);background:var(--acc);color:var(--acc-ink)';
-  else if (kind === 'danger') b.style.cssText = base + 'border:1px solid color-mix(in srgb,var(--bad) 50%,transparent);background:transparent;color:var(--bad)';
-  else b.style.cssText = base + 'border:1px solid var(--bd);background:var(--card);color:var(--fg)';
+  // P11.4-b : le jeu de classes partagé (style.css), plus aucun style en ligne — primaire / destructif / secondaire.
+  b.className = kind === 'primary' ? 'btn-primary btn-sm' : kind === 'danger' ? 'btn btn-sm btn-danger' : 'btn btn-sm';
   return b;
 }
 
@@ -201,7 +199,7 @@ function renderCaseDetail(host, c) {
   hr.appendChild(casePrioBadge(c.priority));
   if (c.overdue) hr.appendChild(caseOverdueBadge(c.sla_due));
   if (c.archived) { const ab = document.createElement('span'); ab.className = 'badge'; ab.textContent = 'ARCHIVÉ'; ab.style.color = 'var(--mut)'; ab.style.borderColor = 'color-mix(in srgb,var(--mut) 45%,transparent)'; ab.title = 'Case archivé' + (c.archived_by ? ' par ' + c.archived_by : '') + (c.archived_ts ? ' le ' + fmtTs(c.archived_ts) : '') + ' — masqué de la liste par défaut, historique conservé'; hr.appendChild(ab); }
-  const collapse = document.createElement('button'); collapse.type = 'button'; collapse.title = 'Fermer le détail'; collapse.innerHTML = ic('x');
+  const collapse = document.createElement('button'); collapse.type = 'button'; collapse.className = 'picon'; collapse.title = 'Fermer le détail'; collapse.innerHTML = ic('x'); // P11.4-b : bouton-icône partagé
   collapse.onclick = () => { S.caseSelectedId = null; host.replaceChildren(); renderCaseList(); };
   hr.appendChild(caseExportBar(c));   // EXPORT : CSV (timeline) / JSON (case complet) / PDF (impression)
   hr.appendChild(collapse);
@@ -318,7 +316,7 @@ function renderCaseDetail(host, c) {
   if (edit) {
     const nf = document.createElement('form'); nf.className = 'c-noteform';
     const ni = document.createElement('input'); ni.className = 'c-note'; ni.placeholder = 'Ajouter une note…'; ni.required = true;
-    const nb = document.createElement('button'); nb.type = 'submit'; nb.textContent = 'Note';
+    const nb = document.createElement('button'); nb.type = 'submit'; nb.className = 'btn-primary'; nb.textContent = 'Note'; // P11.4-b : classe partagée (primaire)
     nf.append(ni, nb);
     nf.onsubmit = e => { e.preventDefault(); const v = ni.value.trim(); if (!v) return; withBusy(nb, async () => { try { await apiSend('/cases/' + c.id + '/items', 'POST', { kind: 'note', body: v }); } catch (err) { toast('Note refusée : ' + ((err && err.message) || err), 'bad'); return; } ni.value = ''; await refreshCaseDetail(c.id); await loadCases(); }); };
     box.appendChild(nf);
@@ -757,4 +755,4 @@ async function prepareResponse(c, s) {
   await refreshCaseDetail(c.id);
 }
 
-export { addToCase, canEditCases, createCase, loadCases, openCase };
+export { addToCase, canEditCases, caseBtn, createCase, loadCases, openCase }; // caseBtn : rendu pur, jugé par le harnais ESM (P11.4-b)

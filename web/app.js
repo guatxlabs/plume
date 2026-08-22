@@ -482,7 +482,7 @@ function renderView() {
   if (!S.dashList.length) {
     const es = document.createElement('div'); es.className = 'emptystate';
     es.append(Object.assign(document.createElement('div'), { textContent: 'Aucun dashboard' + ($('#view') && $('#view').value ? ' dans cette vue' : '') + '.' }));
-    const b = document.createElement('button'); b.textContent = '+ Dashboard'; b.onclick = () => $('#dash-new').click(); es.appendChild(b);
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'btn'; b.textContent = '+ Dashboard'; b.onclick = () => $('#dash-new').click(); es.appendChild(b); // P11.4-b : classe partagée
     wrap.replaceChildren(es); return;
   }
   // #62 — hors mode édition, les FAVORIS remontent en tête (tri STABLE : ordre serveur préservé DANS chaque
@@ -608,7 +608,7 @@ async function loadPanelsInto(grid, d) {
     if (!panels.length) {
       const es = document.createElement('div'); es.className = 'emptystate';
       es.append(Object.assign(document.createElement('div'), { textContent: 'Dashboard vide.' }));
-      if (j.editable !== false) { const b = document.createElement('button'); b.textContent = '+ Ajouter un panneau'; b.onclick = () => createPanelModal(d.id, ($('#sql') && $('#sql').value.trim()) || ''); es.appendChild(b); }
+      if (j.editable !== false) { const b = document.createElement('button'); b.type = 'button'; b.className = 'btn'; b.textContent = '+ Ajouter un panneau'; b.onclick = () => createPanelModal(d.id, ($('#sql') && $('#sql').value.trim()) || ''); es.appendChild(b); }
       grid.replaceChildren(es); return;
     }
     const frag = document.createDocumentFragment();
@@ -1012,7 +1012,7 @@ async function captureSnapshot(d) {
   meta.textContent = 'Lecture seule, figé maintenant (données déjà masquées à votre rôle). Lien partageable :';
   const linkRow = document.createElement('div'); linkRow.className = 'rf-row';
   const inp = document.createElement('input'); inp.value = url; inp.readOnly = true; inp.style.flex = '1';
-  const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = 'Copier';
+  const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'btn'; copy.textContent = 'Copier'; // P11.4-b : classe partagée
   copy.onclick = () => { try { navigator.clipboard.writeText(url); toast('Lien copié', 'ok'); } catch (e) { inp.select(); } };
   linkRow.append(inp, copy);
   const prev = document.createElement('div'); prev.className = 'snapprev';
@@ -1889,7 +1889,12 @@ if (LANG === 'en') {
   // bloc d'intro Parsers (HTML riche, trop fragmenté pour le walk) -> version EN dédiée
   const pi = $('#parsers-intro');
   if (pi) pi.innerHTML = 'Extracts fields (regex named groups <code>(?&lt;name&gt;…)</code>) from the message <b>at ingestion, for all sources</b> (k3s / host / container — parsing is central, mode-independent). Built-in defaults (toggleable) + your custom parsers. <code>source=*</code> = all.<br><b>When?</b> a parser is <b>effective on save</b>, for <b>new</b> events. For <b>old</b> ones: <b>↻ Re-apply</b> (retroactive, with confirmation) — or <code>| rex</code> on the fly in a search.<br><b>IP direction:</b> name <code>src_ip</code> = the <b>initiator</b> (the attacker when inbound), <code>dst_ip</code> = the <b>target</b>. <code>src_ip</code>/<code>rhost</code> are promoted to a searchable column; an IP of uncertain direction → leave it in a neutral field (e.g. <code>ip</code>), never <code>src_ip</code>.';
-  new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(nd => { if (nd.nodeType === 1) i18nWalk(nd); }))).observe(document.body, { childList: true, subtree: true });
+  // P11.8-a : les nœuds TEXTE comptent (un `textContent = '…'` sur un élément déjà attaché ajoute un nœud Text, pas un
+  // élément), et un attribut posé APRÈS attachement est re-traduit — la garde anti-boucle vit dans `i18nWalk`.
+  new MutationObserver(ms => ms.forEach(m => {
+    if (m.type === 'attributes') { i18nWalk(m.target); return; }
+    m.addedNodes.forEach(nd => { if (nd.nodeType === 1 || nd.nodeType === 3) i18nWalk(nd); });
+  })).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['title', 'placeholder', 'aria-label', 'label'] });
 }
 if ($('#lang')) { $('#lang').value = LANG; $('#lang').onchange = () => { localStorage.setItem('soc_lang', $('#lang').value); location.reload(); }; }
 

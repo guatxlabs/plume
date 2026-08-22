@@ -301,7 +301,11 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(badge(ligneP) && badge(ligneP).textContent === "builtin", `(3) playbook livré : badge d'origine « ${badge(ligneP) && badge(ligneP).textContent} » au lieu de builtin`);
   exiger(badge(ligneR) && badge(ligneR).textContent === "perso", `(3) runbook créé (runbook.managed=0 = custom) : badge « ${badge(ligneR) && badge(ligneR).textContent} » au lieu de perso — le codage inverse n'est pas normalisé`);
   const classesBoutons = (row) => row.children.filter((c) => c.tagName === "BUTTON").map((c) => c.className);
-  const horsCharte = [...classesBoutons(ligneP), ...classesBoutons(ligneR)].filter((c) => c.split(/\s+/).some((k) => k && k !== "crud-btn" && k !== "mg-nodel"));
+  // « Sans règle CSS » est DÉRIVÉ de style.css (P11.4-b : les boutons de ligne portent `btn btn-sm`) ; `crud-btn` et
+  // `mg-nodel` sont des classes d'état (masquage au viewer, pas de suppression), sans chrome, nommées ici.
+  const css = readFileSync(path.join(WEB, "style.css"), "utf8");
+  const aRegle = (k) => k === "crud-btn" || k === "mg-nodel" || new RegExp("\\." + k + "(?![\\w-])").test(css);
+  const horsCharte = [...classesBoutons(ligneP), ...classesBoutons(ligneR)].filter((c) => c.split(/\s+/).some((k) => k && !aRegle(k)));
   exiger(horsCharte.length === 0, `(3) bouton(s) à classe sans règle CSS : ${horsCharte.join(", ")}`);
   exiger(classesBoutons(ligneR).length >= 3 && classesBoutons(ligneP).length >= 3, "(3) l'une des lignes n'a pas ses boutons d'action");
   // Témoin inverse : le mot suit l'état dans les deux familles.
@@ -314,10 +318,13 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 // ---------------------------------------------------------------------------------------------
 // 4. LA LISTE DES ALERTES A UNE SEULE BARRE D'ACTIONS (`P11.1-b`, `P11.1-c`). Plate / Règle / Hôte /
 //    Technique sont des TRIS ; la barre est rendue par UNE fonction pure sur le modèle {tri, portée,
-//    hors case, facettes}. Témoin : sur TOUTES les combinaisons, le même jeu d'actions est présent ;
-//    une action impossible est DÉSACTIVÉE avec sa raison, jamais absente. Témoin inverse : sans facette
-//    l'acquittement est global, sous une facette il ne porte que sur les alertes affichées. Et le chip
-//    de la facette source dit l'objet, la portée et l'étendue des dates (la cloche d'une source).
+//    hors case, facettes}. Témoin : sur TOUTES les combinaisons — les deux facettes comprises, sur les
+//    quatre tris et les deux portées — le même jeu d'actions est présent ; une action impossible est
+//    DÉSACTIVÉE avec sa raison, jamais absente. Depuis que le démon sert le filtre `source`, AUCUNE action
+//    n'est désactivée au motif d'une facette : sous la facette source, tris et portée restent actifs.
+//    Témoin inverse : sans facette l'acquittement est global, sous une facette il ne porte que sur les
+//    alertes affichées. Et le chip de la facette source dit l'objet, la portée et l'étendue des dates (la
+//    cloche d'une source).
 // ---------------------------------------------------------------------------------------------
 {
   const { alertActionBarHtml, alertListModel } = await import(pathToFileURL(path.join(WEB, "alerts.js")).href);
@@ -331,20 +338,32 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   };
   const modeles = [];
   for (const view of ["", "rule", "host", "mitre"]) for (const scopeAll of [false, true]) for (const uncased of [true, false]) for (const facette of ["", "mitre", "source"]) {
-    if (facette === "source" && view) continue; // la facette source force la vue plate (limite nommée, cf. RAISON_FACETTE_SOURCE)
     modeles.push({ view, scopeAll, uncased, mitre: facette === "mitre" ? "T1046" : "", source: facette === "source" ? "k8s" : "" });
   }
+  exiger(modeles.length === 48, `(4) instrument : ${modeles.length} combinaisons du modèle au lieu de 48 (4 tris × 2 portées × 2 hors case × 3 facettes)`);
   const charges = { count: 3, countLabel: "3 alerte(s)", ackableIds: [1, 2, 3] };
   const signatures = new Set(modeles.map((m) => signature(alertActionBarHtml(m, charges))));
   exiger(signatures.size === 1, `(4) ${signatures.size} jeux d'actions différents selon la vue au lieu d'un seul :\n  ${[...signatures].join("\n  ")}`);
   exiger([...signatures][0].startsWith(",host,mitre,rule / ack,scope,uncased / export:true"), `(4) jeu d'actions inattendu : ${[...signatures][0]}`);
-  // Sous la facette source : les tris groupés et la portée sont DÉSACTIVÉS avec leur raison, pas retirés.
+  // AUCUN tri ni portée n'est désactivé au motif d'une facette (P11.1-b : le filtre source est servi par le
+  // démon). Sur les 48 combinaisons avec des alertes actives affichées, les seuls boutons désactivés possibles
+  // sont ceux de l'acquittement par liste en vue groupée (rien d'affiché à acquitter) — jamais un tri, jamais
+  // la portée, jamais « hors case ».
+  const desactivesHorsAck = (html) => boutons(html).filter((b) => /\bdisabled\b/.test(b) && !/data-act="ack/.test(b));
+  const trisOuPorteeDesactives = modeles.map((m) => [m, desactivesHorsAck(alertActionBarHtml(m, charges))]).filter(([, d]) => d.length);
+  exiger(trisOuPorteeDesactives.length === 0, `(4) un tri, la portée ou « hors case » est désactivé sous une facette : ${trisOuPorteeDesactives.map(([m, d]) => JSON.stringify(m) + " -> " + d.join(" | ")).join("\n  ")}`);
+  // Sous la facette source, vue plate : rien n'est désactivé, et le chip dit l'objet, la portée, l'étendue.
   const sousSource = alertActionBarHtml({ view: "", scopeAll: false, uncased: false, mitre: "", source: "k8s" }, { ...charges, sourceSpan: { from: 1_700_000_000, to: 1_700_090_000 } });
   const desactives = boutons(sousSource).filter((b) => /\bdisabled\b/.test(b));
-  exiger(desactives.length === 4, `(4) sous la facette source, ${desactives.length} bouton(s) désactivé(s) au lieu de 4 (3 tris groupés + portée)`);
-  exiger(desactives.every((b) => /title="[^"]*côté client[^"]*"/.test(b)), "(4) un bouton désactivé sous la facette source ne porte pas sa raison");
+  exiger(desactives.length === 0, `(4) sous la facette source, ${desactives.length} bouton(s) désactivé(s) au lieu de 0 : ${desactives.join(" | ")}`);
+  exiger(!/côté client/.test(sousSource), "(4) la barre parle encore d'un filtre évalué côté client : la raison n'a plus d'objet");
   exiger(!/data-act="ack-all"/.test(sousSource) && /data-act="ack-shown"/.test(sousSource) && /Acquitter les 3 affichée/.test(sousSource), "(4) sous une facette, l'acquittement doit porter sur les 3 alertes affichées, jamais être global");
   exiger(/Source : /.test(sousSource) && /3 alerte\(s\) active\(s\) imputée\(s\) à cette source, toutes dates \(du .+ au .+\)/.test(sousSource) && /sans lien avec sa fraîcheur/.test(sousSource), `(4) le chip de la facette source ne dit pas objet + portée + étendue des dates + indépendance de la fraîcheur : ${sousSource.match(/Source : .*?<\/span><button/)?.[0]}`);
+  // Facette source sur un tri groupé, portée « tous statuts » : le tri et la portée sont ACTIFS (marqués « on »,
+  // jamais `disabled`) et le chip compte des groupes, tous statuts.
+  const sourceGroupee = alertActionBarHtml({ view: "rule", scopeAll: true, uncased: true, mitre: "", source: "k8s" }, { count: 2, countLabel: "2 groupe(s)", ackableIds: [] });
+  exiger(/class="agseg on" data-g="rule" title=/.test(sourceGroupee) && /class="agscope on" data-act="scope" title=/.test(sourceGroupee), `(4) sous la facette source, le tri « Règle » et la portée « tous statuts » doivent être actifs, sans \`disabled\` : ${sourceGroupee.match(/<button[^>]*data-g="rule"[^>]*>/)?.[0]} ${sourceGroupee.match(/<button[^>]*data-act="scope"[^>]*>/)?.[0]}`);
+  exiger(/2 groupe\(s\) d'alertes \(tous statuts\) imputée\(s\) à cette source/.test(sourceGroupee), `(4) le chip de la facette source en vue groupée ne compte pas des groupes tous statuts : ${sourceGroupee.match(/Source : .*?<\/span><button/)?.[0]}`);
   // Témoin inverse : sans facette, sur les actives, l'acquittement est GLOBAL et le dit.
   const sansFacette = alertActionBarHtml({ view: "rule", scopeAll: false, uncased: true, mitre: "", source: "" }, { count: 9, countLabel: "9 groupe(s)", ackableIds: [] });
   exiger(/data-act="ack-all"[^>]*title="[^"]*y compris celles hors de cette page/.test(sansFacette) && !/\bdisabled\b[^>]*>[^<]*Tout acquitter/.test(sansFacette), "(4) sans facette, « Tout acquitter » doit être global, actif, et dire qu'il dépasse la page");
@@ -699,9 +718,158 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(actionKindOptionLabel("format_disk") === "format_disk", "(8) une action hors vocabulaire doit rester nue, jamais recevoir une phrase rassurante");
 }
 
+// ---------------------------------------------------------------------------------------------
+// 9. AUCUN BOUTON NU HORS DE L'ADMINISTRATION (`P11.4-b`, second lot) — les fabriques de bouton des modules
+//    cas / producteurs (rangées de runbook, playbook, détection) rendent TOUJOURS une classe partagée, même
+//    hors d'un contexte stylant ; la barre d'actions des alertes ne rend aucun bouton sans classe ; le bloc
+//    MFA d'index.html ne porte plus de style en ligne ; chaque bouton d'aide `data-help` d'index.html a son
+//    entrée dans help.js (dérivé dans les deux sens : la section Suppressions en avait une sans bouton).
+//    La garde dérivée `check_every_button_wears_shared_chrome.py` juge le SOURCE ; ici, c'est le RENDU.
+// ---------------------------------------------------------------------------------------------
+{
+  const PARTAGEES = ["btn", "btn-primary", "btn-danger", "btn-link", "picon"];
+  const { caseBtn } = await import(pathToFileURL(path.join(WEB, "cases.js")).href);
+  const { rowButton } = await import(pathToFileURL(path.join(WEB, "producer_ui.js")).href);
+  const { rbRow } = await import(pathToFileURL(path.join(WEB, "runbooks.js")).href);
+  const { alertActionBarHtml } = await import(pathToFileURL(path.join(WEB, "alerts.js")).href);
+  const porte = (el) => PARTAGEES.some((k) => el.classList.contains(k));
+  for (const kind of ["ghost", "danger", "primary", undefined]) {
+    const b = caseBtn("x", kind);
+    exiger(porte(b) && !b.style.cssText, `(9) caseBtn('${kind}') rend un bouton sans classe partagée ou avec un style en ligne`);
+  }
+  exiger(caseBtn("x", "primary").classList.contains("btn-primary") && caseBtn("x", "danger").classList.contains("btn-danger"), "(9) caseBtn ne distingue pas primaire / destructif par les classes partagées");
+  const r1 = rowButton("x"), r2 = rowButton("", { cls: "crud-btn", icon: "<svg/>" });
+  exiger(porte(r1), "(9) rowButton sans option rend un bouton nu — hors d'un `.rulerow`, il tomberait au rendu natif");
+  exiger(porte(r2) && r2.classList.contains("crud-btn"), "(9) rowButton avec `cls` perd la classe partagée ou la classe demandée");
+  const ligne = rbRow({ id: 7, name: "r", managed: 1, active: true, match_kind: "*", match_key: "", steps: 2 });
+  const boutons = [], parcourir = (el) => { for (const c of el.children || []) { if (c.tagName === "BUTTON") boutons.push(c); parcourir(c); } };
+  parcourir(ligne);
+  exiger(boutons.length >= 3, `(9) instrument : une rangée de runbook rend ${boutons.length} bouton(s), au moins 3 attendus`);
+  const nus = boutons.filter((b) => !porte(b));
+  exiger(nus.length === 0, `(9) ${nus.length} bouton(s) NU(s) dans une rangée de runbook : ${nus.map((b) => b.textContent || b.title).join(", ")}`);
+  const barre = alertActionBarHtml({ view: "", scopeAll: false, uncased: false, mitre: "", source: "" }, { count: 3, countLabel: "3 alertes", ackableIds: [1, 2] });
+  const sansClasse = [...barre.matchAll(/<button\b([^>]*)>/g)].filter((m) => !/\bclass="/.test(m[1]));
+  exiger(sansClasse.length === 0, `(9) ${sansClasse.length} bouton(s) de la barre des alertes sans classe : ${sansClasse.map((m) => m[1].trim().slice(0, 40)).join(" | ")}`);
+  exiger(/<button[^>]*class="btn[^"]*"[^>]*data-act="ack-all"/.test(barre), "(9) le bouton « Tout acquitter » ne porte pas la classe partagée");
+  const html = readFileSync(path.join(WEB, "index.html"), "utf8"), aide = readFileSync(path.join(WEB, "help.js"), "utf8");
+  exiger(/<div id="mfa-block">/.test(html) && !/id="mfa-(block|status|actions|enroll)"[^>]*style=/.test(html), "(9) le bloc MFA d'index.html porte encore un style en ligne");
+  exiger(/<button id="airun"[^>]*class="btn"/.test(html), "(9) le bouton de l'assistant IA (#airun) est nu");
+  const clesAide = [...html.matchAll(/data-help="([a-z-]+)"/g)].map((m) => m[1]);
+  exiger(clesAide.length >= 20 && clesAide.includes("suppressions"), `(9) ${clesAide.length} bouton(s) d'aide lus dans index.html ; la section Suppressions doit en porter un`);
+  // Trou CONNU, hors de cette clé : le bouton d'aide « Jetons » (`data-help="tokens"`) n'a aucune section — un clic
+  // n'ouvre rien. Nommé ici pour qu'aucun AUTRE trou ne s'ajoute ; le retirer de cette liste quand la section existe.
+  const TROUS_CONNUS = ["tokens"];
+  const sansEntree = [...new Set(clesAide)].filter((k) => !TROUS_CONNUS.includes(k) && !new RegExp(`^  ${k}: \\{`, "m").test(aide));
+  exiger(sansEntree.length === 0, `(9) bouton(s) d'aide sans section dans help.js : ${sansEntree.join(", ")}`);
+  exiger(TROUS_CONNUS.every((k) => !new RegExp(`^  ${k}: \\{`, "m").test(aide)), "(9) un trou « connu » de l'aide a été comblé : retirer son nom de TROUS_CONNUS");
+}
+
+// ---------------------------------------------------------------------------------------------
+// 10. LE LEXIQUE EST APPLIQUÉ, PAS SEULEMENT ÉCRIT (`P11.8-a`). La garde de CI compte les clés du
+//     dictionnaire ; elle ne dit pas si `i18nWalk` les POSE. Ici, le graphe `core.js` → `i18n.js` →
+//     `system.js` est chargé une seconde fois sous `LANG='en'` (instance distincte par suffixe d'URL,
+//     `localStorage.soc_lang` lu au chargement de `core.js`), le panneau Système est rendu puis parcouru
+//     comme l'observateur de `app.js` le fait sur un nœud ajouté, et c'est le TEXTE qui est jugé : une
+//     tuile de `system.js` et un en-tête d'`index.html` en anglais, leur infobulle aussi (y compris
+//     quand le nœud ajouté PORTE lui-même l'attribut), une chaîne hors lexique laissée telle quelle, un
+//     nœud texte seul traduit par son parent. Témoin inverse : sous `LANG='fr'`, rien ne bouge.
+//     Le shim n'a ni TreeWalker ni sélecteur d'attribut : ils sont fournis ici, au plus juste, sur
+//     l'arbre qu'il enregistre (le texte d'un élément vit dans `_text`, un nœud `Text` dans `_t`).
+// ---------------------------------------------------------------------------------------------
+{
+  Element.prototype.nodeType = 1;
+  Text.prototype.nodeType = 3;
+  Object.defineProperty(Text.prototype, "nodeValue", { get() { return this._t; }, set(v) { this._t = String(v); }, configurable: true });
+  globalThis.NodeFilter = { SHOW_TEXT: 4 };
+  const noeudsTexte = (n, acc) => {
+    if (n instanceof Text) { acc.push(n); return acc; }
+    if (n._text) acc.push({ get nodeValue() { return n._text; }, set nodeValue(v) { n._text = String(v); } });
+    (n.children || []).forEach((c) => noeudsTexte(c, acc));
+    return acc;
+  };
+  document.createTreeWalker = (root) => { const liste = noeudsTexte(root, []); let i = -1; return { nextNode: () => liste[++i] ?? null }; };
+  const attrsDe = (sel) => [...String(sel).matchAll(/\[([a-zA-Z-]+)\]/g)].map((m) => m[1]);
+  const qsaOrigine = Element.prototype.querySelectorAll;
+  Element.prototype.matches = function (sel) { return attrsDe(sel).some((a) => a in this.attributes); };
+  Element.prototype.querySelectorAll = function (sel) {
+    const as = attrsDe(sel);
+    if (!as.length) return qsaOrigine.call(this, sel);
+    const out = [];
+    const rec = (n) => (n.children || []).forEach((c) => { if (c instanceof Element) { if (as.some((a) => a in c.attributes)) out.push(c); rec(c); } });
+    rec(this);
+    return out;
+  };
+
+  // Seconde instance du graphe sous `LANG='en'` : un crochet de résolution propage le suffixe d'URL aux
+  // imports relatifs (`i18n.js?x` importe `./core.js` → `core.js?x`, instance neuve, `soc_lang` relu).
+  const SUFFIXE = "?plume-lang=en";
+  const nodeModule = await import("node:module");
+  if (typeof nodeModule.registerHooks === "function") {
+    nodeModule.registerHooks({ resolve(spec, ctx, next) { const r = next(spec, ctx); return ctx.parentURL && ctx.parentURL.includes(SUFFIXE) && r.url.startsWith("file:") && !r.url.includes("?") ? { ...r, url: r.url + SUFFIXE } : r; } });
+  } else {
+    nodeModule.register("data:text/javascript," + encodeURIComponent(
+      `export async function resolve(spec, ctx, next) { const r = await next(spec, ctx); return ctx.parentURL && ctx.parentURL.includes(${JSON.stringify(SUFFIXE)}) && r.url.startsWith("file:") && !r.url.includes("?") ? { ...r, url: r.url + ${JSON.stringify(SUFFIXE)} } : r; }`));
+  }
+  const urlWeb = (f, suffixe = "") => pathToFileURL(path.join(WEB, f)).href + suffixe;
+  localStorage.setItem("soc_lang", "en");
+  const coreEN = await import(urlWeb("core.js", SUFFIXE));
+  const { i18nWalk: walkEN } = await import(urlWeb("i18n.js", SUFFIXE));
+  const { rendreSysteme: rendreSystemeEN } = await import(urlWeb("system.js", SUFFIXE));
+  localStorage.removeItem("soc_lang");
+  const coreFR = await import(urlWeb("core.js"));
+  const { i18nWalk: walkFR } = await import(urlWeb("i18n.js"));
+  exiger(coreEN.LANG === "en" && coreFR.LANG === "fr", `(10) instrument : les deux instances de core.js ne portent pas deux langues (« ${coreEN.LANG} » / « ${coreFR.LANG} »)`);
+
+  // (a) une tuile de system.js rendue sous LANG='en', puis parcourue comme un nœud ajouté : anglais.
+  const wrapEN = new Element("div");
+  rendreSystemeEN(wrapEN, mB, hB);
+  walkEN(wrapEN);
+  const libellesEN = tuiles(wrapEN).map((t) => t.children.find((c) => c.classList.contains("sys-tile-l")).textContent);
+  exiger(libellesEN.includes("Cumulative CPU") && libellesEN.includes("Database size"), `(10) LANG='en' : les tuiles Système ne sont pas rendues en anglais — libellés : ${libellesEN.join(" | ")}`);
+  exiger(!libellesEN.includes("CPU cumulé"), "(10) LANG='en' : une tuile Système est restée en français");
+  const bilanEN = wrapEN.children.find((c) => c.classList.contains("sys-bilans"));
+  exiger(bilanEN && bilanEN.children.some((c) => c.textContent === "Drops on the last tick, per background loop"), "(10) LANG='en' : l'en-tête des bilans de boucles n'est pas traduit");
+  // Une chaîne HORS lexique est laissée telle quelle : le dictionnaire ne traduit que ce qu'il connaît.
+  const horsLexique = new Element("div"); horsLexique.textContent = "Chaîne hors lexique — témoin";
+  walkEN(horsLexique);
+  exiger(horsLexique.textContent === "Chaîne hors lexique — témoin", "(10) une chaîne absente du lexique a été modifiée");
+
+  // (b) un en-tête d'index.html (texte réel du fichier) et l'infobulle de son bouton d'aide : anglais.
+  const html = readFileSync(path.join(WEB, "index.html"), "utf8");
+  const enTete = (html.match(/<h2 id="rules-h">([^<]*)/) || [])[1];
+  const infobulle = (html.match(/<h2 id="rules-h">[^<]*<button[^>]*title="([^"]*)"/) || [])[1];
+  const lienNav = (html.match(/data-space="overview"[^>]*>[\s\S]*?<span>([^<]*)<\/span>/) || [])[1];
+  exiger(enTete && infobulle && lienNav, "(10) instrument : l'en-tête #rules-h, son infobulle ou le lien de navigation ne sont pas lus dans index.html");
+  const h2 = new Element("h2"); h2._text = enTete;
+  const bouton = new Element("button"); bouton.setAttribute("title", infobulle); h2.appendChild(bouton);
+  const span = new Element("span"); span._text = lienNav;
+  walkEN(h2); walkEN(span);
+  exiger(h2._text.trim() === "Detection rules", `(10) LANG='en' : l'en-tête « ${enTete.trim()} » rend « ${h2._text.trim()} »`);
+  exiger(bouton.getAttribute("title") === "Help: Detection rules", `(10) LANG='en' : l'infobulle d'aide rend « ${bouton.getAttribute("title")} »`);
+  exiger(span._text === "Overview", `(10) LANG='en' : le lien de navigation rend « ${span._text} »`);
+  // Le nœud ajouté PORTE lui-même l'attribut (bouton seul, sans parent parcouru) : traduit aussi.
+  const seul = new Element("button"); seul.setAttribute("title", "Rafraîchir ce panneau");
+  walkEN(seul);
+  exiger(seul.getAttribute("title") === "Refresh this panel", `(10) LANG='en' : l'attribut porté par le nœud racine lui-même n'est pas traduit (« ${seul.getAttribute("title")} »)`);
+  // Un nœud TEXTE seul (ce que `el.textContent = '…'` ajoute à un élément déjà attaché) : traduit par son parent.
+  const statut = new Element("span"); const texteSeul = document.createTextNode("connecté"); statut.appendChild(texteSeul);
+  walkEN(texteSeul);
+  exiger(texteSeul.nodeValue === "connected", `(10) LANG='en' : un nœud texte passé seul à i18nWalk n'est pas traduit (« ${texteSeul.nodeValue} »)`);
+
+  // (c) témoin inverse : sous LANG='fr', la même marche ne change rien.
+  const wrapFR = new Element("div");
+  rendreSysteme(wrapFR, mB, hB);
+  walkFR(wrapFR);
+  const libellesFR = tuiles(wrapFR).map((t) => t.children.find((c) => c.classList.contains("sys-tile-l")).textContent);
+  exiger(libellesFR.includes("CPU cumulé") && !libellesFR.includes("Cumulative CPU"), `(10) LANG='fr' : une tuile Système a été traduite — libellés : ${libellesFR.join(" | ")}`);
+  const h2FR = new Element("h2"); h2FR._text = enTete; const boutonFR = new Element("button"); boutonFR.setAttribute("title", infobulle); h2FR.appendChild(boutonFR);
+  walkFR(h2FR);
+  exiger(h2FR._text === enTete && boutonFR.getAttribute("title") === infobulle, "(10) LANG='fr' : l'en-tête ou son infobulle ont été modifiés");
+}
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie.`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section.`);

@@ -334,19 +334,19 @@
             conn.execute("INSERT INTO alert(ts,rule,severity,title,status) VALUES(?1,'rule.1',2,?2,'closed')", params![2000 + i as i64, format!("C{i}")]).unwrap();
         }
         // tous statuts + total : 9 lignes, page bornée.
-        let (p0, t0) = alerts_query_page(&conn, true, "", "", false, None, "", 4, 0, true);
+        let (p0, t0) = alerts_query_page(&conn, &FiltreAlertes::default(), None, "", 4, 0, true);
         assert_eq!(t0, Some(9), "want_total -> total = COUNT tous statuts");
         assert_eq!(p0.len(), 4, "page bornée à LIMIT=4");
-        let (p1, _) = alerts_query_page(&conn, true, "", "", false, None, "", 4, 4, true);
+        let (p1, _) = alerts_query_page(&conn, &FiltreAlertes::default(), None, "", 4, 4, true);
         assert_eq!(p1.len(), 4, "page 1 (offset 4)");
-        let (p2, _) = alerts_query_page(&conn, true, "", "", false, None, "", 4, 8, true);
+        let (p2, _) = alerts_query_page(&conn, &FiltreAlertes::default(), None, "", 4, 8, true);
         assert_eq!(p2.len(), 1, "dernière page partielle");
         // pages disjointes.
         let id0: Vec<i64> = p0.iter().map(|a| a["id"].as_i64().unwrap()).collect();
         let id1: Vec<i64> = p1.iter().map(|a| a["id"].as_i64().unwrap()).collect();
         assert!(id0.iter().all(|x| !id1.contains(x)), "pages disjointes (offset)");
         // chemin BACKLOG (want_total=false, filtre statut=new) : total None, seulement les 'new'.
-        let (bk, tb) = alerts_query_page(&conn, false, "new", "", false, None, "", 200, 0, false);
+        let (bk, tb) = alerts_query_page(&conn, &FiltreAlertes { statut: Some("new".into()), ..Default::default() }, None, "", 200, 0, false);
         assert_eq!(tb, None, "backlog : pas de total (borné)");
         assert_eq!(bk.len(), 6, "filtre statut=new appliqué");
         assert!(bk.iter().all(|a| a["status"] == "new"));
@@ -367,7 +367,7 @@
         conn.execute("INSERT INTO alert(ts,rule,severity,title,status,host) VALUES(2000,'rule.2',4,'B1','new','h1')", []).unwrap();
         conn.execute("INSERT INTO alert(ts,rule,severity,title,status,host) VALUES(2001,'rule.2',4,'B2-dernier','new','h1')", []).unwrap();
         // GROUPE PAR RÈGLE, tous statuts : 2 groupes ; rule.2 en tête (last_ts=2001 > rule.1 last_ts=1010).
-        let (groups, total) = alert_groups_query_page(&conn, "rule", true, "", "", false, 50, 0);
+        let (groups, total) = alert_groups_query_page(&conn, "rule", &FiltreAlertes::default(), 50, 0);
         assert_eq!(total, Some(2), "2 groupes distincts (rule.1, rule.2)");
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0]["gkey"], "rule.2", "tri par last_ts DESC -> rule.2 en tête");
@@ -382,24 +382,24 @@
         assert_eq!(g1["first_ts"], 900);
         assert_eq!(g1["sample_title"], "A3-dernier", "titre échantillon = dernière alerte du groupe");
         // GROUPE PAR RÈGLE, statut=new : rule.1 compte 3 (le 'closed' exclu du WHERE).
-        let (gnew, _) = alert_groups_query_page(&conn, "rule", false, "new", "", false, 50, 0);
+        let (gnew, _) = alert_groups_query_page(&conn, "rule", &FiltreAlertes { statut: Some("new".into()), ..Default::default() }, 50, 0);
         let r1 = gnew.iter().find(|g| g["gkey"] == "rule.1").unwrap();
         assert_eq!(r1["n"], 3, "filtre statut=new appliqué au groupe");
         // GROUPE PAR HÔTE, tous statuts : h1 (5) + h2 (1) + 2 alertes SANS hôte (host NULL) -> groupe '' (n=2).
         conn.execute("INSERT INTO alert(ts,rule,severity,title,status) VALUES(1500,'rule.9',2,'NH1','new')", []).unwrap(); // host NULL
         conn.execute("INSERT INTO alert(ts,rule,severity,title,status) VALUES(1501,'rule.9',2,'NH2','new')", []).unwrap(); // host NULL
-        let (gh, ght) = alert_groups_query_page(&conn, "host", true, "", "", false, 50, 0);
+        let (gh, ght) = alert_groups_query_page(&conn, "host", &FiltreAlertes::default(), 50, 0);
         assert_eq!(ght, Some(3), "3 clés hôte distinctes (h1, h2, '' pour NULL)");
         let h1 = gh.iter().find(|g| g["gkey"] == "h1").unwrap();
         assert_eq!(h1["n"], 5, "5 alertes sur h1");
         let hnull = gh.iter().find(|g| g["gkey"] == "").unwrap();
         assert_eq!(hnull["n"], 2, "les alertes host NULL fusionnent dans le groupe ''");
         // ROUND-TRIP du groupe NULL : l'expansion `gval=''` (COALESCE(host,'')='') matche bien les lignes NULL.
-        let (nocc, noct) = alerts_query_page(&conn, true, "", "", false, Some("host"), "", 50, 0, true);
+        let (nocc, noct) = alerts_query_page(&conn, &FiltreAlertes::default(), Some("host"), "", 50, 0, true);
         assert_eq!(noct, Some(2), "expansion du groupe host '' -> les 2 alertes NULL (round-trip)");
         assert!(nocc.iter().all(|a| a["title"] == "NH1" || a["title"] == "NH2"));
         // EXPANSION d'un groupe via le chemin PLAT (gkey=rule&gval=rule.1) : les 4 occurrences de rule.1, paginées.
-        let (occ, occt) = alerts_query_page(&conn, true, "", "", false, Some("rule"), "rule.1", 50, 0, true);
+        let (occ, occt) = alerts_query_page(&conn, &FiltreAlertes::default(), Some("rule"), "rule.1", 50, 0, true);
         assert_eq!(occt, Some(4), "expansion -> total = occurrences du groupe");
         assert_eq!(occ.len(), 4);
         assert!(occ.iter().all(|a| a["rule"] == "rule.1"), "l'expansion est SCOPÉE au groupe");
@@ -408,13 +408,13 @@
         // filtrés). rule.7/h9 est disjoint des données ci-dessus -> n'affecte aucune assertion précédente.
         conn.execute("INSERT INTO alert(ts,rule,severity,title,status,host) VALUES(3000,'rule.7',2,'C-new','new','h9')", []).unwrap();
         conn.execute("INSERT INTO alert(ts,rule,severity,title,status,host) VALUES(3100,'rule.7',2,'C-closed-plus-recent','closed','h9')", []).unwrap();
-        let (gact, _) = alert_groups_query_page(&conn, "rule", false, "new", "", false, 50, 0);
+        let (gact, _) = alert_groups_query_page(&conn, "rule", &FiltreAlertes { statut: Some("new".into()), ..Default::default() }, 50, 0);
         let r7 = gact.iter().find(|g| g["gkey"] == "rule.7").unwrap();
         assert_eq!(r7["n"], 1, "scope Actives : seule l'alerte 'new' compte");
         assert_eq!(r7["last_ts"], 3000, "last_ts = la 'new' (la 'closed' plus récente est hors scope)");
         assert_eq!(r7["sample_title"], "C-new", "aperçu RE-SCOPÉ : la 'new', PAS la 'closed' plus récente (cohérent avec last_ts)");
         // …et en TOUS statuts l'aperçu redevient la plus récente ABSOLUE (closed incluse) : best-effort inchangé.
-        let (gall7, _) = alert_groups_query_page(&conn, "rule", true, "", "", false, 50, 0);
+        let (gall7, _) = alert_groups_query_page(&conn, "rule", &FiltreAlertes::default(), 50, 0);
         let r7all = gall7.iter().find(|g| g["gkey"] == "rule.7").unwrap();
         assert_eq!(r7all["sample_title"], "C-closed-plus-recent", "tous statuts : aperçu = plus récente absolue");
     }

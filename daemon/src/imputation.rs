@@ -113,6 +113,18 @@ pub(crate) fn imputation_decoder(csv: &str) -> Vec<String> {
     csv.split(SEPARATEUR).map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| s.to_string()).collect()
 }
 
+/// LE MÊME SÉPARATEUR, LU PAR SQL (P11.1-b). Prédicat d'imputation EXACTE d'une alerte (table ou alias
+/// `prefix`) à UNE source liée en `?` : le nom doit être un ÉLÉMENT ENTIER de la liste stockée, encadré
+/// par le séparateur de part et d'autre — `k8s` ne prend pas `k8s-audit`, ce qu'un `LIKE '%k8s%'` ferait.
+/// `instr` compare des caractères, sans joker ni repli de casse. Dérivé de `SEPARATEUR` : changer le
+/// séparateur change l'encodeur, le décodeur et ce prédicat d'un seul geste. Une alerte d'AVANT la
+/// migration (`sources=''`) n'est appariée à aucune source : le repli textuel est un chemin de LECTURE
+/// en Rust, pas un prédicat SQL, et ce filtre le dit plutôt que de l'imiter par un `LIKE` sur `detail`.
+pub(crate) fn imputation_predicat_sql(prefix: &str) -> String {
+    let sep = SEPARATEUR as u32;
+    format!("instr(char({sep})||COALESCE({prefix}.sources,'')||char({sep}), char({sep})||?||char({sep}))>0")
+}
+
 /// IMPUTATION D'UNE ALERTE DE CAPTEUR MUET — dérivée du DESCRIPTEUR de la sonde, jamais de son libellé.
 ///
 /// Le `match` est EXHAUSTIF : une 5ᵉ variante de `Sonde` ne compilera pas tant qu'elle n'aura pas dit à

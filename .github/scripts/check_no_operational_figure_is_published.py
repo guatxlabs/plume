@@ -365,8 +365,13 @@ def main():
                             check=True).stdout.split("\n")
     total = {"fichiers": 0, "grandeurs": 0, "dates": 0, "attestations": 0}
     accusations = []
+    # La garde ne se lit pas elle-même : ses TÉMOINS sont des relevés de la forme interdite, écrits pour
+    # être accusés, et ils sont validés à part (au-dessus). Mesuré le 2026-08-22 : tant que ce fichier
+    # n'était pas suivi, `git ls-files` ne le rendait pas et la garde passait ; une fois commité, elle
+    # s'accusait sept fois et la CI rougissait — un instrument qui ne se voit qu'une fois publié.
+    soi = os.path.relpath(os.path.abspath(__file__), racine)
     for f in suivis:
-        if not f or f.lower().endswith(EXT_EXCLUES):
+        if not f or f.lower().endswith(EXT_EXCLUES) or f == soi:
             continue
         chemin = os.path.join(racine, f)
         if not os.path.isfile(chemin):

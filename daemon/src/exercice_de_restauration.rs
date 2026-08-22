@@ -395,6 +395,14 @@ pub(crate) fn signal_exercice_du(conn: &Connection, e: &Etat, now_ts: i64) -> bo
 /// Émet le signal DEPUIS LE VRAI CHEMIN DE SAUVEGARDE, une archive venant d'être produite : lit
 /// l'état, l'émet s'il est dû. `escrow_asymetrique` est passé par l'appelant, qui vient justement de
 /// choisir le mode de chiffrement de cette archive-là.
+///
+/// UN APPELANT PAR CHEMIN QUI ÉCRIT UNE ARCHIVE, et c'est une propriété DÉRIVÉE, pas une liste : la
+/// garde `toute_ecriture_d_archive_en_production_emet_tous_les_signaux_de_posture` relit les appelants
+/// de `backup_compressed` et refuse qu'un chemin de production écrive une archive sans atteindre ce
+/// signal. (1) La sous-commande `backup` (`main.rs`). (2) Le cycle NATIF (`server::scheduled_backup_cycle`),
+/// après le rename qui PUBLIE l'archive, sur la porte qu'il ouvre déjà pour la posture symétrique
+/// (P8.26-a ; avant ce branchement, lu le 2026-08-22, le cycle que `deploy/k3s.yaml` active ne posait
+/// jamais la question).
 pub(crate) fn signal_apres_sauvegarde(conn: &Connection, escrow_asymetrique: bool, now_ts: i64) -> bool {
     let e = etat(dernier_exercice(conn).as_ref(), escrow_asymetrique, now_ts, age_max_s());
     signal_exercice_du(conn, &e, now_ts)

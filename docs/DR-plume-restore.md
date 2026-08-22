@@ -269,7 +269,7 @@ une attestation plus ancienne que celle déjà enregistrée, et une attestation 
 |---|---|
 | `/api/system/health`, panneau Système | composant `restauration` — `jamais` / `frais` / `perime` / `mode_non_eprouve`, avec l'âge |
 | `/metrics` | `plume_restore_drill_overdue` (1 = un exercice est dû), `plume_restore_drill_age_seconds` et `plume_restore_drill_last_success_timestamp_seconds` — **absentes tant qu'aucun exercice n'a eu lieu**, parce qu'un âge de 0 se lirait « restauré à l'instant » |
-| SOC | événement `health` **non purgeable** émis par le chemin de sauvegarde (dédup quotidienne) tant qu'un exercice est dû |
+| SOC | événement `health` **non purgeable** émis par tout chemin qui publie une archive — la sous-commande `backup` et le cycle natif du démon (dédup quotidienne) — tant qu'un exercice est dû |
 
 Deux règles portées par le mécanisme, et pas par une phrase :
 

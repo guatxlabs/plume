@@ -322,7 +322,7 @@ env:
   # `daemon/src/tests/mesure_environnement.rs`) : QUATRE tests de plus, sans `cfg` de feature, donc
   # présents dans les DEUX profils. La valeur d'avant cette ré-énumération avait elle-même bougé sous
   # un autre lot en vol : c'est précisément pourquoi le total est celui de l'ARBRE et jamais une somme.
-  EXPECTED_TESTS: "1176"
+  EXPECTED_TESTS: "1178"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -609,7 +609,7 @@ jobs:
           # RÉ-ÉNUMÉRÉ le 2026-08-20 par la MÊME double lecture, sur l'arbre qui porte aussi le lot S32
           # (lectures d'environnement séparant « lu » de « pas lisible », dix-huit tests sans `cfg`) :
           # 1368 avec `cold_tier` pour 1148 par défaut — l'écart reste **220**.
-          EXPECTED_COLD_TESTS: "1396"
+          EXPECTED_COLD_TESTS: "1398"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

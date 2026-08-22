@@ -1380,9 +1380,10 @@ fn main() {
                     // v135 (#7) — SIGNAL SOC NON-PURGEABLE émis depuis la sous-commande `backup` UNIQUEMENT quand un
                     // backup SYMÉTRIQUE a réellement été produit (recipient absent). Anciennement (v134) le signal
                     // partait à tort au boot du serveur, sans qu'aucun backup ait été produit -> faux positif
-                    // « posture dégradée » à chaque restart. L'ordonnanceur NATIF du serveur émet le MÊME signal
-                    // depuis son propre cycle, après le rename qui publie l'archive (P8.25-a,
-                    // `server::signaler_la_posture_de_l_archive_publiee`). Ici le repli est PROUVÉ (le backup vient
+                    // « posture dégradée » à chaque restart. L'ordonnanceur NATIF du serveur émet les MÊMES deux
+                    // signaux (posture symétrique, exercice de restauration dû) depuis son propre cycle, après le
+                    // rename qui publie l'archive, sur une seule porte (P8.25-a + P8.26-a,
+                    // `server::signaler_ce_qu_implique_l_archive_publiee`). Ici le repli est PROUVÉ (le backup vient
                     // d'aboutir sans destinataire) -> signal légitime. Best-effort : un échec d'ouverture DB writer
                     // ne bloque pas le backup déjà produit.
                     // Ce signal ÉCRIT (un événement SOC) -> il passe par la porte. Best-effort DANS LES
@@ -1392,7 +1393,8 @@ fn main() {
                         Ok(conn) => {
                             let _ = signal_backup_symmetric_if_needed(&conn, recipient.as_deref(), now());
                             // P8.3-a — UNE ARCHIVE VIENT D'ÊTRE ÉCRITE : c'est l'instant où « depuis quand
-                            // n'a-t-on rien restauré ? » se pose. Le signal part d'ICI, et pas du démon, pour
+                            // n'a-t-on rien restauré ? » se pose. Le signal part des chemins qui ÉCRIVENT une
+                            // archive (ici, et le cycle natif — P8.26-a), jamais du démarrage du démon, pour
                             // la raison qui avait fait déplacer celui de v135 : une installation qui ne
                             // sauvegarde pas n'a rien à éprouver, et ne doit donc rien recevoir.
                             let _ = exercice_de_restauration::signal_apres_sauvegarde(

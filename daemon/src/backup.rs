@@ -661,7 +661,7 @@ pub(crate) fn emit_backup_symmetric_signal(conn: &Connection, now_ts: i64) -> bo
 /// présent -> aucun signal (posture saine). `now_ts` injecté pour la testabilité. Renvoie true si un signal a été écrit.
 ///
 /// DEUX APPELANTS, UN PAR CHEMIN QUI ÉCRIT UNE ARCHIVE — et c'est une propriété DÉRIVÉE, pas une liste : la garde
-/// `toute_ecriture_d_archive_en_production_emet_le_signal_de_posture` relit les appelants de `backup_compressed`
+/// `toute_ecriture_d_archive_en_production_emet_tous_les_signaux_de_posture` relit les appelants de `backup_compressed`
 /// et refuse qu'un chemin de production écrive une archive sans passer ici. (1) La sous-commande `backup`
 /// (`main.rs`), sur une connexion ouverte avec la clé de l'environnement. (2) Le cycle NATIF
 /// (`server::scheduled_backup_cycle`), celui que `deploy/k3s.yaml` active dans son unique conteneur, après le

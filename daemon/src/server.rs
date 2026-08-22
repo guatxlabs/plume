@@ -559,7 +559,8 @@ fn spawn_background_jobs(conf: HashMap<String, String>, spool: String, db_path: 
     // `PLUME_BACKUP_INTERVAL` dans son unique conteneur, il n'y a plus de sidecar shell). GATÉ sur
     // PLUME_BACKUP_INTERVAL (secondes ; 0/absent = DÉSACTIVÉ -> AUCUN thread spawné -> comportement
     // byte-identique). Sur host/Docker : monte un volume, pose la var -> self-backup. Chaque cycle qui publie
-    // une archive sans destinataire d'escrow émet le signal SOC de posture (P8.25-a).
+    // une archive émet les signaux SOC de posture qu'elle implique : sans destinataire d'escrow, la posture
+    // symétrique (P8.25-a) ; exercice de restauration dû, l'exercice (P8.26-a).
     {
         annoncer_bascule_sauvegarde(&conf);
         spawn_backup_scheduler(conf.clone(), db_path.clone());
@@ -1084,21 +1085,31 @@ fn run_scheduled_backup_objet(db_path: &str, staging: &str, keep: usize, cible: 
         Some(nom)
 }
 
-/// P8.25-a — LE SIGNAL DE POSTURE DU CYCLE NATIF. Le cycle n'a pas de connexion sous la main : il reçoit un
-/// chemin et une clé EXPLICITE (`key`, jamais l'environnement — c'est ce qui le rend testable hermétiquement),
-/// et `backup_compressed` ouvre et referme la sienne. Le signal, lui, ÉCRIT un événement SOC : il passe donc
-/// par la porte (`PreparedDb`), avec la clé du cycle et non celle de l'env, et avec `busy_timeout` posé en
-/// PRÉLUDE parce que ce fil tourne à côté de l'écrivain du démon (le contrat, avant toute lecture, attendrait
-/// sinon zéro seconde sur un verrou transitoire). Best-effort DANS LES DEUX SENS, comme dans `main.rs` : un
-/// contrat non satisfait ne casse pas l'archive déjà publiée, mais il n'écrit rien non plus — il le DIT.
-/// Rend vrai si un signal a été écrit (faux : destinataire présent, dédup horaire, ou porte fermée).
-fn signaler_la_posture_de_l_archive_publiee(db_path: &str, key: Option<&str>, recipient: Option<&str>) -> bool {
+/// P8.25-a + P8.26-a — CE QU'UNE ARCHIVE PUBLIÉE IMPLIQUE, DIT PAR LE CYCLE NATIF. Deux signaux de posture
+/// ont le même moment juste — « une archive vient d'être publiée » — et la même condition d'écriture, une
+/// connexion au contrat : (1) la posture SYMÉTRIQUE (`signal_backup_symmetric_if_needed` : destinataire
+/// absent -> le nœud déchiffre ses propres archives, dédup horaire) ; (2) l'exercice de restauration DÛ
+/// (`exercice_de_restauration::signal_apres_sauvegarde` : jamais éprouvée, périmée ou éprouvée sur un autre
+/// chemin que celui du séquestre, dédup quotidienne). Une SEULE porte pour les deux : ouvrir la base deux fois
+/// à côté de l'écrivain du démon serait un coût sans contrepartie.
+///
+/// Le cycle n'a pas de connexion sous la main : il reçoit un chemin et une clé EXPLICITE (`key`, jamais
+/// l'environnement — c'est ce qui le rend testable hermétiquement), et `backup_compressed` ouvre et referme la
+/// sienne. Les signaux, eux, ÉCRIVENT un événement SOC : ils passent donc par la porte (`PreparedDb`), avec la
+/// clé du cycle et non celle de l'env, et avec `busy_timeout` posé en PRÉLUDE parce que ce fil tourne à côté de
+/// l'écrivain du démon (le contrat, avant toute lecture, attendrait sinon zéro seconde sur un verrou
+/// transitoire). Best-effort DANS LES DEUX SENS, comme dans `main.rs` : un contrat non satisfait ne casse pas
+/// l'archive déjà publiée, mais il n'écrit rien non plus — il le DIT. Même sémantique que la sous-commande
+/// `backup` : `escrow_asymetrique` est dérivé du destinataire de CETTE archive, pas de l'environnement.
+fn signaler_ce_qu_implique_l_archive_publiee(db_path: &str, key: Option<&str>, recipient: Option<&str>) {
         match PreparedDb::open_keyed_with_prelude(db_path, key, |c| { let _ = c.busy_timeout(Duration::from_secs(5)); }) {
-            Ok(conn) => signal_backup_symmetric_if_needed(&conn, recipient, now()),
-            Err(e) => {
-                eprintln!("[backup-sched] signal de posture NON émis (la base n'a pas passé le contrat de schéma : {e})");
-                false
+            Ok(conn) => {
+                let maintenant = now();
+                let _ = signal_backup_symmetric_if_needed(&conn, recipient, maintenant);
+                let escrow_asymetrique = recipient.is_some_and(|r| !r.is_empty());
+                let _ = exercice_de_restauration::signal_apres_sauvegarde(&conn, escrow_asymetrique, maintenant);
             }
+            Err(e) => eprintln!("[backup-sched] signaux de posture NON émis (la base n'a pas passé le contrat de schéma : {e})"),
         }
 }
 
@@ -1127,11 +1138,13 @@ pub(crate) fn scheduled_backup_cycle(db_path: &str, dest_dir: &str, keep: usize,
                     let _ = std::fs::remove_file(&tmp_path); // pas de temp orphelin.
                     return None;
                 }
-                // P8.25-a — L'ARCHIVE EST PUBLIÉE (le rename a réussi) : c'est ICI, et pas avant, que ce cycle
-                // SAIT qu'une sauvegarde existe. Un `backup_compressed` réussi suivi d'un rename raté n'a rien
-                // publié, et la branche ci-dessus sort sans passer ici. Même sémantique que la sous-commande
-                // `backup` (`main.rs`) : destinataire absent -> signal SOC non purgeable, dédupliqué à l'heure.
-                signaler_la_posture_de_l_archive_publiee(db_path, key, recipient);
+                // P8.25-a + P8.26-a — L'ARCHIVE EST PUBLIÉE (le rename a réussi) : c'est ICI, et pas avant, que
+                // ce cycle SAIT qu'une sauvegarde existe. Un `backup_compressed` réussi suivi d'un rename raté
+                // n'a rien publié, et la branche ci-dessus sort sans passer ici. Même sémantique que la
+                // sous-commande `backup` (`main.rs`) : destinataire absent -> signal SOC de posture non
+                // purgeable, dédupliqué à l'heure ; exercice de restauration dû -> signal SOC non purgeable,
+                // dédupliqué au jour. Les deux sur UNE porte.
+                signaler_ce_qu_implique_l_archive_publiee(db_path, key, recipient);
                 let ratio = if st.dest_bytes > 0 { st.plaintext_bytes as f64 / st.dest_bytes as f64 } else { 0.0 };
                 eprintln!(
                     "[backup-sched] écrit {final_path}  charge={} o  dest={} o  ratio={:.1}x  clair-sur-disque={}",
@@ -2019,11 +2032,12 @@ pub(crate) async fn run() {
         }
         // v135 (#7) — CORRECTIF FAUX POSITIF : la posture backup N'EST PLUS asserted ICI. Le check de boot v134
         // émettait un signal SOC NON-PURGEABLE « posture backup dégradée » à CHAQUE restart, sans qu'aucun backup
-        // ait été produit. Le signal vit dans les chemins qui PRODUISENT une archive (backup.rs : warn + gate
-        // fail-closed PLUME_BACKUP_REQUIRE_ASYMMETRIC ; main.rs : la sous-commande `backup` ;
-        // `scheduled_backup_cycle` ci-dessous : le cycle natif, après le rename qui publie — P8.25-a). Ce
-        // processus PRODUIT des backups, par `spawn_backup_scheduler`, dans l'unique conteneur du manifeste
-        // livré (lu le 2026-08-22 dans `deploy/k3s.yaml`) : le signal part de ce cycle-là, pas du démarrage.
+        // ait été produit. Les signaux de posture — symétrique ET exercice de restauration dû — vivent dans
+        // les chemins qui PRODUISENT une archive (backup.rs : warn + gate fail-closed
+        // PLUME_BACKUP_REQUIRE_ASYMMETRIC ; main.rs : la sous-commande `backup` ; `scheduled_backup_cycle`
+        // ci-dessous : le cycle natif, après le rename qui publie — P8.25-a, P8.26-a). Ce processus PRODUIT des
+        // backups, par `spawn_backup_scheduler`, dans l'unique conteneur du manifeste livré (lu le 2026-08-22
+        // dans `deploy/k3s.yaml`) : les signaux partent de ce cycle-là, pas du démarrage.
         // Voir la note de `signal_backup_symmetric_if_needed`.
     }
 

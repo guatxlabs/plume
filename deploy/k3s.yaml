@@ -79,8 +79,11 @@ spec:
             # SQLCipher, présente sur le nœud) donc les backups sont DÉCHIFFRABLES PAR LE NŒUD : pas
             # d'escrow. Le cycle de sauvegarde de CE conteneur émet alors, à chaque archive publiée
             # sans destinataire (au plus une fois par heure), un événement de posture non purgeable
-            # (source `plume-config`, health, sév. 4) ; avant le 2026-08-22 seule la sous-commande
-            # `backup` l'émettait et ce manifeste n'avait pour témoin qu'une ligne de journal.
+            # (source `plume-config`, health, sév. 4) ; et, à chaque archive publiée alors qu'aucun
+            # exercice de restauration frais n'est enregistré (au plus une fois par jour), un
+            # événement « restauration non éprouvée » (même source, sév. 3). Avant le 2026-08-22 seule
+            # la sous-commande `backup` les émettait et ce manifeste n'avait pour témoin qu'une ligne
+            # de journal.
             # Mets PLUME_BACKUP_REQUIRE_ASYMMETRIC=1 pour REFUSER ce repli.
             # - { name: PLUME_BACKUP_AGE_RECIPIENT, value: "age1..." }
             # - { name: PLUME_BACKUP_REQUIRE_ASYMMETRIC, value: "1" }

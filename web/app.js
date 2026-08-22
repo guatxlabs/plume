@@ -1,7 +1,7 @@
 import {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, flashStopped, stopBtn, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, toCSV, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, miniMenu, api, apiSend, transientGatewayMsg, muted, colComparator, makePager, pageNums, pagedList,
   setSocTZ,
-  socIsAdmin, formMsg,
+  socIsAdmin, applyRoleClass, formMsg,
   confirmWithConsequence, disclosure
 } from './core.js';
 import { installI18nObserver } from './i18n_observer.js';
@@ -43,18 +43,6 @@ import { loadRetention } from './retention.js';
 import { loadSuppressions } from './suppressions.js'; // panneau « Suppressions & whitelists » + silences (créer/modifier/supprimer)
 import { renderHelpGuide, openHelpModal, openFreshnessHelp } from './help.js'; // #4c — aide in-app (split H1) : page Aide + modales GXQL/Fraîcheur, câblage #qhelp/#fresh-help ci-dessous
 
-
-// --- CRUD contenu de détection (#1c) : rôles UI + « managed » + remontée d'erreurs serveur ------
-// Défense en profondeur : la VRAIE garde reste serveur (le daemon renvoie 400/403/404/409 + {error}).
-// On reflète le rôle courant sur <body> (classes role-admin/role-editor/role-viewer) -> le CSS masque
-// les contrôles d'écriture de façon RÉTROACTIVE (indépendant de l'ordre de rendu des listes). AUTH.role
-// (GET /api/me) fait foi ; à défaut on hérite de la classe posée par les dashboards/vues.
-function applyRoleClass(role) {
-  if (!role || !document.body) return;
-  document.body.classList.toggle('role-admin', role === 'admin');
-  document.body.classList.toggle('role-editor', role === 'editor');
-  document.body.classList.toggle('role-viewer', role === 'viewer');
-}
 
 // --- authentification (form-login) + CSRF -------------------------------------------------------
 // État d'auth renseigné par GET /api/me : {user, role, auth_method, csrf_token}. null = non authentifié.
@@ -1837,4 +1825,4 @@ async function doLogout() {
 })();
 
 /* ==== exports consumed by seam modules (auto-managed) ==== */
-export { ROLE_LABEL, SPACES, applyRoleClass, currentTab, currentViewName, fetchMe, loadActions, loadDashboard, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAlertMitreFilter, setAlertSourceFilter, setAuthUI, updateQRangeBtn, updateRangeBtn };
+export { ROLE_LABEL, SPACES, currentTab, currentViewName, fetchMe, loadActions, loadDashboard, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAlertMitreFilter, setAlertSourceFilter, setAuthUI, updateQRangeBtn, updateRangeBtn };

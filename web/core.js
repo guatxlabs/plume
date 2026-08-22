@@ -459,6 +459,18 @@ function socRole() {
 // SQL brut = admin uniquement (garde-fou #2/#5). Fail-closed : rôle inconnu -> non-admin.
 function socIsAdmin() { return socRole() === 'admin'; }
 
+// --- CRUD contenu de détection (#1c) : rôles UI + « managed » + remontée d'erreurs serveur ------
+// Défense en profondeur : la VRAIE garde reste serveur (le daemon renvoie 400/403/404/409 + {error}).
+// On reflète le rôle courant sur <body> (classes role-admin/role-editor/role-viewer) -> le CSS masque
+// les contrôles d'écriture de façon RÉTROACTIVE (indépendant de l'ordre de rendu des listes). AUTH.role
+// (GET /api/me) fait foi ; à défaut on hérite de la classe posée par les dashboards/vues.
+function applyRoleClass(role) {
+  if (!role || !document.body) return;
+  document.body.classList.toggle('role-admin', role === 'admin');
+  document.body.classList.toggle('role-editor', role === 'editor');
+  document.body.classList.toggle('role-viewer', role === 'viewer');
+}
+
 // « managed » (garde-fou #4) : 0=builtin (seed), 1=overlay (config.d), 2=perso (créé via l'UI). Le CRUD
 // UI ne crée que du managed=2. La suppression DESTRUCTIVE est réservée au managed=2 ; un builtin se
 // DÉSACTIVE (case « actif »), un overlay est géré par fichier (réimposé au boot). Le serveur applique la
@@ -576,6 +588,6 @@ const humanAge = s => { s = Number(s) || 0; return s < 90 ? s + ' s' : s < 5400 
 export function setSocTZ(v) { socTZ = v; }
 export {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, flashStopped, stopBtn, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, toCSV, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, miniMenu, api, apiSend, transientGatewayMsg, muted, fetchInto, colComparator, makePager, pageNums, pagedList,
-  socRole, socIsAdmin, managedBadge, gateDeleteBtn, formMsg, contentSubmit, contentDelete, SEVCOL, lsSet, collapsibleGroup, mitreName, humanAge,
+  socRole, socIsAdmin, applyRoleClass, managedBadge, gateDeleteBtn, formMsg, contentSubmit, contentDelete, SEVCOL, lsSet, collapsibleGroup, mitreName, humanAge,
   confirmWithConsequence, disclosure
 };

@@ -1,9 +1,9 @@
 // multitenant.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // #2c multi-tenant : switcher tenant/env (header) + vue Tenants + grants + audit acces operateur.
-import { $, LOC, api, apiSend, confirmWithConsequence, fmtTs, ic, muted, pagedList, toast } from './core.js';
+import { $, LOC, api, apiSend, applyRoleClass, confirmWithConsequence, fmtTs, ic, muted, pagedList, toast } from './core.js';
 import { S } from './state.js';
 import { runQ, tableEl } from './viz.js';
-import { ROLE_LABEL, applyRoleClass, currentTab, fetchMe, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAuthUI } from './app.js';
+import { ROLE_LABEL, currentTab, fetchMe, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAuthUI } from './app.js';
 
 // ============ #2c MULTI-TENANT : switcher + vue Tenants + grants + audit accès opérateur ============
 // La VRAIE garde reste SERVEUR (le daemon renvoie 400/403/404/409 ; le path-guard + le re-check handler

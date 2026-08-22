@@ -4644,7 +4644,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     }
 
     /// ADVERSE #2 — **DÉFAUT CONFIRMÉ (test ROUGE volontaire)**. TEXT NON-UTF8. Le commentaire de
-    /// `write_value_ref` (backup/mod.rs) ET le message d'erreur lui-même PROMETTENT un « repli legacy »
+    /// `write_value_ref` (backup/dump_restauration.rs) ET le message d'erreur lui-même PROMETTENT un « repli legacy »
     /// pour un TEXT non-UTF8. En réalité l'erreur remonte en `PlanErr::Fatal` (backup_compressed_stream:711
     /// `map_err(PlanErr::Fatal)`) et `backup_compressed:755` traite `Fatal` en ÉCHEC SEC (remove dest + Err) —
     /// AUCUN repli legacy. Conséquence : un SEUL octet non-UTF8 dans N'IMPORTE quelle cellule TEXT fait

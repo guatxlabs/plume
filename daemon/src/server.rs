@@ -2039,7 +2039,7 @@ pub(crate) async fn run() {
         // v135 (#7) — CORRECTIF FAUX POSITIF : la posture backup N'EST PLUS asserted ICI. Le check de boot v134
         // émettait un signal SOC NON-PURGEABLE « posture backup dégradée » à CHAQUE restart, sans qu'aucun backup
         // ait été produit. Les signaux de posture — symétrique ET exercice de restauration dû — vivent dans
-        // les chemins qui PRODUISENT une archive (backup/mod.rs : warn + gate fail-closed
+        // les chemins qui PRODUISENT une archive (backup/ : warn + gate fail-closed
         // PLUME_BACKUP_REQUIRE_ASYMMETRIC ; main.rs : la sous-commande `backup` ; `scheduled_backup_cycle`
         // ci-dessous : le cycle natif, après le rename qui publie — P8.25-a, P8.26-a). Ce processus PRODUIT des
         // backups, par `spawn_backup_scheduler`, dans l'unique conteneur du manifeste livré (lu le 2026-08-22

@@ -214,6 +214,38 @@ génériques.
 
 ---
 
+## P11 — Console : retours d'usage d'un analyste, relevés en production le 2026-08-22
+
+Ces constats viennent d'une session d'utilisation réelle de la console, pas d'une relecture du code. Chacun est
+à MESURER avant d'être corrigé (la vue, le fichier, la population concernée), et la règle de la phase est celle
+du produit : ce qui est partagé se factorise, ce qui redirige dit où l'on arrive, ce qui est sensible confirme.
+
+| Clé | Périmètre | État | Ce que la clé désigne |
+|---|---|---|---|
+| **P11.1-a** *(clé neuve)* | Alertes : le lien vers la recherche | ⬜ | Une alerte « problème pod (CrashLoop/OOMKilled) » renvoie vers `source=k8s severity>=3`, une requête bien plus large que ce que la règle a compté. Un lien de recherche qui ne reproduit pas le COMPTE de l'alerte n'est pas un lien de recherche. À mesurer sur TOUTES les règles livrées : pour chacune, la requête du lien rend-elle le même ensemble que la règle ? |
+| **P11.1-b** *(clé neuve)* | Alertes : une vue, plusieurs tris | ⬜ | Plate / Règle / Hôte / Technique sont rendues comme des vues distinctes avec des boutons différents ; « Tous statuts » et « Tout acquitter » n'existent que sur certaines. Ce sont des TRIS d'une même liste, pas des écrans : une vue, des facettes, les mêmes actions partout. |
+| **P11.1-c** *(clé neuve)* | Alertes : la cloche dit quoi, sur quelle fenêtre | ⬜ | Depuis l'inventaire des sources, la cloche d'une source mène à des alertes (« Recon web edge low-and-slow ») sans rapport visible avec la fraîcheur, et sans dire sur quelle plage de temps elles comptent. Une notification doit nommer son objet et sa fenêtre. |
+| **P11.1-d** *(clé neuve)* | Alertes : le titre est une porte | ⬜ | Le mot « Alertes » en haut à gauche n'est pas cliquable. Tout en-tête qui nomme une page y mène. |
+| **P11.1-e** *(clé neuve)* | Où arrivera ce que je viens de créer | ⬜ | Règles de détection, playbooks et toute interface qui produit des alertes ne disent pas à l'utilisateur OÙ elles apparaîtront. Chaque surface qui crée un producteur d'alertes nomme la destination, avec le lien. |
+| **P11.2-a** *(clé neuve)* | Réponse : les playbooks livrés ne sont pas des playbooks | ⬜ | Les playbooks par défaut n'ont ni le design, ni les étapes, ni les boutons de ceux que l'utilisateur crée : un bouton « drill-down » hors charte, un interrupteur « Actif » présent d'un côté et absent de l'autre. À mesurer : la liste des playbooks livrés et, pour chacun, ce qui le distingue d'un playbook créé. Un seul rendu, une seule table. |
+| **P11.2-b** *(clé neuve)* | Réponse : l'interrupteur ne se lit pas | ⬜ | « Actif — réponses automatiques » est une case à cocher dont l'utilisateur ne comprend pas qu'elle active et désactive une action de BAN. Une action automatique réversible se présente comme telle : état courant lisible, conséquence nommée, confirmation à l'activation. Le ban a fonctionné (IP bannie) — c'est l'intention qui n'était pas lisible, pas l'effet. |
+| **P11.2-c** *(clé neuve)* | Réponse : des règles sans runbook | ⬜ | On veut des règles de réponse sans un runbook complet autour, et plus technique que le mot « playbook » ne le suggère — les environnements ne sont pas configurés pareil. Le nom et la forme sont à trancher : proposer, ne pas renommer seul. |
+| **P11.3-a** *(clé neuve)* | Sources : « inattendu » sans issue | ⬜ | L'inventaire marque sept sources « inattendu » (cloudflare-http, engagement-adapter, nft, origin-drop, portprobe, derive-deploiement, kube-rbac) et n'offre aucun moyen de dire « attendue ». Un état qu'on ne peut pas acquitter n'est pas un état, c'est une tache. Marquage persistant, par un éditeur, réversible. |
+| **P11.3-b** *(clé neuve)* | Sources : « dégradé » n'est pas « en retard » | ⬜ | La fraîcheur dit « dégradé / en retard » pour des sources dont l'activité dépend de l'environnement (mail périodique, dérive de déploiement, portprobe, cloudflare continu) — la page le dit elle-même en bas de tableau. Le mot qui s'affiche en tête contredit l'explication en pied : le statut doit dériver de la cadence ATTENDUE de chaque source, pas d'un seuil unique. |
+| **P11.4-a** *(clé neuve)* | Composants : une carte qu'on ne peut pas refermer | ⬜ | Alertes, connecteurs (preset, generic http) : une carte dépliée ne se replie plus, et reste grisée. Un composant partagé, un comportement. |
+| **P11.4-b** *(clé neuve)* | Composants : des boutons hors charte | ⬜ | « Créer » (Destinations, Processeur d'ingest, Index & rétention, Field filters), « Tester » (parseur), « Info / Publier / Effacer » (Système — opérabilité), le cadre des IOC (threat intel) : gris, sans le design de plume. À mesurer : la liste des boutons et cadres qui n'utilisent pas les classes partagées. Un seul jeu de classes. |
+| **P11.4-c** *(clé neuve)* | Composants : la clé MFA invisible en thème clair | ⬜ | Dans Administration › compte › MFA, la clé à saisir est lisible en thème sombre et INVISIBLE en thème clair (bleu sombre sur carré noir). Un secret qu'on ne peut pas lire, on ne peut pas le saisir : c'est un défaut d'enrôlement, pas de style. |
+| **P11.5-a** *(clé neuve)* | Administration : suppressions et listes blanches en lecture seule | ⬜ | « Suppressions & whitelists actives » se consulte mais ne se crée, ne se modifie ni ne se supprime depuis la console. Pour l'administrateur, les trois gestes. |
+| **P11.5-b** *(clé neuve)* | Administration : le sensible ne confirme pas | ⬜ | Enregistrer une rétention, changer le rôle d'un utilisateur : aucune confirmation. À DÉRIVER : toute action qui détruit des données, élève un droit ou arme une réponse automatique demande confirmation, et la liste vient des routes, pas d'une énumération écrite à la main. |
+| **P11.6-a** *(clé neuve)* | Couverture ATT&CK : des numéros sans nom | ⬜ | La couverture affiche des techniques par identifiant seul. À mesurer : lesquelles, et pourquoi (absentes de la table de noms, sous-techniques, identifiants retirés). Un identifiant sans nom ne se lit pas. |
+| **P11.7-a** *(clé neuve)* | Navigation : Investigation, Recherche, Explore | ⬜ | L'icône d'Investigation laisse croire qu'elle n'est que la recherche ; Recherche et Explore sont redondants. Proposer : un onglet Recherche, un onglet Cas, et un seul des deux éditeurs de requête. |
+| **P11.8-a** *(clé neuve)* | Langue : le lexique fr/en est troué | ⬜ | Beaucoup de libellés restent dans une seule langue. À mesurer par dérivation : les chaînes affichées qui n'ont pas d'entrée dans le dictionnaire, par module. |
+| **P11.9-a** *(clé neuve)* | Recherche : Modèles, Enregistrer, Sauvegardées, Panneau | ⬜ | « Modèles » est la bonne idée et vaut pour les panneaux et tableaux de bord. « Enregistrer » doit enregistrer dans les Modèles ; « Sauvegardées » devient inutile ; « Récents » reste ; « Panneau » sort de la recherche (accessible depuis les tableaux de bord) ; un modèle s'édite et se supprime. |
+| **P11.9-b** *(clé neuve)* | Recherche : la complétion réécrit `!=` en `=` | ⬜ | Après une expression régulière, taper un espace fait visuellement remplacer le « différent » par un « égal » ; un retour à la ligne le rend. À reproduire dans le harnais ESM sur l'éditeur, puis corriger. |
+| **P11.9-c** *(clé neuve)* | Recherche : « ampleur inconnue » en sautant des pages | ⬜ | Sur un demi-million de résultats, sauter plusieurs pages affiche parfois « ampleur inconnue » et oblige à revenir en arrière pour remettre l'ordre. Pas critique, mais un utilisateur qui ne connaît pas l'infrastructure ne comprendra pas : nommer ce qui s'est passé et comment continuer. |
+
+---
+
 ## Constats sans clé encore ouverts
 
 | Réf. | Périmètre | État | Ce que la référence désigne |

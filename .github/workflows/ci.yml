@@ -749,10 +749,11 @@ jobs:
       - { name: "Chaque identifiant ou classe ciblé par style.css est posé quelque part dans web/ — dérivé, plafond d'orphelins à zéro (P11.4-d)", run: python3 .github/scripts/check_every_style_selector_has_a_target.py }
       # `P11.4-e` — CHAQUE DÉCLENCHEUR D'AIDE OUVRE UNE SECTION. Déclencheurs DÉRIVÉS de `web/` (`data-help`
       # en HTML et dans les gabarits, `dataset.help`, `openHelp('…')`, entrées du sommaire du guide), sections
-      # DÉRIVÉES de l'objet `HELP` de `help.js` ; une section sans déclencheur est une information. Mesuré le
+      # DÉRIVÉES de l'objet `HELP` du registre d'aide (`web/help_registry.js`, lui-même dérivé de sa définition,
+      # pas nommé) ; une section sans déclencheur est une information. Mesuré le
       # 2026-08-22 : deux déclencheurs sans section (« tokens » en HTML, « processors » au sommaire du guide) ;
       # l'ouvreur se taisait (harnais : zéro nœud rendu), il rend désormais un aveu qui nomme la clé.
-      - { name: "Chaque déclencheur d'aide de la console (HTML et JS) ouvre une section de help.js — dérivé dans les deux sens (P11.4-e)", run: python3 .github/scripts/check_every_help_trigger_has_a_section.py }
+      - { name: "Chaque déclencheur d'aide de la console (HTML et JS) ouvre une section du registre d'aide — dérivé dans les deux sens, module du registre dérivé (P11.4-e)", run: python3 .github/scripts/check_every_help_trigger_has_a_section.py }
 
       # `P11.8-a` — LE LEXIQUE FR/EN COUVRE CE QUE CHAQUE MODULE AFFICHE. La console traduit par dictionnaire
       # (`i18n.js`, correspondance EXACTE d'un nœud texte ou d'un attribut affiché) : une chaîne sans clé

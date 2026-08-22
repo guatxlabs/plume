@@ -44,6 +44,11 @@ dans le sens d'un SOUS-compte des trous ; la garde mesure donc un plancher de la
 son plafond. Un texte posé par un nœud puis RETRAITÉ par une concaténation n'est pas suivi.
 Elle ne juge pas non plus si le MÉCANISME applique le lexique : c'est le harnais ESM
 (`web_esm_harnais.mjs`, témoin 10) qui rend un panneau sous `LANG='en'` et lit le texte.
+L'aide in-app porte ses deux langues dans ses propres objets `{fr, en}` : ses modules sont EXEMPTS,
+et le module du REGISTRE des sections n'est pas nommé ici mais DÉRIVÉ (celui de `web/` qui définit
+`const HELP = {`, dérivation de `check_every_help_trigger_has_a_section.py`) — s'il n'est pas
+retrouvé, la garde refuse de conclure plutôt que de le rendre sans le juger (témoin 13 du harnais
+ESM : chaque section rend un anglais distinct du français).
 
 LA GARDE REFUSE UNE RÉGRESSION, PAS UN ÉTAT
 -------------------------------------------
@@ -73,6 +78,9 @@ import html.parser
 import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from check_every_help_trigger_has_a_section import module_du_registre, sans_commentaires_js  # noqa: E402  (source unique)
 
 RACINE = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 WEB = os.path.join(RACINE, "web")
@@ -109,8 +117,21 @@ PLAFOND_DE_TROUS = {
 # Modules qui portent LEURS DEUX LANGUES dans leurs propres objets : `i18nWalk` n'y intervient pas,
 # le lexique n'a rien à y couvrir. La raison est écrite : une exemption sans raison est une trappe.
 EXEMPTS = {
-    "help.js": "registres {fr:{title,body}, en:{title,body}} choisis par LANG : bilingue par construction",
+    "help.js": "mécanique de l'aide : sommaire, glossaire, raccourcis {fr, en} et modales choisies par LANG : bilingue par construction",
 }
+# Le module du REGISTRE des sections d'aide (`{clé: {fr:{title,body}, en:{title,body}}}`) est DÉRIVÉ de sa
+# définition `const HELP = {` sous web/, pas nommé : il suit le registre s'il change de fichier.
+RAISON_DU_REGISTRE = "registre {fr:{title,body}, en:{title,body}} choisi par LANG : bilingue par construction"
+
+
+def module_du_registre_d_aide() -> str | None:
+    """Nom du module de `web/` qui définit `const HELP = {` (commentaires retirés) ; None si aucun ou plusieurs."""
+    corpus = {}
+    for f in sorted(os.listdir(WEB)):
+        if f.endswith(".js") and f != "sw.js":
+            with open(os.path.join(WEB, f), encoding="utf-8") as fh:
+                corpus[f] = sans_commentaires_js(fh.read())
+    return module_du_registre(corpus)
 # Une chaîne choisie par `LANG === 'en' ? … : …` est bilingue PAR CONSTRUCTION, dans n'importe quel
 # module : elle compte comme couverte sans passer par le lexique.
 RE_CHOIX_PAR_LANG = re.compile(r"\bLANG\b[^;]*\?")
@@ -490,7 +511,7 @@ def valider_instrument() -> list[str]:
 # ---------------------------------------------------------------------------------------------
 # Mesure sur l'arbre réel.
 # ---------------------------------------------------------------------------------------------
-def mesurer() -> tuple[dict[str, dict], set[str]]:
+def mesurer(exempts: dict[str, str]) -> tuple[dict[str, dict], set[str]]:
     with open(LEXIQUE, encoding="utf-8") as fh:
         cles = cles_du_lexique(fh.read())
     resultats: dict[str, dict] = {}
@@ -502,7 +523,7 @@ def mesurer() -> tuple[dict[str, dict], set[str]]:
             src = fh.read()
         if f == "index.html":
             st, dy, pc = extraire_index_html(src), [], []
-        elif f == "i18n.js" or f in EXEMPTS:
+        elif f == "i18n.js" or f in exempts:
             continue  # le lexique n'affiche rien ; un module exempt porte ses deux langues lui-même
         else:
             st, dy, pc = extraire_module(src)
@@ -535,7 +556,13 @@ def main(argv: list[str]) -> int:
         print("\nL'instrument ne reconnaît pas son propre corpus : la garde refuse de conclure.")
         return 2
 
-    resultats, cles = mesurer()
+    registre = module_du_registre_d_aide()
+    if registre is None:
+        print("::error::le module du registre d'aide (`const HELP = {` sous web/) n'est pas dérivable — aucun ou plusieurs porteurs : "
+              "la garde refuse de conclure (il serait rendu sans être jugé, ou jugé sans sa raison d'exemption).")
+        return 2
+    exempts = {**EXEMPTS, registre: RAISON_DU_REGISTRE}
+    resultats, cles = mesurer(exempts)
     population = sum(r["population"] for r in resultats.values())
     if len(cles) < MIN_CLES:
         print(f"::error::{len(cles)} clés lues dans le lexique, plancher {MIN_CLES} : la lecture de `web/i18n.js` est cassée.")

@@ -723,7 +723,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 //    cas / producteurs (rangées de runbook, playbook, détection) rendent TOUJOURS une classe partagée, même
 //    hors d'un contexte stylant ; la barre d'actions des alertes ne rend aucun bouton sans classe ; le bloc
 //    MFA d'index.html ne porte plus de style en ligne ; chaque bouton d'aide `data-help` d'index.html a son
-//    entrée dans help.js (dérivé dans les deux sens : la section Suppressions en avait une sans bouton).
+//    entrée au registre d'aide (dérivé dans les deux sens : la section Suppressions en avait une sans bouton).
 //    La garde dérivée `check_every_button_wears_shared_chrome.py` juge le SOURCE ; ici, c'est le RENDU.
 // ---------------------------------------------------------------------------------------------
 {
@@ -937,6 +937,56 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   }
   globalThis.fetch = undefined; document.querySelector = querySelectorOrig; S.alertGroupBy = "";
   console.log(`[voile] ${bilan.join(" ; ")}`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 13. CHAQUE SECTION D'AIDE REND LE MÊME TEXTE, CLÉ PAR CLÉ ET LANGUE PAR LANGUE (`P11.4-e`). Le registre
+//     des sections est un CONTENU, la mécanique qui l'ouvre est un code ; les déplacer l'un hors de l'autre
+//     ne doit changer aucun mot rendu. La preuve n'est pas le diff (un corps d'aide est un gabarit
+//     multiligne à la colonne zéro : un déplacement qui le réindenterait en changerait le texte) : c'est
+//     l'EMPREINTE du texte rendu par `openHelp(<clé>)` sous `LANG='fr'` puis sous `LANG='en'` (seconde
+//     instance du graphe, témoin 10), pour CHAQUE clé du registre. Les empreintes sont imprimées : deux
+//     exécutions, avant et après un déplacement, se comparent ligne à ligne. Témoins permanents : chaque clé
+//     rend exactement un panneau dans chaque langue, jamais vide, et l'anglais diffère du français (une
+//     section sans anglais rend le français sous `LANG='en'` : le même texte deux fois est ce trou, nommé).
+// ---------------------------------------------------------------------------------------------
+{
+  const { createHash } = await import("node:crypto");
+  const empreinte = (t) => createHash("sha256").update(t, "utf8").digest("hex").slice(0, 16);
+  const SUFFIXE = "?plume-lang=en";
+  const urlWeb = (f, suffixe = "") => pathToFileURL(path.join(WEB, f)).href + suffixe;
+  const { openHelp: ouvrirFR } = await import(urlWeb("help.js"));
+  localStorage.setItem("soc_lang", "en");
+  const { openHelp: ouvrirEN } = await import(urlWeb("help.js", SUFFIXE));
+  localStorage.removeItem("soc_lang");
+  // Clés : celles du registre lui-même (pas des déclencheurs : une section que rien n'ouvre est rendue aussi).
+  const { HELP } = await import(urlWeb("help_registry.js"));
+  const cles = Object.keys(HELP).sort();
+  const PLANCHER_CLES = 20;
+  exiger(cles.length >= PLANCHER_CLES, `(13) instrument : ${cles.length} clé(s) de registre lues, plancher ${PLANCHER_CLES} — la dérivation est cassée`);
+  // Le CONTENU d'un panneau est son titre (h3) et son corps (pre) ; le bouton de fermeture appartient à la
+  // mécanique et change de langue de lui-même — l'inclure rendrait « fr ≠ en » vrai même pour une section
+  // sans anglais (mesuré : le témoin restait vert avec l'anglais d'une section retiré).
+  const cueillir = (el, tag, acc) => { if (el.tagName === tag) acc.push(el); (el.children || []).forEach((c) => cueillir(c, tag, acc)); return acc; };
+  const rendu = (ouvrir, cle) => {
+    const avant = document.body.children.length; ouvrir(cle);
+    const ajoutes = document.body.children.slice(avant); ajoutes.forEach((n) => n.remove());
+    const contenu = ajoutes.flatMap((n) => [...cueillir(n, "H3", []), ...cueillir(n, "PRE", [])]);
+    return { n: ajoutes.length, texte: contenu.map(texte).join("\n") };
+  };
+  const lignes = [];
+  for (const cle of cles) {
+    const fr = rendu(ouvrirFR, cle), en = rendu(ouvrirEN, cle);
+    exiger(fr.n === 1 && en.n === 1, `(13) « ${cle} » rend ${fr.n} panneau(x) en français et ${en.n} en anglais, un seul attendu dans chaque langue`);
+    exiger(fr.texte.trim() && en.texte.trim(), `(13) « ${cle} » rend un panneau VIDE (fr ${fr.texte.length} car., en ${en.texte.length} car.)`);
+    exiger(!/aucune section|no help section/i.test(fr.texte + en.texte), `(13) « ${cle} » est une clé du registre et l'ouvreur rend l'aveu d'absence`);
+    lignes.push(`${cle} fr=${empreinte(fr.texte)} en=${empreinte(en.texte)}${fr.texte === en.texte ? " (identiques)" : ""}`);
+  }
+  const identiques = lignes.filter((l) => l.endsWith("(identiques)")).map((l) => l.split(" ")[0]);
+  // L'ouvreur rend le français quand une section n'a pas son anglais (`e.en ? e.en : e.fr`) : une clé
+  // identique dans les deux langues est une section à laquelle il manque une langue, et elle se voit ici.
+  exiger(identiques.length === 0, `(13) ${identiques.length} section(s) rendent le MÊME texte en français et en anglais : ${identiques.join(", ")}`);
+  console.log(`[aide] ${cles.length} sections rendues dans les deux langues — empreintes sha256 (16 hex) du texte rendu :\n` + lignes.map((l) => `    ${l}`).join("\n"));
 }
 
 if (echecs.length) {

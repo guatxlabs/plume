@@ -1236,6 +1236,12 @@ jobs:
           #   4. the FTS-compaction benchmark's own SQLCipher key, which encrypts only the scratch
           #      databases that benchmark builds for itself.
           #   5. the purge test's canary string, which that test asserts is ABSENT from the ledger.
+          #   7. the SQLCipher keys of the native-backup posture tests
+          #      (`daemon/src/tests/posture_de_sauvegarde_native.rs`): every key there follows the
+          #      convention `p8NN-cle-<word>` and opens only the throwaway databases that test BUILDS
+          #      itself under a temporary directory. The SHAPE is allowlisted, not the file: any other
+          #      string in that module is still scanned. Measured on 2026-08-22: four such keys tripped
+          #      `generic-api-key` and turned the public CI red.
           #   6. the shipped-unit digest table in `daemon/src/maj_corroboree.rs` — 88 lines of the exact
           #      shape `("plume-NAME.service", "<64 hex>"),`. These are sha256 digests of unit FILES that
           #      live in this same repository, not credentials. A value allowlist is impossible: each digest
@@ -1266,7 +1272,9 @@ jobs:
             #    NOT in the `paths` list below).
             '''MOTDEPASSE-ULTRA-SENSIBLE-9f3a''',
             # 6. shipped-unit digest table — shape only, see reason 6 above.
-            '''\("plume-[a-z0-9-]+\.(service|timer)", "[0-9a-f]{64}"\),'''
+            '''\("plume-[a-z0-9-]+\.(service|timer)", "[0-9a-f]{64}"\),''',
+            # 7. native-backup posture test keys — shape only, see reason 7 above.
+            '''"p8[0-9]{2}-cle-[a-z-]+"'''
           ]
           # PATH-scoped allowlist — TEST FILES ONLY (never a production path). Each holds documented, offline-generated
           # fixtures: the OIDC/SAML unit-test PEM keys live under `daemon/src/idp/` (a directory module) and in

@@ -1133,9 +1133,43 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[accès données] ${cartes.length} cartes, ${corps.length} corps disant l'absence de données avec la fenêtre, sélecteur à ${selecteur ? selecteur.children.length : 0} choix, ${puces.length} chemins surveillés`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 17. LES LOOKUPS RENDENT LEUR LIGNE ET LISENT LEUR CSV. Le bloc vit dans `lookups.js` (extrait d'`app.js` par
+//     déplacement pur) ; ses deux fonctions pures sont exercées sur le shim : la ligne d'un lookup porte son
+//     nom, son badge d'origine, sa clé, ses colonnes de sortie et un bouton de suppression habillé ; le
+//     collage CSV lit les guillemets (virgule interne, guillemet doublé) et refuse un collage sans données
+//     avec un message. Sans réseau, la liste ne lève pas et ne rend rien (le 403 d'un rôle sans droit suit
+//     le même chemin).
+// ---------------------------------------------------------------------------------------------
+{
+  const { lookupRow, parseCsvRows, loadLookups } = await import(pathToFileURL(path.join(WEB, "lookups.js")).href);
+  const ligne = lookupRow({ name: "geoip", key_field: "ip", cols: "country,asn", rows: 3, updated: 0, managed: 0 });
+  const enfants = (tag) => ligne.children.filter((c) => c.tagName === tag);
+  const nom = enfants("SPAN").find((c) => c.classList.contains("rulename"));
+  exiger(!!nom && nom.textContent.startsWith("geoip") && nom.children.some((c) => c.classList.contains("mgbadge")), `(17) la ligne ne porte pas le nom et le badge d'origine : « ${nom ? nom.textContent : "(sans nom)"} »`);
+  const cle = enfants("CODE")[0];
+  exiger(!!cle && cle.textContent === "clé=ip", `(17) la clé rend « ${cle ? cle.textContent : "(absente)"} »`);
+  const meta = enfants("SPAN").find((c) => c.classList.contains("rulemeta"));
+  exiger(!!meta && meta.textContent === "3 ligne(s) - country, asn" && meta.title.startsWith("colonnes de sortie"), `(17) les colonnes de sortie rendent « ${meta ? meta.textContent : "(absentes)"} »`);
+  const suppr = enfants("BUTTON")[0];
+  exiger(!!suppr && suppr.classList.contains("crud-btn") && suppr.title === "Supprimer", `(17) le bouton de suppression : ${suppr ? "classe « " + suppr.className + " », titre « " + suppr.title + " »" : "absent"}`);
+  const sansColonne = lookupRow({ name: "asn", key_field: "ip", cols: "", rows: 0 });
+  exiger(sansColonne.children.some((c) => c.textContent === "0 ligne(s) - aucune colonne de sortie"), "(17) un lookup sans colonne de sortie ne le dit pas");
+  const lu = parseCsvRows('ip,label\n"1.2.3.4","a, b"\n5.6.7.8,"dit ""x"""\n');
+  exiger(JSON.stringify(lu) === JSON.stringify([{ ip: "1.2.3.4", label: "a, b" }, { ip: "5.6.7.8", label: 'dit "x"' }]), `(17) lecture CSV : ${JSON.stringify(lu)}`);
+  let refus = null; try { parseCsvRows("ip,label\n"); } catch (e) { refus = e.message; }
+  exiger(typeof refus === "string" && refus.startsWith("CSV : une ligne d'en-têtes"), `(17) un CSV sans données est accepté ou refusé sans message : ${refus}`);
+  const hote = new Element("div");
+  const qsOrigine = document.querySelector;
+  document.querySelector = (sel) => (sel === "#lookup-list" ? hote : qsOrigine(sel));
+  let leve = null; try { await loadLookups(); } catch (e) { leve = e; } finally { document.querySelector = qsOrigine; }
+  exiger(leve === null && hote.children.length === 0, `(17) sans réseau, la liste ${leve ? "lève « " + leve.message + " »" : "rend " + hote.children.length + " nœud(s)"}`);
+  console.log(`[lookups] ligne rendue (nom, badge, clé, ${2} colonnes, bouton habillé), CSV lu (${lu.length} lignes, guillemets), refus nommé sans données, liste silencieuse sans réseau`);
+}
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés.`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données.`);

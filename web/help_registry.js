@@ -4,16 +4,122 @@
 // pesait près des deux tiers de help.js, mêlé à la mécanique — extrait tel quel, sans réindentation, car un
 // corps d'aide est un gabarit multiligne à la colonne zéro dont chaque espace est du texte rendu).
 //
-// Forme : { clé : {fr:{title,body}, en:{title,body}} | {fn} }. `body` est une chaîne multiligne rendue en
-// <pre> (textContent). Une entrée `{ fn }` renvoie vers une modale dédiée de la mécanique : la fonction lui
-// est PASSÉE par l'ouvreur au moment de l'appel, le registre ne la connaît pas par import — le sens de
-// dépendance reste mécanique -> registre.
+// Forme : { clé : {fr:{title,body}, en:{title,body}} }. `body` est une chaîne multiligne rendue en <pre>
+// (textContent). TOUT le contenu d'aide vit ici, y compris les deux panneaux ouverts hors du bouton « ? »
+// d'un en-tête — `freshness` (bouton de la carte Fraîcheur) et `syntax` (bouton « ? Aide » de la barre de
+// requête) — qui étaient des tableaux de lignes dans la mécanique (P11.8-b : la mécanique ne porte plus
+// aucun texte long, la garde du lexique la juge comme n'importe quel module ; seul cet objet est exempt,
+// par sa forme {fr, en}). Le sens de dépendance reste mécanique -> registre : ce module n'importe rien.
 //
 // 100 % statique, WEB-ONLY : aucun appel réseau, aucun daemon. Les sections sont lues par la garde de CI
 // `check_every_help_trigger_has_a_section.py` (clés de premier niveau de `const HELP`, localisé sous web/
-// par sa définition) et rendues clé par clé, langue par langue, par le harnais ESM (témoin 13).
+// par sa définition), exemptées de la garde du lexique sur cette même portée (`check_i18n_lexicon_covers_
+// displayed_strings.py`), et rendues clé par clé, langue par langue, par le harnais ESM (témoin 13).
 export const HELP = {
-  freshness: { fn: ({ openFreshnessHelp }) => openFreshnessHelp() },
+  freshness: {
+    fr: { title: `Aide — Fraîcheur des sources`, body:
+`ÉTAT = SANTÉ DE COLLECTE (pas l'activité), dérivé par le démon de la cadence DÉCLARÉE :
+  ● frais      donnée reçue il y a < 15 min
+  ● calme      collecte OK mais source peu active — PAS un retard
+  ● en retard  une sonde DÉCLARE une cadence continue pour cette source et le silence
+               dépasse 3 cycles — la même observation qu'Intégrations montre « muet » sur le
+               capteur ; l'alerte « Capteur muet » part deux cycles plus tard
+  ● muet       INGESTION EN PANNE : plus aucune donnée (toutes sources) depuis > 10 min
+
+Les alertes actives d'une source sont un COMPTE (cloche à côté du nom), jamais un état de collecte.
+
+CADENCE DÉCLARÉE (affichée à côté du nom) :
+  continu · N     une sonde attend un flux ou un battement régulier tous les N → peut être « en retard »
+  événementiel    une sonde l'observe mais son débit dépend de l'activité → jamais « en retard »
+  non déclarée    aucune sonde ne déclare rien : l'âge ne dit que l'activité → jamais « en retard »
+Le rythme observé sur 24 h (~1 donnée / N) est donné au survol : c'est une observation, pas une
+attente, et il ne juge rien.
+
+L'âge = temps depuis la dernière DONNÉE, pas depuis le dernier passage du collecteur (qui, lui,
+tourne sur un timer et vérifie ; il n'émet que s'il y a du nouveau). Une source peut être « calme »
+des heures sans problème : un IPS n'émet rien sans attaque, un collecteur périodique n'émet qu'au changement.` },
+    en: { title: `Help — Source freshness`, body:
+`STATE = COLLECTION HEALTH (not activity), derived by the daemon from the DECLARED cadence :
+  ● fresh   data received < 15 min ago
+  ● quiet   collecting OK but low-activity source — NOT a delay
+  ● late    a probe DECLARES a continuous cadence for this source and the silence exceeds
+            3 cycles — the same observation Integrations shows as a "mute" probe; the
+            "Mute probe" alert fires two cycles later
+  ● down    INGESTION BROKEN: no data (any source) for > 10 min
+
+Active alerts on a source are a COUNT (bell next to the name), never a collection state.
+
+DECLARED CADENCE (shown next to the name) :
+  continuous · N     a probe expects a regular flow or heartbeat every N  → can be "late"
+  event-driven       a probe observes it but its rate depends on activity → never "late"
+  undeclared         no probe declares anything: age only tells activity  → never "late"
+The 24 h observed rhythm (~1 datum / N) is shown on hover; it is an observation, not an
+expectation, and it judges nothing.
+
+Age = time since the last DATA, not since the collector last ran (which runs on a timer and
+checks; it only emits if there is something new). A source can be "quiet" for hours with no
+problem: an IPS emits nothing without an attack, a periodic collector emits on change.` },
+  },
+  syntax: {
+    fr: { title: `Aide — requêtes (GXQL)`, body:
+`PIPELINE :  search <filtres>  | stats …  | where …  | sort …  | head N  | table *
+
+FILTRES (search) :
+  field=val   field:val          égalité        source=ufw   dport=993   proto=TCP
+  field=val*                     joker          src_ip=203.0.113*
+  field=~regex                   regex          message=~"BLOCK"
+  field>v  field<v  >=  <=        comparaison    severity>=3   dport>1000
+  un_mot                         plein-texte sur le message
+
+TRANSFORMATIONS (après un |) :
+  | stats count [by f1,f2]       compte, groupé    by dport   by dir   by src_ip
+  | stats sum(f)|avg(f)|min(f)|max(f)|dc(f)
+  | timechart span=1h count [by f]   série temporelle (buckets)
+  | where f op v                 filtre APRÈS agrégat   where count>50
+  | rex <champ> "(?<nom>…)"       extrait des groupes nommés en COLONNES (regex)
+       ex: search source=mail | rex message "rip=(?<ip>[\\d.]+).*user=<(?<u>[^>]+)>" | table u, ip
+  | sort [-]f                    tri ( - = décroissant )   sort -count
+  | head N      | fields a,b      | table *
+
+CHAMPS groupables (qui/où/quoi/quand) :
+  src_ip dst_ip dport lport proto dir proc user action jail scope host source category severity ts
+
+EXEMPLES (corrélation) :
+  search source=ufw | stats count by src_ip | sort -count | head 10
+  search source=conntrack dir=inbound scope=external | stats count by dport
+  search src_ip=203.0.113.7 | sort -ts        (tout sur une IP : ufw + conntrack + bans…)
+
+Heure : stockée en UTC ; l’affichage suit le sélecteur 🕓 (Navigateur / Europe-Paris / UTC).` },
+    en: { title: `Help — queries (GXQL)`, body:
+`PIPELINE :  search <filters>  | stats …  | where …  | sort …  | head N  | table *
+
+FILTERS (search) :
+  field=val   field:val          equals         source=ufw   dport=993   proto=TCP
+  field=val*                     wildcard       src_ip=203.0.113*
+  field=~regex                   regex          message=~"BLOCK"
+  field>v  field<v  >=  <=        comparison     severity>=3   dport>1000
+  a_word                         full-text on the message
+
+TRANSFORMS (after a |) :
+  | stats count [by f1,f2]       count, grouped    by dport   by dir   by src_ip
+  | stats sum(f)|avg(f)|min(f)|max(f)|dc(f)
+  | timechart span=1h count [by f]   time series (buckets)
+  | where f op v                 filter AFTER aggregate   where count>50
+  | rex <field> "(?<name>…)"      extract named groups into COLUMNS (regex)
+       e.g. search source=mail | rex message "rip=(?<ip>[\\d.]+).*user=<(?<u>[^>]+)>" | table u, ip
+  | sort [-]f                    sort ( - = descending )   sort -count
+  | head N      | fields a,b      | table *
+
+GROUPABLE fields (who/where/what/when) :
+  src_ip dst_ip dport lport proto dir proc user action jail scope host source category severity ts
+
+EXAMPLES (correlation) :
+  search source=ufw | stats count by src_ip | sort -count | head 10
+  search source=conntrack dir=inbound scope=external | stats count by dport
+  search src_ip=203.0.113.7 | sort -ts        (everything on one IP: ufw + conntrack + bans…)
+
+Time: stored in UTC; display follows the time-zone selector (Browser / Europe-Paris / UTC).` },
+  },
   firewall: {
     fr: { title: `Firewall — pare-feu de l'hôte`, body:
 `Vue LIVE (indépendante de la fenêtre temporelle) de l'état du pare-feu.

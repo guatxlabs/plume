@@ -29,8 +29,10 @@ sans lettre (un symbole, un nombre) est hors population. Le texte d'un ÉCHANTIL
 (`<code>`, `<kbd>`, `<pre>`, `<samp>`) est montré tel quel dans les deux langues : hors population,
 comme un `<script>`. Une chaîne choisie par `LANG === 'en' ? … : …` ou posée dans un bloc
 `if (LANG === 'en') { … }` est bilingue PAR CONSTRUCTION (son pendant FR est ailleurs) : couverte
-sans passer par le lexique. Les attributs affichés sont `title`, `placeholder`, `aria-label` et
-`label` (groupe d'options) — ce sont ceux que `i18nWalk` traduit.
+sans passer par le lexique ; de même une valeur posée sous une clé `fr:` ou `en:` d'un objet (`{ fr: '…',
+en: '…' }`, choisi par LANG à l'endroit du rendu) : les deux langues sont côte à côte. Les attributs
+affichés sont `title`, `placeholder`, `aria-label` et `label` (groupe d'options) — ce sont ceux que
+`i18nWalk` traduit.
 
 CE QUE LA GARDE NE VOIT PAS — DIT FRANCHEMENT
 ---------------------------------------------
@@ -43,12 +45,22 @@ les porte pour que la phrase ANGLAISE se lise entière, la garde ne les exige pa
 dans le sens d'un SOUS-compte des trous ; la garde mesure donc un plancher de la dette, jamais
 son plafond. Un texte posé par un nœud puis RETRAITÉ par une concaténation n'est pas suivi.
 Elle ne juge pas non plus si le MÉCANISME applique le lexique : c'est le harnais ESM
-(`web_esm_harnais.mjs`, témoin 10) qui rend un panneau sous `LANG='en'` et lit le texte.
-L'aide in-app porte ses deux langues dans ses propres objets `{fr, en}` : ses modules sont EXEMPTS,
-et le module du REGISTRE des sections n'est pas nommé ici mais DÉRIVÉ (celui de `web/` qui définit
-`const HELP = {`, dérivation de `check_every_help_trigger_has_a_section.py`) — s'il n'est pas
-retrouvé, la garde refuse de conclure plutôt que de le rendre sans le juger (témoin 13 du harnais
-ESM : chaque section rend un anglais distinct du français).
+(`web_esm_harnais.mjs`, témoin 10) qui rend un panneau sous `LANG='en'` et lit le texte. Une paire
+`{ fr, en }` dont les deux valeurs seraient le même texte n'est pas jugée ici (le registre l'est par le
+témoin 13 du harnais : chaque section rend un anglais distinct du français).
+
+L'EXEMPTION EST UNE SURFACE, PAS UN MODULE
+-----------------------------------------
+Le REGISTRE des sections d'aide (`{clé: {fr:{title,body}, en:{title,body}}}`) est le seul texte de la
+console qui porte ses deux langues dans des objets imbriqués que le critère ci-dessus ne lit pas (la valeur
+est sous `title:`/`body:`, à l'intérieur de `fr:`/`en:`). Seule la PORTÉE de sa définition `const HELP = {
+… }` est exemptée : le module qui la porte est DÉRIVÉ (celui de `web/` qui la contient, commentaires
+retirés — dérivation et portée importées de `check_every_help_trigger_has_a_section.py`), et ce qui
+l'entoure dans ce module est jugé au plafond zéro comme tout autre. S'il n'est pas retrouvé, la garde
+refuse de conclure plutôt que de le rendre sans le juger. Avant (2026-08-22) : la mécanique de l'aide
+(`help.js`) était exemptée en ENTIER au motif que ses modales choisissaient leur langue par `LANG` — et
+cette exemption cachait tout ce que le module pouvait poser en dur : l'anglais d'un titre dupliqué hors
+lexique, un mot nu sans clé. Une exemption de module ne voit rien ; une exemption de surface voit le reste.
 
 LA GARDE REFUSE UNE RÉGRESSION, PAS UN ÉTAT
 -------------------------------------------
@@ -80,7 +92,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from check_every_help_trigger_has_a_section import module_du_registre, sans_commentaires_js  # noqa: E402  (source unique)
+from check_every_help_trigger_has_a_section import module_du_registre, portee_du_registre, sans_commentaires_js  # noqa: E402  (source unique)
 
 RACINE = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 WEB = os.path.join(RACINE, "web")
@@ -103,38 +115,50 @@ MIN_CLES = 150
 # Historique du cliquet : 2026-08-22, index.html 513 -> 496 (`P11.2-c`, `P11.7-a`), puis 496 -> 0 ; app.js 143 -> 0 ;
 # connectors.js 49 -> 0 ; detadv.js 37 -> 0 ; detection_admin.js 35 -> 0 ; freshness.js 31 -> 0 ; retention.js 30 -> 0 ;
 # admin_users.js 29 -> 0 ; sigmaimport.js 27 -> 0 ; sources.js 26 -> 0 ; idp.js 23 -> 0 ; suppressions.js inscrit à 0
-# (41 trous avant, module jusque-là rendu sans être jugé) ; les quinze modules sous 20 trous à 0 (`P11.8-a`).
+# (41 trous avant, module jusque-là rendu sans être jugé) ; les quinze modules sous 20 trous à 0 (`P11.8-a`) ;
+# help.js inscrit à 0 le 2026-08-22 (`P11.8-b`) : 32 trous sous l'exemption de module, dont 20 libellés d'interface
+# en ternaire `en ? … : …` que la garde ne lisait pas et 12 fragments de deux corps d'aide déplacés au registre.
 PLAFOND_DE_TROUS = {
     "admin_users.js": 0, "ai.js": 0, "alerting.js": 0, "alerts.js": 0, "app.js": 0, "attack.js": 0,
     "audit.js": 0, "cases.js": 0, "connectors.js": 0, "core.js": 0, "datamodels.js": 0, "destinations.js": 0,
     "detadv.js": 0, "detection_admin.js": 0, "fieldfilters.js": 0, "fleet.js": 0, "freshness.js": 0,
-    "idp.js": 0, "index.html": 0, "index_policies.js": 0, "keys.js": 0, "knowledge.js": 0,
+    "help.js": 0, "idp.js": 0, "index.html": 0, "index_policies.js": 0, "keys.js": 0, "knowledge.js": 0,
     "multitenant.js": 0, "prefs.js": 0, "processors.js": 0, "producer_ui.js": 0, "retention.js": 0,
     "risk.js": 0, "runbooks.js": 0, "savedqueries.js": 0, "sigmaimport.js": 0, "soql_complete.js": 0,
     "sources.js": 0, "state.js": 0, "suppressions.js": 0, "system.js": 0, "threatintel.js": 0, "viz.js": 0,
 }
 
-# Modules qui portent LEURS DEUX LANGUES dans leurs propres objets : `i18nWalk` n'y intervient pas,
-# le lexique n'a rien à y couvrir. La raison est écrite : une exemption sans raison est une trappe.
-EXEMPTS = {
-    "help.js": "mécanique de l'aide : sommaire, glossaire, raccourcis {fr, en} et modales choisies par LANG : bilingue par construction",
-}
-# Le module du REGISTRE des sections d'aide (`{clé: {fr:{title,body}, en:{title,body}}}`) est DÉRIVÉ de sa
-# définition `const HELP = {` sous web/, pas nommé : il suit le registre s'il change de fichier.
-RAISON_DU_REGISTRE = "registre {fr:{title,body}, en:{title,body}} choisi par LANG : bilingue par construction"
+# LA SEULE SURFACE EXEMPTE : la définition `const HELP = { … }` du registre des sections d'aide, DÉRIVÉE
+# (module et portée) de `check_every_help_trigger_has_a_section.py` — pas un nom de fichier, pas un module
+# entier. Le module qui la porte est jugé au plafond zéro sur tout ce qui l'entoure. La raison est écrite :
+# une exemption sans raison est une trappe.
+RAISON_DU_REGISTRE = "registre {fr:{title,body}, en:{title,body}} choisi par LANG : bilingue par construction ; exempt sur la portée de sa définition seulement"
 
 
-def module_du_registre_d_aide() -> str | None:
-    """Nom du module de `web/` qui définit `const HELP = {` (commentaires retirés) ; None si aucun ou plusieurs."""
+def registre_d_aide() -> tuple[str, str] | None:
+    """(nom du module de `web/` qui définit `const HELP = {`, son texte sans commentaires) ; None si aucun ou plusieurs."""
     corpus = {}
     for f in sorted(os.listdir(WEB)):
         if f.endswith(".js") and f != "sw.js":
             with open(os.path.join(WEB, f), encoding="utf-8") as fh:
                 corpus[f] = sans_commentaires_js(fh.read())
-    return module_du_registre(corpus)
+    nom = module_du_registre(corpus)
+    return (nom, corpus[nom]) if nom else None
+
+
+def hors_registre(texte_sans_commentaires: str) -> str:
+    """Le texte du module du registre SANS la portée de `const HELP = { … }` (remplacée par des blancs, lignes
+    conservées) : ce qui reste est jugé comme n'importe quel module."""
+    portee = portee_du_registre(texte_sans_commentaires)
+    if portee is None:
+        return texte_sans_commentaires
+    d, f = portee
+    return texte_sans_commentaires[:d] + re.sub(r"[^\n]", " ", texte_sans_commentaires[d:f]) + texte_sans_commentaires[f:]
 # Une chaîne choisie par `LANG === 'en' ? … : …` est bilingue PAR CONSTRUCTION, dans n'importe quel
 # module : elle compte comme couverte sans passer par le lexique.
 RE_CHOIX_PAR_LANG = re.compile(r"\bLANG\b[^;]*\?")
+# De même une valeur sous une clé `fr:` ou `en:` d'un objet : sa jumelle dans l'autre langue est à côté.
+RE_CLE_FR_EN = re.compile(r"[{,]\s*(fr|en)\s*:\s*$")
 
 SINKS_AFFECTATION = ("textContent", "innerText", "title", "placeholder", "ariaLabel")
 SINKS_CLE = ("label", "title", "placeholder", "okText", "hint", "text")
@@ -408,6 +432,11 @@ def extraire_module(src: str) -> tuple[list[str], list[str]]:
     """(statiques affichées, dynamiques affichées, bilingues par construction) d'un module JS."""
     statiques, dynamiques, par_construction = [], [], []
     for s, avant, apres, bloc_en in chaines_js(src):
+        if RE_CLE_FR_EN.search(avant.rstrip()):
+            # valeur d'une paire `{ fr: '…', en: '…' }` : bilingue par construction, HTML ou non
+            if _candidat(s.replace(SENTINELLE, "")):
+                par_construction.append(s)
+            continue
         if RE_HTML.search(s):
             st, dy = _textes_html(s)
             if bloc_en:
@@ -477,6 +506,13 @@ l.textContent = LANG === 'en' ? 'Bilingual' : 'Bilingue';
 if (LANG === 'en') { m.textContent = 'English only'; if (x) { n.innerHTML = '<b>English rich</b>'; } }
 o.textContent = 'Affiché quatorze';
 el.innerHTML = '<p>Affiché quinze <code>pas_un_libellé(x)</code> <kbd>Ctrl</kbd></p><optgroup label="Affiché seize"></optgroup>';
+const paires = [{ t: 'x', fr: 'Paire française <nom>', en: 'English pair <name>' }];
+"""
+# Un module qui porte le registre : sa définition est la seule surface exempte, ce qui l'entoure est jugé.
+CORPUS_TEMOIN_REGISTRE = """export const HELP = {
+  alpha: { fr: { title: 'Titre du registre <b>riche</b>', body: `Corps {fr}` }, en: { title: 'Registry title', body: `Body {en}` } },
+};
+x.textContent = 'Hors registre';
 """
 ATTENDUS_STATIQUES = {"Affiché un", "Affiché deux", "Affiché trois", "Affiché quatre", "Affiché cinq",
                       "Affiché six", "Affiché sept", "Affiché huit", "Affiché neuf", "Affiché dix",
@@ -484,16 +520,25 @@ ATTENDUS_STATIQUES = {"Affiché un", "Affiché deux", "Affiché trois", "Affich�
                       "Affiché seize"}
 ATTENDUS_DYNAMIQUES = 2
 INTERDITS = {"Pas affiché", "pas-une-chaine affichée", "valeur_technique", "pas une chaîne", "src_ip", "T1110", "…", "x",
-             "English only", "English rich", "pas_un_libellé(x)", "Ctrl"}
+             "English only", "English rich", "pas_un_libellé(x)", "Ctrl", "Paire française", "English pair"}
 
 
 def valider_instrument() -> list[str]:
     errs = []
     st, dy, pc = extraire_module(CORPUS_TEMOIN)
     sst = {s.strip() for s in st}
-    if {x.strip() for x in pc} != {"Bilingual", "Bilingue", "English only", "English rich"}:
-        errs.append(f"témoin : le choix par LANG (ternaire ou bloc `if (LANG === 'en')`) n'est pas reconnu comme "
-                    f"bilingue par construction : {pc}")
+    if {x.strip() for x in pc} != {"Bilingual", "Bilingue", "English only", "English rich", "Paire française <nom>", "English pair <name>"}:
+        errs.append(f"témoin : le choix par LANG (ternaire ou bloc `if (LANG === 'en')`) ou la paire `{{fr, en}}` n'est pas "
+                    f"reconnu comme bilingue par construction : {pc}")
+    # La surface exempte est la définition du registre, pas le module : hors d'elle, une chaîne est jugée ;
+    # et c'est bien l'exemption qui retire le titre du registre, pas une cécité de l'extracteur.
+    vus_nus = {x.strip() for x in extraire_module(CORPUS_TEMOIN_REGISTRE)[0]}
+    vus_hors = {x.strip() for x in extraire_module(hors_registre(CORPUS_TEMOIN_REGISTRE))[0]}
+    if "Registry title" not in vus_nus:
+        errs.append(f"témoin : le titre d'une section du registre n'est pas vu par l'extracteur à nu ({sorted(vus_nus)}) — "
+                    f"l'exemption de surface ne prouverait rien")
+    if vus_hors != {"Hors registre"}:
+        errs.append(f"témoin : hors de la portée du registre, la garde doit voir « Hors registre » et rien du registre : {sorted(vus_hors)}")
     manquants = ATTENDUS_STATIQUES - sst
     if manquants:
         errs.append(f"témoin : chaînes affichées NON reconnues : {sorted(manquants)}")
@@ -511,7 +556,8 @@ def valider_instrument() -> list[str]:
 # ---------------------------------------------------------------------------------------------
 # Mesure sur l'arbre réel.
 # ---------------------------------------------------------------------------------------------
-def mesurer(exempts: dict[str, str]) -> tuple[dict[str, dict], set[str]]:
+def mesurer(registre: tuple[str, str] | None) -> tuple[dict[str, dict], set[str]]:
+    """`registre` = (module, texte sans commentaires) : ce module est jugé HORS de la portée de `const HELP`."""
     with open(LEXIQUE, encoding="utf-8") as fh:
         cles = cles_du_lexique(fh.read())
     resultats: dict[str, dict] = {}
@@ -523,8 +569,10 @@ def mesurer(exempts: dict[str, str]) -> tuple[dict[str, dict], set[str]]:
             src = fh.read()
         if f == "index.html":
             st, dy, pc = extraire_index_html(src), [], []
-        elif f == "i18n.js" or f in exempts:
-            continue  # le lexique n'affiche rien ; un module exempt porte ses deux langues lui-même
+        elif f == "i18n.js":
+            continue  # le lexique n'affiche rien
+        elif registre and f == registre[0]:
+            st, dy, pc = extraire_module(hors_registre(registre[1]))  # la surface du registre est exempte, le reste jugé
         else:
             st, dy, pc = extraire_module(src)
         uniques = sorted({s.strip() for s in st})
@@ -556,13 +604,14 @@ def main(argv: list[str]) -> int:
         print("\nL'instrument ne reconnaît pas son propre corpus : la garde refuse de conclure.")
         return 2
 
-    registre = module_du_registre_d_aide()
+    registre = registre_d_aide()
     if registre is None:
         print("::error::le module du registre d'aide (`const HELP = {` sous web/) n'est pas dérivable — aucun ou plusieurs porteurs : "
               "la garde refuse de conclure (il serait rendu sans être jugé, ou jugé sans sa raison d'exemption).")
         return 2
-    exempts = {**EXEMPTS, registre: RAISON_DU_REGISTRE}
-    resultats, cles = mesurer(exempts)
+    # Le module du registre est jugé au plafond zéro hors de la portée exempte (entrée dérivée, pas nommée).
+    plafonds = {**PLAFOND_DE_TROUS, registre[0]: 0}
+    resultats, cles = mesurer(registre)
     population = sum(r["population"] for r in resultats.values())
     if len(cles) < MIN_CLES:
         print(f"::error::{len(cles)} clés lues dans le lexique, plancher {MIN_CLES} : la lecture de `web/i18n.js` est cassée.")
@@ -591,12 +640,12 @@ def main(argv: list[str]) -> int:
         print(f"{m:<{largeur}}  {r['population']:>10}  {r['couvertes']:>9}  {len(r['trous']):>5}  {r['dynamiques']:>10}  {r['taux']:>5.1f} %")
     couvertes = sum(r["couvertes"] for r in resultats.values())
     print(f"\n{population} chaînes statiques affichées, {couvertes} couvertes ({100.0 * couvertes / population:.1f} %), "
-          f"{len(cles)} clés au lexique.")
+          f"{len(cles)} clés au lexique. Surface exempte : la définition `const HELP` de {registre[0]} — {RAISON_DU_REGISTRE}.")
     if mesure:
         return 0
 
     regressions = []
-    for m, plafond in sorted(PLAFOND_DE_TROUS.items()):
+    for m, plafond in sorted(plafonds.items()):
         r = resultats.get(m)
         if r is None:
             regressions.append(f"{m} : plafond écrit mais module absent — retirez l'entrée ou restaurez le module.")
@@ -613,7 +662,7 @@ def main(argv: list[str]) -> int:
             print(f"::error::{e}")
         print(f"\n{len(regressions)} module(s) au-dessus de leur plafond de trous du lexique.")
         return 1
-    print(f"Aucun module au-dessus de son plafond de trous ({len(PLAFOND_DE_TROUS)} plafonds tenus).")
+    print(f"Aucun module au-dessus de son plafond de trous ({len(plafonds)} plafonds tenus).")
     return 0
 
 

@@ -784,6 +784,11 @@ const I18N_EN = {
   "import : échec": "import: failure",
   // P11.4-b — bouton d'aide de la section Suppressions (index.html)
   "Aide : Suppressions & whitelists": "Help: Suppressions & whitelists",
+  // P11.8-b — help.js, mécanique du guide et des modales d'aide (le contenu des sections vit au registre, en {fr, en})
+  "Aide indisponible": "Help unavailable", "Sommaire du guide": "Guide contents", "Espaces": "Spaces", "Espaces & vues": "Spaces & views",
+  "Glossaire": "Glossary", "Raccourcis": "Shortcuts", "GXQL — Référence": "GXQL — Reference", "Langage de recherche. Exemples :": "Search language. Examples:",
+  "Ouvrir la référence GXQL complète": "Open the full GXQL reference", "Filtrer les termes…": "Filter terms…",
+  "Guide intégré de Plume. Cliquez un sujet pour ouvrir son aide, ou utilisez le “?” dans l'en-tête de chaque vue. Tout ici est statique — aucune requête n'est exécutée.": "In-app guide to Plume. Click a topic to open its help, or use the “?” on any view header. Everything below is static — no query is run.",
 };
 // Attributs AFFICHÉS que le dictionnaire traduit : infobulle, texte d'attente, nom accessible, et le libellé
 // d'un groupe d'options (`<optgroup label>`). Un attribut `value` n'est jamais touché (c'est une donnée).

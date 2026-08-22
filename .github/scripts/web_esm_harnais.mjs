@@ -965,8 +965,8 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const PLANCHER_CLES = 20;
   exiger(cles.length >= PLANCHER_CLES, `(13) instrument : ${cles.length} clé(s) de registre lues, plancher ${PLANCHER_CLES} — la dérivation est cassée`);
   // Le CONTENU d'un panneau est son titre (h3) et son corps (pre) ; le bouton de fermeture appartient à la
-  // mécanique et change de langue de lui-même — l'inclure rendrait « fr ≠ en » vrai même pour une section
-  // sans anglais (mesuré : le témoin restait vert avec l'anglais d'une section retiré).
+  // mécanique et se traduit par le lexique (témoin 14) — l'inclure rendrait « fr ≠ en » vrai même pour une
+  // section sans anglais (mesuré : le témoin restait vert avec l'anglais d'une section retiré).
   const cueillir = (el, tag, acc) => { if (el.tagName === tag) acc.push(el); (el.children || []).forEach((c) => cueillir(c, tag, acc)); return acc; };
   const rendu = (ouvrir, cle) => {
     const avant = document.body.children.length; ouvrir(cle);
@@ -989,9 +989,77 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[aide] ${cles.length} sections rendues dans les deux langues — empreintes sha256 (16 hex) du texte rendu :\n` + lignes.map((l) => `    ${l}`).join("\n"));
 }
 
+// ---------------------------------------------------------------------------------------------
+// 14. LES LIBELLÉS D'INTERFACE DE L'AIDE PASSENT PAR LE LEXIQUE (`P11.8-b`). La mécanique de l'aide était
+//     EXEMPTE de la garde du lexique en entier ; rien ne disait donc ce que ses boutons et titres rendaient
+//     sous `LANG='en'`. Ici, chaque ouvreur de modale (section du registre, `openHelpModal`,
+//     `openFreshnessHelp`, aveu sur clé sans section) est rendu sous `LANG='fr'` puis sous `LANG='en'`
+//     (seconde instance du graphe, témoin 10), et le nœud ajouté est PARCOURU comme l'observateur de
+//     `app.js` le fait : le bouton de fermeture doit dire « Fermer » puis « Close ». Même preuve pour le
+//     guide : titres de sections, intro, nom accessible du sommaire. Instrument : la même modale sous
+//     `LANG='en'` SANS la marche rend encore « Fermer » — la traduction vient du lexique appliqué, pas
+//     d'un mot anglais écrit dans le module (un tel mot passerait le témoin sans lexique). Témoin
+//     inverse : sous `LANG='fr'`, aucun mot anglais. Le texte d'attente du filtre du glossaire est posé
+//     par propriété (`.placeholder =`), que le shim ne reflète pas en attribut : sa valeur française est
+//     lue ici, sa traduction par attribut est celle que le témoin 10 prouve sur un nœud porteur.
+// ---------------------------------------------------------------------------------------------
+{
+  const SUFFIXE = "?plume-lang=en";
+  const urlWeb = (f, suffixe = "") => pathToFileURL(path.join(WEB, f)).href + suffixe;
+  const aideFR = await import(urlWeb("help.js"));
+  localStorage.setItem("soc_lang", "en");
+  const aideEN = await import(urlWeb("help.js", SUFFIXE));
+  const { i18nWalk: walkEN } = await import(urlWeb("i18n.js", SUFFIXE));
+  localStorage.removeItem("soc_lang");
+  const cueillir = (el, tag, acc) => { if (el.tagName === tag) acc.push(el); (el.children || []).forEach((c) => cueillir(c, tag, acc)); return acc; };
+  // Rend une modale, la retire du corps, rend le texte de ses boutons de fermeture (après la marche si demandée).
+  const fermetures = (ouvrir, marche) => {
+    const avant = document.body.children.length; ouvrir();
+    const ajoutes = document.body.children.slice(avant); ajoutes.forEach((n) => n.remove());
+    if (marche) ajoutes.forEach(marche);
+    return ajoutes.flatMap((n) => cueillir(n, "BUTTON", [])).filter((b) => b.classList.contains("m-cancel")).map(texte);
+  };
+  const ouvreurs = [
+    ["openHelp('firewall')", () => aideFR.openHelp("firewall"), () => aideEN.openHelp("firewall")],
+    ["openHelpModal", aideFR.openHelpModal, aideEN.openHelpModal],
+    ["openFreshnessHelp", aideFR.openFreshnessHelp, aideEN.openFreshnessHelp],
+    ["openHelp (clé sans section)", () => aideFR.openHelp("cle-sans-section-temoin"), () => aideEN.openHelp("cle-sans-section-temoin")],
+  ];
+  for (const [nom, fr, en] of ouvreurs) {
+    const bFR = fermetures(fr), bEN = fermetures(en, walkEN);
+    exiger(bFR.length === 1 && bFR[0] === "Fermer", `(14) ${nom} sous LANG='fr' : bouton de fermeture « ${bFR.join(" | ")} » au lieu de « Fermer »`);
+    exiger(bEN.length === 1 && bEN[0] === "Close", `(14) ${nom} sous LANG='en' : bouton de fermeture « ${bEN.join(" | ")} » au lieu de « Close » — la clé « Fermer » manque au lexique, ou le bouton n'est pas écrit avec elle`);
+  }
+  const sansMarche = fermetures(aideEN.openHelpModal);
+  exiger(sansMarche[0] === "Fermer", `(14) instrument : sous LANG='en' sans la marche du lexique, le bouton rend « ${sansMarche[0]} » — un mot anglais écrit dans le module passerait le témoin sans lexique`);
+  // Le guide : rendu dans un hôte fourni sous `#help-body` (core.js résout `$` à l'appel), puis parcouru.
+  const qsOrigine = document.querySelector;
+  const guide = (rendre, marche) => {
+    const hote = new Element("div");
+    document.querySelector = (sel) => (sel === "#help-body" ? hote : qsOrigine(sel));
+    try { rendre(); } finally { document.querySelector = qsOrigine; }
+    if (marche) marche(hote);
+    const toc = hote.children.find((c) => c.tagName === "NAV");
+    const filtre = cueillir(hote, "INPUT", []).find((i) => i.classList.contains("hg-filter"));
+    return { texte: texte(hote), sommaire: toc ? toc.getAttribute("aria-label") : null, filtre: filtre ? filtre.placeholder : null };
+  };
+  const gFR = guide(aideFR.renderHelpGuide), gEN = guide(aideEN.renderHelpGuide, walkEN);
+  for (const mot of ["Espaces & vues", "GXQL — Référence", "Langage de recherche. Exemples :", "Ouvrir la référence GXQL complète", "Glossaire", "Raccourcis", "Guide intégré de Plume"]) {
+    exiger(gFR.texte.includes(mot), `(14) guide sous LANG='fr' : « ${mot} » absent`);
+    exiger(!gEN.texte.includes(mot), `(14) guide sous LANG='en' : « ${mot} » est resté en français — la clé manque au lexique`);
+  }
+  for (const mot of ["Spaces & views", "GXQL — Reference", "Search language. Examples:", "Open the full GXQL reference", "Glossary", "Shortcuts", "In-app guide to Plume"]) {
+    exiger(gEN.texte.includes(mot), `(14) guide sous LANG='en' : « ${mot} » absent`);
+    exiger(!gFR.texte.includes(mot), `(14) guide sous LANG='fr' : un mot anglais « ${mot} » est rendu`);
+  }
+  exiger(gFR.sommaire === "Sommaire du guide" && gEN.sommaire === "Guide contents", `(14) nom accessible du sommaire : fr « ${gFR.sommaire} », en « ${gEN.sommaire} »`);
+  exiger(gFR.filtre === "Filtrer les termes…", `(14) texte d'attente du filtre du glossaire sous LANG='fr' : « ${gFR.filtre} »`);
+  console.log(`[aide] ${ouvreurs.length} ouvreurs de modale : bouton « Fermer » sous fr, « Close » sous en après la marche du lexique ; guide : ${7 * 2} libellés rendus dans la langue de l'instance, nom accessible du sommaire traduit`);
+}
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme.`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module.`);

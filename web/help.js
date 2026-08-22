@@ -1,12 +1,20 @@
 // help.js — AIDE IN-APP (documentation contextuelle) extraite de app.js (audit H1 : 1re découpe, triviale).
 // 100% statique, WEB-ONLY : aucun appel réseau, aucun daemon. Contient la MÉCANIQUE de l'aide : l'ouvreur
-// `openHelp` (registre des sections importé de help_registry.js — le contenu vit là, P11.4-e), les modales
-// (openHelpBox / openHelpModal / openFreshnessHelp), le sommaire et la page « Aide » (HELP_INDEX / GLOSSARY /
-// HELP_SHORTCUTS, renderHelpGuide) et le handler délégué .vhelp. Code relocalisé VERBATIM depuis app.js ->
-// comportement identique. app.js importe renderHelpGuide + openHelpModal + openFreshnessHelp (le câblage
-// #qhelp / #fresh-help et la route 'help' restent dans app.js) ; openHelp est exporté pour le harnais ESM,
-// qui vérifie qu'une clé sans section rend un aveu et non le silence, et que chaque section rend le même
-// texte que le registre, dans les deux langues.
+// `openHelp` (registre des sections importé de help_registry.js — TOUT le contenu vit là, P11.4-e puis
+// P11.8-b), l'unique chrome de modale (openHelpBox), le sommaire et la page « Aide » (HELP_INDEX / GLOSSARY /
+// HELP_SHORTCUTS, renderHelpGuide) et le handler délégué .vhelp. app.js importe renderHelpGuide +
+// openHelpModal + openFreshnessHelp (le câblage #qhelp / #fresh-help et la route 'help' restent dans app.js) ;
+// ces deux ouvreurs ne sont plus que `openHelp('syntax')` et `openHelp('freshness')`. openHelp est exporté
+// pour le harnais ESM, qui vérifie qu'une clé sans section rend un aveu et non le silence, et que chaque
+// section rend le même texte que le registre, dans les deux langues.
+//
+// LANGUE. Ce module ne porte plus de mot anglais hors des objets {fr, en} (sommaire, glossaire, raccourcis),
+// choisis par LANG comme le registre. Tout LIBELLÉ D'INTERFACE (bouton de fermeture, titres du guide,
+// intro, filtre, nom accessible) est écrit en français, clé du lexique `i18n.js`, et traduit par
+// `i18nWalk` quand le nœud est attaché — l'idiome de toute la console (P11.8-a). La garde de CI du
+// lexique juge donc ce module au plafond zéro comme les autres ; seul le registre en est exempt, sur la
+// portée de sa définition (P11.8-b). Avant : une exemption du module entier, et deux modales qui
+// dupliquaient le chrome de openHelpBox avec leur corps en tableaux de lignes.
 import { $, LANG, ic } from './core.js';
 import { uiIsAdmin, multiTenantMode } from './multitenant.js';
 import { HELP } from './help_registry.js';
@@ -17,7 +25,7 @@ function openHelpBox(title, body) {
   const h = document.createElement('h3'); h.textContent = title;
   const pre = document.createElement('pre'); pre.className = 'helpref'; pre.textContent = body;   // textContent -> anti-XSS
   const act = document.createElement('div'); act.className = 'modal-act';
-  const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'm-cancel'; btn.textContent = LANG === 'en' ? 'Close' : 'Fermer';
+  const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'm-cancel'; btn.textContent = 'Fermer';
   act.appendChild(btn); box.append(h, pre, act); ov.appendChild(box); document.body.appendChild(ov);
   const close = () => { document.removeEventListener('keydown', onKey); ov.remove(); };
   const onKey = e => { if (e.key === 'Escape') close(); };
@@ -34,8 +42,7 @@ function aveuSansSection(key) {
 }
 function openHelp(key) {
   const e = HELP[key];
-  if (!e) { openHelpBox(LANG === 'en' ? 'Help unavailable' : 'Aide indisponible', aveuSansSection(String(key))); return; }
-  if (e.fn) { e.fn({ openFreshnessHelp }); return; }   // modale dédiée : l'ouvreur est passé, le registre ne l'importe pas
+  if (!e) { openHelpBox('Aide indisponible', aveuSansSection(String(key))); return; }
   const d = (LANG === 'en' && e.en) ? e.en : e.fr;
   openHelpBox(d.title, d.body);
 }
@@ -160,8 +167,8 @@ function renderHelpGuide() {
   const en = LANG === 'en';
   host.replaceChildren();
   // C9 — mini-sommaire COLLANT (Espaces · GXQL · Glossaire · Raccourcis) : ancres internes, aucun réseau.
-  const toc = document.createElement('nav'); toc.className = 'hg-toc'; toc.setAttribute('aria-label', en ? 'Guide contents' : 'Sommaire du guide');
-  [['hg-espaces', en ? 'Spaces' : 'Espaces'], ['hg-soql', 'GXQL'], ['hg-gloss', en ? 'Glossary' : 'Glossaire'], ['hg-raccourcis', en ? 'Shortcuts' : 'Raccourcis']]
+  const toc = document.createElement('nav'); toc.className = 'hg-toc'; toc.setAttribute('aria-label', 'Sommaire du guide');
+  [['hg-espaces', 'Espaces'], ['hg-soql', 'GXQL'], ['hg-gloss', 'Glossaire'], ['hg-raccourcis', 'Raccourcis']]
     .forEach(([id, lbl]) => {
       const a = document.createElement('button'); a.type = 'button'; a.className = 'hg-toclink'; a.textContent = lbl;
       a.onclick = () => { const t = document.getElementById(id); if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
@@ -169,12 +176,10 @@ function renderHelpGuide() {
     });
   host.appendChild(toc);
   const intro = document.createElement('p'); intro.className = 'muted'; intro.style.cssText = 'margin:0 0 16px;font-size:13px;line-height:1.5';
-  intro.textContent = en
-    ? "In-app guide to Plume. Click a topic to open its help, or use the “?” on any view header. Everything below is static — no query is run."
-    : "Guide intégré de Plume. Cliquez un sujet pour ouvrir son aide, ou utilisez le “?” dans l'en-tête de chaque vue. Tout ici est statique — aucune requête n'est exécutée.";
+  intro.textContent = "Guide intégré de Plume. Cliquez un sujet pour ouvrir son aide, ou utilisez le “?” dans l'en-tête de chaque vue. Tout ici est statique — aucune requête n'est exécutée.";
   host.appendChild(intro);
   // ESPACES — sommaire groupé par espace, avec l'ICÔNE de la sidebar (respecte admin/mtOnly, comme la nav)
-  const idxT = document.createElement('div'); idxT.className = 'fldname hg-anchor'; idxT.id = 'hg-espaces'; idxT.textContent = en ? 'Spaces & views' : 'Espaces & vues';
+  const idxT = document.createElement('div'); idxT.className = 'fldname hg-anchor'; idxT.id = 'hg-espaces'; idxT.textContent = 'Espaces & vues';
   host.appendChild(idxT);
   const idx = document.createElement('div'); idx.className = 'hg-idx hg-sec';
   HELP_INDEX.forEach(sp => {
@@ -196,10 +201,10 @@ function renderHelpGuide() {
   host.appendChild(idx);
   // GXQL — bloc COLLAPSIBLE « Référence » (exemples réels + accès à la référence complète)
   const ref = document.createElement('details'); ref.className = 'hg-ref hg-anchor hg-sec'; ref.id = 'hg-soql'; ref.open = true;
-  const sum = document.createElement('summary'); sum.className = 'hg-refsum'; sum.textContent = en ? 'GXQL — Reference' : 'GXQL — Référence';
+  const sum = document.createElement('summary'); sum.className = 'hg-refsum'; sum.textContent = 'GXQL — Référence';
   ref.appendChild(sum);
   const sP = document.createElement('p'); sP.className = 'muted'; sP.style.cssText = 'margin:8px 0 8px;font-size:13px;line-height:1.5';
-  sP.textContent = en ? 'Search language. Examples:' : 'Langage de recherche. Exemples :'; ref.appendChild(sP);
+  sP.textContent = 'Langage de recherche. Exemples :'; ref.appendChild(sP);
   const ex = document.createElement('pre'); ex.className = 'helpref'; ex.style.margin = '0 0 8px';
   ex.textContent = [
     'search source=ufw | stats count by src_ip | sort -count | head 10',
@@ -207,13 +212,13 @@ function renderHelpGuide() {
     'search source=web | lookup geoip src_ip OUTPUT country',
   ].join('\n'); ref.appendChild(ex);
   const sBtn = document.createElement('button'); sBtn.type = 'button'; sBtn.className = 'hg-link'; sBtn.style.marginBottom = '4px';
-  sBtn.textContent = en ? 'Open the full GXQL reference' : 'Ouvrir la référence GXQL complète';
+  sBtn.textContent = 'Ouvrir la référence GXQL complète';
   sBtn.onclick = () => openHelp('soql'); ref.appendChild(sBtn);
   host.appendChild(ref);
   // GLOSSAIRE filtrable
-  const gT = document.createElement('div'); gT.className = 'fldname hg-anchor'; gT.id = 'hg-gloss'; gT.style.marginTop = '18px'; gT.textContent = en ? 'Glossary' : 'Glossaire'; host.appendChild(gT);
+  const gT = document.createElement('div'); gT.className = 'fldname hg-anchor'; gT.id = 'hg-gloss'; gT.style.marginTop = '18px'; gT.textContent = 'Glossaire'; host.appendChild(gT);
   const filter = document.createElement('input'); filter.className = 'hg-filter'; filter.type = 'search';
-  filter.placeholder = en ? 'Filter terms…' : 'Filtrer les termes…'; host.appendChild(filter);
+  filter.placeholder = 'Filtrer les termes…'; host.appendChild(filter);
   const gl = document.createElement('div'); gl.className = 'hg-gloss';
   GLOSSARY.forEach(g => {
     const row = document.createElement('div'); row.className = 'hg-term';
@@ -227,7 +232,7 @@ function renderHelpGuide() {
     gl.querySelectorAll('.hg-term').forEach(r => { r.hidden = !!q && !r.textContent.toLowerCase().includes(q); });
   });
   // RACCOURCIS — interactions réelles (statique, même chrome que le glossaire)
-  const rT = document.createElement('div'); rT.className = 'fldname hg-anchor'; rT.id = 'hg-raccourcis'; rT.style.marginTop = '18px'; rT.textContent = en ? 'Shortcuts' : 'Raccourcis'; host.appendChild(rT);
+  const rT = document.createElement('div'); rT.className = 'fldname hg-anchor'; rT.id = 'hg-raccourcis'; rT.style.marginTop = '18px'; rT.textContent = 'Raccourcis'; host.appendChild(rT);
   const rl = document.createElement('div'); rl.className = 'hg-gloss';
   HELP_SHORTCUTS.forEach(s => {
     const row = document.createElement('div'); row.className = 'hg-term';
@@ -238,141 +243,9 @@ function renderHelpGuide() {
   host.appendChild(rl);
 }
 
-// aide GXQL (modal) — référence des requêtes directement dans l'UI
-function openHelpModal() {
-  const ov = document.createElement('div'); ov.className = 'modal-ov';
-  const box = document.createElement('div'); box.className = 'modal helpmodal';
-  const en = LANG === 'en';
-  const h = document.createElement('h3'); h.textContent = en ? 'Help — queries (GXQL)' : 'Aide — requêtes (GXQL)';
-  const pre = document.createElement('pre'); pre.className = 'helpref';
-  pre.textContent = (en ? [
-    'PIPELINE :  search <filters>  | stats …  | where …  | sort …  | head N  | table *',
-    '',
-    'FILTERS (search) :',
-    '  field=val   field:val          equals         source=ufw   dport=993   proto=TCP',
-    '  field=val*                     wildcard       src_ip=203.0.113*',
-    '  field=~regex                   regex          message=~"BLOCK"',
-    '  field>v  field<v  >=  <=        comparison     severity>=3   dport>1000',
-    '  a_word                         full-text on the message',
-    '',
-    'TRANSFORMS (after a |) :',
-    '  | stats count [by f1,f2]       count, grouped    by dport   by dir   by src_ip',
-    '  | stats sum(f)|avg(f)|min(f)|max(f)|dc(f)',
-    '  | timechart span=1h count [by f]   time series (buckets)',
-    '  | where f op v                 filter AFTER aggregate   where count>50',
-    '  | rex <field> "(?<name>…)"      extract named groups into COLUMNS (regex)',
-    '       e.g. search source=mail | rex message "rip=(?<ip>[\\d.]+).*user=<(?<u>[^>]+)>" | table u, ip',
-    '  | sort [-]f                    sort ( - = descending )   sort -count',
-    '  | head N      | fields a,b      | table *',
-    '',
-    'GROUPABLE fields (who/where/what/when) :',
-    '  src_ip dst_ip dport lport proto dir proc user action jail scope host source category severity ts',
-    '',
-    'EXAMPLES (correlation) :',
-    '  search source=ufw | stats count by src_ip | sort -count | head 10',
-    '  search source=conntrack dir=inbound scope=external | stats count by dport',
-    '  search src_ip=203.0.113.7 | sort -ts        (everything on one IP: ufw + conntrack + bans…)',
-    '',
-    'Time: stored in UTC; display follows the time-zone selector (Browser / Europe-Paris / UTC).',
-  ] : [
-    'PIPELINE :  search <filtres>  | stats …  | where …  | sort …  | head N  | table *',
-    '',
-    'FILTRES (search) :',
-    '  field=val   field:val          égalité        source=ufw   dport=993   proto=TCP',
-    '  field=val*                     joker          src_ip=203.0.113*',
-    '  field=~regex                   regex          message=~"BLOCK"',
-    '  field>v  field<v  >=  <=        comparaison    severity>=3   dport>1000',
-    '  un_mot                         plein-texte sur le message',
-    '',
-    'TRANSFORMATIONS (après un |) :',
-    '  | stats count [by f1,f2]       compte, groupé    by dport   by dir   by src_ip',
-    '  | stats sum(f)|avg(f)|min(f)|max(f)|dc(f)',
-    '  | timechart span=1h count [by f]   série temporelle (buckets)',
-    '  | where f op v                 filtre APRÈS agrégat   where count>50',
-    '  | rex <champ> "(?<nom>…)"       extrait des groupes nommés en COLONNES (regex)',
-    '       ex: search source=mail | rex message "rip=(?<ip>[\\d.]+).*user=<(?<u>[^>]+)>" | table u, ip',
-    '  | sort [-]f                    tri ( - = décroissant )   sort -count',
-    '  | head N      | fields a,b      | table *',
-    '',
-    'CHAMPS groupables (qui/où/quoi/quand) :',
-    '  src_ip dst_ip dport lport proto dir proc user action jail scope host source category severity ts',
-    '',
-    'EXEMPLES (corrélation) :',
-    '  search source=ufw | stats count by src_ip | sort -count | head 10',
-    '  search source=conntrack dir=inbound scope=external | stats count by dport',
-    '  search src_ip=203.0.113.7 | sort -ts        (tout sur une IP : ufw + conntrack + bans…)',
-    '',
-    'Heure : stockée en UTC ; l’affichage suit le sélecteur 🕓 (Navigateur / Europe-Paris / UTC).',
-  ]).join('\n');
-  const act = document.createElement('div'); act.className = 'modal-act';
-  const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'm-cancel'; btn.textContent = 'Fermer';
-  act.appendChild(btn); box.append(h, pre, act); ov.appendChild(box); document.body.appendChild(ov);
-  const close = () => { document.removeEventListener('keydown', onKey); ov.remove(); };
-  const onKey = e => { if (e.key === 'Escape') close(); };
-  document.addEventListener('keydown', onKey);
-  ov.onclick = e => { if (e.target === ov) close(); };
-  btn.onclick = close;
-}
-
-// aide in-app de la carte Fraîcheur : explique l'état (frais/calme/en retard/muet) et la CADENCE DÉCLARÉE
-// -> pourquoi certaines sources sont « calme » des heures sans que ce soit une panne, et quand « en retard » s'applique.
-function openFreshnessHelp() {
-  const ov = document.createElement('div'); ov.className = 'modal-ov';
-  const box = document.createElement('div'); box.className = 'modal helpmodal';
-  const en = LANG === 'en';
-  const h = document.createElement('h3'); h.textContent = en ? 'Help — Source freshness' : 'Aide — Fraîcheur des sources';
-  const pre = document.createElement('pre'); pre.className = 'helpref';
-  pre.textContent = (en ? [
-    'STATE = COLLECTION HEALTH (not activity), derived by the daemon from the DECLARED cadence :',
-    '  ● fresh   data received < 15 min ago',
-    '  ● quiet   collecting OK but low-activity source — NOT a delay',
-    '  ● late    a probe DECLARES a continuous cadence for this source and the silence exceeds',
-    '            3 cycles — the same observation Integrations shows as a "mute" probe; the',
-    '            "Mute probe" alert fires two cycles later',
-    '  ● down    INGESTION BROKEN: no data (any source) for > 10 min',
-    '',
-    'Active alerts on a source are a COUNT (bell next to the name), never a collection state.',
-    '',
-    'DECLARED CADENCE (shown next to the name) :',
-    '  continuous · N     a probe expects a regular flow or heartbeat every N  → can be "late"',
-    '  event-driven       a probe observes it but its rate depends on activity → never "late"',
-    '  undeclared         no probe declares anything: age only tells activity  → never "late"',
-    'The 24 h observed rhythm (~1 datum / N) is shown on hover; it is an observation, not an',
-    'expectation, and it judges nothing.',
-    '',
-    'Age = time since the last DATA, not since the collector last ran (which runs on a timer and',
-    'checks; it only emits if there is something new). A source can be "quiet" for hours with no',
-    'problem: an IPS emits nothing without an attack, a periodic collector emits on change.',
-  ] : [
-    'ÉTAT = SANTÉ DE COLLECTE (pas l\'activité), dérivé par le démon de la cadence DÉCLARÉE :',
-    '  ● frais      donnée reçue il y a < 15 min',
-    '  ● calme      collecte OK mais source peu active — PAS un retard',
-    '  ● en retard  une sonde DÉCLARE une cadence continue pour cette source et le silence',
-    '               dépasse 3 cycles — la même observation qu\'Intégrations montre « muet » sur le',
-    '               capteur ; l\'alerte « Capteur muet » part deux cycles plus tard',
-    '  ● muet       INGESTION EN PANNE : plus aucune donnée (toutes sources) depuis > 10 min',
-    '',
-    'Les alertes actives d\'une source sont un COMPTE (cloche à côté du nom), jamais un état de collecte.',
-    '',
-    'CADENCE DÉCLARÉE (affichée à côté du nom) :',
-    '  continu · N     une sonde attend un flux ou un battement régulier tous les N → peut être « en retard »',
-    '  événementiel    une sonde l\'observe mais son débit dépend de l\'activité → jamais « en retard »',
-    '  non déclarée    aucune sonde ne déclare rien : l\'âge ne dit que l\'activité → jamais « en retard »',
-    'Le rythme observé sur 24 h (~1 donnée / N) est donné au survol : c\'est une observation, pas une',
-    'attente, et il ne juge rien.',
-    '',
-    'L\'âge = temps depuis la dernière DONNÉE, pas depuis le dernier passage du collecteur (qui, lui,',
-    'tourne sur un timer et vérifie ; il n\'émet que s\'il y a du nouveau). Une source peut être « calme »',
-    'des heures sans problème : un IPS n\'émet rien sans attaque, un collecteur périodique n\'émet qu\'au changement.',
-  ]).join('\n');
-  const act = document.createElement('div'); act.className = 'modal-act';
-  const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'm-cancel'; btn.textContent = 'Fermer';
-  act.appendChild(btn); box.append(h, pre, act); ov.appendChild(box); document.body.appendChild(ov);
-  const close = () => { document.removeEventListener('keydown', onKey); ov.remove(); };
-  const onKey = e => { if (e.key === 'Escape') close(); };
-  document.addEventListener('keydown', onKey);
-  ov.onclick = e => { if (e.target === ov) close(); };
-  btn.onclick = close;
-}
+// Les deux panneaux ouverts hors du bouton « ? » d'un en-tête (barre de requête #qhelp, carte Fraîcheur
+// #fresh-help) sont des sections ordinaires du registre : même chrome, même choix de langue, même témoin.
+function openHelpModal() { openHelp('syntax'); }
+function openFreshnessHelp() { openHelp('freshness'); }
 
 export { renderHelpGuide, openHelpModal, openFreshnessHelp, openHelp };

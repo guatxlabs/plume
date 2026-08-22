@@ -30,8 +30,9 @@ déclencheur cité en commentaire NE DOIT PAS compter, où une section sans déc
 information seulement, et où le registre, déplacé sous un autre nom, est retrouvé — et ne l'est plus s'il
 est absent ou défini deux fois. Il refuse de conclure sous un plancher de déclencheurs et de sections. Cette
 garde lit `web/` seulement : elle ne se lit pas elle-même, ni le harnais, qui citent le motif.
-La dérivation du module du registre est importée par `check_i18n_lexicon_covers_displayed_strings.py`
-(source unique : une règle écrite deux fois diverge).
+La dérivation du module du registre et de la PORTÉE de sa définition (`portee_du_registre`) est importée par
+`check_i18n_lexicon_covers_displayed_strings.py`, qui exempte cette portée seule — pas le module — de son
+plafond de trous (source unique : une règle écrite deux fois diverge).
 """
 import os, re, subprocess, sys
 
@@ -88,10 +89,11 @@ def module_du_registre(corpus_js):
     return porteurs[0] if len(porteurs) == 1 else None
 
 
-def sections(help_js):
-    """Clés de premier niveau de `const HELP = { … }`, par profondeur d'accolades hors chaînes et gabarits."""
+def _parcourir_registre(help_js):
+    """Parcourt `const HELP = { … }` par profondeur d'accolades hors chaînes et gabarits ; rend
+    (clés de premier niveau, index du début de la définition, index après l'accolade fermante), ou None."""
     debut = RE_DEFINITION_DU_REGISTRE.search(help_js)
-    if not debut: return set()
+    if not debut: return None
     i, n, prof, cles, ligne_vide = debut.end(), len(help_js), 1, set(), True
     while i < n and prof > 0:
         c = help_js[i]
@@ -107,7 +109,20 @@ def sections(help_js):
             if m: cles.add(m.group(1)); i += m.end(); ligne_vide = False; continue
         ligne_vide = c == "\n" or (ligne_vide and c.isspace())
         i += 1
-    return cles
+    return cles, debut.start(), i
+
+
+def sections(help_js):
+    """Clés de premier niveau de `const HELP = { … }`, par profondeur d'accolades hors chaînes et gabarits."""
+    p = _parcourir_registre(help_js)
+    return p[0] if p else set()
+
+
+def portee_du_registre(help_js):
+    """(début, fin) de la définition `const HELP = { … }` dans le texte — la SURFACE du contenu d'aide, que la
+    garde du lexique exempte sans exempter le module qui la porte ; None si la définition est absente."""
+    p = _parcourir_registre(help_js)
+    return (p[1], p[2]) if p else None
 
 
 def juger(corpus, help_js):
@@ -131,6 +146,10 @@ def temoins():
     assert module_du_registre({**corpus, "double.js": "const HELP = {};"}) is None, "témoin : deux définitions, la dérivation doit ne rien conclure"
     decl, sect, sans_section, sans_declencheur = juger(corpus, corpus[module_du_registre(corpus)])
     assert sect == {"alpha", "beta", "gamma"}, f"témoin : sections lues {sorted(sect)} — les accolades des corps d'aide faussent la lecture"
+    portee = portee_du_registre(corpus["registre_temoin.js"])
+    assert portee and corpus["registre_temoin.js"][portee[0]:portee[1]].startswith("const HELP = {") and corpus["registre_temoin.js"][portee[0]:portee[1]].endswith("}") \
+        and corpus["registre_temoin.js"][portee[1]:].strip() == ";", f"témoin : la portée du registre ne va pas de sa définition à son accolade fermante ({portee})"
+    assert portee_du_registre("const x = 1;") is None, "témoin : sans définition, la portée doit être None"
     assert set(sans_section) == {"orpheline"}, f"témoin positif : déclencheur sans section attendu «orpheline», lu {sorted(sans_section)}"
     assert not any(k.startswith("commentee") for k in decl), "témoin négatif : un déclencheur cité en COMMENTAIRE a été compté"
     assert "beta" in decl and "alpha" in decl, "témoin : une entrée de sommaire `{ k: }` ou un `data-help` HTML n'est pas lu comme déclencheur"

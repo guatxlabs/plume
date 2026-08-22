@@ -1402,7 +1402,6 @@ fn main() {
                         }
                         Err(e) => eprintln!("[backup] signal de posture NON émis (la base n'a pas passé le contrat de schéma : {e})"),
                     }
-                    let ratio = if st.dest_bytes > 0 { st.plaintext_bytes as f64 / st.dest_bytes as f64 } else { 0.0 };
                     // La ligne DIT quel chemin a tourné : c'est la seule façon pour l'opérateur de savoir si ce
                     // cycle a posé une copie EN CLAIR de la base sur un disque (chemin historique) ou non (dump).
                     let (charge, clair) = if st.wrote_plaintext_to_disk {
@@ -1410,9 +1409,10 @@ fn main() {
                     } else {
                         ("age(zstd(dump))", "non — aucun fichier en clair écrit")
                     };
+                    // Les tailles sont DITES ou AVOUÉES (`P4.1-s`) : jamais un zéro à la place d'une taille illisible.
                     println!(
-                        "backup (compressé+chiffré) -> {dest}  charge={} o  dest={} o  ratio={:.1}x  format={charge}  clair-sur-disque={clair}",
-                        st.plaintext_bytes, st.dest_bytes, ratio);
+                        "backup (compressé+chiffré) -> {dest}  {}  format={charge}  clair-sur-disque={clair}",
+                        st.phrase_des_tailles());
                         // P8.4-a — POURQUOI `dest` EST BIEN PLUS PETIT QUE LA BASE, DIT SUR PLACE.
                         // Le `ratio` ci-dessus est honnête : il compare la CHARGE à sa sortie. Mais
                         // l'exploitant, lui, compare `dest` au FICHIER de base qu'il voit sur son

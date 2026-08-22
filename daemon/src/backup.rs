@@ -709,10 +709,59 @@ pub(crate) fn parse_age_identity_str(s: &str) -> Option<age::x25519::Identity> {
 /// `wrote_plaintext_to_disk` répond à la seule question que l'opérateur se pose vraiment : « ce cycle
 /// a-t-il posé une copie EN CLAIR de la base sur un disque ? ». C'est lui, pas le nom du champ précédent,
 /// qui porte la propriété.
+///
+/// Les deux tailles sont des `Mesure<u64>` (`P4.1-s`) : celle d'un fichier vient d'un `metadata` qui peut
+/// échouer APRÈS que l'archive a été écrite, et un `unwrap_or(0)` à cet endroit publiait « dest=0 o » sur
+/// une archive réelle — la grandeur la plus alarmante ET la plus fausse. Une taille qu'on n'a pas pu lire
+/// est dite INCONNUE avec sa cause, jamais remplacée par un zéro ; et l'archive, elle, n'est pas retirée
+/// pour autant (la rendre en échec ferait supprimer une sauvegarde valide par le cycle natif).
 pub(crate) struct BackupStats {
-    pub(crate) plaintext_bytes: u64,
-    pub(crate) dest_bytes: u64,
+    pub(crate) plaintext_bytes: crate::mesure_environnement::Mesure<u64>,
+    pub(crate) dest_bytes: crate::mesure_environnement::Mesure<u64>,
     pub(crate) wrote_plaintext_to_disk: bool,
+}
+
+impl BackupStats {
+    /// La charge sérialisée, si elle a été mesurée (les assertions de test la lisent ainsi).
+    pub(crate) fn charge_octets(&self) -> Option<u64> {
+        match self.plaintext_bytes {
+            crate::mesure_environnement::Mesure::Lue(n) => Some(n),
+            crate::mesure_environnement::Mesure::Illisible { .. } => None,
+        }
+    }
+
+    /// La taille de l'archive produite, si elle a été lue.
+    pub(crate) fn archive_octets(&self) -> Option<u64> {
+        match self.dest_bytes {
+            crate::mesure_environnement::Mesure::Lue(n) => Some(n),
+            crate::mesure_environnement::Mesure::Illisible { .. } => None,
+        }
+    }
+
+    /// `charge=… o  dest=… o  ratio=…x` pour la ligne opérateur : une taille inconnue est écrite
+    /// `INCONNUE (cause)`, et le ratio n'est calculé que sur deux tailles lues.
+    pub(crate) fn phrase_des_tailles(&self) -> String {
+        use crate::mesure_environnement::Mesure;
+        let dit = |m: &Mesure<u64>| match m {
+            Mesure::Lue(n) => format!("{n} o"),
+            Mesure::Illisible { cause, .. } => format!("INCONNUE ({cause})"),
+        };
+        let ratio = match (&self.plaintext_bytes, &self.dest_bytes) {
+            (Mesure::Lue(p), Mesure::Lue(d)) if *d > 0 => format!("{:.1}x", *p as f64 / *d as f64),
+            (Mesure::Lue(_), Mesure::Lue(_)) => "0.0x".to_string(),
+            _ => "n/a".to_string(),
+        };
+        format!("charge={}  dest={}  ratio={ratio}", dit(&self.plaintext_bytes), dit(&self.dest_bytes))
+    }
+}
+
+/// La taille d'un fichier sur le disque, LUE ou AVOUÉE — jamais zéro faute de savoir.
+pub(crate) fn taille_sur_disque(chemin: &std::path::Path) -> crate::mesure_environnement::Mesure<u64> {
+    use crate::mesure_environnement::{cause_io, Mesure};
+    match std::fs::metadata(chemin) {
+        Ok(m) => Mesure::Lue(m.len()),
+        Err(e) => Mesure::Illisible { cause: cause_io(&e), detail: format!("{} : {e}", chemin.display()) },
+    }
 }
 
 /// SAUVEGARDE COMPRESSÉE+CHIFFRÉE — **CHEMIN LEGACY** (repli de B1, cf. `backup_compressed`).
@@ -766,7 +815,7 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
             tmp_plain.replace('\'', "''"));
         conn.execute_batch(&sql).map_err(|e| format!("export plaintext (sqlcipher_export) : {e}"))?;
     }
-    let plaintext_bytes = std::fs::metadata(&tmp_plain).map(|m| m.len()).unwrap_or(0);
+    let plaintext_bytes = taille_sur_disque(std::path::Path::new(&tmp_plain));
 
     // v134 (#7) — LOUD WARN à chaque repli symétrique (backup DÉCHIFFRABLE PAR LE NŒUD : passphrase = clé
     // SQLCipher, présente sur le pod ; PAS d'escrow hors-cluster). Non-cassant (warn-only) : l'exigence
@@ -803,7 +852,7 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
     let age_w = z.finish().map_err(|e| format!("finalisation zstd : {e}"))?;       // flush frame zstd
     age_w.finish().map_err(|e| format!("finalisation age : {e}"))?;                 // finalise le stream age
 
-    let dest_bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+    let dest_bytes = taille_sur_disque(std::path::Path::new(dest));
     // tmp_guard est droppé ici -> efface le plaintext temporaire.
     Ok(BackupStats { plaintext_bytes, dest_bytes, wrote_plaintext_to_disk: true })
 }
@@ -1249,8 +1298,8 @@ fn backup_compressed_stream(db_path: &str, dest: &str, pass: &str, recipient: Op
     age_w.finish().map_err(|e| PlanErr::Fatal(format!("finalisation age : {e}")))?;
     let _ = conn.execute_batch("COMMIT"); // fin du snapshot (lecture seule).
 
-    let dest_bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
-    Ok(BackupStats { plaintext_bytes, dest_bytes, wrote_plaintext_to_disk: false })
+    let dest_bytes = taille_sur_disque(std::path::Path::new(dest));
+    Ok(BackupStats { plaintext_bytes: crate::mesure_environnement::Mesure::Lue(plaintext_bytes), dest_bytes, wrote_plaintext_to_disk: false })
 }
 
 /// SAUVEGARDE COMPRESSÉE+CHIFFRÉE — B1 par défaut (dump STREAMING, ZÉRO clair transitoire) avec REPLI

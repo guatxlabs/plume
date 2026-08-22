@@ -268,13 +268,20 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                 vec![None]
             };
             for host in hosts {
-                let dup: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM action WHERE kind=?1 AND target=?2 AND IFNULL(host,'')=IFNULL(?3,'') AND ts>=?4",
-                        params![kind, target, host, now_ts - window_s],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or(0);
+                // La déduplication est une LECTURE de la base : si elle échoue, la réponse n'est pas posée à
+                // l'aveugle (elle pourrait doubler une action réelle), elle est COMPTÉE comme non posée et
+                // retentée au prochain tick — le même sort qu'un hôte illisible ci-dessus (`P4.1-s`).
+                let dup: i64 = match conn.query_row(
+                    "SELECT COUNT(*) FROM action WHERE kind=?1 AND target=?2 AND IFNULL(host,'')=IFNULL(?3,'') AND ts>=?4",
+                    params![kind, target, host, now_ts - window_s],
+                    |r| r.get(0),
+                ) {
+                    Ok(n) => n,
+                    Err(_) => {
+                        abandonnes += 1;
+                        continue;
+                    }
+                };
                 if dup > 0 {
                     continue;
                 }

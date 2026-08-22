@@ -1013,7 +1013,9 @@ fn secretprov_phase2_cfg_secret_ref_additive_and_default_unchanged() {
 /// `mask` est délibéré : l'authorizer SQLite ne connaît QUE les DENY de colonnes réelles -> il n'entre
 /// PAS en jeu ici. La compilation masquée est donc la SEULE défense -> le test la mesure ISOLÉMENT.
 /// Supprime une base de test AVEC ses sidecars WAL/SHM. `remove_file` seul laisse `-wal`/`-shm` derrière
-/// (4 Mio par base migrée) : /tmp est un tmpfs, ces résidus s'accumulent à chaque exécution de la suite.
+/// (4 Mio par base migrée) : ces résidus s'accumulent à chaque exécution de la suite — en RAM quand le
+/// répertoire temporaire est un tmpfs, sur le disque sinon (les deux existent selon l'hôte ; ce n'est pas
+/// mesuré ici, et le ménage vaut dans les deux cas).
 fn ff_rm(path: &str) {
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{path}{suffix}"));

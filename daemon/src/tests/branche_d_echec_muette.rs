@@ -377,3 +377,99 @@
         }
         }
     }
+
+    // ---- `P4.1-s` : l'échec testé par MÉTHODE, fermé dans le code et tenu ici dans les deux sens ----
+
+    /// UN FICHIER-JOUR DONT LA TAILLE NE SE LIT PAS N'EST PAS UN FICHIER DE ZÉRO OCTET : il est compté, ses
+    /// octets manquent à la somme, et `illisibles` dit que l'inventaire est un MINORANT. Avant,
+    /// `metadata(..).unwrap_or(0)` l'additionnait pour zéro et l'inventaire se présentait complet. Témoin
+    /// inverse : un fichier-jour lisible est sommé pour sa taille exacte, sans aveu.
+    #[test]
+    fn un_fichier_jour_de_taille_illisible_est_compte_minorant() {
+        let tmp = crate::tmp_possede::TmpPossede::neuf("p41s-taille-froide");
+        let racine = tmp.racine().chemin().to_path_buf();
+        let env = racine.join("prod");
+        std::fs::create_dir_all(&env).unwrap();
+        let fichier = env.join("2026-01-01-0001.parquet");
+        std::fs::write(&fichier, b"sept oc").unwrap();
+        let sain = crate::cold_banniere::inventaire(&racine, 10_000);
+        assert_eq!((sain.fichiers, sain.octets, sain.illisibles), (1, 7, 0), "lisible : sommé pour sa taille, rien d'avoué");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Listable mais pas traversable : `read_dir` rend le nom, `metadata` sur l'entrée est REFUSÉ.
+            // L'instrument est validé avant d'être cru : sous un compte privilégié la privation ne mord pas.
+            std::fs::set_permissions(&env, std::fs::Permissions::from_mode(0o444)).unwrap();
+            let mord = std::fs::read_dir(&env).is_ok() && std::fs::metadata(&fichier).is_err();
+            if mord {
+                let partiel = crate::cold_banniere::inventaire(&racine, 10_000);
+                rendre_la_lecture(&env);
+                assert_eq!((partiel.fichiers, partiel.octets, partiel.illisibles), (1, 0, 1),
+                    "taille illisible : le fichier est compté, ses octets manquent, et c'est DIT");
+                assert!(partiel.phrase().contains("MINORANTS"), "l'inventaire se dit minorant : {}", partiel.phrase());
+            } else {
+                rendre_la_lecture(&env);
+            }
+        }
+    }
+
+    /// LA TAILLE D'UNE ARCHIVE EST LUE OU AVOUÉE, JAMAIS ZÉRO : `BackupStats` porte ses deux tailles en
+    /// `Mesure<u64>`, et la phrase opérateur écrit `INCONNUE (cause)` là où `dest=0 o` se lisait comme une
+    /// archive vide. Dans les deux sens : une archive présente a sa taille exacte et un ratio ; une archive
+    /// absente est avouée avec la cause `source_absente`, sans ratio.
+    #[test]
+    fn la_taille_d_une_archive_est_lue_ou_avouee_jamais_zero() {
+        use crate::backup::BackupStats;
+        let tmp = crate::tmp_possede::TmpPossede::neuf("p41s-taille-archive");
+        let presente = tmp.racine().chemin().join("a.age");
+        std::fs::write(&presente, b"12345").unwrap();
+        let lue = crate::backup::taille_sur_disque(&presente);
+        assert_eq!(lue, Mesure::Lue(5), "une archive présente : sa taille exacte");
+        let absente = crate::backup::taille_sur_disque(&tmp.racine().chemin().join("absente.age"));
+        match &absente {
+            Mesure::Illisible { cause, detail } => {
+                assert_eq!(*cause, CAUSE_SOURCE_ABSENTE);
+                assert!(detail.contains("absente.age"), "l'aveu nomme le chemin : {detail}");
+            }
+            Mesure::Lue(n) => panic!("une archive absente a une taille ({n}) — c'est le zéro rassurant que cette clé ferme"),
+        }
+        let dite = BackupStats { plaintext_bytes: Mesure::Lue(50), dest_bytes: lue, wrote_plaintext_to_disk: false }.phrase_des_tailles();
+        assert_eq!(dite, "charge=50 o  dest=5 o  ratio=10.0x");
+        let avouee = BackupStats { plaintext_bytes: Mesure::Lue(50), dest_bytes: absente, wrote_plaintext_to_disk: false }.phrase_des_tailles();
+        assert!(avouee.contains("dest=INCONNUE (source_absente)") && avouee.ends_with("ratio=n/a"),
+            "une taille inconnue est dite, et aucun ratio n'est calculé dessus : {avouee}");
+    }
+
+    /// UNE DÉDUPLICATION QU'ON NE PEUT PAS LIRE N'EST PAS « AUCUN DOUBLON » : la réponse n'est pas posée à
+    /// l'aveugle, elle est COMPTÉE comme abandonnée dans le bilan du tick. Avant, `query_row(..).unwrap_or(0)`
+    /// posait l'action sur une réponse que la base n'avait pas donnée. Témoin inverse : base saine, la cible
+    /// est posée et le bilan est un vrai zéro.
+    #[test]
+    fn une_deduplication_illisible_compte_la_reponse_non_posee() {
+        let tmp = crate::tmp_possede::TmpPossede::neuf("p41s-dedup");
+        let p = tmp.sous("plume.db").chemin().to_string_lossy().to_string();
+        let db = Arc::new(Mutex::new(open_db(&p).unwrap()));
+        let armer = |db: &Arc<Mutex<Connection>>| {
+            let conn = db.lock();
+            conn.execute("DELETE FROM playbook", []).unwrap();
+            conn.execute(
+                "INSERT INTO playbook(name,enabled,query,is_soql,action_kind,interval_s,window_s,managed,last_run,created_by_role) \
+                 VALUES('p41s-pb',1,'SELECT ''nginx-svc''',0,'stop_service',0,3600,0,NULL,'admin')",
+                [],
+            ).unwrap();
+        };
+        {
+            let conn = db.lock();
+            conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
+            assert!(migrate(&conn));
+        }
+        armer(&db);
+        assert_eq!(crate::handlers::playbooks::run_playbooks(&db, &p), Mesure::Lue(0), "base saine : rien d'abandonné");
+        let posees: i64 = db.lock().query_row("SELECT COUNT(*) FROM action WHERE reason='playbook:p41s-pb'", [], |r| r.get(0)).unwrap();
+        assert_eq!(posees, 1, "et la réponse est posée");
+        // La table des actions DISPARAÎT : la déduplication ne se lit plus -> la réponse n'est pas posée, comptée.
+        db.lock().execute_batch("DROP TABLE action").unwrap();
+        armer(&db);
+        assert_eq!(crate::handlers::playbooks::run_playbooks(&db, &p), Mesure::Lue(1),
+            "déduplication illisible : UNE réponse non posée, comptée — pas un `Lue(0)` qui pose à l'aveugle");
+    }

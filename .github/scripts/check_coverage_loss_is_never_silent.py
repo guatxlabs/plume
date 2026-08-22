@@ -102,21 +102,90 @@ consommateurs (d) ; 3 d'entre eux étaient du code de TEST que l'instrument ne m
 `Mesure<u32>` (`bilan_de_tick`), un `Chargement`, un `Balayage`, un `Inventaire` qui compte ses
 illisibles, ou refusent (`RefusDePrune`). Après fermeture : 0 site.
 
+L'ÉCHEC TESTÉ PAR COMPARAISON OU PAR MÉTHODE (`P4.1-s`, 2026-08-22)
+----------------------------------------------------------------------
+`P4.1-q` et `P4.1-r` écrivaient leur limite : la garde ne voyait une branche d'échec que si un MOTIF la
+séparait (`Err`, `None`, `let … else`). Or le même abandon s'écrit sans motif, et ces trois formes sont
+désormais reconnues — dans les MÊMES populations, jamais dans une population nouvelle :
+
+  (i)  PRÉDICAT DE MÉTHODE. `if x.is_err()`, `if x.is_none()`, `if p.is_null()`, `if !x.is_ok()` : le
+       bloc `then` EST la branche d'échec (la forme inversée de `if let Err`). `if x.is_ok()`,
+       `if x.is_some()` : l'échec est le `else`, ou il est VIDE sans `else` — l'analogue exact de
+       `if let Ok(…)` sans `else`. Exception : `if q.is_ok() { return }` SANS `else`, où c'est le SUCCÈS
+       qui rend la main (« déjà fait ») et la suite de la fonction est le chemin de travail — rien n'y est
+       perdu.
+  (ii) COMPARAISON À UNE SENTINELLE, selon la convention C : `< 0`, `<= 0`, `== -1`, `!= 0` testent
+       l'échec ; `>= 0`, `== 0` le succès. `if roots.len() == 0 { return }` compare une longueur : « rien
+       à faire » n'est pas un échec.
+  (iii) REPLI PAR VALEUR NEUTRE. `.unwrap_or(0)`, `.unwrap_or(false)`, `.unwrap_or(Vec::new())`,
+       `.unwrap_or_default()`, `.unwrap_or_else(Vec::new)`, `.map_or(0, …)` : l'alternative est écrite en
+       une méthode, et sa branche d'échec rend la valeur qui dit « rien » — c'est `return Lue(0)` sous un
+       autre nom. Un `unwrap_or(valeur)` non neutre CHOISIT une valeur, comme `None => name` : pas un
+       site. La trace possible vit dans la fermeture (`unwrap_or_else(|_| { perdus += 1; Vec::new() })`).
+
+  LES TROIS FORMES N'ENTRENT EN POPULATION QUE SI L'OPÉRANDE LIT LE MONDE — et c'est la différence
+  avec les formes à motif, dont le récepteur est libre. Un prédicat, une comparaison ou un repli
+  s'appliquent à une VALEUR que la fonction tient ; ce n'en est un échec de couverture que si cette valeur
+  est ce que le monde a rendu. Lit le monde : une chaîne dont la TÊTE est une primitive — énumération
+  (`read_dir`), système de fichiers ou noyau (`std::fs::`, `libc::`, `unsafe`), verbe SQL (`query_row`,
+  `query_map`, `prepare`, `execute`), verbe d'E/S (`write_all`, `read_to_string`…), appel à une fonction
+  de couverture — ou un NOM LIÉ à une telle expression dans la fonction (`let fd = unsafe { … }`,
+  `Ok(mut f) =>` sur un `open`, `if let Ok(x) = fs::…`), suivie UNIQUEMENT d'adaptateurs de
+  `Result`/`Option` (`map`, `and_then`, `ok`…). Ne lit pas le monde, et c'est adjugé sur pièces :
+  `action_valid(t).is_err()` (une DÉCISION de politique : la cible est refusée, rien n'est perdu),
+  `config.get("url").….unwrap_or(false)` (une NAVIGATION dans un contenu déjà lu : l'échec testé est
+  l'absence d'un champ, pas celui d'une lecture), `env::var(..).….unwrap_or(0)` (une grandeur qui n'arme
+  rien). Le prix de cette frontière est écrit à la limite 2 : `let Some(c) = self.cfg else { return }`
+  est accusé, `if self.cfg.is_none() { return }` ne l'est pas.
+  Ce qui vaut ABANDON et ce qui vaut TRACE ne change pas — sauf qu'un drapeau se pose dans les deux sens
+  (`complet = false` vaut `perdu = true`). En SURFACE, (i) et (ii) suivent la règle du `if let` (la
+  jumelle imprime, l'échec se tait) ; (iii) n'y est pas un site — voir la limite 2.
+
+LA MESURE (2026-08-22, ce critère, ces populations) : 15 alternatives des trois formes dans les quatre
+crates, dont 11 dont la branche d'échec abandonne. SIX abandonnaient sans trace — toutes dans le démon, et
+TOUTES de la forme (iii) `metadata(..).unwrap_or(0)` / `query_row(..).unwrap_or(0)` : la taille d'une
+archive de sauvegarde (trois sites, publiée « dest=0 o » sur la ligne opérateur), la taille d'un
+fichier-jour du tier froid (sommée pour zéro), la déduplication d'une réponse de playbook (posée à
+l'aveugle), l'id d'un événement de démonstration (référencé `event:0`). Les cinq autres comptaient déjà
+(`perdus += 1`, `illisibles += 1`, `complet = false`). Le filtre grossier qui a ouvert la clé annonçait
+« une douzaine » de `if x < 0` et de `.is_err()` : ces sites-là sont soit comptés, soit HORS population
+(le drainage des descripteurs de l'agent, voir la limite 3) — et la forme qui abandonnait vraiment,
+`unwrap_or(0)`, il ne la comptait pas. Après fermeture : 0 site.
+
 CE QUE CETTE GARDE NE PROUVE PAS
 -------------------------------
 1. Elle prouve une FORME, pas un trajet. Qu'un compte existe ne dit pas qu'il atteint le SOC ; c'est
    la suite du crate qui l'exerce (`pose_de_couverture_partielle_est_avouee_et_marque_les_events`,
    son témoin INVERSE `pose_de_couverture_complete_ne_dit_rien_de_particulier`, et
    `la_pose_noyau_compte_ce_qu_elle_abandonne` qui touche le vrai noyau).
-2. Elle ne reconnaît une branche d'échec que lorsqu'elle est ÉCRITE comme telle. Un échec de syscall
-   testé par COMPARAISON (`if fd < 0 { break }`, `if handle.is_err() { return }`) lui échappe. Les
-   sites de ce genre ont été comptés dans le code — le drainage inotify/fanotify distingue désormais
-   EAGAIN d'un descripteur mort — mais une régression qui les réécrirait passerait cette garde.
+2. Elle ne reconnaît une branche d'échec que lorsqu'elle est ÉCRITE — par un motif (`Err`, `None`,
+   `let … else`), par un prédicat, par une comparaison à une sentinelle LIÉE à une primitive, ou par un
+   repli neutre sur un récepteur qui LIT LE MONDE (`P4.1-s`). Lui échappent encore, et c'est dit :
+     - `let _ = primitive(…)` : il n'y a AUCUNE alternative, donc aucune branche ; c'est la famille de
+       la pose DÉGÉNÉRÉE, tenue par le témoin inverse de la suite, pas par une forme ;
+     - une sentinelle STOCKÉE puis lue ailleurs : `let ok = r.is_ok(); … if !ok { return }`, ou un champ
+       (`self.fd`) posé dans une autre fonction et testé dans celle-ci — le lien entre la primitive et le
+       test n'est pas dans la fonction, un scanner textuel ne doit pas le deviner ;
+     - une comparaison sur une grandeur qui n'est PAS le retour d'une primitive (`if n == 0 { return }`
+       sur une longueur) : ce n'est pas un échec, c'est « rien à faire » — hors population ;
+     - un repli par une chaîne vide (`unwrap_or("")`) : les littéraux sont blanchis par le scanner, et un
+       nom de repli est une VALEUR choisie, pas un abandon ;
+     - en SURFACE, `println!("{}", x.unwrap_or(0))` IMPRIME — un zéro rassurant, qui est la famille de
+       `S32`/`S33` (valeur publiée fausse), pas celle-ci (grandeur disparue) ;
+     - un prédicat ou une comparaison sur une valeur qui ne vient pas du monde (`if self.cfg.is_none()
+       { return }`) : la forme à motif équivalente est accusée, celle-ci non — c'est le prix de ne pas
+       accuser une validation refusée ; une écriture déléguée à un module (`store().insert_metric(..)
+       .is_err()`) est un appel à DEUX sauts, que la tête de chaîne ne reconnaît pas comme primitive.
 3. Sa portée est désormais les quatre crates compilés (`CRATES`). Ce qui lui échappe encore dans le
    démon : les consommateurs à DEUX sauts d'un énumérateur qui ne rendent pas de chemins (ils ne sont
    ni énumérateurs ni consommateurs au sens de (d)), et les fonctions qui traitent un contenu déjà lu
    (`ingest_journal_lines` saute une ligne NDJSON invalide par `continue` : hors population, parce
-   qu'elle ne touche ni le système de fichiers ni la table des alertes).
+   qu'elle ne touche ni le système de fichiers ni la table des alertes). Et dans l'AGENT : le DRAINAGE
+   des descripteurs — `read` sur le descripteur inotify/fanotify, `GetQueuedCompletionStatus` — n'est
+   atteint par aucune dérivation (il n'est ni posé, ni énuméré, ni appelé depuis la pose). Les
+   `if n < 0 { … break }` de ce drainage comptent `perdus` depuis `P4.1-q`, mais une régression qui les
+   rendrait muets passerait cette garde : une population « écoute » serait une dérivation NOUVELLE, et
+   elle n'est pas décidée ici.
 4. Elle ne distingue pas un bilan rendu d'un bilan LU : un planificateur qui jetterait le `Mesure`
    rendu par ses tickers passerait. C'est la suite du démon qui le tient (`branche_d_echec_muette.rs`).
 """
@@ -405,7 +474,9 @@ def let_sinon(corps: str):
 # ==================================================================================================
 # COMPTER (`+=`), CONSIGNER nominativement (`.push(` — c'est la forme de `S36` : un compte sauté est
 # poussé dans la liste des comptes sautés, que l'aveu nomme), lever un drapeau, PROPAGER.
-TRACE_COMPTE = re.compile(r"\+=|\.push\(|=\s*true\b|bail!|panic!|unreachable!|todo!|\?")
+# Un drapeau se POSE dans les deux sens : `perdu = true` et `complet = false` portent la même information à
+# celui qui lit le drapeau ensuite (mesuré le 2026-08-22 sur `secure_delete`, dont `complet` est RENDU).
+TRACE_COMPTE = re.compile(r"\+=|\.push\(|=\s*(?:true|false)\b|bail!|panic!|unreachable!|todo!|\?")
 RETOUR_PORTEUR = re.compile(r"\breturn\s+([A-Za-z0-9_&*(\[][^;]*)")
 # `return 0` (aucune perte) et `return Ok(())` (tout va bien) sur une branche d'ÉCHEC NIENT la perte
 # au lieu de la porter : ce sont des retours NEUTRES, et ils ne valent pas trace. C'est la forme
@@ -433,6 +504,292 @@ TRACE_DIT = re.compile(r"\bprintln!|bail!|panic!|\?|\breturn\s+Err\b")
 FS_OU_NOYAU = re.compile(r"\bstd::fs::|\blibc::|\bfs::\w")
 PRINTLN = re.compile(r"\bprintln!")
 ABANDON = re.compile(r"\breturn\b|\bcontinue\b|\bbreak\b")
+
+
+def bloc_de_condition(s: str, i: int):
+    """Le `{` qui ouvre le corps d'un `if <condition>` SANS motif. Un bloc d'expression dans la condition
+    (`if unsafe { libc::x() } < 0 {`) est suivi d'un OPÉRATEUR, d'un `.`, d'un `as` ou d'un autre `{` ;
+    le bloc du corps, lui, est suivi d'un `else`, d'une instruction, ou de la fin du bloc englobant."""
+    while True:
+        j, quoi = jusqu_a(s, i, "{")
+        if quoi != "{":
+            return None
+        k = fin_bloc(s, j)
+        while k < len(s) and s[k] in " \t\n":
+            k += 1
+        if k < len(s) and (s[k] in "{<>=!.&|)+-*/%,?" or s.startswith("as ", k)):
+            i = k if s[k] == "{" else k + 1
+            continue
+        return j
+
+
+def sinon_de(corps: str, fin: int):
+    """Le `else` qui suit un bloc fermé en `fin` : (présent ?, texte de TOUTE la chaîne `else …`)."""
+    mm = re.match(r"\s*else\b", corps[fin:])
+    if not mm:
+        return False, ""
+    r = fin + mm.end()
+    while r < len(corps) and corps[r] in " \t\n":
+        r += 1
+    if r < len(corps) and corps[r] == "{":
+        return True, corps[r:fin_bloc(corps, r)]
+    # `else if …` : la branche est toute la chaîne qui suit, jusqu'à son dernier bloc.
+    k = bloc_de_condition(corps, r) if corps.startswith("if", r) else None
+    if k is None:
+        return True, corps[r:r + 200]
+    fin2 = fin_bloc(corps, k)
+    _, suite = sinon_de(corps, fin2)
+    return True, corps[r:fin2] + suite
+
+
+def clauses(cond: str):
+    """Les clauses d'une condition, séparées aux `&&` / `||` de profondeur 0, parenthèses externes ôtées."""
+    out, i, depth, debut = [], 0, 0, 0
+    while i < len(cond):
+        c = cond[i]
+        if c in OUVR:
+            depth += 1
+        elif c in FERM:
+            depth -= 1
+        elif depth == 0 and cond[i:i + 2] in ("&&", "||"):
+            out.append(cond[debut:i])
+            i += 2
+            debut = i
+            continue
+        i += 1
+    out.append(cond[debut:])
+    res = []
+    for cl in out:
+        cl = cl.strip()
+        while cl.startswith("(") and fin_bloc(cl, 0) == len(cl):
+            cl = cl[1:-1].strip()
+        res.append(cl)
+    return res
+
+
+# (i) prédicat de méthode — sur un récepteur qui LIT LE MONDE (voir `lecteur_du_monde`).
+PREDICAT_ECHEC = re.compile(r"^(?P<neg>!\s*)?(?P<recv>.+)\.(?P<m>is_err|is_none|is_null|is_ok|is_some)\(\)$", re.S)
+# (ii) comparaison à une sentinelle de la convention C.
+SENTINELLE = re.compile(r"^(?P<recv>.+?)\s*(?P<op><=|>=|==|!=|<|>)\s*(?P<val>-?\d+)$", re.S)
+SENTINELLE_ECHEC = {("<", "0"), ("<=", "0"), ("==", "-1"), ("!=", "0")}
+SENTINELLE_SUCCES = {(">=", "0"), ("==", "0"), ("!=", "-1"), (">", "-1")}
+
+
+def sens_de_la_clause(cl: str, lit_le_monde):
+    """`echec` si la clause est vraie sur l'ÉCHEC, `succes` si elle l'est sur le succès, sinon None.
+    `lit_le_monde(expr)` dit si l'opérande comparé est le retour d'une primitive (ou un nom qui y est lié)."""
+    m = PREDICAT_ECHEC.match(cl)
+    if m:
+        if not lit_le_monde(m.group("recv")):
+            return None                             # `action_valid(t).is_err()` : une DÉCISION, pas une lecture
+        echec = m.group("m") in ("is_err", "is_none", "is_null")
+        return "succes" if bool(m.group("neg")) == echec else "echec"
+    m = SENTINELLE.match(cl)
+    if m and lit_le_monde(m.group("recv")):
+        cle = (m.group("op"), m.group("val"))
+        if cle in SENTINELLE_ECHEC:
+            return "echec"
+        if cle in SENTINELLE_SUCCES:
+            return "succes"
+    return None
+
+
+def si_test(corps: str, lit_le_monde):
+    """`if <prédicat ou comparaison> { … } [else …]` — jamais un `if let`, jamais une garde de `match`.
+    Rend (décalage, sens, condition, bloc then, a_else, bloc else)."""
+    res = []
+    for m in re.finditer(r"\bif\b", corps):
+        if re.match(r"\s*let\b", corps[m.end():]):
+            continue
+        k = bloc_de_condition(corps, m.end())
+        if k is None:
+            continue
+        cond = corps[m.end():k]
+        if "=>" in cond:
+            continue                                # `Some(x) if x < 0 => …` : une garde de match
+        sens = None
+        for cl in clauses(cond):
+            sens = sens_de_la_clause(cl, lit_le_monde)
+            if sens:
+                break
+        if not sens:
+            continue
+        fin = fin_bloc(corps, k)
+        a_else, els = sinon_de(corps, fin)
+        res.append((m.start(), sens, cond.strip(), corps[k:fin], a_else, els))
+    return res
+
+
+def recepteur(s: str, pos: int) -> str:
+    """La chaîne d'appels qui PRÉCÈDE le `.` en `pos` : `std::fs::read_dir(d).map(|e| e.count())` devant
+    `.unwrap_or(0)`. Remonte les groupes équilibrés, les turbofish, les noms et chemins, et les `.`/`?`."""
+    i = pos
+    while i > 0:
+        j = i - 1
+        while j >= 0 and s[j] in " \t\n":
+            j -= 1
+        if j < 0:
+            break
+        c = s[j]
+        if c in ")]}":
+            depth, k = 0, j
+            while k >= 0:
+                if s[k] in ")]}":
+                    depth += 1
+                elif s[k] in "([{":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                k -= 1
+            i = max(k, 0)
+            continue
+        if c == ">":
+            if s[j - 1:j] == "=":
+                break                               # `=>` : un bras de match, pas un turbofish
+            depth, k = 0, j
+            while k >= 0:
+                if s[k] == ">":
+                    depth += 1
+                elif s[k] == "<":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                k -= 1
+            if s[k - 2:k] != "::":
+                break                               # un `<` qui n'est pas `::<` est un opérateur
+            i = max(k, 0)
+            continue
+        if c.isalnum() or c in "_:":
+            k = j
+            while k >= 0 and (s[k].isalnum() or s[k] in "_:"):
+                k -= 1
+            i = k + 1
+            continue
+        if c in ".?":
+            i = j
+            continue
+        break
+    return s[i:pos].strip()
+
+
+# (iii) la valeur NEUTRE : celle qui dit « rien » — zéro, faux, vide, défaut, `Lue(0)`.
+NEUTRE = r"(?:0(?:_?[ui](?:8|16|32|64|size))?|false|" + VIDE + r"|(?:[A-Za-z_][\w:]*::)?Lue\(0\)|Vec::new|String::new|Default::default)"
+REPLI_NEUTRE = re.compile(
+    r"\.(?:unwrap_or_default\(\)|(?:unwrap_or|map_or)\(\s*" + NEUTRE + r"\s*[,)]|unwrap_or_else\()"
+)
+
+
+def replis_neutres(corps: str, lit_le_monde):
+    """Les `.unwrap_or(neutre)` / `.unwrap_or_default()` / `.map_or(neutre, …)` / `.unwrap_or_else(…)` dont
+    le récepteur LIT LE MONDE. Rend (décalage, forme, branche d'échec — le corps de la fermeture, s'il y
+    en a un, où une trace peut vivre)."""
+    res = []
+    for m in REPLI_NEUTRE.finditer(corps):
+        forme = m.group(0)
+        branche = ""
+        if forme.startswith(".unwrap_or_else("):
+            fin = fin_bloc(corps, m.end() - 1)
+            arg = corps[m.end():fin - 1].strip()
+            mm = re.match(r"\|[^|]*\|\s*", arg)
+            expr = arg[mm.end():].strip() if mm else arg
+            if expr.startswith("{"):
+                interieur = expr[1:fin_bloc(expr, 0) - 1]
+                if TRACE_COMPTE.search(interieur):
+                    continue                        # la fermeture compte : c'est une trace
+                dernier = interieur.strip().rstrip(";").split(";")[-1].strip()
+                if not re.fullmatch(NEUTRE, dernier):
+                    continue
+                branche = interieur
+            elif not re.fullmatch(NEUTRE, expr):
+                continue                            # `unwrap_or_else(|e| calcule(e))` choisit une valeur
+            forme = ".unwrap_or_else(%s)" % expr[:30]
+        if not lit_le_monde(recepteur(corps, m.start())):
+            continue
+        res.append((m.start(), "`%s`" % forme.strip(), branche))
+    return res
+
+
+# Les adaptateurs de `Result`/`Option` : ils TRANSPORTENT l'échec d'une lecture sans le décider. Tout autre
+# appel après la tête (`.get(`, `.len(`, `.as_str(`) travaille sur le CONTENU lu, et l'échec qu'on teste
+# ensuite n'est plus celui de la lecture.
+ADAPTATEURS = "map|and_then|ok|as_ref|as_deref|as_mut|map_err|cloned|copied|filter|flatten|ok_or|ok_or_else|or_else|or|inspect|inspect_err|by_ref"
+# Ce qui LIT LE MONDE : une énumération, le système de fichiers, le noyau, la base — ou un appel à une
+# fonction de couverture, ajouté par `analyser_crate` une fois la population dérivée.
+LIT_LE_MONDE = re.compile(
+    r"read_dir|std::fs::|\bfs::\w|libc::|\bunsafe\b|\bmetadata\(|File::open|"
+    # les verbes SQL et les verbes d'E/S de `std::io` : la primitive est la MÉTHODE (`conn.query_row(…)`,
+    # `f.write_all(…)`), lue SANS son point parce que la chaîne est découpée en segments.
+    r"\b(?:query_row|query_map|prepare(?:_cached)?|execute(?:_batch)?|query|batch)\(|"
+    r"\b(?:write_all|read_to_string|read_to_end|read_exact|flush|sync_all|sync_data|set_len)\("
+)
+
+
+def noms_lies(corps: str, lit):
+    """Les noms qu'une fonction LIE à une expression qui lit le monde : `let fd = unsafe { … };`,
+    `let (a, b) = …;`, `self.fd = libc::…;`. C'est ce qui fait d'un `if fd < 0` un test d'échec."""
+    noms = set()
+    for m in re.finditer(r"\blet\s+(?:mut\s+)?(\(?[\w\s,]+\)?)\s*(?::[^=;]+)?=\s*([^;]*);", corps):
+        if lit(m.group(2)):
+            noms |= set(re.findall(r"[A-Za-z_]\w*", m.group(1))) - {"mut"}
+    for m in re.finditer(r"(?:^|[;{}\s])((?:self\.)?\w+)\s*=\s*([^;=][^;]*);", corps):
+        if lit(m.group(2)):
+            noms.add(m.group(1))
+    # Une liaison par MOTIF lie aussi : `Ok(mut f) =>` sur un scrutin qui lit le monde, `if let Ok(x) = …`,
+    # `let Ok(x) = … else`. C'est ainsi qu'un `f.write_all(…).is_err()` sait que `f` vient d'un `open`.
+    motif = r"\b(?:Ok|Some|Lue)\(\s*(?:mut\s+)?(\w+)\s*\)"
+    for m in re.finditer(r"\bmatch\b", corps):
+        k = bloc_du_corps(corps, m.end())
+        if k is None or not lit(corps[m.end():k]):
+            continue
+        noms |= set(re.findall(motif + r"\s*(?:if\b[^=]*)?=>", corps[k:fin_bloc(corps, k)]))
+    for m in re.finditer(r"\blet\s+" + motif + r"\s*=\s*([^{;]+?)\s*(?:\{|\belse\b)", corps):
+        if lit(m.group(2)):
+            noms.add(m.group(1))
+    return noms
+
+
+def lecteur_du_monde(corps: str, noms_de_couverture):
+    """Le prédicat « cette expression lit le monde » d'UNE fonction : la forme, ou un nom lié à la forme."""
+    appel_couvert = re.compile(r"\b(?:%s)\s*\(" % "|".join(sorted(noms_de_couverture))) \
+        if noms_de_couverture else None
+
+    def forme(expr):
+        return bool(LIT_LE_MONDE.search(expr)) or bool(appel_couvert and appel_couvert.search(expr))
+
+    lies = noms_lies(corps, forme)
+
+    def lit(expr):
+        """Une expression lit le monde si sa chaîne d'appels a une TÊTE qui le lit — une primitive, ou un nom
+        lié à une primitive — suivie UNIQUEMENT d'adaptateurs de `Result`/`Option` (`map`, `and_then`, `ok`…).
+        `config.get("url")…` NAVIGUE dans un contenu déjà lu : ce n'est plus le monde, c'est sa forme."""
+        segments, i, depth, debut = [], 0, 0, 0
+        expr = expr.strip()
+        while i < len(expr):
+            c = expr[i]
+            if c in OUVR:
+                depth += 1
+            elif c in FERM:
+                depth -= 1
+            elif c == "." and depth == 0 and expr[i + 1:i + 2] != ".":
+                segments.append(expr[debut:i])
+                debut = i + 1
+            i += 1
+        segments.append(expr[debut:])
+        segments = [t.strip() for t in segments]
+        if len(segments) > 1 and segments[0] in ("self", "*self", "&self"):
+            segments[:2] = [segments[0].lstrip("*&") + "." + segments[1]]
+        # La tête est la DERNIÈRE primitive de la chaîne (`f.write_all(…)` : la primitive est la méthode, pas
+        # le nom), ou le nom lié en position 0 s'il n'y a pas de primitive écrite.
+        primitives = [k for k, seg in enumerate(segments) if forme(seg)]
+        nom = re.fullmatch(r"[*&]*\s*((?:self\.)?[A-Za-z_]\w*)", segments[0])
+        if primitives:
+            tete = primitives[-1]
+        elif nom and (nom.group(1) in lies or nom.group(1).removeprefix("self.") in lies):
+            tete = 0
+        else:
+            return False
+        return all(re.match(r"(?:%s)\s*(?:::<[^>]*>)?\s*\(" % ADAPTATEURS, seg) for seg in segments[tete + 1:])
+    return lit
 
 
 def motif_d_echec(m):
@@ -522,7 +879,7 @@ def noms_importes(nu):
     return noms
 
 
-def sites_de(f, est_c):
+def sites_de(f, est_c, lit_le_monde=lambda expr: bool(LIT_LE_MONDE.search(expr))):
     """Les alternatives d'une fonction dont la branche d'échec abandonne — avec, pour chacune, la branche
     d'échec (vide pour un `if let` sans else), son décalage et si une branche JUMELLE imprime."""
     sites = []
@@ -545,9 +902,23 @@ def sites_de(f, est_c):
     for off, motif, els in let_sinon(f.corps):
         if motif_de_succes(motif) and abandonne(els, False):
             sites.append(("`let %s … else`" % motif.strip()[:24], els, off, False))
+    # `P4.1-s` : l'échec testé par PRÉDICAT ou par COMPARAISON — le bloc `then` est la branche d'échec
+    # quand la condition est vraie sur l'échec ; c'est le `else` (ou le vide) quand elle l'est sur le succès.
+    for off, sens, cond, alors, a_else, els in si_test(f.corps, lit_le_monde):
+        if sens == "echec" and abandonne(alors, False):
+            sites.append(("`if %s` (bloc d'échec)" % cond[:28], alors, off,
+                          bool(PRINTLN.search(els)) if a_else else False))
+        elif sens == "succes" and abandonne(els, not a_else) and not (not a_else and abandonne(alors, False)):
+            # `if q.is_ok() { return }` SANS else : le succès abandonne (« déjà fait »), la suite de la fonction
+            # est le chemin de travail sur l'échec — rien n'est perdu. Sinon le `else` vide est la branche d'échec.
+            forme = "`if %s` %s" % (cond[:28], "SANS else" if not a_else else "/ else")
+            sites.append((forme, els if a_else else "", off, bool(PRINTLN.search(alors))))
     if est_c:
         for m in JETTE_LES_ERREURS.finditer(f.corps):
             sites.append(("`%s`" % m.group(0), "", m.start(), False))
+        # `P4.1-s` (iii) : le repli NEUTRE sur un récepteur qui lit le monde est `return Lue(0)` en une méthode.
+        for off, forme, branche in replis_neutres(f.corps, lit_le_monde):
+            sites.append((forme, branche, off, False))
     return sites
 
 
@@ -628,13 +999,14 @@ def analyser_crate(fichiers, derivations=("pose", "charge", "evalue")):
                     couverture.add(id(c))
                     change = True
     surface = {id(u) for u in unites if PRINTLN.search(u.f.corps)}
+    noms_de_couverture = {u.f.nom for u in unites if id(u) in couverture}
 
     fautes = []
     for u in unites:
         est_c, est_s = id(u) in couverture, id(u) in surface
         if not (est_c or est_s):
             continue
-        for forme, branche, off, jumelle in sites_de(u.f, est_c):
+        for forme, branche, off, jumelle in sites_de(u.f, est_c, lecteur_du_monde(u.f.corps, noms_de_couverture)):
             if est_c and not compte_la_perte(branche):
                 fautes.append((u.chemin, u.f.ligne(off + 1), u.f.nom, "COUVERTURE", forme))
             elif est_s and jumelle and not TRACE_DIT.search(branche):
@@ -846,6 +1218,183 @@ fn executer(dir: &Path) -> usize {
 }
 """
 
+# `P4.1-s` — L'ÉCHEC TESTÉ PAR COMPARAISON OU PAR MÉTHODE. Un témoin positif et un négatif PAR FORME, plus
+# les trois négatifs qui bornent la population : le repli sur une grandeur qui n'arme rien, la longueur
+# comparée, la validation refusée — et le drapeau ABAISSÉ qui vaut trace.
+SENTINELLE_MUETTE = """
+impl FimBackend for X {
+    fn watch_root(&mut self, root: &Path) -> usize {
+        for ent in std::fs::read_dir(root).unwrap() {
+            let Ok(ent) = ent else { self.perdus += 1; continue };
+            let wd = unsafe { libc::inotify_add_watch(self.fd, ent.path().as_ptr(), 0) };
+            if wd < 0 {
+                continue;
+            }
+            self.wds.insert(wd, ent.path());
+        }
+        self.perdus
+    }
+}
+"""
+SENTINELLE_QUI_COMPTE = """
+impl FimBackend for X {
+    fn watch_root(&mut self, root: &Path) -> usize {
+        for ent in std::fs::read_dir(root).unwrap() {
+            let Ok(ent) = ent else { self.perdus += 1; continue };
+            let wd = unsafe { libc::inotify_add_watch(self.fd, ent.path().as_ptr(), 0) };
+            if wd < 0 {
+                self.perdus += 1;
+                continue;
+            }
+            self.wds.insert(wd, ent.path());
+        }
+        self.perdus
+    }
+}
+"""
+PREDICAT_MUET = """
+impl FimBackend for X {
+    fn watch_root(&mut self, root: &Path) -> usize {
+        let md = std::fs::symlink_metadata(root);
+        if md.is_err() {
+            return 0;
+        }
+        let _ = libc::x(root);
+        0
+    }
+}
+"""
+PREDICAT_QUI_PROPAGE = """
+impl FimBackend for X {
+    fn watch_root(&mut self, root: &Path) -> usize {
+        let md = std::fs::symlink_metadata(root);
+        if md.is_err() {
+            return 1;
+        }
+        let _ = libc::x(root);
+        0
+    }
+}
+"""
+SUCCES_SANS_ELSE_MUET = """
+impl FimBackend for X {
+    fn watch_root(&mut self, root: &Path) -> usize {
+        if std::fs::read_dir(root).is_ok() {
+            let _ = libc::x(root);
+        }
+        0
+    }
+}
+"""
+REPLI_NEUTRE_SUR_ENUMERATION = """
+impl FimBackend for X {
+    fn watch_root(&mut self, root: &Path) -> usize {
+        let n = std::fs::read_dir(root).map(|e| e.count()).unwrap_or(0);
+        let _ = libc::x(root, n);
+        0
+    }
+}
+"""
+REPLI_DEFAUT_SUR_LECTURE = """
+fn inventaire(racine: &Path) -> usize {
+    let Ok(entrees) = std::fs::read_dir(racine) else { return 1 };
+    let mut n = 0;
+    for e in entrees {
+        let Ok(e) = e else { n += 1; continue };
+        n += std::fs::metadata(e.path()).map(|m| m.len() as usize).unwrap_or_default();
+    }
+    n
+}
+"""
+REPLI_DONT_LA_FERMETURE_COMPTE = """
+impl FimBackend for X {
+    fn watch_root(&mut self, root: &Path) -> usize {
+        let n = std::fs::read_dir(root).map(|e| e.count()).unwrap_or_else(|_| { self.perdus += 1; 0 });
+        let _ = libc::x(root, n);
+        self.perdus
+    }
+}
+"""
+# Un `unwrap_or(0)` sur une grandeur qui N'ARME RIEN : une variable d'environnement, un champ de configuration
+# déjà lu, une conversion. La fonction est de couverture ; ces replis ne sont pas des sites.
+REPLI_HORS_POPULATION = """
+impl FimBackend for X {
+    fn watch_root(&mut self, root: &Path) -> usize {
+        let profondeur = std::env::var("PLUME_FIM_DEPTH").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+        let cfg = std::fs::read_to_string(root).unwrap();
+        let plafond = cfg.get("max").and_then(|v| v.as_u64()).unwrap_or(0);
+        let nom = root.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        let _ = libc::x(root, profondeur, plafond, nom);
+        0
+    }
+}
+"""
+# `roots.len() == 0` compare une LONGUEUR, pas le retour d'une primitive : « rien à faire », pas un échec.
+LONGUEUR_COMPAREE = """
+impl FimBackend for X {
+    fn watch_root(&mut self, root: &Path) -> usize {
+        let roots = self.roots.clone();
+        if roots.len() == 0 {
+            return 0;
+        }
+        let _ = std::fs::read_dir(root);
+        let _ = libc::x(root);
+        0
+    }
+}
+"""
+# Une VALIDATION refusée est une décision, pas une lecture du monde qui a échoué.
+VALIDATION_REFUSEE = """
+fn run_playbooks(conn: &Connection) -> Mesure<u32> {
+    let mut abandonnes = 0u32;
+    for cible in cibles(conn) {
+        if cible.is_empty() || action_valid(&cible).is_err() {
+            continue;
+        }
+        let _ = conn.execute("INSERT INTO alert(ts,rule) VALUES(?1,?2)", params![1, cible]);
+    }
+    Mesure::Lue(abandonnes)
+}
+"""
+DRAPEAU_ABAISSE = """
+fn effacer(dir: &Path) -> usize {
+    let mut non_ecrases = 0;
+    for ent in std::fs::read_dir(dir).unwrap() {
+        let Ok(ent) = ent else { non_ecrases += 1; continue };
+        let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(ent.path()) else { non_ecrases += 1; continue };
+        let mut complet = true;
+        for _ in 0..3 {
+            if f.write_all(&[0u8; 8]).is_err() {
+                complet = false;
+                break;
+            }
+        }
+        if !complet { non_ecrases += 1; }
+    }
+    non_ecrases
+}
+"""
+DEJA_FAIT_QUI_REND_LA_MAIN = """
+fn seed(conn: &Connection) {
+    if conn.query_row("SELECT 1 FROM meta WHERE key='seeded'", [], |r| r.get::<_, i64>(0)).is_ok() { return; }
+    let _ = conn.execute("INSERT INTO alert(ts,rule) VALUES(1,2)", []);
+}
+"""
+SURFACE_PREDICAT_MUET = """
+fn cmd_status(p: &Path) -> Result<()> {
+    let spool = std::fs::read_dir(p).map(|e| e.count());
+    if spool.is_ok() { println!("spool: {}", spool.unwrap()); }
+    Ok(())
+}
+"""
+SURFACE_PREDICAT_QUI_DIT = """
+fn cmd_status(p: &Path) -> Result<()> {
+    let spool = std::fs::read_dir(p).map(|e| e.count());
+    if spool.is_ok() { println!("spool: {}", spool.unwrap()); } else { println!("spool: INCONNU"); }
+    Ok(())
+}
+"""
+
 TEMOINS = [
     ("pose qui abandonne un sous-arbre en silence", POSE_MUETTE, True),
     ("pose qui COMPTE ce qu'elle abandonne", POSE_QUI_COMPTE, False),
@@ -862,6 +1411,22 @@ TEMOINS = [
     ("chargeur dont le bloc d'échec `if let Err(e)` abandonne sans compter", CHARGEUR_ERR_INVERSE, True),
     ("énumérateur qui rend une liste VIDE sur un dossier refusé", ENUMERATEUR_QUI_REND_VIDE, True),
     ("sonde dont le `let … else` rend `Lue(0)` sans point-virgule", SONDE_LET_ELSE_QUI_MENT, True),
+    # `P4.1-s`
+    ("pose dont le `if wd < 0 { continue }` jette un watch refusé", SENTINELLE_MUETTE, True),
+    ("pose dont le `if wd < 0` COMPTE le watch refusé", SENTINELLE_QUI_COMPTE, False),
+    ("pose dont le `if md.is_err() { return 0 }` abandonne la racine", PREDICAT_MUET, True),
+    ("pose dont le `if md.is_err()` rend le compte", PREDICAT_QUI_PROPAGE, False),
+    ("pose dont le `if read_dir(..).is_ok() { … }` SANS else tait le refus", SUCCES_SANS_ELSE_MUET, True),
+    ("pose dont `read_dir(..).map(count).unwrap_or(0)` compte zéro entrée sur un dossier refusé", REPLI_NEUTRE_SUR_ENUMERATION, True),
+    ("inventaire dont `metadata(..).unwrap_or_default()` compte zéro octet sur un fichier illisible", REPLI_DEFAUT_SUR_LECTURE, True),
+    ("pose dont la fermeture de `unwrap_or_else` COMPTE", REPLI_DONT_LA_FERMETURE_COMPTE, False),
+    ("`unwrap_or(0)` sur une variable d'environnement, un champ lu, un nom : HORS population", REPLI_HORS_POPULATION, False),
+    ("`roots.len() == 0` compare une longueur, pas une primitive", LONGUEUR_COMPAREE, False),
+    ("`action_valid(..).is_err()` est une validation refusée, pas une lecture", VALIDATION_REFUSEE, False),
+    ("drapeau ABAISSÉ (`complet = false`) sur un `write_all(..).is_err()`", DRAPEAU_ABAISSE, False),
+    ("`if query_row(..).is_ok() { return }` : déjà fait, la suite est le chemin de travail", DEJA_FAIT_QUI_REND_LA_MAIN, False),
+    ("surface dont le `if spool.is_ok()` SANS else fait disparaître la grandeur", SURFACE_PREDICAT_MUET, True),
+    ("surface dont le `else` dit INCONNU", SURFACE_PREDICAT_QUI_DIT, False),
 ]
 # Témoins à PLUSIEURS fichiers : la résolution des appels qualifiés à travers le crate, et le masquage du
 # code de test. Chacun est une liste de (chemin, texte) et un verdict attendu (rougir ?) ; un témoin dont la
@@ -992,7 +1557,8 @@ def main() -> int:
               "qui écrivent la surface d'état : aucune branche d'échec n'abandonne en silence."
               % (crate, nc, ns))
     print("Témoins de l'instrument : %d + %d (positifs ET négatifs, dont la pose dégénérée, le scrutin "
-          "sous bloc `unsafe`, l'évaluateur qui ment, le listing délégué et le code de test masqué)."
+          "sous bloc `unsafe`, l'évaluateur qui ment, le listing délégué, le code de test masqué, et l'échec "
+          "testé par comparaison, par prédicat ou par repli neutre)."
           % (len(TEMOINS), len(TEMOINS_CRATE)))
     return 0
 

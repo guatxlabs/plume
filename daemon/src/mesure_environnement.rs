@@ -306,6 +306,55 @@ pub(crate) fn profondeur_file_depuis(spool: &std::path::Path) -> Mesure<u64> {
 }
 
 // =================================================================================================
+// LES ENTRÉES NOMMÉES D'UN RÉPERTOIRE — `S29`, l'allégation d'hôte mesurée au lieu d'être écrite
+// =================================================================================================
+
+/// LES NOMS QUI SUBSISTENT DANS UN RÉPERTOIRE, hors ceux que l'appelant possède — paramétrée sur le
+/// répertoire, donc exerçable dans les deux sens : un répertoire fabriqué et VIDE rend `Lue([])` (un
+/// vrai zéro), un répertoire absent ou refusé rend `Illisible` avec sa cause, et n'est JAMAIS lu comme
+/// « rien n'y subsiste ».
+///
+/// POURQUOI ELLE EXISTE. Le déversement des tris repose sur une propriété que seul l'HÔTE rend vraie :
+/// « SQLite délie son fichier temporaire aussitôt après l'avoir ouvert, donc il n'a aucun nom dans
+/// l'arborescence et disparaît à la fermeture, y compris si le processus meurt ». Aucune garde de source
+/// ne peut la tenir — le faiseur de vérité est le moteur vendoré ET le noyau — et si elle cessait d'être
+/// vraie, des VALEURS D'ÉVÉNEMENT EN CLAIR resteraient sous un nom dans un répertoire que personne
+/// n'ouvre : le système continuerait, la bannière dirait « activé vers … », rien ne rougirait. C'est le
+/// rang de silence qui justifie une mesure. Or la propriété a un OBSERVABLE exact : si elle tient, le
+/// répertoire de déversement ne contient JAMAIS de nom au démarrage (rien d'autre n'y écrit, `0700`,
+/// dédié). Un nom qui subsiste est donc la preuve qu'elle a lâché au moins une fois — un processus tombé
+/// entre l'ouverture et le déliage, ou un moteur qui ne délie plus.
+///
+/// UN PARCOURS INTERROMPU N'EST PAS UN PARCOURS COMPLET (même doctrine que `profondeur_file_depuis`) :
+/// une entrée illisible en cours de route rendrait un compte PLUS PETIT que la réalité, c'est-à-dire la
+/// valeur la plus rassurante ; le compte partiel est refusé.
+pub(crate) fn entrees_nommees_depuis(dir: &std::path::Path, ignorer: &[&str]) -> Mesure<Vec<String>> {
+    let entrees = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => return Mesure::Illisible { cause: cause_io(&e), detail: format!("{} : {e}", dir.display()) },
+    };
+    let mut noms = Vec::new();
+    for entree in entrees {
+        match entree {
+            Ok(e) => {
+                let nom = e.file_name().to_string_lossy().into_owned();
+                if !ignorer.contains(&nom.as_str()) {
+                    noms.push(nom);
+                }
+            }
+            Err(e) => {
+                return Mesure::Illisible {
+                    cause: cause_io(&e),
+                    detail: format!("{} : parcours interrompu ({e}) — un compte partiel serait plus petit que ce qui subsiste", dir.display()),
+                }
+            }
+        }
+    }
+    noms.sort();
+    Mesure::Lue(noms)
+}
+
+// =================================================================================================
 // LA TAILLE DE LA BASE
 // =================================================================================================
 

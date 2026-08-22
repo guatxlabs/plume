@@ -84,9 +84,10 @@ pub(crate) struct Inventaire {
     pub(crate) octets: u64,
     /// `Some(n)` : le balayage s'est ARRÊTÉ après `n` entrées -> les deux compteurs sont des MINORANTS.
     pub(crate) borne: Option<usize>,
-    /// Entrées ou sous-répertoires que le balayage N'A PAS SU LIRE (`P4.1-r`) : chacun cache un nombre
-    /// inconnu de fichiers-jour, donc les deux compteurs sont des MINORANTS — comme sous `borne`. Avant,
-    /// ils étaient sautés en silence et l'inventaire se présentait comme complet.
+    /// Entrées ou sous-répertoires que le balayage N'A PAS SU LIRE (`P4.1-r`), et fichiers-jour dont la
+    /// TAILLE n'a pas pu être lue (`P4.1-s`) : chacun cache un nombre inconnu de fichiers-jour ou d'octets,
+    /// donc les deux compteurs sont des MINORANTS — comme sous `borne`. Avant, ils étaient sautés en
+    /// silence (ou comptés pour zéro octet) et l'inventaire se présentait comme complet.
     pub(crate) illisibles: usize,
 }
 
@@ -259,7 +260,12 @@ fn compte_fichier_jour(chemin: &Path, inv: &mut Inventaire) {
         return;
     }
     inv.fichiers += 1;
-    inv.octets += std::fs::metadata(chemin).map(|m| m.len()).unwrap_or(0);
+    // Une taille qu'on n'a pas pu lire n'est pas zéro (`P4.1-s`) : le fichier est compté, ses octets manquent
+    // à la somme, et `illisibles` dit qu'elle est un MINORANT — comme pour une entrée qu'on n'a pas su lister.
+    match std::fs::metadata(chemin) {
+        Ok(m) => inv.octets += m.len(),
+        Err(_) => inv.illisibles += 1,
+    }
 }
 
 /// LA RÉCOLTE, CORPS « CAPACITÉ PRÉSENTE ». Les nombres publiés sont ceux que le processus APPLIQUE :

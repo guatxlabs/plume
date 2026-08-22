@@ -591,10 +591,11 @@ mod vieillissement_serie_tests {
     /// FOIS par vieillissement (cadence horaire de `retention_run`), jamais dans une boucle chaude ; son
     /// coût doit donc être négligeable devant une passe qui dure des secondes. Ce n'est pas une évidence :
     /// `/proc/self/clear_refs` accepte d'autres valeurs que `5`, et elles, elles PARCOURENT toute la
-    /// table des pages du processus (`1`/`2`/`3` : bits soft-dirty, avec purge de TLB). Écrire la
+    /// table des pages du processus (`1`/`2`/`3` : bits « référencé/accédé », `4` : bits soft-dirty, avec
+    /// purge de TLB — `Documentation/filesystems/proc.rst`, relu le 2026-08-22). Écrire la
     /// mauvaise valeur transformerait une mesure gratuite en balayage de tout l'espace d'adressage.
     ///
-    /// CE QUE CE TEST ATTRAPE, ET CE QU'IL N'ATTRAPE PAS — mesuré le 2026-08-10, pas supposé. J'ai cru
+    /// CE QUE CE TEST ATTRAPE, ET CE QU'IL N'ATTRAPE PAS — mesuré le 2026-08-10, pas supposé. L'hypothèse de départ était
     /// que ce test serait la garde contre `clear_refs=1` : FAUX. Mutation exécutée (`b"5"` -> `b"1"`) : le
     /// coût par fenêtre passe de **179 µs à 303 µs** (×1,7), très en dessous de la borne — le test reste
     /// VERT. La table des pages d'un binaire de test (~20 Mio résidents) est trop petite pour que le

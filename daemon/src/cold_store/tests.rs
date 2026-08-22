@@ -9545,7 +9545,7 @@ fn une_connexion_de_sonde_refuse_d_ecrire() {
 /// `now-10 j` tombe dans la bande [now-30 j, now-2 j) que la conf de test produit.
 ///
 /// CE QUE LA MUTATION A RÉFUTÉ, ET CE QU'ELLE A CONFIRMÉ (exécuté le 2026-08-11 — la première version de
-/// ce commentaire annonçait autre chose, et la mesure l'a démentie). J'ai cru qu'ajouter un `ANALYZE` dans
+/// ce commentaire annonçait autre chose, et la mesure l'a démentie). L'hypothèse de départ était qu'ajouter un `ANALYZE` dans
 /// `ouvrir_en_lecture_seule` suffirait à faire rougir l'octet-pour-octet : **FAUX, le test reste VERT**.
 /// `ANALYZE` sur un descripteur `SQLITE_OPEN_READ_ONLY` ÉCHOUE — la première garde l'avale avant qu'il
 /// n'écrive. Retirer SEULEMENT le drapeau read-only laisse le test vert AUSSI (le code, lui, n'écrit

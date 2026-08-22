@@ -1145,10 +1145,9 @@ pub(crate) fn scheduled_backup_cycle(db_path: &str, dest_dir: &str, keep: usize,
                 // purgeable, dédupliqué à l'heure ; exercice de restauration dû -> signal SOC non purgeable,
                 // dédupliqué au jour. Les deux sur UNE porte.
                 signaler_ce_qu_implique_l_archive_publiee(db_path, key, recipient);
-                let ratio = if st.dest_bytes > 0 { st.plaintext_bytes as f64 / st.dest_bytes as f64 } else { 0.0 };
                 eprintln!(
-                    "[backup-sched] écrit {final_path}  charge={} o  dest={} o  ratio={:.1}x  clair-sur-disque={}",
-                    st.plaintext_bytes, st.dest_bytes, ratio,
+                    "[backup-sched] écrit {final_path}  {}  clair-sur-disque={}",
+                    st.phrase_des_tailles(),
                     if st.wrote_plaintext_to_disk { "OUI (chemin historique)" } else { "non" });
             }
             Err(e) => {

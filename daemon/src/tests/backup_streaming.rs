@@ -570,20 +570,24 @@
         let (r_beaucoup, pic_beaucoup) = crate::tas_du_fil::pic_vivant_pendant(
             || backup_compressed(&src_beaucoup, &dest_beaucoup, Some(key), Some(&destinataire)));
         let st_beaucoup = r_beaucoup.expect("sauvegarde OK (beaucoup de lignes)");
+        // La charge du chemin streaming est un COMPTE du dump, toujours lue (`P4.1-s`) ; une charge
+        // avouée illisible ici serait un défaut du chemin pris, pas une mesure.
+        let charge_peu = st_peu.charge_octets().expect("la charge d'un dump streaming est comptée, pas lue sur le disque");
+        let charge_beaucoup = st_beaucoup.charge_octets().expect("la charge d'un dump streaming est comptée, pas lue sur le disque");
         eprintln!("[largeur-de-ligne] cellule={} Mio | {PEU} lignes : charge={} Mio dump={} o pic tas={} o \
                    | {BEAUCOUP} lignes : charge={} Mio dump={} o pic tas={} o",
-            CELLULE >> 20, (PEU * CELLULE) >> 20, st_peu.plaintext_bytes, pic_peu,
-            (BEAUCOUP * CELLULE) >> 20, st_beaucoup.plaintext_bytes, pic_beaucoup);
+            CELLULE >> 20, (PEU * CELLULE) >> 20, charge_peu, pic_peu,
+            (BEAUCOUP * CELLULE) >> 20, charge_beaucoup, pic_beaucoup);
 
         // LE CHEMIN PRIS EST BIEN CELUI QU'ON MESURE : le streaming, jamais le repli historique (qui, lui,
         // matérialise la base en clair et n'a pas du tout le même profil mémoire).
         assert!(!st_peu.wrote_plaintext_to_disk && !st_beaucoup.wrote_plaintext_to_disk,
             "les deux mesures doivent porter sur le chemin STREAMING, pas sur le repli historique");
         // les deux dumps ont RÉELLEMENT transporté leur charge (sinon on comparerait deux non-événements).
-        assert!(st_peu.plaintext_bytes as usize >= PEU * CELLULE,
-            "le dump de {PEU} lignes doit transporter {} o (mesuré : {} o)", PEU * CELLULE, st_peu.plaintext_bytes);
-        assert!(st_beaucoup.plaintext_bytes as usize >= BEAUCOUP * CELLULE,
-            "le dump de {BEAUCOUP} lignes doit transporter {} o (mesuré : {} o)", BEAUCOUP * CELLULE, st_beaucoup.plaintext_bytes);
+        assert!(charge_peu as usize >= PEU * CELLULE,
+            "le dump de {PEU} lignes doit transporter {} o (mesuré : {} o)", PEU * CELLULE, charge_peu);
+        assert!(charge_beaucoup as usize >= BEAUCOUP * CELLULE,
+            "le dump de {BEAUCOUP} lignes doit transporter {} o (mesuré : {} o)", BEAUCOUP * CELLULE, charge_beaucoup);
 
         // LA SONDE A BIEN VU CETTE SAUVEGARDE : le BufWriter de sortie (`BACKUP_BUF` = 1 Mio) est une
         // allocation Rust vivante pendant tout le dump. Un pic en dessous voudrait dire qu'on n'a rien mesuré.
@@ -689,15 +693,17 @@
         restore_compressed(&dest_hist, &re_hist, Some(key), true, None).expect("restauration historique OK");
         let ms_hist = t1.elapsed().as_millis();
 
+        // Les tailles sont LUES ou AVOUÉES (`P4.1-s`) : une archive qui vient d'être écrite a une taille lue.
+        let archive_stream = st_stream.archive_octets().expect("taille de l'archive streaming lue");
+        let archive_hist = st_hist.archive_octets().expect("taille de l'archive historique lue");
         eprintln!(
-            "[taille-comparee] base={src_bytes} o | streaming: charge={} o dest={} o restore={ms_stream} ms | \
-             historique: charge={} o dest={} o restore={ms_hist} ms",
-            st_stream.plaintext_bytes, st_stream.dest_bytes, st_hist.plaintext_bytes, st_hist.dest_bytes);
+            "[taille-comparee] base={src_bytes} o | streaming: {} restore={ms_stream} ms | \
+             historique: {} restore={ms_hist} ms",
+            st_stream.phrase_des_tailles(), st_hist.phrase_des_tailles());
 
         // L'échange, dans son sens : le dump n'emporte ni index ni shadow FTS -> `.age` PLUS PETIT.
-        assert!(st_stream.dest_bytes < st_hist.dest_bytes,
-            "le dump streaming ({} o) doit être plus petit que la copie SQLite complète ({} o)",
-            st_stream.dest_bytes, st_hist.dest_bytes);
+        assert!(archive_stream < archive_hist,
+            "le dump streaming ({archive_stream} o) doit être plus petit que la copie SQLite complète ({archive_hist} o)");
 
         // ...et les DEUX restaurations rendent la MÊME base utile (même nombre de lignes, FTS requêtable).
         for (label, path) in [("streaming", &re_stream), ("historique", &re_hist)] {

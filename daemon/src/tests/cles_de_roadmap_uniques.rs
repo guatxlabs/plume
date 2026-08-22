@@ -1,10 +1,10 @@
 // =================================================================================================
 // `P8.9-b` — UNE LIGNE QUI SE DÉCLARE `*(clé neuve)*` DOIT ÊTRE LA SEULE DÉFINITION DE SA CLÉ
 //
-// CE QUI S'EST PASSÉ, LE 2026-08-15. J'ai ouvert la clé `P4.4-j` pour un constat sur la porte de
+// CE QUI S'EST PASSÉ, LE 2026-08-15. La clé `P4.4-j` a été ouverte pour un constat sur la porte de
 // déploiement. Elle était PRISE depuis le 08-11 — elle désignait le banc de tests qui exécutait
 // `curl https://get.k3s.io | sh` sur sa propre machine. Deux constats sans aucun rapport sous une seule
-// clé, et je m'en suis aperçu APRÈS avoir commité et poussé. Le schéma de clés promet qu'une clé se suit
+// clé, et la collision n'a été vue qu'APRÈS avoir commité et poussé. Le schéma de clés promet qu'une clé se suit
 // *du rapport jusqu'au commit* ; la promesse était rompue dès la première citation.
 //
 // EN CHERCHANT LA MIENNE, J'EN AI TROUVÉ UNE PLUS VIEILLE : `P8.5-a` était la tête de DEUX lignes

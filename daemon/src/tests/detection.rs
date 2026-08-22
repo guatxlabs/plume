@@ -1072,17 +1072,17 @@
 
         // --- 2) BACKUP compressé+chiffré ---
         let stats = backup_compressed(&src, &dest, Some(key), None).expect("backup_compressed OK");
-        let ratio = stats.plaintext_bytes as f64 / stats.dest_bytes.max(1) as f64;
-        eprintln!(
-            "[roundtrip] plaintext={} o  dest={} o  ratio={:.1}x",
-            stats.plaintext_bytes, stats.dest_bytes, ratio);
+        // Les deux tailles sont LUES ou AVOUÉES (`P4.1-s`) : ici elles doivent avoir été lues.
+        let charge = stats.charge_octets().expect("la charge de la sauvegarde est mesurée");
+        let archive = stats.archive_octets().expect("la taille de l'archive écrite est lue sur le disque");
+        let ratio = charge as f64 / archive.max(1) as f64;
+        eprintln!("[roundtrip] plaintext={charge} o  dest={archive} o  ratio={ratio:.1}x");
 
         // (a) dest STRICTEMENT plus petit que le plaintext (compression effective).
-        assert!(stats.dest_bytes > 0 && stats.plaintext_bytes > 0, "tailles non nulles");
+        assert!(archive > 0 && charge > 0, "tailles non nulles");
         assert!(
-            stats.dest_bytes < stats.plaintext_bytes,
-            "le backup compressé ({} o) doit être plus petit que le plaintext ({} o)",
-            stats.dest_bytes, stats.plaintext_bytes);
+            archive < charge,
+            "le backup compressé ({archive} o) doit être plus petit que le plaintext ({charge} o)");
 
         // (b) AUCUN plaintext lisible dans le fichier de backup chiffré.
         let dest_bytes = std::fs::read(&dest).unwrap();

@@ -633,8 +633,12 @@ pub(crate) enum Deversement {
     /// LE DÉFAUT. Pas de déversement : rien d'un événement ne touche le disque en clair, et il n'existe
     /// aucun plafond de tri (cf. l'en-tête du module — c'est un arbitrage, pas un oubli).
     Desactive,
-    /// Demandé par `PLUME_SQLITE_DEVERSEMENT=1` ET obtenu : ce répertoire recevra du clair.
-    Vers(std::path::PathBuf),
+    /// Demandé par `PLUME_SQLITE_DEVERSEMENT=1` ET obtenu : ce répertoire recevra du clair. Le second
+    /// membre est ce qui y SUBSISTAIT DÉJÀ sous un nom au moment de la préparation (`S29`) : SQLite délie
+    /// ses temporaires à l'ouverture, donc un nom qui subsiste est du clair qu'un processus tombé — ou un
+    /// moteur qui ne délie plus — a laissé derrière lui. C'est MESURÉ, jamais supposé vide : un répertoire
+    /// qu'on n'a pas su lister rend `Illisible`, et la bannière le dit tel quel.
+    Vers(std::path::PathBuf, crate::mesure_environnement::Mesure<Vec<String>>),
     /// Demandé et NON obtenu — le cas qui mérite l'alerte, parce que SQLite retombera silencieusement.
     Indisponible(String),
 }
@@ -666,19 +670,43 @@ pub(crate) fn banniere(mode: Deversement, tri: Tri) -> String {
             ),
             Some(d) => format!("{r} — déversement des tris DÉSACTIVÉ (demandé), MAIS LA MESURE DIT AUTRE CHOSE : {d}"),
         },
-        Deversement::Vers(d) => format!(
+        Deversement::Vers(d, residus) => format!(
             "{r} — déversement des tris ACTIVÉ vers {} : ce répertoire reçoit des VALEURS D'ÉVÉNEMENT EN \
-             CLAIR, hors de la base SQLCipher. Il doit être sur un support chiffré. {}",
+             CLAIR, hors de la base SQLCipher. Il doit être sur un support chiffré. {} {}",
             d.display(),
             match desaccord_pour(&tri, true) {
                 None => format!("MESURÉ : {}.", constat_de_tri(&tri)),
                 Some(x) => format!("MAIS LA MESURE DIT AUTRE CHOSE : {x}"),
-            }
+            },
+            constat_de_residus(&residus)
         ),
         Deversement::Indisponible(e) => format!(
             "{r} — déversement des tris DEMANDÉ mais répertoire INDISPONIBLE ({e}) : SQLite retombera sur \
              TMPDIR/var/tmp/tmp, qui est un tmpfs (donc de la RAM) sur la plupart des hôtes systemd -> le \
              déversement n'y borne RIEN"
+        ),
+    }
+}
+
+/// CE QUI SUBSISTE SOUS UN NOM DANS LE RÉPERTOIRE DE DÉVERSEMENT, dit avec un MOT STABLE (`S29`) :
+/// `residus-en-clair=0`, `residus-en-clair=<n>` suivi des noms, ou `residus-en-clair=illisible` suivi de
+/// la cause. Le mot est le contrat de supervision, comme les verdicts de `S28` ; seul `=0` est calme.
+/// Rien n'est supprimé ici : ces fichiers sont du clair, donc aussi une pièce — c'est à l'exploitant de
+/// décider, et la phrase se répète à chaque démarrage tant qu'il ne l'a pas fait.
+pub(crate) fn constat_de_residus(residus: &crate::mesure_environnement::Mesure<Vec<String>>) -> String {
+    use crate::mesure_environnement::Mesure;
+    match residus {
+        Mesure::Lue(noms) if noms.is_empty() => "residus-en-clair=0 (MESURÉ : aucun nom n'y subsistait).".to_string(),
+        Mesure::Lue(noms) => format!(
+            "residus-en-clair={} ({}) : SQLite délie ses temporaires à l'ouverture, donc un fichier qui porte \
+             encore un nom est du CLAIR laissé par un processus tombé ou par un moteur qui ne délie plus. Ils \
+             ne sont PAS supprimés ici : à examiner, puis à retirer.",
+            noms.len(),
+            noms.join(", ")
+        ),
+        Mesure::Illisible { cause, detail } => format!(
+            "residus-en-clair=illisible ({cause} : {detail}) : le répertoire n'a PAS pu être listé, donc rien \
+             ne dit qu'aucun clair n'y subsiste."
         ),
     }
 }
@@ -690,9 +718,20 @@ pub(crate) fn deversement_init(db_path: &str) -> Deversement {
         return Deversement::Desactive;
     }
     match repertoire_temporaire_init(db_path) {
-        Ok(d) => Deversement::Vers(d),
+        Ok(d) => {
+            let residus = residus_de_deversement(&d);
+            Deversement::Vers(d, residus)
+        }
         Err(e) => Deversement::Indisponible(e),
     }
+}
+
+/// LA MESURE DE L'ALLÉGATION D'HÔTE « SQLite délie son temporaire aussitôt ouvert » (`S29`) : les noms qui
+/// subsistent dans le répertoire de déversement, hors la sonde d'écriture qui est à nous. Si l'allégation
+/// tient, cette liste est VIDE à chaque démarrage ; un nom est la preuve qu'elle a lâché au moins une fois.
+/// Paramétrée sur le répertoire, donc exerçable sans toucher à l'environnement du processus.
+pub(crate) fn residus_de_deversement(dir: &std::path::Path) -> crate::mesure_environnement::Mesure<Vec<String>> {
+    crate::mesure_environnement::entrees_nommees_depuis(dir, &[SONDE_ECRITURE])
 }
 
 /// Le répertoire où SQLite déversera. PRIVÉ : on passe par `deversement_init`, sinon un appelant peut
@@ -707,7 +746,9 @@ pub(crate) fn deversement_init(db_path: &str) -> Deversement {
 ///
 /// Un `SQLITE_TMPDIR` posé EXPLICITEMENT par l'exploitant est RESPECTÉ (et seulement contrôlé) : c'est le
 /// levier par lequel un déploiement place le déversement sur un support chiffré. On ne remplace que le
-/// SILENCE — et le silence, ici, vaut `/tmp`.
+/// SILENCE — et le silence, chez le moteur vendoré (`unixTempFileDir`, lu dans `sqlite3.c`), vaut dans
+/// l'ordre `TMPDIR`, puis `/var/tmp`, `/usr/tmp`, `/tmp`, puis le répertoire courant : un répertoire
+/// PARTAGÉ dans tous les cas, et pas forcément `/tmp`.
 fn repertoire_temporaire_init(db_path: &str) -> Result<std::path::PathBuf, String> {
     if let Ok(explicite) = std::env::var("SQLITE_TMPDIR") {
         if !explicite.trim().is_empty() {
@@ -734,8 +775,12 @@ fn repertoire_temporaire_init(db_path: &str) -> Result<std::path::PathBuf, Strin
 }
 
 /// Écrit un octet puis le relit. Une sonde qu'on n'a pas vue RÉUSSIR ne prouve rien de son sujet.
+/// Le nom de la sonde d'écriture : UN SEUL auteur, parce que la mesure des résidus doit l'ignorer par le
+/// même nom que le contrôle l'écrit.
+const SONDE_ECRITURE: &str = ".sonde-ecriture";
+
 fn controle_positif(dir: &std::path::Path) -> Result<(), String> {
-    let sonde = dir.join(".sonde-ecriture");
+    let sonde = dir.join(SONDE_ECRITURE);
     std::fs::write(&sonde, b"1").map_err(|e| format!("écriture impossible dans {} : {e}", dir.display()))?;
     let relu = std::fs::read(&sonde).map_err(|e| format!("relecture impossible dans {} : {e}", dir.display()))?;
     let _ = std::fs::remove_file(&sonde);
@@ -984,7 +1029,10 @@ mod plafond_tests {
             !segment.contains("/"),
             "AUCUN chemin ne doit apparaître quand rien ne déverse — c'est exactement ce qui mentait : {eteint}"
         );
-        let allume = banniere(Deversement::Vers(std::path::PathBuf::from("/x/sqltmp")), Tri::SurDisque { compile: 2, local: 1 });
+        let allume = banniere(
+            Deversement::Vers(std::path::PathBuf::from("/x/sqltmp"), crate::mesure_environnement::Mesure::Lue(vec![])),
+            Tri::SurDisque { compile: 2, local: 1 },
+        );
         assert!(allume.contains("/x/sqltmp"), "le chemin qui reçoit du clair doit être NOMMÉ : {allume}");
         assert!(allume.contains("EN CLAIR"), "et ce qu'il reçoit doit être dit : {allume}");
         let casse = banniere(Deversement::Indisponible("montage RO".into()), memoire);

@@ -39,8 +39,16 @@ LE CRITÈRE, DANS L'ORDRE OÙ IL EST APPLIQUÉ
    existe sous la racine (`collectors/integrity.sh`), un répertoire du dépôt ou un glob dessus
    (`systemd/`, `collectors/*`), ou un nom de fichier à extension connue qui existe dans le dépôt
    (`integrity.sh`, `seeds.rs`, `Cargo.toml`). Un chemin ABSOLU (`/etc/…`, `/proc/…`)
-   désigne l'HÔTE, jamais le dépôt. Le reste (ni fichier du dépôt, ni chemin d'hôte) est laissé SANS
-   faiseur nommé : c'est la case qu'aucune garde de source ne peut tenir.
+   désigne l'HÔTE, jamais le dépôt — SAUF quand il est CITÉ et non pris pour sujet (`CHEMIN_CITE`,
+   faux amis mesurés côté hôte) : la phrase dit où CE CODE nomme, écrit ou touche le chemin, ou qu'une
+   suite n'en dépend pas (« le seul endroit qui écrit dans `/proc` », « valables sur un hôte sans
+   `/proc` ») -> faiseur `arbre`, se tient par une recherche sur l'arbre, pas par une mesure sur
+   l'hôte ; ou le chemin est une VALEUR D'EXEMPLE — un jeton de recherche (« `/usr/bin/dash` …
+   étaient des erreurs FTS5 »), une algèbre de chemins (« `/homeless-binary` n'est pas sous `/home` »),
+   une comparaison (« comme `/dev/zero` ») -> faiseur `exemple`, rien à vérifier nulle part. Mesuré le
+   2026-08-22 : 78 phrases classées hôte, dont 8 `arbre` et 7 `exemple` ; 63 restent hôte.
+   Le reste (ni fichier du dépôt, ni chemin d'hôte) est laissé SANS faiseur nommé : c'est la case
+   qu'aucune garde de source ne peut tenir.
 
 CE QUE CET INSTRUMENT NE FAIT PAS
 ---------------------------------
@@ -53,6 +61,8 @@ USAGE
     recenser_les_allegations_d_environnement.py                 résumé + phrases qui nomment un fichier
     recenser_les_allegations_d_environnement.py --toutes        toutes les phrases qui affirment
     recenser_les_allegations_d_environnement.py --hote          celles dont le faiseur est un chemin d'hôte
+    recenser_les_allegations_d_environnement.py --arbre         chemin cité : où ce code le nomme (recherche sur l'arbre)
+    recenser_les_allegations_d_environnement.py --exemple       chemin cité comme valeur d'exemple (rien à vérifier)
     recenser_les_allegations_d_environnement.py --json          sortie machine (une ligne JSON par phrase)
     recenser_les_allegations_d_environnement.py --sans FICHIER  exclut un fichier du corpus (répétable)
 """
@@ -163,6 +173,26 @@ NOM_DE_FICHIER = re.compile(
     r"|Dockerfile|docker-compose\.yml)(?![\w/\-])"
 )
 CHEMIN_ABSOLU = re.compile(r"(?<![\w/.])/(?:etc|proc|sys|run|var|tmp|dev|usr|opt|home|root|srv|mnt|boot)(?:/[\w.\-*]+)*")
+
+# --- 6 bis. Les faux amis CÔTÉ HÔTE : un chemin absolu CITÉ n'est pas un chemin pris pour sujet.
+# (motif, faiseur rendu à la place de `hote`). Chaque motif porte l'exemple mesuré qui l'a fait écrire.
+CHEMIN_CITE = [
+    # « Le seul endroit du module qui nomme `/proc` », « Aucune des fonctions de lecture ne nomme `/proc` »,
+    # « C'est le seul endroit qui écrit dans `/proc` », « Seuls les tests d'INSTRUMENT touchent `/proc` » :
+    # la phrase parle de CE CODE ; son faiseur est une recherche sur l'arbre.
+    (re.compile(r"\b(?:seuls?|seules?|aucune?)\b[^.;:]{0,60}\b(?:endroit|fonction|test|site|module)s?\b[^.;:]{0,60}"
+                r"\b(?:nomme|nomment|écri|ecri|lit|lisent|touche|touchent|cite|citent|dépend|depend)", re.I), "arbre"),
+    # « valables sur un hôte sans `/proc` comme sur un autre », « y compris une machine sans `/proc` » :
+    # une suite qui dit ne pas dépendre de l'hôte — se tient en lisant la suite.
+    (re.compile(r"\b(?:hôte|hote|machine)s? sans `?/", re.I), "arbre"),
+    # « `/usr/bin/dash` … étaient tous des erreurs FTS5 », « cinq saisies … à `MATCH` », « 4 racines … GXQL » :
+    # le chemin est un JETON de langage de requête.
+    (re.compile(r"\bFTS5?\b|\bMATCH\b|\bGXQL\b|\bsaisies?\b", re.I), "exemple"),
+    # « `/homeless-binary` n'est PAS sous `/home` » (`Path::starts_with`) : une algèbre de chemins.
+    (re.compile(r"starts_with|\bcomposants?\b", re.I), "exemple"),
+    # « (ou `/dev/zero`-like) », « (comme /dev/zero, un fichier qui grossit…) » : une comparaison.
+    (re.compile(r"`?/[\w/.\-]+`?-like|\bcomme `?/", re.I), "exemple"),
+]
 
 
 def fichiers_du_depot():
@@ -373,6 +403,9 @@ def faiseur_de_verite(phrase, relatifs, par_nom, chemin_source):
         return "depot", nommes
     hote = sorted(set(m.group(0) for m in CHEMIN_ABSOLU.finditer(phrase)))
     if hote:
+        for motif, faiseur in CHEMIN_CITE:
+            if motif.search(phrase):
+                return faiseur, hote
         return "hote", hote
     return "aucun", []
 
@@ -420,6 +453,10 @@ def main(argv):
             mode = "toutes"
         elif a == "--hote":
             mode = "hote"
+        elif a == "--arbre":
+            mode = "arbre"
+        elif a == "--exemple":
+            mode = "exemple"
         elif a == "--json":
             en_json = True
         elif a == "--sans":
@@ -432,12 +469,15 @@ def main(argv):
     n_dat = sum(1 for p in ph if p["datee"])
     n_dep = sum(1 for p in ph if p["faiseur"] == "depot")
     n_hot = sum(1 for p in ph if p["faiseur"] == "hote")
+    n_arb = sum(1 for p in ph if p["faiseur"] == "arbre")
+    n_exe = sum(1 for p in ph if p["faiseur"] == "exemple")
     if not en_json:
         print(
             f"corpus : {r['fichiers']} fichiers .rs · {r['blocs']} blocs de commentaire · "
             f"{r['candidats']} blocs candidats · {len(ph)} phrases qui AFFIRMENT · {n_dat} datées "
             f"({(100 * n_dat // len(ph)) if ph else 0} %) · faiseur = fichier du dépôt : {n_dep} · "
-            f"faiseur = chemin d'hôte : {n_hot} · sans faiseur nommé : {len(ph) - n_dep - n_hot}"
+            f"faiseur = chemin d'hôte : {n_hot} · chemin cité (arbre) : {n_arb} · chemin d'exemple : {n_exe} · "
+            f"sans faiseur nommé : {len(ph) - n_dep - n_hot - n_arb - n_exe}"
         )
         if exclus:
             print(f"exclus du corpus : {sorted(exclus)}")

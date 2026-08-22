@@ -67,7 +67,9 @@ pub(crate) fn seed_demo(conn: &Connection) {
     // 100% synthétiques : host `demo-host`, IPs déjà dans `ips` (RFC-5737/TEST-NET), aucun agent réel. Events
     // narratifs dédiés (dedup 'democase-*') liés en timeline pour que les chips alert/event se résolvent. Sous le
     // flag `seeded_demo` déjà posé -> idempotent (une seule fois). JAMAIS hors démo (n'active pas PLUME_DEMO).
-    let ev = |ts: i64, src: &str, cat: &str, sev: i64, msg: &str, ip: Option<&str>, dk: &str| -> i64 {
+    // L'id de l'événement narratif est rendu `None` quand la relecture échoue (`P4.1-s`) : l'élément de
+    // timeline part alors SANS référence plutôt qu'avec `event:0`, qui pointe sur rien et se lit comme un lien.
+    let ev = |ts: i64, src: &str, cat: &str, sev: i64, msg: &str, ip: Option<&str>, dk: &str| -> Option<i64> {
         // CLOISONNEMENT PAR HÔTE (cf. ci-dessus) : la clé STOCKÉE est cloisonnée, DONC la relecture qui
         // résout l'id de l'event narratif l'est aussi — sinon la timeline de la case de démo casserait.
         let dks = dedup_scoped_by_host(Some(host), Some(dk));
@@ -75,7 +77,7 @@ pub(crate) fn seed_demo(conn: &Connection) {
             "INSERT OR IGNORE INTO event(ts,source,category,severity,message,host,src_ip,dedup) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             params![ts, src, cat, sev, msg, host, ip, dks],
         );
-        conn.query_row("SELECT id FROM event WHERE dedup=?1", params![dks], |r| r.get::<_, i64>(0)).unwrap_or(0)
+        conn.query_row("SELECT id FROM event WHERE dedup=?1", params![dks], |r| r.get::<_, i64>(0)).ok()
     };
     let alert_id = |dk: &str| -> Option<i64> {
         conn.query_row("SELECT id FROM alert WHERE dedup=?1", params![dk], |r| r.get::<_, i64>(0)).ok()
@@ -103,9 +105,9 @@ pub(crate) fn seed_demo(conn: &Connection) {
     let ca = conn.last_insert_rowid();
     item(ca, a_ts, "created", "demo", "Incident créé (corrélation détection demo.bruteforce)", None);
     item(ca, a_ts + 60, "note", "analyste", "Triage : source 192.0.2.18 (TEST-NET), rafale d'échecs sur admin/root en < 5 min.", None);
-    item(ca, now_ts - 21300, "event", "analyste", "Échec d'authentification", Some(format!("event:{a1}")));
-    item(ca, now_ts - 21290, "event", "analyste", "Échec d'authentification (root)", Some(format!("event:{a2}")));
-    item(ca, now_ts - 21000, "event", "analyste", "Accès accepté après la rafale — pivot probable", Some(format!("event:{a3}")));
+    item(ca, now_ts - 21300, "event", "analyste", "Échec d'authentification", a1.map(|id| format!("event:{id}")));
+    item(ca, now_ts - 21290, "event", "analyste", "Échec d'authentification (root)", a2.map(|id| format!("event:{id}")));
+    item(ca, now_ts - 21000, "event", "analyste", "Accès accepté après la rafale — pivot probable", a3.map(|id| format!("event:{id}")));
     // L'entrée de chronologie existe dans les DEUX cas : avec son lien si l'alerte de démo a été posée, et
     // SANS lien (en le disant) sinon — une chronologie où l'entrée manque se lirait « pas d'alerte ».
     match alert_id("demo-demo.bruteforce") {
@@ -134,9 +136,9 @@ pub(crate) fn seed_demo(conn: &Connection) {
     let cb = conn.last_insert_rowid();
     item(cb, b_ts, "created", "demo", "Incident créé (corrélation détection demo.scan)", None);
     item(cb, b_ts + 40, "note", "analyste", "Triage : balayage de ports classique (RDP/SMB/SSH), tout bloqué en entrée par UFW.", None);
-    item(cb, now_ts - 7990, "event", "analyste", "Blocage UFW — 3389/TCP", Some(format!("event:{b1}")));
-    item(cb, now_ts - 7975, "event", "analyste", "Blocage UFW — 445/TCP", Some(format!("event:{b2}")));
-    item(cb, now_ts - 7955, "event", "analyste", "Blocage UFW — 22/TCP", Some(format!("event:{b3}")));
+    item(cb, now_ts - 7990, "event", "analyste", "Blocage UFW — 3389/TCP", b1.map(|id| format!("event:{id}")));
+    item(cb, now_ts - 7975, "event", "analyste", "Blocage UFW — 445/TCP", b2.map(|id| format!("event:{id}")));
+    item(cb, now_ts - 7955, "event", "analyste", "Blocage UFW — 22/TCP", b3.map(|id| format!("event:{id}")));
     match alert_id("demo-demo.scan") {
         Some(al) => item(cb, now_ts - 7950, "alert", "analyste", "Alerte de détection rattachée", Some(format!("alert:{al}"))),
         None => item(cb, now_ts - 7950, "alert", "analyste", "Alerte de détection rattachée (alerte de démo absente : lien non posé)", None),

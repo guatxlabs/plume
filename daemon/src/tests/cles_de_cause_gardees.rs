@@ -337,7 +337,7 @@ mod cles_de_cause_gardees_tests {
         // si `file!()` cesse de désigner un fichier réellement balayé. Une assurance qui pointerait à côté
         // serait pire que pas d'assurance du tout.
         //
-        // Contrôlé au passage, hors dépôt, parce que je le soupçonnais d'être la cause de l'inertie : dans
+        // Contrôlé au passage, hors dépôt, parce qu'il était soupçonné d'être la cause de l'inertie : dans
         // un fichier tiré par `include!`, `file!()` rend bien le chemin du fichier INCLUS et non celui de
         // l'incluant. Ce n'est donc PAS l'explication — l'inertie vient de l'absence de citations, point.
         let moi = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(file!());

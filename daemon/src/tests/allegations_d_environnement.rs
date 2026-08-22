@@ -968,4 +968,99 @@ mod allegations_d_environnement_tests {
         // TÉMOIN POSITIF : 27 dépôts par `bootstrap.sh` mesurés le 2026-08-20 ; plancher bas.
         assert!(deposes >= 20, "INSTRUMENT : {deposes} dépôt(s) d'unité reconnus dans les amorceurs — la forme `install … /etc/systemd/system/` a changé");
     }
+
+    // --------------------------------------------------------------------------------------------
+    // LE VOLET HÔTE — ce qu'aucune garde de source n'atteint, et ce qui en a été fait
+    // --------------------------------------------------------------------------------------------
+    //
+    // LE LOT. L'instrument (`--hote`) rend le 2026-08-22, arbre courant, 78 phrases dont le faiseur de
+    // vérité est un chemin d'hôte ; 15 sont des faux amis mesurés et désormais classés à part par
+    // l'instrument (8 `arbre` : la phrase dit où CE CODE nomme le chemin ; 7 `exemple` : le chemin est
+    // un jeton de recherche, une algèbre de chemins ou une comparaison). Restent 63, triées par le
+    // SILENCE PRODUIT — « si ça cesse d'être vrai sur l'hôte cible, que rend le processus, et qui
+    // l'apprend ? » — avec le critère écrit avant le tri : BRUYANT (refus, plantage, test rouge, alerte
+    // qui part), AMORTI (un aveu nommé absorbe — `Illisible`, `PasDeMesure`, `None` — ou la fausseté
+    // ne peut rendre la conception que PLUS prudente), SILENCE PARTIEL (une ligne de journal, rien
+    // d'autre), SILENCE COMPLET (le processus continue et rend une valeur rassurante). Rendu : 21
+    // bruyantes, 19 amorties, aucune en silence partiel, 2 en silence complet, 3 explicatives sans
+    // dépendant ; 18 phrases du lot ne sont pas des allégations d'hôte mais des descriptions du code ou
+    // d'un chemin de configuration (résidu de l'instrument, laissé tel quel : le corriger serait annoter
+    // de la prose).
+    //
+    // LE RANG SILENCE COMPLET COMPTE DEUX ALLÉGATIONS. (1) « SQLite délie le fichier temporaire
+    // aussitôt après l'avoir ouvert, donc il disparaît à la fermeture, y compris si le processus
+    // meurt » (`sqlite_plafond.rs`) — faiseur : le moteur vendoré (`unixOpen`, `osUnlink` sauf
+    // `SQLITE_UNLINK_AFTER_CLOSE`, relu le 2026-08-22 dans le 3.39.4 que `libsqlite3-sys` embarque ici) et le noyau. Si
+    // elle lâche, des valeurs d'événement EN CLAIR restent sous un nom dans un répertoire que personne
+    // n'ouvre, et la bannière continue de dire « activé vers … ». Issue (i) : MESURÉE à l'exécution,
+    // même forme et même endroit que les mesures de `S32` — `entrees_nommees_depuis` rend `Lue([])` ou
+    // `Illisible{cause}`, jamais « vide » faute de regarder ; la bannière porte le mot stable
+    // `residus-en-clair=`. C'est ce que les deux tests ci-dessous tiennent. (2) « le capteur
+    // d'intégrité a raison de surveiller `/etc/systemd/system` : y déposer une unité est un vecteur de
+    // persistance » (`maj_corroboree.rs`) — faiseur : le chemin de recherche d'unités de systemd, compilé
+    // dans le gestionnaire et documenté (`systemd.unit(5)`). Issue (iii) : laissée, parce que ce chemin
+    // n'a jamais changé de forme et que le démon ne tourne pas sur l'hôte du capteur ; ce qui n'est PAS
+    // tenu est autre chose — les AUTRES répertoires du même chemin de recherche (`/run/systemd/system`,
+    // `/usr/local/lib/systemd/system`, les drop-ins `*.d/*.conf`, les `.socket`/`.path`) que le capteur
+    // ne hache pas, et c'est un trou de COUVERTURE, pas une allégation fausse.
+    //
+    // TROIS PHRASES FAUSSES AU MOT PRÈS, sans dépendant, réécrites pour dire ce qui est su : « le silence
+    // vaut `/tmp` » (le moteur vendoré essaie `TMPDIR`, `/var/tmp`, `/usr/tmp`, `/tmp`, `.` dans cet
+    // ordre) ; « `1`/`2`/`3` : bits soft-dirty » (ce sont les bits référencé/accédé ; soft-dirty est `4`) ;
+    // « `/tmp` est un tmpfs » (vrai sur un poste, faux sur un hôte Debian ou un exécuteur d'intégration
+    // continue). Aucun comportement ne dépendait d'elles.
+
+    /// L'ALLÉGATION MESURÉE : « SQLite délie son temporaire aussitôt ouvert ». Son observable exact est
+    /// « aucun nom ne subsiste dans le répertoire de déversement au démarrage ». La mesure est exercée
+    /// dans les DEUX sens sur un temporaire possédé — un vide rend un VRAI zéro, un nom planté est rendu
+    /// avec son nom, la sonde d'écriture (qui est à nous) ne compte pas — et dans le sens qui interdit
+    /// une fonction qui ne saurait jamais rien : un répertoire absent rend `illisible` avec sa cause, pas
+    /// « aucun résidu ».
+    #[test]
+    fn un_residu_de_deversement_est_mesure_jamais_suppose_absent() {
+        use crate::mesure_environnement::{Mesure, CAUSE_SOURCE_ABSENTE, VERDICT_ILLISIBLE, VERDICT_LU};
+        use crate::sqlite_plafond::residus_de_deversement;
+        use crate::tmp_possede::TmpPossede;
+        let tmp = TmpPossede::neuf("s29-residus");
+
+        let vide = residus_de_deversement(&tmp);
+        assert_eq!(vide.verdict(), VERDICT_LU, "un répertoire présent et vide EST une mesure");
+        assert_eq!(vide.valeur(), Some(&vec![]), "et c'est un VRAI zéro");
+
+        std::fs::write(tmp.join(".sonde-ecriture"), b"1").expect("fixture : sonde");
+        let sonde_seule = residus_de_deversement(&tmp);
+        assert_eq!(sonde_seule, Mesure::Lue(vec![]), "la sonde d'écriture est à nous : elle n'est pas un résidu");
+
+        std::fs::write(tmp.join("etilqs_4f2a9c"), b"valeur d'evenement en clair").expect("fixture : résidu");
+        let un = residus_de_deversement(&tmp);
+        assert_eq!(un, Mesure::Lue(vec!["etilqs_4f2a9c".to_string()]), "un nom qui subsiste est rendu AVEC son nom");
+
+        let absent = residus_de_deversement(&tmp.join("sqltmp-qui-n-existe-pas"));
+        assert_eq!(absent.verdict(), VERDICT_ILLISIBLE, "un répertoire absent n'est PAS un répertoire sans résidu");
+        assert_eq!(absent.cause(), CAUSE_SOURCE_ABSENTE, "la cause nomme ce qui manque");
+        assert!(absent.valeur().is_none(), "aucune liste publiable quand on n'a pas regardé");
+    }
+
+    /// LA BANNIÈRE DIT LA MESURE AVEC UN MOT STABLE, et seul `=0` est calme. Trois cas exclusifs, un mot
+    /// chacun ; un répertoire non listé n'est jamais rendu comme un répertoire vide.
+    #[test]
+    fn la_banniere_de_deversement_porte_le_constat_de_residus() {
+        use crate::mesure_environnement::{Mesure, CAUSE_SOURCE_REFUSEE};
+        use crate::sqlite_plafond::{banniere, constat_de_residus, Deversement, Tri};
+        let calme = constat_de_residus(&Mesure::Lue(vec![]));
+        assert!(calme.contains("residus-en-clair=0"), "{calme}");
+        let un = constat_de_residus(&Mesure::Lue(vec!["etilqs_4f2a9c".to_string()]));
+        assert!(un.contains("residus-en-clair=1") && un.contains("etilqs_4f2a9c"), "le nom doit être dit : {un}");
+        assert!(!un.contains("residus-en-clair=0"), "{un}");
+        let aveugle = constat_de_residus(&Mesure::Illisible { cause: CAUSE_SOURCE_REFUSEE, detail: "sqltmp : EACCES".into() });
+        assert!(aveugle.contains("residus-en-clair=illisible") && aveugle.contains(CAUSE_SOURCE_REFUSEE), "{aveugle}");
+        assert!(!aveugle.contains("residus-en-clair=0"), "ne pas avoir regardé n'est pas avoir vu zéro : {aveugle}");
+        // Et le mot traverse la bannière réelle, dans le segment du déversement.
+        let b = banniere(
+            Deversement::Vers(std::path::PathBuf::from("/x/sqltmp"), Mesure::Lue(vec!["etilqs_4f2a9c".to_string()])),
+            Tri::SurDisque { compile: 2, local: 1 },
+        );
+        let segment = b.split_once("— déversement").expect("segment de déversement").1;
+        assert!(segment.contains("residus-en-clair=1") && segment.contains("etilqs_4f2a9c"), "{b}");
+    }
 }

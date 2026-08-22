@@ -7,7 +7,7 @@
 // En Docker et en k3s la distinction ne se voit pas : tout arrive par `env:` et `PLUME_CONFIG` pointe
 // sur `/nonexistent`. En systemd host-natif elle décide de tout — `plume-daemon.service` ne porte
 // AUCUN `EnvironmentFile`, donc une clé écrite dans `/etc/plume/soc.conf` n'atteint QUE la première
-// voie. C'est ainsi qu'un destinataire d'escrow age a pu être annulé en silence (cf. `backup.rs`).
+// voie. C'est ainsi qu'un destinataire d'escrow age a pu être annulé en silence (cf. `backup/mod.rs`).
 //
 // CE QUE CE FICHIER GARDE, ET POURQUOI IL SCANNE AU LIEU D'ÉNUMÉRER. Corriger les sept réglages de
 // sauvegarde ne ferme rien : la huitième variable ajoutée demain rouvrirait le trou exactement de la
@@ -19,7 +19,7 @@
 // manières : en appelant `env::var("PLUME_X")` directement, ou en passant par un AIGUILLEUR — une
 // fonction qui reçoit le nom en paramètre et appelle `env::var(k)`. La première mesure du défaut,
 // faite en cherchant `env::var("PLUME_…")`, avait manqué SIX variables pour cette raison
-// (`PLUME_AI_ENABLE`, `PLUME_AI_ALLOW_CLOUD`, et les quatre paliers GFS de `backup.rs`). Le garde
+// (`PLUME_AI_ENABLE`, `PLUME_AI_ALLOW_CLOUD`, et les quatre paliers GFS de `backup/retention.rs`). Le garde
 // dérive donc AUSSI les aiguilleurs — depuis les sites d'appel à clé non-littérale — puis suit leurs
 // arguments littéraux. Et il verrouille le nombre de ces sites : en créer un nouveau échoue, ce qui
 // interdit de fabriquer un aiguilleur neuf pour contourner la première moitié.

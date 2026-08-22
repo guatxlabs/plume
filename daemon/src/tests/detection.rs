@@ -4149,7 +4149,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
 
     // ============================================================================================
     // RÉTENTION GFS À PALIERS — `backup_prune_plan` (logique de sélection PURE, aucun S3).
-    // Voir daemon/src/backup.rs (section GFS) : paliers dense/daily/weekly + premigrate keep-N,
+    // Voir daemon/src/backup/retention.rs (section GFS) : paliers dense/daily/weekly + premigrate keep-N,
     // invariants fail-safe (jamais le plus récent, keep-si-non-parseable, vide->vide, idempotent).
     // ============================================================================================
 
@@ -4418,7 +4418,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
 
     // ========================================================================================
     // OPS NATIVE — SCHEDULER DE BACKUP IN-DAEMON (portable host/Docker). Voir server.rs
-    // (spawn_backup_scheduler / scheduled_backup_cycle) + backup.rs (fmt_backup_ts /
+    // (spawn_backup_scheduler / scheduled_backup_cycle) + backup/retention.rs (fmt_backup_ts /
     // backup_keep_recent_plan). Preuves : (1) fmt inverse EXACT de parse ; (2) rétention KEEP-N
     // pure + fail-safe ; (3) OFF-par-défaut = aucune tâche/aucun disque touché ; (4) un cycle du
     // scheduler écrit un .age B1 valide + restore fidèle + rétention effective.
@@ -4644,7 +4644,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     }
 
     /// ADVERSE #2 — **DÉFAUT CONFIRMÉ (test ROUGE volontaire)**. TEXT NON-UTF8. Le commentaire de
-    /// `write_value_ref` (backup.rs:388-390) ET le message d'erreur lui-même PROMETTENT un « repli legacy »
+    /// `write_value_ref` (backup/mod.rs) ET le message d'erreur lui-même PROMETTENT un « repli legacy »
     /// pour un TEXT non-UTF8. En réalité l'erreur remonte en `PlanErr::Fatal` (backup_compressed_stream:711
     /// `map_err(PlanErr::Fatal)`) et `backup_compressed:755` traite `Fatal` en ÉCHEC SEC (remove dest + Err) —
     /// AUCUN repli legacy. Conséquence : un SEUL octet non-UTF8 dans N'IMPORTE quelle cellule TEXT fait

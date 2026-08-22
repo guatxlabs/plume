@@ -80,7 +80,7 @@
 /daemon/src/migrate.rs                  @guatxlabs
 /daemon/src/maintenance.rs              @guatxlabs
 /daemon/src/disk.rs                     @guatxlabs
-/daemon/src/backup.rs                   @guatxlabs
+/daemon/src/backup/                     @guatxlabs
 
 # ---- Cold Parquet tier — GUARDED (crypto + crash-safety invariants) ----------------------
 # Reader path is now independently ownable post-split; writer/aging/crypto stay guarded.

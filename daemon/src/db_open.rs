@@ -428,7 +428,7 @@ pub(crate) mod door_tests {
         //   grep -rn 'without_schema_contract(' daemon/src --include=*.rs | grep -v /tests/ | grep -v db_open.rs | wc -l
         // 13 depuis P8.3-a (exercice de restauration), et les DEUX ajouts sont des lectures qui
         // doivent aboutir PRÉCISÉMENT quand le schéma n'est pas celui de ce binaire :
-        //   - `backup.rs` — la vérification d'une archive rouvre la base RESTAURÉE pour en compter le
+        //   - `backup/verification.rs` — la vérification d'une archive rouvre la base RESTAURÉE pour en compter le
         //     contenu. Une archive peut être plus ANCIENNE que le binaire qui la vérifie ; lui opposer
         //     le contrat transformerait un exercice de restauration réussi en échec, exactement quand
         //     il rend le plus service ;

@@ -13,7 +13,7 @@
 //! FTS5 à contenu externe ne peut pas retirer un posting en place : le déclencheur `event_ad` écrit un
 //! posting de SUPPRESSION, qui s'AJOUTE. L'espace n'est rendu qu'à la FUSION DES SEGMENTS. Et plume ne
 //! fusionnait JAMAIS : aucun `'optimize'`, aucun `'merge'` nulle part dans le démon (le seul `'rebuild'`
-//! vit dans `backup.rs`, sur le chemin de RESTAURATION). Le poids mort ne pouvait donc que s'accumuler,
+//! vit dans `backup/mod.rs`, sur le chemin de RESTAURATION). Le poids mort ne pouvait donc que s'accumuler,
 //! purge après purge — c'est ce qui explique que la part FTS soit passée de 8,1 % (banc) à 18,9 % (prod)
 //! sans croissance organique correspondante.
 //!

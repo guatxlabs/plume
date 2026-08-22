@@ -19,7 +19,7 @@
 //! LA GARDE DE PORTÉE. `sous()` ne rend pas un chemin détaché : il rend un [`CheminTmp<'_>`] qui
 //! EMPRUNTE son propriétaire. Un chemin ne peut donc pas survivre au répertoire qui le contient —
 //! `let p = TmpPossede::neuf("x").sous("a.db");` ne compile pas (E0716). C'est la même figure que
-//! `PlaintextTempGuard` (`backup.rs`) côté production, portée cette fois par le vérificateur
+//! `PlaintextTempGuard` (`backup/mod.rs`) côté production, portée cette fois par le vérificateur
 //! d'emprunts au lieu d'une relecture.
 //!
 //! LIMITE DÉCLARÉE : `Drop` ne s'exécute pas sur SIGKILL/OOM-kill/`abort()`. Un binaire de test

@@ -723,7 +723,7 @@ mod allegations_d_environnement_tests {
     // GARDE 4 — « `systemd/plume-daemon.service` ne porte AUCUN `EnvironmentFile` »
     // --------------------------------------------------------------------------------------------
 
-    /// L'ALLÉGATION TENUE, écrite QUATRE fois (`backup.rs`, `crypto/mod.rs`, et deux fichiers de test) :
+    /// L'ALLÉGATION TENUE, écrite QUATRE fois (`backup/mod.rs`, `crypto/mod.rs`, et deux fichiers de test) :
     /// l'unité du démon ne porte aucun `EnvironmentFile`, et c'est CE FAIT qui justifie deux décisions —
     /// router toutes les lectures de réglages par `cfg()` plutôt que d'ajouter la directive, et déposer
     /// la clé SQLCipher dans un fichier de configuration 0640 plutôt que dans l'environnement.
@@ -800,7 +800,7 @@ mod allegations_d_environnement_tests {
     // GARDE 5 — « le manifeste k3s livré sauvegarde depuis son UNIQUE conteneur »  (silence complet)
     // --------------------------------------------------------------------------------------------
 
-    /// L'ALLÉGATION RÉFUTÉE, PUIS RÉÉCRITE. Quatre commentaires (`backup.rs` ×2, `server.rs`, `main.rs`)
+    /// L'ALLÉGATION RÉFUTÉE, PUIS RÉÉCRITE. Quatre commentaires (`backup/mod.rs` ×2, `server.rs`, `main.rs`)
     /// affirmaient que « le conteneur PRINCIPAL ne fait JAMAIS de backup » et que le destinataire d'escrow
     /// est « posé UNIQUEMENT sur le SIDECAR `plume-daemon backup` » — et c'est sur ce fait qu'ils ont
     /// retiré le signal de posture du démarrage du serveur. Lu le 2026-08-22, `deploy/k3s.yaml` n'a

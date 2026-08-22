@@ -1350,11 +1350,11 @@ fn main() {
     if args.get(1).map(String::as_str) == Some("backup") {
         let conf = load_config();
         // P8.7-a ② — la bascule est DITE avant d'agir, y compris hors du démon : un opérateur qui
-        // lance la sauvegarde à la main ne doit pas la découvrir par un refus (cf. backup.rs).
+        // lance la sauvegarde à la main ne doit pas la découvrir par un refus (cf. backup/mod.rs).
         annoncer_bascule_sauvegarde(&conf);
         let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
         // `backup --compress [dest]` -> enveloppe age(zstd(charge)) ; la CHARGE est un dump typé streaming
-        // (défaut, aucun clair sur disque) ou une copie SQLite complète (chemin historique) — cf. backup.rs.
+        // (défaut, aucun clair sur disque) ou une copie SQLite complète (chemin historique) — cf. backup/mod.rs.
         // `backup [dest]`            -> mode HISTORIQUE : VACUUM INTO (copie SQLCipher chiffrée, incompressible).
         let compress = args.iter().skip(2).any(|a| a == "--compress" || a == "-z");
         // premier argument positionnel (non-flag) après le sous-commande = destination.

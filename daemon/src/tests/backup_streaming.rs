@@ -144,7 +144,7 @@
         assert_eq!(tampon, 4_194_304,
             "le tampon scrypt par défaut doit valoir 4 194 304 o (log_n=12) ; il vaut {tampon} o \
              (log_n={}) — si c'est voulu, c'est le raisonnement de la section « FACTEUR DE TRAVAIL \
-             SCRYPT » de backup.rs qu'il faut rouvrir, pas ce nombre qu'il faut suivre",
+             SCRYPT » de backup/mod.rs qu'il faut rouvrir, pas ce nombre qu'il faut suivre",
             crate::backup::BACKUP_SCRYPT_LOG_N_DEFAUT);
 
         // --- TÉMOIN POSITIF de l'instrument : il lit aussi un facteur qu'on n'a PAS écrit. ------------
@@ -659,7 +659,7 @@
     /// DEUX formats et on compare taille du `.age` ET durée de restauration. Le dump streaming n'emporte
     /// ni les index ni les tables shadow FTS5 : il est plus PETIT, et la restauration repaie ce gain en
     /// RECONSTRUISANT ces index. Le test verrouille le sens de l'échange (streaming plus petit) et IMPRIME
-    /// les deux durées — c'est de ces chiffres que vient le tableau de l'en-tête de `backup.rs`.
+    /// les deux durées — c'est de ces chiffres que vient le tableau de l'en-tête de `backup/mod.rs`.
     #[test]
     fn backup_streaming_is_smaller_than_the_plaintext_export_on_the_same_db() {
         let _reglages = BACKUP_ENV_LOCK.write(); // ce test POSE un réglage -> exclut les lecteurs

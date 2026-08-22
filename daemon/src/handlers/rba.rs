@@ -96,8 +96,14 @@ pub(crate) fn ti_risk_contribution(conn: &Connection, hit: &TiHit, ts: i64, env_
 /// `risk_entity_type`. Dédup par (règle, entité, bucket-de-fenêtre) -> une contribution par entité/fenêtre.
 /// 3 phases (calquées sur run_due_rules) : collecte sous lock -> éval hors lock (pool lecture) -> écriture
 /// groupée sous lock. MODE 0 : aucune règle risk -> `due` vide -> retour immédiat (0 travail).
-pub(crate) fn run_risk_rules(db: &Arc<Mutex<Connection>>, db_path: &str) {
+/// REND SON BILAN (`P4.1-r`, même contrat que `run_due_rules`) : `Illisible` si la liste des règles de
+/// risque dues n'a pas pu être lue, `Lue(n)` = règles dues qui n'ont PAS contribué ce tick faute d'avoir
+/// pu être évaluées (ligne indécodable, sans entité cible, compilation refusée, requête en échec, champ
+/// d'entité absent du résultat). Avant : chacune était sautée en avançant `last_run`, indiscernable
+/// d'une règle évaluée qui ne rapporte rien.
+pub(crate) fn run_risk_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
+    let mut abandonnees = 0u32;
     // Phase 1 : collecte des règles risk DUES (enabled + risk_score>0 + intervalle écoulé).
     let due: Vec<(i64, String, String, bool, i64, i64, i64, String, String, String)> = {
         let conn = db.lock();
@@ -108,54 +114,85 @@ pub(crate) fn run_risk_rules(db: &Arc<Mutex<Connection>>, db_path: &str) {
                AND (last_run IS NULL OR ?1 - last_run >= interval_s)",
         ) {
             Ok(s) => s,
-            Err(_) => return,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("règles de risque", &e),
         };
-        let rows = stmt.query_map(params![now_ts], |r| {
+        let rows = match stmt.query_map(params![now_ts], |r| {
             Ok((
                 r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0,
                 r.get::<_, i64>(4)?, r.get::<_, i64>(5)?, r.get::<_, i64>(6)?, r.get::<_, String>(7)?,
                 r.get::<_, String>(8)?, r.get::<_, String>(9)?,
             ))
-        });
-        match rows {
-            Ok(r) => r.flatten().collect(),
-            Err(_) => return,
+        }) {
+            Ok(r) => r,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("règles de risque", &e),
+        };
+        let mut due = Vec::new();
+        for r in rows {
+            match r {
+                Ok(x) => due.push(x),
+                Err(_) => abandonnees += 1, // ligne indécodable : une règle non évaluée, comptée
+            }
         }
+        due
     };
     if due.is_empty() {
-        return;
+        return crate::mesure_environnement::Mesure::Lue(abandonnees);
     }
     // Phase 2 : évalue chaque règle (connexion lecture, hors lock) -> liste de contributions.
     struct Contrib { rule_id: i64, entity_type: String, entity: String, score: i64, reason: String, mitre: String, severity: i64, window_s: i64 }
     let mut contribs: Vec<Contrib> = Vec::new();
     let ran: Vec<i64> = due.iter().map(|d| d.0).collect();
     for (id, name, query, is_soql, window_s, severity, risk_score, mitre, etype, efield) in &due {
-        // Sans entité cible (type/champ), impossible d'attribuer le risque -> aucune contribution (fail-safe).
+        // Sans entité cible (type/champ), impossible d'attribuer le risque -> aucune contribution (fail-safe),
+        // mais une règle de risque sans cible est une règle qui ne contribuera JAMAIS : comptée.
         if etype.is_empty() || efield.is_empty() {
+            abandonnees += 1;
             continue;
         }
         let sql = match rule_sql(query, *is_soql, *window_s) {
             Ok(s) => s,
-            Err(_) => continue,
+            Err(_) => {
+                abandonnees += 1;
+                continue;
+            }
         };
         let v = match run_query(db_path, &sql) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(_) => {
+                abandonnees += 1;
+                continue;
+            }
         };
-        let cols = match v.get("columns").and_then(|c| c.as_array()) { Some(c) => c, None => continue };
-        let rows = match v.get("rows").and_then(|r| r.as_array()) { Some(r) => r, None => continue };
-        // Index de la colonne entité (par NOM = risk_entity_field). Absente -> aucune contribution.
+        // `run_query` rend TOUJOURS `columns` et `rows` ; une réponse sans l'un des deux est une forme
+        // inconnue, donc une évaluation qu'on n'a pas su lire — comptée comme telle.
+        let (cols, rows) = match (v.get("columns").and_then(|c| c.as_array()), v.get("rows").and_then(|r| r.as_array())) {
+            (Some(c), Some(r)) => (c, r),
+            _ => {
+                abandonnees += 1;
+                continue;
+            }
+        };
+        // Index de la colonne entité (par NOM = risk_entity_field). Absente du résultat -> la règle ne peut
+        // attribuer AUCUN risque, et ce n'est pas « rien à signaler » : c'est une règle mal configurée, comptée.
         let idx = match cols.iter().position(|c| c.as_str() == Some(efield.as_str())) {
             Some(i) => i,
-            None => continue,
+            None => {
+                abandonnees += 1;
+                continue;
+            }
         };
         for row in rows {
             let cell = row.as_array().and_then(|a| a.get(idx));
+            // Une cellule vide ou nulle n'est pas un échec d'évaluation : c'est une ligne SANS entité, à
+            // laquelle aucun risque ne peut être attribué. La branche rend une VALEUR (vide), le filtre suit.
             let entity = match cell {
-                Some(Value::String(s)) if !s.is_empty() => s.clone(),
+                Some(Value::String(s)) => s.clone(),
                 Some(Value::Number(n)) => n.to_string(),
-                _ => continue, // entité vide/nulle -> ignorée
+                _ => String::new(),
             };
+            if entity.is_empty() {
+                continue; // entité vide/nulle -> aucune contribution (ce n'est pas un abandon de la règle)
+            }
             contribs.push(Contrib {
                 rule_id: *id, entity_type: etype.clone(), entity, score: *risk_score,
                 reason: name.clone(), mitre: mitre.clone(), severity: *severity, window_s: *window_s,
@@ -172,6 +209,7 @@ pub(crate) fn run_risk_rules(db: &Arc<Mutex<Connection>>, db_path: &str) {
     for id in &ran {
         let _ = conn.execute("UPDATE rule SET last_run=?1 WHERE id=?2", params![now_ts, id]);
     }
+    crate::mesure_environnement::Mesure::Lue(abandonnees)
 }
 
 // ============================================================================================
@@ -209,7 +247,10 @@ fn register_attack_tactic(conn: &Connection) {
 /// MATÉRIALISE `risk_rollup` (agrégat par entité sur la fenêtre) puis évalue les incidents de risque.
 /// RECONSTRUCTION à blanc depuis `risk_event` (petite table) : gère le DECAY (fenêtre glissante) sans purge.
 /// FAST PATH mode 0 : ni risk_event, ni risk_rollup, ni alerte risk ouverte -> retour immédiat (1 point-read).
-pub(crate) fn rollup_risk(conn: &Connection) {
+/// REND LE BILAN de l'évaluation des incidents de risque (`P4.1-r`) : `Illisible` si `risk_rollup` ou les
+/// alertes ouvertes n'ont pas pu être lues (aucun seuil n'a été jugé), `Lue(n)` = lignes du rollup
+/// indécodables, donc des entités dont le risque n'a PAS été jugé ce tick. Mode 0 : `Lue(0)`.
+pub(crate) fn rollup_risk(conn: &Connection) -> crate::bilan_de_tick::BilanDeTick {
     register_attack_tactic(conn);   // #3 : SQL scalar attack_tactic(technique)->tactique (idempotent, cheap)
     let has_events: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM risk_event)", [], |r| r.get(0)).unwrap_or(false);
     let has_rollup: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM risk_rollup)", [], |r| r.get(0)).unwrap_or(false);
@@ -219,7 +260,7 @@ pub(crate) fn rollup_risk(conn: &Connection) {
             .query_row("SELECT EXISTS(SELECT 1 FROM alert WHERE dedup LIKE 'risk-%' AND status IN ('new','ack'))", [], |r| r.get(0))
             .unwrap_or(false);
         if !has_alert {
-            return; // mode 0 : NO-OP strict
+            return crate::mesure_environnement::Mesure::Lue(0); // mode 0 : NO-OP strict, et c'est un VRAI zéro
         }
     }
     let conf = load_config();
@@ -249,7 +290,7 @@ pub(crate) fn rollup_risk(conn: &Connection) {
         ),
         [],
     );
-    risk_incidents_eval(conn, &conf, n);
+    risk_incidents_eval(conn, &conf, n)
 }
 
 /// Sévérité (0..4) d'une alerte risk : palier haut (4) si score très au-delà du seuil OU tactiques largement
@@ -263,27 +304,35 @@ fn risk_alert_severity(score: i64, distinct_tactics: i64, score_thr: i64, tactic
 /// tactiques distinctes, ou vélocité), lève UNE alerte DÉDUPLIQUÉE (`risk-<type>-<entity>`) via INSERT OR
 /// IGNORE (mécanique run_due_rules) ; rafraîchit une alerte ouverte SANS renotifier ; RÉSOUT les alertes
 /// risk ouvertes dont l'entité ne franchit plus aucun seuil (retombée sous la fenêtre / le seuil).
-fn risk_incidents_eval(conn: &Connection, conf: &HashMap<String, String>, n: i64) {
+fn risk_incidents_eval(conn: &Connection, conf: &HashMap<String, String>, n: i64) -> crate::bilan_de_tick::BilanDeTick {
     let score_thr = risk_score_threshold(conf);
     let tactics_thr = risk_tactics_threshold(conf);
     let vel_thr = risk_velocity_threshold(conf);
+    let mut abandonnees = 0u32;
     let rows: Vec<(String, String, i64, i64, i64, i64, String, i64)> = {
         let mut st = match conn.prepare(
             "SELECT entity_type,entity,score,contrib,distinct_tactics,score_hot,tactics,max_severity FROM risk_rollup",
         ) {
             Ok(s) => s,
-            Err(_) => return,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("incidents de risque", &e),
         };
-        let it = st.query_map([], |r| {
+        let it = match st.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?,
                 r.get::<_, i64>(4)?, r.get::<_, i64>(5)?, r.get::<_, String>(6)?, r.get::<_, i64>(7)?,
             ))
-        });
-        match it {
-            Ok(x) => x.flatten().collect(),
-            Err(_) => return,
+        }) {
+            Ok(x) => x,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("incidents de risque", &e),
+        };
+        let mut lues = Vec::new();
+        for r in it {
+            match r {
+                Ok(x) => lues.push(x),
+                Err(_) => abandonnees += 1, // une entité dont le risque n'est PAS jugé ce tick, comptée
+            }
         }
+        lues
     };
     let mut crossing: HashSet<String> = HashSet::new();
     for (etype, entity, score, contrib, dt, score_hot, tactics, max_sev) in &rows {
@@ -320,13 +369,20 @@ fn risk_incidents_eval(conn: &Connection, conf: &HashMap<String, String>, n: i64
     let open: Vec<String> = {
         let mut st = match conn.prepare("SELECT dedup FROM alert WHERE dedup LIKE 'risk-%' AND status IN ('new','ack')") {
             Ok(s) => s,
-            Err(_) => return,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("incidents de risque (résolution)", &e),
         };
-        let it = st.query_map([], |r| r.get::<_, String>(0));
-        match it {
-            Ok(x) => x.flatten().collect(),
-            Err(_) => return,
+        let it = match st.query_map([], |r| r.get::<_, String>(0)) {
+            Ok(x) => x,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("incidents de risque (résolution)", &e),
+        };
+        let mut lues = Vec::new();
+        for r in it {
+            match r {
+                Ok(x) => lues.push(x),
+                Err(_) => abandonnees += 1, // une alerte ouverte dont la résolution n'a pas été jugée, comptée
+            }
         }
+        lues
     };
     for d in open {
         if !crossing.contains(&d) {
@@ -336,6 +392,7 @@ fn risk_incidents_eval(conn: &Connection, conf: &HashMap<String, String>, n: i64
             );
         }
     }
+    crate::mesure_environnement::Mesure::Lue(abandonnees)
 }
 
 // ============================================================================================

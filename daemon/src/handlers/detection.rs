@@ -165,8 +165,15 @@ fn imputations_des_regles_qui_tirent(
 }
 
 /// Évalue les règles dues (enabled + intervalle écoulé) -> alerte si le seuil est franchi.
-pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) {
+///
+/// REND SON BILAN (`P4.1-r`) : `Illisible` si la liste des règles dues n'a pas pu être lue — le tick
+/// est alors AVEUGLE et le planificateur le publie, au lieu de marquer un tick « vert » qui n'a rien
+/// évalué ; `Lue(n)` sinon, `n` étant le nombre de règles dues ABANDONNÉES (ligne indécodable,
+/// compilation refusée, évaluation en échec). Chacune est re-tentée au prochain intervalle, comme
+/// avant ; ce qui change est qu'elle est comptée.
+pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
+    let mut abandonnees = 0u32;
     // mitre porté en queue du tuple -> hérité par l'alerte (mesure de couverture de détection, purple-team)
     let due: Vec<RegleDue> = {
         let conn = db.lock();
@@ -185,18 +192,27 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) {
                AND (last_run IS NULL OR ?1 - last_run >= interval_s)",
         ) {
             Ok(s) => s,
-            Err(_) => return,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("règles", &e),
         };
-        let rows = stmt.query_map(params![now_ts], |r| {
+        let rows = match stmt.query_map(params![now_ts], |r| {
             Ok((
                 r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0,
                 r.get::<_, String>(4)?, r.get::<_, f64>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?, r.get::<_, String>(8)?,
             ))
-        });
-        match rows {
-            Ok(r) => r.flatten().collect(),
-            Err(_) => return,
+        }) {
+            Ok(r) => r,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("règles", &e),
+        };
+        // Une ligne qui ne se décode pas est une règle qui ne sera PAS évaluée ce tick : comptée, jamais
+        // sautée en silence (`.flatten()` la faisait disparaître sans même avancer `last_run`).
+        let mut due = Vec::new();
+        for r in rows {
+            match r {
+                Ok(x) => due.push(x),
+                Err(_) => abandonnees += 1,
+            }
         }
+        due
     };
     // Phase 2 : évalue les règles dues en parallélisme BORNÉ (chaque eval = sa propre connexion lecture, WAL).
     // BACKPRESSURE (#detect) : au lieu de spawn N=len(due) threads d'un coup (~35 déchiffrements SQLCipher
@@ -250,6 +266,7 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) {
     let conn = db.lock();
     for (id, name, op, threshold, val, severity, _window_s, query, mitre, ok) in results {
         if !ok {
+            abandonnees += 1;
             let _ = conn.execute("UPDATE rule SET last_run=?1 WHERE id=?2", params![now_ts, id]);
             continue;
         }
@@ -286,6 +303,7 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) {
             );
         }
     }
+    crate::mesure_environnement::Mesure::Lue(abandonnees)
 }
 
 pub(crate) async fn rules_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {

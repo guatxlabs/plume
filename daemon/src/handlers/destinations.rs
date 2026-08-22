@@ -342,12 +342,20 @@ fn transport_ok(status: u16) -> bool {
 // ===================================================================================================
 /// Forwarde UN lot pour la destination `id`. `transport` injectable (mock en test, `dest_transport` en
 /// prod). `now_ts` figé par l'appelant. Ne panique jamais (l'appelant l'enrobe en catch_unwind malgré tout).
+///
+/// REND SON BILAN (`P4.1-r`) : `Illisible` si le lot d'événements n'a pas pu être lu — la destination n'a
+/// rien transmis ce tick, son `last_error` le dit désormais aussi ; `Lue(n)` sinon, où `n` compte un
+/// événement du lot que la base n'a pas su décoder. Un tel événement ne part PAS et le lot est refusé
+/// (filigrane gelé, `last_error` nomme l'identifiant) : avant, `.flatten()` le sautait et le filigrane
+/// passait dessus — un événement JAMAIS transmis au SOC, sans aucune trace.
 pub(crate) fn forward_one_destination<T>(
     db: &Arc<Mutex<Connection>>, id: i64, dtype: &str, endpoint: &str,
     config_json: &str, filter_json: &str, batch_max: i64, watermark: i64, now_ts: i64, transport: T,
-) where
+) -> crate::bilan_de_tick::BilanDeTick
+where
     T: Fn(&Wire) -> Result<u16, String>,
 {
+    use crate::mesure_environnement::Mesure;
     // STUBS s3/kafka : jamais de réseau, watermark JAMAIS avancé, last_error explicite (non-silence).
     if !dest_type_implemented(dtype) {
         let conn = db.lock();
@@ -355,7 +363,7 @@ pub(crate) fn forward_one_destination<T>(
             "UPDATE destination SET last_run=?1, last_error=?2, error_count=error_count+1 WHERE id=?3",
             params![now_ts, format!("type '{dtype}' = design/stub (non implémenté ; aucun forward)"), id],
         );
-        return;
+        return Mesure::Lue(0);
     }
     let filt = DestFilter::from_json(&serde_json::from_str::<Value>(filter_json).unwrap_or_else(|_| json!({})));
     let batch = batch_max.clamp(1, DEST_BATCH_HARD_MAX);
@@ -371,28 +379,52 @@ pub(crate) fn forward_one_destination<T>(
         let conn = db.lock();
         let mut all: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(watermark)];
         all.extend(fparams);
+        // Le lot qu'on ne sait pas LIRE : la destination ne transmet rien ce tick, et elle le DIT
+        // (`last_error`, `error_count`) au lieu de rendre la main comme si rien n'était dû.
+        let refus = |conn: &Connection, e: &rusqlite::Error| {
+            let _ = conn.execute(
+                "UPDATE destination SET last_run=?1, last_error=?2, error_count=error_count+1 WHERE id=?3",
+                params![now_ts, format!("lecture du lot d'événements refusée : {e}"), id],
+            );
+            crate::bilan_de_tick::tick_aveugle(&format!("destination {id}"), e)
+        };
         let mut stmt = match conn.prepare(&sql) {
             Ok(s) => s,
-            Err(_) => return, // table absente (pré-v92) -> no-op
+            Err(e) => return refus(&conn, &e),
         };
-        let rows = stmt.query_map(rusqlite::params_from_iter(all.iter()), |r| {
+        let rows = match stmt.query_map(rusqlite::params_from_iter(all.iter()), |r| {
             Ok(row_to_fwd(
                 r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
                 r.get::<_, Option<String>>(6)?, r.get::<_, Option<String>>(7)?,
                 r.get::<_, Option<String>>(8)?, r.get::<_, Option<String>>(9)?,
                 r.get::<_, Option<String>>(10)?, r.get::<_, String>(11)?,
             ))
-        });
-        match rows {
-            Ok(r) => r.flatten().collect(),
-            Err(_) => return,
+        }) {
+            Ok(r) => r,
+            Err(e) => return refus(&conn, &e),
+        };
+        let mut lus: Vec<FwdEvent> = Vec::new();
+        for r in rows {
+            match r {
+                Ok(ev) => lus.push(ev),
+                Err(e) => {
+                    // Un événement indécodable ne part pas, et le lot NON PLUS : le filigrane reste en
+                    // deçà, la cause est nommée, et le compte remonte au planificateur.
+                    let _ = conn.execute(
+                        "UPDATE destination SET last_run=?1, last_error=?2, error_count=error_count+1 WHERE id=?3",
+                        params![now_ts, format!("un événement du lot (après id {watermark}) est indécodable, lot non transmis : {e}"), id],
+                    );
+                    return Mesure::Lue(1);
+                }
+            }
         }
+        lus
     };
     if events.is_empty() {
         // Rien de neuf : on pose last_run (anti-martèlement) SANS toucher au watermark ni compter d'erreur.
         let conn = db.lock();
         let _ = conn.execute("UPDATE destination SET last_run=?1 WHERE id=?2", params![now_ts, id]);
-        return;
+        return Mesure::Lue(0);
     }
     let max_id = events.iter().map(|e| e.id).max().unwrap_or(watermark);
     let count = events.len() as i64;
@@ -407,7 +439,7 @@ pub(crate) fn forward_one_destination<T>(
                 "UPDATE destination SET last_run=?1, last_error=?2, error_count=error_count+1 WHERE id=?3",
                 params![now_ts, e, id],
             );
-            return;
+            return Mesure::Lue(1); // le lot de CETTE destination est abandonné : porté par `last_error` ET compté
         }
     };
 
@@ -440,13 +472,18 @@ pub(crate) fn forward_one_destination<T>(
             );
         }
     }
+    Mesure::Lue(0)
 }
 
 /// TICK FORWARDER (thread dédié, PAR TENANT). Sélectionne les destinations DUES (enabled + intervalle
 /// écoulé) -> forward un lot chacune. INERTE si table vide (mode 0 : 0 ligne -> no-op strict, aucun réseau).
 /// FAIL-SAFE : chaque destination isolée par catch_unwind (une panne ne stoppe jamais les autres).
-pub(crate) fn run_due_destinations(db: &Arc<Mutex<Connection>>, _db_path: &str) {
+///
+/// REND SON BILAN (`P4.1-r`) : `Illisible` si la liste des destinations dues n'a pas pu être lue (aucun
+/// forward, et rien ne le disait), `Lue(n)` = abandons cumulés des destinations traitées.
+pub(crate) fn run_due_destinations(db: &Arc<Mutex<Connection>>, _db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
+    let mut bilan = crate::bilan_de_tick::BilanDuPlanificateur::default();
     let due: Vec<(i64, String, String, String, String, i64, i64)> = {
         let conn = db.lock();
         let mut stmt = match conn.prepare(
@@ -454,34 +491,43 @@ pub(crate) fn run_due_destinations(db: &Arc<Mutex<Connection>>, _db_path: &str) 
              WHERE enabled=1 AND (last_run IS NULL OR ?1 - last_run >= interval_s)",
         ) {
             Ok(s) => s,
-            Err(_) => return, // table absente (pré-v92) -> no-op
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("destinations", &e),
         };
-        let rows = stmt.query_map(params![now_ts], |r| {
+        let rows = match stmt.query_map(params![now_ts], |r| {
             Ok((
                 r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, i64>(5)?, r.get::<_, i64>(6)?,
             ))
-        });
-        match rows {
-            Ok(r) => r.flatten().collect(),
-            Err(_) => return,
+        }) {
+            Ok(r) => r,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("destinations", &e),
+        };
+        let mut due = Vec::new();
+        for r in rows {
+            match r {
+                Ok(x) => due.push(x),
+                Err(_) => bilan.absorber(crate::mesure_environnement::Mesure::Lue(1)), // ligne indécodable : une destination non servie, comptée
+            }
         }
+        due
     };
-    if due.is_empty() {
-        return; // INVARIANT mode 0 : rien à faire, aucun effet de bord
-    }
     for (id, dtype, endpoint, config_json, filter_json, batch_max, watermark) in due {
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            forward_one_destination(db, id, &dtype, &endpoint, &config_json, &filter_json, batch_max, watermark, now_ts, dest_transport);
+            forward_one_destination(db, id, &dtype, &endpoint, &config_json, &filter_json, batch_max, watermark, now_ts, dest_transport)
         }));
-        if res.is_err() {
-            let conn = db.lock();
-            let _ = conn.execute(
-                "UPDATE destination SET last_run=?1, last_error=?2, error_count=error_count+1 WHERE id=?3",
-                params![now_ts, "panic interne du forwarder (capturé)", id],
-            );
+        match res {
+            Ok(b) => bilan.absorber(b),
+            Err(_) => {
+                bilan.absorber(crate::mesure_environnement::Mesure::Lue(1));
+                let conn = db.lock();
+                let _ = conn.execute(
+                    "UPDATE destination SET last_run=?1, last_error=?2, error_count=error_count+1 WHERE id=?3",
+                    params![now_ts, "panic interne du forwarder (capturé)", id],
+                );
+            }
         }
     }
+    bilan.bilan_de_tick()
 }
 
 // ===================================================================================================

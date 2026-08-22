@@ -713,10 +713,15 @@ fn spawn_ingest_loop(mgr: TenantDbManager, spool: String) {
         std::thread::spawn(move || {
             // ING-4 : balayage de démarrage des `.tmp` spool ORPHELINS (récepteur push crashé AVANT le rename ;
             // `ingest_once` les ignore -> fuite permanente sans ce sweep). Âge-gardé (épargne un POST en vol).
-            let swept = sweep_orphan_ingest_tmps(&spool, Duration::from_secs(INGEST_TMP_ORPHAN_MAX_AGE_SECS));
-            if swept > 0 { eprintln!("[ingest] {swept} .tmp spool orphelin(s) balayé(s) au démarrage"); }
+            let balayage = sweep_orphan_ingest_tmps(&spool, Duration::from_secs(INGEST_TMP_ORPHAN_MAX_AGE_SECS));
+            let phrase = balayage.phrase("[ingest] .tmp spool au démarrage");
+            if !phrase.is_empty() { eprintln!("{phrase}"); }
             loop {
-                ingest_once(&mgr, &spool);
+                // P4.1-r — le passage rend son bilan (spool illisible, fichiers abandonnés) et la boucle le
+                // PUBLIE : un spool qu'on ne sait plus énumérer n'est plus une boucle qui « tourne ».
+                let mut bilan = crate::bilan_de_tick::BilanDuPlanificateur::default();
+                bilan.absorber(ingest_once(&mgr, &spool));
+                crate::bilan_de_tick::publier(crate::bilan_de_tick::BOUCLE_INGEST, bilan.mesure());
                 std::thread::sleep(Duration::from_secs(5));
             }
         });
@@ -724,27 +729,32 @@ fn spawn_ingest_loop(mgr: TenantDbManager, spool: String) {
 
 fn spawn_rule_scheduler(tenants: TenantDbManager) {
         std::thread::spawn(move || loop {
-            for_each_active_tenant(&tenants, |_tid, handle, db_path| {
+            // P4.1-r — LE BILAN DU TICK : chaque famille rend ce qu'elle a abandonné, ou l'aveu qu'elle n'a
+            // pas pu lire sa liste ; le planificateur absorbe tout et PUBLIE avant de marquer son tick. Un
+            // tick qui n'a rien évalué ne peut plus passer pour un tick calme sur la surface d'état.
+            let mut bilan = crate::bilan_de_tick::BilanDuPlanificateur::default();
+            for_each_active_tenant(&tenants, |tid, handle, db_path| {
                 // CONC-2 : corps PAR TENANT isolé par catch_unwind (symétrie avec les boucles connecteurs/
                 // destinations/rapports). Un panic dans l'évaluation d'une règle d'UN tenant est capturé -> les
                 // autres tenants continuent ET le fil planificateur SURVIT (sans ce garde, un panic tuerait le
                 // thread infini -> détection stoppée SILENCIEUSEMENT). Happy path INCHANGÉ.
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_due_rules(handle, db_path);
+                    let mut b = crate::bilan_de_tick::BilanDuPlanificateur::default();
+                    b.absorber(run_due_rules(handle, db_path));
                     // #48/#53 : règles « avancées » (fenêtre de suppression / throttle-by-field / per-result),
                     // EXCLUES de run_due_rules et traitées à part (comme run_risk_rules). INERTE mode 0 (0 ligne due).
-                    run_advanced_rules(handle, db_path);
+                    b.absorber(run_advanced_rules(handle, db_path));
                     // #24 (RBA) : règles en MODE RISK (risk_score>0, exclues de run_due_rules) -> CONTRIBUENT du
                     // risque par entité au lieu de lever une alerte scalaire. INERTE mode 0 (aucune règle risk).
-                    run_risk_rules(handle, db_path);
+                    b.absorber(run_risk_rules(handle, db_path));
                     // #37 (DÉTECTION AVANCÉE) : corrélation multi-événements stateful (finding-groups de séquence)
                     // + baselining statistique UEBA (déviation z-score par entité). MÊMES garanties fail-closed que
                     // run_due_rules (erreur/timeout ne fabrique JAMAIS un « tout clair »). INERTE mode 0 (tables
                     // correlation/baseline vides -> 0 ligne due -> retour immédiat, tick byte-identique).
-                    run_correlations(handle, db_path);
-                    run_baselines(handle, db_path);
-                    run_playbooks(handle, db_path);
-                    check_heartbeats(handle);
+                    b.absorber(run_correlations(handle, db_path));
+                    b.absorber(run_baselines(handle, db_path));
+                    b.absorber(run_playbooks(handle, db_path));
+                    b.absorber(check_heartbeats(handle));
                     dispatch_notifications(handle);
                     escalate_overdue_cases(handle); // #4a — escalade SLA des cases overdue (INERTE si aucun)
                     sla_multilevel_tick(handle); // #39 — breach SLA MULTI-NIVEAU (ack/resolve). EARLY-RETURN si 0 politique (mode 0 : ZÉRO travail)
@@ -756,11 +766,17 @@ fn spawn_rule_scheduler(tenants: TenantDbManager) {
                         let c = handle.lock();
                         engagement_scope_refresh(db_path, &c);
                     }
+                    b
                 }));
-                if res.is_err() {
-                    eprintln!("[detect] panic capturé dans le tick de détection (tenant isolé) — planificateur préservé, on continue");
+                match res {
+                    Ok(b) => bilan.absorber(b.bilan_de_tick()),
+                    Err(_) => {
+                        bilan.panique(tid);
+                        eprintln!("[detect] panic capturé dans le tick de détection (tenant isolé) — planificateur préservé, on continue");
+                    }
                 }
             });
+            crate::bilan_de_tick::publier(crate::bilan_de_tick::BOUCLE_REGLES, bilan.mesure());
             // #51 DAY-2 OPS : marque le tick du scheduler de règles (santé « détection » = ce tick récent).
             SCHED_RULE_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             SCHED_RULE_LAST_TS.store(now(), std::sync::atomic::Ordering::Relaxed);
@@ -792,9 +808,11 @@ fn spawn_connector_tick(tenants: TenantDbManager) {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(45)); // après le bind + le 1er rollup
             loop {
+                let mut bilan = crate::bilan_de_tick::BilanDuPlanificateur::default();
                 for_each_active_tenant(&tenants, |_tid, handle, db_path| {
-                    run_due_connectors(handle, db_path);
+                    bilan.absorber(run_due_connectors(handle, db_path));
                 });
+                crate::bilan_de_tick::publier(crate::bilan_de_tick::BOUCLE_CONNECTEURS, bilan.mesure());
                 std::thread::sleep(Duration::from_secs(15)); // granularité du scheduler
             }
         });
@@ -804,9 +822,11 @@ fn spawn_destination_tick(tenants: TenantDbManager) {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(50)); // après le bind + le 1er rollup (post-connecteurs)
             loop {
+                let mut bilan = crate::bilan_de_tick::BilanDuPlanificateur::default();
                 for_each_active_tenant(&tenants, |_tid, handle, db_path| {
-                    run_due_destinations(handle, db_path);
+                    bilan.absorber(run_due_destinations(handle, db_path));
                 });
+                crate::bilan_de_tick::publier(crate::bilan_de_tick::BOUCLE_DESTINATIONS, bilan.mesure());
                 std::thread::sleep(Duration::from_secs(15)); // granularité du scheduler de sortie
             }
         });
@@ -831,9 +851,11 @@ fn spawn_report_tick(tenants: TenantDbManager) {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(55)); // après le bind + le 1er rollup (post-destinations)
             loop {
+                let mut bilan = crate::bilan_de_tick::BilanDuPlanificateur::default();
                 for_each_active_tenant(&tenants, |_tid, handle, db_path| {
-                    run_due_reports(handle, db_path);
+                    bilan.absorber(run_due_reports(handle, db_path));
                 });
+                crate::bilan_de_tick::publier(crate::bilan_de_tick::BOUCLE_RAPPORTS, bilan.mesure());
                 std::thread::sleep(Duration::from_secs(30)); // granularité du scheduler de rapports
             }
         });
@@ -852,6 +874,9 @@ fn spawn_rollup_loop(tenants: TenantDbManager, rollup_interval: u64, disk_warn_p
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(90));
             loop {
+                // P4.1-r — les incidents de risque sont une DÉTECTION qui tourne dans cette boucle-ci :
+                // leur bilan est publié à part, et la surface « détection » le lit avec celui des règles.
+                let mut bilan_risque = crate::bilan_de_tick::BilanDuPlanificateur::default();
                 for_each_active_tenant(&tenants, |_tid, handle, db_path| {
                     {
                         let c = handle.lock();
@@ -864,7 +889,7 @@ fn spawn_rollup_loop(tenants: TenantDbManager, rollup_interval: u64, disk_warn_p
                         // #24 (RBA) : matérialise risk_rollup (agrégat par entité, reconstruit depuis la
                         // petite table risk_event -> DECAY fenêtré) + déclenche les alertes risk-based. Mode 0
                         // (aucun risk_event) -> fast-path retour immédiat. JAMAIS un scan de `event`.
-                        rollup_risk(&c);
+                        bilan_risque.absorber(rollup_risk(&c));
                     }
                     // F5 : l'appel `cache_refresh_all_panels` a été RETIRÉ d'ici (boucle rollup 120 s) — la
                     // boucle DÉDIÉE de refresh (`spawn_panel_refresh_loop`, ~10 s) appelle EXACTEMENT la même
@@ -902,6 +927,7 @@ fn spawn_rollup_loop(tenants: TenantDbManager, rollup_interval: u64, disk_warn_p
                 { let c = tenants.default_writer.lock();
                     crate::attente_serie::publier_fenetre(&c, now());
                 }
+                crate::bilan_de_tick::publier(crate::bilan_de_tick::BOUCLE_RISQUE, bilan_risque.mesure());
                 // #51 DAY-2 OPS : marque le tick de rollup (santé « rollups » = ce tick récent).
                 SCHED_ROLLUP_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 SCHED_ROLLUP_LAST_TS.store(now(), std::sync::atomic::Ordering::Relaxed);
@@ -924,8 +950,8 @@ fn spawn_panel_refresh_loop(tenants: TenantDbManager, refresh_sem: Arc<tokio::sy
 
 // OPS NATIVE #1 — SCHEDULER DE BACKUP IN-DAEMON. Rend `docker run` / le binaire host self-backup TURNKEY
 // (zéro sidecar shell, zéro mc/S3, zéro init-container). Gaté sur `PLUME_BACKUP_INTERVAL` (secondes) :
-//   - 0 / absent  -> DÉSACTIVÉ : aucun thread spawné -> comportement byte-identique (k3s/prod inchangé : leur
-//     daemon ne pose pas cette var, l'orchestration reste dans le sidecar shell mc/S3).
+//   - 0 / absent  -> DÉSACTIVÉ : aucun thread spawné -> comportement byte-identique. (`deploy/k3s.yaml` POSE
+//     cette variable dans son unique conteneur — lu le 2026-08-22 ; il n'y a plus de sidecar shell mc/S3.)
 //   - > 0         -> boucle : (optionnel backup-on-start) puis toutes les INTERVAL s : backup B1 compressé
 //     (`backup_compressed`, MÊME code B1 que la CLI/sidecar -> fidélité round-trip prouvée ; streaming, RAM
 //     bornée, 2 Go-safe) vers un fichier TEMP dans DEST puis RENAME ATOMIQUE en `plume-<TS>.db.age` -> rétention
@@ -1003,7 +1029,9 @@ pub(crate) fn spawn_backup_scheduler(conf: HashMap<String, String>, db_path: Str
             // peuvent pas diverger sur la cadence, le démarrage à chaud ou la rétention.
             #[cfg(feature = "s3_backup")]
             let cycle = |db: &str, d: &str, k: usize| match sink_objet.as_deref() {
-                Some(cible) => run_scheduled_backup_objet(db, d, k, cible),
+                Some(cible) => {
+                    run_scheduled_backup_objet(db, d, k, cible);
+                }
                 None => run_scheduled_backup(db, d, k),
             };
             #[cfg(not(feature = "s3_backup"))]
@@ -1032,14 +1060,17 @@ fn run_scheduled_backup(db_path: &str, dest_dir: &str, keep: usize) {
 ///      fonction ne le résume pas, elle l'imprime ;
 ///   3. l'archive locale n'est PAS supprimée quand le dépôt n'aboutit pas : la rétention KEEP-N locale reste
 ///      le filet, et un dépôt raté ne coûte pas la sauvegarde.
+///
+/// REND le nom de l'artefact soumis au dépôt, `None` si ce cycle n'a rien publié (`P4.1-r` : la branche
+/// « rien à déposer » rend une valeur et le journal la nomme ; elle ne se contente plus de rendre la main).
 #[cfg(feature = "s3_backup")]
-fn run_scheduled_backup_objet(db_path: &str, staging: &str, keep: usize, cible: &sink_s3::CibleS3) {
+fn run_scheduled_backup_objet(db_path: &str, staging: &str, keep: usize, cible: &sink_s3::CibleS3) -> Option<String> {
         let recipient = backup_age_recipient();
         let Some(nom) = scheduled_backup_cycle(db_path, staging, keep, db_key().as_deref(), recipient.as_deref())
         else {
             eprintln!("[backup-sched-objet] aucun artefact publié par ce cycle -> RIEN n'est déposé \
                        (un dépôt annoncé sans sauvegarde prise serait un faux succès)");
-            return;
+            return None;
         };
         let chemin = std::path::Path::new(staging).join(&nom);
         let issue = sink_s3::deposer_fichier(cible, &nom, &chemin, &fmt_backup_ts(now()));
@@ -1048,6 +1079,7 @@ fn run_scheduled_backup_objet(db_path: &str, staging: &str, keep: usize, cible: 
             eprintln!("[backup-sched-objet] l'archive locale {} est CONSERVÉE (rétention KEEP-N) — elle est \
                        la seule copie de ce cycle", chemin.display());
         }
+        Some(nom)
 }
 
 /// CŒUR d'un cycle du scheduler natif : backup B1 -> rename ATOMIQUE -> rétention KEEP-N. BEST-EFFORT de bout
@@ -1090,9 +1122,31 @@ pub(crate) fn scheduled_backup_cycle(db_path: &str, dest_dir: &str, keep: usize,
         // RÉTENTION KEEP-N : liste DEST, calcule les plus vieux à supprimer (fonction pure), supprime un par un.
         match std::fs::read_dir(dest_dir) {
             Ok(rd) => {
-                let names: Vec<String> = rd.filter_map(|e| e.ok())
-                    .filter_map(|e| e.file_name().into_string().ok())
-                    .collect();
+                // Un listing PARTIEL ne vaut pas un listing : une entrée illisible est une sauvegarde que le
+                // plan ne verrait pas, et un plan keep-N calculé sur un inventaire tronqué peut supprimer une
+                // sauvegarde qu'un inventaire complet aurait gardée. Sur la moindre entrée illisible, la
+                // rétention de CE cycle est sautée et dite — ne rien effacer est toujours sûr, effacer sur une
+                // connaissance partielle ne l'est jamais (même prudence que le garde-fou clock-skew ci-dessous).
+                let mut names: Vec<String> = Vec::new();
+                let mut listing_complet = true;
+                for entree in rd {
+                    match entree {
+                        Ok(e) => match e.file_name().into_string() {
+                            Ok(n) => names.push(n),
+                            Err(brut) => {
+                                eprintln!("[backup-sched] rétention : nom non-UTF8 dans {dest_dir} ({brut:?}) -> rétention de ce cycle SAUTÉE");
+                                listing_complet = false;
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("[backup-sched] rétention : entrée illisible dans {dest_dir} : {e} -> rétention de ce cycle SAUTÉE");
+                            listing_complet = false;
+                        }
+                    }
+                }
+                if !listing_complet {
+                    return Some(format!("plume-{ts}.db.age"));
+                }
                 // GARDE-FOU CLOCK-SKEW : ne JAMAIS pruner le backup écrit CE cycle, même si le plan
                 // l'inclut (un backup FUTUR-daté déjà présent — NTP reculé / import d'un host à horloge rapide —
                 // aurait un TS plus grand -> notre frais aurait le plus petit TS et serait pruné avec un keep bas
@@ -1938,13 +1992,13 @@ pub(crate) async fn run() {
                 let _ = emit_ledger_unsigned(&conn, now(), &active_key_path);
             }
         }
-        // v135 (#7) — CORRECTIF FAUX POSITIF : la posture backup N'EST PLUS asserted ICI. Le conteneur PRINCIPAL
-        // (server::run) NE PRODUIT JAMAIS de backup et n'a PAS PLUME_BACKUP_AGE_RECIPIENT (posé UNIQUEMENT sur le
-        // SIDECAR `plume-daemon backup`) -> le check de boot v134 émettait un signal SOC NON-PURGEABLE « posture
-        // backup dégradée » à CHAQUE restart du conteneur principal, alors que les backups du sidecar sont bien
-        // ASYMÉTRIQUES. Les signaux autoritatifs vivent dans le VRAI chemin backup (backup.rs : warn + gate
-        // fail-closed PLUME_BACKUP_REQUIRE_ASYMMETRIC ; main.rs : signal SOC émis quand le sidecar produit
-        // réellement un backup symétrique). Voir signal_backup_symmetric_if_needed.
+        // v135 (#7) — CORRECTIF FAUX POSITIF : la posture backup N'EST PLUS asserted ICI. Le check de boot v134
+        // émettait un signal SOC NON-PURGEABLE « posture backup dégradée » à CHAQUE restart, sans qu'aucun backup
+        // ait été produit. Le signal vit désormais dans le chemin qui PRODUIT le backup (backup.rs : warn + gate
+        // fail-closed PLUME_BACKUP_REQUIRE_ASYMMETRIC ; main.rs : signal SOC de la sous-commande `backup`).
+        // CE QUE CE CORRECTIF SUPPOSAIT N'EST PLUS VRAI (lu le 2026-08-22 dans `deploy/k3s.yaml`) : ce processus
+        // PRODUIT des backups, par `spawn_backup_scheduler`, dans l'unique conteneur du manifeste livré — et ce
+        // chemin-là n'émet pas le signal. Voir la note de `signal_backup_symmetric_if_needed`.
     }
 
     // MULTI-TENANT (#2a-2a) — IDENTITÉ & CATALOGUE, INERTE en mode 0. Le control-plane est ouvert/initialisé

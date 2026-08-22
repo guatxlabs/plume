@@ -149,6 +149,8 @@ mod imputation; // S7 : À QUELLE SOURCE UNE ALERTE SE RAPPORTE — lue dans la 
 pub(crate) use imputation::*;
 mod maj_corroboree; // P5.7-b : LE SOC S'ALERTE SUR SA PROPRE MISE À JOUR — un dépôt d'unité systemd n'est reclassé que si son CONTENU est celui d'une unité livrée par ce build ET qu'un déploiement daté vient d'avoir lieu ; jamais sur un nom, et l'événement n'est jamais effacé
 pub(crate) use maj_corroboree::*;
+mod overlays_adossement; // P4.1-r : CE QUI ADOSSE UN OVERLAY À UN FICHIER — le listing de config.d lu ou AVOUÉ (jamais « vide » faute de savoir), le bilan d'un chargement, et le REFUS d'élaguer sur un adossement illisible (un dossier de règles momentanément illisible supprimait TOUTES les règles livrées)
+mod bilan_de_tick; // P4.1-r : CE QU'UN TICK DE FOND REND — le compte des éléments dus ABANDONNÉS, ou l'aveu que la liste n'a pas pu être lue ; le planificateur l'absorbe et la surface d'état le lit (un tick qui n'évalue rien n'est plus « vert »)
 mod mesure_environnement; // S32 : une lecture d'environnement qui échoue n'est PAS un zéro — un type à deux cas, des fonctions paramétrées sur leurs chemins (donc exerçables hors machine), et une jauge de LISIBILITÉ à côté d'une série de valeur ABSENTE
 mod metrics; // #51 DAY-2 OPS : self-métriques process-globales + santé par composant + exposition Prometheus
 pub(crate) use metrics::*;
@@ -949,6 +951,12 @@ impl JsonBody for serde_json::Value {
 }
 
 
+/// LA VALEUR QUE PREND « AUCUN ARGUMENT » dans le dispatch de la ligne de commande : le serveur. Un
+/// sentinelle que la ligne de commande ne peut pas produire (un argument vide est une chaîne vide, pas
+/// un argument absent, et il est refusé comme inconnu), pour que l'absence soit une valeur lue et non une
+/// branche muette (`P4.1-r`).
+const ARGUMENT_ABSENT_LE_SERVEUR: &str = "\u{0}serveur";
+
 /// Sous-commandes qui n'existent QUE dans certains builds. Le dispatch de `cold-backup-plan` est
 /// `#[cfg(feature = "cold_tier")]` : sans la feature, la branche N'EXISTE PAS. L'aide doit le dire
 /// (« indisponible » plutôt que de la promettre), et le rejet doit le dire aussi — sinon un
@@ -1195,7 +1203,15 @@ fn main() {
         let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
         let p = std::path::Path::new(&path);
         let files: Vec<std::path::PathBuf> = if p.is_dir() {
-            sigma_overlay_files(p)
+            // Un dossier qu'on ne sait pas lister n'est pas un dossier vide : la commande le dit et sort 2,
+            // au lieu d'un rapport « 0 importée » qui se lirait comme un dossier sans règle (`P4.1-r`).
+            match sigma_overlay_files(p) {
+                mesure_environnement::Mesure::Lue(v) => v,
+                mesure_environnement::Mesure::Illisible { cause, detail } => {
+                    eprintln!("sigma-import : dossier illisible ({cause}) : {detail}");
+                    std::process::exit(2);
+                }
+            }
         } else if p.is_file() {
             vec![p.to_path_buf()]
         } else {
@@ -1361,10 +1377,11 @@ fn main() {
             let recipient = backup_age_recipient();
             match backup_compressed(&db_path, &dest, db_key().as_deref(), recipient.as_deref()) {
                 Ok(st) => {
-                    // v135 (#7) — SIGNAL SOC NON-PURGEABLE émis depuis le VRAI chemin backup (ce sidecar) UNIQUEMENT
-                    // quand un backup SYMÉTRIQUE a réellement été produit (recipient absent). Anciennement (v134) le
-                    // signal partait à tort au boot du conteneur PRINCIPAL (server::run) qui NE fait JAMAIS de backup
-                    // -> faux positif « posture dégradée » à chaque restart. Ici le repli symétrique est PROUVÉ (le
+                    // v135 (#7) — SIGNAL SOC NON-PURGEABLE émis depuis la sous-commande `backup` UNIQUEMENT quand un
+                    // backup SYMÉTRIQUE a réellement été produit (recipient absent). Anciennement (v134) le signal
+                    // partait à tort au boot du serveur, sans qu'aucun backup ait été produit -> faux positif
+                    // « posture dégradée » à chaque restart. L'ordonnanceur NATIF du serveur, lui, produit des backups
+                    // sans passer ici (cf. la note de `signal_backup_symmetric_if_needed`). Ici le repli est PROUVÉ (le
                     // backup vient d'aboutir sans destinataire) -> signal légitime. Best-effort : un échec d'ouverture
                     // DB writer ne bloque pas le backup déjà produit.
                     // Ce signal ÉCRIT (un événement SOC) -> il passe par la porte. Best-effort DANS LES
@@ -1482,19 +1499,25 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
                 // d'exercice sans qu'aucune clé ne fasse le voyage inverse :
                 //   plume-daemon backup-verify <archive>   (hors ligne, avec l'identité d'escrow)
                 //   … | plume-daemon restore-drill record  (sur le nœud, qui n'a jamais vu l'identité)
-                if let Some(c) = contenu {
-                    println!("contenu restauré : {} table(s), {} ligne(s){}{}",
-                        c.tables, c.lignes,
-                        c.plus_grande.as_ref().map(|(t, n)| format!(", plus grande `{t}` ({n})")).unwrap_or_default(),
-                        c.schema_version.as_ref().map(|v| format!(", schema_version={v}")).unwrap_or_default());
-                    let octets = std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
-                    let archive = std::path::Path::new(&src).file_name()
-                        .map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| src.clone());
-                    let ex = exercice_de_restauration::Exercice {
-                        ts: now(), archive, archive_octets: octets, chiffrement: kind,
-                        tables: c.tables, lignes: c.lignes,
-                    };
-                    println!("{}", ex.attestation());
+                // Les DEUX branches s'impriment (`P4.1-r`) : une vérification structurelle seule ne produit
+                // PAS d'attestation, et la ligne qui le dit ne doit pas manquer — une attestation absente
+                // sans phrase se lirait comme une ligne oubliée, pas comme un exercice qui n'a pas eu lieu.
+                match contenu {
+                    Some(c) => {
+                        println!("contenu restauré : {} table(s), {} ligne(s){}{}",
+                            c.tables, c.lignes,
+                            c.plus_grande.as_ref().map(|(t, n)| format!(", plus grande `{t}` ({n})")).unwrap_or_default(),
+                            c.schema_version.as_ref().map(|v| format!(", schema_version={v}")).unwrap_or_default());
+                        let octets = std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
+                        let archive = std::path::Path::new(&src).file_name()
+                            .map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| src.clone());
+                        let ex = exercice_de_restauration::Exercice {
+                            ts: now(), archive, archive_octets: octets, chiffrement: kind,
+                            tables: c.tables, lignes: c.lignes,
+                        };
+                        println!("{}", ex.attestation());
+                    }
+                    None => println!("contenu restauré : NON VÉRIFIÉ (structurel-seul) — aucune attestation d'exercice n'est émise"),
                 }
             }
             Err(e) => { eprintln!("backup-verify : {e}"); std::process::exit(1); }
@@ -1546,9 +1569,10 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
                 let etat = exercice_de_restauration::etat(
                     dernier.as_ref(), escrow, now(), exercice_de_restauration::age_max_s());
                 println!("restore-drill : {} — {}", etat.mot(), etat.detail());
-                if let Some(d) = &dernier {
-                    println!("dernier exercice : archive={} chiffrement={} tables={} lignes={}",
-                        d.archive, exercice_de_restauration::mot_du_chiffrement(d.chiffrement), d.tables, d.lignes);
+                match &dernier {
+                    Some(d) => println!("dernier exercice : archive={} chiffrement={} tables={} lignes={}",
+                        d.archive, exercice_de_restauration::mot_du_chiffrement(d.chiffrement), d.tables, d.lignes),
+                    None => println!("dernier exercice : AUCUN enregistré"),
                 }
                 // Le VERDICT est le code de sortie : 0 = éprouvé récemment, 3 = un exercice est dû.
                 if etat.en_retard() { std::process::exit(3); }
@@ -1812,18 +1836,22 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
     // `plume-respond.service` passe `respond`, qui est une sous-commande. Aucun appelant de
     // production ne passe autre chose : la garde ne peut pas casser un déploiement existant.
     // ─────────────────────────────────────────────────────────────────────────────────────────────
-    if let Some(arg) = args.get(1) {
-        if matches!(arg.as_str(), "-h" | "--help" | "help") {
+    // Aucun argument est une VALEUR (« le serveur »), pas l'absence d'un argument : le dispatch le lit
+    // comme tel, pour que la branche « rien » ne soit pas une branche muette.
+    let premier_argument = args.get(1).map(String::as_str).unwrap_or(ARGUMENT_ABSENT_LE_SERVEUR);
+    if premier_argument != ARGUMENT_ABSENT_LE_SERVEUR {
+        let arg = premier_argument;
+        if matches!(arg, "-h" | "--help" | "help") {
             print!("{}", usage());
             return;
         }
-        if matches!(arg.as_str(), "-V" | "--version" | "version") {
+        if matches!(arg, "-V" | "--version" | "version") {
             println!("plume-daemon {} (schéma {CODE_SCHEMA_MAX})", env!("CARGO_PKG_VERSION"));
             return;
         }
         // Une sous-commande RÉELLE mais absente de CE build (feature désactivée) : le dire, plutôt
         // que « argument inconnu ». On n'arrive ici que si sa branche `cfg` n'a pas été compilée.
-        if SUBCOMMANDS_COLD.iter().any(|(n, _)| *n == arg.as_str()) {
+        if SUBCOMMANDS_COLD.iter().any(|(n, _)| *n == arg) {
             eprintln!(
                 "plume-daemon: « {arg} » n'existe que dans un binaire compilé avec \
                  `--features cold_tier` — celui-ci ne l'est pas. AUCUN serveur n'a été lancé."

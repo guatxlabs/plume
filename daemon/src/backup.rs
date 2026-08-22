@@ -410,50 +410,140 @@ impl Drop for PlaintextTempGuard {
 /// GARDE-FOUS : (1) le filtre par marqueur n'efface JAMAIS `plume.db`/`-wal`/`-shm` ni les `.age` ;
 /// (2) le seuil d'âge épargne un temp récent d'une invocation CONCURRENTE en vol. Renvoie le
 /// nombre de fichiers effacés (observabilité + assertion de test).
-pub(crate) fn sweep_orphan_temps(dir: &std::path::Path, max_age: std::time::Duration) -> u64 {
+///
+/// REND UN `Balayage` (`P4.1-r`) : le compte des effacés, mais aussi ce que le balayage N'A PAS SU LIRE —
+/// un répertoire illisible (rien balayé), des entrées ou des métadonnées illisibles (un temporaire en
+/// clair qu'on ne sait pas examiner reste sur le disque, et avant rien ne le disait), et les effacés
+/// dont le contenu n'a pas pu être écrasé avant suppression.
+pub(crate) fn sweep_orphan_temps(dir: &std::path::Path, max_age: std::time::Duration) -> Balayage {
     let now = std::time::SystemTime::now();
-    let mut removed = 0u64;
-    let rd = match std::fs::read_dir(dir) { Ok(r) => r, Err(_) => return 0 };
-    for ent in rd.flatten() {
+    let mut b = Balayage::default();
+    let rd = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return Balayage::repertoire_illisible(),
+    };
+    for ent in rd {
+        let ent = match ent {
+            Ok(e) => e,
+            Err(_) => {
+                b.illisibles += 1;
+                continue;
+            }
+        };
         let name = ent.file_name();
         if !name.to_string_lossy().contains(BACKUP_TEMP_MARKER) { continue; }
-        let meta = match ent.metadata() { Ok(m) => m, Err(_) => continue };
+        let meta = match ent.metadata() {
+            Ok(m) => m,
+            Err(_) => {
+                b.illisibles += 1;
+                continue;
+            }
+        };
         if !meta.is_file() { continue; }
-        // mtime illisible OU trop récent -> on ÉPARGNE (ne jamais clobber un backup en vol).
+        // trop récent -> on ÉPARGNE (ne jamais clobber un backup en vol) ; mtime ILLISIBLE -> épargné
+        // aussi, mais COMPTÉ : ce n'est pas un temporaire récent, c'est un temporaire qu'on ne sait pas juger.
         match meta.modified().ok().and_then(|m| now.duration_since(m).ok()) {
             Some(age) if age >= max_age => {}
-            _ => continue,
+            Some(_) => continue,
+            None => {
+                b.illisibles += 1;
+                continue;
+            }
         }
-        secure_delete(&ent.path());
-        removed += 1;
+        if !secure_delete(&ent.path()) {
+            b.non_ecrases += 1;
+        }
+        b.effaces += 1;
     }
-    removed
+    b
+}
+
+/// CE QU'UN BALAYAGE DE TEMPORAIRES REND (`P4.1-r`). Partagé par le balayage du staging de sauvegarde et
+/// celui du spool d'ingestion : même forme, même aveu. Le `u64` seul qu'ils rendaient comptait les effacés
+/// et taisait tout le reste.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Balayage {
+    pub(crate) effaces: u64,
+    /// Entrées, métadonnées ou horodatages que le balayage n'a pas su lire : autant de temporaires
+    /// toujours sur le disque, non jugés.
+    pub(crate) illisibles: u64,
+    /// Effacés dont le contenu N'A PAS été écrasé avant suppression (ouverture refusée, écriture en
+    /// échec) : retirés de l'arborescence, mais pas de la surface du disque.
+    pub(crate) non_ecrases: u64,
+    /// `false` : le répertoire lui-même n'a pas pu être listé — RIEN n'a été balayé.
+    pub(crate) repertoire_lisible: bool,
+}
+
+impl Balayage {
+    pub(crate) fn repertoire_illisible() -> Self {
+        Balayage { repertoire_lisible: false, ..Default::default() }
+    }
+
+    /// La phrase du journal de démarrage — VIDE quand il n'y a rien à dire (rien effacé, rien d'illisible),
+    /// et toujours présente sinon, y compris quand rien n'a été effacé mais que quelque chose n'a pas pu
+    /// être lu. Une chaîne plutôt qu'un `Option` : « rien à dire » est une valeur, pas une branche.
+    pub(crate) fn phrase(&self, quoi: &str) -> String {
+        if !self.repertoire_lisible {
+            return format!("{quoi} : répertoire ILLISIBLE — aucun temporaire orphelin balayé");
+        }
+        if self.effaces == 0 && self.illisibles == 0 {
+            return String::new();
+        }
+        let mut p = format!("{quoi} : {} temporaire(s) orphelin(s) balayé(s)", self.effaces);
+        if self.non_ecrases > 0 {
+            p.push_str(&format!(", dont {} NON écrasé(s) avant suppression", self.non_ecrases));
+        }
+        if self.illisibles > 0 {
+            p.push_str(&format!(" ; {} entrée(s) ILLISIBLE(S) non jugée(s), toujours sur le disque", self.illisibles));
+        }
+        p
+    }
+}
+
+impl Default for Balayage {
+    fn default() -> Self {
+        Balayage { effaces: 0, illisibles: 0, non_ecrases: 0, repertoire_lisible: true }
+    }
 }
 
 /// Effacement best-effort d'un fichier sensible : écrase le contenu de zéros (1 passe,
 /// buffers 1 MiB), fsync, puis supprime. NB : sur FS journalisé/CoW/SSD à wear-leveling
 /// l'écrasement N'EST PAS une garantie cryptographique — la vraie protection reste le
 /// chiffrement at-rest du volume. On réduit la fenêtre d'exposition + on garantit le retrait.
-pub(crate) fn secure_delete(path: &std::path::Path) {
+///
+/// REND `true` si le contenu a été écrasé avant suppression (ou s'il n'y avait rien à écraser), `false`
+/// sinon (`P4.1-r`) : un fichier qu'on n'a pas pu ouvrir ou écrire est retiré de l'arborescence mais pas
+/// de la surface du disque, et l'appelant doit pouvoir le compter au lieu de l'ignorer.
+pub(crate) fn secure_delete(path: &std::path::Path) -> bool {
     use std::io::{Seek, SeekFrom, Write};
-    if let Ok(meta) = std::fs::metadata(path) {
-        let len = meta.len();
-        if len > 0 {
-            if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(path) {
+    let ecrase = match std::fs::metadata(path) {
+        Ok(meta) if meta.len() == 0 => true,
+        Ok(meta) => match std::fs::OpenOptions::new().write(true).open(path) {
+            Ok(mut f) => {
+                let len = meta.len();
                 let zeros = vec![0u8; BACKUP_BUF.min(len as usize)];
                 let _ = f.seek(SeekFrom::Start(0));
                 let mut remaining = len;
+                let mut complet = true;
                 while remaining > 0 {
                     let n = (remaining as usize).min(zeros.len());
-                    if f.write_all(&zeros[..n]).is_err() { break; }
+                    if f.write_all(&zeros[..n]).is_err() {
+                        complet = false;
+                        break;
+                    }
                     remaining -= n as u64;
                 }
                 let _ = f.flush();
                 let _ = f.sync_all();
+                complet
             }
-        }
-    }
+            Err(_) => false,
+        },
+        // Absent ou illisible : rien n'a été écrasé, et `remove_file` ci-dessous dira s'il restait quelque chose.
+        Err(_) => false,
+    };
     let _ = std::fs::remove_file(path);
+    ecrase
 }
 
 /// Copie en flux R -> W par buffers de 1 MiB. Renvoie le nombre d'octets copiés.
@@ -566,10 +656,18 @@ pub(crate) fn emit_backup_symmetric_signal(conn: &Connection, now_ts: i64) -> bo
 
 /// v135 (#7) — émet le signal SOC de posture backup symétrique DEPUIS LE VRAI CHEMIN BACKUP (sidecar `plume-daemon
 /// backup`), et UNIQUEMENT si le backup vient d'être produit SANS destinataire asymétrique (`recipient` None/"" ->
-/// node-déchiffrable, pas d'escrow hors-cluster). Remplace le check de boot v134 mal placé dans `server::run` : le
-/// conteneur PRINCIPAL ne fait JAMAIS de backup et n'a pas PLUME_BACKUP_AGE_RECIPIENT -> il émettait un faux signal
-/// « posture dégradée » à chaque restart. Destinataire présent -> aucun signal (posture saine). `now_ts` injecté
-/// pour la testabilité. Renvoie true si un signal a été écrit.
+/// node-déchiffrable, pas d'escrow hors-cluster). Remplace le check de boot v134 mal placé dans `server::run`, qui
+/// émettait un faux signal « posture dégradée » à chaque restart sans qu'aucun backup ait été produit. Destinataire
+/// présent -> aucun signal (posture saine). `now_ts` injecté pour la testabilité. Renvoie true si un signal a été écrit.
+///
+/// CE QUI N'EST PLUS VRAI, ET LE TROU QUE ÇA LAISSE (lu le 2026-08-22 dans `deploy/k3s.yaml`). Le retrait du
+/// check de boot reposait sur « le conteneur PRINCIPAL ne fait JAMAIS de backup ; le destinataire est posé
+/// UNIQUEMENT sur le SIDECAR ». Le manifeste livré n'a QU'UN conteneur, et lui pose `PLUME_BACKUP_INTERVAL` :
+/// c'est l'ordonnanceur NATIF (`server::scheduled_backup_cycle`) qui sauvegarde, sans destinataire — et ce chemin
+/// n'appelle PAS cette fonction. Le déploiement livré produit donc des archives déchiffrables par le nœud toutes
+/// les six heures avec, pour seul témoin, une ligne sur la sortie d'erreur. Le seul appelant reste la
+/// sous-commande `backup` (`main.rs`). La garde `le_manifeste_k3s_livre_sauvegarde_depuis_son_unique_conteneur`
+/// tient le fait de déploiement ; brancher ce signal sur le cycle natif est ouvert sous `S29`.
 pub(crate) fn signal_backup_symmetric_if_needed(conn: &Connection, recipient: Option<&str>, now_ts: i64) -> bool {
     let symmetric_fallback = recipient.map_or(true, |r| r.is_empty());
     symmetric_fallback && emit_backup_symmetric_signal(conn, now_ts)
@@ -672,9 +770,11 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
     // v134 (#7) — LOUD WARN à chaque repli symétrique (backup DÉCHIFFRABLE PAR LE NŒUD : passphrase = clé
     // SQLCipher, présente sur le pod ; PAS d'escrow hors-cluster). Non-cassant (warn-only) : l'exigence
     // fail-closed a déjà été évaluée EN TÊTE (avant l'export plaintext). Le signal SOC NON-PURGEABLE est émis
-    // par l'appelant du VRAI chemin backup (main.rs -> signal_backup_symmetric_if_needed) une fois le backup
-    // symétrique effectivement produit — v135 a retiré le check de boot faux-positif de server.rs (le conteneur
-    // principal ne fait jamais de backup) ; ici on n'a pas de conn writer dédiée.
+    // par l'appelant, UNIQUEMENT depuis la sous-commande `backup` (main.rs -> signal_backup_symmetric_if_needed)
+    // une fois le backup symétrique effectivement produit ; ici on n'a pas de conn writer dédiée. L'ordonnanceur
+    // NATIF (`server::scheduled_backup_cycle`), que `deploy/k3s.yaml` active dans son unique conteneur, passe
+    // ici SANS émettre ce signal : cette ligne d'avertissement est alors le seul témoin (cf. la note de
+    // `signal_backup_symmetric_if_needed`).
     if symmetric_fallback {
         eprintln!(
             "[backup] ATTENTION : PLUME_BACKUP_AGE_RECIPIENT non configuré -> chiffrement SYMÉTRIQUE par \
@@ -1183,8 +1283,11 @@ pub(crate) fn backup_compressed(db_path: &str, dest: &str, key: Option<&str>, re
     // épargne un backup concurrent en vol. Ne CRÉE rien : il ne fait que supprimer (la garde de staging vide
     // reste donc vraie pendant le chemin streaming).
     let stage_dir = staging_dir(dest);
-    let n = sweep_orphan_temps(&stage_dir, std::time::Duration::from_secs(BACKUP_ORPHAN_MAX_AGE_SECS));
-    if n > 0 { eprintln!("backup : {n} plaintext temporaire(s) orphelin(s) réapé(s) dans {}", stage_dir.display()); }
+    let balayage = sweep_orphan_temps(&stage_dir, std::time::Duration::from_secs(BACKUP_ORPHAN_MAX_AGE_SECS));
+    let phrase = balayage.phrase(&format!("backup : plaintext dans {}", stage_dir.display()));
+    if !phrase.is_empty() {
+        eprintln!("{phrase}");
+    }
 
     // ÉCHAPPATOIRE OPÉRATEUR : retour explicite au chemin historique (plaintext matérialisé) sans rebuild.
     if backup_force_plaintext_export() {

@@ -173,8 +173,12 @@ pub(crate) fn playbook_cell(c: &Value) -> String {
 
 /// Exécute les playbooks dus : la requête renvoie des CIBLES (1re colonne) -> 1 action par cible.
 /// Mode 'observe' -> pending+dry_run (on voit ce qui SERAIT fait) ; 'active' -> approved+réel (auto).
-pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) {
+/// REND SON BILAN (`P4.1-r`, même contrat que `run_due_rules`) : `Illisible` si la liste des playbooks dus
+/// n'a pas pu être lue, `Lue(n)` = playbooks dus abandonnés ce tick (ligne indécodable, compilation
+/// refusée, requête de sélection des cibles en échec — ce dernier cas rendait « aucune cible » en silence).
+pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
+    let mut abandonnes = 0u32;
     let mode: String = {
         let conn = db.lock();
         conn.query_row("SELECT value FROM meta WHERE key='plume_mode'", [], |r| r.get(0)).unwrap_or_else(|_| "observe".into())
@@ -191,18 +195,26 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) {
         let conn = db.lock();
         let mut stmt = match conn.prepare("SELECT id,name,query,is_soql,action_kind,window_s,COALESCE(created_by_role,'admin') FROM playbook WHERE enabled=1 AND (last_run IS NULL OR ?1-last_run>=interval_s)") {
             Ok(s) => s,
-            Err(_) => return,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("playbooks", &e),
         };
-        let v: Vec<(i64, String, String, bool, String, i64, bool)> = stmt
-            .query_map(params![now_ts], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0, r.get::<_, String>(4)?, r.get::<_, i64>(5)?, { let cbr = r.get::<_, String>(6)?; effective_base_role(&cbr) == "admin" && !role_perm_denied(&cbr, "arm_response") })))
-            .map(|x| x.flatten().collect())
-            .unwrap_or_default();
+        let it = match stmt.query_map(params![now_ts], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0, r.get::<_, String>(4)?, r.get::<_, i64>(5)?, { let cbr = r.get::<_, String>(6)?; effective_base_role(&cbr) == "admin" && !role_perm_denied(&cbr, "arm_response") }))) {
+            Ok(it) => it,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("playbooks", &e),
+        };
+        let mut v: Vec<(i64, String, String, bool, String, i64, bool)> = Vec::new();
+        for r in it {
+            match r {
+                Ok(x) => v.push(x),
+                Err(_) => abandonnes += 1, // ligne indécodable : un playbook non évalué, compté
+            }
+        }
         v
     };
     for (id, name, query, is_soql, kind, window_s, admin_authored) in due {
         let sql = match rule_sql(&query, is_soql, window_s) {
             Ok(s) => s,
             Err(_) => {
+                abandonnes += 1;
                 let c = db.lock();
                 let _ = c.execute("UPDATE playbook SET last_run=?1 WHERE id=?2", params![now_ts, id]);
                 continue;
@@ -214,9 +226,13 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) {
         let res = run_query(db_path, &sql);
         let conn = db.lock();
         let _ = conn.execute("UPDATE playbook SET last_run=?1 WHERE id=?2", params![now_ts, id]);
+        // Une sélection de cibles en ÉCHEC n'est pas « aucune cible » : le playbook n'a pas été évalué, compté.
         let rows = match &res {
             Ok(v) => v.get("rows").and_then(|r| r.as_array()).cloned().unwrap_or_default(),
-            Err(_) => Vec::new(),
+            Err(_) => {
+                abandonnes += 1;
+                Vec::new()
+            }
         };
         for row in rows {
             let target = row.as_array().and_then(|c| c.first()).map(playbook_cell).unwrap_or_default();
@@ -227,15 +243,23 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) {
             // la fenêtre (chacun bannit chez lui -> enforcement là où est la menace, pas sur le central).
             // Pour les autres actions (stop_service...) -> central (host NULL).
             let hosts: Vec<Option<String>> = if kind == "ban_ip" || kind == "unban_ip" {
-                let mut h: Vec<Option<String>> = conn
-                    .prepare("SELECT DISTINCT host FROM event WHERE src_ip=?1 AND ts>=?2 AND host IS NOT NULL AND host<>''")
-                    .ok()
-                    .and_then(|mut s| {
-                        s.query_map(params![target, now_ts - window_s], |r| r.get::<_, Option<String>>(0))
-                            .map(|m| m.flatten().collect::<Vec<_>>())
-                            .ok()
-                    })
-                    .unwrap_or_default();
+                // Un hôte qu'on ne sait pas lire est un hôte où la réponse ne sera PAS posée : compté comme
+                // un abandon (avant, `flatten()` le taisait et la réponse partait « partout » sans lui).
+                let mut h: Vec<Option<String>> = Vec::new();
+                match conn.prepare("SELECT DISTINCT host FROM event WHERE src_ip=?1 AND ts>=?2 AND host IS NOT NULL AND host<>''") {
+                    Ok(mut s) => match s.query_map(params![target, now_ts - window_s], |r| r.get::<_, Option<String>>(0)) {
+                        Ok(it) => {
+                            for r in it {
+                                match r {
+                                    Ok(x) => h.push(x),
+                                    Err(_) => abandonnes += 1,
+                                }
+                            }
+                        }
+                        Err(_) => abandonnes += 1,
+                    },
+                    Err(_) => abandonnes += 1,
+                }
                 if h.is_empty() {
                     h.push(None); // IP vue sans hôte -> central
                 }
@@ -283,4 +307,5 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) {
             }
         }
     }
+    crate::mesure_environnement::Mesure::Lue(abandonnes)
 }

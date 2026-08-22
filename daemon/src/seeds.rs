@@ -106,7 +106,12 @@ pub(crate) fn seed_demo(conn: &Connection) {
     item(ca, now_ts - 21300, "event", "analyste", "Échec d'authentification", Some(format!("event:{a1}")));
     item(ca, now_ts - 21290, "event", "analyste", "Échec d'authentification (root)", Some(format!("event:{a2}")));
     item(ca, now_ts - 21000, "event", "analyste", "Accès accepté après la rafale — pivot probable", Some(format!("event:{a3}")));
-    if let Some(al) = alert_id("demo-demo.bruteforce") { item(ca, now_ts - 20990, "alert", "analyste", "Alerte de détection rattachée", Some(format!("alert:{al}"))); }
+    // L'entrée de chronologie existe dans les DEUX cas : avec son lien si l'alerte de démo a été posée, et
+    // SANS lien (en le disant) sinon — une chronologie où l'entrée manque se lirait « pas d'alerte ».
+    match alert_id("demo-demo.bruteforce") {
+        Some(al) => item(ca, now_ts - 20990, "alert", "analyste", "Alerte de détection rattachée", Some(format!("alert:{al}"))),
+        None => item(ca, now_ts - 20990, "alert", "analyste", "Alerte de détection rattachée (alerte de démo absente : lien non posé)", None),
+    }
     item(ca, now_ts - 20980, "priority", "analyste", "priorité -> P2 (high)", None);
     item(ca, now_ts - 20970, "assign", "analyste", "assigné à analyste", None);
     item(ca, now_ts - 20960, "status", "analyste", "statut -> in_progress", None);
@@ -132,7 +137,10 @@ pub(crate) fn seed_demo(conn: &Connection) {
     item(cb, now_ts - 7990, "event", "analyste", "Blocage UFW — 3389/TCP", Some(format!("event:{b1}")));
     item(cb, now_ts - 7975, "event", "analyste", "Blocage UFW — 445/TCP", Some(format!("event:{b2}")));
     item(cb, now_ts - 7955, "event", "analyste", "Blocage UFW — 22/TCP", Some(format!("event:{b3}")));
-    if let Some(al) = alert_id("demo-demo.scan") { item(cb, now_ts - 7950, "alert", "analyste", "Alerte de détection rattachée", Some(format!("alert:{al}"))); }
+    match alert_id("demo-demo.scan") {
+        Some(al) => item(cb, now_ts - 7950, "alert", "analyste", "Alerte de détection rattachée", Some(format!("alert:{al}"))),
+        None => item(cb, now_ts - 7950, "alert", "analyste", "Alerte de détection rattachée (alerte de démo absente : lien non posé)", None),
+    }
     item(cb, now_ts - 7000, "status", "analyste", "statut -> triage", None);
     item(cb, now_ts - 400, "disposition", "analyste", "verdict -> benign", None);
     item(cb, now_ts - 300, "status", "analyste", "statut -> resolved", None);

@@ -334,8 +334,11 @@ pub(crate) fn plan_dispatch(labels: &HashMap<String, String>, policies: &[Policy
 /// Évalue les règles « avancées » (fenêtre de suppression / throttle-by-field / per-result) EXCLUES de
 /// `run_due_rules`. INERTE en mode 0 : aucune règle ne porte ces réglages -> le SELECT ne rend 0 ligne ->
 /// retour immédiat (run_due_rules reste byte-identique car son WHERE exclut ces mêmes règles).
-pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) {
+/// REND SON BILAN (`P4.1-r`, même contrat que `run_due_rules`) : `Illisible` si la liste des règles
+/// avancées dues n'a pas pu être lue, `Lue(n)` = règles dues abandonnées ce tick.
+pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
+    let mut abandonnees = 0u32;
     let due: Vec<(i64, String, String, bool, String, f64, i64, i64, String, i64, String, bool)> = {
         let conn = db.lock();
         let mut stmt = match conn.prepare(
@@ -347,24 +350,32 @@ pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) {
                AND (last_run IS NULL OR ?1 - last_run >= interval_s)",
         ) {
             Ok(s) => s,
-            Err(_) => return,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("règles avancées", &e),
         };
-        let rows = stmt.query_map(params![now_ts], |r| {
+        let rows = match stmt.query_map(params![now_ts], |r| {
             Ok((
                 r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0,
                 r.get::<_, String>(4)?, r.get::<_, f64>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?, r.get::<_, String>(8)?,
                 r.get::<_, i64>(9)?, r.get::<_, String>(10)?, r.get::<_, i64>(11)? != 0,
             ))
-        });
-        match rows {
-            Ok(r) => r.flatten().collect(),
-            Err(_) => return,
+        }) {
+            Ok(r) => r,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("règles avancées", &e),
+        };
+        let mut due = Vec::new();
+        for r in rows {
+            match r {
+                Ok(x) => due.push(x),
+                Err(_) => abandonnees += 1, // ligne indécodable : une règle non évaluée, comptée
+            }
         }
+        due
     };
     for (id, name, query, is_soql, op, threshold, severity, window_s, mitre, suppress_window_s, throttle_field, per_result) in due {
         let sql = match rule_sql(&query, is_soql, window_s) {
             Ok(s) => s,
             Err(_) => {
+                abandonnees += 1;
                 let conn = db.lock();
                 let _ = conn.execute("UPDATE rule SET last_run=?1 WHERE id=?2", params![now_ts, id]);
                 continue;
@@ -373,6 +384,7 @@ pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) {
         // scalaire décide s'il y a franchissement (comme run_due_rules) — fail-closed si éval échoue.
         let scalar = eval_value_budget(db_path, &sql, query_budget_interactive_ms());
         let Some(val) = scalar else {
+            abandonnees += 1;
             let conn = db.lock();
             let _ = conn.execute("UPDATE rule SET last_run=?1 WHERE id=?2", params![now_ts, id]);
             continue;
@@ -399,7 +411,10 @@ pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) {
                     let rows = v.get("rows").and_then(|r| r.as_array()).cloned().unwrap_or_default();
                     plan_fire_units(&throttle_field, per_result, &cols, &rows)
                 }
-                Err(_) => continue, // fail-closed : pas de fabrication d'unités sur éval en erreur
+                Err(_) => {
+                    abandonnees += 1; // fail-closed : pas de fabrication d'unités sur éval en erreur — et c'est COMPTÉ
+                    continue;
+                }
             }
         } else {
             plan_fire_units("", false, &[], &[])
@@ -446,6 +461,7 @@ pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) {
         }
         let _ = conn.execute("UPDATE rule SET last_fired=?1 WHERE id=?2", params![now_ts, id]);
     }
+    crate::mesure_environnement::Mesure::Lue(abandonnees)
 }
 
 // ======================================================================================

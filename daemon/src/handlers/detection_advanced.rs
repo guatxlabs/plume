@@ -217,8 +217,12 @@ fn eval_correlation(
 /// Évalue les corrélations DUES (enabled + intervalle écoulé) en parallélisme BORNÉ (detect_concurrency),
 /// puis écrit les finding-groups sous un seul verrou. MODE 0 : `correlation` vide -> `due` vide -> retour
 /// immédiat (0 travail, byte-identique).
-pub(crate) fn run_correlations(db: &Arc<Mutex<Connection>>, db_path: &str) {
+/// REND SON BILAN (`P4.1-r`, même contrat que `run_due_rules`) : `Illisible` si la liste des corrélations
+/// dues n'a pas pu être lue (table absente comprise : une base non migrée n'évalue RIEN, et le dire vaut
+/// mieux qu'un « no-op strict » indiscernable d'un tick calme), `Lue(n)` = corrélations dues abandonnées.
+pub(crate) fn run_correlations(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
+    let mut abandonnees = 0u32;
     // Phase 1 : collecte des corrélations dues.
     let due: Vec<(i64, String, String, String, String, i64, i64, String, i64)> = {
         let conn = db.lock();
@@ -227,21 +231,28 @@ pub(crate) fn run_correlations(db: &Arc<Mutex<Connection>>, db_path: &str) {
              FROM correlation WHERE enabled=1 AND (last_run IS NULL OR ?1 - last_run >= interval_s)",
         ) {
             Ok(s) => s,
-            Err(_) => return, // table absente (base pré-migration) -> no-op strict
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("corrélations", &e),
         };
-        let rows = stmt.query_map(params![now_ts], |r| {
+        let rows = match stmt.query_map(params![now_ts], |r| {
             Ok((
                 r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?, r.get::<_, i64>(5)?, r.get::<_, i64>(6)?, r.get::<_, String>(7)?, r.get::<_, i64>(8)?,
             ))
-        });
-        match rows {
-            Ok(r) => r.flatten().collect(),
-            Err(_) => return,
+        }) {
+            Ok(r) => r,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("corrélations", &e),
+        };
+        let mut due = Vec::new();
+        for r in rows {
+            match r {
+                Ok(x) => due.push(x),
+                Err(_) => abandonnees += 1, // ligne indécodable : une corrélation non évaluée, comptée
+            }
         }
+        due
     };
     if due.is_empty() {
-        return;
+        return crate::mesure_environnement::Mesure::Lue(abandonnees);
     }
     // Phase 2 : éval hors lock, par tranches de detect_concurrency (miroir run_due_rules).
     let cc = detect_concurrency();
@@ -268,7 +279,8 @@ pub(crate) fn run_correlations(db: &Arc<Mutex<Connection>>, db_path: &str) {
         // last_run avance TOUJOURS (même en échec -> re-tentera au prochain intervalle).
         let _ = conn.execute("UPDATE correlation SET last_run=?1 WHERE id=?2", params![now_ts, ev.id]);
         if !ev.ok {
-            // ÉCHEC D'ÉVAL : ne rien écrire, NE PAS résoudre de groupe ouvert (fail-closed).
+            // ÉCHEC D'ÉVAL : ne rien écrire, NE PAS résoudre de groupe ouvert (fail-closed) — et COMPTER.
+            abandonnees += 1;
             continue;
         }
         if !ev.matched.is_empty() {
@@ -314,11 +326,30 @@ pub(crate) fn run_correlations(db: &Arc<Mutex<Connection>>, db_path: &str) {
         }
         // Résolution : SEULEMENT parce que l'éval a RÉUSSI (ok=true) -> les groupes ouverts de CETTE corrélation
         // dont l'entité n'apparaît plus dans `crossing` sont résolus (retombée). Fail-closed : jamais sur échec.
+        // Les groupes ouverts qu'on ne sait pas LIRE ne sont pas résolus (fail-closed), et chaque lecture
+        // manquée est comptée : une résolution qui n'a pas eu lieu n'est pas un groupe « toujours actif ».
         let open: Vec<String> = {
             let like = format!("corr-{}-%", ev.id);
             match conn.prepare("SELECT dedup FROM alert WHERE dedup LIKE ?1 AND status IN ('new','ack')") {
-                Ok(mut st) => st.query_map(params![like], |r| r.get::<_, String>(0)).map(|x| x.flatten().collect()).unwrap_or_default(),
-                Err(_) => Vec::new(),
+                Ok(mut st) => match st.query_map(params![like], |r| r.get::<_, String>(0)) {
+                    Ok(it) => it
+                        .filter_map(|r| match r {
+                            Ok(d) => Some(d),
+                            Err(_) => {
+                                abandonnees += 1;
+                                None
+                            }
+                        })
+                        .collect(),
+                    Err(_) => {
+                        abandonnees += 1;
+                        Vec::new()
+                    }
+                },
+                Err(_) => {
+                    abandonnees += 1;
+                    Vec::new()
+                }
             }
         };
         for d in open {
@@ -330,6 +361,7 @@ pub(crate) fn run_correlations(db: &Arc<Mutex<Connection>>, db_path: &str) {
             }
         }
     }
+    crate::mesure_environnement::Mesure::Lue(abandonnees)
 }
 
 // ============================================================================================
@@ -464,8 +496,13 @@ fn eval_baseline(
 /// Évalue les baselines DUES (enabled + intervalle écoulé + bucket clos non encore traité). Persiste les
 /// observations du bucket, lève les anomalies (RBA si risk_score>0, sinon alerte discrète), élague les
 /// observations hors fenêtre. MODE 0 : `baseline` vide -> `due` vide -> retour immédiat.
-pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) {
+/// REND SON BILAN (`P4.1-r`, même contrat que `run_due_rules`) : `Illisible` si la liste des lignes de
+/// base dues n'a pas pu être lue, `Lue(n)` = lignes de base dues abandonnées ce tick (ligne indécodable,
+/// évaluation en échec, ou au-delà du plafond de traitement par tick — cette dernière est RE-TENTÉE au
+/// tick suivant mais n'en est pas moins non évaluée ici).
+pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
+    let mut abandonnees = 0u32;
     // Phase 1 : collecte des baselines dues (sous lock — lecture rapide).
     struct Due {
         id: i64, name: String, query: String, entity_field: String, value_field: String, entity_type: String,
@@ -478,20 +515,26 @@ pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) {
              FROM ueba_baseline WHERE enabled=1 AND (last_run IS NULL OR ?1 - last_run >= interval_s)",
         ) {
             Ok(s) => s,
-            Err(_) => return, // table absente -> no-op strict
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("lignes de base", &e),
         };
-        let rows = stmt.query_map(params![now_ts], |r| {
+        let rows = match stmt.query_map(params![now_ts], |r| {
             Ok((
                 r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?,
                 r.get::<_, f64>(8)?, r.get::<_, i64>(9)?, r.get::<_, i64>(10)?, r.get::<_, String>(11)?,
                 r.get::<_, i64>(12)?, r.get::<_, i64>(13)?,
             ))
-        });
-        let all: Vec<_> = match rows {
-            Ok(r) => r.flatten().collect(),
-            Err(_) => return,
+        }) {
+            Ok(r) => r,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("lignes de base", &e),
         };
+        let mut all = Vec::new();
+        for r in rows {
+            match r {
+                Ok(x) => all.push(x),
+                Err(_) => abandonnees += 1, // ligne indécodable : une ligne de base non évaluée, comptée
+            }
+        }
         // Filtre : ne traite que si le bucket clos n'a pas déjà été traité (last_bucket < closed).
         all.into_iter().filter_map(|(id, name, query, ef, vf, et, bs, ms, zt, ws, sev, mi, rs, last_bucket)| {
             let closed = now_ts / bs.max(60) - 1;
@@ -507,18 +550,30 @@ pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) {
         let conn = db.lock();
         let mut st = match conn.prepare("SELECT id FROM ueba_baseline WHERE enabled=1 AND (last_run IS NULL OR ?1 - last_run >= interval_s)") {
             Ok(s) => s,
-            Err(_) => return,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("lignes de base", &e),
         };
-        let ids: Vec<i64> = st.query_map(params![now_ts], |r| r.get::<_, i64>(0)).map(|x| x.flatten().collect()).unwrap_or_default();
+        let it = match st.query_map(params![now_ts], |r| r.get::<_, i64>(0)) {
+            Ok(it) => it,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("lignes de base", &e),
+        };
+        let mut ids: Vec<i64> = Vec::new();
+        for r in it {
+            match r {
+                Ok(id) => ids.push(id),
+                Err(_) => abandonnees += 1,
+            }
+        }
         ids
     };
     if due_ids_all.is_empty() {
-        return;
+        return crate::mesure_environnement::Mesure::Lue(abandonnees);
     }
     // Phase 2 : éval (chaque baseline lit ses observations passées -> connexion writer sous lock court par
     // baseline ; l'éval elle-même exécute la requête via le pool read-only). Séquentiel (peu de baselines,
     // budget 2 Go) mais on borne le nombre traité par tick à detect_concurrency*4 pour rester prévisible.
     let cap = detect_concurrency().saturating_mul(4).max(4);
+    // Au-delà du plafond : non évaluées CE tick (re-tentées au suivant) — comptées, pas tues.
+    abandonnees += u32::try_from(due.len().saturating_sub(cap)).unwrap_or(u32::MAX);
     let mut evals: Vec<BaselineEval> = Vec::new();
     {
         let conn = db.lock();
@@ -537,7 +592,8 @@ pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) {
     }
     for ev in evals {
         if !ev.ok {
-            continue; // fail-closed : n'avance PAS last_bucket, ne persiste rien
+            abandonnees += 1;
+            continue; // fail-closed : n'avance PAS last_bucket, ne persiste rien — et c'est COMPTÉ
         }
         // Persiste les observations du bucket (INSERT OR IGNORE -> idempotent si le tick rejoue).
         for (entity, value) in &ev.observations {
@@ -571,6 +627,7 @@ pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) {
         "DELETE FROM ueba_baseline_obs WHERE bucket < (SELECT (?1/MAX(bucket_s,60)) - (window_s/MAX(bucket_s,60)) - 2 FROM ueba_baseline b WHERE b.id=ueba_baseline_obs.baseline_id)",
         params![now_ts],
     );
+    crate::mesure_environnement::Mesure::Lue(abandonnees)
 }
 
 // ============================================================================================

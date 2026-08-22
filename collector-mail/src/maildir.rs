@@ -42,15 +42,20 @@ fn is_maildir(path: &Path) -> bool {
     path.join("cur").is_dir() || path.join("new").is_dir()
 }
 
-fn has_maildir_children(path: &Path) -> bool {
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for e in entries.flatten() {
-            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) && is_maildir(&e.path()) {
-                return true;
-            }
+/// Un repertoire de DOMAINE (layout NESTED) contient des maildirs d'utilisateurs. Un repertoire qu'on ne
+/// sait pas LISTER n'est ni « domaine » ni « compte plat » : l'erreur REMONTE (`P4.1-r`). Avant, il
+/// repondait `false`, et l'appelant en faisait un compte fantome `<domaine>@<mail_domain>` pendant que
+/// les boites des utilisateurs qu'il contient n'etaient jamais balayees — « 0 alerte », sans trace.
+/// Une entree illisible en cours de parcours remonte de meme : un parcours interrompu n'est pas un
+/// parcours complet (`S36`).
+fn has_maildir_children(path: &Path) -> std::io::Result<bool> {
+    for e in std::fs::read_dir(path)? {
+        let e = e?;
+        if e.file_type().map(|t| t.is_dir()).unwrap_or(false) && is_maildir(&e.path()) {
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 /// Emails des comptes (gere layout PLAT et NESTED, comme le scanner).
@@ -72,7 +77,7 @@ pub fn list_account_emails(root: &str, mail_domain: &str) -> Result<Vec<String>>
         let path = entry.path();
         if is_maildir(&path) {
             out.push(format!("{}@{}", name, mail_domain));
-        } else if has_maildir_children(&path) {
+        } else if has_maildir_children(&path)? {
             let domain = name;
             for ue in std::fs::read_dir(&path)? {
                 let ue = ue?;
@@ -103,15 +108,30 @@ pub fn message_paths(root: &str, email: &str, folder: &str) -> Result<(Vec<(Stri
     if !base.exists() {
         return Err(anyhow!("compte introuvable: {}", email));
     }
+    let mut illisibles = 0usize;
     let folder_dirs: Vec<(String, PathBuf)> = if folder == "*" || folder.eq_ignore_ascii_case("all") {
         let mut dirs = vec![("INBOX".to_string(), base.clone())];
-        if let Ok(entries) = std::fs::read_dir(&base) {
-            for e in entries.flatten() {
-                let n = e.file_name().to_string_lossy().to_string();
-                if n.starts_with('.') && n.len() > 1 && e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    dirs.push((n.trim_start_matches('.').to_string(), e.path()));
+        // Les SOUS-DOSSIERS du compte (`.Sent`, `.Junk`…). Un compte qu'on ne sait pas lister, ou une entree
+        // qui refuse l'enumeration, c'est un ou plusieurs dossiers entiers qui ne seront JAMAIS analyses :
+        // COMPTE dans `illisibles` et avoue par l'appelant (`P4.1-r`) — avant, seule l'INBOX restait et
+        // l'absence des autres se lisait « 0 alerte ».
+        match std::fs::read_dir(&base) {
+            Ok(entries) => {
+                for e in entries {
+                    let e = match e {
+                        Ok(e) => e,
+                        Err(_) => {
+                            illisibles += 1;
+                            continue;
+                        }
+                    };
+                    let n = e.file_name().to_string_lossy().to_string();
+                    if n.starts_with('.') && n.len() > 1 && e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        dirs.push((n.trim_start_matches('.').to_string(), e.path()));
+                    }
                 }
             }
+            Err(_) => illisibles += 1,
         }
         dirs
     } else if folder == "INBOX" {
@@ -125,7 +145,6 @@ pub fn message_paths(root: &str, email: &str, folder: &str) -> Result<(Vec<(Stri
     };
 
     let mut out = Vec::new();
-    let mut illisibles = 0usize;
     for (folder_name, folder_dir) in folder_dirs {
         for sub in ["cur", "new"] {
             let d = folder_dir.join(sub);
@@ -154,10 +173,11 @@ pub fn message_paths(root: &str, email: &str, folder: &str) -> Result<(Vec<(Stri
 /// Localise un message par son id de fichier (egal ou prefixe). Pour le body-fetch gate.
 pub fn find_message(root: &str, email: &str, folder: &str, id: &str) -> Result<(String, PathBuf)> {
     for (fname, p) in message_paths(root, email, folder)?.0 {
-        if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
-            if name == id || name.starts_with(id) {
-                return Ok((fname, p));
-            }
+        // Un nom de fichier non UTF-8 ne peut pas egaler un identifiant texte : c'est une VALEUR (vide),
+        // pas un abandon — et la fin de fonction dit « introuvable » si rien n'a correspondu.
+        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if !name.is_empty() && (name == id || name.starts_with(id)) {
+            return Ok((fname, p));
         }
     }
     Err(anyhow!("message introuvable: {}", id))

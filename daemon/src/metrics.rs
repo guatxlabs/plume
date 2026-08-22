@@ -175,18 +175,37 @@ pub(crate) fn component_health(conn: &Connection, spool: &str, db_path: &str, di
         Some(_) if fresh => ("green", "données fraîches (< 10 min)".to_string()),
         Some(_) => ("yellow", "aucune donnée récente (source calme ou collecte arrêtée)".to_string()),
     };
+    // P4.1-r — CE QUE LE DERNIER PASSAGE SUR LE SPOOL A ABANDONNÉ, ou l'aveu qu'il n'a pas pu l'énumérer.
+    // Distinct de la profondeur de file : celle-ci dit combien attendent, ceci dit combien ont été
+    // laissés de côté (quarantaine, illisibles) — un fichier abandonné à chaque passage reste dans la
+    // file et ne s'ingère jamais, et seul ce compte le fait voir.
+    let bilan_ingest = crate::bilan_de_tick::combiner(&[crate::bilan_de_tick::BOUCLE_INGEST]);
+    let (istate, idetail) = crate::bilan_de_tick::etat_de_surface(istate, idetail, bilan_ingest.as_ref());
     let mut ingest = serde_json::Map::new();
     ingest.insert("component".into(), json!("ingest"));
     ingest.insert("state".into(), json!(istate));
     ingest.insert("detail".into(), json!(idetail));
     queue.poser_dans(&mut ingest, "queue_depth");
+    crate::bilan_de_tick::poser_bilan(&mut ingest, "abandons_dernier_passage", bilan_ingest.as_ref());
     out.push(Value::Object(ingest));
 
     // DÉTECTION : le scheduler de règles tick-t-il ? (SCHED_RULE_LAST_TS). 0 = pas encore tické (boot) -> idle.
+    // P4.1-r — ET QU'A-T-IL ÉVALUÉ ? Un tick à l'heure qui n'a pas pu lire ses règles était VERT ici :
+    // le bilan publié par le planificateur (règles + incidents de risque) le rend ROUGE, et des règles
+    // abandonnées (compilation refusée, évaluation en échec) le rendent JAUNE, avec leur compte.
     let rule_last = SCHED_RULE_LAST_TS.load(Ordering::Relaxed);
     let (dstate, ddetail) = tick_health(rule_last, now_ts, 120, 600, "scheduler de règles");
+    let bilan_detection = crate::bilan_de_tick::combiner(&[crate::bilan_de_tick::BOUCLE_REGLES, crate::bilan_de_tick::BOUCLE_RISQUE]);
+    let (dstate, ddetail) = crate::bilan_de_tick::etat_de_surface(dstate, ddetail, bilan_detection.as_ref());
     let n_rules: i64 = conn.query_row("SELECT COUNT(*) FROM rule WHERE enabled=1", [], |r| r.get(0)).unwrap_or(0);
-    out.push(json!({ "component": "detection", "state": dstate, "detail": ddetail, "enabled_rules": n_rules, "last_tick": rule_last }));
+    let mut detection = serde_json::Map::new();
+    detection.insert("component".into(), json!("detection"));
+    detection.insert("state".into(), json!(dstate));
+    detection.insert("detail".into(), json!(ddetail));
+    detection.insert("enabled_rules".into(), json!(n_rules));
+    detection.insert("last_tick".into(), json!(rule_last));
+    crate::bilan_de_tick::poser_bilan(&mut detection, "abandons_dernier_tick", bilan_detection.as_ref());
+    out.push(Value::Object(detection));
 
     // ROLLUPS : la boucle de rollup tick-t-elle ? (intervalle défaut 120 s).
     let rollup_last = SCHED_ROLLUP_LAST_TS.load(Ordering::Relaxed);
@@ -244,7 +263,15 @@ pub(crate) fn component_health(conn: &Connection, spool: &str, db_path: &str, di
     // FORWARDER (#50 outputs/destinations) : table vide -> idle (mode 0). Une destination ACTIVE en erreur
     // (last_error non vide) -> jaune. Sinon vert. Table absente (schéma < v92) -> idle.
     let (fstate, fdetail) = destination_health(conn);
-    out.push(json!({ "component": "forwarder", "state": fstate, "detail": fdetail }));
+    // P4.1-r — une liste de destinations qu'on n'a pas pu lire n'était ni « en erreur » ni « OK » : rien.
+    let bilan_forwarder = crate::bilan_de_tick::combiner(&[crate::bilan_de_tick::BOUCLE_DESTINATIONS]);
+    let (fstate, fdetail) = crate::bilan_de_tick::etat_de_surface(fstate, fdetail, bilan_forwarder.as_ref());
+    let mut forwarder = serde_json::Map::new();
+    forwarder.insert("component".into(), json!("forwarder"));
+    forwarder.insert("state".into(), json!(fstate));
+    forwarder.insert("detail".into(), json!(fdetail));
+    crate::bilan_de_tick::poser_bilan(&mut forwarder, "abandons_dernier_tick", bilan_forwarder.as_ref());
+    out.push(Value::Object(forwarder));
 
     // RESTAURATION (P8.3-a) : depuis quand une archive n'a-t-elle pas été REMISE EN SERVICE ? Lecture
     // d'UNE ligne `meta`, jamais un scan. Le composant est le seul du lot dont l'état ne décrit pas un
@@ -294,6 +321,20 @@ fn destination_health(conn: &Connection) -> (&'static str, String) {
     } else {
         ("green", format!("{total} destination(s) OK"))
     }
+}
+
+/// Le PIRE de deux états (red > yellow > green > idle) — un seul auteur pour cet ordre, partagé avec
+/// `worst_state` et avec le bilan de tick (`bilan_de_tick::etat_de_surface`).
+pub(crate) fn pire_des_deux(a: &'static str, b: &'static str) -> &'static str {
+    fn rang(e: &str) -> u8 {
+        match e {
+            "red" => 3,
+            "yellow" => 2,
+            "green" => 1,
+            _ => 0,
+        }
+    }
+    if rang(b) > rang(a) { b } else { a }
 }
 
 /// L'état PIRE d'un ensemble de composants -> posture globale (red > yellow > green/idle).
@@ -369,6 +410,17 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
     // panneau Système ne déclenche JAMAIS un parcours dbstat. `null` = jamais mesuré ;
     // `{"mesuree":false,…}` = mesure REFUSÉE (jamais un objet de zéros).
     db.insert("ventilation".into(), ventilation_serie::json(&ventilation_serie::derniere(), now_ts));
+    // P4.1-r — LE BILAN DU DERNIER TICK DE CHAQUE BOUCLE DE FOND, à côté de ses compteurs de ticks : un
+    // tick compté n'est pas un tick qui a évalué. Convention `S32` (`<boucle>_abandons[_verdict|_cause|
+    // _detail]`) ; ABSENT avant le premier tick, jamais un zéro inventé.
+    let mut scheduler = serde_json::Map::new();
+    scheduler.insert("rule_ticks_total".into(), json!(SCHED_RULE_TICKS.load(Ordering::Relaxed)));
+    scheduler.insert("rule_last_tick".into(), json!(SCHED_RULE_LAST_TS.load(Ordering::Relaxed)));
+    scheduler.insert("rollup_ticks_total".into(), json!(SCHED_ROLLUP_TICKS.load(Ordering::Relaxed)));
+    scheduler.insert("rollup_last_tick".into(), json!(SCHED_ROLLUP_LAST_TS.load(Ordering::Relaxed)));
+    for boucle in crate::bilan_de_tick::BOUCLES {
+        crate::bilan_de_tick::poser_bilan(&mut scheduler, &format!("{boucle}_abandons"), crate::bilan_de_tick::dernier(boucle).as_ref());
+    }
     json!({
         "ts": now_ts,
         "version": env!("CARGO_PKG_VERSION"),
@@ -381,12 +433,7 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
         },
         "ingest": ingest,
         "search": { "requests_total": SEARCH_TOTAL.load(Ordering::Relaxed), "p50_ms": p50, "p95_ms": p95, "samples": lat_n },
-        "scheduler": {
-            "rule_ticks_total": SCHED_RULE_TICKS.load(Ordering::Relaxed),
-            "rule_last_tick": SCHED_RULE_LAST_TS.load(Ordering::Relaxed),
-            "rollup_ticks_total": SCHED_ROLLUP_TICKS.load(Ordering::Relaxed),
-            "rollup_last_tick": SCHED_ROLLUP_LAST_TS.load(Ordering::Relaxed),
-        },
+        "scheduler": scheduler,
         "db": db,
         "host": hote,
         "alerts_open": alerts_open,
@@ -451,6 +498,26 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     o.push_str(&format!("plume_search_latency_ms{{quantile=\"0.95\"}} {p95}\n"));
     g(&mut o, "plume_scheduler_rule_ticks_total", "counter", "Ticks du scheduler de règles", "/scheduler/rule_ticks_total");
     g(&mut o, "plume_scheduler_rollup_ticks_total", "counter", "Ticks de la boucle de rollup", "/scheduler/rollup_ticks_total");
+    // P4.1-r — PAR BOUCLE DE FOND : les abandons du dernier tick (jauge, ABSENTE tant que la boucle n'a
+    // pas tické, ou quand le tick a été AVEUGLE) et la lisibilité du bilan à côté, comme pour toute
+    // mesure de `S32`. `g()` n'imprime que ce qu'il trouve : l'absence EST le message, la jauge
+    // `…_lisible{cause}` dit pourquoi.
+    for boucle in crate::bilan_de_tick::BOUCLES {
+        g(
+            &mut o,
+            &format!("plume_scheduler_{boucle}_abandons"),
+            "gauge",
+            &format!("Éléments dus ABANDONNÉS (non évalués) au dernier tick de la boucle « {boucle} »"),
+            &format!("/scheduler/{boucle}_abandons"),
+        );
+        lisible(
+            &mut o,
+            &format!("plume_scheduler_{boucle}_bilan_lisible"),
+            &format!("le bilan du dernier tick de la boucle « {boucle} » (0 = tick AVEUGLE : sa liste d'éléments dus n'a pas pu être lue)"),
+            &format!("/scheduler/{boucle}_abandons_verdict"),
+            &format!("/scheduler/{boucle}_abandons_cause"),
+        );
+    }
     g(&mut o, "plume_db_size_bytes", "gauge", "Taille de la base (db + wal, octets)", "/db/size_bytes");
     lisible(&mut o, "plume_db_size_lisible", "la taille de la base", "/db/size_bytes_verdict", "/db/size_bytes_cause");
     lisible(

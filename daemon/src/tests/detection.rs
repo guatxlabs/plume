@@ -1426,9 +1426,12 @@
         let real_shm = mk("plume.db-shm", b"shm");
         let real_age = mk("plume-20260711.db.age", b"age(zstd(...))");
 
-        let removed = crate::backup::sweep_orphan_temps(&dir, Duration::from_secs(3600));
+        let balayage = crate::backup::sweep_orphan_temps(&dir, Duration::from_secs(3600));
+        let removed = balayage.effaces;
 
         assert_eq!(removed, 2, "exactement le temp ancien + son sidecar journal réapés");
+        assert_eq!(balayage.illisibles, 0, "une arborescence lisible n'avoue aucune entrée illisible");
+        assert!(balayage.repertoire_lisible);
         assert!(!old_tmp.exists(), "l'orphelin ancien doit être effacé");
         assert!(!old_journal.exists(), "le sidecar -journal ancien doit être effacé");
         assert!(fresh_tmp.exists(), "un temp RÉCENT (backup concurrent) doit être ÉPARGNÉ");

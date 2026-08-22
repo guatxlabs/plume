@@ -170,88 +170,91 @@ fn overlay_name(v: &Value) -> Option<String> {
 
 /// NOTIFIERS (canaux d'alerte). Secret dans `config` (token/pass/webhook_url/routing_key/auth_header) ->
 /// référencé indirectement. `url`/`url_ref` : l'endpoint (peut porter un token pour un webhook -> `url_ref`).
-pub(crate) fn load_overlay_notifiers(conn: &Connection, dir: &std::path::Path) -> u32 {
-    let mut n = 0;
+pub(crate) fn load_overlay_notifiers(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
     const KINDS: &[&str] = &["ntfy", "webhook", "email", "slack", "pagerduty", "generic", "lookup"];
-    for path in overlay_files(dir) {
-        let v = match overlay_read_json(&path) { Some(v) => v, None => continue };
-        let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN notifier {} sans 'name' — ignoré", path.display()); continue } };
+    let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_json);
+    for path in fichiers {
+        let v = match overlay_read_json(&path) { Some(v) => v, None => { ch.ignores += 1; continue; } };
+        let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN notifier {} sans 'name' — ignoré", path.display()); ch.ignores += 1; continue } };
         let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("ntfy").trim().to_string();
         if !KINDS.contains(&kind.as_str()) {
             eprintln!("[oac] WARN notifier '{name}' : kind '{kind}' hors allowlist — ignoré");
+            ch.ignores += 1;
             continue;
         }
         // url : `url_ref` (résolu) l'emporte sur `url`. Validation `safe_url` comme notifier_create.
         let url = match v.get("url_ref").and_then(|x| x.as_str()) {
-            Some(r) => match resolve_secret_ref(r) { Ok(u) => u, Err(e) => { eprintln!("[oac] WARN notifier '{name}' : url_ref — {e} — ignoré"); continue } },
+            Some(r) => match resolve_secret_ref(r) { Ok(u) => u, Err(e) => { eprintln!("[oac] WARN notifier '{name}' : url_ref — {e} — ignoré"); ch.ignores += 1; continue } },
             None => v.get("url").and_then(|x| x.as_str()).unwrap_or("").trim().to_string(),
         };
         if notifier_kind_needs_url(&kind) {
-            if !safe_url(&url) { eprintln!("[oac] WARN notifier '{name}' : url requise/invalide pour kind '{kind}' — ignoré"); continue; }
+            if !safe_url(&url) { eprintln!("[oac] WARN notifier '{name}' : url requise/invalide pour kind '{kind}' — ignoré"); ch.ignores += 1; continue; }
         } else if !url.is_empty() && !safe_url(&url) {
             eprintln!("[oac] WARN notifier '{name}' : url invalide — ignoré");
+            ch.ignores += 1;
             continue;
         }
         let mut config = v.get("config").cloned().unwrap_or_else(|| json!({}));
         if let Err(e) = scrub_config_secrets(&mut config) {
             eprintln!("[oac] WARN notifier '{name}' : {e} — REJETÉ");
+            ch.ignores += 1;
             continue;
         }
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true) as i64;
         let min_sev = v.get("min_severity").and_then(|x| x.as_i64()).unwrap_or(2).clamp(0, 4);
         let config_s = config.to_string();
         match plan_upsert(conn, "notifier", &name) {
-            UpsertPlan::SkipUser => { eprintln!("[oac] WARN notifier '{name}' : un canal UI (managed=2) du même nom existe — overlay ignoré (renommez l'un des deux)"); continue; }
+            UpsertPlan::SkipUser => { eprintln!("[oac] WARN notifier '{name}' : un canal UI (managed=2) du même nom existe — overlay ignoré (renommez l'un des deux)"); ch.ignores += 1; continue; }
             UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE notifier SET kind=?1, enabled=?2, url=?3, min_severity=?4, config=?5, managed=1 WHERE id=?6", params![kind, enabled, url, min_sev, config_s, id]); }
             UpsertPlan::Insert => { let _ = conn.execute("INSERT INTO notifier(name,kind,enabled,url,min_severity,config,managed) VALUES(?1,?2,?3,?4,?5,?6,1)", params![name, kind, enabled, url, min_sev, config_s]); }
         }
-        n += 1;
+        ch.charges += 1;
     }
-    n
+    ch
 }
 
 /// DESTINATIONS (#50 forward vers sink externe). Secret dans `config` (hec_token/auth_header) -> référencé.
 /// `endpoint`/`endpoint_ref` non-secret (validé schéma+anti-metadata). `filter` = sélecteur allowlisté.
-pub(crate) fn load_overlay_destinations(conn: &Connection, dir: &std::path::Path) -> u32 {
-    let mut n = 0;
-    for path in overlay_files(dir) {
-        let v = match overlay_read_json(&path) { Some(v) => v, None => continue };
-        let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN destination {} sans 'name' — ignorée", path.display()); continue } };
+pub(crate) fn load_overlay_destinations(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
+    let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_json);
+    for path in fichiers {
+        let v = match overlay_read_json(&path) { Some(v) => v, None => { ch.ignores += 1; continue; } };
+        let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN destination {} sans 'name' — ignorée", path.display()); ch.ignores += 1; continue } };
         let dtype = v.get("type").and_then(|x| x.as_str()).unwrap_or("webhook").trim().to_string();
-        if !dest_type_ok(&dtype) { eprintln!("[oac] WARN destination '{name}' : type '{dtype}' hors allowlist — ignorée"); continue; }
+        if !dest_type_ok(&dtype) { eprintln!("[oac] WARN destination '{name}' : type '{dtype}' hors allowlist — ignorée"); ch.ignores += 1; continue; }
         let endpoint = match v.get("endpoint_ref").and_then(|x| x.as_str()) {
-            Some(r) => match resolve_secret_ref(r) { Ok(u) => u, Err(e) => { eprintln!("[oac] WARN destination '{name}' : endpoint_ref — {e} — ignorée"); continue } },
+            Some(r) => match resolve_secret_ref(r) { Ok(u) => u, Err(e) => { eprintln!("[oac] WARN destination '{name}' : endpoint_ref — {e} — ignorée"); ch.ignores += 1; continue } },
             None => v.get("endpoint").and_then(|x| x.as_str()).unwrap_or("").trim().to_string(),
         };
-        if !dest_endpoint_ok(&dtype, &endpoint) { eprintln!("[oac] WARN destination '{name}' : endpoint invalide pour type '{dtype}' — ignorée"); continue; }
+        if !dest_endpoint_ok(&dtype, &endpoint) { eprintln!("[oac] WARN destination '{name}' : endpoint invalide pour type '{dtype}' — ignorée"); ch.ignores += 1; continue; }
         let filter_v = v.get("filter").cloned().unwrap_or_else(|| json!({}));
-        if let Err(e) = DestFilter::from_json(&filter_v).validate() { eprintln!("[oac] WARN destination '{name}' : filtre invalide ({e}) — ignorée"); continue; }
+        if let Err(e) = DestFilter::from_json(&filter_v).validate() { eprintln!("[oac] WARN destination '{name}' : filtre invalide ({e}) — ignorée"); ch.ignores += 1; continue; }
         let mut config = v.get("config").cloned().unwrap_or_else(|| json!({}));
-        if let Err(e) = scrub_config_secrets(&mut config) { eprintln!("[oac] WARN destination '{name}' : {e} — REJETÉE"); continue; }
+        if let Err(e) = scrub_config_secrets(&mut config) { eprintln!("[oac] WARN destination '{name}' : {e} — REJETÉE"); ch.ignores += 1; continue; }
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false) as i64;
         let batch_max = v.get("batch_max").and_then(|x| x.as_i64()).unwrap_or(500).clamp(1, 10000);
         let interval_s = v.get("interval_s").and_then(|x| x.as_i64()).unwrap_or(30).max(5);
         let (config_s, filter_s) = (config.to_string(), filter_v.to_string());
         match plan_upsert(conn, "destination", &name) {
-            UpsertPlan::SkipUser => { eprintln!("[oac] WARN destination '{name}' : une destination UI (managed=2) du même nom existe — overlay ignoré"); continue; }
+            UpsertPlan::SkipUser => { eprintln!("[oac] WARN destination '{name}' : une destination UI (managed=2) du même nom existe — overlay ignoré"); ch.ignores += 1; continue; }
             UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE destination SET type=?1, enabled=?2, endpoint=?3, config=?4, filter=?5, batch_max=?6, interval_s=?7, managed=1 WHERE id=?8", params![dtype, enabled, endpoint, config_s, filter_s, batch_max, interval_s, id]); }
             UpsertPlan::Insert => { let _ = conn.execute("INSERT INTO destination(type,name,enabled,endpoint,config,filter,batch_max,interval_s,managed,created) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,1,?9)", params![dtype, name, enabled, endpoint, config_s, filter_s, batch_max, interval_s, now()]); }
         }
-        n += 1;
+        ch.charges += 1;
     }
-    n
+    ch
 }
 
 /// CONNECTEURS (#3a sources externes). Credential = colonne `secret` (JAMAIS dans `config_json`) référencée
 /// via `secret_ref`. `config_json` = identifiants NON-secrets (client_id/api_root/...) validés par type.
-pub(crate) fn load_overlay_connectors(conn: &Connection, dir: &std::path::Path) -> u32 {
-    let mut n = 0;
+pub(crate) fn load_overlay_connectors(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
     const TYPES: &[&str] = &["defender", "taxii2", "http_pull"];
-    for path in overlay_files(dir) {
-        let v = match overlay_read_json(&path) { Some(v) => v, None => continue };
-        let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN connecteur {} sans 'name' — ignoré", path.display()); continue } };
+    let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_json);
+    for path in fichiers {
+        let v = match overlay_read_json(&path) { Some(v) => v, None => { ch.ignores += 1; continue; } };
+        let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN connecteur {} sans 'name' — ignoré", path.display()); ch.ignores += 1; continue } };
         let ctype = v.get("type").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
-        if !TYPES.contains(&ctype.as_str()) { eprintln!("[oac] WARN connecteur '{name}' : type '{ctype}' hors allowlist (defender|taxii2|http_pull) — ignoré"); continue; }
+        if !TYPES.contains(&ctype.as_str()) { eprintln!("[oac] WARN connecteur '{name}' : type '{ctype}' hors allowlist (defender|taxii2|http_pull) — ignoré"); ch.ignores += 1; continue; }
         let mut config = v.get("config").cloned().unwrap_or_else(|| json!({}));
         // Validation de forme PAR TYPE (miroir de connector_create).
         let cfg_ok = match ctype.as_str() {
@@ -268,86 +271,87 @@ pub(crate) fn load_overlay_connectors(conn: &Connection, dir: &std::path::Path) 
                 && config.get("client_id").and_then(|x| x.as_str()).map(|s| !s.is_empty()).unwrap_or(false),
             _ => false,
         };
-        if !cfg_ok { eprintln!("[oac] WARN connecteur '{name}' : config invalide/incomplète pour type '{ctype}' — ignoré"); continue; }
+        if !cfg_ok { eprintln!("[oac] WARN connecteur '{name}' : config invalide/incomplète pour type '{ctype}' — ignoré"); ch.ignores += 1; continue; }
         // Le secret NE vit QUE dans la colonne `secret`, via `secret_ref`. Un `secret` en clair top-level -> rejet.
         if v.get("secret").map(|s| !s.is_null()).unwrap_or(false) {
             eprintln!("[oac] WARN connecteur '{name}' : champ 'secret' en clair interdit — utilisez 'secret_ref' (env:/file:/vault:) — REJETÉ");
+            ch.ignores += 1;
             continue;
         }
         let secret = match resolve_secret_ref(v.get("secret_ref").and_then(|x| x.as_str()).unwrap_or("")) {
             Ok(s) => s,
-            Err(e) => { eprintln!("[oac] WARN connecteur '{name}' : secret_ref — {e} — REJETÉ"); continue; }
+            Err(e) => { eprintln!("[oac] WARN connecteur '{name}' : secret_ref — {e} — REJETÉ"); ch.ignores += 1; continue; }
         };
         // Défense en profondeur : le config_json ne DOIT pas porter de secret (le split est structurel).
-        if let Err(e) = scrub_config_secrets(&mut config) { eprintln!("[oac] WARN connecteur '{name}' : {e} — REJETÉ"); continue; }
+        if let Err(e) = scrub_config_secrets(&mut config) { eprintln!("[oac] WARN connecteur '{name}' : {e} — REJETÉ"); ch.ignores += 1; continue; }
         let env_id = v.get("env_id").and_then(|x| x.as_str()).unwrap_or("prod").trim().to_string();
-        if !env_slug_ok(&env_id) { eprintln!("[oac] WARN connecteur '{name}' : env_id '{env_id}' invalide — ignoré"); continue; }
+        if !env_slug_ok(&env_id) { eprintln!("[oac] WARN connecteur '{name}' : env_id '{env_id}' invalide — ignoré"); ch.ignores += 1; continue; }
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false) as i64;
         let interval_s = v.get("interval_s").and_then(|x| x.as_i64()).unwrap_or(300).max(60);
         let config_s = config.to_string();
         match plan_upsert(conn, "connector", &name) {
-            UpsertPlan::SkipUser => { eprintln!("[oac] WARN connecteur '{name}' : un connecteur UI (managed=2) du même nom existe — overlay ignoré"); continue; }
+            UpsertPlan::SkipUser => { eprintln!("[oac] WARN connecteur '{name}' : un connecteur UI (managed=2) du même nom existe — overlay ignoré"); ch.ignores += 1; continue; }
             UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE connector SET type=?1, enabled=?2, config_json=?3, secret=?4, interval_s=?5, env_id=?6, managed=1 WHERE id=?7", params![ctype, enabled, config_s, secret, interval_s, env_id, id]); }
             UpsertPlan::Insert => { let _ = conn.execute("INSERT INTO connector(type,name,enabled,config_json,secret,interval_s,env_id,managed,created) VALUES(?1,?2,?3,?4,?5,?6,?7,1,?8)", params![ctype, name, enabled, config_s, secret, interval_s, env_id, now()]); }
         }
-        n += 1;
+        ch.charges += 1;
     }
-    n
+    ch
 }
 
 /// INDEX-POLICIES (#49). Aucun secret. name = un env_id (env_id_ok) ; rétention clampée [7,3650] si > 0.
-pub(crate) fn load_overlay_index_policies(conn: &Connection, dir: &std::path::Path) -> u32 {
-    let mut n = 0;
-    for path in overlay_files(dir) {
-        let v = match overlay_read_json(&path) { Some(v) => v, None => continue };
-        let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN index-policy {} sans 'name' — ignorée", path.display()); continue } };
-        if !env_id_ok(&name) { eprintln!("[oac] WARN index-policy '{name}' : nom hors allowlist env_id — ignorée"); continue; }
+pub(crate) fn load_overlay_index_policies(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
+    let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_json);
+    for path in fichiers {
+        let v = match overlay_read_json(&path) { Some(v) => v, None => { ch.ignores += 1; continue; } };
+        let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN index-policy {} sans 'name' — ignorée", path.display()); ch.ignores += 1; continue } };
+        if !env_id_ok(&name) { eprintln!("[oac] WARN index-policy '{name}' : nom hors allowlist env_id — ignorée"); ch.ignores += 1; continue; }
         let rdays = v.get("retention_days").and_then(|x| x.as_i64()).unwrap_or(0);
         let max_rows = v.get("max_rows").and_then(|x| x.as_i64()).unwrap_or(0);
         let max_bytes = v.get("max_bytes").and_then(|x| x.as_i64()).unwrap_or(0);
-        if rdays < 0 || max_rows < 0 || max_bytes < 0 { eprintln!("[oac] WARN index-policy '{name}' : valeurs négatives interdites — ignorée"); continue; }
+        if rdays < 0 || max_rows < 0 || max_bytes < 0 { eprintln!("[oac] WARN index-policy '{name}' : valeurs négatives interdites — ignorée"); ch.ignores += 1; continue; }
         let rd = if rdays > 0 { rdays.clamp(7, 3650) } else { 0 };
         let description = v.get("description").and_then(|x| x.as_str()).unwrap_or("").to_string();
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true) as i64;
         match plan_upsert(conn, "index_policy", &name) {
-            UpsertPlan::SkipUser => { eprintln!("[oac] WARN index-policy '{name}' : une policy UI (managed=2) du même nom existe — overlay ignorée"); continue; }
+            UpsertPlan::SkipUser => { eprintln!("[oac] WARN index-policy '{name}' : une policy UI (managed=2) du même nom existe — overlay ignorée"); ch.ignores += 1; continue; }
             UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE index_policy SET retention_days=?1, max_rows=?2, max_bytes=?3, description=?4, enabled=?5, managed=1, updated=?6, updated_by='config.d' WHERE id=?7", params![rd, max_rows, max_bytes, description, enabled, now(), id]); }
             UpsertPlan::Insert => { let _ = conn.execute("INSERT INTO index_policy(name,retention_days,max_rows,max_bytes,description,enabled,managed,created,updated,updated_by) VALUES(?1,?2,?3,?4,?5,?6,1,?7,?7,'config.d')", params![name, rd, max_rows, max_bytes, description, enabled, now()]); }
         }
-        n += 1;
+        ch.charges += 1;
     }
-    n
+    ch
 }
 
 /// FIELD-FILTERS (#45 masquage par champ). Aucun secret. field/action/role validés comme field_filter_create.
-pub(crate) fn load_overlay_field_filters(conn: &Connection, dir: &std::path::Path) -> u32 {
-    let mut n = 0;
+pub(crate) fn load_overlay_field_filters(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
     const ACTIONS: &[&str] = &["mask", "partial", "hash", "redact", "deny"];
     const ROLES: &[&str] = &["", "viewer", "editor", "admin"];
-    for path in overlay_files(dir) {
-        let v = match overlay_read_json(&path) { Some(v) => v, None => continue };
-        let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN field-filter {} sans 'name' — ignoré", path.display()); continue } };
+    let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_json);
+    for path in fichiers {
+        let v = match overlay_read_json(&path) { Some(v) => v, None => { ch.ignores += 1; continue; } };
+        let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN field-filter {} sans 'name' — ignoré", path.display()); ch.ignores += 1; continue } };
         let field = match validate_field(v.get("field").and_then(|x| x.as_str()).unwrap_or("")) {
             Ok(f) => f,
-            Err(e) => { eprintln!("[oac] WARN field-filter '{name}' : champ invalide ({e}) — ignoré"); continue; }
+            Err(e) => { eprintln!("[oac] WARN field-filter '{name}' : champ invalide ({e}) — ignoré"); ch.ignores += 1; continue; }
         };
         let action = v.get("action").and_then(|x| x.as_str()).unwrap_or("mask").to_ascii_lowercase();
-        if !ACTIONS.contains(&action.as_str()) { eprintln!("[oac] WARN field-filter '{name}' : action '{action}' hors allowlist — ignoré"); continue; }
+        if !ACTIONS.contains(&action.as_str()) { eprintln!("[oac] WARN field-filter '{name}' : action '{action}' hors allowlist — ignoré"); ch.ignores += 1; continue; }
         let role = v.get("role").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        if !ROLES.contains(&role.as_str()) { eprintln!("[oac] WARN field-filter '{name}' : rôle '{role}' hors allowlist — ignoré"); continue; }
+        if !ROLES.contains(&role.as_str()) { eprintln!("[oac] WARN field-filter '{name}' : rôle '{role}' hors allowlist — ignoré"); ch.ignores += 1; continue; }
         let tenant = v.get("tenant").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
         let env = v.get("env").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
-        if !env.is_empty() && !env_id_ok(&env) { eprintln!("[oac] WARN field-filter '{name}' : env '{env}' invalide — ignoré"); continue; }
+        if !env.is_empty() && !env_id_ok(&env) { eprintln!("[oac] WARN field-filter '{name}' : env '{env}' invalide — ignoré"); ch.ignores += 1; continue; }
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true) as i64;
         let ord = v.get("ord").and_then(|x| x.as_i64()).unwrap_or(0);
         match plan_upsert(conn, "field_filter", &name) {
-            UpsertPlan::SkipUser => { eprintln!("[oac] WARN field-filter '{name}' : un filtre UI (managed=2) du même nom existe — overlay ignoré"); continue; }
+            UpsertPlan::SkipUser => { eprintln!("[oac] WARN field-filter '{name}' : un filtre UI (managed=2) du même nom existe — overlay ignoré"); ch.ignores += 1; continue; }
             UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE field_filter SET field=?1, action=?2, role=?3, tenant=?4, env=?5, enabled=?6, ord=?7, managed=1, updated=?8 WHERE id=?9", params![field, action, role, tenant, env, enabled, ord, now(), id]); }
             UpsertPlan::Insert => { let _ = conn.execute("INSERT INTO field_filter(name,field,action,role,tenant,env,enabled,ord,managed,created,updated) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?9)", params![name, field, action, role, tenant, env, enabled, ord, now()]); }
         }
-        n += 1;
+        ch.charges += 1;
     }
-    n
+    ch
 }
 
 /// LE SQL BRUT D'UN OVERLAY DE PANNEAU — frontière ÉTABLIE, plus seulement constatée (P7.9-a).
@@ -380,60 +384,60 @@ fn tracer_panneau_sql_brut(conn: &Connection, kind: &str, name: &str) {
 }
 
 /// LIBRARY-PANELS (#54 panneaux réutilisables). Aucun secret. Requête validée par compile_panel_sql.
-pub(crate) fn load_overlay_library_panels(conn: &Connection, dir: &std::path::Path) -> u32 {
-    let mut n = 0;
-    for path in overlay_files(dir) {
-        let v = match overlay_read_json(&path) { Some(v) => v, None => continue };
-        let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN library-panel {} sans 'name' — ignoré", path.display()); continue } };
+pub(crate) fn load_overlay_library_panels(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
+    let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_json);
+    for path in fichiers {
+        let v = match overlay_read_json(&path) { Some(v) => v, None => { ch.ignores += 1; continue; } };
+        let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN library-panel {} sans 'name' — ignoré", path.display()); ch.ignores += 1; continue } };
         let title = v.get("title").and_then(|x| x.as_str()).unwrap_or("Panneau").to_string();
         let query = v.get("query").and_then(|x| x.as_str()).unwrap_or("").to_string();
         let is_soql = v.get("is_soql").and_then(|x| x.as_bool()).unwrap_or(true);
-        if let Err(e) = compile_panel_sql(&query, is_soql, 0, 0, None) { eprintln!("[oac] WARN library-panel '{name}' : requête invalide ({e}) — ignoré"); continue; }
+        if let Err(e) = compile_panel_sql(&query, is_soql, 0, 0, None) { eprintln!("[oac] WARN library-panel '{name}' : requête invalide ({e}) — ignoré"); ch.ignores += 1; continue; }
         if !is_soql { tracer_panneau_sql_brut(conn, "library-panel", &name); }
         let viz = v.get("viz").and_then(|x| x.as_str()).unwrap_or("table").to_string();
         let drill = v.get("drill").and_then(|x| x.as_str()).unwrap_or("").to_string();
         match plan_upsert(conn, "library_panel", &name) {
-            UpsertPlan::SkipUser => { eprintln!("[oac] WARN library-panel '{name}' : un panneau UI (managed=2) du même nom existe — overlay ignoré"); continue; }
+            UpsertPlan::SkipUser => { eprintln!("[oac] WARN library-panel '{name}' : un panneau UI (managed=2) du même nom existe — overlay ignoré"); ch.ignores += 1; continue; }
             UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE library_panel SET title=?1, query=?2, is_soql=?3, viz=?4, drill=?5, managed=1, updated=?6 WHERE id=?7", params![title, query, is_soql as i64, viz, drill, now(), id]); }
             UpsertPlan::Insert => { let _ = conn.execute("INSERT INTO library_panel(name,title,query,is_soql,viz,drill,visibility,managed,created,updated) VALUES(?1,?2,?3,?4,?5,?6,'shared',1,?7,?7)", params![name, title, query, is_soql as i64, viz, drill, now()]); }
         }
-        n += 1;
+        ch.charges += 1;
     }
-    n
+    ch
 }
 
 /// NOTIFICATION-POLICIES (routage des alertes vers des canaux). Aucun secret. matchers validés (allowlist de
 /// champs) ; contact_points = ids de notifiers (CSV, existence NON vérifiée, comme policy_create).
-pub(crate) fn load_overlay_notification_policies(conn: &Connection, dir: &std::path::Path) -> u32 {
-    let mut n = 0;
-    for path in overlay_files(dir) {
-        let v = match overlay_read_json(&path) { Some(v) => v, None => continue };
-        let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN notification-policy {} sans 'name' — ignorée", path.display()); continue } };
+pub(crate) fn load_overlay_notification_policies(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
+    let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_json);
+    for path in fichiers {
+        let v = match overlay_read_json(&path) { Some(v) => v, None => { ch.ignores += 1; continue; } };
+        let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN notification-policy {} sans 'name' — ignorée", path.display()); ch.ignores += 1; continue } };
         let matchers_v = v.get("matchers").cloned().unwrap_or_else(|| json!({}));
-        let matchers = match parse_matchers(&matchers_v) { Ok(m) => m, Err(e) => { eprintln!("[oac] WARN notification-policy '{name}' : matchers invalides ({e}) — ignorée"); continue; } };
+        let matchers = match parse_matchers(&matchers_v) { Ok(m) => m, Err(e) => { eprintln!("[oac] WARN notification-policy '{name}' : matchers invalides ({e}) — ignorée"); ch.ignores += 1; continue; } };
         let matchers_s = matchers_to_json(&matchers);
         let cps: Vec<i64> = v.get("contact_points").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|e| e.as_i64()).collect()).unwrap_or_default();
-        if cps.is_empty() || cps.len() > 32 { eprintln!("[oac] WARN notification-policy '{name}' : contact_points (ids de canaux) vide ou > 32 — ignorée"); continue; }
+        if cps.is_empty() || cps.len() > 32 { eprintln!("[oac] WARN notification-policy '{name}' : contact_points (ids de canaux) vide ou > 32 — ignorée"); ch.ignores += 1; continue; }
         let cps_s = cps.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
         let cont = v.get("continue").and_then(|x| x.as_bool()).unwrap_or(false) as i64;
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true) as i64;
         match plan_upsert(conn, "notification_policy", &name) {
-            UpsertPlan::SkipUser => { eprintln!("[oac] WARN notification-policy '{name}' : une policy UI (managed=2) du même nom existe — overlay ignorée"); continue; }
+            UpsertPlan::SkipUser => { eprintln!("[oac] WARN notification-policy '{name}' : une policy UI (managed=2) du même nom existe — overlay ignorée"); ch.ignores += 1; continue; }
             UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE notification_policy SET matchers=?1, contact_points=?2, continue_=?3, enabled=?4, managed=1 WHERE id=?5", params![matchers_s, cps_s, cont, enabled, id]); }
             UpsertPlan::Insert => { let _ = conn.execute("INSERT INTO notification_policy(name,matchers,contact_points,continue_,enabled,managed,created,created_by) VALUES(?1,?2,?3,?4,?5,1,?6,'config.d')", params![name, matchers_s, cps_s, cont, enabled, now()]); }
         }
-        n += 1;
+        ch.charges += 1;
     }
-    n
+    ch
 }
 
 /// DASHBOARDS (+ leurs PANNEAUX). Aucun secret. Chaque panneau validé par compile_panel_sql. Le jeu de
 /// panneaux managed=1 d'un dashboard managed est REMPLACÉ à l'identique du fichier (idempotent).
-pub(crate) fn load_overlay_dashboards(conn: &Connection, dir: &std::path::Path) -> u32 {
-    let mut n = 0;
-    for path in overlay_files(dir) {
-        let v = match overlay_read_json(&path) { Some(v) => v, None => continue };
-        let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN dashboard {} sans 'name' — ignoré", path.display()); continue } };
+pub(crate) fn load_overlay_dashboards(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
+    let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_json);
+    for path in fichiers {
+        let v = match overlay_read_json(&path) { Some(v) => v, None => { ch.ignores += 1; continue; } };
+        let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN dashboard {} sans 'name' — ignoré", path.display()); ch.ignores += 1; continue } };
         // Valider TOUS les panneaux AVANT toute écriture (tout-ou-rien : un panneau cassé -> dashboard ignoré).
         let panels = v.get("panels").and_then(|x| x.as_array()).cloned().unwrap_or_default();
         let mut compiled: Vec<(String, String, i64, String, i64, String)> = Vec::new(); // title,query,is_soql,viz,window_s,drill
@@ -451,14 +455,14 @@ pub(crate) fn load_overlay_dashboards(conn: &Connection, dir: &std::path::Path) 
                 p.get("drill").and_then(|x| x.as_str()).unwrap_or("").to_string(),
             ));
         }
-        if bad { continue; }
+        if bad { ch.ignores += 1; continue; }
         // Même frontière que les library-panels : un panneau de dashboard overlay en SQL brut est
         // opérateur-authoré, donc accepté — mais TRACÉ (cf. `tracer_panneau_sql_brut`).
         if compiled.iter().any(|(_, _, is_soql, _, _, _)| *is_soql == 0) {
             tracer_panneau_sql_brut(conn, "dashboard-panel", &name);
         }
         let did = match plan_upsert(conn, "dashboard", &name) {
-            UpsertPlan::SkipUser => { eprintln!("[oac] WARN dashboard '{name}' : un dashboard UI (managed=2) du même nom existe — overlay ignoré"); continue; }
+            UpsertPlan::SkipUser => { eprintln!("[oac] WARN dashboard '{name}' : un dashboard UI (managed=2) du même nom existe — overlay ignoré"); ch.ignores += 1; continue; }
             UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE dashboard SET managed=1 WHERE id=?1", params![id]); id }
             UpsertPlan::Insert => {
                 let _ = conn.execute("INSERT INTO dashboard(name,created,managed) VALUES(?1,?2,1)", params![name, now()]);
@@ -473,28 +477,31 @@ pub(crate) fn load_overlay_dashboards(conn: &Connection, dir: &std::path::Path) 
                 params![did, title, query, is_soql, viz, window_s, i as i64, drill],
             );
         }
-        n += 1;
+        ch.charges += 1;
     }
-    n
+    ch
 }
 
 /// Applique TOUS les overlays d'objets de config d'un `config.d` (sous-dossiers dédiés). Racine absente ->
 /// no-op. Appelé DANS `load_overlays_dir` (overlays.rs) APRÈS le contenu de détection.
-pub(crate) fn load_oac_overlays_dir(conn: &Connection, root: &std::path::Path) {
+/// REND LE BILAN (`P4.1-r`, même forme que `load_overlays_dir`, qui l'absorbe et le publie).
+pub(crate) fn load_oac_overlays_dir(conn: &Connection, root: &std::path::Path) -> crate::overlays_adossement::ChargementTotal {
+    let mut total = crate::overlays_adossement::ChargementTotal::default();
     if !root.is_dir() {
-        return;
+        return total;
     }
-    let nn = load_overlay_notifiers(conn, &root.join("notifiers"));
-    let nd = load_overlay_destinations(conn, &root.join("destinations"));
-    let nc = load_overlay_connectors(conn, &root.join("connectors"));
-    let ni = load_overlay_index_policies(conn, &root.join("index-policies"));
-    let nf = load_overlay_field_filters(conn, &root.join("field-filters"));
-    let nl = load_overlay_library_panels(conn, &root.join("library-panels"));
-    let np = load_overlay_notification_policies(conn, &root.join("notification-policies"));
-    let nb = load_overlay_dashboards(conn, &root.join("dashboards"));
+    let nn = total.absorber(load_overlay_notifiers(conn, &root.join("notifiers")));
+    let nd = total.absorber(load_overlay_destinations(conn, &root.join("destinations")));
+    let nc = total.absorber(load_overlay_connectors(conn, &root.join("connectors")));
+    let ni = total.absorber(load_overlay_index_policies(conn, &root.join("index-policies")));
+    let nf = total.absorber(load_overlay_field_filters(conn, &root.join("field-filters")));
+    let nl = total.absorber(load_overlay_library_panels(conn, &root.join("library-panels")));
+    let np = total.absorber(load_overlay_notification_policies(conn, &root.join("notification-policies")));
+    let nb = total.absorber(load_overlay_dashboards(conn, &root.join("dashboards")));
     if nn + nd + nc + ni + nf + nl + np + nb > 0 {
         eprintln!("[oac] config.d objets appliqués : {nn} notifier(s), {nd} destination(s), {nc} connecteur(s), {ni} index-policy, {nf} field-filter(s), {nl} library-panel(s), {np} notification-policy, {nb} dashboard(s) — managed=1 (source git)");
     }
+    total
 }
 
 // =====================================================================================================
@@ -516,16 +523,17 @@ pub(crate) struct OacPruneCounts {
 }
 
 /// Noms adossés à un fichier pour une table donnée (le `name` de chaque overlay JSON du sous-dossier).
-fn backed_names(root: &std::path::Path, sub: &str) -> std::collections::HashSet<String> {
+/// FAIL-CLOSED comme `overlay_backed_names` (`P4.1-r`) : un dossier ou un fichier qu'on ne sait pas lire
+/// REFUSE l'élagage au lieu de valoir « aucun nom ».
+fn backed_names(root: &std::path::Path, sub: &str) -> Result<std::collections::HashSet<String>, crate::overlays_adossement::RefusDePrune> {
+    use crate::overlays_adossement::{est_json, fichiers_ou_refus, RefusDePrune};
     let mut s = std::collections::HashSet::new();
-    for path in overlay_files(&root.join(sub)) {
-        if let Some(v) = overlay_read_json(&path) {
-            if let Some(n) = overlay_name(&v) {
-                s.insert(n);
-            }
-        }
+    for path in fichiers_ou_refus(&root.join(sub), est_json)? {
+        let v = overlay_read_json_ou_cause(&path).map_err(|(cause, pourquoi)| RefusDePrune::fichier(&path, cause, &pourquoi))?;
+        let n = overlay_name(&v).ok_or_else(|| RefusDePrune::forme(&path, "sans `name` : impossible de savoir quelle ligne ce fichier adosse"))?;
+        s.insert(n);
     }
-    s
+    Ok(s)
 }
 
 /// Supprime les lignes managed=1 dont le `name` n'est plus adossé. `table` littéral fixe (aucune injection).
@@ -545,16 +553,29 @@ fn prune_by_name(conn: &Connection, table: &str, keep: &std::collections::HashSe
 /// PRUNE des objets OAC orphelins contre l'état COURANT des fichiers de `root`. Idempotent. Renvoie les
 /// comptes par table. Les panneaux managed=1 d'un dashboard pruné (ou dont le dashboard n'existe plus) sont
 /// élagués derrière (FK logique).
-pub(crate) fn prune_oac_orphans(conn: &Connection, root: &std::path::Path) -> rusqlite::Result<OacPruneCounts> {
+pub(crate) fn prune_oac_orphans(conn: &Connection, root: &std::path::Path) -> Result<OacPruneCounts, crate::overlays_adossement::RefusDePrune> {
+    // TOUS les adossements sont lus AVANT la première suppression : un refus sur le huitième sous-dossier
+    // ne doit pas laisser les sept premiers élagués (l'appelant est dans une transaction, mais la règle
+    // tient d'elle-même).
+    let adosses = [
+        ("notifier", backed_names(root, "notifiers")?),
+        ("destination", backed_names(root, "destinations")?),
+        ("connector", backed_names(root, "connectors")?),
+        ("index_policy", backed_names(root, "index-policies")?),
+        ("field_filter", backed_names(root, "field-filters")?),
+        ("library_panel", backed_names(root, "library-panels")?),
+        ("notification_policy", backed_names(root, "notification-policies")?),
+        ("dashboard", backed_names(root, "dashboards")?),
+    ];
     let mut c = OacPruneCounts {
-        notifier: prune_by_name(conn, "notifier", &backed_names(root, "notifiers"))?,
-        destination: prune_by_name(conn, "destination", &backed_names(root, "destinations"))?,
-        connector: prune_by_name(conn, "connector", &backed_names(root, "connectors"))?,
-        index_policy: prune_by_name(conn, "index_policy", &backed_names(root, "index-policies"))?,
-        field_filter: prune_by_name(conn, "field_filter", &backed_names(root, "field-filters"))?,
-        library_panel: prune_by_name(conn, "library_panel", &backed_names(root, "library-panels"))?,
-        notification_policy: prune_by_name(conn, "notification_policy", &backed_names(root, "notification-policies"))?,
-        dashboard: prune_by_name(conn, "dashboard", &backed_names(root, "dashboards"))?,
+        notifier: prune_by_name(conn, adosses[0].0, &adosses[0].1)?,
+        destination: prune_by_name(conn, adosses[1].0, &adosses[1].1)?,
+        connector: prune_by_name(conn, adosses[2].0, &adosses[2].1)?,
+        index_policy: prune_by_name(conn, adosses[3].0, &adosses[3].1)?,
+        field_filter: prune_by_name(conn, adosses[4].0, &adosses[4].1)?,
+        library_panel: prune_by_name(conn, adosses[5].0, &adosses[5].1)?,
+        notification_policy: prune_by_name(conn, adosses[6].0, &adosses[6].1)?,
+        dashboard: prune_by_name(conn, adosses[7].0, &adosses[7].1)?,
         panel: 0,
     };
     // Panneaux managed=1 orphelins (dashboard managed pruné/absent) — jamais les panneaux managed=2 (UI).

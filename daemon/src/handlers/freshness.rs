@@ -498,7 +498,10 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
 }
 
 /// Alerte si un capteur ayant DÉJÀ remonté devient muet (> 5x son intervalle) = angle mort.
-pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) {
+/// REND SON BILAN (`P4.1-r`) : les sondes de capteurs lisent chacune un horodatage et rendent un verdict
+/// (`Inconnu` compris) — elles n'abandonnent rien ; c'est le dead-man's-switch du PARC qui peut se
+/// retrouver aveugle, et son bilan est celui de cette fonction.
+pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
     let conn = db.lock();
     // FIX #2 — pour un capteur ÉVÉNEMENTIEL (auth), le « muet » NE se juge PAS sur son propre intervalle
@@ -571,7 +574,7 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) {
             );
         }
     }
-    verifier_flotte_muette(&conn, now_ts);
+    verifier_flotte_muette(&conn, now_ts)
 }
 
 /// P3.2-a — LE DEAD-MAN'S-SWITCH DU PARC : un hôte qui se tait ENTIÈREMENT lève un signal.
@@ -586,10 +589,17 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) {
 /// précédent est RÉSOLU et un neuf s'ouvre. Sans ça, la première machine décommissionnée — que
 /// `host_rollup` garde muette pour toujours, cette table n'étant jamais prunée — laisserait une alerte
 /// ouverte qui avalerait en silence la mort de toutes les suivantes.
-fn verifier_flotte_muette(conn: &Connection, now_ts: i64) {
+fn verifier_flotte_muette(conn: &Connection, now_ts: i64) -> crate::bilan_de_tick::BilanDeTick {
     // `None` = la lecture a ÉCHOUÉ. On ne lève rien ET on ne résout rien : résoudre serait affirmer un
-    // parc sain qu'on n'a pas observé, ce qui est exactement le défaut que ce chantier ferme.
-    let Some(f) = flotte_muette(conn, now_ts) else { return };
+    // parc sain qu'on n'a pas observé, ce qui est exactement le défaut que ce chantier ferme. Et on le
+    // DIT (`P4.1-r`) : un dead-man's-switch qui ne sait plus lire le parc est lui-même un signal — sans
+    // cet aveu, il s'éteignait en silence et la santé « détection » restait verte.
+    let Some(f) = flotte_muette(conn, now_ts) else {
+        return crate::mesure_environnement::Mesure::Illisible {
+            cause: crate::mesure_environnement::CAUSE_SOURCE_ILLISIBLE,
+            detail: "flotte muette : `host_rollup` illisible (ou une ligne indécodable) — le parc n'a pas été observé ce tick".to_string(),
+        };
+    };
     let ouverte = f.cle_dedup();
     // RÉSOLUTION de tout épisode de la famille qui n'est PAS l'ensemble courant. Couvre les deux cas
     // d'un seul geste : plus aucun hôte muet (`ouverte` = None -> tout est résolu), et ensemble CHANGÉ.
@@ -598,7 +608,14 @@ fn verifier_flotte_muette(conn: &Connection, now_ts: i64) {
          WHERE dedup LIKE ?1 || '%' AND dedup IS NOT ?2 AND status IN ('new','ack')",
         params![DEDUP_FLOTTE_MUETTE, ouverte],
     );
-    let Some(dedup) = ouverte else { return };
+    // Aucun hôte muet : rien à ouvrir, et c'est un VRAI zéro — le parc a été LU. C'est un fait du parc
+    // (`muets == 0`), testé comme tel ; `cle_dedup` n'est `None` que dans ce cas-là.
+    if f.muets == 0 {
+        return crate::mesure_environnement::Mesure::Lue(0);
+    }
+    // `Some` par construction dès que `muets > 0` ; un invariant rompu PANIQUE ici, et le planificateur
+    // compte la panique comme un tick aveugle — jamais une clé vide posée en silence.
+    let dedup = ouverte.expect("cle_dedup rend Some dès que muets > 0");
     // Le TITRE ne porte que des NOMBRES (il remonte dans le bulletin de support, cf. `system.rs`, qui
     // sélectionne `rule LIKE 'heartbeat.%'`) ; les NOMS de machines vivent dans le détail, qui n'y va pas.
     // `sources` = l'INCONNU NOMMÉ : cette alerte se rapporte à des HÔTES, pas à un feed — lui imputer une
@@ -616,4 +633,5 @@ fn verifier_flotte_muette(conn: &Connection, now_ts: i64) {
             sources
         ],
     );
+    crate::mesure_environnement::Mesure::Lue(0)
 }

@@ -12,16 +12,24 @@
 // SI ÇA CESSE DE L'ÊTRE, ET QUI L'APPREND ? ». Une allégation fausse qui fait planter le processus est
 // bénigne : on la découvre le jour même. Une allégation fausse qui laisse le système rendre une valeur
 // RASSURANTE — zéro alerte, un journal d'apparence normale, un service qui démarre — n'est découverte
-// par personne. Les quatre gardes ci-dessous tiennent les quatre allégations de ce second type dont le
-// FAISEUR DE VÉRITÉ est un fichier de ce dépôt. C'est la ligne de partage utile : sur 258 allégations,
-// 84 portent sur l'hôte (noyau, cgroup, système de fichiers) et AUCUNE garde de source ne peut les
-// tenir — celles-là se MESURENT à l'exécution, ou cessent d'être des affirmations.
+// par personne. Les gardes ci-dessous tiennent les allégations de ce second type dont le FAISEUR DE
+// VÉRITÉ est un fichier de ce dépôt. C'est la ligne de partage utile : sur 258 allégations, 84 portent
+// sur l'hôte (noyau, cgroup, système de fichiers) et AUCUNE garde de source ne peut les tenir —
+// celles-là se MESURENT à l'exécution, ou cessent d'être des affirmations.
+//
+// LE RECENSEMENT A DÉSORMAIS UN INSTRUMENT, à côté de ce fichier :
+// `recenser_les_allegations_d_environnement.py`, critère publié dans son en-tête. Le premier balayage
+// n'en avait laissé aucun, et ses chiffres ne sont donc pas rejouables. Rejoué le 2026-08-22 avec le
+// critère publié : 13 681 blocs, 506 candidats, 396 phrases qui affirment, 30 qui nomment un fichier de
+// ce dépôt (32 une fois la garde 5 réécrite : ses deux phrases nomment désormais `deploy/k3s.yaml`) —
+// réparties en cinq déjà tenues, neuf tenues ici, une FAUSSE et réécrite, et le reste classé hors lot
+// dans l'index public. Les deux séries ne se comparent pas : critères différents.
 //
 // CE QUE CES GARDES NE FONT PAS, écrit pour être opposable :
 //   - elles ne jugent aucune phrase. Elles lisent le FICHIER que la phrase prend à témoin. Une garde qui
 //     prétendrait relire de la prose produirait du bruit et finirait désarmée ;
-//   - elles ne couvrent pas les 254 autres allégations, et c'est délibéré : les traiter en masse
-//     remplacerait 254 affirmations non vérifiées par 254 formulations non vérifiées ;
+//   - elles ne couvrent pas les centaines d'autres allégations, et c'est délibéré : les traiter en masse
+//     remplacerait des affirmations non vérifiées par des formulations non vérifiées ;
 //   - une allégation tenue ici peut rester fausse sur un hôte donné (un opérateur édite l'unité qu'il
 //     déploie). Ce qui est tenu, c'est ce que CE DÉPÔT livre — ni plus, ni moins.
 //
@@ -37,7 +45,9 @@
 //      pour l'expliquer. Le code est donc dépouillé de ses commentaires avant lecture, et l'occurrence
 //      en commentaire sert de témoin négatif ;
 //   2. citer un mot n'est pas l'employer : les CHAÎNES LITTÉRALES sont dépouillées elles aussi — sans
-//      quoi le message d'erreur d'une garde suffirait à la faire échouer sur elle-même.
+//      quoi le message d'erreur d'une garde suffirait à la faire échouer sur elle-même. L'exception est
+//      NOMMÉE : quand la chose cherchée est un littéral (`VmHWM`, une clé de configuration), la garde
+//      garde les chaînes et retire seulement les commentaires, et le dit.
 // =================================================================================================
 #[cfg(test)]
 mod allegations_d_environnement_tests {
@@ -73,12 +83,32 @@ mod allegations_d_environnement_tests {
     /// avalerait le code jusqu'au guillemet suivant — donc masquerait peut-être l'occurrence qu'on
     /// cherche. Une garde aveugle qui rend vert est pire que pas de garde.
     fn code_execute_rust(src: &str) -> String {
+        depouiller_rust(src, false)
+    }
+
+    /// Rend `src` privé de ses seuls commentaires, CHAÎNES CONSERVÉES. Nécessaire quand la chose
+    /// cherchée est précisément un littéral : un lecteur de `/proc/self/status` nomme `VmHWM` dans une
+    /// chaîne, et le dépouillement complet le rendrait invisible — la garde serait aveugle.
+    fn code_sans_commentaires_rust(src: &str) -> String {
+        depouiller_rust(src, true)
+    }
+
+    fn depouiller_rust(src: &str, garder_les_chaines: bool) -> String {
         let o: Vec<char> = src.chars().collect();
         let mut out = String::with_capacity(src.len());
         let mut i = 0usize;
         let pousser_blancs = |out: &mut String, tranche: &[char]| {
             for c in tranche {
                 out.push(if *c == '\n' { '\n' } else { ' ' });
+            }
+        };
+        let pousser_chaine = |out: &mut String, tranche: &[char]| {
+            if garder_les_chaines {
+                out.extend(tranche.iter());
+            } else {
+                for c in tranche {
+                    out.push(if *c == '\n' { '\n' } else { ' ' });
+                }
             }
         };
         while i < o.len() {
@@ -104,7 +134,7 @@ mod allegations_d_environnement_tests {
                         }
                         j += 1;
                     }
-                    pousser_blancs(&mut out, &o[i..j.min(o.len())]);
+                    pousser_chaine(&mut out, &o[i..j.min(o.len())]);
                     i = j;
                     continue;
                 }
@@ -122,7 +152,7 @@ mod allegations_d_environnement_tests {
                     }
                     j += 1;
                 }
-                pousser_blancs(&mut out, &o[i..j.min(o.len())]);
+                pousser_chaine(&mut out, &o[i..j.min(o.len())]);
                 i = j;
                 continue;
             }
@@ -269,6 +299,33 @@ mod allegations_d_environnement_tests {
         out
     }
 
+    /// Lit un fichier du dépôt, ou REFUSE DE CONCLURE : un fichier absent n'est pas un fichier vide.
+    fn lire_du_depot(rel: &str) -> String {
+        std::fs::read_to_string(racine_du_depot().join(rel))
+            .unwrap_or_else(|e| panic!("INSTRUMENT : `{rel}` illisible ({e}) — la garde refuse de conclure"))
+    }
+
+    /// Relit, sur la ligne `i` (0-based) du TEXTE BRUT, le `n`-ième littéral `"…"` — celui que le
+    /// dépouillement a effacé. C'est la voie par laquelle une garde lit une VALEUR chez celui qui
+    /// l'emploie (un chemin par défaut, un préfixe) au lieu de la recopier.
+    fn litteral_sur_la_ligne(brut: &str, i: usize, n: usize) -> Option<String> {
+        let morceaux: Vec<&str> = brut.lines().nth(i)?.split('"').collect();
+        morceaux.get(1 + 2 * n).map(|s| s.to_string())
+    }
+
+    /// Une durée systemd (`120s`, `15min`, `1h`) en secondes ; `None` si la forme n'est pas reconnue.
+    fn secondes_systemd(d: &str) -> Option<i64> {
+        let d = d.trim();
+        let coupe = d.find(|c: char| !c.is_ascii_digit())?;
+        let n: i64 = d[..coupe].parse().ok()?;
+        Some(n * match d[coupe..].trim() { "s" | "sec" => 1, "min" | "m" => 60, "h" => 3600, _ => return None })
+    }
+
+    /// La valeur d'une directive `Cle=valeur` dans le CODE d'une unité.
+    fn directive(code: &str, cle: &str) -> Option<String> {
+        code.lines().find_map(|l| l.trim_start().strip_prefix(&format!("{cle}=")).map(|v| v.trim().to_string()))
+    }
+
     // --------------------------------------------------------------------------------------------
     // L'INSTRUMENT, PROUVÉ SUR DES ÉCHANTILLONS DONT ON CONNAÎT LA RÉPONSE
     // --------------------------------------------------------------------------------------------
@@ -305,6 +362,14 @@ mod allegations_d_environnement_tests {
             code.lines().count(),
             "dépouillement Rust : les numéros de ligne ont bougé, un message de garde désignerait la \
              mauvaise ligne"
+        );
+        // Chaînes CONSERVÉES : le littéral survit, le commentaire et le bloc non.
+        let avec_chaines = code_sans_commentaires_rust(echantillon);
+        assert_eq!(
+            avec_chaines.matches("INTERDIT").count(),
+            3,
+            "dépouillement Rust (chaînes conservées) : {} occurrence(s), trois sont du code ou des chaînes\n{avec_chaines}",
+            avec_chaines.matches("INTERDIT").count()
         );
 
         // Shell — un `#` en début de mot ouvre un commentaire ; entre guillemets, non.
@@ -655,5 +720,251 @@ mod allegations_d_environnement_tests {
              environnement deviennent muets.",
             relatif(&unite)
         );
+    }
+
+    // ============================================================================================
+    // LOT DU 2026-08-22 — le reste des allégations qui NOMMENT un fichier de ce dépôt, triées par le
+    // silence qu'elles produiraient en cessant d'être vraies. Rang SILENCE COMPLET d'abord.
+    // L'instrument du recensement vit à côté : `recenser_les_allegations_d_environnement.py`.
+    // ============================================================================================
+
+    // --------------------------------------------------------------------------------------------
+    // GARDE 5 — « le manifeste k3s livré sauvegarde depuis son UNIQUE conteneur »  (silence complet)
+    // --------------------------------------------------------------------------------------------
+
+    /// L'ALLÉGATION RÉFUTÉE, PUIS RÉÉCRITE. Quatre commentaires (`backup.rs` ×2, `server.rs`, `main.rs`)
+    /// affirmaient que « le conteneur PRINCIPAL ne fait JAMAIS de backup » et que le destinataire d'escrow
+    /// est « posé UNIQUEMENT sur le SIDECAR `plume-daemon backup` » — et c'est sur ce fait qu'ils ont
+    /// retiré le signal de posture du démarrage du serveur. Lu le 2026-08-22, `deploy/k3s.yaml` n'a
+    /// QU'UN conteneur, et lui pose `PLUME_BACKUP_INTERVAL` : l'ordonnanceur NATIF du serveur sauvegarde,
+    /// sans destinataire, et ce chemin-là n'émet aucun signal. Ce que cette garde tient est ce que le
+    /// manifeste dit de lui-même : « sans cette variable, ce déploiement NE SAUVEGARDE RIEN » — et rien
+    /// ne le dirait, le pod démarre et sert à l'identique. Elle tient aussi ce que le même manifeste
+    /// livre comme secret : une clé SQLCipher VIDE (chiffrement opt-in), jamais une valeur par défaut
+    /// que toutes les installations partageraient.
+    #[test]
+    fn le_manifeste_k3s_livre_sauvegarde_depuis_son_unique_conteneur() {
+        let brut = lire_du_depot("deploy/k3s.yaml");
+        let code = code_execute_shell(&brut);
+        // TÉMOIN NÉGATIF : le destinataire d'escrow n'est écrit qu'en COMMENTAIRE (décision documentée).
+        assert!(brut.contains("PLUME_BACKUP_AGE_RECIPIENT"), "INSTRUMENT : le manifeste lu n'est pas celui qu'on croit");
+        assert!(!code.contains("PLUME_BACKUP_AGE_RECIPIENT"), "INSTRUMENT : une ligne COMMENTÉE du manifeste a survécu");
+        let conteneurs = code.lines().filter(|l| l.trim_start().starts_with("image:")).count();
+        assert_eq!(conteneurs, 1, "`deploy/k3s.yaml` livre {conteneurs} conteneur(s) : la prose du démon parle d'un sidecar qui n'existe pas, ou d'un unique conteneur qui n'est plus seul");
+        let valeur = |cle: &str| -> Option<String> {
+            let l = code.lines().find(|l| l.contains(cle))?;
+            let v = l.split("value:").nth(1)?.trim().trim_start_matches('"');
+            Some(v.chars().take_while(|c| *c != '"' && *c != ' ' && *c != '}').collect())
+        };
+        let intervalle: u64 = valeur("PLUME_BACKUP_INTERVAL").and_then(|v| v.parse().ok()).unwrap_or(0);
+        assert!(intervalle > 0, "`deploy/k3s.yaml` ne pose plus `PLUME_BACKUP_INTERVAL` > 0 : ce déploiement NE SAUVEGARDE RIEN, et rien ne le dit");
+        assert!(code.lines().any(|l| l.trim() == "readOnlyRootFilesystem: true"), "`deploy/k3s.yaml` : le pod n'est plus en racine lecture seule — la raison pour laquelle `config.d` et `web/` sont cuits dans l'image n'est plus vraie");
+        let cle = code.lines().find(|l| l.trim_start().starts_with("PLUME_DB_KEY:")).expect("INSTRUMENT : `PLUME_DB_KEY` absent du Secret livré");
+        assert!(cle.trim().ends_with("\"\""), "`deploy/k3s.yaml` livre une clé SQLCipher NON VIDE : toutes les installations partageraient la même — {cle}");
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // GARDE 6 — « `config.d` et `web/` sont CUITS dans l'image, là où le démon les cherche »  (silence complet)
+    // --------------------------------------------------------------------------------------------
+
+    /// L'ALLÉGATION TENUE : `overlays.rs` charge parsers, règles et playbooks sous `PLUME_CONFIG_DIR`,
+    /// « DÉFAUT /usr/local/share/plume/config.d — répertoire BAKED dans l'image, comme web/ ». Le chemin
+    /// par défaut est LU chez le démon, le Dockerfile est lu ensuite : si l'un des deux bouge sans
+    /// l'autre, le démon démarre, sert, et charge ZÉRO règle — un catalogue vide a l'air d'un catalogue.
+    #[test]
+    fn l_image_livree_cuit_la_configuration_la_ou_le_demon_la_cherche() {
+        let lire_defaut = |rel: &str, cle: &str| -> String {
+            let brut = lire_du_depot(rel);
+            // chaînes conservées : la clé cherchée EST un littéral ; les commentaires, eux, sont retirés
+            let i = code_sans_commentaires_rust(&brut).lines().position(|l| l.contains(cle) && l.contains("cfg("))
+                .unwrap_or_else(|| panic!("INSTRUMENT : aucune lecture `cfg(… {cle} …)` dans le CODE de `{rel}`"));
+            litteral_sur_la_ligne(&brut, i, 1).unwrap_or_else(|| panic!("INSTRUMENT : le défaut de `{cle}` n'est plus lisible dans `{rel}`"))
+        };
+        let config = lire_defaut("daemon/src/overlays.rs", "PLUME_CONFIG_DIR");
+        let web = lire_defaut("daemon/src/server.rs", "PLUME_WEB");
+        assert!(config.starts_with('/') && web.starts_with('/'), "INSTRUMENT : défauts lus `{config}` / `{web}` — pas des chemins");
+        let brut = lire_du_depot("Dockerfile");
+        let code = code_execute_unite(&brut);
+        // TÉMOINS : le Dockerfile est abondamment commenté (rien de cela ne doit survivre), et il COPIE.
+        assert!(brut.lines().filter(|l| l.starts_with('#')).count() >= 10, "INSTRUMENT : le Dockerfile lu n'a plus de commentaires — ce n'est pas celui qu'on croit");
+        assert!(!code.lines().any(|l| l.starts_with('#')), "INSTRUMENT : un commentaire du Dockerfile a survécu au dépouillement");
+        assert!(code.lines().filter(|l| l.starts_with("COPY ")).count() >= 3, "INSTRUMENT : le Dockerfile ne copie presque rien — parcours cassé");
+        for (source, cible, cle) in [("config.d", &config, "PLUME_CONFIG_DIR"), ("web", &web, "PLUME_WEB")] {
+            assert!(code.lines().any(|l| l.split_whitespace().collect::<Vec<_>>() == ["COPY", source, cible.as_str()]),
+                "le Dockerfile ne cuit plus `{source}` en `{cible}`, le chemin où le démon le cherche par défaut : le pod (racine lecture seule) démarrerait avec un catalogue VIDE");
+            assert!(code.contains(&format!("{cle}={cible}")), "le Dockerfile ne pose plus `{cle}={cible}` : l'image et le démon ne désignent plus le même répertoire");
+        }
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // GARDE 7 — « `bootstrap.sh` pose `/etc/plume/soc.conf` en 0640 »  (silence complet)
+    // --------------------------------------------------------------------------------------------
+
+    /// L'ALLÉGATION TENUE : `crypto/mod.rs` justifie que la clé SQLCipher vive dans le fichier de
+    /// configuration parce que « le fichier 0640 est LE bon endroit pour cette clé ». Le fichier est
+    /// écrit par `cat >` — donc avec l'umask du shell, 0644 — et c'est une ligne SÉPARÉE qui le referme.
+    /// Retirer cette ligne ne casse rien : le démon lit le fichier exactement pareil, et tout utilisateur
+    /// local lit la clé et l'empreinte du mot de passe.
+    #[test]
+    fn l_amorceur_referme_le_fichier_de_configuration_apres_l_avoir_ecrit() {
+        let brut = lire_du_depot("bootstrap.sh");
+        let code = code_execute_shell(&brut);
+        let fichier = "/etc/plume/soc.conf";
+        // TÉMOIN NÉGATIF : l'en-tête du bloc nomme le fichier ET le mode, en commentaire.
+        let prose: Vec<&str> = brut.lines().filter(|l| l.trim_start().starts_with('#') && l.contains(fichier)).collect();
+        assert!(!prose.is_empty(), "INSTRUMENT : plus aucun commentaire ne nomme `{fichier}` — le témoin négatif a disparu");
+        assert!(prose.iter().all(|l| !code.contains(l.trim())), "INSTRUMENT : un commentaire a survécu au dépouillement");
+        let lignes: Vec<&str> = code.lines().collect();
+        let ecriture = lignes.iter().position(|l| l.contains(&format!("> {fichier}")))
+            .expect("INSTRUMENT : `bootstrap.sh` n'écrit plus `/etc/plume/soc.conf` par redirection — la forme a changé, relire");
+        let referme = lignes[ecriture..].iter().take(16).any(|l| l.contains(&format!("chmod 0640 {fichier}")) || l.contains(&format!("-m0640 {fichier}")));
+        assert!(referme, "`bootstrap.sh` écrit `{fichier}` (ligne {}) sans le refermer en 0640 dans les lignes qui suivent : la clé SQLCipher et l'empreinte du mot de passe restent lisibles par tout utilisateur local, et le démon démarre pareil", ecriture + 1);
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // GARDE 8 — « AUCUN consommateur de ce dépôt ne lit `VmHWM` ; le RSS courant se lit dans `statm` »  (silence complet)
+    // --------------------------------------------------------------------------------------------
+
+    /// L'ALLÉGATION TENUE : `vieillissement_serie.rs` REMET À ZÉRO la crête mémoire du processus
+    /// (`clear_refs`) pour la mesurer par fenêtre, et justifie que ce soit sans effet de bord par « AUCUN
+    /// consommateur dans ce dépôt ne lit `VmHWM` (`metrics.rs` lit le RSS COURANT via `statm`) ». Un
+    /// lecteur de `VmHWM` ajouté demain — une métrique exportée, un diagnostic — recevrait une crête
+    /// FENÊTRÉE en la croyant cumulée : un nombre plausible, faux, et personne pour le dire.
+    /// CHAÎNES CONSERVÉES ici, et c'est le point : `VmHWM` se lit par un littéral.
+    #[test]
+    fn la_crete_memoire_n_a_qu_un_lecteur_et_le_rss_courant_se_lit_ailleurs() {
+        let racine = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut fichiers = Vec::new();
+        collecter_rs(&racine, &mut fichiers);
+        assert!(fichiers.len() >= 150, "INSTRUMENT : {} fichier(s) balayé(s) — parcours cassé", fichiers.len());
+        let (mut lecteur_attendu, mut autres) = (false, Vec::<String>::new());
+        for f in &fichiers {
+            let rel = relatif(f);
+            if rel.contains("/tests/") { continue; }
+            let code = code_sans_commentaires_rust(&std::fs::read_to_string(f).unwrap_or_default());
+            let lit = code.lines().any(|l| l.contains("VmHWM"));
+            if rel.ends_with("/vieillissement_serie.rs") { lecteur_attendu = lit; } else if lit { autres.push(rel); }
+        }
+        // TÉMOIN POSITIF : le lecteur légitime est VU — sinon la garde ne reconnaît plus la forme.
+        assert!(lecteur_attendu, "INSTRUMENT : `vieillissement_serie.rs` ne lit plus `VmHWM` dans son code — la garde ne sait plus reconnaître un lecteur");
+        assert!(autres.is_empty(), "de nouveaux consommateurs lisent `VmHWM` : {autres:?} — la crête est REMISE À ZÉRO par fenêtre par `vieillissement_serie.rs`, ils liraient une valeur fenêtrée en la croyant cumulée");
+        let mesure = code_sans_commentaires_rust(&lire_du_depot("daemon/src/mesure_environnement.rs"));
+        assert!(mesure.lines().any(|l| l.contains("statm") && l.contains("join(")), "le RSS courant ne se lit plus dans `/proc/self/statm` (`mesure_environnement.rs`) : l'autre moitié de l'allégation n'est plus vraie");
+        assert!(code_execute_rust(&lire_du_depot("daemon/src/metrics.rs")).contains("mesure_environnement::cpu_rss()"), "`metrics.rs` ne passe plus par `mesure_environnement::cpu_rss()` pour le RSS courant");
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // GARDE 9 — « le capteur YARA émet la source que la règle semée interroge »  (silence complet)
+    // --------------------------------------------------------------------------------------------
+
+    /// L'ALLÉGATION TENUE : `seeds.rs` sème « `search source=yara` » et affirme que `collectors/yara.sh`
+    /// « émet des events `source=yara category=malware` en severity 4 », règles lues dans
+    /// `/etc/plume/yara.d`. Un capteur renommé ne casse rien : la règle s'exécute sur zéro ligne, à
+    /// jamais — un match YARA est précisément l'événement qu'on ne veut pas rater en silence.
+    #[test]
+    fn le_capteur_yara_emet_la_source_que_la_regle_semee_interroge() {
+        let regle = crate::DETECTION_RULES_V53.iter().find(|r| r.1.contains("source=")).expect("INSTRUMENT : aucune règle de `DETECTION_RULES_V53` n'interroge une source");
+        let source: String = regle.1.split("source=").nth(1).unwrap().chars().take_while(|c| !c.is_whitespace()).collect();
+        let brut = lire_du_depot("collectors/yara.sh");
+        let code = code_execute_shell(&brut);
+        assert!(brut.lines().filter(|l| l.trim_start().starts_with('#') && l.contains(&source)).count() >= 3, "INSTRUMENT : l'en-tête du capteur ne nomme plus `{source}` — témoin négatif disparu");
+        // le JSON est écrit dans une chaîne shell, guillemets ÉCHAPPÉS : on lit la forme désechappée
+        let emissions: Vec<String> = code.lines().map(|l| l.replace("\\\"", "\"")).filter(|l| l.contains("\"source\":\"")).collect();
+        assert!(!emissions.is_empty(), "INSTRUMENT : aucune émission `\"source\":\"…\"` dans le CODE de `collectors/yara.sh` — la forme a changé");
+        for l in &emissions {
+            assert!(l.contains(&format!("\"source\":\"{source}\"")), "`collectors/yara.sh` émet une autre source que `{source}` interrogée par la règle semée : {l}");
+            assert!(l.contains("\"category\":\"malware\"") && l.contains("\"severity\":4"), "`collectors/yara.sh` n'émet plus `category=malware severity=4` : {l}");
+        }
+        assert!(code.lines().any(|l| l.contains("RULES_DIR=") && l.contains("/etc/plume/yara.d")), "`collectors/yara.sh` ne lit plus ses règles dans `/etc/plume/yara.d` par défaut");
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // GARDE 10 — « la mesure qu'interroge la règle « fuite slab » est publiée par `resources.sh` »  (silence complet)
+    // --------------------------------------------------------------------------------------------
+
+    /// L'ALLÉGATION TENUE : `seeds.rs` sème une règle sur `metric mem_slab_mb` et la justifie par
+    /// « SUnreclaim (mem_slab_mb de resources.sh) ». Le nom de série est lu dans la règle SEMÉE (base
+    /// de test, même chemin que la production), puis cherché chez le capteur. Renommer la série d'un
+    /// côté rend la règle inerte pour toujours, avec l'apparence d'un hôte sans fuite.
+    #[test]
+    fn la_mesure_que_la_regle_fuite_slab_interroge_est_publiee_par_le_capteur() {
+        let conn = super::test_db();
+        crate::seed_slab_rule(&conn);
+        let requete: String = conn.query_row("SELECT query FROM rule WHERE query LIKE 'metric %' AND name LIKE '%slab%'", [], |r| r.get(0))
+            .expect("INSTRUMENT : la règle « fuite slab » n'est plus semée sous cette forme");
+        let serie: String = requete.trim_start_matches("metric ").chars().take_while(|c| !c.is_whitespace()).collect();
+        assert!(!serie.is_empty(), "INSTRUMENT : nom de série vide dans `{requete}`");
+        let brut = lire_du_depot("collectors/resources.sh");
+        let code = code_execute_shell(&brut);
+        // TÉMOIN NÉGATIF : `SUnreclaim` est expliqué en commentaire ; cette prose ne doit pas survivre.
+        let prose: Vec<&str> = brut.lines().filter(|l| l.trim_start().starts_with('#') && l.contains("SUnreclaim")).collect();
+        assert!(!prose.is_empty() && prose.iter().all(|l| !code.contains(l.trim())), "INSTRUMENT : témoin négatif absent ou survivant ({} ligne(s) de prose)", prose.len());
+        assert!(code.lines().filter(|l| l.trim_start().starts_with("ajoute_mesure ")).count() >= 4, "INSTRUMENT : `resources.sh` ne publie presque plus rien par `ajoute_mesure` — la forme a changé");
+        assert!(code.lines().any(|l| l.trim_start().starts_with(&format!("ajoute_mesure {serie} "))), "`collectors/resources.sh` ne publie plus `{serie}`, la série qu'interroge la règle semée `{requete}` : la règle ne lèvera plus jamais");
+        assert!(code.lines().any(|l| l.contains("champ_meminfo SUnreclaim")), "`collectors/resources.sh` ne lit plus `SUnreclaim` : la série `{serie}` ne mesure plus ce que la règle croit");
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // GARDE 11 — « `collectors/auditd.sh` rend `action=failure` quand l'`execve` échoue »  (silence complet)
+    // --------------------------------------------------------------------------------------------
+
+    /// L'ALLÉGATION TENUE : les deux émetteurs Windows (`agent/src/source/windows.rs`,
+    /// `plume-collector.ps1`) posent l'issue d'un 4688 en s'alignant sur « le flux Linux, où
+    /// `auditd.sh` rend `action=failure` quand l'`execve` échoue ». Si le capteur Linux cessait de
+    /// porter l'issue, `category=exec action=failure` rendrait zéro sur Linux et des lignes sur Windows :
+    /// la MÊME requête ne dirait plus la même chose selon l'OS, sans erreur.
+    #[test]
+    fn le_capteur_auditd_porte_l_issue_d_un_execve() {
+        let brut = lire_du_depot("collectors/auditd.sh");
+        let code = code_execute_shell(&brut);
+        assert!(brut.lines().filter(|l| l.trim_start().starts_with('#') && l.contains("execve")).count() >= 3, "INSTRUMENT : l'en-tête ne parle plus d'`execve` — témoin négatif disparu");
+        let emissions: Vec<&str> = code.lines().filter(|l| l.contains("af(\"syscall\"")).collect();
+        assert!(!emissions.is_empty(), "INSTRUMENT : aucune ligne du CODE de `auditd.sh` ne pose le champ `syscall` — la forme d'émission a changé");
+        for l in &emissions {
+            assert!(l.contains("af(\"action\",(succ==\"no\")?\"failure\":\"success\")"), "`collectors/auditd.sh` n'assoit plus `action` sur l'issue de l'appel (`succ`) : {}", l.trim());
+        }
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // GARDE 12 — « la fenêtre de corroboration couvre la première passe du capteur d'intégrité »  (bruyant -> fatigue)
+    // --------------------------------------------------------------------------------------------
+
+    /// L'ALLÉGATION TENUE : `maj_corroboree.rs` DÉRIVE sa fenêtre de « `plume-integrity.timer` déclenche
+    /// à `OnBootSec=120s` puis toutes les `OnUnitActiveSec=15min` ». Le rang est BRUYANT — une fenêtre
+    /// trop courte fait alerter chaque déploiement du produit — mais le bruit de maintenance est ce qui
+    /// fait cesser de lire un capteur, et la relation est arithmétique : elle se tient en six lignes.
+    #[test]
+    fn la_fenetre_de_corroboration_couvre_la_premiere_passe_du_capteur_d_integrite() {
+        let code = code_execute_unite(&lire_du_depot("systemd/plume-integrity.timer"));
+        let lire = |cle: &str| directive(&code, cle).and_then(|v| secondes_systemd(&v))
+            .unwrap_or_else(|| panic!("INSTRUMENT : `{cle}=` absent ou illisible dans `systemd/plume-integrity.timer`"));
+        let (boot, cadence, marge) = (lire("OnBootSec"), lire("OnUnitActiveSec"), lire("AccuracySec"));
+        assert!(boot + cadence + marge < crate::FENETRE_DE_CORROBORATION_S,
+            "`systemd/plume-integrity.timer` ({boot} s + {cadence} s + {marge} s) déborde la fenêtre de corroboration ({} s) : la première passe après un déploiement tomberait hors fenêtre et chaque mise à jour du produit alerterait", crate::FENETRE_DE_CORROBORATION_S);
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // GARDE 13 — « les amorceurs posent les unités par `install`, SANS substitution »  (bruyant -> fatigue)
+    // --------------------------------------------------------------------------------------------
+
+    /// L'ALLÉGATION TENUE : la corroboration compare l'empreinte DÉPLOYÉE à l'empreinte LIVRÉE — elle
+    /// suppose que « l'octet déposé dans `/etc/systemd/system` est l'octet livré ». Un `sed` ajouté à
+    /// l'amorceur ne casserait rien : chaque déploiement redeviendrait une alerte (fail-closed), et c'est
+    /// le capteur entier qu'on cesse alors de lire.
+    #[test]
+    fn les_amorceurs_posent_les_unites_sans_substitution() {
+        let mut deposes = 0usize;
+        for script in ["bootstrap.sh", "bootstrap-agent.sh"] {
+            let code = code_execute_shell(&lire_du_depot(script));
+            for (i, l) in code.lines().enumerate().filter(|(_, l)| l.contains("/etc/systemd/system")) {
+                let mots: Vec<&str> = l.split_whitespace().collect();
+                let pose_un_fichier = mots.iter().position(|m| *m == "install").map(|p| !mots[p + 1..].contains(&"-d")).unwrap_or(false);
+                if pose_un_fichier { deposes += 1; }
+                let substitue = ["sed", "envsubst", "cat >", "echo", "printf", "tee"].iter().any(|m| l.contains(m));
+                assert!(!substitue, "{script}:{} transforme ou écrit une unité au lieu de la poser telle quelle : {}", i + 1, l.trim());
+            }
+        }
+        // TÉMOIN POSITIF : 27 dépôts par `bootstrap.sh` mesurés le 2026-08-20 ; plancher bas.
+        assert!(deposes >= 20, "INSTRUMENT : {deposes} dépôt(s) d'unité reconnus dans les amorceurs — la forme `install … /etc/systemd/system/` a changé");
     }
 }

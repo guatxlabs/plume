@@ -32,8 +32,13 @@ pub(crate) fn guarded_http_call(method: &str, url: &str, headers: &[(&str, &str)
 /// intervalle écoulé), les traite SÉQUENTIELLEMENT (budget 2 Go : jamais de fan-out), chacun sous catch_unwind
 /// (un panic ne casse ni le tick, ni les autres connecteurs). INVARIANT : table vide / aucun enabled -> 0 ligne
 /// -> retour immédiat (zéro I/O réseau, zéro écriture). Appelé via for_each_active_tenant (mode 0 = `default`).
-pub(crate) fn run_due_connectors(db: &Arc<Mutex<Connection>>, db_path: &str) {
+/// REND SON BILAN (`P4.1-r`) : `Illisible` si la liste des connecteurs dus n'a pas pu être lue — aucune
+/// source n'a été interrogée et rien ne le disait, pendant que chaque connecteur porte pourtant un
+/// `last_error` pour SES propres échecs ; `Lue(n)` = connecteurs dus abandonnés (ligne indécodable, ou
+/// panic capturé — celui-ci est aussi consigné dans `last_error`).
+pub(crate) fn run_due_connectors(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
+    let mut abandonnes = 0u32;
     // 1) SELECT des « dus » — table vide/aucun enabled => 0 ligne => court-circuit AVANT tout réseau/écriture.
     let due: Vec<(i64, String, String, String, String, Option<String>)> = {
         let conn = db.lock();
@@ -47,21 +52,28 @@ pub(crate) fn run_due_connectors(db: &Arc<Mutex<Connection>>, db_path: &str) {
              WHERE enabled=1 AND type NOT IN ('aws_firehose','gcp_pubsub') AND (last_run IS NULL OR ?1 - last_run >= interval_s)",
         ) {
             Ok(s) => s,
-            Err(_) => return, // table absente (pré-v68) -> no-op
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("connecteurs", &e),
         };
-        let rows = stmt.query_map(params![now_ts], |r| {
+        let rows = match stmt.query_map(params![now_ts], |r| {
             Ok((
                 r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, Option<String>>(5)?,
             ))
-        });
-        match rows {
-            Ok(r) => r.flatten().collect(),
-            Err(_) => return,
+        }) {
+            Ok(r) => r,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("connecteurs", &e),
+        };
+        let mut due = Vec::new();
+        for r in rows {
+            match r {
+                Ok(x) => due.push(x),
+                Err(_) => abandonnes += 1, // ligne indécodable : une source non interrogée, comptée
+            }
         }
+        due
     };
     if due.is_empty() {
-        return; // INVARIANT prod : rien à faire, aucun effet de bord
+        return crate::mesure_environnement::Mesure::Lue(abandonnes); // INVARIANT prod : rien à faire, aucun effet de bord
     }
     // 2) Chaque connecteur SÉQUENTIELLEMENT, isolé par catch_unwind (fail-safe : jamais de propagation).
     for (id, ctype, cfg_json, secret, env_id, watermark) in due {
@@ -74,6 +86,7 @@ pub(crate) fn run_due_connectors(db: &Arc<Mutex<Connection>>, db_path: &str) {
         }));
         if res.is_err() {
             // Panic capturé -> pose last_run (respect interval_s) + last_error, et CONTINUE avec les autres.
+            abandonnes += 1;
             let conn = db.lock();
             let _ = conn.execute(
                 "UPDATE connector SET last_run=?1, last_error=?2 WHERE id=?3",
@@ -81,6 +94,7 @@ pub(crate) fn run_due_connectors(db: &Arc<Mutex<Connection>>, db_path: &str) {
             );
         }
     }
+    crate::mesure_environnement::Mesure::Lue(abandonnes)
 }
 
 /// Traite UN connecteur : pull (poll_defender) -> ingest par lot sous le lock writer (INSERT OR IGNORE sur

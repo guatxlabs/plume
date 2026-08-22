@@ -1347,12 +1347,12 @@
         std::fs::write(&published_nd, b"{}\n").unwrap();
 
         // (1) seuil LARGE -> les `.tmp` fraîchement créés sont trop RÉCENTS -> ÉPARGNÉS (garde d'âge).
-        let n0 = sweep_orphan_ingest_tmps(&sp, std::time::Duration::from_secs(3600));
+        let n0 = sweep_orphan_ingest_tmps(&sp, std::time::Duration::from_secs(3600)).effaces;
         assert_eq!(n0, 0, "garde d'âge : un `.tmp` récent (POST en vol) n'est pas balayé");
         assert!(tmp_a.exists() && tmp_b.exists());
 
         // (2) seuil 0 -> tous les `.tmp` orphelins qualifient par l'âge -> balayés ; le PUBLIÉ reste intact.
-        let n1 = sweep_orphan_ingest_tmps(&sp, std::time::Duration::ZERO);
+        let n1 = sweep_orphan_ingest_tmps(&sp, std::time::Duration::ZERO).effaces;
         assert_eq!(n1, 2, "les 2 `.tmp` orphelins sont balayés");
         assert!(!tmp_a.exists() && !tmp_b.exists(), "`.tmp` orphelins effacés");
         assert!(published_json.exists(), "fichier spool `.json` publié JAMAIS touché");

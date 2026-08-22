@@ -14,43 +14,49 @@ use crate::*;
 // JAMAIS de crash du boot.
 // =====================================================================================
 
-/// Liste triée des `*.json` d'un sous-dossier d'overlays (ordre déterministe). Dossier absent -> vide.
-pub(crate) fn overlay_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut v = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("json") {
-                v.push(p);
-            }
-        }
-    }
-    v.sort();
-    v
+/// Le listing d'un sous-dossier d'overlays vit dans `overlays_adossement::lister` (`P4.1-r`) : lu, ou
+/// AVOUÉ — jamais « vide » faute de savoir. Les chargeurs l'ouvrent par `Chargement::ouvrir`, l'élagage
+/// par `fichiers_ou_refus`.
+
+/// Lit + parse un fichier overlay en JSON, ou dit POURQUOI il ne l'a pas pu — la cause dans l'ensemble
+/// fermé de `S32` (E/S : `cause_io` ; JSON invalide : `forme_inconnue`). C'est cette forme que l'élagage
+/// consomme : un fichier qu'on ne sait pas lire n'y vaut pas « aucun nom adossé ».
+pub(crate) fn overlay_read_json_ou_cause(path: &std::path::Path) -> Result<Value, (&'static str, String)> {
+    let txt = std::fs::read_to_string(path)
+        .map_err(|e| (crate::mesure_environnement::cause_io(&e), format!("lecture échouée : {e}")))?;
+    serde_json::from_str::<Value>(&txt)
+        .map_err(|e| (crate::mesure_environnement::CAUSE_FORME_INCONNUE, format!("JSON invalide : {e}")))
 }
 
-/// Lit + parse un fichier overlay en JSON. Erreur de lecture/parse -> WARNING + None (skip gracieux).
+/// Lit + parse un fichier overlay en JSON. Erreur de lecture/parse -> WARNING + None (skip gracieux), que
+/// le chargeur COMPTE comme un fichier ignoré (`Chargement::ignore`).
 /// Les clés inconnues (ex `_comment` de documentation) sont simplement ignorées en aval.
 pub(crate) fn overlay_read_json(path: &std::path::Path) -> Option<Value> {
-    let txt = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) => { eprintln!("[overlays] WARN lecture {} échouée: {e} — ignoré", path.display()); return None; }
-    };
-    match serde_json::from_str::<Value>(&txt) {
+    match overlay_read_json_ou_cause(path) {
         Ok(v) => Some(v),
-        Err(e) => { eprintln!("[overlays] WARN JSON invalide {}: {e} — ignoré", path.display()); None }
+        Err((_, pourquoi)) => {
+            eprintln!("[overlays] WARN {} : {pourquoi} — ignoré", path.display());
+            None
+        }
     }
 }
 
 /// Parsers d'overlay : MÊME validation que parser_create (motif non vide, ≤1000, regex qui compile),
 /// puis UPSERT keyé par name avec managed=1 (un overlay écrase un builtin du même nom : builtin=0).
-pub(crate) fn load_overlay_parsers(conn: &Connection, dir: &std::path::Path) -> u32 {
-    let mut n = 0;
-    for path in overlay_files(dir) {
-        let v = match overlay_read_json(&path) { Some(v) => v, None => continue };
+pub(crate) fn load_overlay_parsers(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
+    let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_json);
+    for path in fichiers {
+        let v = match overlay_read_json(&path) {
+            Some(v) => v,
+            None => {
+                ch.ignores += 1;
+                continue;
+            }
+        };
         let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
         if name.is_empty() {
             eprintln!("[overlays] WARN parser {} sans 'name' — ignoré", path.display());
+            ch.ignores += 1;
             continue;
         }
         // DISCRIMINANT : un fichier AVEC un objet `map` est un PARSEUR DÉCLARATIF (DSL CIM, pièce 2) traité
@@ -60,6 +66,7 @@ pub(crate) fn load_overlay_parsers(conn: &Connection, dir: &std::path::Path) -> 
         let pattern = v.get("pattern").and_then(|x| x.as_str()).unwrap_or("").to_string();
         if pattern.is_empty() || pattern.len() > 1000 || regex::Regex::new(&pattern).is_err() {
             eprintln!("[overlays] WARN parser '{name}' ({}) : motif vide/trop long/regex invalide — ignoré", path.display());
+            ch.ignores += 1;
             continue;
         }
         let source = v.get("source").and_then(|x| x.as_str()).unwrap_or("*");
@@ -68,10 +75,10 @@ pub(crate) fn load_overlay_parsers(conn: &Connection, dir: &std::path::Path) -> 
         // l'ingest), la valider contre la taxonomie CIM. WARN-only — le parser est chargé quoi
         // qu'il arrive (ENRICH, pas SUPPRESS). N'affecte AUCUNE ligne existante (aucun overlay ne
         // déclare `category` aujourd'hui) : purement additif/observabilité, data-plane inchangé.
-        if let Some(cat) = v.get("category").and_then(|x| x.as_str()) {
-            if !cat.is_empty() && !cim_category_ok(cat) {
-                eprintln!("[cim] WARN parser '{name}' ({}) : category='{cat}' hors taxonomie CIM v{CIM_VERSION} — acceptée mais NON canonique (cf. docs/CIM.md)", path.display());
-            }
+        // Une `category` absente est une VALEUR (vide : rien à valider), pas une branche d'échec.
+        let cat = v.get("category").and_then(|x| x.as_str()).unwrap_or("");
+        if !cat.is_empty() && !cim_category_ok(cat) {
+            eprintln!("[cim] WARN parser '{name}' ({}) : category='{cat}' hors taxonomie CIM v{CIM_VERSION} — acceptée mais NON canonique (cf. docs/CIM.md)", path.display());
         }
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true) as i64;
         let exists = conn.query_row("SELECT 1 FROM parser WHERE name=?1", params![name], |_| Ok(())).is_ok();
@@ -86,9 +93,9 @@ pub(crate) fn load_overlay_parsers(conn: &Connection, dir: &std::path::Path) -> 
                 params![name, source, pattern, enabled, now()],
             );
         }
-        n += 1;
+        ch.charges += 1;
     }
-    n
+    ch
 }
 
 /// Parseurs DÉCLARATIFS d'overlay (DSL CIM, pièce 2) : les fichiers `config.d/parsers/*.json` qui portent un
@@ -97,34 +104,42 @@ pub(crate) fn load_overlay_parsers(conn: &Connection, dir: &std::path::Path) -> 
 /// spec stockée = le JSON figé du fichier (recompilé par dparsers_reload). Une `category` littérale hors
 /// taxonomie CIM est ACCEPTÉE mais SIGNALÉE (warn) — ENRICH, jamais SUPPRESS. Data-plane inchangé tant que
 /// dparsers_reload n'a pas rechargé le registre.
-pub(crate) fn load_overlay_dparsers(conn: &Connection, dir: &std::path::Path) -> u32 {
-    let mut n = 0;
-    for path in overlay_files(dir) {
-        let v = match overlay_read_json(&path) { Some(v) => v, None => continue };
+pub(crate) fn load_overlay_dparsers(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
+    let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_json);
+    for path in fichiers {
+        let v = match overlay_read_json(&path) {
+            Some(v) => v,
+            None => {
+                ch.ignores += 1;
+                continue;
+            }
+        };
         // Seuls les fichiers AVEC un objet `map` sont des parseurs déclaratifs (les autres -> load_overlay_parsers).
         if !v.get("map").map(|m| m.is_object()).unwrap_or(false) { continue; }
         let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
         if name.is_empty() {
             eprintln!("[overlays] WARN parseur déclaratif {} sans 'name' — ignoré", path.display());
+            ch.ignores += 1;
             continue;
         }
         let source = v.get("source").and_then(|x| x.as_str()).unwrap_or("*").to_string();
         // VALIDATION = compilation réelle (mêmes bornes/regex que l'ingest). Échec -> skip (jamais fatal).
         if let Err(e) = dparser_compile(&source, &v) {
             eprintln!("[overlays] WARN parseur déclaratif '{name}' ({}) : {e} — ignoré", path.display());
+            ch.ignores += 1;
             continue;
         }
         // CIM (warn-only) : une `category` LITTÉRALE hors taxonomie est acceptée mais signalée (cf. docs/CIM.md).
-        if let Some(cat) = v.get("map").and_then(|m| m.get("category")).and_then(|x| x.as_str()) {
-            if !cat.is_empty() && !cat.starts_with('$') && !cim_category_ok(cat) {
-                eprintln!("[cim] WARN parseur déclaratif '{name}' : category='{cat}' hors taxonomie CIM v{CIM_VERSION} — acceptée mais NON canonique (cf. docs/CIM.md)");
-            }
+        let cat = v.get("map").and_then(|m| m.get("category")).and_then(|x| x.as_str()).unwrap_or("");
+        if !cat.is_empty() && !cat.starts_with('$') && !cim_category_ok(cat) {
+            eprintln!("[cim] WARN parseur déclaratif '{name}' : category='{cat}' hors taxonomie CIM v{CIM_VERSION} — acceptée mais NON canonique (cf. docs/CIM.md)");
         }
         // SEVERITY (warn-only) : parité avec la validation de `category`. Une `severity` LITTÉRALE
         // (hors capture `$x`) hors 0..4 / non numérique est SILENCIEUSEMENT no-op à l'ingest (le clamp runtime
         // la rejette) -> on AVERTIT ici pour que l'opérateur voie sa mauvaise config (les captures `$x` gardent
         // le clamp runtime, leur valeur n'étant pas connue au chargement).
-        if let Some(sv) = v.get("map").and_then(|m| m.get("severity")) {
+        let sv = v.get("map").and_then(|m| m.get("severity")).unwrap_or(&Value::Null);
+        if !sv.is_null() {
             let is_capture = sv.as_str().map(|s| s.starts_with('$')).unwrap_or(false);
             if !is_capture {
                 let in_range = sv.as_i64().map(|n| (0..=4).contains(&n))
@@ -149,22 +164,29 @@ pub(crate) fn load_overlay_dparsers(conn: &Connection, dir: &std::path::Path) ->
                 params![name, source, spec, enabled, now()],
             );
         }
-        n += 1;
+        ch.charges += 1;
     }
-    n
+    ch
 }
 
 /// Règles d'overlay : la requête soql/SQL doit COMPILER (rule_sql, même chemin que l'éval/test) + MITRE
 /// normalisé/validé (norm_mitre, comme rule_create). UPSERT keyé par name avec managed=1. INVARIANT :
 /// les overlays sont GXQL-ONLY -> une règle en SQL brut (is_soql=false) est REFUSÉE au chargement (elle
 /// contournerait sinon le gate admin `raw_sql_allowed` + le ledger d'audit ; le raw SQL reste admin-only via l'API).
-pub(crate) fn load_overlay_rules(conn: &Connection, dir: &std::path::Path) -> u32 {
-    let mut n = 0;
-    for path in overlay_files(dir) {
-        let v = match overlay_read_json(&path) { Some(v) => v, None => continue };
+pub(crate) fn load_overlay_rules(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
+    let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_json);
+    for path in fichiers {
+        let v = match overlay_read_json(&path) {
+            Some(v) => v,
+            None => {
+                ch.ignores += 1;
+                continue;
+            }
+        };
         let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
         if name.is_empty() {
             eprintln!("[overlays] WARN règle {} sans 'name' — ignorée", path.display());
+            ch.ignores += 1;
             continue;
         }
         let query = v.get("query").and_then(|x| x.as_str()).unwrap_or("").to_string();
@@ -182,22 +204,24 @@ pub(crate) fn load_overlay_rules(conn: &Connection, dir: &std::path::Path) -> u3
                 &format!("overlay config.d : règle raw-SQL '{name}' refusée au chargement (GXQL-only)"),
                 &json!({ "op": "reject", "kind": "rule", "name": name, "reason": "raw-sql-overlay-forbidden" }).to_string(),
             );
+            ch.ignores += 1;
             continue;
         }
         if let Err(e) = rule_sql(&query, is_soql, window_s) {
             eprintln!("[overlays] WARN règle '{name}' ({}) : requête invalide ({e}) — ignorée", path.display());
+            ch.ignores += 1;
             continue;
         }
         let mitre = match norm_mitre(v.get("mitre").and_then(|x| x.as_str()).unwrap_or("")) {
             Some(m) => m,
-            None => { eprintln!("[overlays] WARN règle '{name}' : MITRE invalide (attendu Txxxx[.yyy]) — ignorée"); continue; }
+            None => { eprintln!("[overlays] WARN règle '{name}' : MITRE invalide (attendu Txxxx[.yyy]) — ignorée"); ch.ignores += 1; continue; }
         };
         // #38 COMPLIANCE RULE-TAGS (observability-as-code) : tag de conformité DÉCLARATIF sur la règle. MÊME
         // validation que rule_create (norm_compliance : chaque cadre validé contre le vocabulaire effectif,
         // contrôle charset-borné ; vide -> "" licite). Un tag hors vocabulaire -> WARN + skip (validé-ou-ignoré).
         let compliance = match norm_compliance(v.get("compliance").and_then(|x| x.as_str()).unwrap_or("")) {
             Some(c) => c,
-            None => { eprintln!("[overlays] WARN règle '{name}' : compliance invalide (cadre hors vocabulaire / contrôle invalide) — ignorée"); continue; }
+            None => { eprintln!("[overlays] WARN règle '{name}' : compliance invalide (cadre hors vocabulaire / contrôle invalide) — ignorée"); ch.ignores += 1; continue; }
         };
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true) as i64;
         let op = v.get("op").and_then(|x| x.as_str()).unwrap_or(">");
@@ -216,19 +240,26 @@ pub(crate) fn load_overlay_rules(conn: &Connection, dir: &std::path::Path) -> u3
                 params![name, enabled, query, is_soql as i64, op, threshold, severity, interval_s, window_s, mitre, compliance],
             );
         }
-        n += 1;
+        ch.charges += 1;
     }
-    n
+    ch
 }
 
 /// Playbooks d'overlay : la requête doit COMPILER (rule_sql). UPSERT keyé par name avec managed=1.
-pub(crate) fn load_overlay_playbooks(conn: &Connection, dir: &std::path::Path) -> u32 {
-    let mut n = 0;
-    for path in overlay_files(dir) {
-        let v = match overlay_read_json(&path) { Some(v) => v, None => continue };
+pub(crate) fn load_overlay_playbooks(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
+    let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_json);
+    for path in fichiers {
+        let v = match overlay_read_json(&path) {
+            Some(v) => v,
+            None => {
+                ch.ignores += 1;
+                continue;
+            }
+        };
         let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
         if name.is_empty() {
             eprintln!("[overlays] WARN playbook {} sans 'name' — ignoré", path.display());
+            ch.ignores += 1;
             continue;
         }
         let query = v.get("query").and_then(|x| x.as_str()).unwrap_or("").to_string();
@@ -244,10 +275,12 @@ pub(crate) fn load_overlay_playbooks(conn: &Connection, dir: &std::path::Path) -
                 &format!("overlay config.d : playbook raw-SQL '{name}' refusé au chargement (GXQL-only)"),
                 &json!({ "op": "reject", "kind": "playbook", "name": name, "reason": "raw-sql-overlay-forbidden" }).to_string(),
             );
+            ch.ignores += 1;
             continue;
         }
         if let Err(e) = rule_sql(&query, is_soql, window_s) {
             eprintln!("[overlays] WARN playbook '{name}' ({}) : requête invalide ({e}) — ignoré", path.display());
+            ch.ignores += 1;
             continue;
         }
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true) as i64;
@@ -265,43 +298,40 @@ pub(crate) fn load_overlay_playbooks(conn: &Connection, dir: &std::path::Path) -
                 params![name, enabled, query, is_soql as i64, action_kind, interval_s, window_s],
             );
         }
-        n += 1;
+        ch.charges += 1;
     }
-    n
+    ch
 }
 
 /// Fichiers Sigma d'un dossier overlay (`*.yml` / `*.yaml` / `*.json`), triés. Un fichier peut porter
 /// PLUSIEURS documents YAML (`---`). Distinct de `overlay_files` (JSON-only) : Sigma est du YAML.
-pub(crate) fn sigma_overlay_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut v = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.is_file() {
-                if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
-                    if matches!(ext, "yml" | "yaml" | "json") { v.push(p); }
-                }
-            }
-        }
-    }
-    v.sort();
-    v
+/// Même contrat de lisibilité que `overlays_adossement::lister` (`P4.1-r`).
+pub(crate) fn sigma_overlay_files(dir: &std::path::Path) -> crate::mesure_environnement::Mesure<Vec<std::path::PathBuf>> {
+    crate::overlays_adossement::lister(dir, crate::overlays_adossement::est_sigma)
 }
 
 /// SLICE #7 pièce 3 — overlays SIGMA (`config.d/sigma/*.yml|yaml|json`). Chaque document est TRADUIT
 /// (sigma_translate) puis, en cas de succès, UPSERT dans `rule` avec `managed=1` (source git, comme
 /// load_overlay_rules). MÊME contrat VALIDÉ-OU-IGNORÉ : un doc non traduisible est WARN + skip (jamais
 /// fatal) ; les warnings de traduction (logsource non mappé, casse d'un `in`) sont journalisés (NOTE).
-pub(crate) fn load_overlay_sigma(conn: &Connection, dir: &std::path::Path) -> u32 {
-    let mut n = 0;
-    for path in sigma_overlay_files(dir) {
+pub(crate) fn load_overlay_sigma(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
+    let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_sigma);
+    for path in fichiers {
         let txt = match std::fs::read_to_string(&path) {
             Ok(t) => t,
-            Err(e) => { eprintln!("[overlays] WARN Sigma lecture {} échouée : {e} — ignoré", path.display()); continue; }
+            Err(e) => {
+                eprintln!("[overlays] WARN Sigma lecture {} échouée : {e} — ignoré", path.display());
+                ch.ignores += 1;
+                continue;
+            }
         };
         let docs = match sigma_yaml_to_docs(&txt) {
             Ok(d) => d,
-            Err(e) => { eprintln!("[overlays] WARN Sigma {} : {e} — ignoré", path.display()); continue; }
+            Err(e) => {
+                eprintln!("[overlays] WARN Sigma {} : {e} — ignoré", path.display());
+                ch.ignores += 1;
+                continue;
+            }
         };
         for d in &docs {
             let title = d.str_field("title").to_string();
@@ -320,16 +350,17 @@ pub(crate) fn load_overlay_sigma(conn: &Connection, dir: &std::path::Path) -> u3
                             params![t.name, t.query, t.op, t.threshold, t.severity, t.interval_s, t.window_s, t.mitre],
                         );
                     }
-                    n += 1;
+                    ch.charges += 1;
                 }
                 Err(e) => {
                     let who = if title.is_empty() { "(sans titre)".to_string() } else { title };
                     eprintln!("[overlays] WARN règle Sigma '{who}' ({}) : {e} — ignorée", path.display());
+                    ch.ignores += 1; // un document par règle : un document intraduisible est une règle de moins
                 }
             }
         }
     }
-    n
+    ch
 }
 
 /// #1c-toggle — RÉAPPLIQUE les overrides d'activation ADMIN (detection_override) PAR-DESSUS l'état posé par les
@@ -361,32 +392,54 @@ pub(crate) fn apply_content_overrides(conn: &Connection) {
 
 /// Applique tous les overlays d'un répertoire racine `config.d` (sous-dossiers parsers/rules/playbooks/sigma).
 /// Racine absente -> no-op gracieux. Séparé de load_overlays pour être testable sans env/cfg.
-pub(crate) fn load_overlays_dir(conn: &Connection, root: &std::path::Path) {
+///
+/// REND LE BILAN DU CHARGEMENT (`P4.1-r`) et le PUBLIE pour la surface d'état : ce qui a été chargé, ce qui a
+/// été ignoré (fichier invalide, illisible, requête qui ne compile pas), ou l'aveu qu'un sous-dossier n'a pas
+/// pu être listé. Avant, un dossier de règles illisible chargeait zéro règle et la ligne de résumé — imprimée
+/// seulement quand un compte est positif — ne disait rien.
+pub(crate) fn load_overlays_dir(conn: &Connection, root: &std::path::Path) -> crate::overlays_adossement::ChargementTotal {
+    let mut total = crate::overlays_adossement::ChargementTotal::default();
     if !root.is_dir() {
-        return;
+        return total;
     }
-    let np = load_overlay_parsers(conn, &root.join("parsers"));
-    let nd = load_overlay_dparsers(conn, &root.join("parsers"));   // pièce 2 : mêmes fichiers, ceux à objet `map`
-    let nr = load_overlay_rules(conn, &root.join("rules"));
+    let np = total.absorber(load_overlay_parsers(conn, &root.join("parsers")));
+    let nd = total.absorber(load_overlay_dparsers(conn, &root.join("parsers")));   // pièce 2 : mêmes fichiers, ceux à objet `map`
+    let nr = total.absorber(load_overlay_rules(conn, &root.join("rules")));
     // CATALOGUE DE DÉTECTION (#22 — starter pack curé) : sous-dossier dédié `rules/catalog/` chargé par le
     // MÊME loader (managed=1, MÊME validation « compile-ou-ignore »). Séparé de `rules/` pour distinguer la
     // BIBLIOTHÈQUE curée (large, la plupart enabled=false, activée par l'opérateur selon sa télémétrie) des
     // quelques règles « actives » posées à la racine. overlay_files ne récurse pas -> chemin explicite.
-    let ncat = load_overlay_rules(conn, &root.join("rules").join("catalog"));
+    let ncat = total.absorber(load_overlay_rules(conn, &root.join("rules").join("catalog")));
     let nr = nr + ncat;
-    let nb = load_overlay_playbooks(conn, &root.join("playbooks"));
-    let ns = load_overlay_sigma(conn, &root.join("sigma"));        // pièce 3 : règles Sigma (YAML) -> rule
+    let nb = total.absorber(load_overlay_playbooks(conn, &root.join("playbooks")));
+    let ns = total.absorber(load_overlay_sigma(conn, &root.join("sigma")));        // pièce 3 : règles Sigma (YAML) -> rule
     // #1c-toggle : l'override d'activation admin GAGNE sur l'`enabled` du fichier config.d — réappliqué APRÈS
     // TOUS les upserts d'overlay (rules JSON + Sigma + parsers + playbooks) -> le dernier écrit l'emporte, le
     // choix de l'admin survit au reboot. VIDE en mode 0 -> 0 UPDATE -> byte-identique.
     apply_content_overrides(conn);
-    if np + nd + nr + nb + ns > 0 {
-        eprintln!("[overlays] config.d appliqué : {np} parser(s) regex, {nd} parser(s) déclaratif(s), {nr} règle(s) (dont {ncat} catalogue), {nb} playbook(s), {ns} règle(s) Sigma — managed=1 (source git)");
-    }
     // #55 OBSERVABILITY-AS-CODE — objets de config (dashboards/notifiers/destinations/connecteurs/index-policies/
     // field-filters/library-panels/notification-policies). MÊME racine config.d, sous-dossiers dédiés. No-op si
     // aucun sous-dossier -> mode 0 byte-identique.
-    load_oac_overlays_dir(conn, root);
+    let oac = load_oac_overlays_dir(conn, root);
+    let noac = oac.charges;
+    total.fusionner(oac);
+    let bilan = total.mesure();
+    if np + nd + nr + nb + ns > 0 {
+        eprintln!("[overlays] config.d appliqué : {np} parser(s) regex, {nd} parser(s) déclaratif(s), {nr} règle(s) (dont {ncat} catalogue), {nb} playbook(s), {ns} règle(s) Sigma — managed=1 (source git)");
+    }
+    // L'AVEU, toujours imprimé quand il y a quelque chose à avouer — indépendamment du compte de chargés,
+    // qui est précisément ce qui se taisait quand tout avait échoué.
+    match &bilan {
+        crate::mesure_environnement::Mesure::Lue(0) => {}
+        crate::mesure_environnement::Mesure::Lue(n) => {
+            eprintln!("[overlays] {n} fichier(s) de config.d IGNORÉ(S) (invalides ou illisibles, voir les WARN ci-dessus) — les règles/parseurs/playbooks/objets qu'ils portent ne sont PAS chargés ({noac} objet(s) OAC chargés)");
+        }
+        crate::mesure_environnement::Mesure::Illisible { cause, detail } => {
+            eprintln!("[overlays] config.d PARTIELLEMENT OU PAS DU TOUT LU ({cause}) : {detail} — ce qui s'y trouve n'est PAS chargé, et une base neuve n'a alors AUCUNE règle livrée");
+        }
+    }
+    crate::bilan_de_tick::publier(crate::overlays_adossement::PASSE_OVERLAYS, bilan);
+    total
 }
 
 /// Point d'entrée boot : résout ${PLUME_CONFIG_DIR} (défaut /usr/local/share/plume/config.d, BAKED).
@@ -415,59 +468,58 @@ pub(crate) struct OverlayBackedNames {
     pub(crate) rule: std::collections::HashSet<String>,
     pub(crate) playbook: std::collections::HashSet<String>,
 }
-pub(crate) fn overlay_backed_names(root: &std::path::Path) -> OverlayBackedNames {
+///
+/// FAIL-CLOSED (`P4.1-r`) : un dossier illisible, un fichier qu'on ne sait pas lire, un JSON invalide, un
+/// document Sigma intraduisible ou un fichier sans `name` REFUSENT l'élagage (`RefusDePrune::Adossement`,
+/// le fichier nommé). Avant, chacun de ces cas rendait simplement « pas de nom », et la règle que ce
+/// fichier adosse — toujours en base, toujours voulue par l'opérateur — était supprimée comme orpheline.
+pub(crate) fn overlay_backed_names(root: &std::path::Path) -> Result<OverlayBackedNames, crate::overlays_adossement::RefusDePrune> {
+    use crate::overlays_adossement::{est_json, est_sigma, fichiers_ou_refus, RefusDePrune};
     let mut o = OverlayBackedNames::default();
     if !root.is_dir() {
-        return o;
+        return Ok(o);
     }
+    let nom_de = |path: &std::path::Path| -> Result<(Value, String), RefusDePrune> {
+        let v = overlay_read_json_ou_cause(path).map_err(|(cause, pourquoi)| RefusDePrune::fichier(path, cause, &pourquoi))?;
+        let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+        if name.is_empty() {
+            return Err(RefusDePrune::forme(path, "sans `name` : impossible de savoir quelle ligne ce fichier adosse"));
+        }
+        Ok((v, name))
+    };
     // parsers/*.json : `map` objet -> dparser (déclaratif) ; sinon parser (regex). Même clé que les loaders.
-    for path in overlay_files(&root.join("parsers")) {
-        if let Some(v) = overlay_read_json(&path) {
-            let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
-            if name.is_empty() {
-                continue;
-            }
-            if v.get("map").map(|m| m.is_object()).unwrap_or(false) {
-                o.dparser.insert(name);
-            } else {
-                o.parser.insert(name);
-            }
+    for path in fichiers_ou_refus(&root.join("parsers"), est_json)? {
+        let (v, name) = nom_de(&path)?;
+        if v.get("map").map(|m| m.is_object()).unwrap_or(false) {
+            o.dparser.insert(name);
+        } else {
+            o.parser.insert(name);
         }
     }
     // Racine `rules/` + sous-dossier `rules/catalog/` (catalogue de détection curé) : MÊMES clés `name`
     // adossées que les deux appels load_overlay_rules -> le prune #26 ne considère PAS les règles catalogue
     // comme orphelines (symétrie loader/prune ; sans ceci le prune supprimerait les managed=1 du catalogue).
     for dir in [root.join("rules"), root.join("rules").join("catalog")] {
-        for path in overlay_files(&dir) {
-            if let Some(v) = overlay_read_json(&path) {
-                let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
-                if !name.is_empty() {
-                    o.rule.insert(name);
-                }
-            }
+        for path in fichiers_ou_refus(&dir, est_json)? {
+            let (_, name) = nom_de(&path)?;
+            o.rule.insert(name);
         }
     }
     // Sigma -> `rule` : le NOM adossé est celui produit par la TRADUCTION (identique à load_overlay_sigma).
-    for path in sigma_overlay_files(&root.join("sigma")) {
-        if let Ok(txt) = std::fs::read_to_string(&path) {
-            if let Ok(docs) = sigma_yaml_to_docs(&txt) {
-                for d in &docs {
-                    if let Ok(t) = sigma_translate(d) {
-                        o.rule.insert(t.name);
-                    }
-                }
-            }
+    for path in fichiers_ou_refus(&root.join("sigma"), est_sigma)? {
+        let txt = std::fs::read_to_string(&path)
+            .map_err(|e| RefusDePrune::fichier(&path, crate::mesure_environnement::cause_io(&e), &format!("lecture échouée : {e}")))?;
+        let docs = sigma_yaml_to_docs(&txt).map_err(|e| RefusDePrune::forme(&path, &format!("YAML Sigma invalide : {e}")))?;
+        for d in &docs {
+            let t = sigma_translate(d).map_err(|e| RefusDePrune::forme(&path, &format!("document Sigma intraduisible : {e}")))?;
+            o.rule.insert(t.name);
         }
     }
-    for path in overlay_files(&root.join("playbooks")) {
-        if let Some(v) = overlay_read_json(&path) {
-            let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
-            if !name.is_empty() {
-                o.playbook.insert(name);
-            }
-        }
+    for path in fichiers_ou_refus(&root.join("playbooks"), est_json)? {
+        let (_, name) = nom_de(&path)?;
+        o.playbook.insert(name);
     }
-    o
+    Ok(o)
 }
 
 /// Comptes d'overlays orphelins élagués, par table.
@@ -498,8 +550,8 @@ fn prune_table_orphans(conn: &Connection, table: &str, keep: &std::collections::
 /// PRUNE des overlays config.d orphelins (parser/dparser/rule/playbook) contre l'état COURANT des fichiers de
 /// `root`. Ne touche JAMAIS managed=0/2. Renvoie les comptes par table. PUR côté décision (adossement = lecture
 /// des fichiers) + DELETE ciblés — testable avec un répertoire temporaire.
-pub(crate) fn prune_orphan_overlays(conn: &Connection, root: &std::path::Path) -> rusqlite::Result<PruneCounts> {
-    let backed = overlay_backed_names(root);
+pub(crate) fn prune_orphan_overlays(conn: &Connection, root: &std::path::Path) -> Result<PruneCounts, crate::overlays_adossement::RefusDePrune> {
+    let backed = overlay_backed_names(root)?;
     Ok(PruneCounts {
         parser: prune_table_orphans(conn, "parser", &backed.parser)?,
         dparser: prune_table_orphans(conn, "dparser", &backed.dparser)?,
@@ -524,7 +576,7 @@ pub(crate) async fn config_overlays_prune(State(st): State<AppState>, Extension(
     if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
         return server_err("verrou base indisponible");
     }
-    let outcome: rusqlite::Result<(PruneCounts, OacPruneCounts)> = (|| {
+    let outcome: Result<(PruneCounts, OacPruneCounts), crate::overlays_adossement::RefusDePrune> = (|| {
         let c = prune_orphan_overlays(&conn, &root)?;
         // #55 — prune AUSSI les OBJETS DE CONFIG OAC orphelins (notifiers/destinations/…) — même discipline.
         let o = prune_oac_orphans(&conn, &root)?;

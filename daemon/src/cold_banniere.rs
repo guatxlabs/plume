@@ -82,25 +82,40 @@ pub(crate) struct Inventaire {
     pub(crate) octets: u64,
     /// `Some(n)` : le balayage s'est ARRÊTÉ après `n` entrées -> les deux compteurs sont des MINORANTS.
     pub(crate) borne: Option<usize>,
+    /// Entrées ou sous-répertoires que le balayage N'A PAS SU LIRE (`P4.1-r`) : chacun cache un nombre
+    /// inconnu de fichiers-jour, donc les deux compteurs sont des MINORANTS — comme sous `borne`. Avant,
+    /// ils étaient sautés en silence et l'inventaire se présentait comme complet.
+    pub(crate) illisibles: usize,
 }
 
 impl Inventaire {
     /// PURE, donc exerçable dans les trois formes (mesuré / borné / non mesuré) sans toucher au disque.
-    fn phrase(&self) -> String {
+    pub(crate) fn phrase(&self) -> String {
         if !self.racine_lisible {
             return "répertoire ABSENT ou ILLISIBLE — RIEN n'a été compté (aucun fichier-jour n'a donc \
                     été observé, ce qui n'est PAS la même chose que zéro)"
                 .to_string();
         }
-        match self.borne {
+        let phrase = match self.borne {
             Some(n) => format!(
                 "≥{} fichier(s)-jour, ≥{} sur le disque — balayage ARRÊTÉ à {n} entrées : inventaire \
                  PARTIEL, ces deux nombres sont des MINORANTS et jamais un total",
                 self.fichiers,
                 mio(self.octets)
             ),
+            None if self.illisibles > 0 => format!(
+                "≥{} fichier(s)-jour, ≥{} sur le disque — {} entrée(s) ou sous-répertoire(s) ILLISIBLE(S) \
+                 non comptés : ces deux nombres sont des MINORANTS et jamais un total",
+                self.fichiers,
+                mio(self.octets),
+                self.illisibles
+            ),
             None => format!("{} fichier(s)-jour, {} sur le disque", self.fichiers, mio(self.octets)),
+        };
+        if self.borne.is_some() && self.illisibles > 0 {
+            return format!("{phrase} ; {} entrée(s) illisible(s) de surcroît", self.illisibles);
         }
+        phrase
     }
 }
 
@@ -181,22 +196,46 @@ fn cold_tier_demande(conf: &HashMap<String, String>) -> bool {
 /// qu'un `PLUME_COLD_DIR` pointé un cran trop bas ne se lise pas « vide ». Le type d'entrée vient de
 /// `readdir` (`d_type`), donc AUCUN `stat` n'est payé pour les répertoires ; un `stat` n'est payé que
 /// pour un fichier `.parquet`, dont on veut la taille.
-fn inventaire(racine: &Path, plafond: usize) -> Inventaire {
-    let mut inv = Inventaire { racine_lisible: false, fichiers: 0, octets: 0, borne: None };
+pub(crate) fn inventaire(racine: &Path, plafond: usize) -> Inventaire {
+    let mut inv = Inventaire { racine_lisible: false, fichiers: 0, octets: 0, borne: None, illisibles: 0 };
     let Ok(entrees) = std::fs::read_dir(racine) else {
         return inv; // racine absente/illisible : on n'a RIEN mesuré, et `racine_lisible` le dit.
     };
     inv.racine_lisible = true;
     let mut examinees = 0usize;
-    for e in entrees.filter_map(Result::ok) {
+    for e in entrees {
+        // Une entrée que l'énumération refuse est un fichier-jour qu'on ne verra pas : COMPTÉE, et
+        // l'inventaire se dit MINORANT — avant, `filter_map(Result::ok)` la taisait.
+        let e = match e {
+            Ok(e) => e,
+            Err(_) => {
+                inv.illisibles += 1;
+                continue;
+            }
+        };
         if examinees >= plafond {
             inv.borne = Some(examinees);
             return inv;
         }
         examinees += 1;
         if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            let Ok(sous) = std::fs::read_dir(e.path()) else { continue };
-            for s in sous.filter_map(Result::ok) {
+            // Un sous-répertoire (un environnement) qu'on ne sait pas lister cache un nombre inconnu de
+            // fichiers-jour : compté comme illisible, jamais sauté en silence.
+            let sous = match std::fs::read_dir(e.path()) {
+                Ok(s) => s,
+                Err(_) => {
+                    inv.illisibles += 1;
+                    continue;
+                }
+            };
+            for s in sous {
+                let s = match s {
+                    Ok(s) => s,
+                    Err(_) => {
+                        inv.illisibles += 1;
+                        continue;
+                    }
+                };
                 if examinees >= plafond {
                     inv.borne = Some(examinees);
                     return inv;
@@ -261,7 +300,7 @@ mod cold_banniere_tests {
     use crate::db_open::door_tests::{est_test, fichiers_de_test, rs_files, texte_de_production};
 
     fn inventaire_type() -> Inventaire {
-        Inventaire { racine_lisible: true, fichiers: 59, octets: 164_940_000, borne: None }
+        Inventaire { racine_lisible: true, fichiers: 59, octets: 164_940_000, borne: None, illisibles: 0 }
     }
 
     fn actif_type() -> EtatTierFroid {
@@ -377,13 +416,13 @@ mod cold_banniere_tests {
     /// comme un total).
     #[test]
     fn linventaire_avoue_ce_quil_na_pas_mesure() {
-        let absent = Inventaire { racine_lisible: false, fichiers: 0, octets: 0, borne: None }.phrase();
+        let absent = Inventaire { racine_lisible: false, fichiers: 0, octets: 0, borne: None, illisibles: 0 }.phrase();
         assert!(absent.contains("ABSENT ou ILLISIBLE"), "le répertoire introuvable doit se dire : {absent}");
         assert!(
             !absent.contains("0 fichier(s)-jour"),
             "« rien mesuré » ne doit PAS se présenter comme un compte de zéro : {absent}"
         );
-        let borne = Inventaire { racine_lisible: true, fichiers: 10_000, octets: 1 << 40, borne: Some(10_000) }.phrase();
+        let borne = Inventaire { racine_lisible: true, fichiers: 10_000, octets: 1 << 40, borne: Some(10_000), illisibles: 0 }.phrase();
         assert!(
             borne.contains("≥10000 fichier(s)-jour") && borne.contains("MINORANTS"),
             "un balayage arrêté rend des MINORANTS, et doit le dire : {borne}"

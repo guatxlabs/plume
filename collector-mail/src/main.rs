@@ -286,28 +286,50 @@ fn run() -> Result<()> {
         }
     }
 
-    // persiste l'etat (incremental) meme s'il n'y a pas d'event
-    if !newly_seen.is_empty() {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&state_path) {
-            let _ = f.write_all(newly_seen.join("\n").as_bytes());
-            let _ = f.write_all(b"\n");
-            let _ = std::fs::set_permissions(&state_path, std::fs::Permissions::from_mode(0o640));
+    // persiste l'etat (incremental) meme s'il n'y a pas d'event. UN ETAT QU'ON N'A PAS PU ECRIRE EST
+    // AVOUE (`P4.1-r`) : le prochain passage re-examinera tout ce qui vient d'etre vu, et sans cet aveu
+    // l'exploitant verrait des alertes en double sans savoir d'ou elles viennent.
+    let etat_non_persiste: Option<(&'static str, String)> = if newly_seen.is_empty() {
+        None
+    } else {
+        let ecrit = std::fs::OpenOptions::new().create(true).append(true).open(&state_path).and_then(|mut f| {
+            f.write_all(newly_seen.join("\n").as_bytes())?;
+            f.write_all(b"\n")?;
+            std::fs::set_permissions(&state_path, std::fs::Permissions::from_mode(0o640))
+        });
+        match ecrit {
+            Ok(()) => None,
+            Err(e) => Some((lisibilite::cause_io(&e), format!("{state_path} : {e}"))),
         }
-    }
+    };
 
     // `S36` — LES AVEUX DU PASSAGE, AVANT TOUTE CONCLUSION. Chacun emprunte le canal
     // d'indisponibilite deja livre (`category=config`, `collect_status=unavailable`), sur lequel la
     // regle livree ALERTE deja : aucune regle, aucune categorie, aucune metrique nouvelle. Un aveu
     // par CAUSE, pas un par message — le detail par message vit dans les evenements ci-dessus.
-    if let Some((cause, detail)) = &etat_illisible {
-        aveux.push(lisibilite::event_indisponibilite(
+    // L'aveu, s'il y en a un, rejoint la liste — une forme sans branche muette : l'absence d'aveu est
+    // une valeur (rien a dire), pas un cas oublie.
+    aveux.extend(etat_illisible.as_ref().map(|(cause, detail)| {
+        lisibilite::event_indisponibilite(
             "mail",
             lisibilite::RAISON_SOURCE_ABSENTE,
             cause,
             &format!("etat incrementiel present mais illisible : {detail} — tout est re-examine"),
             ts as i64,
-        ));
-    }
+        )
+    }));
+    aveux.extend(etat_non_persiste.as_ref().map(|(cause, detail)| {
+        lisibilite::event_indisponibilite(
+            "mail",
+            lisibilite::RAISON_SOURCE_ABSENTE,
+            cause,
+            &format!(
+                "etat incrementiel NON PERSISTE : {detail} — {} message(s) vus ce passage seront re-examines au prochain (alertes en double possibles)",
+                newly_seen.len()
+            ),
+            ts as i64,
+        )
+    }));
     if !comptes_sautes.is_empty() {
         aveux.push(lisibilite::event_indisponibilite(
             "mail",

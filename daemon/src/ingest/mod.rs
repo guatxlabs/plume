@@ -656,34 +656,83 @@ pub(crate) const INGEST_TMP_ORPHAN_MAX_AGE_SECS: u64 = 3600; // 1 h
 /// STRICT `.` initial + suffixe `.tmp` -> ne touche JAMAIS un fichier spool publié (`.json`/`.ndjson`) ni le
 /// sous-dossier `quarantine` ; (2) seuil d'âge -> épargne un `.tmp` d'un POST concurrent en vol. Renvoie le
 /// nombre de fichiers effacés (observabilité + assertion de test).
-pub(crate) fn sweep_orphan_ingest_tmps(spool: &str, max_age: std::time::Duration) -> u64 {
+/// REND UN `Balayage` (`P4.1-r`, même forme que `backup::sweep_orphan_temps`) : effacés, mais aussi le
+/// répertoire ou les entrées que le balayage n'a pas su lire — un `.tmp` qu'on ne sait pas juger reste.
+pub(crate) fn sweep_orphan_ingest_tmps(spool: &str, max_age: std::time::Duration) -> crate::backup::Balayage {
     let now = std::time::SystemTime::now();
-    let mut removed = 0u64;
-    let rd = match std::fs::read_dir(spool) { Ok(r) => r, Err(_) => return 0 };
-    for ent in rd.flatten() {
+    let mut b = crate::backup::Balayage::default();
+    let rd = match std::fs::read_dir(spool) {
+        Ok(r) => r,
+        Err(_) => return crate::backup::Balayage::repertoire_illisible(),
+    };
+    for ent in rd {
+        let ent = match ent {
+            Ok(e) => e,
+            Err(_) => {
+                b.illisibles += 1;
+                continue;
+            }
+        };
         let name = ent.file_name();
         let name = name.to_string_lossy();
         // convention des récepteurs push : `.<prefix>-<ts>-<n>.tmp` (dotfile temporaire pré-rename).
         if !(name.starts_with('.') && name.ends_with(".tmp")) { continue; }
-        let meta = match ent.metadata() { Ok(m) => m, Err(_) => continue };
+        let meta = match ent.metadata() {
+            Ok(m) => m,
+            Err(_) => {
+                b.illisibles += 1;
+                continue;
+            }
+        };
         if !meta.is_file() { continue; }
-        // mtime illisible OU trop récente -> ÉPARGNE (ne jamais clobber un `.tmp` d'un POST concurrent en vol).
+        // trop récente -> ÉPARGNE (ne jamais clobber un `.tmp` d'un POST concurrent en vol) ; mtime
+        // ILLISIBLE -> épargné aussi, mais COMPTÉ.
         match meta.modified().ok().and_then(|m| now.duration_since(m).ok()) {
             Some(age) if age >= max_age => {}
-            _ => continue,
+            Some(_) => continue,
+            None => {
+                b.illisibles += 1;
+                continue;
+            }
         }
-        let _ = std::fs::remove_file(ent.path());
-        removed += 1;
+        if std::fs::remove_file(ent.path()).is_err() {
+            b.illisibles += 1; // non supprimé : toujours sur le disque, donc compté avec ce qu'on n'a pas su traiter
+            continue;
+        }
+        b.effaces += 1;
     }
-    removed
+    b
 }
 
-pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) {
+/// Ce qu'un fichier de spool est devenu à l'issue d'un passage : INGÉRÉ (et retiré), ou ABANDONNÉ —
+/// mis en quarantaine, ou laissé en place pour un essai suivant. Les deux formes d'abandon se COMPTENT :
+/// un fichier laissé en place « pour plus tard » qui ne s'ingère jamais est une perte au ralenti.
+enum Sort {
+    Ingere,
+    Abandonne,
+}
+
+/// UN PASSAGE SUR LE SPOOL. REND SON BILAN (`P4.1-r`) : `Illisible` si le répertoire n'a pas pu être
+/// énuméré — la voie fichier de l'ingestion est alors MORTE pour ce passage, et le dire vaut mieux qu'un
+/// retour muet qui laissait la boucle tourner « normalement » ; `Lue(n)` sinon, `n` = fichiers
+/// abandonnés (entrée illisible, spool non routable, fichier illisible ou indécodable, batch refusé,
+/// panic capturé). Chaque abandon est aussi mis en quarantaine ou laissé en place, comme avant.
+pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de_tick::BilanDeTick {
+    use crate::mesure_environnement::{cause_io, Mesure};
     let rd = match std::fs::read_dir(spool) {
         Ok(r) => r,
-        Err(_) => return,
+        Err(e) => return Mesure::Illisible { cause: cause_io(&e), detail: format!("spool {spool} : {e}") },
     };
-    for ent in rd.flatten() {
+    let mut abandonnes = 0u32;
+    for ent in rd {
+        // Une entrée que l'énumération refuse est un fichier qu'on n'ingérera pas ce passage : comptée.
+        let ent = match ent {
+            Ok(e) => e,
+            Err(_) => {
+                abandonnes += 1;
+                continue;
+            }
+        };
         let name = ent.file_name();
         let name = name.to_string_lossy();
         if name.starts_with('.') {
@@ -710,7 +759,7 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) {
             Some(t) => t,
             None => {
                 quarantine_spool_file(spool, &path, &name, "spool non routable (tenant inconnu/suspendu)");
-                return; // (closure CONC-2 : ex-`continue`)
+                return Sort::Abandonne; // (closure CONC-2 : ex-`continue`)
             }
         };
         let db = &handle;
@@ -719,26 +768,37 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) {
             crate::INGEST_FILES_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed); // #51 DAY-2 : fichiers spool consommés
             // ING-1 : ne supprime le fichier QUE si le batch a été COMMITTÉ. Illisible (None) -> laissé pour
             // rejouer ; INSERT/COMMIT échoué (Some(Err)) -> QUARANTAINE (rejouable) au lieu d'une perte silencieuse.
-            match ingest_journal(db, db_path, &path, forced_host.as_deref()) {
-                None => {}
-                Some(Ok(_)) => { let _ = std::fs::remove_file(&path); }
-                Some(Err(_)) => quarantine_spool_file(spool, &path, &name, "journald INSERT échoué (ROLLBACK du batch)"),
-            }
-            return; // (closure CONC-2 : ex-`continue`)
+            return match ingest_journal(db, db_path, &path, forced_host.as_deref()) {
+                // illisible : laissé en place pour rejouer — et COMPTÉ, parce qu'un fichier qui reste
+                // illisible à chaque passage n'est jamais ingéré et que rien d'autre ne le dirait.
+                None => Sort::Abandonne,
+                Some(Ok(_)) => {
+                    let _ = std::fs::remove_file(&path);
+                    Sort::Ingere
+                }
+                Some(Err(_)) => {
+                    quarantine_spool_file(spool, &path, &name, "journald INSERT échoué (ROLLBACK du batch)");
+                    Sort::Abandonne
+                }
+            }; // (closure CONC-2 : ex-`continue`)
         }
         if !name.ends_with(".json") {
-            return; // (closure CONC-2 : ex-`continue`)
+            // Ni `.ndjson` ni `.json` : pas un fichier de spool (convention des récepteurs) — rien à ingérer,
+            // rien d'abandonné. La profondeur de file (`entree_de_spool_comptee`) l'ignore de même.
+            return Sort::Ingere; // (closure CONC-2 : ex-`continue`)
         }
         crate::INGEST_FILES_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed); // #51 DAY-2 : fichiers spool consommés
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
-            Err(_) => return, // (closure CONC-2 : ex-`continue`)
+            Err(_) => return Sort::Abandonne, // laissé en place pour rejouer, et compté (closure CONC-2 : ex-`continue`)
         };
         let v: Value = match serde_json::from_str(&content) {
             Ok(v) => v,
             Err(_) => {
-                let _ = std::fs::remove_file(&path);
-                return; // (closure CONC-2 : ex-`continue`)
+                // Un fichier indécodable était SUPPRIMÉ : les événements d'un cycle de collecte
+                // disparaissaient sans trace. Il part en quarantaine (conservé, examinable), et il est compté.
+                quarantine_spool_file(spool, &path, &name, "JSON indécodable (fichier conservé pour examen)");
+                return Sort::Abandonne; // (closure CONC-2 : ex-`continue`)
             }
         };
         let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("unknown").to_string();
@@ -762,14 +822,25 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) {
                 None => ingest_events_batch(&conn, db_path, &arr, ts, host, forced_host.as_deref()),
             };
             drop(conn);
-            match committed {
-                Ok(_) => { let _ = std::fs::remove_file(&path); }
+            return match committed {
+                Ok(_) => {
+                    let _ = std::fs::remove_file(&path);
+                    Sort::Ingere
+                }
                 // ROLLBACK (fail-safe) -> quarantaine : données préservées/rejouables, pas de perte silencieuse ni de boucle.
-                Err(_) => quarantine_spool_file(spool, &path, &name, "events INSERT échoué (ROLLBACK du batch)"),
-            }
-            return; // (closure CONC-2 : ex-`continue`)
+                Err(_) => {
+                    quarantine_spool_file(spool, &path, &name, "events INSERT échoué (ROLLBACK du batch)");
+                    Sort::Abandonne
+                }
+            }; // (closure CONC-2 : ex-`continue`)
         }
         if kind == "metrics" {
+            // Un fichier `metrics` SANS tableau `metrics` n'est pas « zéro métrique » : c'est une forme que
+            // l'ingestion ne connaît pas. Avant, la transaction vide était commise et le fichier supprimé.
+            let Some(arr) = data.get("metrics").and_then(|m| m.as_array()) else {
+                quarantine_spool_file(spool, &path, &name, "metrics sans tableau `metrics` (forme inconnue, fichier conservé)");
+                return Sort::Abandonne;
+            };
             let conn = db.lock();
             // ING-1 : UNE transaction par fichier (CALQUE de la voie events) -> l'insert des métriques est
             // ATOMIQUE. Sur échec -> ROLLBACK + QUARANTAINE (rejouable, pas de ré-insertion partielle au
@@ -780,16 +851,14 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) {
             // suivantes « cannot start a transaction within a transaction »). Succès + erreur d'insert = byte-identiques.
             let committed = if let Ok(tx) = Txn::begin(&conn) {
                 let mut ok = true;
-                if let Some(arr) = data.get("metrics").and_then(|m| m.as_array()) {
-                    for m in arr {
-                        let name = m.get("name").and_then(|x| x.as_str()).unwrap_or("");
-                        let val = m.get("value").and_then(|x| x.as_f64()).unwrap_or(0.0);
-                        if !name.is_empty() {
-                            // COUTURE STORE (data-plane) : `labels=None` == littéral NULL du legacy -> ligne identique.
-                            if store().insert_metric(&conn, &MetricRow { ts, name: name.to_string(), labels: None, value: val, host: host.map(|s| s.to_string()) }).is_err() {
-                                ok = false;
-                                break;
-                            }
+                for m in arr {
+                    let name = m.get("name").and_then(|x| x.as_str()).unwrap_or("");
+                    let val = m.get("value").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                    if !name.is_empty() {
+                        // COUTURE STORE (data-plane) : `labels=None` == littéral NULL du legacy -> ligne identique.
+                        if store().insert_metric(&conn, &MetricRow { ts, name: name.to_string(), labels: None, value: val, host: host.map(|s| s.to_string()) }).is_err() {
+                            ok = false;
+                            break;
                         }
                     }
                 }
@@ -800,12 +869,13 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) {
                 false
             };
             drop(conn);
-            if committed {
+            return if committed {
                 let _ = std::fs::remove_file(&path);
+                Sort::Ingere
             } else {
                 quarantine_spool_file(spool, &path, &name, "metrics INSERT échoué (ROLLBACK du batch)");
-            }
-            return; // (closure CONC-2 : ex-`continue`)
+                Sort::Abandonne
+            }; // (closure CONC-2 : ex-`continue`)
         }
         // ING-1 : snapshot/firewall/controls en UNE transaction (CALQUE de la voie events). Sur échec d'une
         // écriture (insert snapshot / heartbeat / alerte) -> ROLLBACK + QUARANTAINE (rejouable) au lieu
@@ -874,12 +944,20 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) {
         };
         if committed {
             let _ = std::fs::remove_file(&path);
+            Sort::Ingere
         } else {
             quarantine_spool_file(spool, &path, &name, "snapshot INSERT échoué (ROLLBACK du batch)");
+            Sort::Abandonne
         }
         })); // fin du corps par-fichier isolé (CONC-2)
-        if res.is_err() {
-            quarantine_spool_file(spool, &path, &name, "panic interne pendant l'ingest (capturé)");
+        match res {
+            Ok(Sort::Ingere) => {}
+            Ok(Sort::Abandonne) => abandonnes += 1,
+            Err(_) => {
+                abandonnes += 1;
+                quarantine_spool_file(spool, &path, &name, "panic interne pendant l'ingest (capturé)");
+            }
         }
     }
+    Mesure::Lue(abandonnes)
 }

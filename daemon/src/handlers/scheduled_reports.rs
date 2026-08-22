@@ -208,32 +208,46 @@ pub(crate) fn render_report_detail(db_path: &str, name: &str, run_as: &str, tena
 /// livre. INERTE mode 0 : table vide -> 0 ligne -> retour immédiat (aucun réseau, aucune écriture). FAIL-SAFE :
 /// chaque rapport isolé (catch_unwind + erreur consignée dans last_error) -> un rapport cassé n'arrête pas les
 /// autres. Séquentiel (budget 2 Go).
-pub(crate) fn run_due_reports(db: &Arc<Mutex<Connection>>, db_path: &str) {
+///
+/// REND SON BILAN (`P4.1-r`) : `Illisible` si la liste des rapports dus n'a pas pu être lue, `Lue(n)` =
+/// rapports dus abandonnés (ligne indécodable, ou panic capturé — consigné aussi dans `last_error`). Une
+/// livraison en erreur n'est PAS un abandon : `deliver_report` l'a consignée dans `last_error`.
+pub(crate) fn run_due_reports(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
+    let mut abandonnes = 0u32;
     let due: Vec<i64> = {
         let conn = db.lock();
         let mut stmt = match conn.prepare(
             "SELECT id FROM scheduled_report WHERE enabled=1 AND (last_run IS NULL OR ?1 - last_run >= interval_s)",
-        ) { Ok(s) => s, Err(_) => return }; // table absente (pré-v97) -> no-op
-        let rows = stmt.query_map(params![now_ts], |r| r.get::<_, i64>(0));
-        match rows {
-            Ok(r) => r.flatten().collect(),
-            Err(_) => return,
+        ) {
+            Ok(s) => s,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("rapports", &e),
+        };
+        let rows = match stmt.query_map(params![now_ts], |r| r.get::<_, i64>(0)) {
+            Ok(r) => r,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("rapports", &e),
+        };
+        let mut due = Vec::new();
+        for r in rows {
+            match r {
+                Ok(id) => due.push(id),
+                Err(_) => abandonnes += 1,
+            }
         }
+        due
     };
-    if due.is_empty() {
-        return; // INVARIANT mode 0 : rien à faire, aucun effet de bord
-    }
     for id in due {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| deliver_report(db, db_path, id)));
         match r {
             Ok(Ok(_)) => {}
             Ok(Err(_)) => {} // erreur déjà consignée dans last_error par deliver_report
             Err(_) => {
+                abandonnes += 1;
                 let conn = db.lock();
                 let _ = conn.execute("UPDATE scheduled_report SET last_run=?1, last_error=?2 WHERE id=?3",
                     params![now_ts, "panic interne du rapport (capturé)", id]);
             }
         }
     }
+    crate::mesure_environnement::Mesure::Lue(abandonnes)
 }

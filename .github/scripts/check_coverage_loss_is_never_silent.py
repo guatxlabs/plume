@@ -67,6 +67,41 @@ Hors du crate `agent`, le MÊME critère rend 32 sites de plus (daemon, collecte
 triés à la main et cette garde ne les exige pas : sa portée est le crate `agent`, et c'est une limite
 ÉCRITE, pas un angle mort.
 
+HORS DU CRATE DE L'AGENT : LE DÉMON ET LES COLLECTEURS (`P4.1-r`, 2026-08-22)
+--------------------------------------------------------------------------------
+Le critère est le MÊME ; ce sont les POPULATIONS qui changent, parce que « poser de la surveillance »
+n'est pas la même chose dans un démon que dans un agent. Elles restent DÉRIVÉES, jamais listées :
+
+  COUVERTURE, en plus de (a)(b)(c) :
+    (d) elle CONSOMME une énumération : son corps appelle une fonction qui ÉNUMÈRE — directement
+        (`read_dir`) ou par délégation, c'est-à-dire une fonction qui atteint `read_dir` par appel ET
+        dont le type de retour porte des chemins (`PathBuf`). C'est ainsi qu'un chargeur de règles qui
+        itère sur un listing rendu par un autre module entre dans la population. Les appels NUS sont
+        résolus dans le FICHIER (comme en (c)) ; les appels QUALIFIÉS (`Type::f(`, `module::f(`) dans le
+        CRATE — une résolution crate-wide des noms nus avalerait tout par collision (`drop`, `etat`).
+    (e) elle ÉVALUE ou ÉMET de la détection : son corps écrit `INSERT … INTO alert` ou avance le curseur
+        d'un élément ordonnancé (`SET last_run=`). Ce sont les tickers de fond — règles, règles avancées,
+        règles de risque, corrélations, lignes de base, playbooks, battements de capteurs, connecteurs,
+        destinations, rapports — et c'est CE QU'ILS FONT qui les désigne, pas leur nom.
+
+  SURFACE : inchangée (`println!`). Le panneau JSON et l'exposition Prometheus du démon sont tenus par le
+    TYPE de `S32` (`Mesure<T>`, sans valeur par défaut) et par sa suite, pas par cette garde de forme ;
+    c'est une limite ÉCRITE.
+
+  FORMES, en plus : `.filter_map(Result::ok)` est `.flatten()` sous un autre nom — refusé de même ;
+  `if let Err(e) = … { …; continue }` est la forme INVERSÉE, où le bloc `then` est la branche d'échec.
+  Un `return Mesure::Lue(0)` (ou `Lue(0)` de tout chemin) sur une branche d'ÉCHEC est un retour NEUTRE
+  au même titre que `return 0` : il dit « rien d'abandonné » là où quelque chose l'a été ; rendre une
+  collection VIDE (`Vec::new()`, `vec![]`, `Lue(Vec::new())`…) sur un échec d'énumération l'est aussi.
+  TRACE, en plus : CONSIGNER nominativement (`.push(`) vaut compter — c'est la forme de `S36`.
+
+LA MESURE (2026-08-22, ce critère, ces populations) : 106 sites dans le démon et les collecteurs,
+contre les « 32 » de la borne d'ampleur de `P4.1-q` — qui ne comptait ni les tickers (e) ni les
+consommateurs (d) ; 3 d'entre eux étaient du code de TEST que l'instrument ne masquait pas
+(`pub(crate) mod door_tests`, `#![cfg(test)]`), ce qui est corrigé ici. Les sites fermés rendent un
+`Mesure<u32>` (`bilan_de_tick`), un `Chargement`, un `Balayage`, un `Inventaire` qui compte ses
+illisibles, ou refusent (`RefusDePrune`). Après fermeture : 0 site.
+
 CE QUE CETTE GARDE NE PROUVE PAS
 -------------------------------
 1. Elle prouve une FORME, pas un trajet. Qu'un compte existe ne dit pas qu'il atteint le SOC ; c'est
@@ -77,21 +112,39 @@ CE QUE CETTE GARDE NE PROUVE PAS
    testé par COMPARAISON (`if fd < 0 { break }`, `if handle.is_err() { return }`) lui échappe. Les
    sites de ce genre ont été comptés dans le code — le drainage inotify/fanotify distingue désormais
    EAGAIN d'un descripteur mort — mais une régression qui les réécrirait passerait cette garde.
-3. Sa portée est le crate `agent` (cf. les 30 sites mesurés ailleurs, non exigés ici).
+3. Sa portée est désormais les quatre crates compilés (`CRATES`). Ce qui lui échappe encore dans le
+   démon : les consommateurs à DEUX sauts d'un énumérateur qui ne rendent pas de chemins (ils ne sont
+   ni énumérateurs ni consommateurs au sens de (d)), et les fonctions qui traitent un contenu déjà lu
+   (`ingest_journal_lines` saute une ligne NDJSON invalide par `continue` : hors population, parce
+   qu'elle ne touche ni le système de fichiers ni la table des alertes).
+4. Elle ne distingue pas un bilan rendu d'un bilan LU : un planificateur qui jetterait le `Mesure`
+   rendu par ses tickers passerait. C'est la suite du démon qui le tient (`branche_d_echec_muette.rs`).
 """
 import re
 import subprocess
 import sys
 
-CRATE = "agent/src"
 CONTRAT = "FimBackend"      # le contrat qui déclare la POSE de couverture
 POSE = "watch_root"         # la méthode dont la doc dit « Pose un watch … sur `root` »
 
-# PLANCHERS, pas des comptes exacts : ajouter un backend ou une sous-commande est de la routine. Ils
-# ferment le seul mode de panne réel de la découverte — un motif cassé qui ne trouve RIEN et rend un
-# vert joyeux. MESURÉS le 2026-08-21 : 8 fonctions de couverture, 5 de surface.
-PLANCHER_COUVERTURE = 6
-PLANCHER_SURFACE = 3
+# PLANCHERS PAR CRATE, pas des comptes exacts : ajouter un backend, un ticker ou une sous-commande est
+# de la routine. Ils ferment le seul mode de panne réel de la découverte — un motif cassé qui ne trouve
+# RIEN et rend un vert joyeux. MESURÉS : agent 2026-08-21 (8 couverture, 5 surface) ; démon 2026-08-22
+# (56 couverture, 4 surface) ; collector-mail 2026-08-22 (10 couverture, 1 surface) ; collector-syslog
+# 2026-08-22 (3 couverture, 0 surface — il n'a pas de ligne de commande, et un plancher de surface à 0
+# n'est pas une vérification : c'est dit).
+# Et CE QUE « POSER DE LA SURVEILLANCE » VEUT DIRE dans chaque crate — la dérivation, pas une liste :
+#   "pose"    (a) le contrat `FimBackend` ; (b) l'énumération d'un répertoire ; (c) la fermeture descendante ;
+#   "charge"  (d) le CONSOMMATEUR d'une énumération (chargeur de règles, élagage, lecteur de spool) ;
+#   "evalue"  (e) l'ÉVALUATEUR / l'ÉMETTEUR de détection (`INTO alert`, `SET last_run=`).
+# L'agent pose ; le démon charge et évalue en plus ; un collecteur charge (il consomme des boîtes).
+# (plancher couverture, plancher surface, dérivations)
+CRATES = {
+    "agent/src": (6, 3, ("pose",)),
+    "daemon/src": (20, 2, ("pose", "charge", "evalue")),
+    "collector-mail/src": (5, 1, ("pose", "charge")),
+    "collector-syslog/src": (1, 0, ("pose", "charge")),
+}
 
 OUVR, FERM = "([{", ")]}"
 
@@ -350,12 +403,32 @@ def let_sinon(corps: str):
 # ==================================================================================================
 # LA RÈGLE
 # ==================================================================================================
-TRACE_COMPTE = re.compile(r"\+=|=\s*true\b|bail!|panic!|unreachable!|todo!|\?")
+# COMPTER (`+=`), CONSIGNER nominativement (`.push(` — c'est la forme de `S36` : un compte sauté est
+# poussé dans la liste des comptes sautés, que l'aveu nomme), lever un drapeau, PROPAGER.
+TRACE_COMPTE = re.compile(r"\+=|\.push\(|=\s*true\b|bail!|panic!|unreachable!|todo!|\?")
 RETOUR_PORTEUR = re.compile(r"\breturn\s+([A-Za-z0-9_&*(\[][^;]*)")
 # `return 0` (aucune perte) et `return Ok(())` (tout va bien) sur une branche d'ÉCHEC NIENT la perte
 # au lieu de la porter : ce sont des retours NEUTRES, et ils ne valent pas trace. C'est la forme
 # dégénérée la plus tentante d'un correctif — rendre le bon type, et mentir dedans.
-RETOUR_NEUTRE = re.compile(r"^(?:0|Ok\(\(\)\))\s*$")
+# Et la forme dégénérée d'un ÉNUMÉRATEUR : rendre une collection VIDE sur un échec d'énumération, c'est
+# dire « il n'y a rien là » précisément là où l'on n'a pas su regarder — `Vec::new()`, `vec![]`,
+# `Default::default()`, nus ou sous `Ok(…)`/`Lue(…)`. MESURÉ le 2026-08-22 : la mutation `Err(_) =>
+# return Mesure::Lue(Vec::new())` dans `lister` passait la garde avant cette ligne.
+VIDE = r"(?:Vec::new\(\)|vec!\[\s*\]|Default::default\(\)|String::new\(\))"
+RETOUR_NEUTRE = re.compile(
+    r"^(?:0|Ok\(\(\)\)|(?:[A-Za-z_][\w:]*::)?Lue\(0\)|" + VIDE + r"|(?:[A-Za-z_][\w:]*::)?(?:Lue|Ok|Some)\(" + VIDE + r"\))\s*$"
+)
+# Ce qu'un ÉVALUATEUR ou un ÉMETTEUR de détection FAIT — lu sur la source NON dénudée (c'est du SQL) :
+# il écrit une alerte, ou il avance le curseur d'un élément ordonnancé.
+SQL_EVALUE_OU_EMET = re.compile(r"INTO\s+alert\b|SET\s+last_run\s*=")
+# Un énumérateur PAR DÉLÉGATION rend des chemins.
+REND_DES_CHEMINS = re.compile(r"\bPathBuf\b")
+# La PROPRIÉTÉ : un adaptateur d'itération qui jette le bras d'erreur sans aucune branche — `.flatten()`,
+# `.filter_map`/`.flat_map` sur `Result::ok`, ou sur une fermeture `|x| x.ok()` (mesuré le 2026-08-22 : la
+# forme fermeture passait quand seules les deux orthographes nommées étaient refusées).
+JETTE_LES_ERREURS = re.compile(
+    r"\.flatten\(\)|\.(?:filter_map|flat_map)\(\s*(?:Result::ok|\|\s*(\w+)\s*\|\s*\1\.ok\(\))\s*\)"
+)
 TRACE_DIT = re.compile(r"\bprintln!|bail!|panic!|\?|\breturn\s+Err\b")
 FS_OU_NOYAU = re.compile(r"\bstd::fs::|\blibc::|\bfs::\w")
 PRINTLN = re.compile(r"\bprintln!")
@@ -376,7 +449,12 @@ def compte_la_perte(branche):
     if TRACE_COMPTE.search(branche):
         return True
     m = RETOUR_PORTEUR.search(branche)
-    return bool(m) and not RETOUR_NEUTRE.match(m.group(1).strip())
+    # Un bras de `match` se termine par une virgule, pas un point-virgule : `return Lue(0),` est le
+    # même retour neutre que `return Lue(0);`. MESURÉ le 2026-08-22 : sans ce rognage, la mutation
+    # `Err(_) => return Mesure::Lue(0),` dans `run_due_rules` passait la garde.
+    # Même chose pour l'accolade qui ferme un `else { return Lue(0) }` sans point-virgule (mesuré sur
+    # `verifier_flotte_muette`, même jour).
+    return bool(m) and not RETOUR_NEUTRE.match(m.group(1).strip().rstrip(",;} \t\n").strip())
 
 
 def abandonne(branche, sans_else):
@@ -388,8 +466,14 @@ def abandonne(branche, sans_else):
 
 
 def masque_les_tests(nu):
+    """Un module `#[cfg(test)]` (quelle que soit sa visibilité : `pub`, `pub(crate)`…) et un FICHIER qui
+    commence par `#![cfg(test)]` sont du code de test : ils n'entrent dans aucune population. MESURÉ le
+    2026-08-22 : sans `pub(crate)`, trois « sites » du démon étaient un helper de test ; sans
+    `#![cfg(test)]`, la garde de lisibilité du collecteur mail comptait parmi la couverture."""
+    if re.match(r"\s*#!\[cfg\(test\)\]", nu):
+        return " " * len(nu)
     out = list(nu)
-    for m in re.finditer(r"#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+\w+\s*\{", nu):
+    for m in re.finditer(r"#\[cfg\(test\)\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{", nu):
         i = nu.index("{", m.end() - 1)
         for k in range(m.start(), fin_bloc(nu, i)):
             if out[k] != "\n":
@@ -417,52 +501,154 @@ def appels(corps):
         | set(re.findall(r"\bself\.([a-z_]\w*)\s*\(", corps))
 
 
-def analyser(chemin, texte):
-    nu = masque_les_tests(denude(texte))
-    fns = fonctions(nu)
-    noms = {f.nom for f in fns}
-    couverture = {f.nom for f in fns if f.nom in fonctions_de_pose(nu) or "read_dir(" in f.corps}
+def appels_qualifies(corps):
+    """Appels par CHEMIN (`Type::f(`, `crate::module::f(`) : résolus dans le crate entier, parce que le
+    chemin lève l'ambiguïté qu'un nom nu n'a pas."""
+    return set(re.findall(r"::([a-z_]\w*)\s*\(", corps))
+
+
+def noms_importes(nu):
+    """Les noms qu'un fichier IMPORTE d'un autre module du crate (`use crate::m::{a, b}`, `use super::c;`,
+    y compris un `use` posé dans un corps de fonction). Un appel nu à l'un d'eux est un appel QUALIFIÉ
+    dont le chemin est écrit plus haut : il se résout dans le crate, pas dans le fichier."""
+    noms = set()
+    for m in re.finditer(r"\buse\s+(?:crate|super|self)(?:::\w+)*::\{([^}]*)\}", nu):
+        for partie in m.group(1).split(","):
+            partie = partie.strip().split(" as ")[0].strip()
+            if re.fullmatch(r"[a-z_]\w*", partie):
+                noms.add(partie)
+    for m in re.finditer(r"\buse\s+(?:crate|super|self)(?:::\w+)*::([a-z_]\w*)\s*;", nu):
+        noms.add(m.group(1))
+    return noms
+
+
+def sites_de(f, est_c):
+    """Les alternatives d'une fonction dont la branche d'échec abandonne — avec, pour chacune, la branche
+    d'échec (vide pour un `if let` sans else), son décalage et si une branche JUMELLE imprime."""
+    sites = []
+    for bras in bras_de_match(f.corps):
+        a_succes = any(motif_de_succes(m) for m, _, _ in bras)
+        jumelle = any(PRINTLN.search(c) for _, c, _ in bras)
+        for motif, corps_bras, off in bras:
+            if a_succes and motif_d_echec(motif) and abandonne(corps_bras, False):
+                sites.append(("bras `%s =>` d'un match" % motif.strip()[:26], corps_bras, off, jumelle))
+    for off, motif, alors, a_else, els in si_let(f.corps):
+        if motif_de_succes(motif) and abandonne(els, not a_else):
+            forme = "`if let %s` %s" % (motif.strip()[:24], "SANS else" if not a_else else "/ else")
+            sites.append((forme, els if a_else else "", off, bool(PRINTLN.search(alors))))
+        elif motif_d_echec(motif) and abandonne(alors, False):
+            # `if let Err(e) = … { …; continue }` : la forme INVERSÉE, où le bloc `then` EST la branche
+            # d'échec. MESURÉ le 2026-08-22 : la mutation qui retire `ch.ignores += 1` de ce bloc dans
+            # `load_overlay_rules` passait la garde, qui ne lisait que `if let Ok/Some`.
+            forme = "`if let %s` (bloc d'échec)" % motif.strip()[:24]
+            sites.append((forme, alors, off, bool(PRINTLN.search(els)) if a_else else False))
+    for off, motif, els in let_sinon(f.corps):
+        if motif_de_succes(motif) and abandonne(els, False):
+            sites.append(("`let %s … else`" % motif.strip()[:24], els, off, False))
+    if est_c:
+        for m in JETTE_LES_ERREURS.finditer(f.corps):
+            sites.append(("`%s`" % m.group(0), "", m.start(), False))
+    return sites
+
+
+class Unite:
+    """Une fonction, avec son fichier et son corps NON dénudé (le SQL y est lisible)."""
+    def __init__(self, chemin, f, nu, brut):
+        self.chemin, self.f, self.nu = chemin, f, nu
+        k = nu.find(f.corps, f.debut)
+        self.brut = brut[k:k + len(f.corps)]
+        importes = noms_importes(nu)
+        nus = appels(f.corps)
+        self.appels_nus = nus - importes
+        self.appels_qualifies = appels_qualifies(f.corps) | (nus & importes)
+
+
+def analyser_crate(fichiers, derivations=("pose", "charge", "evalue")):
+    """`fichiers` : liste de (chemin, texte). Les populations sont dérivées sur le CRATE entier — les
+    appels nus résolus dans le fichier, les appels qualifiés dans le crate. `derivations` dit ce que
+    « poser de la surveillance » veut dire dans ce crate (cf. `CRATES`)."""
+    unites = []
+    for chemin, texte in fichiers:
+        nu = masque_les_tests(denude(texte))
+        for f in fonctions(nu):
+            unites.append(Unite(chemin, f, nu, texte))
+    par_fichier = {}
+    par_nom = {}
+    for u in unites:
+        par_fichier.setdefault(u.chemin, {}).setdefault(u.f.nom, []).append(u)
+        par_nom.setdefault(u.f.nom, []).append(u)
+
+    def cibles(u):
+        """Les unités que `u` appelle : nues dans son fichier, qualifiées dans le crate."""
+        out = []
+        for n in u.appels_nus:
+            out += par_fichier[u.chemin].get(n, [])
+        for n in u.appels_qualifies:
+            out += par_nom.get(n, [])
+        return out
+
+    # (a) la POSE du contrat, (b) l'ÉNUMÉRATION directe
+    enum = set()
+    for u in unites:
+        if u.f.nom in fonctions_de_pose(u.nu) or "read_dir(" in u.f.corps:
+            enum.add(id(u))
+    # (b, par délégation) : atteint un énumérateur par appel ET rend des chemins. C'est la dérivation
+    # « charge » : elle fait entrer un listing rendu par un autre module, et les chargeurs qui le
+    # consomment. Le crate de l'agent garde la population de `P4.1-q` telle quelle.
+    if "charge" in derivations:
+        change = True
+        while change:
+            change = False
+            for u in unites:
+                if id(u) in enum or not REND_DES_CHEMINS.search(u.f.retour):
+                    continue
+                if any(id(c) in enum for c in cibles(u)):
+                    enum.add(id(u))
+                    change = True
+    couverture = set(enum)
+    # (d) le CONSOMMATEUR d'une énumération
+    if "charge" in derivations:
+        for u in unites:
+            if id(u) not in couverture and any(id(c) in enum for c in cibles(u)):
+                couverture.add(id(u))
+    # (e) l'ÉVALUATEUR / l'ÉMETTEUR de détection
+    if "evalue" in derivations:
+        for u in unites:
+            if SQL_EVALUE_OU_EMET.search(u.brut):
+                couverture.add(id(u))
+    # (c) fermeture descendante : appelé depuis la couverture ET touche le système de fichiers / le noyau
     change = True
     while change:
         change = False
-        for f in fns:
-            if f.nom not in couverture:
+        for u in unites:
+            if id(u) not in couverture:
                 continue
-            for a in appels(f.corps) & noms:
-                if a not in couverture and any(FS_OU_NOYAU.search(x.corps) for x in fns if x.nom == a):
-                    couverture.add(a)
+            for c in cibles(u):
+                if id(c) not in couverture and FS_OU_NOYAU.search(c.f.corps):
+                    couverture.add(id(c))
                     change = True
-    surface = {f.nom for f in fns if PRINTLN.search(f.corps)}
+    surface = {id(u) for u in unites if PRINTLN.search(u.f.corps)}
 
     fautes = []
-    for f in fns:
-        est_c, est_s = f.nom in couverture, f.nom in surface
+    for u in unites:
+        est_c, est_s = id(u) in couverture, id(u) in surface
         if not (est_c or est_s):
             continue
-        sites = []
-        for bras in bras_de_match(f.corps):
-            a_succes = any(motif_de_succes(m) for m, _, _ in bras)
-            jumelle = any(PRINTLN.search(c) for _, c, _ in bras)
-            for motif, corps_bras, off in bras:
-                if a_succes and motif_d_echec(motif) and abandonne(corps_bras, False):
-                    sites.append(("bras `%s =>` d'un match" % motif.strip()[:26], corps_bras, off, jumelle))
-        for off, motif, alors, a_else, els in si_let(f.corps):
-            if motif_de_succes(motif) and abandonne(els, not a_else):
-                forme = "`if let %s` %s" % (motif.strip()[:24],
-                                            "SANS else" if not a_else else "/ else")
-                sites.append((forme, els if a_else else "", off, bool(PRINTLN.search(alors))))
-        for off, motif, els in let_sinon(f.corps):
-            if motif_de_succes(motif) and abandonne(els, False):
-                sites.append(("`let %s … else`" % motif.strip()[:24], els, off, False))
-        for m in re.finditer(r"\.flatten\(\)", f.corps):
-            if est_c:
-                sites.append(("`.flatten()`", "", m.start(), False))
-        for forme, branche, off, jumelle in sites:
+        for forme, branche, off, jumelle in sites_de(u.f, est_c):
             if est_c and not compte_la_perte(branche):
-                fautes.append((chemin, f.ligne(off + 1), f.nom, "COUVERTURE", forme))
+                fautes.append((u.chemin, u.f.ligne(off + 1), u.f.nom, "COUVERTURE", forme))
             elif est_s and jumelle and not TRACE_DIT.search(branche):
-                fautes.append((chemin, f.ligne(off + 1), f.nom, "SURFACE", forme))
-    return fautes, couverture, surface
+                fautes.append((u.chemin, u.f.ligne(off + 1), u.f.nom, "SURFACE", forme))
+    # Comptées PAR FICHIER ET PAR NOM : deux backends qui implémentent la même méthode sont deux
+    # fonctions de couverture, pas une (c'est ainsi que la mesure de `P4.1-q` les comptait).
+    noms_c = {(u.chemin, u.f.nom) for u in unites if id(u) in couverture}
+    noms_s = {(u.chemin, u.f.nom) for u in unites if id(u) in surface}
+    return fautes, noms_c, noms_s
+
+
+def analyser(chemin, texte):
+    """Un seul fichier — la forme historique, conservée pour les témoins et pour rejouer la mesure."""
+    return analyser_crate([(chemin, texte)])
 
 
 # ==================================================================================================
@@ -540,6 +726,126 @@ fn cmd_status(p: &Path) -> Result<()> {
 }
 """
 
+EVALUATEUR_MUET = """
+fn run_due_rules(db: &Db) {
+    let due = match conn.prepare("SELECT id FROM rule WHERE last_run IS NULL") { Ok(s) => s, Err(_) => return };
+    for r in due.query_map([], |r| r.get(0)).unwrap().flatten() {
+        let _ = conn.execute("UPDATE rule SET last_run=?1 WHERE id=?2", params![now, r]);
+        let _ = conn.execute("INSERT OR IGNORE INTO alert(ts,rule) VALUES(?1,?2)", params![now, r]);
+    }
+}
+"""
+EVALUATEUR_QUI_REND_SON_BILAN = """
+fn run_due_rules(db: &Db) -> Mesure<u32> {
+    let mut abandonnees = 0u32;
+    let due = match conn.prepare("SELECT id FROM rule WHERE last_run IS NULL") {
+        Ok(s) => s,
+        Err(e) => return tick_aveugle("règles", &e),
+    };
+    for r in due.query_map([], |r| r.get(0)).unwrap() {
+        let r = match r { Ok(r) => r, Err(_) => { abandonnees += 1; continue; } };
+        let _ = conn.execute("UPDATE rule SET last_run=?1 WHERE id=?2", params![now, r]);
+        let _ = conn.execute("INSERT OR IGNORE INTO alert(ts,rule) VALUES(?1,?2)", params![now, r]);
+    }
+    Mesure::Lue(abandonnees)
+}
+"""
+EVALUATEUR_QUI_MENT = """
+fn run_due_rules(db: &Db) -> Mesure<u32> {
+    let due = match conn.prepare("SELECT id FROM rule") { Ok(s) => s, Err(_) => return Mesure::Lue(0) };
+    let _ = conn.execute("UPDATE rule SET last_run=?1 WHERE id=?2", params![now, 1]);
+    Mesure::Lue(0)
+}
+"""
+# Un chargeur qui CONSOMME un listing rendu par un AUTRE fichier : c'est (d) avec la résolution qualifiée.
+LISTING_DELEGUE = """
+pub(crate) fn lister(dir: &Path) -> Mesure<Vec<PathBuf>> {
+    let entrees = match std::fs::read_dir(dir) { Ok(e) => e, Err(e) => return Mesure::Illisible { cause: cause_io(&e), detail: String::new() } };
+    let mut v = Vec::new();
+    for e in entrees { match e { Ok(e) => v.push(e.path()), Err(_) => return Mesure::Illisible { cause: "x", detail: String::new() } } }
+    Mesure::Lue(v)
+}
+impl Chargement {
+    pub(crate) fn ouvrir(dir: &Path) -> (Vec<PathBuf>, Chargement) {
+        match crate::adossement::lister(dir) { Mesure::Lue(v) => (v, Chargement::default()), Mesure::Illisible { .. } => (Vec::new(), Chargement::default()) }
+    }
+}
+"""
+CHARGEUR_MUET = """
+fn load_overlay_rules(conn: &Connection, dir: &Path) -> u32 {
+    let mut n = 0;
+    let (fichiers, _ch) = crate::adossement::Chargement::ouvrir(dir);
+    for path in fichiers {
+        let v = match lire(&path) { Some(v) => v, None => continue };
+        n += 1;
+    }
+    n
+}
+"""
+CHARGEUR_QUI_COMPTE = """
+fn load_overlay_rules(conn: &Connection, dir: &Path) -> Chargement {
+    let (fichiers, mut ch) = crate::adossement::Chargement::ouvrir(dir);
+    for path in fichiers {
+        let v = match lire(&path) { Some(v) => v, None => { ch.ignores += 1; continue; } };
+        ch.charges += 1;
+    }
+    ch
+}
+"""
+CHARGEUR_ERR_INVERSE = """
+fn load_overlay_rules(conn: &Connection, dir: &Path) -> u32 {
+    let mut n = 0;
+    for path in std::fs::read_dir(dir).unwrap().flatten().map(|e| e.path()) {
+        if let Err(e) = compile(&path) { eprintln!("{e}"); continue; }
+        n += 1;
+    }
+    n
+}
+"""
+SONDE_LET_ELSE_QUI_MENT = """
+fn verifier_flotte_muette(conn: &Connection) -> Mesure<u32> {
+    let Some(f) = flotte(conn) else { return Mesure::Lue(0) };
+    let _ = conn.execute("INSERT OR IGNORE INTO alert(ts,rule) VALUES(?1,?2)", params![1, f]);
+    Mesure::Lue(0)
+}
+"""
+ENUMERATEUR_QUI_REND_VIDE = """
+fn lister(dir: &Path) -> Mesure<Vec<PathBuf>> {
+    let entrees = match std::fs::read_dir(dir) { Ok(e) => e, Err(_) => return Mesure::Lue(Vec::new()) };
+    let mut v = Vec::new();
+    for e in entrees { match e { Ok(e) => v.push(e.path()), Err(_) => return Mesure::Lue(vec![]) } }
+    Mesure::Lue(v)
+}
+"""
+INVENTAIRE_FILTER_MAP_FERMETURE = """
+fn inventaire(racine: &Path) -> usize {
+    let Ok(entrees) = std::fs::read_dir(racine) else { return 0 };
+    entrees.filter_map(|e| e.ok()).count()
+}
+"""
+INVENTAIRE_FILTER_MAP = """
+fn inventaire(racine: &Path) -> usize {
+    let Ok(entrees) = std::fs::read_dir(racine) else { return 0 };
+    entrees.filter_map(Result::ok).count()
+}
+"""
+TEST_SOUS_PUB_CRATE = """
+#[cfg(test)]
+pub(crate) mod door_tests {
+    pub(crate) fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() { let Some(n) = e.path().to_str() else { continue }; out.push(n.into()); }
+    }
+}
+fn sans_rapport() -> usize { 0 }
+"""
+FICHIER_DE_TEST = """
+#![cfg(test)]
+fn executer(dir: &Path) -> usize {
+    let Ok(e) = std::fs::read_dir(dir) else { return 0 };
+    e.flatten().count()
+}
+"""
+
 TEMOINS = [
     ("pose qui abandonne un sous-arbre en silence", POSE_MUETTE, True),
     ("pose qui COMPTE ce qu'elle abandonne", POSE_QUI_COMPTE, False),
@@ -548,6 +854,27 @@ TEMOINS = [
     ("surface où une grandeur DISPARAÎT", SURFACE_MUETTE, True),
     ("surface qui dit INCONNU", SURFACE_QUI_DIT, False),
     ("surface qui fait ÉCHOUER la commande", SURFACE_QUI_ECHOUE, False),
+    ("évaluateur de règles qui rend la main sans rien dire", EVALUATEUR_MUET, True),
+    ("évaluateur qui rend son bilan", EVALUATEUR_QUI_REND_SON_BILAN, False),
+    ("évaluateur qui MENT (`Lue(0)` sur une liste illisible)", EVALUATEUR_QUI_MENT, True),
+    ("inventaire qui jette les entrées illisibles par `filter_map(Result::ok)`", INVENTAIRE_FILTER_MAP, True),
+    ("inventaire qui jette les entrées illisibles par une FERMETURE `filter_map(|e| e.ok())`", INVENTAIRE_FILTER_MAP_FERMETURE, True),
+    ("chargeur dont le bloc d'échec `if let Err(e)` abandonne sans compter", CHARGEUR_ERR_INVERSE, True),
+    ("énumérateur qui rend une liste VIDE sur un dossier refusé", ENUMERATEUR_QUI_REND_VIDE, True),
+    ("sonde dont le `let … else` rend `Lue(0)` sans point-virgule", SONDE_LET_ELSE_QUI_MENT, True),
+]
+# Témoins à PLUSIEURS fichiers : la résolution des appels qualifiés à travers le crate, et le masquage du
+# code de test. Chacun est une liste de (chemin, texte) et un verdict attendu (rougir ?) ; un témoin dont la
+# population serait VIDE est un instrument cassé, sauf quand le vide est précisément ce qu'on attend.
+TEMOINS_CRATE = [
+    ("chargeur qui consomme un listing DÉLÉGUÉ à un autre fichier, et abandonne en silence",
+     [("adossement.rs", LISTING_DELEGUE), ("overlays.rs", CHARGEUR_MUET)], True, False),
+    ("chargeur qui consomme un listing délégué et COMPTE ce qu'il ignore",
+     [("adossement.rs", LISTING_DELEGUE), ("overlays.rs", CHARGEUR_QUI_COMPTE)], False, False),
+    ("module de test `pub(crate) mod` : hors population",
+     [("db_open.rs", TEST_SOUS_PUB_CRATE)], False, True),
+    ("fichier `#![cfg(test)]` : hors population",
+     [("garde.rs", FICHIER_DE_TEST)], False, True),
 ]
 
 
@@ -562,93 +889,111 @@ def valider_l_instrument(errs):
             errs.append("INSTRUMENT : le témoin « %s » devrait %s et ne le fait pas (%d faute(s)). "
                         "La règle ne mesure pas ce qu'elle annonce." %
                         (nom, "ROUGIR" if doit_rougir else "PASSER", len(fautes)))
+    for nom, fichiers, doit_rougir, population_vide_attendue in TEMOINS_CRATE:
+        fautes, couv, surf = analyser_crate(fichiers)
+        if (not couv and not surf) != population_vide_attendue:
+            errs.append("INSTRUMENT : le témoin « %s » %s — le critère de découverte ne fait pas ce qu'il "
+                        "annonce." % (nom, "n'entre dans AUCUNE population" if population_vide_attendue is False
+                                      else "entre dans une population alors qu'il est du code de TEST"))
+            continue
+        if bool(fautes) is not doit_rougir:
+            errs.append("INSTRUMENT : le témoin « %s » devrait %s et ne le fait pas (%d faute(s))." %
+                        (nom, "ROUGIR" if doit_rougir else "PASSER", len(fautes)))
     # LE TÉMOIN DÉGÉNÉRÉ, EXPLICITEMENT : « ne surveille plus jamais rien » ne doit pas devenir la
     # façon la plus simple de rendre vert. La garde statique ne peut pas l'attraper — elle mesure une
     # forme — donc elle EXIGE que la suite du crate porte le témoin inverse qui, lui, l'attrape.
     return errs
 
 
+def fichiers_du_crate(crate):
+    suivis = subprocess.run(["git", "ls-files", crate + "/*.rs"],
+                            capture_output=True, text=True, check=True).stdout.split()
+    # Un fichier écrit et pas encore suivi est du code du crate au même titre : on le lit aussi (sinon un
+    # module neuf échapperait à la garde jusqu'à son premier commit).
+    suivis += subprocess.run(["git", "ls-files", "--others", "--exclude-standard", crate + "/*.rs"],
+                             capture_output=True, text=True, check=True).stdout.split()
+    return sorted({p for p in suivis if not p.endswith("tests.rs") and "/tests/" not in p})
+
+
 def main() -> int:
     errs = []
     valider_l_instrument(errs)
 
-    suivis = subprocess.run(["git", "ls-files", CRATE + "/*.rs"],
-                            capture_output=True, text=True, check=True).stdout.split()
-    suivis = [p for p in suivis if not p.endswith("tests.rs") and "/tests/" not in p]
-    if not suivis:
-        print("::error::aucun fichier Rust du crate `%s` n'a été trouvé : cette garde ne "
-              "vérifierait RIEN." % CRATE)
-        return 1
-
-    fautes, nc, ns = [], 0, 0
-    for chemin in suivis:
-        with open(chemin, encoding="utf-8") as f:
-            texte = f.read()
-        f_, couv, surf = analyser(chemin, texte)
-        fautes += f_
-        nc += len(couv)
-        ns += len(surf)
-
-    for chemin, ligne, nom, pop, forme in fautes:
-        if pop == "COUVERTURE":
-            errs.append(
-                "%s:%d dans `%s()` — %s : la branche d'ÉCHEC ABANDONNE sans rien COMPTER.\n"
-                "      Cette fonction POSE ou ÉNUMÈRE de la surveillance : ce qu'elle abandonne ici "
-                "sort de la couverture — un chemin, souvent un SOUS-ARBRE ENTIER — sans erreur, sans "
-                "avertissement et sans événement, pendant que la couverture annoncée reste celle de "
-                "la configuration.\n"
-                "      Deux issues, jamais le silence : COMPTER l'abandon (`self.perdus += 1`, et "
-                "`watch_root` rend le compte, que le lecteur avoue), ou PROPAGER l'échec à l'appelant. "
-                "Un `eprintln!` seul ne suffit pas : le contrat veut que le trou remonte au lecteur "
-                "pour marquer `fim_coverage`, jamais un warning d'hôte."
-                % (chemin, ligne, nom, forme))
-        else:
-            errs.append(
-                "%s:%d dans `%s()` — %s : la branche jumelle IMPRIME, celle-ci se TAIT.\n"
-                "      La grandeur DISPARAÎT de la surface d'état au lieu d'être dite INCONNUE. "
-                "L'opérateur ne lit pas une valeur fausse, il ne lit RIEN — et une ligne absente se "
-                "lit comme une absence de problème.\n"
-                "      Deux issues : imprimer l'inconnu en NOMMANT la cause, ou faire ÉCHOUER la "
-                "commande. Ne rien imprimer n'en est pas une."
-                % (chemin, ligne, nom, forme))
-
-    # --- La POSE doit rendre un COMPTE : sans type porteur, aucun backend ne PEUT rien dire --------
-    for chemin in suivis:
-        with open(chemin, encoding="utf-8") as f:
-            nu = masque_les_tests(denude(f.read()))
-        pose = fonctions_de_pose(nu)
-        if not pose:
+    bilan = []
+    for crate, (plancher_c, plancher_s, derivations) in CRATES.items():
+        suivis = fichiers_du_crate(crate)
+        if not suivis:
+            errs.append("aucun fichier Rust du crate `%s` n'a été trouvé : cette garde ne vérifierait RIEN." % crate)
             continue
-        for fn in fonctions(nu):
-            if fn.nom != POSE:
-                continue
-            if "usize" not in fn.retour:
-                errs.append(
-                    "%s:%d `%s()` rend `%s` : le contrat `%s` veut un COMPTE des points de "
-                    "couverture abandonnés.\n"
-                    "      Une pose qui rend `()` ne PEUT rien dire — c'est exactement ainsi qu'un "
-                    "sous-arbre entier sortait de la surveillance sans une ligne. Si un autre type "
-                    "porte désormais la perte, DITES-LE dans cette garde au lieu de la contourner."
-                    % (chemin, fn.ligne(), fn.nom, fn.retour or "()", CONTRAT))
+        fichiers = []
+        for chemin in suivis:
+            with open(chemin, encoding="utf-8") as f:
+                fichiers.append((chemin, f.read()))
+        fautes, couv, surf = analyser_crate(fichiers, derivations)
+        nc, ns = len(couv), len(surf)
+        bilan.append((crate, nc, ns))
 
-    if nc < PLANCHER_COUVERTURE or ns < PLANCHER_SURFACE:
-        errs.append(
-            "population trouvée : %d fonction(s) de couverture (plancher %d) et %d de surface "
-            "(plancher %d). Sous le plancher, soit la découverte est cassée — cette garde ne "
-            "vérifierait alors RIEN —, soit le crate a légitimement rétréci : dans ce cas baissez "
-            "le plancher DEPUIS VOTRE PROPRE MESURE." % (nc, PLANCHER_COUVERTURE, ns, PLANCHER_SURFACE))
+        for chemin, ligne, nom, pop, forme in fautes:
+            if pop == "COUVERTURE":
+                errs.append(
+                    "%s:%d dans `%s()` — %s : la branche d'ÉCHEC ABANDONNE sans rien COMPTER.\n"
+                    "      Cette fonction POSE, ÉNUMÈRE, CHARGE ou ÉVALUE de la surveillance : ce qu'elle "
+                    "abandonne ici sort de la couverture — un chemin, un sous-arbre, un fichier de règles, "
+                    "ou TOUTES les règles d'un tick — sans erreur, sans avertissement et sans événement, "
+                    "pendant que la couverture annoncée reste celle de la configuration.\n"
+                    "      Deux issues, jamais le silence : COMPTER l'abandon (`abandonnes += 1`, "
+                    "`ch.ignores += 1`, et la fonction rend le compte — `Mesure<u32>`, `Chargement`, "
+                    "`Balayage` — que le planificateur publie et que la surface avoue), ou PROPAGER l'échec "
+                    "à l'appelant (`?`, `return tick_aveugle(..)`, `RefusDePrune`). Un `eprintln!` seul ne "
+                    "suffit pas, et `return Mesure::Lue(0)` sur un échec est un mensonge, pas une trace."
+                    % (chemin, ligne, nom, forme))
+            else:
+                errs.append(
+                    "%s:%d dans `%s()` — %s : la branche jumelle IMPRIME, celle-ci se TAIT.\n"
+                    "      La grandeur DISPARAÎT de la surface d'état au lieu d'être dite INCONNUE. "
+                    "L'opérateur ne lit pas une valeur fausse, il ne lit RIEN — et une ligne absente se "
+                    "lit comme une absence de problème.\n"
+                    "      Deux issues : imprimer l'inconnu en NOMMANT la cause, ou faire ÉCHOUER la "
+                    "commande. Ne rien imprimer n'en est pas une."
+                    % (chemin, ligne, nom, forme))
+
+        # --- La POSE doit rendre un COMPTE : sans type porteur, aucun backend ne PEUT rien dire --------
+        for chemin, texte in fichiers:
+            nu = masque_les_tests(denude(texte))
+            if not fonctions_de_pose(nu):
+                continue
+            for fn in fonctions(nu):
+                if fn.nom != POSE:
+                    continue
+                if "usize" not in fn.retour:
+                    errs.append(
+                        "%s:%d `%s()` rend `%s` : le contrat `%s` veut un COMPTE des points de "
+                        "couverture abandonnés.\n"
+                        "      Une pose qui rend `()` ne PEUT rien dire — c'est exactement ainsi qu'un "
+                        "sous-arbre entier sortait de la surveillance sans une ligne. Si un autre type "
+                        "porte désormais la perte, DITES-LE dans cette garde au lieu de la contourner."
+                        % (chemin, fn.ligne(), fn.nom, fn.retour or "()", CONTRAT))
+
+        if nc < plancher_c or ns < plancher_s:
+            errs.append(
+                "`%s` : population trouvée : %d fonction(s) de couverture (plancher %d) et %d de surface "
+                "(plancher %d). Sous le plancher, soit la découverte est cassée — cette garde ne "
+                "vérifierait alors RIEN —, soit le crate a légitimement rétréci : dans ce cas baissez "
+                "le plancher DEPUIS VOTRE PROPRE MESURE." % (crate, nc, plancher_c, ns, plancher_s))
 
     if errs:
         for e in errs:
             print("::error::%s" % e)
-        print("\n%d défaut(s) : une couverture qu'on n'a pas pu poser, ou une grandeur qu'on n'a pas "
-              "pu lire, s'éteint sans trace." % len(errs))
+        print("\n%d défaut(s) : une couverture qu'on n'a pas pu poser, une règle qu'on n'a pas pu charger "
+              "ou évaluer, ou une grandeur qu'on n'a pas pu lire, s'éteint sans trace." % len(errs))
         return 1
-    print("%d fonction(s) qui POSENT ou ÉNUMÈRENT de la surveillance et %d qui écrivent la surface "
-          "d'état, dans `%s` : aucune branche d'échec n'abandonne en silence, et toute pose rend le "
-          "compte de ce qu'elle a abandonné." % (nc, ns, CRATE))
-    print("Témoins de l'instrument : %d (positifs ET négatifs, dont la pose dégénérée et le scrutin "
-          "sous bloc `unsafe`)." % len(TEMOINS))
+    for crate, nc, ns in bilan:
+        print("`%s` : %d fonction(s) qui POSENT, ÉNUMÈRENT, CHARGENT ou ÉVALUENT de la surveillance et %d "
+              "qui écrivent la surface d'état : aucune branche d'échec n'abandonne en silence."
+              % (crate, nc, ns))
+    print("Témoins de l'instrument : %d + %d (positifs ET négatifs, dont la pose dégénérée, le scrutin "
+          "sous bloc `unsafe`, l'évaluateur qui ment, le listing délégué et le code de test masqué)."
+          % (len(TEMOINS), len(TEMOINS_CRATE)))
     return 0
 
 

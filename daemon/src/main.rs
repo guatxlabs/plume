@@ -1583,7 +1583,8 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
         // `mc ls`), écrit sur STDOUT UNIQUEMENT les noms à SUPPRIMER (un par ligne -> `mc rm` un-par-un côté
         // sidecar = un seul DeleteObject, jamais récursif/multi -> pas de faux T1490). Tous les logs -> STDERR.
         // Paramètres (P8.7-a : `env > fichier PLUME_CONFIG > défaut`, comme tout le reste) :
-        // PLUME_BACKUP_{DENSE,DAILY,WEEKLY}_DAYS + PLUME_BACKUP_PREMIGRATE_KEEP (défauts 2/14/90/2).
+        // PLUME_BACKUP_{DENSE,DAILY,WEEKLY}_DAYS + PLUME_BACKUP_PREMIGRATE_KEEP (défauts 2/14/90/2 ; le
+        // dernier borne séparément les `premigrate-*` ET les `plume-<TS>-preschema<N>` de l'exploitant, P4.4-l).
         use std::io::BufRead;
         let params = GfsParams::depuis_la_configuration();
         let names: Vec<String> = std::io::stdin().lock().lines()

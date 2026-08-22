@@ -1503,22 +1503,38 @@ pub(crate) fn restore_compressed(src: &str, dest_db: &str, key: Option<&str>, ov
 // isolation (fonction pure `names + now + params -> noms à supprimer`). Le rayon de souffle reste
 // minuscule : ZÉRO capacité de suppression / crédential S3 dans le daemon.
 //
-// FORMAT DES NOMS (cf. scope) :
-//   - régulier   : `plume-<TS>.db.age`                (backup 2h)
-//   - premigrate : `premigrate-<sha>-<TS>.db.age`     (snapshot pré-migration)
+// FORMAT DES NOMS (cf. scope) — UNE SEULE fonction les connaît tous : `classify_backup_name` :
+//   - régulier   : `plume-<TS>.db.age`                   (sidecar `backup`, cadence PLUME_BACKUP_INTERVAL)
+//   - premigrate : `premigrate-<sha>-<TS>.db.age`        (init `pre-migrate-backup`, automatique, par SHA
+//                                                         d'image, sous le sous-préfixe `premigrate/`)
+//   - preschema  : `plume-<TS>-preschema<N>.db.age`      (P4.4-l — pris À CHAUD par l'EXPLOITANT, avec
+//                                                         `tools/plume-sauvegarde-a-chaud.sh --schema <N>`
+//                                                         du dépôt des manifestes ; N = schéma de
+//                                                         DESTINATION ; c'est l'objet que la porte de
+//                                                         déploiement à sens unique exige en acquittement.
+//                                                         Déposé À LA RACINE du préfixe, donc dans le
+//                                                         MÊME listage que les réguliers : sans classe, il
+//                                                         était `Unparseable` et restait pour toujours)
 //   avec `<TS> = YYYYMMDDTHHMMSSZ` (UTC, `date -u +%Y%m%dT%H%M%SZ`) -> tri lexicographique ==
 //   chronologique. Une clé COMPLÈTE (`premigrate/premigrate-...`) est routée par son BASE-NAME.
 //
-// ALGORITHME (par palier, sur le set RÉGULIER ; premigrate = keep-N) :
+// ALGORITHME (par palier, sur le set RÉGULIER ; premigrate et preschema = keep-N, CHACUN SON QUOTA) :
 //   age < DENSE_DAYS           -> KEEP tout           (granularité 2h)
 //   DENSE_DAYS  <= age < DAILY  -> KEEP le DERNIER (max TS) par jour civil UTC
 //   DAILY_DAYS  <= age < WEEKLY -> KEEP le DERNIER (max TS) par semaine ISO (lun-dim)
 //   age >= WEEKLY_DAYS          -> DROP
 //   premigrate                 -> KEEP les PREMIGRATE_KEEP plus récents (par TS), DROP le reste
+//   preschema                  -> KEEP les PREMIGRATE_KEEP plus récents (par TS), DROP le reste —
+//                                 MÊME réglage parce que c'est la MÊME question (« combien de points de
+//                                 retour d'avant-migration garder ? »), quotas SÉPARÉS parce que les deux
+//                                 classes ne sont jamais dans le même listage (le sidecar voit la racine,
+//                                 l'init voit `premigrate/`) : les compter ensemble ne serait vrai pour
+//                                 aucun des deux appelants. Le numéro de schéma n'ordonne RIEN (comme le
+//                                 `<sha>` des premigrate) : l'horodatage seul décide.
 //
 // INVARIANTS DE SÛRETÉ (fail-safe / keep-if-unsure — tous testés) :
 //   1. le régulier LE PLUS récent n'est JAMAIS supprimé (garde inconditionnelle, hors math paliers) ;
-//   2. le premigrate LE PLUS récent n'est JAMAIS supprimé (keep-N borné à >= 1) ;
+//   2. le premigrate LE PLUS récent n'est JAMAIS supprimé (keep-N borné à >= 1) — idem preschema ;
 //   3. un nom NON parseable (format inconnu / TS invalide) est TOUJOURS gardé (jamais supprimé) ;
 //   4. entrée vide -> sortie vide ;
 //   5. idempotent : rejouer le plan sur (entrée - plan) -> sortie vide ;
@@ -1529,12 +1545,14 @@ pub(crate) fn restore_compressed(src: &str, dest_db: &str, key: Option<&str>, ov
 pub(crate) const BACKUP_TS_LEN: usize = 16;
 
 /// Paramètres GFS (env-tunable, défauts validés par l'opérateur). Jours pour les paliers réguliers + nombre
-/// de snapshots premigrate à conserver.
+/// de points de retour d'avant-migration à conserver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GfsParams {
     pub(crate) dense_days: i64,
     pub(crate) daily_days: i64,
     pub(crate) weekly_days: i64,
+    /// `PLUME_BACKUP_PREMIGRATE_KEEP` — borne de CHACUNE des deux classes d'avant-migration, séparément :
+    /// N `premigrate-<sha>-<TS>` (automatiques) ET N `plume-<TS>-preschema<M>` (pris par l'exploitant).
     pub(crate) premigrate_keep: usize,
 }
 
@@ -1616,18 +1634,37 @@ pub(crate) enum ParsedBackup {
     Regular(i64),
     /// `premigrate-<sha>-<TS>.db.age` — snapshot pré-migration (secondes Unix parsées du TS).
     Premigrate(i64),
+    /// `plume-<TS>-preschema<N>.db.age` — point de retour pris À CHAUD par l'exploitant avant un
+    /// franchissement de schéma vers `schema` (P4.4-l ; produit par `tools/plume-sauvegarde-a-chaud.sh`
+    /// du dépôt des manifestes). `schema` est extrait pour être lisible ; la rétention n'ordonne que par `ts`.
+    PreSchema { ts: i64, schema: u32 },
     /// Format inconnu OU TS non parseable -> KEEP inconditionnel (jamais supprimé).
     Unparseable,
 }
 
 /// Classe un nom d'objet (base-name OU clé complète `dir/...` — routé par le BASE-NAME). Tout format
-/// inattendu ou TS invalide -> `Unparseable` (l'appelant ne le supprimera JAMAIS).
+/// inattendu ou TS invalide -> `Unparseable` (l'appelant ne le supprimera JAMAIS). C'est la SEULE fonction
+/// qui connaît les formes de nom : un appelant qui en énumérerait une lui-même recréerait le défaut P4.4-l.
 pub(crate) fn classify_backup_name(raw: &str) -> ParsedBackup {
     let name = raw.rsplit('/').next().unwrap_or(raw);           // base-name (route même une clé complète)
     if let Some(mid) = name.strip_prefix("plume-").and_then(|s| s.strip_suffix(".db.age")) {
-        return match parse_backup_ts(mid) {
-            Some(ts) => ParsedBackup::Regular(ts),
-            None => ParsedBackup::Unparseable,
+        // `<TS>` seul = régulier ; `<TS>-preschema<N>` = preschema (N = chiffres ASCII, non vide, rien
+        // après) ; toute autre marque après le tiret (`-a-chaud`, `-preschema` sans nombre, `-116` sans
+        // mot) = Unparseable. L'horodatage est vérifié par le MÊME `parse_backup_ts` que les autres classes.
+        return match mid.split_once('-') {
+            None => match parse_backup_ts(mid) {
+                Some(ts) => ParsedBackup::Regular(ts),
+                None => ParsedBackup::Unparseable,
+            },
+            Some((ts_str, marque)) => match (parse_backup_ts(ts_str), marque.strip_prefix("preschema")) {
+                (Some(ts), Some(n)) if !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()) => {
+                    match n.parse::<u32>() {
+                        Ok(schema) => ParsedBackup::PreSchema { ts, schema },
+                        Err(_) => ParsedBackup::Unparseable,        // au-delà de u32 : pas un schéma
+                    }
+                }
+                _ => ParsedBackup::Unparseable,
+            },
         };
     }
     if let Some(mid) = name.strip_prefix("premigrate-").and_then(|s| s.strip_suffix(".db.age")) {
@@ -1646,13 +1683,15 @@ pub(crate) fn classify_backup_name(raw: &str) -> ParsedBackup {
 pub(crate) fn backup_prune_plan(names: &[String], now_secs: i64, p: &GfsParams) -> Vec<String> {
     use std::collections::{BTreeSet, HashMap, HashSet};
 
-    // Partition en (idx, ts) réguliers / premigrate ; les non parseables sont IGNORÉS (donc gardés).
+    // Partition en (idx, ts) réguliers / premigrate / preschema ; les non parseables sont IGNORÉS (donc gardés).
     let mut regular: Vec<(usize, i64)> = Vec::new();
     let mut premigrate: Vec<(usize, i64)> = Vec::new();
+    let mut preschema: Vec<(usize, i64)> = Vec::new();
     for (i, raw) in names.iter().enumerate() {
         match classify_backup_name(raw) {
             ParsedBackup::Regular(ts) => regular.push((i, ts)),
             ParsedBackup::Premigrate(ts) => premigrate.push((i, ts)),
+            ParsedBackup::PreSchema { ts, .. } => preschema.push((i, ts)),
             ParsedBackup::Unparseable => {}                     // INVARIANT 3 : jamais supprimé
         }
     }
@@ -1709,12 +1748,12 @@ pub(crate) fn backup_prune_plan(names: &[String], now_secs: i64, p: &GfsParams) 
         }
     }
 
-    // --- SET PREMIGRATE : keep-N plus récents ---------------------------------
-    if !premigrate.is_empty() {
-        // Tri (ts, nom) DÉCROISSANT ; on garde les `premigrate_keep` premiers (borné à >= 1 : INVARIANT 2).
-        let mut sorted = premigrate.clone();
+    // --- SETS PREMIGRATE et PRESCHEMA : keep-N plus récents, CHACUN SON QUOTA ----
+    // Tri (ts, nom) DÉCROISSANT ; on garde les `premigrate_keep` premiers (borné à >= 1 : INVARIANT 2).
+    let keep_n = p.premigrate_keep.max(1);
+    for set in [&premigrate, &preschema] {
+        let mut sorted = set.clone();
         sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| names[b.0].cmp(&names[a.0])));
-        let keep_n = p.premigrate_keep.max(1);
         for &(idx, _) in sorted.iter().skip(keep_n) {
             delete_idx.insert(idx);
         }
@@ -1761,12 +1800,12 @@ pub(crate) fn fmt_backup_ts(secs: i64) -> String {
 /// et les MÊMES invariants fail-safe :
 ///   - un nom NON parseable (format inconnu / TS invalide, ex. le `.tmp` d'un backup en cours) n'est JAMAIS
 ///     supprimé -> jamais de course avec un rename atomique en vol ;
-///   - un `premigrate-*` n'est JAMAIS supprimé (hors périmètre du scheduler) ;
+///   - un `premigrate-*` ou un `plume-<TS>-preschema<N>` n'est JAMAIS supprimé (hors périmètre du scheduler) ;
 ///   - `keep` est borné à >= 1 -> le répertoire n'est JAMAIS vidé (le plus récent survit toujours) ;
 ///   - entrée <= keep -> sortie vide ; déterministe (tri stable (TS puis nom brut)).
 pub(crate) fn backup_keep_recent_plan(names: &[String], keep: usize) -> Vec<String> {
     let keep = keep.max(1); // garde-fou : au moins le plus récent survit (jamais tout supprimer).
-    // (idx, ts) des SEULS backups réguliers ; premigrate + non-parseables IGNORÉS (donc gardés = fail-safe).
+    // (idx, ts) des SEULS backups réguliers ; premigrate, preschema + non-parseables IGNORÉS (donc gardés = fail-safe).
     let mut regular: Vec<(usize, i64)> = names.iter().enumerate()
         .filter_map(|(i, raw)| match classify_backup_name(raw) {
             ParsedBackup::Regular(ts) => Some((i, ts)),

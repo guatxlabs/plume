@@ -322,7 +322,12 @@ env:
   # `daemon/src/tests/mesure_environnement.rs`) : QUATRE tests de plus, sans `cfg` de feature, donc
   # présents dans les DEUX profils. La valeur d'avant cette ré-énumération avait elle-même bougé sous
   # un autre lot en vol : c'est précisément pourquoi le total est celui de l'ARBRE et jamais une somme.
-  EXPECTED_TESTS: "1226"
+  # RÉ-ÉNUMÉRÉ le 2026-08-22 (`cargo test --bin plume-daemon -- --list | grep -c ': test$'`) sur
+  # l'arbre qui porte le lot P4.4-l — la sauvegarde nommée d'avant un franchissement de schéma
+  # (`plume-<TS>-preschema<N>.db.age`) classée et bornée par la rétention au lieu de rester pour
+  # toujours (`daemon/src/tests/sauvegarde_preschema.rs`) : six tests SANS `cfg` de feature, présents
+  # dans les DEUX profils. Le total est celui de l'ARBRE, jamais une somme de lots.
+  EXPECTED_TESTS: "1232"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -609,7 +614,11 @@ jobs:
           # RÉ-ÉNUMÉRÉ le 2026-08-20 par la MÊME double lecture, sur l'arbre qui porte aussi le lot S32
           # (lectures d'environnement séparant « lu » de « pas lisible », dix-huit tests sans `cfg`) :
           # 1368 avec `cold_tier` pour 1148 par défaut — l'écart reste **220**.
-          EXPECTED_COLD_TESTS: "1446"
+          # RÉ-ÉNUMÉRÉ le 2026-08-22 (`cargo test --bin plume-daemon --features cold_tier -- --list`,
+          # compte des lignes `: test`), sur l'arbre qui porte aussi le lot P4.4-l (la sauvegarde nommée
+          # d'avant un franchissement de schéma, six tests sans `cfg`) : 1452 avec `cold_tier` pour 1232
+          # par défaut — l'écart reste **220**.
+          EXPECTED_COLD_TESTS: "1452"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

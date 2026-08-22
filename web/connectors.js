@@ -1,6 +1,6 @@
 // connectors.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Connecteurs (sources externes en PULL, #3/#3a, admin-only): liste/form/test/poll.
-import { $, api, apiSend, confirmModal, fetchInto, fmtTs, humanAge, ic, muted, pagedList, sev, toast, withBusy } from './core.js';
+import { $, api, apiSend, confirmModal, confirmWithConsequence, fetchInto, fmtTs, humanAge, ic, muted, pagedList, sev, toast, withBusy } from './core.js';
 import { S } from './state.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -455,12 +455,19 @@ function presetRow(p, mode) {
 // transport:'query_token' }. showPushKey affiche la clé/URL UNE SEULE FOIS (jamais re-dérivable). Admin-only.
 async function createPushSource(p) {
   if (!uiIsAdmin()) { toast('réservé à l\'administrateur.', 'bad'); return; }
-  const name = prompt('Nom de la source push :', (p.label || p.id) + ' (push)');
-  if (name === null) return;
-  const env = prompt('Environnement (env_id) :', 'prod');
-  if (env === null) return;
+  // P11.5-b : créer une source push FRAPPE un jeton de livraison (affiché une seule fois) — une élévation, donc
+  // la confirmation partagée nomme la conséquence et recueille nom et environnement au même geste.
+  const r = await confirmWithConsequence(`Créer une source push « ${p.label || p.id} »`,
+    'un jeton de livraison sera frappé et affiché UNE SEULE FOIS : quiconque le détient peut pousser des événements dans cet environnement.',
+    { okText: 'Créer et frapper le jeton', cancelText: 'Annuler',
+      fields: [
+        { name: 'name', label: 'Nom de la source push', placeholder: (p.label || p.id) + ' (push)' },
+        { name: 'env', label: 'Environnement (env_id)', placeholder: 'prod' },
+      ] });
+  if (!r) return;
+  const name = String(r.name || '').trim(), env = String(r.env || '').trim();
   let res;
-  try { res = await apiSend('/connectors/push-source', 'POST', { preset_id: p.id, name: name.trim() || undefined, env_id: env.trim() || 'prod' }); }
+  try { res = await apiSend('/connectors/push-source', 'POST', { preset_id: p.id, name: name || undefined, env_id: env || 'prod' }); }
   catch (e) { toast('échec création source push : ' + ((e && e.message) || e), 'bad'); return; }
   showPushKey(res, p);
   if (typeof loadConnectors === 'function') loadConnectors();

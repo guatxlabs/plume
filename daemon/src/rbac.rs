@@ -282,7 +282,7 @@ pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
         }
     }
     // 3) ADMIN-ONLY toutes méthodes (GET compris car secrets/config) :
-    //    - users / connectors / retention / ledger / sources/settings : historique admin-only ;
+    //    - users / connectors / retention / ledger : historique admin-only ;
     //    - notifiers : GET expose la colonne `config` (token ntfy / user:pass SMTP) -> ADMIN (fix MEDIUM) ;
     //    - actions (list/create/approve/cancel — pending|result déjà traités en 2) : moteur de réponse ;
     //    - password : reset du mdp admin (fix CRITICAL) ; setup : bootstrap (token-gated).
@@ -305,7 +305,6 @@ pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
         // périmètre/jeton). La route reste en plus fermée tant que `PLUME_PURGE_API` n'est pas armé.
         || path.starts_with("/api/purge")
         || path.starts_with("/api/roles") // #59 catalogue de rôles composables : GET compris -> ADMIN (super-admin en mode 1, re-check handler)
-        || path.starts_with("/api/sources/settings")
         || path.starts_with("/api/suppressions") // chantier whitelists→webui : GET (config sensible) + PUT (display-only) admin-only
         || path.starts_with("/api/actions")
         // BAN NATIF PLUME (chantier ② Phase 1) : `/api/netban` (list/add/remove) = contrôle d'enforcement réseau
@@ -412,6 +411,11 @@ pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
         // handler). GET (liste) + /resolve (readonly_post) = viewer+ (section 6). La réponse s'exécute via
         // /api/actions (admin + approbation + ledger) — jamais ici.
         || path.starts_with("/api/workflow-actions")
+        // P11.3-a — MÉTADONNÉES D'AFFICHAGE DES SOURCES (libellé, catégorie, note, marquage « attendue ») :
+        // un acquittement d'inventaire est un geste ÉDITORIAL, réversible et audité (sévérité 3 quand il
+        // étouffe un signal) ; il ne touche ni la collecte, ni les règles, ni aucun secret -> editor+.
+        // GET (liste brute) = lecture viewer+ (section 6) : l'inventaire rend déjà ces colonnes à tout rôle.
+        || path.starts_with("/api/sources/settings")
     {
         return MinRole::Write;
     }

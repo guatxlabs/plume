@@ -1,7 +1,8 @@
 import {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, flashStopped, stopBtn, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, toCSV, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, miniMenu, api, apiSend, transientGatewayMsg, muted, colComparator, makePager, pageNums, pagedList,
   setSocTZ,
-  socIsAdmin, managedBadge, formMsg, contentDelete
+  socIsAdmin, managedBadge, formMsg, contentDelete,
+  confirmWithConsequence, disclosure
 } from './core.js';
 import { i18nWalk } from './i18n.js';
 import { S } from './state.js';
@@ -36,7 +37,8 @@ import { renderAlerts, setAlertMitreFilter, setAlertSourceFilter } from './alert
 import { renderCoverage, loadActions, loadMode, loadPlaybooks } from './detection_admin.js';
 import { loadRunbooks } from './runbooks.js'; // #3 Phase 2 — authoring runbooks (bring-your-own), admin-only
 import { ROLE_LABEL, loadUsers, loadTokens } from './admin_users.js';
-import { loadRetention, loadSuppressions } from './retention.js';
+import { loadRetention } from './retention.js';
+import { loadSuppressions } from './suppressions.js'; // panneau « Suppressions & whitelists » + silences (créer/modifier/supprimer)
 import { renderHelpGuide, openHelpModal, openFreshnessHelp } from './help.js'; // #4c — aide in-app (split H1) : page Aide + modales GXQL/Fraîcheur, câblage #qhelp/#fresh-help ci-dessous
 
 
@@ -164,7 +166,7 @@ async function exploreExport(format) {
   const ecartes = parseInt(r.headers.get('x-plume-truncated-ecartes') || '', 10);
   const marque = !trunc ? '' : (Number.isFinite(ecartes) && ecartes > 0 ? `-TRONQUE-${ecartes}-lignes-manquantes` : '-TRONQUE-ampleur-inconnue');
   downloadText(`plume-explore-${tsSlug()}${marque}.${format}`, format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json', text);
-  const combien = Number.isFinite(ecartes) && ecartes > 0 ? ` — ${ecartes} ligne(s) manquante(s)` : ' — ampleur inconnue';
+  const combien = Number.isFinite(ecartes) && ecartes > 0 ? ` — ${ecartes} ligne(s) manquante(s)` : ' — ampleur non mesurée par le serveur (plafond de lignes) : resserrez la fenêtre pour un export complet';
   toast('Export ' + format.toUpperCase() + ' téléchargé' + (trunc ? ` (TRONQUÉ${combien})` : ''), trunc ? 'info' : 'ok');
 }
 
@@ -559,7 +561,7 @@ function renderDashboard(d) {
     if (!c && grid._deferredLoad) grid._deferredLoad(); // expansion -> charge les panneaux (1re fois)
     if (editable) patchDash(d.id, { collapsed: c });
   };
-  addp.onclick = () => createPanelModal(d.id);
+  addp.onclick = () => createPanelModal(d.id, ($('#sql') && $('#sql').value.trim()) || '');
   ren.onclick = async () => {
     const r = await modal({ title: 'Renommer le dashboard', okText: 'Enregistrer', fields: [{ name: 'name', label: 'Nom', required: true, value: d.name }], validate: v => S.dashList.some(x => x.id !== d.id && x.name === v.name.trim()) ? 'Un dashboard porte deja ce nom.' : null });
     if (!r) return; await patchDash(d.id, { name: r.name.trim() }); loadDashboards();
@@ -606,7 +608,7 @@ async function loadPanelsInto(grid, d) {
     if (!panels.length) {
       const es = document.createElement('div'); es.className = 'emptystate';
       es.append(Object.assign(document.createElement('div'), { textContent: 'Dashboard vide.' }));
-      if (j.editable !== false) { const b = document.createElement('button'); b.textContent = '+ Ajouter un panneau'; b.onclick = () => createPanelModal(d.id); es.appendChild(b); }
+      if (j.editable !== false) { const b = document.createElement('button'); b.textContent = '+ Ajouter un panneau'; b.onclick = () => createPanelModal(d.id, ($('#sql') && $('#sql').value.trim()) || ''); es.appendChild(b); }
       grid.replaceChildren(es); return;
     }
     const frag = document.createDocumentFragment();
@@ -1073,17 +1075,8 @@ if ($('#dash-prev')) $('#dash-prev').addEventListener('click', () => { if (PLAY.
 if ($('#dash-next')) $('#dash-next').addEventListener('click', () => { if (PLAY.on) { playShow(PLAY.idx + 1); playTick(); } });
 if ($('#dash-playint')) $('#dash-playint').addEventListener('change', () => { if (PLAY.on) playTick(); });
 // "Sauver comme panneau" depuis Explore : choisit le dashboard cible dans la vue courante
-if ($('#save-panel')) $('#save-panel').addEventListener('click', async () => {
-  const q = $('#sql').value.trim(); if (!q) { toast("Écris une requête d'abord.", 'bad'); return; }
-  const editables = S.dashList.filter(d => d.editable !== false);
-  if (!editables.length) { toast('Crée d\'abord un dashboard (onglet Dashboards -> + Dashboard).', 'bad'); return; }
-  let did = editables[0].id;
-  if (editables.length > 1) {
-    const r = await modal({ title: 'Ajouter le panneau à', okText: 'Continuer', fields: [{ name: 'did', label: 'Dashboard', type: 'select', value: String(did), options: editables.map(d => ({ value: String(d.id), label: d.name })) }] });
-    if (!r) return; did = Number(r.did);
-  }
-  await createPanelModal(did, q);
-});
+// P11.9-a : « Panneau » a quitté la barre de recherche — un panneau se crée depuis son tableau de bord,
+// pré-rempli avec la requête courante (voir les deux « Ajouter un panneau »).
 
 // --- vues (ensembles de dashboards) ---
 async function loadViews() {
@@ -1252,7 +1245,7 @@ function lookupRow(l) {
   row.append(name, key, meta, del);
   return row;
 }
-if ($('#lookup-new')) $('#lookup-new').onclick = () => { const f = $('#lookup-form'); f.classList.toggle('hidden'); if (!f.classList.contains('hidden')) $('#lk-name').focus(); };
+if ($('#lookup-new') && $('#lookup-form')) disclosure($('#lookup-new'), $('#lookup-form'), { open: () => { $('#lookup-form').classList.remove('hidden'); $('#lk-name').focus(); } }); // P11.4-a — dépli partagé
 if ($('#lk-cancel')) $('#lk-cancel').onclick = () => $('#lookup-form').classList.add('hidden');
 if ($('#lookup-form')) $('#lookup-form').addEventListener('submit', async e => {
   e.preventDefault();
@@ -1340,11 +1333,17 @@ if ($('#fleet-refresh')) $('#fleet-refresh').onclick = loadFleetView;
 
 /* state: editingConnector -> S (state.js) */
 
-if ($('#connector-new-preset')) $('#connector-new-preset').onclick = openPresetPicker; // P1 — picker de presets vendeur (pré-remplit le form)
-if ($('#connector-new')) $('#connector-new').onclick = () => openConnectorForm(null, 'defender');
-if ($('#connector-new-taxii')) $('#connector-new-taxii').onclick = () => openConnectorForm(null, 'taxii2'); // #23/#24 — feed de renseignement TAXII 2.1
-if ($('#connector-new-http')) $('#connector-new-http').onclick = () => openConnectorForm(null, 'http_pull'); // #20/#22 — connecteur générique http_pull (bring-your-own-vendor)
-if ($('#cf-type')) $('#cf-type').addEventListener('change', applyConnectorType); // bascule les champs Defender ↔ TAXII ↔ HTTP
+// P11.4-a — les quatre boutons de création (preset / Defender / TAXII / HTTP) passent par le composant
+// de dépli partagé (`disclosure`, core.js) : un second clic REFERME la carte ouverte, le bouton porte son
+// état (aria-expanded + .on, accent) et n'est jamais grisé. Avant : chaque bouton ne savait qu'OUVRIR.
+const connectorFormClose = () => { $('#cf-secret').value = ''; $('#connector-form').classList.add('hidden'); if ($('#connector-preset-picker')) $('#connector-preset-picker').classList.add('hidden'); };
+const connectorFormShows = type => !$('#connector-form').classList.contains('hidden') && S.editingConnector == null && ($('#cf-type').value || 'defender') === type;
+const connectorDisclosures = [];
+if ($('#connector-new-preset') && $('#connector-preset-picker')) connectorDisclosures.push(disclosure($('#connector-new-preset'), $('#connector-preset-picker'), { open: openPresetPicker })); // P1 — picker de presets vendeur (pré-remplit le form)
+[['#connector-new', 'defender'], ['#connector-new-taxii', 'taxii2'], ['#connector-new-http', 'http_pull']].forEach(([sel, type]) => { // #23/#24 TAXII 2.1 ; #20/#22 http_pull générique (bring-your-own-vendor)
+  if ($(sel) && $('#connector-form')) connectorDisclosures.push(disclosure($(sel), $('#connector-form'), { isOpen: () => connectorFormShows(type), open: () => openConnectorForm(null, type), close: connectorFormClose }));
+});
+if ($('#cf-type')) $('#cf-type').addEventListener('change', () => { applyConnectorType(); connectorDisclosures.forEach(d => d && d.paint()); }); // bascule les champs Defender ↔ TAXII ↔ HTTP (+ l'état des boutons de dépli)
 if ($('#cf-taxii-auth')) $('#cf-taxii-auth').addEventListener('change', applyConnectorType); // ré-ajuste l'indice du secret selon l'auth
 // http_pull : les sélecteurs auth/méthode/pagination re-basculent les sous-champs (applyConnectorType -> applyHttpSubfields)
 if ($('#cf-http-auth')) $('#cf-http-auth').addEventListener('change', applyConnectorType);
@@ -1353,16 +1352,16 @@ if ($('#cf-http-page')) $('#cf-http-page').addEventListener('change', applyConne
 if ($('#cf-http-fm-add')) $('#cf-http-fm-add').onclick = () => addFieldMapRow('', '');   // + champ (field_map)
 if ($('#cf-http-st-add')) $('#cf-http-st-add').onclick = () => addStMapRow('', '');       // + mapping (sourcetype_map)
 if ($('#cf-http-preview')) $('#cf-http-preview').onclick = () => withBusy($('#cf-http-preview'), previewHttpPull); // Test / Prévisualiser (dry-run + rendu échantillon)
-if ($('#cf-cancel')) $('#cf-cancel').onclick = () => { $('#cf-secret').value = ''; $('#connector-form').classList.add('hidden'); if ($('#connector-preset-picker')) $('#connector-preset-picker').classList.add('hidden'); };
+if ($('#cf-cancel')) $('#cf-cancel').onclick = connectorFormClose;
 if ($('#connectors-refresh')) $('#connectors-refresh').onclick = loadConnectors;
 // #50 destinations de sortie (admin-only) : recharge + ouverture du formulaire d'ajout.
 if ($('#destinations-refresh')) $('#destinations-refresh').onclick = loadDestinations;
-if ($('#destination-new')) $('#destination-new').onclick = () => openDestinationForm(null);
+if ($('#destination-new') && $('#destination-form-host')) disclosure($('#destination-new'), $('#destination-form-host'), { isOpen: () => !!$('#destination-form-host').querySelector('#destination-form') && !$('#destination-form-host').querySelector('#destination-form').dataset.editing, open: () => openDestinationForm(null), close: () => $('#destination-form-host').replaceChildren() }); // P11.4-a — dépli partagé (le formulaire est RENDU dans l'hôte ; ouvert = présent et en création)
 // #40 processeur d'ingest (admin-only) : recharge + ouverture du formulaire d'ajout de règle.
 if ($('#processors-refresh')) $('#processors-refresh').onclick = loadProcessors;
-if ($('#processor-new')) $('#processor-new').onclick = openProcessorForm;
+if ($('#processor-new') && $('#processor-form')) disclosure($('#processor-new'), $('#processor-form'), { open: openProcessorForm, close: () => { $('#processor-form').hidden = true; $('#processor-form').replaceChildren(); } }); // P11.4-a — dépli partagé
 if ($('#index-policies-refresh')) $('#index-policies-refresh').onclick = loadIndexPolicies;
-if ($('#index-policy-new')) $('#index-policy-new').onclick = openIndexPolicyForm;
+if ($('#index-policy-new') && $('#index-policy-form')) disclosure($('#index-policy-new'), $('#index-policy-form'), { isOpen: () => !$('#index-policy-form').hidden && !$('#index-policy-form').dataset.editing, open: () => openIndexPolicyForm(), close: () => { $('#index-policy-form').hidden = true; $('#index-policy-form').replaceChildren(); } }); // P11.4-a — dépli partagé
 if ($('#connector-form')) $('#connector-form').addEventListener('submit', async e => {
   e.preventDefault();
   const type = $('#cf-type').value || 'defender';
@@ -1436,7 +1435,7 @@ if ($('#attack-refresh')) $('#attack-refresh').onclick = loadAttackMatrix;
 if ($('#ledger-refresh')) $('#ledger-refresh').onclick = loadLedger;
 if ($('#ledger-limit')) $('#ledger-limit').addEventListener('change', () => { S.LEDGER_LIMIT = parseInt($('#ledger-limit').value, 10) || 100; loadLedger(); });
 // onboarding (super-admin) : POST /api/tenants {id, name?, admin?, key_ref?}
-if ($('#tenant-onboard')) $('#tenant-onboard').onclick = () => { const f = $('#tenant-form'); if (f) f.classList.toggle('hidden'); };
+if ($('#tenant-onboard') && $('#tenant-form')) disclosure($('#tenant-onboard'), $('#tenant-form')); // P11.4-a — dépli partagé
 if ($('#tf-cancel')) $('#tf-cancel').onclick = () => { const f = $('#tenant-form'); if (f) f.classList.add('hidden'); };
 if ($('#tenant-refresh')) $('#tenant-refresh').onclick = loadTenantsView;
 if ($('#tenant-form')) $('#tenant-form').addEventListener('submit', async e => {
@@ -1448,6 +1447,9 @@ if ($('#tenant-form')) $('#tenant-form').addEventListener('submit', async e => {
   const name = $('#tf-name').value.trim(); if (name) body.name = name;
   const admin = $('#tf-admin').value.trim(); if (admin) body.admin = admin;
   const key = $('#tf-key').value.trim(); if (key) body.key_ref = key;
+  // P11.5-b : provisionner un tenant crée une base chiffrée et, si un premier admin est nommé, lui ACCORDE le
+  // rôle admin sur ce tenant (un droit naît) -> confirmation partagée qui nomme la conséquence.
+  if (!await confirmWithConsequence('Provisionner le tenant « ' + id + ' »', 'une base chiffrée dédiée est créée avec sa clé' + (admin ? ', et « ' + admin + ' » en devient administrateur (accès complet à ce tenant)' : '') + '. Action auditée.', { okText: 'Provisionner', danger: !!admin })) { if (res) res.textContent = ''; return; }
   let out;
   try { out = await apiSend('/tenants', 'POST', body); }
   catch (err) { if (res) { res.textContent = (err && err.message) || 'échec'; res.className = 'bad'; } return; }

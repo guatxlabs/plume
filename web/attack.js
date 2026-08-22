@@ -2,15 +2,29 @@
 // ADDITIF, comportement-préservant. LECTURE seule, viewer+ (donnée de posture, pas un secret).
 // Endpoint (construit par le daemon — item concurrent) :
 //   GET /api/coverage/attack -> { tactics:[{ tactic, rule_count, covered,
-//                                            techniques:[{ tid, name?, rule_count, alert_count, covered }] }],
+//                                            techniques:[{ tid, name|null, rule_count, alert_count, covered }] }],
 //                                 totals }
 // Rendu : tactiques en COLONNES, techniques en CELLULES colorées par couverture (couvert = échelle verte
 // selon rule/alert_count ; non couvert = grisé -> les ANGLES MORTS ressortent). Clic technique -> ses alertes.
 // DÉGRADATION : si l'endpoint 404 (daemon non déployé), message « couverture indisponible » (pas d'erreur dure).
 // SÉCU UI : tout en textContent/attributs (anti-XSS). Aucune mutation (aucun apiSend).
-import { $, api, muted, socIsAdmin } from './core.js';
+import { $, api, muted, socIsAdmin, mitreName } from './core.js';
 import { setAlertMitreFilter } from './app.js';
 import { openSigmaImport } from './sigmaimport.js';
+
+// P11.6-a — LE NOM D'UNE TECHNIQUE EST DÉRIVÉ, JAMAIS LAISSÉ VIDE. MESURÉ le 2026-08-22 : le démon
+// n'émettait aucun `name` et cette matrice rendait `t.name || ''` -> TOUTES les cellules (183 techniques
+// du catalogue) n'avaient qu'un numéro. Ordre de résolution : le nom servi par le démon (`attack_names`,
+// sous-technique résolue par son parent côté serveur) ; sinon la table locale de `core.js` (qui replie
+// déjà `Txxxx.yyy` sur `Txxxx`) ; sinon le MOT « nom inconnu » — un identifiant hors catalogue (retiré,
+// personnalisé, mal saisi) se DIT, il ne se tait pas. `null` = inconnu ; jamais une chaîne vide.
+const NOM_INCONNU = 'nom inconnu';
+function techniqueDisplayName(t) {
+  const servi = t && typeof t.name === 'string' ? t.name.trim() : '';
+  if (servi) return servi;
+  const local = mitreName((t && t.tid) || '');
+  return local || null;
+}
 
 // Intensité de couverture d'une technique : max(rule_count, alert_count). Sert l'échelle de couleur.
 function techWeight(t) { return Math.max(Number(t && t.rule_count) || 0, Number(t && t.alert_count) || 0); }
@@ -39,11 +53,13 @@ function techniqueCell(t, max) {
   const idEl = document.createElement('span'); idEl.className = 'attack-tid'; idEl.textContent = tid;
   const cnt = document.createElement('span'); cnt.className = 'attack-cnt' + (covered ? '' : ' none');
   cnt.textContent = covered ? (rc + 'r/' + ac + 'a') : 'aucune règle';
-  const nameEl = document.createElement('span'); nameEl.className = 'attack-tname'; nameEl.textContent = (t && t.name) || '';
+  const nom = techniqueDisplayName(t);
+  const nameEl = document.createElement('span'); nameEl.className = 'attack-tname' + (nom ? '' : ' attack-tname-inconnu');
+  nameEl.textContent = nom || NOM_INCONNU;
   cell.append(cnt, idEl, nameEl);
   // angle mort : état « aucune règle » explicite + indice pour combler (import Sigma). Comportement du clic
   // INCHANGÉ (voir les alertes de la technique) ; le raccourci d'import est le bouton de la légende (admin).
-  cell.title = tid + ((t && t.name) ? ' — ' + t.name : '')
+  cell.title = tid + ' — ' + (nom || (NOM_INCONNU + " : identifiant hors du catalogue ATT&CK connu de la console (technique retirée, personnalisée ou mal saisie)"))
     + '\n' + (covered ? (rc + ' règle(s) · ' + ac + ' alerte(s)') : 'ANGLE MORT — aucune règle ne couvre cette technique. Importez un ruleset Sigma pour la couvrir (bouton « Importer un ruleset Sigma »).')
     + '\nClic : voir les alertes ' + tid;
   cell.onclick = () => setAlertMitreFilter(tid);
@@ -120,4 +136,4 @@ async function loadAttackMatrix() {
   host.replaceChildren(matrix);
 }
 
-export { loadAttackMatrix };
+export { loadAttackMatrix, techniqueCell, techniqueDisplayName, NOM_INCONNU };

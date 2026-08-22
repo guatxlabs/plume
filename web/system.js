@@ -222,10 +222,11 @@ function adminTools() {
   const lbl = document.createElement('label'); lbl.textContent = 'Bulletin / MOTD (bandeau diffusé à tous) :'; lbl.className = 'muted';
   const ta = document.createElement('textarea'); ta.id = 'sys-bulletin-msg'; ta.rows = 2; ta.maxLength = 2000;
   ta.placeholder = 'ex : maintenance planifiée 22h-23h — collecte non interrompue';
-  const lvl = document.createElement('select'); lvl.id = 'sys-bulletin-level';
+  const lvl = document.createElement('select'); lvl.id = 'sys-bulletin-level'; lvl.className = 'field'; lvl.title = 'Niveau du bulletin'; // P11.4-b : chrome partagé
   [['info', 'Info'], ['warn', 'Attention'], ['critical', 'Critique']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; lvl.appendChild(o); });
-  const save = document.createElement('button'); save.className = 'k'; save.type = 'button'; save.textContent = 'Publier';
-  const clear = document.createElement('button'); clear.className = 'k-theme'; clear.type = 'button'; clear.textContent = 'Effacer';
+  // P11.4-b : classes partagées (`.k` n'existait pas ; `.k-theme` est le chrome du sélecteur de thème).
+  const save = document.createElement('button'); save.className = 'btn-primary'; save.type = 'button'; save.textContent = 'Publier';
+  const clear = document.createElement('button'); clear.className = 'btn'; clear.type = 'button'; clear.textContent = 'Effacer';
   const rowb = document.createElement('div'); rowb.className = 'sys-bulletin-row'; rowb.append(lvl, save, clear);
   bl.append(lbl, ta, rowb);
   // pré-remplit avec le bulletin courant.
@@ -243,7 +244,7 @@ function adminTools() {
   // --- bundle de diagnostic ---
   const dl = document.createElement('div'); dl.className = 'sys-diag';
   const dlbl = document.createElement('span'); dlbl.className = 'muted'; dlbl.textContent = 'Bundle de diagnostic (non-secret, pour le support) : ';
-  const dbtn = document.createElement('button'); dbtn.className = 'k-theme'; dbtn.type = 'button'; dbtn.textContent = 'Télécharger le diagnostic';
+  const dbtn = document.createElement('button'); dbtn.className = 'btn'; dbtn.type = 'button'; dbtn.textContent = 'Télécharger le diagnostic'; // P11.4-b
   dbtn.onclick = async () => {
     try {
       const v = await api('/system/diag');

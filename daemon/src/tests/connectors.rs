@@ -854,21 +854,23 @@
     }
 
     /// (D11) DÉBRUITAGE du flag « inattendu » : les 10 feeds LÉGITIMES additionnels (source ≠ id de collecteur)
-    /// sont désormais CONNUS -> plus flaggés. Les ids de COLLECTEURS et les sources auth restent connus. Une
-    /// source GÉNUINEMENT inconnue reste flaggée (le signal fonctionne toujours pour les vraies nouveautés).
+    /// sont CONNUS -> plus flaggés. Les ids de COLLECTEURS et les sources auth restent connus. Une source
+    /// GÉNUINEMENT inconnue reste flaggée (le signal fonctionne toujours pour les vraies nouveautés).
+    /// P11.3-a : la connaissance est DÉRIVÉE (`source_attendue_par_construction`), plus énumérée.
     #[test]
     fn source_is_known_covers_legit_feeds_but_flags_truly_unknown() {
-        // les 10 feeds ajoutés (débruitage du FAUX signal).
+        let conn = test_db();
+        // les 10 feeds qu'une liste manuelle avait dû rattraper : attendus par dérivation.
         for s in ["minio-audit", "vault-audit", "cloudflare", "conntrack", "mail", "containerd", "minio", "k8s", "dataacl", "agent"] {
-            assert!(source_is_known(s), "feed légitime '{s}' ne doit PLUS être flaggé inattendu");
+            assert!(source_attendue_par_construction(&conn, s), "feed légitime '{s}' ne doit PLUS être flaggé inattendu");
         }
         // ids de collecteurs + sources auth : toujours connus.
         for s in ["web", "kube-audit", "ufw", "crowdsec", "sshd", "auditd", "plume-config"] {
-            assert!(source_is_known(s), "'{s}' doit rester connu");
+            assert!(source_attendue_par_construction(&conn, s), "'{s}' doit rester connu");
         }
         // une source réellement inconnue : le SIGNAL « inattendu » reste actif.
         for s in ["totally-new-thing", "attacker-c2", "unknown-src"] {
-            assert!(!source_is_known(s), "'{s}' (vraiment inconnue) DOIT rester flaggée inattendue");
+            assert!(!source_attendue_par_construction(&conn, s), "'{s}' (vraiment inconnue) DOIT rester flaggée inattendue");
         }
     }
 

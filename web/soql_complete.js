@@ -8,10 +8,18 @@
 // UX IDE : dropdown contextuel piloté par la position du curseur, ↑/↓ pour naviguer, Tab/Entrée pour
 // accepter, Échap pour fermer, re-déclenchement à la frappe, matching fuzzy/préfixe sur le jeton courant.
 import { api, apiSend } from './core.js';
+import { fetchSaved, saveCurrent, saveAsTemplate, editSaved, deleteSaved, loadIntoBar } from './savedqueries.js';
 
 let SCHEMA = null;      // { base_keywords, commands, stats_functions, eval_functions, operators, keywords, fields:{core,extended}, values:{category,action,severity,source}, docs:{commands,stats_functions,eval_functions,base_keywords,keywords,operators,fields} }
-let TEMPLATES = null;   // [{ id, title, keywords[], soql }]
+let TEMPLATES = null;   // [{ id, title, keywords[], soql }] — modèles LIVRÉS (bibliothèque embarquée, lecture seule)
 let loadingMeta = null; // promesse de chargement (dédup)
+
+// Pose la métadonnée SANS réseau (harnais ESM : éditeur sur un objet fabriqué ; préchargement par un
+// appelant qui la détient déjà). Remplace ce que `ensureMeta` aurait chargé.
+export function primeCompletionMeta(schema, templates) {
+  SCHEMA = schema || null;
+  TEMPLATES = Array.isArray(templates) ? templates : [];
+}
 
 // Chargement paresseux + caché de la métadonnée de complétion (une seule fois). Silencieux en cas d'échec
 // (la complétion se désactive proprement — la barre reste 100 % utilisable sans elle).
@@ -275,38 +283,92 @@ function onKeydown(e) {
   if ((e.ctrlKey || e.metaKey) && e.key === ' ') { e.preventDefault(); ensureMeta().then(trigger); }
 }
 
-// ── Palette de gabarits (snippet library) ──────────────────────────────────────────────────────────
+// ── Palette « Modèles » : MES MODÈLES (per-user, éditables) + MODÈLES LIVRÉS (bibliothèque, lecture seule) ──
+// P11.9-a — UN SEUL endroit pour les modèles. « Enregistrer » (barre) range la requête courante ici ; chaque
+// modèle personnel se charge, se MODIFIE (✎) et se SUPPRIME (×) ; un modèle livré se charge ou se COPIE dans
+// mes modèles (il devient alors éditable). Charger REMPLIT la barre, n'exécute jamais.
+const LIBELLE_PERSONNELS = 'Mes modèles';
+const LIBELLE_LIVRES = 'Modèles livrés';
+const VIDE_PERSONNELS = 'Aucun modèle personnel — « Enregistrer » range la requête courante ici.';
+const VIDE_LIVRES = 'Aucun modèle livré ne correspond.';
+const INDISPONIBLES_PERSONNELS = 'Mes modèles : indisponibles (chargement échoué).';
+
+function filtreModeles(liste, q, cles) {
+  const ql = (q || '').toLowerCase().trim();
+  if (!ql) return liste;
+  return liste.filter(t => { const hay = cles(t).toLowerCase(); return ql.split(/\s+/).every(w => hay.includes(w)); });
+}
+
+// Rendu PUR de la palette dans `list` (vidée d'abord). `personnels` = null si le chargement a échoué.
+// `actions` = { load, edit, remove, copy } — chacune reçoit l'objet ; séparé du DOM pour le harnais.
+export function renderTemplatePalette(list, q, personnels, livres, actions) {
+  list.innerHTML = '';
+  const section = (titre) => { const h = document.createElement('div'); h.className = 'sq-empty soql-tpl-sec'; h.textContent = titre; list.appendChild(h); };
+  const vide = (texte) => { const e = document.createElement('div'); e.className = 'soql-tpl-empty'; e.textContent = texte; list.appendChild(e); };
+  const ligne = (titre, soql, onLoad, boutons) => {
+    // Classes PARTAGÉES (sq-row / sq-load / sq-icon : celles du menu des requêtes) : une ligne de modèle se
+    // rend avec le même jeu que les autres listes de la barre — pas de classe sans règle CSS.
+    const row = document.createElement('div'); row.className = 'soql-tpl-item sq-row';
+    const load = document.createElement('button'); load.type = 'button'; load.className = 'minimenu-item sq-load soql-tpl-load';
+    const t = document.createElement('div'); t.className = 'soql-tpl-title'; t.textContent = titre;
+    const code = document.createElement('code'); code.className = 'soql-tpl-code'; code.textContent = soql;
+    load.append(t, code); load.title = 'Charger dans la barre (sans exécuter)';
+    load.addEventListener('click', onLoad);
+    row.appendChild(load);
+    boutons.forEach(b => row.appendChild(b));
+    list.appendChild(row);
+    return row;
+  };
+  const bouton = (texte, titre, cls, onClick) => {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'sq-icon ' + cls; b.textContent = texte; b.title = titre;
+    b.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+    return b;
+  };
+  section(LIBELLE_PERSONNELS);
+  if (personnels === null) vide(INDISPONIBLES_PERSONNELS);
+  else {
+    const mine = filtreModeles(personnels, q, m => (m.name || '') + ' ' + (m.soql || ''));
+    if (!mine.length) vide(VIDE_PERSONNELS);
+    mine.forEach(m => ligne(m.name || '(sans nom)', m.soql || '', () => actions.load(m), [
+      bouton('✎', 'Modifier ce modèle', 'soql-tpl-edit', () => actions.edit(m)),
+      bouton('×', 'Supprimer ce modèle', 'sq-del soql-tpl-del', () => actions.remove(m)),
+    ]));
+  }
+  section(LIBELLE_LIVRES);
+  const shipped = filtreModeles(livres || [], q, t => (t.title || '') + ' ' + (t.id || '') + ' ' + (t.keywords || []).join(' ') + ' ' + (t.soql || ''));
+  if (!shipped.length) vide(VIDE_LIVRES);
+  shipped.forEach(t => ligne(t.title || t.id || '(sans titre)', t.soql || '', () => actions.load(t), [
+    bouton('⧉', 'Copier dans mes modèles (pour le modifier)', 'soql-tpl-copy', () => actions.copy(t)),
+  ]));
+}
+
 function openTemplatePalette() {
-  ensureMeta().then(() => {
+  Promise.all([ensureMeta(), fetchSaved()]).then(([, personnels]) => {
     const ov = document.createElement('div');
     ov.className = 'soql-tpl-ov';
     ov.addEventListener('mousedown', (e) => { if (e.target === ov) ov.remove(); });
     const panel = document.createElement('div'); panel.className = 'soql-tpl-panel';
-    const h = document.createElement('div'); h.className = 'soql-tpl-h'; h.textContent = 'Modèles de requête (GXQL)';
+    const head = document.createElement('div'); head.className = 'soql-tpl-h';
+    const h = document.createElement('span'); h.textContent = 'Modèles de requête (GXQL)';
+    const add = document.createElement('button'); add.type = 'button'; add.className = 'picon crud-btn soql-tpl-add'; add.textContent = '+ Enregistrer la requête courante';
+    add.title = 'Enregistrer le texte de la barre dans mes modèles';
+    head.append(h, add);
     const search = document.createElement('input'); search.type = 'text'; search.className = 'soql-tpl-search';
     search.placeholder = 'Rechercher (ex : ssh, scan, firewall, dns)…'; search.setAttribute('aria-label', 'Rechercher un modèle');
     const list = document.createElement('div'); list.className = 'soql-tpl-list';
-    panel.appendChild(h); panel.appendChild(search); panel.appendChild(list); ov.appendChild(panel);
+    panel.appendChild(head); panel.appendChild(search); panel.appendChild(list); ov.appendChild(panel);
     document.body.appendChild(ov);
 
-    const draw = (q) => {
-      list.innerHTML = '';
-      const ql = (q || '').toLowerCase().trim();
-      const matches = (TEMPLATES || []).filter(t => {
-        if (!ql) return true;
-        const hay = (t.title + ' ' + t.id + ' ' + (t.keywords || []).join(' ') + ' ' + t.soql).toLowerCase();
-        return ql.split(/\s+/).every(w => hay.includes(w));
-      });
-      if (!matches.length) { const e = document.createElement('div'); e.className = 'soql-tpl-empty'; e.textContent = 'Aucun modèle.'; list.appendChild(e); return; }
-      matches.forEach(t => {
-        const row = document.createElement('button'); row.type = 'button'; row.className = 'soql-tpl-item';
-        const title = document.createElement('div'); title.className = 'soql-tpl-title'; title.textContent = t.title;
-        const code = document.createElement('code'); code.className = 'soql-tpl-code'; code.textContent = t.soql;
-        row.appendChild(title); row.appendChild(code);
-        row.addEventListener('click', () => { if (ta) { ta.value = t.soql; ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } ov.remove(); });
-        list.appendChild(row);
-      });
+    let mine = personnels;
+    const recharger = () => fetchSaved().then(p => { mine = p; draw(search.value); });
+    const actions = {
+      load: (m) => { loadIntoBar(m.soql || ''); ov.remove(); },
+      edit: (m) => editSaved(m, recharger),
+      remove: (m) => deleteSaved(m, recharger),
+      copy: (t) => saveAsTemplate({ name: t.title || t.id || '', soql: t.soql || '' }).then(r => { if (r) recharger(); }),
     };
+    const draw = (q) => renderTemplatePalette(list, q, mine, TEMPLATES || [], actions);
+    add.addEventListener('click', () => saveCurrent().then(r => { if (r) recharger(); }));
     draw('');
     search.addEventListener('input', () => draw(search.value));
     search.addEventListener('keydown', (e) => { if (e.key === 'Escape') ov.remove(); });
@@ -384,6 +446,14 @@ export function initSoqlComplete() {
     return;
   }
   ta.dataset.acWired = '1';
+  // P11.9-b — L'ÉDITEUR N'A PAS DE LIGATURES. MESURÉ le 2026-08-22 : aucune séquence de frappe ne fait
+  // réécrire `!=` par ce module (témoin dans le harnais ESM) ; en revanche la police monospace livrée
+  // (JetBrains Mono, `calt` actif par défaut) porte 138 ligatures dont `!=`, `<=`, `>=`, `||`, `|>` et
+  // `..` — un « différent » tapé s'AFFICHE comme un seul glyphe barré que l'œil lit « égal ». Dans un
+  // éditeur de requêtes, la forme tapée doit être la forme vue : ligatures coupées sur l'éditeur.
+  // (La règle CSS durable vit dans style.css ; cette pose inline garantit la propriété depuis le module
+  // qui possède l'éditeur, et le harnais la tient.)
+  ta.style.fontVariantLigatures = 'none';
   // Précharge la métadonnée au 1er focus (pas au chargement de page -> zéro coût si l'analyste n'explore pas).
   ta.addEventListener('focus', () => ensureMeta(), { once: true });
   ta.addEventListener('input', () => { scheduleValidate(); ensureMeta().then((ok) => { if (ok) trigger(); }); });
@@ -394,3 +464,6 @@ export function initSoqlComplete() {
   const btn = document.getElementById('qtemplates');
   if (btn && !btn.dataset.acWired) { btn.dataset.acWired = '1'; btn.addEventListener('click', openTemplatePalette); }
 }
+
+// Exposés pour le harnais ESM (séquence de frappe sur un éditeur fabriqué) ; aucun usage applicatif.
+export { analyze, trigger, accept };

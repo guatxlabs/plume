@@ -622,7 +622,7 @@ detection:
         assert_eq!(op.detail["sql"], json!(f.op_sql), "detail.sql = clause runtime");
         assert_eq!(op.detail["soql"], json!(f.op_soql));
         // (c) A3/A6 déclarent EXACTEMENT les constantes runtime (rien caché, rien divergent).
-        assert_eq!(reg.iter().find(|e| e.name == "known_extra_sources").unwrap().value, KNOWN_EXTRA_SOURCES.join(","));
+        assert_eq!(reg.iter().find(|e| e.name == "sources_attendues_par_construction").unwrap().value, sources_attendues_sans_base().join(","));
         assert_eq!(reg.iter().find(|e| e.name == "hot_fields").unwrap().value, HOT_FIELDS.join(","));
         // (d) après un override setting, le registre reflète la nouvelle valeur ET reste byte-identique au builder.
         conn.execute("INSERT INTO setting(scope,key,value,updated,updated_by) VALUES('global',?1,'198.51.100.4',0,'t')", params![EXCL_OP_SETTING]).unwrap();

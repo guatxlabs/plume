@@ -3,7 +3,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, esc, fmtTs, ic, muted, api, apiSend, confirmModal, toast, modal, pagedList, closeModals } from './core.js';
+import { $, esc, fmtTs, ic, muted, api, apiSend, confirmWithConsequence, disclosure, toast, pagedList, closeModals } from './core.js';
 import { S } from './state.js';
 import { route } from './app.js';
 
@@ -26,7 +26,7 @@ async function loadUsers() {
   summary.style.cssText = 'margin:0 0 10px;display:flex;gap:14px;flex-wrap:wrap;align-items:center';
   summary.appendChild(Object.assign(document.createElement('span'), { textContent: `${uarr.length} compte(s) · ` + ['admin', 'editor', 'viewer'].map(r => `${counts[r] || 0} ${ROLE_LABEL[r]}`).join(' · ') }));
   const tokLink = document.createElement('button'); tokLink.type = 'button'; tokLink.textContent = "Provisionner un jeton d'agent →";
-  tokLink.title = 'Aller à Administration → Jetons'; tokLink.style.cssText = 'background:none;border:none;color:var(--acc);cursor:pointer;font-size:12px;padding:0';
+  tokLink.title = 'Aller à Administration → Jetons'; tokLink.className = 'btn-link'; // P11.4-b : classe partagée (lien)
   tokLink.onclick = () => { location.hash = 'tokens'; };
   summary.appendChild(tokLink);
   list.appendChild(summary);
@@ -39,9 +39,16 @@ async function loadUsers() {
     const rsel = document.createElement('select'); rsel.className = 'ue-role';
     ['admin', 'editor', 'viewer'].forEach(r => { const o = document.createElement('option'); o.value = r; o.textContent = r; if (r === u.role) o.selected = true; rsel.appendChild(o); });
     const pw = document.createElement('input'); pw.type = 'password'; pw.className = 'ue-pw'; pw.placeholder = 'nouveau mdp (optionnel, ≥12)'; pw.autocomplete = 'new-password';
-    const save = document.createElement('button'); save.textContent = 'Enregistrer';
+    const save = document.createElement('button'); save.type = 'button'; save.className = 'btn btn-sm'; save.textContent = 'Enregistrer';
     save.onclick = async () => {
       const body = { role: rsel.value }; if (pw.value) body.password = pw.value;
+      // P11.5-b : changer un RÔLE élève ou retire un droit ; réinitialiser un MOT DE PASSE remplace une
+      // crédence. Les deux passent par la confirmation partagée, qui nomme ce qui change.
+      const parts = [];
+      if (rsel.value !== u.role) parts.push(`le rôle de « ${u.name} » passe de ${ROLE_LABEL[u.role] || u.role} à ${ROLE_LABEL[rsel.value] || rsel.value}` + (rsel.value === 'admin' ? ' — accès complet à la configuration, aux secrets et aux suppressions' : u.role === 'admin' ? ' — ce compte perd l\'accès administrateur' : ''));
+      if (pw.value) parts.push(`le mot de passe de « ${u.name} » est remplacé immédiatement (l\'ancien cesse de fonctionner)`);
+      if (!parts.length) { toast('aucune modification', 'info'); return; }
+      if (!await confirmWithConsequence(`Modifier le compte « ${u.name} »`, parts.join(' ; ') + '.', { okText: 'Appliquer', danger: rsel.value === 'admin' || u.role === 'admin' || !!pw.value })) return;
       try { await apiSend('/users/' + u.id, 'POST', body); }
       catch (err) { toast((err && err.message) || 'échec', 'bad'); return; }
       toast('compte mis à jour', 'ok'); loadUsers();
@@ -52,7 +59,7 @@ async function loadUsers() {
     const del = document.createElement('button'); del.className = 'picon'; del.innerHTML = ic('x'); del.title = 'Supprimer le compte';
     if (u.name === me) del.disabled = true;
     del.onclick = async () => {
-      if (!await confirmModal(`Supprimer le compte "${u.name}" ?`, { danger: true })) return;
+      if (!await confirmWithConsequence(`Supprimer le compte « ${u.name} »`, 'ses sessions et jetons de session cessent de fonctionner et le compte ne se restaure pas ; ses actions passées restent dans le journal d\'audit.', { okText: 'Supprimer' })) return;
       try { await apiSend('/users/' + u.id, 'DELETE'); }
       catch (err) { toast((err && err.message) || 'échec', 'bad'); }
       loadUsers();
@@ -62,12 +69,15 @@ async function loadUsers() {
     row.append(info, actions); list.appendChild(row); list.appendChild(editor);
   });
 }
-if ($('#user-new')) $('#user-new').onclick = () => $('#user-form').classList.toggle('hidden');
+if ($('#user-new') && $('#user-form')) disclosure($('#user-new'), $('#user-form')); // P11.4-a — dépli partagé
 if ($('#uf-cancel')) $('#uf-cancel').onclick = () => $('#user-form').classList.add('hidden');
 if ($('#user-form')) $('#user-form').addEventListener('submit', async e => {
   e.preventDefault();
-  const res = $('#uf-result'); res.textContent = '...';
+  const res = $('#uf-result');
   const body = { name: $('#uf-name').value.trim(), password: $('#uf-pw').value, role: $('#uf-role').value };
+  // P11.5-b : créer un compte ÉLÈVE un droit (un nouvel accès naît, avec un rôle) -> confirmation partagée.
+  if (!await confirmWithConsequence(`Créer le compte « ${body.name || '?'} »`, `un accès ${ROLE_LABEL[body.role] || body.role} à cette console est ouvert immédiatement` + (body.role === 'admin' ? ' — accès complet à la configuration, aux secrets et aux suppressions' : '') + '.', { okText: 'Créer', danger: body.role === 'admin' })) return;
+  res.textContent = '...';
   try { await apiSend('/users', 'POST', body); }
   catch (err) { res.textContent = '' + ((err && err.message) || err); return; }
   res.textContent = 'compte créé'; $('#uf-name').value = ''; $('#uf-pw').value = ''; $('#user-form').classList.add('hidden'); loadUsers();
@@ -95,7 +105,7 @@ async function loadTokens() {
     { key: '_act', label: '', align: 'r', render: t => {
         const del = document.createElement('button'); del.className = 'picon'; del.innerHTML = ic('x'); del.title = 'Révoquer le jeton';
         del.onclick = async () => {
-          if (!await confirmModal(`Révoquer le jeton "${t.name}" ? L'agent / forwarder porteur perdra immédiatement l'accès.`, { danger: true })) return;
+          if (!await confirmWithConsequence(`Révoquer le jeton « ${t.name} »`, 'l\'agent ou le forwarder porteur perd l\'accès immédiatement ; un jeton révoqué ne se réactive pas, il faut en provisionner un autre.', { okText: 'Révoquer' })) return;
           try { await apiSend('/tokens/' + encodeURIComponent(t.name), 'DELETE'); toast('jeton révoqué', 'ok'); loadTokens(); }
           catch (e) { toast(e.message || 'échec de la révocation', 'bad'); }
         };
@@ -105,8 +115,10 @@ async function loadTokens() {
   pagedList(host, { mode: 'client', pageSize: 50, rows: tokens, columns, sort: { key: 'created', dir: -1 }, emptyText: 'aucun jeton — clique « + Nouveau jeton » pour provisionner un agent ou un forwarder HEC.' });
 }
 async function newTokenFlow() {
-  const vals = await modal({
-    title: 'Nouveau jeton',
+  // P11.5-b : créer un jeton ÉLÈVE un droit (une crédence d'ingest/responder naît) -> la fenêtre de saisie est
+  // la confirmation partagée elle-même : elle nomme la conséquence au-dessus des champs.
+  const vals = await confirmWithConsequence('Nouveau jeton', 'une crédence d\'accès machine est créée ; son secret n\'est montré qu\'une seule fois, et tout porteur de ce secret pourra écrire des événements sous l\'hôte choisi (un relais : sous n\'importe quel nom d\'hôte).', {
+    danger: false,
     okText: 'Créer le jeton',
     fields: [
       { name: 'name', label: 'Nom', placeholder: 'ex: forwarder-siem-01', required: true },
@@ -158,7 +170,7 @@ function showTokenOnce(res) {
   const cbrow = document.createElement('div'); cbrow.style.cssText = 'display:flex;gap:6px;align-items:stretch;margin:8px 0';
   const inp = document.createElement('input'); inp.readOnly = true; inp.value = tok; inp.className = 'mono'; inp.style.cssText = 'flex:1;font-size:12px'; inp.setAttribute('aria-label', 'Jeton (secret) — à copier maintenant');
   inp.onclick = () => inp.select();
-  const cp = document.createElement('button'); cp.type = 'button'; cp.textContent = 'Copier';
+  const cp = document.createElement('button'); cp.type = 'button'; cp.className = 'btn btn-sm'; cp.textContent = 'Copier'; // P11.4-b
   const doCopy = async (btn, text) => { try { await navigator.clipboard.writeText(text); } catch { inp.select(); try { document.execCommand('copy'); } catch (_) {} } btn.textContent = 'Copié ✓'; setTimeout(() => { btn.textContent = btn === cp ? 'Copier' : 'Copier l\'extrait'; }, 1600); };
   cp.onclick = () => doCopy(cp, tok);
   cbrow.append(inp, cp); box.appendChild(cbrow);
@@ -170,7 +182,7 @@ function showTokenOnce(res) {
     const pre = document.createElement('pre'); pre.className = 'mono'; pre.style.cssText = 'white-space:pre-wrap;word-break:break-all;background:var(--card2);border:1px solid var(--bd);padding:8px;border-radius:6px;font-size:11px;margin:0';
     pre.textContent = snippet;
     box.appendChild(pre);
-    const cp2 = document.createElement('button'); cp2.type = 'button'; cp2.textContent = 'Copier l\'extrait'; cp2.style.marginTop = '6px';
+    const cp2 = document.createElement('button'); cp2.type = 'button'; cp2.className = 'btn btn-sm'; cp2.textContent = 'Copier l\'extrait'; cp2.style.marginTop = '6px'; // P11.4-b
     cp2.onclick = () => doCopy(cp2, snippet);
     box.appendChild(cp2);
   } else {

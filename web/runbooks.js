@@ -5,20 +5,28 @@
 // suppression d'un custom. Le SERVEUR est la vraie garde (route /api/runbooks* = admin-only ; validation temps-
 // auteur du GXQL fermé + enum d'action) ; ici l'admin-only n'est que COSMÉTIQUE (panneau masqué au non-admin).
 // L'exécution d'une réponse reste /api/actions (INCHANGÉ) — un runbook ne fait que RÉFÉRENCER une action.
-import { $, api, apiSend, confirmModal, modal, muted, toast, socIsAdmin } from './core.js';
+//
+// P11.2-a : la ligne d'un runbook passe par la MÊME fabrique que celle d'un playbook ou d'une règle
+// (`producer_ui.js`) — mêmes classes `.rulerow`, même interrupteur ON/OFF, même badge d'origine, mêmes
+// classes de bouton. Les étapes d'un runbook LIVRÉ se lisent (« Étapes ») sans passer par l'éditeur, qui
+// reste réservé aux custom. L'éditeur utilise `.ruleform/.rf-row/.rf-actions` comme le formulaire des
+// playbooks : aucun style en ligne, aucune classe sans règle CSS.
+import { $, api, apiSend, confirmModal, modal, muted, toast, socIsAdmin, gateDeleteBtn, ic } from './core.js';
+import { producerRow, rowButton, announceCreated, takePendingNote, destinationNote } from './producer_ui.js';
 
 const RB_PHASES = ['triage', 'investigation', 'containment', 'eradication', 'recovery'];
 const RB_KINDS = ['manual', 'search', 'response'];
 const RB_ACTIONS = ['ban_ip', 'unban_ip', 'kill_pid', 'stop_service'];
 const RB_TACTICS = ['reconnaissance', 'resource-development', 'initial-access', 'execution', 'persistence', 'privilege-escalation', 'defense-evasion', 'credential-access', 'discovery', 'lateral-movement', 'collection', 'command-and-control', 'exfiltration', 'impact'];
+const PHASE_LABEL = { triage: 'Triage', investigation: 'Investigation', containment: 'Containment', eradication: 'Éradication', recovery: 'Rétablissement' };
 
 function mkSelect(opts, val) {
   const s = document.createElement('select');
   opts.forEach(o => { const e = document.createElement('option'); e.value = o; e.textContent = o; if (o === val) e.selected = true; s.appendChild(e); });
   return s;
 }
-function mkInput(ph, val) { const i = document.createElement('input'); i.placeholder = ph || ''; i.value = val || ''; i.style.minWidth = '160px'; return i; }
-function btn(txt, cls) { const b = document.createElement('button'); b.type = 'button'; b.textContent = txt; if (cls) b.className = cls; return b; }
+function mkInput(ph, val) { const i = document.createElement('input'); i.placeholder = ph || ''; i.value = val || ''; return i; }
+function mkLabel(text, ctl) { const l = document.createElement('label'); l.appendChild(document.createTextNode(text + ' ')); l.appendChild(ctl); return l; }
 
 async function loadRunbooks() {
   const panel = $('#runbooks-panel');
@@ -30,63 +38,93 @@ async function loadRunbooks() {
   let runbooks = [];
   try { ({ runbooks } = await api('/runbooks')); } catch (e) { wrap.replaceChildren(muted('runbooks indisponibles')); return; }
   wrap.replaceChildren();
+  const note = takePendingNote('runbooks'); if (note) wrap.appendChild(note); // P11.1-e : où arrive ce qui vient d'être créé
   if (!runbooks.length) { wrap.appendChild(muted('aucun runbook')); return; }
   runbooks.forEach(r => wrap.appendChild(rbRow(r)));
 }
 
+// Origine d'un runbook dans la convention PARTAGÉE des badges (0 builtin / 1 overlay / 2 perso) : la table
+// `runbook` code le seed `managed=1` et le custom `managed=0`, à l'INVERSE de `rule`/`playbook` (seed=0,
+// perso=2). La normalisation se fait ici, à la frontière, pour qu'une seule fabrique de ligne serve tout.
+function runbookOrigin(r) { return r.managed ? 0 : 2; }
+
+// Modèle de ligne d'un runbook : la MÊME forme que playbookRowModel / ruleRowModel (`producer_ui.js`).
+// Conséquence de l'interrupteur : être PROPOSÉ dans les cas (rien d'automatique — une étape `response` ne
+// fait que préparer une action soumise à approbation) ; donc pas de confirmation à l'activation.
+function runbookRowModel(r) {
+  return {
+    family: 'runbook', name: r.name, origin: runbookOrigin(r), enabled: !!r.active,
+    consequence: 'proposé dans un cas élevé en incident ' + (r.match_kind === '*' ? 'quand aucun runbook plus spécifique ne s\'applique' : 'dont la ' + (r.match_kind === 'tactic' ? 'tactique' : 'technique') + ' dominante est ' + r.match_key) + ' ; rien d\'automatique (une étape response prépare une action soumise à approbation)',
+    toggleAllowed: socIsAdmin(), toggleDeniedReason: "l'activation/désactivation d'un runbook est réservée à l'administrateur",
+    confirmOnEnable: false,
+    // override d'activation — persiste, survit au reboot ; managé compris.
+    onToggle: next => apiSend('/runbooks/' + r.id + '/enabled', 'POST', { enabled: next }),
+    summary: r.match_kind === '*' ? 'défaut' : r.match_kind + ':' + r.match_key,
+    summaryTitle: r.description || '',
+    meta: r.steps + ' étape(s)',
+  };
+}
 function rbRow(r) {
-  const el = document.createElement('div'); el.style.cssText = 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid color-mix(in srgb,var(--bd) 60%,transparent)';
-  const badge = document.createElement('span'); badge.className = 'badge'; badge.textContent = r.managed ? 'managé' : 'custom';
-  if (r.managed) { badge.title = 'baseline git — non modifiable en place (clonez pour personnaliser)'; } else { badge.style.borderColor = 'color-mix(in srgb,var(--acc) 50%,transparent)'; badge.style.color = 'var(--acc)'; }
-  el.appendChild(badge);
-  el.appendChild(Object.assign(document.createElement('span'), { textContent: r.name, style: 'font-weight:600' }));
-  el.appendChild(muted(r.match_kind === '*' ? 'défaut' : r.match_kind + ':' + r.match_key));
-  el.appendChild(muted(r.steps + ' étape(s)'));
-  // activer/désactiver (override d'activation — persiste, survit au reboot ; managé compris).
-  const enLbl = document.createElement('label'); enLbl.style.cssText = 'display:flex;gap:4px;align-items:center;font-size:12px';
-  const en = document.createElement('input'); en.type = 'checkbox'; en.checked = !!r.active;
-  en.onchange = () => apiSend('/runbooks/' + r.id + '/enabled', 'POST', { enabled: en.checked })
-    .then(() => toast('runbook ' + (en.checked ? 'activé' : 'désactivé'), 'ok'))
-    .catch(err => { en.checked = !en.checked; toast('Bascule refusée : ' + ((err && err.message) || err), 'bad'); });
-  enLbl.append(en, document.createTextNode('actif'));
-  el.appendChild(enLbl);
+  const row = producerRow(runbookRowModel(r));
+  const meta = row.metaEl;
+  // Étapes : lecture seule, pour TOUS (un livré n'ouvrait aucune vue de ses étapes — « ni les étapes »).
+  row.appendChild(rowButton('Étapes', { title: 'Voir les étapes phasées (lecture seule)', onClick: () => toggleSteps(row, r.id, meta) }));
   // clone (managé OU custom -> copie custom éditable).
-  const cl = btn('Cloner', 'ghost');
-  cl.onclick = async () => {
+  row.appendChild(rowButton('Cloner', { title: 'Copie custom éditable', onClick: async () => {
     const m = await modal({ title: 'Cloner le runbook', okText: 'Cloner', fields: [{ name: 'name', label: 'Nom de la copie', value: r.name + ' (copie)' }] });
     if (!m) return;
     try { await apiSend('/runbooks/' + r.id + '/clone', 'POST', { name: (m.name || '').trim() }); } catch (e) { toast('Clone refusé : ' + ((e && e.message) || e), 'bad'); return; }
     toast('Runbook cloné', 'ok'); loadRunbooks();
-  };
-  el.appendChild(cl);
+  } }));
   // édition / suppression : CUSTOM uniquement (un managé est immuable en place — seuls enable/disable + clone).
-  if (!r.managed) {
-    const ed = btn('Éditer', 'ghost'); ed.onclick = () => openEditor(r.id); el.appendChild(ed);
-    const del = btn('Suppr.', 'ghost');
-    del.onclick = async () => {
-      if (!await confirmModal('Supprimer le runbook custom « ' + r.name + ' » ?', { danger: true })) return;
-      try { await apiSend('/runbooks/' + r.id, 'DELETE'); } catch (e) { toast('Suppression refusée : ' + ((e && e.message) || e), 'bad'); return; }
-      toast('Runbook supprimé', 'ok'); loadRunbooks();
-    };
-    el.appendChild(del);
-  } else {
-    el.appendChild(muted('immuable (clonez pour éditer)'));
-  }
-  return el;
+  const locked = !!r.managed;
+  row.appendChild(rowButton('Éditer', { cls: 'crud-btn', disabled: locked, title: locked ? 'runbook livré (baseline git) : immuable en place — clonez pour éditer' : 'Modifier', onClick: locked ? null : () => openEditor(r.id) }));
+  const del = rowButton('', { cls: 'crud-btn', icon: ic('x'), title: 'Supprimer' });
+  if (gateDeleteBtn(del, locked ? 0 : 2)) del.onclick = async () => {
+    if (!await confirmModal('Supprimer le runbook custom « ' + r.name + ' » ?', { danger: true })) return;
+    try { await apiSend('/runbooks/' + r.id, 'DELETE'); } catch (e) { toast('Suppression refusée : ' + ((e && e.message) || e), 'bad'); return; }
+    toast('Runbook supprimé', 'ok'); loadRunbooks();
+  };
+  row.appendChild(del);
+  return row;
+}
+
+// Vue LECTURE SEULE des étapes d'un runbook (livré ou custom), dépliée sous sa ligne. Second clic : replie.
+async function toggleSteps(row, id, meta) {
+  if (row.stepsEl) { row.stepsEl.remove(); row.stepsEl = null; return; }
+  let data;
+  try { data = await api('/runbooks/' + id); } catch (e) { meta.textContent = 'étapes indisponibles'; return; }
+  const box = document.createElement('div'); box.className = 'rb-steps';
+  box.style.cssText = 'flex-basis:100%;padding:4px 0 4px 28px';
+  if (data.description) box.appendChild(muted(data.description));
+  let lastPhase = null;
+  (data.step_list || []).forEach(s => {
+    if (s.phase !== lastPhase) { lastPhase = s.phase; const h = document.createElement('div'); h.className = 'muted'; h.style.cssText = 'font-size:11px;font-weight:700;margin-top:6px'; h.textContent = (PHASE_LABEL[s.phase] || s.phase).toUpperCase(); box.appendChild(h); }
+    const line = document.createElement('div'); line.style.cssText = 'font-size:12px;padding:2px 0';
+    const t = document.createElement('b'); t.textContent = s.title; line.appendChild(t);
+    if (s.step_kind === 'search') { const c = document.createElement('code'); c.className = 'rulecond'; c.textContent = s.search_soql || 'search'; c.style.marginLeft = '6px'; line.appendChild(c); }
+    if (s.step_kind === 'response') { const c = document.createElement('code'); c.className = 'rulecond'; c.textContent = 'réponse : ' + (s.action_kind || ''); c.style.marginLeft = '6px'; line.appendChild(c); }
+    if (s.guidance) { line.appendChild(document.createTextNode(' ')); const g = document.createElement('span'); g.className = 'muted'; g.textContent = s.guidance; line.appendChild(g); }
+    box.appendChild(line);
+  });
+  if (!(data.step_list || []).length) box.appendChild(muted('aucune étape'));
+  row.appendChild(box); row.stepsEl = box;
 }
 
 // Éditeur INLINE (création si id=null, édition sinon). Gabarits d'étapes phasées ajoutables/supprimables.
+// Mêmes classes que le formulaire des playbooks (`.ruleform`, `.rf-row`, `.rf-actions`, submit = primaire).
 async function openEditor(id) {
   const box = $('#rb-editor'); if (!box) return;
-  let data = { name: '', match_kind: '*', match_key: '', description: '', step_list: [] };
+  let data = { name: '', match_kind: '*', match_key: '', description: '', step_list: [], active: true };
   if (id != null) { try { data = await api('/runbooks/' + id); } catch (e) { toast('chargement échoué', 'bad'); return; } }
   box.replaceChildren(); box.style.display = '';
-  box.appendChild(Object.assign(document.createElement('div'), { textContent: id != null ? 'Éditer le runbook custom' : 'Nouveau runbook custom', style: 'font-weight:700;margin-bottom:8px' }));
+  const form = document.createElement('form'); form.className = 'ruleform';
+  form.appendChild(Object.assign(document.createElement('div'), { textContent: id != null ? 'Éditer le runbook custom' : 'Nouveau runbook custom', style: 'font-weight:700' }));
 
-  const row1 = document.createElement('div'); row1.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px';
-  const nameI = mkInput('Nom du runbook', data.name); nameI.style.flex = '1'; nameI.style.minWidth = '220px';
+  const row1 = document.createElement('div'); row1.className = 'rf-row';
+  const nameI = mkInput('Nom du runbook', data.name); nameI.setAttribute('aria-label', 'Nom du runbook'); nameI.style.flex = '1'; nameI.style.minWidth = '220px';
   const mkindS = mkSelect(['*', 'tactic', 'technique'], data.match_kind);
-  const mkeyWrap = document.createElement('span'); mkeyWrap.style.cssText = 'display:flex;gap:4px;align-items:center';
+  const mkeyWrap = document.createElement('span'); mkeyWrap.style.cssText = 'display:inline-flex;gap:4px;align-items:center';
   const rebuildMkey = () => {
     mkeyWrap.replaceChildren();
     if (mkindS.value === 'tactic') { const s = mkSelect(RB_TACTICS, data.match_key); s.dataset.mkey = '1'; mkeyWrap.appendChild(s); }
@@ -94,24 +132,32 @@ async function openEditor(id) {
     else { mkeyWrap.appendChild(muted('repli générique')); }
   };
   mkindS.onchange = rebuildMkey; rebuildMkey();
-  row1.append(muted('Nom'), nameI, muted('Match'), mkindS, mkeyWrap);
-  box.appendChild(row1);
+  row1.append(mkLabel('Nom', nameI), mkLabel('Match', mkindS), mkeyWrap);
+  // « actif » à la création, comme le formulaire des playbooks (l'API accepte `active`) ; en édition, la
+  // bascule vit sur la ligne (override d'activation), le champ n'est pas réécrit.
+  let activeCb = null;
+  if (id == null) { activeCb = document.createElement('input'); activeCb.type = 'checkbox'; activeCb.checked = true; const l = document.createElement('label'); l.append(activeCb, document.createTextNode(' actif')); row1.appendChild(l); }
+  form.appendChild(row1);
 
-  const descI = document.createElement('textarea'); descI.rows = 2; descI.placeholder = 'Description / quand appliquer ce runbook'; descI.value = data.description || ''; descI.style.cssText = 'width:100%;margin-bottom:8px';
-  box.appendChild(descI);
+  const descI = document.createElement('textarea'); descI.rows = 2; descI.placeholder = 'Description / quand appliquer ce runbook'; descI.value = data.description || '';
+  form.appendChild(descI);
 
-  box.appendChild(Object.assign(document.createElement('div'), { textContent: 'ÉTAPES (phasées, ordonnées)', style: 'font-size:11px;font-weight:700;color:var(--mut);margin:4px 0' }));
-  const stepsBox = document.createElement('div'); box.appendChild(stepsBox);
+  form.appendChild(Object.assign(document.createElement('div'), { textContent: 'ÉTAPES (phasées, ordonnées)', style: 'font-size:11px;font-weight:700;color:var(--mut)' }));
+  const stepsBox = document.createElement('div'); form.appendChild(stepsBox);
   const addStep = (s) => stepsBox.appendChild(stepEditor(s || { phase: 'triage', title: '', guidance: '', step_kind: 'manual', search_soql: '', action_kind: 'ban_ip' }));
   (data.step_list || []).forEach(addStep);
   if (!(data.step_list || []).length) addStep();
 
-  const acts = document.createElement('div'); acts.style.cssText = 'display:flex;gap:8px;margin-top:10px;flex-wrap:wrap';
-  const addBtn = btn('+ Étape'); addBtn.onclick = () => addStep();
-  const saveBtn = btn('Enregistrer', 'primary');
-  const cancelBtn = btn('Annuler');
-  cancelBtn.onclick = () => { box.style.display = 'none'; box.replaceChildren(); };
-  saveBtn.onclick = async () => {
+  const acts = document.createElement('div'); acts.className = 'rf-actions';
+  const addBtn = rowButton('+ Étape', { onClick: () => addStep() });
+  const saveBtn = document.createElement('button'); saveBtn.type = 'submit'; saveBtn.textContent = 'Enregistrer';
+  const cancelBtn = rowButton('Annuler', { onClick: () => { box.style.display = 'none'; box.replaceChildren(); } });
+  const result = document.createElement('span'); result.className = 'muted';
+  result.appendChild(destinationNote('cases', '', '')); // P11.1-e : la destination est dite AVANT d'enregistrer
+  acts.append(addBtn, saveBtn, cancelBtn, result);
+  form.appendChild(acts);
+  form.onsubmit = async e => {
+    e.preventDefault();
     const steps = [...stepsBox.children].map(readStep).filter(Boolean);
     const mkeyEl = mkeyWrap.querySelector('[data-mkey]');
     const body = {
@@ -121,25 +167,28 @@ async function openEditor(id) {
       description: descI.value.trim(),
       steps,
     };
+    if (activeCb) body.active = activeCb.checked;
     if (!body.name) { toast('nom requis', 'bad'); return; }
     if (!steps.length) { toast('au moins une étape', 'bad'); return; }
     const path = id != null ? '/runbooks/' + id : '/runbooks';
-    try { await apiSend(path, 'POST', body); } catch (e) { toast('Enregistrement refusé : ' + ((e && e.message) || e), 'bad'); return; }
-    toast('Runbook enregistré', 'ok'); box.style.display = 'none'; box.replaceChildren(); loadRunbooks();
+    try { await apiSend(path, 'POST', body); } catch (e) { result.textContent = 'Enregistrement refusé : ' + ((e && e.message) || e); toast('Enregistrement refusé : ' + ((e && e.message) || e), 'bad'); return; }
+    box.style.display = 'none'; box.replaceChildren();
+    announceCreated('runbooks', 'cases', body.name, body.active === false ? 'OFF : activez-le dans la liste' : ''); // P11.1-e
+    loadRunbooks();
   };
-  acts.append(addBtn, saveBtn, cancelBtn);
-  box.appendChild(acts);
+  box.appendChild(form);
 }
 
 // Une ligne d'éditeur d'étape : phase, titre, guidance, genre, et champ conditionnel (GXQL si search /
 // action_kind si response). Les champs hors-genre sont neutralisés côté serveur (validate_step).
 function stepEditor(s) {
-  const el = document.createElement('div'); el.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:6px;margin-bottom:6px;border:1px solid var(--bd);border-radius:6px';
+  // `.rulerow` : la même ligne que les listes (ses boutons portent la charte via `.rulerow button`).
+  const el = document.createElement('div'); el.className = 'rulerow rb-step';
   const phase = mkSelect(RB_PHASES, s.phase); phase.dataset.f = 'phase';
   const title = mkInput('Titre de l\'étape', s.title); title.dataset.f = 'title'; title.style.flex = '1';
   const guide = mkInput('Guidance (optionnel)', s.guidance); guide.dataset.f = 'guidance'; guide.style.flex = '1';
   const kind = mkSelect(RB_KINDS, s.step_kind); kind.dataset.f = 'kind';
-  const cond = document.createElement('span'); cond.style.cssText = 'display:flex;gap:4px;align-items:center;flex:1;min-width:160px';
+  const cond = document.createElement('span'); cond.style.cssText = 'display:inline-flex;gap:4px;align-items:center;flex:1;min-width:160px';
   const rebuild = () => {
     cond.replaceChildren();
     if (kind.value === 'search') { const i = mkInput('search host=$target$ | stats count by source', s.search_soql); i.dataset.f = 'soql'; i.style.flex = '1'; cond.append(muted('GXQL'), i); }
@@ -147,7 +196,7 @@ function stepEditor(s) {
     else { cond.appendChild(muted('—')); }
   };
   kind.onchange = rebuild; rebuild();
-  const rm = btn('×'); rm.title = 'retirer l\'étape'; rm.onclick = () => el.remove();
+  const rm = rowButton('×', { title: 'retirer l\'étape', onClick: () => el.remove() });
   el.append(phase, title, guide, kind, cond, rm);
   return el;
 }
@@ -169,4 +218,4 @@ function readStep(el) {
 
 loadRunbooks();
 
-export { loadRunbooks };
+export { loadRunbooks, runbookRowModel, rbRow };

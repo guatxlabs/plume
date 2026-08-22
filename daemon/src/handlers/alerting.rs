@@ -596,7 +596,7 @@ pub(crate) async fn policy_delete(State(st): State<AppState>, Extension(au): Ext
 }
 
 // ======================================================================================
-// 10) HANDLERS — silences (editor+ ; GET viewer+). Create/delete LEDGERISÉS. TTL borné.
+// 10) HANDLERS — silences (editor+ ; GET viewer+). Create/update/delete LEDGERISÉS. TTL borné.
 // ======================================================================================
 
 pub(crate) async fn silences_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
@@ -666,6 +666,71 @@ pub(crate) async fn silence_create(State(st): State<AppState>, Extension(au): Ex
     })();
     match outcome {
         Ok(id) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "id": id, "expires_at": expires })).into_response() }
+        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+    }
+}
+
+/// PUT|POST /api/silences/:id — MODIFIE un silence existant (P11.5-a : le troisième geste de l'administrateur,
+/// entre créer et lever). Corps partiel : `matchers` (objet, re-validé par `parse_matchers`), `duration_s`
+/// (nouvelle durée COMPTÉE DEPUIS MAINTENANT, bornée par le même TTL maximal que la création : un silence
+/// ne devient pas permanent par modification), `reason`. Rôle : editor+ (même classe que create/delete,
+/// section 7 de `route_min_role`). Audit : `config.silence.update` (ledger + event plume-config, sévérité 3,
+/// fail-closed : rien n'est persisté si l'audit échoue) — MÊME mécanisme que create/delete.
+pub(crate) async fn silence_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
+    crate::req_conn!(st, au, conn);
+    let Ok((old_matchers, old_expires, old_reason)) = conn.query_row(
+        "SELECT matchers, expires_at, COALESCE(reason,'') FROM silence WHERE id=?1",
+        params![id],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)),
+    ) else {
+        return not_found("silence introuvable");
+    };
+    // Validation COMPLÈTE avant toute écriture : un corps invalide ne modifie rien.
+    let matchers_json = match b.get("matchers") {
+        Some(m) => match parse_matchers(m) {
+            Ok(list) if !list.is_empty() => matchers_to_json(&list),
+            Ok(_) => return bad_req("un silence doit porter au moins un matcher (mute par label)"),
+            Err(e) => return bad_req(e),
+        },
+        None => old_matchers.clone(),
+    };
+    let now_ts = now();
+    let expires = match b.get("duration_s").and_then(|v| v.as_i64()) {
+        Some(dur) if dur <= 0 => return bad_req("duration_s doit être > 0"),
+        Some(dur) => {
+            let max = silence_max_ttl_s();
+            if dur > max {
+                return bad_req(format!("durée de silence trop longue (max {max}s) — un silence ne peut être permanent"));
+            }
+            now_ts + dur
+        }
+        None => old_expires,
+    };
+    let reason = match b.get("reason").and_then(|v| v.as_str()) {
+        Some(r) => r.trim().to_string(),
+        None => old_reason.clone(),
+    };
+    if matchers_json == old_matchers && expires == old_expires && reason == old_reason {
+        return Json(json!({ "ok": true, "id": id, "expires_at": expires, "changed": false })).into_response();
+    }
+    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
+        return server_err("verrou base indisponible");
+    }
+    let outcome: rusqlite::Result<()> = (|| {
+        conn.execute(
+            "UPDATE silence SET matchers=?1, expires_at=?2, reason=?3 WHERE id=?4",
+            params![matchers_json, expires, reason, id],
+        )?;
+        audit_config_change(
+            &conn, "config.silence.update",
+            &format!("silence #{id} modifié par {} (matchers={matchers_json}, expire={expires}, raison='{reason}')", au.name), 3,
+            &format!("silence de notification #{id} modifié par {} (expire à {expires})", au.name),
+            &json!({ "op": "update", "kind": "silence", "id": id, "matchers": matchers_json, "expires_at": expires, "reason": reason, "old": { "matchers": old_matchers, "expires_at": old_expires, "reason": old_reason }, "actor": au.name }).to_string(),
+        )?;
+        Ok(())
+    })();
+    match outcome {
+        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "ok": true, "id": id, "expires_at": expires, "changed": true })).into_response() }
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }

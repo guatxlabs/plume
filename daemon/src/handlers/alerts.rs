@@ -82,7 +82,7 @@ pub(crate) fn alerts_query_page(conn: &Connection, all_status: bool, status: &st
                 (SELECT incident_id FROM incident_item WHERE ref='alert:'||alert.id LIMIT 1),\
                 COALESCE(alert.mitre,''),r.window_s,\
                 COALESCE(alert.acked_at,0),COALESCE(alert.acked_by,''),\
-                COALESCE(alert.sources,'') \
+                COALESCE(alert.sources,''),COALESCE(r.is_soql,1) \
                 FROM alert LEFT JOIN rule r ON ('rule.'||r.id)=alert.rule";
     // limit/offset = i64 déjà validés (clamp) -> injection impossible ; interpolés (pas de bind supplémentaire).
     let sql = format!("{base}{where_clause} ORDER BY alert.ts DESC LIMIT {limit} OFFSET {offset}");
@@ -91,13 +91,23 @@ pub(crate) fn alerts_query_page(conn: &Connection, all_status: bool, status: &st
         Err(_) => return (Vec::new(), total),
     };
     let out: Vec<Value> = match stmt.query_map(binds.as_slice(), |r| {
+        // P11.1-a — LE LIEN DE RECHERCHE, construit UNE fois, ici, par le démon : la requête telle qu'elle
+        // a compté (`detail`, recopiée à la levée), la fenêtre de la règle et l'instant de l'évaluation
+        // (`ts`, rafraîchi à chaque re-tir). Absent pour une alerte sans règle (heartbeat.*, règle
+        // supprimée) : le front n'a alors rien d'exact à proposer et le dit.
+        let ts: i64 = r.get(1)?;
+        let detail: String = r.get(6)?;
+        let window_s: Option<i64> = r.get(9)?;
+        let is_soql: bool = r.get::<_, i64>(13)? != 0;
+        let search_link = window_s.map(|w| lien_de_recherche_de_regle(&detail, is_soql, w, ts).to_json()).unwrap_or(Value::Null);
         Ok(json!({
-            "id": r.get::<_, i64>(0)?, "ts": r.get::<_, i64>(1)?,
+            "id": r.get::<_, i64>(0)?, "ts": ts,
             "rule": r.get::<_, String>(2)?, "severity": r.get::<_, i64>(3)?,
             "title": r.get::<_, String>(4)?, "status": r.get::<_, String>(5)?,
-            "detail": r.get::<_, String>(6)?, "case_id": r.get::<_, Option<i64>>(7)?,
+            "detail": detail, "case_id": r.get::<_, Option<i64>>(7)?,
             "mitre": r.get::<_, String>(8)?,
-            "window_s": r.get::<_, Option<i64>>(9)?,
+            "window_s": window_s,
+            "search_link": search_link,
             "acked_at": r.get::<_, i64>(10)?, "acked_by": r.get::<_, String>(11)?,
             // S7 — les sources auxquelles l'alerte est IMPUTÉE, telles qu'elles ont été DÉRIVÉES DE LA
             // DONNÉE à sa levée. Le front en a besoin pour le pivot « voir les N alertes de <source> »
@@ -468,7 +478,7 @@ pub(crate) fn mitre_parents(tag: &str) -> Vec<String> {
 /// global : rendre visible ce qu'on NE détecte pas. SUPERSET : une technique taguée hors CATALOG (custom /
 /// vendeur) n'est jamais perdue -> repliée dans une pseudo-tactique `unmapped` en fin de matrice.
 ///
-/// Forme : `{ tactics:[{tactic, techniques:[{tid, rule_count, alert_count, covered}], rule_count, alert_count,
+/// Forme : `{ tactics:[{tactic, techniques:[{tid, name, rule_count, alert_count, covered}], rule_count, alert_count,
 /// covered}], totals:{tactics, tactics_covered, techniques, techniques_covered, techniques_uncovered,
 /// rules_mapped, alerts} }`.
 pub(crate) fn build_attack_matrix(enabled_rule_tags: &[String], alert_counts: &HashMap<String, i64>) -> Value {
@@ -499,7 +509,9 @@ pub(crate) fn build_attack_matrix(enabled_rule_tags: &[String], alert_counts: &H
             tot_tech += 1;
             if covered { tot_tech_cov += 1; }
             t_rc += rc; t_ac += ac; t_cov = t_cov || covered;
-            techs.push(json!({ "tid": tid, "rule_count": rc, "alert_count": ac, "covered": covered }));
+            // P11.6-a : le NOM voyage avec l'identifiant (`attack_names`) ; `null` = hors catalogue, et la
+            // surface doit alors le dire (« nom inconnu »), jamais rendre un vide.
+            techs.push(json!({ "tid": tid, "name": crate::attack_names::technique_name(tid), "rule_count": rc, "alert_count": ac, "covered": covered }));
         }
         tot_alerts += t_ac;
         if t_cov { tot_tac_cov += 1; }
@@ -523,7 +535,7 @@ pub(crate) fn build_attack_matrix(enabled_rule_tags: &[String], alert_counts: &H
             tot_tech += 1;
             if covered { tot_tech_cov += 1; }
             t_rc += rc; t_ac += ac; t_cov = t_cov || covered;
-            techs.push(json!({ "tid": tid, "rule_count": rc, "alert_count": ac, "covered": covered }));
+            techs.push(json!({ "tid": tid, "name": crate::attack_names::technique_name(tid), "rule_count": rc, "alert_count": ac, "covered": covered }));
         }
         tot_alerts += t_ac;
         if t_cov { tot_tac_cov += 1; }

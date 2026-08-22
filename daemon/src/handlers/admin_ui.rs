@@ -1,20 +1,14 @@
 //! Administration UI (#1b) : rétention éditable (`retention_settings_get/put`, `retention_preview`),
-//! journal d'intégrité (`ledger_page`/`ledger_get`), inventaire/métadonnées sources
-//! (`sources_inventory`, `source_settings_get/put`), et registre d'exclusions unifié
+//! journal d'intégrité (`ledger_page`/`ledger_get`) et registre d'exclusions unifié
 //! (`ExclType`/`ExclEntry`/`daemon_excl_registry`, `suppressions_get/put`, `apply_display_excl_edit`).
+//! L'inventaire des sources et leurs métadonnées d'affichage vivent dans `handlers/sources.rs`.
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
 
-// Plafonds de longueur (caractères) des métadonnées de source éditables (Partie B) — bornage anti-abus
-// avant écriture. Valeurs inchangées, simplement nommées (revue hygiène refactor #25).
-const LABEL_MAX: usize = 200;
-const NOTE_MAX: usize = 2000;
-const CAT_MAX: usize = 100;
-
 // ================================ #1b ADMINISTRATION UI (daemon) ================================
-// Rétention éditable (Partie A) + inventaire/métadonnées sources (Partie B). Toutes les mutations sont
-// admin-only (path-guard `:920` + revérif interne), doublement auditées (ledger + event SOC) dans UNE
-// transaction fail-closed, et bornées par des planchers durs. Aucun de ces endpoints ne touche l'ingest.
+// Rétention éditable. Toutes les mutations sont admin-only (path-guard + revérif interne), doublement
+// auditées (ledger + event SOC) dans UNE transaction fail-closed, et bornées par des planchers durs.
+// Aucun de ces endpoints ne touche l'ingest.
 
 /// GET /api/retention -> valeurs EFFECTIVES courantes (résolveur setting->env/conf->défaut, correctif H2) +
 /// bornes (min/max/défaut/unité) pour la validation miroir côté client. Admin only (B9).
@@ -197,214 +191,12 @@ pub(crate) async fn ledger_get(State(st): State<AppState>, Extension(au): Extens
     })
 }
 
-/// GET /api/sources -> INVENTAIRE read-only dérivé (join observé x attendu x métadonnées display). Observé =
-/// event_rollup GROUP BY source (budget : jamais `event`) ; attendu = source_is_known (COLLECTORS + sources
-/// builtin) ; métadonnées = source_settings. `unexpected` = SIGNAL (source ni connue ni marquée expected).
-/// Accessible à TOUS les rôles (pas de contrôle de mutation ici) -> PAS de guard admin (délibéré).
-pub(crate) async fn sources_inventory(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
-    let now_ts = now();
-    let db_path = req_db_path(&st, &au);
-    tokio::task::spawn_blocking(move || {
-        read_with_watchdog(db_path.as_str(), Json(json!({ "ok": false, "sources": [], "generated": now_ts })), move |conn| {
-            let d1 = now_ts - 86400;
-            let cut7 = now_ts - 7 * 86400;
-            let pipe_fresh = pipeline_is_fresh(conn, now_ts);
-            // OBSERVÉ (event_rollup uniquement : ~ms, jamais un scan de `event`). source -> (last_seen, n_24h).
-            let mut obs: std::collections::BTreeMap<String, (i64, i64)> = std::collections::BTreeMap::new();
-            if let Ok(mut s) = conn.prepare(
-                "SELECT source, COALESCE(NULLIF(MAX(last_ts),0), MAX(bucket)), SUM(CASE WHEN bucket>=?1 THEN n ELSE 0 END) \
-                 FROM event_rollup WHERE bucket>=?2 AND source<>'' GROUP BY source HAVING SUM(n)>=3",
-            ) {
-                if let Ok(rows) = s.query_map(params![d1, cut7], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) {
-                    for (src, last, n) in rows.flatten() {
-                        obs.insert(src, (last, n));
-                    }
-                }
-            }
-            // MÉTADONNÉES DISPLAY (source_settings). Une source labellisée mais dormante reste listée (entry 0,0).
-            #[allow(clippy::type_complexity)]
-            let mut meta: HashMap<String, (bool, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>)> = HashMap::new();
-            if let Ok(mut s) = conn.prepare("SELECT source,expected,label,note,category,updated_by,updated FROM source_settings WHERE scope='global'") {
-                if let Ok(rows) = s.query_map([], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, i64>(1)? != 0,
-                        r.get::<_, Option<String>>(2)?,
-                        r.get::<_, Option<String>>(3)?,
-                        r.get::<_, Option<String>>(4)?,
-                        r.get::<_, Option<String>>(5)?,
-                        r.get::<_, Option<i64>>(6)?,
-                    ))
-                }) {
-                    for (src, exp, lbl, note, cat, by, upd) in rows.flatten() {
-                        obs.entry(src.clone()).or_insert((0, 0));
-                        meta.insert(src, (exp, lbl, note, cat, by, upd));
-                    }
-                }
-            }
-            let mut sources: Vec<Value> = Vec::new();
-            for (src, (last, n24)) in &obs {
-                let known = source_is_known(src);
-                let m = meta.get(src);
-                let expected = m.map(|x| x.0).unwrap_or(known); // pas de settings -> défaut = connue?
-                let age = now_ts - last;
-                let status = if !pipe_fresh {
-                    "muet"
-                } else if *last == 0 {
-                    "dormant"
-                } else if age <= 900 {
-                    "frais"
-                } else {
-                    "calme"
-                };
-                let typ = if *n24 == 0 {
-                    "dormant"
-                } else if 86400 / (*n24).max(1) <= 90 {
-                    "continu"
-                } else {
-                    "périodique"
-                };
-                sources.push(json!({
-                    "source": src,
-                    "in_collectors": known,
-                    "expected": expected,
-                    "unexpected": !expected,
-                    "label": m.and_then(|x| x.1.clone()),
-                    "note": m.and_then(|x| x.2.clone()),
-                    "category": m.and_then(|x| x.3.clone()),
-                    "updated_by": m.and_then(|x| x.4.clone()),
-                    "updated": m.and_then(|x| x.5),
-                    "last_seen": if *last == 0 { Value::Null } else { json!(last) },
-                    "age_s": if *last == 0 { Value::Null } else { json!(age) },
-                    "n_24h": n24,
-                    "status": status,
-                    "type": typ,
-                }));
-            }
-            Json(json!({ "ok": true, "generated": now_ts, "pipeline_fresh": pipe_fresh, "sources": sources }))
-        })
-    })
-    .await
-    .unwrap_or_else(|_| Json(json!({ "ok": false, "sources": [], "generated": now_ts })))
-}
-
-/// GET /api/sources/settings -> liste brute source_settings (métadonnées display). Admin only (B9).
-pub(crate) async fn source_settings_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
-    if !au.is_admin() {
-        return (StatusCode::FORBIDDEN, "réservé à l'administrateur").into_response();
-    }
-    crate::req_conn!(st, au, conn);
-    let mut stmt = match conn.prepare("SELECT source,expected,label,note,category,updated,updated_by FROM source_settings WHERE scope='global' ORDER BY source") {
-        Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("source_settings indisponible: {e}")).into_response(),
-    };
-    let settings: Vec<Value> = stmt
-        .query_map([], |r| {
-            Ok(json!({
-                "source": r.get::<_, String>(0)?,
-                "expected": r.get::<_, i64>(1)? != 0,
-                "label": r.get::<_, Option<String>>(2)?,
-                "note": r.get::<_, Option<String>>(3)?,
-                "category": r.get::<_, Option<String>>(4)?,
-                "updated": r.get::<_, Option<i64>>(5)?,
-                "updated_by": r.get::<_, Option<String>>(6)?,
-            }))
-        })
-        .map(|it| it.flatten().collect())
-        .unwrap_or_default();
-    Json(json!({ "ok": true, "settings": settings })).into_response()
-}
-
-/// POST|PUT /api/sources/settings {source, action, value?} -> métadonnées DISPLAY-only par source (D1 option
-/// b). Enum d'actions FERMÉ : set_expected(bool) | set_label(str) | set_note(str) | set_category(str) | clear.
-/// Admin only (B9) + double-audit transactionnel fail-closed (M5). B8 : set_expected(true) sur une source
-/// INCONNUE = suppression d'un SIGNAL -> sev 3 (sinon sev 2). AUCUN champ ici ne touche l'ingest/la collecte/
-/// les règles (mute d'affichage D4 et override rétention D3 NON implémentés).
-pub(crate) async fn source_settings_put(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
-    if !au.is_admin() {
-        return (StatusCode::FORBIDDEN, "réservé à l'administrateur").into_response();
-    }
-    let source = b.trimmed("source");
-    if source.is_empty() {
-        return (StatusCode::BAD_REQUEST, "champ 'source' requis").into_response();
-    }
-    if source.chars().count() > 256 {
-        return (StatusCode::BAD_REQUEST, "source trop longue (max 256)").into_response();
-    }
-    let action = b.str_field("action");
-    // ENUM FERMÉ (contrainte 8) — toute action inconnue = 400 AVANT d'ouvrir la transaction.
-    if !matches!(action, "set_expected" | "set_label" | "set_note" | "set_category" | "clear") {
-        return (StatusCode::BAD_REQUEST, "action inconnue (enum fermé)").into_response();
-    }
-    let known = source_is_known(&source);
-    crate::req_conn!(st, au, conn);
-    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "verrou base indisponible").into_response();
-    }
-    let outcome: rusqlite::Result<()> = (|| {
-        let ts = now();
-        let (human, sev): (String, i64) = if action == "clear" {
-            conn.execute("DELETE FROM source_settings WHERE scope='global' AND source=?1", params![source])?;
-            ("réinitialisée (clear)".to_string(), 2)
-        } else {
-            // garantit la ligne (upsert), puis applique le champ selon l'enum fermé (col = littéral, jamais user-input).
-            conn.execute(
-                "INSERT INTO source_settings(scope,source,updated,updated_by) VALUES('global',?1,?2,?3) \
-                 ON CONFLICT(scope,source) DO UPDATE SET updated=?2,updated_by=?3",
-                params![source, ts, au.name.as_str()],
-            )?;
-            match action {
-                "set_expected" => {
-                    let v = b.get("value").and_then(|x| x.as_bool()).unwrap_or(true);
-                    conn.execute("UPDATE source_settings SET expected=?1,updated=?2,updated_by=?3 WHERE scope='global' AND source=?4", params![v as i64, ts, au.name.as_str(), source])?;
-                    // B8 : reconnaître (expected=true) une source hors de l'ensemble connu = étouffer un signal -> bruyant.
-                    let sev = if v && !known { 3 } else { 2 };
-                    (format!("attendu={v}"), sev)
-                }
-                "set_label" => {
-                    let s: String = b.get("value").and_then(|x| x.as_str()).unwrap_or("").chars().take(LABEL_MAX).collect();
-                    conn.execute("UPDATE source_settings SET label=?1,updated=?2,updated_by=?3 WHERE scope='global' AND source=?4", params![s, ts, au.name.as_str(), source])?;
-                    (format!("label défini ({} car.)", s.chars().count()), 2)
-                }
-                "set_note" => {
-                    let s: String = b.get("value").and_then(|x| x.as_str()).unwrap_or("").chars().take(NOTE_MAX).collect();
-                    conn.execute("UPDATE source_settings SET note=?1,updated=?2,updated_by=?3 WHERE scope='global' AND source=?4", params![s, ts, au.name.as_str(), source])?;
-                    ("note définie".to_string(), 2)
-                }
-                "set_category" => {
-                    let s: String = b.get("value").and_then(|x| x.as_str()).unwrap_or("").chars().take(CAT_MAX).collect();
-                    conn.execute("UPDATE source_settings SET category=?1,updated=?2,updated_by=?3 WHERE scope='global' AND source=?4", params![s, ts, au.name.as_str(), source])?;
-                    (format!("catégorie définie ({} car.)", s.chars().count()), 2)
-                }
-                _ => unreachable!("action pré-validée"),
-            }
-        };
-        audit_config_change(
-            &conn,
-            "source.settings",
-            &format!("{source}: {human} par {}", au.name),
-            sev,
-            &format!("source {source}: {human} par {}", au.name),
-            &json!({ "source": source, "action": action, "actor": au.name }).to_string(),
-        )?;
-        Ok(())
-    })();
-    match outcome {
-        Ok(()) => {
-            let _ = conn.execute_batch("COMMIT");
-            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
-        }
-        Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK"); // fail-closed : rien de persisté sans audit
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("échec transaction audit (aucune modification appliquée): {e}")).into_response()
-        }
-    }
-}
+// Inventaire des sources + métadonnées d'affichage : `handlers/sources.rs` (P11.3-a).
 
 // =================================================================================================
 // CHANTIER « whitelists → webui » — REGISTRE UNIQUE des suppressions/whitelists/filtres du DAEMON.
 //
-// AVANT : chaque exclusion vivait en CONSTANTE MAGIQUE dispersée (EXCL_CLAUSES, KNOWN_EXTRA_SOURCES,
+// AVANT : chaque exclusion vivait en CONSTANTE MAGIQUE dispersée (EXCL_CLAUSES, sources connues,
 // RETENTION_FIELDS, PROTECTED_IP_MATCHERS, HOT_FIELDS, FTS_FIELDS_ON, generic_sources) —
 // certaines invisibles = l'ANGLE MORT redouté (une suppression cachée). MAINTENANT : chacune est DÉCLARÉE
 // ici comme DONNÉE {name, scope, type, value, source} et lue LIVE (aucune valeur dupliquée : le registre
@@ -500,15 +292,18 @@ pub(crate) fn daemon_excl_registry(conn: &Connection, conf: &HashMap<String, Str
         editable: true,
         edit_key: "self",
     });
-    // A3 — KNOWN_EXTRA_SOURCES (flag DISPLAY-only « inattendu » + sévérité B8 ; ZÉRO effet ingest/collecte).
+    // A3 — sources ATTENDUES PAR CONSTRUCTION (flag d'affichage « inattendu » + sévérité B8 ; ZÉRO effet
+    // ingest/collecte). DÉRIVÉES (fichiers livrés, sondes, dimensions de rollup — cf. handlers/sources.rs),
+    // plus les connecteurs configurés, qui dépendent de la base et ne sont donc pas listés ici.
+    let attendues = sources_attendues_sans_base();
     out.push(ExclEntry {
-        name: "known_extra_sources",
-        label: "Sources connues additionnelles (flag « inattendu »)",
+        name: "sources_attendues_par_construction",
+        label: "Sources attendues par construction (flag « inattendu »)",
         scope: "inventaire /api/sources + sévérité B8",
         etype: ExclType::DisplayOnly,
-        value: KNOWN_EXTRA_SOURCES.join(","),
-        detail: json!({ "count": KNOWN_EXTRA_SOURCES.len(), "items": KNOWN_EXTRA_SOURCES }),
-        source: "const KNOWN_EXTRA_SOURCES / source_is_known",
+        value: attendues.join(","),
+        detail: json!({ "count": attendues.len(), "items": attendues }),
+        source: "SOURCES_LIVREES + COLLECTORS + dim_rollup_specs / raison_attendue_par_construction",
         editable: false,
         edit_key: "",
     });

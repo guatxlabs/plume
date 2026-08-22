@@ -3,7 +3,7 @@
 // change côté auth. Anti-XSS : tout texte via textContent/esc ; le secret (client_secret / bind pw) est un
 // champ password, JAMAIS réaffiché, ré-envoyé UNIQUEMENT s'il est re-saisi (omis = conservé côté serveur).
 // La vraie garde reste SERVEUR (/api/idp/* admin-only ; /api/mfa/* borné à au.name).
-import { $, api, apiSend, confirmModal, esc, fmtTs, muted, toast, withBusy } from './core.js';
+import { $, api, apiSend, confirmWithConsequence, disclosure, esc, fmtTs, modal, muted, toast, withBusy } from './core.js';
 import { uiIsAdmin } from './multitenant.js';
 
 // ---------------------------------------------------------------------------------------------------
@@ -14,7 +14,9 @@ const KIND_LABEL = { oidc: 'OIDC', ldap: 'LDAP / AD', saml: 'SAML (à venir)' };
 
 export async function loadIdpProviders() {
   const wrap = $('#idp-list'); if (!wrap) return;
-  const btn = $('#idp-new'); if (btn) btn.onclick = () => openIdpForm(null);
+  // P11.4-a : « + Fournisseur » passe par le dépli partagé (second clic = repli, état visible sur le bouton).
+  const btn = $('#idp-new'); const fh = $('#idp-form-host');
+  if (btn && fh && !btn.dataset.wired) { btn.dataset.wired = '1'; disclosure(btn, fh, { isOpen: () => !!fh.querySelector('#idp-form') && !fh.querySelector('#idp-form').dataset.editing, open: () => openIdpForm(null), close: () => fh.replaceChildren() }); }
   if (!uiIsAdmin()) { wrap.replaceChildren(muted('réservé à l\'administrateur.')); return; }
   let list = [];
   try { list = await api('/idp/providers'); }
@@ -34,9 +36,9 @@ export async function loadIdpProviders() {
 
 function providerRow(p) {
   const row = document.createElement('div');
-  row.className = 'idp-row'; row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line,#2c3550)';
+  row.className = 'idp-row'; row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--bd)';
   const dot = document.createElement('span');
-  dot.textContent = p.enabled ? '●' : '○'; dot.style.color = p.enabled ? 'var(--ok,#4ade80)' : 'var(--muted,#8b93a7)';
+  dot.textContent = p.enabled ? '●' : '○'; dot.style.color = p.enabled ? 'var(--ok,#4ade80)' : 'var(--mut)';
   dot.title = p.enabled ? 'activé' : 'désactivé';
   const name = document.createElement('b'); name.textContent = p.name;
   const kind = document.createElement('span'); kind.className = 'muted'; kind.style.fontSize = '12px';
@@ -52,24 +54,26 @@ function providerRow(p) {
   });
   const edit = mkBtn('Éditer', () => openIdpForm(p));
   const del = mkBtn('Supprimer', async () => {
-    if (!(await confirmModal('Supprimer le fournisseur « ' + p.name + ' » ?'))) return;
+    // P11.5-b : DELETE = route sensible -> la confirmation partagée nomme la conséquence.
+    if (!(await confirmWithConsequence('Supprimer le fournisseur « ' + p.name + ' »', 'les comptes qui se connectent par ce fournisseur ne pourront plus ouvrir de session ; le secret associé est effacé et ne se restaure pas.', { okText: 'Supprimer' }))) return;
     try { await apiSend('/idp/providers/' + p.id, 'DELETE'); toast('supprimé', 'ok'); loadIdpProviders(); }
     catch (e) { toast('erreur : ' + e.message, 'bad'); }
   });
-  del.style.color = 'var(--bad,#f87171)';
+  del.classList.add('btn-danger');
   row.append(dot, name, kind, meta, toggle, edit, del);
   return row;
 }
 
 function mkBtn(label, fn) {
-  const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.style.fontSize = '12px'; b.onclick = fn; return b;
+  const b = document.createElement('button'); b.type = 'button'; b.className = 'btn btn-sm'; b.textContent = label; b.onclick = fn; return b; // P11.4-b : classe partagée
 }
 
 // Formulaire dynamique de fournisseur (create ou edit). Les champs changent selon le kind.
 function openIdpForm(existing) {
   const host = $('#idp-form-host'); if (!host) return;
   const cfg = (existing && existing.config) || {};
-  const form = document.createElement('form'); form.className = 'ruleform'; form.style.cssText = 'margin:10px 0;padding:10px;border:1px solid var(--line,#2c3550);border-radius:8px';
+  const form = document.createElement('form'); form.className = 'ruleform'; form.id = 'idp-form'; // P11.4-b : le cadre est celui de .ruleform (la bordure en dur citait une variable inexistante)
+  if (existing) form.dataset.editing = String(existing.id);
   const mkInput = (id, ph, val, type) => {
     const l = document.createElement('label'); l.style.cssText = 'display:block;margin:4px 0';
     l.append(document.createTextNode(ph + ' '));
@@ -127,8 +131,8 @@ function openIdpForm(existing) {
   form.appendChild(enLbl);
 
   const actions = document.createElement('div'); actions.className = 'rf-actions';
-  const save = document.createElement('button'); save.type = 'submit'; save.textContent = existing ? 'Enregistrer' : 'Créer';
-  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Annuler'; cancel.onclick = () => host.replaceChildren();
+  const save = document.createElement('button'); save.type = 'submit'; save.className = 'btn-primary'; save.textContent = existing ? 'Enregistrer' : 'Créer'; // P11.4-b
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'btn'; cancel.textContent = 'Annuler'; cancel.onclick = () => host.replaceChildren();
   const res = document.createElement('span'); res.className = 'muted';
   actions.append(save, cancel, res); form.appendChild(actions);
 
@@ -197,7 +201,9 @@ async function startEnroll() {
   const box = document.createElement('div'); box.className = 'ruleform';
   const p1 = document.createElement('p'); p1.style.cssText = 'font-size:12px;margin:0 0 6px';
   p1.textContent = 'Ajoute cette clé dans ton app d\'authentification (Google Authenticator, Authy…) :';
-  const sec = document.createElement('code'); sec.textContent = data.secret; sec.style.cssText = 'display:block;padding:6px;background:var(--bg2,#161c2e);border-radius:6px;word-break:break-all';
+  // P11.4-c : la clé se lit dans LES DEUX thèmes — classe partagée `.secretbox` (fond carte + texte fg), plus
+  // aucune couleur en dur : `--bg2` n'existait dans aucun thème et son repli sombre rendait la clé invisible en clair.
+  const sec = document.createElement('code'); sec.className = 'secretbox'; sec.textContent = data.secret; sec.title = 'Clé TOTP — cliquer sélectionne tout';
   const uri = document.createElement('div'); uri.className = 'muted'; uri.style.cssText = 'font-size:11px;margin:6px 0;word-break:break-all';
   uri.textContent = data.otpauth_uri;
   const lbl = document.createElement('label'); lbl.style.cssText = 'display:block;margin:6px 0';
@@ -223,7 +229,7 @@ function showRecovery(enroll, codes) {
   const h = document.createElement('p'); h.style.cssText = 'font-size:12px;margin:0 0 6px';
   const hb = document.createElement('b'); hb.textContent = 'Codes de secours (usage unique)';
   h.append(hb, document.createTextNode(' — note-les maintenant, ils ne seront plus affichés :'));
-  const ul = document.createElement('div'); ul.style.cssText = 'font-family:monospace;padding:6px;background:var(--bg2,#161c2e);border-radius:6px';
+  const ul = document.createElement('div'); ul.className = 'secretbox'; // P11.4-c : même boîte lisible que la clé
   ul.textContent = codes.join('   ');
   const done = mkBtn('J\'ai noté mes codes', () => { enroll.hidden = true; enroll.replaceChildren(); loadMfa(); });
   const actions = document.createElement('div'); actions.className = 'rf-actions'; actions.appendChild(done);
@@ -231,8 +237,12 @@ function showRecovery(enroll, codes) {
 }
 
 async function disableMfa() {
-  const code = prompt('Entre un code TOTP (ou un code de secours) pour désactiver la MFA :');
-  if (code == null) return;
+  // P11.5-b : désactiver la MFA ABAISSE une protection du compte -> confirmation partagée qui nomme la
+  // conséquence, puis saisie du code dans la modale partagée (plus de prompt() natif).
+  if (!await confirmWithConsequence('Désactiver la double authentification', 'ce compte se connectera de nouveau avec le seul mot de passe ; les codes de secours émis deviennent caducs.', { okText: 'Désactiver' })) return;
+  const r = await modal({ title: 'Code de vérification', message: 'Entre un code TOTP courant, ou un code de secours, pour confirmer la désactivation.', okText: 'Désactiver', fields: [{ name: 'code', label: 'Code', value: '', required: true, placeholder: 'code à 6 chiffres ou code de secours' }] });
+  if (!r) return;
+  const code = String(r.code || '');
   try { await apiSend('/mfa/disable', 'POST', { code: code.trim() }); toast('MFA désactivée', 'ok'); loadMfa(); }
   catch (e) { toast('erreur : ' + e.message, 'bad'); }
 }

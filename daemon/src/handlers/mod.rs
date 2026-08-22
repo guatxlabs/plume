@@ -35,6 +35,7 @@ pub(crate) mod prefs; // #62 : préférences utilisateur self-scoped (GET/PUT /a
 pub(crate) mod saved_queries; // requêtes GXQL nommées per-user, owner-scoped (CRUD /api/saved-queries) — outillage analyste
 pub(crate) mod processors;
 pub(crate) mod query;
+pub(crate) mod sources; // P11.3-a : inventaire des sources, métadonnées d'affichage, dérivation « attendue par construction »
 pub(crate) mod soql_meta; // complétion IDE : /api/soql/schema (vocab+champs+valeurs bornées) + /api/soql/templates
 pub(crate) mod search; // handler /api/search (extrait de main.rs, refactor split #25)
 pub(crate) mod rba;

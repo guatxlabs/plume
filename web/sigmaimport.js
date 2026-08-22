@@ -11,6 +11,7 @@
 // DÉGRADATION : si /api/sigma/import-bulk 404 (daemon concurrent pas encore déployé), message clair, aucune
 //   erreur dure. ADDITIF : ce module n'écrit rien tout seul (une mutation = un import explicite de l'admin).
 import { $, esc, ic, muted, toast, apiSend, closeModals, withBusy, pagedList, socIsAdmin } from './core.js';
+import { destinationNote } from './producer_ui.js';
 
 // Rafraîchisseur post-import (injecté par app.js via initSigmaImport) : recharge règles/couverture/matrice.
 // `var` (hoisté, PAS de TDZ) et non `let` : app.js appelle initSigmaImport au top-level et le graphe est
@@ -203,6 +204,8 @@ export function openSigmaImport() {
       // apiSend renvoie null sur corps vide ; on rend quand même (comptes à 0) sans casser.
       resEl.hidden = false;
       renderSummary(resEl, sum || {});
+      // P11.1-e : dire OÙ arrivent les règles importées — elles naissent OFF.
+      resEl.appendChild(destinationNote('alerts', '', 'règles importées OFF : activez-les dans Détection › Règles'));
       okBtn.textContent = 'Ré-importer';
       const imp = firstNum((sum || {}).imported);
       toast(imp != null ? (imp + ' règle(s) Sigma importée(s) (désactivées)') : 'Import Sigma traité', 'ok');

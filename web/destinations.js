@@ -73,11 +73,11 @@ function destinationRow(d) {
   if (d.last_error) { err.textContent = '⚠ ' + d.last_error; err.style.color = 'var(--warn)'; }
 
   // actions : Flush (forward immédiat), Éditer, Supprimer.
-  const flush = document.createElement('button'); flush.type = 'button'; flush.textContent = 'Flush';
+  const flush = document.createElement('button'); flush.type = 'button'; flush.className = 'btn btn-sm'; flush.textContent = 'Flush'; // P11.4-b
   flush.title = "Déclenche UN forward+avance immédiat (admin-only, fail-safe). Ne renvoie ni la réponse du sink ni le secret.";
   flush.disabled = !d.enabled || stub;
   flush.onclick = () => withBusy(flush, () => flushDestination(d));
-  const edit = document.createElement('button'); edit.type = 'button'; edit.textContent = 'Éditer'; edit.onclick = () => openDestinationForm(d);
+  const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'btn btn-sm'; edit.textContent = 'Éditer'; edit.onclick = () => openDestinationForm(d);
   const del = document.createElement('button'); del.type = 'button'; del.className = 'picon'; del.innerHTML = ic('x'); del.title = 'Supprimer la destination'; del.onclick = () => deleteDestination(d);
 
   const top = document.createElement('div'); top.className = 'rulerow-top';
@@ -123,6 +123,7 @@ export function openDestinationForm(d) {
   editing = d ? d.id : null;
   const host = $('#destination-form-host'); if (!host) return;
   const form = document.createElement('form'); form.className = 'ruleform'; form.id = 'destination-form';
+  if (d) form.dataset.editing = String(d.id); // le dépli partagé (app.js) distingue « création ouverte » d'« édition ouverte »
 
   const name = input('df-name', 'Nom (ex: Splunk cold-archive)', d ? d.name : '');
   const type = document.createElement('select'); type.id = 'df-type';
@@ -164,9 +165,10 @@ export function openDestinationForm(d) {
   };
   type.onchange = applyType; applyType();
 
-  const save = document.createElement('button'); save.type = 'submit'; save.textContent = d ? 'Enregistrer' : 'Créer la destination';
-  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Annuler'; cancel.onclick = () => { host.replaceChildren(); };
-  const actions = document.createElement('div'); actions.className = 'rf-row'; actions.append(save, cancel);
+  // P11.4-b : barre d'actions `.rf-actions` (contexte partagé : submit = primaire accent, le reste = secondaire).
+  const save = document.createElement('button'); save.type = 'submit'; save.className = 'btn-primary'; save.textContent = d ? 'Enregistrer' : 'Créer la destination';
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'btn'; cancel.textContent = 'Annuler'; cancel.onclick = () => { host.replaceChildren(); };
+  const actions = document.createElement('div'); actions.className = 'rf-actions'; actions.append(save, cancel);
 
   form.append(field('Nom', name), field('Endpoint', endpoint), row1, authRow, fRow, fHelp, actions);
   form.onsubmit = (e) => { e.preventDefault(); withBusy(save, () => saveDestination(d)); };

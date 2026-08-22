@@ -9,6 +9,8 @@ import { S } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
 import { loadAttackMatrix } from './attack.js';
 import { setAlertMitreFilter } from './alerts.js';
+// P11.2-a/b + P11.1-e : ligne, interrupteur et destination PARTAGÉS (règles, playbooks, runbooks, détection avancée).
+import { producerRow, rowButton, announceCreated, takePendingNote, detectionDestination, destinationNote, DESTINATIONS } from './producer_ui.js';
 
 // PURPLE — panneau couverture ATT&CK (onglet Détection) : agrège alert.mitre par technique via
 // /api/coverage/detections (count + 1re détection), trié count DESC. Chaque chip pivote vers les
@@ -62,6 +64,7 @@ async function loadRules() {
   try { ({ rules } = await api('/rules')); } catch (e) { return; }
   if (S.ruleSort === 'sev') rules.sort((a, b) => b.severity - a.severity || a.id - b.id);
   wrap.replaceChildren();
+  const note = takePendingNote('rules'); if (note) wrap.appendChild(note); // P11.1-e : où arrive ce qui vient d'être créé
   if (!rules.length) { wrap.appendChild(muted('aucune règle - clique " + Nouvelle règle "')); return; }
   // ITEM 7 : grouper PAR SÉVÉRITÉ (critical/high/medium/low/info), critique d'abord — sections repliables.
   const set = lsSet('soc_rule_collapsed');
@@ -77,21 +80,15 @@ async function loadRules() {
     wrap.appendChild(collapsibleGroup(set, 'soc_rule_collapsed', 'sev:' + s, sev(s), arr.length, [host], dot));
   });
 }
-function ruleRow(r) {
-  const row = document.createElement('div'); row.className = 'rulerow sev-' + r.severity;
-  const en = document.createElement('input'); en.type = 'checkbox'; en.className = 'crud-toggle'; en.checked = r.enabled;
-  // #1c-toggle : (dés)activation ADMIN-only, via l'endpoint dédié /enabled (audité + persistant). Fonctionne
-  // pour TOUS les managed, y compris les overlays config.d (managed=1) dont le choix SURVIT au reboot. Un
-  // non-admin voit la case en LECTURE SEULE (désactivée) — le serveur re-gate admin (403), la garde client=UX.
-  if (socIsAdmin()) {
-    en.title = 'actif — (dés)activer (persistant : le choix survit au reboot, même pour un overlay config.d)';
-    en.onchange = () => apiSend('/rules/' + r.id + '/enabled', 'POST', { enabled: en.checked }).catch(err => { en.checked = !en.checked; toast('Bascule refusée : ' + err.message, 'bad'); });
-  } else {
-    en.disabled = true; en.title = "actif — l'activation/désactivation d'une règle est réservée à l'administrateur";
-  }
-  const name = document.createElement('span'); name.className = 'rulename'; name.textContent = r.name;
+// Modèle de ligne d'une règle (forme UNIQUE partagée avec playbooks/runbooks — `producer_ui.js`).
+// Conséquence de l'interrupteur : lever des alertes (ou du risque) ; pas de confirmation (rien ne touche le
+// réseau). Bascule ADMIN-only via /enabled (audité, persistant — overlays config.d compris) ; un non-admin voit
+// la case en lecture seule, le serveur re-gate (403).
+function ruleRowModel(r) {
+  const dest = DESTINATIONS[detectionDestination(r.risk_score)];
+  const chips = [];
   // tag MITRE ATT&CK (purple) : technique que la règle DÉTECTE — clé de jointure avec Forge (red).
-  if (r.mitre) { const mt = document.createElement('span'); mt.className = 'mitrechip'; mt.textContent = r.mitre; const _mn = mitreName(r.mitre); mt.title = (_mn ? r.mitre + ' — ' + _mn + ' · ' : '') + 'technique MITRE ATT&CK détectée par cette règle'; name.appendChild(document.createTextNode(' ')); name.appendChild(mt); }
+  if (r.mitre) { const mt = document.createElement('span'); mt.className = 'mitrechip'; mt.textContent = r.mitre; const _mn = mitreName(r.mitre); mt.title = (_mn ? r.mitre + ' — ' + _mn + ' · ' : '') + 'technique MITRE ATT&CK détectée par cette règle'; chips.push(mt); }
   // #38 : cadres de conformité couverts (posture/couverture, pas certification) — un chip par cadre distinct.
   if (r.compliance) {
     const seen = new Set();
@@ -99,29 +96,37 @@ function ruleRow(r) {
       const fw = p.split(':')[0]; if (!fw || seen.has(fw)) return; seen.add(fw);
       const c = document.createElement('span'); c.className = 'mitrechip'; c.textContent = fw.toUpperCase();
       c.title = 'cadre de conformité couvert : ' + r.compliance + ' (posture / couverture — pas une certification)';
-      name.appendChild(document.createTextNode(' ')); name.appendChild(c);
+      chips.push(c);
     });
   }
-  name.appendChild(managedBadge(r.managed)); // origine du contenu (builtin/overlay/perso)
-  const cond = document.createElement('code'); cond.className = 'rulecond'; cond.textContent = `${r.op} ${r.threshold}`; cond.title = `${r.is_soql ? 'GXQL' : 'SQL'} : ${r.query}`;
-  const meta = document.createElement('span'); meta.className = 'rulemeta muted';
-  meta.textContent = `${sev(r.severity)} - ${r.last_value == null ? 'pas encore évaluée' : 'dernier ' + r.last_value}${r.last_fired ? ' - ' + fmtTs(r.last_fired) : ''}`;
-  const test = document.createElement('button'); test.textContent = 'Tester';
-  test.onclick = async () => {
+  return {
+    family: 'rule', extraClass: 'sev-' + r.severity, name: r.name, origin: r.managed, chips,
+    enabled: !!r.enabled,
+    consequence: (Number(r.risk_score) > 0 ? 'ajoute ' + r.risk_score + ' au score de risque des entités (' : 'lève une alerte ' + sev(r.severity) + ' (') + dest.label + ') à chaque évaluation où le seuil est franchi',
+    toggleAllowed: socIsAdmin(), toggleDeniedReason: "l'activation/désactivation d'une règle est réservée à l'administrateur",
+    confirmOnEnable: false,
+    onToggle: next => apiSend('/rules/' + r.id + '/enabled', 'POST', { enabled: next }),
+    summary: `${r.op} ${r.threshold}`, summaryTitle: `${r.is_soql ? 'GXQL' : 'SQL'} : ${r.query}`,
+    meta: `${sev(r.severity)} - ${r.last_value == null ? 'pas encore évaluée' : 'dernier ' + r.last_value}${r.last_fired ? ' - ' + fmtTs(r.last_fired) : ''}`,
+  };
+}
+function ruleRow(r) {
+  const m = ruleRowModel(r);
+  const row = producerRow(m);
+  const meta = row.metaEl;
+  const test = rowButton('Tester', { title: 'Évalue la requête maintenant, sans lever d\'alerte', onClick: async () => {
     meta.textContent = '...';
     const j = await apiSend('/rules/' + r.id + '/test');
     meta.textContent = j.error ? ('erreur : ' + j.error) : `test : ${j.value} -> ${j.fired ? 'déclenche' : 'ok'}`;
     meta.title = j.sql || '';
-  };
-  const edit = document.createElement('button'); edit.className = 'crud-btn'; edit.textContent = 'Éditer';
-  // MIROIR UX : éditer une règle BASELINE (seed/builtin managed=0) est réservé admin (le serveur
-  // 403 sinon) — on grise le bouton pour un non-admin plutôt que d'offrir une action qui échoue. Overlay (1) et
-  // ad-hoc perso (2) restent éditables (le serveur gère le reste : (dés)activation d'un managé = admin-only).
-  if (!socIsAdmin() && r.managed === 0) { edit.disabled = true; edit.title = 'détection baseline (seed/builtin) : édition réservée à l\'administrateur ; créez plutôt votre propre règle'; }
-  else edit.onclick = () => openRuleForm(r);
-  const del = document.createElement('button'); del.className = 'crud-btn'; del.innerHTML = ic('x'); del.title = 'Supprimer';
+  } });
+  // MIROIR UX : éditer une règle BASELINE (seed/builtin managed=0) est réservé admin (le serveur 403 sinon) —
+  // bouton grisé pour un non-admin plutôt qu'une action qui échoue. Overlay (1) et perso (2) restent éditables.
+  const baselineLocked = !socIsAdmin() && r.managed === 0;
+  const edit = rowButton('Éditer', { cls: 'crud-btn', disabled: baselineLocked, title: baselineLocked ? 'détection baseline (seed/builtin) : édition réservée à l\'administrateur ; créez plutôt votre propre règle' : '', onClick: baselineLocked ? null : () => openRuleForm(r) });
+  const del = rowButton('', { cls: 'crud-btn', icon: ic('x'), title: 'Supprimer' });
   if (gateDeleteBtn(del, r.managed)) del.onclick = async () => { if (await confirmModal('Supprimer la règle "' + r.name + '" ?', { danger: true })) { if (await contentDelete('/rules/' + r.id, 'règle')) loadRules(); } };
-  row.append(en, name, cond, meta, test, edit, del);
+  row.append(test, edit, del);
   return row;
 }
 function openRuleForm(r) {
@@ -150,6 +155,8 @@ function openRuleForm(r) {
   if ($(RF.compliance)) $(RF.compliance).value = r ? (r.compliance || '') : '';
   refreshMitreHint();
   refreshComplianceHint();
+  // P11.1-e : la destination est dite AVANT d'enregistrer (le span de résultat porte le lien).
+  const res = $('#rf-result'); if (res) { res.className = 'muted'; res.replaceChildren(destinationNote(detectionDestination(r && r.risk_score), '', 'dès la première évaluation (Intervalle)')); }
   $(RF.name).focus();
 }
 function closeRuleForm() {
@@ -193,6 +200,7 @@ if ($('#rule-form')) $('#rule-form').addEventListener('submit', async e => {
   // garde-fou #1 : le serveur VALIDE (GXQL compile / MITRE / …). Sur erreur -> {error} affiché, MODALE OUVERTE.
   if (!await contentSubmit(S.editingRule ? '/rules/' + S.editingRule : '/rules', body, '#rf-result')) return;
   closeRuleForm();
+  announceCreated('rules', 'alerts', body.name, body.enabled ? 'première évaluation dans ' + body.interval_s + ' s' : 'OFF : activez-la dans la liste'); // P11.1-e
   loadRules();
   renderCoverage(); // re-render la couverture après création/édition (le tag MITRE peut avoir changé)
 });
@@ -471,38 +479,42 @@ const PB = { name: '#pb-name', query: '#pb-query', issoql: '#pb-issoql', kind: '
 /* state: editingPb -> S (state.js) */
 async function loadPlaybooks() {
   const wrap = $('#pb-list'); if (!wrap) return;
-  let playbooks = [];
-  try { ({ playbooks } = await api('/playbooks')); } catch (e) { return; }
+  let playbooks = [], mode = 'observe';
+  try { ({ playbooks, mode = 'observe' } = await api('/playbooks')); } catch (e) { return; }
   wrap.replaceChildren();
+  const note = takePendingNote('playbooks'); if (note) wrap.appendChild(note); // P11.1-e
   if (!playbooks.length) { wrap.appendChild(muted('aucun playbook')); return; }
   // groupe repliable « Playbooks » (même chrome que Détection/Parseurs) — tri par nom (localeCompare)
   playbooks.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const set = lsSet('soc_pb_collapsed');
-  wrap.appendChild(collapsibleGroup(set, 'soc_pb_collapsed', 'playbooks', 'Playbooks', playbooks.length, playbooks.map(pbRow)));
+  wrap.appendChild(collapsibleGroup(set, 'soc_pb_collapsed', 'playbooks', 'Playbooks', playbooks.length, playbooks.map(p => pbRow(p, mode))));
 }
-function pbRow(p) {
-  const row = document.createElement('div'); row.className = 'rulerow';
-  const en = document.createElement('input'); en.type = 'checkbox'; en.className = 'crud-toggle'; en.checked = p.enabled;
-  // #1c-toggle : (dés)activation ADMIN-only via /enabled (audité + persistant pour les overlays config.d).
-  if (socIsAdmin()) {
-    en.title = 'actif — (dés)activer (persistant : le choix survit au reboot, même pour un overlay config.d)';
-    en.onchange = () => apiSend('/playbooks/' + p.id + '/enabled', 'POST', { enabled: en.checked }).catch(err => { en.checked = !en.checked; toast('Bascule refusée : ' + err.message, 'bad'); });
-  } else {
-    en.disabled = true; en.title = "actif — l'activation/désactivation d'un playbook est réservée à l'administrateur";
-  }
-  const name = document.createElement('span'); name.className = 'rulename'; name.textContent = p.name;
-  name.appendChild(managedBadge(p.managed)); // origine du contenu (builtin/overlay/perso)
-  const k = document.createElement('code'); k.className = 'rulecond'; k.textContent = '-> ' + p.action_kind; k.title = p.query;
-  const meta = document.createElement('span'); meta.className = 'rulemeta muted';
-  const test = document.createElement('button'); test.textContent = 'Tester';
-  test.onclick = async () => { meta.textContent = '...'; const j = await apiSend('/playbooks/' + p.id + '/test'); meta.textContent = j.error ? ('erreur : ' + j.error) : `${j.valides} cible(s) : ${(j.targets || []).slice(0, 5).join(', ')}`; };
-  const edit = document.createElement('button'); edit.className = 'crud-btn'; edit.textContent = 'Éditer';
+// Modèle de ligne d'un playbook : la MÊME forme que ruleRowModel / runbookRowModel (`producer_ui.js`).
+// `P11.2-b` : la conséquence vient du serveur (`consequence`, durée du ban incluse) et se lit dans les deux
+// états ; l'activation CONFIRME (elle arme une action réseau/processus) ; le mode global dit si ON exécute
+// (Actif) ou propose (Observation : file Actions, en attente, dry-run).
+function playbookRowModel(p, mode) {
+  const consequence = (p.consequence || ('-> ' + p.action_kind)) + (mode === 'active' ? ' — mode Actif : EXÉCUTÉ sans approbation' : ' — mode Observation : PROPOSÉ dans Actions (en attente, dry-run), pas exécuté');
+  return {
+    family: 'playbook', name: p.name, origin: p.managed, enabled: !!p.enabled, consequence,
+    // #1c-toggle : (dés)activation ADMIN-only via /enabled (audité + persistant pour les overlays config.d).
+    toggleAllowed: socIsAdmin(), toggleDeniedReason: "l'activation/désactivation d'un playbook est réservée à l'administrateur",
+    confirmOnEnable: true,
+    onToggle: next => apiSend('/playbooks/' + p.id + '/enabled', 'POST', { enabled: next }),
+    summary: '-> ' + p.action_kind, summaryTitle: p.query,
+    meta: 'toutes les ' + (p.interval_s || 0) + ' s sur ' + (p.window_s || 0) + ' s',
+  };
+}
+function pbRow(p, mode) {
+  const row = producerRow(playbookRowModel(p, mode));
+  const meta = row.metaEl;
+  const test = rowButton('Tester', { title: 'Liste les cibles que la requête rend maintenant, sans poser d\'action', onClick: async () => { meta.textContent = '...'; const j = await apiSend('/playbooks/' + p.id + '/test'); meta.textContent = j.error ? ('erreur : ' + j.error) : `${j.valides} cible(s) : ${(j.targets || []).slice(0, 5).join(', ')}`; } });
   // MIROIR UX : éditer un playbook BASELINE (seed/builtin managed=0) est réservé admin (403 serveur).
-  if (!socIsAdmin() && p.managed === 0) { edit.disabled = true; edit.title = 'playbook baseline (seed/builtin) : édition réservée à l\'administrateur'; }
-  else edit.onclick = () => openPbForm(p);
-  const del = document.createElement('button'); del.className = 'crud-btn'; del.innerHTML = ic('x'); del.title = 'Supprimer';
+  const baselineLocked = !socIsAdmin() && p.managed === 0;
+  const edit = rowButton('Éditer', { cls: 'crud-btn', disabled: baselineLocked, title: baselineLocked ? 'playbook baseline (seed/builtin) : édition réservée à l\'administrateur' : '', onClick: baselineLocked ? null : () => openPbForm(p) });
+  const del = rowButton('', { cls: 'crud-btn', icon: ic('x'), title: 'Supprimer' });
   if (gateDeleteBtn(del, p.managed)) del.onclick = async () => { if (await confirmModal('Supprimer le playbook "' + p.name + '" ?', { danger: true })) { if (await contentDelete('/playbooks/' + p.id, 'playbook')) loadPlaybooks(); } };
-  row.append(en, name, k, meta, test, edit, del);
+  row.append(test, edit, del);
   return row;
 }
 function openPbForm(p) {
@@ -516,7 +528,8 @@ function openPbForm(p) {
   $(PB.interval).value = p ? p.interval_s : 300;
   $(PB.window).value = p ? p.window_s : 3600;
   $(PB.enabled).checked = p ? p.enabled : true;
-  $('#pb-result').textContent = '';
+  // P11.1-e : la destination est dite AVANT d'enregistrer (condition = requête, 1re colonne = cible ; action = enum).
+  const res = $('#pb-result'); if (res) { res.className = 'muted'; res.replaceChildren(destinationNote('actions', '', '')); }
   $(PB.name).focus();
 }
 if ($('#pb-new')) $('#pb-new').onclick = () => openPbForm(null);
@@ -528,9 +541,11 @@ if ($('#pb-form')) $('#pb-form').addEventListener('submit', async e => {
   if (!body.query) { formMsg('#pb-result', 'requête requise', true); toast('requête requise', 'bad'); return; }
   // garde-fous #1/#3 : le serveur valide (requête compile, action ∈ enum fermé). Erreur -> {error} affiché, formulaire OUVERT.
   if (!await contentSubmit(S.editingPb ? '/playbooks/' + S.editingPb : '/playbooks', body, '#pb-result')) return;
-  $('#pb-form').classList.add('hidden'); loadPlaybooks();
+  $('#pb-form').classList.add('hidden');
+  announceCreated('playbooks', 'actions', body.name, body.enabled ? 'première évaluation dans ' + body.interval_s + ' s' : 'OFF : activez-le dans la liste (confirmation demandée)'); // P11.1-e
+  loadPlaybooks();
 });
 loadPlaybooks();
 loadMode();
 
-export { renderCoverage, loadRules, loadNotifiers, loadParsers, loadActions, loadMode, loadPlaybooks };
+export { renderCoverage, loadRules, loadNotifiers, loadParsers, loadActions, loadMode, loadPlaybooks, ruleRowModel, playbookRowModel, pbRow };

@@ -1004,7 +1004,8 @@
         }
         // editor/viewer bloqués sur l'admin-only (échantillon).
         for r in ["editor", "viewer"] {
-            for p in ["/api/users", "/api/connectors", "/api/retention", "/api/ledger", "/api/sources/settings", "/api/actions"] {
+            // `/api/sources/settings` n'est plus dans cet échantillon : editor+ depuis P11.3-a (cf. tests/sources_attendues_et_cadence.rs).
+            for p in ["/api/users", "/api/connectors", "/api/retention", "/api/ledger", "/api/actions"] {
                 assert!(rbac_gate(r, p, true).is_err(), "{r} refusé sur admin-only {p}");
             }
             assert!(rbac_gate(r, "/api/users", false).is_err(), "{r} ne LIT pas /api/users");

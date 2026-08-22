@@ -403,9 +403,43 @@ function setRunning(on) {
   const run = $('#run'); if (run) { run.classList.toggle('running', on); run.setAttribute('aria-busy', on ? 'true' : 'false'); }
 }
 
+// P11.9-c — CE QUE « TRONQUÉ — AMPLEUR INCONNUE » VEUT DIRE QUAND ON FEUILLETTE. MESURÉ le 2026-08-22 sur
+// le chemin du démon : une page atteinte par SAUT DIRECT (numéro de page = OFFSET, sans curseur) sur une
+// fenêtre qui touche le tier froid est servie depuis l'union hydratée, PLAFONNÉE en lignes ; au-delà du
+// plafond le serveur pose `stats.truncated` sans pouvoir chiffrer l'écart. Le badge disait alors « le
+// compte affiché est un plancher » — une phrase de TOTAL sur une page de PARCOURS, illisible pour qui ne
+// connaît pas l'infrastructure. La navigation ◀ / ▶ (curseur) ne passe PAS par ce plafond : elle reste
+// complète et continue. Le rendu nomme donc ce qui s'est passé et comment continuer, selon le contexte.
+// Pure (texte + titre) -> tenue par le harnais ESM.
+function truncationBadge(stats, navigation) {
+  const ec = stats.topn_ecartes, tot = stats.topn_total;
+  if (Number.isFinite(ec) && Number.isFinite(tot) && tot > 0) {
+    const pct = Math.round((ec / tot) * 100);
+    return ['qb-trunc', `tronqué — ${ec.toLocaleString('fr-FR')} écartés (${pct} %)`,
+      `Le compte affiché est un PLANCHER : ${ec.toLocaleString('fr-FR')} événement(s) écartés sur ${tot.toLocaleString('fr-FR')} par le plafond top-N du pré-agrégé.`
+      + (stats.rollup_note ? '\n\n' + stats.rollup_note : '')];
+  }
+  if (navigation && navigation.keyset && navigation.saut) {
+    return ['qb-trunc', 'page sautée — contenu partiel',   // libellé STATIQUE : traduisible par le lexique ; le numéro de page est dans la ligne d'état
+      `Cette page a été demandée par son NUMÉRO (saut direct). Au-delà de ce que le serveur peut matérialiser en une fois, une page sautée n'est ni complète ni garantie continue, et le total n'est pas recompté.\n`
+      + `Les flèches ◀ / ▶ parcourent TOUT le résultat par curseur, sans ce plafond : revenez en arrière avec ◀ (ou à la page 1), puis avancez avec ▶. Pour atteindre une zone lointaine sans sauter, resserrez la fenêtre temporelle ou affinez la requête.`
+      + (stats.rollup_note ? '\n\n' + stats.rollup_note : '')];
+  }
+  if (navigation && navigation.keyset) {
+    return ['qb-trunc', 'page partielle — plafond de lignes du serveur',
+      `Le serveur a rendu moins de lignes que cette page n'en demande, sans pouvoir mesurer ce qui manque (plafond de lignes ou de matérialisation atteint). ◀ / ▶ restent fiables ; si ce badge apparaît à CHAQUE page, la taille de page dépasse le plafond du serveur : choisissez une page plus petite.`
+      + (stats.rollup_note ? '\n\n' + stats.rollup_note : '')];
+  }
+  return ['qb-trunc', 'tronqué — ampleur inconnue',
+    "Résultat INCOMPLET : le serveur a atteint un plafond (lignes, matérialisation ou top-N) sans pouvoir mesurer ce qui manque — le compte affiché est un PLANCHER d'écart inconnu. Resserrez la fenêtre temporelle ou affinez la requête pour un résultat complet."
+    + (stats.rollup_note ? '\n\n' + stats.rollup_note : '')];
+}
+
 // BADGE de transparence (confiance SOC) : l'analyste DOIT voir si le chiffre vient d'un rollup, et s'il
 // est approximatif/tronqué, vs un scan brut exact. stats.served_from "rollup"|"raw" + approx + truncated.
-function renderQBadge(stats) {
+// `navigation` (optionnel) = { keyset, saut, page } : le contexte de feuilletage, qui change ce que
+// « tronqué » veut dire (cf. truncationBadge).
+function renderQBadge(stats, navigation) {
   const el = $('#qbadge'); if (!el) return;
   const parts = [];
   if (stats && stats.served_from === 'rollup') {
@@ -418,19 +452,7 @@ function renderQBadge(stats) {
   // manque trois valeurs ou seize fois le compte affiché (MESURÉ : jusqu'à x16,4 sur le banc). Quand le
   // serveur a pu CHIFFRER ce que le plafond écarte (stats.topn_ecartes/topn_total), on l'affiche ; sinon on
   // dit que l'ampleur est INCONNUE — jamais un chiffre qu'on n'a pas.
-  if (stats && stats.truncated) {
-    const ec = stats.topn_ecartes, tot = stats.topn_total;
-    if (Number.isFinite(ec) && Number.isFinite(tot) && tot > 0) {
-      const pct = Math.round((ec / tot) * 100);
-      parts.push(['qb-trunc', `tronqué — ${ec.toLocaleString('fr-FR')} écartés (${pct} %)`,
-        `Le compte affiché est un PLANCHER : ${ec.toLocaleString('fr-FR')} événement(s) écartés sur ${tot.toLocaleString('fr-FR')} par le plafond top-N du pré-agrégé.` +
-        (stats.rollup_note ? '\n\n' + stats.rollup_note : '')]);
-    } else {
-      parts.push(['qb-trunc', 'tronqué — ampleur inconnue',
-        "Résultat INCOMPLET et l'ampleur de ce qui manque n'a pas pu être établie — le compte affiché est un PLANCHER d'écart inconnu." +
-        (stats.rollup_note ? '\n\n' + stats.rollup_note : '')]);
-    }
-  }
+  if (stats && stats.truncated) parts.push(truncationBadge(stats, navigation));
   el.replaceChildren(...parts.map(([cls, text, title]) => {
     const b = document.createElement('span'); b.className = 'qb ' + cls; b.textContent = text; b.title = title; return b;
   }));
@@ -1128,7 +1150,7 @@ async function evLoad() {
     if (!S.exploreInflight || S.exploreInflight.qid !== qid) return;   // requête supersédée pendant le yield -> on jette ce rendu périmé
     if (forceTable) renderTablePaged($('#qresult'), j.columns, rows);
     else renderEvents($('#qresult'), j.columns, rows);
-    renderQBadge(j.stats);
+    renderQBadge(j.stats, { keyset, saut: jumpOff > 0, page: S.evState.page + 1 });
     showQExport(rows.length > 0);
     const net = Math.round(performance.now() - t0);
     if (keyset) {
@@ -1137,6 +1159,8 @@ async function evLoad() {
       const kpg = kp ? `page ${S.evState.page + 1} / ${kp}` : `page ${S.evState.page + 1}${j.has_more ? ' · plus de résultats →' : ' · fin'}`;
       $('#qstats').textContent = `${ktot}${kpg} · serveur ${srv} ms · total ${net} ms`;
       if (heavyJump) $('#qstats').textContent = `${ktot}page ${S.evState.page + 1} lointaine trop lourde (budget dépassé) — utilise ◀ / ▶ pour un parcours fiable, ou affine la requête`;
+      // P11.9-c — une page sautée servie PARTIELLE le dit dans la ligne d'état, pas seulement dans un badge.
+      else if (jumpOff > 0 && j.stats && j.stats.truncated) $('#qstats').textContent = `${ktot}page ${S.evState.page + 1} atteinte par saut direct : contenu partiel (plafond serveur) — ◀ / ▶ parcourent le résultat complet par curseur`;
     } else {
       const pages = S.evState.total >= 0 ? Math.max(1, Math.ceil(S.evState.total / S.evState.pageSize)) : '?';
       const totTxt = S.evState.total >= 0 ? (S.evState.total + (S.evState.totalCapped ? '+' : '') + ' lignes') : 'total inconnu';
@@ -1200,7 +1224,7 @@ function qHistGo(delta) {
 async function runQuery() {
   const q = $('#sql').value.trim();
   if (!q) { cancelInflight(); $('#qresult').replaceChildren(); $('#qstats').textContent = ''; renderQBadge(null); showQExport(false); return; }
-  const isSoql = /^\s*search\b/i.test(q) || q.includes('|');
+  const isSoql = /^\s*(search|metric)\b/i.test(q) || q.includes('|');
   // GARDE UI (#1c) — une saisie NON-GXQL part en {sql} BRUT (lecture arbitraire de toute
   // la base). Le SQL brut est RÉSERVÉ ADMIN : un non-admin garde tout son accès LECTURE via GXQL/search, on
   // refuse juste d'envoyer du SQL brut (la VRAIE garde reste serveur : /api/query renvoie 403). Message clair.
@@ -1256,4 +1280,4 @@ async function runQuery() {
 function showQExport(has) { const el = $('#qexport'); if (el) el.hidden = !has; }
 
 
-export { banIp, clearDrillCrumb, currentFrom, currentTo, doSearch, evLoad, exploreFrom, exploreTo, qHistGo, queryCount, renderViz, runQ, runQuery, setZoom, stopExplore, tableEl, updateZoomBadge, vizElement };
+export { banIp, clearDrillCrumb, currentFrom, currentTo, doSearch, evLoad, exploreFrom, exploreTo, qHistGo, queryCount, renderViz, runQ, runQuery, setZoom, stopExplore, tableEl, updateZoomBadge, vizElement, truncationBadge };

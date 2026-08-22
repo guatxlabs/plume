@@ -1,6 +1,6 @@
 // alerts.js — file d'alertes : rendu, triage groupe, drill, export, filtres MITRE/source
 // Extrait d'app.js (decoupe par concern — meme patron que freshness.js).
-// PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
+// Extrait d'app.js en PURE MOVE ; depuis P11.1 : lien de recherche servi par le démon, barre d'actions unique.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
 import { $, esc, sev, fmtTs, ic, withBusy, api, apiSend, makePager, exportBar, confirmModal, mitreName } from './core.js';
@@ -9,27 +9,35 @@ import { banIp, runQuery, updateZoomBadge } from './viz.js';
 import { canEditCases, addToCase, openCase } from './cases.js';
 import { refresh, updateRangeBtn } from './app.js';
 
-// clic sur une alerte -> ouvre l'explore sur les ÉVÉNEMENTS déclencheurs. Le `detail` de l'alerte
-// = la requête de la règle (ex "search severity>=3 | stats count") -> on garde la tête `search`
-// (sans le | stats/timechart) pour voir les events. Sinon (alerte collecteur) : IP du titre, ou le titre.
+// clic sur une alerte -> ouvre l'Explore sur ce que la règle a COMPTÉ.
+// P11.1-a — LE LIEN EST CONSTRUIT PAR LE DÉMON (`search_link` sur /api/alerts : requête dont la règle a
+// agrégé le résultat + fenêtre EXACTE de l'évaluation, cf. lien_de_recherche_de_regle). Le navigateur ne
+// dérive plus rien pour une alerte de règle : une seule construction, la même que celle que le test
+// `le_lien_de_chaque_regle_livree_reproduit_la_valeur_de_la_regle` exécute contre chaque règle livrée.
+// Sans lien (alerte d'un collecteur, heartbeat, règle supprimée) : repli HEURISTIQUE historique — l'IP du
+// titre, sinon le titre — sur la fenêtre de l'alerte ; ce repli n'est PAS un lien de recherche exact, et
+// il ne concerne que les alertes qui ne viennent pas d'une règle (la propriété P11.1-a porte sur les règles).
+// LIMITE CONNUE (hors de ce module) : la barre Explore ne reconnaît le GXQL que par `search` ou un `|`
+// (viz.js runQuery) ; un lien `metric <nom>` nu — règle `metric … | stats max(value)` — y est pris pour du
+// SQL brut. Le remède est dans viz.js (`looksLikeSoql` de soql_complete.js reconnaît `metric`).
 function alertDrill(a) {
   if (!a) return;
-  let q = (a.detail || '').trim();
-  if (/^\s*(search|metric)\b/i.test(q)) {
-    q = q.split('|')[0].trim();                 // enlève la transformation -> les événements bruts
-  } else {
-    const ipm = ((a.title || '') + ' ' + (a.detail || '')).match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
-    q = ipm ? ('search src_ip:' + ipm[0]) : ('search ' + (a.title || '').split(':')[0].trim());
-  }
-  // FENÊTRE : on centre l'Explore sur la fenêtre d'ÉVALUATION de l'alerte (et non sur la fenêtre 24h
-  // glissante) -> from = ts - window_s, to = ts (+ petite marge pour voir l'événement de bord). On passe
-  // par zoomRange{from,to} qui est PRIORITAIRE dans exploreFrom/exploreTo. ts peut manquer (vieille alerte) :
-  // on retombe alors sur la fenêtre glissante (comportement historique).
-  if (a.ts) {
-    const w = (a.window_s || 3600);
-    const margin = Math.min(600, Math.max(30, Math.round(w * 0.05)));
-    S.zoomRange = { from: Math.floor(a.ts - w - margin), to: Math.ceil(a.ts + margin) };
+  const lien = a.search_link && a.search_link.query ? a.search_link : null;
+  let q;
+  if (lien) {
+    q = lien.query;
+    // La fenêtre du lien est celle de l'évaluation : [ts - window_s, ts], sans marge — une marge rendait
+    // le lien PLUS LARGE que le compte sur toutes les règles (mesuré P11.1-a).
+    S.zoomRange = { from: lien.from, to: lien.to };
     updateZoomBadge(); if (typeof updateRangeBtn === 'function') updateRangeBtn();
+  } else {
+    const ipm = ((a.title || '') + ' ' + (a.detail || '')).match(ALERT_IP_RE);
+    q = ipm ? ('search src_ip:' + ipm[0]) : ('search ' + (a.title || '').split(':')[0].trim());
+    if (a.ts) {
+      const w = (a.window_s || 3600);
+      S.zoomRange = { from: Math.floor(a.ts - w), to: Math.ceil(a.ts) };
+      updateZoomBadge(); if (typeof updateRangeBtn === 'function') updateRangeBtn();
+    }
   }
   location.hash = 'explore';
   if ($('#sql')) { $('#sql').value = q; runQuery(); }
@@ -52,10 +60,16 @@ const ALERT_HIST_PS = 50;
 /* state: alertGroupPage -> S (state.js) */
 const ALERT_GROUP_PS = 25;   // groupes par page
 const ALERT_OCC_PS = 25;     // occurrences par page dans un groupe déplié
-function setAlertGroupBy(g) { S.alertGroupBy = alert_group_axis(g) ? g : ''; S.alertGroupPage = 0; location.hash = 'alerts'; renderAlerts(true); }
+function setAlertGroupBy(g) { S.alertGroupBy = alert_group_axis(g) ? g : ''; S.alertGroupPage = 0; S.alertHistPage = 0; location.hash = 'alerts'; renderAlerts(true); }
 function alert_group_axis(g) { return g === 'rule' || g === 'host' || g === 'mitre'; }
 // le pivot MITRE amène vers Investigation -> Alertes (onglet #alerts, où vivent les Alertes actives, cf. SPACES).
-function setAlertMitreFilter(m) { S.alertMitreFilter = (m || '').trim().toUpperCase(); S.alertSourceFilter = ''; S.alertHistPage = 0; location.hash = 'alerts'; renderAlerts(true); }
+// P11.1-b — un pivot MITRE pose une FACETTE sur la même liste : portée « tous statuts » (l'historique de
+// détection de la technique, comportement historique), sans le filtre « hors case », tri inchangé.
+function setAlertMitreFilter(m) {
+  S.alertMitreFilter = (m || '').trim().toUpperCase(); S.alertSourceFilter = ''; S.alertHistPage = 0; S.alertGroupPage = 0;
+  if (S.alertMitreFilter) { S.alertGroupAll = true; S.alertUncased = false; }
+  location.hash = 'alerts'; renderAlerts(true);
+}
 // FIX 2 — filtre actif sur les alertes par SOURCE (pivot depuis la cloche d'un feed « chaud » de la
 // fraîcheur). '' = aucun filtre. Il n'existe PAS de filtre source côté serveur : on récupère les alertes
 // 'new' et on les filtre CÔTÉ CLIENT — sur `a.sources`, l'imputation que le daemon a DÉRIVÉE DE LA DONNÉE
@@ -78,7 +92,16 @@ function alertSourcesOf(a) {
   const s = (a && a.sources) || '';
   return s ? s.split('\n').map(x => x.trim()).filter(Boolean) : alertSources(a && a.detail);
 }
-function setAlertSourceFilter(src) { S.alertSourceFilter = (src || '').trim(); S.alertMitreFilter = ''; S.alertHistPage = 0; location.hash = 'alerts'; renderAlerts(true); }
+// P11.1-c — la cloche d'une source pose la facette SOURCE sur la liste, avec la portée EXACTE du compteur de
+// la cloche : alertes ACTIVES (status=new), cases comprises, TOUTES DATES (le compteur `active_alerts` de
+// /api/freshness n'a pas de fenêtre de temps : il compte toute alerte non acquittée imputée à la source, quel
+// que soit son âge — et il est indépendant de la fraîcheur de la source). La vue cible le DIT (cf. le chip
+// de facette) et montre l'étendue réelle des dates des alertes listées.
+function setAlertSourceFilter(src) {
+  S.alertSourceFilter = (src || '').trim(); S.alertMitreFilter = ''; S.alertHistPage = 0; S.alertGroupPage = 0;
+  if (S.alertSourceFilter) { S.alertGroupAll = false; S.alertUncased = false; S.alertGroupBy = ''; }
+  location.hash = 'alerts'; renderAlerts(true);
+}
 // « voir les events » d'une technique sans alerte : recherche plein-texte du tag MITRE (best-effort, les
 // events ne portent pas toujours de champ mitre) -> l'analyste investigue depuis l'Explore.
 function mitreEventsDrill(m) {
@@ -120,19 +143,108 @@ function wireAlertRows(host, alerts, afterAck) {
   host.querySelectorAll('.casebtn').forEach(btn => btn.onclick = () => withBusy(btn, () => addToCase('alert', btn.dataset.t + (btn.dataset.d ? ' - ' + btn.dataset.d : ''), 'alert:' + btn.dataset.id)));
   host.querySelectorAll('.casechip').forEach(btn => btn.onclick = () => withBusy(btn, () => openCase(Number(btn.dataset.cid))));
 }
-// Toggle de vue (segmenté) : Plate / par Règle / par Hôte / par Technique. Affiché uniquement sur la file par
-// défaut et la vue groupée (pas dans un drill mitre/source). `active` = axe courant ('' = plate).
-function alertViewControls(active) {
-  const opt = (g, label, title) => `<button type="button" class="agseg${active === g ? ' on' : ''}" data-g="${g}" title="${esc(title)}">${label}</button>`;
-  return `<div class="alertview" role="group" aria-label="Vue des alertes"><span class="muted">Vue</span>`
-    + opt('', 'Plate', 'Liste plate (backlog à traiter)')
-    + opt('rule', 'Règle', 'Grouper par règle — 1 groupe = N occurrences (triage au volume)')
-    + opt('host', 'Hôte', 'Grouper par hôte / entité')
-    + opt('mitre', 'Technique', 'Grouper par technique MITRE ATT&CK')
-    + `</div>`;
+// ======================================================================================================
+// P11.1-b — UNE LISTE, DES FACETTES, LES MÊMES ACTIONS PARTOUT. Plate / Règle / Hôte / Technique sont des
+// TRIS d'une même liste, pas des écrans. MESURÉ avant correctif (web/alerts.js) : « Tous statuts » n'existait
+// qu'en vue groupée, « Tout acquitter » qu'en vue plate sans filtre, le toggle de vue disparaissait sous un
+// filtre, et le filtre « hors case » (uncased) variait en silence selon le chemin (plate : oui ; MITRE : non ;
+// source : non ; groupes : selon la portée). Le modèle ci-dessous est UNIQUE et la barre est rendue par UNE
+// fonction, quelle que soit la vue. Une action impossible n'est pas ABSENTE : elle est rendue désactivée avec
+// sa raison (attribut `title`), pour qu'un lecteur sache ce qui manque et pourquoi.
+// ======================================================================================================
+// Le modèle de la liste : UN tri, UNE portée, UN filtre « hors case », des FACETTES.
+function alertListModel() {
+  return {
+    view: S.alertGroupBy || '',               // '' plate | 'rule' | 'host' | 'mitre' (tri)
+    scopeAll: !!S.alertGroupAll,              // false = actives (status=new) | true = tous statuts
+    uncased: S.alertUncased !== false,        // alertes hors case seulement (défaut : oui)
+    mitre: S.alertMitreFilter || '',          // facette technique (serveur)
+    source: S.alertSourceFilter || '',        // facette source (CLIENT : le serveur n'offre pas ce filtre)
+  };
 }
-function wireAlertViewControls(host) {
-  host.querySelectorAll('.agseg').forEach(btn => btn.onclick = () => setAlertGroupBy(btn.dataset.g));
+// LIMITE NOMMÉE du filtre source : /api/alerts n'a pas de filtre `source` ; il est évalué côté client sur
+// `a.sources` (imputation dérivée de la donnée). Conséquence : pas de regroupement serveur ni d'historique
+// paginé sous cette facette. La barre le dit au lieu de retirer les boutons.
+const RAISON_FACETTE_SOURCE = 'indisponible sous le filtre source : ce filtre est évalué côté client sur les alertes actives (le serveur n\'offre pas de filtre par source)';
+const ALERT_VIEWS = [
+  ['', 'Plate', 'Liste plate (chaque alerte)'],
+  ['rule', 'Règle', 'Trier par règle — 1 groupe = N occurrences'],
+  ['host', 'Hôte', 'Trier par hôte / entité'],
+  ['mitre', 'Technique', 'Trier par technique MITRE ATT&CK'],
+];
+// Ce que la barre propose, DÉRIVÉ du modèle `m` et de ce qui est chargé (`loaded`) :
+//   loaded.count / loaded.countLabel  — le compte affiché et sa portée en toutes lettres ;
+//   loaded.ackableIds                 — les ids ACTIFS chargés (vue plate) ; vide en vue groupée ;
+//   loaded.sourceSpan                 — {from,to} des alertes listées sous une facette source (P11.1-c).
+// Rendu PUR (chaîne HTML) : le harnais ESM le juge sur des objets fabriqués.
+function alertActionBarHtml(m, loaded) {
+  loaded = loaded || {};
+  const dis = (cond, reason) => cond ? ` disabled aria-disabled="true" title="${esc(reason)}"` : '';
+  const views = ALERT_VIEWS.map(([g, label, title]) => {
+    const offSource = !!m.source && g !== '';
+    return `<button type="button" class="agseg${m.view === g ? ' on' : ''}" data-g="${g}"${offSource ? dis(true, RAISON_FACETTE_SOURCE) : ` title="${esc(title)}"`}>${label}</button>`;
+  }).join('');
+  const scope = `<button type="button" class="agscope${m.scopeAll ? ' on' : ''}" data-act="scope"${m.source ? dis(true, RAISON_FACETTE_SOURCE) : ` title="${m.scopeAll ? 'Tous statuts (historique) — cliquer pour ne voir que les alertes actives' : 'Alertes actives (status=new) — cliquer pour voir tous les statuts'}"`}>${m.scopeAll ? 'Tous statuts' : 'Actives'}</button>`;
+  const uncased = `<button type="button" class="agscope${m.uncased ? ' on' : ''}" data-act="uncased" title="${m.uncased ? 'Hors case : les alertes déjà rattachées à un case sont masquées — cliquer pour les inclure' : 'Toutes : cases comprises — cliquer pour masquer les alertes déjà rattachées à un case'}">${m.uncased ? 'hors case' : 'cases comprises'}</button>`;
+  const facets = [];
+  if (m.mitre) facets.push(`<span class="mitrefilter">Technique : <span class="mitrechip">${esc(m.mitre)}</span><button type="button" data-act="clear-mitre" title="Retirer le filtre technique">${ic('x')}</button></span>`);
+  if (m.source) {
+    const span = loaded.sourceSpan && loaded.sourceSpan.from ? ` (du ${fmtTs(loaded.sourceSpan.from)} au ${fmtTs(loaded.sourceSpan.to)})` : '';
+    const n = typeof loaded.count === 'number' ? loaded.count : 0;
+    facets.push(`<span class="mitrefilter" title="Le compteur de la cloche d'une source compte ses alertes non acquittées, cases comprises, sans fenêtre de temps — il ne dépend pas de la fraîcheur de la source.">Source : <span class="mitrechip">${esc(m.source)}</span> <span class="muted">${n} alerte(s) active(s) imputée(s) à cette source, toutes dates${span} — sans lien avec sa fraîcheur</span><button type="button" data-act="clear-source" title="Retirer le filtre source">${ic('x')}</button></span>`);
+  }
+  // ACQUITTER — même bouton partout, sémantique DÉRIVÉE : sans facette et sur les actives, l'acquittement
+  // GLOBAL (/alerts/ack-all acquitte TOUTE alerte active, y compris hors de la page) ; sinon, les alertes
+  // actives AFFICHÉES, une à une (jamais un ack-all global sous un filtre : il dépasserait le filtre).
+  const filtered = !!(m.mitre || m.source) || m.scopeAll;
+  const nAck = (loaded.ackableIds || []).length;
+  let ack;
+  if (!filtered) ack = `<button type="button" data-act="ack-all"${dis(!(loaded.count > 0), 'aucune alerte active')} title="Acquitter TOUTES les alertes actives (y compris celles hors de cette page)">${ic('check')} Tout acquitter</button>`;
+  else if (nAck > 0) ack = `<button type="button" data-act="ack-shown" title="Acquitter les ${nAck} alerte(s) active(s) affichée(s) — et seulement celles-là">${ic('check')} Acquitter les ${nAck} affichée(s)</button>`;
+  else ack = `<button type="button" data-act="ack-shown"${dis(true, m.view ? 'acquittement par liste : dépliez un groupe (acquittement par occurrence) ou passez en vue plate' : 'aucune alerte active affichée')}>${ic('check')} Acquitter</button>`;
+  return `<div class="alertview alertbar" role="toolbar" aria-label="Liste des alertes : tri, portée, filtres, actions">`
+    + `<span class="muted">Tri</span>${views}<span class="muted">Portée</span>${scope}${uncased}${facets.join('')}</div>`
+    + `<div class="alerthead"><span>${esc(loaded.countLabel || '')}</span><span class="alertbar-actions">${ack}<span class="alertbar-export"></span></span></div>`;
+}
+// Câblage de la barre : chaque action écrit le MODÈLE (état partagé) puis re-rend la liste par le même chemin.
+function wireAlertActionBar(host, loaded) {
+  const rerender = () => renderAlerts(true);
+  host.querySelectorAll('.alertbar .agseg').forEach(btn => btn.onclick = () => { if (btn.disabled) return; setAlertGroupBy(btn.dataset.g); });
+  host.querySelectorAll('[data-act]').forEach(btn => {
+    const act = btn.dataset.act;
+    if (act === 'scope') btn.onclick = () => { if (btn.disabled) return; S.alertGroupAll = !S.alertGroupAll; S.alertGroupPage = 0; S.alertHistPage = 0; rerender(); };
+    else if (act === 'uncased') btn.onclick = () => { S.alertUncased = !(S.alertUncased !== false); S.alertGroupPage = 0; S.alertHistPage = 0; rerender(); };
+    else if (act === 'clear-mitre') btn.onclick = () => setAlertMitreFilter('');
+    else if (act === 'clear-source') btn.onclick = () => setAlertSourceFilter('');
+    else if (act === 'ack-all') btn.onclick = () => withBusy(btn, async () => {
+      if (btn.disabled) return;
+      if (!await confirmModal(`Acquitter TOUTES les alertes actives ? (liste courante : ${loaded.countLabel || loaded.count} ; l'acquittement global porte aussi sur celles hors de la page)`, { okText: 'Acquitter', danger: false })) return;
+      await apiSend('/alerts/ack-all');
+      await refresh();
+    });
+    else if (act === 'ack-shown') btn.onclick = () => withBusy(btn, async () => {
+      const ids = loaded.ackableIds || [];
+      if (btn.disabled || !ids.length) return;
+      if (!await confirmModal(`Acquitter les ${ids.length} alerte(s) active(s) affichée(s) ?`, { okText: 'Acquitter', danger: false })) return;
+      for (const id of ids) await apiSend('/alerts/' + id + '/ack');
+      await rerender();
+    });
+  });
+}
+// P11.1-d — LE TITRE « Alertes » EST UNE PORTE : comme tout en-tête qui nomme une page (liens `#onglet`
+// de la navigation, `capsum-link` des cartes), il mène à la liste des alertes — tri plat, facettes retirées.
+// Le bouton d'aide « ? » qu'il contient garde son propre comportement.
+function wireAlertsTitle() {
+  const h = $('#alerts-h'); if (!h || h.dataset.porte) return;
+  h.dataset.porte = '1'; h.setAttribute('role', 'link'); h.tabIndex = 0; h.style.cursor = 'pointer';
+  h.title = 'Liste des alertes (tri plat, filtres retirés)';
+  const go = (e) => {
+    if (e && e.target && typeof e.target.closest === 'function' && e.target.closest('.ihelp')) return;
+    S.alertMitreFilter = ''; S.alertSourceFilter = ''; S.alertGroupBy = ''; S.alertGroupAll = false; S.alertUncased = true; S.alertHistPage = 0; S.alertGroupPage = 0;
+    location.hash = 'alerts'; renderAlerts(true);
+  };
+  h.onclick = go;
+  h.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(e); } };
 }
 
 // EXPORT ALERTES (client) : sérialise les alertes DÉJÀ chargées (vue courante / page). Aucune colonne
@@ -171,73 +283,63 @@ function alertGroupsExportBar(groups, total) {
 }
 
 async function renderAlerts(loading) {
-  // TRIAGE GROUPÉ : la file PAR DÉFAUT peut basculer en vue de GROUPES repliables (jamais en drill mitre/source).
-  if (S.alertGroupBy && !S.alertMitreFilter && !S.alertSourceFilter) return renderAlertGroups(loading);
-  // Sans filtre : alertes ACTIVES non acquittées ET sans case (status=new&uncased=1) -> backlog = à traiter.
-  // Avec filtre technique : on veut TOUS les statuts (status=all) -> on montre l'historique de détection de
-  // la technique, pas seulement l'actif (sinon « aucune alerte » trompeur alors qu'il y a des détections
-  // passées). Cf. ?mitre=&status=&uncased= côté daemon.
-  // URL : MITRE (tous statuts) > SOURCE (alertes 'new', filtrées côté client) > défaut (backlog new+uncased).
-  // BATCH 1 : la branche MITRE (status=all) est PAGINÉE serveur (limit/offset) ; les autres branches (backlog
-  // 'new', bornées) restent inchangées.
-  const url = S.alertMitreFilter
-    ? '/alerts?status=all&mitre=' + encodeURIComponent(S.alertMitreFilter) + '&limit=' + ALERT_HIST_PS + '&offset=' + (S.alertHistPage * ALERT_HIST_PS)
-    : S.alertSourceFilter
-      ? '/alerts?status=new'
-      : '/alerts?status=new&uncased=1';
+  wireAlertsTitle();
+  const m = alertListModel();
+  // Un TRI groupé est servi par /api/alerts/groups ; la facette source (client) force la vue plate.
+  if (m.view && !m.source) return renderAlertGroups(loading);
+  // LA MÊME URL DÉRIVÉE DU MÊME MODÈLE : portée (status=new | all), « hors case » (uncased=1), facette
+  // technique (mitre=). La portée « tous statuts » est PAGINÉE serveur (limit/offset + total) ; la portée
+  // « actives » reste bornée (200, sans total) — contrat inchangé de /api/alerts.
+  const params = [];
+  params.push(m.scopeAll ? 'status=all' : 'status=new');
+  if (m.uncased) params.push('uncased=1');
+  if (m.mitre) params.push('mitre=' + encodeURIComponent(m.mitre));
+  if (m.scopeAll) params.push('limit=' + ALERT_HIST_PS + '&offset=' + (S.alertHistPage * ALERT_HIST_PS));
+  const url = '/alerts?' + params.join('&');
   const b = $('#alerts .body'); if (!b) return;
   if (loading) { let prog = b.querySelector(':scope > .tableprog'); if (!prog) { prog = document.createElement('div'); prog.className='tableprog'; b.insertBefore(prog, b.firstChild); } prog.hidden=false; b.classList.add('reloading'); }
   let alerts, alertTotal;
   try { const resp = await api(url); alerts = resp.alerts || []; alertTotal = resp.total; } catch (e) { b.classList.remove('reloading'); b.innerHTML = '<div class="bad">alertes indisponibles : ' + esc(e.message) + '</div>'; return; }
   b.classList.remove('reloading');
-  // filtre SOURCE (pas de filtre serveur) : on ne garde que les alertes dont la règle vise cette source.
-  if (S.alertSourceFilter && !S.alertMitreFilter) alerts = alerts.filter(a => alertSourcesOf(a).includes(S.alertSourceFilter));
-  // Le toggle de vue n'apparaît QUE sur la file par défaut (pas dans un drill mitre/source).
-  const viewControls = (!S.alertMitreFilter && !S.alertSourceFilter) ? alertViewControls('') : '';
-  // bandeau retirable quand un filtre (technique MITRE ou source) est actif
-  const filterBar = S.alertMitreFilter
-    ? `<div class="mitrefilter">Filtre MITRE : <span class="mitrechip">${esc(S.alertMitreFilter)}</span> <span class="muted">(tous statuts)</span><button id="mitre-clear" type="button" title="Retirer le filtre">${ic('x')}</button></div>`
-    : S.alertSourceFilter
-      ? `<div class="mitrefilter">Source : <span class="mitrechip">${esc(S.alertSourceFilter)}</span> <span class="muted">(alertes actives)</span><button id="src-clear" type="button" title="Retirer le filtre">${ic('x')}</button></div>`
-      : '';
+  // Facette SOURCE (client) : sur `a.sources`, l'imputation DÉRIVÉE DE LA DONNÉE — exactement ce qui a
+  // fabriqué le compteur de la cloche (cf. alertSourcesOf).
+  let sourceSpan = null;
+  if (m.source) {
+    alerts = alerts.filter(a => alertSourcesOf(a).includes(m.source));
+    if (alerts.length) { const ts = alerts.map(a => a.ts).filter(Boolean); sourceSpan = { from: Math.min(...ts), to: Math.max(...ts) }; }
+  }
+  const count = (m.scopeAll && typeof alertTotal === 'number') ? alertTotal : alerts.length;
+  const portee = (m.scopeAll ? 'tous statuts' : 'actives') + (m.uncased ? ' · hors case' : ' · cases comprises');
+  const loaded = {
+    count,
+    countLabel: `${count} alerte(s) · ${portee}${m.mitre ? ' · technique ' + m.mitre : ''}${m.source ? ' · source ' + m.source : ''}`,
+    ackableIds: alerts.filter(a => a.status === 'new').map(a => a.id),
+    sourceSpan,
+  };
+  const bar = alertActionBarHtml(m, loaded);
   if (!alerts.length) {
-    if (S.alertMitreFilter) {
+    let vide;
+    if (m.mitre) {
       // 0 alerte même TOUS statuts -> on propose de voir les events de la technique (pas de cul-de-sac)
-      b.innerHTML = filterBar + `<div class="muted">Aucune alerte (tous statuts) pour cette technique. <button id="mitre-events" type="button" class="linklike">Voir les events ${esc(S.alertMitreFilter)}</button></div>`;
-      const ev = b.querySelector('#mitre-events'); if (ev) ev.onclick = () => mitreEventsDrill(S.alertMitreFilter);
-    } else if (S.alertSourceFilter) {
-      b.innerHTML = filterBar + `<div class="muted">Aucune alerte active pour la source <b>${esc(S.alertSourceFilter)}</b>.</div>`;
+      vide = `<div class="muted">Aucune alerte (${esc(portee)}) pour cette technique. <button id="mitre-events" type="button" class="linklike">Voir les events ${esc(m.mitre)}</button></div>`;
+    } else if (m.source) {
+      vide = `<div class="muted">Aucune alerte active imputée à la source <b>${esc(m.source)}</b>${m.uncased ? ' hors case' : ''}.</div>`;
     } else {
-      b.innerHTML = viewControls + '<div class="ok">Aucune alerte active </div>';
+      vide = `<div class="ok">Aucune alerte ${m.scopeAll ? '' : 'active '}${m.uncased ? 'hors case ' : ''}</div>`;
     }
-    const c = b.querySelector('#mitre-clear'); if (c) c.onclick = () => setAlertMitreFilter('');
-    const sc = b.querySelector('#src-clear'); if (sc) sc.onclick = () => setAlertSourceFilter('');
-    wireAlertViewControls(b);
+    b.innerHTML = bar + vide;
+    const ev = b.querySelector('#mitre-events'); if (ev) ev.onclick = () => mitreEventsDrill(m.mitre);
+    wireAlertActionBar(b, loaded);
     return;
   }
-  // filtré (MITRE tous statuts, ou source) : libellé neutre + pas de « Tout acquitter » (ack-all est GLOBAL,
-  // pas restreint au filtre). Non filtré : file active classique avec ack-all.
-  // vue MITRE paginée : le compteur reflète le TOTAL (pas la page) ; le pager montre la fenêtre.
-  const mitreCount = (S.alertMitreFilter && typeof alertTotal === 'number') ? alertTotal : alerts.length;
-  const head = (S.alertMitreFilter || S.alertSourceFilter)
-    ? `<div class="alerthead"><span>${mitreCount} alerte(s)${S.alertMitreFilter ? ' — tous statuts' : ' — source ' + esc(S.alertSourceFilter)}</span></div>`
-    : `<div class="alerthead"><span>${alerts.length} alerte(s) active(s)</span><button id="ack-all" type="button" title="Acquitter toutes les alertes actives">${ic('check')} Tout acquitter</button></div>`;
-  b.innerHTML = viewControls + filterBar + head + alerts.map((a, i) => alertRowHtml(a, i)).join('');
-  const clr = b.querySelector('#mitre-clear'); if (clr) clr.onclick = () => setAlertMitreFilter('');
-  const sclr = b.querySelector('#src-clear'); if (sclr) sclr.onclick = () => setAlertSourceFilter('');
-  wireAlertViewControls(b);
-  const ackAll = b.querySelector('#ack-all');
-  if (ackAll) ackAll.onclick = () => withBusy(ackAll, async () => {
-    if (!await confirmModal(`Acquitter les ${alerts.length} alerte(s) active(s) ?`, { okText: 'Acquitter', danger: false })) return;
-    await apiSend('/alerts/ack-all');
-    await refresh();
-  });
-  // WIRING des lignes (drill/ack/ban/case) : ack -> re-render filtré, ou refresh global (comportement historique).
-  wireAlertRows(b, alerts, () => (S.alertMitreFilter || S.alertSourceFilter) ? renderAlerts() : refresh());
-  // EXPORT : barre CSV/JSON/PDF dans l'en-tête (sur les alertes de la vue courante, déjà chargées).
-  { const ah = b.querySelector('.alerthead'); if (ah && alerts.length) ah.appendChild(alertsExportBar(alerts, S.alertMitreFilter ? alertTotal : undefined)); }
-  // BATCH 1 : pager (haut+bas) sur la vue MITRE tous-statuts (serveur limit/offset) ; auto-caché si <=1 page.
-  if (S.alertMitreFilter && typeof alertTotal === 'number') {
+  b.innerHTML = bar + alerts.map((a, i) => alertRowHtml(a, i)).join('');
+  wireAlertActionBar(b, loaded);
+  // WIRING des lignes (drill/ack/ban/case) : ack -> re-render de la liste filtrée, ou refresh global (backlog).
+  wireAlertRows(b, alerts, () => (m.mitre || m.source || m.scopeAll) ? renderAlerts() : refresh());
+  // EXPORT : barre CSV/JSON/PDF dans l'emplacement de la barre d'actions (sur les alertes chargées).
+  { const slot = b.querySelector('.alertbar-export'); if (slot) slot.appendChild(alertsExportBar(alerts, m.scopeAll ? alertTotal : undefined)); }
+  // pager (haut+bas) sur la portée « tous statuts » (serveur limit/offset) ; auto-caché si <=1 page.
+  if (m.scopeAll && typeof alertTotal === 'number') {
     const pgState = { page: S.alertHistPage, pageSize: ALERT_HIST_PS, total: alertTotal, shown: alerts.length };
     const go = p => { S.alertHistPage = p; renderAlerts(true); };
     const top = makePager(pgState, go), bot = makePager(pgState, go);
@@ -249,29 +351,29 @@ async function renderAlerts(loading) {
 
 // TRIAGE GROUPÉ — vue de GROUPES repliables (« 1 groupe = N occurrences »). Groupes paginés serveur
 // (/api/alerts/groups) ; chaque groupe déplié charge ses occurrences à la demande (chemin plat gkey/gval,
-// paginé). Le scope (actives vs tous statuts) s'applique À LA FOIS au groupement et à l'expansion -> le
-// compteur `n` du groupe et le `total` des occurrences restent COHÉRENTS.
+// paginé). Le modèle (portée / hors case / facette technique) est le MÊME que celui de la vue plate, et
+// s'applique À LA FOIS au groupement et à l'expansion -> le compteur `n` du groupe et le `total` des
+// occurrences restent COHÉRENTS.
 async function renderAlertGroups(loading) {
   const b = $('#alerts .body'); if (!b) return;
-  const scope = S.alertGroupAll ? 'all' : 'new';
-  // ui-regression — le scope « Actives » = status=new ET NON ENCAISSÉ (uncased), pour réconcilier
-  // avec le badge de posture (overview) et la vue plate (backlog new+uncased). Sans uncased, des alertes déjà en
-  // case réapparaissaient dans la file active groupée. Scope « Tous statuts » : pas de filtre uncased (inchangé).
-  const url = '/alerts/groups?group=' + encodeURIComponent(S.alertGroupBy) + '&status=' + scope
-            + (S.alertGroupAll ? '' : '&uncased=1')
+  const m = alertListModel();
+  const url = '/alerts/groups?group=' + encodeURIComponent(m.view) + '&status=' + (m.scopeAll ? 'all' : 'new')
+            + (m.uncased ? '&uncased=1' : '')
+            + (m.mitre ? '&mitre=' + encodeURIComponent(m.mitre) : '')
             + '&limit=' + ALERT_GROUP_PS + '&offset=' + (S.alertGroupPage * ALERT_GROUP_PS);
   if (loading) { let prog = b.querySelector(':scope > .tableprog'); if (!prog) { prog = document.createElement('div'); prog.className='tableprog'; b.insertBefore(prog, b.firstChild); } prog.hidden=false; b.classList.add('reloading'); }
   let groups, total;
   try { const r = await api(url); groups = r.groups || []; total = r.total; }
-  catch (e) { b.classList.remove('reloading'); b.innerHTML = alertViewControls(S.alertGroupBy) + '<div class="bad">groupes indisponibles : ' + esc(e.message) + '</div>'; wireAlertViewControls(b); return; }
+  catch (e) { b.classList.remove('reloading'); b.innerHTML = alertActionBarHtml(m, { count: 0, countLabel: 'groupes indisponibles' }) + '<div class="bad">groupes indisponibles : ' + esc(e.message) + '</div>'; wireAlertActionBar(b, { count: 0 }); return; }
   b.classList.remove('reloading');
-  const axisLabel = { rule: 'règle', host: 'hôte', mitre: 'technique' }[S.alertGroupBy] || S.alertGroupBy;
-  const scopeToggle = `<button type="button" id="ag-scope" class="agscope${S.alertGroupAll ? ' on' : ''}" title="Basculer entre alertes actives (status=new) et tous statuts (historique)">${S.alertGroupAll ? 'Tous statuts' : 'Actives'}</button>`;
+  const axisLabel = { rule: 'règle', host: 'hôte', mitre: 'technique' }[m.view] || m.view;
   const count = typeof total === 'number' ? total : groups.length;
-  const head = `<div class="alerthead"><span>${count} groupe(s) · par ${esc(axisLabel)}</span>${scopeToggle}</div>`;
+  const portee = (m.scopeAll ? 'tous statuts' : 'actives') + (m.uncased ? ' · hors case' : ' · cases comprises');
+  const loaded = { count, countLabel: `${count} groupe(s) · par ${axisLabel} · ${portee}${m.mitre ? ' · technique ' + m.mitre : ''}`, ackableIds: [] };
+  const bar = alertActionBarHtml(m, loaded);
   if (!groups.length) {
-    b.innerHTML = alertViewControls(S.alertGroupBy) + head + `<div class="ok">Aucune alerte ${S.alertGroupAll ? '' : 'active '}à grouper</div>`;
-    wireAlertViewControls(b); wireGroupScope(b); return;
+    b.innerHTML = bar + `<div class="ok">Aucune alerte ${m.scopeAll ? '' : 'active '}à trier</div>`;
+    wireAlertActionBar(b, loaded); return;
   }
   // ui-regression — l'auto-refresh (30 s) reconstruit ce conteneur : on MÉMORISE les groupes
   // DÉPLIÉS + leur page d'occurrences AVANT le rebuild pour les RÉTABLIR après (sinon l'analyste perd sa place à
@@ -281,9 +383,9 @@ async function renderAlertGroups(loading) {
     const body = el.querySelector('.agbody');
     prevOpen[el.dataset.gkey || ''] = (body && body.dataset.opage) ? Number(body.dataset.opage) : 0;
   });
-  b.innerHTML = alertViewControls(S.alertGroupBy) + head + groups.map(g => alertGroupHtml(g)).join('');
-  wireAlertViewControls(b); wireGroupScope(b);
-  { const gh = b.querySelector('.alerthead'); if (gh && groups.length) gh.appendChild(alertGroupsExportBar(groups, total)); }
+  b.innerHTML = bar + groups.map(g => alertGroupHtml(g)).join('');
+  wireAlertActionBar(b, loaded);
+  { const slot = b.querySelector('.alertbar-export'); if (slot) slot.appendChild(alertGroupsExportBar(groups, total)); }
   // pager de la LISTE de groupes (haut + bas), inséré autour des groupes.
   if (typeof total === 'number') {
     const pgState = { page: S.alertGroupPage, pageSize: ALERT_GROUP_PS, total, shown: groups.length };
@@ -307,16 +409,13 @@ async function renderAlertGroups(loading) {
     }
   });
 }
-function wireGroupScope(host) {
-  const sc = host.querySelector('#ag-scope');
-  if (sc) sc.onclick = () => { S.alertGroupAll = !S.alertGroupAll; S.alertGroupPage = 0; renderAlertGroups(true); };
-}
 // carte d'un GROUPE : en-tête cliquable (caret + sévérité + compte + clé + aperçu + activités + dernier ts) et
 // un corps `.agbody` (occurrences) initialement replié/vide.
 function alertGroupHtml(g) {
-  const emptyLabel = S.alertGroupBy === 'host' ? '(sans hôte)' : S.alertGroupBy === 'mitre' ? '(sans technique)' : '(sans clé)';
+  const view = S.alertGroupBy || '';
+  const emptyLabel = view === 'host' ? '(sans hôte)' : view === 'mitre' ? '(sans technique)' : '(sans clé)';
   const key = g.gkey ? esc(g.gkey) : `<span class="muted">${emptyLabel}</span>`;
-  const mt = (g.mitre && S.alertGroupBy !== 'mitre') ? ` <span class="mitrechip" title="${esc(g.mitre)}${mitreName(g.mitre) ? ' — ' + esc(mitreName(g.mitre)) : ''}">${esc(g.mitre)}</span>` : '';
+  const mt = (g.mitre && view !== 'mitre') ? ` <span class="mitrechip" title="${esc(g.mitre)}${mitreName(g.mitre) ? ' — ' + esc(mitreName(g.mitre)) : ''}">${esc(g.mitre)}</span>` : '';
   // cellule « actives » TOUJOURS émise (vide si 0) pour garder l'alignement de la grille .agsum stable.
   const open = g.open_n > 0 ? `<span class="agopen" title="${g.open_n} encore active(s) (status=new)">${g.open_n} active(s)</span>` : `<span class="agopen" style="visibility:hidden"></span>`;
   return `
@@ -343,9 +442,11 @@ function toggleAlertGroup(el, g) {
 // `total` cohérent avec `n`). Réutilise alertRowHtml + wireAlertRows + makePager. Après ack : recharge la même
 // page d'occurrences (le groupe reste déplié).
 async function loadGroupOccurrences(body, g, opage) {
-  const scope = S.alertGroupAll ? 'all' : 'new';
-  // MÊME scope uncased que le groupement (renderAlertGroups) -> `total` des occurrences cohérent avec `n`.
-  const url = '/alerts?status=' + scope + (S.alertGroupAll ? '' : '&uncased=1') + '&gkey=' + encodeURIComponent(S.alertGroupBy)
+  const m = alertListModel();
+  // MÊME modèle que le groupement (renderAlertGroups) -> `total` des occurrences cohérent avec `n`.
+  const url = '/alerts?status=' + (m.scopeAll ? 'all' : 'new') + (m.uncased ? '&uncased=1' : '')
+            + (m.mitre ? '&mitre=' + encodeURIComponent(m.mitre) : '')
+            + '&gkey=' + encodeURIComponent(m.view)
             + '&gval=' + encodeURIComponent(g.gkey || '') + '&limit=' + ALERT_OCC_PS + '&offset=' + (opage * ALERT_OCC_PS);
   body.innerHTML = '<div class="tableprog"></div>';
   let occ, total;
@@ -365,4 +466,4 @@ async function loadGroupOccurrences(body, g, opage) {
   wireAlertRows(body, occ, () => loadGroupOccurrences(body, g, opage));
 }
 
-export { renderAlerts, setAlertMitreFilter, setAlertSourceFilter };
+export { renderAlerts, setAlertMitreFilter, setAlertSourceFilter, alertActionBarHtml, alertListModel };

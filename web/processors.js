@@ -7,7 +7,7 @@
 // NON-SILENCE : on affiche les compteurs dropped/masked/routed/sampled_out (la donnée non-indexée est
 // VISIBLE — philosophie garde-disque 503). SÉCU UI : rendu textContent (anti-XSS) ; la VRAIE garde reste
 // serveur (403 hors admin). Défense en profondeur : on court-circuite le fetch hors admin.
-import { $, api, apiSend, fetchInto, muted, pagedList, toast } from './core.js';
+import { $, api, apiSend, confirmWithConsequence, fetchInto, modal, muted, pagedList, toast } from './core.js';
 import { uiIsAdmin } from './multitenant.js';
 
 const FIELDS = ['category', 'source', 'severity', 'host', 'src_ip', 'dst_ip', 'url', 'message', 'fields.<clé>'];
@@ -92,9 +92,10 @@ function ruleRow(r, counters) {
   const cnt = document.createElement('span'); cnt.className = 'muted'; cnt.style.marginLeft = 'auto';
   cnt.textContent = `matched ${num(pr.matched)} · drop ${num(pr.dropped)} · mask ${num(pr.masked)} · route ${num(pr.routed)} · sample-out ${num(pr.sampled_out)}`;
 
-  const del = document.createElement('button'); del.type = 'button'; del.textContent = 'suppr'; del.className = 'picon';
+  const del = document.createElement('button'); del.type = 'button'; del.textContent = 'Supprimer'; del.className = 'btn btn-sm btn-danger'; // P11.4-b : classe partagée
   del.onclick = async () => {
-    if (!confirm('Supprimer la règle « ' + (r.name || r.id) + ' » ?')) return;
+    // P11.5-b : DELETE = route sensible -> confirmation partagée qui nomme la conséquence (plus de confirm() natif).
+    if (!await confirmWithConsequence('Supprimer la règle d’ingest « ' + (r.name || r.id) + ' »', 'les événements que cette règle filtrait, masquait ou routait seront de nouveau ingérés tels quels dès le prochain lot ; la règle ne se restaure pas.', { okText: 'Supprimer' })) return;
     try { await apiSend('/processors/' + r.id, 'DELETE'); toast('règle supprimée', 'ok'); loadProcessors(); }
     catch (e) { toast('échec : ' + ((e && e.message) || e), 'bad'); }
   };
@@ -132,11 +133,16 @@ export function openProcessorForm() {
   };
   action.onchange = syncHint; op.onchange = syncHint; syncHint();
 
-  const save = mk('button', { type: 'button' }, 'Créer');
+  const save = mk('button', { type: 'button', className: 'btn-primary' }, 'Créer'); // P11.4-b : classe partagée (primaire)
   save.onclick = async () => {
+    let matchField = field.value;
+    if (matchField === 'fields.<clé>') { // clé libre : modale partagée (plus de prompt() natif)
+      const r = await modal({ title: 'Clé du champ', fields: [{ name: 'key', label: 'fields.<clé>', value: 'fields.', required: true }] });
+      if (!r) return; matchField = r.key.trim();
+    }
     const body = {
       name: name.value.trim(), ord: parseInt(ord.value, 10) || 0,
-      match_field: field.value === 'fields.<clé>' ? (prompt('Clé du champ (fields.<clé>) :', 'fields.') || '') : field.value,
+      match_field: matchField,
       match_op: op.value, match_value: val.value,
       action: action.value, action_arg: arg.value.trim(),
     };

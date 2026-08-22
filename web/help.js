@@ -93,6 +93,9 @@ Display ONLY : the console never controls the host (enrollment/config are read-o
 • Résultats : timeline, « champs intéressants » (à gauche), liste d'events.
 • Drilldown : cliquer une valeur relance la recherche filtrée (fil d'Ariane).
 • Sur une IP : puces bannir / débannir ; sur un event : ouvrir un case.
+• « Modèles » : mes modèles (enregistrés par « Enregistrer », modifiables, supprimables) et les modèles livrés (copiables) ; charger remplit la barre sans exécuter.
+• « Récentes » : les dernières requêtes exécutées dans ce navigateur.
+• Feuilleter : ◀ / ▶ parcourent tout le résultat par curseur ; un saut direct à un numéro de page lointain peut rendre une page PARTIELLE (le badge le dit) — revenir avec ◀ rétablit le parcours complet.
 • « Panneau » enregistre la requête (réutilisable dans un Dashboard).` },
     en: { title: `Search & Explore (Plume panel)`, body:
 `The heart of investigation: one query = one search across the logs.
@@ -102,6 +105,9 @@ Display ONLY : the console never controls the host (enrollment/config are read-o
 • Results: timeline, "interesting fields" (left), event list.
 • Drilldown: click a value to re-run the search filtered (breadcrumb).
 • On an IP: ban / unban chips ; on an event: open a case.
+• "Templates": my templates (saved with "Save", editable, deletable) and the shipped templates (copyable); loading fills the bar without running.
+• "Recent": the last queries run in this browser.
+• Paging: ◀ / ▶ walk the whole result by cursor; a direct jump to a far page number can render a PARTIAL page (the badge says so) — going back with ◀ restores the complete walk.
 • "Panel" saves the query (reusable inside a Dashboard).` },
   },
   soql: {
@@ -194,14 +200,20 @@ Time stored in UTC ; display follows the time-zone selector.` },
     fr: { title: `Alertes`, body:
 `File des alertes déclenchées par les règles de détection.
 • Une alerte a un statut : « nouveau » puis « acquittée » (jamais supprimée).
-• Acquitter (une, ou « Tout acquitter ») = marquer comme vue / traitée.
-• Filtres par technique MITRE et par source.
+• UNE liste, plusieurs TRIS (Plate / Règle / Hôte / Technique), une PORTÉE (actives / tous statuts), un filtre « hors case », des FACETTES (technique, source). La barre d'actions est la même sur tous les tris ; une action impossible reste visible, désactivée, avec sa raison.
+• Acquitter : sans facette, « Tout acquitter » acquitte TOUTES les alertes actives (au-delà de la page) ; sous une facette, seules les alertes affichées.
+• Cliquer le titre d'une alerte ouvre l'Explore sur CE QUE LA RÈGLE A COMPTÉ : la requête de la règle sans son agrégat final, sur la fenêtre exacte de l'évaluation — le nombre de lignes reproduit le compte de l'alerte (règle en SQL brut : le SQL lui-même, réservé à l'administrateur).
+• La cloche d'une source (Données → Fraîcheur) mène ici avec la facette source : ses alertes non acquittées, cases comprises, toutes dates — sans lien avec la fraîcheur de la source.
+• Le titre « Alertes » ramène à la liste plate sans filtre.
 • Puces : ouvrir un case depuis l'alerte, ou bannir l'IP en cause.` },
     en: { title: `Alerts`, body:
 `Queue of alerts raised by the detection rules.
 • An alert has a status: "new" then "acknowledged" (never deleted).
-• Acknowledge (one, or "Ack all") = mark as seen / handled.
-• Filters by MITRE technique and by source.
+• ONE list, several SORTS (Flat / Rule / Host / Technique), one SCOPE (active / all statuses), an "outside any case" filter, FACETS (technique, source). The action bar is the same on every sort; an impossible action stays visible, disabled, with its reason.
+• Acknowledge: without a facet, "Ack all" acknowledges EVERY active alert (beyond the page); under a facet, only the alerts shown.
+• Clicking an alert title opens Explore on WHAT THE RULE COUNTED: the rule query without its final aggregate, on the exact evaluation window — the row count reproduces the alert count (raw-SQL rule: the SQL itself, admin only).
+• A source bell (Data → Freshness) lands here with the source facet: its unacknowledged alerts, cases included, all dates — unrelated to the source freshness.
+• The "Alerts" title goes back to the flat, unfiltered list.
 • Chips: open a case from the alert, or ban the offending IP.` },
   },
   cases: {
@@ -250,6 +262,7 @@ Time stored in UTC ; display follows the time-zone selector.` },
 • Cellule verte = technique COUVERTE (règles / alertes) ; teinte d'autant plus soutenue que la couverture est dense.
 • Cellule grisée = ANGLE MORT (aucune détection) -> les trous de couverture ressortent (purple-team).
 • Le compteur « r/a » = nombre de règles / d'alertes de la technique.
+• Chaque cellule porte l'identifiant ET le nom de la technique ; « nom inconnu » = identifiant hors du catalogue connu (technique retirée, personnalisée ou mal saisie).
 • Cliquer une technique = pivot vers ses alertes.
 • Lecture seule. Si la matrice est « indisponible », l'endpoint de couverture n'est pas encore déployé.` },
     en: { title: `ATT&CK matrix (coverage)`, body:
@@ -257,6 +270,7 @@ Time stored in UTC ; display follows the time-zone selector.` },
 • Green cell = COVERED technique (rules / alerts); deeper tint = denser coverage.
 • Muted cell = BLIND SPOT (no detection) -> coverage gaps stand out (purple-team).
 • The "r/a" counter = number of rules / alerts for the technique.
+• Each cell carries the technique identifier AND its name; "unknown name" = identifier outside the known catalog (retired, custom or mistyped technique).
 • Click a technique = pivot to its alerts.
 • Read-only. If the matrix is "unavailable", the coverage endpoint is not deployed yet.` },
   },
@@ -268,7 +282,9 @@ Time stored in UTC ; display follows the time-zone selector.` },
 • Type : GXQL (tous) ou SQL brut (réservé admin).
 • Intervalle = fréquence d'exécution ; Fenêtre = plage de temps analysée.
 • MITRE = technique Txxxx[.yyy] taguée (nourrit la Couverture ATT&CK).
-• « Tester » évalue la requête sans créer d'alerte. « actif » (dés)active.` },
+• « Tester » évalue la requête sans créer d'alerte.
+• L'interrupteur ON / OFF dit l'état et, à côté, ce qu'il arme ; il est réservé à l'administrateur.
+• Où ça arrive : ses alertes dans l'onglet Alertes (ou Risque si la règle est en mode risque). Le formulaire et la liste le rappellent avec le lien.` },
     en: { title: `Detection rules`, body:
 `A rule runs a query returning ONE number, on a regular interval.
 • Condition + Threshold (e.g. count > 10): if true -> alert at chosen Severity.
@@ -276,7 +292,9 @@ Time stored in UTC ; display follows the time-zone selector.` },
 • Type: GXQL (everyone) or raw SQL (admin only).
 • Interval = run frequency ; Window = analyzed time span.
 • MITRE = tagged technique Txxxx[.yyy] (feeds ATT&CK Coverage).
-• "Test" evaluates the query without creating an alert. "active" toggles it.` },
+• "Test" evaluates the query without creating an alert.
+• The ON / OFF switch shows the state and, next to it, what it arms; admin only.
+• Where it lands: its alerts in the Alerts tab (or Risk when the rule is in risk mode). The form and the list say so, with the link.` },
   },
   response: {
     fr: { title: `Réponse (playbooks & actions)`, body:
@@ -284,7 +302,10 @@ Time stored in UTC ; display follows the time-zone selector.` },
   ban_ip, unban_ip, kill_pid, stop_service.
 • Mode Observation (vert) = propositions seulement, rien n'est exécuté.
 • Mode ACTIF (rouge) = les playbooks exécutent la riposte automatiquement.
-• Playbook : requête dont la 1re colonne = la cible + action (ban / kill / stop).
+• Playbook = une règle de réponse : condition (requête dont la 1re colonne = la cible) -> action (ban / kill / stop), évaluée à intervalle régulier. Pas besoin d'un runbook autour.
+• L'interrupteur de chaque playbook dit ON ou OFF et, à côté, ce qu'il arme (ex. « bannit l'IP source pendant N h … ») ; l'activation demande confirmation, car elle touche le réseau ou un processus. Repasser sur OFF arrête les nouvelles actions.
+• Où ça arrive : les actions posées dans l'onglet Actions (en attente / dry-run en Observation ; exécutées en Actif).
+• Runbook = guide d'incident (checklist phasée, manuelle), proposé dans un Cas élevé en incident ; ses étapes « response » préparent une action soumise à approbation. Les livrés se lisent (« Étapes ») et se clonent ; seuls les custom s'éditent.
 • Action manuelle : cible (IP / PID / service) + dry-run (simulation) ou RÉEL.
 • dry-run coché par défaut ; les actions passent par une file d'approbation.` },
     en: { title: `Response (playbooks & actions)`, body:
@@ -292,23 +313,34 @@ Time stored in UTC ; display follows the time-zone selector.` },
   ban_ip, unban_ip, kill_pid, stop_service.
 • Observe mode (green) = proposals only, nothing is executed.
 • ACTIVE mode (red) = playbooks run the response automatically.
-• Playbook: a query whose 1st column = the target + action (ban / kill / stop).
+• Playbook = a response rule: condition (a query whose 1st column = the target) -> action (ban / kill / stop), evaluated on an interval. No runbook needed around it.
+• Each playbook's switch reads ON or OFF and, next to it, what it arms (e.g. "bans the source IP for N h …"); enabling asks for confirmation, since it touches the network or a process. Switching back to OFF stops new actions.
+• Where it lands: the actions it posts in the Actions tab (pending / dry-run in Observe; executed in Active).
+• Runbook = incident guide (phased manual checklist), proposed in a Case raised to incident; its "response" steps prepare an action subject to approval. Shipped ones can be read ("Steps") and cloned; only custom ones are edited.
 • Manual action: target (IP / PID / service) + dry-run (simulation) or REAL.
 • dry-run on by default ; actions go through an approval queue.` },
   },
   sources: {
     fr: { title: `Sources d'ingestion`, body:
 `Inventaire (lecture seule) de toutes les sources de données ingérées.
-• Colonnes : Attendu, Type, Dernier vu, volume 24 h, Statut, Catégorie, Note.
-• Badge « inattendu » = source non déclarée dans les collecteurs connus
-  (un signal à examiner, pas forcément un défaut).
-• Les métadonnées d'affichage sont éditables par l'admin (sans effet sur la collecte).` },
+• Colonnes : Attendue (et pourquoi), Cadence déclarée, Dernier vu, volume 24 h, Statut, Catégorie, Note.
+• « Attendue » est DÉRIVÉ : un fichier livré l'émet, une sonde l'observe, le produit l'agrège,
+  ou un connecteur configuré la déclare — la raison est écrite sous le badge.
+• Badge « inattendu » = source que rien ne déclare (signal à examiner, pas forcément un défaut).
+  Un éditeur ou un administrateur la marque « attendue » : persistant, réversible, audité,
+  avec l'auteur et la date affichés dans l'inventaire.
+• Statut = même dérivation que Fraîcheur (frais / calme / en retard / muet).
+• Les métadonnées d'affichage sont éditables (editor+), sans effet sur la collecte.` },
     en: { title: `Ingestion sources`, body:
 `Read-only inventory of every ingested data source.
-• Columns: Expected, Type, Last seen, 24h volume, Status, Category, Note.
-• "unexpected" badge = a source not declared among known collectors
-  (a signal to review, not necessarily a fault).
-• Display metadata is editable by admin (no effect on collection).` },
+• Columns: Expected (and why), Declared cadence, Last seen, 24h volume, Status, Category, Note.
+• "Expected" is DERIVED: a shipped file emits it, a probe observes it, the product aggregates it,
+  or a configured connector declares it — the reason is written under the badge.
+• "unexpected" badge = a source nothing declares (a signal to review, not necessarily a fault).
+  An editor or admin marks it "expected": persistent, reversible, audited, with author and date
+  shown in the inventory.
+• Status = same derivation as Freshness (fresh / quiet / late / mute).
+• Display metadata is editable (editor+), no effect on collection.` },
   },
   connectors: {
     fr: { title: `Connecteurs de sources (PULL)`, body:
@@ -416,15 +448,43 @@ Fail-closed: an unknown role is treated as read-only.` },
 les données plus anciennes sont purgées au prochain cycle horaire.
 • 5 durées : Événements, Snapshots, Alertes closes, Rollups, Métriques brutes.
 • Chaque durée est bornée par un plancher et un plafond.
-• Toute baisse exige confirmation et est inscrite au journal d'audit.
+• Chaque enregistrement confirme en nommant la conséquence : une baisse purge
+  (compte + ancienneté affichés), une hausse retient plus longtemps (disque).
+• Tout changement est inscrit au journal d'audit.
 • Les alertes ouvertes ne sont JAMAIS purgées.` },
     en: { title: `Data retention`, body:
 `Retention durations (admin). REDUCING a duration is DESTRUCTIVE:
 older data is purged on the next hourly cycle.
 • 5 durations: Events, Snapshots, Closed alerts, Rollups, Raw metrics.
 • Each duration is bounded by a floor and a ceiling.
-• Any decrease needs confirmation and is written to the audit ledger.
+• Every save confirms by naming the consequence: a decrease purges (count +
+  age shown), an increase retains longer (disk).
+• Every change is written to the audit ledger.
 • Open alerts are NEVER purged.` },
+  },
+  suppressions: {
+    fr: { title: `Suppressions & whitelists`, body:
+`Un seul écran pour TOUT ce qui filtre, mute ou exclut (admin).
+• Registre du démon : chaque exclusion avec son type — display-only (de-bruite un
+  panneau), collection-reducing (réduit l'ingestion, lecture seule ici), host
+  (frontière hôte, lecture seule). Opérateur / self se modifient et se réinitialisent.
+• Silences d'alertes : l'administrateur les CRÉE, les MODIFIE et les LÈVE ici.
+  Un silence mute les notifications des alertes qui correspondent à ses matchers
+  (severity, mitre, host, source, env, tag) jusqu'à son expiration ; les alertes
+  restent stockées et visibles. Durée bornée : jamais permanent. Chaque geste est audité.
+• Collecteurs hôte et firewall : filtres auto-reportés, lecture seule (le contrôle
+  reste à la frontière hôte — surfacer n'est pas piloter).` },
+    en: { title: `Suppressions & whitelists`, body:
+`One screen for EVERYTHING that filters, mutes or excludes (admin).
+• Daemon registry: each exclusion with its type — display-only (declutters a panel),
+  collection-reducing (reduces ingest, read-only here), host (host boundary,
+  read-only). Operator / self can be edited and reset.
+• Alert silences: the administrator CREATES, EDITS and LIFTS them here. A silence
+  mutes notifications for alerts matching its matchers (severity, mitre, host,
+  source, env, tag) until it expires; alerts stay stored and visible. Bounded
+  duration: never permanent. Every gesture is audited.
+• Host collectors and firewall: self-reported filters, read-only (control stays at
+  the host boundary — surfacing is not steering).` },
   },
   ledger: {
     fr: { title: `Journal d'audit`, body:
@@ -505,6 +565,7 @@ const HELP_INDEX = [
     { k: 'settings', fr: 'Compte', en: 'Account' },
     { k: 'users', fr: 'Users', en: 'Users' },
     { k: 'notifiers', fr: 'Canaux', en: 'Channels' },
+    { k: 'suppressions', fr: 'Suppressions', en: 'Suppressions' },
     { k: 'retention', fr: 'Rétention', en: 'Retention' },
     { k: 'ledger', fr: 'Audit', en: 'Audit' },
     { k: 'tenants', fr: 'Tenants', en: 'Tenants', mtOnly: true },
@@ -538,7 +599,8 @@ const GLOSSARY = [
   { t: 'règle de détection', fr: `Requête renvoyant un nombre + condition/seuil -> alerte, à intervalle régulier.`, en: `Query returning a number + condition/threshold -> alert, on a regular interval.` },
   { t: 'seuil / condition', fr: `Comparaison (>, >=, <, <=, ==, !=) du résultat au seuil.`, en: `Comparison (>, >=, <, <=, ==, !=) of the result to the threshold.` },
   { t: 'intervalle / fenêtre', fr: `Intervalle = fréquence d'exécution ; fenêtre = plage de temps analysée.`, en: `Interval = run frequency ; window = analyzed time span.` },
-  { t: 'playbook', fr: `Détection -> réponse automatique (1re colonne = cible).`, en: `Detection -> automatic response (1st column = target).` },
+  { t: 'playbook', fr: `Règle de réponse : condition (requête, 1re colonne = cible) -> action, automatique en mode Actif.`, en: `Response rule: condition (query, 1st column = target) -> action, automatic in Active mode.` },
+  { t: 'runbook', fr: `Guide d'incident : checklist phasée manuelle, proposée dans un cas élevé en incident.`, en: `Incident guide: phased manual checklist, proposed in a case raised to incident.` },
   { t: 'action', fr: `Riposte : ban_ip, unban_ip, kill_pid, stop_service (enum fermé).`, en: `Response: ban_ip, unban_ip, kill_pid, stop_service (closed enum).` },
   { t: 'dry-run / RÉEL', fr: `dry-run = simulation (rien n'est exécuté) ; RÉEL = exécuté.`, en: `dry-run = simulation (nothing runs) ; REAL = executed.` },
   { t: 'approbation', fr: `File d'attente : une action doit être approuvée avant exécution.`, en: `Queue: an action must be approved before it runs.` },
@@ -550,9 +612,10 @@ const GLOSSARY = [
   { t: 'mode 0 / mode 1', fr: `Mode 0 = mono-tenant (switchers cachés) ; mode 1 = multi-tenant.`, en: `Mode 0 = single-tenant (switchers hidden) ; mode 1 = multi-tenant.` },
   { t: 'rétention', fr: `Durée de conservation des données ; réduire = purge destructive.`, en: `Data keep duration ; reducing = destructive purge.` },
   { t: 'snapshot / rollup', fr: `Snapshot = état capturé ; rollup = métrique agrégée pré-calculée.`, en: `Snapshot = captured state ; rollup = pre-aggregated metric.` },
-  { t: 'fraîcheur', fr: `Santé de collecte d'une source : frais, calme, dégradé, muet.`, en: `A source's collection health: fresh, quiet, degraded, mute.` },
-  { t: 'type de source', fr: `continu, périodique, événement, dormant (cadence attendue).`, en: `stream, periodic, event, dormant (expected cadence).` },
-  { t: 'source inattendue', fr: `Source non déclarée dans les collecteurs connus (à examiner).`, en: `Source not declared among known collectors (to review).` },
+  { t: 'fraîcheur', fr: `Santé de collecte d'une source : frais, calme, en retard, muet.`, en: `A source's collection health: fresh, quiet, late, mute.` },
+  { t: 'cadence déclarée', fr: `Ce que la sonde du démon attend : continue (intervalle), événementielle, ou non déclarée.`, en: `What the daemon's probe expects: continuous (interval), event-driven, or undeclared.` },
+  { t: 'en retard', fr: `Cadence déclarée continue dépassée (3 cycles) — le « muet » du capteur dans Intégrations.`, en: `Declared continuous cadence exceeded (3 cycles) — the probe's "mute" in Integrations.` },
+  { t: 'source inattendue', fr: `Source que rien ne déclare (fichier livré, sonde, agrégat, connecteur) ; acquittable par un éditeur.`, en: `Source nothing declares (shipped file, probe, aggregate, connector); an editor can acknowledge it.` },
   { t: 'parseur', fr: `Extraction de champs par regex à groupes nommés, à l'ingestion.`, en: `Field extraction via named-group regex, at ingestion.` },
   { t: 'src_ip / dst_ip', fr: `src_ip = initiateur (attaquant) ; dst_ip = cible.`, en: `src_ip = initiator (attacker) ; dst_ip = target.` },
   { t: 'connecteur (PULL)', fr: `Source externe interrogée périodiquement (ex. Defender).`, en: `External source polled periodically (e.g. Defender).` },
@@ -730,8 +793,8 @@ function openHelpModal() {
   btn.onclick = close;
 }
 
-// aide in-app de la carte Fraîcheur : explique état (frais/calme/muet) + TYPE de source -> pourquoi
-// certaines sources sont "calme" des heures sans que ce soit une panne (documenté aussi dans le README).
+// aide in-app de la carte Fraîcheur : explique l'état (frais/calme/en retard/muet) et la CADENCE DÉCLARÉE
+// -> pourquoi certaines sources sont « calme » des heures sans que ce soit une panne, et quand « en retard » s'applique.
 function openFreshnessHelp() {
   const ov = document.createElement('div'); ov.className = 'modal-ov';
   const box = document.createElement('div'); box.className = 'modal helpmodal';
@@ -739,48 +802,47 @@ function openFreshnessHelp() {
   const h = document.createElement('h3'); h.textContent = en ? 'Help — Source freshness' : 'Aide — Fraîcheur des sources';
   const pre = document.createElement('pre'); pre.className = 'helpref';
   pre.textContent = (en ? [
-    'STATE = COLLECTION HEALTH (not activity) :',
+    'STATE = COLLECTION HEALTH (not activity), derived by the daemon from the DECLARED cadence :',
     '  ● fresh   data received < 15 min ago',
     '  ● quiet   collecting OK but low-activity source — NOT a delay',
+    '  ● late    a probe DECLARES a continuous cadence for this source and the silence exceeds',
+    '            3 cycles — the same observation Integrations shows as a "mute" probe; the',
+    '            "Mute probe" alert fires two cycles later',
     '  ● down    INGESTION BROKEN: no data (any source) for > 10 min',
-    '            └─ the only alert state (network / corruption / collection stopped).',
     '',
-    'A source can be "quiet" for hours with no problem: it depends on its NATURE.',
-    'Age = time since the last DATA, not since the collector last ran',
-    '(which runs on a timer and checks; it only emits if there is something new).',
+    'Active alerts on a source are a COUNT (bell next to the name), never a collection state.',
     '',
-    'Source TYPE (shown next to the name) :',
-    '  stream     constant flow (s)          k8s-log, kube-audit, metrics, auditd, sshd-session, web',
-    '  periodic   collector on a timer (min) firewall, controls, conntrack, k8s (state), mail',
-    '             Varonis (data governance)  dataaccess, dataacl, kube-rbac, minio, vault-audit',
-    '  event      when something happens     crowdsec, fail2ban, ufw, nft  → no threat = no event',
-    '  dormant    rare / on-demand           integrity (AIDE), su, containerd (container start)',
+    'DECLARED CADENCE (shown next to the name) :',
+    '  continuous · N     a probe expects a regular flow or heartbeat every N  → can be "late"',
+    '  event-driven       a probe observes it but its rate depends on activity → never "late"',
+    '  undeclared         no probe declares anything: age only tells activity  → never "late"',
+    'The 24 h observed rhythm (~1 datum / N) is shown on hover; it is an observation, not an',
+    'expectation, and it judges nothing.',
     '',
-    'Ex. stable cluster: container runtime and cluster-state feeds emit a few dozen events/day, and an',
-    'IPS emits none at all without an attack = sparse BY NATURE -> "quiet" is correct. Pod logs and',
-    'audit feeds are streams (easily tens of thousands of events/day) -> always fresh.',
+    'Age = time since the last DATA, not since the collector last ran (which runs on a timer and',
+    'checks; it only emits if there is something new). A source can be "quiet" for hours with no',
+    'problem: an IPS emits nothing without an attack, a periodic collector emits on change.',
   ] : [
-    'ÉTAT = SANTÉ DE COLLECTE (pas l\'activité) :',
-    '  ● frais   donnée reçue il y a < 15 min',
-    '  ● calme   collecte OK mais source peu active — PAS un retard',
-    '  ● muet    INGESTION EN PANNE : plus aucune donnée (toutes sources) depuis > 10 min',
-    '            └─ seul état d\'alerte (réseau / corruption / collecte arrêtée).',
+    'ÉTAT = SANTÉ DE COLLECTE (pas l\'activité), dérivé par le démon de la cadence DÉCLARÉE :',
+    '  ● frais      donnée reçue il y a < 15 min',
+    '  ● calme      collecte OK mais source peu active — PAS un retard',
+    '  ● en retard  une sonde DÉCLARE une cadence continue pour cette source et le silence',
+    '               dépasse 3 cycles — la même observation qu\'Intégrations montre « muet » sur le',
+    '               capteur ; l\'alerte « Capteur muet » part deux cycles plus tard',
+    '  ● muet       INGESTION EN PANNE : plus aucune donnée (toutes sources) depuis > 10 min',
     '',
-    'Une source peut être « calme » des heures sans problème : ça dépend de sa NATURE.',
-    'L\'âge = temps depuis la dernière DONNÉE, pas depuis le dernier passage du collecteur',
-    '(qui, lui, tourne sur un timer et vérifie ; il n\'émet que s\'il y a du nouveau).',
+    'Les alertes actives d\'une source sont un COMPTE (cloche à côté du nom), jamais un état de collecte.',
     '',
-    'TYPE de source (affiché à côté du nom) :',
-    '  continu      flux constant (s)          k8s-log, kube-audit, métriques, auditd, sshd-session, web',
-    '  périodique   collecteur sur timer (min) firewall, controls, conntrack, k8s (état), mail',
-    '               Varonis (gouvernance)     dataaccess, dataacl, kube-rbac, minio, vault-audit',
-    '  événement    quand il se passe qqch     crowdsec, fail2ban, ufw, nft  → pas de menace = pas d\'event',
-    '  dormant      rare / à la demande        integrity (AIDE), su, containerd (démarrage conteneur)',
+    'CADENCE DÉCLARÉE (affichée à côté du nom) :',
+    '  continu · N     une sonde attend un flux ou un battement régulier tous les N → peut être « en retard »',
+    '  événementiel    une sonde l\'observe mais son débit dépend de l\'activité → jamais « en retard »',
+    '  non déclarée    aucune sonde ne déclare rien : l\'âge ne dit que l\'activité → jamais « en retard »',
+    'Le rythme observé sur 24 h (~1 donnée / N) est donné au survol : c\'est une observation, pas une',
+    'attente, et il ne juge rien.',
     '',
-    'Ex. cluster stable : le runtime conteneur et l\'état du cluster émettent quelques dizaines',
-    'd\'événements/jour, et un IPS n\'émet RIEN sans attaque = sparse PAR NATURE -> « calme » est correct.',
-    'Les logs de pods et les pistes d\'audit sont continus (facilement quelques dizaines de milliers',
-    'd\'événements/jour) -> toujours frais.',
+    'L\'âge = temps depuis la dernière DONNÉE, pas depuis le dernier passage du collecteur (qui, lui,',
+    'tourne sur un timer et vérifie ; il n\'émet que s\'il y a du nouveau). Une source peut être « calme »',
+    'des heures sans problème : un IPS n\'émet rien sans attaque, un collecteur périodique n\'émet qu\'au changement.',
   ]).join('\n');
   const act = document.createElement('div'); act.className = 'modal-act';
   const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'm-cancel'; btn.textContent = 'Fermer';

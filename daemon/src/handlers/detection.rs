@@ -92,6 +92,73 @@ pub(crate) fn caller_dryrun_guard(st: &AppState, au: &AuthUser, queries: &[&str]
     }
     Ok(())
 }
+// ======================================================================================
+// LE LIEN DE RECHERCHE D'UNE ALERTE DE RÈGLE (P11.1-a) — UNE seule construction, dérivée de la
+// requête de la règle et de sa fenêtre d'évaluation.
+// ======================================================================================
+
+/// Ce qu'une alerte de règle ouvre dans l'Explore : la requête DONT la règle a agrégé le résultat, sur
+/// la fenêtre EXACTE sur laquelle elle l'a fait. Le compte de l'alerte se reproduit en exécutant ce lien.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LienDeRecherche {
+    pub(crate) query: String,
+    pub(crate) is_soql: bool,
+    pub(crate) from: i64,
+    pub(crate) to: i64,
+}
+
+impl LienDeRecherche {
+    pub(crate) fn to_json(&self) -> Value {
+        json!({ "query": self.query, "is_soql": self.is_soql, "from": self.from, "to": self.to })
+    }
+}
+
+/// Un étage `stats` qui REND UN SCALAIRE : une ou plusieurs agrégations, sans `by`. C'est l'étage que
+/// le moteur réduit à une valeur (`eval_value_budget` lit la dernière colonne de la première ligne) ;
+/// le RETIRER rend les lignes sur lesquelles cette valeur a été calculée.
+fn etage_stats_scalaire(etage: &str) -> bool {
+    let mut toks = etage.split_whitespace();
+    let Some(verbe) = toks.next() else { return false };
+    if !verbe.eq_ignore_ascii_case("stats") {
+        return false;
+    }
+    let reste: Vec<&str> = toks.collect();
+    !reste.is_empty() && !reste.iter().any(|t| t.eq_ignore_ascii_case("by"))
+}
+
+/// Le lien d'une alerte de règle. `query`/`is_soql` = la requête TELLE QU'ELLE A COMPTÉ (recopiée dans
+/// `alert.detail` à la levée) ; `window_s` = la fenêtre de la règle ; `ts` = l'instant de l'évaluation
+/// qui a levé ou rafraîchi l'alerte (`alert.ts`).
+///
+/// FENÊTRE. `rule_sql` évalue sur `[ts - window_s, +∞)` à l'instant `ts` : le lien borne donc
+/// `[ts - window_s, ts]` (bornes incluses dans le SQL émis), sans marge — une marge « pour voir
+/// l'événement de bord » rendait le lien PLUS LARGE que le compte, par construction, sur toutes les règles.
+///
+/// REQUÊTE. GXQL : on retire le DERNIER étage s'il est un `stats` scalaire (`| stats count`,
+/// `| stats max(value)`) ; ce qui reste est l'ensemble que cet étage a réduit — les événements appariés
+/// pour `search … | stats count`, les GROUPES retenus pour `search … | stats dc(x) by k | where … |
+/// stats count` (l'ancien lien ne gardait que la tête `search …` : il rendait tous les événements, pas
+/// les groupes comptés). Sans étage scalaire terminal, la requête entière est le lien : la valeur de
+/// l'alerte est la dernière colonne de sa première ligne, et c'est ce résultat qu'on montre.
+/// SQL BRUT : opaque, aucun étage à isoler — le lien est le SQL lui-même, fenêtre substituée ; la porte
+/// « SQL brut = admin » de l'Explore s'applique telle quelle.
+pub(crate) fn lien_de_recherche_de_regle(query: &str, is_soql: bool, window_s: i64, ts: i64) -> LienDeRecherche {
+    let from = if window_s > 0 { ts - window_s } else { 0 };
+    let to = ts;
+    if !is_soql {
+        let q = query.replace("__FROM__", &from.to_string()).replace("__TO__", &to.to_string());
+        return LienDeRecherche { query: q, is_soql: false, from, to };
+    }
+    let mut etages = guatx_core::soql::soql_split_pipes(query);
+    let q = if etages.len() >= 2 && etages.last().map(|e| etage_stats_scalaire(e)).unwrap_or(false) {
+        etages.pop();
+        etages.join(" | ")
+    } else {
+        query.trim().to_string()
+    };
+    LienDeRecherche { query: q, is_soql: true, from, to }
+}
+
 /// Exécute la requête et renvoie la dernière colonne de la 1re ligne comme nombre. DURCISSEMENT 3b —
 /// l'ÉVALUATION passe par run_query -> connexion du pool LECTURE SEULE (SQLITE_OPEN_READ_ONLY +
 /// `PRAGMA query_only=ON`, cf read_conn_open) + garde `stmt.readonly()` dans run_query_ex : une règle ne

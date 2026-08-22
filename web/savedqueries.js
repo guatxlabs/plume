@@ -1,11 +1,17 @@
-// savedqueries.js — outillage analyste de la barre Explore (#sql). Deux surfaces, 100 % natives (aucun
-// LLM/modèle, aucun appel externe) :
+// savedqueries.js — MES MODÈLES de requête (persistants, per-user) + HISTORIQUE RÉCENT de la barre Explore (#sql).
+// 100 % natif (aucun LLM/modèle, aucun appel externe).
 //
-//  1) REQUÊTES SAUVEGARDÉES (persistantes, per-user, tenant-scoped) — adossées au serveur
-//     (GET/POST/PUT/DELETE /api/saved-queries, OWNER-scoped strict : chaque utilisateur ne voit/charge/édite/
-//     supprime QUE ses propres requêtes ; l'isolation est imposée SERVEUR, cf. handlers/saved_queries.rs).
-//     Enregistrer capture le texte de la barre (draft autorisé, jamais compilé au save). Charger REMPLIT la
-//     barre — SANS l'exécuter (l'analyste relit puis exécute, cohérent avec le modèle advisory complétion/valide).
+//  1) MES MODÈLES — adossés au serveur (GET/POST/PUT/DELETE /api/saved-queries, table `saved_query`,
+//     OWNER-scoped strict : chaque utilisateur ne voit/charge/édite/supprime QUE les siens ; l'isolation est
+//     imposée SERVEUR, cf. handlers/saved_queries.rs). « Enregistrer » capture le texte de la barre (draft
+//     autorisé, jamais compilé au save) et le range parmi les MODÈLES ; le palette « Modèles »
+//     (soql_complete.js) les liste à côté des modèles LIVRÉS, avec modification et suppression.
+//     P11.9-a — MESURÉ le 2026-08-22 : la barre portait QUATRE affordances (Modèles / Enregistrer /
+//     Sauvegardées / Récentes) pour DEUX stockages (la bibliothèque livrée, lecture seule, et cette table
+//     per-user). « Sauvegardées » n'était que l'autre nom des requêtes enregistrées : elle DISPARAÎT, son
+//     contenu est le même stockage (aucune migration de données — la table `saved_query` EST « mes
+//     modèles »), et le bouton `#qsaved`, s'il est encore dans le gabarit, est caché ici.
+//     Charger REMPLIT la barre — SANS l'exécuter (l'analyste relit puis exécute).
 //
 //  2) HISTORIQUE RÉCENT (client-only, localStorage, par navigateur) — les ~20 dernières requêtes DISTINCTES
 //     exécutées, dédupliquées, plus-récente-d'abord, effaçables. Aucun stockage serveur, aucun endpoint,
@@ -14,7 +20,7 @@
 // SÉCURITÉ : l'endpoint saved-queries est owner-scoped côté serveur (clé = identité authentifiée ; le client
 // n'envoie JAMAIS d'identifiant d'utilisateur) -> pas d'IDOR/énumération. Le texte GXQL stocké est INERTE :
 // il n'est compilé/masqué/autorisé qu'au run, par le chemin gardé /api/query (comme une requête tapée à la main).
-import { $, api, apiSend, toast, modal, confirmModal, esc } from './core.js';
+import { $, api, apiSend, toast, modal, confirmModal } from './core.js';
 
 // ============================ 2) HISTORIQUE RÉCENT (localStorage) ============================
 const RECENT_KEY = 'plume_recent_queries';
@@ -38,7 +44,7 @@ export function recordRecentQuery(sql) {
 }
 
 // ============================ CHARGEMENT DANS LA BARRE (jamais d'auto-run) ====================
-function loadIntoBar(sql) {
+export function loadIntoBar(sql) {
   const el = $('#sql');
   if (!el) return;
   el.value = sql;
@@ -73,85 +79,66 @@ function emptyRow(text) {
   const d = document.createElement('div'); d.className = 'sq-empty'; d.textContent = text; return d;
 }
 
-// ============================ 1) REQUÊTES SAUVEGARDÉES (serveur, owner-scoped) ================
-async function fetchSaved() {
+// ============================ 1) MES MODÈLES (serveur, owner-scoped) ==========================
+// null = chargement échoué (déjà signalé par un toast) ; [] = aucun modèle personnel.
+export async function fetchSaved() {
   try { const d = await api('/saved-queries'); return (d && Array.isArray(d.queries)) ? d.queries : []; }
-  catch (e) { toast('Chargement des requêtes sauvegardées échoué : ' + e.message, 'err'); return null; }
+  catch (e) { toast('Chargement de mes modèles échoué : ' + e.message, 'err'); return null; }
 }
 
-// Enregistrer le texte COURANT de la barre sous un nom. Draft autorisé (texte vide accepté par le serveur).
-async function saveCurrent() {
-  const sql = (($('#sql') && $('#sql').value) || '').trim();
+// Enregistrer un texte sous un nom parmi MES MODÈLES. Draft autorisé (texte vide accepté par le serveur).
+// `preset` = {name, soql} pour pré-remplir (copie d'un modèle livré) ; sans preset, le texte de la barre.
+export async function saveAsTemplate(preset) {
+  const sql = preset && typeof preset.soql === 'string' ? preset.soql : (($('#sql') && $('#sql').value) || '').trim();
   const vals = await modal({
-    title: 'Enregistrer la requête',
+    title: 'Enregistrer dans mes modèles',
     okText: 'Enregistrer',
     fields: [
-      { name: 'name', label: 'Nom', required: true, placeholder: 'ex : erreurs 4xx — 24 h' },
+      { name: 'name', label: 'Nom du modèle', required: true, value: (preset && preset.name) || '', placeholder: 'ex : erreurs 4xx — 24 h' },
       { name: 'soql', label: 'Requête (GXQL)', type: 'textarea', value: sql, placeholder: 'search source=… | stats count by …' },
     ],
   });
-  if (!vals) return;
+  if (!vals) return null;
   try {
-    await apiSend('/saved-queries', 'POST', { name: vals.name, soql: vals.soql || '' });
-    toast('Requête enregistrée', 'ok');
+    const r = await apiSend('/saved-queries', 'POST', { name: vals.name, soql: vals.soql || '' });
+    toast('Modèle enregistré — retrouvez-le sous « Modèles »', 'ok');
+    return r || { name: vals.name, soql: vals.soql || '' };
   } catch (e) {
     toast('Enregistrement échoué : ' + e.message, 'err');
+    return null;
   }
 }
+export function saveCurrent() { return saveAsTemplate(null); }
 
-// Renommer / modifier une requête sauvegardée existante (PUT owner-scoped, IDOR-sûr côté serveur).
-async function editSaved(q, onDone) {
+// Renommer / modifier un modèle personnel (PUT owner-scoped, IDOR-sûr côté serveur).
+export async function editSaved(q, onDone) {
   const vals = await modal({
-    title: 'Modifier la requête',
+    title: 'Modifier le modèle',
     okText: 'Enregistrer',
     fields: [
-      { name: 'name', label: 'Nom', required: true, value: q.name },
+      { name: 'name', label: 'Nom du modèle', required: true, value: q.name },
       { name: 'soql', label: 'Requête (GXQL)', type: 'textarea', value: q.soql || '' },
     ],
   });
   if (!vals) return;
   try {
     await apiSend('/saved-queries/' + encodeURIComponent(q.id), 'PUT', { name: vals.name, soql: vals.soql || '' });
-    toast('Requête mise à jour', 'ok');
+    toast('Modèle mis à jour', 'ok');
     if (onDone) onDone();
   } catch (e) {
     toast('Mise à jour échouée : ' + e.message, 'err');
   }
 }
 
-async function deleteSaved(q, onDone) {
-  if (!(await confirmModal(`Supprimer la requête « ${q.name} » ?`, { title: 'Supprimer', okText: 'Supprimer' }))) return;
+export async function deleteSaved(q, onDone) {
+  if (!(await confirmModal(`Supprimer le modèle « ${q.name} » ?`, { title: 'Supprimer', okText: 'Supprimer' }))) return;
   try {
     await apiSend('/saved-queries/' + encodeURIComponent(q.id), 'DELETE');
-    toast('Requête supprimée', 'ok');
+    toast('Modèle supprimé', 'ok');
     if (onDone) onDone();
   } catch (e) {
     toast('Suppression échouée : ' + e.message, 'err');
   }
-}
-
-// Ouvre le dropdown des requêtes sauvegardées : chaque ligne = charger (clic sur le nom) + ✎ modifier + × supprimer.
-async function openSavedMenu(anchor) {
-  const rows = await fetchSaved();
-  if (rows === null) return;   // erreur déjà signalée
-  const render = list => {
-    openDrop(anchor, (panel, close) => {
-      if (!list.length) { panel.appendChild(emptyRow('Aucune requête sauvegardée')); return; }
-      list.forEach(q => {
-        const row = document.createElement('div'); row.className = 'sq-row';
-        const load = document.createElement('button'); load.type = 'button'; load.className = 'minimenu-item sq-load';
-        load.textContent = q.name; load.title = q.soql || '(vide)';
-        load.onclick = () => { close(); loadIntoBar(q.soql || ''); };
-        const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'sq-icon'; edit.title = 'Modifier'; edit.textContent = '✎';
-        edit.onclick = e => { e.stopPropagation(); close(); editSaved(q, () => {}); };
-        const del = document.createElement('button'); del.type = 'button'; del.className = 'sq-icon sq-del'; del.title = 'Supprimer'; del.textContent = '×';
-        del.onclick = e => { e.stopPropagation(); close(); deleteSaved(q, () => {}); };
-        row.append(load, edit, del);
-        panel.appendChild(row);
-      });
-    });
-  };
-  render(rows);
 }
 
 // Ouvre le dropdown de l'historique récent (localStorage) : chaque ligne charge la requête ; bouton « Effacer ».
@@ -172,11 +159,12 @@ function openRecentMenu(anchor) {
   });
 }
 
-// initSavedQueries() — câble les 3 affordances de la barre Explore (Enregistrer / Sauvegardées / Récentes).
+// initSavedQueries() — câble la barre Explore : « Enregistrer » (-> mes modèles) et « Récentes ».
+// « Sauvegardées » (#qsaved) n'a plus de contenu propre : caché tant que le gabarit le porte encore.
 // Idempotent-safe : appelé une fois au boot. Silencieux si les boutons n'existent pas.
 export function initSavedQueries() {
   const save = $('#qsave'), saved = $('#qsaved'), recent = $('#qrecent');
   if (save) save.addEventListener('click', () => saveCurrent());
-  if (saved) saved.addEventListener('click', () => openSavedMenu(saved));
+  if (saved) saved.hidden = true;
   if (recent) recent.addEventListener('click', () => openRecentMenu(recent));
 }

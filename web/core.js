@@ -103,6 +103,8 @@ function modal(opts = {}) {
     let html = '';
     if (opts.title) html += `<h3>${esc(opts.title)}</h3>`;
     if (opts.message) html += `<p class="modal-msg">${esc(opts.message)}</p>`;
+    // conséquence d'une action sensible : ligne DISTINCTE du message (le lecteur la voit avant de cliquer).
+    if (opts.consequence) html += `<p class="modal-consequence">${esc(opts.consequence)}</p>`;
     (opts.fields || []).forEach(f => {
       html += `<label class="modal-f"><span>${esc(f.label || f.name)}</span>`;
       if (f.type === 'select') html += `<select data-n="${esc(f.name)}">${(f.options || []).map(o => `<option value="${esc(o.value)}"${String(o.value) === String(f.value) ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`;
@@ -132,6 +134,19 @@ function modal(opts = {}) {
 async function confirmModal(message, opts = {}) {
   const r = await modal({ title: opts.title || 'Confirmer', message, okText: opts.okText || 'Confirmer', cancelText: opts.cancelText, danger: opts.danger !== false });
   return r !== null;
+}
+// CONFIRMATION D'UNE ACTION SENSIBLE — la confirmation partagée qui NOMME LA CONSÉQUENCE (P11.5-b).
+// `action` = ce que l'utilisateur s'apprête à faire (titre) ; `consequence` = ce qui en découle et ne se
+// défait pas d'un clic (données détruites, droit élevé, réponse automatique armée). La garde de CI
+// `.github/scripts/check_sensitive_routes_are_confirmed.py` dérive les routes sensibles du démon et exige
+// que chaque appelant web passe par une confirmation exportée d'ici. Sans conséquence nommée, la fenêtre
+// n'est pas posée et l'appelant est arrêté : on ne peut pas « confirmer » sans dire ce qui va se passer.
+async function confirmWithConsequence(action, consequence, opts = {}) {
+  if (!String(consequence || '').trim()) throw new Error('confirmWithConsequence : la conséquence doit être nommée');
+  // `fields`/`validate` passent à la modale (ex. retaper le nom d'un tenant avant sa destruction) ; le retour
+  // reste booléen sauf si des champs sont demandés (alors les valeurs saisies, ou null).
+  const r = await modal({ title: action, message: opts.message, consequence, okText: opts.okText || 'Confirmer', cancelText: opts.cancelText, danger: opts.danger !== false, fields: opts.fields, validate: opts.validate });
+  return opts.fields ? r : r !== null;
 }
 
 // ============ EXPORT (CSV / JSON / PDF) — P0 ==================================================
@@ -448,7 +463,7 @@ function socIsAdmin() { return socRole() === 'admin'; }
 // même sémantique (disable/409) — ceci n'est que l'UX correspondante.
 const MANAGED_LABEL = { 0: 'builtin', 1: 'overlay', 2: 'perso' };
 const MANAGED_HINT = {
-  0: 'contenu par défaut (seed) — non supprimable ; décochez « actif » pour le désactiver',
+  0: 'contenu par défaut (seed) — non supprimable ; passez l’interrupteur sur OFF pour le désactiver',
   1: 'contenu overlay (config.d) — géré par fichier, réimposé au démarrage ; non supprimable ici',
   2: 'contenu créé via l’interface — modifiable et supprimable',
 };
@@ -470,7 +485,7 @@ function gateDeleteBtn(btn, m) {
   btn.classList.add('mg-nodel');
   btn.title = m === 1
     ? 'contenu overlay (config.d) : non supprimable ici (géré par fichier)'
-    : 'contenu builtin : non supprimable — décochez « actif » pour le désactiver';
+    : 'contenu builtin : non supprimable — passez l’interrupteur sur OFF pour le désactiver';
   return false;
 }
 // petite aide : écrit un message d'état dans un <span> de formulaire (#rf-result, #pf-result, …).
@@ -520,6 +535,33 @@ function collapsibleGroup(set, storeKey, key, label, count, nodes, dotHtml) {
   return wrap;
 }
 
+// DÉPLI PARTAGÉ d'un panneau par un bouton (P11.4-a) — formulaire, picker, éditeur en ligne. UN comportement
+// pour toute la console : le bouton OUVRE et REFERME (second clic = repli), il porte son état
+// (`aria-expanded` + `.on`, accent) et n'est JAMAIS désactivé pendant que le panneau est ouvert — un bouton
+// de dépli actif n'est pas un bouton grisé. Plusieurs boutons peuvent piloter le même panneau avec des
+// contenus différents (connecteurs : preset / Defender / TAXII / HTTP) : `isOpen` dit si CE bouton est
+// celui dont le contenu est affiché, `open` pose le contenu. Une fermeture faite ailleurs (« Annuler »
+// dans le panneau, `hidden` posé par un autre module) est observée sur le panneau lui-même, de sorte
+// que l'état du bouton suit toujours le panneau et non l'inverse.
+function disclosure(btn, panel, opts = {}) {
+  if (!btn || !panel) return null;
+  const visible = () => !panel.hidden && !panel.classList.contains('hidden');
+  const isOpen = opts.isOpen || visible;
+  const show = opts.open || (() => { panel.hidden = false; panel.classList.remove('hidden'); });
+  const hide = opts.close || (() => { panel.hidden = true; panel.classList.add('hidden'); });
+  const paint = () => {
+    const o = !!isOpen();
+    btn.setAttribute('aria-expanded', o ? 'true' : 'false');
+    btn.classList.toggle('on', o);
+    if (btn.disabled) btn.disabled = false;
+  };
+  if (panel.id) btn.setAttribute('aria-controls', panel.id);
+  btn.onclick = () => { if (isOpen()) hide(); else show(); paint(); };
+  try { new MutationObserver(paint).observe(panel, { attributes: true, attributeFilter: ['hidden', 'class'] }); } catch (e) {}
+  paint();
+  return { open: () => { show(); paint(); }, close: () => { hide(); paint(); }, toggle: btn.onclick, isOpen, paint };
+}
+
 // MITRE ATT&CK — noms statiques (l'API ne renvoie que l'ID). Fallback sous-technique : strip .NNN -> parent.
 const MITRE_NAMES = { T1046: "Network Service Discovery", T1071: "Application Layer Protocol", T1110: "Brute Force", T1190: "Exploit Public-Facing Application", T1204: "User Execution", T1490: "Inhibit System Recovery", T1498: "Network Denial of Service", T1543: "Create or Modify System Process", T1552: "Unsecured Credentials", T1554: "Compromise Host Software Binary", "T1562.001": "Impair Defenses: Disable or Modify Tools", T1565: "Data Manipulation", T1595: "Active Scanning", "T1595.002": "Active Scanning: Vulnerability Scanning" };
 function mitreName(id) { return MITRE_NAMES[id] || MITRE_NAMES[(id || "").split(".")[0]] || ""; }
@@ -532,5 +574,6 @@ const humanAge = s => { s = Number(s) || 0; return s < 90 ? s + ' s' : s < 5400 
 export function setSocTZ(v) { socTZ = v; }
 export {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, flashStopped, stopBtn, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, toCSV, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, miniMenu, api, apiSend, transientGatewayMsg, muted, fetchInto, colComparator, makePager, pageNums, pagedList,
-  socRole, socIsAdmin, managedBadge, gateDeleteBtn, formMsg, contentSubmit, contentDelete, SEVCOL, lsSet, collapsibleGroup, mitreName, humanAge
+  socRole, socIsAdmin, managedBadge, gateDeleteBtn, formMsg, contentSubmit, contentDelete, SEVCOL, lsSet, collapsibleGroup, mitreName, humanAge,
+  confirmWithConsequence, disclosure
 };

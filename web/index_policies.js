@@ -7,7 +7,7 @@
 //   POST /api/index-policies         -> create ; POST /api/index-policies/:id -> update ; DELETE …/:id
 // SÉCU UI : rendu textContent (anti-XSS) ; la VRAIE garde reste serveur (403 hors admin). Défense en
 // profondeur : on court-circuite le fetch hors admin.
-import { $, api, apiSend, fetchInto, muted, pagedList, toast } from './core.js';
+import { $, api, apiSend, confirmWithConsequence, fetchInto, muted, pagedList, toast } from './core.js';
 import { uiIsAdmin } from './multitenant.js';
 
 function num(v) { return typeof v === 'number' ? v : 0; }
@@ -79,18 +79,19 @@ function indexRow(r, globalDays) {
       try { await apiSend('/index-policies/' + r.id, 'POST', { enabled: want }); r.enabled = want; toast(want ? 'index activé' : 'index désactivé', 'ok'); }
       catch (e) { en.checked = !want; toast('échec : ' + ((e && e.message) || e), 'bad'); }
     };
-    const edit = document.createElement('button'); edit.type = 'button'; edit.textContent = 'éditer'; edit.className = 'picon';
+    const edit = document.createElement('button'); edit.type = 'button'; edit.textContent = 'Éditer'; edit.className = 'btn btn-sm'; // P11.4-b : bouton texte = .btn (pas le chrome icône)
     edit.onclick = () => openIndexPolicyForm(r);
-    const del = document.createElement('button'); del.type = 'button'; del.textContent = 'suppr'; del.className = 'picon';
+    const del = document.createElement('button'); del.type = 'button'; del.textContent = 'Supprimer'; del.className = 'btn btn-sm btn-danger';
     del.onclick = async () => {
-      if (!confirm('Supprimer la politique de l’index « ' + r.name + ' » ? (l’index retombera sur la rétention globale ; aucun event n’est supprimé)')) return;
+      // P11.5-b : DELETE = route sensible -> confirmation partagée qui nomme la conséquence (plus de confirm() natif).
+      if (!await confirmWithConsequence('Supprimer la politique de l’index « ' + r.name + ' »', 'l’index retombe sur la rétention globale ; aucun événement n’est supprimé par ce geste, mais le régime de purge propre à cet index disparaît.', { okText: 'Supprimer' })) return;
       try { await apiSend('/index-policies/' + r.id, 'DELETE'); toast('politique supprimée', 'ok'); loadIndexPolicies(); }
       catch (e) { toast('échec : ' + ((e && e.message) || e), 'bad'); }
     };
     row.append(en, edit, del);
   } else {
     // index découvert sans politique -> proposer d'en créer une (préremplit le nom).
-    const define = document.createElement('button'); define.type = 'button'; define.textContent = '+ définir'; define.className = 'picon';
+    const define = document.createElement('button'); define.type = 'button'; define.textContent = '+ définir'; define.className = 'btn btn-sm';
     define.title = 'définir une rétention/plafond pour cet index';
     define.onclick = () => openIndexPolicyForm({ name: r.name });
     row.append(define);
@@ -108,6 +109,7 @@ export function openIndexPolicyForm(existing) {
   // toggle-fermeture si on reclique « + Index » à vide.
   if (!host.hidden && !existing) { host.hidden = true; host.replaceChildren(); return; }
   host.hidden = false;
+  if (isEdit) host.dataset.editing = String(existing.id); else delete host.dataset.editing; // le dépli partagé (app.js) lit cet état
   const mk = (tag, attrs = {}, txt) => { const e = document.createElement(tag); Object.assign(e, attrs); if (txt != null) e.textContent = txt; return e; };
 
   const name = mk('input', { placeholder: 'Nom de l’index (= env_id, ex: auth)', autocomplete: 'off', value: prefillName });
@@ -117,7 +119,7 @@ export function openIndexPolicyForm(existing) {
   const bytes = mk('input', { type: 'number', min: '0', value: String((existing && existing.max_bytes) || 0), title: 'plafond de taille estimée en octets (0 = aucun)' });
   const desc = mk('input', { placeholder: 'description (optionnel)', autocomplete: 'off', value: (existing && existing.description) || '' });
 
-  const save = mk('button', { type: 'button' }, isEdit ? 'Enregistrer' : 'Créer');
+  const save = mk('button', { type: 'button', className: 'btn-primary' }, isEdit ? 'Enregistrer' : 'Créer'); // P11.4-b : classe partagée
   save.onclick = async () => {
     const body = {
       retention_days: parseInt(ret.value, 10) || 0,
@@ -125,6 +127,16 @@ export function openIndexPolicyForm(existing) {
       max_bytes: parseInt(bytes.value, 10) || 0,
       description: desc.value.trim(),
     };
+    // P11.5-b : une politique d'index PILOTE une purge (rétention propre, plafonds de lignes/octets) — le démon
+    // audite « destructive » quand une borne se resserre. La confirmation partagée nomme la conséquence.
+    const before = existing || {};
+    const tightens = (body.retention_days > 0 && (!before.retention_days || body.retention_days < before.retention_days))
+      || (body.max_rows > 0 && (!before.max_rows || body.max_rows < before.max_rows))
+      || (body.max_bytes > 0 && (!before.max_bytes || body.max_bytes < before.max_bytes));
+    const consequence = tightens
+      ? 'les événements de cet index au-delà de la rétention ou des plafonds seront PURGÉS au prochain cycle, sans retour possible.'
+      : 'aucune purge immédiate ; cette politique fixe le régime de purge propre à cet index (elle peut en retirer plus tard si elle est resserrée).';
+    if (!await confirmWithConsequence((isEdit ? 'Enregistrer' : 'Créer') + ' la politique d\'index « ' + (name.value.trim() || prefillName || '?') + ' »', consequence, { danger: tightens, okText: isEdit ? 'Enregistrer' : 'Créer' })) return;
     try {
       if (isEdit) await apiSend('/index-policies/' + existing.id, 'POST', body);
       else await apiSend('/index-policies', 'POST', Object.assign({ name: name.value.trim() }, body));
@@ -132,7 +144,7 @@ export function openIndexPolicyForm(existing) {
       host.hidden = true; host.replaceChildren(); loadIndexPolicies();
     } catch (e) { toast('refus : ' + ((e && e.message) || e), 'bad'); }
   };
-  const cancel = mk('button', { type: 'button', className: 'picon' }, 'annuler');
+  const cancel = mk('button', { type: 'button', className: 'btn' }, 'Annuler'); // P11.4-b : classe partagée (secondaire)
   cancel.onclick = () => { host.hidden = true; host.replaceChildren(); };
 
   const lab = (t, el) => { const l = mk('label'); l.style.cssText = 'display:flex;flex-direction:column;font-size:11px;gap:2px'; l.append(mk('span', { className: 'muted' }, t), el); return l; };

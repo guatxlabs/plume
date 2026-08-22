@@ -28,6 +28,7 @@ export const S = {
   alertGroupAll: false,
   alertGroupPage: 0,
   alertSourceFilter: '',
+  alertUncased: true,
   editingRule: null,
   ruleSort: localStorage.getItem('soc_rule_sort') || 'id',
   // --- freshness / sources ---

@@ -431,3 +431,75 @@ pub(crate) const COLLECTORS: [(&str, &str, i64, Sonde, bool); 23] = [
     ("integrity-health",  "intégrité santé (FIM)",         900, Sonde::EventBattementSante { source: "integrity" }, false),
     ("journal-health",    "journald santé (shipper auth)", 300, Sonde::EventBattementSante { source: "journal" }, false),
 ];
+
+// ====================================================================================================
+// LA CADENCE DÉCLARÉE D'UN FEED (P11.3-b) — ce que la table ci-dessus ATTEND d'une source, lu du
+// descripteur typé. C'est la seule cadence attendue qui existe : une moyenne observée n'en est pas une.
+// ====================================================================================================
+
+/// La cadence ATTENDUE d'un feed, telle qu'une sonde de `COLLECTORS` la déclare — ou l'aveu qu'aucune ne
+/// la déclare. Dérivée du descripteur typé (`Sonde`), jamais d'une moyenne observée.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CadenceDeclaree {
+    /// Flux régulier ou battement de santé : un silence au-delà de `interval_s × cycles` est un RETARD.
+    Continue { interval_s: i64, capteur: &'static str },
+    /// Débit dépendant d'une activité externe : le silence propre n'est jamais un retard.
+    Evenementielle { capteur: &'static str },
+    /// Aucune sonde ne la déclare : l'âge ne dit que l'activité.
+    NonDeclaree,
+}
+
+impl CadenceDeclaree {
+    pub(crate) fn etiquette(&self) -> &'static str {
+        match self {
+            CadenceDeclaree::Continue { .. } => "continue",
+            CadenceDeclaree::Evenementielle { .. } => "evenementielle",
+            CadenceDeclaree::NonDeclaree => "non_declaree",
+        }
+    }
+    pub(crate) fn interval_s(&self) -> Option<i64> {
+        match self {
+            CadenceDeclaree::Continue { interval_s, .. } => Some(*interval_s),
+            _ => None,
+        }
+    }
+    pub(crate) fn capteur(&self) -> Option<&'static str> {
+        match self {
+            CadenceDeclaree::Continue { capteur, .. } | CadenceDeclaree::Evenementielle { capteur } => Some(capteur),
+            CadenceDeclaree::NonDeclaree => None,
+        }
+    }
+}
+
+/// La cadence déclarée d'un feed (`kind` = event | snapshot | metric, `name` = source | kind d'instantané).
+/// PRÉSÉANCE quand plusieurs sondes observent la même source : le BATTEMENT DE SANTÉ (dead-man's-switch,
+/// continu) l'emporte sur le flux, et un flux continu l'emporte sur un flux événementiel — une source
+/// dont le collecteur bat régulièrement a une cadence, même si son flux réel dépend de l'activité.
+pub(crate) fn cadence_declaree(kind: &str, name: &str) -> CadenceDeclaree {
+    let mut flux_continu: Option<CadenceDeclaree> = None;
+    let mut evenementielle: Option<CadenceDeclaree> = None;
+    for (id, _, interval, sonde, event_based) in COLLECTORS.iter() {
+        match (kind, sonde) {
+            ("event", Sonde::EventBattementSante { source }) if *source == name => {
+                return CadenceDeclaree::Continue { interval_s: *interval, capteur: *id };
+            }
+            ("event", Sonde::EventFlux { sources }) if sources.iter().any(|s| *s == name) => {
+                if *event_based {
+                    evenementielle.get_or_insert(CadenceDeclaree::Evenementielle { capteur: *id });
+                } else {
+                    flux_continu.get_or_insert(CadenceDeclaree::Continue { interval_s: *interval, capteur: *id });
+                }
+            }
+            ("snapshot", Sonde::Instantane { kind: k }) if *k == name => {
+                return CadenceDeclaree::Continue { interval_s: *interval, capteur: *id };
+            }
+            ("metric", Sonde::MetriqueFlotteConfondue) => {
+                return CadenceDeclaree::Continue { interval_s: *interval, capteur: *id };
+            }
+            _ => {}
+        }
+    }
+    flux_continu.or(evenementielle).unwrap_or(CadenceDeclaree::NonDeclaree)
+}
+
+

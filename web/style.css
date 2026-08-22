@@ -190,12 +190,28 @@ footer{padding:12px 20px;color:var(--mut);font-size:12px;border-top:1px solid va
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 .visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);border:0}
 
-/* boutons (secondaires = contour, primaire = accent) */
-.panelhead button,.rf-actions button,.subh button,#rule-new,#notif-new,#act-new,#mode-toggle,#save-panel,#dash-new,#dash-del,.paneltools .picon,.viewbar button,.dashtile-head .chev,.emptystate button{
-  background:var(--card);color:var(--fg);border:1px solid var(--bd);border-radius:9px;padding:6px 13px;cursor:pointer;font-size:13px;transition:border-color .15s,color .15s,background .15s}
-.panelhead button:hover,.rf-actions button:hover,.subh button:hover,#rule-new:hover,#notif-new:hover,#act-new:hover,#mode-toggle:hover,#save-panel:hover,#dash-new:hover,#dash-del:hover,.paneltools .picon:hover,.viewbar button:hover,.dashtile-head .chev:hover,.emptystate button:hover{border-color:var(--acc);color:var(--acc)}
-.rf-actions button[type=submit]{background:var(--acc);color:var(--acc-ink);border-color:var(--acc);font-weight:700}
-.rf-actions button[type=submit]:hover{filter:brightness(1.08)}
+/* boutons (secondaires = contour, primaire = accent) — P11.4-b : LE JEU DE CLASSES PARTAGÉ.
+   `.btn` (secondaire), `.btn-primary` (accent), `.btn-danger` (destructif), `.btn-link` (= .linklike).
+   Les sélecteurs de CONTEXTE (.panelhead button, .rf-actions button, .rulerow button…) restent : ils
+   produisent LE MÊME chrome par la même déclaration. Un bouton créé hors de ces contextes porte une classe. */
+.btn,.btn-primary,.btn-danger,.panelhead button,.rf-actions button,.ruleform button,.subh button,#rule-new,#notif-new,#act-new,#mode-toggle,#save-panel,#dash-new,#dash-del,.paneltools .picon,.viewbar button,.dashtile-head .chev,.emptystate button{
+  background:var(--card);color:var(--fg);border:1px solid var(--bd);border-radius:9px;padding:6px 13px;cursor:pointer;font-size:13px;font-family:inherit;transition:border-color .15s,color .15s,background .15s}
+.btn:hover,.panelhead button:hover,.rf-actions button:hover,.ruleform button:hover,.subh button:hover,#rule-new:hover,#notif-new:hover,#act-new:hover,#mode-toggle:hover,#save-panel:hover,#dash-new:hover,#dash-del:hover,.paneltools .picon:hover,.viewbar button:hover,.dashtile-head .chev:hover,.emptystate button:hover{border-color:var(--acc);color:var(--acc)}
+.btn-primary,.rf-actions button[type=submit]{background:var(--acc);color:var(--acc-ink);border-color:var(--acc);font-weight:700}
+.btn-primary:hover,.rf-actions button[type=submit]:hover{filter:brightness(1.08)}
+.btn-danger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,var(--bd))}
+.btn-danger:hover{background:color-mix(in srgb,var(--bad) 12%,transparent);border-color:var(--bad)}
+.btn:disabled,.btn-primary:disabled,.btn-danger:disabled{opacity:.45;cursor:not-allowed}
+.btn-sm{padding:4px 10px;font-size:12px}
+/* état OUVERT d'un bouton de dépli (composant `disclosure`, core.js) : accent, jamais grisé */
+.btn[aria-expanded="true"],.panelhead button[aria-expanded="true"],.subh button[aria-expanded="true"]{border-color:var(--acc);color:var(--acc);background:var(--acc-bg)}
+/* champ de saisie hors .ruleform (filtre de liste, éditeur en ligne) : même chrome que .ruleform input */
+.field{background:var(--card);border:1px solid var(--bd);border-radius:8px;color:var(--fg);padding:7px 9px;font-size:13px;font-family:inherit}
+.field:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
+/* boîte d'un SECRET à recopier (clé MFA, codes de secours, clé de livraison) : lisible dans LES DEUX thèmes
+   (fond = carte, texte = fg) et sélectionnable d'un clic. P11.4-c : l'ancien fond était une couleur en dur. */
+#mfa-block{border-top-color:var(--bd)!important} /* P11.4-c : le séparateur du bloc MFA (index.html) cite une variable inexistante avec un repli sombre en dur */
+.secretbox{display:block;font-family:var(--font-mono);font-size:13px;color:var(--fg);background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:8px 10px;word-break:break-all;user-select:all;letter-spacing:.04em}
 /* BATCH 2 (B3) — chrome global des boutons-icônes : sans ça, un .picon nu (edit/suppr comptes, refresh
    sources/connecteurs/ledger/rétention/tenant/opaccess, plier règles/parseurs, aide) tombait sur le rendu
    NATIF du navigateur (clair/biseauté). On adopte le langage bouton-carte de la page (miroir de .qhistnav
@@ -204,6 +220,7 @@ footer{padding:12px 20px;color:var(--mut);font-size:12px;border-top:1px solid va
 .picon{padding:4px 9px!important;display:inline-flex;align-items:center;background:var(--card);border:1px solid var(--bd);border-radius:9px;color:var(--mut);cursor:pointer;transition:border-color .15s,color .15s,background .15s}
 .picon:hover:not(:disabled){border-color:var(--acc);color:var(--acc)}
 .picon:disabled{opacity:.3;cursor:not-allowed}
+.ruleform .picon{color:var(--mut)} /* un bouton-icône dans un formulaire garde son ton discret malgré `.ruleform button` */
 .picon .ic{width:15px;height:15px}
 /* batch-2 item 4 — bouton toggle « attendu/inattendu » de la colonne Actions (Sources) : chrome .picon
    (cohérent avec edit/clr) + couleur d'état (vert=attendu / orange=inattendu), miroir du badge « Attendu ». */
@@ -632,6 +649,11 @@ select.picon{padding:2px 6px!important;background:var(--card);color:var(--fg);bo
 .modal.danger{border-color:color-mix(in srgb,var(--bad) 45%,var(--bd))}
 .modal h3{margin:0 0 10px;color:var(--hd);font-size:16px;font-weight:800}
 .modal-msg{color:var(--fg);margin:0 0 12px;font-size:13px;line-height:1.5}
+/* conséquence d'une action sensible (confirmWithConsequence, core.js) : ligne distincte, libellée */
+.modal-consequence{margin:-4px 0 12px;padding:8px 10px;font-size:13px;line-height:1.5;color:var(--fg);border-left:3px solid var(--warn);background:color-mix(in srgb,var(--warn) 10%,transparent);border-radius:0 8px 8px 0}
+.modal-consequence::before{content:"Conséquence : ";font-weight:700;color:var(--warn)}
+.modal.danger .modal-consequence{border-left-color:var(--bad);background:color-mix(in srgb,var(--bad) 10%,transparent)}
+.modal.danger .modal-consequence::before{color:var(--bad)}
 .modal-f{display:flex;flex-direction:column;gap:5px;margin-bottom:11px;font-size:12px;color:var(--mut)}
 /* --- modal de plage temporelle (presets + absolu) --- */
 .rangemodal{width:min(580px,94vw)}
@@ -720,8 +742,8 @@ button.btn-busy::after{content:"";position:absolute;top:50%;left:50%;width:12px;
 .autotgl.off .autodot{background:var(--mut);box-shadow:none}
 
 /* --- Lot 1 : bouton-lien « voir les events » (pivot MITRE sans alerte) --- */
-.linklike{background:none;border:0;color:var(--acc);cursor:pointer;font:inherit;font-size:12px;padding:0;text-decoration:underline;text-underline-offset:2px}
-.linklike:hover{filter:brightness(1.12)}
+.linklike,.btn-link{background:none;border:0;color:var(--acc);cursor:pointer;font:inherit;font-size:12px;padding:0;text-decoration:underline;text-underline-offset:2px}
+.linklike:hover,.btn-link:hover{filter:brightness(1.12)}
 
 /* --- Lot 1 : fraîcheur — surlignage des sources chaudes + groupes repliables --- */
 .kv.hot{background:color-mix(in srgb,var(--warn) 10%,transparent);border-radius:6px;padding-left:6px;padding-right:6px;border-bottom-color:color-mix(in srgb,var(--warn) 30%,var(--bd))}
@@ -877,8 +899,8 @@ h2 .ihelp,h3 .ihelp{vertical-align:middle;margin-left:6px;position:relative;top:
 .cf-kvblock{width:100%}
 .cf-kvhead{font-size:12px;color:var(--hd);margin:2px 0 6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .cf-kvhead .muted{font-weight:400}
-.cf-kvadd{background:var(--card2);border:1px solid var(--bd);border-radius:8px;color:var(--fg);padding:3px 10px;cursor:pointer;font-size:12px}
-.cf-kvadd:hover{border-color:var(--acc);color:var(--acc)}
+.ruleform .cf-kvadd{background:var(--card2);border:1px solid var(--bd);border-radius:8px;color:var(--fg);padding:3px 10px;cursor:pointer;font-size:12px}
+.ruleform .cf-kvadd:hover{border-color:var(--acc);color:var(--acc)}
 .cf-kvrow{display:flex;align-items:center;gap:7px;margin:4px 0}
 .cf-kvrow input{flex:1;min-width:90px;background:var(--card2);border:1px solid var(--bd);border-radius:8px;color:var(--fg);padding:6px 9px;font-size:12px;font-family:var(--font-mono)}
 .cf-kvrow .cf-kvk{max-width:220px}
@@ -1065,3 +1087,15 @@ table.qtable > tbody > tr.krow{outline:2px solid var(--acc);outline-offset:-2px;
 .soql-tpl-title{font-weight:600;color:var(--hd);margin-bottom:3px}
 .soql-tpl-code{display:block;font-family:var(--font-mono);font-size:.82rem;color:var(--mut);white-space:pre-wrap;word-break:break-word}
 .soql-tpl-empty{color:var(--mut);padding:16px;text-align:center}
+
+/* P11.1-d : le badge de posture de l'en-tête est une porte vers la liste des alertes. */
+a.posture{text-decoration:none;cursor:pointer}a.posture:hover{border-color:var(--acc)}
+/* P11.1-b : barre d'actions unifiée des alertes — une action impossible est désactivée, avec sa raison. */
+.alertbar button:disabled{opacity:.45;cursor:not-allowed}.alertbar-actions{display:inline-flex;align-items:center;gap:8px}
+/* P11.6-a : une technique dont le nom est inconnu le DIT, en italique et en retrait, jamais par un vide. */
+.attack-tname-inconnu{font-style:italic;color:var(--mut)}
+/* P11.9-b : la police mono livrée porte des ligatures (calt) qui fondent `!=` en un seul glyphe lu « = » ;
+   partout où une requête ou un journal s'affiche, chaque caractère reste un caractère. */
+#sql,.soql-tpl-code,.qtable,.logline,code,.mono{font-variant-ligatures:none}
+/* P11.9-a : palette des modèles de requête — mes modèles et la bibliothèque livrée. */
+.soql-tpl-h{display:flex;justify-content:space-between;align-items:center;gap:8px}.soql-tpl-sec{font-weight:600;color:var(--hd);padding-top:10px}

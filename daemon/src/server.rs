@@ -1727,7 +1727,8 @@ fn notifiers_policies_silences_routes() -> Router<AppState> {
         .route("/api/notification-policies", get(policies_list).post(policy_create))
         .route("/api/notification-policies/:id", post(policy_update).delete(policy_delete))
         .route("/api/silences", get(silences_list).post(silence_create))
-        .route("/api/silences/:id", delete(silence_delete))
+        // P11.5-a — MODIFIER un silence (PUT/POST) : même classe de rôle (editor+), même audit fail-closed.
+        .route("/api/silences/:id", put(silence_update).post(silence_update).delete(silence_delete))
 }
 
 fn connectors_destinations_routes() -> Router<AppState> {

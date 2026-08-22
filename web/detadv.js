@@ -7,6 +7,8 @@
 //   GET  /api/baselines / POST … /:id / DELETE … / POST …/:id/test (aperçu {ok,bucket,observed,anomalies,hits})
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (CSRF auto).
 import { $, api, apiSend, esc, fetchInto, fmtTs, humanAge, muted, pagedList, sev, toast, modal, confirmModal } from './core.js';
+// P11.1-e : où arrive ce qu'une corrélation / une baseline produit (Alertes, ou Risque si risk_score > 0).
+import { announceCreated, takePendingNote, detectionDestination, destinationSentence } from './producer_ui.js';
 
 // ---- helpers ----
 function stepCount(stepsJson) {
@@ -45,6 +47,7 @@ async function loadCorrelations() {
     ],
     emptyText: 'aucune corrélation définie — crée une séquence (ex. « échec auth ×N puis succès même IP ») pour lever des finding-groups.',
   });
+  const note = takePendingNote('correlations'); if (note) host.insertBefore(note, host.firstChild);
 }
 
 function corrFields(c) {
@@ -74,11 +77,12 @@ function corrPayload(v) {
 }
 async function editCorrelation(c) {
   const isNew = !c;
-  const v = await modal({ title: isNew ? 'Nouvelle corrélation' : 'Éditer la corrélation', okText: isNew ? 'Créer' : 'Enregistrer', fields: corrFields(c) });
+  const v = await modal({ title: isNew ? 'Nouvelle corrélation' : 'Éditer la corrélation', okText: isNew ? 'Créer' : 'Enregistrer', message: destinationSentence(detectionDestination(c && c.risk_score)) + ' Un score RBA > 0 la bascule vers Risque.', fields: corrFields(c) });
   if (!v) return;
   try {
-    await apiSend(isNew ? '/correlations' : '/correlations/' + c.id, 'POST', corrPayload(v));
-    toast(isNew ? 'corrélation créée' : 'corrélation enregistrée', 'ok');
+    const payload = corrPayload(v);
+    await apiSend(isNew ? '/correlations' : '/correlations/' + c.id, 'POST', payload);
+    announceCreated('correlations', detectionDestination(payload.risk_score), payload.name, payload.enabled ? 'première évaluation dans ' + payload.interval_s + ' s' : 'désactivée : cochez « Activée » pour qu\'elle tourne');
     loadCorrelations();
   } catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
 }
@@ -123,6 +127,7 @@ async function loadBaselines() {
     ],
     emptyText: 'aucune baseline définie — crée une métrique par entité (ex. « volume auth par hôte ») pour détecter les déviations (z-score).',
   });
+  const note = takePendingNote('baselines'); if (note) host.insertBefore(note, host.firstChild);
 }
 
 function baseFields(b) {
@@ -154,11 +159,12 @@ function basePayload(v) {
 }
 async function editBaseline(b) {
   const isNew = !b;
-  const v = await modal({ title: isNew ? 'Nouvelle baseline' : 'Éditer la baseline', okText: isNew ? 'Créer' : 'Enregistrer', fields: baseFields(b) });
+  const v = await modal({ title: isNew ? 'Nouvelle baseline' : 'Éditer la baseline', okText: isNew ? 'Créer' : 'Enregistrer', message: destinationSentence(detectionDestination(b && b.risk_score)) + ' Un score RBA > 0 la bascule vers Risque.', fields: baseFields(b) });
   if (!v) return;
   try {
-    await apiSend(isNew ? '/baselines' : '/baselines/' + b.id, 'POST', basePayload(v));
-    toast(isNew ? 'baseline créée' : 'baseline enregistrée', 'ok');
+    const payload = basePayload(v);
+    await apiSend(isNew ? '/baselines' : '/baselines/' + b.id, 'POST', payload);
+    announceCreated('baselines', detectionDestination(payload.risk_score), payload.name, payload.enabled ? 'première évaluation dans ' + payload.interval_s + ' s' : 'désactivée : cochez « Activée » pour qu\'elle tourne');
     loadBaselines();
   } catch (e) { toast('erreur : ' + ((e && e.message) || e), 'err', 6000); }
 }

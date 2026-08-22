@@ -8,7 +8,7 @@
 //   POST /api/threat-intel/iocs     <- {type,value,source?,confidence?,severity?,expires?,env_id?} OU {iocs:[…],source?,env_id?}  -> {added, skipped:[…]}
 //   POST /api/threat-intel/import   <- {bundle:{…}, source?, env_id?}  -> {imported, skipped:[…]}
 // SÉCU UI : tout en textContent/esc (anti-XSS) ; le contenu IOC n'est pas un secret (renseignement).
-import { $, api, apiSend, fetchInto, fmtTs, humanAge, modal, muted, pagedList, sev, toast } from './core.js';
+import { $, api, apiSend, disclosure, fetchInto, fmtTs, humanAge, modal, muted, pagedList, sev, toast } from './core.js';
 import { uiIsAdmin } from './multitenant.js';
 
 // vocabulaire des types d'IOC — MIROIR de guatx_core::ti::IOC_TYPES (le serveur ignore tout type hors liste).
@@ -188,10 +188,10 @@ async function doImport(e) {
 function initThreatIntel() {
   if ($('#ti-refresh')) $('#ti-refresh').onclick = loadThreatIntel;
   if ($('#ti-add')) $('#ti-add').onclick = addIocPrompt;
-  if ($('#ti-import-toggle')) $('#ti-import-toggle').onclick = toggleImport;
+  if ($('#ti-import-toggle') && $('#ti-import-form')) disclosure($('#ti-import-toggle'), $('#ti-import-form'), { open: toggleImport }); // P11.4-a : dépli partagé (second clic = repli, état visible)
   if ($('#ti-imp-cancel')) $('#ti-imp-cancel').onclick = () => { const f = $('#ti-import-form'); if (f) f.classList.add('hidden'); };
   if ($('#ti-import-form')) $('#ti-import-form').addEventListener('submit', doImport);
-  if ($('#ti-search')) $('#ti-search').addEventListener('input', () => { _iocSearch = $('#ti-search').value || ''; renderIocList(); });
+  if ($('#ti-search')) { $('#ti-search').classList.add('field'); $('#ti-search').addEventListener('input', () => { _iocSearch = $('#ti-search').value || ''; renderIocList(); }); } // P11.4-b : le cadre du filtre prend le chrome partagé `.field` (il était natif)
 }
 
 export { loadThreatIntel, initThreatIntel };

@@ -1,6 +1,6 @@
 // multitenant.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // #2c multi-tenant : switcher tenant/env (header) + vue Tenants + grants + audit acces operateur.
-import { $, LOC, api, apiSend, confirmModal, fmtTs, ic, modal, muted, pagedList, toast } from './core.js';
+import { $, LOC, api, apiSend, confirmWithConsequence, fmtTs, ic, muted, pagedList, toast } from './core.js';
 import { S } from './state.js';
 import { runQ, tableEl } from './viz.js';
 import { ROLE_LABEL, applyRoleClass, currentTab, fetchMe, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAuthUI } from './app.js';
@@ -206,15 +206,15 @@ function tenantCard(t, sa) {
   }
   const act = document.createElement('div'); act.className = 'tnt-act';
   const grantsBox = document.createElement('div'); grantsBox.className = 'tnt-grants hidden';
-  const gbtn = document.createElement('button'); gbtn.type = 'button'; gbtn.textContent = 'Accès';
+  const gbtn = document.createElement('button'); gbtn.type = 'button'; gbtn.className = 'btn btn-sm'; gbtn.textContent = 'Accès'; // P11.4-b : classes partagées
   gbtn.title = 'Gérer les accès (grants) de ce tenant';
   gbtn.onclick = () => { grantsBox.classList.toggle('hidden'); if (!grantsBox.classList.contains('hidden')) loadGrants(t.id, grantsBox); };
   act.appendChild(gbtn);
   if (sa && t.id !== 'default') {              // suspend/destroy = super-admin ; jamais sur 'default' (protégé serveur)
-    const susp = document.createElement('button'); susp.type = 'button';
+    const susp = document.createElement('button'); susp.type = 'button'; susp.className = 'btn btn-sm';
     susp.textContent = t.suspended ? 'Réactiver' : 'Suspendre';
     susp.onclick = () => toggleSuspend(t);
-    const del = document.createElement('button'); del.type = 'button'; del.className = 'danger'; del.textContent = 'Supprimer';
+    const del = document.createElement('button'); del.type = 'button'; del.className = 'btn btn-sm btn-danger'; del.textContent = 'Supprimer';
     del.title = 'Destruction cryptographique irréversible';
     del.onclick = () => destroyTenant(t);
     act.append(susp, del);
@@ -226,10 +226,10 @@ function tenantCard(t, sa) {
 
 async function toggleSuspend(t) {
   const suspend = !t.suspended;
-  const msg = suspend
-    ? `Suspendre le tenant « ${t.name || t.id} » ? Ses utilisateurs perdront l'accès (fail-closed) et les traitements de fond seront ignorés. Action auditée.`
-    : `Réactiver le tenant « ${t.name || t.id} » ? L'accès est rétabli.`;
-  if (!await confirmModal(msg, { okText: suspend ? 'Suspendre' : 'Réactiver', danger: suspend })) return;
+  const consequence = suspend
+    ? `ses utilisateurs perdent l'accès immédiatement (fail-closed) et les traitements de fond de ce tenant sont ignorés jusqu'à réactivation. Action auditée.`
+    : `l'accès de ses utilisateurs et ses traitements de fond reprennent. Action auditée.`;
+  if (!await confirmWithConsequence(`${suspend ? 'Suspendre' : 'Réactiver'} le tenant « ${t.name || t.id} »`, consequence, { okText: suspend ? 'Suspendre' : 'Réactiver', danger: suspend })) return;
   const path = '/tenants/' + encodeURIComponent(t.id) + (suspend ? '/suspend' : '/unsuspend');
   try { await apiSend(path, 'POST'); }
   catch (e) { toast((e && e.message) || 'échec', 'bad'); return; }
@@ -239,9 +239,10 @@ async function toggleSuspend(t) {
 
 async function destroyTenant(t) {
   const label = t.name || t.id;
-  const r = await modal({
-    title: 'Supprimer le tenant', danger: true, okText: 'Détruire définitivement', cancelText: 'Annuler',
-    message: `DESTRUCTION CRYPTOGRAPHIQUE IRRÉVERSIBLE du tenant « ${label} » : la clé est oubliée et la base chiffrée supprimée (aucune restauration possible). Pour confirmer, retape EXACTEMENT le nom du tenant : ${t.name || t.id}`,
+  // P11.5-b : confirmation partagée qui nomme la conséquence, renforcée par la ressaisie du nom.
+  const r = await confirmWithConsequence(`Supprimer le tenant « ${label} »`, 'destruction cryptographique IRRÉVERSIBLE : la clé est oubliée et la base chiffrée supprimée, aucune restauration possible.', {
+    danger: true, okText: 'Détruire définitivement', cancelText: 'Annuler',
+    message: `Pour confirmer, retape EXACTEMENT le nom du tenant : ${t.name || t.id}`,
     fields: [{ name: 'confirm', label: 'Nom du tenant', placeholder: t.name || t.id, required: true }],
     validate: v => (String(v.confirm || '').trim() !== (t.name || t.id)) ? 'Le nom saisi ne correspond pas.' : null,
   });
@@ -284,13 +285,16 @@ async function loadGrants(tid, host) {
   const uinp = document.createElement('input'); uinp.placeholder = 'utilisateur (a-z, . _ -)'; uinp.spellcheck = false; uinp.autocomplete = 'off'; uinp.setAttribute('aria-label', 'Utilisateur à autoriser');
   const rsel = document.createElement('select'); rsel.setAttribute('aria-label', 'Rôle');
   ['admin', 'editor', 'viewer'].forEach(role => { const o = document.createElement('option'); o.value = role; o.textContent = role; if (role === 'viewer') o.selected = true; rsel.appendChild(o); });
-  const add = document.createElement('button'); add.type = 'submit'; add.textContent = 'Ajouter';
+  const add = document.createElement('button'); add.type = 'submit'; add.className = 'btn-primary btn-sm'; add.textContent = 'Ajouter'; // P11.4-b
   const res = document.createElement('span'); res.className = 'muted';
+  uinp.className = 'field'; rsel.className = 'field';
   form.append(uinp, rsel, add, res);
   form.onsubmit = async e => {
     e.preventDefault();
     const user = uinp.value.trim(), role = rsel.value;
     if (!user) { res.textContent = 'utilisateur requis'; res.className = 'bad'; return; }
+    // P11.5-b : un grant ÉLÈVE un droit (accès à un tenant avec un rôle) -> confirmation partagée.
+    if (!await confirmWithConsequence(`Accorder l'accès au tenant ${tid}`, `« ${user} » obtient le rôle ${role} sur ce tenant` + (role === 'admin' ? ' — accès complet à sa configuration, ses secrets et ses suppressions' : '') + '.', { okText: 'Accorder', danger: role === 'admin' })) return;
     res.textContent = '…'; res.className = 'muted';
     try { await apiSend('/tenants/' + encodeURIComponent(tid) + '/grants', 'POST', { user, role }); }
     catch (err) { res.textContent = (err && err.message) || 'échec'; res.className = 'bad'; return; }
@@ -301,7 +305,7 @@ async function loadGrants(tid, host) {
 }
 
 async function removeGrant(tid, user, host) {
-  if (!await confirmModal(`Retirer l'accès de « ${user} » au tenant ${tid} ?`, { okText: 'Retirer', danger: true })) return;
+  if (!await confirmWithConsequence(`Retirer l'accès de « ${user} » au tenant ${tid}`, 'cet utilisateur ne pourra plus ouvrir ce tenant ni y lire quoi que ce soit dès sa prochaine requête.', { okText: 'Retirer' })) return;
   try { await apiSend('/tenants/' + encodeURIComponent(tid) + '/grants/' + encodeURIComponent(user), 'DELETE'); }  // 204 -> null
   catch (e) { toast((e && e.message) || 'échec', 'bad'); return; }
   toast('accès retiré', 'ok'); loadGrants(tid, host);

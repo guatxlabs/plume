@@ -322,7 +322,7 @@ env:
   # `daemon/src/tests/mesure_environnement.rs`) : QUATRE tests de plus, sans `cfg` de feature, donc
   # présents dans les DEUX profils. La valeur d'avant cette ré-énumération avait elle-même bougé sous
   # un autre lot en vol : c'est précisément pourquoi le total est celui de l'ARBRE et jamais une somme.
-  EXPECTED_TESTS: "1183"
+  EXPECTED_TESTS: "1206"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -609,7 +609,7 @@ jobs:
           # RÉ-ÉNUMÉRÉ le 2026-08-20 par la MÊME double lecture, sur l'arbre qui porte aussi le lot S32
           # (lectures d'environnement séparant « lu » de « pas lisible », dix-huit tests sans `cfg`) :
           # 1368 avec `cold_tier` pour 1148 par défaut — l'écart reste **220**.
-          EXPECTED_COLD_TESTS: "1403"
+          EXPECTED_COLD_TESTS: "1426"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -737,6 +737,17 @@ jobs:
       # visibles, et la valeur — vrai zéro compris — quand le verdict est « lu ».
       - name: La surface web lit chaque verdict que le démon publie, et le rend comme un état
         run: python3 .github/scripts/check_web_reads_every_verdict.py
+      - { name: "Toute route sensible du démon (détruit / élève un droit / arme une réponse — DÉRIVÉE du routeur) a ses appelants web derrière la confirmation partagée (P11.5-b)", run: python3 .github/scripts/check_sensitive_routes_are_confirmed.py }
+
+      # `P11.8-a` — LE LEXIQUE FR/EN COUVRE CE QUE CHAQUE MODULE AFFICHE. La console traduit par dictionnaire
+      # (`i18n.js`, correspondance EXACTE d'un nœud texte ou d'un attribut affiché) : une chaîne sans clé
+      # reste en français, en silence. MESURÉ le 2026-08-22 sur la propriété « chaîne posée dans un puits de
+      # rendu » (critère écrit dans la garde, avec ce qu'elle ne voit pas) : 1 568 chaînes statiques affichées,
+      # 16 % couvertes avant complément. La garde DÉRIVE la population du code (puits de rendu, littéraux HTML,
+      # `index.html`), valide son instrument sur un corpus témoin dans les deux sens, refuse de conclure sous
+      # ses planchers, et tient un PLAFOND DE TROUS par module : une chaîne affichée de plus sans entrée rougit.
+      - name: Le lexique fr/en couvre les chaînes affichées de chaque module web (aucun trou de plus)
+        run: python3 .github/scripts/check_i18n_lexicon_covers_displayed_strings.py
 
       # LA MÊME FIGURE, PORTÉE À LA SURFACE ENTIÈRE : la garde ci-dessus tient UNE mesure d'hôte sur
       # UN capteur ; celle-ci tient tout capteur shell qui publie des NOMBRES. Sa portée est

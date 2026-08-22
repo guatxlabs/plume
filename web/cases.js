@@ -1,6 +1,6 @@
 // cases.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Cases (gestion d'incident, first-class #4a): liste/detail/CRUD + rattachement d'items.
-import { $, api, apiSend, confirmModal, downloadText, exportPDF, fmtTs, ic, modal, muted, pagedList, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
+import { $, api, apiSend, confirmModal, confirmWithConsequence, downloadText, exportPDF, fmtTs, ic, modal, muted, pagedList, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
 import { S } from './state.js';
 import { refresh } from './app.js';
 // #3 incidents : « Lancer la recherche » d'une step ouvre l'Explore avec le GXQL recompilé (réutilise le
@@ -481,7 +481,7 @@ async function renderCaseLinks(box, c) {
       chip.onclick = () => showCaseDetail(l.id);
       if (canEditCases()) {
         const x = document.createElement('button'); x.type = 'button'; x.className = 'casebtn'; x.title = 'Retirer le lien'; x.style.marginLeft = '4px'; x.innerHTML = ic('x');
-        x.onclick = e => { e.stopPropagation(); withBusy(x, async () => { try { await apiSend('/cases/' + c.id + '/links/' + l.id, 'DELETE'); } catch (err) { toast('Retrait refusé : ' + ((err && err.message) || err), 'bad'); return; } toast('Lien retiré', 'ok'); refreshCaseDetail(c.id); }); };
+        x.onclick = e => { e.stopPropagation(); withBusy(x, async () => { if (!await confirmWithConsequence(`Retirer le lien vers #${l.id}`, 'les deux cas ne seront plus rattachés ; le lien se recrée à la main, sans son historique.', { okText: 'Retirer', danger: true })) return; try { await apiSend('/cases/' + c.id + '/links/' + l.id, 'DELETE'); } catch (err) { toast('Retrait refusé : ' + ((err && err.message) || err), 'bad'); return; } toast('Lien retiré', 'ok'); refreshCaseDetail(c.id); }); };
         chip.appendChild(x);
       }
       wrap.appendChild(chip);

@@ -44,6 +44,7 @@ mod tmp_possede; // LE COFFRE du répertoire temporaire : seule détentrice d'un
 pub(crate) use util::*;
 mod collected; // INVENTAIRE de ce que les collecteurs/agent LIVRÉS émettent réellement -> ORACLE D'INERTIE (séparé de la table de TRADUCTION Sigma)
 mod sigma;
+mod attack_names; // P11.6-a : les NOMS des techniques ATT&CK, servis à côté de l'identifiant par la matrice de couverture
 pub(crate) use sigma::*;
 mod seeds;
 pub(crate) use seeds::*;
@@ -142,7 +143,7 @@ mod sondes; // LES SONDES DE FRAÎCHEUR : ce qu'une sonde OBSERVE, la requête D
 // les glob imports ; extrait dans un module, un glob le mettrait à égalité avec `topn_cap::Sonde` ->
 // E0659 sur les 23 sites d'appel. Un import nommé prime sur tout glob : la résolution redevient
 // EXACTEMENT celle d'avant l'extraction.
-pub(crate) use sondes::{Cout, Portee, Sonde, COLLECTORS, DDL_IDX_BATTEMENT_SANTE, IDX_BATTEMENT_SANTE};
+pub(crate) use sondes::{cadence_declaree, CadenceDeclaree, Cout, Portee, Sonde, COLLECTORS, DDL_IDX_BATTEMENT_SANTE, IDX_BATTEMENT_SANTE};
 mod sonde_de_flotte; // P3.2-a : LA SONDE DE FLOTTE — un hôte qui se tait ENTIÈREMENT lève un signal, rendu comme un COMPTE et non comme une série par hôte (la portée par hôte des 21 sondes multiplierait la cardinalité par la taille du parc)
 pub(crate) use sonde_de_flotte::*;
 mod imputation; // S7 : À QUELLE SOURCE UNE ALERTE SE RAPPORTE — lue dans la DONNÉE (colonne `event.source`, descripteur de sonde), plus dans la prose de la règle ; et un INCONNU NOMMÉ quand elle n'est pas déterminable
@@ -166,6 +167,7 @@ pub(crate) use handlers::prefs::*; // #62 préférences utilisateur self-scoped 
 pub(crate) use handlers::saved_queries::*; // requêtes GXQL nommées per-user, owner-scoped (CRUD /api/saved-queries)
 pub(crate) use handlers::processors::*;
 pub(crate) use handlers::admin_ui::*;
+pub(crate) use handlers::sources::*; // P11.3-a : inventaire des sources + dérivation « attendue par construction »
 pub(crate) use handlers::engagement::*;
 pub(crate) use handlers::actions::*;
 pub(crate) use handlers::notifiers::*;
@@ -553,22 +555,8 @@ fn retention_effective(conn: &Connection, conf: &HashMap<String, String>, skey: 
     0
 }
 
-/// Sources d'events "attendues par construction" au-delà des ids COLLECTORS : le collecteur `journal`
-/// alimente sshd/sudo/su, `audit` alimente auditd ; nos propres audits = plume-config/plume-auth. Sert au
-/// flag DISPLAY-only "inattendu" (inventaire) ET à la sévérité B8 (marquer expected une source hors de cet
-/// ensemble = suppression d'un SIGNAL potentiel -> audit sev 3). AUCUN effet sur l'ingest/la collecte.
-// (a) journal auth (sshd/su/sudo) + auditd + nos propres audits ; (b) FEEDS LÉGITIMES additionnels dont l'id
-// de SOURCE (colonne `source` de l'event) diffère de l'id de COLLECTEUR — ils étaient donc flaggés « inattendu »
-// à tort par l'inventaire alors que ce sont de vraies sources connues (minio/vault/cloudflare/conntrack/mail/
-// containerd/k8s/dataacl/agent). Débruitage d'un FAUX signal : le flag « inattendu » reste actif pour toute
-// source GÉNUINEMENT inconnue (ni ici, ni dans COLLECTORS, ni marquée expected par un admin).
-const KNOWN_EXTRA_SOURCES: [&str; 17] = [
-    "sshd", "sshd-session", "sudo", "su", "auditd", "plume-config", "plume-auth",
-    "minio-audit", "vault-audit", "cloudflare", "conntrack", "mail", "containerd", "minio", "k8s", "dataacl", "agent",
-];
-fn source_is_known(source: &str) -> bool {
-    COLLECTORS.iter().any(|c| c.0 == source) || KNOWN_EXTRA_SOURCES.contains(&source)
-}
+// Sources attendues par construction : DÉRIVÉES dans `handlers/sources.rs` (P11.3-a) — la liste
+// énumérée `KNOWN_EXTRA_SOURCES` qui vivait ici est retirée (six sources livrées par ce dépôt y manquaient).
 
 
 

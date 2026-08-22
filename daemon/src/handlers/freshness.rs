@@ -98,6 +98,64 @@ pub(crate) fn pipeline_is_fresh(conn: &Connection, now_ts: i64) -> bool {
     global_last.map(|m| now_ts - m < 600).unwrap_or(false)
 }
 
+// ====================================================================================================
+// LE STATUT D'UNE SOURCE — UNE SEULE DÉRIVATION, DEUX SURFACES (Fraîcheur, Inventaire). P11.3-b.
+//
+// CE QUI ÉTAIT CASSÉ. Le démon rendait `frais` / `calme` / `muet`, et la surface web fabriquait seule un
+// quatrième mot, « dégradé / en retard », à partir de DEUX choses sans rapport : des alertes actives sur la
+// source, ou un âge supérieur à quatre fois un intervalle `expected_s` qui n'était pas une cadence attendue
+// mais la MOYENNE OBSERVÉE sur vingt-quatre heures (86400 / n_24h). Une source périodique dont le débit
+// dépend de l'activité (le courrier) se retrouvait « en retard » à quatre fois sa moyenne ; une source
+// événementielle à fort débit (les sondes de ports) était classée « continu » par sa moyenne puis
+// « en retard » après une heure de calme ; et la page expliquait en pied que l'âge « n'est pas un retard »
+// pendant que l'en-tête disait le contraire.
+//
+// LA FORME DÉRIVÉE. La seule CADENCE ATTENDUE qui existe est celle que `COLLECTORS` DÉCLARE (intervalle et
+// nature continue ou événementielle de chaque sonde). Une source qu'une sonde observe en CONTINU est
+// « en retard » au-delà de `interval × CYCLES_TOLERES_AFFICHAGE` — le même seuil qui rend le capteur « muet »
+// dans Intégrations, et deux cycles avant l'alerte. Une source ÉVÉNEMENTIELLE, ou qu'aucune sonde ne
+// déclare, n'est jamais « en retard » : son âge ne dit que son activité (« frais » / « calme »). Le mot
+// « dégradé » disparaît ; les alertes actives restent un COMPTE à côté du statut, pas un statut.
+// ====================================================================================================
+
+/// Seuil du mot « frais » : la dernière donnée date de moins de quinze minutes.
+pub(crate) const FRAIS_S: i64 = 900;
+
+// `CadenceDeclaree` / `cadence_declaree` vivent dans `sondes.rs` : la cadence attendue est une propriété
+// DÉCLARÉE de la table des sondes, pas une dérivation de cette surface.
+
+/// LE statut. Quatre mots, chacun avec UN sens : `muet` (plus rien n'arrive, toutes sources confondues),
+/// `en_retard` (cadence déclarée continue dépassée), `frais` (donnée < FRAIS_S), `calme` (collecte saine,
+/// source peu active). `None` pour la cadence = même verdict que `NonDeclaree`.
+pub(crate) fn statut_de_source(age_s: i64, pipeline_fresh: bool, cadence: Option<&CadenceDeclaree>) -> &'static str {
+    if !pipeline_fresh {
+        return "muet";
+    }
+    if let Some(CadenceDeclaree::Continue { interval_s, .. }) = cadence {
+        if age_s > interval_s * CYCLES_TOLERES_AFFICHAGE {
+            return "en_retard";
+        }
+    }
+    if age_s <= FRAIS_S {
+        "frais"
+    } else {
+        "calme"
+    }
+}
+
+/// Les champs de cadence d'un feed, tels que les deux surfaces les rendent : la déclaration (et la sonde
+/// qui la porte), et le rythme OBSERVÉ sur vingt-quatre heures — nommé pour ce qu'il est, jamais plus
+/// « attendu ».
+pub(crate) fn cadence_json(cadence: &CadenceDeclaree, n_24h: i64) -> Value {
+    let observed_interval_s = if n_24h > 0 { Some(86400 / n_24h) } else { None };
+    json!({
+        "cadence_declaree": cadence.etiquette(),
+        "cadence_interval_s": cadence.interval_s(),
+        "cadence_capteur": cadence.capteur(),
+        "observed_interval_s": observed_interval_s,
+    })
+}
+
 // SWR pour /api/integrations (#23) — même motif que /api/freshness ci-dessus. ROOT CAUSE du ~6 s À CHAUD :
 // le handler exécute les 23 requêtes de COLLECTORS, chacune `SELECT MAX(ts) FROM event WHERE source=?[ AND
 // category='health']`. `event` (~4,7 M lignes CHIFFRÉES) n'a qu'un idx_event_src MONOCOLONNE — AUCUN composite
@@ -226,9 +284,8 @@ pub(crate) fn compute_integrations(db_path: &str) -> Value {
 }
 /// Fraîcheur PAR SOURCE (data-driven, pas la liste figée des collecteurs) : pour chaque feed —
 /// source d'event, kind de snapshot, et les métriques (agrégées) — l'âge du dernier point + un statut
-/// ok/warn/late. La cadence ATTENDUE est ESTIMÉE depuis le débit 24h (86400/n_24h) -> s'adapte à chaque
-/// source (un feed 1/min flaggé seulement s'il a des minutes de retard ; un feed rare jamais faux-positif).
-/// "Voir si un feed décroche" d'un coup d'œil. Lecture seule (read pool + watchdog).
+/// (`statut_de_source`). La cadence ATTENDUE est celle que `COLLECTORS` DÉCLARE (`cadence_declaree`) ; le
+/// rythme observé sur 24 h (86400/n_24h) est rendu à part et ne juge rien. Lecture seule (read pool + watchdog).
 // SWR pour /api/freshness : la requête de fraîcheur agrège 7 JOURS d'events par source (GROUP BY + SUM
 // conditionnel) -> scan LOURD sur la base chiffrée qui TOUCHE le watchdog 5 s à CHAQUE appel (mesuré ~5,1 s).
 // Or la fraîcheur évolue lentement (last_seen / cadence) ET l'UI la rappelle à chaque tick d'auto-refresh
@@ -413,18 +470,18 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
         }
         let mk = |kind: &str, name: String, last: i64, n24: i64| -> Value {
             let age = now_ts - last;
-            let expected = if n24 > 0 { 86400 / n24 } else { 0 };   // intervalle moyen entre données (s)
-            // type : explique les âges différents -> continu (logs/métriques) / périodique (collecteur sur timer)
-            // / événement (déclenché par une menace) / dormant (vu récemment mais rien depuis 24 h).
-            let typ = if matches!(name.as_str(), "crowdsec" | "fail2ban" | "ufw" | "nft") { "événement" }
-                else if n24 == 0 { "dormant" } else if expected <= 90 { "continu" } else { "périodique" };
-            // STATUT = SANTÉ DE COLLECTE, pas activité : 'muet' SEULEMENT si l'ingestion est en panne ;
-            // sinon 'frais' (donnée < 15 min) ou 'calme' (collecte OK, source peu active = normal).
-            let status = if !pipeline_fresh { "muet" } else if age <= 900 { "frais" } else { "calme" };
-            // active_alerts : nb d'alertes 'new' dont la règle référence `source=<name>` (0 si aucune / feed
-            // non corrélable comme les snapshots/métriques). Calculé avant le move de `name` dans json!.
+            // CADENCE DÉCLARÉE (sonde de COLLECTORS) -> STATUT (cf. bandeau `statut_de_source`). Le rythme
+            // observé (86400 / n_24h) est rendu à part, sous son vrai nom : il n'est pas une attente.
+            let cadence = cadence_declaree(kind, &name);
+            let status = statut_de_source(age, pipeline_fresh, Some(&cadence));
+            // active_alerts : nb d'alertes 'new' imputées à `name` (0 si aucune / feed non corrélable comme les
+            // snapshots/métriques). Un COMPTE à côté du statut, jamais un statut. Calculé avant le move de `name`.
             let active_alerts = alert_counts.get(&name).copied().unwrap_or(0);
-            json!({ "kind": kind, "name": name, "type": typ, "last_seen": last, "age_s": age, "n_24h": n24, "expected_s": expected, "status": status, "active_alerts": active_alerts })
+            let mut f = json!({ "kind": kind, "name": name, "last_seen": last, "age_s": age, "n_24h": n24, "status": status, "active_alerts": active_alerts });
+            if let (Some(o), Value::Object(c)) = (f.as_object_mut(), cadence_json(&cadence, n24)) {
+                o.extend(c);
+            }
+            f
         };
         // SOURCE = event_rollup pré-agrégé (~ms ; mêmes colonnes que les panneaux : source, bucket horaire, n)
         // au lieu d'un scan 7 j de `event` chiffré (~14,6 s -> tué par le watchdog 5 s, qui faisait disparaître
@@ -480,7 +537,7 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
                 if let Ok(rows) = s.query_map(params![d1, cut7], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) {
                     for (nm, ls, n24) in rows.flatten() {
                         let age = now_ts - ls;
-                        let st = if !pipeline_fresh { "muet" } else if age <= 900 { "frais" } else { "calme" };
+                        let st = statut_de_source(age, pipeline_fresh, None);
                         series_list.push(json!({ "name": nm, "last_seen": ls, "age_s": age, "n_24h": n24, "status": st }));
                     }
                 }

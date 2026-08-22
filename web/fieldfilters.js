@@ -2,7 +2,7 @@
 // Splunk ; PCI/PII). Additif : tant qu'aucune règle n'existe, toute lecture est inchangée (mode 0). La garde
 // réelle est SERVEUR (/api/field-filters admin-only ; le masque est émis DANS le SQL compilé). Anti-XSS : tout
 // texte via textContent/esc. La config CONTRAINT viewer/editor — l'admin voit en clair par défaut.
-import { $, apiSend, confirmModal, esc, fmtTs, muted, toast, withBusy } from './core.js';
+import { $, apiSend, confirmWithConsequence, disclosure, esc, fmtTs, muted, toast, withBusy } from './core.js';
 import { uiIsAdmin } from './multitenant.js';
 
 const ACTION_LABEL = {
@@ -18,7 +18,9 @@ let LAST = { rules: [], matrix: {}, actions: [], roles: [] };
 
 export async function loadFieldFilters() {
   const wrap = $('#field-filter-list'); if (!wrap) return;
-  const btn = $('#field-filter-new'); if (btn) btn.onclick = () => openForm(null);
+  // P11.4-a : le bouton « + Field filter » passe par le dépli partagé (second clic = repli, état visible).
+  const btn = $('#field-filter-new'); const fh = $('#field-filter-form-host');
+  if (btn && fh && !btn.dataset.wired) { btn.dataset.wired = '1'; disclosure(btn, fh, { isOpen: () => !!fh.querySelector('#field-filter-form') && !fh.querySelector('#field-filter-form').dataset.editing, open: () => openForm(null), close: () => fh.replaceChildren() }); }
   if (!uiIsAdmin()) { wrap.replaceChildren(muted('réservé à l\'administrateur.')); return; }
   let data = null;
   try {
@@ -44,9 +46,9 @@ function render(wrap) {
 
 function ruleRow(r) {
   const row = document.createElement('div');
-  row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line,#2c3550)';
+  row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--bd)';
   const dot = document.createElement('span');
-  dot.textContent = r.enabled ? '●' : '○'; dot.style.color = r.enabled ? 'var(--ok,#4ade80)' : 'var(--muted,#8b93a7)';
+  dot.textContent = r.enabled ? '●' : '○'; dot.style.color = r.enabled ? 'var(--ok,#4ade80)' : 'var(--mut)';
   dot.title = r.enabled ? 'activée' : 'désactivée';
   const name = document.createElement('b'); name.textContent = r.name;
   const field = document.createElement('code'); field.textContent = r.field; field.style.cssText = 'font-size:12px';
@@ -67,11 +69,12 @@ function ruleRow(r) {
   });
   const edit = mkBtn('Éditer', () => openForm(r));
   const del = mkBtn('Supprimer', async () => {
-    if (!(await confirmModal('Supprimer la règle « ' + r.name + ' » ?'))) return;
+    // P11.5-b : DELETE = route sensible ; un field filter MASQUE des données personnelles aux rôles restreints.
+    if (!(await confirmWithConsequence('Supprimer le field filter « ' + r.name + ' »', 'le champ « ' + r.field + ' » ne sera plus masqué ni filtré pour les rôles visés : ils verront ces valeurs en clair dès la prochaine requête.', { okText: 'Supprimer' }))) return;
     try { await apiSend('/field-filters/' + r.id, 'DELETE'); toast('supprimée', 'ok'); loadFieldFilters(); }
     catch (e) { toast('erreur : ' + e.message, 'bad'); }
   });
-  del.style.color = 'var(--bad,#f87171)';
+  del.classList.add('btn-danger');
   row.append(dot, name, field, act, scope, meta, toggle, edit, del);
   return row;
 }
@@ -94,8 +97,8 @@ function matrixTable() {
     for (const role of roles) {
       const td = document.createElement('td'); td.style.cssText = cellCss();
       const a = (LAST.matrix[role] || {})[f];
-      if (a) { td.textContent = a; td.style.color = a === 'deny' ? 'var(--bad,#f87171)' : 'var(--accent,#7aa2f7)'; }
-      else { td.textContent = 'en clair'; td.style.color = 'var(--muted,#8b93a7)'; }
+      if (a) { td.textContent = a; td.style.color = a === 'deny' ? 'var(--bad,#f87171)' : 'var(--acc)'; }
+      else { td.textContent = 'en clair'; td.style.color = 'var(--mut)'; }
       tr.appendChild(td);
     }
     table.appendChild(tr);
@@ -104,16 +107,18 @@ function matrixTable() {
   return box;
 }
 function th(t) { const e = document.createElement('th'); e.textContent = t; e.style.cssText = cellCss() + ';text-align:left;font-weight:600'; return e; }
-function cellCss() { return 'border:1px solid var(--line,#2c3550);padding:4px 10px'; }
+function cellCss() { return 'border:1px solid var(--bd);padding:4px 10px'; }
 
 function mkBtn(label, fn) {
-  const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.style.fontSize = '12px'; b.onclick = fn; return b;
+  const b = document.createElement('button'); b.type = 'button'; b.className = 'btn btn-sm'; b.textContent = label; b.onclick = fn; return b; // P11.4-b : classe partagée
 }
 
 function openForm(existing) {
   const host = $('#field-filter-form-host'); if (!host) return;
   const e = existing || {};
-  const form = document.createElement('form'); form.style.cssText = 'margin:10px 0;padding:10px;border:1px solid var(--line,#2c3550);border-radius:8px;display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end';
+  // P11.4-b : chrome partagé `.ruleform` (le cadre était une couleur en dur sur une variable CSS inexistante).
+  const form = document.createElement('form'); form.className = 'ruleform'; form.id = 'field-filter-form'; form.style.cssText = 'flex-direction:row;flex-wrap:wrap;align-items:flex-end';
+  if (existing) form.dataset.editing = String(existing.id);
   const mkField = (label, node) => {
     const l = document.createElement('label'); l.style.cssText = 'display:flex;flex-direction:column;gap:3px;font-size:12px';
     l.append(document.createTextNode(label), node); return l;
@@ -138,9 +143,10 @@ function openForm(existing) {
     mkField('Tenant', tenantI),
     mkField('Env', envI),
   );
-  const save = document.createElement('button'); save.type = 'submit'; save.textContent = existing ? 'Enregistrer' : 'Créer';
-  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Annuler'; cancel.onclick = () => host.replaceChildren();
-  form.append(save, cancel);
+  const save = document.createElement('button'); save.type = 'submit'; save.className = 'btn-primary'; save.textContent = existing ? 'Enregistrer' : 'Créer';
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'btn'; cancel.textContent = 'Annuler'; cancel.onclick = () => host.replaceChildren();
+  const actions = document.createElement('div'); actions.className = 'rf-actions'; actions.append(save, cancel); // P11.4-b : barre d'actions partagée
+  form.append(actions);
   form.onsubmit = async (ev) => {
     ev.preventDefault();
     const body = {

@@ -3,18 +3,48 @@
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
 
+/// Durée du ban posé par un playbook `ban_ip`, telle que les exécuteurs la posent : `--duration` CrowdSec et
+/// TTL du blocage HTTP natif partagent `NETBAN_ACTION_TTL_S` (voir `action_command` et `netban_upsert`).
+/// fail2ban applique la durée de son jail, nft ne pose pas d'expiration : ces deux cas sont NOMMÉS dans la
+/// phrase, pas chiffrés.
+pub(crate) fn ban_duration_hours() -> i64 {
+    NETBAN_ACTION_TTL_S / 3600
+}
+
+/// La CONSÉQUENCE d'un `action_kind`, en une phrase : ce que l'interrupteur « actif » d'un playbook ARME.
+/// `P11.2-b` : une case à cocher qui active un ban d'IP ne se lisait pas ; la phrase est servie avec la liste
+/// pour que la surface n'invente pas la durée. Vocabulaire fermé = celui d'`action_kind_valid`.
+pub(crate) fn action_consequence(kind: &str) -> String {
+    match kind {
+        "ban_ip" => format!(
+            "bannit l'IP source pendant {} h (CrowdSec ou blocage HTTP natif ; fail2ban : durée du jail ; nft : jusqu'à unban) sur chaque hôte qui l'a vue dans la fenêtre",
+            ban_duration_hours()
+        ),
+        "unban_ip" => "lève le ban de l'IP source sur chaque hôte qui l'a vue dans la fenêtre".to_string(),
+        "kill_pid" => "termine le processus cible (SIGTERM) sur le central".to_string(),
+        "stop_service" => "arrête le service cible (systemctl stop) sur le central".to_string(),
+        other => format!("action « {other} » hors vocabulaire : refusée à l'exécution"),
+    }
+}
+
 pub(crate) async fn playbooks_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
     let mut stmt = conn.prepare("SELECT id,name,enabled,query,is_soql,action_kind,interval_s,window_s,last_run,managed FROM playbook ORDER BY id").unwrap();
     let rows = stmt.query_map([], |r| {
+        let action_kind = r.get::<_, String>(5)?;
         Ok(json!({
             "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "enabled": r.get::<_, i64>(2)? != 0,
-            "query": r.get::<_, String>(3)?, "is_soql": r.get::<_, i64>(4)? != 0, "action_kind": r.get::<_, String>(5)?,
+            "query": r.get::<_, String>(3)?, "is_soql": r.get::<_, i64>(4)? != 0,
+            "consequence": action_consequence(&action_kind), "action_kind": action_kind,
             "interval_s": r.get::<_, i64>(6)?, "window_s": r.get::<_, i64>(7)?, "last_run": r.get::<_, Option<i64>>(8)?,
             "managed": r.get::<_, i64>(9)?
         }))
     }).unwrap();
-    Json(json!({ "playbooks": rows.flatten().collect::<Vec<_>>() }))
+    let playbooks = rows.flatten().collect::<Vec<_>>();
+    // Le mode global décide si un playbook ON exécute (active) ou propose (observe) : la liste le porte pour
+    // que la ligne dise la conséquence EFFECTIVE sans une seconde requête.
+    let mode: String = conn.query_row("SELECT value FROM meta WHERE key='plume_mode'", [], |r| r.get(0)).unwrap_or_else(|_| "observe".into());
+    Json(json!({ "playbooks": playbooks, "mode": mode, "ban_duration_s": NETBAN_ACTION_TTL_S }))
 }
 pub(crate) async fn playbook_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let is_soql = b.bool_field("is_soql", true);

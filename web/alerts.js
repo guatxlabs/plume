@@ -172,9 +172,15 @@ const ALERT_VIEWS = [
 function alertActionBarHtml(m, loaded) {
   loaded = loaded || {};
   const dis = (cond, reason) => cond ? ` disabled aria-disabled="true" title="${esc(reason)}"` : '';
-  const views = ALERT_VIEWS.map(([g, label, title]) => `<button type="button" class="agseg${m.view === g ? ' on' : ''}" data-g="${g}" title="${esc(title)}">${label}</button>`).join('');
-  const scope = `<button type="button" class="agscope${m.scopeAll ? ' on' : ''}" data-act="scope" title="${m.scopeAll ? 'Tous statuts (historique) — cliquer pour ne voir que les alertes actives' : 'Alertes actives (status=new) — cliquer pour voir tous les statuts'}">${m.scopeAll ? 'Tous statuts' : 'Actives'}</button>`;
-  const uncased = `<button type="button" class="agscope${m.uncased ? ' on' : ''}" data-act="uncased" title="${m.uncased ? 'Hors case : les alertes déjà rattachées à un case sont masquées — cliquer pour les inclure' : 'Toutes : cases comprises — cliquer pour masquer les alertes déjà rattachées à un case'}">${m.uncased ? 'hors case' : 'cases comprises'}</button>`;
+  // P11.4-i — L'ÉTAT « CHOISI » PASSE PAR `aria-pressed`, ET PLUS PAR LA GRAISSE DU MOT. Le gras portait
+  // déjà « alarme / valeur remarquable » ailleurs dans la console ; le réemployer ici faisait lire un tri
+  // choisi comme une alerte. La marque visuelle est désormais le liseré réservé (`--sel-ring`, style.css)
+  // et l'état lui-même est DIT : `aria-pressed` est le seul canal qu'une aide technique lit, et il ne
+  // dépend d'aucune couleur. Il est posé sur les DEUX états — `false` compte autant que `true` : un
+  // bouton bascule sans attribut se présente comme un simple bouton d'action.
+  const views = ALERT_VIEWS.map(([g, label, title]) => `<button type="button" class="agseg${m.view === g ? ' on' : ''}" aria-pressed="${m.view === g}" data-g="${g}" title="${esc(title)}">${label}</button>`).join('');
+  const scope = `<button type="button" class="agscope${m.scopeAll ? ' on' : ''}" aria-pressed="${m.scopeAll}" data-act="scope" title="${m.scopeAll ? 'Tous statuts (historique) — cliquer pour ne voir que les alertes actives' : 'Alertes actives (status=new) — cliquer pour voir tous les statuts'}">${m.scopeAll ? 'Tous statuts' : 'Actives'}</button>`;
+  const uncased = `<button type="button" class="agscope${m.uncased ? ' on' : ''}" aria-pressed="${m.uncased}" data-act="uncased" title="${m.uncased ? 'Hors case : les alertes déjà rattachées à un case sont masquées — cliquer pour les inclure' : 'Toutes : cases comprises — cliquer pour masquer les alertes déjà rattachées à un case'}">${m.uncased ? 'hors case' : 'cases comprises'}</button>`;
   const facets = [];
   if (m.mitre) facets.push(`<span class="mitrefilter">Technique : <span class="mitrechip">${esc(m.mitre)}</span><button type="button" data-act="clear-mitre" title="Retirer le filtre technique">${ic('x')}</button></span>`);
   if (m.source) {

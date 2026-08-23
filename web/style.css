@@ -26,6 +26,11 @@
   --sev1:#60a5fa; --sev2:#fbbf24; --sev3:#fb923c; --sev4:#f87171;
   --b1:#7ce8c3; --b2:#ffd9a3; --b3:#ffb3ab; --aurora:.16;  /* fond aurora, 2 thèmes */
   --radius:10px; --pill:6px; /* "pill" = chips/badges rectangulaires (pro, ex-999px) */
+  /* P11.4-i — l'ÉPAISSEUR du liseré intérieur qui marque « choisi ». Une variable et non un littéral :
+     c'est ce qui rend le moyen RÉSERVÉ vérifiable (un seul endroit à lire pour savoir qui l'emploie) et
+     ce qui interdit qu'un état choisi soit marqué, ailleurs, par une graisse de police déjà porteuse de
+     sens (alarme, valeur remarquable). Ne pas réemployer pour un survol ni pour un focus. */
+  --sel-ring:1.5px;
   --shadow:0 6px 18px #00000033;
 }
 html[data-theme="light"]{
@@ -143,10 +148,19 @@ b.ok,.ok{color:var(--ok)} b.bad,.bad{color:var(--bad)} b.mut{color:var(--mut)}
 .alertview{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:10px;font-size:12px;color:var(--mut)}
 .alertview .agseg{background:var(--card);border:1px solid var(--bd);border-radius:var(--pill);color:var(--mut);cursor:pointer;padding:3px 11px;font-size:12px;transition:border-color .15s,color .15s,background .15s}
 .alertview .agseg:hover{border-color:var(--acc);color:var(--acc)}
-.alertview .agseg.on{background:var(--acc);color:var(--acc-ink);border-color:var(--acc);font-weight:600}
+/* P11.4-i — UN FILTRE CHOISI N'EST PAS UNE VALEUR REMARQUABLE. Mesuré le 2026-08-23 sur style.css : les
+   deux états choisis de la barre des alertes portaient `font-weight:600`, alors que le gras dit AILLEURS
+   « alarme » ou « valeur remarquable » — `.sidebar a.on` 700, l'en-tête d'ingestion en panne 600, le
+   compte d'un résumé de recherche en `<b>`. Le même trait pour deux sens : un tri choisi se lisait comme
+   une alerte. Le gras est donc RETIRÉ des deux, et l'état choisi se marque par un moyen qui ne sert qu'à
+   ça — le liseré intérieur `--sel-ring`, posé par aucune autre règle de cette feuille, doublé de
+   `aria-pressed` sur le bouton (le seul canal que lit une aide technique, et qui ne dépend d'aucune
+   couleur). CONSÉQUENCE MESURABLE ANNEXE : le mot ne change plus de graisse, donc plus de largeur, donc
+   les pastilles de la barre ne se déplacent plus quand on change de tri. */
+.alertview .agseg.on{background:var(--acc);color:var(--acc-ink);border-color:var(--acc);box-shadow:inset 0 0 0 var(--sel-ring) var(--acc-ink)}
 .agscope{background:var(--card);border:1px solid var(--bd);border-radius:var(--pill);color:var(--mut);cursor:pointer;padding:3px 11px;font-size:12px}
 .agscope:hover{border-color:var(--acc);color:var(--acc)}
-.agscope.on{background:var(--acc-bg);color:var(--acc);border-color:color-mix(in srgb,var(--acc) 30%,transparent);font-weight:600}
+.agscope.on{background:var(--acc-bg);color:var(--acc);border-color:var(--acc);box-shadow:inset 0 0 0 var(--sel-ring) var(--acc)}
 .agroup{border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:10px;background:var(--card2);margin-bottom:7px;overflow:hidden}
 .agroup.sev-1{border-left-color:var(--sev1)} .agroup.sev-2{border-left-color:var(--sev2)} .agroup.sev-3{border-left-color:var(--sev3)} .agroup.sev-4{border-left-color:var(--sev4)}
 .agsum{width:100%;display:grid;grid-template-columns:18px 78px auto auto minmax(0,1fr) auto auto;gap:12px;align-items:center;padding:9px 12px;background:transparent;border:0;cursor:pointer;text-align:left;color:var(--fg);font-size:13px}

@@ -9,24 +9,14 @@
 <meta name="theme-color" content="#0b0e14">
 <link rel="stylesheet" href="/style.css">
 <style>
-  /* CRUD contenu de détection (#1c) — défense en profondeur. La VRAIE garde reste serveur (403/400/409).
-     Masquage RÉTROACTIF des contrôles d'écriture selon le rôle reflété sur <body> par applyRoleClass(). */
-  /* viewer = lecture seule : boutons CRUD masqués, cases « actif » neutralisées (le serveur refuse aussi). */
-  body.role-viewer #parser-new,
-  body.role-viewer #lookup-new,
-  body.role-viewer .crud-btn { display: none !important; }
-  body.role-viewer .crud-toggle { pointer-events: none; opacity: .45; }
-  /* SQL brut = admin uniquement : le toggle Type est visible/actif SEULEMENT en role-admin. Fail-closed :
-     tant que le rôle n'est pas connu (aucune classe), il reste masqué -> le formulaire envoie GXQL. */
-  body:not(.role-admin) .rawsql-toggle { display: none !important; }
+  /* Les règles d'ÉTAT (masquage selon le rôle, contenu non supprimable) vivent dans style.css : un
+     instrument qui DÉRIVE la charte de la feuille doit pouvoir les y lire, sans nommer de classe. */
   /* badge « managed » : origine du contenu (builtin / overlay config.d / perso créé via l'UI). */
   .mgbadge { font-family: var(--font-mono, monospace); font-size: 10px; line-height: 1.4; padding: 0 7px;
     border-radius: 999px; margin-left: 6px; border: 1px solid var(--bd, #333); color: var(--mut, #888);
     background: var(--card2, #1a1a1a); vertical-align: middle; }
   .mgbadge.mg-1 { color: var(--warn, #d99a00); border-color: color-mix(in srgb, var(--warn, #d99a00) 40%, transparent); }
   .mgbadge.mg-2 { color: var(--acc, #4aa5a0); border-color: color-mix(in srgb, var(--acc, #4aa5a0) 40%, transparent); }
-  /* delete grisé pour un contenu non supprimable (builtin/overlay). */
-  button.mg-nodel { opacity: .4; cursor: not-allowed; }
   /* #2c multi-tenant : switcher (header) + vue Tenants (Administration) + gestion des grants. */
   .tenantbox { display: inline-flex; align-items: center; gap: 5px; }
   .tenantbox .tzic { opacity: .7; }
@@ -381,7 +371,7 @@
         <select id="parser-sort" class="picon" title="Trier les parsers"><option value="default">Défaut</option><option value="source">Source</option></select>
         <button id="parser-collapse" type="button" class="picon" title="Plier / déplier" aria-expanded="true"></button>
         <button id="parser-reparse" type="button" title="Réappliquer les parsers actifs aux events déjà stockés (30 j)">↻ Réappliquer aux events</button>
-        <button id="parser-new" type="button">+ Nouveau parser</button>
+        <button id="parser-new" class="crud-btn" type="button">+ Nouveau parser</button>
       </div>
     </div>
     <p id="parsers-intro" class="muted" style="margin:0 0 9px;font-size:12px">Extrait des champs (groupes nommés regex <code>(?&lt;nom&gt;…)</code>) du message <b>à l'ingestion, pour toutes les sources</b> (k3s / hôte / conteneur — le parsing est central, indépendant du mode). Défauts intégrés (désactivables) + tes parsers custom. <code>source=*</code> = toutes.<br><b>Quand ?</b> un parser est <b>effectif dès l'enregistrement</b>, sur les <b>nouveaux</b> events. Pour les <b>anciens</b> : <b>↻ Réappliquer</b> (rétroactif, avec confirmation) — ou <code>| rex</code> à la volée dans une recherche.<br><b>Sens IP :</b> nomme <code>src_ip</code> = l'<b>initiateur</b> (l'attaquant en entrant), <code>dst_ip</code> = la <b>cible</b>. <code>src_ip</code>/<code>rhost</code> sont promus en colonne cherchable ; une IP de sens incertain → laisse-la en champ neutre (ex <code>ip</code>), jamais <code>src_ip</code>.</p>
@@ -710,7 +700,7 @@
   <section id="lookups" class="card span2" aria-labelledby="lookups-h" hidden>
     <div class="panelhead">
       <h2 id="lookups-h">Lookups (tables d'enrichissement) <button class="ihelp vhelp" data-help="lookups" type="button" title="Aide : Lookups">?</button></h2>
-      <button id="lookup-new" type="button">+ Nouveau lookup</button>
+      <button id="lookup-new" class="crud-btn" type="button">+ Nouveau lookup</button>
     </div>
     <p id="lookups-intro" class="muted" style="margin:0 0 9px;font-size:12px">Une <b>table de référence</b> nommée (clé &rarr; colonnes) qui <b>enrichit</b> les événements via l'opérateur GXQL <code>lookup &lt;nom&gt; &lt;champ-clé&gt; [OUTPUT cols]</code> (jointure <b>LEFT JOIN</b>). Ex : un lookup <code>geoip</code> de clé <code>ip</code> &rarr; <code>{country, asn}</code> permet <code>search source=web | lookup geoip src_ip OUTPUT country</code> pour ajouter le pays à chaque événement. <b>Lecture pour tous les rôles ; création/suppression réservées éditeur et admin</b> (viewer = lecture seule). L'upload <b>remplace intégralement</b> le contenu du lookup (les colonnes de sortie sont déduites des lignes) et accepte le collage en <b>JSON</b> (tableau d'objets) ou en <b>CSV</b> (1re ligne = en-têtes).</p>
     <form id="lookup-form" class="ruleform hidden">

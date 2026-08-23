@@ -577,6 +577,16 @@ body.role-viewer .paneltools .picon,
 body.role-viewer #dash-new,
 body.role-viewer #rule-new,body.role-viewer #notif-new,body.role-viewer #pb-new,
 body.role-viewer #act-new,body.role-viewer #mode-toggle{display:none!important}
+/* LA FORME DERIVEE. Tout controle d'ecriture porte `crud-btn` : le masquage se lit ici sans que la feuille
+   nomme un bouton (les identifiants de la regle ci-dessus sont l'enumeration qui reste a reprendre). La VRAIE
+   garde est SERVEUR (403/400/409) ; ceci n'est que de la defense en profondeur, et la feuille est servie a
+   part -- une feuille qui ne charge pas ne rend rien permis, elle rend seulement le bouton visible. */
+body.role-viewer .crud-btn{display:none!important}
+/* case « actif » d'un contenu de detection : neutralisee pour le lecteur (le serveur refuse aussi). */
+body.role-viewer .crud-toggle{pointer-events:none;opacity:.45}
+/* SQL brut = admin uniquement. Fail-closed : tant que le role n'est pas connu (aucune classe sur <body>) le
+   selecteur mord, le toggle Type reste masque et le formulaire envoie du GXQL. */
+body:not(.role-admin) .rawsql-toggle{display:none!important}
 
 /* responsive */
 /* tablette (~1024px) : on replie la sidebar plus tôt (icônes seules) pour rendre de la largeur au contenu,
@@ -1145,3 +1155,11 @@ a.posture{text-decoration:none;cursor:pointer}a.posture:hover{border-color:var(-
 #sql,.soql-tpl-code,.qtable,.logline,code,.mono{font-variant-ligatures:none}
 /* P11.9-a : palette des modèles de requête — mes modèles et la bibliothèque livrée. */
 .soql-tpl-h{display:flex;justify-content:space-between;align-items:center;gap:8px}.soql-tpl-sec{font-weight:600;color:var(--hd);padding-top:10px}
+/* P11.4-j : `mg-nodel` (delete grise d'un contenu builtin ou overlay, classe posee par gateDeleteBtn) vient
+   du bloc de style en ligne de la page, qui suivait TOUTE la feuille. Rang 0-1-1, sans marqueur important : a
+   rang egal c'est la POSITION qui designe le vainqueur face aux regles de curseur des boutons de conteneur —
+   la barre d'actions d'une modale est le cas mesure. La regle reste donc EN DERNIER, la ou elle etait, et le
+   deplacement ne change aucun vainqueur de cascade.
+   Cette note ne cite ni accolade ni nom pointe : la garde du chrome partage derive ses classes de bouton de
+   CE fichier sans en retirer les commentaires, et une accolade citee ici lui inventerait une classe. */
+button.mg-nodel{opacity:.4;cursor:not-allowed}

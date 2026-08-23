@@ -306,10 +306,12 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(badge(ligneP) && badge(ligneP).textContent === "builtin", `(3) playbook livré : badge d'origine « ${badge(ligneP) && badge(ligneP).textContent} » au lieu de builtin`);
   exiger(badge(ligneR) && badge(ligneR).textContent === "perso", `(3) runbook créé (runbook.managed=0 = custom) : badge « ${badge(ligneR) && badge(ligneR).textContent} » au lieu de perso — le codage inverse n'est pas normalisé`);
   const classesBoutons = (row) => row.children.filter((c) => c.tagName === "BUTTON").map((c) => c.className);
-  // « Sans règle CSS » est DÉRIVÉ de style.css (P11.4-b : les boutons de ligne portent `btn btn-sm`) ; `crud-btn` et
-  // `mg-nodel` sont des classes d'état (masquage au viewer, pas de suppression), sans chrome, nommées ici.
+  // « Sans règle CSS » est DÉRIVÉ de style.css, SANS EXCEPTION (P11.4-b : les boutons de ligne portent
+  // `btn btn-sm`). `crud-btn` et `mg-nodel` étaient nommés ici faute d'être dessinés par la feuille : leurs
+  // règles d'état vivaient dans le <style> en ligne d'index.html, que cet instrument ne lit pas (P11.4-j).
+  // Elles sont maintenant dans style.css — le prédicat n'énumère plus aucun nom.
   const css = readFileSync(path.join(WEB, "style.css"), "utf8");
-  const aRegle = (k) => k === "crud-btn" || k === "mg-nodel" || new RegExp("\\." + k + "(?![\\w-])").test(css);
+  const aRegle = (k) => new RegExp("\\." + k + "(?![\\w-])").test(css);
   const horsCharte = [...classesBoutons(ligneP), ...classesBoutons(ligneR)].filter((c) => c.split(/\s+/).some((k) => k && !aRegle(k)));
   exiger(horsCharte.length === 0, `(3) bouton(s) à classe sans règle CSS : ${horsCharte.join(", ")}`);
   exiger(classesBoutons(ligneR).length >= 3 && classesBoutons(ligneP).length >= 3, "(3) l'une des lignes n'a pas ses boutons d'action");

@@ -84,11 +84,18 @@ let poserLaRechercheDesRegles = () => {};
 // comparaison de chaînes sur des lignes déjà en mémoire, et une requête HTTP par caractère serait un coût
 // réseau pour un travail local (même partage `charger`/`rendre` que le panneau des indicateurs).
 let reglesChargees = [];
+// P11.5-d — CE QU'UNE MODIFICATION D'OVERLAY NE DIT PAS D'ELLE-MÊME, DIT PAR LE SERVEUR. Cette console
+// portait sa PROPRE copie française de la phrase ; les deux avaient déjà divergé, et c'est la copie d'ici
+// qui affirmait « Seule la bascule actif/inactif survit » alors que la case du formulaire, elle, ne
+// survivait pas. `/api/rules` la sert désormais UNE fois pour toute la liste, dérivée côté serveur des
+// colonnes que la réimposition écrase réellement — il n'y a plus qu'un seul endroit où elle s'écrit.
+let avertissementOverlayRegle = '';
 async function loadRules() {
   const wrap = $('#rule-list'); if (!wrap) return;
-  let rules = [];
-  try { ({ rules } = await api('/rules')); } catch (e) { return; }
+  let rules = [], avertissement = '';
+  try { ({ rules, avertissement_overlay: avertissement } = await api('/rules')); } catch (e) { return; }
   reglesChargees = rules;
+  avertissementOverlayRegle = avertissement || '';
   renderRules();
 }
 function renderRules() {
@@ -218,11 +225,13 @@ function openRuleForm(r) {
   // P11.1-e : la destination est dite AVANT d'enregistrer (le span de résultat porte le lien).
   const res = $('#rf-result'); if (res) { res.className = 'muted'; res.replaceChildren(destinationNote(detectionDestination(r && r.risk_score), '', 'dès la première évaluation (Intervalle)')); }
   // P11.5-c : DIT AVANT L'ÉDITION, pas après. Une règle d'overlay config.d se modifie ici (le serveur
-  // accepte, 200) mais le fichier versionné réimpose son contenu au prochain démarrage — un succès qui se
-  // défait tout seul, que rien n'annonçait. Le serveur le redit dans sa réponse (`avertissement`).
-  if (res && r && Number(r.managed) === 1) {
+  // accepte, 200) mais le fichier versionné réimpose au prochain démarrage les champs qu'il porte — un
+  // succès partiel qui se défait tout seul, que rien n'annonçait. P11.5-d : la phrase vient du serveur
+  // (`/api/rules`), qui la DÉRIVE de ce que la réimposition écrase vraiment ; il la redit à l'identique
+  // dans la réponse d'une modification acceptée (`avertissement`).
+  if (res && r && Number(r.managed) === 1 && avertissementOverlayRegle) {
     const av = document.createElement('div');
-    av.textContent = "Cette règle vient d'un overlay de configuration (config.d) : le fichier réimpose son contenu au prochain démarrage. Seule la bascule actif/inactif survit ; pour un changement durable, modifiez le fichier côté dépôt.";
+    av.textContent = avertissementOverlayRegle;
     res.appendChild(av);
   }
   $(RF.name).focus();

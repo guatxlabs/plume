@@ -444,7 +444,12 @@ pub(crate) async fn rules_list(State(st): State<AppState>, Extension(au): Extens
         })
         .map(|x| x.flatten().collect())
         .unwrap_or_default();
-    Json(json!({ "rules": rows }))
+    // P11.5-d : L'AVERTISSEMENT D'OVERLAY EST SERVI ICI, UNE SEULE FOIS pour toute la liste — la console
+    // ne le réécrit plus dans sa propre langue (les deux copies avaient déjà divergé, et c'est cette
+    // copie-là qui affirmait « Seule la bascule actif/inactif survit »). Une fois par LISTE et non par
+    // ligne : la phrase est identique pour toutes les règles managed=1, la répéter serait du poids réseau
+    // pour rien.
+    Json(json!({ "rules": rows, "avertissement_overlay": avertissement_overlay("Cette règle", "rule", 1) }))
 }
 // PURPLE — normalise/valide une technique MITRE ATT&CK : trim + casse haute, format ^T\d{4}(\.\d{3})?$
 // (ex T1110, T1190.001). Vide -> Some("") (champ optionnel, non mappée). Format invalide -> None.
@@ -574,28 +579,146 @@ pub(crate) fn delete_managed_row_tx(conn: &Connection, table: &str, audit_prefix
 /// LE DÉFAUT MESURÉ (2026-08-23, routeur réel). Un administrateur modifie une règle `managed=1` (overlay
 /// `config.d`) : le serveur répond `200 {"ok":true}`, la console affiche un succès… et au prochain
 /// démarrage `load_overlay_rules` réécrit la ligne depuis le fichier versionné (`UPDATE rule SET query=…,
-/// threshold=…, managed=1 WHERE name=…`). La modification disparaît sans qu'un mot n'ait été dit. C'est
+/// threshold=…, managed=1 …`). La modification disparaît sans qu'un mot n'ait été dit. C'est
 /// le pire des deux mondes : ni un refus nommé (comme la SUPPRESSION, qui rend 409 avec sa raison), ni un
 /// changement durable. Vu de l'exploitant, « l'administrateur ne peut pas éditer les règles ».
 ///
 /// CE QUE CETTE FONCTION REND. La phrase à joindre à la réponse d'une modification acceptée, quand le
 /// contenu est un overlay — et RIEN dans tous les autres cas (`managed=0` builtin adopté en ad-hoc,
 /// `managed=2` ad-hoc : la modification est durable, il n'y a rien à dire). Pure, donc testable seule.
-/// `objet` est un littéral serveur ACCORDÉ (`cette règle` / `ce parseur` / `ce playbook`), jamais une
-/// entrée utilisateur.
-pub(crate) fn avertissement_overlay(objet: &str, managed: i64) -> Option<String> {
-    (managed == 1).then(|| format!(
+/// `objet` est un littéral serveur ACCORDÉ (`Cette règle` / `Ce parseur` / `Ce playbook`), jamais une
+/// entrée utilisateur ; `kind` (`rule`/`parser`/`playbook`) sélectionne les champs épargnés à nommer.
+///
+/// P11.5-d — LA PHRASE A ÉTÉ RENDUE VRAIE PLUTÔT QUE PRUDENTE. Elle affirmait « Seule la bascule
+/// actif/inactif survit » : c'était faux DEUX FOIS. La bascule posée depuis CE formulaire ne survivait
+/// pas (elle n'écrivait aucune dérogation — corrigé par `persister_derogation_activation`), et trois
+/// réglages de tir, eux, survivaient sans que rien ne le dise (`champs_epargnes_par_la_reimposition`,
+/// dérivés du `SET` réel). Ce que la phrase promet est désormais ce que le code tient.
+pub(crate) fn avertissement_overlay(objet: &str, kind: &str, managed: i64) -> Option<String> {
+    if managed != 1 {
+        return None;
+    }
+    let epargnes = champs_epargnes_par_la_reimposition(kind);
+    let survivants = if epargnes.is_empty() {
+        String::new()
+    } else {
+        format!(" Survivent aussi les réglages que le fichier ne porte pas : {}.", epargnes.join(", "))
+    };
+    Some(format!(
         "{objet} vient d'un overlay de configuration (config.d) : au prochain démarrage, le fichier \
-         versionné réimpose son contenu et cette modification sera perdue. Seule la bascule actif/inactif \
-         survit (elle est enregistrée à part). Pour un changement durable, modifiez le fichier côté dépôt."
+         versionné réimpose les champs qu'il porte, et CES modifications-là seront perdues. \
+         L'activation/désactivation, elle, SURVIT : elle est enregistrée à part (dérogation) et \
+         rétablie après le fichier, que vous la posiez par l'interrupteur de la liste ou par la case de \
+         ce formulaire.{survivants} Le nom, lui, ne peut pas être changé ici : c'est lui qui adosse la \
+         ligne à son fichier. Pour un changement durable du reste, modifiez le fichier côté dépôt."
+    ))
+}
+
+/// P11.5-d — LES CHAMPS QU'UNE ÉDITION D'OVERLAY CONSERVE MALGRÉ LE REDÉMARRAGE, **dérivés** et non
+/// recopiés : tout ce que l'API sait écrire et que le `SET` de la réimposition n'écrase pas.
+///
+/// LE DÉFAUT MESURÉ (2026-08-23). L'avertissement généralisait — « le fichier réimpose son contenu » —
+/// alors que l'`UPDATE` de réimposition épargne précisément trois réglages de bruit, dont une édition
+/// SURVIT donc au redémarrage. Une phrase qui promet moins que ce que le code tient pousse l'exploitant
+/// à rouvrir un fichier versionné pour un réglage qu'il pouvait poser depuis la console.
+///
+/// Un seul des deux ensembles est écrit à la main ici (`COLONNES_PATCHABLES_RULE`), et il est LU DEPUIS
+/// LA SOURCE par une garde de test plutôt qu'énuméré une seconde fois ; l'autre côté
+/// (`overlays::COLONNES_REIMPOSEES_RULE`) est le tableau qui CONSTRUIT le SQL, donc il ne peut pas
+/// diverger de lui. `name` est retiré du résultat : le changer est refusé (409), il ne « survit » pas.
+/// `enabled` EST réimposé par le fichier — mais la dérogation le rétablit ensuite, et la phrase le dit
+/// à part plutôt que de le compter ici.
+pub(crate) fn champs_epargnes_par_la_reimposition(kind: &str) -> Vec<&'static str> {
+    match kind {
+        "rule" => COLONNES_PATCHABLES_RULE
+            .iter()
+            .copied()
+            .filter(|c| *c != "name" && !crate::overlays::COLONNES_REIMPOSEES_RULE.contains(c))
+            .collect(),
+        // Parseur et playbook : leur réimposition écrase TOUT ce que leur API sait écrire (hors le nom,
+        // dont le changement est refusé) -> rien à annoncer comme survivant. Dérivé de la même façon par
+        // la garde de test, qui échouerait si un champ neuf devenait patchable sans être réimposé.
+        _ => Vec::new(),
+    }
+}
+
+/// Les colonnes de `rule` que `rule_update` sait écrire. ÉCRITE UNE FOIS, et confrontée à la SOURCE de
+/// `rule_update` par `avertissement_overlay_derive_les_champs_epargnes` : la garde relit les
+/// `UPDATE rule SET <col>=?1 WHERE id=?2` du corps de la fonction, donc un champ patchable ajouté sans
+/// être ajouté ici casse la garde au lieu de rendre la phrase fausse en silence.
+pub(crate) const COLONNES_PATCHABLES_RULE: [&str; 14] = [
+    "name", "query", "is_soql", "op", "threshold", "severity", "interval_s", "window_s", "enabled",
+    "mitre", "compliance", "suppress_window_s", "throttle_field", "per_result",
+];
+
+/// P11.5-d — LE POINT UNIQUE d'écriture de la DÉROGATION D'ACTIVATION d'un contenu de détection.
+///
+/// LE DÉFAUT MESURÉ (2026-08-23). Deux gestes visuellement identiques avaient des durabilités OPPOSÉES :
+/// l'interrupteur de la LIGNE (`set_content_enabled_tx`) écrivait `detection_override`, que
+/// `apply_content_overrides` rétablit au démarrage ; la case « Activée » du FORMULAIRE d'édition,
+/// postée à chaque enregistrement, ne faisait qu'un `UPDATE … SET enabled=…` que le fichier versionné
+/// réimposait au boot suivant. Et c'est l'avertissement de CE formulaire qui affirmait « Seule la
+/// bascule actif/inactif survit » — la seule chose dont il promettait la survie était justement celle
+/// qui ne survivait pas.
+///
+/// Les deux gestes passent DÉSORMAIS par ici, dans la transaction de l'appelant (jamais la sienne : le
+/// geste et sa dérogation sont commités ou annulés ensemble). Rend `true` quand une dérogation a été
+/// écrite — c.-à-d. sur le contenu adossé à un fichier (`managed=1`) ; un `managed=0`/`2` porte son état
+/// dans sa propre ligne et n'a rien à faire rétablir. `kind` est un LITTÉRAL serveur et `name` vient de
+/// la BASE, jamais du client (injection-safe). Ne porte QUE `enabled`, jamais query/is_soql : aucune
+/// élévation possible par cette surface.
+pub(crate) fn persister_derogation_activation(
+    conn: &Connection, kind: &str, name: &str, managed: i64, enabled: bool, actor: &str,
+) -> rusqlite::Result<bool> {
+    if managed != 1 {
+        return Ok(false);
+    }
+    conn.execute(
+        "INSERT INTO detection_override(kind,name,enabled,updated,updated_by) VALUES(?1,?2,?3,?4,?5) \
+         ON CONFLICT(kind,name) DO UPDATE SET enabled=excluded.enabled, updated=excluded.updated, updated_by=excluded.updated_by",
+        params![kind, name, enabled as i64, now(), actor],
+    )?;
+    Ok(true)
+}
+
+/// P11.5-d — LE REFUS de renommer un contenu de détection adossé à un fichier `config.d`.
+///
+/// LE DÉFAUT MESURÉ (2026-08-23, lecture du schéma réel). `rule.name` ne porte AUCUN `UNIQUE`
+/// (db/schema.sql, et aucun index de `migrate.rs` n'en pose), et ce `name` est à la fois la clé par
+/// laquelle le chargeur d'overlay retrouve sa ligne et celle sous laquelle `detection_override` retient
+/// la dérogation d'activation. Renommer une ligne `managed=1` la détachait donc de son fichier : au
+/// démarrage suivant le chargeur n'y retrouvait plus rien et INSÉRAIT une deuxième ligne, pendant que la
+/// dérogation restait accrochée à un nom que plus personne ne porte.
+///
+/// Le chemin est FERMÉ, pas drapeauté — même patron que le refus de SUPPRIMER un overlay
+/// (`delete_managed_row_tx`, 409 qui NOMME `config.d`) : validation HORS transaction, message qui nomme
+/// CE QUI FAIT FOI et la sortie. Un PATCH qui renvoie le nom INCHANGÉ — ce que fait le formulaire à
+/// chaque enregistrement — n'est pas un renommage et passe. `objet` est un littéral serveur.
+/// NB : la contrainte `UNIQUE(name)` en base reste NON POSÉE — ce serait un franchissement de schéma et
+/// une porte à sens unique ; ce refus applicatif ferme le chemin qui, seul, créait les doublons.
+pub(crate) fn refuser_le_renommage_d_un_overlay(
+    objet: &str, managed: i64, nom_actuel: &str, nom_demande: &str,
+) -> Result<(), (StatusCode, String)> {
+    if managed != 1 || nom_demande == nom_actuel {
+        return Ok(());
+    }
+    Err((
+        StatusCode::CONFLICT,
+        format!(
+            "« {nom_actuel} » vient d'un overlay de configuration (config.d) : son nom est la clé qui \
+             adosse cette ligne à son fichier versionné, et celle sous laquelle sa dérogation \
+             d'activation est retenue. Le changer ici ferait apparaître une deuxième ligne au prochain \
+             démarrage et laisserait la dérogation sur un nom que plus rien ne porte. Renommez le \
+             fichier côté dépôt, ou créez votre propre {objet} à partir de son contenu."
+        ),
     ))
 }
 
 /// La réponse d'une modification de contenu de détection ACCEPTÉE : `{"ok":true}` comme avant, plus
 /// `managed` et — pour un overlay — l'avertissement ci-dessus. Un client qui ignore les champs neufs voit
 /// exactement ce qu'il voyait ; un client qui les lit peut enfin le DIRE.
-pub(crate) fn reponse_modification_acceptee(objet: &str, managed: i64) -> Value {
-    match avertissement_overlay(objet, managed) {
+pub(crate) fn reponse_modification_acceptee(objet: &str, kind: &str, managed: i64) -> Value {
+    match avertissement_overlay(objet, kind, managed) {
         Some(a) => json!({ "ok": true, "managed": managed, "avertissement": a }),
         None => json!({ "ok": true, "managed": managed }),
     }
@@ -637,13 +760,9 @@ pub(crate) fn set_content_enabled_tx(conn: &Connection, kind: &str, table: &str,
     let outcome: rusqlite::Result<()> = (|| {
         conn.execute(&format!("UPDATE {table} SET enabled=?1 WHERE id=?2"), params![en, id])?;
         // managed=1 : PERSISTE la décision (keyé par name, stable across boots) -> gagne au prochain boot.
-        if managed == 1 {
-            conn.execute(
-                "INSERT INTO detection_override(kind,name,enabled,updated,updated_by) VALUES(?1,?2,?3,?4,?5) \
-                 ON CONFLICT(kind,name) DO UPDATE SET enabled=excluded.enabled, updated=excluded.updated, updated_by=excluded.updated_by",
-                params![kind, name, en, now(), actor],
-            )?;
-        }
+        // P11.5-d : par le POINT UNIQUE, celui que la case « Activée » du formulaire d'édition emprunte
+        // aussi désormais — deux gestes identiques à l'écran ne peuvent plus avoir deux durabilités.
+        persister_derogation_activation(conn, kind, &name, managed, enabled, actor)?;
         audit_config_change(
             conn,
             &format!("config.{kind}.{word}"),
@@ -775,11 +894,11 @@ pub(crate) async fn rule_update(State(st): State<AppState>, Extension(au): Exten
     crate::req_conn!(st, au, conn);
     // État courant (is_soql/query/window/managed) pour calculer l'EFFECTIF post-PATCH et valider.
     let cur = conn.query_row(
-        "SELECT is_soql,query,window_s,managed FROM rule WHERE id=?1",
+        "SELECT is_soql,query,window_s,managed,name FROM rule WHERE id=?1",
         params![id],
-        |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)),
+        |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, String>(4)?)),
     );
-    let (cur_soql, cur_query, cur_window, cur_managed) = match cur {
+    let (cur_soql, cur_query, cur_window, cur_managed, cur_name) = match cur {
         Ok(x) => x,
         Err(_) => return not_found("règle introuvable"),
     };
@@ -817,6 +936,11 @@ pub(crate) async fn rule_update(State(st): State<AppState>, Extension(au): Exten
     if enabled_change.is_some() && !(au.is_admin() || cur_managed == 2) {
         return err_json(StatusCode::FORBIDDEN, "activer/désactiver une détection managée (seed/overlay) est réservé à l'administrateur");
     }
+    // P11.5-d : renommer une règle adossée à un fichier config.d est REFUSÉ (409), HORS transaction —
+    // aucune écriture partielle. Un enregistrement de formulaire qui renvoie le nom inchangé passe.
+    if let Some(n) = b.get("name").and_then(|x| x.as_str()) {
+        if let Err((code, msg)) = refuser_le_renommage_d_un_overlay("règle", cur_managed, &cur_name, n) { return err_json(code, msg); }
+    }
     // #1c garde-fou #6 : transaction fail-closed (patron retention_settings_put) + audit #1b.
     if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
         return server_err("verrou base indisponible");
@@ -830,7 +954,15 @@ pub(crate) async fn rule_update(State(st): State<AppState>, Extension(au): Exten
         if let Some(v) = b.get("severity").and_then(|x| x.as_i64()) { conn.execute("UPDATE rule SET severity=?1 WHERE id=?2", params![v, id])?; }
         if let Some(v) = b.get("interval_s").and_then(|x| x.as_i64()) { conn.execute("UPDATE rule SET interval_s=?1 WHERE id=?2", params![v, id])?; }
         if let Some(v) = b.get("window_s").and_then(|x| x.as_i64()) { conn.execute("UPDATE rule SET window_s=?1 WHERE id=?2", params![v, id])?; }
-        if let Some(v) = b.get("enabled").and_then(|x| x.as_bool()) { conn.execute("UPDATE rule SET enabled=?1 WHERE id=?2", params![v as i64, id])?; }
+        // P11.5-d : la case « Activée » du formulaire emprunte le MÊME point unique que l'interrupteur de
+        // la ligne -> sur un overlay (managed=1) la dérogation est écrite DANS CETTE TRANSACTION, et
+        // `apply_content_overrides` la rétablit au démarrage suivant. `cur_name` est le nom d'AVANT le
+        // PATCH : renommer un managed=1 est refusé plus haut, donc pour le seul cas où une dérogation
+        // s'écrit, le nom courant EST le nom final.
+        if let Some(v) = b.get("enabled").and_then(|x| x.as_bool()) {
+            conn.execute("UPDATE rule SET enabled=?1 WHERE id=?2", params![v as i64, id])?;
+            persister_derogation_activation(&conn, "rule", &cur_name, cur_managed, v, &au.name)?;
+        }
         // MITRE normalisé (trim+upper, Txxxx[.yyy]) — invalide -> ignoré (additif, le front bloque en amont).
         if let Some(v) = b.get("mitre").and_then(|x| x.as_str()) {
             if let Some(m) = norm_mitre(v) { conn.execute("UPDATE rule SET mitre=?1 WHERE id=?2", params![m, id])?; }
@@ -863,7 +995,7 @@ pub(crate) async fn rule_update(State(st): State<AppState>, Extension(au): Exten
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(reponse_modification_acceptee("cette règle", cur_managed)).into_response() }
+        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(reponse_modification_acceptee("Cette règle", "rule", cur_managed)).into_response() }
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -928,8 +1060,12 @@ pub(crate) async fn parser_create(State(st): State<AppState>, Extension(au): Ext
 }
 pub(crate) async fn parser_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     crate::req_conn!(st, au, conn);
-    let cur_managed = match conn.query_row("SELECT managed FROM parser WHERE id=?1", params![id], |r| r.get::<_, i64>(0)) {
-        Ok(m) => m,
+    let (cur_managed, cur_name) = match conn.query_row(
+        "SELECT managed,name FROM parser WHERE id=?1",
+        params![id],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+    ) {
+        Ok(x) => x,
         Err(_) => return not_found("parseur introuvable"),
     };
     // #1c garde-fou #1 : si un motif est fourni, il DOIT compiler (≤1000) -> sinon 400 (avant écriture).
@@ -952,6 +1088,10 @@ pub(crate) async fn parser_update(State(st): State<AppState>, Extension(au): Ext
     if enabled_change.is_some() && !(au.is_admin() || cur_managed == 2) {
         return err_json(StatusCode::FORBIDDEN, "activer/désactiver une détection managée (seed/overlay) est réservé à l'administrateur");
     }
+    // P11.5-d : même refus que pour une règle — le nom adosse la ligne à son fichier config.d.
+    if let Some(n) = b.get("name").and_then(|x| x.as_str()) {
+        if let Err((code, msg)) = refuser_le_renommage_d_un_overlay("parseur", cur_managed, &cur_name, n) { return err_json(code, msg); }
+    }
     if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
         return server_err("verrou base indisponible");
     }
@@ -959,7 +1099,11 @@ pub(crate) async fn parser_update(State(st): State<AppState>, Extension(au): Ext
         if let Some(v) = b.get("name").and_then(|x| x.as_str()) { conn.execute("UPDATE parser SET name=?1 WHERE id=?2", params![v, id])?; }
         if let Some(v) = b.get("source").and_then(|x| x.as_str()) { conn.execute("UPDATE parser SET source=?1 WHERE id=?2", params![v, id])?; }
         if let Some(v) = b.get("pattern").and_then(|x| x.as_str()) { conn.execute("UPDATE parser SET pattern=?1 WHERE id=?2", params![v, id])?; }
-        if let Some(v) = b.get("enabled").and_then(|x| x.as_bool()) { conn.execute("UPDATE parser SET enabled=?1 WHERE id=?2", params![v as i64, id])?; }
+        // P11.5-d : la case « Activée » emprunte le MÊME point unique que l'interrupteur de la ligne.
+        if let Some(v) = b.get("enabled").and_then(|x| x.as_bool()) {
+            conn.execute("UPDATE parser SET enabled=?1 WHERE id=?2", params![v as i64, id])?;
+            persister_derogation_activation(&conn, "parser", &cur_name, cur_managed, v, &au.name)?;
+        }
         // #1c garde-fou #4 : éditer un builtin (managed=0) l'ADOPTE en ad-hoc (managed=2, builtin=0) -> il ne
         // sera plus ré-écrasé par un re-seed. Overlay (managed=1) reste 1 (le fichier config.d gagne au boot).
         if cur_managed == 0 { conn.execute("UPDATE parser SET managed=2, builtin=0 WHERE id=?1", params![id])?; }
@@ -972,7 +1116,7 @@ pub(crate) async fn parser_update(State(st): State<AppState>, Extension(au): Ext
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); parsers_reload(&conn, req_db_path(&st, &au).as_str()); Json(reponse_modification_acceptee("ce parseur", cur_managed)).into_response() }
+        Ok(()) => { let _ = conn.execute_batch("COMMIT"); parsers_reload(&conn, req_db_path(&st, &au).as_str()); Json(reponse_modification_acceptee("Ce parseur", "parser", cur_managed)).into_response() }
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }

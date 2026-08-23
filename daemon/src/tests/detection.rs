@@ -3408,6 +3408,228 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         assert_eq!(n, 0, "aucune ligne d'override créée");
     }
 
+    // ============================================================================================
+    //  P11.5-d — LOT D'INTÉGRITÉ DE LA PERSONNALISATION D'UN CONTENU LIVRÉ. Trois défauts mesurés le
+    //  2026-08-23 EN AMONT de la question posée (« peut-on personnaliser une règle livrée ? ») :
+    //   (1) deux gestes identiques à l'écran, durabilités OPPOSÉES, et l'avertissement affirmait
+    //       l'inverse de ce que le code faisait ;
+    //   (2) la réimposition d'un fichier n'était pas scopée -> une copie personnelle homonyme était
+    //       écrasée ET requalifiée en contenu adossé au fichier ;
+    //   (3) renommer un contenu adossé le dédoublait au démarrage suivant et orphelinait sa dérogation.
+    //  Aucun franchissement de schéma : ces trois-là se corrigent dans le code seul.
+    // ============================================================================================
+
+    /// (P11.5-d.1 — RÈGLE) LA CASE « Activée » DU FORMULAIRE A DÉSORMAIS LA MÊME DURABILITÉ QUE
+    /// L'INTERRUPTEUR DE LA LIGNE. MUTATION PROUVÉE, deux valeurs nommées :
+    ///  - `detection_override(kind='rule', name='ovr-form').enabled` : la ligne n'existait pas, elle vaut 0
+    ///    après l'enregistrement du formulaire (avant le correctif, `rule_update` n'en écrivait aucune) ;
+    ///  - `rule.enabled` : vaut ENCORE 0 après un rechargement des overlays, alors que le FICHIER porte
+    ///    `enabled: true` — le geste survit au redémarrage, ce qui rend vraie la phrase du formulaire.
+    /// TÉMOIN NÉGATIF dans le même test : la dérogation retirée, le MÊME rechargement remet `enabled` à 1.
+    /// C'est donc bien cette ligne-là — et rien d'autre — qui porte la survie.
+    #[tokio::test]
+    async fn p11_5_d_la_case_activee_du_formulaire_survit_au_redemarrage() {
+        let st = tenant_test_state("plume-admin", "plume-editor", "admins", None);
+        let dir = mk_overlay_dir("p115d-form");
+        write_overlay(&dir, "rules", "r.json", r#"{"name":"ovr-form","query":"search severity>=3 | stats count","is_soql":true,"op":">","threshold":5,"severity":3,"enabled":true}"#);
+        { let c = st.db.lock(); load_overlays_dir(&c, &dir); }
+        let (id, mgd, en): (i64, i64, i64) = { let c = st.db.lock(); c.query_row("SELECT id,managed,enabled FROM rule WHERE name='ovr-form'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap() };
+        assert_eq!((mgd, en), (1, 1), "état de départ : overlay adossé au fichier, activé par lui");
+        // L'ENREGISTREMENT DU FORMULAIRE tel que la console le poste : TOUS les champs, nom INCHANGÉ,
+        // case décochée. C'est ce geste-là qui ne survivait pas.
+        let (code, v) = tok_resp_json(rule_update(State(st.clone()), Extension(tok_au("admin")), Path(id), Json(json!({
+            "name": "ovr-form", "query": "search severity>=3 | stats count", "is_soql": true, "op": ">",
+            "threshold": 5.0, "severity": 3, "interval_s": 300, "window_s": 3600, "enabled": false
+        }))).await).await;
+        assert_eq!(code, StatusCode::OK, "l'admin enregistre le formulaire d'un overlay -> 200");
+        assert!(v["avertissement"].as_str().unwrap_or("").contains("SURVIT"), "la réponse dit ce qui survit : {v}");
+        let ov: i64 = { let c = st.db.lock(); c.query_row("SELECT enabled FROM detection_override WHERE kind='rule' AND name='ovr-form'", [], |r| r.get(0)).unwrap() };
+        assert_eq!(ov, 0, "LA VALEUR QUI CHANGE : le formulaire écrit la dérogation, comme l'interrupteur");
+        // REDÉMARRAGE : le fichier ré-impose enabled=true, PUIS la dérogation le rétablit à 0.
+        { let c = st.db.lock(); load_overlays_dir(&c, &dir); }
+        let en2: i64 = { let c = st.db.lock(); c.query_row("SELECT enabled FROM rule WHERE id=?1", params![id], |r| r.get(0)).unwrap() };
+        assert_eq!(en2, 0, "le geste du formulaire SURVIT au redémarrage");
+        // TÉMOIN NÉGATIF : sans la dérogation, le MÊME redémarrage rend la règle active.
+        { let c = st.db.lock(); c.execute("DELETE FROM detection_override WHERE kind='rule' AND name='ovr-form'", []).unwrap(); load_overlays_dir(&c, &dir); }
+        let en3: i64 = { let c = st.db.lock(); c.query_row("SELECT enabled FROM rule WHERE id=?1", params![id], |r| r.get(0)).unwrap() };
+        assert_eq!(en3, 1, "dérogation retirée -> le fichier regagne : c'est bien elle qui portait la survie");
+    }
+
+    /// (P11.5-d.1 bis — PARSEUR / PLAYBOOK) Le même trou existait sur les deux autres surfaces d'édition.
+    /// MUTATION : `detection_override(kind='parser'|'playbook')` — aucune ligne avant, une ligne à 0 après ;
+    /// et `apply_content_overrides` la rétablit. Un contenu ad-hoc (managed=2) n'en écrit AUCUNE : la
+    /// dérogation ne sert qu'à survivre à un fichier, et une ligne inutile serait une ligne à purger.
+    #[tokio::test]
+    async fn p11_5_d_la_case_activee_ecrit_la_derogation_pour_parseur_et_playbook() {
+        let st = tenant_test_state("plume-admin", "plume-editor", "admins", None);
+        { let c = st.db.lock();
+          c.execute("INSERT INTO parser(name,source,pattern,enabled,builtin,managed,created) VALUES('ovr-p','nginx','a=(?P<a>\\d+)',1,0,1,0)", []).unwrap();
+          c.execute("INSERT INTO playbook(name,enabled,query,is_soql,action_kind,managed) VALUES('ovr-b',1,'search source=x | table src_ip',1,'ban_ip',1)", []).unwrap();
+          c.execute("INSERT INTO parser(name,source,pattern,enabled,builtin,managed,created) VALUES('adhoc-p','nginx','b=(?P<b>\\d+)',1,0,2,0)", []).unwrap();
+        }
+        let pid: i64 = { let c = st.db.lock(); c.query_row("SELECT id FROM parser WHERE name='ovr-p'", [], |r| r.get(0)).unwrap() };
+        let bid: i64 = { let c = st.db.lock(); c.query_row("SELECT id FROM playbook WHERE name='ovr-b'", [], |r| r.get(0)).unwrap() };
+        let aid: i64 = { let c = st.db.lock(); c.query_row("SELECT id FROM parser WHERE name='adhoc-p'", [], |r| r.get(0)).unwrap() };
+        let (code, _v) = tok_resp_json(parser_update(State(st.clone()), Extension(tok_au("admin")), Path(pid), Json(json!({"name":"ovr-p","enabled":false}))).await).await;
+        assert_eq!(code, StatusCode::OK, "admin enregistre le formulaire du parseur d'overlay");
+        let (code, _v) = tok_resp_json(playbook_update(State(st.clone()), Extension(tok_au("admin")), Path(bid), Json(json!({"name":"ovr-b","enabled":false}))).await).await;
+        assert_eq!(code, StatusCode::OK, "admin enregistre le formulaire du playbook d'overlay");
+        let (code, _v) = tok_resp_json(parser_update(State(st.clone()), Extension(tok_au("admin")), Path(aid), Json(json!({"name":"adhoc-p","enabled":false}))).await).await;
+        assert_eq!(code, StatusCode::OK, "admin enregistre le formulaire d'un parseur ad-hoc");
+        let ovp: i64 = { let c = st.db.lock(); c.query_row("SELECT enabled FROM detection_override WHERE kind='parser' AND name='ovr-p'", [], |r| r.get(0)).unwrap() };
+        let ovb: i64 = { let c = st.db.lock(); c.query_row("SELECT enabled FROM detection_override WHERE kind='playbook' AND name='ovr-b'", [], |r| r.get(0)).unwrap() };
+        assert_eq!((ovp, ovb), (0, 0), "LA VALEUR QUI CHANGE : dérogation écrite pour le parseur ET le playbook");
+        let nadhoc: i64 = { let c = st.db.lock(); c.query_row("SELECT COUNT(*) FROM detection_override WHERE name='adhoc-p'", [], |r| r.get(0)).unwrap() };
+        assert_eq!(nadhoc, 0, "ad-hoc (managed=2) : aucune dérogation — son état vit dans sa propre ligne");
+        // Le fichier ré-imposerait enabled=1 ; la dérogation gagne.
+        { let c = st.db.lock();
+          c.execute("UPDATE parser SET enabled=1 WHERE id=?1", params![pid]).unwrap();
+          c.execute("UPDATE playbook SET enabled=1 WHERE id=?1", params![bid]).unwrap();
+          apply_content_overrides(&c);
+        }
+        let (ep, eb): (i64, i64) = { let c = st.db.lock(); (
+            c.query_row("SELECT enabled FROM parser WHERE id=?1", params![pid], |r| r.get(0)).unwrap(),
+            c.query_row("SELECT enabled FROM playbook WHERE id=?1", params![bid], |r| r.get(0)).unwrap()) };
+        assert_eq!((ep, eb), (0, 0), "la réapplication rétablit le choix posé depuis le formulaire");
+    }
+
+    /// (P11.5-d.2) LA RÉIMPOSITION NE TOUCHE QUE CE QU'ELLE POSSÈDE. Une copie personnelle (`managed=2`)
+    /// portant le nom d'un contenu livré n'est NI écrasée NI requalifiée `managed=1`, et le chargeur ne
+    /// crée PAS une deuxième ligne du même nom : le fichier est IGNORÉ (décision alignée sur
+    /// `overlays_oac::plan_upsert`, le point unique désormais partagé). MUTATION : `managed` de la ligne
+    /// homonyme — 2 avant, 2 après (elle valait 1 avant le correctif), et `query` inchangée.
+    #[test]
+    fn p11_5_d_la_reimposition_ne_requalifie_pas_un_homonyme_ad_hoc() {
+        let conn = test_db();
+        let dir = mk_overlay_dir("p115d-homonyme");
+        write_overlay(&dir, "rules", "r.json", r#"{"name":"homonyme","query":"search severity>=4 | stats count","is_soql":true,"op":">","threshold":9,"severity":4,"enabled":false}"#);
+        write_overlay(&dir, "parsers", "p.json", r#"{"name":"homonyme-p","source":"nginx","pattern":"a=(?P<a>\\d+)","enabled":false}"#);
+        write_overlay(&dir, "playbooks", "b.json", r#"{"name":"homonyme-b","query":"search source=x | table src_ip","is_soql":true,"action_kind":"ban_ip","enabled":false}"#);
+        conn.execute("INSERT INTO rule(name,enabled,query,is_soql,op,threshold,severity,managed) VALUES('homonyme',1,'search severity>=1 | stats count',1,'>',1,1,2)", []).unwrap();
+        conn.execute("INSERT INTO parser(name,source,pattern,enabled,builtin,managed,created) VALUES('homonyme-p','sshd','b=(?P<b>\\d+)',1,0,2,0)", []).unwrap();
+        conn.execute("INSERT INTO playbook(name,enabled,query,is_soql,action_kind,managed) VALUES('homonyme-b',1,'search source=y | table src_ip',1,'ban_ip',2)", []).unwrap();
+        load_overlays_dir(&conn, &dir);
+        for (table, name) in [("rule", "homonyme"), ("parser", "homonyme-p"), ("playbook", "homonyme-b")] {
+            let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE name=?1"), params![name], |r| r.get(0)).unwrap();
+            assert_eq!(n, 1, "{table} '{name}' : aucune DEUXIÈME ligne du même nom");
+            let (mgd, en): (i64, i64) = conn.query_row(&format!("SELECT managed,enabled FROM {table} WHERE name=?1"), params![name], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            assert_eq!((mgd, en), (2, 1), "{table} '{name}' : copie personnelle ni requalifiée ni écrasée");
+        }
+        let q: String = conn.query_row("SELECT query FROM rule WHERE name='homonyme'", [], |r| r.get(0)).unwrap();
+        assert_eq!(q, "search severity>=1 | stats count", "le contenu de la copie personnelle est intact");
+    }
+
+    /// (P11.5-d.2 bis) NON-RÉGRESSION DE L'OVERRIDE INTENTIONNEL : un homonyme `managed=0` (builtin/seed)
+    /// reste ADOPTÉ par l'overlay — contenu écrasé, `managed` porté à 1 — comme le disent l'en-tête de
+    /// `overlays.rs` et `config.d/README.md`. Scoper la réimposition au seul `managed=1` aurait cassé ce
+    /// contrat-là et créé le doublon qu'on cherchait à éviter.
+    #[test]
+    fn p11_5_d_la_reimposition_adopte_toujours_un_homonyme_seed() {
+        let conn = test_db();
+        let dir = mk_overlay_dir("p115d-seed");
+        write_overlay(&dir, "rules", "r.json", r#"{"name":"adopte","query":"search severity>=4 | stats count","is_soql":true,"op":">","threshold":9,"severity":4,"enabled":true}"#);
+        conn.execute("INSERT INTO rule(name,enabled,query,is_soql,op,threshold,severity,managed) VALUES('adopte',1,'search severity>=1 | stats count',1,'>',1,1,0)", []).unwrap();
+        load_overlays_dir(&conn, &dir);
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM rule WHERE name='adopte'", [], |r| r.get(0)).unwrap();
+        let (mgd, q): (i64, String) = conn.query_row("SELECT managed,query FROM rule WHERE name='adopte'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(n, 1, "adoption, pas duplication");
+        assert_eq!(mgd, 1, "le seed homonyme est adopté par le fichier (override intentionnel documenté)");
+        assert_eq!(q, "search severity>=4 | stats count", "le fichier gagne sur le seed");
+    }
+
+    /// (P11.5-d.3) RENOMMER UN CONTENU ADOSSÉ À UN FICHIER EST REFUSÉ — 409 qui NOMME `config.d`, et AUCUNE
+    /// écriture : la validation est hors transaction, donc le champ envoyé dans le MÊME corps n'est pas
+    /// appliqué non plus. MUTATION : `rule.threshold` reste 5 (il passait à 42 en même temps que le nom),
+    /// `rule.name` reste `ov-ren`, et aucune ligne ne porte le nom demandé. Puis la contre-épreuve : le
+    /// MÊME corps avec le nom INCHANGÉ — ce que poste le formulaire à chaque enregistrement — passe (200)
+    /// et le seuil change bien : le refus ferme le renommage, pas l'édition.
+    #[tokio::test]
+    async fn p11_5_d_renommer_un_contenu_d_overlay_est_refuse_sans_ecriture() {
+        let st = tenant_test_state("plume-admin", "plume-editor", "admins", None);
+        { let c = st.db.lock();
+          c.execute("INSERT INTO rule(name,enabled,query,is_soql,op,threshold,severity,managed) VALUES('ov-ren',1,'search severity>=3 | stats count',1,'>',5,3,1)", []).unwrap();
+          c.execute("INSERT INTO parser(name,source,pattern,enabled,builtin,managed,created) VALUES('ov-ren-p','nginx','a=(?P<a>\\d+)',1,0,1,0)", []).unwrap();
+          c.execute("INSERT INTO playbook(name,enabled,query,is_soql,action_kind,managed) VALUES('ov-ren-b',1,'search source=x | table src_ip',1,'ban_ip',1)", []).unwrap();
+          c.execute("INSERT INTO rule(name,enabled,query,is_soql,op,threshold,severity,managed) VALUES('adhoc-ren',1,'search severity>=3 | stats count',1,'>',5,3,2)", []).unwrap();
+        }
+        let rid: i64 = { let c = st.db.lock(); c.query_row("SELECT id FROM rule WHERE name='ov-ren'", [], |r| r.get(0)).unwrap() };
+        let pid: i64 = { let c = st.db.lock(); c.query_row("SELECT id FROM parser WHERE name='ov-ren-p'", [], |r| r.get(0)).unwrap() };
+        let bid: i64 = { let c = st.db.lock(); c.query_row("SELECT id FROM playbook WHERE name='ov-ren-b'", [], |r| r.get(0)).unwrap() };
+        let aid: i64 = { let c = st.db.lock(); c.query_row("SELECT id FROM rule WHERE name='adhoc-ren'", [], |r| r.get(0)).unwrap() };
+        // RENOMMAGE + seuil, dans le même corps : 409, et RIEN d'écrit.
+        let (code, v) = tok_resp_json(rule_update(State(st.clone()), Extension(tok_au("admin")), Path(rid), Json(json!({"name":"ov-ren-bis","threshold":42.0}))).await).await;
+        assert_eq!(code, StatusCode::CONFLICT, "renommer une règle d'overlay -> 409");
+        let msg = v["error"].as_str().unwrap_or("");
+        assert!(msg.contains("config.d") && msg.contains("dépôt"), "le refus NOMME ce qui fait foi et la sortie : {msg}");
+        let (nm, th): (String, f64) = { let c = st.db.lock(); c.query_row("SELECT name,threshold FROM rule WHERE id=?1", params![rid], |r| Ok((r.get(0)?, r.get(1)?))).unwrap() };
+        assert_eq!((nm.as_str(), th), ("ov-ren", 5.0), "AUCUNE écriture : ni le nom ni le seuil du même corps");
+        let dbl: i64 = { let c = st.db.lock(); c.query_row("SELECT COUNT(*) FROM rule WHERE name='ov-ren-bis'", [], |r| r.get(0)).unwrap() };
+        assert_eq!(dbl, 0, "aucune ligne ne porte le nom demandé");
+        // Parseur et playbook : même refus.
+        let (code, _v) = tok_resp_json(parser_update(State(st.clone()), Extension(tok_au("admin")), Path(pid), Json(json!({"name":"ov-ren-p-bis"}))).await).await;
+        assert_eq!(code, StatusCode::CONFLICT, "renommer un parseur d'overlay -> 409");
+        let (code, _v) = tok_resp_json(playbook_update(State(st.clone()), Extension(tok_au("admin")), Path(bid), Json(json!({"name":"ov-ren-b-bis"}))).await).await;
+        assert_eq!(code, StatusCode::CONFLICT, "renommer un playbook d'overlay -> 409");
+        // CONTRE-ÉPREUVE 1 : le nom INCHANGÉ n'est pas un renommage -> l'édition passe.
+        let (code, _v) = tok_resp_json(rule_update(State(st.clone()), Extension(tok_au("admin")), Path(rid), Json(json!({"name":"ov-ren","threshold":42.0}))).await).await;
+        assert_eq!(code, StatusCode::OK, "le formulaire renvoie le nom inchangé : ce n'est pas un renommage");
+        let th2: f64 = { let c = st.db.lock(); c.query_row("SELECT threshold FROM rule WHERE id=?1", params![rid], |r| r.get(0)).unwrap() };
+        assert_eq!(th2, 42.0, "l'édition reste ouverte : seul le renommage est fermé");
+        // CONTRE-ÉPREUVE 2 : un contenu ad-hoc (managed=2) se renomme toujours — il n'adosse aucun fichier.
+        let (code, _v) = tok_resp_json(rule_update(State(st.clone()), Extension(tok_au("admin")), Path(aid), Json(json!({"name":"adhoc-renomme"}))).await).await;
+        assert_eq!(code, StatusCode::OK, "un ad-hoc n'adosse aucun fichier : son renommage reste permis");
+    }
+
+    /// (P11.5-d.4) L'AVERTISSEMENT DIT EXACTEMENT CE QUE LE CODE FAIT, et il le DÉRIVE.
+    ///  (a) EMPREINTE — le SQL de réimposition CONSTRUIT à partir de `COLONNES_REIMPOSEES_RULE` est, au
+    ///      `WHERE` près (`name` -> `id`, exigé par le scope de possession), celui qui était écrit à la
+    ///      main : déplacement pur, aucune colonne perdue ni ajoutée en route.
+    ///  (b) GARDE DÉRIVÉE — les colonnes que `rule_update` sait écrire sont RELUES DANS SA SOURCE, jamais
+    ///      ré-énumérées ici : un champ patchable ajouté demain sans être déclaré casse cette garde au lieu
+    ///      de rendre la phrase fausse en silence.
+    ///  (c) LA PHRASE — elle nomme les trois réglages que la réimposition épargne (leur édition PERSISTE
+    ///      sur une règle d'overlay), et ne promet rien sur ceux qu'elle écrase.
+    #[test]
+    fn p11_5_d_l_avertissement_derive_les_champs_epargnes_du_sql_de_reimposition() {
+        assert_eq!(
+            crate::overlays::sql_reimposition_rule(),
+            "UPDATE rule SET enabled=?1, query=?2, is_soql=?3, op=?4, threshold=?5, severity=?6, interval_s=?7, window_s=?8, mitre=?9, compliance=?10, managed=1 WHERE id=?11",
+            "empreinte du SQL de réimposition : le tableau doit régénérer EXACTEMENT le SET historique"
+        );
+        // (b) relecture de la source de `rule_update` : les `UPDATE rule SET <col>=?1 WHERE id=?2` de son
+        // corps SONT les champs patchables (l'adoption `managed=2 WHERE id=?1` n'en est pas un : elle ne
+        // vient d'aucun champ du corps, et sa forme la distingue).
+        let src = include_str!("../handlers/detection.rs");
+        let debut = src.find("pub(crate) async fn rule_update").expect("rule_update est dans cette source");
+        let reste = &src[debut..];
+        let fin = reste[1..].find("\npub(crate) async fn ").map(|i| i + 1).unwrap_or(reste.len());
+        let corps = &reste[..fin];
+        let mut lues: Vec<&str> = Vec::new();
+        for (i, _) in corps.match_indices("\"UPDATE rule SET ") {
+            let apres = &corps[i + 1..];
+            let stmt = match apres.find('"') { Some(j) => &apres[..j], None => continue };
+            if let Some(col) = stmt.strip_prefix("UPDATE rule SET ").and_then(|r| r.strip_suffix("=?1 WHERE id=?2")) {
+                if !lues.contains(&col) { lues.push(col); }
+            }
+        }
+        let mut lues_triees = lues.clone(); lues_triees.sort_unstable();
+        let mut declarees: Vec<&str> = COLONNES_PATCHABLES_RULE.to_vec(); declarees.sort_unstable();
+        assert_eq!(lues_triees, declarees, "COLONNES_PATCHABLES_RULE doit être ce que rule_update écrit RÉELLEMENT");
+        // (c) la différence dérivée, et la phrase qui la porte.
+        assert_eq!(
+            champs_epargnes_par_la_reimposition("rule"),
+            vec!["suppress_window_s", "throttle_field", "per_result"],
+            "les réglages de tir ne figurent pas au SET de la réimposition : leur édition PERSISTE"
+        );
+        assert!(champs_epargnes_par_la_reimposition("parser").is_empty(), "parseur : rien ne survit hors l'activation");
+        let a = avertissement_overlay("Cette règle", "rule", 1).expect("overlay : la phrase existe");
+        for champ in ["suppress_window_s", "throttle_field", "per_result"] {
+            assert!(a.contains(champ), "la phrase nomme le champ épargné {champ} : {a}");
+        }
+        assert!(!a.contains("threshold") && !a.contains("severity"), "elle ne promet RIEN sur ce que le fichier réimpose : {a}");
+        assert!(a.contains("SURVIT") && a.contains("nom"), "elle dit ce qui survit ET que le nom est fermé : {a}");
+    }
+
     /// (c) ENABLE -> IT-RUNS : une règle overlay LIVRÉE DÉSACTIVÉE, activée par l'admin (override), reste
     /// active après reboot ET est ÉVALUÉE + TIRE par l'ORDONNANCEUR run_due_rules (pas le dry-run). Prouve
     /// que la bascule débouche réellement sur une détection qui tourne. Télémétrie via le PARSEUR nft (réel).

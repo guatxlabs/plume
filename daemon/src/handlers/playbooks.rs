@@ -89,11 +89,11 @@ pub(crate) async fn playbook_create(State(st): State<AppState>, Extension(au): E
 pub(crate) async fn playbook_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     crate::req_conn!(st, au, conn);
     let cur = conn.query_row(
-        "SELECT is_soql,query,window_s,action_kind,managed FROM playbook WHERE id=?1",
+        "SELECT is_soql,query,window_s,action_kind,managed,name FROM playbook WHERE id=?1",
         params![id],
-        |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, i64>(4)?)),
+        |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, i64>(4)?, r.get::<_, String>(5)?)),
     );
-    let (cur_soql, cur_query, cur_window, cur_kind, cur_managed) = match cur {
+    let (cur_soql, cur_query, cur_window, cur_kind, cur_managed, cur_name) = match cur {
         Ok(x) => x,
         Err(_) => return not_found("playbook introuvable"),
     };
@@ -120,6 +120,10 @@ pub(crate) async fn playbook_update(State(st): State<AppState>, Extension(au): E
     if enabled_change.is_some() && !(au.is_admin() || cur_managed == 2) {
         return err_json(StatusCode::FORBIDDEN, "activer/désactiver une détection managée (seed/overlay) est réservé à l'administrateur");
     }
+    // P11.5-d : renommer un playbook adossé à un fichier config.d est REFUSÉ (409), HORS transaction.
+    if let Some(n) = b.get("name").and_then(|x| x.as_str()) {
+        if let Err((code, msg)) = refuser_le_renommage_d_un_overlay("playbook", cur_managed, &cur_name, n) { return err_json(code, msg); }
+    }
     if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
         return server_err("verrou base indisponible");
     }
@@ -130,7 +134,11 @@ pub(crate) async fn playbook_update(State(st): State<AppState>, Extension(au): E
         if let Some(v) = b.get("action_kind").and_then(|x| x.as_str()) { conn.execute("UPDATE playbook SET action_kind=?1 WHERE id=?2", params![v, id])?; }
         if let Some(v) = b.get("interval_s").and_then(|x| x.as_i64()) { conn.execute("UPDATE playbook SET interval_s=?1 WHERE id=?2", params![v, id])?; }
         if let Some(v) = b.get("window_s").and_then(|x| x.as_i64()) { conn.execute("UPDATE playbook SET window_s=?1 WHERE id=?2", params![v, id])?; }
-        if let Some(v) = b.get("enabled").and_then(|x| x.as_bool()) { conn.execute("UPDATE playbook SET enabled=?1 WHERE id=?2", params![v as i64, id])?; }
+        // P11.5-d : la case « Activée » emprunte le MÊME point unique que l'interrupteur de la ligne.
+        if let Some(v) = b.get("enabled").and_then(|x| x.as_bool()) {
+            conn.execute("UPDATE playbook SET enabled=?1 WHERE id=?2", params![v as i64, id])?;
+            persister_derogation_activation(&conn, "playbook", &cur_name, cur_managed, v, &au.name)?;
+        }
         // #1c garde-fou #4 : éditer un builtin (managed=0) l'ADOPTE en ad-hoc (managed=2) ; overlay (1) reste 1.
         if cur_managed == 0 { conn.execute("UPDATE playbook SET managed=2 WHERE id=?1", params![id])?; }
         // DURCISSEMENT : ré-affirme l'auteur du CONTENU à chaque édition validée (seul un admin
@@ -145,7 +153,7 @@ pub(crate) async fn playbook_update(State(st): State<AppState>, Extension(au): E
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(reponse_modification_acceptee("ce playbook", cur_managed)).into_response() }
+        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(reponse_modification_acceptee("Ce playbook", "playbook", cur_managed)).into_response() }
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }

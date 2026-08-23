@@ -328,7 +328,11 @@ env:
   # contenu d'overlay dit d'elle-même (`daemon/src/tests/comptes_qui_accedent.rs`) : douze tests SANS
   # `cfg` de feature, présents dans les DEUX profils. Le total est celui de l'ARBRE, jamais une somme
   # de lots.
-  EXPECTED_TESTS: "1258"
+  # RÉ-ÉNUMÉRÉ le 2026-08-24 (MÊME commande) sur l'arbre qui porte le lot d'intégrité P11.5-d — la case
+  # « Activée » du formulaire d'édition aussi durable que l'interrupteur de la ligne, la réimposition
+  # d'un fichier config.d scopée à ce qu'elle possède, et le renommage d'un contenu adossé refusé :
+  # six tests SANS `cfg` de feature, présents dans les DEUX profils.
+  EXPECTED_TESTS: "1264"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -621,7 +625,11 @@ jobs:
           # par défaut — l'écart reste **220**.
           # RÉ-MESURÉ le 2026-08-23 par la MÊME commande, sur l'arbre qui porte P11.3-c et P11.3-d (cinq
           # tests sans `cfg`) : 1469 avec `cold_tier` pour 1249 par défaut — l'écart reste **220**.
-          EXPECTED_COLD_TESTS: "1478"
+          # RÉ-MESURÉ le 2026-08-24 par la MÊME commande, sur l'arbre qui porte le lot d'intégrité
+          # P11.5-d (six tests sans `cfg`) : 1484 avec `cold_tier` pour 1264 par défaut — l'écart reste
+          # **220**. Ce compteur-ci bouge AVEC l'autre : six tests sans `cfg` entrent dans les deux
+          # profils, et le laisser en arrière rendrait ce job rouge sans rien mesurer de neuf.
+          EXPECTED_COLD_TESTS: "1484"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

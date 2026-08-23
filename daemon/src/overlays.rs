@@ -41,6 +41,52 @@ pub(crate) fn overlay_read_json(path: &std::path::Path) -> Option<Value> {
     }
 }
 
+// =====================================================================================
+// P11.5-d — CE QUE LA RÉIMPOSITION POSSÈDE, ET CE QU'ELLE NE TOUCHE PAS.
+//
+// LE DÉFAUT MESURÉ (2026-08-23, lecture du SQL réel). `apply_content_overrides` s'était scopé des DEUX
+// côtés à `managed=1` (correctif « HIGH-2 ») ; les CHARGEURS, eux, faisaient encore un
+// `UPDATE … WHERE name=?` NON SCOPÉ. Une copie personnelle (`managed=2`) portant le nom d'un contenu
+// livré était donc, au démarrage suivant, écrasée par le fichier ET REQUALIFIÉE `managed=1` :
+// dépossédée de son auteur, verrouillée en édition, et devenue élagable par le prune d'orphelins.
+//
+// LA DÉCISION (et non un effet subi). Un homonyme `managed=2` fait IGNORER le fichier d'overlay
+// (WARN + compté dans les ignorés du bilan de boot) ; il ne crée PAS une deuxième ligne du même nom.
+// C'est la politique DÉJÀ arrêtée et mesurée pour les objets d'observabilité-as-code — et
+// `overlays_oac::plan_upsert` EST le point unique réutilisé ici, plutôt qu'une seconde règle qui
+// aurait divergé de la première. Un homonyme `managed=0` (builtin/seed) reste, lui, ADOPTÉ par
+// l'overlay : c'est l'override intentionnel documenté en tête de ce module et dans config.d/README.md.
+//
+// CE QU'ON PAIE POUR CELA, dit franchement : un contenu livré dont le nom est déjà pris par une ligne
+// ad-hoc n'est PAS chargé. La sortie est de renommer l'un des deux, et le boot le dit (WARN nommant le
+// fichier, puis « N fichier(s) de config.d IGNORÉ(S) »).
+// =====================================================================================
+
+/// P11.5-d — LES COLONNES QU'UNE RÉIMPOSITION DE RÈGLE D'OVERLAY ÉCRASE, dans l'ordre où elles sont
+/// liées. SOURCE UNIQUE : `sql_reimposition_rule` CONSTRUIT l'`UPDATE` à partir de ce tableau, et
+/// `handlers::detection::champs_epargnes_par_la_reimposition` en DÉRIVE l'inverse — ce qu'une édition
+/// d'overlay conserve malgré le redémarrage. L'avertissement montré à l'exploitant ne recopie donc
+/// aucune liste à la main : ajouter une colonne ici la retire mécaniquement de la phrase.
+/// Les règles SIGMA d'overlay écrasent un SOUS-ENSEMBLE strict de ces colonnes (pas `compliance`) :
+/// ce qui survit à `rules/*.json` survit a fortiori à `sigma/*.yml`, la phrase reste donc vraie pour
+/// les deux origines.
+pub(crate) const COLONNES_REIMPOSEES_RULE: [&str; 10] = [
+    "enabled", "query", "is_soql", "op", "threshold", "severity", "interval_s", "window_s", "mitre", "compliance",
+];
+
+/// L'`UPDATE` de réimposition d'une règle d'overlay, DÉRIVÉ de `COLONNES_REIMPOSEES_RULE` (`?1..?N`
+/// dans l'ordre du tableau ; `?N+1` = l'`id` de la ligne possédée, rendu par `plan_upsert`).
+/// `managed=1` est posé à part : ce n'est pas un champ réimposé mais la REQUALIFICATION de la ligne en
+/// contenu adossé à un fichier.
+pub(crate) fn sql_reimposition_rule() -> String {
+    let sets: Vec<String> = COLONNES_REIMPOSEES_RULE
+        .iter()
+        .enumerate()
+        .map(|(i, c)| format!("{c}=?{}", i + 1))
+        .collect();
+    format!("UPDATE rule SET {}, managed=1 WHERE id=?{}", sets.join(", "), COLONNES_REIMPOSEES_RULE.len() + 1)
+}
+
 /// Parsers d'overlay : MÊME validation que parser_create (motif non vide, ≤1000, regex qui compile),
 /// puis UPSERT keyé par name avec managed=1 (un overlay écrase un builtin du même nom : builtin=0).
 pub(crate) fn load_overlay_parsers(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
@@ -81,17 +127,25 @@ pub(crate) fn load_overlay_parsers(conn: &Connection, dir: &std::path::Path) -> 
             eprintln!("[cim] WARN parser '{name}' ({}) : category='{cat}' hors taxonomie CIM v{CIM_VERSION} — acceptée mais NON canonique (cf. docs/CIM.md)", path.display());
         }
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true) as i64;
-        let exists = conn.query_row("SELECT 1 FROM parser WHERE name=?1", params![name], |_| Ok(())).is_ok();
-        if exists {
-            let _ = conn.execute(
-                "UPDATE parser SET source=?1, pattern=?2, enabled=?3, builtin=0, managed=1 WHERE name=?4",
-                params![source, pattern, enabled, name],
-            );
-        } else {
-            let _ = conn.execute(
-                "INSERT INTO parser(name,source,pattern,enabled,builtin,managed,created) VALUES(?1,?2,?3,?4,0,1,?5)",
-                params![name, source, pattern, enabled, now()],
-            );
+        // P11.5-d : la réimposition ne touche QUE ce qu'elle possède (cf. le bloc de doctrine plus haut).
+        match plan_upsert(conn, "parser", &name) {
+            UpsertPlan::SkipUser => {
+                eprintln!("[overlays] WARN parser '{name}' ({}) : un parseur ad-hoc UI (managed=2) du même nom existe — overlay IGNORÉ (renommez l'un des deux)", path.display());
+                ch.ignores += 1;
+                continue;
+            }
+            UpsertPlan::Update(rid) => {
+                let _ = conn.execute(
+                    "UPDATE parser SET source=?1, pattern=?2, enabled=?3, builtin=0, managed=1 WHERE id=?4",
+                    params![source, pattern, enabled, rid],
+                );
+            }
+            UpsertPlan::Insert => {
+                let _ = conn.execute(
+                    "INSERT INTO parser(name,source,pattern,enabled,builtin,managed,created) VALUES(?1,?2,?3,?4,0,1,?5)",
+                    params![name, source, pattern, enabled, now()],
+                );
+            }
         }
         ch.charges += 1;
     }
@@ -152,17 +206,25 @@ pub(crate) fn load_overlay_dparsers(conn: &Connection, dir: &std::path::Path) ->
         }
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true) as i64;
         let spec = v.to_string();
-        let exists = conn.query_row("SELECT 1 FROM dparser WHERE name=?1", params![name], |_| Ok(())).is_ok();
-        if exists {
-            let _ = conn.execute(
-                "UPDATE dparser SET source=?1, spec=?2, enabled=?3, builtin=0, managed=1 WHERE name=?4",
-                params![source, spec, enabled, name],
-            );
-        } else {
-            let _ = conn.execute(
-                "INSERT INTO dparser(name,source,spec,enabled,builtin,managed,created) VALUES(?1,?2,?3,?4,0,1,?5)",
-                params![name, source, spec, enabled, now()],
-            );
+        // P11.5-d : même scope de possession que les autres chargeurs (cf. le bloc de doctrine plus haut).
+        match plan_upsert(conn, "dparser", &name) {
+            UpsertPlan::SkipUser => {
+                eprintln!("[overlays] WARN parseur déclaratif '{name}' ({}) : une ligne ad-hoc UI (managed=2) du même nom existe — overlay IGNORÉ (renommez l'un des deux)", path.display());
+                ch.ignores += 1;
+                continue;
+            }
+            UpsertPlan::Update(rid) => {
+                let _ = conn.execute(
+                    "UPDATE dparser SET source=?1, spec=?2, enabled=?3, builtin=0, managed=1 WHERE id=?4",
+                    params![source, spec, enabled, rid],
+                );
+            }
+            UpsertPlan::Insert => {
+                let _ = conn.execute(
+                    "INSERT INTO dparser(name,source,spec,enabled,builtin,managed,created) VALUES(?1,?2,?3,?4,0,1,?5)",
+                    params![name, source, spec, enabled, now()],
+                );
+            }
         }
         ch.charges += 1;
     }
@@ -228,17 +290,26 @@ pub(crate) fn load_overlay_rules(conn: &Connection, dir: &std::path::Path) -> cr
         let threshold = v.get("threshold").and_then(|x| x.as_f64()).unwrap_or(0.0);
         let severity = v.get("severity").and_then(|x| x.as_i64()).unwrap_or(2);
         let interval_s = v.get("interval_s").and_then(|x| x.as_i64()).unwrap_or(300);
-        let exists = conn.query_row("SELECT 1 FROM rule WHERE name=?1", params![name], |_| Ok(())).is_ok();
-        if exists {
-            let _ = conn.execute(
-                "UPDATE rule SET enabled=?1, query=?2, is_soql=?3, op=?4, threshold=?5, severity=?6, interval_s=?7, window_s=?8, mitre=?9, compliance=?10, managed=1 WHERE name=?11",
-                params![enabled, query, is_soql as i64, op, threshold, severity, interval_s, window_s, mitre, compliance, name],
-            );
-        } else {
-            let _ = conn.execute(
-                "INSERT INTO rule(name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,compliance,managed) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,1)",
-                params![name, enabled, query, is_soql as i64, op, threshold, severity, interval_s, window_s, mitre, compliance],
-            );
+        // P11.5-d : la réimposition ne touche QUE ce qu'elle possède, et son `SET` est DÉRIVÉ de
+        // `COLONNES_REIMPOSEES_RULE` — l'ordre des paramètres liés ci-dessous EST celui du tableau.
+        match plan_upsert(conn, "rule", &name) {
+            UpsertPlan::SkipUser => {
+                eprintln!("[overlays] WARN règle '{name}' ({}) : une règle ad-hoc UI (managed=2) du même nom existe — overlay IGNORÉE (renommez l'une des deux)", path.display());
+                ch.ignores += 1;
+                continue;
+            }
+            UpsertPlan::Update(rid) => {
+                let _ = conn.execute(
+                    &sql_reimposition_rule(),
+                    params![enabled, query, is_soql as i64, op, threshold, severity, interval_s, window_s, mitre, compliance, rid],
+                );
+            }
+            UpsertPlan::Insert => {
+                let _ = conn.execute(
+                    "INSERT INTO rule(name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,compliance,managed) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,1)",
+                    params![name, enabled, query, is_soql as i64, op, threshold, severity, interval_s, window_s, mitre, compliance],
+                );
+            }
         }
         ch.charges += 1;
     }
@@ -286,17 +357,25 @@ pub(crate) fn load_overlay_playbooks(conn: &Connection, dir: &std::path::Path) -
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true) as i64;
         let action_kind = v.get("action_kind").and_then(|x| x.as_str()).unwrap_or("ban_ip");
         let interval_s = v.get("interval_s").and_then(|x| x.as_i64()).unwrap_or(300);
-        let exists = conn.query_row("SELECT 1 FROM playbook WHERE name=?1", params![name], |_| Ok(())).is_ok();
-        if exists {
-            let _ = conn.execute(
-                "UPDATE playbook SET enabled=?1, query=?2, is_soql=?3, action_kind=?4, interval_s=?5, window_s=?6, managed=1 WHERE name=?7",
-                params![enabled, query, is_soql as i64, action_kind, interval_s, window_s, name],
-            );
-        } else {
-            let _ = conn.execute(
-                "INSERT INTO playbook(name,enabled,query,is_soql,action_kind,interval_s,window_s,managed) VALUES(?1,?2,?3,?4,?5,?6,?7,1)",
-                params![name, enabled, query, is_soql as i64, action_kind, interval_s, window_s],
-            );
+        // P11.5-d : la réimposition ne touche QUE ce qu'elle possède (cf. le bloc de doctrine plus haut).
+        match plan_upsert(conn, "playbook", &name) {
+            UpsertPlan::SkipUser => {
+                eprintln!("[overlays] WARN playbook '{name}' ({}) : un playbook ad-hoc UI (managed=2) du même nom existe — overlay IGNORÉ (renommez l'un des deux)", path.display());
+                ch.ignores += 1;
+                continue;
+            }
+            UpsertPlan::Update(rid) => {
+                let _ = conn.execute(
+                    "UPDATE playbook SET enabled=?1, query=?2, is_soql=?3, action_kind=?4, interval_s=?5, window_s=?6, managed=1 WHERE id=?7",
+                    params![enabled, query, is_soql as i64, action_kind, interval_s, window_s, rid],
+                );
+            }
+            UpsertPlan::Insert => {
+                let _ = conn.execute(
+                    "INSERT INTO playbook(name,enabled,query,is_soql,action_kind,interval_s,window_s,managed) VALUES(?1,?2,?3,?4,?5,?6,?7,1)",
+                    params![name, enabled, query, is_soql as i64, action_kind, interval_s, window_s],
+                );
+            }
         }
         ch.charges += 1;
     }
@@ -338,17 +417,25 @@ pub(crate) fn load_overlay_sigma(conn: &Connection, dir: &std::path::Path) -> cr
             match sigma_translate(d) {
                 Ok(t) => {
                     for w in &t.warnings { eprintln!("[sigma] NOTE règle '{}' : {w}", t.name); }
-                    let exists = conn.query_row("SELECT 1 FROM rule WHERE name=?1", params![t.name], |_| Ok(())).is_ok();
-                    if exists {
-                        let _ = conn.execute(
-                            "UPDATE rule SET enabled=1, query=?1, is_soql=1, op=?2, threshold=?3, severity=?4, interval_s=?5, window_s=?6, mitre=?7, managed=1 WHERE name=?8",
-                            params![t.query, t.op, t.threshold, t.severity, t.interval_s, t.window_s, t.mitre, t.name],
-                        );
-                    } else {
-                        let _ = conn.execute(
-                            "INSERT INTO rule(name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,managed) VALUES(?1,1,?2,1,?3,?4,?5,?6,?7,?8,1)",
-                            params![t.name, t.query, t.op, t.threshold, t.severity, t.interval_s, t.window_s, t.mitre],
-                        );
+                    // P11.5-d : même scope de possession que les règles JSON (bloc de doctrine plus haut).
+                    match plan_upsert(conn, "rule", &t.name) {
+                        UpsertPlan::SkipUser => {
+                            eprintln!("[overlays] WARN règle Sigma '{}' ({}) : une règle ad-hoc UI (managed=2) du même nom existe — overlay IGNORÉE (renommez l'une des deux)", t.name, path.display());
+                            ch.ignores += 1;
+                            continue;
+                        }
+                        UpsertPlan::Update(rid) => {
+                            let _ = conn.execute(
+                                "UPDATE rule SET enabled=1, query=?1, is_soql=1, op=?2, threshold=?3, severity=?4, interval_s=?5, window_s=?6, mitre=?7, managed=1 WHERE id=?8",
+                                params![t.query, t.op, t.threshold, t.severity, t.interval_s, t.window_s, t.mitre, rid],
+                            );
+                        }
+                        UpsertPlan::Insert => {
+                            let _ = conn.execute(
+                                "INSERT INTO rule(name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,managed) VALUES(?1,1,?2,1,?3,?4,?5,?6,?7,?8,1)",
+                                params![t.name, t.query, t.op, t.threshold, t.severity, t.interval_s, t.window_s, t.mitre],
+                            );
+                        }
                     }
                     ch.charges += 1;
                 }

@@ -483,13 +483,13 @@ fn la_provenance_distingue_l_annuaire_le_compte_local_et_l_identifiant_d_amorcag
 /// une phrase posée partout serait ignorée partout.
 #[test]
 fn l_avertissement_d_overlay_ne_se_pose_que_sur_un_contenu_gouverne_par_un_fichier() {
-    assert!(avertissement_overlay("cette règle", 0).is_none(), "builtin : modification durable");
-    assert!(avertissement_overlay("cette règle", 2).is_none(), "ad-hoc : modification durable");
-    let a = avertissement_overlay("cette règle", 1).expect("overlay : la phrase existe");
-    assert!(a.starts_with("cette règle"), "la phrase s'accorde à l'objet nommé : {a}");
+    assert!(avertissement_overlay("Cette règle", "rule", 0).is_none(), "builtin : modification durable");
+    assert!(avertissement_overlay("Cette règle", "rule", 2).is_none(), "ad-hoc : modification durable");
+    let a = avertissement_overlay("Cette règle", "rule", 1).expect("overlay : la phrase existe");
+    assert!(a.starts_with("Cette règle"), "la phrase s'accorde à l'objet nommé : {a}");
     assert!(a.contains("config.d") && a.contains("démarrage"), "elle nomme la cause ET le moment : {a}");
     assert!(
-        avertissement_overlay("ce playbook", 1).expect("overlay").starts_with("ce playbook"),
+        avertissement_overlay("Ce playbook", "playbook", 1).expect("overlay").starts_with("Ce playbook"),
         "la même phrase sert les trois contenus de détection, accordée par l'appelant"
     );
 }

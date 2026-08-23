@@ -339,8 +339,12 @@ let alertesChargees = null;
 // prétendrait couvrir tout l'historique mentirait. Le résumé le dit à chaque fois.
 // Les deux phrases sont ÉCRITES EN ENTIER, jamais composées : `i18nWalk` compare un nœud texte à une clé du
 // lexique, et une phrase recollée à l'exécution n'est jamais égale à une clé — elle resterait en français.
+// ÉCRIRE LA PHRASE ENTIÈRE NE SUFFIT PAS : il faut que la clé existe, signe pour signe. Ces deux valeurs sont
+// posées sous des clés d'objet (`page:`, `servies:`) que la garde d'i18n ne compte pas comme puits, donc rien
+// ne vérifiait la correspondance ; la variante « page » a dérivé du texte du lexique et serait restée en
+// français sous `LANG='en'`. Elle est réalignée sur la clé existante, qui n'était plus écrite par personne.
 const RECHERCHE_COUVERTURE = {
-  page: 'alerte(s) — la recherche porte sur la page affichée, pas sur tout l\'historique ; les filtres et le tri restent posés',
+  page: 'alerte(s) de cette page — la recherche porte sur la page affichée, pas sur tout l\'historique ; les filtres et le tri restent posés',
   servies: 'alerte(s) — la recherche porte sur les alertes actives servies ; les filtres et le tri restent posés',
 };
 const RECHERCHE_SANS_RESULTAT = {

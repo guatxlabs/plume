@@ -350,7 +350,10 @@ function openTemplatePalette() {
     const panel = document.createElement('div'); panel.className = 'soql-tpl-panel';
     const head = document.createElement('div'); head.className = 'soql-tpl-h';
     const h = document.createElement('span'); h.textContent = 'Modèles de requête (GXQL)';
-    const add = document.createElement('button'); add.type = 'button'; add.className = 'picon crud-btn soql-tpl-add'; add.textContent = '+ Enregistrer la requête courante';
+    // Pas de `crud-btn` ici : `/api/saved-queries` est self-service viewer+ (rbac.rs -> MinRole::Read, POST/PUT/
+    // DELETE compris, le handler posant `owner = appelant`). Un lecteur gere SES modeles — comme les boutons
+    // modifier/supprimer voisins, qui n'ont jamais porte la classe.
+    const add = document.createElement('button'); add.type = 'button'; add.className = 'picon soql-tpl-add'; add.textContent = '+ Enregistrer la requête courante';
     add.title = 'Enregistrer le texte de la barre dans mes modèles';
     head.append(h, add);
     const search = document.createElement('input'); search.type = 'text'; search.className = 'soql-tpl-search';

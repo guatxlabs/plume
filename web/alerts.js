@@ -11,6 +11,8 @@ import { refresh, updateRangeBtn } from './app.js';
 // P11.1-f : LE champ de recherche partagé des listes (`P11.12-a`) — normalisation, prédicat ET multi-mots,
 // filtre sur des lignes déjà en mémoire, câblage du champ, résumé. Aucun second mécanisme n'est écrit ici.
 import { champDeRecherche, filtrerParRecherche, resumeDeRecherche, texteCherchable } from './recherche_de_liste.js';
+// P11.4-h : LE clic qui respecte une sélection (mécanisme partagé).
+import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
 
 // clic sur une alerte -> ouvre l'Explore sur ce que la règle a COMPTÉ.
 // P11.1-a — LE LIEN EST CONSTRUIT PAR LE DÉMON (`search_link` sur /api/alerts : requête dont la règle a
@@ -130,7 +132,9 @@ function wireAlertRows(host, alerts, afterAck) {
     await afterAck();
   }));
   host.querySelectorAll('.banbtn').forEach(btn => btn.onclick = () => banIp(btn.dataset.ip));
-  host.querySelectorAll('.alertdrill').forEach(el => el.onclick = () => { el.classList.add('drilling'); setTimeout(() => el.classList.remove('drilling'), 1200); alertDrill(alerts[Number(el.dataset.idx)]); });
+  // P11.4-h — le TITRE d'une alerte est ce qu'on veut le plus souvent coller dans un ticket, et c'est aussi
+  // ce qui ouvrait la Recherche au relâchement du glisser : le clic se retire devant une sélection.
+  host.querySelectorAll('.alertdrill').forEach(el => clicQuiRespecteLaSelection(el, () => { el.classList.add('drilling'); setTimeout(() => el.classList.remove('drilling'), 1200); alertDrill(alerts[Number(el.dataset.idx)]); }));
   host.querySelectorAll('.casebtn').forEach(btn => btn.onclick = () => withBusy(btn, () => addToCase('alert', btn.dataset.t + (btn.dataset.d ? ' - ' + btn.dataset.d : ''), 'alert:' + btn.dataset.id)));
   host.querySelectorAll('.casechip').forEach(btn => btn.onclick = () => withBusy(btn, () => openCase(Number(btn.dataset.cid))));
 }

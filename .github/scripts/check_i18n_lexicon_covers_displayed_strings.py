@@ -127,13 +127,16 @@ MIN_CLES = 150
 # recherche_de_liste.js inscrit à 0 à sa création (`P11.12-a`) : le champ de recherche partagé ne porte AUCUN
 # mot de domaine — les deux phrases d'un résumé de recherche lui arrivent en nœuds de texte, écrits par le
 # panneau appelant et jugés dans SON module (0 chaîne affichée mesurée ici).
+# copie_et_selection.js inscrit à 0 à sa création (`P11.4-h`) : le geste de copie partagé porte SES propres
+# mots (le mot du bouton, son accusé, l'aveu d'un presse-papier refusé) et aucun mot de domaine — les
+# phrases de survol lui arrivent de l'appelant et sont jugées dans SON module (2 trous mesurés, comblés).
 PLAFOND_DE_TROUS = {
     "admin_users.js": 0, "ai.js": 0, "alerting.js": 0, "alerts.js": 0, "app.js": 0, "attack.js": 0,
     "audit.js": 0, "cases.js": 0, "connectors.js": 0, "core.js": 0, "dataaccess.js": 0, "dashboards.js": 0, "datamodels.js": 0, "destinations.js": 0,
     "detadv.js": 0, "detection_admin.js": 0, "fieldfilters.js": 0, "fleet.js": 0, "freshness.js": 0,
     "help.js": 0, "i18n_observer.js": 0, "idp.js": 0, "index.html": 0, "index_policies.js": 0, "keys.js": 0, "knowledge.js": 0, "login.js": 0, "lookups.js": 0,
     "multitenant.js": 0, "navigation.js": 0, "prefs.js": 0, "processors.js": 0, "producer_ui.js": 0, "retention.js": 0,
-    "recherche_de_liste.js": 0, "risk.js": 0, "runbooks.js": 0, "savedqueries.js": 0, "sigmaimport.js": 0, "soql_complete.js": 0,
+    "copie_et_selection.js": 0, "recherche_de_liste.js": 0, "risk.js": 0, "runbooks.js": 0, "savedqueries.js": 0, "sigmaimport.js": 0, "soql_complete.js": 0,
     "sources.js": 0, "state.js": 0, "suppressions.js": 0, "system.js": 0, "threatintel.js": 0, "viz.js": 0,
 }
 

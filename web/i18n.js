@@ -741,6 +741,14 @@ const I18N_EN = {
   "Le compteur de la cloche d'une source compte ses alertes non acquittées, cases comprises, sans fenêtre de temps — il ne dépend pas de la fraîcheur de la source.": "A source's bell counter counts its unacknowledged alerts, cases included, without a time window — it does not depend on the source's freshness.",
   "Liste des alertes (tri plat, filtres retirés)": "Alert list (flat sort, filters removed)",
   "Liste des alertes : tri, portée, filtres, actions": "Alert list: sort, scope, filters, actions", "Retirer le filtre source": "Remove the source filter",
+  // P11.4-h — LE GESTE DE COPIE, partagé : le mot du bouton, son accusé, sa phrase de survol par défaut,
+  // l'aveu d'échec, et les phrases que les appelants lui passent. « Copier » et « Copier l'extrait » sont
+  // déjà au lexique (ils y étaient pour les deux boutons écrits à la main que ce geste remplace).
+  "Copié": "Copied", "Copier cette valeur": "Copy this value",
+  "Copie refusée par le navigateur — sélectionnez la valeur et copiez-la à la main": "Copy refused by the browser — select the value and copy it by hand",
+  "Copier le jeton — il ne sera plus jamais affiché": "Copy the token — it will never be shown again",
+  "Copier la commande prête à coller": "Copy the ready-to-paste command",
+  "Copier le lien de partage de cet instantané": "Copy this snapshot's share link",
   // P11.1-f — LA RECHERCHE DES ALERTES : le champ, ce qu'il cherche, ce que la liste filtrée dit d'elle-même
   // et ce qu'elle couvre — la phrase de couverture est composée, donc ses DEUX variantes entrent entières.
   "Rechercher une alerte": "Search an alert", "Rechercher une alerte…": "Search an alert…",

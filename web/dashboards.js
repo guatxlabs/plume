@@ -7,6 +7,8 @@
 import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, transientGatewayMsg, makePager, socIsAdmin, applyRoleClass } from './core.js';
 import { S } from './state.js';
 import { currentFrom, currentTo, queryCount, runQuery, tableEl, vizElement } from './viz.js';
+// P11.4-h : LE geste de copie de la console (mécanisme partagé).
+import { boutonDeCopie } from './copie_et_selection.js';
 import { prefGet, prefSet } from './prefs.js';
 
 // --- dashboards (P3) ---
@@ -653,8 +655,9 @@ async function captureSnapshot(d) {
   meta.textContent = 'Lecture seule, figé maintenant (données déjà masquées à votre rôle). Lien partageable :';
   const linkRow = document.createElement('div'); linkRow.className = 'rf-row';
   const inp = document.createElement('input'); inp.value = url; inp.readOnly = true; inp.style.flex = '1';
-  const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'btn'; copy.textContent = 'Copier'; // P11.4-b : classe partagée
-  copy.onclick = () => { try { navigator.clipboard.writeText(url); toast('Lien copié', 'ok'); } catch (e) { inp.select(); } };
+  // P11.4-h : LE geste de copie partagé remplace celui qui était écrit ici — même retour d'écran partout,
+  // et l'échec du presse-papier se DIT au lieu de laisser croire que la valeur y est.
+  const copy = boutonDeCopie(url, { titre: 'Copier le lien de partage de cet instantané' });
   linkRow.append(inp, copy);
   const prev = document.createElement('div'); prev.className = 'snapprev';
   const act = document.createElement('div'); act.className = 'modal-act';

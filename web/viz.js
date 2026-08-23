@@ -2,6 +2,8 @@
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
 import { $, CSSV, LOC, SEV, api, apiSend, colComparator, confirmModal, esc, flashStopped, fmtTs, ic, makePager, muted, sev, socIsAdmin, toast, tzOpts } from './core.js';
 import { S } from './state.js';
+// P11.4-h : LE clic qui respecte une sélection (mécanisme partagé, `copie_et_selection.js`).
+import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
 import { currentViewName, loadActions, loadDashboard, refresh, updateQRangeBtn, updateRangeBtn } from './app.js';
 import { recordRecentQuery } from './savedqueries.js';   // historique récent client-only (localStorage) : enregistré à chaque exécution
 
@@ -710,7 +712,12 @@ function tableEl(cols, rows, query, drill, opts) {
       order.forEach(oi => { if (hidden.has(oi)) return; const td = document.createElement('td'); td.textContent = fmtCell(row[oi], oi); tr.appendChild(td); });
       tr.style.cursor = 'pointer';
       tr.title = drill ? 'Cliquer pour exécuter le drill du panneau' : (DIMENSIONLESS.has(cols[0]) ? 'Cliquer pour voir tous les détails' : `Cliquer pour voir les événements ${cols[0]}=${row[0]}`);
-      tr.onclick = () => {
+      // P11.4-h — LA LIGNE ENTIÈRE EST CLIQUABLE, ET C'EST ELLE QUI AVALAIT LA SÉLECTION. Un
+      // glisser-sélectionner dans une cellule se termine par un `mouseup` dans la ligne : le clic partait,
+      // le drilldown remplaçait la vue, et le fragment sélectionné disparaissait avec elle. Le geste
+      // partagé rend le clic à sa place — il se retire quand une sélection vient d'être faite ICI, et
+      // seulement ici (une sélection ailleurs dans la page ne gèle rien).
+      clicQuiRespecteLaSelection(tr, () => {
         if (drill) { const c = { value: row[0] }; if (DIMENSIONLESS.has(cols[0])) c.from = Number(row[0]); return customDrill(drill, c); }
         if (!DIMENSIONLESS.has(cols[0])) return drilldown(cols[0], row[0]);
         const nx = tr.nextSibling;
@@ -723,7 +730,7 @@ function tableEl(cols, rows, query, drill, opts) {
         td.appendChild(dl);
         if (nHidden) { const note = document.createElement('div'); note.className = 'muted'; note.style.cssText = 'font-size:11px;margin-top:6px'; note.textContent = '(' + nHidden + ' champ(s) vide(s) masqué(s))'; td.appendChild(note); }
         dtr.appendChild(td); tr.after(dtr);
-      };
+      });
       return tr;
     }));
     if (colsBtn) colsBtn.textContent = `Colonnes ${vcount()}/${order.length} ▾`;

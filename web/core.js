@@ -74,6 +74,9 @@ const ICONS = {
   // parent est fill=none) -> l'étoile pleine se voit même sans classe CSS dédiée.
   star: '<path d="M12 3l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 18.8 6.2 21.4l1.1-6.5L2.6 9.8l6.5-.9z"/>',
   starfill: '<path fill="currentColor" stroke="none" d="M12 3l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 18.8 6.2 21.4l1.1-6.5L2.6 9.8l6.5-.9z"/>',
+  // P11.4-h : le geste de copie de la console (deux feuilles superposées). Une icône et une seule :
+  // c'est ce qui rend le geste reconnaissable partout où il est offert.
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/>',
 };
 const ic = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ''}</svg>`;
 // STOP unifié : carré SVG + feedback DISCRET via la barre .tableprog (flash bref puis disparition, aucun texte/popup).

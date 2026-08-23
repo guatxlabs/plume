@@ -5,6 +5,8 @@
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
 import { $, esc, fmtTs, ic, muted, api, apiSend, confirmWithConsequence, disclosure, toast, pagedList, closeModals } from './core.js';
 import { S } from './state.js';
+// P11.4-h : LE geste de copie de la console (mécanisme partagé).
+import { boutonDeCopie } from './copie_et_selection.js';
 import { route } from './app.js';
 
 // --- Comptes & accès (réservé admin ; vit sous Réglages : la VISIBILITE est pilotee par le routeur) ---
@@ -199,9 +201,10 @@ function showTokenOnce(res) {
   const cbrow = document.createElement('div'); cbrow.style.cssText = 'display:flex;gap:6px;align-items:stretch;margin:8px 0';
   const inp = document.createElement('input'); inp.readOnly = true; inp.value = tok; inp.className = 'mono'; inp.style.cssText = 'flex:1;font-size:12px'; inp.setAttribute('aria-label', 'Jeton (secret) — à copier maintenant');
   inp.onclick = () => inp.select();
-  const cp = document.createElement('button'); cp.type = 'button'; cp.className = 'btn btn-sm'; cp.textContent = 'Copier'; // P11.4-b
-  const doCopy = async (btn, text) => { try { await navigator.clipboard.writeText(text); } catch { inp.select(); try { document.execCommand('copy'); } catch (_) {} } btn.textContent = 'Copié ✓'; setTimeout(() => { btn.textContent = btn === cp ? 'Copier' : 'Copier l\'extrait'; }, 1600); };
-  cp.onclick = () => doCopy(cp, tok);
+  // P11.4-h : LE geste de copie partagé remplace celui qui était écrit ici. Un secret montré une seule
+  // fois est exactement la valeur pour laquelle un échec de presse-papier doit se DIRE : le geste partagé
+  // le dit, l'écriture locale se contentait de reprendre son mot.
+  const cp = boutonDeCopie(tok, { titre: 'Copier le jeton — il ne sera plus jamais affiché' });
   cbrow.append(inp, cp); box.appendChild(cbrow);
   // extrait prêt à coller ----------------------------------------------------------------------------------
   if (res.kind === 'hec') {
@@ -211,8 +214,8 @@ function showTokenOnce(res) {
     const pre = document.createElement('pre'); pre.className = 'mono'; pre.style.cssText = 'white-space:pre-wrap;word-break:break-all;background:var(--card2);border:1px solid var(--bd);padding:8px;border-radius:6px;font-size:11px;margin:0';
     pre.textContent = snippet;
     box.appendChild(pre);
-    const cp2 = document.createElement('button'); cp2.type = 'button'; cp2.className = 'btn btn-sm'; cp2.textContent = 'Copier l\'extrait'; cp2.style.marginTop = '6px'; // P11.4-b
-    cp2.onclick = () => doCopy(cp2, snippet);
+    const cp2 = boutonDeCopie(snippet, { libelle: 'Copier l\'extrait', titre: 'Copier la commande prête à coller' });
+    cp2.style.marginTop = '6px';
     box.appendChild(cp2);
   } else {
     const hint = document.createElement('p'); hint.className = 'muted'; hint.style.fontSize = '12px';

@@ -1828,9 +1828,104 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 }
 
 
+// ---------------------------------------------------------------------------------------------
+// 28. LA SÉLECTION REND CE QUI EST SÉLECTIONNÉ, ET UNE VALEUR TRANSPORTÉE A UN GESTE (`P11.4-h`).
+//     (a) LE CLIC SE RETIRE DEVANT UNE SÉLECTION — mais SEULEMENT devant une vraie : un clic simple
+//         (sélection vide), une sélection d'espaces, ou une sélection faite AILLEURS dans la page
+//         laissent le geste passer. Sans ces trois-là, le remède remplacerait un défaut par une
+//         interface morte, ce qui serait pire.
+//     (b) LE GESTE DE COPIE EST UN, ET IL AVOUE SON ÉCHEC. Un presse-papier refusé (contexte non
+//         sécurisé, permission) ne doit pas laisser le bouton reprendre son mot comme si la valeur y
+//         était : c'est ainsi qu'on recopie à la main une valeur qu'on croit copiée.
+//     (c) IL N'Y A PLUS QU'UN SEUL ÉCRIVAIN DU PRESSE-PAPIER dans `web/` — la propriété est DÉRIVÉE de
+//         l'arbre, pas énumérée : tout module qui rappellerait `navigator.clipboard` en direct rougirait.
+//     (d) LES DEUX GESTIONNAIRES MESURÉS passent par le mécanisme partagé (la ligne d'un tableau de
+//         résultats, le titre d'une alerte) : la propriété est lue dans le SOURCE, parce que c'est le
+//         CÂBLAGE qui était le défaut.
+// ---------------------------------------------------------------------------------------------
+{
+  const cs = await import(pathToFileURL(path.join(WEB, "copie_et_selection.js")).href);
+  // (a) le clic, sous chaque forme de sélection. Le shim n'a pas de `getSelection` : on l'installe le
+  //     temps du témoin, ce qui est aussi la seule façon d'exercer les trois précautions.
+  const hote = new Element("div"), dedans = new Element("span"), ailleurs = new Element("span");
+  hote.appendChild(dedans);
+  const selectionDeTest = { valeur: "", collapsed: true, ancre: null };
+  const selOrigine = globalThis.window.getSelection;
+  globalThis.window.getSelection = () => ({
+    isCollapsed: selectionDeTest.collapsed,
+    anchorNode: selectionDeTest.ancre,
+    toString: () => selectionDeTest.valeur,
+  });
+  try {
+    let passages = 0;
+    cs.clicQuiRespecteLaSelection(hote, () => { passages += 1; });
+    const cliquer = () => hote.onclick({});
+    selectionDeTest.collapsed = true; selectionDeTest.valeur = ""; selectionDeTest.ancre = dedans;
+    cliquer();
+    exiger(passages === 1, "(28a) un clic SIMPLE (sélection vide) est avalé : le remède a tué le geste au lieu de le rendre");
+    selectionDeTest.collapsed = false; selectionDeTest.valeur = "   "; selectionDeTest.ancre = dedans;
+    cliquer();
+    exiger(passages === 2, "(28a) une sélection réduite à des espaces suffit à annuler le geste");
+    selectionDeTest.collapsed = false; selectionDeTest.valeur = "203.0.113.7"; selectionDeTest.ancre = ailleurs;
+    cliquer();
+    exiger(passages === 3, "(28a) une sélection faite AILLEURS dans la page gèle ce clic-là");
+    selectionDeTest.collapsed = false; selectionDeTest.valeur = "203.0.113.7"; selectionDeTest.ancre = dedans;
+    cliquer();
+    exiger(passages === 3, "(28a) une sélection faite DANS l'élément ne retient pas le clic : le geste emporte encore la sélection avec la vue");
+    exiger(cs.selectionEnCours(hote) === true && cs.selectionEnCours(ailleurs) === false, "(28a) le prédicat de sélection ne distingue pas l'hôte de ce qui lui est étranger");
+  } finally {
+    globalThis.window.getSelection = selOrigine;
+  }
+  // (b) le geste de copie : accusé au succès, aveu à l'échec, valeur lue AU CLIC (une valeur recomposée
+  //     n'a pas à être figée à la construction).
+  {
+    const clipOrigine = globalThis.navigator.clipboard, execOrigine = document.execCommand;
+    let ecrit = null;
+    globalThis.navigator.clipboard = { writeText: async (v) => { ecrit = v; } };
+    document.execCommand = () => false;
+    try {
+      let n = 0;
+      const b = cs.boutonDeCopie(() => "valeur-" + (++n), { titre: "Copier ceci" });
+      exiger(b.className === "copybtn", `(28b) le bouton de copie ne porte pas la classe partagée : « ${b.className} »`);
+      exiger(/Copier/.test(b.textContent), `(28b) le bouton de copie ne dit pas ce qu'il fait : « ${b.textContent} »`);
+      exiger(b.getAttribute("aria-label") === "Copier ceci", `(28b) le bouton de copie n'est pas nommé pour une aide technique : « ${b.getAttribute("aria-label")} »`);
+      await b.onclick({});
+      exiger(ecrit === "valeur-1", `(28b) la valeur n'est pas lue AU CLIC : « ${ecrit} »`);
+      exiger(/Copié/.test(b.textContent), `(28b) le geste ne rend aucun accusé : « ${b.textContent} »`);
+      // presse-papier REFUSÉ (contexte non sécurisé) et repli indisponible : l'échec se dit.
+      globalThis.navigator.clipboard = { writeText: async () => { throw new Error("refusé"); } };
+      const b2 = cs.boutonDeCopie("secret", {});
+      await b2.onclick({});
+      exiger(!/Copié/.test(b2.textContent), `(28b) un presse-papier REFUSÉ laisse le bouton dire « Copié » : la valeur serait recopiée à la main en croyant l'avoir — « ${b2.textContent} »`);
+      // une valeur transportée : le texte reste sélectionnable au fragment, et son geste l'accompagne.
+      const frag = cs.valeurTransportee("docs/DR-plume-restore.md");
+      const code = frag.children.find((c) => c.tagName === "CODE");
+      const bouton = frag.children.find((c) => c.tagName === "BUTTON");
+      exiger(!!code && code.textContent === "docs/DR-plume-restore.md", `(28b) la valeur transportée ne rend pas son texte : ${JSON.stringify(frag.children.map((c) => c.tagName))}`);
+      exiger(!!code && code.classList.contains("copyval"), "(28b) la valeur transportée ne prend pas le chrome partagé");
+      exiger(!!bouton && bouton.classList.contains("copybtn"), "(28b) une valeur transportée n'offre AUCUN geste de copie");
+    } finally {
+      globalThis.navigator.clipboard = clipOrigine; document.execCommand = execOrigine;
+    }
+  }
+  // (c)(d) l'arbre : un seul écrivain du presse-papier, et les deux gestionnaires mesurés y passent.
+  {
+    const fichiers = readdirSync(WEB).filter((f) => f.endsWith(".js"));
+    const ecrivains = fichiers.filter((f) => /navigator\.clipboard/.test(readFileSync(path.join(WEB, f), "utf8")));
+    exiger(ecrivains.length === 1 && ecrivains[0] === "copie_et_selection.js", `(28c) le presse-papier est écrit depuis ${ecrivains.length} module(s) au lieu du seul geste partagé : ${ecrivains.join(", ")}`);
+    const viz = readFileSync(path.join(WEB, "viz.js"), "utf8"), alertesSrc = readFileSync(path.join(WEB, "alerts.js"), "utf8");
+    exiger(/clicQuiRespecteLaSelection\(tr,/.test(viz), "(28d) la ligne du tableau de résultats ne passe plus par le clic qui respecte la sélection");
+    exiger(!/\btr\.onclick\s*=/.test(viz), "(28d) une ligne de tableau pose encore un `onclick` en direct : elle avalerait de nouveau la sélection");
+    exiger(/clicQuiRespecteLaSelection\(el,/.test(alertesSrc), "(28d) le titre d'une alerte ne passe plus par le clic qui respecte la sélection");
+    exiger(!/'\.alertdrill'\)\.forEach\(el => el\.onclick =/.test(alertesSrc), "(28d) le titre d'une alerte pose encore un `onclick` en direct");
+  }
+  console.log(`[copie] le clic se retire devant une sélection faite dans l'élément, et devant elle seule (clic simple, espaces, sélection étrangère : le geste passe) ; le geste de copie est unique, lit sa valeur au clic, accuse le succès et AVOUE un presse-papier refusé ; un seul module de web/ écrit dans le presse-papier, et les deux gestionnaires mesurés y passent`);
+}
+
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources NOMME le déclarant de chaque source — ce dépôt, le démon, le produit, un connecteur, ou l'exploitant avec sa date — dit « personne ne l'a déclarée » là où c'est le cas, et n'offre de déclarer une cadence que là où aucune sonde n'en déclare ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et RÉPARTIT les alertes actives entre celles qu'une cloche porte, celles qui ne se rapportent à aucun flux (et qui pivotent vers elles-mêmes) et celles dont l'imputation n'a jamais été enregistrée, sans rien afficher quand aucune alerte n'est active ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus ; la ligne d'une règle rend DÉJÀ tester, éditer, supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur ; et LA recherche de liste, partagée, resserre sur plusieurs mots sans se soucier de la casse ni des accents, cherche une règle par son nom, sa requête et sa technique, rend une liste plate ordonnée par le tri courant qui DIT combien de lignes sur combien elle montre, nomme ce qu'elle a cherché quand elle ne trouve rien, et se vide au retour d'un enregistrement pour que la règle écrite se voie ; enfin une technique ATT&CK est une PORTE — ses règles, ses détections par le pivot qui existait déjà (le module ne fabrique aucune requête) et le geste qui la couvrirait, un angle mort qui se dit et met la création en avant, une sortie impraticable rendue inerte avec son motif, et un lecteur à qui le rôle manquant est nommé ; un filtre choisi de la barre des alertes ne se marque plus par la graisse de son mot — que le gras réservait ailleurs à l'alarme — mais par un liseré que rien d'autre n'emploie, et il DIT son état ; l'espace qui porte les alertes et les cas les annonce tous les deux — aucun espace à plusieurs onglets ne porte plus le nom d'un seul — et son filtre se nomme par ce qu'il MONTRE au lieu d'une relation que l'exploitant ne savait pas lire ; une alerte se cherche par son titre, le jeton de sa regle et sa source imputee, par LE meme champ partage : la recherche se compose avec la portee, le filtre d'affichage et les facettes sans jamais partir au demon, met le groupement de cote le temps de rendre ses resultats, DIT ce qu'elle couvre — les alertes servies, ou la seule page affichee — et retire de la barre l'acquittement qui la depasserait.`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources NOMME le déclarant de chaque source — ce dépôt, le démon, le produit, un connecteur, ou l'exploitant avec sa date — dit « personne ne l'a déclarée » là où c'est le cas, et n'offre de déclarer une cadence que là où aucune sonde n'en déclare ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et RÉPARTIT les alertes actives entre celles qu'une cloche porte, celles qui ne se rapportent à aucun flux (et qui pivotent vers elles-mêmes) et celles dont l'imputation n'a jamais été enregistrée, sans rien afficher quand aucune alerte n'est active ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus ; la ligne d'une règle rend DÉJÀ tester, éditer, supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur ; et LA recherche de liste, partagée, resserre sur plusieurs mots sans se soucier de la casse ni des accents, cherche une règle par son nom, sa requête et sa technique, rend une liste plate ordonnée par le tri courant qui DIT combien de lignes sur combien elle montre, nomme ce qu'elle a cherché quand elle ne trouve rien, et se vide au retour d'un enregistrement pour que la règle écrite se voie ; enfin une technique ATT&CK est une PORTE — ses règles, ses détections par le pivot qui existait déjà (le module ne fabrique aucune requête) et le geste qui la couvrirait, un angle mort qui se dit et met la création en avant, une sortie impraticable rendue inerte avec son motif, et un lecteur à qui le rôle manquant est nommé ; un filtre choisi de la barre des alertes ne se marque plus par la graisse de son mot — que le gras réservait ailleurs à l'alarme — mais par un liseré que rien d'autre n'emploie, et il DIT son état ; l'espace qui porte les alertes et les cas les annonce tous les deux — aucun espace à plusieurs onglets ne porte plus le nom d'un seul — et son filtre se nomme par ce qu'il MONTRE au lieu d'une relation que l'exploitant ne savait pas lire ; une alerte se cherche par son titre, le jeton de sa regle et sa source imputee, par LE meme champ partage : la recherche se compose avec la portee, le filtre d'affichage et les facettes sans jamais partir au demon, met le groupement de cote le temps de rendre ses resultats, DIT ce qu'elle couvre — les alertes servies, ou la seule page affichee — et retire de la barre l'acquittement qui la depasserait ; la selection rend ce qui est selectionne — le clic d'une ligne de resultats et celui d'un titre d'alerte se retirent devant une selection faite chez eux, et devant elle seule — pendant qu'UN unique geste de copie, seul ecrivain du presse-papier dans web/, accuse le succes et avoue un refus au lieu de le taire.`);

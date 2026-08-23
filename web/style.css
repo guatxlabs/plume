@@ -751,6 +751,14 @@ button.btn-busy::after{content:"";position:absolute;top:50%;left:50%;width:12px;
    filtrée doit à son lecteur : combien de lignes sur combien, ou pourquoi il n'y en a aucune. */
 #rule-search,#alert-search{max-width:230px}
 .recherche-resume{margin:2px 0 9px;font-size:12px}
+/* P11.4-h — LE GESTE DE COPIE ET LA VALEUR QU'IL TRANSPORTE. `.copybtn` est LA classe du bouton (une seule
+   forme partout où la console offre de copier : jeton, lien, chemin de document) ; `.copyval` est la valeur
+   elle-même — monospace, coupable en fin de ligne, et SÉLECTIONNABLE au fragment (aucun `user-select:all`
+   ici : la boîte de secret le fait délibérément pour un secret d'un seul tenant, une valeur transportée non). */
+.copybtn{display:inline-flex;align-items:center;gap:5px;background:transparent;border:1px solid var(--bd);border-radius:var(--pill);color:var(--mut);cursor:pointer;padding:2px 8px;font-size:11px;white-space:nowrap}
+.copybtn:hover{border-color:var(--acc);color:var(--acc)}
+.copybtn .ic{width:13px;height:13px}
+.copyval{font-family:var(--font-mono);font-size:11px;color:var(--fg);background:var(--card2);border:1px solid var(--bd);border-radius:5px;padding:1px 6px;word-break:break-all}
 @media(max-width:760px){#rule-search,#alert-search{max-width:150px}}
 
 /* --- Lot 1 : toggle auto-refresh (état on/off) --- */

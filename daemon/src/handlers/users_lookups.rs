@@ -16,7 +16,15 @@ pub(crate) async fn users_list(State(st): State<AppState>, Extension(au): Extens
             }))
         })
         .unwrap();
-    Json(json!({ "users": rows.flatten().collect::<Vec<_>>(), "me": au.name }))
+    let locaux: Vec<Value> = rows.flatten().collect();
+    // P11.5-c — QUI A ACCÈS. `user` ne porte QUE les comptes que le produit crée : un compte d'annuaire
+    // externe (SSO d'en-têtes) accède sans jamais y avoir de ligne. `acces` est l'inventaire de CEUX QUI
+    // ACCÈDENT, quelle que soit leur provenance, consigné au choke-point d'authentification. Rendu À CÔTÉ
+    // de `users` (jamais fondu dedans) : `users` reste la liste GÉRABLE ici (créer/éditer/supprimer),
+    // `acces` est un CONSTAT, y compris pour des comptes que cette console ne peut pas administrer.
+    // Aucun secret n'y figure — cf. `acces_observe`, la table n'en porte aucun.
+    let acces = crate::acces_observe::inventaire_des_acces(&conn);
+    Json(json!({ "users": locaux, "me": au.name, "acces": acces }))
 }
 
 pub(crate) async fn user_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {

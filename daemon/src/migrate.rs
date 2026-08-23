@@ -90,7 +90,7 @@ impl Drop for MigrationLogSilencer {
 /// rien (toutes ses gardes `v < N` sont fausses) et OPÈRE À L'AVEUGLE sur un schéma qu'il ne connaît pas
 /// -> risque de corruption (survivable AUJOURD'HUI car migrations additives, mais non gardé). On REFUSE
 /// d'ouvrir : arrêt PROPRE (exit non-zéro), JAMAIS un panic, JAMAIS un « proceed » silencieux.
-pub(crate) const CODE_SCHEMA_MAX: i64 = 116;
+pub(crate) const CODE_SCHEMA_MAX: i64 = 117;
 
 /// Lit `meta.schema_version` (défaut 1 si table/lignes absentes ou illisibles) — MÊME lecture que `migrate()`.
 /// Une base NEUVE (pas encore de table meta) renvoie 1 -> jamais refusée par la garde.
@@ -815,6 +815,7 @@ fn migrate_chain(conn: &Connection) -> bool {
     if v < 114 && !migrate_step(conn, 114, migrate_v114) { return false; }
     if v < 115 && !migrate_step(conn, 115, migrate_v115) { return false; }
     if v < 116 && !migrate_step(conn, 116, migrate_v116) { return false; }
+    if v < 117 && !migrate_step(conn, 117, migrate_v117) { return false; }
     true
 }
 
@@ -1206,6 +1207,43 @@ fn migrate_v116(conn: &MigTx) {
     }
     let _ = conn.execute("UPDATE meta SET value='116' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v116 (P3.9-a : rule.abandons_consecutifs — le compte persistant des évaluations consécutives abandonnées d'une règle, remis à zéro à la première réussie ; au seuil dérivé de l'intervalle, une alerte de cécité)");
+}
+
+/// v117 (`P11.5-c` — L'INVENTAIRE DES COMPTES COUVRE CEUX QUI ACCÈDENT). TABLE `acces_observe` : une ligne
+/// par (nom, provenance) réellement vu par le point de passage unique de l'authentification, avec le rôle
+/// EFFECTIF du dernier accès, l'origine de ce rôle, la méthode, la première et la dernière vue.
+///
+/// POURQUOI PERSISTANT : la question à laquelle la console doit répondre est « qui a accès », et elle se
+/// pose APRÈS coup — après un départ, après un incident, à un audit. Un registre en mémoire repartirait
+/// vide à chaque redémarrage et ne dirait plus rien de la veille. MESURÉ le 2026-08-23 sur le routeur réel :
+/// un compte SSO administrateur (`x-authentik-username` + groupe admin) reçoit 200 sur `/api/me` avec le
+/// rôle `admin`, et `/api/users` ne le liste PAS — cette liste est `SELECT … FROM user`, la table des
+/// comptes que le produit crée, où un compte d'annuaire externe n'a jamais de ligne.
+///
+/// AUCUN SECRET : ni hash, ni jeton, ni la valeur brute des groupes. La table est PLAFONNÉE
+/// (`ACCES_OBSERVE_PLAFOND`) et son écriture DÉBOUNCÉE (`ACCES_OBSERVE_DEBOUNCE_S`).
+///
+/// ADDITIVE et CONVERGENTE : `CREATE TABLE IF NOT EXISTS` idempotent, MIROIR dans `db/schema.sql` (base
+/// neuve) -> les deux formes convergent (`schema_gaps`). VIDE -> la console rend l'inventaire local seul,
+/// exactement comme avant.
+///
+/// ROLLBACK — bumpe le schéma à 117 : un binaire max=116 REFUSE d'ouvrir une base v117 (`db_open`,
+/// `v > CODE_SCHEMA_MAX` -> Err). Rollback = RESTAURER le SNAPSHOT pré-migrate. Forward-only, idempotent.
+fn migrate_v117(conn: &MigTx) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS acces_observe(\n\
+           nom TEXT NOT NULL,\n\
+           provenance TEXT NOT NULL,\n\
+           role_effectif TEXT NOT NULL,\n\
+           origine_du_role TEXT NOT NULL,\n\
+           methode TEXT NOT NULL,\n\
+           premiere_vue INTEGER NOT NULL,\n\
+           derniere_vue INTEGER NOT NULL,\n\
+           PRIMARY KEY(nom, provenance))",
+        [],
+    );
+    let _ = conn.execute("UPDATE meta SET value='117' WHERE key='schema_version'", []);
+    mig_log!("[migration] schéma -> v117 (P11.5-c : acces_observe — l'inventaire des comptes qui ACCÈDENT, quelle que soit leur provenance : d'où vient le compte, ce qu'il peut, d'où ce rôle est dérivé, quand il a été vu ; aucun secret, table plafonnée, écriture débouncée)");
 }
 
 /// v108 (PERF — RECHERCHE RAW HAUT-VOLUME source=X sur fenêtre longue). MARQUEUR PUR (aucune DDL lourde

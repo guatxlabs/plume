@@ -1242,6 +1242,13 @@ pub(crate) async fn auth_guard(State(st): State<AppState>, mut req: Request, nex
     } else {
         None
     };
+    // P11.5-c — INVENTAIRE DES COMPTES QUI ACCÈDENT. Consigné ICI, au choke-point unique, avec l'identité
+    // RÉSOLUE (nom + rôle EFFECTIF per-tenant + méthode) : c'est le seul endroit qui voit TOUTES les
+    // provenances. Un compte d'annuaire externe (SSO d'en-têtes) n'a aucune ligne dans la table des comptes
+    // -> il n'apparaissait dans AUCUNE liste alors qu'il administrait. Écriture DÉBOUNCÉE par identité et
+    // table PLAFONNÉE (cf. `acces_observe`) : le verrou d'écriture n'est pas pris par requête. Best-effort —
+    // aucune requête n'échoue parce que l'inventaire n'a pas pu être écrit.
+    crate::acces_observe::consigner_l_acces(&st, &tenant, &name, &role, auth_method);
     req.extensions_mut().insert(AuthUser { name, tenant, role, is_superadmin, method: auth_method.to_string(), csrf: csrf_value, env });
     next.run(req).await
 }

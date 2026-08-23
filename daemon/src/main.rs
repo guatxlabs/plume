@@ -210,6 +210,7 @@ mod session;
 pub(crate) use session::*;
 mod rbac;
 pub(crate) use rbac::*;
+mod acces_observe; // P11.5-c : L'INVENTAIRE DES COMPTES QUI ACCÈDENT — un compte d'annuaire externe n'a aucune ligne dans la table des comptes et n'apparaissait donc nulle part, alors qu'il administrait ; ici la provenance est DÉRIVÉE (méthode + existence locale), le rôle effectif et la date de vue sont consignés, aucun secret n'entre, l'écriture est débouncée et la table plafonnée
 mod scim; // #59 SCIM 2.0 : provisioning/deprovisioning IdP (bearer scim_token, control-plane), mode 1 only
 pub(crate) use scim::*;
 mod idp;

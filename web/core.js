@@ -508,8 +508,13 @@ function formMsg(sel, msg, bad) { const el = $(sel); if (el) { el.textContent = 
 // SANS fermer le formulaire. Retour: true si 2xx. Fin wrapper d'UX autour d'apiSend (plus de fetch brut).
 async function contentSubmit(path, body, resSel) {
   formMsg(resSel, '…', false);
-  try { await apiSend(path, 'POST', body); }
+  let j;
+  try { j = await apiSend(path, 'POST', body); }
   catch (e) { const m = (e && e.message) || 'échec'; formMsg(resSel, m, true); toast(m, 'bad'); return false; }
+  // P11.5-c : une modification ACCEPTÉE peut quand même ne pas SURVIVRE — un contenu d'overlay config.d est
+  // réimposé par son fichier au prochain démarrage. Le serveur le DIT (`avertissement`) ; le taire ici
+  // rendrait un succès qui se défait tout seul, ce qui se lit « l'administrateur ne peut pas éditer ».
+  if (j && j.avertissement) toast(j.avertissement, 'info');
   formMsg(resSel, '', false); return true;
 }
 // DELETE managed-aware : 200 {deleted:true} -> supprimé ; 200 {deleted:false,disabled:true,message}

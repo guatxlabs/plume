@@ -157,6 +157,14 @@ function openRuleForm(r) {
   refreshComplianceHint();
   // P11.1-e : la destination est dite AVANT d'enregistrer (le span de résultat porte le lien).
   const res = $('#rf-result'); if (res) { res.className = 'muted'; res.replaceChildren(destinationNote(detectionDestination(r && r.risk_score), '', 'dès la première évaluation (Intervalle)')); }
+  // P11.5-c : DIT AVANT L'ÉDITION, pas après. Une règle d'overlay config.d se modifie ici (le serveur
+  // accepte, 200) mais le fichier versionné réimpose son contenu au prochain démarrage — un succès qui se
+  // défait tout seul, que rien n'annonçait. Le serveur le redit dans sa réponse (`avertissement`).
+  if (res && r && Number(r.managed) === 1) {
+    const av = document.createElement('div');
+    av.textContent = "Cette règle vient d'un overlay de configuration (config.d) : le fichier réimpose son contenu au prochain démarrage. Seule la bascule actif/inactif survit ; pour un changement durable, modifiez le fichier côté dépôt.";
+    res.appendChild(av);
+  }
   $(RF.name).focus();
 }
 function closeRuleForm() {

@@ -303,3 +303,24 @@ CREATE TABLE IF NOT EXISTS case_step(
 CREATE INDEX IF NOT EXISTS idx_runbook_match ON runbook(match_kind, match_key);
 CREATE INDEX IF NOT EXISTS idx_runbook_step_rb ON runbook_step(runbook_id, ordinal);
 CREATE INDEX IF NOT EXISTS idx_case_step_inc ON case_step(incident_id, ordinal);
+
+-- INVENTAIRE DES COMPTES QUI ACCÈDENT (v117, `P11.5-c`). `acces_observe` = la trace, par le point de
+-- passage unique de l'authentification, de CHAQUE identité qui a réellement atteint la console — quelle
+-- que soit sa provenance. RAISON D'ÊTRE : la liste des comptes était `SELECT … FROM user`, donc la table
+-- des comptes que le produit CRÉE ; un compte venu d'un annuaire externe (SSO d'en-têtes) n'y a jamais de
+-- ligne et n'apparaissait donc nulle part, alors qu'il administrait. Personne ne pouvait répondre à
+-- « qui a accès ». Chaque ligne dit d'OÙ vient le compte (`provenance`), CE QU'IL PEUT au dernier accès
+-- (`role_effectif`) et d'où ce rôle est dérivé (`origine_du_role`), et QUAND il a été vu
+-- (`premiere_vue`/`derniere_vue`). AUCUN secret n'y entre : ni hash, ni jeton, ni groupe brut.
+-- Écriture DÉBOUNCÉE (une par identité et par fenêtre) et table PLAFONNÉE (la plus ancienne vue cède) ->
+-- coût borné sur le verrou d'écriture et en octets. VIDE -> la console rend l'inventaire local seul.
+CREATE TABLE IF NOT EXISTS acces_observe(
+  nom TEXT NOT NULL,
+  provenance TEXT NOT NULL,
+  role_effectif TEXT NOT NULL,
+  origine_du_role TEXT NOT NULL,
+  methode TEXT NOT NULL,
+  premiere_vue INTEGER NOT NULL,
+  derniere_vue INTEGER NOT NULL,
+  PRIMARY KEY(nom, provenance)
+);

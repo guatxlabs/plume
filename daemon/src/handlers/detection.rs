@@ -543,6 +543,38 @@ pub(crate) fn delete_managed_row_tx(conn: &Connection, table: &str, audit_prefix
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); Err((StatusCode::INTERNAL_SERVER_ERROR, format!("échec transaction audit (aucune modification): {e}"))) }
     }
 }
+/// P11.5-c — CE QU'UNE MODIFICATION D'OVERLAY NE DIT PAS D'ELLE-MÊME.
+///
+/// LE DÉFAUT MESURÉ (2026-08-23, routeur réel). Un administrateur modifie une règle `managed=1` (overlay
+/// `config.d`) : le serveur répond `200 {"ok":true}`, la console affiche un succès… et au prochain
+/// démarrage `load_overlay_rules` réécrit la ligne depuis le fichier versionné (`UPDATE rule SET query=…,
+/// threshold=…, managed=1 WHERE name=…`). La modification disparaît sans qu'un mot n'ait été dit. C'est
+/// le pire des deux mondes : ni un refus nommé (comme la SUPPRESSION, qui rend 409 avec sa raison), ni un
+/// changement durable. Vu de l'exploitant, « l'administrateur ne peut pas éditer les règles ».
+///
+/// CE QUE CETTE FONCTION REND. La phrase à joindre à la réponse d'une modification acceptée, quand le
+/// contenu est un overlay — et RIEN dans tous les autres cas (`managed=0` builtin adopté en ad-hoc,
+/// `managed=2` ad-hoc : la modification est durable, il n'y a rien à dire). Pure, donc testable seule.
+/// `objet` est un littéral serveur ACCORDÉ (`cette règle` / `ce parseur` / `ce playbook`), jamais une
+/// entrée utilisateur.
+pub(crate) fn avertissement_overlay(objet: &str, managed: i64) -> Option<String> {
+    (managed == 1).then(|| format!(
+        "{objet} vient d'un overlay de configuration (config.d) : au prochain démarrage, le fichier \
+         versionné réimpose son contenu et cette modification sera perdue. Seule la bascule actif/inactif \
+         survit (elle est enregistrée à part). Pour un changement durable, modifiez le fichier côté dépôt."
+    ))
+}
+
+/// La réponse d'une modification de contenu de détection ACCEPTÉE : `{"ok":true}` comme avant, plus
+/// `managed` et — pour un overlay — l'avertissement ci-dessus. Un client qui ignore les champs neufs voit
+/// exactement ce qu'il voyait ; un client qui les lit peut enfin le DIRE.
+pub(crate) fn reponse_modification_acceptee(objet: &str, managed: i64) -> Value {
+    match avertissement_overlay(objet, managed) {
+        Some(a) => json!({ "ok": true, "managed": managed, "avertissement": a }),
+        None => json!({ "ok": true, "managed": managed }),
+    }
+}
+
 /// Enveloppe Response de `delete_managed_row_tx` (rule/playbook ; parser fait son propre reload).
 pub(crate) fn delete_managed_row(conn: &Connection, table: &str, audit_prefix: &str, id: i64, managed: i64, actor: &str) -> Response {
     match delete_managed_row_tx(conn, table, audit_prefix, id, managed, actor) {
@@ -805,7 +837,7 @@ pub(crate) async fn rule_update(State(st): State<AppState>, Extension(au): Exten
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "ok": true })).into_response() }
+        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(reponse_modification_acceptee("cette règle", cur_managed)).into_response() }
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }
@@ -914,7 +946,7 @@ pub(crate) async fn parser_update(State(st): State<AppState>, Extension(au): Ext
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); parsers_reload(&conn, req_db_path(&st, &au).as_str()); Json(json!({ "ok": true })).into_response() }
+        Ok(()) => { let _ = conn.execute_batch("COMMIT"); parsers_reload(&conn, req_db_path(&st, &au).as_str()); Json(reponse_modification_acceptee("ce parseur", cur_managed)).into_response() }
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }

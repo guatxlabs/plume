@@ -648,6 +648,14 @@
       <div class="rf-actions"><button type="submit">Créer</button><button id="uf-cancel" type="button">Annuler</button><span id="uf-result" class="muted"></span></div>
     </form>
     <div id="user-list"></div>
+    <!-- P11.5-c — QUI A ACCÈS. La liste ci-dessus est celle des comptes que CETTE console crée et gère ; un
+         compte venu d'un annuaire externe (SSO d'en-têtes) n'y a jamais de ligne et n'apparaissait donc
+         nulle part, alors qu'il administrait. L'inventaire ci-dessous est celui des comptes que
+         l'authentification a RÉELLEMENT vus, quelle que soit leur provenance : lecture seule par nature
+         (on n'administre pas ici un compte d'annuaire), et sans aucun secret. -->
+    <h3 id="acces-h">Comptes vus par l'authentification</h3>
+    <p id="acces-intro" class="muted" style="margin:0 0 9px;font-size:12px">Chaque compte qui a atteint cette console, quelle que soit sa provenance : ce que la liste ci-dessus ne peut pas montrer. Un compte d'annuaire externe n'est ni créé ni géré ici — son rôle vient de ses groupes, et il se révoque dans l'annuaire.</p>
+    <div id="acces-list"></div>
   </section>
   <!-- Administration → Jetons (agent + HEC), admin-only. Pendant UI du CLI `plume-daemon token`. Le secret
        CLAIR n'est affiché QU'UNE fois à la création (show-once) ; seul son SHA-256 est stocké. Un jeton HEC

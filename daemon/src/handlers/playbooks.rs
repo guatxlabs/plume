@@ -145,7 +145,7 @@ pub(crate) async fn playbook_update(State(st): State<AppState>, Extension(au): E
         Ok(())
     })();
     match outcome {
-        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(json!({ "ok": true })).into_response() }
+        Ok(()) => { let _ = conn.execute_batch("COMMIT"); Json(reponse_modification_acceptee("ce playbook", cur_managed)).into_response() }
         Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
     }
 }

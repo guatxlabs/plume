@@ -17,6 +17,7 @@ async function loadUsers() {
   try { d = await api('/users'); } catch (e) { S.isAdmin = false; route(); return; }
   S.isAdmin = true; route(); // ne PAS forcer hidden ici : laisser le routeur n'afficher #users que sous Reglages
   const { users, me } = d;
+  renderAcces(d.acces);   // P11.5-c : QUI A ACCÈS — l'inventaire des comptes VUS, à côté des comptes gérés ici
   list.replaceChildren();
   // #17 team — RÉCAPITULATIF ÉQUIPE : composition par rôle en un coup d'œil + raccourci vers le provisioning
   // de jetons (Administration → Jetons) pour équiper un coéquipier d'un agent/forwarder HEC.
@@ -69,6 +70,34 @@ async function loadUsers() {
     row.append(info, actions); list.appendChild(row); list.appendChild(editor);
   });
 }
+// --- P11.5-c — QUI A ACCÈS : l'inventaire des comptes que l'AUTHENTIFICATION a vus -----------------
+// La liste `users` ci-dessus est la table des comptes que le produit CRÉE. Un compte d'annuaire externe
+// (SSO d'en-têtes : le proxy pose le nom et les groupes) n'y a jamais de ligne — il administrait sans
+// figurer nulle part, et personne ne pouvait répondre à « qui a accès ». `acces` (GET /api/users) porte
+// chaque compte VU par le point de passage d'authentification, avec sa provenance, son rôle effectif,
+// l'origine de ce rôle et sa dernière vue. LECTURE SEULE par nature : on n'administre pas ici un compte
+// dont l'autorité vient d'ailleurs — la phrase le dit plutôt que de proposer un bouton qui échouerait.
+function renderAcces(acces) {
+  const host = $('#acces-list'); if (!host) return;
+  const arr = acces || [];
+  host.replaceChildren();
+  if (!arr.length) { host.appendChild(muted('aucun accès observé pour le moment')); return; }
+  arr.forEach(a => {
+    const row = document.createElement('div'); row.className = 'urow';
+    const info = document.createElement('span');
+    const role = document.createElement('span'); role.className = 'badge role-' + a.role_effectif; role.textContent = a.role_effectif;
+    role.title = 'rôle effectif au dernier accès, dérivé de : ' + a.origine_du_role;
+    const nom = document.createElement('b'); nom.textContent = a.nom;
+    const prov = document.createElement('span'); prov.className = 'muted'; prov.style.fontSize = '11px';
+    prov.textContent = ' · ' + a.provenance;
+    info.append(nom, document.createTextNode(' '), role, prov);
+    const vu = document.createElement('span'); vu.className = 'muted'; vu.style.fontSize = '11px';
+    vu.textContent = 'vu ' + fmtTs(a.derniere_vue);
+    vu.title = "première vue : " + fmtTs(a.premiere_vue) + " · méthode : " + a.methode;
+    row.append(info, vu); host.appendChild(row);
+  });
+}
+
 if ($('#user-new') && $('#user-form')) disclosure($('#user-new'), $('#user-form')); // P11.4-a — dépli partagé
 if ($('#uf-cancel')) $('#uf-cancel').onclick = () => $('#user-form').classList.add('hidden');
 if ($('#user-form')) $('#user-form').addEventListener('submit', async e => {

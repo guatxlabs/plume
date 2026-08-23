@@ -51,6 +51,18 @@ sont **jamais** lus.
   **écrase** (overwrite) les en-têtes fournis par le client. Si vous configurez des noms personnalisés, le
   middleware **doit écraser CES noms-là** (sinon un client pourrait injecter `PLUME_SSO_HEADER_GROUPS`
   directement). C'est une exigence de configuration du proxy, pas une faiblesse du daemon.
+- **AUCUN COMPTE N'EST CRÉÉ PAR CE CHEMIN**, et c'est délibéré : contrairement à OIDC et LDAP (qui
+  provisionnent un compte à la volée, cf. §2 et §3), le SSO d'en-tête ne pose **aucune** ligne dans la table
+  des comptes — le nom et le rôle sont recalculés à chaque requête depuis les en-têtes. Conséquence à
+  connaître : un compte d'annuaire **n'est ni créé, ni modifiable, ni révocable** depuis `Administration →
+  Comptes & accès` ; son rôle vient de ses groupes et se change **dans l'annuaire**.
+- **« QUI A ACCÈS » se lit quand même** (`P11.5-c`). Comme ces comptes n'ont pas de ligne, la liste des
+  comptes ne pouvait pas les montrer : ils administraient la console sans figurer nulle part. Le point de
+  passage d'authentification consigne désormais **chaque identité résolue** — nom, provenance (annuaire
+  externe / compte local / jeton / identifiant d'amorçage), rôle effectif, origine de ce rôle, première et
+  dernière vue — et `Administration → Comptes & accès` rend cet inventaire **à côté** de la liste des
+  comptes locaux (lecture seule : on n'administre pas ici un compte dont l'autorité vient d'ailleurs).
+  Aucun secret n'y entre — ni empreinte, ni jeton, ni la valeur brute des groupes de l'annuaire.
 
 ## 2. OIDC (implémenté)
 

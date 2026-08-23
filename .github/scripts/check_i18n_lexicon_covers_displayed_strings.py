@@ -22,14 +22,18 @@ Une chaîne est AFFICHÉE si le code la pose dans un puits de rendu, c'est-à-di
   (5) le texte et les mêmes attributs de `web/index.html`.
 Le mécanisme ne peut traduire qu'une chaîne STATIQUE : une chaîne concaténée (`'a' + x`) ou
 interpolée (`${x}`) ne sera jamais égale à une clé — elle est comptée À PART (« dynamique »),
-hors du dénominateur, et rendue pour information. Une chaîne composée UNIQUEMENT de
+hors du dénominateur, et rendue pour information. En fait PARTIE un littéral qui n'est qu'un FRAGMENT
+d'une valeur composée : la branche d'un ternaire opérande de `+` (`a + (c ? 'x' : 'y')`), et le texte de
+BORD d'un littéral HTML collé à une expression (`'<div>erreur : ' + msg`). Le nœud rendu vaut alors le
+littéral PLUS ce qui s'y colle ; lui donner une clé produirait une entrée morte, jamais un affichage
+traduit. Mesuré le 2026-08-23 : 15 chaînes sortent ainsi de la population, 7 d'entre elles étant apparues
+comme des « trous » que le lexique n'aurait pas pu combler. Une chaîne composée UNIQUEMENT de
 minuscules ASCII, chiffres et de ponctuation technique (`src_ip`, `count`, `/api/x`) est un identifiant
-technique, identique dans les deux langues : hors population. LA CLASSE INCLUT L'ESPACE — donc une phrase
-française entière tout en minuscules (`aucun runbook`, `nom et champ requis`) est classée « identifiant »
-MÊME dans un puits reconnu, et une seule majuscule suffit à faire basculer le verdict. Mesuré le 2026-08-23 :
-64 chaînes sur 25 modules échappent ainsi à la garde — 40 dans un puits JS reconnu (22 modules), 24 dans le
-texte d'un littéral HTML (6 modules). C'est une cause de trou INDÉPENDANTE de la forme d'écriture, et elle
-n'est pas encore corrigée ; de même un code en MAJUSCULES
+technique, identique dans les deux langues : hors population. LA CLASSE INCLUT L'ESPACE, et une phrase
+française entière tout en minuscules (`aucun runbook`) y entrait donc comme `src_ip` — MÊME dans un puits
+reconnu, une seule majuscule suffisant à faire basculer le verdict (mesuré le 2026-08-23 : 64 chaînes sur
+25 modules, cause de trou INDÉPENDANTE de la forme d'écriture). La règle est désormais dérivée : DEUX MOTS
+ALPHABÉTIQUES CONSÉCUTIFS font une phrase, pas un identifiant ; de même un code en MAJUSCULES
 sans espace qui porte un chiffre ou tient en quatre signes (`T1110`, `CSV`, `OK`). Une chaîne
 sans lettre (un symbole, un nombre) est hors population. Le texte d'un ÉCHANTILLON DE CODE
 (`<code>`, `<kbd>`, `<pre>`, `<samp>`) est montré tel quel dans les deux langues : hors population,
@@ -49,7 +53,7 @@ qu'aucun puits reconnu ne porte — argument d'une fabrique propre au module (`o
 `tile(...)` / `mesureTile(...)` dans system.js, `kv(...)` ailleurs), branche de ternaire hors puits, entrée
 de tableau, valeur de retour, valeur sous une clé d'objet non reconnue (`page:`, `servies:`).
 LA CONFESSION EST DÉRIVÉE DU DÉPÔT, PAS ÉCRITE À LA MAIN : la garde compte combien de ces hors-regard sont
-DÉJÀ des clés du lexique. Relevé le 2026-08-23 : 609 hors-regard, dont 163 (26,8 %) au lexique — c'est le
+DÉJÀ des clés du lexique. Relevé le 2026-08-23 : 784 hors-regard, dont 168 (21,4 %) au lexique — c'est le
 dépôt lui-même qui atteste qu'ils sont affichés, et donc que le périmètre regardé est plus étroit que
 l'affichage. Le chiffre est GARDÉ par un cliquet au même titre que les trous (`PLAFOND_HORS_REGARD`).
 Restent hors de tout compte, et donc invisibles même à cette colonne : un mot en minuscules ASCII
@@ -125,17 +129,20 @@ WEB = os.path.join(RACINE, "web")
 LEXIQUE = os.path.join(WEB, "i18n.js")
 
 # Plancher de population sur l'arbre réel : en dessous, c'est l'extraction qui est cassée.
-# DÉRIVÉ DU RELEVÉ, PAS CHOISI. Relevé le 2026-08-23 : 1 834 chaînes statiques affichées REGARDÉES, tous
-# modules confondus (échantillons de code et blocs `if (LANG === 'en')` retirés de la population). Le plancher
-# est ce relevé moins un vingtième : une extraction qui perdrait plus de 5 % de sa portée refuse de conclure.
+# DÉRIVÉ DU RELEVÉ, PAS CHOISI. Relevé le 2026-08-23 : 1 926 chaînes statiques affichées REGARDÉES, tous
+# modules confondus (échantillons de code, fragments de concaténation et blocs `if (LANG === 'en')` retirés de
+# la population ; 1 834 avant que la règle des deux mots ne fasse entrer les phrases tout en minuscules). Le
+# plancher est ce relevé moins un vingtième : une extraction qui perdrait plus de 5 % de sa portée refuse de
+# conclure.
 # La valeur précédente (1 000, pour un relevé annoncé à 1 579 et réel à 1 834) laissait l'extraction perdre
 # 45 % de sa portée sans que la validation d'instrument bronche : un plancher sous la moitié du réel ne garde
 # rien, il donne seulement l'apparence d'un garde-fou.
-MIN_POPULATION = 1742
+MIN_POPULATION = 1829
 # Une clé dont on SAIT qu'elle est affichée par `web/index.html` (bouton d'exécution de la barre).
 CLE_TEMOIN = "Exécuter"
 # Plancher de clés du lexique : relevé le 2026-08-22, 223 clés avant complément, 1 594 après ; 1 719 au
-# 2026-08-23. Ce plancher ne garde que la LECTURE du lexique, pas sa taille : il reste bas exprès.
+# 2026-08-23, puis 1 772 après le complément des phrases tout en minuscules. Ce plancher ne garde que la
+# LECTURE du lexique, pas sa taille : il reste bas exprès.
 MIN_CLES = 150
 
 # PLAFOND DE TROUS PAR MODULE (chaînes affichées statiques sans entrée au lexique). Relevé le 2026-08-22 par
@@ -181,21 +188,26 @@ PLAFOND_DE_TROUS = {
 # porte : la garde ne sait pas dire s'ils sont affichés). Relevé le 2026-08-23 par `--mesure` : 609 au total,
 # dont 163 (26,8 %) sont DÉJÀ des clés du lexique — c'est le dépôt qui atteste que le périmètre regardé est
 # plus étroit que l'affichage, et c'est pourquoi ce compte est GARDÉ comme celui des trous.
+# RELEVÉ SUIVANT, AVEC SA RAISON — 2026-08-23, 609 -> 784 : le critère d'identifiant a cessé de prendre une
+# phrase tout en minuscules pour un identifiant technique (`RE_DEUX_MOTS_CONSECUTIFS`), donc des littéraux
+# jusque-là hors population sont devenus des CANDIDATS, et ceux qu'aucun puits ne porte tombent dans cette
+# colonne. C'est le SEUL sens de hausse admis : la garde regarde plus large, le code n'a pas empiré. La part
+# déjà au lexique passe de 163/609 (26,8 %) à 168/784 (21,4 %) sur cette base élargie.
 # CE CLIQUET NE REMONTE PAS. Un module neuf qui pose ses libellés dans une forme inconnue ROUGIT même si la
 # garde ne sait pas lire cette forme : rendre vert sur ce qu'on ne regarde pas est pire qu'une garde absente.
 # L'abaisser est le sens attendu (déplacer un libellé vers un puits reconnu, ou apprendre la forme à la
 # garde). Le relever exige une raison écrite ici, à côté du chiffre.
 PLAFOND_HORS_REGARD = {
-    "admin_users.js": 18, "ai.js": 1, "alerting.js": 2, "alerts.js": 19, "app.js": 21, "attack.js": 3,
-    "audit.js": 1, "cases.js": 74, "composer_depuis_lexistant.js": 7, "connectors.js": 26,
-    "copie_et_selection.js": 3, "core.js": 29, "dashboards.js": 30, "dataaccess.js": 5, "datamodels.js": 6,
-    "destinations.js": 32, "detadv.js": 12, "detection_admin.js": 32, "fieldfilters.js": 18, "fleet.js": 5,
-    "freshness.js": 9, "help.js": 25, "i18n_observer.js": 0, "idp.js": 24, "index.html": 0,
-    "index_policies.js": 16, "keys.js": 5, "knowledge.js": 7, "login.js": 6, "lookups.js": 9, "multitenant.js": 9,
-    "navigation.js": 0, "prefs.js": 0, "processors.js": 9, "producer_ui.js": 5, "recherche_de_liste.js": 1,
-    "retention.js": 15, "risk.js": 6, "runbooks.js": 23, "savedqueries.js": 2, "sigmaimport.js": 8,
-    "soql_complete.js": 13, "sources.js": 6, "state.js": 0, "suppressions.js": 19, "system.js": 23,
-    "threatintel.js": 8, "viz.js": 17,
+    "admin_users.js": 19, "ai.js": 1, "alerting.js": 3, "alerts.js": 20, "app.js": 23, "attack.js": 7,
+    "audit.js": 1, "cases.js": 83, "composer_depuis_lexistant.js": 10, "connectors.js": 32,
+    "copie_et_selection.js": 3, "core.js": 32, "dashboards.js": 42, "dataaccess.js": 13, "datamodels.js": 10,
+    "destinations.js": 39, "detadv.js": 14, "detection_admin.js": 33, "fieldfilters.js": 23, "fleet.js": 14,
+    "freshness.js": 11, "help.js": 35, "i18n_observer.js": 0, "idp.js": 31, "index.html": 0,
+    "index_policies.js": 19, "keys.js": 7, "knowledge.js": 12, "login.js": 6, "lookups.js": 10,
+    "multitenant.js": 14, "navigation.js": 2, "prefs.js": 0, "processors.js": 12, "producer_ui.js": 11,
+    "recherche_de_liste.js": 2, "retention.js": 18, "risk.js": 7, "runbooks.js": 24, "savedqueries.js": 5,
+    "sigmaimport.js": 13, "soql_complete.js": 20, "sources.js": 13, "state.js": 0, "suppressions.js": 24,
+    "system.js": 36, "threatintel.js": 12, "viz.js": 18,
 }
 
 # LA SEULE SURFACE EXEMPTE : la définition `const HELP = { … }` du registre des sections d'aide, DÉRIVÉE
@@ -239,7 +251,17 @@ ATTRS_HTML = ("title", "placeholder", "aria-label", "label")
 TAGS_HORS_POPULATION = ("script", "style", "code", "kbd", "pre", "samp")
 
 # Un identifiant technique : minuscules ASCII, chiffres, ponctuation de chemin. Identique en FR et EN.
+# LA CLASSE INCLUT L'ESPACE, et c'est nécessaire : `search by field`, `a-z, . _ -` en sont. Mais l'espace y
+# faisait aussi entrer une PHRASE française entière tout en minuscules (`aucun runbook`), classée
+# « identifiant technique » même posée dans un puits reconnu, alors qu'une seule majuscule la faisait
+# basculer de l'autre côté. Ce qui sépare les deux n'est pas une liste de mots : c'est que l'identifiant
+# accroche ses mots par de la ponctuation (`src_ip`, `/api/x`, `sort -count`) là où la phrase les pose
+# côte à côte, séparés par une espace et rien d'autre. DEUX MOTS ALPHABÉTIQUES CONSÉCUTIFS = une phrase.
+# Mesuré le 2026-08-23 : la règle fait entrer 64 chaînes sur 25 modules (40 dans un puits JS reconnu sur
+# 22 modules, 24 dans le texte d'un littéral HTML sur 6 modules) ; `src_ip`, `/api/x`, `count`, `t1110.001`
+# restent dehors.
 RE_IDENTIFIANT = re.compile(r"^[a-z0-9_.:/\-+*%#@&=?|,;<>()\[\]{}!~^$\\' ]*$")
+RE_DEUX_MOTS_CONSECUTIFS = re.compile(r"[a-z]+[ \t]+[a-z]+")
 RE_LETTRE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]")
 SENTINELLE = "\x00"
 
@@ -444,6 +466,36 @@ def _est_puits(avant: str, attribut: str = "") -> bool:
     return False
 
 
+def _debut_du_groupe_ouvert(tete: str) -> int:
+    """Index de la dernière parenthèse OUVERTE et jamais refermée dans `tete`, -1 s'il n'y en a pas."""
+    pile = []
+    for i, c in enumerate(tete):
+        if c == "(":
+            pile.append(i)
+        elif c == ")" and pile:
+            pile.pop()
+    return pile[-1] if pile else -1
+
+
+def _fragment_de_concatenation(avant: str) -> bool:
+    """Vrai si le littéral est une BRANCHE DE TERNAIRE dont le ternaire entier est un opérande de `+`
+    (`… = a + (cond ? 'x' : 'y') + b`). Le nœud texte final vaut alors le littéral PLUS ce qui s'y colle :
+    il ne peut jamais être égal à une clé, donc la chaîne est dynamique comme `'a' + x`, pas un trou.
+    Une branche de ternaire hors chaîne de concaténation (`el.textContent = c ? 'A' : 'B'`) reste statique."""
+    a = avant.rstrip()
+    if not (a.endswith("?") or a.endswith(":")):
+        return False
+    # `{ okText: 'Créer' }` finit aussi par `:` : c'est une CLÉ d'objet, pas l'alternative d'un ternaire.
+    if RE_CLE_AUTRE.search(a) or RE_SINK_CLE.search(a) or RE_CLE_FR_EN.search(a):
+        return False
+    q = a.rfind("?")
+    if q < 0:
+        return False
+    tete = a[:q]
+    d = _debut_du_groupe_ouvert(tete)
+    return tete[:d].rstrip().endswith("+") if d >= 0 else False
+
+
 def _dynamique(s: str, avant: str, apres: str) -> bool:
     if SENTINELLE in s:
         return True
@@ -452,7 +504,7 @@ def _dynamique(s: str, avant: str, apres: str) -> bool:
         return True
     if apres.lstrip().startswith("+"):
         return True
-    return False
+    return _fragment_de_concatenation(avant)
 
 
 RE_CODE_MAJUSCULE = re.compile(r"^[A-Z0-9_.:/\-]+$")
@@ -462,7 +514,7 @@ def _candidat(s: str) -> bool:
     t = s.strip()
     if len(t) < 2 or not RE_LETTRE.search(t):
         return False
-    if RE_IDENTIFIANT.match(t):
+    if RE_IDENTIFIANT.match(t) and not RE_DEUX_MOTS_CONSECUTIFS.search(t):
         return False
     # Un code en majuscules sans espace (`T1110`, `CSV`, `OK`) est identique dans les deux langues :
     # hors population s'il porte un chiffre ou tient en quatre signes. `RETARD` (six lettres) reste.
@@ -471,9 +523,11 @@ def _candidat(s: str) -> bool:
     return True
 
 
-def _textes_html(fragment: str) -> tuple[list[str], list[str]]:
-    """Texte entre balises + attributs affichés d'un fragment HTML ; rend (statiques, dynamiques)."""
-    stat, dyn = [], []
+def _noeuds_html(fragment: str) -> tuple[list[str], list[str], list[str]]:
+    """(attributs affichés statiques, attributs affichés dynamiques, nœuds TEXTE EN ORDRE DE DOCUMENT).
+    L'ordre des nœuds texte est nécessaire pour savoir lesquels sont aux BORDS du littéral : ce sont les
+    seuls qu'une concaténation puisse coller à autre chose."""
+    stat, dyn, donnees = [], [], []
 
     class P(html.parser.HTMLParser):
         def __init__(self):
@@ -494,14 +548,20 @@ def _textes_html(fragment: str) -> tuple[list[str], list[str]]:
         def handle_data(self, data):
             if self.skip:
                 return
-            (dyn if SENTINELLE in data else stat).append(data)
+            donnees.append(data)
 
     p = P()
     try:
         p.feed(fragment)
     except Exception:
         pass
-    return stat, dyn
+    return stat, dyn, donnees
+
+
+def _textes_html(fragment: str) -> tuple[list[str], list[str]]:
+    """Texte entre balises + attributs affichés d'un fragment HTML ; rend (statiques, dynamiques)."""
+    a_st, a_dy, donnees = _noeuds_html(fragment)
+    return a_st + [d for d in donnees if SENTINELLE not in d], a_dy + [d for d in donnees if SENTINELLE in d]
 
 
 def extraire_module(src: str) -> tuple[list[str], list[str], list[str], list[str]]:
@@ -521,12 +581,26 @@ def extraire_module(src: str) -> tuple[list[str], list[str], list[str], list[str
                 par_construction.append(courant)
             continue
         if RE_HTML.search(courant):
-            st, dy = _textes_html(courant)
+            att_st, att_dy, donnees = _noeuds_html(courant)
             if bloc_en:
                 # version EN dédiée d'un bloc riche (`if (LANG === 'en') { el.innerHTML = '…' }`) : bilingue par
                 # construction, son pendant FR est dans index.html
-                par_construction += [x for x in st if _candidat(x)]
+                par_construction += [x for x in att_st + [d for d in donnees if SENTINELLE not in d] if _candidat(x)]
                 continue
+            # UN LITTÉRAL HTML COLLÉ À UNE EXPRESSION (`'<div>erreur : ' + msg`) : le nœud texte rendu n'est pas
+            # ce littéral, c'est lui PLUS ce qui s'y colle — jamais égal à une clé, donc dynamique et hors
+            # dénominateur. Seuls les nœuds de BORD sont concernés (un texte encadré par des balises reste un
+            # nœud entier), et seulement du côté où la colle a lieu et où le littéral ne finit/commence pas
+            # par une balise.
+            colles = set()
+            if donnees:
+                if apres.lstrip().startswith("+") and not courant.rstrip().endswith(">"):
+                    colles.add(len(donnees) - 1)
+                if avant.rstrip().endswith("+") and not courant.lstrip().startswith("<"):
+                    colles.add(0)
+            st, dy = list(att_st), list(att_dy)
+            for i, d in enumerate(donnees):
+                (dy if (SENTINELLE in d or i in colles) else st).append(d)
             statiques += [x for x in st if _candidat(x)]
             dynamiques += [x for x in dy if _candidat(x.replace(SENTINELLE, ""))]
             continue
@@ -585,8 +659,12 @@ el.innerHTML = `<span class="k">Affiché dix</span><b title="Affiché onze">${x}
 el.innerHTML = '<div class="muted">Affiché douze</div>';
 e.textContent = 'Dynamique un : ' + n;
 g.textContent = `Dynamique deux ${n}`;
+q.textContent = n + (cond ? 'Fragment de ternaire' : '');
+r.innerHTML = '<div class="bad">Fragment HTML de bord : ' + msg + '</div>';
 const re = /tronqué|'pas une chaîne'/i; h.textContent = 'Affiché treize';
 i.textContent = 'src_ip';
+i2.textContent = '/api/v1/alerts'; i3.textContent = 'count'; i4.textContent = 'sort -count';
+p1.textContent = 'aucun runbook'; p2.textContent = 'nom et champ requis';
 j.textContent = 'T1110';
 k.textContent = '…';
 l.textContent = LANG === 'en' ? 'Bilingual' : 'Bilingue';
@@ -601,12 +679,19 @@ CORPUS_TEMOIN_REGISTRE = """export const HELP = {
 };
 x.textContent = 'Hors registre';
 """
-ATTENDUS_STATIQUES = {"Affiché un", "Affiché deux", "Affiché trois", "Affiché quatre", "Affiché cinq",
+# Témoin POSITIF de la règle des deux mots : une phrase tout en minuscules est comptée.
+ATTENDUS_STATIQUES = {"aucun runbook", "nom et champ requis",
+                      "Affiché un", "Affiché deux", "Affiché trois", "Affiché quatre", "Affiché cinq",
                       "Affiché six", "Affiché sept", "Affiché huit", "Affiché neuf", "Affiché dix",
                       "Affiché onze", "Affiché douze", "Affiché treize", "Affiché quatorze", "Affiché quinze",
                       "Affiché seize"}
-ATTENDUS_DYNAMIQUES = 2
-INTERDITS = {"Pas affiché", "pas-une-chaine affichée", "valeur_technique", "pas une chaîne", "src_ip", "T1110", "…", "x",
+# Les deux derniers sont des FRAGMENTS d'une valeur composée : le nœud rendu vaut le littéral PLUS ce qui
+# s'y colle, donc jamais une clé. Ils sont dynamiques, pas des trous — une clé pour eux serait morte.
+ATTENDUS_DYNAMIQUES = 4
+# Témoin NÉGATIF de la même règle : un identifiant qui accroche ses mots par de la ponctuation reste dehors.
+INTERDITS = {"src_ip", "/api/v1/alerts", "count", "sort -count",
+             "Fragment de ternaire", "Fragment HTML de bord :",
+             "Pas affiché", "pas-une-chaine affichée", "valeur_technique", "pas une chaîne", "T1110", "…", "x",
              "English only", "English rich", "pas_un_libellé(x)", "Ctrl", "Paire française", "English pair"}
 
 # L'ANTI-CORPUS — LES FORMES QUE LA GARDE NE VOIT PAS, ET L'ASSERTION QU'ELLE NE LES VOIT PAS.

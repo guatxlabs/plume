@@ -922,6 +922,48 @@ const I18N_EN = {
   "sans imputation enregistrée (le compte par source les ignore)": "no recorded imputation (the per-source count ignores them)",
   "Ces alertes DISENT qu'elles ne se rapportent à aucun flux : une alerte d'hôte, de règle ou de seuil n'en a pas. Ce n'est pas un défaut de collecte. Cliquer pour les voir.": "These alerts SAY they refer to no flow: a host, rule or threshold alert has none. This is not a collection fault. Click to see them.",
   "Aucune imputation enregistrée et rien de nommable dans leur texte : alertes levées avant l'imputation, ou par un producteur qui ne l'écrit pas. Le compte par source les ignore — c'est dit ici plutôt que tu.": "No recorded imputation and nothing nameable in their text: alerts raised before imputation existed, or by a producer that does not write it. The per-source count ignores them — said here rather than hidden.",
+  // `P11.8-c` — PHRASES TOUT EN MINUSCULES, longtemps prises pour des identifiants techniques. La classe de
+  // caractères du critère d'identifiant de la garde d'i18n inclut l'espace : « aucun runbook » y entrait
+  // comme « src_ip », et une seule majuscule suffisait à faire basculer le verdict. La règle est désormais
+  // dérivée (deux mots alphabétiques consécutifs = une phrase), et ces libellés entrent au lexique.
+  "aucune modification": "no change", "aucune proposition": "no suggestion", "aucune action": "no action",
+  "aucune correspondance": "no match", "aucune occurrence": "no occurrence",
+  "aucun parser": "no parser", "aucun playbook": "no playbook", "aucun runbook": "no runbook",
+  "aucun runbook disponible": "no runbook available", "runbooks indisponibles": "runbooks unavailable",
+  "aucun silence.": "no silence.", "aucun evenement sur la fenetre": "no event over the window",
+  "aucune nouvelle technique couverte": "no newly covered technique",
+  "couverture indisponible": "coverage unavailable", "erreur de chargement": "load error",
+  "secret manquant": "secret missing", "en clair": "in the clear", "hors parc": "out of estate",
+  "avec alertes actives": "with active alerts", "contexte initial": "initial context",
+  "en attente du capteur (5 min)...": "waiting for the sensor (5 min)...",
+  "tous les events": "all events", "tout event": "any event", "(count : sans champ)": "(count: no field)",
+  // messages de validation d'un formulaire : le champ manquant est NOMMÉ, jamais « erreur »
+  "nom requis": "name required", "cible requise": "target required", "utilisateur requis": "user required",
+  "identifiant requis": "id required", "nom et champ requis": "name and field required",
+  "au moins un id de canal requis": "at least one channel id required",
+  "au moins un matcher requis": "at least one matcher required",
+  // textes d'attente (`placeholder`) et libellés de champ de saisie
+  "nom lisible (optionnel)": "human-readable name (optional)", "nom lisible (affichage)": "human-readable name (display)",
+  "note libre (affichage)": "free note (display)", "valeur (ou regex)": "value (or regex)",
+  "plafond de lignes (0 = aucun)": "row cap (0 = none)", "identifiant client (non-secret)": "client id (non-secret)",
+  "ids de canaux, ex: 1,3": "channel ids, e.g. 1,3",
+  "matchers - ex: host=web-01, severity=2 (au moins un)": "matchers - e.g. host=web-01, severity=2 (at least one)",
+  "ex: crowdstrike (sinon http:{id})": "e.g. crowdstrike (otherwise http:{id})",
+  "data.items ou items[*] (vide = racine tableau)": "data.items or items[*] (empty = array root)",
+  "https://api.exemple/v1/alerts (ou laisse vide + api-root/path)": "https://api.exemple/v1/alerts (or leave empty + api-root/path)",
+  "token d'installation (log du daemon / setup-token.txt)": "install token (daemon log / setup-token.txt)",
+  "(basic uniquement)": "(basic only)", "basic (utilisateur + mot de passe)": "basic (username + password)",
+  "1er admin": "1st admin",
+  // fragments d'une phrase RICHE de l'import Sigma : chaque nœud texte entre balises est traduit à part,
+  // pour que la phrase ANGLAISE se lise entière.
+  "fichier bundle": "bundle file", "collez du": "paste", ") ou un": ") or a",
+  // IDENTIQUES DANS LES DEUX LANGUES, et inscrits POUR LE DIRE — pas par recopie du français. Un terme
+  // technique déjà anglais et un échantillon de requête GXQL se lisent tels quels sous `LANG='en'`, et
+  // `i18nWalk` saute une valeur égale à sa clé. Même convention que « Dashboards », « Timeline » ou
+  // « search source=… | stats count by … », déjà au lexique.
+  "auto on": "auto on", "event types": "event types",
+  "search source=sudo | stats count by source": "search source=sudo | stats count by source",
+  "search source=$value | table ts,source,src_ip,message": "search source=$value | table ts,source,src_ip,message",
 };
 // Attributs AFFICHÉS que le dictionnaire traduit : infobulle, texte d'attente, nom accessible, et le libellé
 // d'un groupe d'options (`<optgroup label>`). Un attribut `value` n'est jamais touché (c'est une donnée).

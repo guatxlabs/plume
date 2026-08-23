@@ -474,19 +474,109 @@ mod attente_serie_tests {
     /// UNE MESURE QUI COÛTE CE QU'ELLE MESURE FINIT PAR SE FAIRE ÉTEINDRE. L'observation est faite
     /// sur un chemin qui vient d'acquérir un sémaphore et d'exécuter du SQL : elle doit disparaître
     /// devant. Aucune allocation, aucun format, aucune horloge lue en plus — six atomiques relâchées.
+    ///
+    /// `P6.9-a` — CE QUI EST ASSERTÉ EST UN RAPPORT, PAS DES NANOSECONDES. La forme précédente
+    /// assertait `< 1 000 ns` par observation. Une borne absolue mesure la machine autant que le code,
+    /// et celle-ci rougissait sous charge alors que rien n'avait changé — mesuré le 2026-08-23 sur ce
+    /// banc (12 cœurs, binaire de test `debug`, mesure épinglée sur UN cœur partagé avec des brûleurs
+    /// de CPU) :
+    ///
+    /// | banc                         | ancienne forme (moyenne) | verdict   | rapport MÉDIAN |
+    /// |------------------------------|--------------------------|-----------|----------------|
+    /// | au repos                     | 120 ns                   | VERT      | 8,06 à 8,57    |
+    /// | 8 brûleurs sur le même cœur  | 1 135 ns                 | **ROUGE** | 8,77           |
+    /// | 16 brûleurs                  | 2 297 ns                 | **ROUGE** | 8,21           |
+    /// | 32 brûleurs                  | 4 208 ns                 | **ROUGE** | 8,14           |
+    /// | 12 brûleurs, machine entière | 412 ns                   | VERT      | 8,17           |
+    ///
+    /// Le coût apparent varie de ×35 ; le rapport, de 8 %.
+    ///
+    /// L'ÉTALON EST L'OPÉRATION DONT L'OBSERVATION EST FAITE : un `fetch_add` relâché sur un
+    /// `AtomicU64`. C'est ce que `observer` fait six fois (quatre compteurs, plus deux maximums qui
+    /// lisent et n'échangent qu'en montant), et rien d'autre ne doit s'y ajouter. Un `format!`, un
+    /// `Instant::now()` ou un verrou coûtent des dizaines d'atomiques et sortent immédiatement du
+    /// plafond ; c'est exactement ce que ce test existe pour interdire.
+    ///
+    /// LES BLOCS SONT COURTS ET ALTERNÉS, ET CE N'EST PAS UN DÉTAIL. Une atomique ne se chronomètre
+    /// pas à l'unité (l'horloge coûte plus cher qu'elle) : on mesure des blocs. Avec des blocs LONGS
+    /// (mesuré : 20 blocs de 10 000), la majorité des blocs est préemptée sous charge et la médiane
+    /// devient celle des blocs préemptés — le rapport est monté à 375, faux rouge. Des blocs COURTS
+    /// (200 blocs de 1 000) restent sous la tranche de l'ordonnanceur, la médiane retombe sur les
+    /// blocs propres, et le rapport tient à 6 % près sur tous les bancs ci-dessus.
+    ///
+    /// MUTATION (exécutée le 2026-08-23) : `observer` répétant dix fois son corps porte le rapport de
+    /// 8,5 à **72,1 au repos** et fait rougir cette assertion, au repos comme sous charge.
     #[test]
     fn une_observation_ne_coute_presque_rien() {
+        /// Le nombre d'opérations atomiques que fait UNE observation : quatre compteurs incrémentés,
+        /// deux maximums relevés. Le plafond est dérivé de CE nombre, pas d'une durée.
+        const ATOMIQUES_PAR_OBSERVATION: f64 = 6.0;
+        /// LE PLAFOND, ET D'OÙ IL SORT. Mesuré sur ce banc : 8,06 à 8,77 selon la charge — au-dessus
+        /// des six atomiques, parce qu'une observation calcule aussi son seau et paie, en profil
+        /// `debug`, un appel non inliné. Le plafond est posé au TRIPLE du compte d'atomiques : il
+        /// borne la FORME (une poignée d'atomiques) sans borner le profil de compilation, il laisse
+        /// 2,05 fois de marge au-dessus du pire rapport observé (8,77), et il rougit quatre fois plus
+        /// bas que ce que rend une mutation ×10.
+        const RAPPORT_MAX: f64 = 3.0 * ATOMIQUES_PAR_OBSERVATION;
+        /// Le nombre total d'observations est inchangé ; il est découpé en blocs COURTS pour que la
+        /// médiane porte sur des blocs non préemptés (cf. le commentaire de doc).
         const N: u64 = 200_000;
+        const BLOCS: usize = 200;
+        const PAR_BLOC: u64 = N / BLOCS as u64;
+
         let acc = Accumulateur::neuf();
-        let t = Instant::now();
-        for i in 0..N {
+        let etalon = std::sync::atomic::AtomicU64::new(0);
+        let un_etalon = || {
+            std::hint::black_box(etalon.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        };
+        // Chauffe : le premier bloc paie le cache d'instructions et le premier défaut de page.
+        for i in 0..PAR_BLOC {
             acc.observer(i % 1_000, i % 5_000_000);
+            un_etalon();
         }
-        let ns = t.elapsed().as_nanos() as u64 / N;
-        assert_eq!(acc.observations(), N);
+        // LES DEUX BRAS SONT ENTRELACÉS, bloc par bloc : ils subissent alors le MÊME ordonnancement.
+        let (mut refs, mut obs) = (Vec::with_capacity(BLOCS), Vec::with_capacity(BLOCS));
+        for _ in 0..BLOCS {
+            let t = Instant::now();
+            for _ in 0..PAR_BLOC {
+                un_etalon();
+            }
+            refs.push(t.elapsed() / PAR_BLOC as u32);
+            let t = Instant::now();
+            for i in 0..PAR_BLOC {
+                acc.observer(i % 1_000, i % 5_000_000);
+            }
+            obs.push(t.elapsed() / PAR_BLOC as u32);
+        }
+        let mediane = |v: &mut Vec<Duration>| {
+            v.sort_unstable();
+            v[v.len() / 2]
+        };
+        let (r, o) = (mediane(&mut refs), mediane(&mut obs));
+
+        assert_eq!(
+            acc.observations(),
+            N + PAR_BLOC,
+            "le bras mesuré n'a pas fait le travail annoncé — le rapport ci-dessous porterait sur autre chose"
+        );
+        // GARDE-FOU DE L'INSTRUMENT : un étalon nul rendrait le rapport infini (faux rouge). Si
+        // l'horloge ne résout plus un bloc d'atomiques, ce test ne peut rien prouver — il doit le DIRE.
         assert!(
-            ns < 1_000,
-            "une observation coûte {ns} ns : au-delà, la mesure pèse sur le chemin qu'elle mesure"
+            r > Duration::ZERO,
+            "l'étalon (un `fetch_add` relâché) mesure {r:?} : l'horloge ne le résout pas, le rapport \
+             ci-dessous ne voudrait rien dire"
+        );
+        let rapport = o.as_secs_f64() / r.as_secs_f64();
+        assert!(
+            rapport <= RAPPORT_MAX,
+            "une observation coûte {rapport:.2} `fetch_add` relâchés ({o:?} contre {r:?}, médianes sur \
+             {BLOCS} blocs de {PAR_BLOC} entrelacés) — au-delà de {RAPPORT_MAX:.0}, ce n'est plus la \
+             composition attendue ({ATOMIQUES_PAR_OBSERVATION:.0} atomiques) : une allocation, un \
+             format, une horloge ou un verrou se sont glissés sur le chemin que la mesure mesure"
+        );
+        eprintln!(
+            "[mesure 2026-08-23] une observation : {rapport:.2} `fetch_add` relâchés (médianes {o:?} / \
+             {r:?}). Le chiffre ABSOLU dépend de la machine et n'est qu'un repère : {o:?} par observation."
         );
     }
 

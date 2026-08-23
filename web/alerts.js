@@ -64,7 +64,7 @@ function setAlertGroupBy(g) { S.alertGroupBy = alert_group_axis(g) ? g : ''; S.a
 function alert_group_axis(g) { return g === 'rule' || g === 'host' || g === 'mitre'; }
 // le pivot MITRE amène vers Investigation -> Alertes (onglet #alerts, où vivent les Alertes actives, cf. SPACES).
 // P11.1-b — un pivot MITRE pose une FACETTE sur la même liste : portée « tous statuts » (l'historique de
-// détection de la technique, comportement historique), sans le filtre « hors case », tri inchangé.
+// détection de la technique, comportement historique), sans le filtre d'affichage, tri inchangé.
 function setAlertMitreFilter(m) {
   S.alertMitreFilter = (m || '').trim().toUpperCase(); S.alertSourceFilter = ''; S.alertHistPage = 0; S.alertGroupPage = 0;
   if (S.alertMitreFilter) { S.alertGroupAll = true; S.alertUncased = false; }
@@ -140,15 +140,22 @@ function wireAlertRows(host, alerts, afterAck) {
 // fonction, quelle que soit la vue. Une action impossible n'est pas ABSENTE : elle est rendue désactivée avec
 // sa raison (attribut `title`), pour qu'un lecteur sache ce qui manque et pourquoi.
 // ======================================================================================================
-// Le modèle de la liste : UN tri, UNE portée, UN filtre « hors case », des FACETTES.
+// Le modèle de la liste : UN tri, UNE portée, UN filtre sur ce qui est AFFICHÉ (déjà repris par un cas ou
+// non — `uncased` côté démon), des FACETTES.
 function alertListModel() {
   return {
     view: S.alertGroupBy || '',               // '' plate | 'rule' | 'host' | 'mitre' (tri)
     scopeAll: !!S.alertGroupAll,              // false = actives (status=new) | true = tous statuts
-    uncased: S.alertUncased !== false,        // alertes hors case seulement (défaut : oui)
+    uncased: S.alertUncased !== false,        // n'affiche que les alertes qu'aucun cas n'a reprises (défaut : oui)
     mitre: S.alertMitreFilter || '',          // facette technique (serveur, `?mitre=`)
     source: S.alertSourceFilter || '',        // facette source (serveur, `?source=`, imputation exacte)
   };
+}
+// P11.7-b — LA PORTÉE EN TOUTES LETTRES, ÉCRITE UNE FOIS. Le compte affiché doit dire ce que le bouton dit
+// (« hors case » y survivait en double écriture, vue plate et vue groupée) : un seul auteur, donc un seul
+// vocabulaire, et un renommage qui ne peut plus n'atteindre qu'une des deux vues.
+function porteeEnMots(m) {
+  return (m.scopeAll ? 'tous statuts' : 'actives') + (m.uncased ? ' · pas encore dans un cas' : ' · cas compris');
 }
 // Les deux facettes sont servies par le démon et s'appliquent à tous les tris et aux deux portées : aucune
 // action n'est désactivée au motif d'une facette. L'URL d'une vue est dérivée du modèle par UNE fonction.
@@ -180,7 +187,12 @@ function alertActionBarHtml(m, loaded) {
   // bouton bascule sans attribut se présente comme un simple bouton d'action.
   const views = ALERT_VIEWS.map(([g, label, title]) => `<button type="button" class="agseg${m.view === g ? ' on' : ''}" aria-pressed="${m.view === g}" data-g="${g}" title="${esc(title)}">${label}</button>`).join('');
   const scope = `<button type="button" class="agscope${m.scopeAll ? ' on' : ''}" aria-pressed="${m.scopeAll}" data-act="scope" title="${m.scopeAll ? 'Tous statuts (historique) — cliquer pour ne voir que les alertes actives' : 'Alertes actives (status=new) — cliquer pour voir tous les statuts'}">${m.scopeAll ? 'Tous statuts' : 'Actives'}</button>`;
-  const uncased = `<button type="button" class="agscope${m.uncased ? ' on' : ''}" aria-pressed="${m.uncased}" data-act="uncased" title="${m.uncased ? 'Hors case : les alertes déjà rattachées à un case sont masquées — cliquer pour les inclure' : 'Toutes : cases comprises — cliquer pour masquer les alertes déjà rattachées à un case'}">${m.uncased ? 'hors case' : 'cases comprises'}</button>`;
+  // P11.7-b — CE FILTRE SE NOMME PAR CE QU'IL MONTRE. Il disait « hors case » / « cases comprises » : une
+  // RELATION (dedans ou dehors), dans un vocabulaire qui n'est celui d'aucun autre panneau — l'exploitant
+  // rapporte ne pas savoir à quoi elle correspond. Ce qu'il choisit, en réalité, c'est LA LISTE : soit les
+  // alertes qu'aucun cas n'a encore reprises, soit toutes. Les deux mots le disent maintenant, et le
+  // préfixe « Affiche » les rattache à la liste comme « Tri » et « Portée » rattachent les leurs.
+  const uncased = `<span class="muted">Affiche</span><button type="button" class="agscope${m.uncased ? ' on' : ''}" aria-pressed="${m.uncased}" data-act="uncased" title="${m.uncased ? 'Seules les alertes qu\'aucun cas n\'a encore reprises sont listées — cliquer pour lister aussi celles déjà rattachées à un cas' : 'Toutes les alertes sont listées, celles déjà rattachées à un cas comprises — cliquer pour ne garder que celles qu\'aucun cas n\'a encore reprises'}">${m.uncased ? 'Pas encore dans un cas' : 'Toutes les alertes'}</button>`;
   const facets = [];
   if (m.mitre) facets.push(`<span class="mitrefilter">Technique : <span class="mitrechip">${esc(m.mitre)}</span><button type="button" data-act="clear-mitre" title="Retirer le filtre technique">${ic('x')}</button></span>`);
   if (m.source) {
@@ -284,7 +296,8 @@ async function renderAlerts(loading) {
   const m = alertListModel();
   // Un TRI groupé est servi par /api/alerts/groups, facettes comprises.
   if (m.view) return renderAlertGroups(loading);
-  // LA MÊME URL DÉRIVÉE DU MÊME MODÈLE : portée (status=new | all), « hors case » (uncased=1), facettes
+  // LA MÊME URL DÉRIVÉE DU MÊME MODÈLE : portée (status=new | all), le filtre d'affichage (uncased=1 —
+  // « pas encore dans un cas »), facettes
   // (mitre=, source=). La portée « tous statuts » est PAGINÉE serveur (limit/offset + total) ; la portée
   // « actives » reste bornée (200, sans total) — contrat inchangé de /api/alerts.
   const params = [];
@@ -303,7 +316,7 @@ async function renderAlerts(loading) {
   let sourceSpan = null;
   if (m.source && alerts.length) { const ts = alerts.map(a => a.ts).filter(Boolean); sourceSpan = { from: Math.min(...ts), to: Math.max(...ts) }; }
   const count = (m.scopeAll && typeof alertTotal === 'number') ? alertTotal : alerts.length;
-  const portee = (m.scopeAll ? 'tous statuts' : 'actives') + (m.uncased ? ' · hors case' : ' · cases comprises');
+  const portee = porteeEnMots(m);
   const loaded = {
     count,
     countLabel: `${count} alerte(s) · ${portee}${m.mitre ? ' · technique ' + m.mitre : ''}${m.source ? ' · source ' + m.source : ''}`,
@@ -319,7 +332,7 @@ async function renderAlerts(loading) {
     } else if (m.source) {
       vide = `<div class="muted">Aucune alerte (${esc(portee)}) imputée à la source <b>${esc(m.source)}</b>.</div>`;
     } else {
-      vide = `<div class="ok">Aucune alerte ${m.scopeAll ? '' : 'active '}${m.uncased ? 'hors case ' : ''}</div>`;
+      vide = `<div class="ok">Aucune alerte ${m.scopeAll ? '' : 'active '}${m.uncased ? 'pas encore dans un cas' : ''}</div>`;
     }
     b.innerHTML = bar + vide;
     const ev = b.querySelector('#mitre-events'); if (ev) ev.onclick = () => mitreEventsDrill(m.mitre);
@@ -345,7 +358,7 @@ async function renderAlerts(loading) {
 
 // TRIAGE GROUPÉ — vue de GROUPES repliables (« 1 groupe = N occurrences »). Groupes paginés serveur
 // (/api/alerts/groups) ; chaque groupe déplié charge ses occurrences à la demande (chemin plat gkey/gval,
-// paginé). Le modèle (portée / hors case / facettes technique et source) est le MÊME que celui de la vue plate, et
+// paginé). Le modèle (portée / filtre d'affichage / facettes technique et source) est le MÊME que celui de la vue plate, et
 // s'applique À LA FOIS au groupement et à l'expansion -> le compteur `n` du groupe et le `total` des
 // occurrences restent COHÉRENTS.
 async function renderAlertGroups(loading) {
@@ -362,7 +375,7 @@ async function renderAlertGroups(loading) {
   b.classList.remove('reloading');
   const axisLabel = { rule: 'règle', host: 'hôte', mitre: 'technique' }[m.view] || m.view;
   const count = typeof total === 'number' ? total : groups.length;
-  const portee = (m.scopeAll ? 'tous statuts' : 'actives') + (m.uncased ? ' · hors case' : ' · cases comprises');
+  const portee = porteeEnMots(m);
   const loaded = { count, countLabel: `${count} groupe(s) · par ${axisLabel} · ${portee}${m.mitre ? ' · technique ' + m.mitre : ''}${m.source ? ' · source ' + m.source : ''}`, ackableIds: [] };
   const bar = alertActionBarHtml(m, loaded);
   if (!groups.length) {

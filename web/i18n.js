@@ -9,6 +9,9 @@ import { LANG } from './core.js';
 const I18N_EN = {
   // navigation
   "Vue d'ensemble": "Overview", "Recherche": "Search", "Cas": "Cases", "Dashboards": "Dashboards",
+  // P11.7-b — l'espace ANNONCE ce qu'il porte : il contient les alertes autant que les cas. « Cas » reste
+  // au lexique : c'est le libellé du sous-onglet, et celui du badge d'un cas.
+  "Alertes & cas": "Alerts & cases",
   "Détection": "Detection", "Parsers": "Parsers", "Réponse": "Response", "Cases": "Cases", "Réglages": "Settings",
   "Navigation": "Navigation", "Menu": "Menu",
   // sections / titres
@@ -738,6 +741,13 @@ const I18N_EN = {
   "Le compteur de la cloche d'une source compte ses alertes non acquittées, cases comprises, sans fenêtre de temps — il ne dépend pas de la fraîcheur de la source.": "A source's bell counter counts its unacknowledged alerts, cases included, without a time window — it does not depend on the source's freshness.",
   "Liste des alertes (tri plat, filtres retirés)": "Alert list (flat sort, filters removed)",
   "Liste des alertes : tri, portée, filtres, actions": "Alert list: sort, scope, filters, actions", "Retirer le filtre source": "Remove the source filter",
+  // P11.7-b — LE FILTRE DE LA LISTE DES ALERTES, nommé par ce qu'il MONTRE. Les deux libellés et les deux
+  // phrases de survol sont posés par un ternaire : la garde du lexique ne les compte pas (chaîne dynamique),
+  // mais `i18nWalk` traduit le texte RENDU — sans ces clés, la console reste bilingue par accident.
+  "Affiche": "Showing",
+  "Pas encore dans un cas": "Not yet in a case", "Toutes les alertes": "All alerts",
+  "Seules les alertes qu'aucun cas n'a encore reprises sont listées — cliquer pour lister aussi celles déjà rattachées à un cas": "Only alerts that no case has taken up yet are listed — click to also list those already attached to a case",
+  "Toutes les alertes sont listées, celles déjà rattachées à un cas comprises — cliquer pour ne garder que celles qu'aucun cas n'a encore reprises": "Every alert is listed, including those already attached to a case — click to keep only those no case has taken up yet",
   "Retirer le filtre technique": "Remove the technique filter", "Source :": "Source:", "Technique :": "Technique:", "Tri": "Sort",
   // P11.8-a — audit.js
   "Détail": "Detail", "Empreinte": "Fingerprint", "Horodatage": "Timestamp",

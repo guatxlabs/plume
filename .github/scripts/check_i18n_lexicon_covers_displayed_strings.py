@@ -51,9 +51,11 @@ pire qu'une garde absente. Elle publie donc, par module et à chaque exécution,
 les littéraux qui ont la forme d'un libellé (candidats, statiques, pas bilingues par construction) et
 qu'aucun puits reconnu ne porte — argument d'une fabrique propre au module (`opt(...)` dans alerts.js,
 `tile(...)` / `mesureTile(...)` dans system.js, `kv(...)` ailleurs), branche de ternaire hors puits, entrée
-de tableau, valeur de retour, valeur sous une clé d'objet non reconnue (`page:`, `servies:`).
+de tableau, valeur de retour, valeur sous une clé d'objet non reconnue (`page:`, `servies:`). Un littéral
+posé dans un NON-PUITS reconnu (classe CSS, identifiant, style, attribut non affiché) n'y figure PAS : la
+colonne ne nomme que ce dont la garde ne peut pas décider, jamais ce qu'elle sait déjà hors sujet.
 LA CONFESSION EST DÉRIVÉE DU DÉPÔT, PAS ÉCRITE À LA MAIN : la garde compte combien de ces hors-regard sont
-DÉJÀ des clés du lexique. Relevé le 2026-08-23 : 784 hors-regard, dont 168 (21,4 %) au lexique — c'est le
+DÉJÀ des clés du lexique. Relevé le 2026-08-23 : 680 hors-regard, dont 169 (24,9 %) au lexique — c'est le
 dépôt lui-même qui atteste qu'ils sont affichés, et donc que le périmètre regardé est plus étroit que
 l'affichage. Le chiffre est GARDÉ par un cliquet au même titre que les trous (`PLAFOND_HORS_REGARD`).
 Restent hors de tout compte, et donc invisibles même à cette colonne : un mot en minuscules ASCII
@@ -193,21 +195,25 @@ PLAFOND_DE_TROUS = {
 # jusque-là hors population sont devenus des CANDIDATS, et ceux qu'aucun puits ne porte tombent dans cette
 # colonne. C'est le SEUL sens de hausse admis : la garde regarde plus large, le code n'a pas empiré. La part
 # déjà au lexique passe de 163/609 (26,8 %) à 168/784 (21,4 %) sur cette base élargie.
+# PUIS ABAISSÉ, 784 -> 680 : un littéral posé dans un NON-PUITS RECONNU (classe CSS, identifiant, style,
+# attribut non affiché) sort de l'aveu — la garde SAIT qu'il n'affiche rien, et le mêler à l'indécidable
+# faisait rougir le cliquet sur une classe CSS neuve. La part déjà au lexique remonte à 169/680
+# (24,9 %) : c'est du bruit qui est parti, pas de la dette.
 # CE CLIQUET NE REMONTE PAS. Un module neuf qui pose ses libellés dans une forme inconnue ROUGIT même si la
 # garde ne sait pas lire cette forme : rendre vert sur ce qu'on ne regarde pas est pire qu'une garde absente.
 # L'abaisser est le sens attendu (déplacer un libellé vers un puits reconnu, ou apprendre la forme à la
 # garde). Le relever exige une raison écrite ici, à côté du chiffre.
 PLAFOND_HORS_REGARD = {
-    "admin_users.js": 19, "ai.js": 1, "alerting.js": 3, "alerts.js": 20, "app.js": 23, "attack.js": 7,
-    "audit.js": 1, "cases.js": 83, "composer_depuis_lexistant.js": 10, "connectors.js": 32,
-    "copie_et_selection.js": 3, "core.js": 32, "dashboards.js": 42, "dataaccess.js": 13, "datamodels.js": 10,
-    "destinations.js": 39, "detadv.js": 14, "detection_admin.js": 33, "fieldfilters.js": 23, "fleet.js": 14,
-    "freshness.js": 11, "help.js": 35, "i18n_observer.js": 0, "idp.js": 31, "index.html": 0,
-    "index_policies.js": 19, "keys.js": 7, "knowledge.js": 12, "login.js": 6, "lookups.js": 10,
-    "multitenant.js": 14, "navigation.js": 2, "prefs.js": 0, "processors.js": 12, "producer_ui.js": 11,
-    "recherche_de_liste.js": 2, "retention.js": 18, "risk.js": 7, "runbooks.js": 24, "savedqueries.js": 5,
-    "sigmaimport.js": 13, "soql_complete.js": 20, "sources.js": 13, "state.js": 0, "suppressions.js": 24,
-    "system.js": 36, "threatintel.js": 12, "viz.js": 18,
+    "admin_users.js": 16, "ai.js": 1, "alerting.js": 2, "alerts.js": 20, "app.js": 22, "attack.js": 7,
+    "audit.js": 1, "cases.js": 77, "composer_depuis_lexistant.js": 7, "connectors.js": 28,
+    "copie_et_selection.js": 3, "core.js": 29, "dashboards.js": 30, "dataaccess.js": 11, "datamodels.js": 6,
+    "destinations.js": 37, "detadv.js": 14, "detection_admin.js": 30, "fieldfilters.js": 21, "fleet.js": 9,
+    "freshness.js": 11, "help.js": 30, "i18n_observer.js": 0, "idp.js": 29, "index.html": 0,
+    "index_policies.js": 16, "keys.js": 5, "knowledge.js": 11, "login.js": 6, "lookups.js": 9,
+    "multitenant.js": 8, "navigation.js": 2, "prefs.js": 0, "processors.js": 10, "producer_ui.js": 8,
+    "recherche_de_liste.js": 1, "retention.js": 17, "risk.js": 6, "runbooks.js": 23, "savedqueries.js": 2,
+    "sigmaimport.js": 12, "soql_complete.js": 16, "sources.js": 7, "state.js": 0, "suppressions.js": 21,
+    "system.js": 33, "threatintel.js": 8, "viz.js": 18,
 }
 
 # LA SEULE SURFACE EXEMPTE : la définition `const HELP = { … }` du registre des sections d'aide, DÉRIVÉE
@@ -438,6 +444,17 @@ RE_SINK_APPEL = re.compile(r"\b(%s)\(\s*$" % "|".join(SINKS_APPEL))
 # toutes sur l'attribut `d`, portées à la colonne « dynamiques » d'un module qui n'affiche pas ce texte.
 RE_SINK_SETATTR = re.compile(r"setAttribute\(\s*\"\"\s*,\s*$")
 RE_TERNAIRE = re.compile(r"[?:]\s*$")
+# DES NON-PUITS RECONNUS. La valeur d'une classe CSS, d'un identifiant, d'un chemin ou d'un champ de
+# formulaire n'est JAMAIS du texte affiché. Un littéral posé là n'est pas un libellé qu'on aurait ignoré,
+# c'est une donnée : il sort de la colonne hors-regard, qui ne doit nommer que ce dont la garde ne peut PAS
+# décider. Sans cette liste, `el.className = 'ueditor hidden'` (deux mots minuscules, donc candidat depuis
+# la règle des deux mots) gonflait l'aveu et faisait rougir le cliquet sur une classe CSS neuve. Mesuré le
+# 2026-08-23 : 125 occurrences sur 872, soit 14,3 % de bruit retiré.
+NON_PUITS_CONNUS = ("className", "id", "href", "src", "value", "type", "name", "cssText", "accept",
+                    "autocomplete", "spellcheck", "htmlFor", "action", "method", "rel", "target", "role")
+RE_NON_PUITS = re.compile(
+    r"\.(?:%s)\s*=\s*$|\.(?:dataset|style)\.\w+\s*=\s*$|\bclassList\.(?:add|remove|toggle|replace)\(\s*$"
+    % "|".join(NON_PUITS_CONNUS))
 RE_SINK_AFFECT_DANS = re.compile(r"\.(%s)\s*=[^=]" % "|".join(SINKS_AFFECTATION))
 RE_SINK_CLE_DANS = re.compile(r"[{,]\s*(%s)\s*:" % "|".join(SINKS_CLE))
 RE_SINK_APPEL_DANS = re.compile(r"\b(%s)\(" % "|".join(SINKS_APPEL))
@@ -494,6 +511,14 @@ def _fragment_de_concatenation(avant: str) -> bool:
     tete = a[:q]
     d = _debut_du_groupe_ouvert(tete)
     return tete[:d].rstrip().endswith("+") if d >= 0 else False
+
+
+def _non_puits_reconnu(avant: str, attribut: str = "") -> bool:
+    """Vrai si le littéral est posé dans un emplacement dont on SAIT qu'il n'affiche pas de texte."""
+    a = avant.rstrip()
+    if RE_SINK_SETATTR.search(a):
+        return attribut.strip() not in ATTRS_HTML
+    return bool(RE_NON_PUITS.search(a))
 
 
 def _dynamique(s: str, avant: str, apres: str) -> bool:
@@ -607,7 +632,9 @@ def extraire_module(src: str) -> tuple[list[str], list[str], list[str], list[str
         candidat = _candidat(courant.replace(SENTINELLE, ""))
         if not _est_puits(avant, attribut_precedent):
             # AUCUN puits reconnu : la garde ne regarde pas là. On le DIT au lieu de l'oublier.
-            if candidat and not _dynamique(courant, avant, apres) and not (bloc_en or RE_CHOIX_PAR_LANG.search(avant)):
+            if (candidat and not _dynamique(courant, avant, apres)
+                    and not (bloc_en or RE_CHOIX_PAR_LANG.search(avant))
+                    and not _non_puits_reconnu(avant, attribut_precedent)):
                 hors_regard.append(courant)
             continue
         if not candidat:
@@ -700,8 +727,9 @@ INTERDITS = {"src_ip", "/api/v1/alerts", "count", "sort -count",
 # apparences d'un affichage et qu'aucun critère de puits ne reconnaît ; le témoin exige qu'elle sorte en
 # HORS-REGARD, ni comptée ni oubliée. Si la garde apprend un jour à lire l'une d'elles, ce témoin CASSE
 # (code 2) et force la mise à jour de l'aveu — la colonne « hors-regard » et son cliquet — avant tout verdict.
-# Parts mesurées le 2026-08-23 sur `web/` : fabrique partagée ~35 %, branche de ternaire ~20 %, valeur sous
-# une clé non reconnue ~26 %, entrée de tableau et valeur de retour pour le reste.
+# Parts mesurées le 2026-08-23 sur `web/`, 747 occurrences hors-regard classées par la forme du contexte :
+# argument d'un appel (fabrique propre au module) 38,8 %, valeur sous une clé d'objet non reconnue 26,6 %,
+# reste non classé 16,9 %, branche de ternaire 10,2 %, entrée de tableau 5,0 %, valeur de retour 2,5 %.
 CORPUS_ANTI_REGARD = r"""
 const cols = ['Entrée de tableau'];
 function nom() { return 'Valeur de retour'; }
@@ -709,10 +737,14 @@ host.appendChild(opt('Argument de fabrique partagée'));
 const t = cond ? 'Branche de ternaire vraie' : 'Branche de ternaire fausse';
 const phrases = { page: 'Phrase sous une clé inconnue' };
 el.setAttribute('d', 'Attribut non affiché');
+el.className = 'classe css composee';
 """
 ATTENDUS_HORS_REGARD = {"Entrée de tableau", "Valeur de retour", "Argument de fabrique partagée",
                         "Branche de ternaire vraie", "Branche de ternaire fausse",
-                        "Phrase sous une clé inconnue", "Attribut non affiché"}
+                        "Phrase sous une clé inconnue"}
+# Ceux-là ne sont ni comptés ni avoués : la garde SAIT qu'ils n'affichent rien. Un aveu qui les nommerait
+# mélangerait l'INDÉCIDABLE et le DÉJÀ TRANCHÉ, et ferait rougir le cliquet sur une classe CSS neuve.
+ATTENDUS_HORS_POPULATION = {"Attribut non affiché", "classe css composee"}
 
 
 def valider_instrument() -> list[str]:
@@ -751,6 +783,11 @@ def valider_instrument() -> list[str]:
     perdus = sorted(ATTENDUS_HORS_REGARD - hors_a - vus_a)
     if perdus:
         errs.append(f"anti-corpus : {perdus} n'est ni compté ni rendu hors-regard — l'aveu ne couvre plus ces formes.")
+    su = sorted(ATTENDUS_HORS_POPULATION & (vus_a | hors_a))
+    if su:
+        errs.append(f"anti-corpus : {su} est compté ou avoué alors que son emplacement n'affiche jamais de texte "
+                    f"(classe CSS, attribut non affiché) : l'aveu doit nommer ce dont la garde ne peut PAS décider, "
+                    f"pas ce qu'elle sait déjà hors sujet.")
     en_trop = sorted(hors_a - ATTENDUS_HORS_REGARD)
     if en_trop:
         errs.append(f"anti-corpus : hors-regard inattendu {en_trop} — l'anti-corpus doit nommer EXACTEMENT ce que la "

@@ -731,6 +731,13 @@ button.btn-busy::after{content:"";position:absolute;top:50%;left:50%;width:12px;
 .ackdone .ic{width:14px;height:14px}
 /* outils d'en-tête de panneau (tri + pliage) regroupés à droite du titre */
 .hdtools{display:inline-flex;gap:8px;align-items:center}
+/* P11.12-a — LA RECHERCHE D'UNE LISTE. Le champ prend le chrome partagé `.field` (posé par le câblage,
+   `recherche_de_liste.js`) ; ici seule sa LARGEUR dans les outils d'en-tête, bornée pour que le tri, le
+   pliage et les boutons de création restent sur la ligne. `.recherche-resume` est la phrase qu'une liste
+   filtrée doit à son lecteur : combien de lignes sur combien, ou pourquoi il n'y en a aucune. */
+#rule-search{max-width:230px}
+.recherche-resume{margin:2px 0 9px;font-size:12px}
+@media(max-width:760px){#rule-search{max-width:150px}}
 
 /* --- Lot 1 : toggle auto-refresh (état on/off) --- */
 .autotgl{gap:6px}
@@ -750,6 +757,11 @@ button.btn-busy::after{content:"";position:absolute;top:50%;left:50%;width:12px;
 /* FIX 2 : cloche d'une source chaude = lien vers ses alertes (cliquable + survol explicite) */
 .fhot[data-src]{cursor:pointer}
 .fhot[data-src]:hover{background:color-mix(in srgb,var(--warn) 26%,transparent);border-color:var(--warn)}
+/* P11.3-d — la RÉPARTITION des alertes actives (avec cloche / sans flux / sans imputation). NEUTRE par
+   construction : ce n'est pas une anomalie mais un partage dont la somme se retrouve. Seul le compte
+   « sans flux » est cliquable — il pivote vers les alertes qui portent le jeton d'inconnu nommé. */
+.fimput .forph[data-src]{cursor:pointer;border-bottom:1px dotted currentColor}
+.fimput .forph[data-src]:hover{color:var(--fg)}
 .fgroup{margin:8px 0}
 .fgrouphd{display:flex;align-items:center;gap:7px;width:100%;background:transparent;border:0;border-bottom:1px solid var(--bd);color:var(--mut);cursor:pointer;padding:5px 2px;text-align:left;font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:.06em}
 .fgrouphd:hover{color:var(--acc)}

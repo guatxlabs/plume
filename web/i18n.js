@@ -23,6 +23,11 @@ const I18N_EN = {
   "Chaque compte qui a atteint cette console, quelle que soit sa provenance : ce que la liste ci-dessus ne peut pas montrer. Un compte d'annuaire externe n'est ni créé ni géré ici — son rôle vient de ses groupes, et il se révoque dans l'annuaire.": "Every account that has reached this console, whatever its provenance: what the list above cannot show. An external-directory account is neither created nor managed here — its role comes from its groups, and it is revoked in the directory.",
   "aucun accès observé pour le moment": "no access observed yet",
   "Cette règle vient d'un overlay de configuration (config.d) : le fichier réimpose son contenu au prochain démarrage. Seule la bascule actif/inactif survit ; pour un changement durable, modifiez le fichier côté dépôt.": "This rule comes from a configuration overlay (config.d): the file reimposes its content at the next start. Only the on/off switch survives; for a durable change, edit the file on the repository side.",
+  // P11.12-a — LA RECHERCHE DES RÈGLES : le champ, ce qu'il cherche, et ce que la liste filtrée dit d'elle-même.
+  "Rechercher une règle": "Search a rule", "Rechercher une règle…": "Search a rule…",
+  "Cherche dans le nom, la requête et la technique ATT&CK de chaque règle ; se combine avec le tri. Échap efface la recherche.": "Searches the name, the query and the ATT&CK technique of every rule; combines with the sort. Esc clears the search.",
+  "règle(s) — la recherche cache le reste ; le tri reste celui du sélecteur": "rule(s) — the search hides the rest; the sort stays the one selected",
+  "Aucune règle ne porte ces mots dans son nom, sa requête ou sa technique ATT&CK. Échap efface la recherche.": "No rule carries those words in its name, its query or its ATT&CK technique. Esc clears the search.",
   "Résultats": "Results", "Capteurs": "Sensors", "Hôtes": "Hosts", "Playbooks": "Playbooks", "Actions": "Actions",
   // header / contrôles
   // P11 (2026-08-22) : chaînes posées par le superviseur — confirmation de source push, titres de la barre de recherche, porte des alertes

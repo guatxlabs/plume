@@ -269,6 +269,10 @@
     <div class="panelhead">
       <h2 id="rules-h">Règles de détection <button class="ihelp vhelp" data-help="rules" type="button" title="Aide : Règles de détection">?</button></h2>
       <div class="hdtools">
+        <!-- P11.12-a : la recherche des règles. Se COMPOSE avec le tri ci-contre et le pliage : elle ne les
+             remplace pas. Cherche ce qu'un analyste connaît — le nom, la requête, la technique ATT&CK (son
+             identifiant comme son nom). Champ câblé par le mécanisme partagé `recherche_de_liste.js`. -->
+        <input id="rule-search" type="search" placeholder="Rechercher une règle…" aria-label="Rechercher une règle" title="Cherche dans le nom, la requête et la technique ATT&amp;CK de chaque règle ; se combine avec le tri. Échap efface la recherche.">
         <select id="rule-sort" class="picon" title="Trier les règles"><option value="id">Ordre</option><option value="sev">Sévérité ↓</option></select>
         <button id="rule-collapse" type="button" class="picon" title="Plier / déplier" aria-expanded="true"></button>
         <button id="sigma-import-btn" type="button" title="Importer un ruleset Sigma (absorbe une bibliothèque de détection open-source)">Importer un ruleset Sigma</button>

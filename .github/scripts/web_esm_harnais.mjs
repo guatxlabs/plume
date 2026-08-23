@@ -1412,9 +1412,120 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// 23. LA RECHERCHE D'UNE LISTE EST UN MÉCANISME PARTAGÉ, ET ELLE SE COMPOSE (`P11.12-a`).
+//     (a) LE PRÉDICAT. Recherche vide = la liste entière (une recherche qui n'est pas faite ne cache
+//         rien) ; plusieurs mots = ET (ajouter un mot RESSERRE) ; casse et accents indifférents.
+//     (b) CE QU'UNE RÈGLE OFFRE À LA RECHERCHE : son nom, sa requête, l'identifiant de la technique ET
+//         son nom. Chacun est jugé SÉPARÉMENT — un texte cherchable qui aurait perdu la requête ou la
+//         technique passerait un témoin qui ne chercherait que par le nom.
+//     (c) LA COMPOSITION. Recherche vide -> le groupement repliable par gravité, comme avant. Recherche
+//         posée -> une liste de RÉSULTATS plate, ordonnée par le tri COURANT (le tri n'est pas remplacé),
+//         précédée du compte « trouvées / total » : une liste qui cache des lignes le dit.
+//     (d) L'ABSENCE DE RÉSULTAT SE DIT, et elle dit CE QUI est cherché — sinon elle est indevinable.
+//     (e) LE CHAMP EST LE MÊME PARTOUT : le câblage partagé pose le chrome `.field` et Échap vide.
+// ---------------------------------------------------------------------------------------------
+{
+  const rl = await import(pathToFileURL(path.join(WEB, "recherche_de_liste.js")).href);
+  const { renderRules, loadRules, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, texteCherchableDUneRegle } = await import(pathToFileURL(path.join(WEB, "detection_admin.js")).href);
+  const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const cueillir = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir(c, pred, acc)); return acc; };
+  const aLaClasse = (e, c) => e.classList && e.classList.contains(c);
+
+  // (a) le prédicat, sur des lignes nues.
+  const lignes = [{ n: "Fenêtre glissante" }, { n: "SSH brute force" }, { n: "brute force RDP" }];
+  const texte = (l) => l.n;
+  exiger(rl.filtrerParRecherche(lignes, "", texte).length === 3, "(23a) une recherche vide ne rend pas la liste entière");
+  exiger(rl.filtrerParRecherche(lignes, "   ", texte).length === 3, "(23a) une recherche d'espaces seuls filtre quelque chose");
+  exiger(rl.filtrerParRecherche(lignes, "brute", texte).length === 2, "(23a) un mot ne trouve pas les deux lignes qui le portent");
+  exiger(rl.filtrerParRecherche(lignes, "brute ssh", texte).length === 1, "(23a) deux mots ÉLARGISSENT au lieu de resserrer : la recherche est un OU");
+  exiger(rl.filtrerParRecherche(lignes, "SSH", texte).length === 1, "(23a) la casse change le résultat");
+  exiger(rl.filtrerParRecherche(lignes, "fenetre", texte).length === 1, "(23a) un mot sans accent ne trouve pas le mot accentué");
+
+  // (b) ce qu'une règle offre à la recherche — chaque source jugée séparément.
+  const regle = { id: 1, name: "Échecs SSH", query: "search source=sshd failed | stats count", mitre: "T1110.003", severity: 3, managed: 2, enabled: 1, op: ">", threshold: 5, risk_score: 0 };
+  const cherchable = texteCherchableDUneRegle(regle);
+  for (const [quoi, mot] of [["le nom", "Échecs SSH"], ["la requête", "sshd"], ["l'identifiant de la technique", "T1110.003"], ["le nom de la technique", "Brute Force"]]) {
+    exiger(rl.correspondALaRecherche(cherchable, mot), `(23b) ${quoi} n'est pas cherchable : « ${cherchable} »`);
+  }
+  exiger(rl.correspondALaRecherche(cherchable, "T1110"), "(23b) la technique PARENTE ne trouve pas la règle taguée par une sous-technique : la matrice ATT&CK n'ouvrirait rien");
+  exiger(!rl.correspondALaRecherche(cherchable, "T1190"), "(23b) témoin inverse : une technique étrangère trouve la règle — le texte cherchable colle tout");
+
+  // (c)(d) la composition, sur le panneau réel.
+  const liste = new Element("div"); liste.id = "rule-list";
+  const qsOrigine = document.querySelector, fetchOrigine = globalThis.fetch, triOrigine = S.ruleSort;
+  const catalogue = [
+    { id: 1, name: "Échecs SSH", query: "search source=sshd failed | stats count", mitre: "T1110", severity: 2, managed: 2, enabled: 1, op: ">", threshold: 5, risk_score: 0, last_value: null },
+    { id: 2, name: "Scan de ports", query: "search source=ufw | stats dc(dport) by src_ip", mitre: "T1046", severity: 4, managed: 2, enabled: 1, op: ">", threshold: 15, risk_score: 0, last_value: null },
+    { id: 3, name: "Exploitation web", query: "search source=web status>=500 | stats count", mitre: "T1190", severity: 3, managed: 2, enabled: 0, op: ">", threshold: 50, risk_score: 0, last_value: null },
+  ];
+  document.querySelector = (sel) => (sel === "#rule-list" ? liste : new Element("div"));
+  globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ rules: catalogue }) });
+  try {
+    S.AUTH = { user: "root", role: "admin" };
+    S.ruleSort = "sev";
+    await loadRules();
+    const groupesAvant = cueillir(liste, (e) => aLaClasse(e, "fgroup"), []).length;
+    exiger(groupesAvant === 3, `(23c) sans recherche, le groupement repliable par gravité a changé : ${groupesAvant} groupe(s) au lieu de 3`);
+    exiger(cueillir(liste, (e) => aLaClasse(e, "recherche-resume"), []).length === 0, "(23c) sans recherche, la liste rend quand même un résumé de recherche");
+
+    poserLaRechercheDesRegles("sshd");
+    exiger(cueillir(liste, (e) => aLaClasse(e, "fgroup"), []).length === 0, "(23c) une recherche posée laisse le groupement repliable : une correspondance tombée dans une section repliée resterait invisible");
+    const resume = cueillir(liste, (e) => aLaClasse(e, "recherche-resume"), [])[0];
+    exiger(!!resume && /1 \/ 3/.test(resume.textContent), `(23c) la liste filtrée ne dit pas combien de lignes sur combien : « ${resume && resume.textContent} »`);
+    exiger(!!resume && /le tri reste/.test(resume.textContent), `(23c) le résumé ne dit pas que le tri est conservé : « ${resume && resume.textContent} »`);
+    let nomsRendus = cueillir(liste, (e) => aLaClasse(e, "rulename"), []).map((e) => e.textContent);
+    exiger(nomsRendus.length === 1 && /Échecs SSH/.test(nomsRendus[0]), `(23c) la recherche par le texte de la REQUÊTE ne rend pas la seule règle attendue : ${JSON.stringify(nomsRendus)}`);
+
+    // le tri courant ordonne les résultats — il n'est pas remplacé par la recherche.
+    poserLaRechercheDesRegles("search");
+    nomsRendus = cueillir(liste, (e) => aLaClasse(e, "rulename"), []).map((e) => e.textContent.replace(/\s+/g, " ").trim());
+    exiger(nomsRendus.length === 3, `(23c) instrument : la recherche large ne rend pas les trois règles (${nomsRendus.length})`);
+    exiger(/^Scan de ports/.test(nomsRendus[0]) && /^Échecs SSH/.test(nomsRendus[2]), `(23c) le tri « gravité » n'ordonne PAS les résultats de la recherche : ${JSON.stringify(nomsRendus)}`);
+    S.ruleSort = "id";
+    renderRules();
+    nomsRendus = cueillir(liste, (e) => aLaClasse(e, "rulename"), []).map((e) => e.textContent.replace(/\s+/g, " ").trim());
+    exiger(/^Échecs SSH/.test(nomsRendus[0]), `(23c) changer le tri ne réordonne pas les résultats : ${JSON.stringify(nomsRendus)}`);
+
+    // (d) aucun résultat : la liste le dit, et dit ce qu'elle a cherché.
+    poserLaRechercheDesRegles("kerberoasting");
+    const vide = cueillir(liste, (e) => aLaClasse(e, "recherche-resume"), [])[0];
+    exiger(!!vide && /Aucune règle/.test(vide.textContent), `(23d) une recherche sans résultat ne dit rien : « ${vide && vide.textContent} »`);
+    exiger(!!vide && /nom/.test(vide.textContent) && /requête/.test(vide.textContent) && /ATT&CK/.test(vide.textContent), `(23d) l'absence de résultat ne dit pas CE QUI est cherché : « ${vide && vide.textContent} »`);
+    exiger(cueillir(liste, (e) => aLaClasse(e, "rulerow"), []).length === 0, "(23d) une recherche sans résultat rend quand même des lignes");
+
+    // retour à l'état de départ : vider la recherche rend le groupement.
+    poserLaRechercheDesRegles("");
+    exiger(cueillir(liste, (e) => aLaClasse(e, "fgroup"), []).length === 3, "(23c) vider la recherche ne rend pas le groupement par gravité");
+
+    // (f) UNE RÈGLE ENREGISTRÉE SE VOIT : le retour d'un enregistrement vide la recherche, sinon le geste
+    //     réussirait dans une liste qui n'en montre rien.
+    poserLaRechercheDesRegles("kerberoasting");
+    exiger(cueillir(liste, (e) => aLaClasse(e, "rulerow"), []).length === 0, "(23f) instrument : la recherche de départ montre encore des règles, la suite ne prouverait rien");
+    await apresEnregistrementDUneRegle();
+    exiger(cueillir(liste, (e) => aLaClasse(e, "fgroup"), []).length === 3, "(23f) après un enregistrement, la recherche filtre encore : la règle qu'on vient d'écrire reste invisible");
+    exiger(cueillir(liste, (e) => aLaClasse(e, "recherche-resume"), []).length === 0, "(23f) après un enregistrement, la liste dit encore qu'elle est filtrée");
+
+    // (e) le champ partagé : chrome posé, Échap vide, et le rendu suit.
+    const champ = new Element("input"); champ.value = "";
+    const ecouteurs = {};
+    champ.addEventListener = (type, fn) => { (ecouteurs[type] = ecouteurs[type] || []).push(fn); };
+    let vus = [];
+    const poignee = rl.champDeRecherche(champ, { auChangement: (v) => vus.push(v) });
+    exiger(champ.classList.contains("field"), "(23e) le champ de recherche partagé ne prend pas le chrome `.field` : il retombe au cadre natif du navigateur");
+    champ.value = "ssh"; (ecouteurs.input || []).forEach((f) => f());
+    exiger(poignee.valeur() === "ssh" && vus[vus.length - 1] === "ssh", `(23e) la frappe n'atteint pas le rendu : ${JSON.stringify(vus)}`);
+    (ecouteurs.keydown || []).forEach((f) => f({ key: "Escape" }));
+    exiger(champ.value === "" && vus[vus.length - 1] === "", `(23e) Échap ne vide pas la recherche : « ${champ.value} », ${JSON.stringify(vus)}`);
+    console.log(`[recherche] prédicat ET multi-mots insensible à la casse et aux accents ; une règle se cherche par son nom, sa requête, l'identifiant de sa technique et le nom de celle-ci ; la recherche posée rend une liste plate ordonnée par le tri courant avec le compte « trouvées / total », l'absence de résultat dit ce qui est cherché, et vider rend le groupement`);
+  } finally {
+    document.querySelector = qsOrigine; globalThis.fetch = fetchOrigine; S.ruleSort = triOrigine; S.AUTH = null;
+  }
+}
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus ; la ligne d'une règle rend DÉJÀ tester, éditer, supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur.`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus ; la ligne d'une règle rend DÉJÀ tester, éditer, supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur ; et LA recherche de liste, partagée, resserre sur plusieurs mots sans se soucier de la casse ni des accents, cherche une règle par son nom, sa requête et sa technique, rend une liste plate ordonnée par le tri courant qui DIT combien de lignes sur combien elle montre, nomme ce qu'elle a cherché quand elle ne trouve rien, et se vide au retour d'un enregistrement pour que la règle écrite se voie.`);

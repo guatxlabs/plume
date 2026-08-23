@@ -9,7 +9,11 @@
 //   POST /api/threat-intel/import   <- {bundle:{…}, source?, env_id?}  -> {imported, skipped:[…]}
 // SÉCU UI : tout en textContent/esc (anti-XSS) ; le contenu IOC n'est pas un secret (renseignement).
 import { $, api, apiSend, disclosure, fetchInto, fmtTs, humanAge, modal, muted, pagedList, sev, toast } from './core.js';
+import { champDeRecherche, filtrerParRecherche, texteCherchable } from './recherche_de_liste.js';
 import { uiIsAdmin } from './multitenant.js';
+// P11.12-a : ce panneau avait le PREMIER filtre de liste de la console, câblé en place. Il prend
+// désormais le mécanisme partagé (`recherche_de_liste.js`) — même prédicat, mêmes mots, même Échap que
+// la recherche des règles ; il n'en reste pas une seconde écriture.
 
 // vocabulaire des types d'IOC — MIROIR de guatx_core::ti::IOC_TYPES (le serveur ignore tout type hors liste).
 const IOC_TYPES = ['ip', 'domain', 'url', 'hash_md5', 'hash_sha1', 'hash_sha256', 'email'];
@@ -78,10 +82,8 @@ async function loadIocs() {
 
 function renderIocList() {
   const host = $('#ti-ioc-list'); if (!host) return;
-  const q = _iocSearch.trim().toLowerCase();
-  const rows = q
-    ? _allIocs.filter(x => [x.value, x.type, x.source].some(v => String(v == null ? '' : v).toLowerCase().includes(q)))
-    : _allIocs.slice();
+  const q = _iocSearch.trim();
+  const rows = filtrerParRecherche(_allIocs, q, x => texteCherchable([x.value, x.type, x.source]));
   const nowS = Math.floor(Date.now() / 1000);
   const columns = [
     { key: 'type', label: 'Type', sortable: true, sortVal: r => r.type || '', render: r => { const c = document.createElement('code'); c.textContent = r.type || '?'; return c; } },
@@ -191,7 +193,8 @@ function initThreatIntel() {
   if ($('#ti-import-toggle') && $('#ti-import-form')) disclosure($('#ti-import-toggle'), $('#ti-import-form'), { open: toggleImport }); // P11.4-a : dépli partagé (second clic = repli, état visible)
   if ($('#ti-imp-cancel')) $('#ti-imp-cancel').onclick = () => { const f = $('#ti-import-form'); if (f) f.classList.add('hidden'); };
   if ($('#ti-import-form')) $('#ti-import-form').addEventListener('submit', doImport);
-  if ($('#ti-search')) { $('#ti-search').classList.add('field'); $('#ti-search').addEventListener('input', () => { _iocSearch = $('#ti-search').value || ''; renderIocList(); }); } // P11.4-b : le cadre du filtre prend le chrome partagé `.field` (il était natif)
+  // P11.4-b : le cadre du filtre prend le chrome partagé `.field` — posé désormais par le câblage partagé.
+  if ($('#ti-search')) { const poignee = champDeRecherche($('#ti-search'), { auChangement: v => { _iocSearch = v; renderIocList(); } }); _iocSearch = poignee.valeur(); }
 }
 
 export { loadThreatIntel, initThreatIntel };

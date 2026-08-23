@@ -11,6 +11,9 @@ import { loadAttackMatrix } from './attack.js';
 import { setAlertMitreFilter } from './alerts.js';
 // P11.2-a/b + P11.1-e : ligne, interrupteur et destination PARTAGÉS (règles, playbooks, runbooks, détection avancée).
 import { producerRow, rowButton, announceCreated, takePendingNote, detectionDestination, destinationNote, DESTINATIONS } from './producer_ui.js';
+// P11.12-a : LE champ de recherche partagé des listes (voir `recherche_de_liste.js` pour la mesure
+// des trois filtres existants et la raison pour laquelle aucun n'était reprenable).
+import { champDeRecherche, filtrerParRecherche, resumeDeRecherche, texteCherchable } from './recherche_de_liste.js';
 
 // PURPLE — panneau couverture ATT&CK (onglet Détection) : agrège alert.mitre par technique via
 // /api/coverage/detections (count + 1re détection), trié count DESC. Chaque chip pivote vers les
@@ -58,14 +61,62 @@ function refreshMitreHint() {
 if ($(RF.mitre)) $(RF.mitre).addEventListener('input', refreshMitreHint);
 /* state: editingRule -> S (state.js) */
 /* state: ruleSort -> S (state.js) */
+// P11.12-a — CE QU'UNE RÈGLE OFFRE À LA RECHERCHE : ce qu'un analyste connaît d'elle. Son NOM, sa REQUÊTE
+// (« où est la règle qui compte les échecs SSH ? » se répond par le texte de la requête, pas par le nom),
+// et la TECHNIQUE couverte — son identifiant ET son nom, parce que « brute force » est ce qu'on retient,
+// pas « T1110 ». Rien d'autre : la gravité a déjà son tri et son groupement, les y remettre ferait
+// remonter tout le catalogue sur le mot « high ».
+// La sous-technique tombe d'elle-même : chercher « T1110 » trouve la règle taguée « T1110.003 », par
+// inclusion de chaîne — c'est aussi ce qui fait qu'une cellule de la matrice ATT&CK (`P11.6-b`), dont
+// l'identifiant est la technique PARENTE, ouvre bien les règles qui la couvrent.
+function texteCherchableDUneRegle(r) {
+  return texteCherchable([r && r.name, r && r.query, r && r.mitre, mitreName((r && r.mitre) || '')]);
+}
+// La recherche courante du panneau. Remplacée au câblage du champ ; sans champ dans le document (test,
+// rendu partiel), elle vaut la chaîne vide et la liste rend exactement comme avant.
+let rechercheDesRegles = () => '';
+// L'autre bout de la même poignée : POSER la recherche depuis ailleurs. Une surface qui sait déjà quelle
+// règle intéresse l'analyste (une cellule de la matrice ATT&CK, un chip de technique) ouvre ce panneau
+// SUR ce critère au lieu de le laisser recommencer. Exportée pour cela, et pour que le harnais juge la
+// composition du tri et de la recherche par le même chemin que l'interface.
+let poserLaRechercheDesRegles = () => {};
+// Dernier catalogue servi par `/api/rules`. La frappe REDESSINE, elle ne recharge pas : filtrer est une
+// comparaison de chaînes sur des lignes déjà en mémoire, et une requête HTTP par caractère serait un coût
+// réseau pour un travail local (même partage `charger`/`rendre` que le panneau des indicateurs).
+let reglesChargees = [];
 async function loadRules() {
   const wrap = $('#rule-list'); if (!wrap) return;
   let rules = [];
   try { ({ rules } = await api('/rules')); } catch (e) { return; }
+  reglesChargees = rules;
+  renderRules();
+}
+function renderRules() {
+  const wrap = $('#rule-list'); if (!wrap) return;
+  const rules = reglesChargees.slice();
   if (S.ruleSort === 'sev') rules.sort((a, b) => b.severity - a.severity || a.id - b.id);
   wrap.replaceChildren();
   const note = takePendingNote('rules'); if (note) wrap.appendChild(note); // P11.1-e : où arrive ce qui vient d'être créé
   if (!rules.length) { wrap.appendChild(muted('aucune règle - clique " + Nouvelle règle "')); return; }
+  // P11.12-a — RECHERCHE ACTIVE : liste de RÉSULTATS, plate, dans l'ordre du sélecteur de tri.
+  // POURQUOI PLATE ET NON GROUPÉE. Le groupement par gravité est REPLIABLE et son pliage est PERSISTÉ
+  // (`soc_rule_collapsed`) : une correspondance tombée dans une section repliée serait invisible, et
+  // forcer l'ouverture pendant la recherche écraserait le pliage choisi par l'exploitant dès le premier
+  // clic. Une recherche répond par ses résultats ; le classement par gravité revient dès qu'elle est vidée.
+  // Le tri, lui, n'est PAS remplacé : il s'applique avant le filtre et ordonne les résultats.
+  const requete = rechercheDesRegles();
+  if (requete) {
+    const trouvees = filtrerParRecherche(rules, requete, texteCherchableDUneRegle);
+    wrap.appendChild(resumeDeRecherche(trouvees.length, rules.length, {
+      filtre: document.createTextNode('règle(s) — la recherche cache le reste ; le tri reste celui du sélecteur'),
+      vide: document.createTextNode('Aucune règle ne porte ces mots dans son nom, sa requête ou sa technique ATT&CK. Échap efface la recherche.'),
+    }));
+    if (!trouvees.length) return;
+    const host = document.createElement('div');
+    pagedList(host, { mode: 'client', pageSize: 50, rows: trouvees, renderRow: ruleRow });
+    wrap.appendChild(host);
+    return;
+  }
   // ITEM 7 : grouper PAR SÉVÉRITÉ (critical/high/medium/low/info), critique d'abord — sections repliables.
   const set = lsSet('soc_rule_collapsed');
   const groups = new Map();
@@ -79,6 +130,15 @@ async function loadRules() {
     pagedList(host, { mode: 'client', pageSize: 50, rows: arr, renderRow: ruleRow });
     wrap.appendChild(collapsibleGroup(set, 'soc_rule_collapsed', 'sev:' + s, sev(s), arr.length, [host], dot));
   });
+}
+// P11.12-a — UNE RÈGLE QU'ON VIENT D'ENREGISTRER DOIT SE VOIR. Une recherche active n'a aucune raison de
+// contenir la règle qu'on vient d'écrire : le geste réussirait et la liste n'en montrerait rien — un succès
+// invisible, la famille de défauts que cette campagne poursuit. La recherche est donc VIDÉE au retour d'un
+// enregistrement (et d'elle seule : supprimer depuis une recherche la conserve, on est en train de faire le
+// ménage dans un sous-ensemble). Le classement par gravité revient, la règle est là où on l'attend.
+function apresEnregistrementDUneRegle() {
+  poserLaRechercheDesRegles('');
+  return loadRules();
 }
 // Modèle de ligne d'une règle (forme UNIQUE partagée avec playbooks/runbooks — `producer_ui.js`).
 // Conséquence de l'interrupteur : lever des alertes (ou du risque) ; pas de confirmation (rien ne touche le
@@ -209,7 +269,7 @@ if ($('#rule-form')) $('#rule-form').addEventListener('submit', async e => {
   if (!await contentSubmit(S.editingRule ? '/rules/' + S.editingRule : '/rules', body, '#rf-result')) return;
   closeRuleForm();
   announceCreated('rules', 'alerts', body.name, body.enabled ? 'première évaluation dans ' + body.interval_s + ' s' : 'OFF : activez-la dans la liste'); // P11.1-e
-  loadRules();
+  apresEnregistrementDUneRegle();
   renderCoverage(); // re-render la couverture après création/édition (le tag MITRE peut avoir changé)
 });
 loadRules();
@@ -220,7 +280,10 @@ initSigmaImport({ onImported: () => { loadRules(); renderCoverage(); loadAttackM
 // tri + pliage du panneau Règles (persistés)
 (() => {
   const sortSel = $('#rule-sort'), collapse = $('#rule-collapse'), list = $('#rule-list');
-  if (sortSel) { sortSel.value = S.ruleSort; sortSel.onchange = () => { S.ruleSort = sortSel.value; localStorage.setItem('soc_rule_sort', S.ruleSort); loadRules(); }; }
+  // P11.12-a : le champ de recherche partagé. Il REDESSINE (pas de rechargement) et se compose avec le tri.
+  const champ = $('#rule-search');
+  if (champ) { const poignee = champDeRecherche(champ, { auChangement: () => renderRules() }); rechercheDesRegles = poignee.valeur; poserLaRechercheDesRegles = poignee.poser; }
+  if (sortSel) { sortSel.value = S.ruleSort; sortSel.onchange = () => { S.ruleSort = sortSel.value; localStorage.setItem('soc_rule_sort', S.ruleSort); renderRules(); }; }
   if (collapse && list) {
     const apply = open => { list.hidden = !open; collapse.setAttribute('aria-expanded', open ? 'true' : 'false'); collapse.innerHTML = ic(open ? 'chevdown' : 'chevright'); };
     apply(localStorage.getItem('soc_rule_open') !== '0');
@@ -574,4 +637,4 @@ if ($('#pb-form')) $('#pb-form').addEventListener('submit', async e => {
 loadPlaybooks();
 loadMode();
 
-export { renderCoverage, loadRules, loadNotifiers, loadParsers, loadActions, loadMode, loadPlaybooks, ruleRowModel, ruleRow, playbookRowModel, pbRow, actionKindOptionLabel };
+export { renderCoverage, loadRules, renderRules, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, loadNotifiers, loadParsers, loadActions, loadMode, loadPlaybooks, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };

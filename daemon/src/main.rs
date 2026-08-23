@@ -180,6 +180,7 @@ pub(crate) use handlers::freshness::*;
 pub(crate) use handlers::governance::*; // #59 gouvernance : legal-hold + export ledger + sinks + rôles composables
 pub(crate) use handlers::purge::*; // purge explicite d'événements (routes plan/apply, gate PLUME_PURGE_API)
 pub(crate) use handlers::fleet::*;
+pub(crate) use handlers::hotes_declares::*; // P11.10-a : le verdict d'attente d'un hôte + la surface de déclaration
 pub(crate) use handlers::idp::*;
 #[cfg(feature = "ai")]
 pub(crate) use handlers::ai::*; // #16 couche IA conseil (NL→GXQL) — feature `ai` OFF par défaut -> module ENTIÈREMENT exclu à la compilation

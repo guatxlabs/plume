@@ -416,6 +416,12 @@ pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
         // étouffe un signal) ; il ne touche ni la collecte, ni les règles, ni aucun secret -> editor+.
         // GET (liste brute) = lecture viewer+ (section 6) : l'inventaire rend déjà ces colonnes à tout rôle.
         || path.starts_with("/api/sources/settings")
+        // P11.10-a — CE QU'ON ATTEND D'UN HÔTE (signal attendu / silence attendu / retiré) : déclarer une
+        // machine de son propre parc est un geste ÉDITORIAL, réversible et audité — à la sévérité 3 quand
+        // il éteint le dead-man's-switch de parc sur cette machine. Il ne touche ni la collecte, ni les
+        // règles, ni la rétention, ni aucun secret -> editor+. GET (liste brute) = viewer+ (section 6) :
+        // l'inventaire de flotte rend déjà ces colonnes à tout rôle.
+        || path.starts_with("/api/hosts/settings")
     {
         return MinRole::Write;
     }

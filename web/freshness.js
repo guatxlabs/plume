@@ -53,12 +53,18 @@ async function renderIntegrations() {
   // P3.2-a — LE COMPTE D'HÔTES MUETS, seul chiffre de ce panneau qui parle des machines qui se sont tues
   // (les sondes ci-dessus ne le peuvent pas : leur portée les en empêche). `flotte` absent/null = la
   // lecture de l'inventaire a échoué -> on l'ÉCRIT au lieu d'afficher un zéro rassurant.
+  // P11.10-a — LA PART DÉCLARÉE EST DITE. Un compte qui rétrécit sans dire pourquoi se lit comme une
+  // amélioration ; « aucun muet » là où des machines muettes ont simplement été déclarées telles serait
+  // faux. La phrase porte donc le compte hors-alerte quand il existe, et rien quand il n'existe pas.
   const fl = d.flotte;
+  const declares = fl && fl.muets_declares_attendus
+    ? ` <span class="muted fldeclares">(+ ${fl.muets_declares_attendus} muet(s) au silence déclaré attendu, hors alerte)</span>`
+    : '';
   const flotteLigne = fl === undefined ? ''
     : fl === null ? '<div class="kv"><span class="muted">hôtes muets : inventaire illisible (aucun verdict rendu)</span></div>'
     : fl.muets > 0
-      ? `<div class="kv"><span class="fdot muet"></span><span><b>${fl.muets}</b> hôte(s) muet(s) sur ${fl.attendus} — aucun signal depuis plus de ${Math.round(fl.seuil_s / 60)} min</span></div>`
-      : `<div class="kv"><span class="muted">${fl.attendus} hôte(s) inventoriés, aucun muet</span></div>`;
+      ? `<div class="kv"><span class="fdot muet"></span><span><b>${fl.muets}</b> hôte(s) muet(s) sur ${fl.attendus} — aucun signal depuis plus de ${Math.round(fl.seuil_s / 60)} min${declares}</span></div>`
+      : `<div class="kv"><span class="muted">${fl.attendus} hôte(s) inventoriés, aucun muet non déclaré${declares}</span></div>`;
   // caption : sépare EXPLICITEMENT les 2 axes (couverture de sondes vs endpoints) et renvoie la SANTÉ à Fraîcheur.
   const cap = `<div class="muted intplug" style="font-size:11px">Capteurs = <b>couverture</b> (types de sondes déclarés ; un capteur mort est signalé <b>muet</b> ici) · Hôtes = <b>endpoints</b> (où les agents poussent). La santé fine par source (frais/calme/en retard/muet) vit dans Fraîcheur — « en retard » y désigne la même observation que « muet » ici, au même seuil.</div>`;
   // lien de découverte -> la Flotte (inventaire détaillé des hôtes : statut/enrôlement/dernier signal, paginé + export).

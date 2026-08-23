@@ -209,6 +209,20 @@ CREATE TABLE IF NOT EXISTS source_settings(
   updated INTEGER, updated_by TEXT, PRIMARY KEY(scope, source)
 );
 
+-- `host_settings` (v119, P11.10-a) : CE QU'ON ATTEND D'UN HÔTE, et QUI l'a déclaré. Trois valeurs dans un
+-- enum fermé (`ATTENTES_DECLARABLES`) : `signal_attendu` (le silence est un incident — déclaration
+-- explicite, distincte de l'absence de déclaration), `silence_attendu` (machine de test/fixture : elle
+-- reste dans le parc et dans la liste, mais n'alerte plus), `retire` (décommissionnée : elle sort du
+-- dénominateur, sans disparaître de la liste — `host_rollup` garde son historique). NULL = personne n'a
+-- rien dit, et le défaut reste « le silence alerte » : un dead-man's-switch dont le défaut serait
+-- l'inverse s'éteindrait sur toute machine que personne n'a pensé à déclarer. `attente_par`/`attente_le`
+-- sont la provenance PROPRE de la déclaration et ne bougent QUE sur elle (leçon mesurée de v118).
+CREATE TABLE IF NOT EXISTS host_settings(
+  scope TEXT NOT NULL DEFAULT 'global', host TEXT NOT NULL,
+  attente TEXT, attente_motif TEXT, attente_par TEXT, attente_le INTEGER,
+  updated INTEGER, updated_by TEXT, PRIMARY KEY(scope, host)
+);
+
 -- Override d'ACTIVATION du contenu de détection (v101, #1c-toggle). `detection_override` = décision ADMIN
 -- de (dés)activer une règle/parseur/playbook, keyée par (kind,name) STABLE. Sa RAISON D'ÊTRE : un overlay
 -- config.d (managed=1) est ré-UPSERTé au boot depuis le fichier git versionné -> l'`enabled` du fichier

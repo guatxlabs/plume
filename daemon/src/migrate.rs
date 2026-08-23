@@ -90,7 +90,7 @@ impl Drop for MigrationLogSilencer {
 /// rien (toutes ses gardes `v < N` sont fausses) et OPÈRE À L'AVEUGLE sur un schéma qu'il ne connaît pas
 /// -> risque de corruption (survivable AUJOURD'HUI car migrations additives, mais non gardé). On REFUSE
 /// d'ouvrir : arrêt PROPRE (exit non-zéro), JAMAIS un panic, JAMAIS un « proceed » silencieux.
-pub(crate) const CODE_SCHEMA_MAX: i64 = 118;
+pub(crate) const CODE_SCHEMA_MAX: i64 = 119;
 
 /// Lit `meta.schema_version` (défaut 1 si table/lignes absentes ou illisibles) — MÊME lecture que `migrate()`.
 /// Une base NEUVE (pas encore de table meta) renvoie 1 -> jamais refusée par la garde.
@@ -817,6 +817,7 @@ fn migrate_chain(conn: &Connection) -> bool {
     if v < 116 && !migrate_step(conn, 116, migrate_v116) { return false; }
     if v < 117 && !migrate_step(conn, 117, migrate_v117) { return false; }
     if v < 118 && !migrate_step(conn, 118, migrate_v118) { return false; }
+    if v < 119 && !migrate_step(conn, 119, migrate_v119) { return false; }
     true
 }
 
@@ -1299,6 +1300,48 @@ fn migrate_v118(conn: &MigTx) {
     );
     let _ = conn.execute("UPDATE meta SET value='118' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v118 (P11.3-c : source_settings gagne la provenance PROPRE de chaque déclaration (expected_par/expected_le) et la CADENCE déclarable par l'exploitant (cadence/cadence_interval_s/cadence_par/cadence_le) — « attendu » veut dire déclaré par quelqu'un, et une source installée hors de ce dépôt peut enfin dire son rythme ; affichage seul, aucune alerte n'en dérive)");
+}
+
+/// v119 (`P11.10-a` — CE QU'ON ATTEND D'UN HÔTE SE DÉCLARE, ET LE COMPTE CESSE DE MÉLANGER). UNE table
+/// ADDITIVE, `host_settings`, sur le modèle exact de `source_settings`.
+///
+/// CE QUI ÉTAIT MESURÉ, ET QUI ÉTAIT DÉJÀ ÉCRIT DANS LE CODE : l'en-tête de `sonde_de_flotte.rs` déclarait
+/// noir sur blanc qu'« une machine DÉCOMMISSIONNÉE reste comptée muette indéfiniment » et que, contrairement
+/// aux autres résidus du module, « celui-ci NE se résorbe PAS tout seul ». La charge utile de `/api/fleet`
+/// ne portait AUCUN champ permettant de distinguer une machine retirée, une machine de test et un agent
+/// tombé — les trois rendaient le mot `silent` — et la sonde de parc les alertait toutes les trois.
+///
+/// `attente` : enum fermé partagé avec l'écriture (`ATTENTES_DECLARABLES`) ; NULL = personne n'a rien dit,
+/// ce qui n'est PAS un défaut mais reste « le silence alerte » (le défaut sûr d'un dead-man's-switch).
+/// `attente_motif` : la raison écrite, EXIGÉE par le handler sur les deux valeurs qui éteignent l'alerte.
+/// `attente_par` / `attente_le` : la provenance PROPRE de la déclaration — la leçon MESURÉE de `P11.3-c`
+/// (une provenance qui se réécrit au premier geste suivant ne prouve rien) est appliquée dès la création
+/// de la table, et non rattrapée plus tard.
+///
+/// AUCUN BACKFILL, ET C'EST DÉMONTRABLE : la table n'existait pas, donc aucune ligne antérieure ne porte
+/// de déclaration à reprendre. Le résidu de provenance que v118 a dû assumer sur `source_settings`
+/// n'existe pas ici.
+///
+/// CE QUE ÇA CHANGE : le dénominateur de la flotte (une machine retirée en sort) et la population de
+/// l'alerte `heartbeat.flotte-hotes-muets` (une machine au silence déclaré attendu n'y entre plus, et
+/// l'alerte DIT combien elle ne couvre pas). Rien d'autre : ni l'ingestion, ni la collecte, ni les
+/// règles, ni la rétention, ni `host_rollup` — une machine déclarée reste listée et ses signaux
+/// continuent d'être reçus et comptés.
+///
+/// ADDITIVE et CONVERGENTE : `CREATE TABLE IF NOT EXISTS`, MIROIR dans `db/schema.sql` (base neuve) ->
+/// les deux formes convergent (`schema_gaps`). Idempotent, re-jouable.
+///
+/// ROLLBACK — bumpe le schéma à 119 : un binaire max=118 REFUSE d'ouvrir une base v119 (`db_open`,
+/// `v > CODE_SCHEMA_MAX` -> Err). Rollback = RESTAURER le SNAPSHOT pré-migrate. Forward-only, idempotent.
+fn migrate_v119(conn: &MigTx) {
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS host_settings(\
+           scope TEXT NOT NULL DEFAULT 'global', host TEXT NOT NULL, \
+           attente TEXT, attente_motif TEXT, attente_par TEXT, attente_le INTEGER, \
+           updated INTEGER, updated_by TEXT, PRIMARY KEY(scope, host));",
+    );
+    let _ = conn.execute("UPDATE meta SET value='119' WHERE key='schema_version'", []);
+    mig_log!("[migration] schéma -> v119 (P11.10-a : host_settings — ce qu'on ATTEND d'un hôte se déclare (signal attendu / silence attendu / retiré) avec son déclarant et sa date dans des colonnes propres ; une machine retirée sort du dénominateur, une machine au silence déclaré attendu sort de l'alerte « hôtes muets », qui dit désormais ce qu'elle ne couvre pas)");
 }
 
 /// v108 (PERF — RECHERCHE RAW HAUT-VOLUME source=X sur fenêtre longue). MARQUEUR PUR (aucune DDL lourde

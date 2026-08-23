@@ -455,6 +455,9 @@ fn governance_retention_ledger_routes() -> Router<AppState> {
         .route("/scim/v2/Groups/:role", patch(scim_group_patch))
         .route("/api/sources", get(sources_inventory))
         .route("/api/sources/settings", get(source_settings_get).post(source_settings_put).put(source_settings_put))
+        // P11.10-a — CE QU'ON ATTEND D'UN HÔTE : même grammaire et même gating que les sources
+        // (GET viewer+, mutation editor+ via le préfixe déclaré dans `route_min_role`).
+        .route("/api/hosts/settings", get(host_settings_get).post(host_settings_put).put(host_settings_put))
         // chantier whitelists→webui — panneau read-only agrégeant TOUTES les suppressions/whitelists/filtres
         // (daemon registre + collecteurs hôte + firewall). Admin only (RBAC section 3). PUT = UNIQUEMENT
         // l'exclusion display-only operator/self (le reste est read-only par conception).

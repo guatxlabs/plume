@@ -21,6 +21,7 @@ pub(crate) mod datamodels; // #47 CRUD data models + objets/champs + Pivot (repo
 pub(crate) mod scheduled_reports; // #60 rapports planifiés (dataset -> notifier, masqués par run_as)
 pub(crate) mod workflow_actions; // #60 actions de menu contextuel (navigation search/url + réponse enum-only)
 pub(crate) mod fleet;
+pub(crate) mod hotes_declares; // P11.10-a : ce qu'on ATTEND d'un hôte (signal attendu / silence attendu / retiré), et QUI l'a déclaré
 pub(crate) mod freshness;
 pub(crate) mod governance; // #59 : legal-hold (rétention-lock), export streaming du ledger + sinks, rôles composables (CRUD)
 pub(crate) mod purge; // PURGE EXPLICITE d'événements : surface HTTP deux temps, admin-only, FERMÉE par défaut (PLUME_PURGE_API)

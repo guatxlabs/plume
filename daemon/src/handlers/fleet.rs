@@ -81,6 +81,11 @@ pub(crate) fn fleet_scan_all(conn: &Connection, now_ts: i64) -> (Vec<Value>, boo
     // rollup_hosts) -> AUCUN scan de event∪metric∪snapshot. last_seen=MAX(last_ts), first_seen=MIN(first_ts),
     // signals=SUM(sig_total+sig_hot). GROUP BY host collapse les env (#2d ; mode 0 = tout 'prod' -> 1 ligne/hôte).
     let mut hosts: Vec<Value> = Vec::new();
+    // P11.10-a — CE QU'ON ATTEND DE CHAQUE MACHINE, lu en UNE requête (cardinalité = les machines
+    // DÉCLARÉES, pas le parc). Une table absente rend une carte VIDE : chaque machine retombe alors sur
+    // « personne n'a rien dit », c'est-à-dire sur « le silence alerte » — une lecture impossible produit
+    // PLUS d'alertes, jamais moins.
+    let marquages = marquages_dhotes(conn);
     if let Ok(mut stmt) = conn.prepare(
         "SELECT host, MAX(last_ts) AS last_seen, MIN(first_ts) AS first_seen, \
          SUM(sig_total + sig_hot) AS signals FROM host_rollup WHERE host<>'' GROUP BY host",
@@ -90,6 +95,10 @@ pub(crate) fn fleet_scan_all(conn: &Connection, now_ts: i64) -> (Vec<Value>, boo
                 let age = now_ts - last;
                 let status = fleet_status(age);
                 let e = enroll.get(&h);
+                // UNE SEULE DÉRIVATION pour « son silence est-il attendu, et qui l'a dit » (fonction pure,
+                // partagée avec la sonde de parc). L'enrôlement sert DEUX fois : la colonne d'enrôlement
+                // que la vue rendait déjà, et la seule déclaration que ce dépôt sache DÉRIVER pour un hôte.
+                let verdict = verdict_dhote(attente_par_construction(e), marquages.get(&h));
                 hosts.push(json!({
                     "host": h,
                     "last_seen": last,
@@ -101,11 +110,56 @@ pub(crate) fn fleet_scan_all(conn: &Connection, now_ts: i64) -> (Vec<Value>, boo
                     "enroll_name": e.map(|x| x.0.clone()).unwrap_or_default(),
                     "enroll_created": e.and_then(|x| x.1),
                     "token_last_used": e.and_then(|x| x.2),
+                    // Jetons d'API STABLES : la console pivote dessus et ne les réécrit pas.
+                    "attente": verdict.jeton(),
+                    "attente_libelle": verdict.libelle(),
+                    "declaree_par": verdict.provenance(),
+                    "alerte_si_muet": verdict.alerte_si_muet(),
+                    "dans_la_flotte": verdict.dans_la_flotte(),
                 }));
             }
         }
     }
     (hosts, pipeline_fresh)
+}
+
+/// P11.10-a — LES PARTS, ET ELLES S'ADDITIONNENT. Calculée sur la liste COMPLÈTE (jamais sur la page
+/// servie), donc identique quel que soit le tri, la limite ou le décalage demandés.
+///
+/// POURQUOI LE DÉMON LA PUBLIE AU LIEU DE LAISSER LA CONSOLE COMPTER. C'est la leçon MESURÉE de
+/// `P11.3-d` : la console additionnait des parts calculées sur les lignes AFFICHÉES à côté d'un total
+/// calculé sur le parc ENTIER, et au-delà du plafond de page (500) les trois nombres ne se retrouvaient
+/// plus dans le total annoncé. Une répartition qui ne se retrouve pas se lit comme un défaut de collecte.
+///
+/// LA PARTITION, ÉCRITE : `frais + en_retard + muet_attendu + muet_inattendu = flotte`, et
+/// `flotte + retires = inventories`. `muet_inattendu` est le SEUL compte qui alerte — c'est exactement la
+/// population de `sonde_de_flotte.rs`, dérivée du même verdict.
+pub(crate) fn repartition_de_flotte(hosts_full: &[Value]) -> Value {
+    let (mut frais, mut en_retard, mut muet_attendu, mut muet_inattendu, mut retires) = (0i64, 0i64, 0i64, 0i64, 0i64);
+    for h in hosts_full {
+        if !h["dans_la_flotte"].as_bool().unwrap_or(true) {
+            retires += 1;
+            continue;
+        }
+        match h["status"].as_str().unwrap_or("") {
+            "fresh" => frais += 1,
+            "stale" => en_retard += 1,
+            // `alerte_si_muet` absent (charge utile d'un binaire antérieur) -> compté comme alertant :
+            // le défaut sûr est de montrer un incident, jamais d'en escamoter un.
+            _ if h["alerte_si_muet"].as_bool().unwrap_or(true) => muet_inattendu += 1,
+            _ => muet_attendu += 1,
+        }
+    }
+    let flotte = frais + en_retard + muet_attendu + muet_inattendu;
+    json!({
+        "inventories": flotte + retires,
+        "flotte": flotte,
+        "retires": retires,
+        "frais": frais,
+        "en_retard": en_retard,
+        "muet_attendu": muet_attendu,
+        "muet_inattendu": muet_inattendu,
+    })
 }
 /// TRI (clé whitelistée) + pagination EN RUST sur la liste COMPLÈTE (déjà scannée / servie du cache SWR).
 /// `total` = nb d'hôtes distincts = longueur du vecteur. Défaut = last_seen (hôtes vus le plus récemment
@@ -158,8 +212,11 @@ pub(crate) fn fleet_map() -> &'static Mutex<HashMap<String, (Instant, (Vec<Value
 }
 /// Tri + pagination de la liste complète (en cache) -> payload d'API stable {hosts,total,pipeline_fresh,now}.
 pub(crate) fn fleet_response(hosts_full: &[Value], pipeline_fresh: bool, sort: &str, dir_desc: bool, limit: i64, offset: i64, now_ts: i64) -> Value {
+    // La répartition est calculée sur la liste COMPLÈTE, AVANT la pagination : elle ne bouge donc pas
+    // quand l'exploitant tourne les pages ou change le tri (`P11.10-a`).
+    let repartition = repartition_de_flotte(hosts_full);
     let (page, total) = fleet_sort_paginate(hosts_full.to_vec(), sort, dir_desc, limit, offset);
-    json!({ "hosts": page, "total": total, "pipeline_fresh": pipeline_fresh, "now": now_ts })
+    json!({ "hosts": page, "total": total, "repartition": repartition, "pipeline_fresh": pipeline_fresh, "now": now_ts })
 }
 
 /// GET /api/fleet?limit=&offset=&sort=&dir= — inventaire de la flotte d'agents (viewer+ ; cf. bloc FLEET).

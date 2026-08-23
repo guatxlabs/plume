@@ -60,12 +60,17 @@
 //!     entièrement muet — est fermée.
 //!   - une machine JAMAIS vue n'est pas comptée : l'inventaire est DÉCOUVERT, pas déclaré. Plume n'a
 //!     pas de liste des machines attendues, donc « il en manque une » est indémontrable ici.
-//!   - une machine DÉCOMMISSIONNÉE reste comptée muette indéfiniment : `host_rollup` n'est jamais
-//!     prunée (c'est ce qui rend un agent mort visible, et c'est voulu). Contrairement au résidu de la
-//!     sonde d'instantané, celui-ci NE se résorbe PAS tout seul. L'échange est tenu par l'EMPREINTE de
-//!     l'ensemble muet (ci-dessous) : l'alerte n'est pas un épisode qui dure, c'est un épisode PAR
-//!     ENSEMBLE — une machine décommissionnée laisse une alerte ouverte, mais elle n'empêche pas la
-//!     suivante de lever la SIENNE, ce qui est le vrai risque d'un dead-man's-switch collant.
+//!   - une machine DÉCOMMISSIONNÉE restait comptée muette indéfiniment : `host_rollup` n'est jamais
+//!     prunée (c'est ce qui rend un agent mort visible, et c'est voulu). Ce résidu était écrit ici et
+//!     NE se résorbait PAS tout seul ; `P11.10-a` le ferme — non pas en devinant ce qui est
+//!     décommissionné, ce que ce dépôt ne peut pas savoir, mais en laissant quelqu'un le DÉCLARER
+//!     (`handlers/hotes_declares.rs`, même grammaire que les sources en `P11.3-c`). Une machine dont
+//!     le silence est déclaré attendu sort de la population de cette alerte, une machine retirée sort
+//!     aussi du dénominateur, et le texte DIT combien de machines il ne couvre pas — sans quoi on
+//!     aurait remplacé un faux positif par un angle mort silencieux. Reste l'échange tenu par
+//!     l'EMPREINTE de l'ensemble muet (ci-dessous) : l'alerte n'est pas un épisode qui dure, c'est un
+//!     épisode PAR ENSEMBLE — une machine non déclarée laisse une alerte ouverte, mais elle n'empêche
+//!     pas la suivante de lever la SIENNE, ce qui est le vrai risque d'un dead-man's-switch collant.
 //!   - la valeur lue vient d'un rollup rafraîchi à la cadence de `spawn_rollup_loop` : l'âge rendu
 //!     traîne d'au plus cet intervalle. Négligeable devant `FLEET_STALE_S`, mais dit.
 //! ====================================================================================================
@@ -84,8 +89,13 @@ pub(crate) const DEDUP_FLOTTE_MUETTE: &str = "hb-flotte-muets-";
 pub(crate) struct FlotteMuette {
     /// Hôtes connus de l'inventaire (le DÉNOMINATEUR — sans lui, « 19 muets » ne se lit pas).
     pub(crate) attendus: usize,
-    /// Hôtes sans AUCUN signal depuis plus de `FLEET_STALE_S`.
+    /// Hôtes sans AUCUN signal depuis plus de `FLEET_STALE_S` DONT PERSONNE N'A DÉCLARÉ QUE LE SILENCE
+    /// EST ATTENDU — la seule population qui alerte (`P11.10-a`).
     pub(crate) muets: usize,
+    /// Hôtes muets que quelqu'un a déclarés attendus-muets. COMPTÉS et DITS dans le texte, jamais
+    /// escamotés : une alerte qui rétrécit sa population sans le dire échange un faux positif contre un
+    /// angle mort, ce qui est pire.
+    pub(crate) muets_declares_attendus: usize,
     /// Les plus en retard d'abord, bornés à `PLAFOND_NOMS` : (hôte, dernier signal).
     pub(crate) pires: Vec<(String, i64)>,
     /// EMPREINTE de l'ENSEMBLE muet (noms ordonnés). Sert de clé d'épisode : tant que l'ensemble ne
@@ -137,7 +147,14 @@ pub(crate) fn flotte_muette(conn: &Connection, now_ts: i64) -> Option<FlotteMuet
         .prepare("SELECT host, MAX(last_ts) FROM host_rollup WHERE host<>'' GROUP BY host ORDER BY host")
         .ok()?;
     let mut lignes = st.query([]).ok()?;
-    let (mut attendus, mut muets) = (0usize, 0usize);
+    // P11.10-a — CE QUE QUELQU'UN A DÉCLARÉ. Deux ensembles, lus en UNE requête dont la cardinalité est
+    // le nombre de machines DÉCLARÉES (jamais le parc). Une table absente ou illisible rend deux
+    // ensembles VIDES : la sonde retombe alors sur son comportement d'avant cette clé — elle alerte sur
+    // TOUTES les machines muettes. C'est le bon sens d'échec, et il est l'inverse de celui de la lecture
+    // d'inventaire ci-dessus : ne pas savoir ce qui est déclaré doit produire PLUS d'alertes, ne pas
+    // savoir ce qu'est le parc doit n'en produire AUCUNE.
+    let (silences_attendus, retires) = hotes_hors_alerte(conn);
+    let (mut attendus, mut muets, mut muets_declares_attendus) = (0usize, 0usize, 0usize);
     let mut empreinte = 0xcbf2_9ce4_8422_2325u64; // offset basis FNV-1a
     let mut pires: Vec<(String, i64)> = Vec::with_capacity(PLAFOND_NOMS + 1);
     // `while let Some(row) = ... .ok()?` : une ligne ILLISIBLE interrompt la mesure (None) au lieu de
@@ -146,8 +163,18 @@ pub(crate) fn flotte_muette(conn: &Connection, now_ts: i64) -> Option<FlotteMuet
     while let Some(row) = lignes.next().ok()? {
         let hote: String = row.get(0).ok()?;
         let dernier: i64 = row.get(1).ok()?;
+        // Une machine RETIRÉE du parc sort du dénominateur : « 19 sur 20 » ne veut plus rien dire si le
+        // 20 compte des machines dont quelqu'un a dit qu'elles n'en font plus partie.
+        if retires.contains(&hote) {
+            continue;
+        }
         attendus += 1;
         if fleet_status(now_ts - dernier) != "silent" {
+            continue;
+        }
+        // Muette, mais quelqu'un a dit que c'était normal : comptée à part, et DITE dans le texte.
+        if silences_attendus.contains(&hote) {
+            muets_declares_attendus += 1;
             continue;
         }
         muets += 1;
@@ -159,7 +186,7 @@ pub(crate) fn flotte_muette(conn: &Connection, now_ts: i64) -> Option<FlotteMuet
         pires.sort_by_key(|(_, t)| *t);
         pires.truncate(PLAFOND_NOMS);
     }
-    Some(FlotteMuette { attendus, muets, pires, empreinte })
+    Some(FlotteMuette { attendus, muets, muets_declares_attendus, pires, empreinte })
 }
 
 /// LE TEXTE DE L'ALERTE, séparé de sa levée pour être éprouvable sans base : ce qu'un exploitant LIT
@@ -181,6 +208,15 @@ pub(crate) fn detail_flotte_muette(f: &FlotteMuette, now_ts: i64) -> String {
         if f.muets > f.pires.len() {
             d.push_str(&format!(", et {} autre(s)", f.muets - f.pires.len()));
         }
+    }
+    // CE QUE CETTE ALERTE NE COUVRE PAS, DIT PAR ELLE-MÊME (`P11.10-a`, même exigence que la cloche de
+    // sources en `P11.3-d`). Sans cette phrase, restreindre la population aurait échangé un faux positif
+    // contre un angle mort que rien n'annonce.
+    if f.muets_declares_attendus > 0 {
+        d.push_str(&format!(
+            " — {} machine(s) muette(s) ne sont PAS comptées ici : quelqu'un a déclaré que leur silence est attendu",
+            f.muets_declares_attendus
+        ));
     }
     d
 }

@@ -287,7 +287,15 @@ pub(crate) fn compute_integrations(db_path: &str) -> Value {
         // « tous hôtes confondus » ci-dessus ne peuvent pas le dire, par construction. `None` (lecture
         // impossible) rend `null` — jamais un zéro rassurant fabriqué à la place d'une observation.
         let flotte = match flotte_muette(conn, now_ts) {
-            Some(f) => json!({ "attendus": f.attendus, "muets": f.muets, "seuil_s": FLEET_STALE_S }),
+            // `muets_declares_attendus` accompagne le compte : sans lui, la carte dirait « aucun muet »
+            // là où des machines muettes ont simplement été déclarées telles, ce qui est une autre
+            // phrase (`P11.10-a`).
+            Some(f) => json!({
+                "attendus": f.attendus,
+                "muets": f.muets,
+                "muets_declares_attendus": f.muets_declares_attendus,
+                "seuil_s": FLEET_STALE_S,
+            }),
             None => Value::Null,
         };
         json!({ "collectors": collectors, "hosts": hosts, "flotte": flotte })

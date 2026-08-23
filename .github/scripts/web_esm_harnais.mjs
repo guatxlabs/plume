@@ -1970,6 +1970,102 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 }
 
 
+// ---------------------------------------------------------------------------------------------
+// 30. UN HÔTE MUET DIT S'IL EST NORMAL, ET LE COMPTE NE MÉLANGE PLUS (`P11.10-a`).
+//     MESURE AVANT (2026-08-23, par lecture du code servi) : la charge utile de `/api/fleet` ne portait
+//     AUCUN champ distinguant une machine décommissionnée, une machine de test et un agent tombé — les
+//     trois rendaient `silent` — et l'en-tête additionnait des parts calculées sur les lignes AFFICHÉES
+//     (bornées à 500) à côté d'un total calculé sur le parc ENTIER.
+//       (a) LE DÉCLARANT EST NOMMÉ, colonne par colonne, sur la grammaire des sources (`P11.3-c`) : un
+//           enrôlement, l'exploitant avec sa date et son motif, ou « personne n'a rien dit » — et ce
+//           dernier n'est PAS présenté comme une déclaration.
+//       (b) LES PARTS VIENNENT DU DÉMON et elles s'additionnent ; une charge utile SANS répartition le
+//           DIT au lieu de recomposer un compte qui ne se retrouverait pas.
+//       (c) UN SILENCE DÉCLARÉ ATTENDU N'EST PLUS PEINT COMME UNE ALARME, et une machine retirée porte
+//           « hors parc » — le mot « muet » reste (c'est la même observation), la couleur d'alarme non.
+//       (d) LE GESTE EST OFFERT SELON LE RÔLE : un lecteur ne se voit pas proposer une déclaration
+//           qu'il ne peut pas poser, et la phrase de tête le lui dit autrement.
+// ---------------------------------------------------------------------------------------------
+{
+  const { renderFleetInventory } = await import(pathToFileURL(path.join(WEB, "fleet.js")).href);
+  const parc = {
+    pipeline_fresh: true, now: 1_000_000, total: 5,
+    repartition: { inventories: 5, flotte: 4, retires: 1, frais: 1, en_retard: 0, muet_attendu: 1, muet_inattendu: 2 },
+    hosts: [
+      { host: "srv-frais", status: "fresh", last_seen: 999_900, age_s: 100, first_seen: 1, signals: 10, enrolled: true, enroll_name: "agent-01", enroll_created: 500,
+        attente: "signal_attendu", attente_libelle: "enrôlée sous le jeton « agent-01 » (ts 500)", declaree_par: "un enrôlement", alerte_si_muet: true, dans_la_flotte: true },
+      { host: "srv-banc", status: "silent", last_seen: 900_000, age_s: 100_000, first_seen: 1, signals: 3, enrolled: false,
+        attente: "silence_attendu", attente_libelle: "silence attendu, déclaré par eve (ts 900) — banc de test", attente_motif: "banc de test", declaree_par: "l'exploitant", alerte_si_muet: false, dans_la_flotte: true },
+      { host: "srv-mort", status: "silent", last_seen: 900_000, age_s: 100_000, first_seen: 1, signals: 7, enrolled: false,
+        attente: "non_declare", attente_libelle: null, declaree_par: null, alerte_si_muet: true, dans_la_flotte: true },
+      { host: "srv-mort2", status: "silent", last_seen: 900_000, age_s: 100_000, first_seen: 1, signals: 7, enrolled: false,
+        attente: "non_declare", attente_libelle: null, declaree_par: null, alerte_si_muet: true, dans_la_flotte: true },
+      { host: "srv-vieux", status: "silent", last_seen: 800_000, age_s: 200_000, first_seen: 1, signals: 1, enrolled: false,
+        attente: "retire", attente_libelle: "retirée du parc par root (ts 950) — décommissionnée", declaree_par: "l'exploitant", alerte_si_muet: false, dans_la_flotte: false },
+    ],
+  };
+  const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const rendre = (d, role) => {
+    const avant = S.AUTH;
+    S.AUTH = { user: "u", role };
+    const w = document.createElement("div");
+    try { renderFleetInventory(w, d); } finally { S.AUTH = avant; }
+    return w;
+  };
+  const trouver = (el, pred) => { if (pred(el)) return el; for (const c of el.children || []) { const t = trouver(c, pred); if (t) return t; } return null; };
+  const tous = (el, pred, out = []) => { if (pred(el)) out.push(el); for (const c of el.children || []) tous(c, pred, out); return out; };
+  const cls = (el, c) => el.classList && el.classList.contains(c);
+
+  const w = rendre(parc, "editor");
+  const texte = w.textContent;
+  // (a) le déclarant, nommé, et l'absence de déclaration dite comme telle.
+  const pourquoi = tous(w, (e) => cls(e, "fleetwhy")).map((e) => e.textContent);
+  exiger(pourquoi.length === 5, `(30a) instrument : ${pourquoi.length} colonnes d'attente au lieu de 5 — le témoin jugerait du vide`);
+  exiger(pourquoi.some((t) => /agent-01/.test(t)), `(30a) l'enrôlement ne nomme pas le jeton qui déclare la machine : ${JSON.stringify(pourquoi)}`);
+  exiger(pourquoi.some((t) => /eve/.test(t) && /banc de test/.test(t)), `(30a) le déclarant, sa date et son motif ne sont pas rendus : ${JSON.stringify(pourquoi)}`);
+  exiger(pourquoi.filter((t) => /personne n'a rien dit/.test(t)).length === 2, `(30a) « personne n'a rien dit » n'est pas dit là où c'est le cas : ${JSON.stringify(pourquoi)}`);
+  const badges = tous(w, (e) => cls(e, "fleetbadge-attente")).map((e) => e.textContent);
+  exiger(badges.filter((t) => t === "l'exploitant").length === 2 && badges.includes("un enrôlement"), `(30a) le badge ne nomme pas le déclarant : ${JSON.stringify(badges)}`);
+
+  // (b) les parts du démon, et elles font le tout.
+  const somme = parc.repartition.frais + parc.repartition.en_retard + parc.repartition.muet_attendu + parc.repartition.muet_inattendu;
+  exiger(somme === parc.repartition.flotte && parc.repartition.flotte + parc.repartition.retires === parc.repartition.inventories, "(30b) instrument : la fixture elle-même ne s'additionne pas");
+  const tete = trouver(w, (e) => cls(e, "fleetsum"));
+  exiger(!!tete, "(30b) l'en-tête de répartition n'est pas rendu");
+  exiger(/4 hôte\(s\) dans le parc/.test(tete.innerHTML), `(30b) le dénominateur n'est pas celui du parc : « ${tete.innerHTML} »`);
+  exiger(/2<\/b> muet\(s\)/.test(tete.innerHTML) && /1<\/b> muet\(s\) attendu\(s\)/.test(tete.innerHTML), `(30b) les muets qui alertent ne sont pas séparés de ceux qui n'alertent pas : « ${tete.innerHTML} »`);
+  exiger(/1 retirée\(s\) du parc/.test(tete.innerHTML), `(30b) les machines retirées ne sont pas comptées à part : « ${tete.innerHTML} »`);
+  // …et une charge utile SANS répartition l'avoue au lieu de recomposer un compte de page.
+  const sansParts = rendre({ ...parc, repartition: undefined }, "editor");
+  const teteSans = trouver(sansParts, (e) => cls(e, "fleetsum"));
+  exiger(/répartition non publiée/.test(teteSans.textContent), `(30b) sans répartition, la console invente un compte : « ${teteSans.textContent}|${teteSans.innerHTML} »`);
+
+  // (c) le silence déclaré n'est plus peint comme une alarme, et le retrait se voit sur la ligne.
+  const alarmes = tous(w, (e) => e.tagName === "B" && cls(e, "bad") && e.textContent === "muet");
+  exiger(alarmes.length === 2, `(30c) ${alarmes.length} machine(s) peintes en alarme au lieu des 2 qui alertent vraiment`);
+  const calmes = tous(w, (e) => e.tagName === "B" && cls(e, "calm") && e.textContent === "muet");
+  exiger(calmes.length === 2, `(30c) un silence déclaré attendu (ou une machine retirée) est encore peint comme un incident : ${calmes.length}`);
+  exiger(!!trouver(w, (e) => cls(e, "fleetbadge-retire")), "(30c) une machine retirée ne porte aucune marque sur sa ligne");
+
+  // (d) le geste est offert à l'éditeur, refusé au lecteur, et la phrase de tête change de conseil.
+  exiger(tous(w, (e) => cls(e, "fleetdeclare")).length === 5, "(30d) le geste de déclaration n'est pas offert sur chaque ligne à un éditeur");
+  exiger(/2 hôte\(s\) muet\(s\) que personne n'a déclarés/.test(texte), `(30d) la console ne dit pas ce qui reste à trancher : ${texte.slice(0, 400)}`);
+  exiger(/Actions → « déclarer »/.test(texte), "(30d) l'éditeur n'est pas renvoyé vers l'issue");
+  const lecteur = rendre(parc, "viewer");
+  exiger(tous(lecteur, (e) => cls(e, "fleetdeclare")).length === 0, "(30d) un lecteur se voit offrir un geste que le démon lui refuse");
+  exiger(/rôle éditeur ou administrateur/.test(lecteur.textContent), "(30d) le rôle manquant n'est pas nommé au lecteur");
+
+  // TÉMOIN NÉGATIF : un parc sans machine muette non déclarée ne rend AUCUNE phrase « à trancher ».
+  const sain = rendre({
+    ...parc,
+    repartition: { inventories: 1, flotte: 1, retires: 0, frais: 1, en_retard: 0, muet_attendu: 0, muet_inattendu: 0 },
+    hosts: [parc.hosts[0]],
+  }, "editor");
+  exiger(!/que personne n'a déclarés/.test(sain.textContent), `(30) une phrase toujours rendue ne prouverait rien : « ${sain.textContent.slice(0, 200)} »`);
+  console.log(`[flotte] un hôte muet DIT s'il est normal : le déclarant est nommé (un enrôlement, l'exploitant avec sa date et son motif) et « personne n'a rien dit » se dit comme tel ; les parts viennent du démon et s'additionnent (leur absence est avouée), un silence déclaré attendu n'est plus peint en alarme, une machine retirée porte « hors parc », et le geste de déclaration suit le rôle`);
+}
+
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);

@@ -8,6 +8,9 @@ import { S } from './state.js';
 import { banIp, runQuery, updateZoomBadge } from './viz.js';
 import { canEditCases, addToCase, openCase } from './cases.js';
 import { refresh, updateRangeBtn } from './app.js';
+// P11.1-f : LE champ de recherche partagé des listes (`P11.12-a`) — normalisation, prédicat ET multi-mots,
+// filtre sur des lignes déjà en mémoire, câblage du champ, résumé. Aucun second mécanisme n'est écrit ici.
+import { champDeRecherche, filtrerParRecherche, resumeDeRecherche, texteCherchable } from './recherche_de_liste.js';
 
 // clic sur une alerte -> ouvre l'Explore sur ce que la règle a COMPTÉ.
 // P11.1-a — LE LIEN EST CONSTRUIT PAR LE DÉMON (`search_link` sur /api/alerts : requête dont la règle a
@@ -149,6 +152,10 @@ function alertListModel() {
     uncased: S.alertUncased !== false,        // n'affiche que les alertes qu'aucun cas n'a reprises (défaut : oui)
     mitre: S.alertMitreFilter || '',          // facette technique (serveur, `?mitre=`)
     source: S.alertSourceFilter || '',        // facette source (serveur, `?source=`, imputation exacte)
+    // P11.1-f — la recherche fait partie du MODÈLE, pas d'un état à part : la barre en dérive ce qu'elle
+    // peut promettre (un acquittement global dépasserait la recherche). Elle n'entre dans AUCUNE URL :
+    // /api/alerts n'offre pas de recherche plein-texte, le filtrage est local aux lignes déjà servies.
+    recherche: rechercheDesAlertes(),
   };
 }
 // P11.7-b — LA PORTÉE EN TOUTES LETTRES, ÉCRITE UNE FOIS. Le compte affiché doit dire ce que le bouton dit
@@ -205,7 +212,10 @@ function alertActionBarHtml(m, loaded) {
   // ACQUITTER — même bouton partout, sémantique DÉRIVÉE : sans facette et sur les actives, l'acquittement
   // GLOBAL (/alerts/ack-all acquitte TOUTE alerte active, y compris hors de la page) ; sinon, les alertes
   // actives AFFICHÉES, une à une (jamais un ack-all global sous un filtre : il dépasserait le filtre).
-  const filtered = !!(m.mitre || m.source) || m.scopeAll;
+  // P11.1-f — une recherche RESTREINT ce qui est affiché : « Tout acquitter », qui dépasse la page, la
+  // dépasserait aussi. Sous une recherche, l'acquittement porte donc sur les alertes AFFICHÉES, comme sous
+  // une facette. C'est la même règle, appliquée à un filtre de plus, et non une exception.
+  const filtered = !!(m.mitre || m.source || m.recherche) || m.scopeAll;
   const nAck = (loaded.ackableIds || []).length;
   let ack;
   if (!filtered) ack = `<button type="button" class="btn btn-sm" data-act="ack-all"${dis(!(loaded.count > 0), 'aucune alerte active')} title="Acquitter TOUTES les alertes actives (y compris celles hors de cette page)">${ic('check')} Tout acquitter</button>`;
@@ -250,6 +260,9 @@ function wireAlertsTitle() {
   const go = (e) => {
     if (e && e.target && typeof e.target.closest === 'function' && e.target.closest('.ihelp')) return;
     S.alertMitreFilter = ''; S.alertSourceFilter = ''; S.alertGroupBy = ''; S.alertGroupAll = false; S.alertUncased = true; S.alertHistPage = 0; S.alertGroupPage = 0;
+    // P11.1-f — « filtres retirés » comprend la recherche : la laisser posée rendrait une liste que le
+    // titre annonce comme non filtrée et qui cacherait pourtant des lignes.
+    videLaRechercheSansRedessiner();
     location.hash = 'alerts'; renderAlerts(true);
   };
   h.onclick = go;
@@ -291,11 +304,57 @@ function alertGroupsExportBar(groups, total) {
   return exportBar('alertes-groupes', () => ({ cols: ALERT_GROUP_EXPORT_COLS, rows: groups.map(alertGroupExportRow) }), 'alerts', opts);
 }
 
+// P11.1-f — CE QU'UNE ALERTE OFFRE À LA RECHERCHE : ce qu'un analyste connaît d'elle.
+//   · son TITRE — pour une alerte de règle, le démon l'écrit « <nom de la règle> : <valeur> <op> <seuil> »,
+//     donc chercher le nom de la règle passe par là ;
+//   · sa RÈGLE — le jeton qui l'a levée (`rule.<id>`, `heartbeat.<capteur>`) : c'est ce que porte un lien
+//     profond et ce par quoi le tri « Règle » groupe ; chercher « heartbeat » sort les capteurs muets ;
+//   · son IMPUTATION — les noms de source auxquels elle se rapporte, tels que le démon les a DÉRIVÉS de la
+//     donnée à la levée (`alert.sources`, séparés par des sauts de ligne : ils sont rendus au plat, sinon
+//     deux noms voisins se colleraient en un mot que rien ne trouve). L'inconnu nommé « (source
+//     indéterminée) » est un nom comme un autre : on peut le chercher.
+// PAS la technique : elle a DÉJÀ sa facette servie par le démon (`?mitre=`) et son chip pivote depuis
+// chaque ligne — la remettre ici ferait remonter tout un pan du catalogue sur un identifiant que le geste
+// existant filtre exactement. Pas la gravité ni le statut : ce sont un tri et une portée.
+function texteCherchableDUneAlerte(a) {
+  const imputation = String((a && a.sources) || '').split('\n').filter(Boolean);
+  return texteCherchable([a && a.title, a && a.rule, ...imputation]);
+}
+// La recherche courante du panneau, et l'autre bout de la même poignée. Sans champ dans le document (test,
+// rendu partiel), la recherche vaut la chaîne vide et la liste rend exactement comme avant.
+let rechercheDesAlertes = () => '';
+let poserLaRechercheDesAlertes = () => {};
+// Dernier lot servi par `/api/alerts`, avec le modèle sous lequel il a été demandé. La frappe REDESSINE, elle
+// ne recharge pas : filtrer est une comparaison de chaînes sur des lignes déjà en mémoire, et une requête
+// HTTP par caractère serait un coût réseau pour un travail local (même partage que les règles).
+let alertesChargees = null;
+// CE QUE LA RECHERCHE COUVRE, DIT SANS L'ARRONDIR. Elle porte sur les alertes SERVIES, pas sur la base :
+// sous « Actives » le démon sert le backlog borné en une fois, sous « Tous statuts » il pagine. Le démon
+// n'offre aucun paramètre de recherche plein-texte sur /api/alerts (mesuré le 2026-08-23 : `status`,
+// `mitre`, `uncased`, `source`, `gkey/gval`, `limit/offset` — rien d'autre), donc une recherche qui
+// prétendrait couvrir tout l'historique mentirait. Le résumé le dit à chaque fois.
+// Les deux phrases sont ÉCRITES EN ENTIER, jamais composées : `i18nWalk` compare un nœud texte à une clé du
+// lexique, et une phrase recollée à l'exécution n'est jamais égale à une clé — elle resterait en français.
+const RECHERCHE_COUVERTURE = {
+  page: 'alerte(s) — la recherche porte sur la page affichée, pas sur tout l\'historique ; les filtres et le tri restent posés',
+  servies: 'alerte(s) — la recherche porte sur les alertes actives servies ; les filtres et le tri restent posés',
+};
+const RECHERCHE_SANS_RESULTAT = {
+  page: 'Aucune alerte de cette page ne porte ces mots dans son titre, sa règle ou sa source imputée — et la recherche ne descend pas dans les pages suivantes. Échap efface la recherche.',
+  servies: 'Aucune alerte affichée ne porte ces mots dans son titre, sa règle ou sa source imputée. Échap efface la recherche.',
+};
+const clefDeCouverture = (m) => (m.scopeAll ? 'page' : 'servies');
+
 async function renderAlerts(loading) {
   wireAlertsTitle();
   const m = alertListModel();
+  const requete = m.recherche;
   // Un TRI groupé est servi par /api/alerts/groups, facettes comprises.
-  if (m.view) return renderAlertGroups(loading);
+  // P11.1-f — SOUS UNE RECHERCHE, LA LISTE EST PLATE. Même choix que le panneau des règles, et pour une
+  // raison de plus : un groupe n'est pas seulement REPLIÉ ici, ses occurrences ne sont même pas chargées
+  // (chaque dépli est une requête). Une correspondance tombée dedans serait donc invisible ET introuvable.
+  // Le groupement n'est pas remplacé, il est mis de côté : il revient dès que la recherche est vidée.
+  if (m.view && !requete) return renderAlertGroups(loading);
   // LA MÊME URL DÉRIVÉE DU MÊME MODÈLE : portée (status=new | all), le filtre d'affichage (uncased=1 —
   // « pas encore dans un cas »), facettes
   // (mitre=, source=). La portée « tous statuts » est PAGINÉE serveur (limit/offset + total) ; la portée
@@ -311,16 +370,33 @@ async function renderAlerts(loading) {
   let alerts, alertTotal;
   try { const resp = await api(url); alerts = resp.alerts || []; alertTotal = resp.total; } catch (e) { b.classList.remove('reloading'); b.innerHTML = '<div class="bad">alertes indisponibles : ' + esc(e.message) + '</div>'; return; }
   b.classList.remove('reloading');
+  // P11.1-f — LE LOT SERVI EST MÉMORISÉ, et le dessin en est séparé : une frappe REDESSINE, elle ne
+  // recharge pas. Sans cette scission, chercher coûterait une requête HTTP par caractère pour un travail
+  // qui est une comparaison de chaînes sur des lignes déjà en mémoire.
+  alertesChargees = { alerts, alertTotal };
+  dessinerLaListePlate(b, alertListModel(), alerts, alertTotal);
+}
+
+// LE DESSIN de la vue plate, sur un lot DÉJÀ servi. Séparé du chargement pour la recherche (`P11.1-f`),
+// et c'est aussi ce qui le rend jugeable par le harnais sans réseau.
+function dessinerLaListePlate(b, m, alerts, alertTotal) {
+  const requete = m.recherche;
+  const portee = porteeEnMots(m);
+  // LA RECHERCHE SE COMPOSE : elle s'applique APRÈS le serveur (portée, filtre d'affichage,
+  // facettes) et n'en retire aucun. Elle est calculée ICI, avant la barre, pour que TOUT ce que la barre
+  // promet sur « ce qui est affiché » — l'acquittement par liste, l'étendue des dates, l'export — porte
+  // sur les mêmes lignes que celles qui sont rendues. Le COMPTE de la barre, lui, reste celui du serveur :
+  // c'est la portée, et le résumé de recherche dit juste en dessous combien de lignes sur combien.
+  const affichees = requete ? filtrerParRecherche(alerts, requete, texteCherchableDUneAlerte) : alerts;
   // Facette SOURCE : filtrée par le serveur ; l'étendue des dates des alertes LISTÉES (la page courante sous
   // la portée « tous statuts ») est affichée à côté du chip.
   let sourceSpan = null;
-  if (m.source && alerts.length) { const ts = alerts.map(a => a.ts).filter(Boolean); sourceSpan = { from: Math.min(...ts), to: Math.max(...ts) }; }
+  if (m.source && affichees.length) { const ts = affichees.map(a => a.ts).filter(Boolean); sourceSpan = { from: Math.min(...ts), to: Math.max(...ts) }; }
   const count = (m.scopeAll && typeof alertTotal === 'number') ? alertTotal : alerts.length;
-  const portee = porteeEnMots(m);
   const loaded = {
     count,
     countLabel: `${count} alerte(s) · ${portee}${m.mitre ? ' · technique ' + m.mitre : ''}${m.source ? ' · source ' + m.source : ''}`,
-    ackableIds: alerts.filter(a => a.status === 'new').map(a => a.id),
+    ackableIds: affichees.filter(a => a.status === 'new').map(a => a.id),
     sourceSpan,
   };
   const bar = alertActionBarHtml(m, loaded);
@@ -339,13 +415,22 @@ async function renderAlerts(loading) {
     wireAlertActionBar(b, loaded);
     return;
   }
-  b.innerHTML = bar + alerts.map((a, i) => alertRowHtml(a, i)).join('');
+  b.innerHTML = bar + affichees.map((a, i) => alertRowHtml(a, i)).join('');
+  if (requete) {
+    // Une liste qui cache des lignes le DIT, et quand elle ne trouve rien elle nomme ce qu'elle a cherché.
+    const k = clefDeCouverture(m);
+    b.insertBefore(resumeDeRecherche(affichees.length, alerts.length, {
+      filtre: document.createTextNode(RECHERCHE_COUVERTURE[k]),
+      vide: document.createTextNode(RECHERCHE_SANS_RESULTAT[k]),
+    }), b.querySelector('.alert'));
+  }
   wireAlertActionBar(b, loaded);
   // WIRING des lignes (drill/ack/ban/case) : ack -> re-render de la liste filtrée, ou refresh global (backlog).
-  wireAlertRows(b, alerts, () => (m.mitre || m.source || m.scopeAll) ? renderAlerts() : refresh());
-  // EXPORT : barre CSV/JSON/PDF dans l'emplacement de la barre d'actions (sur les alertes chargées).
-  { const slot = b.querySelector('.alertbar-export'); if (slot) slot.appendChild(alertsExportBar(alerts, m.scopeAll ? alertTotal : undefined)); }
-  // pager (haut+bas) sur la portée « tous statuts » (serveur limit/offset) ; auto-caché si <=1 page.
+  wireAlertRows(b, affichees, () => (m.mitre || m.source || m.scopeAll) ? renderAlerts() : refresh());
+  // EXPORT : barre CSV/JSON/PDF dans l'emplacement de la barre d'actions (sur les alertes AFFICHÉES).
+  { const slot = b.querySelector('.alertbar-export'); if (slot) slot.appendChild(alertsExportBar(affichees, m.scopeAll && !requete ? alertTotal : undefined)); }
+  // pager (haut+bas) sur la portée « tous statuts » (serveur limit/offset) ; auto-caché si <=1 page. Il reste
+  // sous une recherche : chaque page reste cherchable, et c'est ce que le résumé annonce.
   if (m.scopeAll && typeof alertTotal === 'number') {
     const pgState = { page: S.alertHistPage, pageSize: ALERT_HIST_PS, total: alertTotal, shown: alerts.length };
     const go = p => { S.alertHistPage = p; renderAlerts(true); };
@@ -473,4 +558,29 @@ async function loadGroupOccurrences(body, g, opage) {
   wireAlertRows(body, occ, () => loadGroupOccurrences(body, g, opage));
 }
 
-export { renderAlerts, setAlertMitreFilter, setAlertSourceFilter, alertActionBarHtml, alertListModel };
+// Vider le champ SANS redessiner : l'appelant enchaîne sur un rechargement complet, et un dessin
+// intermédiaire sur le lot mémorisé (servi sous l'ancien modèle) montrerait un état qui n'existe plus.
+function videLaRechercheSansRedessiner() {
+  const champ = $('#alert-search'); if (champ) champ.value = '';
+}
+// P11.1-f — CÂBLAGE DU CHAMP DE RECHERCHE. Le champ vit dans l'en-tête du panneau, PAS dans son corps :
+// le corps est réécrit en entier à chaque rendu (`b.innerHTML = …`), un champ posé dedans perdrait le
+// curseur à chaque frappe. La frappe REDESSINE le dernier lot servi ; si rien n'a encore été servi (frappe
+// avant le premier chargement), elle demande un chargement normal.
+function redessinerLesAlertes() {
+  const b = $('#alerts .body'); if (!b) return;
+  const m = alertListModel();
+  // Recherche VIDÉE alors qu'un tri groupé était choisi : le groupement revient, et il se recharge (ses
+  // groupes viennent d'une autre route que la liste plate — le lot mémorisé ne les contient pas).
+  if (m.view && !m.recherche) return renderAlerts(true);
+  if (!alertesChargees) return renderAlerts(true);
+  dessinerLaListePlate(b, m, alertesChargees.alerts, alertesChargees.alertTotal);
+}
+(() => {
+  const champ = $('#alert-search'); if (!champ) return;
+  const poignee = champDeRecherche(champ, { auChangement: () => redessinerLesAlertes() });
+  rechercheDesAlertes = poignee.valeur; poserLaRechercheDesAlertes = poignee.poser;
+})();
+
+export { renderAlerts, setAlertMitreFilter, setAlertSourceFilter, alertActionBarHtml, alertListModel,
+  dessinerLaListePlate, redessinerLesAlertes, poserLaRechercheDesAlertes, texteCherchableDUneAlerte };

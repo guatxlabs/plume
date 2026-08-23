@@ -1729,9 +1729,108 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 }
 
 
+// ---------------------------------------------------------------------------------------------
+// 27. LES ALERTES SE CHERCHENT, PAR LE MÊME CHAMP QUE LES AUTRES LISTES (`P11.1-f`).
+//     (a) CE QU'UNE ALERTE OFFRE À LA RECHERCHE : son titre (qui porte le nom de la règle), le jeton de
+//         la règle qui l'a levée, et les sources auxquelles le démon l'a IMPUTÉE — chacun jugé
+//         SÉPARÉMENT, sans quoi un texte cherchable amputé passerait un témoin qui ne lit que le titre.
+//         Témoin inverse : la technique n'y est PAS (elle a sa facette servie et son chip de pivot).
+//     (b) LA COMPOSITION : la recherche s'applique APRÈS le serveur et ne retire aucun filtre ; sous un
+//         tri GROUPÉ elle rend une liste plate — les occurrences d'un groupe ne sont même pas chargées,
+//         une correspondance tombée dedans serait invisible ET introuvable (même choix qu'aux règles) —
+//         et le groupement revient dès qu'elle est vidée.
+//     (c) CE QUE LA LISTE DIT D'ELLE-MÊME : combien de lignes sur combien, et CE QUE LA RECHERCHE COUVRE
+//         — les alertes servies, ou la seule page affichée sous la portée paginée. La phrase change avec
+//         la portée : une recherche qui laisserait croire qu'elle a lu tout l'historique mentirait.
+//     (d) CE QUE LA BARRE PROMET SUIT LA RECHERCHE : l'acquittement global (qui dépasse la page)
+//         disparaît, l'acquittement par liste compte les alertes AFFICHÉES, et l'export les emporte.
+// ---------------------------------------------------------------------------------------------
+{
+  const { dessinerLaListePlate, alertListModel, poserLaRechercheDesAlertes, texteCherchableDUneAlerte, renderAlerts } = await import(pathToFileURL(path.join(WEB, "alerts.js")).href);
+  const rl = await import(pathToFileURL(path.join(WEB, "recherche_de_liste.js")).href);
+  const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  // (a) le texte cherchable, source par source.
+  const alerte = { id: 7, ts: 1000, rule: "rule.12", severity: 3, title: "Échecs SSH : 42 > 5", status: "new", detail: "search source=sshd failed | stats count", mitre: "T1110", sources: "sshd-session\nauthlog", case_id: null, acked_at: 0, acked_by: "" };
+  const cherchable = texteCherchableDUneAlerte(alerte);
+  for (const [quoi, mot] of [["le titre (donc le nom de la règle)", "Échecs SSH"], ["le jeton de la règle", "rule.12"], ["la première source imputée", "sshd-session"], ["la seconde source imputée", "authlog"]]) {
+    exiger(rl.correspondALaRecherche(cherchable, mot), `(27a) ${quoi} n'est pas cherchable : « ${cherchable} »`);
+  }
+  exiger(!/sshd-sessionauthlog/.test(cherchable), `(27a) deux sources imputées se collent en un mot que rien ne trouve : « ${cherchable} »`);
+  exiger(!rl.correspondALaRecherche(cherchable, "T1110"), "(27a) la technique entre dans le texte cherchable : elle a déjà sa facette servie et son chip de pivot, la remettre ferait remonter tout un pan du catalogue");
+  exiger(!rl.correspondALaRecherche(cherchable, "kerberoasting"), "(27a) témoin inverse : un mot étranger trouve l'alerte, le texte cherchable colle tout");
+
+  const liste = new Element("div");
+  const qsOrigine = document.querySelector, fetchOrigine = globalThis.fetch;
+  const etatOrigine = { g: S.alertGroupBy, a: S.alertGroupAll, u: S.alertUncased, auth: S.AUTH };
+  const lot = [
+    alerte,
+    { id: 8, ts: 900, rule: "heartbeat.auditd", severity: 4, title: "Capteur muet : auditd", status: "new", detail: "aucune donnée depuis 30 min", mitre: "", sources: "auditd", case_id: null, acked_at: 0, acked_by: "" },
+    { id: 9, ts: 800, rule: "rule.3", severity: 2, title: "Scan de ports : 60 > 15", status: "new", detail: "search source=ufw", mitre: "T1046", sources: "ufw", case_id: null, acked_at: 0, acked_by: "" },
+  ];
+  const urlsDemandees = [];
+  document.querySelector = (sel) => (sel === "#alerts .body" ? liste : new Element("div"));
+  globalThis.fetch = async (u) => { urlsDemandees.push(String(u)); return { ok: true, status: 200, text: async () => JSON.stringify({ alerts: lot, total: 137 }) }; };
+  const resume = () => liste.children.find((c) => c.classList && c.classList.contains("recherche-resume"));
+  const titresRendus = () => [...String(liste.innerHTML).matchAll(/class="alertdrill"[^>]*>([^<]*)</g)].map((m) => m[1]);
+  try {
+    S.AUTH = { user: "root", role: "admin" };
+    S.alertGroupBy = ""; S.alertGroupAll = false; S.alertUncased = true;
+    // sans recherche : les trois lignes, aucun résumé.
+    poserLaRechercheDesAlertes("");
+    dessinerLaListePlate(liste, alertListModel(), lot, undefined);
+    exiger(titresRendus().length === 3, `(27) instrument : ${titresRendus().length} ligne(s) rendues sans recherche au lieu de 3`);
+    exiger(!resume(), "(27c) sans recherche, la liste rend quand même un résumé de recherche");
+    // (a bis) chercher par le jeton de la règle, puis par une source imputée.
+    poserLaRechercheDesAlertes("heartbeat");
+    dessinerLaListePlate(liste, alertListModel(), lot, undefined);
+    exiger(titresRendus().length === 1 && /auditd/.test(titresRendus()[0]), `(27a) la recherche par le jeton de règle ne rend pas la seule alerte attendue : ${JSON.stringify(titresRendus())}`);
+    poserLaRechercheDesAlertes("ufw");
+    dessinerLaListePlate(liste, alertListModel(), lot, undefined);
+    exiger(titresRendus().length === 1 && /Scan de ports/.test(titresRendus()[0]), `(27a) la recherche par la SOURCE IMPUTÉE ne rend pas la seule alerte attendue : ${JSON.stringify(titresRendus())}`);
+    // (c) le résumé : combien sur combien, et ce qu'il couvre — portée « actives ».
+    exiger(resume() && /1 \/ 3/.test(resume().textContent), `(27c) la liste filtrée ne dit pas combien de lignes sur combien : « ${resume() && resume().textContent} »`);
+    exiger(resume() && /alertes actives servies/.test(resume().textContent), `(27c) le résumé ne dit pas CE QUE la recherche couvre : « ${resume() && resume().textContent} »`);
+    exiger(resume() && !/page affichée/.test(resume().textContent), "(27c) sous la portée « actives » (non paginée), le résumé parle pourtant d'une page");
+    // (d) la barre suit : plus d'acquittement global, l'acquittement par liste compte les AFFICHÉES.
+    exiger(!/data-act="ack-all"/.test(String(liste.innerHTML)), "(27d) sous une recherche, « Tout acquitter » (qui dépasse la page) est encore offert : il dépasserait la recherche");
+    exiger(/Acquitter les 1 affichée/.test(String(liste.innerHTML)), `(27d) l'acquittement par liste ne compte pas les alertes AFFICHÉES : ${String(liste.innerHTML).match(/data-act="ack-shown"[^>]*>[^<]*/)?.[0]}`);
+    // (c bis) portée paginée : la phrase de couverture change et NOMME la page.
+    S.alertGroupAll = true;
+    dessinerLaListePlate(liste, alertListModel(), lot, 137);
+    exiger(resume() && /page affichée/.test(resume().textContent) && /pas sur tout l'historique/.test(resume().textContent), `(27c) sous la portée paginée, le résumé laisse croire que la recherche a lu tout l'historique : « ${resume() && resume().textContent} »`);
+    S.alertGroupAll = false;
+    // (c ter) aucun résultat : la liste le dit, nomme ce qu'elle a cherché, et ne rend aucune ligne.
+    poserLaRechercheDesAlertes("kerberoasting");
+    dessinerLaListePlate(liste, alertListModel(), lot, undefined);
+    exiger(titresRendus().length === 0, "(27c) une recherche sans résultat rend quand même des lignes");
+    const vide = resume() && resume().textContent;
+    exiger(vide && /Aucune alerte/.test(vide) && /titre/.test(vide) && /règle/.test(vide) && /source imputée/.test(vide), `(27c) l'absence de résultat ne dit pas CE QUI est cherché : « ${vide} »`);
+    // (b) la composition, sur le chemin réel : tri groupé + recherche -> la liste plate, jamais /alerts/groups.
+    S.alertGroupBy = "rule";
+    urlsDemandees.length = 0;
+    poserLaRechercheDesAlertes("ssh");
+    await renderAlerts();
+    exiger(urlsDemandees.length === 1 && !/\/alerts\/groups/.test(urlsDemandees[0]), `(27b) sous une recherche, un tri groupé interroge encore la route des groupes : ${JSON.stringify(urlsDemandees)}`);
+    exiger(/status=new/.test(urlsDemandees[0]) && /uncased=1/.test(urlsDemandees[0]), `(27b) la recherche a RETIRÉ la portée ou le filtre d'affichage de l'URL au lieu de s'y composer : ${urlsDemandees[0]}`);
+    exiger(!/[?&]q=|recherche=/.test(urlsDemandees[0]), `(27b) la recherche est envoyée au démon, qui n'offre aucun paramètre plein-texte : ${urlsDemandees[0]}`);
+    exiger(titresRendus().length === 1 && /Échecs SSH/.test(titresRendus()[0]), `(27b) la liste rendue sous recherche n'est pas la liste plate des résultats : ${JSON.stringify(titresRendus())}`);
+    // ... et vidée, le groupement revient : la route des groupes est de nouveau celle qui est interrogée.
+    urlsDemandees.length = 0;
+    poserLaRechercheDesAlertes("");
+    await renderAlerts();
+    exiger(urlsDemandees.some((u) => /\/alerts\/groups/.test(u)), `(27b) recherche vidée, le groupement ne revient pas : ${JSON.stringify(urlsDemandees)}`);
+    console.log(`[alertes] une alerte se cherche par son titre, le jeton de sa règle et sa source imputée (jamais par sa technique, qui a sa facette) ; la recherche se compose avec la portée, le filtre d'affichage et les facettes sans jamais partir au démon, met le groupement de côté et le rend au vidage, dit combien de lignes sur combien et CE QU'ELLE COUVRE, et la barre ne promet plus d'acquittement qui la dépasse`);
+  } finally {
+    poserLaRechercheDesAlertes("");
+    document.querySelector = qsOrigine; globalThis.fetch = fetchOrigine;
+    S.alertGroupBy = etatOrigine.g; S.alertGroupAll = etatOrigine.a; S.alertUncased = etatOrigine.u; S.AUTH = etatOrigine.auth;
+  }
+}
+
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources NOMME le déclarant de chaque source — ce dépôt, le démon, le produit, un connecteur, ou l'exploitant avec sa date — dit « personne ne l'a déclarée » là où c'est le cas, et n'offre de déclarer une cadence que là où aucune sonde n'en déclare ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et RÉPARTIT les alertes actives entre celles qu'une cloche porte, celles qui ne se rapportent à aucun flux (et qui pivotent vers elles-mêmes) et celles dont l'imputation n'a jamais été enregistrée, sans rien afficher quand aucune alerte n'est active ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus ; la ligne d'une règle rend DÉJÀ tester, éditer, supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur ; et LA recherche de liste, partagée, resserre sur plusieurs mots sans se soucier de la casse ni des accents, cherche une règle par son nom, sa requête et sa technique, rend une liste plate ordonnée par le tri courant qui DIT combien de lignes sur combien elle montre, nomme ce qu'elle a cherché quand elle ne trouve rien, et se vide au retour d'un enregistrement pour que la règle écrite se voie ; enfin une technique ATT&CK est une PORTE — ses règles, ses détections par le pivot qui existait déjà (le module ne fabrique aucune requête) et le geste qui la couvrirait, un angle mort qui se dit et met la création en avant, une sortie impraticable rendue inerte avec son motif, et un lecteur à qui le rôle manquant est nommé ; un filtre choisi de la barre des alertes ne se marque plus par la graisse de son mot — que le gras réservait ailleurs à l'alarme — mais par un liseré que rien d'autre n'emploie, et il DIT son état ; l'espace qui porte les alertes et les cas les annonce tous les deux — aucun espace à plusieurs onglets ne porte plus le nom d'un seul — et son filtre se nomme par ce qu'il MONTRE au lieu d'une relation que l'exploitant ne savait pas lire.`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources NOMME le déclarant de chaque source — ce dépôt, le démon, le produit, un connecteur, ou l'exploitant avec sa date — dit « personne ne l'a déclarée » là où c'est le cas, et n'offre de déclarer une cadence que là où aucune sonde n'en déclare ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et RÉPARTIT les alertes actives entre celles qu'une cloche porte, celles qui ne se rapportent à aucun flux (et qui pivotent vers elles-mêmes) et celles dont l'imputation n'a jamais été enregistrée, sans rien afficher quand aucune alerte n'est active ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus ; la ligne d'une règle rend DÉJÀ tester, éditer, supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur ; et LA recherche de liste, partagée, resserre sur plusieurs mots sans se soucier de la casse ni des accents, cherche une règle par son nom, sa requête et sa technique, rend une liste plate ordonnée par le tri courant qui DIT combien de lignes sur combien elle montre, nomme ce qu'elle a cherché quand elle ne trouve rien, et se vide au retour d'un enregistrement pour que la règle écrite se voie ; enfin une technique ATT&CK est une PORTE — ses règles, ses détections par le pivot qui existait déjà (le module ne fabrique aucune requête) et le geste qui la couvrirait, un angle mort qui se dit et met la création en avant, une sortie impraticable rendue inerte avec son motif, et un lecteur à qui le rôle manquant est nommé ; un filtre choisi de la barre des alertes ne se marque plus par la graisse de son mot — que le gras réservait ailleurs à l'alarme — mais par un liseré que rien d'autre n'emploie, et il DIT son état ; l'espace qui porte les alertes et les cas les annonce tous les deux — aucun espace à plusieurs onglets ne porte plus le nom d'un seul — et son filtre se nomme par ce qu'il MONTRE au lieu d'une relation que l'exploitant ne savait pas lire ; une alerte se cherche par son titre, le jeton de sa regle et sa source imputee, par LE meme champ partage : la recherche se compose avec la portee, le filtre d'affichage et les facettes sans jamais partir au demon, met le groupement de cote le temps de rendre ses resultats, DIT ce qu'elle couvre — les alertes servies, ou la seule page affichee — et retire de la barre l'acquittement qui la depasserait.`);

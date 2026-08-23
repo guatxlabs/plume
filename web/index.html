@@ -156,7 +156,17 @@
   <!-- NIVEAU 2 : barre des sous-onglets de l'espace actif (peuplée par renderNav). Cachée pour les espaces
        à un seul onglet (Vue d'ensemble, Dashboards). Pleine largeur via #subnav{grid-column:1/-1}. -->
   <div id="subnav" class="subnav" role="tablist" aria-label="Sous-navigation" hidden></div>
-  <section id="alerts" class="card span2" aria-labelledby="alerts-h"><h2 id="alerts-h">Alertes <button class="ihelp vhelp" data-help="alerts" type="button" title="Aide : Alertes">?</button></h2><div class="body" role="log" aria-live="polite" aria-relevant="additions text">...</div></section>
+  <section id="alerts" class="card span2" aria-labelledby="alerts-h">
+    <div class="panelhead">
+      <h2 id="alerts-h">Alertes <button class="ihelp vhelp" data-help="alerts" type="button" title="Aide : Alertes">?</button></h2>
+      <!-- P11.1-f : la recherche des alertes. Elle vit dans l'EN-TÊTE et non dans le corps : le corps est
+           réécrit en entier à chaque rendu, un champ posé dedans perdrait le curseur à chaque frappe. Elle
+           se COMPOSE avec la portée, le filtre d'affichage, les facettes et le tri — elle n'en remplace
+           aucun. Champ câblé par le mécanisme partagé `recherche_de_liste.js`. -->
+      <div class="hdtools"><input id="alert-search" type="search" placeholder="Rechercher une alerte…" aria-label="Rechercher une alerte" title="Cherche dans le titre, la règle et la source imputée des alertes affichées ; se combine avec la portée, les filtres et le tri. Échap efface la recherche."></div>
+    </div>
+    <div class="body" role="log" aria-live="polite" aria-relevant="additions text">...</div>
+  </section>
   <section id="firewall" class="card"><h2>Firewall <button class="ihelp vhelp" data-help="firewall" type="button" title="Aide : Firewall">?</button></h2><div class="body">...</div></section>
   <section id="controls" class="card"><h2>Contrôles (zéro-trou) <button class="ihelp vhelp" data-help="controls" type="button" title="Aide : Contrôles">?</button></h2><div class="body">...</div></section>
   <section id="integrations" class="card span2"><h2>Intégrations &amp; hôtes <button class="ihelp vhelp" data-help="integrations" type="button" title="Aide : Intégrations & hôtes">?</button></h2><div class="body">...</div></section>

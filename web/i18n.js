@@ -741,6 +741,14 @@ const I18N_EN = {
   "Le compteur de la cloche d'une source compte ses alertes non acquittées, cases comprises, sans fenêtre de temps — il ne dépend pas de la fraîcheur de la source.": "A source's bell counter counts its unacknowledged alerts, cases included, without a time window — it does not depend on the source's freshness.",
   "Liste des alertes (tri plat, filtres retirés)": "Alert list (flat sort, filters removed)",
   "Liste des alertes : tri, portée, filtres, actions": "Alert list: sort, scope, filters, actions", "Retirer le filtre source": "Remove the source filter",
+  // P11.1-f — LA RECHERCHE DES ALERTES : le champ, ce qu'il cherche, ce que la liste filtrée dit d'elle-même
+  // et ce qu'elle couvre — la phrase de couverture est composée, donc ses DEUX variantes entrent entières.
+  "Rechercher une alerte": "Search an alert", "Rechercher une alerte…": "Search an alert…",
+  "Cherche dans le titre, la règle et la source imputée des alertes affichées ; se combine avec la portée, les filtres et le tri. Échap efface la recherche.": "Searches the title, the rule and the imputed source of the alerts shown; combines with the scope, the filters and the sort. Esc clears the search.",
+  "alerte(s) — la recherche porte sur les alertes actives servies ; les filtres et le tri restent posés": "alert(s) — the search covers the active alerts served; the filters and the sort stay in place",
+  "alerte(s) de cette page — la recherche porte sur la page affichée, pas sur tout l'historique ; les filtres et le tri restent posés": "alert(s) on this page — the search covers the page shown, not the whole history; the filters and the sort stay in place",
+  "Aucune alerte affichée ne porte ces mots dans son titre, sa règle ou sa source imputée. Échap efface la recherche.": "No alert shown carries those words in its title, its rule or its imputed source. Esc clears the search.",
+  "Aucune alerte de cette page ne porte ces mots dans son titre, sa règle ou sa source imputée — et la recherche ne descend pas dans les pages suivantes. Échap efface la recherche.": "No alert on this page carries those words in its title, its rule or its imputed source — and the search does not reach into the following pages. Esc clears the search.",
   // P11.7-b — LE FILTRE DE LA LISTE DES ALERTES, nommé par ce qu'il MONTRE. Les deux libellés et les deux
   // phrases de survol sont posés par un ternaire : la garde du lexique ne les compte pas (chaîne dynamique),
   // mais `i18nWalk` traduit le texte RENDU — sans ces clés, la console reste bilingue par accident.

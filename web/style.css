@@ -749,9 +749,9 @@ button.btn-busy::after{content:"";position:absolute;top:50%;left:50%;width:12px;
    `recherche_de_liste.js`) ; ici seule sa LARGEUR dans les outils d'en-tête, bornée pour que le tri, le
    pliage et les boutons de création restent sur la ligne. `.recherche-resume` est la phrase qu'une liste
    filtrée doit à son lecteur : combien de lignes sur combien, ou pourquoi il n'y en a aucune. */
-#rule-search{max-width:230px}
+#rule-search,#alert-search{max-width:230px}
 .recherche-resume{margin:2px 0 9px;font-size:12px}
-@media(max-width:760px){#rule-search{max-width:150px}}
+@media(max-width:760px){#rule-search,#alert-search{max-width:150px}}
 
 /* --- Lot 1 : toggle auto-refresh (état on/off) --- */
 .autotgl{gap:6px}

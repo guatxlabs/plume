@@ -90,7 +90,7 @@ impl Drop for MigrationLogSilencer {
 /// rien (toutes ses gardes `v < N` sont fausses) et OPÈRE À L'AVEUGLE sur un schéma qu'il ne connaît pas
 /// -> risque de corruption (survivable AUJOURD'HUI car migrations additives, mais non gardé). On REFUSE
 /// d'ouvrir : arrêt PROPRE (exit non-zéro), JAMAIS un panic, JAMAIS un « proceed » silencieux.
-pub(crate) const CODE_SCHEMA_MAX: i64 = 117;
+pub(crate) const CODE_SCHEMA_MAX: i64 = 118;
 
 /// Lit `meta.schema_version` (défaut 1 si table/lignes absentes ou illisibles) — MÊME lecture que `migrate()`.
 /// Une base NEUVE (pas encore de table meta) renvoie 1 -> jamais refusée par la garde.
@@ -816,6 +816,7 @@ fn migrate_chain(conn: &Connection) -> bool {
     if v < 115 && !migrate_step(conn, 115, migrate_v115) { return false; }
     if v < 116 && !migrate_step(conn, 116, migrate_v116) { return false; }
     if v < 117 && !migrate_step(conn, 117, migrate_v117) { return false; }
+    if v < 118 && !migrate_step(conn, 118, migrate_v118) { return false; }
     true
 }
 
@@ -1244,6 +1245,60 @@ fn migrate_v117(conn: &MigTx) {
     );
     let _ = conn.execute("UPDATE meta SET value='117' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v117 (P11.5-c : acces_observe — l'inventaire des comptes qui ACCÈDENT, quelle que soit leur provenance : d'où vient le compte, ce qu'il peut, d'où ce rôle est dérivé, quand il a été vu ; aucun secret, table plafonnée, écriture débouncée)");
+}
+
+/// v118 (`P11.3-c` — « ATTENDU » VEUT DIRE DÉCLARÉ PAR QUELQU'UN, ET UNE CADENCE SE DÉCLARE). SIX
+/// colonnes ADDITIVES sur `source_settings`, qui portaient jusqu'ici une seule paire `updated`/
+/// `updated_by` pour TOUS les gestes de la ligne.
+///
+/// CE QUI ÉTAIT MESURÉ (2026-08-23, sur le chemin réel du handler puis relu après réouverture de la
+/// base) : marquer une source « attendue » écrit bien une ligne `source_settings` qui SURVIT au
+/// redémarrage — ce point-là n'était pas cassé. Mais la console créditait `updated_by`, c'est-à-dire le
+/// DERNIER GESTE sur la ligne : une note posée ensuite par un autre compte réécrivait le nom du
+/// déclarant, et l'inventaire affirmait « marquée attendue par bob » alors qu'eve l'avait déclarée.
+/// Une provenance qui se réécrit toute seule ne prouve rien.
+///
+/// `expected_par` / `expected_le` : la provenance PROPRE de la déclaration « attendue » — elles ne
+/// bougent QUE lorsque `set_expected` est joué. `cadence` / `cadence_interval_s` : ce que l'exploitant
+/// déclare de la cadence d'une source que ce dépôt n'observe pas (enum fermé `NATURES_DECLARABLES`,
+/// NULL = rien de déclaré, ce qui n'est pas un défaut). `cadence_par` / `cadence_le` : la provenance
+/// propre de CETTE déclaration-là, pour la même raison.
+///
+/// BACKFILL ASSUMÉ, ET SA LIMITE ÉCRITE : `expected_par`/`expected_le` reprennent `updated_by`/`updated`
+/// pour les lignes existantes. Pour une ligne créée AVANT cette migration, c'est le dernier geste et non
+/// nécessairement la déclaration — l'ancienne forme ne permet pas de les distinguer. Les laisser vides
+/// effacerait un auteur juste dans la grande majorité des cas ; les reprendre garde l'imprécision
+/// EXISTANTE sans en créer une nouvelle, et à partir d'ici la colonne ne bouge plus que sur le geste.
+///
+/// AUCUN EFFET SUR LA COLLECTE : ces colonnes ne pilotent que le VERDICT AFFICHÉ (attendue / statut de
+/// l'inventaire et de la fraîcheur). L'alerte « capteur muet » reste celle des sondes de `COLLECTORS`,
+/// que rien ici ne touche.
+///
+/// ADDITIVE et CONVERGENTE : `ALTER … ADD COLUMN` gardés par `col_exists` (idempotents), MIROIR dans
+/// `db/schema.sql` (base neuve) -> les deux formes convergent (`schema_gaps`).
+///
+/// ROLLBACK — bumpe le schéma à 118 : un binaire max=117 REFUSE d'ouvrir une base v118 (`db_open`,
+/// `v > CODE_SCHEMA_MAX` -> Err). Rollback = RESTAURER le SNAPSHOT pré-migrate. Forward-only, idempotent.
+fn migrate_v118(conn: &MigTx) {
+    for (col, ddl) in [
+        ("expected_par", "ALTER TABLE source_settings ADD COLUMN expected_par TEXT"),
+        ("expected_le", "ALTER TABLE source_settings ADD COLUMN expected_le INTEGER"),
+        ("cadence", "ALTER TABLE source_settings ADD COLUMN cadence TEXT"),
+        ("cadence_interval_s", "ALTER TABLE source_settings ADD COLUMN cadence_interval_s INTEGER"),
+        ("cadence_par", "ALTER TABLE source_settings ADD COLUMN cadence_par TEXT"),
+        ("cadence_le", "ALTER TABLE source_settings ADD COLUMN cadence_le INTEGER"),
+    ] {
+        if !conn.col_exists("source_settings", col) {
+            let _ = conn.execute(ddl, []);
+        }
+    }
+    // BACKFILL borné aux lignes qui n'ont pas encore de provenance propre (idempotent, re-jouable).
+    let _ = conn.execute(
+        "UPDATE source_settings SET expected_par=updated_by, expected_le=updated WHERE expected_par IS NULL",
+        [],
+    );
+    let _ = conn.execute("UPDATE meta SET value='118' WHERE key='schema_version'", []);
+    mig_log!("[migration] schéma -> v118 (P11.3-c : source_settings gagne la provenance PROPRE de chaque déclaration (expected_par/expected_le) et la CADENCE déclarable par l'exploitant (cadence/cadence_interval_s/cadence_par/cadence_le) — « attendu » veut dire déclaré par quelqu'un, et une source installée hors de ce dépôt peut enfin dire son rythme ; affichage seul, aucune alerte n'en dérive)");
 }
 
 /// v108 (PERF — RECHERCHE RAW HAUT-VOLUME source=X sur fenêtre longue). MARQUEUR PUR (aucune DDL lourde

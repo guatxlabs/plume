@@ -28,12 +28,24 @@ export const HELP = {
 
 Les alertes actives d'une source sont un COMPTE (cloche à côté du nom), jamais un état de collecte.
 
-CADENCE DÉCLARÉE (affichée à côté du nom) :
-  continu · N     une sonde attend un flux ou un battement régulier tous les N → peut être « en retard »
-  événementiel    une sonde l'observe mais son débit dépend de l'activité → jamais « en retard »
-  non déclarée    aucune sonde ne déclare rien : l'âge ne dit que l'activité → jamais « en retard »
-Le rythme observé sur 24 h (~1 donnée / N) est donné au survol : c'est une observation, pas une
-attente, et il ne juge rien.
+CE QUE LA CLOCHE COUVRE, ET CE QU'ELLE NE COUVRE PAS. Une cloche compte les alertes IMPUTÉES à
+une source, toutes dates confondues. Le bandeau répartit donc toutes les alertes actives en trois :
+  imputées à un flux         leur cloche est allumée dans la liste
+  sans flux                  elles DISENT ne se rapporter à aucune source : une alerte d'hôte, de
+                             règle éteinte ou de seuil n'en a pas. Ce n'est PAS un défaut de
+                             collecte. Le compte est cliquable : il ouvre exactement ces alertes.
+  sans imputation enregistrée  levées avant l'imputation, ou par un producteur qui ne l'écrit
+                             pas : le compte par source les ignore, et c'est dit plutôt que tu.
+Les trois font le total : c'est ce qui permet de vérifier qu'aucune alerte ne se perd.
+
+CADENCE DÉCLARÉE (affichée à côté du nom) — par une sonde du démon OU par l'exploitant :
+  continu · N     un point est attendu tous les N → peut être « en retard »
+  événementiel    pas de cadence PAR NATURE, le débit dépend de l'activité → jamais « en retard »
+  aucune cadence déclarée   personne ne l'a dite (ni sonde, ni humain) : un blanc, pas un défaut
+                            → l'âge ne dit que l'activité, jamais « en retard »
+Une cadence déclarée par un humain porte son nom et sa date (survol). Elle se déclare depuis
+l'Inventaire (Données → Sources). Le rythme observé sur 24 h (~1 donnée / N) est donné au survol :
+c'est une observation, pas une attente, et il ne juge rien.
 
 L'âge = temps depuis la dernière DONNÉE, pas depuis le dernier passage du collecteur (qui, lui,
 tourne sur un timer et vérifie ; il n'émet que s'il y a du nouveau). Une source peut être « calme »
@@ -49,12 +61,24 @@ des heures sans problème : un IPS n'émet rien sans attaque, un collecteur pér
 
 Active alerts on a source are a COUNT (bell next to the name), never a collection state.
 
-DECLARED CADENCE (shown next to the name) :
-  continuous · N     a probe expects a regular flow or heartbeat every N  → can be "late"
-  event-driven       a probe observes it but its rate depends on activity → never "late"
-  undeclared         no probe declares anything: age only tells activity  → never "late"
-The 24 h observed rhythm (~1 datum / N) is shown on hover; it is an observation, not an
-expectation, and it judges nothing.
+WHAT THE BELL COVERS, AND WHAT IT DOES NOT. A bell counts the alerts IMPUTED to a source, across
+all dates. The banner therefore splits every active alert into three:
+  imputed to a flow      their bell is lit in the list below
+  no flow                they SAY they refer to no source: a host, dead-rule or threshold alert
+                         has none. This is NOT a collection fault. The count is clickable: it
+                         opens exactly those alerts.
+  no recorded imputation raised before imputation existed, or by a producer that does not write
+                         it: the per-source count ignores them, and that is said rather than hidden.
+The three add up to the total: that is what lets you check no alert goes missing.
+
+DECLARED CADENCE (shown next to the name) — by a daemon probe OR by the operator :
+  continuous · N     a datum is expected every N                         → can be "late"
+  event-driven       no cadence BY NATURE, the rate depends on activity  → never "late"
+  no declared cadence  nobody stated one (no probe, no human): a blank, not a fault
+                       → age only tells activity, never "late"
+A human-declared cadence carries its author and date (on hover). It is declared from the
+Inventory (Data → Sources). The 24 h observed rhythm (~1 datum / N) is shown on hover; it is an
+observation, not an expectation, and it judges nothing.
 
 Age = time since the last DATA, not since the collector last ran (which runs on a timer and
 checks; it only emits if there is something new). A source can be "quiet" for hours with no
@@ -426,23 +450,47 @@ Time stored in UTC ; display follows the time-zone selector.` },
   },
   sources: {
     fr: { title: `Sources d'ingestion`, body:
-`Inventaire (lecture seule) de toutes les sources de données ingérées.
-• Colonnes : Attendue (et pourquoi), Cadence déclarée, Dernier vu, volume 24 h, Statut, Catégorie, Note.
-• « Attendue » est DÉRIVÉ : un fichier livré l'émet, une sonde l'observe, le produit l'agrège,
-  ou un connecteur configuré la déclare — la raison est écrite sous le badge.
-• Badge « inattendu » = source que rien ne déclare (signal à examiner, pas forcément un défaut).
-  Un éditeur ou un administrateur la marque « attendue » : persistant, réversible, audité,
-  avec l'auteur et la date affichés dans l'inventaire.
+`Inventaire de toutes les sources de données ingérées.
+• Colonnes : Déclarée (par qui), Cadence, Dernier vu, volume 24 h, Statut, Catégorie, Note.
+• « Déclarée » veut dire VOULUE PAR QUELQU'UN, pas « livrée dans le dépôt ». Cinq déclarants,
+  et la colonne dit lequel : ce dépôt (un fichier livré l'émet), le démon (une sonde l'observe),
+  le produit (il l'agrège), un connecteur configuré, ou L'EXPLOITANT de cette installation.
+• Badge « non déclarée » = personne ne l'a voulue, pas même un humain d'ici : un signal à
+  examiner, PAS un défaut de collecte. Une sonde installée hors de ce dépôt est aussi légitime
+  qu'une autre — un éditeur la déclare (persistant, réversible, audité), et l'inventaire dit
+  ensuite QUI l'a déclarée et QUAND. Cette provenance ne bouge plus : poser une note ou un
+  libellé ne réécrit pas le nom du déclarant.
+• CADENCE — trois réponses distinctes, jamais confondues :
+  continu · N     un point est attendu tous les N → au-delà de 3 cycles, « en retard »
+  événementiel    pas de cadence PAR NATURE (le débit dépend d'une activité extérieure)
+  aucune cadence déclarée   personne ne l'a dite : un blanc, pas un défaut → jamais « en retard »
+  Là où AUCUNE sonde du démon ne déclare de cadence, un éditeur peut la déclarer (Actions →
+  « déclarer la cadence »), et la retirer. Là où une sonde en déclare une, elle fait foi et le
+  geste est refusé plutôt qu'accepté puis ignoré.
+• Déclarer une cadence ne crée AUCUNE alerte : elle change le mot affiché ici et dans Fraîcheur.
+  Le dead-man's-switch (« Capteur muet ») reste celui des sondes du démon.
 • Statut = même dérivation que Fraîcheur (frais / calme / en retard / muet).
 • Les métadonnées d'affichage sont éditables (editor+), sans effet sur la collecte.` },
     en: { title: `Ingestion sources`, body:
-`Read-only inventory of every ingested data source.
-• Columns: Expected (and why), Declared cadence, Last seen, 24h volume, Status, Category, Note.
-• "Expected" is DERIVED: a shipped file emits it, a probe observes it, the product aggregates it,
-  or a configured connector declares it — the reason is written under the badge.
-• "unexpected" badge = a source nothing declares (a signal to review, not necessarily a fault).
-  An editor or admin marks it "expected": persistent, reversible, audited, with author and date
-  shown in the inventory.
+`Inventory of every ingested data source.
+• Columns: Declared (by whom), Cadence, Last seen, 24h volume, Status, Category, Note.
+• "Declared" means WANTED BY SOMEONE, not "shipped in the repository". Five declarers, and the
+  column says which one: this repository (a shipped file emits it), the daemon (a probe observes
+  it), the product (it aggregates it), a configured connector, or THIS DEPLOYMENT'S OPERATOR.
+• "not declared" badge = nobody wanted it, not even a human here: a signal to review, NOT a
+  collection fault. A probe installed outside this repository is as legitimate as any other —
+  an editor declares it (persistent, reversible, audited), and the inventory then says WHO
+  declared it and WHEN. That provenance no longer moves: setting a note or a label does not
+  rewrite the declarer's name.
+• CADENCE — three distinct answers, never conflated:
+  continuous · N   a datum is expected every N → beyond 3 cycles, "late"
+  event-driven     no cadence BY NATURE (the rate depends on outside activity)
+  no declared cadence   nobody stated one: a blank, not a fault → never "late"
+  Where NO daemon probe declares a cadence, an editor may declare one (Actions → "declare the
+  cadence") and withdraw it. Where a probe does declare one, it prevails and the gesture is
+  refused rather than accepted then ignored.
+• Declaring a cadence creates NO alert: it changes the word shown here and in Freshness. The
+  dead-man's-switch ("Mute probe") remains the daemon probes'.
 • Status = same derivation as Freshness (fresh / quiet / late / mute).
 • Display metadata is editable (editor+), no effect on collection.` },
   },

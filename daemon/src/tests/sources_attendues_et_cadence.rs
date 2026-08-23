@@ -342,7 +342,8 @@
             imp_flux(&w, "derive-deploiement", "config", 3000, 3); // inconnue
             imp_flux(&w, "auditd", "exec", 1200, 4); // continu déclaré 120 s : 20 min de silence = en retard
             rollup_events(&w);
-            w.execute("INSERT INTO source_settings(scope,source,expected,updated,updated_by) VALUES('global','derive-deploiement',1,1700000000,'eve')", []).unwrap();
+            w.execute("INSERT INTO source_settings(scope,source,expected,updated,updated_by,expected_par,expected_le) VALUES('global','derive-deploiement',1,1700000000,'eve',
+                'eve',1700000000)", []).unwrap();
         }
         let st = ds_file_state(&p);
         let v = sources_inventory(State(st), Extension(sac_au("viewer", "v"))).await.0;
@@ -355,7 +356,9 @@
         assert_eq!(pp["status"], "calme", "sans cadence déclarée, deux heures de silence = calme, jamais en retard");
         let dd = src("derive-deploiement");
         assert_eq!(dd["expected"], true, "marquage persistant lu");
-        assert!(dd["raison_attendue"].as_str().unwrap().starts_with("marquée attendue par eve"), "qui : {dd}");
+        assert!(dd["raison_attendue"].as_str().unwrap().starts_with("déclarée par eve"), "qui : {dd}");
+        assert_eq!(dd["declaree_par"], "l'exploitant", "le CINQUIÈME déclarant est nommé pour ce qu'il est");
+        assert_eq!(pp["declaree_par"], "ce dépôt", "et les quatre autres restent distincts");
         assert_eq!(dd["marquage"]["updated_by"], "eve");
         assert_eq!(dd["marquage"]["updated"], 1700000000, "quand");
         let au = src("auditd");
@@ -375,18 +378,19 @@
     /// LA CADENCE DÉCLARÉE dérive de `COLLECTORS` — par famille de sonde, avec la préséance du battement.
     #[test]
     fn cadence_declaree_derive_des_sondes() {
+        use crate::sondes::DeclarantDeCadence as Decl;
         // flux continu.
-        assert_eq!(cadence_declaree("event", "auditd"), CadenceDeclaree::Continue { interval_s: 120, capteur: "audit" });
-        assert_eq!(cadence_declaree("event", "web"), CadenceDeclaree::Continue { interval_s: 1800, capteur: "web" });
+        assert_eq!(cadence_declaree("event", "auditd"), CadenceDeclaree::Continue { interval_s: 120, par: Decl::Sonde("audit") });
+        assert_eq!(cadence_declaree("event", "web"), CadenceDeclaree::Continue { interval_s: 1800, par: Decl::Sonde("web") });
         // flux événementiel SANS battement : jamais en retard.
-        assert_eq!(cadence_declaree("event", "sshd"), CadenceDeclaree::Evenementielle { capteur: "journal" });
-        assert_eq!(cadence_declaree("event", "yara"), CadenceDeclaree::Evenementielle { capteur: "yara" });
+        assert_eq!(cadence_declaree("event", "sshd"), CadenceDeclaree::Evenementielle { par: Decl::Sonde("journal") });
+        assert_eq!(cadence_declaree("event", "yara"), CadenceDeclaree::Evenementielle { par: Decl::Sonde("yara") });
         // flux événementiel AVEC battement de santé : le battement (dead-man's-switch) donne la cadence.
-        assert_eq!(cadence_declaree("event", "crowdsec"), CadenceDeclaree::Continue { interval_s: 300, capteur: "crowdsec-health" });
-        assert_eq!(cadence_declaree("event", "portscan"), CadenceDeclaree::Continue { interval_s: 300, capteur: "portscan-health" });
+        assert_eq!(cadence_declaree("event", "crowdsec"), CadenceDeclaree::Continue { interval_s: 300, par: Decl::Sonde("crowdsec-health") });
+        assert_eq!(cadence_declaree("event", "portscan"), CadenceDeclaree::Continue { interval_s: 300, par: Decl::Sonde("portscan-health") });
         // instantanés et métriques.
-        assert_eq!(cadence_declaree("snapshot", "firewall"), CadenceDeclaree::Continue { interval_s: 120, capteur: "firewall" });
-        assert_eq!(cadence_declaree("metric", "métriques · 3 séries"), CadenceDeclaree::Continue { interval_s: 60, capteur: "resources" });
+        assert_eq!(cadence_declaree("snapshot", "firewall"), CadenceDeclaree::Continue { interval_s: 120, par: Decl::Sonde("firewall") });
+        assert_eq!(cadence_declaree("metric", "métriques · 3 séries"), CadenceDeclaree::Continue { interval_s: 60, par: Decl::Sonde("resources") });
         // les quatre sources du constat : aucune sonde ne déclare de cadence pour mail / portprobe /
         // cloudflare ; `derive-deploiement` non plus. Elles ne peuvent donc pas être « en retard ».
         for n in ["mail", "portprobe", "cloudflare", "derive-deploiement", "nft"] {
@@ -410,8 +414,9 @@
     /// LE STATUT : quatre mots, un sens chacun, et le seuil « en retard » = celui du capteur « muet ».
     #[test]
     fn statut_de_source_quatre_mots_un_sens_chacun() {
-        let cont = CadenceDeclaree::Continue { interval_s: 300, capteur: "x" };
-        let evt = CadenceDeclaree::Evenementielle { capteur: "x" };
+        use crate::sondes::DeclarantDeCadence as Decl;
+        let cont = CadenceDeclaree::Continue { interval_s: 300, par: Decl::Sonde("x") };
+        let evt = CadenceDeclaree::Evenementielle { par: Decl::Sonde("x") };
         // pipeline en panne : muet, quelle que soit la cadence.
         assert_eq!(statut_de_source(5, false, Some(&cont)), "muet");
         assert_eq!(statut_de_source(5, false, None), "muet");
@@ -424,7 +429,7 @@
         // continu : en retard AU-DELÀ de interval × CYCLES_TOLERES_AFFICHAGE — le seuil du capteur « muet ».
         assert_eq!(statut_de_source(300 * CYCLES_TOLERES_AFFICHAGE, true, Some(&cont)), "frais", "à la limite : pas encore en retard");
         assert_eq!(statut_de_source(300 * CYCLES_TOLERES_AFFICHAGE + 1, true, Some(&cont)), "en_retard", "la cadence déclarée prime sur frais/calme");
-        let lent = CadenceDeclaree::Continue { interval_s: 1800, capteur: "web" };
+        let lent = CadenceDeclaree::Continue { interval_s: 1800, par: Decl::Sonde("web") };
         assert_eq!(statut_de_source(3600, true, Some(&lent)), "calme", "web à 1 h : sous 3 cycles de 30 min, calme");
         assert_eq!(statut_de_source(5401, true, Some(&lent)), "en_retard", "web à 90 min et 1 s : en retard");
         // cohérence avec le verdict du capteur : même observation, même seuil.
@@ -478,4 +483,207 @@
         let v2 = compute_freshness(&p2, None);
         assert_eq!(v2["pipeline_fresh"], false);
         assert!(v2["feeds"].as_array().unwrap().iter().all(|f| f["status"] == "muet"));
+    }
+
+    // ================================================================================================
+    // P11.3-c — « ATTENDU » VEUT DIRE DÉCLARÉ PAR QUELQU'UN, ET UNE CADENCE SE DÉCLARE.
+    //
+    // CE QUI A ÉTÉ MESURÉ AVANT DE CORRIGER (2026-08-23, sur le chemin réel du handler puis relu après
+    // réouverture de la base) :
+    //   (a) « marquer attendue » écrit UNE ligne `source_settings(scope='global', source, expected=1,
+    //       updated, updated_by)` et rien d'autre — et elle SURVIT au redémarrage. Ce point-là n'était
+    //       pas cassé, et la mesure valait mieux que la supposition.
+    //   (b) MAIS la console créditait `updated_by`, c'est-à-dire le DERNIER GESTE sur la ligne : après
+    //       qu'un autre compte y a posé une note, l'inventaire affirmait « marquée attendue par bob »
+    //       alors qu'eve l'avait déclarée. Une provenance qui se réécrit toute seule ne prouve rien.
+    //   (c) Et une source installée HORS de ce dépôt ne pouvait déclarer NI son existence autrement que
+    //       par un booléen anonyme, NI sa cadence — « cadence non déclarée » était un état sans issue.
+    //
+    // CE QUI EST TENU ICI : le geste écrit ce qu'on croit ; il survit ; sa provenance est PROPRE (une
+    // note n'y touche plus) ; la cadence se déclare là où aucune sonde ne parle et est REFUSÉE là où une
+    // sonde parle ; et une cadence déclarée par un humain CHANGE le statut affiché — la mutation est
+    // nommée : `derive-deploiement` passe de `calme` à `en_retard`, et rien d'autre ne bouge.
+    // ================================================================================================
+
+    /// Ce que le geste écrit, où, et sa SURVIE — puis la provenance qui ne se laisse plus réécrire.
+    #[tokio::test]
+    async fn declarer_attendue_ecrit_une_ligne_qui_survit_et_credite_le_declarant() {
+        let (_tmp, p) = imp_base_disque("decl-attendue");
+        {
+            let w = open_db(&p).unwrap();
+            imp_flux(&w, "web", "web", 10, 4); // pipeline frais
+            imp_flux(&w, "derive-deploiement", "config", 3000, 3);
+            rollup_events(&w);
+        }
+        // (1) CE QUE LE GESTE ÉCRIT — une ligne, avec la provenance PROPRE de la déclaration.
+        {
+            let st = ds_file_state(&p);
+            assert_eq!(
+                sac_put(&st, sac_au("editor", "eve"), json!({"source":"derive-deploiement","action":"set_expected","value":true})).await,
+                StatusCode::OK
+            );
+            let c = st.db.lock();
+            let (scope, expected, par, le, upd_by): (String, i64, Option<String>, Option<i64>, String) = c
+                .query_row(
+                    "SELECT scope,expected,expected_par,expected_le,COALESCE(updated_by,'') FROM source_settings WHERE source='derive-deploiement'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .expect("le geste écrit une ligne source_settings");
+            assert_eq!((scope.as_str(), expected, par.as_deref(), upd_by.as_str()), ("global", 1, Some("eve"), "eve"));
+            assert!(le.unwrap_or(0) > 0, "la date du geste est écrite");
+        }
+        // (2) SURVIE AU REDÉMARRAGE : plus aucune connexion vivante, base rouverte, état neuf.
+        async fn lire(p: &str, tag: &str) -> Value {
+            let st = ds_file_state(p);
+            let v = sources_inventory(State(st), Extension(sac_au("viewer", "v"))).await.0;
+            v["sources"].as_array().unwrap().iter().find(|s| s["source"] == "derive-deploiement").cloned()
+                .unwrap_or_else(|| panic!("{tag} : source absente"))
+        }
+        let dd = lire(&p, "après redémarrage").await;
+        assert_eq!(dd["expected"], true, "la déclaration SURVIT au redémarrage (elle est en base, pas en mémoire)");
+        assert_eq!(dd["declaree_par"], "l'exploitant");
+        assert!(dd["raison_attendue"].as_str().unwrap().starts_with("déclarée par eve"), "{dd}");
+        // (3) LA MUTATION QUI PROUVE LE CORRECTIF : un AUTRE compte pose une note ; la ligne change
+        // (`updated_by` devient bob) mais la PROVENANCE de la déclaration, elle, ne bouge pas.
+        {
+            let st = ds_file_state(&p);
+            assert_eq!(
+                sac_put(&st, sac_au("editor", "bob"), json!({"source":"derive-deploiement","action":"set_note","value":"sonde de dérive"})).await,
+                StatusCode::OK
+            );
+            let c = st.db.lock();
+            let (upd_by, par): (String, Option<String>) = c
+                .query_row("SELECT COALESCE(updated_by,''),expected_par FROM source_settings WHERE source='derive-deploiement'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap();
+            assert_eq!(upd_by, "bob", "le dernier geste est bien de bob (la valeur qui DOIT changer)");
+            assert_eq!(par.as_deref(), Some("eve"), "... et la provenance de la DÉCLARATION reste eve (la valeur qui ne doit PAS changer)");
+        }
+        let dd3 = lire(&p, "après la note de bob").await;
+        assert!(dd3["raison_attendue"].as_str().unwrap().contains("eve"), "la console crédite le déclarant : {dd3}");
+        assert!(!dd3["raison_attendue"].as_str().unwrap().contains("bob"), "et jamais l'auteur du dernier geste : {dd3}");
+    }
+
+    /// LA CADENCE SE DÉCLARE là où personne ne la déclare, elle est REFUSÉE là où une sonde parle, elle se
+    /// RETIRE, et elle CHANGE le statut affiché — dans l'inventaire ET dans la fraîcheur, du même mot.
+    #[tokio::test]
+    async fn declarer_la_cadence_change_le_statut_et_est_refusee_la_ou_une_sonde_parle() {
+        let (_tmp, p) = imp_base_disque("decl-cadence");
+        {
+            let w = open_db(&p).unwrap();
+            imp_flux(&w, "web", "web", 10, 4); // pipeline frais ; sonde continue 1800 s
+            imp_flux(&w, "derive-deploiement", "config", 5 * 3600, 3); // 5 h de silence, aucune sonde
+            imp_flux(&w, "portprobe", "firewall", 5 * 3600, 5); // livrée, aucune sonde de cadence non plus
+            rollup_events(&w);
+        }
+        async fn statut(p: &str, src: &str) -> (String, String, Value, Option<bool>) {
+            let st = ds_file_state(p);
+            let v = sources_inventory(State(st), Extension(sac_au("viewer", "v"))).await.0;
+            let e = v["sources"].as_array().unwrap().iter().find(|s| s["source"] == src).cloned().unwrap();
+            (e["status"].as_str().unwrap_or("").to_string(), e["cadence_declaree"].as_str().unwrap_or("").to_string(), e["cadence_par"].clone(), e["cadence_declarable"].as_bool())
+        }
+        // AVANT : personne ne déclare -> aucune cadence, jamais « en retard » malgré cinq heures de silence.
+        let avant = statut(&p, "derive-deploiement").await;
+        assert_eq!((avant.0.as_str(), avant.1.as_str(), avant.3), ("calme", "non_declaree", Some(true)));
+        // REFUS là où une sonde parle : `web` est déclarée continue par la sonde « web ».
+        {
+            let st = ds_file_state(&p);
+            assert_eq!(
+                sac_put(&st, sac_au("editor", "eve"), json!({"source":"web","action":"set_cadence","value":"continue","interval_s":300})).await,
+                StatusCode::CONFLICT,
+                "une déclaration humaine que la préséance ignorerait est REFUSÉE, pas acceptée en silence"
+            );
+        }
+        // BORNES dérivées : sous le plancher (l'intervalle le plus serré que ce dépôt livre) et au-delà de
+        // la fenêtre de l'inventaire, le geste est refusé.
+        {
+            let st = ds_file_state(&p);
+            for i in [1_i64, FENETRE_INVENTAIRE_S + 1] {
+                assert_eq!(
+                    sac_put(&st, sac_au("editor", "eve"), json!({"source":"derive-deploiement","action":"set_cadence","value":"continue","interval_s":i})).await,
+                    StatusCode::BAD_REQUEST,
+                    "intervalle {i} hors bornes"
+                );
+            }
+            assert_eq!(
+                sac_put(&st, sac_au("editor", "eve"), json!({"source":"derive-deploiement","action":"set_cadence","value":"toutes-les-lunes"})).await,
+                StatusCode::BAD_REQUEST,
+                "enum fermé des natures"
+            );
+            // un lecteur ne déclare rien.
+            assert_eq!(
+                sac_put(&st, sac_au("viewer", "vic"), json!({"source":"derive-deploiement","action":"set_cadence","value":"evenementielle"})).await,
+                StatusCode::FORBIDDEN
+            );
+        }
+        // LA MUTATION : eve déclare une cadence continue horaire -> `status` passe de calme à en_retard.
+        {
+            let st = ds_file_state(&p);
+            assert_eq!(
+                sac_put(&st, sac_au("editor", "eve"), json!({"source":"derive-deploiement","action":"set_cadence","value":"continue","interval_s":3600})).await,
+                StatusCode::OK
+            );
+        }
+        let apres = statut(&p, "derive-deploiement").await;
+        assert_eq!(apres.0, "en_retard", "cinq heures de silence pour une cadence horaire DÉCLARÉE : en retard");
+        assert_eq!(apres.1, "continue");
+        assert_eq!(apres.2, json!("eve"), "la console dit QUI a déclaré la cadence");
+        // ... et rien d'autre ne bouge : `portprobe`, aussi silencieuse, reste calme faute de déclaration.
+        assert_eq!(statut(&p, "portprobe").await.0, "calme", "aucune déclaration ailleurs : aucun autre statut ne change");
+        // LA FRAÎCHEUR REND LE MÊME MOT (une seule dérivation, deux surfaces).
+        let f = compute_freshness(&p, None);
+        let feed = f["feeds"].as_array().unwrap().iter().find(|x| x["name"] == "derive-deploiement").cloned().unwrap();
+        assert_eq!(feed["status"], "en_retard");
+        assert_eq!(feed["cadence_par"], "eve");
+        assert!(feed["cadence_declarant"].as_str().unwrap().contains("eve"));
+        // ÉVÉNEMENTIEL : une RÉPONSE, pas un trou — et jamais « en retard ».
+        {
+            let st = ds_file_state(&p);
+            assert_eq!(
+                sac_put(&st, sac_au("editor", "eve"), json!({"source":"derive-deploiement","action":"set_cadence","value":"evenementielle"})).await,
+                StatusCode::OK
+            );
+        }
+        let evt = statut(&p, "derive-deploiement").await;
+        assert_eq!((evt.0.as_str(), evt.1.as_str()), ("calme", "evenementielle"), "l'événementiel n'est jamais en retard");
+        // LE RETRAIT existe : sans lui, on pourrait déclarer sans jamais se dédire.
+        {
+            let st = ds_file_state(&p);
+            assert_eq!(
+                sac_put(&st, sac_au("editor", "eve"), json!({"source":"derive-deploiement","action":"set_cadence","value":"inconnue"})).await,
+                StatusCode::OK
+            );
+        }
+        let retire = statut(&p, "derive-deploiement").await;
+        assert_eq!((retire.0.as_str(), retire.1.as_str()), ("calme", "non_declaree"), "retirée : la console ne connaît plus le rythme");
+    }
+
+    /// LA DÉRIVATION DU VERDICT, en fonction PURE : cinq déclarants, un retrait explicite, et un blanc.
+    #[test]
+    fn verdict_de_source_nomme_le_declarant_et_distingue_le_retrait_du_blanc() {
+        let livree = RaisonAttendue::Livree { fichier: "collectors/x.sh" };
+        let marque = |expected: bool, par: &str| MarquageSource {
+            expected,
+            expected_par: Some(par.to_string()),
+            expected_le: Some(1700000000),
+            ..Default::default()
+        };
+        // rien du tout : un blanc, pas un défaut.
+        assert_eq!(verdict_de_source(None, None), VerdictDeSource::NonDeclaree);
+        assert!(verdict_de_source(None, None).libelle().is_none());
+        // construction seule.
+        let v = verdict_de_source(Some(livree.clone()), None);
+        assert!(v.attendue() && v.provenance() == Some("ce dépôt"));
+        // l'exploitant seul : le cinquième déclarant, nommé et daté.
+        let v = verdict_de_source(None, Some(&marque(true, "eve")));
+        assert!(v.attendue() && v.provenance() == Some("l'exploitant"));
+        assert!(v.libelle().unwrap().contains("eve"));
+        // RETRAIT explicite : distinct du blanc, et il tient MÊME sur une source livrée.
+        let v = verdict_de_source(Some(livree), Some(&marque(false, "root")));
+        assert!(!v.attendue());
+        assert!(v.libelle().unwrap().contains("root"), "un refus porte un nom lui aussi : {v:?}");
+        assert_ne!(v, VerdictDeSource::NonDeclaree, "« quelqu'un a dit non » n'est pas « personne n'a rien dit »");
+        // ligne ancienne, sans provenance consignée : la console le DIT au lieu d'inventer un auteur.
+        let v = verdict_de_source(None, Some(&MarquageSource { expected: true, ..Default::default() }));
+        assert!(v.libelle().unwrap().contains("non consigné"), "{v:?}");
     }

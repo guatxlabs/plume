@@ -367,7 +367,12 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   // Facette source sur un tri groupé, portée « tous statuts » : le tri et la portée sont ACTIFS (marqués « on »,
   // jamais `disabled`) et le chip compte des groupes, tous statuts.
   const sourceGroupee = alertActionBarHtml({ view: "rule", scopeAll: true, uncased: true, mitre: "", source: "k8s" }, { count: 2, countLabel: "2 groupe(s)", ackableIds: [] });
-  exiger(/class="agseg on" data-g="rule" title=/.test(sourceGroupee) && /class="agscope on" data-act="scope" title=/.test(sourceGroupee), `(4) sous la facette source, le tri « Règle » et la portée « tous statuts » doivent être actifs, sans \`disabled\` : ${sourceGroupee.match(/<button[^>]*data-g="rule"[^>]*>/)?.[0]} ${sourceGroupee.match(/<button[^>]*data-act="scope"[^>]*>/)?.[0]}`);
+  // Le motif ne fige plus l'ORDRE des attributs (`P11.4-i` a inséré `aria-pressed` entre la classe et
+  // `data-g`) : il exige la classe « on » et l'absence de `disabled` SUR LE MÊME bouton, ce qui est la
+  // propriété visée — un motif d'ordre aurait rougi sur un ajout d'attribut sans rien dire de l'état.
+  const boutonAvec = (html, motif) => (html.match(new RegExp(`<button[^>]*${motif}[^>]*>`)) || [])[0] || "";
+  const btnTriRegle = boutonAvec(sourceGroupee, 'data-g="rule"'), btnPortee = boutonAvec(sourceGroupee, 'data-act="scope"');
+  exiger(/class="agseg on"/.test(btnTriRegle) && !/\bdisabled\b/.test(btnTriRegle) && /class="agscope on"/.test(btnPortee) && !/\bdisabled\b/.test(btnPortee), `(4) sous la facette source, le tri « Règle » et la portée « tous statuts » doivent être actifs, sans \`disabled\` : ${btnTriRegle} ${btnPortee}`);
   exiger(/2 groupe\(s\) d'alertes \(tous statuts\) imputée\(s\) à cette source/.test(sourceGroupee), `(4) le chip de la facette source en vue groupée ne compte pas des groupes tous statuts : ${sourceGroupee.match(/Source : .*?<\/span><button/)?.[0]}`);
   // Témoin inverse : sans facette, sur les actives, l'acquittement est GLOBAL et le dit.
   const sansFacette = alertActionBarHtml({ view: "rule", scopeAll: false, uncased: true, mitre: "", source: "" }, { count: 9, countLabel: "9 groupe(s)", ackableIds: [] });
@@ -521,14 +526,15 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const enTetes = (wrap) => { let th = []; const marcher = (el) => { if (!el || !el.children) return; if (el.tagName === "THEAD") th = el.children[0].children.map((x) => texte(x)); el.children.forEach(marcher); }; marcher(wrap); return th; };
   const inventaire = {
     ok: true, pipeline_fresh: true, sources: [
-      // livrée par ce dépôt : attendue par construction, la raison nomme le fichier ; calme sans cadence déclarée.
-      { source: "portprobe", expected: true, unexpected: false, in_collectors: true, raison_attendue: "émise par un fichier livré (collectors/portprobe.sh)", marquage: null, cadence_declaree: "non_declaree", cadence_interval_s: null, cadence_capteur: null, observed_interval_s: 72, last_seen: 1000, age_s: 7200, n_24h: 1200, status: "calme" },
-      // rien ne la déclare, personne ne l'a marquée : le signal.
-      { source: "derive-deploiement", expected: false, unexpected: true, in_collectors: false, raison_attendue: null, marquage: null, cadence_declaree: "non_declaree", cadence_interval_s: null, cadence_capteur: null, observed_interval_s: 3600, last_seen: 1000, age_s: 3000, n_24h: 24, status: "calme" },
-      // marquée attendue par un éditeur : qui et quand sont rendus.
-      { source: "vault-custom", expected: true, unexpected: false, in_collectors: false, raison_attendue: "marquée attendue par eve (ts 1700000000)", marquage: { expected: true, updated_by: "eve", updated: 1700000000 }, cadence_declaree: "non_declaree", cadence_interval_s: null, cadence_capteur: null, observed_interval_s: 600, last_seen: 1000, age_s: 120, n_24h: 144, status: "frais" },
-      // continue déclarée et dépassée : en retard, avec la cadence et la sonde.
-      { source: "auditd", expected: true, unexpected: false, in_collectors: true, raison_attendue: "émise par un fichier livré (collectors/auditd.sh)", marquage: null, cadence_declaree: "continue", cadence_interval_s: 120, cadence_capteur: "audit", observed_interval_s: 30, last_seen: 1000, age_s: 1200, n_24h: 2880, status: "en_retard" },
+      // livrée par ce dépôt : déclarée par construction, la raison nomme le fichier ; calme, et sa cadence
+      // reste DÉCLARABLE (aucune sonde n'en déclare) -> l'éditeur doit se voir offrir le geste.
+      { source: "portprobe", expected: true, unexpected: false, in_collectors: true, declaree_par: "ce dépôt", raison_attendue: "émise par un fichier livré (collectors/portprobe.sh)", marquage: null, cadence_declarable: true, cadence_declaree: "non_declaree", cadence_interval_s: null, cadence_capteur: null, cadence_par: null, cadence_le: null, observed_interval_s: 72, last_seen: 1000, age_s: 7200, n_24h: 1200, status: "calme" },
+      // personne ne l'a déclarée : le signal.
+      { source: "derive-deploiement", expected: false, unexpected: true, in_collectors: false, declaree_par: null, raison_attendue: null, marquage: null, cadence_declarable: true, cadence_declaree: "non_declaree", cadence_interval_s: null, cadence_capteur: null, cadence_par: null, cadence_le: null, observed_interval_s: 3600, last_seen: 1000, age_s: 3000, n_24h: 24, status: "calme" },
+      // déclarée PAR L'EXPLOITANT, avec la cadence qu'il a lui-même déclarée : qui et quand sont rendus.
+      { source: "vault-custom", expected: true, unexpected: false, in_collectors: false, declaree_par: "l'exploitant", raison_attendue: "déclarée par eve (ts 1700000000)", marquage: { expected: true, updated_by: "eve", updated: 1700000000 }, cadence_declarable: true, cadence_declaree: "continue", cadence_interval_s: 3600, cadence_capteur: null, cadence_par: "eve", cadence_le: 1700000000, observed_interval_s: 600, last_seen: 1000, age_s: 120, n_24h: 144, status: "frais" },
+      // continue déclarée par une SONDE et dépassée : en retard — et la cadence n'y est pas déclarable.
+      { source: "auditd", expected: true, unexpected: false, in_collectors: true, declaree_par: "ce dépôt", raison_attendue: "émise par un fichier livré (collectors/auditd.sh)", marquage: null, cadence_declarable: false, cadence_declaree: "continue", cadence_interval_s: 120, cadence_capteur: "audit", cadence_par: null, cadence_le: null, observed_interval_s: 30, last_seen: 1000, age_s: 1200, n_24h: 2880, status: "en_retard" },
     ],
   };
   const ligne = (rows, nom) => rows.find((tr) => celluleTexte(tr, 0).startsWith(nom));
@@ -541,14 +547,19 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const colsA = enTetes(invA);
   exiger(!colsA.includes("Actions"), `(inventaire, viewer) une colonne Actions est offerte à un rôle qui ne peut pas marquer (${colsA.join(", ")})`);
   const lPort = ligne(lignesA, "portprobe"), lDer = ligne(lignesA, "derive-deploiement"), lVc = ligne(lignesA, "vault-custom"), lAud = ligne(lignesA, "auditd");
-  exiger(lPort && !celluleTexte(lPort, 0).includes("inattendu"), "(inventaire) une source LIVRÉE porte le badge « inattendu » : la dérivation n'est pas lue");
-  exiger(lPort && texte(lPort).includes("collectors/portprobe.sh"), `(inventaire) la raison « attendue par construction » (fichier livré) n'est pas rendue : « ${lPort && texte(lPort)} »`);
-  exiger(lDer && celluleTexte(lDer, 0).includes("inattendu"), "(inventaire) une source que rien ne déclare ne porte PAS le badge « inattendu »");
-  exiger(lDer && celluleTexte(lDer, 1).includes("non déclarée"), `(inventaire) le « non » d'une source inattendue n'est pas expliqué : « ${lDer && celluleTexte(lDer, 1)} »`);
-  exiger(lVc && !celluleTexte(lVc, 0).includes("inattendu") && texte(lVc).includes("marquée attendue par eve"), `(inventaire) le marquage (qui) n'est pas rendu : « ${lVc && texte(lVc)} »`);
+  exiger(lPort && !celluleTexte(lPort, 0).includes("non déclarée"), "(inventaire) une source LIVRÉE porte le badge « non déclarée » : la dérivation n'est pas lue");
+  exiger(lPort && texte(lPort).includes("collectors/portprobe.sh"), `(inventaire) la raison « déclarée par ce dépôt » (fichier livré) n'est pas rendue : « ${lPort && texte(lPort)} »`);
+  exiger(lPort && celluleTexte(lPort, 1).includes("ce dépôt"), `(inventaire) la colonne « Déclarée » ne NOMME pas le déclarant : « ${lPort && celluleTexte(lPort, 1)} »`);
+  exiger(lDer && celluleTexte(lDer, 0).includes("non déclarée"), "(inventaire) une source que personne n'a déclarée ne porte PAS le badge");
+  exiger(lDer && celluleTexte(lDer, 1).includes("personne") && celluleTexte(lDer, 1).includes("aucune déclaration"), `(inventaire) l'absence de déclaration n'est pas dite pour ce qu'elle est : « ${lDer && celluleTexte(lDer, 1)} »`);
+  exiger(lVc && !celluleTexte(lVc, 0).includes("non déclarée") && texte(lVc).includes("déclarée par eve"), `(inventaire) la déclaration de l'exploitant (qui) n'est pas rendue : « ${lVc && texte(lVc)} »`);
+  exiger(lVc && celluleTexte(lVc, 1).includes("l'exploitant"), `(inventaire) le cinquième déclarant n'est pas nommé : « ${lVc && celluleTexte(lVc, 1)} »`);
+  exiger(lVc && celluleTexte(lVc, 2).includes("continu · 60 min") && celluleTexte(lVc, 2).includes("déclarée par eve"), `(inventaire) une cadence déclarée par un humain ne dit pas qui : « ${lVc && celluleTexte(lVc, 2)} »`);
   exiger(lAud && texte(lAud).includes("en retard") && texte(lAud).includes("continu · 2 min"), `(inventaire) « en retard » et la cadence déclarée ne sont pas rendus : « ${lAud && texte(lAud)} »`);
-  exiger(lPort && texte(lPort).includes("calme") && !texte(lPort).includes("retard") && texte(lPort).includes("non déclarée"), `(inventaire) une source sans cadence déclarée, silencieuse 2 h, doit lire « calme » et « non déclarée » : « ${lPort && texte(lPort)} »`);
-  exiger(texte(invA).includes("1 source(s) que rien ne déclare"), "(inventaire) le compte des signaux n'est pas rendu en tête");
+  exiger(lAud && celluleTexte(lAud, 2).includes("sonde « audit »"), `(inventaire) la cadence d'une SONDE ne nomme pas la sonde : « ${lAud && celluleTexte(lAud, 2)} »`);
+  exiger(lPort && texte(lPort).includes("calme") && !texte(lPort).includes("retard") && celluleTexte(lPort, 2).includes("aucune cadence déclarée"), `(inventaire) une source sans cadence déclarée, silencieuse 2 h, doit lire « calme » et « aucune cadence déclarée » : « ${lPort && texte(lPort)} »`);
+  exiger(!texte(invA).includes("cadence non déclarée"), "(inventaire) une absence de DÉCLARATION est encore présentée comme un défaut de cadence");
+  exiger(texte(invA).includes("1 source(s) que personne n'a déclarée"), "(inventaire) le compte des signaux n'est pas rendu en tête");
   exiger(!texte(invA).includes("dégradé"), "(inventaire) le mot « dégradé » survit dans l'inventaire");
   // (b) ÉDITEUR : la colonne Actions existe et offre « marquer attendue » sur le signal, « marquer inattendue » sur l'acquittée.
   document.body.className = "role-editor";
@@ -558,9 +569,13 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(colsB.includes("Actions"), `(inventaire, editor) aucune colonne Actions : l'éditeur n'a toujours aucune issue (${colsB.join(", ")})`);
   const lignesB = lignesDe(invB);
   const actionsDe = (tr) => { const td = tr.children[tr.children.length - 1]; const out = []; const marcher = (el) => { if (!el || !el.children) return; if (el.tagName === "BUTTON") out.push(texte(el)); el.children.forEach(marcher); }; marcher(td); return out; };
-  exiger(actionsDe(ligne(lignesB, "derive-deploiement")).includes("marquer attendue"), `(inventaire, editor) le signal n'offre pas « marquer attendue » : ${JSON.stringify(actionsDe(ligne(lignesB, "derive-deploiement")))}`);
-  exiger(actionsDe(ligne(lignesB, "vault-custom")).includes("marquer inattendue"), "(inventaire, editor) une source marquée n'offre pas le geste inverse (réversibilité)");
-  exiger(texte(invB).includes("Actions → « marquer attendue »"), "(inventaire, editor) l'en-tête ne dit pas à l'éditeur où est le geste");
+  exiger(actionsDe(ligne(lignesB, "derive-deploiement")).includes("déclarer attendue"), `(inventaire, editor) le signal n'offre pas « déclarer attendue » : ${JSON.stringify(actionsDe(ligne(lignesB, "derive-deploiement")))}`);
+  exiger(actionsDe(ligne(lignesB, "vault-custom")).includes("retirer la déclaration"), "(inventaire, editor) une source déclarée n'offre pas le geste inverse (réversibilité)");
+  exiger(texte(invB).includes("Actions → « déclarer attendue »"), "(inventaire, editor) l'en-tête ne dit pas à l'éditeur où est le geste");
+  // P11.3-c — LE GESTE DE CADENCE N'EST OFFERT QUE LÀ OÙ IL A UN EFFET : le démon REFUSE une déclaration
+  // humaine là où une sonde parle, donc offrir le bouton y serait promettre un réglage sans effet.
+  exiger(actionsDe(ligne(lignesB, "derive-deploiement")).includes("déclarer la cadence"), `(inventaire, editor) une source sans cadence déclarée n'offre pas de la déclarer : ${JSON.stringify(actionsDe(ligne(lignesB, "derive-deploiement")))}`);
+  exiger(!actionsDe(ligne(lignesB, "auditd")).includes("déclarer la cadence"), "(inventaire, editor) le geste de cadence est offert là où une sonde déclare déjà : le démon le refuserait");
   document.body.className = "";
 }
 
@@ -571,7 +586,11 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 {
   const { renderFreshnessDetail, freshState, countStates } = await import(pathToFileURL(path.join(WEB, "freshness.js")).href);
   const feeds = {
-    pipeline_fresh: true, unattributed_alerts: 0, feeds: [
+    pipeline_fresh: true,
+    // P11.3-d — le PARTAGE des alertes actives, qui doit se retrouver : 2 avec cloche (cloudflare en
+    // porte 2, une seule alerte y suffit ici), 1 sans flux, 1 sans imputation enregistrée.
+    imputation_des_alertes: { actives: 4, avec_cloche: 2, sans_source_nommee: 1, sans_imputation: 1, jeton_sans_source: "(source indéterminée)" },
+    feeds: [
       // périodique (courrier) à 66 min sans cadence déclarée : calme — le cas du constat.
       { kind: "event", name: "mail", status: "calme", age_s: 66 * 60, last_seen: 1000, n_24h: 96, active_alerts: 0, cadence_declaree: "non_declaree", cadence_interval_s: null, cadence_capteur: null, observed_interval_s: 900 },
       // périodique DANS sa cadence : frais.
@@ -597,8 +616,20 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(sc.frais === 2 && sc.calme === 2 && sc.en_retard === 1 && sc.muet === 0 && sc.alertes === 1, `(fraîcheur) agrégation ${JSON.stringify(sc)}`);
   exiger(/en retard — cadence déclarée dépassée/.test(brut), "(fraîcheur) le groupe « en retard » ne dit pas ce qu'il désigne");
   exiger(/kube-audit[^]*?au-delà de 2 min/.test(brut), `(fraîcheur) la ligne en retard ne nomme pas la cadence dépassée : « ${brut} »`);
-  exiger(/mail cadence non déclarée/.test(brut) && /yara événementiel/.test(brut) && /kube-audit continu · 2 min/.test(brut), `(fraîcheur) la cadence déclarée n'est pas rendue à côté du nom : « ${brut} »`);
-  exiger(/Il ne devient un retard que pour une source dont la sonde DÉCLARE une cadence continue/.test(brut), "(fraîcheur) l'en-tête ne dit plus ce qu'est un retard");
+  exiger(/mail aucune cadence déclarée/.test(brut) && /yara événementiel — pas de cadence par nature/.test(brut) && /kube-audit continu · 2 min/.test(brut), `(fraîcheur) la cadence déclarée n'est pas rendue à côté du nom : « ${brut} »`);
+  // P11.3-d — LA PHRASE DIT CE QUE LA CLOCHE COUVRE ET CE QU'ELLE NE COUVRE PAS, elle n'accuse plus la
+  // collecte, et le compte « sans flux » est un PIVOT vers les alertes concernées.
+  exiger(/4 alerte\(s\) active\(s\)/.test(brut) && /2 imputée\(s\) à un flux/.test(brut), `(fraîcheur) le partage des alertes actives n'est pas rendu : « ${brut} »`);
+  exiger(/sans flux \(normal pour une alerte d'hôte, de règle ou de seuil\)/.test(brut), "(fraîcheur) « sans flux » n'est pas dit pour ce qu'il est, il se lit encore comme un défaut de collecte");
+  exiger(/sans imputation enregistrée/.test(brut), "(fraîcheur) la famille que personne ne comptait reste tue");
+  exiger(!/aucune cloche de source ne les porte/.test(brut), "(fraîcheur) l'ancienne phrase, qui laissait croire à un trou de collecte, survit");
+  exiger(/class="forph"[^>]*data-src="\(source indéterminée\)"/.test(html), `(fraîcheur) le compte « sans flux » n'est pas un pivot vers ces alertes : « ${html.slice(0, 900)} »`);
+  exiger(!/fwarn[^>]*>[^<]*alerte\(s\) active/.test(html), "(fraîcheur) la répartition des alertes est peinte comme une anomalie (fwarn)");
+  // ... et sans aucune alerte active, RIEN n'est affiché : une phrase sur des cloches inexistantes ne
+  // pourrait qu'induire en erreur.
+  const sansAlerte = renderFreshnessDetail({ pipeline_fresh: true, imputation_des_alertes: { actives: 0, avec_cloche: 0, sans_source_nommee: 0, sans_imputation: 0, jeton_sans_source: "(source indéterminée)" }, feeds: feeds.feeds }).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+  exiger(!/alerte\(s\) active\(s\)/.test(sansAlerte), `(fraîcheur) une répartition est affichée alors qu'aucune alerte n'est active : « ${sansAlerte.slice(0, 300)} »`);
+  exiger(/Il ne devient un retard que pour une source dont QUELQU'UN — une sonde du démon ou l'exploitant — DÉCLARE une cadence continue/.test(brut), "(fraîcheur) l'en-tête ne dit plus ce qu'est un retard, ni qui peut le déclarer");
   exiger(!/expected_s|4x|4×/.test(html), "(fraîcheur) la surface dérive encore un retard d'une moyenne observée");
   // pipeline en panne : tout muet, le bandeau rouge.
   const panne = renderFreshnessDetail({ pipeline_fresh: false, feeds: feeds.feeds.map((f) => ({ ...f, status: "muet" })) }).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
@@ -1606,9 +1637,49 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// 25. UN FILTRE CHOISI SE MARQUE PAR UN MOYEN RÉSERVÉ, PAS PAR LA GRAISSE DU MOT (`P11.4-i`).
+//     MESURE (2026-08-23, style.css) : `.alertview .agseg.on` et `.agscope.on` portaient `font-weight:600`,
+//     alors que le gras dit ailleurs « alarme » ou « valeur remarquable ». Le témoin juge les DEUX moitiés
+//     de la correction, et il les juge à leur source respective :
+//       (a) la FEUILLE — aucun état choisi de la barre ne porte de graisse, et le liseré réservé y est
+//           employé ; le témoin lit le fichier, parce que le défaut EST une déclaration de style ;
+//       (b) le RENDU — l'état choisi est DIT (`aria-pressed`), sur les deux valeurs, et le mot rendu est
+//           le MÊME choisi ou non : seul l'habillage change.
+// ---------------------------------------------------------------------------------------------
+{
+  const { alertActionBarHtml } = await import(pathToFileURL(path.join(WEB, "alerts.js")).href);
+  const css = readFileSync(path.join(WEB, "style.css"), "utf8");
+  const regle = (sel) => (css.match(new RegExp(`(^|\\n)${sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\{([^}]*)\\}`)) || [])[2] || "";
+  // (a) la feuille. Instrument d'abord : les deux règles existent, sinon la suite jugerait le vide.
+  const etatsChoisis = [".alertview .agseg.on", ".agscope.on"];
+  for (const sel of etatsChoisis) exiger(regle(sel).length > 0, `(25a) instrument : la règle « ${sel} » est introuvable dans style.css, le témoin jugerait une chaîne vide`);
+  for (const sel of etatsChoisis) exiger(!/font-weight/.test(regle(sel)), `(25a) « ${sel} » marque encore l'état choisi par la graisse du mot : « ${regle(sel)} »`);
+  for (const sel of etatsChoisis) exiger(/var\(--sel-ring\)/.test(regle(sel)), `(25a) « ${sel} » n'emploie pas le moyen réservé à l'état choisi : « ${regle(sel)} »`);
+  // Le moyen est RÉSERVÉ : `--sel-ring` est déclaré une fois et n'est lu que par les états choisis.
+  const lecteurs = [...css.matchAll(/(^|\n)([^\n{]+)\{[^}]*var\(--sel-ring\)[^}]*\}/g)].map((m) => m[2].trim());
+  exiger(lecteurs.length === etatsChoisis.length && lecteurs.every((l) => etatsChoisis.includes(l)), `(25a) le moyen réservé à « choisi » est employé ailleurs : ${JSON.stringify(lecteurs)}`);
+  // (b) le rendu. Le mot ne change pas, l'état est dit — dans les deux sens.
+  const libelleDe = (html, motif) => ((html.match(new RegExp(`<button[^>]*${motif}[^>]*>([^<]*)</button>`)) || [])[1] || "").trim();
+  const boutonDe = (html, motif) => (html.match(new RegExp(`<button[^>]*${motif}[^>]*>`)) || [])[0] || "";
+  const charges = { count: 3, countLabel: "3 alerte(s)", ackableIds: [1, 2, 3] };
+  const nu = { view: "", scopeAll: false, uncased: true, mitre: "", source: "" };
+  const surRegle = alertActionBarHtml({ ...nu, view: "rule" }, charges), surPlate = alertActionBarHtml(nu, charges);
+  exiger(libelleDe(surRegle, 'data-g="rule"') === libelleDe(surPlate, 'data-g="rule"') && libelleDe(surPlate, 'data-g="rule"').length > 0, `(25b) le MOT d'un tri change selon qu'il est choisi ou non : « ${libelleDe(surRegle, 'data-g="rule"')} » / « ${libelleDe(surPlate, 'data-g="rule"')} »`);
+  exiger(/aria-pressed="true"/.test(boutonDe(surRegle, 'data-g="rule"')), `(25b) le tri choisi ne DIT pas qu'il l'est : ${boutonDe(surRegle, 'data-g="rule"')}`);
+  exiger(/aria-pressed="false"/.test(boutonDe(surPlate, 'data-g="rule"')), `(25b) un tri NON choisi ne dit rien : un bouton bascule sans attribut se lit comme un bouton d'action — ${boutonDe(surPlate, 'data-g="rule"')}`);
+  for (const [motif, quoi] of [['data-act="scope"', "la portée"], ['data-act="uncased"', "le filtre de ce qui est listé"]]) {
+    exiger(/aria-pressed="(true|false)"/.test(boutonDe(surPlate, motif)), `(25b) ${quoi} ne dit pas son état : ${boutonDe(surPlate, motif)}`);
+  }
+  const porteeTous = alertActionBarHtml({ ...nu, scopeAll: true }, charges);
+  exiger(/aria-pressed="true"/.test(boutonDe(porteeTous, 'data-act="scope"')) && /aria-pressed="false"/.test(boutonDe(surPlate, 'data-act="scope"')), "(25b) l'état dit de la portée ne SUIT pas le modèle");
+  console.log(`[filtres] aucun état choisi de la barre des alertes ne passe par la graisse du mot ; le liseré réservé n'est lu que par ces deux règles, le mot rendu est le même choisi ou non, et l'état est dit par aria-pressed dans les deux sens`);
+}
+
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus ; la ligne d'une règle rend DÉJÀ tester, éditer, supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur ; et LA recherche de liste, partagée, resserre sur plusieurs mots sans se soucier de la casse ni des accents, cherche une règle par son nom, sa requête et sa technique, rend une liste plate ordonnée par le tri courant qui DIT combien de lignes sur combien elle montre, nomme ce qu'elle a cherché quand elle ne trouve rien, et se vide au retour d'un enregistrement pour que la règle écrite se voie ; enfin une technique ATT&CK est une PORTE — ses règles, ses détections par le pivot qui existait déjà (le module ne fabrique aucune requête) et le geste qui la couvrirait, un angle mort qui se dit et met la création en avant, une sortie impraticable rendue inerte avec son motif, et un lecteur à qui le rôle manquant est nommé.`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources NOMME le déclarant de chaque source — ce dépôt, le démon, le produit, un connecteur, ou l'exploitant avec sa date — dit « personne ne l'a déclarée » là où c'est le cas, et n'offre de déclarer une cadence que là où aucune sonde n'en déclare ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et RÉPARTIT les alertes actives entre celles qu'une cloche porte, celles qui ne se rapportent à aucun flux (et qui pivotent vers elles-mêmes) et celles dont l'imputation n'a jamais été enregistrée, sans rien afficher quand aucune alerte n'est active ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus ; la ligne d'une règle rend DÉJÀ tester, éditer, supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur ; et LA recherche de liste, partagée, resserre sur plusieurs mots sans se soucier de la casse ni des accents, cherche une règle par son nom, sa requête et sa technique, rend une liste plate ordonnée par le tri courant qui DIT combien de lignes sur combien elle montre, nomme ce qu'elle a cherché quand elle ne trouve rien, et se vide au retour d'un enregistrement pour que la règle écrite se voie ; enfin une technique ATT&CK est une PORTE — ses règles, ses détections par le pivot qui existait déjà (le module ne fabrique aucune requête) et le geste qui la couvrirait, un angle mort qui se dit et met la création en avant, une sortie impraticable rendue inerte avec son motif, et un lecteur à qui le rôle manquant est nommé.`);

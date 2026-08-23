@@ -433,19 +433,69 @@ pub(crate) const COLLECTORS: [(&str, &str, i64, Sonde, bool); 23] = [
 ];
 
 // ====================================================================================================
-// LA CADENCE DÉCLARÉE D'UN FEED (P11.3-b) — ce que la table ci-dessus ATTEND d'une source, lu du
-// descripteur typé. C'est la seule cadence attendue qui existe : une moyenne observée n'en est pas une.
+// LA CADENCE DÉCLARÉE D'UN FEED (P11.3-b, étendu par P11.3-c) — ce que quelqu'un ATTEND d'une source.
+//
+// P11.3-b avait posé la bonne moitié : la cadence attendue est DÉCLARÉE, jamais dérivée d'une moyenne
+// observée. Mais un seul déclarant existait, la table des sondes de ce dépôt — donc une source que
+// l'exploitant installe LUI-MÊME (une sonde d'outillage venue d'un autre dépôt) restait « cadence non
+// déclarée » à perpétuité, et la console présentait comme un trou ce qui n'était qu'une absence de
+// DÉCLARATION qu'elle ne permettait pas de combler.
+//
+// DEUX DÉCLARANTS, ET LA MÊME MÉCANIQUE POUR LES DEUX. `DeclarantDeCadence` nomme QUI déclare : la sonde
+// du démon, ou l'exploitant de cette installation (avec son nom et sa date, consignés). La PRÉSÉANCE va
+// à la sonde : c'est elle qui porte le dead-man's-switch et l'alerte « capteur muet », et deux vérités
+// sur le même seuil ne peuvent pas coexister — l'écriture d'une déclaration humaine est d'ailleurs
+// REFUSÉE là où une sonde parle déjà (cf. `source_settings_put`), plutôt qu'acceptée puis ignorée.
+//
+// ET « INCONNUE » CESSE D'ÊTRE UN DÉFAUT. Trois états, trois sens distincts : `Continue` (un silence
+// au-delà du cycle EST un retard), `Evenementielle` (pas de cadence PAR NATURE — le débit dépend d'une
+// activité extérieure, un silence ne prouve rien), `NonDeclaree` (personne ne l'a dite : la console
+// l'ignore, ce qui n'accuse ni la source ni la collecte). Seul le premier peut rendre « en retard ».
 // ====================================================================================================
 
-/// La cadence ATTENDUE d'un feed, telle qu'une sonde de `COLLECTORS` la déclare — ou l'aveu qu'aucune ne
-/// la déclare. Dérivée du descripteur typé (`Sonde`), jamais d'une moyenne observée.
+/// QUI DÉCLARE une cadence. Deux déclarants, jamais un troisième deviné.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DeclarantDeCadence {
+    /// Une sonde de `COLLECTORS` (son identifiant) : la déclaration est dans le code livré.
+    Sonde(&'static str),
+    /// Un humain de cette installation, consigné dans `source_settings` avec sa date.
+    Exploitant { par: String, le: Option<i64> },
+}
+
+impl DeclarantDeCadence {
+    /// Phrase destinée à être LUE telle quelle dans la console.
+    pub(crate) fn libelle(&self) -> String {
+        match self {
+            DeclarantDeCadence::Sonde(id) => format!("déclarée par la sonde « {id} »"),
+            DeclarantDeCadence::Exploitant { par, .. } => format!("déclarée par {par}"),
+        }
+    }
+    /// Le nom d'un déclarant HUMAIN, pour que la console dise qui — `None` pour une sonde.
+    pub(crate) fn humain(&self) -> Option<&str> {
+        match self {
+            DeclarantDeCadence::Exploitant { par, .. } => Some(par.as_str()),
+            DeclarantDeCadence::Sonde(_) => None,
+        }
+    }
+    /// La date de la déclaration humaine — `None` pour une sonde (elle date du code, pas d'un geste).
+    pub(crate) fn le(&self) -> Option<i64> {
+        match self {
+            DeclarantDeCadence::Exploitant { le, .. } => *le,
+            DeclarantDeCadence::Sonde(_) => None,
+        }
+    }
+}
+
+/// La cadence ATTENDUE d'un feed, telle qu'une sonde de `COLLECTORS` ou l'exploitant la DÉCLARE — ou
+/// l'aveu que personne ne l'a déclarée. Dérivée d'un descripteur typé ou d'une ligne consignée, jamais
+/// d'une moyenne observée.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CadenceDeclaree {
     /// Flux régulier ou battement de santé : un silence au-delà de `interval_s × cycles` est un RETARD.
-    Continue { interval_s: i64, capteur: &'static str },
-    /// Débit dépendant d'une activité externe : le silence propre n'est jamais un retard.
-    Evenementielle { capteur: &'static str },
-    /// Aucune sonde ne la déclare : l'âge ne dit que l'activité.
+    Continue { interval_s: i64, par: DeclarantDeCadence },
+    /// Débit dépendant d'une activité externe : PAS de cadence par nature, le silence n'est jamais un retard.
+    Evenementielle { par: DeclarantDeCadence },
+    /// Personne ne l'a déclarée : la console l'ignore. Ce n'est pas un défaut, c'est un blanc à combler.
     NonDeclaree,
 }
 
@@ -463,43 +513,90 @@ impl CadenceDeclaree {
             _ => None,
         }
     }
+    /// L'identifiant de la SONDE qui déclare — `None` quand c'est un humain, ou que rien n'est déclaré.
     pub(crate) fn capteur(&self) -> Option<&'static str> {
+        match self.declarant() {
+            Some(DeclarantDeCadence::Sonde(id)) => Some(id),
+            _ => None,
+        }
+    }
+    pub(crate) fn declarant(&self) -> Option<&DeclarantDeCadence> {
         match self {
-            CadenceDeclaree::Continue { capteur, .. } | CadenceDeclaree::Evenementielle { capteur } => Some(capteur),
+            CadenceDeclaree::Continue { par, .. } | CadenceDeclaree::Evenementielle { par } => Some(par),
             CadenceDeclaree::NonDeclaree => None,
         }
     }
 }
 
-/// La cadence déclarée d'un feed (`kind` = event | snapshot | metric, `name` = source | kind d'instantané).
-/// PRÉSÉANCE quand plusieurs sondes observent la même source : le BATTEMENT DE SANTÉ (dead-man's-switch,
-/// continu) l'emporte sur le flux, et un flux continu l'emporte sur un flux événementiel — une source
-/// dont le collecteur bat régulièrement a une cadence, même si son flux réel dépend de l'activité.
+/// CE QUE L'EXPLOITANT A DÉCLARÉ pour une source. Construit UNIQUEMENT par `depuis_les_colonnes` : une
+/// valeur illisible (écrite par un binaire plus récent, ou une continue sans intervalle) ne devient pas
+/// une déclaration bancale — elle n'en devient AUCUNE, et la source reste honnêtement « non déclarée ».
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CadenceExploitant {
+    pub(crate) nature: CadenceDeclaree,
+    pub(crate) par: Option<String>,
+    pub(crate) le: Option<i64>,
+}
+
+/// Les deux natures qu'un humain peut déclarer, telles qu'elles sont STOCKÉES. Enum fermé : l'écriture
+/// (`source_settings_put`) et la lecture partagent cette liste, donc une valeur qui passe l'une passe
+/// l'autre.
+pub(crate) const NATURES_DECLARABLES: &[&str] = &["continue", "evenementielle"];
+
+impl CadenceExploitant {
+    /// Des colonnes de `source_settings` vers une déclaration typée. `None` = aucune déclaration lisible.
+    pub(crate) fn depuis_les_colonnes(nature: Option<&str>, interval_s: Option<i64>, par: Option<String>, le: Option<i64>) -> Option<Self> {
+        let declarant = DeclarantDeCadence::Exploitant { par: par.clone().unwrap_or_default(), le };
+        let nature = match nature?.trim() {
+            "continue" => CadenceDeclaree::Continue { interval_s: interval_s.filter(|i| *i > 0)?, par: declarant },
+            "evenementielle" => CadenceDeclaree::Evenementielle { par: declarant },
+            _ => return None,
+        };
+        Some(CadenceExploitant { nature, par, le })
+    }
+}
+
+/// La cadence déclarée d'un feed PAR UNE SONDE (`kind` = event | snapshot | metric, `name` = source |
+/// kind d'instantané). PRÉSÉANCE quand plusieurs sondes observent la même source : le BATTEMENT DE SANTÉ
+/// (dead-man's-switch, continu) l'emporte sur le flux, et un flux continu l'emporte sur un flux
+/// événementiel — une source dont le collecteur bat régulièrement a une cadence, même si son flux réel
+/// dépend de l'activité.
 pub(crate) fn cadence_declaree(kind: &str, name: &str) -> CadenceDeclaree {
     let mut flux_continu: Option<CadenceDeclaree> = None;
     let mut evenementielle: Option<CadenceDeclaree> = None;
     for (id, _, interval, sonde, event_based) in COLLECTORS.iter() {
         match (kind, sonde) {
             ("event", Sonde::EventBattementSante { source }) if *source == name => {
-                return CadenceDeclaree::Continue { interval_s: *interval, capteur: *id };
+                return CadenceDeclaree::Continue { interval_s: *interval, par: DeclarantDeCadence::Sonde(id) };
             }
             ("event", Sonde::EventFlux { sources }) if sources.iter().any(|s| *s == name) => {
                 if *event_based {
-                    evenementielle.get_or_insert(CadenceDeclaree::Evenementielle { capteur: *id });
+                    evenementielle.get_or_insert(CadenceDeclaree::Evenementielle { par: DeclarantDeCadence::Sonde(id) });
                 } else {
-                    flux_continu.get_or_insert(CadenceDeclaree::Continue { interval_s: *interval, capteur: *id });
+                    flux_continu.get_or_insert(CadenceDeclaree::Continue { interval_s: *interval, par: DeclarantDeCadence::Sonde(id) });
                 }
             }
             ("snapshot", Sonde::Instantane { kind: k }) if *k == name => {
-                return CadenceDeclaree::Continue { interval_s: *interval, capteur: *id };
+                return CadenceDeclaree::Continue { interval_s: *interval, par: DeclarantDeCadence::Sonde(id) };
             }
             ("metric", Sonde::MetriqueFlotteConfondue) => {
-                return CadenceDeclaree::Continue { interval_s: *interval, capteur: *id };
+                return CadenceDeclaree::Continue { interval_s: *interval, par: DeclarantDeCadence::Sonde(id) };
             }
             _ => {}
         }
     }
     flux_continu.or(evenementielle).unwrap_or(CadenceDeclaree::NonDeclaree)
+}
+
+/// LA CADENCE RETENUE pour un feed, sonde ET exploitant confondus — l'unique dérivation, lue par les
+/// deux surfaces (Fraîcheur, Inventaire). La sonde du démon d'abord (elle porte le dead-man's-switch),
+/// la déclaration humaine ensuite, l'aveu sinon.
+pub(crate) fn cadence_du_feed(kind: &str, name: &str, exploitant: Option<&CadenceExploitant>) -> CadenceDeclaree {
+    let sonde = cadence_declaree(kind, name);
+    if sonde != CadenceDeclaree::NonDeclaree {
+        return sonde;
+    }
+    exploitant.map(|c| c.nature.clone()).unwrap_or(CadenceDeclaree::NonDeclaree)
 }
 
 

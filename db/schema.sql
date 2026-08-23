@@ -199,6 +199,13 @@ CREATE TABLE IF NOT EXISTS setting(
 CREATE TABLE IF NOT EXISTS source_settings(
   scope TEXT NOT NULL DEFAULT 'global', source TEXT NOT NULL,
   expected INTEGER NOT NULL DEFAULT 1, label TEXT, note TEXT, category TEXT,
+  -- v118 (P11.3-c) : la provenance PROPRE de chaque déclaration, et la CADENCE que l'exploitant déclare
+  -- pour une source que ce dépôt n'observe pas. `updated`/`updated_by` = dernier geste sur la ligne, quel
+  -- qu'il soit ; `expected_par`/`cadence_par` ne bougent que sur LEUR geste — une provenance qui se
+  -- réécrirait au premier changement de note ne prouverait rien. `cadence` : enum fermé partagé avec
+  -- l'écriture (NATURES_DECLARABLES) ; NULL = personne ne l'a déclarée, ce qui n'est pas un défaut.
+  expected_par TEXT, expected_le INTEGER,
+  cadence TEXT, cadence_interval_s INTEGER, cadence_par TEXT, cadence_le INTEGER,
   updated INTEGER, updated_by TEXT, PRIMARY KEY(scope, source)
 );
 

@@ -143,7 +143,10 @@ mod sondes; // LES SONDES DE FRAÎCHEUR : ce qu'une sonde OBSERVE, la requête D
 // les glob imports ; extrait dans un module, un glob le mettrait à égalité avec `topn_cap::Sonde` ->
 // E0659 sur les 23 sites d'appel. Un import nommé prime sur tout glob : la résolution redevient
 // EXACTEMENT celle d'avant l'extraction.
-pub(crate) use sondes::{cadence_declaree, CadenceDeclaree, Cout, Portee, Sonde, COLLECTORS, DDL_IDX_BATTEMENT_SANTE, IDX_BATTEMENT_SANTE};
+pub(crate) use sondes::{
+    cadence_declaree, cadence_du_feed, CadenceDeclaree, CadenceExploitant, Cout, Portee, Sonde, COLLECTORS, DDL_IDX_BATTEMENT_SANTE,
+    IDX_BATTEMENT_SANTE, NATURES_DECLARABLES,
+};
 mod sonde_de_flotte; // P3.2-a : LA SONDE DE FLOTTE — un hôte qui se tait ENTIÈREMENT lève un signal, rendu comme un COMPTE et non comme une série par hôte (la portée par hôte des 21 sondes multiplierait la cardinalité par la taille du parc)
 pub(crate) use sonde_de_flotte::*;
 mod imputation; // S7 : À QUELLE SOURCE UNE ALERTE SE RAPPORTE — lue dans la DONNÉE (colonne `event.source`, descripteur de sonde), plus dans la prose de la règle ; et un INCONNU NOMMÉ quand elle n'est pas déterminable

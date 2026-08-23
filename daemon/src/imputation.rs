@@ -65,7 +65,9 @@ use crate::*;
 /// colonne vide : une colonne vide est indiscernable d'une alerte d'avant la migration, et retomberait
 /// donc en silence sur le chemin textuel — c'est-à-dire sur le défaut. Ce jeton ne correspond au nom
 /// d'AUCUN feed (il porte des espaces et des parenthèses, qu'un `event.source` ne porte pas) : il est
-/// donc compté à part (`unattributed_alerts` de /api/freshness) au lieu d'accuser une source au hasard.
+/// donc compté à part (`imputation_des_alertes.sans_source_nommee` de /api/freshness) au lieu d'accuser
+/// une source au hasard — et la charge utile publie AUSSI ce jeton, pour que la console pivote dessus sans
+/// le réécrire en dur.
 pub(crate) const SOURCE_INDETERMINABLE: &str = "(source indéterminée)";
 
 /// SÉPARATEUR de la liste stockée. Le saut de ligne, et non la virgule : un nom de source est un

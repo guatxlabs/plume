@@ -121,6 +121,12 @@ pub(crate) fn pipeline_is_fresh(conn: &Connection, now_ts: i64) -> bool {
 /// Seuil du mot « frais » : la dernière donnée date de moins de quinze minutes.
 pub(crate) const FRAIS_S: i64 = 900;
 
+/// FENÊTRE des deux surfaces : un feed vu il y a plus longtemps n'est PLUS listé. Écrite une fois, lue par
+/// la fraîcheur, par l'inventaire, et par le plafond d'un intervalle de cadence déclaré à la main (déclarer
+/// une cadence plus longue que cette fenêtre reviendrait à déclarer un rythme que la console ne pourra
+/// jamais juger : la source aura disparu de la liste avant l'échéance).
+pub(crate) const FENETRE_INVENTAIRE_S: i64 = 7 * 86400;
+
 // `CadenceDeclaree` / `cadence_declaree` vivent dans `sondes.rs` : la cadence attendue est une propriété
 // DÉCLARÉE de la table des sondes, pas une dérivation de cette surface.
 
@@ -152,6 +158,11 @@ pub(crate) fn cadence_json(cadence: &CadenceDeclaree, n_24h: i64) -> Value {
         "cadence_declaree": cadence.etiquette(),
         "cadence_interval_s": cadence.interval_s(),
         "cadence_capteur": cadence.capteur(),
+        // QUI la déclare (P11.3-c) : une sonde du démon, ou un humain de cette installation — avec son nom
+        // et la date de SON geste. Le lecteur n'a plus à supposer qu'une cadence vient du code.
+        "cadence_declarant": cadence.declarant().map(|d| d.libelle()),
+        "cadence_par": cadence.declarant().and_then(|d| d.humain()),
+        "cadence_le": cadence.declarant().and_then(|d| d.le()),
         "observed_interval_s": observed_interval_s,
     })
 }
@@ -424,7 +435,7 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
     let wenv = env_where_pred(env);
     read_with_watchdog(db_path, json!({ "feeds": [], "ts": now_ts }), move |conn| {
         let d1 = now_ts - 86400;        // fenêtre 24h -> estimation de cadence
-        let cut7 = now_ts - 7 * 86400;  // ne liste que les feeds vus dans les 7 derniers jours
+        let cut7 = now_ts - FENETRE_INVENTAIRE_S; // ne liste que les feeds vus dans la fenêtre de l'inventaire
         let mut feeds: Vec<Value> = Vec::new();
         // SANTÉ DU PIPELINE : la donnée la PLUS récente, TOUTES sources confondues. Tant qu'au moins une
         // source arrive (<10 min), l'ingestion fonctionne. Si même la plus fraîche est vieille -> ingestion
@@ -448,31 +459,69 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
         // passe par là : le producteur écrit toujours au moins l'inconnu NOMMÉ.
         //
         // L'INCONNU NOMMÉ NE VOTE POUR PERSONNE. `SOURCE_INDETERMINABLE` ne correspond au nom d'aucun feed :
-        // il est compté à part et RESSORT dans la charge utile (`unattributed_alerts`), au lieu d'être un
+        // il est compté à part et RESSORT dans la charge utile (`imputation_des_alertes`), au lieu d'être un
         // zéro muet réparti sur tout le monde ou une imputation prise au hasard.
         //
         // BASE NON MIGRÉE : la colonne n'existe pas -> le `prepare` échoue. On NE tombe PAS à zéro (ce
         // serait perdre en silence un surlignage qui marchait avant) : on rejoue l'énoncé HISTORIQUE,
         // qui ne lit que `detail`. Un seul décodeur pour les deux chemins -> aucune sémantique en double.
+        //
+        // P11.3-d — LES TROIS FAMILLES, ET LE TOTAL QUI SE RETROUVE. La charge utile n'en nommait que
+        // deux (la cloche d'un feed, le compte d'orphelines) ; MESURÉ le 2026-08-23 sur trois alertes
+        // actives, UNE n'était comptée nulle part — colonne `sources` vide (sept producteurs sur onze la
+        // laissent ainsi) ET aucun jeton `source=` dans son texte. Un lecteur ne pouvait donc pas vérifier
+        // que la somme fait le tout, et la phrase de la console laissait croire à un trou de collecte là
+        // où il n'y a qu'une alerte qui ne parle pas d'un flux. Les familles sont comptées PAR ALERTE
+        // (une alerte imputée à trois feeds compte une fois ici, et trois fois dans les cloches) :
+        //   - `avec_cloche`          : au moins un feed la porte ;
+        //   - `sans_source_nommee`   : elle DIT qu'elle ne sait pas nommer sa source (inconnu NOMMÉ) —
+        //                              une alerte d'hôte, de règle ou de seuil n'a pas de flux, c'est
+        //                              normal et ce n'est pas un défaut de collecte ;
+        //   - `sans_imputation`      : rien d'enregistré et rien de lisible dans son texte (alerte levée
+        //                              avant l'imputation, ou producteur qui ne l'écrit pas). Le compte
+        //                              par source l'ignore — et il faut le DIRE, pas la faire disparaître.
         let mut alert_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-        let mut unattributed: i64 = 0;
+        let (mut actives, mut avec_cloche, mut sans_source_nommee, mut sans_imputation) = (0i64, 0i64, 0i64, 0i64);
         let avec_colonne = format!("SELECT COALESCE(sources,''), COALESCE(detail,'') FROM alert WHERE status='new'{envp}");
         let sans_colonne = format!("SELECT '', COALESCE(detail,'') FROM alert WHERE status='new'{envp}");
         if let Ok(mut s) = conn.prepare(&avec_colonne).or_else(|_| conn.prepare(&sans_colonne)) {
             if let Ok(rows) = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
                 for (srcs, d) in rows.flatten() {
+                    actives += 1;
                     let imputees = if srcs.is_empty() { extract_query_sources(&d) } else { imputation_decoder(&srcs) };
+                    let (mut portee, mut nomme_l_inconnu) = (false, false);
                     for src in imputees {
-                        if src == SOURCE_INDETERMINABLE { unattributed += 1; } else { *alert_counts.entry(src).or_insert(0) += 1; }
+                        if src == SOURCE_INDETERMINABLE {
+                            nomme_l_inconnu = true;
+                        } else {
+                            *alert_counts.entry(src).or_insert(0) += 1;
+                            portee = true;
+                        }
+                    }
+                    if portee {
+                        avec_cloche += 1;
+                    } else if nomme_l_inconnu {
+                        sans_source_nommee += 1;
+                    } else {
+                        sans_imputation += 1;
                     }
                 }
             }
         }
+        // CE QUE L'EXPLOITANT A DÉCLARÉ, lu UNE fois (P11.3-c). N'est appliqué qu'aux feeds `event` : la
+        // clé de `source_settings` est un nom de SOURCE, et un `kind` d'instantané qui porterait le même
+        // nom n'est pas la même chose — appliquer la déclaration aux deux ferait mentir l'une des deux.
+        let declarations = crate::handlers::sources::marquages_de_sources(conn);
         let mk = |kind: &str, name: String, last: i64, n24: i64| -> Value {
             let age = now_ts - last;
-            // CADENCE DÉCLARÉE (sonde de COLLECTORS) -> STATUT (cf. bandeau `statut_de_source`). Le rythme
-            // observé (86400 / n_24h) est rendu à part, sous son vrai nom : il n'est pas une attente.
-            let cadence = cadence_declaree(kind, &name);
+            // CADENCE DÉCLARÉE — par la sonde de COLLECTORS, sinon par l'exploitant -> STATUT (cf. bandeau
+            // `statut_de_source`). Le rythme observé (86400 / n_24h) est rendu à part, sous son vrai nom :
+            // il n'est pas une attente.
+            let cadence = if kind == "event" {
+                cadence_du_feed(kind, &name, declarations.get(&name).and_then(|m| m.cadence.as_ref()))
+            } else {
+                cadence_declaree(kind, &name)
+            };
             let status = statut_de_source(age, pipeline_fresh, Some(&cadence));
             // active_alerts : nb d'alertes 'new' imputées à `name` (0 si aucune / feed non corrélable comme les
             // snapshots/métriques). Un COMPTE à côté du statut, jamais un statut. Calculé avant le move de `name`.
@@ -546,11 +595,24 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
             if let Some(o) = mf.as_object_mut() { o.insert("series".into(), json!(series_list)); }
             feeds.push(mf);
         }
-        // S7 — `unattributed_alerts` : le nombre d'alertes actives qui ne SAVENT PAS nommer leur source.
-        // Il est publié même à zéro : une surface qui n'affiche un compteur que lorsqu'il est non nul ne
-        // permet pas de distinguer « aucune alerte orpheline » de « ce compteur n'existe pas ». Ce chiffre
-        // est le prix HONNÊTE de l'imputation : ce qu'elle n'a pas su rattacher est DIT, pas dilué.
-        json!({ "feeds": feeds, "ts": now_ts, "pipeline_fresh": pipeline_fresh, "unattributed_alerts": unattributed })
+        // S7 + P11.3-d — LE PARTAGE DES ALERTES ACTIVES, publié MÊME À ZÉRO : une surface qui n'affiche un
+        // compteur que lorsqu'il est non nul ne permet pas de distinguer « rien à signaler » de « ce
+        // compteur n'existe pas ». Les quatre nombres se retrouvent (`actives = avec_cloche +
+        // sans_source_nommee + sans_imputation`), et c'est ce qui permet au lecteur de vérifier qu'aucune
+        // alerte ne s'est perdue en route. `jeton_sans_source` publie le nom EXACT de l'inconnu nommé pour
+        // que la console puisse pivoter dessus sans le réécrire en dur.
+        json!({
+            "feeds": feeds,
+            "ts": now_ts,
+            "pipeline_fresh": pipeline_fresh,
+            "imputation_des_alertes": {
+                "actives": actives,
+                "avec_cloche": avec_cloche,
+                "sans_source_nommee": sans_source_nommee,
+                "sans_imputation": sans_imputation,
+                "jeton_sans_source": SOURCE_INDETERMINABLE,
+            },
+        })
     })
 }
 

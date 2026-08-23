@@ -222,7 +222,8 @@
         assert_eq!(imp_alertes_du_feed(&v, "crowdsec"), Some(1), "LA source fautive bascule");
         assert_eq!(imp_alertes_du_feed(&v, "ufw"), Some(0), "la source saine ne bascule PAS");
         assert_eq!(imp_alertes_du_feed(&v, "web"), Some(0), "la source saine ne bascule PAS");
-        assert_eq!(v["unattributed_alerts"], 0, "rien n'est resté orphelin");
+        assert_eq!(v["imputation_des_alertes"]["sans_source_nommee"], 0, "rien n'est resté orphelin");
+        assert_eq!(v["imputation_des_alertes"]["sans_imputation"], 0, "et rien n'échappe au partage");
     }
 
     /// TÉMOIN INVERSE de la mutation A — DEUX capteurs muets, DEUX pastilles. Ce n'est pas la même
@@ -381,7 +382,7 @@
         }
         let v = compute_freshness(&p, None);
         assert_eq!(imp_alertes_du_feed(&v, "web"), Some(1), "le repli textuel imputait, et impute toujours");
-        assert_eq!(v["unattributed_alerts"], 0, "une alerte que le texte sait nommer n'est pas orpheline");
+        assert_eq!(v["imputation_des_alertes"]["sans_source_nommee"], 0, "une alerte que le texte sait nommer n'est pas orpheline");
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -390,7 +391,7 @@
 
     /// UNE SOURCE QU'ON NE SAIT PAS NOMMER LE DIT. Le capteur de métriques est muet ; son feed est nommé
     /// DYNAMIQUEMENT par la fraîcheur (« métriques · N séries »), donc il n'existe aucun nom stable à
-    /// imputer. L'alerte porte alors l'inconnu NOMMÉ, elle est COMPTÉE à part (`unattributed_alerts`), et
+    /// imputer. L'alerte porte alors l'inconnu NOMMÉ, elle est COMPTÉE à part (`sans_source_nommee`), et
     /// surtout elle n'accuse AUCUNE source au hasard — ce qui serait pire que de ne rien dire.
     #[test]
     fn imputation_source_non_determinable_est_nommee_pas_silencieuse() {
@@ -417,7 +418,7 @@
         assert_eq!(regles, vec!["heartbeat.resources"], "seul le capteur de métriques est muet");
         assert_eq!(sources, SOURCE_INDETERMINABLE, "l'alerte DIT qu'elle ne sait pas nommer sa source");
         let v = compute_freshness(&p, None);
-        assert_eq!(v["unattributed_alerts"], 1, "l'orpheline est COMPTÉE, pas diluée");
+        assert_eq!(v["imputation_des_alertes"]["sans_source_nommee"], 1, "l'orpheline est COMPTÉE, pas diluée");
         assert_eq!(imp_alertes_du_feed(&v, "web"), Some(0), "et elle n'accuse personne au hasard");
     }
 
@@ -520,4 +521,82 @@
              sonde) et celui de la FLOTTE (à l'inconnu NOMMÉ : une alerte d'hôtes ne se rapporte à aucun \
              feed) : {imputent:?}"
         );
+    }
+
+    // ================================================================================================
+    // P11.3-d — CE QUE LA CLOCHE COUVRE, ET CE QU'ELLE NE COUVRE PAS.
+    //
+    // CE QUI A ÉTÉ MESURÉ AVANT DE CORRIGER (2026-08-23) : sur trois alertes actives, UNE était comptée
+    // par la cloche d'un feed, UNE par `unattributed_alerts`, et LA TROISIÈME nulle part — colonne
+    // `sources` vide (sept producteurs sur onze la laissent ainsi) ET aucun jeton `source=` dans son
+    // texte. La charge utile ne permettait donc pas de retrouver le total, et la phrase de la console
+    // (« N alerte(s) active(s) sans source déterminée — aucune cloche de source ne les porte ») se
+    // lisait comme un trou de collecte alors qu'elle décrivait, pour l'essentiel, des alertes qui n'ont
+    // AUCUNE raison d'avoir un flux : une alerte d'hôte, de règle éteinte, de seuil.
+    //
+    // CE QUI EST TENU ICI : le partage est PUBLIÉ, il se retrouve (`actives = avec_cloche +
+    // sans_source_nommee + sans_imputation`), et le jeton d'inconnu nommé sort dans la charge utile pour
+    // que la console pivote dessus sans le réécrire en dur.
+    // ================================================================================================
+
+    /// LES TROIS FAMILLES, ET LE TOTAL QUI SE RETROUVE.
+    #[test]
+    fn les_alertes_actives_se_repartissent_en_trois_familles_dont_la_somme_fait_le_tout() {
+        let (_tmp, p) = imp_base_disque("familles-cloches");
+        {
+            let w = open_db(&p).unwrap();
+            imp_flux(&w, "web", "web", 10, 4);
+            imp_flux(&w, "cloudflare", "web", 30, 4);
+            rollup_events(&w);
+            // (1) imputée à un feed -> allume SA cloche.
+            w.execute("INSERT INTO alert(ts,rule,severity,title,detail,status,sources) VALUES(?1,'r1',2,'A','','new',?2)",
+                params![now(), imputation_encoder(&["cloudflare".to_string()])]).unwrap();
+            // (2) imputée à l'inconnu NOMMÉ -> elle DIT qu'elle ne parle d'aucun flux.
+            w.execute("INSERT INTO alert(ts,rule,severity,title,detail,status,sources) VALUES(?1,'r2',2,'B','','new',?2)",
+                params![now(), SOURCE_INDETERMINABLE]).unwrap();
+            // (3) colonne VIDE et texte muet — le cas des sept producteurs qui n'imputent pas.
+            w.execute("INSERT INTO alert(ts,rule,severity,title,detail,status,sources) VALUES(?1,'r3',2,'C','seuil dépassé','new','')",
+                params![now()]).unwrap();
+            // (4) ACQUITTÉE : hors du partage (le partage ne porte que les actives).
+            w.execute("INSERT INTO alert(ts,rule,severity,title,detail,status,sources) VALUES(?1,'r4',2,'D','','ack','')",
+                params![now()]).unwrap();
+        }
+        let v = compute_freshness(&p, None);
+        let imp = &v["imputation_des_alertes"];
+        assert_eq!(imp["actives"], 3, "les acquittées ne sont pas du partage");
+        assert_eq!(imp["avec_cloche"], 1);
+        assert_eq!(imp["sans_source_nommee"], 1, "elle DIT qu'elle ne se rapporte à aucun flux");
+        assert_eq!(imp["sans_imputation"], 1, "et celle que PERSONNE ne comptait est nommée");
+        // LE TOTAL SE RETROUVE — c'est ce qui rend le partage vérifiable par un lecteur.
+        let (a, b, c, d) = (imp["actives"].as_i64().unwrap(), imp["avec_cloche"].as_i64().unwrap(),
+                            imp["sans_source_nommee"].as_i64().unwrap(), imp["sans_imputation"].as_i64().unwrap());
+        assert_eq!(a, b + c + d, "le partage doit faire le tout : {imp}");
+        // le jeton de pivot est publié, et c'est EXACTEMENT celui que le prédicat SQL sait apparier.
+        assert_eq!(imp["jeton_sans_source"], SOURCE_INDETERMINABLE);
+        let conn = open_db(&p).unwrap();
+        let sql = format!("SELECT COUNT(*) FROM alert WHERE status='new' AND {}", imputation_predicat_sql("alert"));
+        let n: i64 = conn.query_row(&sql, params![SOURCE_INDETERMINABLE], |r| r.get(0)).unwrap();
+        assert_eq!(n, c, "le pivot de la console ramène EXACTEMENT les alertes que le compte annonce");
+        // la cloche d'une source reste un compte PAR IMPUTATION (une alerte sur deux feeds compte deux fois).
+        let cf = imp_alertes_du_feed(&v, "cloudflare");
+        assert_eq!(cf, Some(1));
+        assert_eq!(imp_alertes_du_feed(&v, "web"), Some(0), "et personne n'est accusé au hasard");
+    }
+
+    /// LA CLOCHE N'EXISTE QUE POUR CE QU'UNE IMPUTATION SAIT NOMMER — dérivé, pas énuméré. Un feed de
+    /// MÉTRIQUES est nommé DYNAMIQUEMENT (« métriques · N séries ») : aucune imputation ne peut le viser,
+    /// et sa sonde le DIT en imputant à l'inconnu nommé. C'est la raison pour laquelle une alerte « sans
+    /// flux » n'est pas un défaut de collecte, et ce test l'établit sur le descripteur des sondes.
+    #[test]
+    fn la_cloche_ne_peut_viser_que_les_feeds_qu_une_sonde_sait_nommer() {
+        let nommables: Vec<String> = COLLECTORS
+            .iter()
+            .flat_map(|(_, _, _, sonde, _)| imputer_alerte_de_capteur(sonde))
+            .collect();
+        assert!(nommables.iter().any(|s| s == SOURCE_INDETERMINABLE),
+            "au moins une sonde avoue ne pas savoir nommer son feed : c'est ce qui alimente « sans flux »");
+        assert!(nommables.iter().any(|s| s == "crowdsec"), "et la plupart nomment bien leur source");
+        // Le jeton d'inconnu ne peut pas être un nom de feed : il porte des caractères qu'aucune source
+        // n'emploie. C'est CE fait qui garantit qu'il est compté à part au lieu d'accuser quelqu'un.
+        assert!(SOURCE_INDETERMINABLE.contains(' ') && SOURCE_INDETERMINABLE.contains('('));
     }

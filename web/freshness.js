@@ -93,14 +93,17 @@ const FSTATE_TXT = { muet: 'bad', en_retard: 'fwarn', frais: 'ok', calme: 'calm'
 const FSTATE_LBL = { muet: 'muet — plus rien n\'arrive, toutes sources confondues', en_retard: 'en retard — cadence déclarée dépassée', attente: 'en attente — déclaré, pas encore de donnée', frais: 'frais (donnée < 15 min)', calme: 'calme (collecte saine, source peu active)' };
 const SRANK = { muet: 0, en_retard: 1, attente: 2, frais: 3, calme: 4 };   // panne en haut ; puis en retard, en attente, frais, calme
 const age = s => s < 90 ? s + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : s < 172800 ? Math.round(s / 3600) + ' h' : Math.round(s / 86400) + ' j';
-// libellé de la cadence DÉCLARÉE d'un feed (sonde du démon) ; le rythme observé est rendu à part (title).
+// libellé de la cadence DÉCLARÉE d'un feed — par une sonde du démon OU par l'exploitant (P11.3-c) ; le
+// rythme observé est rendu à part (title). « aucune cadence déclarée » n'est pas un défaut : c'est un blanc.
 function cadenceLabel(f) {
   if (f.cadence_declaree === 'continue') return 'continu' + (f.cadence_interval_s ? ' · ' + age(f.cadence_interval_s) : '');
-  if (f.cadence_declaree === 'evenementielle') return 'événementiel';
-  return 'cadence non déclarée';
+  if (f.cadence_declaree === 'evenementielle') return 'événementiel — pas de cadence par nature';
+  return 'aucune cadence déclarée';
 }
 function cadenceTitle(f) {
-  const decl = f.cadence_capteur ? 'cadence déclarée par la sonde « ' + f.cadence_capteur + ' »' : 'aucune sonde ne déclare de cadence : l\'âge ne dit que l\'activité';
+  const decl = f.cadence_capteur ? 'cadence déclarée par la sonde « ' + f.cadence_capteur + ' »'
+    : f.cadence_par ? 'cadence déclarée par ' + f.cadence_par + (f.cadence_le ? ' le ' + fmtTs(f.cadence_le) : '')
+    : 'personne n\'a déclaré de cadence pour cette source — ni une sonde du démon, ni l\'exploitant : l\'âge ne dit que l\'activité, et elle ne peut pas être « en retard »';
   return decl + (f.observed_interval_s ? ' · rythme observé sur 24 h : ~1 donnée / ' + age(f.observed_interval_s) : '');
 }
 // compteurs par état + alertes actives (un compte à part, pas un état) — même agrégation pour le détail et le pulse.
@@ -127,15 +130,37 @@ function renderFreshnessDetail(d) {
   // d'une cadence DÉCLARÉE ; sinon l'âge est INFORMATIF.
   const head0 = !d.pipeline_fresh
     ? `<div class="bad" style="font-weight:600;margin-bottom:8px">${ic('warn')} Ingestion en panne — aucune donnée reçue récemment</div>`
-    : `<div class="muted" style="margin-bottom:8px">Collecte OK. L'âge = temps depuis la dernière donnée. Il ne devient un retard que pour une source dont la sonde DÉCLARE une cadence continue ; pour les autres, il ne dit que l'activité.</div>`;
-  // S7 — L'INCONNU NOMMÉ. Une alerte active dont le serveur n'a pas su déterminer la source ne bascule la
-  // cloche d'AUCUN feed. La taire reviendrait à laisser croire que tout est imputé ; on la COMPTE ici,
-  // à côté des feeds, pour que l'exploitant sache qu'il reste des alertes à rattacher à la main. Absent /
-  // zéro -> rien n'est affiché (un daemon antérieur ne renvoie pas ce champ : aucune ligne fantôme).
-  const orph = Number(d.unattributed_alerts) || 0;
-  const head = head0 + (orph > 0
-    ? `<div class="fwarn" style="margin-bottom:8px">${ic('bell')} ${orph} alerte(s) active(s) sans source déterminée — aucune cloche de source ne les porte.</div>`
-    : '');
+    : `<div class="muted" style="margin-bottom:8px">Collecte OK. L'âge = temps depuis la dernière donnée. Il ne devient un retard que pour une source dont QUELQU'UN — une sonde du démon ou l'exploitant — DÉCLARE une cadence continue ; pour les autres, il ne dit que l'activité.</div>`;
+  // P11.3-d — CE QUE LA CLOCHE COUVRE, ET CE QU'ELLE NE COUVRE PAS.
+  //
+  // L'ancienne phrase (« N alerte(s) active(s) sans source déterminée — aucune cloche de source ne les
+  // porte ») disait un fait vrai d'une façon qui se lisait comme un défaut de collecte : elle ne disait ni
+  // ce qu'est une cloche, ni que la plupart des alertes qu'elle désigne n'ont AUCUNE raison d'avoir un
+  // flux (une alerte d'hôte, de règle éteinte ou de seuil ne parle pas d'un flux). Et elle ignorait une
+  // troisième famille, mesurée le 2026-08-23 : les alertes dont l'imputation n'a jamais été enregistrée,
+  // que le compte par source laisse tomber en silence.
+  //
+  // LE BLOC N'EST RENDU QUE S'IL DIT QUELQUE CHOSE DE VRAI : sans alerte active, il n'y a rien à répartir
+  // et rien ne s'affiche. Il est NEUTRE (muted), jamais orange : ce n'est pas une anomalie, c'est une
+  // répartition — les quatre nombres se retrouvent, ce qui est précisément ce qu'un lecteur doit pouvoir
+  // vérifier. Charge utile absente (démon antérieur) -> rien, jamais une ligne fantôme.
+  const imp = d.imputation_des_alertes || null;
+  const orph = imp ? Number(imp.sans_source_nommee) || 0 : 0;
+  const muettes = imp ? Number(imp.sans_imputation) || 0 : 0;
+  const actives = imp ? Number(imp.actives) || 0 : 0;
+  let bloc = '';
+  if (imp && actives > 0) {
+    const jeton = String(imp.jeton_sans_source || '');
+    const parts = [`${ic('bell')} <b>${actives}</b> alerte(s) active(s) : <b>${Number(imp.avec_cloche) || 0}</b> imputée(s) à un flux (leur cloche est allumée ci-dessous)`];
+    if (orph > 0) {
+      parts.push(`<b>${orph}</b> <span class="forph" role="button" tabindex="0" data-src="${esc(jeton)}" title="Ces alertes DISENT qu'elles ne se rapportent à aucun flux : une alerte d'hôte, de règle ou de seuil n'en a pas. Ce n'est pas un défaut de collecte. Cliquer pour les voir.">sans flux (normal pour une alerte d'hôte, de règle ou de seuil)</span>`);
+    }
+    if (muettes > 0) {
+      parts.push(`<b>${muettes}</b> <span title="Aucune imputation enregistrée et rien de nommable dans leur texte : alertes levées avant l'imputation, ou par un producteur qui ne l'écrit pas. Le compte par source les ignore — c'est dit ici plutôt que tu.">sans imputation enregistrée (le compte par source les ignore)</span>`);
+    }
+    bloc = `<div class="muted fimput" style="margin-bottom:8px">${parts.join(' · ')}. Une cloche compte les alertes imputées à UNE source, toutes dates — elle ne dit rien de sa fraîcheur.</div>`;
+  }
+  const head = head0 + bloc;
   // une SÉRIE métrique (sous le feed agrégé déplié) : même modèle d'état que les sources (statut du démon).
   const seriesRow = s => {
     const ss = freshState(s);
@@ -185,7 +210,7 @@ function renderFreshnessDetail(d) {
       `<div class="fgbody">${arr.map(rowOf).join('')}</div></div>`;
   }
   html += `<div class="flegend"><span class="fdot frais"></span>frais (donnée &lt; 15 min) · <span class="fdot calme"></span>calme (collecte saine, source peu active) · <span class="fdot warn"></span>en retard (cadence déclarée dépassée) · <span class="fdot attente"></span>en attente (déclaré, pas de donnée) · <span class="fdot muet"></span>muet (plus rien n'arrive, toutes sources confondues)` +
-    `<div class="muted" style="margin-top:4px">La cadence attendue est celle que la sonde du démon DÉCLARE (affichée à côté du nom). Une source événementielle ou sans cadence déclarée n'est jamais « en retard » : son âge ne dit que son activité. Les alertes actives sont un compte (cloche), pas un état de collecte. Même dérivation que l'Inventaire (Données → Sources).</div></div>`;
+    `<div class="muted" style="margin-top:4px">La cadence attendue est celle qu'une sonde du démon ou l'exploitant DÉCLARE (affichée à côté du nom, avec son déclarant au survol). Une source événementielle, ou dont personne n'a déclaré la cadence, n'est jamais « en retard » : son âge ne dit que son activité, et ce blanc n'est pas un défaut — il se comble depuis l'Inventaire (Données → Sources). Les alertes actives sont un compte (cloche), pas un état de collecte.</div></div>`;
   return html;
 }
 async function renderFreshness(loading) {
@@ -226,8 +251,11 @@ async function renderFreshness(loading) {
     hd.onclick = toggle;
     hd.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
   });
-  // FIX 2 — cloche d'une source « chaude » cliquable -> alertes filtrées par CETTE source (#notifications)
-  b.querySelectorAll('.fhot[data-src]').forEach(el => {
+  // FIX 2 / P11.3-d — cloche d'une source « chaude » cliquable -> alertes filtrées par CETTE source
+  // (#notifications). Le compte « sans flux » pivote de la même façon, sur le JETON que le démon publie
+  // (`jeton_sans_source`) : la console ne réécrit pas ce nom en dur, elle pose la facette que le démon
+  // sait apparier — les alertes visées sont donc exactement celles que ce compte annonce.
+  b.querySelectorAll('.fhot[data-src], .forph[data-src]').forEach(el => {
     const go = e => { e.stopPropagation(); setAlertSourceFilter(el.dataset.src); };
     el.onclick = go;
     el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(e); } };

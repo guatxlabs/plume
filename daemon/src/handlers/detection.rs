@@ -160,6 +160,28 @@ pub(crate) fn lien_de_recherche_de_regle(query: &str, is_soql: bool, window_s: i
     LienDeRecherche { query: q, is_soql: true, from, to }
 }
 
+/// P11.13-a — LA REQUÊTE D'UNE RÈGLE, RENDUE RÉUTILISABLE PAR UN PANNEAU. Une règle ne porte pas une
+/// requête de tableau : elle porte une requête qui REND UN SCALAIRE, comparé à son seuil. Recopiée telle
+/// quelle dans un panneau, elle affiche un nombre nu là où l'analyste attend les lignes qui l'ont produit.
+///
+/// LA DÉRIVATION EXISTE DÉJÀ ET N'EST PAS RÉÉCRITE : c'est celle de `lien_de_recherche_de_regle`
+/// (`P11.1-a`), qui retire le dernier étage quand c'est un `stats` scalaire. Elle n'était exposée que sur
+/// `/api/alerts` — donc atteignable seulement depuis une alerte DÉJÀ levée, jamais depuis la règle
+/// elle-même. La rendre ici est le geste manquant, pas un second mécanisme.
+///
+/// LE SQL BRUT NE PASSE PAS PAR LA MÊME PORTE, ET C'EST MESURÉ. Le lien d'alerte SUBSTITUE `__FROM__` /
+/// `__TO__` par les bornes de l'évaluation : un panneau construit dessus figerait sa fenêtre pour
+/// toujours. Or un panneau substitue lui-même ces marqueurs à chaque rendu (cf. `rollups.rs`). La
+/// requête brute est donc rendue INTACTE, marqueurs compris — c'est ce qui la rend réutilisable.
+pub(crate) fn requete_reutilisable_de_regle(query: &str, is_soql: bool) -> String {
+    if !is_soql {
+        return query.trim().to_string();
+    }
+    // `window_s`/`ts` à zéro : pour du GXQL cette fonction ne touche pas aux bornes, elle ne fait que
+    // retirer l'étage scalaire terminal. Les passer serait suggérer qu'une fenêtre est transportée.
+    lien_de_recherche_de_regle(query, true, 0, 0).query
+}
+
 /// Exécute la requête et renvoie la dernière colonne de la 1re ligne comme nombre. DURCISSEMENT 3b —
 /// l'ÉVALUATION passe par run_query -> connexion du pool LECTURE SEULE (SQLITE_OPEN_READ_ONLY +
 /// `PRAGMA query_only=ON`, cf read_conn_open) + garde `stmt.readonly()` dans run_query_ex : une règle ne
@@ -413,7 +435,11 @@ pub(crate) async fn rules_list(State(st): State<AppState>, Extension(au): Extens
                 // #38 : `compliance` = tags de cadre réglementaire (cadre[:contrôle], CSV) — à côté de `mitre`.
                 "mitre": r.get::<_, String>(13)?, "managed": r.get::<_, i64>(14)?, "compliance": r.get::<_, String>(15)?,
                 // #48 : réglages de tir avancé (0/''/false = mode historique).
-                "suppress_window_s": r.get::<_, i64>(16)?, "throttle_field": r.get::<_, String>(17)?, "per_result": r.get::<_, i64>(18)? != 0
+                "suppress_window_s": r.get::<_, i64>(16)?, "throttle_field": r.get::<_, String>(17)?, "per_result": r.get::<_, i64>(18)? != 0,
+                // P11.13-a : la MÊME requête, rendue réutilisable par un panneau (étage scalaire terminal
+                // retiré en GXQL, brut intact avec ses marqueurs de fenêtre). Dérivée par le démon pour
+                // que la console n'ait rien à réécrire — et rendue à côté de `query`, jamais à sa place.
+                "query_reutilisable": requete_reutilisable_de_regle(&r.get::<_, String>(3)?, r.get::<_, i64>(4)? != 0)
             }))
         })
         .map(|x| x.flatten().collect())

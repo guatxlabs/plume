@@ -98,7 +98,12 @@ function toast(msg, kind = 'info', ms = 3200) {
   setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 220); }, ms);
 }
 function showErr(form, msg) { const e = form.querySelector('.modal-err'); if (e) { e.textContent = msg; e.hidden = false; } }
-// modale générique -> Promise(valeurs|null). opts: {title,message,fields,okText,cancelText,danger,validate}
+// modale générique -> Promise(valeurs|null). opts: {title,message,fields,body,okText,cancelText,danger,validate}
+// `body` (P11.13-a) : un NŒUD inséré avant la zone d'erreur, pour une modale qui doit porter autre chose
+// qu'une suite de champs — une liste cherchable, par exemple. TROIS surfaces de la console avaient dû se
+// fabriquer leur propre calque faute de cette fente (la palette de modèles, le dropdown des requêtes
+// enregistrées, le formulaire de règle) ; ouvrir la fente coûte une ligne et retire la raison d'en écrire
+// un quatrième. Les valeurs des champs `[data-n]` que le nœud contient sont collectées comme les autres.
 function modal(opts = {}) {
   return new Promise(resolve => {
     closeModals();
@@ -120,7 +125,9 @@ function modal(opts = {}) {
     });
     html += `<div class="modal-err" hidden></div>`;
     html += `<div class="modal-act"><button type="button" class="m-cancel">${esc(opts.cancelText || 'Annuler')}</button><button type="submit" class="m-ok${opts.danger ? ' danger' : ''}">${esc(opts.okText || 'OK')}</button></div>`;
-    form.innerHTML = html; box.appendChild(form); ov.appendChild(box); document.body.appendChild(ov);
+    form.innerHTML = html;
+    if (opts.body) form.insertBefore(opts.body, form.querySelector('.modal-err'));
+    box.appendChild(form); ov.appendChild(box); document.body.appendChild(ov);
     const close = val => { ov.classList.add('out'); document.removeEventListener('keydown', onKey); setTimeout(() => ov.remove(), 160); resolve(val); };
     const onKey = e => { if (e.key === 'Escape') close(null); };
     document.addEventListener('keydown', onKey);

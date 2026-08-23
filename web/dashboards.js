@@ -10,6 +10,9 @@ import { currentFrom, currentTo, queryCount, runQuery, tableEl, vizElement } fro
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
 import { boutonDeCopie } from './copie_et_selection.js';
 import { prefGet, prefSet } from './prefs.js';
+// P11.13-a : l'inventaire de ce que le produit porte DÉJÀ (modèles livrés, requêtes enregistrées,
+// requêtes de règles), offert à qui compose un panneau. Ce module ne connaît rien d'un tableau de bord.
+import { choisirDansLexistant } from './composer_depuis_lexistant.js';
 
 // --- dashboards (P3) ---
 /* state: editing, dashList, viewList, panelCards -> S (state.js) */ // mode édition + listes + cartes panneaux
@@ -49,7 +52,21 @@ function getPanelObserver() {
 // fetch des panneaux hors-écran/cachés à chaque tick (le lazy-load s'en charge à leur apparition).
 function refreshPanels() { S.panelCards.forEach(c => { const pn = c._panel; if (c.isConnected && pn && pn.window_s === 0 && pn.loaded && pn.visible) pn.reload(); }); }
 const VIZOPTS = [{ value: 'table', label: 'Table' }, { value: 'bar', label: 'Barres' }, { value: 'line', label: 'Courbe' }, { value: 'stat', label: 'Stat' }, { value: 'gauge', label: 'Jauge' }, { value: 'pie', label: 'Camembert' }, { value: 'donut', label: 'Donut' }, { value: 'heatmap', label: 'Heatmap' }, { value: 'histogram', label: 'Histogramme' }];
-async function createPanelModal(did, query = '') {
+// P11.13-a — PARTIR DE CE QUI EXISTE DÉJÀ. La fenêtre de choix s'ouvre AVANT celle du panneau (deux
+// fenêtres successives, jamais imbriquées : la modale partagée ferme toute autre modale à son ouverture,
+// donc imbriquer perdrait la promesse de la première). Le choix pré-remplit titre, requête et nature.
+async function composerPanneauDepuisLexistant(did) {
+  const c = await choisirDansLexistant();
+  if (!c) return;
+  await createPanelModal(did, c.requete, { title: c.titre, viz: c.viz, is_soql: c.is_soql });
+}
+
+// `prefill` (P11.13-a) : ce qu'une définition existante apporte en plus de son texte — son nom, sa
+// visualisation, et sa NATURE telle que le démon l'a déclarée. `is_soql` déclaré vaut mieux que la
+// devinette locale : une règle en SQL brut dont le texte porte une barre verticale serait prise pour du
+// GXQL par l'heuristique, et le panneau ne compilerait pas. La devinette reprend la main dès que le
+// texte est ÉDITÉ — la nature déclarée ne vaut plus pour une requête qui n'est plus celle-là.
+async function createPanelModal(did, query = '', prefill = {}) {
   // #54 — LIBRARY PANELS : proposer de RÉFÉRENCER une définition réutilisable (édité une fois, à jour partout).
   let libs = [];
   try { libs = (await api('/library-panels')).library_panels || []; } catch (e) {}
@@ -57,9 +74,9 @@ async function createPanelModal(did, query = '') {
   const r = await modal({
     title: 'Nouveau panneau', okText: 'Créer', fields: [
       { name: 'library_panel_id', label: 'Panneau de bibliothèque (réutilisable)', type: 'select', value: '', options: libOpts },
-      { name: 'title', label: 'Titre', required: true, value: 'Panneau' },
+      { name: 'title', label: 'Titre', required: true, value: prefill.title || 'Panneau' },
       { name: 'query', label: 'Requête (GXQL ou SQL) — ignorée si un panneau de bibliothèque est choisi', type: 'textarea', required: false, value: query, placeholder: 'search source=sudo | stats count by source' },
-      { name: 'viz', label: 'Visualisation', type: 'select', value: 'table', options: VIZOPTS },
+      { name: 'viz', label: 'Visualisation', type: 'select', value: prefill.viz || 'table', options: VIZOPTS },
       { name: 'visibility', label: 'Panneau', type: 'select', value: 'shared', options: [{ value: 'shared', label: 'public' }, { value: 'private', label: 'privé' }] },
       { name: 'query_private', label: 'Requête privée (cacher le texte aux autres)', type: 'checkbox', value: false },
       { name: 'drill', label: 'Requête au clic / drill (optionnel : $value, $from, $to)', type: 'textarea', value: '', placeholder: 'search source=$value | table ts,source,src_ip,message' },
@@ -83,7 +100,9 @@ async function createPanelModal(did, query = '') {
     await loadDashboards(); toast('Panneau (bibliothèque) créé', 'ok'); return;
   }
   const qq = r.query.trim(); if (!qq) { toast('Requête requise (ou choisis un panneau de bibliothèque).', 'bad'); return; }
-  const isSoql = /^\s*search\b/i.test(qq) || qq.includes('|');
+  // La NATURE déclarée par le démon fait foi tant que le texte n'a pas bougé ; sinon l'heuristique.
+  const intacte = prefill.is_soql !== undefined && qq === String(query || '').trim();
+  const isSoql = intacte ? !!prefill.is_soql : (/^\s*search\b/i.test(qq) || qq.includes('|'));
   // FAILLE B (UI) — un panneau en SQL brut (saisie non-GXQL) est réservé admin (miroir serveur panel_create).
   if (!isSoql && !socIsAdmin()) { toast('SQL brut réservé à l\'administrateur (utilisez GXQL)', 'bad'); return; }
   try {
@@ -174,6 +193,11 @@ function renderDashboard(d) {
     if (!wasFav) { const w = $('#dashview'); if (w && tile.parentElement === w) w.insertBefore(tile, w.firstChild); }
   };
   const addp = document.createElement('button'); addp.type = 'button'; addp.className = 'picon'; addp.innerHTML = ic('plus'); addp.title = 'Ajouter un panneau';
+  // P11.13-a — le second geste de création : partir d'une définition que le produit porte déjà, au lieu
+  // de retaper une requête qui existe ailleurs. Posé plus bas, derrière `editable` (cf. son commentaire).
+  const addex = document.createElement('button'); addex.type = 'button'; addex.className = 'picon dashcompose'; addex.textContent = 'Partir de l\'existant';
+  addex.title = 'Composer un panneau depuis un modèle livré, une requête enregistrée ou une règle de détection';
+  addex.onclick = () => composerPanneauDepuisLexistant(d.id);
   // refresh PAR DASHBOARD (non editonly : un viewer peut rafraîchir) -> recharge UNIQUEMENT les panneaux de CETTE grille
   const dref = document.createElement('button'); dref.type = 'button'; dref.className = 'picon'; dref.innerHTML = ic('refresh'); dref.title = 'Rafraîchir ce dashboard';
   dref.onclick = () => {
@@ -194,7 +218,9 @@ function renderDashboard(d) {
   const dsnap = document.createElement('button'); dsnap.type = 'button'; dsnap.className = 'picon editonly'; dsnap.innerHTML = ic('save'); dsnap.title = 'Capturer un instantané partageable (lecture seule)';
   dsnap.onclick = () => captureSnapshot(d);
   tools.append(fav, dref, addp, dpdf);
-  if (editable) tools.append(dsnap, ren, wsel, del);
+  // `addex` est GATÉ sur `editable`, là où `addp` ne l'est pas : offrir un geste NEUF à qui ne peut pas
+  // le poser serait ajouter une fausse promesse. L'état du bouton « + », lui, est antérieur à cette clé.
+  if (editable) tools.append(addex, dsnap, ren, wsel, del);
   head.append(chev, grip, h, meta, tools);
   tile.appendChild(head);
   // --- corps : grille de panneaux ---
@@ -259,7 +285,12 @@ async function loadPanelsInto(grid, d) {
     if (!panels.length) {
       const es = document.createElement('div'); es.className = 'emptystate';
       es.append(Object.assign(document.createElement('div'), { textContent: 'Dashboard vide.' }));
-      if (j.editable !== false) { const b = document.createElement('button'); b.type = 'button'; b.className = 'btn'; b.textContent = '+ Ajouter un panneau'; b.onclick = () => createPanelModal(d.id, ($('#sql') && $('#sql').value.trim()) || ''); es.appendChild(b); }
+      if (j.editable !== false) {
+        const b = document.createElement('button'); b.type = 'button'; b.className = 'btn'; b.textContent = '+ Ajouter un panneau'; b.onclick = () => createPanelModal(d.id, ($('#sql') && $('#sql').value.trim()) || ''); es.appendChild(b);
+        // Un dashboard VIDE est l'endroit où l'on a le moins envie de retaper une requête : le geste qui
+        // part de l'existant y est offert à côté du geste vierge (P11.13-a).
+        const bx = document.createElement('button'); bx.type = 'button'; bx.className = 'btn dashcompose'; bx.textContent = 'Partir de l\'existant'; bx.onclick = () => composerPanneauDepuisLexistant(d.id); es.appendChild(bx);
+      }
       grid.replaceChildren(es); return;
     }
     const frag = document.createDocumentFragment();

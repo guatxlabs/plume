@@ -637,6 +637,18 @@ const I18N_EN = {
   "en attente (déclaré, pas de donnée) ·": "pending (declared, no data) ·", "en retard (cadence déclarée dépassée) ·": "late (declared cadence exceeded) ·",
   "feed(s) observé(s)": "feed(s) observed", "flotte →": "fleet →", "frais (donnée < 15 min) ·": "fresh (data < 15 min) ·",
   "hôte local uniquement — aucun agent distant n'a encore poussé de logs.": "local host only — no remote agent has pushed logs yet.",
+  // P11.13-a — COMPOSER DEPUIS L'EXISTANT : le geste, la fenêtre de choix, sa recherche et ses aveux.
+  "Partir de l'existant": "Start from what exists",
+  "Partir de ce qui existe déjà": "Start from what already exists",
+  "Composer un panneau depuis un modèle livré, une requête enregistrée ou une règle de détection": "Compose a panel from a shipped template, a saved query or a detection rule",
+  "Les modèles livrés, vos requêtes enregistrées et les requêtes de vos règles de détection. La définition choisie est COPIÉE : la modifier ensuite ne touche pas son original.": "The shipped templates, your saved queries and the queries of your detection rules. The chosen definition is COPIED: editing it afterwards does not touch its original.",
+  "Rechercher un modèle, une requête, une règle…": "Search a template, a query, a rule…",
+  "Rechercher dans ce que le produit porte déjà": "Search what the product already carries",
+  "Utiliser": "Use",
+  "Choisissez une définition, ou fermez cette fenêtre.": "Choose a definition, or close this window.",
+  "définition(s) réutilisable(s)": "reusable definition(s)",
+  "aucune définition réutilisable — ni modèle livré, ni requête enregistrée, ni règle de détection": "no reusable definition — no shipped template, no saved query, no detection rule",
+  "aucune définition": "no definition",
   // P11.10-a — CE QU'ON ATTEND D'UN HÔTE : la colonne, les trois valeurs déclarables, le geste et son
   // motif, et les deux phrases qui disent ce que le compte additionne et ce que l'alerte ne couvre pas.
   "Attendu de l'hôte": "Expected from host",

@@ -2066,6 +2066,111 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 }
 
 
+// ---------------------------------------------------------------------------------------------
+// 31. COMPOSER UN PANNEAU À PARTIR DE CE QUE LE PRODUIT PORTE DÉJÀ (`P11.13-a`).
+//     MESURE AVANT (2026-08-23) : DEUX des quatre absences annoncées se sont retournées. Les modèles
+//     livrés ET les requêtes enregistrées SONT offerts à qui compose une requête (le bouton « Modèles »
+//     de la barre ouvre une palette qui liste les deux) ; et le transport vers un panneau existait de
+//     bout en bout, indirect — la palette charge la requête dans la barre, la création d'un panneau
+//     pré-remplit son champ avec ce texte. Ce qui manquait était de pouvoir CHOISIR dans l'inventaire
+//     LÀ OÙ L'ON COMPOSE, et — vraiment absent, celui-là — de partir d'une RÈGLE.
+//       (a) LES TROIS STOCKS SONT DANS UNE SEULE LISTE, chacun nommé par son origine.
+//       (b) UN STOCK QU'ON N'A PAS PU LIRE EST NOMMÉ — sinon « aucune règle » et « je n'ai pas pu lire
+//           les règles » se rendent pareil ; TÉMOIN NÉGATIF : trois stocks lus -> aucun aveu.
+//       (c) LA RECHERCHE EST CELLE, PARTAGÉE, DU DÉPÔT : plusieurs mots, sans casse ni accents, sur le
+//           nom ET sur le texte de la requête, avec le résumé qui dit combien sur combien.
+//       (d) LA FENÊTRE EST LA MODALE PARTAGÉE (fente `body`), pas un quatrième calque maison — et elle
+//           REFUSE de rendre un choix quand aucune ligne n'a été prise.
+// ---------------------------------------------------------------------------------------------
+{
+  const { inventaireComposable, choisirDansLexistant, texteDUnChoix } = await import(pathToFileURL(path.join(WEB, "composer_depuis_lexistant.js")).href);
+  const fetchOrigine = globalThis.fetch;
+  const stocks = {
+    "/api/soql/templates": { templates: [{ id: "ssh-failed", title: "Échecs SSH", keywords: ["ssh", "auth"], soql: "search source=sshd action=failure | stats count by src_ip" }] },
+    "/api/saved-queries": { queries: [{ id: 4, name: "Ma chasse aux scans", soql: "search source=portscan | stats count by src_ip" }] },
+    "/api/rules": { rules: [
+      { id: 1, name: "Brute-force SSH", query: "search source=sshd action=failure | stats count", is_soql: true, mitre: "T1110", query_reutilisable: "search source=sshd action=failure" },
+      { id: 2, name: "Règle brute", query: "SELECT COUNT(*) FROM event WHERE ts>=__FROM__", is_soql: false, mitre: "", query_reutilisable: "SELECT COUNT(*) FROM event WHERE ts>=__FROM__" },
+      { id: 3, name: "Règle sans requête", query: "", is_soql: true, mitre: "", query_reutilisable: "" },
+    ] },
+  };
+  const servir = (manquants = []) => async (url) => {
+    const chemin = String(url).split("?")[0];
+    if (manquants.some((m) => chemin.endsWith(m))) throw new Error("réseau coupé (témoin)");
+    const j = stocks[chemin];
+    if (!j) throw new Error("chemin non servi : " + chemin);
+    return { ok: true, status: 200, text: async () => JSON.stringify(j), json: async () => j };
+  };
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const derniereOverlay = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).pop();
+  const cueillirTous = (el, pred, out = []) => { if (pred(el)) out.push(el); for (const c of el.children || []) cueillirTous(c, pred, out); return out; };
+  try {
+    // (a) les trois stocks, dans une seule liste, chacun nommé.
+    globalThis.fetch = servir();
+    const inv = await inventaireComposable();
+    exiger(inv.absents.length === 0, `(31b) TÉMOIN NÉGATIF : trois stocks LUS et pourtant un aveu d'absence — ${JSON.stringify(inv.absents)}`);
+    const origines = [...new Set(inv.items.map((i) => i.origine))].sort();
+    exiger(JSON.stringify(origines) === JSON.stringify(["ma requête", "modèle livré", "règle de détection"]), `(31a) les trois stocks ne sont pas tous offerts : ${JSON.stringify(origines)}`);
+    // une règle sans requête réutilisable n'est PAS offerte (elle ne composerait rien) ; les deux autres le sont.
+    const regles = inv.items.filter((i) => i.origine === "règle de détection");
+    exiger(regles.length === 2, `(31a) une règle sans requête réutilisable est offerte quand même : ${JSON.stringify(regles.map((r) => r.titre))}`);
+    // LA REQUÊTE VIENT DU DÉMON, pas d'une recomposition locale : l'étage scalaire terminal a disparu.
+    const bf = regles.find((r) => r.titre === "Brute-force SSH");
+    exiger(bf.requete === "search source=sshd action=failure" && bf.is_soql === true, `(31a) la requête réutilisable d'une règle n'est pas celle que le démon dérive : « ${bf.requete} »`);
+    // …et une règle en SQL brut garde sa NATURE déclarée et ses marqueurs de fenêtre intacts.
+    const brute = regles.find((r) => r.titre === "Règle brute");
+    exiger(brute.is_soql === false && /__FROM__/.test(brute.requete), `(31a) la règle brute perd sa nature ou ses marqueurs : ${JSON.stringify(brute)}`);
+
+    // (b) un stock non lu est NOMMÉ, et les autres restent servis.
+    globalThis.fetch = servir(["/api/rules"]);
+    const partiel = await inventaireComposable();
+    exiger(partiel.absents.includes("règle de détection"), `(31b) un stock illisible disparaît en silence : ${JSON.stringify(partiel.absents)}`);
+    exiger(partiel.items.length === 2, `(31b) l'échec d'un stock prive des autres : ${partiel.items.length} entrée(s)`);
+
+    // (c) la recherche partagée : plusieurs mots, sans casse ni accents, sur le nom ET sur la requête.
+    const { filtrerParRecherche } = await import(pathToFileURL(path.join(WEB, "recherche_de_liste.js")).href);
+    exiger(filtrerParRecherche(inv.items, "echecs ssh", texteDUnChoix).length === 1, "(31c) la recherche ne trouve pas « Échecs SSH » sans accent ni casse");
+    exiger(filtrerParRecherche(inv.items, "portscan", texteDUnChoix).length === 1, "(31c) la recherche ne regarde pas le TEXTE de la requête");
+    exiger(filtrerParRecherche(inv.items, "brute ssh", texteDUnChoix).length === 1, "(31c) plusieurs mots n'ont pas resserré (ET)");
+
+    // (d) la fenêtre : modale PARTAGÉE, liste cherchable dedans, et rien rendu sans choix.
+    globalThis.fetch = servir();
+    const p = choisirDansLexistant();
+    let resolu = false; p.then(() => { resolu = true; });
+    await tick(); await tick();
+    const ov = derniereOverlay();
+    exiger(!!ov, "(31d) aucune fenêtre partagée posée — la liste est-elle repartie dans un calque maison ?");
+    const form = ov.children[0].children[0];
+    exiger(!!cueillirTous(form, (e) => e.classList && e.classList.contains("compo-choix"))[0], "(31d) la liste n'est pas dans la modale partagée");
+    const champ = cueillirTous(form, (e) => e.tagName === "INPUT" && e.type === "search")[0];
+    exiger(!!champ && champ.classList.contains("field"), "(31d) le champ de recherche ne prend pas le chrome partagé");
+    const lignes = () => cueillirTous(form, (e) => e.classList && e.classList.contains("compo-ligne"));
+    exiger(lignes().length === 4, `(31d) ${lignes().length} ligne(s) offertes au lieu des 4 définitions réutilisables`);
+    // AUCUNE LIGNE PRISE -> la validation REFUSE : la fenêtre ne se ferme pas et ne rend rien. (Le texte
+    // du refus vit dans `.modal-err`, posé par `innerHTML` que le shim ne parse pas ; ce qui est jugeable
+    // ici, et qui est le comportement, c'est que la promesse RESTE en attente.)
+    form.onsubmit({ preventDefault() {} });
+    await tick(); await tick();
+    exiger(!resolu, "(31d) la fenêtre rend un choix alors qu'aucune définition n'a été prise");
+    // une ligne prise, puis validée -> c'est CELLE-LÀ qui revient.
+    const cible = lignes().find((b) => b.textContent.includes("Brute-force SSH"));
+    cible.onclick();
+    form.onsubmit({ preventDefault() {} });
+    const choix = await p;
+    exiger(choix && choix.titre === "Brute-force SSH" && choix.requete === "search source=sshd action=failure", `(31d) le choix rendu n'est pas celui qui a été pris : ${JSON.stringify(choix)}`);
+    // …et une fenêtre ABANDONNÉE ne rend rien.
+    const p2 = choisirDansLexistant();
+    await tick(); await tick();
+    const ov2 = derniereOverlay(); ov2.onclick({ target: ov2 });
+    exiger((await p2) === null, "(31d) une fenêtre abandonnée rend quand même un choix");
+  } finally {
+    globalThis.fetch = fetchOrigine;
+    document.body.children = document.body.children.filter((c) => !(c.classList && c.classList.contains("modal-ov")));
+  }
+  console.log(`[composer] un panneau part de ce que le produit porte DÉJÀ : les modèles livrés, les requêtes enregistrées et les requêtes de règles dans UNE liste, chacune nommée par son origine ; la requête d'une règle est celle que le DÉMON dérive (étage scalaire retiré, SQL brut intact avec ses marqueurs) ; un stock illisible est NOMMÉ au lieu de passer pour vide ; la recherche est celle, partagée, du dépôt ; et la fenêtre est la modale partagée, qui refuse un choix vide`);
+}
+
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);

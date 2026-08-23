@@ -328,7 +328,7 @@ env:
   # contenu d'overlay dit d'elle-même (`daemon/src/tests/comptes_qui_accedent.rs`) : douze tests SANS
   # `cfg` de feature, présents dans les DEUX profils. Le total est celui de l'ARBRE, jamais une somme
   # de lots.
-  EXPECTED_TESTS: "1256"
+  EXPECTED_TESTS: "1258"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -621,7 +621,7 @@ jobs:
           # par défaut — l'écart reste **220**.
           # RÉ-MESURÉ le 2026-08-23 par la MÊME commande, sur l'arbre qui porte P11.3-c et P11.3-d (cinq
           # tests sans `cfg`) : 1469 avec `cold_tier` pour 1249 par défaut — l'écart reste **220**.
-          EXPECTED_COLD_TESTS: "1476"
+          EXPECTED_COLD_TESTS: "1478"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

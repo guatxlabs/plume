@@ -574,4 +574,4 @@ if ($('#pb-form')) $('#pb-form').addEventListener('submit', async e => {
 loadPlaybooks();
 loadMode();
 
-export { renderCoverage, loadRules, loadNotifiers, loadParsers, loadActions, loadMode, loadPlaybooks, ruleRowModel, playbookRowModel, pbRow, actionKindOptionLabel };
+export { renderCoverage, loadRules, loadNotifiers, loadParsers, loadActions, loadMode, loadPlaybooks, ruleRowModel, ruleRow, playbookRowModel, pbRow, actionKindOptionLabel };

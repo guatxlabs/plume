@@ -1369,9 +1369,52 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// 22. CE QUE LA CONSOLE SAVAIT DÉJÀ FAIRE SUR UNE RÈGLE (`P11.12-a`, mesure). La clé affirmait que le
+//     panneau des règles « ne s'édite pas depuis la console ». Ce témoin est VERT AVANT toute correction :
+//     la ligne d'une règle rend DÉJÀ « Tester », « Éditer » et « Supprimer », et l'interrupteur d'activation
+//     partagé (`producer_ui.js`) y est actif pour un administrateur ; `index.html` porte DÉJÀ le bouton de
+//     création. C'est lui qui interdit de raconter que la création, la modification, le retrait ou
+//     l'activation manquaient : ce qui manquait est la RECHERCHE, et rien d'autre.
+//     Le témoin inverse (un lecteur) prouve que la mesure lit bien le rôle : l'interrupteur d'une règle est
+//     alors inerte, et il dit pourquoi — une version qui rendrait TOUJOURS un interrupteur actif ne passerait
+//     pas les deux.
+// ---------------------------------------------------------------------------------------------
+{
+  const { ruleRow } = await import(pathToFileURL(path.join(WEB, "detection_admin.js")).href);
+  const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const cueillir = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir(c, pred, acc)); return acc; };
+  const regle = { id: 3, name: "SSH brute force", enabled: 1, query: "search source=sshd failed | stats count", is_soql: 1, op: ">", threshold: 10, severity: 3, interval_s: 300, window_s: 600, last_run: 0, last_value: null, last_fired: null, mitre: "T1110", managed: 2, compliance: "", risk_score: 0 };
+  const roleOrigine = S.AUTH;
+  try {
+    S.AUTH = { user: "root", role: "admin" };
+    const ligne = ruleRow(regle);
+    const etiquettes = cueillir(ligne, (e) => e.tagName === "BUTTON", []).map((b) => (b.textContent || "") + " " + (b.title || ""));
+    for (const geste of ["Tester", "Éditer", "Supprimer"]) {
+      exiger(etiquettes.some((l) => l.includes(geste)), `(22) la ligne d'une règle ne rend AUCUN geste « ${geste} » : ${JSON.stringify(etiquettes)}`);
+    }
+    const interrupteur = cueillir(ligne, (e) => e.tagName === "INPUT" && e.classList && e.classList.contains("crud-toggle"), [])[0];
+    exiger(!!interrupteur, "(22) la ligne d'une règle ne rend aucun interrupteur d'activation");
+    exiger(interrupteur && interrupteur.disabled !== true, "(22) l'interrupteur d'activation est inerte pour un ADMINISTRATEUR : l'activation ne serait pas atteignable depuis la console");
+    const html = readFileSync(path.join(WEB, "index.html"), "utf8");
+    exiger(/id="rule-new"/.test(html), "(22) index.html ne porte aucun bouton de création de règle : la création manquerait vraiment");
+
+    // témoin inverse — un lecteur : l'interrupteur est inerte, et la raison est écrite à côté.
+    S.AUTH = { user: "bob", role: "viewer" };
+    const ligneLecteur = ruleRow(regle);
+    const interrupteurLecteur = cueillir(ligneLecteur, (e) => e.tagName === "INPUT" && e.classList && e.classList.contains("crud-toggle"), [])[0];
+    exiger(interrupteurLecteur && interrupteurLecteur.disabled === true, "(22) témoin inverse : un lecteur obtient un interrupteur ACTIF — la mesure ne lit pas le rôle");
+    const etiquetteLecteur = cueillir(ligneLecteur, (e) => e.tagName === "LABEL" && e.classList && e.classList.contains("producer-switch"), [])[0];
+    exiger(etiquetteLecteur && /administrateur/.test(etiquetteLecteur.title || ""), `(22) témoin inverse : l'interrupteur inerte d'un lecteur ne dit pas pourquoi — « ${etiquetteLecteur && etiquetteLecteur.title} »`);
+    console.log(`[règles] mesure : la ligne d'une règle rend déjà tester / éditer / supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur ; index.html porte le bouton de création`);
+  } finally {
+    S.AUTH = roleOrigine;
+  }
+}
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus.`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus ; la ligne d'une règle rend DÉJÀ tester, éditer, supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur.`);

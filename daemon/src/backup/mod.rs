@@ -90,7 +90,7 @@ pub(crate) const TEMP_SIDECARS: [&str; 3] = ["-journal", "-wal", "-shm"];
 // opinion sur l'entropie. La passphrase de ce chemin n'est pas saisie par un humain au moment du
 // backup : c'est `db_key()`, c'est-à-dire `PLUME_DB_KEY_FILE` sinon `PLUME_DB_KEY` — la clé
 // SQLCipher — dans les DEUX seuls appelants de production (`main.rs` sous-commande `backup`, et
-// `server.rs::run_scheduled_backup`). Or ce MÊME secret est déjà protégé AILLEURS, sur PLUS de
+// `server::run_scheduled_backup`). Or ce MÊME secret est déjà protégé AILLEURS, sur PLUS de
 // données, par un étirement PLUS FAIBLE :
 //   * le TIER FROID chiffre ses jours-files avec `COLD_SCRYPT_LOG_N = 12` (4 Mio) sur une
 //     passphrase HKDF-dérivée de `PLUME_DB_KEY` — HKDF ne CRÉE pas d'entropie, donc deviner

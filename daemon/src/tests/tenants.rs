@@ -74,7 +74,7 @@
     /// Mesure AVANT correctif (base tenant réelle, 2 règles posées par l'exploitant, redémarrage simulé) :
     /// `effective_masks` rendait un jeu VIDE et `SELECT src_ip FROM event` rendait la valeur EN CLAIR
     /// (`203.0.113.7`) alors que la règle DENY existait dans la base du tenant. Cause : `field_filters_reload`
-    /// n'était appelé qu'au bind pour PLUME_DB (server.rs) et après un CRUD — jamais à l'obtention d'une
+    /// n'était appelé qu'au bind pour PLUME_DB (server/mod.rs) et après un CRUD — jamais à l'obtention d'une
     /// connexion tenant.
     #[test]
     fn mode1_field_masking_survives_a_process_restart_for_every_tenant() {
@@ -246,14 +246,16 @@
     }
 
     /// LE CLIQUET : tout registre PAR db_path que le bind charge pour PLUME_DB doit être chargé pour une
-    /// base TENANT. La liste n'est pas écrite ici — elle est DÉRIVÉE du texte de `server.rs` (tout appel
+    /// base TENANT. La liste n'est pas écrite ici — elle est DÉRIVÉE du texte du module `server` (tout appel
     /// `X_reload(&conn, &db_path)` EST un registre par db_path) et confrontée au corps de l'unique point
     /// d'hydratation. Un registre ajouté demain au bind fait rougir ce test tant qu'il n'est pas hydraté
     /// pour les tenants — sans que personne n'ait à le déclarer quelque part.
     #[test]
     fn every_per_db_registry_loaded_at_boot_is_loaded_for_a_tenant_base() {
         let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-        let boot = std::fs::read_to_string(src.join("server.rs")).expect("lecture de server.rs");
+        // Façade ET sous-modules : DÉRIVÉ DU PRÉFIXE DE RÉPERTOIRE depuis `P7.18-a`, jamais d'un nom de
+        // fichier — un registre déplacé dans `server/<x>.rs` reste vu.
+        let boot = texte_du_module_serveur();
         let mut noms: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for l in boot.lines() {
             let compact: String = l.chars().filter(|c| !c.is_whitespace()).collect();
@@ -265,7 +267,7 @@
         }
         assert!(
             noms.len() >= 5,
-            "ANTI-FAUX-VERT : {} registre(s) par db_path trouvé(s) dans server.rs — le motif cherché ne \
+            "ANTI-FAUX-VERT : {} registre(s) par db_path trouvé(s) dans le module `server` — le motif cherché ne \
              correspond plus au code, ce test ne prouve donc plus rien ({noms:?})",
             noms.len()
         );
@@ -282,7 +284,7 @@
                  Registres vus au bind : {noms:?}"
             );
         }
-        println!("[cliquet] {} registres par db_path dérivés de server.rs : {noms:?}", noms.len());
+        println!("[cliquet] {} registres par db_path dérivés du module `server` : {noms:?}", noms.len());
     }
 
 

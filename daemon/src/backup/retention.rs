@@ -279,7 +279,7 @@ pub(crate) fn backup_prune_plan(names: &[String], now_secs: i64, p: &GfsParams) 
 // Rendent `docker run` / le binaire host self-backup TURNKEY sans dépendre du sidecar shell k3s (mc/S3) :
 //   - `fmt_backup_ts`            : nomme les backups `plume-<TS>.db.age` (inverse EXACT de `parse_backup_ts`)
 //   - `backup_keep_recent_plan`  : rétention KEEP-N PURE (garde les N plus récents), fail-safe comme le GFS.
-// L'orchestration (boucle intervalle, rename atomique, prune) vit dans `server.rs` ; ici = logique PURE testable.
+// L'orchestration (boucle intervalle, rename atomique, prune) vit dans `server/mod.rs` ; ici = logique PURE testable.
 // ============================================================================
 
 /// Formate des secondes Unix -> horodatage compact `YYYYMMDDTHHMMSSZ` (UTC) — INVERSE EXACT de

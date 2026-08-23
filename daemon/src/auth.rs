@@ -808,7 +808,7 @@ pub(crate) fn resolve_identity(
             // Lus UNIQUEMENT ICI, sous `secret_ok` (le secret partagé gate déjà) : changer le NOM ne crée aucun
             // chemin de lecture hors du gate secret. Le forward-auth du DÉPLOIEMENT doit overwrite CES noms (le
             // client ne peut pas les injecter directement — concern de déploiement, documenté). `HeaderMap::get`
-            // est case-insensitive ; les noms sont normalisés en minuscules au chargement (server.rs).
+            // est case-insensitive ; les noms sont normalisés en minuscules au chargement (server/mod.rs).
             if let Some(user) = req.headers().get(st.sso_header_user.as_str()).and_then(|h| h.to_str().ok()).filter(|s| !s.is_empty()) {
                 let groups = req.headers().get(st.sso_header_groups.as_str()).and_then(|h| h.to_str().ok()).unwrap_or("");
                 if st.multi_tenant {

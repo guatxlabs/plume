@@ -204,7 +204,7 @@ env:
   # témoin négatif (`NOT INDEXED` doit rendre VIDE, sinon un vide ne serait pas une mesure) ; le REFUS
   # DE PUBLIER si la base d'épreuve ne porte pas les index que la production porte (mutation : retirer
   # un seul appel de réconciliation de fond nomme l'index absent) ; la CLÔTURE DE LA PARTITION du
-  # corpus, dérivée de `server.rs`/`tenants.rs` et du catalogue de colonnes porteuses — deux mutations
+  # corpus, dérivée du module `server`/`tenants.rs` et du catalogue de colonnes porteuses — deux mutations
   # la font rougir, dont celle qui a révélé que l'extracteur ne lisait pas les lignes à commentaire de
   # fin ; la MESURE elle-même (230 objets livrés, rejoués en `EXPLAIN QUERY PLAN` sous trois régimes de
   # statistiques) ; et l'ABLATION qui chiffre l'autre moitié du devis, le coût d'ÉCRITURE par index.

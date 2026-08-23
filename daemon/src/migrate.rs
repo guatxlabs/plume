@@ -1001,7 +1001,7 @@ pub(crate) fn schema_gaps(conn: &Connection) -> Result<Vec<String>, String> {
 ///
 /// COMBIEN DE TEMPS FAUT-IL TENIR LE VERROU POUR DÉCLENCHER CE CAS ? Cela dépend de l'appelant, et les
 /// valeurs sont dans le code, pas dans une estimation : le DAEMON pose `PRAGMA busy_timeout=5000` pour
-/// toute base via `tune()` (server.rs), passé en PRÉLUDE de la porte, donc AVANT ce contrat ; les
+/// toute base via `tune()` (server/mod.rs), passé en PRÉLUDE de la porte, donc AVANT ce contrat ; les
 /// autres chemins (CLI, responder, rétention) passent par `db_open::raw_env` -> `apply_key`, qui pose
 /// 5 s MAIS seulement DANS le `if let Some(k) = db_key()`, donc une base EN CLAIR n'a AUCUN
 /// `busy_timeout` et échoue au premier verrou concurrent.
@@ -1057,7 +1057,7 @@ pub(crate) fn prepare_schema(conn: &Connection) -> Result<(), String> {
 /// d'une base estampillée 111, AUCUN redémarrage ne la recrée — ni schema.sql (elle n'y est pas), ni la
 /// garde `if v < 111` (fausse). C'est exactement l'état que `schema_gaps` détecte.
 ///
-/// ROLLBACK — bumpe le schéma à 111 : un binaire max=110 REFUSE d'ouvrir une base v111 (server.rs
+/// ROLLBACK — bumpe le schéma à 111 : un binaire max=110 REFUSE d'ouvrir une base v111 (server/mod.rs
 /// open_and_migrate_db, `v > CODE_SCHEMA_MAX` -> Err) -> restaurer le SNAPSHOT pré-migrate (initContainer).
 /// Forward-only, idempotent (le CREATE IF NOT EXISTS re-tourné est no-op ; la version ré-écrit juste '111').
 fn migrate_v111(conn: &MigTx) {
@@ -1154,7 +1154,7 @@ fn migrate_v113(conn: &MigTx) {
 /// nouvel index. ADDITIF, mode 0 byte-identique (l'index ne change AUCUNE valeur rendue par une sonde ni
 /// aucune sémantique de requête ; aucune donnée modifiée). PURE optimisation.
 ///
-/// ROLLBACK — bumpe le schéma à 114 : un binaire max=113 REFUSE d'ouvrir une base v114 (server.rs
+/// ROLLBACK — bumpe le schéma à 114 : un binaire max=113 REFUSE d'ouvrir une base v114 (server/mod.rs
 /// open_and_migrate_db, `v > CODE_SCHEMA_MAX` -> Err). Rollback = RESTAURER le SNAPSHOT pré-migrate
 /// (initContainer). Forward-only, idempotent (le marqueur re-tourné ré-écrit juste value='114').
 fn migrate_v114(conn: &MigTx) {
@@ -1178,7 +1178,7 @@ fn migrate_v114(conn: &MigTx) {
 /// historique -> comportement byte-identique pour les alertes déjà en base. ADDITIF : aucune donnée
 /// modifiée, aucune alerte créée ni supprimée.
 ///
-/// ROLLBACK — bumpe le schéma à 115 : un binaire max=114 REFUSE d'ouvrir une base v115 (server.rs
+/// ROLLBACK — bumpe le schéma à 115 : un binaire max=114 REFUSE d'ouvrir une base v115 (server/mod.rs
 /// open_and_migrate_db, `v > CODE_SCHEMA_MAX` -> Err). Rollback = RESTAURER le SNAPSHOT pré-migrate
 /// (initContainer). Forward-only, idempotent.
 fn migrate_v115(conn: &MigTx) {
@@ -1228,7 +1228,7 @@ fn migrate_v116(conn: &MigTx) {
 /// (budget 2 Go). ADDITIF, mode 0 byte-identique (l'index ne change AUCUNE sémantique de requête ; aucune donnée
 /// modifiée). PURE optimisation (« optimiser, pas augmenter les ressources »).
 ///
-/// ROLLBACK — bumpe le schéma à 108 : un binaire max=107 REFUSE d'ouvrir une base v108 (server.rs
+/// ROLLBACK — bumpe le schéma à 108 : un binaire max=107 REFUSE d'ouvrir une base v108 (server/mod.rs
 /// open_and_migrate_db, `v > CODE_SCHEMA_MAX` -> Err). Rollback = RESTAURER le SNAPSHOT pré-migrate
 /// (initContainer). Forward-only, idempotent (le marqueur re-tourné ré-écrit juste value='108').
 fn migrate_v108(conn: &MigTx) {
@@ -1244,7 +1244,7 @@ fn migrate_v108(conn: &MigTx) {
 /// migration, mais la ligne DÉPLOYÉE a pris v107 (saved_query) puis v108 (idx_event_src_ts) ; à l'intégration
 /// la migration IA s'empile donc APRÈS le max courant (108) -> v109, jamais de collision. Sur base neuve
 /// migrate stampe directement 109. ROLLBACK — bumpe le schéma à 109 : un binaire max=108 REFUSE d'ouvrir
-/// une base v109 (server.rs open_and_migrate_db, `v > CODE_SCHEMA_MAX` -> Err) -> restaurer le SNAPSHOT
+/// une base v109 (server/mod.rs open_and_migrate_db, `v > CODE_SCHEMA_MAX` -> Err) -> restaurer le SNAPSHOT
 /// pré-migrate (initContainer). Forward-only, idempotent.
 /// v110 (ALLÈGEMENT INDEX HOT — P5). MARQUEUR PUR (aucune DDL synchrone), MÊME posture EXACTE que v102/v108 :
 /// le TRAVAIL (DROP des index REDONDANTS) est délégué à `drop_redundant_event_indexes_background` (EN FOND
@@ -1271,7 +1271,7 @@ fn migrate_v108(conn: &MigTx) {
 /// AUCUNE requête ne change de résultat (un index redondant retiré n'altère jamais un résultat, seulement un
 /// plan — et ici le plan reste un seek indexé). PURE optimisation disque (« optimiser, pas augmenter les ressources »).
 ///
-/// ROLLBACK — bumpe le schéma à 110 : un binaire max=109 REFUSE d'ouvrir une base v110 (server.rs
+/// ROLLBACK — bumpe le schéma à 110 : un binaire max=109 REFUSE d'ouvrir une base v110 (server/mod.rs
 /// open_and_migrate_db, `v > CODE_SCHEMA_MAX` -> Err). Rollback = RESTAURER le SNAPSHOT pré-migrate
 /// (initContainer) ; ré-armer les index = re-CREATE (réversible, aucune donnée touchée). Forward-only, idempotent.
 fn migrate_v110(conn: &MigTx) {
@@ -1320,7 +1320,7 @@ fn migrate_v109(conn: &MigTx) {
 /// (client_case_*) : aucune colonne/table n'y est ajoutée -> les incidents/runbooks NE FUITENT PAS au MSSP.
 ///
 /// ROLLBACK — cette migration bumpe le schéma à 104 : un binaire v114 (max=103) REFUSE d'ouvrir une base v104
-/// (server.rs:301 open_and_migrate_db, `v > CODE_SCHEMA_MAX` -> Err). Un rollback de code exige donc de
+/// (server/mod.rs open_and_migrate_db, `v > CODE_SCHEMA_MAX` -> Err). Un rollback de code exige donc de
 /// RESTAURER le SNAPSHOT pré-migration (l'initContainer pre-migrate snapshotte AVANT migrate) — on ne peut pas
 /// « dé-migrer » en place. Forward-only, idempotent.
 /// v105 (#3 PHASE 3 — Part A : CIBLES DE RÉPONSE STRUCTURÉES). ADDITIF, nullable, best-effort. Trois colonnes
@@ -1342,7 +1342,7 @@ fn migrate_v109(conn: &MigTx) {
 /// ligne existante, un case/une alerte ordinaire lit/écrit exactement comme aujourd'hui.
 ///
 /// ROLLBACK — cette migration bumpe le schéma à 105 : un binaire max=104 REFUSE d'ouvrir une base v105
-/// (server.rs open_and_migrate_db, `v > CODE_SCHEMA_MAX` -> Err). Un rollback de code exige donc de RESTAURER le
+/// (server/mod.rs open_and_migrate_db, `v > CODE_SCHEMA_MAX` -> Err). Un rollback de code exige donc de RESTAURER le
 /// SNAPSHOT pré-migration (l'initContainer pre-migrate snapshotte AVANT migrate) — on ne peut pas « dé-migrer » en
 /// place. Forward-only, idempotent.
 /// v106 (#4a CASE-OPS — DISPOSITION / VERDICT ANALYSTE). ADDITIF PUR, nullable, mode 0 byte-identique. Trois
@@ -1358,7 +1358,7 @@ fn migrate_v109(conn: &MigTx) {
 /// Idempotent par `col_exists` (re-jouable). La table `incident` étant ENTIÈREMENT migration-only (cf. schema.sql
 /// §incident #4a/#39), rien n'est ajouté à schema.sql — miroir exact de v104/v105.
 ///
-/// ROLLBACK — bumpe le schéma à 106 : un binaire max=105 REFUSE d'ouvrir une base v106 (server.rs
+/// ROLLBACK — bumpe le schéma à 106 : un binaire max=105 REFUSE d'ouvrir une base v106 (server/mod.rs
 /// open_and_migrate_db, `v > CODE_SCHEMA_MAX` -> Err). Rollback = RESTAURER le SNAPSHOT pré-migrate
 /// (initContainer). Forward-only, idempotent.
 /// v107 (SAVED QUERIES — outillage analyste per-user). UNE table NEUVE, VIDE -> ZÉRO effet tant qu'aucune
@@ -4308,7 +4308,7 @@ mod s4_round2_tests {
     }
 
     /// (2 bis) v63 est le cas SANS FILET : contrairement à v37/v52 (re-tentés à chaque boot par
-    /// server.rs), rien ne recrée les vues. Il FAUT donc que l'étape soit re-tentable, c.-à-d. que la
+    /// server/mod.rs), rien ne recrée les vues. Il FAUT donc que l'étape soit re-tentable, c.-à-d. que la
     /// version reste à 62 -> et que le démarrage suivant la rattrape RÉELLEMENT.
     #[test]
     fn v63_view_creation_failure_is_retried_and_recovers() {
@@ -4377,7 +4377,7 @@ mod s4_round2_tests {
     }
 
     /// (4) SIGNAL À L'APPELANT — une migration interrompue doit être RAPPORTÉE : sans valeur de retour,
-    /// `server.rs` enchaînait les seeds puis le bind et SERVAIT sur un schéma qu'il savait incomplet.
+    /// `server/mod.rs` enchaînait les seeds puis le bind et SERVAIT sur un schéma qu'il savait incomplet.
     #[test]
     fn interrupted_migration_is_reported_to_the_caller() {
         let conn = Connection::open_in_memory().unwrap();

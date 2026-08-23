@@ -3669,7 +3669,7 @@ MÊME binaire **et le MÊME mélange de requêtes** : leur écart, à niveau d'a
 EST le taux de change entre concurrence et mémoire.
 
 **Il est réglable sans recompiler** : `PLUME_QUERY_CONCURRENCY` est lu dans la
-configuration au démarrage (`daemon/src/server.rs:254`, défaut 3) et le daemon publie la
+configuration au démarrage (`daemon/src/server/mod.rs`, défaut 3) et le daemon publie la
 valeur qu'il applique sur `/api/system/diag` — c'est de là que ce banc la lit, plutôt que
 de la supposer. En revanche il est lu **une seule fois, au boot** : le changer demande un
 redémarrage, et un redémarrage a son propre coût (voir la mise au repos plus haut).

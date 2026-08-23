@@ -296,11 +296,12 @@
                     continue;
                 }
                 let rel = p.strip_prefix(&root).unwrap().to_string_lossy().to_string();
-                // DÉCLARATION et CÂBLAGE du sémaphore : `state.rs` porte le champ, `server.rs` le
-                // construit et le transporte. Ces deux fichiers-là NOMMENT donc légitimement le
-                // sémaphore sans l'acquérir — et le test le vérifie plus bas, au lieu de leur faire
-                // confiance.
-                let porteur = rel == "state.rs" || rel == "server.rs";
+                // DÉCLARATION et CÂBLAGE du sémaphore : `state.rs` porte le champ, la FAÇADE du module
+                // `server` le construit et le transporte. Ces deux fichiers-là NOMMENT donc légitimement
+                // le sémaphore sans l'acquérir — et le test le vérifie plus bas, au lieu de leur faire
+                // confiance. L'exemption reste NOMINATIVE et ne couvre PAS les sous-modules de `server`
+                // (`P7.18-a`) : un sous-module qui prendrait un permit hors de la porte serait accusé.
+                let porteur = rel == "state.rs" || rel == "server/mod.rs";
                 for (n, line) in std::fs::read_to_string(&p).unwrap().lines().enumerate() {
                     let l = line.trim();
                     if l.starts_with("//") || l.starts_with("//!") {

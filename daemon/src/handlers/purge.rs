@@ -10,7 +10,7 @@
 //!
 //! CE QUI GARDE CETTE SURFACE, et où c'est prouvé :
 //!  - `route_min_role("/api/purge…") == Admin` (préfixe déclaré dans la section admin-only, GET compris) ;
-//!  - le balayage `router_viewer_cannot_reach_any_mutating_route` LIT la table de routage dans `server.rs` :
+//!  - le balayage `router_viewer_cannot_reach_any_mutating_route` LIT la table de routage dans `server/groupes_de_routes.rs` :
 //!    ces deux routes y entrent AUTOMATIQUEMENT, sans qu'on ait à les inscrire quelque part ;
 //!  - `route_denied_perm("/api/purge") == Some("purge_events")` : un rôle composable base=admin peut se voir
 //!    RETIRER la purge tout en gardant le reste de l'autorité admin (soustractif, jamais additif) ;

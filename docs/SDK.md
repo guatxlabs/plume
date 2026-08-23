@@ -47,7 +47,7 @@ Trois **idiomes** seulement, par ordre de préférence :
 | **Parser** (log vendeur → `EventRow`) | extraction de champs | overlay déclaratif (DSL) | `config.d/parsers/*.json` → tables `parser`/`dparser` | **non** | [PARSER-DSL.md](PARSER-DSL.md) |
 | **Parser** haut débit | dialecte binaire/positionnel | trait compilé | `collector-syslog` : `impl VendorParser` + `parser::select()` | oui | code |
 | **Source pull** (API REST/JSON) | une source d'events | descripteur connecteur | `POST /api/connectors` type `http_pull`, champ `config` | **non** | [connector-presets](connector-presets/README.md) |
-| **Source push** (SIEM/agent) | flux entrant | endpoint HTTP | `POST /services/collector` (HEC), `/api/ingest*` | **non** | code (`server.rs`) |
+| **Source push** (SIEM/agent) | flux entrant | endpoint HTTP | `POST /services/collector` (HEC), `/api/ingest*` | **non** | code (`server/groupes_de_routes.rs`) |
 | **Détection** | règle | overlay déclaratif | `config.d/rules/*.json` (GXQL) + `config.d/sigma/*.yml` | **non** | [SIGMA-IMPORTER.md](SIGMA-IMPORTER.md) |
 | **Threat-intel** | flux d'IOC | descripteur connecteur / import | connecteur `taxii2`, `POST /api/threat-intel/import` (STIX 2.1) | **non** | `core::ti` |
 | **Réponse / enforcer** | exécuteur d'action | adaptateur hors-process | `PLUME_BAN_BACKEND` (nft/fail2ban/…), engagement `adapter` | **non** | code (`actions.rs`) |

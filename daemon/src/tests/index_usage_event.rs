@@ -138,7 +138,7 @@ use crate::index_usage::{lire_detail, plan_de, PlanLu};
 
 /// La base que ce binaire produit VRAIMENT sur un déploiement : `db/schema.sql` + toute la chaîne de
 /// migrations (`prepare_schema`), PUIS les réconciliations d'index que le boot lance EN FOND après le
-/// bind (`server.rs`) — c'est là que naissent `idx_event_category`, `idx_event_src_ts` et
+/// bind (`server/mod.rs`) — c'est là que naissent `idx_event_category`, `idx_event_src_ts` et
 /// `idx_event_health_beat`, qu'AUCUNE migration ne peut créer (un `CREATE INDEX` sur des millions de
 /// lignes chiffrées bloquerait le bind). Sur une base neuve `event` est VIDE : ces créations sont
 /// instantanées. Base FICHIER (pas `:memory:`) : les pragmas de catalogue portent sur une vraie base,
@@ -798,18 +798,17 @@ fn la_base_depreuve_porte_les_index_que_la_production_porte() {
 /// Le corpus est « ce que le produit écrit lui-même dans les colonnes porteuses de requête ». Deux
 /// façons de le rater, toutes deux fermées ici en LISANT LE CODE plutôt qu'en le croyant :
 ///   (a) un semeur appelé au BOOT que `semer_le_corpus` n'appelle pas -> requêtes livrées jamais vues.
-///       On extrait de `server.rs` la liste des `seed_*(&conn)` du bloc de boot et on la confronte à
+///       On extrait du module `server` la liste des `seed_*(&conn)` du bloc de boot et on la confronte à
 ///       ce que `seed_tenant_content` (`tenants.rs`) appelle, plus les exceptions NOMMÉES ici ;
 ///   (b) une colonne porteuse de requête absente du vocabulaire -> on exige que chaque colonne nommée
 ///       `%query%` / `%soql%` du schéma migré soit soit dans le vocabulaire, soit explicitement
 ///       classée hors-corpus (métadonnée, empreinte, cache).
 #[test]
 fn la_partition_du_corpus_est_close() {
-    // (a) — les semeurs du boot, LUS dans server.rs.
-    let srv = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("server.rs"),
-    )
-    .expect("server.rs lisible");
+    // (a) — les semeurs du boot, LUS dans le module `server` (façade ET sous-modules : la lecture est
+    // DÉRIVÉE DU PRÉFIXE DE RÉPERTOIRE depuis `P7.18-a`, pas d'un nom de fichier — un bloc extrait vers
+    // `server/<x>.rs` reste lu).
+    let srv = texte_du_module_serveur();
     let debut = srv.find("reconcile_index_state(&conn").expect("bloc de seeds du boot repérable");
     let fin = srv.find("seed_env_notifier(&conn").expect("fin du bloc de seeds repérable");
     let bloc = &srv[debut..fin];
@@ -846,7 +845,7 @@ fn la_partition_du_corpus_est_close() {
     // sa doc dit « dans le même ordre que run() », sans les seeds spécifiques au déploiement).
     assert!(
         semeurs_boot.len() >= 25 && semeurs_tenant.len() >= 25,
-        "EXTRACTEUR MUET : {} semeur(s) lus dans le bloc de boot de server.rs et {} dans \
+        "EXTRACTEUR MUET : {} semeur(s) lus dans le bloc de boot du module `server` et {} dans \
          seed_tenant_content. Une garde de clôture qui n'a presque rien lu est verte pour la mauvaise \
          raison. boot={semeurs_boot:?} tenant={semeurs_tenant:?}",
         semeurs_boot.len(),

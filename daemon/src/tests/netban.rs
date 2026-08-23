@@ -353,7 +353,7 @@
     // les routes d'un coup » — une promesse de COMPOSITION, qui ne se prouve qu'en composant.
     //
     // POURQUOI DÉRIVÉE. Une liste de routes écrite à la main est périmée dès la route suivante. La table
-    // est donc lue à son UNIQUE site de déclaration (`declared_route_table()`, `server.rs`) : une route
+    // est donc lue à son UNIQUE site de déclaration (`declared_route_table()`, `server/groupes_de_routes.rs`) : une route
     // ajoutée demain entre dans le périmètre sans que personne ne l'inscrive nulle part.
     // ----------------------------------------------------------------------------------------------
 
@@ -386,7 +386,7 @@
         let (st, dbp) = router_test_state("netban-cablage");
         let addr = router_serve(st).await;
         let table = declared_route_table();
-        assert!(table.len() > 200, "table de routage lue depuis server.rs : {} routes", table.len());
+        assert!(table.len() > 200, "table de routage lue depuis le module `server` : {} routes", table.len());
 
         // (a) BAN ACTIF sur l'IP réelle annoncée par le proxy de confiance. LE VERDICT PORTE SUR CE QUE
         // LA COUCHE ÉCRIT, pas sur le seul code : un 403 se rend aussi pour une clé de livraison invalide.

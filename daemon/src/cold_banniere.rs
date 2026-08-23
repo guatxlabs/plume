@@ -512,7 +512,7 @@ mod cold_banniere_tests {
     }
 
     /// LE DÉMARRAGE QUI ANNONCE SON PLAFOND MÉMOIRE DOIT ANNONCER SON TIER FROID. La règle n'énumère
-    /// PAS `server.rs` : elle est DÉRIVÉE d'un invariant déjà tenu — tout site qui imprime la bannière
+    /// PAS `server/mod.rs` : elle est DÉRIVÉE d'un invariant déjà tenu — tout site qui imprime la bannière
     /// du plafond au démarrage est un site de démarrage, donc doit aussi imprimer celle du tier froid.
     /// Un second point d'entrée écrit demain est couvert le jour où il est écrit.
     ///
@@ -525,7 +525,7 @@ mod cold_banniere_tests {
     /// démon aussi muet qu'avant). FAIL-CLOSED : un appel étalé sur plusieurs lignes échoue aussi, et
     /// c'est voulu — on préfère un refus bruyant à un démarrage silencieux.
     ///
-    /// MUTATION : remplacer l'`eprintln!` de `server.rs` par `let _ = …` ⇒ la 2e assertion passe au
+    /// MUTATION : remplacer l'`eprintln!` de `server/mod.rs` par `let _ = …` ⇒ la 2e assertion passe au
     /// ROUGE en nommant le fichier redevenu muet.
     #[test]
     fn le_demarrage_qui_annonce_son_plafond_annonce_son_tier_froid() {

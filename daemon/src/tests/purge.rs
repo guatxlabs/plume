@@ -745,7 +745,7 @@
             "la perm est dans l'enum FERMÉ (sinon un deny_perm serait ignoré au chargement)"
         );
         // ET LE BALAYAGE DU ROUTEUR COUVRE BIEN CES DEUX ROUTES. La garde de câblage (B-1/B-2/B-3) LIT la
-        // table de routage dans `server.rs` : si les deux routes n'y étaient pas lues (ligne commentée,
+        // table de routage dans `server/groupes_de_routes.rs` : si les deux routes n'y étaient pas lues (ligne commentée,
         // méthode non reconnue), elle passerait au vert en ne les sondant JAMAIS — un vert qui ne mesure
         // rien. On vérifie donc explicitement leur PRÉSENCE dans la table que la garde balaie.
         let table = declared_route_table();

@@ -107,7 +107,7 @@ where
 {
     // TAXII 2.1 (#23) : pull STIX -> upsert IOC (magasin threat-intel). Chemin DISTINCT de Defender (qui
     // ingère des EVENTS) : ici on écrit dans `ioc`. Le cache de match est rafraîchi par la boucle rollup
-    // (~120 s, server.rs) -> les nouveaux IOC deviennent actifs au match-on-ingest au tick suivant.
+    // (~120 s, server/mod.rs) -> les nouveaux IOC deviennent actifs au match-on-ingest au tick suivant.
     if ctype == "taxii2" {
         let cfg = TaxiiCfg::from_json(&serde_json::from_str::<Value>(cfg_json).unwrap_or_else(|_| json!({})));
         // source du feed = config.source (traçabilité) sinon stable `taxii:{id}`.

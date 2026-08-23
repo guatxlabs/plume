@@ -11,7 +11,7 @@ code du démon à chaque exécution, et c'est la surface web qui doit la rattrap
 
 CE QUI REND UNE ROUTE SENSIBLE — trois familles, chacune lue dans le code du démon
 -------------------------------------------------------------------------------------
-Le périmètre est l'ensemble des routes MUTANTES du routeur (`daemon/src/server.rs`, méthodes post/put/
+Le périmètre est l'ensemble des routes MUTANTES du routeur (`daemon/src/server/`, méthodes post/put/
 patch/delete), moins les POST de lecture que le démon déclare lui-même (`is_readonly_post`, auth.rs) et
 les routes sans session (login, setup, SAML, LDAP, MFA de connexion). Chaque route est résolue vers le
 corps de son handler (le symbole nommé dans `.route(...)`), et une route est sensible si :

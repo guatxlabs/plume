@@ -32,7 +32,7 @@ mod exercice_de_restauration;
 // feature ce module n'existe PAS, et l'ordonnanceur refuse une destination `s3://` comme il le faisait
 // déjà -> mode 0 inchangé. La feature n'ajoute AUCUNE caisse au graphe (signature v4 = HMAC-SHA256 +
 // SHA-256, tous deux déjà dans `util::hexcrypto` ; transport = `util::http_client` + rustls/ring déjà liés).
-// PAS de `use sink_s3::*` : les noms restent qualifiés, pour qu'une lecture de `server.rs` voie d'où sort
+// PAS de `use sink_s3::*` : les noms restent qualifiés, pour qu'une lecture de `server/mod.rs` voie d'où sort
 // chaque pièce du dépôt distant.
 #[cfg(feature = "s3_backup")]
 mod sink_s3;

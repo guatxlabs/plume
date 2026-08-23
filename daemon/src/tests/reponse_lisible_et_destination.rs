@@ -19,7 +19,7 @@
     //      « proposé », en Actif « exécuté » — la même ligne, l'autre mot (mutation du mode).
     //   ④ GARDE DÉRIVÉE `P11.1-e` : les tables de producteurs sont LUES dans les boucles du
     //      planificateur (`FROM <table> … enabled=1`), les routes qui en créent sont LUES dans
-    //      `server.rs` + le corps des handlers (`INSERT INTO <table>(`), et les modules web qui POSTent
+    //      le module `server` + le corps des handlers (`INSERT INTO <table>(`), et les modules web qui POSTent
     //      sur ces routes sont LUS sous `web/`. Chacun doit nommer la destination par l'aide partagée
     //      (`announceCreated` / `destinationNote` / `destinationSentence` de `producer_ui.js`). Aucune
     //      des trois listes n'est écrite à la main ; un module qui apparaîtrait demain est attrapé le
@@ -158,14 +158,27 @@
         }
         fn corps_de_fonction<'a>(index: &'a IndexDesFonctions, nom: &str) -> Option<&'a String> { index.corps.get(nom) }
 
-        /// LE TICK QUI DISPATCHE LES ALERTES : la fermeture `catch_unwind` de `server.rs` qui contient
+        /// LE TICK QUI DISPATCHE LES ALERTES : la fermeture `catch_unwind` du module `server` qui contient
         /// `dispatch_notifications(`. Ce qui y tourne produit ce que l'onglet Alertes/Actions reçoit ; les
         /// autres boucles (connecteurs, destinations, rapports) lisent aussi des tables `enabled=1` mais
         /// produisent des ÉVÉNEMENTS ou des ENVOIS, pas des alertes — elles ne sont pas des producteurs.
+        /// LE TEXTE DU MODULE `server` — façade et sous-modules concaténés, DÉRIVÉ DU PRÉFIXE DE
+        /// RÉPERTOIRE et jamais d'un nom de fichier : `server/mod.rs` est devenu `server/mod.rs` plus des
+        /// sous-modules (`P7.18-a`), et une garde restée sur le nom du fichier aurait cessé de lire le
+        /// tick et la table de routage sans que rien ne le dise.
+        fn source_du_serveur(sources: &[(PathBuf, String)]) -> String {
+            let mut v: Vec<&(PathBuf, String)> = sources.iter()
+                .filter(|(p, _)| p.components().any(|c| c.as_os_str() == "server"))
+                .collect();
+            v.sort_by(|a, b| a.0.cmp(&b.0));
+            assert!(!v.is_empty(), "INSTRUMENT MUET : aucune source sous `src/server/` — le module a été déplacé");
+            v.iter().map(|(_, s)| s.as_str()).collect::<Vec<_>>().join("\n")
+        }
+
         fn tick_des_alertes(sources: &[(PathBuf, String)]) -> String {
-            let (_p, server) = sources.iter().find(|(p, _)| p.ends_with("server.rs")).expect("server.rs");
-            let fin = server.find("dispatch_notifications(").expect("server.rs : dispatch_notifications( absent du tick");
-            let debut = server[..fin].rfind("catch_unwind(").expect("server.rs : aucun catch_unwind avant dispatch_notifications");
+            let server = &source_du_serveur(sources);
+            let fin = server.find("dispatch_notifications(").expect("module `server` : dispatch_notifications( absent du tick");
+            let debut = server[..fin].rfind("catch_unwind(").expect("module `server` : aucun catch_unwind avant dispatch_notifications");
             let apres = server[fin..].find("}));").map(|i| fin + i).unwrap_or(server.len());
             server[debut..apres].to_string()
         }
@@ -198,9 +211,9 @@
             out
         }
 
-        /// Les routes POST de `server.rs` : (chemin, handler).
+        /// Les routes POST du module `server` : (chemin, handler).
         fn routes_post(sources: &[(PathBuf, String)]) -> Vec<(String, String)> {
-            let (_p, server) = sources.iter().find(|(p, _)| p.ends_with("server.rs")).unwrap();
+            let server = &source_du_serveur(sources);
             let mut out = Vec::new();
             for l in server.lines() {
                 let Some(reste) = l.split(".route(\"").nth(1) else { continue };

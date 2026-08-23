@@ -649,7 +649,7 @@ pub(crate) enum Deversement {
     Indisponible(String),
 }
 
-/// LE SEUL point qui décide ET rapporte. La bannière était écrite dans `server.rs`, qui n'a pas accès au
+/// LE SEUL point qui décide ET rapporte. La bannière était écrite dans `server/mod.rs`, qui n'a pas accès au
 /// mode : elle annonçait « déversement des tris : <chemin> » À CHAQUE DÉMARRAGE, y compris quand rien ne
 /// déverse — une phrase fausse dans le journal, et la branche d'erreur alertait sur un plafond inexistant.
 /// La rendre ICI ferme l'écart par construction : le `match` est EXHAUSTIF (aucun bras `_`), donc un mode
@@ -1071,7 +1071,7 @@ mod plafond_tests {
     /// est là pour que ça ne puisse pas se faire par inadvertance.
     ///
     /// LA BANNIÈRE NE PEUT PAS ANNONCER UN DÉVERSEMENT QUI N'A PAS LIEU. C'est le défaut RÉEL corrigé
-    /// ici : `server.rs` imprimait « déversement des tris : <chemin> » à CHAQUE démarrage, sans accès au
+    /// ici : `server/mod.rs` imprimait « déversement des tris : <chemin> » à CHAQUE démarrage, sans accès au
     /// mode. Un journal qui décrit autre chose que ce qui se passe est pire qu'un journal muet — c'est sur
     /// lui qu'on s'appuiera le jour d'un incident de confidentialité.
     ///

@@ -811,16 +811,36 @@
 // l'allowlist admin-only, `rbac_gate` fail-open par défaut) : c'est un angle mort STRUCTUREL.
 //
 // GARDE DÉRIVÉE (pas d'énumération de routes) : axum n'expose PAS d'itérateur sur sa table matchit, mais
-// les routes sont déclarées à UN SEUL endroit (`daemon/src/server.rs`, les `*_routes()` fusionnés par
+// les routes sont déclarées à UN SEUL endroit (`daemon/src/server/groupes_de_routes.rs`, les `*_routes()` fusionnés par
 // `build_router`). Les tests ci-dessous LISENT cette table dans la source, CONSTRUISENT le routeur réel,
 // le servent sur une socket loopback éphémère, et interrogent CHAQUE (route, méthode) déclarée. Une route
 // ajoutée demain entre donc automatiquement dans le périmètre — personne n'a à l'inscrire sur une liste.
 // ================================================================================================
 
+/// LE TEXTE DU MODULE `server` — la façade ET tous ses sous-modules, concaténés dans l'ordre des
+/// chemins. DÉRIVÉ DU PRÉFIXE DE RÉPERTOIRE, jamais d'un nom de fichier : `server/mod.rs` est devenu
+/// `server/mod.rs` plus des sous-modules (`P7.18-a`), et une garde restée sur le nom du fichier serait
+/// devenue VERTE EN ÉTANT AVEUGLE — elle aurait cessé de lire la table de routage sans que rien ne le
+/// dise. Un sous-module ajouté demain est lu sans que personne ait à l'inscrire quelque part.
+fn texte_du_module_serveur() -> String {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("server");
+    let mut fichiers = Vec::new();
+    crate::db_open::door_tests::rs_files(&dir, &mut fichiers);
+    fichiers.sort();
+    assert!(
+        !fichiers.is_empty(),
+        "INSTRUMENT MUET : aucun fichier `.rs` sous `{}` — le module `server` a été déplacé et la \
+         garde ne lit plus rien.",
+        dir.display()
+    );
+    fichiers.iter().map(|p| std::fs::read_to_string(p).expect("source du module `server` lisible"))
+        .collect::<Vec<_>>().join("\n")
+}
+
 /// Table de routage DÉCLARÉE, lue à son UNIQUE site de déclaration : (chemin axum, méthodes HTTP).
-/// Une route ajoutée dans `server.rs` apparaît ici sans action supplémentaire.
+/// Une route ajoutée dans le module `server` apparaît ici sans action supplémentaire.
 fn declared_route_table() -> Vec<(String, Vec<String>)> {
-    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server.rs")).unwrap();
+    let src = texte_du_module_serveur();
     let mut out: Vec<(String, Vec<String>)> = Vec::new();
     for line in src.lines() {
         let code = line.split("//").next().unwrap_or(""); // jamais un `.route(` en commentaire
@@ -978,7 +998,7 @@ fn viewer_authz() -> String {
 async fn router_no_declared_route_serves_anonymous_requests() {
     let (st, dbp) = router_test_state("router-anon");
     let table = declared_route_table();
-    assert!(table.len() > 200, "table de routage lue depuis server.rs : {} routes", table.len());
+    assert!(table.len() > 200, "table de routage lue depuis le module `server` : {} routes", table.len());
     let addr = router_serve(st).await;
     let mut bad: Vec<String> = Vec::new();
     let mut probed = 0usize;

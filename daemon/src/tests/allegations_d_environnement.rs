@@ -800,7 +800,7 @@ mod allegations_d_environnement_tests {
     // GARDE 5 — « le manifeste k3s livré sauvegarde depuis son UNIQUE conteneur »  (silence complet)
     // --------------------------------------------------------------------------------------------
 
-    /// L'ALLÉGATION RÉFUTÉE, PUIS RÉÉCRITE. Quatre commentaires (`backup/mod.rs` ×2, `server.rs`, `main.rs`)
+    /// L'ALLÉGATION RÉFUTÉE, PUIS RÉÉCRITE. Quatre commentaires (`backup/mod.rs` ×2, `server/mod.rs`, `main.rs`)
     /// affirmaient que « le conteneur PRINCIPAL ne fait JAMAIS de backup » et que le destinataire d'escrow
     /// est « posé UNIQUEMENT sur le SIDECAR `plume-daemon backup` » — et c'est sur ce fait qu'ils ont
     /// retiré le signal de posture du démarrage du serveur. Lu le 2026-08-22, `deploy/k3s.yaml` n'a
@@ -850,7 +850,7 @@ mod allegations_d_environnement_tests {
             litteral_sur_la_ligne(&brut, i, 1).unwrap_or_else(|| panic!("INSTRUMENT : le défaut de `{cle}` n'est plus lisible dans `{rel}`"))
         };
         let config = lire_defaut("daemon/src/overlays.rs", "PLUME_CONFIG_DIR");
-        let web = lire_defaut("daemon/src/server.rs", "PLUME_WEB");
+        let web = lire_defaut("daemon/src/server/mod.rs", "PLUME_WEB");
         assert!(config.starts_with('/') && web.starts_with('/'), "INSTRUMENT : défauts lus `{config}` / `{web}` — pas des chemins");
         let brut = lire_du_depot("Dockerfile");
         let code = code_execute_unite(&brut);

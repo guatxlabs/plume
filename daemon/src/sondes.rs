@@ -63,7 +63,7 @@ use crate::*;
 // dernier battement » — c'est-à-dire QUASI NUL tant que le collecteur va bien, et CROISSANT SANS BORNE
 // à partir de l'instant où il meurt (le flux réel de la source, lui, continue : CrowdSec bannit encore
 // quand le script de santé est mort). La sonde devient donc la plus chère précisément quand elle sert.
-// Et elle tourne dans `check_heartbeats`, SOUS LE VERROU D'ÉCRITURE, tous les 20 s (`server.rs`) : ce
+// Et elle tourne dans `check_heartbeats`, SOUS LE VERROU D'ÉCRITURE, tous les 20 s (`server/mod.rs`) : ce
 // qu'elle consomme, l'ingestion ne l'a pas. C'est une panne AUTO-AMPLIFIANTE.
 //
 // LA FORME DÉRIVÉE. Une sonde ne peut plus porter de SQL : elle nomme ce qu'elle OBSERVE (le FLUX

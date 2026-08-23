@@ -87,7 +87,7 @@
 /daemon/src/cold_store/                 @guatxlabs
 
 # ---- Server / state / entry — GUARDED (boot god-function, shared AppState) ----------------
-/daemon/src/server.rs                   @guatxlabs
+/daemon/src/server/                     @guatxlabs
 /daemon/src/state.rs                    @guatxlabs
 /daemon/src/main.rs                     @guatxlabs
 

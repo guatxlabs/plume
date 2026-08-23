@@ -66,7 +66,7 @@ pub(crate) fn ingest_events_over_cap(v: &Value, max: usize) -> bool {
 // ------------------------------------------------------------------------------------------------
 
 /// Défaut de `PLUME_INGEST_MAX_EVENTS`, décidé ICI et nulle part ailleurs (`boot_config` le lit).
-/// Il vivait en littéral `"50000"` dans `server.rs` ; le survol P4.1-p en avait besoin pour comparer
+/// Il vivait en littéral `"50000"` dans `server/mod.rs` ; le survol P4.1-p en avait besoin pour comparer
 /// les plafonds de route à la configuration PAR DÉFAUT, et deux littéraux auraient pu diverger — le
 /// test aurait alors mesuré une configuration que personne ne déploie.
 pub(crate) const INGEST_MAX_EVENTS_DEFAUT: usize = 50_000;

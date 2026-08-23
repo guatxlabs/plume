@@ -102,12 +102,13 @@ mod semaphore_interactif_tests {
     }
 
     /// LES SITES D'ACQUISITION, DÉRIVÉS : toute ligne de production qui NOMME le sémaphore
-    /// interactif hors de son point de déclaration (`state.rs`) et de son câblage (`server.rs`).
+    /// interactif hors de son point de déclaration (`state.rs`) et de son câblage (`server/mod.rs`,
+    /// la FAÇADE seule : l'exemption ne couvre PAS les sous-modules extraits en `P7.18-a`).
     /// Rendu : (fichier, n° de ligne, fonction englobante, texte).
     fn p78a_sites() -> Vec<(String, usize, String, String)> {
         let mut out = Vec::new();
         for (rel, contenu) in p78a_fichiers() {
-            if rel == "state.rs" || rel == "server.rs" {
+            if rel == "state.rs" || rel == "server/mod.rs" {
                 continue;
             }
             let fns = p78a_fonctions(&contenu);

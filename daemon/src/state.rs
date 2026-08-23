@@ -500,7 +500,7 @@ impl TenantDbManager {
     }
 
     /// Handle d'ÉCRITURE (writer) du tenant. Mode 0 : le writer process-global existant (st.db) —
-    /// passthrough exact, AUCUNE ligne de ce chemin n'est touchée (c'est `server.rs` qui a déjà passé
+    /// passthrough exact, AUCUNE ligne de ce chemin n'est touchée (c'est `server/mod.rs` qui a déjà passé
     /// ce handle par `prepare_schema` avant le bind). Mode 1 : le writer du `PreparedWriter` (cf. `ready`).
     pub(crate) fn handle_for(&self, tenant: &str) -> Option<Arc<Mutex<Connection>>> {
         if self.control.is_none() {
@@ -794,7 +794,7 @@ pub(crate) const UNAVAILABLE_TENANT_DB_PATH: &str = "/dev/null/plume-tenant-indi
 /// Mode 1 : le chemin SERVABLE du tenant (registres chargés, cf. `ready_db_path`), sinon le cul-de-sac.
 pub(crate) fn req_db_path(st: &AppState, au: &AuthUser) -> String {
     // Mode 0 — ET mode 1 DÉGRADÉ sans control-plane (init échoué : « l'identité retombe sur la base
-    // unique », cf. server.rs) : passthrough EXACT, comme `req_db`/`handle_for` au même instant.
+    // unique », cf. server/mod.rs) : passthrough EXACT, comme `req_db`/`handle_for` au même instant.
     if !st.multi_tenant || st.tenants.control.is_none() {
         return st.db_path.as_ref().clone();
     }

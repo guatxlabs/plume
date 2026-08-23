@@ -127,7 +127,9 @@ re-read it, only the table rows below.)
 ### Server / state / entry
 | Path | Purpose | Ownable? |
 |------|---------|----------|
-| `server.rs` | `run()` boot: config → open/migrate DB → seed_* → background jobs → router (**245 routes**, mesuré 2026-08-06 : `sed 's\|//.*\|\|' server.rs \| grep -c '\.route('` — chaque route peut porter plusieurs méthodes HTTP, le nombre de handlers est donc plus élevé) | Guarded — the boot god-function; changes here are deploy-gated |
+| `server/` | The HTTP server and its boot, split into one façade and its submodules (below); callers keep the `crate::server::X` paths through `pub(crate)` re-exports | Guarded — the boot god-function; changes here are deploy-gated |
+| `server/mod.rs` | Façade: the HTTP layers (security headers + HSTS, per-IP/global rate limit, `Cache-Control` policy, panic→JSON), the opening PRAGMAs (`tune`), and the boot itself — `boot_config` → `open_and_migrate_db` → `seed_*` → background jobs → `run()` (control plane, TLS, bind); submodule decls and `pub(crate)` re-exports | Guarded — deploy-gated |
+| `server/groupes_de_routes.rs` | **The routing table**: the cohesive per-domain sub-routers merged by `build_router` (**245 routes**, mesuré 2026-08-23 : `cat daemon/src/server/*.rs \| sed 's\|//.*\|\|' \| grep -c '\.route('` — chaque route peut porter plusieurs méthodes HTTP, le nombre de handlers est donc plus élevé), plus the six global layers, the fallback file service and the state injection, in the exact order the `router_*` sweeps interrogate. Read **as source** by the derived guards (`declared_route_table`), which resolve it by directory prefix, never by file name | Guarded — the composition is what the `router_*` sweeps defend |
 | `state.rs` | `AppState` (config carrier + shared handles) | See caveat below |
 | `main.rs` | CLI subcommands (backup/restore/…), glue | — |
 | `util/` (`mod`, `hexcrypto`, `http_client`) | Pure primitives with no `AppState` dependency: hex/sha256/hmac/constant-time compare, and the minimal HTTP/1.1 client (raw TCP + rustls) used by Vault, the Defender connector and the notifiers | Yes |
@@ -194,7 +196,7 @@ per-module invariant headers, not `AppState` reach-through, be how subsystems co
 
 ## Boundaries worth clarifying (open questions for the maintainer)
 
-- **`server.rs::run()`** is the one true god-function (config + DB open/migrate + ~40 `seed_*`
+- **`server/mod.rs::run()`** is the one true god-function (config + DB open/migrate + ~40 `seed_*`
   + background spawns + ~340-route table). The audit proposes splitting into `boot_config` /
   `open_and_migrate_db` / `spawn_background_jobs` / `build_router`. Until then, ownership of
   "boot" is diffuse.

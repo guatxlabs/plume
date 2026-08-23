@@ -58,7 +58,7 @@ async fn onb_post(addr: std::net::SocketAddr, path: &str, body: &str) -> (u16, S
 
 /// (O-1) LE TOKEN D'INSTALLATION N'A PAS DE REPLI. Il ouvre le compte ADMIN du SIEM à un anonyme : sans
 /// entropie il n'y a PAS de token (`/api/setup` refuse tout), et surtout pas un token DÉRIVÉ DE L'HORLOGE.
-/// MESURÉ (6fc8c11, server.rs) : le repli était `format!("setup{}", now())` — `setup1754…`, une dizaine de
+/// MESURÉ (6fc8c11, server/mod.rs) : le repli était `format!("setup{}", now())` — `setup1754…`, une dizaine de
 /// chiffres autour de l'heure de boot, énumérable sous le budget d'auth (120 req/10 s) en quelques heures,
 /// annoncé au journal EXACTEMENT comme un vrai token, sans un mot.
 #[test]

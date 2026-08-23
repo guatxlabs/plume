@@ -55,7 +55,7 @@ pub(crate) fn ledger_key_path_is_legacy(path: &str) -> bool {
 
 /// v105 — chemin ACTIF de la clé ledger, résolu comme `ledger_key` : `PLUME_LEDGER_KEY_PATH` (préféré, v105)
 /// puis `PLUME_LEDGER_KEY` (compat) puis le défaut compilé. Une valeur VIDE de `PLUME_LEDGER_KEY_PATH`
-/// n'écrase pas le fallback. Extrait pour que le backstop de cutover (server.rs) et le signal SOC de
+/// n'écrase pas le fallback. Extrait pour que le backstop de cutover (server/mod.rs) et le signal SOC de
 /// signature dégradée (retention_run) raisonnent EXACTEMENT sur le même chemin que le chargement de la clé.
 pub(crate) fn ledger_key_active_path(conf: &HashMap<String, String>) -> String {
     let p = cfg(conf, "PLUME_LEDGER_KEY_PATH", "");
@@ -164,7 +164,7 @@ pub(crate) fn emit_ledger_unsigned(conn: &Connection, now_ts: i64, active_path: 
 }
 
 /// v105 (STEP 1) — signal SOC : la clé Vault ACTIVE DIFFÈRE de la clé LEGACY résiduelle au cutover (fork
-/// silencieux de la chaîne d'intégrité). Émis JUSTE AVANT le refus-de-boot (server.rs) pour qu'une trace
+/// silencieux de la chaîne d'intégrité). Émis JUSTE AVANT le refus-de-boot (server/mod.rs) pour qu'une trace
 /// non-purgeable subsiste malgré l'arrêt. Sévérité 4 (P1).
 pub(crate) fn emit_ledger_key_mismatch(conn: &Connection, now_ts: i64, active_path: &str, legacy_path: &str) -> bool {
     let msg = format!(

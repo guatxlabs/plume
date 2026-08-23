@@ -829,6 +829,26 @@ jobs:
       - name: Un document suivi doit être ATTEIGNABLE depuis la page d'accueil
         run: python3 .github/scripts/check_every_doc_is_reachable.py
 
+      # `P8.9-c` — MÊME FAMILLE, APPLIQUÉE À L'INDEX DES CLÉS : ici ce n'est ni la couverture ni le
+      # document qui manque, c'est ce que la ligne dit d'ELLE-MÊME. Une clé porte un état, et ✅
+      # promet qu'il n'y a plus rien à faire. MESURÉ le 2026-08-23, avant réparation : sur 155 lignes
+      # ✅ de `docs/ROADMAP.md`, 20 portaient dans leur propre cellule un énoncé « Reste : » /
+      # « Reste ouvert : » / « Résidu nommé : », et 17 de ces énoncés n'étaient ni qualifiés
+      # d'assumés, ni renvoyés à une clé, ni déclarés fermés. Le document SAVAIT le travail
+      # incomplet et l'affichait comme complet ; qui lisait « ce qui est ouvert » ne voyait pas ces
+      # dix-sept-là. La garde n'énumère AUCUNE clé — une garde qui nommerait `P3.2-a` serait morte au
+      # prochain ajout : elle reconnaît une FORME que le document se donne à lui-même, le substantif
+      # en tête d'énoncé, et laisse passer le verbe conjugué en pleine phrase (« le dépôt reste
+      # détecté »), qui la noierait sous les faux positifs. Sous ✅, un tel énoncé doit porter un
+      # RENVOI vers une autre clé, une QUALIFICATION (assumé, délibéré, à dessein, hors périmètre,
+      # hors de portée), ou une CLÔTURE en majuscules — laquelle ferme aussi les restes qui la
+      # précèdent, car ces cellules sont écrites dans l'ordre du temps. Elle porte ses deux témoins
+      # sur un corpus fabriqué, refuse de conclure sous ses planchers, et échoue si le vocabulaire du
+      # reste disparaît du document plutôt que de rester verte en ne gardant plus rien. Ce qu'elle ne
+      # tient pas est écrit : la seule famille lexicale du reste, et aucun dépôt voisin.
+      - name: Un reste sous une clé fermée appartient à une clé ouverte, ou se déclare
+        run: python3 .github/scripts/check_every_residue_belongs_to_an_open_key.py
+
       # MÊME FAMILLE, APPLIQUÉE AU PLAN DES MODULES : un document que rien ne relit dérive. Le plan
       # (`docs/MODULE-MAP.md`) nommait encore `idp.rs` et `compliance.rs` alors que l'un était devenu
       # un répertoire et l'autre n'avait jamais vécu qu'en handler, et un module de premier niveau sur

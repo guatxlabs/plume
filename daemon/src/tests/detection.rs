@@ -4417,7 +4417,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     }
 
     // ========================================================================================
-    // OPS NATIVE — SCHEDULER DE BACKUP IN-DAEMON (portable host/Docker). Voir server.rs
+    // OPS NATIVE — SCHEDULER DE BACKUP IN-DAEMON (portable host/Docker). Voir server/sauvegarde_planifiee.rs
     // (spawn_backup_scheduler / scheduled_backup_cycle) + backup/retention.rs (fmt_backup_ts /
     // backup_keep_recent_plan). Preuves : (1) fmt inverse EXACT de parse ; (2) rétention KEEP-N
     // pure + fail-safe ; (3) OFF-par-défaut = aucune tâche/aucun disque touché ; (4) un cycle du

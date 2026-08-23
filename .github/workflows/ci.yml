@@ -834,7 +834,13 @@ jobs:
       # relit dans les DEUX sens — tout chemin cité en première cellule d'un tableau du périmètre
       # existe dans l'arbre SUIVI, et tout module de premier niveau du périmètre a une entrée. Elle
       # porte ses témoins, un plancher d'entrées, et refuse de conclure si `git ls-files` se tait.
-      - name: Le plan des modules dit vrai sur l'arbre suivi, dans les deux sens (P7.18-a)
+      # LE PÉRIMÈTRE COUVRE AUSSI LA CONSOLE. Le plan ne tenait que le démon ; `web/`, la moitié du
+      # produit et le tronc d'où sont extraits ses modules, n'était relu par rien. Mesuré sur l'arbre
+      # suivi le 2026-08-23 : 47 modules `web/*.js`, zéro cité dans le plan. Chaque poste du périmètre
+      # DÉCLARE désormais l'extension qui y fait un module (`` `daemon/src/` (`*.rs`), `web/` (`*.js`)
+      # ``) : ce qu'est un module dépend du langage de l'arbre, et une garde qui supposait `.rs` ne
+      # pouvait tenir que la moitié du produit. Le corpus témoin porte les deux langages.
+      - name: Le plan des modules dit vrai sur l'arbre suivi, dans les deux sens — démon ET console (P7.18-a)
         run: python3 .github/scripts/check_module_map_matches_tree.py
 
       # MÊME FAMILLE, APPLIQUÉE À LA PROMESSE CENTRALE DU PRODUIT : une garantie AFFIRMÉE que le code

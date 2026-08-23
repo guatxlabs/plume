@@ -9,13 +9,16 @@ Ownership verdicts ("safely ownable independently?") reflect a modularity review
 codebase is modular with clean handler↔service↔store layering; the caveats below are the
 few real cross-module tentacles.
 
-Scope: `daemon/src/`, `daemon/src/cold_store/` — except `tests`.
+Scope: `daemon/src/` (`*.rs`), `daemon/src/cold_store/` (`*.rs`), `web/` (`*.js`) — except `tests`.
 
-The line above is read by a CI guard (`.github/scripts/check_module_map_matches_tree.py`): every
-first-level module of each directory it names — a `name.rs` file or a `name/` directory, the
-excepted names aside — must have a row in a table of a section whose heading names that
-directory, and every path a row's first cell cites must exist in the tracked tree. A plan that
-nothing re-reads drifts; this one is re-read on every push.
+The line above is read by a CI guard (`.github/scripts/check_module_map_matches_tree.py`). Each
+scope entry names a directory and, in parentheses, the extension that makes a *module* there: what a
+module is depends on the language of the tree, and a guard that assumed one language would only ever
+hold half the product — the console went unread for exactly that reason. Every first-level module of
+each directory — a `name.<ext>` file or a `name/` subdirectory, the excepted names aside — must have
+a row in a table of a section whose heading names that directory, and every path a row's first cell
+cites must exist in the tracked tree. The guard enumerates nothing: both lists are derived, from this
+line and from `git ls-files`. A plan that nothing re-reads drifts; this one is re-read on every push.
 
 ---
 
@@ -166,6 +169,110 @@ submodule owns exactly one invariant, stated at the top of its file:
 | `sonde_vieillissement` | The instrument that was missing: the PLAN and the stopwatch of each aging statement, on the live database, read-only (`plume-daemon cold-aging-plan`). |
 | `vectorized` | Vectorised query engine over typed column batches, streaming row-group by row-group, never through SQLite; reuses the SAME `FieldMaskSet` masking as hot. |
 | `planner` | Router: a query that is pure-cold AND vectorisable runs on `vectorized`; anything else returns `None` and the caller falls back VERBATIM on `cold_union_query` — the fallback is never duplicated. |
+
+---
+
+## The console — `web/`
+
+The operator console is a **dependency-free ES-module SPA** served read-only by the daemon
+(`ServeDir` fallback): no bundler, no framework, no build step — what is tracked here is what the
+browser loads. `index.html` is the document; `app.js` is the single module it imports. The bulk of
+these files came out of a monolithic `app.js` by pure move: bodies unchanged, only imports and
+exports added. The remaining `app.js` ↔ view cycles are benign because the imported functions are
+called at *execution* time (a click, after an `await`), never while a module is being evaluated.
+
+Every module here except the service worker is linked by the ESM harness
+(`.github/scripts/web_esm_harnais.mjs`), whose list is **derived from the directory**, not
+enumerated: an import of a symbol that moved is a link error, the cascade reaches `app.js`, and the
+interface stays blank — no Rust test can see that.
+
+The `Kind` column tells four shapes apart. **service** — no view of its own; other modules import
+it. **render** — owns one panel or view and is reached through the router. **registry** — content
+only, imports nothing, re-read by a guard. **entry / shell / asset** — the document, its boot, and
+what the browser fetches alongside.
+
+### Shell, entry and shared services
+| Path | Kind | Owns / exposes | Imported by |
+|------|------|----------------|-------------|
+| `app.js` | entry | Wraps `window.fetch` once (CSRF token, tenant and environment headers, the global in-flight progress bar), boots the console in the order the monolith did, registers the service worker, and re-exports the symbols the seam modules still read. It also still holds the panels never extracted — Overview, the Explore query bar and its back/forward history, Settings, the retention/sources/ledger admin wiring — so it is the one box here that does **not** reduce to a single concern | `alerts`, `admin_users`, `attack`, `cases`, `freshness`, `multitenant`, `viz` (at execution time only) |
+| `navigation.js` | service | The two-level model of spaces and their sub-tabs (`SPACES`), resolution of the current tab from the hash (historic aliases; a forbidden or unknown tab falls back **without** rewriting the deep link), rendering of both levels, and routing to each view's loader. `initNavigation()` installs the hash listener, the sidebar and sub-tab clicks, and the burger | `app.js` |
+| `login.js` | service | The front door: login form, logout, and the `GET /api/me` that decides between the application and the overlay. `initAuthGate()` is called where the block used to live, before the `fetch` wrapper is installed | `app.js` |
+| `state.js` | service | The single mutable UI-state namespace `S`. ES-module imports are read-only *bindings*, so a module cannot reassign an imported `let`; every variable the seams both read and write lives here and is mutated as a property. Pure leaf — imports nothing | every module that shares mutable state (`viz`, `cases`, `connectors`, `alerts`, `dashboards`, …) |
+| `core.js` | service | Shared UI primitives, with no business state and no import of `app.js`: DOM helpers (`$`, `esc`, `ic`), date and locale formatting, modals and toasts, the shared `disclosure` and `confirmWithConsequence` chrome, CSV/JSON/PDF export, `api()`/`apiSend()`, pagination | nearly every module |
+| `prefs.js` | service | Per-user UI preferences (column config, dashboard favourites, per-view settings, default range): synchronous reads from memory, a localStorage mirror as the offline fast path, and a debounced write to a self-scoped endpoint. Never holds a secret — only UI state | `app.js`, `dashboards.js`, `login.js` |
+| `keys.js` | service | Keyboard-driven navigation (`/`, `g` then a key, `j`/`k`, `?`): one document-level handler that never fires while the user is typing, while a modifier is held, or while a modal is open. Decoupled from the router — it drives `location.hash`, so there is no import cycle | `app.js` |
+| `sw.js` | service | The PWA service worker: **network-first** app shell (the cache is the offline fallback, never the first answer), the API never cached, older cache versions purged on activate. Registered by `app.js`; the only module the ESM harness does not link, because it runs in a worker scope and not in the document | registered by `app.js` |
+
+### Internationalisation
+| Path | Kind | Owns / exposes | Imported by |
+|------|------|----------------|-------------|
+| `i18n.js` | service | The fr→en lexicon and `i18nWalk`, the exact-match walk that translates text nodes and displayed attributes. A displayed string with no entry stays in French, silently — which is why a CI guard holds the lexicon against what each module renders | `i18n_observer.js` |
+| `i18n_observer.js` | service | Puts the lexicon on the **live** document: the initial walk, then the observer that translates what arrives afterwards — added elements and text nodes, and the displayed attributes (`title`, `placeholder`, `aria-label`, `label`). The dictionary and the walk stay next door; this module only installs them. Does not import `app.js` | `app.js` |
+
+### In-app help
+| Path | Kind | Owns / exposes | Imported by |
+|------|------|----------------|-------------|
+| `help.js` | service | The **mechanism** of in-app help: the `openHelp` opener, the single modal chrome, the guide page (index, glossary, shortcuts) and the delegated help handler. It carries no help text of its own, and a key with no section renders an admission naming the key rather than silence | `app.js`, `navigation.js` |
+| `help_registry.js` | registry | The **content**, and only the content: one section per console panel, keyed, in both languages, rendered as preformatted text. Imports nothing. Its keys are the corpus of the help-trigger guard, and it is the one module exempt from the lexicon guard — over the scope of that object alone | `help.js` |
+
+### Search, visualisation and dashboards
+| Path | Kind | Owns / exposes | Imported by |
+|------|------|----------------|-------------|
+| `viz.js` | render | Explore and the charts: drilldown, sliding window, the interactive query (single flight, cancel-previous), table and chart rendering shared with dashboards, the truncation badge, the ban action | `alerts.js`, `app.js`, `cases.js`, `dashboards.js`, `dataaccess.js`, `multitenant.js` |
+| `soql_complete.js` | render | Native IDE-like completion of the query bar. The vocabulary comes from the schema endpoint — derived from the closed compiler's own constants — so a suggestion is a **strict subset** of what compiles; plus the template palette | `app.js` |
+| `savedqueries.js` | service | Per-user query templates, backed by an owner-scoped endpoint (the client never sends a user id), and the recent-query history held in the browser alone. Loading fills the bar **without** executing; the stored text is inert until it is run through the guarded query path | `app.js`, `soql_complete.js`, `viz.js` |
+| `dashboards.js` | render | Tiles, panel grids (lazy load, render, export), shareable snapshot, slideshow, views and favourites. `initDashboards()` does the wiring at the point where the block used to live; `renderDashboard` is exported for the harness. Does not import `app.js` | `app.js`, `navigation.js` |
+| `dataaccess.js` | render | Read-access governance: five panels over **existing** query surfaces, an analysis-window selector, a scope note, and a card order persisted locally. Does not import `app.js` | `navigation.js` |
+
+### Detection and response
+| Path | Kind | Owns / exposes | Imported by |
+|------|------|----------------|-------------|
+| `alerts.js` | render | The alert queue: rendering, group triage, drill, export, MITRE and source filters, and the single action bar. `alertListModel` and `alertActionBarHtml` are exported so the harness judges the rendered form | `app.js`, `detection_admin.js`, `navigation.js` |
+| `cases.js` | render | Case management: list, detail, CRUD, and attaching items from the other surfaces. `caseBtn` is a pure render, judged by the harness | `alerts.js`, `app.js`, `navigation.js` |
+| `detection_admin.js` | render | Detection administration: coverage, rules, notification channels, parsers, actions, the global mode, and playbooks — with the DOM wiring and initial loads. Its row models are exported so the harness can compare them with the other producer surfaces | `app.js`, `navigation.js` |
+| `detadv.js` | render | Advanced detection: multi-event correlations (finding groups) and UEBA baselines, each with an author-time backtest | `app.js`, `navigation.js` |
+| `attack.js` | render | The ATT&CK coverage matrix: tactics as columns, techniques as cells shaded by coverage, so the **blind spots** are what stands out. Read-only; if the endpoint is absent it says coverage is unavailable instead of failing hard. Owns the display name of a technique and the token used when that name is unknown | `app.js`, `detection_admin.js`, `navigation.js` |
+| `risk.js` | render | Risk by entity: the entity list and, for one entity, its timeline and contributions — served from the rollup, so no event scan. Read-only | `app.js`, `navigation.js` |
+| `runbooks.js` | render | Runbook authoring: shipped versus custom templates, phased steps with their kind, clone of a shipped one, enable and disable, delete. A runbook only *references* a response action; execution stays on the actions path | `navigation.js` |
+| `sigmaimport.js` | render | Bulk Sigma import: archive upload or multi-document paste, then the returned summary — the **coverage delta** first, and every reject with its reason. Imported rules arrive disabled, and the panel says so and links to the rule list | `app.js`, `attack.js`, `detection_admin.js` |
+| `suppressions.js` | render | The active suppressions and whitelists panel, and the three administrator gestures on alert silences — create, edit, delete — each audited daemon-side | `navigation.js` |
+| `alerting.js` | render | Notification policies (the routing tree) and timed silences. Policies reference channels **by id only**: a channel secret never transits through this surface | `navigation.js` |
+| `producer_ui.js` | service | The shared render factory for *producers* (detection rule, playbook, runbook, correlation, baseline): one row shape, one switch that states its value as a word and names the consequence it arms — asking for confirmation when that consequence reaches the network or a process — and one sentence saying where the product will land, with the link | `detadv.js`, `detection_admin.js`, `runbooks.js`, `sigmaimport.js` |
+
+### Data, sources and knowledge
+| Path | Kind | Owns / exposes | Imported by |
+|------|------|----------------|-------------|
+| `datamodels.js` | render | The semantic layer (models → objects → fields), the Pivot report builder and datasets. Pivot never builds SQL: the endpoint compiles a query in the closed language and runs it through the **same masked path** as a hand-written one | `navigation.js` |
+| `knowledge.js` | render | Search-time knowledge objects: field aliases, calculated fields, event types, tags. Readable by any role on purpose — these objects shape everyone's search | `navigation.js` |
+| `lookups.js` | render | Enrichment lookup tables: list, row, JSON and CSV paste, delete. `lookupRow` and `parseCsvRows` are exported for the harness. Does not import `app.js` | `app.js` |
+| `sources.js` | render | The source inventory and its display metadata, plus the audited metadata mutations. `renderSourcesInventory` is exported for the harness | `app.js`, `navigation.js` |
+| `processors.js` | render | The ingest processor: ordered rules that filter, mask, route or sample an event **before** indexing, a dry-run, and the per-rule counters — what was not indexed stays visible rather than silently dropped | `app.js`, `navigation.js` |
+| `connectors.js` | render | External pull connectors (Defender, TAXII, generic HTTP pull, presets): list, form, type switch, field and status mapping, preview, poll | `app.js`, `navigation.js` |
+| `destinations.js` | render | Outputs: forwarding normalised events to an external sink. Data leaves the perimeter here, so the surface is admin-only and send-only; the sink credential is a password field, never redisplayed, and re-sent only if re-typed | `app.js`, `navigation.js` |
+| `index_policies.js` | render | Named logical indexes — an index being the environment value of an event, the same axis the ingest processor routes on — with their own retention and caps. An index with no policy inherits the global retention | `app.js`, `navigation.js` |
+| `retention.js` | render | Retention durations, editable, with a destructive preview: any **decrease** raises a modal naming what it deletes before the write | `navigation.js` |
+| `threatintel.js` | render | Threat intel: indicator coverage by type and source, the indicator list, manual add and bundle import | `app.js`, `navigation.js` |
+
+### Operations, identity and administration
+| Path | Kind | Owns / exposes | Imported by |
+|------|------|----------------|-------------|
+| `system.js` | render | The day-2 operations console: self-metrics, per-component health, the administrator bulletin, and the non-secret diagnostic bundle. `rendreSysteme` and `lireMesure` are exported because this is where the harness proves a **verdict is rendered as a state** — never as a zero, never as an empty cell | `app.js`, `login.js`, `navigation.js` |
+| `freshness.js` | render | The two Overview panels: freshness (health per source) and integrations (sensor and host coverage). `freshState` and `countStates` are exported for the harness. Its one edge into `app.js` is the pivot from a hot source to the filtered alert queue, called on a click | `app.js`, `navigation.js` |
+| `fleet.js` | render | The agent fleet inventory — hosts and endpoints, read-only | `app.js`, `navigation.js` |
+| `audit.js` | render | The hashed mutation ledger, newest first, read-only, admin | `app.js`, `navigation.js` |
+| `admin_users.js` | render | Accounts and access, plus agent and collector token provisioning — a provisioned token is shown **once** and never again | `app.js`, `navigation.js` |
+| `idp.js` | render | The native identity provider: federated providers and self-service second-factor enrolment. Additive — with no provider enabled and no factor enrolled, authentication is unchanged. The provider secret is a password field, never redisplayed; omitting it keeps the stored one | `navigation.js` |
+| `fieldfilters.js` | render | The administration surface of field-level masking. Additive: with no rule, every read is unchanged. The real enforcement is server-side — the mask is emitted **inside** the compiled SQL — and this surface only configures it | `navigation.js` |
+| `multitenant.js` | service | The tenant and environment switcher in the header, the tenants view, grants, and the operator-access audit. It also owns the two predicates the rest of the console asks before spending a request: whether multi-tenant mode is on, and whether the current identity is an administrator | `app.js` and most administration modules |
+| `ai.js` | render | The advisory assistant, revealed only if the status endpoint reports the feature enabled. It **proposes** a query into the bar for the analyst to review and run — zero automatic execution | `login.js` |
+
+### Served document and assets
+| Path | Kind | Owns / exposes | Imported by |
+|------|------|----------------|-------------|
+| `index.html` | shell | The served document: the static skeleton of every space and panel, the role-driven style rules that hide write controls as defence in depth, and the single module script that starts the console | — |
+| `style.css` | asset | The whole theme — dark by default, light through a root attribute — driven entirely by CSS variables. Every identifier and class it targets is held against `web/` by a CI guard, orphan ceiling zero | `index.html` |
+| `fonts/` | asset | Self-hosted Inter and JetBrains Mono subsets with their licence texts: no font request ever leaves the browser for a third party | `style.css` |
+| `manifest.webmanifest`, `{favicon,favicon-plume,quetzal}.svg` | asset | The installable-app manifest and the icons the document and the manifest point at | `index.html` |
 
 ---
 

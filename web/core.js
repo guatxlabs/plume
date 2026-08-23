@@ -557,6 +557,10 @@ function collapsibleGroup(set, storeKey, key, label, count, nodes, dotHtml) {
 // celui dont le contenu est affiché, `open` pose le contenu. Une fermeture faite ailleurs (« Annuler »
 // dans le panneau, `hidden` posé par un autre module) est observée sur le panneau lui-même, de sorte
 // que l'état du bouton suit toujours le panneau et non l'inverse.
+// `observe: false` retire cette surveillance, et l'appelant reprend la charge de repeindre par la poignée
+// rendue (`paint`). Réservé au cas où le MÊME panneau est piloté par un grand nombre de boutons REMPLACÉS
+// à chaque page rendue (la liste des cas, `P11.11-a`) : un nœud observé retient ses observateurs, donc
+// chaque page ajouterait autant de rappels au panneau, et chaque rappel retiendrait sa ligne morte.
 function disclosure(btn, panel, opts = {}) {
   if (!btn || !panel) return null;
   const visible = () => !panel.hidden && !panel.classList.contains('hidden');
@@ -571,7 +575,7 @@ function disclosure(btn, panel, opts = {}) {
   };
   if (panel.id) btn.setAttribute('aria-controls', panel.id);
   btn.onclick = () => { if (isOpen()) hide(); else show(); paint(); };
-  try { new MutationObserver(paint).observe(panel, { attributes: true, attributeFilter: ['hidden', 'class'] }); } catch (e) {}
+  if (opts.observe !== false) { try { new MutationObserver(paint).observe(panel, { attributes: true, attributeFilter: ['hidden', 'class'] }); } catch (e) {} }
   paint();
   return { open: () => { show(); paint(); }, close: () => { hide(); paint(); }, toggle: btn.onclick, isOpen, paint };
 }

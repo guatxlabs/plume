@@ -1273,9 +1273,105 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[navigation] résolution : deux alias historiques suivis, hash inconnu et onglet d'administration repliés sur la vue d'ensemble sans réécrire le lien profond, onglet admin atteint par un admin`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 21. UN CAS S'OUVRE ET SE REFERME PAR LE MÊME GESTE, ET UN ÉTAT TERNE DIT POURQUOI IL L'EST (`P11.11-a`).
+//     Ce qui MANQUAIT et ce qui était SEULEMENT INATTEIGNABLE ne se corrigent pas pareil, donc le témoin
+//     sépare les deux. (a) Le geste de fermeture EXISTAIT — un bouton-icône « Fermer le détail » dans
+//     l'en-tête du détail : ce témoin-là est vert avant comme après, et c'est lui qui interdit de raconter
+//     que la console n'avait aucune fermeture. (b) Ce qui manquait, c'est que la LIGNE qui ouvre referme :
+//     elle passe désormais par le dépli partagé (`disclosure`, témoin 7), donc elle porte `aria-expanded`,
+//     `aria-controls`, n'est jamais grisée, et un second clic rend le document à son état de départ.
+//     (c) Les deux fermetures sont le MÊME chemin : refermer par le bouton du détail repeint la ligne, sans
+//     quoi la liste continuerait d'affirmer que le cas est déplié. (d) Un cas terminé rendait son sélecteur
+//     de statut ABSENT, sans un mot ; il est maintenant PRÉSENT, inerte, avec sa raison en clair — et le
+//     témoin inverse (un cas en cours) interdit qu'une version qui dirait TOUJOURS « inerte » passe.
+//     (e) Un droit qui manque et un état qui ne bouge plus se disent DIFFÉREMMENT.
+// ---------------------------------------------------------------------------------------------
+{
+  const { caseRow, renderCaseDetail } = await import(pathToFileURL(path.join(WEB, "cases.js")).href);
+  const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const cueillir = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir(c, pred, acc)); return acc; };
+
+  const encours = { id: 7, title: "Balayage", status: "in_progress", severity: 3, priority: 2, items: 0, ts: 1000, updated: 1000 };
+  const clos = { id: 9, title: "Ancien", status: "closed", severity: 1, priority: 4, items: 0, ts: 900, updated: 950, closed_ts: 960 };
+  const reponse = (o) => ({ ok: true, status: 200, text: async () => JSON.stringify(o) });
+  const fetchOrigine = globalThis.fetch, qsOrigine = document.querySelector;
+  const detail = new Element("div"); detail.id = "case-detail";
+  const liste = new Element("div"); liste.id = "cases-list";
+  let lignes = [];
+  liste.querySelector = () => lignes[0] ?? null;
+  liste.querySelectorAll = () => lignes;
+  document.querySelector = (sel) => (sel === "#case-detail" ? detail : sel === "#cases-list" ? liste : new Element("div"));
+  globalThis.fetch = async (url) => {
+    if (/\/cases\/\d+\/links$/.test(url)) return reponse({ links: [] });
+    if (/\/cases\/\d+\/runbooks$/.test(url)) return reponse({ incident_tier: null, available: [] });
+    if (/\/cases\/\d+\/steps$/.test(url)) return reponse({ steps: [], progress: { total: 0, done: 0, skipped: 0 }, runbook: null });
+    return reponse(/\/cases\/9$/.test(url) ? clos : encours);
+  };
+  try {
+    S.AUTH = { user: "eve", role: "editor" }; S.caseSelectedId = null;
+
+    // (a) LE GESTE DE FERMETURE EXISTAIT DÉJÀ — présent, mais loin de la ligne qui a ouvert.
+    const hote = new Element("div");
+    renderCaseDetail(hote, encours); await tick();
+    const fermer = cueillir(hote, (e) => e.tagName === "BUTTON" && e.title === "Fermer le détail", [])[0];
+    exiger(!!fermer && fermer.classList.contains("picon"), "(21) le détail d'un cas ne rend aucun bouton de fermeture habillé — le défaut ne serait plus « inatteignable » mais « absent »");
+
+    // (b) LA LIGNE OUVRE ET REFERME. État de départ relevé AVANT, comparé APRÈS l'aller-retour.
+    const ligne = caseRow(encours); lignes = [ligne];
+    const depart = { enfants: detail.children.length, deplie: ligne.getAttribute("aria-expanded"), on: ligne.classList.contains("on"), selection: S.caseSelectedId };
+    exiger(depart.deplie === "false" && !depart.on, `(21) au rendu, la ligne ne porte pas son état replié : aria-expanded=« ${depart.deplie} », .on=${depart.on}`);
+    exiger(ligne.getAttribute("aria-controls") === "case-detail", `(21) la ligne ne déclare pas le panneau qu'elle pilote : aria-controls=« ${ligne.getAttribute("aria-controls")} »`);
+    ligne.onclick(); await tick();
+    exiger(S.caseSelectedId === 7 && detail.children.length === 1, `(21) le premier clic n'ouvre pas le cas (sélection ${S.caseSelectedId}, ${detail.children.length} enfant(s))`);
+    exiger(ligne.getAttribute("aria-expanded") === "true" && ligne.classList.contains("on"), "(21) le cas ouvert ne se lit pas sur la ligne qui l'a ouvert");
+    exiger(ligne.disabled !== true, "(21) la ligne est grisée pendant que le cas est ouvert");
+    ligne.onclick(); await tick();
+    exiger(S.caseSelectedId === depart.selection && detail.children.length === depart.enfants, `(21) le second clic ne REFERME pas le cas (sélection ${S.caseSelectedId}, ${detail.children.length} enfant(s)) — c'est le constat de \`P11.11-a\``);
+    exiger(ligne.getAttribute("aria-expanded") === depart.deplie && ligne.classList.contains("on") === depart.on, "(21) après l'aller-retour, la ligne ne revient pas à son état de départ");
+
+    // (c) LES DEUX FERMETURES SONT LE MÊME CHEMIN : celle du détail repeint la ligne.
+    ligne.onclick(); await tick();
+    exiger(ligne.getAttribute("aria-expanded") === "true", "(21) instrument : la réouverture a échoué, la suite ne prouve rien");
+    const fermerDetail = cueillir(detail, (e) => e.tagName === "BUTTON" && e.title === "Fermer le détail", [])[0];
+    exiger(!!fermerDetail, "(21) instrument : le détail ouvert ne porte pas son bouton de fermeture");
+    fermerDetail.onclick(); await tick();
+    exiger(detail.children.length === 0 && S.caseSelectedId === null, "(21) le bouton du détail ne referme pas le cas");
+    exiger(ligne.getAttribute("aria-expanded") === "false" && !ligne.classList.contains("on"), "(21) refermé par le détail, la LIGNE affirme encore que le cas est déplié — les deux fermetures ne sont pas le même chemin");
+
+    // (d) UN CAS TERMINÉ : contrôle PRÉSENT, inerte, raison en clair. Témoin inverse sur un cas en cours.
+    const statut = (c) => { const h = new Element("div"); renderCaseDetail(h, c); return cueillir(h, (e) => e.tagName === "LABEL" && /^Statut/.test(e.textContent), [])[0]; };
+    const labClos = statut(clos), labEnCours = statut(encours);
+    exiger(!!labClos, "(21) un cas terminé ne rend AUCUN contrôle de statut : l'inertie reste indevinable (le défaut d'origine)");
+    const selClos = labClos && labClos.children.find((e) => e.tagName === "SELECT");
+    exiger(selClos && selClos.disabled === true, "(21) le contrôle de statut d'un cas terminé n'est pas rendu inerte");
+    exiger(labClos && /Inerte par nature/.test(labClos.textContent) && /Rouvrir/.test(labClos.textContent), `(21) le contrôle inerte ne porte pas sa raison ni la sortie : « ${labClos && labClos.textContent} »`);
+    const selEnCours = labEnCours && labEnCours.children.find((e) => e.tagName === "SELECT");
+    exiger(!!selEnCours && selEnCours.disabled !== true, "(21) témoin inverse : le statut d'un cas EN COURS est inerte lui aussi — une version qui grise tout passerait le témoin précédent");
+    exiger(labEnCours && !/Inerte par nature/.test(labEnCours.textContent), `(21) témoin inverse : un cas en cours se dit inerte — « ${labEnCours && labEnCours.textContent} »`);
+    // le cadre d'état lui-même tranche entre les deux lectures, et la ligne terne dit pourquoi elle l'est.
+    const cadre = (c) => cueillir(caseRow(c), (e) => e.classList.contains("casest"), [])[0];
+    const cClos = cadre(clos), cEnCours = cadre(encours);
+    exiger(cClos && /terminé/.test(cClos.title || ""), `(21) le cadre d'état d'un cas terminé ne dit pas qu'il est terminé : « ${cClos && cClos.title} »`);
+    exiger(cEnCours && cEnCours.title && cEnCours.title !== cClos.title, `(21) le cadre d'état d'un cas en cours dit la même chose qu'un cas terminé : « ${cEnCours && cEnCours.title} »`);
+    exiger(/estompée/.test(caseRow(clos).title || ""), "(21) la ligne estompée d'un cas terminé ne dit pas qu'elle reste active");
+
+    // (e) UN DROIT QUI MANQUE SE DIT AUTREMENT QU'UN ÉTAT QUI NE BOUGE PLUS.
+    S.AUTH = { user: "bob", role: "viewer" };
+    const hLecteur = new Element("div"); renderCaseDetail(hLecteur, clos); await tick();
+    const texteLecteur = hLecteur.textContent;
+    exiger(/Lecture seule/.test(texteLecteur) && /rôle éditeur/.test(texteLecteur), `(21) un lecteur ne voit AUCUNE action et rien ne lui dit que c'est un droit qui manque : « ${texteLecteur.slice(0, 200)} »`);
+    exiger(!/Inerte par nature/.test(texteLecteur), "(21) le droit manquant est rendu avec les mots de l'inertie par nature : les deux causes redeviennent indiscernables");
+    console.log(`[cas] la ligne ouvre et referme le même cas (aria-expanded ${depart.deplie} -> true -> false), le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui nomme sa raison et sa sortie, un cas en cours ne la porte pas, et un droit manquant se dit autrement`);
+  } finally {
+    document.querySelector = qsOrigine; globalThis.fetch = fetchOrigine; S.AUTH = null; S.caseSelectedId = null;
+  }
+}
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond.`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus.`);

@@ -1,6 +1,6 @@
 // cases.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Cases (gestion d'incident, first-class #4a): liste/detail/CRUD + rattachement d'items.
-import { $, api, apiSend, confirmModal, confirmWithConsequence, downloadText, exportPDF, fmtTs, ic, modal, muted, pagedList, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
+import { $, api, apiSend, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, modal, muted, pagedList, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
 import { S } from './state.js';
 import { refresh } from './app.js';
 // #3 incidents : « Lancer la recherche » d'une step ouvre l'Explore avec le GXQL recompilé (réutilise le
@@ -59,9 +59,14 @@ function caseBtn(label, kind) {
 }
 
 // badges color-codés (textContent -> pas d'injection ; couleur en inline-style car style.css n'est pas édité).
+// P11.11-a — le cadre d'état DIT pourquoi il est terne : `closed` est gris par palette et la ligne d'un cas
+// terminé est estompée, ce qui se lit comme un contrôle désactivé alors que rien ne l'est. L'infobulle
+// tranche entre les deux lectures : inerte PAR NATURE (le cas est terminé) ou encore modifiable.
 function caseStatusBadge(status) {
   const s = document.createElement('span'); s.className = 'casest'; const col = CASE_STATUS_COL[status] || 'var(--mut)';
   s.style.color = col; s.style.borderColor = 'color-mix(in srgb,' + col + ' 45%,transparent)';
+  if (CASE_TERMINAL.has(status)) s.title = 'Cas terminé : son état n\'évolue plus tant qu\'il n\'est pas rouvert';
+  else s.title = 'Cas en cours : son état peut encore changer';
   s.textContent = CASE_STATUS[status] || status; return s;
 }
 
@@ -104,10 +109,22 @@ function caseSortRows(rows) {
 }
 
 // construit une ligne de case (.caserow) — extrait pour être réutilisé par pagedList (renderRow).
+// P11.11-a — la ligne est le BOUTON DE DÉPLI du détail : elle ouvre le cas, et le MÊME clic le referme.
+// Le mécanisme est celui de toute la console (`disclosure`, core.js, `P11.4-a`) — pas un second écrit ici :
+// l'état vit sur la ligne (`aria-expanded`, `.on`) au lieu d'une bordure posée en style en ligne, et la
+// ligne n'est jamais grisée. `observe:false` : le panneau `#case-detail` ne change ni `hidden` ni `class`
+// (le détail se pose et se retire par ses ENFANTS), et une page en porte cinquante — la repeinte est faite
+// par `renderCaseList` à partir de la poignée gardée sur la ligne.
 function caseRow(c) {
   const row = document.createElement('button'); row.className = 'caserow' + (CASE_TERMINAL.has(c.status) ? ' closed' : '');
   row.dataset.cid = c.id;
-  if (c.id === S.caseSelectedId) { row.style.borderColor = 'var(--acc)'; row.setAttribute('aria-current', 'true'); }
+  if (CASE_TERMINAL.has(c.status)) row.title = 'Cas terminé : la ligne est estompée parce que le cas ne bouge plus, pas parce qu\'elle serait inactive — elle s\'ouvre et se referme comme les autres';
+  row._disc = disclosure(row, $('#case-detail'), {
+    observe: false,
+    isOpen: () => c.id === S.caseSelectedId,
+    open: () => showCaseDetail(c.id),
+    close: () => closeCaseDetail(),
+  });
   row.appendChild(Object.assign(document.createElement('span'), { className: 'badge sevb-' + c.severity, textContent: sev(c.severity) }));
   row.appendChild(casePrioBadge(c.priority));
   row.appendChild(caseStatusBadge(c.status));
@@ -117,7 +134,6 @@ function caseRow(c) {
   const meta = document.createElement('span'); meta.className = 'casemeta';
   meta.textContent = c.items + ' élément(s)' + (c.assignee ? ' · ' + c.assignee : (c.owner ? ' · ' + c.owner : '')) + ' · ' + fmtTs(c.updated);
   row.appendChild(meta);
-  row.onclick = () => showCaseDetail(c.id);
   return row;
 }
 
@@ -143,15 +159,20 @@ async function loadCases() {
   loadCaseOpsSummary(); // #39 : bandeau charge/MTTA-MTTR (async, non bloquant ; vide en mode 0)
 }
 
-// re-surlignage de la sélection SANS refetch (met à jour les bordures des .caserow déjà rendues).
+// re-marquage de la sélection SANS refetch. P11.11-a : la ligne porte son état par le dépli partagé, donc
+// on ne repeint plus une bordure à la main — on redemande à chaque poignée de se relire (`paint`).
 function renderCaseList() {
   const wrap = $('#cases-list'); if (!wrap) return;
   if (!wrap.querySelector('.caserow')) { if (!S.casePager) loadCases(); return; }
-  wrap.querySelectorAll('.caserow').forEach(el => {
-    const on = Number(el.dataset.cid) === S.caseSelectedId;
-    el.style.borderColor = on ? 'var(--acc)' : '';
-    if (on) el.setAttribute('aria-current', 'true'); else el.removeAttribute('aria-current');
-  });
+  wrap.querySelectorAll('.caserow').forEach(el => { if (el._disc) el._disc.paint(); });
+}
+
+// P11.11-a — UN SEUL chemin de fermeture, emprunté par la ligne (second clic) comme par le bouton du
+// détail : sans lui, refermer d'un côté laisserait l'autre affirmer que le cas est encore ouvert.
+function closeCaseDetail() {
+  S.caseSelectedId = null;
+  const host = $('#case-detail'); if (host) host.replaceChildren();
+  renderCaseList();
 }
 
 async function showCaseDetail(id) {
@@ -200,7 +221,7 @@ function renderCaseDetail(host, c) {
   if (c.overdue) hr.appendChild(caseOverdueBadge(c.sla_due));
   if (c.archived) { const ab = document.createElement('span'); ab.className = 'badge'; ab.textContent = 'ARCHIVÉ'; ab.style.color = 'var(--mut)'; ab.style.borderColor = 'color-mix(in srgb,var(--mut) 45%,transparent)'; ab.title = 'Case archivé' + (c.archived_by ? ' par ' + c.archived_by : '') + (c.archived_ts ? ' le ' + fmtTs(c.archived_ts) : '') + ' — masqué de la liste par défaut, historique conservé'; hr.appendChild(ab); }
   const collapse = document.createElement('button'); collapse.type = 'button'; collapse.className = 'picon'; collapse.title = 'Fermer le détail'; collapse.innerHTML = ic('x'); // P11.4-b : bouton-icône partagé
-  collapse.onclick = () => { S.caseSelectedId = null; host.replaceChildren(); renderCaseList(); };
+  collapse.onclick = closeCaseDetail;   // P11.11-a : le même chemin que le second clic sur la ligne
   hr.appendChild(caseExportBar(c));   // EXPORT : CSV (timeline) / JSON (case complet) / PDF (impression)
   hr.appendChild(collapse);
   head.append(h, hr); box.appendChild(head);
@@ -219,15 +240,29 @@ function renderCaseDetail(host, c) {
   if (c.resolve_due) meta.appendChild(mk('SLA résolution : ' + fmtTs(c.resolve_due) + (c.resolve_breached ? ' (BREACH)' : '')));
   box.appendChild(meta);
   // --- barre d'ACTIONS (editor/admin) : statut / priorité / assigner / résoudre-clore-rouvrir / rattacher ---
+  // P11.11-a — sans droit d'écriture la barre disparaissait en silence, et l'absence se confondait avec
+  // l'inertie d'un cas terminé. Les deux se disent maintenant, et se disent DIFFÉREMMENT : ici c'est un
+  // DROIT qui manque, pas un état qui ne bouge plus.
+  if (!edit) box.appendChild(muted('Lecture seule : modifier un cas demande le rôle éditeur ou administrateur — aucune action n\'est proposée.'));
   if (edit) {
     const terminal = CASE_TERMINAL.has(c.status);
     const act = document.createElement('div'); act.className = 'caserowtop';
-    if (!terminal) {   // transitions de travail ; les transitions terminales passent par les boutons ci-dessous
-      const stLab = mkLabel('Statut'); const stSel = document.createElement('select');
+    // P11.11-a — le sélecteur de statut existe TOUJOURS. Sur un cas terminé il était simplement ABSENT :
+    // le lecteur voyait Priorité/Verdict/Assigné sans Statut, sans un mot, et devait deviner. Il est
+    // désormais PRÉSENT et inerte, avec sa raison EN CLAIR à côté — un `title` ne suffirait pas, un
+    // contrôle `disabled` ne reçoit pas la souris et n'affiche donc pas d'infobulle.
+    const stLab = mkLabel('Statut'); const stSel = document.createElement('select');
+    if (terminal) {
+      const o = document.createElement('option'); o.value = c.status; o.textContent = CASE_STATUS[c.status] || c.status; o.selected = true; stSel.appendChild(o);
+      stSel.disabled = true;
+      stLab.appendChild(stSel);
+      stLab.appendChild(muted('Inerte par nature : un cas terminé ne change plus d\'état. « Rouvrir » le ramène en cours.'));
+    } else {
       CASE_STEPS.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = CASE_STATUS[s]; if (caseCanonStatus(c.status) === s) o.selected = true; stSel.appendChild(o); });
       stSel.onchange = () => caseUpdate(c.id, { status: stSel.value });
-      stLab.appendChild(stSel); act.appendChild(stLab);
+      stLab.appendChild(stSel);
     }
+    act.appendChild(stLab);
     const prLab = mkLabel('Priorité'); const prSel = document.createElement('select');
     [1, 2, 3, 4].forEach(p => { const o = document.createElement('option'); o.value = String(p); o.textContent = PRIO_LABEL[p]; if (p === c.priority) o.selected = true; prSel.appendChild(o); });
     prSel.onchange = () => caseUpdate(c.id, { priority: Number(prSel.value) });
@@ -248,8 +283,10 @@ function renderCaseDetail(host, c) {
     box.appendChild(act);
     const bar = document.createElement('div'); bar.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 4px';
     if (terminal) {
+      // P11.11-a — c'est la SEULE sortie de l'état inerte, et la raison affichée à côté du sélecteur y
+      // renvoie : elle dit donc ce qu'elle engage, par la confirmation partagée (rien de destructif).
       const reopen = caseBtn('Rouvrir', 'ghost');
-      reopen.onclick = () => withBusy(reopen, () => caseUpdate(c.id, { status: 'in_progress' }));
+      reopen.onclick = () => withBusy(reopen, async () => { if (await confirmWithConsequence('Rouvrir le case', 'le case quitte son état terminal et revient dans la file de travail', { okText: 'Rouvrir', danger: false })) await caseUpdate(c.id, { status: 'in_progress' }); });
       bar.appendChild(reopen);
     } else {
       const resolve = caseBtn('Résoudre', 'ghost');
@@ -755,4 +792,6 @@ async function prepareResponse(c, s) {
   await refreshCaseDetail(c.id);
 }
 
-export { addToCase, canEditCases, caseBtn, createCase, loadCases, openCase }; // caseBtn : rendu pur, jugé par le harnais ESM (P11.4-b)
+// caseBtn : rendu pur, jugé par le harnais ESM (P11.4-b). caseRow / renderCaseDetail : rendus purs eux
+// aussi, jugés par le témoin 21 (P11.11-a) — dépli d'une ligne et raison d'un état inerte.
+export { addToCase, canEditCases, caseBtn, caseRow, createCase, loadCases, openCase, renderCaseDetail };

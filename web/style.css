@@ -424,7 +424,13 @@ tr.rowdetail>td{background:var(--card2);padding:10px 14px;white-space:normal;max
 #cases-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:8px}
 .caserow{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:var(--card2);border:1px solid var(--bd);border-radius:10px;padding:9px 12px;cursor:pointer;color:var(--fg);font-size:13px}
 .caserow:hover{border-color:var(--acc)}
-.caserow.closed{opacity:.55}
+/* P11.11-a — un cas terminé est TERMINÉ, pas désactivé. La ligne entière était à `opacity:.55`, à un
+   cheveu du `.45` que cette feuille donne à `.btn:disabled` : elle se lisait comme un contrôle éteint
+   alors qu'elle s'ouvre et se referme comme les autres. On estompe désormais son TEXTE seul ; le cadre
+   d'état garde sa pleine opacité — c'est une information, pas un contrôle. */
+.caserow.closed .casetitle,.caserow.closed .casemeta{opacity:.6}
+/* état ouvert du dépli partagé (`disclosure`) : remplace la bordure d'accent posée en style en ligne. */
+.caserow.on{border-color:var(--acc)}
 .caserow .casetitle{font-weight:600;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .caserow .casemeta{font-size:11px;color:var(--mut);white-space:nowrap;min-width:0;flex-shrink:1;overflow:hidden;text-overflow:ellipsis}   /* BATCH 2 (B5) : peut rétrécir/ellipsis -> ne déborde plus dans la colonne de grille voisine (minmax 360px) */
 .casest{font-size:10px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.06em;padding:2px 8px;border-radius:var(--pill);border:1px solid var(--bd);color:var(--mut)}

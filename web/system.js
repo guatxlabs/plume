@@ -5,6 +5,9 @@
 //  - (admin) bundle de diagnostic NON-SECRET (support hand-off, téléchargé)               -> GET /api/system/diag
 // LECTURE viewer+. Additif : aucun bulletin -> aucun bandeau (invariant mode 0).
 import { $, api, apiSend, muted, toast, fmtTs, downloadText, humanAge, socIsAdmin } from './core.js';
+// P11.4-g : la référence documentaire d'un avertissement est une VALEUR qu'on transporte — geste de copie
+// partagé (`copie_et_selection.js`, `P11.4-h`).
+import { valeurTransportee } from './copie_et_selection.js';
 
 // état V/J/R -> classe pastille .fdot (réutilise le vocabulaire de sources.js : frais/warn/muet/calme) + libellé.
 const STATE_DOT = { green: 'frais', yellow: 'warn', red: 'muet', idle: 'calme' };
@@ -146,6 +149,30 @@ function verdictsDuComposant(c) {
   return out;
 }
 
+// P11.4-g — LA RÉFÉRENCE DOCUMENTAIRE D'UN AVERTISSEMENT DOIT ÊTRE ATTEIGNABLE. Plusieurs détails servis
+// par le démon citent un document du dépôt (`cf. docs/DR-plume-restore.md`, `cf. docs/CIM.md §5.1bis`…).
+// POURQUOI PAS UN LIEN. Mesuré le 2026-08-23 : le démon ne sert en fichiers QUE le répertoire web
+// (`ServeDir`, un seul point de montage) ; `docs/` est une surface de DÉPÔT, atteignable depuis le README
+// et gardée comme telle, jamais une route HTTP. Un lien rendrait 404, c'est-à-dire un cul-de-sac de plus
+// là où on vient d'en réparer un. Ce qui rend la référence atteignable, c'est donc qu'elle se LISE en
+// entier et se COPIE en un geste — pour la retrouver dans le dépôt ou la coller dans un ticket.
+// Le motif est DÉRIVÉ du texte servi, jamais d'une liste de documents : un nouveau détail qui citerait un
+// autre document reçoit le même traitement sans que rien ne soit ajouté ici.
+const REFERENCE_DE_DOCUMENT = /(docs\/[A-Za-z0-9._\/-]*[A-Za-z0-9])/g;
+function detailAvecSesReferences(texte) {
+  const t = String(texte || '');
+  const noeuds = [];
+  let pos = 0;
+  REFERENCE_DE_DOCUMENT.lastIndex = 0;
+  for (let m = REFERENCE_DE_DOCUMENT.exec(t); m; m = REFERENCE_DE_DOCUMENT.exec(t)) {
+    if (m.index > pos) noeuds.push(document.createTextNode(t.slice(pos, m.index)));
+    noeuds.push(valeurTransportee(m[1], { titre: 'Copier le chemin de ce document' }));
+    pos = m.index + m[1].length;
+  }
+  if (!noeuds.length) return [document.createTextNode(t)];
+  if (pos < t.length) noeuds.push(document.createTextNode(t.slice(pos)));
+  return noeuds;
+}
 function componentRow(c) {
   const row = document.createElement('div');
   row.className = 'sys-comp';
@@ -153,7 +180,10 @@ function componentRow(c) {
   const dot = document.createElement('span'); dot.className = 'fdot ' + (STATE_DOT[st] || 'muet');
   const name = document.createElement('b'); name.className = 'sys-comp-n'; name.textContent = c.component;
   const badge = document.createElement('span'); badge.className = 'sys-comp-b sys-' + st; badge.textContent = STATE_LBL[st] || st;
-  const detail = document.createElement('span'); detail.className = 'sys-comp-d muted'; detail.textContent = c.detail || '';
+  // Le détail est rendu EN NŒUDS et non par `textContent` : il porte des références qui deviennent des
+  // valeurs copiables. Il n'est plus tronqué non plus (cf. `.sys-comp-d`, style.css).
+  const detail = document.createElement('span'); detail.className = 'sys-comp-d muted';
+  detail.append(...detailAvecSesReferences(c.detail));
   row.append(dot, name, badge, ...verdictsDuComposant(c), detail);
   return row;
 }
@@ -271,4 +301,4 @@ async function loadBulletin() {
   el.hidden = false;
 }
 
-export { loadSystemView, loadBulletin, rendreSysteme, lireMesure };
+export { loadSystemView, loadBulletin, rendreSysteme, lireMesure, componentRow, detailAvecSesReferences };

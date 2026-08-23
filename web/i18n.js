@@ -745,6 +745,8 @@ const I18N_EN = {
   // l'aveu d'échec, et les phrases que les appelants lui passent. « Copier » et « Copier l'extrait » sont
   // déjà au lexique (ils y étaient pour les deux boutons écrits à la main que ce geste remplace).
   "Copié": "Copied", "Copier cette valeur": "Copy this value",
+  // P11.4-g — la référence documentaire d'un avertissement du panneau Système.
+  "Copier le chemin de ce document": "Copy this document's path",
   "Copie refusée par le navigateur — sélectionnez la valeur et copiez-la à la main": "Copy refused by the browser — select the value and copy it by hand",
   "Copier le jeton — il ne sera plus jamais affiché": "Copy the token — it will never be shown again",
   "Copier la commande prête à coller": "Copy the ready-to-paste command",

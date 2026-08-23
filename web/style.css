@@ -1044,14 +1044,22 @@ body:not(.role-admin) #sigma-import-btn{display:none!important}
 .bulletin-banner.lvl-critical{background:color-mix(in srgb,var(--bad) 15%,var(--card));border-left:3px solid var(--bad)}
 .sys-posture{display:flex;align-items:center;gap:8px;padding:6px 2px 10px}
 .sys-comps{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
-.sys-comp{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--card)}
+/* P11.4-g — LA LIGNE D'UN COMPOSANT S'ENROULE. Mesuré le 2026-08-23 : le détail d'un composant était un
+   item de flex à `white-space:nowrap;overflow:hidden;text-overflow:ellipsis`, donc COUPÉ à une ligne, sans
+   même un `title` de repli — l'avertissement d'exercice de restauration s'arrêtait avant sa conclusion et
+   la référence documentaire qu'il porte était hors de l'écran. Le texte était ENTIER dans le document :
+   c'est la feuille de style qui le cachait, pas le démon ni le rendu. La ligne s'enroule donc, et le détail
+   passe à la ligne quand il ne tient pas — un avertissement illisible ne vaut pas mieux qu'un absent. */
+.sys-comp{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--card)}
 .sys-comp-n{text-transform:capitalize;min-width:90px}
 .sys-comp-b{font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding:1px 7px;border-radius:10px;border:1px solid var(--bd)}
 .sys-comp-b.sys-green{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 50%,transparent)}
 .sys-comp-b.sys-yellow{color:#d29922;border-color:color-mix(in srgb,#d29922 55%,transparent)}
 .sys-comp-b.sys-red{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 50%,transparent)}
 .sys-comp-b.sys-idle{color:var(--mut)}
-.sys-comp-d{font-size:12px;margin-left:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sys-comp-d{font-size:12px;margin-left:6px;flex:1 1 260px;min-width:0;white-space:normal;line-height:1.45}
+.sys-comp-d .copyval{font-size:11px}
+.sys-comp-d .copybtn{margin-left:4px;vertical-align:middle}
 .sys-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
 .sys-tile{border:1px solid var(--bd);border-radius:8px;padding:10px 12px;background:var(--card)}
 .sys-tile-v{font-size:20px;font-weight:700;line-height:1.1}

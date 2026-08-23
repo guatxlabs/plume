@@ -614,7 +614,8 @@ impl Drop for Fenetre {
 impl Fenetre {
     /// OUVRE la fenêtre : prend l'exclusivité, arme la crête, PUIS démarre les chronomètres. L'ordre
     /// compte : `t0` est pris APRÈS l'armement, donc la durée publiée est celle de la PASSE et non celle
-    /// de l'instrument (~180 µs mesurés le 2026-08-10, cf. `ouvrir_et_clore_une_fenetre_ne_coute_presque_rien`).
+    /// de l'instrument — QUATRE lectures de `/proc/self/status` et une écriture dans `clear_refs`, cf.
+    /// `ouvrir_et_clore_une_fenetre_ne_coute_que_quelques_lectures_de_proc`, qui en garde le RAPPORT.
     pub(crate) fn ouvrir() -> Fenetre {
         let exclusive = FENETRE_ACTIVE
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -691,7 +692,12 @@ pub(crate) fn reset_effectif(hwm_apres_reset: u64, rss_apres_reset: u64) -> bool
 
 /// Lit un champ `Vm*` de `/proc/self/status` (exprimé en kio) et le rend en OCTETS. `None` si `/proc`
 /// est illisible ou le champ absent -> l'appelant en fait un trou nommé, jamais un zéro.
-fn champ_status_octets(cle: &str) -> Option<u64> {
+///
+/// VISIBLE DANS LA CAISSE parce que c'est l'OPÉRATION ÉLÉMENTAIRE dont une fenêtre n'est qu'un petit
+/// multiple : `ouvrir_et_clore_une_fenetre_ne_coute_que_quelques_lectures_de_proc` mesure le coût d'une fenêtre EN
+/// UNITÉS DE CET APPEL. Une référence recopiée dans le test dériverait de celle-ci sans que rien ne
+/// le dise ; celle-ci ne peut pas dériver d'elle-même.
+pub(crate) fn champ_status_octets(cle: &str) -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let ligne = status.lines().find(|l| l.starts_with(cle))?;
     let kio: u64 = ligne.split_whitespace().nth(1)?.parse().ok()?;

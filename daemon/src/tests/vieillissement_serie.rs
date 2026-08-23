@@ -597,37 +597,113 @@ mod vieillissement_serie_tests {
     ///
     /// CE QUE CE TEST ATTRAPE, ET CE QU'IL N'ATTRAPE PAS — mesuré le 2026-08-10, pas supposé. L'hypothèse de départ était
     /// que ce test serait la garde contre `clear_refs=1` : FAUX. Mutation exécutée (`b"5"` -> `b"1"`) : le
-    /// coût par fenêtre passe de **179 µs à 303 µs** (×1,7), très en dessous de la borne — le test reste
-    /// VERT. La table des pages d'un binaire de test (~20 Mio résidents) est trop petite pour que le
-    /// balayage se voie. Ce qui attrape VRAIMENT la mauvaise valeur est le test SÉMANTIQUE
-    /// `la_crete_rss_est_bornee_a_la_fenetre` : `1` ne remet PAS le pic à zéro, la validation le voit, et
-    /// il rougit sur `reset_refuse` (vérifié le 2026-08-10). Ce test-ci ne garde donc qu'une chose, et
-    /// elle est écrite dans son message : un changement d'ORDRE DE GRANDEUR du coût de l'instrument.
+    /// coût par fenêtre passe de **179 µs à 303 µs** (×1,7) — le test reste VERT. La table des pages d'un
+    /// binaire de test (~20 Mio résidents) est trop petite pour que le balayage se voie. Ce qui attrape
+    /// VRAIMENT la mauvaise valeur est le test SÉMANTIQUE `la_crete_rss_est_bornee_a_la_fenetre` : `1` ne
+    /// remet PAS le pic à zéro, la validation le voit, et il rougit sur `reset_refuse` (vérifié le
+    /// 2026-08-10). Ce test-ci ne garde donc qu'une chose : un changement d'ORDRE DE GRANDEUR du coût de
+    /// l'instrument.
+    ///
+    /// `P6.9-a` — POURQUOI UN RAPPORT, ET PLUS DES MICROSECONDES ABSOLUES. La forme précédente assertait
+    /// `moyenne < 500 µs`. Une borne absolue ne peut pas exprimer « l'ordre de grandeur n'a pas changé » :
+    /// elle mesure la MACHINE autant que le code. Mesuré sur ce banc (12 cœurs, binaire de test `debug`,
+    /// mesure épinglée sur UN cœur partagé avec des brûleurs de CPU) :
+    ///
+    /// | banc                        | moyenne par fenêtre | ancienne forme | rapport MÉDIAN |
+    /// |-----------------------------|---------------------|----------------|----------------|
+    /// | au repos                    | 123 µs              | VERT           | 4,25           |
+    /// | 8 brûleurs sur le même cœur | 655 µs              | **ROUGE**      | 4,28           |
+    /// | 16 brûleurs                 | 833 µs              | **ROUGE**      | 4,26           |
+    ///
+    /// Le coût apparent varie de ×6,8 ; le rapport, de 0,7 %. C'est la définition d'une garde qui mesure
+    /// le code et non l'ordonnanceur — et une borne absolue relevée à 900 µs n'aurait fait que déplacer
+    /// la même faute d'un cran.
+    ///
+    /// LA RÉFÉRENCE EST L'OPÉRATION DONT LA FENÊTRE EST FAITE : `champ_status_octets`, une lecture de
+    /// `/proc/self/status`. Une fenêtre en fait QUATRE (`ouvrir` : `VmRSS`, puis `VmHWM` et `VmRSS` pour
+    /// VALIDER le reset ; `clore` : `VmHWM`) plus UNE écriture dans `clear_refs` et deux horloges. Le
+    /// rapport attendu est donc « quatre et des poussières », et c'est bien ce qu'on mesure — le
+    /// dénominateur n'est pas un étalon choisi, c'est le composant.
+    ///
+    /// LA MÉDIANE, PAS LA MOYENNE, et ce n'est pas un détail de goût : sous 16 brûleurs le rapport des
+    /// MOYENNES tombe à 1,56, parce qu'une préemption de plusieurs millisecondes s'ajoute IDENTIQUEMENT
+    /// aux deux bras et pousse leur rapport vers 1. Une garde bâtie sur la moyenne ne rougirait donc pas
+    /// seulement à tort sous charge : elle deviendrait AVEUGLE. La médiane, elle, ignore les préemptions
+    /// (elles sont rares) et garde le coût réel.
+    ///
+    /// MUTATION (exécutée le 2026-08-23) : rendre l'instrument dix fois plus cher — `armer_crete` répétant
+    /// dix fois sa séquence lecture/écriture/relecture — porte le rapport de 4,25 à **33,1 au repos et
+    /// 33,6 sous charge** (attendu : 31 lectures + 10 écritures, soit ~33,5 — la mesure et la
+    /// composition tombent d'accord), et fait rougir cette assertion dans les DEUX conditions.
+    ///
+    /// CE QU'ON NE REVENDIQUE PAS. Sous `clear_refs=1`, le rapport mesuré vaut 8,43 à 8,64 (2026-08-23),
+    /// donc il DÉPASSE le plafond — de 5 %. Cinq pour cent ne sont pas une garde : c'est le test
+    /// SÉMANTIQUE qui attrape cette valeur, et lui la voit sans marge d'interprétation (`reset_refuse`).
+    /// Le chiffre est consigné parce qu'il borne le plafond par le haut, pas parce qu'il ajouterait une
+    /// promesse.
     #[test]
-    fn ouvrir_et_clore_une_fenetre_ne_coute_presque_rien() {
+    fn ouvrir_et_clore_une_fenetre_ne_coute_que_quelques_lectures_de_proc() {
         let _serialise = FENETRES.lock();
         if !cfg!(target_os = "linux") {
             eprintln!("[mesure] non-Linux : instrument absent, coût sans objet ici");
             return;
         }
+        /// Le nombre de lectures de `/proc/self/status` qu'une fenêtre effectue — trois à l'ouverture,
+        /// une à la fermeture. C'est de CE nombre que le plafond est dérivé, pas d'une durée.
+        const LECTURES_PAR_FENETRE: f64 = 4.0;
+        /// LE PLAFOND, ET D'OÙ IL SORT. Mesuré sur ce banc : 4,25 au repos, 4,28 et 4,26 sous charge
+        /// (le détail est dans le commentaire de doc ci-dessus). Le plafond est posé au DOUBLE de la
+        /// composition — il absorbe une machine où l'écriture de `clear_refs` coûterait jusqu'à quatre
+        /// lectures (elle en coûte 0,25 ici) et reste très en dessous de ce que rend une mutation ×10.
+        const RAPPORT_MAX: f64 = 2.0 * LECTURES_PAR_FENETRE;
+        const N: usize = 200;
+
+        let une_fenetre =
+            || Fenetre::ouvrir().clore(Issue::Balaye, Compte::default(), Retard::Mesure(0));
+        let une_lecture = || champ_status_octets("VmHWM:");
         // Chauffe : le tout premier accès à `/proc/self/status` paie le cache de dentry.
-        let _ = Fenetre::ouvrir().clore(Issue::Balaye, Compte::default(), Retard::Mesure(0));
-        const N: u32 = 200;
-        let t0 = Instant::now();
+        let _ = black_box(une_fenetre());
+        let _ = black_box(une_lecture());
+
+        // LES DEUX BRAS SONT ENTRELACÉS, tour par tour : ils subissent alors le MÊME ordonnancement.
+        // Deux boucles successives laisseraient la charge de la machine changer entre les deux, et le
+        // rapport mesurerait cette dérive plutôt que le coût.
+        let (mut refs, mut fens) = (Vec::with_capacity(N), Vec::with_capacity(N));
         for _ in 0..N {
-            let _ = Fenetre::ouvrir().clore(Issue::Balaye, Compte::default(), Retard::Mesure(0));
+            let t = Instant::now();
+            let _ = black_box(une_lecture());
+            refs.push(t.elapsed());
+            let t = Instant::now();
+            let _ = black_box(une_fenetre());
+            fens.push(t.elapsed());
         }
-        let par_fenetre = t0.elapsed() / N;
+        let mediane = |v: &mut Vec<Duration>| {
+            v.sort_unstable();
+            v[v.len() / 2]
+        };
+        let (r, f) = (mediane(&mut refs), mediane(&mut fens));
+
+        // GARDE-FOU DE L'INSTRUMENT LUI-MÊME : un dénominateur nul rendrait le rapport infini (faux
+        // rouge) ou indéfini. Si la lecture de `/proc` n'est plus mesurable par l'horloge, ce test ne
+        // peut rien prouver — et il doit le DIRE, pas rendre un chiffre.
         assert!(
-            par_fenetre < Duration::from_micros(500),
-            "ouvrir+fermer une fenêtre coûte {par_fenetre:?} — au-delà de ~0,5 ms ce n'est plus une \
-             lecture de `/proc` mais un parcours de la table des pages : vérifier que `clear_refs` reçoit \
-             bien `5` (remise à zéro du pic) et pas `1`/`2`/`3` (bits soft-dirty, TLB flush)"
+            r > Duration::ZERO,
+            "la lecture de référence de `/proc/self/status` mesure {r:?} : l'horloge ne la résout pas, \
+             le rapport ci-dessous ne voudrait rien dire"
+        );
+        let rapport = f.as_secs_f64() / r.as_secs_f64();
+        assert!(
+            rapport <= RAPPORT_MAX,
+            "ouvrir+fermer une fenêtre coûte {rapport:.2} lectures de `/proc/self/status` ({f:?} contre \
+             {r:?}, médianes sur {N} tours entrelacés) — au-delà de {RAPPORT_MAX:.0}, ce n'est plus la \
+             composition attendue ({LECTURES_PAR_FENETRE:.0} lectures + une écriture dans `clear_refs`) : \
+             vérifier que `clear_refs` reçoit bien `5` (remise à zéro du pic) et pas `1`/`2`/`3` (bits \
+             soft-dirty, TLB flush), et qu'aucune lecture de `/proc` n'a été ajoutée à la fenêtre"
         );
         eprintln!(
-            "[mesure 2026-08-10] ouverture+fermeture d'une fenêtre : {par_fenetre:?} — soit {:.6} % d'une \
-             passe horaire même si la passe ne durait qu'une seconde",
-            par_fenetre.as_secs_f64() * 100.0
+            "[mesure 2026-08-23] ouverture+fermeture d'une fenêtre : {rapport:.2} lectures de \
+             `/proc/self/status` (médianes {f:?} / {r:?}). Le chiffre ABSOLU dépend de la machine et \
+             n'est donc rien d'autre qu'un repère : {f:?} par fenêtre, une fois l'heure."
         );
     }
 

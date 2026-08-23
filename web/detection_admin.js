@@ -7,7 +7,7 @@
 import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, mitreName, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, formMsg, socIsAdmin, lsSet, collapsibleGroup, SEVCOL } from './core.js';
 import { S } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
-import { loadAttackMatrix } from './attack.js';
+import { loadAttackMatrix, poserLesPortesDeTechnique } from './attack.js';
 import { setAlertMitreFilter } from './alerts.js';
 // P11.2-a/b + P11.1-e : ligne, interrupteur et destination PARTAGÉS (règles, playbooks, runbooks, détection avancée).
 import { producerRow, rowButton, announceCreated, takePendingNote, detectionDestination, destinationNote, DESTINATIONS } from './producer_ui.js';
@@ -227,6 +227,25 @@ function openRuleForm(r) {
   }
   $(RF.name).focus();
 }
+// P11.6-b — CE PANNEAU EST LA DESTINATION DES PORTES DE LA MATRICE ATT&CK. Lui seul sait ouvrir sa
+// recherche et son formulaire ; il les POSE sur la matrice au chargement plutôt que d'être importé par
+// elle (l'import inverse existe déjà, le refermer ferait un cycle).
+// Ouvrir les règles d'une technique = poser la recherche partagée sur son identifiant : c'est le même
+// chemin que la frappe d'un analyste, donc rien de neuf à maintenir, et l'inclusion de chaîne y retrouve
+// les règles taguées par une sous-technique de celle-ci.
+function ouvrirLesReglesDeLaTechnique(tid) {
+  location.hash = 'detection';
+  poserLaRechercheDesRegles(tid || '');
+}
+// Créer la règle qui couvrira une technique : le formulaire de création ordinaire, la technique déjà
+// renseignée (et son indice de format rafraîchi, comme après une frappe).
+function ouvrirLaCreationPourLaTechnique(tid) {
+  location.hash = 'detection';
+  openRuleForm(null);
+  if ($(RF.mitre)) { $(RF.mitre).value = normMitre(tid); refreshMitreHint(); }
+}
+poserLesPortesDeTechnique({ regles: ouvrirLesReglesDeLaTechnique, creer: ouvrirLaCreationPourLaTechnique });
+
 function closeRuleForm() {
   const form = $('#rule-form'); if (form) form.classList.add('hidden');
   const ov = $('#rule-form-ov'); if (ov) ov.style.display = 'none';
@@ -637,4 +656,4 @@ if ($('#pb-form')) $('#pb-form').addEventListener('submit', async e => {
 loadPlaybooks();
 loadMode();
 
-export { renderCoverage, loadRules, renderRules, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, loadNotifiers, loadParsers, loadActions, loadMode, loadPlaybooks, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };
+export { renderCoverage, loadRules, renderRules, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, loadMode, loadPlaybooks, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };

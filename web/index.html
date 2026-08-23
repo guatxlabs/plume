@@ -556,14 +556,15 @@
   </section>
   <!-- Détection & Réponse → ATT&CK : matrice de couverture MITRE ATT&CK (tactiques en colonnes, techniques en
        cellules colorées par couverture -> les angles morts « ressortent »). LECTURE (viewer+), 100% via
-       GET /api/coverage/attack. Clic sur une technique -> ses alertes filtrées. Si l'endpoint 404 (daemon non
-       déployé), dégrade proprement (« couverture indisponible »). -->
+       GET /api/coverage/attack. P11.6-b : clic sur une technique -> sa PORTE (ses règles, ses détections par le
+       pivot existant, le geste qui la couvrirait). Si l'endpoint 404 (daemon non déployé), dégrade proprement
+       (« couverture indisponible »). -->
   <section id="attack-panel" class="card span2" aria-labelledby="attack-h" hidden>
     <div class="panelhead">
       <h2 id="attack-h">Matrice ATT&amp;CK (couverture) <button class="ihelp vhelp" data-help="attack" type="button" title="Aide : Matrice ATT&amp;CK">?</button></h2>
       <button id="attack-refresh" class="picon" type="button" title="Recharger la matrice de couverture ATT&amp;CK"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg></button>
     </div>
-    <p class="muted" style="margin:0 0 9px;font-size:12px">Couverture <b>MITRE ATT&amp;CK</b> : chaque <b>tactique</b> (colonne) liste ses <b>techniques</b> (cellules). Une cellule <b>verte</b> = technique <b>couverte</b> (règles / alertes), teinte d'autant plus soutenue que la couverture est dense ; une cellule <b>grisée</b> = <b>angle mort</b> (aucune détection). Clique une technique pour voir ses alertes. Lecture seule.</p>
+    <p class="muted" style="margin:0 0 9px;font-size:12px">Couverture <b>MITRE ATT&amp;CK</b> : chaque <b>tactique</b> (colonne) liste ses <b>techniques</b> (cellules). Une cellule <b>verte</b> = technique <b>couverte</b> (règles / alertes), teinte d'autant plus soutenue que la couverture est dense ; une cellule <b>grisée</b> = <b>angle mort</b> (aucune détection). Clique une technique : elle ouvre ses règles, ses détections, et le geste qui la couvrirait.</p>
     <div id="attack-legend"></div>
     <div id="attack-body"><div class="muted">chargement…</div></div>
   </section>

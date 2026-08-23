@@ -1523,9 +1523,92 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// 24. UNE TECHNIQUE ATT&CK EST UNE PORTE (`P11.6-b`).
+//     (a) VERT AVANT : la console NE FABRIQUE AUCUNE REQUÊTE pour une technique. Le chemin vers les
+//         détections est le pivot qui existait déjà (`setAlertMitreFilter`, `P11.1-b`), et de là le lien
+//         exact est celui que le démon sert avec l'alerte (`P11.1-a`). Ce témoin lit le module : aucune
+//         requête montée à la main, aucune écriture dans la barre de recherche. Il tient avant comme
+//         après, et c'est lui qui interdit d'inventer une seconde construction de requête.
+//     (b) La porte d'une technique COUVERTE rend ses trois sorties, et dit combien de règles la couvrent.
+//     (c) La porte d'un ANGLE MORT le dit, met la CRÉATION en avant, et rend la sortie « voir les règles »
+//         inerte AVEC sa raison — une sortie retirée ne se distinguerait pas d'une sortie oubliée.
+//     (d) Les sorties MÈNENT : celle des règles et celle de la création appellent le panneau des règles
+//         sur CETTE technique, celle des détections pose la facette de la technique sur la file d'alertes.
+//     (e) Un lecteur voit la sortie de création, inerte, et le motif nomme le RÔLE — pas un état.
+// ---------------------------------------------------------------------------------------------
+{
+  const { porteDeLaTechnique, poserLesPortesDeTechnique } = await import(pathToFileURL(path.join(WEB, "attack.js")).href);
+  const { ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique } = await import(pathToFileURL(path.join(WEB, "detection_admin.js")).href);
+  const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const cueillir = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir(c, pred, acc)); return acc; };
+  const sorties = (el) => cueillir(el, (e) => e.tagName === "BUTTON", []);
+  const parLibelle = (el, motif) => sorties(el).find((b) => motif.test(b.textContent));
+
+  // (a) aucune requête fabriquée ici.
+  const source = readFileSync(path.join(WEB, "attack.js"), "utf8");
+  exiger(!/['"`]\s*search\s/i.test(source), "(24a) `attack.js` monte une requête à la main : le lien vers les détections doit rester le pivot existant, et la requête exacte celle que le démon sert avec l'alerte");
+  exiger(!/#sql/.test(source), "(24a) `attack.js` écrit dans la barre de recherche : la console fabriquerait une seconde construction de requête");
+  exiger(/setAlertMitreFilter/.test(source), "(24a) instrument : le module n'appelle plus le pivot existant, les deux assertions ci-dessus ne prouveraient rien");
+
+  const roleOrigine = S.AUTH, hashOrigine = location.hash, fetchOrigine = globalThis.fetch;
+  const vus = [];
+  try {
+    S.AUTH = { user: "root", role: "admin" };
+    poserLesPortesDeTechnique({ regles: (t) => vus.push("regles:" + t), creer: (t) => vus.push("creer:" + t) });
+
+    // (b) technique couverte.
+    const couverte = { tid: "T1110", name: "Brute Force", covered: true, rule_count: 3, alert_count: 12 };
+    const porte = porteDeLaTechnique(couverte);
+    exiger(/T1110/.test(porte.textContent) && /Brute Force/.test(porte.textContent), `(24b) la porte ne nomme pas la technique : « ${porte.textContent} »`);
+    exiger(/3 règle\(s\) la couvrent/.test(porte.textContent), `(24b) la porte ne dit pas combien de règles couvrent la technique : « ${porte.textContent} »`);
+    for (const [quoi, motif] of [["les règles", /règles qui la couvrent/], ["les détections", /détections de cette technique/], ["la création", /règle sur cette technique|règle qui la couvrira/]]) {
+      const b = parLibelle(porte, motif);
+      exiger(!!b, `(24b) la porte d'une technique couverte n'offre AUCUNE sortie vers ${quoi} : ${JSON.stringify(sorties(porte).map((x) => x.textContent))}`);
+      exiger(b && b.disabled !== true, `(24b) la sortie vers ${quoi} est inerte alors que la technique est couverte`);
+    }
+
+    // (c) angle mort.
+    const aveugle = { tid: "T1552", name: "Unsecured Credentials", covered: false, rule_count: 0, alert_count: 0 };
+    const porteAveugle = porteDeLaTechnique(aveugle);
+    exiger(/ANGLE MORT/.test(porteAveugle.textContent), `(24c) un angle mort ne se dit pas dans sa porte : « ${porteAveugle.textContent} »`);
+    const versRegles = parLibelle(porteAveugle, /règles qui la couvrent/);
+    exiger(versRegles && versRegles.disabled === true, "(24c) la sortie « voir les règles » d'un angle mort n'est pas inerte : elle ouvrirait une liste vide");
+    exiger(versRegles && /Aucune règle ne couvre/.test(versRegles.title || ""), `(24c) la sortie inerte ne dit pas POURQUOI : « ${versRegles && versRegles.title} »`);
+    const versCreation = parLibelle(porteAveugle, /Créer la règle qui la couvrira/);
+    exiger(!!versCreation && versCreation.classList.contains("btn-primary"), "(24c) sur un angle mort, la création n'est pas la sortie mise en avant");
+    exiger(!!parLibelle(porteAveugle, /ruleset Sigma/), "(24c) un administrateur ne se voit pas offrir l'import Sigma depuis la porte d'un angle mort");
+
+    // (d) les sorties mènent.
+    // les clics sont défensifs : une sortie disparue doit RAPPORTER (témoins ci-dessus) et non faire
+    // tomber le harnais avant qu'il n'imprime ce qu'il a relevé.
+    parLibelle(porte, /règles qui la couvrent/)?.onclick?.();
+    parLibelle(porteAveugle, /Créer la règle qui la couvrira/)?.onclick?.();
+    exiger(vus.join(" ") === "regles:T1110 creer:T1552", `(24d) les sorties n'appellent pas le panneau des règles sur CETTE technique : ${JSON.stringify(vus)}`);
+    globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ alerts: [], total: 0, groups: [] }) });
+    S.alertMitreFilter = "";
+    parLibelle(porte, /détections de cette technique/)?.onclick?.();
+    exiger(S.alertMitreFilter === "T1110", `(24d) la sortie « détections » ne pose pas la facette de la technique sur la file d'alertes : « ${S.alertMitreFilter} »`);
+    exiger(/^#?alerts$/.test(location.hash), `(24d) la sortie « détections » ne mène pas aux alertes : « ${location.hash} »`);
+
+    // (e) un lecteur : la création est rendue, inerte, et le motif nomme le rôle.
+    S.AUTH = { user: "bob", role: "viewer" };
+    const porteLecteur = porteDeLaTechnique(aveugle);
+    const creationLecteur = parLibelle(porteLecteur, /Créer la règle qui la couvrira/);
+    exiger(!!creationLecteur, "(24e) un lecteur ne voit AUCUNE sortie de création : le droit manquant devient indevinable");
+    exiger(creationLecteur && creationLecteur.disabled === true, "(24e) un lecteur obtient une sortie de création praticable : la garde d'interface ne lit pas le rôle");
+    exiger(creationLecteur && /rôle éditeur/.test(creationLecteur.title || ""), `(24e) le motif ne nomme pas le rôle qui manque : « ${creationLecteur && creationLecteur.title} »`);
+    exiger(!parLibelle(porteLecteur, /ruleset Sigma/), "(24e) témoin inverse : un lecteur se voit offrir l'import Sigma, réservé à l'administrateur");
+    console.log(`[ATT&CK] une technique ouvre une porte : ses règles, ses détections (le pivot existant, aucune requête fabriquée) et le geste qui la couvrirait ; un angle mort le dit, met la création en avant et rend la sortie vide inerte avec son motif ; un lecteur voit la création inerte, motivée par le rôle`);
+  } finally {
+    poserLesPortesDeTechnique({ regles: ouvrirLesReglesDeLaTechnique, creer: ouvrirLaCreationPourLaTechnique });
+    S.AUTH = roleOrigine; location.hash = hashOrigine; globalThis.fetch = fetchOrigine; S.alertMitreFilter = "";
+  }
+}
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus ; la ligne d'une règle rend DÉJÀ tester, éditer, supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur ; et LA recherche de liste, partagée, resserre sur plusieurs mots sans se soucier de la casse ni des accents, cherche une règle par son nom, sa requête et sa technique, rend une liste plate ordonnée par le tri courant qui DIT combien de lignes sur combien elle montre, nomme ce qu'elle a cherché quand elle ne trouve rien, et se vide au retour d'un enregistrement pour que la règle écrite se voie.`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus ; la ligne d'une règle rend DÉJÀ tester, éditer, supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur ; et LA recherche de liste, partagée, resserre sur plusieurs mots sans se soucier de la casse ni des accents, cherche une règle par son nom, sa requête et sa technique, rend une liste plate ordonnée par le tri courant qui DIT combien de lignes sur combien elle montre, nomme ce qu'elle a cherché quand elle ne trouve rien, et se vide au retour d'un enregistrement pour que la règle écrite se voie ; enfin une technique ATT&CK est une PORTE — ses règles, ses détections par le pivot qui existait déjà (le module ne fabrique aucune requête) et le geste qui la couvrirait, un angle mort qui se dit et met la création en avant, une sortie impraticable rendue inerte avec son motif, et un lecteur à qui le rôle manquant est nommé.`);

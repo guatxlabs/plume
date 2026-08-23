@@ -958,6 +958,12 @@ h2 .ihelp,h3 .ihelp{vertical-align:middle;margin-left:6px;position:relative;top:
 /* raccourci « fermer les angles morts » dans la légende ATT&CK (admin) */
 .attack-fill{margin-left:auto;border:1px solid color-mix(in srgb,var(--acc) 40%,transparent);background:var(--acc-bg);color:var(--acc);border-radius:8px;padding:5px 11px;font-size:11px;font-weight:600;cursor:pointer;transition:filter .12s}
 .attack-fill:hover{filter:brightness(1.08);border-color:var(--acc)}
+/* P11.6-b — LA PORTE D'UNE TECHNIQUE : le contenu de la modale ouverte par une cellule. Les sorties sont
+   empilées et pleine largeur — chacune est une destination, pas une variante d'un même geste, et une pile
+   se lit dans l'ordre où elle est écrite (les règles, les détections, le geste qui couvrirait). */
+.attack-porte h3{margin:0 0 6px;font-size:15px}
+.attack-porte-sorties{display:flex;flex-direction:column;gap:7px;margin-top:12px}
+.attack-porte-sorties .btn{width:100%;text-align:left}
 
 /* ============ Import Sigma en masse (admin) : bouton gaté + rendu du SUMMARY ============ */
 body:not(.role-admin) #sigma-import-btn{display:none!important}

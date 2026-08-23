@@ -4,7 +4,7 @@
 //! Il mesurait le temps écoulé entre l'ENTRÉE du handler et l'obtention du permit — c'est-à-dire
 //! l'attente du permit PLUS tout le travail fait avant lui, dont une lecture de base qui prend le
 //! verrou de la connexion PARTAGÉE (le même que tient la boucle de rollups toutes les 120 s, cf.
-//! `server::spawn_rollup_loop`, et l'`ANALYZE` de démarrage). Le champ additionnait donc deux
+//! `server/boucles_de_fond.rs`, et l'`ANALYZE` de démarrage). Le champ additionnait donc deux
 //! attentes de natures opposées :
 //!
 //!   * l'attente d'un PERMIT, bornée par `PLUME_QUERY_CONCURRENCY` — qu'on réduit en AUGMENTANT le

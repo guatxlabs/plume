@@ -486,7 +486,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         // depuis la base, jamais affirmée ici ; l'absence de bande vaut déclin (cf. `rollup_coverage`).
         // LA SÉRIALISATION RETIRÉE, ET POURQUOI C'EST SÛR. Cette lecture prenait le mutex de la
         // connexion PARTAGÉE — celui que la boucle de rollups tient pendant tout un tick
-        // (`server::spawn_rollup_loop`, 120 s) et que l'`ANALYZE` de démarrage tient plusieurs
+        // (`spawn_rollup_loop`, `server/boucles_de_fond.rs`, 120 s) et que l'`ANALYZE` de démarrage tient plusieurs
         // minutes. MESURÉ le 2026-08-01 sur la base de banc, en publiant l'attente à part
         // (`stats.db_lock_wait_ms`) : jusqu'à 3,4 s en SOLO et 4,1 s sous charge, sur le chemin de
         // CHAQUE requête GXQL — dont 3,4 s pour `C6-filter-host`, une requête qui s'exécute en

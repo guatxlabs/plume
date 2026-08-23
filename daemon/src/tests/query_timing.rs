@@ -126,7 +126,7 @@
         let sem = Arc::new(Semaphore::new(8));
         let m: Arc<Mutex<Connection>> = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
         let held = m.clone();
-        // Le TIERS : la boucle de rollups du vrai daemon (`server::spawn_rollup_loop`) tient ce même
+        // Le TIERS : la boucle de rollups du vrai daemon (`server/boucles_de_fond.rs`) tient ce même
         // verrou pendant tout un tick, toutes les 120 s.
         let squatter = std::thread::spawn(move || {
             let _g = held.lock();

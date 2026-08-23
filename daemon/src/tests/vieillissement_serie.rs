@@ -540,8 +540,55 @@ mod vieillissement_serie_tests {
     ///
     /// MUTATION (exécutée le 2026-08-10) : passer à `CLOCK_PROCESS_CPUTIME_ID` ⇒ « un fil qui a DORMI
     /// 300 ms s'est vu imputer **294 ms** de CPU ». Sans mutation, le même fil est mesuré à **0 ms**.
+    ///
+    /// `P6.9-a` — LE TÉMOIN POSITIF NE SE BORNE PLUS AU MUR. Il assertait « un fil qui a brûlé pendant
+    /// 200 ms de MUR doit se voir imputer au moins 50 ms de CPU ». Du temps de mur n'est pas du temps de
+    /// CPU : sur une machine partagée, la même boucle en accumule beaucoup moins. Mesuré le 2026-08-23
+    /// sur ce banc (12 cœurs, binaire de test `debug`) :
+    ///
+    /// | banc                                | CPU imputé | ancienne borne (>= 50 ms) |
+    /// |-------------------------------------|------------|---------------------------|
+    /// | au repos                            | 199 ms     | VERT                      |
+    /// | 12 brûleurs (machine à 1×)          | 198 ms     | VERT                      |
+    /// | 24 brûleurs (machine à 2×)          | 65 ms      | VERT de justesse          |
+    /// | 48 brûleurs (machine à 4×)          | 52 ms      | à 4 % du rouge            |
+    /// | 8 brûleurs sur le même cœur         | 22 ms      | **ROUGE**                 |
+    ///
+    /// LA FORME NEUVE BRÛLE UNE QUANTITÉ DE CPU, PAS UNE DURÉE DE MUR, et elle l'oppose à un ORACLE
+    /// INDÉPENDANT : `getrusage(RUSAGE_THREAD)`, qui rend le CPU du fil courant par un tout autre chemin
+    /// du noyau que le `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` de l'instrument. Ce que le test garde
+    /// devient une CONCORDANCE entre deux instruments mesurée DANS LA MÊME EXÉCUTION — grandeur qui ne
+    /// dépend plus de la part de cœur obtenue. Sous charge, la boucle met simplement plus de temps de mur
+    /// à brûler son CPU ; elle en brûle autant.
+    ///
+    /// CE N'EST PAS CIRCULAIRE : l'oracle qui PILOTE la boucle n'est pas l'instrument qui est JUGÉ. Une
+    /// mutation de `cpu_du_fil_ns` laisse l'oracle intact et fait diverger la concordance.
+    ///
+    /// DEUX MUTATIONS EXÉCUTÉES LE 2026-08-23, et la seconde dit pourquoi la forme neuve n'est pas
+    /// seulement plus stable mais plus SÉVÈRE :
+    ///   * `CLOCK_THREAD_CPUTIME_ID` -> `CLOCK_PROCESS_CPUTIME_ID` : le dormeur se voit imputer 300 ms,
+    ///     l'assertion du dormeur rougit (c'est la mutation déjà connue) ;
+    ///   * l'instrument SOUS-DÉCLARE de moitié (`/ 2_000_000` au lieu de `/ 1_000_000`) : la forme
+    ///     précédente rendait 99 ms, au-dessus de son plancher de 50 ms, et passait **VERTE** ; la
+    ///     concordance, elle, voit 50 % d'écart avec l'oracle et rougit. Un plancher au mur ne pouvait
+    ///     pas attraper un facteur d'échelle ; une concordance, si.
     #[test]
     fn le_temps_cpu_est_celui_du_fil_pas_du_processus() {
+        /// CPU (ms) que le fil doit brûler dans la seconde fenêtre. Inchangé par rapport à la durée de
+        /// mur de la forme précédente : c'est la même quantité de travail, exprimée dans la bonne unité.
+        const CPU_CIBLE_MS: u64 = 200;
+        /// PLAFOND DE MUR — pas une borne de mesure, un FILET. Sans lui, un fil qui n'obtiendrait jamais
+        /// de CPU (ou un oracle qui n'avancerait pas) ferait tourner la boucle sans fin. Il est
+        /// volontairement énorme devant le CPU visé : le franchir n'est pas « la machine est lente »,
+        /// c'est « l'oracle n'avance pas », et le test le DIT au lieu de pendre.
+        const MUR_MAX: Duration = Duration::from_secs(120);
+        /// Concordance exigée entre les deux instruments. Mesurée sur ce banc le 2026-08-23 : l'écart
+        /// relatif vaut moins de 1 % au repos comme sous charge (les deux lisent la même comptabilité du
+        /// noyau par deux appels différents). La tolérance est posée à 25 % — vingt-cinq fois l'écart
+        /// observé — pour absorber la granularité de `getrusage`, qui rend des microsecondes là où
+        /// `clock_gettime` rend des nanosecondes, et le décalage des deux prises de base.
+        const ECART_MAX: f64 = 0.25;
+
         let _serialise = FENETRES.lock();
         let stop = Arc::new(AtomicBool::new(false));
         let s = stop.clone();
@@ -559,10 +606,24 @@ mod vieillissement_serie_tests {
         brûleur.join().unwrap();
 
         let f = Fenetre::ouvrir();
-        let t0 = Instant::now();
+        let oracle0 = cpu_du_fil_par_getrusage_us().expect("getrusage(RUSAGE_THREAD) doit répondre sous Linux");
+        let mur0 = Instant::now();
         let mut x = 0u64;
-        while t0.elapsed() < Duration::from_millis(200) {
-            x = x.wrapping_add(black_box(1));
+        let mut oracle_us = 0u64;
+        while oracle_us < CPU_CIBLE_MS * 1000 {
+            for _ in 0..10_000 {
+                x = x.wrapping_add(black_box(1));
+            }
+            oracle_us = cpu_du_fil_par_getrusage_us()
+                .expect("getrusage(RUSAGE_THREAD) doit répondre sous Linux")
+                .saturating_sub(oracle0);
+            assert!(
+                mur0.elapsed() < MUR_MAX,
+                "après {:?} de mur, l'oracle indépendant n'a compté que {oracle_us} µs de CPU pour ce fil \
+                 (cible {} µs) : ce n'est pas une machine lente, c'est un oracle qui n'avance pas",
+                mur0.elapsed(),
+                CPU_CIBLE_MS * 1000
+            );
         }
         black_box(x);
         let travailleur = f.clore(Issue::Balaye, Compte::default(), Retard::Mesure(0));
@@ -575,12 +636,41 @@ mod vieillissement_serie_tests {
             "un fil qui a DORMI 300 ms s'est vu imputer {cpu_dormeur} ms de CPU -> c'est le CPU du \
              PROCESSUS (un autre fil brûlait), donc le coût de l'ingest serait facturé au vieillissement"
         );
+        // LE TÉMOIN POSITIF : deux instruments indépendants, la MÊME fenêtre, le MÊME fil.
+        let oracle_ms = oracle_us / 1000;
+        let ecart = (cpu_travailleur as f64 - oracle_ms as f64).abs() / (oracle_ms.max(1) as f64);
         assert!(
-            cpu_travailleur >= 50,
-            "un fil qui a brûlé 200 ms ne s'est vu imputer que {cpu_travailleur} ms -> le compteur ne \
-             mesure pas le travail de ce fil"
+            ecart <= ECART_MAX,
+            "l'instrument impute {cpu_travailleur} ms de CPU à ce fil là où `getrusage(RUSAGE_THREAD)` en \
+             compte {oracle_ms} ms — {:.1} % d'écart : les deux comptabilités du noyau ne peuvent pas \
+             diverger ainsi sur le MÊME fil et la MÊME fenêtre, donc l'une des deux ne mesure pas ce \
+             qu'elle annonce",
+            ecart * 100.0
         );
-        eprintln!("[mesure 2026-08-10] CPU du fil : dormeur {cpu_dormeur} ms, travailleur {cpu_travailleur} ms");
+        eprintln!(
+            "[mesure 2026-08-23] CPU du fil : dormeur {cpu_dormeur} ms ; travailleur {cpu_travailleur} ms \
+             contre {oracle_ms} ms à l'oracle indépendant ({:.2} % d'écart, mur {:?})",
+            ecart * 100.0,
+            mur0.elapsed()
+        );
+    }
+
+    /// L'ORACLE INDÉPENDANT DU TEMPS CPU DU FIL — `getrusage(RUSAGE_THREAD)`, en microsecondes.
+    ///
+    /// IL EXISTE POUR N'ÊTRE PAS L'INSTRUMENT QU'IL JUGE. La production lit
+    /// `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` ; cet oracle passe par la comptabilité `rusage`, un tout
+    /// autre chemin du noyau. Les faire concorder prouve quelque chose ; les faire concorder avec
+    /// eux-mêmes ne prouverait rien.
+    fn cpu_du_fil_par_getrusage_us() -> Option<u64> {
+        let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+        // SÛRETÉ : `getrusage` n'écrit que dans `ru`, dont nous possédons le stockage pour la durée de
+        // l'appel. `RUSAGE_THREAD` est spécifique à Linux, comme tout cet instrument.
+        let rc = unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut ru) };
+        if rc != 0 {
+            return None;
+        }
+        let us = |t: libc::timeval| (t.tv_sec as u64).saturating_mul(1_000_000).saturating_add(t.tv_usec as u64);
+        Some(us(ru.ru_utime).saturating_add(us(ru.ru_stime)))
     }
 
     // =============================================================================================

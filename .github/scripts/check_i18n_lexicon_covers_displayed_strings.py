@@ -15,15 +15,21 @@ Une chaîne est AFFICHÉE si le code la pose dans un puits de rendu, c'est-à-di
   (1) une affectation `.textContent = `, `.innerText = `, `.title = `, `.placeholder = ` ;
   (2) une clé d'objet `label:`, `title:`, `placeholder:`, `okText:`, `hint:`, `text:` ;
   (3) un appel `createTextNode(`, `muted(`, `toast(`, `showErr(`, `confirmModal(`, `append(`,
-      `prepend(`, ou `setAttribute('title'|'placeholder'|'aria-label', ` ;
+      `prepend(`, `emptyRow(`, ou `setAttribute(` dont le PREMIER argument est un attribut affiché
+      (`title`, `placeholder`, `aria-label`, `label`) ;
   (4) le TEXTE entre balises et les attributs `title`/`placeholder`/`aria-label` d'un littéral
       HTML (chaîne contenant une balise, posée en `innerHTML` ou construite en gabarit) ;
   (5) le texte et les mêmes attributs de `web/index.html`.
 Le mécanisme ne peut traduire qu'une chaîne STATIQUE : une chaîne concaténée (`'a' + x`) ou
 interpolée (`${x}`) ne sera jamais égale à une clé — elle est comptée À PART (« dynamique »),
 hors du dénominateur, et rendue pour information. Une chaîne composée UNIQUEMENT de
-minuscules ASCII, chiffres et `_ . : / -` (`src_ip`, `count`, `/api/x`) est un identifiant
-technique, identique dans les deux langues : hors population ; de même un code en MAJUSCULES
+minuscules ASCII, chiffres et de ponctuation technique (`src_ip`, `count`, `/api/x`) est un identifiant
+technique, identique dans les deux langues : hors population. LA CLASSE INCLUT L'ESPACE — donc une phrase
+française entière tout en minuscules (`aucun runbook`, `nom et champ requis`) est classée « identifiant »
+MÊME dans un puits reconnu, et une seule majuscule suffit à faire basculer le verdict. Mesuré le 2026-08-23 :
+64 chaînes sur 25 modules échappent ainsi à la garde — 40 dans un puits JS reconnu (22 modules), 24 dans le
+texte d'un littéral HTML (6 modules). C'est une cause de trou INDÉPENDANTE de la forme d'écriture, et elle
+n'est pas encore corrigée ; de même un code en MAJUSCULES
 sans espace qui porte un chiffre ou tient en quatre signes (`T1110`, `CSV`, `OK`). Une chaîne
 sans lettre (un symbole, un nombre) est hors population. Le texte d'un ÉCHANTILLON DE CODE
 (`<code>`, `<kbd>`, `<pre>`, `<samp>`) est montré tel quel dans les deux langues : hors population,
@@ -34,16 +40,22 @@ en: '…' }`, choisi par LANG à l'endroit du rendu) : les deux langues sont cô
 affichés sont `title`, `placeholder`, `aria-label` et `label` (groupe d'options) — ce sont ceux que
 `i18nWalk` traduit.
 
-CE QUE LA GARDE NE VOIT PAS — DIT FRANCHEMENT
----------------------------------------------
-Un puits propre à un module (`opt(...)` dans alerts.js, `tile(...)` / `mesureTile(...)` dans
-system.js, `kv(...)` ailleurs) n'est pas reconnu : les chaînes qui y passent ne sont PAS comptées
-(les libellés des tuiles Système sont au lexique sans être comptés ici). Un mot en minuscules
-ASCII (`frais`, `statut`) est exclu par le critère d'identifiant alors qu'il peut être un libellé,
-et un fragment de phrase riche en minuscules (`) du message`, `puis`) l'est de même : le lexique
-les porte pour que la phrase ANGLAISE se lise entière, la garde ne les exige pas. Les biais vont
-dans le sens d'un SOUS-compte des trous ; la garde mesure donc un plancher de la dette, jamais
-son plafond. Un texte posé par un nœud puis RETRAITÉ par une concaténation n'est pas suivi.
+CE QUE LA GARDE NE VOIT PAS — MESURÉ, PUBLIÉ, ET GARDÉ
+------------------------------------------------------
+Le critère de puits ci-dessus est ÉTROIT, et une garde qui rend vert sur ce qu'elle ne regarde pas est
+pire qu'une garde absente. Elle publie donc, par module et à chaque exécution, une colonne HORS-REGARD :
+les littéraux qui ont la forme d'un libellé (candidats, statiques, pas bilingues par construction) et
+qu'aucun puits reconnu ne porte — argument d'une fabrique propre au module (`opt(...)` dans alerts.js,
+`tile(...)` / `mesureTile(...)` dans system.js, `kv(...)` ailleurs), branche de ternaire hors puits, entrée
+de tableau, valeur de retour, valeur sous une clé d'objet non reconnue (`page:`, `servies:`).
+LA CONFESSION EST DÉRIVÉE DU DÉPÔT, PAS ÉCRITE À LA MAIN : la garde compte combien de ces hors-regard sont
+DÉJÀ des clés du lexique. Relevé le 2026-08-23 : 609 hors-regard, dont 163 (26,8 %) au lexique — c'est le
+dépôt lui-même qui atteste qu'ils sont affichés, et donc que le périmètre regardé est plus étroit que
+l'affichage. Le chiffre est GARDÉ par un cliquet au même titre que les trous (`PLAFOND_HORS_REGARD`).
+Restent hors de tout compte, et donc invisibles même à cette colonne : un mot en minuscules ASCII
+(`frais`, `statut`) exclu par le critère d'identifiant alors qu'il peut être un libellé, une chaîne
+dynamique, et un texte posé par un nœud puis RETRAITÉ par une concaténation. Les biais vont dans le sens
+d'un SOUS-compte ; la garde mesure un plancher de la dette, jamais son plafond.
 Elle ne juge pas non plus si le MÉCANISME applique le lexique : c'est le harnais ESM
 (`web_esm_harnais.mjs`, témoin 10) qui rend un panneau sous `LANG='en'` et lit le texte. Une paire
 `{ fr, en }` dont les deux valeurs seraient le même texte n'est pas jugée ici (le registre l'est par le
@@ -65,24 +77,38 @@ lexique, un mot nu sans clé. Une exemption de module ne voit rien ; une exempti
 LA GARDE REFUSE UNE RÉGRESSION, PAS UN ÉTAT
 -------------------------------------------
 Le taux de couverture (clés présentes / population) est mesuré et rendu PAR MODULE ; ce qui
-est GARDÉ est le nombre de chaînes affichées SANS entrée (les « trous »), comparé à un PLAFOND
-écrit ici avec sa date. Pourquoi le compte et non le taux : un taux ne voit pas UNE chaîne de
-plus parmi six cents (20,6 % -> 20,4 %), le compte la voit. Ajouter une chaîne affichée sans
-l'inscrire au lexique fait dépasser le plafond : rouge. Traduire abaisse le compte et autorise
-à ABAISSER le plafond — c'est le seul sens de modification admis sans raison écrite à côté.
+est GARDÉ est DOUBLE : le nombre de chaînes affichées SANS entrée (les « trous ») et le nombre de
+littéraux HORS-REGARD, chacun comparé à un PLAFOND écrit ici avec sa date. Pourquoi le compte et non le
+taux : un taux ne voit pas UNE chaîne de plus parmi six cents (20,6 % -> 20,4 %), le compte la voit.
+Ajouter une chaîne affichée sans l'inscrire au lexique fait dépasser le plafond : rouge. Poser un libellé
+neuf dans une forme que la garde ne lit pas fait dépasser l'autre : rouge aussi, alors même que la garde
+ne sait pas lire cette forme — c'est le seul moyen qu'un périmètre étroit ne serve pas d'échappatoire.
+Traduire abaisse le premier compte, déplacer un libellé vers un puits reconnu abaisse le second ; abaisser
+un plafond est le seul sens de modification admis sans raison écrite à côté.
+UN MODULE MESURÉ SANS PLAFOND FAIT REFUSER DE CONCLURE. Le verdict parcourait les PLAFONDS, pas les
+modules : un module absent de la table était rendu au tableau et jamais jugé (`composer_depuis_lexistant.js`
+l'a été de sa création au 2026-08-23). L'asymétrie est levée : plafond sans module = régression, module
+sans plafond = code 2.
 
 L'INSTRUMENT SE VALIDE AVANT DE RENDRE UN VERDICT
 -------------------------------------------------
 Un extracteur rend vert de deux façons : tout va bien, ou son motif ne reconnaît plus rien.
 La garde exécute d'abord un corpus de contrôle (chaînes qu'elle DOIT reconnaître dans chaque
 puits, chaînes qu'elle NE DOIT PAS compter : classe CSS, identifiant, chaîne dynamique,
-commentaire), puis exige un PLANCHER de population sur l'arbre réel et la présence d'une clé
-témoin connue. Sans ces trois jambes, elle refuse de conclure (code 2), elle ne rend pas vert.
+commentaire), puis un ANTI-CORPUS — les formes qu'elle NE VOIT PAS, avec l'assertion qu'elle ne les voit
+pas et qu'elle les rend en hors-regard. Un corpus qui n'a que des « ne doit pas compter » ne peut jamais
+dire que le périmètre a bougé ; l'anti-corpus le dit : si la garde apprend à lire une de ces formes, le
+témoin CASSE et force la mise à jour de l'aveu avant tout verdict. Elle exige ensuite un PLANCHER de
+population sur l'arbre réel, la présence d'une clé témoin connue, et qu'aucun module mesuré ne soit hors du
+cliquet. Sans ces jambes, elle refuse de conclure (code 2), elle ne rend pas vert.
 
-Usage :  python3 .github/scripts/check_i18n_lexicon_covers_displayed_strings.py [--mesure] [--trous MODULE]
-Sortie :  0 = aucun module au-dessus de son plafond ; 1 = régression ; 2 = instrument invalide.
-          `--mesure` imprime le tableau par module sans verdict ; `--trous MODULE` liste les
-          chaînes du module sans entrée au lexique.
+Usage :  python3 .github/scripts/check_i18n_lexicon_covers_displayed_strings.py
+             [--mesure] [--trous MODULE] [--hors-regard MODULE]
+Sortie :  0 = aucun module au-dessus de ses plafonds ; 1 = régression (trous ou hors-regard) ;
+          2 = instrument invalide, ou module mesuré hors du cliquet. `--mesure` imprime le tableau par
+          module sans verdict (c'est ce qui sert à relever le compte d'un module neuf) ; `--trous MODULE`
+          liste les chaînes du module sans entrée au lexique ; `--hors-regard MODULE` liste ce que la
+          garde ne regarde pas dans ce module, en marquant celles qui sont déjà des clés du lexique.
 """
 from __future__ import annotations
 
@@ -99,18 +125,24 @@ WEB = os.path.join(RACINE, "web")
 LEXIQUE = os.path.join(WEB, "i18n.js")
 
 # Plancher de population sur l'arbre réel : en dessous, c'est l'extraction qui est cassée.
-# Relevé le 2026-08-22 : 1 579 chaînes statiques affichées, tous modules confondus (échantillons de code et
-# blocs `if (LANG === 'en')` retirés de la population).
-MIN_POPULATION = 1000
+# DÉRIVÉ DU RELEVÉ, PAS CHOISI. Relevé le 2026-08-23 : 1 834 chaînes statiques affichées REGARDÉES, tous
+# modules confondus (échantillons de code et blocs `if (LANG === 'en')` retirés de la population). Le plancher
+# est ce relevé moins un vingtième : une extraction qui perdrait plus de 5 % de sa portée refuse de conclure.
+# La valeur précédente (1 000, pour un relevé annoncé à 1 579 et réel à 1 834) laissait l'extraction perdre
+# 45 % de sa portée sans que la validation d'instrument bronche : un plancher sous la moitié du réel ne garde
+# rien, il donne seulement l'apparence d'un garde-fou.
+MIN_POPULATION = 1742
 # Une clé dont on SAIT qu'elle est affichée par `web/index.html` (bouton d'exécution de la barre).
 CLE_TEMOIN = "Exécuter"
-# Plancher de clés du lexique : relevé le 2026-08-22, 223 clés avant complément, 1 594 après.
+# Plancher de clés du lexique : relevé le 2026-08-22, 223 clés avant complément, 1 594 après ; 1 719 au
+# 2026-08-23. Ce plancher ne garde que la LECTURE du lexique, pas sa taille : il reste bas exprès.
 MIN_CLES = 150
 
 # PLAFOND DE TROUS PAR MODULE (chaînes affichées statiques sans entrée au lexique). Relevé le 2026-08-22 par
 # `--mesure` : chaque module suivi est à ZÉRO après complément du lexique (1 579 chaînes affichées, toutes
-# couvertes ; 1 594 clés). Le cliquet est donc au plancher : toute chaîne affichée neuve entre au lexique ou
-# rougit. Un module absent d'ici est rendu, pas jugé ; l'y inscrire est le geste attendu quand on le crée.
+# couvertes ; 1 594 clés) ; toujours zéro partout au 2026-08-23 (1 834 chaînes regardées, 1 719 clés). Le
+# cliquet est donc au plancher : toute chaîne affichée neuve entre au lexique ou rougit. Un module absent
+# d'ici n'est plus rendu sans être jugé : depuis le 2026-08-23 il fait REFUSER de conclure (code 2).
 # Relever un plafond exige une raison écrite à côté.
 # Historique du cliquet : 2026-08-22, index.html 513 -> 496 (`P11.2-c`, `P11.7-a`), puis 496 -> 0 ; app.js 143 -> 0 ;
 # connectors.js 49 -> 0 ; detadv.js 37 -> 0 ; detection_admin.js 35 -> 0 ; freshness.js 31 -> 0 ; retention.js 30 -> 0 ;
@@ -127,6 +159,10 @@ MIN_CLES = 150
 # recherche_de_liste.js inscrit à 0 à sa création (`P11.12-a`) : le champ de recherche partagé ne porte AUCUN
 # mot de domaine — les deux phrases d'un résumé de recherche lui arrivent en nœuds de texte, écrits par le
 # panneau appelant et jugés dans SON module (0 chaîne affichée mesurée ici).
+# composer_depuis_lexistant.js inscrit le 2026-08-23 à son compte RELEVÉ : 6 chaînes affichées, 0 trou. Le module
+# était MESURÉ et rendu au tableau depuis sa création sans figurer ici — donc jamais jugé, parce que le verdict
+# parcourait les PLAFONDS et non les modules. Le sens de la garde s'est inversé sur ce point : un module mesuré
+# sans plafond fait maintenant refuser de conclure (code 2).
 # copie_et_selection.js inscrit à 0 à sa création (`P11.4-h`) : le geste de copie partagé porte SES propres
 # mots (le mot du bouton, son accusé, l'aveu d'un presse-papier refusé) et aucun mot de domaine — les
 # phrases de survol lui arrivent de l'appelant et sont jugées dans SON module (2 trous mesurés, comblés).
@@ -135,9 +171,31 @@ PLAFOND_DE_TROUS = {
     "audit.js": 0, "cases.js": 0, "connectors.js": 0, "core.js": 0, "dataaccess.js": 0, "dashboards.js": 0, "datamodels.js": 0, "destinations.js": 0,
     "detadv.js": 0, "detection_admin.js": 0, "fieldfilters.js": 0, "fleet.js": 0, "freshness.js": 0,
     "help.js": 0, "i18n_observer.js": 0, "idp.js": 0, "index.html": 0, "index_policies.js": 0, "keys.js": 0, "knowledge.js": 0, "login.js": 0, "lookups.js": 0,
+    "composer_depuis_lexistant.js": 0,
     "multitenant.js": 0, "navigation.js": 0, "prefs.js": 0, "processors.js": 0, "producer_ui.js": 0, "retention.js": 0,
     "copie_et_selection.js": 0, "recherche_de_liste.js": 0, "risk.js": 0, "runbooks.js": 0, "savedqueries.js": 0, "sigmaimport.js": 0, "soql_complete.js": 0,
     "sources.js": 0, "state.js": 0, "suppressions.js": 0, "system.js": 0, "threatintel.js": 0, "viz.js": 0,
+}
+
+# PLAFOND DE HORS-REGARD PAR MODULE (littéraux qui ont la forme d'un libellé et qu'AUCUN puits reconnu ne
+# porte : la garde ne sait pas dire s'ils sont affichés). Relevé le 2026-08-23 par `--mesure` : 609 au total,
+# dont 163 (26,8 %) sont DÉJÀ des clés du lexique — c'est le dépôt qui atteste que le périmètre regardé est
+# plus étroit que l'affichage, et c'est pourquoi ce compte est GARDÉ comme celui des trous.
+# CE CLIQUET NE REMONTE PAS. Un module neuf qui pose ses libellés dans une forme inconnue ROUGIT même si la
+# garde ne sait pas lire cette forme : rendre vert sur ce qu'on ne regarde pas est pire qu'une garde absente.
+# L'abaisser est le sens attendu (déplacer un libellé vers un puits reconnu, ou apprendre la forme à la
+# garde). Le relever exige une raison écrite ici, à côté du chiffre.
+PLAFOND_HORS_REGARD = {
+    "admin_users.js": 18, "ai.js": 1, "alerting.js": 2, "alerts.js": 19, "app.js": 21, "attack.js": 3,
+    "audit.js": 1, "cases.js": 74, "composer_depuis_lexistant.js": 7, "connectors.js": 26,
+    "copie_et_selection.js": 3, "core.js": 29, "dashboards.js": 30, "dataaccess.js": 5, "datamodels.js": 6,
+    "destinations.js": 32, "detadv.js": 12, "detection_admin.js": 32, "fieldfilters.js": 18, "fleet.js": 5,
+    "freshness.js": 9, "help.js": 25, "i18n_observer.js": 0, "idp.js": 24, "index.html": 0,
+    "index_policies.js": 16, "keys.js": 5, "knowledge.js": 7, "login.js": 6, "lookups.js": 9, "multitenant.js": 9,
+    "navigation.js": 0, "prefs.js": 0, "processors.js": 9, "producer_ui.js": 5, "recherche_de_liste.js": 1,
+    "retention.js": 15, "risk.js": 6, "runbooks.js": 23, "savedqueries.js": 2, "sigmaimport.js": 8,
+    "soql_complete.js": 13, "sources.js": 6, "state.js": 0, "suppressions.js": 19, "system.js": 23,
+    "threatintel.js": 8, "viz.js": 17,
 }
 
 # LA SEULE SURFACE EXEMPTE : la définition `const HELP = { … }` du registre des sections d'aide, DÉRIVÉE
@@ -352,6 +410,10 @@ def _dans_bloc_lang_en(texte_code: str, p: int) -> bool:
 RE_SINK_AFFECT = re.compile(r"\.(%s)\s*=\s*$" % "|".join(SINKS_AFFECTATION))
 RE_SINK_CLE = re.compile(r"[{,]\s*(%s)\s*:\s*$" % "|".join(SINKS_CLE))
 RE_SINK_APPEL = re.compile(r"\b(%s)\(\s*$" % "|".join(SINKS_APPEL))
+# `setAttribute(` : le NOM de l'attribut est le littéral qui PRÉCÈDE la valeur (la tokenisation l'a réduit
+# à `""`, il est donc relu dans la liste des littéraux). Sans cette vérification, `setAttribute('d', …)` d'un
+# tracé SVG était compté comme un puits d'affichage — mesuré le 2026-08-23 : 5 occurrences dans `web/viz.js`,
+# toutes sur l'attribut `d`, portées à la colonne « dynamiques » d'un module qui n'affiche pas ce texte.
 RE_SINK_SETATTR = re.compile(r"setAttribute\(\s*\"\"\s*,\s*$")
 RE_TERNAIRE = re.compile(r"[?:]\s*$")
 RE_SINK_AFFECT_DANS = re.compile(r"\.(%s)\s*=[^=]" % "|".join(SINKS_AFFECTATION))
@@ -361,12 +423,14 @@ RE_CLE_AUTRE = re.compile(r"[{,]\s*([A-Za-z_]\w*)\s*:\s*$")
 RE_HTML = re.compile(r"<[a-zA-Z][^<>]*>|</[a-zA-Z]+>")
 
 
-def _est_puits(avant: str) -> bool:
+def _est_puits(avant: str, attribut: str = "") -> bool:
+    """`attribut` = le littéral qui précède immédiatement celui qu'on juge ; pour `setAttribute(` c'est le NOM
+    de l'attribut, et seul un attribut AFFICHÉ (`ATTRS_HTML`) fait de l'appel un puits."""
     a = avant.rstrip()
     if RE_SINK_AFFECT.search(a) or RE_SINK_CLE.search(a) or RE_SINK_APPEL.search(a):
         return True
     if RE_SINK_SETATTR.search(a):
-        return True
+        return attribut.strip() in ATTRS_HTML
     # ternaire `x.title = cond ? 'A' : 'B'` : le puits est AVANT le `?`, séparé de la chaîne par la
     # condition ; on le cherche dans ce qui précède le `?` (le contexte s'arrête déjà au dernier `;`).
     if RE_TERNAIRE.search(a):
@@ -440,17 +504,24 @@ def _textes_html(fragment: str) -> tuple[list[str], list[str]]:
     return stat, dyn
 
 
-def extraire_module(src: str) -> tuple[list[str], list[str]]:
-    """(statiques affichées, dynamiques affichées, bilingues par construction) d'un module JS."""
-    statiques, dynamiques, par_construction = [], [], []
+def extraire_module(src: str) -> tuple[list[str], list[str], list[str], list[str]]:
+    """(statiques affichées, dynamiques affichées, bilingues par construction, HORS-REGARD) d'un module JS.
+
+    HORS-REGARD : un littéral qui a la FORME d'un libellé (candidat, statique, pas bilingue par construction)
+    et que le critère de puits ne reconnaît PAS. La garde ne sait pas dire s'il est affiché — c'est justement
+    ce qu'elle publie, plutôt que de rendre vert sur un périmètre qu'elle tait."""
+    statiques, dynamiques, par_construction, hors_regard = [], [], [], []
+    precedent = ""
     for s, avant, apres, bloc_en in chaines_js(src):
+        # le littéral qui PRÉCÈDE : c'est le nom d'attribut d'un `setAttribute('x', 'valeur')`
+        courant, attribut_precedent, precedent = s, precedent, s
         if RE_CLE_FR_EN.search(avant.rstrip()):
             # valeur d'une paire `{ fr: '…', en: '…' }` : bilingue par construction, HTML ou non
-            if _candidat(s.replace(SENTINELLE, "")):
-                par_construction.append(s)
+            if _candidat(courant.replace(SENTINELLE, "")):
+                par_construction.append(courant)
             continue
-        if RE_HTML.search(s):
-            st, dy = _textes_html(s)
+        if RE_HTML.search(courant):
+            st, dy = _textes_html(courant)
             if bloc_en:
                 # version EN dédiée d'un bloc riche (`if (LANG === 'en') { el.innerHTML = '…' }`) : bilingue par
                 # construction, son pendant FR est dans index.html
@@ -459,17 +530,21 @@ def extraire_module(src: str) -> tuple[list[str], list[str]]:
             statiques += [x for x in st if _candidat(x)]
             dynamiques += [x for x in dy if _candidat(x.replace(SENTINELLE, ""))]
             continue
-        if not _est_puits(avant):
+        candidat = _candidat(courant.replace(SENTINELLE, ""))
+        if not _est_puits(avant, attribut_precedent):
+            # AUCUN puits reconnu : la garde ne regarde pas là. On le DIT au lieu de l'oublier.
+            if candidat and not _dynamique(courant, avant, apres) and not (bloc_en or RE_CHOIX_PAR_LANG.search(avant)):
+                hors_regard.append(courant)
             continue
-        if not _candidat(s.replace(SENTINELLE, "")):
+        if not candidat:
             continue
-        if _dynamique(s, avant, apres):
-            dynamiques.append(s)
+        if _dynamique(courant, avant, apres):
+            dynamiques.append(courant)
         elif bloc_en or RE_CHOIX_PAR_LANG.search(avant):
-            par_construction.append(s)
+            par_construction.append(courant)
         else:
-            statiques.append(s)
-    return statiques, dynamiques, par_construction
+            statiques.append(courant)
+    return statiques, dynamiques, par_construction, hors_regard
 
 
 def extraire_index_html(src: str) -> list[str]:
@@ -534,10 +609,30 @@ ATTENDUS_DYNAMIQUES = 2
 INTERDITS = {"Pas affiché", "pas-une-chaine affichée", "valeur_technique", "pas une chaîne", "src_ip", "T1110", "…", "x",
              "English only", "English rich", "pas_un_libellé(x)", "Ctrl", "Paire française", "English pair"}
 
+# L'ANTI-CORPUS — LES FORMES QUE LA GARDE NE VOIT PAS, ET L'ASSERTION QU'ELLE NE LES VOIT PAS.
+# Le corpus ci-dessus n'a que des « doit compter » et des « ne doit pas compter » : il ne peut donc jamais
+# dire que le PÉRIMÈTRE a bougé. Celui-ci le dit. Chaque forme ci-dessous porte un libellé qui a toutes les
+# apparences d'un affichage et qu'aucun critère de puits ne reconnaît ; le témoin exige qu'elle sorte en
+# HORS-REGARD, ni comptée ni oubliée. Si la garde apprend un jour à lire l'une d'elles, ce témoin CASSE
+# (code 2) et force la mise à jour de l'aveu — la colonne « hors-regard » et son cliquet — avant tout verdict.
+# Parts mesurées le 2026-08-23 sur `web/` : fabrique partagée ~35 %, branche de ternaire ~20 %, valeur sous
+# une clé non reconnue ~26 %, entrée de tableau et valeur de retour pour le reste.
+CORPUS_ANTI_REGARD = r"""
+const cols = ['Entrée de tableau'];
+function nom() { return 'Valeur de retour'; }
+host.appendChild(opt('Argument de fabrique partagée'));
+const t = cond ? 'Branche de ternaire vraie' : 'Branche de ternaire fausse';
+const phrases = { page: 'Phrase sous une clé inconnue' };
+el.setAttribute('d', 'Attribut non affiché');
+"""
+ATTENDUS_HORS_REGARD = {"Entrée de tableau", "Valeur de retour", "Argument de fabrique partagée",
+                        "Branche de ternaire vraie", "Branche de ternaire fausse",
+                        "Phrase sous une clé inconnue", "Attribut non affiché"}
+
 
 def valider_instrument() -> list[str]:
     errs = []
-    st, dy, pc = extraire_module(CORPUS_TEMOIN)
+    st, dy, pc, _hr = extraire_module(CORPUS_TEMOIN)
     sst = {s.strip() for s in st}
     if {x.strip() for x in pc} != {"Bilingual", "Bilingue", "English only", "English rich", "Paire française <nom>", "English pair <name>"}:
         errs.append(f"témoin : le choix par LANG (ternaire ou bloc `if (LANG === 'en')`) ou la paire `{{fr, en}}` n'est pas "
@@ -559,6 +654,22 @@ def valider_instrument() -> list[str]:
         errs.append(f"témoin : chaînes comptées alors qu'elles ne sont pas affichées : {sorted(trop)}")
     if len(dy) != ATTENDUS_DYNAMIQUES:
         errs.append(f"témoin : {len(dy)} chaîne(s) dynamique(s) vue(s) au lieu de {ATTENDUS_DYNAMIQUES}")
+    # ANTI-CORPUS : le périmètre n'a pas bougé sans que l'aveu bouge avec lui.
+    st_a, dy_a, pc_a, hr_a = extraire_module(CORPUS_ANTI_REGARD)
+    vus_a = {x.strip() for x in st_a} | {x.strip() for x in dy_a} | {x.strip() for x in pc_a}
+    hors_a = {x.strip() for x in hr_a}
+    appris = sorted(ATTENDUS_HORS_REGARD & vus_a)
+    if appris:
+        errs.append(f"anti-corpus : la garde COMPTE désormais une forme qu'elle déclarait ne pas regarder : {appris}. "
+                    f"C'est un élargissement du périmètre : retirez ces formes de `ATTENDUS_HORS_REGARD`, refaites la "
+                    f"mesure et abaissez `PLAFOND_HORS_REGARD` avant de conclure.")
+    perdus = sorted(ATTENDUS_HORS_REGARD - hors_a - vus_a)
+    if perdus:
+        errs.append(f"anti-corpus : {perdus} n'est ni compté ni rendu hors-regard — l'aveu ne couvre plus ces formes.")
+    en_trop = sorted(hors_a - ATTENDUS_HORS_REGARD)
+    if en_trop:
+        errs.append(f"anti-corpus : hors-regard inattendu {en_trop} — l'anti-corpus doit nommer EXACTEMENT ce que la "
+                    f"garde ne regarde pas.")
     lex = cles_du_lexique('const I18N_EN = {\n  "Clé un": "Key one", "Clé deux": "Key two",\n  // c\n  "Clé trois": "Key three",\n  "Clé\\u00a0quatre": "Key four",\n};')
     if lex != {"Clé un", "Clé deux", "Clé trois", "Clé\xa0quatre"}:
         errs.append(f"témoin : lecture du lexique fausse : {sorted(lex)}")
@@ -580,24 +691,30 @@ def mesurer(registre: tuple[str, str] | None) -> tuple[dict[str, dict], set[str]
         with open(chemin, encoding="utf-8") as fh:
             src = fh.read()
         if f == "index.html":
-            st, dy, pc = extraire_index_html(src), [], []
+            st, dy, pc, hr = extraire_index_html(src), [], [], []
         elif f == "i18n.js":
             continue  # le lexique n'affiche rien
         elif registre and f == registre[0]:
-            st, dy, pc = extraire_module(hors_registre(registre[1]))  # la surface du registre est exempte, le reste jugé
+            st, dy, pc, hr = extraire_module(hors_registre(registre[1]))  # la surface du registre est exempte, le reste jugé
         else:
-            st, dy, pc = extraire_module(src)
+            st, dy, pc, hr = extraire_module(src)
         uniques = sorted({s.strip() for s in st})
         bilingues = {s.strip() for s in pc}
         couvertes = [s for s in uniques if s in cles] + sorted(bilingues)
         trous = [s for s in uniques if s not in cles]
         total = len(uniques) + len(bilingues)
+        aveugles = sorted({s.strip() for s in hr})
         resultats[f] = {
             "population": total,
             "couvertes": len(couvertes),
             "couvertes_liste": couvertes,
             "trous": trous,
             "dynamiques": len({s for s in dy}),
+            "hors_regard": aveugles,
+            # LA CONFESSION, ÉCRITE PAR LE DÉPÔT : parmi ce que la garde ne regarde pas, ce que le lexique
+            # porte DÉJÀ. Aucun humain ne l'écrit — c'est le dépôt qui prouve que le périmètre du critère de
+            # puits est plus étroit que l'affichage réel.
+            "hors_regard_au_lexique": [s for s in aveugles if s in cles],
             "taux": (100.0 * len(couvertes) / total) if total else 100.0,
         }
     return resultats, cles
@@ -608,6 +725,9 @@ def main(argv: list[str]) -> int:
     trous_de = None
     if "--trous" in argv:
         trous_de = argv[argv.index("--trous") + 1]
+    hors_de = None
+    if "--hors-regard" in argv:
+        hors_de = argv[argv.index("--hors-regard") + 1]
 
     errs = valider_instrument()
     if errs:
@@ -623,6 +743,7 @@ def main(argv: list[str]) -> int:
         return 2
     # Le module du registre est jugé au plafond zéro hors de la portée exempte (entrée dérivée, pas nommée).
     plafonds = {**PLAFOND_DE_TROUS, registre[0]: 0}
+    plafonds_hr = {**PLAFOND_HORS_REGARD, registre[0]: 0}
     resultats, cles = mesurer(registre)
     population = sum(r["population"] for r in resultats.values())
     if len(cles) < MIN_CLES:
@@ -646,22 +767,50 @@ def main(argv: list[str]) -> int:
             print(s)
         return 0
 
+    if hors_de:
+        r = resultats.get(hors_de)
+        if not r:
+            print(f"module inconnu : {hors_de}")
+            return 2
+        for s in r["hors_regard"]:
+            print(f"{'AU LEXIQUE' if s in cles else '          '}  {s}")
+        return 0
+
     largeur = max(len(m) for m in resultats)
-    print(f"{'module':<{largeur}}  population  couvertes  trous  dynamiques  taux")
+    print(f"{'module':<{largeur}}  population  couvertes  trous  dynamiques  hors-regard  dont au lexique   taux")
     for m, r in resultats.items():
-        print(f"{m:<{largeur}}  {r['population']:>10}  {r['couvertes']:>9}  {len(r['trous']):>5}  {r['dynamiques']:>10}  {r['taux']:>5.1f} %")
+        print(f"{m:<{largeur}}  {r['population']:>10}  {r['couvertes']:>9}  {len(r['trous']):>5}  {r['dynamiques']:>10}  "
+              f"{len(r['hors_regard']):>11}  {len(r['hors_regard_au_lexique']):>15}  {r['taux']:>5.1f} %")
     couvertes = sum(r["couvertes"] for r in resultats.values())
-    print(f"\n{population} chaînes statiques affichées, {couvertes} couvertes ({100.0 * couvertes / population:.1f} %), "
+    aveugles = sum(len(r["hors_regard"]) for r in resultats.values())
+    aveugles_au_lexique = sum(len(r["hors_regard_au_lexique"]) for r in resultats.values())
+    print(f"\n{population} chaînes statiques affichées REGARDÉES, {couvertes} couvertes ({100.0 * couvertes / population:.1f} %), "
           f"{len(cles)} clés au lexique. Surface exempte : la définition `const HELP` de {registre[0]} — {RAISON_DU_REGISTRE}.")
+    print(f"HORS-REGARD : {aveugles} littéraux qui ont la forme d'un libellé et que le critère de puits ne reconnaît PAS — "
+          f"la garde ne les juge pas, elle les publie. {aveugles_au_lexique} d'entre eux "
+          f"({100.0 * aveugles_au_lexique / aveugles if aveugles else 0.0:.1f} %) sont DÉJÀ des clés du lexique : c'est le "
+          f"dépôt lui-même qui atteste qu'ils sont affichés, et donc que le périmètre regardé est plus étroit que "
+          f"l'affichage. `--hors-regard MODULE` les liste.")
     if mesure:
         return 0
 
+    # UN MODULE MESURÉ SANS PLAFOND N'EST PAS JUGÉ. Il paraissait au tableau et le verdict le comptait vert
+    # sans qu'aucun cliquet ne le tienne ; la garde refuse désormais de conclure. `--mesure` reste utilisable
+    # pour relever le compte à inscrire.
+    sans_plafond = sorted(m for m in resultats if m not in plafonds or m not in plafonds_hr)
+    if sans_plafond:
+        print(f"::error::module(s) mesuré(s) mais hors du cliquet : {', '.join(sans_plafond)} — inscrivez chacun dans "
+              f"`PLAFOND_DE_TROUS` ET dans `PLAFOND_HORS_REGARD` à son compte relevé par `--mesure`. La garde refuse "
+              f"de conclure : un module rendu sans être jugé fait rendre vert sur ce que personne ne garde.")
+        return 2
+
     regressions = []
-    for m, plafond in sorted(plafonds.items()):
+    for m in sorted(set(plafonds) | set(plafonds_hr)):
         r = resultats.get(m)
         if r is None:
             regressions.append(f"{m} : plafond écrit mais module absent — retirez l'entrée ou restaurez le module.")
             continue
+        plafond = plafonds[m]
         if len(r["trous"]) > plafond:
             ex = ", ".join(f"« {s} »" for s in r["trous"][:8])
             regressions.append(
@@ -669,12 +818,24 @@ def main(argv: list[str]) -> int:
                 f"(couverture {r['taux']:.1f} %) — p. ex. {ex}. Inscrivez chaque chaîne affichée dans "
                 f"`web/i18n.js` (clé FR -> valeur EN) ; une chaîne dynamique se compose à partir de clés traduites."
             )
+        plafond_hr = plafonds_hr[m]
+        if len(r["hors_regard"]) > plafond_hr:
+            ex = ", ".join(f"« {s} »" for s in r["hors_regard"][:5])
+            regressions.append(
+                f"{m} : {len(r['hors_regard'])} littéral(aux) HORS-REGARD, plafond {plafond_hr} — p. ex. {ex}. "
+                f"Un libellé neuf posé dans une forme que la garde ne lit pas ne doit pas passer en silence : "
+                f"posez-le dans un puits reconnu (`textContent`, `label:`, `muted(`, littéral HTML…), ou faites "
+                f"lire cette forme à la garde et abaissez le plafond. Ce cliquet n'est pas relevable sans raison "
+                f"écrite : il garde ce que la garde IGNORE, et rendre vert sur ce qu'on ne regarde pas est pire "
+                f"qu'une garde absente. `--hors-regard {m}` les liste."
+            )
     if regressions:
         for e in regressions:
             print(f"::error::{e}")
-        print(f"\n{len(regressions)} module(s) au-dessus de leur plafond de trous du lexique.")
+        print(f"\n{len(regressions)} dépassement(s) de plafond (trous du lexique ou hors-regard).")
         return 1
-    print(f"Aucun module au-dessus de son plafond de trous ({len(plafonds)} plafonds tenus).")
+    print(f"Aucun module au-dessus de son plafond de trous ni de hors-regard "
+          f"({len(plafonds)} plafonds de trous et {len(plafonds_hr)} plafonds de hors-regard tenus).")
     return 0
 
 

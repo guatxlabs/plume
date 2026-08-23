@@ -1210,9 +1210,45 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[dashboards] tuile d'éditeur : ${boutons.length} outils habillés, largeur ${largeur ? largeur.value : "?"} col, grille qui avoue l'erreur ; lecteur : ${outilsL ? outilsL.children.length : 0} outils ; repliée : différée`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 19. L'IDENTITÉ EST DITE, ET L'ÉCRAN DE CONNEXION VERROUILLE CE QU'IL COUVRE. Le bloc vit dans `login.js`
+//     (extrait d'`app.js` par déplacement pur). Sur le shim : l'encart d'identité nomme l'utilisateur, son
+//     rôle et sa MÉTHODE quand elle n'est pas la session cookie (une session SSO ou démo doit se voir), il se
+//     cache quand personne n'est authentifié ; l'overlay de connexion pose `login-locked` sur le corps du
+//     document ET coupe la boucle d'auto-rafraîchissement (sinon l'API est martelée en 401 derrière l'écran),
+//     et la retire en repartant.
+// ---------------------------------------------------------------------------------------------
+{
+  const { setAuthUI, showLogin } = await import(pathToFileURL(path.join(WEB, "login.js")).href);
+  const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const encart = new Element("div"), identite = new Element("span"), overlay = new Element("div");
+  const qsOrigine = document.querySelector;
+  document.querySelector = (sel) => ({ "#authbox": encart, "#auth-id": identite, "#login-ov": overlay }[sel] || qsOrigine(sel));
+  try {
+    S.AUTH = { user: "alice", role: "admin", auth_method: "sso" };
+    setAuthUI();
+    exiger(identite.textContent === "alice · admin (sso)", `(19) l'encart d'identité rend « ${identite.textContent} »`);
+    exiger(identite.title === "Connecté : alice (admin) — sso", `(19) l'infobulle d'identité rend « ${identite.title} »`);
+    exiger(encart.hidden === false, "(19) l'encart d'identité reste caché alors qu'une session est ouverte");
+    S.AUTH = { user: "bob", role: "viewer", auth_method: "cookie" };
+    setAuthUI();
+    exiger(identite.textContent === "bob · viewer", `(19) la session cookie ne doit pas nommer sa méthode : « ${identite.textContent} »`);
+    S.AUTH = null;
+    setAuthUI();
+    exiger(encart.hidden === true, "(19) l'encart d'identité reste visible sans session");
+    S.autoTimer = setInterval(() => {}, 1e6);
+    showLogin(true);
+    exiger(overlay.hidden === false && document.body.classList.contains("login-locked"), `(19) l'écran de connexion : overlay ${overlay.hidden ? "caché" : "visible"}, corps ${document.body.classList.contains("login-locked") ? "verrouillé" : "NON verrouillé"}`);
+    exiger(S.autoTimer === null, "(19) la boucle d'auto-rafraîchissement tourne encore derrière l'écran de connexion : l'API serait martelée en 401");
+    showLogin(false);
+    exiger(overlay.hidden === true && !document.body.classList.contains("login-locked"), "(19) le verrou du corps du document survit à la fermeture de l'écran de connexion");
+  } finally { document.querySelector = qsOrigine; S.AUTH = null; }
+  console.log(`[connexion] identité nommée avec sa méthode hors session cookie, encart caché sans session, écran de connexion qui verrouille le corps et coupe l'auto-rafraîchissement`);
+}
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau.`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources rend attendue / inattendue / marquée avec la raison et offre l'acquittement à l'éditeur ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et compte les alertes à part ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement.`);

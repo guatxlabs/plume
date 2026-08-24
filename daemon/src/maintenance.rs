@@ -27,6 +27,21 @@ use crate::*;
 /// le sache (ce qui casserait l'appariement de l'index), ni l'inverse.
 const EXPR_INDEX_FIELDS: &[&str] = HOT_FIELDS;
 
+/// LE PRÉFIXE DE LA FAMILLE — et c'est le SEUL critère qui SURVIT au retrait d'un champ de la liste
+/// chaude. Tant qu'un champ est déclaré, son index se nomme depuis la liste ; le jour où il en sort,
+/// la liste ne peut plus le nommer, et seul le préfixe désigne encore ce qui reste sur la base.
+/// C'est de lui que `drop_orphan_expr_field_indexes` dérive son périmètre.
+///
+/// CE QUI EMPÊCHE CE PRÉFIXE DE DÉRIVER DE LA DDL QUI CRÉE, alors que rien ici ne relit la source du
+/// produit. La garde `P6.8-e` fabrique son orphelin avec le préfixe que le produit CRÉE, et exige
+/// qu'il DISPARAISSE : un renommage de la famille qui oublierait cette constante-ci ferait chercher
+/// la purge sous un préfixe que plus rien ne porte — un no-op parfaitement silencieux — et fait donc
+/// tomber deux témoins de cette garde. La confrontation qui l'accompagne (le préfixe attendu par la
+/// garde est bien celui des index créés, ces derniers étant retrouvés par l'EXPRESSION qu'ils
+/// portent et jamais par leur nom, faute de quoi elle serait circulaire) ne remplace pas ces deux
+/// témoins : elle NOMME la cause au lieu de laisser lire un orphelin qui survit.
+const PREFIXE_INDEX_CHAMP_CHAUD: &str = "idx_ev_f_";
+
 /// Version d'exécution réelle de la SQLite liée (SQLCipher vendoré). On la lit au lieu
 /// de supposer : le crate `libsqlite3-sys` 0.28 vendore SQLite 3.39.4 (< 3.43) -> `contentless_delete=1`
 /// (ajouté en 3.43) N'EST PAS disponible. On vérifie donc à l'exécution et on documente le chemin pris.
@@ -110,7 +125,7 @@ fn expr_indexes_constates(conn: &Connection) -> (Vec<&'static str>, Vec<&'static
         let au_catalogue = conn
             .query_row(
                 "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1",
-                params![format!("idx_ev_f_{champ}")],
+                params![format!("{PREFIXE_INDEX_CHAMP_CHAUD}{champ}")],
                 |_| Ok(()),
             )
             .is_ok();
@@ -199,6 +214,10 @@ pub(crate) fn reconcile_index_state(conn: &Connection, conf: &HashMap<String, St
 /// n'est pas décoratif : il rend le compte rendu EXERÇABLE, de sorte qu'une garde assère LA valeur
 /// imprimée et non une reconstruction voisine qui pourrait en diverger (`P6.8-f`).
 pub(crate) fn reconcile_expr_indexes_background(db: &Arc<Mutex<Connection>>) -> Option<String> {
+    // RÉCONCILIER, C'EST CONVERGER DANS LES DEUX SENS. Avant de créer ce que la déclaration promet,
+    // on retire ce que plus personne ne sait nommer — et AVANT de lire le levier, donc dans les deux
+    // régimes (la décision est motivée sur `drop_orphan_expr_field_indexes`, `P6.8-e`).
+    drop_orphan_expr_field_indexes(&db.lock());
     let conf = load_config();
     if cfg(&conf, "PLUME_EXPRINDEX", "1") != "1" {
         return None; // OFF : rien à créer (le drop est synchrone au boot).
@@ -239,6 +258,96 @@ pub(crate) fn reconcile_expr_indexes_background(db: &Arc<Mutex<Connection>>) -> 
     };
     eprintln!("{ligne}");
     Some(ligne)
+}
+
+/// P6.8-e — DROP des index de champ chaud ORPHELINS : ceux dont le CHAMP a quitté la liste chaude.
+/// Rend les noms effectivement retirés (pour que le geste soit exerçable, pas seulement journalisé).
+///
+/// LE MODE D'ÉCHEC, QUI EST CELUI QU'UN VOISIN A DÉJÀ DÉCRIT. `reconcile_expr_indexes_fast` ne droppe
+/// que les noms qu'il DÉRIVE de la liste COURANTE. Retirer un champ de `HOT_FIELDS` retire donc, du
+/// même geste, la seule chose qui savait NOMMER son index : celui-ci reste sur toute base déjà
+/// déployée, payé en disque ET en écriture d'arbre PAR LIGNE INGÉRÉE, et même l'interrupteur qui
+/// éteint la famille entière ne l'atteint pas, puisqu'il énumère lui aussi depuis la liste courante.
+/// C'est mot pour mot le mode d'échec que `drop_orphan_auto_field_indexes_background` a été écrit
+/// pour fermer sur la famille voisine `idx_ev_auto_*` ; ceci en est le symétrique pour `idx_ev_f_*`.
+///
+/// LE CRITÈRE EST LE PRÉFIXE, PAS LA LISTE. On n'écrit aucun nom : on DEMANDE au catalogue les index
+/// de la famille, et on retire ceux dont le champ — le nom, privé de son préfixe — n'est PLUS
+/// déclaré. Un champ retiré demain est donc nettoyé au démarrage suivant sans que personne ait à
+/// inscrire son index quelque part. Dériver, ne pas énumérer.
+///
+/// TOURNE-T-IL QUAND LE LEVIER EST ÉTEINT ? OUI, ET C'EST TRANCHÉ ICI. Un retrait qui n'aurait lieu
+/// que sous levier ARMÉ abandonnerait à jamais les orphelins d'une installation qui a ÉTEINT la
+/// famille — or c'est précisément celle qui ne veut plus payer un seul de ces index, et son levier
+/// éteint ne sait pas davantage les nommer. Le retrait est donc INCONDITIONNEL, et il est appelé
+/// AVANT la lecture du levier. Sa prudence ne vient pas d'un drapeau mais de son CRITÈRE, qui ne
+/// désigne QUE des objets que plus rien ne réclame :
+///   - `type='index'` — un objet homonyme d'un AUTRE type (table, vue) n'est jamais touché ;
+///   - le champ ne doit PLUS être déclaré — sous levier armé, aucun index déclaré n'entre donc dans
+///     le périmètre (le voir recréé juste après serait le signe d'une purge trop large) ; sous levier
+///     éteint, les index déclarés ont déjà été droppés par le réconciliateur synchrone, et il ne
+///     reste que ceux que personne d'autre ne sait nommer ;
+///   - un nom réduit au seul préfixe est LAISSÉ : le produit n'en crée jamais (il appose toujours un
+///     champ non vide), donc il ne vient pas de cette famille ;
+///   - le nom passe enfin le prédicat d'identifiant du produit, comme chez le voisin.
+///
+/// LA CONSÉQUENCE ASSUMÉE, ET ELLE EST NOMMÉE. Un binaire qui REVIENT en arrière (retour à une
+/// version dont la liste chaude est plus courte) retirera les index des champs que la version
+/// suivante avait ajoutés. C'est réparable par construction, et sans intervention : re-déployer la
+/// version récente les recrée en tâche de fond. Le coût d'un aller-retour est donc une re-création
+/// d'index, à comparer à un orphelin permanent que plus aucun code ne peut retirer.
+///
+/// SÛR EN TÂCHE DE FOND, contrairement à un CREATE : `DROP INDEX` rend au freelist les pages du btree
+/// sans LIRE ni DÉCHIFFRER `event` (cf. `drop_subsumed_index`). Idempotent — au démarrage suivant il
+/// n'y a plus rien à voir — et non fatal : un échec est NOMMÉ et retenté au boot suivant.
+pub(crate) fn drop_orphan_expr_field_indexes(conn: &Connection) -> Vec<String> {
+    // `ESCAPE '\'` n'est pas décoratif : dans un motif LIKE, `_` signifie « un caractère quelconque »
+    // — sans échappement le motif attraperait aussi des noms d'AUTRES familles.
+    let motif = format!("{}%", PREFIXE_INDEX_CHAMP_CHAUD.replace('_', "\\_"));
+    let famille: Vec<String> = match conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE ?1 ESCAPE '\\' ORDER BY name")
+    {
+        Ok(mut st) => match st.query_map(params![motif], |r| r.get::<_, String>(0)) {
+            Ok(rows) => rows.flatten().collect(),
+            Err(e) => {
+                eprintln!("[reconcile-bg] énumération des index de champ chaud ÉCHEC ({e}) — retry au prochain boot");
+                return Vec::new();
+            }
+        },
+        Err(e) => {
+            eprintln!("[reconcile-bg] énumération des index de champ chaud ÉCHEC ({e}) — retry au prochain boot");
+            return Vec::new();
+        }
+    };
+    let mut retires = Vec::new();
+    for nom in famille {
+        // Le champ est DÉRIVÉ du nom, jamais l'inverse : c'est ce qui rend le geste possible pour un
+        // champ que la déclaration ne porte plus.
+        let champ = match nom.strip_prefix(PREFIXE_INDEX_CHAMP_CHAUD) {
+            Some(c) if !c.is_empty() => c,
+            _ => continue, // nom réduit au préfixe : le produit n'en crée pas -> pas à nous de le retirer
+        };
+        if EXPR_INDEX_FIELDS.contains(&champ) {
+            continue; // champ DÉCLARÉ -> ce n'est pas un orphelin, quel que soit l'état du levier
+        }
+        // Le nom vient de sqlite_master (jamais d'une entrée utilisateur) ; il est EN OUTRE re-validé
+        // par le même prédicat d'identifiant que partout ailleurs -> aucune interpolation non contrôlée.
+        if !soql_ident_ok(&nom) {
+            continue;
+        }
+        match conn.execute(&format!("DROP INDEX IF EXISTS {nom}"), []) {
+            Ok(_) => {
+                eprintln!(
+                    "[reconcile-bg] {nom} DROPPÉ (index de champ chaud ORPHELIN : « {champ} » n'est \
+                     plus dans la liste chaude, plus rien ne savait le nommer — ni le kill-switch, ni \
+                     la purge voisine ; P6.8-e)"
+                );
+                retires.push(nom);
+            }
+            Err(e) => eprintln!("[reconcile-bg] DROP INDEX {nom} ÉCHEC ({e}) — retry au prochain boot"),
+        }
+    }
+    retires
 }
 
 /// Crée l'index MANQUANT idx_event_category EN TÂCHE DE FOND (jamais synchrone au boot :

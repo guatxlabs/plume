@@ -341,7 +341,13 @@ env:
   # trois tests SANS `cfg` de feature, présents dans les DEUX profils (la mutation qui nomme le
   # compte annoncé, son témoin inverse qui interdit un verdict accusant toujours, et la validation
   # de l'instrument — un nom déjà porté par un objet d'un autre type fait échouer la création).
-  EXPECTED_TESTS: "1271"
+  # RÉ-ÉNUMÉRÉ le 2026-08-24 (MÊME commande) sur l'arbre qui porte le correctif P6.8-e — un champ
+  # retiré de la liste chaude ne laisse plus son index à vie, le retrait de fond dérivant son
+  # périmètre du PRÉFIXE de la famille et non de la liste des champs : cinq tests SANS `cfg` de
+  # feature, présents dans les DEUX profils (la mutation par le vrai point d'entrée, le témoin
+  # inverse qui interdit la purge trop large, la prudence d'un geste inconditionnel, l'ordre qui
+  # tient la décision sur le levier, et la confrontation du préfixe à ce que le produit crée).
+  EXPECTED_TESTS: "1276"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -649,7 +655,12 @@ jobs:
           # l'écart reste **220**. Ce compteur-ci bouge AVEC l'autre : trois tests sans `cfg` entrent
           # dans les deux profils, et le laisser en arrière rendrait ce job rouge sans rien mesurer
           # de neuf.
-          EXPECTED_COLD_TESTS: "1491"
+          # RÉ-MESURÉ le 2026-08-24 par la MÊME commande, sur l'arbre qui porte le correctif P6.8-e
+          # (cinq tests sans `cfg` : le retrait de fond des index de champ chaud orphelins, dérivé du
+          # préfixe de la famille) : 1496 avec `cold_tier` pour 1276 par défaut — l'écart reste
+          # **220**. Ce compteur-ci bouge AVEC l'autre : cinq tests sans `cfg` entrent dans les deux
+          # profils, et le laisser en arrière rendrait ce job rouge sans rien mesurer de neuf.
+          EXPECTED_COLD_TESTS: "1496"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

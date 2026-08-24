@@ -30,12 +30,19 @@
 // (`cfg(&load_config(), …)`, la même précédence env > fichier > défaut), et il est NOMMÉ dans chaque
 // verdict pour qu'un rouge dise sous quel régime il tombe.
 //
-// LA RÉCIPROQUE, ET CE QU'ELLE DÉCOUVRE. Exiger que chaque champ déclaré ait son index ne suffit pas :
-// le réconciliateur ne sait dropper QUE les noms qu'il dérive de la liste. Un index de la famille dont le
-// champ a quitté la déclaration n'est donc plus retiré par personne — ni par le kill-switch, ni par la
-// purge de fond, qui ne connaît que la famille `idx_ev_auto_*` (cf. autoindex_retire.rs). Il resterait sur
-// une base vivante, payé en disque et en écriture btree à chaque ligne ingérée. La garde exige donc aussi
-// l'inclusion inverse, et le troisième test le prouve en montrant qu'un tel orphelin SURVIT au kill-switch.
+// LA RÉCIPROQUE, ET CE QU'ELLE A DÉCOUVERT. Exiger que chaque champ déclaré ait son index ne suffit
+// pas : le réconciliateur ne sait dropper QUE les noms qu'il dérive de la liste. Un index de la famille
+// dont le champ a quitté la déclaration n'était donc retiré par personne — ni par le kill-switch, ni par
+// la purge de fond, qui ne connaît que la famille `idx_ev_auto_*` (cf. autoindex_retire.rs) : il restait
+// sur une base vivante, payé en disque et en écriture btree à chaque ligne ingérée. C'est le constat que
+// la clé `P6.8-e` a ouvert, puis fermé par `drop_orphan_expr_field_indexes`, dont le critère est le
+// PRÉFIXE de la famille et non la liste des champs (cf. index_de_champ_chaud_orphelin.rs).
+//
+// CE QUE LE TROISIÈME TEST DIT AUJOURD'HUI, ET POURQUOI IL RESTE. L'inclusion inverse garde tout son
+// objet : un orphelin ne doit pas s'INTRODUIRE en silence. Et la seconde moitié du test énonce une
+// limite qui n'a pas bougé — le KILL-SWITCH SYNCHRONE, lui, ne sait toujours pas nommer cet index : ce
+// n'est pas lui qui le retire, c'est la passe de FOND. Le geste qui répare vit ailleurs que le geste qui
+// éteint, et c'est exactement ce qui rendait l'orphelin permanent avant `P6.8-e`.
 //
 // AUCUN ÉTAT DE PROCESSUS N'EST ÉCRIT ICI. Le régime est lu, jamais posé : `cle_at_rest_voie_unique.rs`
 // a mesuré ce que coûte un test qui pose une variable d'environnement — deux tests d'incidents sans
@@ -310,15 +317,16 @@ mod index_de_champ_chaud {
     }
 
     /// LA RÉCIPROQUE, ET LA RAISON DE SON EXISTENCE — un index de la famille dont le champ a quitté la
-    /// déclaration n'est retiré par PERSONNE.
+    /// déclaration échappe à TOUT geste dérivé de la liste courante.
     ///
     /// Deux choses sont prouvées ici, et la seconde justifie la première :
     ///   (1) l'inclusion inverse ATTRAPE cet index — le témoin est fabriqué à partir de la déclaration
     ///       elle-même, jamais d'un nom inventé, et le témoin POSITIF (sans orphelin, rien n'est accusé)
     ///       est joué juste avant pour que l'instrument ne puisse pas accuser à vide ;
-    ///   (2) le kill-switch NE LE RETIRE PAS — le réconciliateur ne droppe que les noms qu'il dérive de
-    ///       la liste courante. C'est exactement pourquoi retirer un champ de `HOT_FIELDS` sans cette
-    ///       garde laisserait un index mort sur toute base déjà déployée.
+    ///   (2) le kill-switch SYNCHRONE NE LE RETIRE PAS — le réconciliateur ne droppe que les noms qu'il
+    ///       dérive de la liste courante. C'est exactement pourquoi retirer un champ de `HOT_FIELDS`
+    ///       laissait un index mort sur toute base déjà déployée, et pourquoi le geste qui le retire
+    ///       (`P6.8-e`) dérive son critère du PRÉFIXE et vit dans la passe de FOND, pas ici.
     #[test]
     fn un_index_de_la_famille_sans_champ_declare_est_accuse_et_survit_au_kill_switch() {
         let attendus = attendus();
@@ -355,9 +363,11 @@ mod index_de_champ_chaud {
              cet index sur toute base déployée sans que rien ne rougisse."
         );
 
-        // (2) LE KILL-SWITCH NE LE VOIT PAS — quelle que soit la valeur du levier dans l'environnement,
-        // le réconciliateur ne droppe que `<préfixe><champ déclaré>`. La limite est réelle et nommée :
-        // c'est elle qui rend l'inclusion inverse nécessaire plutôt que décorative.
+        // (2) LE KILL-SWITCH SYNCHRONE NE LE VOIT PAS — quelle que soit la valeur du levier dans
+        // l'environnement, le réconciliateur ne droppe que `<préfixe><champ déclaré>`. La limite est
+        // réelle et nommée : c'est elle qui rend l'inclusion inverse nécessaire plutôt que décorative,
+        // et qui a imposé de placer le retrait des orphelins AILLEURS — dans la passe de fond, sur un
+        // critère de PRÉFIXE (`P6.8-e`), le seul qui survive au retrait d'un champ.
         let eteint: HashMap<String, String> =
             [(LEVIER.to_string(), "0".to_string())].into_iter().collect();
         reconcile_index_state(&conn, &eteint);

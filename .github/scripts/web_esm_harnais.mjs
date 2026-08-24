@@ -70,6 +70,19 @@ class Element {
   removeChild(c) { this.children = this.children.filter((x) => x !== c); return c; }
   remove() { if (this.parentNode) this.parentNode.removeChild(this); }
   replaceWith(...cs) { if (!this.parentNode) return; const p = this.parentNode, i = p.children.indexOf(this); p.children.splice(i, 1, ...cs); cs.forEach((c) => (c.parentNode = p)); }
+  // ATTRIBUTS REFLÉTÉS (`P11.8-d`). Un navigateur REFLÈTE ces propriétés IDL dans l'attribut du même nom :
+  // `el.placeholder = '…'` POSE l'attribut, et `setAttribute('placeholder', …)` change la propriété. Le shim
+  // ne le faisait pas, et c'était un TROU DE TÉMOIN, pas un détail : `i18nWalk` lit et écrit les libellés
+  // affichés PAR ATTRIBUT, donc une valeur posée par propriété était intraduisible ici — sa clé pouvait être
+  // au lexique et sa valeur anglaise n'être jamais rendue sans que rien ne rougisse. Mesuré dans `web/` le
+  // 2026-08-24 : 228 valeurs affichées sont posées par propriété (201 `title`, 25 `placeholder`, 2 `label`),
+  // aucune n'était témoignée en anglais. Un navigateur rend "" et non `null` pour ces trois-là non posées.
+  get title() { return this.attributes.title ?? ""; }
+  set title(v) { this.setAttribute("title", v); }
+  get placeholder() { return this.attributes.placeholder ?? ""; }
+  set placeholder(v) { this.setAttribute("placeholder", v); }
+  get label() { return this.attributes.label ?? ""; }
+  set label(v) { this.setAttribute("label", v); }
   setAttribute(k, v) { this.attributes[k] = String(v); }
   getAttribute(k) { return this.attributes[k] ?? null; }
   removeAttribute(k) { delete this.attributes[k]; }
@@ -816,7 +829,9 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 //     comme l'observateur de `app.js` le fait sur un nœud ajouté, et c'est le TEXTE qui est jugé : une
 //     tuile de `system.js` et un en-tête d'`index.html` en anglais, leur infobulle aussi (y compris
 //     quand le nœud ajouté PORTE lui-même l'attribut), une chaîne hors lexique laissée telle quelle, un
-//     nœud texte seul traduit par son parent. Témoin inverse : sous `LANG='fr'`, rien ne bouge.
+//     nœud texte seul traduit par son parent, et — `P11.8-d` — une valeur POSÉE PAR PROPRIÉTÉ
+//     (`el.placeholder =`, `el.title =`), que le shim reflète désormais dans l'attribut comme un
+//     navigateur. Témoin inverse : sous `LANG='fr'`, rien ne bouge, propriétés comprises.
 //     Le shim n'a ni TreeWalker ni sélecteur d'attribut : ils sont fournis ici, au plus juste, sur
 //     l'arbre qu'il enregistre (le texte d'un élément vit dans `_text`, un nœud `Text` dans `_t`).
 // ---------------------------------------------------------------------------------------------
@@ -899,6 +914,16 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const statut = new Element("span"); const texteSeul = document.createTextNode("connecté"); statut.appendChild(texteSeul);
   walkEN(texteSeul);
   exiger(texteSeul.nodeValue === "connected", `(10) LANG='en' : un nœud texte passé seul à i18nWalk n'est pas traduit (« ${texteSeul.nodeValue} »)`);
+  // Une valeur POSÉE PAR PROPRIÉTÉ (`el.placeholder = '…'`, `el.title = '…'`) : le navigateur la reflète dans
+  // l'attribut, `i18nWalk` la traduit donc comme tout autre porteur. Le geste jugé est celui des nœuds texte
+  // ci-dessus — rendu sous `LANG='en'`, parcouru, puis LU — et non la seule présence de la clé au lexique :
+  // une clé déclarée dont la valeur anglaise n'est jamais rendue est un faux vert.
+  const parPropriete = new Element("input");
+  parPropriete.placeholder = "Filtrer les termes…";
+  parPropriete.title = "Rafraîchir ce panneau";
+  walkEN(parPropriete);
+  exiger(parPropriete.placeholder === "Filter terms…", `(10) LANG='en' : un placeholder posé par PROPRIÉTÉ rend « ${parPropriete.placeholder} » — la valeur anglaise n'est pas appliquée`);
+  exiger(parPropriete.title === "Refresh this panel", `(10) LANG='en' : un title posé par PROPRIÉTÉ rend « ${parPropriete.title} »`);
 
   // (c) témoin inverse : sous LANG='fr', la même marche ne change rien.
   const wrapFR = new Element("div");
@@ -909,6 +934,11 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const h2FR = new Element("h2"); h2FR._text = enTete; const boutonFR = new Element("button"); boutonFR.setAttribute("title", infobulle); h2FR.appendChild(boutonFR);
   walkFR(h2FR);
   exiger(h2FR._text === enTete && boutonFR.getAttribute("title") === infobulle, "(10) LANG='fr' : l'en-tête ou son infobulle ont été modifiés");
+  const parProprieteFR = new Element("input");
+  parProprieteFR.placeholder = "Filtrer les termes…"; parProprieteFR.title = "Rafraîchir ce panneau";
+  walkFR(parProprieteFR);
+  exiger(parProprieteFR.placeholder === "Filtrer les termes…" && parProprieteFR.title === "Rafraîchir ce panneau",
+    `(10) LANG='fr' : une valeur posée par propriété a été traduite (« ${parProprieteFR.placeholder} » / « ${parProprieteFR.title} »)`);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1048,8 +1078,9 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 //     `LANG='en'` SANS la marche rend encore « Fermer » — la traduction vient du lexique appliqué, pas
 //     d'un mot anglais écrit dans le module (un tel mot passerait le témoin sans lexique). Témoin
 //     inverse : sous `LANG='fr'`, aucun mot anglais. Le texte d'attente du filtre du glossaire est posé
-//     par propriété (`.placeholder =`), que le shim ne reflète pas en attribut : sa valeur française est
-//     lue ici, sa traduction par attribut est celle que le témoin 10 prouve sur un nœud porteur.
+//     par propriété (`.placeholder =`) : le shim reflète maintenant cette propriété dans l'attribut comme
+//     un navigateur (`P11.8-d`), donc sa valeur est jugée dans les DEUX langues ici, et non plus seulement
+//     en français — une clé au lexique dont l'anglais n'est jamais rendu était un faux vert.
 // ---------------------------------------------------------------------------------------------
 {
   const SUFFIXE = "?plume-lang=en";
@@ -1059,6 +1090,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const aideEN = await import(urlWeb("help.js", SUFFIXE));
   const { i18nWalk: walkEN } = await import(urlWeb("i18n.js", SUFFIXE));
   localStorage.removeItem("soc_lang");
+  const { i18nWalk: walkFR } = await import(urlWeb("i18n.js"));
   const cueillir = (el, tag, acc) => { if (el.tagName === tag) acc.push(el); (el.children || []).forEach((c) => cueillir(c, tag, acc)); return acc; };
   // Rend une modale, la retire du corps, rend le texte de ses boutons de fermeture (après la marche si demandée).
   const fermetures = (ouvrir, marche) => {
@@ -1091,7 +1123,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     const filtre = cueillir(hote, "INPUT", []).find((i) => i.classList.contains("hg-filter"));
     return { texte: texte(hote), sommaire: toc ? toc.getAttribute("aria-label") : null, filtre: filtre ? filtre.placeholder : null };
   };
-  const gFR = guide(aideFR.renderHelpGuide), gEN = guide(aideEN.renderHelpGuide, walkEN);
+  const gFR = guide(aideFR.renderHelpGuide, walkFR), gEN = guide(aideEN.renderHelpGuide, walkEN);
   for (const mot of ["Espaces & vues", "GXQL — Référence", "Langage de recherche. Exemples :", "Ouvrir la référence GXQL complète", "Glossaire", "Raccourcis", "Guide intégré de Plume"]) {
     exiger(gFR.texte.includes(mot), `(14) guide sous LANG='fr' : « ${mot} » absent`);
     exiger(!gEN.texte.includes(mot), `(14) guide sous LANG='en' : « ${mot} » est resté en français — la clé manque au lexique`);
@@ -1101,8 +1133,13 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     exiger(!gFR.texte.includes(mot), `(14) guide sous LANG='fr' : un mot anglais « ${mot} » est rendu`);
   }
   exiger(gFR.sommaire === "Sommaire du guide" && gEN.sommaire === "Guide contents", `(14) nom accessible du sommaire : fr « ${gFR.sommaire} », en « ${gEN.sommaire} »`);
+  // `P11.8-d` — le texte d'attente du glossaire est posé PAR PROPRIÉTÉ (`.placeholder =`). Il est désormais
+  // jugé dans les DEUX langues, comme tout autre libellé du guide : le français rendu, l'anglais RENDU après
+  // la marche du lexique. Tant que le shim ne reflétait pas la propriété dans l'attribut, seule la valeur
+  // française était lue — la clé pouvait être au lexique et son anglais n'être jamais appliqué.
   exiger(gFR.filtre === "Filtrer les termes…", `(14) texte d'attente du filtre du glossaire sous LANG='fr' : « ${gFR.filtre} »`);
-  console.log(`[aide] ${ouvreurs.length} ouvreurs de modale : bouton « Fermer » sous fr, « Close » sous en après la marche du lexique ; guide : ${7 * 2} libellés rendus dans la langue de l'instance, nom accessible du sommaire traduit`);
+  exiger(gEN.filtre === "Filter terms…", `(14) texte d'attente du filtre du glossaire sous LANG='en' : « ${gEN.filtre} » — une valeur posée par propriété dont l'anglais n'est pas appliqué`);
+  console.log(`[aide] ${ouvreurs.length} ouvreurs de modale : bouton « Fermer » sous fr, « Close » sous en après la marche du lexique ; guide : ${7 * 2} libellés rendus dans la langue de l'instance, nom accessible du sommaire traduit, et le texte d'attente du glossaire — posé par PROPRIÉTÉ — rendu dans les deux langues`);
 }
 
 // ---------------------------------------------------------------------------------------------

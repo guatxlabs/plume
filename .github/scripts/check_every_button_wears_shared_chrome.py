@@ -21,13 +21,26 @@ habillé par un contexte posé ailleurs rougit ici ; la réponse est de lui donn
 est précisément la règle. L'instrument se valide sur deux témoins (une forme nue DOIT rougir, une forme
 habillée NE DOIT PAS) et refuse de conclure sous un plancher de sites, de contextes et de classes.
 
-LA RACINE EXAMINÉE est lue par le geste partagé `racine_designee()`, importé de la garde sœur
+ON DÉRIVE DE RÈGLES, PAS DE PROSE (`P8.27-b`). La dérivation ne dépouillait pas les commentaires de la
+feuille. Un commentaire qui CITE un corps de règle portant `cursor:pointer` et dont une tranche séparée par
+une virgule finit sur un jeton de la forme `.nom` — une virgule suffit, sans elle le mot `button` suivant
+dans la même tranche fait prendre l'autre branche et rien ne bouge — FABRIQUAIT une classe de bouton. Le
+sens de l'erreur est ce qui la rend grave : la garde n'inventait pas un refus, elle ÉLARGISSAIT en silence
+l'ensemble des classes tenues pour habillées, si bien qu'un bouton réellement nu pouvait être déclaré
+conforme par une phrase écrite ailleurs. Une garde qu'on rend plus permissive en lui PARLANT ne fait aucun
+bruit. Le dépouillement est celui de la garde sœur, `sans_commentaires_css()`, IMPORTÉ et non recopié : la
+sœur, elle, ne souffrait pas du défaut, et deux exemplaires d'une même règle finissent par diverger. Un
+témoin épingle qu'aucun commentaire ne change plus un compte, un autre que les vraies règles sont toujours
+lues — sans quoi le dépouillement rendrait l'instrument aveugle au lieu de le rendre exact.
+
+LA RACINE EXAMINÉE est lue par le geste partagé `racine_designee()`, importé de la même garde sœur
 `check_every_style_selector_has_a_target.py` plutôt que recopié (`P8.27-a`).
 """
 import os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from check_every_style_selector_has_a_target import racine_designee  # noqa: E402  (source unique de vérité)
+from check_every_style_selector_has_a_target import (  # noqa: E402  (source unique de vérité)
+    racine_designee, sans_commentaires_css)
 
 WEB = None  # renseigné par main() : la racine ne se devine pas à l'import (voir `racine_designee`)
 PLANCHER_SITES, PLANCHER_CONTEXTES, PLANCHER_CLASSES = 250, 10, 12
@@ -38,6 +51,7 @@ VIDES = ("input", "br", "img", "hr", "meta", "link", "path", "circle", "rect", "
 
 
 def deriver(css):
+    css = sans_commentaires_css(css)  # on dérive de RÈGLES, pas de prose — voir `P8.27-b` en tête
     ctx, cls = set(), set()
     for sels, corps in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
         chrome, pointeur = re.search(r"\b(border|background)\b", corps), "cursor:pointer" in corps.replace(" ", "")
@@ -127,7 +141,17 @@ def sites_js(nom, texte, ctx, cls, compter):
 def main():
     global WEB
     WEB = os.path.join(racine_designee(), "web")
-    ctx, cls = deriver(open(os.path.join(WEB, "style.css"), encoding="utf-8").read())
+    css = open(os.path.join(WEB, "style.css"), encoding="utf-8").read()
+    ctx, cls = deriver(css)
+    # Témoins de la DÉRIVATION, dans les deux sens. (1) Aucun commentaire ne change plus un compte : la
+    # prose ci-dessous cite un corps de règle et finit une tranche sur `d'index.html` — la virgule est
+    # nécessaire — et elle faisait naître une classe de bouton de plus, donc habillait des boutons nus.
+    # (2) Le dépouillement ne rend pas la dérivation aveugle : une vraie règle reste vue, une règle
+    # commentée ne l'est pas. Sans ce second témoin, retirer les commentaires pourrait tout retirer.
+    prose = "\n/* la regle vit dans d'index.html, sous la forme button{cursor:pointer} */\n"
+    assert deriver(css + prose) == (ctx, cls), "témoin : un commentaire de style.css fabrique encore un contexte ou une classe"
+    assert deriver("/* .commentee{cursor:pointer} */\n.reelle{cursor:pointer}\n")[1] == {".reelle"}, \
+        "témoin : le dépouillement des commentaires a rendu la dérivation aveugle aux vraies règles"
     html = open(os.path.join(WEB, "index.html"), encoding="utf-8").read()
     for m in re.finditer(r"<\w+\s+([^<>]*)>", html):
         for i in ids(m.group(1)): ID_HTML[i[1:]] = noms(m.group(1))

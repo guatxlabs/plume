@@ -332,7 +332,11 @@ env:
   # « Activée » du formulaire d'édition aussi durable que l'interrupteur de la ligne, la réimposition
   # d'un fichier config.d scopée à ce qu'elle possède, et le renommage d'un contenu adossé refusé :
   # six tests SANS `cfg` de feature, présents dans les DEUX profils.
-  EXPECTED_TESTS: "1264"
+  # RÉ-ÉNUMÉRÉ le 2026-08-24 (MÊME commande) sur l'arbre qui porte la garde P6.8-d — les index
+  # d'expression des champs chauds CONSTATÉS au catalogue d'une base migrée, l'attente DÉRIVÉE de
+  # la déclaration et non énumérée à côté d'elle, dans les deux sens du levier `PLUME_EXPRINDEX` :
+  # quatre tests SANS `cfg` de feature, présents dans les DEUX profils.
+  EXPECTED_TESTS: "1268"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -629,7 +633,12 @@ jobs:
           # P11.5-d (six tests sans `cfg`) : 1484 avec `cold_tier` pour 1264 par défaut — l'écart reste
           # **220**. Ce compteur-ci bouge AVEC l'autre : six tests sans `cfg` entrent dans les deux
           # profils, et le laisser en arrière rendrait ce job rouge sans rien mesurer de neuf.
-          EXPECTED_COLD_TESTS: "1484"
+          # RÉ-MESURÉ le 2026-08-24 par la MÊME commande, sur l'arbre qui porte la garde P6.8-d
+          # (quatre tests sans `cfg` : les index d'expression des champs chauds constatés au
+          # catalogue d'une base migrée) : 1488 avec `cold_tier` pour 1268 par défaut — l'écart
+          # reste **220**. Ce compteur-ci bouge AVEC l'autre : quatre tests sans `cfg` entrent dans
+          # les deux profils, et le laisser en arrière rendrait ce job rouge sans rien mesurer de neuf.
+          EXPECTED_COLD_TESTS: "1488"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

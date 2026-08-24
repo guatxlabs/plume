@@ -34,12 +34,15 @@ LA GARDE REFUSE UNE RÉGRESSION, PAS UN ÉTAT. Le nombre d'orphelins est compar�
 sa date ; une règle morte de plus rougit, en retirer une autorise à abaisser le plafond. L'instrument se
 valide d'abord sur deux témoins (une règle `#inexistant{}` DOIT rougir, `.btn` NE DOIT PAS) et refuse de
 conclure sous un plancher de sélecteurs et de fichiers de corpus.
+
+LA RACINE EXAMINÉE EST UN GESTE PARTAGÉ, ÉCRIT ICI ET NULLE PART AILLEURS. `racine_designee()` est
+IMPORTÉE par les deux gardes sœurs qui lisent la même surface (`check_every_button_wears_shared_chrome.py`,
+`check_no_operational_figure_is_published.py`) plutôt que recopiée : trois recopies, c'est ce qui a
+permis à l'une des trois de diverger et d'ignorer en silence la racine qu'on lui désignait (`P8.27-a`).
 """
 import os, re, subprocess, sys
 
-RACINE = (sys.argv[1] if len(sys.argv) > 1 else subprocess.run(["git", "rev-parse", "--show-toplevel"],
-          capture_output=True, text=True, check=True).stdout.strip())
-WEB = os.path.join(RACINE, "web")
+WEB = None  # renseigné par main() : la racine ne se devine pas à l'import (voir `racine_designee`)
 FEUILLE = "style.css"
 PLANCHER_SELECTEURS, PLANCHER_FICHIERS = 300, 20
 # PLAFOND D'ORPHELINS. Relevé le 2026-08-22 après retrait des règles mortes : zéro. Une règle de style dont
@@ -47,6 +50,34 @@ PLANCHER_SELECTEURS, PLANCHER_FICHIERS = 300, 20
 PLAFOND_ORPHELINS = 0
 
 TOKEN = re.compile(r"([#.])(-?[_a-zA-Z][\w-]*)")
+
+
+def racine_designee(argv=None):
+    """La racine EXAMINÉE, écrite UNE fois pour les trois gardes sœurs qui la lisent (`P8.27-a`).
+
+    Deux d'entre elles honoraient leur premier argument, la troisième l'AVALAIT sans effet et
+    dérivait toujours sa racine du répertoire courant. Un outil qui accepte une racine et en mesure
+    une autre ment sur ce qu'il fait : son rouge accuse un arbre qu'on n'a pas désigné — le symptôme
+    par lequel le défaut s'est vu — et son vert, plus grave parce que silencieux, n'atteste rien de
+    celui qu'on voulait juger. Une racine inutilisable est donc REFUSÉE (code 2, aucun verdict), et
+    jamais remplacée par une devinette : c'est la retombée muette qui rendait l'argument mensonger.
+    """
+    argv = sys.argv if argv is None else argv
+    if len(argv) > 2:
+        print(f"[racine] REFUS — une seule racine attendue, {len(argv) - 1} arguments reçus.", file=sys.stderr)
+        raise SystemExit(2)
+    if len(argv) == 2:
+        if not os.path.isdir(argv[1]):
+            print(f"[racine] REFUS — la racine désignée « {argv[1]} » n'est pas un répertoire ; retomber "
+                  f"sur le dépôt courant rendrait un verdict sur un arbre qu'on n'a pas choisi.", file=sys.stderr)
+            raise SystemExit(2)
+        return os.path.abspath(argv[1])
+    fait = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if fait.returncode or not fait.stdout.strip():
+        print("[racine] REFUS — aucune racine désignée et le répertoire courant n'est pas un arbre git.",
+              file=sys.stderr)
+        raise SystemExit(2)
+    return fait.stdout.strip()
 
 
 def sans_commentaires_css(css):
@@ -148,6 +179,8 @@ def juger(noms, corpus, prefixes, suffixes):
 
 
 def main():
+    global WEB
+    WEB = os.path.join(racine_designee(), "web")
     css = open(os.path.join(WEB, FEUILLE), encoding="utf-8").read()
     corpus = corpus_web()
     prefixes, suffixes = bords_dynamiques(corpus)

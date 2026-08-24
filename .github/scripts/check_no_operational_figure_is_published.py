@@ -79,11 +79,24 @@ banc, un chiffre dans un fichier de test, une date de constat sans grandeur, une
 datée NE DOIVENT PAS l'être), puis vérifie des PLANCHERS sur l'arbre réel (fichiers lus, grandeurs
 reconnues, dates reconnues, attestations reconnues) : un dépouillement qui ne trouve plus rien
 ÉCHOUE au lieu de se taire. Rendre la garde tautologique la fait REFUSER DE CONCLURE.
+
+L'ARBRE JUGÉ EST CELUI QU'ON DÉSIGNE (`P8.27-a`)
+-------------------------------------------------
+Cette garde AVALAIT son premier argument : elle dérivait toujours sa racine du répertoire courant,
+là où ses deux sœurs de surface web l'honoraient déjà. Un outil qui accepte un paramètre et ne s'en
+sert pas ment sur ce qu'il fait. La racine se lit désormais par le geste partagé `racine_designee()`,
+écrit UNE fois dans `check_every_style_selector_has_a_target.py` et importé ici — trois recopies
+sont précisément ce qui a laissé celle-ci diverger. Et parce que l'exclusion qu'elle s'applique à
+elle-même est un chemin RELATIF à cette racine, elle refuse de juger un arbre où elle ne vit pas :
+elle s'y accuserait de ses propres témoins.
 """
 import os
 import re
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from check_every_style_selector_has_a_target import racine_designee  # noqa: E402  (source unique de vérité)
 
 # --- Corpus --------------------------------------------------------------------------------------
 
@@ -345,8 +358,19 @@ def valider_instrument(inst):
 
 
 def main():
-    racine = subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                            capture_output=True, text=True, check=True).stdout.strip()
+    racine = racine_designee()
+    # L'EXCLUSION QUE LA GARDE S'APPLIQUE À ELLE-MÊME EST UN CHEMIN RELATIF À LA RACINE EXAMINÉE.
+    # Ses témoins sont des relevés de la forme interdite, écrits pour être accusés, et validés à part
+    # (au-dessus) ; le fichier qui les porte doit donc sortir du corpus. Si ce fichier-ci ne vit pas
+    # dans l'arbre désigné, l'exclusion ne désigne rien : la garde lit la copie SUIVIE d'elle-même,
+    # s'accuse de ses propres témoins, et rend un rouge inventé. Un arbre se juge avec la garde qui y
+    # vit — sinon, aucun verdict. Ce contrôle attrape aussi la racine devinée depuis un répertoire
+    # courant étranger, qui rendrait, elle, un verdict silencieux sur un arbre qu'on n'a pas choisi.
+    soi = os.path.relpath(os.path.abspath(__file__), racine)
+    if soi == os.pardir or soi.startswith(os.pardir + os.sep):
+        print(f"::error::racine « {racine} » : cette garde ne vit pas dans cet arbre ({soi}) — elle ne "
+              f"pourrait pas s'exclure de son propre corpus et s'accuserait de ses témoins. Aucun verdict.")
+        return 2
     try:
         inst = Instrument(domaine_editeur(racine))
     except Exception as e:  # noqa: BLE001 — tout défaut d'instrument refuse de conclure
@@ -361,15 +385,17 @@ def main():
               "mauvaises raisons).")
         return 2
 
-    suivis = subprocess.run(["git", "ls-files"], cwd=racine, capture_output=True, text=True,
-                            check=True).stdout.split("\n")
+    lu = subprocess.run(["git", "ls-files"], cwd=racine, capture_output=True, text=True)
+    if lu.returncode:
+        print(f"::error::racine « {racine} » : `git ls-files` échoue, il n'y a pas d'arbre suivi à lire "
+              f"— donc pas de corpus. Aucun verdict n'est rendu.")
+        return 2
+    suivis = lu.stdout.split("\n")
     total = {"fichiers": 0, "grandeurs": 0, "dates": 0, "attestations": 0}
     accusations = []
-    # La garde ne se lit pas elle-même : ses TÉMOINS sont des relevés de la forme interdite, écrits pour
-    # être accusés, et ils sont validés à part (au-dessus). Mesuré le 2026-08-22 : tant que ce fichier
-    # n'était pas suivi, `git ls-files` ne le rendait pas et la garde passait ; une fois commité, elle
-    # s'accusait sept fois et la CI rougissait — un instrument qui ne se voit qu'une fois publié.
-    soi = os.path.relpath(os.path.abspath(__file__), racine)
+    # La garde ne se lit pas elle-même (`soi`, calculé plus haut). Mesuré le 2026-08-22 : tant que ce
+    # fichier n'était pas suivi, `git ls-files` ne le rendait pas et la garde passait ; une fois commité,
+    # elle s'accusait sept fois et la CI rougissait — un instrument qui ne se voit qu'une fois publié.
     for f in suivis:
         if not f or f.lower().endswith(EXT_EXCLUES) or f == soi:
             continue

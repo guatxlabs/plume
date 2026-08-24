@@ -20,12 +20,16 @@ LIMITE ASSUMÉE : la résolution du parent est lexicale (fenêtre de lignes), pa
 habillé par un contexte posé ailleurs rougit ici ; la réponse est de lui donner la classe partagée, ce qui
 est précisément la règle. L'instrument se valide sur deux témoins (une forme nue DOIT rougir, une forme
 habillée NE DOIT PAS) et refuse de conclure sous un plancher de sites, de contextes et de classes.
-"""
-import os, re, subprocess, sys
 
-RACINE = (sys.argv[1] if len(sys.argv) > 1 else subprocess.run(["git", "rev-parse", "--show-toplevel"],
-          capture_output=True, text=True, check=True).stdout.strip())
-WEB = os.path.join(RACINE, "web")
+LA RACINE EXAMINÉE est lue par le geste partagé `racine_designee()`, importé de la garde sœur
+`check_every_style_selector_has_a_target.py` plutôt que recopié (`P8.27-a`).
+"""
+import os, re, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from check_every_style_selector_has_a_target import racine_designee  # noqa: E402  (source unique de vérité)
+
+WEB = None  # renseigné par main() : la racine ne se devine pas à l'import (voir `racine_designee`)
 PLANCHER_SITES, PLANCHER_CONTEXTES, PLANCHER_CLASSES = 250, 10, 12
 HELPERS = {}    # nom -> classe inconditionnelle (None : la classe vient de l'appel `cls:` ou du contexte)
 ID_HTML = {}    # id d'index.html -> ses classes
@@ -121,6 +125,8 @@ def sites_js(nom, texte, ctx, cls, compter):
 
 
 def main():
+    global WEB
+    WEB = os.path.join(racine_designee(), "web")
     ctx, cls = deriver(open(os.path.join(WEB, "style.css"), encoding="utf-8").read())
     html = open(os.path.join(WEB, "index.html"), encoding="utf-8").read()
     for m in re.finditer(r"<\w+\s+([^<>]*)>", html):

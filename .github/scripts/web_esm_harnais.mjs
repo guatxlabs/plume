@@ -398,8 +398,8 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 
 // ---------------------------------------------------------------------------------------------
 // 4. LA RECHERCHE ET LA COUVERTURE ATT&CK (`P11.6-a`, `P11.9-a`, `P11.9-b`, `P11.9-c`).
-//    (a) Une technique sans nom se DIT : « nom inconnu », jamais une cellule vide ; une sous-technique
-//        que le démon n'a pas nommée se résout par son parent côté client.
+//    (a) Une technique sans nom se DIT : « nom inconnu », jamais une cellule vide. Le nom SERVI est la
+//        seule source (`P11.6-c`) : sans lui la cellule dit le mot, elle ne devine pas.
 //    (b) L'éditeur de requête ne réécrit JAMAIS `!=` : une séquence de frappe réelle (regex avec `|`,
 //        puis espace, puis Entrée/Tab) laisse le « différent » en place — et le témoin inverse prouve
 //        que la complétion est bien VIVANTE sur cet éditeur (Tab accepte une suggestion). La cause
@@ -420,9 +420,9 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(nomEl && nomEl.textContent === NOM_INCONNU, `(4a) technique hors catalogue : nom rendu « ${nomEl && nomEl.textContent} » au lieu de « ${NOM_INCONNU} »`);
   exiger(nomEl && nomEl.classList.contains("attack-tname-inconnu"), "(4a) la cellule sans nom ne porte pas sa classe d'état");
   exiger(c.title.includes(NOM_INCONNU) && c.title.includes("hors du catalogue"), `(4a) l'infobulle ne dit pas pourquoi le nom manque : « ${c.title} »`);
-  // sous-technique sans nom servi -> résolue par le parent via la table locale
-  exiger(techniqueDisplayName({ tid: "T1110.003" }) === "Brute Force", `(4a) sous-technique non nommée par le démon : « ${techniqueDisplayName({ tid: "T1110.003" })} » au lieu du parent`);
-  exiger(techniqueDisplayName({ tid: "T1110", name: "   " }) === "Brute Force", "(4a) un nom vide servi doit compter comme absent");
+  // sous-technique sans nom servi -> le MOT, pas une devinette (`P11.6-c` : plus de table locale ici)
+  exiger(techniqueDisplayName({ tid: "T1110.003" }) === null, `(4a) la matrice devine encore un nom sans le démon : « ${techniqueDisplayName({ tid: "T1110.003" })} » — un second porteur du catalogue`);
+  exiger(techniqueDisplayName({ tid: "T1110", name: "   " }) === null, "(4a) un nom vide servi doit compter comme absent, et l'absence se DIT");
   exiger(techniqueDisplayName({ tid: "T9999" }) === null, "(4a) hors catalogue -> null (la cellule dit le mot), pas une chaîne");
 
   // (b) l'éditeur — objet fabriqué qui porte la sélection et dispatch ses écouteurs.
@@ -2546,6 +2546,92 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   }
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// 33. LA CONSOLE NE PORTE PAS UNE SECONDE COPIE DU CATALOGUE ATT&CK (`P11.6-c`).
+//     Le catalogue vit d'un seul côté : `daemon/src/attack_names.rs`. La console garde un
+//     SOUS-ENSEMBLE de libellés pour les deux panneaux dont les routes servent `mitre` NU (file
+//     d'alertes, administration des règles) ; la matrice, elle, ne garde plus rien — son nom est servi.
+//     Un sous-ensemble recopié à la main n'est pas un repli : c'est une source qui vieillit sans le
+//     dire. Ce témoin lui retire ce silence. Il DÉRIVE du texte du démon le nom que celui-ci émettrait
+//     pour chaque clé listée — la même règle de résolution, réécrite ici — et refuse l'écart DANS LES
+//     DEUX SENS : un libellé qui s'écarte, une clé que le catalogue ne connaît pas. Il ne peut pas
+//     rendre la table complète (elle nomme moins que le catalogue, et c'est écrit à côté d'elle) ;
+//     il garantit qu'elle est INCOMPLÈTE et jamais FAUSSE.
+//     L'INSTRUMENT EST VALIDÉ AVANT TOUT VERDICT : les tables lues non vides, la règle de résolution
+//     éprouvée sur ses quatre cas (composition, parent seul, hors catalogue, hors format), et surtout
+//     ce que le témoin a LU du texte de `core.js` confronté à ce que le module SERT — une lecture
+//     désynchronisée garderait une valeur qui ne mesure rien.
+//     Enfin il refuse une TROISIÈME copie : aucun autre module de `web/` ne pose de table `T####: "…"`.
+// ---------------------------------------------------------------------------------------------
+{
+  const rs = readFileSync(path.join(RACINE, "daemon", "src", "attack_names.rs"), "utf8");
+  const tableRust = (nom) => {
+    const m = rs.match(new RegExp(`const ${nom}: &\\[\\(&str, &str\\)\\] = &\\[([\\s\\S]*?)\\n\\];`));
+    exiger(!!m, `(33) table \`${nom}\` introuvable dans le catalogue du démon : le témoin ne lit plus rien`);
+    const t = new Map();
+    // rustfmt éclate une entrée longue sur plusieurs lignes : on replie les blancs avant de lire.
+    if (m) for (const e of m[1].replace(/\s+/g, " ").matchAll(/\(\s*"(T\d{4}(?:\.\d{3})?)"\s*,\s*"((?:[^"\\]|\\.)*)"\s*,?\s*\)/g)) t.set(e[1], e[2]);
+    return t;
+  };
+  const PARENTS = tableRust("TECHNIQUE_NAMES");
+  const SOUS = tableRust("SUBTECHNIQUE_NAMES");
+
+  // Règle de résolution du démon (`attack_names::technique_name`), DÉRIVÉE et non recopiée en données.
+  const nomDuDemon = (tid) => {
+    const t = String(tid == null ? "" : tid).trim().toUpperCase();
+    const point = t.indexOf(".");
+    const base = point < 0 ? t : t.slice(0, point);
+    const sous = point < 0 ? "" : t.slice(point + 1);
+    if (!/^T\d+$/.test(base)) return null;
+    if (point >= 0 && !/^\d+$/.test(sous)) return null;
+    const parent = PARENTS.get(base);
+    if (parent === undefined) return null;
+    if (!sous) return parent;
+    const n = SOUS.get(t);
+    return n === undefined ? `${parent} (sous-technique .${sous})` : `${parent}: ${n}`;
+  };
+
+  // — instrument : les tables sont lues, et la règle se comporte comme celle du démon sur ses 4 cas.
+  exiger(PARENTS.size > 100 && SOUS.size > 0, `(33) catalogue lu vide ou tronqué (${PARENTS.size} technique(s) parente(s), ${SOUS.size} sous-technique(s)) : le témoin refuse de conclure`);
+  exiger(nomDuDemon(" t1110.003 ") === "Brute Force: Password Spraying", `(33) composition parent+sous-technique non reproduite : « ${nomDuDemon(" t1110.003 ")} »`);
+  exiger(nomDuDemon("T1110.999") === "Brute Force (sous-technique .999)", `(33) sous-technique inconnue : « ${nomDuDemon("T1110.999")} » au lieu du parent qui DIT le rang`);
+  exiger(nomDuDemon("T9999") === null, "(33) un identifiant hors catalogue doit rendre null, pas un nom");
+  exiger(nomDuDemon("pas-un-identifiant") === null, "(33) un jeton hors format doit rendre null");
+
+  const srcCore = readFileSync(path.join(WEB, "core.js"), "utf8");
+  const mTable = srcCore.match(/const MITRE_NAMES = \{([\s\S]*?)\};/);
+  exiger(!!mTable, "(33) table `MITRE_NAMES` introuvable dans core.js : le témoin ne lit plus ce qu'il juge");
+  const locale = new Map();
+  if (mTable) for (const e of mTable[1].matchAll(/"?(T\d{4}(?:\.\d{3})?)"?\s*:\s*"((?:[^"\\]|\\.)*)"/g)) locale.set(e[1], e[2]);
+  exiger(locale.size > 0, "(33) table locale lue vide : le témoin refuse de conclure sur une lecture qui ne rend rien");
+
+  // — instrument : ce qui a été LU du texte est bien ce que le module SERT.
+  const { mitreName } = await import(pathToFileURL(path.join(WEB, "core.js")).href);
+  for (const [tid, nom] of locale) {
+    exiger(mitreName(tid) === nom, `(33) lecture désynchronisée : le texte de core.js donne « ${nom} » pour ${tid}, le module sert « ${mitreName(tid)} »`);
+  }
+
+  // — le verdict, dans les deux sens.
+  const ecarts = [];
+  const inconnues = [];
+  for (const [tid, nom] of locale) {
+    const attendu = nomDuDemon(tid);
+    if (attendu === null) inconnues.push(tid);
+    else if (attendu !== nom) ecarts.push(`${tid} : console « ${nom} » ≠ démon « ${attendu} »`);
+  }
+  exiger(ecarts.length === 0, `(33) ${ecarts.length} libellé(s) de la console ont DIVERGÉ du catalogue du démon : ${ecarts.join(" ; ")} — deux porteurs du même savoir, donc deux vérités`);
+  exiger(inconnues.length === 0, `(33) ${inconnues.length} clé(s) de la console que le catalogue du démon ne connaît pas : ${inconnues.join(", ")} — un libellé sans porteur est une source qui invente`);
+
+  // — aucune troisième copie, et la matrice n'en reprend pas une.
+  const autresPorteurs = modules.filter((f) => f !== "core.js")
+    .filter((f) => /[{,]\s*"?T\d{4}(?:\.\d{3})?"?\s*:\s*"/.test(readFileSync(path.join(WEB, f), "utf8")));
+  exiger(autresPorteurs.length === 0, `(33) ${autresPorteurs.length} autre(s) module(s) posent une table identifiant ATT&CK -> nom : ${autresPorteurs.join(", ")} — la console n'en porte qu'UNE, et c'est celle que ce témoin tient`);
+  const srcAttack = readFileSync(path.join(WEB, "attack.js"), "utf8");
+  exiger(!/\bmitreName\b/.test(srcAttack), "(33) `attack.js` reprend la table locale alors que sa route sert un nom pour chaque technique qu'elle rend : un second porteur y rouvrirait la divergence");
+
+  console.log(`[attack-catalogue] catalogue du démon LU : ${PARENTS.size} techniques parentes, ${SOUS.size} sous-techniques nommées. La console en nomme ${locale.size}, toutes DÉRIVÉES : aucun écart, aucune clé hors catalogue, aucune autre table dans web/, et la matrice n'en porte plus (son nom est servi). Ce que ce témoin NE tient PAS, et qui est écrit à côté de la table : la COMPLÉTUDE — la console peut nommer moins que le démon, et le fera dès qu'une technique s'ajoutera ; seule une route dédiée servant le catalogue ferait disparaître ce sous-ensemble.`);
+}
 
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);

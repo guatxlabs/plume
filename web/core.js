@@ -647,7 +647,29 @@ function disclosure(btn, panel, opts = {}) {
   return { open: () => { show(); paint(); }, close: () => { hide(); paint(); }, toggle: btn.onclick, isOpen, paint };
 }
 
-// MITRE ATT&CK — noms statiques (l'API ne renvoie que l'ID). Fallback sous-technique : strip .NNN -> parent.
+// MITRE ATT&CK — LES SEULS LIBELLÉS QUE LA CONSOLE CONNAISSE SANS LE DÉMON, ET CE N'EST PAS LE CATALOGUE.
+// P11.6-c. Le catalogue vit d'un seul côté : `daemon/src/attack_names.rs`, 183 techniques parentes et
+// 16 sous-techniques nommées. Cette table-ci n'en est ni une copie ni un résumé fidèle — c'est un
+// sous-ensemble, et il faut dire lequel plutôt que laisser croire à un repli.
+//
+// QUI LA LIT, ET POURQUOI ELLE SURVIT. La matrice de couverture ne la lit plus : sa route sert le nom avec
+// l'identifiant. Restent la file d'alertes et l'administration des règles, dont les routes servent `mitre`
+// NU — aucun nom n'y voyage. Là, cette table n'est pas un repli : c'est la source, la seule.
+//
+// CE QU'ELLE NE COUVRE PAS, DIT PLUTÔT QUE PASSÉ SOUS SILENCE. Les identifiants qu'elle ignore rendent leur NUMÉRO SEUL,
+// sans libellé — et les appelants n'écrivent rien à la place d'un nom absent. MESURÉ le 2026-08-24 sur les
+// règles LIVRÉES avec le produit : elles citent 19 techniques, cette table en nomme 14, donc 5 arrivent à
+// l'exploitant en numéro nu (dont `T1562`, alors même que sa sous-technique `T1562.001` est nommée ici —
+// l'incohérence qu'une liste tenue à la main finit par produire). Le remède est une route DÉDIÉE et bon
+// marché servant le catalogue : la seule route qui porte aujourd'hui des noms est une AGRÉGATION sur la
+// table des alertes qui prend un permis de requête, et l'appeler pour un dictionnaire serait payer un scan
+// pour un libellé. Cette route n'existe pas ; le résidu reste porté par `P11.6-c`.
+//
+// CE QUI EST TENU. Aucune valeur d'ici n'est écrite à la main : le harnais ESM DÉRIVE de
+// `daemon/src/attack_names.rs` le nom que le démon émettrait pour chaque clé listée, et REFUSE la moindre
+// différence, dans les deux sens — un libellé qui s'écarte, une clé que le catalogue ne connaît pas. La
+// table ne peut donc plus vieillir en silence : elle peut être INCOMPLÈTE, jamais FAUSSE.
+// Repli sous-technique : strip .NNN -> parent (le nom du parent, moins précis que celui du démon).
 const MITRE_NAMES = { T1046: "Network Service Discovery", T1071: "Application Layer Protocol", T1110: "Brute Force", T1190: "Exploit Public-Facing Application", T1204: "User Execution", T1490: "Inhibit System Recovery", T1498: "Network Denial of Service", T1543: "Create or Modify System Process", T1552: "Unsecured Credentials", T1554: "Compromise Host Software Binary", "T1562.001": "Impair Defenses: Disable or Modify Tools", T1565: "Data Manipulation", T1595: "Active Scanning", "T1595.002": "Active Scanning: Vulnerability Scanning" };
 function mitreName(id) { return MITRE_NAMES[id] || MITRE_NAMES[(id || "").split(".")[0]] || ""; }
 

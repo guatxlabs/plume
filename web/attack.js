@@ -20,22 +20,29 @@
 // selon rule/alert_count ; non couvert = grisé -> les ANGLES MORTS ressortent). Clic technique -> ses alertes.
 // DÉGRADATION : si l'endpoint 404 (daemon non déployé), message « couverture indisponible » (pas d'erreur dure).
 // SÉCU UI : tout en textContent/attributs (anti-XSS). Aucune mutation (aucun apiSend).
-import { $, api, muted, socIsAdmin, socRole, mitreName, closeModals } from './core.js';
+import { $, api, muted, socIsAdmin, socRole, closeModals } from './core.js';
 import { setAlertMitreFilter } from './app.js';
 import { openSigmaImport } from './sigmaimport.js';
 
 // P11.6-a — LE NOM D'UNE TECHNIQUE EST DÉRIVÉ, JAMAIS LAISSÉ VIDE. MESURÉ le 2026-08-22 : le démon
 // n'émettait aucun `name` et cette matrice rendait `t.name || ''` -> TOUTES les cellules (183 techniques
-// du catalogue) n'avaient qu'un numéro. Ordre de résolution : le nom servi par le démon (`attack_names`,
-// sous-technique résolue par son parent côté serveur) ; sinon la table locale de `core.js` (qui replie
-// déjà `Txxxx.yyy` sur `Txxxx`) ; sinon le MOT « nom inconnu » — un identifiant hors catalogue (retiré,
-// personnalisé, mal saisi) se DIT, il ne se tait pas. `null` = inconnu ; jamais une chaîne vide.
+// du catalogue) n'avaient qu'un numéro. Le nom servi par le démon (`attack_names`, sous-technique résolue
+// par son parent côté serveur) est la SEULE source ; sinon le MOT « nom inconnu » — un identifiant hors
+// catalogue (retiré, personnalisé, mal saisi) se DIT, il ne se tait pas. `null` = inconnu ; jamais vide.
+//
+// P11.6-c — CETTE MATRICE N'A PLUS DE SECONDE SOURCE. Elle repliait sur la table de `core.js` quand le
+// démon ne nommait pas ; cette table était un second porteur du même savoir, et un repli recopié à la main
+// n'est pas un repli mais une source qui vieillit sans le dire. MESURÉ le 2026-08-24, sur les deux textes :
+// la route `/api/coverage/attack` émet un nom pour CHACUNE des techniques qu'elle énumère (elle parcourt
+// tout le catalogue, tactique par tactique) et ne rend jamais de sous-technique — les tags y sont repliés
+// sur leur technique parente. Le repli ne pouvait donc s'appliquer qu'à ce que la route ne sert pas : rien.
+// Il ne couvrait en pratique qu'un démon ANTÉRIEUR au nom servi, et dans ce cas la console n'a jamais à
+// deviner : l'absence est DITE (« nom inconnu ») et l'infobulle en donne la raison. Une console qui connaît
+// 14 libellés par cœur sur 183 ne rend pas ce cas meilleur, elle le rend inégal.
 const NOM_INCONNU = 'nom inconnu';
 function techniqueDisplayName(t) {
   const servi = t && typeof t.name === 'string' ? t.name.trim() : '';
-  if (servi) return servi;
-  const local = mitreName((t && t.tid) || '');
-  return local || null;
+  return servi || null;
 }
 
 // Intensité de couverture d'une technique : max(rule_count, alert_count). Sert l'échelle de couleur.

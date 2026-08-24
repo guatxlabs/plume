@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, mitreName, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, formMsg, socIsAdmin, lsSet, collapsibleGroup, SEVCOL } from './core.js';
+import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, mitreName, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, socIsAdmin, lsSet, collapsibleGroup, SEVCOL } from './core.js';
 import { S } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
 import { loadAttackMatrix, poserLesPortesDeTechnique } from './attack.js';
@@ -90,12 +90,17 @@ let reglesChargees = [];
 // survivait pas. `/api/rules` la sert désormais UNE fois pour toute la liste, dérivée côté serveur des
 // colonnes que la réimposition écrase réellement — il n'y a plus qu'un seul endroit où elle s'écrit.
 let avertissementOverlayRegle = '';
+// P11.14-a — UN PANNEAU VIDE DISAIT « AUCUNE RÈGLE » ALORS QU'IL N'AVAIT RIEN PU LIRE. Le chargement
+// avalait son erreur (`catch { return; }`) et sortait SANS TOUCHER À `#rule-list` : la div reste celle
+// d'`index.html`, c'est-à-dire vide, et rien ne distingue « le serveur n'a pas répondu » de « il n'y a
+// pas de règle ». Pour un outil de sécurité c'est le pire malentendu : l'exploitant a cru ses règles
+// perdues. `fetchInto` (core) est le mécanisme PARTAGÉ créé pour exactement ce motif — il écrit la cause
+// DANS l'hôte et rend `null` — et quatre panneaux de ce module le contournaient de la même façon.
 async function loadRules() {
   const wrap = $('#rule-list'); if (!wrap) return;
-  let rules = [], avertissement = '';
-  try { ({ rules, avertissement_overlay: avertissement } = await api('/rules')); } catch (e) { return; }
-  reglesChargees = rules;
-  avertissementOverlayRegle = avertissement || '';
+  const d = await fetchInto(wrap, '/rules'); if (!d) return;
+  reglesChargees = d.rules || [];
+  avertissementOverlayRegle = d.avertissement_overlay || '';
   renderRules();
 }
 function renderRules() {
@@ -196,18 +201,49 @@ function ruleRow(r) {
   row.append(test, edit, del);
   return row;
 }
+// P11.14-a — LE FORMULAIRE DE RÈGLE EST UN ÉLÉMENT DE LA PAGE, PAS LE CONTENU D'UNE MODALE JETABLE.
+// Il est écrit dans `index.html`, à l'intérieur de la section « Règles de détection ». La présentation
+// en modale le DÉPLAÇAIT à demeure dans un calque `.modal-ov` fabriqué une seule fois — et `closeModals()`
+// (core) retire du document TOUS les `.modal-ov`. Or toute ouverture de modale de la console commence par
+// là (`modal()` l'appelle en premier : confirmation de suppression, menu d'une cellule ATT&CK, lien de
+// retour d'un import Sigma). Le formulaire partait avec le calque : `$('#rule-form')` valait `null`,
+// « + Nouvelle règle » levait une TypeError et ne faisait plus rien, et SEUL un rechargement de la page
+// rendait le balisage — ce qui se lit comme une perte.
+// LE CALQUE EST DONC JETABLE, LE FORMULAIRE NON : refait à chaque ouverture, défait à chaque fermeture, et
+// le formulaire est REMIS DANS SA SECTION avant chaque ouverture comme après chaque fermeture. Le module
+// garde la référence de l'élément et de sa section : même si un `closeModals()` étranger détache le calque
+// pendant que la modale est ouverte, l'élément est retrouvé et réancré au geste suivant, sans rechargement.
+const FORMULAIRE_DE_REGLE = $('#rule-form');
+const SECTION_DES_REGLES = FORMULAIRE_DE_REGLE && FORMULAIRE_DE_REGLE.parentNode;
+let calqueDuFormulaireDeRegle = null;   // le calque, tant que la modale est ouverte ; null sinon
+// Remet le formulaire là où `index.html` le pose (dans sa section, avant la liste), et lui rend les classes
+// qu'il y porte. Idempotent : s'il y est déjà, rien ne bouge.
+function rendreLeFormulaireASaSection() {
+  const form = FORMULAIRE_DE_REGLE; if (!form) return null;
+  form.classList.remove('rulemodal'); form.classList.add('hidden');
+  const hote = SECTION_DES_REGLES;
+  if (hote && form.parentNode !== hote) {
+    const liste = $('#rule-list');
+    if (liste && liste.parentNode === hote) hote.insertBefore(form, liste); else hote.appendChild(form);
+  }
+  return form;
+}
+// Échap ferme la modale — posé UNE fois sur le document, sur l'état du module et non sur un calque donné
+// (le calque, lui, est refait à chaque ouverture ; un écouteur par ouverture en laisserait un par geste).
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && calqueDuFormulaireDeRegle) closeRuleForm(); });
 function openRuleForm(r) {
   S.editingRule = r ? r.id : null;
-  const form = $('#rule-form');
+  const form = rendreLeFormulaireASaSection();   // réancre : le calque de l'ouverture précédente a pu être retiré
+  if (!form) return;
   // présenter en MODAL (overlay centré) au lieu d'un formulaire inline constant
-  let ov = $('#rule-form-ov');
-  if (!ov) {
-    ov = document.createElement('div'); ov.id = 'rule-form-ov'; ov.className = 'modal-ov';
-    form.parentNode.insertBefore(ov, form); ov.appendChild(form);
+  if (form.parentNode) {
+    const ov = document.createElement('div'); ov.id = 'rule-form-ov'; ov.className = 'modal-ov';
     ov.addEventListener('click', e => { if (e.target === ov) closeRuleForm(); });
-    document.addEventListener('keydown', e => { if (e.key === 'Escape' && ov.style.display === 'flex') closeRuleForm(); });
+    form.parentNode.insertBefore(ov, form); ov.appendChild(form);
+    ov.style.display = 'flex';
+    calqueDuFormulaireDeRegle = ov;
   }
-  form.classList.remove('hidden'); form.classList.add('rulemodal'); ov.style.display = 'flex';
+  form.classList.remove('hidden'); form.classList.add('rulemodal');
   $(RF.name).value = r ? r.name : '';
   $(RF.query).value = r ? r.query : '';
   $(RF.issoql).value = r ? (r.is_soql ? '1' : '0') : '1';
@@ -256,8 +292,9 @@ function ouvrirLaCreationPourLaTechnique(tid) {
 poserLesPortesDeTechnique({ regles: ouvrirLesReglesDeLaTechnique, creer: ouvrirLaCreationPourLaTechnique });
 
 function closeRuleForm() {
-  const form = $('#rule-form'); if (form) form.classList.add('hidden');
-  const ov = $('#rule-form-ov'); if (ov) ov.style.display = 'none';
+  rendreLeFormulaireASaSection();                  // le formulaire rentre chez lui AVANT que le calque parte
+  const ov = calqueDuFormulaireDeRegle; calqueDuFormulaireDeRegle = null;
+  if (ov && ov.parentNode) ov.remove();            // rien de jetable ne survit à la fermeture
 }
 if ($('#rule-new')) $('#rule-new').onclick = () => openRuleForm(null);
 if ($('#rf-cancel')) $('#rf-cancel').onclick = closeRuleForm;
@@ -324,10 +361,11 @@ const NFK = { name: '#nf-name', kind: '#nf-kind', url: '#nf-url', sev: '#nf-sev'
 /* state: editingNotif -> S (state.js) */
 async function loadNotifiers() {
   const wrap = $('#notif-list'); if (!wrap) return;
-  let notifiers = [];
   // /api/notifiers est désormais admin-only (le token/mdp du canal n'est plus exposé). Un non-admin reçoit
-  // 403 {error} -> on garde une liste vide (pas de crash sur .length) au lieu d'écraser par `undefined`.
-  try { const j = await api('/notifiers'); if (Array.isArray(j.notifiers)) notifiers = j.notifiers; } catch (e) { return; }
+  // 403 {error} -> la cause est ÉCRITE dans le panneau (P11.14-a) et la liste n'est pas remplacée par
+  // `undefined` ; un refus ne se lit plus comme « aucun canal ».
+  const d = await fetchInto(wrap, '/notifiers'); if (!d) return;
+  const notifiers = Array.isArray(d.notifiers) ? d.notifiers : [];
   wrap.replaceChildren();
   if (!notifiers.length) { wrap.appendChild(muted('aucun canal - les alertes ne sont envoyées nulle part. Clique " + Nouveau canal ".')); return; }
   notifiers.forEach(n => wrap.appendChild(notifRow(n)));
@@ -401,8 +439,8 @@ function openParserForm(p) {
 /* state: parserSort -> S (state.js) */
 async function loadParsers() {
   const wrap = $('#parser-list'); if (!wrap) return;
-  let parsers = [];
-  try { ({ parsers } = await api('/parsers')); } catch (e) { return; }
+  const d = await fetchInto(wrap, '/parsers'); if (!d) return;   // P11.14-a : la cause est écrite dans le panneau
+  const parsers = d.parsers || [];
   if (S.parserSort === 'source') parsers.sort((a, b) => (a.source || '').localeCompare(b.source || '') || a.id - b.id);
   wrap.replaceChildren();
   if (!parsers.length) { wrap.appendChild(muted('aucun parser')); return; }
@@ -492,8 +530,8 @@ loadParsers();
 // --- moteur de réponse () ---
 async function loadActions() {
   const wrap = $('#act-list'); if (!wrap) return;
-  let actions = [];
-  try { ({ actions } = await api('/actions')); } catch (e) { return; }
+  const d = await fetchInto(wrap, '/actions'); if (!d) return;   // P11.14-a : la cause est écrite dans le panneau
+  const actions = d.actions || [];
   wrap.replaceChildren();
   if (!actions.length) { wrap.appendChild(muted('aucune action')); return; }
   // groupe repliable « Actions » (même chrome que Détection/Parseurs) — tri : pending d'abord, puis récence (done_ts desc)
@@ -595,8 +633,8 @@ function labelActionKindOptions(banDurationS) {
 }
 async function loadPlaybooks() {
   const wrap = $('#pb-list'); if (!wrap) return;
-  let playbooks = [], mode = 'observe', ban_duration_s = null;
-  try { ({ playbooks, mode = 'observe', ban_duration_s = null } = await api('/playbooks')); } catch (e) { return; }
+  const d = await fetchInto(wrap, '/playbooks'); if (!d) return;   // P11.14-a : la cause est écrite dans le panneau
+  const playbooks = d.playbooks || [], mode = d.mode || 'observe', ban_duration_s = d.ban_duration_s === undefined ? null : d.ban_duration_s;
   labelActionKindOptions(ban_duration_s);
   wrap.replaceChildren();
   const note = takePendingNote('playbooks'); if (note) wrap.appendChild(note); // P11.1-e

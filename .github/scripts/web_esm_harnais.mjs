@@ -108,9 +108,14 @@ const document = {
   querySelector: () => new Element("div"),
   querySelectorAll: () => [],
   getElementById: () => new Element("div"),
-  addEventListener() {}, removeEventListener() {},
+  // Le shim ne DISPATCHE rien de lui-même, mais il ENREGISTRE ce que la console câble sur le document :
+  // un capteur en phase de capture est un mécanisme partagé, et un mécanisme qu'aucun témoin ne peut
+  // rappeler est un mécanisme que rien n'empêche de disparaître (le témoin 32 rappelle le sien).
+  addEventListener(type, rappel, options) { ecouteursDuDocument.push({ type, rappel, capture: options === true || !!(options && options.capture) }); },
+  removeEventListener() {},
   execCommand: () => false,
 };
+const ecouteursDuDocument = [];
 // Les observateurs de mutations restent INERTES (le shim ne mute rien de lui-même), mais chaque pose est
 // enregistrée : le témoin 15 juge celle de l'amorçage du lexique (cible, options, rappel).
 const observateursPoses = [];
@@ -2170,6 +2175,110 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     document.body.children = document.body.children.filter((c) => !(c.classList && c.classList.contains("modal-ov")));
   }
   console.log(`[composer] un panneau part de ce que le produit porte DÉJÀ : les modèles livrés, les requêtes enregistrées et les requêtes de règles dans UNE liste, chacune nommée par son origine ; la requête d'une règle est celle que le DÉMON dérive (étage scalaire retiré, SQL brut intact avec ses marqueurs) ; un stock illisible est NOMMÉ au lieu de passer pour vide ; la recherche est celle, partagée, du dépôt ; et la fenêtre est la modale partagée, qui refuse un choix vide`);
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// 32. UN CONTRÔLE D'ÉCRITURE REFUSÉ AU LECTEUR RESTE, INERTE, AVEC SA RAISON (`P11.4-l`).
+//     CE QU'AUCUN INSTRUMENT DU DÉPÔT NE SAVAIT VOIR. Deux contrôles refusés au même lecteur, VOISINS dans
+//     la même ligne d'écran, suivaient des grammaires opposées : l'interrupteur restait visible, inerte et
+//     motivé, pendant que les boutons d'écriture étaient EFFACÉS par la feuille (`display:none`), sans un
+//     mot. Le harnais est un shim sans moteur de rendu : une règle qui masque n'existait donc pour personne,
+//     et un bouton construit inerte AVEC sa raison pouvait être effacé juste après sans que rien ne rougisse.
+//     Ce qu'un shim SAIT faire, en revanche, c'est LIRE la feuille et confronter ce qu'elle efface à ce que
+//     la console rend — c'est le geste du témoin 3, qui dérive de `style.css` la notion de « classe dessinée ».
+//
+//     (a) LA FEUILLE N'EFFACE AUCUNE CLASSE QUE LA CONSOLE POSE SUR UN BOUTON. Dérivé des deux côtés, rien
+//         d'énuméré : d'un côté les classes qu'une règle de rôle efface À ELLE SEULE (sélecteur = la portée
+//         de rôle + UN composant, corps qui déclare `display:none`) ; de l'autre les classes que portent les
+//         boutons du gabarit ET ceux que les fabriques partagées construisent. L'intersection doit être vide.
+//         LIMITE ÉCRITE : une règle qui n'efface une classe QUE dans un contexte (`… .paneltools .picon`) et
+//         celles qui visent un IDENTIFIANT ne sont pas jugées ici — c'est l'énumération par identifiant que
+//         `P11.4-j` a nommée comme résidu assumé, un autre chantier que celui de la grammaire.
+//     (b) LA RAISON EST ÉCRITE, ET C'EST LE CODE QUI L'ÉCRIT. Sur la ligne d'une règle rendue à un LECTEUR,
+//         chaque bouton d'écriture porte la marque accessible du refus et une infobulle qui NOMME le rôle
+//         qui manque. Témoin inverse : pour un ADMINISTRATEUR, les mêmes boutons ne portent ni l'une ni
+//         l'autre — une version qui marquerait TOUJOURS ne passerait pas les deux.
+//     (c) L'INERTIE EXISTE, ET ELLE PARLE. Le capteur de clic en phase de capture posé par le rôle rend le
+//         geste inerte (il l'empêche et coupe la propagation AVANT tout gestionnaire de module), et il pose
+//         la raison sur un bouton qu'aucune fabrique n'a construit — la cible du clic étant l'ICÔNE, pas le
+//         bouton. Témoin inverse : sous un rôle administrateur, le même clic n'est ni empêché ni arrêté.
+// ---------------------------------------------------------------------------------------------
+{
+  const { applyRoleClass, motiverLeRefusAuLecteur } = await import(pathToFileURL(path.join(WEB, "core.js")).href);
+  const { ruleRow } = await import(pathToFileURL(path.join(WEB, "detection_admin.js")).href);
+  const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const cueillir = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir(c, pred, acc)); return acc; };
+  const roleOrigine = S.AUTH;
+  const regle = { id: 3, name: "SSH brute force", enabled: 1, query: "search source=sshd failed | stats count", is_soql: 1, op: ">", threshold: 10, severity: 3, interval_s: 300, window_s: 600, last_run: 0, last_value: null, last_fired: null, mitre: "T1110", managed: 2, compliance: "", risk_score: 0 };
+  try {
+    // (a) — CE QUE LA FEUILLE EFFACE POUR UN RÔLE, contre CE QUE LA CONSOLE POSE SUR UN BOUTON.
+    const css = readFileSync(path.join(WEB, "style.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, " ");
+    const html = readFileSync(path.join(WEB, "index.html"), "utf8");
+    const effaceesParRole = new Set();
+    for (const [, preludes, corps] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (!/display\s*:\s*none/.test(corps)) continue;
+      for (const sel of preludes.split(",")) {
+        const comp = sel.trim().replace(/>/g, " ").split(/\s+/).filter(Boolean);
+        if (comp.length !== 2 || !/^body[.:]/.test(comp[0]) || !/role-/.test(comp[0])) continue;
+        const m = /^\.([\w-]+)$/.exec(comp[1]);
+        if (m) effaceesParRole.add(m[1]);
+      }
+    }
+    const classesDeBoutons = new Set();
+    for (const [, attrs] of html.matchAll(/<button\b([^>]*)>/g)) {
+      const c = /class="([^"]*)"/.exec(attrs);
+      if (c) c[1].split(/\s+/).filter(Boolean).forEach((x) => classesDeBoutons.add(x));
+    }
+    S.AUTH = { user: "bob", role: "viewer" };
+    cueillir(ruleRow(regle), (e) => e.tagName === "BUTTON", []).forEach((b) => b.className.split(/\s+/).filter(Boolean).forEach((x) => classesDeBoutons.add(x)));
+    exiger(effaceesParRole.size >= 1, "(32a) aucune règle de rôle n'efface plus rien : l'instrument ne peut plus rien mesurer, il refuse de conclure vert");
+    exiger(classesDeBoutons.size >= 5, `(32a) seulement ${classesDeBoutons.size} classe(s) de bouton dérivée(s) du gabarit et des fabriques : la dérivation est cassée`);
+    const effacesEtRendus = [...classesDeBoutons].filter((c) => effaceesParRole.has(c)).sort();
+    exiger(effacesEtRendus.length === 0, `(32a) la feuille EFFACE pour un rôle des classes que la console pose sur un bouton : ${effacesEtRendus.join(", ")} — un contrôle refusé disparaît sans un mot au lieu de dire pourquoi`);
+
+    // (b) — LA RAISON, POSÉE PAR LE CODE, SUR CE QUE LA FABRIQUE PARTAGÉE CONSTRUIT.
+    const ecriture = (ligne) => cueillir(ligne, (e) => e.tagName === "BUTTON" && e.classList.contains("crud-btn"), []);
+    const lecteur = ecriture(ruleRow(regle));
+    exiger(lecteur.length >= 2, `(32b) la ligne d'une règle ne rend que ${lecteur.length} bouton(s) d'écriture : la mesure porterait sur rien`);
+    for (const b of lecteur) {
+      exiger(b.getAttribute("aria-disabled") === "true", `(32b) bouton d'écriture rendu à un LECTEUR sans la marque du refus : « ${b.textContent} » / ${JSON.stringify(b.className)}`);
+      exiger(/rôle éditeur/.test(b.title || ""), `(32b) bouton d'écriture refusé à un lecteur dont l'infobulle ne NOMME pas le rôle qui manque : « ${b.title} »`);
+    }
+    S.AUTH = { user: "root", role: "admin" };
+    const admin = ecriture(ruleRow(regle));
+    exiger(admin.length === lecteur.length, `(32b) témoin inverse : ${admin.length} bouton(s) d'écriture pour un administrateur contre ${lecteur.length} pour un lecteur — le refus RETIRE encore des gestes`);
+    for (const b of admin) {
+      exiger(b.getAttribute("aria-disabled") === null, `(32b) témoin inverse : un ADMINISTRATEUR reçoit un bouton marqué refusé — la marque ne lit pas le rôle`);
+      exiger(!/rôle éditeur/.test(b.title || ""), `(32b) témoin inverse : un administrateur lit la raison d'un refus qui ne le concerne pas — « ${b.title} »`);
+    }
+
+    // (c) — L'INERTIE, ET CE QU'ELLE DIT. Le capteur est celui que la pose du rôle câble sur le document.
+    S.AUTH = { user: "bob", role: "viewer" };
+    applyRoleClass("viewer");
+    const capteur = ecouteursDuDocument.filter((e) => e.type === "click" && e.capture === true).pop();
+    exiger(!!capteur, "(32c) la pose du rôle lecteur ne câble AUCUN capteur de clic en phase de capture : un bouton qu'aucune fabrique ne construit resterait actif");
+    if (capteur) {
+      const nu = new Element("button"); nu.className = "crud-btn"; nu.title = "Supprimer";
+      const icone = new Element("svg"); nu.appendChild(icone);
+      let empeche = 0, arrete = 0;
+      capteur.rappel({ target: icone, preventDefault() { empeche++; }, stopPropagation() { arrete++; } });
+      exiger(empeche === 1 && arrete === 1, `(32c) le clic d'un lecteur sur un geste d'écriture n'est pas rendu inerte (empêché ${empeche}, arrêté ${arrete}) : le gestionnaire du module partirait`);
+      exiger(nu.getAttribute("aria-disabled") === "true" && /rôle éditeur/.test(nu.title), `(32c) le capteur rend le geste inerte SANS dire pourquoi — « ${nu.title} »`);
+      exiger(/Supprimer/.test(nu.title), `(32c) la raison du refus a EFFACÉ l'infobulle que le bouton portait déjà — « ${nu.title} »`);
+      S.AUTH = { user: "root", role: "admin" };
+      const nuAdmin = new Element("button"); nuAdmin.className = "crud-btn";
+      let empecheAdmin = 0, arreteAdmin = 0;
+      capteur.rappel({ target: nuAdmin, preventDefault() { empecheAdmin++; }, stopPropagation() { arreteAdmin++; } });
+      exiger(empecheAdmin === 0 && arreteAdmin === 0, `(32c) témoin inverse : le clic d'un ADMINISTRATEUR est rendu inerte (empêché ${empecheAdmin}, arrêté ${arreteAdmin}) — le capteur ne lit pas le rôle`);
+      exiger(nuAdmin.getAttribute("aria-disabled") === null, "(32c) témoin inverse : un administrateur voit son bouton marqué refusé");
+      exiger(motiverLeRefusAuLecteur(nuAdmin) === false, "(32c) témoin inverse : la pose du refus rend vrai sous un rôle administrateur");
+    }
+    console.log(`[refus] une seule grammaire pour les contrôles refusés : la feuille n'efface aucune des ${classesDeBoutons.size} classes de bouton dérivées du gabarit et des fabriques (${effaceesParRole.size} classe(s) effacée(s) par un rôle, aucune rendue), les ${lecteur.length} boutons d'écriture d'une règle rendue à un lecteur portent la marque du refus et NOMMENT le rôle qui manque, aucun pour un administrateur, et le capteur partagé rend inerte — en le disant — le clic d'un lecteur sur un bouton qu'aucune fabrique n'a construit`);
+  } finally {
+    S.AUTH = roleOrigine;
+    document.body.classList.remove("role-viewer"); document.body.classList.remove("role-editor"); document.body.classList.remove("role-admin");
+  }
 }
 
 

@@ -11,7 +11,7 @@
 // arme), et demande CONFIRMATION à l'activation quand la conséquence touche le réseau ou un processus.
 //
 // P11.1-e : chaque surface qui crée un producteur dit OÙ son produit arrivera, avec le lien.
-import { confirmModal, managedBadge, toast } from './core.js';
+import { confirmModal, managedBadge, motiverLeRefusAuLecteur, toast } from './core.js';
 
 // --- destinations : où arrive ce qu'un producteur produit. Clé = famille de producteur. ---------------------
 // `hash` = onglet de la console (routage par `location.hash`), `label` = le nom de l'onglet tel qu'affiché.
@@ -92,7 +92,11 @@ function enabledSwitch(opts) {
 }
 
 // --- bouton de ligne : la classe partagée TOUJOURS (P11.4-b — un bouton porte son chrome, même hors d'un
-//     `.rulerow` ; dans la ligne, `.rulerow button` produit le même chrome) ; `crud-btn` = masqué au viewer.
+//     `.rulerow` ; dans la ligne, `.rulerow button` produit le même chrome). `crud-btn` = geste d'écriture :
+//     refusé à un lecteur, il ne s'efface plus, il reste inerte AVEC sa raison (P11.4-l) — la même grammaire
+//     que l'interrupteur ci-dessus, dont le refus est écrit dans l'infobulle de son enveloppe survolable.
+//     La raison est posée ICI, à la construction, pour ce que cette fabrique rend ; le capteur partagé de
+//     `core` rattrape les boutons qu'aucune fabrique ne construit (le gabarit de la page).
 function rowButton(label, opts = {}) {
   const b = document.createElement('button'); b.type = 'button';
   if (opts.icon) b.innerHTML = opts.icon; else b.textContent = label; // `icon` = SVG statique de `ic()` (core), jamais une donnée
@@ -100,6 +104,7 @@ function rowButton(label, opts = {}) {
   if (opts.title) b.title = opts.title;
   if (opts.disabled) b.disabled = true;
   if (opts.onClick) b.onclick = opts.onClick;
+  motiverLeRefusAuLecteur(b);
   return b;
 }
 

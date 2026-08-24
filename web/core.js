@@ -479,6 +479,49 @@ function applyRoleClass(role) {
   document.body.classList.toggle('role-admin', role === 'admin');
   document.body.classList.toggle('role-editor', role === 'editor');
   document.body.classList.toggle('role-viewer', role === 'viewer');
+  if (role === 'viewer') cablerLeRefusDEcriture();
+}
+
+// --- P11.4-l : UN GESTE D'ÉCRITURE REFUSÉ AU LECTEUR RESTE, INERTE, AVEC SA RAISON -------------
+// La feuille EFFAÇAIT `crud-btn` pour un lecteur (`display:none`) pendant que l'interrupteur voisin de la
+// MÊME ligne restait visible, inerte et motivé : deux grammaires opposées à un centimètre l'une de l'autre.
+// Ce que la mesure a tranché : la garde qui LIE est SERVEUR (un viewer ne satisfait ni l'écriture éditoriale
+// ni l'administration — toute mutation lui rend 403), l'effacement ne protégeait donc rien ; il ôtait
+// seulement au lecteur la connaissance que le geste existe et que c'est SON rôle qui le borne.
+// POURQUOI `aria-disabled` ET NON `disabled` : un contrôle désactivé ne reçoit plus le survol ni le focus —
+// son infobulle ne s'afficherait jamais, et la raison serait écrite sans pouvoir être lue. L'inertie vient
+// donc d'ailleurs : UN capteur unique, en phase de CAPTURE, qui précède tout gestionnaire posé par un module
+// et survit à un bouton réactivé après coup. Il DIT la raison au lieu de laisser un geste sans effet.
+// La raison est posée par le CODE ; une feuille de style ne sait pas écrire un motif.
+
+// Le contrôle d'écriture qui porte `el`, ou `el` lui-même — l'icône d'un bouton est la cible du clic, pas
+// le bouton. Remonte la chaîne des parents (aucune dépendance à `closest`, absent des arbres fabriqués).
+function controleDEcritureSous(el) {
+  for (let n = el; n; n = n.parentNode) if (n.classList && n.classList.contains('crud-btn')) return n;
+  return null;
+}
+// Pose le refus SUR le contrôle : marque accessible + raison ajoutée à l'infobulle déjà écrite (celle du
+// contenu livré, quand elle existe, n'est pas remplacée). Idempotent. Rend false si rien n'était à poser.
+function motiverLeRefusAuLecteur(btn) {
+  if (!btn || !btn.classList || !btn.classList.contains('crud-btn') || socRole() !== 'viewer') return false;
+  if (btn.dataset.refusLecteur) return true;
+  btn.dataset.refusLecteur = '1';
+  btn.setAttribute('aria-disabled', 'true');
+  btn.title = (btn.title ? btn.title + ' · ' : '') + 'rôle lecteur : ce geste demande le rôle éditeur (le serveur le refuse aussi)';
+  return true;
+}
+let refusDEcritureCable = false;
+function cablerLeRefusDEcriture() {
+  if (refusDEcritureCable || !document.addEventListener) return;
+  refusDEcritureCable = true;
+  document.addEventListener('click', ev => {
+    if (socRole() !== 'viewer') return;
+    const btn = controleDEcritureSous(ev && ev.target);
+    if (!btn) return;
+    ev.preventDefault(); ev.stopPropagation();
+    motiverLeRefusAuLecteur(btn);
+    toast(btn.title, 'bad', 4200);
+  }, true);
 }
 
 // « managed » (garde-fou #4) : 0=builtin (seed), 1=overlay (config.d), 2=perso (créé via l'UI). Le CRUD
@@ -607,6 +650,6 @@ const humanAge = s => { s = Number(s) || 0; return s < 90 ? s + ' s' : s < 5400 
 export function setSocTZ(v) { socTZ = v; }
 export {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, flashStopped, stopBtn, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, toCSV, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, miniMenu, api, apiSend, transientGatewayMsg, muted, fetchInto, colComparator, makePager, pageNums, pagedList,
-  socRole, socIsAdmin, applyRoleClass, managedBadge, gateDeleteBtn, formMsg, contentSubmit, contentDelete, SEVCOL, lsSet, collapsibleGroup, mitreName, humanAge,
+  socRole, socIsAdmin, applyRoleClass, controleDEcritureSous, motiverLeRefusAuLecteur, managedBadge, gateDeleteBtn, formMsg, contentSubmit, contentDelete, SEVCOL, lsSet, collapsibleGroup, mitreName, humanAge,
   confirmWithConsequence, disclosure
 };

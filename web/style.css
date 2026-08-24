@@ -577,12 +577,21 @@ body.role-viewer .paneltools .picon,
 body.role-viewer #dash-new,
 body.role-viewer #rule-new,body.role-viewer #notif-new,body.role-viewer #pb-new,
 body.role-viewer #act-new,body.role-viewer #mode-toggle{display:none!important}
-/* LA FORME DERIVEE. Tout controle d'ecriture porte `crud-btn` : le masquage se lit ici sans que la feuille
-   nomme un bouton (les identifiants de la regle ci-dessus sont l'enumeration qui reste a reprendre). La VRAIE
-   garde est SERVEUR (403/400/409) ; ceci n'est que de la defense en profondeur, et la feuille est servie a
-   part -- une feuille qui ne charge pas ne rend rien permis, elle rend seulement le bouton visible. */
-body.role-viewer .crud-btn{display:none!important}
-/* case « actif » d'un contenu de detection : neutralisee pour le lecteur (le serveur refuse aussi). */
+/* LA FORME DERIVEE, ET UNE SEULE GRAMMAIRE POUR LES DEUX VOISINS (`P11.4-l`). Tout controle d'ecriture porte
+   `crud-btn` : la feuille le lit sans nommer aucun bouton (les identifiants de la regle ci-dessus sont
+   l'enumeration qui reste a reprendre). Ces deux regles etaient ecrites A L'OPPOSE l'une de l'autre — le
+   bouton EFFACE sans un mot, l'interrupteur voisin de la MEME ligne visible, inerte et motive.
+   CE QUE LA MESURE A TRANCHE. La garde qui LIE est SERVEUR : un lecteur ne satisfait ni l'ecriture editoriale
+   ni l'administration, et TOUTE mutation lui rend 403 — l'effacement ne protegeait donc rien, il ne faisait
+   qu'oter au lecteur la connaissance que ce geste existe et que c'est SON role qui le borne. Pire, le MEME
+   bouton portait deja une raison ecrite pour l'AUTRE obstacle (contenu livre, non supprimable en place) : le
+   masquage jetait cette raison-la aussi. Le controle refuse reste donc, estompe.
+   OU VIT LA RAISON, ET POURQUOI PAS ICI. Une feuille de style ne sait pas ecrire un motif : la raison est
+   posee par le code partage de la console, avec l'inertie, en phase de capture. Un bouton n'a pas d'enveloppe
+   survolable ou loger sa raison, et `pointer-events` couperait justement le survol qui la ferait lire. */
+body.role-viewer .crud-btn{opacity:.45;cursor:not-allowed}
+/* case « actif » d'un contenu de detection : l'interrupteur, LUI, a son enveloppe — sa raison vit sur le
+   `label` survolable que pose la fabrique partagee, donc son inertie peut rester ici (le serveur refuse aussi). */
 body.role-viewer .crud-toggle{pointer-events:none;opacity:.45}
 /* SQL brut = admin uniquement. Fail-closed : tant que le role n'est pas connu (aucune classe sur <body>) le
    selecteur mord, le toggle Type reste masque et le formulaire envoie du GXQL. */

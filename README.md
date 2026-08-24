@@ -201,14 +201,53 @@ lisible via `/proc/<pid>/environ`) ; l'environnement gagne s'il porte la même c
 clair, sans le dire ; si vous êtes dans ce cas, le démon l'annonce au démarrage et convertit la base.*
 **Perte de la clé = perte de la base** : conservez‑la hors de la machine.
 
-### Désinstallation (hôte)
+### Désinstallation — les trois modes
+
+`uninstall.sh` couvre les **trois** modes d'installation ci‑dessus. Il désigne le mode par `--mode`
+et **refuse de le deviner** : sans `--mode` il sonde les trois et n'agit que si **un seul** porte des
+traces ; zéro trace, ou deux modes à la fois, il le dit et s'arrête sans rien toucher.
+
 ```sh
-sudo bash uninstall.sh            # removes binary + collectors + units + config (KEEPS /var/lib/plume)
-sudo bash uninstall.sh --purge    # ALSO removes data (DB, spool, ledger key) + the plume user
-sudo bash uninstall.sh --purge -y # idem, sans confirmation interactive (scripts / SSH non interactif)
+bash uninstall.sh --dry-run                       # inventaire des trois modes, sans root, sans rien modifier
+sudo bash uninstall.sh --mode host                # binaire + collecteurs + units + config ; GARDE /var/lib/plume
+sudo bash uninstall.sh --mode host --purge        # + base, spool, sauvegardes, clé du ledger, utilisateur `soc`
+sudo bash uninstall.sh --mode docker              # conteneurs + réseau du projet compose ; GARDE le volume
+sudo bash uninstall.sh --mode docker --purge      # + volume nommé + image `soc:latest`
+bash uninstall.sh --mode k3s                      # IMPRIME le plan dérivé de deploy/k3s.yaml, ne touche à rien
+bash uninstall.sh --mode k3s --apply              # exécute ; GARDE le PVC et le Namespace
+bash uninstall.sh --mode k3s --apply --purge      # + PVC + Namespace (destructif)
 ```
-> `--purge` **demande une confirmation `[y/N]`** : sans terminal (SSH non interactif, script), il lit
-> une réponse vide, **n'enlève rien et sort en 0**. Utilisez `-y` dans ce cas. *Mesuré le 2026‑08‑01.*
+
+**Trois propriétés, et ce qu'elles coûtent.**
+
+- **Le geste par défaut ne détruit rien d'irréversible.** Il retire le logiciel et laisse les
+  données. `--purge` **énumère ce qu'il va détruire avant de le faire** — chaque chemin avec sa
+  taille, le volume, le PVC, l'utilisateur système — puis demande confirmation.
+- **Il rend compte de ce qu'il n'a pas pu retirer**, et le **code de sortie devient 3**. Ce que le
+  mode hôte laisse aujourd'hui derrière lui, et qu'il nomme : le répertoire de drop‑in
+  `/etc/systemd/system/plume-<x>.service.d/` s'il contient un fichier qui n'est pas de plume ; la
+  ligne `soc.localhost` ajoutée à `/etc/hosts` par `bootstrap.sh` (**il n'édite jamais ce fichier
+  partagé** — il donne la commande) ; les règles auditd déjà chargées dans le noyau si `augenrules`
+  est absent ; un `plume-daemon` encore vivant. En k3s : une ressource refusée par RBAC, un
+  namespace bloqué par un *finalizer*, un `PersistentVolume` resté `Released`.
+- **Le mode k3s dit quoi faire plutôt que de le faire.** Il imprime le contexte kubectl visé, le
+  plan **dérivé de `deploy/k3s.yaml`** (donc juste même si le manifeste change), et la **politique de
+  récupération** du volume lue dans le cluster — `Delete` détruit les octets avec le PVC, `Retain`
+  les laisse et abandonne un PV `Released`. Il n'exécute qu'avec `--apply`. Le plan reste imprimable
+  **sans cluster joignable**, et il dit alors qu'il n'a pas consulté le cluster.
+
+Codes de sortie : `0` terminé sans reste connu · `1` usage, droits, ou confirmation impossible ·
+`2` mode non déterminable, **rien n'a été fait** · `3` terminé, **des restes subsistent** et ils
+sont nommés.
+
+> **Limites, dites plutôt que tues.** `uninstall.sh` ne connaît que les installations faites par
+> `bootstrap.sh`, `bootstrap-agent.sh`, `docker-compose.yml` et `deploy/k3s.yaml` : un déploiement
+> monté à la main lui est invisible. En mode docker il retrouve les ressources par le **nom de
+> projet compose**, que compose dérive du **répertoire** de lancement — si vous avez lancé
+> d'ailleurs, redonnez‑le avec `--project <nom>`. Un outil absent (`docker`, `kubectl`) n'est jamais
+> lu comme « il n'y a rien » : c'est un **sondage impossible**, et il est rapporté comme tel.
+> `--purge` sans terminal **et** sans `--yes` **refuse et sort en 1** au lieu de rendre 0 en
+> n'ayant rien fait, ce qui était le comportement précédent.
 
 ## Ajouter vos sources et collecteurs
 
@@ -218,29 +257,94 @@ Plume ingère **n'importe quelle source** sans rebuild ni intervention de notre 
 `/etc/plume/inputs.d/<nom>.input` (`KEY=value`), exécute la commande et transforme chaque ligne de sa
 sortie en événement `source=<SOURCE>`.
 
-> ⚠️ **`custom` n'est PAS installé par défaut** — `bootstrap-agent.sh` n'installe que
-> `resources integrity ship`. Deux étapes explicites (la « règle d'or » du projet : on installe sans
-> activer, l'opérateur décide) :
-> ```sh
-> sudo env PLUME_EXTRA_COLLECTORS="custom" PLUME_CENTRAL=… PLUME_TOKEN=… bash bootstrap-agent.sh
-> sudo install -d -o root -g root -m 0700 /etc/plume/inputs.d   # aucun script ne le crée
-> sudo systemctl enable --now plume-custom.timer                # cadence : 60 s
-> ```
-> Le répertoire **doit** être root-only : `CMD` s'exécute **en root** (le collecteur n'a pas de
-> `User=`), donc y déposer un fichier revient à exécuter du code privilégié.
+#### De bout en bout, sans rien supposer de connu
+
+Cinq gestes. Aucun n'est facultatif, et le cinquième est celui qu'on oublie : **prouver que les
+événements arrivent**.
+
+**① Installer le collecteur générique.** Il n'est **pas** installé par défaut : `bootstrap-agent.sh`
+n'installe que `resources integrity ship`. C'est la « règle d'or » du projet — on installe sans
+activer, l'opérateur décide.
+
+```sh
+sudo env PLUME_EXTRA_COLLECTORS="custom" PLUME_CENTRAL=… PLUME_TOKEN=… bash bootstrap-agent.sh
+```
+
+**② Créer le répertoire d'entrées.** **Aucun script ne le crée** — ni `bootstrap.sh`, ni
+`bootstrap-agent.sh`, ni le collecteur lui‑même. Sans lui, `custom.sh` ne collecte rien : il émet un
+événement `collect_status=unavailable` / `reason=missing-config` et sort en 0 (il le **dit**, il ne
+fait pas semblant).
+
+```sh
+sudo install -d -o root -g root -m 0700 /etc/plume/inputs.d
+```
+
+Le répertoire **doit** être root‑only : `CMD` s'exécute **en root** (le collecteur n'a pas de
+`User=`), donc y déposer un fichier revient à faire exécuter du code privilégié.
+
+**③ Écrire la déclaration.** Un fichier `KEY=value` par source. Seuls `SOURCE` et `CMD` sont
+obligatoires ; un fichier auquel il manque l'un des deux est **ignoré en silence**.
 
 ```sh
 # /etc/plume/inputs.d/monapp.input
-SOURCE=monapp                          # nom cherchable (source=monapp) — obligatoire
-CMD=tail -n0 -F /var/log/monapp.log    # toute commande ; 1 ligne stdout = 1 événement — obligatoire
-CATEGORY=application                    # défaut: custom
-SEVERITY=1                             # 0 info … 4 critique (défaut 1)
-FILTER=ERROR|WARN                      # optionnel : ne garde que les lignes qui matchent
-MAXLEN=4000                            # longueur max/ligne (monter pour du JSON verbeux)
+SOURCE=monapp                             # nom cherchable (source=monapp) — OBLIGATOIRE
+CMD=journalctl -u monapp --since -1min --no-pager   # 1 ligne stdout = 1 événement — OBLIGATOIRE
+CATEGORY=application                      # défaut : custom
+SEVERITY=2                                # 0 info … 4 critique (défaut 1)
+FILTER=ERROR|WARN                         # optionnel : ne garde que les lignes qui matchent (grep -iE)
+MAX=100                                   # plafond de lignes PAR PASSAGE (défaut 100) — voir l'avertissement
+MAXLEN=4000                               # longueur max d'une ligne (défaut 1000 ; monter pour du JSON verbeux)
 ```
 
-Faites émettre à `CMD` uniquement le **nouveau** (`journalctl --since -1min`, `tail -n0 -F`, un appel d'API…) ; la déduplication horaire absorbe les doublons. Tout ce qui produit du texte se collecte ainsi : un log Linux, une API REST, une base — le collecteur tourne sur un hôte Linux mais la **cible** peut être n'importe quel système.
+> ⚠️ **`CMD` doit se TERMINER.** Le collecteur exécute `sh -c "$CMD"` et **attend sa sortie** ; il
+> n'a pas de minuterie, et `plume-custom.service` est un `Type=oneshot` **sans `TimeoutStartSec`**.
+> Une commande qui suit un flux — `tail -F`, `journalctl -f`, `kubectl logs -f` — ne rend jamais la
+> main : *le collecteur reste bloqué et ne publie rien*, jusqu'à ce que systemd le tue à son délai
+> par défaut, alors que le timer réarme toutes les 60 s. **Vérifié sur cet arbre :** `CMD=tail -n0 -F
+> <fichier>` → le collecteur ne rend pas la main et le spool reste vide ; la même source avec un
+> `CMD` borné (`journalctl --since -1min`, `tail -n 200`, un appel d'API) → sortie 0 et enveloppe
+> publiée. Faites donc émettre à `CMD` **uniquement le nouveau, puis sortez** : la déduplication
+> horaire (`source` + ligne) absorbe les recouvrements.
+>
+> ⚠️ **`MAX` est un plafond, pas une file d'attente.** Au‑delà de `MAX` lignes dans un passage, le
+> surplus est **jeté**, pas reporté au passage suivant. Une source qui produit plus de `MAX` lignes
+> par minute perd la différence, **en silence**. Dimensionnez `MAX` sur votre débit réel, ou
+> resserrez `FILTER`.
 
+**④ Armer la cadence.** Le timer tourne toutes les 60 s (`OnUnitActiveSec=60s`).
+
+```sh
+sudo systemctl enable --now plume-custom.timer
+```
+
+**⑤ PROUVER que ça marche.** Trois vérifications, de l'agent jusqu'au central. Ne vous arrêtez pas
+avant la troisième : les deux premières prouvent que le collecteur produit, pas que le central
+reçoit.
+
+```sh
+# a) sur l'AGENT — jouer le collecteur à la main et LIRE son code de sortie (0 = passage complet)
+sudo /usr/local/lib/plume/collectors/custom.sh; echo "code=$?"
+
+# b) ce qu'il a produit : une enveloppe JSON par passage, en attente d'expédition
+sudo ls -1 /var/lib/plume/spool/ && sudo cat /var/lib/plume/spool/custom-*.json
+
+# c) forcer l'expédition sans attendre le timer (30 s), puis interroger le CENTRAL
+sudo systemctl start plume-ship.service
+curl -sS -u "<utilisateur>:<mot de passe>" \
+  'http://127.0.0.1:7000/api/search?q=source%3Dmonapp&limit=5'
+```
+
+La réponse est un JSON `{"results":[…]}`. **Une liste vide est un échec**, pas un silence : la
+source n'arrive pas. Dans l'interface, la même preuve se fait dans la barre *Explore* avec
+`source=monapp`. Et si un collecteur s'est déclaré aveugle plutôt que de se taire :
+
+```sh
+# sur le central, la liste des capteurs qui ont DIT ne pas pouvoir collecter
+search category=config collect_status=unavailable | table host, source, reason, detail
+```
+
+Tout ce qui produit du texte se collecte ainsi : un log Linux, une API REST, une base de données —
+le collecteur tourne sur un hôte Linux, mais la **cible** peut être n'importe quel système.
 > **Linux** (serveur ou poste, toute distribution) est couvert nativement par les collecteurs
 > (`collectors/*.sh`, POSIX-sh). Un collecteur dont l'outil est absent **se désactive — et le DIT** :
 > il émet un événement `category=config` avec `collect_status=unavailable` et une `reason`
@@ -291,6 +395,81 @@ Faites émettre à `CMD` uniquement le **nouveau** (`journalctl --since -1min`, 
 >
 > **Windows** (poste, entreprise, Windows Server) a un **collecteur natif PowerShell clé-en-main** — événements · pare-feu · réseau · Defender — dans **[`collectors/windows/`](collectors/windows/)** : copiez-le, planifiez-le (tâche toutes les 5 min), il POST directement au central. **macOS** : via un scripted input (`log show`).
 
+#### Les collecteurs livrés — quarante existent, trois s'installent
+
+Cet écart est **délibéré** (« on installe sans activer ») mais il n'était visible nulle part. Il l'est
+ici. Les chiffres sont **dérivés de l'arbre**, pas recopiés — la commande qui les redonne est sous le
+tableau.
+
+`collectors/` livre **40 scripts shell**, dont `lib.sh` (bibliothèque partagée, jamais exécutée
+seule). S'y ajoutent un relais Python (`minio-audit-relay.py`) et le collecteur Windows PowerShell
+(`collectors/windows/`). Ce qui s'installe par défaut :
+
+| Installateur | Installe | Active | Ce qui reste dehors |
+|---|---|---|---|
+| `bootstrap-agent.sh` (agent) | **3** — `resources` `integrity` `ship` | les 3 | tout le reste, via `PLUME_EXTRA_COLLECTORS="…"` ou un drapeau `PLUME_WITH_*` (11 existent) |
+| `bootstrap.sh` (central) | **12** | **7** timers | `respond` `falco` `crowdsec` `kube-state` `pod-logs` `prom-scrape` sont installés puis **explicitement désactivés** — à activer à la demande |
+
+Sur un agent par défaut, seuls **deux** capteurs collectent (`resources` = métriques, `integrity` =
+FIM) ; `ship` expédie. **Aucun événement de sécurité** n'arrive tant que rien d'autre n'est activé.
+
+| Collecteur | Ce qu'il remonte | Prérequis hors plume |
+|---|---|---|
+| `resources` ★ | CPU, mémoire, swap, disque, température, réseau → table `metric` | — |
+| `integrity` ★ | FIM natif : fichiers, unités systemd et drop‑ins, persistance | — |
+| `ship` ★ | *(pas un capteur)* expédie le spool vers le central | — |
+| `journal` | journald → `category=auth` (`sshd`, `sudo`, `su`) | — |
+| `auditd` | log auditd → `category=exec`, accès fichiers, élévation | `auditctl` + règles chargées |
+| `audit` | *(remplacé par `auditd`, désactivé par `bootstrap.sh`)* | `ausearch` |
+| `controls` | catalogue de contrôles « zéro‑trou » : ce qui devrait défendre défend‑il | `systemctl`, `sysctl` (autres facultatifs) |
+| `firewall` | empreinte d'intégrité du ruleset nftables | `nft` ou `iptables` |
+| `nft` | compteurs des sets nft (blocklists) → `metric` | `nft`, `jq` |
+| `ufw` | couche pare‑feu hôte UFW, distincte de nft | `ufw` |
+| `conntrack` | flux réseau entrant/sortant | `ss` |
+| `origin-drop` | rend visibles les paquets rejetés par le pare‑feu d'origine | `nft` |
+| `portscan` | balayage de ports vu par la table nft `plume-portscan` | `nft` |
+| `portprobe` | sondage *low‑and‑slow* sur la même table | `nft`, `jq` |
+| `bans` | bans actifs de tous les backends → `category=ban` | `cscli` / `fail2ban-client` |
+| `crowdsec` | alertes CrowdSec | `cscli` |
+| `falco` | détections eBPF de Falco (JSON) | Falco installé |
+| `suricata` | `eve.json` de Suricata | Suricata installé |
+| `clamav` | antivirus ClamAV sur les fichiers nouveaux | `clamscan` / `clamdscan` |
+| `yara` | scan YARA des chemins surveillés | `yara` + vos règles |
+| `vuln` | vulnérabilités des images déployées | `trivy`, `crictl` |
+| `imgdrift` | dérive de digest : nouveau build poussé sur le même tag | `skopeo`, `crictl` |
+| `containerd` | images tirées, conteneurs démarrés (CRI) | `crictl`, `jq` |
+| `kube-state` | état du cluster k8s/k3s → `metric` + events | `kubectl` |
+| `kube-audit` | log d'audit de l'API Kubernetes | accès au fichier d'audit |
+| `kube-rbac` | RBAC Kubernetes (qui peut quoi) | `kubectl` |
+| `pod-logs` | logs des pods, filtrés sécurité | accès `/var/log/pods` |
+| `dataaccess` | accès aux données (façon Varonis) | règles auditd |
+| `dataacl` | carte des droits d'accès aux données | — |
+| `minio` | gouvernance d'accès MinIO / S3 | `mc` |
+| `minio-audit-relay.py` | télémétrie d'accès objet MinIO (relais, long‑running) | MinIO configuré |
+| `mail` | logs mailserver (postfix / dovecot) | accès aux logs |
+| `web` | access‑logs Traefik (JSON) | accès aux logs |
+| `cloudflare` | *firewall events* Cloudflare (WAF / Bot / RateLimit) | jeton API |
+| `cloudflare-http` | requêtes HTTP 4xx/5xx vues au *edge* | jeton API |
+| `prom-scrape` | *scrape* d'endpoints `/metrics` (remplace Prometheus) | vos cibles |
+| `custom` | **vos sources**, sans code (cf. ci‑dessus) | — |
+| `engagement-adapter` | exemptions d'*enforcer* pour un engagement autorisé | selon backend |
+| `respond` | *(pas un capteur)* applique les actions décidées par le central | selon backend |
+| `backup` | *(pas un capteur)* sauvegarde compacte + rotation | — |
+| `windows/` | Windows : événements · pare‑feu · réseau · Defender, POST direct | PowerShell |
+
+★ = installé **et activé** par `bootstrap-agent.sh`.
+
+Pour redériver ces chiffres depuis l'arbre plutôt que de nous croire :
+
+```sh
+ls collectors/*.sh | wc -l                                     # scripts livrés
+grep -cE '^\s*install -m0755 "\$SRC/collectors/' bootstrap.sh  # installés par le central
+grep -cE '^\s*systemctl enable --now plume-[a-z-]+\.timer' bootstrap.sh   # activés par le central
+```
+
+Un collecteur dont l'outil est absent **se désactive — et le DIT** (`collect_status=unavailable`,
+avec une `reason`) : voir l'encadré plus haut et la requête qui les liste.
+
 **2. Extraire des champs d'un format inconnu (parser).** Déposez `config.d/parsers/<nom>.json` : une regex à groupes nommés `(?P<champ>…)` transforme le texte brut en champs structurés, cherchables et mappables au CIM — sans rebuild.
 
 ```json
@@ -310,6 +489,187 @@ n'est pas mesuré** à ce jour : nous ne publierons ce chiffre qu'une fois le ba
 **3. Détecter et agir.** Ajoutez une **règle** (`config.d/rules/*.json` : requête GXQL + seuil) ou un **playbook** (`config.d/playbooks/*.json` : requête → action). Parsers, règles et playbooks sont aussi **créables/éditables dans l'interface** (rôle admin) ; le fichier reste la source durable, versionnée en git.
 
 Les fichiers de `config.d/` sont chargés au démarrage de façon **idempotente** (un overlay l'emporte sur le builtin de même nom) ; un fichier invalide est **ignoré avec un avertissement**, jamais un crash. Vue d'ensemble des points d'extension (parser · connecteur · détection · threat-intel · enforcer) et modèle *bring-your-own-vendor* : **[`docs/SDK.md`](docs/SDK.md)**.
+
+## Configuration : les variables `PLUME_*`
+
+**Où on les pose, et qui gagne.** Toute la configuration passe par des variables `PLUME_*`, et la
+précédence est la même **dans les trois modes de déploiement** : `environnement` **>** fichier de
+configuration **>** défaut compilé. Le fichier est `/etc/plume/soc.conf` sur un central hôte (0640,
+`root:soc`), `/etc/plume/plume.conf` sur un agent, `.env` en Docker, le `Secret`/`env:` du
+`Deployment` en k3s. Le fichier est **préférable pour un secret** : contrairement à l'environnement,
+il n'est pas lisible via `/proc/<pid>/environ`.
+
+> ⚠️ En Docker, le service `soc` du `docker-compose.yml` **énumère** ses variables : une variable que
+> vous ajoutez à `.env` **sans l'ajouter au bloc `environment:`** n'atteint jamais le conteneur. Le
+> réglage semble posé et ne mord pas.
+
+### Ce que ce document couvre, et ce qu'il ne couvre pas
+
+Soyons exacts plutôt que rassurants, et comptons **sur l'arbre** plutôt que de promettre. Le démon
+et les collecteurs lisent **299** variables `PLUME_*` distinctes. **130** apparaissent dans au moins
+un document livré ; **169** n'apparaissent dans **aucun**. Ce README en nomme **54** — il en
+nommait **8** avant cette section.
+
+La section ci‑dessous documente donc **une sélection** : les leviers qu'un exploitant a une raison de
+toucher, groupés par usage. Elle ne couvre pas les 299, et un document qui prétendrait le contraire
+serait pire que le silence. Le reste est porté par une clé ouverte de
+[`docs/ROADMAP.md`](docs/ROADMAP.md), et se dérive avec les commandes ci‑dessous.
+
+**Alors dérivez la liste plutôt que de nous croire.** Ces commandes se lancent à la racine du dépôt
+et lisent les sources, donc elles ne peuvent pas vieillir :
+
+```sh
+# 1. TOUS les leviers du démon, AVEC leur valeur par défaut
+grep -rhoE 'cfg[a-z_]*\([^,]+, *"PLUME_[A-Z0-9_]+", *"[^"]*"' daemon/src --include='*.rs' --exclude-dir=tests \
+  | sed -E 's/.*"(PLUME_[A-Z0-9_]+)", *"([^"]*)".*/\1 = \2/' | sort -u
+
+# 2. TOUS les leviers des collecteurs et des installateurs, AVEC leur valeur par défaut
+grep -rhoE '\$\{PLUME_[A-Z0-9_]+:-[^}]*\}' collectors bootstrap.sh bootstrap-agent.sh \
+  | sed -E 's/\$\{(PLUME_[A-Z0-9_]+):-(.*)\}/\1 = \2/' | sort -u
+
+# 3. La liste COMPLÈTE des leviers lus, et ceux qu'aucun document ne cite
+{ grep -rhoE '(env::var|cfg[a-z_]*)\([^)]*"PLUME_[A-Z0-9_]+"' daemon/src --include='*.rs' --exclude-dir=tests
+  grep -rhoE '\$\{?PLUME_[A-Z0-9_]+' collectors bootstrap.sh bootstrap-agent.sh
+} | grep -oE 'PLUME_[A-Z0-9_]+' | sort -u > /tmp/leviers.txt
+grep -hoE '\bPLUME_[A-Z0-9_]+' $(git ls-files '*.md') .env.example | sort -u > /tmp/documentes.txt
+wc -l < /tmp/leviers.txt                              # leviers lus
+comm -23 /tmp/leviers.txt /tmp/documentes.txt         # ceux qu'aucun document ne cite
+
+# 4. Où une variable donnée est lue, et ce qu'elle vaut par défaut
+grep -rn 'PLUME_RETENTION_DAYS' daemon/src collectors --exclude-dir=tests
+```
+
+Les commandes 1 et 2 rendent ensemble **240** leviers avec leur défaut littéral. Sur une
+instance qui tourne, un administrateur lit les valeurs **effectives** d'une liste sûre de 26 clés
+(jamais un secret) via `GET /api/system/diag`.
+
+### Les leviers qu'on a une raison de toucher
+
+Les valeurs entre crochets sont les **défauts lus dans les sources** ; celles marquées *(dérivé)*
+viennent d'une constante — la commande 4 ci‑dessus la donne.
+
+**Identité et exposition du central**
+
+| Variable | Effet | Défaut |
+|---|---|---|
+| `PLUME_ADDR` | interface et port d'écoute | `127.0.0.1:7000` |
+| `PLUME_HOST` | hôte attendu — **garde anti‑DNS‑rebinding**, un écart rend `421` | `plume.localhost` |
+| `PLUME_HOST_STRICT` | `1` = n'accepte plus le *loopback* d'office, seulement les FQDN de `PLUME_HOST` | `0` |
+| `PLUME_USER` / `PLUME_PASS_HASH` | compte admin ; le hash vient de `plume-daemon hashpw`. Hash vide → **mode SETUP** | `admin` / vide |
+| `PLUME_TRUSTED_PROXIES` | reverse proxies dont on accepte l'IP réelle | vide |
+| `PLUME_SESSION_TTL_S` | durée d'une session web | `43200` |
+| `PLUME_MULTI_TENANT` | mode multi‑tenant (une base + une clé par tenant) | `0` |
+
+**Enrôler un agent** — posés dans `/etc/plume/plume.conf`, jamais sur la ligne de commande.
+
+| Variable | Effet | Défaut |
+|---|---|---|
+| `PLUME_CENTRAL` | URL du central vers lequel pousser | `http://127.0.0.1:7000` |
+| `PLUME_TOKEN` | jeton *Bearer* d'agent (préféré) | vide |
+| `PLUME_USER` / `PLUME_PASS` | repli *basic auth* si pas de jeton | vide |
+| `PLUME_HOST_HEADER` | force l'en‑tête `Host` quand on joint le central par IP | vide |
+| `PLUME_TLS_CACERT` / `_CERT` / `_KEY` | mTLS côté agent | vide |
+
+**Où vivent les données**
+
+| Variable | Effet | Défaut |
+|---|---|---|
+| `PLUME_DB` | fichier SQLite | `/var/lib/plume/db/plume.db` |
+| `PLUME_SPOOL` | spool d'expédition côté agent | `/var/lib/plume/spool` |
+| `PLUME_STATE` | filigranes des collecteurs | `/var/lib/plume/state` |
+| `PLUME_CONFIG_DIR` | overlays `config.d` (parsers, règles, playbooks) | `/usr/local/share/plume/config.d` |
+| `PLUME_WEB` | racine de la PWA servie | `/usr/local/share/plume/web` |
+
+**Chiffrement au repos** — voir la section dédiée plus haut ; **par défaut la base est en clair**.
+
+| Variable | Effet | Défaut |
+|---|---|---|
+| `PLUME_DB_KEY_FILE` | chemin d'un fichier‑clé monté en lecture seule (**préféré**, *fail‑closed*) | vide |
+| `PLUME_DB_KEY` | passphrase SQLCipher — lisible via `/proc/<pid>/environ` | vide |
+
+**Sauvegarde et reprise** — toutes détaillées dans [`docs/DR-plume-restore.md`](docs/DR-plume-restore.md).
+
+| Variable | Effet | Défaut |
+|---|---|---|
+| `PLUME_BACKUP_INTERVAL` | secondes entre deux sauvegardes ; **`0` = aucune sauvegarde** | `0` |
+| `PLUME_BACKUP_KEEP` | rétention *keep‑N* | `24` |
+| `PLUME_BACKUP_DEST` | répertoire local de destination | `<dir(PLUME_DB)>/backups` |
+| `PLUME_BACKUP_ON_START` | `1` = une sauvegarde au démarrage | `0` |
+| `PLUME_BACKUP_AGE_RECIPIENT` | clé **publique** age pour un séquestre hors machine | vide |
+| `PLUME_BACKUP_REQUIRE_ASYMMETRIC` | `1` = refuse le repli symétrique (déchiffrable par la machine) | `0` |
+
+**Place disque et rétention**
+
+| Variable | Effet | Défaut |
+|---|---|---|
+| `PLUME_RETENTION_DAYS` | âge au‑delà duquel les événements sont purgés | `30` |
+| `PLUME_AUTOVACUUM_INTERVAL` | secondes entre deux passes de *vacuum* incrémental ; `0` = désactivé | `0` |
+| `PLUME_DISK_WARN_PCT` | seuil d'alerte d'occupation disque | `80` |
+| `PLUME_INGEST_MIN_FREE_MB` | plancher d'espace libre sous lequel l'ingestion s'arrête | `512` |
+| `PLUME_COLD_TIER` / `PLUME_COLD_DIR` | tier froid Parquet, **opt‑in** (`1` pour l'activer) | vide |
+| `PLUME_COLD_HOT_WINDOW_DAYS` | fenêtre gardée en base chaude avant bascule | `7` |
+
+**Tenir dans le budget de 2 Gio** — les leviers qui bornent la mémoire et le temps d'une requête.
+
+| Variable | Effet | Défaut |
+|---|---|---|
+| `PLUME_QUERY_CONCURRENCY` | requêtes simultanées (sémaphore partagé recherche + query) | `3` |
+| `PLUME_QUERY_BUDGET_MS` | budget d'une requête avant abandon | `5000` |
+| `PLUME_QUERY_MAX` | plafond de lignes rendues par `/api/query` (borné dur à `100000`) | `5000` |
+| `PLUME_SEARCH_LIMIT` / `PLUME_SEARCH_MAX` | défaut et plafond de `/api/search` | `100` / `5000` |
+| `PLUME_FTS_FIELDS` | `1` = indexe aussi les champs JSON en plein texte (**coûteux en RAM**) | `0` |
+| `PLUME_SQLITE_DEVERSEMENT` | `1` = autorise les tris à déverser sur disque. **Échange de confidentialité** : les temporaires SQLite ne sont **pas** chiffrés par SQLCipher | `0` |
+| `PLUME_SQLITE_BUDGET_MB` | budget mémoire du moteur | *(dérivé)* |
+| `PLUME_SQLITE_PLAFOND_DUR` | `1` = le dépassement **refuse** la requête au lieu de la laisser filer | `1` |
+
+**Débit et anti‑force‑brute**
+
+| Variable | Effet | Défaut |
+|---|---|---|
+| `PLUME_RL_IP_MAX` / `_AUTH_MAX` / `_GLOBAL_MAX` | limitation de débit par IP, sur l'authentification, et globale | `1200` / `120` / `6000` |
+| `PLUME_AUTH_LOCK_THRESHOLD` | échecs avant verrouillage à *backoff* exponentiel | `10` |
+| `PLUME_INGEST_MAX_EVENTS` / `PLUME_INGEST_MAX_BODY_MB` | bornes d'un lot d'ingestion | *(dérivé)* |
+
+**Ce que l'agent installe** — cf. le tableau des collecteurs plus haut.
+
+| Variable | Effet | Défaut |
+|---|---|---|
+| `PLUME_EXTRA_COLLECTORS` | liste de collecteurs à **installer sans activer** (`"journal auditd custom"`) | vide |
+| `PLUME_WITH_MAIL` · `_YARA` · `_SYSLOG` · `_RESPONDER` · `_PORTSCAN` · `_PORTPROBE` · `_ORIGIN_DROP` · `_CLOUDFLARE` · `_CLOUDFLARE_HTTP` · `_MINIO_AUDIT` · `_ENGAGEMENT` | drapeaux d'installation des modules qui demandent un binaire ou une configuration à part (11 en tout) | `0` |
+| `PLUME_INPUTS_DIR` | répertoire des *scripted inputs* | `/etc/plume/inputs.d` |
+
+**Réponse automatique** — coupée par défaut, et à raison : elle agit en root.
+
+| Variable | Effet | Défaut |
+|---|---|---|
+| `PLUME_RESPONDER` | `1` = le moteur de réponse tourne | `0` |
+| `PLUME_RESPONDER_APPLY` | `1` = il **applique** ; `0` = *dry‑run* qui journalise sans agir | `0` |
+| `PLUME_RESPONDER_ALLOW` | chemin du fichier d'*allowlist* du responder d'agent — voir l'avertissement sous le tableau | `/etc/plume/responder.allow` |
+| `PLUME_BAN_DURATION` | durée d'un bannissement | `4h` |
+| `PLUME_PROTECTED_IPS` / `PLUME_OPERATOR_IPS` | IP qu'aucune action ne peut bannir (ne vous enfermez pas dehors) | vide |
+
+> ⚠️ **`/etc/plume/responder.allow` porte DEUX significations incompatibles selon qui l'a créé.**
+> L'installateur du central y sème une liste de **services systemd** autorisés pour `stop_service`, et
+> c'est ainsi que le démon la lit. L'installateur d'agent sème le **même chemin** avec une liste
+> d'**adresses IP à ne jamais bannir**, et c'est ainsi que le responder d'agent la lit. Les deux ne
+> créent le fichier que s'il est absent : sur une machine qui est à la fois centrale et agent, le
+> second hérite du contenu du premier et le **relit de travers**. Concrètement, un exploitant qui y
+> écrit des noms de service perd sa liste d'IP épargnées — donc peut se faire bannir lui‑même.
+> Constat ouvert : voir `P4.7-a` dans [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+**Démonstration**
+
+| Variable | Effet | Défaut |
+|---|---|---|
+| `PLUME_DEMO` | `1` = peuple une instance neuve de données d'exemple sur 24 h | non posé |
+| `PLUME_PUBLIC_DEMO` | `1` = accès **anonyme en lecture seule**. À n'employer que sur une instance isolée et jetable | `0` |
+
+**Le reste** — SSO (`PLUME_SSO_*`), Vault (`PLUME_VAULT_*`), ClickHouse (`PLUME_CLICKHOUSE_*`),
+notifications (`PLUME_NOTIFY_*`), IA (`PLUME_AI_*`), score de risque (`PLUME_RISK_*`), *rollups*
+(`PLUME_ROLLUP_*`), et les réglages propres à chaque collecteur (`PLUME_MAIL_*`, `PLUME_WEB_*`,
+`PLUME_YARA_*`, `PLUME_CF_*`, `PLUME_MINIO_*`, `PLUME_SYSLOG_*`, `PLUME_ENGAGEMENT_*`…) se dérivent
+avec les commandes ci‑dessus. Beaucoup n'ont **pas d'autre documentation que le code qui les lit** :
+c'est un manque connu, nommé, et pas un oubli.
 
 ## Architecture (en bref)
 ```

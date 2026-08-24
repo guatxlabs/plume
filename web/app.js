@@ -10,7 +10,7 @@ import { banIp, clearDrillCrumb, evLoad, exploreFrom, exploreTo, qHistGo, render
 import { initDashboards, loadDashboard, loadDashboards, refreshPanels } from './dashboards.js';
 import { initLookups } from './lookups.js';
 import { loadFleetView } from './fleet.js';
-import { initNavigation, SPACES, currentTab, currentViewName, renderNav, route } from './navigation.js';
+import { chargesAffichees, chargesVivesAffichees, cibleAffichee, initNavigation, lancerLesCharges, poserUneCharge, SPACES, currentTab, currentViewName, renderNav, route } from './navigation.js';
 import { initAuthGate, fetchMe, setAuthUI } from './login.js';
 import { loadSourcesView } from './sources.js';
 import { loadSystemView } from './system.js'; // #51 DAY-2 OPS — console d'opérabilité + bandeau MOTD
@@ -30,9 +30,9 @@ import { prefGet, prefSet, prefsReady } from './prefs.js'; // #62 — préféren
 import { initKeyboardNav } from './keys.js'; // #62 — navigation clavier (/, g+touche, j/k, ?) non-intrusive
 import { initSoqlComplete } from './soql_complete.js'; // complétion IDE-like NATIVE de la barre Explore (schema/templates)
 import { initSavedQueries } from './savedqueries.js'; // requêtes GXQL nommées per-user (owner-scoped) + historique récent (localStorage)
-import { renderFreshness, renderFreshnessPulse, renderIntegrations } from './freshness.js'; // découpe par concern ; pulse compact de la Vue d'ensemble
-import { renderAlerts, setAlertMitreFilter, setAlertSourceFilter } from './alerts.js'; // decoupe par concern (alerts)
-import { renderCoverage, loadActions, loadMode, loadPlaybooks } from './detection_admin.js';
+import { renderFreshness } from './freshness.js'; // découpe par concern (le pulse et les intégrations sont des charges du registre)
+import { setAlertMitreFilter, setAlertSourceFilter } from './alerts.js'; // decoupe par concern (alerts ; la liste est une charge du registre)
+import { loadActions } from './detection_admin.js';   // ré-exporté pour les modules seam ; les autres charges passent par le registre
 import { ROLE_LABEL, loadUsers } from './admin_users.js';
 import { openHelpModal, openFreshnessHelp } from './help.js'; // #4c — aide in-app (split H1) : page Aide + modales GXQL/Fraîcheur, câblage #qhelp/#fresh-help ci-dessous
 
@@ -155,7 +155,7 @@ async function exploreExport(format) {
 
 
 // =================================================================================================
-// `P11.17-a` — CE QU'UNE CADENCE A LE DROIT DE RELANCER.
+// `P11.17-a` / `P11.14-e` — CE QU'UNE CADENCE A LE DROIT DE RELANCER.
 //
 // LE CHEMIN QUI ÉTAIT OUVERT, MESURÉ LE 2026-08-25. Un unique minuteur global relançait la MÊME
 // batterie de NEUF appels toutes les 30 s (valeur par défaut du sélecteur), à l'identique sur les neuf
@@ -164,35 +164,21 @@ async function exploreExport(format) {
 // ne l'appliquait qu'au SÉLECTEUR : le contrôle disparaissait de la barre, le minuteur, lui, continuait
 // de tirer. Le geste existait ; il était posé sur l'affichage du contrôle et non sur la boucle.
 //
-// CE QUI REMPLACE LA LISTE DE NOMS DE VUES. Chaque chargement DÉCLARE ici la cible qu'il peint, et le
-// périmètre d'un tir est DÉRIVÉ de l'affichage de cette cible. `showView()` masque les sections des
-// autres vues ; « affichée » se lit donc en remontant les parents. Une vue posée demain hérite de la
-// règle sans qu'une ligne soit ajoutée ici, et le minuteur ne cite aucun nom de vue.
+// OÙ VIT LA DÉCLARATION, ET POURQUOI PAS ICI. Le premier correctif a posé dans ce fichier une liste de
+// neuf cibles dont le commentaire affirmait qu'elle « rend le périmètre dérivable ». C'était faux, et
+// `P11.14-e` l'a nommé : la liste ÉNUMÉRAIT, quatre panneaux frères n'y étaient pas, et leur charge de
+// démarrage ratée ne se réparait jamais. Le registre vit désormais dans `navigation.js`, à côté des
+// sections que chaque onglet déclare — un seul registre pour l'entrée dans une vue ET pour la cadence,
+// de sorte qu'un panneau ne peut plus être servi par l'un et oublié par l'autre. Ce fichier n'en garde
+// que ce qu'il peint lui-même, ATTACHÉ à une charge déjà déclarée là-bas (`poserUneCharge` refuse une
+// cible inconnue, pour qu'une faute de frappe ne crée pas une charge fantôme).
 //
-// CE QUE CETTE LECTURE NE VOIT PAS, écrit ici et non passé sous silence : un masquage par FEUILLE DE STYLE
-// (`display:none` d'une classe de rôle, par exemple) n'est pas un attribut `hidden` — un chargement
-// dont la seule cause d'invisibilité serait la feuille de style partirait quand même.
-//
-// CE QUE CE PÉRIMÈTRE COÛTE, ET POURQUOI CE COÛT EST BORNÉ. Une carte cessait d'être tenue au chaud
-// pendant qu'elle est masquée : en revenant sur une vue, elle porte son dernier contenu jusqu'au tir
-// suivant, au plus une période de cadence. Ce délai est PLUS COURT que la granularité de la donnée
-// elle-même — les cartes d'instantané sont alimentées par des capteurs qui écrivent toutes les 2 à
-// 5 minutes, et chaque carte affiche l'horodatage de SON instantané, pas celui de sa requête : rien
-// n'est présenté comme plus frais qu'il ne l'est. Le geste qui manque pour supprimer même ce délai est
-// hors de ce fichier : il faudrait que le modèle de navigation déclare le chargeur d'une vue (l'onglet
-// « Vue d'ensemble » est le seul dont l'entrée n'en appelle aucun), et cette déclaration vit ailleurs.
+// CE QUE LA CADENCE DÉRIVE : les charges déclarées VIVES dont la cible est AFFICHÉE. Aucun nom de vue
+// n'apparaît ici ni là-bas ; une vue posée demain hérite de la règle par ses sections.
 // =================================================================================================
 
-// « Affichée » = ni la cible ni aucun de ses parents ne porte `hidden`. Lecture du DOM, pas d'un nom.
-function cibleAffichee(sel) {
-  let n = $(sel);
-  if (!n) return false;                                  // cible absente du document : rien à peindre
-  for (; n && n !== document.body; n = n.parentNode) if (n.hidden) return false;
-  return true;
-}
-
 // L'en-tête et le pied de page vivent HORS de `<main>` : leur cible est affichée sur toutes les vues,
-// et c'est pour cela que la posture reste une charge comme les autres au lieu d'être un cas à part.
+// et c'est pour cela que la posture est une charge comme les autres au lieu d'être un cas à part.
 async function peindreLaPosture() {
   const ov = await api('/overview');
   $('#updated').textContent = fmtTs(ov.ts);
@@ -200,64 +186,33 @@ async function peindreLaPosture() {
   p.textContent = ov.open_alerts > 0 ? `${ov.open_alerts} alerte(s)` : 'OK ';
   p.className = 'posture ' + (ov.open_alerts > 0 ? 'bad' : 'ok');
 }
-
-// LA DÉCLARATION. `cible` = ce que la charge peint ; c'est elle qui rend le périmètre dérivable.
-const CHARGES_DE_LA_SURFACE = [
-  { cible: '#posture', charger: peindreLaPosture },      // en-tête + pied de page (hors <main>)
-  { cible: '#alerts', charger: () => renderAlerts() },
-  { cible: '#firewall', charger: () => renderFirewall() },
-  { cible: '#controls', charger: () => renderControls() },
-  { cible: '#integrations', charger: () => renderIntegrations() },
-  { cible: '#freshness', charger: () => renderFreshnessPulse() },
-  { cible: '#act-list', charger: () => loadActions() },
-  { cible: '#mode-toggle', charger: () => loadMode() },
-  { cible: '#pb-list', charger: () => loadPlaybooks() },
-];
+// Les trois charges que ce fichier PEINT : leur cible et leur cadence sont déclarées dans le registre,
+// seule la fonction est attachée ici. Posé AVANT le premier `route()` (plus bas), sans quoi la
+// première entrée dans la Vue d'ensemble ne peindrait rien.
+poserUneCharge('posture', peindreLaPosture);
+poserUneCharge('firewall', () => renderFirewall());
+poserUneCharge('controls', () => renderControls());
 
 // FRAÎCHEUR — « ne pas relancer ce qui est déjà chargé ». La borne est l'instant du tir de cadence
-// PRÉCÉDENT : une charge qu'un GESTE EXPLICITE a déjà lancée depuis cette borne ne repart pas.
-//
-// SEULS LES GESTES EXPLICITES DATENT LEUR CHARGE. Dater aussi celles de la cadence retourne la règle
-// contre elle : la charge d'un tir est postérieure à la borne de ce tir, donc le tir SUIVANT la trouve
-// « déjà faite » et ne part pas — et comme il ne part pas, il ne date rien, si bien que le troisième
-// repart. Cette forme a été écrite puis mesurée le 2026-08-25 : sur 20 tirs de la Vue d'ensemble elle
-// rendait 50 appels au lieu de 100, UN TIR SUR DEUX perdu. Elle ne se voit que si l'estampille et la
-// borne tombent dans deux millisecondes différentes — donc au gré de la charge de la machine, jamais
-// dans un cas franc : c'est une suppression qui se cache, et c'est pourquoi elle est nommée ici.
-// Formuler la même règle en DURÉE (« pas avant une période ») rouvrirait l'autre piège, symétrique : un
-// minuteur qui rend la main une milliseconde trop tôt ferait sauter le tir tout entier.
+// PRÉCÉDENT : une charge qu'un GESTE EXPLICITE a déjà lancée depuis cette borne ne repart pas. La règle
+// et son piège sont écrits avec le coureur partagé, dans `navigation.js` : les deux appelants —
+// l'entrée dans une vue et la cadence — passent par la même mécanique, sans quoi elle vaudrait pour
+// l'un et pas pour l'autre.
 let dernierTirDeCadence = 0;
 
 // `refresh()` — les charges dont la cible est AFFICHÉE.
-//   `opts.depuis` présent  => tir de CADENCE : s'y ajoutent la fraîcheur (rien qu'un geste explicite ait
-//                             déjà lancé depuis cette borne) et le non-recouvrement (rien encore en vol).
-//   `opts` absent          => geste EXPLICITE (amorçage, bouton Rafraîchir, changement de thème ou de
-//                             plage, bascule de tenant) : le périmètre s'applique, la fraîcheur NON —
-//                             un opérateur qui demande une lecture doit toujours l'obtenir.
-async function refresh(opts) {
-  const cadence = !!(opts && typeof opts.depuis === 'number');
-  // Filtre calculé SYNCHRONEMENT, avant tout `await` : l'appelant peut avancer la borne juste après.
-  const partantes = CHARGES_DE_LA_SURFACE.filter(c => {
-    if (!cibleAffichee(c.cible)) return false;
-    if (!cadence) return true;
-    if (c._enVol) return false;                          // le tir précédent n'est pas revenu : ne pas empiler
-    return !(c._demande > opts.depuis);                  // un geste l'a déjà lancée depuis la borne
-  });
-  const suivre = (c) => {
-    if (!cadence) c._demande = Date.now();               // seul un geste explicite date la charge
-    c._enVol = true;
-    return Promise.resolve().then(c.charger).finally(() => { c._enVol = false; });
-  };
-  if (!partantes.length) return;                         // rien d'affiché à recharger : pas de verdict à écrire
-  // `#status` est écrit ICI, une fois toutes les charges retombées : « connecté » avant qu'elles aient
-  // abouti serait une affirmation que le tir n'a pas encore vérifiée, et un rejet arrivé après coup
-  // écraserait l'aveu par un état rassurant.
-  try {
-    await Promise.all(partantes.map(suivre));            // les charges en parallèle (pas en série)
-    $('#status').textContent = 'connecté';
-  } catch (e) {
-    $('#status').textContent = 'hors-ligne (' + e.message + ')';
-  }
+//   `opts.depuis` présent  => tir de CADENCE : les charges déclarées VIVES seulement, plus la fraîcheur
+//                             et le non-recouvrement. C'est là que la déclaration `vive` sert.
+//   `opts` absent          => geste EXPLICITE (bouton Rafraîchir, changement de thème ou de plage,
+//                             bascule de tenant) : TOUT ce qui est affiché repart, catalogues compris,
+//                             et sans exception de fraîcheur — un opérateur qui demande une lecture
+//                             doit toujours l'obtenir.
+// `#status` (« connecté » / « hors-ligne ») est écrit par le coureur partagé, une fois les charges
+// retombées : l'aveu appartient à celui qui sait si elles ont abouti, pas à chaque appelant.
+function refresh(opts) {
+  const depuis = (opts && typeof opts.depuis === 'number') ? opts.depuis : undefined;
+  // Lu SYNCHRONEMENT : l'appelant avance la borne juste après.
+  return lancerLesCharges(depuis === undefined ? chargesAffichees() : chargesVivesAffichees(), depuis);
 }
 
 
@@ -431,7 +386,13 @@ if ($('#case-assignee-filter')) $('#case-assignee-filter').addEventListener('inp
 //                                        last_seen,age_s,n_24h,status,type}]} (tous rôles)
 //   PUT  /api/sources/settings     <- {source,action,value?} ; action ∈ set_expected|set_label|
 //                                        set_note|set_category|clear (admin, audité, rollback si échec)
-//   GET  /api/ledger?limit=<n>     -> {ok,entries:[{id,ts,kind,detail,hash}]} (id DESC, admin)
+//   GET  /api/ledger?limit=<n>[&window_days=<n>][&cursor=<id>|&offset=<n>][&count=0]
+//        -> {ok,entries:[{id,ts,kind,detail,hash}],total,total_capped,has_more,next_cursor,limit} (id DESC, admin).
+//        `P11.16-d` : fenêtre de temps (`window_days`) + pagination PAR CLÉ (`cursor` = un identifiant, SEUL —
+//        la chaîne d'intégrité est construite et revérifiée dans cet ordre, trier par horodatage la romprait).
+//        `count=0` n'exige pas le total (`total`/`total_capped` valent alors null) : il n'est demandé qu'une
+//        fois par fenêtre. Au-delà du plafond de comptage, `total_capped` est vrai et la vue retire le dernier
+//        numéro de page au lieu de rendre des pages inatteignables.
 // INVARIANTS : aucun contrôle de collecte/hôte ; label/note/category = texte libre rendu en textContent
 // (B7, jamais innerHTML) ; toute BAISSE de rétention -> modal destructif AVANT le PUT (H3) ; mutations
 // cachées au non-admin côté UI (isAdmin), la vraie garde reste serveur.
@@ -619,8 +580,7 @@ function tirDeCadence() {
   if (document.hidden) return;
   const borne = dernierTirDeCadence;
   dernierTirDeCadence = Date.now();
-  refresh({ depuis: borne });
-  refreshPanels();   // P5 : déjà borné aux panneaux chargés ET visibles à fenêtre globale (dashboards.js)
+  refresh({ depuis: borne });   // les panneaux de dashboard sont une charge VIVE du registre, comme les autres
 }
 function applyAutoRefresh() {
   if (S.autoTimer) clearInterval(S.autoTimer);
@@ -638,18 +598,16 @@ if ($('#refresh')) $('#refresh').addEventListener('change', applyAutoRefresh);
 // Rattrapage au retour au premier plan : sans lui, couper les tirs en arrière-plan ferait attendre une
 // période entière devant une vue qu'on vient de rouvrir.
 document.addEventListener('visibilitychange', () => { if (!document.hidden && S.autoTimer) tirDeCadence(); });
-// Refresh MANUEL : relance les chargements de la vue courante — `refresh()` sans borne, donc les charges
-// AFFICHÉES repartent toutes, y compris celle qui vient d'aboutir (`P11.17-a` : la règle de fraîcheur ne
-// s'applique qu'à la cadence, jamais à un geste explicite) ; `refreshPanels()` les panneaux ; puis le
-// loader spécifique à la vue.
+// Refresh MANUEL — TOUT ce qui est à l'écran repart, vives et catalogues, sans exception de fraîcheur :
+// un opérateur qui demande une lecture doit toujours l'obtenir. La chaîne de conditions sur le nom de la
+// vue qui vivait ici (`detection` -> couverture, `cases` -> cas, `dashboards` -> panneaux) a disparu avec
+// les deux autres : ces chargements sont des charges du registre, donc déjà couverts par « affiché ».
+// LA RECHERCHE RESTE À PART, et c'est la seule : aucune charge ne la porte, délibérément (`P11.17-a` —
+// une requête lourde ne part jamais d'elle-même). Le bouton Rafraîchir EST le geste qui l'autorise, et
+// la condition se lit sur le document — l'éditeur est-il affiché et porte-t-il un texte — non sur un nom.
 function refreshCurrentView() {
-  const v = currentViewName();
   refresh();
-  refreshPanels();
-  if (v === 'detection') renderCoverage();
-  else if (v === 'cases') loadCases();
-  else if (v === 'dashboards') loadDashboard();
-  else if (v === 'explore') { if ($('#sql') && $('#sql').value.trim()) runQuery(); }
+  if (cibleAffichee('sql') && $('#sql').value.trim()) runQuery();
 }
 if ($('#manual-refresh')) $('#manual-refresh').onclick = refreshCurrentView;
 // toggle Stop/Start de l'auto-refresh + état visuel (pastille verte = actif, grise = en pause).
@@ -731,6 +689,11 @@ if ($('#fresh-help')) $('#fresh-help').onclick = openFreshnessHelp;
 if ($('#fresh-refresh')) $('#fresh-refresh').onclick = () => renderFreshness(true); // refresh manuel -> barre .tableprog (idem Explore/Dashboards)
 updateRangeBtn();
 updateQRangeBtn();
+// AMORÇAGE — `route()` a déjà peint les charges DE LA VUE ; celui-ci prend le reste, c'est-à-dire ce
+// qui vit hors de `<main>` et qu'aucune vue ne montre : la pastille de posture et l'horodatage du pied
+// de page. Le retirer a été essayé, puis MESURÉ le 2026-08-25 : un appel de moins à l'amorçage, et
+// c'était celui de la posture — le badge restait vide jusqu'au premier tir de cadence. Rien ne part
+// deux fois pour autant : une charge en vol ne repart jamais, et celles de la vue le sont encore.
 refresh();
 applyAutoRefresh();
 

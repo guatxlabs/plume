@@ -1,7 +1,7 @@
 // help.js — AIDE IN-APP (documentation contextuelle) extraite de app.js (audit H1 : 1re découpe, triviale).
 // 100% statique, WEB-ONLY : aucun appel réseau, aucun daemon. Contient la MÉCANIQUE de l'aide : l'ouvreur
-// `openHelp` (registre des sections importé de help_registry.js — TOUT le contenu vit là, P11.4-e puis
-// P11.8-b), l'unique chrome de modale (openHelpBox), le sommaire et la page « Aide » (HELP_INDEX / GLOSSARY /
+// `openHelp` (registre des SECTIONS importé de help_registry.js, P11.4-e puis P11.8-b), l'unique chrome de
+// modale (openHelpBox), le sommaire et la page « Aide » (HELP_INDEX / GLOSSARY /
 // HELP_SHORTCUTS, renderHelpGuide) et le handler délégué .vhelp. app.js importe renderHelpGuide +
 // openHelpModal + openFreshnessHelp (le câblage #qhelp / #fresh-help et la route 'help' restent dans app.js) ;
 // ces deux ouvreurs ne sont plus que `openHelp('syntax')` et `openHelp('freshness')`. openHelp est exporté
@@ -15,6 +15,33 @@
 // lexique juge donc ce module au plafond zéro comme les autres ; seul le registre en est exempt, sur la
 // portée de sa définition (P11.8-b). Avant : une exemption du module entier, et deux modales qui
 // dupliquaient le chrome de openHelpBox avec leur corps en tableaux de lignes.
+//
+// LA FRONTIÈRE, ET CE QU'ELLE NE COUVRE PAS (P11.4-k). Le registre a pris les SECTIONS, et rien de plus :
+// ce module garde, à côté de la mécanique, TROIS TABLES DE CONTENU — le sommaire du guide, le glossaire et
+// les raccourcis. Écrire ailleurs que « tout le contenu vit dans le registre » était donc faux ; la phrase
+// est corrigée des deux côtés plutôt qu'entretenue, parce qu'une frontière qu'on croit tenue est pire
+// qu'une frontière avouée.
+// LE DÉPLACEMENT A ÉTÉ TENTÉ ET MESURÉ le 2026-08-24. Il est PUR — 109 lignes déplacées sans qu'un octet
+// change, et l'empreinte du rendu du guide reste identique dans les DEUX LANGUES et sous les deux régimes
+// de droits (lecteur mode 0, administrateur multi-tenant). Il est pourtant REFUSÉ, par deux gardes, chacune
+// pour une raison qui lui est propre et qu'aucune préférence ne déplace :
+//   - LE SOMMAIRE ne peut pas traverser. La garde des déclencheurs d'aide ne cherche la clé de sommaire
+//     que dans CE FICHIER, par son NOM. Déplacé, le sommaire cesse d'être lu — 27 déclencheurs sur 56
+//     sortent du compte — et la garde reste VERTE. Mesuré par mutation : une entrée de sommaire qui pointe
+//     une section inexistante est REFUSÉE tant qu'elle vit ici (code 1) et passe INAPERÇUE une fois
+//     déplacée (code 0). Ce serait rouvrir en silence le défaut même que P11.4-e a fermé.
+//   - LE GLOSSAIRE ET LES RACCOURCIS ne peuvent pas traverser. Le module du registre est tenu à ZÉRO
+//     littéral hors-regard par la garde du lexique, et ce plafond est DÉRIVÉ : il n'est pas écrit dans une
+//     liste, il est posé sur le porteur du registre quel qu'il soit. Or un terme de glossaire (t:) et un nom
+//     de touche (key:) sont des libellés MONO-FORME — le même dans les deux langues — posés sous une clé
+//     qu'aucun puits de rendu ne reconnaît : 22 littéraux tomberaient dans cette colonne contre un plafond
+//     de zéro.
+// CE QUE LA FRONTIÈRE SÉPARE VRAIMENT n'est donc pas « contenu » contre « mécanique » : le registre
+// accueille le contenu BILINGUE PAR CONSTRUCTION ({fr, en}), et il est l'ancre dérivée de deux gardes. Une
+// table mono-forme, ou une table qui sert elle-même d'ancre à une garde, reste de ce côté-ci.
+// CONTENU QUI RESTE ICI : `HELP_INDEX`, `GLOSSARY`, `HELP_SHORTCUTS`. Le harnais ESM (témoin 34) DÉRIVE
+// cette liste du module et la confronte à cette ligne dans les deux sens, et il refuse que le sommaire
+// quitte le fichier auquel la garde des déclencheurs est ancrée.
 import { $, LANG, ic } from './core.js';
 import { uiIsAdmin, multiTenantMode } from './multitenant.js';
 import { HELP } from './help_registry.js';

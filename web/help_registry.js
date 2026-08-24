@@ -1,15 +1,25 @@
-// help_registry.js — REGISTRE des sections d'aide in-app, une par panneau de la console : le CONTENU, et lui
-// seul. La mécanique qui l'ouvre (ouvreur `openHelp`, modales, sommaire du guide, aveu sur clé inconnue)
-// vit dans help.js, qui importe ce module ; ce module n'importe rien de la console (P11.4-e : le registre
+// help_registry.js — REGISTRE des SECTIONS d'aide in-app, une par panneau de la console : elles, et elles
+// seules. L'ouvreur `openHelp`, les modales et l'aveu sur clé inconnue — la mécanique — vivent dans
+// help.js, qui importe ce module ; ce module n'importe rien de la console (P11.4-e : le registre
 // pesait près des deux tiers de help.js, mêlé à la mécanique — extrait tel quel, sans réindentation, car un
 // corps d'aide est un gabarit multiligne à la colonne zéro dont chaque espace est du texte rendu).
 //
 // Forme : { clé : {fr:{title,body}, en:{title,body}} }. `body` est une chaîne multiligne rendue en <pre>
-// (textContent). TOUT le contenu d'aide vit ici, y compris les deux panneaux ouverts hors du bouton « ? »
+// (textContent). TOUTES les sections vivent ici, y compris les deux panneaux ouverts hors du bouton « ? »
 // d'un en-tête — `freshness` (bouton de la carte Fraîcheur) et `syntax` (bouton « ? Aide » de la barre de
 // requête) — qui étaient des tableaux de lignes dans la mécanique (P11.8-b : la mécanique ne porte plus
 // aucun texte long, la garde du lexique la juge comme n'importe quel module ; seul cet objet est exempt,
 // par sa forme {fr, en}). Le sens de dépendance reste mécanique -> registre : ce module n'importe rien.
+//
+// CE QUI NE VIT PAS ICI, ET POURQUOI — la frontière le DIT au lieu de le laisser croire (P11.4-k). Le
+// sommaire du guide, le glossaire et les raccourcis sont du CONTENU et sont restés dans help.js. Le
+// déplacement a été tenté et mesuré le 2026-08-24 : il est PUR (rendu identique dans les deux langues) et
+// deux gardes le refusent. Ce module est tenu à ZÉRO littéral hors-regard par la garde du lexique — un
+// plafond DÉRIVÉ, posé sur le porteur du registre quel qu'il soit — donc il n'accueille que du contenu
+// BILINGUE PAR CONSTRUCTION ({fr, en}) ; un terme de glossaire ou un nom de touche est mono-forme et y
+// tomberait hors-regard. Et le sommaire est l'ancre, PAR NOM DE FICHIER, de la garde des déclencheurs
+// d'aide : l'y déplacer rendrait cette garde aveugle à 27 déclencheurs sans la faire rougir. Le détail
+// mesuré, avec ses codes de sortie, est écrit en tête de help.js, à côté du contenu qui reste.
 //
 // 100 % statique, WEB-ONLY : aucun appel réseau, aucun daemon. Les sections sont lues par la garde de CI
 // `check_every_help_trigger_has_a_section.py` (clés de premier niveau de `const HELP`, localisé sous web/

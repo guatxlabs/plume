@@ -2670,6 +2670,52 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[attack-catalogue] catalogue du démon LU : ${PARENTS.size} techniques parentes, ${SOUS.size} sous-techniques nommées. La console en nomme ${locale.size}, toutes DÉRIVÉES : aucun écart, aucune clé hors catalogue, aucune autre table dans web/, et la matrice n'en porte plus (son nom est servi). Ce que ce témoin NE tient PAS, et qui est écrit à côté de la table : la COMPLÉTUDE — la console peut nommer moins que le démon, et le fera dès qu'une technique s'ajoutera ; seule une route dédiée servant le catalogue ferait disparaître ce sous-ensemble.`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 34. LA FRONTIÈRE DE L'AIDE DIT CE QU'ELLE NE COUVRE PAS, ET ELLE NE PEUT PLUS DEVENIR FAUSSE EN
+//     SILENCE (`P11.4-k`). L'extraction du registre (`P11.4-e`) a sorti les SECTIONS ; le sommaire, le
+//     glossaire et les raccourcis sont restés du CONTENU dans le module de la mécanique, et les deux
+//     gardes qui DÉRIVENT le porteur du registre ne regardent pas ce contenu-là : la frontière était donc
+//     fausse à l'endroit où on la croyait tenue. Le déplacement, tenté et mesuré, est PUR et REFUSÉ par
+//     deux gardes ; ce témoin tient l'autre issue — la frontière est ÉCRITE, et elle est DÉRIVÉE.
+//     (a) La liste déclarée en tête du module et les tables de contenu que le module porte réellement sont
+//         le MÊME ensemble, dans les deux sens : une table neuve non déclarée rougit, une déclaration
+//         devenue fausse rougit.
+//     (b) Le sommaire reste dans le fichier auquel la garde des déclencheurs d'aide est ANCRÉE PAR SON NOM.
+//         Ce nom est LU dans la garde, jamais recopié ici. Déplacer le sommaire ferait sortir ses entrées
+//         du compte des déclencheurs sans faire rougir cette garde-là : le silence est rendu bruyant ici.
+//     L'instrument se valide avant de conclure : la lecture qui trouve zéro table, zéro nom déclaré, zéro
+//     entrée de sommaire, ou qui ne retrouve pas l'ancre dans la garde, REFUSE de conclure.
+// ---------------------------------------------------------------------------------------------
+{
+  const RE_TABLE = /^const ([A-Z][A-Z0-9_]*)\s*=\s*[[{]/gm;
+  const RE_DECLARE = /^\/\/ CONTENU QUI RESTE ICI : (.+)$/m;
+  const srcAide = readFileSync(path.join(WEB, "help.js"), "utf8");
+
+  // (a) déclaré <-> porté, dans les deux sens.
+  const portees = new Set([...srcAide.matchAll(RE_TABLE)].map((m) => m[1]));
+  const ligne = srcAide.match(RE_DECLARE);
+  exiger(!!ligne, "(34) le module de la mécanique de l'aide ne DÉCLARE plus ce qu'il garde : la ligne « CONTENU QUI RESTE ICI : » a disparu, et la frontière redevient une croyance");
+  const declarees = new Set(ligne ? [...ligne[1].matchAll(/`([A-Z][A-Z0-9_]*)`/g)].map((m) => m[1]) : []);
+  exiger(portees.size > 0 && declarees.size > 0, `(34) instrument : ${portees.size} table(s) lue(s), ${declarees.size} nom(s) déclaré(s) — la lecture est cassée, le témoin refuse de conclure`);
+  const nonDeclarees = [...portees].filter((t) => !declarees.has(t)).sort();
+  const declareesAbsentes = [...declarees].filter((t) => !portees.has(t)).sort();
+  exiger(nonDeclarees.length === 0, `(34) ${nonDeclarees.length} table(s) de contenu que le module porte SANS les déclarer : ${nonDeclarees.join(", ")} — la frontière écrite ne dit plus ce qu'elle ne couvre pas`);
+  exiger(declareesAbsentes.length === 0, `(34) ${declareesAbsentes.length} nom(s) déclaré(s) que le module ne porte plus : ${declareesAbsentes.join(", ")} — une déclaration périmée fait croire à une frontière qui n'existe plus`);
+
+  // (b) le sommaire reste sous l'ancre de la garde des déclencheurs — ancre LUE, pas recopiée.
+  const srcGarde = readFileSync(path.join(RACINE, ".github", "scripts", "check_every_help_trigger_has_a_section.py"), "utf8");
+  const ancre = srcGarde.match(/\(\s*re\.compile\([^)]*\bk:[^)]*\)\s*,\s*"([^"]+)"\s*\)/);
+  exiger(!!ancre, "(34) instrument : le motif de sommaire de la garde des déclencheurs n'est plus retrouvé — son ancrage a changé de forme, et ce témoin ne mesure plus ce qu'il croit");
+  const porteurDuSommaire = modules.find((f) => /^const HELP_INDEX\s*=\s*\[/m.test(readFileSync(path.join(WEB, f), "utf8")));
+  exiger(!!porteurDuSommaire, "(34) instrument : aucun module ne définit le sommaire du guide");
+  const entrees = porteurDuSommaire ? (readFileSync(path.join(WEB, porteurDuSommaire), "utf8").match(/\{\s*k:\s*['"]/g) || []).length : 0;
+  exiger(entrees > 10, `(34) instrument : ${entrees} entrée(s) de sommaire lues — la lecture est cassée`);
+  exiger(ancre && porteurDuSommaire === ancre[1],
+    `(34) le sommaire du guide vit dans « ${porteurDuSommaire} » alors que la garde des déclencheurs d'aide ne cherche ses ${entrees} entrées que dans « ${ancre && ancre[1]} », PAR SON NOM DE FICHIER. Déplacé, le sommaire sort du compte des déclencheurs et cette garde reste VERTE : une entrée pointant une section inexistante ne serait plus refusée. Ramener le sommaire, ou apprendre le déplacement à la garde AVANT de le faire.`);
+
+  console.log(`[frontiere-aide] ${portees.size} tables de contenu restent dans la mécanique (${[...portees].sort().join(", ")}), toutes DÉCLARÉES en tête du module et dérivées ici dans les deux sens ; le sommaire et ses ${entrees} entrées restent sous « ${ancre && ancre[1]} », le fichier auquel la garde des déclencheurs est ancrée par son NOM. Ce que ce témoin NE tient PAS : il ne rend pas le déplacement possible — il rend son refus VISIBLE. Les deux obstacles mesurés sont écrits en tête de help.js.`);
+}
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);

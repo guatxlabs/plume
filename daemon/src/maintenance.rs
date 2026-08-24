@@ -110,44 +110,147 @@ fn reconcile_fts_fields(conn: &Connection, conf: &HashMap<String, String>) {
     }
 }
 
+/// LA TABLE QUE CES INDEX COUVRENT. Elle n'était nulle part hors de la DDL qui crée, et c'est ce qui
+/// rendait le constat de présence aveugle : un index d'expression est utile parce qu'il est posé sur
+/// CETTE table-là et sur CETTE expression-là, pas parce qu'il en porte le nom.
+const TABLE_DES_INDEX_DE_CHAMP_CHAUD: &str = "event";
+
+/// LE FRAGMENT DE DÉFINITION QUI IDENTIFIE L'EXPRESSION INDEXÉE — le chemin JSON du champ, tel que la
+/// DDL de la passe l'écrit. C'est le geste déjà employé par la confrontation de `P6.8-e`, qui retrouve
+/// les index de la famille par l'EXPRESSION qu'ils portent et jamais par leur nom, faute de quoi elle
+/// serait circulaire ; il est repris ici plutôt qu'une seconde lecture du catalogue.
+fn chemin_json_du_champ(champ: &str) -> String {
+    format!("'$.{champ}'")
+}
+
+/// CE QUE LE CATALOGUE DIT DU NOM ATTENDU — trois cas EXCLUSIFS, d'où un type et des `match` EXHAUSTIFS
+/// (aucun bras `_`) : un quatrième cas ajouté demain ne compile pas tant que sa phrase n'est pas écrite.
+enum ConstatAuCatalogue {
+    /// Un index de ce nom existe, il est posé sur la BONNE TABLE, et sa définition porte le chemin JSON
+    /// du champ. Seul ce cas compte comme présent.
+    Fidele,
+    /// AUCUN objet de type index ne porte ce nom.
+    Absent,
+    /// Un objet de type index porte ce nom, mais sa DÉFINITION n'est pas celle attendue. Porte de quoi
+    /// le dire à l'exploitant : ce n'est pas « manquant », c'est « occupé par autre chose ».
+    MalPose(String),
+}
+
+/// LE CONSTAT D'UN CHAMP, LU DANS LA DÉFINITION ET PAS DANS L'ÉTIQUETTE (`P6.8-g`).
+///
+/// CE QUE LA COMPARAISON REGARDE, ET POURQUOI CES DEUX FAITS-LÀ. La définition qu'un moteur rend est
+/// normalisée à sa façon — espaces, casse des mots-clés, guillemets d'identifiants — donc une égalité
+/// de texte avec la DDL du produit virerait au ROUGE à la première reformulation, ce qui serait pire
+/// que le défaut qu'elle prétend fermer. On compare donc ce qui est STABLE :
+///   * `tbl_name`, une COLONNE du catalogue et non du texte : la table sur laquelle l'index est posé ;
+///   * la présence du chemin JSON `'$.<champ>'` dans le texte de la définition — un littéral de chaîne,
+///     que SQLite conserve tel qu'il a été écrit, et que la reformulation d'un DDL ne touche pas.
+/// La recherche est faite EN RUST et non par un `LIKE` : `LIKE` est insensible à la casse sur l'ASCII,
+/// or un chemin JSON ne l'est pas — `'$.ACTION'` désigne un autre champ que `'$.action'` et serait
+/// accepté à tort.
+///
+/// CE QU'ELLE NE SAIT PAS DISTINGUER, ÉCRIT ICI PLUTÔT QUE LAISSÉ À DEVINER :
+///   * un index posé sur `event` et portant bien `'$.<champ>'` mais d'une AUTRE FORME — composite,
+///     non partiel, ou dont le prédicat diffère — est compté PRÉSENT. Il indexe le bon champ de la
+///     bonne table ; il peut néanmoins ne pas servir les mêmes plans. C'est la limite assumée d'une
+///     comparaison qui refuse de dépendre du texte exact du DDL ;
+///   * inversement, un DDL qui écrirait le même chemin AUTREMENT (guillemets doubles, chemin cité
+///     `'$."<champ>"'`) serait déclaré mal posé alors qu'il est équivalent. Ce n'est pas un silence :
+///     la passe le NOMME, et le nommer est le comportement recherché ;
+///   * elle ne dit RIEN de l'état de l'index (à jour, utilisable par le planner) : c'est une lecture
+///     de catalogue, pas une vérification de contenu.
+///
+/// UNE ERREUR DE LECTURE COMPTE COMME ABSENT, et c'est le sens SÛR : la passe tentera la création, qui
+/// est idempotente (`IF NOT EXISTS`). Compter présent ce qu'on n'a pas su lire serait le défaut même.
+fn constat_au_catalogue(conn: &Connection, champ: &str) -> ConstatAuCatalogue {
+    let nom = format!("{PREFIXE_INDEX_CHAMP_CHAUD}{champ}");
+    let lu: Option<(String, Option<String>)> = conn
+        .query_row(
+            "SELECT tbl_name, sql FROM sqlite_master WHERE type='index' AND name=?1",
+            params![nom],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    let (table, definition) = match lu {
+        None => return ConstatAuCatalogue::Absent,
+        Some((table, definition)) => (table, definition),
+    };
+    if table != TABLE_DES_INDEX_DE_CHAMP_CHAUD {
+        return ConstatAuCatalogue::MalPose(format!(
+            "{nom} est posé sur « {table} » et non sur « {TABLE_DES_INDEX_DE_CHAMP_CHAUD} »"
+        ));
+    }
+    match definition {
+        None => ConstatAuCatalogue::MalPose(format!(
+            "{nom} n'a aucune définition au catalogue (auto-index d'une contrainte, jamais un index d'expression)"
+        )),
+        Some(d) if d.contains(&chemin_json_du_champ(champ)) => ConstatAuCatalogue::Fidele,
+        Some(_) => ConstatAuCatalogue::MalPose(format!(
+            "{nom} est posé sur « {TABLE_DES_INDEX_DE_CHAMP_CHAUD} » mais sa définition ne porte pas {}",
+            chemin_json_du_champ(champ)
+        )),
+    }
+}
+
 /// LE CONSTAT AU CATALOGUE, ÉCRIT UNE SEULE FOIS — pour chaque champ DÉCLARÉ, son index d'expression
-/// est-il RÉELLEMENT là ? Rend la partition (présents, manquants), dans l'ordre de la déclaration.
-/// Lecture de `sqlite_master`, aucun scan de table.
+/// est-il RÉELLEMENT là ? Trois listes, dans l'ordre de la déclaration. Lecture de `sqlite_master`,
+/// aucun scan de table.
 ///
 /// POURQUOI CE POINT EST UNIQUE. Le court-circuit de la passe de fond et le compte rendu de sa fin
 /// répondent à LA MÊME question ; deux lectures recopiées finiraient par répondre autrement l'une que
 /// l'autre. C'est exactement l'écart « déclaré vs constaté » qui a produit le défaut `P6.8-f` : le
 /// court-circuit, lui, lisait bien le catalogue, tandis que le compte rendu récitait la déclaration.
-fn expr_indexes_constates(conn: &Connection) -> (Vec<&'static str>, Vec<&'static str>) {
-    let mut presents = Vec::new();
-    let mut manquants = Vec::new();
-    for champ in EXPR_INDEX_FIELDS {
-        let au_catalogue = conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1",
-                params![format!("{PREFIXE_INDEX_CHAMP_CHAUD}{champ}")],
-                |_| Ok(()),
-            )
-            .is_ok();
-        if au_catalogue {
-            presents.push(*champ);
-        } else {
-            manquants.push(*champ);
-        }
-    }
-    (presents, manquants)
+///
+/// ET POURQUOI IL NE SUFFIT PAS QU'IL LISE LE CATALOGUE (`P6.8-g`). Il l'interrogeait sur le seul NOM.
+/// Un objet de type index portant le nom attendu mais posé sur une AUTRE table — ou sur une autre
+/// expression — était donc compté présent : le court-circuit sortait sans rien faire et le vrai index
+/// n'était JAMAIS créé, sans une ligne ni une alerte. Un homonyme mal posé est désormais NOMMÉ comme
+/// tel et n'entre jamais dans les présents.
+struct ConstatDesIndex {
+    /// Les champs dont l'index est là ET conforme.
+    presents: Vec<&'static str>,
+    /// Les champs dont AUCUN index ne porte le nom attendu.
+    absents: Vec<&'static str>,
+    /// Les champs dont le nom attendu est OCCUPÉ par un index qui n'est pas le leur, avec la raison.
+    mal_poses: Vec<String>,
 }
 
-/// Les index expression partiels (EXPR_INDEX_FIELDS) existent-ils déjà tous ? DÉRIVÉ du constat
-/// ci-dessus — pas une seconde lecture du catalogue.
+impl ConstatDesIndex {
+    /// Tous les champs déclarés ont leur index CONFORME. C'est la condition du court-circuit : un
+    /// homonyme mal posé ne l'ouvre plus.
+    fn complet(&self) -> bool {
+        self.absents.is_empty() && self.mal_poses.is_empty()
+    }
+}
+
+fn expr_indexes_constates(conn: &Connection) -> ConstatDesIndex {
+    let mut c = ConstatDesIndex { presents: Vec::new(), absents: Vec::new(), mal_poses: Vec::new() };
+    for champ in EXPR_INDEX_FIELDS {
+        match constat_au_catalogue(conn, champ) {
+            ConstatAuCatalogue::Fidele => c.presents.push(*champ),
+            ConstatAuCatalogue::Absent => c.absents.push(*champ),
+            ConstatAuCatalogue::MalPose(raison) => c.mal_poses.push(raison),
+        }
+    }
+    c
+}
+
+/// Les index expression partiels (EXPR_INDEX_FIELDS) existent-ils déjà tous, ET conformes ? DÉRIVÉ du
+/// constat ci-dessus — pas une seconde lecture du catalogue.
 fn expr_indexes_all_present(conn: &Connection) -> bool {
-    expr_indexes_constates(conn).1.is_empty()
+    expr_indexes_constates(conn).complet()
 }
 
 /// Le marqueur qui introduit, dans le compte rendu de la passe, la liste des index qui MANQUENT.
 /// Écrit une fois : la garde `P6.8-f` lit la liste ANNONCÉE à partir de lui au lieu de deviner la
 /// forme de la ligne, et une reformulation qui l'emporterait la rendrait rouge plutôt qu'aveugle.
 pub(crate) const MARQUEUR_INDEX_MANQUANTS: &str = "MANQUENT :";
+
+/// Le marqueur qui introduit la liste des noms attendus OCCUPÉS PAR UN INDEX POSÉ SUR AUTRE CHOSE
+/// (`P6.8-g`). Écrit une fois, pour la même raison que son voisin : la garde le lit au lieu de deviner
+/// la forme de la phrase. Il est DISTINCT de `MARQUEUR_INDEX_MANQUANTS` et n'en contient pas le texte —
+/// sans quoi la lecture de l'un attraperait la liste de l'autre.
+pub(crate) const MARQUEUR_INDEX_MAL_POSES: &str = "POSÉS SUR AUTRE CHOSE :";
 
 /// LE COMPTE RENDU DE LA PASSE — CONSTATÉ AU CATALOGUE, JAMAIS DÉDUIT DE LA DÉCLARATION (`P6.8-f`).
 ///
@@ -160,22 +263,35 @@ pub(crate) const MARQUEUR_INDEX_MANQUANTS: &str = "MANQUENT :";
 /// création dès que tous les index sont là : cette ligne ne s'imprime donc QUE lorsque la passe
 /// travaille pour de bon, c'est-à-dire exactement quand une création peut échouer. Un verdict qui ne
 /// peut rendre qu'un succès ne renseigne sur rien.
+///
+/// ET IL DIT DÉSORMAIS DEUX MANQUES DIFFÉRENTS (`P6.8-g`). « Aucun index de ce nom » et « ce nom est
+/// occupé par un index posé sur autre chose » n'appellent pas le même geste : le premier se répare tout
+/// seul au démarrage suivant, le second JAMAIS — la création est idempotente sur le NOM, donc elle
+/// n'écrase pas l'occupant et se retire en silence. L'homonyme mal posé est donc nommé à part, avec la
+/// raison, et l'accusation des mal posés PRÉCÈDE celle des manquants pour que la liste introduite par
+/// `MARQUEUR_INDEX_MANQUANTS` reste la fin de la ligne.
 fn compte_rendu_de_la_passe(conn: &Connection) -> String {
-    let (presents, manquants) = expr_indexes_constates(conn);
+    let c = expr_indexes_constates(conn);
     let attendus = EXPR_INDEX_FIELDS.len();
-    if manquants.is_empty() {
-        format!(
+    if c.complet() {
+        return format!(
             "[reconcile-bg] {}/{attendus} index expression partiels CONSTATÉS au catalogue ({}) — créés en fond, boot non bloqué",
-            presents.len(),
-            presents.join(",")
-        )
-    } else {
-        format!(
-            "[reconcile-bg] {}/{attendus} index expression partiels CONSTATÉS au catalogue — création échouée ci-dessus, retry au prochain boot ; {MARQUEUR_INDEX_MANQUANTS} {}",
-            presents.len(),
-            manquants.join(",")
-        )
+            c.presents.len(),
+            c.presents.join(",")
+        );
     }
+    let mut accusations = Vec::new();
+    if !c.mal_poses.is_empty() {
+        accusations.push(format!("{MARQUEUR_INDEX_MAL_POSES} {}", c.mal_poses.join(" ; ")));
+    }
+    if !c.absents.is_empty() {
+        accusations.push(format!("{MARQUEUR_INDEX_MANQUANTS} {}", c.absents.join(",")));
+    }
+    format!(
+        "[reconcile-bg] {}/{attendus} index expression partiels CONSTATÉS au catalogue — la passe n'a pas abouti pour tous, retry au prochain boot ; {}",
+        c.presents.len(),
+        accusations.join(" ; ")
+    )
 }
 
 /// Réconcilie les INDEX EXPRESSION (EXPR_INDEX_FIELDS) avec l'env. Partie INSTANTANÉE seulement :

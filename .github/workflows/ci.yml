@@ -347,7 +347,14 @@ env:
   # feature, présents dans les DEUX profils (la mutation par le vrai point d'entrée, le témoin
   # inverse qui interdit la purge trop large, la prudence d'un geste inconditionnel, l'ordre qui
   # tient la décision sur le levier, et la confrontation du préfixe à ce que le produit crée).
-  EXPECTED_TESTS: "1276"
+  # RÉ-ÉNUMÉRÉ le 2026-08-24 (MÊME commande) sur l'arbre qui porte le correctif P6.8-g — le constat
+  # de présence d'un index compare la DÉFINITION et non l'étiquette (un homonyme posé sur une autre
+  # table, ou sur une autre expression, était compté « présent » et le court-circuit sortait sans rien
+  # faire) : cinq tests SANS `cfg` de feature, présents dans les DEUX profils (deux mutations qui
+  # nomment le compte annoncé, une qui nomme le TRAVAIL de la passe, le témoin inverse qui vaut
+  # confrontation anti-no-op, et la validation de l'instrument — la création du produit ne déloge pas
+  # un nom déjà porté par un index, donc l'état est stable).
+  EXPECTED_TESTS: "1281"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -660,7 +667,12 @@ jobs:
           # préfixe de la famille) : 1496 avec `cold_tier` pour 1276 par défaut — l'écart reste
           # **220**. Ce compteur-ci bouge AVEC l'autre : cinq tests sans `cfg` entrent dans les deux
           # profils, et le laisser en arrière rendrait ce job rouge sans rien mesurer de neuf.
-          EXPECTED_COLD_TESTS: "1496"
+          # RÉ-MESURÉ le 2026-08-24 par la MÊME commande, sur l'arbre qui porte le correctif P6.8-g
+          # (cinq tests sans `cfg` : le constat de présence d'un index comparé à la définition et non
+          # à l'étiquette) : 1501 avec `cold_tier` pour 1281 par défaut — l'écart reste **220**. Ce
+          # compteur-ci bouge AVEC l'autre : cinq tests sans `cfg` entrent dans les deux profils, et
+          # le laisser en arrière rendrait ce job rouge sans rien mesurer de neuf.
+          EXPECTED_COLD_TESTS: "1501"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

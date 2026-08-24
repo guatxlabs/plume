@@ -4,7 +4,7 @@
 // au point où ce bloc vivait (un module s'exécute à l'import, avant l'enveloppe `fetch` d'`app.js`). Les seams
 // (`viz.js`, `multitenant.js`) continuent de lire `loadDashboard` / `refreshPanels` via le ré-export d'`app.js`.
 // `renderDashboard` est exporté pour le harnais. N'importe pas `app.js`.
-import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, transientGatewayMsg, makePager, socIsAdmin, applyRoleClass } from './core.js';
+import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, transientGatewayMsg, makePager, socIsAdmin, applyRoleClass, roleSansEcriturePartagee } from './core.js';
 import { S } from './state.js';
 import { currentFrom, currentTo, queryCount, runQuery, tableEl, vizElement } from './viz.js';
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
@@ -128,7 +128,12 @@ function loadDashboard() {
   S.panelCards.forEach(c => { const pn = c._panel; if (pn && pn.window_s === 0 && !pn.visible) pn.loaded = false; });
   refreshPanels();
 }
-function patchDash(id, body) { return apiSend('/dashboard/' + id, 'POST', body); }
+// `P11.4-m` — LES DEUX PERSISTANCES D'ETAT DE CETTE VUE, GATEES EN UN SEUL ENDROIT. Plier une tuile ou
+// changer la visualisation d'un panneau produit un effet LOCAL permis a tout role, mais la persistance est
+// une mutation editoriale (`/api/dashboard/:id`, `/api/panels/:id` -> editor+ dans la table du demon) : un
+// lecteur y recevait un 403 muet a chaque geste. Le refus est pose ICI, sur la persistance, et non sur les
+// controles — les marquer d'ecriture aurait coupe le geste permis. La vue locale suit ; rien n'est envoye.
+function patchDash(id, body) { return roleSansEcriturePartagee() ? Promise.resolve(null) : apiSend('/dashboard/' + id, 'POST', body); }
 // #62 — FAVORIS de dashboards (per-user), stockés dans le store de préférences self-scoped (/api/prefs,
 // clé `favDash` = liste d'ids). AUCUN schéma dashboard partagé n'est touché (les favoris sont propres à
 // chaque compte). Les favoris remontent en tête (tri STABLE, hors mode édition -> jamais de conflit avec le
@@ -192,10 +197,16 @@ function renderDashboard(d) {
     toggleFavDash(d.id); paintFav();
     if (!wasFav) { const w = $('#dashview'); if (w && tile.parentElement === w) w.insertBefore(tile, w.firstChild); }
   };
-  const addp = document.createElement('button'); addp.type = 'button'; addp.className = 'picon'; addp.innerHTML = ic('plus'); addp.title = 'Ajouter un panneau';
+  // `P11.4-m` — LE REFUS SE DECLARE SUR LE CONTROLE, IL NE SE DEDUIT PLUS DU CONTENEUR. La feuille effacait
+  // pour un lecteur tout `.picon` pose dans `.paneltools` : elle emportait l'etoile de favori, les deux
+  // rafraichissements, l'arret, les exports et l'ouverture dans l'editeur — sept gestes que le demon ACCORDE.
+  // Les outils ci-dessous portent donc `crud-btn` un par un, et SEULEMENT ceux dont la route est bornee a
+  // `editor+` (`/api/panels`, `/api/dashboard/:id`, `/api/dashboard-snapshots`) : ils restent visibles,
+  // inertes et motives (grammaire de `P11.4-l`). Ce qui ne porte pas la marque reste PERMIS, comme le serveur.
+  const addp = document.createElement('button'); addp.type = 'button'; addp.className = 'picon crud-btn'; addp.innerHTML = ic('plus'); addp.title = 'Ajouter un panneau';
   // P11.13-a — le second geste de création : partir d'une définition que le produit porte déjà, au lieu
   // de retaper une requête qui existe ailleurs. Posé plus bas, derrière `editable` (cf. son commentaire).
-  const addex = document.createElement('button'); addex.type = 'button'; addex.className = 'picon dashcompose'; addex.textContent = 'Partir de l\'existant';
+  const addex = document.createElement('button'); addex.type = 'button'; addex.className = 'picon dashcompose crud-btn'; addex.textContent = 'Partir de l\'existant';
   addex.title = 'Composer un panneau depuis un modèle livré, une requête enregistrée ou une règle de détection';
   addex.onclick = () => composerPanneauDepuisLexistant(d.id);
   // refresh PAR DASHBOARD (non editonly : un viewer peut rafraîchir) -> recharge UNIQUEMENT les panneaux de CETTE grille
@@ -205,17 +216,17 @@ function renderDashboard(d) {
     grid.querySelectorAll('.panel').forEach(c => { if (c._panel && c._panel.loaded) c._panel.reload(); });
     syncDashStop();
   };
-  const ren = document.createElement('button'); ren.type = 'button'; ren.className = 'picon editonly'; ren.innerHTML = ic('pencil'); ren.title = 'Renommer le dashboard';
-  const wsel = document.createElement('select'); wsel.className = 'picon editonly'; wsel.title = 'Largeur (colonnes)';
+  const ren = document.createElement('button'); ren.type = 'button'; ren.className = 'picon editonly crud-btn'; ren.innerHTML = ic('pencil'); ren.title = 'Renommer le dashboard';
+  const wsel = document.createElement('select'); wsel.className = 'picon editonly crud-btn'; wsel.title = 'Largeur (colonnes)';
   [1, 2, 3, 4].forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n + ' col'; wsel.appendChild(o); });
   wsel.value = String(cols);
-  const del = document.createElement('button'); del.type = 'button'; del.className = 'picon editonly'; del.innerHTML = ic('x'); del.title = 'Supprimer le dashboard';
+  const del = document.createElement('button'); del.type = 'button'; del.className = 'picon editonly crud-btn'; del.innerHTML = ic('x'); del.title = 'Supprimer le dashboard';
   // EXPORT dashboard : PDF (impression de la surface #dashboards) ; CSV/JSON se font par panneau.
   const dpdf = document.createElement('button'); dpdf.type = 'button'; dpdf.className = 'picon'; dpdf.innerHTML = ic('print'); dpdf.title = 'Imprimer / exporter ce dashboard en PDF';
   dpdf.onclick = () => exportPDF('dashboards');
   // #54 — INSTANTANÉ : capture le rendu courant (données DÉJÀ masquées côté serveur au rôle de l'appelant),
   // partageable en lecture seule via un token. editor+ (le bouton n'apparaît qu'à eux ; le serveur re-garde).
-  const dsnap = document.createElement('button'); dsnap.type = 'button'; dsnap.className = 'picon editonly'; dsnap.innerHTML = ic('save'); dsnap.title = 'Capturer un instantané partageable (lecture seule)';
+  const dsnap = document.createElement('button'); dsnap.type = 'button'; dsnap.className = 'picon editonly crud-btn'; dsnap.innerHTML = ic('save'); dsnap.title = 'Capturer un instantané partageable (lecture seule)';
   dsnap.onclick = () => captureSnapshot(d);
   tools.append(fav, dref, addp, dpdf);
   // `addex` est GATÉ sur `editable`, là où `addp` ne l'est pas : offrir un geste NEUF à qui ne peut pas
@@ -309,7 +320,7 @@ function reorderDash(fromId, targetId) {
   arr.forEach((x, i) => { if (x.position !== i) { x.position = i; patchDash(x.id, { position: i }); } });
   S.dashList = arr; renderView();
 }
-function patchPanel(id, body) { return apiSend('/panels/' + id, 'POST', body); }
+function patchPanel(id, body) { return roleSansEcriturePartagee() ? Promise.resolve(null) : apiSend('/panels/' + id, 'POST', body); }
 // reordonne les PANNEAUX dans une grille de dashboard (place `from` avant `target`) et persiste position
 function reorderPanels(grid, fromId, targetId, after) {
   const panels = () => [...grid.children].filter(c => c.classList && c.classList.contains('panel'));
@@ -352,10 +363,13 @@ async function renderPanel(p, editable = true) {
   });
   const open = document.createElement('button'); open.className = 'picon'; open.innerHTML = ic('ext'); open.title = 'Ouvrir dans Explore';
   open.onclick = () => { $('#sql').value = p.query; location.hash = 'explore'; runQuery(); };
-  const edit = document.createElement('button'); edit.className = 'picon editonly'; edit.innerHTML = ic('pencil'); edit.title = 'Éditer le panneau';
-  const del = document.createElement('button'); del.className = 'picon editonly'; del.innerHTML = ic('x'); del.title = 'Supprimer le panneau';
+  // `P11.4-m` — meme declaration qu'en tete de tuile : seuls les outils dont la route est bornee a `editor+`
+  // (`/api/panels/:id`) portent la marque ; ouvrir dans l'editeur, rafraichir, arreter et exporter restent
+  // PERMIS a un lecteur, ce que la borne serveur dit deja (lecture, ou aucun appel du tout).
+  const edit = document.createElement('button'); edit.className = 'picon editonly crud-btn'; edit.innerHTML = ic('pencil'); edit.title = 'Éditer le panneau';
+  const del = document.createElement('button'); del.className = 'picon editonly crud-btn'; del.innerHTML = ic('x'); del.title = 'Supprimer le panneau';
   del.onclick = async () => { if (await confirmModal('Supprimer ce panneau ?', { danger: true })) { await apiSend('/panels/' + p.id, 'DELETE'); loadDashboards(); } };
-  const wsel = document.createElement('select'); wsel.className = 'picon editonly'; wsel.title = 'Largeur (colonnes)';
+  const wsel = document.createElement('select'); wsel.className = 'picon editonly crud-btn'; wsel.title = 'Largeur (colonnes)';
   [1, 2, 3, 4].forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n + ' col'; wsel.appendChild(o); });
   wsel.value = String(p.cols || 1);
   wsel.onchange = () => { const n = Number(wsel.value); card.style.flexBasis = tileBasis(n); patchPanel(p.id, { cols: n }); };

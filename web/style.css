@@ -573,7 +573,15 @@ tr.rowdetail>td{background:var(--card2);padding:10px 14px;white-space:normal;max
 .badge.role-viewer{background:color-mix(in srgb,var(--ok) 14%,transparent);color:var(--ok);border-color:color-mix(in srgb,var(--ok) 32%,transparent)}
 
 /* role viewer : masque les controles d'ecriture (le serveur les refuse aussi) */
-body.role-viewer .paneltools .picon,
+/* `P11.4-m` — CE QUI A ETE RETIRE ICI, ET POURQUOI PAS UNE EXEMPTION. Cette regle visait aussi
+   `.paneltools .picon` : un CONTENEUR d'outils, donc TOUT ce qu'on y pose. Un effacement fonde sur
+   l'appartenance a un parent ne sait pas distinguer un geste REFUSE d'un geste PERMIS, et la mesure a
+   compte, dans ce seul conteneur, sept controles que le demon accorde a un lecteur — l'etoile de favori
+   (`/api/prefs`, self-service borne a la lecture MEME en ecriture), les deux rafraichissements
+   (`/api/panels/:id/data`, `/api/query`), l'arret de chargement, les deux exports et l'ouverture dans
+   l'editeur — effaces au motif du voisinage. Exempter l'etoile aurait laisse le piege arme pour le
+   prochain bouton pose la. Le refus se DECLARE donc sur le controle (`crud-btn` ci-dessous, grammaire
+   de `P11.4-l`) au lieu de se deduire de son parent, et le defaut d'un conteneur redevient : permis. */
 body.role-viewer #dash-new,
 body.role-viewer #rule-new,body.role-viewer #notif-new,body.role-viewer #pb-new,
 body.role-viewer #act-new,body.role-viewer #mode-toggle{display:none!important}

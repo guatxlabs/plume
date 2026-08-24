@@ -510,6 +510,15 @@ function motiverLeRefusAuLecteur(btn) {
   btn.title = (btn.title ? btn.title + ' · ' : '') + 'rôle lecteur : ce geste demande le rôle éditeur (le serveur le refuse aussi)';
   return true;
 }
+// --- P11.4-m : LE GESTE MIXTE — effet LOCAL permis, PERSISTANCE refusee -----------------------
+// Plier une tuile, changer la visualisation d'un panneau : l'effet a l'ecran est un geste de LECTURE, que
+// rien ne refuse a un lecteur. Mais la console PERSISTE cet etat, et la persistance est une mutation
+// editoriale que le demon borne a l'editeur — le lecteur recevait donc un 403 dont personne ne lisait la
+// reponse, a chaque pli. Poser `crud-btn` sur ces controles couperait le geste PERMIS ; les laisser
+// emettre fait partir une requete qu'on sait refusee. La console ne l'ENVOIE donc pas : la vue locale
+// suit, le serveur n'est pas sollicite pour rien, et le refus reste celui du demon.
+// MEME VOCABULAIRE que le refus d'ecriture ci-dessus (`socRole`), pour qu'il n'y en ait pas deux.
+function roleSansEcriturePartagee() { return socRole() === 'viewer'; }
 let refusDEcritureCable = false;
 function cablerLeRefusDEcriture() {
   if (refusDEcritureCable || !document.addEventListener) return;
@@ -650,6 +659,6 @@ const humanAge = s => { s = Number(s) || 0; return s < 90 ? s + ' s' : s < 5400 
 export function setSocTZ(v) { socTZ = v; }
 export {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, flashStopped, stopBtn, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, toCSV, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, miniMenu, api, apiSend, transientGatewayMsg, muted, fetchInto, colComparator, makePager, pageNums, pagedList,
-  socRole, socIsAdmin, applyRoleClass, controleDEcritureSous, motiverLeRefusAuLecteur, managedBadge, gateDeleteBtn, formMsg, contentSubmit, contentDelete, SEVCOL, lsSet, collapsibleGroup, mitreName, humanAge,
+  socRole, socIsAdmin, applyRoleClass, controleDEcritureSous, motiverLeRefusAuLecteur, roleSansEcriturePartagee, managedBadge, gateDeleteBtn, formMsg, contentSubmit, contentDelete, SEVCOL, lsSet, collapsibleGroup, mitreName, humanAge,
   confirmWithConsequence, disclosure
 };

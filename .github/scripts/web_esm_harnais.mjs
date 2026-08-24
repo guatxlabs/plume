@@ -2192,9 +2192,8 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 //         d'énuméré : d'un côté les classes qu'une règle de rôle efface À ELLE SEULE (sélecteur = la portée
 //         de rôle + UN composant, corps qui déclare `display:none`) ; de l'autre les classes que portent les
 //         boutons du gabarit ET ceux que les fabriques partagées construisent. L'intersection doit être vide.
-//         LIMITE ÉCRITE : une règle qui n'efface une classe QUE dans un contexte (`… .paneltools .picon`) et
-//         celles qui visent un IDENTIFIANT ne sont pas jugées ici — c'est l'énumération par identifiant que
-//         `P11.4-j` a nommée comme résidu assumé, un autre chantier que celui de la grammaire.
+//         PORTÉE DE CE VOLET : sélecteur à DEUX composants seulement. Les règles à CONTEXTE et celles qui
+//         visent un IDENTIFIANT sont jugées par (d), sur les contrôles que la console rend.
 //     (b) LA RAISON EST ÉCRITE, ET C'EST LE CODE QUI L'ÉCRIT. Sur la ligne d'une règle rendue à un LECTEUR,
 //         chaque bouton d'écriture porte la marque accessible du refus et une infobulle qui NOMME le rôle
 //         qui manque. Témoin inverse : pour un ADMINISTRATEUR, les mêmes boutons ne portent ni l'une ni
@@ -2203,9 +2202,26 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 //         geste inerte (il l'empêche et coupe la propagation AVANT tout gestionnaire de module), et il pose
 //         la raison sur un bouton qu'aucune fabrique n'a construit — la cible du clic étant l'ICÔNE, pas le
 //         bouton. Témoin inverse : sous un rôle administrateur, le même clic n'est ni empêché ni arrêté.
+//     (d) UN EFFACEMENT NE SE DÉDUIT PLUS D'UN PARENT (`P11.4-m`). La règle qui a produit ce constat ne
+//         nommait aucun bouton : elle visait un CONTENEUR d'outils, donc tout ce qu'on y pose ensuite —
+//         l'étoile de favori, les rafraîchissements, les exports, l'ouverture dans l'éditeur, effacés au
+//         motif du voisinage. (a) ne pouvait pas la voir. Ce volet lit la feuille en CHAÎNE COMPLÈTE (portée
+//         de rôle, contextes, cible), construit la tuile et son panneau par le module lui-même, et exige que
+//         RIEN de ce que la console rend ne soit effacé par un rôle sans porter la marque d'écriture. Deux
+//         validations de l'instrument, sur des règles réelles et non écrites ici : chaque règle de la feuille,
+//         jouée sur une chaîne fabriquée pour la satisfaire, doit être VUE ; et pour CHAQUE contrôle permis,
+//         la règle de conteneur qui l'effaçait — dérivée de l'arbre rendu — doit être vue elle aussi. C'est
+//         la preuve que réintroduire l'effacement ferait rougir, contrôle par contrôle.
+//     (e) LA BORNE EST CELLE DU DÉMON, RELUE DANS SA TABLE. `route_min_role`, `is_readonly_post` et
+//         `role_satisfies` sont RE-DÉRIVÉS de la source Rust — jamais recopiés ici. Chaque contrôle est
+//         déclenché deux fois : sous un ÉDITEUR pour voir la route qu'il PORTE, sous un LECTEUR pour voir ce
+//         que la console ENVOIE. Un contrôle dont toutes les routes portées sont ouvertes au lecteur n'est ni
+//         marqué ni effacé. Témoin inverse : un contrôle qui porte une route REFUSÉE est ou bien traité comme
+//         refusé (marque, raison posable, capteur partagé qui le reconnaît), ou bien n'envoie rien quand c'est
+//         un lecteur qui agit — le geste MIXTE, dont l'effet local est permis et la persistance non.
 // ---------------------------------------------------------------------------------------------
 {
-  const { applyRoleClass, motiverLeRefusAuLecteur } = await import(pathToFileURL(path.join(WEB, "core.js")).href);
+  const { applyRoleClass, motiverLeRefusAuLecteur, controleDEcritureSous } = await import(pathToFileURL(path.join(WEB, "core.js")).href);
   const { ruleRow } = await import(pathToFileURL(path.join(WEB, "detection_admin.js")).href);
   const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
   const cueillir = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir(c, pred, acc)); return acc; };
@@ -2274,6 +2290,255 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       exiger(nuAdmin.getAttribute("aria-disabled") === null, "(32c) témoin inverse : un administrateur voit son bouton marqué refusé");
       exiger(motiverLeRefusAuLecteur(nuAdmin) === false, "(32c) témoin inverse : la pose du refus rend vrai sous un rôle administrateur");
     }
+
+    // ===========================================================================================
+    // (d) + (e) `P11.4-m` — LE REFUS NE SE DÉDUIT PLUS D'UN PARENT, ET LA BORNE EST CELLE DU DÉMON.
+    // ===========================================================================================
+    // LECTURE DE LA FEUILLE, CHAÎNE COMPLÈTE. (a) ne juge qu'un sélecteur à DEUX composants et écrivait sa
+    // limite : une règle qui n'efface une classe QUE dans un contexte n'était jugée par personne. C'est
+    // exactement la forme qui a produit ce constat. Ici la chaîne entière est modélisée (portée de rôle,
+    // contextes, cible), et une règle qu'on ne saurait pas modéliser est COMPTÉE, jamais ignorée en silence.
+    const composant = (txt) => {
+      const c = { tag: null, id: null, classes: [], sans: [], modelise: true };
+      const reste = txt.replace(/:not\(\s*\.([\w-]+)\s*\)/g, (_, x) => { c.sans.push(x); return ""; });
+      if (!/^([a-zA-Z][\w-]*)?((?:[.#][\w-]+)*)$/.test(reste)) { c.modelise = false; return c; }
+      const t = /^([a-zA-Z][\w-]*)/.exec(reste);
+      if (t) c.tag = t[1].toUpperCase();
+      for (const m of reste.matchAll(/([.#])([\w-]+)/g)) { if (m[1] === ".") c.classes.push(m[2]); else c.id = m[2]; }
+      return c;
+    };
+    const porte = (el, c) => {
+      if (!c.modelise || !el || !el.classList) return false;
+      if (c.tag && el.tagName !== c.tag) return false;
+      if (c.id && (el.id || (el.getAttribute && el.getAttribute("id")) || null) !== c.id) return false;
+      if (c.classes.some((x) => !el.classList.contains(x))) return false;
+      if (c.sans.some((x) => el.classList.contains(x))) return false;
+      return true;
+    };
+    const reglesQuiEffacent = (feuille) => {
+      const out = [];
+      for (const m of feuille.replace(/\/\*[\s\S]*?\*\//g, " ").matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        if (!/display\s*:\s*none/.test(m[2])) continue;
+        for (const sel of m[1].split(",")) {
+          const comps = sel.trim().replace(/\s*>\s*/g, " ").split(/\s+/).filter(Boolean);
+          if (comps.length < 2 || !/^body[.:]/.test(comps[0]) || !/role-/.test(comps[0])) continue;
+          out.push({ selecteur: sel.trim(), portee: composant(comps[0]), chaine: comps.slice(1).map(composant) });
+        }
+      }
+      return out;
+    };
+    // Un descendant : la cible porte le dernier composant, et les contextes apparaissent DANS L'ORDRE parmi
+    // les ancêtres. Rend la règle qui efface, ou null.
+    const effacePar = (regles, corps, ancetres, el) => {
+      for (const r of regles) {
+        if (!porte(corps, r.portee)) continue;
+        if (!porte(el, r.chaine[r.chaine.length - 1])) continue;
+        let i = ancetres.length - 1, ok = true;
+        for (let k = r.chaine.length - 2; k >= 0; k--) {
+          while (i >= 0 && !porte(ancetres[i], r.chaine[k])) i--;
+          if (i < 0) { ok = false; break; }
+          i--;
+        }
+        if (ok) return r;
+      }
+      return null;
+    };
+    const feuille = readFileSync(path.join(WEB, "style.css"), "utf8");
+    const reglesRole = reglesQuiEffacent(feuille);
+    const nonModelisees = reglesRole.filter((r) => !r.portee.modelise || !r.chaine.every((c) => c.modelise));
+    exiger(reglesRole.length >= 1, "(32d) la feuille ne porte plus AUCUNE règle d'effacement de rôle : l'instrument ne mesure plus rien et refuse de conclure vert");
+    exiger(nonModelisees.length === 0, `(32d) ${nonModelisees.length} règle(s) de rôle hors du modèle du témoin — il ne peut pas dire ce qu'elles effacent : ${nonModelisees.map((r) => r.selecteur).join(" | ")}`);
+    // VALIDATION DE L'INSTRUMENT, SUR LES RÈGLES RÉELLES : chaque règle de la feuille, jouée sur une chaîne
+    // fabriquée pour la satisfaire, DOIT être vue. Une version qui ne saurait rien voir ne passerait pas ici.
+    for (const r of reglesRole) {
+      const corpsF = new Element("body"); r.portee.classes.forEach((x) => corpsF.classList.add(x));
+      const noeuds = r.chaine.map((c) => { const e = new Element(c.tag || "div"); if (c.id) e.id = c.id; c.classes.forEach((x) => e.classList.add(x)); return e; });
+      exiger(!!effacePar([r], corpsF, noeuds.slice(0, -1), noeuds[noeuds.length - 1]), `(32d) le témoin ne sait pas voir sa propre règle « ${r.selecteur} » : instrument aveugle`);
+    }
+
+    // CE QUE LA CONSOLE REND VRAIMENT DANS UN CONTENEUR D'OUTILS. La tuile et ses panneaux sont construits
+    // par le module, sous le rôle LECTEUR, avec un réseau simulé — c'est le seul moyen de voir les contrôles
+    // qu'aucun gabarit ne déclare (ils naissent d'un `document.createElement`).
+    const { renderDashboard } = await import(pathToFileURL(path.join(WEB, "dashboards.js")).href);
+    const { flushPrefs } = await import(pathToFileURL(path.join(WEB, "prefs.js")).href);
+    const appels = [];
+    const fetchOrigine = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      const u = String(url), meth = ((init && init.method) || "GET").toUpperCase();
+      appels.push({ chemin: u.split("?")[0], methode: meth });
+      const j = /\/api\/dashboard\/\d+$/.test(u.split("?")[0])
+        ? { panels: [{ id: 11, title: "Connexions refusées", query: "search source=sshd failed | stats count", is_soql: 1, viz: "table", cols: 2, window_s: 0, visibility: "shared" }], editable: true }
+        : { columns: ["c"], rows: [[1]], library_panels: [], templates: [], rules: [], saved: [] };
+      return { ok: true, status: 200, text: async () => JSON.stringify(j) };
+    };
+    const tic = () => new Promise((r) => setTimeout(r, 0));
+    const parcourir2 = (el, anc, acc) => {
+      if (el.tagName === "BUTTON" || el.tagName === "SELECT") acc.push({ el, anc: anc.slice() });
+      anc.push(el);
+      (el.children || []).forEach((c) => { if (c && c.children) parcourir2(c, anc, acc); });
+      anc.pop();
+    };
+    let controles = [];
+    try {
+      // Le shim n'a pas de moteur de sélecteurs : la grille rend `querySelectorAll` vide, et le
+      // rafraîchissement d'un dashboard ne trouverait aucun panneau à recharger. On lui donne les panneaux
+      // qu'elle vient elle-même de construire — l'arbre RENDU, pas une liste écrite ici.
+      const batir = async (role) => {
+        S.AUTH = { user: role === "viewer" ? "bob" : "eve", role };
+        applyRoleClass(role);
+        const t = renderDashboard({ id: 7, name: "Posture", panels: 1, cols: 2, visibility: "shared", editable: true, collapsed: false });
+        for (let i = 0; i < 6; i++) await tic();
+        const tous = []; parcourir2(t, [], tous);
+        const grille = []; const cueillirGrille = (el) => { if (el.classList && el.classList.contains("dashgrid")) grille.push(el); (el.children || []).forEach((c) => c.children && cueillirGrille(c)); };
+        cueillirGrille(t);
+        const panneaux = []; const cueillirPanneaux = (el) => { if (el.classList && el.classList.contains("panel")) panneaux.push(el); (el.children || []).forEach((c) => c.children && cueillirPanneaux(c)); };
+        cueillirPanneaux(t);
+        grille.forEach((g) => { g.querySelectorAll = () => panneaux; });
+        // Le shim n'a pas d'observateur d'intersection réel : aucun panneau ne devient jamais « visible », et
+        // le rafraîchissement d'un dashboard ne rechargerait rien. On pose la visibilité que le navigateur
+        // aurait posée — sans quoi ce geste-là échapperait à la mesure.
+        panneaux.forEach((c) => { if (c._panel) { c._panel.loaded = true; c._panel.visible = true; } });
+        return tous;
+      };
+      controles = await batir("viewer");
+      const controlesEditeur = await batir("editor");
+      exiger(controles.length >= 12, `(32d) la console ne rend que ${controles.length} contrôle(s) dans une tuile et ses panneaux : la mesure porterait sur presque rien`);
+      exiger(controlesEditeur.length === controles.length && controlesEditeur.every((c, i) => c.el.className === controles[i].el.className),
+        `(32e) la console ne rend pas la MÊME surface aux deux rôles (${controles.length} contrôles pour un lecteur, ${controlesEditeur.length} pour un éditeur) : le témoin ne peut plus apparier un geste à sa route`);
+      S.AUTH = { user: "bob", role: "viewer" }; applyRoleClass("viewer");
+
+      // (d) LE VERDICT — aucun contrôle rendu n'est effacé par un rôle sans porter la marque d'écriture.
+      const effacesSansMarque = controles
+        .map((c) => ({ ...c, regle: effacePar(reglesRole, document.body, c.anc, c.el) }))
+        .filter((c) => c.regle && !c.el.classList.contains("crud-btn"));
+      exiger(effacesSansMarque.length === 0, `(32d) ${effacesSansMarque.length} contrôle(s) que la console rend à un lecteur sont EFFACÉS par une règle de rôle sans porter la marque d'écriture : ${effacesSansMarque.map((c) => `« ${c.el.title || c.el.textContent} » (${c.el.className}) par « ${c.regle.selecteur} »`).join(" ; ")} — un effacement fondé sur l'appartenance à un parent ne distingue pas un geste REFUSÉ d'un geste PERMIS`);
+
+      // LA MUTATION DE CETTE FAMILLE, JOUÉE PAR LE TÉMOIN LUI-MÊME. Pour CHAQUE contrôle sans marque, on
+      // fabrique la règle de conteneur que la feuille portait — « portée de rôle, classe du parent, classe
+      // du contrôle », dérivée de l'arbre RENDU et non écrite ici — et on exige qu'elle soit VUE. C'est la
+      // preuve que réintroduire l'effacement ferait rougir (d), contrôle par contrôle.
+      const sansMarque = controles.filter((c) => !c.el.classList.contains("crud-btn") && c.el.className && c.anc.some((a) => a.className));
+      let vus = 0;
+      for (const c of sansMarque) {
+        const parent = [...c.anc].reverse().find((a) => a.className);
+        const factice = reglesQuiEffacent(`body.role-viewer .${parent.className.split(/\s+/)[0]} .${c.el.className.split(/\s+/)[0]}{display:none!important}`);
+        if (effacePar(factice, document.body, c.anc, c.el)) vus++;
+      }
+      exiger(sansMarque.length >= 7 && vus === sansMarque.length, `(32d) la règle de CONTENEUR n'est vue que sur ${vus} des ${sansMarque.length} contrôles permis : le témoin ne rougirait pas si l'effacement revenait`);
+
+      // (e) LA BORNE EST CELLE DU DÉMON, LUE DANS SA TABLE — pas une borne recopiée ici. `route_min_role`
+      // et `is_readonly_post` sont RE-DÉRIVÉS de la source Rust : une route déclarée ouverte au lecteur
+      // (préférences self-service, lectures) ne peut pas porter la marque d'écriture, et une route bornée
+      // à l'éditeur DOIT la porter. Le témoin ne conclut que sur les contrôles dont il a VU la route.
+      const sansCommentaires = (s) => s.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^[ \t]*\/\/.*$/gm, " ");
+      const corpsDe = (src, signature) => {
+        const i = src.indexOf(signature); if (i < 0) return null;
+        const j = src.indexOf("{", i); let p = 0, k = j;
+        for (; k < src.length; k++) { if (src[k] === "{") p++; else if (src[k] === "}") { p--; if (!p) break; } }
+        return src.slice(j + 1, k);
+      };
+      const rbac = readFileSync(path.join(RACINE, "daemon", "src", "rbac.rs"), "utf8");
+      const authRs = readFileSync(path.join(RACINE, "daemon", "src", "auth.rs"), "utf8");
+      const litteraux = (txt) => {
+        const p = [], vus2 = new Set();
+        const prendre = (re, k) => { for (const m of txt.matchAll(re)) { p.push({ k, v: m[1] }); vus2.add(m[1]); } };
+        prendre(/path\.starts_with\(\s*"([^"]*)"/g, "prefixe");
+        prendre(/path\.ends_with\(\s*"([^"]*)"/g, "suffixe");
+        prendre(/path\s*==\s*"([^"]*)"/g, "egal");
+        for (const m of txt.matchAll(/"([^"]*)"/g)) if (!vus2.has(m[1])) p.push({ k: "egal", v: m[1] });
+        return p;
+      };
+      // Un bloc dont la condition mêle `&&` n'est modélisé qu'en DISJONCTION : ne pas correspondre y reste
+      // SÛR (aucun des membres n'est vrai), correspondre y devient INCERTAIN — et le témoin refuse alors de
+      // conclure au lieu de deviner.
+      const corpsTable = sansCommentaires((corpsDe(rbac, "fn route_min_role(") || "").replace(/#\[cfg\(feature[^\]]*\)\]\s*\{[\s\S]*?\n    \}/g, " "));
+      const blocs = []; const reRet = /return\s+(?:if\s+mutating\s*\{\s*MinRole::(\w+)\s*\}\s*else\s*\{\s*MinRole::(\w+)\s*\}|MinRole::(\w+))\s*;/g;
+      for (let m, debut = 0; (m = reRet.exec(corpsTable)); debut = reRet.lastIndex) {
+        const cond = corpsTable.slice(debut, m.index);
+        blocs.push({ preds: litteraux(cond), porte: /!\s*mutating/.test(cond) ? false : /\bmutating\b/.test(cond) ? true : null, approx: /&&/.test(cond), siMutant: m[1] || m[3], sinon: m[2] || m[3] });
+      }
+      const defautTable = (/MinRole::(\w+)\s*$/.exec(corpsTable.trim()) || [])[1] || null;
+      exiger(blocs.length >= 8 && !!defautTable, `(32e) la table d'autorisation du démon n'a pas été relue (${blocs.length} bloc(s), défaut « ${defautTable} ») : le témoin refuse de conclure sur une table qu'il n'a pas lue`);
+      const borne = (chemin, mutant) => {
+        for (const b of blocs) {
+          if (b.porte !== null && b.porte !== mutant) continue;
+          const touche = b.preds.length === 0 || b.preds.some((p) => (p.k === "prefixe" ? chemin.startsWith(p.v) : p.k === "suffixe" ? chemin.endsWith(p.v) : chemin === p.v));
+          if (!touche) continue;
+          return { role: mutant ? b.siMutant : b.sinon, sur: !b.approx };
+        }
+        return { role: defautTable, sur: true };
+      };
+      const corpsRO = sansCommentaires(corpsDe(authRs, "fn is_readonly_post(") || "");
+      const pairesRO = [...corpsRO.matchAll(/path\.starts_with\(\s*"([^"]*)"\s*\)\s*&&\s*path\.ends_with\(\s*"([^"]*)"\s*\)/g)].map((m) => [m[1], m[2]]);
+      const egauxRO = new Set([...corpsRO.matchAll(/"([^"]*)"/g)].map((m) => m[1]));
+      pairesRO.forEach(([a, b]) => { egauxRO.delete(a); egauxRO.delete(b); });
+      const lectureSeulePost = (c) => egauxRO.has(c) || pairesRO.some(([a, b]) => c.startsWith(a) && c.endsWith(b));
+      const corpsSat = sansCommentaires(corpsDe(rbac, "fn role_satisfies(") || "");
+      const lecteurSatisfait = (nom) => { const m = new RegExp("MinRole::" + nom + "\\s*=>([^\\n]*)").exec(corpsSat); return m ? /"viewer"/.test(m[1]) : null; };
+      exiger(egauxRO.size >= 4 && lecteurSatisfait("Read") === true && lecteurSatisfait("Write") === false && lecteurSatisfait("Admin") === false,
+        `(32e) la relecture du démon ne dit pas ce qu'elle doit dire (POST de lecture : ${egauxRO.size} ; lecteur satisfait lecture=${lecteurSatisfait("Read")}, écriture=${lecteurSatisfait("Write")}, administration=${lecteurSatisfait("Admin")}) : instrument non validé`);
+      const ouvertAuLecteur = (chemin, methode) => {
+        const mutant = !["GET", "HEAD"].includes(methode) && !lectureSeulePost(chemin);
+        const b = borne(chemin, mutant);
+        return { mutant, role: b.role, sur: b.sur, ouvert: b.sur ? lecteurSatisfait(b.role) : null };
+      };
+
+      // ON DÉCLENCHE CHAQUE CONTRÔLE, ET ON REGARDE OÙ IL VA. Le geste est appelé DIRECTEMENT : le capteur de
+      // refus de (c) est un AUTRE étage, et ce qu'on cherche ici est la ROUTE que le contrôle porte. Deux
+      // états sont distingués et jamais confondus avec la conformité : un geste qui n'atteint aucune route
+      // (export client, arrêt, impression), et un geste SUSPENDU sur une confirmation ou une saisie — celui-là
+      // n'a pas encore atteint sa mutation, et le témoin le DIT au lieu de conclure.
+      // DEUX PASSES, PARCE QUE LES DEUX QUESTIONS SONT DIFFÉRENTES : sous ÉDITEUR, quelle route le contrôle
+      // PORTE ; sous LECTEUR, ce que la console ENVOIE vraiment. Un contrôle peut porter une route refusée et
+      // ne rien envoyer — c'est le cas du geste MIXTE, dont l'effet local est permis et la persistance non.
+      const modaleOuverte = () => document.body.children.some((e) => e.classList && e.classList.contains("modal-ov"));
+      // Une préférence part APRÈS une temporisation ; on ne la force que si le contrôle a VRAIMENT écrit dans
+      // le magasin (le miroir change), sinon chaque contrôle se verrait attribuer l'envoi du précédent.
+      const miroirPrefs = () => { try { return localStorage.getItem("plume_prefs"); } catch (e) { return null; } };
+      const sonder = async (liste) => {
+        const vus = [];
+        for (const c of liste) {
+          document.body.children = document.body.children.filter((e) => !(e.classList && e.classList.contains("modal-ov")));
+          appels.length = 0;
+          const avantPrefs = miroirPrefs();
+          try { if (typeof c.el.onchange === "function") { c.el.value = "4"; c.el.onchange({ target: c.el }); } else if (typeof c.el.onclick === "function") c.el.onclick({ target: c.el, stopPropagation() {}, preventDefault() {} }); } catch (e) { /* la route est ce qu'on cherche, pas le rendu */ }
+          await tic();
+          if (miroirPrefs() !== avantPrefs) { try { await flushPrefs(); } catch (e) {} }
+          const routes = appels.map((a) => ({ ...a, ...ouvertAuLecteur(a.chemin, a.methode) })).filter((r) => r.sur);
+          vus.push({ c, routes, suspendu: modaleOuverte() });
+        }
+        return vus;
+      };
+      const sousLecteur = await sonder(controles);
+      // La MÊME surface, sous un rôle qui PEUT écrire : les gestes révèlent alors la route qu'ils portent.
+      S.AUTH = { user: "eve", role: "editor" }; applyRoleClass("editor");
+      const sousEditeur = await sonder(controlesEditeur);
+      S.AUTH = { user: "bob", role: "viewer" }; applyRoleClass("viewer");
+
+      const marque = (c) => c.el.classList.contains("crud-btn");
+      const refuseeParmi = (v) => v.routes.some((r) => r.ouvert === false);
+      // (e-a) LE VERDICT DE `P11.4-m` : un contrôle dont TOUTES les routes portées sont ouvertes au lecteur —
+      // geste allé au bout — n'est ni marqué d'écriture, ni effacé par une règle de rôle.
+      const permis = sousEditeur.filter((v) => !v.suspendu && v.routes.length && !refuseeParmi(v));
+      const permisTraitesEnRefus = permis.filter((v) => marque(v.c) || effacePar(reglesRole, document.body, v.c.anc, v.c.el));
+      // (e-b) TÉMOIN INVERSE : un contrôle qui PORTE une route refusée au lecteur ne peut pas être laissé
+      // libre. De deux choses l'une, et le témoin accepte les deux : ou il est traité comme refusé (marque
+      // portée, raison posable, capteur partagé qui le reconnaît), ou la console N'ENVOIE RIEN de refusé
+      // quand c'est un lecteur qui agit. Tout le reste est un 403 muet.
+      const porteurs = sousEditeur.map((v, i) => ({ v, envoi: sousLecteur[i] })).filter((x) => refuseeParmi(x.v));
+      const porteursLibres = porteurs.filter(({ v, envoi }) => {
+        const traiteEnRefus = marque(v.c) && motiverLeRefusAuLecteur(v.c.el) && controleDEcritureSous(v.c.el) === v.c.el;
+        return !traiteEnRefus && refuseeParmi(envoi);
+      });
+      exiger(permis.length >= 2, `(32e) seuls ${permis.length} contrôle(s) ont mené leur geste au bout sur des routes toutes ouvertes : le témoin ne relie plus rien à la borne du démon`);
+      exiger(porteurs.length >= 2, `(32e) seuls ${porteurs.length} contrôle(s) portent encore une route que le démon refuse à un lecteur : le témoin inverse ne mesure plus rien et refuse de conclure vert`);
+      exiger(permisTraitesEnRefus.length === 0, `(32e) ${permisTraitesEnRefus.length} contrôle(s) sont traités en refus alors que le démon leur ouvre TOUTES les routes qu'ils portent : ${permisTraitesEnRefus.map((v) => `« ${v.c.el.title || v.c.el.textContent} » (${v.c.el.className}) -> ${v.routes.map((r) => r.methode + " " + r.chemin + " (" + r.role + ")").join(", ")}`).join(" ; ")}`);
+      exiger(porteursLibres.length === 0, `(32e) témoin inverse : ${porteursLibres.length} contrôle(s) portent une route que le démon REFUSE à un lecteur, ne sont pas traités comme refusés, et l'envoient quand même : ${porteursLibres.map(({ v }) => `« ${v.c.el.title || v.c.el.textContent} » (${v.c.el.className}) -> ${v.routes.filter((r) => r.ouvert === false).map((r) => r.methode + " " + r.chemin + " (" + r.role + ")").join(", ")}`).join(" ; ")}`);
+      console.log(`[refus-conteneur] ${controles.length} contrôles rendus dans une tuile et son panneau, identiques sous les deux rôles ; ${reglesRole.length} règles d'effacement de rôle, toutes modélisées et toutes VUES par le témoin : aucun contrôle effacé sans porter la marque d'écriture, et la règle de CONTENEUR qui les effaçait est vue sur les ${sansMarque.length} contrôles permis — elle rougirait donc contrôle par contrôle. Table d'autorisation du démon RELUE (${blocs.length} blocs, défaut ${defautTable}, ${egauxRO.size} POST de lecture) : ${permis.length} gestes menés au bout sur des routes TOUTES ouvertes au lecteur, aucun marqué ni effacé ; ${porteurs.length} qui portent une route refusée, tous traités comme refusés ou n'envoyant rien quand c'est un lecteur qui agit. HORS DU TÉMOIN, ÉCRIT : un geste SUSPENDU sur une confirmation ou une saisie (${sousEditeur.filter((v) => v.suspendu).length} ici) n'a pas atteint sa mutation et n'est pas jugé « permis » ; un contrôle qui n'appelle rien ne l'est pas non plus ; un bloc de la table dont la condition mêle des « et » n'est modélisé qu'en disjonction, et le témoin refuse alors de conclure ; le bloc gaté par une option de compilation absente du build par défaut n'est pas lu.`);
+    } finally {
+      globalThis.fetch = fetchOrigine;
+    }
+
     console.log(`[refus] une seule grammaire pour les contrôles refusés : la feuille n'efface aucune des ${classesDeBoutons.size} classes de bouton dérivées du gabarit et des fabriques (${effaceesParRole.size} classe(s) effacée(s) par un rôle, aucune rendue), les ${lecteur.length} boutons d'écriture d'une règle rendue à un lecteur portent la marque du refus et NOMMENT le rôle qui manque, aucun pour un administrateur, et le capteur partagé rend inerte — en le disant — le clic d'un lecteur sur un bouton qu'aucune fabrique n'a construit`);
   } finally {
     S.AUTH = roleOrigine;

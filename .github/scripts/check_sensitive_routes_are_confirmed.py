@@ -38,13 +38,61 @@ fonction nommée -> apiSend`). Un appel placé dans une fonction qui ne confirme
 confirme en amont est un défaut. Une route sensible SANS appelant web n'est pas un défaut (machine-to-
 machine, contrôle par API) : elle est listée, et le jour où un appelant apparaît il est tenu.
 
+LA GARDE SE LIT DANS LES DEUX SENS (`P11.13-b`)
+-----------------------------------------------
+Les trois familles ci-dessus disent ce qui est sensible ; elles ne disaient rien de ce qu'elles RATENT.
+Mesuré le 2026-08-24 sur ce dépôt : 23 routes mutantes que les DEUX surfaces traitent déjà comme
+sensibles — le démon inscrit le changement à son journal (`audit_config_change` / `audit_source_change`)
+et TOUS les appelants web passent par une confirmation partagée — n'entraient dans aucune des trois
+familles. Vingt-trois n'est pas un accident, c'est un motif : le critère était plus étroit que le
+traitement réel, et une garde qui rate une route déjà confirmée ratera la suivante, qui elle ne le sera
+pas. D'où un SECOND SENS de lecture, et une famille de plus :
+
+  DÉCLARE               — le démon AUDITE le changement et la console le CONFIRME partout. La famille
+                          n'ajoute aucune exigence à ces routes (elles sont confirmées par définition) ;
+                          elle les fait ENTRER dans la liste dérivée, pour que l'écart entre le critère
+                          et le traitement des surfaces soit nul et le reste.
+
+  ANGLE MORT            — une route que les deux surfaces traitent comme sensible et que la dérivation
+                          ne reconnaît pas est une ERREUR : c'est la cécité que `P11.13-b` nomme. Après
+                          l'élargissement il n'en reste aucune ; retirer la famille les fait toutes
+                          reparaître, et c'est la mutation qui prouve ce sens de lecture.
+
+  ASYMÉTRIE             — le démon audite, la console ATTEINT la route, et tous ses appelants ne
+                          confirment pas : les deux surfaces ne disent pas la même chose. Ce n'est pas la
+                          cécité de la garde mais une dette de la surface, et elle est tenue par un
+                          CLIQUET (`PLAFOND_ASYMETRIE`) : une route auditée appelée sans confirmation de
+                          plus fait rougir. C'est ce cliquet qui attrape « la suivante ».
+
+CE QUE « CONFIRMÉE » VAUT AU JUSTE — limite mesurée, valable dans les DEUX sens
+La remontée d'appelants répond à « UN appelant confirme-t-il ? », pas à « TOUS les chemins
+confirment-ils ? » : un existentiel, là où la propriété visée est universelle. Mesuré le 2026-08-24 :
+sur 144 appels mutants, 6 (dans 3 modules) sont déclarés confirmés par une chaîne de NOMS qui traverse
+un CÂBLAGE (`x.onclick = f`) — l'installateur d'un gestionnaire n'est pas son appelant, et le geste
+confirmé qu'on atteint ainsi est celui d'un voisin, pas d'un ancêtre. Resserrer la remontée à ce
+critère rendrait ces 6 non confirmés, mais produirait aussi une FAUSSE accusation : le motif
+`/api/connectors/*` d'un appel destiné à `/api/connectors/:id` recouvre `/api/connectors/push-source`,
+que la console n'appelle pas là. Les deux imprécisions se compensent en l'état — ce n'est pas une
+garantie, et les deux se corrigent ensemble ou pas du tout. Le second sens de lecture LIT LE MÊME
+signal que le premier, délibérément : deux lectures divergentes de « confirmée » vaudraient moins
+qu'une seule lecture dont la limite est écrite.
+
+Ce que la garde ne fait PAS : traiter la seule confirmation de la console comme une déclaration de
+sensibilité. Une confirmation est un choix d'ergonomie (un formulaire dont on relit le contenu) ; le
+démon, lui, engage un journal. Le compte des routes confirmées que le démon n'audite pas est IMPRIMÉ,
+jamais compté comme défaut — sans quoi `POST /api/rules/:id/test` deviendrait « sensible ».
+
 L'INSTRUMENT SE VALIDE AVANT DE RENDRE UN VERDICT
 --------------------------------------------------
 Témoins sur un corpus de contrôle : une route DELETE avec un appelant confirmé (doit passer), la même
 sans confirmation (doit rougir), une route de création ordinaire (ne doit pas être sensible), un
 appelant confirmé par sa fonction APPELANTE (doit passer), un appel en commentaire (ne compte pas).
-Puis des planchers sur l'arbre réel : un nombre minimal de routes sensibles, une route témoin trouvée
-sensible ET confirmée (`/api/users/:id`, le changement de rôle), sans quoi la garde refuse de conclure.
+Pour le second sens : une route auditée et confirmée partout est un ANGLE MORT tant que la famille
+`DÉCLARE` ne la reprend pas, et cesse de l'être une fois reprise ; une route auditée appelée SANS
+confirmation est une ASYMÉTRIE ; une route auditée sans appelant web et une route confirmée que le démon
+n'audite pas ne sont NI l'un NI l'autre. Puis des planchers sur l'arbre réel : un nombre minimal de
+routes sensibles, une route témoin trouvée sensible ET confirmée (`/api/users/:id`, le changement de
+rôle), sans quoi la garde refuse de conclure.
 """
 import os
 import re
@@ -59,6 +107,10 @@ WEB = os.path.join(RACINE, "web")
 
 MIN_ROUTES_SENSIBLES = 12
 ROUTE_TEMOIN = ("POST", "/api/users/:id")
+# CLIQUET DU SECOND SENS (`P11.13-b`) : routes que le démon AUDITE, que la console ATTEINT, et dont tous les
+# appelants ne confirment pas. 12 mesurées le 2026-08-24 ; ce nombre ne se relève pas sans raison écrite ici —
+# une route auditée appelée sans confirmation de plus est exactement le défaut que la garde doit attraper.
+PLAFOND_ASYMETRIE = 12
 
 # LE DÉPOUILLEMENT ET L'AVEUGLEMENT DES LITTÉRAUX SONT IMPORTÉS, PLUS RECOPIÉS (`P11.8-f`). « Même
 # dépouillement que les gardes voisines » était vrai du texte et faux du RÉSULTAT : quatre copies, quatre
@@ -81,6 +133,9 @@ LITTERAUX = re.compile(r'"(/[^"]*)"')
 ECRIT_IDENTITE = re.compile(r'INSERT\s+(?:OR\s+REPLACE\s+)?INTO\s+(?:user\b|\\?"?grant\\?"?\b)|UPDATE\s+user\s+SET\s+role', re.I)
 INSERT_TOKEN = re.compile(r'INSERT\s+(?:OR\s+REPLACE\s+)?INTO\s+token\b', re.I)
 AUDIT_SEV = re.compile(r'audit_(?:config|source)_change\([^;]*?,\s*(\d)\s*,', re.S)
+# LE DÉMON DÉCLARE LUI-MÊME QU'IL S'AGIT D'UN CHANGEMENT en l'inscrivant à son journal. `audit_bulk_read`
+# n'en est pas : c'est une LECTURE tracée, elle ne change rien et ne dit rien de la sensibilité d'une mutation.
+AUDIT_CHANGEMENT = re.compile(r'\baudit_(?:config_change|source_change|tenant_event)\s*\(')
 MODE_ARME = re.compile(r'path\s*==\s*"(/api/mode)"[^}]*?mutating\s*\{\s*MinRole::Admin')
 ENABLED_ARME = re.compile(r'path\.ends_with\(\s*"(/enabled)"\s*\)')
 
@@ -152,20 +207,32 @@ def deriver_routes(sources):
 SANS_SESSION = re.compile(r'^/api/(?:auth/|login|logout|setup)')
 
 
+def corps_etendu(handler, handlers):
+    """Le corps du handler PLUS celui des fonctions qu'il appelle directement (un niveau) — une insertion de
+    jeton ou d'utilisateur, comme un appel au journal, vit souvent dans un helper (`token_insert`,
+    `scim_upsert`). Rend None quand le symbole n'est pas résolu."""
+    propre = handlers.get(handler)
+    if propre is None:
+        return None
+    appelees = set(re.findall(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\(', propre)) - {handler}
+    return propre + "".join(handlers.get(n, "") for n in appelees if n in handlers)
+
+
+def dans_le_perimetre(path, readonly):
+    """Une route mutante est jugée sauf si le démon la déclare en lecture, ou si elle précède la session."""
+    return path not in readonly and not SANS_SESSION.match(path)
+
+
 def classer(routes, handlers, readonly, armement):
     """Rend {(verbe, path): (familles, handler, fichier)} pour les routes sensibles, + erreurs."""
     sensibles, erreurs = {}, []
     for verbe, path, handler, fichier in routes:
-        if path in readonly or SANS_SESSION.match(path):
+        if not dans_le_perimetre(path, readonly):
             continue
-        propre = handlers.get(handler)
-        if propre is None:
+        corps = corps_etendu(handler, handlers)
+        if corps is None:
             erreurs.append(f"{fichier} : handler `{handler}` de {verbe} {path} introuvable — la garde ne peut pas lire ce qu'il fait")
             continue
-        # Corps ÉTENDU : le handler plus les fonctions qu'il appelle directement (un niveau) — une insertion
-        # de jeton ou d'utilisateur vit souvent dans un helper (`token_insert`, `scim_upsert`).
-        appelees = set(re.findall(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\(', propre)) - {handler}
-        corps = propre + "".join(handlers.get(n, "") for n in appelees if n in handlers)
         familles = []
         sevs = [int(s) for s in AUDIT_SEV.findall(corps)]
         # DÉTRUIT
@@ -378,6 +445,64 @@ def appelants_web(sources_js, confirmations, aveux=None):
     return out
 
 
+# --- second sens de lecture : ce que les SURFACES traitent comme sensible (`P11.13-b`) ----------------
+def signaux_des_surfaces(routes, handlers, readonly, appels):
+    """{(verbe, path): (audite, atteinte, confirmee_partout, handler, fichier)} pour chaque route mutante du
+    périmètre. Deux surfaces, chacune lue chez elle et sans rien emprunter à l'autre :
+      démon   — le handler inscrit le changement au journal (`AUDIT_CHANGEMENT`) ;
+      console — la route a au moins un appelant web (`atteinte`), et tous passent par une confirmation
+                partagée (`confirmee_partout`). Une route qu'aucun appelant n'atteint n'est pas « confirmée » :
+                le silence de la console n'est pas une déclaration."""
+    signaux = {}
+    for verbe, path, handler, fichier in routes:
+        if not dans_le_perimetre(path, readonly):
+            continue
+        corps = corps_etendu(handler, handlers)
+        if corps is None:
+            continue
+        sites = [a for a in appels if a[2] == verbe and motif_correspond(a[3], path)]
+        signaux[(verbe, path)] = (bool(AUDIT_CHANGEMENT.search(corps)), bool(sites),
+                                  bool(sites) and all(a[4] for a in sites), handler, fichier)
+    return signaux
+
+
+FAMILLE_DECLARE = "déclare (auditée par le démon, confirmée par la console)"
+
+
+def elargir_par_les_surfaces(sensibles, signaux):
+    """Fait ENTRER dans la liste dérivée les routes que les deux surfaces traitent déjà comme sensibles.
+    Rend la liste des clés ajoutées. La famille n'exige rien de plus de ces routes — elle supprime l'écart
+    entre le critère et le traitement réel, que le second sens de lecture mesure juste après."""
+    ajoutees = []
+    for cle, (audite, _atteinte, confirmee, handler, fichier) in sorted(signaux.items()):
+        if cle in sensibles or not (audite and confirmee):
+            continue
+        sensibles[cle] = ([FAMILLE_DECLARE], handler, fichier)
+        ajoutees.append(cle)
+    return ajoutees
+
+
+def relire_a_lenvers(signaux, sensibles):
+    """L'AUTRE SENS : partir des surfaces et revenir au critère. Rend (angles_morts, asymetries, console_seule).
+      angles_morts  — les deux surfaces la traitent comme sensible, la dérivation ne la reconnaît pas : la
+                      cécité de la garde elle-même, donc une erreur.
+      asymetries    — le démon audite, la console atteint la route mais ne confirme pas partout : les deux
+                      surfaces se contredisent. Dette de la surface, tenue par un cliquet.
+      console_seule — la console confirme, le démon n'inscrit rien : une ergonomie, pas une déclaration de
+                      sensibilité. Compté et imprimé, jamais un défaut."""
+    angles, asymetries, console_seule = [], [], []
+    for cle, (audite, atteinte, confirmee, _h, _f) in sorted(signaux.items()):
+        if cle in sensibles:
+            continue
+        if audite and confirmee:
+            angles.append(cle)
+        elif audite and atteinte:
+            asymetries.append(cle)
+        elif confirmee:
+            console_seule.append(cle)
+    return angles, asymetries, console_seule
+
+
 def verdict(sensibles, appels):
     """Rend (defauts, couverts, sans_appelant)."""
     defauts, couverts, sans = [], {}, []
@@ -416,7 +541,10 @@ def valider_instrument():
              '  .route("/api/login", post(login_post))\n'
              '  .route("/api/rules/:id/enabled", post(rule_set_enabled))\n'
              '  .route("/api/purge/plan", post(purge_plan_route))\n'
-             '  .route("/api/purge/apply", post(purge_apply_route)) }\n'
+             '  .route("/api/purge/apply", post(purge_apply_route))\n'
+             '  .route("/api/declarations", post(declaration_upsert))\n'
+             '  .route("/api/notes", post(note_create))\n'
+             '  .route("/api/silences", post(silence_create)) }\n'
              'pub(crate) fn is_readonly_post(path: &str) -> bool {\n    matches!(path, "/api/query" | "/api/search")\n}\n'
              'pub(crate) async fn thing_create(Json(b): Json<Value>) -> Response { conn.execute("INSERT INTO thing(name) VALUES(?1)", params![n]); audit_config_change(&conn, "config.thing.create", "d", 2, "m", "f"); ok() }\n'
              'pub(crate) async fn thing_update() -> Response { ok() }\n'
@@ -430,6 +558,10 @@ def valider_instrument():
              'pub(crate) async fn rule_set_enabled() -> Response { ok() }\n'
              'pub(crate) async fn purge_plan_route() -> Response { purge_plan(&conn) }\n'
              'pub(crate) async fn purge_apply_route() -> Response { purge_confirm_and_apply(&conn, scope, &token) }\n'
+             # `P11.13-b` — la route de DÉCLARATION : le démon inscrit le changement à son journal, rien d'autre.
+             'pub(crate) async fn declaration_upsert(Json(b): Json<Value>) -> Response { conn.execute("INSERT INTO declaration(name) VALUES(?1)", params![n]); audit_config_change(&conn, "config.declaration", "d", 2, "m", "f"); ok() }\n'
+             'pub(crate) async fn silence_create(Json(b): Json<Value>) -> Response { conn.execute("INSERT INTO silence(m) VALUES(?1)", params![m]); audit_source_change(&conn, "s", "config.silence", "d", 3, "m", "f"); ok() }\n'
+             'pub(crate) async fn note_create(Json(b): Json<Value>) -> Response { conn.execute("INSERT INTO note(t) VALUES(?1)", params![t]); ok() }\n'
              '// .route("/api/commentee", delete(commentee))\n'
              'fn route_min_role(path: &str, mutating: bool) -> MinRole {\n'
              '  if path == "/api/mode" { return if mutating { MinRole::Admin } else { MinRole::Read }; }\n'
@@ -459,7 +591,10 @@ def valider_instrument():
            "const creer = async () => { await apiSend('/things', 'POST', { name }); };\n"
            "btn.onclick = async () => { if (!await confirmModal('x')) return; await apiSend('/things/' + id, 'DELETE'); };\n"
            "other.onclick = async () => { await apiSend(`/rules/${id}/enabled`, 'POST', {}); };\n"
-           "// async function fantome() { await apiSend('/purge/apply', 'POST', {}); }\n")]
+           "// async function fantome() { await apiSend('/purge/apply', 'POST', {}); }\n"
+           "async function saveDeclaration() { if (!await confirmWithConsequence('x', 'y')) return; await apiSend('/declarations', 'POST', { name }); }\n"
+           "async function saveNote() { if (!await confirmModal('?')) return; await apiSend('/notes', 'POST', { t }); }\n"
+           "async function saveSilence() { await apiSend('/silences', 'POST', { m }); }\n")]
     appels = appelants_web(js, confs)
     defauts, couverts, sans = verdict(sensibles, appels)
     if ("DELETE", "/api/things/:id") not in couverts:
@@ -471,6 +606,29 @@ def valider_instrument():
         errs.append(f"témoin NÉGATIF en échec : un changement de rôle ou une activation SANS confirmation doit rougir (défauts : {sorted(mauvais)})")
     if ("POST", "/api/purge/apply") not in {(s[0], s[1]) for s in sans}:
         errs.append("témoin de SILENCE en échec : un appel en commentaire a été compté comme appelant")
+
+    # SECOND SENS DE LECTURE (`P11.13-b`) — quatre témoins sur le même corpus.
+    signaux = signaux_des_surfaces(routes, handlers, readonly, appels)
+    avant, _asy_avant, _cs_avant = relire_a_lenvers(signaux, sensibles)
+    if ("POST", "/api/declarations") not in avant:
+        errs.append(f"témoin d'ANGLE MORT en échec : une route que le démon audite et que la console confirme partout, "
+                    f"hors des trois familles, doit être vue comme non reconnue par la dérivation (angles : {avant})")
+    reprises = elargir_par_les_surfaces(sensibles, signaux)
+    apres, asymetries, console_seule = relire_a_lenvers(signaux, sensibles)
+    if ("POST", "/api/declarations") not in reprises or apres:
+        errs.append(f"témoin de FERMETURE en échec : la famille des surfaces doit reprendre la route de déclaration et "
+                    f"ne laisser aucun angle mort (reprises : {reprises}, restants : {apres})")
+    # Les deux appels du journal sont couverts : `/api/things` par `audit_config_change`, `/api/silences` par
+    # `audit_source_change` — l'un et l'autre appelés par la console sans confirmation.
+    if asymetries != [("POST", "/api/silences"), ("POST", "/api/things")]:
+        errs.append(f"témoin d'ASYMÉTRIE en échec : les routes auditées appelées SANS confirmation doivent être "
+                    f"relevées, et elles seules — obtenu {asymetries} (une route auditée SANS appelant web n'en est pas)")
+    if ("POST", "/api/notes") not in console_seule or ("POST", "/api/notes") in sensibles:
+        errs.append(f"témoin INVERSE en échec : une route que la console confirme et que le démon n'audite PAS ne doit "
+                    f"être ni sensible ni un angle mort, seulement comptée ({console_seule})")
+    if ("DELETE", "/api/bulletin") in {c for c in avant} | {c for c in asymetries}:
+        errs.append("témoin de SILENCE du second sens en échec : une route auditée SANS appelant web est comptée comme "
+                    "angle mort ou asymétrie — le silence de la console n'est pas une déclaration")
     return errs
 
 
@@ -520,13 +678,27 @@ def main():
     appels = appelants_web(sources_js, confs, aveux)
     if aveux and refuser_sur_aveu("routes sensibles", aveux):
         return 2
+
+    # SECOND SENS (`P11.13-b`) : partir des surfaces et revenir au critère, AVANT de rendre le verdict habituel.
+    signaux = signaux_des_surfaces(routes, handlers, readonly, appels)
+    reprises = elargir_par_les_surfaces(sensibles, signaux)
+    angles, asymetries, console_seule = relire_a_lenvers(signaux, sensibles)
+    for verbe, path in angles:
+        print(f"::error::{verbe} {path} — le démon inscrit ce changement à son journal et TOUS ses appelants web "
+              "confirment, mais aucune famille de la dérivation ne la reconnaît : la garde est aveugle à une route "
+              "que les deux surfaces traitent déjà comme sensible.")
+    if angles:
+        print(f"\n{len(angles)} angle(s) mort(s) de la dérivation.")
+        return 1
+
     defauts, couverts, sans = verdict(sensibles, appels)
     if ROUTE_TEMOIN not in couverts:
         print(f"::error::la route témoin {ROUTE_TEMOIN} n'a pas d'appelant web confirmé : soit la surface a régressé, "
               "soit l'analyse des appelants ne reconnaît plus la forme du code.")
         return 1
 
-    print(f"routes sensibles dérivées du démon : {len(sensibles)} (sur {len(routes)} routes mutantes)")
+    print(f"routes sensibles dérivées du démon : {len(sensibles)} (sur {len(routes)} routes mutantes), dont "
+          f"{len(reprises)} reprises par les surfaces")
     for (verbe, path), (familles, handler, fichier) in sorted(sensibles.items()):
         etat = "confirmée" if (verbe, path) in couverts else ("SANS CONFIRMATION" if (verbe, path) in {(d[0], d[1]) for d in defauts} else "sans appelant web")
         print(f"  {verbe:6} {path:44} {etat:18} {'; '.join(familles)}")
@@ -537,6 +709,18 @@ def main():
     if defauts:
         print(f"\n{len(defauts)} route(s) sensible(s) appelée(s) sans confirmation.")
         return 1
+    print(f"\nsecond sens de lecture : 0 angle mort ; {len(asymetries)} asymétrie(s) (le démon audite, la console "
+          f"atteint la route sans confirmer partout), plafond {PLAFOND_ASYMETRIE} ; {len(console_seule)} route(s) que "
+          "la console confirme sans que le démon inscrive de changement — une ergonomie, pas une déclaration.")
+    for verbe, path in asymetries:
+        print(f"  asymétrie  {verbe:6} {path}")
+    if len(asymetries) > PLAFOND_ASYMETRIE:
+        print(f"::error::{len(asymetries)} route(s) auditée(s) par le démon sont appelées par la console sans que tous "
+              f"leurs appelants confirment, plafond {PLAFOND_ASYMETRIE} : une de plus que le cliquet. Faites passer "
+              "l'appelant par une confirmation partagée — ce cliquet ne se relève pas sans raison écrite dans la garde.")
+        return 1
+    if len(asymetries) < PLAFOND_ASYMETRIE:
+        print(f"note : le cliquet peut descendre à {len(asymetries)} (`PLAFOND_ASYMETRIE`).")
     print(f"\nOK — {len(couverts)} route(s) sensible(s) confirmée(s) par la surface, {len(sans)} sans appelant web "
           f"(contrôle par API) ; confirmations partagées : {', '.join(confs)}.")
     return 0

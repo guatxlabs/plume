@@ -77,37 +77,18 @@ TABLE_BOUCLES = re.compile(r'const\s+BOUCLES\s*:\s*\[&str;\s*\d+\]\s*=\s*\[([^\]
 OBJET = "<objet>"
 
 
-# Délimiteurs de chaîne par langage. En Rust, `'` n'en est PAS un : c'est une durée de vie
-# (`&'static str`), et la prendre pour une ouverture de chaîne protégerait tout ce qui suit, jusqu'au
-# `'` suivant, du retrait des commentaires — une émission COMMENTÉE y serait comptée. Un littéral de
-# caractère `'"'` reste le cas non couvert, et il est dit.
-CHAINES_RUST = '"'
-CHAINES_JS = "\"'`"
-
-
-def sans_commentaires(src, delimiteurs=CHAINES_JS):
-    """Retire les commentaires `//` et `/* */` en respectant les chaînes (une URL dans une chaîne
-    n'est pas un commentaire). Une chaîne brute Rust `r#"…"#` ou un gabarit JS multi-ligne sont
-    traités comme des chaînes ordinaires."""
-    out, i, n = [], 0, len(src)
-    while i < n:
-        c = src[i]
-        if c in delimiteurs:
-            j = i + 1
-            while j < n and src[j] != c:
-                j += 2 if src[j] == "\\" else 1
-            out.append(src[i:j + 1])
-            i = j + 1
-        elif src.startswith("//", i):
-            j = src.find("\n", i)
-            i = n if j < 0 else j
-        elif src.startswith("/*", i):
-            j = src.find("*/", i + 2)
-            i = n if j < 0 else j + 2
-        else:
-            out.append(c)
-            i += 1
-    return "".join(out)
+# LE DÉPOUILLEMENT N'EST PLUS RECOPIÉ ICI (`P11.8-f`). Il vivait en quatre exemplaires dans quatre
+# gardes, et les quatre portaient la même cécité : aucun ne reconnaissait le littéral d'expression
+# régulière, si bien qu'un `"` posé dans un motif ouvrait une fausse chaîne et que les commentaires de la
+# région n'étaient PLUS RETIRÉS — une émission citée en commentaire y redevenait une émission. Mesuré le
+# 2026-08-24 sur `web/` : `core.js` 124 lignes, `viz.js` 4 lignes, `app.js` 2 lignes lues de travers.
+# La règle vit désormais à UN endroit, avec ses limites et son aveu de perte de synchronisation ; c'est le
+# geste de `sans_commentaires_css`, que la garde du chrome importe de la garde des sélecteurs.
+# En Rust, `'` n'est PAS un délimiteur (c'est une durée de vie `&'static str`), une chaîne peut franchir
+# une fin de ligne et `/` est toujours une division : d'où deux entrées et non un drapeau.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from check_every_help_trigger_has_a_section import (  # noqa: E402  (source unique de vérité)
+    refuser_sur_aveu, sans_commentaires_js, sans_commentaires_rust, temoins_du_lecteur)
 
 
 def fichiers_du_demon():
@@ -127,7 +108,7 @@ def deriver_cles(sources):
     boucles, table = {}, None
     textes = []
     for chemin, texte in sources:
-        code = sans_commentaires(texte, CHAINES_RUST)
+        code = sans_commentaires_rust(texte)
         # Un module de test en ligne (`#[cfg(test)] mod …`) est coupé : tout ce qui suit est du test.
         coupe = code.find("#[cfg(test)]")
         if coupe >= 0:
@@ -169,12 +150,17 @@ def deriver_cles(sources):
 
 
 # --- Lecture côté surface ---------------------------------------------------------------------
-def lecteurs_du_web(sources):
+def lecteurs_du_web(sources, aveux=None):
     """`sources` : liste de (chemin, texte JS). Rend {chemin: code sans commentaires} pour les modules
-    dont le CODE lit `_verdict`. Un module qui ne cite `_verdict` qu'en commentaire n'est pas un lecteur."""
+    dont le CODE lit `_verdict`. Un module qui ne cite `_verdict` qu'en commentaire n'est pas un lecteur.
+    `aveux` (facultatif) recueille les pertes de synchronisation du lecteur, PAR FICHIER : sans elles, un
+    module dont une région serait avalée cesserait d'être un lecteur en silence."""
     out = {}
     for chemin, texte in sources:
-        code = sans_commentaires(texte)
+        journal = []
+        code = sans_commentaires_js(texte, journal)
+        if journal and aveux is not None:
+            aveux[os.path.basename(chemin)] = [f"ligne {texte.count(chr(10), 0, o) + 1} : {m}" for m, o in journal]
         if "_verdict" in code:
             out[chemin] = code
     return out
@@ -204,6 +190,14 @@ def suffixe_est_lu(suffixe, lecteurs):
 # --- Validation de l'instrument ---------------------------------------------------------------
 def valider_instrument():
     errs = []
+    # LE LECTEUR PARTAGÉ SE VALIDE ICI AUSSI (`P11.8-f`). Il est IMPORTÉ, donc ses témoins ne tournent pas
+    # à l'import : sans cet appel, un lecteur privé de sa reconnaissance des expressions régulières ou de
+    # son aveu de perte de synchronisation ne serait épinglé que par la garde qui le PORTE, et cette
+    # garde-ci rendrait un compte amputé en vert.
+    try:
+        temoins_du_lecteur()
+    except AssertionError as e:
+        errs.append(f"lecteur JavaScript partagé : {e}")
     rust = [
         ("a.rs",
          'queue.poser_dans(&mut ingest, "queue_depth");\n'
@@ -304,7 +298,10 @@ def main():
               f"de la publier (changez le témoin), soit la dérivation ne voit plus son site.")
         return 2
 
-    lecteurs = lecteurs_du_web(sources_js)
+    aveux = {}
+    lecteurs = lecteurs_du_web(sources_js, aveux)
+    if aveux and refuser_sur_aveu("verdicts", aveux):
+        return 2
     if not lecteurs:
         print("::error::aucun module sous web/ ne lit `_verdict` dans son CODE : la surface aplatit tous "
               "les verdicts.")

@@ -109,7 +109,7 @@ le lexique ne couvrait pas, et deux littéraux INVENTÉS (un morceau de code sou
 La colonne HORS-REGARD ne pouvait rien y faire : la région n'existait plus pour elle non plus.
 DEUX RÉPONSES, PARCE QU'UNE SEULE NE SUFFIT PAS :
   1. LE DÉCOUPEUR RECONNAÎT LE LITTÉRAL D'EXPRESSION RÉGULIÈRE, partout et par le même code
-     (`_saute_regex`, règle `RE_AVANT_REGEX`) — la désambiguïsation du `/` se fait sur le JETON PRÉCÉDENT,
+     (`saute_regex`, règle `RE_AVANT_REGEX`) — la désambiguïsation du `/` se fait sur le JETON PRÉCÉDENT,
      et cette règle est écrite une fois, avec ce qu'elle ne sait pas faire, à côté de `RE_AVANT_REGEX`.
   2. IL DIT QUAND IL A PERDU LE FIL. La règle du jeton précédent ne peut pas être juste dans tous les cas
      sans une grammaire complète ; alors le lecteur surveille ce qu'un module JS valide ne peut PAS
@@ -148,7 +148,9 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from check_every_help_trigger_has_a_section import module_du_registre, portee_du_registre, sans_commentaires_js  # noqa: E402  (source unique)
+from check_every_help_trigger_has_a_section import (  # noqa: E402  (source unique de vérité)
+    RE_AVANT_REGEX, journaliser_perte, module_du_registre, portee_du_registre, refuser_sur_aveu,
+    sans_commentaires_js, saute_regex, temoins_du_lecteur)
 
 RACINE = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 WEB = os.path.join(RACINE, "web")
@@ -256,13 +258,19 @@ PLAFOND_HORS_REGARD = {
 RAISON_DU_REGISTRE = "registre {fr:{title,body}, en:{title,body}} choisi par LANG : bilingue par construction ; exempt sur la portée de sa définition seulement"
 
 
-def registre_d_aide() -> tuple[str, str] | None:
-    """(nom du module de `web/` qui définit `const HELP = {`, son texte sans commentaires) ; None si aucun ou plusieurs."""
+def registre_d_aide(aveux: dict | None = None) -> tuple[str, str] | None:
+    """(nom du module de `web/` qui définit `const HELP = {`, son texte sans commentaires) ; None si aucun ou
+    plusieurs. `aveux` recueille les pertes de synchronisation : le dépouillement est le LECTEUR PARTAGÉ
+    (`P11.8-f`), et une région avalée ici déplacerait la PORTÉE exemptée du registre — donc la population."""
     corpus = {}
     for f in sorted(os.listdir(WEB)):
         if f.endswith(".js") and f != "sw.js":
             with open(os.path.join(WEB, f), encoding="utf-8") as fh:
-                corpus[f] = sans_commentaires_js(fh.read())
+                brut = fh.read()
+            journal: list[tuple[str, int]] = []
+            corpus[f] = sans_commentaires_js(brut, journal)
+            if journal and aveux is not None:
+                aveux[f] = [f"ligne {brut.count(chr(10), 0, o) + 1} : {m}" for m, o in journal]
     nom = module_du_registre(corpus)
     return (nom, corpus[nom]) if nom else None
 
@@ -308,55 +316,12 @@ SENTINELLE = "\x00"
 # ---------------------------------------------------------------------------------------------
 # Tokenisation JavaScript : on ne garde que les littéraux de chaîne, avec le code qui les précède.
 # ---------------------------------------------------------------------------------------------
-# LA DÉSAMBIGUÏSATION DU `/`, ÉCRITE UNE FOIS ET UTILISÉE PARTOUT (`P11.8-e`)
-# En JavaScript, `/` est soit une division, soit le début d'une expression régulière, et rien dans le
-# caractère lui-même ne le dit : c'est le JETON PRÉCÉDENT qui tranche. LA RÈGLE RETENUE : le `/` ouvre une
-# expression régulière si le dernier caractère significatif qui le précède est un début d'expression —
-# rien (début de source), une ouvrante ou un opérateur (`( [ , = : ! & | ? { } ; + - * % < > ~ ^`), ou l'un
-# des mots-clés `return` / `typeof` / `case`. Sinon c'est une division.
-# CE QUE CETTE RÈGLE NE SAIT PAS FAIRE, ÉCRIT PLUTÔT QUE TU : elle tranche sur un caractère, pas sur une
-# grammaire. Après `)` et après `]` elle dit TOUJOURS division — vrai pour `(a + b) / 2` et pour `t[i] / 2`,
-# FAUX pour `if (x) /re/.test(y)`. Les mots-clés hors de la liste (`in`, `of`, `new`, `delete`, `void`,
-# `do`, `else`, `yield`, `await`) suivis d'une expression régulière sont lus comme des divisions. Un lecteur
-# qui prétendrait trancher juste dans tous les cas devrait analyser la grammaire entière ; c'est pourquoi
-# la règle est DOUBLÉE d'un aveu de perte de synchronisation (voir `_journaliser`), qui fait refuser de
-# conclure au lieu de rendre un compte amputé en silence.
-RE_AVANT_REGEX = re.compile(r"(?:^|[\(\[,=:!&|?{};+\-*%<>~^]|\breturn|\btypeof|\bcase)\s*$")
-
-
-def _saute_regex(src: str, i: int) -> int:
-    """`src[i]` est le `/` ouvrant d'un littéral d'expression régulière : rend l'index APRÈS le `/` fermant
-    et ses drapeaux. Un `/` à l'intérieur d'une classe `[…]` ne ferme pas, et une expression régulière ne
-    franchit pas une fin de ligne."""
-    j = i + 1
-    n = len(src)
-    in_cls = False
-    while j < n and src[j] != "\n":
-        if src[j] == "\\":
-            j += 2
-            continue
-        if src[j] == "[":
-            in_cls = True
-        elif src[j] == "]":
-            in_cls = False
-        elif src[j] == "/" and not in_cls:
-            break
-        j += 1
-    j += 1
-    while j < n and src[j].isalpha():
-        j += 1
-    return j
-
-
-def _journaliser(journal: list[tuple[str, int]] | None, motif: str, depart: int) -> None:
-    """L'AVEU DE PERTE DE SYNCHRONISATION. Un délimiteur qu'un module JS valide ne peut pas produire —
-    une chaîne `'…` / `"…` qui se termine sur une fin de ligne, un littéral qui atteint la fin du fichier —
-    prouve que le découpeur a ouvert une chaîne qui n'en était pas une, et donc qu'il a AVALÉ du code. Il
-    le DIT (la garde refuse alors de conclure) plutôt que de rendre un décompte amputé en silence.
-    `depart` = l'offset où le faux littéral s'est OUVERT : c'est l'endroit où le lecteur S'APERÇOIT de la
-    perte, pas nécessairement celui où elle a commencé — la désynchronisation peut naître bien plus haut."""
-    if journal is not None:
-        journal.append((motif, depart))
+# LA DÉSAMBIGUÏSATION DU `/` N'EST PLUS ÉCRITE ICI (`P11.8-f`). « Écrite une fois » ne valait que DANS ce
+# module : quatre autres lecteurs du dépôt, dans quatre gardes, n'en savaient rien et portaient tous la
+# cécité au littéral d'expression régulière. La règle, ce qu'elle NE SAIT PAS FAIRE et son aveu de perte de
+# synchronisation vivent désormais à un seul endroit pour tout le dépôt, importés ci-dessous — le geste de
+# `sans_commentaires_css`, que la garde du chrome importe de la garde des sélecteurs.
+# `saute_regex` et `RE_AVANT_REGEX` viennent du LECTEUR PARTAGÉ (voir l'import en tête de module).
 
 
 def _lire_gabarit(src: str, i: int, journal: list[tuple[str, int]] | None = None) -> tuple[str, int]:
@@ -396,7 +361,7 @@ def _lire_gabarit(src: str, i: int, journal: list[tuple[str, int]] | None = None
                     expr.append('""')
                     continue
                 if ch == "/" and RE_AVANT_REGEX.search("".join(expr[-40:])):
-                    i = _saute_regex(src, i)
+                    i = saute_regex(src, i)
                     expr.append("/re/")
                     continue
                 if ch == "{":
@@ -409,7 +374,7 @@ def _lire_gabarit(src: str, i: int, journal: list[tuple[str, int]] | None = None
             continue
         out.append(c)
         i += 1
-    _journaliser(journal, "un gabarit `…` atteint la fin du fichier sans son accent grave fermant", depart)
+    journaliser_perte(journal, "un gabarit `…` atteint la fin du fichier sans son accent grave fermant", depart)
     return "".join(out), i
 
 
@@ -440,11 +405,11 @@ def _lire_chaine(src: str, i: int, journal: list[tuple[str, int]] | None = None)
             # Un littéral de chaîne JS ne franchit PAS une fin de ligne : arriver ici prouve que ce
             # guillemet n'ouvrait pas une chaîne (il appartenait à une expression régulière, ou le lecteur
             # était déjà désynchronisé plus haut).
-            _journaliser(journal, "une chaîne \u00ab\u202f'\u202f\u00bb ou \u00ab\u202f\"\u202f\u00bb se termine sur une fin de ligne", depart)
+            journaliser_perte(journal, "une chaîne \u00ab\u202f'\u202f\u00bb ou \u00ab\u202f\"\u202f\u00bb se termine sur une fin de ligne", depart)
             return "".join(out), i
         out.append(c)
         i += 1
-    _journaliser(journal, "une chaîne atteint la fin du fichier sans son guillemet fermant", depart)
+    journaliser_perte(journal, "une chaîne atteint la fin du fichier sans son guillemet fermant", depart)
     return "".join(out), i
 
 
@@ -478,7 +443,7 @@ def chaines_js(src: str, journal: list[tuple[str, int]] | None = None) -> list[t
             continue
         if c == "/":
             if RE_AVANT_REGEX.search("".join(code[-40:])):
-                i = _saute_regex(src, i)  # même règle et même lecteur qu'à l'intérieur d'un `${…}`
+                i = saute_regex(src, i)  # même règle et même lecteur qu'à l'intérieur d'un `${…}`
                 code.append("/re/")
                 continue
         code.append(c)
@@ -847,6 +812,12 @@ if (x) /"/.test(y);
 
 def valider_instrument() -> list[str]:
     errs = []
+    # LE LECTEUR PARTAGÉ SE VALIDE ICI AUSSI (`P11.8-f`) : `registre_d_aide` s'appuie sur son
+    # dépouillement, et il est IMPORTÉ — ses témoins ne tournent pas à l'import.
+    try:
+        temoins_du_lecteur()
+    except AssertionError as e:
+        errs.append(f"lecteur JavaScript partagé : {e}")
     st, dy, pc, _hr = extraire_module(CORPUS_TEMOIN)
     sst = {s.strip() for s in st}
     if {x.strip() for x in pc} != {"Bilingual", "Bilingue", "English only", "English rich", "Paire française <nom>", "English pair <name>"}:
@@ -982,7 +953,10 @@ def main(argv: list[str]) -> int:
         print("\nL'instrument ne reconnaît pas son propre corpus : la garde refuse de conclure.")
         return 2
 
-    registre = registre_d_aide()
+    aveux_du_registre: dict[str, list[str]] = {}
+    registre = registre_d_aide(aveux_du_registre)
+    if aveux_du_registre and refuser_sur_aveu("lexique", aveux_du_registre):
+        return 2
     if registre is None:
         print("::error::le module du registre d'aide (`const HELP = {` sous web/) n'est pas dérivable — aucun ou plusieurs porteurs : "
               "la garde refuse de conclure (il serait rendu sans être jugé, ou jugé sans sa raison d'exemption).")

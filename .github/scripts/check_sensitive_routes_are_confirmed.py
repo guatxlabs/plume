@@ -60,31 +60,14 @@ WEB = os.path.join(RACINE, "web")
 MIN_ROUTES_SENSIBLES = 12
 ROUTE_TEMOIN = ("POST", "/api/users/:id")
 
-CHAINES_RUST = '"'
-CHAINES_JS = "\"'`"
-
-
-def sans_commentaires(src, delimiteurs=CHAINES_JS):
-    """Retire `//` et `/* */` en respectant les chaînes (même dépouillement que les gardes voisines)."""
-    out, i, n = [], 0, len(src)
-    while i < n:
-        c = src[i]
-        if c in delimiteurs:
-            j = i + 1
-            while j < n and src[j] != c:
-                j += 2 if src[j] == "\\" else 1
-            out.append(src[i:j + 1])
-            i = j + 1
-        elif src.startswith("//", i):
-            j = src.find("\n", i)
-            i = n if j < 0 else j
-        elif src.startswith("/*", i):
-            j = src.find("*/", i + 2)
-            i = n if j < 0 else j + 2
-        else:
-            out.append(c)
-            i += 1
-    return "".join(out)
+# LE DÉPOUILLEMENT ET L'AVEUGLEMENT DES LITTÉRAUX SONT IMPORTÉS, PLUS RECOPIÉS (`P11.8-f`). « Même
+# dépouillement que les gardes voisines » était vrai du texte et faux du RÉSULTAT : quatre copies, quatre
+# fois la même cécité au littéral d'expression régulière. Le geste est celui de `sans_commentaires_css`,
+# que la garde du chrome importe de la garde des sélecteurs.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from check_every_help_trigger_has_a_section import (  # noqa: E402  (source unique de vérité)
+    aveugler_litteraux_js, refuser_sur_aveu, sans_commentaires_js, sans_commentaires_rust,
+    temoins_du_lecteur)
 
 
 # --- démon : routes, handlers, déclarations --------------------------------------------------------
@@ -134,7 +117,7 @@ def deriver_routes(sources):
     """`sources` : [(chemin, texte Rust)]. Rend (routes, handlers, readonly_posts, armement, erreurs)."""
     routes, handlers, readonly, armement, erreurs = [], {}, set(), {"mode": None, "enabled": None}, []
     for chemin, texte in sources:
-        code = sans_commentaires(texte, CHAINES_RUST)
+        code = sans_commentaires_rust(texte)
         # Un MODULE de test en ligne est coupé ; un simple item `#[cfg(test)] fn` au milieu d'un fichier de
         # production ne l'est pas (mesuré : soql_meta.rs et sigma.rs en portent, avant leurs handlers).
         coupe = re.search(r"#\[cfg\(test\)\]\s*(?:pub(?:\(crate\))?\s+)?mod\s", code)
@@ -217,7 +200,7 @@ APPEL = re.compile(r'\b(apiSend|fetch)\(')
 
 
 def confirmations_de_core(core_src):
-    m = EXPORT_CORE.search(sans_commentaires(core_src))
+    m = EXPORT_CORE.search(sans_commentaires_js(core_src))
     noms = [x.strip() for x in (m.group(1) if m else "").split(",")]
     return sorted(n for n in noms if n.startswith("confirm"))
 
@@ -303,26 +286,10 @@ SCOPE = re.compile(r'(?:async\s+)?function\s*(?:[A-Za-z_$][\w$]*)?\s*\([^()]*\)\
 NOM_AVANT = re.compile(r'(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?$|function\s+([A-Za-z_$][\w$]*)\s*$')
 
 
-def aveugler_chaines(src):
-    """Même longueur que `src`, le contenu des chaînes remplacé par des espaces : les accolades d'un
-    littéral ne comptent pas dans l'appariement des blocs."""
-    out, i, n = [], 0, len(src)
-    while i < n:
-        c = src[i]
-        if c in CHAINES_JS:
-            j = i + 1
-            while j < n and src[j] != c:
-                j += 2 if src[j] == "\\" else 1
-            out.append(c + " " * (j - i - 1) + c); i = j + 1
-        else:
-            out.append(c); i += 1
-    return "".join(out)[:n]
-
-
 def scopes_js(code):
     """[(nom|None, début, fin)] pour chaque fonction (déclarée, expression, flèche) — nom = celui de la
     déclaration ou de la variable qui la reçoit ; une flèche posée sur un `onclick` reste anonyme."""
-    aveugle = aveugler_chaines(code)
+    aveugle = aveugler_litteraux_js(code)
     out = []
     for m in SCOPE.finditer(aveugle):
         i = m.end() - 1
@@ -354,12 +321,17 @@ def fonction_englobante(scopes, pos):
     return meilleur
 
 
-def appelants_web(sources_js, confirmations):
-    """[(fichier, ligne, méthode, motif, confirmé, fonction)] pour chaque apiSend/fetch mutant."""
+def appelants_web(sources_js, confirmations, aveux=None):
+    """[(fichier, ligne, méthode, motif, confirmé, fonction)] pour chaque apiSend/fetch mutant.
+    `aveux` (facultatif) recueille les pertes de synchronisation du lecteur, PAR FICHIER : un appelant
+    perdu dans une région avalée passerait autrement pour un appelant absent, donc pour un vert."""
     out = []
     conf_re = re.compile(r"\b(?:" + "|".join(map(re.escape, confirmations)) + r")\(") if confirmations else None
     for chemin, texte in sources_js:
-        code = sans_commentaires(texte)
+        journal = []
+        code = sans_commentaires_js(texte, journal)
+        if journal and aveux is not None:
+            aveux[os.path.basename(chemin)] = [f"ligne {texte.count(chr(10), 0, o) + 1} : {m}" for m, o in journal]
         scopes = scopes_js(code)
         nommes = {}
         for nom, i, j in scopes:
@@ -425,6 +397,14 @@ def verdict(sensibles, appels):
 # --- validation de l'instrument ----------------------------------------------------------------------
 def valider_instrument():
     errs = []
+    # LE LECTEUR PARTAGÉ SE VALIDE ICI AUSSI (`P11.8-f`). Il est IMPORTÉ, donc ses témoins ne tournent pas
+    # à l'import : sans cet appel, un lecteur privé de sa reconnaissance des expressions régulières ou de
+    # son aveu de perte de synchronisation ne serait épinglé que par la garde qui le PORTE, et cette
+    # garde-ci rendrait un compte amputé en vert.
+    try:
+        temoins_du_lecteur()
+    except AssertionError as e:
+        errs.append(f"lecteur JavaScript partagé : {e}")
     rust = [("s.rs",
              'fn r() { Router::new()\n'
              '  .route("/api/things", get(things_list).post(thing_create))\n'
@@ -536,7 +516,10 @@ def main():
         if nom.endswith(".js") and nom != "sw.js":
             with open(os.path.join(WEB, nom), encoding="utf-8", errors="replace") as fh:
                 sources_js.append((os.path.join(WEB, nom), fh.read()))
-    appels = appelants_web(sources_js, confs)
+    aveux = {}
+    appels = appelants_web(sources_js, confs, aveux)
+    if aveux and refuser_sur_aveu("routes sensibles", aveux):
+        return 2
     defauts, couverts, sans = verdict(sensibles, appels)
     if ROUTE_TEMOIN not in couverts:
         print(f"::error::la route témoin {ROUTE_TEMOIN} n'a pas d'appelant web confirmé : soit la surface a régressé, "

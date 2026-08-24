@@ -154,15 +154,107 @@ async function exploreExport(format) {
 }
 
 
-async function refresh() {
+// =================================================================================================
+// `P11.17-a` — CE QU'UNE CADENCE A LE DROIT DE RELANCER.
+//
+// LE CHEMIN QUI ÉTAIT OUVERT, MESURÉ LE 2026-08-25. Un unique minuteur global relançait la MÊME
+// batterie de NEUF appels toutes les 30 s (valeur par défaut du sélecteur), à l'identique sur les neuf
+// vues mesurées — Recherche et Aide comprises, alors qu'AUCUNE des cartes peintes par ces neuf appels
+// n'y est affichée. `showView()` déclarait déjà l'intention (« refresh auto : vues temporelles ») mais
+// ne l'appliquait qu'au SÉLECTEUR : le contrôle disparaissait de la barre, le minuteur, lui, continuait
+// de tirer. Le geste existait ; il était posé sur l'affichage du contrôle et non sur la boucle.
+//
+// CE QUI REMPLACE LA LISTE DE NOMS DE VUES. Chaque chargement DÉCLARE ici la cible qu'il peint, et le
+// périmètre d'un tir est DÉRIVÉ de l'affichage de cette cible. `showView()` masque les sections des
+// autres vues ; « affichée » se lit donc en remontant les parents. Une vue posée demain hérite de la
+// règle sans qu'une ligne soit ajoutée ici, et le minuteur ne cite aucun nom de vue.
+//
+// CE QUE CETTE LECTURE NE VOIT PAS, écrit ici et non passé sous silence : un masquage par FEUILLE DE STYLE
+// (`display:none` d'une classe de rôle, par exemple) n'est pas un attribut `hidden` — un chargement
+// dont la seule cause d'invisibilité serait la feuille de style partirait quand même.
+//
+// CE QUE CE PÉRIMÈTRE COÛTE, ET POURQUOI CE COÛT EST BORNÉ. Une carte cessait d'être tenue au chaud
+// pendant qu'elle est masquée : en revenant sur une vue, elle porte son dernier contenu jusqu'au tir
+// suivant, au plus une période de cadence. Ce délai est PLUS COURT que la granularité de la donnée
+// elle-même — les cartes d'instantané sont alimentées par des capteurs qui écrivent toutes les 2 à
+// 5 minutes, et chaque carte affiche l'horodatage de SON instantané, pas celui de sa requête : rien
+// n'est présenté comme plus frais qu'il ne l'est. Le geste qui manque pour supprimer même ce délai est
+// hors de ce fichier : il faudrait que le modèle de navigation déclare le chargeur d'une vue (l'onglet
+// « Vue d'ensemble » est le seul dont l'entrée n'en appelle aucun), et cette déclaration vit ailleurs.
+// =================================================================================================
+
+// « Affichée » = ni la cible ni aucun de ses parents ne porte `hidden`. Lecture du DOM, pas d'un nom.
+function cibleAffichee(sel) {
+  let n = $(sel);
+  if (!n) return false;                                  // cible absente du document : rien à peindre
+  for (; n && n !== document.body; n = n.parentNode) if (n.hidden) return false;
+  return true;
+}
+
+// L'en-tête et le pied de page vivent HORS de `<main>` : leur cible est affichée sur toutes les vues,
+// et c'est pour cela que la posture reste une charge comme les autres au lieu d'être un cas à part.
+async function peindreLaPosture() {
+  const ov = await api('/overview');
+  $('#updated').textContent = fmtTs(ov.ts);
+  const p = $('#posture');
+  p.textContent = ov.open_alerts > 0 ? `${ov.open_alerts} alerte(s)` : 'OK ';
+  p.className = 'posture ' + (ov.open_alerts > 0 ? 'bad' : 'ok');
+}
+
+// LA DÉCLARATION. `cible` = ce que la charge peint ; c'est elle qui rend le périmètre dérivable.
+const CHARGES_DE_LA_SURFACE = [
+  { cible: '#posture', charger: peindreLaPosture },      // en-tête + pied de page (hors <main>)
+  { cible: '#alerts', charger: () => renderAlerts() },
+  { cible: '#firewall', charger: () => renderFirewall() },
+  { cible: '#controls', charger: () => renderControls() },
+  { cible: '#integrations', charger: () => renderIntegrations() },
+  { cible: '#freshness', charger: () => renderFreshnessPulse() },
+  { cible: '#act-list', charger: () => loadActions() },
+  { cible: '#mode-toggle', charger: () => loadMode() },
+  { cible: '#pb-list', charger: () => loadPlaybooks() },
+];
+
+// FRAÎCHEUR — « ne pas relancer ce qui est déjà chargé ». La borne est l'instant du tir de cadence
+// PRÉCÉDENT : une charge qu'un GESTE EXPLICITE a déjà lancée depuis cette borne ne repart pas.
+//
+// SEULS LES GESTES EXPLICITES DATENT LEUR CHARGE. Dater aussi celles de la cadence retourne la règle
+// contre elle : la charge d'un tir est postérieure à la borne de ce tir, donc le tir SUIVANT la trouve
+// « déjà faite » et ne part pas — et comme il ne part pas, il ne date rien, si bien que le troisième
+// repart. Cette forme a été écrite puis mesurée le 2026-08-25 : sur 20 tirs de la Vue d'ensemble elle
+// rendait 50 appels au lieu de 100, UN TIR SUR DEUX perdu. Elle ne se voit que si l'estampille et la
+// borne tombent dans deux millisecondes différentes — donc au gré de la charge de la machine, jamais
+// dans un cas franc : c'est une suppression qui se cache, et c'est pourquoi elle est nommée ici.
+// Formuler la même règle en DURÉE (« pas avant une période ») rouvrirait l'autre piège, symétrique : un
+// minuteur qui rend la main une milliseconde trop tôt ferait sauter le tir tout entier.
+let dernierTirDeCadence = 0;
+
+// `refresh()` — les charges dont la cible est AFFICHÉE.
+//   `opts.depuis` présent  => tir de CADENCE : s'y ajoutent la fraîcheur (rien qu'un geste explicite ait
+//                             déjà lancé depuis cette borne) et le non-recouvrement (rien encore en vol).
+//   `opts` absent          => geste EXPLICITE (amorçage, bouton Rafraîchir, changement de thème ou de
+//                             plage, bascule de tenant) : le périmètre s'applique, la fraîcheur NON —
+//                             un opérateur qui demande une lecture doit toujours l'obtenir.
+async function refresh(opts) {
+  const cadence = !!(opts && typeof opts.depuis === 'number');
+  // Filtre calculé SYNCHRONEMENT, avant tout `await` : l'appelant peut avancer la borne juste après.
+  const partantes = CHARGES_DE_LA_SURFACE.filter(c => {
+    if (!cibleAffichee(c.cible)) return false;
+    if (!cadence) return true;
+    if (c._enVol) return false;                          // le tir précédent n'est pas revenu : ne pas empiler
+    return !(c._demande > opts.depuis);                  // un geste l'a déjà lancée depuis la borne
+  });
+  const suivre = (c) => {
+    if (!cadence) c._demande = Date.now();               // seul un geste explicite date la charge
+    c._enVol = true;
+    return Promise.resolve().then(c.charger).finally(() => { c._enVol = false; });
+  };
+  if (!partantes.length) return;                         // rien d'affiché à recharger : pas de verdict à écrire
+  // `#status` est écrit ICI, une fois toutes les charges retombées : « connecté » avant qu'elles aient
+  // abouti serait une affirmation que le tir n'a pas encore vérifiée, et un rejet arrivé après coup
+  // écraserait l'aveu par un état rassurant.
   try {
-    // les 3 requêtes en parallèle (pas en série)
-    const [ov] = await Promise.all([api('/overview'), renderAlerts(), renderFirewall(), renderControls(), renderIntegrations(), renderFreshnessPulse(), loadActions(), loadMode(), loadPlaybooks()]);
+    await Promise.all(partantes.map(suivre));            // les charges en parallèle (pas en série)
     $('#status').textContent = 'connecté';
-    $('#updated').textContent = fmtTs(ov.ts);
-    const p = $('#posture');
-    p.textContent = ov.open_alerts > 0 ? `${ov.open_alerts} alerte(s)` : 'OK ';
-    p.className = 'posture ' + (ov.open_alerts > 0 ? 'bad' : 'ok');
   } catch (e) {
     $('#status').textContent = 'hors-ligne (' + e.message + ')';
   }
@@ -516,16 +608,40 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').cat
 // --- fenêtre temporelle + rafraîchissement auto ---
 /* state: autoTimer -> S (state.js) */
 /* state: autoPaused -> S (state.js) */   // toggle Stop/Start : coupe la boucle d'auto-refresh sans toucher au select #refresh
+// UN TIR DE CADENCE (`P11.17-a`). Il ne relance QUE les charges dont la cible est affichée, QUE celles
+// qui ne sont pas déjà parties depuis le tir précédent, et QUE celles qui ne sont pas encore en vol.
+// La borne est avancée AVANT l'appel : `refresh()` calcule son filtre synchronement, et un tir qui
+// s'attarderait ne rendrait pas la borne du suivant fausse.
+// UNE CONSOLE LAISSÉE OUVERTE dans un onglet d'arrière-plan ne tire pas du tout — `document.hidden` est
+// une lecture de l'état du navigateur, pas une liste de cas. Le retour au premier plan tire aussitôt,
+// donc la vue ne reste jamais figée sans que le geste de retour la remette à jour.
+function tirDeCadence() {
+  if (document.hidden) return;
+  const borne = dernierTirDeCadence;
+  dernierTirDeCadence = Date.now();
+  refresh({ depuis: borne });
+  refreshPanels();   // P5 : déjà borné aux panneaux chargés ET visibles à fenêtre globale (dashboards.js)
+}
 function applyAutoRefresh() {
   if (S.autoTimer) clearInterval(S.autoTimer);
   S.autoTimer = null;
   if (S.autoPaused) return;   // boucle suspendue par l'utilisateur
   const s = Number(($('#refresh') && $('#refresh').value) || 0);
-  if (s > 0) S.autoTimer = setInterval(() => { refresh(); refreshPanels(); }, s * 1000); // P5 : refresh cible, pas de rebuild complet
+  // La borne part de l'ARMEMENT, jamais de zéro : à zéro, le premier tir prendrait tout ce que
+  // l'amorçage vient de charger pour « déjà fait depuis la borne » et ne relancerait rien — la vue
+  // resterait figée une période de plus, et le défaut serait invisible puisque le tir suivant, lui,
+  // repartirait normalement.
+  dernierTirDeCadence = Date.now();
+  if (s > 0) S.autoTimer = setInterval(tirDeCadence, s * 1000); // P5 : refresh cible, pas de rebuild complet
 }
 if ($('#refresh')) $('#refresh').addEventListener('change', applyAutoRefresh);
-// Refresh MANUEL : relance les chargements de la vue courante (refresh() couvre overview/notifications +
-// intégrations/fraîcheur/réponse ; refreshPanels() les panneaux ; + le loader spécifique à la vue).
+// Rattrapage au retour au premier plan : sans lui, couper les tirs en arrière-plan ferait attendre une
+// période entière devant une vue qu'on vient de rouvrir.
+document.addEventListener('visibilitychange', () => { if (!document.hidden && S.autoTimer) tirDeCadence(); });
+// Refresh MANUEL : relance les chargements de la vue courante — `refresh()` sans borne, donc les charges
+// AFFICHÉES repartent toutes, y compris celle qui vient d'aboutir (`P11.17-a` : la règle de fraîcheur ne
+// s'applique qu'à la cadence, jamais à un geste explicite) ; `refreshPanels()` les panneaux ; puis le
+// loader spécifique à la vue.
 function refreshCurrentView() {
   const v = currentViewName();
   refresh();

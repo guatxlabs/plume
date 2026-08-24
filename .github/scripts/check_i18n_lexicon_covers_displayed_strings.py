@@ -96,6 +96,30 @@ modules : un module absent de la table était rendu au tableau et jamais jugé (
 l'a été de sa création au 2026-08-23). L'asymétrie est levée : plafond sans module = régression, module
 sans plafond = code 2.
 
+LE DÉCOUPEUR AVOUE CE QU'IL N'A PAS SU LIRE
+-------------------------------------------
+Tout ce qui précède repose sur un DÉCOUPEUR : un lecteur de source qui isole les littéraux du code qui les
+entoure. Un découpeur qui se trompe ne rougit pas — il ne voit simplement plus rien dans la région qu'il a
+mal lue, et le compte tombe SANS QUE PERSONNE NE LE SACHE. C'est arrivé : le sauteur d'interpolation
+`${…}` savait éviter les chaînes et les gabarits imbriqués, mais pas les littéraux d'expression régulière.
+Un `"` à l'intérieur d'un motif (`` `"${String(v).replace(/"/g, '')}"` ``) ouvrait donc une fausse chaîne,
+et le lecteur avalait la suite. Mesuré le 2026-08-24 par comparaison de deux lecteurs sur `web/` : UNE
+région, dans UN module (`viz.js`, lignes 46 à 179), 118 littéraux disparus — dont une chaîne affichée que
+le lexique ne couvrait pas, et deux littéraux INVENTÉS (un morceau de code source lu comme du texte).
+La colonne HORS-REGARD ne pouvait rien y faire : la région n'existait plus pour elle non plus.
+DEUX RÉPONSES, PARCE QU'UNE SEULE NE SUFFIT PAS :
+  1. LE DÉCOUPEUR RECONNAÎT LE LITTÉRAL D'EXPRESSION RÉGULIÈRE, partout et par le même code
+     (`_saute_regex`, règle `RE_AVANT_REGEX`) — la désambiguïsation du `/` se fait sur le JETON PRÉCÉDENT,
+     et cette règle est écrite une fois, avec ce qu'elle ne sait pas faire, à côté de `RE_AVANT_REGEX`.
+  2. IL DIT QUAND IL A PERDU LE FIL. La règle du jeton précédent ne peut pas être juste dans tous les cas
+     sans une grammaire complète ; alors le lecteur surveille ce qu'un module JS valide ne peut PAS
+     produire — une chaîne qui se termine sur une fin de ligne, un littéral qui atteint la fin du fichier.
+     L'un de ces signes prouve qu'il a ouvert un littéral qui n'en était pas un. La garde refuse alors de
+     conclure (code 2) en NOMMANT la ligne, au lieu de rendre un compte amputé en vert. L'aveu nomme
+     l'endroit où le lecteur s'aperçoit de la perte, pas forcément celui où elle a commencé (sur `viz.js`,
+     il l'aurait dite à la ligne 153 pour une désynchronisation née à la ligne 44) : il borne la confiance,
+     il ne remplace pas la lecture.
+
 L'INSTRUMENT SE VALIDE AVANT DE RENDRE UN VERDICT
 -------------------------------------------------
 Un extracteur rend vert de deux façons : tout va bien, ou son motif ne reconnaît plus rien.
@@ -111,7 +135,7 @@ cliquet. Sans ces jambes, elle refuse de conclure (code 2), elle ne rend pas ver
 Usage :  python3 .github/scripts/check_i18n_lexicon_covers_displayed_strings.py
              [--mesure] [--trous MODULE] [--hors-regard MODULE]
 Sortie :  0 = aucun module au-dessus de ses plafonds ; 1 = régression (trous ou hors-regard) ;
-          2 = instrument invalide, ou module mesuré hors du cliquet. `--mesure` imprime le tableau par
+          2 = instrument invalide, module mesuré hors du cliquet, ou découpeur désynchronisé. `--mesure` imprime le tableau par
           module sans verdict (c'est ce qui sert à relever le compte d'un module neuf) ; `--trous MODULE`
           liste les chaînes du module sans entrée au lexique ; `--hors-regard MODULE` liste ce que la
           garde ne regarde pas dans ce module, en marquant celles qui sont déjà des clés du lexique.
@@ -139,7 +163,10 @@ LEXIQUE = os.path.join(WEB, "i18n.js")
 # La valeur précédente (1 000, pour un relevé annoncé à 1 579 et réel à 1 834) laissait l'extraction perdre
 # 45 % de sa portée sans que la validation d'instrument bronche : un plancher sous la moitié du réel ne garde
 # rien, il donne seulement l'apparence d'un garde-fou.
-MIN_POPULATION = 1829
+# 2026-08-24 (`P11.8-e`) : le relevé passe de 1 926 à 1 928 — deux chaînes affichées de `web/viz.js` que le
+# découpeur ne voyait plus depuis qu'un `"` dans une expression régulière le désynchronisait à la ligne 44.
+# Le plancher suit la même dérivation (relevé moins un vingtième) : 1 831.
+MIN_POPULATION = 1831
 # Une clé dont on SAIT qu'elle est affichée par `web/index.html` (bouton d'exécution de la barre).
 CLE_TEMOIN = "Exécuter"
 # Plancher de clés du lexique : relevé le 2026-08-22, 223 clés avant complément, 1 594 après ; 1 719 au
@@ -213,8 +240,14 @@ PLAFOND_HORS_REGARD = {
     "multitenant.js": 8, "navigation.js": 2, "prefs.js": 0, "processors.js": 10, "producer_ui.js": 8,
     "recherche_de_liste.js": 1, "retention.js": 17, "risk.js": 6, "runbooks.js": 23, "savedqueries.js": 2,
     "sigmaimport.js": 12, "soql_complete.js": 16, "sources.js": 7, "state.js": 0, "suppressions.js": 21,
-    "system.js": 33, "threatintel.js": 8, "viz.js": 18,
+    "system.js": 33, "threatintel.js": 8, "viz.js": 21,
 }
+# RAISON DE LA SEULE HAUSSE ÉCRITE ICI — viz.js 18 -> 21 le 2026-08-24 (`P11.8-e`). Le code n'a pas empiré :
+# le découpeur a cessé de perdre 134 lignes de ce module. Les cinq littéraux qui reviennent à l'aveu
+# (`Escape`, `Ko`, `Mo`, `Go`, `depuis la recherche`) y étaient déjà, invisibles ; les deux qui en sortent
+# étaient FAUX — l'un (`(sans sujet)`) appartient à une interpolation et non au texte d'un gabarit, l'autre
+# était un morceau de CODE SOURCE (`").join(''); box.innerHTML =`) que le lecteur désynchronisé avait pris
+# pour un littéral. Un cliquet nourri d'une lecture fausse gardait une valeur qui ne mesurait rien.
 
 # LA SEULE SURFACE EXEMPTE : la définition `const HELP = { … }` du registre des sections d'aide, DÉRIVÉE
 # (module et portée) de `check_every_help_trigger_has_a_section.py` — pas un nom de fichier, pas un module
@@ -275,13 +308,62 @@ SENTINELLE = "\x00"
 # ---------------------------------------------------------------------------------------------
 # Tokenisation JavaScript : on ne garde que les littéraux de chaîne, avec le code qui les précède.
 # ---------------------------------------------------------------------------------------------
+# LA DÉSAMBIGUÏSATION DU `/`, ÉCRITE UNE FOIS ET UTILISÉE PARTOUT (`P11.8-e`)
+# En JavaScript, `/` est soit une division, soit le début d'une expression régulière, et rien dans le
+# caractère lui-même ne le dit : c'est le JETON PRÉCÉDENT qui tranche. LA RÈGLE RETENUE : le `/` ouvre une
+# expression régulière si le dernier caractère significatif qui le précède est un début d'expression —
+# rien (début de source), une ouvrante ou un opérateur (`( [ , = : ! & | ? { } ; + - * % < > ~ ^`), ou l'un
+# des mots-clés `return` / `typeof` / `case`. Sinon c'est une division.
+# CE QUE CETTE RÈGLE NE SAIT PAS FAIRE, ÉCRIT PLUTÔT QUE TU : elle tranche sur un caractère, pas sur une
+# grammaire. Après `)` et après `]` elle dit TOUJOURS division — vrai pour `(a + b) / 2` et pour `t[i] / 2`,
+# FAUX pour `if (x) /re/.test(y)`. Les mots-clés hors de la liste (`in`, `of`, `new`, `delete`, `void`,
+# `do`, `else`, `yield`, `await`) suivis d'une expression régulière sont lus comme des divisions. Un lecteur
+# qui prétendrait trancher juste dans tous les cas devrait analyser la grammaire entière ; c'est pourquoi
+# la règle est DOUBLÉE d'un aveu de perte de synchronisation (voir `_journaliser`), qui fait refuser de
+# conclure au lieu de rendre un compte amputé en silence.
 RE_AVANT_REGEX = re.compile(r"(?:^|[\(\[,=:!&|?{};+\-*%<>~^]|\breturn|\btypeof|\bcase)\s*$")
 
 
-def _lire_gabarit(src: str, i: int) -> tuple[str, int]:
+def _saute_regex(src: str, i: int) -> int:
+    """`src[i]` est le `/` ouvrant d'un littéral d'expression régulière : rend l'index APRÈS le `/` fermant
+    et ses drapeaux. Un `/` à l'intérieur d'une classe `[…]` ne ferme pas, et une expression régulière ne
+    franchit pas une fin de ligne."""
+    j = i + 1
+    n = len(src)
+    in_cls = False
+    while j < n and src[j] != "\n":
+        if src[j] == "\\":
+            j += 2
+            continue
+        if src[j] == "[":
+            in_cls = True
+        elif src[j] == "]":
+            in_cls = False
+        elif src[j] == "/" and not in_cls:
+            break
+        j += 1
+    j += 1
+    while j < n and src[j].isalpha():
+        j += 1
+    return j
+
+
+def _journaliser(journal: list[tuple[str, int]] | None, motif: str, depart: int) -> None:
+    """L'AVEU DE PERTE DE SYNCHRONISATION. Un délimiteur qu'un module JS valide ne peut pas produire —
+    une chaîne `'…` / `"…` qui se termine sur une fin de ligne, un littéral qui atteint la fin du fichier —
+    prouve que le découpeur a ouvert une chaîne qui n'en était pas une, et donc qu'il a AVALÉ du code. Il
+    le DIT (la garde refuse alors de conclure) plutôt que de rendre un décompte amputé en silence.
+    `depart` = l'offset où le faux littéral s'est OUVERT : c'est l'endroit où le lecteur S'APERÇOIT de la
+    perte, pas nécessairement celui où elle a commencé — la désynchronisation peut naître bien plus haut."""
+    if journal is not None:
+        journal.append((motif, depart))
+
+
+def _lire_gabarit(src: str, i: int, journal: list[tuple[str, int]] | None = None) -> tuple[str, int]:
     """Lit un gabarit `` `...` `` à partir du backtick ouvrant ; rend (texte avec SENTINELLE pour
     chaque `${…}`, index après le backtick fermant)."""
     assert src[i] == "`"
+    depart = i
     i += 1
     out = []
     n = len(src)
@@ -294,31 +376,46 @@ def _lire_gabarit(src: str, i: int) -> tuple[str, int]:
         if c == "`":
             return "".join(out), i + 1
         if c == "$" and i + 1 < n and src[i + 1] == "{":
-            # saute l'expression interpolée (accolades équilibrées, chaînes et gabarits imbriqués compris)
+            # saute l'expression interpolée (accolades équilibrées, chaînes, gabarits ET LITTÉRAUX
+            # D'EXPRESSION RÉGULIÈRE imbriqués). Sans le dernier, un `"` de regex (`.replace(/"/g, '')`)
+            # ouvrait une fausse chaîne et le lecteur avalait une région entière du fichier : mesuré le
+            # 2026-08-24 sur `web/viz.js`, 118 littéraux disparus sur 134 lignes, dont une chaîne affichée
+            # que le lexique ne couvrait pas (`P11.8-e`). `expr` accumule le code de l'expression, littéraux
+            # et regex réduits, pour que la MÊME règle de désambiguïsation qu'au niveau supérieur s'applique.
             depth = 1
             i += 2
+            expr: list[str] = []
             while i < n and depth:
                 ch = src[i]
                 if ch in "'\"":
-                    _, i = _lire_chaine(src, i)
+                    _, i = _lire_chaine(src, i, journal)
+                    expr.append('""')
                     continue
                 if ch == "`":
-                    _, i = _lire_gabarit(src, i)
+                    _, i = _lire_gabarit(src, i, journal)
+                    expr.append('""')
+                    continue
+                if ch == "/" and RE_AVANT_REGEX.search("".join(expr[-40:])):
+                    i = _saute_regex(src, i)
+                    expr.append("/re/")
                     continue
                 if ch == "{":
                     depth += 1
                 elif ch == "}":
                     depth -= 1
+                expr.append(ch)
                 i += 1
             out.append(SENTINELLE)
             continue
         out.append(c)
         i += 1
+    _journaliser(journal, "un gabarit `…` atteint la fin du fichier sans son accent grave fermant", depart)
     return "".join(out), i
 
 
-def _lire_chaine(src: str, i: int) -> tuple[str, int]:
+def _lire_chaine(src: str, i: int, journal: list[tuple[str, int]] | None = None) -> tuple[str, int]:
     q = src[i]
+    depart = i
     i += 1
     out = []
     n = len(src)
@@ -340,13 +437,18 @@ def _lire_chaine(src: str, i: int) -> tuple[str, int]:
         if c == q:
             return "".join(out), i + 1
         if c == "\n":
+            # Un littéral de chaîne JS ne franchit PAS une fin de ligne : arriver ici prouve que ce
+            # guillemet n'ouvrait pas une chaîne (il appartenait à une expression régulière, ou le lecteur
+            # était déjà désynchronisé plus haut).
+            _journaliser(journal, "une chaîne \u00ab\u202f'\u202f\u00bb ou \u00ab\u202f\"\u202f\u00bb se termine sur une fin de ligne", depart)
             return "".join(out), i
         out.append(c)
         i += 1
+    _journaliser(journal, "une chaîne atteint la fin du fichier sans son guillemet fermant", depart)
     return "".join(out), i
 
 
-def chaines_js(src: str) -> list[tuple[str, str, str]]:
+def chaines_js(src: str, journal: list[tuple[str, int]] | None = None) -> list[tuple[str, str, str]]:
     """Rend [(texte, code_avant, code_apres)] pour chaque littéral de chaîne/gabarit du source.
     `code_avant` = le code (sans commentaires ni chaînes) depuis le dernier `;` ou retour à la ligne
     significatif ; `code_apres` = les quelques caractères de code qui suivent."""
@@ -365,35 +467,18 @@ def chaines_js(src: str) -> list[tuple[str, str, str]]:
             i = n if j < 0 else j + 2
             continue
         if c in "'\"":
-            s, i = _lire_chaine(src, i)
+            s, i = _lire_chaine(src, i, journal)
             trouves.append((s, len(code)))
             code.append('""')
             continue
         if c == "`":
-            s, i = _lire_gabarit(src, i)
+            s, i = _lire_gabarit(src, i, journal)
             trouves.append((s, len(code)))
             code.append('""')
             continue
         if c == "/":
-            avant = "".join(code[-40:])
-            if RE_AVANT_REGEX.search(avant):
-                # littéral regex : on saute jusqu'au `/` fermant non échappé hors classe
-                j = i + 1
-                in_cls = False
-                while j < n and src[j] != "\n":
-                    if src[j] == "\\":
-                        j += 2
-                        continue
-                    if src[j] == "[":
-                        in_cls = True
-                    elif src[j] == "]":
-                        in_cls = False
-                    elif src[j] == "/" and not in_cls:
-                        break
-                    j += 1
-                i = j + 1
-                while i < n and src[i].isalpha():
-                    i += 1
+            if RE_AVANT_REGEX.search("".join(code[-40:])):
+                i = _saute_regex(src, i)  # même règle et même lecteur qu'à l'intérieur d'un `${…}`
                 code.append("/re/")
                 continue
         code.append(c)
@@ -589,7 +674,7 @@ def _textes_html(fragment: str) -> tuple[list[str], list[str]]:
     return a_st + [d for d in donnees if SENTINELLE not in d], a_dy + [d for d in donnees if SENTINELLE in d]
 
 
-def extraire_module(src: str) -> tuple[list[str], list[str], list[str], list[str]]:
+def extraire_module(src: str, journal: list[tuple[str, int]] | None = None) -> tuple[list[str], list[str], list[str], list[str]]:
     """(statiques affichées, dynamiques affichées, bilingues par construction, HORS-REGARD) d'un module JS.
 
     HORS-REGARD : un littéral qui a la FORME d'un libellé (candidat, statique, pas bilingue par construction)
@@ -597,7 +682,7 @@ def extraire_module(src: str) -> tuple[list[str], list[str], list[str], list[str
     ce qu'elle publie, plutôt que de rendre vert sur un périmètre qu'elle tait."""
     statiques, dynamiques, par_construction, hors_regard = [], [], [], []
     precedent = ""
-    for s, avant, apres, bloc_en in chaines_js(src):
+    for s, avant, apres, bloc_en in chaines_js(src, journal):
         # le littéral qui PRÉCÈDE : c'est le nom d'attribut d'un `setAttribute('x', 'valeur')`
         courant, attribut_precedent, precedent = s, precedent, s
         if RE_CLE_FR_EN.search(avant.rstrip()):
@@ -699,6 +784,7 @@ if (LANG === 'en') { m.textContent = 'English only'; if (x) { n.innerHTML = '<b>
 o.textContent = 'Affiché quatorze';
 el.innerHTML = '<p>Affiché quinze <code>pas_un_libellé(x)</code> <kbd>Ctrl</kbd></p><optgroup label="Affiché seize"></optgroup>';
 const paires = [{ t: 'x', fr: 'Paire française <nom>', en: 'English pair <name>' }];
+const lit = `"${String(v).replace(/"/g, '')}"`; u.textContent = 'Affiché dix-sept';
 """
 # Un module qui porte le registre : sa définition est la seule surface exempte, ce qui l'entoure est jugé.
 CORPUS_TEMOIN_REGISTRE = """export const HELP = {
@@ -707,7 +793,10 @@ CORPUS_TEMOIN_REGISTRE = """export const HELP = {
 x.textContent = 'Hors registre';
 """
 # Témoin POSITIF de la règle des deux mots : une phrase tout en minuscules est comptée.
-ATTENDUS_STATIQUES = {"aucun runbook", "nom et champ requis",
+# « Affiché dix-sept » est le TÉMOIN DU LITTÉRAL D'EXPRESSION RÉGULIÈRE (`P11.8-e`) : il est posé APRÈS
+# un `${… .replace(/"/g, '') …}` en fin de corpus. Un découpeur qui ne reconnaît pas la regex prend le `"`
+# du motif pour l'ouverture d'une chaîne, avale le reste, et cette chaîne-là disparaît du décompte.
+ATTENDUS_STATIQUES = {"aucun runbook", "nom et champ requis", "Affiché dix-sept",
                       "Affiché un", "Affiché deux", "Affiché trois", "Affiché quatre", "Affiché cinq",
                       "Affiché six", "Affiché sept", "Affiché huit", "Affiché neuf", "Affiché dix",
                       "Affiché onze", "Affiché douze", "Affiché treize", "Affiché quatorze", "Affiché quinze",
@@ -745,6 +834,15 @@ ATTENDUS_HORS_REGARD = {"Entrée de tableau", "Valeur de retour", "Argument de f
 # Ceux-là ne sont ni comptés ni avoués : la garde SAIT qu'ils n'affichent rien. Un aveu qui les nommerait
 # mélangerait l'INDÉCIDABLE et le DÉJÀ TRANCHÉ, et ferait rougir le cliquet sur une classe CSS neuve.
 ATTENDUS_HORS_POPULATION = {"Attribut non affiché", "classe css composee"}
+
+# LE TÉMOIN POSITIF DE L'AVEU DE PERTE DE SYNCHRONISATION — et, dans le même geste, la LIMITE AVOUÉE de la
+# règle de désambiguïsation du `/`. Ici le `/` suit une parenthèse FERMANTE : la règle dit « division »,
+# alors que JavaScript y admet une expression régulière. Le `"` du motif ouvre donc une fausse chaîne, qui
+# se termine sur une fin de ligne — ce qu'un littéral JS ne fait jamais. Le lecteur DOIT le dire.
+# Un détecteur qui ne se déclenche sur rien ne garde rien : ce corpus est ce qui prouve qu'il est vivant.
+CORPUS_DESYNCHRONISATION = r"""
+if (x) /"/.test(y);
+"""
 
 
 def valider_instrument() -> list[str]:
@@ -792,6 +890,20 @@ def valider_instrument() -> list[str]:
     if en_trop:
         errs.append(f"anti-corpus : hors-regard inattendu {en_trop} — l'anti-corpus doit nommer EXACTEMENT ce que la "
                     f"garde ne regarde pas.")
+    # L'AVEU DE PERTE DE SYNCHRONISATION : vivant sur la forme qu'il doit attraper, muet sur les corpus sains.
+    j_sain: list[tuple[str, int]] = []
+    chaines_js(CORPUS_TEMOIN, j_sain)
+    chaines_js(CORPUS_ANTI_REGARD, j_sain)
+    chaines_js(CORPUS_TEMOIN_REGISTRE, j_sain)
+    if j_sain:
+        errs.append(f"témoin : le découpeur s'avoue désynchronisé sur un corpus SAIN ({j_sain}) — l'aveu crie "
+                    f"au loup et fera refuser de conclure sur du code correct.")
+    j_perdu: list[tuple[str, int]] = []
+    chaines_js(CORPUS_DESYNCHRONISATION, j_perdu)
+    if len(j_perdu) != 1:
+        errs.append(f"témoin : {len(j_perdu)} aveu(x) de désynchronisation au lieu de 1 sur `if (x) /\"/.test(y);` — "
+                    f"le détecteur de perte de synchronisation est mort, ou la règle du `/` a changé sans son témoin. "
+                    f"Un lecteur qui ne sait plus dire qu'il a sauté une région rend un compte faux EN SILENCE.")
     lex = cles_du_lexique('const I18N_EN = {\n  "Clé un": "Key one", "Clé deux": "Key two",\n  // c\n  "Clé trois": "Key three",\n  "Clé\\u00a0quatre": "Key four",\n};')
     if lex != {"Clé un", "Clé deux", "Clé trois", "Clé\xa0quatre"}:
         errs.append(f"témoin : lecture du lexique fausse : {sorted(lex)}")
@@ -801,25 +913,37 @@ def valider_instrument() -> list[str]:
 # ---------------------------------------------------------------------------------------------
 # Mesure sur l'arbre réel.
 # ---------------------------------------------------------------------------------------------
-def mesurer(registre: tuple[str, str] | None) -> tuple[dict[str, dict], set[str]]:
-    """`registre` = (module, texte sans commentaires) : ce module est jugé HORS de la portée de `const HELP`."""
+def mesurer(registre: tuple[str, str] | None) -> tuple[dict[str, dict], set[str], dict[str, list[str]]]:
+    """`registre` = (module, texte sans commentaires) : ce module est jugé HORS de la portée de `const HELP`.
+    Le 3e retour = LES AVEUX DE PERTE DE SYNCHRONISATION du découpeur, `module -> [« motif, ligne N »]`."""
     with open(LEXIQUE, encoding="utf-8") as fh:
         cles = cles_du_lexique(fh.read())
     resultats: dict[str, dict] = {}
+    desynchronisations: dict[str, list[str]] = {}
     for f in sorted(os.listdir(WEB)):
         chemin = os.path.join(WEB, f)
         if f == "sw.js" or not (f.endswith(".js") or f == "index.html"):
             continue
         with open(chemin, encoding="utf-8") as fh:
             src = fh.read()
+        journal: list[tuple[str, int]] = []
+        lu = src
         if f == "index.html":
             st, dy, pc, hr = extraire_index_html(src), [], [], []
         elif f == "i18n.js":
-            continue  # le lexique n'affiche rien
+            # le lexique n'affiche rien, mais il doit être LU sans perte : `cles_du_lexique` s'appuie sur le
+            # même découpeur, et une région avalée y ferait disparaître des clés — donc des trous fantômes.
+            chaines_js(src, journal)
+            st, dy, pc, hr = [], [], [], []
         elif registre and f == registre[0]:
-            st, dy, pc, hr = extraire_module(hors_registre(registre[1]))  # la surface du registre est exempte, le reste jugé
+            lu = hors_registre(registre[1])  # la surface du registre est exempte, le reste jugé
+            st, dy, pc, hr = extraire_module(lu, journal)
         else:
-            st, dy, pc, hr = extraire_module(src)
+            st, dy, pc, hr = extraire_module(src, journal)
+        if journal:
+            desynchronisations[f] = [f"ligne {lu.count(chr(10), 0, o) + 1} : {motif}" for motif, o in journal]
+        if f == "i18n.js":
+            continue
         uniques = sorted({s.strip() for s in st})
         bilingues = {s.strip() for s in pc}
         couvertes = [s for s in uniques if s in cles] + sorted(bilingues)
@@ -839,7 +963,7 @@ def mesurer(registre: tuple[str, str] | None) -> tuple[dict[str, dict], set[str]
             "hors_regard_au_lexique": [s for s in aveugles if s in cles],
             "taux": (100.0 * len(couvertes) / total) if total else 100.0,
         }
-    return resultats, cles
+    return resultats, cles, desynchronisations
 
 
 def main(argv: list[str]) -> int:
@@ -866,7 +990,20 @@ def main(argv: list[str]) -> int:
     # Le module du registre est jugé au plafond zéro hors de la portée exempte (entrée dérivée, pas nommée).
     plafonds = {**PLAFOND_DE_TROUS, registre[0]: 0}
     plafonds_hr = {**PLAFOND_HORS_REGARD, registre[0]: 0}
-    resultats, cles = mesurer(registre)
+    resultats, cles, desynchronisations = mesurer(registre)
+    if desynchronisations:
+        for m, aveux in sorted(desynchronisations.items()):
+            for a in aveux:
+                print(f"::error::{m}:{a} — le découpeur a PERDU LA SYNCHRONISATION : il a ouvert un littéral "
+                      f"qui n'en est pas un, et tout ce qu'il a lu depuis est faux. Cause la plus fréquente : "
+                      f"un `/` que la règle de désambiguïsation (jeton précédent, cf. `RE_AVANT_REGEX`) a pris "
+                      f"pour une division alors qu'il ouvrait une expression régulière — après `)` ou `]`, "
+                      f"typiquement `if (x) /re/.test(y)`. Écrivez `if (x) {{ return /re/.test(y); }}` ou "
+                      f"`new RegExp(...)`, ou apprenez la forme à `RE_AVANT_REGEX`.")
+        print("\nLe découpeur avoue avoir sauté une région : la garde refuse de conclure. Un compte amputé "
+              "rendu en silence est pire qu'une garde absente — c'est ce qu'un `\"` dans une expression "
+              "régulière a fait pendant un jour sur `web/viz.js` (118 littéraux perdus, `P11.8-e`).")
+        return 2
     population = sum(r["population"] for r in resultats.values())
     if len(cles) < MIN_CLES:
         print(f"::error::{len(cles)} clés lues dans le lexique, plancher {MIN_CLES} : la lecture de `web/i18n.js` est cassée.")

@@ -536,6 +536,12 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
     let budget = budget_ms.max(1);
     let _budget_guard = budget_guard(conn.get_interrupt_handle(), budget);
 
+    // P10.1-b — LA NOTE DE QUOTA DE DÉVERSEMENT EST REMISE À ZÉRO AVANT D'EXÉCUTER. Elle est posée par
+    // le rappel de progression, sur CE fil ; une note qu'une requête précédente n'aurait pas consommée
+    // ferait passer une annulation client ou un dépassement de budget pour un franchissement de quota,
+    // c'est-à-dire un refus qui nomme la mauvaise cause.
+    sqlite_plafond::oublier_refus_de_quota();
+
     let result = (|| -> Result<Value, String> {
         let t0 = Instant::now();
         // TOUTE erreur de ce corps passe par `sqlite_plafond::message_erreur` : elle est rendue TELLE
@@ -578,6 +584,14 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
                 Err(e) => {
                     let msg = e.to_string();
                     if msg.contains("interrupted") {
+                        // P10.1-b — TROIS CAUSES RENDENT LE MÊME CODE. Le franchissement du quota de
+                        // déversement arrête l'instruction par le rappel de progression, donc par une
+                        // interruption ; il est reconnu D'ABORD parce qu'il est le seul à laisser une
+                        // note disant CE QUI a été mesuré. Sans lui, un volume qu'on vient d'empêcher
+                        // de se remplir serait rendu à l'analyste comme « budget dépassé ».
+                        if let Some(refus) = sqlite_plafond::refus_de_quota_de_deversement() {
+                            return Err(refus);
+                        }
                         // interrupt() peut venir de /api/cancel (utilisateur) OU du watchdog (budget).
                         if cancelled.load(Ordering::Relaxed) {
                             return Err("requête annulée par l'utilisateur".into());

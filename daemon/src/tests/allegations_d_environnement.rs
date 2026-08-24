@@ -1126,7 +1126,7 @@ mod allegations_d_environnement_tests {
         assert!(!aveugle.contains("residus-en-clair=0"), "ne pas avoir regardé n'est pas avoir vu zéro : {aveugle}");
         // Et le mot traverse la bannière réelle, dans le segment du déversement.
         let b = banniere(
-            Deversement::Vers(std::path::PathBuf::from("/x/sqltmp"), Mesure::Lue(vec!["etilqs_4f2a9c".to_string()])),
+            Deversement::Vers(std::path::PathBuf::from("/x/sqltmp"), Mesure::Lue(vec!["etilqs_4f2a9c".to_string()]), crate::sqlite_plafond::QuotaDeversement::Arme(1024 * 1048576)),
             Mesure::Lue(Tri::SurDisque { compile: 2, local: 1 }),
         );
         let segment = b.split_once("— déversement").expect("segment de déversement").1;

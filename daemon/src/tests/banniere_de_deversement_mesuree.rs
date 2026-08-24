@@ -65,7 +65,7 @@ mod banniere_de_deversement_mesuree_tests {
     fn deversement_demande_et_tenu_par_une_connexion_armee() {
         let lue = mesure_armee(true, "s38-tenu");
         assert!(matches!(lue, Mesure::Lue(Tri::SurDisque { compile: 2, local: 1 })), "précondition : {lue:?}");
-        let b = banniere(Deversement::Vers(std::path::PathBuf::from("/x/sqltmp"), Mesure::Lue(vec![])), lue);
+        let b = banniere(Deversement::Vers(std::path::PathBuf::from("/x/sqltmp"), Mesure::Lue(vec![]), crate::sqlite_plafond::QuotaDeversement::Arme(1024 * 1048576)), lue);
         let s = segment_de_deversement(&b);
         assert!(s.contains("ACTIVÉ vers /x/sqltmp"), "{b}");
         assert!(s.contains("demandé et TENU"), "la demande tenue doit être DITE comme telle : {b}");
@@ -88,7 +88,7 @@ mod banniere_de_deversement_mesuree_tests {
         // VOLONTAIREMENT aucun `armer` : la connexion reste nue, comme après un batch refusé.
         let lue = tri_de_la_connexion_qui_sert(&c);
         assert_eq!(lue, Mesure::Lue(Tri::EnMemoire { compile: 2, local: 0 }), "précondition : nue, donc local=0");
-        let b = banniere(Deversement::Vers(std::path::PathBuf::from("/x/sqltmp"), Mesure::Lue(vec![])), lue);
+        let b = banniere(Deversement::Vers(std::path::PathBuf::from("/x/sqltmp"), Mesure::Lue(vec![]), crate::sqlite_plafond::QuotaDeversement::Arme(1024 * 1048576)), lue);
         let s = segment_de_deversement(&b);
         assert!(s.contains("MAIS LA MESURE DIT AUTRE CHOSE"), "{b}");
         assert!(s.contains("DEMANDÉ MAIS LE TRI RESTE EN MÉMOIRE") && s.contains("temp_store local=0"), "{b}");
@@ -123,7 +123,7 @@ mod banniere_de_deversement_mesuree_tests {
             cause: CAUSE_SOURCE_ABSENTE,
             detail: "aucune connexion armée au moment de la bannière".into(),
         };
-        let vers = banniere(Deversement::Vers(std::path::PathBuf::from("/x/sqltmp"), Mesure::Lue(vec![])), non_mesure());
+        let vers = banniere(Deversement::Vers(std::path::PathBuf::from("/x/sqltmp"), Mesure::Lue(vec![]), crate::sqlite_plafond::QuotaDeversement::Arme(1024 * 1048576)), non_mesure());
         let s = segment_de_deversement(&vers);
         assert!(!s.contains("TENU"), "sans mesure, rien n'est tenu : {vers}");
         assert!(s.contains("NON MESURÉ") && s.contains(CAUSE_SOURCE_ABSENTE), "la cause doit être dite : {vers}");

@@ -354,7 +354,13 @@ env:
   # nomment le compte annoncé, une qui nomme le TRAVAIL de la passe, le témoin inverse qui vaut
   # confrontation anti-no-op, et la validation de l'instrument — la création du produit ne déloge pas
   # un nom déjà porté par un index, donc l'état est stable).
-  EXPECTED_TESTS: "1281"
+  # RÉ-ÉNUMÉRÉ le 2026-08-24 (MÊME commande) sur l'arbre qui porte le correctif P10.1-b — la taille du
+  # déversement des tris est BORNÉE par un quota déclaré, ou l'absence de borne est DITE : cinq tests
+  # SANS `cfg` de feature, présents dans les DEUX profils (la mesure qui voit un temporaire délié que le
+  # listage du répertoire ne voit pas, une mesure impraticable qui rend un verdict et pas un zéro, le
+  # contrôle positif du démarrage, les quatre verdicts du quota, et la mutation dans les deux sens sur
+  # un tri qui déverse pour de vrai).
+  EXPECTED_TESTS: "1286"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -672,7 +678,12 @@ jobs:
           # à l'étiquette) : 1501 avec `cold_tier` pour 1281 par défaut — l'écart reste **220**. Ce
           # compteur-ci bouge AVEC l'autre : cinq tests sans `cfg` entrent dans les deux profils, et
           # le laisser en arrière rendrait ce job rouge sans rien mesurer de neuf.
-          EXPECTED_COLD_TESTS: "1501"
+          # RÉ-MESURÉ le 2026-08-24 par la MÊME commande, sur l'arbre qui porte le correctif P10.1-b
+          # (cinq tests sans `cfg` : le quota qui borne la taille du déversement des tris) : 1506 avec
+          # `cold_tier` pour 1286 par défaut — l'écart reste **220**. Ce compteur-ci bouge AVEC
+          # l'autre : cinq tests sans `cfg` entrent dans les deux profils, et le laisser en arrière
+          # rendrait ce job rouge sans rien mesurer de neuf.
+          EXPECTED_COLD_TESTS: "1506"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

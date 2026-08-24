@@ -336,7 +336,12 @@ env:
   # d'expression des champs chauds CONSTATÉS au catalogue d'une base migrée, l'attente DÉRIVÉE de
   # la déclaration et non énumérée à côté d'elle, dans les deux sens du levier `PLUME_EXPRINDEX` :
   # quatre tests SANS `cfg` de feature, présents dans les DEUX profils.
-  EXPECTED_TESTS: "1268"
+  # RÉ-ÉNUMÉRÉ le 2026-08-24 (MÊME commande) sur l'arbre qui porte le correctif P6.8-f — le compte
+  # rendu de la passe d'index CONSTATÉ au catalogue au lieu d'être récité depuis la déclaration :
+  # trois tests SANS `cfg` de feature, présents dans les DEUX profils (la mutation qui nomme le
+  # compte annoncé, son témoin inverse qui interdit un verdict accusant toujours, et la validation
+  # de l'instrument — un nom déjà porté par un objet d'un autre type fait échouer la création).
+  EXPECTED_TESTS: "1271"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -638,7 +643,13 @@ jobs:
           # catalogue d'une base migrée) : 1488 avec `cold_tier` pour 1268 par défaut — l'écart
           # reste **220**. Ce compteur-ci bouge AVEC l'autre : quatre tests sans `cfg` entrent dans
           # les deux profils, et le laisser en arrière rendrait ce job rouge sans rien mesurer de neuf.
-          EXPECTED_COLD_TESTS: "1488"
+          # RÉ-MESURÉ le 2026-08-24 par la MÊME commande, sur l'arbre qui porte le correctif P6.8-f
+          # (trois tests sans `cfg` : le compte rendu de la passe d'index constaté au catalogue au
+          # lieu d'être récité depuis la déclaration) : 1491 avec `cold_tier` pour 1271 par défaut —
+          # l'écart reste **220**. Ce compteur-ci bouge AVEC l'autre : trois tests sans `cfg` entrent
+          # dans les deux profils, et le laisser en arrière rendrait ce job rouge sans rien mesurer
+          # de neuf.
+          EXPECTED_COLD_TESTS: "1491"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

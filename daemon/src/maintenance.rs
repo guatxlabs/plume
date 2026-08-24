@@ -95,16 +95,72 @@ fn reconcile_fts_fields(conn: &Connection, conf: &HashMap<String, String>) {
     }
 }
 
-/// Les index expression partiels (EXPR_INDEX_FIELDS) existent-ils déjà tous ? (lecture sqlite_master, pas de scan).
+/// LE CONSTAT AU CATALOGUE, ÉCRIT UNE SEULE FOIS — pour chaque champ DÉCLARÉ, son index d'expression
+/// est-il RÉELLEMENT là ? Rend la partition (présents, manquants), dans l'ordre de la déclaration.
+/// Lecture de `sqlite_master`, aucun scan de table.
+///
+/// POURQUOI CE POINT EST UNIQUE. Le court-circuit de la passe de fond et le compte rendu de sa fin
+/// répondent à LA MÊME question ; deux lectures recopiées finiraient par répondre autrement l'une que
+/// l'autre. C'est exactement l'écart « déclaré vs constaté » qui a produit le défaut `P6.8-f` : le
+/// court-circuit, lui, lisait bien le catalogue, tandis que le compte rendu récitait la déclaration.
+fn expr_indexes_constates(conn: &Connection) -> (Vec<&'static str>, Vec<&'static str>) {
+    let mut presents = Vec::new();
+    let mut manquants = Vec::new();
+    for champ in EXPR_INDEX_FIELDS {
+        let au_catalogue = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1",
+                params![format!("idx_ev_f_{champ}")],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if au_catalogue {
+            presents.push(*champ);
+        } else {
+            manquants.push(*champ);
+        }
+    }
+    (presents, manquants)
+}
+
+/// Les index expression partiels (EXPR_INDEX_FIELDS) existent-ils déjà tous ? DÉRIVÉ du constat
+/// ci-dessus — pas une seconde lecture du catalogue.
 fn expr_indexes_all_present(conn: &Connection) -> bool {
-    EXPR_INDEX_FIELDS.iter().all(|c| {
-        conn.query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1",
-            params![format!("idx_ev_f_{c}")],
-            |_| Ok(()),
+    expr_indexes_constates(conn).1.is_empty()
+}
+
+/// Le marqueur qui introduit, dans le compte rendu de la passe, la liste des index qui MANQUENT.
+/// Écrit une fois : la garde `P6.8-f` lit la liste ANNONCÉE à partir de lui au lieu de deviner la
+/// forme de la ligne, et une reformulation qui l'emporterait la rendrait rouge plutôt qu'aveugle.
+pub(crate) const MARQUEUR_INDEX_MANQUANTS: &str = "MANQUENT :";
+
+/// LE COMPTE RENDU DE LA PASSE — CONSTATÉ AU CATALOGUE, JAMAIS DÉDUIT DE LA DÉCLARATION (`P6.8-f`).
+///
+/// CE QU'IL REMPLACE. Cette ligne annonçait `EXPR_INDEX_FIELDS.len()` index « présents » : la
+/// longueur de la liste DÉCLARÉE. Un démarrage où trois créations échouaient journalisait donc le
+/// compte complet — alors que la passe avait capturé chacune de ces erreurs et les avait écrites
+/// juste au-dessus. Le composant SAVAIT son résultat incomplet et le présentait comme complet.
+///
+/// ET IL NE POUVAIT SE TROMPER QU'AU MOMENT UTILE. Le court-circuit de la passe sort AVANT toute
+/// création dès que tous les index sont là : cette ligne ne s'imprime donc QUE lorsque la passe
+/// travaille pour de bon, c'est-à-dire exactement quand une création peut échouer. Un verdict qui ne
+/// peut rendre qu'un succès ne renseigne sur rien.
+fn compte_rendu_de_la_passe(conn: &Connection) -> String {
+    let (presents, manquants) = expr_indexes_constates(conn);
+    let attendus = EXPR_INDEX_FIELDS.len();
+    if manquants.is_empty() {
+        format!(
+            "[reconcile-bg] {}/{attendus} index expression partiels CONSTATÉS au catalogue ({}) — créés en fond, boot non bloqué",
+            presents.len(),
+            presents.join(",")
         )
-        .is_ok()
-    })
+    } else {
+        format!(
+            "[reconcile-bg] {}/{attendus} index expression partiels CONSTATÉS au catalogue — création échouée ci-dessus, retry au prochain boot ; {MARQUEUR_INDEX_MANQUANTS} {}",
+            presents.len(),
+            manquants.join(",")
+        )
+    }
 }
 
 /// Réconcilie les INDEX EXPRESSION (EXPR_INDEX_FIELDS) avec l'env. Partie INSTANTANÉE seulement :
@@ -137,16 +193,21 @@ pub(crate) fn reconcile_index_state(conn: &Connection, conf: &HashMap<String, St
 /// CREATE INDEX partiel est borné (1 seul à la fois, jamais en boucle/churn) ; il tient le lock writer LE
 /// TEMPS d'UN index (one-time, partiel WHERE expr IS NOT NULL -> petit), puis le relâche entre chaque ->
 /// l'ingest respire. IF NOT EXISTS -> idempotent (no-op si déjà créés au boot précédent).
-pub(crate) fn reconcile_expr_indexes_background(db: &Arc<Mutex<Connection>>) {
+///
+/// REND LA LIGNE ANNONCÉE — celle-là même qui part sur la sortie d'erreur — ou `None` quand la passe
+/// n'annonce rien : levier éteint, ou court-circuit parce que tout était déjà au catalogue. Ce retour
+/// n'est pas décoratif : il rend le compte rendu EXERÇABLE, de sorte qu'une garde assère LA valeur
+/// imprimée et non une reconstruction voisine qui pourrait en diverger (`P6.8-f`).
+pub(crate) fn reconcile_expr_indexes_background(db: &Arc<Mutex<Connection>>) -> Option<String> {
     let conf = load_config();
     if cfg(&conf, "PLUME_EXPRINDEX", "1") != "1" {
-        return; // OFF : rien à créer (le drop est synchrone au boot).
+        return None; // OFF : rien à créer (le drop est synchrone au boot).
     }
     // Court-circuit : si tout est déjà là, on évite même de prendre le lock writer.
     {
         let conn = db.lock();
         if expr_indexes_all_present(&conn) {
-            return;
+            return None;
         }
     }
     for c in EXPR_INDEX_FIELDS {
@@ -169,7 +230,15 @@ pub(crate) fn reconcile_expr_indexes_background(db: &Arc<Mutex<Connection>>) {
         // respiration entre deux index : laisse l'ingest et les lectures passer (anti-famine writer).
         std::thread::sleep(Duration::from_millis(200));
     }
-    eprintln!("[reconcile-bg] {} index expression partiels présents ({}) — créés en fond, boot non bloqué", EXPR_INDEX_FIELDS.len(), EXPR_INDEX_FIELDS.join(","));
+    // LE COMPTE RENDU EST RELU AU CATALOGUE, jamais récité depuis la déclaration : la passe vient
+    // d'avaler ses propres échecs (chacun nommé ci-dessus), c'est donc le seul moment où annoncer un
+    // compte complet serait un mensonge (`P6.8-f`).
+    let ligne = {
+        let conn = db.lock();
+        compte_rendu_de_la_passe(&conn)
+    };
+    eprintln!("{ligne}");
+    Some(ligne)
 }
 
 /// Crée l'index MANQUANT idx_event_category EN TÂCHE DE FOND (jamais synchrone au boot :

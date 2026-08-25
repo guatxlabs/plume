@@ -1,9 +1,15 @@
 // Accès données (DLP, gouvernance d'accès en lecture seule) : cinq panneaux sur des requêtes GXQL existantes,
 // sélecteur de fenêtre d'analyse, note de périmètre, réordonnancement des cartes persisté localement. Extrait
 // d'`app.js` par déplacement pur ; le seul consommateur est la navigation (`showView`). N'importe pas `app.js`.
-import { $, ic, muted } from './core.js';
+import { $, fmtTs, ic, muted, LANG } from './core.js';
 import { S } from './state.js';
 import { runQ, tableEl, truncationBadge } from './viz.js';
+// `P11.18-c` — LE CHOIX DE DATES EST PARTAGÉ, ET IL VIT DANS `audit.js`. Il n'est pas écrit deux fois,
+// et il n'est pas non plus au point commun (`web/core.js`), qui serait sa place : ce lot ne pouvait
+// toucher que ces deux vues, alors la vue dont la ROUTE est la plus pauvre le porte et celle-ci
+// l'importe. La raison du sens est écrite en tête du bloc `P11.18-c` de `web/audit.js`, avec la forme
+// recommandée si le point commun s'ouvre.
+import { plageActive, poserLaPlage, poserLeChoixDeDates } from './audit.js';
 
 // --- DLP / gouvernance d'accès (style Varonis) — onglet LECTURE SEULE (Phase 1) -------------------
 // "Qui touche quoi", intégrité (FIM) et droits (ACL/RBAC). Chaque panneau s'appuie sur une requête
@@ -24,7 +30,32 @@ const DATA_WATCHED = ['/etc', '/etc/rancher/k3s', '/opt/local-path-provisioner',
 // déploiement, servie par le démon), et « ~30 j » était donc un nombre sans source affiché à l'analyste.
 /* state: daWin -> S (state.js) */
 const DA_WINLBL = { all: 'toute la rétention', '7d': '7 derniers jours', '24h': 'dernières 24 h' };
-function daFromValue() { return S.daWin === 'all' ? 0 : Math.floor(Date.now() / 1000) - (S.daWin === '7d' ? 604800 : 86400); }
+// `P11.18-c` — LA PLAGE DE DATES PRIME SUR LE PALIER. Les deux répondent à la même question ; choisir
+// l'un retire l'autre. Seule la borne BASSE part d'ici : `runQ` la porte par son 3e argument (`from`).
+function daFromValue() {
+  const plage = plageActive();
+  if (plage) return plage.debut;
+  return S.daWin === 'all' ? 0 : Math.floor(Date.now() / 1000) - (S.daWin === '7d' ? 604800 : 86400);
+}
+
+// =================================================================================================
+// `P11.18-c` — LA BORNE HAUTE DE CE PANNEAU : CE QU'IL ENVOIE, ET CE QU'IL HÉRITE SANS L'AVOIR CHOISI.
+//
+// MESURÉ le 2026-08-25, en lisant le fabricant partagé. `runQ` (`web/viz.js`) pose
+// `body.to = exploreTo()`, c'est-à-dire `S.zoomRange ? S.zoomRange.to : 0` — l'intervalle ABSOLU réglé
+// dans l'Explore ou les Dashboards (`openRangeModal`, `setZoom`). Ce panneau ne le règle pas, ne
+// l'affichait pas, et sa barre annonçait « Fenêtre : toute la rétention » pendant que ses cinq
+// requêtes partaient bornées EN HAUT par une valeur venue d'une autre vue. C'est une fenêtre héritée
+// en douce, et la contradiction est de la même famille que celle relevée sous `P11.14-c`.
+//
+// CE QUE CE LOT PEUT ET NE PEUT PAS. La route accepte `to` (`POST /api/query` ; `guatx_core::soql`
+// émet `ts <= to`) — c'est le fabricant CLIENT qui n'offre aucun moyen de le poser, et `web/viz.js`
+// est hors de ce lot. Deux gestes en découlent, tous deux dans le périmètre :
+//   * une plage dont la FIN est antérieure à maintenant est REFUSÉE, en nommant cette raison-là ;
+//   * la borne haute HÉRITÉE, quand il y en a une, est NOMMÉE au-dessus des cartes. Une borne qu'on ne
+//     peut pas retirer se dit ; c'est la taire qui fabrique la contradiction.
+// =================================================================================================
+function borneHauteHeritee() { return S.zoomRange ? S.zoomRange.to : 0; }
 
 // =================================================================================================
 // `P11.14-c` — TROIS ISSUES DISTINCTES, LÀ OÙ CE PANNEAU N'EN RENDAIT QU'UNE.
@@ -57,6 +88,10 @@ function daFromValue() { return S.daWin === 'all' ? 0 : Math.floor(Date.now() / 
 // Fonction PURE (une réponse -> un élément) : c'est ce qui la rend tenable par le harnais ESM, dans
 // les deux sens (un refus ne doit jamais rendre une absence ; un vrai vide doit rester une absence).
 // =================================================================================================
+// `win` : une CLÉ de palier (`all`/`7d`/`24h`) ou, depuis `P11.18-c`, le libellé d'une plage de dates
+// (« AAAA-MM-JJ → AAAA-MM-JJ »). Le repli `String(win)` porte donc les deux sans changer de signature ;
+// et une plage n'est PAS `all`, ce qui suffit à ce qu'un vide y invite à élargir plutôt qu'à accuser un
+// capteur — la conclusion « rien sur toute la rétention » ne vaut que sur toute la rétention.
 function daRenduDeReponse(j, win, soql) {
   const lbl = DA_WINLBL[win] || String(win);
   // (1) RIEN N'A ÉTÉ ÉTABLI — refus du serveur, réponse illisible, ou promesse rejetée (réseau).
@@ -109,15 +144,41 @@ async function renderDataAccess() {
   host.appendChild(intro);
   // D12 — indicateur de fenêtre VISIBLE + sélecteur (24 h / 7 j / tout) câblant fromOverride.
   const bar = document.createElement('div'); bar.className = 'da-winbar';
+  const plage = plageActive();
   const wlbl = document.createElement('span'); wlbl.className = 'muted';
-  wlbl.textContent = 'Fenêtre : ' + DA_WINLBL[S.daWin] + ' · top N par panneau';
+  // Une plage active REMPLACE le libellé du palier : afficher les deux laisserait croire à deux
+  // fenêtres superposées. Sans plage, la phrase est EXACTEMENT celle d'avant.
+  wlbl.textContent = plage
+    ? ((LANG === 'en' ? 'Window: from ' : 'Fenêtre : du ') + plage.texteDebut + (LANG === 'en' ? ' to ' : ' au ') + plage.texteFin + (LANG === 'en' ? ' · top N per panel' : ' · top N par panneau'))
+    : ('Fenêtre : ' + DA_WINLBL[S.daWin] + ' · top N par panneau');
   const wsel = document.createElement('select'); wsel.className = 'k-theme'; wsel.setAttribute('aria-label', "Fenêtre d'analyse (DLP)");
   wsel.title = "Fenêtre d'analyse : borne le `from` des requêtes (le nombre de lignes reste cappé par panneau)";
   [['24h', '24 h'], ['7d', '7 j'], ['all', 'Tout']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; if (v === S.daWin) o.selected = true; wsel.appendChild(o); });
-  wsel.onchange = () => { S.daWin = wsel.value; renderDataAccess(); };
-  bar.append(wlbl, wsel); host.appendChild(bar);
+  // Choisir un PALIER retire la plage — même règle que sur le journal d'audit, par le même écrivain.
+  wsel.onchange = () => { S.daWin = wsel.value; poserLaPlage(null); renderDataAccess(); };
+  bar.append(wlbl, wsel);
+  // Le choix de dates PARTAGÉ. Sa raison de refus est propre à CE chemin : la route accepte `to`, c'est
+  // `runQ` qui ne laisse pas le poser. Écrite ici parce que c'est ici qu'elle est vraie.
+  bar.appendChild(poserLeChoixDeDates('dataaccess', () => renderDataAccess(), choisie => (LANG === 'en'
+    ? 'Range refused: the upper bound does not leave from here. The shared query builder (runQ, web/viz.js) takes `to` from the Explore interval (S.zoomRange) and offers no way to set it, so the end you chose (' + choisie.texteFin + ') cannot be sent — the route POST /api/query does accept `to`. What this panel can send: from ' + choisie.texteDebut + ' up to now.'
+    : "Plage refusée : la borne HAUTE ne part pas d'ici. Le fabricant de requête partagé (runQ, web/viz.js) prend `to` de l'intervalle de l'Explore (S.zoomRange) et n'offre aucun moyen de le poser, donc la fin choisie (" + choisie.texteFin + ") ne peut pas être envoyée — la route POST /api/query, elle, accepte bien `to`. Ce que ce panneau sait envoyer : du " + choisie.texteDebut + " jusqu'à maintenant.")).barre);
+  // LA BORNE HAUTE HÉRITÉE, DITE. Elle vient d'une AUTRE vue et ce panneau ne peut pas la retirer ; la
+  // taire, c'est annoncer une fenêtre que les requêtes n'ont pas. Rien n'est affiché quand il n'y en a
+  // pas : une phrase permanente se lirait comme une borne permanente.
+  const heritee = borneHauteHeritee();
+  if (heritee > 0) {
+    const h = document.createElement('span'); h.className = 'muted';
+    h.textContent = (LANG === 'en' ? '· upper bound INHERITED from the Explore/Dashboards interval: nothing after ' : "· borne haute HÉRITÉE de l'intervalle Explore/Dashboards : rien après ")
+      + fmtTs(heritee)
+      + (LANG === 'en' ? ' is queried, and this panel cannot lift it.' : " n'est interrogé, et ce panneau ne peut pas la lever.");
+    h.title = String(heritee);
+    bar.appendChild(h);
+  }
+  host.appendChild(bar);
   const daFrom = daFromValue();
-  const daWin = S.daWin;   // figé pour ce rendu : le sélecteur peut changer pendant les requêtes en vol
+  // Figé pour ce rendu : le sélecteur comme les dates peuvent changer pendant les requêtes en vol. Une
+  // plage se nomme par ses deux jours ; un palier par sa clé (voir `daRenduDeReponse`).
+  const daWin = plage ? (plage.texteDebut + ' → ' + plage.texteFin) : S.daWin;
   for (const p of DATA_PANELS) {
     const card = document.createElement('section'); card.className = 'card'; card.dataset.da = p.id;
     const h = document.createElement('h2'); h.textContent = p.title; card.appendChild(h);

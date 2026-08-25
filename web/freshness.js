@@ -423,7 +423,35 @@ function renderFreshnessDetail(d) {
     return `<div class="kv fseries"><span><span class="fdot ${pastilleDEtat(ss)}"></span>${esc(s.name)}</span>` +
       `<b class="${couleurDEtat(ss)}" title="dernière donnée ${fmtTs(s.last_seen)}">il y a ${age(s.age_s)}</b></div>`;
   };
-  // une ligne par source ; surlignée (classe .hot + cloche) si la source a des alertes actives (active_alerts>0).
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // `P11.18-n` — UNE LIGNE PORTEUSE D'ALERTES N'EST PLUS REPEINTE, ET LA MARQUE N'EST PLUS UNE
+  // PROPRIÉTÉ DE LA LIGNE.
+  //
+  // LE CONSTAT, ET CE QUI L'ÉCLAIRE. Une source portant des alertes actives recevait une classe qui
+  // teintait TOUTE sa ligne — et la teinte employée était celle de l'avertissement, c'est-à-dire
+  // dans cette vue précise la couleur de l'état « en retard » (l'âge d'une ligne en retard est rendu
+  // avec la même valeur). Le signal de PLACE et le signal de COULEUR disaient donc tous deux
+  // « problème de collecte » à propos d'un compte d'alertes. `P11.18-d` a sorti le compte de la
+  // grammaire de la collecte ; c'est ce marquage-ci qui expliquait le reste de la confusion.
+  //
+  // LA COULEUR NE POUVAIT PAS ÊTRE REMPLACÉE PAR UNE AUTRE. Les cinq états de cette vue RÉSERVENT
+  // chacun la leur, pastille et encre — frais, calme, en retard, en attente, muet. Relevé dans les
+  // deux thèmes le 2026-08-25 : il n'en reste aucune de libre, l'accent VALANT le vert « frais »
+  // sous le thème clair. Et le défaut ne tenait pas qu'à la teinte : ce qui vaut pour la LIGNE
+  // ENTIÈRE appartient ici à la grammaire de l'état — la pastille l'ouvre, l'âge coloré la ferme —
+  // donc une ligne repeinte se lit comme un état, quelle que soit la couleur.
+  //
+  // LA MARQUE EST DONC UN OBJET DANS LA LIGNE, PAS LA LIGNE. C'est la cloche : un GLYPHE que rien
+  // d'autre ne pose sur une ligne, le NOMBRE d'alertes et un CADRE — trois canaux qui survivent en
+  // monochrome, comme le chevron du dépli partagé. Elle reste le seul élément de la ligne
+  // atteignable au clavier, son intitulé nomme le compte, et elle ouvre exactement ces alertes.
+  // CE QU'ELLE NE FAIT PAS, ÉCRIT PLUTÔT QUE TU : elle ne forme pas une colonne — sa position suit
+  // la longueur du nom et de la cadence — donc elle se repère par sa forme, non par un balayage
+  // vertical. Le COMBIEN se lit d'un coup dans la zone des alertes, qui le porte pour la vue.
+  //
+  // LA RÈGLE DE STYLE ET LA CLASSE SONT PARTIES ENSEMBLE : une classe sans règle ne peint rien, et
+  // une règle sans cible est refusée par la garde des sélecteurs, dont le plafond est zéro.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
   const rowOf = f => {
     const st = freshState(f);
     if (f.kind === 'metric') {
@@ -437,14 +465,14 @@ function renderFreshnessDetail(d) {
         `<b class="${couleurDEtat(st)}">il y a ${age(f.age_s)}</b></div>`;
       return `<div class="fmetric${open ? '' : ' collapsed'}">${hd}${body}</div>`;
     }
-    const hot = Number(f.active_alerts) > 0;
-    const badge = hot ? ` <span class="fhot" role="button" tabindex="0" data-src="${esc(f.name)}" title="${f.active_alerts} alerte(s) non acquittée(s) imputée(s) à ${esc(f.name)}, toutes dates (cases comprises) · cliquer pour les ouvrir dans Alertes">${ic('bell')} ${f.active_alerts}</span>` : '';
+    const porteDesAlertes = Number(f.active_alerts) > 0;
+    const badge = porteDesAlertes ? ` <span class="fhot" role="button" tabindex="0" data-src="${esc(f.name)}" title="${f.active_alerts} alerte(s) non acquittée(s) imputée(s) à ${esc(f.name)}, toutes dates (cases comprises) · cliquer pour les ouvrir dans Alertes">${ic('bell')} ${f.active_alerts}</span>` : '';
     // « en retard » : la raison est DITE sur la ligne (cadence déclarée, sonde, silence), pas seulement coloriée.
     const reason = st === 'en_retard'
       ? `en retard — aucune donnée depuis ${age(f.age_s)} pour une cadence déclarée de ${age(f.cadence_interval_s || 0)} (sonde « ${f.cadence_capteur || '?'} »)`
       : '';
     const why = reason ? ` <span class="muted fwhy">· au-delà de ${age(f.cadence_interval_s || 0)}</span>` : '';
-    return `<div class="kv${hot ? ' hot' : ''}"${reason ? ` title="${esc(reason)}"` : ''}><span><span class="fdot ${pastilleDEtat(st)}"></span>${esc(f.name)} <span class="muted fkind" title="${esc(cadenceTitle(f))}">${esc(cadenceLabel(f))}</span>${badge}${why}</span>` +
+    return `<div class="kv"${reason ? ` title="${esc(reason)}"` : ''}><span><span class="fdot ${pastilleDEtat(st)}"></span>${esc(f.name)} <span class="muted fkind" title="${esc(cadenceTitle(f))}">${esc(cadenceLabel(f))}</span>${badge}${why}</span>` +
       `<b class="${couleurDEtat(st)}" title="dernière donnée ${fmtTs(f.last_seen)}">il y a ${age(f.age_s)}</b></div>`;
   };
   // GROUPES PAR ÉTAT : chaque état est une section repliable (libellé + nombre + pastille), tri DANS le groupe

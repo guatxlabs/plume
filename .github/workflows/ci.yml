@@ -360,7 +360,7 @@ env:
   # listage du répertoire ne voit pas, une mesure impraticable qui rend un verdict et pas un zéro, le
   # contrôle positif du démarrage, les quatre verdicts du quota, et la mutation dans les deux sens sur
   # un tri qui déverse pour de vrai).
-  EXPECTED_TESTS: "1316"
+  EXPECTED_TESTS: "1323"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -683,7 +683,7 @@ jobs:
           # `cold_tier` pour 1286 par défaut — l'écart reste **220**. Ce compteur-ci bouge AVEC
           # l'autre : cinq tests sans `cfg` entrent dans les deux profils, et le laisser en arrière
           # rendrait ce job rouge sans rien mesurer de neuf.
-          EXPECTED_COLD_TESTS: "1536"
+          EXPECTED_COLD_TESTS: "1543"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

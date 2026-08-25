@@ -1,10 +1,13 @@
 // viz.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Explore + viz/charts: drilldown, fenetre glissante, requete interactive, rendu table/graphes (partages avec dashboards).
-import { $, CSSV, LOC, SEV, api, apiSend, colComparator, confirmModal, esc, flashStopped, fmtTs, ic, makePager, muted, sev, socIsAdmin, toast, tzOpts } from './core.js';
+import { $, CSSV, LANG, LOC, SEV, api, apiSend, colComparator, confirmModal, esc, flashStopped, fmtTs, ic, makePager, muted, sev, socIsAdmin, toast, tzOpts } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE clic qui respecte une sélection (mécanisme partagé, `copie_et_selection.js`).
 import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
 import { currentViewName, loadActions, loadDashboard, refresh, updateQRangeBtn, updateRangeBtn } from './app.js';
+// `P11.18-a` : le réglage des axes se mémorise dans le magasin de préférences adossé au démon
+// (self-scoped, viewer+), qui miroite lui-même dans `localStorage` — voir le bloc du réglage.
+import { prefGet, prefSet } from './prefs.js';
 import { recordRecentQuery } from './savedqueries.js';   // historique récent client-only (localStorage) : enregistré à chaque exécution
 
 // Le zoom temporel (drag-select sur un graphe + clic-sur-bucket = drillTime) n'a de sens que sur les
@@ -428,6 +431,251 @@ function vizElement(mode, cols, rows, query, drill) {
   if (mode === 'histogram') return histogramEl(cols, rows, query, drill);
   return tableEl(cols, rows, query, drill);
 }
+
+// ==============================================================================================
+// `P11.18-a` — RÉGLER UN GRAPHE : CE QUI PORTE L'ABSCISSE, CE QUI PORTE L'ORDONNÉE.
+//
+// LA RÈGLE QUI EXISTAIT DÉJÀ, MESURÉE PAR MUTATION le 2026-08-25 (on remplace les valeurs d'UNE
+// colonne du résultat, on re-rend, et on regarde si le rendu change : ce qui ne change pas n'est pas
+// lu). Elle est UNIQUE et POSITIONNELLE pour les neuf représentations — PREMIÈRE colonne = dimension
+// (abscisse), DERNIÈRE colonne = valeur (ordonnée) — et les colonnes du MILIEU sont IGNORÉES, sauf
+// par `heatmap` (2e colonne = colonnes de la grille, dès 3 colonnes) et par `table` (qui les rend
+// toutes). Aucun NOM de colonne n'entre dans cette règle : les noms ne servent qu'à l'unité
+// (`unitKeyFor`) et à la suppression du drill (`DIMENSIONLESS`). `stats count by host, source` rend
+// donc `[host, source, count]`, et `source` est jeté en silence par barres, courbe et camembert.
+//
+// CE QUE CETTE MESURE DÉCIDE, et c'est la question que la clé posait : puisque la règle est DÉJÀ
+// dérivée de la POSITION et PARTAGÉE par toutes les représentations, le réglage n'a rien à remplacer.
+// Il se pose AU-DESSUS : il REMET AU GRAPHE les colonnes dans l'ordre voulu — `[abscisse,
+// (2e dimension), ordonnée]` — et la règle positionnelle fait le reste. Une représentation posée
+// demain hérite du réglage sans le savoir, parce qu'elle héritera de la règle que tout ce module
+// partage. `vizElement` n'est PAS touché : un appelant qui ne passe pas de réglage rend exactement ce
+// qu'il rendait, et cette non-modification en est la preuve la plus courte.
+//
+// CE QUE CE BLOC NE FAIT PAS, écrit plutôt que tu : il ne redresse PAS le chemin PAR DÉFAUT. Mesuré
+// le même jour sur banc, sans aucun réglage : `gauge` sur une colonne textuelle affiche « 0 / 1 » (un
+// zéro FABRIQUÉ), `line` écrase toutes les abscisses non numériques sur un point unique, `bar` trace
+// toutes ses barres à 0 % de large tout en imprimant le texte à côté, et `pie` répond « aucune
+// donnée » alors que les lignes existent — une ABSENCE affirmée à la place d'un refus. Seul
+// `histogram` dit « aucune donnée numérique ». Les redresser changerait ce que rendent des panneaux
+// existants, ce que la borne de ce chantier interdit ; le refus ci-dessous est donc attaché au CHOIX.
+const PLAFOND_CARDINALITE_ABSCISSE = 200;   // au-delà, une marque occupe moins de 3 unités sur les 580
+                                            // utiles du canevas de 640 que ces représentations partagent :
+                                            // les marques fusionnent. UN seul plafond, le même pour toutes,
+                                            // pour qu'une représentation posée demain en hérite aussi.
+
+// -- CE QU'UNE REPRÉSENTATION LIT, DEMANDÉ À LA REPRÉSENTATION ELLE-MÊME ------------------------
+// Jamais à une liste écrite par type : on la rend sur un jeu FABRIQUÉ, on mute une colonne, on
+// compare. Trois faits en sortent : quelles FENTES elle lit, si elle TRACE (une géométrie qui suit la
+// valeur) ou si elle se contente de texte, et si son ordonnée doit être un NOMBRE.
+// TÉMOIN DE CONTRÔLE INTÉGRÉ, sans quoi un zéro ne prouverait rien : on vérifie D'ABORD que deux
+// ordonnées NUMÉRIQUES différentes bougent la géométrie. Si elles ne la bougent pas, la
+// représentation ne trace pas (table, stat) et rien ne lui est reproché. C'est seulement une fois ce
+// témoin positif obtenu que « deux ordonnées TEXTUELLES différentes produisent la MÊME géométrie »
+// signifie quelque chose : la valeur n'est pas exprimée, elle est coercée — le graphe serait FAUX.
+// Ce sondage est aussi ce qui rend le réglage indifférent aux types : ce qui est offert vient de ce
+// que la représentation a répondu, pas d'une table écrite ici.
+const SONDE_COLS = ['sonde_a', 'sonde_b', 'sonde_c'];
+const SONDE_N1 = [[10, 4, 3], [20, 5, 9]];
+const SONDE_N2 = [[10, 4, 7], [20, 5, 2]];
+const SONDE_T1 = [[10, 4, 'pa'], [20, 5, 'qb']];
+const SONDE_T2 = [[10, 4, 'rc'], [20, 5, 'sd']];
+// La GÉOMÉTRIE d'un rendu = ce qui place ou dimensionne une marque. Le TEXTE en est exclu : c'est lui
+// qui rend un graphe faux crédible (une barre à 0 % qui affiche « rouge » juste à côté). Les marques
+// CONSTANTES d'un rendu (le tracé d'une icône) ne gênent pas : le sondage ne lit jamais une géométrie
+// seule, il COMPARE deux rendus, et ce qui ne dépend pas des données s'annule des deux côtés.
+const ATTRS_GEOMETRIE = ['points', 'd', 'x', 'y', 'cx', 'cy', 'r', 'width', 'height'];
+function marquesDe(n, out) {
+  out = out || [];
+  if (n && n.attributes) {
+    const g = ATTRS_GEOMETRIE.map(a => n.attributes[a]).filter(v => v !== undefined);
+    if (g.length) out.push(n.tagName + '|' + g.join(','));
+    if (n.style && n.style.width) out.push(n.tagName + '|w=' + n.style.width);
+    if (n.style && n.style.background) out.push(n.tagName + '|b=' + n.style.background);
+  }
+  for (const c of (n && n.children) || []) marquesDe(c, out);
+  return out;
+}
+function empreinteDe(n) {
+  if (!n) return '';
+  const at = Object.keys(n.attributes || {}).sort().map(k => k + '=' + n.attributes[k]).join(',');
+  return n.tagName + '[' + at + ']' + (n.textContent || '');
+}
+function rendreEnSonde(mode, rows) { try { return vizElement(mode, SONDE_COLS, rows, '', ''); } catch (e) { return null; } }
+const _sondages = new Map();
+function sondage(mode) {
+  if (_sondages.has(mode)) return _sondages.get(mode);
+  const geo = rows => marquesDe(rendreEnSonde(mode, rows)).join(';');
+  const trace = geo(SONDE_N1) !== geo(SONDE_N2);               // TÉMOIN POSITIF : la géométrie suit la valeur
+  const ordonneeNumerique = trace && geo(SONDE_T1) === geo(SONDE_T2);
+  const ref = empreinteDe(rendreEnSonde(mode, SONDE_N1));
+  const fentes = SONDE_COLS.map((_, k) => {
+    const mut = SONDE_N1.map(r => r.map((v, j) => (j === k ? Number(v) + 500 : v)));
+    return empreinteDe(rendreEnSonde(mode, mut)) !== ref;
+  });
+  const s = { trace, ordonneeNumerique, fentes };
+  _sondages.set(mode, s);
+  return s;
+}
+
+// -- LE MAGASIN DU RÉGLAGE ---------------------------------------------------------------------
+// Le store de préférences ADOSSÉ AU DÉMON (`prefs.js` -> `/api/prefs`, self-scoped, viewer+), et non
+// `localStorage` en direct. TROIS RAISONS, dont une contrainte de fait :
+// (1) le démon n'a AUCUNE colonne où loger un axe : `/api/panels/:id` accepte titre, requête, viz,
+//     fenêtre, visibilité, requête privée, drill, colonnes et hauteur — rien d'autre. `patchPanel` ne
+//     peut donc pas porter ce réglage sans une capacité NOUVELLE du démon ;
+// (2) `prefs.js` est DURABLE ET INTER-POSTES (le démon garde le blob) là où `localStorage` seul
+//     perdrait le réglage au changement de navigateur — exactement la perte que la clé nomme ;
+// (3) il MIROITE déjà dans `localStorage` : le stockage local est obtenu sans l'écrire deux fois, et
+//     la console reste réglable hors ligne.
+// CE QUE CE CHOIX COÛTE, écrit plutôt que tu : le réglage est PAR COMPTE, il n'est pas porté par le
+// panneau partagé. Deux exploitants devant le même panneau peuvent voir deux axes. Le rendre commun
+// exige une colonne au démon ; la capacité manque, elle est nommée ici plutôt que contournée.
+// Le réglage retient des NOMS de colonne, pas des rangs : une requête ré-écrite qui garde la colonne
+// garde le réglage, et une requête qui la retire produit un REFUS qui la nomme — là où un rang aurait
+// silencieusement désigné une autre colonne.
+const CLE_PREF_AXES = 'viz_axes';   // clé du blob de préférences ; tout en minuscules, comme les autres identifiants techniques du dépôt
+const PLAFOND_REGLAGES_MEMORISES = 60;   // borne du blob de préférences ; le plus ancien inscrit sort.
+function reglagesMemorises() { const o = prefGet(CLE_PREF_AXES, null); return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {}; }
+function reglageLu(cle) { const r = cle ? reglagesMemorises()[cle] : null; return (r && typeof r === 'object') ? r : null; }
+function reglageEcrit(cle, r) {
+  if (!cle) return;
+  const tout = reglagesMemorises();
+  if (!r || (!r.x && !r.y && !r.s)) delete tout[cle]; else tout[cle] = r;
+  const cles = Object.keys(tout);
+  while (cles.length > PLAFOND_REGLAGES_MEMORISES) delete tout[cles.shift()];
+  prefSet(CLE_PREF_AXES, tout);
+}
+// La CLÉ d'un réglage : l'identité du panneau quand il y en a une, sinon la SIGNATURE des colonnes
+// servies — Explore n'a pas d'objet persistant, et la FORME du résultat est ce qui s'y répète.
+function cleDeReglage(idPanneau, cols) { return idPanneau ? ('p' + idPanneau) : ('c' + cols.join('\x1f')); }
+
+// -- CE QUE LA REQUÊTE REND VRAIMENT -----------------------------------------------------------
+// Un fait par colonne, LU SUR LES LIGNES SERVIES : rien n'est deviné d'un nom de champ ni d'un type
+// de graphe. C'est de là, et de là seulement, que sortent les choix offerts et les refus.
+function profilsDeColonnes(cols, rows) {
+  return cols.map((nom, i) => {
+    let nonVides = 0, nombres = 0; const vus = new Set();
+    for (const r of rows) {
+      const v = r[i];
+      if (v === null || v === undefined || v === '') continue;
+      nonVides++;
+      if (Number.isFinite(Number(v))) nombres++;
+      vus.add(String(v));
+    }
+    return { nom, i, nonVides, nombres, cardinalite: vus.size, numerique: nonVides > 0 && nombres === nonVides };
+  });
+}
+function premiereNonNumerique(rows, i) {
+  for (const r of rows) { const v = r[i]; if (v !== null && v !== undefined && v !== '' && !Number.isFinite(Number(v))) return String(v).slice(0, 40); }
+  return '';
+}
+
+// -- UN CHOIX IMPOSSIBLE PRODUIT UN REFUS QUI DIT POURQUOI --------------------------------------
+// Trois causes, toutes DÉRIVÉES — de ce que la requête rend, et de ce que la représentation a répondu
+// au sondage. Aucune ne cite un type de graphe. Le refus prend la place du GRAPHE, jamais celle des
+// données : il n'est décidé dans aucun test qui jugerait aussi un vide, et il nomme la colonne, le
+// compte et la valeur qui le motivent.
+function refusDeReglage(mode, cols, rows, reglage) {
+  const s = sondage(mode), profils = profilsDeColonnes(cols, rows);
+  const parNom = nom => profils.find(p => p.nom === nom) || null;
+  for (const nom of [reglage.x, reglage.s, reglage.y]) {
+    if (nom && !parNom(nom)) return {
+      fr: 'colonne « ' + nom + ' » absente du résultat, qui ne rend plus que ' + cols.join(', ') + '. Choisis une autre colonne.',
+      en: 'column “' + nom + '” is not in the result, which now returns only ' + cols.join(', ') + '. Pick another column.',
+    };
+  }
+  const y = reglage.y ? parNom(reglage.y) : null;
+  if (y && s.ordonneeNumerique && !y.numerique) return {
+    fr: 'ordonnée « ' + y.nom + ' » non numérique — ' + (y.nonVides - y.nombres) + ' valeur(s) sur ' + y.nonVides + ' n’en sont pas, par exemple « ' + premiereNonNumerique(rows, y.i) + ' ». Cette représentation les ramènerait toutes à zéro et tracerait un graphe FAUX.',
+    en: 'Y axis “' + y.nom + '” is not numeric — ' + (y.nonVides - y.nombres) + ' of ' + y.nonVides + ' values are not numbers, for example “' + premiereNonNumerique(rows, y.i) + '”. This representation would coerce them all to zero and draw a FALSE chart.',
+  };
+  const x = reglage.x ? parNom(reglage.x) : null;
+  if (x && s.trace && x.cardinalite > PLAFOND_CARDINALITE_ABSCISSE) return {
+    fr: 'abscisse « ' + x.nom + ' » à ' + x.cardinalite + ' valeurs distinctes, au-dessus du plafond de ' + PLAFOND_CARDINALITE_ABSCISSE + ' : les marques se confondraient. Agrège cette colonne, ou porte-la en ordonnée.',
+    en: 'X axis “' + x.nom + '” has ' + x.cardinalite + ' distinct values, above the ceiling of ' + PLAFOND_CARDINALITE_ABSCISSE + ': the marks would merge. Aggregate that column, or move it to the Y axis.',
+  };
+  return null;
+}
+
+// -- LE RÉGLAGE SE POSE AU-DESSUS DE LA RÈGLE : IL REMET LES COLONNES DANS L'ORDRE VOULU --------
+// Les fentes NON choisies gardent ce que la règle positionnelle leur donnait : première colonne en
+// abscisse, dernière en ordonnée, deuxième en 2e dimension là où la représentation la lit. Régler UN
+// axe ne déplace donc pas l'autre.
+function projeter(mode, cols, rows, reglage) {
+  const s = sondage(mode);
+  const rang = nom => cols.indexOf(nom);
+  const ix = reglage.x ? rang(reglage.x) : 0;
+  const iy = reglage.y ? rang(reglage.y) : cols.length - 1;
+  const is = reglage.s ? rang(reglage.s) : ((s.fentes[1] && cols.length >= 3) ? 1 : -1);
+  const ordre = [ix]; if (is >= 0) ordre.push(is); ordre.push(iy);
+  return { cols: ordre.map(i => cols[i]), rows: rows.map(r => ordre.map(i => r[i])) };
+}
+
+// -- LA SURFACE DE RÉGLAGE ---------------------------------------------------------------------
+// Elle vit LÀ OÙ LE GRAPHE EST, jamais derrière une entrée qu'il faut deviner : `P11.17-b` a mesuré
+// ce que coûte un accès qu'on ne prend pas. Les fentes offertes sont celles que la représentation a
+// dit lire au sondage — une représentation qui ne lit pas de 2e dimension n'en propose pas, plutôt
+// que d'offrir un contrôle sans effet ; et les colonnes offertes sont celles que la requête rend.
+function selecteurDeFente(libelle, infobulle, colonnes, choix, onChoix) {
+  const l = document.createElement('label');
+  const s = document.createElement('select');
+  s.title = infobulle;
+  const zero = document.createElement('option');
+  zero.value = ''; zero.textContent = LANG === 'en' ? '(default)' : '(par défaut)';
+  s.appendChild(zero);
+  colonnes.forEach(p => { const o = document.createElement('option'); o.value = p.nom; o.textContent = p.nom; s.appendChild(o); });
+  s.value = (choix && colonnes.some(p => p.nom === choix)) ? choix : '';
+  s.onchange = () => onChoix(s.value || '');
+  l.append(libelle, s);
+  return l;
+}
+function barreDeReglage(mode, cols, rows, reglage, onChoix) {
+  const s = sondage(mode), profils = profilsDeColonnes(cols, rows);
+  const barre = document.createElement('div');
+  barre.className = 'rf-row';
+  if (s.fentes[0]) barre.appendChild(selecteurDeFente(
+    LANG === 'en' ? 'X axis ' : 'Abscisse ',
+    LANG === 'en' ? 'Column handed to the chart in first position' : 'Colonne remise au graphe en première position',
+    profils, reglage.x, v => onChoix(Object.assign({}, reglage, { x: v }))));
+  if (s.fentes[1]) barre.appendChild(selecteurDeFente(
+    LANG === 'en' ? '2nd dimension ' : '2e dimension ',
+    LANG === 'en' ? 'Column handed to the chart in middle position' : 'Colonne remise au graphe en position médiane',
+    profils, reglage.s, v => onChoix(Object.assign({}, reglage, { s: v }))));
+  barre.appendChild(selecteurDeFente(
+    LANG === 'en' ? 'Y axis ' : 'Ordonnée ',
+    LANG === 'en' ? 'Column handed to the chart in last position' : 'Colonne remise au graphe en dernière position',
+    profils, reglage.y, v => onChoix(Object.assign({}, reglage, { y: v }))));
+  return barre;
+}
+
+// -- LE GRAPHE RÉGLÉ ---------------------------------------------------------------------------
+// Rend une LISTE de nœuds, jamais une enveloppe : une enveloppe changerait la mise en page de tous
+// les appelants. Sans réglage mémorisé, le graphe est l'appel `vizElement` D'ORIGINE, sur les colonnes
+// et les lignes D'ORIGINE — aucune projection n'a lieu. Le refus, quand il y en a un, prend la place
+// du graphe, et la barre reste au-dessus : sans quoi un choix impossible serait sans issue.
+function noeudsDeVizReglee(mode, cols, rows, query, drill, idPanneau, redessiner) {
+  const cle = cleDeReglage(idPanneau, cols);
+  const reglage = reglageLu(cle) || {};
+  const regle = !!(reglage.x || reglage.y || reglage.s);
+  const out = [];
+  // Sous DEUX colonnes il n'y a rien à choisir : le résultat n'a qu'une fente. La barre ne s'affiche pas,
+  // et aucun réglage ne peut donc changer l'arité de ce qui est remis au graphe.
+  if (sondage(mode).trace && cols.length >= 2) out.push(barreDeReglage(mode, cols, rows, reglage, r => { reglageEcrit(cle, r); redessiner(); }));
+  if (!regle) { out.push(vizElement(mode, cols, rows, query, drill)); return out; }
+  const refus = refusDeReglage(mode, cols, rows, reglage);
+  if (refus) {
+    const d = document.createElement('div');
+    d.className = 'rf-hint bad';
+    d.textContent = (LANG === 'en' ? 'Chart refused — ' : 'Graphe refusé — ') + (LANG === 'en' ? refus.en : refus.fr);
+    out.push(d);
+    return out;
+  }
+  const p = projeter(mode, cols, rows, reglage);
+  out.push(vizElement(mode, p.cols, p.rows, query, drill));
+  return out;
+}
+
 
 // Palette catégorielle stable (dérivée des variables de thème avec repli) : indexée par position -> une
 // même catégorie garde sa couleur d'un rendu à l'autre. Vendor-free (aucune dépendance).
@@ -863,7 +1111,10 @@ function lineEl(cols, rows, query, drill) {
 
 function renderViz() {
   if (!S.lastResult) return;
-  $('#qresult').replaceChildren(vizElement(($('#viz') && $('#viz').value) || 'table', S.lastResult.columns, S.lastResult.rows, $('#sql') ? $('#sql').value : ''));
+  // `P11.18-a` : Explore n'a pas d'objet persistant -> la clé du réglage est la SIGNATURE des colonnes
+  // servies (`cleDeReglage` avec un identifiant de panneau nul). Sans réglage mémorisé, `noeudsDeVizReglee`
+  // rend l'appel `vizElement` d'origine, sur les colonnes et les lignes d'origine.
+  $('#qresult').replaceChildren(...noeudsDeVizReglee(($('#viz') && $('#viz').value) || 'table', S.lastResult.columns, S.lastResult.rows, $('#sql') ? $('#sql').value : '', '', 0, renderViz));
 }
 
 // --- affichage unifie : evenements bruts OU table/viz selon la requete ---
@@ -1198,4 +1449,4 @@ async function runQuery() {
 function showQExport(has) { const el = $('#qexport'); if (el) el.hidden = !has; }
 
 
-export { banIp, clearDrillCrumb, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, qHistGo, queryCount, renderViz, runQ, runQuery, setZoom, stopExplore, tableEl, updateZoomBadge, vizElement, truncationBadge };
+export { banIp, clearDrillCrumb, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, noeudsDeVizReglee, qHistGo, queryCount, refusDeReglage, reglageLu, renderViz, runQ, runQuery, setZoom, sondage, stopExplore, tableEl, updateZoomBadge, vizElement, truncationBadge };

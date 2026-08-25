@@ -1,10 +1,10 @@
 // risk.js — panneau Risque par entité (RBA #24). ADDITIF, comportement-préservant.
 // Vit dans l'espace DÉTECTION & RÉPONSE. LECTURE seule, viewer+ (donnée de posture, pas un secret).
 // Endpoints (déjà LIVE, vérifiés 200) — servis du ROLLUP (zéro scan d'events) :
-//   GET /api/risk/entities                 -> {entities:[{entity_type,entity,env_id,score,contrib,distinct_tactics,tactics,score_hot,contrib_hot,max_severity,first_ts,last_ts,over_threshold}], thresholds:{score,distinct_tactics,velocity,window_s}}
+//   GET /api/risk/entities                 -> {entities:[{entity_type,entity,env_id,score,contrib,distinct_tactics,tactics,score_hot,contrib_hot,max_severity,first_ts,last_ts,over_threshold}], served, window, total, total_capped, over_threshold_total, thresholds:{score,distinct_tactics,velocity,window_s}}
 //   GET /api/risk/entity/:etype/:entity    -> {entity_type,entity,summary:{…}|null, timeline:[{ts,score,contrib}], contributions:[{ts,risk_score,source,rule_id,reason,mitre,severity}]}
 // SÉCU UI : tout en textContent/esc (anti-XSS). Aucune mutation (aucun apiSend).
-import { $, api, fetchInto, fmtTs, humanAge, muted, pagedList, sev } from './core.js';
+import { $, api, fetchInto, fmtTs, humanAge, LANG, muted, pagedList, sev } from './core.js';
 
 let _thresholds = null;   // seuils courants (pour la légende) — repeuplés à chaque chargement.
 
@@ -31,7 +31,17 @@ async function loadRiskView() {
     { key: 'max_severity', label: 'Sév. max', sortable: true, sortVal: r => r.max_severity || 0, render: r => { const s = document.createElement('span'); s.className = 'sev'; s.textContent = sev(r.max_severity); return s; } },
     { key: 'last_ts', label: 'Dernier', sortable: true, sortVal: r => r.last_ts || 0, render: r => { const s = document.createElement('span'); s.textContent = r.last_ts ? 'il y a ' + humanAge(nowS - r.last_ts) : '—'; if (r.last_ts) s.title = fmtTs(r.last_ts); return s; } },
   ];
-  pagedList(host, { mode: 'client', pageSize: 50, rows: entities, columns, sort: { key: 'score', dir: -1 }, emptyText: 'aucune entité à risque — le moteur de risque (RBA) n\'a pas encore attribué de contribution.', onRowClick: r => openEntity(r.entity_type, r.entity) });
+  host.replaceChildren();
+  const phrase = document.createElement('div');
+  phrase.className = 'muted';
+  phrase.style.cssText = 'margin-bottom:6px;font-size:11px';
+  phrase.appendChild(document.createTextNode(motDeLaCoupeDuClassement(d)));
+  phrase.appendChild(document.createElement('br'));
+  phrase.appendChild(document.createTextNode(motDesEntitesAuDessusDunSeuil(d)));
+  host.appendChild(phrase);
+  const liste = document.createElement('div');
+  host.appendChild(liste);
+  pagedList(liste, { mode: 'client', pageSize: 50, rows: entities, columns, sort: { key: 'score', dir: -1 }, emptyText: MOT_RISQUE_AUCUNE_ENTITE, onRowClick: r => openEntity(r.entity_type, r.entity) });
   // légende des seuils courants (aide à lire « seuil »).
   const leg = $('#risk-legend');
   if (leg) {
@@ -47,6 +57,68 @@ async function loadRiskView() {
     }
   }
 }
+
+
+// `P11.17-f` — CE QUE LA VUE AFFICHE QUAND LA COUPE MORD, ET POURQUOI DEUX PHRASES SONT NÉCESSAIRES.
+// La borne de cette route est DÉLIBÉRÉE : l'ordre étant `score DESC`, la coupe retient les entités les
+// plus à risque, ce qui est la question d'un panneau de triage — et `risk_rollup` est reconstruite à
+// blanc à chaque tick, donc elle ne grossit pas avec le temps. Une borne délibérée n'a pas à être
+// corrigée, elle a à se DIRE : le démon rend le rang de coupe (`window`), le nombre servi (`served`) et
+// le total des entités à risque borné par le plafond de comptage partagé (`total`, `total_capped`).
+// Fonction PURE (une réponse -> une phrase), quatre états de connaissance, aucun qui présente une coupe
+// comme un inventaire.
+function motDeLaCoupeDuClassement(d) {
+  const servies = d && d.entities ? d.entities.length : 0;
+  if (!laCoupeMordLeClassement(d)) return servies + MOT_RISQUE_TOUTE_LA_FLOTTE;
+  if (!d || typeof d.total !== 'number') return servies + MOT_RISQUE_SERVIES_A + (d && d.window ? d.window : servies) + MOT_RISQUE_SERVIES_B;
+  if (d.total_capped) return servies + MOT_RISQUE_PLUS_HAUTES + MOT_RISQUE_PLUS_DE + d.total + MOT_RISQUE_A_RISQUE;
+  return servies + MOT_RISQUE_PLUS_HAUTES + d.total + MOT_RISQUE_A_RISQUE;
+}
+// LA SECONDE PHRASE, ET LE DANGER PROPRE À UNE COUPE DE RANG. La pastille « seuil » est une DISJONCTION
+// (score OU tactiques distinctes OU vélocité) ; l'ordre du classement, lui, ne connaît que le SCORE. Une
+// entité qui franchit un seuil par les TACTIQUES avec un score modeste tombe donc sous le rang de coupe
+// et disparaît du panneau qui existe pour la montrer. Le total seul ne le dirait pas : le démon rend
+// aussi le nombre d'entités au-dessus d'un seuil, compté par le MÊME prédicat que les pastilles et que
+// le moteur d'alerte, et cette phrase le compare à ce qui est visible.
+function motDesEntitesAuDessusDunSeuil(d) {
+  const total = d ? d.over_threshold_total : null;
+  if (typeof total !== 'number') return MOT_RISQUE_SEUIL_NON_COMPTE;
+  const visibles = (d && Array.isArray(d.entities) ? d.entities : []).filter(e => e && e.over_threshold).length;
+  if (total <= visibles) return total + MOT_RISQUE_SEUIL_TOUTES;
+  return total + MOT_RISQUE_SEUIL_DONT + visibles + MOT_RISQUE_SEUIL_SOUS_LA_COUPE;
+}
+// LA COUPE MORD-ELLE ? UNE SEULE LECTURE — l'écrire deux fois la laisserait diverger. Le classement ne
+// couvre TOUTE la flotte à risque que lorsqu'elle a été comptée (`total` numérique), que le comptage n'a
+// pas lui-même été plafonné, et qu'il ne dépasse pas les lignes rendues. Un total absent n'est PAS un zéro.
+function laCoupeMordLeClassement(d) {
+  const servies = d && d.entities ? d.entities.length : 0;
+  return !(d && typeof d.total === 'number' && !d.total_capped && d.total <= servies);
+}
+// Le vocabulaire de la coupe, écrit EN ENTIER dans les deux langues à l'endroit du rendu : une phrase
+// recollée à l'exécution ne serait jamais égale à une clé du lexique et resterait en français.
+const MOT_RISQUE_PLUS_HAUTES = LANG === 'en' ? ' highest-risk entities out of ' : ' entités les plus à risque sur ';
+const MOT_RISQUE_PLUS_DE = LANG === 'en' ? 'more than ' : 'plus de ';
+const MOT_RISQUE_A_RISQUE = LANG === 'en'
+  ? ' carrying risk — this is a rank cut, not the whole list: the ranking is ordered by cumulative score.'
+  : " porteuses de risque — c'est une coupe de rang, pas la liste entière : le classement est ordonné par score cumulé.";
+const MOT_RISQUE_TOUTE_LA_FLOTTE = LANG === 'en' ? ' entities carrying risk — that is all of them.' : " entités porteuses de risque — c'est la totalité.";
+const MOT_RISQUE_SERVIES_A = LANG === 'en' ? ' entities served (rank cut of ' : ' entités servies (coupe de rang de ';
+const MOT_RISQUE_SERVIES_B = LANG === 'en'
+  ? ') — the risk rollup could NOT be counted, so it may hold more.'
+  : ") — le cumul de risque n'a PAS pu être compté, il peut donc en contenir davantage.";
+const MOT_RISQUE_SEUIL_TOUTES = LANG === 'en'
+  ? ' entity(ies) cross a threshold, and every one of them is shown here.'
+  : ' entité(s) franchissent un seuil, et toutes sont affichées ici.';
+const MOT_RISQUE_SEUIL_DONT = LANG === 'en' ? ' entity(ies) cross a threshold, of which ' : ' entité(s) franchissent un seuil, dont ';
+const MOT_RISQUE_SEUIL_SOUS_LA_COUPE = LANG === 'en'
+  ? ' are shown here — the others sit below the rank cut, because a threshold can be crossed on distinct tactics or on velocity while the score stays low. Alerting reads the whole rollup and does not miss them.'
+  : " sont affichées ici — les autres sont sous le rang de coupe, un seuil pouvant être franchi par les tactiques distinctes ou par la vélocité avec un score modeste. Le moteur d'alerte, lui, lit le cumul entier et ne les manque pas.";
+const MOT_RISQUE_SEUIL_NON_COMPTE = LANG === 'en'
+  ? 'The entities crossing a threshold could NOT be counted — this is not a count of zero.'
+  : "Les entités qui franchissent un seuil n'ont PAS pu être comptées — ce n'est pas un compte nul.";
+const MOT_RISQUE_AUCUNE_ENTITE = LANG === 'en'
+  ? 'No entity carries risk — the risk engine (RBA) has not attributed any contribution yet.'
+  : "Aucune entité à risque — le moteur de risque (RBA) n'a pas encore attribué de contribution.";
 
 // ---- vue détail d'UNE entité : synthèse + timeline horaire + contributions ----
 async function openEntity(etype, entity) {

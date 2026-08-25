@@ -362,15 +362,73 @@ fn ti_enrich(fields: Option<String>, matched: &str, meta: &IocMeta) -> String {
 // on re-check `au.is_admin()` ici (défense en profondeur, comme les connecteurs).
 // ============================================================================================
 
-/// GET /api/threat-intel/iocs — liste (cappée) des IOC du tenant courant. viewer+ (donnée de
-/// renseignement, pas un secret). Retourne aussi le statut expiré (calculé au read).
-pub(crate) async fn iocs_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
-    crate::req_conn!(st, au, conn);
-    let now_ts = now();
-    let list: Vec<Value> = match conn.prepare(
+// =================================================================================================
+// `P11.17-f` — L'INVENTAIRE DES INDICATEURS DIT CE QU'IL SERT, ET CE QU'IL NE SERT PAS
+//
+// LE DÉFAUT, ET POURQUOI IL EST LE PLUS GRAVE DE SA FAMILLE. `GET /api/threat-intel/iocs` bornait sa
+// lecture à deux mille lignes et rendait un TABLEAU NU : ni total, ni indicateur de troncature, ni
+// même une enveloppe où en poser un. Un inventaire d'indicateurs tronqué en silence ne se lit pas
+// comme une liste incomplète : il se lit comme une COUVERTURE. Un analyste qui cherche si un
+// indicateur est connu du magasin et ne le voit pas conclut qu'il n'y est pas — alors qu'il peut
+// simplement être hors fenêtre. L'écart va donc dans le sens dangereux, et il grandit : rien ne purge
+// `ioc` (l'expiration est calculée À LA LECTURE, aucune ligne n'est supprimée), la table ne fait que
+// croître et la fenêtre en couvre une part toujours plus petite.
+//
+// CE QUE LA CLÉ ET LES INDEX DE **CETTE** TABLE PERMETTENT — vérifiés plutôt que supposés, parce que
+// c'est la FORME qui se reprend d'un flux à l'autre et jamais le littéral SQL :
+//   * `ioc.id` est `INTEGER PRIMARY KEY` (migration v79), donc l'alias du `rowid`. Les index de la
+//     table sont `idx_ioc_value(value)`, `idx_ioc_expires(expires) WHERE expires IS NOT NULL` et
+//     l'auto-index de `UNIQUE(type,value,source,env_id)`. **`last_seen` N'EST INDEXÉ PAR AUCUN.**
+//   * IL S'ENSUIT QUE LA BORNE NE BORNE PAS LA LECTURE, seulement l'ENVOI : `ORDER BY last_seen DESC,
+//     id DESC` sans index sur `last_seen` impose au moteur de parcourir la table ENTIÈRE et de la
+//     trier avant de couper à la fenêtre. C'est l'inverse de la file de riposte (`P11.17-e`), dont la
+//     fenêtre `ORDER BY id DESC` est un parcours arrière de la clé primaire, O(N). Le total borné
+//     ajouté ici coûte donc, dans le pire cas, MOINS que la fenêtre qu'il accompagne.
+//   * LE CURSEUR N'EST PAS CONSTRUIT, ET LA RAISON EST DANS LA DONNÉE : `ioc_upsert` RÉÉCRIT
+//     `last_seen` à chaque ré-apport d'un indicateur par son flux. Une clé de pagination
+//     `(last_seen,id)` désignerait donc une ligne qui SE DÉPLACE entre deux pages — un indicateur
+//     ré-apporté pendant le parcours remonterait en tête et une ligne serait sautée sans que rien ne
+//     le dise. Ce serait le défaut de cette clé, reproduit sous un autre nom. Un curseur sur `id`
+//     seul serait stable mais servirait l'ordre des CRÉATIONS, pas celui des dernières vues, donc
+//     pas la liste que ce panneau montre.
+//   * LE VOISIN COMPTE DÉJÀ, ET C'EST CE QUI RENDAIT LE SILENCE VISIBLE : `GET
+//     /api/threat-intel/coverage` sert un `COUNT(*)` EXACT de la même table, affiché en tuile juste
+//     au-dessus de la liste. Les deux chiffres étaient donc côte à côte à l'écran sans qu'aucun ne
+//     dise que le second était une fenêtre du premier. Ce comptage-là n'est pas touché : il répond à
+//     une autre question (l'état du magasin) et son coût est celui d'un comptage d'arbre.
+// =================================================================================================
+
+/// TAILLE DE LA FENÊTRE servie par `GET /api/threat-intel/iocs` — les `IOCS_WINDOW` indicateurs vus le
+/// plus récemment. Nommée plutôt qu'écrite dans l'énoncé : la vue la REÇOIT, et le test la lit ici au
+/// lieu de la recopier.
+pub(crate) const IOCS_WINDOW: i64 = 2000;
+
+/// LE SEUL fabricant du COMPTAGE de l'inventaire — écrit une fois pour que le test mesure CE QUI EST
+/// ÉMIS et non une copie. `SELECT 1` ne demande aucune colonne, `LIMIT CAP+1` ARRÊTE le balayage au
+/// plafond partagé : sous le plafond le total est EXACT, au-dessus il est plafonné ET annoncé.
+pub(crate) fn iocs_total_sql() -> String {
+    format!("SELECT COUNT(*) FROM (SELECT 1 FROM ioc LIMIT {})", PAGINATION_COUNT_CAP + 1)
+}
+
+/// LE SEUL fabricant de la FENÊTRE servie. Projection et ordre INCHANGÉS : ce correctif ajoute un
+/// chiffre à côté de la liste, il ne touche pas à la liste.
+pub(crate) fn iocs_window_sql() -> String {
+    format!(
         "SELECT id,type,value,source,confidence,severity,first_seen,last_seen,expires,stix_id,env_id \
-         FROM ioc ORDER BY last_seen DESC, id DESC LIMIT 2000",
-    ) {
+         FROM ioc ORDER BY last_seen DESC, id DESC LIMIT {IOCS_WINDOW}"
+    )
+}
+
+/// Fenêtre + total borné de l'inventaire d'indicateurs. Fonction PURE sur `&Connection` -> testable
+/// sans `AppState`.
+///
+/// Rend `{iocs, served, window, total, total_capped}`. `served` est le nombre de lignes RENDUES et
+/// `window` la borne de la route : leur égalité est précisément ce qui dit à la vue que la borne MORD.
+/// `total`/`total_capped` valent `null` — jamais `0` — quand le comptage n'a pas pu être lu : « non
+/// compté » et « aucun indicateur » sont deux faits différents, et sur un inventaire de renseignement
+/// l'écart va dans le sens dangereux (un magasin qu'on croit vide n'alarme personne).
+pub(crate) fn iocs_page(conn: &Connection, now_ts: i64) -> Value {
+    let rows: Vec<Value> = match conn.prepare(&iocs_window_sql()) {
         Ok(mut stmt) => stmt
             .query_map([], |r| {
                 let expires: Option<i64> = r.get(8)?;
@@ -393,7 +451,30 @@ pub(crate) async fn iocs_list(State(st): State<AppState>, Extension(au): Extensi
             .unwrap_or_default(),
         Err(_) => Vec::new(),
     };
-    Json(Value::Array(list)).into_response()
+    // COMPTAGE BORNÉ : `raw` = min(vrai_total, CAP+1). > CAP -> plafonné (CAP + `total_capped`) ; sinon
+    // exact. Un comptage qui ÉCHOUE ne rend pas un zéro rassurant : il rend `null`, et la vue dit qu'elle
+    // ne sait pas.
+    let (total, total_capped) = match conn.query_row(&iocs_total_sql(), [], |r| r.get::<_, i64>(0)) {
+        Ok(raw) => {
+            let capped = raw > PAGINATION_COUNT_CAP;
+            (json!(if capped { PAGINATION_COUNT_CAP } else { raw }), json!(capped))
+        }
+        Err(_) => (Value::Null, Value::Null),
+    };
+    json!({
+        "iocs": rows,
+        "served": rows.len(),
+        "window": IOCS_WINDOW,
+        "total": total,
+        "total_capped": total_capped,
+    })
+}
+
+/// GET /api/threat-intel/iocs — fenêtre des IOC du tenant courant, servie AVEC son total borné. viewer+
+/// (donnée de renseignement, pas un secret). Retourne aussi le statut expiré (calculé au read).
+pub(crate) async fn iocs_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
+    crate::req_conn!(st, au, conn);
+    Json(iocs_page(&conn, now())).into_response()
 }
 
 /// UPSERT d'un IOC (INSERT OR sur UNIQUE(type,value,source,env_id)). `first_seen` conservé au conflit ;

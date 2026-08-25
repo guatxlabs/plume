@@ -920,13 +920,47 @@ button.btn-busy::after{content:"";position:absolute;top:50%;left:50%;width:12px;
 .linklike,.btn-link{background:none;border:0;color:var(--acc);cursor:pointer;font:inherit;font-size:12px;padding:0;text-decoration:underline;text-underline-offset:2px}
 .linklike:hover,.btn-link:hover{filter:brightness(1.12)}
 
-/* --- Lot 1 : fraîcheur — surlignage des sources chaudes + groupes repliables --- */
-.kv.hot{background:color-mix(in srgb,var(--warn) 10%,transparent);border-radius:6px;padding-left:6px;padding-right:6px;border-bottom-color:color-mix(in srgb,var(--warn) 30%,var(--bd))}
-.fhot{display:inline-flex;align-items:center;gap:3px;font-size:10px;font-family:var(--font-mono);color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 40%,transparent);background:color-mix(in srgb,var(--warn) 14%,transparent);border-radius:var(--pill);padding:0 6px;margin-left:6px;vertical-align:middle}
+/* `P11.18-n` — CE QUI DISTINGUE UNE LIGNE PORTEUSE D'ALERTES N'EMPRUNTE AUCUNE COULEUR D'ÉTAT, ET
+   N'EST PLUS UNE PROPRIÉTÉ DE LA LIGNE.
+
+   LE CONSTAT, MESURÉ LE 2026-08-25 DANS UN MOTEUR DE RENDU. Une source portant des alertes actives
+   recevait la classe `hot`, et la règle qui la lisait repeignait TOUTE la ligne d'un fond dérivé de
+   `--warn` — en la décalant au passage d'un rembourrage que les autres lignes n'ont pas. Or `--warn`
+   est, dans cette vue, l'encre de l'état « en retard » : l'âge d'une ligne en retard est rendu par
+   `.fwarn`, c'est-à-dire EXACTEMENT la même valeur. À la capture, une ligne teintée valait le fond
+   de carte composé avec l'encre du retard, une ligne ordinaire le fond de carte nu. Le signal de
+   PLACE et le signal de COULEUR disaient donc tous deux « problème de collecte » à propos d'un
+   compte d'alertes ; la place a été corrigée sous `P11.18-d`, la couleur l'est ici.
+
+   POURQUOI AUCUNE AUTRE TEINTE, ET POURQUOI LA RÈGLE PART PLUTÔT QUE DE CHANGER DE COULEUR. Les cinq
+   états de collecte de cette vue RÉSERVENT chacun la leur, pastille et encre : `--ok` (frais), le
+   bleu de `.calme`, le doré de `.fdot.warn` doublé de `--warn` (en retard), `--mut` (en attente),
+   `--bad` (muet). Relevé dans les DEUX thèmes le 2026-08-25 : il n'en reste aucune de libre —
+   `--acc` VAUT `--ok` sous le thème clair, `--sev2` vaut `--warn` et `--sev4` vaut `--bad`. Et le
+   défaut ne tenait pas qu'à la teinte : dans cette vue, ce qui vaut pour la LIGNE ENTIÈRE appartient
+   à la grammaire de l'état — la pastille l'ouvre, l'âge coloré la ferme. Une ligne repeinte se lit
+   comme un état, quelle que soit la couleur employée. La marque redevient donc un OBJET DANS la
+   ligne, la cloche, et la règle de ligne disparaît. Les lignes porteuses d'alertes se réalignent
+   ainsi sur les autres, et le seul axe de comparaison d'un groupe redevient l'état de collecte.
+
+   LA MARQUE NE TIENT PAS À LA COULEUR. La cloche porte un GLYPHE que rien d'autre ne pose sur une
+   ligne, le NOMBRE d'alertes et un CADRE : trois canaux qui survivent en monochrome, comme le
+   chevron du dépli partagé (`P11.15-a`). Son encre est celle des titres, son cadre en est dérivé, et
+   son survol ne change QUE le cadre — aucune teinte n'entre dans la marque ni dans son survol, donc
+   aucune ne peut être prise pour un état. Elle reste le seul élément d'une ligne atteignable au
+   clavier, et son intitulé nomme le compte qu'elle ouvre. Cette même règle habille le compte de la
+   zone des alertes (`P11.18-d`), que `P11.3-d` déclare NEUTRE : il l'est désormais aussi à l'œil.
+
+   POURQUOI LA RÈGLE DE LIGNE ET LA CLASSE PARTENT ENSEMBLE. `hot` n'avait aucune autre cible dans la
+   console : retirer la règle seule aurait laissé une classe qui ne peint rien, et retirer la classe
+   seule aurait laissé une règle orpheline — ce que la garde des sélecteurs refuse, plafond zéro. */
+.fhot{display:inline-flex;align-items:center;gap:3px;font-size:10px;font-family:var(--font-mono);color:var(--hd);border:1px solid color-mix(in srgb,var(--hd) 30%,transparent);background:var(--card2);border-radius:var(--pill);padding:0 6px;margin-left:6px;vertical-align:middle}
 .fhot .ic{width:11px;height:11px}
-/* FIX 2 : cloche d'une source chaude = lien vers ses alertes (cliquable + survol explicite) */
+/* FIX 2 : cloche d'une source porteuse d'alertes = lien vers ses alertes (cliquable + survol
+   explicite). Le survol n'appuie que sur le CADRE : il n'introduit aucune teinte que la vue réserve
+   à un état, et le focus reste celui, partagé, de la console (`:focus-visible`). */
 .fhot[data-src]{cursor:pointer}
-.fhot[data-src]:hover{background:color-mix(in srgb,var(--warn) 26%,transparent);border-color:var(--warn)}
+.fhot[data-src]:hover{border-color:var(--hd)}
 /* P11.3-d — la RÉPARTITION des alertes actives (avec cloche / sans flux / sans imputation). NEUTRE par
    construction : ce n'est pas une anomalie mais un partage dont la somme se retrouve. Seul le compte
    « sans flux » est cliquable — il pivote vers les alertes qui portent le jeton d'inconnu nommé. */

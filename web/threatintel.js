@@ -4,11 +4,11 @@
 // sont viewer+). Défense en profondeur côté client : uiIsAdmin() court-circuite les fetch inutiles.
 // Endpoints (déjà LIVE, vérifiés 200) :
 //   GET  /api/threat-intel/coverage -> {total, active, expired, by_type:[{type,n}], by_source:[{source,n}], hits_query}
-//   GET  /api/threat-intel/iocs     -> [ {id,type,value,source,confidence,severity,first_seen,last_seen,expires,expired,stix_id,env_id} ]  (cappé 2000, tableau NU)
+//   GET  /api/threat-intel/iocs     -> {iocs:[{id,type,value,source,confidence,severity,first_seen,last_seen,expires,expired,stix_id,env_id}], served, window, total, total_capped}
 //   POST /api/threat-intel/iocs     <- {type,value,source?,confidence?,severity?,expires?,env_id?} OU {iocs:[…],source?,env_id?}  -> {added, skipped:[…]}
 //   POST /api/threat-intel/import   <- {bundle:{…}, source?, env_id?}  -> {imported, skipped:[…]}
 // SÉCU UI : tout en textContent/esc (anti-XSS) ; le contenu IOC n'est pas un secret (renseignement).
-import { $, api, apiSend, disclosure, fetchInto, fmtTs, humanAge, modal, muted, pagedList, sev, toast } from './core.js';
+import { $, api, apiSend, disclosure, fetchInto, fmtTs, humanAge, LANG, modal, muted, pagedList, sev, toast } from './core.js';
 import { champDeRecherche, filtrerParRecherche, texteCherchable } from './recherche_de_liste.js';
 import { uiIsAdmin } from './multitenant.js';
 // P11.12-a : ce panneau avait le PREMIER filtre de liste de la console, câblé en place. Il prend
@@ -18,7 +18,8 @@ import { uiIsAdmin } from './multitenant.js';
 // vocabulaire des types d'IOC — MIROIR de guatx_core::ti::IOC_TYPES (le serveur ignore tout type hors liste).
 const IOC_TYPES = ['ip', 'domain', 'url', 'hash_md5', 'hash_sha1', 'hash_sha256', 'email'];
 
-let _allIocs = [];      // dernier jeu chargé (tableau NU) — filtré côté client par la recherche.
+let _allIocs = [];      // dernières lignes SERVIES — filtrées côté client par la recherche.
+let _borneIocs = null;  // la réponse ENTIÈRE : c'est elle qui porte la fenêtre, le servi et le total.
 let _iocSearch = '';    // filtre de recherche courant (valeur/type/source).
 
 // ---- chargement du panneau : tuile de couverture + liste des IOC (+ resync du filtre) ----
@@ -76,7 +77,8 @@ async function loadCoverage() {
 async function loadIocs() {
   const host = $('#ti-ioc-list'); if (!host) return;
   const d = await fetchInto(host, '/threat-intel/iocs'); if (!d) return;
-  _allIocs = Array.isArray(d) ? d : [];
+  _borneIocs = d;
+  _allIocs = (d && Array.isArray(d.iocs)) ? d.iocs : [];
   renderIocList();
 }
 
@@ -101,8 +103,69 @@ function renderIocList() {
     } },
     { key: 'env_id', label: 'Env', sortable: true, sortVal: r => r.env_id || '', render: r => { const c = document.createElement('code'); c.textContent = r.env_id || 'prod'; return c; } },
   ];
-  pagedList(host, { mode: 'client', pageSize: 50, rows, columns, sort: { key: 'last_seen', dir: -1 }, emptyText: q ? 'aucun IOC ne correspond au filtre' : 'aucun IOC — ajoute-en un ou importe un feed / bundle STIX.' });
+  const borne = laFenetreBorneLeMagasin(_borneIocs);
+  host.replaceChildren();
+  const phrase = document.createElement('div');
+  phrase.className = 'muted';
+  phrase.style.cssText = 'margin-bottom:6px;font-size:11px';
+  phrase.appendChild(document.createTextNode(motDeLaBorneDesIndicateurs(_borneIocs)));
+  host.appendChild(phrase);
+  const liste = document.createElement('div');
+  host.appendChild(liste);
+  pagedList(liste, { mode: 'client', pageSize: 50, rows, columns, sort: { key: 'last_seen', dir: -1 }, emptyText: q ? (borne ? MOT_IOC_RIEN_FENETRE : MOT_IOC_RIEN_MAGASIN) : MOT_IOC_MAGASIN_VIDE });
 }
+
+// `P11.17-f` — CE QUE LA VUE AFFICHE QUAND LA BORNE MORD. Le démon rend, à côté des lignes, la FENÊTRE
+// qu'il sert (`window`), le nombre de lignes SERVIES (`served`) et le TOTAL du magasin borné par le
+// plafond de comptage partagé (`total`, `total_capped`) — le même idiome que `/api/query`, que le
+// journal d'audit et que la file de riposte. Quatre phrases, une par état de connaissance, et aucune ne
+// présente une fenêtre comme une couverture : « tant sur tant » quand la borne mord, « tant sur PLUS DE
+// tant » quand le comptage lui-même est plafonné, « c'est tout le magasin » quand elle ne mord pas, et
+// un aveu quand le démon n'a pas pu compter — un total absent n'est PAS un zéro. C'est ici que la
+// gravité de cette liste se paie : ne pas voir un indicateur se conclut « il n'est pas connu ».
+// Fonction PURE (une réponse -> une phrase).
+function motDeLaBorneDesIndicateurs(d) {
+  const servis = d && d.iocs ? d.iocs.length : 0;
+  if (!laFenetreBorneLeMagasin(d)) return servis + MOT_IOC_TOUT_LE_MAGASIN;
+  if (!d || typeof d.total !== 'number') return servis + MOT_IOC_SERVIS_A + (d && d.window ? d.window : servis) + MOT_IOC_SERVIS_B;
+  if (d.total_capped) return servis + MOT_IOC_SUR + MOT_IOC_PLUS_DE + d.total + MOT_IOC_HORS_ATTEINTE;
+  return servis + MOT_IOC_SUR + d.total + MOT_IOC_HORS_ATTEINTE;
+}
+// LA BORNE MORD-ELLE ? UNE SEULE LECTURE, DEUX EMPLOIS — la phrase de la fenêtre et celle de la
+// recherche répondent à la MÊME question, et l'écrire deux fois serait la laisser diverger. Le magasin
+// n'est ENTIÈREMENT servi que lorsqu'il a été compté (`total` numérique), que le comptage n'a pas
+// lui-même été plafonné, et qu'il ne dépasse pas les lignes rendues. Tout le reste — comptage
+// impossible, comptage plafonné, total supérieur au servi — est une fenêtre qui borne, et un total
+// absent n'est PAS un zéro.
+function laFenetreBorneLeMagasin(d) {
+  const servis = d && d.iocs ? d.iocs.length : 0;
+  return !(d && typeof d.total === 'number' && !d.total_capped && d.total <= servis);
+}
+// Le vocabulaire de la borne, écrit EN ENTIER dans les deux langues à l'endroit du rendu : une phrase
+// recollée à l'exécution ne serait jamais égale à une clé du lexique et resterait en français.
+const MOT_IOC_SUR = LANG === 'en' ? ' indicator(s) shown out of ' : ' indicateur(s) affiché(s) sur ';
+const MOT_IOC_PLUS_DE = LANG === 'en' ? 'more than ' : 'plus de ';
+const MOT_IOC_HORS_ATTEINTE = LANG === 'en'
+  ? ' in the store — the route serves the most recently seen ones; the others are not reachable from this panel, so an absence here is NOT proof that an indicator is unknown.'
+  : " au magasin — la route sert les plus récemment vus ; les autres ne sont pas atteignables depuis ce panneau, donc une absence ici ne PROUVE PAS qu'un indicateur est inconnu.";
+const MOT_IOC_TOUT_LE_MAGASIN = LANG === 'en' ? ' indicator(s) — that is the whole store.' : " indicateur(s) — c'est tout le magasin.";
+const MOT_IOC_SERVIS_A = LANG === 'en' ? ' indicator(s) served (window of ' : ' indicateur(s) servi(s) (fenêtre de ';
+const MOT_IOC_SERVIS_B = LANG === 'en'
+  ? ') — the store could NOT be counted, so it may hold more.'
+  : ") — le magasin n'a PAS pu être compté, il peut donc en contenir davantage.";
+// CE QUE LA RECHERCHE COUVRE, DIT SANS L'ARRONDIR. La route sert une FENÊTRE des indicateurs vus le plus
+// récemment ; une recherche du navigateur ne porte donc que sur les lignes SERVIES. Taire cette limite
+// ferait rendre « aucun résultat » pour un indicateur qui EXISTE au magasin — et sur un inventaire de
+// renseignement, l'erreur va dans le sens dangereux.
+const MOT_IOC_RIEN_FENETRE = LANG === 'en'
+  ? 'No SERVED indicator carries these words in its value, type or source — and the search does not reach into the store beyond the served window, so a match may exist without being reachable from this panel.'
+  : "Aucun indicateur SERVI ne porte ces mots dans sa valeur, son type ou sa source — et la recherche ne descend pas dans le magasin au-delà de la fenêtre servie : un indicateur peut exister sans être atteignable depuis ce panneau.";
+const MOT_IOC_RIEN_MAGASIN = LANG === 'en'
+  ? 'No indicator in the store carries these words in its value, type or source — and the whole store is served here, so none exists.'
+  : "Aucun indicateur du magasin ne porte ces mots dans sa valeur, son type ou sa source — et le magasin est servi ici en entier : il n'en existe donc aucun.";
+const MOT_IOC_MAGASIN_VIDE = LANG === 'en'
+  ? 'No indicator — add one, or import a feed / STIX bundle.'
+  : "Aucun indicateur — ajoutes-en un ou importe un feed / bundle STIX.";
 
 // ---- ajout MANUEL d'un IOC (modale) — POST /threat-intel/iocs {type,value,…} ----
 async function addIocPrompt() {

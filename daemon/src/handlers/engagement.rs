@@ -442,16 +442,94 @@ pub(crate) async fn engagements_active(State(st): State<AppState>, Extension(au)
     })
 }
 
-/// GET /api/engagements — liste (admin ; double garde route_min_role + re-check ici).
+// =================================================================================================
+// `P11.17-f` — LA LISTE DES ENGAGEMENTS DIT CE QU'ELLE SERT, ET CE QU'ELLE NE SERT PAS
+//
+// LE DÉFAUT. `GET /api/engagements` bornait sa lecture à deux cents lignes et ne rendait QUE ces
+// lignes : ni total, ni indicateur de troncature. Le seul chiffre disponible était donc le nombre de
+// lignes SERVIES — qu'un lecteur prend pour un total alors qu'il est une fenêtre. Cette table ne
+// décroît JAMAIS : aucun `DELETE` ne la touche (le cycle de vie ne fait que passer `status` à
+// `expired` / `revoked`), donc les engagements clos s'y accumulent et la fenêtre en couvre une part
+// toujours plus petite. Sur un registre d'AUTORISATIONS de pentest, une ligne hors d'atteinte est une
+// autorisation qu'on ne sait plus avoir accordée.
+//
+// CE QUE LA CLÉ ET LES INDEX DE **CETTE** TABLE PERMETTENT — vérifiés plutôt que supposés :
+//   * `engagement.id` est `TEXT PRIMARY KEY` (migration v75) et vaut `eng_<32 hexadécimaux tirés de
+//     /dev/urandom>`. **L'ORDRE DES `id` N'EST DONC PAS CELUI DES CRÉATIONS**, contrairement à
+//     `action.id` qui est un alias de `rowid` : le curseur sur l'identifiant seul de `P11.17-e` ne se
+//     recopie PAS ici. Il paginerait dans un ordre ALÉATOIRE, sans rapport avec la liste servie.
+//   * Le seul index de la table est `idx_engagement_status(status, window_end)`, posé pour le
+//     balayage d'expiration. **`created` n'est indexé par rien**, et l'ordre servi l'enveloppe dans
+//     `COALESCE(created,0)` — une expression qu'aucun index ne couvre. La fenêtre impose donc déjà un
+//     parcours complet suivi d'un tri : la borne borne l'ENVOI, pas la lecture, et le total borné
+//     ajouté ici coûte au pire moins que la fenêtre qu'il accompagne.
+//   * UN CURSEUR `(created,id)` SERAIT CORRECT MAIS SANS SUPPORT : `created` n'est jamais réécrit
+//     après la création (seuls `status` et `ended_ts` le sont), donc la clé serait STABLE — au
+//     contraire de celle de l'inventaire d'indicateurs. Il n'est pas construit dans ce lot, et c'est
+//     écrit tel quel : chaque page rejouerait le parcours et le tri complets, pour une table dont la
+//     croissance est celle d'un geste humain audité et non celle d'un flux.
+//   * CE QUE CETTE ROUTE N'A PAS, ET QUI COMPTE POUR LIRE LA SUITE : aucun module de `web/` ne la
+//     consomme — relevé le 2026-08-25 par recherche sur l'arbre entier. Il n'y a pas de vue où poser
+//     l'aveu ; c'est la RÉPONSE elle-même qui doit le porter, pour l'exploitant qui l'interroge.
+// =================================================================================================
+
+/// TAILLE DE LA FENÊTRE servie par `GET /api/engagements` — les `ENGAGEMENTS_WINDOW` engagements
+/// déclarés le plus récemment. Nommée plutôt qu'écrite dans l'énoncé : le test la lit ici au lieu de
+/// la recopier.
+pub(crate) const ENGAGEMENTS_WINDOW: i64 = 200;
+
+/// LE SEUL fabricant du COMPTAGE du registre — écrit une fois pour que le test mesure CE QUI EST ÉMIS
+/// et non une copie. `LIMIT CAP+1` arrête le balayage au plafond partagé : sous le plafond le total est
+/// EXACT, au-dessus il est plafonné ET annoncé.
+pub(crate) fn engagements_total_sql() -> String {
+    format!("SELECT COUNT(*) FROM (SELECT 1 FROM engagement LIMIT {})", PAGINATION_COUNT_CAP + 1)
+}
+
+/// LE SEUL fabricant de la FENÊTRE servie. Projection et ordre INCHANGÉS : ce correctif ajoute un
+/// chiffre à côté de la liste, il ne touche pas à la liste.
+pub(crate) fn engagements_window_sql() -> String {
+    format!(
+        "SELECT id,name,box,scope,window_start,window_end,authorizer,reason,status,adapter,created,created_by,ended_ts \
+         FROM engagement ORDER BY COALESCE(created,0) DESC, id DESC LIMIT {ENGAGEMENTS_WINDOW}"
+    )
+}
+
+/// Fenêtre + total borné du registre d'engagements. Fonction PURE sur `&Connection` -> testable sans
+/// `AppState`.
+///
+/// Rend `{engagements, served, window, total, total_capped}`. `served` est le nombre de lignes RENDUES
+/// et `window` la borne de la route : leur égalité est ce qui dit au lecteur que la borne MORD.
+/// `total`/`total_capped` valent `null` — jamais `0` — quand le comptage n'a pas pu être lu : « non
+/// compté » et « aucun engagement » sont deux faits différents.
+pub(crate) fn engagements_page(conn: &Connection) -> Value {
+    let rows: Vec<Value> = match conn.prepare(&engagements_window_sql()) {
+        Ok(mut stmt) => stmt.query_map([], engagement_row_json).map(|m| m.flatten().collect()).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    // COMPTAGE BORNÉ : `raw` = min(vrai_total, CAP+1). > CAP -> plafonné (CAP + `total_capped`) ; sinon
+    // exact. Un comptage qui ÉCHOUE rend `null`, jamais un zéro rassurant.
+    let (total, total_capped) = match conn.query_row(&engagements_total_sql(), [], |r| r.get::<_, i64>(0)) {
+        Ok(raw) => {
+            let capped = raw > PAGINATION_COUNT_CAP;
+            (json!(if capped { PAGINATION_COUNT_CAP } else { raw }), json!(capped))
+        }
+        Err(_) => (Value::Null, Value::Null),
+    };
+    json!({
+        "engagements": rows,
+        "served": rows.len(),
+        "window": ENGAGEMENTS_WINDOW,
+        "total": total,
+        "total_capped": total_capped,
+    })
+}
+
+/// GET /api/engagements — fenêtre du registre, servie AVEC son total borné (admin ; double garde
+/// route_min_role + re-check ici).
 pub(crate) async fn engagements_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
     if let Err(r) = require_admin(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let mut stmt = match conn.prepare(
-        "SELECT id,name,box,scope,window_start,window_end,authorizer,reason,status,adapter,created,created_by,ended_ts \
-         FROM engagement ORDER BY COALESCE(created,0) DESC, id DESC LIMIT 200",
-    ) { Ok(s) => s, Err(e) => return server_err(e.to_string()) };
-    let rows: Vec<Value> = stmt.query_map([], engagement_row_json).map(|m| m.flatten().collect()).unwrap_or_default();
-    Json(json!({ "engagements": rows })).into_response()
+    Json(engagements_page(&conn)).into_response()
 }
 
 /// Ligne engagement -> JSON (partagé list/get). scope JSON -> tableau.

@@ -6,7 +6,7 @@
 // `renderDashboard` est exporté pour le harnais. N'importe pas `app.js`.
 import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, transientGatewayMsg, makePager, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG } from './core.js';
 import { S } from './state.js';
-import { currentFrom, currentTo, queryCount, runQuery, tableEl, vizElement } from './viz.js';
+import { currentFrom, currentTo, noeudsDeVizReglee, queryCount, runQuery, tableEl, vizElement } from './viz.js';
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
 import { boutonDeCopie } from './copie_et_selection.js';
 import { prefGet, prefSet } from './prefs.js';
@@ -638,7 +638,14 @@ async function renderPanel(p, editable = true) {
       }
       return;
     }
-    body.replaceChildren(vizElement(curViz, result.columns, result.rows, p.query, p.drill || ''));
+    // `P11.18-a` — LE RÉGLAGE DES AXES, remis au graphe par-dessus la règle positionnelle qu'il partage
+    // avec toutes les représentations (mesurée le 2026-08-25 : 1re colonne = abscisse, dernière =
+    // ordonnée). La clé de mémorisation est l'identité du PANNEAU, donc le réglage survit au
+    // rechargement, au changement de fenêtre et au passage d'une représentation traçante à une autre.
+    // Sans réglage mémorisé, `noeudsDeVizReglee` rend l'appel `vizElement` d'origine, inchangé — les
+    // chemins TABLE ci-dessus n'y passent même pas. Le re-dessin est `draw` lui-même : le choix
+    // s'applique sans repartir au démon (les lignes servies sont déjà là).
+    body.replaceChildren(...noeudsDeVizReglee(curViz, result.columns, result.rows, p.query, p.drill || '', p.id, draw));
   }
   // chargement NON bloquant -> carte rendue tout de suite, requetes EN PARALLELE (WAL).
   async function load() {

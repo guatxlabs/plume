@@ -216,12 +216,16 @@ mod file_de_riposte_bornee_tests {
     /// LES ÉCARTS CONNUS — MÊME FAMILLE, PAS DANS CE LOT. Chacun est nommé par la TABLE qu'il fenêtre
     /// (une propriété de l'énoncé), pas par un fichier, et avec ce qui manque. Le cliquet ne remonte
     /// pas : un écart fermé DOIT sortir de cette liste, sinon le test rougit et le dit.
-    /// Relevé le 2026-08-25 sur cet arbre, par le critère ci-dessus.
-    const ECARTS_CONNUS: &[(&str, &str)] = &[
-        ("engagement", "liste des engagements bornée à 200, servie sans total ni curseur"),
-        ("risk_rollup", "classement d'entités à risque borné à 200, servi sans total ni curseur"),
-        ("ioc", "inventaire des indicateurs borné à 2 000, servi sans total ni curseur"),
-    ];
+    ///
+    /// RELEVÉ LE 2026-08-25 : trois écarts — `engagement`, `risk_rollup`, `ioc`. TOUS TROIS FERMÉS LE
+    /// MÊME JOUR par `P11.17-f`, et donc retirés d'ici : la liste est VIDE, et le cliquet est à zéro.
+    /// Toute fenêtre de récence servie sans total ni curseur fait désormais rougir la garde par son
+    /// seul nom de table, sans qu'aucune inscription ne soit possible sans une raison écrite ici.
+    /// Ce que chacune a reçu est écrit dans son propre module ; le TOTAL BORNÉ (le motif de
+    /// `PAGINATION_COUNT_CAP`) là où la borne était une troncature, et la DÉCLARATION DE LA COUPE là
+    /// où elle était délibérée — le classement par score de `risk_rollup`, qui répond à la question
+    /// posée au lieu de tronquer un registre.
+    const ECARTS_CONNUS: &[(&str, &str)] = &[];
 
     /// Un énoncé de la population, tel que la garde le voit.
     #[derive(Debug)]

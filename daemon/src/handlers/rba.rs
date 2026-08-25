@@ -336,10 +336,14 @@ fn risk_incidents_eval(conn: &Connection, conf: &HashMap<String, String>, n: i64
     };
     let mut crossing: HashSet<String> = HashSet::new();
     for (etype, entity, score, contrib, dt, score_hot, tactics, max_sev) in &rows {
+        // `P11.17-f` — LE MÊME PRÉDICAT QUE LA PASTILLE ET QUE LE COMPTE DE LA ROUTE. Les trois
+        // déclencheurs restent calculés parce que le MOTIF de l'alerte les nomme un à un ; la DÉCISION,
+        // elle, passe par l'écrit unique. Sans quoi le panneau pourrait annoncer un nombre d'entités
+        // au-dessus d'un seuil que le moteur d'alerte ne partagerait pas.
         let trig_score = *score >= score_thr;
         let trig_tactics = tactics_thr > 0 && *dt >= tactics_thr;
         let trig_vel = vel_thr > 0 && *score_hot >= vel_thr;
-        if !(trig_score || trig_tactics || trig_vel) {
+        if !risk_over_threshold(*score, *dt, *score_hot, score_thr, tactics_thr, vel_thr) {
             continue;
         }
         let dedup = format!("risk-{}-{}", etype, entity);
@@ -400,20 +404,87 @@ fn risk_incidents_eval(conn: &Connection, conf: &HashMap<String, String>, n: i64
 // viewer+ (donnée de posture, pas un secret) via route_min_role (GET -> Read).
 // ============================================================================================
 
-/// GET /api/risk/entities — entités les plus à risque (score cumulé, contributions, tactiques distinctes,
-/// vélocité), SERVIES DEPUIS `risk_rollup` (aucun scan de `event`). Renvoie aussi les seuils courants pour
-/// que l'UI marque les entités over-threshold. Mode 0 : rollup vide -> `entities:[]`.
-pub(crate) async fn risk_entities(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
-    let conf = load_config();
-    let score_thr = risk_score_threshold(&conf);
-    let tactics_thr = risk_tactics_threshold(&conf);
-    let vel_thr = risk_velocity_threshold(&conf);
-    let window = risk_window_s(&conf);
-    crate::req_conn!(st, au, conn);
-    let entities: Vec<Value> = match conn.prepare(
+// =================================================================================================
+// `P11.17-f` — LE CLASSEMENT DES ENTITÉS À RISQUE EST UNE COUPE DE RANG, ET IL LE DIT
+//
+// LA BORNE EST ICI DÉLIBÉRÉE, ET C'EST LA SEULE DES TROIS DE CE LOT. Les deux autres fenêtres de
+// `P11.17-f` sont des TRONCATURES de récence : la borne y coupe un registre dans le temps, et ce qui
+// tombe hors fenêtre n'est ni moins important ni plus vieux qu'une question posée. Ici l'ordre est
+// `score DESC` : la coupe retient les entités LES PLUS À RISQUE, ce qui est exactement la question
+// d'un panneau de triage. La borne n'est donc pas un défaut — mais elle était MUETTE, et un
+// classement muet se lit comme un inventaire.
+//
+// CE QU'ELLE DOIT DIRE, ET POURQUOI CE N'EST PAS SEULEMENT UN TOTAL. La liste porte une pastille
+// « seuil » dont le prédicat est une DISJONCTION : score cumulé, OU nombre de tactiques MITRE
+// distinctes, OU vélocité. Une entité peut donc franchir un seuil par les tactiques ou par la
+// vélocité tout en portant un score modeste — et se trouver SOUS le rang de coupe, invisible, alors
+// qu'elle est précisément celle que le panneau existe pour montrer. Le total seul ne le dirait pas.
+// La réponse porte donc AUSSI le nombre d'entités au-dessus d'un seuil, que la vue compare à celles
+// qu'elle a reçues.
+//
+// CE QUE LA COUPE NE CACHE PAS, ET C'EST CE QUI REND LA BORNE TENABLE : le chemin d'ALERTE ne passe
+// pas par cette route. `risk_incidents_eval` lit `risk_rollup` SANS borne et lève ses alertes sur la
+// table entière ; la coupe de rang est une commodité de lecture, jamais un filtre de détection. Une
+// entité hors du classement est toujours alertée si elle franchit un seuil.
+//
+// CE QUE LA CLÉ ET LES INDEX DE **CETTE** TABLE PERMETTENT — vérifiés plutôt que supposés :
+//   * `risk_rollup` a pour clé primaire `(entity_type, entity, env_id)` et porte
+//     `idx_risk_rollup_score(score DESC)` (migration v80) : le premier terme de l'ordre servi est
+//     donc INDEXÉ, à la différence des deux autres routes de ce lot. Le second terme (`last_ts DESC`)
+//     ne l'est pas, et n'ordonne qu'à score égal.
+//   * LA TABLE NE GROSSIT PAS AVEC LE TEMPS, elle est RECONSTRUITE À BLANC à chaque tick de rollup
+//     (`DELETE FROM risk_rollup` puis `INSERT ... SELECT` fenêtré) : sa taille est le nombre
+//     d'entités ayant reçu du risque dans la fenêtre d'accumulation, pas un cumul historique. C'est
+//     la seconde raison pour laquelle la borne est délibérée ici et une troncature ailleurs.
+//   * UN CURSEUR N'A PAS DE SENS SUR UN CLASSEMENT RECONSTRUIT : la clé `(score, entity_type, entity,
+//     env_id)` serait unique, mais la table entière est réécrite entre deux pages — un curseur y
+//     paginerait à travers deux classements différents. Ce qui manquait n'était pas un parcours,
+//     c'était la déclaration de la coupe.
+// =================================================================================================
+
+/// RANG DE COUPE du classement servi par `GET /api/risk/entities` — les `RISK_ENTITIES_WINDOW`
+/// entités de plus haut score. Nommé plutôt qu'écrit dans l'énoncé : la vue le REÇOIT, et le test le
+/// lit ici au lieu de le recopier.
+pub(crate) const RISK_ENTITIES_WINDOW: i64 = 200;
+
+/// LE SEUL écrit du prédicat « au-dessus d'un seuil ». Il décide la pastille d'une LIGNE et le compte
+/// d'entités concernées de la RÉPONSE : l'écrire deux fois le laisserait diverger, et un compte qui
+/// diverge de la pastille qu'il annonce est le défaut que ce lot ferme, reproduit un cran plus loin.
+/// Un seuil à zéro est DÉSARMÉ (le score, lui, est toujours comparé — c'est le seuil de base).
+pub(crate) fn risk_over_threshold(score: i64, distinct_tactics: i64, score_hot: i64, score_thr: i64, tactics_thr: i64, vel_thr: i64) -> bool {
+    score >= score_thr || (tactics_thr > 0 && distinct_tactics >= tactics_thr) || (vel_thr > 0 && score_hot >= vel_thr)
+}
+
+/// LE SEUL fabricant du RECENSEMENT borné — UNE passe, DEUX chiffres. Ne demande que les trois
+/// colonnes dont le prédicat de seuil a besoin, et `LIMIT CAP+1` arrête le balayage au plafond
+/// partagé : le nombre de lignes rendues donne le total (exact sous le plafond, plafonné au-dessus),
+/// et le prédicat appliqué à chacune donne le compte au-dessus d'un seuil. Aucun `WHERE` n'y écrit une
+/// seconde fois la règle de seuil.
+pub(crate) fn risk_rollup_recensement_sql() -> String {
+    format!("SELECT score,distinct_tactics,score_hot FROM risk_rollup LIMIT {}", PAGINATION_COUNT_CAP + 1)
+}
+
+/// LE SEUL fabricant du CLASSEMENT servi. Projection et ordre INCHANGÉS : ce correctif ajoute des
+/// chiffres à côté de la liste, il ne touche pas à la liste.
+pub(crate) fn risk_entities_window_sql() -> String {
+    format!(
         "SELECT entity_type,entity,env_id,score,contrib,distinct_tactics,tactics,score_hot,contrib_hot,max_severity,first_ts,last_ts \
-         FROM risk_rollup ORDER BY score DESC, last_ts DESC LIMIT 200",
-    ) {
+         FROM risk_rollup ORDER BY score DESC, last_ts DESC LIMIT {RISK_ENTITIES_WINDOW}"
+    )
+}
+
+/// Classement + recensement borné des entités à risque. Fonction PURE sur `&Connection` et sur les
+/// seuils -> testable sans `AppState` ni configuration de processus.
+///
+/// Rend `{entities, served, window, total, total_capped, over_threshold_total, thresholds}`. `served`
+/// est le nombre de lignes RENDUES et `window` le rang de coupe : leur égalité dit à la vue que la
+/// coupe MORD. `total`/`total_capped`/`over_threshold_total` valent `null` — jamais `0` — quand le
+/// recensement n'a pas pu être lu : « non recensé » et « aucune entité à risque » sont deux faits
+/// différents, et sur un panneau de posture l'écart va dans le sens dangereux. Quand `total_capped`
+/// est vrai, `over_threshold_total` est lui aussi un PLANCHER : il n'a été compté que sur les lignes
+/// que le plafond a laissé lire.
+pub(crate) fn risk_entities_page(conn: &Connection, score_thr: i64, tactics_thr: i64, vel_thr: i64) -> Value {
+    let entities: Vec<Value> = match conn.prepare(&risk_entities_window_sql()) {
         Ok(mut s) => s
             .query_map([], |r| {
                 let score: i64 = r.get(3)?;
@@ -432,17 +503,66 @@ pub(crate) async fn risk_entities(State(st): State<AppState>, Extension(au): Ext
                     "max_severity": r.get::<_, i64>(9)?,
                     "first_ts": r.get::<_, i64>(10)?,
                     "last_ts": r.get::<_, i64>(11)?,
-                    "over_threshold": score >= score_thr || (tactics_thr > 0 && dt >= tactics_thr) || (vel_thr > 0 && score_hot >= vel_thr)
+                    "over_threshold": risk_over_threshold(score, dt, score_hot, score_thr, tactics_thr, vel_thr)
                 }))
             })
             .map(|rows| rows.flatten().collect())
             .unwrap_or_default(),
         Err(_) => Vec::new(),
     };
-    Json(json!({
+    // RECENSEMENT BORNÉ : une passe plafonnée rend le total ET le compte au-dessus d'un seuil, par le
+    // MÊME prédicat que les lignes. Une lecture qui ÉCHOUE rend `null`, jamais un zéro rassurant.
+    let recense: Option<(i64, i64)> = conn
+        .prepare(&risk_rollup_recensement_sql())
+        .and_then(|mut s| {
+            s.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+                .map(|rows| {
+                    let mut n = 0i64;
+                    let mut au_dessus = 0i64;
+                    for (score, dt, hot) in rows.flatten() {
+                        n += 1;
+                        if risk_over_threshold(score, dt, hot, score_thr, tactics_thr, vel_thr) {
+                            au_dessus += 1;
+                        }
+                    }
+                    (n, au_dessus)
+                })
+        })
+        .ok();
+    let (total, total_capped, over_threshold_total) = match recense {
+        Some((n, au_dessus)) => {
+            let capped = n > PAGINATION_COUNT_CAP;
+            (
+                json!(if capped { PAGINATION_COUNT_CAP } else { n }),
+                json!(capped),
+                json!(au_dessus.min(PAGINATION_COUNT_CAP)),
+            )
+        }
+        None => (Value::Null, Value::Null, Value::Null),
+    };
+    json!({
         "entities": entities,
-        "thresholds": { "score": score_thr, "distinct_tactics": tactics_thr, "velocity": vel_thr, "window_s": window },
-    }))
+        "served": entities.len(),
+        "window": RISK_ENTITIES_WINDOW,
+        "total": total,
+        "total_capped": total_capped,
+        "over_threshold_total": over_threshold_total,
+    })
+}
+
+/// GET /api/risk/entities — entités les plus à risque (score cumulé, contributions, tactiques distinctes,
+/// vélocité), SERVIES DEPUIS `risk_rollup` (aucun scan de `event`). Renvoie aussi les seuils courants pour
+/// que l'UI marque les entités over-threshold. Mode 0 : rollup vide -> `entities:[]`.
+pub(crate) async fn risk_entities(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
+    let conf = load_config();
+    let score_thr = risk_score_threshold(&conf);
+    let tactics_thr = risk_tactics_threshold(&conf);
+    let vel_thr = risk_velocity_threshold(&conf);
+    let window = risk_window_s(&conf);
+    crate::req_conn!(st, au, conn);
+    let mut page = risk_entities_page(&conn, score_thr, tactics_thr, vel_thr);
+    page["thresholds"] = json!({ "score": score_thr, "distinct_tactics": tactics_thr, "velocity": vel_thr, "window_s": window });
+    Json(page)
 }
 
 /// GET /api/risk/entity/:etype/:entity — SYNTHÈSE (rollup) + TIMELINE horaire + contributions récentes d'UNE

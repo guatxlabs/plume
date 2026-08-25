@@ -6,9 +6,18 @@
 // est sans danger : setAlertSourceFilter n'est appelé qu'à l'EXÉCUTION (clic), jamais à l'évaluation du module.
 // collapsibleGroup vit dans core.js (helper PARTAGÉ règles/parseurs/actions/playbooks) ; il n'est pas un
 // membre du concern Fraîcheur (que renderFreshness/renderIntegrations n'appellent pas) — d'où non importé ici.
-import { $, api, esc, fmtTs, ic, LANG } from './core.js';
+//
+// TROIS EMPRUNTS, AUCUNE RECOPIE (`P11.18-f`, `P11.18-g`) : le VOCABULAIRE d'état d'une source vient de
+// `sources.js` (il y est canonique et l'inventaire le pose déjà) ; le COMPARATEUR de tri vient de
+// `core.js`, c'est celui du tri par colonne des listes partagées, qui MESURE le type des valeurs au lieu
+// de le supposer ; la MÉMOIRE d'un choix d'affichage vient de `prefs.js`. Le sens des imports va de
+// freshness vers sources, jamais l'inverse : sources.js ne dépend que de core.js, donc aucun cycle neuf
+// n'est introduit (celui qui existe, app<->freshness, reste le seul, et il est sans danger — cf. plus haut).
+import { $, api, colComparator, esc, fmtTs, ic, LANG } from './core.js';
 import { S } from './state.js';
 import { setAlertSourceFilter } from './app.js';
+import { ETAT_DE_SOURCE, etatDeSource, rangDEtatDeSource } from './sources.js';
+import { prefGet, prefSet } from './prefs.js';
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // P11.16-b — LA FAMILLE D'UN NOMBRE EST DÉCLARÉE, ET C'EST ELLE QUI CHOISIT LE SIGNE.
@@ -80,6 +89,50 @@ function rangeeDeChiffres(chiffres) {
   return html;
 }
 
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// `P11.18-e` — DEUX LIBELLÉS NE DÉSIGNENT JAMAIS LA MÊME DESTINATION.
+//
+// LE CONSTAT, ET CE QU'IL COÛTE. Cette surface offrait « santé des sources → » et « voir le détail → »
+// qui mènent au MÊME onglet, et « inventaire → » et « voir l'inventaire → » qui mènent au même autre.
+// Deux noms font croire à deux endroits : l'exploitant qui a suivi les deux cherche ensuite ce qu'il a
+// manqué, et il n'y a rien à trouver. Le nom d'un renvoi ne dit pas ce qu'on fait en cliquant, il dit
+// CE QU'ON TROUVE À L'ARRIVÉE — donc le nom que porte la destination elle-même.
+//
+// LA PROPRIÉTÉ EST TENUE PAR CONSTRUCTION, PAS PAR RELECTURE. Corriger la paire signalée aurait laissé
+// la suivante s'écrire. Le libellé n'est donc plus écrit sur le renvoi : il est DÉRIVÉ de la
+// destination par cette table, seule source des renvois de ce module. Écrire deux noms pour une même
+// ancre est devenu impossible — il n'y a plus qu'un endroit où un nom s'écrit.
+//
+// UNE DESTINATION QUE LA TABLE NE NOMME PAS N'EST PAS RENDUE EN SILENCE : le renvoi avoue qu'elle n'est
+// pas nommée, comme la fabrique de chiffres avoue une famille manquante (`P11.16-b`). C'est ce qui
+// oblige le prochain renvoi à se déclarer au lieu de se fondre dans la surface.
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+const RENVOIS = {
+  '#freshness-view': {
+    nom: LANG === 'en' ? 'Source freshness' : 'Fraîcheur des sources',
+    titre: LANG === 'en' ? 'Collection health per feed, grouped by state (fresh / quiet / late / waiting / mute): Data → Source freshness.' : 'Santé de collecte par flux, groupée par état (frais / calme / en retard / en attente / muet) : Données → Fraîcheur des sources.',
+  },
+  '#sources': {
+    nom: LANG === 'en' ? 'Source inventory' : 'Inventaire des sources',
+    titre: LANG === 'en' ? 'Every ingestion source, its producer, its declarer, its declared cadence and its display metadata: Data → Sources.' : 'Toutes les sources d\'ingestion, leur producteur, leur déclarant, leur cadence déclarée et leurs métadonnées d\'affichage : Données → Sources.',
+  },
+  '#fleet': {
+    nom: LANG === 'en' ? 'Fleet' : 'Flotte',
+    titre: LANG === 'en' ? 'Host inventory: status, enrolment, last signal — Data → Fleet.' : 'Inventaire des hôtes : statut, enrôlement, dernier signal — Données → Flotte.',
+  },
+  '#alerts': {
+    nom: LANG === 'en' ? 'Alerts' : 'Alertes',
+    titre: LANG === 'en' ? 'What has been DETECTED, all sources together, with its own filters and facets: Cases → Alerts.' : 'Ce qui a été DÉTECTÉ, toutes sources confondues, avec ses propres filtres et facettes : Cas → Alertes.',
+  },
+};
+function renvoi(destination) {
+  const r = RENVOIS[destination];
+  if (!r) {
+    return `<span class="capsum-link" style="color:var(--warn)">${esc(destination)} <span>${LANG === 'en' ? '(destination not named)' : '(destination non nommée)'}</span></span>`;
+  }
+  return `<a class="capsum-link" href="${esc(destination)}" title="${esc(r.titre)}">${esc(r.nom)} →</a>`;
+}
+
 async function renderIntegrations() {
   const b = $('#integrations .body'); if (!b) return;
   let d; try { d = await api('/integrations'); } catch (e) { return; }
@@ -128,8 +181,7 @@ async function renderIntegrations() {
     { famille: 'recoupement', valeur: confondues, libelle: LANG === 'en' ? 'at « all hosts together » scope' : 'à portée « tous hôtes confondus »',
       titre: LANG === 'en' ? 'ALREADY counted in one of the terms above — this number crosses the distribution, it does not share it. These probes return the FRESHEST data of the estate: they stay green as long as a single machine still talks. Fully silent machines are counted separately (Hosts).' : 'DÉJÀ comptées dans l\'un des termes ci-dessus — ce nombre recoupe la répartition, il ne la partage pas. Ces sondes rendent la donnée la plus FRAÎCHE du parc : elles restent vertes tant qu\'une seule machine parle encore. Les machines entièrement muettes sont comptées à part (Hôtes).' },
   ]) +
-    `<a class="capsum-link" href="#freshness-view" title="Santé par source (frais/calme/en retard/muet) : Données → Fraîcheur">santé des sources →</a>` +
-    `<a class="capsum-link" href="#sources" title="Inventaire complet des sources (Données → Sources)">inventaire →</a></div>`;
+    renvoi('#freshness-view') + renvoi('#sources') + `</div>`;
   const hosts = (d.hosts || []).length
     ? d.hosts.map(h => `<div class="kv"><span>${ic('server')} ${esc(h.host)}</span><span class="muted">${fmtTs(h.last_seen)}</span></div>`).join('')
     : '<div class="muted">hôte local uniquement — aucun agent distant n\'a encore poussé de logs.</div>';
@@ -151,7 +203,7 @@ async function renderIntegrations() {
   // caption : sépare EXPLICITEMENT les 2 axes (couverture de sondes vs endpoints) et renvoie la SANTÉ à Fraîcheur.
   const cap = `<div class="muted intplug" style="font-size:11px">Capteurs = <b>couverture</b> (types de sondes déclarés ; un capteur mort est signalé <b>muet</b> ici) · Hôtes = <b>endpoints</b> (où les agents poussent). La santé fine par source (frais/calme/en retard/muet) vit dans Fraîcheur — « en retard » y désigne la même observation que « muet » ici, au même seuil.</div>`;
   // lien de découverte -> la Flotte (inventaire détaillé des hôtes : statut/enrôlement/dernier signal, paginé + export).
-  const hostsHdr = `Hôtes (endpoints) <a class="capsum-link" href="#fleet" title="Flotte d'agents : inventaire détaillé (statut, enrôlement, dernier signal) — Données → Flotte">flotte →</a>`;
+  const hostsHdr = `Hôtes (endpoints) ${renvoi('#fleet')}`;
   b.innerHTML = `<div class="intgrid"><div><div class="fldname">Capteurs (couverture)</div>${capsum}</div><div><div class="fldname">${hostsHdr}</div>${flotteLigne}${hosts}</div></div>${cap}`;
 }
 // fraîcheur PAR SOURCE : âge du dernier point + statut. « Est-ce live ? »
@@ -169,18 +221,27 @@ async function renderIntegrations() {
 // dépassée) > frais (< 15 min) > calme (collecte saine, source peu active). Les alertes actives restent
 // un COMPTE (cloche) à côté du statut, jamais un statut. `attente` (déclaré, jamais de donnée) ne concerne
 // que les capteurs d'Intégrations (les feeds de /freshness ont tous une donnée).
+// `P11.18-f` — LA PASTILLE, LA COULEUR ET LE RANG NE SONT PLUS ÉCRITS ICI.
+//
+// CE QUI A ÉTÉ MESURÉ. L'inventaire des sources et cette vue rendaient le même statut, dérivé côté démon
+// par la MÊME fonction (`statut_de_source`), à partir de la même mesure ; côté console, chacune tenait sa
+// PROPRE table de pastilles et de couleurs. Les deux tables s'accordaient — et c'est exactement l'état
+// d'un miroir la veille du jour où il diverge : rien ne signalerait qu'un mot a changé de ton d'un seul
+// côté. La table vit désormais dans `sources.js`, où elle est déjà canonique, et cette surface la LIT.
+//
+// CE QUE CETTE SURFACE GARDE EN PROPRE : les cinq états qu'elle peut RECEVOIR (le vocabulaire canonique
+// en porte un sixième, `dormant`, qu'un flux ne peut pas prendre — une source dormante n'a aucun flux),
+// et les libellés LONGS qui définissent chaque état pour un lecteur de cette vue.
 const FSTATES = ['muet', 'en_retard', 'attente', 'frais', 'calme'];
 function freshState(f) {
-  const s = f.status === 'inconnu' || f.status === 'en_attente' ? 'attente' : f.status;
-  return FSTATES.includes(s) ? s : 'calme';
+  const e = etatDeSource(f.status);
+  return FSTATES.includes(e) ? e : 'calme';
 }
-// pastille (.fdot) par état — `en_retard` reprend la pastille orange existante.
-const FSTATE_DOT = { muet: 'muet', en_retard: 'warn', attente: 'attente', frais: 'frais', calme: 'calme' };
-// classe de couleur du texte (le <b> "il y a …") par état
-const FSTATE_TXT = { muet: 'bad', en_retard: 'fwarn', frais: 'ok', calme: 'calm', attente: 'mut' };
+const pastilleDEtat = (etat) => (ETAT_DE_SOURCE[etat] ? ETAT_DE_SOURCE[etat].dot : 'calme');
+const couleurDEtat = (etat) => (ETAT_DE_SOURCE[etat] ? ETAT_DE_SOURCE[etat].txt : 'bad');
 // libellé d'en-tête de groupe quand on regroupe PAR ÉTAT
 const FSTATE_LBL = { muet: 'muet — plus rien n\'arrive, toutes sources confondues', en_retard: 'en retard — cadence déclarée dépassée', attente: 'en attente — déclaré, pas encore de donnée', frais: 'frais (donnée < 15 min)', calme: 'calme (collecte saine, source peu active)' };
-const SRANK = { muet: 0, en_retard: 1, attente: 2, frais: 3, calme: 4 };   // panne en haut ; puis en retard, en attente, frais, calme
+// LE RANG DE TRI vient de la même table canonique : panne en haut ; puis en retard, en attente, frais, calme.
 const age = s => s < 90 ? s + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : s < 172800 ? Math.round(s / 3600) + ' h' : Math.round(s / 86400) + ' j';
 // libellé de la cadence DÉCLARÉE d'un feed — par une sonde du démon OU par l'exploitant (P11.3-c) ; le
 // rythme observé est rendu à part (title). « aucune cadence déclarée » n'est pas un défaut : c'est un blanc.
@@ -195,42 +256,133 @@ function cadenceTitle(f) {
     : 'personne n\'a déclaré de cadence pour cette source — ni une sonde du démon, ni l\'exploitant : l\'âge ne dit que l\'activité, et elle ne peut pas être « en retard »';
   return decl + (f.observed_interval_s ? ' · rythme observé sur 24 h : ~1 donnée / ' + age(f.observed_interval_s) : '');
 }
-// compteurs par état + alertes actives (un compte à part, pas un état) — même agrégation pour le détail et le
-// pulse. LES CINQ ÉTATS SE PARTAGENT `feeds.length` PAR CONSTRUCTION : `freshState` a un repli, donc chaque
-// flux incrémente exactement un état. `alertes` compte sur la MÊME population sans la partager — c'est ce que
-// la rangée DIT désormais (« dont »), au lieu de le laisser dans ce commentaire (P11.16-b).
+// compteurs par état + alertes actives — même agrégation pour le détail et le pulse. LES CINQ ÉTATS SE
+// PARTAGENT `feeds.length` PAR CONSTRUCTION : `freshState` a un repli, donc chaque flux incrémente
+// exactement un état, et c'est là toute la rangée de tête. `alertes` compte sur la MÊME population sans
+// la partager : il ne paraît plus dans cette rangée, mais dans la zone qui porte les nombres d'alertes
+// (`P11.18-d`) — sa place le dit, aucune phrase n'a plus à le dire.
 function countStates(feeds) {
   const scount = { muet: 0, en_retard: 0, attente: 0, frais: 0, calme: 0, alertes: 0 };
   feeds.forEach(f => { scount[freshState(f)] += 1; if (Number(f.active_alerts) > 0) scount.alertes += 1; });
   return scount;
 }
-// LE LIBELLÉ COURT D'UN ÉTAT, DÉRIVÉ du libellé long des groupes : la vignette, l'en-tête de groupe et
-// la légende ne peuvent plus diverger, et ajouter un état n'oblige pas à écrire son mot deux fois. Le
-// long porte la définition (« — … » ou « (…) »), le court en est le premier segment ; sans séparateur,
-// c'est le libellé entier qui est rendu — trop long dans la rangée, donc VISIBLE, jamais silencieux.
-const libelleCourtDEtat = (etat) => String(FSTATE_LBL[etat] || etat).split(/ [—(]/)[0].trim();
+// LE LIBELLÉ COURT D'UN ÉTAT vient du vocabulaire canonique (`sources.js`) : c'est le MOT MÊME que la
+// colonne « Statut » de l'inventaire pose sur ses lignes, écrit une seule fois pour les deux surfaces
+// (`P11.18-f`). À défaut d'entrée canonique — un état que le démon rendrait avant que la table ne le
+// connaisse — il reste DÉRIVÉ du libellé long de ce module : le long porte la définition (« — … » ou
+// « (…) »), le court en est le premier segment ; sans séparateur, c'est le libellé entier qui est rendu
+// — trop long dans la rangée, donc VISIBLE, jamais silencieux.
+const libelleCourtDEtat = (etat) => (ETAT_DE_SOURCE[etat] && ETAT_DE_SOURCE[etat].court)
+  || String(FSTATE_LBL[etat] || etat).split(/ [—(]/)[0].trim();
 // L'ORDRE DE LECTURE des parts : du plus sain au plus grave, l'inverse exact du rang de tri du détail
 // (`SRANK`, la panne en haut). Une seule table de rang, lue dans les deux sens — pas une seconde liste.
-const ETATS_DE_LA_RANGEE = [...FSTATES].sort((a, b) => (SRANK[b] ?? 9) - (SRANK[a] ?? 9));
-// LA RANGÉE DE FRAÎCHEUR, déclarée famille par famille (cf. la fabrique en tête de module) : cinq parts
-// qui se partagent le total, et UN recoupement — les flux porteurs d'alertes actives, déjà comptés dans
-// leur état, que l'addition ne doit pas reprendre.
+const ETATS_DE_LA_RANGEE = [...FSTATES].sort((a, b) => rangDEtatDeSource(b) - rangDEtatDeSource(a));
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// `P11.18-d` — QUAND UNE PHRASE NE SUFFIT PAS, C'EST LA PLACE QUI PARLE.
+//
+// LA SECONDE FOIS. `P11.16-b` avait séparé ce qui PARTAGE un total de ce qui le RECOUPE, et écrit la
+// distinction sur l'écran : le compte des flux porteurs d'alertes actives était introduit par « dont »,
+// avec l'aveu au survol qu'une alerte n'est pas un état de collecte. Relevé en usage réel : ce n'est
+// TOUJOURS pas clair. Une source de bordure porte deux vraies alertes — un balayage absorbé au bord,
+// une reconnaissance lente — qui ne disent rien de sa fraîcheur, et le nombre continue d'être lu comme
+// un état de collecte. La vue le démentait pourtant en toutes lettres, deux fois.
+//
+// CE QUI A ÉCHOUÉ, ET POURQUOI UNE TROISIÈME PHRASE ÉCHOUERAIT AUSSI. Le nombre était posé DANS la
+// rangée qui répartit les états de collecte, sous le même jeton, séparé des autres par un seul mot. Une
+// rangée se lit d'un coup d'œil ; le mot qui la coupe se lit après, s'il se lit. Tant que ce compte est
+// rendu parmi les états, il sera lu comme un état — quel que soit le texte à côté.
+//
+// CE QUE L'EXPLOITANT VIENT CHERCHER ICI, ÉTABLI ET NON SUPPOSÉ. La section d'aide de cette vue
+// (`web/help_registry.js`, clé `freshness`) l'écrit en première ligne : « ÉTAT = SANTÉ DE COLLECTE (pas
+// l'activité) ». C'est la vue qu'on ouvre pour savoir si la donnée ARRIVE ENCORE, donc pour décider si
+// l'on peut faire confiance à ce que les autres vues montrent. Un compte d'alertes ne répond pas à
+// cette question-là : il répond à « qu'a-t-on détecté ? », qui est la question d'une autre vue.
+//
+// LA DÉCISION. Le compte QUITTE la grammaire de la collecte : il n'est plus un terme de cette rangée,
+// qui redevient une répartition pure — total, cinq parts, rien d'autre. Il est REGROUPÉ, avec les
+// autres nombres d'alertes de cette vue, dans une zone à lui, en bas, sous une séparation qui n'est pas
+// une phrase : un filet, un nom, et le renvoi vers la vue à laquelle ces nombres appartiennent.
+//
+// POURQUOI IL RESTE DANS LA VUE PLUTÔT QUE D'EN PARTIR. Ces nombres se rapportent aux FLUX listés ici,
+// et à eux seuls : ce sont les alertes imputées à ces flux, et la répartition qui les accompagne est le
+// seul endroit de la console où l'on vérifie qu'aucune alerte active ne se perd entre celles qu'une
+// cloche porte, celles qui ne se rapportent à aucun flux et celles dont l'imputation n'a jamais été
+// enregistrée. Les emporter ailleurs les couperait de la liste qu'ils qualifient. CE QUI CHANGE, ALORS,
+// c'est la place — et les deux phrases qui avaient échoué sont RETIRÉES : rien ne remplace un filet.
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// LA RANGÉE DE FRAÎCHEUR : un total et cinq parts qui se le partagent, plus aucun recoupement. La
+// fabrique de familles reste celle de `P11.16-b` — elle sert encore la rangée d'Intégrations, dont le
+// recoupement (« à portée tous hôtes confondus ») EST, lui, une propriété des capteurs comptés.
 function summaryPills(feeds) {
   const sc = countStates(feeds);
   return rangeeDeChiffres([
     { famille: 'total', valeur: feeds.length, libelle: LANG === 'en' ? 'feed(s) observed' : 'feed(s) observé(s)',
-      titre: LANG === 'en' ? 'The row recomposes: the total is the sum of the terms joined by « + ». What follows « of which » is taken from the same population and is not part of the addition.' : 'La rangée se recompose : le total est la somme des termes reliés par « + ». Ce qui suit « dont » est pris sur la même population et n\'entre pas dans l\'addition.' },
-    ...ETATS_DE_LA_RANGEE.map(e => ({ famille: 'part', valeur: sc[e], dot: FSTATE_DOT[e], libelle: libelleCourtDEtat(e), titre: FSTATE_LBL[e] })),
-    { famille: 'recoupement', valeur: sc.alertes, cloche: true, libelle: LANG === 'en' ? 'with active alerts' : 'avec alertes actives',
-      titre: LANG === 'en' ? 'These feeds are ALREADY counted in their state above: this number crosses the distribution, it does not share it — adding it in would exceed the total. An active alert is a count, never a collection state.' : 'Ces flux sont DÉJÀ comptés dans leur état ci-dessus : ce nombre recoupe la répartition, il ne la partage pas — l\'additionner ferait dépasser le total. Une alerte active est un compte, jamais un état de collecte.' },
+      titre: LANG === 'en' ? 'The row recomposes: the total is the sum of the terms joined by « + », and this row holds nothing else.' : 'La rangée se recompose : le total est la somme des termes reliés par « + », et cette rangée ne porte rien d\'autre.' },
+    ...ETATS_DE_LA_RANGEE.map(e => ({ famille: 'part', valeur: sc[e], dot: pastilleDEtat(e), libelle: libelleCourtDEtat(e), titre: FSTATE_LBL[e] })),
   ]);
+}
+
+// LA ZONE DES ALERTES — tous les nombres d'alertes de cette vue, et eux seuls. Le filet et le nom sont
+// la séparation ; le renvoi dit où ces nombres vivent. `bloc` est la répartition servie par le démon,
+// rendue seulement quand elle a quelque chose à répartir.
+function zoneDesAlertes(sc, bloc) {
+  const compte = rangeeDeChiffres([
+    { famille: 'recoupement', valeur: sc.alertes, cloche: true,
+      libelle: LANG === 'en' ? 'with active alerts' : 'avec alertes actives',
+      titre: LANG === 'en' ? 'Number of feeds listed above to which at least one unacknowledged alert is attributed, all dates, cases included. Each of them carries a bell on its line, which opens exactly those alerts.' : 'Nombre de flux listés ci-dessus auxquels au moins une alerte non acquittée est imputée, toutes dates, cases comprises. Chacun porte une cloche sur sa ligne, qui ouvre exactement ces alertes.' },
+  ]);
+  return `<div class="fimput" style="margin-top:14px;border-top:1px solid var(--bd);padding-top:9px">` +
+    `<div class="fldname">${LANG === 'en' ? 'Alerts attributed to these feeds' : 'Alertes imputées à ces flux'}</div>` +
+    `<div class="capsum">${compte}${renvoi('#alerts')}</div>${bloc}</div>`;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// `P11.18-g` — L'ORDRE INTERNE D'UN GROUPE SE CHOISIT, ET LE CHOIX SE RETIENT.
+//
+// LE CONSTAT. Les flux sont groupés par état — c'est le bon axe, et il ne change pas. Mais DANS un
+// groupe, l'ordre suivait l'ancienneté de la dernière donnée : il sert à repérer ce qui vient de
+// bouger, pas à RETROUVER une source qu'on cherche par son nom dans une liste qui grandit.
+//
+// LE TRI VIENT DU MÉCANISME PARTAGÉ, PAS D'UNE COMPARAISON ÉCRITE ICI. `colComparator` (core.js) est
+// celui du tri par colonne des listes partagées : il MESURE le type des valeurs de la colonne (adresse,
+// nombre, texte) au lieu de le supposer, puis rend le comparateur qui va avec. Une liste de noms
+// numériques se classera donc numériquement sans qu'une ligne soit écrite pour ce cas.
+//
+// LE CHOIX EST MÉMORISÉ COMME L'EST LE PLIAGE — par le magasin de préférences PARTAGÉ (`prefs.js`),
+// qui survit au re-rendu de l'auto-rafraîchissement, au rechargement de la page et au changement de
+// poste (il est adossé au démon), là où le pliage ne tient que dans le stockage local du navigateur.
+// CE QUI N'EXISTE PAS ENCORE et qui manque : un CONTRÔLE d'ordre dans la fabrique de listes elle-même.
+// `pagedList` n'offre le choix qu'aux TABLEAUX (clic d'en-tête, non mémorisé) ; deux panneaux de
+// l'administration de la détection tiennent chacun leur sélecteur et leur clé. Cette vue est la
+// troisième écriture de la même idée : sa place est dans `core.js`, à côté de « Grouper par ».
+const ORDRES_DANS_UN_ETAT = [
+  { cle: 'anciennete', lire: f => f.age_s, sens: -1,
+    nom: LANG === 'en' ? 'oldest data first' : 'donnée la plus ancienne d\'abord' },
+  { cle: 'nom', lire: f => f.name, sens: 1,
+    nom: LANG === 'en' ? 'by name (A → Z)' : 'par nom (A → Z)' },
+];
+const CLE_D_ORDRE = 'freshness.ordre-dans-un-etat';
+// Un choix mémorisé que la table ne connaît plus (ordre retiré, préférence d'une version antérieure)
+// retombe sur le premier — l'ordre historique — jamais sur un tri vide.
+const ordreDansUnEtat = () => ORDRES_DANS_UN_ETAT.find(o => o.cle === prefGet(CLE_D_ORDRE, '')) || ORDRES_DANS_UN_ETAT[0];
+function trierDansUnEtat(arr, ordre) {
+  const cmp = colComparator(arr, ordre.lire);
+  arr.sort((a, c) => (cmp(a, c) * ordre.sens) || String(a.name).localeCompare(String(c.name)));
+  return arr;
+}
+function barreDOrdre(ordre) {
+  const opts = ORDRES_DANS_UN_ETAT.map(o => `<option value="${esc(o.cle)}"${o.cle === ordre.cle ? ' selected' : ''}>${esc(o.nom)}</option>`).join('');
+  const titre = LANG === 'en' ? 'Order of the feeds INSIDE each state. The choice is remembered, as the folding of the groups is.' : 'Ordre des flux À L\'INTÉRIEUR de chaque état. Le choix est mémorisé, comme l\'est le pliage des groupes.';
+  const mot = LANG === 'en' ? 'order inside each state — the grouping by state does not change' : 'ordre à l\'intérieur de chaque état — le regroupement par état ne change pas';
+  return `<div class="flegend"><select class="picon" data-ordre title="${esc(titre)}">${opts}</select>` +
+    `<span class="muted">${esc(mot)}</span></div>`;
 }
 
 // RENDU PUR du détail à partir de la charge utile de /api/freshness (exercé par le harnais ESM sur des objets
 // fabriqués). Renvoie le HTML ; `renderFreshness` le pose et câble les gestes.
 function renderFreshnessDetail(d) {
   const feeds = (d.feeds || []).slice();
-  feeds.sort((a, c) => ((SRANK[freshState(a)] ?? 9) - (SRANK[freshState(c)] ?? 9)) || a.name.localeCompare(c.name));
+  feeds.sort((a, c) => (rangDEtatDeSource(freshState(a)) - rangDEtatDeSource(freshState(c))) || a.name.localeCompare(c.name));
   // le STATUT = santé de collecte : muet seulement si l'ingestion est en panne ; en retard seulement au-delà
   // d'une cadence DÉCLARÉE ; sinon l'âge est INFORMATIF.
   const head0 = !d.pipeline_fresh
@@ -263,14 +415,13 @@ function renderFreshnessDetail(d) {
     if (muettes > 0) {
       parts.push(`<b>${muettes}</b> <span title="Aucune imputation enregistrée et rien de nommable dans leur texte : alertes levées avant l'imputation, ou par un producteur qui ne l'écrit pas. Le compte par source les ignore — c'est dit ici plutôt que tu.">sans imputation enregistrée (le compte par source les ignore)</span>`);
     }
-    bloc = `<div class="muted fimput" style="margin-bottom:8px">${parts.join(' · ')}. Une cloche compte les alertes imputées à UNE source, toutes dates — elle ne dit rien de sa fraîcheur.</div>`;
+    bloc = `<div class="muted" style="margin-top:6px">${parts.join(' · ')}.</div>`;
   }
-  const head = head0 + bloc;
   // une SÉRIE métrique (sous le feed agrégé déplié) : même modèle d'état que les sources (statut du démon).
   const seriesRow = s => {
     const ss = freshState(s);
-    return `<div class="kv fseries"><span><span class="fdot ${FSTATE_DOT[ss]}"></span>${esc(s.name)}</span>` +
-      `<b class="${FSTATE_TXT[ss] || 'bad'}" title="dernière donnée ${fmtTs(s.last_seen)}">il y a ${age(s.age_s)}</b></div>`;
+    return `<div class="kv fseries"><span><span class="fdot ${pastilleDEtat(ss)}"></span>${esc(s.name)}</span>` +
+      `<b class="${couleurDEtat(ss)}" title="dernière donnée ${fmtTs(s.last_seen)}">il y a ${age(s.age_s)}</b></div>`;
   };
   // une ligne par source ; surlignée (classe .hot + cloche) si la source a des alertes actives (active_alerts>0).
   const rowOf = f => {
@@ -282,40 +433,41 @@ function renderFreshnessDetail(d) {
         ? `<div class="fmetricbody">${sList.map(seriesRow).join('')}</div>`
         : `<div class="fmetricbody muted" style="padding:4px 0 0 18px">détail des séries indisponible (mettre à jour le daemon)</div>`;
       const hd = `<div class="kv fmetrichd" role="button" tabindex="0" aria-expanded="${open ? 'true' : 'false'}" title="Plier / déplier les séries métriques">` +
-        `<span><span class="fchev">${ic('chevright')}</span><span class="fdot ${FSTATE_DOT[st]}"></span>${esc(f.name)} <span class="muted fkind" title="${esc(cadenceTitle(f))}">${esc(cadenceLabel(f))}</span></span>` +
-        `<b class="${FSTATE_TXT[st] || 'bad'}">il y a ${age(f.age_s)}</b></div>`;
+        `<span><span class="fchev">${ic('chevright')}</span><span class="fdot ${pastilleDEtat(st)}"></span>${esc(f.name)} <span class="muted fkind" title="${esc(cadenceTitle(f))}">${esc(cadenceLabel(f))}</span></span>` +
+        `<b class="${couleurDEtat(st)}">il y a ${age(f.age_s)}</b></div>`;
       return `<div class="fmetric${open ? '' : ' collapsed'}">${hd}${body}</div>`;
     }
     const hot = Number(f.active_alerts) > 0;
-    const badge = hot ? ` <span class="fhot" role="button" tabindex="0" data-src="${esc(f.name)}" title="${f.active_alerts} alerte(s) non acquittée(s) imputée(s) à ${esc(f.name)}, toutes dates (cases comprises) — un compte, sans lien avec sa fraîcheur · cliquer pour les voir">${ic('bell')} ${f.active_alerts}</span>` : '';
+    const badge = hot ? ` <span class="fhot" role="button" tabindex="0" data-src="${esc(f.name)}" title="${f.active_alerts} alerte(s) non acquittée(s) imputée(s) à ${esc(f.name)}, toutes dates (cases comprises) · cliquer pour les ouvrir dans Alertes">${ic('bell')} ${f.active_alerts}</span>` : '';
     // « en retard » : la raison est DITE sur la ligne (cadence déclarée, sonde, silence), pas seulement coloriée.
     const reason = st === 'en_retard'
       ? `en retard — aucune donnée depuis ${age(f.age_s)} pour une cadence déclarée de ${age(f.cadence_interval_s || 0)} (sonde « ${f.cadence_capteur || '?'} »)`
       : '';
     const why = reason ? ` <span class="muted fwhy">· au-delà de ${age(f.cadence_interval_s || 0)}</span>` : '';
-    return `<div class="kv${hot ? ' hot' : ''}"${reason ? ` title="${esc(reason)}"` : ''}><span><span class="fdot ${FSTATE_DOT[st]}"></span>${esc(f.name)} <span class="muted fkind" title="${esc(cadenceTitle(f))}">${esc(cadenceLabel(f))}</span>${badge}${why}</span>` +
-      `<b class="${FSTATE_TXT[st] || 'bad'}" title="dernière donnée ${fmtTs(f.last_seen)}">il y a ${age(f.age_s)}</b></div>`;
+    return `<div class="kv${hot ? ' hot' : ''}"${reason ? ` title="${esc(reason)}"` : ''}><span><span class="fdot ${pastilleDEtat(st)}"></span>${esc(f.name)} <span class="muted fkind" title="${esc(cadenceTitle(f))}">${esc(cadenceLabel(f))}</span>${badge}${why}</span>` +
+      `<b class="${couleurDEtat(st)}" title="dernière donnée ${fmtTs(f.last_seen)}">il y a ${age(f.age_s)}</b></div>`;
   };
   // GROUPES PAR ÉTAT : chaque état est une section repliable (libellé + nombre + pastille), tri DANS le groupe
   // le plus PÉRIMÉ d'abord (age décroissant). Par défaut seul « calme » est replié (voir init de
   // freshCollapsed). État persisté dans freshCollapsed (clé 'cat:<état>' présente = REPLIÉ).
   const groups = new Map();
   feeds.forEach(f => { const c = freshState(f); if (!groups.has(c)) groups.set(c, []); groups.get(c).push(f); });
-  const cats = [...groups.entries()].sort((a, c) => (SRANK[a[0]] ?? 9) - (SRANK[c[0]] ?? 9));
-  const summaryLine = `<div class="capsum">${summaryPills(feeds)}` +
-    `<a class="capsum-link" href="#sources" title="Ouvrir l'inventaire complet des sources (Données → Sources)">voir l'inventaire →</a></div>`;
-  let html = head + summaryLine;
+  const cats = [...groups.entries()].sort((a, c) => rangDEtatDeSource(a[0]) - rangDEtatDeSource(c[0]));
+  const summaryLine = `<div class="capsum">${summaryPills(feeds)}${renvoi('#sources')}</div>`;
+  const ordre = ordreDansUnEtat();
+  let html = head0 + summaryLine + barreDOrdre(ordre);
   for (const [cat, arr] of cats) {
-    arr.sort((a, c) => (c.age_s - a.age_s) || a.name.localeCompare(c.name));
+    trierDansUnEtat(arr, ordre);
     const collapsed = S.freshCollapsed.has('cat:' + cat);
     const lbl = FSTATE_LBL[cat] || cat;
     html += `<div class="fgroup${collapsed ? ' collapsed' : ''}" data-cat="${esc(cat)}">` +
       `<button type="button" class="fgrouphd" aria-expanded="${collapsed ? 'false' : 'true'}" title="Plier / déplier ${esc(lbl)}">` +
-      `${ic('chevdown')}<span class="fdot ${FSTATE_DOT[cat]}"></span><span class="fglbl">${esc(lbl)}</span><span class="fgcount">${arr.length}</span></button>` +
+      `${ic('chevdown')}<span class="fdot ${pastilleDEtat(cat)}"></span><span class="fglbl">${esc(lbl)}</span><span class="fgcount">${arr.length}</span></button>` +
       `<div class="fgbody">${arr.map(rowOf).join('')}</div></div>`;
   }
+  html += zoneDesAlertes(countStates(feeds), bloc);
   html += `<div class="flegend"><span class="fdot frais"></span>frais (donnée &lt; 15 min) · <span class="fdot calme"></span>calme (collecte saine, source peu active) · <span class="fdot warn"></span>en retard (cadence déclarée dépassée) · <span class="fdot attente"></span>en attente (déclaré, pas de donnée) · <span class="fdot muet"></span>muet (plus rien n'arrive, toutes sources confondues)` +
-    `<div class="muted" style="margin-top:4px">La cadence attendue est celle qu'une sonde du démon ou l'exploitant DÉCLARE (affichée à côté du nom, avec son déclarant au survol). Une source événementielle, ou dont personne n'a déclaré la cadence, n'est jamais « en retard » : son âge ne dit que son activité, et ce blanc n'est pas un défaut — il se comble depuis l'Inventaire (Données → Sources). Les alertes actives sont un compte (cloche), pas un état de collecte.</div>` +
+    `<div class="muted" style="margin-top:4px">${LANG === 'en' ? 'The expected cadence is the one a daemon probe or the operator DECLARES (shown next to the name, with its declarer on hover). An event-driven source, or one whose cadence nobody declared, is never “late”: its age only tells its activity, and that blank is not a fault — it is filled from the Source inventory (Data → Sources).' : 'La cadence attendue est celle qu\'une sonde du démon ou l\'exploitant DÉCLARE (affichée à côté du nom, avec son déclarant au survol). Une source événementielle, ou dont personne n\'a déclaré la cadence, n\'est jamais « en retard » : son âge ne dit que son activité, et ce blanc n\'est pas un défaut — il se comble depuis l\'Inventaire des sources (Données → Sources).'}</div>` +
     // P11.16-a — CE PANNEAU NE PEUT PAS NOMMER LE PRODUCTEUR : la charge utile de `/api/freshness` ne
     // porte que le NOM de la source (le rapprochement dérivé vit dans `/api/sources`). Plutôt que de
     // laisser croire qu'un nom de flux nomme le fichier qui l'émet, la légende dit où ce nom se trouve.
@@ -370,6 +522,10 @@ async function renderFreshness(loading) {
     el.onclick = go;
     el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(e); } };
   });
+  // `P11.18-g` — LE CHOIX D'ORDRE EST MÉMORISÉ AVANT D'ÊTRE APPLIQUÉ : le rendu suivant le relit, donc
+  // ni l'auto-rafraîchissement ni un rechargement ne le perdent — c'est ce que le pliage fait déjà.
+  const selOrdre = b.querySelector('select[data-ordre]');
+  if (selOrdre) selOrdre.onchange = () => { prefSet(CLE_D_ORDRE, selOrdre.value); renderFreshness(); };
   const md = b.querySelector('.fmetrichd');
   if (md) {
     const toggle = () => {
@@ -398,8 +554,7 @@ async function renderFreshnessPulse() {
     ? `<div class="bad" style="font-weight:600;margin-bottom:8px">${ic('warn')} Ingestion en panne — aucune donnée reçue récemment</div>`
     : '';
   b.innerHTML = head +
-    `<div class="capsum">${summaryPills(feeds)}` +
-    `<a class="capsum-link" href="#freshness-view" title="Détail par feed (santé de collecte) : Données → Fraîcheur">voir le détail →</a></div>`;
+    `<div class="capsum">${summaryPills(feeds)}${renvoi('#freshness-view')}</div>`;
 }
 
 // exports du module Fraîcheur/Intégrations (importés par app.js : refresh() + bouton #fresh-refresh).

@@ -166,14 +166,48 @@ function alertRowHtml(a, i) {
       <span class="alertact">${cas}${ban}${a.status === 'new' ? `<button data-ack="${a.id}" title="Acquitter : marquer comme vue (retire de la file active, sans la supprimer)">Acquitter</button>` : `<span class="ackdone" title="Acquittée${a.acked_at ? ' · ' + fmtTs(a.acked_at) : ''}${a.acked_by ? ' par ' + esc(a.acked_by) : ''}">${ic('check')} Acquittée</span>`}</span>
     </div>`;
 }
+// ======================================================================================================
+// P11.18-k — TOUT GESTE QUI RETIRE UNE ALERTE DE LA FILE ACTIVE SE CONFIRME. La propriété est DÉRIVÉE, pas
+// posée bouton par bouton : `acquitter` est le SEUL endroit d'où partent `/alerts/ack-all` et
+// `/alerts/<id>/ack`, et il confirme AVANT d'envoyer. Un geste d'acquittement de plus ne peut donc pas
+// rouvrir l'écart — écrit ailleurs, il n'acquitterait rien du tout.
+// CE QUE LA MESURE DU 2026-08-25 A PRÉCISÉ : le bouton d'une LIGNE n'a jamais rien demandé — un clic
+// acquittait sur-le-champ — alors que les deux gestes de masse portaient chacun leur confirmation. C'est
+// l'ASYMÉTRIE qui était le défaut : qui a appris que ce produit confirme avant d'acquitter clique sans se
+// méfier là où rien ne confirme.
+// POURQUOI CELA NE REND PAS DIX ACQUITTEMENTS INSUPPORTABLES : la barre porte DÉJÀ la forme groupée de ce
+// geste répété — « Acquitter les N affichée(s) » sous un filtre, « Tout acquitter » sans — et chacune ne
+// demande QU'UNE confirmation en nommant son compte ou sa portée. Dix alertes s'acquittent donc d'un geste
+// et d'une confirmation, et la question par ligne ne coûte qu'au geste réellement unitaire. Aucun mécanisme
+// neuf n'est introduit pour cela : ni « ne plus demander », ni annulation différée — le dépôt n'en a aucun,
+// et en inventer un ici poserait une surface de plus pour un geste qui ne détruit rien.
+// LA CONFIRMATION EST CELLE DU POINT COMMUN (`confirmModal`), la MÊME que les deux gestes de masse
+// employaient déjà : `confirmWithConsequence` est réservée à ce qui ne se défait pas, et un acquittement ne
+// supprime rien — l'alerte quitte la file active et reste lisible sous la portée « tous statuts ».
+// `portee` : { phrase, ids } — les identifiants acquittés un à un — ou { phrase, toutes: true } pour
+// l'acquittement global, qui a sa propre route parce qu'il dépasse la page.
+// Rend true si l'acquittement a été confirmé ET envoyé, false s'il a été refusé — l'appelant n'a pas à
+// redériver la réponse pour savoir s'il doit rafraîchir.
+async function acquitter(portee) {
+  if (!await confirmModal(portee.phrase, { okText: 'Acquitter', danger: false })) return false;
+  if (portee.toutes) await apiSend('/alerts/ack-all');
+  else for (const id of portee.ids) await apiSend('/alerts/' + id + '/ack');
+  return true;
+}
 // WIRING partagé des lignes d'alerte présentes dans `host` pour le tableau `alerts` (index-aligné avec
 // data-idx). `afterAck` = callback exécuté après un acquittement (vue plate: renderAlerts/refresh ; groupe:
 // recharge les occurrences du groupe). Les sélecteurs sont SCOPÉS à `host` -> deux groupes dépliés ne se
 // marchent pas dessus.
 function wireAlertRows(host, alerts, afterAck) {
   host.querySelectorAll('.mitrepivot').forEach(el => el.onclick = (e) => { e.stopPropagation(); setAlertMitreFilter(el.dataset.m); });
+  // P11.18-k — le bouton d'une ligne ne connaît pas la route : il nomme ce qu'il retire de la file, et la
+  // porte partagée confirme puis envoie. Le titre est retrouvé par l'IDENTIFIANT porté par le bouton, jamais
+  // par une position : seules les alertes ACTIVES portent ce bouton, le rang d'un bouton n'est donc pas
+  // celui de son alerte dans le tableau servi.
   host.querySelectorAll('[data-ack]').forEach(btn => btn.onclick = () => withBusy(btn, async () => {
-    await apiSend('/alerts/' + btn.dataset.ack + '/ack');
+    const id = btn.dataset.ack;
+    const a = (alerts || []).find(x => String(x.id) === String(id));
+    if (!await acquitter({ ids: [id], phrase: `Acquitter l'alerte #${id}${a && a.title ? ` « ${a.title} »` : ''} ? Elle quitte la file active, sans être supprimée.` })) return;
     await afterAck();
   }));
   host.querySelectorAll('.banbtn').forEach(btn => btn.onclick = () => banIp(btn.dataset.ip));
@@ -276,28 +310,37 @@ function alertActionBarHtml(m, loaded) {
     + `<div class="alerthead"><span>${esc(loaded.countLabel || '')}</span><span class="alertbar-actions">${ack}<span class="alertbar-export"></span></span></div>`;
 }
 // Câblage de la barre : chaque action écrit le MODÈLE (état partagé) puis re-rend la liste par le même chemin.
+// P11.18-j — L'INERTIE D'UN CONTRÔLE SE LIT AVANT `withBusy`, JAMAIS DANS SON RAPPEL. `withBusy` (core.js)
+// DÉSACTIVE le bouton pour la durée du geste : un `if (btn.disabled) return` écrit À L'INTÉRIEUR de son
+// rappel lit donc toujours vrai, et le geste s'annule LUI-MÊME — sans confirmation, sans requête, sans un
+// mot. REPRODUIT le 2026-08-25 sur l'état exact du relevé — quarante-neuf alertes actives, aucune facette,
+// aucune recherche : « Tout acquitter » est bien RENDU et bien ACTIF (il ne porte pas `disabled`), le clic
+// est bien REÇU, la confirmation ne s'ouvre pas et AUCUNE requête ne quitte le navigateur. Le démon n'a
+// donc rien refusé : il n'a rien reçu. « Acquitter les N affichée(s) » était atteint par la même ligne.
+// LA LECTURE EST DÉRIVÉE, PAS RECOPIÉE SUR CHAQUE BOUTON : tous les gestes de cette barre passent par
+// `siActif`, qui lit l'inertie au seul moment où elle veut dire « ce contrôle est inerte » et non « ce
+// geste est en cours ». Un geste de plus câblé ici en hérite ; réécrire le test à la main le rouvrirait.
+const siActif = (btn, faire) => () => (btn.disabled ? undefined : faire());
 function wireAlertActionBar(host, loaded) {
   const rerender = () => renderAlerts(true);
-  host.querySelectorAll('.alertbar .agseg').forEach(btn => btn.onclick = () => { if (btn.disabled) return; setAlertGroupBy(btn.dataset.g); });
+  host.querySelectorAll('.alertbar .agseg').forEach(btn => btn.onclick = siActif(btn, () => setAlertGroupBy(btn.dataset.g)));
   host.querySelectorAll('[data-act]').forEach(btn => {
     const act = btn.dataset.act;
-    if (act === 'scope') btn.onclick = () => { if (btn.disabled) return; S.alertGroupAll = !S.alertGroupAll; S.alertGroupPage = 0; S.alertHistPage = 0; rerender(); };
-    else if (act === 'uncased') btn.onclick = () => { S.alertUncased = !(S.alertUncased !== false); S.alertGroupPage = 0; S.alertHistPage = 0; rerender(); };
-    else if (act === 'clear-mitre') btn.onclick = () => setAlertMitreFilter('');
-    else if (act === 'clear-source') btn.onclick = () => setAlertSourceFilter('');
-    else if (act === 'ack-all') btn.onclick = () => withBusy(btn, async () => {
-      if (btn.disabled) return;
-      if (!await confirmModal(`Acquitter TOUTES les alertes actives ? (liste courante : ${loaded.countLabel || loaded.count} ; l'acquittement global porte aussi sur celles hors de la page)`, { okText: 'Acquitter', danger: false })) return;
-      await apiSend('/alerts/ack-all');
+    if (act === 'scope') btn.onclick = siActif(btn, () => { S.alertGroupAll = !S.alertGroupAll; S.alertGroupPage = 0; S.alertHistPage = 0; rerender(); });
+    else if (act === 'uncased') btn.onclick = siActif(btn, () => { S.alertUncased = !(S.alertUncased !== false); S.alertGroupPage = 0; S.alertHistPage = 0; rerender(); });
+    else if (act === 'clear-mitre') btn.onclick = siActif(btn, () => setAlertMitreFilter(''));
+    else if (act === 'clear-source') btn.onclick = siActif(btn, () => setAlertSourceFilter(''));
+    else if (act === 'ack-all') btn.onclick = siActif(btn, () => withBusy(btn, async () => {
+      // La portée est NOMMÉE dans la question, parce que ce geste dépasse la page affichée.
+      if (!await acquitter({ toutes: true, phrase: `Acquitter TOUTES les alertes actives ? (liste courante : ${loaded.countLabel || loaded.count} ; l'acquittement global porte aussi sur celles hors de la page)` })) return;
       await refresh();
-    });
-    else if (act === 'ack-shown') btn.onclick = () => withBusy(btn, async () => {
+    }));
+    else if (act === 'ack-shown') btn.onclick = siActif(btn, () => withBusy(btn, async () => {
       const ids = loaded.ackableIds || [];
-      if (btn.disabled || !ids.length) return;
-      if (!await confirmModal(`Acquitter les ${ids.length} alerte(s) active(s) affichée(s) ?`, { okText: 'Acquitter', danger: false })) return;
-      for (const id of ids) await apiSend('/alerts/' + id + '/ack');
+      if (!ids.length) return;
+      if (!await acquitter({ ids, phrase: `Acquitter les ${ids.length} alerte(s) active(s) affichée(s) ?` })) return;
       await rerender();
-    });
+    }));
   });
 }
 // P11.1-d — LE TITRE « Alertes » EST UNE PORTE : comme tout en-tête qui nomme une page (liens `#onglet`

@@ -522,9 +522,55 @@ loadParsers();
 })();
 
 // --- moteur de réponse () ---
+// `P11.18-h` — CE QU'UNE ACTION OFFRE À LA RECHERCHE, LU SUR LA LIGNE ET NON DÉCIDÉ POUR CETTE VUE. Ce que
+// `actionRow` rend est exactement ce qui se cherche : le GESTE et sa CIBLE — « où est le ban de 10.0.0.5 »
+// est la question qu'on pose à une file de riposte —, l'HÔTE où il s'applique, l'ÉTAT tel que le démon le
+// sert, puis la ligne de méta : le MOTIF et le RÉSULTAT.
+// LA RÈGLE PRODUCTRICE N'EST PAS UN CHAMP, ET ELLE N'EST PAS RELUE ICI. La route ne sert aucun identifiant
+// de règle ; le moteur de réponse inscrit son producteur DANS le motif sous la forme `famille:nom`, et
+// c'est de là que la fabrique de liste tire l'axe « règle ». Le motif porte donc déjà le nom du groupe,
+// mot pour mot : chercher l'en-tête d'un groupe cherche ses lignes, sans qu'une seconde lecture de la
+// raison — qui pourrait diverger de celle de la fabrique — soit écrite dans ce panneau.
+// CE QUI EN EST ÉCARTÉ, ET POURQUOI : les mots que la CONSOLE substitue à un état — « dry-run » / « RÉEL »
+// pour un booléen, « central » pour un hôte absent. Ce sont des mots d'interface, pas des mots du
+// registre ; les rendre cherchables ferait dépendre la recherche de la langue choisie, et la file de
+// riposte se chercherait autrement en anglais qu'en français. La phrase rendue quand rien n'est trouvé
+// NOMME donc ce sur quoi la recherche porte, pour que cette limite se lise au lieu de se deviner.
+function texteCherchableDUneAction(a) {
+  return texteCherchable([a && a.kind, a && a.target, a && a.host, a && a.status, a && a.reason, a && a.result]);
+}
+// La recherche courante de la file, et l'autre bout de la même poignée — même forme que le panneau des
+// règles quelques centaines de lignes plus haut. Sans champ dans le document (test, rendu partiel), la
+// recherche vaut la chaîne vide et la liste rend exactement comme avant.
+let rechercheDesActions = () => '';
+let poserLaRechercheDesActions = () => {};
+// Dernière réponse servie par `/api/actions` — la RÉPONSE ENTIÈRE, pas ses seules lignes : la fenêtre, le
+// nombre servi et le total borné sont ce qui décide de la portée que la recherche doit annoncer. La frappe
+// REDESSINE, elle ne recharge pas : filtrer est une comparaison de chaînes sur des lignes déjà en mémoire,
+// et une requête HTTP par caractère serait un coût réseau pour un travail local (même partage
+// `charger`/`dessiner` que les règles et que la file d'alertes).
+let actionsChargees = null;
+
 async function loadActions() {
   const wrap = $('#act-list'); if (!wrap) return;
   const d = await fetchInto(wrap, '/actions'); if (!d) return;   // P11.14-a : la cause est écrite dans le panneau
+  actionsChargees = d;
+  dessinerLesActions();
+}
+// `P11.18-h` — UNE ACTION QU'ON VIENT DE CRÉER DOIT SE VOIR. Une recherche posée n'a aucune raison de
+// contenir la ligne qu'on vient d'écrire : le geste réussirait et la file n'en montrerait rien — un succès
+// invisible, la famille de défauts que cette campagne poursuit. La recherche est donc vidée à la CRÉATION,
+// et d'elle seule : approuver ou annuler travaille DANS le sous-ensemble qu'on regarde, et l'en éjecter
+// ferait perdre sa place à l'exploitant au milieu d'un tri de file.
+function apresCreationDUneAction() {
+  poserLaRechercheDesActions('');
+  return loadActions();
+}
+// LE DESSIN, sur une réponse DÉJÀ servie. Séparé du chargement pour la recherche, et c'est aussi ce qui le
+// rend jugeable sans réseau.
+function dessinerLesActions() {
+  const wrap = $('#act-list'); const d = actionsChargees;
+  if (!wrap || !d) return;
   const actions = d.actions || [];
   wrap.replaceChildren();
   // `P11.17-e` — UNE LISTE VIDE N'EST PAS TOUJOURS UNE FILE VIDE. Le démon rend désormais, à côté des
@@ -541,12 +587,33 @@ async function loadActions() {
   // disait ce qu'elle savait faute de total. Le remède est en amont : la route rend le total, borné et
   // annoncé comme tel, et la vue écrit « tant sur tant ».
   wrap.appendChild(muted(motDeLaBorneDesActions(d)));
+  // `P11.18-h` — LA RECHERCHE SE COMPOSE AVEC LE REGROUPEMENT AU LIEU DE LE DÉFAIRE. Les deux panneaux qui
+  // portaient déjà la recherche rendent une liste PLATE dès qu'elle est posée, et pour une raison écrite :
+  // chez eux une correspondance tombée dans une section repliée serait INVISIBLE (les règles) ou même pas
+  // chargée (les groupes d'alertes, dont chaque dépli est une requête). Ici ni l'un ni l'autre : les lignes
+  // sont toutes en mémoire, et l'en-tête d'un groupe ANNONCE SON COMPTE — un groupe replié qui affiche « 3 »
+  // ne cache pas ses correspondances, il les résume. Défaire le regroupement ferait donc perdre la lecture
+  // par règle productrice au moment précis où l'on cherche une règle. La partition est refaite sur les
+  // lignes TROUVÉES : un groupe sans correspondance disparaît, et le compte de chaque en-tête est celui
+  // des lignes retenues.
+  const requete = rechercheDesActions();
+  const trouvees = requete ? filtrerParRecherche(actions, requete, texteCherchableDUneAction) : actions;
+  if (requete) {
+    // Une liste qui cache des lignes le DIT ; et quand elle ne trouve rien, elle nomme ce qu'elle a cherché
+    // ET jusqu'où elle a cherché.
+    const borne = laFenetreBorneLeRegistre(d);
+    wrap.appendChild(resumeDeRecherche(trouvees.length, actions.length, {
+      filtre: document.createTextNode(borne ? MOT_RECHERCHE_ACTIONS_FENETRE : MOT_RECHERCHE_ACTIONS_REGISTRE),
+      vide: document.createTextNode(borne ? MOT_RECHERCHE_ACTIONS_RIEN_FENETRE : MOT_RECHERCHE_ACTIONS_RIEN_REGISTRE),
+    }));
+    if (!trouvees.length) return;
+  }
   // `P11.17-c` — LE REGROUPEMENT PAR RÈGLE N'EST PAS ÉCRIT ICI. La fabrique lit ce que les lignes portent :
   // une action nomme la règle qui l'a produite (le moteur de réponse l'inscrit dans sa raison), son état et
   // l'hôte où elle s'applique — trois axes offerts, dont la règle est le premier de l'ordre partagé. Le
   // panneau ne rendait qu'UN groupe contenant toute la liste, et il en construisait chaque ligne même replié.
   const host = document.createElement('div');
-  pagedList(host, { mode: 'client', pageSize: 50, rows: actions, renderRow: actionRow, group: { storeKey: 'soc_act_collapsed' } });
+  pagedList(host, { mode: 'client', pageSize: 50, rows: trouvees, renderRow: actionRow, group: { storeKey: 'soc_act_collapsed' } });
   wrap.appendChild(host);
 }
 // `P11.17-e` — CE QUE LA VUE AFFICHE QUAND LA BORNE MORD. Le démon rend, à côté des lignes, la FENÊTRE
@@ -560,10 +627,20 @@ async function loadActions() {
 // deux sens (une borne qui mord doit se dire ; un registre entier servi ne doit pas s'annoncer tronqué).
 function motDeLaBorneDesActions(d) {
   const servies = d && d.actions ? d.actions.length : 0;
+  if (!laFenetreBorneLeRegistre(d)) return servies + MOT_ACTIONS_TOUT_LE_REGISTRE;
   if (!d || typeof d.total !== 'number') return servies + MOT_ACTIONS_SERVIES_A + (d && d.window ? d.window : servies) + MOT_ACTIONS_SERVIES_B;
   if (d.total_capped) return servies + MOT_ACTIONS_SUR + MOT_ACTIONS_PLUS_DE + d.total + MOT_ACTIONS_HORS_ATTEINTE;
-  if (d.total > servies) return servies + MOT_ACTIONS_SUR + d.total + MOT_ACTIONS_HORS_ATTEINTE;
-  return servies + MOT_ACTIONS_TOUT_LE_REGISTRE;
+  return servies + MOT_ACTIONS_SUR + d.total + MOT_ACTIONS_HORS_ATTEINTE;
+}
+// `P11.18-h` — LA BORNE MORD-ELLE ? UNE SEULE LECTURE, DEUX EMPLOIS. La phrase de la fenêtre et celle de la
+// recherche répondent à la MÊME question ; l'écrire deux fois serait la laisser diverger, et une portée qui
+// diverge de la borne qu'elle annonce est exactement le défaut que `P11.17-e` a fermé en amont. Le registre
+// n'est ENTIÈREMENT servi que lorsqu'il a été compté (`total` numérique), que le comptage n'a pas lui-même
+// été plafonné, et qu'il ne dépasse pas les lignes rendues. Tout le reste — comptage impossible, comptage
+// plafonné, total supérieur au servi — est une fenêtre qui borne, et un total absent n'est PAS un zéro.
+function laFenetreBorneLeRegistre(d) {
+  const servies = d && d.actions ? d.actions.length : 0;
+  return !(d && typeof d.total === 'number' && !d.total_capped && d.total <= servies);
 }
 // Le vocabulaire de la borne, écrit dans les deux langues. La console ne dit que ce que la réponse porte.
 const MOT_ACTIONS_SUR = LANG === 'en' ? ' action(s) shown out of ' : ' action(s) affichée(s) sur ';
@@ -579,6 +656,31 @@ const MOT_ACTIONS_SERVIES_B = LANG === 'en'
 const MOT_ACTIONS_ILLISIBLES = LANG === 'en'
   ? 'The register holds actions, but none could be read — this is NOT an empty queue.'
   : "Le registre compte des actions, mais aucune n'a pu être lue — ce n'est PAS une file vide.";
+// `P11.18-h` — CE QUE LA RECHERCHE COUVRE, DIT SANS L'ARRONDIR. La route sert une FENÊTRE des actions les
+// plus récentes ; une recherche du navigateur ne porte donc que sur les lignes SERVIES. Taire cette limite
+// ferait rendre « aucun résultat » pour une action qui EXISTE — et sur une file de gestes de riposte,
+// l'erreur va dans le sens dangereux. Deux états, séparés par le prédicat de la borne lui-même : ils ne
+// peuvent pas contredire la phrase écrite juste au-dessus d'eux. Les quatre phrases sont écrites EN ENTIER
+// dans les deux langues, à l'endroit du rendu : une phrase recollée à l'exécution ne serait jamais égale à
+// une clé du lexique et resterait en français, et une phrase posée sous une clé d'objet ne serait vue par
+// aucune garde — deux dérives déjà mesurées sur la file d'alertes.
+const MOT_RECHERCHE_ACTIONS_FENETRE = LANG === 'en'
+  ? 'action(s) among the SERVED lines — the search does not reach into the register beyond that window; grouping and order stay as they are'
+  : "action(s) parmi les lignes SERVIES — la recherche ne descend pas dans le registre au-delà de cette fenêtre ; le regroupement et l'ordre restent posés";
+const MOT_RECHERCHE_ACTIONS_REGISTRE = LANG === 'en'
+  ? 'action(s) — the search covers the whole register, which is served in full here; grouping and order stay as they are'
+  : "action(s) — la recherche porte sur tout le registre, servi ici en entier ; le regroupement et l'ordre restent posés";
+const MOT_RECHERCHE_ACTIONS_RIEN_FENETRE = LANG === 'en'
+  ? 'No SERVED action carries these words in its kind, target, host, status, reason or result — and the search does not go past the served window, so an older action may exist without being reachable from this panel. Esc clears the search.'
+  : "Aucune action SERVIE ne porte ces mots dans son geste, sa cible, son hôte, son état, son motif ou son résultat — et la recherche ne descend pas au-delà de la fenêtre servie : une action plus ancienne peut exister sans être atteignable depuis ce panneau. Échap efface la recherche.";
+const MOT_RECHERCHE_ACTIONS_RIEN_REGISTRE = LANG === 'en'
+  ? 'No action in the register carries these words in its kind, target, host, status, reason or result — and the whole register is served here, so none exists. Esc clears the search.'
+  : "Aucune action du registre ne porte ces mots dans son geste, sa cible, son hôte, son état, son motif ou son résultat — et le registre est servi ici en entier : il n'en existe donc aucune. Échap efface la recherche.";
+const MOT_RECHERCHE_ACTIONS_INVITE = LANG === 'en' ? 'Search an action…' : 'Rechercher une action…';
+const MOT_RECHERCHE_ACTIONS_ETIQUETTE = LANG === 'en' ? 'Search an action' : 'Rechercher une action';
+const MOT_RECHERCHE_ACTIONS_AIDE = LANG === 'en'
+  ? 'Searches the kind, target, host, status, reason and result of each SERVED action; it composes with the grouping. Esc clears the search.'
+  : "Cherche dans le geste, la cible, l'hôte, l'état, le motif et le résultat de chaque action SERVIE ; se combine avec le regroupement. Échap efface la recherche.";
 function actionRow(a) {
   const row = document.createElement('div'); row.className = 'rulerow';
   const st = document.createElement('span'); st.className = 'actst act-' + a.status; st.textContent = a.status;
@@ -610,8 +712,33 @@ if ($('#act-form')) $('#act-form').addEventListener('submit', async e => {
   const j = await apiSend('/actions', 'POST', body);
   if (j.error) { $('#af-result').textContent = '' + j.error; return; }
   $('#act-form').classList.add('hidden'); $('#af-target').value = ''; $('#af-reason').value = ''; $('#af-result').textContent = '';
-  loadActions();
+  apresCreationDUneAction();   // `P11.18-h` : la ligne qu'on vient d'écrire n'a aucune raison de porter la recherche posée
 });
+// `P11.18-h` — LE CHAMP DE RECHERCHE DE LA FILE DE RIPOSTE, POSÉ PAR LE MÉCANISME PARTAGÉ. Il REDESSINE
+// (aucun rechargement), Échap le vide, et le chrome `.field` vient du câblage : trois propriétés que ce
+// panneau n'a pas à réécrire.
+// POURQUOI LE CHAMP EST CONSTRUIT ICI ET NON DANS `index.html`, OÙ VIVENT CEUX DES RÈGLES ET DES ALERTES.
+// L'en-tête de ce panneau ne porte AUCUN conteneur d'outils : il n'a qu'un titre et un bouton de création,
+// là où les deux autres panneaux ont un `.hdtools`. Le conteneur partagé est donc créé, le champ y est posé,
+// et le bouton de création l'y rejoint — l'en-tête prend la forme des deux autres au lieu d'en inventer une
+// troisième. Sa place naturelle reste le document ; c'est écrit ici pour que l'y déplacer soit une reprise
+// et non une découverte, et pour nommer ce qui manque alors : la largeur de ces champs est bornée dans la
+// feuille par une règle qui les ÉNUMÈRE (`#rule-search,#alert-search`), et `#act-search` n'y figure pas.
+(() => {
+  const tete = document.querySelector('#actions-panel .panelhead');
+  if (!tete) return;
+  const outils = document.createElement('div'); outils.className = 'hdtools';
+  const champ = document.createElement('input');
+  champ.id = 'act-search'; champ.type = 'search';
+  champ.placeholder = MOT_RECHERCHE_ACTIONS_INVITE;
+  champ.title = MOT_RECHERCHE_ACTIONS_AIDE;
+  champ.setAttribute('aria-label', MOT_RECHERCHE_ACTIONS_ETIQUETTE);
+  outils.appendChild(champ);
+  tete.appendChild(outils);
+  const creer = $('#act-new'); if (creer) outils.appendChild(creer);   // insérer DÉTACHE : le bouton n'a jamais deux parents
+  const poignee = champDeRecherche(champ, { auChangement: () => dessinerLesActions() });
+  rechercheDesActions = poignee.valeur; poserLaRechercheDesActions = poignee.poser;
+})();
 loadActions();
 
 // --- mode global observe/active ---
@@ -790,4 +917,4 @@ if ($('#pb-form')) $('#pb-form').addEventListener('submit', async e => {
 loadPlaybooks();
 loadMode();
 
-export { renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, loadMode, loadPlaybooks, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };
+export { renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, loadPlaybooks, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };

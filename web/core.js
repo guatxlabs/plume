@@ -704,8 +704,40 @@ function peindreEnGroupes(host, rows, opts) {
 // en phase de capture qui mesure la table que l'on survole ou dans laquelle on entre au clavier. Les
 // tableaux `.qtable` construits hors de la fabrique (résultats de recherche, aperçu de connecteur) sont
 // ainsi couverts sans qu'une ligne leur soit écrite.
+//
+// `P11.18-b` — LA PLACE RÉSERVÉE NE BORNAIT QUE CE QUE LA CELLULE METTAIT EN LIGNE ELLE-MÊME
+// --------------------------------------------------------------------------------------------------
+// LE RELEVÉ, ET LA DIFFÉRENCE QU'IL DÉSIGNE. Le chevron recouvrait le texte qu'il sert à révéler, mais
+// pas partout : dans le journal d'audit il était bien placé. Un seul mécanisme, deux rendus — la
+// différence tient à CE QUE LA CELLULE CONTIENT, et elle se mesure. Relevé le 2026-08-25, à l'encre
+// réellement peinte (deux captures d'un navigateur réel, texte peint contre texte transparent) : dans une
+// cellule dont le contenu est INLINE — le journal d'audit n'en construit pas d'autres — l'encre s'arrête
+// 5 px AVANT le bord de la boîte de contenu et 11 px avant le chevron, soit 0 px sous le chevron ; dans
+// une cellule qui porte une SOUS-LIGNE de niveau bloc — l'inventaire des sources, la flotte — l'encre va
+// 23 px AU-DELÀ de ce même bord, jusqu'à la coupe, dont 17 px SOUS le chevron (≈ 2,4 caractères).
+//
+// POURQUOI. La place réservée est un REMBOURRAGE de la cellule, et `text-overflow` ne s'hérite pas : la
+// coupe à trois points ne borne QUE les lignes que la cellule met en page elle-même. Un enfant de niveau
+// bloc est un autre conteneur — sa valeur par défaut y est `clip`, sa ligne n'est donc pas raccourcie, et
+// `overflow:hidden` ne la coupe qu'à la boîte de REMBOURRAGE, c'est-à-dire à l'autre bout de la place
+// réservée. Ce contenu-là traversait donc la réservation et passait sous le bouton. RÉFUTÉ au passage :
+// la réservation n'était pas de la mauvaise taille — la supprimer ne change rien à la cellule inline
+// (l'encre reste au même pixel), et l'élargir n'aurait pas déplacé d'un pixel une ligne qu'elle ne borne
+// pas. Ce n'est pas non plus un décalage du bouton qu'il fallait : le défaut est que la cellule PEIGNAIT
+// là où le bouton est posé.
+//
+// LE REMÈDE EST UNE BOÎTE, ET IL VAUT POUR TOUTES LES CELLULES. La valeur reçoit sa propre boîte
+// (`CELL_VALEUR`), qui occupe la boîte de contenu et coupe ce qui dépasse : tout ce qu'une vue met dans
+// une cellule — inline, bloc, imbriqué, posé demain — est mis en page et coupé DANS cette boîte, donc
+// s'arrête où la place du bouton commence. Le bouton est alors posé À CÔTÉ de la valeur et non par-dessus,
+// et la propriété ne dépend plus de ce que la cellule contient. Ce qui a été écarté : borner les enfants
+// depuis la cellule (`td.plcut > *`) atteindrait des éléments qu'on ne vise pas — c'est `P11.4-m` — et
+// laisserait dehors les boîtes anonymes, qu'aucun sélecteur ne nomme ; rétrécir la coupe de la cellule
+// (`overflow-clip-margin`, une bordure large) emporterait le bouton avec, puisqu'il est posé DANS la
+// bande — la seule borne qui coupe la valeur sans couper le contrôle est une boîte qui ne contient que
+// la valeur.
 // ==================================================================================================
-const CELL_COUPEE = 'plcut', CELL_DEPLIEE = 'plopen';
+const CELL_COUPEE = 'plcut', CELL_DEPLIEE = 'plopen', CELL_VALEUR = 'plval';
 
 // « plus large que sa place » — la seule question posée à une cellule. Sur un arbre sans mise en page
 // (aucune largeur mesurable), la réponse est NON : le geste ne se pose jamais au hasard.
@@ -720,6 +752,13 @@ function boutonDeDepli(td) {
     && n.classList && n.classList.contains('plmore')) || null;
 }
 
+// La BOÎTE DE VALEUR d'une cellule marquée, ou rien. Même lecture que pour le bouton — par la classe et
+// non par un rang : une vue peut poser ce qu'elle veut dans la cellule, l'ordre ne fait foi nulle part.
+function boiteDeValeur(td) {
+  const enfants = td && td.childNodes ? Array.from(td.childNodes) : [];
+  return enfants.find(n => n && n.classList && n.classList.contains(CELL_VALEUR)) || null;
+}
+
 function poserLeDepliDeCellule(td) {
   if (td.classList.contains(CELL_COUPEE)) return false;
   const entier = td.textContent == null ? '' : String(td.textContent);   // AVANT d'ajouter le bouton
@@ -727,6 +766,15 @@ function poserLeDepliDeCellule(td) {
   // Recours immédiat, sans aucun geste : la valeur entière au survol. Une infobulle déjà écrite par la
   // vue (elle en sait plus que la fabrique) n'est jamais remplacée.
   if (entier && !td.getAttribute('title')) td.title = entier;
+  // `P11.18-b` — LA VALEUR PASSE DANS SA PROPRE BOÎTE, ET C'EST ELLE QUI S'ARRÊTE OÙ LE BOUTON COMMENCE.
+  // La place réservée par la feuille ne borne que ce que la CELLULE met en ligne elle-même ; ce qu'un
+  // enfant de niveau BLOC met en ligne lui échappe (voir l'en-tête de section). La boîte rend la borne
+  // commune : tout le contenu, quel qu'il soit, est mis en page et coupé dans une boîte qui finit AVANT
+  // la place du bouton. Elle est posée AVANT le bouton, qui reste le dernier enfant de la cellule.
+  const boite = document.createElement('span');
+  boite.className = CELL_VALEUR;
+  while (td.firstChild) boite.appendChild(td.firstChild);
+  td.appendChild(boite);
   const btn = document.createElement('button');
   btn.type = 'button'; btn.className = 'plmore';
   btn.title = 'Plier / déplier';
@@ -742,9 +790,13 @@ function poserLeDepliDeCellule(td) {
   return true;
 }
 
+// Rend la cellule TELLE QU'ELLE ÉTAIT : le bouton part, et la boîte de valeur est dépliée sur place —
+// les nœuds que la vue a construits reviennent à leur rang, elle n'en perd aucun.
 function retirerLeDepliDeCellule(td) {
   td.classList.remove(CELL_COUPEE);
   const b = boutonDeDepli(td); if (b && b.remove) b.remove();
+  const boite = boiteDeValeur(td);
+  if (boite) { while (boite.firstChild) td.insertBefore(boite.firstChild, boite); boite.remove(); }
 }
 
 // Les cellules à mesurer sous `racine` : celles des tableaux habillés `.qtable`, d'où qu'ils viennent.
@@ -784,7 +836,11 @@ function marquerLesCellulesTronquees(racine) {
     if (td.classList.contains(CELL_DEPLIEE)) continue;   // déplié : la mesure ne dit plus rien de lui
     if (cellulePorteUnControle(td)) continue;
     const marquee = td.classList.contains(CELL_COUPEE);
-    if (celluleDeborde(td)) { if (!marquee && poserLeDepliDeCellule(td)) posees++; }
+    // UNE CELLULE MARQUÉE SE MESURE PAR SA BOÎTE DE VALEUR, pas par elle-même : la boîte coupe ce qui
+    // dépasse, donc la cellule ne déborde plus, et la mesurer ELLE ferait retirer le geste à la première
+    // re-mesure (survol, focus, redimensionnement) — le recours disparaîtrait dès qu'on s'en approche.
+    const mesuree = marquee ? (boiteDeValeur(td) || td) : td;
+    if (celluleDeborde(mesuree)) { if (!marquee && poserLeDepliDeCellule(td)) posees++; }
     else if (marquee) retirerLeDepliDeCellule(td);       // la fenêtre s'est élargie : plus rien à déplier
   }
   return posees;

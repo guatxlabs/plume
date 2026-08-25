@@ -3,13 +3,56 @@
 import { $, LANG, apiSend, confirmModal, fetchInto, fmtTs, humanAge, ic, modal, pagedList, socRole, toast } from './core.js';
 
 // ============ SOURCES (inventaire + métadonnées d'affichage) ============
-// Vocabulaire d'état CANONIQUE partagé avec Fraîcheur (même dérivation côté démon, `statut_de_source`) :
-// muet(rouge) > en_retard(orange) > en_attente(gris, déclaré jamais vu) > frais(vert) > calme(bleu).
-// `dormant` = ligne de réglage sans aucune donnée sur 7 j (repeint calme).
-const SRC_DOT = { frais: 'frais', calme: 'calme', muet: 'muet', en_retard: 'warn', dormant: 'calme', attente: 'attente', en_attente: 'attente' };
-const SRC_TXT = { frais: 'ok', calme: 'calm', muet: 'bad', en_retard: 'fwarn', dormant: 'calm', attente: 'mut', en_attente: 'mut' };
-const SRC_LBL = { frais: 'frais', calme: 'calme', muet: 'muet', en_retard: 'en retard', dormant: 'dormant', attente: 'en attente', en_attente: 'en attente' };
-const SRANK_SRC = { muet: 0, en_retard: 1, attente: 2, en_attente: 2, frais: 3, calme: 4, dormant: 4 };
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// `P11.18-f` — LE STATUT DE L'INVENTAIRE ET CELUI DE LA FRAÎCHEUR : LA MESURE D'ABORD, LE VERDICT ENSUITE.
+//
+// LA QUESTION POSÉE. « Le statut porté par l'inventaire fait-il doublon avec la vue de fraîcheur ? »
+// Elle ne se tranche ni au goût ni au coup d'œil : elle se tranche en lisant D'OÙ chacun des deux
+// affichages dérive.
+//
+// CE QUE LA LECTURE DONNE. Les deux dérivent de la MÊME grandeur, par la MÊME fonction :
+// `daemon/src/handlers/sources.rs` et `daemon/src/handlers/freshness.rs` appellent tous deux
+// `statut_de_source(age_s, pipeline_fresh, cadence)` — âge du dernier point d'`event_rollup`, fraîcheur
+// du pipeline, cadence DÉCLARÉE — et cette fonction rend quatre mots : muet, en_retard, frais, calme.
+// Sur ces quatre mots, la colonne « Statut » de l'inventaire est donc un MIROIR de la fraîcheur, et un
+// miroir finit toujours par diverger : c'est la famille de défaut que ce dépôt poursuit.
+//
+// CE QUI N'EST PAS UN MIROIR, ET POURQUOI LA COLONNE RESTE. L'inventaire rend un CINQUIÈME mot que la
+// fraîcheur ne peut pas rendre : `dormant`, posé par le démon quand aucune donnée n'a été observée sur
+// la fenêtre de l'inventaire. Une source dans cet état n'a AUCUN flux dans `/api/freshness` — elle n'y
+// figure pas du tout. Retirer la colonne ferait donc perdre une information que l'autre vue ne porte
+// pas ; c'est ce que la mesure évite, et c'est pourquoi rien n'est retiré ici.
+//
+// CE QUE LE MIROIR COÛTAIT DÉJÀ, MESURÉ. Le mot `dormant` était rendu tel quel dans la colonne, et la
+// légende de cette même vue ne le définissait nulle part : elle définissait « en attente » — un mot que
+// le démon ne rend JAMAIS pour une source. Un lecteur voyait donc un état sans définition à côté d'une
+// définition sans état. La table ci-dessous est désormais l'UNIQUE vocabulaire d'état de source de la
+// console (pastille, couleur, rang de tri, mot court) ; `freshness.js` la LIT au lieu d'en tenir une
+// copie, et la légende nomme `dormant` pour ce qu'il est.
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// muet(rouge) > en_retard(orange) > attente(gris) > frais(vert) > calme(bleu) ; `dormant` prend le ton
+// calme (la collecte n'est pas en cause) mais garde son mot, parce qu'il dit autre chose.
+const ETAT_DE_SOURCE = {
+  muet:      { dot: 'muet',    txt: 'bad',   rang: 0, court: 'muet' },
+  en_retard: { dot: 'warn',    txt: 'fwarn', rang: 1, court: 'en retard' },
+  attente:   { dot: 'attente', txt: 'mut',   rang: 2, court: 'en attente' },
+  frais:     { dot: 'frais',   txt: 'ok',    rang: 3, court: 'frais' },
+  calme:     { dot: 'calme',   txt: 'calm',  rang: 4, court: 'calme' },
+  dormant:   { dot: 'calme',   txt: 'calm',  rang: 4, court: 'dormant' },
+};
+// Les mots que le démon a rendus sous d'autres noms, ramenés au vocabulaire ci-dessus ; un mot INCONNU
+// retombe sur `calme`, le repli que les deux surfaces tenaient déjà chacune de leur côté.
+const ALIAS_D_ETAT_DE_SOURCE = { inconnu: 'attente', en_attente: 'attente' };
+function etatDeSource(status) {
+  const e = ALIAS_D_ETAT_DE_SOURCE[status] || status;
+  return Object.prototype.hasOwnProperty.call(ETAT_DE_SOURCE, e) ? e : 'calme';
+}
+const rangDEtatDeSource = (etat) => (ETAT_DE_SOURCE[etat] ? ETAT_DE_SOURCE[etat].rang : 9);
+// UN STATUT ABSENT N'EST PAS UN STATUT CALME. Le repli `calme` d'`etatDeSource` vaut pour un MOT que
+// la console ne connaît pas, jamais pour l'ABSENCE de mot : une ligne sans verdict prendrait sinon le
+// ton d'une collecte saine. Sans statut, pas de vocabulaire — la ligne le dit (tiret) et ferme la liste.
+const vocDeSource = (s) => (s && s.status ? ETAT_DE_SOURCE[etatDeSource(s.status)] : null);
+const rangDeSource = (s) => { const v = vocDeSource(s); return v ? v.rang : 9; };
 
 // Libellé de la cadence DÉCLARÉE (par une sonde du démon OU par l'exploitant) — jamais la moyenne
 // observée, qui est rendue à part. P11.3-c : « non déclarée » n'est PAS un défaut et ne se dit plus comme
@@ -44,7 +87,7 @@ function renderSourcesInventory(wrap, d) {
   // tri INITIAL : inattendues d'abord (signal), puis par statut, puis nom. Le tri par colonne (clic
   // en-tête) prend ensuite le relais via pagedList (mode client).
   sources.sort((a, c) => (Number(c.unexpected) - Number(a.unexpected))
-    || ((SRANK_SRC[a.status] ?? 9) - (SRANK_SRC[c.status] ?? 9))
+    || (rangDeSource(a) - rangDeSource(c))
     || String(a.source).localeCompare(String(c.source)));
   wrap.replaceChildren();
   const banner = document.createElement('div');
@@ -152,10 +195,11 @@ function renderSourcesInventory(wrap, d) {
       const sp = document.createElement('span'); sp.textContent = s.last_seen ? 'il y a ' + humanAge(s.age_s) : '—'; if (s.last_seen) sp.title = fmtTs(s.last_seen); return sp;
     } },
     { key: 'n_24h', label: '24 h', sortable: true, align: 'r', sortVal: s => s.n_24h || 0, render: s => s.n_24h != null ? String(s.n_24h) : '0' },
-    { key: 'status', label: 'Statut', sortable: true, sortVal: s => (SRANK_SRC[s.status] ?? 9), render: s => {
+    { key: 'status', label: 'Statut', sortable: true, sortVal: s => rangDeSource(s), render: s => {
       const f = document.createDocumentFragment();
-      const dot = document.createElement('span'); dot.className = 'fdot ' + (SRC_DOT[s.status] || 'calme');
-      const lbl = document.createElement('b'); lbl.className = SRC_TXT[s.status] || 'calm'; lbl.textContent = SRC_LBL[s.status] || s.status || '—';
+      const voc = vocDeSource(s);
+      const dot = document.createElement('span'); dot.className = 'fdot ' + (voc ? voc.dot : 'calme');
+      const lbl = document.createElement('b'); lbl.className = voc ? voc.txt : 'calm'; lbl.textContent = voc ? voc.court : '—';
       f.append(dot, lbl); return f;
     } },
     { key: 'category', label: 'Catégorie', sortable: true, sortVal: s => s.category || '', render: s => s.category || '—' },
@@ -195,6 +239,13 @@ function renderSourcesInventory(wrap, d) {
     const prov = document.createElement('div'); prov.className = 'muted'; prov.style.cssText = 'margin-top:6px;font-size:11px';
     prov.textContent = LANG === 'en' ? 'Under each source name: the PRODUCER that emits it. A source name does not name its producer — the two often differ — and this match is DERIVED from what the shipped producers declare, never from a hand-written table that would be wrong the day a sensor is added. A source installed outside this repository has no producer the console can name, and the screen says so instead of suggesting an obvious origin. Enabling or removing a sensor happens on the host (its collector and its timer): this console only ever changes what is DISPLAYED.' : 'Sous chaque nom de source : le PRODUCTEUR qui l\'émet. Le nom d\'une source ne nomme pas son producteur — les deux diffèrent souvent — et ce rapprochement est DÉRIVÉ de ce que les producteurs livrés déclarent, jamais d\'une table écrite à la main, qui serait fausse le jour où un capteur s\'ajoute. Une source installée hors de ce dépôt n\'a aucun producteur que la console sache nommer, et l\'écran le dit au lieu de laisser croire à une origine évidente. Activer ou retirer un capteur se fait sur l\'hôte (son collecteur et son minuteur) : cette console ne change jamais que ce qui est AFFICHÉ.';
     wrap.appendChild(prov);
+    // `P11.18-f` — CE QUE CE STATUT PORTE DE PLUS QUE LA FRAÎCHEUR, dans son PROPRE nœud (ajouté au
+    // texte ci-dessus, il l'aurait rendu intraduisible : le lexique apparie un nœud entier).
+    const doublon = document.createElement('div'); doublon.className = 'muted'; doublon.style.cssText = 'margin-top:6px;font-size:11px';
+    doublon.textContent = LANG === 'en'
+      ? 'Four of these words come from the SAME derivation as Data → Source freshness, on the same measure: they say the same thing, seen from the inventory. The fifth belongs to this view alone — « dormant » : a source declared here of which no data was observed over the inventory window (seven days). Such a source has no feed at all in Source freshness, so it does not appear there.'
+      : 'Quatre de ces mots viennent de la MÊME dérivation que Données → Fraîcheur des sources, sur la même mesure : ils disent la même chose, vue depuis l\'inventaire. Le cinquième n\'appartient qu\'à cette vue — « dormant » : une source déclarée ici dont aucune donnée n\'a été observée sur la fenêtre de l\'inventaire (sept jours). Une telle source n\'a aucun flux dans Fraîcheur des sources, elle n\'y figure donc pas.';
+    wrap.appendChild(doublon);
   }
 }
 
@@ -271,4 +322,4 @@ async function clearSourceMeta(s) {
 }
 
 
-export { loadSourcesView, renderSourcesInventory };
+export { loadSourcesView, renderSourcesInventory, ETAT_DE_SOURCE, etatDeSource, rangDEtatDeSource };

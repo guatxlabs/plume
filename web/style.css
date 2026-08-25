@@ -181,7 +181,10 @@ b.ok,.ok{color:var(--ok)} b.bad,.bad{color:var(--bad)} b.mut{color:var(--mut)}
    CONTENEURS D'ENTRÉE partagés — la cellule d'un tableau, la ligne clé/valeur — et sur le vocabulaire
    partagé des mentions ; elle ne nomme aucune vue, donc la vue posée demain l'a sans qu'on y pense. La
    PREMIÈRE mention n'est jamais décalée : c'est l'entrée elle-même, elle n'a rien à qualifier. */
-:is(.qtable td,.kv>span)>:is(.badge,.muted):not(:first-child){margin-inline-start:8px}
+/* `P11.18-b` : la boîte de valeur d'une cellule coupée est TRANSPARENTE pour cette règle — elle enveloppe
+   le contenu sans le sortir de son conteneur d'entrée, sinon la mention perdrait son blanc au moment
+   précis où la valeur devient trop longue, c'est-à-dire là où elle est le plus utile. */
+:is(.qtable td,.qtable td>.plval,.kv>span)>:is(.badge,.muted):not(:first-child){margin-inline-start:8px}
 
 /* alertes */
 .alerthead{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;font-size:12px;color:var(--mut)}
@@ -395,6 +398,16 @@ button[aria-pressed="true"]{background:var(--sel-bg);color:var(--sel-fg);border-
    SUR PLACE — elle s'enroule et la ligne grandit en hauteur, la largeur des colonnes ne bouge pas. */
 .qtable td{max-width:520px;overflow:hidden;text-overflow:ellipsis;position:relative}
 .qtable td.plcut{padding-right:calc(var(--dens-plmore) + 9px)}   /* la place réservée SUIT la taille du bouton : 28px au défaut, le littéral qu'elle remplace */
+/* `P11.18-b` — LA BOÎTE DE LA VALEUR, ET POURQUOI LE REMBOURRAGE NE SUFFISAIT PAS. `text-overflow` ne
+   s'hérite pas et ne borne que les lignes que la CELLULE met en page : une sous-ligne de niveau bloc
+   (l'inventaire des sources, la flotte) est un autre conteneur, sa ligne n'est pas raccourcie, et
+   `overflow:hidden` ne la coupe qu'à la boîte de REMBOURRAGE — donc à l'autre bout de la place réservée,
+   sous le bouton. Mesuré le 2026-08-25 à l'encre peinte : 0 px sous le chevron pour une cellule au
+   contenu inline (le journal d'audit), 17 px (≈ 2,4 caractères) pour une cellule à sous-ligne bloc.
+   La boîte occupe la boîte de contenu et coupe ce qui dépasse : tout ce qu'une vue met dans la cellule
+   s'arrête là où la place du bouton commence, quel que soit son affichage. Elle porte la coupe à trois
+   points qui vivait sur la cellule — la cellule la garde pour n'en rien changer là où elle suffisait. */
+.qtable td.plcut>.plval{display:block;overflow:hidden;text-overflow:ellipsis}
 .qtable td.plopen{white-space:pre-wrap;overflow-wrap:anywhere;overflow:visible;text-overflow:clip;vertical-align:top}
 /* `P11.15-b` — le bouton de dépli TIENT DANS LA LIGNE à toutes les densités : sa taille et son retrait
    dérivent des mêmes jetons (retrait = la moitié du rembourrage vertical, 3px au défaut). Une taille

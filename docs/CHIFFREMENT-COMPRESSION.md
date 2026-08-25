@@ -12,27 +12,71 @@ qu'est-ce qui ne l'est pas.**
 
 ---
 
-## 1. La base au repos : en clair par défaut
+## 1. La base au repos : neuve → chiffrée ; existante → jamais touchée par un démarrage
 
-**Sans clé, la base est en clair sur le disque, dans les trois modes de déploiement.** SQLCipher est
-compilé dans le binaire — inconditionnellement, ce n'est pas une *feature* de compilation
-(`daemon/Cargo.toml`, `rusqlite` avec `bundled-sqlcipher-vendored-openssl`) — mais il ne s'arme
-qu'à la présence d'une clé.
+**Une base neuve naît chiffrée. Une base existante n'est jamais convertie par un démarrage.** Ce sont
+les deux moitiés de `P9.6-a`, et elles sont indépendantes. SQLCipher est compilé dans le binaire —
+inconditionnellement, ce n'est pas une *feature* de compilation (`daemon/Cargo.toml`, `rusqlite` avec
+`bundled-sqlcipher-vendored-openssl`).
 
 ```sh
 grep -n 'bundled-sqlcipher' daemon/Cargo.toml
 grep -n 'PRAGMA key' daemon/src/crypto/mod.rs daemon/src/db_open.rs
 ```
 
-### Les deux leviers, et l'ordre entre eux
+### Les trois leviers, et l'ordre entre eux
 
 L'ordre de précédence est écrit **une fois**, dans le code, comme un tableau dont l'ordre EST la
 règle (`daemon/src/crypto/mod.rs`) :
 
 | Levier | Ce que c'est | Comportement |
 |---|---|---|
-| `PLUME_DB_KEY_FILE` | chemin d'un fichier-clé | **préféré** ; s'il est posé mais illisible, vide ou non-UTF8 → message `[FATAL]` et **arrêt du processus**, sans repli sur l'autre levier |
+| `PLUME_DB_KEY_FILE` | chemin d'un fichier-clé que **vous** fournissez | **préféré** ; s'il est posé mais illisible, vide ou non-UTF8 → message `[FATAL]` et **arrêt du processus**, sans repli sur les autres leviers |
 | `PLUME_DB_KEY` | la passphrase elle-même | repli ; lisible via `/proc/<pid>/environ` si elle vient de l'environnement |
+| `PLUME_DB_KEY_AUTO_PATH` | chemin où le démon **engendre** et relit sa propre clé | dernier recours ; vide → `<PLUME_DB>.key`. La clé n'est engendrée **que** sur une base absente ou vide, et **jamais** ailleurs |
+| `PLUME_DB_KEY_ESCROWED` | acquittement de mise à l'abri (`1/true/yes/on`) | tant qu'il est absent, chaque ouverture de la base écrit un événement de posture **non purgeable** |
+
+### La propriété qui décide « base neuve », et pourquoi elle ne peut pas se tromper dans le sens dangereux
+
+Se tromper en disant *existante* d'une base neuve la laisse en clair : c'est le défaut d'avant, sans
+aggravation. Se tromper dans l'autre sens engendrerait une clé pour une base qui n'en a pas — et le
+démarrage suivant lui appliquerait un `PRAGMA key` qu'elle ne comprend pas. La fonction
+`etat_du_fichier_de_base` est donc écrite pour que la seconde erreur n'existe pas :
+
+* `Neuve` exige **deux absences indépendantes** : le fichier principal absent ou de longueur zéro,
+  **et** aucun compagnon SQLite (`-wal`, `-shm`, `-journal`) portant des octets ;
+* **toute** erreur de `metadata` autre que « absent » rend `Indecidable`, qui ne fait rien — c'est le
+  correctif `S32` appliqué ici dès l'écriture, plutôt que le verdict le plus rassurant ;
+* et même si le verdict était faux, la clé engendrée **ne peut pas atteindre** le chemin qui réécrit
+  une base : `ensure_encrypted` décide sur `db_key_depuis` (clé explicite), la clé engendrée n'entre
+  que par `db_key()` (clé d'ouverture). La conséquence d'une erreur serait un refus de démarrer, pas
+  une conversion.
+
+### Une nouvelle façon de tout perdre, et ce que le produit en dit
+
+Avant `P9.6-a`, perdre un fichier de clé n'avait aucun effet sur un déploiement livré tel quel :
+il n'y en avait pas. Désormais, **perdre la clé d'une base chiffrée, c'est perdre le SOC entier et
+toutes ses archives, définitivement** — la sauvegarde compressée emploie la même clé comme passphrase.
+
+Le produit le dit **deux fois**, et jamais par une simple ligne de journal :
+
+1. **à l'engendrement** : un message qui nomme le fichier, dit contre quoi le chiffrement protège
+   (vol de disque, image de volume, stockage mal décommissionné) et contre quoi il ne protège pas
+   (machine compromise, où la clé est lisible à côté de la base) ;
+2. **ensuite, tant que rien n'atteste la mise à l'abri** : un **événement de posture non purgeable**
+   (`source=plume-config`, `category=health`, `origin=daemon`, sévérité 4, au plus un par heure),
+   qu'un exploitant **ne peut pas effacer** — même mécanisme que « sauvegarde symétrique » et
+   « cycle sans archive ». Il s'arrête quand `PLUME_DB_KEY_ESCROWED=1` est posé.
+
+**Ce que cet acquittement vaut, écrit sans complaisance :** une *déclaration*. Le produit ne peut pas
+vérifier qu'une copie de la clé existe ailleurs, et il ne le prétend pas — le message du signal le dit
+lui-même.
+
+```sh
+# lire la clé engendrée pour la mettre à l'abri (Docker)
+docker compose exec soc cat /data/plume-at-rest.key
+# … puis poser PLUME_DB_KEY_ESCROWED=1 dans .env
+```
 
 Chacun se lit par `cfg()`, donc avec la précédence commune au produit — `environnement` > fichier de
 configuration > défaut — ce qui veut dire que **sur un hôte, la clé peut vivre dans
@@ -43,18 +87,24 @@ aussi le fichier — une moitié chiffrée, l'autre en clair, sans que rien le d
 Le contenu du fichier est lu **verbatim** : le `\n` final n'est pas retiré, délibérément, pour que
 `fichier` et `environnement` portant le même secret donnent le même octet-à-octet.
 
-### Ce que le code NE vérifie PAS
+### Ce que le code vérifie, et ce qu'il ne vérifie pas
 
-**Les permissions du fichier-clé ne sont pas contrôlées.** La lecture est un `read` nu ; il n'y a
-aucun contrôle de mode `0600`, aucun contrôle de propriétaire. Un fichier-clé lisible par tous sera
-accepté sans un mot.
+**Les permissions d'un fichier-clé que VOUS fournissez ne sont pas contrôlées.** La lecture de
+`PLUME_DB_KEY_FILE` est un `read` nu ; aucun contrôle de mode, aucun contrôle de propriétaire. Un
+fichier-clé lisible par tous sera accepté sans un mot. C'est à l'opérateur de poser les droits.
+
+**La clé que le démon ENGENDRE, elle, est posée en `0600` et ses droits sont RELUS.** Le fichier est
+créé avec `create_new(true)` — il n'écrase jamais un fichier existant, ce qui rend aussi inoffensive
+la course entre deux démarrages simultanés — et le mode est demandé **à la création**, pas par un
+`chmod` d'après coup qui laisserait une fenêtre. Si le système de fichiers n'honore pas les droits
+POSIX (un montage `fat`, `9p`…), **la clé est retirée** et le démon refuse de démarrer plutôt que de
+la laisser lisible. La pose est **fermée** : toute erreur d'écriture, de synchronisation ou de droits
+donne un `[FATAL]` et un `exit 78`, jamais une base créée en clair en silence.
 
 ```sh
-grep -rn '0o600' daemon/src --include='*.rs' --exclude-dir=tests   # que des POSES, jamais une vérification
+grep -rn '0o600' daemon/src --include='*.rs' --exclude-dir=tests
+grep -n 'create_new' daemon/src/crypto/mod.rs
 ```
-
-C'est à l'opérateur de poser les droits. Le dire ici vaut mieux que de laisser croire à un contrôle
-qui n'existe pas.
 
 ### Les paramètres du chiffrement ne sont pas choisis par ce dépôt
 
@@ -75,25 +125,75 @@ brute `x'<64 hexa>'` — y compris pour une clé de tenant, qui est pourtant 32 
 encodés en hexadécimal. SQLCipher lui applique donc son KDF. *Les conséquences exactes de ce choix
 relèvent du comportement de SQLCipher et **ne sont pas établies** par lecture de ce dépôt.*
 
-### Convertir une base existante : ce qui se passe, et la fenêtre qui s'ouvre
+### Convertir une base existante : un geste explicite, irréversible, et ce qu'il exige avant de partir
 
-Une base **neuve** est créée chiffrée d'office. Une base **en clair existante** est convertie au
-démarrage, une seule fois, et l'opération est idempotente (`ensure_encrypted`,
-`daemon/src/crypto/mod.rs`). La séquence, dans l'ordre :
+**Aucun démarrage ne convertit une base existante.** Ni poser une clé, ni la changer, ni monter
+d'image ne réécrit une base déjà en service. Si une clé est configurée et que la base est **en clair**,
+le démon **refuse de démarrer** (`[FATAL]`, `exit 78`), ne touche à rien, et nomme le geste.
 
-1. un résidu `<db>.plaintext.bak` d'un essai interrompu est **effacé d'abord** ;
-2. une **sonde non destructive** classe la base : fraîche, s'ouvre avec la clé, en clair, verrouillée,
-   illisible, ou mauvaise clé ;
-3. « mauvaise clé ou corrompue » → message `[FATAL]` et arrêt, **base non modifiée** — jamais une
-   conversion à l'aveugle ;
-4. « en clair » → point de contrôle du WAL, **copie en clair** vers `<db>.plaintext.bak`, export par
-   `sqlcipher_export` vers `<db>.enc.tmp`, renommage atomique, suppression des `-wal`/`-shm`, puis
-   effacement de la copie.
+*C'est un changement de comportement par rapport à l'état antérieur, et il est délibéré : la
+conversion se faisait alors au démarrage, sans sauvegarde, sans preuve d'équivalence et sans contrôle
+de place. Franchir une porte à sens unique sur les données vivantes d'un SOC parce qu'une variable
+d'environnement a changé n'est pas une commodité, c'est un risque.*
 
-**La fenêtre est nommée** : entre l'étape 4 et son dernier geste, une **copie en clair de la base
-existe sur le disque**. Une coupure à cet instant la laisse en place ; le démarrage suivant l'efface.
-L'effacement écrase de zéros puis supprime — et le code écrit lui-même que **cela ne garantit rien
-sur un SSD ou un système de fichiers à copie sur écriture**.
+Le geste est `plume-daemon chiffrer-au-repos` (moteur : `convertir_la_base_au_repos`,
+`daemon/src/crypto/mod.rs`). Il **refuse de partir** tant que les préconditions ne sont pas réunies :
+
+| Précondition | Ce qu'elle établit |
+|---|---|
+| une clé **explicite** (`PLUME_DB_KEY_FILE` ou `PLUME_DB_KEY`) | la clé vient de vous ; le produit ne convertit jamais vers une clé qu'il se serait donnée lui-même |
+| `PLUME_DB_KEY_ESCROWED=1` | vous **déclarez** que la clé est copiée hors de la machine |
+| la base est bien **en clair** | `OpensWithKey` → rien à faire (le geste est idempotent) ; verrouillée → refus, arrêtez le démon d'abord |
+| **la place** : `2,4 ×` la taille de la base | la copie chiffrée, l'archive de sécurité, et la base jetable de sa vérification. La mesure **indisponible** vaut refus, pas fail-open |
+
+Puis, dans cet ordre — et **l'ordre est inhabituel pour une raison mesurée** :
+
+1. point de contrôle du WAL sur l'original (un repli refusé = refus, sans rien toucher) ;
+2. `sqlcipher_export` vers `<db>.conversion-en-cours`, **un nom que le démon n'ouvre jamais** ;
+3. **équivalence prouvée**, quatre lectures toutes dérivées du schéma : `PRAGMA integrity_check` sur
+   la copie ; l'empreinte `sqlite_master` objet par objet, dans les deux sens ; le compte de **chaque**
+   table de données (pas un total — deux erreurs qui se compensent passeraient un total) ; et la
+   **chaîne du journal inaltérable**, revérifiée sur la copie ;
+4. **sauvegarde produite ET vérifiée** — voir ci-dessous ;
+5. **bascule** : un lien dur sur l'original, puis **un seul `rename`**, atomique ;
+6. la conversion **s'inscrit au journal inaltérable** (`at_rest.converted`) avec ce qui a été vérifié ;
+7. la copie en clair est effacée (écrasement + `unlink`).
+
+**Pourquoi la sauvegarde est prise depuis la COPIE et non depuis l'original.** *La séquence évidente —
+sauvegarder, puis convertir — est réfutée par la mesure* : `backup_compressed` ouvre sa source **avec
+la clé** (`PRAGMA key`), et une base en clair devient alors illisible (`SQLITE_NOTADB`) ; sans clé, il
+refuse dès sa première instruction. **Le produit ne sait pas sauvegarder une base en clair** — c'est
+exactement le cul-de-sac nommé par `P9.4-b`. La séquence tenable est donc : exporter → prouver
+l'équivalence → sauvegarder et vérifier **depuis la copie** → basculer.
+
+**Ce que cette précondition établit** : une archive existe à `PLUME_BACKUP_DEST` ; elle se déchiffre ;
+elle se **rejoue** dans une base neuve ; et cette base restaurée rend le **même nombre de lignes** que
+la copie qui va devenir la base vivante. Ce compte est confronté à celui produit par l'**autre**
+dérivation du produit (`verify_backup` → `inventaire_restaure`) : si les deux lectures de « quelles
+tables portent les données » divergeaient, la conversion refuserait.
+
+**Ce qu'elle n'établit PAS** : que l'archive soit stockée **hors** de la machine (sans destinataire
+`age`, elle est chiffrée par passphrase et la machine la déchiffre) ; qu'une restauration réussisse
+ailleurs, sur un autre matériel ou un autre binaire ; que les lignes soient **sémantiquement** justes
+— seul leur nombre est comparé ; ni que l'archive survive à la rétention *keep-N*.
+
+**Le mode asymétrique sans identité privée est refusé**, et c'est le point le plus important :
+`verify_backup` dégrade alors en contrôle **structurel**, qui dit « l'en-tête est bien formé », pas
+« des lignes en reviennent ». Accepter ce verdict comme précondition d'une porte à sens unique serait
+exactement ce que `P8.3-a` a nommé : un contrôle vert qui porte le mot « restore » sans avoir rien
+restauré. Fournissez `PLUME_BACKUP_AGE_IDENTITY_FILE` le temps de la conversion, ou convertissez avec
+une archive symétrique vérifiable sur place.
+
+**Aucun état intermédiaire n'est démarrable**, et c'est structurel : la copie vit sous un nom que le
+démon n'ouvre jamais, l'original garde le sien jusqu'au `rename`, et il n'existe **aucun instant** où
+`PLUME_DB` désigne un fichier à moitié écrit. Le lien dur avant la bascule n'est pas un détail : deux
+`rename` successifs ouvriraient une fenêtre où `PLUME_DB` n'existe pas — et un démarrage y créerait une
+base **vide, chiffrée, d'apparence saine**.
+
+**Ce qui est réversible, et ce qui ne l'est pas.** Avant la bascule : **tout**. Chaque échec laisse
+l'original intact, et retirer la clé de la configuration remet le déploiement dans son état exact — la
+base n'a pas bougé d'un octet. Après la bascule : **rien**. Il n'existe **aucun déchiffrement au
+repos** dans ce produit, et la seule voie de reprise est l'archive vérifiée à l'étape 4.
 
 ### Multi-tenant
 

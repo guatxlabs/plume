@@ -22,18 +22,20 @@ type: Opaque
 stringData:
   PLUME_USER: "admin"
   PLUME_PASS_HASH: "REMPLACER_PAR_LE_HASH"   # plume-daemon hashpw 'tonmdp'
-  # CHIFFREMENT AT-REST (SQLCipher) — OPT-IN. Laissé VIDE = la base sur le PVC est EN CLAIR.
-  # Pour l'activer : mets une passphrase forte ici, PUIS décommente le bloc `PLUME_DB_KEY_FILE`
-  # du Deployment (montage en lecture seule — préféré à une variable d'env, qui reste lisible via
-  # `kubectl exec` dans /proc/<pid>/environ). Une base neuve est créée chiffrée d'office ; une base
-  # en clair existante est convertie au boot (idempotent).
-  # PERTE DE CLÉ = PERTE DE LA BASE. Sauvegarde-la HORS du cluster.
-  # CETTE CLÉ CONDITIONNE AUSSI LA SAUVEGARDE NATIVE (`P9.4-b`) : le scheduler armé plus bas produit
-  # une archive COMPRESSÉE+CHIFFRÉE dont la passphrase age EST cette clé. Vide -> `backup_compressed`
-  # refuse dès sa première instruction, et chaque cycle se termine SANS ÉCRIRE. Renseigner cette valeur
-  # ne suffit pas : elle n'atteint le conteneur QUE si le bloc `PLUME_DB_KEY_FILE` du Deployment ET son
-  # montage sont décommentés — le Deployment ci-dessous n'injecte PAS `PLUME_DB_KEY` en variable d'env.
-  # Le chiffrement par défaut de la base est traité par `P9.6-a`, ouverte.
+  # CHIFFREMENT AT-REST (SQLCipher) — APPORTEZ VOTRE PROPRE CLÉ. Cette entrée est le chemin
+  # « bring-your-own-key » : mets une passphrase forte ici, PUIS décommente le bloc
+  # `PLUME_DB_KEY_FILE` du Deployment ET son montage (fichier en lecture seule — préféré à une
+  # variable d'env, qui reste lisible via `kubectl exec` dans /proc/<pid>/environ). Renseigner cette
+  # valeur SEULE ne suffit pas : elle n'atteint le conteneur que par ce montage.
+  # LAISSÉE VIDE, ELLE NE SIGNIFIE PLUS « base en clair » (`P9.6-a`) : le Deployment pose
+  # `PLUME_DB_KEY_AUTO_PATH`, et sur un PVC VIERGE le démon engendre lui-même une clé au premier
+  # démarrage (0600, sur le PVC) — la base naît CHIFFRÉE et le scheduler de sauvegarde a de quoi
+  # produire ses archives. Sur un PVC qui porte DÉJÀ une base en clair, rien n'est engendré et rien
+  # n'est converti : le démarrage ne franchit jamais cette porte-là.
+  # PERTE DE CLÉ = PERTE DE LA BASE **ET** DE TOUTES SES ARCHIVES. Sauvegarde-la HORS du cluster :
+  #   kubectl -n soc exec deploy/soc -- cat /data/plume-at-rest.key
+  # puis pose `PLUME_DB_KEY_ESCROWED=1` dans le Deployment. Tant que ce n'est pas fait, le démon
+  # écrit à chaque ouverture de la base un événement de posture NON PURGEABLE, ineffaçable.
   PLUME_DB_KEY: ""
 ---
 apiVersion: v1
@@ -70,29 +72,46 @@ spec:
             - { name: PLUME_CONFIG, value: "/nonexistent" }
             - { name: PLUME_USER,      valueFrom: { secretKeyRef: { name: soc-auth, key: PLUME_USER } } }
             - { name: PLUME_PASS_HASH, valueFrom: { secretKeyRef: { name: soc-auth, key: PLUME_PASS_HASH } } }
-            # CHIFFREMENT AT-REST — décommente pour l'activer (après avoir renseigné PLUME_DB_KEY
-            # dans le Secret). FAIL-CLOSED : si le chemin est posé mais le fichier absent/vide, le
-            # daemon REFUSE de démarrer (exit 78) au lieu d'ouvrir la base en clair en silence.
+            # CHIFFREMENT AT-REST (`P9.6-a`) — TROIS PROVENANCES, DANS CET ORDRE DE PRÉCÉDENCE.
+            #   1. PLUME_DB_KEY_FILE (ci-dessous, commenté) — votre propre clé, montée en lecture
+            #      seule depuis le Secret. FAIL-CLOSED : chemin posé mais fichier absent/vide -> le
+            #      démon REFUSE de démarrer (exit 78) au lieu d'ouvrir la base en clair en silence.
+            #   2. PLUME_DB_KEY en variable d'env — ce Deployment ne l'injecte PAS, délibérément.
+            #   3. PLUME_DB_KEY_AUTO_PATH — la clé que le démon ENGENDRE lui-même sur un PVC VIERGE,
+            #      quand aucune des deux précédentes n'est fournie. C'est le défaut de ce manifeste.
             # - { name: PLUME_DB_KEY_FILE, value: "/etc/plume/secrets/PLUME_DB_KEY" }
+            - { name: PLUME_DB_KEY_AUTO_PATH, value: "/data/plume-at-rest.key" }
+            # ACQUITTEMENT DE MISE À L'ABRI — à décommenter UNE FOIS la clé copiée hors du cluster.
+            # Livré COMMENTÉ, délibérément : un acquittement livré par défaut n'acquitte rien.
+            # - { name: PLUME_DB_KEY_ESCROWED, value: "1" }
+            #
+            # LE DÉMARRAGE NE CONVERTIT JAMAIS UNE BASE EXISTANTE. Poser une clé sur un déploiement
+            # dont la base est EN CLAIR ne la réécrit pas : le démon REFUSE de démarrer et nomme le
+            # geste explicite `plume-daemon chiffrer-au-repos`, qui exige une sauvegarde produite ET
+            # vérifiée, la place pour une seconde base, et PLUME_DB_KEY_ESCROWED=1. IL EST
+            # IRRÉVERSIBLE. Tant qu'il n'a pas eu lieu, retirer la clé remet le déploiement dans son
+            # état exact.
             #
             # --- OPS NATIVES : BACKUP + AUTO-VACUUM DANS LE BINAIRE (zéro sidecar, zéro CronJob) ---
             # Les deux boucles sont GATÉES sur un intervalle > 0. Sans ces variables, ce déploiement
             # NE SAUVEGARDE RIEN.
             #
-            # ⚠ AVEC ELLES NON PLUS, TANT QUE LA CLÉ MANQUE (`P9.4-b`). Le scheduler natif produit une
-            # archive COMPRESSÉE+CHIFFRÉE, qui EXIGE une clé de base non vide (la passphrase age est la
-            # clé SQLCipher). Le Secret ci-dessus livre `PLUME_DB_KEY: ""` et ce conteneur ne reçoit
-            # AUCUNE des deux variables at-rest (le bloc `PLUME_DB_KEY_FILE` est commenté) : appliqué
-            # tel quel, ce manifeste ARME un cycle qui, toutes les 6 h, part, échoue et n'écrit rien.
-            # CE N'EST PLUS SILENCIEUX : chaque cycle sans archive écrit un événement de posture NON
-            # PURGEABLE (source `plume-config`, category `health`, sév. 4, au plus un par heure) qui
-            # nomme l'étape et la cause. La vérification directe :
+            # CE QUI A CHANGÉ DEPUIS `P9.4-b`. Ce manifeste ARMAIT un cycle qui, toutes les 6 h,
+            # partait, échouait et n'écrivait rien : le scheduler natif produit une archive
+            # COMPRESSÉE+CHIFFRÉE, qui EXIGE une clé de base non vide, et aucune des variables
+            # at-rest n'atteignait ce conteneur. Sur un PVC VIERGE, la clé engendrée
+            # (`PLUME_DB_KEY_AUTO_PATH` ci-dessus) satisfait désormais cette précondition et les
+            # cycles publient. Sur un PVC dont la base est restée EN CLAIR, elle ne l'est toujours
+            # pas — et le cycle continue de le DIRE : chaque cycle sans archive écrit un événement de
+            # posture NON PURGEABLE (source `plume-config`, category `health`, sév. 4, au plus un par
+            # heure) qui nomme l'étape et la cause. La vérification directe :
             #   kubectl -n soc exec deploy/soc -- ls -1 /data/backups
             # un répertoire sans `plume-<TS>.db.age` est un déploiement SANS sauvegarde.
             - { name: PLUME_BACKUP_INTERVAL, value: "21600" }   # secondes ; 0 = désactivé. 21600 = 6 h
             # KEEP-N = PLAFOND de ce qui est CONSERVÉ, pas une promesse d'archives : il borne ce que les
             # cycles ont écrit, il ne l'écrit pas. 24 archives à 6 h couvriraient ~6 jours SI chaque
-            # cycle publiait ; sans clé, ce plafond ne garde rien parce qu'il n'y a rien à garder.
+            # cycle publiait. Sur un PVC vierge, la clé engendrée les fait publier ; sur un PVC dont
+            # la base est restée en clair, ce plafond ne garde rien parce qu'il n'y a rien à garder.
             - { name: PLUME_BACKUP_KEEP,     value: "24" }      # rétention KEEP-N
             - { name: PLUME_BACKUP_DEST,     value: "/data/backups" }  # répertoire LOCAL (sur le PVC)
             # ESCROW HORS-CLUSTER : clé PUBLIQUE age (`age1…`). Ce n'est PAS un secret -> elle peut

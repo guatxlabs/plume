@@ -43,18 +43,18 @@ fn tete(chemin: &std::path::Path) -> Vec<u8> {
     buf.to_vec()
 }
 
-/// Fabrique une base SQLite EN CLAIR non triviale (une table, une ligne) à `chemin`.
-fn base_en_clair(chemin: &std::path::Path) {
-    let c = Connection::open(chemin).expect("création de la base en clair");
-    c.execute_batch("CREATE TABLE t(x TEXT); INSERT INTO t VALUES('valeur-en-clair-p87b');")
-        .expect("écriture dans la base en clair");
-}
-
 /// ① LE CAS DANGEREUX, SUR LES OCTETS, AVEC SON TÉMOIN. Une clé présente dans le fichier de
-/// configuration SEUL doit désormais chiffrer la base chaude ; la MÊME base, la MÊME fonction, sans
-/// cette ligne dans le fichier, doit rester EN CLAIR. Deux verdicts opposés produits par UNE SEULE
-/// mutation (la ligne `PLUME_DB_KEY` de la carte de configuration) : c'est ce qui distingue une mesure
-/// d'une croyance. La carte est INJECTÉE — aucun état de processus n'est touché.
+/// configuration SEUL doit atteindre la base CHAUDE ; la MÊME base, la MÊME fonction, sans cette
+/// ligne dans le fichier, doit rester EN CLAIR. Deux verdicts opposés produits par UNE SEULE mutation
+/// (la ligne `PLUME_DB_KEY` de la carte de configuration) : c'est ce qui distingue une mesure d'une
+/// croyance. La carte est INJECTÉE — aucun état de processus n'est touché.
+///
+/// `P9.6-a` — CE QUI A CHANGÉ ICI, ET CE QUI N'A PAS CHANGÉ. La PROPRIÉTÉ mesurée est la même, à
+/// l'octet près : une clé écrite dans le fichier de configuration chiffre bien la base chaude. Ce qui
+/// a changé, c'est QUI la franchit. Le DÉMARRAGE ne convertit plus jamais une base existante — cette
+/// porte à sens unique ne s'ouvre plus parce qu'une variable a changé — et la conversion est devenue
+/// un geste EXPLICITE. Le test suit le geste ; il ne relâche pas la propriété. La preuve que le
+/// démarrage, lui, ne touche plus rien vit dans `base_neuve_nait_chiffree.rs`.
 #[test]
 fn p87b_une_cle_du_fichier_seul_chiffre_desormais_la_base_chaude() {
     assert!(
@@ -63,30 +63,39 @@ fn p87b_une_cle_du_fichier_seul_chiffre_desormais_la_base_chaude() {
         "ce test EXIGE un environnement muet sur la clé : il mesure ce que le FICHIER apporte, et \
          l'environnement gagne sur le fichier (c'est précisément l'invariant Docker/k3s)"
     );
+    let _reglages = BACKUP_ENV_LOCK.read(); // le geste SAUVEGARDE, et la sauvegarde relit des réglages ambiants
     let _tmpg = crate::tmp_possede::TmpPossede::neuf("p87b-at-rest");
     let dir = _tmpg.racine().chemin().to_path_buf();
     let dir = dir.as_path();
+    let dest = dir.join("backups").to_string_lossy().into_owned();
 
-    // (a) TÉMOIN NÉGATIF — configuration SANS clé : la base reste en clair.
-    let temoin = dir.join("temoin.db");
-    base_en_clair(&temoin);
-    ensure_encrypted(&conf_at_rest(&[]), &temoin.to_string_lossy());
+    // (a) TÉMOIN NÉGATIF — configuration SANS clé : la base reste en clair, et le geste REFUSE.
+    let temoin = dir.join("temoin.db").to_string_lossy().into_owned();
+    base_plume_en_clair(&temoin, 5);
+    let refus = convertir_la_base_au_repos(&conf_at_rest(&[("PLUME_BACKUP_DEST", dest.as_str())]), &temoin)
+        .expect_err("sans clé nulle part, il n'y a rien à faire");
+    assert!(refus.contains("aucune clé"), "{refus}");
     assert_eq!(
-        tete(&temoin),
+        tete(std::path::Path::new(&temoin)),
         ENTETE_SQLITE_EN_CLAIR.to_vec(),
         "sans clé nulle part, la base DOIT rester en clair (rétrocompat : c'est le défaut annoncé)"
     );
 
     // (b) LE CAS MESURÉ — la MÊME clé, portée par la configuration de FICHIER SEULE.
-    let base = dir.join("chaude.db");
-    base_en_clair(&base);
-    assert_eq!(tete(&base), ENTETE_SQLITE_EN_CLAIR.to_vec(), "état de départ : en clair");
-    ensure_encrypted(
-        &conf_at_rest(&[("PLUME_DB_KEY", "cle-ecrite-dans-soc-conf-p87b")]),
-        &base.to_string_lossy(),
-    );
+    let base = dir.join("chaude.db").to_string_lossy().into_owned();
+    base_plume_en_clair(&base, 5);
+    assert_eq!(tete(std::path::Path::new(&base)), ENTETE_SQLITE_EN_CLAIR.to_vec(), "état de départ : en clair");
+    convertir_la_base_au_repos(
+        &conf_at_rest(&[
+            ("PLUME_DB_KEY", "cle-ecrite-dans-soc-conf-p87b"),
+            ("PLUME_DB_KEY_ESCROWED", "1"),
+            ("PLUME_BACKUP_DEST", dest.as_str()),
+        ]),
+        &base,
+    )
+    .expect("la conversion doit aboutir avec la clé du fichier de configuration");
 
-    let apres = tete(&base);
+    let apres = tete(std::path::Path::new(&base));
     assert_ne!(
         apres,
         ENTETE_SQLITE_EN_CLAIR.to_vec(),
@@ -97,15 +106,15 @@ fn p87b_une_cle_du_fichier_seul_chiffre_desormais_la_base_chaude() {
     );
     // …et ce n'est pas « illisible », c'est CHIFFRÉ AVEC CETTE CLÉ : la sonde non destructive le dit.
     assert_eq!(
-        probe_db(&base.to_string_lossy(), "cle-ecrite-dans-soc-conf-p87b"),
+        probe_db(&base, "cle-ecrite-dans-soc-conf-p87b"),
         DbProbe::OpensWithKey,
         "la base doit s'OUVRIR avec la clé du fichier — sinon on aurait échangé une base en clair \
          contre une base perdue"
     );
     // …et la copie en clair ne traîne pas à côté.
     assert!(
-        !dir.join("chaude.db.plaintext.bak").exists(),
-        "la copie EN CLAIR de la migration doit être effacée, sinon le chiffrement at-rest est \
+        !dir.join("chaude.db.avant-chiffrement").exists() && !dir.join("chaude.db.plaintext.bak").exists(),
+        "la copie EN CLAIR de la conversion doit être effacée, sinon le chiffrement at-rest est \
          cosmétique"
     );
 }
@@ -129,10 +138,20 @@ fn p87b_bascule_annoncee_quand_la_cle_vient_du_fichier_seul() {
 
     let msg = annonce_bascule_at_rest(Some("PLUME_DB_KEY"), DbProbe::Plaintext).expect("annonce due");
     assert!(msg.contains("PLUME_DB_KEY"), "l'annonce doit NOMMER la clé : {msg}");
+    // `P9.6-a` — CET ÉNONCÉ A CHANGÉ PARCE QUE LE COMPORTEMENT A CHANGÉ, et c'est exactement le
+    // genre de phrase qui, laissée en place, décrit un état qui n'existe plus. L'annonce disait « la
+    // base va être RÉÉCRITE chiffrée maintenant » ; le démarrage ne réécrit plus rien. Ce qu'elle
+    // doit dire désormais est ce qui va VRAIMENT se passer — un refus de démarrer — et par quel
+    // geste on sort de là. Une annonce qui promettrait encore une réécriture serait pire qu'aucune :
+    // l'exploitant attendrait la durée d'une conversion qui n'aura pas lieu.
     assert!(
-        msg.contains("RÉÉCRITE"),
-        "sur une base EN CLAIR, l'annonce doit dire que le fichier va être réécrit — c'est le seul \
-         moyen de ne pas découvrir une réécriture complète par sa durée : {msg}"
+        msg.contains("NE SERA PAS convertie") && msg.contains("REFUSER de démarrer"),
+        "sur une base EN CLAIR, l'annonce doit dire que ce démarrage NE convertit PAS et qu'il va \
+         refuser — sinon l'exploitant découvre le refus au lieu de le lire : {msg}"
+    );
+    assert!(
+        msg.contains("chiffrer-au-repos") && msg.contains("IRRÉVERSIBLE"),
+        "…et elle doit NOMMER le geste explicite, en disant qu'il ne se défait pas : {msg}"
     );
     assert!(
         !msg.contains("peu-importe-la-valeur"),

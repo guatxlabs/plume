@@ -93,17 +93,103 @@ pub(crate) async fn action_create(State(st): State<AppState>, Extension(au): Ext
     ledger_append(&conn, "action.queued", &format!("{kind} {target} dry={dry}"));
     Json(json!({ "id": id }))
 }
+// =================================================================================================
+// `P11.17-e` — LA FILE DE RIPOSTE DIT CE QU'ELLE SERT, ET CE QU'ELLE NE SERT PAS.
+//
+// LE DÉFAUT. `GET /api/actions` bornait sa lecture à cent lignes et ne rendait QUE ces lignes : ni
+// total, ni indicateur de troncature. La console n'avait donc, pour tout chiffre, que le nombre de
+// lignes SERVIES — qu'un lecteur prend pour un total alors qu'il est une fenêtre. C'est la famille
+// de défaut que ce dépôt poursuit — un composant qui SAIT son résultat incomplet et le présente
+// comme complet — et elle portait ici sur la file des gestes de RIPOSTE, là où une ligne manquante
+// se paie. Elle grandit avec le temps : rien ne purge `action` (aucun `DELETE` de production, aucune
+// rétention), donc la table ne fait que croître et la fenêtre en couvre une part toujours plus
+// petite.
+//
+// LE REMÈDE, REPRIS DE `/api/query` : un COMPTAGE BORNÉ. `SELECT COUNT(*) FROM (SELECT 1 FROM action
+// LIMIT CAP+1)` s'arrête au plafond partagé `PAGINATION_COUNT_CAP` — au-dessous le total est EXACT,
+// au-dessus il est plafonné ET `total_capped:true` le DIT, de sorte que la vue écrit « sur tant et
+// plus » au lieu d'un chiffre faux présenté comme exact. Même motif, même raison et même plafond que
+// le `total` de `handlers/query.rs` et que celui du journal d'intégrité (`handlers/admin_ui.rs`).
+//
+// CE QUE LA CLÉ DE **CETTE** TABLE PERMET — vérifié plutôt que supposé, parce que la FORME se reprend
+// et le SQL, non :
+//   * `action.id` est `INTEGER PRIMARY KEY` (migration v4), donc l'alias du `rowid` : la fenêtre
+//     `ORDER BY id DESC LIMIT N` est un parcours ARRIÈRE de l'arbre de la clé primaire, O(N), sans
+//     tri ni index annexe. `action` ne porte AUCUN autre index.
+//   * Aucune ligne n'est SUPPRIMÉE en production (seuls `INSERT` et `UPDATE` touchent cette table) :
+//     un `id` n'est donc jamais réutilisé, et l'ordre des `id` est celui des créations.
+//   * LE KEYSET `(ts,id)` DE `/api/query` NE SE RECOPIE PAS ICI, et c'est la raison qui compte :
+//     `action.ts` n'est pas indexé, et le moteur de réponse insère plusieurs actions dans la MÊME
+//     seconde (`run_playbooks`) — un curseur `(ts,id)` ordonnerait donc autrement que la fenêtre
+//     servie, en balayant sans index. La clé qui convient ici est `id`, seule et nue.
+//   * CE QUI RESTE OUVERT, ÉCRIT PLUTÔT QUE TU : la route ne rend toujours PAS de curseur. Rien ne
+//     l'en empêche — `action` ne porte aucune chaîne d'intégrité, contrairement au journal d'audit
+//     dont l'ordre EST celui de sa chaîne de hash — mais aucun parcours au-delà de la fenêtre n'est
+//     construit à ce jour. Le total est ce qui rend cette limite VISIBLE au lieu de la taire.
+// =================================================================================================
+
+/// TAILLE DE LA FENÊTRE servie par `GET /api/actions` — les `ACTIONS_WINDOW` actions les plus récentes.
+/// Nommée plutôt qu'écrite dans l'énoncé : la vue la RECOIT, et le test la lit ici au lieu de la recopier.
+pub(crate) const ACTIONS_WINDOW: i64 = 100;
+
+/// LE SEUL fabricant du COMPTAGE de la file — écrit une fois pour que le test mesure CE QUI EST ÉMIS et
+/// non une copie. `SELECT 1` ne demande aucune colonne, `LIMIT CAP+1` ARRÊTE le balayage au plafond :
+/// sous le plafond le total est EXACT, au-dessus il est plafonné ET annoncé.
+pub(crate) fn actions_total_sql() -> String {
+    format!("SELECT COUNT(*) FROM (SELECT 1 FROM action LIMIT {})", PAGINATION_COUNT_CAP + 1)
+}
+
+/// LE SEUL fabricant de la FENÊTRE servie. Projection et ordre INCHANGÉS par rapport à la version
+/// d'origine (`id,ts,kind,target,status,dry_run,reason,result,done_ts,host`, `ORDER BY id DESC`) : ce
+/// correctif ajoute un chiffre à côté de la liste, il ne touche pas à la liste.
+pub(crate) fn actions_window_sql() -> String {
+    format!(
+        "SELECT id,ts,kind,target,status,dry_run,reason,result,done_ts,host FROM action ORDER BY id DESC LIMIT {ACTIONS_WINDOW}"
+    )
+}
+
+/// Fenêtre + total borné de la file de riposte. Fonction PURE sur `&Connection` -> testable sans AppState.
+///
+/// Rend `{actions, served, window, total, total_capped}`. `served` est le nombre de lignes RENDUES et
+/// `window` la borne de la route : leur égalité est précisément ce qui dit à la vue que la borne MORD.
+/// `total`/`total_capped` valent `null` — jamais `0` — quand le comptage n'a pas pu être lu : « non
+/// compté » et « aucune action » sont deux faits différents, et sur cette file l'écart va dans le sens
+/// dangereux.
+pub(crate) fn actions_page(conn: &Connection) -> Value {
+    let rows: Vec<Value> = match conn.prepare(&actions_window_sql()) {
+        Ok(mut stmt) => stmt
+            .query_map([], |r| {
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?, "ts": r.get::<_, i64>(1)?, "kind": r.get::<_, String>(2)?, "target": r.get::<_, String>(3)?,
+                    "status": r.get::<_, String>(4)?, "dry_run": r.get::<_, i64>(5)? != 0, "reason": r.get::<_, Option<String>>(6)?,
+                    "result": r.get::<_, Option<String>>(7)?, "done_ts": r.get::<_, Option<i64>>(8)?, "host": r.get::<_, Option<String>>(9)?
+                }))
+            })
+            .map(|m| m.flatten().collect())
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    // COMPTAGE BORNÉ : `raw` = min(vrai_total, CAP+1). > CAP -> plafonné (CAP + `total_capped`) ; sinon exact.
+    // Un comptage qui ÉCHOUE ne rend pas un zéro rassurant : il rend `null`, et la vue dit qu'elle ne sait pas.
+    let (total, total_capped) = match conn.query_row(&actions_total_sql(), [], |r| r.get::<_, i64>(0)) {
+        Ok(raw) => {
+            let capped = raw > PAGINATION_COUNT_CAP;
+            (json!(if capped { PAGINATION_COUNT_CAP } else { raw }), json!(capped))
+        }
+        Err(_) => (Value::Null, Value::Null),
+    };
+    json!({
+        "actions": rows,
+        "served": rows.len(),
+        "window": ACTIONS_WINDOW,
+        "total": total,
+        "total_capped": total_capped,
+    })
+}
+
 pub(crate) async fn actions_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
-    let mut stmt = conn.prepare("SELECT id,ts,kind,target,status,dry_run,reason,result,done_ts,host FROM action ORDER BY id DESC LIMIT 100").unwrap();
-    let rows = stmt.query_map([], |r| {
-        Ok(json!({
-            "id": r.get::<_, i64>(0)?, "ts": r.get::<_, i64>(1)?, "kind": r.get::<_, String>(2)?, "target": r.get::<_, String>(3)?,
-            "status": r.get::<_, String>(4)?, "dry_run": r.get::<_, i64>(5)? != 0, "reason": r.get::<_, Option<String>>(6)?,
-            "result": r.get::<_, Option<String>>(7)?, "done_ts": r.get::<_, Option<i64>>(8)?, "host": r.get::<_, Option<String>>(9)?
-        }))
-    }).unwrap();
-    Json(json!({ "actions": rows.flatten().collect::<Vec<_>>() }))
+    Json(actions_page(&conn))
 }
 
 /// Agent (token) : réclame les actions APPROUVÉES à appliquer sur SON hôte (ban/unban uniquement).

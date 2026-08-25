@@ -139,7 +139,20 @@ impl PreparedDb {
     /// `write_contention_on_an_up_to_date_database_is_not_a_refusal`).
     pub(crate) fn open_with_prelude(path: &str, prelude: impl FnOnce(&Connection)) -> Result<Self, DbOpenError> {
         let conn = raw_env(path).map_err(DbOpenError::Ouverture)?;
-        Self::seal(conn, prelude)
+        let prete = Self::seal(conn, prelude)?;
+        // `P9.6-a` — LA POSTURE DE LA CLÉ AT-REST SE DIT ICI, ET LA PORTÉE EST DÉRIVÉE. Une base née
+        // chiffrée tourne sous une clé que le PRODUIT s'est donnée à lui-même : la perdre, c'est perdre
+        // le SOC entier, définitivement. Une ligne sur la sortie d'erreur au moment de l'engendrement ne
+        // suffit pas — c'est exactement ce qui a laissé la sauvegarde muette invisible (`P9.4-b`). Le
+        // signal est donc NON PURGEABLE et il repart TANT QUE rien n'atteste la mise à l'abri.
+        // POURQUOI À CET ENDROIT PRÉCIS : c'est le seul point du produit où l'on tient à la fois une
+        // connexion sur la base de l'environnement ET la certitude que `event` existe (le contrat de
+        // schéma vient d'être satisfait). Tout ce qui obtient une connexion d'écriture par la clé de
+        // l'environnement passe par là — le démon comme les sous-commandes, et un chemin écrit demain
+        // le jour où il est écrit. Le coût de cette couverture large est UNE ligne par heure au plus
+        // (déduplication horaire, comme tous les signaux de santé non purgeables du dépôt).
+        signaler_la_cle_auto_si_besoin(&prete);
+        Ok(prete)
     }
 
     /// Clé EXPLICITE (base tenant : le fichier EST le tenant, sa clé n'est pas celle de l'env).
@@ -435,7 +448,22 @@ pub(crate) mod door_tests {
         //   - `main.rs` — `restore-drill status` LIT une ligne `meta` et n'écrit rien. Passer par la
         //     porte la ferait MIGRER la base pour répondre à une question de lecture, et refuserait de
         //     dire depuis quand rien n'a été restauré au moment où cette réponse compte le plus.
-        const SANS_CONTRAT_ATTENDUS: usize = 13;
+        // 16 depuis `P9.6-a` (chiffrement d'une base existante par geste explicite), et les DEUX
+        // mouvements sont dans le même sens : le boot a PERDU son ouverture (il ne convertit plus
+        // rien, cf. `crypto::ensure_encrypted`), et le geste de conversion en a QUATRE —
+        //   - lire l'ORIGINAL en clair, dont le schéma peut être plus ancien que ce binaire ; lui
+        //     opposer le contrat le MIGRERAIT avant de le copier, c'est-à-dire écrirait dans le
+        //     fichier que ce geste s'engage à ne pas toucher tant que la copie n'est pas prouvée ;
+        //   - relire la COPIE chiffrée pour prouver son équivalence : même raison, et le contrat
+        //     masquerait la seule chose qu'on veut mesurer (la copie est-elle IDENTIQUE, pas
+        //     est-elle À JOUR) ;
+        //   - rouvrir la COPIE, après publication de l'archive, pour y consigner ce que cette
+        //     archive IMPLIQUE (posture symétrique, exercice de restauration réellement mené) :
+        //     passer par la porte la MIGRERAIT entre la preuve d'équivalence et la bascule, donc
+        //     changerait ce qu'on vient de prouver identique ;
+        //   - rouvrir la base BASCULÉE pour inscrire la conversion au journal inaltérable, sur le
+        //     même schéma qu'avant la bascule.
+        const SANS_CONTRAT_ATTENDUS: usize = 16;
         assert_eq!(
             sans_contrat.len(),
             SANS_CONTRAT_ATTENDUS,

@@ -970,7 +970,7 @@ const SUBCOMMANDS_COLD: [(&str, &str); 2] = [
 /// détection d'une sous-commande INCONNUE, elle, n'est PAS une comparaison à cette liste (cf. la
 /// garde en bas de `main`). La liste est tenue alignée sur le code par
 /// `aide_cli_liste_les_memes_sous_commandes_que_le_dispatch` (elle lit `main.rs`).
-const SUBCOMMANDS: [(&str, &str); 18] = [
+const SUBCOMMANDS: [(&str, &str); 19] = [
     ("hashpw", "hashpw [<mdp>] — hash argon2 d'un mot de passe (stdin si omis)"),
     ("respond", "respond — boucle du moteur de réponse (service séparé)"),
     ("verify", "verify — vérifie la chaîne d'intégrité du ledger"),
@@ -985,6 +985,7 @@ const SUBCOMMANDS: [(&str, &str); 18] = [
     ("restore", "restore <f> — restaure une sauvegarde"),
     ("backup-verify", "backup-verify <f> — vérifie une sauvegarde (structure ; restauration complète si la clé de lecture est fournie)"),
     ("restore-drill", "restore-drill <status|record> — exercice de restauration : depuis quand aucun n'a eu lieu, ou enregistre une attestation"),
+    ("chiffrer-au-repos", "chiffrer-au-repos — chiffre une base EXISTANTE restée en clair. IRRÉVERSIBLE : exige une clé explicite, PLUME_DB_KEY_ESCROWED=1, et produit une sauvegarde VÉRIFIÉE PAR RESTAURATION avant de basculer"),
     ("backup-prune-plan", "backup-prune-plan — plan de purge des sauvegardes (lecture seule)"),
     ("migrate-check", "migrate-check — compare le schéma live au code (lecture seule)"),
     ("db-stats", "db-stats — occupation disque SQLite (lecture seule)"),
@@ -1527,6 +1528,29 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
     //                           produite par une vérification COMPLÈTE réussie) et l'enregistre ;
     //   `restore-drill status`  dit l'état et SORT EN 3 si un exercice est dû — un code de sortie, pas une
     //                           phrase, pour qu'une tâche planifiée puisse en faire un dead-man's switch.
+    // `P9.6-a` — LE GESTE EXPLICITE, ET LE SEUL. Le DÉMARRAGE ne convertit JAMAIS une base existante :
+    // il refuse de démarrer et NOMME cette commande. Tout le contrat vit dans
+    // `convertir_la_base_au_repos`, qui refuse à la première précondition non tenue et laisse
+    // l'original intact à CHAQUE point de sortie — la copie vit sous un nom que le démon n'ouvre
+    // jamais, et un unique `rename` atomique fait la bascule. Ce qui est vérifié AVANT de basculer est
+    // IMPRIMÉ, pour que l'exploitant lise ce qui a été prouvé et non un mot rassurant.
+    if args.get(1).map(String::as_str) == Some("chiffrer-au-repos") {
+        let conf = load_config();
+        let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
+        match convertir_la_base_au_repos(&conf, &db_path) {
+            Ok(IssueConversion::DejaChiffree) => println!(
+                "chiffrer-au-repos : {db_path} s'ouvre déjà avec la clé configurée — rien à faire, aucun fichier touché."),
+            Ok(IssueConversion::Convertie(r)) => {
+                println!("chiffrer-au-repos : {db_path} est CHIFFRÉE AU REPOS.");
+                println!("  vérifié AVANT la bascule : {} objets de schéma, {} tables de données, {} lignes, {} entrées de journal inaltérable",
+                    r.objets_de_schema, r.tables, r.lignes, r.entrees_ledger);
+                println!("  archive de sécurité VÉRIFIÉE PAR RESTAURATION : {} ({} lignes relues)", r.archive, r.lignes_restaurees);
+                println!("  IL N'Y A PAS DE RETOUR ARRIÈRE : ce produit ne sait pas déchiffrer une base au repos.");
+            }
+            Err(e) => { eprintln!("chiffrer-au-repos : {e}"); std::process::exit(1); }
+        }
+        return;
+    }
     if args.get(1).map(String::as_str) == Some("restore-drill") {
         let conf = load_config();
         let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");

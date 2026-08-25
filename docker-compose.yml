@@ -17,16 +17,27 @@
 # GATÉS SUR UN INTERVALLE > 0 : retirez les variables ci-dessous (ou posez PLUME_BACKUP_INTERVAL=0) et
 # ce déploiement NE SAUVEGARDE PLUS RIEN.
 #
-# ⚠ ARMER LE SCHEDULER NE SUFFIT PAS À OBTENIR UNE ARCHIVE (`P9.4-b`). La sauvegarde du scheduler est
-# la sauvegarde COMPRESSÉE+CHIFFRÉE, et elle EXIGE une clé de base non vide : la passphrase age est la
-# clé SQLCipher (`PLUME_DB_KEY`). Sans clé, `backup_compressed` refuse dès sa première instruction et
-# le cycle se termine SANS RIEN ÉCRIRE — à chaque intervalle. Or `PLUME_DB_KEY` est livré VIDE
-# ci-dessous (le chiffrement at-rest est opt-in). TEL QUEL, ce fichier ARME un scheduler qui ne peut
-# pas aboutir : posez `PLUME_DB_KEY` dans `.env` si vous voulez des archives.
-# CE N'EST PLUS SILENCIEUX : depuis `P9.4-b`, chaque cycle qui ne publie rien écrit un événement de
-# posture NON PURGEABLE (source `plume-config`, category `health`, sév. 4, au plus un par heure) qui
-# nomme l'étape et la cause. La vérification directe reste la même : `docker compose exec soc ls
-# /data/backups` — un répertoire sans `plume-<TS>.db.age` est un déploiement SANS sauvegarde.
+# ⚠ LA SAUVEGARDE EXIGE UNE CLÉ, ET DEPUIS `P9.6-a` UN DÉPLOIEMENT NEUF EN A UNE. La sauvegarde du
+# scheduler est la sauvegarde COMPRESSÉE+CHIFFRÉE, et sa passphrase age EST la clé SQLCipher : sans
+# clé, `backup_compressed` refuse dès sa première instruction et le cycle se termine SANS RIEN
+# ÉCRIRE. C'était l'état de ce fichier, qui armait un scheduler incapable d'aboutir (`P9.4-b`).
+# CE QUI A CHANGÉ : sur une base NEUVE et en l'absence de toute clé configurée, le démon ENGENDRE une
+# clé au premier démarrage (0600, `PLUME_DB_KEY_AUTO_PATH` ci-dessous), la base naît CHIFFRÉE, et le
+# scheduler a de quoi produire ses archives. Un déploiement DÉJÀ EN SERVICE dont la base est en clair
+# n'est PAS touché — ni migré, ni converti — et son scheduler reste sans clé : pour lui, la
+# précondition n'est satisfaite que par le geste explicite `plume-daemon chiffrer-au-repos`.
+# CE N'EST PLUS SILENCIEUX DANS AUCUN DES DEUX CAS : chaque cycle qui ne publie rien écrit un
+# événement de posture NON PURGEABLE (source `plume-config`, category `health`, sév. 4, au plus un par
+# heure) qui nomme l'étape et la cause. La vérification directe reste la même : `docker compose exec
+# soc ls /data/backups` — un répertoire sans `plume-<TS>.db.age` est un déploiement SANS sauvegarde.
+#
+# ⚠⚠ VOUS AVEZ UNE NOUVELLE FAÇON DE TOUT PERDRE. La clé engendrée vit sur le volume `soc-data`, à
+# côté de la base. La perdre, c'est perdre la base ET toutes ses archives — elles sont chiffrées avec
+# elle — DÉFINITIVEMENT. Copiez-la hors de cette machine dès le premier démarrage :
+#   docker compose exec soc cat /data/plume-at-rest.key
+# puis rangez-la où vous rangez vos secrets, et posez `PLUME_DB_KEY_ESCROWED=1` dans `.env`. Tant que
+# ce n'est pas fait, le démon écrit à chaque ouverture de la base un événement de posture NON
+# PURGEABLE qu'un exploitant ne peut pas effacer.
 services:
   soc:
     build:
@@ -45,24 +56,47 @@ services:
       PLUME_CONFIG: "/nonexistent"
       PLUME_DEMO: "${PLUME_DEMO:-0}"   # 1 = peuple une instance fraîche avec des données de démo (à voir vivante sans agent)
       PLUME_PUBLIC_DEMO: "${PLUME_PUBLIC_DEMO:-0}"   # 1 = accès ANONYME lecture seule (démo publique exposée ; instance isolée + PLUME_DEMO=1)
-      # --- CHIFFREMENT AT-REST (SQLCipher) — OPT-IN, VIDE PAR DÉFAUT ---
-      # VIDE = la base sur le volume `soc-data` est EN CLAIR. Le chiffrement SQLCipher est compilé dans
-      # le binaire mais ne s'active QUE si une clé est fournie (`db_key()`, daemon/src/crypto/mod.rs) :
-      # une base neuve est alors créée chiffrée d'office, une base en clair existante est convertie au
-      # boot (`ensure_encrypted`, idempotent). Préférez PLUME_DB_KEY_FILE (fichier monté en lecture
-      # seule, fail-closed s'il est absent) à la variable d'env, qui reste lisible via /proc/<pid>/environ.
-      # PERTE DE CLÉ = PERTE DE LA BASE : aucune récupération possible, gardez-la hors de l'hôte.
-      # CETTE CLÉ CONDITIONNE AUSSI LA SAUVEGARDE NATIVE : elle sert de passphrase age au scheduler
-      # ci-dessous. Vide -> le scheduler tourne et ne produit AUCUNE archive (cf. l'avertissement en
-      # tête de fichier). Le chiffrement par défaut de la base est traité par `P9.6-a`, ouverte.
+      # --- CHIFFREMENT AT-REST (SQLCipher) — `P9.6-a` ---
+      # TROIS PROVENANCES POSSIBLES POUR LA CLÉ, DANS CET ORDRE DE PRÉCÉDENCE :
+      #   1. PLUME_DB_KEY_FILE — un fichier monté en lecture seule. C'est la forme PRÉFÉRÉE quand vous
+      #      apportez votre propre clé : elle ne transite pas par /proc/<pid>/environ. Fail-closed si le
+      #      fichier est posé mais absent/vide (le démon refuse de démarrer plutôt que d'écrire en clair).
+      #   2. PLUME_DB_KEY — la passphrase directement. Livrée VIDE ici, délibérément.
+      #   3. PLUME_DB_KEY_AUTO_PATH — la clé que le démon ENGENDRE lui-même quand aucune des deux
+      #      précédentes n'est fournie ET que la base N'EXISTE PAS ENCORE. C'est le défaut de ce
+      #      fichier : un déploiement neuf naît chiffré, sans que vous ayez rien à saisir.
+      #
+      # CE QUE LE DÉMARRAGE NE FAIT JAMAIS : convertir une base EXISTANTE. Ni en poser une clé, ni en
+      # changer, ni en mettre à jour l'image ne réécrit une base déjà en service. Si vous posez une clé
+      # sur un déploiement dont la base est EN CLAIR, le démon REFUSE de démarrer et nomme le geste :
+      #   docker compose run --rm soc chiffrer-au-repos
+      # Ce geste exige une sauvegarde produite ET vérifiée, la place pour une seconde base, et
+      # PLUME_DB_KEY_ESCROWED=1. IL EST IRRÉVERSIBLE : ce produit ne sait pas déchiffrer une base au
+      # repos. Tant qu'il n'a pas eu lieu, retirer la clé remet le déploiement dans son état exact.
+      #
+      # CE QUE LE CHIFFREMENT AT-REST PROTÈGE : le vol du disque, une image du volume `soc-data`, un
+      # stockage mal décommissionné. CE QU'IL NE PROTÈGE PAS : une machine compromise, où la clé
+      # engendrée est lisible à côté de la base.
       PLUME_DB_KEY: "${PLUME_DB_KEY:-}"
+      # Où le démon POSE (0600) et RELIT la clé qu'il engendre pour une base neuve. Sur le volume
+      # `soc-data`, donc persistante. Vide -> `<PLUME_DB>.key`. Ce chemin ne CRÉE rien par lui-même :
+      # aucune clé n'est engendrée si une base existe déjà, quel que soit ce que vous écrivez ici.
+      PLUME_DB_KEY_AUTO_PATH: "${PLUME_DB_KEY_AUTO_PATH:-/data/plume-at-rest.key}"
+      # ACQUITTEMENT DE MISE À L'ABRI. Posez-le à 1 dans `.env` UNE FOIS la clé copiée hors de cette
+      # machine. Livré VIDE, délibérément : un acquittement livré par défaut n'acquitte rien, et le
+      # signal de posture non purgeable est précisément ce qui rend l'oubli impossible à manquer. Ce
+      # que ce drapeau atteste est votre DÉCLARATION — le produit ne peut pas vérifier qu'une copie
+      # existe ailleurs, et il ne le prétend pas.
+      PLUME_DB_KEY_ESCROWED: "${PLUME_DB_KEY_ESCROWED:-}"
       # --- BACKUP NATIF (scheduler in-daemon) ---
       # Intervalle en SECONDES ; 0/absent = DÉSACTIVÉ (aucun thread). 21600 = toutes les 6 h.
       PLUME_BACKUP_INTERVAL: "${PLUME_BACKUP_INTERVAL:-21600}"
       # Rétention KEEP-N : PLAFOND du nombre d'archives conservées, pas une promesse d'archives. Elle
       # BORNE ce que les cycles ont écrit, elle ne l'écrit pas : 24 archives à 6 h d'intervalle
-      # couvriraient environ 6 jours SI chaque cycle publiait — ce qui suppose `PLUME_DB_KEY` posée.
-      # Avec la clé livrée VIDE, ce plafond ne garde rien, parce qu'il n'y a rien à garder.
+      # couvriraient environ 6 jours SI chaque cycle publiait — ce qui suppose une clé de base. Sur un
+      # déploiement NEUF, elle est engendrée (cf. PLUME_DB_KEY_AUTO_PATH) et les cycles publient. Sur
+      # un déploiement dont la base est restée EN CLAIR, ce plafond ne garde rien : il n'y a rien à
+      # garder tant que `chiffrer-au-repos` n'a pas eu lieu.
       PLUME_BACKUP_KEEP: "${PLUME_BACKUP_KEEP:-24}"
       # Destination = un RÉPERTOIRE LOCAL. Défaut du binaire = `<dir(PLUME_DB)>/backups` -> /data/backups,
       # donc déjà sur le volume `soc-data`. `s3://…` est DÉTECTÉ ET REFUSÉ (sink S3 natif non implémenté) :
@@ -79,14 +113,16 @@ services:
       # rien (il choisit COMMENT chiffrer, pas SI la sauvegarde a lieu). L'énoncé précédent — « l'archive
       # n'est pas chiffrée du tout » — décrivait un fichier qui n'existe pas, et c'est ce qui rendait
       # `P9.4-b` invisible. Le signal de posture non purgeable, lui, n'est émis QUE si une archive est
-      # PUBLIÉE : sur ce déploiement, tant que la clé est vide, il ne part jamais.
+      # PUBLIÉE : sur un déploiement NEUF il part donc dès la première archive, et il dit vrai — la
+      # passphrase est la clé engendrée, qui vit sur le même volume que la base.
       PLUME_BACKUP_AGE_RECIPIENT: "${PLUME_BACKUP_AGE_RECIPIENT:-}"
       PLUME_BACKUP_REQUIRE_ASYMMETRIC: "${PLUME_BACKUP_REQUIRE_ASYMMETRIC:-0}"
       # Facteur de travail scrypt (log2 N) du chiffrement PAR PASSPHRASE, borné [10, 20]. Vide = 12
       # (4 194 304 octets de tampon). Cette ligne existe parce que `.env` seul ne suffirait PAS : ce
       # service énumère ses variables, une variable non listée ici n'atteint jamais le conteneur —
       # exactement le genre de levier qui ne mord pas dont plume tient registre (P4.1-p).
-      # Ne le relevez QUE si vous savez que votre PLUME_DB_KEY est une phrase tapée par un humain :
+      # Ne le relevez QUE si vous savez que votre clé est une phrase tapée par un humain (la clé
+      # ENGENDRÉE, elle, est 256 bits d'aléa : monter le facteur n'y ajoute rien) :
       # le même secret protège déjà le tier froid à log_n=12, donc monter ici ne relève aucun
       # plancher, ça ne fait que consommer de la RAM. Prix mesuré le 2026-08-09 : 16 -> 67 108 864 o,
       # 20 -> 1 073 741 824 o. Cf. docs/DR-plume-restore.md.

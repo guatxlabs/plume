@@ -360,7 +360,7 @@ env:
   # listage du répertoire ne voit pas, une mesure impraticable qui rend un verdict et pas un zéro, le
   # contrôle positif du démarrage, les quatre verdicts du quota, et la mutation dans les deux sens sur
   # un tri qui déverse pour de vrai).
-  EXPECTED_TESTS: "1298"
+  EXPECTED_TESTS: "1316"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -683,7 +683,7 @@ jobs:
           # `cold_tier` pour 1286 par défaut — l'écart reste **220**. Ce compteur-ci bouge AVEC
           # l'autre : cinq tests sans `cfg` entrent dans les deux profils, et le laisser en arrière
           # rendrait ce job rouge sans rien mesurer de neuf.
-          EXPECTED_COLD_TESTS: "1518"
+          EXPECTED_COLD_TESTS: "1536"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -933,6 +933,25 @@ jobs:
       - name: Ce qu'un exploitant doit pouvoir trouver est documenté — onglets, capteurs, modes et leviers DÉRIVÉS des sources, cliquet sur ce qui n'est pas couvert (P9.7-b)
         run: python3 .github/scripts/check_operator_surface_is_documented.py
 
+      # `P9.4-b` + `P9.6-a` — UN DÉPLOIEMENT N'ARME JAMAIS UNE TÂCHE DONT UNE PRÉCONDITION MANQUE CHEZ
+      # LUI. Cette garde était ÉCRITE et volontairement NON CÂBLÉE : elle sortait en refus, et c'était son
+      # verdict JUSTE — les deux déploiements de référence armaient l'ordonnanceur de sauvegarde toutes
+      # les 6 h en livrant la clé de base VIDE, si bien qu'aucune archive n'était jamais écrite pendant
+      # qu'une rétention était annoncée en toutes lettres à côté, et que l'échec était MUET. Son câblage
+      # devait atterrir AVEC la décision, pas avant : c'est `P9.6-a` qui satisfait la précondition sur un
+      # déploiement NEUF — une base absente engendre sa clé, la base naît chiffrée, le cycle a de quoi
+      # produire. RIEN N'EST ÉNUMÉRÉ : les tâches armées sont dérivées de la FORME du gate dans le démon,
+      # les préconditions du point fixe des refus atteignables, les équivalences de variables des TABLEAUX
+      # DE CONSTANTES du démon, et les déploiements de tout YAML du dépôt qui arme. Chaque lecture est
+      # exercée dans les DEUX sens avant tout verdict, et la garde REFUSE DE CONCLURE (sortie 2) sous ses
+      # planchers plutôt que de rendre vert en étant aveugle. Éprouvée par mutation le 2026-08-25 :
+      # commenter la précondition du manifeste la fait sortir en refus en NOMMANT le fichier.
+      # CE QU'ELLE NE TIENT PAS, et qui est écrit dans son verdict : la justesse d'une valeur non vide,
+      # l'aboutissement réel du cycle — dit à l'exécution par le signal non purgeable — et ce qu'un
+      # fichier d'environnement d'exploitant ajouterait hors du dépôt.
+      - name: Un déploiement n'arme jamais une tâche dont une précondition n'est pas satisfaite chez lui (P9.4-b)
+        run: python3 .github/scripts/check_a_deployment_never_arms_a_task_it_cannot_run.py
+
       # `P8.9-c` — MÊME FAMILLE, APPLIQUÉE À L'INDEX DES CLÉS : ici ce n'est ni la couverture ni le
       # document qui manque, c'est ce que la ligne dit d'ELLE-MÊME. Une clé porte un état, et ✅
       # promet qu'il n'y a plus rien à faire. MESURÉ le 2026-08-23, avant réparation : sur 155 lignes
@@ -952,6 +971,25 @@ jobs:
       # tient pas est écrit : la seule famille lexicale du reste, et aucun dépôt voisin.
       - name: Un reste sous une clé fermée appartient à une clé ouverte, ou se déclare
         run: python3 .github/scripts/check_every_residue_belongs_to_an_open_key.py
+
+      # `P8.9-d` — LA FORME DU TABLEAU, LÀ OÙ LES TROIS GARDES VOISINES NE LISENT QUE SON TEXTE. Mesuré
+      # le 2026-08-25 : QUINZE lignes de l'index ne se terminaient pas par la barre qui clôt une cellule,
+      # et SOIXANTE-DIX lignes réparties sur trois documents portaient plus de cellules que leur tableau
+      # n'en déclare — le rendu IGNORE l'excédent. Sur l'index seul, plus de douze mille caractères
+      # n'atteignaient pas la page, dont la clôture entière de TROIS clés fermées, que le lecteur voyait
+      # donc comme inachevées. Cause unique et vérifiée sur les 70 : une barre verticale dans le texte
+      # d'une cellule, que les accents graves ne protègent PAS. Aucune garde ne le voyait : celle des
+      # restes, celle des chiffres publiés et celle des collisions de clés lisent le TEXTE des cellules.
+      # LE CRITÈRE EST DÉRIVÉ DU DOCUMENT LUI-MÊME : la LIGNE DE DÉLIMITATION d'un tableau est la
+      # déclaration que ce tableau fait de sa propre forme — nombre de colonnes, style de barres — et
+      # toute ligne de son corps doit la porter. Rien n'est écrit à la main, ni « quatre cellules » ni un
+      # nom de fichier (`P11.13-d`). Le corpus est aussi une PROPRIÉTÉ : tout document Markdown qui
+      # DÉCLARE un tableau, suivi ou seulement présent, pour qu'un document neuf soit jugé AVANT d'être
+      # indexé et non le jour où il est publié. Elle refuse de conclure (code 2) sous ses planchers ou si
+      # son découpeur ne se reconnaît plus, et dit ce qu'elle ne tient pas : la forme seulement, jamais le
+      # texte, et pas les tableaux montrés dans un bloc de code, qui sont des échantillons.
+      - name: Une ligne de tableau porte la forme que son en-tête déclare (P8.9-d)
+        run: python3 .github/scripts/check_every_table_row_carries_the_shape_its_header_declares.py
 
       # MÊME FAMILLE, APPLIQUÉE AU PLAN DES MODULES : un document que rien ne relit dérive. Le plan
       # (`docs/MODULE-MAP.md`) nommait encore `idp.rs` et `compliance.rs` alors que l'un était devenu

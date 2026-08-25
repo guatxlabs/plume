@@ -143,7 +143,10 @@ async function loadTokens() {
         return del;
       } },
   ];
-  pagedList(host, { mode: 'client', pageSize: 50, rows: tokens, columns, sort: { key: 'created', dir: -1 }, emptyText: 'aucun jeton — clique « + Nouveau jeton » pour provisionner un agent ou un forwarder HEC.' });
+  // `P11.18-m` — LA RECHERCHE PORTE SUR TOUS LES JETONS : `/api/tokens` rend la table entière, sans borne ni
+  // pagination. Le texte cherché est celui des cellules RENDUES — nom, type, hôte lié, dates — jamais le
+  // secret, qui n'est ni servi ni affiché (seul son empreinte est stockée).
+  pagedList(host, { mode: 'client', pageSize: 50, rows: tokens, columns, sort: { key: 'created', dir: -1 }, emptyText: 'aucun jeton — clique « + Nouveau jeton » pour provisionner un agent ou un forwarder HEC.', recherche: true });
 }
 async function newTokenFlow() {
   // P11.5-b : créer un jeton ÉLÈVE un droit (une crédence d'ingest/responder naît) -> la fenêtre de saisie est

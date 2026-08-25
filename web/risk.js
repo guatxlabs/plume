@@ -41,7 +41,11 @@ async function loadRiskView() {
   host.appendChild(phrase);
   const liste = document.createElement('div');
   host.appendChild(liste);
-  pagedList(liste, { mode: 'client', pageSize: 50, rows: entities, columns, sort: { key: 'score', dir: -1 }, emptyText: MOT_RISQUE_AUCUNE_ENTITE, onRowClick: r => openEntity(r.entity_type, r.entity) });
+  // `P11.18-m` — LA RECHERCHE PORTE SUR LE CLASSEMENT SERVI, ET LE DIT. La route rend une COUPE DE RANG
+  // (`risk_rollup ORDER BY score DESC LIMIT`) : les lignes tenues ici sont une fenêtre du cumul de risque,
+  // ce que les deux phrases au-dessus de la liste énoncent déjà en chiffres. Une entité sous la coupe est
+  // introuvable d'ici, et le résumé de la recherche doit le dire au lieu de conclure « elle n'existe pas ».
+  pagedList(liste, { mode: 'client', pageSize: 50, rows: entities, columns, sort: { key: 'score', dir: -1 }, emptyText: MOT_RISQUE_AUCUNE_ENTITE, onRowClick: r => openEntity(r.entity_type, r.entity), recherche: { fenetre: true } });
   // légende des seuils courants (aide à lire « seuil »).
   const leg = $('#risk-legend');
   if (leg) {

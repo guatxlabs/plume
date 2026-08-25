@@ -5,7 +5,10 @@
 // par `initNavigation()`, appelée par `app.js` au point où ce bloc vivait. `app.js` garde l'amorçage (le
 // premier `route()` et les initialisations qui suivent) et ré-exporte `SPACES`, `currentTab`,
 // `currentViewName`, `renderNav` et `route` pour les modules seam. N'importe pas `app.js`.
-import { $ } from './core.js';
+// Ce module porte aussi LE NOM D'UNE DESTINATION (`P11.18-o`) : il ne l'écrit pas, il le DÉRIVE de la
+// page — titre du panneau, ou lien de barre latérale quand l'espace n'a qu'un onglet — et le pose là
+// où il manque. Voir le bloc de nommage sous `SPACES`.
+import { $, LANG } from './core.js';
 import { S } from './state.js';
 import { loadDashboards, refreshPanels } from './dashboards.js';
 import { renderDataAccess } from './dataaccess.js';
@@ -46,64 +49,195 @@ import { loadLookups } from './lookups.js';
 // (Lookups dans Données). 1er onglet = onglet par défaut de l'espace. Chaque id d'espace a son lien
 // `data-space` dans la sidebar d'index.html (le harnais ESM tient les deux listes égales).
 // P11.7-a : « Recherche » = l'éditeur de requête et ses résultats ; « Cas » = le flux alerte -> cas.
+// `P11.18-o` — CE MARQUEUR EST LA DÉCLARATION D'UN NOM NON ÉCRIT. Un onglet porte toujours un
+// `label` — c'est ce qui le distingue d'un espace, pour ce module comme pour la garde de surface
+// d'exploitation — mais le nom lui-même n'est PAS recopié ici : il est DÉRIVÉ de la destination, plus
+// bas, par `nomDeLaDestination`. Un onglet qui écrit un vrai libellé déclare, par ce seul fait, qu'il
+// est un GROUPE que nul panneau unique ne nomme.
+const NOM_DERIVE = '';
 const SPACES = [
   { id: 'overview', tabs: [
-    { id: 'overview', label: "Vue d'ensemble", sections: ['firewall', 'controls', 'integrations', 'freshness'] },
+    { id: 'overview', label: NOM_DERIVE, sections: ['firewall', 'controls', 'integrations', 'freshness'] },
   ] },
   { id: 'search', tabs: [
-    { id: 'explore', label: 'Recherche', sections: ['query'] },
+    { id: 'explore', label: NOM_DERIVE, sections: ['query'] },
   ] },
   { id: 'cases', tabs: [
-    { id: 'alerts', label: 'Alertes', sections: ['alerts'] },
-    { id: 'cases', label: 'Cas', sections: ['cases'] },
+    { id: 'alerts', label: NOM_DERIVE, sections: ['alerts'] },
+    { id: 'cases', label: NOM_DERIVE, sections: ['cases'] },
   ] },
   { id: 'dashboards', tabs: [
-    { id: 'dashboards', label: 'Dashboards', sections: ['dashboards'], plageGlobale: true }, // seul onglet piloté par le sélecteur de plage de la barre (Recherche a le sien, la Vue d'ensemble ignore la plage)
+    { id: 'dashboards', label: NOM_DERIVE, sections: ['dashboards'], plageGlobale: true }, // seul onglet piloté par le sélecteur de plage de la barre (Recherche a le sien, la Vue d'ensemble ignore la plage)
   ] },
   { id: 'detresp', tabs: [
     { id: 'detection', label: 'Détection', sections: ['coverage', 'rules'] },
-    { id: 'attack', label: 'ATT&CK', sections: ['attack-panel'] }, // matrice de couverture MITRE ATT&CK (lecture viewer+) — GET /api/coverage/attack
+    { id: 'attack', label: NOM_DERIVE, sections: ['attack-panel'] }, // matrice de couverture MITRE ATT&CK (lecture viewer+) — GET /api/coverage/attack
     // C8 — Réponse scindée : Playbooks (détection -> réponse auto, + le toggle de mode) et Actions (file de riposte).
     { id: 'playbooks', label: 'Playbooks', sections: ['playbooks-panel', 'runbooks-panel'] }, // + #3 Phase 2 : authoring runbooks (admin-only, masqué au non-admin)
-    { id: 'actions', label: 'Actions', sections: ['actions-panel'] },
-    { id: 'risk', label: 'Risque', sections: ['risk-panel'] }, // #24 : Risk-Based Alerting — entités à risque (lecture viewer+)
-    { id: 'detadv', label: 'Avancée', sections: ['detadv-panel'] }, // #37 : corrélations de séquence + baselines UEBA (lecture viewer+, CRUD éditeur+)
-    { id: 'routing', label: 'Routage & silences', sections: ['routing-panel'] }, // #53 : politiques de notification + silences (lecture viewer+, CRUD éditeur+)
+    { id: 'actions', label: NOM_DERIVE, sections: ['actions-panel'] },
+    { id: 'risk', label: NOM_DERIVE, sections: ['risk-panel'] }, // #24 : Risk-Based Alerting — entités à risque (lecture viewer+)
+    { id: 'detadv', label: NOM_DERIVE, sections: ['detadv-panel'] }, // #37 : corrélations de séquence + baselines UEBA (lecture viewer+, CRUD éditeur+)
+    { id: 'routing', label: NOM_DERIVE, sections: ['routing-panel'] }, // #53 : politiques de notification + silences (lecture viewer+, CRUD éditeur+)
   ] },
   { id: 'data', tabs: [
-    { id: 'sources', label: 'Sources', sections: ['sources-panel'] },
-    { id: 'freshness-view', label: 'Fraîcheur', sections: ['freshness-panel'] }, // onglet SIBLING de Sources ; rend le détail complet (renderFreshness). Détail migré depuis la Vue d'ensemble (qui garde un pulse compact).
-    { id: 'system', label: 'Système', sections: ['system-panel'] }, // #51 DAY-2 OPS : self-métriques + santé R/J/V par composant + (admin) bulletin/diag. LECTURE viewer+.
-    { id: 'fleet', label: 'Flotte', sections: ['fleet-panel'] }, // P0 UI : inventaire des hôtes/endpoints (last-seen + statut + enrôlement). LECTURE viewer+.
-    { id: 'connectors', label: 'Connecteurs', sections: ['connectors-panel'], admin: true }, // #3/#3a : sources externes en PULL (Defender) — admin-only (API 403 hors admin)
-    { id: 'destinations', label: 'Destinations', sections: ['destinations-panel'], admin: true }, // #50 : sorties/forward des events vers un sink externe (syslog/HEC/webhook) — admin-only (data-exfil surface)
-    { id: 'processors', label: "Processeur d'ingest", sections: ['processors-panel'], admin: true }, // #40 : pipeline filtre/masque/route/échantillon à l'ingest — admin-only
-    { id: 'indexes', label: 'Indexes & rétention', sections: ['index-policies-panel'], admin: true }, // #49 : indexes logiques nommés (rétention/plafonds par env_id) — admin-only
-    { id: 'parsers', label: 'Parseurs', sections: ['parsers'] },
-    { id: 'lookups', label: 'Lookups', sections: ['lookups'] }, // #1c : lecture tous rôles ; CRUD éditeur/admin (viewer = lecture seule)
-    { id: 'knowledge', label: 'Savoir', sections: ['knowledge-panel'] }, // #46 : objets de savoir search-time (alias/calc/eventtype/tag). Lecture viewer+ ; CRUD éditeur+ (crud-btn masqué au viewer)
-    { id: 'datamodels', label: 'Modèles & Pivot', sections: ['datamodels-panel'] }, // #47 : couche sémantique + report-builder Pivot + datasets. Lecture/exécution viewer+ ; CRUD éditeur+
-    { id: 'dataaccess', label: 'Accès données (DLP)', sections: ['dataaccess-view'] },
+    { id: 'sources', label: NOM_DERIVE, sections: ['sources-panel'] },
+    { id: 'freshness-view', label: NOM_DERIVE, sections: ['freshness-panel'] }, // onglet SIBLING de Sources ; rend le détail complet (renderFreshness). Détail migré depuis la Vue d'ensemble (qui garde un pulse compact).
+    { id: 'system', label: NOM_DERIVE, sections: ['system-panel'] }, // #51 DAY-2 OPS : self-métriques + santé R/J/V par composant + (admin) bulletin/diag. LECTURE viewer+.
+    { id: 'fleet', label: NOM_DERIVE, sections: ['fleet-panel'] }, // P0 UI : inventaire des hôtes/endpoints (last-seen + statut + enrôlement). LECTURE viewer+.
+    { id: 'connectors', label: NOM_DERIVE, sections: ['connectors-panel'], admin: true }, // #3/#3a : sources externes en PULL (Defender) — admin-only (API 403 hors admin)
+    { id: 'destinations', label: NOM_DERIVE, sections: ['destinations-panel'], admin: true }, // #50 : sorties/forward des events vers un sink externe (syslog/HEC/webhook) — admin-only (data-exfil surface)
+    { id: 'processors', label: NOM_DERIVE, sections: ['processors-panel'], admin: true }, // #40 : pipeline filtre/masque/route/échantillon à l'ingest — admin-only
+    { id: 'indexes', label: NOM_DERIVE, sections: ['index-policies-panel'], admin: true }, // #49 : indexes logiques nommés (rétention/plafonds par env_id) — admin-only
+    { id: 'parsers', label: NOM_DERIVE, sections: ['parsers'] },
+    { id: 'lookups', label: NOM_DERIVE, sections: ['lookups'] }, // #1c : lecture tous rôles ; CRUD éditeur/admin (viewer = lecture seule)
+    { id: 'knowledge', label: NOM_DERIVE, sections: ['knowledge-panel'] }, // #46 : objets de savoir search-time (alias/calc/eventtype/tag). Lecture viewer+ ; CRUD éditeur+ (crud-btn masqué au viewer)
+    { id: 'datamodels', label: NOM_DERIVE, sections: ['datamodels-panel'] }, // #47 : couche sémantique + report-builder Pivot + datasets. Lecture/exécution viewer+ ; CRUD éditeur+
+    { id: 'dataaccess', label: NOM_DERIVE, sections: ['dataaccess-view'] },
   ] },
   { id: 'admin', admin: true, tabs: [
-    { id: 'settings', label: 'Compte', sections: ['settings'] },
-    { id: 'users', label: 'Users', sections: ['users'] },
-    { id: 'tokens', label: 'Jetons', sections: ['tokens'], admin: true }, // provisioning jetons agent/HEC (secrets) — admin-only (API 403 hors admin)
-    { id: 'idp', label: 'Identité (SSO)', sections: ['idp-panel'], admin: true }, // #44 : fournisseurs OIDC/LDAP — admin-only (secrets ; API 403 hors admin)
-    { id: 'fieldfilters', label: 'Field filters', sections: ['field-filter-panel'], admin: true }, // #45 : masquage PII par champ — admin-only (config qui contraint viewer/editor ; API 403 hors admin)
-    { id: 'tenants', label: 'Tenants', sections: ['tenants-panel'], mtOnly: true }, // #2c : multi-tenant only (masqué en mode 0)
-    { id: 'notifiers', label: 'Canaux', sections: ['notifiers'] },
-    { id: 'threatintel', label: 'Threat Intel', sections: ['threatintel-panel'] }, // #23 : magasin d'IOC (couverture + liste + ajout/import) — espace admin => admin-only ; API GET viewer+ / POST admin
-    { id: 'suppressions', label: 'Suppressions', sections: ['suppressions-panel'] }, // chantier whitelists→webui : panneau RO + operator/self éditable (admin)
-    { id: 'retention', label: 'Rétention', sections: ['retention-panel'] },
-    { id: 'ledger', label: 'Audit', sections: ['ledger-panel'] },
+    { id: 'settings', label: NOM_DERIVE, sections: ['settings'] },
+    { id: 'users', label: NOM_DERIVE, sections: ['users'] },
+    { id: 'tokens', label: NOM_DERIVE, sections: ['tokens'], admin: true }, // provisioning jetons agent/HEC (secrets) — admin-only (API 403 hors admin)
+    { id: 'idp', label: NOM_DERIVE, sections: ['idp-panel'], admin: true }, // #44 : fournisseurs OIDC/LDAP — admin-only (secrets ; API 403 hors admin)
+    { id: 'fieldfilters', label: NOM_DERIVE, sections: ['field-filter-panel'], admin: true }, // #45 : masquage PII par champ — admin-only (config qui contraint viewer/editor ; API 403 hors admin)
+    { id: 'tenants', label: NOM_DERIVE, sections: ['tenants-panel'], mtOnly: true }, // #2c : multi-tenant only (masqué en mode 0)
+    { id: 'notifiers', label: NOM_DERIVE, sections: ['notifiers'] },
+    { id: 'threatintel', label: NOM_DERIVE, sections: ['threatintel-panel'] }, // #23 : magasin d'IOC (couverture + liste + ajout/import) — espace admin => admin-only ; API GET viewer+ / POST admin
+    { id: 'suppressions', label: NOM_DERIVE, sections: ['suppressions-panel'] }, // chantier whitelists→webui : panneau RO + operator/self éditable (admin)
+    { id: 'retention', label: NOM_DERIVE, sections: ['retention-panel'] },
+    { id: 'ledger', label: NOM_DERIVE, sections: ['ledger-panel'] },
   ] },
   // #4c : espace Aide / Guide — documentation in-app 100% statique (sommaire des espaces + glossaire).
   // Visible pour tous les rôles ; 1 seul onglet => pas de barre de sous-onglets. Aucun appel réseau.
   { id: 'help', tabs: [
-    { id: 'help', label: 'Aide', sections: ['help-panel'] },
+    { id: 'help', label: NOM_DERIVE, sections: ['help-panel'] },
   ] },
 ];
+// =================================================================================================
+// `P11.18-o` — UN NOM DÉSIGNE UNE CHOSE, ET C'EST LE MÊME PARTOUT OÙ L'ON Y RENVOIE.
+//
+// CE QUI A ÉTÉ MESURÉ (2026-08-25), et qui n'était pas une exception mais la règle. Sur les 34 onglets
+// qui ouvrent UN SEUL panneau, 31 portaient un libellé DIFFÉRENT du titre de ce panneau : qui cherchait
+// « Inventaire des sources » devait deviner « Sources », « Comptes & accès » devait deviner « Users ».
+// Et DEUX sections portaient le MÊME titre de niveau deux — la vignette de fraîcheur de la Vue
+// d'ensemble et le panneau de fraîcheur —, si bien qu'un même nom désignait deux endroits.
+//
+// LA PROPRIÉTÉ EST TENUE PAR CONSTRUCTION, PAS PAR RELECTURE. `P11.18-e` l'a tenue sur les renvois en
+// ôtant le libellé du renvoi : il est DÉRIVÉ de la destination, et une destination que la table ne
+// nomme pas est rendue AVEC SON AVEU. Ici le geste est le même, un cran plus haut : un libellé
+// d'onglet n'est plus écrit, il est DÉRIVÉ. Corriger les 31 écarts à la main aurait laissé le 32e
+// s'écrire dès le prochain panneau.
+//
+// OÙ LE NOM S'ÉCRIT — UNE SEULE RÈGLE, ET ELLE SUIT LÀ OÙ LE NOM EST PERMANENT :
+//   * un onglet qui ouvre UN SEUL panneau -> le nom est le TITRE DE CE PANNEAU (ce qu'on trouve à
+//     l'arrivée) ; le libellé de l'onglet en dérive ;
+//   * un espace qui n'a QU'UN onglet n'affiche aucune barre de sous-onglets : son lien de barre
+//     latérale est alors le seul nom permanent, donc c'est LUI qui nomme, et le titre du panneau en
+//     dérive (`nommerLesPanneaux`). C'est ce qui ferme le troisième écart mesuré : la barre latérale
+//     nommait une destination par son ESPACE pendant que le panneau s'appelait autrement — l'éditeur
+//     de requête s'annonçait « Plume panel » sous un lien « Recherche » ;
+//   * un onglet qui montre PLUSIEURS sections est lui-même un GROUPE, comme un espace : il n'y a pas
+//     de panneau unique à nommer, il déclare donc son libellé (`label`) — deux cas, Détection et
+//     Playbooks, et la garde du lexique les voit comme des libellés affichés ;
+//   * rien de tout cela -> AVEU. Une destination sans nom est rendue en le disant, jamais en silence.
+//
+// POURQUOI LE NOM EST LU SUR LE DOCUMENT ET NON RECOPIÉ ICI. Recopier les 34 titres dans une table de
+// ce module rouvrirait exactement le défaut : deux endroits où le même nom s'écrit, donc deux endroits
+// qui peuvent diverger. La page est la source, et le lexique fr/en la couvre déjà — un libellé dérivé
+// est donc traduit par le MÊME chemin que le titre dont il vient, sans une seule entrée de plus.
+// CE QUE CE MÉCANISME NE TIENT PAS, écrit plutôt que tu : il ne rend pas DEUX panneaux incapables de
+// porter le même titre. Il retire les deux sources de divergence mesurées (le libellé recopié, la
+// vignette qui usurpait le nom de son panneau) ; un titre écrit deux fois dans la page resterait un
+// défaut de relecture.
+// =================================================================================================
+
+// Le nom qu'un PANNEAU se donne : le texte de son titre de niveau deux, GESTES EXCLUS. Le « ? » de
+// l'aide et les boutons d'outil vivent DANS le titre sans en faire partie ; les lire ferait entrer un
+// point d'interrogation dans le libellé de l'onglet. Rendu vide si la page ne porte pas ce panneau ou
+// si son titre n'est pas écrit : c'est l'appelant qui décide quoi en faire, la lecture n'invente rien.
+function nomEcritSurLePanneau(idSection) {
+  const h = document.querySelector('#' + idSection + ' h2');
+  if (!h) return '';
+  return Array.from(h.childNodes || [])
+    .filter(n => n && !n.tagName)
+    .map(n => String(n.textContent || ''))
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Le nom qu'un ESPACE porte dans la barre latérale (le libellé du lien, l'icône exclue).
+function nomEcritSurLaBarreLaterale(idEspace) {
+  const a = $('#nav a[data-space="' + idEspace + '"]');
+  const s = a && a.querySelector ? a.querySelector('span') : null;
+  return s ? String(s.textContent || '').replace(/\s+/g, ' ').trim() : '';
+}
+
+// L'AVEU — même forme que celui des renvois (`P11.18-e`) : une destination que rien ne nomme est
+// rendue avec son identifiant et le mot qui dit qu'elle n'est pas nommée. C'est ce qui oblige la
+// prochaine destination à se déclarer au lieu de se fondre dans la surface.
+function aveuDeDestinationNonNommee(cle) {
+  return '« ' + cle + ' » ' + (LANG === 'en' ? '(destination not named)' : '(destination non nommée)');
+}
+
+// LE NOM D'UNE DESTINATION, DÉRIVÉ — l'ordre suit la règle écrite ci-dessus.
+function nomDeLaDestination(sp, t) {
+  if (t.sections.length === 1) {
+    const n = nomEcritSurLePanneau(t.sections[0]);
+    if (n) return n;
+  }
+  if (sp.tabs.length === 1) {
+    const n = nomEcritSurLaBarreLaterale(sp.id);
+    if (n) return n;
+  }
+  if (t.label) return t.label;                 // GROUPE déclaré (plusieurs sections, espace partagé)
+  return aveuDeDestinationNonNommee(t.id);
+}
+
+// ÉCRIT le titre d'une section SANS toucher aux gestes qu'il porte : le bouton d'aide et les outils
+// restent, à leur rang, après le nom. Les morceaux sont posés en nœuds texte SÉPARÉS parce que le
+// lexique traduit un nœud dont la valeur ENTIÈRE est une clé : un nom collé à son complément ne serait
+// plus traduisible, alors que le nom seul l'est déjà — et le complément, lui, est bilingue par
+// construction. Un blanc sépare le dernier morceau du premier geste.
+function ecrireLeTitre(h, morceaux) {
+  const gestes = Array.from(h.childNodes || []).filter(n => n && n.tagName);
+  const noeuds = morceaux.filter(m => m !== '' && m != null).map(m => document.createTextNode(m));
+  if (noeuds.length && gestes.length) noeuds.push(document.createTextNode(' '));
+  h.replaceChildren(...noeuds, ...gestes);
+}
+
+// UN PANNEAU QUI NE SE NOMME PAS LUI-MÊME REÇOIT LE NOM DE SA DESTINATION. Aucun titre n'est ÉCRASÉ :
+// là où la page écrit un nom, elle reste la source. C'est le cas des espaces à un seul onglet, dont le
+// nom permanent est le lien de la barre latérale.
+function nommerLesPanneaux() {
+  SPACES.forEach(sp => sp.tabs.forEach(t => {
+    if (t.sections.length !== 1) return;
+    if (nomEcritSurLePanneau(t.sections[0])) return;
+    const h = document.querySelector('#' + t.sections[0] + ' h2');
+    if (h) ecrireLeTitre(h, [t.label]);
+  }));
+}
+
+// UNE VIGNETTE N'EST PAS SA DESTINATION. Une section qui déclare `data-resume-de` RÉSUME un panneau :
+// elle en porte le nom — DÉRIVÉ de ce panneau, jamais recopié — suivi du mot qui dit qu'elle n'en est
+// que le résumé. Sans cela deux endroits portent le même nom et le lecteur croit avoir déjà vu ce qui
+// l'attend ailleurs : c'est le défaut mesuré sur la fraîcheur (la vignette de la Vue d'ensemble et le
+// panneau de Données -> Fraîcheur s'appelaient tous deux « Fraîcheur des sources »).
+function nommerLesResumes() {
+  document.querySelectorAll('section[data-resume-de]').forEach(sec => {
+    const cible = sec.getAttribute('data-resume-de');
+    const h = sec.querySelector ? sec.querySelector('h2') : null;
+    if (!h) return;
+    const nom = nomEcritSurLePanneau(cible);
+    if (nom) ecrireLeTitre(h, [nom, LANG === 'en' ? ' — summary' : ' — résumé']);
+    else ecrireLeTitre(h, [aveuDeDestinationNonNommee(cible)]);
+  });
+}
+
+// LA DÉRIVATION, UNE FOIS, À L'ÉVALUATION DU MODULE. Le libellé doit être une donnée du modèle (la
+// navigation le rend, et le banc le lit comme tel) : il est donc POSÉ ici, pas calculé à chaque rendu.
+// Le document est déjà analysé quand ce module s'évalue — la console charge `app.js` en fin de corps.
+SPACES.forEach(sp => sp.tabs.forEach(t => { t.label = nomDeLaDestination(sp, t); }));
 // =================================================================================================
 // LE REGISTRE DES CHARGES (`P11.14-e`, `P11.17-d`).
 //
@@ -364,6 +498,11 @@ function navTo(href) {
 // icônes-seules inchangé) -> le burger déplie réellement (labels + sous-onglets atteignables) ; >1024px inchangé.
 
 function initNavigation() {
+  // LES NOMS AVANT TOUT RENDU (`P11.18-o`) : un panneau qui ne se nomme pas lui-même et une vignette
+  // qui résume une destination reçoivent leur nom AVANT que la marche du lexique ne passe (`app.js`
+  // pose l'observateur plus loin), pour qu'il soit traduit par le même chemin que les titres écrits.
+  nommerLesPanneaux();
+  nommerLesResumes();
   window.addEventListener('hashchange', route);
   document.querySelectorAll('#nav a').forEach(a => a.addEventListener('click', e => { e.preventDefault(); navTo(a.getAttribute('href')); }));
   if ($('#subnav')) $('#subnav').addEventListener('click', e => { const a = e.target.closest('a'); if (!a) return; e.preventDefault(); navTo(a.getAttribute('href')); });
@@ -371,4 +510,4 @@ function initNavigation() {
   if ($('#navtoggle')) $('#navtoggle').onclick = () => { const l = document.querySelector('.layout'); if (l) l.classList.toggle('collapsed'); };
 }
 
-export { CHARGES_DE_LA_CONSOLE, SECTIONS_SANS_CHARGE, chargesAffichees, chargesDeLaVueAffichees, chargesVivesAffichees, cibleAffichee, initNavigation, lancerLesCharges, poserUneCharge, SPACES, currentTab, currentViewName, renderNav, route };
+export { CHARGES_DE_LA_CONSOLE, SECTIONS_SANS_CHARGE, chargesAffichees, chargesDeLaVueAffichees, chargesVivesAffichees, cibleAffichee, initNavigation, lancerLesCharges, poserUneCharge, SPACES, currentTab, currentViewName, nomEcritSurLePanneau, nomEcritSurLaBarreLaterale, nommerLesPanneaux, nommerLesResumes, renderNav, route };

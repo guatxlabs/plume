@@ -228,7 +228,11 @@ function renderSourcesInventory(wrap, d) {
     clr.title = 'Réinitialiser les déclarations et les métadonnées d\'affichage de cette source'; clr.onclick = e => { e.stopPropagation(); clearSourceMeta(s); };
     box.append(clr); return box;
   } });
-  pagedList(tblHost, { mode: 'client', pageSize: 50, rows: sources, columns, emptyText: 'aucune source' });
+  // `P11.18-m` — LA RECHERCHE PORTE SUR TOUT L'INVENTAIRE. `/api/sources` ne pagine pas et ne tronque pas :
+  // ce que la vue reçoit est l'inventaire entier, dont la fenêtre de sept jours est déjà nommée dans la
+  // légende ci-dessous. Le texte cherché est celui des cellules RENDUES — une source se cherche donc aussi
+  // par le PRODUCTEUR écrit sous son nom, par le mot de son statut et par son déclarant.
+  pagedList(tblHost, { mode: 'client', pageSize: 50, rows: sources, columns, emptyText: 'aucune source', recherche: true });
   if (sources.length) {
     const legend = document.createElement('div'); legend.className = 'muted'; legend.style.cssText = 'margin-top:8px;font-size:11px';
     legend.textContent = 'Statut = santé de collecte (même dérivation que Données → Fraîcheur) : frais (donnée < 15 min) · calme (collecte saine, source peu active) · en retard (cadence DÉCLARÉE continue dépassée — c\'est le « muet » du capteur dans Intégrations) · en attente (déclarée, pas encore de donnée) · muet (plus rien n\'arrive, toutes sources confondues). « Déclarée » veut dire voulue par QUELQU\'UN : ce dépôt (un fichier livré l\'émet), le démon (une sonde l\'observe), le produit (il l\'agrège), un connecteur configuré, ou l\'exploitant — une source installée hors de ce dépôt se déclare ici, et la colonne dit qui l\'a fait et quand. La cadence attendue se déclare de la même façon là où aucune sonde n\'en déclare : « aucune cadence déclarée » est un blanc, pas un défaut, et une source événementielle ou sans cadence n\'est jamais « en retard ».';

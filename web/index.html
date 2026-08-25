@@ -161,15 +161,23 @@
   <section id="controls" class="card"><h2>Contrôles (zéro-trou) <button class="ihelp vhelp" data-help="controls" type="button" title="Aide : Contrôles">?</button></h2><div class="body">...</div></section>
   <section id="integrations" class="card span2"><h2>Intégrations &amp; hôtes <button class="ihelp vhelp" data-help="integrations" type="button" title="Aide : Intégrations & hôtes">?</button></h2><div class="body">...</div></section>
   <!-- PULSE compact seulement (compteurs par état + lien). Le détail par feed a migré vers son
-       propre onglet Données → Fraîcheur (#freshness-panel). Refresh/aide vivent désormais sur cet onglet. -->
-  <section id="freshness" class="card"><h2 id="freshness-h">Fraîcheur des sources</h2><div class="body"><div class="muted">chargement…</div></div></section>
+       propre onglet Données → Fraîcheur (#freshness-panel). Refresh/aide vivent désormais sur cet onglet.
+       P11.18-o : LE TITRE EST VIDE PARCE QU'IL EST DÉRIVÉ, pas parce qu'il manque. Cette vignette RÉSUME
+       la destination que `data-resume-de` désigne : `nommerLesResumes` (navigation.js) lui pose le nom de
+       ce panneau suivi du mot « résumé ». Écrire le nom ici en ferait un SECOND endroit portant le même
+       nom — c'est exactement le défaut mesuré le 2026-08-25 (deux sections, un seul titre). -->
+  <section id="freshness" class="card" data-resume-de="freshness-panel"><h2 id="freshness-h"></h2><div class="body"><div class="muted">chargement…</div></div></section>
   <section id="query" class="card span2" aria-labelledby="query-h">
     <div class="qhead">
       <div class="qhistnav">
         <button id="qprev" class="picon" type="button" title="Requête précédente (historique)" disabled></button>
         <button id="qnext" class="picon" type="button" title="Requête suivante (historique)" disabled></button>
       </div>
-      <h2 id="query-h">Plume panel <button class="ihelp vhelp" data-help="explore" type="button" title="Aide : Recherche">?</button></h2>
+      <!-- P11.18-o : titre DÉRIVÉ, pas manquant. L'espace « Recherche » n'a qu'un onglet, donc aucune
+           barre de sous-onglets ne s'affiche : le lien de la barre latérale est le seul nom PERMANENT de
+           cette destination, et `nommerLesPanneaux` (navigation.js) le pose ici. Ce panneau s'annonçait
+           « Plume panel » sous un lien « Recherche » — un nom qui ne disait pas ce qu'on y trouve. -->
+      <h2 id="query-h"><button class="ihelp vhelp" data-help="explore" type="button" title="Aide : Recherche">?</button></h2>
       <span id="qcrumb" class="qcrumb" role="status" aria-live="polite" hidden></span>
     </div>
     <div class="qsub">Requête GXQL ou SQL — les drilldowns atterrissent ici</div>
@@ -231,7 +239,9 @@
     <div id="qresult" class="qresult"></div>
   </section>
   <section id="dashboards" class="span2" aria-labelledby="dash-h">
-    <h2 id="dash-h" class="sronly">Dashboards</h2>
+    <!-- P11.18-o : titre DÉRIVÉ du lien de barre latérale (espace à un seul onglet), posé par
+         `nommerLesPanneaux`. -->
+    <h2 id="dash-h" class="sronly"></h2>
     <div class="viewbar card">
       <div class="viewbar-l">
         <span class="lvl">Vue</span>
@@ -1064,7 +1074,9 @@
   <!-- #4c Aide / Guide : documentation in-app 100% statique — sommaire des espaces + référence GXQL +
        glossaire des concepts. Rempli par renderHelpGuide() (aucun appel réseau). Visible pour tous les rôles. -->
   <section id="help-panel" class="card span2" aria-labelledby="help-h" hidden>
-    <div class="panelhead"><h2 id="help-h">Aide &amp; Guide</h2></div>
+    <!-- P11.18-o : titre DÉRIVÉ du lien de barre latérale (espace à un seul onglet), posé par
+         `nommerLesPanneaux`. -->
+    <div class="panelhead"><h2 id="help-h"></h2></div>
     <div id="help-body"></div>
   </section>
   <!-- P2/P3 : CVE - Durcissement - Auth - Process(auditd) - Intégrité(AIDE) - Réseau - Conteneurs - Ressources -->

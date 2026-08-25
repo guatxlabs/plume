@@ -446,7 +446,10 @@ async function loadParsers() {
   // n'est plus rangé sous un libellé écrit sur place, mais sous le groupe « sans source » que la fabrique
   // nomme pour toutes les vues, et il reste compté.
   const host = document.createElement('div');
-  pagedList(host, { mode: 'client', pageSize: 50, rows: parsers, renderRow: parserRow, group: { storeKey: 'soc_parser_collapsed' } });
+  // `P11.18-m` — LA RECHERCHE PORTE SUR TOUT LE REGISTRE : `/api/parsers` rend la table entière, sans borne
+  // ni pagination. Elle se compose avec le groupement par source — la partition est refaite sur les lignes
+  // trouvées — et le texte cherché est celui de la ligne RENDUE (nom, source, motif d'extraction).
+  pagedList(host, { mode: 'client', pageSize: 50, rows: parsers, renderRow: parserRow, group: { storeKey: 'soc_parser_collapsed' }, recherche: true });
   wrap.appendChild(host);
 }
 function parserRow(p) {

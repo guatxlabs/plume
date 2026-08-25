@@ -133,7 +133,10 @@ function silencesSection(wrap, d) {
       box.append(ed, dl); return box;
     } },
   ];
-  pagedList(host, { mode: 'client', pageSize: 50, rows, columns: cols, emptyText: 'aucun silence — « + Silence » pour muter temporairement les notifications d\'une règle, d\'un hôte ou d\'une source.' });
+  // `P11.18-m` — LA RECHERCHE PORTE SUR TOUS LES SILENCES : `/api/silences` rend la table entière, sans
+  // borne ni pagination. Un silence se cherche par ses matchers, par son état, par sa raison et par qui
+  // l'a posé — c'est-à-dire par le texte des cellules RENDUES.
+  pagedList(host, { mode: 'client', pageSize: 50, rows, columns: cols, emptyText: 'aucun silence — « + Silence » pour muter temporairement les notifications d\'une règle, d\'un hôte ou d\'une source.', recherche: true });
 }
 
 async function loadSuppressions() {
@@ -167,7 +170,10 @@ async function loadSuppressions() {
       return box;
     } },
   ];
-  pagedList(dt, { mode: 'client', pageSize: 50, rows: d.daemon || [], columns: dcols, emptyText: 'aucune exclusion' });
+  // `P11.18-m` — LA RECHERCHE PORTE SUR TOUT LE REGISTRE : `/api/suppressions` rend les entrées déclaratives
+  // en entier, sans borne ni pagination. Une exclusion se cherche par son libellé, son type, sa VALEUR
+  // active, son périmètre et sa provenance dans le code.
+  pagedList(dt, { mode: 'client', pageSize: 50, rows: d.daemon || [], columns: dcols, emptyText: 'aucune exclusion', recherche: true });
   // ---- (1bis) SILENCES D'ALERTES — créer / modifier / supprimer (P11.5-a) ----
   silencesSection(wrap, silences);
   if (silences && silences.error) wrap.appendChild(muted('silences indisponibles : ' + silences.error));
@@ -205,7 +211,10 @@ async function loadSuppressions() {
       } },
       { key: 'ts', label: 'Dernier report', sortable: true, sortVal: c => c.ts || 0, render: c => { const sp = document.createElement('span'); sp.textContent = c.ts ? 'il y a ' + humanAge(Math.max(0, (d.generated || Math.floor(Date.now() / 1000)) - c.ts)) : '—'; if (c.ts) sp.title = fmtTs(c.ts) + (c.host ? ' · ' + c.host : ''); return sp; } },
     ];
-    pagedList(ct, { mode: 'client', pageSize: 50, rows: d.collectors, columns: ccols, emptyText: 'aucun' });
+    // `P11.18-m` — MÊME PORTÉE QUE LE REGISTRE CI-DESSUS : la route rend un auto-report par source, sans
+    // borne ni pagination. Un collecteur se cherche par sa source, par son type, par les filtres qu'il
+    // DÉCLARE, et par le mot d'alerte que porte une provenance non attestée ou contestée.
+    pagedList(ct, { mode: 'client', pageSize: 50, rows: d.collectors, columns: ccols, emptyText: 'aucun', recherche: true });
   }
   // ---- (3) ÉTAT FIREWALL (hôte) ----
   if (d.firewall && d.firewall.data != null) {

@@ -168,6 +168,7 @@ fn sec_h1_verify_ledger_keyed_never_panics() {
 // ------------------------------------------------------------------------------------------------
 #[test]
 fn v134_ledger_pubkey_pin_rejects_resign() {
+    let _env = VERROU_ENV_PROCESSUS.write(); // l'environnement du processus est MUTÉ ici : verrou UNIQUE en écriture (common.rs)
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
     let _ = migrate(&conn);
@@ -895,6 +896,7 @@ fn secretprov_phase2_file_layer_byte_parity() {
 
 #[test]
 fn secretprov_phase2_tenant_vs_overlay_semantics_preserved() {
+    let _env = VERROU_ENV_PROCESSUS.write(); // l'environnement du processus est MUTÉ ici : verrou UNIQUE en écriture (common.rs)
     // resolve_tenant_key (filter-vide, `Result<Option<String>>`) et resolve_secret_ref (env-BRUT + file-TRIM,
     // `Result<String>`) partagent la MÊME grammaire `SecretRef` mais gardent des sémantiques VOLONTAIREMENT
     // DIFFÉRENTES. On prouve la divergence là où elle compte (anti-homogénéisation).
@@ -956,6 +958,7 @@ fn secretprov_phase2_tenant_vs_overlay_semantics_preserved() {
 
 #[test]
 fn secretprov_phase2_cfg_secret_ref_additive_and_default_unchanged() {
+    let _env = VERROU_ENV_PROCESSUS.write(); // l'environnement du processus est MUTÉ ici : verrou UNIQUE en écriture (common.rs)
     // `{KEY}_REF` (ADDITIF Phase 2) résout n'importe quel SecretRef et GAGNE ; NON posé -> chemin
     // historique STRICTEMENT inchangé (default path byte-identique). Clés inventées -> jamais dans l'env.
     const K: &str = "PLUME_UNITTEST_P2REF";

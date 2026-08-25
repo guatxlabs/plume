@@ -54,6 +54,7 @@
     /// Une RÉFÉRENCE de secret env: est RÉSOLUE au chargement -> le secret est écrit résolu, jamais la référence.
     #[test]
     fn oac_secret_ref_env_resolves() {
+        let _env = VERROU_ENV_PROCESSUS.write(); // l'environnement du processus est MUTÉ ici : verrou UNIQUE en écriture (common.rs)
         let conn = test_db();
         let var = format!("PLUME_TEST_OAC_TOKEN_{}", std::process::id());
         std::env::set_var(&var, "resolved-secret-value");
@@ -1109,7 +1110,7 @@ detection:
     // Le catalogue de rôles composables est un GLOBAL process (`custom_roles_cell`), remplacé EN BLOC par
     // `reload_custom_roles` à chaque mutation (role_create/update/delete). Tout test qui INJECTE des rôles en
     // mémoire pour assertion ET tout test qui DÉCLENCHE un reload doivent donc se sérialiser, sinon un reload
-    // concurrent efface les entrées d'un autre test (flakiness). Même patron que ENGAGEMENT_TEST_LOCK/RBA_ENV_LOCK.
+    // concurrent efface les entrées d'un autre test (flakiness). Même patron que ENGAGEMENT_TEST_LOCK/VERROU_ENV_PROCESSUS.
 
     /// #64 CORRECTIF (fix 1) : l'auto-approbation de `run_playbooks` suit l'AUTORITÉ ADMIN EFFECTIVE de
     /// l'auteur, pas un `created_by_role == "admin"` LITTÉRAL. Un rôle composable base=admin SANS deny

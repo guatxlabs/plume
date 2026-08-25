@@ -2,7 +2,7 @@
 // B2b MERGE — TESTS ADVERSES (rollup ∪ raw-partiels, résultat prétendu EXACT & FRAIS).
 // Oracle = `count by source,severity` sur `event` brut (scan complet = vérité). Le merge DOIT
 // reproduire ce compte EXACTEMENT (au COMPTE près, pas au bucket près) pour être `approx:false`.
-// Réutilise le harnais du fichier rollup.rs (même module via include!) : B2_ENV_LOCK, b2_map,
+// Réutilise le harnais du fichier rollup.rs (même module via include!) : VERROU_ENV_PROCESSUS, b2_map,
 // test_db, rollup_events, try_rollup_route_at, soql_to_sql_x.
 // =====================================================================================
 
@@ -27,7 +27,7 @@
     /// touchant l'heure courante -> tête (aucune ici, from aligné) + corps + queue.
     #[test]
     fn b2b_adverse_v1_exact_boundary_events_counted_once() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
         let conn = test_db();
         let n = now();
@@ -59,7 +59,7 @@
     /// >= recent lu par le corps (sinon double-comptage avec la queue), aucun bucket < recent zappé.
     #[test]
     fn b2b_adverse_v2_watermark_frontier_no_overlap_no_gap() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
         let conn = test_db();
         let n = now();
@@ -100,7 +100,7 @@
     /// bucket pendant cette fenêtre est SILENCIEUSEMENT sous-compté et présenté comme exact.
     #[test]
     fn b2b_adverse_v3_late_event_in_definitive_bucket_undercounts() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
         let conn = test_db();
         let n = now();
@@ -163,7 +163,7 @@
     /// partiels raw ; parité exacte par environnement.
     #[test]
     fn b2b_adverse_v4_env_filter_parity() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
         let conn = test_db();
         let n = now();
@@ -199,7 +199,7 @@
     /// sub-horaire pure et entièrement dans les ~2h volatiles.
     #[test]
     fn b2b_adverse_v5_declines_when_no_definitive_body() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
         let soql = "search | stats count by source,severity";
         let now_ts = 1_000_000_000_i64;
@@ -219,7 +219,7 @@
     #[cfg(feature = "cold_tier")]
     #[test]
     fn b2b_adverse_v6_cold_aligned_exact_and_bounded_residual() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
         let conn = test_db();
         // crée cold_rollup (miroir) + event_rollup.

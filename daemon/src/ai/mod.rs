@@ -301,6 +301,7 @@ mod ai_unit_tests {
     #[cfg(feature = "ai")]
     #[test]
     fn budget_saturates_then_errors() {
+        let _env = crate::tests::VERROU_ENV_PROCESSUS.write(); // l'environnement du processus est MUTÉ ici : verrou UNIQUE en écriture (common.rs)
         std::env::set_var("PLUME_AI_MAX_CALLS_PER_MIN", "3");
         let t = "tenant-budget-test";
         assert!(super::budget_take(t).is_ok());

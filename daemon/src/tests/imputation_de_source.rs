@@ -442,8 +442,17 @@
     }
 
     /// GARDE DÉRIVÉE — AUCUN PRODUCTEUR D'ALERTE NE REJOINT LA LISTE EN SILENCE. Le périmètre est QUATRE
-    /// producteurs sur onze ; les sept autres retombent volontairement sur le chemin textuel, à
+    /// producteurs sur douze ; les huit autres retombent volontairement sur le chemin textuel, à
     /// l'identique. Ce qui doit tenir, ce n'est pas ce partage — c'est qu'il soit un CHOIX à chaque fois.
+    ///
+    /// LE DOUZIÈME (P11.18-i) est l'alerte de CATALOGUE DE CONTRÔLES VIDE. Elle est écrite trois lignes
+    /// sous ses deux sœurs de la voie INSTANTANÉ (`firewall.lockdown`, `control.catalog`) et prend
+    /// EXACTEMENT leur chemin : colonne `sources` non liée, repli textuel. Le choix est celui de la
+    /// COHÉRENCE DE LA VOIE — deux alertes levées dans la même fonction, sur la même charge, ne peuvent
+    /// pas s'imputer selon deux règles opposées. Ces trois-là décrivent une MACHINE et aucun feed, donc
+    /// leur place est l'inconnu NOMMÉ, comme la sonde de flotte ; les faire basculer déplace le partage
+    /// publié par `imputation.rs` et se décide sous la clé qui porte l'imputation, pas ici — une seule
+    /// des trois qui basculerait ne serait pas un choix, ce serait une divergence.
     ///
     /// LE QUATRIÈME (P3.9-a) est l'alerte de DÉTECTION AVEUGLE : elle se rapporte à une RÈGLE qui ne
     /// peut plus être évaluée, et à aucun feed — elle impute à l'inconnu NOMMÉ, pour la même raison que
@@ -492,7 +501,7 @@
         let imputent: Vec<&(String, bool)> = sites.iter().filter(|(_, ok)| *ok).collect();
         assert_eq!(
             sites.len(),
-            11,
+            12,
             "le nombre de producteurs d'alerte a bougé ({} trouvés) : chaque producteur doit dire s'il \
              impute depuis la DONNÉE (colonne `sources`) ou s'il retombe sur le texte de la règle. \
              Sites : {:?}",
@@ -528,7 +537,7 @@
     //
     // CE QUI A ÉTÉ MESURÉ AVANT DE CORRIGER (2026-08-23) : sur trois alertes actives, UNE était comptée
     // par la cloche d'un feed, UNE par `unattributed_alerts`, et LA TROISIÈME nulle part — colonne
-    // `sources` vide (sept producteurs sur onze la laissent ainsi) ET aucun jeton `source=` dans son
+    // `sources` vide (huit producteurs sur douze la laissent ainsi) ET aucun jeton `source=` dans son
     // texte. La charge utile ne permettait donc pas de retrouver le total, et la phrase de la console
     // (« N alerte(s) active(s) sans source déterminée — aucune cloche de source ne les porte ») se
     // lisait comme un trou de collecte alors qu'elle décrivait, pour l'essentiel, des alertes qui n'ont
@@ -554,7 +563,7 @@
             // (2) imputée à l'inconnu NOMMÉ -> elle DIT qu'elle ne parle d'aucun flux.
             w.execute("INSERT INTO alert(ts,rule,severity,title,detail,status,sources) VALUES(?1,'r2',2,'B','','new',?2)",
                 params![now(), SOURCE_INDETERMINABLE]).unwrap();
-            // (3) colonne VIDE et texte muet — le cas des sept producteurs qui n'imputent pas.
+            // (3) colonne VIDE et texte muet — le cas des huit producteurs qui n'imputent pas.
             w.execute("INSERT INTO alert(ts,rule,severity,title,detail,status,sources) VALUES(?1,'r3',2,'C','seuil dépassé','new','')",
                 params![now()]).unwrap();
             // (4) ACQUITTÉE : hors du partage (le partage ne porte que les actives).

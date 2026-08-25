@@ -467,7 +467,7 @@ impl<'a> SnapshotSeries<'a> {
     }
 
     /// Clé anti-doublon d'une alerte qui décrit L'ÉTAT DE CETTE MACHINE (`firewall.lockdown`,
-    /// `control.catalog`). Ces clés-là sont fabriquées par le daemon, mais — contrairement à
+    /// `control.catalog`, `control.catalog.vide`). Ces clés-là sont fabriquées par le daemon, mais — contrairement à
     /// `alert.dedup` des règles, laissé GLOBAL par décision en P3.1-a parce que son grain est DÉCLARÉ
     /// (`rule-{id}[::{throttle_field}]`) — leur grain ne l'était PAS : l'INSERT lie pourtant `host` sur
     /// la ligne d'alerte, donc le code VEUT attribuer le constat à une machine, et l'état dédupliqué

@@ -1,15 +1,15 @@
 // Accès données (DLP, gouvernance d'accès en lecture seule) : cinq panneaux sur des requêtes GXQL existantes,
 // sélecteur de fenêtre d'analyse, note de périmètre, réordonnancement des cartes persisté localement. Extrait
 // d'`app.js` par déplacement pur ; le seul consommateur est la navigation (`showView`). N'importe pas `app.js`.
-import { $, fmtTs, ic, muted, LANG } from './core.js';
+import { $, ic, muted, poserLeChoixDeDates, LANG } from './core.js';
 import { S } from './state.js';
 import { runQ, tableEl, truncationBadge } from './viz.js';
-// `P11.18-c` — LE CHOIX DE DATES EST PARTAGÉ, ET IL VIT DANS `audit.js`. Il n'est pas écrit deux fois,
-// et il n'est pas non plus au point commun (`web/core.js`), qui serait sa place : ce lot ne pouvait
-// toucher que ces deux vues, alors la vue dont la ROUTE est la plus pauvre le porte et celle-ci
-// l'importe. La raison du sens est écrite en tête du bloc `P11.18-c` de `web/audit.js`, avec la forme
-// recommandée si le point commun s'ouvre.
-import { plageActive, poserLaPlage, poserLeChoixDeDates } from './audit.js';
+// `P11.18-s` — LE GESTE VIENT DU POINT COMMUN, LA VALEUR VIENT DE L'AUTRE VUE. Le choix de dates
+// lui-même (`poserLeChoixDeDates`) est dans `web/core.js` et sert quatre consommateurs. La CIBLE où
+// la plage se pose est celle du journal d'audit : le partage est celui de la VALEUR — une enquête
+// porte sur les mêmes jours d'une vue à l'autre — et c'est la vue dont la ROUTE est la plus PAUVRE
+// qui la porte. La raison du sens est écrite en tête du bloc `P11.18-c` de `web/audit.js`.
+import { CIBLE_DE_PLAGE, plageActive, poserLaPlage } from './audit.js';
 
 // --- DLP / gouvernance d'accès (style Varonis) — onglet LECTURE SEULE (Phase 1) -------------------
 // "Qui touche quoi", intégrité (FIM) et droits (ACL/RBAC). Chaque panneau s'appuie sur une requête
@@ -39,23 +39,33 @@ function daFromValue() {
 }
 
 // =================================================================================================
-// `P11.18-c` — LA BORNE HAUTE DE CE PANNEAU : CE QU'IL ENVOIE, ET CE QU'IL HÉRITE SANS L'AVOIR CHOISI.
+// `P11.18-r` — LA BORNE HAUTE DE CE PANNEAU : CE QU'IL N'HÉRITE PLUS, ET CE QU'IL NE PEUT TOUJOURS
+// PAS ENVOYER.
 //
-// MESURÉ le 2026-08-25, en lisant le fabricant partagé. `runQ` (`web/viz.js`) pose
-// `body.to = exploreTo()`, c'est-à-dire `S.zoomRange ? S.zoomRange.to : 0` — l'intervalle ABSOLU réglé
-// dans l'Explore ou les Dashboards (`openRangeModal`, `setZoom`). Ce panneau ne le règle pas, ne
-// l'affichait pas, et sa barre annonçait « Fenêtre : toute la rétention » pendant que ses cinq
-// requêtes partaient bornées EN HAUT par une valeur venue d'une autre vue. C'est une fenêtre héritée
-// en douce, et la contradiction est de la même famille que celle relevée sous `P11.14-c`.
+// CE QUI ÉTAIT MESURÉ le 2026-08-25, en lisant le fabricant partagé. `runQ` (`web/viz.js`) posait
+// `body.to = exploreTo()`, c'est-à-dire `S.zoomRange ? S.zoomRange.to : 0` — l'intervalle ABSOLU
+// réglé dans l'Explore ou les tableaux de bord. Ce panneau ne le réglait pas, ne l'affichait pas, et
+// sa barre annonçait « Fenêtre : toute la rétention » pendant que ses cinq requêtes partaient bornées
+// EN HAUT par une valeur venue d'une autre vue : une fenêtre héritée en douce.
 //
-// CE QUE CE LOT PEUT ET NE PEUT PAS. La route accepte `to` (`POST /api/query` ; `guatx_core::soql`
-// émet `ts <= to`) — c'est le fabricant CLIENT qui n'offre aucun moyen de le poser, et `web/viz.js`
-// est hors de ce lot. Deux gestes en découlent, tous deux dans le périmètre :
-//   * une plage dont la FIN est antérieure à maintenant est REFUSÉE, en nommant cette raison-là ;
-//   * la borne haute HÉRITÉE, quand il y en a une, est NOMMÉE au-dessus des cartes. Une borne qu'on ne
-//     peut pas retirer se dit ; c'est la taire qui fabrique la contradiction.
+// CE QUI A CHANGÉ. `runQ` prend désormais la borne haute EN ARGUMENT (`opts.to`), et son défaut
+// n'hérite de rien. Ce panneau n'en passe aucune : ses cinq requêtes partent donc SANS borne haute,
+// et la phrase « toute la rétention » est redevenue vraie. Rien n'est plus affiché à ce sujet — une
+// borne qu'on n'hérite plus n'a pas à être nommée, et une phrase permanente se lirait comme une
+// borne permanente.
+//
+// CE QUE CE PANNEAU NE PEUT TOUJOURS PAS ENVOYER, ET LA RAISON A CHANGÉ AVEC LE FAIT. Une plage dont
+// la FIN est antérieure à maintenant reste REFUSÉE — non plus parce que le fabricant client ne sait
+// pas poser `to` (il le sait), mais parce que la plage est PARTAGÉE avec le journal d'audit, dont la
+// route ne porte AUCUNE borne haute. La valeur commune ne peut exprimer que ce que la route la plus
+// pauvre exprime ; poser ici une fin passée ferait afficher au journal une fenêtre qu'il n'a pas.
 // =================================================================================================
-function borneHauteHeritee() { return S.zoomRange ? S.zoomRange.to : 0; }
+const PORTE_DE_LA_PREVENTION_DES_FUITES = {
+  borneHaute: false,
+  refus: choisie => (LANG === 'en'
+    ? 'Range refused: the upper bound cannot be set from here. This route (POST /api/query) does accept `to`, and the shared query builder now takes it as an argument — but this range is SHARED with the audit journal, whose route carries no upper bound at all, so the end you chose (' + choisie.texteFin + ') would show there as a window the journal does not have. What this panel can send: from ' + choisie.texteDebut + ' up to now.'
+    : "Plage refusée : la borne HAUTE ne se pose pas d'ici. Cette route (POST /api/query) accepte bien `to`, et le fabricant de requête partagé le prend désormais en argument — mais cette plage est PARTAGÉE avec le journal d'audit, dont la route ne porte aucune borne haute, si bien que la fin choisie (" + choisie.texteFin + ") y afficherait une fenêtre que le journal n'a pas. Ce que ce panneau sait envoyer : du " + choisie.texteDebut + " jusqu'à maintenant."),
+};
 
 // =================================================================================================
 // `P11.14-c` — TROIS ISSUES DISTINCTES, LÀ OÙ CE PANNEAU N'EN RENDAIT QU'UNE.
@@ -157,23 +167,10 @@ async function renderDataAccess() {
   // Choisir un PALIER retire la plage — même règle que sur le journal d'audit, par le même écrivain.
   wsel.onchange = () => { S.daWin = wsel.value; poserLaPlage(null); renderDataAccess(); };
   bar.append(wlbl, wsel);
-  // Le choix de dates PARTAGÉ. Sa raison de refus est propre à CE chemin : la route accepte `to`, c'est
-  // `runQ` qui ne laisse pas le poser. Écrite ici parce que c'est ici qu'elle est vraie.
-  bar.appendChild(poserLeChoixDeDates('dataaccess', () => renderDataAccess(), choisie => (LANG === 'en'
-    ? 'Range refused: the upper bound does not leave from here. The shared query builder (runQ, web/viz.js) takes `to` from the Explore interval (S.zoomRange) and offers no way to set it, so the end you chose (' + choisie.texteFin + ') cannot be sent — the route POST /api/query does accept `to`. What this panel can send: from ' + choisie.texteDebut + ' up to now.'
-    : "Plage refusée : la borne HAUTE ne part pas d'ici. Le fabricant de requête partagé (runQ, web/viz.js) prend `to` de l'intervalle de l'Explore (S.zoomRange) et n'offre aucun moyen de le poser, donc la fin choisie (" + choisie.texteFin + ") ne peut pas être envoyée — la route POST /api/query, elle, accepte bien `to`. Ce que ce panneau sait envoyer : du " + choisie.texteDebut + " jusqu'à maintenant.")).barre);
-  // LA BORNE HAUTE HÉRITÉE, DITE. Elle vient d'une AUTRE vue et ce panneau ne peut pas la retirer ; la
-  // taire, c'est annoncer une fenêtre que les requêtes n'ont pas. Rien n'est affiché quand il n'y en a
-  // pas : une phrase permanente se lirait comme une borne permanente.
-  const heritee = borneHauteHeritee();
-  if (heritee > 0) {
-    const h = document.createElement('span'); h.className = 'muted';
-    h.textContent = (LANG === 'en' ? '· upper bound INHERITED from the Explore/Dashboards interval: nothing after ' : "· borne haute HÉRITÉE de l'intervalle Explore/Dashboards : rien après ")
-      + fmtTs(heritee)
-      + (LANG === 'en' ? ' is queried, and this panel cannot lift it.' : " n'est interrogé, et ce panneau ne peut pas la lever.");
-    h.title = String(heritee);
-    bar.appendChild(h);
-  }
+  // LE CHOIX DE DATES PARTAGÉ, tel que le point commun le pose : la CIBLE est celle du journal
+  // d'audit (la valeur est partagée), la PORTE est celle de CE chemin — écrite plus haut, là où elle
+  // est vraie.
+  bar.appendChild(poserLeChoixDeDates('dataaccess', CIBLE_DE_PLAGE, PORTE_DE_LA_PREVENTION_DES_FUITES, () => renderDataAccess()).barre);
   host.appendChild(bar);
   const daFrom = daFromValue();
   // Figé pour ce rendu : le sélecteur comme les dates peuvent changer pendant les requêtes en vol. Une

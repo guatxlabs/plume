@@ -90,7 +90,7 @@
     /// et non sur un cas choisi : `servi + reste == vérité brute`, à l'unité, dans chaque cellule.
     #[test]
     fn la_ligne_de_reste_chiffre_exactement_ce_que_le_plafond_ecarte() {
-        let _g = ROLLUP_DIMS_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         let now_ts = now();
         let bucket = (now_ts / 3600) * 3600; // fenêtre chaude : ré-agrégée à chaque tick, aucune bande à attendre
         let mut cellules = 0usize;
@@ -137,7 +137,7 @@
     /// exactement la faute des quatre correctifs précédents, prise à sa racine.
     #[test]
     fn le_reste_est_ecrit_meme_quand_il_est_nul() {
-        let _g = ROLLUP_DIMS_ENV_LOCK.lock(); // le plafond est un env process-global : sans ce verrou, une
+        let _g = VERROU_ENV_PROCESSUS.write(); // le plafond est un env process-global : sans ce verrou, une
         let conn = test_db();                 // cellule voisine le change sous nos pieds (constaté).
         std::env::remove_var("PLUME_ROLLUP_DIM_TOPN");
         let bucket = (now() / 3600) * 3600;
@@ -162,7 +162,7 @@
     /// déclare écarter, égale ce qu'`event` porte. La phrase rendue à l'analyste doit porter le nombre.
     #[test]
     fn la_route_publie_une_ampleur_qui_est_celle_de_l_oracle() {
-        let _g = ROLLUP_DIMS_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         let conn = test_db();
         std::env::set_var("PLUME_ROLLUP_DIM_TOPN", "5");
         let now_ts = now();
@@ -202,7 +202,7 @@
     /// `écartés: 0` ici serait le même défaut que le `0` de couverture, par une autre porte.
     #[test]
     fn sans_ligne_de_reste_l_ampleur_est_avouee_pas_supposee_nulle() {
-        let _g = ROLLUP_DIMS_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         let conn = test_db();
         std::env::set_var("PLUME_ROLLUP_DIM_TOPN", "5");
         let now_ts = now();
@@ -231,7 +231,7 @@
     /// gonflerait le compte d'un panneau. Les deux surfaces sont vérifiées sur la base réelle.
     #[test]
     fn la_ligne_de_reste_ne_pollue_aucun_resultat_servi() {
-        let _g = ROLLUP_DIMS_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         let conn = test_db();
         std::env::set_var("PLUME_ROLLUP_DIM_TOPN", "5");
         let now_ts = now();
@@ -267,7 +267,7 @@
     /// (`aucune ligne de reste`) reste du côté sûr.
     #[test]
     fn une_perte_nulle_prouvee_n_est_pas_declaree_tronquee() {
-        let _g = ROLLUP_DIMS_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_DIM_TOPN"); // plafond livré (50) -> 3 valeurs passent largement
         let conn = test_db();
         let now_ts = now();

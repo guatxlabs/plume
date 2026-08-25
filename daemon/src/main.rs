@@ -151,6 +151,7 @@ mod sonde_de_flotte; // P3.2-a : LA SONDE DE FLOTTE — un hôte qui se tait ENT
 pub(crate) use sonde_de_flotte::*;
 mod imputation; // S7 : À QUELLE SOURCE UNE ALERTE SE RAPPORTE — lue dans la DONNÉE (colonne `event.source`, descripteur de sonde), plus dans la prose de la règle ; et un INCONNU NOMMÉ quand elle n'est pas déterminable
 pub(crate) use imputation::*;
+mod controles_de_defense; // P11.18-i : CE QU'UN INSTANTANÉ DE CONTRÔLES DIT — l'alerte NOMME les contrôles manquants, la machine et depuis quand (les trois étaient déjà en base, aucune n'était rendue) ; et un catalogue VIDE se dit au lieu de rendre « 0 manquant »
 mod maj_corroboree; // P5.7-b : LE SOC S'ALERTE SUR SA PROPRE MISE À JOUR — un dépôt d'unité systemd n'est reclassé que si son CONTENU est celui d'une unité livrée par ce build ET qu'un déploiement daté vient d'avoir lieu ; jamais sur un nom, et l'événement n'est jamais effacé
 pub(crate) use maj_corroboree::*;
 mod overlays_adossement; // P4.1-r : CE QUI ADOSSE UN OVERLAY À UN FICHIER — le listing de config.d lu ou AVOUÉ (jamais « vide » faute de savoir), le bilan d'un chargement, et le REFUS d'élaguer sur un adossement illisible (un dossier de règles momentanément illisible supprimait TOUTES les règles livrées)

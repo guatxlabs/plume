@@ -34,7 +34,7 @@
     /// existé, sur le seul chemin qui les compte encore.
     #[test]
     fn la_retention_ne_laisse_jamais_le_rollup_plus_vieux_qu_event() {
-        let _g = RETENTION_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         let conn = test_db();
         let n = now();
         // 20 jours d'histoire horaire + un event de CONTRÔLE très ancien (origin='daemon' : non purgeable

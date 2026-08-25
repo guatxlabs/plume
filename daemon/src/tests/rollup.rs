@@ -292,8 +292,8 @@
     // CLAIR) -> une dim déniée => masks non vide => route non tentée => chemin masqué. Inchangé par B2.
     // ============================================================================================
 
-    // Sérialise les tests B2 qui LISENT/MUTENT PLUME_ROLLUP_MULTIDIM (env process-global).
-    static B2_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    // Les tests B2 MUTENT PLUME_ROLLUP_MULTIDIM : ils prennent `VERROU_ENV_PROCESSUS.write()` (déclaré
+    // une seule fois dans common.rs). Un verrou « à eux » ne les excluait que d'eux-mêmes.
 
     /// Sème des events RÉALISTES (source/severity/action/host TOUS peuplés -> pas de divergence NULL vs ''),
     /// tous dans l'HEURE COURANTE, puis matérialise event_rollup. `n_each` copies par combinaison.
@@ -354,7 +354,7 @@
     /// l'heure courante (volatile) -> tout servi par la QUEUE raw sur `event` -> EXACT (`approx:false`, note:none).
     #[test]
     fn b2_multidim_parity_rollup_equals_raw() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM"); // défaut = activé
         let conn = test_db();
         b2_seed(&conn, 3);
@@ -390,7 +390,7 @@
     /// jamais un approx silencieux). Et le single-dim reste au comportement pré-B2 (zéro régression).
     #[test]
     fn b2_multidim_declines_non_grain_dims() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
         // src_ip est APPROX (top-N) -> tout multi-dim qui l'inclut DÉCLINE (pas d'approx silencieux servi exact).
         for q in [
@@ -435,7 +435,7 @@
     /// rollup en retard d'un tick. Fenêtre sub-horaire sans bucket définitif -> DÉCLINE (None -> raw).
     #[test]
     fn b2b_multidim_merge_bounds_exact_no_freshness_lag() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
         let now_ts = 1_000_000_000_i64;
         let cur = (now_ts / 3600) * 3600;
@@ -495,7 +495,7 @@
     /// TOUCHANT l'heure courante. Boundary : tête/corps/queue disjoints -> ni double-comptage ni perte.
     #[test]
     fn b2b_multidim_merge_parity_multi_hour() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
         let conn = test_db();
         let n = now();
@@ -534,7 +534,7 @@
     /// le sous-comptage `approx:true`+note de l'ancien B2). Prouve que le corps ≠ toute la vérité et la queue rattrape.
     #[test]
     fn b2b_multidim_recent_events_after_rollup_exact() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
         let conn = test_db();
         let n = now();
@@ -566,7 +566,7 @@
     /// tandis que ROUTE A single-dim reste servie (kill-switch ciblé, réversible sans redéploiement).
     #[test]
     fn b2_multidim_killswitch_disables_route() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::set_var("PLUME_ROLLUP_MULTIDIM", "0");
         let multidim = try_rollup_route("search | stats count by source,severity", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test());
         let single = try_rollup_route("search | stats count by source", 0, 0, None, RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX), DimRollupCoverage::all_asserted_by_the_test());
@@ -591,7 +591,7 @@
     /// -> scan RAW qui DISTINGUE le groupe host=NULL (3) du groupe host='' explicite (2) -> plus de fusion.
     #[test]
     fn b2_adverse_host_null_merged_with_empty_wrong_counts() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
         let conn = test_db();
         let t = now() - 10; // heure courante
@@ -626,7 +626,7 @@
     /// DÉCLINE (action hors grain) -> scan RAW qui DISTINGUE action=NULL (3) de action='' (2) -> plus de fusion.
     #[test]
     fn b2_adverse_action_missing_merged_with_empty_wrong_counts() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
         let conn = test_db();
         let t = now() - 10;
@@ -660,7 +660,7 @@
     /// `host=NULL` HONNÊTE (absence), PAS un `host=''` fabriqué -> plus d'hôte '' fantôme, attribution correcte.
     #[test]
     fn b2_adverse_host_null_relabeled_empty_string() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
         let conn = test_db();
         let t = now() - 10;
@@ -688,7 +688,7 @@
     /// raw). Nommé `..._bench_...` -> exclu par `cargo test -- --skip bench`. Parité vérifiée sous volume.
     #[test]
     fn b2_multidim_bench_rollup_vs_rawscan() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
         let conn = test_db();
         let n = now();

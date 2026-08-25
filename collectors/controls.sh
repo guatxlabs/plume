@@ -4,8 +4,15 @@
 #
 # Mode-aware (cf project deployment-modes : k3s / hôte-natif / container) : chaque contrôle n'est
 # inclus QUE s'il S'APPLIQUE dans cet environnement (auto-détection sur l'outil présent) -> pas de
-# faux "manquant" hors-contexte (ex : ne PAS exiger sshd inactif sur un serveur, ni wlan0 sur un VPS).
+# faux "manquant" hors-contexte (ex : ne PAS exiger `auditd` actif là où auditd n'est pas installé).
 # Extensible sans toucher au script : /etc/plume/controls.d/*.check (lignes "id|commande", rc 0 = OK).
+#
+# CE QUE CE CATALOGUE NE SAIT PAS ENCORE FAIRE, ET C'EST DIT ICI PARCE QUE C'EST LA PREMIÈRE CHOSE QU'UN
+# EXPLOITANT DEMANDE (P11.18-i) : on ne peut qu'AJOUTER des contrôles, et seulement depuis le système de
+# fichiers de l'hôte. Aucun mécanisme ne permet d'en RETIRER ni d'en MODIFIER un depuis la console — les
+# règles de détection, elles, se désactivent avec une trace au journal inaltérable. Tant que ce n'est pas
+# fait, la seule prise sur une alerte jugée envahissante est ce fichier-ci. Un catalogue VIDE, lui, ne
+# rend plus une posture verte : il se DIT (voir la publication en fin de script).
 set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 plume_init
@@ -13,11 +20,13 @@ plume_init
 # MANQUANT ». Chaque sonde de ce capteur rendait DEUX verdicts, et l'echec de la sonde elle-meme
 # tombait du cote `false` : `sysctl -n` dont la sortie est vide (`/proc` masque, conteneur, cle
 # renommee), `systemctl is-active` quand il n'y a pas de gestionnaire de services joignable,
-# `iptables -C` dont le code de retour vaut 2 ou plus (verrou xtables, module absent, droits). Le
+# une verification externe dont le code de retour ne separe pas « pas la » de « pas verifiable ». Le
 # daemon compte `failed > 0` et leve l'alerte livree `control.catalog` (severite 3, dedupliquee sur
 # l'ETAT et le jour) : une sonde qui echoue de facon intermittente CHANGE l'empreinte d'etat, donc
-# refait une alerte a chaque bascule. C'est l'usure — l'exploitant finit par ne plus ouvrir « n
-# controle(s) de defense MANQUANT(S) », et le jour ou c'est vrai il ne le lira pas.
+# refait une alerte a chaque bascule. C'est l'usure — l'exploitant finit par ne plus ouvrir une alerte
+# qui n'annonce qu'un COMPTE, et le jour ou c'est vrai il ne le lira pas. Depuis `P11.18-i` cette alerte
+# NOMME les controles manquants, la machine et depuis quand : elle reste dedupliquee de la meme facon,
+# mais elle se lit sans ouvrir quoi que ce soit.
 #
 # LE TROISIEME VERDICT S'APPELLE `indetermine`, il vaut `null` sur le fil, il ne compte PAS dans
 # `failed`, et il est AVOUE. Ce n'est pas se taire : le controle reste dans la liste, avec sa cause,
@@ -92,16 +101,28 @@ aide_verdict(){
 }
 command -v aide           >/dev/null 2>&1 && add aide_db         "$(aide_verdict)" 'base AIDE présente/planifiée'
 
-# --- Spécifique hôte type laptop : docker-lan-lockdown UNIQUEMENT si l'interface wifi existe ---
-IFACE="${PLUME_LOCKDOWN_IFACE:-wlan0}"
-if command -v iptables >/dev/null 2>&1 && ip link show "$IFACE" >/dev/null 2>&1; then
-  PORTS="${PLUME_LOCKDOWN_PORTS:-5900,6080,8080,8081,8090,5173}"
-  # Meme distinction que dans `firewall.sh` : `iptables -C` rend 1 quand la regle n'est PAS la (un
-  # verdict) et >=2 quand la verification n'a pas pu avoir lieu (verrou xtables, module, droits).
-  chk(){ if "$@" >/dev/null 2>&1; then echo true; else case $? in 1) echo false ;; *) echo indetermine ;; esac; fi; }
-  add docker_lockdown_v4 "$(chk iptables  -C DOCKER-USER -i "$IFACE" -d 172.16.0.0/12 -m conntrack --ctstate NEW -j DROP)" 'DROP LAN->docker (v4)'
-  add docker_lockdown_v6 "$(chk ip6tables -C INPUT -i "$IFACE" -p tcp -m multiport --dports "$PORTS" -m conntrack --ctstate NEW -j DROP)" 'lockdown INPUT (v6)'
-fi
+# --- CE QUE CE CATALOGUE N'ATTEND PLUS, ET POURQUOI (P11.18-i, mesuré le 2026-08-25) ---
+# Deux entrées — `docker_lockdown_v4` et `docker_lockdown_v6` — vérifiaient deux des trois jambes d'un
+# verrou iptables posé sur une interface wifi et une liste de ports. Elles sont RETIRÉES, pas
+# désactivées : un contrôle qui n'a plus lieu d'être ne se désactive pas, il se retire.
+#   (a) LE MÊME CONTRÔLE EST DÉJÀ PORTÉ PAR LA VOIE `firewall`. `collectors/firewall.sh` évalue les
+#       TROIS jambes sous la MÊME condition d'applicabilité (iptables présent ET interface présente),
+#       rend `indetermine` quand `-C` ne conclut pas, et le daemon en lève l'alerte DÉDIÉE
+#       `firewall.lockdown` — une par machine et par jour. Un hôte concerné recevait donc DEUX alertes
+#       par jour pour UN SEUL fait. Et les deux ne s'accordaient pas : ce catalogue omettait la jambe
+#       `INPUT (v4)`, si bien qu'un verrou v4 disparu se comptait « 1 manquant » ici pendant que la
+#       voie `firewall` disait « ABSENT ».
+#   (b) LE PRODUIT N'INSTALLE RIEN DE CE QU'ELLES EXIGENT. Aucun artefact livré — unité systemd,
+#       manifeste de déploiement, bootstrap — ne CRÉE cette règle : les seules occurrences de la chaîne
+#       dans l'arbre étaient les vérifications elles-mêmes. Les ports visés (bureau distant, serveur de
+#       développement front) ne sont ceux d'AUCUN service de ce produit, dont le seul port publié est
+#       7000. Un catalogue qui exige une règle que rien ne pose est MANQUANT pour toujours sur toute
+#       machine qui porte l'interface visée : c'est l'alerte que l'exploitant ne peut ni comprendre,
+#       ni clore, ni retirer.
+# CE QUI EST PERDU, ET C'EST DIT : sur un hôte qui a iptables et l'interface mais dont le ruleset nft
+# est absent ou illisible, `firewall.sh` sort par `plume_unavailable` et ne rend AUCUN verdict sur ce
+# verrou. Le trou n'est pas silencieux — cette sortie lève déjà l'alerte de capteur indisponible — mais
+# il n'est plus comblé par ce catalogue.
 
 # --- Contrôles propres au déploiement (k3s : crowdsec pod, etc.) sans toucher au script générique ---
 for f in /etc/plume/controls.d/*.check; do
@@ -122,6 +143,14 @@ if [ -n "$indetermines" ]; then
     "controle(s) NON ETABLI(S) ce passage (ni tenu(s), ni manquant(s)) :$indetermines. Ils ne comptent PAS dans failed — le compte de controles manquants publie est donc un MINORANT tant que c'est le cas."
 fi
 
-[ -z "$items" ] && plume_exit_nodata
+# UN CATALOGUE VIDE SE DIT — IL NE SE TAIT PAS (P11.18-i). Ce capteur sortait ici par « rien de neuf »
+# quand AUCUN contrôle ne s'appliquait : aucun instantané n'était jamais publié, la sonde de fraîcheur
+# restait « inconnu » (jamais « muet » : elle n'a rien vu du tout), et le panneau affichait « en attente
+# du capteur » indéfiniment. Une machine où RIEN n'est mesuré se lisait donc comme une machine dont le
+# capteur n'a pas encore parlé. On publie désormais l'instantané VIDE : il porte `failed:0` et une liste
+# `controls` vide, et c'est le daemon qui en tire l'alerte `control.catalog.vide` — la propriété est
+# « zéro contrôle évalué », jamais la RAISON du zéro, de sorte qu'un catalogue retiré ou entièrement
+# désactivé s'y dira de la même façon. Rien n'est acquitté au passage : ce capteur ne met aucun marqueur
+# de progression en attente (c'est ce que `plume_exit_nodata` faisait ici, et il n'avait rien à écrire).
 hash=$(printf '%s' "$hash" | sha256sum | cut -d' ' -f1)
 spool_write "controls-$ts.json" "$(printf '{"ts":%s,"host":"%s","kind":"controls","hash":"%s","data":{"failed":%s,"controls":[%s]}}' "$ts" "$host" "$hash" "$failed" "$items")"

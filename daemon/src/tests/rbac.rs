@@ -711,6 +711,7 @@
 
     #[test]
     fn reconcile_fts_on_creates_infra_and_indexes_insert() {
+        let _env = VERROU_ENV_PROCESSUS.write(); // l'environnement du processus est MUTÉ ici : verrou UNIQUE en écriture (common.rs)
         // PLUME_FTS_FIELDS=1 -> reconcile crée la vtable + les triggers ; un INSERT event remplit le FTS.
         let conn = test_db();
         let conf = conf_with(&[("PLUME_FTS_FIELDS", "1")]);
@@ -733,6 +734,7 @@
 
     #[test]
     fn reconcile_fts_delete_leaves_no_orphan_postings() {
+        let _env = VERROU_ENV_PROCESSUS.write(); // l'environnement du processus est MUTÉ ici : verrou UNIQUE en écriture (common.rs)
         // TRIGGER AD : après DELETE de l'event, le trigger AD (reconstruction des tokens) doit décrémenter
         // les postings -> plus aucun doc ne matche (table contentless 3.39.4, sans contentless_delete).
         let conn = test_db();
@@ -757,6 +759,7 @@
 
     #[test]
     fn reconcile_toggle_on_then_off_drops_infra() {
+        let _env = VERROU_ENV_PROCESSUS.write(); // l'environnement du processus est MUTÉ ici : verrou UNIQUE en écriture (common.rs)
         // KILL-SWITCH : le vrai kill-switch. ON crée, puis OFF (toggle env + redeploy simulé) droppe TOUT.
         let conn = test_db();
 
@@ -773,6 +776,7 @@
 
     #[test]
     fn reconcile_is_idempotent_on_and_off() {
+        let _env = VERROU_ENV_PROCESSUS.write(); // l'environnement du processus est MUTÉ ici : verrou UNIQUE en écriture (common.rs)
         // re-jouer reconcile (ON puis ON, OFF puis OFF) ne doit jamais échouer (CREATE/DROP IF [NOT] EXISTS).
         let conn = test_db();
         let on = conf_with(&[("PLUME_FTS_FIELDS", "1")]);
@@ -787,6 +791,7 @@
 
     #[test]
     fn reconcile_expr_index_off_drops_indexes() {
+        let _env = VERROU_ENV_PROCESSUS.write(); // l'environnement du processus est MUTÉ ici : verrou UNIQUE en écriture (common.rs)
         // PLUME_EXPRINDEX=0 -> TOUS les index expression (un par EXPR_INDEX_FIELDS) sont droppés
         // (kill-switch dur). On en crée un à la
         // main (comme le ferait le background ON) puis on vérifie que le reconcile OFF le retire.

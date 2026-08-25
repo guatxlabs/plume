@@ -476,7 +476,7 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
         //
         // P11.3-d — LES TROIS FAMILLES, ET LE TOTAL QUI SE RETROUVE. La charge utile n'en nommait que
         // deux (la cloche d'un feed, le compte d'orphelines) ; MESURÉ le 2026-08-23 sur trois alertes
-        // actives, UNE n'était comptée nulle part — colonne `sources` vide (sept producteurs sur onze la
+        // actives, UNE n'était comptée nulle part — colonne `sources` vide (huit producteurs sur douze la
         // laissent ainsi) ET aucun jeton `source=` dans son texte. Un lecteur ne pouvait donc pas vérifier
         // que la somme fait le tout, et la phrase de la console laissait croire à un trou de collecte là
         // où il n'y a qu'une alerte qui ne parle pas d'un flux. Les familles sont comptées PAR ALERTE

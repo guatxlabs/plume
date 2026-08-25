@@ -25,7 +25,7 @@
     // qui lit précisément l'ABSENCE de cette variable.
     // ============================================================================================
 
-    // LE VERROU DES RÉGLAGES DE SAUVEGARDE vit désormais dans `common.rs` (`BACKUP_ENV_LOCK`), avec le
+    // LE VERROU DES RÉGLAGES DE SAUVEGARDE vit désormais dans `common.rs` (`VERROU_ENV_PROCESSUS`), avec le
     // garde RAII `ReglageBackupPose` qui restaure la valeur antérieure même sous panic. Il y a été déplacé
     // parce que l'énoncé « cette variable n'est touchée QUE par ce module » était FAUX de deux manières :
     // `PLUME_BACKUP_REQUIRE_ASYMMETRIC` est posée par un test de `detection.rs`, et une douzaine de tests
@@ -111,7 +111,7 @@
     /// rougir à tort — et surtout, aucun voisin ne se voit imposer un facteur de travail par ce test.
     #[test]
     fn le_facteur_scrypt_ecrit_est_fixe_borne_et_independant_de_la_machine() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // sauvegarde -> LIT les réglages posés par d'autres tests
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // sauvegarde -> LIT les réglages posés par d'autres tests
         let _tmpg = crate::tmp_possede::TmpPossede::neuf("bkst-kdf-fixe");
         let root = _tmpg.racine().chemin().to_path_buf();
         let key = "facteur-scrypt-fixe-passphrase";
@@ -191,7 +191,7 @@
     /// Sans ce témoin, « ça échoue » se lirait « la borne a mordu » aussi bien que « la forge casse tout ».
     #[test]
     fn le_plafond_scrypt_de_lecture_est_fixe_couvre_l_historique_et_refuse_au_dela() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // `backup_compressed` LIT les réglages portés par l'env
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // `backup_compressed` LIT les réglages portés par l'env
         use crate::backup::{scrypt_tampon_octets, BACKUP_SCRYPT_MAX_LOG_N};
 
         // (1) LA COUVERTURE HISTORIQUE, en dur : abaisser le plafond sous 20 rendrait illisibles des
@@ -361,7 +361,7 @@
     /// cas nominal.
     #[test]
     fn backup_streaming_leaves_the_staging_dir_empty_under_watch() {
-        let _reglages = BACKUP_ENV_LOCK.write(); // ce test POSE un réglage -> exclut les lecteurs
+        let _reglages = VERROU_ENV_PROCESSUS.write(); // ce test POSE un réglage -> exclut les lecteurs
         let _tmpg = crate::tmp_possede::TmpPossede::neuf("bkst-watch");
         let root = _tmpg.racine().chemin().to_path_buf();
         let key = "staging-watch-passphrase";
@@ -416,7 +416,7 @@
     #[test]
     fn backup_streaming_survives_an_unusable_staging_dir() {
         use std::os::unix::fs::PermissionsExt;
-        let _reglages = BACKUP_ENV_LOCK.write(); // ce test POSE un réglage -> exclut les lecteurs
+        let _reglages = VERROU_ENV_PROCESSUS.write(); // ce test POSE un réglage -> exclut les lecteurs
         let _tmpg = crate::tmp_possede::TmpPossede::neuf("bkst-ro");
         let root = _tmpg.racine().chemin().to_path_buf();
         let key = "staging-non-inscriptible-passphrase";
@@ -547,7 +547,7 @@
         // Sans le verrou, un voisin peut faire prendre à CETTE sauvegarde le chemin HISTORIQUE au milieu de
         // la mesure — un deuxième canal de non-déterminisme, indépendant du RSS. Ce test ne POSE rien : il
         // lui suffit d'exclure les poseurs, donc la LECTURE.
-        let _reglages = BACKUP_ENV_LOCK.read();
+        let _reglages = VERROU_ENV_PROCESSUS.read();
         let _tmpg = crate::tmp_possede::TmpPossede::neuf("bkst-largeur");
         let root = _tmpg.racine().chemin().to_path_buf();
         let key = "largeur-de-ligne-passphrase";
@@ -662,7 +662,7 @@
     /// les deux durées — c'est de ces chiffres que vient le tableau de l'en-tête de `backup/mod.rs`.
     #[test]
     fn backup_streaming_is_smaller_than_the_plaintext_export_on_the_same_db() {
-        let _reglages = BACKUP_ENV_LOCK.write(); // ce test POSE un réglage -> exclut les lecteurs
+        let _reglages = VERROU_ENV_PROCESSUS.write(); // ce test POSE un réglage -> exclut les lecteurs
         let _tmpg = crate::tmp_possede::TmpPossede::neuf("bkst-taille");
         let root = _tmpg.racine().chemin().to_path_buf();
         let key = "taille-comparee-passphrase";
@@ -718,7 +718,7 @@
     // ============================================================================================
     // LA GARDE QUI EMPÊCHE LA RÉCIDIVE — DÉRIVÉE DES SOURCES, JAMAIS UNE LISTE.
     // --------------------------------------------------------------------------------------------
-    // Le verrou `BACKUP_ENV_LOCK` ne vaut que si TOUS ceux qui lisent les réglages le prennent. Tant
+    // Le verrou `VERROU_ENV_PROCESSUS` ne vaut que si TOUS ceux qui lisent les réglages le prennent. Tant
     // que cette obligation n'était qu'une phrase de commentaire, elle a été manquée par douze tests
     // répartis dans trois fichiers, et le prix s'est payé en rougeurs INTERMITTENTES (mesuré le
     // 2026-08-19 : 2 exécutions sur 5 du binaire filtré `backup`, alors que chacun des tests concernés
@@ -726,7 +726,7 @@
     // sauvegarde sans prendre le verrou.
     // ============================================================================================
 
-    /// GARDE DÉRIVÉE : aucun `#[test]` ne déclenche une sauvegarde sans prendre `BACKUP_ENV_LOCK`.
+    /// GARDE DÉRIVÉE : aucun `#[test]` ne déclenche une sauvegarde sans prendre `VERROU_ENV_PROCESSUS`.
     ///
     /// Rien n'est énuméré. Les DÉCLENCHEURS sont dérivés des sources de PRODUCTION : `backup_compressed`
     /// (la fonction qui relit les réglages) plus toute fonction de production qui l'appelle — c'est ce
@@ -744,7 +744,7 @@
         use crate::db_open::door_tests::{rs_files, sans_commentaire};
         use std::path::PathBuf;
 
-        const VERROU: &str = "BACKUP_ENV_LOCK";
+        const VERROU: &str = "VERROU_ENV_PROCESSUS";
         const RACINE: &str = "backup_compressed"; // la fonction qui RELIT les réglages, à chaque appel
 
         /// Un en-tête de fonction d'indentation 0 (production) ou 4 (module de tests), avec sa VISIBILITÉ.
@@ -845,7 +845,7 @@
             "l'instrument n'a trouvé que {} test(s) gardé(s) : il ne voit plus les corps de test, et son \
              « aucune infraction » ne prouverait rien (mesuré le 2026-08-19 : 20)", gardes.len());
         let temoin_nu = "    fn t() { scheduled_backup_cycle(a, b, 1, None, None); }";
-        let temoin_garde = "    fn t() { let _g = BACKUP_ENV_LOCK.read(); scheduled_backup_cycle(a, b, 1, None, None); }";
+        let temoin_garde = "    fn t() { let _g = VERROU_ENV_PROCESSUS.read(); scheduled_backup_cycle(a, b, 1, None, None); }";
         assert!(declencheurs.iter().any(|d| appelle(temoin_nu, d)) && !temoin_nu.contains(VERROU),
             "le prédicat n'ACCUSE pas un corps synthétique qui sauvegarde sans verrou : il n'accuserait rien");
         assert!(declencheurs.iter().any(|d| appelle(temoin_garde, d)) && temoin_garde.contains(VERROU),

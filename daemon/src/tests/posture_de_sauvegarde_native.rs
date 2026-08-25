@@ -76,7 +76,7 @@
     /// purgeable, dédupliqué à l'heure (un second cycle dans la même heure n'en ajoute pas).
     #[test]
     fn le_cycle_natif_sans_destinataire_emet_le_signal_de_posture() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
         let dir = crate::tmp_possede::TmpPossede::neuf("p825-sym");
         let key = "p825-cle-symetrique";
         let src = base_source_au_contrat(&dir, key);
@@ -111,7 +111,7 @@
     /// lui, ne regarde pas le destinataire : son témoin inverse est un exercice frais, plus bas.)
     #[test]
     fn le_cycle_natif_avec_destinataire_n_emet_aucun_signal_de_posture() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
         let dir = crate::tmp_possede::TmpPossede::neuf("p825-asym");
         let key = "p825-cle-asymetrique";
         let src = base_source_au_contrat(&dir, key);
@@ -134,7 +134,7 @@
     /// `backup_compressed`, avant le rename, passerait le premier et rougirait au second.
     #[test]
     fn un_cycle_natif_qui_echoue_n_avoue_aucune_posture_d_archive() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
         let dir = crate::tmp_possede::TmpPossede::neuf("p825-echec");
         let key = "p825-la-bonne-cle";
         let src = base_source_au_contrat(&dir, key);
@@ -170,7 +170,7 @@
     /// jamais restaurée est tout aussi non éprouvée, et reçoit le même signal.
     #[test]
     fn le_cycle_natif_sans_exercice_enregistre_emet_le_signal_d_exercice_du() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
         let dir = crate::tmp_possede::TmpPossede::neuf("p826-jamais");
         let key = "p826-cle-jamais";
         let src = base_source_au_contrat(&dir, key);
@@ -218,7 +218,7 @@
     /// ce qui prouve que `escrow_asymetrique` est dérivé du destinataire de l'archive, pas figé.
     #[test]
     fn le_cycle_natif_apres_un_exercice_frais_n_emet_aucun_signal_d_exercice() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
         let dir = crate::tmp_possede::TmpPossede::neuf("p826-frais");
         let key = "p826-cle-frais";
         let src = base_source_au_contrat(&dir, key);
@@ -418,7 +418,7 @@
     /// temporaire — et le cycle l'écrit dans la base, une fois, non purgeable, avec l'étape et la cause.
     #[test]
     fn le_cycle_natif_sans_cle_ne_publie_rien_et_le_dit() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
         let dir = crate::tmp_possede::TmpPossede::neuf("p94b-sans-cle");
         let src = base_source_en_clair(&dir);
         let dest = dir.sous("backups").as_str().to_owned();
@@ -461,7 +461,7 @@
     /// cycle — la porte a donc bien été ouverte, et l'absence du signal `P9.4-b` est une décision.
     #[test]
     fn un_cycle_natif_qui_publie_n_emet_aucun_signal_de_cycle_sans_archive() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
         let dir = crate::tmp_possede::TmpPossede::neuf("p94b-publie");
         let key = "p94b-la-bonne-cle";
         let src = base_source_au_contrat(&dir, key);
@@ -484,7 +484,7 @@
     /// causes, qui n'appellent pas le même geste.
     #[test]
     fn un_cycle_natif_qui_ne_publie_pas_son_temporaire_le_dit_avec_sa_propre_etape() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
         let dir = crate::tmp_possede::TmpPossede::neuf("p94b-rename");
         let key = "p94b-cle-rename";
         let src = base_source_au_contrat(&dir, key);

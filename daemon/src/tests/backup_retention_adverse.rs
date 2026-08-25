@@ -89,7 +89,7 @@
     /// PUBLIE par rename atomique (aucun `.tmp` de CE cycle ne subsiste). Prune APRÈS rename (le neuf compte).
     #[test]
     fn adverse_cycle_never_prunes_inflight_tmp_or_premigrate() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
         let key = "adverse-inflight-tmp-passphrase";
         let src = mk_tmp_path("adv-tmp-src.db");
         let dest_dir = mk_tmp_path("adv-tmp-dest");
@@ -145,7 +145,7 @@
     /// un cycle avec une MAUVAISE clé -> tout doit rester intact, aucun nouveau backup, aucun prune.
     #[test]
     fn adverse_failed_backup_does_not_prune_existing() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
         let good = "the-real-passphrase";
         let wrong = "the-WRONG-passphrase";
         let src = mk_tmp_path("adv-fail-src.db");
@@ -340,7 +340,7 @@
     /// il n'est JAMAIS supprimé, quoi qu'en dise le plan. Ce test VÉRIFIE le garde-fou (le frais survit).
     #[test]
     fn adverse_clock_skew_never_prunes_just_written_fresh_backup() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
         let key = "adverse-clock-skew-passphrase";
         let src = mk_tmp_path("adv-skew-src.db");
         let dest_dir = mk_tmp_path("adv-skew-dest");

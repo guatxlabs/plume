@@ -18,7 +18,7 @@
 //   * LA PAGE SUIVANTE se prend PAR CLÉ (`cursor` = `id` de la dernière ligne rendue), comme le flux
 //     d'événements (#28) : un clic sur un NUMÉRO reste un saut par décalage, borné côté démon, et la
 //     page atterrie rend son curseur — le parcours séquentiel repart donc par clé.
-import { $, api, fmtTs, muted, pagedList, LANG } from './core.js';
+import { $, api, fmtTs, muted, pagedList, poserLaPlageSurLaCible, poserLeChoixDeDates, LANG } from './core.js';
 import { S } from './state.js';
 import { loadOperatorAudit } from './multitenant.js';
 
@@ -48,13 +48,13 @@ function ledgerCell(txt, title) { const s = document.createElement('span'); s.te
 // choisir un palier RETIRE la plage : un raccourci et une plage sont deux réponses à la même
 // question, jamais deux fenêtres superposées.
 //
-// OÙ CE CHOIX VIT, ET POURQUOI ICI PLUTÔT QU'AU POINT COMMUN. Un composant partagé par deux vues
-// appartient à `web/core.js`. Il n'y est pas, et c'est dit plutôt que sous-entendu : cette vue-ci
-// l'EXPORTE et `web/dataaccess.js` l'IMPORTE. Le sens du partage n'est pas arbitraire — c'est la vue
-// dont la ROUTE est la plus PAUVRE qui le porte, parce que la plage qu'une route pauvre sait exprimer
-// est un SOUS-ENSEMBLE de ce qu'une route riche sait exprimer. Dans l'autre sens, le journal aurait
-// hérité d'un contrôle promettant une borne que sa route ne porte pas. La forme recommandée reste
-// celle du point commun ; elle est décrite en fin de bloc.
+// OÙ CE CHOIX VIT — LE GESTE EST AU POINT COMMUN DEPUIS `P11.18-s`, LA VALEUR EST ENCORE ICI. Le
+// contrôle lui-même (lire une saisie, refuser ce qui ne peut pas partir, écrire sur une cible) vit
+// dans `web/core.js` et sert QUATRE consommateurs. Ce qui reste ici est la VALEUR partagée par ces
+// deux vues-ci, et le sens de ce partage n'est pas arbitraire : c'est la vue dont la ROUTE est la
+// plus PAUVRE qui la porte, parce que la plage qu'une route pauvre sait exprimer est un
+// SOUS-ENSEMBLE de ce qu'une route riche sait exprimer. Dans l'autre sens, le journal aurait hérité
+// d'une plage promettant une borne que sa route ne porte pas.
 //
 // CE QUE LES DEUX ROUTES ACCEPTENT — LU, PAS SUPPOSÉ (2026-08-25) :
 //   * `GET /api/ledger` (`daemon/src/handlers/admin_ui.rs`, `ledger_get`) accepte EXACTEMENT cinq
@@ -75,23 +75,16 @@ function ledgerCell(txt, title) { const s = document.createElement('span'); s.te
 // refus comme une absence, ce que ce dépôt refuse par ailleurs
 // (`check_a_refusal_is_not_rendered_as_an_absence.py`).
 //
-// CE QUI FERMERAIT LE RÉSIDU, ÉCRIT PLUTÔT QUE TU. Côté journal, une borne haute servie par la route :
-// elle pagine DÉJÀ par `id` décroissant et son `cursor` est un `id` — un `until_ts` traduit côté démon
-// (ou un `max_id`) tiendrait dans `LedgerAsk`/`ledger_page_sql` sans changer la forme de la page.
-// Côté prévention des fuites, la route accepte déjà `to` : il manque au fabricant partagé `runQ`
-// (`web/viz.js`) le moyen de le POSER — il le prend aujourd'hui de l'intervalle de l'Explore.
-// Les deux sont hors de ce lot.
-//
-// LA FORME RECOMMANDÉE, SI LE POINT COMMUN S'OUVRE : `core.js` porte déjà `makePager`/`pagedList`,
-// c'est-à-dire des fabriques d'interface partagées. Le choix de temps a la même nature. Mieux : le
-// geste EXISTE DÉJÀ, mal placé — `openRangeModal` (`web/app.js`) offre paliers ET intervalle absolu,
-// avec ses deux refus (« Dates invalides. », « Le début doit précéder la fin. ») et son style
-// (`.rmgrid`/`.rmp`/`.rmabs`, `web/style.css`), mais il n'est pas exporté et il écrit dans
-// `S.zoomRange`, l'état de l'Explore et des Dashboards. La forme juste est de le LEVER dans `core.js`
-// en le paramétrant par sa CIBLE (l'état où la plage se pose) et par ce que la route de l'appelant
-// SAIT porter, puis de lui faire servir les quatre consommateurs : `#range` (dashboards), `#qrange`
-// (Explore), le journal d'audit et la prévention des fuites. Ce lot ne pouvant toucher ni `core.js`
-// ni `app.js` ni `viz.js`, il pose le contrat ici et le nomme.
+// CE QUI A ÉTÉ FERMÉ DEPUIS, ET CE QUI RESTE. Côté prévention des fuites, le résidu écrit ici est
+// CLOS (`P11.18-r`, 2026-08-25) : `runQ` prend désormais la borne haute EN ARGUMENT, avec un défaut
+// qui n'hérite de rien, et ce panneau n'hérite donc plus de l'intervalle de l'Explore. Ce qui a
+// remplacé cette raison n'est pas une absence de raison : la plage est PARTAGÉE avec le journal, dont
+// la route ne porte aucune borne haute, et c'est ce partage qui gouverne les deux — la route la plus
+// pauvre décide de ce que la valeur commune sait exprimer.
+// RESTE, NOMMÉ : une borne haute servie par la route du journal la lèverait pour les deux. Elle
+// pagine DÉJÀ par `id` décroissant et son `cursor` est un `id` — un `until_ts` traduit côté démon (ou
+// un `max_id`) tiendrait dans `LedgerAsk`/`ledger_page_sql` sans changer la forme de la page. C'est
+// hors de ce lot, qui ne touche pas au démon.
 // =================================================================================================
 
 // LA PLAGE COURANTE, PARTAGÉE PAR LES DEUX VUES : `null` = aucune, les paliers gouvernent. Le partage
@@ -100,136 +93,38 @@ function ledgerCell(txt, title) { const s = document.createElement('span'); s.te
 // vue NOMME la plage active au-dessus de ce qu'elle montre. Sans cette obligation, ce serait une borne
 // héritée en douce, c'est-à-dire exactement le défaut que ce même lot a mesuré sur `runQ`.
 let plageChoisie = null;
-// Les contrôles POSÉS, par clé de vue — une vue repeinte REMPLACE le sien (aucune accumulation). Ils
-// servent à REFLÉTER la plage : un changement fait ailleurs ne doit pas laisser des dates affichées que
-// la fenêtre envoyée n'a plus.
-const controlesPoses = new Map();
+
+// `P11.18-s` — LA CIBLE : le PREMIER des deux paramètres du geste partagé (`web/core.js`). Elle dit
+// trois choses et rien de plus — le GRAIN que cet état sait tenir, comment le LIRE, comment
+// l'ÉCRIRE. Aucun élément d'interface, aucun refus, aucun nom de vue : ce qui DISTINGUE les
+// consommateurs est ici, ce qui leur est COMMUN est au point commun.
+// LE GRAIN EST `jour`, ET IL EST DÉRIVÉ, PAS CHOISI : la route du journal ne borne qu'en JOURS
+// entiers depuis maintenant, donc cet état ne sait pas tenir un instant plus fin. C'est ce même fait
+// qui donne au contrôle des champs `type=date` et une fin qui INCLUT son jour.
+const CIBLE_DE_PLAGE = {
+  grain: 'jour',
+  lire: () => plageChoisie,
+  poser: p => { plageChoisie = p; },
+};
+
+// CE QUE LA ROUTE DE CETTE VUE SAIT PORTER : le SECOND paramètre. `GET /api/ledger` accepte
+// exactement cinq paramètres et AUCUN n'est une borne haute (voir l'en-tête, où ils sont LUS). Une
+// plage dont la FIN est antérieure à maintenant ne peut donc pas être envoyée : elle est REFUSÉE, et
+// le refus nomme CETTE raison-là. Il est écrit ici parce que c'est ici qu'il est vrai.
+const PORTE_DU_JOURNAL = {
+  borneHaute: false,
+  refus: plage => (LANG === 'en'
+    ? 'Range refused: the audit journal route takes only a NUMBER OF DAYS back from now (window_days) and carries no upper bound, so the end you chose (' + plage.texteFin + ') cannot be sent. Applying it here instead would empty the newest pages and count entries the view would hide. What this route accepts: from ' + plage.texteDebut + ' up to now.'
+    : "Plage refusée : la route du journal d'audit ne prend qu'un NOMBRE DE JOURS depuis maintenant (window_days) et ne porte aucune borne haute, donc la fin choisie (" + plage.texteFin + ") ne peut pas être envoyée. L'appliquer ici viderait les pages les plus récentes et ferait compter des entrées que la vue cacherait. Ce que cette route accepte : du " + plage.texteDebut + " jusqu'à maintenant."),
+};
 
 function plageActive() { return plageChoisie; }
 
-// LE SEUL ÉCRIVAIN de la plage partagée. Écrire ailleurs laisserait un contrôle afficher autre chose
-// que ce qui part au démon.
-function poserLaPlage(p) {
-  plageChoisie = p;
-  controlesPoses.forEach(c => {
-    c.debut.value = plageChoisie ? plageChoisie.texteDebut : '';
-    c.fin.value = plageChoisie ? plageChoisie.texteFin : '';
-  });
-}
-
-// Un jour du calendrier, tel qu'un champ `type=date` le rend (« AAAA-MM-JJ »), en secondes epoch à
-// l'heure LOCALE de l'analyste : il choisit un jour de SON calendrier, pas un instant UTC.
-// `finDeJournee` -> la DERNIÈRE seconde du jour choisi (la fin d'un jour INCLUT ce jour).
-// `null` = illisible. Un jour inexistant (2026-02-31) est REPORTÉ par `Date` sur le mois suivant : on
-// le refuse au lieu de laisser cette correction silencieuse passer pour un choix.
-function jourEnSecondes(texte, finDeJournee) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(texte == null ? '' : texte).trim());
-  if (!m) return null;
-  const a = Number(m[1]), mo = Number(m[2]), j = Number(m[3]);
-  const d = new Date(a, mo - 1, j, 0, 0, 0, 0);
-  if (d.getFullYear() !== a || d.getMonth() !== mo - 1 || d.getDate() !== j) return null;
-  if (!finDeJournee) return Math.floor(d.getTime() / 1000);
-  d.setDate(d.getDate() + 1);
-  return Math.floor(d.getTime() / 1000) - 1;
-}
-
-// LE SEUL LECTEUR d'une plage choisie — fonction PURE (deux textes + un instant -> une plage OU un
-// refus), ce qui la rend éprouvable sans document ni réseau. Elle ne CORRIGE jamais : chaque saisie
-// qu'elle ne sait pas lire produit un REFUS qui dit POURQUOI, et aucune fenêtre ne part. Rendre une
-// plage « la plus proche » d'une saisie fautive serait répondre à une question que personne n'a posée.
-function lirePlageChoisie(texteDebut, texteFin, maintenant) {
-  const td = String(texteDebut == null ? '' : texteDebut).trim();
-  const tf = String(texteFin == null ? '' : texteFin).trim();
-  if (!td || !tf) {
-    return { refus: (LANG === 'en' ? 'A range needs TWO dates — a start and an end. Missing: ' : 'Une plage demande DEUX dates — un début et une fin. Manque : ')
-      + (!td ? (LANG === 'en' ? 'the start' : 'le début') : '') + (!td && !tf ? (LANG === 'en' ? ' and ' : ' et ') : '')
-      + (!tf ? (LANG === 'en' ? 'the end' : 'la fin') : '') + '.' };
-  }
-  const debut = jourEnSecondes(td, false), fin = jourEnSecondes(tf, true);
-  if (debut == null || fin == null) {
-    return { refus: (LANG === 'en' ? 'Unreadable date: ' : 'Date illisible : ')
-      + (debut == null ? td : tf)
-      + (LANG === 'en' ? '. A calendar day is expected, written YYYY-MM-DD. Nothing was sent.' : '. Un jour du calendrier est attendu, écrit AAAA-MM-JJ. Rien n\'a été envoyé.') };
-  }
-  if (debut > fin) {
-    return { refus: (LANG === 'en' ? 'Reversed range: the start (' : 'Plage inversée : le début (') + td
-      + (LANG === 'en' ? ') is AFTER the end (' : ') est APRÈS la fin (') + tf
-      + (LANG === 'en' ? '). The two dates are kept as typed and nothing was sent — swapping them here would answer a question nobody asked.' : "). Les deux dates restent telles qu'elles ont été saisies et rien n'a été envoyé — les échanger ici répondrait à une question que personne n'a posée.") };
-  }
-  if (debut > maintenant) {
-    return { refus: (LANG === 'en' ? 'Start date in the future: ' : 'Date de début dans le futur : ') + td
-      + (LANG === 'en' ? '. Nothing has been recorded after now, so this range can only be empty — and an empty window reads as an absence. Nothing was sent.' : ". Rien n'est enregistré après maintenant, donc cette plage ne peut être que vide — et une fenêtre vide se lit comme une absence. Rien n'a été envoyé.") };
-  }
-  return { debut, fin, texteDebut: td, texteFin: tf };
-}
-
-// La borne HAUTE choisie couvre-t-elle l'instant présent ? C'est la SEULE question qui décide si une
-// plage est exprimable par les deux chemins de ce lot (voir l'en-tête : le journal ne borne qu'en bas,
-// et `runQ` ne laisse pas poser `to`). Une fin posée au jour courant la couvre : `jourEnSecondes`
-// rend la DERNIÈRE seconde du jour.
-function borneHauteCouvreMaintenant(plage, maintenant) { return plage.fin >= maintenant; }
-
-// LE CONTRÔLE partagé : deux champs de date, un bouton qui APPLIQUE, un bouton qui RETIRE, et UNE ligne
-// qui porte le refus. Rien ne part tant qu'une saisie est refusée, et la plage précédente reste intacte
-// — un refus ne modifie pas la fenêtre, il explique pourquoi elle n'a pas bougé.
-// `cle` : la vue qui pose (une seule inscription par vue). `surChangement` n'est rappelé QUE lorsque la
-// plage a effectivement changé. `raisonBorneHaute(plage)` : la phrase, propre à la vue appelante, qui
-// dit pourquoi SON chemin ne porte pas de borne haute — écrite là où elle est vraie, pas ici.
-function poserLeChoixDeDates(cle, surChangement, raisonBorneHaute) {
-  const barre = document.createElement('div');
-  barre.className = 'rmabs';
-  barre.setAttribute('role', 'group');
-  barre.setAttribute('aria-label', LANG === 'en' ? 'Exact dates (start and end)' : 'Dates exactes (début et fin)');
-  const champ = texte => {
-    const l = document.createElement('label');
-    const i = document.createElement('input');
-    i.type = 'date';
-    l.append(texte, i);
-    barre.appendChild(l);
-    return i;
-  };
-  const debut = champ(LANG === 'en' ? 'From (day)' : 'Du (jour)');
-  const fin = champ(LANG === 'en' ? 'To (day)' : 'Au (jour)');
-  const appliquer = document.createElement('button');
-  appliquer.type = 'button';
-  appliquer.className = 'btn btn-sm';
-  appliquer.textContent = LANG === 'en' ? 'Apply these dates' : 'Appliquer ces dates';
-  const retirer = document.createElement('button');
-  retirer.type = 'button';
-  retirer.className = 'linklike';
-  retirer.textContent = LANG === 'en' ? 'Back to the shortcut' : 'Revenir au raccourci';
-  // La ligne de refus occupe toute la largeur de la barre : une phrase qui explique un refus ne se lit
-  // pas coincée entre deux champs. `hidden` tant qu'il n'y a rien à dire — jamais un vide qui se
-  // confondrait avec un espace réservé.
-  const refus = document.createElement('div');
-  refus.className = 'bad';
-  refus.setAttribute('role', 'alert');
-  refus.style.cssText = 'flex-basis:100%;margin:4px 0 0';
-  refus.hidden = true;
-  const direLeRefus = texte => { refus.textContent = texte; refus.hidden = !texte; };
-  // Retoucher une date EFFACE le refus : il porte sur ce qui était saisi, pas sur ce qui l'est.
-  debut.addEventListener('input', () => direLeRefus(''));
-  fin.addEventListener('input', () => direLeRefus(''));
-  appliquer.addEventListener('click', () => {
-    const maintenant = Math.floor(Date.now() / 1000);
-    const lue = lirePlageChoisie(debut.value, fin.value, maintenant);
-    if (lue.refus) { direLeRefus(lue.refus); return; }
-    if (!borneHauteCouvreMaintenant(lue, maintenant)) { direLeRefus(raisonBorneHaute(lue)); return; }
-    direLeRefus('');
-    poserLaPlage(lue);
-    surChangement();
-  });
-  retirer.addEventListener('click', () => {
-    debut.value = ''; fin.value = ''; direLeRefus('');
-    if (plageChoisie) { poserLaPlage(null); surChangement(); }
-  });
-  barre.append(appliquer, retirer, refus);
-  const controle = { barre, debut, fin, appliquer, retirer, refus, direLeRefus };
-  controlesPoses.set(cle, controle);
-  debut.value = plageChoisie ? plageChoisie.texteDebut : '';
-  fin.value = plageChoisie ? plageChoisie.texteFin : '';
-  return controle;
-}
+// L'écrivain de la plage partagée, tel que les deux vues le connaissent : il DÉLÈGUE à l'écrivain
+// unique du point commun, qui remet au reflet les contrôles posés sur CETTE cible. Écrire
+// `plageChoisie` sans passer par là laisserait un contrôle afficher autre chose que ce qui part au
+// démon — c'est pour cela que la variable n'est touchée QUE par `CIBLE_DE_PLAGE.poser`.
+function poserLaPlage(p) { poserLaPlageSurLaCible(CIBLE_DE_PLAGE, p); }
 
 // La plage -> ce que `GET /api/ledger` sait porter : un NOMBRE DE JOURS. L'arrondi est AU SUPÉRIEUR, et
 // c'est un choix écrit : la borne effective (`now - jours*86400`) tombe alors un peu AVANT le jour
@@ -275,9 +170,7 @@ function barreDePlage() {
   if ($('#ledger-range')) return;
   const corps = $('#ledger-body');
   if (!corps || !corps.parentNode) return;
-  const c = poserLeChoixDeDates('ledger', () => loadLedger(), plage => (LANG === 'en'
-    ? 'Range refused: the audit journal route takes only a NUMBER OF DAYS back from now (window_days) and carries no upper bound, so the end you chose (' + plage.texteFin + ') cannot be sent. Applying it here instead would empty the newest pages and count entries the view would hide. What this route accepts: from ' + plage.texteDebut + ' up to now.'
-    : "Plage refusée : la route du journal d'audit ne prend qu'un NOMBRE DE JOURS depuis maintenant (window_days) et ne porte aucune borne haute, donc la fin choisie (" + plage.texteFin + ") ne peut pas être envoyée. L'appliquer ici viderait les pages les plus récentes et ferait compter des entrées que la vue cacherait. Ce que cette route accepte : du " + plage.texteDebut + " jusqu'à maintenant."));
+  const c = poserLeChoixDeDates('ledger', CIBLE_DE_PLAGE, PORTE_DU_JOURNAL, () => loadLedger());
   c.barre.id = 'ledger-range';
   c.barre.style.margin = '0 0 9px';
   corps.parentNode.insertBefore(c.barre, corps);
@@ -399,10 +292,11 @@ async function loadLedger() {
 }
 
 
-// `P11.18-c` — CE QUE CETTE VUE EXPORTE POUR L'AUTRE, ET POURQUOI C'EST ÉCRIT ICI. Le choix de dates
-// n'appartient pas au journal d'audit : il appartient au point commun. Faute de pouvoir l'y poser, il
-// vit dans la vue dont la route est la plus pauvre et `web/dataaccess.js` l'importe (voir l'en-tête du
-// bloc `P11.18-c`). `lirePlageChoisie` et `jourEnSecondes` sont PURES et exportées pour être éprouvées
-// sans document ni réseau — c'est le seul moyen de tenir « une saisie refusée dit pourquoi » autrement
-// que par la pose d'un écouteur, qui ne prouve rien du chemin réel de la frappe.
-export { loadLedger, jourEnSecondes, lirePlageChoisie, borneHauteCouvreMaintenant, joursPourLeJournal, plageActive, poserLaPlage, poserLeChoixDeDates };
+// `P11.18-s` — CE QUE CETTE VUE EXPORTE POUR L'AUTRE, ET CE QU'ELLE N'EXPORTE PLUS. Le CHOIX DE
+// DATES n'est plus ici : il est au point commun (`web/core.js`), avec son lecteur pur, ses refus et
+// son écrivain, et il sert quatre consommateurs. Ce qui part encore d'ici est ce qui appartient
+// vraiment à ces deux vues : la CIBLE où leur plage se pose — la valeur partagée — et les deux
+// gestes qui la lisent et l'écrivent. `joursPourLeJournal` reste PURE et exportée pour être éprouvée
+// sans document ni réseau : c'est la traduction que la route de CETTE vue impose, elle n'appartient
+// donc à aucune autre.
+export { loadLedger, CIBLE_DE_PLAGE, joursPourLeJournal, plageActive, poserLaPlage };

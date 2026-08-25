@@ -63,7 +63,7 @@ fn p87b_une_cle_du_fichier_seul_chiffre_desormais_la_base_chaude() {
         "ce test EXIGE un environnement muet sur la clé : il mesure ce que le FICHIER apporte, et \
          l'environnement gagne sur le fichier (c'est précisément l'invariant Docker/k3s)"
     );
-    let _reglages = BACKUP_ENV_LOCK.read(); // le geste SAUVEGARDE, et la sauvegarde relit des réglages ambiants
+    let _reglages = VERROU_ENV_PROCESSUS.read(); // le geste SAUVEGARDE, et la sauvegarde relit des réglages ambiants
     let _tmpg = crate::tmp_possede::TmpPossede::neuf("p87b-at-rest");
     let dir = _tmpg.racine().chemin().to_path_buf();
     let dir = dir.as_path();

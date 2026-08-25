@@ -510,6 +510,7 @@
     /// JAMAIS — ni en lecture, ni en écriture, ni en ingest — et JAMAIS avec une clé par défaut.
     #[test]
     fn mode1_unresolvable_key_fails_closed() {
+        let _env = VERROU_ENV_PROCESSUS.write(); // l'environnement du processus est MUTÉ ici : verrou UNIQUE en écriture (common.rs)
         // Déterminisme : pas de Vault configuré -> résolution vault: échoue AVANT tout accès réseau.
         std::env::remove_var("PLUME_VAULT_ADDR");
         std::env::remove_var("PLUME_VAULT_TOKEN");
@@ -616,6 +617,7 @@
     /// de rétention propre à A ne s'applique qu'à A (chaque tenant lit SES settings depuis SA base).
     #[test]
     fn mode1_background_jobs_per_tenant() {
+        let _env = VERROU_ENV_PROCESSUS.write(); // l'environnement du processus est MUTÉ ici : verrou UNIQUE en écriture (common.rs)
         // Déterminisme : pas de Vault configuré -> la clé du tenant 'x' échoue AVANT tout accès réseau.
         std::env::remove_var("PLUME_VAULT_ADDR");
         std::env::remove_var("PLUME_VAULT_TOKEN");

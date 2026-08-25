@@ -465,6 +465,277 @@ function pagedList(host, opts) {
 }
 
 // ==================================================================================================
+// `P11.18-s` — CHOISIR UNE PLAGE DE TEMPS : UN SEUL GESTE, QUATRE CONSOMMATEURS.
+//
+// LE CONSTAT, MESURÉ le 2026-08-25 — cinquième occurrence du même motif (le geste existe, il n'est pas
+// là où on le cherche). Un contrôle de plage offrant DÉJÀ paliers ET intervalle absolu vivait dans
+// `web/app.js`, avec ses deux refus écrits et ses règles de style posées (`.rangemodal`, `.rmgrid`,
+// `.rmabs`). Il n'était pas exporté, et il écrivait directement dans `S.zoomRange`. Faute de pouvoir
+// l'atteindre, le journal d'audit et la prévention des fuites en ont reçu un SECOND, dans
+// `web/audit.js` : deux lecteurs de saisie, deux jeux de refus, deux écrivains — le défaut sous une
+// autre forme.
+//
+// CE QUI EST PARTAGÉ ICI, ET CE QUI NE L'EST PAS.
+//   * PARTAGÉ : le LECTEUR d'une saisie (`lireUnePlage`, PURE — deux textes et un instant contre une
+//     plage ou un refus), les cinq familles de REFUS qu'il rend, la question « la borne haute choisie
+//     couvre-t-elle maintenant ? », l'ÉCRITURE sur la cible, et le reflet des contrôles posés.
+//   * NON PARTAGÉ, et c'est mesuré, pas concédé : les PALIERS. Ceux des tableaux de bord vont de
+//     5 min à 1 an, ceux du journal sont 7/30/90/365 jours, ceux de la prévention des fuites
+//     24 h/7 j/tout. Trois jeux pour trois questions : les fondre inventerait un raccourci qu'aucune
+//     vue n'a demandé. Ils restent donc chez leur consommateur et arrivent PAR LA CIBLE, puisque
+//     choisir un palier écrit sur la même cible que choisir une plage — et la retire.
+//
+// LES DEUX PARAMÈTRES SONT EXACTEMENT LES DEUX FAITS QUI DISTINGUENT LES QUATRE CONSOMMATEURS.
+//   (a) LA CIBLE — l'état où la plage se pose, et le GRAIN qu'il sait tenir. `S.zoomRange` tient un
+//       intervalle d'INSTANTS en secondes : son champ est `datetime-local`. La plage du journal et de
+//       la prévention des fuites tient des JOURS du calendrier — parce que la route du journal ne
+//       borne qu'en jours entiers depuis maintenant — : son champ est `date`, et la fin INCLUT son
+//       jour. LA PRÉSENTATION SUIT LA CIBLE et n'est pas un troisième réglage : la cible d'instants
+//       est déjà servie par un BOUTON d'en-tête (`#rangepick`, `#qrangepick`), donc une modale ; la
+//       cible de jours vit DANS le panneau, à côté du sélecteur de paliers de la vue, donc une barre.
+//   (b) CE QUE LA ROUTE DE L'APPELANT SAIT PORTER — une borne HAUTE, ou pas. `POST /api/query` la
+//       porte ; `GET /api/ledger` ne prend qu'un NOMBRE DE JOURS depuis maintenant et n'en porte
+//       aucune. Quand elle manque, une plage dont la FIN est antérieure à maintenant est REFUSÉE, et
+//       le refus nomme la raison de l'APPELANT — écrite là où elle est vraie, jamais ici.
+//
+// CE QUE CE PARTAGE NE FAIT PAS, écrit plutôt que tu : il ne fond pas les deux PRÉSENTATIONS en une.
+// Elles existent toutes deux, sont toutes deux déjà stylées, et chacune est celle que sa vue offre
+// déjà. Ce qui a fondu, c'est ce qui était réellement écrit deux fois : lire, refuser, écrire.
+// ==================================================================================================
+
+// Un jour du calendrier, tel qu'un champ `type=date` le rend (« AAAA-MM-JJ »), en secondes epoch à
+// l'heure LOCALE de l'analyste : il choisit un jour de SON calendrier, pas un instant UTC.
+// `finDeJournee` -> la DERNIÈRE seconde du jour choisi (la fin d'un jour INCLUT ce jour).
+// `null` = illisible. Un jour inexistant (2026-02-31) est REPORTÉ par `Date` sur le mois suivant : on
+// le refuse au lieu de laisser cette correction silencieuse passer pour un choix.
+function jourEnSecondes(texte, finDeJournee) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(texte == null ? '' : texte).trim());
+  if (!m) return null;
+  const a = Number(m[1]), mo = Number(m[2]), j = Number(m[3]);
+  const d = new Date(a, mo - 1, j, 0, 0, 0, 0);
+  if (d.getFullYear() !== a || d.getMonth() !== mo - 1 || d.getDate() !== j) return null;
+  if (!finDeJournee) return Math.floor(d.getTime() / 1000);
+  d.setDate(d.getDate() + 1);
+  return Math.floor(d.getTime() / 1000) - 1;
+}
+
+// Un INSTANT, tel qu'un champ `type=datetime-local` le rend (« AAAA-MM-JJThh:mm »), en secondes epoch
+// à l'heure LOCALE. Même contrat que `jourEnSecondes` — `null` = illisible — pour que le lecteur
+// n'ait qu'une seule forme de réponse à traiter, quel que soit le grain. Le report silencieux d'une
+// date inexistante est refusé ici aussi, et pour la même raison.
+function instantEnSecondes(texte) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(String(texte == null ? '' : texte).trim());
+  if (!m) return null;
+  const a = Number(m[1]), mo = Number(m[2]), j = Number(m[3]), h = Number(m[4]), mi = Number(m[5]);
+  const d = new Date(a, mo - 1, j, h, mi, Number(m[6] || 0), 0);
+  if (d.getFullYear() !== a || d.getMonth() !== mo - 1 || d.getDate() !== j || d.getHours() !== h || d.getMinutes() !== mi) return null;
+  return Math.floor(d.getTime() / 1000);
+}
+
+// LE GRAIN D'UNE CIBLE — ce que l'état où la plage se pose sait TENIR, et rien d'autre. Tout ce qui
+// diffère entre un choix de JOURS et un choix d'INSTANTS est ici, dérivé de cette seule question :
+// le type du champ, la lecture des deux bornes, la forme attendue nommée dans un refus, et les mots
+// des deux champs de la barre. Le grain `minute` n'a aujourd'hui aucun consommateur EN BARRE (sa
+// vue l'offre en modale) ; ses mots sont écrits pour qu'une barre posée demain sur une cible
+// d'instants ne rende pas un libellé vide.
+const GRAINS = {
+  jour: {
+    typeDeChamp: 'date',
+    lireDebut: t => jourEnSecondes(t, false),
+    lireFin: t => jourEnSecondes(t, true),
+    motDebut: LANG === 'en' ? 'From (day)' : 'Du (jour)',
+    motFin: LANG === 'en' ? 'To (day)' : 'Au (jour)',
+    motAttendu: LANG === 'en' ? '. A calendar day is expected, written YYYY-MM-DD. Nothing was sent.' : ". Un jour du calendrier est attendu, écrit AAAA-MM-JJ. Rien n'a été envoyé.",
+  },
+  minute: {
+    typeDeChamp: 'datetime-local',
+    lireDebut: instantEnSecondes,
+    lireFin: instantEnSecondes,
+    motDebut: LANG === 'en' ? 'From (instant)' : "Du (instant)",
+    motFin: LANG === 'en' ? 'To (instant)' : "Au (instant)",
+    motAttendu: LANG === 'en' ? '. An instant is expected, written YYYY-MM-DD hh:mm. Nothing was sent.' : ". Un instant est attendu, écrit AAAA-MM-JJ hh:mm. Rien n'a été envoyé.",
+  },
+};
+
+// LE SEUL LECTEUR d'une plage choisie — fonction PURE (deux textes + un instant + un grain -> une
+// plage OU un refus), ce qui la rend éprouvable sans document ni réseau. Elle ne CORRIGE jamais :
+// chaque saisie qu'elle ne sait pas lire produit un REFUS qui dit POURQUOI, et aucune fenêtre ne
+// part. Rendre une plage « la plus proche » d'une saisie fautive serait répondre à une question que
+// personne n'a posée.
+function lireUnePlage(texteDebut, texteFin, maintenant, grain) {
+  const g = GRAINS[grain] || GRAINS.jour;
+  const td = String(texteDebut == null ? '' : texteDebut).trim();
+  const tf = String(texteFin == null ? '' : texteFin).trim();
+  if (!td || !tf) {
+    return { refus: (LANG === 'en' ? 'A range needs TWO dates — a start and an end. Missing: ' : 'Une plage demande DEUX dates — un début et une fin. Manque : ')
+      + (!td ? (LANG === 'en' ? 'the start' : 'le début') : '') + (!td && !tf ? (LANG === 'en' ? ' and ' : ' et ') : '')
+      + (!tf ? (LANG === 'en' ? 'the end' : 'la fin') : '') + '.' };
+  }
+  const debut = g.lireDebut(td), fin = g.lireFin(tf);
+  if (debut == null || fin == null) {
+    return { refus: (LANG === 'en' ? 'Unreadable date: ' : 'Date illisible : ')
+      + (debut == null ? td : tf) + g.motAttendu };
+  }
+  if (debut > fin) {
+    return { refus: (LANG === 'en' ? 'Reversed range: the start (' : 'Plage inversée : le début (') + td
+      + (LANG === 'en' ? ') is AFTER the end (' : ') est APRÈS la fin (') + tf
+      + (LANG === 'en' ? '). The two dates are kept as typed and nothing was sent — swapping them here would answer a question nobody asked.' : "). Les deux dates restent telles qu'elles ont été saisies et rien n'a été envoyé — les échanger ici répondrait à une question que personne n'a posée.") };
+  }
+  // DURÉE NULLE — atteignable au seul grain des instants : au grain du jour, la fin est la dernière
+  // seconde de son jour, donc deux jours égaux font une fenêtre d'un jour entier. Une fenêtre sans
+  // durée ne peut être que vide, et un vide se lit comme une absence : c'est la même raison que
+  // celle du début dans le futur, et le refus le dit de la même façon.
+  if (debut === fin) {
+    return { refus: (LANG === 'en' ? 'Range with no duration: the start and the end are the SAME instant (' : 'Plage sans durée : le début et la fin sont le MÊME instant (') + td
+      + (LANG === 'en' ? '). Such a window can only be empty — and an empty window reads as an absence. Nothing was sent.' : "). Une telle fenêtre ne peut être que vide — et une fenêtre vide se lit comme une absence. Rien n'a été envoyé.") };
+  }
+  if (debut > maintenant) {
+    return { refus: (LANG === 'en' ? 'Start date in the future: ' : 'Date de début dans le futur : ') + td
+      + (LANG === 'en' ? '. Nothing has been recorded after now, so this range can only be empty — and an empty window reads as an absence. Nothing was sent.' : ". Rien n'est enregistré après maintenant, donc cette plage ne peut être que vide — et une fenêtre vide se lit comme une absence. Rien n'a été envoyé.") };
+  }
+  return { debut, fin, texteDebut: td, texteFin: tf };
+}
+
+// La borne HAUTE choisie couvre-t-elle l'instant présent ? C'est la SEULE question qui décide si une
+// plage est exprimable par une route qui ne borne qu'en bas. Une fin posée au jour courant la
+// couvre : au grain du jour, la fin est la DERNIÈRE seconde du jour choisi.
+function borneHauteCouvreMaintenant(plage, maintenant) { return plage.fin >= maintenant; }
+
+// LES CONTRÔLES POSÉS, par clé de vue — une vue repeinte REMPLACE le sien (aucune accumulation). Ils
+// servent à REFLÉTER la plage de LEUR cible : un changement fait dans une autre vue posée sur la
+// MÊME cible ne doit pas laisser des dates affichées que la fenêtre envoyée n'a plus.
+const controlesDePlage = new Map();
+
+// LE SEUL ÉCRIVAIN de la plage d'une cible. Écrire ailleurs laisserait un contrôle afficher autre
+// chose que ce qui part au démon. Les contrôles posés sur CETTE cible se remettent au reflet ; ceux
+// d'une autre cible ne bougent pas — deux cibles sont deux fenêtres, pas une.
+function poserLaPlageSurLaCible(cible, plage) {
+  cible.poser(plage);
+  const p = cible.lire();
+  controlesDePlage.forEach(c => {
+    if (c.cible !== cible) return;
+    c.debut.value = p ? p.texteDebut : '';
+    c.fin.value = p ? p.texteFin : '';
+  });
+}
+
+// LE CONTRÔLE EN BARRE : deux champs, un bouton qui APPLIQUE, un bouton qui RETIRE, et UNE ligne qui
+// porte le refus. Rien ne part tant qu'une saisie est refusée, et la plage précédente reste intacte
+// — un refus ne modifie pas la fenêtre, il explique pourquoi elle n'a pas bougé.
+// `cle` : la vue qui pose (une seule inscription par vue). `cible` : où la plage se pose (a).
+// `porte.borneHaute` : ce que la route de l'appelant sait porter (b) ; `porte.refus(plage)` : la
+// phrase, propre à la vue appelante, qui dit pourquoi SON chemin ne porte pas de borne haute —
+// écrite là où elle est vraie, pas ici. `surChangement` n'est rappelé QUE lorsque la plage a
+// effectivement changé.
+function poserLeChoixDeDates(cle, cible, porte, surChangement) {
+  const g = GRAINS[cible.grain] || GRAINS.jour;
+  const barre = document.createElement('div');
+  barre.className = 'rmabs';
+  barre.setAttribute('role', 'group');
+  barre.setAttribute('aria-label', LANG === 'en' ? 'Exact dates (start and end)' : 'Dates exactes (début et fin)');
+  const champ = texte => {
+    const l = document.createElement('label');
+    const i = document.createElement('input');
+    i.type = g.typeDeChamp;
+    l.append(texte, i);
+    barre.appendChild(l);
+    return i;
+  };
+  const debut = champ(g.motDebut);
+  const fin = champ(g.motFin);
+  const appliquer = document.createElement('button');
+  appliquer.type = 'button';
+  appliquer.className = 'btn btn-sm';
+  appliquer.textContent = LANG === 'en' ? 'Apply these dates' : 'Appliquer ces dates';
+  const retirer = document.createElement('button');
+  retirer.type = 'button';
+  retirer.className = 'linklike';
+  retirer.textContent = LANG === 'en' ? 'Back to the shortcut' : 'Revenir au raccourci';
+  // La ligne de refus occupe toute la largeur de la barre : une phrase qui explique un refus ne se lit
+  // pas coincée entre deux champs. `hidden` tant qu'il n'y a rien à dire — jamais un vide qui se
+  // confondrait avec un espace réservé.
+  const refus = document.createElement('div');
+  refus.className = 'bad';
+  refus.setAttribute('role', 'alert');
+  refus.style.cssText = 'flex-basis:100%;margin:4px 0 0';
+  refus.hidden = true;
+  const direLeRefus = texte => { refus.textContent = texte; refus.hidden = !texte; };
+  // Retoucher une date EFFACE le refus : il porte sur ce qui était saisi, pas sur ce qui l'est.
+  debut.addEventListener('input', () => direLeRefus(''));
+  fin.addEventListener('input', () => direLeRefus(''));
+  appliquer.addEventListener('click', () => {
+    const maintenant = Math.floor(Date.now() / 1000);
+    const lue = lireUnePlage(debut.value, fin.value, maintenant, cible.grain);
+    if (lue.refus) { direLeRefus(lue.refus); return; }
+    if (!porte.borneHaute && !borneHauteCouvreMaintenant(lue, maintenant)) { direLeRefus(porte.refus(lue)); return; }
+    direLeRefus('');
+    poserLaPlageSurLaCible(cible, lue);
+    surChangement();
+  });
+  retirer.addEventListener('click', () => {
+    debut.value = ''; fin.value = ''; direLeRefus('');
+    if (cible.lire()) { poserLaPlageSurLaCible(cible, null); surChangement(); }
+  });
+  barre.append(appliquer, retirer, refus);
+  const controle = { barre, debut, fin, appliquer, retirer, refus, direLeRefus, cible };
+  controlesDePlage.set(cle, controle);
+  const posee = cible.lire();
+  debut.value = posee ? posee.texteDebut : '';
+  fin.value = posee ? posee.texteFin : '';
+  return controle;
+}
+
+// LE CONTRÔLE EN MODALE : les paliers de la cible (raccourcis relatifs) ET l'intervalle absolu, dans
+// la même fenêtre — les deux répondent à la même question, et choisir l'un retire l'autre. Le
+// gabarit est celui qui vivait dans `web/app.js`, inchangé ; ce qui change est ce qu'il APPELLE :
+// le lecteur partagé et l'écrivain de la cible, au lieu de son propre couple.
+function ouvrirLaModaleDePlage(cible, porte, surChangement) {
+  const ov = document.createElement('div'); ov.className = 'modal-ov';
+  const box = document.createElement('div'); box.className = 'modal rangemodal';
+  const plage = cible.lire();
+  const cur = cible.palier ? cible.palier() : 0;
+  const toLocal = d => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  const now = new Date();
+  const f0 = plage ? new Date(plage.debut * 1000) : new Date(now.getTime() - 3600000);
+  const t0 = plage ? new Date(plage.fin * 1000) : now;
+  box.innerHTML = `
+    <h3>Plage temporelle</h3>
+    <div class="rmsub">Relatif — depuis maintenant (suit l'heure courante)</div>
+    <div class="rmgrid">${(cible.paliers || []).map(([s, l]) => `<button type="button" class="rmp${!plage && s === cur ? ' on' : ''}" data-s="${s}">${l}</button>`).join('')}</div>
+    <div class="rmsub">Absolu — intervalle précis (figé)</div>
+    <div class="rmabs">
+      <label>Début<input type="datetime-local" id="rm-from" value="${toLocal(f0)}"></label>
+      <label>Fin<input type="datetime-local" id="rm-to" value="${toLocal(t0)}"></label>
+      <button type="button" id="rm-abs">Appliquer l'intervalle</button>
+    </div>
+    <div class="modal-err" hidden></div>
+    <div class="modal-act"><button type="button" class="m-cancel">Fermer</button></div>`;
+  ov.appendChild(box); document.body.appendChild(ov);
+  const close = () => { ov.classList.add('out'); document.removeEventListener('keydown', onKey); setTimeout(() => ov.remove(), 160); };
+  const onKey = e => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', onKey);
+  ov.onclick = e => { if (e.target === ov) close(); };
+  box.querySelector('.m-cancel').onclick = close;
+  box.querySelectorAll('.rmp').forEach(b => b.onclick = () => {
+    cible.poserLePalier(b.dataset.s);   // relatif -> retire la plage + recharge (le geste est celui de la vue)
+    surChangement(); close();
+  });
+  box.querySelector('#rm-abs').onclick = () => {
+    const err = box.querySelector('.modal-err');
+    const maintenant = Math.floor(Date.now() / 1000);
+    // LE MÊME LECTEUR QUE LA BARRE, ET LES MÊMES REFUS. Ce chemin n'en avait que deux (« Dates
+    // invalides. », « Le début doit précéder la fin. ») et laissait passer en silence les trois
+    // autres familles — début dans le futur, durée nulle, borne haute que la route ne porte pas.
+    const lue = lireUnePlage(box.querySelector('#rm-from').value, box.querySelector('#rm-to').value, maintenant, cible.grain);
+    if (lue.refus) { err.textContent = lue.refus; err.hidden = false; return; }
+    if (!porte.borneHaute && !borneHauteCouvreMaintenant(lue, maintenant)) { err.textContent = porte.refus(lue); err.hidden = false; return; }
+    err.hidden = true;
+    poserLaPlageSurLaCible(cible, lue); surChangement(); close();
+  };
+  return { ov, box, close };
+}
+
+// ==================================================================================================
 // `P11.15-b` / `P11.17-c` — REGROUPER SANS CONSTRUIRE : LA CLÉ VIENT DES LIGNES, LE COÛT SUIT LE PLI
 // --------------------------------------------------------------------------------------------------
 // CE QUI EXISTAIT, ET OÙ. Le mécanisme demandé n'était pas à inventer : deux panneaux le tenaient déjà à
@@ -1136,5 +1407,6 @@ export function setSocTZ(v) { socTZ = v; }
 export {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, flashStopped, stopBtn, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, toCSV, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, miniMenu, api, apiSend, transientGatewayMsg, muted, fetchInto, colComparator, makePager, pageNums, pagedList,
   socRole, socIsAdmin, applyRoleClass, controleDEcritureSous, motiverLeRefusAuLecteur, roleSansEcriturePartagee, managedBadge, gateDeleteBtn, formMsg, contentSubmit, contentDelete, SEVCOL, lsSet, collapsibleGroup, mitreName, humanAge,
-  confirmWithConsequence, disclosure, marquerLesCellulesTronquees, celluleDeborde
+  confirmWithConsequence, disclosure, marquerLesCellulesTronquees, celluleDeborde,
+  jourEnSecondes, instantEnSecondes, lireUnePlage, borneHauteCouvreMaintenant, poserLaPlageSurLaCible, poserLeChoixDeDates, ouvrirLaModaleDePlage
 };

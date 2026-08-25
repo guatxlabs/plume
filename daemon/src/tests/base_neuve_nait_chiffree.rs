@@ -507,7 +507,7 @@
     /// IDEMPOTENT : le relancer ne fait rien.
     #[test]
     fn p96a_la_conversion_prouve_l_equivalence_puis_bascule_et_s_inscrit_au_journal() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde RELIT des réglages que d'autres tests POSENT
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // la sauvegarde RELIT des réglages que d'autres tests POSENT
         let _tmp = crate::tmp_possede::TmpPossede::neuf("p96a-conversion");
         let dir = _tmp.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
@@ -619,7 +619,7 @@
     /// d'équivalence, donc celle qui a le plus à laisser derrière elle.
     #[test]
     fn p96a_un_echec_de_sauvegarde_laisse_l_original_intact_et_retire_la_copie() {
-        let _reglages = BACKUP_ENV_LOCK.read();
+        let _reglages = VERROU_ENV_PROCESSUS.read();
         let _tmp = crate::tmp_possede::TmpPossede::neuf("p96a-echec");
         let dir = _tmp.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();

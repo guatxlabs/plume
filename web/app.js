@@ -2,11 +2,12 @@ import {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, api, apiSend, muted, colComparator, pageNums, pagedList,
   setSocTZ,
   socIsAdmin, formMsg,
-  confirmWithConsequence, disclosure
+  confirmWithConsequence, disclosure,
+  ouvrirLaModaleDePlage
 } from './core.js';
 import { installI18nObserver } from './i18n_observer.js';
 import { S } from './state.js';
-import { banIp, clearDrillCrumb, evLoad, exploreFrom, exploreTo, qHistGo, renderViz, runQuery, setZoom, stopExplore, updateZoomBadge } from './viz.js';
+import { banIp, clearDrillCrumb, clearZoom, evLoad, exploreFrom, exploreTo, qHistGo, renderViz, runQuery, setZoom, stopExplore, updateZoomBadge } from './viz.js';
 import { initDashboards, loadDashboard, loadDashboards, refreshPanels } from './dashboards.js';
 import { initLookups } from './lookups.js';
 import { loadFleetView } from './fleet.js';
@@ -240,7 +241,24 @@ async function renderFirewall() {
 async function renderControls() {
   const r = await api('/panel/controls');
   const b = $('#controls .body');
-  if (!r.data || !r.data.controls) { b.innerHTML = '<div class="muted">en attente du capteur (5 min)...</div>'; return; }
+  // `P11.18-i` — UN CATALOGUE VIDE N'EST PAS « 0 MANQUANT ». Trois cas, pas deux, et le tableau
+  // JavaScript vide est le piège : il est *truthy*, donc `!r.data.controls` le laissait passer, `map()`
+  // rendait la chaîne vide, et le panneau affichait « 0 manquant(s) » — un tableau de bord RASSURANT là
+  // où RIEN n'est mesuré. Mesuré le 2026-08-25 en même temps que le capteur cessait de se taire à vide.
+  //   charge illisible  -> on attend (une absence de données, `muted`) ;
+  //   liste VIDE        -> on le DIT (un trou de couverture, `bad`) — « 0 manquant » ne mesure rien ;
+  //   liste non vide    -> le rendu ordinaire.
+  // La condition est DÉRIVÉE de la liste, jamais de la RAISON du vide : outil absent, catalogue retiré
+  // ou contrôles tous désactivés y tombent de la même façon, donc l'invariant tiendra encore quand la
+  // console saura désactiver un contrôle.
+  const liste = r.data && Array.isArray(r.data.controls) ? r.data.controls : null;
+  if (!r.data || liste === null) { b.innerHTML = '<div class="muted">en attente du capteur (5 min)...</div>'; return; }
+  if (liste.length === 0) {
+    b.innerHTML = `<div class="bad">${esc(LANG === 'en'
+      ? 'No defence control is evaluated here — the expected catalogue is EMPTY: "0 missing" measures nothing.'
+      : "Aucun contrôle de défense n'est évalué ici — le catalogue attendu est VIDE : « 0 manquant » ne mesure rien.")}</div>`;
+    return;
+  }
   // `failed` de la machine affichée ; le total PARC est la somme sur `hosts[]` — sans lui, un parc dont
   // une seule machine est saine se lit « 0 manquant ».
   const hs = Array.isArray(r.hosts) ? r.hosts : [];
@@ -636,52 +654,34 @@ function rangeLabel(sel) {
 function updateRangeBtn() { const el = $('#rangelbl'); if (el) el.textContent = rangeLabel('#range'); }
 // Explore : même picker que les Dashboards mais piloté par #qrange (état local) -> son propre libellé.
 function updateQRangeBtn() { const el = $('#qrangelbl'); if (el) el.textContent = rangeLabel('#qrange'); }
-// Modal unique RÉUTILISÉ par les Dashboards (#range/#rangepick) ET par l'Explore (#qrange/#qrangepick) :
-// opts = { rangeSel, updateBtn } ; sans opts -> cible Dashboards (#range) par défaut.
-function openRangeModal(opts) {
-  const cfg = opts || {};
-  const rangeSel = cfg.rangeSel || '#range';
-  const updateBtn = cfg.updateBtn || updateRangeBtn;
-  const ov = document.createElement('div'); ov.className = 'modal-ov';
-  const box = document.createElement('div'); box.className = 'modal rangemodal';
-  const cur = Number(($(rangeSel) && $(rangeSel).value) || 0);
-  const toLocal = d => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-  const now = new Date();
-  const f0 = S.zoomRange ? new Date(S.zoomRange.from * 1000) : new Date(now.getTime() - 3600000);
-  const t0 = S.zoomRange ? new Date(S.zoomRange.to * 1000) : now;
-  box.innerHTML = `
-    <h3>Plage temporelle</h3>
-    <div class="rmsub">Relatif — depuis maintenant (suit l'heure courante)</div>
-    <div class="rmgrid">${RANGE_PRESETS.map(([s, l]) => `<button type="button" class="rmp${!S.zoomRange && s === cur ? ' on' : ''}" data-s="${s}">${l}</button>`).join('')}</div>
-    <div class="rmsub">Absolu — intervalle précis (figé)</div>
-    <div class="rmabs">
-      <label>Début<input type="datetime-local" id="rm-from" value="${toLocal(f0)}"></label>
-      <label>Fin<input type="datetime-local" id="rm-to" value="${toLocal(t0)}"></label>
-      <button type="button" id="rm-abs">Appliquer l'intervalle</button>
-    </div>
-    <div class="modal-err" hidden></div>
-    <div class="modal-act"><button type="button" class="m-cancel">Fermer</button></div>`;
-  ov.appendChild(box); document.body.appendChild(ov);
-  const close = () => { ov.classList.add('out'); document.removeEventListener('keydown', onKey); setTimeout(() => ov.remove(), 160); };
-  const onKey = e => { if (e.key === 'Escape') close(); };
-  document.addEventListener('keydown', onKey);
-  ov.onclick = e => { if (e.target === ov) close(); };
-  box.querySelector('.m-cancel').onclick = close;
-  box.querySelectorAll('.rmp').forEach(b => b.onclick = () => {
-    if ($(rangeSel)) { $(rangeSel).value = b.dataset.s; $(rangeSel).dispatchEvent(new Event('change')); }  // relatif -> clear zoom + reload (cf listener #range / #qrange)
-    updateBtn(); close();
-  });
-  box.querySelector('#rm-abs').onclick = () => {
-    const a = new Date(box.querySelector('#rm-from').value).getTime(), b = new Date(box.querySelector('#rm-to').value).getTime();
-    const err = box.querySelector('.modal-err');
-    if (isNaN(a) || isNaN(b)) { err.textContent = 'Dates invalides.'; err.hidden = false; return; }
-    if (a >= b) { err.textContent = 'Le début doit précéder la fin.'; err.hidden = false; return; }
-    setZoom(a / 1000, b / 1000); updateBtn(); close();
+// `P11.18-s` — LE GESTE EST LEVÉ AU POINT COMMUN (`ouvrirLaModaleDePlage`, `web/core.js`) ET IL SERT
+// QUATRE VUES. Ce qui restait ici — un modal offrant paliers ET intervalle absolu, avec son propre
+// lecteur de saisie et ses deux refus — n'était pas exporté, si bien que le journal d'audit et la
+// prévention des fuites en avaient reçu un SECOND. Ce qui reste ICI est ce qui appartient VRAIMENT à
+// ces deux vues : leurs paliers (`RANGE_PRESETS`, de 5 min à 1 an) et la cible où leur plage se pose.
+//
+// LA CIBLE DES DEUX PICKERS D'INSTANTS : `S.zoomRange`. Les deux vues ne diffèrent que par leur
+// sélecteur de paliers — `#range` pour les tableaux de bord, `#qrange` pour l'Explore — et c'est le
+// seul paramètre de cette fabrique. Le grain est `minute` : cet état tient un intervalle d'INSTANTS
+// en secondes (le champ est `datetime-local`), là où le journal d'audit tient des JOURS entiers.
+function cibleDeZoom(rangeSel) {
+  return {
+    grain: 'minute',
+    paliers: RANGE_PRESETS,
+    palier: () => Number(($(rangeSel) && $(rangeSel).value) || 0),
+    // Choisir un palier RETIRE la plage : le listener de `#range` / `#qrange` efface `S.zoomRange` et recharge.
+    poserLePalier: v => { if ($(rangeSel)) { $(rangeSel).value = v; $(rangeSel).dispatchEvent(new Event('change')); } },
+    lire: () => (S.zoomRange ? { debut: S.zoomRange.from, fin: S.zoomRange.to } : null),
+    poser: p => { if (p) setZoom(p.debut, p.fin); else clearZoom(); },
   };
 }
-if ($('#rangepick')) $('#rangepick').onclick = () => openRangeModal();
-// Explore : même control/design que les Dashboards (presets jusqu'à 1 an + intervalle précis), piloté par #qrange.
-if ($('#qrangepick')) $('#qrangepick').onclick = () => openRangeModal({ rangeSel: '#qrange', updateBtn: updateQRangeBtn });
+// CE QUE LA ROUTE DE CES DEUX VUES SAIT PORTER : une borne HAUTE. `POST /api/query` accepte `to`, et
+// depuis `P11.18-r` le fabricant client la POSE au lieu de l'hériter d'une autre vue. Il n'y a donc
+// aucune phrase de refus à écrire ici — celle du journal d'audit vit là où elle est vraie.
+const PORTE_DE_ZOOM = { borneHaute: true };
+if ($('#rangepick')) $('#rangepick').onclick = () => ouvrirLaModaleDePlage(cibleDeZoom('#range'), PORTE_DE_ZOOM, updateRangeBtn);
+// Explore : même geste, même style, même refus — seule la cible du palier change.
+if ($('#qrangepick')) $('#qrangepick').onclick = () => ouvrirLaModaleDePlage(cibleDeZoom('#qrange'), PORTE_DE_ZOOM, updateQRangeBtn);
 // fuseau horaire d'affichage (stockage UTC) : recharge pour re-rendre tous les temps affichés
 if ($('#tz')) { $('#tz').value = socTZ; $('#tz').onchange = () => { setSocTZ($('#tz').value); localStorage.setItem('soc_tz', socTZ); location.reload(); }; }
 if ($('#qhelp')) $('#qhelp').onclick = openHelpModal;

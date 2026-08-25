@@ -700,8 +700,8 @@
     // set_var -> rollup -> assert -> remove_var est atomique vis-à-vis des autres tests du groupe). Les
     // autres tests de la suite continuent de tourner en parallèle. Verrou parking_lot SANS empoisonnement
     // (audit #67) : un panic dans un test relâche le verrou sain -> pas de cascade d'échecs de verrou.
-    fn rba_env_lock() -> parking_lot::MutexGuard<'static, ()> {
-        RBA_ENV_LOCK.lock()
+    fn rba_env_lock() -> parking_lot::RwLockWriteGuard<'static, ()> {
+        VERROU_ENV_PROCESSUS.write()
     }
 
     /// Helper : insère une contribution de risque directement (miroir run_risk_rules / ti_risk_contribution).
@@ -1040,7 +1040,7 @@
     /// (c) la restauration n'est lisible QU'AVEC la clé (chiffrée at-rest).
     #[test]
     fn backup_restore_roundtrip_compressed() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "test-backup-passphrase-correct-horse-battery-staple";
         let marker = "MARKER_NEEDLE_DO_NOT_LEAK_7Q";
         let src = mk_tmp_path("src.db");
@@ -1228,7 +1228,7 @@
     /// classe de stockage), FTS fonctionnelle, compteur AUTOINCREMENT exact. Échoue si UNE valeur diffère.
     #[test]
     fn backup_b1_parity_roundtrip() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "b1-parity-passphrase-correct-horse-battery-staple";
         let src = mk_tmp_path("b1src.db");
         let dest = mk_tmp_path("b1dest.age");
@@ -1357,7 +1357,7 @@
     /// survit via la copie bit-à-bit). -> zéro perte pour les schémas hors périmètre B1.
     #[test]
     fn backup_b1_falls_back_to_legacy_for_contentless_fts() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "b1-fallback-passphrase-xyz";
         let src = mk_tmp_path("b1fbsrc.db");
         let dest = mk_tmp_path("b1fbdest.age");
@@ -1479,6 +1479,7 @@
     /// plus par /proc/environ quand le fichier est utilisé). Le cœur `vault_token_from_file` est PUR (no env).
     #[test]
     fn v134_vault_token_file_first_and_env_fallback() {
+        let _env = VERROU_ENV_PROCESSUS.write(); // l'environnement du processus est MUTÉ ici : verrou UNIQUE en écriture (common.rs)
         let _tmpg20 = crate::tmp_possede::TmpPossede::neuf("vaulttok");
         let dir = _tmpg20.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
@@ -1634,7 +1635,7 @@
     /// Et INERTE : recipient=None -> chiffrement SYMÉTRIQUE historique, full-verify EN cluster (aucun changement).
     #[test]
     fn f3_asymmetric_roundtrip_and_symmetric_inert() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let _tmpg23 = crate::tmp_possede::TmpPossede::neuf("f3");
         let dir = _tmpg23.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
@@ -1693,7 +1694,7 @@
         // (`backup_streaming_survives_an_unusable_staging_dir`) voir SA sauvegarde REFUSÉE par cette
         // exigence-ci — l'énoncé « n'est touché que par ce test -> pas de course » confondait « qui l'écrit »
         // avec « qui la lit ».
-        let _reglages = BACKUP_ENV_LOCK.write();
+        let _reglages = VERROU_ENV_PROCESSUS.write();
         let _tmpg24 = crate::tmp_possede::TmpPossede::neuf("v134bk");
         let dir = _tmpg24.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
@@ -4720,7 +4721,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     /// KEEP-N effective (les anciens backups synthétiques en trop sont supprimés).
     #[test]
     fn native_scheduler_cycle_roundtrip_and_retention() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "test-native-scheduler-passphrase-xyzzy";
         let marker = "NATIVE_SCHED_MARKER_5Z";
         let src = mk_tmp_path("sched-src.db");
@@ -4838,7 +4839,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     /// legacy — mais un backup RESTAURABLE. Si ça casse : backup produit mais IRRESTAURABLE (perte totale à DR).
     #[test]
     fn adv_b1_generated_columns_roundtrip_or_fallback() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "adv-gencol-key";
         let src = mk_tmp_path("advgcsrc.db");
         let dest = mk_tmp_path("advgcdest.age");
@@ -4875,7 +4876,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     /// Ce test ÉCHOUE tant que le fix prod n'est pas appliqué — c'est la preuve du défaut.
     #[test]
     fn adv_b1_non_utf8_text_falls_back_to_legacy() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "adv-nonutf8-key";
         let src = mk_tmp_path("advnu8src.db");
         let dest = mk_tmp_path("advnu8dest.age");
@@ -4909,7 +4910,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     /// schéma et les données (dont classes de stockage) round-trippent, et que le schéma survit VERBATIM.
     #[test]
     fn adv_b1_without_rowid_and_constraints_roundtrip() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "adv-worid-key";
         let src = mk_tmp_path("advwrsrc.db");
         let dest = mk_tmp_path("advwrdest.age");
@@ -4945,7 +4946,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     /// d'index doit être re-créé EXACTEMENT et rester fonctionnel après restore.
     #[test]
     fn adv_b1_expression_and_partial_index_roundtrip() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "adv-idx-key";
         let src = mk_tmp_path("advidxsrc.db");
         let dest = mk_tmp_path("advidxdest.age");
@@ -4984,7 +4985,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     /// C'est le cas de production qui compte le plus.
     #[test]
     fn adv_b1_real_plume_schema_roundtrip() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
         let key = "adv-realschema-key";
         let src = mk_tmp_path("advrssrc.db");
         let dest = mk_tmp_path("advrsdest.age");

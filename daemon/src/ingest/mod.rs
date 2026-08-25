@@ -921,16 +921,39 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
                 }
                 if ok && kind == "controls" {
                     let failed = data.get("failed").and_then(|x| x.as_i64()).unwrap_or(0);
+                    // P11.18-i — L'ÉNONCÉ EST COMPOSÉ DE CE QUI EST DÉJÀ LÀ. La charge nomme les contrôles,
+                    // l'INSERT lie déjà la machine, et la série d'instantanés porte le dernier état
+                    // DIFFÉRENT de cette machine : aucune donnée nouvelle n'entre ici (cf. le module).
+                    let etat = crate::controles_de_defense::lire_le_catalogue(&data);
                     if failed > 0 {
                         // dédup sur l'ÉTAT (hash) + jour, PAR MACHINE : 1 alerte/jour tant que l'état de CETTE
                         // machine ne change pas (avant : /3600 = toutes les heures = verbeux pour un manque
                         // persistant). L'hôte manquait à la clé alors que le `hash` dédupliqué est celui d'UNE
                         // machine — MESURÉ : 5 machines à 2 contrôles manquants (même hash) -> 1 alerte.
                         let dedup = serie.cle_alerte(&format!("controls-{}-{}", hash, ts / 86400));
+                        // Lu APRÈS l'écriture de l'instantané courant : la ligne courante s'exclut par son
+                        // empreinte, la borne rendue est donc bien celle de l'état PRÉCÉDENT.
+                        let depuis = crate::controles_de_defense::dernier_etat_different(&conn, host, &hash)
+                            .and_then(|t| crate::controles_de_defense::jour_utc(&conn, t));
+                        let titre = crate::controles_de_defense::enonce_des_manquants(&etat, failed, host, depuis.as_deref());
                         if conn.execute(
                             "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host) \
                              VALUES(?1,'control.catalog',3,?2,?3,?4,?5)",
-                            params![ts, format!("{failed} contrôle(s) de défense MANQUANT(S)"), data.to_string(), dedup, host],
+                            params![ts, titre, data.to_string(), dedup, host],
+                        ).is_err() { ok = false; }
+                    }
+                    // UN CATALOGUE VIDE SE DIT. `failed=0` sur un catalogue vide est la valeur la PLUS
+                    // rassurante de la série et ne mesure rien : la posture serait verte parce que personne
+                    // ne regarde. La condition est DÉRIVÉE de la charge (« zéro contrôle évalué »), jamais de
+                    // la raison — outil absent, catalogue retiré, contrôles tous désactivés y tombent pareil.
+                    // Sévérité 2 : c'est un TROU DE COUVERTURE (même rang que l'aveu d'indisponibilité d'un
+                    // capteur), pas une défense connue tombée. Dédup (hôte, jour) : un seul état possible.
+                    if ok && etat.declare_vide() {
+                        let dedup = serie.cle_alerte(&format!("controls-vides-{}", ts / 86400));
+                        if conn.execute(
+                            "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host) \
+                             VALUES(?1,'control.catalog.vide',2,?2,?3,?4,?5)",
+                            params![ts, crate::controles_de_defense::enonce_du_catalogue_vide(host), data.to_string(), dedup, host],
                         ).is_err() { ok = false; }
                     }
                 }

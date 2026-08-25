@@ -126,7 +126,7 @@
     // vieux jours ; les lignes restées HOT sont les RÉCENTES NON archivées. Un plafond count/byte qui ne garde
     // que les N plus récentes supprimerait EXACTEMENT ces lignes SANS copie cold -> PERTE. La correction SKIP les
     // plafonds quand PLUME_COLD_TIER=1. Ces tests sont gatés `cold_tier` (jamais dans la suite par défaut = 762)
-    // et sérialisés (COLD_CAPS_ENV_LOCK) car ils mutent l'env process-global PLUME_COLD_TIER/PLUME_COLD_DIR.
+    // et sérialisés (VERROU_ENV_PROCESSUS) car ils mutent l'env process-global PLUME_COLD_TIER/PLUME_COLD_DIR.
 
     /// Prépare un env cold : PLUME_COLD_TIER=1 + PLUME_COLD_DIR=<temp> (aucune clé -> aging fail-closed, ne
     /// touche RIEN ; de toute façon les events de test sont RÉCENTS, hors fenêtre d'aging). Renvoie le temp dir.
@@ -147,7 +147,7 @@
     #[cfg(feature = "cold_tier")]
     #[test]
     fn fix18_caps_still_trim_when_cold_off() {
-        let _g = COLD_CAPS_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         cold_env_off(); // garantit PLUME_COLD_TIER absent -> caps_active=true
         let conn = test_db();
         conn.execute("INSERT INTO setting(scope,key,value) VALUES('global','retention_days','30')", []).unwrap();
@@ -166,7 +166,7 @@
     #[cfg(feature = "cold_tier")]
     #[test]
     fn fix18_cold_on_max_rows_no_loss_all_survive() {
-        let _g = COLD_CAPS_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         let dir = cold_env_on();
         let conn = test_db();
         conn.execute("INSERT INTO setting(scope,key,value) VALUES('global','retention_days','30')", []).unwrap();
@@ -188,7 +188,7 @@
     #[cfg(feature = "cold_tier")]
     #[test]
     fn fix18_cold_on_max_bytes_zero_deletion() {
-        let _g = COLD_CAPS_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         let dir = cold_env_on();
         let conn = test_db();
         conn.execute("INSERT INTO setting(scope,key,value) VALUES('global','retention_days','30')", []).unwrap();
@@ -215,7 +215,7 @@
     #[cfg(feature = "cold_tier")]
     #[test]
     fn fix18_cold_on_nonpurge_control_events_unaffected() {
-        let _g = COLD_CAPS_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         let dir = cold_env_on();
         let conn = test_db();
         conn.execute("INSERT INTO setting(scope,key,value) VALUES('global','retention_days','30')", []).unwrap();
@@ -823,7 +823,7 @@
         assert!(role_satisfies("agent", MinRole::Ingest), "agent satisfait Ingest");
         assert!(!role_satisfies("viewer", MinRole::Ingest), "viewer JAMAIS ingest (pas de forge de traces)");
         // gate : par défaut OFF (mode 0). L'activation est explicite (PLUME_OTLP_TRACES=1).
-        let _g = OTLP_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_OTLP_TRACES");
         assert!(!otlp_traces_enabled(), "défaut OFF -> handler 404, mode 0 byte-identique");
         std::env::set_var("PLUME_OTLP_TRACES", "1");
@@ -864,7 +864,7 @@
     /// pas le coût par un decode protobuf structuré (serde matérialise l'arbre Value entier avant les caps).
     #[test]
     fn otlp_max_decompress_cap_default_and_env() {
-        let _g = OTLP_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_OTLP_MAX_DECOMPRESS");
         assert_eq!(otlp_max_decompress(), 16 * 1024 * 1024, "défaut 16 Mio");
         assert!(otlp_max_decompress() < INGEST_MAX_DECOMPRESS, "cap OTLP < cap partagé 64 Mio");
@@ -901,11 +901,11 @@
     /// FIX DoS #41 (handler bout-en-bout) — les 3 couches sur /v1/traces : (200) un vrai payload OTLP ingère
     /// et écrit le spool ; (400) un gzip NON-OTLP qui gonfle sous le cap est rejeté par la FORME AVANT le
     /// parse ; (413) un gzip qui DÉPASSE le cap OTLP est refusé à la décompression ; (503) la borne de
-    /// concurrence d'ingest coupe quand tous les permits sont pris. Gate PLUME_OTLP_TRACES=1 (OTLP_ENV_LOCK).
+    /// concurrence d'ingest coupe quand tous les permits sont pris. Gate PLUME_OTLP_TRACES=1 (VERROU_ENV_PROCESSUS).
     #[tokio::test]
     async fn otlp_handler_dos_layers_end_to_end() {
         use std::io::Write;
-        let _g = OTLP_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::set_var("PLUME_OTLP_TRACES", "1");
         std::env::remove_var("PLUME_OTLP_MAX_DECOMPRESS");
 

@@ -466,8 +466,15 @@ réécrit `data` que si `hash` a **changé** ; sinon il avance le `ts` de la lig
 **LA SÉRIE EST `(kind, host)`, JAMAIS `kind` SEUL.** Un instantané capture ce que l'émetteur
 peut OBSERVER, et un émetteur n'observe que sa machine. Toute la voie snapshot est donc
 cloisonnée par l'hôte de la ligne (`SnapshotSeries`, `daemon/src/ingest/store.rs`) :
-comparaison d'état, heartbeat, clés d'alerte d'état (`firewall.lockdown`, `control.catalog`),
-sondes de fraîcheur et surfaces de lecture.
+comparaison d'état, heartbeat, clés d'alerte d'état (`firewall.lockdown`, `control.catalog`,
+`control.catalog.vide`), sondes de fraîcheur et surfaces de lecture.
+
+**UN INSTANTANÉ VIDE EST UNE RÉPONSE, PAS UN SILENCE.** Un émetteur qui a bien tourné et n'a
+RIEN à évaluer publie un instantané dont la liste est vide, plutôt que de ne rien publier : la
+série reste vivante et la surface peut dire « rien n'est mesuré ici », au lieu de laisser un
+« en attente du capteur » indéfini se lire comme une machine encore silencieuse. Pour le
+catalogue de contrôles, le daemon en tire l'alerte `control.catalog.vide` — la condition est
+« zéro contrôle évalué », jamais la RAISON du zéro.
 
 Conséquences pour qui écrit un émetteur :
 

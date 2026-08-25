@@ -395,11 +395,36 @@ function showQError(serverMsg) {
   $('#qstats').textContent = '';
 }
 
+// ==============================================================================================
+// `P11.18-r` — LA BORNE HAUTE EST UN ARGUMENT DE L'APPELANT, ET SON DÉFAUT N'HÉRITE DE RIEN.
+//
+// CE QUI ÉTAIT ÉCRIT ICI, ET CE QUE ÇA FABRIQUAIT. `body.to = exploreTo()`, POSÉ SANS CONDITION :
+// toute requête passant par ce fabricant était bornée en haut par `S.zoomRange`, l'intervalle absolu
+// réglé dans l'Explore ou les tableaux de bord. Les vues qui n'ont jamais touché à cet état en
+// héritaient donc en silence — mesuré le 2026-08-25 : les cinq requêtes de la prévention des fuites
+// partaient bornées pendant que leur barre annonçait « toute la rétention », et le sous-panneau
+// d'accès opérateur (`web/multitenant.js`) l'héritait sans même le savoir. La vue disait une chose,
+// la requête en faisait une autre.
+//
+// LA DÉCISION, ET SA RAISON. Une requête N'HÉRITE PAS d'un intervalle réglé dans une AUTRE vue. Deux
+// vues qui ne partagent ni barre ni libellé ne partagent pas une fenêtre ; hériter en silence est ce
+// qui rend une vue incapable de dire ce qu'elle envoie. La borne haute devient donc un argument
+// (`opts.to`), dont le défaut est `0` — aucune borne. Les vues qui RÈGLENT cet intervalle et qui
+// l'AFFICHENT (l'Explore, par son `#zoombadge` et son libellé de plage) le passent explicitement ;
+// les autres ne le reçoivent plus.
+//
+// CE QUI N'EST PAS FAIT, ET POURQUOI. On ne filtre JAMAIS côté navigateur pour compenser une borne
+// que la route ne porte pas : l'ordre étant décroissant, cela viderait les premières pages et ferait
+// compter au total des lignes cachées — c'est-à-dire rendrait un refus comme une absence.
+// LA BORNE BASSE reste ce qu'elle était : elle est DÉJÀ un argument (`fromOverride`), et ses deux
+// appelants hors Explore la posent tous les deux. Aucune vue n'en hérite, mesuré le même jour ; son
+// défaut hérite pourtant encore, et c'est un reste NOMMÉ plutôt que corrigé au passage.
+// ==============================================================================================
 async function runQ(query, isSoql, fromOverride, limit, offset, opts) {
   opts = opts || {};
   const body = isSoql ? { soql: query } : { sql: query };
   body.from = (fromOverride !== undefined ? fromOverride : exploreFrom());
-  body.to = exploreTo();
+  body.to = (opts.to !== undefined ? opts.to : 0);
   if (limit !== undefined && limit !== null) {
     body.limit = limit;
     // KEYSET (#28) : pagination par CURSEUR (parcours intégral, sans le cap 10 000 qui cachait des événements).
@@ -1288,7 +1313,7 @@ async function evLoad() {
   $('#qstats').textContent = 'exécution…';
   const t0 = performance.now();
   try {
-    const opts = { qid, signal: ctrl.signal };
+    const opts = { qid, signal: ctrl.signal, to: exploreTo() };   // `P11.18-r` : l'Explore RÈGLE cet intervalle et l'AFFICHE (#zoombadge) — il le passe, il ne l'hérite pas.
     if (keyset) { opts.keyset = true; if (cursor) opts.cursor = cursor; else if (jumpOff) opts.offset = jumpOff; }   // curseur (séquentiel) OU offset (saut) ; sinon 1re page
     const j = await runQ(q, isSoql, undefined, limit, offset, opts);
     if (!S.exploreInflight || S.exploreInflight.qid !== qid) return;   // supersédée (autre requête lancée) -> on ignore le résultat périmé
@@ -1426,7 +1451,7 @@ async function runQuery() {
   const t0 = performance.now();
   $('#qstats').textContent = 'exécution…';
   try {
-    const j = await runQ(q, isSoql, undefined, null, 0, { qid, signal: ctrl.signal });
+    const j = await runQ(q, isSoql, undefined, null, 0, { qid, signal: ctrl.signal, to: exploreTo() });   // idem : borne posée par la vue qui la règle
     if (!S.exploreInflight || S.exploreInflight.qid !== qid) return;   // supersédée -> on ignore le résultat périmé
     if (j.error) { showQError(j.error); return; }
     S.lastResult = { columns: j.columns, rows: j.rows };
@@ -1449,4 +1474,4 @@ async function runQuery() {
 function showQExport(has) { const el = $('#qexport'); if (el) el.hidden = !has; }
 
 
-export { banIp, clearDrillCrumb, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, noeudsDeVizReglee, qHistGo, queryCount, refusDeReglage, reglageLu, renderViz, runQ, runQuery, setZoom, sondage, stopExplore, tableEl, updateZoomBadge, vizElement, truncationBadge };
+export { banIp, clearDrillCrumb, clearZoom, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, noeudsDeVizReglee, qHistGo, queryCount, refusDeReglage, reglageLu, renderViz, runQ, runQuery, setZoom, sondage, stopExplore, tableEl, updateZoomBadge, vizElement, truncationBadge };

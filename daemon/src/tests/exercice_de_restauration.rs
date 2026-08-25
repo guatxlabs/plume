@@ -71,7 +71,7 @@
     /// n'existe nulle part. La clé utilisée ici naît et meurt dans cette fonction.
     #[test]
     fn un_exercice_de_restauration_compare_le_contenu_et_pas_seulement_le_schema() {
-        let _reglages = BACKUP_ENV_LOCK.read(); // la sauvegarde RELIT des réglages que d'autres tests POSENT
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // la sauvegarde RELIT des réglages que d'autres tests POSENT
         let _tmp = crate::tmp_possede::TmpPossede::neuf("p83a-exercice");
         let dir = _tmp.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();

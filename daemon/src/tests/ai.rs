@@ -6,14 +6,14 @@
 // Le CŒUR (invariant cardinal « compilo fermé dispose », zéro-exécution, redaction, rebond) est prouvé en
 // pur dans core/src/ai.rs (mock provider, sans réseau). Ici on prouve le CÂBLAGE daemon, hors réseau.
 
-#[cfg(feature = "ai")]
-static AI_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+// Les tests IA MUTENT PLUME_AI_* : ils prennent `VERROU_ENV_PROCESSUS.write()` (common.rs), le verrou
+// UNIQUE de l'environnement du processus — et non un verrou propre à cette famille.
 
 // ---- (c) GARDE CLOUD : classification + PLUME_AI_ALLOW_CLOUD (pur, hors réseau) ----
 #[cfg(feature = "ai")]
 #[test]
 fn ai_cloud_gate_local_vs_cloud() {
-    let _g = AI_ENV_LOCK.lock();
+    let _g = VERROU_ENV_PROCESSUS.write();
     // classification pure (IP littérales -> pas de DNS) : RFC1918/loopback = local, publique = cloud.
     assert!(!crate::ai::endpoint_is_cloud("http://10.0.0.5:8000"), "RFC1918 = local");
     assert!(!crate::ai::endpoint_is_cloud("http://192.168.1.10:11434"), "RFC1918 = local");
@@ -37,7 +37,7 @@ fn ai_cloud_gate_local_vs_cloud() {
 #[cfg(feature = "ai")]
 #[tokio::test]
 async fn ai_from_preset_cloud_gate_and_local_ok() {
-    let _g = AI_ENV_LOCK.lock();
+    let _g = VERROU_ENV_PROCESSUS.write();
     std::env::remove_var("PLUME_AI_ALLOW_CLOUD");
     let st = sso_test_state("plume-admin", "plume-editor", "admins");
 
@@ -100,7 +100,7 @@ async fn ai_provider_crud_redacts_secret() {
 #[cfg(feature = "ai")]
 #[tokio::test]
 async fn ai_nl2soql_inert_without_enable_or_provider() {
-    let _g = AI_ENV_LOCK.lock();
+    let _g = VERROU_ENV_PROCESSUS.write();
     let st = sso_test_state("plume-admin", "plume-editor", "admins");
 
     std::env::remove_var("PLUME_AI_ENABLE");

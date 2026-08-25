@@ -140,7 +140,7 @@
     /// déclarer approx/truncated. Jamais un nombre différent sous `approx:false`.
     #[test]
     fn parity_famille_route_rapide_jamais_un_faux_exact() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM"); // défaut = activé
         let now_ts = now();
         let queries = parity_family_queries();
@@ -193,7 +193,7 @@
     /// import d'historique). On le vérifie sur ce que la TABLE porte, pas sur ce que le job annonce.
     #[test]
     fn parity_famille_un_tick_repare_la_couverture_backdatee() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
         let now_ts = now();
         let cur = (now_ts / 3600) * 3600;
@@ -232,7 +232,7 @@
     /// depuis le corps rollup, quoi que porte le watermark. Fail-closed par le TYPE, pas par un `if`.
     #[test]
     fn parity_famille_couverture_absente_vaut_refus_du_corps() {
-        let _g = B2_ENV_LOCK.lock();
+        let _g = VERROU_ENV_PROCESSUS.write();
         std::env::remove_var("PLUME_ROLLUP_MULTIDIM");
         let now_ts = now();
         let cur = (now_ts / 3600) * 3600;

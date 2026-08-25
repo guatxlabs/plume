@@ -289,6 +289,7 @@ const HOT_WIN: i64 = 2;
 
 #[test]
 fn aging_converges_write_verify_delete() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("age");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -318,6 +319,7 @@ fn aging_converges_write_verify_delete() {
 
 #[test]
 fn aging_is_idempotent_second_run_noop() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("idem");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -343,6 +345,7 @@ fn aging_is_idempotent_second_run_noop() {
 
 #[test]
 fn crash_after_write_before_seal_reruns_no_dup_no_loss() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     // Simule un crash APRÈS rename (jour-Parquet présent) mais AVANT le seal : pas de ligne cold_seal,
     // lignes hot INTACTES. Re-run : aucun seal -> ré-écrit + scelle + supprime. Pas de dup, pas de perte.
     let root = tmp_root("cwbs");
@@ -372,6 +375,7 @@ fn crash_after_write_before_seal_reruns_no_dup_no_loss() {
 
 #[test]
 fn crash_after_seal_before_delete_resumes_no_dup_no_loss() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     // Simule un crash APRÈS seal (jour-Parquet durable + cold_seal purged=0) mais AVANT/pendant le DELETE :
     // lignes hot ENCORE présentes. Re-run : seal(purged=0) -> VERIFY -> REPREND le delete -> purged=1.
     let root = tmp_root("csbd");
@@ -403,6 +407,7 @@ fn crash_after_seal_before_delete_resumes_no_dup_no_loss() {
 
 #[test]
 fn resume_with_corrupt_sealed_parquet_does_not_delete_hot() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     // seal purged=0 mais Parquet ABSENT/corrompu au re-run -> VERIFY échoue -> AUCUNE suppression du hot
     // (fail-safe : jamais de perte sur une preuve non prouvée durable).
     let root = tmp_root("corrupt");
@@ -427,6 +432,7 @@ fn resume_with_corrupt_sealed_parquet_does_not_delete_hot() {
 
 #[test]
 fn control_events_never_aged() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     // Un event de CONTRÔLE (origin='daemon' + source dans la liste) NE DOIT JAMAIS être agé/supprimé.
     let root = tmp_root("ctrl");
     let cold = root.join("cold");
@@ -454,6 +460,7 @@ fn control_events_never_aged() {
 
 #[test]
 fn legal_hold_suspends_aging() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("hold");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -479,6 +486,7 @@ fn legal_hold_suspends_aging() {
 
 #[test]
 fn runtime_gate_off_is_inert() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     // PLUME_COLD_TIER absent -> cold_age_run retourne IMMÉDIATEMENT : aucun fichier, hot inchangé, et
     // AUCUNE table cold_seal créée (base byte-identique côté cold).
     let root = tmp_root("gateoff");
@@ -510,6 +518,7 @@ fn runtime_gate_off_is_inert() {
 
 #[test]
 fn day_outside_hot_and_retention_windows_untouched() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     // Un jour DANS la fenêtre chaude (récent) et un jour AU-DELÀ de la rétention (trop vieux) ne sont PAS
     // agés par la fenêtre [M-30, M-2).
     let root = tmp_root("windows");
@@ -535,6 +544,7 @@ fn day_outside_hot_and_retention_windows_untouched() {
 
 #[test]
 fn expired_day_parquet_and_seal_cleaned_up() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     // Un jour scellé+purgé qui tombe AU-DELÀ de la rétention -> son fichier + son marqueur seal sont retirés.
     let root = tmp_root("expire");
     let cold = root.join("cold");
@@ -618,6 +628,7 @@ fn fix1_late_event_after_maxid_snapshot_is_not_deleted() {
 // n'est jamais re-columnarisé (choix P1 documenté) ; le cold reste inchangé.
 #[test]
 fn fix1_straggler_in_sealed_day_stays_hot_no_loss() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("fix1strag");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -645,6 +656,7 @@ fn fix1_straggler_in_sealed_day_stays_hot_no_loss() {
 // aucun n'écrase l'autre ; chaque seal pointe SA propre donnée.
 #[test]
 fn fix2_two_tenants_same_env_disjoint_cold_files() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("fix2");
     let a_root = root.join("tenantA");
     let b_root = root.join("tenantB");
@@ -694,6 +706,7 @@ fn fix2_two_tenants_same_env_disjoint_cold_files() {
 // FIX #2 (mode 0 inchangé) — tenant default : la racine cold reste HISTORIQUE (PLUME_COLD_DIR / <parent PLUME_DB>/cold).
 #[test]
 fn fix2_default_tenant_path_unchanged() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("fix2def");
     let cold = root.join("cold");
     // (a) PLUME_COLD_DIR posé (mode 0) -> racine == PLUME_COLD_DIR (db_path vide OU == PLUME_DB).
@@ -713,6 +726,7 @@ fn fix2_default_tenant_path_unchanged() {
 // tout le jour en RAM d'un coup). On le prouve via le nombre de row-groups du fichier de sortie.
 #[test]
 fn fix3_streaming_yields_multiple_row_groups() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("fix3");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -743,6 +757,7 @@ fn fix3_streaming_yields_multiple_row_groups() {
 // un index SANS policy retombe sur le cutoff GLOBAL (inchangé).
 #[test]
 fn fix4_per_index_retention_governs_cold_expiry() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("fix4");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -805,6 +820,7 @@ fn fix5_corrupt_ciphertext_rejected() {
 // -> déchiffrement/décodage échoue au VERIFY -> AUCUNE suppression du hot (fail-safe), seal reste non purgé.
 #[test]
 fn fix5_resume_corrupt_page_preserves_hot() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("fix5e2e");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -841,6 +857,7 @@ fn fix5_resume_corrupt_page_preserves_hot() {
 // le tail (`table_max > day_max_id`), le tick suivant l'archive et le supprime correctement.
 #[test]
 fn h1_tail_holding_day_deferred_then_aged_after_newer_data() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("h1defer");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -880,6 +897,7 @@ fn h1_tail_holding_day_deferred_then_aged_after_newer_data() {
 // la garde ne bloque QUE le tail-holder, jamais les autres jours/envs sous le tail.
 #[test]
 fn h1_non_tail_day_ages_immediately() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("h1normal");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -902,6 +920,7 @@ fn h1_non_tail_day_ages_immediately() {
 // (sous le tail) s'âge. Prouve que la garde ne bloque pas accidentellement des jours dont max_id < table_max.
 #[test]
 fn h1_guard_defers_only_the_tail_holding_day() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("h1perday");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -1073,6 +1092,7 @@ const WRONG_PASS: &str = "cle-completement-etrangere-au-tenant-cold-000";
 // chemin d'aging n'apparaît EN CLAIR nulle part dans les octets bruts du jour-file cold (chiffré at-rest).
 #[test]
 fn ciphertext_at_rest_no_plaintext_event_string_on_disk() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("cipher");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -1141,6 +1161,7 @@ fn wrong_key_decrypt_and_verify_fail() {
 // -> le VERIFY (déchiffre) échoue -> AUCUNE suppression du hot (fail-safe), seal non purgé.
 #[test]
 fn resume_wrong_key_sealed_file_preserves_hot() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("wrongkeyage");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -1170,6 +1191,7 @@ fn resume_wrong_key_sealed_file_preserves_hot() {
 // -> pas de clé) : indépendant de l'env `PLUME_DB_KEY` du process de test.
 #[test]
 fn fail_closed_when_key_unavailable_no_file_no_delete() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("failclosed");
     let db = mkdb(&root);
     let day = M - 10;
@@ -1254,6 +1276,7 @@ fn fixb_bound_verify_rejects_wrong_env_id() {
 // -> AUCUNE suppression du hot mal-mappée (fail-safe), seal non purgé.
 #[test]
 fn fixb_day_swap_sealed_file_rejected_resume_preserves_hot() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("fixbdayswap");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -1285,6 +1308,7 @@ fn fixb_day_swap_sealed_file_rejected_resume_preserves_hot() {
 // FIX B (ii, bout-en-bout RESUME) — même scénario pour un env_id substitué sous la MÊME clé de tenant.
 #[test]
 fn fixb_env_swap_sealed_file_rejected_resume_preserves_hot() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("fixbenvswap");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -1320,6 +1344,7 @@ fn fixb_env_swap_sealed_file_rejected_resume_preserves_hot() {
 // test partageait une clé et ne prouvait QUE la disjonction des chemins).
 #[test]
 fn fixd_distinct_per_tenant_keys_cross_undecryptable() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("fixd");
     let a_root = root.join("tenantA");
     let b_root = root.join("tenantB");
@@ -1470,6 +1495,7 @@ fn p15_cold_retention_days_semantics_and_clamp() {
 // P1.5 (test 1) — l'extension GARDE un cold-file au-delà de retention_days JUSQU'À cold_ret (puis l'expire).
 #[test]
 fn p15_extension_keeps_cold_file_past_retention_until_cold_ret() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p15ext");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -1490,6 +1516,7 @@ fn p15_extension_keeps_cold_file_past_retention_until_cold_ret() {
 // avant P1.5 (un cold-file à 90j est expiré à 30j, pas retenu). Prouve le défaut byte-identique.
 #[test]
 fn p15_backward_compat_knob_unset_horizon_is_retention_days() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p15bc");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -1508,6 +1535,7 @@ fn p15_backward_compat_knob_unset_horizon_is_retention_days() {
 // cold_ret. Exerce le HARD-PURGE HOT RÉEL (rollups::retention_prune_table) avec l'horizon étendu.
 #[test]
 fn p15_no_premature_hot_purge_then_aged_row_lives_in_cold() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p15hotloss");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -1544,6 +1572,7 @@ fn p15_no_premature_hot_purge_then_aged_row_lives_in_cold() {
 // est honoré (jamais expiré prématurément par le global étendu). L'env SANS policy suit cold_ret.
 #[test]
 fn p15_per_index_cold_expiry_vs_extension() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p15pix");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -1599,6 +1628,7 @@ fn p15_per_index_hot_purge_vs_extension() {
 // bien au-delà de la fenêtre chaude ; il RESTE MUET en régime drainé normal (zéro faux positif).
 #[test]
 fn p15_aging_stall_signal_fires_on_stall_and_quiet_when_drained() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     // `event.dedup` est CLOISONNÉ PAR HÔTE à l'écriture (`ingest::store::dedup_scoped_by_host`) : la clé
     // STOCKÉE d'un signal daemon est `<len>\u{1}plume-daemon\u{1}plume-cold-…`. Le `LIKE` porte donc sur
     // la clé ÉMETTEUR à l'intérieur de la clé cloisonnée (`…||char(1)||'plume-cold-…-%'`) — ce qui est
@@ -1693,6 +1723,7 @@ const STUCK_GRACE: i64 = COLD_SEAL_STUCK_GRACE_S;
 // feature-OFF est couvert par la compilation : sans `cold_tier` ce module n'existe pas.
 #[test]
 fn fix18_seal_stuck_quiet_when_runtime_off() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("seal-stuck-off");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -2050,6 +2081,7 @@ fn compte_serie(db: &Arc<Mutex<Connection>>, nom: &str) -> i64 {
 /// détecteur retire à chaque passe, ce qui est exactement le comportement d'avant ce lot.
 #[test]
 fn le_detecteur_de_retard_ne_tire_quune_fois_par_jour_et_son_etat_survit_au_redemarrage() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("retard-cadence");
     let cold = root.join("cold");
     let chemin = root.join("plume.db");
@@ -2131,6 +2163,7 @@ fn le_detecteur_de_retard_ne_tire_quune_fois_par_jour_et_son_etat_survit_au_rede
 /// mesure » rougit. C'est la démonstration que la porte est bien UNE, et pas deux qui se ressemblent.
 #[test]
 fn la_cadence_couvre_aussi_le_site_de_la_cle_absente() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("retard-cadence-clef");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -2302,6 +2335,7 @@ fn une_requete_de_retard_en_echec_ne_consomme_pas_le_tir() {
 ///      mutation-là, rien ne prouverait que l'assertion d'ABSENCE mord.
 #[test]
 fn une_passe_suspendue_nomme_le_trou_du_detecteur_de_retard() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let etiquette_du_trou = format!("{{\"cause\":\"{RETARD_PASSE_SUSPENDUE}\"}}");
 
     // ---- ÉMETTEUR 1 : RÉTENTION GLOBALE TROP COURTE (`retention_days <= 1`) ----
@@ -2377,6 +2411,7 @@ fn une_passe_suspendue_nomme_le_trou_du_detecteur_de_retard() {
 /// fermé ⇒ la série publie un « 0 ligne de retard » pour un détecteur qui n'a jamais regardé.
 #[test]
 fn sans_extension_le_detecteur_nest_pas_arme_et_la_serie_le_nomme() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("retard-non-arme");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -2410,6 +2445,7 @@ fn sans_extension_le_detecteur_nest_pas_arme_et_la_serie_le_nomme() {
 // M-365 est agé (>=env_lo_day) et NON purgé (ts>=cutoff) ; M-366 est purgé (ts<cutoff) et NON agé -> disjoint, sans trou.
 #[test]
 fn p15_disjoint_bands_under_extension() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p15disjoint");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -2512,6 +2548,7 @@ fn seal_prefix_no_last(db: &Arc<Mutex<Connection>>, cold: &Path, env: &str, day:
 // lignes du jour (aucun trou, aucun doublon).
 #[test]
 fn p2b_day_over_cap_splits_into_verifiable_sequenced_files() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p2bsplit");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -2554,6 +2591,7 @@ fn p2b_day_over_cap_splits_into_verifiable_sequenced_files() {
 // les fichiers chevauchant une fenêtre sous-journalière SANS déchiffrer aucun fichier (métadonnées seal seules).
 #[test]
 fn p2b_per_file_ts_bounds_prune_without_decrypt() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p2bprune");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -2591,6 +2629,7 @@ fn p2b_per_file_ts_bounds_prune_without_decrypt() {
 // Pilote le VRAI chemin de reprise (seals présents + pas de last_file -> resume-écriture puis Phase 2).
 #[test]
 fn p2b_crash_mid_phase1_resume_completes_no_loss_no_dup() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p2bcrash");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -2630,6 +2669,7 @@ fn p2b_crash_mid_phase1_resume_completes_no_loss_no_dup() {
 // même parfaitement déchiffrable/décodable (le seq stampé DANS l'AEAD ne correspond pas).
 #[test]
 fn p2b_seq_binding_rejects_file_at_wrong_seq() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p2bseq");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -2660,6 +2700,7 @@ fn p2b_seq_binding_rejects_file_at_wrong_seq() {
 // n'excédant le plafond (RAM de déchiffrement bornée à VOLUME QUELCONQUE : plus de fichiers, pas de fichiers plus gros).
 #[test]
 fn p2b_per_file_size_cap_holds_on_huge_day() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p2bcap");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -2751,6 +2792,7 @@ fn dump_cold(h: &ColdHydrate) -> Vec<(i64, i64, String, Option<String>, Option<S
 // CORROMPANT les fichiers hors fenêtre : si la prune les ouvrait, l'hydratation échouerait — elle réussit.
 #[test]
 fn p2b_hydrate_prune_selects_only_overlapping_files_non_overlap_not_opened() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("hydprune");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -2789,6 +2831,7 @@ fn p2b_hydrate_prune_selects_only_overlapping_files_non_overlap_not_opened() {
 // NULLs intacts, et les lignes HORS fenêtre exclues.
 #[test]
 fn p2b_hydrate_roundtrip_cols_json_nulls_and_window() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("hydrt");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -2835,6 +2878,7 @@ fn p2b_hydrate_roundtrip_cols_json_nulls_and_window() {
 // des colonnes non-projetées est absente.
 #[test]
 fn p2b_hydrate_projection_leaves_unrequested_columns_null() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("hydproj");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -2862,6 +2906,7 @@ fn p2b_hydrate_projection_leaves_unrequested_columns_null() {
 // d'env, sûr en tests parallèles) : 5001 lignes -> 5000 hydratées + truncated=true.
 #[test]
 fn p2b_hydrate_row_cap_truncates_and_signals() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("hydcap");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -2902,7 +2947,7 @@ fn p2b_hydrate_row_cap_truncates_and_signals() {
 // (rowid inclus) -> aucun ordre d'achèvement de worker ni horloge ne fuit dans le résultat.
 #[test]
 fn p2b_hydrate_parallel_determinism_degree1_vs_4() {
-    let _el = par_env_lock();
+    let _el = crate::tests::VERROU_ENV_PROCESSUS.write(); // ce test MUTE PLUME_COLD_READ_PARALLELISM
     let root = tmp_root("hyddet");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -2941,6 +2986,7 @@ fn p2b_hydrate_parallel_determinism_degree1_vs_4() {
 // (fail-closed), JAMAIS de résultat cold partiel silencieux.
 #[test]
 fn p2b_hydrate_corrupt_selected_file_fails_closed_no_partial() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("hydcorrupt");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -2971,6 +3017,7 @@ fn p2b_hydrate_corrupt_selected_file_fails_closed_no_partial() {
 // != attendue) -> verify échoue sur les fichiers sélectionnés -> hydrate_cold ÉCHOUE (fail-closed).
 #[test]
 fn p2b_hydrate_wrong_key_fails_closed() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("hydwrongkey");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -3033,6 +3080,7 @@ fn p2b_hydrate_is_internal_no_query_or_handler_reference() {
 // ligne à `ts == q_end`, 1re seconde du jour, vit dans `hi_day` -> le jour du fichier DOIT être balayé).
 #[test]
 fn p2b_hydrate_prune_boundary_inclusive_equalities() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("hydbound");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -3083,7 +3131,7 @@ fn p2b_hydrate_prune_boundary_inclusive_equalities() {
 // (5001 lignes réparties en 3 fichiers) -> AUCUNE mutation de PLUME_QUERY_MAX -> sûr en tests parallèles.
 #[test]
 fn p2b_hydrate_multifile_truncation_deterministic() {
-    let _el = par_env_lock();
+    let _el = crate::tests::VERROU_ENV_PROCESSUS.write(); // ce test MUTE PLUME_COLD_READ_PARALLELISM
     let root = tmp_root("hydmftrunc");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -3148,7 +3196,7 @@ fn p2b_hydrate_multifile_truncation_deterministic() {
 // mauvaise clé -> erreur CÔTÉ WORKER) sont couverts par 5a/5b et empruntent le MÊME chemin de drain (déjà sûr).
 #[test]
 fn p2b_hydrate_inserter_error_drain_invariant_documented() {
-    let _el = par_env_lock();
+    let _el = crate::tests::VERROU_ENV_PROCESSUS.write(); // ce test MUTE PLUME_COLD_READ_PARALLELISM
     // Sanity de non-régression du chemin d'erreur ATTEIGNABLE le plus proche (erreur worker, même drain que
     // l'inséreur) : un fichier sélectionné corrompu -> Err sans blocage, aucun cold partiel. (Backstop léger ;
     // l'assertion anti-deadlock forte vit dans le raisonnement + les commentaires du site corrigé.)
@@ -3243,6 +3291,7 @@ const UWIN_TO: i64 = M * SECS_PER_DAY;
 // '***' — le masquage est dans le SQL compilé, l'union le fait passer aux lignes cold automatiquement.
 #[test]
 fn p3_masking_applies_to_cold_rows() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p3mask");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -3289,6 +3338,7 @@ fn p3_masking_applies_to_cold_rows() {
 // la LECTURE sur `cold_event` (miroir) EXACTEMENT comme sur `main.event` — le cold ne contourne PAS l'authorizer.
 #[test]
 fn p3_deny_authorizer_applies_to_cold() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p3deny");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -3332,6 +3382,7 @@ fn p3_deny_authorizer_applies_to_cold() {
 // COLD n'est comptée QU'UNE FOIS. La partition (hot ts>=B ∪ cold ts<B) dédoublonne : count == N (pas 2N).
 #[test]
 fn p3_no_double_count_at_overlap() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p3dup");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -3363,6 +3414,7 @@ fn p3_no_double_count_at_overlap() {
 // (cold_event), pas un rollup tronqué. count == compte brut réel des lignes cold de la fenêtre.
 #[test]
 fn p3_rollup_gap_aggregate_complete_from_cold_raw() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p3gap");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -3390,6 +3442,7 @@ fn p3_rollup_gap_aggregate_complete_from_cold_raw() {
 // puis-agrégat-une-fois, jamais une fusion d'agrégats partiels).
 #[test]
 fn p3_aggregate_correctness_union_equals_single_table() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p3agg");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -3441,6 +3494,7 @@ fn p3_aggregate_correctness_union_equals_single_table() {
 // SIGNALE (meta.truncated), jamais un cold∪hot incomplet présenté comme complet.
 #[test]
 fn p3_truncated_surfaced() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p3trunc");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -3476,6 +3530,7 @@ fn p3_truncated_surfaced() {
 // AUCUNE ligne cold (hi = min(to,B-1) < B <= from -> sous-fenêtre cold vide).
 #[test]
 fn p3_hot_only_window_no_hydration() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p3hot");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -3502,6 +3557,7 @@ fn p3_hot_only_window_no_hydration() {
 // de B (base/racine/clé disjointes). Prouvé : l'union A ne sert AUCUNE source 'b-*'.
 #[test]
 fn p3_per_tenant_isolation() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p3tenant");
     let a_root = root.join("a");
     let b_root = root.join("b");
@@ -3551,6 +3607,7 @@ fn p3_per_tenant_isolation() {
 // un sel différent (ou brut), cold≠hot ou cold≠expected -> le test casse.
 #[test]
 fn p3_hash_masking_over_cold_matches_hot() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p3hash");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -3617,6 +3674,7 @@ fn p3_hash_masking_over_cold_matches_hot() {
 // blob brut cold — c'est précisément le chemin le plus exfiltrant.)
 #[test]
 fn p3_fields_json_key_masking_over_cold() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p3jkey");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -3673,6 +3731,7 @@ fn p3_fields_json_key_masking_over_cold() {
 // les lignes cold sont bien AGRÉGÉES sous la clé masquée (aucun groupe brut cold séparé ne fuit).
 #[test]
 fn p3_masked_aggregate_over_cold() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("p3magg");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -3726,6 +3785,7 @@ fn p3_masked_aggregate_over_cold() {
 //       STRUCTURELLEMENT incapable de lire une ligne cold, même si des données cold existent sur disque.
 #[test]
 fn p3_raw_sql_never_touches_cold() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     // (a) INVARIANT DE SOURCE.
     let src = include_str!("../handlers/query.rs");
     let anchors: Vec<usize> = src.match_indices("raw_sql_allowed(false").map(|(i, _)| i).collect();
@@ -3951,6 +4011,7 @@ fn cold_rollup_sum(db: &Arc<Mutex<Connection>>, where_sql: &str) -> i64 {
 // columnarisées (== le compte brut du jour), par source. Preuve directe que seal_cold_rollup a tourné.
 #[test]
 fn phase_a_seal_computes_cold_rollup() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("carollup-seal");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -3978,6 +4039,7 @@ fn phase_a_seal_computes_cold_rollup() {
 // read-only, jamais l'hydratation cold). Fenêtre purement cold (to < B) -> côté hot vide des DEUX côtés.
 #[test]
 fn phase_a_cold_route_count_by_source_equals_raw_zero_parquet() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("carollup-eqraw");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -4019,6 +4081,7 @@ fn phase_a_cold_route_count_by_source_equals_raw_zero_parquet() {
 // routable (COALESCE '' à la matérialisation -> divergence NULL/'') -> non testés en route ici.
 #[test]
 fn phase_a_cold_route_multidim_by_dims_equals_raw_b2() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("carollup-multidim-b2");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -4077,6 +4140,7 @@ fn phase_a_cold_route_multidim_by_dims_equals_raw_b2() {
 // non purgé) est EXCLUE par le côté hot (bucket>=B) -> jamais sur-comptée.
 #[test]
 fn phase_a_hot_cold_union_no_double_count_at_boundary() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("carollup-boundary");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -4133,6 +4197,7 @@ fn phase_a_dc_timechart_secondfilter_fall_back_no_cold_route() {
 // désactivée dès qu'un masque/deny existe (comme le hot), ce miroir ferme AUSSI le chemin SQL brut.
 #[test]
 fn phase_a_deny_authorizer_covers_cold_rollup_mirrors() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("carollup-deny");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -4176,6 +4241,7 @@ fn phase_a_deny_authorizer_covers_cold_rollup_mirrors() {
 // cold_union_query, qui applique le MÊME masque (émis dans le SQL compilé) aux lignes COLD -> jamais le brut.
 #[test]
 fn phase_a_masking_cold_rollup_raw_but_union_masks_cold() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("carollup-mask");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -4207,6 +4273,7 @@ fn phase_a_masking_cold_rollup_raw_but_union_masks_cold() {
 // « un nouveau vendeur auto-rollé ».
 #[test]
 fn phase_a_generic_unknown_source_rolls_up_zero_config() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("carollup-generic");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -4236,6 +4303,7 @@ fn phase_a_generic_unknown_source_rolls_up_zero_config() {
 // crash-safety : une fois last_file=1 durable, seal_cold_rollup n'est PLUS jamais appelée pour ce jour.
 #[test]
 fn phase_a_reseal_idempotent_no_double_no_wipe() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("carollup-idem");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -4408,6 +4476,7 @@ fn pb_dump(h: &ColdHydrate) -> Vec<PbRow> {
 // (a) STATS CALCULÉES À L'ÉCRITURE : min/max (sev/source/category/host) + bloom (présence jamais faux-négative).
 #[test]
 fn phaseb_dim_stats_computed_at_write() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("pb-write");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -4442,6 +4511,7 @@ fn phaseb_dim_stats_computed_at_write() {
 // étaient ouverts, l'AEAD échouerait -> hydrate Err. Prouvé pour source=X, host=Y, src_ip=Z.
 #[test]
 fn phaseb_prune_skips_nonmatching_files_without_decrypt() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("pb-skip");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -4478,6 +4548,7 @@ fn phaseb_prune_skips_nonmatching_files_without_decrypt() {
 // (un faux positif de bloom ne fait qu'ajouter un déchiffrement ; min/max ne saute que le prouvé-hors-borne).
 #[test]
 fn phaseb_prune_equals_full_scan_battery() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("pb-eq");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -4543,6 +4614,7 @@ fn phaseb_prune_equals_full_scan_battery() {
 // est TOUJOURS GARDÉ (jamais élagué), même pour un prédicat qui l'exclurait avec des stats -> zéro perte.
 #[test]
 fn phaseb_pre_phaseb_seal_without_stats_always_kept() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("pb-compat");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -4575,6 +4647,7 @@ fn phaseb_pre_phaseb_seal_without_stats_always_kept() {
 // mécanisme est clé sur la VALEUR BRUTE de la colonne, pas sur un vocabulaire.
 #[test]
 fn phaseb_generic_unknown_source_prunes_zero_config() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("pb-generic");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -4825,6 +4898,7 @@ fn phaseb_extractor_in_clause_extracts_the_equality_not_the_in() {
 // aussi que la valeur TRONQUÉE `source='foo!'` (l'ancienne divergence F1) aurait élagué à tort -> perte évitée.
 #[test]
 fn phaseb_operator_char_value_extracted_exact_and_kept() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("pb-opchar");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -4919,6 +4993,7 @@ fn phaseb_extract_from_compiled_sql_parser_robustness() {
 // compilé -> les fichiers sans web1 sont sautés, et l'ensemble des lignes rendues reste IDENTIQUE au full-scan.
 #[test]
 fn phaseb_now_prunes_host_when_in_clause_present_equals_full_scan() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("pb-hostin");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -6683,22 +6758,52 @@ fn audit_over_prune_partial_null_column() {
 // plusieurs tests p4a le toucheraient concurremment. Chaque test p4a prend donc `p4a_lock()` pour la durée
 // de ses appels `cold_vectorized_try` -> les batteries ne s'entrelacent jamais -> le census (reset+assert
 // exact) est DÉTERMINISTE quel que soit le nombre de threads.
+//
+// DEUX RESSOURCES, DEUX VERROUS — ET C'EST LA SEULE RAISON D'EN AVOIR DEUX ICI. Le compteur de route est
+// une ressource ; l'ENVIRONNEMENT DU PROCESSUS en est une AUTRE, et il n'a qu'un verrou pour tout le
+// binaire de test (`crate::tests::VERROU_ENV_PROCESSUS`). Ce fichier en déclarait un TROISIÈME
+// (`par_env_lock`) pour la seule variable `PLUME_COLD_READ_PARALLELISM`, pendant que les utilitaires de
+// test en déclaraient un QUATRIÈME pour `PLUME_COLD_TIER`/`PLUME_COLD_DIR` : deux verrous pour une même
+// ressource, donc ZÉRO verrou entre les deux familles. Mesuré le 2026-08-25 :
+// `search_declares_what_it_did_not_search_only_when_cold_history_exists` a échoué une fois sur deux
+// exécutions complètes de la suite froide, sur l'assertion « tier froid OFF -> aucune note, aucun coût »
+// — sa `conf` portait bien `PLUME_COLD_TIER=0`, mais `cfg()` fait passer l'ENVIRONNEMENT devant la conf,
+// et un test de plafonds y avait posé `PLUME_COLD_TIER=1`. Le message accusait le tier d'être éteint
+// alors qu'il était allumé.
+//
+// LA COURSE A ÉTÉ REJOUÉE AVANT D'ÊTRE DÉCLARÉE FERMÉE (2026-08-25, binaire de test, filtres `fix18` +
+// `search_declares`, 4 fils, MÊME binaire dans les deux bras — seule change la prise du verrou
+// d'environnement par `p4a_lock`) : SANS lui, 4 échecs sur 20 exécutions, tous sur cette assertion-là ;
+// AVEC lui, 0 sur 40. Une exécution verte ne prouve rien sur une course : c'est le bras qui la DÉCLENCHE
+// qui donne son sens au bras qui ne la déclenche plus.
+//
+// D'OÙ LA RÈGLE, TENUE PAR `.github/scripts/check_no_test_mutates_the_process_env_unlocked.py` : tout test
+// qui MUTE une variable d'environnement prend `VERROU_ENV_PROCESSUS.write()` ; tout test dont le résultat
+// DÉPEND de l'environnement le prend en `.read()`. L'ORDRE D'ACQUISITION est fixe — environnement, PUIS
+// compteur de route — donc aucun cycle possible entre les deux.
 // ====================================================================================================
 
-/// Verrou de sérialisation des tests p4a (voir en-tête). Tolère l'empoisonnement (un panic sous garde ne doit
-/// pas geler les autres tests p4a).
-fn p4a_lock() -> std::sync::MutexGuard<'static, ()> {
-    static L: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    L.lock().unwrap_or_else(|e| e.into_inner())
+/// Le verrou du COMPTEUR DE ROUTE, et de lui seul (état global du process, pas une variable d'environnement).
+fn compteur_de_route_lock() -> parking_lot::MutexGuard<'static, ()> {
+    // `parking_lot` : pas d'empoisonnement, donc un panic d'assertion sous garde relâche un verrou SAIN au
+    // lieu de geler toute la famille — ce que l'ancien `unwrap_or_else(|e| e.into_inner())` obtenait à la main.
+    static COMPTEUR_DE_ROUTE: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    COMPTEUR_DE_ROUTE.lock()
 }
 
-/// VERROU PARTAGÉ des tests qui LISENT/BASCULENT `PLUME_COLD_READ_PARALLELISM` (env GLOBAL) : sérialise les tests
-/// P6 (dont les assertions DÉPENDENT du degré : jauge de concurrence, bench) avec les tests P2b qui basculent le
-/// MÊME knob -> pas de course d'env sous `--test-threads`. Les tests P6 le prennent EN PLUS de `p4a_lock` (ordre
-/// fixe p4a_lock -> par_env_lock, aucun cycle : P2b ne prend QUE ce verrou).
-fn par_env_lock() -> std::sync::MutexGuard<'static, ()> {
-    static L: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    L.lock().unwrap_or_else(|e| e.into_inner())
+/// CE QUE PREND UN TEST P4A : l'environnement du processus en LECTURE — sa `conf` ne décide de rien tant
+/// qu'un voisin peut poser la même clé dans l'environnement, qui passe DEVANT — puis le compteur de route.
+fn p4a_lock() -> (parking_lot::RwLockReadGuard<'static, ()>, parking_lot::MutexGuard<'static, ()>) {
+    let environnement = crate::tests::VERROU_ENV_PROCESSUS.read();
+    (environnement, compteur_de_route_lock())
+}
+
+/// LA VARIANTE ÉCRIVAINE, pour un test p4a qui MUTE l'environnement (`PLUME_COLD_READ_PARALLELISM`,
+/// `PLUME_QUERY_MAX`) : même ordre d'acquisition, mais en exclusion totale. Un test qui prendrait
+/// `p4a_lock()` PUIS l'écriture se bloquerait lui-même : la variante existe pour rendre ce cas impossible.
+fn p4a_lock_env_mute() -> (parking_lot::RwLockWriteGuard<'static, ()>, parking_lot::MutexGuard<'static, ()>) {
+    let environnement = crate::tests::VERROU_ENV_PROCESSUS.write();
+    (environnement, compteur_de_route_lock())
 }
 
 /// Ligne de fixture P4a — dims VARIÉES (source/severity/host/src_ip) + `url` SANS espace (regex/glob testables
@@ -8062,7 +8167,7 @@ fn p4b_ADVERSE_topn_over_cap_hot_groups_falls_back() {
 //       + multi-dim / top-N / matérialisation ; ordre final DÉTERMINISTE pour materialize/top-N.
 //   (2) 2Go-safe : le PIC de fichiers décodés SIMULTANÉMENT est <= degré, INDÉPENDANT du nombre de fichiers.
 //   (3) BENCH : sur BEAUCOUP de fichiers, degré 3 accélère le décode+déchiffrement vs degré 1.
-// Sérialisé par `p4a_lock` (compteurs de route + jauge de décode globaux) + `par_env_lock` (le knob d'env, partagé
+// Sérialisé par `p4a_lock_env_mute` : environnement du processus en ÉCRITURE (le knob d'env, partagé
 // avec les tests P2b). Le degré est basculé via l'env var SOUS ces verrous -> pas de course.
 // ====================================================================================================
 
@@ -8108,8 +8213,7 @@ fn p6_raw_rows(v: &Value) -> Vec<Value> {
 /// matérialisation. La parallélisation ne change QUE la vitesse.
 #[test]
 fn p6_parity_parallel_eq_sequential_eq_oracle() {
-    let _lk = p4a_lock();
-    let _el = par_env_lock();
+    let _lk = p4a_lock_env_mute();
     let (f, nfiles) = p6_fixture("p6-parity", 300, 25); // 300/25 -> ~12 fichiers
     assert!(nfiles >= 8, "assez de fichiers pour exercer le pool parallèle (nfiles={nfiles})");
     let cases: &[&str] = &[
@@ -8143,8 +8247,7 @@ fn p6_parity_parallel_eq_sequential_eq_oracle() {
 /// l'ordre) ET conforme au canonique (ts croissant pour la matérialisation).
 #[test]
 fn p6_materialize_and_topn_order_deterministic() {
-    let _lk = p4a_lock();
-    let _el = par_env_lock();
+    let _lk = p4a_lock_env_mute();
     let (f, nfiles) = p6_fixture("p6-order", 300, 25); // ~12 fichiers
     assert!(nfiles >= 6, "multi-fichiers (nfiles={nfiles})");
 
@@ -8172,8 +8275,7 @@ fn p6_materialize_and_topn_order_deterministic() {
 /// le volume. Preuve à plusieurs degrés + preuve que la concurrence est RÉELLE au degré 4.
 #[test]
 fn p6_ram_bounded_peak_concurrency_le_degree() {
-    let _lk = p4a_lock();
-    let _el = par_env_lock();
+    let _lk = p4a_lock_env_mute();
     let (f, nfiles) = p6_fixture("p6-ram", 300, 10); // ~30 fichiers -> pool saturable (>> degré 4)
     assert!(nfiles >= 20, "BEAUCOUP de fichiers (nfiles={nfiles}) — la RAM ne doit PAS croître avec eux");
     let soql = "search | stats count by source,severity"; // scanne TOUS les fichiers (aucun élagage)
@@ -8241,8 +8343,7 @@ fn p6_ram_bounded_peak_concurrency_le_degree() {
 /// silencieux — exactement le mode de panne redouté du tier froid.
 #[test]
 fn p6_bench_parallel_vs_sequential_decode() {
-    let _lk = p4a_lock();
-    let _el = par_env_lock();
+    let _lk = p4a_lock_env_mute();
     let n = 1200i64; // < cap 5000 -> routé vectorisé
     let (f, nfiles) = p6_fixture("p6-bench", n, 30); // ~40 fichiers (assez pour voir le gain décode/déchiffrement)
     let iters = 2;
@@ -8291,7 +8392,7 @@ fn p6_bench_parallel_vs_sequential_decode() {
 // (C) borne RAM (pic gauge <= degré) sous BEAUCOUP de fichiers, (D) fail-closed sans deadlock ni résultat
 // partiel sur fichier corrompu au MILIEU du décode parallèle. Fixtures VOLONTAIREMENT petites (~8-12
 // fichiers) : le déchiffrement domine, mais >= degré suffit à exercer le pool. Sérialisation identique aux
-// p6_* : p4a_lock (compteurs/jauge globaux) + par_env_lock (knob d'env).
+// p6_* : p4a_lock_env_mute (environnement en ÉCRITURE + compteurs/jauge globaux).
 // ====================================================================================================
 
 /// Nombre de répétitions de la requête PARALLÈLE par cas (stress du non-déterminisme d'ordonnancement).
@@ -8303,8 +8404,7 @@ const P6_ADV_REPEAT: usize = 6;
 /// parallèles (deg 3) comparées à l'oracle. Toute divergence (même 1 exécution sur K) = merge cassé / course.
 #[test]
 fn p6_adv_multirun_parity_overlapping_keys() {
-    let _lk = p4a_lock();
-    let _el = par_env_lock();
+    let _lk = p4a_lock_env_mute();
     let (f, nfiles) = p6_fixture("p6-adv-parity", 160, 20); // ~8 fichiers, clés très chevauchantes
     assert!(nfiles >= 6, "assez de fichiers aux clés répétées (nfiles={nfiles})");
     let cases: &[&str] = &[
@@ -8335,8 +8435,7 @@ fn p6_adv_multirun_parity_overlapping_keys() {
 /// tie-break sous fusion parallèle non ordonnée.
 #[test]
 fn p6_adv_order_determinism_multirun() {
-    let _lk = p4a_lock();
-    let _el = par_env_lock();
+    let _lk = p4a_lock_env_mute();
     let (f, nfiles) = p6_fixture("p6-adv-order", 160, 20); // ~8 fichiers
     assert!(nfiles >= 6, "multi-fichiers (nfiles={nfiles})");
 
@@ -8368,8 +8467,7 @@ fn p6_adv_order_determinism_multirun() {
 /// une concurrence RÉELLE observée (pic>=2). Répété pour débusquer un pic transitoire > degré.
 #[test]
 fn p6_adv_gauge_bound_multirun_high_filecount() {
-    let _lk = p4a_lock();
-    let _el = par_env_lock();
+    let _lk = p4a_lock_env_mute();
     let (f, nfiles) = p6_fixture("p6-adv-ram", 240, 12); // ~20 fichiers (>> degré 4)
     assert!(nfiles >= 12, "fichiers >> degré (nfiles={nfiles})");
     let soql = "search | stats count by source,severity"; // scanne TOUS les fichiers (aucun élagage)
@@ -8402,8 +8500,7 @@ fn p6_adv_gauge_bound_multirun_high_filecount() {
 /// 3=panic worker) pour distinguer un vrai résultat partiel d'un simple Err. Répété à degrés 2/3/4.
 #[test]
 fn p6_adv_corruption_midset_failclosed_no_deadlock() {
-    let _lk = p4a_lock();
-    let _el = par_env_lock();
+    let _lk = p4a_lock_env_mute();
     let (f, nfiles) = p6_fixture("p6-adv-corrupt", 160, 16); // ~10 fichiers
     assert!(nfiles >= 6, "assez de fichiers pour un décode parallèle réel (nfiles={nfiles})");
     let day = M - 10; // p6_fixture âge ce jour
@@ -8459,8 +8556,7 @@ fn p6_adv_corruption_midset_failclosed_no_deadlock() {
 /// Prouve qu'aucun `abort`/canal résiduel ne contamine les requêtes suivantes.
 #[test]
 fn p6_adv_healthy_after_corruption_failure() {
-    let _lk = p4a_lock();
-    let _el = par_env_lock();
+    let _lk = p4a_lock_env_mute();
     // 1) une fixture corrompue échoue (degré 3).
     let (fc, nfc) = p6_fixture("p6-adv-after-c", 120, 16); // ~8 fichiers
     assert!(nfc >= 5);
@@ -8588,8 +8684,7 @@ fn ks_page(f: &P4aFix, base_sql: &str, cursor: Option<(i64, i64)>, n: i64) -> Va
 
 #[test]
 fn ks_full_traversal_hot_cold_eq_raw_scan_no_gap_no_dup() {
-    let _lk = p4a_lock();
-    let _el = par_env_lock();
+    let _lk = p4a_lock_env_mute();
     // 20 ts × 3 ties = 60 cold + 15 hot = 75 lignes ; 8 lignes/fichier -> ~8 fichiers cold (frontières de fichier).
     let (f, n_cold, n_hot, nfiles) = ks_fixture("ks-full", 20, 3, 15, 8);
     assert!(nfiles >= 6, "assez de fichiers cold pour éprouver les frontières de fichier (nfiles={nfiles})");
@@ -8676,8 +8771,7 @@ fn ks_gate_armed_by_default_opt_out_and_unsupported_shapes_fall_back() {
 /// pages aux ids collidés (ligne SOC ratée) ; ce test échouerait (Some au lieu de None).
 #[test]
 fn ks_multi_env_unscoped_falls_back_scoped_serves() {
-    let _lk = p4a_lock();
-    let _el = par_env_lock();
+    let _lk = p4a_lock_env_mute();
     let root = tmp_root("ks-multienv");
     let db = mkdb(&root);
     let dbp = dbp(&root);
@@ -9159,6 +9253,7 @@ use crate::vieillissement_serie::{
 /// DIVERGENT (vérifié le 2026-08-10 : 0 attendu, 25 publiés sous mutation).
 #[test]
 fn un_vieillissement_reussi_rend_compte_de_ce_quil_a_fait() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("serie-travail");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -9223,6 +9318,7 @@ fn un_vieillissement_reussi_rend_compte_de_ce_quil_a_fait() {
 /// scénario où les deux nombres divergent.
 #[test]
 fn un_re_run_ne_reclame_pas_davoir_deplace_des_lignes() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("serie-rerun");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -9263,6 +9359,7 @@ fn un_re_run_ne_reclame_pas_davoir_deplace_des_lignes() {
 /// MUTATION : ne publier que si `jours_candidats > 0` ⇒ la table reste vide et la 1re assertion rougit.
 #[test]
 fn une_passe_sans_rien_a_faire_publie_des_zeros_pas_un_silence() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("serie-vide");
     let cold = root.join("cold");
     let db = mkdb(&root); // AUCUN event : rien n'est éligible
@@ -9287,6 +9384,7 @@ fn une_passe_sans_rien_a_faire_publie_des_zeros_pas_un_silence() {
 /// travail pour une passe qui n'a rien regardé, et les deux dernières assertions rougissent.
 #[test]
 fn une_suspension_par_cle_absente_est_dite_et_ne_publie_aucun_compteur() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("serie-sanscle");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -9321,6 +9419,7 @@ fn une_suspension_par_cle_absente_est_dite_et_ne_publie_aucun_compteur() {
 /// n'est pas touchée — pas même par la mesure.
 #[test]
 fn le_tier_froid_eteint_ne_publie_aucune_serie() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("serie-off");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -9348,6 +9447,7 @@ fn le_tier_froid_eteint_ne_publie_aucune_serie() {
 /// `jours{issue=candidat}` vaut 0, et les deux assertions rougissent.
 #[test]
 fn une_decouverte_impossible_ne_se_publie_pas_comme_zero_jour() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("serie-decouverte");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -9384,6 +9484,7 @@ fn une_decouverte_impossible_ne_se_publie_pas_comme_zero_jour() {
 /// « retirées du chaud » alors que le DELETE en a supprimé 0, et l'assertion rougit.
 #[test]
 fn un_seal_rejoue_ne_compte_que_les_lignes_reellement_supprimees() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("serie-rejeu");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -9556,6 +9657,7 @@ fn une_connexion_de_sonde_refuse_d_ecrire() {
 /// futur remaniement qui rendrait la connexion écrivable ET ajouterait une écriture ne passe pas.
 #[test]
 fn la_sonde_rejoue_les_enonces_de_la_passe_sans_toucher_la_base() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("sonde-plan");
     let cold = root.join("cold");
     let chemin = root.join("plume.db");
@@ -9783,6 +9885,7 @@ fn la_sonde_annonce_la_cadence_du_detecteur_sans_cesser_de_le_mesurer() {
 /// assertions de la seconde moitié rougissent (le témoin positif, lui, reste vert).
 #[test]
 fn un_jour_sans_travail_ne_se_compte_pas_comme_columnarise() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // sa conf ne décide QUE si l'env ne porte pas la clé
     let root = tmp_root("serie-sanstravail");
     let cold = root.join("cold");
     let db = mkdb(&root);

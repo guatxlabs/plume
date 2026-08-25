@@ -575,10 +575,13 @@
         // 2026-08-03 (P3.7-a) : `Sonde` a QUITTÉ main.rs pour `sondes.rs` (le module qui porte aussi ce
         // qui BORNE le coût d'une sonde) — les deux mêmes requêtes, le même `GROUP BY host`, un autre
         // fichier. C'est le cas (b) ci-dessous, et c'est cette garde qui l'a signalé.
+        // 2026-08-25 (P11.18-i) : un SEPTIÈME site, `controles_de_defense.rs` — « depuis quand cet état
+        // dure », c'est-à-dire le dernier instantané de CETTE machine dont l'empreinte DIFFÈRE. C'est
+        // encore le cas (b) : la requête porte `host IS ?1`, et cette garde l'a signalée à l'écriture.
         vues.sort();
         assert_eq!(
             vues,
-            vec!["sondes.rs", "sondes.rs", "store.rs", "store.rs", "store.rs", "store.rs"],
+            vec!["controles_de_defense.rs", "sondes.rs", "sondes.rs", "store.rs", "store.rs", "store.rs", "store.rs"],
             "ANTI-ROT : l'ensemble des interrogations de `snapshot` PAR `kind` vues par l'extracteur a \
              changé. (a) requête reformatée -> réparez l'EXTRACTEUR, sinon la garde passe au vert en ne \
              regardant rien ; (b) site ajouté/retiré LÉGITIMEMENT -> vérifiez qu'il porte l'hôte et mettez \

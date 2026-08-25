@@ -171,6 +171,29 @@ fn signaler_ce_qu_implique_l_archive_publiee(db_path: &str, key: Option<&str>, r
         }
 }
 
+/// `P9.4-b` — CE QU'UN CYCLE SANS ARCHIVE IMPLIQUE, DIT PAR LE CYCLE NATIF. JUMEAU EXACT de
+/// `signaler_ce_qu_implique_l_archive_publiee`, à l'autre bout du cycle : la branche de SUCCÈS lève des
+/// signaux de posture NON PURGEABLES, la branche d'ÉCHEC écrivait UNE ligne sur la sortie d'erreur et
+/// rendait la main. Le produit savait donc parler d'une sauvegarde qui a eu lieu, et se taisait quand il
+/// n'y en avait jamais eu — alors que `docker-compose.yml` et `deploy/k3s.yaml` ARMENT ce cycle en
+/// laissant `PLUME_DB_KEY` vide, ce qui fait REFUSER `backup_compressed` à chaque passage.
+///
+/// LA PORTE EST LA MÊME, POUR LA MÊME RAISON : le signal ÉCRIT un événement SOC, il passe donc par
+/// `PreparedDb`, avec la clé DU CYCLE (jamais celle de l'environnement — c'est ce qui rend le cycle
+/// testable hermétiquement) et `busy_timeout` posé en PRÉLUDE, ce fil tournant à côté de l'écrivain du
+/// démon. BEST-EFFORT DANS LES DEUX SENS : un contrat non satisfait n'invente pas de signal, il le DIT.
+///
+/// CE QUE CETTE PORTE NE PEUT PAS FAIRE, ÉCRIT ICI PLUTÔT QUE SOUS-ENTENDU : quand la cause de l'échec
+/// est une clé FAUSSE, la base ne s'ouvre pas plus pour le signal que pour la sauvegarde, et il ne reste
+/// que la ligne de journal. Ce n'est pas le cas visé : le cas visé est la clé VIDE, où la base est en
+/// clair et s'ouvre sans clé — c'est précisément le déploiement conteneur/cluster par défaut.
+fn signaler_qu_aucune_archive_n_a_ete_publiee(db_path: &str, key: Option<&str>, etape: &str, cause: &str) {
+        match PreparedDb::open_keyed_with_prelude(db_path, key, |c| { let _ = c.busy_timeout(Duration::from_secs(5)); }) {
+            Ok(conn) => { let _ = emit_backup_cycle_failed_signal(&conn, etape, cause, now()); }
+            Err(e) => eprintln!("[backup-sched] cycle SANS ARCHIVE, et le signal n'a PAS pu être émis (la base n'a pas passé le contrat de schéma : {e}) — le seul témoin de ce cycle est cette ligne"),
+        }
+}
+
 /// CŒUR d'un cycle du scheduler natif : backup B1 -> rename ATOMIQUE -> rétention KEEP-N. BEST-EFFORT de bout
 /// en bout (tout échec logge + retourne ; JAMAIS de panic/crash daemon). Réutilise VERBATIM `backup_compressed`
 /// (même code B1 que la CLI et le sidecar -> même fidélité round-trip, même chiffrement age asym/sym) et
@@ -194,6 +217,11 @@ pub(crate) fn scheduled_backup_cycle(db_path: &str, dest_dir: &str, keep: usize,
                 if let Err(e) = std::fs::rename(&tmp_path, &final_path) {
                     eprintln!("[backup-sched] rename {tmp_path} -> {final_path} : {e} (cycle ABANDONNÉ)");
                     let _ = std::fs::remove_file(&tmp_path); // pas de temp orphelin.
+                    // P9.4-b — la sauvegarde a été PRODUITE mais jamais PUBLIÉE : rien n'est servi, rien
+                    // n'est prunable, ce cycle n'a donc rien laissé. Le dire là où la posture se dit.
+                    signaler_qu_aucune_archive_n_a_ete_publiee(
+                        db_path, key, CYCLE_SANS_ARCHIVE_PUBLICATION_IMPOSSIBLE,
+                        &format!("rename {tmp_path} -> {final_path} : {e}"));
                     return None;
                 }
                 // P8.25-a + P8.26-a — L'ARCHIVE EST PUBLIÉE (le rename a réussi) : c'est ICI, et pas avant, que
@@ -211,6 +239,11 @@ pub(crate) fn scheduled_backup_cycle(db_path: &str, dest_dir: &str, keep: usize,
             Err(e) => {
                 eprintln!("[backup-sched] backup B1 échoué : {e} (best-effort -> on continue)");
                 let _ = std::fs::remove_file(&tmp_path); // pas de temp partiel/orphelin.
+                // P9.4-b — LE POINT DE SORTIE DU DÉFAUT : sans `PLUME_DB_KEY`, `backup_compressed` refuse
+                // dès sa première instruction, et c'est ce que livrent les deux déploiements conteneurisés.
+                // « best-effort » qualifie la SUITE du cycle (on ne casse pas le démon), pas le SILENCE.
+                signaler_qu_aucune_archive_n_a_ete_publiee(
+                    db_path, key, CYCLE_SANS_ARCHIVE_SAUVEGARDE_REFUSEE, &e);
                 return None;
             }
         }

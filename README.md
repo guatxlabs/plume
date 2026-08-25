@@ -53,10 +53,17 @@ Le central est aussi son propre agent. Documentation approfondie : [`ARCHITECTUR
 conception) — dont [SDK](docs/SDK.md) · [CIM](docs/CIM.md) · [DSL de parsing](docs/PARSER-DSL.md) ·
 [Importeur Sigma](docs/SIGMA-IMPORTER.md) · [reprise après sinistre](docs/DR-plume-restore.md).
 
+**Pour s'en servir**, quatre pages écrites pour l'exploitant plutôt que pour le contributeur :
+[le même geste dans les trois modes](docs/TROIS-MODES.md) ·
+[la console, onglet par onglet](docs/CONSOLE.md) ·
+[le langage de recherche GXQL](docs/GXQL.md) ·
+[les agents et leur protocole](docs/AGENTS-PROTOCOLE.md) ·
+[chiffrement et compression, tels qu'ils sont](docs/CHIFFREMENT-COMPRESSION.md).
+
 ## Au menu
 | Domaine | Capacité |
 |---|---|
-| **Recherche** | GXQL (*GuatX Query Language*, **anciennement « SOQL »** — même langage, même syntaxe, seul le nom change) — un langage à pipes façon SPL compilé en SQL **lecture seule, à l'épreuve des injections** (champs en liste blanche, paramètres liés, un seul SELECT, budget temps). Aucune requête, aucun panneau, aucune règle n'est à réécrire ; les identifiants techniques (route `/api/soql/*`, clé JSON `soql`, colonne `is_soql`, module Rust `guatx_core::soql`) restent en `soql`. |
+| **Recherche** | GXQL (*GuatX Query Language*, **anciennement « SOQL »** — même langage, même syntaxe, seul le nom change) — un langage à pipes façon SPL compilé en SQL **lecture seule, à l'épreuve des injections** : colonnes en liste blanche, identifiants contraints en forme, **littéraux échappés** (le chemin GXQL n'utilise pas de paramètres liés — ils sont sur `/api/search`), une seule instruction préparée, budget temps. Grammaire complète, bornes et **ce que le langage n'accepte pas** : **[`docs/GXQL.md`](docs/GXQL.md)**. Aucune requête, aucun panneau, aucune règle n'est à réécrire ; les identifiants techniques (route `/api/soql/*`, clé JSON `soql`, colonne `is_soql`, module Rust `guatx_core::soql`) restent en `soql`. |
 | **Détection** | Règles + playbooks SOAR‑lite · **import Sigma** (unitaire et en masse, avec delta de couverture ATT&CK) · **matrice de couverture ATT&CK** (**14 tactiques × 183 techniques** curées — le catalogue `guatx_core::attack::CATALOG`, angles morts mis en évidence). |
 | **Threat‑intel** | Base d'IOC · import **STIX 2.1** · **correspondance à l'ingestion** (`ti_match`, enrichir sans supprimer) · connecteur de flux **TAXII 2.1** · appartenance basée sur des filtres de Bloom pour le passage à l'échelle. |
 | **Risque (RBA)** | Scoring de risque par entité (modèle Splunk‑ES) · alerting sur incident de risque (cumul / tactiques distinctes / vélocité) · une seule alerte dédupliquée par entité. |
@@ -111,7 +118,9 @@ Le mot de passe admin n'est **jamais** stocké en clair : vous fournissez son **
 >   stage `rust:1-bookworm`. Docker (avec BuildKit) suffit.
 > - **Hôte nu** et **k3s** demandent, eux, **un Rust stable installé** (`cargo`) : le premier pour
 >   produire le binaire, le second pour produire l'image à importer.
-> - Le build tire crates.io **et** la git‑dep `guatxlabs/core@v0.2.1` → **un accès réseau est requis**
+> - Le build tire crates.io **et** la git‑dep `guatxlabs/core`, à l'étiquette **épinglée dans
+>   [`daemon/Cargo.toml`](daemon/Cargo.toml)** (`grep guatx-core daemon/Cargo.toml` — la citer ici la
+>   ferait vieillir, et c'est déjà arrivé) → **un accès réseau est requis**
 >   au premier build. *Durée et pic mémoire du build : non mesurés sur cette machine ; le `Dockerfile`
 >   borne `CARGO_BUILD_JOBS=2` pour éviter l'OOM sur une petite machine.*
 >
@@ -126,9 +135,18 @@ docker compose run --rm soc hashpw 'my-password'     # -> copy the printed $argo
 cp .env.example .env                                 # paste PLUME_PASS_HASH=...
 docker compose up -d --build                         # -> http://soc.localhost:7000
 ```
-Le `docker-compose.yml` livré active les **ops natives du binaire** : **backup toutes les 6 h** vers
-`/data/backups` (rétention des 24 plus récents) + **auto‑vacuum quotidien**, sans sidecar ni cron hôte.
-Réglez‑les — ou coupez‑les avec `PLUME_BACKUP_INTERVAL=0` — via `.env`.
+Le `docker-compose.yml` livré **arme** les ops natives du binaire : planificateur de sauvegarde
+toutes les 6 h vers `/data/backups` (rétention des 24 plus récents) + **auto‑vacuum quotidien**, sans
+sidecar ni cron hôte. Réglez‑les — ou coupez‑les avec `PLUME_BACKUP_INTERVAL=0` — via `.env`.
+
+> ⚠️ **Armer le planificateur ne suffit pas à obtenir une sauvegarde.** *Mesuré sur l'arbre suivi le
+> 2026‑08‑25 :* le chemin compressé **exige `PLUME_DB_KEY`** (la clé sert de passphrase à l'enveloppe),
+> et cette clé est **vide par défaut**. Sur une installation Docker ou k3s prise telle quelle, chaque
+> cycle échoue en journalisant `backup --compress : PLUME_DB_KEY requis` et **aucune archive n'est
+> produite** — le planificateur continue, aucun voyant ne change. Le mode hôte n'a pas ce trou : son
+> timer emprunte `VACUUM INTO`, qui n'exige aucune clé. Posez une clé, puis **prouvez‑le** avec
+> `plume-daemon backup-verify`. Détail complet :
+> [`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.md#34-le-défaut-mesuré--sans-clé-de-base-le-planificateur-ne-produit-rien).
 
 > 🪶 **Démo (peuplée, sans agents)** — ajoutez `PLUME_DEMO=1` : des événements/métriques/alertes d'exemple sur 24 h pour voir Plume *vivant* immédiatement. *(Désactivé hors démo.)*
 
@@ -388,7 +406,7 @@ le collecteur tourne sur un hôte Linux, mais la **cible** peut être n'importe 
 > amd64. *Mesuré le 2026‑08‑01, même VM, même charge (build de 100 unités de compilation) : gabarit
 > précédent (`arch=b32` seul) → **0** événement `category=exec` ; gabarit actuel → **533**.* Elle a un
 > **coût en volume, chiffré** dans
-> [`docs/ENDPOINT-SECURITY.md`](docs/ENDPOINT-SECURITY.md#coût-de-la-règle-execve-mesuré) — lisez-le
+> [`docs/ENDPOINT-SECURITY.md`](docs/ENDPOINT-SECURITY.md#4bis-coût-de-la-règle-execve-mesuré) — lisez-le
 > avant de déployer sur une flotte, avec les deux leviers pour réduire sans redevenir aveugle.
 > *Mesuré le 2026‑08‑01, Ubuntu 24.04.4 amd64 : gabarit tel quel → 6 règles chargées sur 12 et **0**
 > enregistrement `EXECVE` ; les deux pièges corrigés → 9 règles et `category=exec` alimenté.*
@@ -506,9 +524,15 @@ il n'est pas lisible via `/proc/<pid>/environ`.
 ### Ce que ce document couvre, et ce qu'il ne couvre pas
 
 Soyons exacts plutôt que rassurants, et comptons **sur l'arbre** plutôt que de promettre. Le démon
-et les collecteurs lisent **299** variables `PLUME_*` distinctes. **130** apparaissent dans au moins
-un document livré ; **169** n'apparaissent dans **aucun**. Ce README en nomme **54** — il en
+et les collecteurs lisent **299** variables `PLUME_*` distinctes. **131** apparaissent dans au moins
+un document livré ; **168** n'apparaissent dans **aucun**. Ce README en nomme **54** — il en
 nommait **8** avant cette section.
+
+**Et ce compte ne dérivera plus en silence** : la garde
+[`check_operator_surface_is_documented.py`](.github/scripts/check_operator_surface_is_documented.py)
+dérive ces mêmes listes des sources à chaque poussée, publie le nombre de leviers qu'aucun document
+ne cite, et **refuse qu'il augmente**. Elle applique le même critère aux onglets de la console, aux
+capteurs livrés et aux modes de déploiement — pour ceux-là, le plafond est **zéro** (`P9.7-b`).
 
 La section ci‑dessous documente donc **une sélection** : les leviers qu'un exploitant a une raison de
 toucher, groupés par usage. Elle ne couvre pas les 299, et un document qui prétendrait le contraire

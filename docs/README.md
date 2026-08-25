@@ -14,6 +14,23 @@ explicitement plutôt que laissé à la surprise de l'opérateur.
 | 🧪 **Opt-in / expérimental** | implémenté derrière une feature de compilation ou un drapeau, non activé par défaut |
 | 📐 **Conception** | design de référence ; **pas** (ou pas entièrement) câblé au runtime |
 
+## S'en servir (le cycle de vie, pour l'exploitant)
+
+Ces cinq pages décrivent le produit **tel qu'il est**, pour quelqu'un qui l'exploite : installer,
+configurer, s'en servir, désinstaller — dans les **trois** modes de déploiement. Chaque affirmation y
+porte la commande qui la redonne, et ce qui n'a pas été exécuté y est dit à côté de l'exemple.
+La garde [`check_operator_surface_is_documented.py`](../.github/scripts/check_operator_surface_is_documented.py)
+dérive des sources ce qu'un exploitant doit pouvoir trouver — onglets, capteurs, modes, leviers — et
+refuse qu'un ajout passe sans être écrit (`P9.7-b`).
+
+| Document | État | Pour quoi |
+|---|---|---|
+| [TROIS-MODES.md](TROIS-MODES.md) | ✅ | **Le même geste dans les trois modes** — hôte natif, Docker, k3s. Où vivent les choses, comment on change un réglage, on ajoute une source, on crée un jeton, on sauvegarde, on met à jour — et **les gestes qui n'existent PAS** dans un mode, nommés au lieu d'être lissés. |
+| [CONSOLE.md](CONSOLE.md) | ✅ | **La console, espace par espace et onglet par onglet** — ce que chacun fait, quel rôle le voit, ce qu'il ne fait pas. Dérivé de la structure de navigation, pas recopié. |
+| [GXQL.md](GXQL.md) | ✅ | **Le langage de recherche** — les vingt commandes, les fonctions, les bornes, les couches de lecture seule, et surtout **ce que la grammaire n'accepte pas** (ni `OR`, ni groupement, ni tri multi-champs). |
+| [AGENTS-PROTOCOLE.md](AGENTS-PROTOCOLE.md) | ✅ | **Les agents et leur protocole** — le contrat de fil, les jetons et ce que « lié à l'hôte » veut vraiment dire, le tampon disque et **son absence de borne côté shell**, les filigranes, le canal retour, TLS. |
+| [CHIFFREMENT-COMPRESSION.md](CHIFFREMENT-COMPRESSION.md) | ✅ | **Chiffrement et compression, tels qu'ils sont** — ce qui est chiffré, ce qui ne l'est pas, l'ordre `age(zstd(…))`, et le défaut mesuré : **sans clé de base, le planificateur de sauvegarde ne produit rien**. |
+
 ## Exploiter (opérateur)
 
 | Document | État | Pour quoi |

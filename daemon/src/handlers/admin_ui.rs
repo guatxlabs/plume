@@ -154,13 +154,173 @@ pub(crate) async fn retention_preview(State(st): State<AppState>, Extension(au):
     .into_response()
 }
 
-/// Page du journal d'intégrité (BATCH 1) : `total` = COUNT total du ledger + `entries` = fenêtre
-/// LIMIT/OFFSET (ordre id décroissant). Fonction pure sur &Connection -> testable sans AppState.
-pub(crate) fn ledger_page(conn: &Connection, limit: i64, offset: i64) -> (Vec<Value>, i64) {
-    let total: i64 = conn.query_row("SELECT COUNT(*) FROM ledger", [], |r| r.get(0)).unwrap_or(0);
-    let entries: Vec<Value> = match conn.prepare("SELECT id,ts,kind,detail,hash FROM ledger ORDER BY id DESC LIMIT ?1 OFFSET ?2") {
+// =================================================================================================
+// `P11.16-d` — LE JOURNAL D'AUDIT SE LIT PAR FENÊTRE DE TEMPS, PAR CLÉ, ET SANS RECOMPTER LA TABLE
+// -------------------------------------------------------------------------------------------------
+// CE QUI ÉTAIT ÉCRIT, ET CE QUE ÇA COÛTAIT. La route n'acceptait que `limit` et `offset` : il n'y
+// avait AUCUNE borne de temps, donc rien à régler — une capacité absente, pas un réglage mal placé.
+// Chaque affichage de page émettait `SELECT COUNT(*) FROM ledger`, un comptage INTÉGRAL de la table,
+// pour rendre un total dont le pager n'a besoin qu'une fois. Et la fenêtre était atteinte par
+// DÉCALAGE : une page lointaine coûtait le parcours des pages précédentes. Le journal d'intégrité est
+// précisément ce qu'on ne purge pas — les trois coûts croissent donc sans borne, pour toujours.
+//
+// CE QUI CHANGE, ET LA VALEUR QUI LE PROUVE. La grandeur mesurée est le nombre de LIGNES TRAVERSÉES,
+// compté par SQLite lui-même (`SQLITE_STMTSTATUS_FULLSCAN_STEP`) : déterministe, indépendant de la
+// machine, et c'est celle qui décide — une ligne traversée est une page lue et, sous SQLCipher,
+// déchiffrée. Relevé le 2026-08-25 sur la fixture des tests :
+//   * LE TOTAL est BORNÉ. `SELECT COUNT(*) FROM (SELECT 1 FROM ledger … LIMIT CAP+1)` s'ARRÊTE au
+//     plafond — exactement le motif de `handlers/query.rs`, pour la même raison. MESURÉ : 10 000 lignes
+//     traversées sur un journal de 10 500 comme sur un journal de 21 000, quand le même comptage privé
+//     de sa borne en traverse 10 499 puis 20 999. Le coût cesse de suivre la taille du journal. Au-delà
+//     du plafond le total n'est pas INVENTÉ : il est rendu plafonné ET `total_capped:true` le DIT, la
+//     vue passant alors à un pager non numéroté dont le Suivant reste fiable. Un chiffre coûteux n'est
+//     pas remplacé par un chiffre faux présenté comme exact. Et il n'est plus demandé À CHAQUE PAGE : un
+//     total ne bouge pas au fil d'un parcours, donc la vue le demande sur la PREMIÈRE page d'une fenêtre
+//     et le garde (`count=0` ensuite). Sur un journal à peine plus gros que le plafond, la borne seule
+//     n'aurait presque rien économisé — c'est ce second geste qui ramène le comptage à UNE fois.
+//     (UN COMPTEUR A MENTI, ET C'EST ÉCRIT PARCE QUE ÇA COMPTE : en PAS DE MACHINE VIRTUELLE, la forme
+//     bornée en coûte PLUS — 90 024 contre 42 011 et 84 011 — parce que la borne empêche l'aplatissement
+//     de la sous-requête, donc chaque ligne coûte plus d'interprétation pendant qu'il y a moitié moins
+//     de lignes à lire. Et `SELECT COUNT(*) FROM ledger`, la forme d'origine, coûte NEUF pas quel que
+//     soit le volume : SQLite la sert par un comptage de B-tree sans boucle VDBE, donc ce compteur-là
+//     est aveugle à son coût. Le compteur retenu est nommé avec ce qu'il mesure.)
+//   * LA PAGE se prend PAR CLÉ (`LedgerPlan`), sur le modèle de `PagePlan`/`page_sql`/`keyset_finalize`
+//     déjà éprouvé ici même (#28), et avec le MÊME contrat de continuation (`has_more`+`next_cursor`).
+//     MESURÉ : atteindre la 40e page par clé coûte ce que coûte la 2e ; par décalage, vingt fois plus.
+//   * LA FENÊTRE DE TEMPS existe (`window_days`), elle est réglable, et la vue la DIT.
+//
+// LA CLÉ EST `id`, PAS `(ts,id)`, ET CE N'EST PAS UN RACCOURCI. L'ordre du journal d'intégrité EST
+// l'ordre de sa chaîne de hash : `ledger_append` chaîne sur la dernière ligne `ORDER BY id DESC`, et
+// `verify_ledger_conn` recalcule la chaîne `ORDER BY id`. `ledger_export_get` pagine DÉJÀ par `from_id`.
+// Reprendre le wrap `(ts,id)` de `page_sql` RÉORDONNERAIT le journal le jour où l'horloge recule — cette
+// correction n'a pas le droit de toucher à ce que le journal contient, à son ordre, ni à sa chaîne.
+// Ce qui est repris est donc la FORME (un plan fermé, un seul fabricant de page, un curseur, un contrat
+// de continuation honnête), pas le littéral SQL d'un autre flux.
+//
+// CE QUE CETTE CORRECTION NE BORNE PAS, ÉCRIT PLUTÔT QUE SOUS-ENTENDU. `ledger(ts)` n'est PAS indexé
+// (`id INTEGER PRIMARY KEY` est la seule clé, cf. migrate v7). La fenêtre est donc un FILTRE EXACT
+// appliqué au fil du balayage descendant de la clé primaire : tant que la fenêtre couvre les entrées
+// les plus récentes — ce qu'elle fait par construction, sa borne haute étant l'instant présent — chaque
+// page ne lit que ses propres lignes. La DERNIÈRE page d'une fenêtre, elle, doit prouver qu'il n'y a
+// plus rien sous la borne : SQLite descend alors jusqu'au bas de la table. C'est UN balayage par
+// parcours de fenêtre, contre UN comptage intégral PAR PAGE auparavant. Le fermer demanderait un index
+// sur `ledger(ts)`, c'est-à-dire une migration de schéma — hors de ce correctif, et à mettre en regard
+// du poids des index déjà porté par la base.
+// =================================================================================================
+
+/// Plafond de réglage de la fenêtre, en jours — le MÊME que celui de la rétention et de la purge
+/// (`RETENTION_FIELDS`, `PURGE_WINDOW_MAX_DAYS`) : au-delà, une valeur n'est plus une fenêtre mais une
+/// faute de frappe. `window_days=0` (ou paramètre absent) = AUCUNE borne.
+pub(crate) const LEDGER_WINDOW_MAX_DAYS: i64 = 3650;
+
+/// `P11.16-d` — PLAFOND DU SAUT à une page arbitraire, DÉRIVÉ du plafond de comptage : le `total` rendu
+/// ne dépasse jamais `PAGINATION_COUNT_CAP`, donc aucune page NUMÉROTÉE ne peut se trouver au-delà. Un
+/// décalage plus grand ne vient pas du pager, et il coûterait exactement le balayage que la clé évite.
+/// Au-delà, la route REFUSE en nommant le plafond : elle ne rend pas une page vide, qui se lirait comme
+/// une fin de journal — et sur CETTE vue, une ligne manquante ne se remarque pas.
+pub(crate) const LEDGER_JUMP_MAX: i64 = PAGINATION_COUNT_CAP;
+
+/// CE QUE LA ROUTE A COMPRIS DE LA DEMANDE — une seule valeur, pour que le test interroge EXACTEMENT ce
+/// que le handler exécute (le handler ne fait plus que traduire la requête HTTP en `LedgerAsk`).
+pub(crate) struct LedgerAsk {
+    /// Taille de page, clampée [1,1000] par le handler.
+    pub(crate) limit: i64,
+    /// Borne basse de temps, INCLUSE. `i64::MIN` = aucune borne (tout l'historique).
+    pub(crate) since: i64,
+    /// Fenêtre demandée, en jours (0 = aucune borne). RENDUE au client pour qu'il puisse la DIRE.
+    pub(crate) window_days: i64,
+    /// Curseur de continuation : `id` de la DERNIÈRE ligne rendue -> la page suivante est `id < cursor`.
+    pub(crate) cursor: Option<i64>,
+    /// Saut à une page arbitraire DANS l'ordre du journal (clic sur un numéro). 0 = première page.
+    pub(crate) offset: i64,
+    /// COMPTER, ou pas. Le total ne change pas d'une page à l'autre d'un même parcours : le recompter à
+    /// chaque page fait relire jusqu'au plafond pour un chiffre déjà connu. La vue le demande sur la
+    /// PREMIÈRE page d'une fenêtre et le garde ; `false` -> `total:null`, et le client sait qu'il doit
+    /// se servir de celui qu'il a. Défaut `true` : un appelant qui ne dit rien reçoit ce qu'il recevait.
+    pub(crate) count: bool,
+}
+
+/// PLAN DE PAGE du journal — la forme de page à fabriquer, sur le modèle fermé de `PagePlan`
+/// (`handlers/query.rs`) : ajouter une variante OBLIGE à la traiter dans `ledger_page_sql`, et aucun
+/// appelant ne peut composer sa propre clause de page.
+pub(crate) enum LedgerPlan {
+    /// CURSEUR (Suivant/Précédent séquentiel) : O(page), quelle que soit la profondeur.
+    Cursor(i64),
+    /// SAUT à une page arbitraire : l'OFFSET est le seul moyen d'atteindre la page k sans parcourir les
+    /// k-1 précédentes. Choix ASSUMÉ, borné par `LEDGER_JUMP_MAX` : la page atterrie rend son curseur,
+    /// donc le Suivant repart par clé.
+    Jump(i64),
+    /// PREMIÈRE page.
+    First,
+}
+
+/// Traduit (curseur, décalage) en plan — la décision est ici, pas chez l'appelant. Le curseur PRIME.
+pub(crate) fn ledger_plan(cursor: Option<i64>, offset: i64) -> LedgerPlan {
+    match cursor {
+        Some(c) => LedgerPlan::Cursor(c),
+        None if offset > 0 => LedgerPlan::Jump(offset),
+        None => LedgerPlan::First,
+    }
+}
+
+/// LE SEUL fabricant du COMPTAGE du journal — écrit une fois pour que le test mesure CE QUI EST ÉMIS et
+/// non une copie. Le `SELECT 1` ne demande aucune colonne grasse et le `LIMIT CAP+1` ARRÊTE le balayage au
+/// plafond : au-dessous le total est EXACT, au-dessus il est plafonné ET annoncé (`total_capped`). Même
+/// motif, même raison et même plafond que le `total` de `/api/query` (`PAGINATION_COUNT_CAP`).
+///
+/// UNE PHRASE HÉRITÉE EST ICI CORRIGÉE : la documentation de `PAGINATION_COUNT_CAP` explique que « SQLite
+/// aplatit la sous-requête ». MESURÉ le 2026-08-25 : le `LIMIT` l'EN EMPÊCHE — la sous-requête est jouée en
+/// co-routine, ce qui coûte DAVANTAGE de pas de machine virtuelle par ligne. Cela n'enlève rien à la
+/// propriété qui décide, et c'est elle qui est éprouvée : le nombre de LIGNES TRAVERSÉES est plafonné,
+/// donc le nombre de pages lues et déchiffrées aussi.
+pub(crate) fn ledger_total_sql() -> String {
+    format!("SELECT COUNT(*) FROM (SELECT 1 FROM ledger WHERE ts>=?1 LIMIT {})", PAGINATION_COUNT_CAP + 1)
+}
+
+/// LE SEUL fabricant de page du journal d'audit. `cursor`/`offset` sont des `i64` parsés stricts en amont
+/// et formatés directement -> injection impossible (même raisonnement que `page_sql`). La borne de temps
+/// part en PARAMÈTRE LIÉ (`?1`) et la taille de page aussi (`?2`). Projection et ordre INCHANGÉS par
+/// rapport à la version d'origine : `id,ts,kind,detail,hash`, `ORDER BY id DESC`.
+pub(crate) fn ledger_page_sql(plan: &LedgerPlan) -> String {
+    const TETE: &str = "SELECT id,ts,kind,detail,hash FROM ledger WHERE ts>=?1";
+    match plan {
+        LedgerPlan::Cursor(c) => format!("{TETE} AND id<{c} ORDER BY id DESC LIMIT ?2"),
+        LedgerPlan::Jump(o) => format!("{TETE} ORDER BY id DESC LIMIT ?2 OFFSET {o}"),
+        LedgerPlan::First => format!("{TETE} ORDER BY id DESC LIMIT ?2"),
+    }
+}
+
+/// Page du journal d'intégrité. Fonction PURE sur `&Connection` -> testable sans AppState.
+///
+/// Rend `{ok, entries, total, total_capped, window_days, since, oldest_ts, older_outside_window,
+/// has_more, next_cursor, limit}` — `total`/`total_capped` valant `null` quand `count` est faux (« non
+/// compté », ce qu'un `0` ne saurait pas dire). `entries` : MÊMES colonnes, MÊME ordre (`id` décroissant)
+/// qu'avant — la fenêtre de temps FILTRE, elle ne réordonne rien et ne touche pas à la chaîne de hash.
+pub(crate) fn ledger_page(conn: &Connection, ask: &LedgerAsk) -> Value {
+    // (1) TOTAL BORNÉ : le balayage s'arrête à `CAP+1` lignes au lieu de lire toute la table. Sous le
+    //     plafond le total est EXACT (pager numéroté juste) ; au plafond il est rendu plafonné AVEC
+    //     `total_capped`, jamais présenté comme exact.
+    //     DEMANDÉ SEULEMENT QUAND IL PEUT AVOIR CHANGÉ : hors de la première page d'un parcours, le total
+    //     est déjà connu du client, et le relire coûterait le plafond POUR RIEN. `null` dit « non compté »,
+    //     ce qu'un `0` ne saurait pas dire.
+    let (total, total_capped) = if ask.count {
+        let raw: i64 = conn.query_row(&ledger_total_sql(), params![ask.since], |r| r.get(0)).unwrap_or(0);
+        let capped = raw > PAGINATION_COUNT_CAP;
+        (json!(if capped { PAGINATION_COUNT_CAP } else { raw }), json!(capped))
+    } else {
+        (Value::Null, Value::Null)
+    };
+
+    // (2) LA PLUS ANCIENNE ENTRÉE STOCKÉE — première ligne de la clé primaire, coût constant. C'est ce
+    //     qui permet à la vue de DIRE que la fenêtre mord (des entrées existent hors du cadre) au lieu
+    //     de laisser croire que le journal s'arrête là.
+    let oldest_ts: Option<i64> = conn.query_row("SELECT ts FROM ledger ORDER BY id LIMIT 1", [], |r| r.get(0)).ok();
+
+    // (3) LA PAGE, PAR CLÉ.
+    let sql = ledger_page_sql(&ledger_plan(ask.cursor, ask.offset));
+    let entries: Vec<Value> = match conn.prepare(&sql) {
         Ok(mut stmt) => stmt
-            .query_map(params![limit, offset], |r| {
+            .query_map(params![ask.since, ask.limit], |r| {
                 Ok(json!({
                     "id": r.get::<_, i64>(0)?,
                     "ts": r.get::<_, i64>(1)?,
@@ -173,22 +333,107 @@ pub(crate) fn ledger_page(conn: &Connection, limit: i64, offset: i64) -> (Vec<Va
             .unwrap_or_default(),
         Err(_) => Vec::new(),
     };
-    (entries, total)
+
+    // (4) CONTRAT DE CONTINUATION, identique à `keyset_finalize` : EXACTEMENT `limit` lignes -> il reste
+    //     probablement des lignes, on fournit le curseur ; MOINS -> dernière page (`next_cursor:null`).
+    //     `has_more` reste HONNÊTE : jamais vrai sans curseur exploitable (sinon la vue bouclerait à vide).
+    let next_cursor = if entries.len() as i64 == ask.limit {
+        entries.last().and_then(|e| e.get("id").cloned()).unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    json!({
+        "ok": true,
+        "entries": entries,
+        "total": total,
+        "total_capped": total_capped,
+        "window_days": ask.window_days,
+        // Borne basse EFFECTIVE, ou `null` quand il n'y a pas de borne (jamais `i64::MIN`, qui se lirait
+        // comme une date absurde côté client).
+        "since": if ask.window_days > 0 { json!(ask.since) } else { Value::Null },
+        "oldest_ts": oldest_ts,
+        "older_outside_window": oldest_ts.map(|t| t < ask.since).unwrap_or(false),
+        "has_more": !next_cursor.is_null(),
+        "next_cursor": next_cursor,
+        "limit": ask.limit,
+    })
 }
 
-/// GET /api/ledger?limit=<n>&offset=<n> -> page du journal d'intégrité (audit tamper-evident), ordre
-/// décroissant + `total`. Rend l'audit config RÉELLEMENT consultable in-UI (correctif H1 : le ledger n'avait
-/// qu'un `verify` CLI). Lecture seule, admin only (B9). limit clampé [1,1000] ; offset absent -> 0 (rétro-compat).
+/// GET /api/ledger?limit=<n>&window_days=<j>&cursor=<id>&offset=<n>&count=<0|1> -> page du journal
+/// d'intégrité (audit tamper-evident), ordre `id` décroissant. Rend l'audit RÉELLEMENT consultable in-UI
+/// (correctif H1 : le ledger n'avait qu'un `verify` CLI). Admin only (B9).
+///
+/// LECTURE SEULE — ET LE CODE LE FAIT MAINTENANT. L'en-tête disait « lecture seule » pendant que le
+/// corps prenait le MUTEX D'ÉCRITURE (`with_write`), c'est-à-dire la connexion par laquelle passe
+/// l'ingestion. Le comptage intégral servi sur ce verrou entrait donc en concurrence avec elle. La route
+/// passe au pool read-only + `query_sem` + `spawn_blocking` + watchdog, EXACTEMENT comme `/api/query`
+/// et comme `cases_list` — dont le commentaire porte déjà ce même correctif (« M6 : SORT du mutex
+/// d'ÉCRITURE »), preuve que le geste était connu et que cette route était restée en arrière.
+///
+/// `count=0` : ne recompte pas le total (le client garde celui de la première page de son parcours) ->
+/// `total:null` + `total_capped:null`, ce qu'un `0` ne saurait pas dire. ABSENT -> on compte, comme avant.
+///
+/// `window_days` : 1..`LEDGER_WINDOW_MAX_DAYS`, `0` ou ABSENT = aucune borne. LE DÉFAUT DE LA ROUTE EST
+/// « AUCUNE BORNE », ET CE N'EST PAS UN OUBLI : un appelant qui cherche le DERNIER changement audité — le
+/// bandeau de la vue Rétention (`web/retention.js`) — doit le trouver même s'il date d'avant n'importe
+/// quelle fenêtre choisie ; un défaut borné côté route lui ferait afficher « aucun changement audité »
+/// pour un changement qui existe. Le défaut est donc une propriété de la VUE, et il vit à UN seul endroit :
+/// `FENETRE_DEFAUT` dans `web/audit.js`, où la vue le NOMME au-dessus du tableau. L'écrire aussi ici en
+/// ferait un second compteur, qui pourrirait.
+///
+/// Un décalage au-delà de `LEDGER_JUMP_MAX`, une fenêtre non numérique, un permis ou une connexion de
+/// lecture indisponibles -> REFUS explicite. Jamais une page vide : sur cette vue, un vide se lit comme
+/// un fait, et une ligne manquante ne se remarque pas.
 pub(crate) async fn ledger_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Response {
     if !au.is_admin() {
         return (StatusCode::FORBIDDEN, "réservé à l'administrateur").into_response();
     }
     let limit: i64 = q.get("limit").and_then(|s| s.trim().parse::<i64>().ok()).unwrap_or(100).clamp(1, 1000);
     let offset: i64 = q.get("offset").and_then(|s| s.trim().parse::<i64>().ok()).unwrap_or(0).max(0);
-    with_write(&st, &au, |conn| {
-    let (entries, total) = ledger_page(&conn, limit, offset);
-    Json(json!({ "ok": true, "entries": entries, "total": total })).into_response()
-    })
+    if offset > LEDGER_JUMP_MAX {
+        return bad_req(format!(
+            "saut refusé : décalage {offset} au-delà du plafond de {LEDGER_JUMP_MAX} entrées. Le journal se \
+             parcourt par clé (page suivante / précédente), ou se resserre par sa fenêtre de temps."
+        ));
+    }
+    let cursor: Option<i64> = q.get("cursor").and_then(|s| s.trim().parse::<i64>().ok()).filter(|c| *c > 0);
+    let window_days: i64 = match q.get("window_days").map(|s| s.trim()) {
+        None | Some("") => 0,
+        Some(s) => match s.parse::<i64>() {
+            Ok(0) => 0,
+            Ok(n) if n > 0 => n.min(LEDGER_WINDOW_MAX_DAYS),
+            _ => {
+                return bad_req(format!(
+                    "fenêtre de temps invalide : un nombre de jours entre 1 et {LEDGER_WINDOW_MAX_DAYS} est \
+                     attendu, ou 0 pour tout l'historique."
+                ))
+            }
+        },
+    };
+    let since = if window_days > 0 { now() - window_days * 86_400 } else { i64::MIN };
+    // `count=0` -> ne recompte pas (le client garde le total de la première page de son parcours).
+    let count = q.get("count").map(|s| !matches!(s.trim(), "0" | "false" | "no")).unwrap_or(true);
+    let ask = LedgerAsk { limit, since, window_days, cursor, offset, count };
+    let _permit = match acquire_query_permit(&st.query_sem).await {
+        Ok((p, _wait)) => p,
+        Err(_) => {
+            return server_err(
+                "journal d'audit : aucun permis de lecture disponible. Aucune page n'est rendue — une page \
+                 vide se lirait comme un journal vide.",
+            )
+        }
+    };
+    let db_path = req_db_path(&st, &au);
+    let res = tokio::task::spawn_blocking(move || read_with_watchdog(&db_path, Value::Null, move |conn| ledger_page(conn, &ask)))
+        .await
+        .unwrap_or(Value::Null);
+    if res.is_null() {
+        return server_err(
+            "journal d'audit illisible (connexion de lecture indisponible). Aucune page n'est rendue — une \
+             page vide se lirait comme un journal vide.",
+        );
+    }
+    Json(res).into_response()
 }
 
 // Inventaire des sources + métadonnées d'affichage : `handlers/sources.rs` (P11.3-a).

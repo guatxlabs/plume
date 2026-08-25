@@ -360,7 +360,7 @@ env:
   # listage du répertoire ne voit pas, une mesure impraticable qui rend un verdict et pas un zéro, le
   # contrôle positif du démarrage, les quatre verdicts du quota, et la mutation dans les deux sens sur
   # un tri qui déverse pour de vrai).
-  EXPECTED_TESTS: "1286"
+  EXPECTED_TESTS: "1298"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -683,7 +683,7 @@ jobs:
           # `cold_tier` pour 1286 par défaut — l'écart reste **220**. Ce compteur-ci bouge AVEC
           # l'autre : cinq tests sans `cfg` entrent dans les deux profils, et le laisser en arrière
           # rendrait ce job rouge sans rien mesurer de neuf.
-          EXPECTED_COLD_TESTS: "1506"
+          EXPECTED_COLD_TESTS: "1518"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -815,6 +815,20 @@ jobs:
       - { name: "Toute route sensible du démon (détruit / élève un droit / arme une réponse — DÉRIVÉE du routeur) a ses appelants web derrière la confirmation partagée (P11.5-b)", run: python3 .github/scripts/check_sensitive_routes_are_confirmed.py }
       - { name: "Aucun bouton de la surface web sans classe partagée ni contexte stylant — contextes et classes DÉRIVÉS de style.css, sites dérivés des modules (P11.4-b)", run: python3 .github/scripts/check_every_button_wears_shared_chrome.py }
 
+      # `P11.14-c` — UN REFUS NE SE REND JAMAIS COMME UNE ABSENCE. Le panneau DLP décidait de son
+      # affichage sur UNE condition (`!j || j.error || !Array.isArray(j.rows) || !j.rows.length`) :
+      # un refus du démon, une réponse illisible, une panne réseau et un vrai vide y entraient, et
+      # « Aucun changement récent (<fenêtre>) — ou capteur inactif » en sortait. D'où la contradiction
+      # relevée en usage réel le 2026-08-25 — toute la rétention rendant MOINS que sept jours — alors
+      # que le SQL de la fenêtre large est celui de l'étroite MOINS son conjoint `ts >= …` et rend
+      # toujours au moins autant : ce que le démon rendait de différent, c'était un REFUS (422 froid
+      # tronqué, 400 budget). La garde juge la CONDITION, pas la phrase (une phrase se reformule) :
+      # aucune expression de `web/` ne doit décider dans le MÊME test qu'une lecture a échoué et
+      # qu'elle est vide. Population DÉCOUVERTE par parcours de `web/`, instrument validé dans les
+      # deux sens, refus de conclure sous ses planchers. Ce qu'elle NE tient PAS — la phrase rendue
+      # ensuite — est tenu par le harnais ESM (témoin 16), qui exige trois issues distinctes.
+      - { name: "Un refus du démon ne se rend jamais comme une absence de données — aucune condition de web/ ne fond l'échec et le vide (P11.14-c)", run: python3 .github/scripts/check_a_refusal_is_not_rendered_as_an_absence.py }
+
       # `P11.4-d` — AUCUNE RÈGLE DE STYLE SANS CIBLE. Les sélecteurs d'identifiant et de classe sont DÉRIVÉS de
       # `style.css`, le corpus où un nom peut être posé est DÉRIVÉ de `web/` (code sans commentaires) ; un nom
       # construit par concaténation ou gabarit est « indécidable » et nommé, jamais compté orphelin. Mesuré le
@@ -890,6 +904,34 @@ jobs:
       # au moment où le document est écrit, pas lors d'un futur audit.
       - name: Un document suivi doit être ATTEIGNABLE depuis la page d'accueil
         run: python3 .github/scripts/check_every_doc_is_reachable.py
+
+      # `P9.7-b` — CE QU'UN EXPLOITANT DOIT POUVOIR TROUVER EST DOCUMENTÉ. Même famille que le pas
+      # précédent, appliquée non plus au FICHIER mais à la SURFACE : le corpus dérive parce que rien
+      # ne le lie au code — un levier ajouté, un capteur livré, un onglet posé ne font rougir aucun
+      # instrument s'ils ne sont écrits nulle part. MESURÉ SUR L'ARBRE SUIVI le 2026-08-25, avant la
+      # campagne `P9.7-a` : sur les 37 onglets que la console DÉCLARE, TROIS avaient une entrée dans
+      # le corpus ; les 34 autres n'étaient décrits nulle part. Dans le même temps 39 capteurs sur 39
+      # en avaient une — le critère n'est donc pas hors d'atteinte, c'est une part de la surface qui
+      # n'avait jamais été relue.
+      # LES QUATRE INVENTAIRES SONT DÉRIVÉS, ET LES SOURCES LE SONT AUSSI. Le module de navigation
+      # est l'unique fichier de `web/` qui porte la définition `const SPACES = [` ; le script de
+      # retrait est l'unique fichier suivi qui porte le `case` validant le mode ; une bibliothèque
+      # de capteurs se reconnaît à ce qu'un autre capteur la SOURCE, jamais à son nom. ANCRAGE SUR
+      # LA PROPRIÉTÉ, PAS SUR LE NOM (`P11.13-d`) : prouvé par mutation le 2026-08-25 — les trois
+      # sources renommées ET déplacées, la garde les retrouve, publie leurs nouveaux chemins, et
+      # MORD toujours (37 onglets et 39 capteurs, comptes inchangés) au lieu de verdir en voyant
+      # moins de choses à contrôler.
+      # DEUX RÉGIMES. Onglets, capteurs et modes : plafond ZÉRO, chacun doit avoir une ENTRÉE — la
+      # première cellule d'une ligne de tableau, jamais une simple mention en prose. Leviers
+      # `PLUME_*` : plusieurs centaines, dont la majorité n'a d'autre documentation que le code qui
+      # les lit — exiger zéro désarmerait la garde, on pose donc un CLIQUET, le nombre non documenté
+      # est PUBLIÉ à chaque exécution et ne doit jamais AUGMENTER. Un vert affiche les quatre
+      # comptes ; un rouge nomme ce qui manque et où le décrire ; un instrument muet (source de
+      # dérivation absente ou dédoublée) REFUSE DE CONCLURE en code 2 au lieu de rendre vert.
+      # LE CORPUS QU'ELLE LIT EST CELUI DES FICHIERS SUIVIS, délibérément : un document hors index
+      # n'existe pas pour elle comme il n'existe pas pour le lecteur du dépôt.
+      - name: Ce qu'un exploitant doit pouvoir trouver est documenté — onglets, capteurs, modes et leviers DÉRIVÉS des sources, cliquet sur ce qui n'est pas couvert (P9.7-b)
+        run: python3 .github/scripts/check_operator_surface_is_documented.py
 
       # `P8.9-c` — MÊME FAMILLE, APPLIQUÉE À L'INDEX DES CLÉS : ici ce n'est ni la couverture ni le
       # document qui manque, c'est ce que la ligne dit d'ELLE-MÊME. Une clé porte un état, et ✅

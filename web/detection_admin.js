@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, mitreName, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, socIsAdmin, lsSet, collapsibleGroup, SEVCOL } from './core.js';
+import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, mitreName, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, socIsAdmin, lsSet, collapsibleGroup } from './core.js';
 import { S } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
 import { loadAttackMatrix, poserLesPortesDeTechnique } from './attack.js';
@@ -129,19 +129,16 @@ function renderRules() {
     wrap.appendChild(host);
     return;
   }
-  // ITEM 7 : grouper PAR SÉVÉRITÉ (critical/high/medium/low/info), critique d'abord — sections repliables.
-  const set = lsSet('soc_rule_collapsed');
-  const groups = new Map();
-  rules.forEach(r => { const s = Number(r.severity) || 0; if (!groups.has(s)) groups.set(s, []); groups.get(s).push(r); });
-  [...groups.keys()].sort((a, b) => b - a).forEach(s => {
-    const arr = groups.get(s);
-    const dot = `<span class="fdot" style="background:${SEVCOL[s] || 'var(--mut)'}"></span>`;
-    // BATCH 1 : la liste plate de CHAQUE groupe est paginée (client) -> gros catalogue de règles borné, tout
-    // en gardant le groupement repliable + le sélecteur de tri. Pager auto-caché tant que <= une page.
-    const host = document.createElement('div');
-    pagedList(host, { mode: 'client', pageSize: 50, rows: arr, renderRow: ruleRow });
-    wrap.appendChild(collapsibleGroup(set, 'soc_rule_collapsed', 'sev:' + s, sev(s), arr.length, [host], dot));
-  });
+  // `P11.15-b` — LE REGROUPEMENT VIENT DE LA FABRIQUE, ET SA CLÉ EST DÉRIVÉE. Ce panneau écrivait sa
+  // propre partition par gravité : la boucle, la `Map`, la clé de pliage, la pastille et le libellé. La
+  // fabrique partagée mesure ce que les LIGNES portent — une règle porte `severity`, donc elle se groupe
+  // par gravité, exactement comme avant, sans qu'un mot le lui dise. Elle porte aussi `mitre`, donc la
+  // technique ATT&CK devient un second axe offert, sans qu'une ligne lui soit écrite ici.
+  // CE QUI CHANGE VRAIMENT : chacun des groupes construisait sa page de lignes MÊME REPLIÉ ; la feuille les
+  // masquait ensuite. Le corps d'un groupe replié n'est plus bâti du tout.
+  const host = document.createElement('div');
+  pagedList(host, { mode: 'client', pageSize: 50, rows: rules, renderRow: ruleRow, group: { storeKey: 'soc_rule_collapsed' } });
+  wrap.appendChild(host);
 }
 // P11.12-a — UNE RÈGLE QU'ON VIENT D'ENREGISTRER DOIT SE VOIR. Une recherche active n'a aucune raison de
 // contenir la règle qu'on vient d'écrire : le geste réussirait et la liste n'en montrerait rien — un succès
@@ -444,16 +441,13 @@ async function loadParsers() {
   if (S.parserSort === 'source') parsers.sort((a, b) => (a.source || '').localeCompare(b.source || '') || a.id - b.id);
   wrap.replaceChildren();
   if (!parsers.length) { wrap.appendChild(muted('aucun parser')); return; }
-  // ITEM 7 : grouper PAR SOURCE — chaque source = section repliable (« source <x> »), pliage persisté.
-  const set = lsSet('soc_parser_collapsed');
-  const groups = new Map();
-  parsers.forEach(p => { const s = p.source || '(sans source)'; if (!groups.has(s)) groups.set(s, []); groups.get(s).push(p); });
-  for (const [source, arr] of groups) {
-    // BATCH 1 : liste plate de chaque groupe paginée (client) ; groupement + tri conservés, pager auto-caché.
-    const host = document.createElement('div');
-    pagedList(host, { mode: 'client', pageSize: 50, rows: arr, renderRow: parserRow });
-    wrap.appendChild(collapsibleGroup(set, 'soc_parser_collapsed', 'src:' + source, 'source ' + source, arr.length, [host]));
-  }
+  // `P11.15-b` — MÊME FABRIQUE, MÊME DÉRIVATION : un parseur porte `source`, il se groupe par source. La
+  // partition écrite à la main ici était la seconde copie de celle des règles ; le parseur sans source
+  // n'est plus rangé sous un libellé écrit sur place, mais sous le groupe « sans source » que la fabrique
+  // nomme pour toutes les vues, et il reste compté.
+  const host = document.createElement('div');
+  pagedList(host, { mode: 'client', pageSize: 50, rows: parsers, renderRow: parserRow, group: { storeKey: 'soc_parser_collapsed' } });
+  wrap.appendChild(host);
 }
 function parserRow(p) {
   const row = document.createElement('div'); row.className = 'rulerow';
@@ -534,12 +528,29 @@ async function loadActions() {
   const actions = d.actions || [];
   wrap.replaceChildren();
   if (!actions.length) { wrap.appendChild(muted('aucune action')); return; }
-  // groupe repliable « Actions » (même chrome que Détection/Parseurs) — tri : pending d'abord, puis récence (done_ts desc)
+  // tri : pending d'abord, puis récence (done_ts desc). Il ordonne les lignes DANS chaque groupe.
   const PRANK = { pending: 0, approved: 1 };
   actions.sort((a, b) => ((PRANK[a.status] ?? 2) - (PRANK[b.status] ?? 2)) || ((b.done_ts || 0) - (a.done_ts || 0)));
-  const set = lsSet('soc_act_collapsed');
-  wrap.appendChild(collapsibleGroup(set, 'soc_act_collapsed', 'actions', 'Actions', actions.length, actions.map(actionRow)));
+  // `P11.15-b` — CE QUE CETTE LISTE COUVRE, DIT AVANT D'ÊTRE LUE. `/api/actions` sert les actions les plus
+  // récentes, BORNÉES, et sa réponse ne porte ni total ni curseur (`daemon/src/handlers/actions.rs`). Le
+  // compte des en-têtes est donc celui des lignes SERVIES et non celui du registre : présenter l'un pour
+  // l'autre ferait lire « il y a N actions » là où il y en a peut-être mille — exactement la promesse que
+  // ce panneau ne peut pas tenir tant que la route ne rend pas de total. Un compte borné qui se présente
+  // comme un total est une troncature silencieuse, et c'est la famille de défaut que ce dépôt poursuit.
+  wrap.appendChild(muted(actions.length + MOT_ACTIONS_SERVIES));
+  // `P11.17-c` — LE REGROUPEMENT PAR RÈGLE N'EST PAS ÉCRIT ICI. La fabrique lit ce que les lignes portent :
+  // une action nomme la règle qui l'a produite (le moteur de réponse l'inscrit dans sa raison), son état et
+  // l'hôte où elle s'applique — trois axes offerts, dont la règle est le premier de l'ordre partagé. Le
+  // panneau ne rendait qu'UN groupe contenant toute la liste, et il en construisait chaque ligne même replié.
+  const host = document.createElement('div');
+  pagedList(host, { mode: 'client', pageSize: 50, rows: actions, renderRow: actionRow, group: { storeKey: 'soc_act_collapsed' } });
+  wrap.appendChild(host);
 }
+// Ce que la console SAIT de la borne, écrit dans les deux langues : elle connaît le nombre de lignes qu'on
+// lui a servies, et l'absence de total dans la réponse. Elle n'invente pas le reste.
+const MOT_ACTIONS_SERVIES = LANG === 'en'
+  ? ' action(s) served — the route serves the most recent ones, bounded; its response carries neither a total nor a cursor, so the ledger may hold more.'
+  : ' action(s) servie(s) — la route sert les plus récentes, bornées ; sa réponse ne porte ni total ni curseur, le registre peut donc en compter davantage.';
 function actionRow(a) {
   const row = document.createElement('div'); row.className = 'rulerow';
   const st = document.createElement('span'); st.className = 'actst act-' + a.status; st.textContent = a.status;
@@ -576,33 +587,79 @@ if ($('#act-form')) $('#act-form').addEventListener('submit', async e => {
 loadActions();
 
 // --- mode global observe/active ---
+// P11.14-a — UN MODE NON LU N'EST PAS « OBSERVATION ». Cette charge avalait son échec (`catch (e) {}`) puis
+// PEIGNAIT sa valeur de repli : l'interrupteur affirmait « Observation — propositions seulement », en vert,
+// alors qu'il n'avait rien pu lire. Sur une console de sécurité l'écart va dans le sens DANGEREUX — croire
+// qu'on observe quand on ne sait pas si l'on applique. Le mode a donc TROIS rendus et non deux, et le
+// troisième est celui que le reste du produit emploie déjà pour une grandeur qu'on n'a pas su lire
+// (`system.js` : « NON LISIBLE » à côté de sa cause). La cause, elle, est écrite dans l'hôte par le
+// mécanisme PARTAGÉ `fetchInto` — le badge d'état, qui est la région `role="status"` voisine.
+// L'INTERRUPTEUR D'UN ÉTAT NON LU EST DÉSARMÉ : on n'arme pas ce qu'on ne sait pas lire, et une bascule
+// dont l'état courant est inconnu n'a pas de destination. `aria-checked="mixed"` est l'état indéterminé
+// que la norme donne à un `role="switch"` ; `data-mode` vide dit la même chose au gestionnaire de clic.
 async function loadMode() {
   const b = $('#mode-badge'), tg = $('#mode-toggle'); if (!tg) return;
-  let m = 'observe';
-  try { ({ mode: m } = await api('/mode')); } catch (e) {}
-  const active = m === 'active';
-  // D13 — INTERRUPTEUR ON/OFF color-codé (piste + bouton), au lieu d'un bouton dont le libellé = la DESTINATION.
-  // Vert = Observation (sûr) ; ambre/rouge = Actif (armé, réponses automatiques). L'ÉTAT COURANT est porté par
-  // data-mode (le handler s'y fie, PLUS jamais à className) ; aria-checked=« armé ». Le libellé décrit le mode
-  // COURANT (pas une destination). L'interrupteur reste #mode-toggle -> viewer-hide CSS + confirm d'armement intacts.
-  tg.dataset.mode = active ? 'active' : 'observe';
-  tg.classList.toggle('armed', active);
-  tg.setAttribute('aria-checked', active ? 'true' : 'false');
-  tg.setAttribute('aria-label', active
-    ? 'Mode ACTIF (réponses automatiques armées) — cliquer pour repasser en Observation'
-    : 'Mode Observation (propositions seulement) — cliquer pour armer les réponses automatiques');
-  tg.title = active
-    ? 'Réponses automatiques ARMÉES — cliquer pour revenir en Observation'
-    : 'Observation (propositions seulement) — cliquer pour armer les réponses automatiques';
-  tg.innerHTML = '<span class="mt-track"><span class="mt-knob"></span></span><span class="mt-lbl">' + (active ? 'ACTIF' : 'OBSERVE') + '</span>';
-  if (b) {
-    // libellé descriptif à côté de l'interrupteur (état COURANT + conséquence), même code couleur.
-    b.className = 'modestate ' + (active ? 'bad' : 'ok');
-    b.innerHTML = `<span class="fdot ${active ? 'bad' : 'ok'}"></span>` + (active ? 'Actif — réponses automatiques' : 'Observation — propositions seulement');
+  let mode = null;                                    // null = NON LU, jamais replié sur 'observe'
+  // Le badge est l'hôte de la cause : `fetchInto` l'y écrit et rend null. Sans badge dans le document, la
+  // lecture reste la même et l'échec vaut toujours « non lu » — jamais une valeur par défaut.
+  if (b) { const d = await fetchInto(b, '/mode'); if (d) mode = d.mode || 'observe'; }
+  else { try { const d = await api('/mode'); mode = d.mode || 'observe'; } catch (e) { mode = null; } }
+  peindreLeMode(tg, b, mode);
+}
+// D13 — INTERRUPTEUR ON/OFF color-codé (piste + bouton), au lieu d'un bouton dont le libellé = la DESTINATION.
+// Vert = Observation (sûr) ; ambre/rouge = Actif (armé, réponses automatiques) ; gris inerte = état NON LU.
+// L'ÉTAT COURANT est porté par data-mode (le handler s'y fie, PLUS jamais à className) ; aria-checked=« armé ».
+// Le libellé décrit le mode COURANT (pas une destination). L'interrupteur reste #mode-toggle -> viewer-hide CSS
+// + confirm d'armement intacts. `mode` vaut 'active', 'observe', ou null (non lu) — la peinture est PURE, ce
+// qui met les trois rendus sur le même chemin et permet de les juger l'un contre l'autre.
+function peindreLeMode(tg, b, mode) {
+  const lu = mode === 'active' || mode === 'observe';
+  const active = mode === 'active';
+  tg.dataset.mode = lu ? mode : '';
+  tg.classList.toggle('armed', lu && active);
+  tg.disabled = !lu;                                  // rien à basculer tant que l'état n'est pas lu
+  tg.setAttribute('aria-checked', lu ? (active ? 'true' : 'false') : 'mixed');
+  // Gris de l'état non lu, rendu à la feuille dès que le mode est lu. Même idiome que le mot d'état de
+  // l'interrupteur partagé (`producer_ui.js`), qui peint déjà son mot avec `var(--mut)`.
+  tg.style.color = lu ? '' : 'var(--mut)';
+  tg.style.borderColor = lu ? '' : 'var(--bd)';
+  if (lu) {
+    tg.setAttribute('aria-label', active
+      ? 'Mode ACTIF (réponses automatiques armées) — cliquer pour repasser en Observation'
+      : 'Mode Observation (propositions seulement) — cliquer pour armer les réponses automatiques');
+    tg.title = active
+      ? 'Réponses automatiques ARMÉES — cliquer pour revenir en Observation'
+      : 'Observation (propositions seulement) — cliquer pour armer les réponses automatiques';
+  } else {
+    // Aucune phrase d'état ne survit à une lecture ratée : celle de la lecture PRÉCÉDENTE affirmerait
+    // encore un mode. Le nom accessible retombe alors sur le contenu du bouton, qui dit « NON LISIBLE ».
+    tg.removeAttribute('aria-label'); tg.removeAttribute('title');
   }
+  if (lu) {
+    tg.innerHTML = '<span class="mt-track"><span class="mt-knob"></span></span><span class="mt-lbl">' + (active ? 'ACTIF' : 'OBSERVE') + '</span>';
+  } else {
+    // Le mot de l'état non lu est celui que le produit emploie DÉJÀ pour une grandeur qu'il n'a pas su lire
+    // (`system.js`) : un seul vocabulaire pour un seul fait. Posé par `textContent`, il est REGARDÉ par la
+    // garde du lexique — et il y figure, donc il se traduit comme le reste. La piste passe au gris neutre :
+    // ni le vert d'Observation ni le rouge d'Actif ne doit paraître quand rien n'a été lu.
+    const piste = document.createElement('span'); piste.className = 'mt-track'; piste.style.background = 'var(--mut)';
+    const bouton = document.createElement('span'); bouton.className = 'mt-knob'; piste.appendChild(bouton);
+    const mot = document.createElement('span'); mot.className = 'mt-lbl'; mot.textContent = 'NON LISIBLE';
+    tg.replaceChildren(piste, mot);
+  }
+  if (!b) return;
+  // Le code couleur du badge suit le même partage : ni vert ni rouge quand rien n'a été lu.
+  b.className = 'modestate' + (lu ? (active ? ' bad' : ' ok') : '');
+  // Non lu : `fetchInto` a DÉJÀ écrit la cause dans le badge — l'écraser la ferait disparaître.
+  if (!lu) return;
+  // libellé descriptif à côté de l'interrupteur (état COURANT + conséquence), même code couleur.
+  b.innerHTML = `<span class="fdot ${active ? 'bad' : 'ok'}"></span>` + (active ? 'Actif — réponses automatiques' : 'Observation — propositions seulement');
 }
 if ($('#mode-toggle')) $('#mode-toggle').onclick = async () => {
   const tg = $('#mode-toggle');
+  // P11.14-a — FAIL-CLOSED : `data-mode` vide = état NON LU. Sans état courant il n'y a pas de destination,
+  // et le repli implicite était « armer ». Le bouton est déjà désarmé dans ce cas ; la garde ferme le chemin.
+  if (tg.dataset.mode !== 'active' && tg.dataset.mode !== 'observe') return;
   const active = tg.dataset.mode === 'active';   // D13 — état COURANT via data-attribute (jamais className)
   const next = active ? 'observe' : 'active';
   // confirm DESTRUCTIF conservé à l'armement (passage en Actif) : exécution réelle sans approbation.
@@ -642,7 +699,9 @@ async function loadPlaybooks() {
   // groupe repliable « Playbooks » (même chrome que Détection/Parseurs) — tri par nom (localeCompare)
   playbooks.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const set = lsSet('soc_pb_collapsed');
-  wrap.appendChild(collapsibleGroup(set, 'soc_pb_collapsed', 'playbooks', 'Playbooks', playbooks.length, playbooks.map(p => pbRow(p, mode))));
+  // `P11.15-b` : le corps n'est bâti qu'au premier dépli — un groupe replié ne construisait pas moins de
+  // lignes qu'un groupe ouvert, la feuille se contentait de les masquer.
+  wrap.appendChild(collapsibleGroup(set, 'soc_pb_collapsed', 'playbooks', 'Playbooks', playbooks.length, () => playbooks.map(p => pbRow(p, mode))));
 }
 // Modèle de ligne d'un playbook : la MÊME forme que ruleRowModel / runbookRowModel (`producer_ui.js`).
 // `P11.2-b` : la conséquence vient du serveur (`consequence`, durée du ban incluse) et se lit dans les deux
@@ -703,4 +762,4 @@ if ($('#pb-form')) $('#pb-form').addEventListener('submit', async e => {
 loadPlaybooks();
 loadMode();
 
-export { renderCoverage, loadRules, renderRules, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, loadMode, loadPlaybooks, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };
+export { renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, loadMode, loadPlaybooks, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };

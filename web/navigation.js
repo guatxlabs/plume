@@ -7,7 +7,7 @@
 // `currentViewName`, `renderNav` et `route` pour les modules seam. N'importe pas `app.js`.
 import { $ } from './core.js';
 import { S } from './state.js';
-import { loadDashboards } from './dashboards.js';
+import { loadDashboards, refreshPanels } from './dashboards.js';
 import { renderDataAccess } from './dataaccess.js';
 import { loadCases } from './cases.js';
 import { loadFleetView } from './fleet.js';
@@ -28,14 +28,15 @@ import { loadAttackMatrix } from './attack.js';
 import { loadTenantsView, multiTenantMode, uiIsAdmin } from './multitenant.js';
 import { loadKnowledge } from './knowledge.js';
 import { loadDataModels } from './datamodels.js';
-import { renderFreshness } from './freshness.js';
+import { renderFreshness, renderFreshnessPulse, renderIntegrations } from './freshness.js';
 import { renderAlerts } from './alerts.js';
-import { renderCoverage, loadActions, loadMode, loadPlaybooks } from './detection_admin.js';
+import { renderCoverage, loadActions, loadMode, loadNotifiers, loadParsers, loadPlaybooks, loadRules } from './detection_admin.js';
 import { loadRunbooks } from './runbooks.js';
-import { loadTokens } from './admin_users.js';
+import { loadTokens, loadUsers } from './admin_users.js';
 import { loadRetention } from './retention.js';
 import { loadSuppressions } from './suppressions.js';
 import { renderHelpGuide } from './help.js';
+import { loadLookups } from './lookups.js';
 
 // --- navigation à 2 niveaux : ESPACES (1er niveau, sidebar) -> SOUS-ONGLETS (2e niveau) -> sections <main> ---
 // Chaque espace regroupe des sous-onglets ; chaque sous-onglet mappe une/des sections existantes (ids PRÉSERVÉS).
@@ -57,7 +58,7 @@ const SPACES = [
     { id: 'cases', label: 'Cas', sections: ['cases'] },
   ] },
   { id: 'dashboards', tabs: [
-    { id: 'dashboards', label: 'Dashboards', sections: ['dashboards'] },
+    { id: 'dashboards', label: 'Dashboards', sections: ['dashboards'], plageGlobale: true }, // seul onglet piloté par le sélecteur de plage de la barre (Recherche a le sien, la Vue d'ensemble ignore la plage)
   ] },
   { id: 'detresp', tabs: [
     { id: 'detection', label: 'Détection', sections: ['coverage', 'rules'] },
@@ -103,6 +104,162 @@ const SPACES = [
     { id: 'help', label: 'Aide', sections: ['help-panel'] },
   ] },
 ];
+// =================================================================================================
+// LE REGISTRE DES CHARGES (`P11.14-e`, `P11.17-d`).
+//
+// CE QU'IL REMPLACE, ET POURQUOI. Ce qui PEINT une section vivait jusqu'ici dans deux chaînes de
+// conditions écrites à la main sur l'identifiant de l'onglet — l'une dans `showView`, l'autre dans
+// `route`. Mesuré le 2026-08-25 sur les 37 onglets du modèle : SIX onglets n'avaient aucune charge du
+// tout, l'onglet ATT&CK en avait DEUX (il figurait dans les deux chaînes, et sa matrice partait donc
+// deux fois à chaque entrée), et QUATRE panneaux — dont celui des règles de détection — n'étaient
+// peints qu'à l'évaluation de leur module : une lecture ratée au démarrage ne se réparait JAMAIS,
+// aucun geste ne la rejouant. C'est la cause mesurée du « il faut recharger la page » de `P11.14-a`.
+//
+// CE QU'UNE CHARGE DÉCLARE, ET RIEN DE PLUS :
+//   `cible` — l'élément qu'elle peint. L'ONGLET auquel elle appartient n'est PAS déclaré : il se
+//             DÉDUIT, parce que la cible vit dans une section et que `sections` dit déjà quelle
+//             section un onglet montre. Rien n'est écrit deux fois, donc rien ne peut diverger, et un
+//             onglet ajouté demain hérite des charges de ses sections sans qu'on y pense.
+//   `vive`  — la lecture change TOUTE SEULE (état d'un capteur, file d'alertes) et mérite donc la
+//             cadence. Son absence n'est pas un oubli : une charge sans `vive` est un CATALOGUE, elle
+//             rejoue à l'ENTRÉE de la vue — ce qui répare un démarrage manqué — mais pas toutes les
+//             trente secondes. C'est la déclaration dont la cadence dérive son périmètre (`P11.17-a`).
+//
+// CE QUE CE REGISTRE EST ET N'EST PAS. Il ÉNUMÈRE ses charges, et le commentaire qui l'a précédé
+// prétendait le contraire ; c'est ce mensonge que `P11.14-e` a nommé, parce qu'il éteint la vigilance
+// de qui ajoute le panneau suivant. Ce qui est DÉRIVÉ ici, c'est l'APPARTENANCE d'une charge à un
+// onglet et le périmètre d'un tir — jamais la liste elle-même. Une liste écrite à la main s'oublie :
+// c'est pourquoi le harnais refuse qu'une section de la page ne soit peinte par aucune charge, et
+// exige que celles qui n'en ont délibérément pas se déclarent ci-dessous avec leur raison.
+// =================================================================================================
+const CHARGES_DE_LA_CONSOLE = [
+  // `pose` = la cible et la cadence se déclarent ICI, avec les autres ; la fonction qui peint est
+  // attachée par le module où vit le panneau (`poserUneCharge`). La pastille de posture vit dans
+  // l'en-tête, hors de <main> : aucune vue ne la montre ni ne la masque, seule la cadence la rejoue.
+  { cible: 'posture', pose: true, vive: true },        // peinte par app.js (peindreLaPosture)
+  { cible: 'alerts', charger: () => renderAlerts(), vive: true },
+  { cible: 'firewall', pose: true, vive: true },       // peinte par app.js (renderFirewall)
+  { cible: 'controls', pose: true, vive: true },       // peinte par app.js (renderControls)
+  { cible: 'integrations', charger: () => renderIntegrations(), vive: true },
+  { cible: 'freshness', charger: () => renderFreshnessPulse(), vive: true },
+  // DEUX charges sur la même section, et c'est la distinction qui compte : la LISTE des dashboards est
+  // un catalogue (elle rejoue à l'entrée, ce qui répare une lecture ratée au démarrage — elle n'avait
+  // aucun autre moyen de se réparer), les DONNÉES des panneaux sont une lecture vive (cadence, et
+  // déjà bornée aux panneaux chargés ET visibles par `dashboards.js`).
+  { cible: 'dashview', charger: () => loadDashboards() },
+  { cible: 'dashboards', charger: () => refreshPanels(), vive: true },
+  { cible: 'coverage', charger: () => renderCoverage() },
+  { cible: 'rules', charger: () => loadRules() },
+  { cible: 'notifiers', charger: () => loadNotifiers() },
+  { cible: 'routing-panel', charger: () => loadRouting() },
+  { cible: 'parsers', charger: () => loadParsers() },
+  { cible: 'playbooks-panel', charger: () => loadPlaybooks(), vive: true },
+  { cible: 'mode-toggle', charger: () => loadMode(), vive: true },
+  { cible: 'runbooks-panel', charger: () => loadRunbooks() },
+  { cible: 'actions-panel', charger: () => loadActions(), vive: true },
+  { cible: 'risk-panel', charger: () => loadRiskView() },
+  { cible: 'knowledge-panel', charger: () => loadKnowledge() },
+  { cible: 'datamodels-panel', charger: () => loadDataModels() },
+  { cible: 'detadv-panel', charger: () => loadDetAdv() },
+  { cible: 'attack-panel', charger: () => loadAttackMatrix() },
+  { cible: 'cases', charger: () => loadCases() },
+  { cible: 'settings', charger: () => loadMfa() },
+  { cible: 'users', charger: () => loadUsers() },
+  { cible: 'tokens', charger: () => loadTokens() },
+  { cible: 'idp-panel', charger: () => loadIdpProviders() },
+  { cible: 'field-filter-panel', charger: () => loadFieldFilters() },
+  { cible: 'lookups', charger: () => loadLookups() },
+  { cible: 'dataaccess-view', charger: () => renderDataAccess() },
+  { cible: 'system-panel', charger: () => loadSystemView() },
+  { cible: 'sources-panel', charger: () => loadSourcesView() },
+  { cible: 'freshness-panel', charger: () => renderFreshness() },
+  { cible: 'fleet-panel', charger: () => loadFleetView() },
+  { cible: 'processors-panel', charger: () => loadProcessors() },
+  { cible: 'index-policies-panel', charger: () => loadIndexPolicies() },
+  { cible: 'connectors-panel', charger: () => loadConnectors() },
+  { cible: 'destinations-panel', charger: () => loadDestinations() },
+  { cible: 'suppressions-panel', charger: () => loadSuppressions() },
+  { cible: 'retention-panel', charger: () => loadRetention() },
+  { cible: 'ledger-panel', charger: () => loadLedger() },
+  { cible: 'tenants-panel', charger: () => loadTenantsView() },
+  { cible: 'threatintel-panel', charger: () => loadThreatIntel() },
+  { cible: 'help-panel', charger: () => renderHelpGuide() },
+];
+// LES SECTIONS QU'AUCUNE CHARGE NE PEINT, ET POURQUOI. Un oubli ne doit pas pouvoir se déguiser en
+// décision : le harnais refuse toute section que rien ne peint et que cette liste ne nomme pas, et il
+// exige que la raison soit écrite JUSTE AU-DESSUS avec la clé de roadmap qui en a décidé — clé qu'il
+// va vérifier dans l'index public. Une raison libre servirait à se rassurer ; une clé renvoie à ce qui
+// a été mesuré et à ce qui a été réfuté.
+//   `query` — l'éditeur de recherche, décidé par `P11.17-a`. La recherche ne part JAMAIS d'elle-même :
+//   une requête lourde relancée en boucle par une console laissée ouverte est précisément le danger que
+//   cette clé refuse. Elle ne part que d'un geste, et le bouton Rafraîchir est ce geste.
+const SECTIONS_SANS_CHARGE = ['query'];
+// ATTACHE la fonction qui peint à une charge DÉJÀ déclarée ci-dessus. Remonter ces peintres ici
+// ferait de ce fichier un fourre-tout ; les déclarer ailleurs rouvrirait la divergence que ce registre
+// ferme. Une cible inconnue est REFUSÉE plutôt qu'ajoutée en douce : sans cela, une faute de frappe
+// créerait une charge fantôme qu'aucune section ne montre et qu'aucun témoin ne verrait.
+function poserUneCharge(cible, charger) {
+  const c = CHARGES_DE_LA_CONSOLE.find(x => x.cible === cible && x.pose);
+  if (!c) throw new Error('charge non déclarée : ' + cible);
+  c.charger = charger;
+}
+
+// AFFICHÉE = ni la cible ni aucun de ses parents ne porte `hidden`. `showView` masque les sections des
+// autres onglets : c'est cette lecture-là, et non un nom d'onglet, qui donne le périmètre.
+// CE QU'ELLE NE VOIT PAS, écrit ici et non passé sous silence : un masquage par FEUILLE DE STYLE
+// (`display:none`) n'est pas l'attribut `hidden` — une charge masquée par ce seul moyen partirait.
+function cibleAffichee(id) {
+  let n = $('#' + id);
+  if (!n) return false;
+  for (; n && n !== document.body; n = n.parentNode) if (n.hidden) return false;
+  return true;
+}
+function chargeAffichee(c) {
+  return !!c.charger && cibleAffichee(c.cible);  // déclarée sans peintre attaché : rien à peindre
+}
+// DANS LA VUE = la cible vit sous <main>, donc un onglet la montre ou la masque. Hors de <main>
+// (en-tête, pied de page) une cible est visible partout : elle suit la cadence, pas les entrées de vue.
+function chargeDansLaVue(c) {
+  for (let n = $('#' + c.cible); n && n !== document.body; n = n.parentNode) if (n.tagName === 'MAIN') return true;
+  return false;
+}
+function chargesAffichees() { return CHARGES_DE_LA_CONSOLE.filter(chargeAffichee); }
+function chargesDeLaVueAffichees() { return chargesAffichees().filter(chargeDansLaVue); }
+function chargesVivesAffichees() { return chargesAffichees().filter(c => c.vive); }
+
+// LE COUREUR, PARTAGÉ par l'entrée de vue et par la cadence — deux appelants, une seule mécanique de
+// fraîcheur et de non-recouvrement (`P11.17-a`).
+//   `depuis` absent  => GESTE EXPLICITE : tout part, et chaque charge est DATÉE.
+//   `depuis` présent => TIR DE CADENCE : ne part pas non plus ce qu'un geste a lancé depuis cette
+//                       borne. Un tir ne date rien — dater ses propres charges retournerait la règle
+//                       contre elle (mesuré : un tir sur deux perdu, en silence).
+// UNE CHARGE EN VOL NE REPART JAMAIS, quel que soit celui qui la demande. Ce n'est pas de la fraîcheur
+// mais de la RÉENTRANCE, et elle vaut aussi pour un geste : relancer ce qui tourne déjà n'apporte rien,
+// puisque la charge en cours peindra. Mesuré le 2026-08-25 en dérivant les charges de la vue : la
+// charge des comptes rappelle `route()` — elle a besoin du rôle pour recomposer la navigation — et
+// `route()` relance les charges de la vue, donc elle-même : RÉCURSION SANS FIN, que le harnais a
+// fait apparaître aussitôt. La borne posée ici la ferme par construction, pour toutes les charges.
+function lancerLesCharges(liste, depuis) {
+  const cadence = typeof depuis === 'number';
+  const partantes = liste.filter(c => !c._enVol && (!cadence || !(c._demande > depuis)));
+  const promesses = partantes.map(c => {
+    if (!cadence) c._demande = Date.now();
+    c._enVol = true;
+    return Promise.resolve().then(c.charger).finally(() => { c._enVol = false; });
+  });
+  // L'ÉCHEC D'UNE CHARGE SE DIT, QUEL QUE SOIT CELUI QUI L'A LANCÉE. Écrit ICI et non chez l'appelant :
+  // seule la cadence avait un `catch` qui portait l'aveu au pied de page ; une charge lancée à l'entrée
+  // d'une vue échouait donc EN SILENCE — et un `Promise.all` non rattrapé aurait fait pire, un rejet
+  // non traité qui n'affiche rien du tout. `allSettled` : une charge qui échoue n'empêche pas les
+  // autres de peindre, et la première cause est celle qu'on nomme.
+  return Promise.allSettled(promesses).then(bilans => {
+    const rate = bilans.find(b => b.status === 'rejected');
+    const st = $('#status');
+    if (st && partantes.length) st.textContent = rate ? ('hors-ligne (' + ((rate.reason && rate.reason.message) || rate.reason) + ')') : 'connecté';
+    return partantes.length;
+  });
+}
+
 // index dérivés : id onglet -> {onglet, espace}
 const TAB = {}, SPACE_OF_TAB = {}, SPACE_BY_ID = {};
 SPACES.forEach(sp => { SPACE_BY_ID[sp.id] = sp; sp.tabs.forEach(t => { TAB[t.id] = t; SPACE_OF_TAB[t.id] = sp; }); });
@@ -155,23 +312,23 @@ function showView(tabId) {
   // #1c : lookups lisibles par tous les rôles (GET /api/lookups ouvert) ; la section reste pilotée par showView,
   // le CRUD (bouton + delete) est masqué au viewer via CSS (role-viewer). Plus de hard-hide admin-only ici.
   renderNav(tabId);
-  // barre de recherche : seulement sur Explore.
-  if ($('#q')) $('#q').hidden = (tabId !== 'explore');
-  // refresh auto : vues temporelles (explore/dashboards/overview).
-  const refreshView = (tabId === 'explore' || tabId === 'dashboards' || tabId === 'overview');
-  if ($('#refresh')) $('#refresh').hidden = !refreshView;
-  // picker de plage de la NAVBAR : DASHBOARDS UNIQUEMENT. Explore a son propre picker local (#qrange) ;
-  // Overview est live-only (ignore la plage). Le zoombadge global ne concerne plus que les dashboards.
-  const rangeView = (tabId === 'dashboards');
+  // Barre de recherche de l'en-tête : c'est un RACCOURCI vers l'éditeur de requête, donc elle se montre
+  // là où l'éditeur est affiché. Lu sur le document, pas sur un nom d'onglet.
+  if ($('#q')) $('#q').hidden = !cibleAffichee('sql');
+  // `P11.17-d` — LE SÉLECTEUR DE CADENCE SE MONTRE LÀ OÙ LA CADENCE A QUELQUE CHOSE À FAIRE, et cela
+  // se DÉDUIT : il apparaît si la vue courante affiche au moins une charge déclarée VIVE. Le triplet
+  // qu'il remplace (`explore || dashboards || overview`) était écrit à la main, il CONTENAIT la
+  // recherche — la vue même où l'exploitant ne veut pas de cadence — et il manquait les vues qui en
+  // ont une (alertes, playbooks, actions). Retirer le contrôle plutôt que le dériver l'aurait laissé
+  // visible partout, y compris là où rien ne se rafraîchit : un contrôle qui ment sur ce qu'il pilote.
+  // La pastille de posture, hors de <main>, ne compte pas : elle ne dépend d'aucune vue.
+  if ($('#refresh')) $('#refresh').hidden = !chargesDeLaVueAffichees().some(c => c.vive);
+  // Sélecteur de plage de la BARRE : l'onglet DÉCLARE s'il est piloté par elle (`plageGlobale`), au
+  // lieu d'être nommé ici. La Recherche a son propre sélecteur local, la Vue d'ensemble ignore la plage.
+  const rangeView = !!t.plageGlobale;
   if ($('#range')) $('#range').hidden = !rangeView;
   if ($('#rangepick')) $('#rangepick').hidden = !rangeView;
   if ($('#zoombadge') && !rangeView) $('#zoombadge').hidden = true;
-  if (tabId === 'detection') renderCoverage(); // panneau couverture ATT&CK rafraîchi à l'entrée (idempotent)
-  if (tabId === 'attack') loadAttackMatrix(); // matrice ATT&CK rafraîchie à l'entrée (idempotent, dégrade si endpoint absent)
-  if (tabId === 'playbooks') { loadPlaybooks(); loadMode(); loadRunbooks(); } // C8 — playbooks + toggle de mode ; #3 Phase 2 — authoring runbooks (admin-only) (idempotent)
-  if (tabId === 'actions') loadActions(); // C8 — file de riposte rafraîchie à l'entrée (idempotent)
-  if (tabId === 'alerts') renderAlerts(); // file des alertes rafraîchie à l'entrée de l'onglet
-  if (tabId === 'dataaccess') renderDataAccess(); // gouvernance d'accès (lecture seule) rafraîchie à l'entrée
 }
 
 function route() {
@@ -184,31 +341,14 @@ function route() {
   // dont Administration, sont masquées) -> on révèle <main> (règle inline `html:not(.app-ready) main{visibility:hidden}`).
   // Posé ICI (avant les loaders async) : la révélation ne dépend pas du succès d'un chargement de données. Idempotent.
   document.documentElement.classList.add('app-ready');
-  if (t === 'cases') loadCases();
-  else if (t === 'help') renderHelpGuide();         // #4c — page Aide / Guide (statique, aucun réseau)
-  else if (t === 'sources') loadSourcesView();     // #1b — inventaire des sources (tous rôles)
-  else if (t === 'freshness-view') renderFreshness(); // détail complet de la fraîcheur (santé de collecte par feed), onglet Données → Fraîcheur
-  else if (t === 'system') loadSystemView();       // #51 — console d'opérabilité (self-métriques + santé + admin outils)
-  else if (t === 'fleet') loadFleetView();         // P0 UI — inventaire de la flotte d'agents (hôtes/endpoints, viewer+)
-  else if (t === 'connectors') loadConnectors();   // #3/#3a — connecteurs de sources externes (Defender, admin-only)
-  else if (t === 'destinations') loadDestinations(); // #50 — destinations de sortie (forward vers sink externe, admin-only)
-  else if (t === 'processors') loadProcessors();   // #40 — processeur d'ingest (filtre/masque/route/échantillon, admin-only)
-  else if (t === 'indexes') loadIndexPolicies();   // #49 — indexes logiques nommés (rétention/plafonds par index, admin-only)
-  else if (t === 'threatintel') loadThreatIntel(); // #23 — magasin d'IOC (couverture + liste + ajout/import, admin-only)
-  else if (t === 'knowledge') loadKnowledge();     // #46 — objets de savoir (alias/calc/eventtype/tag) — lecture viewer+, CRUD éditeur+
-  else if (t === 'datamodels') loadDataModels();   // #47 — modèles de données + Pivot + datasets — lecture/exécution viewer+, CRUD éditeur+
-  else if (t === 'risk') loadRiskView();           // #24 — Risk-Based Alerting : entités à risque (lecture viewer+)
-  else if (t === 'detadv') loadDetAdv();           // #37 — détection avancée : corrélations + baselines UEBA
-  else if (t === 'routing') loadRouting();         // #53 — politiques de notification (routage) + silences (mute)
-  else if (t === 'attack') loadAttackMatrix();     // matrice de couverture MITRE ATT&CK (lecture viewer+)
-  else if (t === 'suppressions') loadSuppressions(); // chantier whitelists→webui — panneau RO + operator/self éditable (admin)
-  else if (t === 'retention') loadRetention();     // #1b — rétention (admin)
-  else if (t === 'ledger') loadLedger();           // #1b — journal d'audit (admin) + #2c accès opérateur
-  else if (t === 'tenants') loadTenantsView();     // #2c — gestion des tenants / grants (mode 1 only)
-  else if (t === 'tokens') loadTokens();           // jetons agent/HEC — provisioning (admin-only)
-  else if (t === 'idp') loadIdpProviders();        // #44 — fournisseurs d'identité fédérée OIDC/LDAP (admin-only)
-  else if (t === 'fieldfilters') loadFieldFilters(); // #45 — field filters (masquage PII par champ, admin-only)
-  if (t === 'settings') loadMfa();                 // #44 — MFA TOTP self-service (dans la section Compte, tous rôles)
+  // `P11.17-d` — L'ENTRÉE DANS UNE VUE REJOUE LES CHARGES DE CETTE VUE, et lesquelles se DÉDUIT :
+  // `showView` vient de masquer les sections des autres onglets, donc « affichée » désigne exactement
+  // ce que cet onglet montre. La chaîne de conditions qui vivait ici égrenait un identifiant d'onglet
+  // par ligne ; elle avait OUBLIÉ six onglets, en avait servi un DEUX FOIS, et laissait quatre
+  // panneaux sans aucun moyen de se réparer après une lecture ratée au démarrage (`P11.14-e`).
+  // Rejouer est un GESTE de l'exploitant : les charges sont datées, et un tir de cadence qui suivrait
+  // aussitôt ne les doublera pas.
+  lancerLesCharges(chargesDeLaVueAffichees());
 }
 // navigation par hash MANUELLE : preventDefault tue le scroll-into-view natif des ancres dont l'id existe
 // réellement (#dashboards/#parsers/#playbooks/#cases/#settings) -> plus d'à-coup vers le bas.
@@ -231,4 +371,4 @@ function initNavigation() {
   if ($('#navtoggle')) $('#navtoggle').onclick = () => { const l = document.querySelector('.layout'); if (l) l.classList.toggle('collapsed'); };
 }
 
-export { initNavigation, SPACES, currentTab, currentViewName, renderNav, route };
+export { CHARGES_DE_LA_CONSOLE, SECTIONS_SANS_CHARGE, chargesAffichees, chargesDeLaVueAffichees, chargesVivesAffichees, cibleAffichee, initNavigation, lancerLesCharges, poserUneCharge, SPACES, currentTab, currentViewName, renderNav, route };

@@ -1,6 +1,6 @@
 // sources.js — extracted from app.js (DEEP state-container split).
 // Sources (inventaire + métadonnées d'affichage) + mutations de métadonnées (editor+, auditées).
-import { $, apiSend, confirmModal, fetchInto, fmtTs, humanAge, ic, modal, pagedList, socRole, toast } from './core.js';
+import { $, LANG, apiSend, confirmModal, fetchInto, fmtTs, humanAge, ic, modal, pagedList, socRole, toast } from './core.js';
 
 // ============ SOURCES (inventaire + métadonnées d'affichage) ============
 // Vocabulaire d'état CANONIQUE partagé avec Fraîcheur (même dérivation côté démon, `statut_de_source`) :
@@ -75,6 +75,36 @@ function renderSourcesInventory(wrap, d) {
         bad.title = 'Personne n\'a déclaré cette source — un signal à examiner, pas un défaut de collecte. Si elle est voulue (une sonde installée hors de ce dépôt l\'est autant qu\'une autre), un éditeur la déclare depuis Actions.';
         f.appendChild(bad);
       }
+      // P11.16-a — LE PRODUCTEUR EST ÉCRIT SOUS LE NOM. Relevé en usage réel le 2026-08-25 : une source
+      // figure à l'inventaire et celui-là même qui a installé le produit ne sait ni d'où elle vient ni où
+      // on la déclare. LE NOM D'UNE SOURCE NE NOMME PAS SON PRODUCTEUR : les deux diffèrent souvent, et
+      // aucune lecture de l'écran ne permettait de les rapprocher.
+      //
+      // LE RAPPROCHEMENT N'EST PAS ÉCRIT ICI, ET IL NE PEUT PAS L'ÊTRE. Une table nom-de-capteur ->
+      // nom-de-source recopiée dans la console serait fausse au premier capteur ajouté, et donnerait
+      // l'illusion d'une couverture. Le démon la DÉRIVE déjà (`raison_attendue` nomme le fichier livré, la
+      // sonde, le produit ou le connecteur qui émet la source, et une garde tient cette dérivation contre
+      // les fichiers livrés) ; elle n'était rendue que sous la colonne « Déclarée », en 10 px, là où un
+      // lecteur cherche un oui/non et non une provenance. Elle est désormais SOUS LE NOM, où la question
+      // se pose.
+      //
+      // CE QUI DÉCIDE EST DÉRIVÉ DE DEUX BOOLÉENS PUBLIÉS, jamais d'une liste : `in_collectors` dit que le
+      // démon connaît un producteur PAR CONSTRUCTION, et `expected` que ce verdict-là n'a pas été remplacé
+      // par un geste humain (un retrait rend le geste à la place du producteur — le nom du producteur
+      // n'est alors plus dans la charge utile, et l'inventer serait une devinette). Là où la console ne
+      // peut pas nommer, elle le DIT : un blanc se lirait comme une origine évidente.
+      const prod = document.createElement('span'); prod.className = 'muted srcprod'; prod.style.cssText = 'display:block;font-size:10px';
+      if (s.in_collectors && s.expected) {
+        prod.textContent = s.raison_attendue || '';
+        prod.title = LANG === 'en' ? 'Where this source comes from: the producer that emits it, derived from what this repository ships, observes, aggregates or configures — never from a hand-written table. A source name and its producer name often differ. A sensor is enabled or removed on the host (its collector and its timer), not from this console.' : 'D\'où vient cette source : le producteur qui l\'émet, dérivé de ce que ce dépôt livre, observe, agrège ou configure — jamais d\'une table écrite à la main. Le nom d\'une source et celui de son producteur diffèrent souvent. Un capteur s\'active ou se retire sur l\'hôte (son collecteur et son minuteur), pas depuis cette console.';
+      } else if (s.in_collectors) {
+        prod.textContent = LANG === 'en' ? 'producer known by construction, not named here while the declaration is withdrawn' : 'producteur connu par construction, non nommé ici tant que la déclaration est retirée';
+        prod.title = LANG === 'en' ? 'A producer of this repository does emit this source, but the inventory renders the withdrawal gesture in place of its name. Restoring the declaration (Actions) brings the producer back.' : 'Un producteur de ce dépôt émet bien cette source, mais l\'inventaire rend le geste de retrait à la place de son nom. Rétablir la déclaration (Actions) fait réapparaître le producteur.';
+      } else {
+        prod.textContent = LANG === 'en' ? 'no producer named — the console does not know what emits this source' : 'aucun producteur nommé — la console ne sait pas ce qui émet cette source';
+        prod.title = LANG === 'en' ? 'Matching a source with its producer is DERIVED from what the shipped producers declare: a probe installed outside this repository does not enter that derivation. Declaring a source expected says it is WANTED, never what EMITS it — so this blank is said rather than left to be guessed.' : 'Le rapprochement entre une source et son producteur est DÉRIVÉ de ce que les producteurs livrés déclarent : une sonde installée hors de ce dépôt n\'y entre pas. Déclarer une source attendue dit qu\'on la VEUT, jamais ce qui l\'ÉMET — ce blanc est donc dit, plutôt que laissé à deviner.';
+      }
+      f.appendChild(prod);
       return f;
     } },
     { key: 'expected', label: 'Déclarée', sortable: true, sortVal: s => s.expected ? 1 : 0, render: s => {
@@ -89,16 +119,22 @@ function renderSourcesInventory(wrap, d) {
       f.appendChild(exp);
       // QUI l'a déclarée et QUAND : la provenance PROPRE du geste, jamais le dernier compte qui a touché
       // la ligne (le démon écrit `marquage.updated_by` seulement quand `set_expected` est joué).
+      // P11.16-a — CETTE COLONNE NE RÉPÈTE PLUS LE PRODUCTEUR : il est écrit sous le nom (colonne Source),
+      // et la même phrase rendue deux fois dans une ligne serait du bruit. Elle ne porte donc que ce qui
+      // relève de la DÉCLARATION — le geste humain quand il existe, la déclaration que le producteur ne
+      // porte pas, ou l'absence de toute déclaration. Une case vide dit alors : « rien de plus que ce que
+      // la colonne Source vient de nommer ».
       const why = document.createElement('span'); why.className = 'muted srcwhy'; why.style.cssText = 'display:block;font-size:10px';
       const mark = s.marquage;
+      const producteurSousLeNom = !!(s.in_collectors && s.expected);
       if (mark && mark.updated_by && ((mark.expected && !s.in_collectors) || !mark.expected)) {
         why.textContent = (mark.expected ? 'déclarée par ' : 'déclarée NON attendue par ') + mark.updated_by + (mark.updated ? ' le ' + fmtTs(mark.updated) : '');
-      } else if (s.raison_attendue) {
+      } else if (s.raison_attendue && !producteurSousLeNom) {
         why.textContent = s.raison_attendue;
-      } else {
+      } else if (!s.raison_attendue) {
         why.textContent = 'aucune déclaration';
       }
-      f.appendChild(why);
+      if (why.textContent) f.appendChild(why);
       return f;
     } },
     { key: 'cadence', label: 'Cadence', sortable: true, sortVal: s => cadenceLabel(s), render: s => {
@@ -153,6 +189,12 @@ function renderSourcesInventory(wrap, d) {
     const legend = document.createElement('div'); legend.className = 'muted'; legend.style.cssText = 'margin-top:8px;font-size:11px';
     legend.textContent = 'Statut = santé de collecte (même dérivation que Données → Fraîcheur) : frais (donnée < 15 min) · calme (collecte saine, source peu active) · en retard (cadence DÉCLARÉE continue dépassée — c\'est le « muet » du capteur dans Intégrations) · en attente (déclarée, pas encore de donnée) · muet (plus rien n\'arrive, toutes sources confondues). « Déclarée » veut dire voulue par QUELQU\'UN : ce dépôt (un fichier livré l\'émet), le démon (une sonde l\'observe), le produit (il l\'agrège), un connecteur configuré, ou l\'exploitant — une source installée hors de ce dépôt se déclare ici, et la colonne dit qui l\'a fait et quand. La cadence attendue se déclare de la même façon là où aucune sonde n\'en déclare : « aucune cadence déclarée » est un blanc, pas un défaut, et une source événementielle ou sans cadence n\'est jamais « en retard ».';
     wrap.appendChild(legend);
+    // P11.16-a — CE QUE LA COLONNE « Source » DIT MAINTENANT, ET CE QU'ELLE NE PEUT PAS DIRE. Écrit dans
+    // son PROPRE nœud, à côté de la légende existante : ajouté au même texte, il aurait rendu cette
+    // légende-là intraduisible (le lexique apparie un nœud entier).
+    const prov = document.createElement('div'); prov.className = 'muted'; prov.style.cssText = 'margin-top:6px;font-size:11px';
+    prov.textContent = LANG === 'en' ? 'Under each source name: the PRODUCER that emits it. A source name does not name its producer — the two often differ — and this match is DERIVED from what the shipped producers declare, never from a hand-written table that would be wrong the day a sensor is added. A source installed outside this repository has no producer the console can name, and the screen says so instead of suggesting an obvious origin. Enabling or removing a sensor happens on the host (its collector and its timer): this console only ever changes what is DISPLAYED.' : 'Sous chaque nom de source : le PRODUCTEUR qui l\'émet. Le nom d\'une source ne nomme pas son producteur — les deux diffèrent souvent — et ce rapprochement est DÉRIVÉ de ce que les producteurs livrés déclarent, jamais d\'une table écrite à la main, qui serait fausse le jour où un capteur s\'ajoute. Une source installée hors de ce dépôt n\'a aucun producteur que la console sache nommer, et l\'écran le dit au lieu de laisser croire à une origine évidente. Activer ou retirer un capteur se fait sur l\'hôte (son collecteur et son minuteur) : cette console ne change jamais que ce qui est AFFICHÉ.';
+    wrap.appendChild(prov);
   }
 }
 

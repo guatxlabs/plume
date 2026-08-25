@@ -28,6 +28,12 @@ stringData:
   # `kubectl exec` dans /proc/<pid>/environ). Une base neuve est créée chiffrée d'office ; une base
   # en clair existante est convertie au boot (idempotent).
   # PERTE DE CLÉ = PERTE DE LA BASE. Sauvegarde-la HORS du cluster.
+  # CETTE CLÉ CONDITIONNE AUSSI LA SAUVEGARDE NATIVE (`P9.4-b`) : le scheduler armé plus bas produit
+  # une archive COMPRESSÉE+CHIFFRÉE dont la passphrase age EST cette clé. Vide -> `backup_compressed`
+  # refuse dès sa première instruction, et chaque cycle se termine SANS ÉCRIRE. Renseigner cette valeur
+  # ne suffit pas : elle n'atteint le conteneur QUE si le bloc `PLUME_DB_KEY_FILE` du Deployment ET son
+  # montage sont décommentés — le Deployment ci-dessous n'injecte PAS `PLUME_DB_KEY` en variable d'env.
+  # Le chiffrement par défaut de la base est traité par `P9.6-a`, ouverte.
   PLUME_DB_KEY: ""
 ---
 apiVersion: v1
@@ -36,10 +42,11 @@ metadata: { name: soc-data, namespace: soc }
 spec:
   accessModes: [ReadWriteOnce]
   resources:
-    # 1Gi = un DÉMARRAGE, pas une capacité de production. Ce volume porte la base ET les backups
-    # locaux du scheduler natif (`/data/backups`, KEEP-N ci-dessous). Dimensionne-le sur ta rétention
-    # réelle et ton volume d'événements : un PVC saturé arrête l'ingestion. Volume non mesuré ici —
-    # observe la croissance réelle avec `plume-daemon db-stats` avant de figer la taille.
+    # 1Gi = un DÉMARRAGE, pas une capacité de production. Ce volume porte la base ET, dès que le
+    # scheduler natif peut aboutir, ses archives locales (`/data/backups`, KEEP-N ci-dessous) — TEL
+    # QUEL, avec la clé du Secret vide et non injectée, il n'en porte AUCUNE (`P9.4-b`). Dimensionne-le
+    # sur ta rétention réelle et ton volume d'événements : un PVC saturé arrête l'ingestion. Volume non
+    # mesuré ici — observe la croissance réelle avec `plume-daemon db-stats` avant de figer la taille.
     requests: { storage: 1Gi }
 ---
 apiVersion: apps/v1
@@ -70,9 +77,23 @@ spec:
             #
             # --- OPS NATIVES : BACKUP + AUTO-VACUUM DANS LE BINAIRE (zéro sidecar, zéro CronJob) ---
             # Les deux boucles sont GATÉES sur un intervalle > 0. Sans ces variables, ce déploiement
-            # NE SAUVEGARDE RIEN — c'était le cas de ce manifeste avant ce commit.
+            # NE SAUVEGARDE RIEN.
+            #
+            # ⚠ AVEC ELLES NON PLUS, TANT QUE LA CLÉ MANQUE (`P9.4-b`). Le scheduler natif produit une
+            # archive COMPRESSÉE+CHIFFRÉE, qui EXIGE une clé de base non vide (la passphrase age est la
+            # clé SQLCipher). Le Secret ci-dessus livre `PLUME_DB_KEY: ""` et ce conteneur ne reçoit
+            # AUCUNE des deux variables at-rest (le bloc `PLUME_DB_KEY_FILE` est commenté) : appliqué
+            # tel quel, ce manifeste ARME un cycle qui, toutes les 6 h, part, échoue et n'écrit rien.
+            # CE N'EST PLUS SILENCIEUX : chaque cycle sans archive écrit un événement de posture NON
+            # PURGEABLE (source `plume-config`, category `health`, sév. 4, au plus un par heure) qui
+            # nomme l'étape et la cause. La vérification directe :
+            #   kubectl -n soc exec deploy/soc -- ls -1 /data/backups
+            # un répertoire sans `plume-<TS>.db.age` est un déploiement SANS sauvegarde.
             - { name: PLUME_BACKUP_INTERVAL, value: "21600" }   # secondes ; 0 = désactivé. 21600 = 6 h
-            - { name: PLUME_BACKUP_KEEP,     value: "24" }      # rétention KEEP-N (24 × 6 h ≈ 6 jours)
+            # KEEP-N = PLAFOND de ce qui est CONSERVÉ, pas une promesse d'archives : il borne ce que les
+            # cycles ont écrit, il ne l'écrit pas. 24 archives à 6 h couvriraient ~6 jours SI chaque
+            # cycle publiait ; sans clé, ce plafond ne garde rien parce qu'il n'y a rien à garder.
+            - { name: PLUME_BACKUP_KEEP,     value: "24" }      # rétention KEEP-N
             - { name: PLUME_BACKUP_DEST,     value: "/data/backups" }  # répertoire LOCAL (sur le PVC)
             # ESCROW HORS-CLUSTER : clé PUBLIQUE age (`age1…`). Ce n'est PAS un secret -> elle peut
             # rester en clair ici. NON POSÉE -> repli sur le chiffrement SYMÉTRIQUE (passphrase = clé
@@ -81,9 +102,10 @@ spec:
             # sans destinataire (au plus une fois par heure), un événement de posture non purgeable
             # (source `plume-config`, health, sév. 4) ; et, à chaque archive publiée alors qu'aucun
             # exercice de restauration frais n'est enregistré (au plus une fois par jour), un
-            # événement « restauration non éprouvée » (même source, sév. 3). Avant le 2026-08-22 seule
-            # la sous-commande `backup` les émettait et ce manifeste n'avait pour témoin qu'une ligne
-            # de journal.
+            # événement « restauration non éprouvée » (même source, sév. 3).
+            # CES DEUX SIGNAUX SONT CONDITIONNÉS À UNE ARCHIVE PUBLIÉE : tant que la clé manque, il n'y
+            # a pas d'archive, donc ni l'un ni l'autre ne part — c'est le signal « aucune archive
+            # publiée » (`P9.4-b`) qui parle, et lui seul.
             # Mets PLUME_BACKUP_REQUIRE_ASYMMETRIC=1 pour REFUSER ce repli.
             # - { name: PLUME_BACKUP_AGE_RECIPIENT, value: "age1..." }
             # - { name: PLUME_BACKUP_REQUIRE_ASYMMETRIC, value: "1" }

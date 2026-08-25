@@ -426,6 +426,7 @@ function pagedList(host, opts) {
     const top = makePager(state, go); if (top) host.appendChild(top);
     host.appendChild(bodyNode(rows));
     const bot = makePager(state, go); if (bot) host.appendChild(bot);
+    programmerLaMesureDesCellules(host);   // `P11.15-a` : la fabrique pose le geste de lecture elle-même
   }
   function sliceClient() {
     let rows = clientRows.slice();
@@ -451,9 +452,379 @@ function pagedList(host, opts) {
     paint(rows);
   }
   function reload() { if (opts.mode === 'server') loadServer(); else sliceClient(); }
+  // `P11.15-b` — LE REGROUPEMENT EST UNE OPTION DE CETTE FABRIQUE, PAS UNE VUE À PART. Il n'a de sens
+  // que sur un ensemble COMPLET : le mode serveur ne tient qu'une page et ne peut pas partitionner ce
+  // qu'il n'a pas, donc il rend plat. Et il ne s'applique que si les LIGNES portent une dimension connue :
+  // sans quoi la liste plate d'aujourd'hui est rendue telle quelle, rien n'est caché.
+  if (opts.group && opts.mode !== 'server' && clientRows) {
+    const groupe = peindreEnGroupes(host, clientRows, opts);
+    if (groupe) return groupe;
+  }
   reload();
   return { reload, state };
 }
+
+// ==================================================================================================
+// `P11.15-b` / `P11.17-c` — REGROUPER SANS CONSTRUIRE : LA CLÉ VIENT DES LIGNES, LE COÛT SUIT LE PLI
+// --------------------------------------------------------------------------------------------------
+// CE QUI EXISTAIT, ET OÙ. Le mécanisme demandé n'était pas à inventer : deux panneaux le tenaient déjà à
+// la main dans `detection_admin.js` — les règles partitionnées par gravité, les parseurs par source —
+// chacun avec sa boucle, sa `Map`, sa clé de pliage et son libellé. La file des actions et celle des
+// playbooks, elles, rendaient UN groupe unique contenant toute la liste. Trois écritures d'une même idée,
+// et la quatrième vue rendait plat faute d'avoir été écrite.
+//
+// LA CLÉ EST DÉRIVÉE DE CE QUE LA LIGNE PORTE, JAMAIS DE LA VUE QUI L'AFFICHE. Une dimension déclare
+// COMMENT SE LIT sa valeur sur une ligne ; elle s'applique dès qu'au moins une ligne la porte, et les
+// dimensions applicables sont offertes dans un ORDRE UNIQUE. Cet ordre seul reproduit ce que les deux
+// panneaux écrivaient : une règle porte `severity` donc elle se groupe par gravité, un parseur porte
+// `source` donc par source, une action ne porte ni l'une ni l'autre mais nomme la règle qui l'a produite
+// donc par règle. Aucun nom de vue n'apparaît ici, et la vue posée demain hérite du même arbitrage.
+//
+// CE QUE CE MÉCANISME ÉVITE DE CONSTRUIRE, ET C'EST LÀ QU'EST L'ÉCHELLE. Replier après avoir construit ne
+// résout rien : la feuille masquait un corps déjà payé. Ici le corps d'un groupe est bâti au PREMIER dépli
+// (`collapsibleGroup`), et la liste des groupes est elle-même paginée par cette fabrique — sinon
+// l'explosion remonterait d'un étage dès qu'il y a mille clés distinctes. Sur N lignes réparties en G
+// groupes, l'arbre construit passe de N lignes à `min(G, pageSize)` en-têtes, plus les lignes de la seule
+// page des seuls groupes ouverts. La partition, elle, se fait sur les OBJETS déjà en mémoire — une passe,
+// aucun nœud.
+//
+// LE TOTAL SE RECOMPOSE (`P11.16-b`). Chaque ligne tombe dans un groupe et un seul, y compris celle qui ne
+// porte pas la dimension : elle n'est pas écartée, elle rejoint un groupe NOMMÉ (« sans règle ») compté
+// comme les autres et rendu en dernier. La somme des comptes d'en-tête vaut donc le total annoncé, et le
+// résumé le dit au lieu de laisser le lecteur le vérifier.
+// ==================================================================================================
+
+// Les mots du regroupement, écrits dans les DEUX langues à l'endroit du rendu : ils se recollent autour de
+// nombres et de noms de données, donc aucun nœud texte rendu ne serait jamais égal à une clé du lexique.
+const MOT_GROUPER_PAR = LANG === 'en' ? 'Group by' : 'Grouper par';
+const MOT_LIGNES_EN = LANG === 'en' ? ' row(s) in ' : ' ligne(s) en ';
+const MOT_GROUPES_PAR = LANG === 'en' ? ' group(s) by ' : ' groupe(s) par ';
+const MOT_SOMME_DES_GROUPES = LANG === 'en' ? ' — the group counts add up to that total' : ' — les comptes des groupes s’additionnent à ce total';
+const MOT_SANS = LANG === 'en' ? 'no ' : 'sans ';
+
+// LA RÈGLE QUI A PRODUIT UNE LIGNE, LUE SUR LA LIGNE — et non le nom de la ligne elle-même : une règle
+// s'appelle `name`, ce champ-là n'est PAS lu ici, sans quoi chaque règle formerait son propre groupe.
+// Trois champs possibles, dans l'ordre où les charges de ce produit servent le nom d'une automatisation.
+// À défaut, le producteur ÉCRIT dans la raison : la file des actions ne porte aucun identifiant de règle
+// (`daemon/src/handlers/actions.rs` sert id/ts/kind/target/status/dry_run/reason/result/done_ts/host), et
+// le moteur de réponse inscrit son producteur dans la raison sous la forme `famille:nom`
+// (`daemon/src/handlers/playbooks.rs`). Une raison SAISIE par l'exploitant n'est pas un producteur : le
+// préfixe doit être une famille de contenu du produit, sinon la ligne ne porte pas la dimension et rejoint
+// le groupe « sans règle », compté et nommé plutôt que fondu dans les autres.
+const FAMILLES_PRODUCTRICES = ['playbook', 'rule', 'runbook'];
+function nomDeLaRegleProductrice(r) {
+  if (!r) return '';
+  const direct = r.rule_name || r.rule || r.playbook;
+  if (direct) return String(direct);
+  const raison = r.reason == null ? '' : String(r.reason);
+  const i = raison.indexOf(':');
+  if (i <= 0) return '';
+  const famille = raison.slice(0, i).trim().toLowerCase(), nom = raison.slice(i + 1).trim();
+  return (nom && FAMILLES_PRODUCTRICES.indexOf(famille) >= 0) ? nom : '';
+}
+
+// LES DIMENSIONS, DANS L'ORDRE OÙ ELLES SONT OFFERTES. Chacune : `lire(ligne)` rend la clé du groupe ou ''
+// quand la ligne ne porte pas la dimension ; `libelle(clé)` rend l'en-tête ; `ordre` classe les clés ;
+// `pastille` rend le point de couleur de l'en-tête. Ce sont les axes que le produit groupe DÉJÀ quelque
+// part — gravité et source dans l'administration de la détection, règle / hôte / technique dans la file
+// des alertes, que le démon agrège par les mêmes trois axes. Rien n'est inventé ici, tout est remonté.
+const DIMENSIONS_DE_REGROUPEMENT = [
+  {
+    cle: 'severity',
+    nom: LANG === 'en' ? 'severity' : 'gravité',
+    lire: r => (r && r.severity != null && r.severity !== '' ? String(Number(r.severity) || 0) : ''),
+    libelle: k => sev(Number(k)),
+    ordre: (a, b) => Number(b) - Number(a),
+    pastille: k => '<span class="fdot" style="background:' + (SEVCOL[Number(k)] || 'var(--mut)') + '"></span>',
+  },
+  {
+    cle: 'regle',
+    nom: LANG === 'en' ? 'rule' : 'règle',
+    lire: nomDeLaRegleProductrice,
+    libelle: k => k,
+  },
+  {
+    // L'ÉTAT VIENT APRÈS LA RÈGLE, ET C'EST DÉLIBÉRÉ. Grouper par règle reclasse la file : le tri « en
+    // attente d'abord » ne vaut plus qu'À L'INTÉRIEUR d'un groupe, plus en travers du panneau. C'est le
+    // prix demandé, et il est rendu réversible ici plutôt que discuté ailleurs — l'axe qui rend la file
+    // par état existe, il se choisit, et il n'a coûté qu'une entrée de ce registre.
+    cle: 'statut',
+    nom: LANG === 'en' ? 'status' : 'état',
+    lire: r => (r && r.status ? String(r.status) : ''),
+    libelle: k => k,
+  },
+  {
+    cle: 'source',
+    nom: LANG === 'en' ? 'source' : 'source',
+    lire: r => (r && r.source ? String(r.source) : ''),
+    libelle: k => k,
+  },
+  {
+    cle: 'host',
+    nom: LANG === 'en' ? 'host' : 'hôte',
+    lire: r => (r && r.host ? String(r.host) : ''),
+    libelle: k => k,
+  },
+  {
+    cle: 'mitre',
+    nom: LANG === 'en' ? 'ATT&CK technique' : 'technique ATT&CK',
+    lire: r => (r && r.mitre ? String(r.mitre) : ''),
+    libelle: k => (mitreName(k) ? k + ' — ' + mitreName(k) : k),
+  },
+];
+
+// Les dimensions que CES lignes portent. Mesure, jamais déclaration : une dimension qu'aucune ligne ne
+// porte n'est pas offerte, et la lecture s'arrête à la première ligne qui la porte.
+function dimensionsApplicables(rows) {
+  if (!rows || !rows.length) return [];
+  return DIMENSIONS_DE_REGROUPEMENT.filter(d => rows.some(r => d.lire(r) !== ''));
+}
+
+// L'en-tête d'un groupe. La clé vide n'est pas un groupe anonyme : elle est NOMMÉE par la dimension qui
+// manque, pour qu'un lecteur sache ce qu'il regarde au lieu de le déduire.
+function libelleDuGroupe(dim, cle) { return cle === '' ? MOT_SANS + dim.nom : dim.libelle(cle); }
+
+// La partition, faite sur les OBJETS : une passe, aucun nœud construit. Le groupe « sans … » ferme la
+// marche — il existe toujours quand il n'est pas vide, jamais quand il l'est.
+function grouperLesLignes(rows, dim) {
+  const par = new Map();
+  rows.forEach(r => {
+    const k = dim.lire(r), c = k == null ? '' : String(k);
+    if (!par.has(c)) par.set(c, []);
+    par.get(c).push(r);
+  });
+  const ordre = dim.ordre || ((a, b) => String(a).localeCompare(String(b)));
+  return [...par.keys()]
+    .sort((a, b) => (a === '' ? 1 : b === '' ? -1 : ordre(a, b)))
+    .map(c => ({ cle: c, lignes: par.get(c) }));
+}
+
+// LE RÉSUMÉ, ET LE CHOIX DE L'AXE. Le sélecteur n'apparaît que si les lignes portent PLUSIEURS dimensions :
+// offrir un choix unique serait un contrôle qui ne choisit rien. Le résumé dit le total, le nombre de
+// groupes, l'axe courant, et que les comptes d'en-tête s'additionnent à ce total (`P11.16-b`).
+function barreDeRegroupement(dims, dim, nLignes, nGroupes, onChoisir) {
+  const bar = document.createElement('div'); bar.className = 'flegend';
+  if (dims.length > 1) {
+    const sel = document.createElement('select'); sel.className = 'picon'; sel.title = MOT_GROUPER_PAR;
+    dims.forEach(d => {
+      const o = document.createElement('option'); o.value = d.cle; o.textContent = d.nom;
+      if (d.cle === dim.cle) { o.selected = true; sel.value = d.cle; }
+      sel.appendChild(o);
+    });
+    sel.onchange = () => onChoisir(sel.value);
+    bar.appendChild(sel);
+  }
+  const resume = document.createElement('span'); resume.className = 'muted';
+  resume.textContent = nLignes + MOT_LIGNES_EN + nGroupes + MOT_GROUPES_PAR + dim.nom + MOT_SOMME_DES_GROUPES;
+  bar.appendChild(resume);
+  return bar;
+}
+
+// Le corps d'UN groupe : la même fabrique, sans regroupement (pas de récursion possible) et sur les seules
+// lignes de ce groupe. Il n'est appelé qu'au premier dépli.
+function hoteDesLignesDUnGroupe(lignes, opts) {
+  const h = document.createElement('div');
+  pagedList(h, {
+    mode: 'client', pageSize: opts.pageSize || 50, rows: lignes,
+    columns: opts.columns, renderRow: opts.renderRow, sort: opts.sort,
+    onRowClick: opts.onRowClick, emptyText: opts.emptyText,
+  });
+  return h;
+}
+
+// Rend la liste groupée dans `host`, ou `null` si aucune dimension ne s'applique (l'appelant retombe alors
+// sur la liste plate — rien n'est caché, rien n'est deviné).
+function peindreEnGroupes(host, rows, opts) {
+  const dims = dimensionsApplicables(rows);
+  if (!dims.length) return null;
+  const storeKey = (opts.group && opts.group.storeKey) || '';
+  const cleDuChoix = storeKey ? storeKey + ':dim' : '';
+  const dimensionChoisie = () => {
+    let c = '';
+    try { c = cleDuChoix ? (localStorage.getItem(cleDuChoix) || '') : ''; } catch (e) { c = ''; }
+    return dims.find(d => d.cle === c) || dims[0];
+  };
+  let interne = null;
+  function peindre() {
+    const dim = dimensionChoisie();
+    const groupes = grouperLesLignes(rows, dim);
+    const plie = lsSet(storeKey);
+    host.replaceChildren();
+    host.appendChild(barreDeRegroupement(dims, dim, rows.length, groupes.length, k => {
+      try { if (cleDuChoix) localStorage.setItem(cleDuChoix, k); } catch (e) {}
+      peindre();
+    }));
+    // UN ENSEMBLE QUI NE TIENT PAS DANS UNE PAGE ARRIVE REPLIÉ. Le seuil n'est pas un nombre choisi : c'est
+    // LA PAGE, le seul budget que cette fabrique connaisse déjà. En deçà, la liste se lit d'un coup comme
+    // avant ; au-delà, ce sont les GROUPES qu'on lit — chacun annonce combien de lignes il contient — et
+    // l'on ouvre celui dont on a besoin. Sans ce défaut, grouper COÛTERAIT plus cher que ne pas grouper :
+    // une page de lignes par groupe ouvert, au lieu d'une page pour toute la liste. Même parti que la file
+    // d'alertes groupée, dont les occurrences ne sont chargées qu'au premier dépli.
+    const pageSizeGroupes = opts.pageSize || 50;
+    const defautPlie = rows.length > pageSizeGroupes;
+    const hoteDesGroupes = document.createElement('div');
+    interne = pagedList(hoteDesGroupes, {
+      mode: 'client', pageSize: pageSizeGroupes, rows: groupes,
+      renderRow: g => collapsibleGroup(plie, storeKey, dim.cle + ':' + g.cle,
+        libelleDuGroupe(dim, g.cle), g.lignes.length,
+        () => [hoteDesLignesDUnGroupe(g.lignes, opts)],
+        dim.pastille ? dim.pastille(g.cle) : '', defautPlie),
+    });
+    host.appendChild(hoteDesGroupes);
+  }
+  peindre();
+  return { reload: peindre, state: (interne && interne.state) || { page: 0, pageSize: opts.pageSize || 50, total: rows.length, shown: rows.length } };
+}
+
+// ==================================================================================================
+// `P11.15-a` — UNE LIGNE TROP LONGUE SE LIT EN ENTIER, ET LE GESTE VIENT DE LA FABRIQUE
+// --------------------------------------------------------------------------------------------------
+// LE DÉFAUT, ET POURQUOI IL EST REVENU. La feuille plafonne `.qtable td` à une largeur, masque le
+// débordement et pose des points de suspension ; elle annonçait à côté « valeur complète au survol
+// (title) + au clic (détail) ». MESURÉ le 2026-08-25 dans web/ : la fabrique de tableau ne posait
+// AUCUN `title`, et le clic d'une ligne, là où il mène quelque part, mène AILLEURS (drilldown,
+// ouverture d'un détail) — un chemin de fichier, un message d'audit ou une requête étaient donc
+// coupés sans recours. Le même défaut avait déjà été fermé sur UN panneau (`P11.4-g`) : le remède y
+// était local, celui-ci ne l'est pas.
+//
+// LA PROPRIÉTÉ EST MESURÉE, JAMAIS ÉNUMÉRÉE. Aucune liste de colonnes, de vues ni de panneaux : une
+// cellule reçoit le geste quand SON CONTENU EST PLUS LARGE QUE SA PLACE (`scrollWidth` > `clientWidth`).
+// La colonne posée demain est jugée par la même mesure, sans qu'on y pense.
+//
+// LE GESTE EST LE DÉPLI PARTAGÉ, PAS UN GESTE DE PLUS. `disclosure` est celui des cases et des groupes :
+// un bouton qui DIT son état (`aria-expanded`), atteignable au clavier, et dont l'icône bascule — la
+// marque ne tient donc pas à la seule couleur. Le dépli se fait SUR PLACE : la cellule garde sa largeur
+// et s'enroule, la ligne grandit en hauteur. Le clic du bouton est ARRÊTÉ là : une ligne de tableau
+// porte souvent son propre clic, et lire une valeur ne doit pas faire changer de vue.
+//
+// POURQUOI PAS UN OBSERVATEUR DE MUTATIONS SUR LE CORPS DU DOCUMENT. Ce serait le geste évident, et il
+// est exclu : la liaison des modules ne doit poser AUCUN observateur sur le corps du document — le seul
+// admis est celui du lexique, posé par l'amorçage sous `LANG='en'`, et le harnais ESM l'épingle. Le
+// geste s'accroche donc à ce qui existe déjà : la peinture de la liste paginée partagée, et UN capteur
+// en phase de capture qui mesure la table que l'on survole ou dans laquelle on entre au clavier. Les
+// tableaux `.qtable` construits hors de la fabrique (résultats de recherche, aperçu de connecteur) sont
+// ainsi couverts sans qu'une ligne leur soit écrite.
+// ==================================================================================================
+const CELL_COUPEE = 'plcut', CELL_DEPLIEE = 'plopen';
+
+// « plus large que sa place » — la seule question posée à une cellule. Sur un arbre sans mise en page
+// (aucune largeur mesurable), la réponse est NON : le geste ne se pose jamais au hasard.
+function celluleDeborde(td) {
+  const contenu = td.scrollWidth, place = td.clientWidth;
+  return Number.isFinite(contenu) && Number.isFinite(place) && contenu > place + 1;
+}
+
+function boutonDeDepli(td) {
+  const enfants = td.childNodes ? Array.from(td.childNodes) : [];
+  return enfants.find(n => n && String(n.tagName || '').toLowerCase() === 'button'
+    && n.classList && n.classList.contains('plmore')) || null;
+}
+
+function poserLeDepliDeCellule(td) {
+  if (td.classList.contains(CELL_COUPEE)) return false;
+  const entier = td.textContent == null ? '' : String(td.textContent);   // AVANT d'ajouter le bouton
+  td.classList.add(CELL_COUPEE);
+  // Recours immédiat, sans aucun geste : la valeur entière au survol. Une infobulle déjà écrite par la
+  // vue (elle en sait plus que la fabrique) n'est jamais remplacée.
+  if (entier && !td.getAttribute('title')) td.title = entier;
+  const btn = document.createElement('button');
+  btn.type = 'button'; btn.className = 'plmore';
+  btn.title = 'Plier / déplier';
+  btn.innerHTML = ic('chevdown');
+  disclosure(btn, td, {
+    observe: false,
+    isOpen: () => td.classList.contains(CELL_DEPLIEE),
+    open: () => td.classList.add(CELL_DEPLIEE),
+    close: () => td.classList.remove(CELL_DEPLIEE),
+  });
+  btn.addEventListener('click', e => { if (e && e.stopPropagation) e.stopPropagation(); });
+  td.appendChild(btn);
+  return true;
+}
+
+function retirerLeDepliDeCellule(td) {
+  td.classList.remove(CELL_COUPEE);
+  const b = boutonDeDepli(td); if (b && b.remove) b.remove();
+}
+
+// Les cellules à mesurer sous `racine` : celles des tableaux habillés `.qtable`, d'où qu'ils viennent.
+// SONT HORS MESURE, et c'est dérivé et non listé : un tableau qui a DÉJÀ dé-plafonné ses cellules
+// (`.onecol`, la ligne longue s'y lit par défilement) et la ligne de détail d'un drilldown (`.rowdetail`,
+// elle s'enroule déjà). `racine` peut être la table elle-même, l'hôte d'une liste paginée, ou le document.
+function cellulesAMesurer(racine) {
+  if (!racine || typeof racine.querySelectorAll !== 'function') return [];
+  const cl = racine.classList;
+  const estTable = String(racine.tagName || '').toLowerCase() === 'table' && cl && cl.contains('qtable');
+  if (estTable && cl.contains('onecol')) return [];
+  const sel = estTable ? 'tbody > tr:not(.rowdetail) > td'
+    : 'table.qtable:not(.onecol) > tbody > tr:not(.rowdetail) > td';
+  try { return Array.from(racine.querySelectorAll(sel)); } catch (e) { return []; }
+}
+
+// Une cellule d'ACTIONS ne porte pas une valeur à lire, elle porte des gestes à faire : y poser un
+// bouton de dépli mettrait un contrôle de plus au milieu des autres, et l'infobulle rendrait la suite
+// des libellés de boutons collés. La distinction est DÉRIVÉE de ce que la cellule contient — un
+// contrôle —, jamais du nom d'une colonne ; le bouton de dépli lui-même ne compte pas.
+const CONTROLES = ['button', 'a', 'input', 'select', 'textarea'];
+function cellulePorteUnControle(td) {
+  const enfants = td && td.childNodes ? Array.from(td.childNodes) : [];
+  return enfants.some(n => {
+    if (!n || !n.tagName) return false;
+    if (n.classList && n.classList.contains('plmore')) return false;
+    return CONTROLES.includes(String(n.tagName).toLowerCase()) || cellulePorteUnControle(n);
+  });
+}
+
+// Pose (ou retire) le geste sur les cellules de `racine`. Rend le NOMBRE de cellules nouvellement
+// équipées — c'est ce compte qui rend la mesure vérifiable au lieu d'être crue sur parole.
+function marquerLesCellulesTronquees(racine) {
+  let posees = 0;
+  for (const td of cellulesAMesurer(racine)) {
+    if (!td || !td.classList) continue;
+    if (td.classList.contains(CELL_DEPLIEE)) continue;   // déplié : la mesure ne dit plus rien de lui
+    if (cellulePorteUnControle(td)) continue;
+    const marquee = td.classList.contains(CELL_COUPEE);
+    if (celluleDeborde(td)) { if (!marquee && poserLeDepliDeCellule(td)) posees++; }
+    else if (marquee) retirerLeDepliDeCellule(td);       // la fenêtre s'est élargie : plus rien à déplier
+  }
+  return posees;
+}
+
+// Mesurer force un calcul de mise en page : on le fait une fois par image, sur les racines demandées.
+let mesuresEnAttente = null;
+function programmerLaMesureDesCellules(racine) {
+  const cible = racine || (typeof document !== 'undefined' ? document : null);
+  if (!cible) return;
+  if (mesuresEnAttente) { mesuresEnAttente.add(cible); return; }
+  mesuresEnAttente = new Set([cible]);
+  const differer = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (f => setTimeout(f, 0));
+  differer(() => {
+    const lot = mesuresEnAttente; mesuresEnAttente = null;
+    lot.forEach(r => { try { marquerLesCellulesTronquees(r); } catch (e) {} });
+  });
+}
+
+// La table `.qtable` qui porte `el`, ou rien. Remonte la chaîne des parents (aucune dépendance à
+// `closest`, absent des arbres fabriqués — même raison qu'au capteur de refus d'écriture).
+function tableTronquableSous(el) {
+  for (let n = el, i = 0; n && i < 16; n = n.parentNode, i++) {
+    if (String(n.tagName || '').toLowerCase() === 'table' && n.classList && n.classList.contains('qtable')) return n;
+  }
+  return null;
+}
+
+try {
+  const surUneTable = e => { const t = e && e.target ? tableTronquableSous(e.target) : null; if (t) programmerLaMesureDesCellules(t); };
+  if (typeof document !== 'undefined' && document.addEventListener) {
+    document.addEventListener('pointerover', surUneTable, true);
+    document.addEventListener('focusin', surUneTable, true);
+  }
+  // Une fenêtre qui s'élargit peut RENDRE lisible ce qui était coupé ; celle qui se resserre coupe ce
+  // qui ne l'était pas. La mesure suit, sinon le geste mentirait dans les deux sens.
+  if (typeof window !== 'undefined' && window.addEventListener) {
+    window.addEventListener('resize', () => programmerLaMesureDesCellules(document));
+  }
+} catch (e) { /* environnement sans document (harnais, service worker) : rien à câbler */ }
 
 // ============ HELPERS PARTAGÉS (relocalisés depuis app.js — audit H1) ============================
 // Ces helpers vivaient dans app.js mais étaient réimportés par de nombreuses vues (deps CIRCULAIRES
@@ -598,20 +969,47 @@ function lsSet(storeKey) { try { return new Set(JSON.parse(localStorage.getItem(
 // groupe repliable RÉUTILISABLE (même chrome que renderFreshness : .fgroup/.fgrouphd/.fgbody).
 // `set` = Set d'état plié (chargé via lsSet), `storeKey` = clé localStorage où le persister, `key` = clé
 // du groupe dans le Set. `nodes` = lignes DOM du corps. `dotHtml` (optionnel) = pastille de tête.
-function collapsibleGroup(set, storeKey, key, label, count, nodes, dotHtml) {
-  const collapsed = set.has(key);
+// `defautPlie` (défaut : déplié) — l'état d'un groupe que PERSONNE n'a encore touché. Le jeu persisté ne
+// dit donc pas « replié » mais « ÉCARTE du défaut » : sans cela, un groupe replié par défaut que
+// l'exploitant OUVRE ne pourrait rien mémoriser (ouvrir ne fait que retirer une clé absente), et se
+// refermerait au rechargement. Les appelants qui n'en passent pas gardent exactement le contrat d'avant.
+function collapsibleGroup(set, storeKey, key, label, count, nodes, dotHtml, defautPlie) {
+  const collapsed = set.has(key) ? !defautPlie : !!defautPlie;
   const wrap = document.createElement('div'); wrap.className = 'fgroup' + (collapsed ? ' collapsed' : '');
   const hd = document.createElement('button'); hd.type = 'button'; hd.className = 'fgrouphd';
-  hd.setAttribute('aria-expanded', collapsed ? 'false' : 'true'); hd.title = 'Plier / déplier ' + label;
+  hd.title = 'Plier / déplier ' + label;
   hd.innerHTML = ic('chevdown') + (dotHtml || '') + `<span class="fglbl">${esc(label)}</span><span class="fgcount">${count}</span>`;
   const body = document.createElement('div'); body.className = 'fgbody';
-  nodes.forEach(n => body.appendChild(n));
-  hd.onclick = () => {
-    const nowCollapsed = wrap.classList.toggle('collapsed');
-    hd.setAttribute('aria-expanded', nowCollapsed ? 'false' : 'true');
-    if (nowCollapsed) set.add(key); else set.delete(key);
+  // `P11.15-b` — LE CORPS N'EST BÂTI QUE S'IL EST VU. `nodes` accepte désormais une FONCTION, appelée au
+  // PREMIER dépli et une seule fois. Un groupe replié ne coûtait pas moins cher qu'un groupe ouvert : la
+  // feuille masque son corps (`.fgroup.collapsed .fgbody{display:none}`) mais le corps était déjà construit,
+  // donc replier allégeait l'écran sans rien retirer du travail. Un tableau reste accepté — les appelants
+  // dont le corps est déjà bâti gardent exactement le comportement d'avant.
+  let bati = false;
+  const batir = () => {
+    if (bati) return; bati = true;
+    const ns = typeof nodes === 'function' ? (nodes() || []) : (nodes || []);
+    ns.forEach(n => body.appendChild(n));
+  };
+  const memoriserLePli = plie => {
+    if (plie !== !!defautPlie) set.add(key); else set.delete(key);
     try { localStorage.setItem(storeKey, JSON.stringify([...set])); } catch (e) {}
   };
+  // `P11.15-b` — UN SEUL DÉPLI DANS LA CONSOLE. Ce groupe écrivait son `aria-expanded`, son clic et sa
+  // bascule à côté de `disclosure`, qui est déjà le dépli des panneaux et des cellules trop longues : deux
+  // mécanismes de pliage pour un même geste, dans le même fichier. L'état, la marque accessible et la
+  // bascule viennent maintenant de lui ; `.collapsed` sur l'enveloppe reste le seul vocabulaire que la
+  // feuille connaîsse, et le chevron continue de basculer par elle.
+  // `observe: false` : l'état est porté par l'ENVELOPPE et non par le panneau (rien à observer sur lui), et
+  // une liste repeinte à chaque chargement ajouterait sinon un observateur par groupe — la raison même
+  // pour laquelle cette option existe.
+  disclosure(hd, body, {
+    observe: false,
+    isOpen: () => !wrap.classList.contains('collapsed'),
+    open: () => { wrap.classList.remove('collapsed'); batir(); memoriserLePli(false); },
+    close: () => { wrap.classList.add('collapsed'); memoriserLePli(true); },
+  });
+  if (!collapsed) batir();
   wrap.append(hd, body);
   return wrap;
 }
@@ -682,5 +1080,5 @@ export function setSocTZ(v) { socTZ = v; }
 export {
   $, CSSV, socTZ, LANG, LOC, tzOpts, fmtTs, SEV, sev, bool, esc, ICONS, ic, flashStopped, stopBtn, closeModals, withBusy, toast, showErr, modal, confirmModal, csvCell, toCSV, downloadText, tsSlug, exportPDF, exportBar, closeMiniMenu, miniMenu, api, apiSend, transientGatewayMsg, muted, fetchInto, colComparator, makePager, pageNums, pagedList,
   socRole, socIsAdmin, applyRoleClass, controleDEcritureSous, motiverLeRefusAuLecteur, roleSansEcriturePartagee, managedBadge, gateDeleteBtn, formMsg, contentSubmit, contentDelete, SEVCOL, lsSet, collapsibleGroup, mitreName, humanAge,
-  confirmWithConsequence, disclosure
+  confirmWithConsequence, disclosure, marquerLesCellulesTronquees, celluleDeborde
 };

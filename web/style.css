@@ -31,6 +31,17 @@
      ce qui interdit qu'un état choisi soit marqué, ailleurs, par une graisse de police déjà porteuse de
      sens (alarme, valeur remarquable). Ne pas réemployer pour un survol ni pour un focus. */
   --sel-ring:1.5px;
+  /* P11.15-c — LA MARQUE DU CHOIX, ÉCRITE UNE FOIS. Relevé en usage réel le 2026-08-25 : un contrôle
+     choisi était REMPLI d'accent. Dans une console de sécurité, un aplat de couleur entre en
+     concurrence avec les couleurs qui portent la GRAVITÉ (`--sev1..4`, `--bad`, `--warn`) : un filtre
+     choisi se lisait avec le poids visuel d'une alerte. Même règle que le gras, retiré des filtres pour
+     la même raison (`P11.4-i`). Le choix se dit donc par un CERNE et par le TEXTE en couleur, et rien
+     d'autre ; les trois valeurs vivent ICI et non dans chaque règle, de sorte qu'une surface
+     sélectionnable posée demain porte la même marque sans qu'on y pense. Mesuré le 2026-08-25 avant la
+     correction : 12 règles marquaient un choix par un fond (7 en accent plein, 5 en teinte), 2 par du
+     gras. Ne pas réintroduire de `background` littéral dans une règle d'état choisi : le compte
+     ci-dessus est la propriété tenue. */
+  --sel-bg:transparent; --sel-fg:var(--acc); --sel-bd:var(--acc);
   --shadow:0 6px 18px #00000033;
 }
 html[data-theme="light"]{
@@ -95,7 +106,7 @@ header h1{display:flex;align-items:center;gap:8px;font-size:17px;font-weight:800
 .sidebar{position:sticky;top:57px;display:flex;flex-direction:column;gap:3px;padding:14px 10px;min-width:210px;height:calc(100vh - 57px);border-right:1px solid var(--bd);background:var(--card2)}
 .sidebar a{display:flex;gap:11px;align-items:center;padding:9px 12px;border-radius:10px;color:var(--fg);text-decoration:none;font-size:14px;font-weight:500;white-space:nowrap;border:1px solid transparent}
 .sidebar a:hover{background:var(--acc-bg);color:var(--hd)}
-.sidebar a.on{background:var(--acc-bg);color:var(--acc);border-color:color-mix(in srgb,var(--acc) 30%,transparent);font-weight:700}
+.sidebar a.on{background:var(--sel-bg);color:var(--sel-fg);border-color:var(--sel-bd)}
 .layout main{flex:1;min-width:0}
 .layout.collapsed .sidebar{min-width:0;padding:14px 8px}
 .layout.collapsed .sidebar a span{display:none}
@@ -106,7 +117,7 @@ main{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:
 .subnav{grid-column:1/-1;display:flex;gap:4px;flex-wrap:wrap;align-items:center;padding:4px;margin-bottom:-4px;background:var(--card2);border:1px solid var(--bd);border-radius:var(--radius)}
 .subnav .subtab{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:8px;color:var(--mut);text-decoration:none;font-size:13px;font-weight:600;white-space:nowrap;border:1px solid transparent;transition:border-color .15s,color .15s,background .15s}
 .subnav .subtab:hover{color:var(--hd);background:var(--acc-bg)}
-.subnav .subtab.on{background:var(--acc-bg);color:var(--acc);border-color:color-mix(in srgb,var(--acc) 30%,transparent)}
+.subnav .subtab.on{background:var(--sel-bg);color:var(--sel-fg);border-color:var(--sel-bd)}
 
 /* placeholders « À venir — chantier #1b » (Données -> Sources, Administration -> Rétention) */
 .soon{padding:28px 24px;text-align:center;border:1px dashed var(--bd);border-radius:var(--radius);background:var(--card2)}
@@ -124,6 +135,14 @@ main{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:
 .kv:last-child{border:0}
 b.ok,.ok{color:var(--ok)} b.bad,.bad{color:var(--bad)} b.mut{color:var(--mut)}
 .muted{color:var(--mut);font-size:12px;margin-top:8px}
+/* P11.15-d — UNE MENTION QUI QUALIFIE UNE ENTRÉE NE LA TOUCHE PAS. Les vues accolent au libellé d'une
+   entrée des mentions discrètes — le badge d'une source, la cadence déclarée d'un flux, le déclarant
+   d'un marquage, le motif d'un retard — séparées du mot qu'elles qualifient par un seul blanc
+   typographique. À 10-11 px, en gris ou en majuscules, elles s'y collent. La règle est posée sur les
+   CONTENEURS D'ENTRÉE partagés — la cellule d'un tableau, la ligne clé/valeur — et sur le vocabulaire
+   partagé des mentions ; elle ne nomme aucune vue, donc la vue posée demain l'a sans qu'on y pense. La
+   PREMIÈRE mention n'est jamais décalée : c'est l'entrée elle-même, elle n'a rien à qualifier. */
+:is(.qtable td,.kv>span)>:is(.badge,.muted):not(:first-child){margin-inline-start:8px}
 
 /* alertes */
 .alerthead{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;font-size:12px;color:var(--mut)}
@@ -157,10 +176,10 @@ b.ok,.ok{color:var(--ok)} b.bad,.bad{color:var(--bad)} b.mut{color:var(--mut)}
    `aria-pressed` sur le bouton (le seul canal que lit une aide technique, et qui ne dépend d'aucune
    couleur). CONSÉQUENCE MESURABLE ANNEXE : le mot ne change plus de graisse, donc plus de largeur, donc
    les pastilles de la barre ne se déplacent plus quand on change de tri. */
-.alertview .agseg.on{background:var(--acc);color:var(--acc-ink);border-color:var(--acc);box-shadow:inset 0 0 0 var(--sel-ring) var(--acc-ink)}
+.alertview .agseg.on{background:var(--sel-bg);color:var(--sel-fg);border-color:var(--sel-bd);box-shadow:inset 0 0 0 var(--sel-ring) var(--sel-bd)}
 .agscope{background:var(--card);border:1px solid var(--bd);border-radius:var(--pill);color:var(--mut);cursor:pointer;padding:3px 11px;font-size:12px}
 .agscope:hover{border-color:var(--acc);color:var(--acc)}
-.agscope.on{background:var(--acc-bg);color:var(--acc);border-color:var(--acc);box-shadow:inset 0 0 0 var(--sel-ring) var(--acc)}
+.agscope.on{background:var(--sel-bg);color:var(--sel-fg);border-color:var(--sel-bd);box-shadow:inset 0 0 0 var(--sel-ring) var(--sel-bd)}
 .agroup{border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:10px;background:var(--card2);margin-bottom:7px;overflow:hidden}
 .agroup.sev-1{border-left-color:var(--sev1)} .agroup.sev-2{border-left-color:var(--sev2)} .agroup.sev-3{border-left-color:var(--sev3)} .agroup.sev-4{border-left-color:var(--sev4)}
 .agsum{width:100%;display:grid;grid-template-columns:18px 78px auto auto minmax(0,1fr) auto auto;gap:12px;align-items:center;padding:9px 12px;background:transparent;border:0;cursor:pointer;text-align:left;color:var(--fg);font-size:13px}
@@ -213,7 +232,13 @@ footer{padding:12px 20px;color:var(--mut);font-size:12px;border-top:1px solid va
 .btn:disabled,.btn-primary:disabled,.btn-danger:disabled{opacity:.45;cursor:not-allowed}
 .btn-sm{padding:4px 10px;font-size:12px}
 /* état OUVERT d'un bouton de dépli (composant `disclosure`, core.js) : accent, jamais grisé */
-.btn[aria-expanded="true"],.panelhead button[aria-expanded="true"],.subh button[aria-expanded="true"]{border-color:var(--acc);color:var(--acc);background:var(--acc-bg)}
+.btn[aria-expanded="true"],.panelhead button[aria-expanded="true"],.subh button[aria-expanded="true"]{border-color:var(--sel-bd);color:var(--sel-fg);background:var(--sel-bg)}
+/* P11.15-c — LE DÉFAUT PARTAGÉ DE « CHOISI » : un bouton qui DIT être choisi porte la marque sans
+   qu'une règle lui soit écrite. La condition est `aria-pressed`, qui ne se pose que sur un contrôle à
+   BASCULE — jamais sur une ligne, une carte ni un conteneur : cette règle ne peut donc pas repeindre ce
+   qu'elle ne vise pas, le défaut par lequel sept contrôles permis avaient été effacés (`P11.4-m`). Sa
+   spécificité est la plus faible du lot : toute règle nommée la précise, aucune ne la subit. */
+button[aria-pressed="true"]{background:var(--sel-bg);color:var(--sel-fg);border-color:var(--sel-bd)}
 /* champ de saisie hors .ruleform (filtre de liste, éditeur en ligne) : même chrome que .ruleform input */
 .field{background:var(--card);border:1px solid var(--bd);border-radius:8px;color:var(--fg);padding:7px 9px;font-size:13px;font-family:inherit}
 .field:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
@@ -277,7 +302,14 @@ footer{padding:12px 20px;color:var(--mut);font-size:12px;border-top:1px solid va
 .qhistnav .picon{background:var(--card);border:1px solid var(--bd);border-radius:9px;color:var(--mut);cursor:pointer;transition:border-color .15s,color .15s,background .15s}
 .qhistnav .picon:hover:not(:disabled){border-color:var(--acc);color:var(--acc)}
 /* Plume panel : sous-titre + fil d'Ariane de drilldown (indicateur subtil, mêmes tons que les chips) */
-.qsub{margin:-6px 0 10px;color:var(--mut);font-size:12px}
+/* P11.15-d — LE SOUS-TITRE D'UNE VUE RESPIRE, ET SES QUALIFICATIFS AUSSI. Relevé en usage réel le
+   2026-08-25 sur l'inventaire des sources et sur la fraîcheur : la suite de mentions que porte le
+   sous-titre — « libellé / catégorie / attendu », « events + snapshots + métriques » — se lit d'un bloc,
+   et le sous-titre lui-même touchait son titre. La cause est ICI et nulle part dans les deux vues : un
+   `margin-top` NÉGATIF le remontait de 6 px contre le titre, sans hauteur de ligne propre et sans blanc
+   entre les mots. La règle est celle du sous-titre PARTAGÉ : les 3 vues qui en portent un aujourd'hui
+   (2026-08-25) et celle qu'on posera demain en héritent, aucune n'est ajustée pour elle-même. */
+.qsub{margin:4px 0 12px;color:var(--mut);font-size:12px;line-height:1.6;word-spacing:.12em}
 .qcrumb{display:inline-flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:11px;padding:2px 9px;border-radius:var(--pill);background:var(--acc-bg);color:var(--acc);border:1px solid color-mix(in srgb,var(--acc) 30%,transparent)}
 .qcrumb b{font-weight:700;color:var(--hd)}
 .qcrumb button{display:inline-flex;align-items:center;background:transparent;border:0;padding:0;color:inherit;cursor:pointer;opacity:.75}
@@ -289,7 +321,7 @@ footer{padding:12px 20px;color:var(--mut);font-size:12px;border-top:1px solid va
 .evpager button{background:var(--card2);border:1px solid var(--bd);border-radius:8px;padding:3px 9px;color:var(--fg);cursor:pointer;min-width:32px;text-align:center}
 .evpager button:hover:not(:disabled){border-color:var(--acc);color:var(--acc)}
 .evpager button:disabled{opacity:.4;cursor:default}
-.evpager .evnum.on{background:var(--acc);color:var(--acc-ink);border-color:var(--acc);font-weight:700}
+.evpager .evnum.on{background:var(--sel-bg);color:var(--sel-fg);border-color:var(--sel-bd)}
 .evpager .evdots{padding:0 2px}
 .evpager .evtot{margin-left:8px;white-space:nowrap;color:var(--mut)}
 /* liste paginée partagée (BATCH 1 — pagedList) : enveloppe de défilement HORIZONTAL des tables en carte
@@ -311,7 +343,24 @@ footer{padding:12px 20px;color:var(--mut);font-size:12px;border-top:1px solid va
 .qtable{border-collapse:separate;border-spacing:0;width:100%;font-family:var(--font-mono);font-size:12px}
 .qtable th,.qtable td{border-right:1px solid var(--bd);border-bottom:1px solid var(--bd);padding:6px 10px;text-align:left;white-space:nowrap}
 .qtable th:first-child,.qtable td:first-child{border-left:1px solid var(--bd)}
-.qtable td{max-width:520px;overflow:hidden;text-overflow:ellipsis}   /* valeur longue -> tronquée (…) ; valeur complète au survol (title) + au clic (détail) */
+/* P11.15-a — UNE VALEUR COUPÉE SE LIT EN ENTIER, ET LE GESTE EST LE MÊME PARTOUT. La cellule reste
+   plafonnée : c'est ce qui garde une table lisible en colonnes. Ce qui manquait, c'est le RECOURS —
+   mesuré le 2026-08-25, cette règle annonçait « valeur complète au survol (title) + au clic (détail) »
+   et NI l'un NI l'autre n'étaient posés par la fabrique de tableau ; seul l'aperçu d'un connecteur
+   écrivait un `title`, et le clic d'une ligne mène ailleurs quand il mène quelque part. Le geste est
+   désormais posé par la fabrique sur toute cellule dont le contenu dépasse sa place (`P11.15-a`,
+   core.js) : la cellule se marque `plcut` (place réservée au bouton), le bouton `plmore` la déplie
+   SUR PLACE — elle s'enroule et la ligne grandit en hauteur, la largeur des colonnes ne bouge pas. */
+.qtable td{max-width:520px;overflow:hidden;text-overflow:ellipsis;position:relative}
+.qtable td.plcut{padding-right:28px}
+.qtable td.plopen{white-space:pre-wrap;overflow-wrap:anywhere;overflow:visible;text-overflow:clip;vertical-align:top}
+.plmore{position:absolute;top:3px;right:3px;display:inline-flex;align-items:center;justify-content:center;width:19px;height:19px;padding:0;background:var(--card2);border:1px solid var(--bd);border-radius:6px;color:var(--mut);cursor:pointer;opacity:.7}
+.plmore:hover,.plmore:focus-visible{border-color:var(--acc);color:var(--acc);opacity:1}
+.plmore .ic{width:12px;height:12px;transition:transform .15s}
+/* déplié : le chevron BASCULE — l'état ne tient donc pas à la seule couleur (il se voit aussi en
+   monochrome), et la couleur employée est celle, partagée, du choix (`P11.15-c`). */
+.plmore.on{color:var(--sel-fg);border-color:var(--sel-bd);background:var(--sel-bg);opacity:1}
+.plmore.on .ic{transform:rotate(180deg)}
 /* table 1 colonne (ex. `| table message`) : on dé-plafonne la cellule -> la ligne longue s'étend (nowrap),
    le conteneur .qresult (overflow:auto) fournit le défilement HORIZONTAL -> lisible sans cliquer. Le clic
    reste un drilldown (search=valeur). */
@@ -363,7 +412,7 @@ tr.rowdetail>td{background:var(--card2);padding:10px 14px;white-space:normal;max
 .playbar{display:inline-flex;gap:6px;align-items:center}
 .playpos{font-size:12px;color:var(--mut);font-variant-numeric:tabular-nums;min-width:34px;text-align:center}
 .playbar input{width:56px}
-#dash-play.on{background:var(--acc);color:#04121a}
+#dash-play.on{background:var(--sel-bg);color:var(--sel-fg);border-color:var(--sel-bd)}
 .snapview{max-width:min(920px,92vw);width:920px}
 .snapprev{display:flex;flex-wrap:wrap;gap:12px;margin-top:12px;max-height:56vh;overflow:auto}
 .snapcard{flex:1 1 calc(50% - 12px);min-width:240px;background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:10px}
@@ -385,7 +434,10 @@ tr.rowdetail>td{background:var(--card2);padding:10px 14px;white-space:normal;max
 .paneltools .seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--bd);border-radius:9px;overflow:hidden} /* Les boutons viz passent à la ligne (restent atteignables) au lieu d'être clippés sur un panneau étroit */
 .paneltools .seg button{background:transparent;color:var(--mut);border:0;border-right:1px solid var(--bd);padding:3px 9px;cursor:pointer;display:inline-flex;align-items:center}
 .paneltools .seg button:last-child{border-right:0}
-.paneltools .seg button.on{background:var(--acc);color:var(--acc-ink)}
+/* Un segment n'a pas de cadre propre (le cerne appartient au groupe `.seg`) : sa marque est un
+   SOULIGNEMENT, tracé en ombre intérieure — aucun décalage de mise en page, et un second canal en
+   plus de la couleur. Le liseré intérieur `--sel-ring` reste RÉSERVÉ à la barre des alertes. */
+.paneltools .seg button.on{background:var(--sel-bg);color:var(--sel-fg);box-shadow:inset 0 -2px 0 var(--sel-bd)}
 .paneltools .seg .ic{width:15px;height:15px}
 .panelq{display:block;font-size:11px;color:var(--mut);background:var(--card2);border:1px solid var(--bd);border-radius:8px;padding:5px 9px;margin-bottom:8px;overflow-x:auto;white-space:nowrap;font-family:var(--font-mono)}
 
@@ -444,7 +496,7 @@ tr.rowdetail>td{background:var(--card2);padding:10px 14px;white-space:normal;max
    d'état garde sa pleine opacité — c'est une information, pas un contrôle. */
 .caserow.closed .casetitle,.caserow.closed .casemeta{opacity:.6}
 /* état ouvert du dépli partagé (`disclosure`) : remplace la bordure d'accent posée en style en ligne. */
-.caserow.on{border-color:var(--acc)}
+.caserow.on{border-color:var(--sel-bd)}
 .caserow .casetitle{font-weight:600;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .caserow .casemeta{font-size:11px;color:var(--mut);white-space:nowrap;min-width:0;flex-shrink:1;overflow:hidden;text-overflow:ellipsis}   /* BATCH 2 (B5) : peut rétrécir/ellipsis -> ne déborde plus dans la colonne de grille voisine (minmax 360px) */
 .casest{font-size:10px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.06em;padding:2px 8px;border-radius:var(--pill);border:1px solid var(--bd);color:var(--mut)}
@@ -638,10 +690,10 @@ body:not(.role-admin) .rawsql-toggle{display:none!important}
    sticky z-index:3, poignées de coin…) -> le crayon reste toujours visible et cliquable. */
 .dashview.editing .panelhead,.dashview.editing .dashtile-head{position:relative;z-index:5}
 select.picon{padding:2px 6px!important;background:var(--card);color:var(--fg);border:1px solid var(--bd);border-radius:7px;font-size:11px;font-family:var(--font-sans)}
-#dash-edit.on{background:var(--acc);color:var(--acc-ink);border-color:var(--acc)}
+#dash-edit.on{background:var(--sel-bg);color:var(--sel-fg);border-color:var(--sel-bd)}
 /* #17 team — bascules d'équipe : « À moi » (file de travail) pressée + partage de vue actif (picon) */
-#case-mine[aria-pressed="true"]{background:var(--acc);color:var(--acc-ink);border-color:var(--acc)}
-#view-share.on{color:var(--acc);border-color:color-mix(in srgb,var(--acc) 35%,transparent)}
+#case-mine[aria-pressed="true"]{background:var(--sel-bg);color:var(--sel-fg);border-color:var(--sel-bd)}
+#view-share.on{background:var(--sel-bg);color:var(--sel-fg);border-color:var(--sel-bd)}
 /* niveau VUE (barre superieure) + niveau DASHBOARD (tuiles dans la vue) */
 .sronly{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .viewbar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
@@ -700,7 +752,7 @@ select.picon{padding:2px 6px!important;background:var(--card);color:var(--fg);bo
 .rmgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:6px}
 .rmp{background:var(--card2);border:1px solid var(--bd);border-radius:8px;padding:8px 4px;color:var(--fg);cursor:pointer;font-size:12px;font-family:var(--font-mono)}
 .rmp:hover{border-color:var(--acc);color:var(--acc)}
-.rmp.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+.rmp.on{background:var(--sel-bg);color:var(--sel-fg);border-color:var(--sel-bd)}
 .rmabs{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
 .rmabs label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--mut);flex:1 1 160px}
 .rmabs input{background:var(--card2);border:1px solid var(--bd);border-radius:7px;padding:6px 8px;color:var(--fg);font-size:12px;font-family:var(--font-mono)}
@@ -767,6 +819,10 @@ button.btn-busy::after{content:"";position:absolute;top:50%;left:50%;width:12px;
 @keyframes spin{to{transform:rotate(360deg)}}
 .alert button:disabled{opacity:.5;cursor:progress}
 .alertdrill{cursor:pointer}.alertdrill.drilling{opacity:.45;transition:opacity .1s}
+.alertdrill[aria-disabled="true"]{cursor:default}.alertdrill[aria-disabled="true"]:hover{color:inherit;text-decoration:none}   /* `P11.14-b` : un pivot refusé n'invite pas au clic. Spécificité (0,2,0) : l'emporte sur les DEUX
+      `.alertdrill{cursor:pointer}` quel que soit leur ordre — cf. `P11.14-f`, où une règle postérieure
+      à spécificité ÉGALE annulait un masquage. La raison du refus reste lisible au survol (le contrôle
+      n'est pas `disabled`, qui couperait l'infobulle). */
 #alerts .body.reloading,#freshness .body.reloading{opacity:.5;transition:opacity .1s;pointer-events:none}
 .ackdone{display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--ok);opacity:.8;padding:3px 9px;border:1px solid var(--bd);border-radius:7px}
 .ackdone .ic{width:14px;height:14px}
@@ -975,7 +1031,7 @@ h2 .ihelp,h3 .ihelp{vertical-align:middle;margin-left:6px;position:relative;top:
 .pv-chips{display:flex;flex-wrap:wrap;gap:7px}
 .pv-chip{background:var(--card);border:1px solid var(--bd);border-radius:999px;color:var(--fg);padding:5px 11px;font-size:12px;font-family:var(--font-mono);cursor:pointer}
 .pv-chip:hover{border-color:var(--acc);color:var(--acc)}
-.pv-chip.on{background:var(--acc-bg);border-color:var(--acc);color:var(--acc-ink)}
+.pv-chip.on{background:var(--sel-bg);border-color:var(--sel-bd);color:var(--sel-fg)}
 .pv-row{display:flex;align-items:center;gap:7px;margin:5px 0}
 .pv-row select,.pv-row input{background:var(--card);border:1px solid var(--bd);border-radius:8px;color:var(--fg);padding:6px 9px;font-size:12px;font-family:var(--font-mono)}
 .pv-row .pv-func,.pv-row .pv-fop{flex:0 0 auto}

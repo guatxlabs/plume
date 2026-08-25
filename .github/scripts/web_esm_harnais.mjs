@@ -17,8 +17,14 @@
 //    dirait TOUJOURS « non lisible » passe le premier.
 //
 // Le shim ne rend pas de mise en page : il enregistre l'arbre que les modules construisent, et
-// c'est le TEXTE de cet arbre qui est jugé. `fetch` est absent par construction — une surface qui
-// appellerait le réseau au chargement d'un module est une erreur, et elle se voit ici.
+// c'est le TEXTE de cet arbre qui est jugé. `fetch` est absent par construction : aucun témoin ne
+// dépend du réseau, et une lecture réseau échoue ici au lieu de partir.
+// CE QUE CETTE ABSENCE NE PROUVE PAS, et le commentaire qui vivait ici l'affirmait à tort : elle NE
+// REFUSE PAS un appel réseau au chargement d'un module. La console en fait — elle doit peindre à
+// l'amorçage — et l'échec de `fetch` retombe dans le `catch` de la charge, donc rien ne rougit. Ce
+// harnais ne verrait un tel appel que s'il produisait un rejet NON TRAITÉ. Mesuré le 2026-08-25 :
+// c'est ce qui est arrivé en dérivant les charges de la vue, et c'est ce qui a fait apparaître une
+// récursion sans fin — utile, mais par accident, pas par construction.
 import { readdirSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
@@ -62,11 +68,17 @@ class Element {
   get lastChild() { return this.children[this.children.length - 1] ?? null; }
   get childNodes() { return this.children; }
   get isConnected() { return true; }
-  appendChild(c) { if (c instanceof Fragment) { c.children.forEach((x) => this.appendChild(x)); return c; } c.parentNode = this; this.children.push(c); return c; }
+  // `P11.13-e` — INSÉRER DÉTACHE. Le document réel RETIRE un nœud de son parent précédent avant de le
+  // poser ailleurs : un nœud n'a jamais deux parents. Le shim posait le nouveau parent sans retirer
+  // l'enfant de l'ancienne liste, si bien qu'un élément DÉPLACÉ restait listé sous les deux — et une
+  // mesure a conclu qu'un formulaire restait joignable après la fermeture des modales alors qu'il ne
+  // l'était pas. L'instrument a produit un faux négatif sur le défaut même qu'il servait à établir.
+  _detacher(n) { const p = n && n.parentNode; if (p && p !== this) p.children = p.children.filter((x) => x !== n); else if (p === this) this.children = this.children.filter((x) => x !== n); return n; }
+  appendChild(c) { if (c instanceof Fragment) { c.children.forEach((x) => this.appendChild(x)); return c; } this._detacher(c); c.parentNode = this; this.children.push(c); return c; }
   append(...cs) { cs.forEach((c) => this.appendChild(typeof c === "string" ? document.createTextNode(c) : c)); }
-  prepend(...cs) { cs.reverse().forEach((c) => { const n = typeof c === "string" ? document.createTextNode(c) : c; n.parentNode = this; this.children.unshift(n); }); }
-  replaceChildren(...cs) { this.children = []; this._text = ""; this.append(...cs); }
-  insertBefore(n, ref) { const i = this.children.indexOf(ref); n.parentNode = this; if (i < 0) this.children.push(n); else this.children.splice(i, 0, n); return n; }
+  prepend(...cs) { cs.reverse().forEach((c) => { const n = typeof c === "string" ? document.createTextNode(c) : c; this._detacher(n); n.parentNode = this; this.children.unshift(n); }); }
+  replaceChildren(...cs) { this.children.forEach((c) => { if (c && c.parentNode === this) c.parentNode = null; }); this.children = []; this._text = ""; this.append(...cs); }
+  insertBefore(n, ref) { this._detacher(n); const i = this.children.indexOf(ref); n.parentNode = this; if (i < 0) this.children.push(n); else this.children.splice(i, 0, n); return n; }
   removeChild(c) { this.children = this.children.filter((x) => x !== c); return c; }
   remove() { if (this.parentNode) this.parentNode.removeChild(this); }
   replaceWith(...cs) { if (!this.parentNode) return; const p = this.parentNode, i = p.children.indexOf(this); p.children.splice(i, 1, ...cs); cs.forEach((c) => (c.parentNode = p)); }
@@ -152,7 +164,8 @@ const fenetre = {
   IntersectionObserver: class { observe() {} disconnect() {} unobserve() {} },
   EventSource: class { constructor() { this.readyState = 0; } close() {} addEventListener() {} },
   WebSocket: class { constructor() { this.readyState = 0; } close() {} addEventListener() {} send() {} },
-  // Réseau : absent par construction. Un appel au chargement d'un module est une faute, et elle se voit.
+  // Réseau : absent par construction. Voir l'en-tête : cette absence ne REFUSE pas un appel au
+  // chargement d'un module, elle le fait seulement échouer.
   fetch: undefined,
 };
 for (const [k, v] of Object.entries(fenetre)) Object.defineProperty(globalThis, k, { value: v, writable: true, configurable: true });
@@ -161,6 +174,135 @@ globalThis.self = globalThis;
 
 // Le texte d'un sous-arbre, tel qu'un lecteur le verrait (sans mise en page).
 const texte = (el) => el.textContent;
+
+// ---------------------------------------------------------------------------------------------
+// LE DOCUMENT DE LA PAGE (`P11.13-e`). Le shim ne portait AUCUN arbre : `querySelector` rendait un
+// nœud détaché neuf à chaque appel et `querySelectorAll` une liste vide. Trois conséquences, toutes
+// mesurées le 2026-08-25 : le changement de vue n'y masquait rien (`showView` itère sur
+// `main > section`), tout paraissait donc AFFICHÉ, et la propriété « une charge ne part que si sa
+// cible est visible » (`P11.17-a`) n'était pas gardable — un témoin l'aurait toujours trouvée vraie.
+//
+// CE QUI EST CONSTRUIT : l'arbre RÉEL de `index.html`, ancêtres compris, avec `id`, `hidden`, classes
+// et la valeur sélectionnée des listes déroulantes. La page est la SOURCE ; rien n'est énuméré ici.
+// CE QUI RESTE UN MENSONGE ASSUMÉ, et qui est écrit plutôt que tu : un identifiant ABSENT de la page
+// rend encore un nœud détaché — mémoïsé, donc le même à chaque appel, comme le ferait un document —
+// au lieu de `null`. Le rendre nul arrêterait au chargement tout module qui câble `$('#x').onclick`,
+// et c'est le compromis que ce harnais assume depuis l'origine. Il est SANS EFFET sur la visibilité :
+// un nœud hors page n'a pas d'ancêtre masqué, donc une charge qui viserait un identifiant inexistant
+// serait comptée affichée — c'est pourquoi le témoin de couverture lit la page, jamais le registre.
+// ---------------------------------------------------------------------------------------------
+const VIDES = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
+  "path", "circle", "rect", "line", "polyline", "polygon", "use", "stop", "ellipse", "feoffset", "fegaussianblur", "femerge", "femergenode"]);
+const OPAQUES = new Set(["script", "style", "textarea"]);
+const parIdentifiant = new Map();
+let mainDeLaPage = null;
+function construireLeDocumentDeLaPage(html) {
+  const pile = [document.body];
+  const RE = /<!--[\s\S]*?-->|<(\/?)([a-zA-Z][\w:-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)(\/?)>/g;
+  let m;
+  while ((m = RE.exec(html))) {
+    if (m[0].startsWith("<!--")) continue;
+    const fermante = m[1] === "/", tag = m[2].toLowerCase(), attrs = m[3] || "", autoferme = m[4] === "/";
+    if (fermante) { if (pile.length > 1 && pile[pile.length - 1].tagName === tag.toUpperCase()) pile.pop(); continue; }
+    const el = new Element(tag);
+    for (const a of attrs.matchAll(/([\w:-]+)(?:\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g)) {
+      const nom = a[1].toLowerCase(), val = a[3] ?? a[4] ?? a[5] ?? "";
+      if (nom === "id") el.id = val;
+      else if (nom === "class") el.className = val;
+      else if (nom === "hidden") el.hidden = true;
+      else el.setAttribute(nom, val);
+    }
+    pile[pile.length - 1].appendChild(el);
+    if (tag === "main" && !mainDeLaPage) mainDeLaPage = el;
+    if (el.id && !parIdentifiant.has(el.id)) parIdentifiant.set(el.id, el);
+    // Un élément OPAQUE EXISTE dans le document — seul son CONTENU est ignoré. Le sauter entièrement
+    // le faisait DISPARAÎTRE : l'éditeur de requête est un `<textarea>`, sa cible était introuvable et
+    // toute dérivation qui le lit (la barre de recherche de l'en-tête, la section d'une charge)
+    // répondait « nulle part ». Mesuré le 2026-08-25 en écrivant le témoin de couverture.
+    if (OPAQUES.has(tag)) { const fin = html.indexOf("</" + tag, RE.lastIndex); if (fin >= 0) RE.lastIndex = fin; continue; }
+    if (!VIDES.has(tag) && !autoferme) pile.push(el);
+  }
+  // Une liste déroulante porte la valeur de son option `selected` : sans elle, la cadence par défaut
+  // de la console (le `selected` du balisage) serait lue comme vide et rien ne s'armerait.
+  for (const el of parIdentifiant.values()) {
+    if (el.tagName !== "SELECT") continue;
+    el.options = el.children.filter((c) => c.tagName === "OPTION");
+    const choisie = el.options.find((o) => o.hasAttribute("selected")) || el.options[0];
+    if (choisie) { el.value = choisie.getAttribute("value") ?? ""; el.selectedIndex = el.options.indexOf(choisie); }
+    if (el.hasAttribute("value")) el.value = el.getAttribute("value");
+  }
+}
+construireLeDocumentDeLaPage(readFileSync(path.join(WEB, "index.html"), "utf8"));
+const sectionsDeLaPage = () => (mainDeLaPage ? mainDeLaPage.children.filter((c) => c.tagName === "SECTION") : []);
+// UN MOTEUR DE SÉLECTEURS MINIMAL — tag, identifiant, classes, attributs, descendant, enfant direct,
+// `:scope`, listes séparées par des virgules. Il ne prétend pas être CSS ; il couvre ce que la console
+// écrit. IL EST DEVENU NÉCESSAIRE EN FERMANT L'AUTRE TROU : tant que l'insertion ne détachait pas, un
+// sélecteur non résolu rendait un nœud détaché sans conséquence. Depuis que détacher est fidèle, un
+// `main.appendChild(section)` résolu vers un faux `main` ARRACHE la section du document — mesuré le
+// 2026-08-25 : le réordonnancement des cartes de la Vue d'ensemble sortait les quatre du document et
+// la vue paraissait n'avoir aucune charge. Les deux trous ne se ferment donc pas séparément.
+const RE_ETAPE = /^([a-zA-Z][\w-]*)?(#[\w-]+)?((?:\.[\w-]+)*)((?:\[[^\]]+\])*)$/;
+function etapeCorrespond(el, etape) {
+  const m = RE_ETAPE.exec(etape);
+  if (!m || !el.tagName) return false;
+  if (m[1] && el.tagName !== m[1].toUpperCase()) return false;
+  if (m[2] && el.id !== m[2].slice(1)) return false;
+  for (const c of (m[3] || "").split(".").filter(Boolean)) if (!el.classList.contains(c)) return false;
+  for (const a of (m[4] || "").match(/\[[^\]]+\]/g) || []) {
+    const mm = /^\[([\w:-]+)(?:=["']?([^\]"']*)["']?)?\]$/.exec(a);
+    if (!mm) return false;
+    const v = el.getAttribute(mm[1]);
+    if (v === null || (mm[2] !== undefined && v !== mm[2])) return false;
+  }
+  return true;
+}
+function descendants(n, sortie) {
+  for (const c of n.children || []) { if (c.tagName) { sortie.push(c); descendants(c, sortie); } }
+  return sortie;
+}
+function chercher(racine, sel, tous) {
+  const out = [];
+  for (const brut of String(sel).split(",")) {
+    const etapes = brut.trim().split(/\s*(>)\s*|\s+/).filter(Boolean);
+    if (!etapes.length) continue;
+    let courants = [racine], direct = false, premiere = true;
+    for (const e of etapes) {
+      if (e === ">") { direct = true; continue; }
+      if (e === ":scope") { premiere = false; continue; }
+      // Raccourci par identifiant : la page en compte des centaines, un parcours complet par requête
+      // rendrait le harnais inutilisable.
+      const parId = premiere && !direct && /^[a-zA-Z]*#[\w-]+/.test(e) ? parIdentifiant.get(e.match(/#([\w-]+)/)[1]) : null;
+      if (parId) { courants = etapeCorrespond(parId, e) && racine.contains(parId) ? [parId] : []; premiere = false; continue; }
+      const suiv = [];
+      for (const n of courants) for (const c of (direct ? (n.children || []).filter((x) => x.tagName) : descendants(n, []))) {
+        if (etapeCorrespond(c, e) && !suiv.includes(c)) suiv.push(c);
+      }
+      courants = suiv; direct = false; premiere = false;
+    }
+    for (const c of courants) if (!out.includes(c)) out.push(c);
+    if (!tous && out.length) break;
+  }
+  return out;
+}
+// Nœuds de repli, MÉMOÏSÉS par (racine, sélecteur) : un document rend le même nœud pour la même
+// question. Un sélecteur qui ne désigne rien dans la page rend ce nœud détaché plutôt que `null` —
+// mensonge assumé de longue date, sans quoi tout module qui câble `$('#x').onclick` s'arrêterait au
+// chargement. Il est INOFFENSIF pour la visibilité (un nœud détaché n'a aucun ancêtre masqué) et il
+// ne peut plus arracher quoi que ce soit, puisque les sélecteurs de la page sont résolus pour de bon.
+const repli = new Map();
+function unSeul(racine, sel) {
+  const t = chercher(racine, sel, false);
+  if (t.length) return t[0];
+  const cle = (racine.id || racine.tagName) + "|" + sel;
+  if (!repli.has(cle)) { const e = new Element("div"); const id = (String(sel).match(/^#([\w-]+)$/) || [])[1]; if (id) e.id = id; repli.set(cle, e); }
+  return repli.get(cle);
+}
+document.querySelector = (sel) => unSeul(document.body, sel);
+document.getElementById = (id) => unSeul(document.body, "#" + id);
+document.querySelectorAll = (sel) => chercher(document.body, sel, true);
+Element.prototype.querySelector = function (sel) { return unSeul(this, sel); };
+Element.prototype.querySelectorAll = function (sel) { return chercher(this, sel, true); };
+
 
 // ---------------------------------------------------------------------------------------------
 // 1. LE GRAPHE DE MODULES SE LIE — chaque module suivi de `web/`, sauf le service worker (il n'est
@@ -1183,14 +1325,32 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 }
 
 // ---------------------------------------------------------------------------------------------
-// 16. LE PANNEAU D'ACCÈS DONNÉES REND SES CARTES, SA FENÊTRE ET SON PÉRIMÈTRE. Le rendu vit dans
-//     `dataaccess.js` (extrait d'`app.js` par déplacement pur) ; il est exercé ici sur le shim, sans réseau :
-//     cinq cartes titrées, dont chaque corps dit l'absence de données AVEC la fenêtre d'analyse (la requête
-//     ne peut pas partir, le placeholder est remplacé par l'aveu, jamais laissé à « ... ») ; un sélecteur de
-//     fenêtre à trois choix avec son nom accessible ; la note de périmètre et ses sept chemins surveillés.
+// 16. LE PANNEAU D'ACCÈS DONNÉES REND SES CARTES, SA FENÊTRE ET SON PÉRIMÈTRE — ET IL DISTINGUE UN
+//     REFUS D'UNE ABSENCE (`P11.14-c`). Le rendu vit dans `dataaccess.js` (extrait d'`app.js` par
+//     déplacement pur) ; il est exercé ici sur le shim, sans réseau : cinq cartes titrées, un sélecteur
+//     de fenêtre à trois choix avec son nom accessible, la note de périmètre et ses sept chemins.
+//
+//     CE QUE CE TÉMOIN A LONGTEMPS ENTÉRINÉ, ET QUI ÉTAIT LE DÉFAUT. Il exigeait que, SANS RÉSEAU,
+//     chaque corps de carte dise « Aucun changement récent (…) » — c'est-à-dire qu'il exigeait du
+//     panneau qu'il AFFIRME une absence de données là où aucune requête n'était partie. Le panneau
+//     tenait la promesse : la même phrase sortait d'un refus du démon, d'une réponse illisible, d'une
+//     panne réseau ET d'un vrai vide. C'est ce qui a produit la contradiction relevée en usage réel le
+//     2026-08-25 — « toute la rétention » rendant « aucun changement récent » quand « 7 jours »
+//     rendait des lignes, un sur-ensemble affichant moins que son sous-ensemble. Mesuré le même jour :
+//     le SQL de la fenêtre large est celui de la fenêtre étroite MOINS son conjoint `ts >= …`, et il
+//     rend toujours au moins autant de lignes ; ce que la fenêtre large rend de différent, c'est un
+//     REFUS du démon (422 « refus de rendre un nombre FAUX … », ou 400 « budget dépassé »). La
+//     contradiction naissait donc à l'AFFICHAGE, et ce témoin la protégeait.
+//
+//     LES TROIS ISSUES SONT DÉSORMAIS TENUES, DANS LES DEUX SENS. Un refus doit NOMMER sa cause et ne
+//     doit accuser NI la collecte NI l'absence de données ; un VRAI vide doit rester une absence (sans
+//     quoi un correctif dégénéré — « avoue toujours » — passerait le premier témoin sans rien prouver) ;
+//     des lignes doivent rendre une table. La distinction est jugée sur la STRUCTURE (trois classes,
+//     trois textes, tous distincts), pas sur une phrase recopiée : une reformulation ne casse pas le
+//     témoin, mais un aplatissement des trois issues sur une seule, si.
 // ---------------------------------------------------------------------------------------------
 {
-  const { renderDataAccess } = await import(pathToFileURL(path.join(WEB, "dataaccess.js")).href);
+  const { renderDataAccess, daRenduDeReponse } = await import(pathToFileURL(path.join(WEB, "dataaccess.js")).href);
   const hote = new Element("div");
   const qsOrigine = document.querySelector;
   document.querySelector = (sel) => (sel === "#da-body" ? hote : qsOrigine(sel));
@@ -1200,8 +1360,32 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(cartes.length === 5, `(16) ${cartes.length} carte(s) d'accès données rendue(s), cinq attendues`);
   const titres = cartes.map(h2De);
   for (const t of ["Qui touche quoi (accès données)", "Intégrité (FIM)", "RBAC Kubernetes (kube-rbac)"]) exiger(titres.includes(t), `(16) carte « ${t} » absente — titres : ${titres.join(" | ")}`);
-  const corps = cartes.map((c) => { const b = c.children.find((x) => x.classList.contains("body")); return b ? b.textContent : "(pas de corps)"; });
-  exiger(corps.every((t) => t.startsWith("Aucun changement récent (toute la rétention")), `(16) sans réseau, un corps de carte ne dit pas l'absence de données avec sa fenêtre : ${corps.join(" | ")}`);
+  const corpsEl = cartes.map((c) => c.children.find((x) => x.classList.contains("body")));
+  const corps = corpsEl.map((b) => (b ? b.textContent : "(pas de corps)"));
+  // SANS RÉSEAU, RIEN N'EST ÉTABLI. Le placeholder « ... » doit avoir été remplacé (le panneau conclut),
+  // et ce qu'il rend est un aveu qui NOMME la cause — jamais une absence de données.
+  exiger(corps.every((t) => t && t !== "..." && !t.endsWith("...")), `(16) sans réseau, un corps de carte reste au placeholder : ${corps.join(" | ")}`);
+  const avecCause = corpsEl.map((b) => (b && b.children.find((x) => x.classList.contains("bad"))) || null);
+  exiger(avecCause.every(Boolean), `(16) sans réseau, un corps de carte ne rend pas un aveu de cause : ${corps.join(" | ")}`);
+  // TROIS ISSUES DISTINCTES, sur la MÊME fonction pure et la MÊME fenêtre. Aucune phrase n'est recopiée :
+  // c'est la CARDINALITÉ (trois classes, trois textes) qui est exigée, plus la présence de la cause
+  // servie par le démon dans le seul rendu qui a le droit de la porter.
+  const SOQL = "search source=dataaccess | stats count by path,user | sort -count | head 30";
+  const CAUSE = "refus de rendre un nombre FAUX : la lecture froide a dû s'arrêter à N lignes";
+  const refus = daRenduDeReponse({ error: CAUSE }, "all", SOQL);
+  const vide = daRenduDeReponse({ columns: ["path"], rows: [] }, "all", SOQL);
+  const lignes = daRenduDeReponse({ columns: ["path", "count"], rows: [["/etc/shadow", 3]] }, "all", SOQL);
+  const issues = [refus, vide, lignes];
+  exiger(new Set(issues.map((e) => e.className)).size === 3, `(16) les trois issues d'une réponse partagent une classe : ${issues.map((e) => e.className).join(" | ")}`);
+  exiger(new Set(issues.map((e) => e.textContent)).size === 3, `(16) les trois issues d'une réponse rendent le même texte : ${issues.map((e) => e.textContent).join(" | ")}`);
+  exiger(refus.textContent.includes(CAUSE), `(16) le refus du démon n'est pas rendu à l'analyste — la cause et les voies exactes qu'il nomme sont perdues : « ${refus.textContent} »`);
+  exiger(!/capteur/i.test(refus.textContent), `(16) un refus accuse la collecte : « ${refus.textContent} »`);
+  exiger(!vide.textContent.includes(CAUSE) && vide.textContent.includes("Aucun"), `(16) un VRAI vide ne se dit plus comme une absence — un correctif qui avouerait TOUJOURS passerait le témoin du refus sans rien prouver : « ${vide.textContent} »`);
+  exiger(lignes.children.some((c) => c.tagName === "TABLE"), `(16) des lignes ne rendent pas de table : « ${lignes.textContent} »`);
+  // La fenêtre ÉTROITE ne conclut pas comme la large : sur toute la rétention un vide porte sur la
+  // collecte, sur sept jours il porte sur la fenêtre. Deux textes, une seule fonction.
+  const vide7j = daRenduDeReponse({ columns: ["path"], rows: [] }, "7d", SOQL);
+  exiger(vide7j.textContent !== vide.textContent, `(16) le vide d'une fenêtre étroite et celui de toute la rétention disent la même chose : « ${vide.textContent} »`);
   const barre = hote.children.find((c) => c.classList.contains("da-winbar"));
   const selecteur = barre && barre.children.find((c) => c.tagName === "SELECT");
   exiger(!!selecteur && selecteur.children.length === 3 && selecteur.getAttribute("aria-label") === "Fenêtre d'analyse (DLP)", `(16) sélecteur de fenêtre : ${selecteur ? selecteur.children.length + " option(s), nom « " + selecteur.getAttribute("aria-label") + " »" : "absent"}`);
@@ -1210,7 +1394,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(!!note && h2De(note) === "Périmètre surveillé (hôte)", `(16) note de périmètre : ${note ? "titre « " + h2De(note) + " »" : "absente"}`);
   const puces = note ? note.children.flatMap((c) => c.children || []).filter((c) => c.classList.contains("plugchip")) : [];
   exiger(puces.length === 7 && puces.some((c) => c.textContent === "/etc/shadow"), `(16) ${puces.length} chemin(s) surveillé(s) rendu(s), sept attendus`);
-  console.log(`[accès données] ${cartes.length} cartes, ${corps.length} corps disant l'absence de données avec la fenêtre, sélecteur à ${selecteur ? selecteur.children.length : 0} choix, ${puces.length} chemins surveillés`);
+  console.log(`[accès données] ${cartes.length} cartes ; sans réseau, ${avecCause.filter(Boolean).length} corps avouent leur cause au lieu d'affirmer une absence ; trois issues distinctes (refus « ${refus.className} », vide « ${vide.className} », lignes « ${lignes.className} ») sur la même fonction, et le vide de sept jours ne conclut pas comme celui de toute la rétention ; sélecteur à ${selecteur ? selecteur.children.length : 0} choix, ${puces.length} chemins surveillés`);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2716,9 +2900,194 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[frontiere-aide] ${portees.size} tables de contenu restent dans la mécanique (${[...portees].sort().join(", ")}), toutes DÉCLARÉES en tête du module et dérivées ici dans les deux sens ; le sommaire et ses ${entrees} entrées restent sous « ${ancre && ancre[1]} », le fichier auquel la garde des déclencheurs est ancrée par son NOM. Ce que ce témoin NE tient PAS : il ne rend pas le déplacement possible — il rend son refus VISIBLE. Les deux obstacles mesurés sont écrits en tête de help.js.`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 35. CE QUI PEINT UNE VUE EST DÉCLARÉ, ET LA CADENCE EN DÉRIVE SON PÉRIMÈTRE (`P11.17-a`,
+//     `P11.17-d`, `P11.14-e`). Trois défauts de la même famille se ferment ensemble, et ce témoin
+//     tient les trois — aucun ne pouvait être tenu avant que le shim porte l'arbre de la page.
+//     (a) COUVERTURE : chaque `<section>` de `<main>` est peinte par au moins une charge DÉCLARÉE, ou
+//         nommée dans la table des sections sans charge AVEC SA RAISON. L'attente vient d'index.html,
+//         la réponse du registre : deux sources indépendantes. C'est la garde que `P11.14-e` demande —
+//         une liste écrite à la main s'oublie, et quatre panneaux avaient été oubliés.
+//     (b) AUCUN NOM D'ONGLET ne décide de quoi que ce soit dans le module qui porte le modèle. Les
+//         identifiants sont DÉRIVÉS du modèle lui-même ; toute comparaison à l'un d'eux est refusée.
+//         Le module est trouvé par ce qu'il DÉFINIT, jamais par son nom de fichier.
+//     (c) PÉRIMÈTRE : sur chaque onglet, les charges rejouées à l'entrée sont exactement celles dont la
+//         cible vit dans une section que cet onglet montre — et aucune charge ne vise une section
+//         déclarée sans charge. C'est la propriété corrigée sous `P11.17-a`, enfin gardable.
+//     (d) CHAQUE ONGLET peint quelque chose, ou toutes ses sections sont déclarées sans charge.
+//     L'INSTRUMENT SE VALIDE : planchers de non-dégénérescence, puis quatre fautes INJECTÉES sur des
+//     copies — un registre amputé, une charge visant une section déclarée sans charge, un arbre à plat
+//     (le trou de `P11.13-e`), un onglet vidé de ses charges — que la dérivation DOIT voir.
+// ---------------------------------------------------------------------------------------------
+{
+  const nav = await import(pathToFileURL(path.join(WEB, "navigation.js")).href);
+  const { CHARGES_DE_LA_CONSOLE, SECTIONS_SANS_CHARGE, SPACES: MODELE } = nav;
+  const html = readFileSync(path.join(WEB, "index.html"), "utf8");
+
+  // Le module qui PORTE le modèle est trouvé par ce qu'il définit — pas par son nom.
+  const porteurDuModele = modules.find((f) => /^const SPACES\s*=\s*\[/m.test(readFileSync(path.join(WEB, f), "utf8")));
+  exiger(!!porteurDuModele, "(35) aucun module ne définit le modèle de navigation `SPACES` : la dérivation n'a plus d'ancre");
+
+  // Les sections de la page, lues DEUX fois : par l'arbre du shim et par le texte d'index.html. Un
+  // écart signerait un arbre construit de travers, et le témoin refuserait de conclure.
+  const sectionsArbre = sectionsDeLaPage().map((s) => s.id).filter(Boolean);
+  const sectionsTexte = [...html.slice(html.indexOf("<main>")).matchAll(/<section[^>]*\bid="([\w-]+)"/g)].map((m) => m[1]);
+  exiger(sectionsArbre.length >= 20, `(35) instrument : ${sectionsArbre.length} section(s) dans l'arbre — la construction du document est cassée, le témoin refuse de conclure`);
+  // COMPARÉES COMME ENSEMBLES, pas comme suites : la console RÉORDONNE les cartes de la Vue d'ensemble
+  // (préférence par utilisateur), donc l'ordre du document n'est pas celui du balisage — et ce n'est
+  // pas un défaut. Ce que le témoin tient, c'est que l'arbre porte les MÊMES sections que la page.
+  const ecart = [...new Set([...sectionsArbre, ...sectionsTexte])].filter((s) => sectionsArbre.includes(s) !== sectionsTexte.includes(s));
+  exiger(ecart.length === 0,
+    `(35) instrument : l'arbre du shim et le texte d'index.html ne portent pas les mêmes sections — écart : ${ecart.join(", ")}`);
+  exiger(CHARGES_DE_LA_CONSOLE.length >= 20, `(35) instrument : ${CHARGES_DE_LA_CONSOLE.length} charge(s) au registre — lecture cassée`);
+
+  // La section qui CONTIENT la cible d'une charge (ancêtre le plus proche qui est une section de main).
+  const sectionDe = (cible, chercheur) => {
+    const dep = (chercheur || document).querySelector("#" + cible);
+    for (let n = dep; n; n = n.parentNode) if (n.tagName === "SECTION" && sectionsArbre.includes(n.id)) return n.id;
+    return null;
+  };
+  const couverture = (charges) => {
+    const m = new Map(sectionsArbre.map((s) => [s, []]));
+    for (const c of charges) { const s = sectionDe(c.cible); if (s && m.has(s)) m.get(s).push(c.cible); }
+    return m;
+  };
+  const orphelines = (charges) => sectionsArbre.filter((s) => !couverture(charges).get(s).length && !SECTIONS_SANS_CHARGE.includes(s));
+
+  // (a) COUVERTURE.
+  const nues = orphelines(CHARGES_DE_LA_CONSOLE);
+  exiger(nues.length === 0, `(35a) ${nues.length} section(s) de la page qu'AUCUNE charge ne peint et qu'aucune raison ne couvre : ${nues.join(", ")} — une lecture ratée au démarrage n'y serait jamais rejouée (c'est le défaut mesuré de P11.14-e). Déclarer la charge, ou nommer la section dans la table des sections sans charge avec sa raison.`);
+  // LA RAISON D'UNE DISPENSE EST ÉCRITE, ET ELLE CITE UNE CLÉ QUI EXISTE. Le commentaire qui précède
+  // immédiatement la déclaration doit nommer chaque section dispensée et au moins une clé de roadmap,
+  // et cette clé doit figurer dans l'index public — sinon la dispense renvoie dans le vide.
+  const srcDispense = readFileSync(path.join(WEB, porteurDuModele), "utf8");
+  const lignes = srcDispense.split("\n");
+  const posDispense = lignes.findIndex((l) => /^const SECTIONS_SANS_CHARGE\s*=/.test(l));
+  // Le bloc de commentaire CONTIGU qui précède la déclaration : c'est là que vit la raison, comme
+  // partout ailleurs dans ce dépôt. Remonter tant que la ligne est un commentaire.
+  const bloc = [];
+  for (let i = posDispense - 1; i >= 0 && /^\s*\/\//.test(lignes[i]); i--) bloc.unshift(lignes[i]);
+  const avant = bloc.join("\n");
+  const clesCitees = [...new Set([...avant.matchAll(/\bP\d+\.\d+-[a-z]\b/g)].map((m) => m[0]))];
+  exiger(posDispense >= 0, "(35a) la table des sections dispensées de charge n'est plus déclarée sous une forme lisible : la dispense ne peut plus être jugée");
+  const roadmap = readFileSync(path.join(RACINE, "docs", "ROADMAP.md"), "utf8");
+  exiger(/\bP\d+\.\d+-[a-z]\b/.test(roadmap), "(35a) instrument : aucune clé lue dans l'index public — la lecture est cassée, le témoin refuse de conclure");
+  for (const s of SECTIONS_SANS_CHARGE) {
+    exiger(sectionsArbre.includes(s), `(35a) « ${s} » est dispensée de charge mais n'est pas une section de la page : une dispense périmée cache une section réellement découverte`);
+    exiger(new RegExp("`" + s + "`").test(avant), `(35a) la section « ${s} » est dispensée sans que le commentaire qui précède la déclaration la NOMME : une dispense sans raison est un oubli déguisé en décision`);
+    exiger(!couverture(CHARGES_DE_LA_CONSOLE).get(s).length, `(35a) « ${s} » est dispensée de charge ET peinte par ${couverture(CHARGES_DE_LA_CONSOLE).get(s).join(", ")} : la déclaration ment`);
+  }
+  exiger(clesCitees.length > 0, "(35a) la dispense n'est adossée à AUCUNE clé de roadmap : une décision sans clé n'a ni mesure ni réfutation derrière elle");
+  const clesInconnues = clesCitees.filter((k) => !roadmap.includes(k));
+  exiger(clesInconnues.length === 0, `(35a) clé(s) citées par la dispense et absentes de l'index public : ${clesInconnues.join(", ")} — la raison renvoie dans le vide`);
+
+  // (b) AUCUN NOM D'ONGLET NE DÉCIDE.
+  const srcModele = readFileSync(path.join(WEB, porteurDuModele), "utf8");
+  const sansCommentaires = srcModele.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  const idsDOnglet = MODELE.flatMap((sp) => sp.tabs.map((t) => t.id));
+  exiger(idsDOnglet.length >= 20, `(35b) instrument : ${idsDOnglet.length} onglet(s) dérivés du modèle — lecture cassée`);
+  const comparaisons = idsDOnglet.filter((id) => new RegExp("[!=]==?\\s*'" + id + "'|'" + id + "'\\s*[!=]==?").test(sansCommentaires));
+  exiger(comparaisons.length === 0,
+    `(35b) ${comparaisons.length} identifiant(s) d'onglet SERVENT DE CONDITION dans « ${porteurDuModele} » : ${comparaisons.join(", ")}. Une chaîne de conditions sur un nom d'onglet oublie l'onglet posé demain — elle en avait oublié six et en servait un deux fois. Ce qu'un onglet fait se DÉCLARE dans son modèle, ou se DÉDUIT du document.`);
+
+  // (c) et (d) PÉRIMÈTRE et COUVERTURE PAR ONGLET, onglet par onglet, sur l'arbre réel.
+  const sansCharge = new Set(SECTIONS_SANS_CHARGE);
+  let ongletsVus = 0, ongletsMuets = [];
+  for (const sp of MODELE) for (const t of sp.tabs) {
+    sectionsDeLaPage().forEach((s) => { s.hidden = !t.sections.includes(s.id); });
+    const dansLaVue = nav.chargesDeLaVueAffichees().map((c) => c.cible);
+    const attendues = CHARGES_DE_LA_CONSOLE.filter((c) => t.sections.includes(sectionDe(c.cible))).map((c) => c.cible);
+    exiger(dansLaVue.slice().sort().join(",") === attendues.slice().sort().join(","),
+      `(35c) onglet « ${t.id} » : les charges rejouées à l'entrée [${dansLaVue.join(", ")}] ne sont pas celles de ses sections [${attendues.join(", ")}]`);
+    for (const c of nav.chargesVivesAffichees()) {
+      const s = sectionDe(c.cible);
+      exiger(!s || !sansCharge.has(s), `(35c) onglet « ${t.id} » : la cadence viserait « ${c.cible} », dans la section « ${s} » déclarée SANS charge — c'est exactement ce que P11.17-a refuse`);
+    }
+    if (!attendues.length && !t.sections.every((s) => sansCharge.has(s) || !sectionsArbre.includes(s))) ongletsMuets.push(t.id);
+    ongletsVus++;
+  }
+  exiger(ongletsVus >= 20, `(35d) instrument : ${ongletsVus} onglet(s) parcourus — lecture cassée`);
+  exiger(ongletsMuets.length === 0, `(35d) ${ongletsMuets.length} onglet(s) n'ont AUCUNE charge et ne déclarent pas pourquoi : ${ongletsMuets.join(", ")}`);
+
+  // ---- L'INSTRUMENT SE VALIDE : quatre fautes injectées, que la dérivation doit VOIR. ----
+  const ampute = CHARGES_DE_LA_CONSOLE.filter((c) => c.cible !== "rules");
+  exiger(orphelines(ampute).includes("rules"), "(35-témoin) une charge RETIRÉE du registre n'est pas vue : la couverture rendrait vert sur un panneau que plus rien ne peint");
+  const detourne = CHARGES_DE_LA_CONSOLE.concat([{ cible: "sql", charger: () => {}, vive: true }]);
+  exiger(couverture(detourne).get("query").length > 0, "(35-témoin) une charge visant une section déclarée sans charge n'est pas vue : la dispense pourrait mentir sans rougir");
+  const plat = { querySelector: () => new Element("div") };   // l'arbre ABSENT — le trou de P11.13-e
+  exiger(sectionDe("rules", plat) === null && sectionDe("rules") === "rules",
+    "(35-témoin) sans arbre de page, la section d'une charge est introuvable et TOUT paraîtrait couvert ou affiché : c'est le faux vert que P11.13-e a fermé, et il doit rester visible ici");
+  const vide = CHARGES_DE_LA_CONSOLE.filter((c) => sectionDe(c.cible) !== "cases");
+  exiger(orphelines(vide).includes("cases"), "(35-témoin) un onglet vidé de ses charges n'est pas vu");
+
+  sectionsDeLaPage().forEach((s) => { s.hidden = false; });
+  const vives = CHARGES_DE_LA_CONSOLE.filter((c) => c.vive).length;
+  console.log(`[charges] ${CHARGES_DE_LA_CONSOLE.length} charges déclarées dans « ${porteurDuModele} », dont ${vives} VIVES (celles dont la cadence dérive son périmètre) ; ${sectionsArbre.length} sections de la page toutes peintes ou dispensées avec leur raison (${SECTIONS_SANS_CHARGE.join(", ") || "aucune dispense"}, adossée à ${clesCitees.join(", ")}) ; ${ongletsVus} onglets parcourus sur l'arbre réel, aucun muet, aucune charge de cadence dans une section dispensée, et AUCUN identifiant d'onglet ne sert de condition. Ce que ce témoin NE tient PAS : qu'une charge peigne réellement sa cible — il tient qui est CENSÉ peindre quoi, pas le contenu peint ; et il ne voit pas un masquage par feuille de style, seulement l'attribut du document.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 36. UN NŒUD N'A QU'UN PARENT (`P11.13-e`). Le shim posait le nouveau parent sans retirer l'enfant de
+//     la liste de l'ancien : un élément DÉPLACÉ restait listé sous les deux, ce que le vrai document
+//     ne fait jamais. Ce n'est pas une coquette­rie d'instrument — la mesure qui en a dépendu a conclu
+//     qu'un formulaire restait joignable après la fermeture des modales alors qu'il ne l'était pas :
+//     un FAUX NÉGATIF sur le défaut même que l'instrument servait à établir.
+//     (a) Les quatre chemins d'insertion détachent : `appendChild`, `insertBefore`, `prepend`,
+//         « replaceChildren » (celui-ci doit aussi ORPHELINER ce qu'il retire).
+//     (b) LE DOCUMENT RÉEL, après le chargement de toute la console — qui DÉPLACE réellement des
+//         sections (l'ordre des cartes de la Vue d'ensemble est une préférence par utilisateur) —
+//         ne contient aucun nœud listé sous deux parents.
+//     (c) TÉMOIN NÉGATIF : le comportement d'AVANT, reconstitué à la main sur deux nœuds jetables, est
+//         VU par le même vérificateur. Sans lui, (a) et (b) pourraient passer sur un vérificateur muet.
+// ---------------------------------------------------------------------------------------------
+{
+  const deuxParents = (racine) => {
+    const vus = new Map(), fautes = [];
+    const marcher = (n) => {
+      for (const c of n.children || []) {
+        if (vus.has(c)) fautes.push(`${c.tagName}${c.id ? "#" + c.id : ""} listé sous ${vus.get(c)} ET sous ${n.tagName}${n.id ? "#" + n.id : ""}`);
+        else { vus.set(c, n.tagName + (n.id ? "#" + n.id : "")); marcher(c); }
+      }
+    };
+    marcher(racine);
+    return { fautes, vus: vus.size };
+  };
+
+  // (c) LE TÉMOIN NÉGATIF D'ABORD : sans lui, un vérificateur muet rendrait (a) et (b) vides de sens.
+  const vieuxA = new Element("div"), vieuxB = new Element("div"), errant = new Element("span");
+  vieuxA.children.push(errant); vieuxB.children.push(errant); errant.parentNode = vieuxB;   // le shim d'AVANT
+  const porteur = new Element("div"); porteur.children.push(vieuxA, vieuxB);
+  exiger(deuxParents(porteur).fautes.length === 1,
+    "(36c) le vérificateur ne VOIT PAS un nœud listé sous deux parents : les témoins (a) et (b) ne prouveraient rien");
+
+  // (a) LES QUATRE CHEMINS.
+  for (const [nom, poser] of [
+    ["appendChild", (b, n) => b.appendChild(n)],
+    ["insertBefore", (b, n) => b.insertBefore(n, null)],
+    ["prepend", (b, n) => b.prepend(n)],
+    ["replaceChildren", (b, n) => b.replaceChildren(n)],
+  ]) {
+    const a = new Element("div"), b = new Element("div"), n = new Element("p");
+    a.appendChild(n);
+    poser(b, n);
+    exiger(!a.children.includes(n), `(36a) ${nom} : le nœud reste listé sous son ANCIEN parent — un élément déplacé apparaîtrait deux fois`);
+    exiger(!a.contains(n), `(36a) ${nom} : l'ancien parent CONTIENT encore le nœud déplacé`);
+    exiger(n.parentNode === b && b.children.includes(n), `(36a) ${nom} : le nœud n'est pas correctement rattaché à son nouveau parent`);
+  }
+  const p0 = new Element("div"), enfant = new Element("i");
+  p0.appendChild(enfant); p0.replaceChildren();
+  exiger(enfant.parentNode === null, "(36a) replaceChildren : ce qu'il RETIRE garde son ancien parent — un nœud sorti du document s'y croirait encore");
+
+  // (b) LE DOCUMENT RÉEL, tous les modules chargés (donc après les déplacements que la console opère).
+  const bilan = deuxParents(document.body);
+  exiger(bilan.vus > 500, `(36b) instrument : ${bilan.vus} nœud(s) parcourus dans le document — l'arbre n'est pas construit, le témoin refuse de conclure`);
+  exiger(bilan.fautes.length === 0, `(36b) ${bilan.fautes.length} nœud(s) du document listés sous DEUX parents : ${bilan.fautes.slice(0, 5).join(" ; ")}`);
+
+  console.log(`[un-seul-parent] ${bilan.vus} nœuds du document parcourus après chargement de toute la console : aucun sous deux parents. Les quatre chemins d'insertion détachent, « replaceChildren » orpheline ce qu'il retire, et le vérificateur VOIT le comportement d'avant reconstitué à la main. Ce que ce témoin NE tient PAS : l'ordre des nœuds, ni le fait qu'un déplacement soit VOULU — seulement qu'il n'en reste pas de copie.`);
+}
+
 if (echecs.length) {
   for (const e of echecs) console.error(`::error::${e}`);
   console.error(`\n${echecs.length} témoin(s) en échec : la surface aplatit un verdict.`);
   process.exit(1);
 }
-console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources NOMME le déclarant de chaque source — ce dépôt, le démon, le produit, un connecteur, ou l'exploitant avec sa date — dit « personne ne l'a déclarée » là où c'est le cas, et n'offre de déclarer une cadence que là où aucune sonde n'en déclare ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et RÉPARTIT les alertes actives entre celles qu'une cloche porte, celles qui ne se rapportent à aucun flux (et qui pivotent vers elles-mêmes) et celles dont l'imputation n'a jamais été enregistrée, sans rien afficher quand aucune alerte n'est active ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui disent l'absence de données avec leur fenêtre, son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus ; la ligne d'une règle rend DÉJÀ tester, éditer, supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur ; et LA recherche de liste, partagée, resserre sur plusieurs mots sans se soucier de la casse ni des accents, cherche une règle par son nom, sa requête et sa technique, rend une liste plate ordonnée par le tri courant qui DIT combien de lignes sur combien elle montre, nomme ce qu'elle a cherché quand elle ne trouve rien, et se vide au retour d'un enregistrement pour que la règle écrite se voie ; enfin une technique ATT&CK est une PORTE — ses règles, ses détections par le pivot qui existait déjà (le module ne fabrique aucune requête) et le geste qui la couvrirait, un angle mort qui se dit et met la création en avant, une sortie impraticable rendue inerte avec son motif, et un lecteur à qui le rôle manquant est nommé ; un filtre choisi de la barre des alertes ne se marque plus par la graisse de son mot — que le gras réservait ailleurs à l'alarme — mais par un liseré que rien d'autre n'emploie, et il DIT son état ; l'espace qui porte les alertes et les cas les annonce tous les deux — aucun espace à plusieurs onglets ne porte plus le nom d'un seul — et son filtre se nomme par ce qu'il MONTRE au lieu d'une relation que l'exploitant ne savait pas lire ; une alerte se cherche par son titre, le jeton de sa regle et sa source imputee, par LE meme champ partage : la recherche se compose avec la portee, le filtre d'affichage et les facettes sans jamais partir au demon, met le groupement de cote le temps de rendre ses resultats, DIT ce qu'elle couvre — les alertes servies, ou la seule page affichee — et retire de la barre l'acquittement qui la depasserait ; la selection rend ce qui est selectionne — le clic d'une ligne de resultats et celui d'un titre d'alerte se retirent devant une selection faite chez eux, et devant elle seule — pendant qu'UN unique geste de copie, seul ecrivain du presse-papier dans web/, accuse le succes et avoue un refus au lieu de le taire ; le detail d'un composant du panneau Systeme n'est plus coupe a une ligne par la feuille de style — l'avertissement d'exercice de restauration se lit jusqu'a sa conclusion et la reference documentaire qu'il porte se copie en un geste, faute d'etre servie par une route.`);
+console.log(`OK — ${modules.length} modules web se lient ; le panneau Système rend l'état « NON LISIBLE » avec sa cause sur 5 tuiles, les bilans de boucles et les grandeurs de composant, et la valeur quand le verdict est « lu » (vrai zéro compris) ; un playbook livré et un runbook créé rendent par la même fabrique de ligne, avec le mot de leur état et leur conséquence ; la liste des alertes rend une seule barre d'actions sur tous ses tris, aucune action n'est désactivée au motif d'une facette, et la facette source dit son objet et son étendue ; une technique ATT&CK sans nom se dit, l'éditeur de requête laisse « != » en place sous la frappe, la palette des modèles porte modifier/supprimer/copier, et le badge de troncature nomme le saut de page ; l'inventaire des sources NOMME le déclarant de chaque source — ce dépôt, le démon, le produit, un connecteur, ou l'exploitant avec sa date — dit « personne ne l'a déclarée » là où c'est le cas, et n'offre de déclarer une cadence que là où aucune sonde n'en déclare ; la fraîcheur rend le statut du démon (une périodique dans sa cadence = frais, jamais « dégradé ») et RÉPARTIT les alertes actives entre celles qu'une cloche porte, celles qui ne se rapportent à aucun flux (et qui pivotent vers elles-mêmes) et celles dont l'imputation n'a jamais été enregistrée, sans rien afficher quand aucune alerte n'est active ; une carte d'administration se replie par son bouton sans jamais le griser, un formulaire de création ne rend aucun bouton nu, et la confirmation partagée exige une conséquence nommée, bloque écartée et passe validée ; la sidebar porte deux espaces « Recherche » et « Cas » égaux au modèle de navigation, les alertes sous Cas, l'éditeur seul sous Recherche, chaque section mappée existe, et les deux familles de l'onglet Playbooks sont nommées dans leurs en-têtes et boutons, la durée du ban suivant la valeur servie ; les fabriques de bouton des cas et des producteurs, la barre des alertes et le bloc MFA ne rendent aucun bouton nu ni style en ligne, et chaque bouton d'aide a sa section ; l'aide « Jetons » s'ouvre et dit le secret montré une seule fois, et une clé sans section ouvre un aveu qui la nomme ; le bouton de fermeture des modales d'aide et les titres du guide rendent en anglais par le lexique, jamais par un mot écrit dans le module ; l'amorçage pose l'observateur du lexique sur le corps du document et celui-ci traduit un nœud texte, un élément et un attribut posés après coup ; le panneau d'accès données rend cinq cartes qui DISTINGUENT un refus du démon d'une absence de données — sans réseau elles avouent leur cause au lieu d'affirmer un vide — son sélecteur et ses sept chemins surveillés ; la ligne d'un lookup porte nom, badge, clé, colonnes et bouton habillé, et le collage CSV lit les guillemets et refuse un collage sans données ; une tuile de dashboard rend son titre, ses outils selon le droit, sa largeur, et sa grille avoue l'erreur sans réseau ; l'encart d'identité nomme la méthode d'authentification hors session cookie et l'écran de connexion verrouille le corps du document en coupant l'auto-rafraîchissement ; un onglet interdit, inconnu ou renommé se replie sur la vue d'ensemble sans réécrire le lien profond ; la ligne d'un cas ouvre et REFERME le détail par le dépli partagé, le bouton du détail emprunte le même chemin et repeint la ligne, un cas terminé rend un statut inerte qui NOMME sa raison et sa sortie là où il n'en rendait aucun, un cas en cours ne la porte pas, et un droit manquant se dit autrement qu'un état qui ne bouge plus ; la ligne d'une règle rend DÉJÀ tester, éditer, supprimer et un interrupteur actif pour un administrateur, inerte et motivé pour un lecteur ; et LA recherche de liste, partagée, resserre sur plusieurs mots sans se soucier de la casse ni des accents, cherche une règle par son nom, sa requête et sa technique, rend une liste plate ordonnée par le tri courant qui DIT combien de lignes sur combien elle montre, nomme ce qu'elle a cherché quand elle ne trouve rien, et se vide au retour d'un enregistrement pour que la règle écrite se voie ; enfin une technique ATT&CK est une PORTE — ses règles, ses détections par le pivot qui existait déjà (le module ne fabrique aucune requête) et le geste qui la couvrirait, un angle mort qui se dit et met la création en avant, une sortie impraticable rendue inerte avec son motif, et un lecteur à qui le rôle manquant est nommé ; un filtre choisi de la barre des alertes ne se marque plus par la graisse de son mot — que le gras réservait ailleurs à l'alarme — mais par un liseré que rien d'autre n'emploie, et il DIT son état ; l'espace qui porte les alertes et les cas les annonce tous les deux — aucun espace à plusieurs onglets ne porte plus le nom d'un seul — et son filtre se nomme par ce qu'il MONTRE au lieu d'une relation que l'exploitant ne savait pas lire ; une alerte se cherche par son titre, le jeton de sa regle et sa source imputee, par LE meme champ partage : la recherche se compose avec la portee, le filtre d'affichage et les facettes sans jamais partir au demon, met le groupement de cote le temps de rendre ses resultats, DIT ce qu'elle couvre — les alertes servies, ou la seule page affichee — et retire de la barre l'acquittement qui la depasserait ; la selection rend ce qui est selectionne — le clic d'une ligne de resultats et celui d'un titre d'alerte se retirent devant une selection faite chez eux, et devant elle seule — pendant qu'UN unique geste de copie, seul ecrivain du presse-papier dans web/, accuse le succes et avoue un refus au lieu de le taire ; le detail d'un composant du panneau Systeme n'est plus coupe a une ligne par la feuille de style — l'avertissement d'exercice de restauration se lit jusqu'a sa conclusion et la reference documentaire qu'il porte se copie en un geste, faute d'etre servie par une route.`);

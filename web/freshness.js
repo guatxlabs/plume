@@ -6,9 +6,79 @@
 // est sans danger : setAlertSourceFilter n'est appelé qu'à l'EXÉCUTION (clic), jamais à l'évaluation du module.
 // collapsibleGroup vit dans core.js (helper PARTAGÉ règles/parseurs/actions/playbooks) ; il n'est pas un
 // membre du concern Fraîcheur (que renderFreshness/renderIntegrations n'appellent pas) — d'où non importé ici.
-import { $, api, esc, fmtTs, ic } from './core.js';
+import { $, api, esc, fmtTs, ic, LANG } from './core.js';
 import { S } from './state.js';
 import { setAlertSourceFilter } from './app.js';
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// P11.16-b — LA FAMILLE D'UN NOMBRE EST DÉCLARÉE, ET C'EST ELLE QUI CHOISIT LE SIGNE.
+//
+// CE QUI N'ÉTAIT PAS LE DÉFAUT. Relevé en usage réel le 2026-08-25 : l'exploitant lit la rangée de
+// vignettes et conclut que « cela ne concorde pas ». AUCUN CHIFFRE N'EST FAUX, et les deux
+// répartitions de cette surface tiennent PAR CONSTRUCTION — le démon incrémente le total une fois par
+// alerte puis exactement une branche sur trois ; `countStates` range chaque flux dans l'un de cinq
+// états, repli compris, donc la somme des états vaut le nombre de flux. Le défaut est de PRÉSENTATION.
+//
+// CE QU'IL ÉTAIT. La rangée posait, sous des jetons IDENTIQUES, des nombres qui se PARTAGENT un total
+// et un nombre qui RECOUPE la même population sans la partager — déjà compté dans une part. Un lecteur
+// qui additionne la rangée dépasse le total, et il a raison de s'en étonner. Le code le SAVAIT et
+// l'écrivait en commentaire (« un compte à part, pas un état ») ; l'écran, lui, ne le disait pas :
+// c'est la famille de défaut que ce dépôt poursuit — la connaissance existe et n'atteint pas le lecteur.
+//
+// LA FABRIQUE, PAS LE CAS PARTICULIER. Un cas spécial posé sur le sixième nombre aurait déplacé le
+// problème d'un cran : le septième en aurait hérité. Chaque nombre DÉCLARE donc sa famille, et la
+// famille choisit le signe qui le relie à ses voisins :
+//   `total`       — le nombre que la répartition partage ; il ouvre la rangée.
+//   `part`        — un terme de ce partage ; « = » après le total, « + » entre parts : la rangée se
+//                   recompose à l'œil, sans lire une explication.
+//   `recoupement` — un compte pris sur la MÊME population sans la partager ; introduit par « dont »,
+//                   donc visiblement hors de l'addition.
+// Un nombre qui ne déclare aucune de ces familles n'hérite PAS du jeton par défaut : il est rendu avec
+// l'aveu que sa famille manque. C'est le seul état que cette fabrique refuse de taire — et c'est ce qui
+// oblige le prochain nombre ajouté à se déclarer au lieu de se fondre dans la rangée.
+//
+// AUCUNE VIGNETTE N'EST RETIRÉE PARCE QU'ELLE VAUT ZÉRO. Un terme qui disparaît à zéro ne se distingue
+// plus d'un terme qui n'existe pas, et la répartition cesse de se recomposer. Un zéro est rendu en
+// atténué : présent pour l'addition, sans tirer le regard.
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+const FAMILLES_DE_CHIFFRE = ['total', 'part', 'recoupement'];
+// « dont » : le mot qui dit un SOUS-ENSEMBLE. Il porte à lui seul la distinction que la rangée taisait.
+const MOT_DONT = LANG === 'en' ? 'of which' : 'dont';
+// LE SIGNE QUI RELIE une vignette à celle qui la précède — dérivé du COUPLE de familles, jamais écrit
+// sur une vignette en particulier. Une part qui suit un recoupement, ou une famille non déclarée,
+// retombe sur le point médian : aucune addition n'est promise là où elle ne serait pas vraie.
+function signeEntreChiffres(famille, precedente) {
+  if (!precedente) return '';
+  if (famille === 'recoupement') return '· ' + MOT_DONT;
+  if (famille === 'part') return precedente === 'total' ? '=' : precedente === 'part' ? '+' : '·';
+  return '·';
+}
+// UNE VIGNETTE : { famille, valeur, libelle, dot?, cloche?, titre?, suite? }. `suite` est un fragment
+// HTML DÉJÀ échappé par l'appelant (la liste des noms d'un compte), rendu DANS la vignette pour que les
+// signes restent collés aux nombres qu'ils relient.
+function vignetteDeChiffre(c, famille) {
+  const zero = !Number(c.valeur);
+  const dot = c.dot ? `<span class="fdot ${c.dot}"></span>` : '';
+  const nombre = famille === 'total' ? `<b>${c.valeur}</b>&nbsp;`
+    : c.cloche ? `<span class="fhot">${ic('bell')} ${c.valeur}</span> `
+    : `${c.valeur} `;
+  const aveu = famille === 'indeclaree'
+    ? ` <span style="color:var(--warn)">(${LANG === 'en' ? 'family not declared' : 'famille non déclarée'})</span>` : '';
+  return `<span class="capsum-pill"${zero ? ' style="color:var(--mut)"' : ''}${c.titre ? ` title="${esc(c.titre)}"` : ''}>` +
+    `${dot}${nombre}${esc(c.libelle)}${c.suite || ''}${aveu}</span>`;
+}
+// LA RANGÉE — seule entrée de la fabrique, partagée par les deux panneaux de cette surface.
+function rangeeDeChiffres(chiffres) {
+  let html = '', precedente = '';
+  for (const c of chiffres) {
+    const famille = FAMILLES_DE_CHIFFRE.includes(c.famille) ? c.famille : 'indeclaree';
+    const signe = signeEntreChiffres(famille, precedente);
+    if (signe) html += `<span style="color:var(--mut)">${signe}</span>`;
+    html += vignetteDeChiffre(c, famille);
+    precedente = famille;
+  }
+  return html;
+}
 
 async function renderIntegrations() {
   const b = $('#integrations .body'); if (!b) return;
@@ -29,22 +99,35 @@ async function renderIntegrations() {
   // muets + en attente.
   const mute = collectors.filter(c => c.status === 'muet');
   const total = collectors.length, connected = total - waiting.length - mute.length;
-  const pill = (dot, lbl, cnt) => `<span class="capsum-pill"><span class="fdot ${dot}"></span>${cnt} ${lbl}</span>`;
-  const withNames = (arr) => { const nm = arr.map(c => esc(c.label || c.id)).join(', '); return nm ? ` <span class="muted" style="font-size:11px">(${nm})</span>` : ''; };
-  // muet : capteur branché puis décroché (dead-man's-switch continu). ROUGE = alerte : à investiguer.
-  const mutePill = mute.length ? pill('muet', 'muet(s)', mute.length) + withNames(mute) : '';
-  // en attente : liste inline des sondes déclarées-jamais-vues (remplace le bloc « Non branché » codé en dur :
-  // YARA EST le en_attente data-driven -> sa pastille disparaît d'elle-même dès qu'un event source=yara arrive).
-  const waitPill = waiting.length ? pill('attente', 'en attente', waiting.length) + withNames(waiting) : '';
+  // les noms tiennent DANS la vignette du compte qu'ils détaillent (P11.16-b) : hors d'elle, ils se
+  // seraient glissés entre un nombre et le signe qui le relie au suivant.
+  const withNames = (arr) => { const nm = arr.map(c => esc(c.label || c.id)).join(', '); return nm ? ` <span style="font-size:11px;color:var(--mut)">(${nm})</span>` : ''; };
   // « branché(s) » = pastille NEUTRE (pas de couleur santé) : c'est de la COUVERTURE, pas de la fraîcheur
   // (le vert=frais reste réservé à Fraîcheur) -> l'opérateur ne confond plus les deux compteurs.
+  // muet : capteur branché puis décroché (dead-man's-switch continu). ROUGE = alerte : à investiguer.
+  // en attente : sondes déclarées-jamais-vues, nommées inline (YARA EST le en_attente data-driven -> sa
+  // vignette retombe à zéro d'elle-même dès qu'un event source=yara arrive).
   // P3.2-a — LA PORTÉE D'UNE SONDE SE LIT, ELLE NE SE DEVINE PAS. Une sonde « tous hôtes confondus »
   // rend la donnée la plus FRAÎCHE du parc : elle reste verte tant qu'UNE machine parle encore. Le champ
   // `portee` vient du serveur (dérivé du type de la sonde) — on le COMPTE ici plutôt que de le déduire
   // d'une liste locale, qui aurait dérivé du jour où une sonde change de portée.
   const confondues = collectors.filter(c => c.portee === 'tous hôtes confondus').length;
-  const porteePill = confondues ? `<span class="capsum-pill" title="Ces sondes rendent la donnée la plus FRAÎCHE du parc : elles restent vertes tant qu'une seule machine parle encore. Les machines entièrement muettes sont comptées à part (Hôtes).">${confondues} à portée « tous hôtes confondus »</span>` : '';
-  const capsum = `<div class="capsum"><span class="capsum-pill"><b>${total}</b>&nbsp;capteurs déclarés</span>${connected ? `<span class="capsum-pill">${connected} branché(s)</span>` : ''}${mutePill}${waitPill}${porteePill}` +
+  // P11.16-b — CETTE RANGÉE PORTAIT LE MÊME DÉFAUT que celle de Fraîcheur, et elle est réparée par la
+  // MÊME fabrique : « déclarés = branchés + muets + en attente » se lisait déjà en commentaire ici, et
+  // la portée « tous hôtes confondus » RECOUPE ces trois parts (une sonde de cette portée est déjà
+  // comptée dans son état) sans jamais les partager.
+  const capsum = `<div class="capsum">` + rangeeDeChiffres([
+    { famille: 'total', valeur: total, libelle: LANG === 'en' ? 'declared sensors' : 'capteurs déclarés',
+      titre: LANG === 'en' ? 'A sensor is a PROBE TYPE, not a source: the total is shared by the three terms joined by « + ». What follows « of which » is taken from the same population and is not part of the addition.' : 'Un capteur est un TYPE de sonde, pas une source : le total se partage entre les trois termes reliés par « + ». Ce qui suit « dont » est pris sur la même population et n\'entre pas dans l\'addition.' },
+    { famille: 'part', valeur: connected, libelle: LANG === 'en' ? 'connected' : 'branché(s)',
+      titre: LANG === 'en' ? 'Declared sensors that have already reported at least one piece of data.' : 'Capteurs déclarés ayant déjà remonté au moins une donnée.' },
+    { famille: 'part', valeur: mute.length, dot: 'muet', libelle: LANG === 'en' ? 'mute' : 'muet(s)', suite: withNames(mute),
+      titre: LANG === 'en' ? 'Connected then dropped out (continuous dead-man\'s-switch): to investigate.' : 'Branché puis décroché (dead-man\'s-switch continu) : à investiguer.' },
+    { famille: 'part', valeur: waiting.length, dot: 'attente', libelle: LANG === 'en' ? 'waiting' : 'en attente', suite: withNames(waiting),
+      titre: LANG === 'en' ? 'Declared, never seen: no data yet from this probe.' : 'Déclaré, jamais vu : aucune donnée de cette sonde à ce jour.' },
+    { famille: 'recoupement', valeur: confondues, libelle: LANG === 'en' ? 'at « all hosts together » scope' : 'à portée « tous hôtes confondus »',
+      titre: LANG === 'en' ? 'ALREADY counted in one of the terms above — this number crosses the distribution, it does not share it. These probes return the FRESHEST data of the estate: they stay green as long as a single machine still talks. Fully silent machines are counted separately (Hosts).' : 'DÉJÀ comptées dans l\'un des termes ci-dessus — ce nombre recoupe la répartition, il ne la partage pas. Ces sondes rendent la donnée la plus FRAÎCHE du parc : elles restent vertes tant qu\'une seule machine parle encore. Les machines entièrement muettes sont comptées à part (Hôtes).' },
+  ]) +
     `<a class="capsum-link" href="#freshness-view" title="Santé par source (frais/calme/en retard/muet) : Données → Fraîcheur">santé des sources →</a>` +
     `<a class="capsum-link" href="#sources" title="Inventaire complet des sources (Données → Sources)">inventaire →</a></div>`;
   const hosts = (d.hosts || []).length
@@ -112,19 +195,35 @@ function cadenceTitle(f) {
     : 'personne n\'a déclaré de cadence pour cette source — ni une sonde du démon, ni l\'exploitant : l\'âge ne dit que l\'activité, et elle ne peut pas être « en retard »';
   return decl + (f.observed_interval_s ? ' · rythme observé sur 24 h : ~1 donnée / ' + age(f.observed_interval_s) : '');
 }
-// compteurs par état + alertes actives (un compte à part, pas un état) — même agrégation pour le détail et le pulse.
+// compteurs par état + alertes actives (un compte à part, pas un état) — même agrégation pour le détail et le
+// pulse. LES CINQ ÉTATS SE PARTAGENT `feeds.length` PAR CONSTRUCTION : `freshState` a un repli, donc chaque
+// flux incrémente exactement un état. `alertes` compte sur la MÊME population sans la partager — c'est ce que
+// la rangée DIT désormais (« dont »), au lieu de le laisser dans ce commentaire (P11.16-b).
 function countStates(feeds) {
   const scount = { muet: 0, en_retard: 0, attente: 0, frais: 0, calme: 0, alertes: 0 };
   feeds.forEach(f => { scount[freshState(f)] += 1; if (Number(f.active_alerts) > 0) scount.alertes += 1; });
   return scount;
 }
-const sumPill = (dot, lbl, c) => c ? `<span class="capsum-pill"><span class="fdot ${dot}"></span>${c} ${lbl}</span>` : '';
+// LE LIBELLÉ COURT D'UN ÉTAT, DÉRIVÉ du libellé long des groupes : la vignette, l'en-tête de groupe et
+// la légende ne peuvent plus diverger, et ajouter un état n'oblige pas à écrire son mot deux fois. Le
+// long porte la définition (« — … » ou « (…) »), le court en est le premier segment ; sans séparateur,
+// c'est le libellé entier qui est rendu — trop long dans la rangée, donc VISIBLE, jamais silencieux.
+const libelleCourtDEtat = (etat) => String(FSTATE_LBL[etat] || etat).split(/ [—(]/)[0].trim();
+// L'ORDRE DE LECTURE des parts : du plus sain au plus grave, l'inverse exact du rang de tri du détail
+// (`SRANK`, la panne en haut). Une seule table de rang, lue dans les deux sens — pas une seconde liste.
+const ETATS_DE_LA_RANGEE = [...FSTATES].sort((a, b) => (SRANK[b] ?? 9) - (SRANK[a] ?? 9));
+// LA RANGÉE DE FRAÎCHEUR, déclarée famille par famille (cf. la fabrique en tête de module) : cinq parts
+// qui se partagent le total, et UN recoupement — les flux porteurs d'alertes actives, déjà comptés dans
+// leur état, que l'addition ne doit pas reprendre.
 function summaryPills(feeds) {
   const sc = countStates(feeds);
-  return `<span class="capsum-pill"><b>${feeds.length}</b>&nbsp;feed(s) observé(s)</span>` +
-    sumPill('frais', 'frais', sc.frais) + sumPill('calme', 'calme', sc.calme) + sumPill('warn', 'en retard', sc.en_retard) +
-    sumPill('attente', 'en attente', sc.attente) + sumPill('muet', 'muet', sc.muet) +
-    (sc.alertes ? `<span class="capsum-pill"><span class="fhot">${ic('bell')} ${sc.alertes}</span> avec alertes actives</span>` : '');
+  return rangeeDeChiffres([
+    { famille: 'total', valeur: feeds.length, libelle: LANG === 'en' ? 'feed(s) observed' : 'feed(s) observé(s)',
+      titre: LANG === 'en' ? 'The row recomposes: the total is the sum of the terms joined by « + ». What follows « of which » is taken from the same population and is not part of the addition.' : 'La rangée se recompose : le total est la somme des termes reliés par « + ». Ce qui suit « dont » est pris sur la même population et n\'entre pas dans l\'addition.' },
+    ...ETATS_DE_LA_RANGEE.map(e => ({ famille: 'part', valeur: sc[e], dot: FSTATE_DOT[e], libelle: libelleCourtDEtat(e), titre: FSTATE_LBL[e] })),
+    { famille: 'recoupement', valeur: sc.alertes, cloche: true, libelle: LANG === 'en' ? 'with active alerts' : 'avec alertes actives',
+      titre: LANG === 'en' ? 'These feeds are ALREADY counted in their state above: this number crosses the distribution, it does not share it — adding it in would exceed the total. An active alert is a count, never a collection state.' : 'Ces flux sont DÉJÀ comptés dans leur état ci-dessus : ce nombre recoupe la répartition, il ne la partage pas — l\'additionner ferait dépasser le total. Une alerte active est un compte, jamais un état de collecte.' },
+  ]);
 }
 
 // RENDU PUR du détail à partir de la charge utile de /api/freshness (exercé par le harnais ESM sur des objets
@@ -216,7 +315,12 @@ function renderFreshnessDetail(d) {
       `<div class="fgbody">${arr.map(rowOf).join('')}</div></div>`;
   }
   html += `<div class="flegend"><span class="fdot frais"></span>frais (donnée &lt; 15 min) · <span class="fdot calme"></span>calme (collecte saine, source peu active) · <span class="fdot warn"></span>en retard (cadence déclarée dépassée) · <span class="fdot attente"></span>en attente (déclaré, pas de donnée) · <span class="fdot muet"></span>muet (plus rien n'arrive, toutes sources confondues)` +
-    `<div class="muted" style="margin-top:4px">La cadence attendue est celle qu'une sonde du démon ou l'exploitant DÉCLARE (affichée à côté du nom, avec son déclarant au survol). Une source événementielle, ou dont personne n'a déclaré la cadence, n'est jamais « en retard » : son âge ne dit que son activité, et ce blanc n'est pas un défaut — il se comble depuis l'Inventaire (Données → Sources). Les alertes actives sont un compte (cloche), pas un état de collecte.</div></div>`;
+    `<div class="muted" style="margin-top:4px">La cadence attendue est celle qu'une sonde du démon ou l'exploitant DÉCLARE (affichée à côté du nom, avec son déclarant au survol). Une source événementielle, ou dont personne n'a déclaré la cadence, n'est jamais « en retard » : son âge ne dit que son activité, et ce blanc n'est pas un défaut — il se comble depuis l'Inventaire (Données → Sources). Les alertes actives sont un compte (cloche), pas un état de collecte.</div>` +
+    // P11.16-a — CE PANNEAU NE PEUT PAS NOMMER LE PRODUCTEUR : la charge utile de `/api/freshness` ne
+    // porte que le NOM de la source (le rapprochement dérivé vit dans `/api/sources`). Plutôt que de
+    // laisser croire qu'un nom de flux nomme le fichier qui l'émet, la légende dit où ce nom se trouve.
+    // Phrase posée dans son PROPRE nœud : ajoutée au texte ci-dessus, elle l'aurait rendu intraduisible.
+    `<div class="muted" style="margin-top:4px">${LANG === 'en' ? 'A feed\'s name is the name of the SOURCE, not of the file that emits it — the two often differ. The producer of each source is named in the inventory (Data → Sources).' : 'Le nom d\'un flux est celui de la SOURCE, pas du fichier qui l\'émet — les deux diffèrent souvent. Le producteur de chaque source est nommé dans l\'inventaire (Données → Sources).'}</div></div>`;
   return html;
 }
 async function renderFreshness(loading) {

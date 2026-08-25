@@ -3,7 +3,7 @@
 // Extrait d'app.js en PURE MOVE ; depuis P11.1 : lien de recherche servi par le démon, barre d'actions unique.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, esc, sev, fmtTs, ic, withBusy, api, apiSend, makePager, exportBar, confirmModal, mitreName } from './core.js';
+import { $, esc, sev, fmtTs, ic, withBusy, api, apiSend, makePager, exportBar, confirmModal, mitreName, LANG, toast } from './core.js';
 import { S } from './state.js';
 import { banIp, runQuery, updateZoomBadge } from './viz.js';
 import { canEditCases, addToCase, openCase } from './cases.js';
@@ -19,33 +19,72 @@ import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
 // agrégé le résultat + fenêtre EXACTE de l'évaluation, cf. lien_de_recherche_de_regle). Le navigateur ne
 // dérive plus rien pour une alerte de règle : une seule construction, la même que celle que le test
 // `le_lien_de_chaque_regle_livree_reproduit_la_valeur_de_la_regle` exécute contre chaque règle livrée.
-// Sans lien (alerte d'un collecteur, heartbeat, règle supprimée) : repli HEURISTIQUE historique — l'IP du
-// titre, sinon le titre — sur la fenêtre de l'alerte ; ce repli n'est PAS un lien de recherche exact, et
-// il ne concerne que les alertes qui ne viennent pas d'une règle (la propriété P11.1-a porte sur les règles).
+// Sans lien (alerte d'un collecteur, heartbeat, alerte écrite sur un instantané, règle supprimée) : le seul
+// repli qui subsiste est l'ADRESSE lue dans le texte, sur la fenêtre de l'alerte ; ce repli n'est PAS un lien
+// de recherche exact, et il ne concerne que les alertes qui ne viennent pas d'une règle (la propriété P11.1-a
+// porte sur les règles). Le repli « sinon le titre » a été RETIRÉ (`P11.14-b`, ci-dessous).
 // LIMITE CONNUE (hors de ce module) : la barre Explore ne reconnaît le GXQL que par `search` ou un `|`
 // (viz.js runQuery) ; un lien `metric <nom>` nu — règle `metric … | stats max(value)` — y est pris pour du
 // SQL brut. Le remède est dans viz.js (`looksLikeSoql` de soql_complete.js reconnaît `metric`).
-function alertDrill(a) {
-  if (!a) return;
+// P11.14-b — DE QUOI CETTE ALERTE PERMET-ELLE DE PIVOTER ? La question porte sur ce que l'alerte PORTE,
+// jamais sur le nom de sa règle : une liste de noms vieillirait en silence, une propriété non. Trois
+// réponses, et la troisième est un REFUS.
+//   'exact'   — le démon a construit le lien (`search_link`) : la requête telle qu'elle a COMPTÉ, sur la
+//               fenêtre EXACTE de l'évaluation. C'est le seul pivot dont le VIDE prouverait quelque chose.
+//   'adresse' — pas de lien, mais le texte de l'alerte porte une ADRESSE : un OBSERVABLE, que les
+//               événements peuvent réellement contenir. Repli historique, conservé au caractère près
+//               (même requête, même fenêtre) ; son survol dit seulement qu'il n'est pas la requête exacte.
+//   'aucun'   — ni l'un ni l'autre : la console REFUSE de pivoter, et dit pourquoi.
+// CE QUE LA TROISIÈME BRANCHE REMPLACE (mesuré le 2026-08-25) : la console prenait le TITRE, le coupait au
+// premier deux-points et lançait une recherche plein texte sur ce fragment. Pour une alerte écrite à partir
+// d'un INSTANTANÉ — ni règle, ni fenêtre, donc aucun lien (cf. `daemon/src/ingest/mod.rs`, voie snapshot) —
+// cela revenait à chercher dans les événements une phrase que le produit venait de composer POUR L'ÉCRAN :
+// aucun événement ne la porte, et le vide rendu se lit comme une panne de collecte. Le démon écrit
+// d'ailleurs, à l'endroit même où il renonce au lien (`daemon/src/handlers/alerts.rs`), que le front
+// « n'a alors rien d'exact à proposer et le dit » : c'est ce contrat-là que cette branche tient enfin.
+// CE QUE CETTE BRANCHE NE PEUT PAS FAIRE, ET POURQUOI ELLE NE LE FEINT PAS : renvoyer vers l'instantané qui
+// FONDE l'alerte. Rien dans ce que /api/alerts sert ne DÉCLARE cette fondation ni ne nomme une destination ;
+// la deviner d'un jeton de règle serait refaire, un étage plus haut, la fabrication qu'on retire ici.
+// LES TROIS PHRASES SONT BILINGUES PAR CONSTRUCTION (`{fr, en}` choisi par LANG) : elles sont écrites UNE
+// fois et servent au survol du titre COMME au refus dit au clic — deux formulations divergeraient.
+const PIVOT_MOTS = {
+  exact: { fr: 'Cliquer → voir les événements déclencheurs', en: 'Click → see the triggering events' },
+  adresse: { fr: "Cliquer → chercher cette adresse (src_ip) dans les événements ; l'alerte ne porte pas la requête exacte d'une règle.", en: 'Click → search this address (src_ip) in the events; this alert carries no exact rule query.' },
+  aucun: { fr: "Aucun pivot exact : cette alerte n'a ni règle ni fenêtre d'évaluation, elle n'a donc pas été levée par une recherche d'événements. La console refuse d'en fabriquer une — chercher son libellé rendrait un vide qui ne prouverait rien, alors que sa justification est l'état qu'elle porte.", en: 'No exact pivot: this alert has neither rule nor evaluation window, so it was not raised by an event search. The console refuses to make one up — searching its wording would return an emptiness that proves nothing, whereas its justification is the state it carries.' },
+};
+const motDuPivot = (mode) => (LANG === 'en' ? PIVOT_MOTS[mode].en : PIVOT_MOTS[mode].fr);
+function pivotDUneAlerte(a) {
+  a = a || {};
   const lien = a.search_link && a.search_link.query ? a.search_link : null;
-  let q;
-  if (lien) {
-    q = lien.query;
-    // La fenêtre du lien est celle de l'évaluation : [ts - window_s, ts], sans marge — une marge rendait
-    // le lien PLUS LARGE que le compte sur toutes les règles (mesuré P11.1-a).
-    S.zoomRange = { from: lien.from, to: lien.to };
+  // La fenêtre du lien est celle de l'évaluation : [ts - window_s, ts], sans marge — une marge rendait
+  // le lien PLUS LARGE que le compte sur toutes les règles (mesuré P11.1-a).
+  if (lien) return { mode: 'exact', query: lien.query, from: lien.from, to: lien.to, survol: motDuPivot('exact') };
+  const ipm = ((a.title || '') + ' ' + (a.detail || '')).match(ALERT_IP_RE);
+  if (ipm) {
+    const w = (a.window_s || 3600);
+    return {
+      mode: 'adresse', query: 'search src_ip:' + ipm[0], adresse: ipm[0],
+      from: a.ts ? Math.floor(a.ts - w) : null, to: a.ts ? Math.ceil(a.ts) : null,
+      survol: motDuPivot('adresse'),
+    };
+  }
+  return { mode: 'aucun', query: '', from: null, to: null, survol: motDuPivot('aucun') };
+}
+// Rend true si le pivot a EU LIEU, false s'il a été refusé — l'appelant n'a pas à redériver la réponse.
+function alertDrill(a) {
+  if (!a) return false;
+  const pivot = pivotDUneAlerte(a);
+  // LE REFUS EST UN GESTE, PAS UN SILENCE — même grammaire que le refus d'écriture partagé (core.js,
+  // `P11.4-l`) : la raison est écrite UNE fois, portée par le survol du contrôle, et le clic la DIT.
+  // RIEN d'autre ne bouge : ni l'onglet courant, ni le champ de requête, ni la fenêtre de zoom partagée.
+  if (pivot.mode === 'aucun') { toast(pivot.survol, 'bad', 6000); return false; }
+  if (pivot.from != null && pivot.to != null) {
+    S.zoomRange = { from: pivot.from, to: pivot.to };
     updateZoomBadge(); if (typeof updateRangeBtn === 'function') updateRangeBtn();
-  } else {
-    const ipm = ((a.title || '') + ' ' + (a.detail || '')).match(ALERT_IP_RE);
-    q = ipm ? ('search src_ip:' + ipm[0]) : ('search ' + (a.title || '').split(':')[0].trim());
-    if (a.ts) {
-      const w = (a.window_s || 3600);
-      S.zoomRange = { from: Math.floor(a.ts - w), to: Math.ceil(a.ts) };
-      updateZoomBadge(); if (typeof updateRangeBtn === 'function') updateRangeBtn();
-    }
   }
   location.hash = 'explore';
-  if ($('#sql')) { $('#sql').value = q; runQuery(); }
+  if ($('#sql')) { $('#sql').value = pivot.query; runQuery(); }
+  return true;
 }
 // PURPLE — filtre actif sur les alertes par technique MITRE (pivot depuis le panneau couverture ou un
 // chip d'alerte). '' = aucun filtre (toutes les alertes). Cf. ?mitre= côté daemon (index idx_alert_mitre_ts,
@@ -108,6 +147,12 @@ const ALERT_IP_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/;
 // (.alert/.sev/.mitrechip.mitrepivot/.casechip/.casebtn/.banbtn/.ackdone) -> zéro divergence de rendu.
 function alertRowHtml(a, i) {
   const ipm = ((a.title || '') + ' ' + (a.detail || '')).match(ALERT_IP_RE);
+  // P11.14-b — LE TITRE N'ANNONCE QUE CE QU'IL TIENDRA. Le survol est DÉRIVÉ du pivot de l'alerte, par la
+  // MÊME fonction que le clic : un contrôle qui ne mène nulle part ne peut plus se présenter comme un
+  // contrôle qui mène quelque part. `aria-disabled` — et NON `disabled`, qui couperait le survol et
+  // rendrait la raison illisible (le choix est celui de core.js, `P11.4-l`) — dit l'inertie aux aides
+  // techniques ; le clic, lui, reste écouté pour DIRE le refus au lieu de le laisser sans effet.
+  const pivot = pivotDUneAlerte(a);
   const ban = ipm ? `<button class="banbtn" data-ip="${esc(ipm[0])}" title="Bannir ${esc(ipm[0])} (action en attente, dry-run)">${ic('ban')}</button>` : '';
   const cas = a.case_id
     ? `<button class="casechip" data-cid="${a.case_id}" title="Rattachée au case #${a.case_id} - cliquer pour ouvrir">${ic('case')} #${a.case_id}</button>`
@@ -116,7 +161,7 @@ function alertRowHtml(a, i) {
   return `
     <div class="alert sev-${a.severity}">
       <span class="sev">${sev(a.severity)}</span>
-      <span class="title"><span class="alertdrill" data-idx="${i}" title="Cliquer → voir les événements déclencheurs">${esc(a.title)}</span>${mt}</span>
+      <span class="title"><span class="alertdrill" data-idx="${i}" data-pivot="${pivot.mode}"${pivot.mode === 'aucun' ? ' aria-disabled="true"' : ''} title="${esc(pivot.survol)}">${esc(a.title)}</span>${mt}</span>
       <time>${fmtTs(a.ts)}</time>
       <span class="alertact">${cas}${ban}${a.status === 'new' ? `<button data-ack="${a.id}" title="Acquitter : marquer comme vue (retire de la file active, sans la supprimer)">Acquitter</button>` : `<span class="ackdone" title="Acquittée${a.acked_at ? ' · ' + fmtTs(a.acked_at) : ''}${a.acked_by ? ' par ' + esc(a.acked_by) : ''}">${ic('check')} Acquittée</span>`}</span>
     </div>`;
@@ -134,7 +179,8 @@ function wireAlertRows(host, alerts, afterAck) {
   host.querySelectorAll('.banbtn').forEach(btn => btn.onclick = () => banIp(btn.dataset.ip));
   // P11.4-h — le TITRE d'une alerte est ce qu'on veut le plus souvent coller dans un ticket, et c'est aussi
   // ce qui ouvrait la Recherche au relâchement du glisser : le clic se retire devant une sélection.
-  host.querySelectorAll('.alertdrill').forEach(el => clicQuiRespecteLaSelection(el, () => { el.classList.add('drilling'); setTimeout(() => el.classList.remove('drilling'), 1200); alertDrill(alerts[Number(el.dataset.idx)]); }));
+  // P11.14-b — le voile `.drilling` accuse un DÉPART ; il ne se pose que si le pivot a bien eu lieu.
+  host.querySelectorAll('.alertdrill').forEach(el => clicQuiRespecteLaSelection(el, () => { if (!alertDrill(alerts[Number(el.dataset.idx)])) return; el.classList.add('drilling'); setTimeout(() => el.classList.remove('drilling'), 1200); }));
   host.querySelectorAll('.casebtn').forEach(btn => btn.onclick = () => withBusy(btn, () => addToCase('alert', btn.dataset.t + (btn.dataset.d ? ' - ' + btn.dataset.d : ''), 'alert:' + btn.dataset.id)));
   host.querySelectorAll('.casechip').forEach(btn => btn.onclick = () => withBusy(btn, () => openCase(Number(btn.dataset.cid))));
 }
@@ -591,4 +637,5 @@ function redessinerLesAlertes() {
 })();
 
 export { renderAlerts, setAlertMitreFilter, setAlertSourceFilter, alertActionBarHtml, alertListModel,
-  dessinerLaListePlate, redessinerLesAlertes, poserLaRechercheDesAlertes, texteCherchableDUneAlerte };
+  dessinerLaListePlate, redessinerLesAlertes, poserLaRechercheDesAlertes, texteCherchableDUneAlerte,
+  pivotDUneAlerte, alertDrill };

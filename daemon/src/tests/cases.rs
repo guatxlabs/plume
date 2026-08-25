@@ -298,27 +298,423 @@
         assert_eq!(w["cases"], d["cases"], "wrapper == paged (sort défaut, LIMIT 300)");
     }
 
-    /// BATCH 1 — ledger_page : total = COUNT complet, LIMIT/OFFSET borne la fenêtre (ordre id DESC),
-    /// offset=0 = première page (rétro-compat).
-    #[test]
-    fn ledger_page_pagination() {
-        let conn = test_db();
-        for i in 0..7 {
-            conn.execute(
-                "INSERT INTO ledger(ts,kind,detail,prev_hash,hash) VALUES(?1,?2,?3,'p','h')",
-                params![1000 + i as i64, format!("k{i}"), format!("d{i}")],
-            )
-            .unwrap();
+    // =============================================================================================
+    // `P11.16-d` — LE JOURNAL D'AUDIT : FENÊTRE DE TEMPS, CLÉ, ET COÛT QUI NE SUIT PLUS LE VOLUME
+    // ---------------------------------------------------------------------------------------------
+    // CE QUE CES TESTS PROUVENT, ET PAR QUELLE VALEUR :
+    //   1. `ledger_page_par_cle_et_fenetre`      — le CONTRAT : page par clé, fenêtre, total, `oldest_ts`.
+    //   2. `ledger_parcours_integral_par_cle`    — AUCUN trou, AUCUN doublon : chaque entrée vue une fois.
+    //   3. `ledger_total_cout_independant_du_volume` — LE THÉORÈME du total : le volume DOUBLE, les lignes
+    //      lues par le comptage ne bougent PAS ; et l'ANCIENNE forme, elle, double (contre-exemple porté
+    //      par le test lui-même : un instrument qui ne saurait pas voir la faute ne prouverait rien).
+    //   4. `ledger_page_cout_independant_de_la_profondeur` — LE THÉORÈME de la page : atteindre la page 40
+    //      par CLÉ coûte ce que coûte la page 2 ; par DÉCALAGE, ça coûte vingt fois plus.
+    //   5. `ledger_total_plafonne_est_annonce`   — au-dessus du plafond, le total est plafonné ET DIT.
+    //   6. `ledger_lecture_ne_prend_pas_le_verrou_d_ecriture` — LE VERDICT sur la connexion.
+    //   7. `ledger_saut_hors_plafond_est_un_refus` — au-delà de la borne, un REFUS, jamais une page vide.
+    //   8. `ledger_fenetre_ne_touche_ni_ordre_ni_chaine` — ce que la fenêtre n'a PAS le droit de changer.
+    //
+    // L'INSTRUMENT DE COÛT est celui de `tests/sondes_cout.rs` : `SQLITE_STMTSTATUS_VM_STEP`, compté par
+    // SQLite lui-même. Il ne dépend ni de la charge machine, ni du cache, ni de l'horloge — deux
+    // exécutions identiques rendent le même nombre, ce qui rend le théorème opposable au lieu d'être un
+    // chronomètre. Il est lu sur le SQL RÉELLEMENT ÉMIS (`ledger_total_sql`/`ledger_page_sql`), jamais sur
+    // une copie : une copie ne mesurerait que sa propre exactitude.
+    // =============================================================================================
+
+    /// Le coût d'un énoncé, compté par SQLite lui-même. Le statement est préparé ICI et jeté après la
+    /// mesure : `sqlite3_stmt_status(resetFlg=0)` rend un CUMUL sur la vie du statement, donc réutiliser un
+    /// statement mesurerait la somme de toutes ses exécutions.
+    ///
+    /// DEUX COMPTEURS, PARCE QU'ILS NE DISENT PAS LA MÊME CHOSE — et l'un des deux a menti (cf. le test 3).
+    /// `VmStep` compte les pas de machine virtuelle : il mesure le TRAVAIL D'INTERPRÉTATION. `FullscanStep`
+    /// compte les LIGNES traversées en balayage de table : c'est lui qui suit les pages lues et — sous
+    /// SQLCipher — déchiffrées, donc la grandeur qui doit cesser de croître avec le journal.
+    fn led_cout(conn: &Connection, sql: &str, binds: &[i64], quoi: rusqlite::StatementStatus) -> i64 {
+        let mut s = conn.prepare(sql).expect("le journal émet un SQL valide");
+        {
+            let mut rows = s.query(rusqlite::params_from_iter(binds.iter())).unwrap();
+            while rows.next().unwrap().is_some() {}
         }
-        let (e0, total) = ledger_page(&conn, 3, 0);
-        assert_eq!(total, 7, "total = COUNT complet");
-        assert_eq!(e0.len(), 3, "page bornée par LIMIT");
-        assert_eq!(e0[0]["kind"], "k6", "ordre id DESC : la plus récente en tête");
-        let (e1, _) = ledger_page(&conn, 3, 3);
-        assert_eq!(e1.len(), 3);
-        assert_eq!(e1[0]["kind"], "k3", "offset 3 -> saute les 3 premières");
-        let (e2, _) = ledger_page(&conn, 3, 6);
-        assert_eq!(e2.len(), 1, "dernière page partielle");
+        s.get_status(quoi) as i64
+    }
+
+    /// LIGNES traversées en balayage — la grandeur que la borne doit plafonner.
+    fn led_lignes(conn: &Connection, sql: &str, binds: &[i64]) -> i64 {
+        led_cout(conn, sql, binds, rusqlite::StatementStatus::FullscanStep)
+    }
+
+    /// PAS de machine virtuelle — la grandeur qui suit la PROFONDEUR d'un décalage.
+    fn led_pas(conn: &Connection, sql: &str, binds: &[i64]) -> i64 {
+        led_cout(conn, sql, binds, rusqlite::StatementStatus::VmStep)
+    }
+
+    /// Sème `n` entrées de journal en UN énoncé (CTE récursive) : `ts` croissant avec `id`, comme
+    /// `ledger_append` qui écrit `now()` à chaque appel. Le `hash` est un remplissage — les tests qui
+    /// portent sur la CHAÎNE (n° 8) passent par `ledger_append`, le vrai chemin d'écriture.
+    fn led_semer(conn: &Connection, n: i64, ts0: i64) {
+        conn.execute_batch(&format!(
+            "WITH RECURSIVE s(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM s WHERE i<{n}) \
+             INSERT INTO ledger(ts,kind,detail,prev_hash,hash) SELECT {ts0}+i,'k'||i,'d'||i,'p','h'||i FROM s;"
+        ))
+        .unwrap();
+    }
+
+    fn led_ask(limit: i64, since: i64, window_days: i64, cursor: Option<i64>, offset: i64) -> LedgerAsk {
+        LedgerAsk { limit, since, window_days, cursor, offset, count: true }
+    }
+
+    fn led_ids(v: &Value) -> Vec<i64> {
+        v["entries"].as_array().unwrap().iter().map(|e| e["id"].as_i64().unwrap()).collect()
+    }
+
+    /// (1) LE CONTRAT. Première page = les plus RÉCENTES (`id` décroissant, l'ordre de la chaîne) ; la page
+    /// suivante se prend par CURSEUR ; la dernière page rend `has_more:false` + `next_cursor:null` ; le
+    /// total est EXACT sous le plafond ; la fenêtre FILTRE et DIT qu'elle mord (`older_outside_window`)
+    /// en nommant la plus ancienne entrée STOCKÉE (`oldest_ts`).
+    #[test]
+    fn ledger_page_par_cle_et_fenetre() {
+        let conn = test_db();
+        led_semer(&conn, 7, 1000); // ts 1001..1007, id 1..7
+        // --- SANS BORNE (paramètre absent -> `since` = i64::MIN) : tout l'historique, total exact.
+        let p0 = ledger_page(&conn, &led_ask(3, i64::MIN, 0, None, 0));
+        assert_eq!(p0["total"], json!(7), "total EXACT sous le plafond de comptage");
+        assert_eq!(p0["total_capped"], json!(false));
+        assert_eq!(led_ids(&p0), vec![7, 6, 5], "première page = les plus récentes, id décroissant");
+        assert_eq!(p0["has_more"], json!(true), "page pleine -> il reste probablement des lignes");
+        assert_eq!(p0["next_cursor"], json!(5), "curseur = id de la DERNIÈRE ligne rendue");
+        assert_eq!(p0["since"], Value::Null, "aucune borne -> aucune date de borne inventée");
+        assert_eq!(p0["older_outside_window"], json!(false), "sans borne, rien n'est hors du cadre");
+        assert_eq!(p0["oldest_ts"], json!(1001), "la plus ancienne entrée STOCKÉE est nommée");
+        // --- PAGE SUIVANTE PAR CLÉ.
+        let p1 = ledger_page(&conn, &led_ask(3, i64::MIN, 0, Some(5), 0));
+        assert_eq!(led_ids(&p1), vec![4, 3, 2], "curseur -> strictement APRÈS la dernière ligne rendue");
+        // --- DERNIÈRE PAGE : partielle -> fin explicite.
+        let p2 = ledger_page(&conn, &led_ask(3, i64::MIN, 0, Some(2), 0));
+        assert_eq!(led_ids(&p2), vec![1], "reste une ligne");
+        assert_eq!(p2["has_more"], json!(false), "page partielle -> dernière page");
+        assert_eq!(p2["next_cursor"], Value::Null, "dernière page -> aucun curseur de continuation");
+        // --- FENÊTRE : ne garde que ts>=1005, et DIT que des entrées plus anciennes existent.
+        let f = ledger_page(&conn, &led_ask(10, 1005, 1, None, 0));
+        assert_eq!(led_ids(&f), vec![7, 6, 5], "la fenêtre filtre, elle ne réordonne pas");
+        assert_eq!(f["total"], json!(3), "le total porte sur la FENÊTRE, pas sur la table");
+        assert_eq!(f["since"], json!(1005), "la borne effective est rendue : la vue peut la DIRE");
+        assert_eq!(f["window_days"], json!(1));
+        assert_eq!(f["older_outside_window"], json!(true), "la borne MORD, et la route le dit");
+        assert_eq!(f["oldest_ts"], json!(1001), "…en nommant la plus ancienne entrée du journal");
+    }
+
+    /// (2) PARCOURS INTÉGRAL PAR CLÉ : chaque entrée visitée EXACTEMENT une fois, dans l'ordre de la
+    /// chaîne, sans trou ni doublon — la propriété qui manque à une pagination par décalage dès qu'une
+    /// écriture tombe pendant le parcours.
+    #[test]
+    fn ledger_parcours_integral_par_cle() {
+        let conn = test_db();
+        led_semer(&conn, 38, 1000);
+        let mut vus: Vec<i64> = Vec::new();
+        let mut cursor: Option<i64> = None;
+        let mut pages = 0usize;
+        loop {
+            let p = ledger_page(&conn, &led_ask(8, i64::MIN, 0, cursor, 0));
+            vus.extend(led_ids(&p));
+            pages += 1;
+            assert!(pages < 100, "garde-fou anti-boucle infinie");
+            if !p["has_more"].as_bool().unwrap() {
+                assert_eq!(p["next_cursor"], Value::Null);
+                break;
+            }
+            cursor = Some(p["next_cursor"].as_i64().unwrap());
+        }
+        let attendu: Vec<i64> = (1..=38).rev().collect();
+        assert_eq!(vus, attendu, "l'ensemble collecté == la table entière, dans l'ordre de la chaîne");
+        assert!(pages >= 5, "38 lignes / 8 par page -> au moins 5 pages (parcours réel)");
+    }
+
+    /// (3) LE THÉORÈME DU TOTAL — le volume DOUBLE, le comptage borné ne lit PAS une ligne de plus, et il
+    /// SATURE (il rend la même valeur, donc il a cessé de regarder). Le contre-exemple est le MÊME énoncé
+    /// privé de sa seule clause de bornage : c'est la mutation de la correction elle-même, pas la
+    /// comparaison à un énoncé d'une autre forme.
+    ///
+    /// UN INSTRUMENT A ÉTÉ RÉFUTÉ ICI, ET C'EST POURQUOI LE CONTRE-EXEMPLE A CETTE FORME. Mesuré le
+    /// 2026-08-25 : `SELECT COUNT(*) FROM ledger` — la forme D'ORIGINE de cette route — coûte NEUF pas de
+    /// machine virtuelle, que la table porte dix mille lignes ou vingt et un mille. SQLite la sert par un
+    /// comptage de B-tree (`OP_Count`), qui visite toutes les pages de la table SANS boucle VDBE : le
+    /// compteur de pas est AVEUGLE à ce coût — la table n'est pas bon marché, c'est l'instrument qui ne
+    /// voit rien. Opposer les deux formes aurait donc rendu VERT en ne mesurant rien. Ce qui est éprouvé
+    /// ici est donc la seule chose qui décide, comptée par `FULLSCAN_STEP` — les LIGNES traversées, celles
+    /// qui coûtent une page lue et, sous SQLCipher, déchiffrée.
+    ///
+    /// RELEVÉ le 2026-08-25 sur cette fixture (lignes traversées) : comptage BORNÉ = 10 000 sur un journal
+    /// de 10 500 comme sur un journal de 21 000 ; le MÊME comptage privé de sa borne = 10 499 puis 20 999.
+    /// La borne cesse donc de suivre le volume, et elle le fait AU PLAFOND. À l'inverse, en pas de machine
+    /// virtuelle, la forme bornée en coûte DAVANTAGE (90 024 contre 42 011 et 84 011) : la borne empêche
+    /// l'aplatissement de la sous-requête, donc chaque ligne coûte plus d'interprétation — pendant qu'il y
+    /// a deux fois moins de lignes à lire. Deux compteurs, deux verdicts opposés : c'est pourquoi celui qui
+    /// est retenu est nommé, avec ce qu'il mesure.
+    #[test]
+    fn ledger_total_cout_independant_du_volume() {
+        // Le MÊME énoncé, privé de `LIMIT CAP+1` — la mutation exacte de ce que la correction ajoute.
+        const SANS_BORNE: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM ledger WHERE ts>=?1)";
+        let petit = test_db();
+        led_semer(&petit, PAGINATION_COUNT_CAP + 500, 1_700_000_000);
+        let grand = test_db();
+        led_semer(&grand, 2 * (PAGINATION_COUNT_CAP + 500), 1_700_000_000);
+
+        let sql = ledger_total_sql();
+        let c_petit = led_lignes(&petit, &sql, &[i64::MIN]);
+        let c_grand = led_lignes(&grand, &sql, &[i64::MIN]);
+        assert_eq!(c_petit, c_grand, "MUTATION x2 du volume : le comptage borné lit le MÊME nombre de lignes");
+        assert!(c_grand <= PAGINATION_COUNT_CAP + 1, "…et ce nombre est le plafond lui-même ({c_grand})");
+
+        let s_petit = led_lignes(&petit, SANS_BORNE, &[i64::MIN]);
+        let s_grand = led_lignes(&grand, SANS_BORNE, &[i64::MIN]);
+        assert!(
+            s_grand > s_petit * 3 / 2,
+            "témoin INVERSE : privé de sa borne, le MÊME comptage DOIT suivre le volume (petit={s_petit}, \
+             grand={s_grand}) — sinon l'instrument ne mesure pas ce qu'il prétend mesurer"
+        );
+        assert!(
+            c_grand < s_petit,
+            "le comptage borné du GROS journal lit moins de lignes que le comptage non borné du PETIT \
+             (borné_grand={c_grand}, sans_borne_petit={s_petit})"
+        );
+
+        // SATURATION : le total rendu est le MÊME des deux côtés, et il se déclare plafonné. Un comptage
+        // qui rend la même valeur sur deux volumes différents est un comptage qui a cessé de regarder.
+        for (nom, base) in [("petit", &petit), ("grand", &grand)] {
+            let v = ledger_page(base, &led_ask(10, i64::MIN, 0, None, 0));
+            assert_eq!(v["total"], json!(PAGINATION_COUNT_CAP), "{nom} : total plafonné");
+            assert_eq!(v["total_capped"], json!(true), "{nom} : et il le DIT");
+        }
+    }
+
+    /// (4) LE THÉORÈME DE LA PAGE — atteindre une page LOINTAINE par CLÉ coûte ce que coûte une page
+    /// proche. Le contre-exemple est le décalage, sur la MÊME base et la MÊME page : c'est exactement ce
+    /// que la clé achète, et pourquoi le saut par décalage reste borné par `LEDGER_JUMP_MAX`.
+    #[test]
+    fn ledger_page_cout_independant_de_la_profondeur() {
+        let conn = test_db();
+        led_semer(&conn, 4000, 1_700_000_000);
+        let max_id: i64 = conn.query_row("SELECT MAX(id) FROM ledger", [], |r| r.get(0)).unwrap();
+        let (lim, proche, loin) = (50i64, 2i64, 40i64);
+        // Par CLÉ : le curseur qui ouvre la page k est l'id de la dernière ligne de la page k-1.
+        let cle = |k: i64| {
+            let sql = ledger_page_sql(&ledger_plan(Some(max_id - (k - 1) * lim + 1), 0));
+            led_pas(&conn, &sql, &[i64::MIN, lim])
+        };
+        let c_proche = cle(proche);
+        let c_loin = cle(loin);
+        assert_eq!(c_proche, c_loin, "par CLÉ, la page {loin} coûte ce que coûte la page {proche}");
+        // Par DÉCALAGE, sur les MÊMES pages.
+        let saut = |k: i64| {
+            let sql = ledger_page_sql(&ledger_plan(None, (k - 1) * lim));
+            led_pas(&conn, &sql, &[i64::MIN, lim])
+        };
+        let s_proche = saut(proche);
+        let s_loin = saut(loin);
+        assert!(
+            s_loin > s_proche * 5,
+            "témoin INVERSE : par DÉCALAGE le coût DOIT croître avec la profondeur (page {proche}={s_proche}, \
+             page {loin}={s_loin}) — sinon la comparaison ci-dessus ne prouve rien"
+        );
+        assert!(c_loin < s_loin / 5, "la clé rend la page lointaine sans en payer la profondeur");
+    }
+
+    /// (5) AU-DESSUS DU PLAFOND, LE TOTAL EST PLAFONNÉ **ET DIT**. Un chiffre coûteux n'est pas remplacé
+    /// par un chiffre faux présenté comme exact : `total_capped` est ce qui autorise la vue à rendre un
+    /// pager non numéroté dont le Suivant reste fiable, au lieu d'un dernier numéro qui cacherait des pages.
+    #[test]
+    fn ledger_total_plafonne_est_annonce() {
+        let sous = test_db();
+        led_semer(&sous, PAGINATION_COUNT_CAP - 1, 1_700_000_000);
+        let v = ledger_page(&sous, &led_ask(10, i64::MIN, 0, None, 0));
+        assert_eq!(v["total"], json!(PAGINATION_COUNT_CAP - 1), "sous le plafond : total EXACT");
+        assert_eq!(v["total_capped"], json!(false));
+
+        let au_dessus = test_db();
+        led_semer(&au_dessus, PAGINATION_COUNT_CAP + 1, 1_700_000_000);
+        let v = ledger_page(&au_dessus, &led_ask(10, i64::MIN, 0, None, 0));
+        assert_eq!(v["total"], json!(PAGINATION_COUNT_CAP), "au plafond : le total est PLAFONNÉ…");
+        assert_eq!(v["total_capped"], json!(true), "…et il le DIT");
+
+        // NON DEMANDÉ, DONC NON COMPTÉ — et `null` le dit. Un `0` mentirait (« journal vide »), et sur
+        // cette vue un chiffre faux ne se remarque pas. Un total ne bouge pas au fil d'un parcours : la
+        // vue le demande une fois par fenêtre, les pages suivantes ne repaient plus le plafond.
+        let sans = LedgerAsk { limit: 10, since: i64::MIN, window_days: 0, cursor: None, offset: 0, count: false };
+        let v = ledger_page(&au_dessus, &sans);
+        assert_eq!(v["total"], Value::Null, "non demandé -> `total:null`, jamais un zéro");
+        assert_eq!(v["total_capped"], Value::Null, "et rien n'est affirmé sur un plafond qu'on n'a pas éprouvé");
+        assert_eq!(v["entries"].as_array().unwrap().len(), 10, "la page, elle, est servie");
+        assert_eq!(v["oldest_ts"], json!(1_700_000_001i64), "la plus ancienne entrée reste NOMMÉE (coût constant)");
+    }
+
+    /// (6) LE VERDICT SUR LA CONNEXION. L'en-tête de la route disait « lecture seule » pendant que le corps
+    /// prenait le MUTEX D'ÉCRITURE — celui de l'ingestion. Ici l'écrivain tient le verrou pendant toute la
+    /// requête : si la lecture le réclamait, elle ne rendrait JAMAIS. La valeur qui change entre avant et
+    /// après est donc binaire : la réponse arrive, ou elle n'arrive pas.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ledger_lecture_ne_prend_pas_le_verrou_d_ecriture() {
+        let path = ff_tmp_path("ledger-verrou");
+        {
+            let conn = open_db(&path).unwrap();
+            conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
+            assert!(migrate(&conn), "fixture : chaîne de migrations complète");
+            led_semer(&conn, 5, 1_700_000_000);
+        }
+        let st = ds_file_state(&path);
+        // L'ÉCRIVAIN (ingestion) prend le verrou et ne le rend pas avant la fin de la mesure.
+        let ecrivain = st.db.clone();
+        let (pris_tx, pris_rx) = std::sync::mpsc::channel::<()>();
+        let (fin_tx, fin_rx) = std::sync::mpsc::channel::<()>();
+        let fil = std::thread::spawn(move || {
+            let _verrou = ecrivain.lock();
+            pris_tx.send(()).unwrap();
+            let _ = fin_rx.recv();
+        });
+        pris_rx.recv().unwrap();
+
+        let au = AuthUser {
+            name: "root".into(), role: "admin".into(), tenant: "default".into(),
+            is_superadmin: false, method: "basic".into(), csrf: String::new(), env: None,
+        };
+        let appel = tokio::spawn(ledger_get(State(st.clone()), Extension(au), Query(HashMap::new())));
+        let issue = tokio::time::timeout(std::time::Duration::from_secs(5), appel).await;
+        let _ = fin_tx.send(());
+        fil.join().unwrap();
+
+        let rep = issue
+            .expect("la lecture du journal a réclamé le verrou d'ÉCRITURE : sous un écrivain unique, elle \
+                     attend l'ingestion au lieu de passer par le pool de lecture")
+            .expect("le handler a paniqué");
+        let (code, corps) = tok_resp_json(rep).await;
+        assert_eq!(code, StatusCode::OK, "la page est servie verrou d'écriture TENU");
+        assert_eq!(corps["entries"].as_array().unwrap().len(), 5, "et elle porte bien les entrées");
+    }
+
+    /// (7) AU-DELÀ DE LA BORNE, UN REFUS QUI NOMME LE PLAFOND — jamais une page vide. Sur cette vue, un
+    /// vide se lit comme un fait (« le journal s'arrête là »), et une ligne manquante ne se remarque pas.
+    #[tokio::test]
+    async fn ledger_saut_hors_plafond_est_un_refus() {
+        let path = ff_tmp_path("ledger-saut");
+        {
+            let conn = open_db(&path).unwrap();
+            conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
+            assert!(migrate(&conn), "fixture : chaîne de migrations complète");
+            led_semer(&conn, 3, 1_700_000_000);
+        }
+        let st = ds_file_state(&path);
+        let au = AuthUser {
+            name: "root".into(), role: "admin".into(), tenant: "default".into(),
+            is_superadmin: false, method: "basic".into(), csrf: String::new(), env: None,
+        };
+        let mut q = HashMap::new();
+        q.insert("offset".to_string(), (LEDGER_JUMP_MAX + 1).to_string());
+        let (code, corps) = tok_resp_json(ledger_get(State(st.clone()), Extension(au.clone()), Query(q)).await).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "un saut hors plafond est REFUSÉ, pas servi vide");
+        let msg = corps["error"].as_str().unwrap_or("");
+        assert!(msg.contains(&LEDGER_JUMP_MAX.to_string()), "le refus NOMME le plafond : {msg}");
+        // Une fenêtre non numérique est un refus, pas un silencieux retour au défaut.
+        let mut q = HashMap::new();
+        q.insert("window_days".to_string(), "trente".to_string());
+        let (code, corps) = tok_resp_json(ledger_get(State(st.clone()), Extension(au.clone()), Query(q)).await).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "fenêtre illisible -> refus explicite");
+        assert!(
+            corps["error"].as_str().unwrap_or("").contains(&LEDGER_WINDOW_MAX_DAYS.to_string()),
+            "le refus dit quelle fenêtre est acceptable"
+        );
+        // Une fenêtre AU-DELÀ du plafond est ramenée au plafond, et la réponse REND la valeur effective.
+        let mut q = HashMap::new();
+        q.insert("window_days".to_string(), (LEDGER_WINDOW_MAX_DAYS * 10).to_string());
+        let (code, corps) = tok_resp_json(ledger_get(State(st), Extension(au), Query(q)).await).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(corps["window_days"], json!(LEDGER_WINDOW_MAX_DAYS), "la fenêtre EFFECTIVE est rendue");
+    }
+
+    /// (8) CE QUE LA FENÊTRE N'A PAS LE DROIT DE CHANGER. Le journal d'intégrité est infalsifiable par
+    /// conception : lire une fenêtre ne doit toucher ni ce qu'il contient, ni son ordre, ni sa chaîne de
+    /// vérification. Chaîne construite par le VRAI chemin d'écriture (`ledger_append`).
+    #[test]
+    fn ledger_fenetre_ne_touche_ni_ordre_ni_chaine() {
+        let conn = test_db();
+        for i in 0..12 {
+            ledger_append(&conn, &format!("config.k{i}"), &format!("detail {i}"));
+        }
+        let (n_avant, _, _, rompue_avant) = verify_ledger_conn(&conn, None).expect("chaîne lisible");
+        assert_eq!(n_avant, 12);
+        assert!(rompue_avant.is_none(), "chaîne intacte avant lecture");
+
+        let sans = ledger_page(&conn, &led_ask(50, i64::MIN, 0, None, 0));
+        // Fenêtre LARGE : les 12 entrées viennent d'être écrites -> toutes dedans, à l'identique.
+        let large = ledger_page(&conn, &led_ask(50, now() - 86_400, 1, None, 0));
+        assert_eq!(sans["entries"], large["entries"], "même contenu, même ordre, mêmes empreintes");
+        assert_eq!(large["older_outside_window"], json!(false), "rien hors du cadre");
+        // Fenêtre qui EXCLUT tout : zéro entrée, et la route le DIT au lieu de laisser croire à un journal vide.
+        let vide = ledger_page(&conn, &led_ask(50, now() + 86_400, 1, None, 0));
+        assert!(vide["entries"].as_array().unwrap().is_empty());
+        assert_eq!(vide["total"], json!(0));
+        assert_eq!(vide["older_outside_window"], json!(true), "toutes les entrées sont hors de la fenêtre");
+        assert!(vide["oldest_ts"].is_i64(), "et la plus ancienne entrée reste NOMMÉE");
+        // La chaîne, après toutes ces lectures, est celle d'avant.
+        let (n_apres, _, _, rompue_apres) = verify_ledger_conn(&conn, None).expect("chaîne lisible");
+        assert_eq!((n_apres, rompue_apres), (n_avant, rompue_avant), "lire ne touche pas la chaîne");
+    }
+
+    /// (9) UN SEUL FABRICANT DE PAGE, UN SEUL FABRICANT DE COMPTAGE — garde DÉRIVÉE DE LA SOURCE, sur le
+    /// modèle de `page_sql_is_the_only_place_that_builds_an_offset` (tests/keyset.rs).
+    ///
+    /// Le défaut n'était pas « ce site-là utilise un décalage » ni « ce site-là compte toute la table » :
+    /// c'était qu'AUCUNE forme n'empêchait un deuxième site de naître à côté. Les deux invariants tenus
+    /// ici, dans `handlers/admin_ui.rs` et sans aucune liste de sites :
+    ///   * aucune ligne non commentée ne fabrique un `OFFSET` hors du corps de `ledger_page_sql` ;
+    ///   * aucune ligne non commentée ne fabrique un `COUNT(` sur `ledger` hors du corps de
+    ///     `ledger_total_sql` — les comptages des AUTRES tables (aperçu de rétention) ne sont pas visés,
+    ///     et la règle le dit par son prédicat, pas par une exception nommée.
+    /// Les deux moitiés sont exigées NON VIDES : un invariant qui ne trouve plus la forme qu'il garde est
+    /// un invariant mort, et il rendrait vert en étant aveugle.
+    #[test]
+    fn ledger_un_seul_fabricant_de_page_et_de_comptage() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/handlers/admin_ui.rs"),
+        )
+        .unwrap();
+        let (mut dans_page, mut dans_total) = (false, false);
+        let (mut vus_page, mut vus_total) = (0usize, 0usize);
+        let mut fautes: Vec<(usize, &str)> = Vec::new();
+        for (n, ligne) in src.lines().enumerate() {
+            if ligne.starts_with("pub(crate) fn ledger_page_sql(") {
+                dans_page = true;
+            } else if ligne.starts_with("pub(crate) fn ledger_total_sql(") {
+                dans_total = true;
+            } else if ligne.starts_with('}') {
+                dans_page = false;
+                dans_total = false;
+            }
+            let code = ligne.trim_start();
+            if code.starts_with("//") {
+                continue; // commentaire : la prose cite les deux formes, c'est son rôle
+            }
+            if code.contains("OFFSET") {
+                if dans_page {
+                    vus_page += 1;
+                } else {
+                    fautes.push((n + 1, ligne));
+                }
+            }
+            if code.contains("COUNT(") && code.contains("ledger") {
+                if dans_total {
+                    vus_total += 1;
+                } else {
+                    fautes.push((n + 1, ligne));
+                }
+            }
+        }
+        assert!(
+            fautes.is_empty(),
+            "une page ou un comptage du journal est fabriqué HORS de son fabricant unique — un chemin \
+             peut donc retomber sur un décalage nu ou sur un comptage intégral sans passer par la \
+             décision unique : {fautes:?}"
+        );
+        assert!(vus_page >= 1, "invariant vide = invariant mort : `ledger_page_sql` doit porter la forme OFFSET");
+        assert!(vus_total >= 1, "invariant vide = invariant mort : `ledger_total_sql` doit porter le COUNT borné");
     }
 
     /// BATCH 1 — alerts_query_page : `total` renvoyé uniquement quand want_total (vue tous-statuts) ; LIMIT/OFFSET

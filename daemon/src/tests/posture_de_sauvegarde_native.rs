@@ -27,7 +27,12 @@
     /// AURAIT le droit d'effacer). Le second terme est ce que « non purgeable » veut dire, lu sur le
     /// prédicat de production et non sur une phrase.
     fn signaux(src: &str, key: &str, famille: &str) -> (i64, i64) {
-        let c = open_db_keyed(src, Some(key)).unwrap();
+        signaux_cle(src, Some(key), famille)
+    }
+    /// MÊME lecture, clé OPTIONNELLE : le cas `P9.4-b` porte sur une base EN CLAIR (`PLUME_DB_KEY`
+    /// vide, ce que livrent `docker-compose.yml` et `deploy/k3s.yaml`), qui s'ouvre SANS clé.
+    fn signaux_cle(src: &str, key: Option<&str>, famille: &str) -> (i64, i64) {
+        let c = open_db_keyed(src, key).unwrap();
         let ou = format!("source='plume-config' AND category='health' AND {famille}");
         let n: i64 = c.query_row(&format!("SELECT COUNT(*) FROM event WHERE {ou}"), [], |r| r.get(0)).unwrap();
         let purgeables: i64 = c.query_row(
@@ -120,13 +125,15 @@
         assert_eq!(signaux_de_posture(&src, key), (0, 0), "destinataire présent -> posture saine, AUCUN signal");
     }
 
-    /// (c) Un cycle qui ÉCHOUE n'avoue aucune posture : on ne signale pas une sauvegarde qui n'existe
-    /// pas. Deux échecs distincts, parce qu'ils n'ont pas le même point de sortie : la sauvegarde
+    /// (c) Un cycle qui ÉCHOUE n'avoue aucune posture D'ARCHIVE : on ne signale pas le chiffrement ni
+    /// l'éprouvé d'une sauvegarde qui n'existe pas. Ce qu'un tel cycle dit désormais, il le dit dans SA
+    /// famille — le signal `P9.4-b` « aucune archive publiée », dont les témoins suivent ce bloc.
+    /// Deux échecs distincts, parce qu'ils n'ont pas le même point de sortie : la sauvegarde
     /// refusée (clé fausse : `backup_compressed` rend Err), et la sauvegarde PRODUITE mais jamais
     /// PUBLIÉE (le rename échoue : le chemin final est un répertoire). Un signal posé sur le `Ok` de
     /// `backup_compressed`, avant le rename, passerait le premier et rougirait au second.
     #[test]
-    fn un_cycle_natif_qui_echoue_n_emet_aucun_signal() {
+    fn un_cycle_natif_qui_echoue_n_avoue_aucune_posture_d_archive() {
         let _reglages = BACKUP_ENV_LOCK.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
         let dir = crate::tmp_possede::TmpPossede::neuf("p825-echec");
         let key = "p825-la-bonne-cle";
@@ -352,4 +359,221 @@
             "ces chemins de production ÉCRIVENT une archive sans émettre tous les signaux de posture :\n  {}\n\
              Une archive publiée sans ces signaux est, selon le signal manquant, déchiffrable par le nœud (P8.25-a) ou \
              jamais restaurée (P8.26-a) avec, pour seul témoin, une ligne de journal — les deux trous fermés sur le cycle natif.", muets.join("\n  "));
+    }
+
+    // ============================================================================================
+    // P9.4-b — UN CYCLE QUI NE PRODUIT RIEN LE DIT ; UN CYCLE QUI PRODUIT NE DIT RIEN.
+    // --------------------------------------------------------------------------------------------
+    // LE DÉFAUT, MESURÉ SUR LES SOURCES le 2026-08-25. La branche de SUCCÈS du cycle natif lève deux
+    // signaux de posture NON PURGEABLES (les témoins (a) à (d) ci-dessus). Sa branche d'ÉCHEC écrivait
+    // UNE ligne sur la sortie d'erreur et rendait la main. Or `backup_compressed` REFUSE dès sa
+    // première instruction quand la clé de base est vide, et les deux déploiements conteneurisés
+    // ARMENT ce cycle en livrant `PLUME_DB_KEY` VIDE : à intervalle régulier un cycle partait,
+    // échouait, et AUCUNE archive n'était jamais écrite — sans qu'aucune surface ne le dise.
+    //
+    // LES DEUX TÉMOINS, ET LE SECOND EST LE CŒUR. (1) un cycle SANS CLÉ ne publie rien et le signal
+    // PART, non purgeable, dédupliqué à l'heure, son étape prise dans un ensemble FERMÉ et sa cause
+    // NOMMANT la clé requise ; (2) un cycle qui PUBLIE n'émet AUCUN signal de cette famille — et le
+    // témoin croisé (la posture symétrique, elle, est bien écrite) prouve que ce silence est une
+    // décision et non une base qu'on n'aurait pas su ouvrir. Sans (2), une version qui crierait
+    // TOUJOURS passerait (1) sans rien prouver.
+    //
+    // PUIS UNE GARDE DÉRIVÉE DU CORPS DU CYCLE : chaque sortie « aucune archive » de
+    // `scheduled_backup_cycle` émet. Rien n'est énuméré — un TROISIÈME point de sortie ajouté demain
+    // est contrôlé d'office.
+    // ============================================================================================
+
+    /// Une base plume EN CLAIR (aucune clé) au contrat : EXACTEMENT ce que livrent `docker-compose.yml`
+    /// et `deploy/k3s.yaml` par défaut (`PLUME_DB_KEY` vide -> `db_key()` rend `None`). C'est la base
+    /// sur laquelle le cycle natif tourne dans ces deux déploiements.
+    fn base_source_en_clair(dir: &crate::tmp_possede::TmpPossede) -> String {
+        let src = dir.sous("source.db").as_str().to_owned();
+        let c = open_db_keyed(&src, None).unwrap();
+        c.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
+        let _ = migrate(&c);
+        c.execute("INSERT INTO event(ts,source,category,severity,host,message,fields) VALUES(?1,'sshd','auth',3,'h','m','{}')",
+            params![now()]).unwrap();
+        src
+    }
+
+    /// P9.4-b — la famille « ce cycle n'a publié AUCUNE archive », telle que l'émetteur la marque dans
+    /// ses `fields`. Pas sur `dedup` : la clé STOCKÉE est cloisonnée par hôte (`dedup_scoped_by_host`),
+    /// un motif ancré dessus ne trouverait jamais rien et le témoin rendrait « aucun signal » pour la
+    /// mauvaise raison — la même faute que celle déjà relevée sur la famille EXERCICE.
+    const FAMILLE_SANS_ARCHIVE: &str = "fields LIKE '%\"backup_cycle\":\"no_archive\"%'";
+    fn signaux_sans_archive(src: &str, key: Option<&str>) -> (i64, i64) {
+        signaux_cle(src, key, FAMILLE_SANS_ARCHIVE)
+    }
+    /// L'ÉTAPE et la CAUSE que porte le DERNIER signal « aucune archive », s'il y en a un.
+    fn etape_et_cause_du_dernier_signal_sans_archive(src: &str, key: Option<&str>) -> Option<(String, String)> {
+        let c = open_db_keyed(src, key).unwrap();
+        c.query_row(
+            &format!("SELECT json_extract(fields,'$.step'), json_extract(fields,'$.cause') FROM event \
+                      WHERE {FAMILLE_SANS_ARCHIVE} ORDER BY id DESC LIMIT 1"),
+            [], |r| Ok((r.get(0)?, r.get(1)?))).ok()
+    }
+
+    /// P9.4-b (1) — LE CAS DU DÉPLOIEMENT CONTENEUR/CLUSTER, JOUÉ : base EN CLAIR, cycle armé, aucune
+    /// clé. La sauvegarde compressée refuse, RIEN n'est écrit dans la destination — pas même un
+    /// temporaire — et le cycle l'écrit dans la base, une fois, non purgeable, avec l'étape et la cause.
+    #[test]
+    fn le_cycle_natif_sans_cle_ne_publie_rien_et_le_dit() {
+        let _reglages = BACKUP_ENV_LOCK.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
+        let dir = crate::tmp_possede::TmpPossede::neuf("p94b-sans-cle");
+        let src = base_source_en_clair(&dir);
+        let dest = dir.sous("backups").as_str().to_owned();
+        std::fs::create_dir_all(&dest).unwrap();
+        assert_eq!(signaux_sans_archive(&src, None), (0, 0), "TÉMOIN : aucun signal avant le cycle");
+
+        let seau_avant = now() / 3600; // le seau de dédup est l'heure (cf. `emit_backup_cycle_failed_signal`)
+        let publie = crate::server::scheduled_backup_cycle(&src, &dest, 24, None, None);
+        assert!(publie.is_none(), "sans clé, la sauvegarde compressée REFUSE : ce cycle ne publie rien");
+        assert!(archives_publiees(&dest).is_empty(), "aucune archive ne doit exister");
+        assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0,
+            "la destination doit rester VIDE — pas même un temporaire : c'est ce que l'exploitant y trouve");
+        assert_eq!(signaux_sans_archive(&src, None), (1, 0),
+            "cycle sans archive -> UN signal, que la rétention n'a pas le droit d'effacer");
+
+        let (etape, cause) = etape_et_cause_du_dernier_signal_sans_archive(&src, None).expect("le signal doit porter son étape et sa cause");
+        assert!(crate::backup::CAUSES_DE_CYCLE_SANS_ARCHIVE.contains(&etape.as_str()),
+            "l'étape `{etape}` sort de l'ensemble FERMÉ {:?} : la cardinalité de l'étiquette n'est plus bornée",
+            crate::backup::CAUSES_DE_CYCLE_SANS_ARCHIVE);
+        assert_eq!(etape, crate::backup::CYCLE_SANS_ARCHIVE_SAUVEGARDE_REFUSEE, "la sauvegarde a été REFUSÉE, pas produite-puis-perdue");
+        assert!(cause.contains("PLUME_DB_KEY"),
+            "la cause doit NOMMER la clé requise — sans elle, l'exploitant lit « échec » sans savoir quoi poser : {cause}");
+
+        // DÉDUP HORAIRE : le cycle suivant, dans la même heure, n'ajoute pas de second signal — sinon un
+        // `PLUME_BACKUP_INTERVAL` bas noierait l'exploitant sous le même fait. Si l'heure a tourné entre
+        // les deux, un second signal est légitime : l'attente est bornée par les seaux traversés.
+        std::thread::sleep(std::time::Duration::from_millis(1100)); // un nom d'archive à la seconde
+        assert!(crate::server::scheduled_backup_cycle(&src, &dest, 24, None, None).is_none(), "second cycle : toujours rien");
+        let n = signaux_sans_archive(&src, None).0;
+        if seau_avant == now() / 3600 {
+            assert_eq!(n, 1, "même heure -> toujours un seul signal (dédup)");
+        } else {
+            assert!((1..=2).contains(&n), "heure tournée entre les cycles -> un ou deux signaux, jamais plus : {n}");
+        }
+    }
+
+    /// P9.4-b (2) — LE TÉMOIN INVERSE, ET C'EST LUI QUI REND LE PREMIER OPPOSABLE : un cycle qui PUBLIE
+    /// n'émet AUCUN signal de cette famille. Le témoin CROISÉ, dans le même corps, interdit de lire ce
+    /// silence comme une cécité : la posture symétrique, elle, EST écrite sur la même base par le même
+    /// cycle — la porte a donc bien été ouverte, et l'absence du signal `P9.4-b` est une décision.
+    #[test]
+    fn un_cycle_natif_qui_publie_n_emet_aucun_signal_de_cycle_sans_archive() {
+        let _reglages = BACKUP_ENV_LOCK.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
+        let dir = crate::tmp_possede::TmpPossede::neuf("p94b-publie");
+        let key = "p94b-la-bonne-cle";
+        let src = base_source_au_contrat(&dir, key);
+        let dest = dir.sous("backups").as_str().to_owned();
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let publie = crate::server::scheduled_backup_cycle(&src, &dest, 24, Some(key), None);
+        assert!(publie.is_some(), "le cycle doit avoir publié une archive");
+        assert_eq!(archives_publiees(&dest).len(), 1);
+        assert_eq!(signaux_sans_archive(&src, Some(key)), (0, 0),
+            "une archive A ÉTÉ publiée -> AUCUN signal « aucune archive ». Une version qui crierait à chaque cycle rougit ici");
+        assert_eq!(signaux_de_posture(&src, key), (1, 0),
+            "TÉMOIN CROISÉ : la posture symétrique EST écrite sur cette base par ce cycle — le silence ci-dessus n'est pas une base qu'on n'a pas su ouvrir");
+    }
+
+    /// P9.4-b (3) — LE SECOND POINT DE SORTIE SANS ARCHIVE, et il n'a pas la même étape : la sauvegarde
+    /// est PRODUITE dans le temporaire mais jamais PUBLIÉE (le nom canonique est occupé par un
+    /// répertoire -> le rename échoue). Rien n'est servi, rien n'est prunable ; le cycle le dit avec
+    /// l'étape `publication_impossible`, distincte du refus. Une étiquette unique fondrait les deux
+    /// causes, qui n'appellent pas le même geste.
+    #[test]
+    fn un_cycle_natif_qui_ne_publie_pas_son_temporaire_le_dit_avec_sa_propre_etape() {
+        let _reglages = BACKUP_ENV_LOCK.read(); // `scheduled_backup_cycle` -> `backup_compressed` LIT les réglages
+        let dir = crate::tmp_possede::TmpPossede::neuf("p94b-rename");
+        let key = "p94b-cle-rename";
+        let src = base_source_au_contrat(&dir, key);
+        let dest = dir.sous("backups").as_str().to_owned();
+        std::fs::create_dir_all(&dest).unwrap();
+
+        // Le nom porte l'instant de DÉBUT du cycle (à la seconde) : on occupe la seconde courante et les
+        // deux suivantes par un répertoire NON VIDE, que `rename` ne peut pas écraser.
+        let t = now();
+        for s in t..t + 3 {
+            let occupe = format!("{dest}/plume-{}.db.age/occupe", crate::backup::fmt_backup_ts(s));
+            std::fs::create_dir_all(&occupe).unwrap();
+        }
+        assert!(crate::server::scheduled_backup_cycle(&src, &dest, 24, Some(key), None).is_none(), "rename impossible : rien n'est publié");
+        assert_eq!(signaux_sans_archive(&src, Some(key)), (1, 0), "cycle sans archive -> UN signal non purgeable");
+        let (etape, cause) = etape_et_cause_du_dernier_signal_sans_archive(&src, Some(key)).expect("étape et cause dues");
+        assert_eq!(etape, crate::backup::CYCLE_SANS_ARCHIVE_PUBLICATION_IMPOSSIBLE,
+            "produite-mais-jamais-publiée n'est pas un refus : l'étape doit les distinguer");
+        assert!(cause.contains("rename"), "la cause doit dire ce qui a échoué : {cause}");
+        // Et les DEUX familles d'archive publiée restent muettes : rien n'a été publié.
+        assert_eq!((signaux_de_posture(&src, key), signaux_d_exercice(&src, key)), ((0, 0), (0, 0)),
+            "aucune archive publiée -> aucune posture d'archive avouée");
+    }
+
+    /// P9.4-b (4) — GARDE DÉRIVÉE DU CORPS DU CYCLE : CHAQUE sortie « aucune archive » de
+    /// `scheduled_backup_cycle` émet le signal. Rien n'est énuméré — la population est faite des
+    /// `return None` du corps LIVRÉ, commentaires retirés ; un TROISIÈME point de sortie ajouté demain
+    /// est contrôlé sans être nommé ici.
+    ///
+    /// L'INSTRUMENT EST VALIDÉ AVANT DE CONCLURE : un plancher sur le nombre de sorties réellement
+    /// LUES (sous lui, c'est la lecture qui est cassée et la garde REFUSE de conclure plutôt que de
+    /// rendre vert en étant aveugle), un corps synthétique qui sort sans émettre est ACCUSÉ, le même
+    /// corps qui émet est ACQUITTÉ, et un corps qui ne nomme l'émission qu'en COMMENTAIRE est accusé.
+    #[test]
+    fn toute_sortie_sans_archive_du_cycle_natif_emet_le_signal() {
+        use crate::db_open::door_tests::sans_commentaire;
+        const EMETTEUR: &str = "signaler_qu_aucune_archive_n_a_ete_publiee";
+        const SORTIE: &str = "return None;";
+        /// Sous ce nombre de sorties réellement lues, c'est l'instrument qui est cassé.
+        const PLANCHER_SORTIES: usize = 2;
+
+        /// Les sorties « aucune archive » qui n'émettent PAS : pour chaque `return None;` du corps, les
+        /// lignes qui le précèdent DANS SON BLOC (jusqu'à l'accolade ouvrante la plus proche) doivent
+        /// nommer l'émetteur. Rend (sorties lues, numéros de ligne fautifs).
+        fn sorties_muettes(corps: &str) -> (usize, Vec<usize>) {
+            let lignes: Vec<String> = corps.lines().map(|l| sans_commentaire(l).to_string()).collect();
+            let (mut vues, mut muettes) = (0usize, Vec::new());
+            for (i, l) in lignes.iter().enumerate() {
+                if !l.contains(SORTIE) { continue; }
+                vues += 1;
+                // remonte jusqu'à l'ouverture du bloc qui porte cette sortie (ou le début du corps)
+                // Un APPEL, pas une MENTION : `let _ = (X, signaler_qu_...)` nomme l'émetteur sans
+                // l'exécuter, et acquittait à tort — mesuré en MUTANT ce module le 2026-08-25.
+                let mut emet = false;
+                for j in (0..i).rev() {
+                    if lignes[j].contains(&format!("{EMETTEUR}(")) { emet = true; break; }
+                    if lignes[j].trim_end().ends_with('{') { break; }
+                }
+                if !emet { muettes.push(i + 1); }
+            }
+            (vues, muettes)
+        }
+
+        // Témoins de la lecture, dans les DEUX sens, avant de juger le corps livré.
+        let muet = "    match x {\n        Err(e) => {\n            eprintln!(\"{e}\");\n            return None;\n        }\n    }\n";
+        let garde = format!("    match x {{\n        Err(e) => {{\n            eprintln!(\"{{e}}\");\n            {EMETTEUR}(db, key, ETAPE, &e);\n            return None;\n        }}\n    }}\n");
+        let prose = format!("    match x {{\n        Err(e) => {{\n            // {EMETTEUR}(db, key, ETAPE, &e) — en commentaire seulement\n            return None;\n        }}\n    }}\n");
+        assert_eq!(sorties_muettes(muet), (1, vec![4]), "la lecture n'ACCUSE pas une sortie muette");
+        assert_eq!(sorties_muettes(&garde).1, Vec::<usize>::new(), "la lecture n'ACQUITTE pas une sortie qui émet");
+        assert_eq!(sorties_muettes(&prose).1, vec![4], "une émission écrite en COMMENTAIRE ne doit pas acquitter");
+        // MESURÉ le 2026-08-25 en mutant le module : la première version de cette lecture cherchait le
+        // NOM de l'émetteur, et `let _ = (ETAPE, signaler_…);` l'acquittait sans rien exécuter — un
+        // correctif dégénéré serait passé. Un appel se distingue d'une mention par sa parenthèse.
+        let mention = format!("    match x {{\n        Err(e) => {{\n            let _ = (ETAPE, {EMETTEUR});\n            return None;\n        }}\n    }}\n");
+        assert_eq!(sorties_muettes(&mention).1, vec![4], "une MENTION de l'émetteur, sans appel, ne doit pas acquitter");
+
+        let fichier = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/server/sauvegarde_planifiee.rs");
+        let source = std::fs::read_to_string(&fichier).expect("le module de l'ordonnanceur doit être lisible");
+        let debut = source.find("pub(crate) fn scheduled_backup_cycle").expect("INSTRUMENT : le cycle n'est plus dans ce module");
+        // BORNÉ à l'accolade fermante d'indentation 0 : sans cette borne, une fonction écrite APRÈS le
+        // cycle verrait ses propres `return None` jugés par cette garde, avec le mauvais diagnostic.
+        let fin = source[debut..].find("\n}\n").map(|i| debut + i).unwrap_or(source.len());
+        let corps = &source[debut..fin];
+        let (vues, muettes) = sorties_muettes(corps);
+        eprintln!("[p94b] {vues} sortie(s) `{SORTIE}` lue(s) dans le cycle natif ; muettes : {muettes:?}");
+        assert!(vues >= PLANCHER_SORTIES,
+            "{vues} sortie(s) `{SORTIE}` lue(s) dans `scheduled_backup_cycle`, plancher {PLANCHER_SORTIES} : la lecture est cassée, la garde REFUSE de conclure");
+        assert!(muettes.is_empty(),
+            "ces sorties du cycle natif rendent la main SANS ARCHIVE et SANS SIGNAL (lignes {muettes:?} du corps lu) : \
+             un cycle qui ne produit rien redeviendrait invisible, comme il l'était avant P9.4-b — l'exploitant \
+             croirait disposer de la rétention annoncée à côté et n'aurait AUCUNE archive.");
     }

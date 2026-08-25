@@ -592,14 +592,33 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     // backpressure : l'acquisition ATTEND un permit (borne les déchiffrements concurrents à
     // N -> anti-OOM, les waiters ne déchiffrent pas) ; elle ne rejette jamais sous charge. UN seul acquire
     // par handler (pas de ré-acquisition imbriquée -> pas de deadlock) ; le permit couvre AUSSI le COUNT de
-    // pagination ; relâché en fin de handler. Seule erreur possible = sémaphore fermé (shutdown) -> on sert
-    // vide proprement (identique à panel_data + /api/search, pas de 503 « saturation » trompeur).
+    // pagination ; relâché en fin de handler. Seule erreur possible = sémaphore fermé (shutdown).
+    //
+    // `P11.14-c` — ET ON LE DIT, comme `/api/search` le dit depuis `P10.7-a` : « le service s'arrête »
+    // n'est pas « aucun résultat ». Cette branche rendait `{columns:[],rows:[]}` NU, c'est-à-dire une
+    // réponse que tout consommateur lit comme une ABSENCE DE DONNÉES établie — le vide silencieux que
+    // `P10.7-a` a fermé sur la barre de recherche et qui restait ouvert sur `/api/query`, la route qui
+    // sert l'Explore, les tableaux de bord et les panneaux d'accès données. Le commentaire qui tenait
+    // ici invoquait une PARITÉ qui n'existe plus : `/api/search` avoue (`handlers/search.rs`), et
+    // `panel_data` ne prend JAMAIS ce permit (il est réservé à `/api/query` + `/api/search`, cf.
+    // l'invariant 3c de `dashboards.rs`) — il n'avait donc pas de branche à imiter.
+    // La FORME est conservée (`columns`/`rows` vides) pour tout lecteur qui les attend ; `error`
+    // s'y ajoute, et c'est lui que les consommateurs testent. Toujours pas de 503 « saturation »
+    // trompeur : l'acquisition n'a pas échoué sous la charge, le processus se ferme.
+    //
     // MÉTRIQUE : `clock.permit` CONSOMME l'horloge d'entrée et rend le DÉCOUPAGE (`QueryTimings`).
     // C'est la seule porte : l'attente publiée en `sem_wait_ms` ne peut venir que de l'acquisition
     // qui vient d'avoir lieu ici, jamais du temps écoulé depuis l'entrée du handler.
     let (_permit, timings) = match clock.permit(&st.query_sem).await {
         Ok(x) => x,
-        Err(_) => return Json(json!({ "columns": [], "rows": [] })).into_response(),
+        Err(_) => {
+            return Json(json!({
+                "columns": [],
+                "rows": [],
+                "error": "requête NON EXÉCUTÉE : le service se ferme (sémaphore de lecture clos)",
+            }))
+            .into_response()
+        }
     };
     let sql_for_resp = sql.clone();
     let db_path = req_db_path(&st, &au); // #2a-2b : requête interactive routée vers la base du tenant courant

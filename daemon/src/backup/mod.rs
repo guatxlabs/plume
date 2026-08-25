@@ -677,6 +677,87 @@ pub(crate) fn signal_backup_symmetric_if_needed(conn: &Connection, recipient: Op
     symmetric_fallback && emit_backup_symmetric_signal(conn, now_ts)
 }
 
+// ================================================================================================
+// `P9.4-b` — UN CYCLE DE SAUVEGARDE QUI NE PRODUIT RIEN LE DIT DANS LA BASE, PAS SEULEMENT SUR LA
+// SORTIE D'ERREUR
+// ------------------------------------------------------------------------------------------------
+// CE QUI ÉTAIT MUET, ET CE QUE ÇA COÛTAIT (mesuré sur les sources le 2026-08-25). La branche de
+// SUCCÈS de l'ordonnanceur natif lève DEUX signaux de posture non purgeables
+// (`signal_backup_symmetric_if_needed`, `exercice_de_restauration::signal_apres_sauvegarde`) :
+// le produit sait donc parler d'une sauvegarde QUI A EU LIEU. Sa branche d'ÉCHEC, elle, écrivait une
+// ligne sur la sortie d'erreur et rendait la main — pas de métrique, pas d'événement, pas de signal.
+// Or `docker-compose.yml` et `deploy/k3s.yaml` ARMENT cet ordonnanceur (intervalle non nul, rétention
+// écrite en toutes lettres) tout en livrant `PLUME_DB_KEY` VIDE, et `backup_compressed` REFUSE dès sa
+// première instruction sans clé : à intervalle régulier, un cycle part, échoue, et aucune archive
+// n'est jamais écrite. L'exploitant lit « rétention 24 × 6 h » et n'a AUCUNE archive.
+//
+// POURQUOI UN ÉVÉNEMENT SOC ET PAS UNE LIGNE DE PLUS. Une ligne de journal existait déjà et n'a rien
+// empêché : elle n'est ni requêtable, ni conservée, ni visible dans la surface que l'exploitant
+// regarde. Un cycle qui ne produit rien est un défaut de SÉCURITÉ (il n'y a pas de reprise possible),
+// pas un « meilleur effort » — il se dit donc là où la posture se dit déjà.
+//
+// JUMEAU EXACT DE `emit_backup_symmetric_signal`, ET C'EST DÉLIBÉRÉ : même source managée
+// `plume-config`, même `category='health'`, même `origin='daemon'` (donc `RETENTION_NONPURGE` : un
+// opérateur ne peut pas l'effacer), même sévérité 4 (posture P1), même SEAU HORAIRE de déduplication.
+// Les deux disent une posture de sauvegarde ; ils doivent vivre, se dédupliquer et mourir de la même
+// façon, sinon l'un des deux dérive. LE SEAU HORAIRE EST LA RÉPONSE AU PIÈGE DE LA CADENCE : un
+// signal par cycle noierait un exploitant qui règle `PLUME_BACKUP_INTERVAL` bas, et l'heure est déjà
+// l'horizon des autres signaux de santé non purgeables du dépôt (`emit_disk_health`,
+// `emit_ledger_unsigned`, `emit_backup_symmetric_signal`, cf. `detection_aveugle`).
+//
+// LA CAUSE EST DANS LE MESSAGE, PAS DANS LA CLÉ DE DÉDUPLICATION. Une cause porte un chemin, un
+// errno, une phrase de moteur : la mettre dans la clé rendrait la cardinalité NON BORNÉE et une
+// cause qui varie légèrement d'un cycle à l'autre rouvrirait la tempête que le seau ferme. L'ÉTAPE,
+// elle, est étiquetée par un ensemble FERMÉ (`CAUSES_DE_CYCLE_SANS_ARCHIVE`) : elle dit LEQUEL des
+// deux points de sortie a été pris sans laisser la cardinalité s'échapper.
+// ================================================================================================
+
+/// `P9.4-b` — la sauvegarde a été REFUSÉE ou a échoué : rien n'a même été écrit dans le temporaire.
+/// C'est le cas du déploiement conteneur/cluster sans `PLUME_DB_KEY`.
+pub(crate) const CYCLE_SANS_ARCHIVE_SAUVEGARDE_REFUSEE: &str = "sauvegarde_refusee";
+/// `P9.4-b` — la sauvegarde a été PRODUITE dans le temporaire mais jamais PUBLIÉE : le rename atomique
+/// a échoué, et le cycle a retiré son temporaire. Rien n'est servi, rien n'est prunable.
+pub(crate) const CYCLE_SANS_ARCHIVE_PUBLICATION_IMPOSSIBLE: &str = "publication_impossible";
+/// L'ENSEMBLE FERMÉ des étapes où un cycle natif peut se terminer SANS archive. Il borne la
+/// cardinalité de l'étiquette `step` du signal ; un témoin vérifie que chaque point de sortie sans
+/// archive de `scheduled_backup_cycle` en emploie un — et qu'aucun autre n'est émis.
+pub(crate) const CAUSES_DE_CYCLE_SANS_ARCHIVE: [&str; 2] = [
+    CYCLE_SANS_ARCHIVE_SAUVEGARDE_REFUSEE,
+    CYCLE_SANS_ARCHIVE_PUBLICATION_IMPOSSIBLE,
+];
+
+/// `P9.4-b` — SIGNAL SOC NON-PURGEABLE : ce cycle de sauvegarde n'a publié AUCUNE archive. `etape`
+/// appartient à `CAUSES_DE_CYCLE_SANS_ARCHIVE` (cardinalité bornée) ; `cause` est le message d'erreur
+/// TEL QUEL, qui nomme la clé requise quand c'est elle qui manque. `now_ts` injecté pour la
+/// testabilité. Renvoie true si une ligne a été écrite (false = dédupliquée dans l'heure, ou refusée).
+pub(crate) fn emit_backup_cycle_failed_signal(conn: &Connection, etape: &str, cause: &str, now_ts: i64) -> bool {
+    let bucket = now_ts / 3600; // dedup HORAIRE — même horizon que les autres signaux de santé non purgeables
+    let dedup = format!("plume-backup-sans-archive-{bucket}");
+    let msg = format!(
+        "SAUVEGARDE SANS ARCHIVE : ce cycle de l'ordonnanceur natif s'est terminé sans publier de \
+         fichier ({etape}) — {cause}. L'ordonnanceur reste ARMÉ et repartira au prochain intervalle : \
+         tant que la cause dure, AUCUNE archive n'est écrite, et la rétention KEEP-N ne garde que ce \
+         qui existe, c'est-à-dire rien. Un répertoire PLUME_BACKUP_DEST sans `plume-<TS>.db.age` est un \
+         déploiement SANS sauvegarde, quelle que soit la rétention annoncée à côté."
+    );
+    let fields = json!({ "backup_cycle": "no_archive", "step": etape, "cause": cause }).to_string();
+    let n = store().insert_event(conn, &EventRow {
+        ts: now_ts,
+        source: "plume-config".into(), // NON-PURGEABLE avec origin='daemon' (RETENTION_NONPURGE)
+        category: "health".into(),
+        severity: 4,
+        message: msg,
+        host: Some("plume-daemon".into()),
+        src_ip: None, dst_ip: None, url: None,
+        dedup: Some(dedup),
+        fields: Some(fields),
+        engagement_id: String::new(),
+        origin: "daemon".into(),
+        env_id: None,
+    }).unwrap_or(0);
+    n > 0
+}
+
 /// IDENTITÉ age PRIVÉE (`AGE-SECRET-KEY-1...`) pour DÉCHIFFRER un backup asymétrique, fournie au
 /// moment du DR depuis l'escrow HORS-cluster : fichier (`PLUME_BACKUP_AGE_IDENTITY_FILE`, prioritaire —
 /// mount secret) puis valeur directe (`PLUME_BACKUP_AGE_IDENTITY`, DR ad-hoc). Normalement ABSENTE en

@@ -527,17 +527,20 @@ async function loadActions() {
   const d = await fetchInto(wrap, '/actions'); if (!d) return;   // P11.14-a : la cause est écrite dans le panneau
   const actions = d.actions || [];
   wrap.replaceChildren();
-  if (!actions.length) { wrap.appendChild(muted('aucune action')); return; }
+  // `P11.17-e` — UNE LISTE VIDE N'EST PAS TOUJOURS UNE FILE VIDE. Le démon rend désormais, à côté des
+  // lignes, le TOTAL du registre (borné) : si le registre en compte et qu'aucune ligne n'est arrivée,
+  // « aucune action » serait FAUX — et sur la file des gestes de riposte, l'erreur va alors dans le sens
+  // dangereux. La vue dit ce qu'elle sait, et rien de plus.
+  if (!actions.length) { wrap.appendChild(muted(typeof d.total === 'number' && d.total > 0 ? MOT_ACTIONS_ILLISIBLES : 'aucune action')); return; }
   // tri : pending d'abord, puis récence (done_ts desc). Il ordonne les lignes DANS chaque groupe.
   const PRANK = { pending: 0, approved: 1 };
   actions.sort((a, b) => ((PRANK[a.status] ?? 2) - (PRANK[b.status] ?? 2)) || ((b.done_ts || 0) - (a.done_ts || 0)));
-  // `P11.15-b` — CE QUE CETTE LISTE COUVRE, DIT AVANT D'ÊTRE LUE. `/api/actions` sert les actions les plus
-  // récentes, BORNÉES, et sa réponse ne porte ni total ni curseur (`daemon/src/handlers/actions.rs`). Le
-  // compte des en-têtes est donc celui des lignes SERVIES et non celui du registre : présenter l'un pour
-  // l'autre ferait lire « il y a N actions » là où il y en a peut-être mille — exactement la promesse que
-  // ce panneau ne peut pas tenir tant que la route ne rend pas de total. Un compte borné qui se présente
-  // comme un total est une troncature silencieuse, et c'est la famille de défaut que ce dépôt poursuit.
-  wrap.appendChild(muted(actions.length + MOT_ACTIONS_SERVIES));
+  // `P11.15-b` puis `P11.17-e` — CE QUE CETTE LISTE COUVRE, DIT AVANT D'ÊTRE LUE. Le compte des en-têtes
+  // était celui des lignes SERVIES et non celui du registre ; présenter l'un pour l'autre fait lire « il y
+  // a N actions » là où il y en a peut-être mille. La phrase de `P11.15-b` était un PANSEMENT — la vue
+  // disait ce qu'elle savait faute de total. Le remède est en amont : la route rend le total, borné et
+  // annoncé comme tel, et la vue écrit « tant sur tant ».
+  wrap.appendChild(muted(motDeLaBorneDesActions(d)));
   // `P11.17-c` — LE REGROUPEMENT PAR RÈGLE N'EST PAS ÉCRIT ICI. La fabrique lit ce que les lignes portent :
   // une action nomme la règle qui l'a produite (le moteur de réponse l'inscrit dans sa raison), son état et
   // l'hôte où elle s'applique — trois axes offerts, dont la règle est le premier de l'ordre partagé. Le
@@ -546,11 +549,36 @@ async function loadActions() {
   pagedList(host, { mode: 'client', pageSize: 50, rows: actions, renderRow: actionRow, group: { storeKey: 'soc_act_collapsed' } });
   wrap.appendChild(host);
 }
-// Ce que la console SAIT de la borne, écrit dans les deux langues : elle connaît le nombre de lignes qu'on
-// lui a servies, et l'absence de total dans la réponse. Elle n'invente pas le reste.
-const MOT_ACTIONS_SERVIES = LANG === 'en'
-  ? ' action(s) served — the route serves the most recent ones, bounded; its response carries neither a total nor a cursor, so the ledger may hold more.'
-  : ' action(s) servie(s) — la route sert les plus récentes, bornées ; sa réponse ne porte ni total ni curseur, le registre peut donc en compter davantage.';
+// `P11.17-e` — CE QUE LA VUE AFFICHE QUAND LA BORNE MORD. Le démon rend, à côté des lignes, la FENÊTRE
+// qu'il sert (`window`), le nombre de lignes SERVIES (`served`) et le TOTAL du registre borné par le
+// plafond de comptage partagé (`total`, `total_capped`) — le même idiome que `/api/query` et que le
+// journal d'audit. Quatre phrases, une par état de connaissance, et aucune ne présente une fenêtre comme
+// un total : « tant sur tant » quand la borne mord, « tant sur PLUS DE tant » quand le comptage lui-même
+// est plafonné, « c'est tout le registre » quand elle ne mord pas, et un aveu quand le démon n'a pas pu
+// compter — un total absent n'est PAS un zéro.
+// Fonction PURE (une réponse -> une phrase) : c'est ce qui la rend tenable par le harnais ESM, dans les
+// deux sens (une borne qui mord doit se dire ; un registre entier servi ne doit pas s'annoncer tronqué).
+function motDeLaBorneDesActions(d) {
+  const servies = d && d.actions ? d.actions.length : 0;
+  if (!d || typeof d.total !== 'number') return servies + MOT_ACTIONS_SERVIES_A + (d && d.window ? d.window : servies) + MOT_ACTIONS_SERVIES_B;
+  if (d.total_capped) return servies + MOT_ACTIONS_SUR + MOT_ACTIONS_PLUS_DE + d.total + MOT_ACTIONS_HORS_ATTEINTE;
+  if (d.total > servies) return servies + MOT_ACTIONS_SUR + d.total + MOT_ACTIONS_HORS_ATTEINTE;
+  return servies + MOT_ACTIONS_TOUT_LE_REGISTRE;
+}
+// Le vocabulaire de la borne, écrit dans les deux langues. La console ne dit que ce que la réponse porte.
+const MOT_ACTIONS_SUR = LANG === 'en' ? ' action(s) shown out of ' : ' action(s) affichée(s) sur ';
+const MOT_ACTIONS_PLUS_DE = LANG === 'en' ? 'more than ' : 'plus de ';
+const MOT_ACTIONS_HORS_ATTEINTE = LANG === 'en'
+  ? ' in the register — the route serves the most recent ones; older ones are not reachable from this panel.'
+  : " au registre — la route sert les plus récentes ; les plus anciennes ne sont pas atteignables depuis ce panneau.";
+const MOT_ACTIONS_TOUT_LE_REGISTRE = LANG === 'en' ? ' action(s) — that is the whole register.' : " action(s) — c'est tout le registre.";
+const MOT_ACTIONS_SERVIES_A = LANG === 'en' ? ' action(s) served (window of ' : ' action(s) servie(s) (fenêtre de ';
+const MOT_ACTIONS_SERVIES_B = LANG === 'en'
+  ? ') — the register could NOT be counted, so it may hold more.'
+  : ") — le registre n'a PAS pu être compté, il peut donc en contenir davantage.";
+const MOT_ACTIONS_ILLISIBLES = LANG === 'en'
+  ? 'The register holds actions, but none could be read — this is NOT an empty queue.'
+  : "Le registre compte des actions, mais aucune n'a pu être lue — ce n'est PAS une file vide.";
 function actionRow(a) {
   const row = document.createElement('div'); row.className = 'rulerow';
   const st = document.createElement('span'); st.className = 'actst act-' + a.status; st.textContent = a.status;
@@ -762,4 +790,4 @@ if ($('#pb-form')) $('#pb-form').addEventListener('submit', async e => {
 loadPlaybooks();
 loadMode();
 
-export { renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, loadMode, loadPlaybooks, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };
+export { renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, loadMode, loadPlaybooks, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };

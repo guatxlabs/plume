@@ -597,9 +597,9 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 1h | 51 | 51 | 51 | 440 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 24h | 702 | 802 | 552 | 440 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 3357 | 4789 | 3357 | 440 | 0 | 1 | raw | **pris sous swap — à rejouer** |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 51 | 52 | 52 | 747 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 52 | 152 | 152 | 747 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 52 | 62 | 52 | 747 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 51 | 52 | 52 | 747 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 52 | 152 | 152 | 747 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 52 | 62 | 52 | 747 | 0 | 200 | raw \|  |
 
 ## Résultats — `apres-leviers@1.4M`
 
@@ -667,9 +667,9 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 1h | 3.5 | 724 | 724 | 402 | 0 | 1 | raw | dispersion x204.6 (loadavg 3) — p95 dominé par la contention, pas par plume |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 24h | 597 | 896 | 896 | 414 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 2696 | 8066 | 2550 | 452 | 0 | 1 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.6 | 2.1 | 2.1 | 687 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 1.4 | 2.0 | 1.4 | 687 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.6 | 1.9 | 1.7 | 687 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.6 | 2.1 | 2.1 | 687 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 1.4 | 2.0 | 1.4 | 687 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.6 | 1.9 | 1.7 | 687 | 0 | 200 | raw \|  |
 
 ## Résultats — `chaud-seul@1.4M`
 
@@ -771,11 +771,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 4286 | 4395 | 4395 | 462 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 2750 | 6896 | 2550 | 460 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 2924 | 9404 | 2630 | 486 | 0 | 1 | raw | dispersion x3.2 (loadavg 3) — p95 dominé par la contention, pas par plume |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.6 | 1.7 | 1.6 | 769 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 1.6 | 1.9 | 1.9 | 769 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 1.5 | 1.5 | 1.5 | 769 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.9 | 3.6 | 1.6 | 769 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.6 | 2.4 | 2.2 | 769 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.6 | 1.7 | 1.6 | 769 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 1.6 | 1.9 | 1.9 | 769 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 1.5 | 1.5 | 1.5 | 769 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.9 | 3.6 | 1.6 | 769 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.6 | 2.4 | 2.2 | 769 | 0 | 200 | raw \|  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 3.1 | 2820 | 2820 | 699 | 0 | 1 | raw | dispersion x912.7 (loadavg 4) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 604 | 1647 | 1537 | 699 | 0 | 1 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 275 | 638 | 638 | 699 | 0 | 1 | raw |  |
@@ -892,11 +892,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 5331 | 6060 | 4427 | 357 | 0 | 1 | scan | tronqué |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 1045 | 1402 | 1045 | 357 | 0 | 1 | scan | tronqué |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 4478 | 4705 | 4705 | 357 | 0 | 1 | scan | tronqué |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.7 | 6.9 | 6.9 | 506 | 0 | 200 | raw | dispersion x4.1 (loadavg 4) — p95 dominé par la contention, pas par plume |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 1.6 | 1.8 | 1.5 | 506 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 544 | 571 | 544 | 506 | 0 | 200 | scan | tronqué |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 1065 | 1376 | 1376 | 506 | 0 | 200 | scan | tronqué |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1122 | 1450 | 1127 | 506 | 0 | 200 | scan | tronqué |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.7 | 6.9 | 6.9 | 506 | 0 | 200 | raw \| dispersion x4.1 (loadavg 4) — p95 dominé par la contention, pas par plume |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 1.6 | 1.8 | 1.5 | 506 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 544 | 571 | 544 | 506 | 0 | 200 | scan \| tronqué |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 1065 | 1376 | 1376 | 506 | 0 | 200 | scan \| tronqué |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1122 | 1450 | 1127 | 506 | 0 | 200 | scan \| tronqué |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.7 | 25 | 25 | 506 | 0 | 1 | raw | dispersion x14.7 (loadavg 3) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 503 | 1237 | 503 | 506 | 0 | 1 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 597 | 937 | 639 | 506 | 0 | 1 | scan | tronqué |
@@ -1163,11 +1163,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | — | — | 4067 | 468 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/3 tirs OK |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | — | — | 1101 | 468 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/7 tirs OK |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | — | — | 5113 | 468 | 0 | — | scan | ERREUR: {"cold_row_cap":5000,"cold_rows_hydrated":5000,"error":"refus de rendr / 0/3 tirs OK |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.9 | 2.2 | 2.2 | 509 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 1.9 | 2.4 | 2.0 | 509 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.3 | 2.5 | 2.2 | 509 | 0 | 0 | scan |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 1164 | 1294 | 1110 | 509 | 0 | 200 | scan | tronqué |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 3.1 | 7.3 | 7.3 | 509 | 0 | 0 | scan |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.9 | 2.2 | 2.2 | 509 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 1.9 | 2.4 | 2.0 | 509 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.3 | 2.5 | 2.2 | 509 | 0 | 0 | scan \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 1164 | 1294 | 1110 | 509 | 0 | 200 | scan \| tronqué |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 3.1 | 7.3 | 7.3 | 509 | 0 | 0 | scan \|  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.8 | 26 | 26 | 509 | 0 | 1 | raw | dispersion x14.5 (loadavg 4) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 506 | 547 | 547 | 509 | 0 | 1 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 654 | 759 | 654 | 509 | 0 | 1 | cold-vectorized-merge |  |
@@ -1284,11 +1284,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 8349 | 11.0 s | 8349 | 801 | 0 | 1 | raw | **pris sous swap — à rejouer** |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 3484 | 4323 | 3484 | 801 | 0 | 1 | raw | **pris sous swap — à rejouer** |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 3685 | 8071 | 3685 | 801 | 0 | 1 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 6.7 | 9.9 | 9.9 | 972 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 6.4 | 6.9 | 6.4 | 972 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 6.4 | 6.9 | 6.4 | 972 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 6.5 | 7.7 | 7.7 | 972 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 6.9 | 8.0 | 6.5 | 972 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 6.7 | 9.9 | 9.9 | 972 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 6.4 | 6.9 | 6.4 | 972 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 6.4 | 6.9 | 6.4 | 972 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 6.5 | 7.7 | 7.7 | 972 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 6.9 | 8.0 | 6.5 | 972 | 0 | 200 | raw \|  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 2.5 | 28 | 28 | 987 | 0 | 1 | raw | dispersion x11.3 (loadavg 4) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 600 | 1668 | 1389 | 987 | 0 | 1 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 259 | 661 | 661 | 987 | 0 | 1 | raw |  |
@@ -1405,11 +1405,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 241 | 4163 | 267 | 767 | 0 | 1 | raw | dispersion x17.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 1481 | 2602 | 2059 | 763 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 1454 | 2432 | 1308 | 551 | 0 | 1 | raw | **pris sous swap — à rejouer** |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 2.2 | 3.8 | 2.8 | 547 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.1 | 3.7 | 1.9 | 547 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.4 | 3.5 | 2.6 | 547 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 1.7 | 5.8 | 5.8 | 547 | 0 | 200 | raw | dispersion x3.4 (loadavg 6) — p95 dominé par la contention, pas par plume |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 2.1 | 2.9 | 2.6 | 547 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 2.2 | 3.8 | 2.8 | 547 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.1 | 3.7 | 1.9 | 547 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.4 | 3.5 | 2.6 | 547 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 1.7 | 5.8 | 5.8 | 547 | 0 | 200 | raw \| dispersion x3.4 (loadavg 6) — p95 dominé par la contention, pas par plume |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 2.1 | 2.9 | 2.6 | 547 | 0 | 200 | raw \|  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.8 | 14 | 14 | 547 | 0 | 1 | raw | dispersion x7.9 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 9.9 | 147 | 147 | 547 | 0 | 1 | raw | dispersion x14.9 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 8.3 | 10 | 8.3 | 547 | 0 | 1 | raw |  |
@@ -1526,11 +1526,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 1980 | 2793 | 911 | 626 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 1428 | 2502 | 2113 | 833 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 1491 | 2647 | 1461 | 836 | 0 | 1 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.8 | 3.2 | 1.8 | 619 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.2 | 2.5 | 2.3 | 619 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 1.9 | 2.8 | 2.2 | 619 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.0 | 3.0 | 3.0 | 619 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.9 | 2.6 | 2.6 | 619 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.8 | 3.2 | 1.8 | 619 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.2 | 2.5 | 2.3 | 619 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 1.9 | 2.8 | 2.2 | 619 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.0 | 3.0 | 3.0 | 619 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.9 | 2.6 | 2.6 | 619 | 0 | 200 | raw \|  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.4 | 23 | 23 | 834 | 0 | 1 | raw | dispersion x16.8 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 21 | 297 | 297 | 834 | 0 | 1 | raw | dispersion x14.3 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 1842 | 4922 | 1654 | 834 | 0 | 1 | raw |  |
@@ -1647,11 +1647,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 1595 | 2715 | 216 | 535 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 908 | 1601 | 728 | 562 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 781 | 801 | 749 | 355 | 0 | 1 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.7 | 2.6 | 2.6 | 594 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 1.8 | 3.0 | 3.0 | 594 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 1.8 | 3.8 | 3.8 | 594 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.1 | 2.4 | 2.1 | 594 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.9 | 2.9 | 1.7 | 594 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 1.7 | 2.6 | 2.6 | 594 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 1.8 | 3.0 | 3.0 | 594 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 1.8 | 3.8 | 3.8 | 594 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.1 | 2.4 | 2.1 | 594 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.9 | 2.9 | 1.7 | 594 | 0 | 200 | raw \|  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.5 | 10 | 10 | 384 | 0 | 1 | raw | dispersion x6.9 (loadavg 7) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 188 | 201 | 201 | 384 | 0 | 1 | raw |  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 9.4 | 115 | 115 | 384 | 0 | 1 | raw | dispersion x12.2 (loadavg 7) — p95 dominé par la contention, pas par plume |
@@ -1768,11 +1768,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 196 | 453 | 453 | 799 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 1419 | 2150 | 757 | 799 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 1636 | 2548 | 1806 | 798 | 0 | 1 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 9.3 | 9.9 | 9.9 | 587 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 7.7 | 9.3 | 7.7 | 587 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 8.9 | 11 | 7.7 | 587 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 8.9 | 12 | 9.6 | 587 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 7.7 | 10.0 | 8.0 | 587 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 9.3 | 9.9 | 9.9 | 587 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 7.7 | 9.3 | 7.7 | 587 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 8.9 | 11 | 7.7 | 587 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 8.9 | 12 | 9.6 | 587 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 7.7 | 10.0 | 8.0 | 587 | 0 | 200 | raw \|  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.5 | 20 | 20 | 803 | 0 | 1 | raw | dispersion x13.4 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 7.7 | 138 | 138 | 803 | 0 | 1 | raw | dispersion x17.9 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 6.8 | 8.0 | 8.0 | 803 | 0 | 1 | raw |  |
@@ -1889,11 +1889,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 1792 | 2710 | 1291 | 722 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 1487 | 2638 | 2638 | 673 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 1512 | 2524 | 1979 | 673 | 0 | 1 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 2.2 | 2.8 | 2.2 | 809 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.2 | 3.0 | 1.4 | 809 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.1 | 3.2 | 1.5 | 809 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.2 | 3.1 | 1.9 | 809 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.9 | 2.8 | 1.8 | 809 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 2.2 | 2.8 | 2.2 | 809 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.2 | 3.0 | 1.4 | 809 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.1 | 3.2 | 1.5 | 809 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.2 | 3.1 | 1.9 | 809 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.9 | 2.8 | 1.8 | 809 | 0 | 200 | raw \|  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.2 | 9.6 | 9.6 | 851 | 0 | 1 | raw | dispersion x7.7 (loadavg 5) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 7.5 | 78 | 78 | 851 | 0 | 1 | raw | dispersion x10.3 (loadavg 5) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 7.8 | 8.3 | 7.7 | 851 | 0 | 1 | raw |  |
@@ -2010,11 +2010,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 857 | 1939 | 946 | 617 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 1317 | 1747 | 1281 | 617 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 1435 | 2456 | 2250 | 631 | 0 | 1 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 2.2 | 2.8 | 2.4 | 620 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.1 | 2.7 | 2.1 | 620 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.4 | 2.6 | 2.5 | 620 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.1 | 2.7 | 2.1 | 620 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.9 | 2.4 | 1.8 | 620 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 2.2 | 2.8 | 2.4 | 620 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.1 | 2.7 | 2.1 | 620 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.4 | 2.6 | 2.5 | 620 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 2.1 | 2.7 | 2.1 | 620 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 1.9 | 2.4 | 1.8 | 620 | 0 | 200 | raw \|  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.4 | 12 | 12 | 744 | 0 | 1 | raw | dispersion x8.2 (loadavg 5) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 8.7 | 88 | 88 | 744 | 0 | 1 | raw | dispersion x10.2 (loadavg 5) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 7.8 | 8.2 | 7.9 | 744 | 0 | 1 | raw |  |
@@ -2131,11 +2131,11 @@ processus (0 = servi depuis le cache de pages).
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | 7d | 4785 | 5177 | 1842 | 827 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | au-dela-7d | 3199 | 4470 | 4470 | 627 | 0 | 1 | raw |  |
 | `C2e-free-term-common` <br><sub>terme libre PEU sélectif (1 ligne sur 10) en LIKE</sub> | all | 2677 | 4887 | 4887 | 825 | 0 | 1 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 2.9 | 4.2 | 2.1 | 777 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.5 | 3.0 | 3.0 | 777 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.9 | 3.7 | 2.0 | 777 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 3.0 | 3.7 | 3.0 | 777 | 0 | 200 | raw |  |
-| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 2.5 | 2.8 | 2.8 | 777 | 0 | 200 | raw |  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 1h | 2.9 | 4.2 | 2.1 | 777 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 24h | 2.5 | 3.0 | 3.0 | 777 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | 7d | 2.9 | 3.7 | 2.0 | 777 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | au-dela-7d | 3.0 | 3.7 | 3.0 | 777 | 0 | 200 | raw \|  |
+| `C4d-keyset-projete` <br><sub>keyset DEMANDÉ sur un pipeline PROJETÉ (| table)</sub> | all | 2.5 | 2.8 | 2.8 | 777 | 0 | 200 | raw \|  |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 1h | 1.9 | 21 | 21 | 776 | 0 | 1 | raw | dispersion x11.2 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 24h | 11 | 302 | 302 | 776 | 0 | 1 | raw | dispersion x27.7 (loadavg 6) — p95 dominé par la contention, pas par plume |
 | `C6-filter-host` <br><sub>filtre sur UN hôte (idx_event_host, sélectivité 1/N)</sub> | 7d | 8.3 | 10 | 8.7 | 776 | 0 | 1 | raw |  |

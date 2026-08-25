@@ -4,7 +4,7 @@
 // au point où ce bloc vivait (un module s'exécute à l'import, avant l'enveloppe `fetch` d'`app.js`). Les seams
 // (`viz.js`, `multitenant.js`) continuent de lire `loadDashboard` / `refreshPanels` via le ré-export d'`app.js`.
 // `renderDashboard` est exporté pour le harnais. N'importe pas `app.js`.
-import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, transientGatewayMsg, makePager, socIsAdmin, applyRoleClass, roleSansEcriturePartagee } from './core.js';
+import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, transientGatewayMsg, makePager, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG } from './core.js';
 import { S } from './state.js';
 import { currentFrom, currentTo, queryCount, runQuery, tableEl, vizElement } from './viz.js';
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
@@ -52,13 +52,39 @@ function getPanelObserver() {
 // fetch des panneaux hors-écran/cachés à chaque tick (le lazy-load s'en charge à leur apparition).
 function refreshPanels() { S.panelCards.forEach(c => { const pn = c._panel; if (c.isConnected && pn && pn.window_s === 0 && pn.loaded && pn.visible) pn.reload(); }); }
 const VIZOPTS = [{ value: 'table', label: 'Table' }, { value: 'bar', label: 'Barres' }, { value: 'line', label: 'Courbe' }, { value: 'stat', label: 'Stat' }, { value: 'gauge', label: 'Jauge' }, { value: 'pie', label: 'Camembert' }, { value: 'donut', label: 'Donut' }, { value: 'heatmap', label: 'Heatmap' }, { value: 'histogram', label: 'Histogramme' }];
-// P11.13-a — PARTIR DE CE QUI EXISTE DÉJÀ. La fenêtre de choix s'ouvre AVANT celle du panneau (deux
-// fenêtres successives, jamais imbriquées : la modale partagée ferme toute autre modale à son ouverture,
-// donc imbriquer perdrait la promesse de la première). Le choix pré-remplit titre, requête et nature.
-async function composerPanneauDepuisLexistant(did) {
-  const c = await choisirDansLexistant();
-  if (!c) return;
-  await createPanelModal(did, c.requete, { title: c.titre, viz: c.viz, is_soql: c.is_soql });
+// `P11.17-b` — L'ACCÈS À CE QUI EST DÉJÀ ENREGISTRÉ PART DE L'ENDROIT OÙ L'ON COMPOSE, ET PORTE LE NOM DE
+// CE QU'IL OFFRE. La console offrait DEUX entrées voisines pour un même but, et une seule aboutissait :
+// l'icône « + » (« Ajouter un panneau »), celle qu'on prend spontanément, ouvrait le formulaire nu ; et un
+// second bouton, seul à mener à l'inventaire, était libellé « Partir de l'existant » — une formule qui ne
+// contient aucun des mots que cherche quelqu'un qui veut ses MODÈLES ou ses REQUÊTES ENREGISTRÉES. Elles ne
+// différaient pas que par le nom : la première n'était pas conditionnée au droit d'édition, la seconde
+// l'était, donc il existait un état où l'on voyait l'entrée qui ne mène nulle part sans voir celle qui mène
+// à l'inventaire. Il n'y a plus qu'UNE entrée — celle qu'on prend — et l'inventaire s'ouvre DEPUIS la
+// fenêtre de composition, sous un libellé qui nomme les deux stocks qu'on y cherche. Plus de piège, et plus
+// d'asymétrie de droit : il n'y a plus deux contrôles à conditionner.
+//
+// P11.13-a — LA FENÊTRE DE CHOIX NE S'IMBRIQUE PAS dans celle du panneau : la modale partagée ferme toute
+// autre modale à son ouverture, donc imbriquer perdrait la promesse de la première. La composition est donc
+// MISE DE CÔTÉ (ce qui est saisi est relevé avant de fermer), le choix s'ouvre seul, puis la composition
+// revient — enrichie du choix, ou intacte si la fenêtre de choix est abandonnée. Rien n'est perdu par le
+// détour : c'est ce qui permet à l'accès de vivre DANS le formulaire plutôt qu'avant lui.
+function accesALexistant(relever) {
+  const corps = document.createElement('div');
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = 'btn dashcompose';
+  // Bilingue PAR CONSTRUCTION (les deux langues sont ici, côte à côte) plutôt que par le lexique : le
+  // libellé porte les mots que l'exploitant cherche, dans l'une et l'autre langue.
+  b.textContent = LANG === 'en' ? 'Templates and saved queries…' : 'Modèles et requêtes enregistrées…';
+  b.title = 'Composer un panneau depuis un modèle livré, une requête enregistrée ou une règle de détection';
+  b.onclick = () => {
+    const f = b.closest('form'); if (!f) return;
+    const saisie = {};
+    f.querySelectorAll('[data-n]').forEach(el => { saisie[el.dataset.n] = el.type === 'checkbox' ? el.checked : el.value; });
+    relever(saisie);
+    const annuler = f.querySelector('.m-cancel'); if (annuler) annuler.click();
+  };
+  corps.appendChild(b);
+  return corps;
 }
 
 // `prefill` (P11.13-a) : ce qu'une définition existante apporte en plus de son texte — son nom, sa
@@ -71,17 +97,38 @@ async function createPanelModal(did, query = '', prefill = {}) {
   let libs = [];
   try { libs = (await api('/library-panels')).library_panels || []; } catch (e) {}
   const libOpts = [{ value: '', label: '— aucun (panneau autonome) —' }, ...libs.map(l => ({ value: String(l.id), label: l.name + ' (' + l.viz + ')' }))];
+  // `P11.17-b` — l'accès à l'inventaire vit DANS cette fenêtre (voir `accesALexistant`). `saisie` reste
+  // `null` tant qu'on n'y touche pas : c'est ce qui distingue un abandon de la fenêtre d'un détour vers
+  // l'inventaire, deux sorties que la modale partagée rend toutes deux par `null`.
+  let saisie = null;
   const r = await modal({
-    title: 'Nouveau panneau', okText: 'Créer', fields: [
-      { name: 'library_panel_id', label: 'Panneau de bibliothèque (réutilisable)', type: 'select', value: '', options: libOpts },
+    title: 'Nouveau panneau', okText: 'Créer', body: accesALexistant(v => { saisie = v; }), fields: [
+      { name: 'library_panel_id', label: 'Panneau de bibliothèque (réutilisable)', type: 'select', value: prefill.library_panel_id || '', options: libOpts },
       { name: 'title', label: 'Titre', required: true, value: prefill.title || 'Panneau' },
       { name: 'query', label: 'Requête (GXQL ou SQL) — ignorée si un panneau de bibliothèque est choisi', type: 'textarea', required: false, value: query, placeholder: 'search source=sudo | stats count by source' },
       { name: 'viz', label: 'Visualisation', type: 'select', value: prefill.viz || 'table', options: VIZOPTS },
-      { name: 'visibility', label: 'Panneau', type: 'select', value: 'shared', options: [{ value: 'shared', label: 'public' }, { value: 'private', label: 'privé' }] },
-      { name: 'query_private', label: 'Requête privée (cacher le texte aux autres)', type: 'checkbox', value: false },
-      { name: 'drill', label: 'Requête au clic / drill (optionnel : $value, $from, $to)', type: 'textarea', value: '', placeholder: 'search source=$value | table ts,source,src_ip,message' },
+      { name: 'visibility', label: 'Panneau', type: 'select', value: prefill.visibility || 'shared', options: [{ value: 'shared', label: 'public' }, { value: 'private', label: 'privé' }] },
+      { name: 'query_private', label: 'Requête privée (cacher le texte aux autres)', type: 'checkbox', value: !!prefill.query_private },
+      { name: 'drill', label: 'Requête au clic / drill (optionnel : $value, $from, $to)', type: 'textarea', value: prefill.drill || '', placeholder: 'search source=$value | table ts,source,src_ip,message' },
     ],
   });
+  // DÉTOUR PAR L'INVENTAIRE, puis retour à la composition. Le choix écrase titre, requête et nature ; tout
+  // le reste de ce qui était saisi est rendu tel quel — un abandon du choix ne coûte donc rien non plus.
+  // La NATURE déclarée ne survit au détour que si le texte n'a pas été touché : elle ne vaut que pour la
+  // requête qu'elle décrit (même règle qu'à la validation, plus bas).
+  if (r === null && saisie) {
+    const c = await choisirDansLexistant();
+    const natureTenue = prefill.is_soql !== undefined && String(saisie.query || '').trim() === String(query || '').trim();
+    return createPanelModal(did, c ? c.requete : (saisie.query || ''), {
+      title: c ? c.titre : saisie.title,
+      viz: c ? c.viz : saisie.viz,
+      is_soql: c ? c.is_soql : (natureTenue ? prefill.is_soql : undefined),
+      library_panel_id: saisie.library_panel_id,
+      visibility: saisie.visibility,
+      query_private: saisie.query_private,
+      drill: saisie.drill,
+    });
+  }
   if (!r) return;
   const libId = Number(r.library_panel_id) || 0;
   // P7.13-a — CE COMMENTAIRE AFFIRMAIT LE CONTRAIRE ET C'EST CE RAISONNEMENT QUI A OUVERT LE TROU : il
@@ -203,12 +250,12 @@ function renderDashboard(d) {
   // Les outils ci-dessous portent donc `crud-btn` un par un, et SEULEMENT ceux dont la route est bornee a
   // `editor+` (`/api/panels`, `/api/dashboard/:id`, `/api/dashboard-snapshots`) : ils restent visibles,
   // inertes et motives (grammaire de `P11.4-l`). Ce qui ne porte pas la marque reste PERMIS, comme le serveur.
+  // `P11.17-b` — UN SEUL geste de création de panneau. Il y en avait deux côte à côte pour le même but, et
+  // celui-ci — le seul qu'on prenne — était celui qui n'offrait AUCUN accès aux requêtes enregistrées. Le
+  // second est retiré : ce qu'il donnait s'ouvre désormais depuis la fenêtre de composition (`accesALexistant`),
+  // sous un libellé qui nomme les stocks. Une entrée qui ne mène pas au but ne subsiste donc plus à côté
+  // d'une autre qui y mène — et l'asymétrie de droit entre les deux disparaît avec la seconde entrée.
   const addp = document.createElement('button'); addp.type = 'button'; addp.className = 'picon crud-btn'; addp.innerHTML = ic('plus'); addp.title = 'Ajouter un panneau';
-  // P11.13-a — le second geste de création : partir d'une définition que le produit porte déjà, au lieu
-  // de retaper une requête qui existe ailleurs. Posé plus bas, derrière `editable` (cf. son commentaire).
-  const addex = document.createElement('button'); addex.type = 'button'; addex.className = 'picon dashcompose crud-btn'; addex.textContent = 'Partir de l\'existant';
-  addex.title = 'Composer un panneau depuis un modèle livré, une requête enregistrée ou une règle de détection';
-  addex.onclick = () => composerPanneauDepuisLexistant(d.id);
   // refresh PAR DASHBOARD (non editonly : un viewer peut rafraîchir) -> recharge UNIQUEMENT les panneaux de CETTE grille
   const dref = document.createElement('button'); dref.type = 'button'; dref.className = 'picon'; dref.innerHTML = ic('refresh'); dref.title = 'Rafraîchir ce dashboard';
   dref.onclick = () => {
@@ -229,9 +276,7 @@ function renderDashboard(d) {
   const dsnap = document.createElement('button'); dsnap.type = 'button'; dsnap.className = 'picon editonly crud-btn'; dsnap.innerHTML = ic('save'); dsnap.title = 'Capturer un instantané partageable (lecture seule)';
   dsnap.onclick = () => captureSnapshot(d);
   tools.append(fav, dref, addp, dpdf);
-  // `addex` est GATÉ sur `editable`, là où `addp` ne l'est pas : offrir un geste NEUF à qui ne peut pas
-  // le poser serait ajouter une fausse promesse. L'état du bouton « + », lui, est antérieur à cette clé.
-  if (editable) tools.append(addex, dsnap, ren, wsel, del);
+  if (editable) tools.append(dsnap, ren, wsel, del);
   head.append(chev, grip, h, meta, tools);
   tile.appendChild(head);
   // --- corps : grille de panneaux ---
@@ -297,10 +342,10 @@ async function loadPanelsInto(grid, d) {
       const es = document.createElement('div'); es.className = 'emptystate';
       es.append(Object.assign(document.createElement('div'), { textContent: 'Dashboard vide.' }));
       if (j.editable !== false) {
+        // `P11.17-b` — un seul geste ici aussi. Un dashboard VIDE est l'endroit où l'on a le moins envie de
+        // retaper une requête qui existe ailleurs, et c'est précisément pour cela que l'accès à l'existant
+        // ne doit pas être un BOUTON VOISIN qu'on peut ne pas voir : il est dans la fenêtre qui s'ouvre.
         const b = document.createElement('button'); b.type = 'button'; b.className = 'btn'; b.textContent = '+ Ajouter un panneau'; b.onclick = () => createPanelModal(d.id, ($('#sql') && $('#sql').value.trim()) || ''); es.appendChild(b);
-        // Un dashboard VIDE est l'endroit où l'on a le moins envie de retaper une requête : le geste qui
-        // part de l'existant y est offert à côté du geste vierge (P11.13-a).
-        const bx = document.createElement('button'); bx.type = 'button'; bx.className = 'btn dashcompose'; bx.textContent = 'Partir de l\'existant'; bx.onclick = () => composerPanneauDepuisLexistant(d.id); es.appendChild(bx);
       }
       grid.replaceChildren(es); return;
     }

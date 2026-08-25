@@ -42,6 +42,27 @@
      gras. Ne pas réintroduire de `background` littéral dans une règle d'état choisi : le compte
      ci-dessus est la propriété tenue. */
   --sel-bg:transparent; --sel-fg:var(--acc); --sel-bd:var(--acc);
+  /* `P11.15-b` — LA DENSITÉ D'UNE TABLE EST UN JEU DE JETONS, PAS UNE RÈGLE PAR VUE. Resserrer ou aérer
+     les tables est ce qui reste dû après le regroupement et la paresse, et cela n'existe qu'en feuille
+     de style. MESURÉ le 2026-08-25, et c'est ce qui rend UN jeu de jetons suffisant : sur les 9 règles
+     qui touchent la hauteur d'une cellule de `.qtable`, une SEULE fixe le rembourrage vertical de toutes
+     les cellules, AUCUNE ne fixe de hauteur ni d'interligne (l'interligne descend de `body`, 1.55 — d'où
+     la valeur par défaut ci-dessous, qui ne change donc rien tant qu'aucune densité n'est demandée), et
+     la ligne de détail d'un drilldown déclare son propre rembourrage : c'est une surface de LECTURE, pas
+     une ligne de table, elle reste hors de la densité.
+     LA RECOMMANDATION DU LOT PRÉCÉDENT EST CORRIGÉE SUR SON MÉCANISME : un jeton de HAUTEUR de ligne
+     (`height` / `max-height`) casserait le dépli de cellule de `P11.15-a`, dont le principe est
+     justement que la ligne GRANDIT quand la valeur tronquée s'enroule sur place. La densité est donc
+     portée par le REMBOURRAGE et l'INTERLIGNE ; la ligne reste libre de grandir à toutes les densités,
+     et la place réservée au bouton de dépli suit la taille de ce bouton au lieu d'être un littéral.
+     OÙ ELLE SE POSE, ET POURQUOI PAR UN ATTRIBUT : `data-density` sur n'importe quel ancêtre des lignes
+     — la racine du document pour une préférence d'exploitant (le geste déjà employé par `data-theme`),
+     ou le conteneur d'UNE liste pour un réglage local. Une variable personnalisée HÉRITE : la règle qui
+     la consomme n'a besoin d'aucun sélecteur de descendance, et la règle qui vise le conteneur ne
+     déclare QUE des variables — elle ne peut donc pas atteindre un contrôle qu'elle ne visait pas, qui
+     est le piège mesuré sous `P11.4-m`. Une valeur inconnue, ou l'absence d'attribut, vaut le défaut :
+     aucune valeur ne peut casser une table. */
+  --dens-y:6px; --dens-x:10px; --dens-lh:1.55; --dens-plmore:19px;
   --shadow:0 6px 18px #00000033;
 }
 html[data-theme="light"]{
@@ -53,6 +74,12 @@ html[data-theme="light"]{
   --b1:#7ce8c3; --b2:#ffd9a3; --b3:#ffb3ab; --aurora:.18;
   --shadow:0 6px 18px #4a5f5518;
 }
+/* `P11.15-b` — LES DEUX CRANS DE DENSITÉ, le défaut étant l'absence d'attribut. Deux sélecteurs et non
+   un : posé sur la RACINE, l'attribut concourt avec `:root` et doit l'emporter par sa SPÉCIFICITÉ
+   (0,2,0 contre 0,1,0), jamais parce qu'il est écrit plus bas — c'est l'exigence de `P11.14-f`
+   appliquée ici. Sur tout autre conteneur rien ne concourt : la valeur descend par héritage. */
+:root[data-density="compact"],[data-density="compact"]{--dens-y:2px;--dens-x:7px;--dens-lh:1.3;--dens-plmore:15px}
+:root[data-density="comfortable"],[data-density="comfortable"]{--dens-y:11px;--dens-x:14px;--dens-lh:1.7}
 
 *{box-sizing:border-box}
 html{font-size:15px}
@@ -100,8 +127,20 @@ header h1{display:flex;align-items:center;gap:8px;font-size:17px;font-weight:800
 .k-theme .ic{width:16px;height:16px}
 
 /* mise en page : sidebar repliable */
+/* `P11.14-f` — UN MASQUAGE L'EMPORTE PAR CONSTRUCTION, JAMAIS PAR SA POSITION DANS LE FICHIER. Mesuré le
+   2026-08-25 : `.hidden` et `.ruleform` (plus bas, section « formulaires ») ont la MÊME spécificité
+   (0,1,0) ; la seconde étant écrite après l'emportait, et les onze éléments du gabarit qui portent les
+   deux classes n'étaient PAS masqués — un formulaire de création restait déplié en permanence. Redescendre
+   cette règle sous l'autre n'aurait rien tenu : la règle suivante posée en dessous rouvrait le trou.
+   `!important` est la seule propriété qui ne dépende NI de l'ordre NI de la spécificité — une déclaration
+   importante bat toute déclaration normale du même auteur, où qu'elle soit écrite. Ce qui la bat encore,
+   et c'est voulu : une déclaration importante de spécificité STRICTEMENT supérieure, donc une intention
+   explicite et lisible — c'est ainsi que `@media print` ressort une section pour l'imprimer — jamais un
+   accident de placement. Les deux règles ci-dessous portent la même propriété pour la même raison :
+   masquer est une garantie, pas une préférence de mise en page. Ne pas retirer `!important` sans porter
+   le masquage ailleurs par une propriété qui, elle aussi, tienne sans dépendre de l'ordre. */
 [hidden]{display:none!important}
-.hidden{display:none}
+.hidden{display:none!important}
 .layout{display:flex;align-items:flex-start}
 .sidebar{position:sticky;top:57px;display:flex;flex-direction:column;gap:3px;padding:14px 10px;min-width:210px;height:calc(100vh - 57px);border-right:1px solid var(--bd);background:var(--card2)}
 .sidebar a{display:flex;gap:11px;align-items:center;padding:9px 12px;border-radius:10px;color:var(--fg);text-decoration:none;font-size:14px;font-weight:500;white-space:nowrap;border:1px solid transparent}
@@ -341,7 +380,10 @@ button[aria-pressed="true"]{background:var(--sel-bg);color:var(--sel-fg);border-
 .colsmenu .colsall{width:100%;margin-top:5px;background:var(--card2);border:1px solid var(--bd);border-radius:7px;padding:5px;color:var(--fg);cursor:pointer;font-size:12px}
 .colsmenu .colsall:hover{border-color:var(--acc);color:var(--acc)}
 .qtable{border-collapse:separate;border-spacing:0;width:100%;font-family:var(--font-mono);font-size:12px}
-.qtable th,.qtable td{border-right:1px solid var(--bd);border-bottom:1px solid var(--bd);padding:6px 10px;text-align:left;white-space:nowrap}
+/* `P11.15-b` — LE SEUL POINT QUI FAIT LA HAUTEUR D'UNE LIGNE, donc le seul qui lise les jetons de
+   densité (déclarés en tête). `line-height` était hérité de `body` et vaut la même chose au défaut :
+   l'écrire ici ne change rien tant qu'aucune densité n'est demandée, et rend l'interligne réglable. */
+.qtable th,.qtable td{border-right:1px solid var(--bd);border-bottom:1px solid var(--bd);padding:var(--dens-y) var(--dens-x);line-height:var(--dens-lh);text-align:left;white-space:nowrap}
 .qtable th:first-child,.qtable td:first-child{border-left:1px solid var(--bd)}
 /* P11.15-a — UNE VALEUR COUPÉE SE LIT EN ENTIER, ET LE GESTE EST LE MÊME PARTOUT. La cellule reste
    plafonnée : c'est ce qui garde une table lisible en colonnes. Ce qui manquait, c'est le RECOURS —
@@ -352,9 +394,13 @@ button[aria-pressed="true"]{background:var(--sel-bg);color:var(--sel-fg);border-
    core.js) : la cellule se marque `plcut` (place réservée au bouton), le bouton `plmore` la déplie
    SUR PLACE — elle s'enroule et la ligne grandit en hauteur, la largeur des colonnes ne bouge pas. */
 .qtable td{max-width:520px;overflow:hidden;text-overflow:ellipsis;position:relative}
-.qtable td.plcut{padding-right:28px}
+.qtable td.plcut{padding-right:calc(var(--dens-plmore) + 9px)}   /* la place réservée SUIT la taille du bouton : 28px au défaut, le littéral qu'elle remplace */
 .qtable td.plopen{white-space:pre-wrap;overflow-wrap:anywhere;overflow:visible;text-overflow:clip;vertical-align:top}
-.plmore{position:absolute;top:3px;right:3px;display:inline-flex;align-items:center;justify-content:center;width:19px;height:19px;padding:0;background:var(--card2);border:1px solid var(--bd);border-radius:6px;color:var(--mut);cursor:pointer;opacity:.7}
+/* `P11.15-b` — le bouton de dépli TIENT DANS LA LIGNE à toutes les densités : sa taille et son retrait
+   dérivent des mêmes jetons (retrait = la moitié du rembourrage vertical, 3px au défaut). Une taille
+   figée le ferait rogner par `overflow:hidden` de la cellule au cran resserré — le recours de
+   `P11.15-a` disparaîtrait au moment précis où la table est la plus dense. */
+.plmore{position:absolute;top:calc(var(--dens-y) / 2);right:calc(var(--dens-y) / 2);display:inline-flex;align-items:center;justify-content:center;width:var(--dens-plmore);height:var(--dens-plmore);padding:0;background:var(--card2);border:1px solid var(--bd);border-radius:6px;color:var(--mut);cursor:pointer;opacity:.7}
 .plmore:hover,.plmore:focus-visible{border-color:var(--acc);color:var(--acc);opacity:1}
 .plmore .ic{width:12px;height:12px;transition:transform .15s}
 /* déplié : le chevron BASCULE — l'état ne tient donc pas à la seule couleur (il se voit aussi en
@@ -519,9 +565,15 @@ tr.rowdetail>td{background:var(--card2);padding:10px 14px;white-space:normal;max
 .caseview .c-noteform button{border:1px solid var(--acc);background:var(--acc);color:var(--acc-ink);border-radius:9px;padding:8px 14px;cursor:pointer;font-size:13px;font-weight:600}
 .caseview .c-noteform button:hover{filter:brightness(1.08)}
 
-/* formulaires */
+/* FORMULAIRES. Un formulaire de création est masqué tant que son module ne l'ouvre pas — et ce masquage
+   ne tient PAS à ce bloc. Jusqu'au 2026-08-25 le commentaire posé ici affirmait que ces formulaires
+   étaient masqués par `.hidden` pendant qu'ils restaient ouverts en permanence : `.ruleform` déclare
+   `display` à la même spécificité que `.hidden` et la battait par sa seule position dans le fichier
+   (`P11.14-f`). Ce qui rend l'affirmation vraie aujourd'hui est le `!important` porté par `.hidden`, et
+   rien d'autre ; déclarer `display` ici, ou dans n'importe quelle règle ajoutée après, n'a plus d'effet
+   sur le masquage. */
 .ruleform{display:flex;flex-direction:column;gap:9px;margin:10px 0;padding:14px;border:1px solid var(--bd);border-radius:12px;background:var(--card2)}
-#rb-editor{margin-bottom:12px} /* éditeur de runbook : masqué par la classe .hidden, jamais par un style en ligne */
+#rb-editor{margin-bottom:12px} /* éditeur de runbook : masqué par `.hidden`, jamais par un style en ligne */
 .ruleform input,.ruleform textarea,.ruleform select{background:var(--card);border:1px solid var(--bd);border-radius:8px;color:var(--fg);padding:7px 9px;font-size:13px}
 .ruleform input:focus,.ruleform textarea:focus,.ruleform select:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
 .ruleform textarea{font-family:var(--font-mono);width:100%}

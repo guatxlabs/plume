@@ -133,7 +133,8 @@ pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col:
                 (SELECT incident_id FROM incident_item WHERE ref='alert:'||alert.id LIMIT 1),\
                 COALESCE(alert.mitre,''),r.window_s,\
                 COALESCE(alert.acked_at,0),COALESCE(alert.acked_by,''),\
-                COALESCE(alert.sources,''),COALESCE(r.is_soql,1) \
+                COALESCE(alert.sources,''),COALESCE(r.is_soql,1),\
+                alert.host \
                 FROM alert LEFT JOIN rule r ON ('rule.'||r.id)=alert.rule";
     // limit/offset = i64 déjà validés (clamp) -> injection impossible ; interpolés (pas de bind supplémentaire).
     let sql = format!("{base}{where_clause} ORDER BY alert.ts DESC LIMIT {limit} OFFSET {offset}");
@@ -165,7 +166,22 @@ pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col:
             // depuis la cloche d'un feed : sans ce champ il refiltrerait le TEXTE de `detail` et
             // n'afficherait rien pour les alertes que ce même texte ne sait pas nommer — le défaut S7
             // ressorti une couche plus haut. Vide = alerte antérieure à la migration v115.
-            "sources": r.get::<_, String>(12)?
+            "sources": r.get::<_, String>(12)?,
+            // `P11.18-v` — SUR QUELLE MACHINE. La colonne était LIÉE à l'écriture par les quatre voies de
+            // levée (règle groupée par hôte, corrélation keyée sur un hôte, instantané de contrôles,
+            // amorce) et ABSENTE de cet énoncé : une alerte livrée à la console ne disait jamais sur quelle
+            // machine elle portait. C'est un ajout de SÉLECTION, pas de collecte.
+            //
+            // AUCUN `COALESCE` ICI, ET C'EST LA MOITIÉ QUI COMPTE. `alert_group_expr` en pose un — délibéré,
+            // pour que le GROUPE '' round-trippe avec les lignes NULL — mais un axe de tri et un fait servi
+            // ne sont pas la même chose. Servir la colonne NUE fait tenir au TYPE trois faits distincts que
+            // le rendu ne peut plus confondre : `null` = l'alerte n'est liée à AUCUNE machine (les voies de
+            // levée écrivent NULL exprès quand elles ne sont pas keyées sur un hôte) ; `""` = une machine
+            // est attachée mais l'émetteur ne l'a pas NOMMÉE (machine INCONNUE) ; un nom = la machine.
+            // Un `COALESCE(alert.host,'')` aurait rendu les deux premiers indiscernables — exactement la
+            // famille de défaut que ce dépôt poursuit, et la raison pour laquelle `sur_la_machine`
+            // (contrôles de défense) refuse déjà d'escamoter un hôte absent.
+            "host": r.get::<_, Option<String>>(14)?
         }))
     }) {
         Ok(r) => r.flatten().collect(),

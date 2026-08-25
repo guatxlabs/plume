@@ -142,6 +142,59 @@ function mitreEventsDrill(m) {
   if ($('#sql')) { $('#sql').value = 'search ' + m; runQuery(); }
 }
 const ALERT_IP_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/;
+// ======================================================================================================
+// P11.18-v — SUR QUELLE MACHINE PORTE CETTE ALERTE. La colonne était STOCKÉE par les quatre voies de levée
+// et jamais SERVIE : la console ne pouvait pas le dire, et un lot voisin avait contourné en écrivant la
+// machine dans le TITRE d'une alerte particulière — ce qui vaut pour celle-là et pour aucune autre.
+// QUATRE ÉTATS, ET LE QUATRIÈME NE PRÉTEND RIEN. Le démon sert la colonne NUE (aucun `COALESCE`), donc :
+//   · un nom            -> la machine ;
+//   · `""`              -> une machine est attachée mais l'émetteur ne l'a pas NOMMÉE : machine INCONNUE ;
+//   · `null`            -> l'alerte n'est liée à AUCUNE machine (la voie de levée n'était pas keyée sur un
+//                          hôte : règle groupée autrement, corrélation sur une autre entité). C'est un FAIT
+//                          sur l'alerte, pas une ignorance — les confondre avec le cas précédent est
+//                          exactement la famille de défaut que ce dépôt poursuit ;
+//   · clé ABSENTE       -> personne ne nous a rien dit. On n'AFFIRME rien : aucun chip. La branche est
+//                          DÉRIVÉE de la présence de la clé, jamais d'une version ou d'un nom de route.
+// Les mots sont bilingues PAR CONSTRUCTION (`{fr, en}` choisi par LANG), écrits UNE fois et partagés entre
+// le chip, son survol et la colonne d'export — trois formulations divergeraient.
+// Un ÉTAT par entrée, ses mots dessous : la structure porte la même distinction que le corps servi, donc
+// un état de plus ne peut pas arriver sans ses deux formulations. L'état `nommee` n'a pas de `texte` —
+// le texte, c'est le nom de la machine, et l'inventer serait précisément l'escamotage qu'on retire.
+const MACHINE_MOTS = {
+  nommee: {
+    survol: { fr: 'Machine sur laquelle porte cette alerte', en: 'Machine this alert bears on' },
+  },
+  inconnue: {
+    texte: { fr: 'hôte NON DÉCLARÉ', en: 'host NOT DECLARED' },
+    survol: {
+      fr: "Une machine est attachée à cette alerte, mais l'émetteur ne l'a pas nommée : la machine est INCONNUE. Ce n'est pas « aucune machine ».",
+      en: 'A machine is attached to this alert, but the emitter did not name it: the machine is UNKNOWN. This is not "no machine".',
+    },
+  },
+  aucune: {
+    texte: { fr: 'aucune machine', en: 'no machine' },
+    survol: {
+      fr: "Cette alerte n'est liée à AUCUNE machine : la voie qui l'a levée ne portait pas d'hôte (règle groupée sur autre chose qu'un hôte, corrélation sur une autre entité). Ce n'est pas une machine inconnue.",
+      en: 'This alert is attached to NO machine: the path that raised it carried no host (rule grouped on something other than a host, correlation on another entity). This is not an unknown machine.',
+    },
+  },
+};
+const motDeLaMachine = (etat, quoi) => (LANG === 'en' ? MACHINE_MOTS[etat][quoi].en : MACHINE_MOTS[etat][quoi].fr);
+// Rend `{ etat, texte, survol }` — ou `null` quand la clé n'a pas été servie, seul cas où la console se tait.
+function machineDUneAlerte(a) {
+  a = a || {};
+  if (!('host' in a) || a.host === undefined) return null;
+  const nom = a.host === null ? '' : String(a.host).trim();
+  const etat = a.host === null ? 'aucune' : (nom ? 'nommee' : 'inconnue');
+  return { etat, texte: etat === 'nommee' ? nom : motDeLaMachine(etat, 'texte'), survol: motDeLaMachine(etat, 'survol') };
+}
+// Le chip, dans le MÊME slot pour les trois états rendus : une absence de chip se lirait comme « la console
+// ne montre pas les machines », c'est-à-dire le défaut qu'on ferme. `.hostchip` existe déjà (style.css) et
+// porte le même vêtement qu'aux lignes d'événement -> aucune règle de feuille de style n'est ajoutée.
+function machineChipHtml(a) {
+  const m = machineDUneAlerte(a);
+  return m ? ` <span class="hostchip" data-machine="${m.etat}" title="${esc(m.survol)}">${esc(m.texte)}</span>` : '';
+}
 // TEMPLATE d'une ligne d'alerte — PARTAGÉ entre la vue plate et les occurrences d'un groupe déplié. `i` =
 // index dans le tableau passé à wireAlertRows (drill). Reprend TEL QUEL les conventions existantes
 // (.alert/.sev/.mitrechip.mitrepivot/.casechip/.casebtn/.banbtn/.ackdone) -> zéro divergence de rendu.
@@ -161,7 +214,7 @@ function alertRowHtml(a, i) {
   return `
     <div class="alert sev-${a.severity}">
       <span class="sev">${sev(a.severity)}</span>
-      <span class="title"><span class="alertdrill" data-idx="${i}" data-pivot="${pivot.mode}"${pivot.mode === 'aucun' ? ' aria-disabled="true"' : ''} title="${esc(pivot.survol)}">${esc(a.title)}</span>${mt}</span>
+      <span class="title"><span class="alertdrill" data-idx="${i}" data-pivot="${pivot.mode}"${pivot.mode === 'aucun' ? ' aria-disabled="true"' : ''} title="${esc(pivot.survol)}">${esc(a.title)}</span>${mt}${machineChipHtml(a)}</span>
       <time>${fmtTs(a.ts)}</time>
       <span class="alertact">${cas}${ban}${a.status === 'new' ? `<button data-ack="${a.id}" title="Acquitter : marquer comme vue (retire de la file active, sans la supprimer)">Acquitter</button>` : `<span class="ackdone" title="Acquittée${a.acked_at ? ' · ' + fmtTs(a.acked_at) : ''}${a.acked_by ? ' par ' + esc(a.acked_by) : ''}">${ic('check')} Acquittée</span>`}</span>
     </div>`;
@@ -363,17 +416,23 @@ function wireAlertsTitle() {
 }
 
 // EXPORT ALERTES (client) : sérialise les alertes DÉJÀ chargées (vue courante / page). Aucune colonne
-// secrète (le schéma alert = id/ts/rule/severity/title/status/detail/mitre/case_id/acked_*). ts en clair.
+// secrète (le schéma alert = id/ts/rule/severity/title/status/detail/mitre/host/case_id/acked_*). ts en clair.
+// P11.18-v — la MACHINE y entre par le MÊME auteur que le chip (`machineDUneAlerte`) : un export qui
+// écrirait `''` pour « aucune machine » comme pour « machine inconnue » rendrait au fichier la confusion
+// que l'écran vient de lever. Colonne VIDE = la clé n'a pas été servie, et rien n'est affirmé.
 const ALERT_EXPORT_COLS = [
   { key: 'id', label: 'id' }, { key: 'ts', label: 'ts' }, { key: 'severity', label: 'severity' },
   { key: 'title', label: 'title' }, { key: 'status', label: 'status' }, { key: 'rule', label: 'rule' },
-  { key: 'mitre', label: 'mitre' }, { key: 'case_id', label: 'case_id' }, { key: 'detail', label: 'detail' },
+  { key: 'mitre', label: 'mitre' }, { key: 'host', label: 'host' }, { key: 'case_id', label: 'case_id' },
+  { key: 'detail', label: 'detail' },
   { key: 'acked_at', label: 'acked_at' }, { key: 'acked_by', label: 'acked_by' },
 ];
 function alertExportRow(a) {
+  const machine = machineDUneAlerte(a);
   return {
     id: a.id, ts: fmtTs(a.ts), severity: sev(a.severity), title: a.title || '', status: a.status || '',
-    rule: a.rule || '', mitre: a.mitre || '', case_id: a.case_id || '', detail: a.detail || '',
+    rule: a.rule || '', mitre: a.mitre || '', host: machine ? machine.texte : '',
+    case_id: a.case_id || '', detail: a.detail || '',
     acked_at: a.acked_at ? fmtTs(a.acked_at) : '', acked_by: a.acked_by || '',
   };
 }
@@ -681,4 +740,4 @@ function redessinerLesAlertes() {
 
 export { renderAlerts, setAlertMitreFilter, setAlertSourceFilter, alertActionBarHtml, alertListModel,
   dessinerLaListePlate, redessinerLesAlertes, poserLaRechercheDesAlertes, texteCherchableDUneAlerte,
-  pivotDUneAlerte, alertDrill };
+  pivotDUneAlerte, alertDrill, machineDUneAlerte };

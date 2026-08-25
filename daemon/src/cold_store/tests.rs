@@ -9226,6 +9226,131 @@ fn p87b_les_deux_moities_at_rest_derivent_du_meme_appel() {
     unregister_db_key("/p87b/tenant-en-clair.db");
 }
 
+// ── P8.7-c : LA PROVENANCE DE LA CLÉ EST **UNE**, ET UN FROID FAIL-CLOSED DIT POURQUOI ───────────
+// `P9.6-a` a donné une TROISIÈME provenance à la clé d'ouverture — celle qu'une base NÉE chiffrée
+// s'engendre à elle-même — et cette moitié-ci ne la lisait pas : une base née sous la clé auto avait
+// sa moitié chaude CHIFFRÉE et son tier froid FAIL-CLOSED, aucun fichier écrit. Ce n'était pas une
+// régression (sans clé, le froid ne s'écrivait déjà pas) mais l'ASYMÉTRIE de `P8.7-b`, à l'envers.
+//
+// LE LIEN MESURÉ N'EST PAS UNE TAUTOLOGIE. Comparer `cold_base_secret` à l'expression qui le définit
+// ne prouverait rien. Le témoin oppose donc le secret rendu à une base RÉELLE : `probe_db` — la sonde
+// du produit, qui OUVRE le fichier — doit dire que ce secret-là ouvre la base chaude. C'est la même
+// forme de preuve que `P8.7-b` a payée sur les octets, prise de l'autre côté.
+
+/// ① LA BASE NÉE CHIFFRÉE : le secret dont le froid dérive sa clé AEAD est CELUI QUI OUVRE le chaud.
+/// Témoin NÉGATIF dans le même corps (la clé retirée -> `None`, et le froid le DIT en nommant les
+/// provenances essayées) et CONTRÔLE de précédence (une clé explicite gagne, donc aucune base
+/// existante ne change de comportement).
+#[test]
+fn p87c_le_secret_froid_suit_la_provenance_de_la_cle_douverture() {
+    // Ce test LIT l'environnement (`cfg` interroge l'env avant la conf) sans jamais le muter.
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
+    for cle in [CLE_DB_KEY, CLE_DB_KEY_FILE, CLE_DB_KEY_AUTO_PATH, "PLUME_DB"] {
+        assert!(
+            std::env::var(cle).map(|v| v.is_empty()).unwrap_or(true),
+            "ce test EXIGE un environnement muet sur `{cle}` : l'environnement gagne sur la conf (c'est \
+             l'invariant Docker/k3s de `P8.7-b`), et c'est LUI qu'on mesurerait"
+        );
+    }
+    let root = tmp_root("p87c-cle-auto");
+    let db = root.racine().chemin().join("plume.db");
+    let dbs = db.to_string_lossy().into_owned();
+    let mut conf: HashMap<String, String> = HashMap::new();
+    conf.insert("PLUME_DB".to_string(), dbs.clone());
+    let chemin_cle = cle_auto_chemin(&conf);
+
+    // ── TÉMOIN NÉGATIF (a) : aucune clé nulle part -> le froid FAIL-CLOSE, comme avant ce lot.
+    assert_eq!(
+        cold_base_secret(&conf, &dbs),
+        None,
+        "sans aucune clé, le tier froid doit rester fail-closed : c'est le comportement d'AVANT, et \
+         aucune base existante restée en clair ne doit en changer"
+    );
+    // …et il DIT pourquoi, en nommant les provenances qu'il vient d'essayer (`P8.7-c`). Les noms sont
+    // DÉRIVÉS de la table de précédence de l'ouverture, pas recopiés : c'est ce qui les empêche de
+    // diverger le jour où une quatrième provenance apparaît.
+    let dit = enonce_sans_cle(&conf, &dbs);
+    for provenance in CLES_AT_REST {
+        assert!(
+            dit.contains(provenance),
+            "un tier froid inerte doit NOMMER les provenances essayées : `{provenance}` manque à « {dit} »"
+        );
+    }
+    assert!(
+        dit.contains(&chemin_cle),
+        "la provenance qu'une base NÉE chiffrée se donne à elle-même doit être nommée par son CHEMIN \
+         RÉSOLU (celui que le démon lirait) : « {dit} »"
+    );
+
+    // ── LE CAS MESURÉ : une base NÉE chiffrée sous la clé que le produit s'engendre.
+    let cle = cle_auto_engendrer(&chemin_cle).expect("la clé auto s'engendre au chemin résolu");
+    {
+        let c = rusqlite::Connection::open(&db).expect("création de la base");
+        c.pragma_update(None, "key", &cle).expect("PRAGMA key");
+        c.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES(1);").expect("la base naît chiffrée");
+    }
+    assert_eq!(
+        probe_db(&dbs, &cle),
+        DbProbe::OpensWithKey,
+        "instrument : la fixture doit être une base RÉELLEMENT chiffrée sous la clé auto, sinon le \
+         témoin qui suit ne mesure rien"
+    );
+    let secret = cold_base_secret(&conf, &dbs).expect(
+        "RÉGRESSION P8.7-c : une base NÉE chiffrée laisse son tier froid sans clé -> fail-closed, \
+         AUCUN fichier écrit, pendant que sa moitié chaude est chiffrée",
+    );
+    assert_eq!(
+        probe_db(&dbs, &secret),
+        DbProbe::OpensWithKey,
+        "LES DEUX MOITIÉS DIVERGENT : le secret dont le tier froid dérive sa clé AEAD n'OUVRE PAS la \
+         base chaude. C'est la faute de `P8.7-b`, prise de l'autre côté."
+    );
+    // La clé AEAD elle-même est dérivable, donc le froid peut ÉCRIRE (c'est la seule chose que le
+    // fail-closed interdisait) — et elle n'est PAS la clé brute (domaine HKDF séparé).
+    let pass = cold_aead_passphrase(&conf, &dbs).expect("la passphrase cold se dérive de ce secret");
+    assert_ne!(pass, cle, "la clé AEAD cold ne doit JAMAIS être la clé SQLCipher brute (domaine séparé)");
+
+    // ── TÉMOIN NÉGATIF (b) : la MÊME base, la MÊME conf, le fichier de clé RETIRÉ -> `None`. C'est
+    // l'état d'avant ce lot, et il prouve que le témoin ci-dessus mesure bien CE fichier-là.
+    std::fs::remove_file(&chemin_cle).expect("retrait du fichier de clé");
+    assert_eq!(
+        cold_base_secret(&conf, &dbs),
+        None,
+        "sans le fichier de clé auto, le froid doit redevenir fail-closed : sinon le témoin positif \
+         serait passé pour une autre raison que celle qu'il nomme"
+    );
+
+    // ── CONTRÔLE DE PRÉCÉDENCE : une clé EXPLICITE gagne, même quand le fichier auto existe. C'est
+    // ce qui garantit qu'AUCUNE base existante ne change de comportement — sur une base chiffrée par
+    // clé explicite le repli n'est jamais ÉVALUÉ, et le secret rendu est le même qu'avant, à l'octet.
+    let _ = cle_auto_engendrer(&chemin_cle).expect("la clé auto est réengendrée pour le contrôle");
+    conf.insert(CLE_DB_KEY.to_string(), "cle-explicite-p87c".to_string());
+    assert_eq!(
+        cold_base_secret(&conf, &dbs),
+        db_key_depuis(&conf),
+        "la clé EXPLICITE doit rester la plus prioritaire : le repli de `P8.7-c` ne s'ÉVALUE que \
+         lorsqu'il n'y en a aucune"
+    );
+    assert_eq!(cold_base_secret(&conf, &dbs), Some("cle-explicite-p87c".to_string()));
+
+    // ── ET LA SECONDE CAUSE RESTE UNE SECONDE CAUSE : un tenant enregistré EN CLAIR n'a pas le même
+    // problème qu'un déploiement sans clé, et l'énoncé ne doit pas les confondre (l'un n'a RIEN à
+    // corriger). C'est exactement ce que « PLUME_DB_KEY indisponible » disait des deux.
+    register_db_key("/p87c/tenant-en-clair.db", None);
+    let dit_clair = enonce_sans_cle(&conf, "/p87c/tenant-en-clair.db");
+    assert_ne!(
+        dit_clair, dit,
+        "deux causes distinctes rendues par la même phrase : un tenant EN CLAIR et un déploiement \
+         sans clé n'appellent pas le même geste"
+    );
+    assert_eq!(
+        cold_base_secret(&conf, "/p87c/tenant-en-clair.db"),
+        None,
+        "un tenant enregistré EN CLAIR ne doit JAMAIS voir le froid chiffrer avec la clé globale"
+    );
+    unregister_db_key("/p87c/tenant-en-clair.db");
+}
+
 // =====================================================================================================
 // `P10.5-a` — LE VIEILLISSEMENT REND COMPTE. Mesuré sur une base réelle le 2026-08-10 : une passe libérait
 // une centaine de Mio de base chaude et écrivait quelques Mio de Parquet SANS ÉMETTRE UNE LIGNE, et quatre axes de coût

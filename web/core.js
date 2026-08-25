@@ -5,6 +5,11 @@
 // state.js est un pur leaf (aucun import) -> l'importer ici ne crée aucun cycle. Utilisé par socRole/socIsAdmin
 // (helpers partagés relocalisés depuis app.js, audit H1 — cassent les deps circulaires app<->vues).
 import { S } from './state.js';
+// `P11.18-m` — LA RECHERCHE D'UNE LISTE N'EST PAS RÉÉCRITE ICI : elle vit dans le module qui la porte
+// déjà pour toute la console. `recherche_de_liste.js` est un feuillet — il n'importe rien — donc
+// l'importer depuis le cœur ne crée aucun cycle, et le prédicat, le filtre et la phrase de résumé
+// restent écrits UNE fois.
+import { champDeRecherche, filtrerParRecherche, resumeDeRecherche, texteCherchable } from './recherche_de_liste.js';
 
 const $ = s => document.querySelector(s);
 // lit une variable de thème CSS (graphes SVG theme-aware : se recolorent au changement clair/sombre)
@@ -363,6 +368,124 @@ function pageNums(cur, pages, keyset) {
   for (const n of arr) { if (n - prev > 1) out.push('…'); out.push(n); prev = n; }
   return out;
 }
+// ==================================================================================================
+// `P11.18-m` — LA RECHERCHE EST UNE OPTION DE LA FABRIQUE, ET SON TEXTE SE DÉRIVE
+// --------------------------------------------------------------------------------------------------
+// LE CONSTAT, MESURÉ le 2026-08-25 sur `web/`. La fabrique rend TRENTE-QUATRE surfaces de liste (trente-
+// cinq appels : le panneau des règles en fait deux, la branche « recherche posée » et la branche
+// groupée). QUATRE d'entre elles portent une recherche, et le câblage est réécrit à chaque fois : un
+// champ, un état de module, un prédicat, une phrase. TROIS déclarent un groupement, toutes les trois dans
+// le même fichier. Le même écart sur deux gestes voisins — et la trente-cinquième liste posée repartira
+// sans rien, comme les trente précédentes, tant que l'un et l'autre se recâblent à la main.
+//
+// LE TEXTE CHERCHÉ EST CE QUI EST AFFICHÉ, ET IL EST DÉRIVÉ — AUCUNE LISTE DE CHAMPS N'EST ÉCRITE.
+// VINGT-QUATRE des trente-quatre surfaces DÉCLARENT leurs colonnes, et la fabrique sait déjà rendre
+// chaque cellule : le texte d'une ligne est donc le texte de ses cellules, et la propriété devient « ce
+// qui est affiché se cherche ». C'est plus qu'un raccourci d'écriture : une colonne qui rend « critical »
+// pour une gravité valant 4 se cherche par le mot LU, pas par le chiffre stocké — chercher les champs
+// rendrait « aucun résultat » sur ce que l'exploitant a sous les yeux. Les listes qui rendent leur ligne
+// à la main n'ont pas de cellules : le nœud qu'elles rendent EST leur affichage, et son texte fait
+// l'affaire ; celles qui veulent en décider autrement fournissent `texteDeLaLigne`.
+// LE COÛT EST BORNÉ PAR UN SOUVENIR PAR LISTE. Dériver le texte construit les cellules de TOUTES les
+// lignes, pas seulement de la page rendue ; le résultat est donc retenu par ligne, pour la durée de cette
+// liste — la première frappe le paie, les suivantes ne le repaient pas.
+//
+// LA PORTÉE, LA FABRIQUE LA CONNAÎT DÉJÀ ; LE SEUL POINT À DÉCLARER EST LA FENÊTRE. Une liste servie par
+// page (`mode: 'server'`) ne tient QUE la page affichée — la recherche ne peut porter que sur elle, et
+// elle le DIT. Une liste qui a reçu ses lignes les tient toutes : la recherche porte sur tout ce qu'on
+// lui a remis. Reste ce que la fabrique ne peut pas mesurer : ce qu'on lui a remis est-il lui-même une
+// FENÊTRE d'un magasin plus grand ? La route le sait, la fabrique non — c'est le seul mot à déclarer
+// (`recherche: { fenetre: true }`), et taire cette limite ferait rendre « aucun résultat » pour une ligne
+// qui EXISTE, l'erreur qui va dans le sens dangereux sur une console de sécurité.
+//
+// UNE OPTION, JAMAIS UNE RÈGLE QUI VISE LE CONTENEUR. Rien n'est imposé aux trente-quatre : une liste
+// sans `recherche` rend exactement ce qu'elle rendait, au nœud près, et la barre n'existe pas. C'est le
+// piège `P11.4-m` — une règle qui vise le conteneur atteint ce qu'on ne visait pas — et il est évité ici
+// par construction : l'option s'active liste par liste, là où elle a un sens.
+// ==================================================================================================
+const MOT_RECHERCHE_LISTE_INVITE = LANG === 'en' ? 'Search this list…' : 'Rechercher dans cette liste…';
+const MOT_RECHERCHE_LISTE_ETIQUETTE = LANG === 'en' ? 'Search this list' : 'Rechercher dans cette liste';
+// Les trois portées, écrites EN ENTIER dans les deux langues à l'endroit du rendu : une phrase recollée à
+// l'exécution ne serait jamais égale à une clé du lexique et resterait en français.
+const MOT_RECHERCHE_LISTE_AIDE_TOUT = LANG === 'en'
+  ? 'Searches the DISPLAYED text of each row, that text alone; the whole list is held here, so nothing escapes it. It composes with sorting and grouping. Esc clears the search.'
+  : "Cherche dans le texte AFFICHÉ de chaque ligne, celui-là seul ; la liste est tenue ici en entier, rien ne lui échappe. Se combine avec le tri et le regroupement. Échap efface la recherche.";
+const MOT_RECHERCHE_LISTE_AIDE_FENETRE = LANG === 'en'
+  ? 'Searches the DISPLAYED text of each SERVED row; it does not reach beyond the served window, so an older row may exist without being reachable from here. Esc clears the search.'
+  : "Cherche dans le texte AFFICHÉ de chaque ligne SERVIE ; elle ne descend pas au-delà de la fenêtre servie : une ligne plus ancienne peut exister sans être atteignable depuis ici. Échap efface la recherche.";
+const MOT_RECHERCHE_LISTE_AIDE_PAGE = LANG === 'en'
+  ? 'Searches the DISPLAYED text of the rows on THIS page; the other pages are not held here. Esc clears the search.'
+  : "Cherche dans le texte AFFICHÉ des lignes de CETTE page ; les autres pages ne sont pas tenues ici. Échap efface la recherche.";
+const MOT_RECHERCHE_LISTE_FILTRE_TOUT = LANG === 'en'
+  ? 'row(s) — the search covers the whole list, held here in full; sorting and grouping stay as they are'
+  : "ligne(s) — la recherche porte sur toute la liste, tenue ici en entier ; le tri et le regroupement restent posés";
+const MOT_RECHERCHE_LISTE_FILTRE_FENETRE = LANG === 'en'
+  ? 'row(s) among the SERVED lines — the search does not reach beyond that window; sorting and grouping stay as they are'
+  : "ligne(s) parmi les lignes SERVIES — la recherche ne descend pas au-delà de cette fenêtre ; le tri et le regroupement restent posés";
+const MOT_RECHERCHE_LISTE_FILTRE_PAGE = LANG === 'en'
+  ? 'row(s) on the page displayed — the search does not reach the other pages; sorting stays as it is'
+  : "ligne(s) de la page affichée — la recherche n'atteint pas les autres pages ; le tri reste posé";
+const MOT_RECHERCHE_LISTE_RIEN_TOUT = LANG === 'en'
+  ? 'No row displays these words — and the whole list is held here, so none carries them. Esc clears the search.'
+  : "Aucune ligne n'affiche ces mots — et la liste est tenue ici en entier : aucune ne les porte. Échap efface la recherche.";
+const MOT_RECHERCHE_LISTE_RIEN_FENETRE = LANG === 'en'
+  ? 'No SERVED row displays these words — and the search does not reach beyond the served window, so a row may exist without being reachable from here. Esc clears the search.'
+  : "Aucune ligne SERVIE n'affiche ces mots — et la recherche ne descend pas au-delà de la fenêtre servie : une ligne peut exister sans être atteignable depuis ici. Échap efface la recherche.";
+const MOT_RECHERCHE_LISTE_RIEN_PAGE = LANG === 'en'
+  ? 'No row on the page displayed carries these words — the other pages are not held here; turn the page to search them. Esc clears the search.'
+  : "Aucune ligne de la page affichée ne porte ces mots — les autres pages ne sont pas tenues ici : changer de page pour y chercher. Échap efface la recherche.";
+const AIDE_PAR_PORTEE = { tout: MOT_RECHERCHE_LISTE_AIDE_TOUT, fenetre: MOT_RECHERCHE_LISTE_AIDE_FENETRE, page: MOT_RECHERCHE_LISTE_AIDE_PAGE };
+const FILTRE_PAR_PORTEE = { tout: MOT_RECHERCHE_LISTE_FILTRE_TOUT, fenetre: MOT_RECHERCHE_LISTE_FILTRE_FENETRE, page: MOT_RECHERCHE_LISTE_FILTRE_PAGE };
+const RIEN_PAR_PORTEE = { tout: MOT_RECHERCHE_LISTE_RIEN_TOUT, fenetre: MOT_RECHERCHE_LISTE_RIEN_FENETRE, page: MOT_RECHERCHE_LISTE_RIEN_PAGE };
+
+// Ce que la fabrique sait de la portée sans qu'on le lui dise, et le seul mot qu'elle ne peut pas mesurer.
+function porteeDeLaRecherche(opts) {
+  if (opts.mode === 'server') return 'page';
+  const conf = opts.recherche === true ? {} : (opts.recherche || {});
+  return conf.fenetre ? 'fenetre' : 'tout';
+}
+
+// LA BARRE EST POSÉE UNE FOIS, HORS DE LA ZONE REPEINTE. Le champ appartient à la liste et non au
+// document : la fabrique le construit, faute d'exister dans le gabarit — c'est ce que le lot précédent
+// avait dû écrire à la main dans un panneau. S'il vivait DANS la zone que chaque frappe repeint, il
+// serait détruit et reconstruit à chaque lettre, et le curseur partirait avec lui : le corps de la liste
+// est donc un nœud à part, et c'est LUI que la peinture remplace.
+function poserLaRechercheDeLaListe(host, opts) {
+  const portee = porteeDeLaRecherche(opts);
+  const barre = document.createElement('div'); barre.className = 'hdtools';
+  const champ = document.createElement('input');
+  champ.type = 'search';
+  champ.placeholder = MOT_RECHERCHE_LISTE_INVITE;
+  champ.title = AIDE_PAR_PORTEE[portee];
+  champ.setAttribute('aria-label', MOT_RECHERCHE_LISTE_ETIQUETTE);
+  barre.appendChild(champ);
+  const zoneResume = document.createElement('div');
+  const corps = document.createElement('div');
+  host.replaceChildren(barre, zoneResume, corps);
+  let surChangement = () => {};
+  const poignee = champDeRecherche(champ, { auChangement: () => surChangement() });
+  return {
+    corps,
+    valeur: poignee.valeur,
+    auChangement: f => { surChangement = f; },
+    // Recherche vide -> le MÊME tableau, par identité : rien ne s'interpose entre les lignes reçues et
+    // ce que la fabrique en fait tant qu'aucune lettre n'est frappée.
+    filtrer: (lignes, texteDeLaLigne) => {
+      const q = poignee.valeur();
+      return q ? filtrerParRecherche(lignes, q, texteDeLaLigne) : lignes;
+    },
+    // Une liste qui cache des lignes le DIT, et elle dit CE QU'ELLE COUVRE. Sans recherche posée : rien.
+    resumer: (affichees, total) => {
+      zoneResume.replaceChildren();
+      if (!poignee.valeur()) return;
+      zoneResume.appendChild(resumeDeRecherche(affichees, total, {
+        filtre: document.createTextNode(FILTRE_PAR_PORTEE[portee]),
+        vide: document.createTextNode(RIEN_PAR_PORTEE[portee]),
+      }));
+    },
+  };
+}
+
 // LISTE PAGINÉE PARTAGÉE (BATCH 1 — scalabilité) : pager haut+bas (makePager, auto-caché si <=1 page),
 // tri, et sortie tableau enveloppée dans un conteneur overflow:auto (corrige aussi le débordement table-
 // dans-carte). Deux modes :
@@ -378,6 +501,13 @@ function pagedList(host, opts) {
   const pageSize = opts.pageSize || 50;
   const state = { page: 0, pageSize, total: 0, shown: 0 };
   const columns = opts.columns || null;
+  // `P11.18-m` — SANS L'OPTION, `cible` EST `host` : la peinture, la liste groupée et le message d'erreur
+  // écrivent exactement où ils écrivaient, et rien n'est interposé.
+  const chercheur = opts.recherche ? poserLaRechercheDeLaListe(host, opts) : null;
+  const cible = chercheur ? chercheur.corps : host;
+  // Le texte AFFICHÉ d'une ligne, retenu pour la durée de CETTE liste (le souvenir est propre à
+  // l'instance : deux listes peuvent afficher les mêmes objets sous des colonnes différentes).
+  const texteRetenu = new WeakMap();
   let sort = opts.sort ? { key: opts.sort.key, dir: opts.sort.dir || 1 } : null;   // dir : 1 asc / -1 desc
   const clientRows = opts.mode === 'client' ? (opts.rows || []) : null;
   const alignOf = a => (a === 'r' ? 'right' : a === 'c' ? 'center' : '');
@@ -398,6 +528,29 @@ function pagedList(host, opts) {
     if (opts.onRowClick) { tr.style.cursor = 'pointer'; tr.onclick = () => opts.onRowClick(row); }
     return tr;
   }
+  // LE TEXTE CHERCHABLE D'UNE LIGNE — DÉRIVÉ DE CE QUI EST AFFICHÉ, jamais d'une liste de champs écrite
+  // quelque part. Colonnes déclarées -> le texte de chaque cellule RENDUE ; ligne rendue à la main -> le
+  // texte du nœud rendu ; `texteDeLaLigne` l'emporte sur les deux. Un rendu qui échoue ne fait pas tomber
+  // la recherche : il ne contribue rien, et la ligne reste cherchable par ses autres cellules.
+  function texteAffiche(row) {
+    if (row == null || typeof row !== 'object') return String(row == null ? '' : row);
+    const memo = texteRetenu.get(row);
+    if (memo !== undefined) return memo;
+    const conf = opts.recherche === true ? {} : (opts.recherche || {});
+    let texte = '';
+    if (conf.texteDeLaLigne) { try { texte = String(conf.texteDeLaLigne(row) || ''); } catch (e) { texte = ''; } }
+    else if (columns && !opts.renderRow) {
+      texte = texteCherchable(columns.map(c => {
+        try { const v = c.render ? c.render(row) : row[c.key]; return v instanceof Node ? v.textContent : v; }
+        catch (e) { return ''; }
+      }));
+    } else if (opts.renderRow) {
+      try { const n = opts.renderRow(row); texte = n && n.textContent != null ? String(n.textContent) : ''; } catch (e) { texte = ''; }
+    }
+    texteRetenu.set(row, texte);
+    return texte;
+  }
+  const lignesRetenues = lignes => (chercheur ? chercheur.filtrer(lignes || [], texteAffiche) : lignes);
   // corps : renderRow -> nœuds empilés directement (pas de <table>, layout inchangé) ; columns -> table
   // .qtable enveloppée dans .plscroll (overflow:auto).
   function bodyNode(rows) {
@@ -420,23 +573,28 @@ function pagedList(host, opts) {
     scroll.appendChild(table); return scroll;
   }
   function paint(rows) {
-    host.replaceChildren();
-    if (!rows.length && !state.total) { host.appendChild(muted(opts.emptyText || 'aucune donnée')); return; }
+    cible.replaceChildren();
+    // UNE RECHERCHE POSÉE PARLE À LA PLACE DU VIDE DE LA LISTE (`P11.18-m`). « aucune donnée » à côté d'une
+    // recherche qui ne trouve rien est un second message, et il est FAUX : la liste porte des lignes, c'est
+    // la recherche qui les cache. La phrase du résumé, elle, dit ce qui a été cherché ET jusqu'où. Sans
+    // l'option, `chercheur` est nul et le message d'origine est rendu exactement comme avant.
+    if (!rows.length && !state.total) { if (!chercheur || !chercheur.valeur()) cible.appendChild(muted(opts.emptyText || 'aucune donnée')); return; }
     const go = p => { state.page = p; reload(); };
-    const top = makePager(state, go); if (top) host.appendChild(top);
-    host.appendChild(bodyNode(rows));
-    const bot = makePager(state, go); if (bot) host.appendChild(bot);
-    programmerLaMesureDesCellules(host);   // `P11.15-a` : la fabrique pose le geste de lecture elle-même
+    const top = makePager(state, go); if (top) cible.appendChild(top);
+    cible.appendChild(bodyNode(rows));
+    const bot = makePager(state, go); if (bot) cible.appendChild(bot);
+    programmerLaMesureDesCellules(cible);   // `P11.15-a` : la fabrique pose le geste de lecture elle-même
   }
   function sliceClient() {
-    let rows = clientRows.slice();
+    const source = lignesRetenues(clientRows);
+    let rows = source.slice();
     if (sort) {
       const col = columns ? columns.find(c => c.key === sort.key) : null;
       const get = col && col.sortVal ? col.sortVal : (r => r[sort.key]);
       const cmp = colComparator(rows, get);
       rows.sort((a, b) => cmp(a, b) * sort.dir);
     }
-    state.total = clientRows.length;
+    state.total = source.length;
     const start = state.page * state.pageSize;
     const page = rows.slice(start, start + state.pageSize);
     state.shown = page.length;
@@ -445,23 +603,48 @@ function pagedList(host, opts) {
   async function loadServer() {
     let r;
     try { r = await opts.fetchPage({ limit: state.pageSize, offset: state.page * state.pageSize, sort: sort ? sort.key : '', dir: sort ? (sort.dir > 0 ? 'asc' : 'desc') : '' }); }
-    catch (e) { host.replaceChildren(muted('erreur : ' + (e && e.message ? e.message : e))); return; }
+    catch (e) { cible.replaceChildren(muted('erreur : ' + (e && e.message ? e.message : e))); return; }
     const rows = (r && r.rows) || [];
     state.total = (r && typeof r.total === 'number') ? r.total : rows.length;
+    // LE PAGINATEUR DIT LA PAGE, LA RECHERCHE DIT CE QU'ELLE MONTRE DEDANS. `shown` reste le nombre de
+    // lignes SERVIES : c'est lui qui borne « 1–50 » et qui arme le bouton suivant, et le faire varier avec
+    // la recherche ferait mentir le paginateur sur la page où l'on se trouve.
     state.shown = rows.length;
-    paint(rows);
+    const retenues = lignesRetenues(rows);
+    if (chercheur) chercheur.resumer(retenues.length, rows.length);
+    paint(retenues);
   }
   function reload() { if (opts.mode === 'server') loadServer(); else sliceClient(); }
   // `P11.15-b` — LE REGROUPEMENT EST UNE OPTION DE CETTE FABRIQUE, PAS UNE VUE À PART. Il n'a de sens
   // que sur un ensemble COMPLET : le mode serveur ne tient qu'une page et ne peut pas partitionner ce
   // qu'il n'a pas, donc il rend plat. Et il ne s'applique que si les LIGNES portent une dimension connue :
   // sans quoi la liste plate d'aujourd'hui est rendue telle quelle, rien n'est caché.
-  if (opts.group && opts.mode !== 'server' && clientRows) {
-    const groupe = peindreEnGroupes(host, clientRows, opts);
-    if (groupe) return groupe;
+  // `P11.18-m` — ET LA RECHERCHE SE COMPOSE AVEC LUI AU LIEU DE LE DÉFAIRE : la partition est refaite sur
+  // les lignes TROUVÉES, un groupe sans correspondance disparaît, et le compte de chaque en-tête est celui
+  // des lignes retenues. Les lignes sont toutes en mémoire et l'en-tête ANNONCE son compte : un groupe
+  // replié qui affiche « 3 » ne cache pas ses correspondances, il les résume.
+  function peindreUnePasse() {
+    if (opts.group && opts.mode !== 'server' && clientRows) {
+      const groupe = peindreEnGroupes(cible, lignesRetenues(clientRows), opts);
+      if (groupe) return groupe;
+    }
+    reload();
+    return null;
   }
-  reload();
-  return { reload, state };
+  if (!chercheur) {
+    const groupe = peindreUnePasse();
+    if (groupe) return groupe;
+    return { reload, state };
+  }
+  // Avec l'option, la poignée rendue est STABLE d'une frappe à l'autre : elle est rendue une fois, alors
+  // que la passe, elle, est refaite à chaque lettre.
+  const repeindre = () => {
+    if (clientRows) chercheur.resumer(lignesRetenues(clientRows).length, clientRows.length);
+    peindreUnePasse();
+  };
+  chercheur.auChangement(() => { state.page = 0; repeindre(); });   // une recherche neuve se lit depuis sa première page
+  repeindre();
+  return { reload: repeindre, state };
 }
 
 // ==================================================================================================
@@ -1293,15 +1476,73 @@ async function contentDelete(path, label) {
 // couleurs par sévérité (var CSS) — partagé alertes/détection.
 const SEVCOL = { 1: 'var(--sev1)', 2: 'var(--sev2)', 3: 'var(--sev3)', 4: 'var(--sev4)' };
 function lsSet(storeKey) { try { return new Set(JSON.parse(localStorage.getItem(storeKey)) || []); } catch (e) { return new Set(); } }
+
+// ==================================================================================================
+// `P11.18-l` — LE PLI SE MÉMORISE ABSOLUMENT ; UN GESTE NE SE RETOURNE PAS PARCE QU'UN SEUIL A BOUGÉ
+// --------------------------------------------------------------------------------------------------
+// LE DÉFAUT, MESURÉ le 2026-08-25, ET IL PRÉEXISTE À LA RECHERCHE QUI L'A RÉVÉLÉ. Le jeu persisté ne
+// disait pas « replié » mais « ÉCART au défaut », et le défaut d'une liste groupée est DÉRIVÉ : elle
+// dépasse la taille d'une page, ou non. Les deux se lisent ensemble, donc quand le défaut bouge —
+// la liste passant sous le seuil — le même jeu se lit à l'envers : un groupe explicitement OUVERT
+// revient REPLIÉ, et ceux qu'on n'a jamais touchés s'ouvrent. Relevé sur un banc à répartiteur
+// d'événements réel : un groupe ouvert par clic rendait `fgroup` / `aria-expanded="true"`, et le
+// rendu suivant, sous le seuil et sans qu'aucun geste ne soit fait, `fgroup collapsed` /
+// `aria-expanded="false"` — le magasin, lui, n'avait pas changé.
+//
+// CE QUI EST MÉMORISÉ MAINTENANT : L'ÉTAT, PAS L'ÉCART. Le magasin porte une TABLE `{clé: replié}` où
+// la valeur est ce que l'exploitant a laissé, vrai ou faux. Le défaut ne s'applique plus qu'à une clé
+// ABSENTE de la table — c'est-à-dire jamais touchée. Un seuil qui bouge ne peut donc plus rien
+// retourner : il ne décide que du sort des clés dont personne n'a rien dit.
+//
+// LA MIGRATION, ET POURQUOI ELLE NE RETOURNE AUCUN GESTE. Des plis sont déjà mémorisés sous l'ancienne
+// écriture (un TABLEAU de clés en écart). Ils ne sont ni jetés ni devinés : à la PREMIÈRE lecture, chaque
+// clé du tableau devient l'état que l'ancien mécanisme AURAIT RENDU à cet instant, c'est-à-dire
+// `!defautPlie`. Le premier rendu après migration est donc, groupe par groupe, exactement celui d'avant —
+// une migration qui changerait ce que l'exploitant voit au moment où elle a lieu retournerait elle-même
+// un geste. Ce qu'elle ne peut PAS faire, et qui est écrit plutôt que tu : retrouver l'intention d'un
+// geste que l'ancienne écriture avait déjà perdue. Si le seuil a bougé entre le geste et cette lecture,
+// l'état affiché est DÉJÀ l'inverse de l'intention ; la migration le fige tel quel — elle ne l'inverse pas
+// une seconde fois, et à partir de là il ne bougera plus. La forme du magasin distingue les deux
+// écritures sans qu'aucun drapeau ne soit gardé : un tableau est l'ancienne, une table est la nouvelle.
+//
+// UNE LECTURE PAR PEINTURE, PAS UNE PAR GROUPE. La table est mémoïsée SUR LE JEU que l'appelant passe :
+// `peindreEnGroupes` en construit un par peinture et le partage entre ses groupes, donc la lecture du
+// magasin garde exactement la cadence d'avant, et deux groupes de la même peinture voient les écritures
+// l'un de l'autre. Un jeu neuf (peinture suivante, autre onglet) relit le magasin.
+// ==================================================================================================
+const PLIS_PAR_JEU = new WeakMap();
+function persisterLesPlis(storeKey, plis) {
+  const table = {};
+  plis.forEach((replie, cle) => { table[cle] = !!replie; });
+  try { localStorage.setItem(storeKey, JSON.stringify(table)); } catch (e) {}
+}
+function plisMemorises(set, storeKey, defautPlie) {
+  const jeu = set && typeof set === 'object' ? set : null;
+  if (jeu && PLIS_PAR_JEU.has(jeu)) return PLIS_PAR_JEU.get(jeu);
+  const plis = new Map();
+  let brut = null;
+  try { brut = localStorage.getItem(storeKey); } catch (e) { brut = null; }
+  if (typeof brut === 'string' && brut.trim().charAt(0) === '{') {
+    let table = null;
+    try { table = JSON.parse(brut); } catch (e) { table = null; }
+    if (table && typeof table === 'object') Object.keys(table).forEach(k => plis.set(k, !!table[k]));
+  } else if (jeu && typeof jeu.forEach === 'function' && jeu.size) {
+    jeu.forEach(k => plis.set(String(k), !defautPlie));   // l'état que l'ancienne écriture rendait À CET INSTANT
+    persisterLesPlis(storeKey, plis);
+  }
+  if (jeu) { try { PLIS_PAR_JEU.set(jeu, plis); } catch (e) {} }
+  return plis;
+}
 // groupe repliable RÉUTILISABLE (même chrome que renderFreshness : .fgroup/.fgrouphd/.fgbody).
 // `set` = Set d'état plié (chargé via lsSet), `storeKey` = clé localStorage où le persister, `key` = clé
 // du groupe dans le Set. `nodes` = lignes DOM du corps. `dotHtml` (optionnel) = pastille de tête.
-// `defautPlie` (défaut : déplié) — l'état d'un groupe que PERSONNE n'a encore touché. Le jeu persisté ne
-// dit donc pas « replié » mais « ÉCARTE du défaut » : sans cela, un groupe replié par défaut que
-// l'exploitant OUVRE ne pourrait rien mémoriser (ouvrir ne fait que retirer une clé absente), et se
-// refermerait au rechargement. Les appelants qui n'en passent pas gardent exactement le contrat d'avant.
+// `defautPlie` (défaut : déplié) — l'état d'un groupe que PERSONNE n'a encore touché, et RIEN D'AUTRE
+// (`P11.18-l`) : le magasin retient l'état LAISSÉ, pas un écart à ce défaut, de sorte qu'un défaut qui
+// bouge ne retourne aucun geste. `set` reste le contrat des appelants : c'est la lecture ANCIENNE du
+// magasin, et elle ne sert plus qu'à la migration décrite au-dessus de `plisMemorises`.
 function collapsibleGroup(set, storeKey, key, label, count, nodes, dotHtml, defautPlie) {
-  const collapsed = set.has(key) ? !defautPlie : !!defautPlie;
+  const plis = plisMemorises(set, storeKey, defautPlie);
+  const collapsed = plis.has(key) ? plis.get(key) : !!defautPlie;
   const wrap = document.createElement('div'); wrap.className = 'fgroup' + (collapsed ? ' collapsed' : '');
   const hd = document.createElement('button'); hd.type = 'button'; hd.className = 'fgrouphd';
   hd.title = 'Plier / déplier ' + label;
@@ -1318,10 +1559,7 @@ function collapsibleGroup(set, storeKey, key, label, count, nodes, dotHtml, defa
     const ns = typeof nodes === 'function' ? (nodes() || []) : (nodes || []);
     ns.forEach(n => body.appendChild(n));
   };
-  const memoriserLePli = plie => {
-    if (plie !== !!defautPlie) set.add(key); else set.delete(key);
-    try { localStorage.setItem(storeKey, JSON.stringify([...set])); } catch (e) {}
-  };
+  const memoriserLePli = plie => { plis.set(key, !!plie); persisterLesPlis(storeKey, plis); };
   // `P11.15-b` — UN SEUL DÉPLI DANS LA CONSOLE. Ce groupe écrivait son `aria-expanded`, son clic et sa
   // bascule à côté de `disclosure`, qui est déjà le dépli des panneaux et des cellules trop longues : deux
   // mécanismes de pliage pour un même geste, dans le même fichier. L'état, la marque accessible et la

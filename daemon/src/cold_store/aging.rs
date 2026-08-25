@@ -347,7 +347,13 @@ fn balayer(
     let pass = match cold_aead_passphrase(conf, db_path) {
         Some(p) => p,
         None => {
-            eprintln!("[cold] PLUME_DB_KEY indisponible -> chiffrement at-rest impossible : aging cold SUSPENDU ce tick (fail-closed ; hot intact, aucun fichier écrit)");
+            // `P8.7-c` — LE REFUS SE DIT AVEC SA RAISON, et la raison est DÉRIVÉE de ce que la résolution
+            // vient d'essayer (`enonce_sans_cle`), jamais recopiée ici : ce site nommait `PLUME_DB_KEY`,
+            // c'est-à-dire UNE provenance sur trois, et se trompait de cause sur un tenant en clair.
+            eprintln!(
+                "[cold] chiffrement at-rest impossible : {} -> aging cold SUSPENDU ce tick (fail-closed ; hot intact, aucun fichier écrit)",
+                enonce_sans_cle(conf, db_path)
+            );
             // `P10.13-a` — PLUS DE GATE POSÉ ICI. Le `if cold_ret > retention_days` qui l'entourait vivait
             // en DEUX exemplaires (ici et en fin de passe) ; il est descendu DANS le détecteur, avec la
             // cadence, via `Bande`. Ce site ne peut donc plus diverger de l'autre, ni en oublier un.
@@ -597,10 +603,10 @@ fn emit_cold_aging_stall(conn: &Connection, now_ts: i64, lingering: i64, hot_win
     let dedup = format!("plume-cold-aging-stall-{bucket}");
     let msg = format!(
         "TIER COLD EN RETARD : {lingering} event(s) non-contrôle stagnent en HOT bien au-delà de la fenêtre \
-         chaude ({hot_window} j) sans avoir été columnarisés. L'aging cold ne draine plus le hot (PLUME_DB_KEY \
-         absente ? verify en échec ? ingest arrêté ?) -> le hot grossit vers la rétention étendue ({cold_ret} j) \
-         au lieu d'être plafonné à la fenêtre chaude (bloat RAM/disque, PAS de perte). Vérifier PLUME_DB_KEY et \
-         les journaux [cold]."
+         chaude ({hot_window} j) sans avoir été columnarisés. L'aging cold ne draine plus le hot (aucune clé \
+         at-rest résolue ? verify en échec ? ingest arrêté ?) -> le hot grossit vers la rétention étendue \
+         ({cold_ret} j) au lieu d'être plafonné à la fenêtre chaude (bloat RAM/disque, PAS de perte). Les \
+         journaux [cold] NOMMENT la cause, provenances de clé essayées comprises (`P8.7-c`)."
     );
     let fields = json!({
         "subsystem": "cold-tier",

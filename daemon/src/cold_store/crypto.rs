@@ -9,9 +9,11 @@
 //! l'en-tête age — sans données — précède le flux chiffré).
 //!
 //! DOMAINE SÉPARÉ (HKDF) : la CLÉ cold est dérivée par HKDF-SHA256 (label de DOMAINE `plume-cold-aead-v1`) de
-//! la clé SQLCipher du tenant (`PLUME_DB_KEY`), JAMAIS la clé brute ; AUCUN nouveau secret Vault. On NE réutilise
+//! la clé SQLCipher du tenant — CELLE QUI OUVRE LA BASE CHAUDE, quelle que soit sa provenance (`P8.7-c`) —,
+//! JAMAIS la clé brute ; AUCUN nouveau secret Vault. On NE réutilise
 //! JAMAIS la clé SQLCipher brute pour l'AEAD cold. Cold ON EXIGE le chiffrement : si la clé est indisponible ->
-//! FAIL-CLOSED (rien n'est agé, rien n'est écrit, rien n'est supprimé).
+//! FAIL-CLOSED (rien n'est agé, rien n'est écrit, rien n'est supprimé) — et il DIT laquelle des provenances
+//! il a essayées (`enonce_sans_cle`), un froid muet faisant croire à une rétention qu'on n'a pas.
 //!
 //! LECTURE : déchiffrement STREAMÉ -> tampon `Bytes` EN MÉMOIRE (fichiers ~8 Mio -> borné/bon marché ; le lecteur
 //! parquet exige un accès aléatoire au footer alors que le déchiffrement est séquentiel) -> décodage row-group par
@@ -63,11 +65,56 @@ const COLD_AEAD_INFO: &[u8] = b"plume-cold-aead-v1";
 /// deux moitiés du chiffrement at-rest ne dérivent plus de deux lectures, mais d'un seul appel sur le MÊME
 /// `HashMap` que celui de l'ouverture. Les tests qui fournissent leur clé par une conf explicite passent par
 /// exactement le même chemin (`cfg` env > conf), inchangés.
+///
+/// `P8.7-c` — LA PROVENANCE EST **UNE**, ET C'EST LE MÊME `or_else` QUE `db_key()`. `P9.6-a` a donné une
+/// TROISIÈME provenance à la clé d'ouverture — celle qu'une base NÉE chiffrée s'engendre à elle-même
+/// (`cle_auto_chemin`) — et cette moitié-ci ne la lisait pas : une base née sous la clé auto avait sa moitié
+/// chaude chiffrée et son tier froid FAIL-CLOSED. Ce n'était pas une régression (sans clé, le froid ne
+/// s'écrivait déjà pas) mais l'ASYMÉTRIE de la famille `P8.7-b`, à l'envers. Le repli est écrit ici avec la
+/// MÊME expression que dans `db_key()` : ce qui OUVRE la base et ce dont le froid DÉRIVE son AEAD ne
+/// peuvent plus répondre différemment.
+///
+/// CE QUI NE CHANGE POUR AUCUNE BASE EXISTANTE, et c'est le témoin qui compte (comme pour `P9.6-a`) : le
+/// repli n'est ÉVALUÉ que lorsque la clé explicite est absente, et il ne lit qu'un fichier que le démon
+/// n'écrit QUE sur une base NEUVE. Sur toute base antérieure — chiffrée par clé explicite (le repli n'est
+/// jamais atteint) comme restée en clair (le fichier n'existe pas) — le secret rendu est le MÊME qu'avant,
+/// donc les jours-files déjà écrits restent déchiffrables et le fail-closed reste fail-closed.
 pub(super) fn cold_base_secret(conf: &HashMap<String, String>, db_path: &str) -> Option<String> {
     if let Some(entry) = db_key_registry().lock().get(db_path).cloned() {
         return entry; // tenant enregistré : Some(clé)=chiffré / None=en clair (-> cold fail-closed, pas de clé)
     }
-    db_key_depuis(conf) // tenant défaut / mode 0 : fichier monté RO (fail-closed) -> env -> fichier de conf
+    // tenant défaut / mode 0 : fichier monté RO (fail-closed) -> env -> fichier de conf -> clé auto-engendrée.
+    db_key_depuis(conf).or_else(|| cle_auto_lire(&cle_auto_chemin(conf)))
+}
+
+/// `P8.7-c` — CE QU'UN TIER FROID QUI REFUSE D'ÉCRIRE DIT DE LUI-MÊME. Un froid inerte et muet fait croire
+/// à une rétention longue qu'on n'a pas ; « PLUME_DB_KEY indisponible » — le seul mot qu'il disait — nomme
+/// UNE provenance sur trois et se trompe carrément quand la cause est un tenant enregistré EN CLAIR.
+///
+/// LES DEUX CAUSES SONT DEUX FAITS, PAS UN SEUL : un tenant dont la base chaude n'est pas chiffrée ne PEUT
+/// pas voir son froid chiffré (ce serait la divergence `P8.7-b`, à l'envers), alors qu'un déploiement sans
+/// aucune clé attend seulement qu'on lui en donne une. Les confondre a un coût : le premier n'a rien à
+/// corriger, le second si.
+///
+/// LA LISTE DES PROVENANCES EST **DÉRIVÉE** de `CLES_AT_REST` — la table de précédence que la voie
+/// d'ouverture parcourt — et du chemin de clé auto RÉSOLU pour cette configuration. Elle ne peut donc pas
+/// se désaccorder de ce que `cold_base_secret` vient réellement d'essayer : une quatrième provenance
+/// ajoutée à la table entre dans la phrase sans que personne n'y touche.
+pub(super) fn enonce_sans_cle(conf: &HashMap<String, String>, db_path: &str) -> String {
+    if db_key_registry().lock().get(db_path).map(|e| e.is_none()).unwrap_or(false) {
+        return format!(
+            "le tenant `{db_path}` est ENREGISTRÉ EN CLAIR : sa base chaude n'est pas chiffrée, et \
+             chiffrer son tier froid avec la clé d'un autre remettrait les deux moitiés en désaccord. \
+             Il n'y a RIEN à corriger ici : chiffrer ce tenant est le geste qui débloque son froid"
+        );
+    }
+    format!(
+        "aucune provenance ne rend de clé — ni {} (fournies au déploiement), ni `{}` (clé qu'une base \
+         NÉE chiffrée s'engendre). Le tier froid dérive son secret de la MÊME provenance que l'ouverture \
+         de la base chaude : sans clé chaude, aucun jour-file ne peut être écrit",
+        CLES_AT_REST.map(|c| format!("`{c}`")).join(" / "),
+        cle_auto_chemin(conf)
+    )
 }
 
 /// Dérive la PASSPHRASE age du tier cold : HKDF-SHA256(ikm = clé SQLCipher, salt = ∅, info = `plume-cold-aead-v1`)

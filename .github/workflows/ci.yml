@@ -294,6 +294,14 @@ env:
   # positif et un témoin négatif : le compte des lignes `: test` et le total que cargo imprime
   # lui-même concordent, et `-- --list --ignored` rend **0 test**. Le total énuméré est donc bien le
   # total qui PASSE, et non un total dont il faudrait retrancher des tests ignorés.
+  # ÉCART DÉPLACÉ le 2026-08-25, et c'est la PREMIÈRE fois : il passe de **220** à **221**. Tous les récits
+  # ci-dessous parlent d'un écart de 220 — ils décrivent l'arbre de leur date, ils ne sont pas faux, mais
+  # l'invariant qu'ils énoncent a cessé de valoir. RAISON MESURÉE : le lot `P8.7-c` ajoute UN test qui ne
+  # peut EXISTER que sous la feature (il vérifie que le secret du tier froid suit la provenance de la clé
+  # d'ouverture, et la fonction qu'il exerce n'est visible que là). Les deux autres tests du même lot
+  # (`P11.18-v`, la machine d'une alerte enfin SERVIE) sont sans `cfg` et entrent dans les deux profils.
+  # Énumération du 2026-08-25 : **1331** par défaut, **1552** avec `cold_tier`, écart **221**. Un écart qui
+  # bouge n'est pas une alerte en soi ; un écart qui bouge SANS RAISON ÉCRITE en serait une.
   # CONFIRMÉ le 2026-08-20 par une ÉNUMÉRATION INDÉPENDANTE du même arbre — **1125** par défaut,
   # **1345** avec `cold_tier`, écart **220**, `--list --ignored` toujours **0** — donc AUCUN chiffre
   # n'est déplacé ici. Cette énumération porte le lot P5.7-b (le SOC s'alerte sur sa propre mise à
@@ -360,7 +368,7 @@ env:
   # listage du répertoire ne voit pas, une mesure impraticable qui rend un verdict et pas un zéro, le
   # contrôle positif du démarrage, les quatre verdicts du quota, et la mutation dans les deux sens sur
   # un tri qui déverse pour de vrai).
-  EXPECTED_TESTS: "1329"
+  EXPECTED_TESTS: "1331"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -683,7 +691,7 @@ jobs:
           # `cold_tier` pour 1286 par défaut — l'écart reste **220**. Ce compteur-ci bouge AVEC
           # l'autre : cinq tests sans `cfg` entrent dans les deux profils, et le laisser en arrière
           # rendrait ce job rouge sans rien mesurer de neuf.
-          EXPECTED_COLD_TESTS: "1549"
+          EXPECTED_COLD_TESTS: "1552"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

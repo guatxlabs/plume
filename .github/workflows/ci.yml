@@ -736,6 +736,13 @@ jobs:
     steps:
       - name: Checkout plume
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # `P8.9-f` — la garde « l'index concorde avec ce qu'un commit déclare fermé » compare
+          # l'HISTOIRE à l'index. MESURÉ le 2026-08-25 : sur un clone `--depth 1` elle sort en 2,
+          # c'est-à-dire qu'elle REFUSE DE CONCLURE au lieu de verdir en étant aveugle — le
+          # comportement voulu, mais elle n'atteste alors rien. L'historique complet est ce qui la
+          # rend utile ; ce dépôt en compte quelques centaines de commits, le coût est nul.
+          fetch-depth: 0
 
       # Le compteur de la suite est écrit ICI et NULLE PART AILLEURS. Il l'a été dans quatre
       # fichiers, et CONTRIBUTING prescrivait même de mettre les quatre à jour ; relevé le
@@ -1014,6 +1021,25 @@ jobs:
       # texte, et pas les tableaux montrés dans un bloc de code, qui sont des échantillons.
       - name: Une ligne de tableau porte la forme que son en-tête déclare (P8.9-d)
         run: python3 .github/scripts/check_every_table_row_carries_the_shape_its_header_declares.py
+
+      # `P8.9-f` — L'INDEX ET LES COMMITS POUVAIENT SE CONTREDIRE SANS QUE RIEN NE LE DISE. Deux fois
+      # le 2026-08-25, des clés commitées, déployées et VÉRIFIÉES EN PRODUCTION figuraient encore
+      # parmi les clés OUVERTES : qui lit « ce qui est ouvert » ne voyait pas ce qui est fait. Cette
+      # garde compare ce qu'un commit AFFIRME fermer à ce que l'index DÉCLARE, sans énumérer ni clé ni
+      # fichier — le vocabulaire de fermeture est DÉRIVÉ des déclarations datées de l'index, et une
+      # famille impure est REJETÉE (« déployé » n'est pas « fermé »). La fermeture doit SUIVRE le
+      # groupe de clés : le critère « même ligne » accuserait six clés ouvertes à tort.
+      # ELLE NE FERME PAS LA CLÉ QUI LA FONDE, ET ELLE LE DIT LA PREMIÈRE : rejouée sur l'arbre
+      # d'avant chacun des deux incidents, elle rend ZÉRO les deux fois. Deux causes MESURÉES, dont
+      # une qui vaut au-delà d'ici : un lexique dérivé de l'usage n'admet une famille qu'après
+      # plusieurs déclarations déjà posées, donc **la PREMIÈRE fermeture écrite avec un mot neuf est
+      # toujours manquée**. Les deux remèdes évidents ont été RÉFUTÉS par la mesure — dériver aussi du
+      # vocabulaire des commits ajoute vingt familles dont dix-huit ne ferment rien et deux
+      # accusations FAUSSES pour zéro légitime ; exiger la convention en amont refuserait
+      # quatre-vingt-neuf commits de fermeture sur cent-dix, et ne dirait rien d'une bascule ABSENTE,
+      # qui est justement le défaut. Elle refuse de conclure (code 2) sous ses planchers.
+      - name: L'index concorde avec ce qu'un commit déclare fermé — posée sous P8.9-f, qu'elle ne ferme pas
+        run: python3 .github/scripts/check_the_index_agrees_with_what_a_commit_closes.py
 
       # MÊME FAMILLE, APPLIQUÉE AU PLAN DES MODULES : un document que rien ne relit dérive. Le plan
       # (`docs/MODULE-MAP.md`) nommait encore `idp.rs` et `compliance.rs` alors que l'un était devenu

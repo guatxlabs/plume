@@ -15,7 +15,7 @@ axum = "0.7"
 parking_lot = "0.12"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync"] }
 tower-http = { version = "0.5", features = ["fs", "compression-gzip", "catch-panic"] }
-rusqlite = { version = "0.31", features = ["bundled-sqlcipher-vendored-openssl", "functions", "hooks"] }
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl", "functions", "hooks"] }
 regex = "1"
 prost = "0.13"
 snap = "1"

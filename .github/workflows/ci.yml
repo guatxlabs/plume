@@ -1031,6 +1031,14 @@ jobs:
       - name: Une clé se lit sous le titre de sa phase (P8.9-g)
         run: python3 .github/scripts/check_every_key_sits_under_the_section_of_its_phase.py
 
+      # `P8.9-h` — UNE CELLULE PORTAIT DEUX MARQUEURS D'ÉTAT COLLÉS, valeur que la légende ne déclare
+      # pas. Elle échappait à tout relevé qui lit la colonne — c'est un compte faux qui l'a révélée —
+      # et l'un des deux marqueurs contredisait le texte de sa propre cellule. Les états admis sont
+      # DÉRIVÉS de la table de légende du document : en ajouter un n'oblige à rien toucher ici, et un
+      # document qui porte des clés sans légende fait REFUSER DE CONCLURE plutôt que passer au vert.
+      - name: L'état d'une clé est un de ceux que la légende déclare (P8.9-h)
+        run: python3 .github/scripts/check_a_key_state_is_one_the_legend_declares.py
+
       # `P8.9-f` — L'INDEX ET LES COMMITS POUVAIENT SE CONTREDIRE SANS QUE RIEN NE LE DISE. Deux fois
       # le 2026-08-25, des clés commitées, déployées et VÉRIFIÉES EN PRODUCTION figuraient encore
       # parmi les clés OUVERTES : qui lit « ce qui est ouvert » ne voyait pas ce qui est fait. Cette

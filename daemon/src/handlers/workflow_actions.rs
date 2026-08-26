@@ -116,7 +116,7 @@ pub(crate) async fn workflow_action_create(State(st): State<AppState>, Extension
     }
 }
 
-/// DELETE /api/workflow-actions/:id — supprime (editor+, audité).
+/// DELETE /api/workflow-actions/{id} — supprime (editor+, audité).
 pub(crate) async fn workflow_action_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     crate::req_conn!(st, au, conn);
@@ -138,7 +138,7 @@ pub(crate) async fn workflow_action_delete(State(st): State<AppState>, Extension
     }
 }
 
-/// POST /api/workflow-actions/:id/resolve {value} — RÉSOUT l'action pour une valeur de champ concrète (viewer+
+/// POST /api/workflow-actions/{id}/resolve {value} — RÉSOUT l'action pour une valeur de champ concrète (viewer+
 /// via readonly_post). Retourne une CIBLE DE NAVIGATION prête (GXQL recompilé / URL encodée) OU, pour
 /// 'response', l'action de l'enum + la valeur (la console la joue via /api/actions -> approbation + ledger).
 /// La valeur est SANITISÉE ; jamais d'exécution ici.

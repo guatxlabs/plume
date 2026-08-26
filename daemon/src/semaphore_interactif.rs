@@ -34,8 +34,14 @@
 //! elle-même.
 //!
 //! LA CARDINALITÉ EST BORNÉE, ET C'EST UNE CONTRAINTE DE MÉMOIRE, PAS UN DÉTAIL. L'étiquette est un
-//! GABARIT (`/api/v1/label/:name/values`), jamais une URL, jamais un paramètre, jamais un
-//! utilisateur : deux requêtes sur des chemins concrets différents partagent la même étiquette. Le
+//! GABARIT (`/api/v1/label/{name}/values`), jamais une URL, jamais un paramètre, jamais un
+//! utilisateur : deux requêtes sur des chemins concrets différents partagent la même étiquette. La
+//! SYNTAXE de ce gabarit est celle du routeur, et elle a changé : `:name` jusqu'à axum 0.7, `{name}`
+//! depuis axum 0.8 — donc la VALEUR de l'étiquette `route` exposée par `/metrics` a changé avec
+//! elle : un tableau de bord qui sélectionnait `route="/api/x/:id"` ne trouve plus que `route="/api/x/{id}"`,
+//! donc il ne sélectionne plus rien. CE FAIT NE PEUT PAS RESTER ICI : qui scrape ce démon ne lit pas sa
+//! source, donc il est APPOSÉ AU `# HELP` des six séries étiquetées (`SYNTAXE_ETIQUETTE_ROUTE`), écrit
+//! une fois et rendu six. Le
 //! registre est en OUTRE plafonné à `ROUTES_CAP` entrées + une entrée de débordement, de sorte que
 //! la borne ne dépend PAS du nombre de routes déclarées dans le routeur : au pire
 //! `(ROUTES_CAP + 1)` valeurs d'étiquette. Un débordement ne perd pas la mesure (elle tombe dans le
@@ -303,6 +309,26 @@ pub(crate) fn permis_pris(permis: OwnedSemaphorePermit, attente: Option<Duration
     PermitMesure { _permis: permis, compteurs, depuis: Instant::now() }
 }
 
+/// CE QUE LA VALEUR DE L'ÉTIQUETTE `route` NE DIT PAS D'ELLE-MÊME — ET QUI VOYAGE DONC DANS LE `# HELP`,
+/// PAS SEULEMENT DANS UN COMMENTAIRE DE MODULE. Sa SYNTAXE est celle du routeur, et le routeur en a
+/// changé : `:id` jusqu'à axum 0.7, `{id}` depuis axum 0.8. Personne qui scrape ce démon ne lit sa source ;
+/// ce qui n'est pas dans l'exposition n'atteint pas l'exploitant, et une règle d'alerte qui sélectionne sur
+/// `route=` devient MUETTE sans rien rougir — une série qui disparaît ne déclenche pas, elle se tait.
+///
+/// ÉCRIT UNE FOIS, RENDU SUR LES SIX SÉRIES ÉTIQUETÉES : `bloc` l'appose, donc une série ajoutée demain le
+/// porte sans que personne y pense, et les six ne peuvent pas diverger. Rien ici ne dépend d'un état
+/// d'installation : c'est la syntaxe d'un gabarit, une grandeur de CONCEPTION.
+///
+/// CE QU'IL NE TIENT PAS : il DÉCRIT la rupture, il ne la RÉPARE pas — aucun alias, aucune double
+/// exposition. Un tableau de bord écrit pour un plume antérieur doit être réécrit ; la seule chose que
+/// cette ligne garantit, c'est que son auteur apprend POURQUOI en lisant la métrique elle-même.
+// La forme d'AVANT est citée ici À CÔTÉ de la nouvelle, et c'est la seule façon dont ce dépôt tolère de
+// l'écrire (`check_route_templates_use_the_router_syntax.py`) : une ligne qui ne porte que l'ancienne
+// DÉCRIT un contrat mort, une ligne qui porte les deux NOMME une rupture.
+const SYNTAXE_ETIQUETTE_ROUTE: &str =
+    "— la valeur est un GABARIT en syntaxe axum 0.8 (`/api/cases/{id}`) et non l'ancienne (`/api/cases/:id`) : \
+     un sélecteur `route=` écrit pour un plume antérieur ne sélectionne plus rien";
+
 /// Échappement d'une valeur d'étiquette Prometheus. Les étiquettes ne viennent QUE de la table de
 /// routes et de deux constantes — donc rien à échapper dans l'état actuel du routeur ; il est là pour
 /// ça reste vrai si un gabarit exotique apparaît, pas pour réparer une entrée utilisateur.
@@ -322,7 +348,7 @@ pub(crate) fn exposition_prom() -> String {
     let instantane = registre().instantane();
     let mut o = String::with_capacity(512 + instantane.len() * 320);
     let bloc = |o: &mut String, nom: &str, typ: &str, aide: &str, valeur: &dyn Fn(&Compteurs) -> String| {
-        o.push_str(&format!("# HELP {nom} {aide}\n# TYPE {nom} {typ}\n"));
+        o.push_str(&format!("# HELP {nom} {aide} {SYNTAXE_ETIQUETTE_ROUTE}\n# TYPE {nom} {typ}\n"));
         for (r, c) in &instantane {
             o.push_str(&format!("{nom}{{route=\"{r}\"}} {}\n", valeur(c)));
         }

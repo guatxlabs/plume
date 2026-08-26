@@ -436,7 +436,7 @@ pub(crate) fn net_ban_is_blocked(ip: &str, now_ts: i64) -> bool {
 
 /// Chemins EXEMPTÉS du guard : sondes k8s + scrape Prometheus (comme `host_guard`) ET la VALVE DE RÉCUPÉRATION
 /// `/api/netban` — un opérateur dont l'IP réelle a été bannie par erreur DOIT pouvoir
-/// se DÉBANNIR EN DIRECT (`DELETE /api/netban/:ip`) sans redémarrage/port-forward. Sûr : `/api/netban` reste gardé
+/// se DÉBANNIR EN DIRECT (`DELETE /api/netban/{ip}`) sans redémarrage/port-forward. Sûr : `/api/netban` reste gardé
 /// EN AVAL par `auth_guard`+RBAC admin-only -> un attaquant banni SANS session admin y prend 401/403 (il ne gagne
 /// aucune route utile) ; seul un admin authentifié peut lever son propre ban. Un ban ne doit jamais masquer la
 /// supervision ni se rendre irréversible depuis l'UI.

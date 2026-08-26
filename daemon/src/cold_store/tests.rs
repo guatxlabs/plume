@@ -1088,6 +1088,150 @@ fn h2_reparse_update_spares_aged_rows_when_cold_on() {
 /// Robuste face à l'env : c'est un « autre secret » quel que soit le résultat de `cold_base_secret`.
 const WRONG_PASS: &str = "cle-completement-etrangere-au-tenant-cold-000";
 
+/// L'OKM GELÉ de la dérivation cold, en base64 — la valeur EXACTE que `cold_aead_passphrase` rend pour
+/// `TEST_DB_KEY`. Ce n'est pas un chiffre relevé sur une installation : c'est la sortie d'une fonction PURE
+/// (RFC 5869) appliquée à une clé de test PUBLIQUE, donc une constante de CONCEPTION, reproductible par
+/// quiconque lit ce fichier.
+const OKM_COLD_GELE_B64: &str = "QZuPiiRfSyzpskEGFncj+ceQ0kEt2wq3hCSWdc8mmvc=";
+
+/// CE QUE CE TEST EXISTE POUR ATTRAPER : une MONTÉE DE VERSION de `hkdf`/`sha2` qui changerait l'octet
+/// dérivé. Ce risque n'est pas théorique — `hkdf` 0.13.0 a forcé la crate à porter DEUX générations de
+/// `sha2` (`sha2 0.10` direct + `sha2_v11`), et rien dans le compilateur ne dit qu'un jour l'une n'a pas
+/// été substituée à l'autre par erreur. Or la passphrase cold n'est pas un détail interne : chaque jour-file
+/// froid DÉJÀ ÉCRIT sur disque n'est déchiffrable que par elle. La faire dériver autrement rend ces fichiers
+/// définitivement illisibles — et sans témoin, la panne ne se voit qu'à la première RELECTURE d'un froid
+/// ancien, c'est-à-dire des mois plus tard.
+///
+/// UNE AFFIRMATION, ET QUATRE TÉMOINS QUI L'ENCADRENT :
+///   1. TÉMOINS POSITIFS — les vecteurs PUBLIÉS RFC 5869 (§ A.1 cas 1, § A.3 cas 3) passent par la MÊME
+///      expression `hkdf::Hkdf::<sha2_v11::Sha256>` que la production. Sans eux, l'égalité gelée du point 2
+///      ne prouverait que « le code rend ce qu'il rend » : elle ancre l'implémentation à la NORME.
+///   1 bis. LE SALT QUE LA PRODUCTION N'ÉCRIT PAS — la production appelle `new(None, …)` et laisse la
+///      bibliothèque substituer elle-même 32 octets nuls. C'est la seule convention qu'une montée de
+///      version pourrait changer sans rien casser de visible : elle est donc ancrée au vecteur PUBLIÉ
+///      § A.3, sans introduire AUCUNE constante nouvelle.
+///   2. LA VALEUR GELÉE — `cold_aead_passphrase` rend `OKM_COLD_GELE_B64` pour `TEST_DB_KEY`.
+///   3. TÉMOIN NÉGATIF (label) — un SEUL octet du label de domaine (`…-v1` -> `…-v2`) doit rendre une autre
+///      valeur. Sans lui, le point 2 passerait encore si `expand` rendait des zéros ou ignorait `info`.
+///   3 bis. TÉMOIN NÉGATIF (ikm) — un SEUL octet de la clé de base doit rendre une autre valeur. Sans lui,
+///      le point 2 passerait encore si la dérivation ignorait son ikm.
+///
+/// UN TÉMOIN QUI SE DÉSARME SELON L'ENVIRONNEMENT DE CELUI QUI LE LANCE N'EST PAS UN TÉMOIN. Ce test a
+/// porté, jusqu'au 2026-08-26, une trappe : si `PLUME_DB_KEY` était dans l'environnement du lanceur (l'env
+/// PRIME sur la conf dans `db_key_depuis`, donc l'ikm n'était plus `TEST_DB_KEY`), le point 2 imprimait une
+/// phrase et RENDAIT LA MAIN. Mesuré ce jour-là sur cet arbre, `--features cold_tier` : sous
+/// `PLUME_DB_KEY=…`, `cargo test` rend `test result: ok. 1 passed` et **zéro** occurrence de la phrase — le
+/// harnais CAPTURE la sortie des tests qui passent. La phrase n'apparaît qu'avec `--nocapture` (témoin
+/// positif : elle existe, la branche était bien prise). Autrement dit la SEULE assertion qui traverse le
+/// chemin de production sautait, en vert, sans un mot dans le journal du job.
+///
+/// LE REMÈDE N'EST PAS DE MIEUX DIRE, C'EST DE NE PLUS DÉPENDRE — ET LA VOIE LA PLUS COURTE N'EST PAS DE
+/// NETTOYER L'ENVIRONNEMENT, C'EST DE NE PLUS LE CONSULTER. `cold_base_secret` interroge TROIS provenances
+/// dans un ordre FIXÉ, et la PREMIÈRE est le registre de clés de tenant — consulté AVANT l'environnement et
+/// avant la conf (`crypto.rs`). En enregistrant `TEST_DB_KEY` sous un db_path qui n'appartient qu'à ce test,
+/// l'ikm est donc épinglé par la branche que rien ne peut coiffer : ni `PLUME_DB_KEY` dans le shell du
+/// lanceur, ni un fichier de conf, ni la clé auto-engendrée. Le test ne LIT plus l'environnement du tout —
+/// il n'a donc plus ni verrou d'environnement à prendre ni variable à retirer et à remettre, et il rend le
+/// MÊME verdict dans un shell propre et dans un shell pollué. C'est le sens de « rendre un témoin
+/// indépendant » : pas une trappe mieux rédigée, une dépendance en moins.
+///
+/// L'ENREGISTREMENT EST DÉFAIT AVANT LA MOINDRE ASSERTION, et c'est délibéré : une valeur d'abord LUE, le
+/// registre ensuite REMIS EN ÉTAT, la comparaison en dernier. Aucun panic d'assertion ne peut donc laisser
+/// une entrée derrière lui — ce qu'un `unregister` écrit après le `assert_eq!` ne tiendrait pas (le
+/// déroulement de la pile le sauterait), et ce pour quoi les autres tests de ce fichier ont besoin d'être
+/// relus, pas imités.
+///
+/// CE QUE CE TEST NE TIENT PAS : il gèle la dérivation à partir du secret de base, PAS la RÉSOLUTION de ce
+/// secret. Si `cold_base_secret` changeait de provenance ou d'ordre de précédence, la dérivation resterait
+/// juste et le froid deviendrait quand même illisible — famille `P8.7-b/-c`, couverte ailleurs. Il ne tient
+/// pas davantage `tpass()`, l'aide de fixture qui fournit la clé par une CONF (db_path `""`) : sous un
+/// `PLUME_DB_KEY` exporté, `tpass()` rend légitimement autre chose, parce que l'environnement PRIME sur la
+/// conf — c'est le produit qui parle, pas une régression, et geler `tpass()` reviendrait à geler le shell.
+#[test]
+fn cold_hkdf_derivation_gelee_rfc5869() {
+    // 1. TÉMOIN POSITIF — RFC 5869 § A.1 (cas 1) : salt/ikm/info fournis, 42 octets attendus.
+    let ikm_rfc = [0x0bu8; 22];
+    let salt_rfc: Vec<u8> = (0u8..=0x0c).collect();
+    let info_rfc: Vec<u8> = (0xf0u8..=0xf9).collect();
+    let mut okm = [0u8; 42];
+    hkdf::Hkdf::<sha2_v11::Sha256>::new(Some(&salt_rfc), &ikm_rfc).expand(&info_rfc, &mut okm).unwrap();
+    assert_eq!(
+        hexa(&okm),
+        "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865",
+        "RFC 5869 § A.1 : l'implémentation liée doit rendre le vecteur PUBLIÉ, pas seulement être stable"
+    );
+    // … et § A.3 (cas 3) : salt VIDE + info VIDE — le cas dégénéré que le point 2 approche (salt ∅).
+    let mut okm3 = [0u8; 42];
+    hkdf::Hkdf::<sha2_v11::Sha256>::new(Some(&[]), &ikm_rfc).expand(&[], &mut okm3).unwrap();
+    assert_eq!(
+        hexa(&okm3),
+        "8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d9d201395faa4b61a96c8",
+        "RFC 5869 § A.3 (salt et info vides)"
+    );
+    // … et la MÊME expression avec `None` — la forme EXACTE qu'emploie la production (crypto.rs) et la
+    // SEULE où la bibliothèque choisit elle-même le salt (32 octets nuls). L'ancrer au vecteur PUBLIÉ § A.3
+    // coûte une ligne et n'introduit AUCUNE constante nouvelle : HMAC complète toute clé de moins d'un bloc
+    // par des zéros, donc salt vide et salt de 32 zéros donnent le même PRK. Sans elle, la convention de
+    // `None` ne serait exercée QUE par le point 2 — c'est-à-dire par la seule assertion qu'une trappe a déjà
+    // su sauter une fois.
+    let mut okm3_none = [0u8; 42];
+    hkdf::Hkdf::<sha2_v11::Sha256>::new(None, &ikm_rfc).expand(&[], &mut okm3_none).unwrap();
+    assert_eq!(
+        hexa(&okm3_none),
+        hexa(&okm3),
+        "`new(None, …)` doit rendre le vecteur PUBLIÉ § A.3 comme `new(Some(&[]), …)` : si la bibliothèque \
+         changeait le salt qu'elle substitue à `None`, la production (salt = ∅) dériverait AUTRE CHOSE"
+    );
+
+    // 3. TÉMOIN NÉGATIF, écrit AVANT l'égalité qu'il protège : un octet du label change tout.
+    let mut okm_v2 = [0u8; 32];
+    hkdf::Hkdf::<sha2_v11::Sha256>::new(None, TEST_DB_KEY.as_bytes())
+        .expand(b"plume-cold-aead-v2", &mut okm_v2)
+        .unwrap();
+    let v2 = base64::engine::general_purpose::STANDARD.encode(okm_v2);
+    assert_ne!(
+        v2, OKM_COLD_GELE_B64,
+        "le label de DOMAINE doit porter : `…-v2` ne peut pas dériver la même clé que `…-v1`"
+    );
+
+    // 3 bis. TÉMOIN NÉGATIF SUR L'IKM — un octet de la clé de base change la valeur dérivée. Sans lui, le
+    // point 2 passerait encore si la dérivation ignorait son ikm (une constante par label suffirait).
+    let mut ikm_mute = TEST_DB_KEY.as_bytes().to_vec();
+    *ikm_mute.last_mut().unwrap() ^= 1;
+    let mut okm_ikm = [0u8; 32];
+    hkdf::Hkdf::<sha2_v11::Sha256>::new(None, &ikm_mute).expand(COLD_AEAD_INFO, &mut okm_ikm).unwrap();
+    assert_ne!(
+        base64::engine::general_purpose::STANDARD.encode(okm_ikm),
+        OKM_COLD_GELE_B64,
+        "un octet de l'IKM doit porter : deux clés SQLCipher distinctes ne peuvent pas dériver la même clé cold"
+    );
+
+    // 2. LA VALEUR GELÉE — par le VRAI chemin de production (`cold_aead_passphrase`), et
+    //    INCONDITIONNELLEMENT : l'ikm est épinglé par la provenance que rien ne coiffe (le registre), donc
+    //    l'assertion s'exécute quel que soit l'environnement du lanceur. Ordre imposé : enregistrer, LIRE,
+    //    désenregistrer, PUIS comparer — l'entrée est retirée avant qu'un panic puisse la laisser derrière.
+    let db_path_du_gel = format!("gel-hkdf-{}", UNIQ.fetch_add(1, Ordering::SeqCst));
+    register_db_key(&db_path_du_gel, Some(TEST_DB_KEY.to_string()));
+    let obtenu = cold_aead_passphrase(&HashMap::new(), &db_path_du_gel);
+    unregister_db_key(&db_path_du_gel);
+    assert_eq!(
+        obtenu.as_deref(),
+        Some(OKM_COLD_GELE_B64),
+        "HKDF-SHA256(ikm=TEST_DB_KEY, salt=∅, info=`plume-cold-aead-v1`) a CHANGÉ : tout jour-file cold déjà \
+         écrit devient indéchiffrable. Ne pas « mettre à jour » cette constante sans avoir établi pourquoi \
+         la dérivation a bougé."
+    );
+}
+
+/// Hexa minuscule d'un buffer — les vecteurs RFC 5869 sont publiés sous cette forme.
+fn hexa(b: &[u8]) -> String {
+    use std::fmt::Write as _;
+    b.iter().fold(String::with_capacity(b.len() * 2), |mut s, x| {
+        let _ = write!(s, "{x:02x}");
+        s
+    })
+}
+
 // PREUVE DE CONFIDENTIALITÉ (le cœur du durcissement #18) : une chaîne d'event distinctive écrite via le VRAI
 // chemin d'aging n'apparaît EN CLAIR nulle part dans les octets bruts du jour-file cold (chiffré at-rest).
 #[test]

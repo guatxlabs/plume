@@ -733,7 +733,7 @@
     }
 
     /// AUTZ : /api/runbooks* = ADMIN toutes méthodes (route_min_role section 3, GET compris) ; le picker/attach du
-    /// wizard (/api/cases/:id/runbook(s)) reste editor+/viewer+ (inchangé) -> un viewer/editor n'accède PAS à
+    /// wizard (/api/cases/{id}/runbook(s)) reste editor+/viewer+ (inchangé) -> un viewer/editor n'accède PAS à
     /// l'authoring mais garde le wizard.
     #[test]
     fn runbook_authoring_routes_admin_only() {

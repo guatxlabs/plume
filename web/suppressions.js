@@ -62,7 +62,7 @@ async function clearSuppression(e) {
 // Un silence mute les NOTIFICATIONS des alertes qui correspondent à {champ=valeur,…} jusqu'à son expiration
 // (TTL borné côté démon : jamais permanent). Les alertes restent stockées et visibles dans la file : un
 // silence ne crée aucun angle mort de détection, seulement un silence de notification. Routes : POST /silences
-// (créer), PUT /silences/:id (modifier — ajoutée pour ce panneau), DELETE /silences/:id (lever) ; chacune
+// (créer), PUT /silences/{id} (modifier — ajoutée pour ce panneau), DELETE /silences/{id} (lever) ; chacune
 // est auditée (ledger + event plume-config, sévérité 3).
 // =================================================================================================
 const SILENCE_FIELDS = ['severity', 'mitre', 'host', 'source', 'env', 'tag']; // miroir de MATCHER_FIELDS (alerting.rs)

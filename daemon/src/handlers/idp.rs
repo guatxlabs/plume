@@ -296,7 +296,7 @@ fn oidc_endpoints_for(cfg: &OidcCfg) -> Result<OidcEndpoints, String> {
     oidc_resolve_endpoints(cfg, discovery.as_ref())
 }
 
-/// GET /api/auth/oidc/:name/start — démarre le login OIDC : pose un cookie de state signé (Lax, court) et
+/// GET /api/auth/oidc/{name}/start — démarre le login OIDC : pose un cookie de state signé (Lax, court) et
 /// redirige (302) vers l'authorize endpoint. PUBLIC. Fail-closed : provider inconnu/désactivé/misconfig -> 4xx.
 pub(crate) async fn oidc_start(State(st): State<AppState>, Path(name): Path<String>) -> Response {
     if st.multi_tenant {
@@ -440,7 +440,7 @@ pub(crate) async fn oidc_callback(State(st): State<AppState>, headers: axum::htt
 // XML-DSig/XSW est feature-gated (`saml`) dans idp.rs -> sans la feature, ces handlers renvoient 501.
 // ================================================================================================
 
-/// GET /api/auth/saml/:name/start — construit l'AuthnRequest (HTTP-Redirect), pose le RelayState signé +
+/// GET /api/auth/saml/{name}/start — construit l'AuthnRequest (HTTP-Redirect), pose le RelayState signé +
 /// un cookie de flux (Lax, best-effort) et redirige (302) vers l'IdP. PUBLIC. Fail-closed.
 pub(crate) async fn saml_start(State(st): State<AppState>, Path(name): Path<String>) -> Response {
     if st.multi_tenant {
@@ -544,7 +544,7 @@ pub(crate) async fn saml_acs(
     resp
 }
 
-/// GET /api/auth/saml/:name/metadata — métadonnée SP (XML public, à fournir à l'IdP). PUBLIC.
+/// GET /api/auth/saml/{name}/metadata — métadonnée SP (XML public, à fournir à l'IdP). PUBLIC.
 pub(crate) async fn saml_metadata(State(st): State<AppState>, Path(name): Path<String>) -> Response {
     if st.multi_tenant {
         return deny_multitenant();

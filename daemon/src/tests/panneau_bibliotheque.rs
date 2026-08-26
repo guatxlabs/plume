@@ -408,7 +408,7 @@ async fn un_snapshot_ne_fige_pas_le_panneau_prive_d_un_autre_proprietaire() {
 /// « UN VRAI EDITOR », BOUT EN BOUT — par le ROUTEUR RÉEL (toutes ses couches, sur une socket
 /// loopback), pas par un appel direct au handler. Sans ce test, « l'editor ne peut pas rattacher »
 /// resterait AMBIGU : refusé par le RBAC (la route lui serait fermée) ou refusé par la PORTE ? On
-/// mesure les deux : la route `POST /api/panels/:id` lui est OUVERTE (invariant rbac.rs §7,
+/// mesure les deux : la route `POST /api/panels/{id}` lui est OUVERTE (invariant rbac.rs §7,
 /// « l'editor garde ce CRUD » — 204 sur une édition ordinaire), et c'est bien la PORTE qui rend le
 /// 403 sur le rattachement d'une définition SQL brut.
 #[tokio::test]

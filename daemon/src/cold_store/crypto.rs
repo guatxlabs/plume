@@ -50,7 +50,7 @@ pub(super) fn cold_decrypt_count_reset() {
 }
 
 /// Label de DOMAINE (HKDF-SHA256 `info`) : sépare la clé cold de tout autre usage de la clé SQLCipher.
-const COLD_AEAD_INFO: &[u8] = b"plume-cold-aead-v1";
+pub(super) const COLD_AEAD_INFO: &[u8] = b"plume-cold-aead-v1";
 
 /// Résout le SECRET DE BASE (la clé SQLCipher du tenant) dont on DÉRIVE la clé cold. Ordre (le plus SPÉCIFIQUE
 /// d'abord) : (1) REGISTRE par-tenant (frontière crypto multi-tenant #2a-3 : entrée `Some(k)` = clé du tenant ;
@@ -122,7 +122,10 @@ pub(super) fn enonce_sans_cle(conf: &HashMap<String, String>, db_path: &str) -> 
 /// JAMAIS la clé SQLCipher brute pour l'AEAD cold. `None` si aucun secret de base -> l'appelant FAIL-CLOSE.
 pub(super) fn cold_aead_passphrase(conf: &HashMap<String, String>, db_path: &str) -> Option<String> {
     let base = cold_base_secret(conf, db_path)?;
-    let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, base.as_bytes()); // salt ∅ : le domaine est porté par `info`
+    // `sha2_v11` = `sha2` 0.11 (SHA-256 de la génération `digest` 0.11), et NON le `sha2` 0.10 direct de la
+    // crate : `hkdf` 0.13 exige `H: digest 0.11::EagerHash`. MÊME algorithme, MÊME sortie — HKDF-SHA256 est
+    // RFC 5869 des deux côtés, et `cold_hkdf_derivation_gelee_rfc5869` gèle l'octet.
+    let hk = hkdf::Hkdf::<sha2_v11::Sha256>::new(None, base.as_bytes()); // salt ∅ : domaine porté par `info`
     let mut okm = [0u8; 32];
     // 32 octets (= 1 bloc SHA-256) << 255*32 -> `expand` ne peut PAS échouer ; `.ok()?` défensif.
     hk.expand(COLD_AEAD_INFO, &mut okm).ok()?;

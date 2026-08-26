@@ -1,10 +1,47 @@
 #!/usr/bin/env bash
 # Verifie qu'un message de commit s'adresse au LECTEUR DU CODE et non a une personne.
 # Utilise par le hook `commit-msg` (local) ET par la CI (non contournable).
-# Argument : un fichier contenant le message. Sortie 1 = refus, avec la raison.
+# Argument : un fichier contenant le message.
+# Sorties : 0 = admissible · 1 = REFUS, avec la raison · 2 = REFUS DE CONCLURE (rien n'a pu
+# etre lu). Un appelant qui confondrait 1 et 2 acquitterait ce qu'il n'a pas lu.
 set -uo pipefail
 f="${1:?usage: verifier-message.sh <fichier>}"
-corps="$(grep -v '^Co-Authored-By:' "$f" | grep -v '^#')"
+
+# P7.19-a — CE SCRIPT JUGE LE TEXTE QU'ON LUI DONNE, VERBATIM.
+# Il ne retire AUCUNE ligne de commentaire. Nettoyer ici reviendrait a juger autre chose que ce
+# qui est publie ; le nettoyage appartient a celui qui remet le texte — git l'a deja fait sur le
+# message d'un commit deja ecrit, et le hook `commit-msg` le fait explicitement, en le disant.
+#
+# CE QUE LE RETRAIT INCONDITIONNEL DES LIGNES `#` COUTAIT, mesure du 2026-08-26 : un message
+# portant « # contact: <adresse hors du domaine> » etait ACCEPTE (code 0) ; la MEME adresse sans
+# le `#` etait refusee. Le `#` suffisait a faire entrer une adresse etrangere dans l'histoire
+# publiee, et ce n'est pas theorique : `git commit -m` GARDE les lignes `#` dans le message
+# publie. Temoin negatif du meme jour : le meme texte saisi dans l'EDITEUR les perd.
+# CE QU'IL EN COUTE : les lignes de contenu commencant par `#` sont desormais LUES. Mesure du
+# 2026-08-26 sur l'histoire du depot : 2 messages sur 384 en portent (selecteur CSS « #dash »,
+# attribut Rust « #[cfg(test)] ») et aucun des deux ne devient fautif.
+#
+# BRANCHER SUR LE NOM DU FICHIER A ETE ESSAYE, PUIS RETIRE : IL NE DISTINGUE RIEN. Mesure du
+# 2026-08-26 : le fichier remis au hook s'appelle `COMMIT_EDITMSG` que le message vienne de
+# l'editeur (git retirera les `#`) ou de `-m` (git les GARDE). Le nom est le meme et le sort des
+# lignes `#` est l'oppose ; brancher dessus faisait ACCEPTER cote hook, sur un contenu identique,
+# ce que la CI REFUSE. Une regle qui depend du nom du fichier n'est plus une regle.
+#
+# UNE LECTURE QUI ECHOUE N'ACQUITTE RIEN. Mesure du 2026-08-26 : appele sur un fichier absent, ce
+# script laissait `grep` se plaindre et rendait 0 — un acquittement de ce qu'il n'avait pas pu
+# lire, et silencieux en CI puisque la sortie d'erreur n'y est montree qu'en cas de refus.
+# CODES DE SORTIE : 0 = admissible · 1 = REFUS (le message est fautif) · 2 = REFUS DE CONCLURE
+# (rien n'a pu etre lu). Les deux refus ne disent pas la meme chose et ne se confondent plus.
+if [ ! -r "$f" ]; then
+  printf 'REFUS DE CONCLURE — « %s » : fichier illisible, aucun message lu.\n' "$f" >&2
+  printf '  Une garde qui ne peut pas LIRE ne doit pas ACQUITTER.\n' >&2
+  exit 2
+fi
+
+# Retrait INSENSIBLE A LA CASSE : la plateforme ecrit « Co-authored-by: », pas « Co-Authored-By: ».
+# Sans cela l'adresse du trailer etait comptee une seconde fois par le controle d'ADRESSES, et le
+# commentaire ci-dessous, qui promet le contraire, etait faux.
+corps="$(grep -viE '^co-authored-by:' "$f")"
 
 # CITER UN MOT N'EST PAS L'EMPLOYER. Les controles de STYLE portent sur le texte PRIVE de
 # ce qui est entre guillemets francais : sans cela, un message ne peut pas expliquer la

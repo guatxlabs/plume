@@ -8,7 +8,7 @@ import { uiIsAdmin } from './multitenant.js';
 // Un ADMIN configure une source externe (Microsoft Defender d'abord) ; le daemon PULL les alertes, les
 // normalise (source=defender, sévérité mappée, entités -> champs) et les INGÈRE dans la base du tenant.
 // API admin-only : GET /api/connectors (tableau NU, JAMAIS le secret) ; POST /api/connectors (create) ;
-// POST /api/connectors/:id (update PARTIEL) ; DELETE /api/connectors/:id ; POST /api/connectors/:id/test
+// POST /api/connectors/{id} (update PARTIEL) ; DELETE /api/connectors/{id} ; POST /api/connectors/{id}/test
 // (dry-run OAuth + 1 page, N'INGÈRE PAS, renvoie {ok,sample_count,error} sans secret ni contenu d'alerte).
 // SÉCU UI : rendu textContent (anti-XSS) ; le client_secret est un CREDENTIAL -> champ password, JAMAIS
 // réaffiché (masqué •••), ré-envoyé UNIQUEMENT s'il est re-saisi (omis/vide = conservé côté serveur).
@@ -34,7 +34,7 @@ async function loadConnectors() {
 
 function connectorRow(c) {
   const row = document.createElement('div'); row.className = 'rulerow';
-  // enable/disable (POST /api/connectors/:id {enabled}) — rollback visuel si le serveur refuse.
+  // enable/disable (POST /api/connectors/{id} {enabled}) — rollback visuel si le serveur refuse.
   const en = document.createElement('input'); en.type = 'checkbox'; en.checked = !!c.enabled; en.title = 'actif';
   en.onchange = async () => {
     const want = en.checked;
@@ -66,7 +66,7 @@ function connectorRow(c) {
   const test = document.createElement('button'); test.type = 'button'; test.textContent = 'Tester la connexion';
   test.title = 'OAuth + 1 page Graph, sans ingérer — feedback succès/erreur (jamais le secret)';
   test.onclick = () => withBusy(test, () => testConnector(c));
-  // D10b — collecte immédiate : POST /api/connectors/:id/poll (admin-only + fail-safe côté serveur). Ingère
+  // D10b — collecte immédiate : POST /api/connectors/{id}/poll (admin-only + fail-safe côté serveur). Ingère
   // pour de vrai (réutilise le poll de fond) ; feedback = nombre d'events ingérés / erreur (jamais le secret).
   const poll = document.createElement('button'); poll.type = 'button'; poll.textContent = 'Collecter maintenant';
   poll.title = 'Déclencher un pull + ingest immédiat de ce connecteur (ne montre jamais le secret)';
@@ -79,7 +79,7 @@ function connectorRow(c) {
   return row;
 }
 
-// DRY-RUN de connexion : POST /api/connectors/:id/test -> {ok,sample_count,error}. N'ingère pas, ne renvoie
+// DRY-RUN de connexion : POST /api/connectors/{id}/test -> {ok,sample_count,error}. N'ingère pas, ne renvoie
 // NI le secret NI le contenu des alertes ; `error` = statut/motif seul. Feedback par toast (succès/erreur).
 async function testConnector(c) {
   let j;
@@ -90,7 +90,7 @@ async function testConnector(c) {
   else toast('échec : ' + (j.error || 'erreur inconnue'), 'bad', 4200);
 }
 
-// D10b — POST /api/connectors/:id/poll : déclenche UN pull+ingest IMMÉDIAT (admin-only + fail-safe serveur).
+// D10b — POST /api/connectors/{id}/poll : déclenche UN pull+ingest IMMÉDIAT (admin-only + fail-safe serveur).
 // Feedback = nombre d'events ingérés au dernier lot / erreur (jamais le secret). Rafraîchit la liste ensuite
 // (last_run / last_count / last_error reflètent le poll qui vient de s'exécuter).
 async function pollConnector(c) {
@@ -249,7 +249,7 @@ function httpPullFormConfig() {
   return { config, defaultName: 'Connecteur HTTP', authKind: ak };
 }
 
-// TEST / PRÉVISUALISATION http_pull : POST /api/connectors/:id/test (dry-run) -> {ok,sample_count,sample:[…events
+// TEST / PRÉVISUALISATION http_pull : POST /api/connectors/{id}/test (dry-run) -> {ok,sample_count,sample:[…events
 // mappés]} SANS ingérer ni révéler le secret. Rend l'échantillon mappé pour vérifier le field_map AVANT d'activer.
 // Nécessite un connecteur ENREGISTRÉ (le /test lit la config en base) : sinon on invite à enregistrer d'abord.
 async function previewHttpPull() {

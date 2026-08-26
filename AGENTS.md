@@ -62,6 +62,48 @@ message avant de committer :
 git log -1 --format=%B > /tmp/m && ./.github/scripts/verifier-message-de-commit.sh /tmp/m
 ```
 
+La règle est la même des deux côtés ; **le texte, pas tout à fait**, et le hook le dit. Mesuré le
+2026-08-26 : git n'a pas encore nettoyé le fichier quand il appelle le hook, et il ne le
+nettoiera **que si le message a été édité** — `git commit -m` garde une ligne de commentaire
+dans le message publié, et le fichier s'appelle `COMMIT_EDITMSG` dans les deux cas. Le hook
+applique donc le nettoyage de git lui-même (`git stripspace --strip-comments`, qui suit
+`core.commentChar`) et **avertit** quand ce nettoyage change le verdict, en citant ce que la CI
+refusera. La CI, elle, ne nettoie rien : elle juge le message **tel qu'il est publié**.
+
+La CI juge **tout commit poussé, sur toute branche**, message et identité, sur une plage dérivée
+**une seule fois**. Quand le point de départ de la poussée est inatteignable — création de
+branche, poussée forcée, déclenchement manuel — elle juge le **sur-ensemble** de ce qui a été
+poussé, c'est-à-dire toute l'histoire atteignable : un sur-ensemble ne peut qu'en refuser plus,
+jamais en acquitter moins. Elle ne rend jamais vert sur ce qu'elle n'a pas pu lire — `2` veut
+dire « rien n'a été lu », distinct de `1` qui veut dire « refusé ».
+
+### Une demande de fusion n'est pas un chemin d'entrée
+
+Mesuré le 2026-08-26 sur les réglages de ce dépôt et sur une fusion par écrasement **réelle**
+réglée à l'identique : **le bouton de fusion ne peut produire aucun commit admissible ici.**
+Trois refus se cumulent, et aucun réglage ne les retire :
+
+| Ce que la plateforme ajoute au commit d'écrasement | Ce qui le refuse |
+|---|---|
+| les contreseings des commits écrasés, **reportés** — donc l'adresse étrangère qu'ils portent | adresse hors `@guatx.com` |
+| une ligne `Co-authored-by:` par auteur distinct | trailer de co-signature |
+| un committer qui est **le compte de la plateforme**, pas l'identité canonique | identité non canonique |
+
+Prouvé par mutation : le même corps, privé de ces seules lignes, passe.
+
+**Conséquence, et elle est durable.** Le seul chemin d'entrée dans l'histoire publiée est la
+**poussée directe** sur la branche de publication, sous l'identité canonique. Une contribution,
+ou une mise à jour de dépendance, se **reprend localement**, se rejoue sous cette identité, et
+se pousse ; le message cite le numéro de la demande, pour que la discussion reste retrouvable.
+Le robot de dépendances garde toute sa valeur pour l'**alerte** — il dit quelle version bouge et
+pourquoi — et aucune pour la fusion.
+
+**Ces demandes restent donc au rouge, et ce rouge est VRAI.** Il ne se corrige pas branche par
+branche : personne ne peut réécrire le message d'un commit qu'un robot vient de poser. Il ne
+doit pas être éteint pour autant — une garde qui cesserait de juger ces commits ne retirerait
+pas la cause, elle retirerait seulement le fait de la voir, et la branche de publication
+perdrait sa seule redondance : chaque commit y arriverait sans avoir jamais été lu.
+
 ## 4. Ce qui ne se publie pas
 
 Ce depot est public, et deux categories de contenu n'y ont pas leur place. Aucune garde

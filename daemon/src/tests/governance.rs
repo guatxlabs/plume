@@ -1051,7 +1051,7 @@ detection:
     }
 
     /// HIGH #59 : les endpoints SCIM `Users` sont TENANT-SCOPÉS (platform_user est GLOBAL). Un token pour le
-    /// tenant t1 ne liste/ne renvoie JAMAIS un user provisionné seulement dans t2 ; un GET /Users/:id d'un id
+    /// tenant t1 ne liste/ne renvoie JAMAIS un user provisionné seulement dans t2 ; un GET /Users/{id} d'un id
     /// hors tenant -> 404 (identité cross-tenant jamais révélée).
     #[tokio::test]
     async fn gov_scim_users_are_tenant_scoped() {

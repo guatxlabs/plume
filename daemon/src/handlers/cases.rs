@@ -480,7 +480,7 @@ pub(crate) async fn case_create(State(st): State<AppState>, Extension(au): Exten
     Json(json!({ "id": id, "status": "new", "priority": priority, "priority_label": priority_label(priority), "sla_due": sla_due }))
 }
 
-/// GET /api/cases/:id — métadonnées + timeline (refs résolues) + overdue calculé. Lecture (viewer OK). #4a.
+/// GET /api/cases/{id} — métadonnées + timeline (refs résolues) + overdue calculé. Lecture (viewer OK). #4a.
 pub(crate) async fn case_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     // FIELD FILTERS (#45) : la timeline d'un cas résout `event:<id>` -> `event.message` (HORS run_query_ex,
     // point-lookup) -> on masque `ref_title` pour le rôle appelant si `message` est masqué. VIDE -> no-op.
@@ -508,11 +508,11 @@ pub(crate) async fn case_get(State(st): State<AppState>, Extension(au): Extensio
     })
 }
 
-/// POST /api/cases/:id — patch (status/priority/assignee/severity/title/summary). Chaque changement -> item
+/// POST /api/cases/{id} — patch (status/priority/assignee/severity/title/summary). Chaque changement -> item
 /// typé + audit. Couvre assign / close / reopen / priorisation. Mutating (editor/admin). #4a.
 pub(crate) async fn case_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
     // DISPOSITION (#4a) — validation FERMÉE au bord : un verdict non-vide hors de l'allowlist -> 400 AVANT toute
-    // écriture. NULL/'' (unset) est légitime. Le CRUD du case reste gated editor+ par la RBAC de /api/cases/:id.
+    // écriture. NULL/'' (unset) est légitime. Le CRUD du case reste gated editor+ par la RBAC de /api/cases/{id}.
     if let Some(dv) = b.get("disposition") {
         let d = dv.as_str().unwrap_or("").trim();
         if !d.is_empty() && !disposition_valid(d) {
@@ -528,7 +528,7 @@ pub(crate) async fn case_update(State(st): State<AppState>, Extension(au): Exten
     })
 }
 
-/// POST /api/cases/:id/items — ajoute un item de timeline : note (add_note), OU rattachement d'une alerte
+/// POST /api/cases/{id}/items — ajoute un item de timeline : note (add_note), OU rattachement d'une alerte
 /// (kind='alert', ref='alert:ID' = link_alert) / d'un event (kind='event', ref='event:ID' = link_event) /
 /// action. Mutating (editor/admin). #4a.
 pub(crate) async fn case_item_add(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
@@ -548,7 +548,7 @@ pub(crate) async fn case_item_add(State(st): State<AppState>, Extension(au): Ext
     StatusCode::NO_CONTENT
 }
 
-/// DELETE /api/cases/:id/items/:item_id — détache un item (alerte/event/note) du case + trace le geste.
+/// DELETE /api/cases/{id}/items/{item_id} — détache un item (alerte/event/note) du case + trace le geste.
 /// Mutating (editor/admin). 404 si l'item n'appartient pas au case. #4a.
 pub(crate) async fn case_item_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, item_id)): Path<(i64, i64)>) -> StatusCode {
     with_write(&st, &au, |conn| {
@@ -588,7 +588,7 @@ pub(crate) fn case_set_archived(conn: &Connection, id: i64, author: &str, archiv
     true
 }
 
-/// POST /api/cases/:id/archive — ARCHIVE (soft-delete) un case : le MASQUE de la liste par défaut tout en
+/// POST /api/cases/{id}/archive — ARCHIVE (soft-delete) un case : le MASQUE de la liste par défaut tout en
 /// conservant la ligne + sa timeline (append-only). Action DELETE-LIKE => ADMIN-ONLY : gatée au choke-point
 /// (rbac_gate) ET re-vérifiée ICI (défense en profondeur). 403 hors admin ; 404 si le case n'existe pas. #4a-bis.
 pub(crate) async fn case_archive(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
@@ -604,7 +604,7 @@ pub(crate) async fn case_archive(State(st): State<AppState>, Extension(au): Exte
     })
 }
 
-/// POST /api/cases/:id/unarchive — DÉSARCHIVE un case (le ré-affiche dans la liste). ADMIN-ONLY (idem archive).
+/// POST /api/cases/{id}/unarchive — DÉSARCHIVE un case (le ré-affiche dans la liste). ADMIN-ONLY (idem archive).
 /// 403 hors admin ; 404 si le case n'existe pas. #4a-bis.
 pub(crate) async fn case_unarchive(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
     if !au.is_admin() {

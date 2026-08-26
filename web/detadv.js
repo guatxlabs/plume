@@ -2,9 +2,9 @@
 // Vit dans l'espace DÉTECTION & RÉPONSE. Lecture viewer+ ; CRUD éditeur+ (le viewer voit en lecture seule,
 // boutons masqués via CSS role-viewer + garde SERVEUR editor+). Endpoints :
 //   GET  /api/correlations            -> {correlations:[{id,name,enabled,key_field,entity_type,steps,window_s,interval_s,severity,mitre,risk_score,last_run,last_fired,managed}]}
-//   POST /api/correlations            -> crée ; POST /api/correlations/:id -> édite ; DELETE -> supprime
-//   POST /api/correlations/:id/test   -> backtest {ok,matched,entities:[{entity,detail}]}
-//   GET  /api/baselines / POST … /:id / DELETE … / POST …/:id/test (aperçu {ok,bucket,observed,anomalies,hits})
+//   POST /api/correlations            -> crée ; POST /api/correlations/{id} -> édite ; DELETE -> supprime
+//   POST /api/correlations/{id}/test   -> backtest {ok,matched,entities:[{entity,detail}]}
+//   GET  /api/baselines / POST … /{id} / DELETE … / POST …/{id}/test (aperçu {ok,bucket,observed,anomalies,hits})
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (CSRF auto).
 import { $, api, apiSend, esc, fetchInto, fmtTs, humanAge, muted, pagedList, sev, toast, modal, confirmModal } from './core.js';
 // P11.1-e : où arrive ce qu'une corrélation / une baseline produit (Alertes, ou Risque si risk_score > 0).

@@ -11,7 +11,7 @@ import { $, api, apiSend, confirmModal, contentDelete, disclosure, fmtTs, ic, ma
 // bloqué serveur (403 via le gate `mutating`) ET côté UI (boutons .crud-btn masqués en role-viewer).
 // Les mutations reçoivent X-CSRF-Token automatiquement via le wrapper window.fetch global.
 // API : GET /api/lookups -> {lookups:[{name,key_field,cols,updated,rows}]} ; POST {name,key_field,rows:[{...}]}
-// -> {name,rows,cols:[...]} (REMPLACE tout le lookup) ; DELETE /api/lookups/:name -> {ok,deleted:true}.
+// -> {name,rows,cols:[...]} (REMPLACE tout le lookup) ; DELETE /api/lookups/{name} -> {ok,deleted:true}.
 const LK_NAME_RE = /^[A-Za-z0-9_]+$/;   // miroir de soql_ident_ok côté daemon (alphanumérique + _, non vide)
 // Import CSV (collage) -> tableau d'objets, en pendant du collage JSON. RFC 4180 simplifié : séparateur
 // virgule, guillemets doubles pour échapper virgule/retour-ligne/guillemet interne ("" -> "). La 1re ligne

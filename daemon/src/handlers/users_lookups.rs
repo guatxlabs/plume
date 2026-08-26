@@ -307,7 +307,7 @@ pub(crate) async fn lookup_upload(State(st): State<AppState>, Extension(au): Ext
     }
 }
 
-/// DELETE /api/lookups/:name -> supprime le lookup (lignes kv + métadonnées). #1c : audit fail-closed.
+/// DELETE /api/lookups/{name} -> supprime le lookup (lignes kv + métadonnées). #1c : audit fail-closed.
 pub(crate) async fn lookup_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(name): Path<String>) -> Response {
     if !soql_ident_ok(&name) {
         return bad_req("nom de lookup invalide");

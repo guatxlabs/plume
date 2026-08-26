@@ -37,7 +37,7 @@
 2. **Copiez le JSON du preset** dans le champ `config`, puis adaptez les `REPLACE_*` /
    `{placeholders}` (host régional, tenant, `client_id`, account_id…).
 3. Mettez le **credential** dans le champ **`secret`** (jamais dans `config`).
-4. **Tester** (`POST /api/connectors/:id/test`) : 1 page, **n'ingère pas**, renvoie un échantillon
+4. **Tester** (`POST /api/connectors/{id}/test`) : 1 page, **n'ingère pas**, renvoie un échantillon
    des events **mappés** — vérifiez que le `field_map` produit le CIM attendu.
 5. **Activez** quand la prévisualisation est correcte.
 

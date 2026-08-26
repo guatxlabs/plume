@@ -4,8 +4,8 @@
 // env_id) : ici la donnée SORT du périmètre (surface de data-exfil) -> admin-only, send-only, ledgerisé.
 //
 // API admin-only : GET /api/destinations (JAMAIS le secret d'auth -> has_auth:bool) ; POST /api/destinations
-// (create) ; POST /api/destinations/:id (update PARTIEL) ; DELETE /api/destinations/:id ; POST
-// /api/destinations/:id/flush (forward+avance immédiat, fail-safe, ne renvoie NI la réponse du sink NI le
+// (create) ; POST /api/destinations/{id} (update PARTIEL) ; DELETE /api/destinations/{id} ; POST
+// /api/destinations/{id}/flush (forward+avance immédiat, fail-safe, ne renvoie NI la réponse du sink NI le
 // secret). SÉCU UI : rendu textContent (anti-XSS) ; l'auth (jeton HEC / en-tête webhook) est un CREDENTIAL
 // -> champ password, JAMAIS réaffiché, ré-envoyé UNIQUEMENT s'il est re-saisi (vide = conservé côté serveur).
 // La VRAIE garde reste serveur (403 hors admin + route_min_role Admin) ; ceci est la défense en profondeur.
@@ -37,7 +37,7 @@ function badge(text, title, tone) {
 
 function destinationRow(d) {
   const row = document.createElement('div'); row.className = 'rulerow';
-  // enable/disable (POST /api/destinations/:id {enabled}) — rollback visuel si le serveur refuse.
+  // enable/disable (POST /api/destinations/{id} {enabled}) — rollback visuel si le serveur refuse.
   const en = document.createElement('input'); en.type = 'checkbox'; en.checked = !!d.enabled; en.title = 'actif (ouvre la sortie de données)';
   en.onchange = async () => {
     const want = en.checked;
@@ -91,7 +91,7 @@ function destinationRow(d) {
   return row;
 }
 
-// DRY-RUN/flush : POST /api/destinations/:id/flush -> {ok,forwarded,watermark,last_error} (jamais la réponse du sink).
+// DRY-RUN/flush : POST /api/destinations/{id}/flush -> {ok,forwarded,watermark,last_error} (jamais la réponse du sink).
 async function flushDestination(d) {
   let j;
   try { j = await apiSend('/destinations/' + d.id + '/flush', 'POST'); }

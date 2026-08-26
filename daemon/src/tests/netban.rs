@@ -365,7 +365,7 @@
         ("/readyz", "sonde k8s readiness : idem, et le retrait du service ferait tomber TOUT le trafic"),
         ("/metrics", "scrape Prometheus : bannir l'IP du collecteur rendrait la supervision aveugle"),
         ("/api/netban", "VALVE DE RÉCUPÉRATION : se débannir en direct, sans redémarrage (admin-only en aval)"),
-        ("/api/netban/:ip", "idem, le retrait lui-même — sinon un ban de l'opérateur serait irréversible"),
+        ("/api/netban/{ip}", "idem, le retrait lui-même — sinon un ban de l'opérateur serait irréversible"),
     ];
 
     /// AUCUNE ROUTE DÉCLARÉE N'ÉCHAPPE AU GATE — et le 403 observé vient bien du BAN (témoin négatif).

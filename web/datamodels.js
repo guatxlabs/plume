@@ -7,11 +7,11 @@
 // touché. Le Pivot ne fabrique jamais de SQL : /api/pivot/run compile un GXQL puis l'exécute par le MÊME
 // chemin masqué que /api/query (masquage #45 du rôle appliqué côté serveur) :
 //   GET    /api/datamodels                 -> {models,objects,fields,field_types,stat_funcs,filter_ops}
-//   POST   /api/datamodels | /:id/objects | /objects/:id/fields         (editor+)
-//   DELETE /api/datamodels/:id | /objects/:id | /fields/:id             (editor+)
+//   POST   /api/datamodels | /{id}/objects | /objects/{id}/fields         (editor+)
+//   DELETE /api/datamodels/{id} | /objects/{id} | /fields/{id}             (editor+)
 //   POST   /api/pivot/compile  (GXQL généré, transparence)  |  /api/pivot/run  (exécution masquée)  viewer+
-//   GET    /api/datasets  |  POST /api/datasets  (editor+)  |  POST /api/datasets/:id/run  (viewer+)
-//   DELETE /api/datasets/:id                                            (editor+)
+//   GET    /api/datasets  |  POST /api/datasets  (editor+)  |  POST /api/datasets/{id}/run  (viewer+)
+//   DELETE /api/datasets/{id}                                            (editor+)
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (jeton CSRF auto).
 import { $, api, apiSend, fetchInto, muted, pagedList, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';
 

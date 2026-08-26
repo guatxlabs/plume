@@ -530,7 +530,7 @@ pub(crate) async fn connector_test(State(st): State<AppState>, Extension(au): Ex
     }
 }
 
-/// POST /api/connectors/:id/poll — DÉCLENCHE UN poll+ingest IMMÉDIAT de CE connecteur. ADMIN-only (serveur,
+/// POST /api/connectors/{id}/poll — DÉCLENCHE UN poll+ingest IMMÉDIAT de CE connecteur. ADMIN-only (serveur,
 /// re-check ici EN PLUS du path-guard) + PAR-TENANT (req_db). RÉUTILISE `poll_one_connector` (#3a) : chemin
 /// d'ingestion IDENTIQUE au poll loop de fond (INSERT OR IGNORE dedup, avance watermark + last_ok/last_count/
 /// last_error). FAIL-SAFE : `poll_one_connector` ne remonte JAMAIS (toute erreur réseau/OAuth/parse ->

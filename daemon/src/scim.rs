@@ -107,7 +107,7 @@ pub(crate) async fn scim_users_list(State(st): State<AppState>, Extension(ctx): 
         .into_response()
 }
 
-/// GET /scim/v2/Users/:id — un user.
+/// GET /scim/v2/Users/{id} — un user.
 pub(crate) async fn scim_user_get(State(st): State<AppState>, Extension(ctx): Extension<ScimCtx>, Path(id): Path<String>) -> Response {
     let Some(cp) = st.tenants.control.as_ref() else {
         return scim_err(StatusCode::NOT_FOUND, "SCIM indisponible");
@@ -186,7 +186,7 @@ pub(crate) async fn scim_user_create(State(st): State<AppState>, Extension(ctx):
     (StatusCode::CREATED, [(header::CONTENT_TYPE, "application/scim+json")], scim_user_resource(cp, &ctx.tenant, &id, &username).to_string()).into_response()
 }
 
-/// PUT /scim/v2/Users/:id — remplace (ici : gère `active`). active=false -> DEPROVISION (retrait des grants
+/// PUT /scim/v2/Users/{id} — remplace (ici : gère `active`). active=false -> DEPROVISION (retrait des grants
 /// du user dans le tenant du token). Ne touche jamais is_superadmin.
 pub(crate) async fn scim_user_replace(State(st): State<AppState>, Extension(ctx): Extension<ScimCtx>, Path(id): Path<String>, Json(b): Json<Value>) -> Response {
     let Some(cp) = st.tenants.control.as_ref() else {
@@ -221,7 +221,7 @@ pub(crate) async fn scim_user_replace(State(st): State<AppState>, Extension(ctx)
     (StatusCode::OK, [(header::CONTENT_TYPE, "application/scim+json")], scim_user_resource(cp, &ctx.tenant, &id, &name).to_string()).into_response()
 }
 
-/// DELETE /scim/v2/Users/:id — DEPROVISION : retire les grants du user dans le tenant du token. Le
+/// DELETE /scim/v2/Users/{id} — DEPROVISION : retire les grants du user dans le tenant du token. Le
 /// platform_user (identité plateforme, possiblement multi-tenant) n'est pas détruit ici (retrait de grant =
 /// perte d'accès au tenant ; la destruction d'identité reste une action admin séparée).
 pub(crate) async fn scim_user_delete(State(st): State<AppState>, Extension(ctx): Extension<ScimCtx>, Path(id): Path<String>) -> Response {
@@ -274,7 +274,7 @@ pub(crate) async fn scim_groups_list(State(st): State<AppState>, Extension(_ctx)
         .into_response()
 }
 
-/// PATCH /scim/v2/Groups/:role — ajoute/retire des membres (grant du rôle dans le tenant du token). Le rôle
+/// PATCH /scim/v2/Groups/{role} — ajoute/retire des membres (grant du rôle dans le tenant du token). Le rôle
 /// (displayName) DOIT être valide (valid_grant_role) -> jamais super-admin, jamais un rôle indéfini.
 pub(crate) async fn scim_group_patch(State(st): State<AppState>, Extension(ctx): Extension<ScimCtx>, Path(role): Path<String>, Json(b): Json<Value>) -> Response {
     let Some(cp) = st.tenants.control.as_ref() else {

@@ -588,7 +588,7 @@ pub(crate) async fn case_metrics(State(st): State<AppState>, Extension(au): Exte
     Json(res)
 }
 
-/// POST /api/cases/:id/merge {into} — fusion SOFT du case :id DANS `into`. Mutating (editor+). Ledgerisé,
+/// POST /api/cases/{id}/merge {into} — fusion SOFT du case :id DANS `into`. Mutating (editor+). Ledgerisé,
 /// non destructif (source conservée + réversible). 404 si un case manque / refus (déjà fusionné / cycle).
 pub(crate) async fn case_merge_handler(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
     let into = b.get("into").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -600,14 +600,14 @@ pub(crate) async fn case_merge_handler(State(st): State<AppState>, Extension(au)
     })
 }
 
-/// POST /api/cases/:id/unmerge — dé-fusionne (réversibilité). Mutating (editor+).
+/// POST /api/cases/{id}/unmerge — dé-fusionne (réversibilité). Mutating (editor+).
 pub(crate) async fn case_unmerge_handler(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
     with_write(&st, &au, |conn| {
         if case_unmerge(&conn, id, &au.name) { StatusCode::NO_CONTENT } else { StatusCode::NOT_FOUND }
     })
 }
 
-/// GET /api/cases/:id/links — liens du case. POST /api/cases/:id/links {to,kind,note} — ajoute un lien.
+/// GET /api/cases/{id}/links — liens du case. POST /api/cases/{id}/links {to,kind,note} — ajoute un lien.
 pub(crate) async fn case_links_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Json<Value> {
     let db_path = req_db_path(&st, &au);
     let res = tokio::task::spawn_blocking(move || read_with_watchdog(&db_path, json!({ "links": [] }), move |conn| json!({ "links": case_links_json(conn, id) })))
@@ -690,7 +690,7 @@ pub(crate) async fn sla_policy_upsert(State(st): State<AppState>, Extension(au):
     })
 }
 
-/// DELETE /api/sla-policies/:id — supprime une politique. ADMIN-ONLY (config gouvernante) : re-check handler.
+/// DELETE /api/sla-policies/{id} — supprime une politique. ADMIN-ONLY (config gouvernante) : re-check handler.
 pub(crate) async fn sla_policy_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
     if !au.is_admin() {
         return StatusCode::FORBIDDEN;
@@ -734,7 +734,7 @@ pub(crate) async fn client_cases_list(State(st): State<AppState>, Extension(au):
     Json(res)
 }
 
-/// GET /api/client/cases/:id — DÉTAIL client (projection fermée + timeline cycle-de-vie anonymisée). 404 si
+/// GET /api/client/cases/{id} — DÉTAIL client (projection fermée + timeline cycle-de-vie anonymisée). 404 si
 /// absent/archivé/fusionné. Tenant-scopé + masqué (INVARIANT).
 pub(crate) async fn client_case_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     let db_path = req_db_path(&st, &au);

@@ -4,7 +4,7 @@
     // Le panneau « Suppressions & whitelists actives » ne savait que LIRE. Les silences d'alertes
     // (la suppression que l'on crée) avaient une route de création et une route de levée, mais
     // aucune route de MODIFICATION : pour changer la durée d'un silence il fallait le lever et le
-    // recréer, et le journal d'audit perdait le lien entre les deux. La route `PUT /api/silences/:id`
+    // recréer, et le journal d'audit perdait le lien entre les deux. La route `PUT /api/silences/{id}`
     // ferme ce trou avec les MÊMES garanties que ses voisines : même classe de rôle, même audit
     // fail-closed (ledger + event plume-config), même borne de TTL.
     //
@@ -130,7 +130,7 @@
     /// rendrait Write pour tout.
     #[test]
     fn modifier_un_silence_exige_le_meme_role_que_le_creer() {
-        assert_eq!(route_min_role("/api/silences/7", true), MinRole::Write, "PUT /api/silences/:id = editor+");
+        assert_eq!(route_min_role("/api/silences/7", true), MinRole::Write, "PUT /api/silences/{{id}} = editor+");
         assert_eq!(route_min_role("/api/silences", true), MinRole::Write, "POST /api/silences = editor+");
         assert_eq!(route_min_role("/api/silences", false), MinRole::Read, "GET /api/silences = viewer+");
         assert_eq!(route_min_role("/api/suppressions", true), MinRole::Admin, "témoin négatif : le panneau des suppressions reste admin-only");

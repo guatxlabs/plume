@@ -695,7 +695,7 @@ tr.rowdetail>td{background:var(--card2);padding:10px 14px;white-space:normal;max
    l'appartenance a un parent ne sait pas distinguer un geste REFUSE d'un geste PERMIS, et la mesure a
    compte, dans ce seul conteneur, sept controles que le demon accorde a un lecteur — l'etoile de favori
    (`/api/prefs`, self-service borne a la lecture MEME en ecriture), les deux rafraichissements
-   (`/api/panels/:id/data`, `/api/query`), l'arret de chargement, les deux exports et l'ouverture dans
+   (`/api/panels/{id}/data`, `/api/query`), l'arret de chargement, les deux exports et l'ouverture dans
    l'editeur — effaces au motif du voisinage. Exempter l'etoile aurait laisse le piege arme pour le
    prochain bouton pose la. Le refus se DECLARE donc sur le controle (`crud-btn` ci-dessous, grammaire
    de `P11.4-l`) au lieu de se deduire de son parent, et le defaut d'un conteneur redevient : permis. */

@@ -1,6 +1,6 @@
 //! SAVED QUERIES — requêtes GXQL NOMMÉES, PERSISTANTES, PER-USER (table `saved_query`, v107). Outillage
 //! d'analyste PERSONNEL : `/api/saved-queries` GET (liste MES requêtes) / POST (créer {name, soql}) /
-//! PUT `/:id` (modifier {name?, soql?}) / DELETE `/:id`. RBAC = viewer+ SELF-SERVICE (route_min_role :
+//! PUT `/{id}` (modifier {name?, soql?}) / DELETE `/{id}`. RBAC = viewer+ SELF-SERVICE (route_min_role :
 //! `/api/saved-queries` -> Read, MÊME modèle que `/api/prefs` et `/api/mfa/*`) : ce n'est PAS une surface
 //! admin (aucun secret, aucune autz), juste de l'outillage personnel ; le CSRF cookie s'applique quand même
 //! aux POST/PUT/DELETE (chemin mutant normal).
@@ -150,7 +150,7 @@ pub(crate) async fn saved_query_create(State(st): State<AppState>, Extension(au)
     }
 }
 
-/// PUT /api/saved-queries/:id {name, soql} — met à jour MA requête (IDOR-sûr). Audit `saved_query.update`.
+/// PUT /api/saved-queries/{id} {name, soql} — met à jour MA requête (IDOR-sûr). Audit `saved_query.update`.
 pub(crate) async fn saved_query_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let soql = b.get("soql").and_then(|v| v.as_str()).unwrap_or("");
@@ -164,7 +164,7 @@ pub(crate) async fn saved_query_update(State(st): State<AppState>, Extension(au)
     }
 }
 
-/// DELETE /api/saved-queries/:id — supprime MA requête (IDOR-sûr). Audit `saved_query.delete`.
+/// DELETE /api/saved-queries/{id} — supprime MA requête (IDOR-sûr). Audit `saved_query.delete`.
 pub(crate) async fn saved_query_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
     match delete(&conn, &au.name, id) {

@@ -777,7 +777,7 @@ pub(crate) async fn correlation_delete(State(st): State<AppState>, Extension(au)
     delete_managed_row(&conn, "correlation", "config.correlation", id, managed, &au.name)
 }
 
-/// POST /api/correlations/:id/test — BACKTEST/dry-run : évalue la séquence sur la fenêtre courante SANS écrire.
+/// POST /api/correlations/{id}/test — BACKTEST/dry-run : évalue la séquence sur la fenêtre courante SANS écrire.
 /// Renvoie les entités matchées + le détail par étape (aperçu avant activation).
 pub(crate) async fn correlation_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Json<Value> {
     let row = {
@@ -978,7 +978,7 @@ pub(crate) async fn baseline_delete(State(st): State<AppState>, Extension(au): E
     delete_managed_row(&conn, "ueba_baseline", "config.baseline", id, managed, &au.name)
 }
 
-/// POST /api/baselines/:id/test — dry-run : calcule les valeurs du dernier bucket clos + le z-score par entité
+/// POST /api/baselines/{id}/test — dry-run : calcule les valeurs du dernier bucket clos + le z-score par entité
 /// SANS persister d'observation ni lever d'alerte. Aperçu pour régler seuil/fenêtre.
 pub(crate) async fn baseline_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Json<Value> {
     // #45 — DRY-RUN = SURFACE D'APPELANT : cette route est EDITOR+ et RENVOIE les ÉCHANTILLONS

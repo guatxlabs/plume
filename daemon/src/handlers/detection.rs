@@ -44,8 +44,8 @@ fn rule_sql_masked(query: &str, is_soql: bool, window_s: i64, masks: &guatx_core
 /// #45 — UNIQUE PORTE DE COMPILATION D'UNE REQUÊTE DE RÈGLE POUR UN APPELANT IDENTIFIÉ.
 ///
 /// POURQUOI ELLE EXISTE (et pourquoi elle prend `st`+`au` et non un `FieldMaskSet` déjà résolu) : les
-/// surfaces de TEST / DRY-RUN de détection (`/api/rule-test`, `/api/rules/:id/test`,
-/// `/api/playbooks/:id/test`) sont EDITOR+ et RENVOIENT le résultat de la requête à l'appelant. Compilées
+/// surfaces de TEST / DRY-RUN de détection (`/api/rule-test`, `/api/rules/{id}/test`,
+/// `/api/playbooks/{id}/test`) sont EDITOR+ et RENVOIENT le résultat de la requête à l'appelant. Compilées
 /// par la porte SYSTÈME (`rule_sql`, sans masque), elles étaient un ORACLE : `search src_ip=10.0.0.6 |
 /// stats count` répondait `value=2` là où `search src_ip=9.9.9.9` répondait `value=0` — un bit de la valeur
 /// d'un champ que le rôle ne peut PAS voir, à volonté (et pour un playbook, la valeur EN CLAIR dans
@@ -782,7 +782,7 @@ pub(crate) fn set_content_enabled_tx(conn: &Connection, kind: &str, table: &str,
 fn body_enabled(b: &Value) -> Result<bool, Response> {
     b.get("enabled").and_then(|v| v.as_bool()).ok_or_else(|| bad_req("champ 'enabled' (booléen) requis"))
 }
-/// POST /api/rules/:id/enabled {enabled:bool} — bascule d'activation d'une RÈGLE, ADMIN-only (gate route
+/// POST /api/rules/{id}/enabled {enabled:bool} — bascule d'activation d'une RÈGLE, ADMIN-only (gate route
 /// `route_min_role` + re-check `require_admin` = default-deny en profondeur) + audité. FONCTIONNE pour TOUS les
 /// managed, y compris les overlays config.d (managed=1) via un override persistant qui survit au reboot.
 pub(crate) async fn rule_set_enabled(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
@@ -794,7 +794,7 @@ pub(crate) async fn rule_set_enabled(State(st): State<AppState>, Extension(au): 
         Err((code, msg)) => err_json(code, msg),
     }
 }
-/// POST /api/parsers/:id/enabled — bascule d'activation d'un PARSEUR (ADMIN-only + audité). Recharge le
+/// POST /api/parsers/{id}/enabled — bascule d'activation d'un PARSEUR (ADMIN-only + audité). Recharge le
 /// registre compilé après coup (parsers_reload) -> l'ingest reflète l'état immédiatement, comme parser_update.
 pub(crate) async fn parser_set_enabled(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     if let Err(r) = require_admin(&au) { return r; }
@@ -805,7 +805,7 @@ pub(crate) async fn parser_set_enabled(State(st): State<AppState>, Extension(au)
         Err((code, msg)) => err_json(code, msg),
     }
 }
-/// POST /api/playbooks/:id/enabled — bascule d'activation d'un PLAYBOOK (ADMIN-only + audité). NB : (dés)activer
+/// POST /api/playbooks/{id}/enabled — bascule d'activation d'un PLAYBOOK (ADMIN-only + audité). NB : (dés)activer
 /// un playbook ne change QUE `enabled` — l'ARMEMENT réel d'une réponse destructive reste gouverné par le mode
 /// global + created_by_role (run_playbooks n'auto-approuve que l'admin) : ce toggle ne contourne pas ce garde.
 pub(crate) async fn playbook_set_enabled(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {

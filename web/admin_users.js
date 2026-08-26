@@ -37,7 +37,7 @@ async function loadUsers() {
     const row = document.createElement('div'); row.className = 'urow';
     const info = document.createElement('span');
     info.innerHTML = `<b>${esc(u.name)}</b> <span class="badge role-${esc(u.role)}">${esc(ROLE_LABEL[u.role] || u.role)}</span>` + (u.name === me ? ' <span class="muted">(vous)</span>' : '') + (u.created ? ` <span class="muted" style="font-size:11px">· créé ${esc(fmtTs(u.created))}</span>` : '');
-    // éditeur inline (rôle + reset mot de passe) — révélé au clic sur ✎ ; POST /api/users/:id
+    // éditeur inline (rôle + reset mot de passe) — révélé au clic sur ✎ ; POST /api/users/{id}
     const editor = document.createElement('div'); editor.className = 'ueditor hidden';
     const rsel = document.createElement('select'); rsel.className = 'ue-role';
     ['admin', 'editor', 'viewer'].forEach(r => { const o = document.createElement('option'); o.value = r; o.textContent = r; if (r === u.role) o.selected = true; rsel.appendChild(o); });

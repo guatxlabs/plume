@@ -69,7 +69,7 @@ Codes de sortie : `0` simulation rendue ou purge exécutée · `2` arguments inv
 
 | Refus | Pourquoi |
 |---|---|
-| **Rétention légale** | ≥ 1 `legal_hold` actif recouvre le périmètre → refus **total**, en nommant les holds. Jamais de purge partielle « sauf les lignes tenues » : elle laisserait croire que tout est parti. Lever un hold reste un acte de gouvernance tracé (`/api/legal-holds/:id/release`) ; la purge ne le contourne pas. |
+| **Rétention légale** | ≥ 1 `legal_hold` actif recouvre le périmètre → refus **total**, en nommant les holds. Jamais de purge partielle « sauf les lignes tenues » : elle laisserait croire que tout est parti. Lever un hold reste un acte de gouvernance tracé (`/api/legal-holds/{id}/release`) ; la purge ne le contourne pas. |
 | **État des holds indéterminable** | Table `legal_hold` présente mais illisible → fail-closed. On ne supprime jamais une preuve dont on ne peut pas prouver qu'elle n'est pas retenue. |
 | **Tier froid** | Des fichiers Parquet scellés recouvrent la fenêtre → refus, en nommant le nombre de fichiers et de jours. Vider `event` laisserait ces copies columnarisées **interrogeables** : « purgé » serait faux. La purge ne sait pas réécrire un Parquet scellé, et elle ne prétend pas le contraire. Contournement : attendre l'expiration cold, ou restreindre la fenêtre aux jours encore chauds. |
 | **Chaîne de preuve** | Un event du périmètre est cité par la timeline d'un case/incident → refus, en nommant les identifiants. Détacher l'item d'abord. |

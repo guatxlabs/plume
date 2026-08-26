@@ -1004,8 +1004,8 @@ fn secretprov_phase2_cfg_secret_ref_additive_and_default_unchanged() {
 // porte masquée fait DEUX choses : elle masque la PROJECTION *et* elle REJETTE tout prédicat de base sur
 // un champ masqué (garde-oracle du cœur : chaque comparaison fuit la valeur par le NOMBRE DE LIGNES).
 //
-// Les surfaces de TEST/DRY-RUN de détection (`/api/rule-test`, `/api/rules/:id/test`,
-// `/api/playbooks/:id/test`, `/api/correlations/:id/test`, `/api/baselines/:id/test`) sont TOUTES
+// Les surfaces de TEST/DRY-RUN de détection (`/api/rule-test`, `/api/rules/{id}/test`,
+// `/api/playbooks/{id}/test`, `/api/correlations/{id}/test`, `/api/baselines/{id}/test`) sont TOUTES
 // EDITOR+ (route_min_role section 7) et compilaient par la porte NON MASQUÉE tout en RENVOYANT le
 // résultat à l'appelant -> oracle (voire exfiltration directe des valeurs pour playbook/corrélation/
 // baseline, qui renvoient les CIBLES/ENTITÉS). C'est exactement la famille de l'incident « un viewer
@@ -1084,7 +1084,7 @@ async fn sec_ff_detection_test_surfaces_are_not_unmasked_oracles() {
          l'authorizer SQLite ne connaît QUE les colonnes RÉELLES sous DENY -> sur une clé du sac JSON, la \
          compilation masquée est la SEULE défense.");
 
-    // ---- (3) /api/rules/:id/test : même oracle via une règle STOCKÉE (créable par un editor). ----
+    // ---- (3) /api/rules/{id}/test : même oracle via une règle STOCKÉE (créable par un editor). ----
     {
         let c = st.db.lock();
         c.execute("INSERT INTO rule(name,query,is_soql,op,threshold,severity,window_s,interval_s,enabled) \
@@ -1093,9 +1093,9 @@ async fn sec_ff_detection_test_surfaces_are_not_unmasked_oracles() {
     let rid: i64 = st.db.lock().query_row("SELECT id FROM rule WHERE name='probe'", [], |r| r.get(0)).unwrap();
     let rt = rule_test(State(st.clone()), Extension(editor.clone()), axum::extract::Path(rid)).await.0;
     assert!(err_of(&rt).contains("masqué"),
-        "/api/rules/:id/test : règle filtrant un champ masqué doit être REFUSÉE — reçu {rt}");
+        "/api/rules/{{id}}/test : règle filtrant un champ masqué doit être REFUSÉE — reçu {rt}");
 
-    // ---- (4) /api/playbooks/:id/test : renvoie les CIBLES -> exfiltration DIRECTE des valeurs masquées. ----
+    // ---- (4) /api/playbooks/{id}/test : renvoie les CIBLES -> exfiltration DIRECTE des valeurs masquées. ----
     {
         let c = st.db.lock();
         c.execute("INSERT INTO playbook(name,query,is_soql,action_kind,window_s,interval_s,enabled,created_by_role) \
@@ -1105,12 +1105,12 @@ async fn sec_ff_detection_test_surfaces_are_not_unmasked_oracles() {
     let pt = playbook_test(State(st.clone()), Extension(editor.clone()), axum::extract::Path(pid)).await.0;
     let targets = pt.get("targets").map(|t| t.to_string()).unwrap_or_default();
     assert!(!targets.contains("10.0.0.6") && !targets.contains("10.0.0.5"),
-        "/api/playbooks/:id/test : les CIBLES ne doivent PAS porter la valeur masquée en clair — exfiltré : {targets}");
+        "/api/playbooks/{{id}}/test : les CIBLES ne doivent PAS porter la valeur masquée en clair — exfiltré : {targets}");
     // Comportement ATTENDU pinné : le masque est émis DANS le SQL -> la cible est restituée MASQUÉE (le
     // dry-run reste utilisable : on voit COMBIEN de cibles, jamais LESQUELLES).
-    assert!(targets.contains("***"), "/api/playbooks/:id/test : cibles MASQUÉES attendues, reçu {targets}");
+    assert!(targets.contains("***"), "/api/playbooks/{{id}}/test : cibles MASQUÉES attendues, reçu {targets}");
 
-    // ---- (5) /api/correlations/:id/test : renvoie les ENTITÉS (key_field) -> idem. ----
+    // ---- (5) /api/correlations/{id}/test : renvoie les ENTITÉS (key_field) -> idem. ----
     {
         let c = st.db.lock();
         let steps = r#"[{"query":"search source=sshd | table ts,src_ip"},{"query":"search source=sshd | table ts,src_ip"}]"#;
@@ -1121,11 +1121,11 @@ async fn sec_ff_detection_test_surfaces_are_not_unmasked_oracles() {
     let ct = correlation_test(State(st.clone()), Extension(editor.clone()), axum::extract::Path(cid)).await.0;
     let ents = ct.get("entities").map(|t| t.to_string()).unwrap_or_default();
     assert!(!ents.contains("10.0.0.6") && !ents.contains("10.0.0.5"),
-        "/api/correlations/:id/test : les ENTITÉS ne doivent PAS porter la valeur masquée en clair — exfiltré : {ents}");
+        "/api/correlations/{{id}}/test : les ENTITÉS ne doivent PAS porter la valeur masquée en clair — exfiltré : {ents}");
     assert!(err_of(&ct).contains("masqué"),
-        "/api/correlations/:id/test : la clé de corrélation étant masquée, la surface doit REFUSER — reçu {ct}");
+        "/api/correlations/{{id}}/test : la clé de corrélation étant masquée, la surface doit REFUSER — reçu {ct}");
 
-    // ---- (6) /api/baselines/:id/test : renvoie les ÉCHANTILLONS (entité, valeur) -> idem. ----
+    // ---- (6) /api/baselines/{id}/test : renvoie les ÉCHANTILLONS (entité, valeur) -> idem. ----
     {
         let c = st.db.lock();
         c.execute("INSERT INTO ueba_baseline(name,query,entity_field,value_field,entity_type,bucket_s,min_samples,z_threshold,window_s,interval_s,severity,enabled) \
@@ -1135,9 +1135,9 @@ async fn sec_ff_detection_test_surfaces_are_not_unmasked_oracles() {
     let bt = baseline_test(State(st.clone()), Extension(editor.clone()), axum::extract::Path(bid)).await.0;
     let samples = bt.get("samples").map(|t| t.to_string()).unwrap_or_default();
     assert!(!samples.contains("10.0.0.6") && !samples.contains("10.0.0.5"),
-        "/api/baselines/:id/test : les ÉCHANTILLONS ne doivent PAS porter la valeur masquée en clair — exfiltré : {samples}");
+        "/api/baselines/{{id}}/test : les ÉCHANTILLONS ne doivent PAS porter la valeur masquée en clair — exfiltré : {samples}");
     assert!(err_of(&bt).contains("masqué"),
-        "/api/baselines/:id/test : le champ d'entité étant masqué, la surface doit REFUSER — reçu {bt}");
+        "/api/baselines/{{id}}/test : le champ d'entité étant masqué, la surface doit REFUSER — reçu {bt}");
 
     ff_rm(&path);
 }

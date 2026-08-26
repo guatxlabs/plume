@@ -8,7 +8,7 @@ license = "AGPL-3.0-or-later"
 # Shared SOQL compiler core. Public builds resolve this from the published git tag.
 # Local development overrides it to the sibling checkout via .cargo/config.toml (paths override, git-ignored).
 guatx-core = { git = "https://github.com/guatxlabs/core", tag = "v0.2.4" }
-axum = "0.7"
+axum = "0.8"
 # Verrous SANS empoisonnement (audit #67) : remplace std::sync::Mutex/RwLock -> pas de cascade poison
 # (un panic sous garde 500-ait DÉFINITIVEMENT ce tenant). Drop-in ; guards !Send (le rejet compile-time du
 # lock-tenu-au-travers-d'un .await est PRÉSERVÉ). Déjà dans le lockfile (0.12.x, tiré transitivement).
@@ -125,11 +125,78 @@ parquet = { version = "58", default-features = false, features = ["zstd", "snap"
 # la pile crypto DÉJÀ en arbre : `age` (STREAM AEAD ChaCha20-Poly1305, nonce par-fichier aléatoire + compteur
 # de chunk -> JAMAIS de réutilisation de nonce ; MÊME crate/chemin que le backup chiffré), + `hkdf`+`sha2`
 # (RustCrypto) pour DÉRIVER une clé cold à domaine séparé (`plume-cold-aead-v1`) depuis la clé SQLCipher
-# (jamais la clé brute). `hkdf` et `bytes` sont DÉJÀ dans le lockfile (hkdf via `age`, bytes via `parquet`/
-# hyper) -> AUCUNE crate compilée NOUVELLE ; 100 % pur-Rust. `optional=true` + rattachés à la feature
-# `cold_tier` : le build/mode 0 par défaut ne les utilise PAS -> byte-identique préservé (age/sha2/base64 sont
-# déjà des dép DIRECTES non-optionnelles, utilisées ici seulement sous `#[cfg(feature=\"cold_tier\")]`).
-hkdf = { version = "0.12", optional = true }
+# (jamais la clé brute). `optional=true` + rattachés à la feature `cold_tier` : le build/mode 0 par défaut ne
+# les utilise PAS -> byte-identique préservé (age/sha2/base64 sont déjà des dép DIRECTES non-optionnelles,
+# utilisées ici seulement sous `#[cfg(feature=\"cold_tier\")]`).
+#
+# CE QUE CE LOT NE TIENT PLUS, ET IL FAUT LE LIRE AVANT DE LE CROIRE. Ce bloc a longtemps porté l'invariante
+# « AUCUNE crate compilée NOUVELLE » : `hkdf` 0.12 était DÉJÀ dans le graphe (tiré par `age-core`), donc
+# l'activer ne coûtait rien. `hkdf` 0.13.0 (2026-03-30) a cassé cette gratuité et l'invariante est RETIRÉE
+# plutôt que laissée à mentir. Mesuré sur le lock le 2026-08-26 : hkdf 0.13 dépend de `hmac` 0.13, qui exige
+# `digest::EagerHash` (génération `digest` 0.11), tandis que `hkdf` 0.12.4 reste tiré — dans le graphe
+# `cold_tier`, par `age-core` seul ; à l'échelle du lock, aussi par `elliptic-curve`, `kryptering` et
+# `bergshamra-crypto`. Les deux générations COEXISTENT donc dans le binaire cold_tier.
+#
+# LE COÛT RÉEL, MESURÉ ET NON ADDITIONNÉ. Relevé le 2026-08-26 SUR L'ARBRE, sur un poste de développement,
+# en comparant DEUX manifestes qui ne diffèrent que par ces trois lignes-ci (`hkdf` 0.12 sans `sha2_v11`
+# contre `hkdf` 0.13 avec), la seule ligne de production qui en dépend (`cold_store/crypto.rs`) basculant
+# avec elles :
+#   · GRAPHE `--features cold_tier` : 235 -> 240 paquets. Les CINQ ajoutés sont `hkdf` 0.13.0, `hmac` 0.13.0,
+#     `sha2` 0.11.0, `ctutils` 0.4.2 et `cmov` 0.5.4 ; AUCUN n'est retiré en échange. Les deux derniers ne se
+#     déduisent PAS d'une lecture du lock, et pas pour la raison qu'on croit : le lock les portait déjà (ils
+#     y entrent par la feature `saml`, optionnelle). Ce qui les rend NEUFS, c'est qu'ils n'étaient dans AUCUN
+#     graphe compilé — `cargo tree` sur le manifeste 0.12, feature `cold_tier` comprise, répond « did not
+#     match any packages ». C'est le GRAPHE qui dit ce qui compile, jamais le lock : le lock est l'union de
+#     toutes les combinaisons de features. Ils entrent parce que `hmac` 0.13 allume la feature de `digest`
+#     0.11.3 qui compare les tags en temps constant.
+#   · GRAPHE PAR DÉFAUT : 222 -> 222, et les ensembles sont IDENTIQUES (différence VIDE). Un déploiement qui
+#     ne prend pas `cold_tier` ne paie rien du tout — c'est ce que `optional=true` promet, et c'est ici
+#     mesuré plutôt que supposé.
+#   · TEMPS DE COMPILATION des cinq unités (rapport `cargo build --timings`, profil `debug`) : 3,36 s de
+#     processeur en tout (`sha2` 0.11 1,68 · `ctutils` 0,55 · `cmov` 0,41 · `hmac` 0.13 0,37 · `hkdf` 0.13
+#     0,35), auxquels s'ajoute le RECALCUL de `digest` 0.11.3 (0,42 s) et de `sha1` 0.11.0 (0,84 s) sous la
+#     feature supplémentaire — unités déjà présentes, recompilées, pas ajoutées. La compilation de
+#     `plume-daemon` lui-même, elle, ne bouge pas : 28,91 s contre 29,39 s, le même travail des deux côtés.
+#   · TAILLE du binaire `plume-daemon` de l'arbre, construit `--features cold_tier`, profil `debug` :
+#     +639 328 octets, soit +0,19 %.
+#
+# TRANCHÉ, ET LA RAISON N'EST PAS LE PRIX : ON GARDE LES DEUX PILES. « Monter toute la pile d'un coup pour
+# n'en garder qu'une » n'est pas une décision que ce manifeste peut prendre. Mesuré le même jour sur le
+# graphe `cold_tier` : `hkdf` 0.12.4 y est tiré par `age-core`, et `sha2` 0.10.9 par `age`, `age-core`,
+# `ed25519-dalek`, `scrypt` et `rust-embed-utils` (17 paquets à l'échelle du lock entier, `hkdf` 0.12.4 en
+# ayant 4). Le démon peut cesser de s'en servir : les deux générations RESTENT, parce qu'elles appartiennent
+# à des dépendances qui ne sont pas les nôtres — à commencer par `age`, qui EST l'AEAD de ce tier froid.
+# Rester sur `hkdf` 0.12 n'éviterait donc AUCUNE coexistence ; cela laisserait seulement une mise à jour de
+# dépendance au rouge indéfiniment (clé `P7.19-c`), ce que la chaîne d'approvisionnement de ce dépôt existe
+# pour empêcher. Le budget de 2 Gio, lui, est un budget de MÉMOIRE VIVE : ces cinq unités sont derrière
+# `optional=true`, et rien de ce qu'elles apportent ne s'exécute dans un déploiement sans `cold_tier`.
+#
+# CE QUE CETTE MESURE NE DIT PAS, et il faut le dire ici plutôt que le laisser croire : la taille du binaire
+# de RELEASE. Ce profil-là est `opt-level = \"z\"`, `lto = true`, `strip = true` — l'écart y est
+# nécessairement PLUS PETIT (l'édition de liens globale retire le code non atteint), mais il n'a pas été
+# mesuré : il aurait fallu deux reconstructions complètes du graphe, la montée d'`axum` du même lot ayant
+# invalidé les artefacts de release existants.
+#
+# CE QUI NE BOUGE PAS PAR AILLEURS : `digest` 0.11.3, `block-buffer` 0.12 et `crypto-common` 0.2 étaient DÉJÀ
+# dans le graphe par défaut (tirés par `sha1 = \"0.11\"`, dép DIRECTE non-optionnelle, TOTP #44). `bytes`
+# reste lui aussi déjà présent (via `parquet`/hyper) ; 100 % pur-Rust des deux côtés.
+hkdf = { version = "0.13", optional = true }
+# SHA-256 de la GÉNÉRATION `digest` 0.11, et RIEN D'AUTRE. `hkdf::Hkdf<H>` 0.13 se déplie en
+# `GenericHkdf<Hmac<H>>` et `Hmac<H>` de hmac 0.13 exige `H: digest 0.11::EagerHash` : le `sha2 = \"0.10\"`
+# direct du démon (17 paquets du lock en dépendent — `age`, `rsa`, `ed25519-dalek`... — il ne PEUT pas être
+# retiré) est de la génération `digest` 0.10 et n'implémente pas ce trait. Les deux sha2 coexistent donc, sous
+# DEUX noms distincts, exactement comme `sha1 0.11` coexiste déjà avec `sha2 0.10` dans cette même crate.
+# LA DÉRIVATION NE CHANGE PAS D'UN OCTET, et c'est la seule chose qui compte ici — mais il faut dire COMMENT
+# on le sait, parce que « déduit » et « mesuré » ne se valent pas et que le premier est ici le plus fort.
+# HKDF-SHA256 est RFC 5869 des DEUX côtés : la valeur attendue n'est pas ce que rend notre code, c'est ce que
+# la NORME impose. `cold_hkdf_derivation_gelee_rfc5869` en fait une propriété REJOUABLE plutôt qu'un
+# raisonnement — il ancre l'implémentation liée aux vecteurs PUBLIÉS de la RFC (§ A.1, et § A.3 y compris par
+# `new(None, …)`, la forme exacte qu'emploie la production), gèle l'octet dérivé pour une clé de test
+# PUBLIQUE, et exige les deux témoins négatifs (un octet du label, un octet de l'ikm). Ce qu'il ne fait PAS,
+# et personne ne devrait le lire autrement : rejouer un « avant/après ». Plus une ligne de ce dépôt ne
+# construit la valeur avec `hkdf` 0.12 ; l'égalité avec l'ancienne pile se DÉDUIT de la norme et se VÉRIFIE
+# contre ses vecteurs, ce qui vaut mieux qu'une comparaison du code à lui-même.
+sha2_v11 = { package = "sha2", version = "0.11", optional = true }
 # `bytes::Bytes` = tampon EN MÉMOIRE (ChunkReader parquet) sur lequel on rejoue le Parquet DÉCHIFFRÉ (le
 # lecteur parquet exige un accès aléatoire -> footer ; le déchiffrement age est SÉQUENTIEL. Fichiers ~8 Mio ->
 # on déchiffre en flux vers un Bytes borné puis on décode row-group par row-group ; JAMAIS de plaintext DISQUE).
@@ -155,7 +222,7 @@ clickhouse-ha = ["clickhouse"]
 # (hot SQLite -> Parquet colonnaire). Tire `parquet` (default-features=false : codecs zstd/snap SEULEMENT,
 # PAS d'arrow). Sans la feature, `cold_store.rs` n'est pas compilé et la branche cold de `retention_run` est
 # INEXISTANTE (mode 0 byte-identique). Le gate RUNTIME `PLUME_COLD_TIER` doit AUSSI être posé pour l'activer.
-cold_tier = ["dep:parquet", "dep:hkdf", "dep:bytes", "guatx-core/cold_tier"]
+cold_tier = ["dep:parquet", "dep:hkdf", "dep:sha2_v11", "dep:bytes", "guatx-core/cold_tier"]
 # LDAP/AD bind réseau (#44). OFF par défaut : opt-in de compilation pour un déploiement on-prem/AD. Tire
 # `ldap3` (tokio-rustls, pur-Rust). Sans cette feature, le login LDAP renvoie 501 (code présent, non linké).
 ldap = ["dep:ldap3"]

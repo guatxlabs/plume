@@ -1,51 +1,191 @@
+# P7.19-a — TOUT COMMIT POUSSE EST JUGE, SUR TOUTE BRANCHE, MESSAGE ET IDENTITE.
+#
 # Un message de commit s'adresse au lecteur du code. Le hook local le rappelle, mais il se
 # contourne (`--no-verify`) et se perd a chaque clone frais : cette verification-ci est celle
-# qui LIE. Elle rejoue le MEME script que le hook, sur la plage reellement poussee.
+# qui LIE. Elle rejoue le MEME script que le hook.
+#
+# POURQUOI LA PORTEE N'A PAS ETE REDUITE, alors que le rouge est permanent sur les branches du
+# robot de dependances. Mesure du 2026-08-26, sur les reglages de ce depot : la fusion par
+# ECRASEMENT est le seul mode autorise, et son message est « titre + description ». Mesure du
+# meme jour sur une fusion par ecrasement REELLE, reglee a l'identique : la plateforme REPORTE
+# dans ce message les contreseings des commits ecrases — donc l'adresse etrangere qu'ils
+# portent —, ajoute une co-signature par auteur distinct, et signe le commit d'ecrasement de
+# SON PROPRE compte. Les trois sont refuses ici, et aucun reglage ne les retire. AUCUNE demande
+# de fusion ne peut donc produire un commit admissible, meme ecrite par l'exploitant : une
+# demande de fusion n'est pas un chemin d'entree dans ce depot, le seul chemin est la poussee
+# DIRECTE sous l'identite canonique. Le rouge de ces branches est VRAI. Cesser de les juger ne
+# retirerait pas la cause, cela retirerait seulement le fait de la voir — et priverait au
+# passage la branche de publication de sa seule redondance, puisque chaque commit y arrive
+# alors sans avoir jamais ete lu. AGENTS.md porte cette regle en entier.
+#
+# CE QUI A ETE ESSAYE PUIS RETIRE : juger le TITRE et la DESCRIPTION d'une demande. Ce texte ne
+# devient jamais un commit publie, puisque le bouton est inutilisable ; le juger revenait a
+# remplacer un objet qui n'entre nulle part par un autre objet qui n'entre nulle part.
+#
+# LE CHEMIN `pull_request` A ETE RETIRE, ET LA MESURE LE TRANCHE. Sur ce chemin,
+# `actions/checkout` place HEAD sur `refs/pull/N/merge` — un commit de fusion EPHEMERE fabrique
+# par la plateforme, qui n'entre nulle part. Mesure du 2026-08-26 sur une execution reelle :
+# l'etape de message y annoncait « messages verifies : 1 · refuses : 0 », un vert qui n'affirme
+# rien. Rien n'est perdu : les commits d'une demande sont deja juges par la POUSSEE de leur
+# branche, et ce verdict s'affiche sur la demande — mesure du meme jour, la tete d'une demande
+# ouverte portait DEUX controles nommes `verifier`, un par evenement, tous deux rouges.
 name: message-public
 on:
   push:
     branches: ["**"]
-  pull_request:
+  # Sans lui, aucune histoire ne peut etre REJUGEE : le seul declencheur serait une poussee de
+  # plus. C'etait le seul des quatre workflows du depot a ne pas l'avoir.
+  workflow_dispatch:
+
+# Le job ne fait que LIRE. Meme convention que `ci.yml`, `agent-ci.yml`, `agent-cross.yml`.
+permissions:
+  contents: read
+
 jobs:
   verifier:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          # Le repli parcourt toute l'histoire atteignable : elle doit etre presente.
           fetch-depth: 0
-      - name: Verifier chaque message de la plage poussee
+          persist-credentials: false
+
+      - name: Deriver la plage jugee — UNE fois, pour les deux etapes qui suivent
+        id: plage
         env:
           AVANT: ${{ github.event.before }}
         run: |
           set -uo pipefail
-          # PLAGE DERIVEE, pas devinee : au premier push (ou apres un force-push) `before` vaut
-          # la valeur nulle — on retombe alors sur le seul HEAD plutot que de tout rejouer.
-          NUL=0000000000000000000000000000000000000000
-          if [ -z "${AVANT:-}" ] || [ "$AVANT" = "$NUL" ] || ! git cat-file -e "$AVANT^{commit}" 2>/dev/null; then
-            PLAGE="$(git rev-parse HEAD)"
+          # RIEN N'EST ENUMERE, PAS MEME LE SHA NUL DU PROTOCOLE : une reference absente, nulle
+          # ou devenue inatteignable echoue toutes le meme test d'atteignabilite.
+          if [ -n "${AVANT:-}" ] && git rev-parse --verify --quiet "${AVANT}^{commit}" >/dev/null; then
+            plage="${AVANT}..HEAD"
+            mode=exacte
           else
-            PLAGE="$(git rev-list "$AVANT..HEAD")"
+            plage="HEAD"
+            mode=surensemble
+          fi
+
+          # UNE PLAGE QU'ON NE PEUT PAS LIRE EST UN REFUS DE CONCLURE, PAS UN ACQUITTEMENT.
+          if ! n="$(git rev-list --count "$plage" 2>"$RUNNER_TEMP/err")"; then
+            echo "::error::REFUS DE CONCLURE — plage « $plage » illisible : aucun commit n'a ete juge."
+            sed 's/^/    /' "$RUNNER_TEMP/err"
+            exit 2
+          fi
+
+          # LA MEME EXPRESSION EST REMISE AUX DEUX ETAPES. Avant, chacune derivait la sienne et
+          # « HEAD » n'y voulait pas dire la meme chose : mesure du 2026-08-26 sur cet arbre,
+          # l'etape de message en tirait 1 commit la ou celle d'identite en lisait 384.
+          {
+            echo "plage=$plage"
+            echo "mode=$mode"
+          } >> "$GITHUB_OUTPUT"
+          echo "plage jugee : « $plage » — $n commits, message ET identite."
+
+          if [ "$mode" = surensemble ]; then
+            echo "::warning::point de depart inatteignable (creation de branche, poussee forcee, declenchement manuel) — la plage jugee est le SUR-ENSEMBLE de ce qui a ete pousse : tout ce qui est atteignable depuis HEAD, soit $n commits."
+            echo "POURQUOI UN SUR-ENSEMBLE PLUTOT QUE « HEAD SEUL ». Juger le seul HEAD rendait VERT en"
+            echo "annoncant « 1 » la ou N commits venaient d'entrer : un acquittement de ce qui n'a pas"
+            echo "pu etre lu. Un sur-ensemble ne peut qu'en REFUSER plus, jamais en acquitter moins."
+            echo "CE QU'IL COUTE : le verdict porte aussi sur des commits deja publies, donc un refus"
+            echo "peut designer un commit ancien et non celui qui vient d'arriver."
+          fi
+
+      - name: Message de chaque commit de la plage
+        env:
+          PLAGE: ${{ steps.plage.outputs.plage }}
+        run: |
+          set -uo pipefail
+          if ! commits="$(git rev-list "$PLAGE" 2>"$RUNNER_TEMP/err")"; then
+            echo "::error::REFUS DE CONCLURE — plage « $PLAGE » illisible : aucun message n'a ete juge."
+            sed 's/^/    /' "$RUNNER_TEMP/err"
+            exit 2
           fi
           n=0; ko=0
-          for h in $PLAGE; do
-            git log -1 --format=%B "$h" > /tmp/msg
-            if ! ./.github/scripts/verifier-message-de-commit.sh /tmp/msg 2> /tmp/err; then
+          for h in $commits; do
+            if ! git log -1 --format=%B "$h" > "$RUNNER_TEMP/msg" 2>"$RUNNER_TEMP/err"; then
+              echo "::error::REFUS DE CONCLURE — message de $h illisible."
+              sed 's/^/    /' "$RUNNER_TEMP/err"
+              exit 2
+            fi
+            # Le code de sortie est lu IMMEDIATEMENT : tout ce qui s'interpose entre l'appel et
+            # sa lecture rend le code de ce qui s'interpose. 2 et 1 ne disent pas la meme chose.
+            ./.github/scripts/verifier-message-de-commit.sh "$RUNNER_TEMP/msg" 2>"$RUNNER_TEMP/err"
+            rc=$?
+            if [ "$rc" -eq 2 ]; then
+              echo "::error::REFUS DE CONCLURE sur $(git log -1 --format='%h %s' "$h")"
+              sed 's/^/    /' "$RUNNER_TEMP/err"
+              exit 2
+            fi
+            if [ "$rc" -ne 0 ]; then
               echo "::error::$(git log -1 --format='%h %s' "$h")"
-              sed 's/^/    /' /tmp/err
+              sed 's/^/    /' "$RUNNER_TEMP/err"
               ko=$((ko+1))
             fi
             n=$((n+1))
           done
-          echo "messages verifies : $n · refuses : $ko"
+          echo "messages juges : $n · refuses : $ko"
           [ "$ko" -eq 0 ]
-      - name: Identite canonique sur la plage poussee
+
+      - name: Identite canonique sur la plage
+        # `always()` : les deux verdicts sont rendus dans la MEME execution. Avant, un message
+        # refuse SAUTAIT cette etape et l'identite restait inconnue jusqu'a la correction du
+        # message. La garde reste conditionnee a l'existence d'une plage : si la derivation a
+        # refuse de conclure, sa sortie est vide et il n'y a rien a juger — condition DERIVEE
+        # de l'etape precedente, pas une liste de cas.
+        if: always() && steps.plage.outputs.plage != ''
+        env:
+          PLAGE: ${{ steps.plage.outputs.plage }}
         run: |
+          set -uo pipefail
           # Le hook local se contourne et disparait a chaque clone frais ; c'est ICI que la
           # regle lie. Le canonique n'est ecrit qu'une fois, dans le script appele.
-          base='${{ github.event.before }}'
-          if [ -z "$base" ] || [ "$base" = '0000000000000000000000000000000000000000' ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            plage=HEAD
-          else
-            plage="$base..HEAD"
+          ./.github/scripts/verifier-identite.sh "$PLAGE"
+          rc=$?
+          if [ "$rc" -eq 2 ]; then
+            echo "::error::REFUS DE CONCLURE — l'identite n'a pas pu etre lue sur « $PLAGE »."
+            exit 2
           fi
-          ./.github/scripts/verifier-identite.sh "$plage"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::identite non canonique sur « $PLAGE »"
+            exit 1
+          fi
+          echo "identites jugees sur « $PLAGE » : toutes canoniques."
+
+      - name: Ce que cette execution ne tient pas
+        # Sans autre condition qu'`always()` — la limite s'imprime a CHAQUE execution, y compris
+        # verte. Une garde doit DIRE ce qu'elle ne tient pas, sinon son vert se lit comme une
+        # affirmation qu'elle n'a jamais faite.
+        if: always()
+        run: |
+          set -uo pipefail
+          cat <<'LIMITE'
+          ── CE QUE CETTE GARDE NE TIENT PAS ────────────────────────────────────────────────
+          · Elle REFUSE une execution ; elle ne retire pas un commit deja pousse. Sur la branche
+            de publication, un message ou une identite inadmissibles sont DETECTES a l'arrivee,
+            jamais EMPECHES : seule une reecriture d'histoire, faite a la main, les retire.
+          · Le hook local est une boucle de retour, pas une frontiere : `--no-verify` le
+            contourne, et un clone frais ne l'a pas tant que `git config core.hooksPath
+            .githooks` n'y a pas ete pose.
+          · Le hook et cette garde ne jugent pas exactement le meme texte. Mesure du 2026-08-26 :
+            git n'a pas encore nettoye le fichier quand il appelle le hook, et il ne le nettoiera
+            que si le message a ete EDITE — « git commit -m » garde une ligne de commentaire dans
+            le message publie. Le hook nettoie donc lui-meme et AVERTIT quand ce nettoyage change
+            le verdict. Ici, aucun nettoyage : le message d'un commit deja ecrit est juge tel
+            qu'il est publie.
+          · Quand le point de depart de la poussee est inatteignable — creation de branche,
+            poussee forcee, declenchement manuel — la plage jugee est le SUR-ENSEMBLE de ce qui a
+            ete pousse : toute l'histoire atteignable. Un refus peut alors designer un commit
+            ancien plutot que celui qui vient d'arriver. C'est le prix de ne jamais acquitter ce
+            qu'on n'a pas pu lire.
+          · Une demande de fusion venue d'un FORK ne pousse aucune branche ici : ses commits ne
+            sont juges par rien tant qu'ils ne sont pas repris localement et pousses.
+          · Le bouton de fusion pose sur la branche de publication un commit que ces deux gardes
+            refusent — co-signature, adresse etrangere reportee par les contreseings ecrases,
+            committer de la plateforme. C'est pourquoi une demande de fusion n'est pas un chemin
+            d'entree ici, et pourquoi le rouge de ces branches est VRAI : il ne se corrige pas
+            branche par branche, et il ne doit pas etre eteint.
+          · Le STYLE au-dela des motifs ecrits dans le script n'est pas mecanise : ils attrapent
+            des formes, pas une intention. Le reste se tient a la relecture.
+          LIMITE

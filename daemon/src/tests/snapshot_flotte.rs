@@ -398,7 +398,7 @@
         assert!(crate::ingest::store::dernier_instantane_par_hote(&conn, "jamais-vu", 500).is_empty());
     }
 
-    /// LE PANNEAU LUI-MÊME (route `GET /api/panel/:kind`) PORTE SON DÉNOMINATEUR. AVANT : la route rendait
+    /// LE PANNEAU LUI-MÊME (route `GET /api/panel/{kind}`) PORTE SON DÉNOMINATEUR. AVANT : la route rendait
     /// `{kind, ts, hash, data}` — l'état de la DERNIÈRE machine à avoir parlé (mesuré : `srv00` pour un
     /// parc de 50), sans `host` ni compte. Les champs de tête restent ceux de la machine la plus fraîche
     /// (mono-hôte : réponse inchangée) mais sont désormais ATTRIBUÉS et accompagnés du parc.

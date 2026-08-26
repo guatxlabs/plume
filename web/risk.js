@@ -2,7 +2,7 @@
 // Vit dans l'espace DÉTECTION & RÉPONSE. LECTURE seule, viewer+ (donnée de posture, pas un secret).
 // Endpoints (déjà LIVE, vérifiés 200) — servis du ROLLUP (zéro scan d'events) :
 //   GET /api/risk/entities                 -> {entities:[{entity_type,entity,env_id,score,contrib,distinct_tactics,tactics,score_hot,contrib_hot,max_severity,first_ts,last_ts,over_threshold}], served, window, total, total_capped, over_threshold_total, thresholds:{score,distinct_tactics,velocity,window_s}}
-//   GET /api/risk/entity/:etype/:entity    -> {entity_type,entity,summary:{…}|null, timeline:[{ts,score,contrib}], contributions:[{ts,risk_score,source,rule_id,reason,mitre,severity}]}
+//   GET /api/risk/entity/{etype}/{entity}    -> {entity_type,entity,summary:{…}|null, timeline:[{ts,score,contrib}], contributions:[{ts,risk_score,source,rule_id,reason,mitre,severity}]}
 // SÉCU UI : tout en textContent/esc (anti-XSS). Aucune mutation (aucun apiSend).
 import { $, api, fetchInto, fmtTs, humanAge, LANG, muted, pagedList, sev } from './core.js';
 

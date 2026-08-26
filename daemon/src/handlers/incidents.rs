@@ -368,7 +368,7 @@ pub(crate) fn resolve_step_search(conn: &Connection, id: i64, step_id: i64, valu
 // une step response se joue via /api/actions (admin + arm + approbation + ledger), JAMAIS ici.
 // ---------------------------------------------------------------------------------------------------------
 
-/// POST /api/cases/:id/incident — DÉCLARE (tier) / RÉTROGRADE (demote) un case en incident + type/commander.
+/// POST /api/cases/{id}/incident — DÉCLARE (tier) / RÉTROGRADE (demote) un case en incident + type/commander.
 /// editor+ (miroir du statut/assignation d'un case). Body : {tier?, incident_type?, commander?, demote?}.
 pub(crate) async fn incident_set(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
     let demote = b.get("demote").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -389,7 +389,7 @@ pub(crate) async fn incident_set(State(st): State<AppState>, Extension(au): Exte
     })
 }
 
-/// GET /api/cases/:id/runbooks — incident + runbook recommandé (tactique dominante) + disponibles. viewer+.
+/// GET /api/cases/{id}/runbooks — incident + runbook recommandé (tactique dominante) + disponibles. viewer+.
 pub(crate) async fn case_runbooks_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
     match case_runbooks_json(&conn, id) {
@@ -398,7 +398,7 @@ pub(crate) async fn case_runbooks_get(State(st): State<AppState>, Extension(au):
     }
 }
 
-/// POST /api/cases/:id/runbook — ATTACHE un runbook (instancie ses steps). editor+. Body : {runbook_id}.
+/// POST /api/cases/{id}/runbook — ATTACHE un runbook (instancie ses steps). editor+. Body : {runbook_id}.
 /// La cible pré-remplie est dérivée de l'alerte dominante (best-effort) côté serveur.
 pub(crate) async fn case_runbook_attach(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     let runbook_id = match b.get("runbook_id").and_then(|v| v.as_i64()) {
@@ -413,13 +413,13 @@ pub(crate) async fn case_runbook_attach(State(st): State<AppState>, Extension(au
     }
 }
 
-/// GET /api/cases/:id/steps — steps de l'incident + progression. viewer+.
+/// GET /api/cases/{id}/steps — steps de l'incident + progression. viewer+.
 pub(crate) async fn case_steps_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
     Json(case_steps_json(&conn, id))
 }
 
-/// POST /api/cases/:id/steps/:step_id — AVANCE/skip une step (+ note). editor+. Body : {status, note?}.
+/// POST /api/cases/{id}/steps/{step_id} — AVANCE/skip une step (+ note). editor+. Body : {status, note?}.
 pub(crate) async fn case_step_set(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, step_id)): Path<(i64, i64)>, Json(b): Json<Value>) -> StatusCode {
     let status = b.str_field("status");
     let note = b.get("note").and_then(|v| v.as_str());
@@ -432,7 +432,7 @@ pub(crate) async fn case_step_set(State(st): State<AppState>, Extension(au): Ext
     })
 }
 
-/// GET /api/cases/:id/steps/:step_id/search[?value=] — RÉSOUT le GXQL d'une step 'search' (recompilé, masqué à
+/// GET /api/cases/{id}/steps/{step_id}/search[?value=] — RÉSOUT le GXQL d'une step 'search' (recompilé, masqué à
 /// l'exécution via /api/query). viewer+ (readonly_post-like GET). Ne déclenche RIEN.
 pub(crate) async fn case_step_search(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, step_id)): Path<(i64, i64)>, Query(q): Query<HashMap<String, String>>) -> Response {
     let value = q.get("value").map(|s| s.as_str());
@@ -695,7 +695,7 @@ pub(crate) async fn runbooks_admin_list(State(st): State<AppState>, Extension(au
     Json(json!({ "runbooks": items })).into_response()
 }
 
-/// GET /api/runbooks/:id — un runbook + ses étapes (pour édition). ADMIN.
+/// GET /api/runbooks/{id} — un runbook + ses étapes (pour édition). ADMIN.
 pub(crate) async fn runbook_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_admin(&au) { return r; }
     crate::req_conn!(st, au, conn);
@@ -735,7 +735,7 @@ pub(crate) async fn runbook_create(State(st): State<AppState>, Extension(au): Ex
     }
 }
 
-/// POST /api/runbooks/:id — MET À JOUR un runbook custom (managed=1 -> 403). ADMIN.
+/// POST /api/runbooks/{id} — MET À JOUR un runbook custom (managed=1 -> 403). ADMIN.
 pub(crate) async fn runbook_update_handler(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     if let Err(r) = require_admin(&au) { return r; }
     let (name, mkind, mkey, desc, steps) = match parse_runbook_payload(&b) { Ok(x) => x, Err(e) => return bad_req(e) };
@@ -756,7 +756,7 @@ pub(crate) async fn runbook_update_handler(State(st): State<AppState>, Extension
     }
 }
 
-/// DELETE /api/runbooks/:id — SUPPRIME un runbook custom + ses étapes (managed=1 -> 403). ADMIN. Les case_step
+/// DELETE /api/runbooks/{id} — SUPPRIME un runbook custom + ses étapes (managed=1 -> 403). ADMIN. Les case_step
 /// déjà instanciées (copies figées) ne sont PAS affectées.
 pub(crate) async fn runbook_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_admin(&au) { return r; }
@@ -781,7 +781,7 @@ pub(crate) async fn runbook_delete(State(st): State<AppState>, Extension(au): Ex
     }
 }
 
-/// POST /api/runbooks/:id/enabled — (DÉS)ACTIVE un runbook — MANAGÉ OU CUSTOM. ADMIN. Pour un managé, c'est
+/// POST /api/runbooks/{id}/enabled — (DÉS)ACTIVE un runbook — MANAGÉ OU CUSTOM. ADMIN. Pour un managé, c'est
 /// l'override d'activation (doctrine detection_override) : il PERSISTE et SURVIT au reboot (le re-seed est
 /// INSERT-si-absent, il ne ré-active jamais). Body : {enabled: bool}.
 pub(crate) async fn runbook_set_enabled(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
@@ -806,7 +806,7 @@ pub(crate) async fn runbook_set_enabled(State(st): State<AppState>, Extension(au
     }
 }
 
-/// POST /api/runbooks/:id/clone — CLONE un runbook (managé/custom) en COPIE managed=0 éditable. ADMIN. Body : {name?}.
+/// POST /api/runbooks/{id}/clone — CLONE un runbook (managé/custom) en COPIE managed=0 éditable. ADMIN. Body : {name?}.
 pub(crate) async fn runbook_clone_handler(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     if let Err(r) = require_admin(&au) { return r; }
     let new_name = b.get("name").and_then(|v| v.as_str());

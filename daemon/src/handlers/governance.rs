@@ -101,7 +101,7 @@ pub(crate) async fn legal_hold_create(State(st): State<AppState>, Extension(au):
     }
 }
 
-/// POST /api/legal-holds/:id/release — LÈVE un hold (admin-only, ledgerisé). Ne SUPPRIME jamais la ligne
+/// POST /api/legal-holds/{id}/release — LÈVE un hold (admin-only, ledgerisé). Ne SUPPRIME jamais la ligne
 /// (trace conservée) : passe active=0 + released_ts/by. Après levée, la portée redevient purgeable au tick suivant.
 pub(crate) async fn legal_hold_release(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if !au.is_admin() {
@@ -261,7 +261,7 @@ pub(crate) async fn ledger_sink_create(State(st): State<AppState>, Extension(au)
     }
 }
 
-/// DELETE /api/ledger-sinks/:id — retire un sink (admin-only, ledgerisé).
+/// DELETE /api/ledger-sinks/{id} — retire un sink (admin-only, ledgerisé).
 pub(crate) async fn ledger_sink_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if !au.is_admin() {
         return forbidden("réservé à l'administrateur");
@@ -296,7 +296,7 @@ pub(crate) async fn ledger_sink_delete(State(st): State<AppState>, Extension(au)
     }
 }
 
-/// POST /api/ledger-sinks/:id/flush — EXPORTE les nouvelles entrées du ledger (id > last_id) vers le sink,
+/// POST /api/ledger-sinks/{id}/flush — EXPORTE les nouvelles entrées du ledger (id > last_id) vers le sink,
 /// puis avance le curseur (last_id/last_hash) UNIQUEMENT si l'écriture réussit (at-least-once : jamais de
 /// trou dans la copie WORM). Read-only sur `ledger` (aucune mutation). Renvoie le nombre d'entrées exportées.
 pub(crate) async fn ledger_sink_flush(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -421,7 +421,7 @@ pub(crate) async fn role_create(State(st): State<AppState>, Extension(au): Exten
     Json(json!({ "ok": true, "name": name, "base_role": base, "deny_perms": deny })).into_response()
 }
 
-/// DELETE /api/roles/:name — retire un rôle composable (super-admin). Rafraîchit le cache. NB : les grants
+/// DELETE /api/roles/{name} — retire un rôle composable (super-admin). Rafraîchit le cache. NB : les grants
 /// qui référencent ce rôle retombent alors sur effective_base_role="" -> rang 0 -> DEFAULT-DENY (fail-closed).
 pub(crate) async fn role_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(name): Path<String>) -> Response {
     let cp = match roles_guard(&st, &au) {

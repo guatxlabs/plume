@@ -318,7 +318,7 @@ impl std::fmt::Display for PurgeRefusal {
             PurgeRefusal::LegalHold(names) => write!(
                 f,
                 "REFUS — rétention légale : le périmètre est recouvert par {} legal-hold(s) ACTIF(s) [{}]. \
-                 Lever le hold (/api/legal-holds/:id/release) est un acte de gouvernance tracé ; la purge ne \
+                 Lever le hold (/api/legal-holds/{{id}}/release) est un acte de gouvernance tracé ; la purge ne \
                  le contourne pas.",
                 names.len(),
                 names.join(", ")

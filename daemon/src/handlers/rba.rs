@@ -565,7 +565,7 @@ pub(crate) async fn risk_entities(State(st): State<AppState>, Extension(au): Ext
     Json(page)
 }
 
-/// GET /api/risk/entity/:etype/:entity — SYNTHÈSE (rollup) + TIMELINE horaire + contributions récentes d'UNE
+/// GET /api/risk/entity/{etype}/{entity} — SYNTHÈSE (rollup) + TIMELINE horaire + contributions récentes d'UNE
 /// entité. La timeline/les contributions lisent la PETITE table `risk_event` INDEXÉE par (entity_type,entity)
 /// -> lookup ciblé, PAS un scan de `event`. viewer+.
 pub(crate) async fn risk_entity_timeline(

@@ -368,7 +368,33 @@ env:
   # listage du répertoire ne voit pas, une mesure impraticable qui rend un verdict et pas un zéro, le
   # contrôle positif du démarrage, les quatre verdicts du quota, et la mutation dans les deux sens sur
   # un tri qui déverse pour de vrai).
-  EXPECTED_TESTS: "1331"
+  # LA MARCHE QUI MANQUAIT — RETROUVÉE PAR MESURE LE 2026-08-26, et c'est une dérive de JOURNAL, pas de
+  # compteur. Entre la ligne ci-dessus (lot P10.1-b, 1286 par défaut) et la valeur que ce fichier portait
+  # en entrant dans le lot d'aujourd'hui (1331), ce journal ne dit RIEN : `git log -S` sur les deux paires
+  # rend le MÊME commit, `ed99dbf`, qui a posé 1286 -> 1331 et 1506 -> 1552 d'un seul geste sans ajouter
+  # de ligne ici. Ce sont donc **45** tests entrés dans les DEUX profils, plus **un** test froid seul —
+  # celui-là est nommé sur `EXPECTED_COLD_TESTS`, parce que c'est LUI qui a fait passer l'écart de 220 à
+  # 221 avant que ce lot n'y ajoute le sien. Un compteur juste avec un journal muet reste une dérive : le
+  # chiffre disait vrai, la phrase qui l'explique n'existait pas.
+  # RÉ-MESURÉ le 2026-08-26 par `.github/scripts/compter-les-tests.sh` sur l'arbre qui prend `axum`
+  # 0.8.9 : 1331 -> **1332**. Le +1 est UN test et un seul,
+  # `router_json_refuse_les_octets_parasites_apres_le_document` : il traverse le routeur RÉEL pour
+  # épingler un changement de CODE DE REFUS que la montée de version apporte — `axum::Json` appelle
+  # `Deserializer::end()` depuis 0.8.5, si bien qu'un document JSON valide SUIVI d'octets parasites
+  # passe de ACCEPTÉ (le reste ignoré) à **400**. Mesuré en liant les deux piles dans un même binaire
+  # le 2026-08-26 : `{"user":"x","pass":"y"} parasite` -> accepté par 0.7.9, refusé 400 par 0.8.9.
+  # Sans `cfg` de feature -> il entre AUSSI dans le profil `cold_tier` (voir EXPECTED_COLD_TESTS).
+  # RÉ-MESURÉ le 2026-08-26 (MÊME commande) sur l'arbre qui NOMME les deux autres changements servis
+  # par la montée `axum` : 1332 -> **1334**. Les +2 sont DEUX tests et deux seuls, tous deux sans
+  # `cfg` de feature (donc +2 aussi sur EXPECTED_COLD_TESTS) :
+  #   - `router_path_i64_ecrit_la_valeur_de_refus_sans_guillemets` — le CORPS d'un refus de `Path<i64>`
+  #     passe de « Cannot parse `"abc"` » à « Cannot parse `abc` » (`{value:?}` -> `{value}` dans
+  #     `src/extract/path/mod.rs`) SANS que le code change : 400 des deux côtés, donc aucune garde de
+  #     code de refus ne pouvait le voir, sur 101 sites `Path<i64>` mesurés le 2026-08-26 ;
+  #   - `router_un_segment_statique_gagne_sur_son_parametre_frere` — le moteur d'appariement a été
+  #     REMPLACÉ (matchit 0.7.3 -> 0.8.4) et la précédence « statique avant paramètre » n'était tenue
+  #     par aucun test, seulement par un commentaire qui en donnait un mécanisme FAUX.
+  EXPECTED_TESTS: "1334"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -691,7 +717,47 @@ jobs:
           # `cold_tier` pour 1286 par défaut — l'écart reste **220**. Ce compteur-ci bouge AVEC
           # l'autre : cinq tests sans `cfg` entrent dans les deux profils, et le laisser en arrière
           # rendrait ce job rouge sans rien mesurer de neuf.
-          EXPECTED_COLD_TESTS: "1552"
+          # LA MARCHE QUI MANQUAIT, ET LE TEST QUI L'A FAITE — MESURÉ LE 2026-08-26. Entre la ligne
+          # ci-dessus (1506 / 1286, écart 220) et la valeur que ce fichier portait en entrant dans le lot
+          # d'aujourd'hui (1552 / 1331, écart **221**), ce journal ne dit rien : `git log -S` sur les deux
+          # paires rend le MÊME commit, `ed99dbf`, qui les a posées d'un coup sans ajouter de ligne ici.
+          # LE TEST FROID QUI A FAIT CETTE MARCHE, DÉRIVÉ DES SOURCES aux deux commits (les `#[test]` du
+          # module `cold_store`, gaté en entier par la feature, plus ceux qu'un `cfg` cold_tier gâte
+          # ailleurs) : `p87c_le_secret_froid_suit_la_provenance_de_la_cle_douverture`, et lui seul — la
+          # différence des deux ensembles ne porte AUCUN autre nom.
+          # L'INSTRUMENT EST VALIDÉ AVANT D'ÊTRE CRU, sans quoi « il n'a rien trouvé d'autre » et « il est
+          # aveugle » se liraient pareil : la même dérivation rend 223 / 224 / 225 noms aux trois points
+          # (`ed99dbf~1`, `ed99dbf`, cet arbre) là où les écarts MESURÉS valent 220 / 221 / 222, et ses
+          # DEUX faux positifs sont NOMMÉS plutôt que constatés comme un décalage —
+          # `sans_la_feature_la_recolte_dit_non_compile` (gaté `cfg(not(feature = "cold_tier"))`) et
+          # `purge_refuses_when_the_cold_tier_covers_the_window` (présent dans les DEUX profils). Un
+          # décalage constant et expliqué laisse la DIFFÉRENCE exacte.
+          #
+          # ET « L'ÉCART » N'EST PAS UN COMPTE D'AJOUTS, C'EST UN SOLDE — mesuré le 2026-08-26 en
+          # comparant les DEUX listes (`cargo test -- --list`, avec et sans la feature) : le profil froid
+          # GAGNE 223 tests et en PERD **1**. Celui qu'il perd est
+          # `sans_la_feature_la_recolte_dit_non_compile`, qui n'existe que SANS la feature parce qu'il
+          # éprouve exactement ce que la bannière dit quand le tier n'est pas compilé. 223 − 1 = 222.
+          # Écrire « l'écart reste 222 » sans cette soustraction laissait croire qu'aucun test ne
+          # disparaît d'un profil à l'autre : il y en a un, et c'est par construction.
+          # RÉ-MESURÉ le 2026-08-26 par `.github/scripts/compter-les-tests.sh` (1553 avec `cold_tier`
+          # pour 1331 par défaut — écart **222**) sur l'arbre qui prend `hkdf` 0.13.0. Le +1 est UN
+          # test et un seul, `cold_hkdf_derivation_gelee_rfc5869` : il GÈLE l'octet dérivé par
+          # HKDF-SHA256 pour la clé cold, parce que cette montée de version fait cohabiter DEUX
+          # générations de `sha2` dans la crate et qu'une clé cold qui change rend illisible tout
+          # jour-file froid déjà écrit. Il est derrière `cfg(feature = "cold_tier")` -> `EXPECTED_TESTS`
+          # ne bouge PAS, et la mesure du 2026-08-26 le confirme (1331 inchangé).
+          # RÉ-MESURÉ le 2026-08-26 (MÊME commande) sur l'arbre qui prend `axum` 0.8.9 : 1554 avec
+          # `cold_tier` pour 1332 par défaut — l'écart reste **222**. Le +1 est le MÊME test que
+          # celui d'`EXPECTED_TESTS` (`router_json_refuse_les_octets_parasites_apres_le_document`,
+          # sans `cfg` de feature) : les deux compteurs bougent ensemble, et l'écart INCHANGÉ est ce
+          # qui prouve qu'aucun test n'a été gagné ni perdu du côté de la feature.
+          # RÉ-MESURÉ le 2026-08-26 (MÊME commande) sur l'arbre qui NOMME les deux autres changements
+          # servis par la montée `axum` : 1556 avec `cold_tier` pour 1334 par défaut — l'écart reste
+          # **222**. Les +2 sont les MÊMES deux tests que ceux d'`EXPECTED_TESTS` (refus de `Path<i64>`
+          # et précédence du segment statique, tous deux sans `cfg`) : les deux compteurs bougent
+          # ensemble, et l'écart INCHANGÉ est ce qui dit qu'aucun test froid n'a été perdu en chemin.
+          EXPECTED_COLD_TESTS: "1556"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -828,6 +894,20 @@ jobs:
       - name: La surface web lit chaque verdict que le démon publie, et le rend comme un état
         run: python3 .github/scripts/check_web_reads_every_verdict.py
       - { name: "Toute route sensible du démon (détruit / élève un droit / arme une réponse — DÉRIVÉE du routeur) a ses appelants web derrière la confirmation partagée (P11.5-b)", run: python3 .github/scripts/check_sensitive_routes_are_confirmed.py }
+
+      # `P7.19-d` — LA SYNTAXE D'UN GABARIT DE ROUTE EST CELLE DU ROUTEUR, PARTOUT OÙ ELLE EST ÉCRITE.
+      # La montée `axum` 0.7 -> 0.8 fait passer `/api/cases/:id` à `/api/cases/{id}`, et la bibliothèque
+      # PANIQUE au démarrage sur un littéral resté en arrière : la table de routage ne pouvait donc pas
+      # dériver. Tout le reste, si — mesuré le 2026-08-26 APRÈS la migration de la table, l'ancienne
+      # syntaxe survivait dans cinquante-huit fichiers, dont DEUX corps de refus SERVIS (le refus « store
+      # de bans plein » renvoyait l'exploitant vers `DELETE /api/netban/:ip`, le refus de purge sous
+      # rétention légale vers `/api/legal-holds/:id/release`) et CINQ documents d'intégration publiés.
+      # Une garde qui ne juge que les littéraux de `.route(` tient donc le seul endroit que la
+      # bibliothèque tenait déjà. Le critère n'est pas « interdire l'ancienne forme » — ce serait rendre
+      # inécrivable la seule phrase qui vaille sur cette rupture — c'est : une ligne qui porte l'ANCIENNE
+      # doit porter la NOUVELLE sur la MÊME ligne. Prouvée par MUTATION le 2026-08-26 : remettre UN
+      # commentaire de `web/` à l'ancienne syntaxe la fait rougir, le restaurer la fait reverdir.
+      - { name: "Un gabarit de route s'écrit dans la syntaxe du routeur partout où il est décrit — démon, console, documents publiés (P7.19-d)", run: python3 .github/scripts/check_route_templates_use_the_router_syntax.py }
       - { name: "Aucun bouton de la surface web sans classe partagée ni contexte stylant — contextes et classes DÉRIVÉS de style.css, sites dérivés des modules (P11.4-b)", run: python3 .github/scripts/check_every_button_wears_shared_chrome.py }
 
       # `P11.14-c` — UN REFUS NE SE REND JAMAIS COMME UNE ABSENCE. Le panneau DLP décidait de son

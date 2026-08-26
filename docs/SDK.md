@@ -116,7 +116,7 @@ vers les champs `EventRow`/`fields`. Exemple (squelette) :
 ```
 
 > Registration : `POST /api/connectors` (type `http_pull`), coller la `config`, le **credential dans le
-> champ `secret`** (jamais dans `config`), **Tester** (`/api/connectors/:id/test` — 1 page, n'ingère pas,
+> champ `secret`** (jamais dans `config`), **Tester** (`/api/connectors/{id}/test` — 1 page, n'ingère pas,
 > renvoie un échantillon mappé), puis activer. Le poll périodique (`run_due_connectors` →
 > `poll_one_connector` → `poll_http_pull`) ingère et avance le watermark.
 > **Garantie no-rebuild** : ajouter un vendeur = écrire un JSON comme ceux de

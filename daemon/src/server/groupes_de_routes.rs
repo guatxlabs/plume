@@ -36,7 +36,7 @@ fn overview_search_routes() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/api/overview", get(overview))
         .route("/api/environments", get(environments)) // #2d : liste des environnements + compte (filtre X-Plume-Env)
-        .route("/api/panel/:kind", get(panel))
+        .route("/api/panel/{kind}", get(panel))
         .route("/api/search", get(search))
 }
 
@@ -45,7 +45,7 @@ fn alerts_coverage_routes() -> Router<AppState> {
         .route("/api/alerts", get(alerts))
         .route("/api/alerts/groups", get(alert_groups)) // TRIAGE GROUPÉ (viewer+) : « 1 groupe = N occurrences »
         .route("/api/alerts/ack-all", post(ack_all))
-        .route("/api/alerts/:id/ack", post(ack))
+        .route("/api/alerts/{id}/ack", post(ack))
         .route("/api/coverage/detections", get(coverage_detections))
         .route("/api/coverage/attack", get(coverage_attack)) // #22 (Tier-2) : matrice de couverture ATT&CK (règles+alertes par technique/tactique, blind-spots). viewer+, read-only.
 }
@@ -84,7 +84,7 @@ fn datasource_routes() -> Router<AppState> {
         // Prometheus-compatible read (Grafana Prometheus datasource) — sous-ensemble honnête sur `metric`.
         .route("/api/v1/query", get(prom_query).post(prom_query))
         .route("/api/v1/query_range", get(prom_query_range).post(prom_query_range))
-        .route("/api/v1/label/:name/values", get(prom_label_values))
+        .route("/api/v1/label/{name}/values", get(prom_label_values))
         .route("/api/v1/labels", get(prom_labels).post(prom_labels))
         .route("/api/v1/series", get(prom_series).post(prom_series))
         // Loki-query LogQL — STUB (501) + couture PLUME_LOKI_QUERY. Conception : docs/DATASOURCE.md.
@@ -94,12 +94,12 @@ fn datasource_routes() -> Router<AppState> {
 fn dashboards_panels_routes() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/api/views", get(views_list).post(view_create))
-        .route("/api/views/:id", post(view_update).delete(view_delete))
+        .route("/api/views/{id}", post(view_update).delete(view_delete))
         .route("/api/dashboards", get(dash_list).post(dash_create))
-        .route("/api/dashboard/:id", get(dash_get).post(dash_update).delete(dash_delete))
+        .route("/api/dashboard/{id}", get(dash_get).post(dash_update).delete(dash_delete))
         .route("/api/panels", post(panel_create))
-        .route("/api/panels/:id", post(panel_update).delete(panel_delete))
-        .route("/api/panels/:id/data", get(panel_data))
+        .route("/api/panels/{id}", post(panel_update).delete(panel_delete))
+        .route("/api/panels/{id}/data", get(panel_data))
 }
 
 fn dashboard_ergonomics_routes() -> Router<AppState> {
@@ -109,22 +109,22 @@ fn dashboard_ergonomics_routes() -> Router<AppState> {
         // snapshot PAR TOKEN (:token) est viewer+ (read-only, token-scoped) ; les données figées sont DÉJÀ
         // masquées à la capture (chemin GXQL masqué du rôle du créateur).
         .route("/api/library-panels", get(library_panels_list).post(library_panel_create))
-        .route("/api/library-panels/:id", post(library_panel_update).delete(library_panel_delete))
+        .route("/api/library-panels/{id}", post(library_panel_update).delete(library_panel_delete))
         .route("/api/playlists", get(playlists_list).post(playlist_create))
-        .route("/api/playlists/:id", post(playlist_update).delete(playlist_delete))
+        .route("/api/playlists/{id}", post(playlist_update).delete(playlist_delete))
         .route("/api/dashboard-snapshots", get(snapshots_list).post(snapshot_create))
-        .route("/api/dashboard-snapshots/:token", get(snapshot_get))
-        .route("/api/dashboard-snapshots/id/:id", delete(snapshot_delete))
+        .route("/api/dashboard-snapshots/{token}", get(snapshot_get))
+        .route("/api/dashboard-snapshots/id/{id}", delete(snapshot_delete))
 }
 
 fn users_tokens_routes() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/api/users", get(users_list).post(user_create))
-        .route("/api/users/:id", delete(user_delete).post(user_update))
+        .route("/api/users/{id}", delete(user_delete).post(user_update))
         // JETONS (#tokens) — provisioning UI agent/HEC, pendant du CLI `plume-daemon token`. Admin-only
         // (route_min_role /api/tokens -> Admin + re-check handler). Secret CLAIR renvoyé une seule fois (POST).
         .route("/api/tokens", get(tokens_list).post(token_create))
-        .route("/api/tokens/:name", delete(token_delete))
+        .route("/api/tokens/{name}", delete(token_delete))
 }
 
 fn idp_auth_mfa_routes() -> Router<AppState> {
@@ -132,13 +132,13 @@ fn idp_auth_mfa_routes() -> Router<AppState> {
         // IdP NATIF (#44) — CRUD providers (admin-only, cf. route_min_role /api/idp -> Admin ; secret
         // write-only + redaction) + flux de login fédéré PUBLICS (auth_guard allowlist) + MFA self-service.
         .route("/api/idp/providers", get(idp_providers_list).post(idp_provider_create))
-        .route("/api/idp/providers/:id", post(idp_provider_update).delete(idp_provider_delete))
-        .route("/api/auth/oidc/:name/start", get(oidc_start))
+        .route("/api/idp/providers/{id}", post(idp_provider_update).delete(idp_provider_delete))
+        .route("/api/auth/oidc/{name}/start", get(oidc_start))
         .route("/api/auth/oidc/callback", get(oidc_callback))
         // SAML 2.0 SP (#44) — SP-initié, ACS HTTP-POST. Routes PUBLIQUES (auth dans le handler : assertion
         // signée). Sans `--features saml` -> 501 (samlify non linké). CRUD providers reste /api/idp/* (admin).
-        .route("/api/auth/saml/:name/start", get(saml_start))
-        .route("/api/auth/saml/:name/metadata", get(saml_metadata))
+        .route("/api/auth/saml/{name}/start", get(saml_start))
+        .route("/api/auth/saml/{name}/metadata", get(saml_metadata))
         .route("/api/auth/saml/acs", post(saml_acs))
         .route("/api/auth/ldap", post(ldap_login_post))
         .route("/api/login/mfa", post(login_mfa_post))
@@ -147,9 +147,9 @@ fn idp_auth_mfa_routes() -> Router<AppState> {
         .route("/api/prefs", get(prefs_get).put(prefs_put))
         // SAVED QUERIES — requêtes GXQL nommées per-user, OWNER-scoped (viewer+ self-service, cf. route_min_role
         // /api/saved-queries -> Read ; POST/PUT/DELETE restent CSRF-gardés par le middleware). GET = MES requêtes ;
-        // POST crée ; PUT/DELETE /:id sont IDOR-sûrs (WHERE id=? AND owner=?). ADDITIF : table vide -> mode 0.
+        // POST crée ; PUT/DELETE /{id} sont IDOR-sûrs (WHERE id=? AND owner=?). ADDITIF : table vide -> mode 0.
         .route("/api/saved-queries", get(saved_queries_list).post(saved_query_create))
-        .route("/api/saved-queries/:id", put(saved_query_update).delete(saved_query_delete))
+        .route("/api/saved-queries/{id}", put(saved_query_update).delete(saved_query_delete))
         .route("/api/mfa/status", get(mfa_status))
         .route("/api/mfa/enroll", post(mfa_enroll))
         .route("/api/mfa/verify", post(mfa_verify))
@@ -163,7 +163,7 @@ fn idp_auth_mfa_routes() -> Router<AppState> {
     #[cfg(feature = "ai")]
     let r = r
         .route("/api/ai/providers", get(ai_providers_list).post(ai_provider_create))
-        .route("/api/ai/providers/:id", post(ai_provider_update).delete(ai_provider_delete))
+        .route("/api/ai/providers/{id}", post(ai_provider_update).delete(ai_provider_delete))
         .route("/api/ai/presets", get(ai_presets_list))
         .route("/api/ai/from-preset", post(ai_from_preset))
         .route("/api/ai/redaction-policy", get(ai_redaction_policy_get).put(ai_redaction_policy_put))
@@ -175,25 +175,25 @@ fn idp_auth_mfa_routes() -> Router<AppState> {
 fn lookups_routes() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/api/lookups", get(lookups_list).post(lookup_upload))
-        .route("/api/lookups/:name", delete(lookup_delete))
+        .route("/api/lookups/{name}", delete(lookup_delete))
 }
 
 fn rules_parsers_processors_routes() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/api/rules", get(rules_list).post(rule_create))
-        .route("/api/rules/:id", post(rule_update).delete(rule_delete))
-        .route("/api/rules/:id/test", post(rule_test))
+        .route("/api/rules/{id}", post(rule_update).delete(rule_delete))
+        .route("/api/rules/{id}/test", post(rule_test))
         // #1c-toggle : bascule d'activation ADMIN-only (route_min_role -> Admin + re-check require_admin),
         // fonctionne pour les overlays config.d (managed=1) via un override persistant qui survit au reboot.
-        .route("/api/rules/:id/enabled", post(rule_set_enabled))
+        .route("/api/rules/{id}/enabled", post(rule_set_enabled))
         .route("/api/parsers", get(parsers_list).post(parser_create))
-        .route("/api/parsers/:id", post(parser_update).delete(parser_delete))
-        .route("/api/parsers/:id/enabled", post(parser_set_enabled))
+        .route("/api/parsers/{id}", post(parser_update).delete(parser_delete))
+        .route("/api/parsers/{id}/enabled", post(parser_set_enabled))
         .route("/api/parser-test", post(parser_test))
         .route("/api/parsers/reparse", post(parser_reparse))
         // #40 PROCESSEUR D'INGEST (admin-only, cf. route_min_role) : règles filtre/masque/route/échantillon.
         .route("/api/processors", get(processors_list).post(processor_create))
-        .route("/api/processors/:id", post(processor_update).delete(processor_delete))
+        .route("/api/processors/{id}", post(processor_update).delete(processor_delete))
         .route("/api/processors/test", post(processor_test))
 }
 
@@ -201,11 +201,11 @@ fn index_field_filter_routes() -> Router<AppState> {
     Router::<AppState>::new()
         // #49 INDEXES LOGIQUES NOMMÉS (admin-only, cf. route_min_role) : rétention/plafonds par env_id.
         .route("/api/index-policies", get(index_policies_list).post(index_policy_create))
-        .route("/api/index-policies/:id", post(index_policy_update).delete(index_policy_delete))
+        .route("/api/index-policies/{id}", post(index_policy_update).delete(index_policy_delete))
         // FIELD FILTERS (#45) — CRUD masquage par champ (admin-only, cf. route_min_role /api/field-filters
         // -> Admin, GET compris : la config CONTRAINT viewer/editor). update = POST (convention du dépôt).
         .route("/api/field-filters", get(field_filters_list).post(field_filter_create))
-        .route("/api/field-filters/:id", post(field_filter_update).delete(field_filter_delete))
+        .route("/api/field-filters/{id}", post(field_filter_update).delete(field_filter_delete))
 }
 
 fn knowledge_routes() -> Router<AppState> {
@@ -215,39 +215,39 @@ fn knowledge_routes() -> Router<AppState> {
         // Auto-appliqués à la compilation GXQL suivante (Explore/panels/règles/export en héritent). ADDITIF -> mode 0 vide.
         .route("/api/knowledge", get(knowledge_list))
         .route("/api/knowledge/alias", post(alias_create))
-        .route("/api/knowledge/alias/:id", delete(alias_delete))
+        .route("/api/knowledge/alias/{id}", delete(alias_delete))
         .route("/api/knowledge/calc", post(calc_create))
-        .route("/api/knowledge/calc/:id", delete(calc_delete))
+        .route("/api/knowledge/calc/{id}", delete(calc_delete))
         .route("/api/knowledge/eventtype", post(eventtype_create))
-        .route("/api/knowledge/eventtype/:id", delete(eventtype_delete))
+        .route("/api/knowledge/eventtype/{id}", delete(eventtype_delete))
         .route("/api/knowledge/tag", post(tag_create))
-        .route("/api/knowledge/tag/:id", delete(tag_delete))
+        .route("/api/knowledge/tag/{id}", delete(tag_delete))
         // #60 — MACROS (fragment GXQL détendu par le compilateur FERMÉ) + AUTO-LOOKUPS (enrichissement auto
         // mask-aware ; GeoIP = auto-lookup BYO). Même famille que les KO -> editor+ (façonnent la recherche de
         // tous). Compile-vérifiés à la création ; auto-appliqués via `knowledge_reload`. ADDITIF -> mode 0 vide.
         .route("/api/knowledge/macro", post(macro_create))
-        .route("/api/knowledge/macro/:id", delete(macro_delete))
+        .route("/api/knowledge/macro/{id}", delete(macro_delete))
         .route("/api/knowledge/auto-lookup", post(auto_lookup_create))
-        .route("/api/knowledge/auto-lookup/:id", delete(auto_lookup_delete))
+        .route("/api/knowledge/auto-lookup/{id}", delete(auto_lookup_delete))
 }
 
 fn datamodels_routes() -> Router<AppState> {
     Router::<AppState>::new()
         // DATA MODELS + PIVOT + DATASETS (#47) — couche sémantique au-dessus du CIM. CRUD des modèles/objets/
         // champs/datasets = editor+ (route_min_role /api/datamodels + /api/datasets -> Write ; GET viewer+).
-        // L'EXÉCUTION d'un Pivot / dataset (/api/pivot/*, /api/datasets/:id/run) = viewer+ (readonly_post) et
+        // L'EXÉCUTION d'un Pivot / dataset (/api/pivot/*, /api/datasets/{id}/run) = viewer+ (readonly_post) et
         // passe par le MÊME soql_to_sql_masked_x que /api/query -> masquage #45 hérité, jamais de SQL brut.
         .route("/api/datamodels", get(datamodels_list).post(model_create))
-        .route("/api/datamodels/:id", delete(model_delete))
-        .route("/api/datamodels/:id/objects", post(object_create))
-        .route("/api/datamodels/objects/:id", delete(object_delete))
-        .route("/api/datamodels/objects/:id/fields", post(field_create))
-        .route("/api/datamodels/fields/:id", delete(field_delete))
+        .route("/api/datamodels/{id}", delete(model_delete))
+        .route("/api/datamodels/{id}/objects", post(object_create))
+        .route("/api/datamodels/objects/{id}", delete(object_delete))
+        .route("/api/datamodels/objects/{id}/fields", post(field_create))
+        .route("/api/datamodels/fields/{id}", delete(field_delete))
         .route("/api/pivot/compile", post(pivot_compile)) // génère le GXQL (transparence report-builder ; readonly_post)
         .route("/api/pivot/run", post(pivot_run)) // exécute le Pivot via le chemin GXQL masqué (readonly_post)
         .route("/api/datasets", get(datasets_list).post(dataset_create))
-        .route("/api/datasets/:id", delete(dataset_delete))
-        .route("/api/datasets/:id/run", post(dataset_run)) // exécute le GXQL stocké via le chemin masqué (readonly_post)
+        .route("/api/datasets/{id}", delete(dataset_delete))
+        .route("/api/datasets/{id}/run", post(dataset_run)) // exécute le GXQL stocké via le chemin masqué (readonly_post)
 }
 
 fn reports_workflow_routes() -> Router<AppState> {
@@ -256,14 +256,14 @@ fn reports_workflow_routes() -> Router<AppState> {
         // (route_min_role Write ; run_as PLAFONNÉ au rôle du créateur). GET = viewer+ (section 6). Le run/tick
         // passe par le MÊME chemin masqué que /api/query. ADDITIF -> table vide = tick no-op (mode 0).
         .route("/api/scheduled-reports", get(reports_list).post(report_create))
-        .route("/api/scheduled-reports/:id", delete(report_delete))
-        .route("/api/scheduled-reports/:id/run", post(report_run_now))
+        .route("/api/scheduled-reports/{id}", delete(report_delete))
+        .route("/api/scheduled-reports/{id}/run", post(report_run_now))
         // #60 — WORKFLOW ACTIONS (menu contextuel) : CRUD editor+ (kind='response' re-exige admin) ; la
         // résolution (/resolve) est un POST de LECTURE (readonly_post -> viewer+) qui sanitise $field$ et ne
         // déclenche RIEN (une réponse se joue via /api/actions). ADDITIF -> table vide = aucun menu (mode 0).
         .route("/api/workflow-actions", get(workflow_actions_list).post(workflow_action_create))
-        .route("/api/workflow-actions/:id", delete(workflow_action_delete))
-        .route("/api/workflow-actions/:id/resolve", post(workflow_action_resolve))
+        .route("/api/workflow-actions/{id}", delete(workflow_action_delete))
+        .route("/api/workflow-actions/{id}/resolve", post(workflow_action_resolve))
 }
 
 fn detection_advanced_routes() -> Router<AppState> {
@@ -275,11 +275,11 @@ fn detection_advanced_routes() -> Router<AppState> {
         // GET = viewer+ (lecture posture, section 6 route_min_role) ; POST/DELETE = editor+ (Write, section 7 —
         // étapes/requêtes GXQL bornées, pas de SQL brut ni d'action destructive). ADDITIF -> mode 0 = [].
         .route("/api/correlations", get(correlations_list).post(correlation_create))
-        .route("/api/correlations/:id", post(correlation_update).delete(correlation_delete))
-        .route("/api/correlations/:id/test", post(correlation_test))
+        .route("/api/correlations/{id}", post(correlation_update).delete(correlation_delete))
+        .route("/api/correlations/{id}/test", post(correlation_test))
         .route("/api/baselines", get(baselines_list).post(baseline_create))
-        .route("/api/baselines/:id", post(baseline_update).delete(baseline_delete))
-        .route("/api/baselines/:id/test", post(baseline_test))
+        .route("/api/baselines/{id}", post(baseline_update).delete(baseline_delete))
+        .route("/api/baselines/{id}/test", post(baseline_test))
         // SLICE #7 pièce 3 — importeur Sigma (admin-only via default-deny route_min_role : hors allowlist).
         .route("/api/sigma/import", post(sigma_import))
         // SLICE #7 — import EN MASSE d'une bibliothèque Sigma (bundle multi-docs) + delta de couverture ATT&CK.
@@ -351,16 +351,16 @@ fn session_routes() -> Router<AppState> {
 fn notifiers_policies_silences_routes() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/api/notifiers", get(notifiers_list).post(notifier_create))
-        .route("/api/notifiers/:id", post(notifier_update).delete(notifier_delete))
-        .route("/api/notifiers/:id/test", post(notifier_test))
+        .route("/api/notifiers/{id}", post(notifier_update).delete(notifier_delete))
+        .route("/api/notifiers/{id}/test", post(notifier_test))
         // #53 — POLITIQUES DE NOTIFICATION (arbre de routage) + SILENCES (mute temporisé). GET = viewer+
         // (route_min_role Read) ; mutations = editor+ (allowlist éditoriale). Create/delete de silence +
         // mutations de politique LEDGERISÉS (audit_config_change). ADDITIF : routes neuves -> mode 0 = [].
         .route("/api/notification-policies", get(policies_list).post(policy_create))
-        .route("/api/notification-policies/:id", post(policy_update).delete(policy_delete))
+        .route("/api/notification-policies/{id}", post(policy_update).delete(policy_delete))
         .route("/api/silences", get(silences_list).post(silence_create))
         // P11.5-a — MODIFIER un silence (PUT/POST) : même classe de rôle (editor+), même audit fail-closed.
-        .route("/api/silences/:id", put(silence_update).post(silence_update).delete(silence_delete))
+        .route("/api/silences/{id}", put(silence_update).post(silence_update).delete(silence_delete))
 }
 
 fn connectors_destinations_routes() -> Router<AppState> {
@@ -369,20 +369,21 @@ fn connectors_destinations_routes() -> Router<AppState> {
         .route("/api/connectors", get(connectors_list).post(connector_create))
         // Pont preset -> connecteur (chantier « connecteurs actifs » P1) : bibliothèque embarquée en
         // lecture-seule + instanciation 1-clic qui DÉLÈGUE à connector_create. Admin-only via le même
-        // path-guard `/api/connectors` (rbac.rs). Segments STATIQUES (présent avant `/:id`).
+        // path-guard `/api/connectors` (rbac.rs). Segments STATIQUES, FRÈRES du paramètre `/{id}` : c'est la
+        // priorité du statique qui les sert, pas leur position — mécanisme et mesure sur `/api/cases`.
         .route("/api/connectors/presets", get(connector_presets_list))
         .route("/api/connectors/from-preset", post(connector_from_preset))
         // P-HEC — crée une SOURCE PUSH AWS (Firehose) + minte sa clé de livraison (show-once). Admin-only
-        // (require_admin + path-guard /api/connectors -> Admin). Segment STATIQUE (avant `/:id`).
+        // (require_admin + path-guard /api/connectors -> Admin). Segment STATIQUE, frère de `/{id}` (idem).
         .route("/api/connectors/push-source", post(connector_push_source))
-        .route("/api/connectors/:id", post(connector_update).delete(connector_delete))
-        .route("/api/connectors/:id/test", post(connector_test))
-        .route("/api/connectors/:id/poll", post(connector_poll)) // #3a — déclenche UN poll+ingest immédiat (admin-only, fail-safe)
+        .route("/api/connectors/{id}", post(connector_update).delete(connector_delete))
+        .route("/api/connectors/{id}/test", post(connector_test))
+        .route("/api/connectors/{id}/poll", post(connector_poll)) // #3a — déclenche UN poll+ingest immédiat (admin-only, fail-safe)
         // #50 — OUTPUTS / DESTINATIONS : forward des events vers un SINK EXTERNE (data-exfil surface). Admin-only
         // (serveur + route_min_role Admin, GET compris : `config` porte le secret d'auth) + par-tenant (req_db).
         .route("/api/destinations", get(destinations_list).post(destination_create))
-        .route("/api/destinations/:id", post(destination_update).delete(destination_delete))
-        .route("/api/destinations/:id/flush", post(destination_flush)) // déclenche UN forward+avance immédiat (admin-only, fail-safe)
+        .route("/api/destinations/{id}", post(destination_update).delete(destination_delete))
+        .route("/api/destinations/{id}/flush", post(destination_flush)) // déclenche UN forward+avance immédiat (admin-only, fail-safe)
 }
 
 fn threat_intel_risk_routes() -> Router<AppState> {
@@ -396,7 +397,7 @@ fn threat_intel_risk_routes() -> Router<AppState> {
         // #24 — RISK-BASED ALERTING : entités à risque + timeline par entité, servies DU ROLLUP (zéro scan
         // event). GET = viewer+ (route_min_role -> Read ; posture, pas un secret). ADDITIF -> mode 0 = [].
         .route("/api/risk/entities", get(risk_entities))
-        .route("/api/risk/entity/:etype/:entity", get(risk_entity_timeline))
+        .route("/api/risk/entity/{etype}/{entity}", get(risk_entity_timeline))
 }
 
 fn actions_mode_engagements_routes() -> Router<AppState> {
@@ -404,15 +405,15 @@ fn actions_mode_engagements_routes() -> Router<AppState> {
         .route("/api/actions", get(actions_list).post(action_create))
         .route("/api/actions/pending", get(actions_pending))
         .route("/api/actions/result", post(action_result))
-        .route("/api/actions/:id/approve", post(action_approve))
-        .route("/api/actions/:id/cancel", post(action_cancel))
+        .route("/api/actions/{id}/approve", post(action_approve))
+        .route("/api/actions/{id}/cancel", post(action_cancel))
         .route("/api/mode", get(mode_get).post(mode_set))
         // v75 — MODE ENGAGEMENT AUTORISÉ (pentest natif). /active = agent host-bound (seam pull enforcer) ;
         // list/get/create/end = admin-only (break-glass audité). Par-tenant (req_db). Inerte mode off.
         .route("/api/engagements", get(engagements_list).post(engagement_create))
         .route("/api/engagements/active", get(engagements_active))
-        .route("/api/engagements/:id", get(engagement_get))
-        .route("/api/engagements/:id/end", post(engagement_end))
+        .route("/api/engagements/{id}", get(engagement_get))
+        .route("/api/engagements/{id}/end", post(engagement_end))
 }
 
 /// BAN NATIF PLUME (chantier ② Phase 1) — API de pilotage du blocage HTTP par IP réelle. admin-only
@@ -420,7 +421,7 @@ fn actions_mode_engagements_routes() -> Router<AppState> {
 fn netban_routes() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/api/netban", get(netban_list).post(netban_add))
-        .route("/api/netban/:ip", delete(netban_delete))
+        .route("/api/netban/{ip}", delete(netban_delete))
 }
 
 fn governance_retention_ledger_routes() -> Router<AppState> {
@@ -434,10 +435,10 @@ fn governance_retention_ledger_routes() -> Router<AppState> {
         // (holds/sinks) -> inertes ; /api/roles -> 404 (control-plane requis).
         .route("/api/ledger/export", get(ledger_export_get))
         .route("/api/ledger-sinks", get(ledger_sinks_list).post(ledger_sink_create))
-        .route("/api/ledger-sinks/:id", delete(ledger_sink_delete))
-        .route("/api/ledger-sinks/:id/flush", post(ledger_sink_flush))
+        .route("/api/ledger-sinks/{id}", delete(ledger_sink_delete))
+        .route("/api/ledger-sinks/{id}/flush", post(ledger_sink_flush))
         .route("/api/legal-holds", get(legal_holds_list).post(legal_hold_create))
-        .route("/api/legal-holds/:id/release", post(legal_hold_release))
+        .route("/api/legal-holds/{id}/release", post(legal_hold_release))
         // PURGE EXPLICITE D'ÉVÉNEMENTS — deux temps. `/plan` SIMULE (aucune écriture) et rend le jeton ;
         // `/apply` RE-SIMULE, compare le jeton, inscrit au registre PUIS supprime. Les deux sont ADMIN-only
         // (préfixe `/api/purge` dans la section admin-only de `route_min_role`, GET compris) et refusent tant
@@ -446,13 +447,13 @@ fn governance_retention_ledger_routes() -> Router<AppState> {
         .route("/api/purge/plan", post(purge_plan_route))
         .route("/api/purge/apply", post(purge_apply_route))
         .route("/api/roles", get(roles_list).post(role_create))
-        .route("/api/roles/:name", delete(role_delete))
+        .route("/api/roles/{name}", delete(role_delete))
         // #59 SCIM 2.0 — provisioning IdP (bearer scim_token, auth DANS auth_guard, HORS session). Mode 0 :
         // control=None -> auth_guard répond 404 (inerte). Users/Groups mappent vers platform_user/grant.
         .route("/scim/v2/Users", get(scim_users_list).post(scim_user_create))
-        .route("/scim/v2/Users/:id", get(scim_user_get).put(scim_user_replace).delete(scim_user_delete))
+        .route("/scim/v2/Users/{id}", get(scim_user_get).put(scim_user_replace).delete(scim_user_delete))
         .route("/scim/v2/Groups", get(scim_groups_list))
-        .route("/scim/v2/Groups/:role", patch(scim_group_patch))
+        .route("/scim/v2/Groups/{role}", patch(scim_group_patch))
         .route("/api/sources", get(sources_inventory))
         .route("/api/sources/settings", get(source_settings_get).post(source_settings_put).put(source_settings_put))
         // P11.10-a — CE QU'ON ATTEND D'UN HÔTE : même grammaire et même gating que les sources
@@ -467,46 +468,58 @@ fn governance_retention_ledger_routes() -> Router<AppState> {
 fn playbooks_cases_routes() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/api/playbooks", get(playbooks_list).post(playbook_create))
-        .route("/api/playbooks/:id", post(playbook_update).delete(playbook_delete))
-        .route("/api/playbooks/:id/test", post(playbook_test))
-        .route("/api/playbooks/:id/enabled", post(playbook_set_enabled)) // #1c-toggle : (dés)activation ADMIN-only + audité
+        .route("/api/playbooks/{id}", post(playbook_update).delete(playbook_delete))
+        .route("/api/playbooks/{id}/test", post(playbook_test))
+        .route("/api/playbooks/{id}/enabled", post(playbook_set_enabled)) // #1c-toggle : (dés)activation ADMIN-only + audité
         .route("/api/cases", get(cases_list).post(case_create))
-        // #39 team case-ops — routes SPÉCIFIQUES avant /:id (axum matche l'ordre littéral) : queues + metrics.
+        // #39 team case-ops — SEGMENT STATIQUE CONTRE PARAMÈTRE FRÈRE. `queues` et `metrics` sont servis par
+        // LEUR handler, jamais par `/api/cases/{id}`. LE MÉCANISME N'EST PAS L'ORDRE D'ÉCRITURE : matchit
+        // donne priorité au segment STATIQUE sur le paramètre (« Routing Priority », README de matchit 0.8.4,
+        // la version verrouillée dans `Cargo.lock`), et déplacer ces trois lignes ne changerait RIEN. La
+        // formulation précédente — « axum matche l'ordre littéral » — décrivait un moteur que la
+        // bibliothèque ne suit pas, et elle aurait fait lire un tri de cette table comme une régression.
+        // MESURÉ le 2026-08-26, moteur contre moteur : les gabarits de cette table insérés dans matchit
+        // 0.7.3 PUIS dans 0.8.4 apparient le même chemin sur la même valeur et les mêmes paramètres —
+        // l'unique divergence est la VARIANTE d'erreur sur une barre oblique finale en trop
+        // (`ExtraTrailingSlash` -> `NotFound`), que les deux versions d'axum renvoient au MÊME repli.
+        // ÉPINGLÉ, pour TOUS les points de la table où un statique et un paramètre sont frères et non pour
+        // ce cas seul, par `router_un_segment_statique_gagne_sur_son_parametre_frere` (corpus DÉRIVÉ de la
+        // table de routes, jamais énuméré).
         .route("/api/cases/queues", get(case_queues))
         .route("/api/cases/metrics", get(case_metrics))
-        .route("/api/cases/:id", get(case_get).post(case_update))
-        .route("/api/cases/:id/archive", post(case_archive))
-        .route("/api/cases/:id/unarchive", post(case_unarchive))
-        .route("/api/cases/:id/items", post(case_item_add))
-        .route("/api/cases/:id/items/:item_id", delete(case_item_delete))
+        .route("/api/cases/{id}", get(case_get).post(case_update))
+        .route("/api/cases/{id}/archive", post(case_archive))
+        .route("/api/cases/{id}/unarchive", post(case_unarchive))
+        .route("/api/cases/{id}/items", post(case_item_add))
+        .route("/api/cases/{id}/items/{item_id}", delete(case_item_delete))
         // #39 — merge (soft) / unmerge (réversible) + liens (association non destructive).
-        .route("/api/cases/:id/merge", post(case_merge_handler))
-        .route("/api/cases/:id/unmerge", post(case_unmerge_handler))
-        .route("/api/cases/:id/links", get(case_links_get).post(case_link_handler))
-        .route("/api/cases/:id/links/:other", delete(case_unlink_handler))
+        .route("/api/cases/{id}/merge", post(case_merge_handler))
+        .route("/api/cases/{id}/unmerge", post(case_unmerge_handler))
+        .route("/api/cases/{id}/links", get(case_links_get).post(case_link_handler))
+        .route("/api/cases/{id}/links/{other}", delete(case_unlink_handler))
         // #3 INCIDENTS Phase 1 — sous /api/cases/* -> héritent de l'AUTZ case (route_min_role §7 : mutation
         // editor+, §6 : lecture viewer+). Une step `response` se joue via /api/actions (admin+arm+approbation+
         // ledger) — JAMAIS ici. ADDITIF : tables vides + incident_tier NULL -> mode 0 byte-identique.
-        .route("/api/cases/:id/incident", post(incident_set)) // déclare/rétrograde (tier) + type/commander : editor+
-        .route("/api/cases/:id/runbooks", get(case_runbooks_get)) // recommandé (tactique dominante) + disponibles : viewer+
-        .route("/api/cases/:id/runbook", post(case_runbook_attach)) // attache un runbook (instancie les steps) : editor+
-        .route("/api/cases/:id/steps", get(case_steps_get)) // steps + progression : viewer+
-        .route("/api/cases/:id/steps/:step_id", post(case_step_set)) // avance/skip une step (+note) : editor+
-        .route("/api/cases/:id/steps/:step_id/search", get(case_step_search)) // résout le GXQL d'une step search (recompilé) : viewer+
+        .route("/api/cases/{id}/incident", post(incident_set)) // déclare/rétrograde (tier) + type/commander : editor+
+        .route("/api/cases/{id}/runbooks", get(case_runbooks_get)) // recommandé (tactique dominante) + disponibles : viewer+
+        .route("/api/cases/{id}/runbook", post(case_runbook_attach)) // attache un runbook (instancie les steps) : editor+
+        .route("/api/cases/{id}/steps", get(case_steps_get)) // steps + progression : viewer+
+        .route("/api/cases/{id}/steps/{step_id}", post(case_step_set)) // avance/skip une step (+note) : editor+
+        .route("/api/cases/{id}/steps/{step_id}/search", get(case_step_search)) // résout le GXQL d'une step search (recompilé) : viewer+
         // #3 INCIDENTS Phase 2 — RUNBOOKS CUSTOM (bring-your-own) : CRUD ADMIN-only (route_min_role section 3 :
         // /api/runbooks -> Admin, GET compris). Managé=1 IMMUABLE en place (seulement enable/disable + clone) ;
         // CRUD complet sur custom=managed=0. Une step response reste jouée via /api/actions (INCHANGÉ). Par-tenant
         // (req_db). ADDITIF : aucun runbook custom -> liste = managés seuls, endpoints existants inchangés.
         .route("/api/runbooks", get(runbooks_admin_list).post(runbook_create)) // liste authoring / crée custom : admin
-        .route("/api/runbooks/:id", get(runbook_get).post(runbook_update_handler).delete(runbook_delete)) // détail / update / delete (custom) : admin
-        .route("/api/runbooks/:id/enabled", post(runbook_set_enabled)) // (dés)active (managé override + custom) : admin
-        .route("/api/runbooks/:id/clone", post(runbook_clone_handler)) // clone managé/custom -> custom éditable : admin
+        .route("/api/runbooks/{id}", get(runbook_get).post(runbook_update_handler).delete(runbook_delete)) // détail / update / delete (custom) : admin
+        .route("/api/runbooks/{id}/enabled", post(runbook_set_enabled)) // (dés)active (managé override + custom) : admin
+        .route("/api/runbooks/{id}/clone", post(runbook_clone_handler)) // clone managé/custom -> custom éditable : admin
         // #39 — SLA policies multi-niveau (CRUD) : GET viewer+, POST editor+, DELETE admin (re-check handler).
         .route("/api/sla-policies", get(sla_policies_list).post(sla_policy_upsert))
-        .route("/api/sla-policies/:id", delete(sla_policy_delete))
+        .route("/api/sla-policies/{id}", delete(sla_policy_delete))
         // #39 — CLIENT-READ API (external, read-only, tenant-scoped, masked). Cf. INVARIANT dans caseops.rs.
         .route("/api/client/cases", get(client_cases_list))
-        .route("/api/client/cases/:id", get(client_case_get))
+        .route("/api/client/cases/{id}", get(client_case_get))
 }
 
 fn tenants_routes() -> Router<AppState> {
@@ -515,11 +528,11 @@ fn tenants_routes() -> Router<AppState> {
         // auth_guard (tenant_mgmt_gate) + re-check role/superadmin DANS chaque handler. Mode 0 : inerte.
         .route("/api/my-tenants", get(my_tenants))
         .route("/api/tenants", get(tenants_list).post(tenant_create))
-        .route("/api/tenants/:id", delete(tenant_delete))
-        .route("/api/tenants/:id/suspend", post(tenant_suspend))
-        .route("/api/tenants/:id/unsuspend", post(tenant_unsuspend))
-        .route("/api/tenants/:id/grants", get(grants_list).post(grant_set))
-        .route("/api/tenants/:id/grants/:user", delete(grant_delete))
+        .route("/api/tenants/{id}", delete(tenant_delete))
+        .route("/api/tenants/{id}/suspend", post(tenant_suspend))
+        .route("/api/tenants/{id}/unsuspend", post(tenant_unsuspend))
+        .route("/api/tenants/{id}/grants", get(grants_list).post(grant_set))
+        .route("/api/tenants/{id}/grants/{user}", delete(grant_delete))
 }
 
 

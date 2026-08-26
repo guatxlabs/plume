@@ -313,7 +313,7 @@ pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
         || path.starts_with("/api/netban")
         // #3 Phase 2 — AUTHORING de runbooks (bring-your-own) : CRUD + clone + enable/disable = surface admin
         // (contenu ADMIN-AUTHORED : gabarits GXQL de step 'search' + réf d'action de step 'response'). GET compris
-        // (la vue d'authoring liste key/steps/match). NB : /api/cases/:id/runbook(s) (picker/attach du wizard)
+        // (la vue d'authoring liste key/steps/match). NB : /api/cases/{id}/runbook(s) (picker/attach du wizard)
         // NE commence PAS par /api/runbooks -> reste editor+/viewer+ (section 6/7), inchangé.
         || path.starts_with("/api/runbooks")
         || path.starts_with("/api/engagements") // v75 : create/end/list/get = admin-only (break-glass) ; /active déjà capté en 2
@@ -336,7 +336,7 @@ pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
     }
     // 5bis) #39 — SUPPRESSION d'une politique SLA (config gouvernante multi-niveau) = DELETE-LIKE => ADMIN
     //   (re-check `au.is_admin()` dans le handler). L'UPSERT (POST /api/sla-policies) reste editor+ (section 7).
-    //   Match par présence d'un id (path plus long) + mutation -> DELETE /api/sla-policies/:id.
+    //   Match par présence d'un id (path plus long) + mutation -> DELETE /api/sla-policies/{id}.
     if path.starts_with("/api/sla-policies/") && mutating {
         return MinRole::Admin;
     }
@@ -384,7 +384,7 @@ pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
         || path.starts_with("/api/playbooks")
         || path.starts_with("/api/cases")
         // #39 — UPSERT de politique SLA multi-niveau (POST /api/sla-policies) = CRUD éditorial (editor+) ; GET
-        //  reste viewer+ (section 6) ; DELETE /api/sla-policies/:id = admin (section 5bis, capté avant).
+        //  reste viewer+ (section 6) ; DELETE /api/sla-policies/{id} = admin (section 5bis, capté avant).
         || path == "/api/sla-policies"
         || path.starts_with("/api/alerts/") // ack-all + :id/ack (la LISTE /api/alerts est GET -> lecture en 6)
         || path == "/api/mail/body"
@@ -399,7 +399,7 @@ pub(crate) fn route_min_role(path: &str, mutating: bool) -> MinRole {
         || path.starts_with("/api/knowledge")
         // DATA MODELS + DATASETS (#47) : CRUD des modèles/objets/champs/datasets = editor+ (couche sémantique
         // PARTAGÉE, comme les knowledge objects ; GET reste viewer+ capté en 6). L'EXÉCUTION de Pivot/dataset
-        // (/api/pivot/*, /api/datasets/:id/run) est un POST de LECTURE (readonly_post -> mutating=false) -> capté
+        // (/api/pivot/*, /api/datasets/{id}/run) est un POST de LECTURE (readonly_post -> mutating=false) -> capté
         // en 6 (Read) AVANT d'arriver ici. Pas de SQL brut (le Pivot génère du GXQL) -> editor légitime.
         || path.starts_with("/api/datamodels")
         || path.starts_with("/api/datasets")
@@ -611,7 +611,7 @@ pub(crate) fn mgmt_grants_role(st: &AppState, user: &str, target: &str, sso_map:
 /// (#2c) PATH-GUARD des routes de gestion des tenants (appelé par auth_guard, MODE 1 uniquement). Double le
 /// re-check des handlers (défense en profondeur). Autorisations :
 ///  - `/api/my-tenants`                     -> tout user authentifié (switcher) ;
-///  - `/api/tenants/:id/grants[...]`        -> SUPER-ADMIN (n'importe quel tenant) OU admin de CE tenant ;
+///  - `/api/tenants/{id}/grants[...]`        -> SUPER-ADMIN (n'importe quel tenant) OU admin de CE tenant ;
 ///  - toute autre `/api/tenants[...]` (CRUD/suspend/list/create) -> SUPER-ADMIN uniquement.
 pub(crate) fn tenant_mgmt_gate(path: &str, role: &str, tenant: &str, is_superadmin: bool) -> Result<(), (StatusCode, &'static str)> {
     if path == "/api/my-tenants" {

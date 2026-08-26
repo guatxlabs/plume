@@ -30,7 +30,7 @@ function refreshDashboards() {
   S.panelCards.forEach(c => { if (c.isConnected && c._panel && c._panel.loaded) c._panel.reload(); });
   syncDashStop();   // load()'s finally rappelle syncDashStop -> le bouton se masque quand le dernier load se termine
 }
-// LAZY-LOAD des panneaux : on ne fait le fetch /api/panels/:id/data QUE lorsque la carte entre dans le
+// LAZY-LOAD des panneaux : on ne fait le fetch /api/panels/{id}/data QUE lorsque la carte entre dans le
 // viewport (IntersectionObserver). Évite la RAFALE de N requêtes au chargement (tous les dashboards de la
 // vue + tous leurs panneaux d'un coup), y compris ceux de l'onglet Dashboards encore caché, des dashboards
 // repliés et des panneaux hors-écran. rootMargin 200px = précharge juste avant l'entrée à l'écran.
@@ -177,7 +177,7 @@ function loadDashboard() {
 }
 // `P11.4-m` — LES DEUX PERSISTANCES D'ETAT DE CETTE VUE, GATEES EN UN SEUL ENDROIT. Plier une tuile ou
 // changer la visualisation d'un panneau produit un effet LOCAL permis a tout role, mais la persistance est
-// une mutation editoriale (`/api/dashboard/:id`, `/api/panels/:id` -> editor+ dans la table du demon) : un
+// une mutation editoriale (`/api/dashboard/{id}`, `/api/panels/{id}` -> editor+ dans la table du demon) : un
 // lecteur y recevait un 403 muet a chaque geste. Le refus est pose ICI, sur la persistance, et non sur les
 // controles — les marquer d'ecriture aurait coupe le geste permis. La vue locale suit ; rien n'est envoye.
 function patchDash(id, body) { return roleSansEcriturePartagee() ? Promise.resolve(null) : apiSend('/dashboard/' + id, 'POST', body); }
@@ -248,7 +248,7 @@ function renderDashboard(d) {
   // pour un lecteur tout `.picon` pose dans `.paneltools` : elle emportait l'etoile de favori, les deux
   // rafraichissements, l'arret, les exports et l'ouverture dans l'editeur — sept gestes que le demon ACCORDE.
   // Les outils ci-dessous portent donc `crud-btn` un par un, et SEULEMENT ceux dont la route est bornee a
-  // `editor+` (`/api/panels`, `/api/dashboard/:id`, `/api/dashboard-snapshots`) : ils restent visibles,
+  // `editor+` (`/api/panels`, `/api/dashboard/{id}`, `/api/dashboard-snapshots`) : ils restent visibles,
   // inertes et motives (grammaire de `P11.4-l`). Ce qui ne porte pas la marque reste PERMIS, comme le serveur.
   // `P11.17-b` — UN SEUL geste de création de panneau. Il y en avait deux côte à côte pour le même but, et
   // celui-ci — le seul qu'on prenne — était celui qui n'offrait AUCUN accès aux requêtes enregistrées. Le
@@ -409,7 +409,7 @@ async function renderPanel(p, editable = true) {
   const open = document.createElement('button'); open.className = 'picon'; open.innerHTML = ic('ext'); open.title = 'Ouvrir dans Explore';
   open.onclick = () => { $('#sql').value = p.query; location.hash = 'explore'; runQuery(); };
   // `P11.4-m` — meme declaration qu'en tete de tuile : seuls les outils dont la route est bornee a `editor+`
-  // (`/api/panels/:id`) portent la marque ; ouvrir dans l'editeur, rafraichir, arreter et exporter restent
+  // (`/api/panels/{id}`) portent la marque ; ouvrir dans l'editeur, rafraichir, arreter et exporter restent
   // PERMIS a un lecteur, ce que la borne serveur dit deja (lecture, ou aucun appel du tout).
   const edit = document.createElement('button'); edit.className = 'picon editonly crud-btn'; edit.innerHTML = ic('pencil'); edit.title = 'Éditer le panneau';
   const del = document.createElement('button'); del.className = 'picon editonly crud-btn'; del.innerHTML = ic('x'); del.title = 'Supprimer le panneau';

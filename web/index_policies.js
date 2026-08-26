@@ -4,7 +4,7 @@
 // index sans politique hérite de la rétention globale. API admin-only :
 //   GET  /api/index-policies         -> { global_retention_days, bounds, indexes:[{name,events,oldest_ts,
 //                                         size_bytes_est, retention_days, max_rows, max_bytes, has_policy, id, …}] }
-//   POST /api/index-policies         -> create ; POST /api/index-policies/:id -> update ; DELETE …/:id
+//   POST /api/index-policies         -> create ; POST /api/index-policies/{id} -> update ; DELETE …/{id}
 // SÉCU UI : rendu textContent (anti-XSS) ; la VRAIE garde reste serveur (403 hors admin). Défense en
 // profondeur : on court-circuite le fetch hors admin.
 import { $, api, apiSend, confirmWithConsequence, fetchInto, muted, pagedList, toast } from './core.js';

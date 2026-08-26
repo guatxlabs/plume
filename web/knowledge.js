@@ -4,7 +4,7 @@
 // viewer via CSS role-viewer + garde SERVEUR editor+). Réutilise 100% les endpoints #46 EXISTANTS :
 //   GET    /api/knowledge                 -> {aliases:[], calcs:[], eventtypes:[], tags:[]}
 //   POST   /api/knowledge/alias|calc|eventtype|tag         (editor+)
-//   DELETE /api/knowledge/alias|calc|eventtype|tag/:id     (editor+)
+//   DELETE /api/knowledge/alias|calc|eventtype|tag/{id}    (editor+)
 // SÉCU UI : tout en textContent/esc (anti-XSS). Mutations via apiSend (jeton CSRF auto). Aucune surface
 // nouvelle ni chemin de requête/masquage touché — pure UI sur des routes déjà en place.
 import { $, api, apiSend, muted, pagedList, toast, modal, confirmModal, managedBadge, gateDeleteBtn } from './core.js';

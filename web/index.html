@@ -477,7 +477,7 @@
   </section>
   <!-- #24 Détection & Réponse → Risque : Risk-Based Alerting. Entités les plus à risque (score cumulé, contributions,
        tactiques distinctes, vélocité) SERVIES DU ROLLUP (zéro scan d'events). Clic sur une entité → timeline horaire +
-       contributions. LECTURE seule (viewer+). Rempli par loadRiskView(). API : GET /api/risk/entities & /risk/entity/:type/:entity. -->
+       contributions. LECTURE seule (viewer+). Rempli par loadRiskView(). API : GET /api/risk/entities & /risk/entity/{type}/{entity}. -->
   <section id="risk-panel" class="card span2" aria-labelledby="risk-h" hidden>
     <div class="panelhead">
       <h2 id="risk-h">Risque par entité (RBA)</h2>
@@ -546,7 +546,7 @@
   </section>
   <!-- #37 Détection & Réponse → Avancée : corrélations multi-événements (finding-groups de séquence) +
        baselines statistiques (UEBA, déviation z-score). Lecture viewer+ ; CRUD éditeur+ (boutons crud-btn
-       masqués au viewer). Rempli par loadDetAdv(). API : /api/correlations & /api/baselines (+ /:id/test). -->
+       masqués au viewer). Rempli par loadDetAdv(). API : /api/correlations & /api/baselines (+ /{id}/test). -->
   <section id="detadv-panel" class="card span2" aria-labelledby="detadv-h" hidden>
     <div class="panelhead">
       <h2 id="detadv-h">Détection avancée</h2>
@@ -780,7 +780,7 @@
   <!-- Données → Connecteurs (chantier #3/#3a, admin-only) : sources externes en PULL. Un admin configure une
        source (Microsoft Defender d'abord), le daemon PULL les alertes et les ingère (normalisées au schéma event).
        Rempli par loadConnectors() (GET /api/connectors — tableau nu, JAMAIS le secret). CRUD : POST /api/connectors,
-       POST /api/connectors/:id (update partiel), DELETE /api/connectors/:id, POST /api/connectors/:id/test.
+       POST /api/connectors/{id} (update partiel), DELETE /api/connectors/{id}, POST /api/connectors/{id}/test.
        Le client_secret est un CREDENTIAL : champ password, jamais réaffiché (masqué •••), ré-envoyé seulement si
        re-saisi. La vraie garde reste serveur (403 hors admin). Onglet admin-only ; sans connecteur = rien collecté. -->
   <!-- #40 Processeur d'ingest (edge/ingest pipeline) — admin-only. Règles ordonnées filtre/masque/route/échantillon AVANT indexation. -->

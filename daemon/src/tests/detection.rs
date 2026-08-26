@@ -3727,7 +3727,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     //  garde l'invariant : CRUD complet sur SON propre contenu ad-hoc managed=2, y compris (dés)activation.
     // ============================================================================================
 
-    /// (HIGH-1.1) editor POST /api/rules/:id {"enabled":false} sur un SEED managed=0 -> 403 ; la règle reste
+    /// (HIGH-1.1) editor POST /api/rules/{id} {"enabled":false} sur un SEED managed=0 -> 403 ; la règle reste
     /// enabled=1 ET managed=0 (PAS d'adoption managed=0->2 : le refus est fail-closed, aucune écriture).
     #[tokio::test]
     async fn crud_editor_cannot_disable_managed0_seed_rule() {
@@ -3740,7 +3740,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         assert_eq!((en, mgd), (1, 0), "seed INTACT : toujours activé + toujours managed=0 (NON adopté)");
     }
 
-    /// (HIGH-1.2) editor POST /api/rules/:id {"enabled":false} sur un OVERLAY managed=1 -> 403 ; inchangé.
+    /// (HIGH-1.2) editor POST /api/rules/{id} {"enabled":false} sur un OVERLAY managed=1 -> 403 ; inchangé.
     #[tokio::test]
     async fn crud_editor_cannot_disable_managed1_overlay_rule() {
         let st = tenant_test_state("plume-admin", "plume-editor", "admins", None);

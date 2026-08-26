@@ -21,7 +21,7 @@
 // LA CARDINALITÉ EST UNE CONTRAINTE DE MÉMOIRE, PAS UN GOÛT. Le budget du projet est de 2 Gio :
 // l'étiquette doit donc être bornée par construction. Elle l'est deux fois — c'est le GABARIT de
 // route qui étiquette (jamais l'URL : prouvé en servant réellement `/api/essai-p78a/42` et en
-// vérifiant que l'étiquette enregistrée est `/api/essai-p78a/:id`), et le registre est PLAFONNÉ
+// vérifiant que l'étiquette enregistrée est `/api/essai-p78a/{id}`), et le registre est PLAFONNÉ
 // (prouvé en faisant mordre le plafond). Au pire : `ROUTES_CAP + 1` valeurs d'étiquette.
 // =================================================================================================
 mod semaphore_interactif_tests {
@@ -311,6 +311,34 @@ mod semaphore_interactif_tests {
         assert!(exposition.contains(&format!("plume_query_permit_acquisitions_total{{route=\"{R}\"}} 2")), "{exposition}");
         assert!(exposition.contains("plume_query_permits_held "), "la saturation instantanée doit être exposée");
         assert!(exposition.contains("plume_query_permit_routes_cap "), "la borne de cardinalité doit être exposée");
+
+        // LA SYNTAXE DE L'ÉTIQUETTE VOYAGE DANS L'EXPOSITION, PAS DANS LA SOURCE (`P7.19-d`). La montée
+        // axum 0.7 -> 0.8 a changé la VALEUR de `route` (`/api/x/:id` -> `/api/x/{id}`) : un sélecteur
+        // `route=` d'un tableau de bord antérieur ne sélectionne plus rien, et une série qui disparaît ne
+        // rougit pas — elle se tait. Le fait doit donc être LISIBLE par qui scrape.
+        // TÉMOIN POSITIF : le `# HELP` de la série d'attente le porte.
+        let aide_attente = exposition
+            .lines()
+            .find(|l| l.starts_with("# HELP plume_query_permit_wait_ms_total"))
+            .expect("la série d'attente doit porter un `# HELP`");
+        assert!(
+            aide_attente.contains("axum 0.8") && aide_attente.contains("route="),
+            "le `# HELP` doit NOMMER la syntaxe du gabarit et le fait qu'un sélecteur `route=` d'avant ne \
+             sélectionne plus : reçu `{aide_attente}`"
+        );
+        // TÉMOIN NÉGATIF : sans lui, une note posée sur UNE série passerait pour la couverture des six.
+        let etiquetees = exposition.lines().filter(|l| l.starts_with("# HELP plume_query_permit_acquisitions_total")
+            || l.starts_with("# HELP plume_query_permit_waits_total")
+            || l.starts_with("# HELP plume_query_permit_wait_ms_")
+            || l.starts_with("# HELP plume_query_work_ms_")).collect::<Vec<_>>();
+        assert_eq!(etiquetees.len(), 6, "six séries ÉTIQUETÉES par route sont attendues : {etiquetees:?}");
+        let muettes: Vec<&&str> = etiquetees.iter().filter(|l| !l.contains("axum 0.8")).collect();
+        assert!(
+            muettes.is_empty(),
+            "une série étiquetée par `route` SANS la syntaxe dans son `# HELP` : un tableau de bord se lit \
+             série par série, donc la note doit être APPOSÉE PAR `bloc`, jamais recopiée sur l'une d'elles \
+             — muettes : {muettes:?}"
+        );
     }
 
     /// (b) LE TÉMOIN NÉGATIF — la garde mord dans l'AUTRE sens. Autant de permis que de clients :
@@ -384,7 +412,7 @@ mod semaphore_interactif_tests {
         let s = sem.clone();
         let app = Router::new()
             .route(
-                "/api/essai-p78a/:id",
+                "/api/essai-p78a/{id}",
                 get(move || {
                     let s = s.clone();
                     async move {
@@ -403,7 +431,7 @@ mod semaphore_interactif_tests {
         assert_eq!(router_probe(addr, "GET", "/api/essai-p78a/1337", None).await, 200);
 
         let c = registre()
-            .existants("/api/essai-p78a/:id")
+            .existants("/api/essai-p78a/{id}")
             .expect("l'étiquette doit être le GABARIT apparié par la table de routes");
         assert_eq!(c.acquisitions(), 2, "deux requêtes, deux acquisitions, UNE seule étiquette");
         for url in ["/api/essai-p78a/42", "/api/essai-p78a/1337"] {

@@ -81,7 +81,7 @@ pub(crate) async fn processor_create(State(st): State<AppState>, Extension(au): 
     }
 }
 
-/// POST /api/processors/:id — met à jour une règle (admin-only). Re-valide la règle RÉSULTANTE avant écriture.
+/// POST /api/processors/{id} — met à jour une règle (admin-only). Re-valide la règle RÉSULTANTE avant écriture.
 pub(crate) async fn processor_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     crate::req_conn!(st, au, conn);
     // Charge l'existant pour valider la règle FUSIONNÉE (un update partiel ne doit pas produire un état invalide).
@@ -135,7 +135,7 @@ pub(crate) async fn processor_update(State(st): State<AppState>, Extension(au): 
     }
 }
 
-/// DELETE /api/processors/:id — supprime une règle (admin-only). managed=2 (ad-hoc) -> suppression réelle.
+/// DELETE /api/processors/{id} — supprime une règle (admin-only). managed=2 (ad-hoc) -> suppression réelle.
 pub(crate) async fn processor_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
     let managed = match conn.query_row("SELECT managed FROM ingest_rule WHERE id=?1", params![id], |r| r.get::<_, i64>(0)) {

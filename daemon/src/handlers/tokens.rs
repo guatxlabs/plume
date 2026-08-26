@@ -253,7 +253,7 @@ pub(crate) async fn token_create(State(st): State<AppState>, Extension(au): Exte
     }
 }
 
-/// DELETE /api/tokens/:name — révoque (supprime) tous les jetons de ce nom. Audité. Admin-only.
+/// DELETE /api/tokens/{name} — révoque (supprime) tous les jetons de ce nom. Audité. Admin-only.
 pub(crate) async fn token_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(name): Path<String>) -> Response {
     if !au.is_admin() {
         return forbidden("réservé admin");

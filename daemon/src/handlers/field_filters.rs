@@ -130,7 +130,7 @@ pub(crate) async fn field_filter_create(State(st): State<AppState>, Extension(au
     }
 }
 
-/// POST /api/field-filters/:id — met à jour une règle (admin-only). Re-valide la règle FUSIONNÉE.
+/// POST /api/field-filters/{id} — met à jour une règle (admin-only). Re-valide la règle FUSIONNÉE.
 pub(crate) async fn field_filter_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     if let Err(r) = require_admin(&au) {
         return r;
@@ -195,7 +195,7 @@ pub(crate) async fn field_filter_update(State(st): State<AppState>, Extension(au
     }
 }
 
-/// DELETE /api/field-filters/:id — supprime une règle (admin-only).
+/// DELETE /api/field-filters/{id} — supprime une règle (admin-only).
 pub(crate) async fn field_filter_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_admin(&au) {
         return r;

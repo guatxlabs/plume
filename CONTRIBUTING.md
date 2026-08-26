@@ -7,7 +7,10 @@ because Plume is a **security-critical, resource-bounded** tool.
 
 By contributing you agree that your contribution is licensed under **AGPL-3.0-or-later** (the
 project license), and you certify the [Developer Certificate of Origin](https://developercertificate.org/)
-by signing off your commits (`git commit -s` → adds `Signed-off-by:`).
+by the act of contributing itself. **Do not add a `Signed-off-by:` trailer.** Measured 2026-08-26:
+the trailer carries an address outside the project domain, the guards refuse it, and the platform
+*carries it over* into a squash commit — so a signed-off commit cannot land here. The certification
+stands; only the trailer is dropped. See *How a change actually lands here* below.
 
 For the *what* and *why* of the architecture, read these first — this guide does **not** repeat
 them: [`ARCHITECTURE.md`](ARCHITECTURE.md), [`docs/MODULE-MAP.md`](docs/MODULE-MAP.md)
@@ -228,8 +231,32 @@ The **shell collectors** (43 tracked scripts) get a `bash -n` parse gate (`shell
 4. Run `cargo test` (default) and, for gated work, the feature suite separately; run
    `cargo clippy`. All must pass. "The default suite is green" is **not** evidence for gated
    code — see the mode-0 invariant above.
-5. Sign off your commits (`-s`).
+5. **Do not sign off (`-s`).** The trailer carries a non-project address that both guards refuse —
+   see *How a change actually lands here*. The DCO is certified by contributing, not by the trailer.
 6. **Security issues do not go here** — see [`SECURITY.md`](SECURITY.md).
+
+### How a change actually lands here
+
+**The merge button cannot produce a commit this repository accepts.** Measured 2026-08-26 on
+this repo's settings and on a real squash merge configured identically, the squash commit
+carries three things the guards refuse, and no repository setting removes any of them: the
+**sign-off trailers of the squashed commits are carried over** (bringing back a non-project
+address), a **`Co-authored-by:` line per distinct author** is added, and the squash commit is
+**committed by the platform account**, not the canonical identity. Proved by mutation: the same
+body, stripped of those lines alone, passes.
+
+So a pull request is **not** an entry path here — not even one written by the maintainer. The
+only entry path is a **direct push** to the publication branch under the canonical identity. A
+contribution is re-applied locally, replayed under that identity, and pushed; the commit message
+cites the PR number so the discussion stays findable. The same goes for dependency-update PRs:
+the bot is worth keeping for the **alert** — it says which version moved and why — and not for
+merging.
+
+That is why those pull requests stay red, and the red is **true**. It cannot be fixed branch by
+branch: nobody can rewrite the message of a commit a bot just wrote. It must not be silenced
+either — a guard that stopped judging those commits would not remove the cause, only the sight
+of it, and the publication branch would lose its one redundancy: every commit would land there
+without ever having been read.
 
 ## A word on intent
 
@@ -266,6 +293,7 @@ git config core.hooksPath .githooks   # arme les gardes ci-dessous
 
 **Deux gardes versionnées** appliquent le mécanisable : `pre-commit` refuse un commit dont
 l'auteur n'est pas le canonique ; `commit-msg` refuse un message portant un chemin machine,
-un pseudo personnel ou une adresse tierce. Le STYLE, lui, n'est pas mécanisé : une garde
+un pseudo personnel ou une adresse tierce. Les hooks sont une **boucle de retour**, pas une
+frontière — la CI juge tout commit poussé, sur toute branche, et c'est elle qui lie. Le STYLE, lui, n'est pas mécanisé : une garde
 qui prétendrait en juger produirait du bruit et finirait désarmée. Il se tient à la
 relecture.

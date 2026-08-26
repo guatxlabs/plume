@@ -80,7 +80,7 @@ pub(crate) async fn environments(State(st): State<AppState>, Extension(au): Exte
     })
 }
 
-/// GET /api/panel/:kind — état point-in-time d'un `kind` d'instantané (firewall / contrôles).
+/// GET /api/panel/{kind} — état point-in-time d'un `kind` d'instantané (firewall / contrôles).
 ///
 /// PAR HÔTE, PAS « LE » PARC. Cette route rendait `… ORDER BY ts DESC LIMIT 1` : l'état de la DERNIÈRE
 /// machine à avoir parlé, présenté comme l'état du déploiement (MESURÉ le 2026-08-02 : `srv00` rendu seul

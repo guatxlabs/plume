@@ -670,7 +670,7 @@ pub(crate) async fn silence_create(State(st): State<AppState>, Extension(au): Ex
     }
 }
 
-/// PUT|POST /api/silences/:id — MODIFIE un silence existant (P11.5-a : le troisième geste de l'administrateur,
+/// PUT|POST /api/silences/{id} — MODIFIE un silence existant (P11.5-a : le troisième geste de l'administrateur,
 /// entre créer et lever). Corps partiel : `matchers` (objet, re-validé par `parse_matchers`), `duration_s`
 /// (nouvelle durée COMPTÉE DEPUIS MAINTENANT, bornée par le même TTL maximal que la création : un silence
 /// ne devient pas permanent par modification), `reason`. Rôle : editor+ (même classe que create/delete,

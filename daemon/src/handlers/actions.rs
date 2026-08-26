@@ -391,14 +391,14 @@ pub(crate) async fn netban_add(State(st): State<AppState>, Extension(au): Extens
         ledger_append(&conn, "netban.plafond", &format!("{ip} refusé : store live plein by={}", au.name));
         return err_json(
             StatusCode::INSUFFICIENT_STORAGE,
-            format!("store de bans plein ({NETBAN_CACHE_CAP} IP) — libérer par DELETE /api/netban/:ip, ou bloquer en amont (pare-feu/CDN)"),
+            format!("store de bans plein ({NETBAN_CACHE_CAP} IP) — libérer par DELETE /api/netban/{{ip}}, ou bloquer en amont (pare-feu/CDN)"),
         );
     }
     ledger_append(&conn, "netban.add", &format!("{ip} ttl={} by={}", ttl.map(|t| t.to_string()).unwrap_or_else(|| "permanent".into()), au.name));
     Json(json!({ "ok": true, "ip": ip, "expires_ts": expires })).into_response()
 }
 
-/// DELETE /api/netban/:ip — retire un ban HTTP (réversibilité). Idempotent (retirer une IP absente = ok).
+/// DELETE /api/netban/{ip} — retire un ban HTTP (réversibilité). Idempotent (retirer une IP absente = ok).
 pub(crate) async fn netban_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(ip): Path<String>) -> Response {
     if let Err(r) = require_admin(&au) { return r; }
     let ip = ip.trim().to_string();

@@ -397,7 +397,7 @@ pub(crate) async fn prom_query_range(State(st): State<AppState>, Extension(au): 
     prom_ok(json!({ "resultType": "matrix", "result": result }))
 }
 
-/// GET /api/v1/label/:name/values — valeurs distinctes d'un label. `__name__` -> noms de métriques distincts.
+/// GET /api/v1/label/{name}/values — valeurs distinctes d'un label. `__name__` -> noms de métriques distincts.
 /// Un label MASQUÉ pour l'appelant -> 400 (miroir #45 : pas d'énumération d'un champ masqué).
 pub(crate) async fn prom_label_values(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(label): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {
     let masks = caller_masks(&st, &au);

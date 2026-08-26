@@ -545,7 +545,7 @@ pub(crate) fn engagement_row_json(r: &rusqlite::Row) -> rusqlite::Result<Value> 
     }))
 }
 
-/// GET /api/engagements/:id — engagement + ses grants (admin). Les grants exposent l'INTENT de provisioning :
+/// GET /api/engagements/{id} — engagement + ses grants (admin). Les grants exposent l'INTENT de provisioning :
 /// un adaptateur de provisioning PULL les 'pending' (émet + écrit le ref), le sweep les passe 'revoked' — MÊME
 /// pattern déclare-vs-applique que /api/engagements/active pour l'enforcer.
 pub(crate) async fn engagement_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<String>) -> Response {
@@ -729,7 +729,7 @@ pub(crate) async fn engagement_create(State(st): State<AppState>, Extension(au):
     }
 }
 
-/// POST /api/engagements/:id/end — clôture ANTICIPÉE (admin-only, audité, transactionnel). status='revoked' +
+/// POST /api/engagements/{id}/end — clôture ANTICIPÉE (admin-only, audité, transactionnel). status='revoked' +
 /// révoque tout grant ouvert + exemption levée (recompile l'index). Idempotent (no-op si déjà clos).
 pub(crate) async fn engagement_end(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<String>) -> Response {
     if let Err(r) = require_admin(&au) { return r; }

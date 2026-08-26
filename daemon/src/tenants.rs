@@ -339,7 +339,7 @@ pub(crate) async fn tenant_create(State(st): State<AppState>, Extension(au): Ext
     (StatusCode::CREATED, Json(json!({ "ok": true, "id": id, "name": name, "first_admin": first_admin }))).into_response()
 }
 
-/// POST /api/tenants/:id/suspend | /unsuspend — bascule le flag `suspended` (SUPER-ADMIN only). Un tenant
+/// POST /api/tenants/{id}/suspend | /unsuspend — bascule le flag `suspended` (SUPER-ADMIN only). Un tenant
 /// suspendu = plus d'accès (guard fail-closed) + jobs de fond SKIP. `default` protégé. Audit.
 pub(crate) async fn tenant_suspend(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<String>) -> Response {
     tenant_set_suspended(&st, &au, &id, true).await
@@ -391,7 +391,7 @@ pub(crate) async fn tenant_set_suspended(st: &AppState, au: &AuthUser, id: &str,
     Json(json!({ "ok": true, "id": id, "suspended": suspend })).into_response()
 }
 
-/// DELETE /api/tenants/:id — DESTRUCTION CRYPTO (SUPER-ADMIN only, DESTRUCTIF). Exige une confirmation forte
+/// DELETE /api/tenants/{id} — DESTRUCTION CRYPTO (SUPER-ADMIN only, DESTRUCTIF). Exige une confirmation forte
 /// (body {confirm:<name>} == nom du tenant). `default` INTERDIT (protégé aussi par tenant_destroy). Audit
 /// control_ledger `tenant.destroy` (niveau break-glass). La base tenant disparaissant, pas d'event tenant.
 pub(crate) async fn tenant_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<String>, Json(b): Json<Value>) -> Response {
@@ -438,7 +438,7 @@ pub(crate) async fn tenant_delete(State(st): State<AppState>, Extension(au): Ext
     }
 }
 
-/// GET /api/tenants/:id/grants — liste (user -> role) du tenant. SUPER-ADMIN (tout tenant) OU admin de CE
+/// GET /api/tenants/{id}/grants — liste (user -> role) du tenant. SUPER-ADMIN (tout tenant) OU admin de CE
 /// tenant (re-check serveur `can_manage_grants`).
 pub(crate) async fn grants_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<String>) -> Response {
     if !st.multi_tenant {
@@ -465,7 +465,7 @@ pub(crate) async fn grants_list(State(st): State<AppState>, Extension(au): Exten
     Json(json!({ "tenant": id, "grants": grants })).into_response()
 }
 
-/// POST /api/tenants/:id/grants — pose/màj un grant {user, role}. SUPER-ADMIN (tout tenant) OU admin de CE
+/// POST /api/tenants/{id}/grants — pose/màj un grant {user, role}. SUPER-ADMIN (tout tenant) OU admin de CE
 /// tenant. `role` ∈ {admin, editor, viewer} (enum FERMÉ -> aucune escalade superadmin). Anti-lockout : un
 /// non-superadmin ne peut pas retirer/rétrograder le DERNIER admin du tenant. Audit control_ledger + event.
 pub(crate) async fn grant_set(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<String>, Json(b): Json<Value>) -> Response {
@@ -537,7 +537,7 @@ pub(crate) async fn grant_set(State(st): State<AppState>, Extension(au): Extensi
     Json(json!({ "ok": true, "tenant": id, "user": user, "role": role })).into_response()
 }
 
-/// DELETE /api/tenants/:id/grants/:user — retire un grant. SUPER-ADMIN (tout tenant) OU admin de CE tenant.
+/// DELETE /api/tenants/{id}/grants/{user} — retire un grant. SUPER-ADMIN (tout tenant) OU admin de CE tenant.
 /// Anti-lockout : un non-superadmin ne peut pas retirer le DERNIER admin. Audit control_ledger + event.
 pub(crate) async fn grant_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, user)): Path<(String, String)>) -> Response {
     if !st.multi_tenant {

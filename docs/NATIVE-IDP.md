@@ -66,7 +66,7 @@ sont **jamais** lus.
 
 ## 2. OIDC (implémenté)
 
-- `GET /api/auth/oidc/:name/start` → génère `state`, `nonce`, et un **PKCE** `code_verifier`/`code_challenge`
+- `GET /api/auth/oidc/{name}/start` → génère `state`, `nonce`, et un **PKCE** `code_verifier`/`code_challenge`
   (S256), pose un **cookie de state signé HMAC** (`plume_oidc`, `SameSite=Lax`, HttpOnly, 10 min) et redirige
   (302) vers l'`authorization_endpoint` (résolu par **discovery** `.well-known/openid-configuration`, ou
   overrides explicites). Aucun état serveur (stateless).
@@ -128,7 +128,7 @@ UNIQUEMENT si `sign_authn_requests`) vont dans `secret` (write-only, comme les a
 
 **Endpoints** (routes PUBLIQUES, exemptées de l'allowlist Host + rate-limit `auth_route`) :
 
-1. **`GET /api/auth/saml/:name/start`** — construit l'`AuthnRequest` (HTTP-Redirect : deflate+base64+urlencode
+1. **`GET /api/auth/saml/{name}/start`** — construit l'`AuthnRequest` (HTTP-Redirect : deflate+base64+urlencode
    via samlify), pose un `RelayState` **signé HMAC** (`saml_relaystate_sign`, réutilise le pattern
    `oidc_state_sign`) porteur de l'ID d'AuthnRequest, pose un cookie de flux `plume_saml` (Lax, défense en
    profondeur — peut ne pas survivre au POST cross-site → le RelayState reste autoritatif), 302 vers l'IdP.
@@ -155,7 +155,7 @@ UNIQUEMENT si `sign_authn_requests`) vont dans `secret` (write-only, comme les a
    `saml_groups_str` **neutralise les séparateurs `|`/`,` à l'intérieur de chaque valeur de groupe** avant de
    joindre → une valeur IdP unique `x|plume-admin` ne peut pas se ré-éclater en un groupe `plume-admin`
    synthétique (anti-élévation de privilège).
-3. **`GET /api/auth/saml/:name/metadata`** — métadonnée SP (XML public) à fournir à l'IdP.
+3. **`GET /api/auth/saml/{name}/metadata`** — métadonnée SP (XML public) à fournir à l'IdP.
 4. **SLO** : différé (non implémenté).
 
 **EncryptedAssertion : HORS PÉRIMÈTRE** — on exige l'assertion signée sur TLS (le déchiffrement RSA logiciel

@@ -10,7 +10,7 @@ import { runQuery } from './viz.js';
 // ---------- Cases (gestion d'incident, first-class #4a) ----------
 // Master-detail PLEINE LARGEUR dans #cases : liste filtrable + tri (gauche/haut), détail inline (bas)
 // avec header, timeline TYPÉE et barre d'actions. Données OPÉRATIONNELLES par-tenant (le daemon route via
-// req_db) ; la timeline = historique/audit du case. Contrat daemon : GET/POST /api/cases[/:id[/items[/:iid]]].
+// req_db) ; la timeline = historique/audit du case. Contrat daemon : GET/POST /api/cases[/{id}[/items[/{iid}]]].
 // Toutes les E/S passent par api()/apiSend() (core.js) : erreurs REMONTÉES (toast) au lieu d'être avalées.
 
 // Statuts : vocabulaire CANONIQUE new->triage->in_progress->resolved->closed (ce que le daemon ÉCRIT),
@@ -193,7 +193,7 @@ async function refreshCaseDetail(id) {
 }
 
 // EXPORT CASE (client) : CSV = timeline (items déjà chargés) ; JSON = le case complet ; PDF = impression.
-// Le case provient de /api/cases/:id (déjà caviardé/gated) -> aucune donnée secrète.
+// Le case provient de /api/cases/{id} (déjà caviardé/gated) -> aucune donnée secrète.
 function caseExportBar(c) {
   const wrap = document.createElement('span'); wrap.className = 'export-actions noprint';
   const mk = (label, title, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'exportbtn'; b.title = title; b.textContent = label; b.onclick = fn; return b; };

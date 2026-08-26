@@ -2,7 +2,7 @@
 // Un ADMIN définit des règles ORDONNÉES qui filtrent/masquent/routent/échantillonnent un event AVANT son
 // indexation (levier de rétention #1 : « décider ce qu'on n'ingère PAS »). API admin-only :
 //   GET /api/processors            -> { rules:[…], counters:{ per_rule, totals, reload_errors } }
-//   POST /api/processors           -> create ; POST /api/processors/:id -> update ; DELETE …/:id
+//   POST /api/processors           -> create ; POST /api/processors/{id} -> update ; DELETE …/{id}
 //   POST /api/processors/test      -> dry-run { event } -> { verdict, result }
 // NON-SILENCE : on affiche les compteurs dropped/masked/routed/sampled_out (la donnée non-indexée est
 // VISIBLE — philosophie garde-disque 503). SÉCU UI : rendu textContent (anti-XSS) ; la VRAIE garde reste
@@ -64,7 +64,7 @@ function ruleRow(r, counters) {
   const row = document.createElement('div'); row.className = 'rulerow';
   row.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--bd,#2222)';
 
-  // actif (POST /api/processors/:id {enabled}) — rollback visuel si le serveur refuse.
+  // actif (POST /api/processors/{id} {enabled}) — rollback visuel si le serveur refuse.
   const en = document.createElement('input'); en.type = 'checkbox'; en.checked = !!r.enabled; en.title = 'active';
   en.onchange = async () => {
     const want = en.checked;

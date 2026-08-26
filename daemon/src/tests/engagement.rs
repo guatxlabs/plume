@@ -548,7 +548,7 @@
         }
         // GET ne ré-expose JAMAIS le secret (ni en clair nulle part).
         let (_c, gv) = eng_resp_json(engagement_get(State(st.clone()), Extension(admin.clone()), Path(id.clone())).await).await;
-        assert!(!gv.to_string().contains(&secret), "GET /api/engagements/:id ne ré-expose JAMAIS le secret minté");
+        assert!(!gv.to_string().contains(&secret), "GET /api/engagements/{{id}} ne ré-expose JAMAIS le secret minté");
         assert!(gv["grants"].as_array().unwrap().iter().any(|g| g["ref"] == json!(username)), "GET expose le ref (username) mais pas le secret");
         // /end -> auth échoue + config_read révoqué.
         let r = engagement_end(State(st.clone()), Extension(admin.clone()), Path(id.clone())).await;

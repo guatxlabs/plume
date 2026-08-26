@@ -19,7 +19,7 @@ sont de la documentation. Ajouter un nouveau vendeur = écrire un JSON comme ceu
    pagination, watermark.
 3. Mettez le **credential** (client_secret OAuth, jeton API…) dans le champ **`secret`** du
    connecteur — **JAMAIS dans `config`**. Le `secret` n'est jamais renvoyé ni journalisé.
-4. Utilisez le bouton **Tester** (`POST /api/connectors/:id/test`) : il fait 1 page, **n'ingère
+4. Utilisez le bouton **Tester** (`POST /api/connectors/{id}/test`) : il fait 1 page, **n'ingère
    pas**, et renvoie un ÉCHANTILLON des events mappés pour vérifier que le `field_map` produit ce que
    vous attendez.
 5. Activez le connecteur quand la prévisualisation est correcte (créé **désactivé** par défaut).

@@ -272,7 +272,7 @@ function attachTip(svg, W, dataAt) {
 // ============ EXPLORE : fenêtre glissante + requête interactive annulable (budget 60 s) ============
 // La boîte EXPLORE (textarea GXQL + Exécuter) est une requête DÉLIBÉRÉE -> budget interactif 60 s côté
 // daemon (interactive:true) + annulable (qid + POST /api/cancel). À NE PAS confondre avec les PANNEAUX
-// (/api/panels/:id/data, fenêtre glissante côté serveur, budget auto 5 s) : chemin séparé, intact.
+// (/api/panels/{id}/data, fenêtre glissante côté serveur, budget auto 5 s) : chemin séparé, intact.
 //
 // Fenêtre temporelle GLISSANTE propre à l'Explore (#qrange, piloté par le picker #qrangepick — même
 // design que le picker Dashboard) : recalculée À CHAQUE exécution (from = now - window, to = 0).
@@ -546,7 +546,7 @@ function sondage(mode) {
 // -- LE MAGASIN DU RÉGLAGE ---------------------------------------------------------------------
 // Le store de préférences ADOSSÉ AU DÉMON (`prefs.js` -> `/api/prefs`, self-scoped, viewer+), et non
 // `localStorage` en direct. TROIS RAISONS, dont une contrainte de fait :
-// (1) le démon n'a AUCUNE colonne où loger un axe : `/api/panels/:id` accepte titre, requête, viz,
+// (1) le démon n'a AUCUNE colonne où loger un axe : `/api/panels/{id}` accepte titre, requête, viz,
 //     fenêtre, visibilité, requête privée, drill, colonnes et hauteur — rien d'autre. `patchPanel` ne
 //     peut donc pas porter ce réglage sans une capacité NOUVELLE du démon ;
 // (2) `prefs.js` est DURABLE ET INTER-POSTES (le démon garde le blob) là où `localStorage` seul

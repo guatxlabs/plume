@@ -450,7 +450,7 @@ pub(crate) async fn dataset_delete(State(st): State<AppState>, Extension(au): Ex
     dm_commit(&conn, outcome, json!({ "ok": true }))
 }
 
-/// POST /api/datasets/:id/run — exécute le GXQL stocké du dataset via le chemin MASQUÉ. viewer+ (readonly_post).
+/// POST /api/datasets/{id}/run — exécute le GXQL stocké du dataset via le chemin MASQUÉ. viewer+ (readonly_post).
 pub(crate) async fn dataset_run(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     let __rc = req_db(&st, &au);
     let soql = {

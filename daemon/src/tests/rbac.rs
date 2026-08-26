@@ -860,9 +860,30 @@ fn declared_route_table() -> Vec<(String, Vec<String>)> {
     out
 }
 
-/// Chemin CONCRET pour une route paramétrée (`/api/rules/:id/test` -> `/api/rules/1/test`).
+/// Chemin CONCRET pour une route paramétrée (`/api/rules/{id}/test` -> `/api/rules/1/test`).
+///
+/// LA SYNTAXE DU GABARIT EST CELLE DU ROUTEUR, ET ELLE A DÉJÀ CHANGÉ (axum 0.7 `:id` -> axum 0.8
+/// `{id}`). Une substitution muette est le pire des cas : le chemin sondé resterait le gabarit
+/// LITTÉRAL, le routeur répondrait 404, et TOUTE la famille `router_*` / `netban_*` passerait au vert
+/// en ne mesurant plus rien. La fonction REFUSE donc de rendre un chemin qui porte encore une marque
+/// de gabarit, au lieu de le sonder tel quel.
+///
+/// CE QU'ELLE NE TIENT PAS : elle ne valide pas que la valeur substituée (`1`) est acceptable pour le
+/// handler — un identifiant inexistant est justement ce qu'on veut (on mesure le CÂBLAGE d'autorisation,
+/// qui décide AVANT le handler), et un 404 métier ne se distingue pas ici d'un 404 de table.
 fn concrete_path(p: &str) -> String {
-    p.split('/').map(|seg| if seg.starts_with(':') { "1" } else { seg }).collect::<Vec<_>>().join("/")
+    let concret = p
+        .split('/')
+        .map(|seg| if seg.starts_with('{') && seg.ends_with('}') { "1" } else { seg })
+        .collect::<Vec<_>>()
+        .join("/");
+    assert!(
+        !concret.contains(['{', '}']) && !concret.split('/').any(|s| s.starts_with(':')),
+        "INSTRUMENT MUET : `{p}` n'a pas été rendu concret (`{concret}`). La syntaxe de gabarit du \
+         routeur a changé sous la substitution : les sondes interrogeraient le gabarit LITTÉRAL, \
+         récolteraient des 404, et les gardes de câblage seraient VERTES EN ÉTANT AVEUGLES."
+    );
+    concret
 }
 
 /// Routes que `auth_guard` sert AVANT toute vérification d'identité/rôle (chaque entrée = une décision de
@@ -898,7 +919,7 @@ fn router_bypassed(path: &str) -> bool {
 const ROUTER_VIEWER_SELF_SERVICE: &[(&str, &str)] = &[
     ("/api/prefs", "#62 préférences d'UI self-scopées (le handler écrit user_pref WHERE user=au.name)"),
     ("/api/saved-queries", "requêtes GXQL nommées per-user (owner=au.name posé par le handler ; IDOR fermé)"),
-    ("/api/saved-queries/:id", "idem, mutation WHERE id=? AND owner=au.name (IDOR fermé)"),
+    ("/api/saved-queries/{id}", "idem, mutation WHERE id=? AND owner=au.name (IDOR fermé)"),
     ("/api/mfa/enroll", "#44 enrôlement de SA PROPRE MFA (au.name uniquement)"),
     ("/api/mfa/verify", "#44 vérification de SON PROPRE code TOTP"),
     ("/api/mfa/disable", "#44 désactivation de SA PROPRE MFA"),
@@ -964,11 +985,23 @@ async fn router_probe_h(addr: std::net::SocketAddr, method: &str, path: &str, au
 /// invalide, exactement comme le gate de ban. Un test qui ne lit que le code compte alors un refus de
 /// handler comme la preuve d'un blocage qu'il n'a pas observé. Ce que la couche ÉCRIT, lui, la nomme.
 async fn router_probe_corps(addr: std::net::SocketAddr, method: &str, path: &str, authz: Option<&str>, headers: &[(&str, &str)]) -> (u16, String) {
+    router_probe_envoi(addr, method, path, authz, headers, "").await
+}
+
+/// La MÊME sonde, qui ENVOIE un corps de requête. Une seule implémentation du dialogue HTTP (celle-ci) :
+/// `router_probe_corps` n'est plus que le cas « corps vide », et `Content-Length` est DÉRIVÉ du corps
+/// plutôt qu'écrit à zéro — une sonde qui annoncerait 0 en envoyant des octets ferait lire au serveur une
+/// requête tronquée, et le refus mesuré serait celui du protocole, pas celui de l'extracteur.
+async fn router_probe_envoi(addr: std::net::SocketAddr, method: &str, path: &str, authz: Option<&str>, headers: &[(&str, &str)], corps: &str) -> (u16, String) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Length: 0\r\n");
+    let mut req = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Length: {}\r\n",
+        corps.len()
+    );
     if let Some(a) = authz { req.push_str(&format!("Authorization: {a}\r\n")); }
     for (k, v) in headers { req.push_str(&format!("{k}: {v}\r\n")); }
     req.push_str("\r\n");
+    req.push_str(corps);
     let fut = async {
         let mut s = tokio::net::TcpStream::connect(addr).await.ok()?;
         s.write_all(req.as_bytes()).await.ok()?;
@@ -1100,5 +1133,232 @@ async fn router_admin_only_gets_and_readonly_post_allowlist_are_wired() {
     }
     assert!(checked > 20, "sonde effective sur les GET admin-only ({checked})");
     assert!(leaks.is_empty(), "GET ADMIN-ONLY ATTEIGNABLE PAR UN VIEWER (attendu 403) : {leaks:?}");
+    ff_rm(&dbp);
+}
+
+/// (B-4) UN CORPS JSON SUIVI D'OCTETS PARASITES EST DÉSORMAIS REFUSÉ — 400, LÀ OÙ IL ÉTAIT ACCEPTÉ.
+///
+/// CE N'EST PAS UNE PROPRIÉTÉ DE PLUME, C'EST UNE PROPRIÉTÉ DE SON EXTRACTEUR, ET ELLE A CHANGÉ SOUS
+/// NOS PIEDS. `axum::Json` appelle `Deserializer::end()` depuis axum 0.8.5 — VERSION D'INTRODUCTION
+/// VÉRIFIÉE, pas empruntée : l'entrée « Reject JSON request bodies with trailing characters after the
+/// JSON document » (#3453) est celle de `0.8.5` dans le `CHANGELOG.md` de la caisse `axum` 0.8.9 telle
+/// qu'elle est VERROUILLÉE par `Cargo.lock` (lu le 2026-08-26). Ce que ce chiffre ne dit toujours pas :
+/// la source est le journal de l'éditeur, pas un banc de cette machine — aucun essai n'a été fait
+/// CONTRE 0.8.4 ici. Ce qui EST mesuré sur ce poste, c'est la borne large : 0.7.9 accepte, 0.8.9
+/// refuse. Un corps qui est un
+/// document JSON valide SUIVI de n'importe quoi (`{"user":"x"} parasite`) était lu jusqu'au document
+/// et le reste IGNORÉ ; il rend maintenant `JsonSyntaxError`, c'est-à-dire **400**. Toutes les routes
+/// du démon qui prennent `Json<T>` sont concernées — c'est-à-dire l'essentiel de la surface mutante.
+///
+/// La sonde traverse le ROUTEUR RÉEL. `/api/login` est le bon site : il prend `Json<Value>`, il est
+/// servi AVANT le gate d'identité (`ROUTER_PRE_GATE_BYPASS`), donc le code observé vient de
+/// l'extracteur ou du handler, jamais de l'autorisation.
+///
+/// DEUX TÉMOINS, sans quoi un 400 ne prouverait rien :
+///   - POSITIF : le MÊME corps sans les octets parasites atteint le handler et rend 401
+///     (identifiants invalides) — la route est donc bien joignable et l'extracteur bien passant ;
+///   - NÉGATIF : avec les octets parasites, 400 ET le corps de la réponse NOMME l'analyse JSON.
+///     Sans la lecture du corps, un 400 rendu par une tout autre couche se lirait comme une preuve.
+///
+/// CE QUE CE TEST NE TIENT PAS, ET POURQUOI CE N'EST PLUS UN TROU : il ne dit rien des clients qui
+/// envoient ces octets parasites (il n'y en a aucun dans `web/`, qui sérialise par `JSON.stringify`).
+/// Il ne sonde ni `Form<T>` ni `Query<T>` — et la raison n'est pas « seul le texte change », c'est que
+/// leur refus est INATTEIGNABLE dans cet arbre. MESURÉ le 2026-08-26 : les VINGT-SEPT sites `Query<…>`
+/// et l'UNIQUE site `Form<…>` du démon sont tous `HashMap<String, String>`, or `form_urlencoded::parse`
+/// ne rend que des paires de chaînes (il remplace un octet non-UTF-8 au lieu d'échouer) — il n'existe
+/// donc aucune entrée qui fasse échouer la désérialisation, et le `serde_path_to_error` qu'axum 0.8
+/// ajoute n'a aucun champ à nommer. C'est le même argument qui rend le 422 d'axum inatteignable :
+/// 193 des 194 `Json<…>` sont `Json<Value>`.
+///
+/// LA SURFACE LARGE N'EST PAS CELLE-LÀ, C'EST `Path` — 101 sites `Path<i64>`, dont le CORPS de refus a
+/// changé sans changer de code. Elle a sa propre sonde :
+/// `router_path_i64_ecrit_la_valeur_de_refus_sans_guillemets`.
+#[tokio::test]
+async fn router_json_refuse_les_octets_parasites_apres_le_document() {
+    let (st, dbp) = router_test_state("router-json-parasite");
+    let addr = router_serve(st).await;
+    let entetes = [("Content-Type", "application/json")];
+
+    let propre = r#"{"user":"compte-inexistant-a","pass":"motdepasse-invalide"}"#;
+    let (code_propre, corps_propre) =
+        router_probe_envoi(addr, "POST", "/api/login", None, &entetes, propre).await;
+    assert_eq!(
+        code_propre, 401,
+        "TÉMOIN POSITIF EN ÉCHEC : un corps JSON PROPRE doit atteindre le handler de connexion et \
+         rendre 401 (identifiants invalides). Reçu {code_propre} — la sonde ne mesure pas l'extracteur \
+         mais autre chose. Réponse : {corps_propre}"
+    );
+
+    let parasite = format!("{propre} parasite");
+    let (code_parasite, corps_parasite) =
+        router_probe_envoi(addr, "POST", "/api/login", None, &entetes, &parasite).await;
+    assert_eq!(
+        code_parasite, 400,
+        "MÊME corps + octets parasites après le document : attendu 400 (l'extracteur `Json` refuse \
+         depuis axum 0.8.5). Reçu {code_parasite}. Si c'est 401, l'extracteur a REPRIS l'indulgence \
+         d'axum 0.7 et le contrat de refus de l'API a changé sans que personne ne l'ait décidé. \
+         Réponse : {corps_parasite}"
+    );
+    assert!(
+        corps_parasite.contains("Failed to parse the request body as JSON"),
+        "le 400 doit être ÉCRIT par l'analyse JSON, pas par une autre couche qui rend le même code : \
+         {corps_parasite}"
+    );
+    ff_rm(&dbp);
+}
+
+/// (B-5) LE CORPS D'UN REFUS DE `Path<i64>` A CHANGÉ — MÊME CODE, AUTRE TEXTE, ET RIEN NE LE DISAIT.
+///
+/// C'EST LA SURFACE LA PLUS LARGE DE LA MONTÉE. Entre axum 0.7.9 et 0.8.9, l'affichage de
+/// `ErrorKind::ParseError` passe de `{value:?}` à `{value}` (`src/extract/path/mod.rs`, les deux
+/// caisses lues dans le registre cargo le 2026-08-26) : le corps servi passe de
+/// ``Invalid URL: Cannot parse `"abc"` to a `i64` `` à ``Invalid URL: Cannot parse `abc` to a `i64` ``.
+/// Le CODE reste 400 des deux côtés — `ParseError` est dans la liste `BAD_REQUEST` des deux `status()`
+/// — donc AUCUNE garde de code de refus ne pouvait le voir. MESURÉ sur l'arbre le 2026-08-26 :
+/// 101 sites `Path<i64>`, c'est-à-dire la quasi-totalité des routes à identifiant, atteignable par
+/// n'importe quel segment non numérique.
+///
+/// DEUX TÉMOINS :
+///   - POSITIF : le MÊME gabarit avec un identifiant NUMÉRIQUE n'est pas refusé par l'extracteur —
+///     sans quoi un 400 ne dirait pas d'où il vient (la route pourrait être fermée, absente, gatée) ;
+///   - NÉGATIF (celui qui porte la mutation) : le segment non numérique rend 400 ET le corps porte la
+///     valeur SANS guillemets. La forme d'AVANT est asserte absente, faute de quoi un retour en
+///     arrière d'axum passerait au vert.
+///
+/// CE QUE CE TEST NE TIENT PAS : il épingle le texte d'UNE famille de refus (`ParseError`), pas la
+/// liste des refus de `Path` ; et il ne répare rien — un client qui APPARIAIT ce texte reste cassé,
+/// le test dit seulement que le changement est connu et ne rebougera pas en silence.
+#[tokio::test]
+async fn router_path_i64_ecrit_la_valeur_de_refus_sans_guillemets() {
+    let (st, dbp) = router_test_state("router-path-i64");
+    let addr = router_serve(st).await;
+    let authz = viewer_authz();
+
+    let (code_num, corps_num) = router_probe_corps(addr, "GET", "/api/cases/1", Some(&authz), &[]).await;
+    assert_ne!(
+        code_num, 400,
+        "TÉMOIN POSITIF EN ÉCHEC : `/api/cases/1` (identifiant NUMÉRIQUE) ne doit pas être refusé par \
+         l'extracteur. Reçu 400 — la sonde ne mesure alors pas l'analyse du segment mais autre chose. \
+         Réponse : {corps_num}"
+    );
+
+    let (code, corps) = router_probe_corps(addr, "GET", "/api/cases/abc", Some(&authz), &[]).await;
+    assert_eq!(
+        code, 400,
+        "un segment non numérique sur un gabarit servi par `Path<i64>` doit être refusé 400 par \
+         l'extracteur. Reçu {code} : {corps}"
+    );
+    assert!(
+        corps.contains("Cannot parse `abc` to a `i64`"),
+        "CORPS DE REFUS INATTENDU : attendu la forme axum 0.8 (valeur SANS guillemets). Reçu : {corps}"
+    );
+    assert!(
+        !corps.contains("Cannot parse `\"abc\"`"),
+        "LA FORME D'AVANT EST REVENUE (valeur entre guillemets, axum 0.7) : le corps servi par 101 \
+         routes à identifiant a rebougé sans que le code de refus change. Reçu : {corps}"
+    );
+    ff_rm(&dbp);
+}
+
+/// (B-6) UN SEGMENT STATIQUE GAGNE SUR SON PARAMÈTRE FRÈRE — ET LE MOTEUR QUI EN DÉCIDE VIENT D'ÊTRE
+/// REMPLACÉ (matchit 0.7.3 -> 0.8.4 sous axum 0.8), SANS QU'AUCUN TEST NE TIENNE LA PROPRIÉTÉ.
+///
+/// La table de routes portait, pour toute justification, un commentaire qui donnait un mécanisme FAUX
+/// (« axum matche l'ordre littéral »). Le vrai mécanisme est la PRIORITÉ DU SEGMENT STATIQUE dans
+/// l'arbre de matchit (« Routing Priority », README de matchit 0.8.4) : l'ordre des appels `.route(…)`
+/// n'y entre pas. Une propriété dont l'unique trace était une phrase fausse n'était tenue par personne.
+///
+/// LE CORPUS EST DÉRIVÉ, JAMAIS ÉNUMÉRÉ : tout gabarit déclaré dont le chemin concret est ENTIÈREMENT
+/// littéral et qui possède, à une position, un FRÈRE paramétré de même arité, est un point où la
+/// précédence se joue. Un point ajouté demain entre dans le périmètre sans qu'on l'inscrive.
+///
+/// TROIS TÉMOINS :
+///   - BALAYAGE : aucun de ces chemins ne doit être servi par la branche PARAMÈTRE. La signature d'une
+///     bascule est le refus d'analyse de `Path` (`Invalid URL: Cannot parse …`) sur un segment qui est
+///     un mot ;
+///   - NÉGATIF : le MÊME parent, avec un segment non déclaré, DOIT rendre ce refus — sans lui, le
+///     balayage serait vacuous et vert quoi qu'il arrive ;
+///   - FORME : `/api/cases/queues` rend la forme des files, et `/api/cases/1` NE la rend PAS. Sans ce
+///     dernier, un vert ne distinguerait pas « le statique gagne » de « les deux rendent pareil ».
+///
+/// CE QUE CE TEST NE TIENT PAS : le refus RBAC est décidé sur le chemin BRUT, par une couche posée
+/// AVANT l'appariement fin — une route admin-only rend donc 403 des deux côtés, et le balayage ne
+/// prouve rien sur elle. Il ne prouve rien non plus là où le frère paramétré est un `Path<String>`
+/// (`/api/auth/oidc/{name}`), qui accepterait le mot sans broncher : c'est exactement pour ces
+/// angles-là que le témoin de FORME existe, et il ne couvre qu'UN point de la table. Enfin le balayage
+/// ne retient que les GET — sur une méthode mutante un viewer est refusé 403 par une couche antérieure
+/// (la sonde n'apprendrait rien), et un compte admin déclencherait de VRAIES mutations pour l'apprendre.
+#[tokio::test]
+async fn router_un_segment_statique_gagne_sur_son_parametre_frere() {
+    let table = declared_route_table();
+    let gabarits: Vec<String> = table.iter().map(|(p, _)| p.clone()).collect();
+    let est_param = |s: &str| s.starts_with('{') && s.ends_with('}');
+
+    // DÉRIVATION : chemins entièrement littéraux qui ont un frère paramétré de MÊME arité.
+    let mut ambigus: Vec<String> = Vec::new();
+    for (chemin, methodes) in &table {
+        if !methodes.iter().any(|m| m == "GET") { continue; }
+        let segs: Vec<&str> = chemin.split('/').collect();
+        if segs.iter().any(|s| est_param(s)) { continue; }
+        let frere = gabarits.iter().any(|autre| {
+            let a: Vec<&str> = autre.split('/').collect();
+            a.len() == segs.len()
+                && a.iter().zip(&segs).all(|(x, y)| x == y || est_param(x))
+                && a.iter().zip(&segs).any(|(x, y)| est_param(x) && x != y)
+        });
+        if frere { ambigus.push(chemin.clone()); }
+    }
+    // CLIQUET : QUATRE points mesurés le 2026-08-26 (`/api/connectors/presets`, `/api/engagements/active`,
+    // `/api/cases/queues`, `/api/cases/metrics`). Ce plancher ne se BAISSE pas sans raison écrite ici —
+    // une dérivation qui en trouve moins a cessé de lire la table, pas la table de porter des ambiguïtés.
+    assert!(
+        ambigus.len() >= 4,
+        "INSTRUMENT MUET : la dérivation ne trouve plus les points où un segment statique et un \
+         paramètre sont frères ({ambigus:?}). La table a changé de forme et le test ne mesure plus la \
+         précédence."
+    );
+
+    let (st, dbp) = router_test_state("router-precedence");
+    let addr = router_serve(st).await;
+    let authz = viewer_authz();
+
+    let mut bascules: Vec<(String, String)> = Vec::new();
+    for chemin in &ambigus {
+        let (_, corps) = router_probe_corps(addr, "GET", chemin, Some(&authz), &[]).await;
+        if corps.contains("Invalid URL: Cannot parse") {
+            bascules.push((chemin.clone(), corps.lines().last().unwrap_or("").to_string()));
+        }
+    }
+    assert!(
+        bascules.is_empty(),
+        "UN SEGMENT STATIQUE A ÉTÉ SERVI PAR SON FRÈRE PARAMÉTRÉ : le routeur a préféré `{{id}}` au \
+         littéral, donc la route déclarée est INATTEIGNABLE et rend un refus d'analyse. {bascules:?}"
+    );
+
+    // TÉMOIN NÉGATIF — sans lui, le balayage ci-dessus est vert même si plus rien n'atteint la branche
+    // paramètre (route disparue, gate qui court-circuite, sonde muette).
+    let (_, corps_param) =
+        router_probe_corps(addr, "GET", "/api/cases/segment-non-declare", Some(&authz), &[]).await;
+    assert!(
+        corps_param.contains("Invalid URL: Cannot parse"),
+        "TÉMOIN NÉGATIF EN ÉCHEC : un segment NON déclaré sous `/api/cases` doit tomber dans la branche \
+         `{{id}}` et rendre le refus d'analyse de `Path<i64>`. Il ne le rend pas, donc le balayage \
+         ci-dessus ne pouvait RIEN attraper. Réponse : {corps_param}"
+    );
+
+    // TÉMOIN DE FORME — le handler ATTEINT, pas seulement le code. `/api/cases/queues` et
+    // `/api/cases/{id}` sont tous deux lisibles par un viewer : un vert doit distinguer les deux.
+    let (code_q, corps_q) = router_probe_corps(addr, "GET", "/api/cases/queues", Some(&authz), &[]).await;
+    assert!(
+        code_q == 200 && corps_q.contains("\"queues\""),
+        "le segment STATIQUE `/api/cases/queues` doit être servi par le handler des files (200 + clé \
+         `queues`). Reçu {code_q} : {corps_q}"
+    );
+    let (_, corps_id) = router_probe_corps(addr, "GET", "/api/cases/1", Some(&authz), &[]).await;
+    assert!(
+        !corps_id.contains("\"queues\""),
+        "TÉMOIN DE FORME EN ÉCHEC : `/api/cases/1` rend la MÊME forme que `/api/cases/queues`, donc le \
+         témoin positif ne prouve pas que le littéral a gagné. Réponse : {corps_id}"
+    );
     ff_rm(&dbp);
 }

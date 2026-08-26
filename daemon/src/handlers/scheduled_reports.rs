@@ -83,7 +83,7 @@ pub(crate) async fn report_create(State(st): State<AppState>, Extension(au): Ext
     }
 }
 
-/// DELETE /api/scheduled-reports/:id — supprime (editor+, audité).
+/// DELETE /api/scheduled-reports/{id} — supprime (editor+, audité).
 pub(crate) async fn report_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     crate::req_conn!(st, au, conn);
@@ -105,7 +105,7 @@ pub(crate) async fn report_delete(State(st): State<AppState>, Extension(au): Ext
     }
 }
 
-/// POST /api/scheduled-reports/:id/run — déclenche MANUELLEMENT (editor+). Exécute + livre TOUT DE SUITE avec
+/// POST /api/scheduled-reports/{id}/run — déclenche MANUELLEMENT (editor+). Exécute + livre TOUT DE SUITE avec
 /// le run_as du rapport (masqué par CE rôle, pas par l'appelant) -> même garantie que le tick de fond.
 pub(crate) async fn report_run_now(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }

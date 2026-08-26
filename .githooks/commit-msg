@@ -1,6 +1,50 @@
 #!/usr/bin/env bash
 # Delegue au MEME verificateur que la CI. Une regle ecrite deux fois finit par diverger :
 # le hook est la boucle de retour rapide, la CI est l'application qui ne se contourne pas.
-set -euo pipefail
-racine="$(git rev-parse --show-toplevel)"
-exec "$racine/.github/scripts/verifier-message-de-commit.sh" "$1"
+#
+# P7.19-a — LA REGLE EST LA MEME DES DEUX COTES ; LE TEXTE, PAS TOUT A FAIT. LE HOOK LE DIT.
+# Mesure du 2026-08-26 : git n'a PAS encore nettoye le fichier quand il appelle ce hook. Le
+# fichier porte donc le gabarit de l'editeur, dont les lignes ne deviendront jamais du message.
+# Les juger refuserait des messages parfaitement valides. Le nettoyage est donc fait ici, par
+# `git stripspace --strip-comments`, c'est-a-dire par le nettoyage de git lui-meme : mesure du
+# meme jour, temoin POSITIF — sur un message edite, il rend exactement ce que git a garde ;
+# temoin NEGATIF — avec `core.commentChar=';'` il retire les `;` et GARDE les `#`, donc il suit
+# la configuration au lieu de supposer le caractere de commentaire, ce que `grep -v '^#'` faisait.
+#
+# LA DIVERGENCE QUI RESTE EST ASSUMEE, ET ANNONCEE A CHAQUE FOIS QU'ELLE COMPTE. Git ne retire
+# les lignes de commentaire QUE si le message a ete edite ; `git commit -m` les GARDE dans le
+# message publie (mesure du 2026-08-26). Et le fichier remis ici s'appelle `COMMIT_EDITMSG` dans
+# les DEUX cas : rien, dans son nom, ne les distingue. Le hook ne peut donc pas savoir lequel des
+# deux textes sera publie. Il tranche du cote qui ne refuse jamais a tort — il REFUSE sur le
+# texte nettoye — puis, si le texte BRUT aurait ete refuse, il AVERTIT en nommant ce que la CI
+# refusera. Un contributeur ne peut plus etre vert ici et rouge la-bas sans avoir ete prevenu.
+#
+# CE QUE CE HOOK NE TIENT PAS : `git commit -v` place le diff SOUS une ligne de coupure, sans le
+# mettre en commentaire (mesure du 2026-08-26). `stripspace` ne le retire donc pas, et un diff
+# qui contient une adresse etrangere fait refuser un message valide. C'etait deja vrai du
+# `grep -v '^#'` d'avant. Geste : committer sans `-v`. La CI, elle, ne voit jamais ce diff : elle
+# juge le message DEJA ECRIT, celui que git a garde.
+set -uo pipefail
+
+racine="$(git rev-parse --show-toplevel)" || exit 1
+regle="$racine/.github/scripts/verifier-message-de-commit.sh"
+
+nettoye="$(mktemp)" || exit 1
+trap 'rm -f "$nettoye"' EXIT
+git stripspace --strip-comments < "$1" > "$nettoye" || exit 1
+
+"$regle" "$nettoye"
+rc=$?
+[ "$rc" -eq 0 ] || exit "$rc"
+
+brut="$("$regle" "$1" 2>&1)"
+rc_brut=$?
+if [ "$rc_brut" -ne 0 ]; then
+  {
+    echo "[commit-msg] AVERTISSEMENT — le texte a ete juge APRES retrait des lignes de commentaire."
+    echo "             Tel quel, il serait refuse. Git ne les retire que si ce message est EDITE :"
+    echo "             « git commit -m » les GARDE, et la CI les jugera alors comme du contenu."
+    printf '%s\n' "$brut" | sed 's/^/             /'
+  } >&2
+fi
+exit 0

@@ -177,7 +177,7 @@ pub(crate) async fn index_policy_create(State(st): State<AppState>, Extension(au
     }
 }
 
-/// POST /api/index-policies/:id — met à jour une policy (admin-only). Re-valide la valeur RÉSULTANTE.
+/// POST /api/index-policies/{id} — met à jour une policy (admin-only). Re-valide la valeur RÉSULTANTE.
 pub(crate) async fn index_policy_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     if !au.is_admin() {
         return (StatusCode::FORBIDDEN, "réservé à l'administrateur").into_response();
@@ -237,7 +237,7 @@ pub(crate) async fn index_policy_update(State(st): State<AppState>, Extension(au
     }
 }
 
-/// DELETE /api/index-policies/:id — supprime une policy (admin-only). L'index (env_id) retombe alors sur la
+/// DELETE /api/index-policies/{id} — supprime une policy (admin-only). L'index (env_id) retombe alors sur la
 /// rétention GLOBALE ; AUCUN event n'est touché par la suppression de la policy (seul le régime de purge change).
 pub(crate) async fn index_policy_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if !au.is_admin() {

@@ -71,7 +71,7 @@ sur 144 appels mutants, 6 (dans 3 modules) sont déclarés confirmés par une ch
 un CÂBLAGE (`x.onclick = f`) — l'installateur d'un gestionnaire n'est pas son appelant, et le geste
 confirmé qu'on atteint ainsi est celui d'un voisin, pas d'un ancêtre. Resserrer la remontée à ce
 critère rendrait ces 6 non confirmés, mais produirait aussi une FAUSSE accusation : le motif
-`/api/connectors/*` d'un appel destiné à `/api/connectors/:id` recouvre `/api/connectors/push-source`,
+`/api/connectors/*` d'un appel destiné à `/api/connectors/{id}` recouvre `/api/connectors/push-source`,
 que la console n'appelle pas là. Les deux imprécisions se compensent en l'état — ce n'est pas une
 garantie, et les deux se corrigent ensemble ou pas du tout. Le second sens de lecture LIT LE MÊME
 signal que le premier, délibérément : deux lectures divergentes de « confirmée » vaudraient moins
@@ -80,7 +80,7 @@ qu'une seule lecture dont la limite est écrite.
 Ce que la garde ne fait PAS : traiter la seule confirmation de la console comme une déclaration de
 sensibilité. Une confirmation est un choix d'ergonomie (un formulaire dont on relit le contenu) ; le
 démon, lui, engage un journal. Le compte des routes confirmées que le démon n'audite pas est IMPRIMÉ,
-jamais compté comme défaut — sans quoi `POST /api/rules/:id/test` deviendrait « sensible ».
+jamais compté comme défaut — sans quoi `POST /api/rules/{id}/test` deviendrait « sensible ».
 
 L'INSTRUMENT SE VALIDE AVANT DE RENDRE UN VERDICT
 --------------------------------------------------
@@ -91,7 +91,7 @@ Pour le second sens : une route auditée et confirmée partout est un ANGLE MORT
 `DÉCLARE` ne la reprend pas, et cesse de l'être une fois reprise ; une route auditée appelée SANS
 confirmation est une ASYMÉTRIE ; une route auditée sans appelant web et une route confirmée que le démon
 n'audite pas ne sont NI l'un NI l'autre. Puis des planchers sur l'arbre réel : un nombre minimal de
-routes sensibles, une route témoin trouvée sensible ET confirmée (`/api/users/:id`, le changement de
+routes sensibles, une route témoin trouvée sensible ET confirmée (`/api/users/{id}`, le changement de
 rôle), sans quoi la garde refuse de conclure.
 """
 import os
@@ -106,7 +106,7 @@ DEMON = os.path.join(RACINE, "daemon", "src")
 WEB = os.path.join(RACINE, "web")
 
 MIN_ROUTES_SENSIBLES = 12
-ROUTE_TEMOIN = ("POST", "/api/users/:id")
+ROUTE_TEMOIN = ("POST", "/api/users/{id}")
 # CLIQUET DU SECOND SENS (`P11.13-b`) : routes que le démon AUDITE, que la console ATTEINT, et dont tous les
 # appelants ne confirment pas. 12 mesurées le 2026-08-24 ; ce nombre ne se relève pas sans raison écrite ici —
 # une route auditée appelée sans confirmation de plus est exactement le défaut que la garde doit attraper.
@@ -334,12 +334,25 @@ def methode_de(nom, args):
 
 
 def motif_correspond(motif, route):
-    """`motif` = chemin côté web (`*` = segment inconnu) ; `route` = gabarit axum (`:id`)."""
+    """`motif` = chemin côté web (`*` = segment inconnu) ; `route` = gabarit axum (`{id}`).
+
+    LA SYNTAXE DU GABARIT EST CELLE DU ROUTEUR, ET ELLE A CHANGÉ (axum 0.7 `:id` -> axum 0.8 `{id}`).
+    Une seule syntaxe est reconnue, celle du présent : accepter les deux laisserait vivre côte à côte
+    une forme que la table ne produit plus.
+
+    CE QUE CETTE LIGNE COÛTE QUAND ELLE EST FAUSSE — MESURÉ le 2026-08-26 en laissant l'appariement
+    sur `:` alors que la table déclare `{…}` : la garde reste VERTE (`rc=0`), le plancher
+    `ROUTE_TEMOIN` la laisse passer (son appelant web porte un `*`, jamais un segment concret), et
+    pourtant 12 routes sensibles basculent de « confirmée » à « sans appelant web » (64 -> 52) et le
+    cliquet d'asymétrie se desserre tout seul de 12 à 10. C'est-à-dire : verte en étant aveugle.
+    Ce sont donc les DEUX témoins de `valider_instrument()` — un segment concret qui DOIT s'apparier
+    à `{id}`, et `:id` qui ne DOIT PLUS s'apparier — qui tiennent cette ligne, pas le plancher.
+    """
     mp, rp = motif.strip("/").split("/"), route.strip("/").split("/")
     if len(mp) != len(rp):
         return False
     for a, b in zip(mp, rp):
-        if b.startswith(":") or a == "*":
+        if (b.startswith("{") and b.endswith("}")) or a == "*":
             continue
         if "*" in a:
             if not re.fullmatch(re.escape(a).replace(r"\*", ".*"), b):
@@ -533,13 +546,13 @@ def valider_instrument():
     rust = [("s.rs",
              'fn r() { Router::new()\n'
              '  .route("/api/things", get(things_list).post(thing_create))\n'
-             '  .route("/api/things/:id", post(thing_update).delete(thing_delete))\n'
-             '  .route("/api/users/:id", post(user_update))\n'
+             '  .route("/api/things/{id}", post(thing_update).delete(thing_delete))\n'
+             '  .route("/api/users/{id}", post(user_update))\n'
              '  .route("/api/mode", get(mode_get).post(mode_set))\n'
              '  .route("/api/bulletin", delete(bulletin_clear))\n'
              '  .route("/api/query", post(query))\n'
              '  .route("/api/login", post(login_post))\n'
-             '  .route("/api/rules/:id/enabled", post(rule_set_enabled))\n'
+             '  .route("/api/rules/{id}/enabled", post(rule_set_enabled))\n'
              '  .route("/api/purge/plan", post(purge_plan_route))\n'
              '  .route("/api/purge/apply", post(purge_apply_route))\n'
              '  .route("/api/declarations", post(declaration_upsert))\n'
@@ -569,8 +582,8 @@ def valider_instrument():
              '  MinRole::Read }\n')]
     routes, handlers, readonly, armement, derr = deriver_routes(rust)
     sensibles, cerr = classer(routes, handlers, readonly, armement)
-    attendu = {("DELETE", "/api/things/:id"), ("POST", "/api/users/:id"), ("POST", "/api/mode"),
-               ("POST", "/api/rules/:id/enabled"), ("POST", "/api/purge/apply")}
+    attendu = {("DELETE", "/api/things/{id}"), ("POST", "/api/users/{id}"), ("POST", "/api/mode"),
+               ("POST", "/api/rules/{id}/enabled"), ("POST", "/api/purge/apply")}
     if derr or cerr:
         errs.append(f"témoin de DÉRIVATION : erreurs inattendues {derr + cerr}")
     if set(sensibles) != attendu:
@@ -578,6 +591,17 @@ def valider_instrument():
                     "une création ordinaire, un POST de lecture, une route de connexion, un DELETE audité "
                     "informatif ou une simulation de purge ne doivent pas être sensibles ; un DELETE, un rôle "
                     "lu, le mode, une activation et une purge appliquée doivent l'être.")
+    # TÉMOINS DE LA SYNTAXE DE GABARIT (`P7.19-d`) — la seule chose qui empêche l'appariement de rester
+    # sur une syntaxe que le routeur ne produit plus. Positif ET négatif : sans le négatif, reconnaître
+    # les deux formes passerait pour correct, et personne ne saurait laquelle la table écrit.
+    if not motif_correspond("/api/users/7", "/api/users/{id}"):
+        errs.append("témoin de GABARIT (positif) en échec : un segment concret côté web ne s'apparie plus à un "
+                    "paramètre `{…}` de la table. L'appariement est resté sur une syntaxe que le routeur ne "
+                    "produit plus : la couverture se réduit EN SILENCE, verdict vert compris.")
+    if motif_correspond("/api/users/7", "/api/users/:id"):
+        errs.append("témoin de GABARIT (négatif) en échec : `:id` s'apparie encore alors que le routeur (axum 0.8) "
+                    "ne l'accepte plus — il paniquerait à la construction. Deux syntaxes reconnues, aucune preuve "
+                    "de celle que la table porte vraiment.")
     core = ("export { a, confirmModal, b, confirmWithConsequence, modal };\n")
     confs = confirmations_de_core(core)
     if confs != ["confirmModal", "confirmWithConsequence"]:
@@ -597,12 +621,12 @@ def valider_instrument():
            "async function saveSilence() { await apiSend('/silences', 'POST', { m }); }\n")]
     appels = appelants_web(js, confs)
     defauts, couverts, sans = verdict(sensibles, appels)
-    if ("DELETE", "/api/things/:id") not in couverts:
+    if ("DELETE", "/api/things/{id}") not in couverts:
         errs.append("témoin POSITIF en échec : un DELETE confirmé dans sa fonction n'est pas reconnu couvert")
     if ("POST", "/api/mode") not in couverts:
         errs.append("témoin d'APPELANT en échec : une confirmation portée par la fonction appelante n'est pas reconnue")
     mauvais = {(d[0], d[1]) for d in defauts}
-    if ("POST", "/api/users/:id") not in mauvais or ("POST", "/api/rules/:id/enabled") not in mauvais:
+    if ("POST", "/api/users/{id}") not in mauvais or ("POST", "/api/rules/{id}/enabled") not in mauvais:
         errs.append(f"témoin NÉGATIF en échec : un changement de rôle ou une activation SANS confirmation doit rougir (défauts : {sorted(mauvais)})")
     if ("POST", "/api/purge/apply") not in {(s[0], s[1]) for s in sans}:
         errs.append("témoin de SILENCE en échec : un appel en commentaire a été compté comme appelant")

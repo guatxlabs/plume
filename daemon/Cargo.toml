@@ -129,7 +129,7 @@ parquet = { version = "58", default-features = false, features = ["zstd", "snap"
 # hyper) -> AUCUNE crate compilée NOUVELLE ; 100 % pur-Rust. `optional=true` + rattachés à la feature
 # `cold_tier` : le build/mode 0 par défaut ne les utilise PAS -> byte-identique préservé (age/sha2/base64 sont
 # déjà des dép DIRECTES non-optionnelles, utilisées ici seulement sous `#[cfg(feature=\"cold_tier\")]`).
-hkdf = { version = "0.12", optional = true }
+hkdf = { version = "0.13", optional = true }
 # `bytes::Bytes` = tampon EN MÉMOIRE (ChunkReader parquet) sur lequel on rejoue le Parquet DÉCHIFFRÉ (le
 # lecteur parquet exige un accès aléatoire -> footer ; le déchiffrement age est SÉQUENTIEL. Fichiers ~8 Mio ->
 # on déchiffre en flux vers un Bytes borné puis on décode row-group par row-group ; JAMAIS de plaintext DISQUE).

@@ -35,12 +35,33 @@ sa date ; une règle morte de plus rougit, en retirer une autorise à abaisser l
 valide d'abord sur deux témoins (une règle `#inexistant{}` DOIT rougir, `.btn` NE DOIT PAS) et refuse de
 conclure sous un plancher de sélecteurs et de fichiers de corpus.
 
+LE DÉPOUILLEUR JAVASCRIPT N'EST PLUS ÉCRIT ICI (`P11.8-f`). Le corpus du point (2) est le code SANS ses
+commentaires, et cette garde en portait sa PROPRE copie — la cinquième du dépôt. Elle avait la cécité que
+les quatre autres ont perdue : un `"` ou un `'` posé dans un littéral d'EXPRESSION RÉGULIÈRE y ouvrait une
+fausse chaîne, si bien que les commentaires de la région n'étaient PLUS retirés ; et une séquence `//` dans
+un motif était prise pour un commentaire de ligne, ce qui MANGEAIT la fin de la ligne. Mesuré le 2026-08-26
+sur `web/` : 8 462 caractères de commentaire gardés en trop (`core.js` 89 lignes après `/[&<>"]/g`,
+`viz.js` 4) et 32 caractères de code mangés (`app.js`, `/^\/api\//`). Le sens du défaut ICI est le PIRE des
+deux : un nom cité dans un commentaire non retiré est compté POSÉ, donc une règle de style morte passe en
+VERT SILENCIEUX. Prouvé par mutation le 2026-08-26 — une règle `.fantome-en-commentaire{}` citée seulement
+dans un commentaire placé après cette expression régulière : l'ancien dépouilleur rendait 0 (« 0 orphelin,
+plafond tenu »), le lecteur partagé rend 1 en la nommant ; le même nom posé dans du vrai code reste vert des
+deux côtés. Le lecteur vient donc de `check_every_help_trigger_has_a_section.py`, comme pour les gardes du
+lexique, des verdicts et des routes sensibles, et il est VALIDÉ (`temoins_du_lecteur()`) avant de servir :
+importé, il ne joue pas ses témoins tout seul. Il DIT aussi quand il perd la synchronisation, et la garde
+REFUSE ALORS DE CONCLURE (code 2) au lieu de juger sur un corpus dont la frontière code/commentaire a
+bougé — la sortie sur l'arbre du jour est inchangée mot pour mot.
+
 LA RACINE EXAMINÉE EST UN GESTE PARTAGÉ, ÉCRIT ICI ET NULLE PART AILLEURS. `racine_designee()` est
 IMPORTÉE par les deux gardes sœurs qui lisent la même surface (`check_every_button_wears_shared_chrome.py`,
 `check_no_operational_figure_is_published.py`) plutôt que recopiée : trois recopies, c'est ce qui a
 permis à l'une des trois de diverger et d'ignorer en silence la racine qu'on lui désignait (`P8.27-a`).
 """
 import os, re, subprocess, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from check_every_help_trigger_has_a_section import (  # noqa: E402  (LECTEUR PARTAGÉ, source unique — `P11.8-f`)
+    refuser_sur_aveu, sans_commentaires_js, temoins_du_lecteur)
 
 WEB = None  # renseigné par main() : la racine ne se devine pas à l'import (voir `racine_designee`)
 FEUILLE = "style.css"
@@ -104,36 +125,23 @@ def selecteurs(css):
     return trouves
 
 
-def sans_commentaires_js(src):
-    """Retire `//…` et `/*…*/` en respectant les chaînes ('', "", ``) : un `//` dans une URL reste."""
-    out, i, n = [], 0, len(src)
-    while i < n:
-        c = src[i]
-        if c in "'\"`":
-            j = i + 1
-            while j < n and src[j] != c:
-                j += 2 if src[j] == "\\" else 1
-            out.append(src[i:j + 1]); i = j + 1
-        elif src.startswith("//", i):
-            j = src.find("\n", i); i = n if j < 0 else j
-        elif src.startswith("/*", i):
-            j = src.find("*/", i + 2); fin = n if j < 0 else j + 2; out.append(re.sub(r"[^\n]", " ", src[i:fin])); i = fin
-        else:
-            out.append(c); i += 1
-    return "".join(out)
-
-
 def sans_commentaires_html(src):
     return re.sub(r"<!--.*?-->", lambda m: re.sub(r"[^\n]", " ", m.group(0)), src, flags=re.S)
 
 
-def corpus_web():
-    """{fichier: texte sans commentaires} pour tout ce qui, sous `web/`, peut poser un nom — sauf la feuille."""
+def corpus_web(aveux=None):
+    """{fichier: texte sans commentaires} pour tout ce qui, sous `web/`, peut poser un nom — sauf la feuille.
+    `aveux` recueille les PERTES DE SYNCHRONISATION du lecteur partagé : une région mal lue déplace la
+    frontière entre le code et ses commentaires, donc le verdict « posé / orphelin » (voir `main`)."""
     corpus = {}
     for f in sorted(os.listdir(WEB)):
         chemin = os.path.join(WEB, f)
         if not os.path.isfile(chemin) or f == FEUILLE: continue
-        if f.endswith(".js"): corpus[f] = sans_commentaires_js(open(chemin, encoding="utf-8").read())
+        if f.endswith(".js"):
+            journal, brut = [], open(chemin, encoding="utf-8").read()
+            corpus[f] = sans_commentaires_js(brut, journal)
+            if journal and aveux is not None:
+                aveux[f] = [f"ligne {brut.count(chr(10), 0, o) + 1} : {motif}" for motif, o in journal]
         elif f.endswith((".html", ".svg", ".webmanifest")): corpus[f] = sans_commentaires_html(open(chemin, encoding="utf-8").read())
     return corpus
 
@@ -182,7 +190,13 @@ def main():
     global WEB
     WEB = os.path.join(racine_designee(), "web")
     css = open(os.path.join(WEB, FEUILLE), encoding="utf-8").read()
-    corpus = corpus_web()
+    aveux = {}
+    corpus = corpus_web(aveux)
+    # LE LECTEUR AVOUE, LA GARDE REFUSE DE CONCLURE (`P11.8-f`). Un dépouilleur désynchronisé ne rougit
+    # pas : il rend un corpus où un nom cité en commentaire redevient « posé » (orphelin manqué, vert
+    # silencieux) ou bien mange le code qui posait un nom (orphelin inventé). Les deux passent pour un
+    # verdict, aucun ne se plaint.
+    if aveux and refuser_sur_aveu("style", aveux): return 2
     prefixes, suffixes = bords_dynamiques(corpus)
     # Témoins : l'instrument DOIT accuser une règle sans cible et se taire sur une classe partagée, avant de juger.
     temoin = selecteurs(css + "\n#inexistant-temoin{color:red}\n.btn{color:red}\n")
@@ -193,6 +207,19 @@ def main():
     assert ".btn" not in orph_temoin, "témoin négatif : `.btn` est accusée à tort, l'instrument hallucine"
     assert not selecteurs("a{opacity:.5;background:url(#x)} /* .commente */ @media(min-width:1px){}"), "témoin : un corps, un commentaire ou une at-rule est lu comme sélecteur"
     assert ".x" in {n for n, _ in selecteurs("@media print{ .x{display:none} }")}, "témoin : un sélecteur sous @media n'est pas lu"
+    # LE LECTEUR PARTAGÉ SE VALIDE AVANT DE SERVIR (`P11.8-f`) : il est IMPORTÉ, ses témoins ne tournent
+    # pas à l'import. C'est le geste des trois gardes sœurs qui le partagent déjà.
+    temoins_du_lecteur()
+    # ET IL EST VALIDÉ SUR CE QUE CETTE GARDE-CI EN FAIT : le corpus sert à décider si un nom est POSÉ.
+    # Un commentaire qui n'est pas retiré rend « posé » un nom que personne ne pose — l'orphelin passe en
+    # VERT SILENCIEUX. C'est ce que faisait la copie locale du dépouilleur : un `"` dans une expression
+    # régulière ouvrait une fausse chaîne, et les commentaires jusqu'au guillemet suivant restaient.
+    # Mesuré le 2026-08-26 sur `web/` : 8 462 caractères de commentaire gardés en trop (`core.js` 89 lignes,
+    # `viz.js` 4) et 32 caractères de CODE mangés (`app.js`, `/^\/api\//` lu comme un commentaire de ligne).
+    fausse_chaine = 'const esc = s => String(s).replace(/[&<>"]/g, c => X[c]);\n// .fantome-en-commentaire\n'
+    assert "fantome-en-commentaire" not in sans_commentaires_js(fausse_chaine), \
+        "témoin : après une expression régulière porteuse d'un guillemet, un commentaire n'est plus retiré — " \
+        "un nom cité là serait compté POSÉ et une règle de style morte passerait en vert"
     assert "posted-one" in sans_commentaires_js("const u = 'http://h/posted-one'; // .commented-one") and "commented-one" not in sans_commentaires_js("const u = 'http://h/posted-one'; // .commented-one"), "témoin : le dépouillement des commentaires JS coupe une chaîne ou garde un commentaire"
 
     trouves = selecteurs(css)

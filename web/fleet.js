@@ -192,7 +192,13 @@ function renderFleetInventory(wrap, d) {
   // FENÊTRE du parc dès qu'il dépasse ce plafond, et la déclarer est ce qui empêche la liste de rendre
   // « aucun résultat » pour un hôte qui EXISTE. Le texte cherché est celui des cellules RENDUES : un hôte
   // se cherche par son nom, par le mot de son statut, par ce qui est déclaré de lui et par son enrôlement.
-  pagedList(tblHost, { mode: 'client', pageSize: 50, rows: hosts, columns, emptyText: 'aucun hôte', recherche: { fenetre: true } });
+  // `P11.18-z` — L'IDENTITÉ DE CETTE LISTE, ET C'EST ELLE QUI ARME SA MÉMOIRE DE RECHERCHE. Déclarer
+  // un hôte (`declareHostExpectation`) ou retirer une déclaration (`clearHostExpectation`) rappellent
+  // `loadFleetView()`, qui refabrique l'hôte de la liste : sans identité, la recherche de l'exploitant
+  // repartait à zéro à chaque geste éditorial. La clé est un LITTÉRAL — stable d'un rendu à l'autre,
+  // propre à cette liste — et c'est le motif de rangement que le dépôt porte déjà (`group.storeKey`),
+  // jamais un second.
+  pagedList(tblHost, { mode: 'client', pageSize: 50, rows: hosts, columns, emptyText: 'aucun hôte', storeKey: 'soc_fleet_hosts', recherche: { fenetre: true } });
   const legend = document.createElement('div'); legend.className = 'muted'; legend.style.cssText = 'margin-top:8px;font-size:11px';
   legend.textContent = "Statut = fraîcheur du dernier signal de l'hôte : frais (<15 min) · en retard (15 min–1 h) · muet (>1 h). « Attendu de l'hôte » dit ce que quelqu'un a déclaré de cette machine, et qui : un enrôlement (un jeton d'agent y est lié), l'exploitant (avec sa date et son motif), ou personne. Un silence n'est un incident QUE si personne n'a déclaré le contraire — une machine de test se déclare « silence attendu » (elle reste au parc, sans alerter), une machine décommissionnée se déclare « retirée » (elle sort du dénominateur, sans disparaître de la liste). Ces déclarations ne touchent ni la collecte, ni les règles, ni la rétention. « Signaux » = volume total reçu (rétention). « Enrôlement » = token d'agent lié à l'hôte ; « Dernier push agent » = dernier appel authentifié du token (mode mono-tenant). Version et OS de l'agent ne sont pas transmis par le collecteur (différés).";
   wrap.appendChild(legend);

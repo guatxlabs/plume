@@ -49,6 +49,7 @@ refuse qu'un ajout passe sans être écrit (`P9.7-b`).
 |---|---|---|
 | [SDK.md](SDK.md) | ✅ | Le modèle **bring-your-own-vendor** : par où brancher une source. |
 | [CIM.md](CIM.md) | ✅ | Le modèle d'information commun — la taxonomie d'événements sur laquelle les règles se composent. |
+| [VALEURS-DES-CAPTEURS.md](VALEURS-DES-CAPTEURS.md) | 📐 | **Ce qu'un capteur émet, et ce que ses valeurs veulent dire.** Le modèle commun ci-dessus déclare **un** vocabulaire par champ ; un capteur, lui, n'écrit qu'un sous-ensemble, et deux capteurs écrivent le même nom de champ avec des sens sans rapport — la clé est donc le couple **(source, champ)**. Dit ce que les producteurs livrés déclarent déjà, ce qui n'atteint ni le fil ni l'écran, et pourquoi l'écart ne se comble pas par une table écrite à la main (`P11.19-a`). |
 | [PARSER-DSL.md](PARSER-DSL.md) | ✅ | Parseur déclaratif (DSL CIM) : ajouter un format de log **sans rebuild**. |
 | [CONNECTOR-PRESETS.md](CONNECTOR-PRESETS.md) | ✅ | Presets `http_pull` prêts à l'emploi (AWS, M365/Entra, Okta, CrowdStrike, SentinelOne, GCP, Cloudflare, Google Workspace). Fichiers dans [`connector-presets/`](connector-presets/). |
 | [SIGMA-IMPORTER.md](SIGMA-IMPORTER.md) | ✅ | Import de règles Sigma (unitaire et en masse) + delta de couverture ATT&CK. |

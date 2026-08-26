@@ -899,6 +899,12 @@ button.btn-busy::after{content:"";position:absolute;top:50%;left:50%;width:12px;
    filtrée doit à son lecteur : combien de lignes sur combien, ou pourquoi il n'y en a aucune. */
 #rule-search,#alert-search{max-width:230px}
 .recherche-resume{margin:2px 0 9px;font-size:12px}
+/* P11.18-z — L'AVIS D'UNE LISTE QUI CACHE DAVANTAGE QU'AVANT. Une recherche CONSERVÉE d'un rendu à
+   l'autre peut masquer une ligne apparue depuis ; la liste le DIT plutôt que d'effacer le travail de son
+   lecteur, et le geste de tout revoir est posé DANS la phrase. La règle ne fait que la placer : elle
+   passe avant le résumé (elle porte la nouvelle, il porte l'état), et son bouton reste sur la ligne du
+   texte, aligné sur lui. Aucune couleur d'alarme — ce n'est pas une faute, c'est une nouvelle. */
+.recherche-annonce{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;margin:2px 0 9px;font-size:12px}
 /* P11.4-h — LE GESTE DE COPIE ET LA VALEUR QU'IL TRANSPORTE. `.copybtn` est LA classe du bouton (une seule
    forme partout où la console offre de copier : jeton, lien, chemin de document) ; `.copyval` est la valeur
    elle-même — monospace, coupable en fin de ligne, et SÉLECTIONNABLE au fragment (aucun `user-select:all`

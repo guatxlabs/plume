@@ -80,7 +80,10 @@ function enabledSwitch(opts) {
   cb.onchange = async () => {
     const next = cb.checked;
     if (next && opts.confirmOnEnable) {
-      const ok = await confirmModal('Activer « ' + (opts.name || '') + ' » ? Une fois ON : ' + (opts.consequence || '') + '. Réversible : repasser sur OFF arrête les nouvelles actions (celles déjà posées restent dans Actions).', { okText: 'Activer', danger: true });
+      // La phrase de réversibilité est celle de TOUTES les familles : elle nommait « Actions », l'onglet d'une
+      // seule d'entre elles, alors que ce commutateur arme aussi une collecte, une sortie de données ou une
+      // porte d'entrée. Ce qu'elle doit dire est le même partout — OFF arrête la suite, pas ce qui a eu lieu.
+      const ok = await confirmModal('Activer « ' + (opts.name || '') + ' » ? Une fois ON : ' + (opts.consequence || '') + '. Réversible : repasser sur OFF arrête l\'effet pour la suite ; ce qui a déjà eu lieu n\'est pas défait.', { okText: 'Activer', danger: true });
       if (!ok) { cb.checked = false; paint(); return; }
     }
     try { await opts.onToggle(next); paint(); toast((opts.name ? opts.name + ' : ' : '') + (next ? 'ON' : 'OFF'), 'ok'); }

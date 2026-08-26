@@ -146,7 +146,10 @@ async function loadTokens() {
   // `P11.18-m` — LA RECHERCHE PORTE SUR TOUS LES JETONS : `/api/tokens` rend la table entière, sans borne ni
   // pagination. Le texte cherché est celui des cellules RENDUES — nom, type, hôte lié, dates — jamais le
   // secret, qui n'est ni servi ni affiché (seul son empreinte est stockée).
-  pagedList(host, { mode: 'client', pageSize: 50, rows: tokens, columns, sort: { key: 'created', dir: -1 }, emptyText: 'aucun jeton — clique « + Nouveau jeton » pour provisionner un agent ou un forwarder HEC.', recherche: true });
+  // `P11.18-z` — IDENTITÉ DE CETTE LISTE (littérale, stable, propre à elle) : révoquer un jeton et en
+  // provisionner un rappellent `loadTokens()`, qui refabrique l'hôte de la liste. La clé ne nomme que la
+  // LISTE : aucun secret n'y entre, et rien de cette mémoire n'est écrit hors de la page.
+  pagedList(host, { mode: 'client', pageSize: 50, rows: tokens, columns, sort: { key: 'created', dir: -1 }, emptyText: 'aucun jeton — clique « + Nouveau jeton » pour provisionner un agent ou un forwarder HEC.', storeKey: 'soc_admin_tokens', recherche: true });
 }
 async function newTokenFlow() {
   // P11.5-b : créer un jeton ÉLÈVE un droit (une crédence d'ingest/responder naît) -> la fenêtre de saisie est

@@ -1,6 +1,7 @@
 // connectors.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Connecteurs (sources externes en PULL, #3/#3a, admin-only): liste/form/test/poll.
 import { $, api, apiSend, confirmModal, confirmWithConsequence, fetchInto, fmtTs, humanAge, ic, muted, pagedList, sev, toast, withBusy } from './core.js';
+import { enabledSwitch } from './producer_ui.js';
 import { S } from './state.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -34,14 +35,14 @@ async function loadConnectors() {
 
 function connectorRow(c) {
   const row = document.createElement('div'); row.className = 'rulerow';
-  // enable/disable (POST /api/connectors/{id} {enabled}) — rollback visuel si le serveur refuse.
-  const en = document.createElement('input'); en.type = 'checkbox'; en.checked = !!c.enabled; en.title = 'actif';
-  en.onchange = async () => {
-    const want = en.checked;
-    try { await apiSend('/connectors/' + c.id, 'POST', { enabled: want }); }
-    catch (e) { en.checked = !want; toast((e && e.message) || 'échec', 'bad'); return; }
-    c.enabled = want; toast(want ? 'connecteur activé' : 'connecteur désactivé', 'ok');
-  };
+  // enable/disable (POST /api/connectors/{id} {enabled}) — COMMUTATEUR PARTAGÉ (`P11.13-c`) : la case nue ne
+  // disait pas ce qu'elle coupe. `enabledSwitch` écrit la conséquence à côté de l'interrupteur dans les DEUX
+  // états, avant la bascule, et remet la case à son état précédent si le serveur refuse.
+  const en = enabledSwitch({
+    enabled: !!c.enabled, name: c.name || '(sans nom)', allowed: true, confirmOnEnable: false,
+    consequence: 'plume interroge ' + (CONNECTOR_TYPES[c.type] || c.type || '?') + ' et ingère ce qu\'il rend ; OFF, la collecte s\'arrête et rien n\'est rattrapé du temps passé hors ligne',
+    onToggle: (next) => apiSend('/connectors/' + c.id, 'POST', { enabled: next }),
+  });
   // nom + type + environnement (textContent — anti-XSS)
   const name = document.createElement('span'); name.className = 'rulename'; name.textContent = c.name || '(sans nom)';
   const type = document.createElement('code'); type.className = 'rulecond'; type.textContent = CONNECTOR_TYPES[c.type] || c.type || '?';

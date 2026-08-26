@@ -20,7 +20,7 @@
 // selon rule/alert_count ; non couvert = grisé -> les ANGLES MORTS ressortent). Clic technique -> ses alertes.
 // DÉGRADATION : si l'endpoint 404 (daemon non déployé), message « couverture indisponible » (pas d'erreur dure).
 // SÉCU UI : tout en textContent/attributs (anti-XSS). Aucune mutation (aucun apiSend).
-import { $, api, muted, socIsAdmin, socRole, closeModals } from './core.js';
+import { $, LANG, api, muted, socIsAdmin, socRole, closeModals } from './core.js';
 import { setAlertMitreFilter } from './app.js';
 import { openSigmaImport } from './sigmaimport.js';
 
@@ -235,6 +235,51 @@ function renderLegend(tactics) {
   }
 }
 
+// UNE MATRICE VIDE N'EST PAS UNE MATRICE SANS COUVERTURE — MAIS CETTE SURFACE NE SAIT PAS POURQUOI.
+// Mesuré le 2026-08-26 en lisant le démon : `build_attack_matrix` empile UNE entrée par tactique du
+// catalogue, sans aucune condition sur les données, et le test LIVRÉ `attack_matrix_empty_rules_all_uncovered`
+// l'exige explicitement sur zéro règle et zéro alerte (« chaque tactique canonique est présente et non
+// couverte »). Une réponse CALCULÉE porte donc TOUJOURS ses tactiques, et écrire « aucune tactique dans la
+// matrice » présentait un non-calcul comme une ABSENCE : l'exploitant lisait « rien n'est couvert » là où le
+// démon n'avait rien lu.
+//
+// CE QUE CE MODULE AFFIRMAIT ET QUI ÉTAIT FAUX, RETIRÉ LE 2026-08-26. Il nommait DEUX causes — « permis de
+// requête saturé » et « chien de garde de lecture » — et la lecture des trois sorties de `coverage_attack`
+// (daemon/src/handlers/alerts.rs) les RÉFUTE toutes les deux. (a) `acquire_query_permit`
+// (daemon/src/query_timing.rs) ne rend PAS d'erreur quand les permis manquent : sur `NoPermits` il ATTEND
+// (`acquire_owned().await`). Son seul `Err` est `Closed`, c'est-à-dire le sémaphore FERMÉ — l'arrêt du démon.
+// La saturation ne produit donc JAMAIS de matrice vide. (b) `read_with_watchdog` (daemon/src/query_exec.rs)
+// ne rend son `default` que si `read_conn_get` échoue ; le chien de garde, lui, interrompt la CONNEXION et la
+// closure s'exécute quand même, avale les erreurs SQLite (`if let Ok(...)`, `rows.flatten()`) et appelle
+// `build_attack_matrix` avec ce qu'elle a lu. Une lecture interrompue rend donc une matrice PLEINE et
+// SOUS-COMPTÉE, jamais un tableau vide. (c) Une troisième sortie n'était pas nommée : le `spawn_blocking`
+// tombé (`.await.unwrap_or_else`).
+//
+// CE QUI EST DÉRIVÉ, ET CE QUI EST AVOUÉ. Dérivé de ce que le démon rend : les trois sorties dégradées portent
+// `tactics: []`, une réponse d'une AUTRE forme (pas de liste de tactiques du tout) n'en vient donc pas — les
+// deux cas reçoivent deux phrases distinctes, et la seconde n'impute rien au démon. Avoué : LAQUELLE des trois
+// sorties dégradées, car elles rendent le même corps `{tactics:[], totals:{}}` ; les séparer demande un
+// marqueur côté démon, hors de ce module. La surface le DIT plutôt que de choisir une cause.
+//
+// CE QUI RESTE OUVERT ET QUE CETTE SURFACE NE PEUT PAS VOIR (`P11.6-e`) : la lecture interrompue par le chien
+// de garde rend une matrice ENTIÈREMENT DESSINÉE à couverture sous-comptée. C'est le même défaut — un résultat
+// incomplet présenté comme complet — sous une forme que le tableau vide ne trahit pas. Seul le démon peut le
+// dire ; la console ne peut pas le deviner, et ne le devine pas.
+//
+// Rend null quand la réponse porte des tactiques (rien à dire), sinon la phrase qui convient, dans la langue.
+function refusDeMatrice(d) {
+  const tactics = (d && Array.isArray(d.tactics)) ? d.tactics : null;
+  if (tactics && tactics.length) return null;
+  if (tactics) {
+    return LANG === 'en'
+      ? "ATT&CK coverage NOT COMPUTED: the response carries no tactic, which a computed matrix never does — it carries one per catalogue tactic even when no rule covers anything. The daemon therefore declined or failed the read, through one of its three degraded exits: query semaphore closed (shutdown under way), read database unreachable, or the read task died. WHICH of the three, this surface cannot say — they return the same body, and telling them apart needs a marker on the daemon side. This is NOT an absence of coverage; try again."
+      : "couverture ATT&CK NON CALCULÉE : la réponse ne porte aucune tactique, ce qu'une matrice calculée ne fait jamais — elle en porte une par tactique du catalogue, même quand aucune règle ne couvre rien. Le démon a donc refusé ou manqué la lecture, par l'une de ses trois sorties dégradées : sémaphore de requête fermé (arrêt en cours), base de lecture injoignable, ou tâche de lecture tombée. LAQUELLE des trois, cette surface ne peut pas le dire — elles rendent le même corps, et les séparer demande un marqueur côté démon. Ce n'est PAS une absence de couverture ; réessayer.";
+  }
+  return LANG === 'en'
+    ? "ATT&CK coverage UNREADABLE: the response does not even carry a tactic list, which this route always serves — including when it declines. This surface therefore cannot say whether the daemon refused the read or the response was altered on the way, and it does not guess. This is NOT an absence of coverage; try again."
+    : "couverture ATT&CK ILLISIBLE : la réponse ne porte même pas de liste de tactiques, ce que cette route sert toujours — y compris quand elle refuse. Cette surface ne peut donc pas dire si le démon a refusé la lecture ou si la réponse a été altérée en route, et elle ne le devine pas. Ce n'est PAS une absence de couverture ; réessayer.";
+}
+
 async function loadAttackMatrix() {
   const host = $('#attack-body'); if (!host) return;
   const leg = $('#attack-legend'); if (leg) leg.replaceChildren();
@@ -248,7 +293,8 @@ async function loadAttackMatrix() {
     return;
   }
   const tactics = (d && Array.isArray(d.tactics)) ? d.tactics : [];
-  if (!tactics.length) { host.replaceChildren(muted('aucune tactique dans la matrice de couverture.')); return; }
+  const refus = refusDeMatrice(d);
+  if (refus) { host.replaceChildren(muted(refus)); return; }
   // poids max sur TOUTES les techniques -> échelle de couleur commune (comparaison inter-tactiques honnête).
   let max = 0;
   tactics.forEach(tac => (tac.techniques || []).forEach(t => { const w = techWeight(t); if (w > max) max = w; }));
@@ -258,4 +304,4 @@ async function loadAttackMatrix() {
   host.replaceChildren(matrix);
 }
 
-export { loadAttackMatrix, techniqueCell, techniqueDisplayName, porteDeLaTechnique, poserLesPortesDeTechnique, NOM_INCONNU };
+export { loadAttackMatrix, techniqueCell, techniqueDisplayName, porteDeLaTechnique, poserLesPortesDeTechnique, refusDeMatrice, NOM_INCONNU };

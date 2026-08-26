@@ -6,8 +6,9 @@
 //
 // Forme : { clé : {fr:{title,body}, en:{title,body}} }. `body` est une chaîne multiligne rendue en <pre>
 // (textContent). TOUTES les sections vivent ici, y compris les deux panneaux ouverts hors du bouton « ? »
-// d'un en-tête — `freshness` (bouton de la carte Fraîcheur) et `syntax` (bouton « ? Aide » de la barre de
-// requête) — qui étaient des tableaux de lignes dans la mécanique (P11.8-b : la mécanique ne porte plus
+// d'un en-tête — `freshness` (bouton de la carte Fraîcheur) et `soql` (bouton « ? Aide » de la barre de
+// requête, qui ouvrait `syntax` jusqu'à ce que `P11.6-d` supprime cette seconde référence) — qui étaient
+// des tableaux de lignes dans la mécanique (P11.8-b : la mécanique ne porte plus
 // aucun texte long, la garde du lexique la juge comme n'importe quel module ; seul cet objet est exempt,
 // par sa forme {fr, en}). Le sens de dépendance reste mécanique -> registre : ce module n'importe rien.
 //
@@ -93,66 +94,6 @@ observation, not an expectation, and it judges nothing.
 Age = time since the last DATA, not since the collector last ran (which runs on a timer and
 checks; it only emits if there is something new). A source can be "quiet" for hours with no
 problem: an IPS emits nothing without an attack, a periodic collector emits on change.` },
-  },
-  syntax: {
-    fr: { title: `Aide — requêtes (GXQL)`, body:
-`PIPELINE :  search <filtres>  | stats …  | where …  | sort …  | head N  | table *
-
-FILTRES (search) :
-  field=val   field:val          égalité        source=ufw   dport=993   proto=TCP
-  field=val*                     joker          src_ip=203.0.113*
-  field=~regex                   regex          message=~"BLOCK"
-  field>v  field<v  >=  <=        comparaison    severity>=3   dport>1000
-  un_mot                         plein-texte sur le message
-
-TRANSFORMATIONS (après un |) :
-  | stats count [by f1,f2]       compte, groupé    by dport   by dir   by src_ip
-  | stats sum(f)|avg(f)|min(f)|max(f)|dc(f)
-  | timechart span=1h count [by f]   série temporelle (buckets)
-  | where f op v                 filtre APRÈS agrégat   where count>50
-  | rex <champ> "(?<nom>…)"       extrait des groupes nommés en COLONNES (regex)
-       ex: search source=mail | rex message "rip=(?<ip>[\\d.]+).*user=<(?<u>[^>]+)>" | table u, ip
-  | sort [-]f                    tri ( - = décroissant )   sort -count
-  | head N      | fields a,b      | table *
-
-CHAMPS groupables (qui/où/quoi/quand) :
-  src_ip dst_ip dport lport proto dir proc user action jail scope host source category severity ts
-
-EXEMPLES (corrélation) :
-  search source=ufw | stats count by src_ip | sort -count | head 10
-  search source=conntrack dir=inbound scope=external | stats count by dport
-  search src_ip=203.0.113.7 | sort -ts        (tout sur une IP : ufw + conntrack + bans…)
-
-Heure : stockée en UTC ; l’affichage suit le sélecteur 🕓 (Navigateur / Europe-Paris / UTC).` },
-    en: { title: `Help — queries (GXQL)`, body:
-`PIPELINE :  search <filters>  | stats …  | where …  | sort …  | head N  | table *
-
-FILTERS (search) :
-  field=val   field:val          equals         source=ufw   dport=993   proto=TCP
-  field=val*                     wildcard       src_ip=203.0.113*
-  field=~regex                   regex          message=~"BLOCK"
-  field>v  field<v  >=  <=        comparison     severity>=3   dport>1000
-  a_word                         full-text on the message
-
-TRANSFORMS (after a |) :
-  | stats count [by f1,f2]       count, grouped    by dport   by dir   by src_ip
-  | stats sum(f)|avg(f)|min(f)|max(f)|dc(f)
-  | timechart span=1h count [by f]   time series (buckets)
-  | where f op v                 filter AFTER aggregate   where count>50
-  | rex <field> "(?<name>…)"      extract named groups into COLUMNS (regex)
-       e.g. search source=mail | rex message "rip=(?<ip>[\\d.]+).*user=<(?<u>[^>]+)>" | table u, ip
-  | sort [-]f                    sort ( - = descending )   sort -count
-  | head N      | fields a,b      | table *
-
-GROUPABLE fields (who/where/what/when) :
-  src_ip dst_ip dport lport proto dir proc user action jail scope host source category severity ts
-
-EXAMPLES (correlation) :
-  search source=ufw | stats count by src_ip | sort -count | head 10
-  search source=conntrack dir=inbound scope=external | stats count by dport
-  search src_ip=203.0.113.7 | sort -ts        (everything on one IP: ufw + conntrack + bans…)
-
-Time: stored in UTC; display follows the time-zone selector (Browser / Europe-Paris / UTC).` },
   },
   firewall: {
     fr: { title: `Firewall — pare-feu de l'hôte`, body:
@@ -240,50 +181,121 @@ Display ONLY : the console never controls the host (enrollment/config are read-o
 • Paging: ◀ / ▶ walk the whole result by cursor; a direct jump to a far page number can render a PARTIAL page (the badge says so) — going back with ◀ restores the complete walk.
 • "Panel" saves the query (reusable inside a Dashboard).` },
   },
+  // GXQL — LA SEULE RÉFÉRENCE DU LANGAGE (`P11.6-d`). Il y en avait DEUX : celle-ci, atteignable depuis
+  // le guide seul, et `syntax`, qu'ouvrait le bouton « ? Aide » de la barre de requête — la plus pauvre
+  // au bout du chemin le plus fréquenté. `syntax` est SUPPRIMÉE ; les deux portes ouvrent ce texte.
+  // FORME EXIGÉE, et un témoin de construction en dépend : une ligne de VOCABULAIRE porte DEUX espaces
+  // d'indentation, le jeton, puis DEUX espaces au moins avant sa description. Rien d'autre dans ce corps
+  // ne doit prendre cette forme — prose à la colonne zéro, exemples et remarques à QUATRE espaces. Le
+  // témoin lit ces lignes dans le texte RENDU et confronte leur ensemble, dans les deux sens, aux
+  // vocabulaires que `daemon/src/handlers/soql_meta.rs` DÉCLARE : un jeton déclaré qui manque ici, ou
+  // un jeton écrit ici que le démon ne déclare pas, fait rougir. Une ligne de prose qui prendrait la
+  // forme d'un item serait donc lue comme un jeton inconnu, et refusée en le nommant.
   soql: {
     fr: { title: `GXQL — référence des requêtes`, body:
 `Le langage de requête s'appelle GXQL (GuatX Query Language), anciennement SOQL.
 Même langage, même syntaxe : une requête, un lien ou un panneau écrit du temps
 de « SOQL » fonctionne tel quel, rien à réécrire.
 
-PIPELINE :  search <filtres>  | transform  | transform  | …
+C'EST LA SEULE RÉFÉRENCE DU LANGAGE. Le bouton « ? Aide » de la barre de requête
+et le guide intégré ouvrent CE panneau ; il n'en existe pas une seconde version,
+et il n'y a donc plus de chemin qui mène à un texte plus pauvre que l'autre.
+Les vocabulaires ci-dessous sont ceux que le produit DÉCLARE : un témoin de
+construction les confronte à la déclaration du démon et refuse l'écart DANS LES
+DEUX SENS — un item déclaré qui manquerait ici, un item écrit ici que le produit
+ne déclare pas. CE QU'IL NE TIENT PAS : le texte des descriptions, qui est celui
+de la console (le démon n'en porte qu'en français) ; et la liste des CHAMPS
+ci-dessous, dont la déclaration vit dans le cœur partagé, hors de sa portée.
 
-FILTRES (search) — champs : source, category|cat, severity|sev,
-  src_ip|ip, dst_ip, host, message|msg|event, url, xff, fields|field
-  champ=val / champ:val   égalité         source=ufw   dport=993
-  champ=val*              joker (LIKE)    src_ip=203.0.113*
-  champ=~regex            regex           message=~BLOCK
-  champ> < >= <=          comparaison     severity>=3
-  un_mot                  plein-texte (FTS) sur le message
-  limit:N / max:N         borne le nombre de lignes
-  (base alternative : metric … pour les séries de métriques)
+PIPELINE :  <base> <filtres>  | commande  | commande  | …
 
-TRANSFORMATIONS (après un |) :
-  stats / timechart   agréger : count, sum, avg, min, max, dc,
-                      values, list  [by champs]
-                      by n'accepte qu'un champ en portée (colonne, label
-                      déclaré par metric … by, clé JSON de fields) ; « par
-                      heure / par jour » = timechart span=1h / span=1d
-  where               filtrer APRÈS agrégat (gère in / not in)
-  sort [-]f           trier ( - = décroissant )
-  head N / limit N    garder les N premières lignes
-  fields a,b / table  choisir / ordonner les colonnes
-  rex "(?<nom>…)"     extraire des groupes nommés en colonnes
-  rename a as b       renommer une colonne
-  dedup f             supprimer les doublons sur f
-  top / rare f        valeurs les plus / moins fréquentes
-  eventstats          agrégat AJOUTÉ à chaque ligne (sans réduire)
-  rate                taux par unité de temps
-  eval x = expr       colonne calculée
-  append [ … ]        concatène une seconde recherche
-  join f [ … ]        jointure sur un champ
-  mvexpand f          éclate une valeur multiple en lignes
-  lookup <t> <clé> OUTPUT cols   enrichit (LEFT JOIN)
+BASES (première étape) :
+  search      sélectionne les événements bruts, filtrables par champ<op>valeur
+  metric      interroge les séries de métriques (observabilité)
 
-EXEMPLES RÉELS :
-  search source=ufw | stats count by src_ip | sort -count | head 10
-  search source=sshd severity>=3 | stats count by src_ip | where count > 10
-  search source=web | lookup geoip src_ip OUTPUT country
+OPÉRATEURS DE FILTRE (champ<op>valeur, dans la première étape) :
+  =           égalité (texte : correspondance ; * = joker)     source=ufw
+  :           égalité (alias de =)                             dport:993
+  !=          différent de                                     action!=allow
+  >           strictement supérieur (numérique)                dport>1000
+  >=          supérieur ou égal                                severity>=3
+  <           strictement inférieur                            severity<2
+  <=          inférieur ou égal                                severity<=1
+  =~          correspondance par expression régulière          message=~BLOCK
+
+Deux formes de la première étape qui ne sont pas des opérateurs :
+    un mot nu           recherche plein-texte (FTS) dans le message
+    limit:N / max:N     borne le nombre de lignes ramenées
+
+CHAMPS de la première étape — colonnes de l'événement, et leurs alias :
+    source   category|cat   severity|sev   src_ip|ip   dst_ip   host
+    message|msg|event   url   xff   fields|field   ts
+
+COMMANDES (après un |) :
+  stats       agrège : mesures, éventuellement groupées par champ (by)
+  timechart   série temporelle : agrège par intervalle (span=), éventuellement by
+  where       filtre sur une condition APRÈS agrégat (gère in / not in)
+  sort        trie par un ou plusieurs champs (préfixe - pour décroissant)
+  head        ne conserve que les N premiers résultats
+  limit       borne le nombre de résultats retournés
+  rex         extrait des champs d'un texte via une regex à groupes nommés
+  fields      restreint les colonnes retournées à la liste donnée
+  table       affiche les résultats en table pour les champs listés
+  rename      renomme un champ (champ as alias)
+  dedup       supprime les doublons en gardant le premier par champ(s)
+  top         valeurs les plus fréquentes d'un champ (compte + pourcentage)
+  rare        valeurs les moins fréquentes d'un champ
+  eventstats  agrégat RATTACHÉ à chaque événement (ne réduit pas les lignes)
+  rate        calcule un taux (événements par unité de temps)
+  eval        crée ou dérive un champ à partir d'une expression
+  append      ajoute les résultats d'une sous-recherche à la fin du flux
+  join        joint le flux à une sous-recherche sur un champ commun
+  mvexpand    éclate un champ multi-valué en une ligne par valeur
+  lookup      enrichit via une table de correspondance (reftable … OUTPUT …)
+
+MESURES (stats / timechart / eventstats) :
+  count       nombre d'événements (ou d'occurrences par groupe)
+  sum         somme des valeurs d'un champ numérique
+  avg         moyenne des valeurs d'un champ numérique
+  min         valeur minimale d'un champ
+  max         valeur maximale d'un champ
+  dc          nombre de valeurs DISTINCTES d'un champ (cardinalité)
+  values      liste triée des valeurs distinctes d'un champ
+  list        liste des valeurs (ordre d'apparition, doublons conservés)
+
+FONCTIONS DE eval :
+  if          if(cond, a, b) : a si la condition est vraie, sinon b
+  coalesce    premier argument non nul parmi ceux fournis
+  ifnull      ifnull(x, y) : x s'il n'est pas nul, sinon y
+  nullif      nullif(a, b) : nul si a égale b, sinon a
+  lower       convertit un texte en minuscules
+  upper       convertit un texte en majuscules
+  length      longueur (nombre de caractères) d'un texte
+  len         longueur d'un texte (alias de length)
+  abs         valeur absolue d'un nombre
+  round       arrondit un nombre (round(x[, décimales]))
+  min         plus petite valeur parmi les arguments
+  max         plus grande valeur parmi les arguments
+  substr      sous-chaîne : substr(texte, début[, longueur])
+  replace     remplace des occurrences : replace(texte, motif, remplacement)
+  trim        supprime les espaces en début et fin de texte
+
+MOTS-CLÉS :
+  by          regroupement des agrégats (stats/timechart … by champ)
+  span=       taille de l'intervalle d'un timechart (ex : span=5m)
+  as          renomme/aliase un champ (rename champ as alias)
+  OUTPUT      sélectionne les colonnes ramenées par un lookup
+
+CE QUE « by » ACCEPTE : un champ EN PORTÉE — une colonne, un label déclaré par
+metric … by, un alias amont, ou une clé JSON du sac fields tant qu'il est en
+portée. Un mot de calendrier (« date », « hour ») N'EST PAS un découpage
+temporel : celui-ci s'écrit timechart span=1h / span=1d.
+
+EXEMPLES :
+    search source=ufw | stats count by src_ip | sort -count | head 10
+    search source=sshd severity>=3 | stats count by src_ip | where count > 10
+    search source=web | lookup geoip src_ip OUTPUT country
+    search source=mail | rex message "user=<(?<u>[^>]+)>" | table u
 
 Heure stockée en UTC ; l'affichage suit le sélecteur de fuseau.` },
     en: { title: `GXQL — query reference`, body:
@@ -291,44 +303,105 @@ Heure stockée en UTC ; l'affichage suit le sélecteur de fuseau.` },
 Same language, same syntax: a query, a link or a panel written back when it
 was called "SOQL" still works as-is — nothing to rewrite.
 
-PIPELINE :  search <filters>  | transform  | transform  | …
+THIS IS THE ONLY REFERENCE FOR THE LANGUAGE. The query bar's "? Help" button and
+the in-app guide open THIS panel; there is no second version of it, so no path
+leads to a poorer text than another.
+The vocabularies below are the ones the product DECLARES: a build witness
+confronts them with the daemon's declaration and refuses any gap IN BOTH
+DIRECTIONS — a declared item missing here, an item written here the product does
+not declare. WHAT IT DOES NOT HOLD: the wording of the descriptions, which is the
+console's own (the daemon carries French ones only); and the FIELD list below,
+whose declaration lives in the shared core, out of its reach.
 
-FILTERS (search) — fields: source, category|cat, severity|sev,
-  src_ip|ip, dst_ip, host, message|msg|event, url, xff, fields|field
-  field=val / field:val   equals          source=ufw   dport=993
-  field=val*              wildcard (LIKE) src_ip=203.0.113*
-  field=~regex            regex           message=~BLOCK
-  field> < >= <=          comparison      severity>=3
-  a_word                  full-text (FTS) on the message
-  limit:N / max:N         cap the number of rows
-  (alternative base: metric … for metric series)
+PIPELINE :  <base> <filters>  | command  | command  | …
 
-TRANSFORMS (after a |) :
-  stats / timechart   aggregate: count, sum, avg, min, max, dc,
-                      values, list  [by fields]
-                      by only takes a field in scope (column, label declared
-                      by metric … by, JSON key of fields); "per hour / per
-                      day" is timechart span=1h / span=1d
-  where               filter AFTER aggregate (supports in / not in)
-  sort [-]f           sort ( - = descending )
-  head N / limit N    keep the first N rows
-  fields a,b / table  pick / order columns
-  rex "(?<name>…)"    extract named groups into columns
-  rename a as b       rename a column
-  dedup f             drop duplicates on f
-  top / rare f        most / least frequent values
-  eventstats          aggregate ADDED to each row (without reducing)
-  rate                rate per unit of time
-  eval x = expr       computed column
-  append [ … ]        concatenate a second search
-  join f [ … ]        join on a field
-  mvexpand f          explode a multi-value into rows
-  lookup <t> <key> OUTPUT cols   enrich (LEFT JOIN)
+BASES (first stage) :
+  search      selects raw events, filterable by field<op>value
+  metric      queries metric series (observability)
 
-REAL EXAMPLES :
-  search source=ufw | stats count by src_ip | sort -count | head 10
-  search source=sshd severity>=3 | stats count by src_ip | where count > 10
-  search source=web | lookup geoip src_ip OUTPUT country
+FILTER OPERATORS (field<op>value, in the first stage) :
+  =           equals (text: match ; * = wildcard)              source=ufw
+  :           equals (alias of =)                              dport:993
+  !=          not equal to                                     action!=allow
+  >           strictly greater than (numeric)                  dport>1000
+  >=          greater than or equal                            severity>=3
+  <           strictly less than                               severity<2
+  <=          less than or equal                               severity<=1
+  =~          regular-expression match                         message=~BLOCK
+
+Two first-stage forms that are not operators:
+    a bare word         full-text (FTS) search in the message
+    limit:N / max:N     cap the number of rows returned
+
+FIELDS of the first stage — event columns, and their aliases:
+    source   category|cat   severity|sev   src_ip|ip   dst_ip   host
+    message|msg|event   url   xff   fields|field   ts
+
+COMMANDS (after a |) :
+  stats       aggregates: measures, optionally grouped by field (by)
+  timechart   time series: aggregates per interval (span=), optionally by
+  where       filters on a condition AFTER aggregation (supports in / not in)
+  sort        sorts by one or more fields (- prefix for descending)
+  head        keeps only the first N results
+  limit       caps the number of results returned
+  rex         extracts fields from text via a named-group regex
+  fields      restricts returned columns to the given list
+  table       renders the results as a table for the listed fields
+  rename      renames a field (field as alias)
+  dedup       drops duplicates, keeping the first per field(s)
+  top         most frequent values of a field (count + percentage)
+  rare        least frequent values of a field
+  eventstats  aggregate ATTACHED to each event (does not reduce rows)
+  rate        computes a rate (events per unit of time)
+  eval        creates or derives a field from an expression
+  append      appends the results of a sub-search to the stream
+  join        joins the stream to a sub-search on a common field
+  mvexpand    explodes a multi-value field into one row per value
+  lookup      enriches via a reference table (reftable … OUTPUT …)
+
+MEASURES (stats / timechart / eventstats) :
+  count       number of events (or of occurrences per group)
+  sum         sum of a numeric field's values
+  avg         average of a numeric field's values
+  min         smallest value of a field
+  max         largest value of a field
+  dc          number of DISTINCT values of a field (cardinality)
+  values      sorted list of a field's distinct values
+  list        list of values (order of appearance, duplicates kept)
+
+eval FUNCTIONS :
+  if          if(cond, a, b) : a when the condition holds, else b
+  coalesce    first non-null argument among those given
+  ifnull      ifnull(x, y) : x when not null, else y
+  nullif      nullif(a, b) : null when a equals b, else a
+  lower       lowercases a text
+  upper       uppercases a text
+  length      length (character count) of a text
+  len         length of a text (alias of length)
+  abs         absolute value of a number
+  round       rounds a number (round(x[, decimals]))
+  min         smallest value among the arguments
+  max         largest value among the arguments
+  substr      substring: substr(text, start[, length])
+  replace     replaces occurrences: replace(text, pattern, replacement)
+  trim        strips leading and trailing whitespace
+
+KEYWORDS :
+  by          groups aggregates (stats/timechart … by field)
+  span=       bucket size of a timechart (e.g. span=5m)
+  as          renames/aliases a field (rename field as alias)
+  OUTPUT      selects the columns brought back by a lookup
+
+WHAT "by" ACCEPTS: a field IN SCOPE — a column, a label declared by metric … by,
+an upstream alias, or a JSON key of the fields bag while that bag is in scope. A
+calendar word ("date", "hour") IS NOT a time bucket: that is written
+timechart span=1h / span=1d.
+
+EXAMPLES :
+    search source=ufw | stats count by src_ip | sort -count | head 10
+    search source=sshd severity>=3 | stats count by src_ip | where count > 10
+    search source=web | lookup geoip src_ip OUTPUT country
+    search source=mail | rex message "user=<(?<u>[^>]+)>" | table u
 
 Time stored in UTC ; display follows the time-zone selector.` },
   },

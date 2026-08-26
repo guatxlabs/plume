@@ -10,7 +10,7 @@ import { initSigmaImport } from './sigmaimport.js';
 import { loadAttackMatrix, poserLesPortesDeTechnique } from './attack.js';
 import { setAlertMitreFilter } from './alerts.js';
 // P11.2-a/b + P11.1-e : ligne, interrupteur et destination PARTAGÉS (règles, playbooks, runbooks, détection avancée).
-import { producerRow, rowButton, announceCreated, takePendingNote, detectionDestination, destinationNote, DESTINATIONS } from './producer_ui.js';
+import { producerRow, rowButton, enabledSwitch, announceCreated, takePendingNote, detectionDestination, destinationNote, DESTINATIONS } from './producer_ui.js';
 // P11.12-a : LE champ de recherche partagé des listes (voir `recherche_de_liste.js` pour la mesure
 // des trois filtres existants et la raison pour laquelle aucun n'était reprenable).
 import { champDeRecherche, filtrerParRecherche, resumeDeRecherche, texteCherchable } from './recherche_de_liste.js';
@@ -369,8 +369,14 @@ async function loadNotifiers() {
 }
 function notifRow(n) {
   const row = document.createElement('div'); row.className = 'rulerow';
-  const en = document.createElement('input'); en.type = 'checkbox'; en.checked = n.enabled; en.title = 'actif';
-  en.onchange = () => apiSend('/notifiers/' + n.id, 'POST', { enabled: en.checked }).catch(err => { en.checked = !en.checked; toast('Bascule refusée : ' + err.message, 'bad'); });
+  // COMMUTATEUR PARTAGÉ (`P11.13-c`) : ce que la bascule arme, c'est un ENVOI SORTANT à chaque alerte ; la
+  // case nue ne disait ni le canal ni le seuil. `enabledSwitch` l'écrit à côté de l'interrupteur, dans les
+  // deux états, et rétablit la case si le serveur refuse.
+  const en = enabledSwitch({
+    enabled: !!n.enabled, name: n.name, allowed: true, confirmOnEnable: false,
+    consequence: 'chaque alerte de sévérité ' + sev(n.min_severity) + ' ou plus part vers ' + n.kind + (n.url ? ' (' + n.url + ')' : '') + ' ; OFF, plus aucune notification ne sort par ce canal',
+    onToggle: (next) => apiSend('/notifiers/' + n.id, 'POST', { enabled: next }),
+  });
   const name = document.createElement('span'); name.className = 'rulename'; name.textContent = n.name;
   const kind = document.createElement('code'); kind.className = 'rulecond'; kind.textContent = `${n.kind} >= ${sev(n.min_severity)}`;
   const meta = document.createElement('span'); meta.className = 'rulemeta muted'; meta.textContent = n.url || '(pas d\'URL)';
@@ -454,14 +460,15 @@ async function loadParsers() {
 }
 function parserRow(p) {
   const row = document.createElement('div'); row.className = 'rulerow';
-  const en = document.createElement('input'); en.type = 'checkbox'; en.className = 'crud-toggle'; en.checked = p.enabled;
   // #1c-toggle : (dés)activation ADMIN-only via /enabled (audité + persistant pour les overlays config.d).
-  if (socIsAdmin()) {
-    en.title = 'actif — (dés)activer (persistant : le choix survit au reboot, même pour un overlay config.d)';
-    en.onchange = () => apiSend('/parsers/' + p.id + '/enabled', 'POST', { enabled: en.checked }).catch(err => { en.checked = !en.checked; toast('Bascule refusée : ' + err.message, 'bad'); });
-  } else {
-    en.disabled = true; en.title = "actif — l'activation/désactivation d'un parseur est réservée à l'administrateur";
-  }
+  // COMMUTATEUR PARTAGÉ (`P11.13-c`) : ce que la bascule arme, c'est l'EXTRACTION DE CHAMPS sur une source ;
+  // la case nue ne disait pas quels events perdent leurs champs quand elle retombe. Le refus au lecteur passe
+  // par le même commutateur (`allowed` / `deniedReason`), il n'est plus une case grisée sans raison lisible.
+  const en = enabledSwitch({
+    enabled: !!p.enabled, name: p.name, allowed: socIsAdmin(), confirmOnEnable: false,
+    consequence: 'les events de source=' + p.source + ' sont découpés en champs par ce parseur (choix persistant : il survit au reboot, même pour un overlay config.d) ; OFF, ils restent bruts et les recherches sur ces champs ne rendent plus rien',
+    onToggle: (next) => apiSend('/parsers/' + p.id + '/enabled', 'POST', { enabled: next }),
+  });
   const name = document.createElement('span'); name.className = 'rulename'; name.textContent = p.name + (p.builtin ? ' · défaut' : '');
   const src = document.createElement('code'); src.className = 'rulecond'; src.textContent = 'source=' + p.source;
   const pat = document.createElement('span'); pat.className = 'rulemeta muted'; pat.textContent = p.pattern; pat.title = p.pattern;

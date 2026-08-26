@@ -315,10 +315,175 @@ const ALERT_VIEWS = [
   ['host', 'Hôte', 'Trier par hôte / entité'],
   ['mitre', 'Technique', 'Trier par technique MITRE ATT&CK'],
 ];
+// ======================================================================================================
+// P11.1-g — CE QUE L'ACQUITTEMENT PAR LISTE COUVRE, ET CE QU'IL NE COUVRE PAS.
+// MESURÉ le 2026-08-26 : la SEULE route d'acquittement en masse du démon, `POST /api/alerts/ack-all`,
+// ne prend AUCUN paramètre — ni facette, ni portée, ni filtre d'affichage. Elle pose `status='ack'` sur
+// TOUTE alerte `status='new'` (`daemon/src/handlers/cases.rs`, `ack_all` ; la route est déclarée sans
+// extracteur de requête ni corps dans `daemon/src/server/groupes_de_routes.rs`). LE GESTE QUE L'ANALYSTE
+// CROIT POSER SOUS UNE FACETTE — « acquitter tout ce qui relève de cette source » — N'EXISTE DONC PAS
+// dans le produit, et aucune surface ne le disait.
+// LA BRANCHE PRISE, PARMI LES DEUX QUE LE CONSTAT OFFRAIT : « la console cesse de l'offrir sous facette
+// ET DIT POURQUOI ». L'autre — le démon porte la facette par le MÊME prédicat exact que `?source=` — est
+// hors de ce module ; elle n'a pas été prise, et ce commentaire ne la remplace pas.
+// CE QUI NE CHANGE PAS : sous un filtre, la console n'envoyait déjà jamais `ack-all` ; elle acquitte les
+// alertes AFFICHÉES, une à une, par identifiant, derrière la confirmation partagée (`acquitter`,
+// `P11.18-k`). Aucun câblage, aucune route, aucune confirmation ne bouge ici.
+// CE QUI MANQUAIT, ET QUI EST AJOUTÉ : LES MOTS. « Acquitter les 12 affichée(s) » se lit comme « vider la
+// source » tant que rien ne dit ni que le geste global n'a pas de facette, ni ce qui reste hors d'atteinte.
+// LA PHRASE DE CE QUI RESTE EST DÉRIVÉE DE LA RÉPONSE DU DÉMON, JAMAIS D'UNE BORNE RECOPIÉE. /api/alerts
+// ne rend `total` QUE sur les vues qu'il pagine (portée « tous statuts », occurrences d'un groupe) ; sur
+// le backlog des actives il rend une liste BORNÉE et AUCUN total. L'absence de `total` est donc l'aveu,
+// par le démon, qu'il a borné sans déclarer la population — et la console en tire qu'elle NE PEUT PAS
+// savoir s'il reste des alertes sous ce filtre. Recopier ici la borne du démon ferait de la console
+// l'auteur d'un chiffre qui n'est pas le sien, et un changement côté démon la rendrait fausse en silence.
+// CE QUE CES MOTS NE TIENNENT PAS : ils ne rendent pas le geste complet, et ils ne disent pas COMBIEN
+// d'alertes lui échappent — le démon ne le déclare pas. Ils disent qu'on ne le sait pas.
+// Bilingues PAR CONSTRUCTION (`{fr, en}` choisi par LANG), écrits UNE fois et partagés entre le survol du
+// bouton et la QUESTION DE LA CONFIRMATION : deux formulations divergeraient, et c'est la question de la
+// confirmation que l'analyste lit vraiment au moment d'engager le geste.
+// LA PHRASE ENTIÈRE, PAS SES SEULES BRIBES. MESURÉ le 2026-08-26, avant correctif, en important ce module
+// dans une seconde instance du graphe sous `LANG='en'` : seuls les mots ci-dessous étaient bilingues, et la
+// TÊTE de la phrase comme les NOMS des filtres étaient des littéraux français interpolés hors de tout
+// mécanisme de langue. La question rendue sous `LANG='en'` était donc à moitié française — « Acquitter les 3
+// alerte(s) active(s) affichée(s) sous la source « sudo » ? This gesture only covers… » — exactement à
+// l'endroit dont ce commentaire dit qu'il est celui que l'analyste lit. Le lexique (`web/i18n.js`) ne pouvait
+// pas la rattraper : `i18nWalk` ne remplace que sur une ÉGALITÉ EXACTE, et une phrase interpolée n'est jamais
+// égale à une clé. Tout ce qui compose la phrase entre donc ici, TROUS COMPRIS : `{n}`, `{v}`, `{sous}`,
+// `{filtres}`, `{restrictions}` sont remplis par le seul appelant qui les nomme, et la valeur passe telle
+// quelle (un nom de source, une technique, une recherche, un compte ne se traduisent pas).
+const ACQUITTEMENT_MOTS = {
+  affichees: {
+    fr: 'Ce geste ne porte que sur les alertes actives AFFICHÉES, une à une.',
+    en: 'This gesture only covers the DISPLAYED active alerts, one by one.',
+  },
+  aucun_geste_a_filtre: {
+    fr: 'Aucun geste « acquitter tout ce qui relève de ce filtre » n\'existe : l\'unique acquittement en masse du démon ne prend aucun filtre — il acquitterait TOUTES les alertes actives, bien au-delà de ce qui est filtré ici. La console ne l\'offre donc pas sous un filtre.',
+    en: 'No "acknowledge everything under this filter" gesture exists: the daemon\'s single bulk acknowledgement takes no filter — it would acknowledge ALL active alerts, far beyond what is filtered here. The console therefore does not offer it under a filter.',
+  },
+  reste_autres_pages: {
+    fr: 'Les alertes des autres pages de cette liste ne sont pas touchées.',
+    en: 'Alerts on the other pages of this list are not touched.',
+  },
+  reste_indeterminable: {
+    fr: 'Le démon borne cette liste sans en déclarer le total : la console ne peut pas savoir s\'il reste des alertes actives sous ce filtre, et elle ne le prétend pas.',
+    en: 'The daemon bounds this list without declaring its total: the console cannot know whether active alerts remain under this filter, and does not claim to.',
+  },
+  // LA TÊTE DE LA PHRASE ET LES NOMS DES FILTRES — ce qui manquait, et sans quoi tout le reste était
+  // décoratif : c'est cette tête que l'analyste lit d'abord.
+  tete: {
+    fr: 'Acquitter les {n} alerte(s) active(s) affichée(s){sous}',
+    en: 'Acknowledge the {n} DISPLAYED active alert(s){sous}',
+  },
+  sous_les_filtres: { fr: ' sous {filtres}', en: ' under {filtres}' },
+  la_source: { fr: 'la source « {v} »', en: 'the source “{v}”' },
+  la_technique: { fr: 'la technique {v}', en: 'the {v} technique' },
+  la_recherche: { fr: 'la recherche « {v} »', en: 'the search “{v}”' },
+  // Le filtre d'affichage de `alertListModel` : il RESTREINT la liste comme une facette, mais la console ne
+  // retire pas le geste global sous lui (voir `restrictionsDeLaListe`) — elle le NOMME dans la question.
+  hors_cas: { fr: 'les alertes déjà reprises dans un cas', en: 'alerts already taken up in a case' },
+  // LA QUESTION DU GESTE GLOBAL, du même auteur : elle était le SEUL texte d'acquittement encore écrit en
+  // français en dur, et c'est celui qui engage le geste le plus large du panneau.
+  tete_globale: { fr: 'Acquitter TOUTES les alertes actives ?', en: 'Acknowledge ALL active alerts?' },
+  global_hors_page: {
+    fr: 'Ce geste porte aussi sur les alertes actives qui ne sont pas sur cette page.',
+    en: 'This gesture also covers active alerts that are not on this page.',
+  },
+  global_franchit: {
+    fr: 'Il ne prend AUCUN filtre : il franchit aussi ce que cette liste écarte et annonce dans son compte — {restrictions}.',
+    en: 'It takes NO filter: it also crosses what this list leaves out and announces in its count — {restrictions}.',
+  },
+  liste_courante: { fr: 'Liste courante : {n}.', en: 'Current list: {n}.' },
+  // LA PONCTUATION EST DE LA LANGUE, ELLE AUSSI. Le français pose une espace devant le point
+  // d'interrogation, l'anglais non : la coller en dur rendait « … the search “web-01” ? This gesture… ».
+  // C'est le SEUL séparateur qui distingue la QUESTION du survol — d'où sa place ici, avec les mots.
+  avant_la_question: { fr: ' ? ', en: '? ' },
+};
+// Un mot de l'acquittement dans la langue de la console, trous remplis par l'appelant qui les nomme.
+const motDeLAcquittement = (k, valeurs) => {
+  const mot = LANG === 'en' ? ACQUITTEMENT_MOTS[k].en : ACQUITTEMENT_MOTS[k].fr;
+  return valeurs ? mot.replace(/\{(\w+)\}/g, (_, nom) => String(valeurs[nom])) : mot;
+};
+// LES RESTRICTIONS DE LA LISTE, DÉRIVÉES DU MODÈLE — UN SEUL PARCOURS, et les deux usages en découlent.
+// MESURÉ le 2026-08-26, avant correctif : il y en avait DEUX, écrites à côté du modèle et tenues d'accorder
+// — `filtresDeLaListe` (source, technique, recherche) et le test `!!(m.mitre || m.source || m.recherche)`
+// de la barre — et TOUTES DEUX oubliaient le quatrième discriminant que `alertListModel` déclare, le filtre
+// d'affichage `uncased`, celui qui est ARMÉ PAR DÉFAUT (`S.alertUncased !== false`). Une restriction de plus
+// n'a désormais qu'à être nommée ICI pour entrer d'un coup dans le survol, dans les deux questions de
+// confirmation et dans le motif du bouton inerte.
+// La PORTÉE (« tous statuts ») n'est pas une restriction : elle n'exclut aucune alerte, elle en ajoute —
+// mais elle PAGINE, ce dont la phrase du reste tient compte par la présence d'un `total`.
+// CHAQUE RESTRICTION DIT SI L'ANALYSTE L'A POSÉE, parce que la console en fait deux choses différentes :
+//   `posee: true`  — une facette servie par le démon ou une recherche locale : l'analyste l'a demandée.
+//     Sous elle, « Tout acquitter » se lirait « acquitter tout ce qui relève de ce filtre », geste qui
+//     N'EXISTE PAS côté démon : la console le RETIRE, et le dit (`aucun_geste_a_filtre`).
+//   `posee: false` — le filtre d'affichage, forme PAR DÉFAUT de la liste. Le geste global le franchit LUI
+//     AUSSI : `POST /api/alerts/ack-all` ne prend aucun paramètre et acquitte donc les alertes déjà reprises
+//     dans un cas, que cette liste écarte et NOMME juste au-dessus (`countLabel`, `porteeEnMots`). Ce que
+//     la console fait ici n'est pas de retirer le geste — il ne partirait alors plus d'AUCUN écran, celui
+//     d'arrivée étant le seul où aucune facette n'est posée — mais de le NOMMER dans la QUESTION de sa
+//     confirmation (`questionDuGesteGlobal`), la seule surface que l'analyste lit au moment d'engager.
+//   CE QUE CE CHOIX NE TIENT PAS : le geste global reste plus large que la liste sous laquelle il est
+//     offert. Il le DIT désormais, il ne le corrige pas. Les deux façons de le corriger sortent de ce
+//     module — que le démon porte le filtre d'affichage sur `ack-all`, ou que la console retire le geste
+//     sous ce filtre comme sous une facette (ce qui change ce que la barre offre à l'arrivée) — et elles
+//     sont portées par `P11.1-h`, ouverte.
+function restrictionsDeLaListe(m) {
+  const r = [];
+  if (m.source) r.push({ posee: true, nom: motDeLAcquittement('la_source', { v: m.source }) });
+  if (m.mitre) r.push({ posee: true, nom: motDeLAcquittement('la_technique', { v: m.mitre }) });
+  if (m.recherche) r.push({ posee: true, nom: motDeLAcquittement('la_recherche', { v: m.recherche }) });
+  if (m.uncased) r.push({ posee: false, nom: motDeLAcquittement('hors_cas') });
+  return r;
+}
+// Les restrictions que l'analyste a POSÉES, nommées : ce que la phrase de l'acquittement par liste énonce.
+const filtresDeLaListe = (m) => restrictionsDeLaListe(m).filter(r => r.posee).map(r => r.nom);
+// LE GESTE GLOBAL EST OFFERT OU NON PAR LA MÊME DÉRIVATION, ET NON PAR UNE SECONDE ÉNUMÉRATION : aucune
+// restriction POSÉE, et la portée « actives » (« tous statuts » PAGINE, le geste dépasserait la page sans
+// que le démon déclare de quoi).
+const gesteGlobalOffert = (m) => !filtresDeLaListe(m).length && !m.scopeAll;
+// `{ survol, phrase, sansObjet }` de l'acquittement PAR LISTE, écrits par un SEUL auteur.
+// `loaded.total` = la population que le démon DÉCLARE pour cette liste, ou `undefined` quand il n'en
+// déclare aucune (c'est la seule façon dont la console apprend qu'une liste est bornée).
+function porteeDeLAcquittement(m, loaded) {
+  loaded = loaded || {};
+  const filtres = filtresDeLaListe(m);
+  const dits = [motDeLAcquittement('affichees')];
+  if (filtres.length) dits.push(motDeLAcquittement('aucun_geste_a_filtre'));
+  dits.push(motDeLAcquittement(typeof loaded.total === 'number' ? 'reste_autres_pages' : 'reste_indeterminable'));
+  const n = (loaded.ackableIds || []).length;
+  const sous = filtres.length ? motDeLAcquittement('sous_les_filtres', { filtres: filtres.join(' + ') }) : '';
+  const tete = motDeLAcquittement('tete', { n, sous });
+  return {
+    survol: `${tete}. ${dits.join(' ')}`,
+    phrase: `${tete}${motDeLAcquittement('avant_la_question')}${dits.join(' ')}`,
+    // LE MOTIF D'UN BOUTON INERTE PORTE LA MÊME RAISON : un lecteur qui trouve le bouton gris apprend au
+    // même endroit que « Tout acquitter » n'aurait pas porté ce filtre non plus.
+    sansObjet: filtres.length ? motDeLAcquittement('aucun_geste_a_filtre') : '',
+  };
+}
+// LA QUESTION DU GESTE GLOBAL — MÊME AUTEUR que le survol et la question de l'acquittement par liste.
+// `POST /api/alerts/ack-all` ne prend aucun paramètre : le geste franchit TOUTE restriction que la liste
+// pose. Ce qu'il franchit est donc DÉRIVÉ de `restrictionsDeLaListe` au lieu d'être nommé en dur — là où la
+// console l'offre, les restrictions POSÉES sont vides par construction (`gesteGlobalOffert`), et ce qui
+// reste est exactement ce que la question doit avouer. Une restriction de plus qui ne retirerait pas le
+// geste y entrerait d'elle-même.
+// LE COMPTE VIENT DE `loaded.count`, PAS DE `countLabel` : `countLabel` est une phrase française composée
+// par la vue (`porteeEnMots`), l'interpoler ici rendrait sous `LANG='en'` la phrase mi-anglaise que ce
+// module vient de fermer ailleurs.
+function questionDuGesteGlobal(m, loaded) {
+  loaded = loaded || {};
+  const franchies = restrictionsDeLaListe(m).map(r => r.nom);
+  const dits = [motDeLAcquittement('global_hors_page')];
+  if (franchies.length) dits.push(motDeLAcquittement('global_franchit', { restrictions: franchies.join(' + ') }));
+  dits.push(motDeLAcquittement('liste_courante', { n: typeof loaded.count === 'number' ? loaded.count : 0 }));
+  return `${motDeLAcquittement('tete_globale')} ${dits.join(' ')}`;
+}
 // Ce que la barre propose, DÉRIVÉ du modèle `m` et de ce qui est chargé (`loaded`) :
 //   loaded.count / loaded.countLabel  — le compte affiché et sa portée en toutes lettres ;
 //   loaded.ackableIds                 — les ids ACTIFS chargés (vue plate) ; vide en vue groupée ;
-//   loaded.sourceSpan                 — {from,to} des alertes listées sous une facette source (P11.1-c).
+//   loaded.sourceSpan                 — {from,to} des alertes listées sous une facette source (P11.1-c) ;
+//   loaded.total                      — la population DÉCLARÉE par le démon, ou absente (P11.1-g).
 // Rendu PUR (chaîne HTML) : le harnais ESM le juge sur des objets fabriqués.
 function alertActionBarHtml(m, loaded) {
   loaded = loaded || {};
@@ -352,12 +517,15 @@ function alertActionBarHtml(m, loaded) {
   // P11.1-f — une recherche RESTREINT ce qui est affiché : « Tout acquitter », qui dépasse la page, la
   // dépasserait aussi. Sous une recherche, l'acquittement porte donc sur les alertes AFFICHÉES, comme sous
   // une facette. C'est la même règle, appliquée à un filtre de plus, et non une exception.
-  const filtered = !!(m.mitre || m.source || m.recherche) || m.scopeAll;
+  const filtered = !gesteGlobalOffert(m);
   const nAck = (loaded.ackableIds || []).length;
+  // P11.1-g — LE SURVOL ET LA CONFIRMATION ONT LE MÊME AUTEUR : ce que le bouton promet au survol est
+  // MOT POUR MOT ce que la question de la confirmation engage.
+  const acq = porteeDeLAcquittement(m, loaded);
   let ack;
   if (!filtered) ack = `<button type="button" class="btn btn-sm" data-act="ack-all"${dis(!(loaded.count > 0), 'aucune alerte active')} title="Acquitter TOUTES les alertes actives (y compris celles hors de cette page)">${ic('check')} Tout acquitter</button>`;
-  else if (nAck > 0) ack = `<button type="button" class="btn btn-sm" data-act="ack-shown" title="Acquitter les ${nAck} alerte(s) active(s) affichée(s) — et seulement celles-là">${ic('check')} Acquitter les ${nAck} affichée(s)</button>`;
-  else ack = `<button type="button" class="btn btn-sm" data-act="ack-shown"${dis(true, m.view ? 'acquittement par liste : dépliez un groupe (acquittement par occurrence) ou passez en vue plate' : 'aucune alerte active affichée')}>${ic('check')} Acquitter</button>`;
+  else if (nAck > 0) ack = `<button type="button" class="btn btn-sm" data-act="ack-shown" title="${esc(acq.survol)}">${ic('check')} Acquitter les ${nAck} affichée(s)</button>`;
+  else ack = `<button type="button" class="btn btn-sm" data-act="ack-shown"${dis(true, (m.view ? 'acquittement par liste : dépliez un groupe (acquittement par occurrence) ou passez en vue plate' : 'aucune alerte active affichée') + (acq.sansObjet ? ' — ' + acq.sansObjet : ''))}>${ic('check')} Acquitter</button>`;
   return `<div class="alertview alertbar" role="toolbar" aria-label="Liste des alertes : tri, portée, filtres, actions">`
     + `<span class="muted">Tri</span>${views}<span class="muted">Portée</span>${scope}${uncased}${facets.join('')}</div>`
     + `<div class="alerthead"><span>${esc(loaded.countLabel || '')}</span><span class="alertbar-actions">${ack}<span class="alertbar-export"></span></span></div>`;
@@ -374,7 +542,10 @@ function alertActionBarHtml(m, loaded) {
 // `siActif`, qui lit l'inertie au seul moment où elle veut dire « ce contrôle est inerte » et non « ce
 // geste est en cours ». Un geste de plus câblé ici en hérite ; réécrire le test à la main le rouvrirait.
 const siActif = (btn, faire) => () => (btn.disabled ? undefined : faire());
-function wireAlertActionBar(host, loaded) {
+// P11.1-g — LE MODÈLE SOUS LEQUEL LA BARRE A ÉTÉ DESSINÉE EST PASSÉ ICI, il n'est pas RELU au clic. La
+// question de la confirmation doit nommer les filtres que le lecteur AVAIT sous les yeux ; les relire dans
+// l'état partagé au moment du clic ferait engager un geste sous des mots décrivant un autre écran.
+function wireAlertActionBar(host, loaded, m) {
   const rerender = () => renderAlerts(true);
   host.querySelectorAll('.alertbar .agseg').forEach(btn => btn.onclick = siActif(btn, () => setAlertGroupBy(btn.dataset.g)));
   host.querySelectorAll('[data-act]').forEach(btn => {
@@ -384,14 +555,17 @@ function wireAlertActionBar(host, loaded) {
     else if (act === 'clear-mitre') btn.onclick = siActif(btn, () => setAlertMitreFilter(''));
     else if (act === 'clear-source') btn.onclick = siActif(btn, () => setAlertSourceFilter(''));
     else if (act === 'ack-all') btn.onclick = siActif(btn, () => withBusy(btn, async () => {
-      // La portée est NOMMÉE dans la question, parce que ce geste dépasse la page affichée.
-      if (!await acquitter({ toutes: true, phrase: `Acquitter TOUTES les alertes actives ? (liste courante : ${loaded.countLabel || loaded.count} ; l'acquittement global porte aussi sur celles hors de la page)` })) return;
+      // La portée est NOMMÉE dans la question, parce que ce geste dépasse la page affichée ET le filtre
+      // d'affichage sous lequel la liste est rendue. MÊME auteur que le reste (`questionDuGesteGlobal`).
+      if (!await acquitter({ toutes: true, phrase: questionDuGesteGlobal(m, loaded) })) return;
       await refresh();
     }));
     else if (act === 'ack-shown') btn.onclick = siActif(btn, () => withBusy(btn, async () => {
       const ids = loaded.ackableIds || [];
       if (!ids.length) return;
-      if (!await acquitter({ ids, phrase: `Acquitter les ${ids.length} alerte(s) active(s) affichée(s) ?` })) return;
+      // P11.1-g — la question NOMME les filtres posés, dit que le geste ne les franchit pas, et dit ce
+      // qui reste hors d'atteinte. MÊME auteur que le survol du bouton (`porteeDeLAcquittement`).
+      if (!await acquitter({ ids, phrase: porteeDeLAcquittement(m, loaded).phrase })) return;
       await rerender();
     }));
   });
@@ -554,6 +728,10 @@ function dessinerLaListePlate(b, m, alerts, alertTotal) {
     countLabel: `${count} alerte(s) · ${portee}${m.mitre ? ' · technique ' + m.mitre : ''}${m.source ? ' · source ' + m.source : ''}`,
     ackableIds: affichees.filter(a => a.status === 'new').map(a => a.id),
     sourceSpan,
+    // P11.1-g — la population TELLE QUE LE DÉMON LA DÉCLARE, transmise NUE : `undefined` quand il n'en
+    // déclare aucune. `count` ne peut pas en tenir lieu — il retombe sur la taille du lot servi, donc il
+    // vaut un nombre y compris là où le démon n'a rien déclaré, et ce nombre serait pris pour une population.
+    total: alertTotal,
   };
   const bar = alertActionBarHtml(m, loaded);
   if (!alerts.length) {
@@ -568,7 +746,7 @@ function dessinerLaListePlate(b, m, alerts, alertTotal) {
     }
     b.innerHTML = bar + vide;
     const ev = b.querySelector('#mitre-events'); if (ev) ev.onclick = () => mitreEventsDrill(m.mitre);
-    wireAlertActionBar(b, loaded);
+    wireAlertActionBar(b, loaded, m);
     return;
   }
   b.innerHTML = bar + affichees.map((a, i) => alertRowHtml(a, i)).join('');
@@ -580,7 +758,7 @@ function dessinerLaListePlate(b, m, alerts, alertTotal) {
       vide: document.createTextNode(RECHERCHE_SANS_RESULTAT[k]),
     }), b.querySelector('.alert'));
   }
-  wireAlertActionBar(b, loaded);
+  wireAlertActionBar(b, loaded, m);
   // WIRING des lignes (drill/ack/ban/case) : ack -> re-render de la liste filtrée, ou refresh global (backlog).
   wireAlertRows(b, affichees, () => (m.mitre || m.source || m.scopeAll) ? renderAlerts() : refresh());
   // EXPORT : barre CSV/JSON/PDF dans l'emplacement de la barre d'actions (sur les alertes AFFICHÉES).
@@ -612,16 +790,18 @@ async function renderAlertGroups(loading) {
   if (loading) { let prog = b.querySelector(':scope > .tableprog'); if (!prog) { prog = document.createElement('div'); prog.className='tableprog'; b.insertBefore(prog, b.firstChild); } prog.hidden=false; b.classList.add('reloading'); }
   let groups, total;
   try { const r = await api(url); groups = r.groups || []; total = r.total; }
-  catch (e) { b.classList.remove('reloading'); b.innerHTML = alertActionBarHtml(m, { count: 0, countLabel: 'groupes indisponibles' }) + '<div class="bad">groupes indisponibles : ' + esc(e.message) + '</div>'; wireAlertActionBar(b, { count: 0 }); return; }
+  catch (e) { b.classList.remove('reloading'); b.innerHTML = alertActionBarHtml(m, { count: 0, countLabel: 'groupes indisponibles' }) + '<div class="bad">groupes indisponibles : ' + esc(e.message) + '</div>'; wireAlertActionBar(b, { count: 0 }, m); return; }
   b.classList.remove('reloading');
   const axisLabel = { rule: 'règle', host: 'hôte', mitre: 'technique' }[m.view] || m.view;
   const count = typeof total === 'number' ? total : groups.length;
   const portee = porteeEnMots(m);
-  const loaded = { count, countLabel: `${count} groupe(s) · par ${axisLabel} · ${portee}${m.mitre ? ' · technique ' + m.mitre : ''}${m.source ? ' · source ' + m.source : ''}`, ackableIds: [] };
+  // `total` = nombre de GROUPES déclaré par le démon ; `ackableIds` est vide en vue groupée (rien n'est
+  // acquittable depuis la liste de groupes), la phrase de P11.1-g ne sert donc ici qu'au bouton inerte.
+  const loaded = { count, countLabel: `${count} groupe(s) · par ${axisLabel} · ${portee}${m.mitre ? ' · technique ' + m.mitre : ''}${m.source ? ' · source ' + m.source : ''}`, ackableIds: [], total };
   const bar = alertActionBarHtml(m, loaded);
   if (!groups.length) {
     b.innerHTML = bar + `<div class="ok">Aucune alerte ${m.scopeAll ? '' : 'active '}à trier${m.source ? ` pour la source ${esc(m.source)}` : ''}</div>`;
-    wireAlertActionBar(b, loaded); return;
+    wireAlertActionBar(b, loaded, m); return;
   }
   // ui-regression — l'auto-refresh (30 s) reconstruit ce conteneur : on MÉMORISE les groupes
   // DÉPLIÉS + leur page d'occurrences AVANT le rebuild pour les RÉTABLIR après (sinon l'analyste perd sa place à
@@ -632,7 +812,7 @@ async function renderAlertGroups(loading) {
     prevOpen[el.dataset.gkey || ''] = (body && body.dataset.opage) ? Number(body.dataset.opage) : 0;
   });
   b.innerHTML = bar + groups.map(g => alertGroupHtml(g)).join('');
-  wireAlertActionBar(b, loaded);
+  wireAlertActionBar(b, loaded, m);
   { const slot = b.querySelector('.alertbar-export'); if (slot) slot.appendChild(alertGroupsExportBar(groups, total)); }
   // pager de la LISTE de groupes (haut + bas), inséré autour des groupes.
   if (typeof total === 'number') {
@@ -740,4 +920,4 @@ function redessinerLesAlertes() {
 
 export { renderAlerts, setAlertMitreFilter, setAlertSourceFilter, alertActionBarHtml, alertListModel,
   dessinerLaListePlate, redessinerLesAlertes, poserLaRechercheDesAlertes, texteCherchableDUneAlerte,
-  pivotDUneAlerte, alertDrill, machineDUneAlerte };
+  pivotDUneAlerte, alertDrill, machineDUneAlerte, porteeDeLAcquittement, questionDuGesteGlobal };

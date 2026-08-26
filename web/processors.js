@@ -8,6 +8,7 @@
 // VISIBLE — philosophie garde-disque 503). SÉCU UI : rendu textContent (anti-XSS) ; la VRAIE garde reste
 // serveur (403 hors admin). Défense en profondeur : on court-circuite le fetch hors admin.
 import { $, api, apiSend, confirmWithConsequence, fetchInto, modal, muted, pagedList, toast } from './core.js';
+import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
 const FIELDS = ['category', 'source', 'severity', 'host', 'src_ip', 'dst_ip', 'url', 'message', 'fields.<clé>'];
@@ -64,13 +65,14 @@ function ruleRow(r, counters) {
   const row = document.createElement('div'); row.className = 'rulerow';
   row.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--bd,#2222)';
 
-  // actif (POST /api/processors/{id} {enabled}) — rollback visuel si le serveur refuse.
-  const en = document.createElement('input'); en.type = 'checkbox'; en.checked = !!r.enabled; en.title = 'active';
-  en.onchange = async () => {
-    const want = en.checked;
-    try { await apiSend('/processors/' + r.id, 'POST', { enabled: want }); r.enabled = want; toast(want ? 'règle activée' : 'règle désactivée', 'ok'); }
-    catch (e) { en.checked = !want; toast('échec : ' + ((e && e.message) || e), 'bad'); }
-  };
+  // actif (POST /api/processors/{id} {enabled}) — COMMUTATEUR PARTAGÉ (`P11.13-c`) : une règle de pipeline
+  // DROPPE, MASQUE ou ROUTE des events avant l'index ; la case nue ne disait pas lequel. La conséquence est
+  // écrite à côté de l'interrupteur dans les deux états, et la case revient en place si le serveur refuse.
+  const en = enabledSwitch({
+    enabled: !!r.enabled, name: r.name || '(sans nom)', allowed: true, confirmOnEnable: false,
+    consequence: 'chaque event qui vérifie « ' + (r.match_op === 'any' ? 'tout event' : r.match_field + ' ' + r.match_op) + ' » subit ' + r.action + (r.action_arg ? ' ' + r.action_arg : '') + ' AVANT l\'index ; OFF, le pipeline le laisse passer entier',
+    onToggle: (next) => apiSend('/processors/' + r.id, 'POST', { enabled: next }),
+  });
 
   const ord = document.createElement('span'); ord.className = 'muted'; ord.textContent = '#' + num(r.ord); ord.title = "ordre d'évaluation";
   const name = document.createElement('b'); name.textContent = r.name || '(sans nom)';

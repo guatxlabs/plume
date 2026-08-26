@@ -3,6 +3,7 @@
 // réelle est SERVEUR (/api/field-filters admin-only ; le masque est émis DANS le SQL compilé). Anti-XSS : tout
 // texte via textContent/esc. La config CONTRAINT viewer/editor — l'admin voit en clair par défaut.
 import { $, apiSend, confirmWithConsequence, disclosure, esc, fmtTs, muted, toast, withBusy } from './core.js';
+import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
 const ACTION_LABEL = {
@@ -47,9 +48,6 @@ function render(wrap) {
 function ruleRow(r) {
   const row = document.createElement('div');
   row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--bd)';
-  const dot = document.createElement('span');
-  dot.textContent = r.enabled ? '●' : '○'; dot.style.color = r.enabled ? 'var(--ok,#4ade80)' : 'var(--mut)';
-  dot.title = r.enabled ? 'activée' : 'désactivée';
   const name = document.createElement('b'); name.textContent = r.name;
   const field = document.createElement('code'); field.textContent = r.field; field.style.cssText = 'font-size:12px';
   const act = document.createElement('span'); act.className = 'muted'; act.style.fontSize = '12px';
@@ -61,11 +59,15 @@ function ruleRow(r) {
   scope.textContent = parts.join(' · ');
   const meta = document.createElement('span'); meta.className = 'muted'; meta.style.cssText = 'font-size:11px;margin-left:auto';
   meta.textContent = r.updated ? 'maj ' + fmtTs(r.updated) : '';
-  const toggle = mkBtn(r.enabled ? 'Désactiver' : 'Activer', async () => {
-    await withBusy(toggle, async () => {
-      try { await apiSend('/field-filters/' + r.id, 'POST', { enabled: !r.enabled }); toast('mis à jour', 'ok'); loadFieldFilters(); }
-      catch (e) { toast('erreur : ' + e.message, 'bad'); }
-    });
+  // COMMUTATEUR PARTAGÉ (`P11.13-c`) : la bascule d'un field filter DÉCOUVRE ou RECOUVRE une donnée
+  // personnelle pour des rôles entiers ; le bouton « Activer / Désactiver » ne disait ni le champ, ni les
+  // rôles, ni le sens. `enabledSwitch` écrit la conséquence à côté de l'interrupteur dans les deux états,
+  // porte l'état par le mot (ON / OFF) — c'est ce que la pastille disait, en moins précis — et rétablit la
+  // case si le serveur refuse.
+  const toggle = enabledSwitch({
+    enabled: !!r.enabled, name: r.name, allowed: true, confirmOnEnable: false,
+    consequence: 'le champ « ' + r.field + ' » est ' + (ACTION_LABEL[r.action] || r.action) + ' pour ' + (ROLE_LABEL[r.role] || r.role) + ' ; OFF, ces rôles voient la valeur EN CLAIR dès la prochaine requête',
+    onToggle: (next) => apiSend('/field-filters/' + r.id, 'POST', { enabled: next }),
   });
   const edit = mkBtn('Éditer', () => openForm(r));
   const del = mkBtn('Supprimer', async () => {
@@ -75,7 +77,7 @@ function ruleRow(r) {
     catch (e) { toast('erreur : ' + e.message, 'bad'); }
   });
   del.classList.add('btn-danger');
-  row.append(dot, name, field, act, scope, meta, toggle, edit, del);
+  row.append(toggle, name, field, act, scope, meta, edit, del);
   return row;
 }
 
@@ -154,6 +156,12 @@ function openForm(existing) {
       role: roleS.value, tenant: tenantI.value.trim(), env: envI.value.trim(),
     };
     if (!body.name || !body.field) { toast('nom et champ requis', 'bad'); return; }
+    // `P11.13-c` : ENREGISTRER un field filter CHANGE CE QUE DES RÔLES ENTIERS VOIENT — le démon l'inscrit à
+    // son journal, la console ne le disait nulle part. La conséquence est nommée AVANT le geste.
+    if (!(await confirmWithConsequence(
+      existing ? 'Enregistrer le field filter « ' + body.name + ' »' : 'Créer le field filter « ' + body.name + ' »',
+      'le champ « ' + body.field + ' » sera ' + (ACTION_LABEL[body.action] || body.action) + ' pour ' + (ROLE_LABEL[body.role] || body.role) + (body.tenant ? ' (tenant ' + body.tenant + ')' : '') + (body.env ? ' (env ' + body.env + ')' : '') + ' dès la prochaine requête.',
+      { okText: 'Enregistrer' }))) return;
     await withBusy(save, async () => {
       try {
         if (existing) await apiSend('/field-filters/' + existing.id, 'POST', body);

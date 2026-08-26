@@ -79,6 +79,50 @@ function champDeRecherche(champ, opts = {}) {
   return { valeur, poser, vider: () => poser('') };
 }
 
+// ==================================================================================================
+// `P11.18-z` — LA RECHERCHE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP, ET LA MÉMOIRE EST PAR IDENTITÉ
+// --------------------------------------------------------------------------------------------------
+// LE DÉFAUT. Le champ appartient à la LISTE : un rechargement de vue ne redessine pas dans le même hôte,
+// il vide son conteneur et FABRIQUE un élément neuf. Au moment de reconstruire, le champ précédent
+// n'existe plus — donc relire la valeur DANS le champ ne peut pas marcher, et l'aurait fait pour les
+// listes dont l'hôte survit et pas pour les autres. La valeur doit donc survivre à la DESTRUCTION de
+// l'hôte : elle est retenue ici, sous l'IDENTITÉ de la liste, et non dans un nœud du document.
+//
+// SANS IDENTITÉ, AUCUNE MÉMOIRE — ET C'EST LE DÉFAUT SÛR. `souvenirDeRecherche('')` rend `null` : la
+// liste se comporte exactement comme avant, sans mémoire, jamais à moitié. Aucune identité n'est
+// devinée depuis la position d'un hôte ni depuis un libellé : deux listes voisines échangeraient leur
+// recherche le jour où une section conditionnelle paraît ou disparaît, et une recherche appliquée à la
+// mauvaise liste est pire que pas de mémoire du tout.
+//
+// EN MÉMOIRE, PAS SUR LE DISQUE, ET C'EST MESURÉ COMME UN CHOIX. Une recherche d'exploitant porte ce
+// qu'il cherche — un nom de machine, une adresse, un compte. L'écrire dans un magasin persistant la
+// déposerait sur le poste bien après la session ; une table de module la tient aussi longtemps que la
+// page vit, ce qui est exactement la portée demandée (un rechargement de VUE), et pas une seconde de
+// plus. CE QUE CETTE MÉMOIRE NE TIENT PAS, écrit plutôt que tu : elle ne survit ni au rechargement de la
+// PAGE, ni à un autre onglet, ni à un autre navigateur.
+//
+// CE QU'ELLE RETIENT EN PLUS DE LA REQUÊTE : le nombre de lignes que cette recherche MASQUAIT au dernier
+// geste de l'exploitant sur elle. C'est la seule référence qui permette, après coup et sur les NOMBRES
+// seuls, de dire qu'une liste en cache maintenant davantage qu'à ce moment-là — sans rien demander à
+// l'appelant, donc sans qu'aucune vue puisse retomber du mauvais côté.
+// ==================================================================================================
+const SOUVENIRS_DE_RECHERCHE = new Map();
+
+function souvenirDeRecherche(identite) {
+  const cle = String(identite == null ? '' : identite).trim();
+  if (!cle) return null;
+  return {
+    lire: () => SOUVENIRS_DE_RECHERCHE.get(cle) || null,
+    // Une recherche VIDE n'est pas un souvenir : elle est l'absence de recherche, et la retenir ferait
+    // renaître une entrée que l'exploitant vient d'effacer.
+    noter: (requete, masquees) => {
+      const q = String(requete == null ? '' : requete);
+      if (!q) { SOUVENIRS_DE_RECHERCHE.delete(cle); return; }
+      SOUVENIRS_DE_RECHERCHE.set(cle, { requete: q, masquees: Math.max(0, Number(masquees) || 0) });
+    },
+  };
+}
+
 // Ce qu'une liste filtrée DIT d'elle-même. Une liste qui cache des lignes sans le dire ment par
 // omission : le compte affiché sur le compte total est la seule façon de savoir qu'on ne regarde plus
 // tout. Ce module ne pose que la forme et les nombres.
@@ -99,4 +143,4 @@ function resumeDeRecherche(affichees, total, textes = {}) {
   return el;
 }
 
-export { normaliser, motsDeLaRecherche, correspondALaRecherche, filtrerParRecherche, texteCherchable, champDeRecherche, resumeDeRecherche };
+export { normaliser, motsDeLaRecherche, correspondALaRecherche, filtrerParRecherche, texteCherchable, champDeRecherche, resumeDeRecherche, souvenirDeRecherche };

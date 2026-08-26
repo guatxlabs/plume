@@ -1516,6 +1516,20 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   walkEN(parPropriete);
   exiger(parPropriete.placeholder === "Filter terms…", `(10) LANG='en' : un placeholder posé par PROPRIÉTÉ rend « ${parPropriete.placeholder} » — la valeur anglaise n'est pas appliquée`);
   exiger(parPropriete.title === "Refresh this panel", `(10) LANG='en' : un title posé par PROPRIÉTÉ rend « ${parPropriete.title} »`);
+  // Un texte posé SOUS UNE CLÉ (`P11.8-c`) : `Object.assign(document.createElement('div'), { textContent: … })`
+  // est l'idiome par lequel une quinzaine de libellés de `web/` rejoignent le document, et le critère de
+  // puits de la garde du lexique ne le lisait pas — huit d'entre eux s'affichaient en français sous
+  // `LANG='en'` alors que leur module tenait un plafond de ZÉRO trou. La garde dit maintenant que la clé
+  // est là ; ce témoin-ci dit que la valeur anglaise est RENDUE, ce qu'aucune garde de lexique ne peut
+  // dire. C'est la même exigence que pour la valeur posée par PROPRIÉTÉ juste au-dessus.
+  const sousUneCle = Object.assign(new Element("div"), { textContent: "Liens" });
+  walkEN(sousUneCle);
+  exiger(sousUneCle.textContent === "Links", `(10) LANG='en' : un texte posé SOUS LA CLÉ « textContent » rend « ${sousUneCle.textContent} » — la valeur anglaise n'est pas appliquée`);
+  // Témoin INVERSE : sous `LANG='fr'`, le même geste ne touche à rien. Sans lui, une marche qui écrirait
+  // l'anglais dans les deux langues passerait pour un succès.
+  const sousUneCleFR = Object.assign(new Element("div"), { textContent: "Liens" });
+  walkFR(sousUneCleFR);
+  exiger(sousUneCleFR.textContent === "Liens", `(10) LANG='fr' : un texte posé SOUS LA CLÉ « textContent » a été traduit (« ${sousUneCleFR.textContent} »)`);
 
   // (c) témoin inverse : sous LANG='fr', la même marche ne change rien.
   const wrapFR = new Element("div");
@@ -3340,18 +3354,31 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(nonDeclarees.length === 0, `(34) ${nonDeclarees.length} table(s) de contenu que le module porte SANS les déclarer : ${nonDeclarees.join(", ")} — la frontière écrite ne dit plus ce qu'elle ne couvre pas`);
   exiger(declareesAbsentes.length === 0, `(34) ${declareesAbsentes.length} nom(s) déclaré(s) que le module ne porte plus : ${declareesAbsentes.join(", ")} — une déclaration périmée fait croire à une frontière qui n'existe plus`);
 
-  // (b) le sommaire reste sous l'ancre de la garde des déclencheurs — ancre LUE, pas recopiée.
+  // (b) LE SOMMAIRE N'EST PLUS ANCRÉ À UN NOM DE FICHIER (`P11.13-d`). Ce témoin disait, jusqu'au
+  //     2026-08-26, « le sommaire DOIT rester dans le fichier auquel la garde est ancrée » : il rendait
+  //     visible un refus au lieu de lever l'obstacle. L'obstacle est levé — la garde dérive la PORTÉE de
+  //     `const HELP_INDEX = [ … ]` où qu'elle vive — et le témoin s'inverse : il interdit désormais le
+  //     RETOUR à un nom de fichier, et vérifie que les deux outils nomment la MÊME propriété.
   const srcGarde = readFileSync(path.join(RACINE, ".github", "scripts", "check_every_help_trigger_has_a_section.py"), "utf8");
-  const ancre = srcGarde.match(/\(\s*re\.compile\([^)]*\bk:[^)]*\)\s*,\s*"([^"]+)"\s*\)/);
-  exiger(!!ancre, "(34) instrument : le motif de sommaire de la garde des déclencheurs n'est plus retrouvé — son ancrage a changé de forme, et ce témoin ne mesure plus ce qu'il croit");
-  const porteurDuSommaire = modules.find((f) => /^const HELP_INDEX\s*=\s*\[/m.test(readFileSync(path.join(WEB, f), "utf8")));
-  exiger(!!porteurDuSommaire, "(34) instrument : aucun module ne définit le sommaire du guide");
+  const motifSommaire = srcGarde.match(/\(\s*re\.compile\([^)]*\bk:[^)]*\)\s*,\s*([^)]+?)\s*\)\s*,/);
+  exiger(!!motifSommaire, "(34) instrument : le motif de sommaire de la garde des déclencheurs n'est plus retrouvé — son ancrage a changé de forme, et ce témoin ne mesure plus ce qu'il croit");
+  const ancrage = motifSommaire ? motifSommaire[1].trim() : "";
+  exiger(!/^["']/.test(ancrage),
+    `(34) la garde des déclencheurs d'aide ancre de nouveau le motif du sommaire à un NOM DE FICHIER (${ancrage}) : un emplacement là où il faut une PROPRIÉTÉ. Déplacé, le sommaire sortirait du compte des déclencheurs et la garde resterait VERTE — mesuré le 2026-08-26 : 29 clés et 56 sites vus tombaient à 28 et 29, sans un mot.`);
+  exiger(ancrage === "SOMMAIRE", `(34) instrument : l'ancrage du motif de sommaire est « ${ancrage} » et non la portée dérivée « SOMMAIRE » — ce témoin ne sait plus ce qu'il lit`);
+  const defSommaire = srcGarde.match(/^RE_DEFINITION_DU_SOMMAIRE\s*=\s*re\.compile\(r"([^"]+)"\)/m);
+  exiger(!!defSommaire && /HELP_INDEX/.test(defSommaire[1]),
+    "(34) instrument : la garde ne dérive plus la portée du sommaire d'une définition `const HELP_INDEX = [` — le témoin et la garde ne nomment plus la même propriété");
+  const porteursDuSommaire = modules.filter((f) => /^const HELP_INDEX\s*=\s*\[/m.test(readFileSync(path.join(WEB, f), "utf8")));
+  exiger(porteursDuSommaire.length === 1, `(34) ${porteursDuSommaire.length} module(s) définissent le sommaire du guide (${porteursDuSommaire.join(", ") || "aucun"}) : un seul attendu, sinon la garde refuse de conclure et le compte des déclencheurs s'effondre`);
+  const porteurDuSommaire = porteursDuSommaire[0];
   const entrees = porteurDuSommaire ? (readFileSync(path.join(WEB, porteurDuSommaire), "utf8").match(/\{\s*k:\s*['"]/g) || []).length : 0;
   exiger(entrees > 10, `(34) instrument : ${entrees} entrée(s) de sommaire lues — la lecture est cassée`);
-  exiger(ancre && porteurDuSommaire === ancre[1],
-    `(34) le sommaire du guide vit dans « ${porteurDuSommaire} » alors que la garde des déclencheurs d'aide ne cherche ses ${entrees} entrées que dans « ${ancre && ancre[1]} », PAR SON NOM DE FICHIER. Déplacé, le sommaire sort du compte des déclencheurs et cette garde reste VERTE : une entrée pointant une section inexistante ne serait plus refusée. Ramener le sommaire, ou apprendre le déplacement à la garde AVANT de le faire.`);
+  const cliquet = srcGarde.match(/^CLIQUET_SITES_DECLENCHEURS\s*=\s*(\d+)/m);
+  exiger(!!cliquet && Number(cliquet[1]) >= entrees,
+    `(34) la garde des déclencheurs ne garde plus le COMPTE qu'elle voit par un cliquet au moins égal aux ${entrees} entrées du sommaire (${cliquet ? cliquet[1] : "aucun cliquet"}) : une chute du nombre de déclencheurs vus rendrait la garde plus verte, en silence.`);
 
-  console.log(`[frontiere-aide] ${portees.size} tables de contenu restent dans la mécanique (${[...portees].sort().join(", ")}), toutes DÉCLARÉES en tête du module et dérivées ici dans les deux sens ; le sommaire et ses ${entrees} entrées restent sous « ${ancre && ancre[1]} », le fichier auquel la garde des déclencheurs est ancrée par son NOM. Ce que ce témoin NE tient PAS : il ne rend pas le déplacement possible — il rend son refus VISIBLE. Les deux obstacles mesurés sont écrits en tête de help.js.`);
+  console.log(`[frontiere-aide] ${portees.size} tables de contenu restent dans la mécanique (${[...portees].sort().join(", ")}), toutes DÉCLARÉES en tête du module et dérivées ici dans les deux sens ; le sommaire et ses ${entrees} entrées vivent dans « ${porteurDuSommaire} », et la garde des déclencheurs les trouve par la PORTÉE de leur définition, plus par un nom de fichier — le déplacement est devenu possible, et une chute du compte vu est tenue par un cliquet à ${cliquet && cliquet[1]} sites. Ce que ce témoin NE tient PAS : il lit du TEXTE dans la garde, il ne l'exécute pas ; c'est la garde elle-même qui prouve par ses témoins que la portée dérivée est lue.`);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -3537,6 +3564,682 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(bilan.fautes.length === 0, `(36b) ${bilan.fautes.length} nœud(s) du document listés sous DEUX parents : ${bilan.fautes.slice(0, 5).join(" ; ")}`);
 
   console.log(`[un-seul-parent] ${bilan.vus} nœuds du document parcourus après chargement de toute la console : aucun sous deux parents. Les quatre chemins d'insertion détachent, « replaceChildren » orpheline ce qu'il retire, et le vérificateur VOIT le comportement d'avant reconstitué à la main. Ce que ce témoin NE tient PAS : l'ordre des nœuds, ni le fait qu'un déplacement soit VOULU — seulement qu'il n'en reste pas de copie.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 37. UNE RECHERCHE DE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP, ET CE QUE CONSERVER CACHE SE DIT
+//     (`P11.18-z`).
+//     CE QUE CE TÉMOIN RECONSTITUE, et c'est ce qui le rend concluant : un rechargement de vue ne
+//     redessine pas dans le même hôte — il en FABRIQUE un neuf. Chaque « rendu » ci-dessous construit
+//     donc un `Element` NEUF et rappelle la fabrique, et le témoin épingle d'abord que le champ du
+//     second rendu n'est pas celui du premier ; sans cette vérification, un banc qui repeindrait dans le
+//     même hôte validerait une mémoire qui n'existe pas.
+//     (a) LE DÉFAUT SÛR, D'ABORD. Une liste qui ne déclare AUCUNE identité n'a pas de mémoire et rend
+//         exactement ce qu'elle rendait : même nombre de zones dans l'hôte, champ vide, aucun avis.
+//     (b) AVEC UNE IDENTITÉ, la recherche est reposée ET la liste est filtrée — restaurer le texte sans
+//         filtrer rendrait une liste entière sous un champ qui dit le contraire.
+//     (c) UNE LIGNE APPARUE QUE LA RECHERCHE MASQUE EST ANNONCÉE, avec son NOMBRE, ce que ce nombre ne
+//         tient pas, et le geste de tout revoir. TÉMOIN INVERSE : une ligne apparue que la recherche
+//         MONTRE n'est annoncée par rien — l'avis se déclenche sur le MASQUAGE, pas sur l'apparition.
+//     (d) LE GESTE RÉVÈLE ET OUBLIE : la liste entière revient, l'avis et le résumé partent avec elle,
+//         et le rendu suivant ne fait pas renaître la recherche que l'exploitant vient d'effacer.
+//     (e) LA LIMITE, RENDUE OBSERVABLE. En mode SERVI, le total est la PAGE servie : un nombre de lignes
+//         masquées n'y a pas le même sens d'un rendu à l'autre, donc l'avis n'est PAS armé — alors même
+//         que la situation qui l'aurait déclenché est fabriquée ici. La recherche, elle, y survit.
+// ---------------------------------------------------------------------------------------------
+{
+  const { pagedList } = await import(pathToFileURL(path.join(WEB, "core.js")).href);
+  const cueillir = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir(c, pred, acc)); return acc; };
+  const aLaClasse = (e, c) => e.classList && e.classList.contains(c);
+  const champDe = (h) => cueillir(h, (e) => e.tagName === "INPUT", [])[0];
+  const avisDe = (h) => cueillir(h, (e) => aLaClasse(e, "recherche-annonce"), [])[0];
+  const resumeDe = (h) => cueillir(h, (e) => aLaClasse(e, "recherche-resume"), [])[0];
+  const lignesRendues = (h) => cueillir(h, (e) => e.tagName === "TR", []).filter((tr) => cueillir(tr, (e) => e.tagName === "TD", []).length > 0);
+  const frapper = (h, texte) => { const c = champDe(h); c.value = texte; c.dispatchEvent({ type: "input" }); };
+  const colonnes = [{ key: "nom", label: "Nom" }, { key: "etat", label: "État" }];
+  const lot = [{ nom: "web-01", etat: "muet" }, { nom: "web-02", etat: "frais" }, { nom: "db-01", etat: "frais" }];
+  const lotPlusMasquee = lot.concat([{ nom: "db-02", etat: "muet" }]);        // une ligne de plus, que « web » MASQUE
+  const lotPlusVisible = lot.concat([{ nom: "web-03", etat: "frais" }]);      // une ligne de plus, que « web » MONTRE
+  const rendre = (identite, lignes) => {
+    const hote = new Element("div");
+    const o = { mode: "client", pageSize: 50, rows: lignes, columns: colonnes, emptyText: "aucune", recherche: true };
+    if (identite) o.storeKey = identite;
+    pagedList(hote, o);
+    return hote;
+  };
+
+  // (a) SANS IDENTITÉ — le comportement d'aujourd'hui, au nœud près.
+  const a1 = rendre("", lot);
+  exiger(a1.children.length === 3, `(37a) une liste sans identité rend ${a1.children.length} zones dans son hôte au lieu des 3 d'avant : le mécanisme s'impose à qui n'en veut pas`);
+  exiger(lignesRendues(a1).length === 3, `(37a) instrument : ${lignesRendues(a1).length} ligne(s) rendues sans recherche au lieu de 3`);
+  frapper(a1, "web");
+  exiger(lignesRendues(a1).length === 2, `(37a) instrument : la recherche ne filtre pas la liste (${lignesRendues(a1).length} lignes)`);
+  const a2 = rendre("", lot);
+  exiger(champDe(a2).value === "" && lignesRendues(a2).length === 3, `(37a) une liste SANS identité a gardé une mémoire (« ${champDe(a2).value} ») : le défaut sûr exigé n'est pas tenu`);
+  exiger(!avisDe(a2), "(37a) une liste sans identité rend un avis de lignes masquées");
+
+  // (b) AVEC IDENTITÉ — la recherche survit à la destruction de son champ.
+  const b1 = rendre("banc_p1118z_flotte", lot);
+  exiger(b1.children.length === 4, `(37b) une liste à identité ne pose pas la zone d'avis (${b1.children.length} zones)`);
+  frapper(b1, "web");
+  exiger(lignesRendues(b1).length === 2, "(37b) instrument : la recherche frappée ne filtre pas");
+  const b2 = rendre("banc_p1118z_flotte", lot);
+  exiger(champDe(b2) !== champDe(b1) && b2 !== b1, "(37b) instrument : le second rendu réutilise le champ du premier — il ne reconstitue PAS un rechargement de vue, et rien de ce qui suit ne prouverait quoi que ce soit");
+  exiger(champDe(b2).value === "web", `(37b) la recherche n'a pas survécu au rendu qui détruit son champ : « ${champDe(b2).value} »`);
+  exiger(lignesRendues(b2).length === 2, `(37b) le texte est reposé dans le champ mais la liste rend ${lignesRendues(b2).length} lignes : le champ dit une chose, la liste une autre`);
+  exiger(!!resumeDe(b2), "(37b) la liste restaurée ne dit plus qu'elle est filtrée");
+  exiger(!avisDe(b2), "(37b) sans aucune ligne apparue, la liste annonce quand même des lignes masquées en plus");
+
+  // (c) UNE LIGNE APPARUE QUE LA RECHERCHE MASQUE — et le témoin inverse.
+  const c1 = rendre("banc_p1118z_flotte", lotPlusMasquee);
+  const avis = avisDe(c1);
+  exiger(!!avis, "(37c) une ligne apparue que la recherche masque n'est annoncée par rien : elle est invisible ET tue, ce qui est le défaut que cette clé poursuit");
+  exiger(/(^|\D)1(\D|$)/.test(avis.textContent), `(37c) l'avis ne porte pas le NOMBRE de lignes masquées en plus : « ${avis.textContent} »`);
+  exiger(/diff/i.test(avis.textContent), `(37c) l'avis ne dit pas qu'il est une DIFFÉRENCE de comptes — il laisserait croire qu'il a identifié les lignes : « ${avis.textContent} »`);
+  // Le témoin RAPPORTE, il n'interrompt pas : sans cette précaution, un avis absent ferait LEVER ce banc
+  // au lieu de le faire rougir, et les sections suivantes ne rendraient plus de verdict du tout.
+  const bouton = avis ? cueillir(avis, (e) => e.tagName === "BUTTON", [])[0] : null;
+  exiger(!!bouton && bouton.classList.contains("btn"), "(37c) l'avis n'offre aucun geste habillé pour révéler les lignes qu'il annonce");
+  const d1 = rendre("banc_p1118z_visible", lot);
+  frapper(d1, "web");
+  const d2 = rendre("banc_p1118z_visible", lotPlusVisible);
+  exiger(lignesRendues(d2).length === 3, `(37c) instrument : la ligne ajoutée n'est pas rendue par la recherche (${lignesRendues(d2).length} lignes)`);
+  exiger(!avisDe(d2), "(37c) témoin inverse : une ligne apparue que la recherche MONTRE est annoncée comme masquée — l'avis se déclenche sur l'apparition au lieu du masquage");
+
+  // (d) LE GESTE RÉVÈLE, ET IL OUBLIE.
+  if (bouton) {
+    bouton.dispatchEvent({ type: "click" });
+    exiger(champDe(c1).value === "" && lignesRendues(c1).length === 4, `(37d) le geste de l'avis ne rend pas la liste entière (${lignesRendues(c1).length} lignes, champ « ${champDe(c1).value} »)`);
+    exiger(!avisDe(c1) && !resumeDe(c1), "(37d) après avoir tout révélé, la liste dit encore qu'elle cache quelque chose");
+  } else exiger(false, "(37d) aucun geste à exercer : l'avis n'en offre pas, et ce que ce geste doit produire n'est mesuré par personne");
+  const e1 = rendre("banc_p1118z_flotte", lotPlusMasquee);
+  exiger(champDe(e1).value === "", `(37d) une recherche VIDÉE renaît au rendu suivant (« ${champDe(e1).value} ») : le souvenir survit au geste qui l'efface`);
+
+  // (e) MODE SERVI — la recherche survit, l'avis n'est PAS armé, et la situation qui l'aurait déclenché
+  //     est fabriquée pour que le témoin ne soit pas vide de sens.
+  const servir = (lignes) => async () => ({ rows: lignes, total: 137 });
+  const rendreServi = (lignes) => {
+    const hote = new Element("div");
+    pagedList(hote, { mode: "server", pageSize: 50, fetchPage: servir(lignes), columns: colonnes, recherche: true, storeKey: "banc_p1118z_servi" });
+    return hote;
+  };
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const s1 = rendreServi(lot); await tick();
+  exiger(lignesRendues(s1).length === 3, `(37e) instrument : la liste servie ne rend pas ses 3 lignes (${lignesRendues(s1).length})`);
+  frapper(s1, "web"); await tick();
+  exiger(lignesRendues(s1).length === 2, `(37e) instrument : la recherche ne filtre pas la page servie (${lignesRendues(s1).length})`);
+  const s2 = rendreServi(lotPlusMasquee); await tick();
+  exiger(champDe(s2).value === "web", `(37e) en mode servi la recherche n'est pas conservée : « ${champDe(s2).value} »`);
+  exiger(lignesRendues(s2).length === 2, `(37e) instrument : la page servie suivante n'est pas filtrée (${lignesRendues(s2).length}) — l'écart de masquage n'existerait pas`);
+  exiger(!avisDe(s2), "(37e) l'avis est armé sur une page SERVIE : son compte varie avec la page, il annoncerait des lignes apparues là où l'on a seulement tourné la page");
+
+  console.log(`[recherche-persistante] une recherche de liste survit au rendu qui DÉTRUIT son champ, sous la seule condition d'une identité de liste — sans identité, mêmes zones, même champ vide, aucun avis ; avec elle, le texte est reposé ET la liste filtrée, une ligne apparue que la recherche masque est annoncée par un NOMBRE qui dit être une différence de comptes et porte le geste de tout revoir, une ligne apparue qu'elle MONTRE n'est annoncée par rien, et le geste de révéler oublie le souvenir au lieu de le laisser renaître. Ce que ce témoin NE tient PAS : rien de la mise en page ni du style calculé, et l'avis n'est pas armé en mode servi — c'est vérifié ici sur la situation même qui l'aurait déclenché.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 38. L'ACQUITTEMENT PAR LISTE DIT CE QU'IL COUVRE, ET POURQUOI LE GESTE À FACETTE N'EXISTE PAS
+//     (`P11.1-g`).
+//     LE CONSTAT : sous la facette d'une source, « Acquitter les N affichée(s) » se lit comme
+//     « acquitter tout ce qui relève de cette source ». Ce geste-là N'EXISTE PAS — l'unique route
+//     d'acquittement en masse du démon ne prend aucun filtre — et rien ne le disait.
+//     (a) TÉMOIN NÉGATIF D'ABORD : sans aucun filtre posé, le geste OFFERT est le geste GLOBAL, son
+//         libellé et son survol sont ceux d'avant, et la phrase du filtre n'apparaît nulle part. Sans
+//         ce témoin, (b) passerait sur une phrase collée partout.
+//     (b) SOUS UN FILTRE : le survol du bouton dit les TROIS choses — ce que le geste atteint, pourquoi
+//         le geste à facette n'est pas offert, et ce qui reste hors d'atteinte.
+//     (c) LA PHRASE DU RESTE EST DÉRIVÉE DE LA RÉPONSE DU DÉMON, PROUVÉ PAR MUTATION : à modèle
+//         IDENTIQUE, la SEULE valeur qui change est `loaded.total` — la population que le démon
+//         déclare. Déclarée, la console dit « les autres pages ne sont pas touchées » ; non déclarée,
+//         elle dit qu'elle NE PEUT PAS savoir s'il en reste. Aucune borne (200) n'est recopiée : c'est
+//         l'ABSENCE de `total` qui porte l'aveu.
+//     (d) LE SURVOL ET LA CONFIRMATION ONT UN SEUL AUTEUR — la propriété est lue dans le SOURCE, parce
+//         que c'est la DIVERGENCE qui serait le défaut : un bouton qui promet une portée et une
+//         question qui en engage une autre. Et le chemin de confirmation de `P11.18-k` n'est pas
+//         contourné : `confirmModal` reste appelé d'un SEUL endroit, `acquitter`.
+//     (e) LE BOUTON INERTE PORTE LA MÊME RAISON : sous un filtre, un geste sans objet dit AUSSI que
+//         « Tout acquitter » n'aurait pas porté ce filtre.
+//     CE QUE CE TÉMOIN NE TIENT PAS : il ne prouve pas que le démon refuse un ack-all à facette (il
+//     n'en a pas), ni que la liste servie soit complète — elle ne l'est pas, et c'est ce qui est DIT.
+// ---------------------------------------------------------------------------------------------
+{
+  const { alertActionBarHtml, porteeDeLAcquittement } = await import(pathToFileURL(path.join(WEB, "alerts.js")).href);
+  const src = readFileSync(path.join(WEB, "alerts.js"), "utf8");
+  const titreDe = (html, act) => (html.match(new RegExp(`<button[^>]*data-act="${act}"[^>]*title="([^"]*)"`)) || [])[1] || "";
+  const MOT_FILTRE = /acquitter tout ce qui relève de ce filtre/;
+  const MOT_AFFICHEES = /ne porte que sur les alertes actives AFFICHÉES/;
+  const MOT_AUTRES_PAGES = /autres pages de cette liste ne sont pas touchées/;
+  const MOT_INCONNU = /borne cette liste sans en déclarer le total/;
+
+  // (a) TÉMOIN NÉGATIF — aucun filtre, portée « actives » : le geste GLOBAL, inchangé.
+  const mSansFiltre = { view: "", scopeAll: false, uncased: true, mitre: "", source: "", recherche: "" };
+  const sansFiltre = alertActionBarHtml(mSansFiltre, { count: 9, countLabel: "9 alerte(s)", ackableIds: [1, 2, 3] });
+  exiger(/data-act="ack-all"/.test(sansFiltre) && !/data-act="ack-shown"/.test(sansFiltre),
+    "(38a) sans aucun filtre, la barre n'offre plus l'acquittement GLOBAL : le geste qui existe vraiment a été retiré");
+  exiger(titreDe(sansFiltre, "ack-all") === "Acquitter TOUTES les alertes actives (y compris celles hors de cette page)",
+    `(38a) le survol du geste global a changé : « ${titreDe(sansFiltre, "ack-all")} » — il est au lexique, le déplacer le laisserait en français`);
+  exiger(!MOT_FILTRE.test(sansFiltre) && !MOT_INCONNU.test(sansFiltre),
+    "(38a) la phrase du filtre est rendue là où AUCUN filtre n'est posé : elle est collée partout, et (b) ne prouverait rien");
+
+  // (b) SOUS LA FACETTE D'UNE SOURCE, portée « actives » : le démon ne déclare aucun total.
+  const mSource = { view: "", scopeAll: false, uncased: false, mitre: "", source: "k8s-audit", recherche: "" };
+  const chargeSansTotal = { count: 3, countLabel: "3 alerte(s)", ackableIds: [7, 8, 9] };
+  const sousSource = alertActionBarHtml(mSource, chargeSansTotal);
+  const survolSource = titreDe(sousSource, "ack-shown");
+  exiger(MOT_AFFICHEES.test(survolSource), `(38b) le survol ne dit pas CE QUE le geste atteint : « ${survolSource} »`);
+  exiger(MOT_FILTRE.test(survolSource), `(38b) le survol ne dit pas que le geste « tout ce qui relève de ce filtre » n'existe pas : « ${survolSource} »`);
+  exiger(/la source « k8s-audit »/.test(survolSource), `(38b) le survol ne NOMME pas le filtre posé : « ${survolSource} »`);
+  exiger(MOT_INCONNU.test(survolSource), `(38b) le survol ne dit pas ce qui reste hors d'atteinte : « ${survolSource} »`);
+  exiger(/Acquitter les 3 affichée\(s\)</.test(sousSource), `(38b) le LIBELLÉ du bouton a changé : ${sousSource.match(/data-act="ack-shown"[^>]*>[^<]*/)?.[0]}`);
+
+  // (c) LA MUTATION — même modèle, même charge, SEUL `total` change.
+  const avecTotal = alertActionBarHtml(mSource, { ...chargeSansTotal, total: 137 });
+  const survolTotal = titreDe(avecTotal, "ack-shown");
+  exiger(MOT_INCONNU.test(survolSource) && !MOT_AUTRES_PAGES.test(survolSource),
+    `(38c) sans total déclaré, la console parle pourtant d'autres pages : « ${survolSource} »`);
+  exiger(MOT_AUTRES_PAGES.test(survolTotal) && !MOT_INCONNU.test(survolTotal),
+    `(38c) avec un total déclaré, la console dit encore qu'elle ignore ce qui reste : « ${survolTotal} »`);
+  exiger(survolSource !== survolTotal, "(38c) instrument : la mutation de `total` ne change RIEN au survol — la dérivation est morte");
+  exiger(!/\b200\b/.test(survolSource) && !/\b200\b/.test(src.match(/const ACQUITTEMENT_MOTS[\s\S]*?\n};/)[0]),
+    "(38c) la borne du démon (200) est RECOPIÉE dans la console : un changement côté démon la rendrait fausse en silence");
+
+  // (d) UN SEUL AUTEUR, et la porte de confirmation n'est pas contournée — lu dans le SOURCE.
+  const acq = porteeDeLAcquittement(mSource, chargeSansTotal);
+  exiger(survolSource === acq.survol, "(38d) le survol du bouton n'est pas celui que l'auteur unique rend : deux formulations peuvent diverger");
+  exiger(acq.phrase.replace(" ? ", ". ") === acq.survol,
+    `(38d) la question de la confirmation et le survol ne disent pas la MÊME chose :\n  survol : ${acq.survol}\n  phrase : ${acq.phrase}`);
+  exiger(/acquitter\(\{\s*ids,\s*phrase:\s*porteeDeLAcquittement\(m,\s*loaded\)\.phrase\s*\}\)/.test(src),
+    "(38d) l'acquittement par liste n'engage plus la phrase de l'auteur unique : la confirmation peut promettre autre chose que le bouton");
+  exiger((src.match(/\bconfirmModal\(/g) || []).length === 1 && /async function acquitter\(portee\)\s*\{\s*\n\s*if \(!await confirmModal\(/.test(src),
+    "(38d) `confirmModal` n'est plus appelé du seul `acquitter` : un geste d'acquittement peut désormais partir SANS confirmation (`P11.18-k`)");
+  exiger(/function porteeDeLAcquittement\(m, loaded\)/.test(src) && (src.match(/const ACQUITTEMENT_MOTS/g) || []).length === 1,
+    "(38d) les mots de l'acquittement ont plus d'un auteur : un renommage n'atteindrait qu'une des surfaces");
+
+  // (e) LE BOUTON INERTE PORTE LA MÊME RAISON — et, hors filtre, il ne la porte pas.
+  const inerteSousFiltre = alertActionBarHtml({ ...mSource, view: "host" }, { count: 2, countLabel: "2 groupe(s)", ackableIds: [] });
+  const motifFiltre = titreDe(inerteSousFiltre, "ack-shown");
+  exiger(/dépliez un groupe/.test(motifFiltre) && MOT_FILTRE.test(motifFiltre),
+    `(38e) le bouton inerte sous un filtre ne dit pas que « Tout acquitter » n'aurait pas porté ce filtre : « ${motifFiltre} »`);
+  const inerteHorsFiltre = alertActionBarHtml({ view: "host", scopeAll: true, uncased: true, mitre: "", source: "", recherche: "" }, { count: 2, countLabel: "2 groupe(s)", ackableIds: [], total: 2 });
+  exiger(!MOT_FILTRE.test(titreDe(inerteHorsFiltre, "ack-shown")),
+    `(38e) témoin inverse : sans filtre posé, le bouton inerte parle quand même d'un filtre : « ${titreDe(inerteHorsFiltre, "ack-shown")} »`);
+
+  // (f) LE CHEMIN RÉEL, pas seulement la fonction pure : la liste plate DESSINÉE sur un lot servi. C'est
+  //     `dessinerLaListePlate` qui remplit `loaded.total` depuis la réponse du démon ; une valeur qui n'y
+  //     arriverait pas ferait dire à la barre l'INVERSE de ce que le démon a répondu, sans que (b)-(c) le
+  //     voient. Les deux réponses possibles du démon sont jouées sur le MÊME lot.
+  {
+    const { dessinerLaListePlate, alertListModel } = await import(pathToFileURL(path.join(WEB, "alerts.js")).href);
+    const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+    const liste = new Element("div");
+    const etatOrigine = { g: S.alertGroupBy, a: S.alertGroupAll, u: S.alertUncased, s: S.alertSourceFilter, auth: S.AUTH };
+    try {
+      S.AUTH = { user: "root", role: "admin" };
+      S.alertGroupBy = ""; S.alertGroupAll = false; S.alertUncased = false; S.alertSourceFilter = "k8s-audit";
+      const lot = [{ id: 1, ts: 1000, rule: "rule.1", severity: 3, title: "Echecs SSH", status: "new", detail: "", mitre: "", sources: "k8s-audit", case_id: null, acked_at: 0, acked_by: "" }];
+      dessinerLaListePlate(liste, alertListModel(), lot, undefined);
+      const rendueSansTotal = titreDe(String(liste.innerHTML), "ack-shown");
+      dessinerLaListePlate(liste, alertListModel(), lot, 137);
+      const rendueAvecTotal = titreDe(String(liste.innerHTML), "ack-shown");
+      exiger(MOT_FILTRE.test(rendueSansTotal) && /la source « k8s-audit »/.test(rendueSansTotal),
+        `(38f) la liste RENDUE sous une facette ne dit pas que le geste à facette n'existe pas : « ${rendueSansTotal} »`);
+      exiger(MOT_INCONNU.test(rendueSansTotal) && !MOT_AUTRES_PAGES.test(rendueSansTotal),
+        `(38f) le démon n'a déclaré AUCUN total et la liste rendue parle pourtant d'autres pages : « ${rendueSansTotal} »`);
+      exiger(MOT_AUTRES_PAGES.test(rendueAvecTotal) && !MOT_INCONNU.test(rendueAvecTotal),
+        `(38f) le démon a déclaré un total et la liste rendue dit encore qu'elle ignore ce qui reste — la population déclarée ne remonte pas du chemin réel : « ${rendueAvecTotal} »`);
+    } finally {
+      S.alertGroupBy = etatOrigine.g; S.alertGroupAll = etatOrigine.a; S.alertUncased = etatOrigine.u;
+      S.alertSourceFilter = etatOrigine.s; S.AUTH = etatOrigine.auth;
+    }
+  }
+
+  console.log(`[acquittement] sous un filtre, l'acquittement par liste NOMME le filtre posé, dit qu'il ne porte que sur les alertes affichées, dit que le geste « tout ce qui relève de ce filtre » n'existe pas côté démon, et dit ce qui reste hors d'atteinte — phrase DÉRIVÉE de la présence d'un total déclaré, prouvée par mutation, jamais d'une borne recopiée ; le survol et la question de la confirmation ont un auteur unique, la porte de confirmation reste seule, et sans filtre le geste GLOBAL et son survol sont inchangés. Ce que ce témoin NE tient PAS : il ne rend pas le geste complet — le démon n'a pas d'acquittement à facette — et il ne dit pas COMBIEN d'alertes lui échappent, parce que personne ne le déclare.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 38b. LE LANGAGE DE REQUÊTE N'A QU'UNE RÉFÉRENCE, ET SON VOCABULAIRE EST DÉRIVÉ DU PRODUIT (`P11.6-d`).
+//     Il y en avait DEUX. Celle du guide nommait tout ; celle qu'ouvrait le bouton « ? Aide » de la barre
+//     de requête nommait 8 des 20 commandes de pipe — LE CHEMIN LE PLUS FRÉQUENTÉ MENAIT AU TEXTE LE PLUS
+//     PAUVRE. La cause n'était pas la pauvreté du texte mais son ISOLEMENT : rien ne DÉRIVAIT la liste des
+//     commandes de l'aide depuis la déclaration du produit, et la divergence s'est donc installée sans que
+//     rien ne rougisse. La seconde référence est supprimée ; ce témoin ferme le chemin qui l'a laissée
+//     naître, il n'ajoute pas un drapeau.
+//     CE QU'IL TIENT. (a) Les SIX vocabulaires que `daemon/src/handlers/soql_meta.rs` DÉCLARE (bases,
+//     commandes de pipe, mesures, fonctions d'eval, opérateurs de filtre, mots-clés) sont confrontés à
+//     l'ensemble des jetons que la référence RENDUE écrit, DANS LES DEUX SENS et DANS LES DEUX LANGUES :
+//     un jeton déclaré qui manque à la référence est un trou, un jeton écrit que le produit ne déclare pas
+//     est une invention. (b) La porte de la barre de requête (`openHelpModal`) et celle du guide rendent
+//     le MÊME texte, caractère pour caractère : il ne peut plus y avoir un pire chemin. (c) Aucune AUTRE
+//     section du registre n'est une seconde référence — le critère est DÉRIVÉ (nommer un quart ou plus des
+//     commandes déclarées), pas une liste de clés interdites, donc une seconde référence sous un nom neuf
+//     rougirait aussi.
+//     L'INSTRUMENT SE VALIDE AVANT DE CONCLURE : les six vocabulaires lus non vides ; l'extracteur de
+//     jetons éprouvé sur un corpus TÉMOIN à double sens — il DOIT lire les lignes d'item (deux espaces, le
+//     jeton, deux espaces au moins), il NE DOIT PAS lire la prose de colonne zéro, les exemples indentés de
+//     quatre, ni une ligne d'item dont le jeton n'est séparé que par UN espace ; et le texte lu vient du
+//     panneau RENDU, jamais de la source du registre.
+//     CE QU'IL NE TIENT PAS, ET C'EST MESURÉ ICI PLUTÔT QUE SUPPOSÉ : le LIBELLÉ de chaque description
+//     (celui de la console, dans deux langues là où le démon n'en porte qu'une, en français) ; la liste des
+//     CHAMPS de la première étape, dont la déclaration vit dans le cœur partagé et n'est pas lisible de ce
+//     dépôt ; et le GLOSSAIRE du guide, qui définit quelques-uns des mêmes mots sans prétendre énumérer le
+//     langage — le nombre de commandes déclarées qu'il redéfinit est DÉRIVÉ et publié ci-dessous, et une
+//     commande retirée du langage y survivrait sans que ce témoin le voie.
+// ---------------------------------------------------------------------------------------------
+{
+  const DECLARATION = path.join(RACINE, "daemon", "src", "handlers", "soql_meta.rs");
+  const rsq = readFileSync(DECLARATION, "utf8");
+  const vocabulaire = (nom) => {
+    const m = rsq.match(new RegExp(`const ${nom}: &\\[\\(&str, &str\\)\\] = &\\[([\\s\\S]*?)\\n\\];`));
+    exiger(!!m, `(38) vocabulaire \`${nom}\` introuvable dans la déclaration du démon : le témoin ne lit plus ce qu'il juge`);
+    return m ? [...m[1].replace(/\s+/g, " ").matchAll(/\(\s*"((?:[^"\\]|\\.)*)"\s*,/g)].map((e) => e[1]) : [];
+  };
+  // Les six vocabulaires que la complétion sert (`/api/soql/schema`) et que le compilateur fermé accepte :
+  // `soql_docs_cover_all_vocab` exige côté démon qu'ils couvrent 1:1 les consts `SOQL_*` du cœur.
+  const NOMS = ["DOC_BASE_KEYWORDS", "DOC_COMMANDS", "DOC_STATS_FUNCTIONS", "DOC_EVAL_FUNCTIONS", "DOC_OPERATORS", "DOC_KEYWORDS"];
+  const parVocabulaire = new Map(NOMS.map((n) => [n, vocabulaire(n)]));
+  const COMMANDES = parVocabulaire.get("DOC_COMMANDS") || [];
+  const declares = new Set([...parVocabulaire.values()].flat());
+
+  // — instrument : aucun vocabulaire lu vide, sans quoi le verdict ne mesure rien.
+  const vides = NOMS.filter((n) => (parVocabulaire.get(n) || []).length === 0);
+  exiger(vides.length === 0, `(38) ${vides.length} vocabulaire(s) lus VIDES dans la déclaration du démon : ${vides.join(", ")} — le témoin refuse de conclure`);
+
+  // L'extracteur de jetons : une ligne d'ITEM de la référence porte DEUX espaces, le jeton, puis DEUX
+  // espaces au moins avant sa description. La forme est écrite à côté du registre ; elle est la seule de ce
+  // corps, prose et exemples ayant une autre indentation.
+  const jetonsDe = (t) => new Set([...String(t).matchAll(/^ {2}(\S+) {2,}\S/gm)].map((m) => m[1]));
+
+  // — instrument, DANS LES DEUX SENS : ce que l'extracteur doit lire, et ce qu'il ne doit PAS lire.
+  const CORPUS = [
+    "PIPELINE :  <base> <filtres>  | commande  | commande",   // prose de colonne zéro : ignorée
+    "  stats       agrège les événements",                     // item : lu
+    "  span=       taille de l'intervalle",                    // item dont le jeton porte un signe : lu
+    "  =~          correspondance par expression régulière",   // item dont le jeton est un opérateur : lu
+    "  motnu description",                                     // UN seul espace : ce n'est pas un item
+    "    search source=ufw | stats count by src_ip",           // exemple indenté de quatre : ignoré
+    "    limit:N / max:N     borne le nombre de lignes",        // remarque indentée de quatre : ignorée
+  ].join("\n");
+  const lu = jetonsDe(CORPUS);
+  for (const doitLire of ["stats", "span=", "=~"]) exiger(lu.has(doitLire), `(38) instrument : l'extracteur ne lit plus « ${doitLire} » dans son corpus témoin — il ne mesure plus la référence`);
+  for (const doitIgnorer of ["motnu", "search", "limit:N", "PIPELINE"]) exiger(!lu.has(doitIgnorer), `(38) instrument : l'extracteur prend « ${doitIgnorer} » pour un item de vocabulaire — il compterait la prose et les exemples`);
+  exiger(lu.size === 3, `(38) instrument : ${lu.size} jeton(s) lus sur le corpus témoin, 3 attendus — ${[...lu].join(" ")}`);
+
+  // La référence est lue dans le panneau RENDU, jamais dans la source du registre.
+  const SUF = "?plume-lang=en";
+  const urlAide = (f, suffixe = "") => pathToFileURL(path.join(WEB, f)).href + suffixe;
+  const aideFR = await import(urlAide("help.js"));
+  localStorage.setItem("soc_lang", "en");
+  const aideEN = await import(urlAide("help.js", SUF));
+  localStorage.removeItem("soc_lang");
+  const cueillirPre = (el, acc = []) => { if (el.tagName === "PRE") acc.push(el); (el.children || []).forEach((c) => cueillirPre(c, acc)); return acc; };
+  const panneau = (ouvrir) => {
+    const avant = document.body.children.length;
+    ouvrir();
+    const ajoutes = document.body.children.slice(avant);
+    ajoutes.forEach((n) => n.remove());
+    return { n: ajoutes.length, corps: ajoutes.flatMap((n) => cueillirPre(n)).map(texte).join("\n") };
+  };
+
+  // (b) LA PORTE DE LA BARRE DE REQUÊTE ET CELLE DU GUIDE RENDENT LE MÊME TEXTE — plus de pire chemin.
+  const parLaBarre = panneau(aideFR.openHelpModal);
+  const parLeGuide = panneau(() => aideFR.openHelp("soql"));
+  exiger(parLaBarre.n === 1 && parLeGuide.n === 1, `(38) la barre de requête rend ${parLaBarre.n} panneau(x) et le guide ${parLeGuide.n} : une porte de la référence ne s'ouvre pas`);
+  exiger(parLaBarre.corps.length > 500, `(38) instrument : la référence rendue par la barre fait ${parLaBarre.corps.length} caractère(s) — la lecture du <pre> est cassée`);
+  exiger(parLaBarre.corps === parLeGuide.corps, `(38) le bouton « ? Aide » de la barre de requête et le guide ouvrent DEUX textes différents (${parLaBarre.corps.length} vs ${parLeGuide.corps.length} caractères) : le chemin le plus fréquenté peut à nouveau mener au texte le plus pauvre`);
+
+  // (a) LES SIX VOCABULAIRES, DANS LES DEUX SENS, DANS LES DEUX LANGUES.
+  const rendus = [["fr", parLeGuide.corps], ["en", panneau(() => aideEN.openHelp("soql")).corps]];
+  for (const [langue, corps] of rendus) {
+    exiger(corps.trim().length > 0, `(38) la référence ne rend AUCUN texte sous LANG='${langue}'`);
+    const ecrits = jetonsDe(corps);
+    const manquants = [...declares].filter((t) => !ecrits.has(t));
+    const inventes = [...ecrits].filter((t) => !declares.has(t));
+    exiger(manquants.length === 0, `(38) sous LANG='${langue}', ${manquants.length} jeton(s) que le produit DÉCLARE et que la référence ne nomme pas : ${manquants.join(" ")} — une référence incomplète qui ne dit pas qu'elle l'est`);
+    exiger(inventes.length === 0, `(38) sous LANG='${langue}', ${inventes.length} jeton(s) écrits que la déclaration du démon ne porte pas : ${inventes.join(" ")} — soit le langage a changé, soit une ligne de prose a pris la forme d'un item de vocabulaire`);
+  }
+
+  // (c) AUCUNE SECONDE RÉFÉRENCE — critère DÉRIVÉ du vocabulaire déclaré, pas une liste de clés interdites.
+  const { HELP } = await import(urlAide("help_registry.js"));
+  const SEUIL = Math.ceil(COMMANDES.length / 4);
+  const nomme = (t, jeton) => new RegExp(`(^|[^A-Za-z_])${jeton.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^A-Za-z_])`).test(t);
+  const compte = [];
+  for (const [cle, e] of Object.entries(HELP)) {
+    for (const langue of ["fr", "en"]) {
+      const d = e && e[langue];
+      if (!d) continue;
+      compte.push([`${cle}.${langue}`, COMMANDES.filter((c) => nomme(`${d.title}\n${d.body}`, c)).length]);
+    }
+  }
+  exiger(compte.length > 20, `(38) instrument : ${compte.length} section(s)/langue(s) lues dans le registre — la dérivation est cassée`);
+  const references = compte.filter(([, n]) => n >= SEUIL);
+  const horsReference = compte.filter(([, n]) => n < SEUIL);
+  const plusHauteHors = horsReference.reduce((a, b) => (b[1] > a[1] ? b : a), ["(aucune)", 0]);
+  exiger(references.every(([nom]) => nom.startsWith("soql.")),
+    `(38) ${references.length} surface(s) d'aide nomment un quart ou plus des ${COMMANDES.length} commandes déclarées, donc plus d'UNE référence du langage : ${references.map(([n, v]) => `${n} (${v})`).join(", ")} — deux porteurs du même savoir, donc deux vérités dès que l'un bouge`);
+
+  // CE QUE CE TÉMOIN NE TIENT PAS, DÉRIVÉ DU DÉPÔT PLUTÔT QU'ÉCRIT : le glossaire du guide redéfinit une
+  // partie des mêmes mots, hors de la référence et hors de ce verdict.
+  const srcAideTexte = readFileSync(path.join(WEB, "help.js"), "utf8");
+  const termesGlossaire = [...srcAideTexte.matchAll(/\{\s*t:\s*'([^']+)'/g)].map((m) => m[1]);
+  exiger(termesGlossaire.length > 10, `(38) instrument : ${termesGlossaire.length} terme(s) de glossaire lus — la lecture est cassée`);
+  const glossaireCommandes = termesGlossaire.filter((t) => COMMANDES.includes(t));
+
+  console.log(`[gxql-reference] UNE seule référence du langage : le bouton « ? Aide » de la barre de requête et le guide rendent le MÊME texte (${parLaBarre.corps.length} caractères). ${declares.size} jetons DÉCLARÉS par le démon en ${NOMS.length} vocabulaires (${NOMS.map((n) => `${n.replace("DOC_", "").toLowerCase()}=${(parVocabulaire.get(n) || []).length}`).join(", ")}) ; la référence les écrit TOUS, en français comme en anglais, et n'en écrit aucun que la déclaration ne porte pas. Seconde référence : refusée par un critère DÉRIVÉ (nommer >= ${SEUIL} des ${COMMANDES.length} commandes) — ${references.length} surface(s) au-dessus du seuil, toutes « soql », la plus haute des autres étant « ${plusHauteHors[0]} » à ${plusHauteHors[1]}. Ce que ce témoin NE tient PAS : le libellé des descriptions ; la liste des CHAMPS, déclarée dans le cœur partagé et illisible d'ici ; et le glossaire du guide, qui redéfinit ${glossaireCommandes.length} des ${COMMANDES.length} commandes (${glossaireCommandes.join(", ")}) sans prétendre énumérer le langage — une commande retirée y survivrait sans que ce verdict le voie.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 39. UNE MATRICE ATT&CK VIDE N'EST PAS UNE ABSENCE DE COUVERTURE — ET LA SURFACE NE DOIT NOMMER
+//     AUCUNE CAUSE QUE LE DÉMON NE PRODUIT PAS (`P11.6-c`, `P11.6-e`, mesure du 2026-08-26).
+//     Le démon empile UNE entrée par tactique du catalogue SANS condition sur les données — son test
+//     livré `attack_matrix_empty_rules_all_uncovered` l'exige sur zéro règle et zéro alerte — donc une
+//     réponse CALCULÉE n'est jamais vide, et la matrice ne peut pas rendre « aucune tactique ».
+//     CE TÉMOIN A ENTÉRINÉ UNE ÉNUMÉRATION FAUSSE, RETIRÉE ICI. Il recopiait dans son verdict VERT les
+//     deux causes que le module affirmait (« permis de requête », « chien de garde ») sans jamais LIRE
+//     les sorties du démon. Elles sont réfutées, et le témoin lit désormais les deux textes qui les
+//     réfutent : `acquire_query_permit` ATTEND sur `NoPermits` (son seul `Err` est le sémaphore FERMÉ),
+//     et `read_with_watchdog` ne rend son `default` que si `read_conn_get` échoue — le chien de garde,
+//     lui, interrompt la connexion et laisse la closure rendre une matrice PLEINE et sous-comptée.
+//     Le témoin tient donc QUATRE choses, dans les deux sens et dans les deux langues : une réponse qui
+//     porte des tactiques ne dit RIEN ; une réponse vide DIT le refus et DÉMENT l'absence ; elle AVOUE
+//     ne pas savoir laquelle des sorties dégradées a joué ; et elle NE NOMME PAS une cause que le démon
+//     ne produit pas — un `saturated`/`saturé` ou un `watchdog`/`chien de garde` réintroduit dans la
+//     phrase servie fait ROUGIR ce témoin.
+//     L'INSTRUMENT SE VALIDE : les quatre propriétés du démon sont LUES dans son arbre, jamais recopiées
+//     ici. Si l'une disparaît, le témoin refuse de conclure au lieu de garder une conclusion périmée.
+//     CE QU'IL NE TIENT PAS : que le démon SÉPARE un jour ses trois sorties (il ne les sépare pas, elles
+//     rendent le même corps) ; et la matrice PLEINE et sous-comptée que rend une lecture interrompue —
+//     le même défaut sous une forme que le tableau vide ne trahit pas, ouvert sous `P11.6-e`.
+// ---------------------------------------------------------------------------------------------
+{
+  // — instrument : les propriétés qui rendent le verdict possible sont LUES dans le démon.
+  const srcMatrice = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "alerts.rs"), "utf8");
+  const corps = srcMatrice.match(/fn build_attack_matrix\([\s\S]*?\n\}/);
+  exiger(!!corps, "(39) instrument : `build_attack_matrix` introuvable dans le démon — le témoin ne lit plus la propriété qu'il invoque");
+  exiger(!!corps && /for tac in guatx_core::attack::TACTICS \{/.test(corps[0]) && /tactics_json\.push\(/.test(corps[0]),
+    "(39) instrument : `build_attack_matrix` n'empile plus une entrée par tactique du catalogue sans condition — une réponse calculée POURRAIT être vide, et la phrase de refus deviendrait fausse");
+  const srcTest = readFileSync(path.join(RACINE, "daemon", "src", "tests", "rbac.rs"), "utf8");
+  exiger(/fn attack_matrix_empty_rules_all_uncovered\(\)[\s\S]*?for tac in guatx_core::attack::TACTICS[\s\S]*?expect\("tactique présente"\)/.test(srcTest),
+    "(39) instrument : le test livré qui EXIGE toutes les tactiques sur zéro règle et zéro alerte n'est plus retrouvé — la seule preuve qu'une matrice calculée n'est jamais vide a disparu");
+  // — instrument : LES DEUX RÉFUTATIONS. Elles sont la raison d'être de la phrase servie ; si le démon
+  //   changeait, la phrase pourrait redevenir nommable et ce témoin doit le voir plutôt que l'ignorer.
+  const srcPermis = readFileSync(path.join(RACINE, "daemon", "src", "query_timing.rs"), "utf8");
+  const permis = srcPermis.match(/pub\(crate\) async fn acquire_query_permit\([\s\S]*?\n\}/);
+  exiger(!!permis
+    && /Err\(TryAcquireError::NoPermits\) => \{\}/.test(permis[0])
+    && /Err\(TryAcquireError::Closed\) => \{/.test(permis[0])
+    && /acquire_owned\(\)\.await\?/.test(permis[0].replace(/\s+/g, "")),
+    "(39) instrument : `acquire_query_permit` ne montre plus qu'il ATTEND sur `NoPermits` — la réfutation de « permis saturé » n'est plus lisible dans le démon");
+  const srcExec = readFileSync(path.join(RACINE, "daemon", "src", "query_exec.rs"), "utf8");
+  const wd = srcExec.match(/pub\(crate\) fn read_with_watchdog<T>\([\s\S]*?\n\}/);
+  exiger(!!wd && /read_conn_get\(db_path\) \{ Ok\(c\) => c, Err\(_\) => return default \}/.test(wd[0].replace(/\s+/g, " ")),
+    "(39) instrument : `read_with_watchdog` ne rend plus son `default` sur le seul échec de `read_conn_get` — la réfutation de « chien de garde » n'est plus lisible dans le démon");
+
+  const SUF = "?plume-lang=en";
+  const urlM = (f, suffixe = "") => pathToFileURL(path.join(WEB, f)).href + suffixe;
+  const { refusDeMatrice: refusFR } = await import(urlM("attack.js"));
+  localStorage.setItem("soc_lang", "en");
+  const { refusDeMatrice: refusEN } = await import(urlM("attack.js", SUF));
+  localStorage.removeItem("soc_lang");
+
+  // — sens POSITIF : une réponse qui porte des tactiques ne prononce aucun refus.
+  const servie = { tactics: [{ tactic: "discovery", techniques: [{ tid: "T1046", name: "Network Service Discovery", covered: true, rule_count: 1, alert_count: 0 }] }], totals: {} };
+  exiger(refusFR(servie) === null && refusEN(servie) === null, `(39) une matrice SERVIE est prise pour un refus : « ${refusFR(servie)} »`);
+
+  // — sens NÉGATIF : la forme dégradée du démon, et deux corps qui n'en viennent pas.
+  for (const [quoi, d] of [["la forme dégradée du démon", { tactics: [], totals: {} }], ["un corps sans clé `tactics`", { totals: {} }], ["une réponse informe", null]]) {
+    for (const [langue, refus] of [["fr", refusFR], ["en", refusEN]]) {
+      const m = refus(d);
+      exiger(typeof m === "string" && m.trim().length > 0, `(39) ${quoi} sous LANG='${langue}' : la surface ne dit RIEN (« ${m} ») — un refus tu se lit comme un vide`);
+      // « ne contient pas le mot absence » ne serait pas une propriété : la phrase EXPLIQUE le vide, donc
+      // elle le nomme. Ce qui est décidable, et c'est ce qui compte, c'est qu'elle NOMME le refus et qu'elle
+      // DÉMENTE la lecture « il n'y a pas de couverture ». L'ancien texte (« aucune tactique dans la matrice
+      // de couverture. ») échoue aux deux : il ne nomme aucun refus et ne dément rien.
+      exiger(/refus|décliné|declined|refused/i.test(m), `(39) ${quoi} sous LANG='${langue}' : le texte ne NOMME pas le refus (« ${m} »)`);
+      exiger(/pas une absence|not an absence/i.test(m), `(39) ${quoi} sous LANG='${langue}' : le texte ne DÉMENT pas la lecture « aucune couverture » (« ${m} ») — un refus qui ne se distingue pas d'un vide se lit comme un vide`);
+      // LA PROPRIÉTÉ NEUVE DU 2026-08-26, dans les deux sens. (a) le texte AVOUE son ignorance…
+      exiger(/\bne (peut|sait)\b.{0,20}?\bpas\b|cannot (say|tell)/i.test(m), `(39) ${quoi} sous LANG='${langue}' : le texte n'AVOUE pas ce qu'il ignore (« ${m} ») — il tranche une cause que la réponse ne porte pas`);
+      // …(b) et il ne NOMME aucune des deux causes que la lecture du démon a réfutées.
+      exiger(!/satur|watchdog|chien de garde/i.test(m), `(39) ${quoi} sous LANG='${langue}' : le texte nomme une cause que le démon NE PRODUIT PAS (« ${m} ») — la saturation attend, et le chien de garde rend une matrice pleine`);
+    }
+  }
+  exiger(refusFR({ tactics: [], totals: {} }) !== refusEN({ tactics: [], totals: {} }), "(39) le refus rend le même texte dans les deux langues : une des deux n'est pas écrite");
+  // Deux corps de PROVENANCE différente ne reçoivent pas la même phrase : celle du corps informe n'impute
+  // rien au démon, faute de pouvoir le prouver.
+  exiger(refusFR({ tactics: [], totals: {} }) !== refusFR({ totals: {} }), "(39) un corps qui n'est pas de cette route reçoit la phrase des sorties dégradées du démon — c'est imputer sans preuve");
+
+  console.log(`[attack-refus] la matrice ne prononce plus d'absence sur un tableau vide, ET ne nomme plus de cause que le démon ne produit pas : sur 3 formes de réponse (forme dégradée du démon, corps sans clé, réponse informe) et dans les deux langues, le texte NOMME le refus, DÉMENT l'absence, AVOUE ce qu'il ignore, et ne prononce ni « saturé » ni « chien de garde » — deux causes que la lecture du démon RÉFUTE (la saturation ATTEND, seul le sémaphore FERMÉ rend une erreur ; le chien de garde interrompt la connexion et laisse rendre une matrice PLEINE). Les deux corps qui ne viennent pas de cette route reçoivent une phrase distincte, qui n'impute rien au démon. Quatre propriétés du démon sont LUES dans son arbre — boucle inconditionnelle sur les tactiques, test livré sur zéro règle, attente sur NoPermits, un repli réservé à l'échec de connexion — et le témoin refuse de conclure si l'une disparaît. Ce qu'il NE tient PAS : LAQUELLE des trois sorties dégradées a joué (elles rendent le même corps, seul un marqueur côté démon les séparerait) ; et la matrice PLEINE et SOUS-COMPTÉE que rend une lecture interrompue — même défaut, forme que le tableau vide ne trahit pas, ouvert sous \`P11.6-e\`.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 40. LES SEPT LISTES QUI RESTAIENT SANS MÉMOIRE LA PORTENT MAINTENANT, ET SUR LEUR PROPRE CHEMIN
+//     DE VUE (`P11.18-z`).
+//     CE QUE LE TÉMOIN 37 NE POUVAIT PAS DIRE. Il exerce la FABRIQUE sur une liste construite pour lui,
+//     à qui IL donne une identité : il prouve le mécanisme, pas son ARMEMENT. Mesuré le 2026-08-26 par
+//     dérivation sur `web/` : une seule des huit listes cherchables du produit déclarait une identité
+//     (`detection_admin.js`, qui en portait déjà une pour son pli), et aucune des trois vues que le
+//     constat nomme. Ce témoin-ci part des MODULES RÉELS et de leurs propres chargeurs de vue.
+//     (a) L'INSTRUMENT D'ABORD : chaque vue est rendue par SON chargeur sur une charge utile fabriquée,
+//         et le témoin épingle le nombre de lignes rendues avant toute recherche. Sans ce compte, un
+//         « rien n'a changé » se lirait comme un succès.
+//     (b) LES SEPT SURFACES, une par une : la recherche frappée filtre ; le chargeur de la vue est
+//         rappelé — c'est la DERNIÈRE instruction de chacun des gestes éditoriaux de ces vues — l'hôte de
+//         la liste est REFABRIQUÉ (le témoin épingle que le champ n'est pas le même objet, sans quoi il ne
+//         reconstituerait pas un rechargement), la recherche est reposée ET appliquée ; puis, vidée, elle
+//         ne renaît pas au rechargement suivant.
+//     (c) LE CHEMIN COMPLET, DEPUIS LE BOUTON DE LA LIGNE, sur trois modules et deux confirmations
+//         partagées différentes : retirer la déclaration d'un hôte, lever un silence, révoquer un jeton.
+//         Le témoin clique le bouton de la LIGNE, valide la fenêtre, et la charge utile SERVIE change —
+//         donc ce qui revient n'est pas une peinture rejouée. La recherche, elle, tient.
+//     (d) DEUX LISTES D'UN MÊME ÉCRAN NE PARTAGENT PAS LEUR MÉMOIRE. Les trois listes du panneau
+//         Suppressions sont rechargées par le MÊME `loadSuppressions()` : une recherche frappée dans les
+//         silences ne doit reparaître ni dans le registre du démon, ni chez les collecteurs — une
+//         recherche appliquée à la mauvaise liste est pire que pas de mémoire du tout.
+//     CE QUE CE TÉMOIN NE TIENT PAS, ET IL L'ÉCRIT : il ne joue pas les onze autres gestes éditoriaux de
+//     ces vues (éditer une source, déclarer une cadence, réinitialiser une exclusion, créer un jeton…) —
+//     il rappelle leur chargeur, qui est leur dernière instruction ; il ne dit rien de la mise en page ni
+//     du style ; et il ne prouve rien du panneau Risque comme vue ÉDITORIALE, qui ne porte aucun geste
+//     d'écriture (sa mémoire sert le rafraîchissement et le retour au panneau, exercés en (b)).
+// ---------------------------------------------------------------------------------------------
+{
+  const modFleet = await import(pathToFileURL(path.join(WEB, "fleet.js")).href);
+  const modSources = await import(pathToFileURL(path.join(WEB, "sources.js")).href);
+  const modSupp = await import(pathToFileURL(path.join(WEB, "suppressions.js")).href);
+  const modAdmin = await import(pathToFileURL(path.join(WEB, "admin_users.js")).href);
+  const modRisk = await import(pathToFileURL(path.join(WEB, "risk.js")).href);
+  const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+
+  const cueillir = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir(c, pred, acc)); return acc; };
+  const lignesDe = (h) => cueillir(h, (e) => e.tagName === "TR", []).filter((tr) => cueillir(tr, (e) => e.tagName === "TD", []).length > 0);
+  // UNE LISTE = SON CHAMP ET L'HÔTE QUI LE PORTE, APPARIÉS PAR LE PARENT — jamais par une position dans
+  // l'écran : la fabrique pose [barre, avis?, résumé, corps] dans l'hôte, et le champ vit dans la barre.
+  // Un panneau qui gagnerait ou perdrait une section décalerait un repérage positionnel sans rien dire.
+  const listesDe = (racine) => cueillir(racine, (e) => e.tagName === "INPUT" && e.type === "search", [])
+    .map((champ) => { const hote = champ.parentNode && champ.parentNode.parentNode; return { champ, hote, lignes: () => lignesDe(hote) }; })
+    .filter((l) => !!l.hote);
+  const laListeQuiPorte = (racine, marqueur) => listesDe(racine).find((l) => String(l.hote.textContent).includes(marqueur)) || null;
+  const frapper = (liste, texte) => { liste.champ.value = texte; liste.champ.dispatchEvent({ type: "input" }); };
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const attendre = async (n = 25) => { for (let i = 0; i < n; i++) await tick(); };
+  const derniereFenetre = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).pop();
+  const validerLaFenetre = () => { const ov = derniereFenetre(); if (!ov || !ov.children[0] || !ov.children[0].children[0]) return false; ov.children[0].children[0].onsubmit({ preventDefault() {} }); return true; };
+  const boutonDeLaLigne = (tr, re) => cueillir(tr, (e) => e.tagName === "BUTTON" && re.test(e.title || ""), [])[0] || null;
+
+  // LES CHARGES UTILES SONT MUTABLES, et c'est ce qui rend le geste ÉDITORIAL : une écriture change ce que
+  // la route SERT ensuite, donc la liste qui revient n'est pas la peinture d'avant rejouée.
+  const etat = {
+    fleet: { pipeline_fresh: true, now: 1000, hosts: [
+      { host: "web-01", status: "silent", last_seen: 100, signals: 12, first_seen: 10, enrolled: false, attente: "silence_attendu", declaree_par: "l'exploitant", attente_libelle: "banc de test — déclaré par l'exploitant" },
+      { host: "web-02", status: "fresh", last_seen: 990, signals: 40, first_seen: 10, enrolled: false, attente: "non_declare" },
+      { host: "db-01", status: "fresh", last_seen: 980, signals: 33, first_seen: 10, enrolled: false, attente: "non_declare" },
+    ] },
+    sources: { pipeline_fresh: true, sources: [
+      { source: "sshd-session", status: "frais", expected: true, declaree_par: "ce dépôt", last_seen: 990, age_s: 10, n_24h: 42, unexpected: false, in_collectors: true },
+      { source: "sshd-auth", status: "calme", expected: true, declaree_par: "ce dépôt", last_seen: 980, age_s: 20, n_24h: 12, unexpected: false, in_collectors: true },
+      { source: "ufw", status: "frais", expected: false, last_seen: 970, age_s: 30, n_24h: 7, unexpected: true },
+    ] },
+    suppressions: { generated: 1000, firewall: null, firewall_n_hosts: 0, daemon: [
+      { name: "A1_operator_self", label: "exclusion opérateur", type: "display-only", value: "root", scope: "affichage", source: "core/display.rs", editable: true },
+      { name: "A2_ufw_noise", label: "bruit ufw", type: "display-only", value: "ufw", scope: "affichage", source: "core/display.rs", editable: true },
+      { name: "A3_kernel_drop", label: "kernel drop", type: "collection-reducing", value: "kern", scope: "ingestion", source: "core/ingest.rs", editable: false },
+    ], collectors: [
+      { source: "sshd", type: "display-only", fields: { filters: { exclude: ["debug"] } }, ts: 990, host: "web-01", attested: true },
+      { source: "ufw", type: "display-only", fields: { filters: { exclude: ["accept"] } }, ts: 980, host: "web-02", attested: true },
+      { source: "auditd", type: "collection-reducing", fields: { filters: { exclude: ["bruit"] } }, ts: 970, host: "db-01", attested: true },
+    ] },
+    silences: { silences: [
+      { id: 1, matchers: { rule: "web.brute" }, active: true, expires_at: 2000, reason: "maintenance planifiée", created_by: "hugo" },
+      { id: 2, matchers: { rule: "ssh.brute" }, active: true, expires_at: 2000, reason: "bruit connu", created_by: "hugo" },
+      { id: 3, matchers: { host: "db-01" }, active: false, expires_at: 500, reason: "migration", created_by: "hugo" },
+    ] },
+    tokens: { tokens: [
+      { name: "agent-web-01", kind: "agent", host: "web-01", created: 100, last_used: 900 },
+      { name: "agent-web-02", kind: "agent", host: "web-02", created: 200, last_used: 900 },
+      { name: "hec-forwarder", kind: "hec", host: "", created: 300, last_used: 0 },
+    ] },
+    risk: { served: 3, total: 3, total_capped: false, window: 86400, over_threshold_total: 1,
+      thresholds: { score: 50, distinct_tactics: 3, velocity: 5, window_s: 86400 }, entities: [
+      { entity_type: "host", entity: "web-01", score: 61, score_hot: 12, contrib: 4, distinct_tactics: 2, tactics: "TA0006, TA0008", max_severity: 4, first_ts: 100, last_ts: 990, over_threshold: true },
+      { entity_type: "host", entity: "web-02", score: 22, score_hot: 3, contrib: 2, distinct_tactics: 1, tactics: "TA0006", max_severity: 3, first_ts: 100, last_ts: 980, over_threshold: false },
+      { entity_type: "user", entity: "compte-de-service", score: 9, score_hot: 0, contrib: 1, distinct_tactics: 1, tactics: "TA0001", max_severity: 2, first_ts: 100, last_ts: 970, over_threshold: false },
+    ] },
+  };
+  const routes = [["/api/risk/entities", () => etat.risk], ["/api/fleet", () => etat.fleet], ["/api/sources", () => etat.sources],
+    ["/api/suppressions", () => etat.suppressions], ["/api/silences", () => etat.silences], ["/api/tokens", () => etat.tokens]];
+  const ecritures = [];
+  const hotes = { "#fleet-body": new Element("div"), "#sources-body": new Element("div"), "#suppressions-body": new Element("div"), "#token-list": new Element("div"), "#risk-list": new Element("div") };
+
+  const qsOrigine = document.querySelector, fetchOrigine = globalThis.fetch;
+  const etatOrigine = { auth: S.AUTH, admin: S.isAdmin };
+  document.querySelector = (sel) => hotes[sel] || new Element("div");
+  globalThis.fetch = async (u, o) => {
+    const url = String(u), methode = (o && o.method) || "GET";
+    if (methode !== "GET") {
+      ecritures.push(methode + " " + url);
+      if (/\/api\/hosts\/settings/.test(url)) etat.fleet = { ...etat.fleet, hosts: etat.fleet.hosts.map((h) => (h.host === "web-01" ? { ...h, attente: "non_declare", declaree_par: "", attente_libelle: "" } : h)) };
+      if (/\/api\/silences\//.test(url)) etat.silences = { silences: etat.silences.silences.filter((s) => s.id !== 1) };
+      if (/\/api\/tokens\//.test(url)) etat.tokens = { tokens: etat.tokens.tokens.filter((t) => t.name !== "agent-web-01") };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) };
+    }
+    for (const [frag, charge] of routes) if (url.includes(frag)) return { ok: true, status: 200, text: async () => JSON.stringify(charge()) };
+    return { ok: true, status: 200, text: async () => JSON.stringify({}) };
+  };
+  try {
+    S.AUTH = { user: "hugo", role: "admin" }; S.isAdmin = true;
+
+    // (a) + (b) LES SEPT SURFACES, PAR LEUR PROPRE CHARGEUR DE VUE.
+    const surfaces = [
+      { nom: "flotte", cle: "soc_fleet_hosts", hote: "#fleet-body", charger: () => modFleet.loadFleetView(), marqueur: "web-01", mot: "web", avant: 3, apres: 2 },
+      { nom: "inventaire des sources", cle: "soc_sources_inventory", hote: "#sources-body", charger: () => modSources.loadSourcesView(), marqueur: "sshd-session", mot: "sshd", avant: 3, apres: 2 },
+      { nom: "jetons d'agent", cle: "soc_admin_tokens", hote: "#token-list", charger: () => modAdmin.loadTokens(), marqueur: "agent-web-01", mot: "agent-web", avant: 3, apres: 2 },
+      { nom: "risque par entité", cle: "soc_risk_entities", hote: "#risk-list", charger: () => modRisk.loadRiskView(), marqueur: "web-01", mot: "web", avant: 3, apres: 2 },
+      { nom: "silences d'alertes", cle: "soc_silences", hote: "#suppressions-body", charger: () => modSupp.loadSuppressions(), marqueur: "web.brute", mot: "brute", avant: 3, apres: 2 },
+      { nom: "registre du démon", cle: "soc_daemon_suppressions", hote: "#suppressions-body", charger: () => modSupp.loadSuppressions(), marqueur: "kernel drop", mot: "kern", avant: 3, apres: 1 },
+      { nom: "collecteurs hôte", cle: "soc_collector_suppressions", hote: "#suppressions-body", charger: () => modSupp.loadSuppressions(), marqueur: "auditd", mot: "auditd", avant: 3, apres: 1 },
+    ];
+    for (const s of surfaces) {
+      const racine = hotes[s.hote];
+      await s.charger(); await attendre(6);
+      const l1 = laListeQuiPorte(racine, s.marqueur);
+      exiger(!!l1, `(40a) ${s.nom} : aucune liste cherchable ne porte « ${s.marqueur} » après le chargement de la vue — le témoin ne mesure rien`);
+      if (!l1) continue;
+      exiger(l1.lignes().length === s.avant, `(40a) instrument : ${s.nom} rend ${l1.lignes().length} ligne(s) au lieu de ${s.avant} avant toute recherche`);
+      frapper(l1, s.mot);
+      exiger(l1.lignes().length === s.apres, `(40b) instrument : ${s.nom} — « ${s.mot} » rend ${l1.lignes().length} ligne(s) au lieu de ${s.apres} : la recherche ne filtre pas cette liste`);
+      await s.charger(); await attendre(6);
+      const l2 = laListeQuiPorte(racine, s.marqueur);
+      exiger(!!l2 && l2.champ !== l1.champ, `(40b) instrument : ${s.nom} — le rechargement de la vue REND LE MÊME champ ; il ne reconstitue pas un rendu qui détruit son hôte, et rien de ce qui suit ne prouverait quoi que ce soit`);
+      if (!l2) continue;
+      exiger(l2.champ.value === s.mot, `(40b) ${s.nom} (identité \`${s.cle}\`) : la recherche n'a pas survécu au rechargement de la vue — champ « ${l2.champ.value} » au lieu de « ${s.mot} »`);
+      exiger(l2.lignes().length === s.apres, `(40b) ${s.nom} : la recherche est reposée dans le champ mais la liste rend ${l2.lignes().length} ligne(s) au lieu de ${s.apres} — le champ dit une chose, la liste une autre`);
+      frapper(l2, "");
+      await s.charger(); await attendre(6);
+      const l3 = laListeQuiPorte(racine, s.marqueur);
+      exiger(!!l3 && l3.champ.value === "" && l3.lignes().length === s.avant, `(40b) ${s.nom} : une recherche VIDÉE renaît au rechargement suivant (« ${l3 && l3.champ.value} », ${l3 && l3.lignes().length} lignes) — le souvenir survit au geste qui l'efface`);
+    }
+
+    // (c) LE CHEMIN COMPLET : le bouton de la LIGNE, la fenêtre de confirmation, l'écriture, le retour.
+    const gestes = [
+      { nom: "retirer la déclaration d'un hôte", hote: "#fleet-body", charger: () => modFleet.loadFleetView(), marqueur: "web-01", mot: "web",
+        ligne: "web-01", bouton: /Retirer la déclaration/, apres: 2, ecriture: /PUT \/api\/hosts\/settings/, preuve: (t) => /personne n'a rien dit/.test(t), quoiDeChange: "la déclaration de « web-01 » a disparu de la ligne" },
+      { nom: "lever un silence", hote: "#suppressions-body", charger: () => modSupp.loadSuppressions(), marqueur: "ssh.brute", mot: "brute",
+        ligne: "web.brute", bouton: /Lever le silence/, apres: 1, ecriture: /DELETE \/api\/silences\/1/, preuve: (t) => !/web\.brute/.test(t), quoiDeChange: "la ligne « rule=web.brute » n'est plus servie" },
+      { nom: "révoquer un jeton", hote: "#token-list", charger: () => modAdmin.loadTokens(), marqueur: "agent-web-02", mot: "agent-web",
+        ligne: "agent-web-01", bouton: /Révoquer le jeton/, apres: 1, ecriture: /DELETE \/api\/tokens\/agent-web-01/, preuve: (t) => !/agent-web-01/.test(t), quoiDeChange: "le jeton « agent-web-01 » n'est plus servi" },
+    ];
+    for (const g of gestes) {
+      const racine = hotes[g.hote];
+      await g.charger(); await attendre(6);
+      const avant = laListeQuiPorte(racine, g.marqueur);
+      exiger(!!avant, `(40c) ${g.nom} : la liste à exercer n'est pas rendue`);
+      if (!avant) continue;
+      frapper(avant, g.mot);
+      const tr = avant.lignes().find((r) => String(r.textContent).includes(g.ligne));
+      const btn = tr ? boutonDeLaLigne(tr, g.bouton) : null;
+      exiger(!!btn, `(40c) ${g.nom} : la ligne « ${g.ligne} » n'offre aucun bouton dont le survol dit ${g.bouton} — le geste éditorial n'est pas atteignable depuis la liste, et le chemin mesuré ici serait fictif`);
+      if (!btn) continue;
+      const nEcrituresAvant = ecritures.length;
+      btn.onclick({ stopPropagation() {} });
+      await attendre(3);
+      exiger(validerLaFenetre(), `(40c) ${g.nom} : aucune fenêtre de confirmation partagée n'a été posée par le geste`);
+      await attendre(30);
+      exiger(ecritures.length > nEcrituresAvant && g.ecriture.test(ecritures[ecritures.length - 1]), `(40c) ${g.nom} : l'écriture attendue n'est pas partie (${JSON.stringify(ecritures.slice(nEcrituresAvant))})`);
+      const apres = laListeQuiPorte(racine, g.marqueur);
+      exiger(!!apres && apres.champ !== avant.champ, `(40c) instrument : ${g.nom} — la vue n'a pas été refabriquée après le geste (même champ), le témoin ne mesure pas un rechargement`);
+      if (!apres) continue;
+      exiger(apres.champ.value === g.mot, `(40c) ${g.nom} : la recherche de l'exploitant a été PERDUE par le geste éditorial — champ « ${apres.champ.value} » au lieu de « ${g.mot} »`);
+      exiger(apres.lignes().length === g.apres, `(40c) ${g.nom} : ${apres.lignes().length} ligne(s) rendues au lieu de ${g.apres} — la liste filtrée qui revient ne suit pas ce que la route sert`);
+      exiger(g.preuve(String(apres.hote.textContent)), `(40c) instrument : ${g.nom} — ${g.quoiDeChange} n'est pas visible dans la liste revenue : ce qui est peint est l'ancien rendu, et la « survie » de la recherche ne prouverait rien`);
+      frapper(apres, "");
+    }
+
+    // (d) TROIS LISTES, UN SEUL CHARGEUR, TROIS MÉMOIRES.
+    await modSupp.loadSuppressions(); await attendre(6);
+    const racineSupp = hotes["#suppressions-body"];
+    const silences = laListeQuiPorte(racineSupp, "ssh.brute");
+    exiger(!!silences, "(40d) instrument : la liste des silences n'est pas rendue, la mesure de partage n'a pas d'objet");
+    if (silences) {
+      frapper(silences, "ssh");
+      await modSupp.loadSuppressions(); await attendre(6);
+      const s2 = laListeQuiPorte(racineSupp, "ssh.brute");
+      exiger(!!s2 && s2.champ.value === "ssh", `(40d) instrument : la recherche des silences n'a pas tenu (« ${s2 && s2.champ.value} »), le partage ne se mesure pas`);
+      // UNE VOISINE QUI NE MONTRE PLUS SON PROPRE REPÈRE EST DÉJÀ LA RÉPONSE : elle a été filtrée par une
+      // recherche qui n'est pas la sienne. Le témoin le DIT ainsi, plutôt que de rendre « null » sous une
+      // phrase qui parlerait d'un champ — un instrument qui nomme mal ce qu'il voit se relit de travers.
+      for (const [repere, nom] of [["kernel drop", "le registre du démon"], ["auditd", "la liste des collecteurs"]]) {
+        const voisine = laListeQuiPorte(racineSupp, repere);
+        exiger(!!voisine, `(40d) ${nom} ne montre plus « ${repere} » après une recherche frappée dans les SILENCES : elle est filtrée par une recherche qui n'est pas la sienne, donc les deux listes partagent une identité`);
+        if (!voisine) continue;
+        exiger(voisine.champ.value === "", `(40d) ${nom} a HÉRITÉ de la recherche des silences (« ${voisine.champ.value} ») : deux listes d'un même écran partagent une identité`);
+        exiger(voisine.lignes().length === 3, `(40d) ${nom} rend ${voisine.lignes().length} ligne(s) au lieu de 3 : elle est filtrée par une recherche qui n'est pas la sienne`);
+      }
+      if (s2) frapper(s2, "");
+    }
+
+    // (e) DONNER UNE IDENTITÉ À UNE LISTE N'ÉCRIT RIEN SUR LE POSTE. La clé de rangement d'une liste
+    //     GROUPÉE est AUSSI une clé de `localStorage` — c'est là que son pli est persisté. Les sept
+    //     listes armées ici ne sont pas groupées, et la mémoire de recherche vit dans une table de
+    //     module : une recherche d'exploitant porte un nom de machine, une adresse, un compte, et la
+    //     déposer sur le poste la laisserait bien après la session. Les clés jugées sont DÉRIVÉES du
+    //     source (identités de TÊTE = toutes celles déclarées, moins celles qui viennent d'un `group`),
+    //     et la dérivation est appariée à ce que (b) vient d'exercer avant de servir.
+    const clesDuPoste = () => { const t = []; for (let i = 0; i < localStorage.length; i++) t.push(localStorage.key(i)); return t; };
+    localStorage.setItem("temoin_p1118z_ecriture", "1");
+    exiger(clesDuPoste().includes("temoin_p1118z_ecriture"), "(40e) instrument : la lecture des clés du poste ne voit pas une clé qui vient d'y être posée — ce qui suit ne prouverait rien");
+    localStorage.removeItem("temoin_p1118z_ecriture");
+    const sourceDesVues = ["fleet.js", "sources.js", "suppressions.js", "admin_users.js", "risk.js", "detection_admin.js"]
+      .map((f) => readFileSync(path.join(WEB, f), "utf8")).join("\n");
+    const duGroupe = [...sourceDesVues.matchAll(/group:\s*\{\s*storeKey:\s*'([^']+)'/g)].map((m) => m[1]);
+    const deTete = [...sourceDesVues.matchAll(/storeKey:\s*'([^']+)'/g)].map((m) => m[1]).filter((k) => !duGroupe.includes(k));
+    for (const cle of surfaces.map((s) => s.cle).filter((c) => !duGroupe.includes(c))) {
+      exiger(deTete.includes(cle), `(40e) instrument : l'identité « ${cle} » exercée plus haut n'est pas lue dans le source comme une identité de TÊTE — la dérivation qui suit ne porte pas sur ce qui vient d'être exercé`);
+    }
+    const deposees = clesDuPoste().filter((k) => deTete.includes(k));
+    exiger(deposees.length === 0, `(40e) l'identité d'une liste a été DÉPOSÉE sur le poste (${deposees.join(", ")}) : la mémoire de recherche est une table de module qui meurt avec la page, elle n'écrit rien — une recherche porte un nom de machine, une adresse, un compte`);
+  } finally {
+    document.querySelector = qsOrigine; globalThis.fetch = fetchOrigine;
+    S.AUTH = etatOrigine.auth; S.isAdmin = etatOrigine.admin;
+  }
+
+  console.log(`[recherche-armee] les SEPT listes cherchables qui n'avaient aucune identité en portent une, et la mémoire de P11.18-z est exercée sur les MODULES RÉELS par leurs propres chargeurs de vue : flotte, inventaire des sources, jetons, risque par entité, silences, registre du démon, collecteurs hôte. Sur trois d'entre elles le chemin part du BOUTON de la ligne, passe par la fenêtre de confirmation partagée, écrit (la charge utile servie CHANGE — déclaration retirée, silence levé, jeton révoqué) et revient : la recherche de l'exploitant tient, la liste revenue suit ce que la route sert, et une recherche vidée ne renaît pas. Les trois listes du panneau Suppressions, rechargées par un SEUL chargeur, ne se passent pas leur recherche. Ce que ce témoin NE tient PAS : les onze autres gestes éditoriaux de ces vues (leur dernière instruction est le chargeur, rappelé ici, mais leur fenêtre n'est pas jouée), rien de la mise en page ni du style, et rien d'une vue sans geste d'écriture au-delà de son rechargement.`);
 }
 
 // LE VERDICT PORTE SA PROPRE LIMITE (`P11.13-g`). Un vert qui ne dit pas ce sur quoi il ne s'engage pas

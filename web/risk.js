@@ -45,7 +45,10 @@ async function loadRiskView() {
   // (`risk_rollup ORDER BY score DESC LIMIT`) : les lignes tenues ici sont une fenêtre du cumul de risque,
   // ce que les deux phrases au-dessus de la liste énoncent déjà en chiffres. Une entité sous la coupe est
   // introuvable d'ici, et le résumé de la recherche doit le dire au lieu de conclure « elle n'existe pas ».
-  pagedList(liste, { mode: 'client', pageSize: 50, rows: entities, columns, sort: { key: 'score', dir: -1 }, emptyText: MOT_RISQUE_AUCUNE_ENTITE, onRowClick: r => openEntity(r.entity_type, r.entity), recherche: { fenetre: true } });
+  // `P11.18-z` — IDENTITÉ DE CETTE LISTE (littérale, stable, propre à elle). CE PANNEAU NE PORTE AUCUN
+  // GESTE D'ÉCRITURE, et c'est écrit plutôt que tu : sa mémoire ne sert pas un geste éditorial mais le
+  // rafraîchissement (`#risk-refresh`) et le retour au panneau, qui refabriquent l'hôte de la même façon.
+  pagedList(liste, { mode: 'client', pageSize: 50, rows: entities, columns, sort: { key: 'score', dir: -1 }, emptyText: MOT_RISQUE_AUCUNE_ENTITE, onRowClick: r => openEntity(r.entity_type, r.entity), storeKey: 'soc_risk_entities', recherche: { fenetre: true } });
   // légende des seuils courants (aide à lire « seuil »).
   const leg = $('#risk-legend');
   if (leg) {

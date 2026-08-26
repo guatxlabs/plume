@@ -9,7 +9,7 @@ import { S } from './state.js';
 // déjà pour toute la console. `recherche_de_liste.js` est un feuillet — il n'importe rien — donc
 // l'importer depuis le cœur ne crée aucun cycle, et le prédicat, le filtre et la phrase de résumé
 // restent écrits UNE fois.
-import { champDeRecherche, filtrerParRecherche, resumeDeRecherche, texteCherchable } from './recherche_de_liste.js';
+import { champDeRecherche, filtrerParRecherche, resumeDeRecherche, souvenirDeRecherche, texteCherchable } from './recherche_de_liste.js';
 
 const $ = s => document.querySelector(s);
 // lit une variable de thème CSS (graphes SVG theme-aware : se recolorent au changement clair/sombre)
@@ -438,6 +438,82 @@ const AIDE_PAR_PORTEE = { tout: MOT_RECHERCHE_LISTE_AIDE_TOUT, fenetre: MOT_RECH
 const FILTRE_PAR_PORTEE = { tout: MOT_RECHERCHE_LISTE_FILTRE_TOUT, fenetre: MOT_RECHERCHE_LISTE_FILTRE_FENETRE, page: MOT_RECHERCHE_LISTE_FILTRE_PAGE };
 const RIEN_PAR_PORTEE = { tout: MOT_RECHERCHE_LISTE_RIEN_TOUT, fenetre: MOT_RECHERCHE_LISTE_RIEN_FENETRE, page: MOT_RECHERCHE_LISTE_RIEN_PAGE };
 
+// ==================================================================================================
+// `P11.18-z` — UNE RECHERCHE POSÉE SURVIT AU RECHARGEMENT DE LA VUE, ET CE QUE CONSERVER CACHE SE DIT
+// --------------------------------------------------------------------------------------------------
+// LE CONSTAT, MESURÉ le 2026-08-25. Le champ appartient à la LISTE, pas au gabarit : chaque geste
+// éditorial recharge la vue, la vue reconstruit son hôte, et la recherche repart à zéro — l'exploitant
+// qui travaillait sur une liste filtrée retrouve la liste entière après avoir déclaré un hôte, retiré
+// une déclaration ou levé un silence.
+//
+// DEUX REMÈDES ONT ÉTÉ RÉFUTÉS PAR LA MESURE AVANT D'ÊTRE LIVRÉS, et ils ne sont pas rejoués ici.
+//   (1) « QUE LA DISTINCTION VIENNE DU GESTE » — créer efface, modifier conserve. La seule trace du
+//       geste dans le transport est le VERBE, et il ne porte pas cette distinction : beaucoup de `POST`
+//       de la console ne créent rien (activer une règle, relancer une analyse, archiver un cas), et
+//       jusqu'à des LECTURES ne sont des `POST` que pour porter un corps. Le chemin ne le porte pas
+//       davantage. Dériver du verbe ferait retomber des vues du mauvais côté.
+//   (2) « RELIRE LA VALEUR DANS LE CHAMP que le rendu s'apprête à jeter ». Le rechargement ne redessine
+//       pas dans le même hôte : il vide son conteneur et FABRIQUE un élément neuf. Pire que l'échec,
+//       cela aurait marché pour les listes dont l'hôte survit et pas pour les autres — deux vues
+//       voisines, deux comportements, sans que rien ne l'explique.
+//
+// LA VOIE RETENUE DÉRIVE DU RÉSULTAT, PAS DE L'INTENTION. On conserve TOUJOURS, et l'on traite le seul
+// cas où conserver nuit : une ligne apparue que la recherche masque. Ce cas se constate APRÈS COUP, sur
+// les NOMBRES seuls (combien de lignes cette recherche cache-t-elle de plus qu'au dernier geste de
+// l'exploitant sur elle ?), donc aucun appelant n'a à déclarer la nature de son geste et une vue future
+// en hérite sans y penser. ET LE DIRE VAUT MIEUX QUE L'EFFACER : effacer la recherche détruit le travail
+// de l'exploitant pour lui montrer une ligne, alors que la liste sait DÉJÀ déclarer qu'elle cache des
+// lignes — il ne lui manquait que de dire qu'elle en cache DAVANTAGE, et le geste de tout revoir.
+//
+// CE QUE CET AVIS NE TIENT PAS, ET IL L'ÉCRIT LUI-MÊME. C'est une DIFFÉRENCE entre deux comptes : il ne
+// nomme pas les lignes, et il ne distingue pas une ligne NEUVE d'une ligne qui a cessé de correspondre.
+// Il n'est ARMÉ que là où le compte a un sens d'un rendu à l'autre : une liste qui tient ses lignes.
+// En mode servi, `total` est la page SERVIE — tourner la page changerait le compte sans qu'aucune ligne
+// n'apparaisse, et l'avis dirait un nombre faux. La recherche, elle, y est quand même conservée.
+//
+// L'IDENTITÉ SUIT LE MOTIF QUE LE DÉPÔT PORTE DÉJÀ : la clé de rangement d'une liste groupée
+// (`opts.group.storeKey`). Une liste qui en déclare une l'hérite sans un mot ; une liste qui n'en
+// déclare aucune n'a PAS de mémoire et se comporte exactement comme aujourd'hui.
+// ==================================================================================================
+const MOT_RECHERCHE_LISTE_AIDE_MEMOIRE = LANG === 'en'
+  ? ' This search stays put when the view is redrawn; emptying it, or reloading the page, forgets it.'
+  : " Cette recherche reste posée quand la vue est redessinée ; la vider, ou recharger la page, l'oublie.";
+const MOT_RECHERCHE_LISTE_MASQUEES = LANG === 'en'
+  ? ' more row(s) are hidden by this search than at the last keystroke on it — they exist, they are simply not displayed. This is a DIFFERENCE between two counts: it does not name the rows, and it does not say whether they are new or merely stopped matching.'
+  : " ligne(s) de plus sont masquées par cette recherche que lors de la dernière frappe — elles existent, elles ne sont simplement pas affichées. C'est une DIFFÉRENCE entre deux comptes : elle ne nomme pas les lignes, et ne dit pas si elles sont neuves ou si elles ont cessé de correspondre.";
+const MOT_RECHERCHE_LISTE_REVELER = LANG === 'en' ? 'Show every row' : 'Afficher toutes les lignes';
+const MOT_RECHERCHE_LISTE_REVELER_AIDE = LANG === 'en'
+  ? 'Empties the search: the whole list comes back, and this notice goes with it.'
+  : "Vide la recherche : la liste entière revient, et cet avis avec elle.";
+
+// L'IDENTITÉ D'UNE LISTE — la clé de rangement qu'elle porte déjà, jamais un second motif. Vide = pas
+// d'identité = pas de mémoire ; c'est le défaut, et il est le comportement d'aujourd'hui. AUCUNE IDENTITÉ
+// N'EST DEVINÉE, et c'est délibéré : la position d'un hôte dans son parent et le libellé d'une liste ont
+// tous deux été écartés, parce qu'une section conditionnelle qui paraît ou disparaît les décale — deux
+// listes voisines échangeraient alors leur recherche, ce qui est pire que pas de mémoire du tout. Deux
+// listes qui déclarent la MÊME clé partagent donc la même mémoire : la clé doit être unique par liste,
+// comme elle l'est déjà pour le pli.
+function identiteDeLaListe(opts) {
+  return String(opts.storeKey || (opts.group && opts.group.storeKey) || '').trim();
+}
+
+// L'avis, et le GESTE de le lever. `surReveler` vide la recherche : c'est le seul chemin proposé, et il
+// est celui que l'exploitant aurait fait à la main.
+function annonceDesLignesMasquees(dePlus, surReveler) {
+  const el = document.createElement('div');
+  el.className = 'muted recherche-annonce';
+  const compte = document.createElement('b');
+  compte.textContent = String(dePlus);
+  el.append(compte, document.createTextNode(MOT_RECHERCHE_LISTE_MASQUEES), document.createTextNode(' '));
+  const btn = document.createElement('button');
+  btn.type = 'button'; btn.className = 'btn btn-sm';
+  btn.textContent = MOT_RECHERCHE_LISTE_REVELER;
+  btn.title = MOT_RECHERCHE_LISTE_REVELER_AIDE;
+  btn.onclick = surReveler;
+  el.appendChild(btn);
+  return el;
+}
+
 // Ce que la fabrique sait de la portée sans qu'on le lui dise, et le seul mot qu'elle ne peut pas mesurer.
 function porteeDeLaRecherche(opts) {
   if (opts.mode === 'server') return 'page';
@@ -452,18 +528,34 @@ function porteeDeLaRecherche(opts) {
 // est donc un nœud à part, et c'est LUI que la peinture remplace.
 function poserLaRechercheDeLaListe(host, opts) {
   const portee = porteeDeLaRecherche(opts);
+  // `P11.18-z` — LA MÉMOIRE EST OPT-IN PAR L'IDENTITÉ, ET TOUT CE QUI SUIT RETOMBE À L'IDENTIQUE SANS
+  // ELLE : pas de zone d'avis dans l'hôte, pas de phrase de plus au champ, pas d'écriture nulle part.
+  const souvenir = souvenirDeRecherche(identiteDeLaListe(opts));
   const barre = document.createElement('div'); barre.className = 'hdtools';
   const champ = document.createElement('input');
   champ.type = 'search';
   champ.placeholder = MOT_RECHERCHE_LISTE_INVITE;
-  champ.title = AIDE_PAR_PORTEE[portee];
+  champ.title = AIDE_PAR_PORTEE[portee] + (souvenir ? MOT_RECHERCHE_LISTE_AIDE_MEMOIRE : '');
   champ.setAttribute('aria-label', MOT_RECHERCHE_LISTE_ETIQUETTE);
+  // LA VALEUR EST POSÉE AVANT LE CÂBLAGE : `champDeRecherche` lit le champ, il n'a rien à apprendre de
+  // plus, et aucun rappel ne part pour une frappe qui n'a pas eu lieu.
+  const reference = souvenir ? souvenir.lire() : null;
+  if (reference && reference.requete) champ.value = reference.requete;
   barre.appendChild(champ);
+  const zoneAnnonce = souvenir ? document.createElement('div') : null;
   const zoneResume = document.createElement('div');
   const corps = document.createElement('div');
-  host.replaceChildren(barre, zoneResume, corps);
+  host.replaceChildren(...(zoneAnnonce ? [barre, zoneAnnonce, zoneResume, corps] : [barre, zoneResume, corps]));
   let surChangement = () => {};
-  const poignee = champDeRecherche(champ, { auChangement: () => surChangement() });
+  // LE GESTE DE L'EXPLOITANT SUR CETTE INSTANCE, ET RIEN D'AUTRE. Tant qu'il n'a pas frappé, ce que la
+  // liste montre vient d'un souvenir : c'est le seul moment où l'avis a un sens, et le seul où la
+  // référence ne doit PAS bouger — sans quoi elle rattraperait le compte et l'avis disparaîtrait tout
+  // seul au rechargement suivant, en emportant ce que personne n'a encore vu.
+  let gesteFait = false;
+  const poignee = champDeRecherche(champ, { auChangement: () => { gesteFait = true; surChangement(); } });
+  // L'avis n'est armé que là où le compte a le MÊME sens d'un rendu à l'autre (voir l'en-tête) : une
+  // page servie n'est pas un ensemble stable, et un nombre qui varie avec la page mentirait.
+  const annonceArmee = opts.mode !== 'server';
   return {
     corps,
     valeur: poignee.valeur,
@@ -475,9 +567,21 @@ function poserLaRechercheDeLaListe(host, opts) {
       return q ? filtrerParRecherche(lignes, q, texteDeLaLigne) : lignes;
     },
     // Une liste qui cache des lignes le DIT, et elle dit CE QU'ELLE COUVRE. Sans recherche posée : rien.
+    // `P11.18-z` — C'EST AUSSI LE SEUL ENDROIT OÙ LES DEUX NOMBRES SONT CONNUS, donc c'est ici que la
+    // mémoire se tient à jour et que l'écart se lit. Aucun appelant n'a à le savoir.
     resumer: (affichees, total) => {
       zoneResume.replaceChildren();
-      if (!poignee.valeur()) return;
+      const q = poignee.valeur();
+      if (souvenir) {
+        const masquees = Math.max(0, (Number(total) || 0) - (Number(affichees) || 0));
+        if (gesteFait) { souvenir.noter(q, masquees); zoneAnnonce.replaceChildren(); }
+        else {
+          const dePlus = (annonceArmee && reference && q && q === reference.requete) ? masquees - reference.masquees : 0;
+          if (dePlus > 0) zoneAnnonce.replaceChildren(annonceDesLignesMasquees(dePlus, () => poignee.vider()));
+          else zoneAnnonce.replaceChildren();
+        }
+      }
+      if (!q) return;
       zoneResume.appendChild(resumeDeRecherche(affichees, total, {
         filtre: document.createTextNode(FILTRE_PAR_PORTEE[portee]),
         vide: document.createTextNode(RIEN_PAR_PORTEE[portee]),
@@ -497,6 +601,10 @@ function poserLaRechercheDeLaListe(host, opts) {
 // <table.qtable>) OU opts.renderRow:(row)=>Node (liste libre, ex. lignes badge/action). `render`/`renderRow`
 // renvoient des NŒUDS -> badges & boutons d'action survivent. opts: {mode,pageSize=50,rows,fetchPage,columns,
 // renderRow,sort:{key,dir},emptyText,onRowClick}. Renvoie {reload,state}.
+// `opts.storeKey` (facultatif) = L'IDENTITÉ DE CETTE LISTE, stable d'un rendu à l'autre — la même clé
+// de rangement que le regroupement emploie déjà (`opts.group.storeKey`, qui vaut identité à lui seul).
+// Cette identité, et elle seule, arme la mémoire de recherche de `P11.18-z` : sans elle, la liste n'a
+// aucune mémoire et se comporte exactement comme avant cette clé.
 function pagedList(host, opts) {
   const pageSize = opts.pageSize || 50;
   const state = { page: 0, pageSize, total: 0, shown: 0 };
@@ -1091,7 +1199,10 @@ function hoteDesLignesDUnGroupe(lignes, opts) {
 function peindreEnGroupes(host, rows, opts) {
   const dims = dimensionsApplicables(rows);
   if (!dims.length) return null;
-  const storeKey = (opts.group && opts.group.storeKey) || '';
+  // `P11.18-z` — UNE SEULE IDENTITÉ PAR LISTE, LUE PAR UN SEUL GESTE : le pli et la recherche ne
+  // peuvent plus se ranger sous deux clés différentes. Pour les appelants d'aujourd'hui, qui ne
+  // déclarent que `group.storeKey`, la valeur lue est exactement celle d'avant.
+  const storeKey = identiteDeLaListe(opts);
   const cleDuChoix = storeKey ? storeKey + ':dim' : '';
   const dimensionChoisie = () => {
     let c = '';

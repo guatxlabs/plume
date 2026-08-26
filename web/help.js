@@ -4,7 +4,7 @@
 // modale (openHelpBox), le sommaire et la page « Aide » (HELP_INDEX / GLOSSARY /
 // HELP_SHORTCUTS, renderHelpGuide) et le handler délégué .vhelp. app.js importe renderHelpGuide +
 // openHelpModal + openFreshnessHelp (le câblage #qhelp / #fresh-help et la route 'help' restent dans app.js) ;
-// ces deux ouvreurs ne sont plus que `openHelp('syntax')` et `openHelp('freshness')`. openHelp est exporté
+// ces deux ouvreurs ne sont plus que `openHelp('soql')` et `openHelp('freshness')`. openHelp est exporté
 // pour le harnais ESM, qui vérifie qu'une clé sans section rend un aveu et non le silence, et que chaque
 // section rend le même texte que le registre, dans les deux langues.
 //
@@ -272,7 +272,17 @@ function renderHelpGuide() {
 
 // Les deux panneaux ouverts hors du bouton « ? » d'un en-tête (barre de requête #qhelp, carte Fraîcheur
 // #fresh-help) sont des sections ordinaires du registre : même chrome, même choix de langue, même témoin.
-function openHelpModal() { openHelp('syntax'); }
+//
+// P11.6-d — LE CHAMP DE REQUÊTE OUVRE LA MÊME RÉFÉRENCE QUE LE GUIDE. Il ouvrait `syntax`, une SECONDE
+// référence du langage : mesuré le 2026-08-26 en dérivant les vocabulaires de `daemon/src/handlers/
+// soql_meta.rs`, elle nommait 8 des 20 commandes de pipe, 6 des 8 mesures, ignorait la base `metric`, les
+// mots-clés `as`/`OUTPUT` et le bornage `limit:N`, et donnait pour « champs groupables » seize noms dont
+// NEUF ne sont pas des colonnes d'`event` mais des clés du sac JSON `fields` (deux d'entre eux, `lport` et
+// `jail`, n'étant écrits par aucun collecteur livré : `by` les accepte et rend une colonne nulle, cf.
+// `P11.9-d`). Le chemin le plus fréquenté menait donc au texte le plus pauvre. `syntax` est SUPPRIMÉE du
+// registre : `openHelpModal` et le bouton du guide ouvrent le MÊME `soql`, dont le témoin 38 du harnais
+// confronte les vocabulaires à ceux du démon dans les deux sens.
+function openHelpModal() { openHelp('soql'); }
 function openFreshnessHelp() { openHelp('freshness'); }
 
 export { renderHelpGuide, openHelpModal, openFreshnessHelp, openHelp };

@@ -12,9 +12,31 @@ LA GARDE EST DÉRIVÉE, PAS ÉNUMÉRÉE.
     (1) `data-help="<clé>"` dans `index.html` et dans les gabarits des modules (un gabarit est de l'HTML) ;
     (2) `dataset.help = '<clé>'` ;
     (3) `openHelp('<clé>')` ;
-    (4) `{ k: '<clé>', … }` — les entrées du sommaire `HELP_INDEX` du guide, rendues en boutons.
+    (4) `{ k: '<clé>', … }` DANS LA PORTÉE du sommaire `HELP_INDEX` du guide, dont les entrées sont rendues
+        en boutons. Cette portée est DÉRIVÉE de la définition `const HELP_INDEX = [ … ]`, comme celle du
+        registre l'est de la sienne — le motif `{ k: … }` est trop banal pour être lâché sur tout `web/`,
+        et le fichier qui l'héberge n'est pas une propriété du sommaire (`P11.13-d`).
     Le corpus est lu SANS ses commentaires : une clé citée dans un commentaire n'ouvre rien. Un déclencheur
     dont la clé est construite (`data-help="${x}"`) n'est pas décidable et n'est pas compté.
+
+  CE QUE LE NOM DE FICHIER COÛTAIT, MESURÉ PAR MUTATION LE 2026-08-26 (`P11.13-d`). Le motif du sommaire
+    n'était accepté que dans un fichier NOMMÉ `help.js`. En déplaçant la seule définition `const HELP_INDEX`
+    dans un module voisin — un découpage banal, le dépôt en a déjà fait plusieurs — la garde tombait de
+    **29 à 28 clés déclenchées et de 56 à 29 sites**, et restait VERTE : moins de déclencheurs vus, moins de
+    contrôles à passer, aucun mot. Une seule clé (`processors`) n'était plus tenue par rien.
+    LE CHIFFRE DE CADRAGE DE LA CELLULE EST RÉFUTÉ AU PASSAGE : elle annonçait « 28 déclencheurs distincts
+    tombant à 1 ». Mesuré : 29 -> 28 en clés distinctes, 56 -> 29 en sites. Le mécanisme était juste, son
+    ampleur non — `data-help` et `openHelp(` portent 28 des 29 clés à eux seuls, le sommaire n'en apporte
+    qu'une que personne d'autre ne déclenche.
+
+  LE COMPTE VU EST GARDÉ PAR UN CLIQUET (`P11.13-d`). Une garde de couverture ne rougit pas quand elle voit
+    MOINS : elle a moins de contrôles à passer, donc elle verdit. Le compte des SITES est donc un PLANCHER —
+    c'est lui qui s'effondre quand une portée est perdue (56 -> 29 sur la mutation ci-dessus, quand les clés
+    distinctes ne bougeaient que de 1) et c'est lui que la garde contrôle réellement. Le nombre de clés
+    distinctes est PUBLIÉ et non gardé : il baisse légitimement quand deux déclencheurs sont ramenés sur une
+    même section, et le garder ferait rougir un remaniement qui ne perd aucune couverture.
+    Le sens inverse n'a PAS besoin de cliquet, et c'est dit : moins de SECTIONS fait rougir la garde toute
+    seule (des déclencheurs se retrouvent sans section). C'est la seule asymétrie, elle est mesurée.
   SECTIONS — les clés de premier niveau de l'objet `const HELP = { … }`, lues en suivant la profondeur des
     accolades hors chaînes et gabarits (les corps d'aide contiennent des accolades). Le MODULE qui porte
     cette définition est lui-même DÉRIVÉ (le seul fichier de `web/` qui la contient, commentaires retirés) :
@@ -36,16 +58,35 @@ plafond de trous (source unique : une règle écrite deux fois diverge).
 """
 import os, re, subprocess, sys
 
-PLANCHER_DECLENCHEURS, PLANCHER_SECTIONS = 20, 20
+PLANCHER_SECTIONS = 20
+# CLIQUET DES DÉCLENCHEURS VUS (`P11.13-d`) — relevé sur l'arbre le 2026-08-26 : 56 SITES de déclenchement.
+# C'est un PLANCHER, et le sens est écrit : une garde de couverture qui voit MOINS a moins de contrôles à
+# passer, donc elle VERDIT — une chute est un échec, jamais un silence.
+# POURQUOI LES SITES ET NON LES CLÉS DISTINCTES, mesuré le même jour : c'est le compte des SITES qui
+# s'effondre quand une PORTÉE est perdue (le sommaire déplacé hors de son fichier : 56 -> 29 sites, mais
+# 29 -> 28 clés seulement), et c'est lui que la garde CONTRÔLE réellement — un site sans section est ce
+# qu'elle refuse. Le nombre de clés distinctes, lui, baisse légitimement quand deux déclencheurs sont
+# ramenés sur une même section : le garder ferait rougir un remaniement qui ne perd aucune couverture.
+# Il reste PUBLIÉ à chaque exécution, il n'est pas gardé.
+# Le sens inverse n'a PAS besoin de cliquet, et c'est dit : moins de SECTIONS fait rougir la garde toute
+# seule (des déclencheurs se retrouvent sans section). C'est la seule asymétrie, elle est mesurée.
+# Abaisser ce nombre exige une raison écrite ici, à côté du chiffre ; le relever est le sens attendu.
+CLIQUET_SITES_DECLENCHEURS = 56
 CLE = r"([A-Za-z][\w-]*)"
 # La définition du registre : `const HELP = {` (exporté ou non), hors commentaires. Même ancre pour le
 # localiser dans `web/` et pour en lire les clés.
 RE_DEFINITION_DU_REGISTRE = re.compile(r"\bconst HELP\s*=\s*\{")
-MOTIFS_DECLENCHEUR = [  # (motif, fichier où il vaut — None : partout sous web/)
+# La définition du SOMMAIRE du guide : `const HELP_INDEX = [ … ]`. C'est l'ancre du quatrième motif —
+# la PROPRIÉTÉ qui distingue le sommaire, là où un nom de fichier ne disait que son hébergement du jour.
+RE_DEFINITION_DU_SOMMAIRE = re.compile(r"\bconst HELP_INDEX\s*=\s*\[")
+SOMMAIRE = "sommaire"  # portée dérivée, pas un nom de fichier
+MOTIFS_DECLENCHEUR = [  # (motif, portée où il vaut — None : partout sous web/ ; SOMMAIRE : dans HELP_INDEX)
     (re.compile(r"""data-help\s*=\s*["']""" + CLE + r"""["']"""), None),
     (re.compile(r"""dataset\.help\s*=\s*["'`]""" + CLE + r"""["'`]"""), None),
     (re.compile(r"""\bopenHelp\(\s*["'`]""" + CLE + r"""["'`]\s*\)"""), None),
-    (re.compile(r"""\{\s*k:\s*["']""" + CLE + r"""["']"""), "help.js"),  # le sommaire du guide vit dans help.js seulement
+    # `{ k: '…' }` est un motif BANAL : lâché sur tout `web/` il accuserait le premier objet venu portant une
+    # clé `k`. Il ne vaut donc que DANS la portée dérivée de `const HELP_INDEX = [ … ]`, où qu'elle vive.
+    (re.compile(r"""\{\s*k:\s*["']""" + CLE + r"""["']"""), SOMMAIRE),
 ]
 
 
@@ -257,21 +298,71 @@ def sans_commentaires_html(src):
     return re.sub(r"<!--.*?-->", lambda m: re.sub(r"[^\n]", " ", m.group(0)), src, flags=re.S)
 
 
-def declencheurs(corpus):
-    """{clé: [fichier:ligne, …]} — chaque déclencheur à clé littérale du corpus (textes sans commentaires)."""
+def declencheurs(corpus, sommaire=None):
+    """{clé: [fichier:ligne, …]} — chaque déclencheur à clé littérale du corpus (textes sans commentaires).
+
+    `sommaire` = (nom du module, (début, fin)) de la définition `const HELP_INDEX = [ … ]`, DÉRIVÉE par
+    `portee_du_sommaire` — jamais un nom de fichier écrit ici (`P11.13-d`). Le motif `{ k: … }` ne vaut que
+    dans cette fenêtre : hors d'elle il accuserait n'importe quel objet portant une clé `k`. Sans sommaire
+    dérivé, le motif ne vaut NULLE PART — et l'appelant refuse alors de conclure plutôt que de rendre un
+    compte amputé en vert."""
     trouves = {}
     for nom, texte in corpus.items():
-        for motif, fichier in MOTIFS_DECLENCHEUR:
-            if fichier and nom != fichier: continue
-            for m in motif.finditer(texte):
+        for motif, portee in MOTIFS_DECLENCHEUR:
+            if portee is SOMMAIRE:
+                if not sommaire or sommaire[0] != nom: continue
+                sites = motif.finditer(texte, sommaire[1][0], sommaire[1][1])
+            elif portee and nom != portee: continue
+            else:
+                sites = motif.finditer(texte)
+            for m in sites:
                 trouves.setdefault(m.group(1), []).append(f"{nom}:{texte.count(chr(10), 0, m.start()) + 1}")
     return trouves
 
 
+def _module_qui_definit(corpus_js, ancre):
+    """Nom du SEUL module de `web/` (textes sans commentaires) où `ancre` apparaît ; None si aucun ou
+    plusieurs — la dérivation ne tranche pas à la place de qui lit."""
+    porteurs = sorted(nom for nom, texte in corpus_js.items() if nom.endswith(".js") and ancre.search(texte))
+    return porteurs[0] if len(porteurs) == 1 else None
+
+
 def module_du_registre(corpus_js):
     """Nom du SEUL module (textes sans commentaires) qui définit `const HELP = { … }` ; None si aucun ou plusieurs."""
-    porteurs = sorted(nom for nom, texte in corpus_js.items() if nom.endswith(".js") and RE_DEFINITION_DU_REGISTRE.search(texte))
-    return porteurs[0] if len(porteurs) == 1 else None
+    return _module_qui_definit(corpus_js, RE_DEFINITION_DU_REGISTRE)
+
+
+def module_du_sommaire(corpus_js):
+    """Nom du SEUL module qui définit `const HELP_INDEX = [ … ]` ; None si aucun ou plusieurs (`P11.13-d`)."""
+    return _module_qui_definit(corpus_js, RE_DEFINITION_DU_SOMMAIRE)
+
+
+def _portee_appariee(texte, depart, ouvrant, fermant, journal=None):
+    """(début, fin) du bloc ouvert par le caractère d'index `depart - 1` : appariement `ouvrant`/`fermant`
+    HORS LITTÉRAUX (le saut est celui du LECTEUR PARTAGÉ, sinon une accolade de chaîne ou une expression
+    régulière déplacerait la fin). `fin` = index APRÈS le fermant ; None si le bloc n'est pas refermé."""
+    i, n, prof, code = depart, len(texte), 1, []
+    while i < n and prof:
+        c = texte[i]
+        if c in CHAINES_JS:
+            i = saute_gabarit(texte, i, journal) if c == "`" else saute_chaine(texte, i, journal)
+            code.append('""'); continue
+        if c == "/" and RE_AVANT_REGEX.search("".join(code[-40:])):
+            i = saute_regex(texte, i); code.append("/re/"); continue
+        if c == ouvrant: prof += 1
+        elif c == fermant: prof -= 1
+        code.append(c); i += 1
+    return None if prof else (i,)
+
+
+def portee_du_sommaire(texte, journal=None):
+    """(début, fin) de la définition `const HELP_INDEX = [ … ]` — la fenêtre où le motif `{ k: … }` du
+    sommaire vaut. None si la définition est absente ou son crochet jamais refermé (`P11.13-d`)."""
+    m = RE_DEFINITION_DU_SOMMAIRE.search(texte)
+    if not m:
+        return None
+    fin = _portee_appariee(texte, m.end(), "[", "]", journal)
+    return (m.start(), fin[0]) if fin else None
 
 
 def _parcourir_registre(help_js, journal=None):
@@ -315,8 +406,8 @@ def portee_du_registre(help_js, journal=None):
     return (p[1], p[2]) if p else None
 
 
-def juger(corpus, help_js, journal=None):
-    decl, sect = declencheurs(corpus), sections(help_js, journal)
+def juger(corpus, help_js, sommaire=None, journal=None):
+    decl, sect = declencheurs(corpus, sommaire), sections(help_js, journal)
     sans_section = {k: v for k, v in decl.items() if k not in sect}
     sans_declencheur = sorted(sect - set(decl))
     return decl, sect, sans_section, sans_declencheur
@@ -391,14 +482,29 @@ def temoins():
     registre = ("// const HELP = { cite: { } } — en commentaire, ne compte pas\nexport const HELP = {\n"
                 "  alpha: { fr: { title: `A`, body: `x { y } z` }, en: { title: `A`, body: `{` } },\n"
                 "  beta: { fn: () => 1 },\n  gamma: { fr: { title: 'G', body: 'g' } },\n};\n")
-    aide = ("import { HELP } from './registre_temoin.js';\nconst HELP_INDEX = [ { k: 'beta', fr: 'b' } ];\n"
+    # LE SOMMAIRE VIT SOUS UN NOM QUI N'EST NI `help.js` NI CELUI DU REGISTRE (`P11.13-d`) : la garde doit le
+    # retrouver par sa DÉFINITION. Le module porte AUSSI un `{ k: … }` HORS du sommaire — c'est le témoin
+    # négatif : anciennement borné à un nom de fichier, le motif comptait tout ce que le fichier contenait.
+    aide = ("import { HELP } from './registre_temoin.js';\nconst AUTRE = [ { k: 'pas-un-declencheur', v: 1 } ];\n"
+            "const HELP_INDEX = [ { k: 'beta', fr: 'b', re: /[\"']/ } ];\n"
             "// openHelp('commentee')\n/* data-help=\"commentee-bloc\" */\n")
     html = "<button data-help=\"alpha\"></button><button data-help=\"orpheline\"></button><!-- data-help=\"commentee-html\" -->"
-    corpus = {"index.html": sans_commentaires_html(html), "help.js": sans_commentaires_js(aide), "registre_temoin.js": sans_commentaires_js(registre)}
+    corpus = {"index.html": sans_commentaires_html(html), "guide_temoin.js": sans_commentaires_js(aide), "registre_temoin.js": sans_commentaires_js(registre)}
     assert module_du_registre(corpus) == "registre_temoin.js", f"témoin : le registre déplacé n'est pas retrouvé par sa définition ({module_du_registre(corpus)})"
     assert module_du_registre({k: v for k, v in corpus.items() if k != "registre_temoin.js"}) is None, "témoin : sans définition, la dérivation doit ne rien conclure"
     assert module_du_registre({**corpus, "double.js": "const HELP = {};"}) is None, "témoin : deux définitions, la dérivation doit ne rien conclure"
-    decl, sect, sans_section, sans_declencheur = juger(corpus, corpus[module_du_registre(corpus)])
+    assert module_du_sommaire(corpus) == "guide_temoin.js", f"témoin : le sommaire déplacé hors de `help.js` n'est pas retrouvé par sa définition ({module_du_sommaire(corpus)})"
+    assert module_du_sommaire({k: v for k, v in corpus.items() if k != "guide_temoin.js"}) is None, "témoin : sans définition de sommaire, la dérivation doit ne rien conclure"
+    assert module_du_sommaire({**corpus, "double.js": "const HELP_INDEX = [];"}) is None, "témoin : deux sommaires, la dérivation doit ne rien conclure"
+    portee_s = portee_du_sommaire(corpus["guide_temoin.js"])
+    assert portee_s and corpus["guide_temoin.js"][portee_s[0]:portee_s[1]].startswith("const HELP_INDEX = [") \
+        and corpus["guide_temoin.js"][portee_s[0]:portee_s[1]].endswith("]"), f"témoin : la portée du sommaire ne va pas de sa définition à son crochet fermant ({portee_s})"
+    assert portee_du_sommaire("const x = 1;") is None, "témoin : sans définition, la portée du sommaire doit être None"
+    sommaire = (module_du_sommaire(corpus), portee_s)
+    decl_hors = declencheurs(corpus, None)
+    assert "beta" not in decl_hors, "témoin : sans portée de sommaire dérivée, le motif `{ k: … }` doit ne valoir NULLE PART (l'appelant refuse alors de conclure)"
+    decl, sect, sans_section, sans_declencheur = juger(corpus, corpus[module_du_registre(corpus)], sommaire)
+    assert "pas-un-declencheur" not in decl, f"témoin NÉGATIF : un `{{ k: … }}` HORS de la portée du sommaire est compté comme déclencheur ({sorted(decl)}) — le motif est trop banal pour valoir ailleurs"
     assert sect == {"alpha", "beta", "gamma"}, f"témoin : sections lues {sorted(sect)} — les accolades des corps d'aide faussent la lecture"
     portee = portee_du_registre(corpus["registre_temoin.js"])
     assert portee and corpus["registre_temoin.js"][portee[0]:portee[1]].startswith("const HELP = {") and corpus["registre_temoin.js"][portee[0]:portee[1]].endswith("}") \
@@ -429,12 +535,32 @@ def main():
     if registre is None:
         porteurs = [n for n, t in corpus.items() if n.endswith(".js") and RE_DEFINITION_DU_REGISTRE.search(t)]
         print(f"[aide] ÉCHEC — {len(porteurs)} module(s) de web/ définissent `const HELP = {{` ({', '.join(porteurs) or 'aucun'}) : un seul attendu, la garde refuse de conclure"); return 2
+    # LA PORTÉE DU SOMMAIRE EST DÉRIVÉE, PAS NOMMÉE (`P11.13-d`). Sans elle le quatrième motif ne vaudrait
+    # nulle part : la garde verrait MOINS et verdirait. Elle refuse donc de conclure plutôt que d'acquitter
+    # ce qu'elle n'a pas pu délimiter.
+    mod_sommaire = module_du_sommaire(corpus)
+    porteurs_s = [n for n, t in corpus.items() if n.endswith(".js") and RE_DEFINITION_DU_SOMMAIRE.search(t)]
+    portee_s = portee_du_sommaire(corpus[mod_sommaire]) if mod_sommaire else None
+    if portee_s is None:
+        print(f"[aide] ÉCHEC — {len(porteurs_s)} module(s) de web/ définissent `const HELP_INDEX = [` "
+              f"({', '.join(porteurs_s) or 'aucun'}) et sa portée n'est pas délimitable : le motif du sommaire "
+              f"ne vaudrait nulle part et la garde verrait moins de déclencheurs — elle refuse de conclure"); return 2
+    sommaire = (mod_sommaire, portee_s)
     journal_registre = []
-    decl, sect, sans_section, sans_declencheur = juger(corpus, corpus[registre], journal_registre)
+    decl, sect, sans_section, sans_declencheur = juger(corpus, corpus[registre], sommaire, journal_registre)
     if journal_registre and refuser_sur_aveu("aide", {registre: [f"offset {o} : {m}" for m, o in journal_registre]}): return 2
-    print(f"[aide] {len(decl)} clés déclenchées ({sum(len(v) for v in decl.values())} déclencheurs dans {len(corpus)} fichiers), {len(sect)} sections dans {registre} (module du registre dérivé de sa définition)")
-    if len(decl) < PLANCHER_DECLENCHEURS or len(sect) < PLANCHER_SECTIONS:
-        print("[aide] ÉCHEC — sous le plancher : la dérivation est cassée, la garde refuse de conclure"); return 2
+    sites = sum(len(v) for v in decl.values())
+    print(f"[aide] {len(decl)} clés déclenchées ({sites} déclencheurs dans {len(corpus)} fichiers), {len(sect)} sections dans {registre} (module du registre dérivé de sa définition) ; sommaire dérivé dans {mod_sommaire} (portée {portee_s[0]}-{portee_s[1]})")
+    if len(sect) < PLANCHER_SECTIONS:
+        print("[aide] ÉCHEC — sous le plancher de sections : la dérivation est cassée, la garde refuse de conclure"); return 2
+    # LE CLIQUET (`P11.13-d`). Voir moins de déclencheurs, c'est avoir moins de contrôles à passer : sans ce
+    # plancher, une portée perdue rend la garde plus verte. Le compte est publié, et sa chute est un ÉCHEC.
+    if sites < CLIQUET_SITES_DECLENCHEURS:
+        print(f"[aide] ÉCHEC — le compte de déclencheurs VUS a chuté : {sites} sites pour un cliquet à "
+              f"{CLIQUET_SITES_DECLENCHEURS} ({len(decl)} clés distinctes, non gardées). Soit une PORTÉE a été "
+              f"perdue (le registre ou le sommaire a changé de forme, et la dérivation ne la retrouve plus), soit "
+              f"des déclencheurs ont vraiment été retirés — dans ce second cas, abaisser le cliquet AVEC sa raison "
+              f"écrite à côté du chiffre. La garde ne verdit pas sur moins de vue."); return 2
     for k in sans_declencheur: print(f"    i section « {k} » sans déclencheur à clé littérale (information, pas une erreur)")
     for k, sites in sorted(sans_section.items()): print(f"    - « {k} » déclenché sans section : {', '.join(sites)}")
     if sans_section:

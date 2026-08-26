@@ -51,7 +51,16 @@ pire qu'une garde absente. Elle publie donc, par module et à chaque exécution,
 les littéraux qui ont la forme d'un libellé (candidats, statiques, pas bilingues par construction) et
 qu'aucun puits reconnu ne porte — argument d'une fabrique propre au module (`opt(...)` dans alerts.js,
 `tile(...)` / `mesureTile(...)` dans system.js, `kv(...)` ailleurs), branche de ternaire hors puits, entrée
-de tableau, valeur de retour, valeur sous une clé d'objet non reconnue (`page:`, `servies:`). Un littéral
+de tableau, valeur de retour, valeur sous une clé d'objet qui ne nomme aucune propriété du document
+(`emptyText:`, `page:`, `servies:`), et un SIXIÈME poste qui ne nomme rien — « forme non classée », le repli
+du classeur quand rien avant le littéral n'est reconnu. Ce poste n'est pas un détail : relevé le 2026-08-26,
+il pesait 114 occurrences sur 716 (15,9 %), quatrième de la répartition. Il tient surtout le repli d'un `||`
+(`toast((e && e.message) || '…')`), qui est bien de l'indécidable, et aussi des opérandes de COMPARAISON
+(`if (e.key === 'Escape')`) qui, eux, n'affichent jamais rien : c'est du BRUIT dans l'aveu, du même genre que
+les classes CSS avant leur retrait, et ce n'est PAS corrigé ici — c'est dit. CETTE RÉPARTITION EST PUBLIÉE, PAS DÉCRITE : elle est dérivée du
+contexte de chaque littéral à chaque exécution, postes et clés portantes en tête, et l'anti-corpus vérifie
+que chaque forme reçoit bien le nom qu'elle doit recevoir — un aveu qui dirait COMBIEN sans dire QUOI ne
+désignerait plus rien. Un littéral
 posé dans un NON-PUITS reconnu (classe CSS, identifiant, style, attribut non affiché) n'y figure PAS : la
 colonne ne nomme que ce dont la garde ne peut pas décider, jamais ce qu'elle sait déjà hors sujet.
 LA CONFESSION EST DÉRIVÉE DU DÉPÔT, PAS ÉCRITE À LA MAIN : la garde compte combien de ces hors-regard sont
@@ -91,6 +100,12 @@ neuf dans une forme que la garde ne lit pas fait dépasser l'autre : rouge aussi
 ne sait pas lire cette forme — c'est le seul moyen qu'un périmètre étroit ne serve pas d'échappatoire.
 Traduire abaisse le premier compte, déplacer un libellé vers un puits reconnu abaisse le second ; abaisser
 un plafond est le seul sens de modification admis sans raison écrite à côté.
+CE QUE LE CLIQUET LAISSE PASSER EST PUBLIÉ AVEC LE VERDICT. Un plafond peut rester AU-DESSUS de son relevé :
+ce n'est pas une régression, c'est du JEU — la place exacte que des libellés neufs peuvent prendre sans faire
+rougir personne. Écrit à la main dans un commentaire, ce jeu est daté d'un jour et faux le lendemain (mesuré :
+`dashboards.js` a porté 25 pour 22 relevés). La garde le DÉRIVE donc de la mesure du jour et le rend à chaque
+exécution, module par module (ligne « JEU DU CLIQUET »). Elle ne force pas la descente — elle refuse la
+hausse et dit ce qu'elle laisse passer.
 UN MODULE MESURÉ SANS PLAFOND FAIT REFUSER DE CONCLURE. Le verdict parcourait les PLAFONDS, pas les
 modules : un module absent de la table était rendu au tableau et jamais jugé (`composer_depuis_lexistant.js`
 l'a été de sa création au 2026-08-23). L'asymétrie est levée : plafond sans module = régression, module
@@ -142,6 +157,7 @@ Sortie :  0 = aucun module au-dessus de ses plafonds ; 1 = régression (trous ou
 """
 from __future__ import annotations
 
+import collections
 import html.parser
 import os
 import re
@@ -168,7 +184,30 @@ LEXIQUE = os.path.join(WEB, "i18n.js")
 # 2026-08-24 (`P11.8-e`) : le relevé passe de 1 926 à 1 928 — deux chaînes affichées de `web/viz.js` que le
 # découpeur ne voyait plus depuis qu'un `"` dans une expression régulière le désynchronisait à la ligne 44.
 # Le plancher suit la même dérivation (relevé moins un vingtième) : 1 831.
-MIN_POPULATION = 1831
+# 2026-08-26 (`P11.8-c`) : +15 chaînes affichées que le critère de puits ne lisait pas — la valeur posée sous
+# une clé d'objet qui NOMME une propriété d'affichage (`Object.assign(el, { textContent: … })`). L'écart est
+# ISOLÉ (deux instruments, même arbre) parce que l'arbre bougeait sous six agents : 1 928 + 15 = 1 943, et le
+# plancher suit la même dérivation (relevé moins un vingtième) : 1 845.
+# CE QUE L'ARBRE MESURE VRAIMENT, ET CE QUI A ÉTÉ RÉFUTÉ DEUX FOIS. La même ligne annonçait « l'arbre du jour
+# en mesure 1 945 » : aucun instrument ne rend ce chiffre. Mais les deux nombres écrits ICI pour le réfuter
+# (« 1 940 sur l'arbre livré, 1 929 avec l'instrument de HEAD ») ne se retrouvent pas non plus — rejoués le
+# 2026-08-26 à 21 h sur l'arbre de travail, les deux instruments rendent 1 946 et 1 957, soit +17 de chacun.
+# LA CAUSE EST MESURÉE, PAS SUPPOSÉE : `web/` bouge sous plusieurs agents (`web/alerts.js` a été réécrit à
+# 20 h 26 min 26 s, la garde ci-présente à 20 h 26 min 02 s — 24 secondes plus tôt). UN NOMBRE ABSOLU DE
+# POPULATION N'EST PAS UNE PROPRIÉTÉ DE L'INSTRUMENT, C'EST UNE PROPRIÉTÉ DE L'ARBRE, et le citer sans dire
+# QUEL arbre le rend non reproductible avant la fin de la journée. Il s'en écrit donc désormais deux choses,
+# toutes deux vérifiables sans dépendre du jour :
+#   1. L'ANCRE EST UN ARBRE IMMUABLE. Sur `web/` de HEAD `207f51a` (que rien ne peut plus réécrire) :
+#      instrument de HEAD -> 1 922 ; instrument du jour -> 1 933. Ces deux nombres se refont en deux commandes,
+#      aujourd'hui comme dans un mois (`git archive HEAD web` dans un miroir, la garde copiée dedans — elle
+#      dérive sa racine de `__file__` et IGNORE `argv[1]`).
+#   2. CE QUI EST UNE PROPRIÉTÉ DE L'INSTRUMENT, C'EST L'ÉCART, et il est INVARIANT PAR L'ARBRE : +11 sur
+#      `web/` de HEAD (1 922 -> 1 933) comme sur `web/` de travail (1 946 -> 1 957). C'est l'écart qui vaut
+#      +11 et non +15, et c'est lui seul que ce commentaire avait le droit d'affirmer.
+# Le plancher, lui, ne bouge pas : il est dérivé du relevé ATTRIBUABLE (1 943), pas de celui du jour, et
+# aucune des mesures ci-dessus ne s'en approche. Un plancher ne DESCEND jamais pour suivre une mesure plus
+# basse — il ne garderait plus rien.
+MIN_POPULATION = 1845
 # Une clé dont on SAIT qu'elle est affichée par `web/index.html` (bouton d'exécution de la barre).
 CLE_TEMOIN = "Exécuter"
 # Plancher de clés du lexique : relevé le 2026-08-22, 223 clés avant complément, 1 594 après ; 1 719 au
@@ -234,16 +273,88 @@ PLAFOND_DE_TROUS = {
 # garde). Le relever exige une raison écrite ici, à côté du chiffre.
 PLAFOND_HORS_REGARD = {
     "admin_users.js": 16, "ai.js": 1, "alerting.js": 2, "alerts.js": 20, "app.js": 22, "attack.js": 7,
-    "audit.js": 1, "cases.js": 77, "composer_depuis_lexistant.js": 7, "connectors.js": 28,
-    "copie_et_selection.js": 3, "core.js": 29, "dashboards.js": 30, "dataaccess.js": 11, "datamodels.js": 6,
-    "destinations.js": 37, "detadv.js": 14, "detection_admin.js": 30, "fieldfilters.js": 21, "fleet.js": 9,
-    "freshness.js": 11, "help.js": 30, "i18n_observer.js": 0, "idp.js": 29, "index.html": 0,
+    "audit.js": 1, "cases.js": 70, "composer_depuis_lexistant.js": 7, "connectors.js": 27,
+    "copie_et_selection.js": 3, "core.js": 29, "dashboards.js": 22, "dataaccess.js": 11, "datamodels.js": 6,
+    "destinations.js": 37, "detadv.js": 14, "detection_admin.js": 28, "fieldfilters.js": 21, "fleet.js": 9,
+    "freshness.js": 10, "help.js": 30, "i18n_observer.js": 0, "idp.js": 29, "index.html": 0,
     "index_policies.js": 16, "keys.js": 5, "knowledge.js": 11, "login.js": 6, "lookups.js": 9,
-    "multitenant.js": 8, "navigation.js": 2, "prefs.js": 0, "processors.js": 10, "producer_ui.js": 8,
-    "recherche_de_liste.js": 1, "retention.js": 17, "risk.js": 6, "runbooks.js": 23, "savedqueries.js": 2,
+    "multitenant.js": 7, "navigation.js": 2, "prefs.js": 0, "processors.js": 10, "producer_ui.js": 7,
+    "recherche_de_liste.js": 1, "retention.js": 17, "risk.js": 6, "runbooks.js": 20, "savedqueries.js": 2,
     "sigmaimport.js": 12, "soql_complete.js": 16, "sources.js": 7, "state.js": 0, "suppressions.js": 21,
-    "system.js": 33, "threatintel.js": 8, "viz.js": 21,
+    "system.js": 33, "threatintel.js": 6, "viz.js": 21,
 }
+# UNE BAISSE ET UNE HAUSSE, 2026-08-26 (`P11.13-f`), toutes deux dues au MÊME changement de règle — la
+# reconnaissance d'un texte affiché ne dépend plus du niveau de parenthèses, elle repose sur ce qui atteint
+# l'écran (voir « CE QUI SE COLLE À UN LITTÉRAL DANS LE NŒUD RENDU »).
+#   detection_admin.js 30 -> 28 : le plafond était en RETARD de deux crans sur son propre relevé (28 mesurés)
+#     depuis la correction de `P11.14-g`. Un cliquet qui descend est le seul mouvement qui ne se discute pas.
+#   viz.js 21 -> 21 : LE PLAFOND NE BOUGE PAS, C'EST LA DETTE QUI EST PAYÉE. La règle élargie a RÉVÉLÉ un
+#     littéral que la garde prenait pour un fragment de concaténation alors que rien ne s'y colle
+#     (`x >= 0 ? (…) : 'total inconnu'`, affecté à une const) : `web/viz.js` passait à 22 sans qu'une seule
+#     de ses lignes bouge (croisement 2x2 le 2026-08-26, instrument de HEAD `207f51a` contre celui du jour,
+#     `web/viz.js` identique à l'octet — sha256 cef1b64d… des deux côtés : 21 / 21 / 22 / 22). Une dette
+#     RÉVÉLÉE se PAIE ; relever le plafond est justement ce que le paragraphe ci-dessus interdit par écrit.
+#     ELLE A ÉTÉ PAYÉE, ET PAS PAR LE CHEMIN ATTENDU — LA MESURE A ÉCARTÉ CELUI-LÀ. Le chemin ordinaire
+#     (« poser le libellé dans un puits reconnu ») le ferait entrer dans la POPULATION sous un plafond de
+#     trous de ZÉRO, donc exigerait une entrée au lexique ; or `total inconnu` n'est JAMAIS un nœud texte à
+#     lui seul : il est interpolé dans la ligne d'état (« page X/Y · … · serveur … ms · total … ms »), et
+#     `i18nWalk` ne remplace que sur l'égalité du nœud ENTIER après `trim()`. TÉMOIN JOUÉ (vrai `i18nWalk`
+#     importé, shim DOM minimal, clé `"total inconnu"` AJOUTÉE au lexique d'une copie) : nœud « Annulé » ->
+#     « Cancelled » (POSITIF, c'est un nœud entier) ; nœud « page 1/? · total inconnu · serveur 12 ms ·
+#     total 30 ms » -> INCHANGÉ (NÉGATIF). La clé serait MORTE — un vert sans traduction, le piège que
+#     `web/i18n.js` nomme lui-même à côté de ses fragments. Le libellé est donc devenu BILINGUE PAR
+#     CONSTRUCTION (`LANG === 'en' ? 'unknown total' : 'total inconnu'`), la forme que `web/viz.js` emploie
+#     déjà pour ses libellés composés (l. 650, 663-672, 695) : il quitte l'aveu parce qu'il est TRADUIT,
+#     pas parce qu'on cesse de le regarder. Relevé après correction : viz.js 21, trous 0, total 655 -> 654.
+#   CE QUE CETTE CORRECTION NE TIENT PAS : les autres mots de la MÊME ligne d'état (`lignes`, `serveur`,
+#     `page`) restent français sous `LANG='en'`. Ce sont des fragments de concaténation, hors population par
+#     la convention écrite plus haut — dette CONNUE et ANCIENNE de la ligne d'état, ni révélée ni close ici.
+# HUIT BAISSES, RELEVÉES LE 2026-08-26 EN JOUANT LES DEUX INSTRUMENTS SUR LE MÊME `web/` (celui du jour) :
+#   cases.js 77 -> 70 · connectors.js 28 -> 27 · dashboards.js 30 -> 22 · freshness.js 11 -> 10 ·
+#   multitenant.js 8 -> 7 · producer_ui.js 8 -> 7 · runbooks.js 23 -> 20 · threatintel.js 8 -> 6.
+#   Chacun est posé sur le RELEVÉ du jour, pas sur un chiffre annoncé : `dashboards.js` avait été inscrit à 25
+#   au motif d'une baisse « 30 -> 25 » alors que les deux instruments en mesuraient 22 — un cliquet laissé
+#   trois crans au-dessus de son propre relevé, ce que le paragraphe voisin reproche justement à
+#   `detection_admin.js`. Des littéraux quittent l'aveu parce que la garde SAIT désormais les lire :
+#   les uns sont posés sous une clé d'objet qui NOMME une propriété d'affichage du document
+#   (`{ textContent: … }`), la liste de ces clés étant DÉRIVÉE des propriétés déjà déclarées au lieu d'être
+#   tenue à côté d'elles (`P11.8-c`) ; les autres sont des branches de ternaire que la règle de colle ne
+#   prend plus pour des fragments (`P11.13-f`). Ils entrent donc dans la POPULATION, et huit d'entre eux y
+#   sont entrés comme des TROUS — au lexique depuis. C'est le sens attendu de la baisse : apprendre une
+#   forme à la garde, pas déplacer un libellé.
+# LE DELTA EST CELUI DES DEUX RÈGLES ENSEMBLE, ET IL EST DIT COMME TEL. Les deux changements ont été livrés
+# dans le même lot : rien sur l'arbre livré ne permet de les séparer, et une attribution par clé serait une
+# affirmation non reproductible. Ce qui EST reproductible, mesuré le 2026-08-26 (instrument de HEAD `207f51a`
+# contre celui du jour, même `web/`, `--mesure` des deux côtés) : hors-regard 676 -> 655 (-21), population
+# +11, mouvement dans QUATORZE modules. LES QUATRE NOMBRES SONT ANCRÉS SUR UN ARBRE IMMUABLE, `web/` de HEAD
+# `207f51a` : hors-regard 676 -> 655, population 1 922 -> 1 933 (voir « CE QUE L'ARBRE MESURE VRAIMENT »
+# ci-dessus — un absolu pris sur l'arbre de travail se périme sous les autres agents, l'écart non).
+# Le relevé précédent annonçait « -15 hors-regard,
+# +15 population, et zéro déplacement ailleurs » : ces trois chiffres ne se retrouvent pas, et c'est cette
+# ligne-ci qui vaut — les deux instruments sont côte à côte, la mesure se refait en deux commandes.
+# UN CHIFFRE DE CLIQUET RÉFUTÉ, ET C'EST LE PRINCIPAL SERVICE DE CE RELEVÉ : `alerts.js` a été annoncé
+# « 23 pour 20, dépassement délibérément non réparé ». Les DEUX instruments joués sur l'arbre du jour rendent
+# 20 (celui de HEAD, plafond exactement TENU) et 18 (celui du lot) : la valeur 23 n'existe dans aucune des
+# deux mesures. Le défaut réel de ce module n'était pas un hors-regard mais un TROU (« groupes
+# indisponibles »), que la règle élargie a révélé et que le lexique couvre depuis. Une non-réparation écrite
+# à côté d'un chiffre que l'instrument contredit dans la même exécution ne couvre rien : elle déplace le
+# regard du défaut qui rougit vers un défaut qui n'existe pas.
+# ON NE POSE PAS UN CLIQUET AU RAS D'UN MODULE QUI BOUGE, ET LA RAISON EST MESURÉE, PAS INVOQUÉE. `alerts.js`
+# reste à 20 : deux relevés du MÊME 2026-08-26, à quelques minutes d'écart, en rendent 18 puis 19 — le fichier
+# a changé entre les deux sous un autre agent (la ligne du repli de chargement des groupes est passée de 706
+# à 795). Un cliquet posé au ras du premier relevé aurait rendu la CI ROUGE sur le travail d'un autre, sans
+# qu'aucun libellé n'ait empiré. `risk.js` reste à 6 pour la même raison et de la même façon mesurée : sa
+# descente à 5 avait été écrite, puis le module est entré en écriture concurrente dans l'heure, et elle a été
+# ANNULÉE avant livraison. Ce n'est pas une hausse (aucun de ces deux chiffres ne dépasse celui de `HEAD`) ni
+# un silence (c'est écrit ici, et le jeu restant est PUBLIÉ à chaque exécution) : c'est une descente RETARDÉE,
+# à faire sur un module stable. Le mouvement à surveiller sur un module qui bouge est celui des TROUS, dont le
+# plafond est à ZÉRO et le reste dans tous les relevés du jour.
+# CE QUE CE CLIQUET NE TIENT PAS : il refuse une HAUSSE, il ne force pas une DESCENTE. Un plafond peut donc
+# rester au-dessus de son relevé — c'est du JEU, pas une régression, mais ce jeu est exactement la place que
+# des libellés neufs peuvent prendre sans faire rougir personne. Ce jeu n'est plus écrit dans ce commentaire
+# (où il datait d'un jour et s'est révélé faux de trois crans sur `dashboards.js`) : la garde le PUBLIE à
+# chaque exécution, module par module, DÉRIVÉ de la mesure du jour. Le lire est le seul moyen de savoir ce
+# que ce cliquet laisse passer aujourd'hui, et un plafond qu'on oublierait de faire descendre s'y voit.
 # RAISON DE LA SEULE HAUSSE ÉCRITE ICI — viz.js 18 -> 21 le 2026-08-24 (`P11.8-e`). Le code n'a pas empiré :
 # le découpeur a cessé de perdre 134 lignes de ce module. Les cinq littéraux qui reviennent à l'aveu
 # (`Escape`, `Ko`, `Mo`, `Go`, `depuis la recherche`) y étaient déjà, invisibles ; les deux qui en sortent
@@ -290,9 +401,33 @@ RE_CHOIX_PAR_LANG = re.compile(r"\bLANG\b[^;]*\?")
 RE_CLE_FR_EN = re.compile(r"[{,]\s*(fr|en)\s*:\s*$")
 
 SINKS_AFFECTATION = ("textContent", "innerText", "title", "placeholder", "ariaLabel")
-SINKS_CLE = ("label", "title", "placeholder", "okText", "hint", "text")
 SINKS_APPEL = ("createTextNode", "muted", "toast", "showErr", "confirmModal", "append", "prepend", "emptyRow")
 ATTRS_HTML = ("title", "placeholder", "aria-label", "label")
+
+
+def _propriete(attribut: str) -> str:
+    """Le nom de PROPRIÉTÉ du document que porte un attribut HTML : `aria-label` -> `ariaLabel`. C'est la
+    seule différence d'écriture entre les deux formes du MÊME puits."""
+    return re.sub(r"-(\w)", lambda m: m.group(1).upper(), attribut.strip())
+
+
+# LES CLÉS D'OBJET NE SONT PLUS ÉNUMÉRÉES, ELLES SONT DÉRIVÉES (`P11.8-c`). Une clé d'objet qui NOMME une
+# propriété d'affichage du document EST le même puits que l'affectation de cette propriété : la valeur y
+# rejoint le document par `Object.assign(el, {…})` ou par une fabrique qui recopie ses clés. La liste
+# n'est donc pas à tenir — elle se dérive de ce que la garde déclare DÉJÀ afficher : les propriétés
+# affectées (`SINKS_AFFECTATION`) et les attributs affichés (`ATTRS_HTML`, sous leur nom de propriété).
+# Avant (jusqu'au 2026-08-26), la liste des clés était écrite À CÔTÉ de celle des affectations et avait
+# divergé : `textContent` y manquait. Mesuré ce jour-là sur `web/` : 15 littéraux entraient dans la
+# population par cette seule dérivation, dont HUIT chaînes françaises affichées SANS entrée au lexique
+# (`web/cases.js` 4, `web/dashboards.js` 3, `web/runbooks.js` 1) — toutes posées par
+# `Object.assign(document.createElement(…), { textContent: … })`, toutes invisibles à un plafond de zéro.
+# C'est EXACTEMENT le défaut de `P11.8-c` : un module affichait du français non traduit en tenant zéro.
+# CE QUI RESTE ÉNUMÉRÉ, ET POURQUOI : ces trois clés ne nomment AUCUNE propriété du document ; ce sont des
+# conventions d'appel des fabriques de la console (`confirmModal({okText})`, champs à `hint`, `text`).
+# Aucune dérivation ne peut les trouver — seul un suivi de flux jusqu'à l'écriture le pourrait, et c'est
+# l'étape suivante, pas celle-ci. Elles sont donc écrites, avec cette raison.
+CLES_APPLICATIVES = ("okText", "hint", "text")
+SINKS_CLE = tuple(sorted(set(SINKS_AFFECTATION) | {_propriete(a) for a in ATTRS_HTML} | set(CLES_APPLICATIVES)))
 # Le texte d'un échantillon de code (`<code>`, `<kbd>`, `<pre>`, `<samp>`) est montré tel quel dans les deux
 # langues : hors population, comme le contenu d'un `<script>`.
 TAGS_HORS_POPULATION = ("script", "style", "code", "kbd", "pre", "samp")
@@ -413,10 +548,12 @@ def _lire_chaine(src: str, i: int, journal: list[tuple[str, int]] | None = None)
     return "".join(out), i
 
 
-def chaines_js(src: str, journal: list[tuple[str, int]] | None = None) -> list[tuple[str, str, str]]:
-    """Rend [(texte, code_avant, code_apres)] pour chaque littéral de chaîne/gabarit du source.
+def chaines_js(src: str, journal: list[tuple[str, int]] | None = None) -> list[tuple]:
+    """Rend [(texte, code_avant, code_apres, bloc_en, contexte)] pour chaque littéral de chaîne/gabarit.
     `code_avant` = le code (sans commentaires ni chaînes) depuis le dernier `;` ou retour à la ligne
-    significatif ; `code_apres` = les quelques caractères de code qui suivent."""
+    significatif ; `code_apres` = les quelques caractères de code qui suivent ; `contexte` = le triplet
+    (code réduit ENTIER, position du littéral dedans, {position: texte}) dont `_voisin_de_concatenation`
+    a besoin pour retrouver les littéraux COLLÉS à celui-ci (`P11.13-f`)."""
     n = len(src)
     i = 0
     code: list[str] = []  # code accumulé sans commentaires ni littéraux (les littéraux deviennent `""`)
@@ -455,6 +592,7 @@ def chaines_js(src: str, journal: list[tuple[str, int]] | None = None) -> list[t
     for seg in code:
         offsets.append(pos)
         pos += len(seg)
+    litteraux = {offsets[idx]: s for s, idx in trouves}
     out = []
     for s, idx in trouves:
         p = offsets[idx]
@@ -464,7 +602,7 @@ def chaines_js(src: str, journal: list[tuple[str, int]] | None = None) -> list[t
         if k >= 0:
             avant = avant[k + 1 :]
         apres = texte_code[p + 2 : p + 12]
-        out.append((s, avant, apres, _dans_bloc_lang_en(texte_code, p)))
+        out.append((s, avant, apres, _dans_bloc_lang_en(texte_code, p), (texte_code, p, litteraux)))
     return out
 
 
@@ -473,16 +611,33 @@ RE_BLOC_LANG_EN = re.compile(r"\bif\s*\(\s*LANG\s*===\s*\"\"\s*\)\s*\{")
 
 
 def _dans_bloc_lang_en(texte_code: str, p: int) -> bool:
-    """Vrai si la position `p` est à l'intérieur du dernier bloc `if (LANG === 'en') {` ouvert avant elle :
-    les accolades ouvertes entre l'ouverture du bloc et `p` (littéraux et regex déjà réduits) n'ont pas
-    toutes été refermées."""
+    """Vrai si la position `p` est à l'intérieur du dernier bloc `if (LANG === 'en') {` ouvert avant elle.
+
+    ON SORT D'UN BLOC POUR TOUJOURS (`P11.8-c`). Le solde d'accolades était comparé à zéro À LA FIN
+    seulement : une fois le bloc refermé (solde -1), la première accolade ouverte plus loin — n'importe quel
+    objet, n'importe quelle fonction — ramenait le solde à 0 et TOUT le reste du fichier redevenait « dans le
+    bloc anglais », donc BILINGUE PAR CONSTRUCTION, donc COUVERT SANS ENTRÉE AU LEXIQUE. Un vert silencieux :
+    la chaîne est comptée dans la population et jamais réclamée. Ce qui décide n'est pas le solde final mais
+    le fait qu'il soit passé sous zéro EN CHEMIN. Le défaut s'est vu en ajoutant un témoin au corpus de
+    contrôle — deux chaînes affichées y sont devenues « bilingues » parce qu'elles portaient une accolade.
+    MESURÉ SUR L'ARBRE le 2026-08-26, DANS LES DEUX SENS : un seul module de `web/` porte un
+    `if (LANG === 'en') {` (`i18n_observer.js`), et le correctif ne déplace AUCUNE chaîne, AUCUN trou,
+    AUCUN module. Le chemin est donc fermé sans qu'aucun chiffre ne bouge : c'est un vert silencieux qu'un
+    module à venir aurait déclenché, pas une dette d'aujourd'hui."""
     ouvert = None
     for m in RE_BLOC_LANG_EN.finditer(texte_code, 0, p):
         ouvert = m.end()
     if ouvert is None:
         return False
-    corps = texte_code[ouvert:p]
-    return corps.count("{") - corps.count("}") >= 0
+    solde = 0
+    for c in texte_code[ouvert:p]:
+        if c == "{":
+            solde += 1
+        elif c == "}":
+            solde -= 1
+            if solde < 0:
+                return False  # le bloc est refermé : on n'y rentre plus
+    return True
 
 
 RE_SINK_AFFECT = re.compile(r"\.(%s)\s*=\s*$" % "|".join(SINKS_AFFECTATION))
@@ -493,6 +648,12 @@ RE_SINK_APPEL = re.compile(r"\b(%s)\(\s*$" % "|".join(SINKS_APPEL))
 # tracé SVG était compté comme un puits d'affichage — mesuré le 2026-08-23 : 5 occurrences dans `web/viz.js`,
 # toutes sur l'attribut `d`, portées à la colonne « dynamiques » d'un module qui n'affiche pas ce texte.
 RE_SINK_SETATTR = re.compile(r"setAttribute\(\s*\"\"\s*,\s*$")
+# UNE CLÉ D'OBJET PEUT ÊTRE ÉCRITE ENTRE GUILLEMETS (`{ 'aria-label': 'Valeur' }`) — obligatoire dès que le
+# nom porte un tiret. La tokenisation l'a réduite à `""` comme n'importe quel littéral : le NOM est donc le
+# littéral qui PRÉCÈDE, exactement comme pour `setAttribute('aria-label', 'Valeur')`. Sans cette lecture, la
+# forme la plus naturelle d'écrire un `aria-label` sous une clé serait hors-regard pour toujours. Aucune
+# occurrence sur l'arbre au 2026-08-26 : ce que ce motif ferme est un chemin, pas une dette.
+RE_CLE_LITTERALE = re.compile(r"[{,]\s*\"\"\s*:\s*$")
 RE_TERNAIRE = re.compile(r"[?:]\s*$")
 # DES NON-PUITS RECONNUS. La valeur d'une classe CSS, d'un identifiant, d'un chemin ou d'un champ de
 # formulaire n'est JAMAIS du texte affiché. Un littéral posé là n'est pas un libellé qu'on aurait ignoré,
@@ -520,6 +681,9 @@ def _est_puits(avant: str, attribut: str = "") -> bool:
         return True
     if RE_SINK_SETATTR.search(a):
         return attribut.strip() in ATTRS_HTML
+    if RE_CLE_LITTERALE.search(a):
+        # clé d'objet CITÉE : le nom est le littéral précédent, la règle est celle des clés nues
+        return _propriete(attribut) in SINKS_CLE
     # ternaire `x.title = cond ? 'A' : 'B'` : le puits est AVANT le `?`, séparé de la chaîne par la
     # condition ; on le cherche dans ce qui précède le `?` (le contexte s'arrête déjà au dernier `;`).
     if RE_TERNAIRE.search(a):
@@ -533,34 +697,91 @@ def _est_puits(avant: str, attribut: str = "") -> bool:
     return False
 
 
-def _debut_du_groupe_ouvert(tete: str) -> int:
-    """Index de la dernière parenthèse OUVERTE et jamais refermée dans `tete`, -1 s'il n'y en a pas."""
-    pile = []
-    for i, c in enumerate(tete):
-        if c == "(":
-            pile.append(i)
-        elif c == ")" and pile:
-            pile.pop()
-    return pile[-1] if pile else -1
+# =====================================================================================================
+# CE QUI SE COLLE À UN LITTÉRAL DANS LE NŒUD RENDU (`P11.13-f`)
+# =====================================================================================================
+# LE DÉFAUT CORRIGÉ, MESURÉ LE 2026-08-26. La règle précédente décidait « ce littéral n'est qu'un FRAGMENT
+# d'une valeur composée » en remontant à la dernière PARENTHÈSE OUVERTE : elle lisait donc la MISE EN FORME
+# de l'expression, pas ce qui atteint l'écran. Mesuré par mutation sur `web/detection_admin.js` : remplacer
+# `a + (c ? 'ACTIF' : 'OBSERVE')` par `a + (c ? 'ACTIF' : (lu ? 'OBSERVE' : 'OBSERVE'))` — un niveau de
+# parenthèses de plus, AUCUN changement du texte affiché — faisait passer `OBSERVE` d'« exclu » à
+# « hors-regard », et le compte du module de 28 à 29 sous un plafond de 30. Le cliquet devenait un piège
+# pour qui remanie : le verdict bougeait sans que rien d'affiché ne bouge.
+#
+# LA RÈGLE EST DÉSORMAIS CELLE DU NŒUD TEXTE, et elle est DÉRIVÉE de celle que la branche HTML applique
+# déjà à ses bords : un `+` ne fabrique un fragment que s'il colle du TEXTE à du TEXTE. Quand ce qui se
+# colle est une FRONTIÈRE DE BALISE (`…>` à gauche, `<…` à droite), le navigateur ouvre un nouveau nœud et
+# le texte rendu est ce littéral SEUL — il est affiché, il se traduit, et il doit être au lexique.
+# Les deux branches d'un même ternaire ne se collent PAS (elles s'excluent), et la CONDITION d'un ternaire
+# n'est pas un voisin : on sort donc des ternaires et de leurs groupes avant de chercher le `+`. C'est ce
+# qui rend le verdict indépendant du nombre de parenthèses.
+#
+# CE QUE LA RÈGLE NE TIENT PAS, ÉCRIT ICI. Elle lit une concaténation, pas un programme : un opérande qui
+# n'est pas un littéral (`'<b>' + nom`) est traité comme du TEXTE collé — c'est le sens prudent, il
+# maintient le littéral hors du dénominateur. Une balise écrite dans une chaîne posée en `textContent`
+# (donc affichée LITTÉRALEMENT, jamais interprétée) serait lue comme une frontière de nœud alors qu'elle
+# n'en est pas une : la garde regarderait alors une chaîne de PLUS, jamais une de moins.
+OUVRANTES, FERMANTES, ARRETS = "([{", ")]}", ";,"
 
 
-def _fragment_de_concatenation(avant: str) -> bool:
-    """Vrai si le littéral est une BRANCHE DE TERNAIRE dont le ternaire entier est un opérande de `+`
-    (`… = a + (cond ? 'x' : 'y') + b`). Le nœud texte final vaut alors le littéral PLUS ce qui s'y colle :
-    il ne peut jamais être égal à une clé, donc la chaîne est dynamique comme `'a' + x`, pas un trou.
-    Une branche de ternaire hors chaîne de concaténation (`el.textContent = c ? 'A' : 'B'`) reste statique."""
-    a = avant.rstrip()
-    if not (a.endswith("?") or a.endswith(":")):
+def _voisin_de_concatenation(contexte: tuple, sens: int) -> tuple[bool, str | None]:
+    """(y a-t-il une colle `+` de ce côté ?, texte du littéral collé — None si l'opérande n'en est pas un).
+
+    On sort des ternaires et des groupes : `?` (en remontant) précède une CONDITION, `:` sépare deux
+    branches qui S'EXCLUENT — ni l'une ni l'autre n'est un voisin. Sortir d'un groupe (`(` en remontant,
+    `)` en descendant) remet la lecture au niveau de la concaténation qui le porte, et c'est ce qui rend
+    le résultat INDÉPENDANT du niveau de parenthèses (`P11.13-f`)."""
+    code, p, litteraux = contexte
+    j = p - 1 if sens < 0 else p + 2
+    entrant, sortant = (FERMANTES, OUVRANTES) if sens < 0 else (OUVRANTES, FERMANTES)
+    profondeur, hors_concat = 0, False
+    while 0 <= j < len(code):
+        c = code[j]
+        if c in entrant:
+            profondeur += 1
+        elif c in sortant:
+            profondeur -= 1
+            if profondeur < 0:  # on sort du groupe : retour au niveau de la concaténation qui le porte
+                profondeur, hors_concat = 0, False
+        elif profondeur == 0:
+            if c in ARRETS:
+                return False, None
+            if c in "?:" and not hors_concat:
+                # condition d'un ternaire, ou branche jumelle : rien de tout cela ne se colle au nœud
+                hors_concat = True
+            elif c == "+" and not hors_concat:
+                k = j + sens
+                while 0 <= k < len(code) and code[k] in " \t\n":
+                    k += sens
+                debut = k - 1 if sens < 0 else k
+                return True, (litteraux.get(debut) if code[debut:debut + 2] == '""' else None)
+        j += sens
+    return False, None
+
+
+RE_BORD_BALISE_FIN = re.compile(r"<[a-zA-Z/][^<>]*>\s*$")
+RE_BORD_BALISE_DEBUT = re.compile(r"^\s*<[a-zA-Z/][^<>]*>")
+
+
+def _colle_dans_le_texte(cote: tuple[bool, str | None], fin: bool) -> bool:
+    """Vrai si la colle de ce côté tombe DANS le nœud texte — le littéral n'en est alors qu'un fragment.
+    Elle tombe sur une FRONTIÈRE quand le voisin ferme une balise (à gauche) ou en ouvre une (à droite)."""
+    colle, voisin = cote
+    if not colle:
         return False
-    # `{ okText: 'Créer' }` finit aussi par `:` : c'est une CLÉ d'objet, pas l'alternative d'un ternaire.
-    if RE_CLE_AUTRE.search(a) or RE_SINK_CLE.search(a) or RE_CLE_FR_EN.search(a):
+    if voisin is None:
+        return True  # opérande non littéral : on ne sait pas, et le sens prudent est « du texte se colle »
+    return not (RE_BORD_BALISE_FIN if fin else RE_BORD_BALISE_DEBUT).search(voisin)
+
+
+def _noeud_de_composition_html(gauche: tuple[bool, str | None], droite: tuple[bool, str | None]) -> bool:
+    """Vrai si le littéral est le TEXTE ENTRE BALISES d'une composition HTML écrite en plusieurs morceaux
+    (`'<span>' + (c ? 'A' : 'B') + '</span>'`) : au moins un côté est une frontière de balise, et aucun
+    côté ne colle du texte. Le nœud rendu vaut alors ce littéral SEUL — c'est un texte AFFICHÉ, au même
+    titre que le texte entre balises d'un littéral HTML d'un seul tenant."""
+    if _colle_dans_le_texte(gauche, True) or _colle_dans_le_texte(droite, False):
         return False
-    q = a.rfind("?")
-    if q < 0:
-        return False
-    tete = a[:q]
-    d = _debut_du_groupe_ouvert(tete)
-    return tete[:d].rstrip().endswith("+") if d >= 0 else False
+    return (gauche[0] and gauche[1] is not None) or (droite[0] and droite[1] is not None)
 
 
 def _non_puits_reconnu(avant: str, attribut: str = "") -> bool:
@@ -571,15 +792,39 @@ def _non_puits_reconnu(avant: str, attribut: str = "") -> bool:
     return bool(RE_NON_PUITS.search(a))
 
 
-def _dynamique(s: str, avant: str, apres: str) -> bool:
+# LA FORME D'UN HORS-REGARD EST DÉRIVÉE DU CONTEXTE, PAS ÉNUMÉRÉE (`P11.8-c`). L'aveu disait COMBIEN la
+# garde ne regarde pas ; il ne disait pas QUOI, et la répartition ne vivait qu'en commentaire — donc datée
+# d'un jour et fausse le lendemain. Elle est maintenant recalculée à chaque exécution à partir du seul texte
+# qui précède le littéral, et c'est elle qui nomme la prochaine forme à apprendre.
+RE_RETOUR = re.compile(r"\breturn\s*$")
+
+
+def forme_hors_regard(avant: str, attribut: str = "") -> str:
+    """La forme par laquelle un littéral rejoint (peut-être) le document, quand aucun puits ne le porte."""
+    a = avant.rstrip()
+    m = RE_CLE_AUTRE.search(a)
+    if m:
+        return f"valeur sous la clé d'objet « {m.group(1)} »"
+    if RE_CLE_LITTERALE.search(a):
+        return f"valeur sous la clé d'objet « {attribut.strip()} »"
+    if RE_RETOUR.search(a):
+        return "valeur de retour"
+    if a.endswith("("):
+        return "argument d'un appel"
+    if a.endswith(",") or a.endswith("["):
+        return "entrée de tableau ou argument suivant"
+    if a.endswith("?") or a.endswith(":"):
+        return "branche de ternaire"
+    return "forme non classée"
+
+
+def _dynamique(s: str, gauche: tuple[bool, str | None], droite: tuple[bool, str | None]) -> bool:
+    """Le nœud rendu vaut-il PLUS que ce littéral ? Une interpolation `${…}` le dit d'elle-même ; sinon
+    c'est une colle `+` QUI TOMBE DANS LE TEXTE (`P11.13-f`) — une colle qui tombe sur une frontière de
+    balise laisse au contraire le littéral seul dans son nœud, et il est alors affiché tel quel."""
     if SENTINELLE in s:
         return True
-    a = avant.rstrip()
-    if a.endswith("+"):
-        return True
-    if apres.lstrip().startswith("+"):
-        return True
-    return _fragment_de_concatenation(avant)
+    return _colle_dans_le_texte(gauche, True) or _colle_dans_le_texte(droite, False)
 
 
 RE_CODE_MAJUSCULE = re.compile(r"^[A-Z0-9_.:/\-]+$")
@@ -644,12 +889,18 @@ def extraire_module(src: str, journal: list[tuple[str, int]] | None = None) -> t
 
     HORS-REGARD : un littéral qui a la FORME d'un libellé (candidat, statique, pas bilingue par construction)
     et que le critère de puits ne reconnaît PAS. La garde ne sait pas dire s'il est affiché — c'est justement
-    ce qu'elle publie, plutôt que de rendre vert sur un périmètre qu'elle tait."""
+    ce qu'elle publie, plutôt que de rendre vert sur un périmètre qu'elle tait. Chaque entrée est un couple
+    (texte, FORME dérivée du contexte) : c'est la forme qui nomme la prochaine à apprendre."""
     statiques, dynamiques, par_construction, hors_regard = [], [], [], []
     precedent = ""
-    for s, avant, apres, bloc_en in chaines_js(src, journal):
+    for s, avant, apres, bloc_en, contexte in chaines_js(src, journal):
         # le littéral qui PRÉCÈDE : c'est le nom d'attribut d'un `setAttribute('x', 'valeur')`
         courant, attribut_precedent, precedent = s, precedent, s
+        # CE QUI SE COLLE À CE LITTÉRAL DANS LE NŒUD RENDU (`P11.13-f`) — la MÊME lecture pour un littéral
+        # HTML et pour un littéral nu : ce sont les deux moitiés d'une seule question, « le nœud vaut-il
+        # plus que ce texte ? ». Elle ne dépend plus du niveau de parenthèses.
+        gauche = _voisin_de_concatenation(contexte, -1)
+        droite = _voisin_de_concatenation(contexte, +1)
         if RE_CLE_FR_EN.search(avant.rstrip()):
             # valeur d'une paire `{ fr: '…', en: '…' }` : bilingue par construction, HTML ou non
             if _candidat(courant.replace(SENTINELLE, "")):
@@ -669,9 +920,9 @@ def extraire_module(src: str, journal: list[tuple[str, int]] | None = None) -> t
             # par une balise.
             colles = set()
             if donnees:
-                if apres.lstrip().startswith("+") and not courant.rstrip().endswith(">"):
+                if _colle_dans_le_texte(droite, False) and not courant.rstrip().endswith(">"):
                     colles.add(len(donnees) - 1)
-                if avant.rstrip().endswith("+") and not courant.lstrip().startswith("<"):
+                if _colle_dans_le_texte(gauche, True) and not courant.lstrip().startswith("<"):
                     colles.add(0)
             st, dy = list(att_st), list(att_dy)
             for i, d in enumerate(donnees):
@@ -680,16 +931,23 @@ def extraire_module(src: str, journal: list[tuple[str, int]] | None = None) -> t
             dynamiques += [x for x in dy if _candidat(x.replace(SENTINELLE, ""))]
             continue
         candidat = _candidat(courant.replace(SENTINELLE, ""))
+        # LE TEXTE ENTRE BALISES D'UNE COMPOSITION ÉCRITE EN PLUSIEURS MORCEAUX (`P11.13-f`). Le puits n'est
+        # pas dans le code qui précède ce littéral : il est dans les BALISES qui l'encadrent, exactement
+        # comme pour le texte entre balises d'un littéral HTML d'un seul tenant. Le nœud rendu vaut ce
+        # littéral SEUL, `i18nWalk` le compare donc bien à une clé — il est AFFICHÉ.
+        if candidat and SENTINELLE not in courant and _noeud_de_composition_html(gauche, droite):
+            (par_construction if (bloc_en or RE_CHOIX_PAR_LANG.search(avant)) else statiques).append(courant)
+            continue
         if not _est_puits(avant, attribut_precedent):
             # AUCUN puits reconnu : la garde ne regarde pas là. On le DIT au lieu de l'oublier.
-            if (candidat and not _dynamique(courant, avant, apres)
+            if (candidat and not _dynamique(courant, gauche, droite)
                     and not (bloc_en or RE_CHOIX_PAR_LANG.search(avant))
                     and not _non_puits_reconnu(avant, attribut_precedent)):
-                hors_regard.append(courant)
+                hors_regard.append((courant, forme_hors_regard(avant, attribut_precedent)))
             continue
         if not candidat:
             continue
-        if _dynamique(courant, avant, apres):
+        if _dynamique(courant, gauche, droite):
             dynamiques.append(courant)
         elif bloc_en or RE_CHOIX_PAR_LANG.search(avant):
             par_construction.append(courant)
@@ -709,7 +967,7 @@ def cles_du_lexique(src: str) -> set[str]:
         return set()
     corps = m.group(1)
     cles = set()
-    for s, avant, _, _ in chaines_js(corps):
+    for s, avant, _, _, _ in chaines_js(corps):
         # une CLÉ est un littéral suivi de `:` ; la tokenisation remplace les littéraux par `""`,
         # donc on regarde le code qui PRÉCÈDE : une clé est précédée de `{`, `,` ou d'un début de ligne.
         a = avant.rstrip()
@@ -750,6 +1008,11 @@ o.textContent = 'Affiché quatorze';
 el.innerHTML = '<p>Affiché quinze <code>pas_un_libellé(x)</code> <kbd>Ctrl</kbd></p><optgroup label="Affiché seize"></optgroup>';
 const paires = [{ t: 'x', fr: 'Paire française <nom>', en: 'English pair <name>' }];
 const lit = `"${String(v).replace(/"/g, '')}"`; u.textContent = 'Affiché dix-sept';
+host.appendChild(Object.assign(document.createElement('div'), { className: 'muted', textContent: 'Affiché dix-huit' }));
+w.appendChild(Object.assign(document.createElement('i'), { 'aria-label': 'Affiché dix-neuf' }));
+const dur = { emptyText: 'Sous une clé que le document ne connaît pas' };
+z1.innerHTML = '<span class="mtl">' + (cond ? 'Noeud entre balises' : 'z') + '</span>';
+z2.textContent = (cond ? 'Fragment colle a droite' : 'z') + ' suite du texte';
 """
 # Un module qui porte le registre : sa définition est la seule surface exempte, ce qui l'entoure est jugé.
 CORPUS_TEMOIN_REGISTRE = """export const HELP = {
@@ -761,17 +1024,31 @@ x.textContent = 'Hors registre';
 # « Affiché dix-sept » est le TÉMOIN DU LITTÉRAL D'EXPRESSION RÉGULIÈRE (`P11.8-e`) : il est posé APRÈS
 # un `${… .replace(/"/g, '') …}` en fin de corpus. Un découpeur qui ne reconnaît pas la regex prend le `"`
 # du motif pour l'ouverture d'une chaîne, avale le reste, et cette chaîne-là disparaît du décompte.
+# « Affiché dix-huit » et « Affiché dix-neuf » sont les TÉMOINS DE LA CLÉ-PROPRIÉTÉ (`P11.8-c`) : la valeur
+# rejoint le document sous une CLÉ (`{ textContent: … }`, `{ 'aria-label': … }`) et non par une affectation.
+# La forme citée entre guillemets est là parce qu'un nom d'attribut à tiret ne peut PAS s'écrire nu.
+# « Noeud entre balises » est le TÉMOIN DU NŒUD DE COMPOSITION (`P11.13-f`) : le texte n'est pas DANS un
+# littéral HTML, il est COLLÉ entre deux littéraux HTML dont les bords sont des balises. Ce qui atteint
+# l'écran est ce texte SEUL, donc il est affiché et doit être au lexique. « Fragment colle a droite » est
+# son NÉGATIF : même forme, mais ce qui se colle est du TEXTE — le nœud vaut plus que le littéral, une clé
+# pour lui serait morte. L'ancienne règle voyait le premier comme un fragment et le second comme affiché :
+# elle lisait les parenthèses, pas l'écran.
 ATTENDUS_STATIQUES = {"aucun runbook", "nom et champ requis", "Affiché dix-sept",
+                      "Affiché dix-huit", "Affiché dix-neuf", "Noeud entre balises",
                       "Affiché un", "Affiché deux", "Affiché trois", "Affiché quatre", "Affiché cinq",
                       "Affiché six", "Affiché sept", "Affiché huit", "Affiché neuf", "Affiché dix",
                       "Affiché onze", "Affiché douze", "Affiché treize", "Affiché quatorze", "Affiché quinze",
                       "Affiché seize"}
 # Les deux derniers sont des FRAGMENTS d'une valeur composée : le nœud rendu vaut le littéral PLUS ce qui
 # s'y colle, donc jamais une clé. Ils sont dynamiques, pas des trous — une clé pour eux serait morte.
-ATTENDUS_DYNAMIQUES = 4
+ATTENDUS_DYNAMIQUES = 5
 # Témoin NÉGATIF de la même règle : un identifiant qui accroche ses mots par de la ponctuation reste dehors.
-INTERDITS = {"src_ip", "/api/v1/alerts", "count", "sort -count",
-             "Fragment de ternaire", "Fragment HTML de bord :",
+# « Sous une clé que le document ne connaît pas » est le TÉMOIN NÉGATIF de la clé-propriété : la règle est
+# DÉRIVÉE des propriétés d'affichage, elle ne dit donc pas oui à n'importe quelle clé. Sans lui, remplacer la
+# dérivation par « toute clé d'objet est un puits » passerait sans bruit et compterait des données.
+INTERDITS = {"Sous une clé que le document ne connaît pas",
+             "src_ip", "/api/v1/alerts", "count", "sort -count",
+             "Fragment de ternaire", "Fragment HTML de bord :", "Fragment colle a droite",
              "Pas affiché", "pas-une-chaine affichée", "valeur_technique", "pas une chaîne", "T1110", "…", "x",
              "English only", "English rich", "pas_un_libellé(x)", "Ctrl", "Paire française", "English pair"}
 
@@ -790,12 +1067,13 @@ function nom() { return 'Valeur de retour'; }
 host.appendChild(opt('Argument de fabrique partagée'));
 const t = cond ? 'Branche de ternaire vraie' : 'Branche de ternaire fausse';
 const phrases = { page: 'Phrase sous une clé inconnue' };
+toast((e && e.message) || 'Repli apres un ou logique');
 el.setAttribute('d', 'Attribut non affiché');
 el.className = 'classe css composee';
 """
 ATTENDUS_HORS_REGARD = {"Entrée de tableau", "Valeur de retour", "Argument de fabrique partagée",
                         "Branche de ternaire vraie", "Branche de ternaire fausse",
-                        "Phrase sous une clé inconnue"}
+                        "Phrase sous une clé inconnue", "Repli apres un ou logique"}
 # Ceux-là ne sont ni comptés ni avoués : la garde SAIT qu'ils n'affichent rien. Un aveu qui les nommerait
 # mélangerait l'INDÉCIDABLE et le DÉJÀ TRANCHÉ, et ferait rougir le cliquet sur une classe CSS neuve.
 ATTENDUS_HORS_POPULATION = {"Attribut non affiché", "classe css composee"}
@@ -809,6 +1087,18 @@ CORPUS_DESYNCHRONISATION = r"""
 if (x) /"/.test(y);
 """
 
+# LE TÉMOIN DE LA PARENTHÈSE (`P11.13-f`) — LE SEUL QUI TIENNE L'ATTENDU DE LA CLÉ. Deux corpus qui ne
+# diffèrent QUE par un niveau de parenthèses : un ternaire simple, puis le même ternaire dont la branche
+# fausse est elle-même un ternaire. AUCUN texte affiché ne change. Le classement doit donc être MOT POUR
+# MOT le même. Sans ce témoin, un retour à une règle qui remonte à « la dernière parenthèse ouverte »
+# repasserait sans bruit — et c'est exactement ce qui faisait basculer trois libellés d'un module réel.
+# Le témoin est DOUBLE : l'égalité seule serait satisfaite par une garde devenue aveugle aux deux formes,
+# donc la première forme doit AUSSI être vue affichée.
+PAIRE_PARENTHESES = (
+    """el.innerHTML = \'<span class="k">\' + (c ? \'Parenthese temoin\' : \'z\') + \'</span>\';\n""",
+    """el.innerHTML = \'<span class="k">\' + (c ? \'Parenthese temoin\' : (d ? \'z\' : \'z\')) + \'</span>\';\n""",
+)
+
 
 def valider_instrument() -> list[str]:
     errs = []
@@ -818,6 +1108,18 @@ def valider_instrument() -> list[str]:
         temoins_du_lecteur()
     except AssertionError as e:
         errs.append(f"lecteur JavaScript partagé : {e}")
+    # LA PARENTHÈSE NE CHANGE PAS LE VERDICT (`P11.13-f`) — témoin positif ET égalité, dans cet ordre :
+    # une garde aveugle aux deux formes satisferait l'égalité toute seule.
+    classes = [({x.strip() for x in r[0]}, {x.strip() for x in r[1]}, {t.strip() for t, _ in r[3]})
+               for r in (extraire_module(PAIRE_PARENTHESES[0]), extraire_module(PAIRE_PARENTHESES[1]))]
+    if "Parenthese temoin" not in classes[0][0]:
+        errs.append(f"témoin de PARENTHÈSE (positif) : un texte collé entre deux balises n'est pas vu affiché "
+                    f"({sorted(classes[0][0])}) — l'égalité qui suit ne prouverait plus rien.")
+    elif classes[0] != classes[1]:
+        errs.append(f"témoin de PARENTHÈSE : le classement dépend du NIVEAU DE PARENTHÈSES — ternaire simple "
+                    f"{classes[0]}, ternaire imbriqué {classes[1]}. Aucun texte affiché ne diffère entre les deux "
+                    f"corpus : la garde lit la mise en forme du code, pas ce qui atteint l'écran, et son cliquet "
+                    f"devient un piège pour qui remanie.")
     st, dy, pc, _hr = extraire_module(CORPUS_TEMOIN)
     sst = {s.strip() for s in st}
     if {x.strip() for x in pc} != {"Bilingual", "Bilingue", "English only", "English rich", "Paire française <nom>", "English pair <name>"}:
@@ -843,7 +1145,8 @@ def valider_instrument() -> list[str]:
     # ANTI-CORPUS : le périmètre n'a pas bougé sans que l'aveu bouge avec lui.
     st_a, dy_a, pc_a, hr_a = extraire_module(CORPUS_ANTI_REGARD)
     vus_a = {x.strip() for x in st_a} | {x.strip() for x in dy_a} | {x.strip() for x in pc_a}
-    hors_a = {x.strip() for x in hr_a}
+    hors_a = {t.strip() for t, _ in hr_a}
+    formes_a = {t.strip(): f for t, f in hr_a}
     appris = sorted(ATTENDUS_HORS_REGARD & vus_a)
     if appris:
         errs.append(f"anti-corpus : la garde COMPTE désormais une forme qu'elle déclarait ne pas regarder : {appris}. "
@@ -857,6 +1160,31 @@ def valider_instrument() -> list[str]:
         errs.append(f"anti-corpus : {su} est compté ou avoué alors que son emplacement n'affiche jamais de texte "
                     f"(classe CSS, attribut non affiché) : l'aveu doit nommer ce dont la garde ne peut PAS décider, "
                     f"pas ce qu'elle sait déjà hors sujet.")
+    # LA RÉPARTITION PUBLIÉE EST UN INSTRUMENT, ELLE SE VALIDE AUSSI. Sans ce témoin, la dérivation des
+    # formes pourrait tomber sur « forme non classée » pour tout, et l'aveu resterait vert en ne disant
+    # plus rien. Chaque forme de l'anti-corpus porte donc le NOM qu'elle doit recevoir.
+    formes_attendues = {
+        "Entrée de tableau": "entrée de tableau ou argument suivant",
+        "Valeur de retour": "valeur de retour",
+        "Argument de fabrique partagée": "argument d'un appel",
+        "Branche de ternaire vraie": "branche de ternaire",
+        "Branche de ternaire fausse": "branche de ternaire",
+        "Phrase sous une clé inconnue": "valeur sous la clé d'objet « page »",
+        # LE SIXIÈME POSTE PUBLIÉ A LUI AUSSI SON NOM GARDÉ. « forme non classée » est le repli du classeur :
+        # il pesait 114 occurrences sur 716 (15,9 %) le 2026-08-26, quatrième poste de l'aveu, et l'anti-corpus
+        # ne l'exerçait pas — un aveu peut donc glisser vers ce repli sans que rien ne casse, et ne plus rien
+        # désigner tout en restant vert. Le repli d'un `||` (`toast((e && e.message) || '…')`) en est la forme
+        # la plus courante sur `web/` : le littéral est bien un candidat à l'affichage, mais rien avant lui ne
+        # nomme un puits. CE QUE CE TÉMOIN NE TIENT PAS : il garde le NOM du poste, pas sa COMPOSITION — le
+        # poste mêle ce repli à des opérandes de comparaison (`if (e.key === 'Escape')`) qui, eux, n'affichent
+        # jamais rien et sont du BRUIT dans l'aveu, comme l'étaient les classes CSS avant leur retrait.
+        "Repli apres un ou logique": "forme non classée",
+    }
+    ecarts = {t: (formes_a.get(t), f) for t, f in formes_attendues.items() if formes_a.get(t) != f}
+    if ecarts:
+        errs.append(f"anti-corpus : la FORME publiée pour un hors-regard n'est plus celle attendue {ecarts} — "
+                    f"la répartition rendue à chaque exécution ne nomme plus ce que la garde ne regarde pas, "
+                    f"et un aveu qui ne dit plus QUOI est un aveu mort.")
     en_trop = sorted(hors_a - ATTENDUS_HORS_REGARD)
     if en_trop:
         errs.append(f"anti-corpus : hors-regard inattendu {en_trop} — l'anti-corpus doit nommer EXACTEMENT ce que la "
@@ -920,7 +1248,8 @@ def mesurer(registre: tuple[str, str] | None) -> tuple[dict[str, dict], set[str]
         couvertes = [s for s in uniques if s in cles] + sorted(bilingues)
         trous = [s for s in uniques if s not in cles]
         total = len(uniques) + len(bilingues)
-        aveugles = sorted({s.strip() for s in hr})
+        aveugles = sorted({t.strip() for t, _ in hr})
+        formes = collections.Counter(f for _, f in hr)
         resultats[f] = {
             "population": total,
             "couvertes": len(couvertes),
@@ -928,6 +1257,7 @@ def mesurer(registre: tuple[str, str] | None) -> tuple[dict[str, dict], set[str]
             "trous": trous,
             "dynamiques": len({s for s in dy}),
             "hors_regard": aveugles,
+            "formes": formes,
             # LA CONFESSION, ÉCRITE PAR LE DÉPÔT : parmi ce que la garde ne regarde pas, ce que le lexique
             # porte DÉJÀ. Aucun humain ne l'écrit — c'est le dépôt qui prouve que le périmètre du critère de
             # puits est plus étroit que l'affichage réel.
@@ -1024,6 +1354,55 @@ def main(argv: list[str]) -> int:
           f"({100.0 * aveugles_au_lexique / aveugles if aveugles else 0.0:.1f} %) sont DÉJÀ des clés du lexique : c'est le "
           f"dépôt lui-même qui atteste qu'ils sont affichés, et donc que le périmètre regardé est plus étroit que "
           f"l'affichage. `--hors-regard MODULE` les liste.")
+    # LA RÉPARTITION EST RECALCULÉE, PAS RECOPIÉE (`P11.8-c`). Un aveu qui dit COMBIEN sans dire QUOI ne
+    # désigne pas la prochaine forme à apprendre ; et une répartition figée dans un commentaire est datée
+    # d'un jour. Les postes sortent du contexte de chaque littéral, à chaque exécution.
+    formes = collections.Counter()
+    for r in resultats.values():
+        formes.update(r["formes"])
+    postes = collections.Counter()
+    cles_d_objet = collections.Counter()
+    for forme, n in formes.items():
+        tete = forme.split(" « ")[0]
+        postes[tete] += n
+        if len(forme.split(" « ")) > 1:
+            cles_d_objet[forme.split(" « ")[1].rstrip(" »")] += n
+    # LE DÉNOMINATEUR EST CELUI DES OCCURRENCES, PAS DES TEXTES DISTINCTS. La colonne hors-regard compte des
+    # textes DÉDUPLIQUÉS par module (c'est ce que garde le cliquet) ; une même phrase posée deux fois y
+    # compte une fois et ici deux. Rapporter les postes au compte dédupliqué ferait des parts qui dépassent
+    # 100 % — un instrument qui rend un pourcentage impossible n'est pas cru, à raison.
+    occurrences = sum(postes.values())
+    print(f"PAR FORME, sur {occurrences} OCCURRENCES (dérivée du contexte à chaque exécution — c'est elle qui "
+          f"nomme la prochaine à apprendre ; le compte gardé, lui, est celui des {aveugles} textes distincts) :")
+    for forme, n in postes.most_common():
+        print(f"    {n:>4}  {100.0 * n / occurrences if occurrences else 0.0:>5.1f} %  {forme}")
+    if cles_d_objet:
+        tete = ", ".join(f"{k} {v}" for k, v in cles_d_objet.most_common(8))
+        print(f"    clés d'objet les plus portantes ({len(cles_d_objet)} distinctes) : {tete}. Une clé qui NOMME "
+              f"une propriété d'affichage du document est déjà lue ; celles-ci n'en nomment aucune — il "
+              f"faudrait suivre le flux jusqu'à l'écriture pour trancher, et ce n'est pas fait.")
+    # LE JEU DU CLIQUET EST PUBLIÉ, PAS ÉCRIT À CÔTÉ DU CHIFFRE. Un plafond qui reste AU-DESSUS de son relevé
+    # n'est pas une régression — c'est la place que des libellés neufs peuvent prendre sans faire rougir
+    # personne, et c'est donc ce que la garde laisse passer aujourd'hui. Écrit à la main dans un commentaire,
+    # ce jeu est daté d'un jour et faux le lendemain : `dashboards.js` a porté 25 pour 22 mesurés pendant que
+    # le commentaire d'à côté reprochait à un autre module d'être « en RETARD de deux crans sur son propre
+    # relevé ». Il est donc DÉRIVÉ de la mesure du jour, à chaque exécution, et nommé module par module.
+    jeu = sorted(((m, plafonds_hr[m] - len(r["hors_regard"])) for m, r in resultats.items()
+                  if m in plafonds_hr and plafonds_hr[m] > len(r["hors_regard"])),
+                 key=lambda x: (-x[1], x[0]))
+    jeu_trous = sorted(((m, plafonds[m] - len(r["trous"])) for m, r in resultats.items()
+                        if m in plafonds and plafonds[m] > len(r["trous"])),
+                       key=lambda x: (-x[1], x[0]))
+    if jeu or jeu_trous:
+        detail = ", ".join(f"{m} +{n}" for m, n in jeu) or "aucun"
+        print(f"JEU DU CLIQUET : {len(jeu)} plafond(s) de hors-regard au-dessus de leur relevé du jour "
+              f"(total {sum(n for _, n in jeu)} cran(s)) — {detail} ; et {len(jeu_trous)} plafond(s) de trous "
+              f"(total {sum(n for _, n in jeu_trous)}). Un cliquet REFUSE une hausse ; il ne force pas une "
+              f"descente. Ce jeu est ce que la garde laisse passer sans rougir : le faire descendre au relevé "
+              f"est le seul mouvement qui ne se discute pas.")
+    else:
+        print("JEU DU CLIQUET : aucun plafond au-dessus de son relevé du jour — chaque cliquet est au ras de sa "
+              "mesure, et le moindre libellé neuf posé dans une forme non lue rougit.")
     if mesure:
         return 0
 

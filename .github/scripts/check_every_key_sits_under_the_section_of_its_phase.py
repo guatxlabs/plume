@@ -55,7 +55,7 @@ def epreuves():
     cas = [
         ("clé sous sa phase", bon, 0, 0),
         ("clé sous une AUTRE phase", "## P3 — a\n| **P4.1-a** | y |\n", 1, 1),
-        ("clé sans aucune section", "| **P9.1-a** | y |\n", 1, 1),
+        ("clé sans aucune section", "| **P1.1-a** | y |\n", 1, 1),  # phase NON titrée : convention des témoins
         ("clé sous un titre qui n'est pas une phase", "## Limites\n| **P3.1-a** | y |\n", 1, 1),
         ("clé montrée dans un bloc de code", "## P3 — a\n```\n| **P4.1-a** | y |\n```\n", 0, 0),
         ("phase à deux chiffres", "## P10 — a\n| **P10.5-a** | y |\n", 0, 0),

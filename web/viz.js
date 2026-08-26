@@ -1357,7 +1357,13 @@ async function evLoad() {
       else if (jumpOff > 0 && j.stats && j.stats.truncated) $('#qstats').textContent = `${ktot}page ${S.evState.page + 1} atteinte par saut direct : contenu partiel (plafond serveur) — ◀ / ▶ parcourent le résultat complet par curseur`;
     } else {
       const pages = S.evState.total >= 0 ? Math.max(1, Math.ceil(S.evState.total / S.evState.pageSize)) : '?';
-      const totTxt = S.evState.total >= 0 ? (S.evState.total + (S.evState.totalCapped ? '+' : '') + ' lignes') : 'total inconnu';
+      // P11.13-f — CE LIBELLÉ NE PEUT PAS PASSER PAR LE LEXIQUE, IL EST DONC BILINGUE PAR CONSTRUCTION.
+      // `i18nWalk` ne remplace que sur l'égalité du nœud texte ENTIER (web/i18n.js) ; or ce mot est un
+      // FRAGMENT du nœud d'état (« page X/Y · … · serveur … ms · total … ms »), jamais un nœud à lui seul.
+      // Une entrée au lexique serait une entrée MORTE — un vert sans traduction, le piège déjà nommé pour
+      // les fragments de concaténation. Les trois autres états de `#qstats` (« Annulé », « exécution… »,
+      // « Trop lourd… ») remplissent le nœud ENTIER : eux passent bien par le lexique.
+      const totTxt = S.evState.total >= 0 ? (S.evState.total + (S.evState.totalCapped ? '+' : '') + ' lignes') : (LANG === 'en' ? 'unknown total' : 'total inconnu');
       $('#qstats').textContent = `page ${S.evState.page + 1}/${pages}${S.evState.totalCapped ? '+' : ''} · ${totTxt} · serveur ${srv} ms · total ${net} ms`;
     }
     // COUNT async SANS PLAFOND — keyset (total inconnu) OU offset CAPÉ (| table/| fields gardent l'offset + COUNT capé

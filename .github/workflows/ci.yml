@@ -1119,6 +1119,33 @@ jobs:
       - name: L'état d'une clé est un de ceux que la légende déclare (P8.9-h)
         run: python3 .github/scripts/check_a_key_state_is_one_the_legend_declares.py
 
+      # `P8.9-i` — UNE GARDE ÉCRITE MAIS NON CÂBLÉE NE REFUSE RIEN, et son verdict se lit pourtant comme
+      # une garantie. Mesuré le 2026-08-26 : deux gardes neuves vivaient dans `.github/scripts/` sans
+      # qu'aucun pas ne les exécute ; le mécanisme qu'elles protégeaient pouvait disparaître sans qu'un
+      # seul vert ne bouge. Le corpus est le RÉPERTOIRE et non l'index du dépôt — une garde neuve existe
+      # sur le disque avant d'être suivie, et c'est là qu'on oublie de la câbler.
+      - name: Une garde écrite est une garde câblée (P8.9-i)
+        run: python3 .github/scripts/check_every_guard_written_is_a_guard_wired.py
+
+      # `P8.9-j` — UNE CLÉ CITÉE PAR LE CODE MAIS ABSENTE DE L'INDEX désigne un travail que rien ne suit.
+      # Mesuré le 2026-08-26 : quatre clés vivaient dans des modules de la console, dans deux gardes et
+      # dans l'intégration continue sans exister dans la feuille de route — dont une, citée quinze fois
+      # avec son propre fichier de témoins, qui était FERMÉE depuis le 9 août. Le contrôle des restes ne
+      # lit que l'index : il ne pouvait pas les voir. La borne des clés FACTICES des témoins est dérivée
+      # de l'index lui-même — une phase que l'index ne titre pas est une phase fabriquée.
+      - name: Une clé citée par le code existe dans l'index (P8.9-j)
+        run: python3 .github/scripts/check_every_key_cited_in_the_code_exists_in_the_index.py
+
+      # `P11.19-a` — CE QU'UN CAPTEUR ÉMET EST DÉCLARÉ, et le mot étranger est refusé à l'émission.
+      - name: Un producteur déclare les valeurs qu'il émet (P11.19-a)
+        run: python3 .github/scripts/check_a_producer_declares_the_values_it_emits.py
+
+      # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
+      # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
+      # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
+      - name: Une liste cherchable se souvient de sa recherche (P11.18-z)
+        run: python3 .github/scripts/check_every_searchable_list_remembers_its_search.py
+
       # `P8.9-f` — L'INDEX ET LES COMMITS POUVAIENT SE CONTREDIRE SANS QUE RIEN NE LE DISE. Deux fois
       # le 2026-08-25, des clés commitées, déployées et VÉRIFIÉES EN PRODUCTION figuraient encore
       # parmi les clés OUVERTES : qui lit « ce qui est ouvert » ne voyait pas ce qui est fait. Cette

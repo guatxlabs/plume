@@ -534,7 +534,7 @@ TEMOINS_DE_LA_LECTURE = [
     # ne prouve rien. Chacun porte désormais un mot du lexique témoin, placé là où il NE DOIT PAS
     # attacher, et `valider_la_lecture` refuse de conclure si l'un d'eux redevient vide.
     ("P9.6-a TRANCHÉE par l'opérateur : base neuve chiffrée, et P9.4-b fermée", {"P9.4-b"}),
-    ("P8.13-a VÉRIFIÉE en production, P8.13-b fermée le même jour", {"P8.13-b"}),
+    ("P2.13-a VÉRIFIÉE en production, P2.13-b fermée le même jour", {"P2.13-b"}),
     ("P11.4-j, P11.5-d, P11.8-c, P11.12-a : deployees et VERIFIEES en production, aucune fermee",
      set()),                                          # le mot de fermeture ne SUIT aucun groupe
     ("fermée depuis longtemps, P3.9-a n'est ici que citée", set()),  # le mot PRÉCÈDE : il n'attache pas

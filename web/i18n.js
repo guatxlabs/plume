@@ -969,6 +969,33 @@ const I18N_EN = {
   "auto on": "auto on", "event types": "event types",
   "search source=sudo | stats count by source": "search source=sudo | stats count by source",
   "search source=$value | table ts,source,src_ip,message": "search source=$value | table ts,source,src_ip,message",
+  // P11.8-c — HUIT libellés qui arrivaient au document SOUS UNE CLÉ (`Object.assign(el, { textContent: … })`)
+  // et qu'aucune garde ne voyait : le critère de puits lisait `.textContent =` mais pas `textContent:`.
+  // Ils étaient affichés en français sous `LANG='en'` depuis leur écriture, sans jamais faire rougir un
+  // plafond de zéro. Mesurés le 2026-08-26, une fois la liste des clés-puits DÉRIVÉE des propriétés
+  // d'affichage déjà déclarées au lieu d'être tenue à côté d'elles.
+  "Files :": "Queues:", "Liens": "Links", "Runbook / réponse guidée": "Runbook / guided response",
+  "runbook indisponible": "runbook unavailable",
+  "Dashboard vide.": "Empty dashboard.", "aucune donnée sur la fenêtre": "no data over the window",
+  "… chargement (mesure en cours)": "… loading (measuring)",
+  "ÉTAPES (phasées, ordonnées)": "STEPS (phased, ordered)",
+  // P11.8-c — SEPT libellés que le critère de puits ÉLARGI a rendus visibles le 2026-08-26, sur QUATRE
+  // modules dont trois qu'aucun lot ne touchait : ils étaient affichés en français sous `LANG='en'` depuis
+  // leur écriture, sous un plafond de zéro que rien ne faisait rougir. Ce ne sont pas des chaînes neuves,
+  // c'est une DETTE RÉVÉLÉE : la garde a cessé de faire dépendre le classement du niveau de parenthèses et
+  // lit maintenant ce qui atteint le NŒUD RENDU, donc la branche d'un ternaire qui remplit un élément à elle
+  // seule (`'<span class="mt-lbl">' + (a ? 'ACTIF' : 'OBSERVE') + '</span>'`) est bien une chaîne affichée.
+  // CHAQUE CLÉ EST LE NŒUD TEXTE ENTIER, vérifié fragment par fragment : `i18nWalk` ne remplace que sur une
+  // égalité exacte après `trim()`, une clé qui ne serait qu'un MORCEAU du nœud serait une entrée morte et
+  // rendrait un vert sans traduction (c'est le piège déjà nommé pour les fragments de concaténation).
+  "groupes indisponibles": "groups unavailable",
+  "ACTIF": "ACTIVE", "Actif — réponses automatiques": "Active — automatic responses",
+  "Observation — propositions seulement": "Observation — proposals only",
+  "muet (plus rien n'arrive, toutes sources confondues)": "silent (nothing arrives any more, all sources combined)",
+  // IDENTIQUES DANS LES DEUX LANGUES, inscrits POUR LE DIRE (même convention que « auto on » ci-dessus) :
+  // « auto off » est déjà de l'anglais, et « OBSERVE » est le mot que la langue anglaise emploie pour ce
+  // mode — c'est le pendant court d'« Observation », le terme que les infobulles voisines rendent déjà.
+  "auto off": "auto off", "OBSERVE": "OBSERVE",
 };
 // Attributs AFFICHÉS que le dictionnaire traduit : infobulle, texte d'attente, nom accessible, et le libellé
 // d'un groupe d'options (`<optgroup label>`). Un attribut `value` n'est jamais touché (c'est une donnée).

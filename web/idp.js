@@ -4,6 +4,7 @@
 // champ password, JAMAIS réaffiché, ré-envoyé UNIQUEMENT s'il est re-saisi (omis = conservé côté serveur).
 // La vraie garde reste SERVEUR (/api/idp/* admin-only ; /api/mfa/* borné à au.name).
 import { $, api, apiSend, confirmWithConsequence, disclosure, esc, fmtTs, modal, muted, toast, withBusy } from './core.js';
+import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
 // ---------------------------------------------------------------------------------------------------
@@ -37,20 +38,20 @@ export async function loadIdpProviders() {
 function providerRow(p) {
   const row = document.createElement('div');
   row.className = 'idp-row'; row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--bd)';
-  const dot = document.createElement('span');
-  dot.textContent = p.enabled ? '●' : '○'; dot.style.color = p.enabled ? 'var(--ok,#4ade80)' : 'var(--mut)';
-  dot.title = p.enabled ? 'activé' : 'désactivé';
   const name = document.createElement('b'); name.textContent = p.name;
   const kind = document.createElement('span'); kind.className = 'muted'; kind.style.fontSize = '12px';
   kind.textContent = KIND_LABEL[p.kind] || p.kind;
   const meta = document.createElement('span'); meta.className = 'muted'; meta.style.cssText = 'font-size:11px;margin-left:auto';
   const issuer = (p.config && (p.config.issuer || p.config.url)) || '';
   meta.textContent = (p.has_secret ? '🔑 ' : '') + (issuer ? esc(issuer) : '') + (p.updated ? '  · maj ' + fmtTs(p.updated) : '');
-  const toggle = mkBtn(p.enabled ? 'Désactiver' : 'Activer', async () => {
-    await withBusy(toggle, async () => {
-      try { await apiSend('/idp/providers/' + p.id, 'POST', { enabled: !p.enabled }); toast('mis à jour', 'ok'); loadIdpProviders(); }
-      catch (e) { toast('erreur : ' + e.message, 'bad'); }
-    });
+  // COMMUTATEUR PARTAGÉ (`P11.13-c`) : ce que la bascule arme, c'est une PORTE D'ENTRÉE — des comptes
+  // extérieurs peuvent ouvrir une session par ce fournisseur. Le bouton « Activer / Désactiver » ne le
+  // disait pas. `enabledSwitch` écrit la conséquence à côté de l'interrupteur dans les deux états, porte
+  // l'état par le mot (ON / OFF) — ce que la pastille disait — et rétablit la case si le serveur refuse.
+  const toggle = enabledSwitch({
+    enabled: !!p.enabled, name: p.name, allowed: true, confirmOnEnable: true,
+    consequence: 'les comptes de cet annuaire ' + (KIND_LABEL[p.kind] || p.kind) + ' peuvent ouvrir une session sur plume, avec le rôle que leur groupe leur donne ; OFF, plus aucune session ne s\'ouvre par ce fournisseur',
+    onToggle: (next) => apiSend('/idp/providers/' + p.id, 'POST', { enabled: next }),
   });
   const edit = mkBtn('Éditer', () => openIdpForm(p));
   const del = mkBtn('Supprimer', async () => {
@@ -60,7 +61,7 @@ function providerRow(p) {
     catch (e) { toast('erreur : ' + e.message, 'bad'); }
   });
   del.classList.add('btn-danger');
-  row.append(dot, name, kind, meta, toggle, edit, del);
+  row.append(toggle, name, kind, meta, edit, del);
   return row;
 }
 
@@ -154,6 +155,15 @@ function openIdpForm(existing) {
     // n'inclut le secret QUE s'il est saisi (vide = conserver côté serveur).
     const body = { config, enabled: en.checked };
     if (secret) body.secret = secret;
+    // `P11.13-c` : CE FORMULAIRE ARME. `body.enabled` part avec l'enregistrement — un fournisseur d'identité
+    // enregistré « activé » est une porte d'entrée ouverte, et l'utilisateur ne le voyait qu'après coup. La
+    // conséquence est donc nommée AVANT le geste, dans les deux sens ; le formulaire reste ouvert si on refuse.
+    if (!(await confirmWithConsequence(
+      existing ? 'Enregistrer le fournisseur « ' + existing.name + ' »' : 'Créer le fournisseur « ' + v('idpf-name') + ' »',
+      en.checked
+        ? 'ce fournisseur sera ACTIF : les comptes de son annuaire pourront ouvrir une session sur plume, avec le rôle que leur groupe leur donne.'
+        : 'ce fournisseur sera enregistré INACTIF : personne ne pourra ouvrir de session par lui tant qu\'il n\'est pas activé depuis la liste.',
+      { okText: 'Enregistrer' }))) return;
     try {
       await withBusy(save, async () => {
         if (existing) { await apiSend('/idp/providers/' + existing.id, 'POST', body); }

@@ -8,6 +8,7 @@
 // SÉCU UI : rendu textContent (anti-XSS) ; la VRAIE garde reste serveur (403 hors admin). Défense en
 // profondeur : on court-circuite le fetch hors admin.
 import { $, api, apiSend, confirmWithConsequence, fetchInto, muted, pagedList, toast } from './core.js';
+import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
 function num(v) { return typeof v === 'number' ? v : 0; }
@@ -72,13 +73,13 @@ function indexRow(r, globalDays) {
   row.append(name, ret, caps, stats, spacer);
 
   if (r.has_policy) {
-    // toggle actif
-    const en = document.createElement('input'); en.type = 'checkbox'; en.checked = r.enabled !== false; en.title = 'active';
-    en.onchange = async () => {
-      const want = en.checked;
-      try { await apiSend('/index-policies/' + r.id, 'POST', { enabled: want }); r.enabled = want; toast(want ? 'index activé' : 'index désactivé', 'ok'); }
-      catch (e) { en.checked = !want; toast('échec : ' + ((e && e.message) || e), 'bad'); }
-    };
+    // toggle actif — COMMUTATEUR PARTAGÉ (`P11.13-c`) : ce que la bascule arme est un RÉGIME DE PURGE, et la
+    // case nue ne le disait pas. La conséquence est écrite à côté de l'interrupteur dans les deux états.
+    const en = enabledSwitch({
+      enabled: r.enabled !== false, name: r.name, allowed: true, confirmOnEnable: false,
+      consequence: 'la purge applique à cet index sa rétention propre (' + (num(r.retention_days) > 0 ? num(r.retention_days) + ' j' : 'héritée : ' + globalDays + ' j') + ') et ses plafonds ; OFF, l\'index retombe sur la rétention globale',
+      onToggle: (next) => apiSend('/index-policies/' + r.id, 'POST', { enabled: next }),
+    });
     const edit = document.createElement('button'); edit.type = 'button'; edit.textContent = 'Éditer'; edit.className = 'btn btn-sm'; // P11.4-b : bouton texte = .btn (pas le chrome icône)
     edit.onclick = () => openIndexPolicyForm(r);
     const del = document.createElement('button'); del.type = 'button'; del.textContent = 'Supprimer'; del.className = 'btn btn-sm btn-danger';

@@ -10,6 +10,7 @@
 // -> champ password, JAMAIS réaffiché, ré-envoyé UNIQUEMENT s'il est re-saisi (vide = conservé côté serveur).
 // La VRAIE garde reste serveur (403 hors admin + route_min_role Admin) ; ceci est la défense en profondeur.
 import { $, api, apiSend, confirmModal, fetchInto, fmtTs, humanAge, ic, muted, pagedList, toast, withBusy } from './core.js';
+import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
 const DEST_TYPES = { syslog: 'Syslog (RFC5424/TCP)', hec: 'HEC-out (Splunk)', webhook: 'Webhook (POST JSON)', s3: 'S3 (design/stub)', kafka: 'Kafka (design/stub)' };
@@ -37,14 +38,14 @@ function badge(text, title, tone) {
 
 function destinationRow(d) {
   const row = document.createElement('div'); row.className = 'rulerow';
-  // enable/disable (POST /api/destinations/{id} {enabled}) — rollback visuel si le serveur refuse.
-  const en = document.createElement('input'); en.type = 'checkbox'; en.checked = !!d.enabled; en.title = 'actif (ouvre la sortie de données)';
-  en.onchange = async () => {
-    const want = en.checked;
-    try { await apiSend('/destinations/' + d.id, 'POST', { enabled: want }); }
-    catch (e) { en.checked = !want; toast((e && e.message) || 'échec', 'bad'); return; }
-    d.enabled = want; toast(want ? 'destination activée (forward ON)' : 'destination désactivée', 'ok');
-  };
+  // enable/disable (POST /api/destinations/{id} {enabled}) — COMMUTATEUR PARTAGÉ (`P11.13-c`) : une SORTIE DE
+  // DONNÉES s'ouvre ici ; la case nue ne nommait pas ce qui part, ni vers où. `enabledSwitch` l'écrit à côté de
+  // l'interrupteur dans les deux états, et remet la case en place si le serveur refuse.
+  const en = enabledSwitch({
+    enabled: !!d.enabled, name: d.name || '(sans nom)', allowed: true, confirmOnEnable: false,
+    consequence: 'les events retenus par le filtre SORTENT de plume vers ' + (d.endpoint || DEST_TYPES[d.type] || d.type || '?') + ' ; OFF, plus rien ne sort et le retard ne se rattrape pas',
+    onToggle: (next) => apiSend('/destinations/' + d.id, 'POST', { enabled: next }),
+  });
   const name = document.createElement('span'); name.className = 'rulename'; name.textContent = d.name || '(sans nom)';
   const type = document.createElement('code'); type.className = 'rulecond'; type.textContent = DEST_TYPES[d.type] || d.type || '?';
   const ep = document.createElement('code'); ep.className = 'rulecond'; ep.textContent = d.endpoint || '(endpoint vide)'; ep.title = 'Endpoint du sink';

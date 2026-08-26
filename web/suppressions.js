@@ -136,7 +136,12 @@ function silencesSection(wrap, d) {
   // `P11.18-m` — LA RECHERCHE PORTE SUR TOUS LES SILENCES : `/api/silences` rend la table entière, sans
   // borne ni pagination. Un silence se cherche par ses matchers, par son état, par sa raison et par qui
   // l'a posé — c'est-à-dire par le texte des cellules RENDUES.
-  pagedList(host, { mode: 'client', pageSize: 50, rows, columns: cols, emptyText: 'aucun silence — « + Silence » pour muter temporairement les notifications d\'une règle, d\'un hôte ou d\'une source.', recherche: true });
+  // `P11.18-z` — IDENTITÉ DE CETTE LISTE. Ce panneau en rend TROIS, toutes rechargées par le même
+  // `loadSuppressions()` : chacune porte donc une clé DISTINCTE (`soc_silences`, `soc_daemon_suppressions`,
+  // `soc_collector_suppressions`). Une clé partagée ferait migrer la recherche d'une liste à sa voisine —
+  // une recherche appliquée à la mauvaise liste est pire que pas de mémoire du tout. Créer, modifier ou
+  // lever un silence rappelle `loadSuppressions()`, qui refabrique l'hôte de cette liste.
+  pagedList(host, { mode: 'client', pageSize: 50, rows, columns: cols, emptyText: 'aucun silence — « + Silence » pour muter temporairement les notifications d\'une règle, d\'un hôte ou d\'une source.', storeKey: 'soc_silences', recherche: true });
 }
 
 async function loadSuppressions() {
@@ -173,7 +178,9 @@ async function loadSuppressions() {
   // `P11.18-m` — LA RECHERCHE PORTE SUR TOUT LE REGISTRE : `/api/suppressions` rend les entrées déclaratives
   // en entier, sans borne ni pagination. Une exclusion se cherche par son libellé, son type, sa VALEUR
   // active, son périmètre et sa provenance dans le code.
-  pagedList(dt, { mode: 'client', pageSize: 50, rows: d.daemon || [], columns: dcols, emptyText: 'aucune exclusion', recherche: true });
+  // `P11.18-z` — identité PROPRE au registre déclaratif : éditer une exclusion d'affichage ou la
+  // réinitialiser rappelle `loadSuppressions()`, qui refabrique les trois hôtes de ce panneau.
+  pagedList(dt, { mode: 'client', pageSize: 50, rows: d.daemon || [], columns: dcols, emptyText: 'aucune exclusion', storeKey: 'soc_daemon_suppressions', recherche: true });
   // ---- (1bis) SILENCES D'ALERTES — créer / modifier / supprimer (P11.5-a) ----
   silencesSection(wrap, silences);
   if (silences && silences.error) wrap.appendChild(muted('silences indisponibles : ' + silences.error));
@@ -214,7 +221,9 @@ async function loadSuppressions() {
     // `P11.18-m` — MÊME PORTÉE QUE LE REGISTRE CI-DESSUS : la route rend un auto-report par source, sans
     // borne ni pagination. Un collecteur se cherche par sa source, par son type, par les filtres qu'il
     // DÉCLARE, et par le mot d'alerte que porte une provenance non attestée ou contestée.
-    pagedList(ct, { mode: 'client', pageSize: 50, rows: d.collectors, columns: ccols, emptyText: 'aucun', recherche: true });
+    // `P11.18-z` — identité PROPRE aux collecteurs : cette liste est rechargée par les gestes des DEUX
+    // autres (un seul `loadSuppressions()` les refabrique toutes), et sa recherche doit rester la sienne.
+    pagedList(ct, { mode: 'client', pageSize: 50, rows: d.collectors, columns: ccols, emptyText: 'aucun', storeKey: 'soc_collector_suppressions', recherche: true });
   }
   // ---- (3) ÉTAT FIREWALL (hôte) ----
   if (d.firewall && d.firewall.data != null) {

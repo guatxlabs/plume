@@ -1022,6 +1022,15 @@ jobs:
       - name: Une ligne de tableau porte la forme que son en-tête déclare (P8.9-d)
         run: python3 .github/scripts/check_every_table_row_carries_the_shape_its_header_declares.py
 
+      # `P8.9-g` — UNE CLÉ NEUVE S'AJOUTE À LA FIN DU DOCUMENT, QUI N'EST PAS LA FIN DE SA PHASE. Mesuré
+      # le 2026-08-26 : vingt clés sur deux cent quatre-vingts se lisaient sous le titre de la console,
+      # dont neuf d'une phase qui n'avait AUCUNE section. Un lecteur cherchant la phase ne trouvait rien,
+      # un lecteur lisant la console y trouvait de la sauvegarde. La garde DÉRIVE la section attendue de
+      # la clé elle-même — aucune phase n'est énumérée ici, en ajouter une n'oblige à rien toucher — et
+      # elle refuse de conclure si son propre instrument échoue à ses témoins ou si le corpus est vide.
+      - name: Une clé se lit sous le titre de sa phase (P8.9-g)
+        run: python3 .github/scripts/check_every_key_sits_under_the_section_of_its_phase.py
+
       # `P8.9-f` — L'INDEX ET LES COMMITS POUVAIENT SE CONTREDIRE SANS QUE RIEN NE LE DISE. Deux fois
       # le 2026-08-25, des clés commitées, déployées et VÉRIFIÉES EN PRODUCTION figuraient encore
       # parmi les clés OUVERTES : qui lit « ce qui est ouvert » ne voyait pas ce qui est fait. Cette

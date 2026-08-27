@@ -163,3 +163,93 @@
         let plan = crate::backup::backup_keep_recent_plan(&names, 1);
         assert_eq!(plan, vec![gfs_reg(now - 7200), gfs_reg(now - 14400)], "seules les routines excédentaires partent");
     }
+
+    // ============================================================================================
+    // P4.4-n — LA CLASSE D'UN NOM, DEMANDÉE AU PRODUIT AU LIEU D'ÊTRE RECOPIÉE CHEZ L'APPELANT.
+    //
+    // LE CONSTAT. La porte de déploiement refuse un objet d'acquittement que la rétention ne saurait
+    // pas classer, et jusqu'ici elle le DÉRIVAIT : faute de sous-commande rendant la classe d'un nom,
+    // elle accompagnait le candidat de NOMS DE RÉFÉRENCE écrits dans l'outillage, un par classe, puis
+    // lisait ce que `backup-prune-plan` décidait de supprimer. Ces noms de référence sont une
+    // TRANSCRIPTION des formes que `classify_backup_name` connaît — exactement la source de divergence
+    // que `P4.4-l` avait fermée ailleurs.
+    //
+    // LE CORRECTIF CÔTÉ PRODUIT : `plume-daemon backup-classify <nom>…`, dont la décision est PURE
+    // (`backup_classify_rendu`) et donc éprouvée ici, sans binaire, sans cluster et sans base.
+    // ============================================================================================
+
+    /// TÉMOIN 7 — CHAQUE VARIANTE A SON MOT, ET LES MOTS SONT DISTINCTS. Le `match` de `mot_de_classe`
+    /// est exhaustif : une variante ajoutée demain ne compile pas tant que personne ne l'a nommée.
+    /// Ce témoin tient l'autre moitié — que deux variantes ne se cachent pas derrière un même mot,
+    /// ce qui rendrait la sortie ambiguë sans faire rougir le compilateur.
+    #[test]
+    fn classify_chaque_classe_a_un_mot_distinct_et_seul_inclassable_n_est_pas_bornee() {
+        use crate::backup::ParsedBackup as P;
+        let toutes = [P::Regular(0), P::Premigrate(0), P::PreSchema { ts: 0, schema: 1 }, P::Unparseable];
+        let mots: Vec<&str> = toutes.iter().map(|c| c.mot_de_classe()).collect();
+        assert_eq!(mots, vec!["regulier", "premigrate", "preschema", "inclassable"]);
+        let uniques: std::collections::HashSet<&&str> = mots.iter().collect();
+        assert_eq!(uniques.len(), mots.len(), "deux variantes partagent un mot : la sortie serait ambiguë");
+        // `est_bornee` est FAUX pour `Unparseable` et pour lui seul — c'est ce que le code 3 porte.
+        for c in toutes {
+            assert_eq!(c.est_bornee(), c != P::Unparseable, "borne mal rendue pour {c:?}");
+        }
+    }
+
+    /// TÉMOIN 8 — LA SORTIE EST UNE LIGNE PAR NOM, DANS L'ORDRE D'ENTRÉE, LE NOM RENDU VERBATIM.
+    /// Les trois formes que l'outil de l'exploitant et le sidecar produisent sont classées ; une clé
+    /// complète est routée par son base-name, comme partout ailleurs.
+    #[test]
+    fn classify_rend_une_ligne_par_nom_dans_l_ordre() {
+        let secs = crate::backup::days_from_civil(2026, 8, 22) * 86400 + 10 * 3600 + 15 * 60;
+        let noms: Vec<String> = vec![
+            gfs_reg(secs),
+            gfs_preschema(116, secs),
+            gfs_premig("82c168b", secs),
+            format!("plume/{}", gfs_preschema(117, secs)),
+        ];
+        let (out, imperissables, code) = crate::backup::backup_classify_rendu(&noms);
+        assert_eq!(imperissables, 0);
+        assert_eq!(code, 0, "toutes bornées -> succès");
+        let lignes: Vec<&str> = out.lines().collect();
+        assert_eq!(lignes.len(), noms.len(), "une ligne par nom, ni plus ni moins");
+        assert_eq!(lignes[0], format!("{} regulier", noms[0]));
+        assert_eq!(lignes[1], format!("{} preschema", noms[1]));
+        assert_eq!(lignes[2], format!("{} premigrate", noms[2]));
+        assert_eq!(lignes[3], format!("{} preschema", noms[3]), "clé complète routée par le base-name");
+    }
+
+    /// TÉMOIN 9 — UN NOM IMPÉRISSABLE SORT EN 3, ET LE NOM RESTE LISIBLE. C'est le cas que la porte
+    /// doit refuser : `Unparseable` n'est jamais proposé à la suppression (invariant 3), donc un tel
+    /// objet acquitté resterait au dépôt pour toujours. Le code 3 le dit SANS que l'appelant ait à
+    /// connaître le mot « inclassable » — c'est ce qui le dispense de le transcrire.
+    #[test]
+    fn classify_un_nom_imperissable_sort_en_3() {
+        let secs = crate::backup::days_from_civil(2026, 8, 22) * 86400;
+        let inconnu = "plume-20260822T101500Z-a-chaud.db.age".to_string();
+        let (out, n, code) = crate::backup::backup_classify_rendu(&[inconnu.clone()]);
+        assert_eq!(out, format!("{inconnu} inclassable\n"));
+        assert_eq!((n, code), (1, 3));
+        // MÉLANGE : un seul intrus suffit à faire sortir en 3, et les bonnes lignes sortent quand même.
+        let melange = vec![gfs_reg(secs), inconnu.clone(), gfs_preschema(116, secs)];
+        let (out2, n2, code2) = crate::backup::backup_classify_rendu(&melange);
+        assert_eq!((n2, code2), (1, 3), "un intrus sur trois suffit");
+        assert_eq!(out2.lines().count(), 3, "les noms classés sortent quand même");
+        // TÉMOIN INVERSE : les mêmes noms SANS l'intrus sortent en 0. Sans lui, le 3 ci-dessus ne
+        // prouverait pas que c'est l'intrus qui l'a produit.
+        let sans = vec![gfs_reg(secs), gfs_preschema(116, secs)];
+        assert_eq!(crate::backup::backup_classify_rendu(&sans).2, 0);
+    }
+
+    /// TÉMOIN 10 — AUCUN NOM LU SORT EN 2, ET NE REND AUCUNE LIGNE. « Je n'ai rien mesuré » n'est pas
+    /// « tout est classé » : recopier le patron de `backup-prune-plan` (où l'entrée vide est un vrai
+    /// vide, « rien à supprimer ») aurait rendu 0 sur une porte qui n'a rien lu.
+    #[test]
+    fn classify_entree_vide_refuse_de_conclure() {
+        let (out, n, code) = crate::backup::backup_classify_rendu(&[]);
+        assert_eq!(out, "", "aucune ligne : rien n'a été classé");
+        assert_eq!((n, code), (0, 2), "2 = rien mesuré, JAMAIS 0");
+        // Et le 2 se distingue du 0 : un seul nom classable rend 0.
+        let secs = crate::backup::days_from_civil(2026, 8, 22) * 86400;
+        assert_eq!(crate::backup::backup_classify_rendu(&[gfs_reg(secs)]).2, 0);
+    }

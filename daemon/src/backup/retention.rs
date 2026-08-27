@@ -152,6 +152,92 @@ pub(crate) enum ParsedBackup {
     Unparseable,
 }
 
+// ─── CE QUE `backup-classify` REND — LE SEUL ENDROIT OÙ CES MOTS EXISTENT (`P4.4-n`) ────────────
+//
+// POURQUOI CETTE SURFACE EXISTE. La porte de déploiement à sens unique doit refuser un objet
+// d'acquittement que la rétention ne saurait pas CLASSER : un nom `Unparseable` n'est jamais purgé
+// (invariant 3), donc impérissable, et l'accepter en fabriquerait un de plus à chaque franchissement
+// de schéma. Faute d'une sous-commande qui rende la classe d'un nom, l'outillage de déploiement
+// dérivait la classe en accompagnant le candidat de NOMS DE RÉFÉRENCE écrits chez lui, puis en lisant
+// ce que `backup-prune-plan` décidait de supprimer. Ces noms sont une TRANSCRIPTION des formes que
+// cette fonction connaît — la source de divergence même que `P4.4-l` a fermée ailleurs.
+//
+// LES MOTS NE SONT PAS ÉNUMÉRÉS AILLEURS, ET LE COMPILATEUR LE TIENT. Le `match` ci-dessous est
+// EXHAUSTIF : une variante ajoutée demain ne compile pas tant que personne ne lui a donné son mot.
+// C'est la seule garde connue contre une classe neuve qui sortirait MUETTE d'un outil qu'un tiers
+// lit pour DÉCIDER — et elle ne peut pas être désarmée sans que la caisse cesse de compiler.
+//
+// ─── CE QUI N'EST PAS TENU, ET C'EST LA MOITIÉ DE L'ATTENDU ────────────────────────────────────
+// MESURÉ SUR CET ARBRE le 2026-08-27 : `grep -rn 'backup-classify' --include=*.sh --include=*.yml
+// --include=*.yaml --include=*.md .` rend **zéro appelant** hors du démon lui-même — quatre fichiers
+// touchés, tous du produit (`main.rs`, ce fichier, `backup/mod.rs`, `tests/sauvegarde_preschema.rs`).
+// L'ATTENDU de `P4.4-n` est en DEUX moitiés : « une sous-commande de classification côté produit …
+// QUE L'OUTILLAGE INTERROGE au lieu de fabriquer ses propres témoins ». La première est faite et
+// éprouvée purement ; la SECONDE ne l'est pas, et elle ne PEUT pas l'être ici — l'outillage de la
+// porte vit dans le dépôt des manifestes, ce que ce fichier dit déjà lui-même quelques lignes plus
+// haut (`tools/plume-sauvegarde-a-chaud.sh`), et `grep -rn PLUME_SCHEMA_BUMP_ACK .` rend zéro dans
+// ce dépôt. LA TRANSCRIPTION QUE LA CLÉ POURSUIT EST DONC TOUJOURS EN PLACE, INTACTE : le mécanisme
+// est POSÉ, le consommateur n'est pas ARMÉ. Écrire ici « le correctif côté produit » sans cette
+// phrase ferait exactement ce que la campagne poursuit — présenter un mécanisme posé comme fermé.
+// SECOND RESTE, MESURÉ LE MÊME JOUR : cette sous-commande n'apparaît dans AUCUN document du dépôt,
+// et aucune garde ne l'exige — `check_operator_surface_is_documented.py` dérive les leviers
+// `PLUME_*`, les capteurs, les onglets et les modes, PAS les sous-commandes du binaire. Ses deux
+// sœurs (`backup-prune-plan`, `restore-drill`) ne sont pas mieux loties : la première n'est citée
+// nulle part, la seconde uniquement dans `docs/DR-plume-restore.md`. Ce n'est donc pas un oubli de
+// ce lot, c'est un angle mort de la surface documentée — décrit ici, pas refermé ici.
+impl ParsedBackup {
+    /// Le mot rendu sur la sortie standard de `plume-daemon backup-classify`.
+    pub(crate) fn mot_de_classe(self) -> &'static str {
+        match self {
+            ParsedBackup::Regular(_) => "regulier",
+            ParsedBackup::Premigrate(_) => "premigrate",
+            ParsedBackup::PreSchema { .. } => "preschema",
+            ParsedBackup::Unparseable => "inclassable",
+        }
+    }
+
+    /// `true` quand la rétention SAIT borner cet objet — c'est-à-dire quand il sera un jour proposé
+    /// à la suppression. `Unparseable` ne l'est jamais : ce n'est pas une classe comme les autres,
+    /// c'est un REFUS, et c'est lui que le code de sortie de la sous-commande porte.
+    pub(crate) fn est_bornee(self) -> bool {
+        !matches!(self, ParsedBackup::Unparseable)
+    }
+}
+
+/// LA DÉCISION DE `backup-classify`, PURE — donc éprouvable SANS binaire ni cluster (`P4.4-n`).
+///
+/// `noms` = les noms déjà lus par l'appelant (arguments ou lignes de stdin), rendus VERBATIM.
+/// Rend `(lignes de stdout, nombre d'inclassables, code de sortie)`.
+///
+/// LES TROIS CODES, ET POURQUOI ILS SONT TROIS. L'appelant de cette sous-commande est une PORTE qui
+/// décide d'accepter ou de refuser un objet ; elle doit pouvoir distinguer les trois seules réponses
+/// qui existent, sans connaître aucun des mots rendus :
+///   * `0` — tous les noms lus tombent dans une classe que la rétention SAIT borner ;
+///   * `3` — au moins un nom est impérissable : la rétention ne le proposerait JAMAIS (invariant 3) ;
+///   * `2` — AUCUN nom n'a été lu. Ce n'est pas un vide, c'est une mesure qui n'a pas eu lieu, et la
+///           confondre avec un succès est exactement le défaut que cette campagne poursuit. (Le même
+///           `2` sort d'un binaire qui ne connaît pas la sous-commande — les deux disent « je n'ai
+///           pas répondu », ce qui est la même chose pour la porte : un refus, jamais un feu vert.)
+pub(crate) fn backup_classify_rendu(noms: &[String]) -> (String, usize, i32) {
+    if noms.is_empty() {
+        return (String::new(), 0, 2);
+    }
+    let mut out = String::new();
+    let mut imperissables = 0usize;
+    for nom in noms {
+        let classe = classify_backup_name(nom);
+        if !classe.est_bornee() {
+            imperissables += 1;
+        }
+        out.push_str(nom);
+        out.push(' ');
+        out.push_str(classe.mot_de_classe());
+        out.push('\n');
+    }
+    let code = if imperissables > 0 { 3 } else { 0 };
+    (out, imperissables, code)
+}
+
 /// Classe un nom d'objet (base-name OU clé complète `dir/...` — routé par le BASE-NAME). Tout format
 /// inattendu ou TS invalide -> `Unparseable` (l'appelant ne le supprimera JAMAIS). C'est la SEULE fonction
 /// qui connaît les formes de nom : un appelant qui en énumérerait une lui-même recréerait le défaut P4.4-l.

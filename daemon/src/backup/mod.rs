@@ -964,7 +964,7 @@ use dump_restauration::quote_ident; // consommé par `verification` (inventaire)
 mod retention; // RÉTENTION : classification des noms + GFS + plan de purge + helpers purs de l'ordonnanceur natif
 // FAÇADE `pub(crate)` — surface consommée par les AUTRES modules du daemon (main, server, sink_s3) sous les chemins
 // d'origine `crate::backup::X`. Les primitives de parsing/calendrier ne sont consommées que par les tests -> gatées.
-pub(crate) use retention::{backup_keep_recent_plan, backup_prune_plan, fmt_backup_ts, GfsParams};
+pub(crate) use retention::{backup_classify_rendu, backup_keep_recent_plan, backup_prune_plan, fmt_backup_ts, GfsParams};
 #[cfg(test)]
 pub(crate) use retention::{classify_backup_name, day_key, days_from_civil, parse_backup_ts, week_key, ParsedBackup, BACKUP_TS_LEN};
 mod verification; // VÉRIFICATION : en-tête age sans déchiffrer, puis restauration jetable + inventaire du contenu

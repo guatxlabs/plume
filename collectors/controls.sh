@@ -127,7 +127,17 @@ command -v aide           >/dev/null 2>&1 && add aide_db         "$(aide_verdict
 # --- Contrôles propres au déploiement (k3s : crowdsec pod, etc.) sans toucher au script générique ---
 for f in /etc/plume/controls.d/*.check; do
   [ -r "$f" ] || continue
-  while IFS='|' read -r cid ccmd; do
+  # `|| [ -n "$cid$ccmd" ]` — MEME FAMILLE QUE `collectors/respond.sh` ET `collectors/custom.sh`,
+  # MESUREE le 2026-08-27 : `while read` n execute pas son corps sur une derniere ligne depourvue de
+  # saut de ligne final. Un catalogue d exploitant dont la derniere ligne n en porte pas perdait son
+  # DERNIER controle — le controle disparaissait du verdict sans etre compte `indetermine`, donc
+  # sans un mot. Ici la perte va dans la direction rassurante (un verrou de moins a verifier, donc
+  # « 0 manquant » de plus), ce qui est exactement la valeur qu il ne faut jamais deviner.
+  # CE QUI N EST PAS TENU, ET C EST DIT : ce chemin (`/etc/plume/controls.d`) n est pas
+  # parametrable, aucun temoin du depot ne peut donc l exercer sans ecrire dans `/etc`. La
+  # correction est un DEPLACEMENT du meme motif, prouve chez ses deux voisins parametrables.
+  cid=""; ccmd=""
+  while IFS='|' read -r cid ccmd || [ -n "${cid:-}${ccmd:-}" ]; do
     [ -n "${cid:-}" ] || continue
     case "$cid" in \#*) continue ;; esac
     if sh -c "$ccmd" >/dev/null 2>&1; then add "$cid" true "$cid"; else add "$cid" false "$cid"; fi

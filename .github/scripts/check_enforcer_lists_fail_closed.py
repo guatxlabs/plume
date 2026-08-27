@@ -32,6 +32,13 @@ arborescence temporaire. Rien de la machine qui exécute la garde n'entre dans l
       version qui refuserait TOUJOURS passerait le témoin (1) sans rien prouver : elle serait le
       défaut symétrique — un responder qui n'applique plus rien, un adaptateur qui révoque à
       chaque cycle une exemption parfaitement valide.
+  (3) LA DERNIÈRE LIGNE SANS SAUT DE LIGNE FINAL, DANS LES DEUX SENS. Ajouté le 2026-08-27 parce
+      que cette garde était AVEUGLE là où le chemin l'était : tous ses témoins de forme écrivaient
+      un `\n` terminal, et `while read` n'exécute pas son corps sur une dernière ligne non
+      terminée. Contenu `nginx.service` SANS `\n` -> le ban PARTAIT (`nft add element`, remonté
+      `done`) ; le MÊME contenu AVEC `\n` était refusé. Le témoin jumeau — une liste bien formée
+      et non terminée — exige qu'elle ÉPARGNE encore, sans quoi « refuser tout fichier non
+      terminé » passerait pour une correction.
 Un troisième témoin sert d'instrument : le compteur d'armement doit encore ARMER (deuxième cycle
 d'échec -> revert-all), sinon « pas de refus » ne prouverait rien non plus.
 
@@ -226,6 +233,96 @@ def temoins_respond():
         open(f, "w").write("203.0.113.7\n")
         return f
 
+    def liste_de_l_autre_politique(tmp):
+        """Le contenu que l'installateur du CENTRAL sème dans `/etc/plume/responder.allow` :
+        des NOMS DE SERVICE pour `stop_service`. Bien formé — pour l'autre lecteur."""
+        f = os.path.join(tmp, "liste-du-central.allow")
+        open(f, "w").write(
+            "# 1 service systemd autorise par ligne pour l action stop_service (ex: nginx.service)\n"
+            "nginx.service\n"
+        )
+        return f
+
+    def liste_avec_cidr(tmp):
+        """Une ligne CIDR : de la BONNE politique, mais que la recherche par égalité de ligne
+        n'a jamais pu apparier. Elle laissait le ban partir en silence."""
+        f = os.path.join(tmp, "liste-cidr.allow")
+        open(f, "w").write("203.0.113.0/24\n")
+        return f
+
+    def contenu_par_defaut(script, motif):
+        """LE CONTENU QUE L'INSTALLATEUR POSE — EXTRAIT DU SCRIPT, JAMAIS RECOPIÉ ICI.
+
+        Recopier ce contenu ferait de ce témoin une tautologie : il vérifierait que la copie se
+        comporte comme la copie. En le LISANT dans l'installateur, un contenu par défaut qui
+        gagnerait demain une ligne non commentée fait rougir cette garde — ce qui est le point,
+        puisqu'une telle ligne DÉSARMERAIT tout bannissement de l'hôte, fail-closed."""
+        chemin = os.path.join(RACINE, script)
+        try:
+            texte = open(chemin, encoding="utf-8").read()
+        except OSError:
+            return None
+        m = re.search(motif, texte, re.S)
+        if not m:
+            return None
+        brut = m.group(1)
+        lignes = [l for l in re.findall(r'"([^"]*)"', brut)] if "echo" in brut else brut.split("\\n")
+        lignes = [l for l in lignes if l.strip() != ""]
+        # VALIDATION DE L'INSTRUMENT, ET ELLE NE DOIT PAS SE CONFONDRE AVEC LE VERDICT. Ce qui est
+        # vérifié ici est que l'EXTRACTION a marché — plusieurs lignes, dont au moins une qui
+        # ressemble à l'en-tête que ces fichiers portent. Ce qui NE l'est pas ici : que le contenu
+        # soit acceptable. Un contenu par défaut qui gagnerait une ligne non commentée doit faire
+        # rougir le SCÉNARIO (« la liste refuse alors qu'elle devrait laisser passer »), pas être
+        # rangé en « forme changée » — deux fautes distinctes, deux messages distincts, sans quoi
+        # cette garde commettrait à son tour le défaut qu'elle poursuit.
+        if len(lignes) < 3 or not any(l.lstrip().startswith("#") for l in lignes):
+            return None
+        return "\n".join(lignes) + "\n"
+
+    def liste_par_defaut_du_central(tmp):
+        contenu = contenu_par_defaut(
+            "bootstrap.sh", r"printf '(.*?)' > /etc/plume/responder\.allow")
+        if contenu is None:
+            return None
+        f = os.path.join(tmp, "defaut-central.allow")
+        open(f, "w").write(contenu)
+        return f
+
+    def liste_par_defaut_de_l_agent(tmp):
+        contenu = contenu_par_defaut(
+            "bootstrap-agent.sh", r'if \[ ! -f "\$RESP_ALLOW" \]; then\n\s*\{(.*?)\n\s*\} > "\$RESP_ALLOW"')
+        if contenu is None:
+            return None
+        f = os.path.join(tmp, "defaut-agent.allow")
+        open(f, "w").write(contenu)
+        return f
+
+    def liste_de_l_autre_politique_sans_saut_final(tmp):
+        """LE MÊME CONTENU, SANS `\\n` TERMINAL — et c'est ce qui manquait à cette garde.
+
+        MESURÉ le 2026-08-27 sur `respond.sh` tel qu'il était livré : `while IFS= read -r`
+        n'exécute PAS son corps sur une dernière ligne non terminée (`read` rend un code non
+        nul). La ligne fautive n'était donc jamais présentée à `is_ip`, la liste passait pour
+        bien formée, et le ban PARTAIT (`nft add element …`, remonté en `{"status":"done"}`).
+        Les deux témoins qui précèdent écrivaient TOUS DEUX un saut de ligne final : la garde
+        était aveugle exactement là où le chemin l'était. La mutation qui le prouve : retirer
+        le `|| [ -n "$_vle_l" ]` de `verdict_liste_epargne` fait retomber CE témoin — et lui
+        seul — sur `done`."""
+        f = os.path.join(tmp, "liste-du-central-sans-saut.allow")
+        with open(f, "w") as fh:
+            fh.write("nginx.service")          # PAS de "\n" : c'est tout le témoin
+        return f
+
+    def liste_avec_ip_sans_saut_final(tmp):
+        """LE TÉMOIN NÉGATIF DU PRÉCÉDENT. Une liste BIEN FORMÉE et sans saut de ligne final doit
+        continuer d'ÉPARGNER : une correction qui refuserait tout fichier non terminé
+        transformerait la lecture en refus permanent et passerait le témoin positif sans rien
+        prouver. C'est le témoin qui interdit de « corriger » par un refus global."""
+        f = os.path.join(tmp, "liste-sans-saut.allow")
+        with open(f, "w") as fh:
+            fh.write("203.0.113.7")
+        return f
+
     # (1) LISTE ILLISIBLE -> REFUS NOMMÉ
     scenario_respond("liste-posee-mais-absente", liste_absente_mais_posee,
                      ("refus", {"source_absente"}))
@@ -234,8 +331,42 @@ def temoins_respond():
     if os.geteuid() != 0:   # sous root, `-r` est vrai sur un mode 000 : le témoin n'aurait aucun sens
         scenario_respond("liste-acces-refuse", liste_mode_000,
                          ("refus", {"source_refusee"}))
+    # (1 bis) LISTE DE L'AUTRE POLITIQUE -> REJETÉE, PAS IGNORÉE (`P4.7-a`).
+    # C'est le témoin qui SÈME l'un des deux contenus et exige que l'AUTRE lecteur le refuse. Avant
+    # ce contrôle, ce scénario rendait `("applique",)` : le responder cherchait une IP, n'en trouvait
+    # aucune, concluait « hors-liste » et BANNISSAIT — la liste d'épargne de l'exploitant était vide
+    # sans que rien ne l'ait jamais dite vide. La mutation qui le prouve : retirer la boucle de forme
+    # de `verdict_liste_epargne` fait retomber ce cas sur `done`, et ce témoin devient rouge.
+    scenario_respond("liste-de-l-autre-politique", liste_de_l_autre_politique,
+                     ("refus", {"forme_inconnue"}))
+    # (1 ter) UNE LIGNE DE LA BONNE POLITIQUE QUE LA RECHERCHE NE SAIT PAS APPARIER (CIDR) : la
+    # protection promise n'existe pas non plus, et elle cesse d'être promise en silence.
+    scenario_respond("liste-cidr-non-appariable", liste_avec_cidr,
+                     ("refus", {"forme_inconnue"}))
+    # (1 quater) LA MÊME LIGNE FAUTIVE, SANS SAUT DE LIGNE FINAL. Le trou que les deux témoins
+    # précédents ne pouvaient pas voir : ils écrivaient tous deux un `\n` terminal.
+    scenario_respond("liste-de-l-autre-politique-SANS-SAUT-FINAL",
+                     liste_de_l_autre_politique_sans_saut_final,
+                     ("refus", {"forme_inconnue"}))
+    # (1 quinquies) TÉMOIN NÉGATIF DU PRÉCÉDENT : bien formée ET sans saut final -> ÉPARGNE.
+    scenario_respond("ip-dans-la-liste-SANS-SAUT-FINAL", liste_avec_ip_sans_saut_final,
+                     ("epargnee",))
     # (2) LISTE LISIBLE ET RÉELLEMENT VIDE -> COMPORTEMENT NORMAL, SANS REFUS
     scenario_respond("liste-lisible-et-vide", liste_vide, ("applique",))
+    # (2 bis) LE CONTENU QUE CHAQUE INSTALLATEUR POSE — LU DANS L'INSTALLATEUR — NE REFUSE RIEN.
+    # C'est la contrepartie du contrôle de forme : puisqu'une ligne non conforme DÉSARME tout
+    # bannissement de l'hôte (fail-closed), une installation NEUVE ne doit jamais partir dans cet
+    # état. MESURÉ le 2026-08-27 : les deux fichiers par défaut ne portent QUE des commentaires en
+    # colonne zéro, et le ban suit son cours.
+    for nom, prepare in (("liste-par-defaut-du-central", liste_par_defaut_du_central),
+                         ("liste-par-defaut-de-l-agent", liste_par_defaut_de_l_agent)):
+        with tempfile.TemporaryDirectory() as sonde:
+            if prepare(sonde) is None:
+                echec(f"respond/{nom}: le contenu par défaut n'a pas pu être EXTRAIT de "
+                      f"l'installateur (forme changée ?) — cette garde ne peut pas juger ce qu'une "
+                      f"installation neuve pose, elle REFUSE DE CONCLURE.")
+                continue
+        scenario_respond(nom, prepare, ("applique",))
     # (3) la liste sert encore à ce pour quoi elle existe
     scenario_respond("ip-dans-la-liste", liste_avec_ip, ("epargnee",))
 

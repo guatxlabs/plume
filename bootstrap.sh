@@ -95,8 +95,21 @@ fi
 grep -q 'soc.localhost' /etc/hosts || echo '127.0.0.1 soc.localhost' >> /etc/hosts
 
 # allowlist du responder (vide par défaut -> stop_service entièrement bloqué tant qu'on n'ajoute pas un service)
+# P4.7-a — CE CHEMIN A PORTÉ DEUX POLITIQUES, ET IL N'EN PORTE PLUS QU'UNE. `bootstrap-agent.sh`
+# semait ICI, sous le MÊME nom, la liste des ADRESSES à ne jamais bannir ; les deux installateurs ne
+# créant le fichier que s'il est ABSENT, sur une machine à la fois centrale et agent le second
+# héritait du contenu du premier et le relisait de travers — et la direction dangereuse a été
+# MESURÉE le 2026-08-27 : avec des noms de service dans ce fichier, le responder d'agent n'y trouvait
+# AUCUNE adresse épargnée et POSAIT le ban.
+# TROIS choses ont changé, et il en faut trois : (1) une installation d'agent NEUVE sème sa liste
+# dans `/etc/plume/responder-ban-exempt.allow`, donc les deux politiques ont deux fichiers ;
+# (2) une installation EXISTANTE n'est pas touchée — son `responder.conf` garde son chemin, qui peut
+# rester celui-ci ; (3) c'est pourquoi les DEUX lecteurs REFUSENT désormais un contenu qui n'est pas
+# de leur politique au lieu de le lire de travers (le démon : `blocked` en nommant l'autre politique ;
+# l'agent : refus fail-closed `forme_inconnue`, aucun ban appliqué). Le chemin de CETTE liste-ci se
+# pose par `PLUME_STOP_SERVICE_ALLOW`.
 if [ ! -f /etc/plume/responder.allow ]; then
-  printf '# 1 service systemd autorisé par ligne pour l action stop_service (ex: nginx.service)\n# vide = aucun stop_service autorisé\n' > /etc/plume/responder.allow
+  printf '# POLITIQUE DE CE FICHIER : services systemd autorises pour l action stop_service (lu par le DEMON).\n# 1 nom de service par ligne (ex: nginx.service). vide = aucun stop_service autorise.\n# N Y METTEZ PAS D ADRESSES IP : ce chemin est aussi celui de la liste des IP a ne jamais bannir de\n# l agent (bootstrap-agent.sh). Les deux lecteurs REFUSENT le contenu de l autre politique.\n' > /etc/plume/responder.allow
   chgrp soc /etc/plume/responder.allow && chmod 0640 /etc/plume/responder.allow
 fi
 

@@ -972,7 +972,7 @@ const SUBCOMMANDS_COLD: [(&str, &str); 2] = [
 /// détection d'une sous-commande INCONNUE, elle, n'est PAS une comparaison à cette liste (cf. la
 /// garde en bas de `main`). La liste est tenue alignée sur le code par
 /// `aide_cli_liste_les_memes_sous_commandes_que_le_dispatch` (elle lit `main.rs`).
-const SUBCOMMANDS: [(&str, &str); 19] = [
+const SUBCOMMANDS: [(&str, &str); 20] = [
     ("hashpw", "hashpw [<mdp>] — hash argon2 d'un mot de passe (stdin si omis)"),
     ("respond", "respond — boucle du moteur de réponse (service séparé)"),
     ("verify", "verify — vérifie la chaîne d'intégrité du ledger"),
@@ -989,6 +989,7 @@ const SUBCOMMANDS: [(&str, &str); 19] = [
     ("restore-drill", "restore-drill <status|record> — exercice de restauration : depuis quand aucun n'a eu lieu, ou enregistre une attestation"),
     ("chiffrer-au-repos", "chiffrer-au-repos — chiffre une base EXISTANTE restée en clair. IRRÉVERSIBLE : exige une clé explicite, PLUME_DB_KEY_ESCROWED=1, et produit une sauvegarde VÉRIFIÉE PAR RESTAURATION avant de basculer"),
     ("backup-prune-plan", "backup-prune-plan — plan de purge des sauvegardes (lecture seule)"),
+    ("backup-classify", "backup-classify <nom>… — classe de rétention d'un nom de sauvegarde, une ligne « <nom> <classe> » par nom (stdin si aucun argument ; sortie 3 si un nom est inclassable, donc jamais purgé)"),
     ("migrate-check", "migrate-check — compare le schéma live au code (lecture seule)"),
     ("db-stats", "db-stats — occupation disque SQLite (lecture seule)"),
     ("fts-compact", "fts-compact — fusionne les segments de l'index plein-texte (rend les octets morts des purges)"),
@@ -1631,6 +1632,54 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
         let mut out = String::new();
         for name in &plan { out.push_str(name); out.push('\n'); }
         print!("{out}");
+        return;
+    }
+    if args.get(1).map(String::as_str) == Some("backup-classify") {
+        // `P4.4-n` — LA CLASSE D'UN NOM, DEMANDÉE AU PRODUIT AU LIEU D'ÊTRE RECOPIÉE CHEZ L'APPELANT.
+        // Appel DIRECT de `classify_backup_name`, comme `backup-prune-plan` : aucune base ouverte,
+        // aucun credential, aucun accès réseau ou disque — seulement des noms lus et un mot rendu.
+        //
+        // ENTRÉE : les noms en ARGUMENTS, ou (si aucun) un nom par ligne sur STDIN — la même forme
+        // que `backup-prune-plan`, pour qu'un listage `mc ls` s'y pipe sans adaptation.
+        // STDOUT : une ligne « <nom> <classe> » par nom, DANS L'ORDRE D'ENTRÉE, nom rendu VERBATIM.
+        //          Rien d'autre ne sort sur stdout (les logs vont sur stderr).
+        //
+        // LE VERDICT EST LE CODE DE SORTIE, ET C'EST DÉLIBÉRÉ (même patron que `restore-drill`) :
+        //   0 = tous les noms lus tombent dans une classe que la rétention SAIT borner ;
+        //   3 = au moins un nom est impérissable (`inclassable`) — il ne serait JAMAIS purgé ;
+        //   2 = rien n'a été mesuré (aucun nom lu), ou l'argument n'est pas reconnu par ce binaire.
+        // L'appelant n'a donc AUCUN mot à connaître pour décider : il lit le code. Les mots ne lui
+        // servent qu'à NOMMER la classe à l'exploitant, jamais à conclure — ce qui est précisément ce
+        // qui évite qu'ils soient retranscrits ailleurs.
+        //
+        // « RIEN LU » N'EST PAS « TOUT VA BIEN ». Une entrée vide sortait en 0 avec zéro ligne si on
+        // recopiait le patron de `backup-prune-plan` (où « aucun nom à supprimer » est un vrai vide).
+        // Ici l'absence de nom veut dire que la mesure n'a pas eu lieu : elle sort en 2.
+        use std::io::BufRead;
+        let noms: Vec<String> = if args.len() > 2 {
+            args[2..].iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        } else {
+            std::io::stdin().lock().lines()
+                .map_while(Result::ok)
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect()
+        };
+        // LA DÉCISION EST AILLEURS ET ELLE EST PURE (`backup_classify_rendu`, backup/retention.rs) :
+        // ce bloc ne fait que LIRE, ÉCRIRE et SORTIR. C'est ce qui rend le verdict éprouvable sans
+        // binaire — la même séparation que `backup_prune_plan` / son bloc de dispatch.
+        let (out, imperissables, code) = backup_classify_rendu(&noms);
+        if code == 2 {
+            eprintln!(
+                "backup-classify : AUCUN nom lu (ni argument, ni ligne non vide sur stdin) — rien n'a \
+                 été mesuré, et « rien mesuré » n'est pas « classé ». \
+                 Usage : plume-daemon backup-classify <nom>… (ou un nom par ligne sur stdin)."
+            );
+            std::process::exit(2);
+        }
+        eprintln!("[backup-classify] noms={} inclassables={imperissables}", noms.len());
+        print!("{out}");
+        if code != 0 { std::process::exit(code); }
         return;
     }
     // TIER FROID 2-TIER BACKUP (#18) — sous-commande `cold-backup-plan`, MIROIR de `backup-prune-plan` (logique de

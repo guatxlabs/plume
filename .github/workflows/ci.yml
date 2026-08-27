@@ -428,7 +428,26 @@ env:
   # `une_base_deja_deployee_…` (elle affirmait « rendue comme angle mort », ce qui est vrai de TOUTE
   # technique à zéro règle) et le verdict de `aucune_surface_de_couverture_…`, dont les portes admises
   # sont désormais DÉRIVÉES de `detection_aveugle.rs` au lieu d'être un nom recopié.
-  EXPECTED_TESTS: "1351"
+  #
+  # RÉ-MESURÉ le 2026-08-27 par `.github/scripts/compter-les-tests.sh` (les DEUX profils dans la même
+  # exécution, JAMAIS par addition) sur le lot P3→P8 et sa reprise adverse : 1351 -> **1376**, soit
+  # +25, et le MÊME +25 sur `EXPECTED_COLD_TESTS` — l'écart entre les deux profils reste **222**,
+  # INCHANGÉ. Aucun des vingt-cinq n'est derrière un `cfg(feature)`, et c'est cet écart inchangé qui
+  # le dit, pas une lecture des sources. LA MESURE INTERMÉDIAIRE EST ÉCRITE, parce qu'elle réfute une
+  # allégation reçue : l'arbre AVANT reprise mesurait 1368 / 1590, donc HEAD mesurait exactement 1351
+  # et 1573 — il n'y avait AUCUNE dérive antérieure non reportée. Les +25 se répartissent ainsi
+  # (répartition DÉRIVÉE du delta de déclarations par fichier, le TOTAL restant une mesure) :
+  #   - 17 pour le lot lui-même : `tests/allowlist_du_responder.rs` (6, neuf, `P4.7-a`),
+  #     `tests/entrees_scriptees_bornees.rs` (5, neuf, `P4.6-a`/`P4.6-b`), `tests/query_verify.rs`
+  #     (+1, `P7.19-b`), `tests/sauvegarde_preschema.rs` (+4, `P4.4-n`), `tests/sondes_cout.rs`
+  #     (+1, `P3.7-b`) ;
+  #   - 8 pour la reprise adverse du 2026-08-27 : 7 dans `tests/entrees_scriptees_bornees.rs` (la
+  #     dernière ligne sans saut de ligne final et son témoin inverse ; le plafond qui borne encore
+  #     l'exécution sans `timeout` et son témoin inverse à compte exact ; le faux aveu de troncature
+  #     sur un code 124 hors borne armée ; la clé d'aveu stable sous un compte qui change et son
+  #     témoin inverse à deux bornes cumulables) et 1 dans `tests/allowlist_du_responder.rs` (le
+  #     miroir, côté démon, du trou de lecture qui était côté shell).
+  EXPECTED_TESTS: "1376"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -485,7 +504,20 @@ jobs:
           set -euo pipefail
           export TMPDIR="$RUNNER_TEMP/plume-tmp-defaut"
           rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"
-          cargo test --locked --verbose 2>&1 | tee /tmp/daemon-tests.log
+          rc_cargo=0
+          cargo test --locked --verbose 2>&1 | tee /tmp/daemon-tests.log || rc_cargo=$?
+          # `P7.19-b` — LE CANAL DISTINCT, ARMÉ ICI. Le code de cargo est CAPTURÉ (et non laissé
+          # tuer le pas), puis le journal est TRIÉ : si un banc a REFUSÉ DE CONCLURE, sa marque y
+          # figure et le tri rend **2** — « je n'ai pas pu mesurer » — là où une propriété violée
+          # laisse passer le code de cargo. Le job reste ROUGE dans les deux cas (un banc qui sait
+          # ne pas avoir mesuré n'a pas le droit d'être vert) : ce que le 2 achète est un tri
+          # MÉCANIQUE — code de sortie du pas + annotation distincte — au lieu d'une lecture
+          # d'humain sur un `panic!` indiscernable d'une assertion. La marque n'est écrite NULLE
+          # PART ici : le tri la LIT dans `daemon/src/tests/query_verify.rs` (`QB_MARQUE_REFUS`).
+          rc_tri=0
+          python3 "$GITHUB_WORKSPACE/.github/scripts/check_a_bench_refusal_is_a_distinct_channel.py" \
+            --trier /tmp/daemon-tests.log "$rc_cargo" || rc_tri=$?
+          [ "$rc_tri" = 0 ] || exit "$rc_tri"
           total=$(awk '/^test result: ok\. [0-9]+ passed/{s+=$4} END{print s+0}' /tmp/daemon-tests.log)
           echo "tests passed: $total (expected $EXPECTED_TESTS)"
           if [ "$total" != "$EXPECTED_TESTS" ]; then
@@ -803,13 +835,30 @@ jobs:
           # Sigma comptés pareil ; l'aveu dérivé du magasin de secrets sur son propre producteur), aucun
           # derrière un `cfg` de feature : les deux compteurs bougent ensemble, et c'est l'écart INCHANGÉ
           # qui dit qu'aucun test froid n'a été perdu en chemin.
-          EXPECTED_COLD_TESTS: "1573"
+          # RÉ-MESURÉ le 2026-08-27 (MÊME commande, les deux profils dans la même exécution) sur le lot
+          # P3→P8 et sa reprise adverse : 1598 avec `cold_tier` pour 1376 par défaut — l'écart reste
+          # **222**. Les +25 sont les MÊMES vingt-cinq que ceux d'`EXPECTED_TESTS` (leur répartition
+          # par fichier est écrite là-bas, une seule fois), aucun derrière un `cfg` de feature.
+          EXPECTED_COLD_TESTS: "1598"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
           export TMPDIR="$RUNNER_TEMP/plume-tmp-cold"
           rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"
-          cargo test --locked --features cold_tier --verbose 2>&1 | tee /tmp/cold-tests.log
+          rc_cargo=0
+          cargo test --locked --features cold_tier --verbose 2>&1 | tee /tmp/cold-tests.log || rc_cargo=$?
+          # `P7.19-b` — LE CANAL DISTINCT, ARMÉ ICI. Le code de cargo est CAPTURÉ (et non laissé
+          # tuer le pas), puis le journal est TRIÉ : si un banc a REFUSÉ DE CONCLURE, sa marque y
+          # figure et le tri rend **2** — « je n'ai pas pu mesurer » — là où une propriété violée
+          # laisse passer le code de cargo. Le job reste ROUGE dans les deux cas (un banc qui sait
+          # ne pas avoir mesuré n'a pas le droit d'être vert) : ce que le 2 achète est un tri
+          # MÉCANIQUE — code de sortie du pas + annotation distincte — au lieu d'une lecture
+          # d'humain sur un `panic!` indiscernable d'une assertion. La marque n'est écrite NULLE
+          # PART ici : le tri la LIT dans `daemon/src/tests/query_verify.rs` (`QB_MARQUE_REFUS`).
+          rc_tri=0
+          python3 "$GITHUB_WORKSPACE/.github/scripts/check_a_bench_refusal_is_a_distinct_channel.py" \
+            --trier /tmp/cold-tests.log "$rc_cargo" || rc_tri=$?
+          [ "$rc_tri" = 0 ] || exit "$rc_tri"
           total=$(awk '/^test result: ok\. [0-9]+ passed/{s+=$4} END{print s+0}' /tmp/cold-tests.log)
           echo "cold_tier tests passed: $total (expected $EXPECTED_COLD_TESTS)"
           if [ "$total" != "$EXPECTED_COLD_TESTS" ]; then
@@ -1059,6 +1108,20 @@ jobs:
       # sans refus. Sans ce second témoin, un enforcer qui refuserait toujours passerait le premier.
       - name: Un enforcer qui ne peut pas lire sa liste de protection REFUSE (fail-closed)
         run: python3 .github/scripts/check_enforcer_lists_fail_closed.py
+
+      # `P7.19-b` — « JE N'AI PAS PU MESURER » NE SORT PAS PAR LE MÊME CANAL QUE « LA PROPRIÉTÉ EST
+      # VIOLÉE ». Le banc de `daemon/src/tests/query_verify.rs` refuse de conclure hors de sa fenêtre
+      # de validité, et son message porte une marque. MESURÉ le 2026-08-27 : `grep -rn "INSTRUMENT
+      # NON" .github/` rendait ZÉRO — la marque existait, le TRI n'existait nulle part, et le module
+      # affirmait pourtant que « la CI trie sur cette marque et rend le code 2 ». Mécanisme POSÉ,
+      # présenté comme ARMÉ. Ce pas garde le tri qui l'arme : il exerce ses témoins POSITIF (marque
+      # -> 2) et NÉGATIF (assertion violée -> le code de cargo ; suite verte -> 0) sur la fonction
+      # que les pas de test appellent RÉELLEMENT, puis vérifie deux propriétés DÉRIVÉES — la marque
+      # est bien émise par la fonction de refus, et TOUT pas qui lance `cargo test` dans le crate du
+      # banc passe son journal au tri. La marque n'est recopiée nulle part : elle est lue dans le
+      # banc, et sa disparition fait REFUSER la garde (code 2) au lieu de la rendre verte.
+      - name: Un banc qui refuse de conclure sort par un canal DISTINCT d'une propriété violée
+        run: python3 .github/scripts/check_a_bench_refusal_is_a_distinct_channel.py
 
       # MÊME FAMILLE, APPLIQUÉE À LA DOCUMENTATION : ici ce n'est pas une couverture annoncée qui est
       # injoignable, c'est le DOCUMENT lui-même. Un document à jour que rien ne référence est
@@ -1564,7 +1627,20 @@ jobs:
           set -euo pipefail
           export TMPDIR="$RUNNER_TEMP/plume-tmp-s3"
           rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"
-          cargo test --features s3_backup --locked --verbose sink_s3_ 2>&1 | tee /tmp/s3-tests.log
+          rc_cargo=0
+          cargo test --features s3_backup --locked --verbose sink_s3_ 2>&1 | tee /tmp/s3-tests.log || rc_cargo=$?
+          # `P7.19-b` — LE CANAL DISTINCT, ARMÉ ICI. Le code de cargo est CAPTURÉ (et non laissé
+          # tuer le pas), puis le journal est TRIÉ : si un banc a REFUSÉ DE CONCLURE, sa marque y
+          # figure et le tri rend **2** — « je n'ai pas pu mesurer » — là où une propriété violée
+          # laisse passer le code de cargo. Le job reste ROUGE dans les deux cas (un banc qui sait
+          # ne pas avoir mesuré n'a pas le droit d'être vert) : ce que le 2 achète est un tri
+          # MÉCANIQUE — code de sortie du pas + annotation distincte — au lieu d'une lecture
+          # d'humain sur un `panic!` indiscernable d'une assertion. La marque n'est écrite NULLE
+          # PART ici : le tri la LIT dans `daemon/src/tests/query_verify.rs` (`QB_MARQUE_REFUS`).
+          rc_tri=0
+          python3 "$GITHUB_WORKSPACE/.github/scripts/check_a_bench_refusal_is_a_distinct_channel.py" \
+            --trier /tmp/s3-tests.log "$rc_cargo" || rc_tri=$?
+          [ "$rc_tri" = 0 ] || exit "$rc_tri"
           total=$(awk '/^test result: ok\. [0-9]+ passed/{s+=$4} END{print s+0}' /tmp/s3-tests.log)
           echo "s3_backup tests passed: $total (expected $EXPECTED_S3_TESTS)"
           if [ "$total" != "$EXPECTED_S3_TESTS" ]; then

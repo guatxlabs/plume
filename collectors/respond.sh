@@ -81,7 +81,7 @@ protected() {            # 0 = IP reservee/centrale (ne pas bannir) : loopback/R
 # capteurs). Il est REECRIT ici et non emprunte : cet enforcer ne depend d AUCUNE bibliotheque
 # (cf. l en-tete), et une garde de CI verifie qu il n en depend toujours pas. Trois lignes de
 # duplication coutent moins qu une garde affaiblie.
-RESP_CAUSES="source_absente source_refusee source_illisible"
+RESP_CAUSES="source_absente source_refusee source_illisible forme_inconnue"
 
 # _resp_illisible <cause> — LA CARDINALITE EST BORNEE ICI : une cause hors de l ensemble ferme est
 # ramenee a `source_illisible` plutot que de devenir une surface libre. Le detail non borne (chemin
@@ -108,6 +108,79 @@ verdict_liste_epargne() {
     printf 'hors-liste'; return 0
   fi
   [ -r "$_vle_f" ] || { _resp_illisible source_refusee; return 0; }
+  # ========================================================================================
+  # UNE LISTE BIEN FORMEE POUR QUELQU UN D AUTRE N EST PAS UNE LISTE VIDE (P4.7-a)
+  # ----------------------------------------------------------------------------------------
+  # LE DEFAUT, MESURE SUR L ARBRE le 2026-08-27. `/etc/plume/responder.allow` est ecrit par les
+  # DEUX installateurs et lu par DEUX composants, avec deux politiques qui ne se recouvrent pas :
+  # cote CENTRAL il porte des NOMS DE SERVICE autorises pour `stop_service` (bootstrap.sh, et
+  # `daemon/src/handlers/actions.rs` le lit ainsi) ; cote AGENT il porte des ADRESSES a NE JAMAIS
+  # bannir (bootstrap-agent.sh, et ce script le lit ainsi). Les deux installateurs ne creent le
+  # fichier que s il est ABSENT : sur une machine qui est a la fois centrale et agent — que rien
+  # n interdit — le second herite du contenu du premier.
+  # LA DIRECTION DANGEREUSE EST CELLE-CI, ET C EST POURQUOI LE CONTROLE EST ICI. Un exploitant qui
+  # suit la consigne du central y ecrit `nginx.service` ; ce script cherchait alors une IP par
+  # egalite de ligne, n en trouvait aucune, et concluait `hors-liste` — c est-a-dire LA BRANCHE QUI
+  # BANNIT. Sa liste d IP epargnees etait vide sans qu il l ait jamais dite vide, et le premier
+  # bannissement pouvait l enfermer dehors depuis sa propre console. Aucun des deux composants ne
+  # se plaignait : chacun lisait un fichier bien forme POUR LUI.
+  # CE QU ON FAIT : une ligne retenue qui n est pas une ADRESSE rend la liste NON LUE, avec sa
+  # cause (`forme_inconnue`), donc le refus fail-closed deja ecrit plus bas. Rejeter, jamais
+  # ignorer. Le predicat d adresse est `is_ip` — CELUI QUE CE SCRIPT EMPLOIE DEJA sur la cible des
+  # actions : une seule definition de « qu est-ce qu une adresse », pas deux qui divergeront.
+  # CE QUE CE CONTROLE CASSE, ET CHEZ QUI (dit, pas sous-entendu) :
+  #   * une ligne CIDR (`203.0.113.0/24`) est desormais REFUSEE. Elle n a JAMAIS epargne personne —
+  #     la recherche est une egalite de ligne (`grep -qxF`), donc une IP ne l a jamais appariee — et
+  #     elle laissait le ban PARTIR en silence. Le refus est la meme absence de protection, mais
+  #     DITE. Remede : une ligne par adresse, ou `PLUME_PROTECTED_IPS`.
+  #   * un commentaire commencant EN COLONNE ZERO (`#`) et une ligne STRICTEMENT vide restent
+  #     ignores. Les deux listes par defaut ne contiennent QUE cela — VERIFIE, pas suppose : les
+  #     temoins `liste-par-defaut-du-central` et `liste-par-defaut-de-l-agent` de
+  #     `check_enforcer_lists_fail_closed.py` EXTRAIENT le contenu des DEUX installateurs et exigent
+  #     que le ban suive son cours (mesure du 2026-08-27 : 5 lignes et 8 lignes, toutes en
+  #     commentaire de colonne zero, verdict `hors-liste` des deux cotes). Une ligne non commentee
+  #     ajoutee demain a l un des deux defauts fait ROUGIR ce temoin.
+  #   * LES ESPACES EN TETE NE SONT PAS ROGNES, ET IL FAUT LIRE CE QUE CELA COUTE : un commentaire
+  #     INDENTE (`  # ...`) et une ligne de BLANCS (`   `) ne sont donc PAS ignores — ils sont
+  #     REFUSES, et un seul d entre eux desarme TOUT le bannissement de cet hote (MESURE le
+  #     2026-08-27, les deux cas). C est deliberement le MEME critere que la recherche : celle-ci est
+  #     une egalite de ligne (`grep -qxF`), donc une ligne indentee n aurait JAMAIS epargne
+  #     personne, et la refuser DIT une protection absente au lieu de la laisser croire. Le refus va
+  #     dans la direction protectrice — aucun ban ne part —, et c est pour cela qu il est acceptable ;
+  #     la direction inverse (rogner, puis chercher sur la ligne brute) rendrait une ligne `epargnee`
+  #     que la recherche n apparie pas, c est-a-dire un ban qui part sur une IP declaree intouchable.
+  #     Idem pour un fichier a fins de ligne CRLF — le retour chariot restait dans la ligne, la
+  #     recherche ne l appariait jamais, et le ban partait. Le refus dit ce que le silence cachait.
+  #   * LES DEUX LECTEURS NE NORMALISENT PAS PAREIL, ET C EST JUSTE : le versant demon
+  #     (`allowlist_stop_service`) fait `trim()` avant de tester, parce que SA recherche porte sur la
+  #     valeur ROGNEE — rogner y est donc sans effet de bord. Ici, la recherche porte sur la ligne
+  #     BRUTE ; rogner y creerait l ecart decrit ci-dessus. Ce qui est COMMUN aux deux lecteurs est le
+  #     PREDICAT D ADRESSE, pas la normalisation, et c est cela seul que le lot promet.
+  #   * dans TOUS ces cas, la protection etait DEJA absente : le changement ne retire rien, il rend
+  #     l absence VISIBLE et bloquante. Et il ne touche pas `unban_ip`, qui ne baisse aucune defense
+  #     et continue de passer (le refuser transformerait une panne de lecture en verrouillage).
+  # ========================================================================================
+  # `|| [ -n "$_vle_l" ]` — LA DERNIERE LIGNE SANS SAUT DE LIGNE FINAL EST LUE, ELLE AUSSI.
+  # MESURE LE 2026-08-27, sur ce script tel qu il est livre : une liste dont le contenu est
+  # exactement `nginx.service` SANS `\n` terminal ne faisait PAS entrer la boucle (`read` rend un
+  # code non nul sur une derniere ligne non terminee, et son corps n est alors jamais execute). La
+  # liste passait donc pour bien formee, `grep -qxF` rendait 1, le verdict tombait sur `hors-liste`
+  # — LA BRANCHE QUI BANNIT — et `nft add element inet plume blocklist { 203.0.113.7 }` PARTAIT,
+  # remonte au central en `{"status":"done"}`. LE MEME CONTENU AVEC son `\n` etait refuse.
+  # Un fichier sans saut de ligne final n est pas une curiosite : `printf '%s' ...`, un editeur
+  # regle ainsi, un `echo -n` d installeur en produisent un. Le versant DEMON n avait pas ce trou
+  # (`str::lines()` rend la derniere ligne partielle), si bien que les deux lecteurs divergeaient
+  # LA OU le lot promet un critere unique. Le temoin qui le tient est
+  # `check_enforcer_lists_fail_closed.py`, scenario `liste-de-l-autre-politique-SANS-SAUT-FINAL`.
+  _vle_l=""
+  # `${_vle_l:-}` et non `$_vle_l` : sur un REPERTOIRE, `read` echoue SANS affecter la variable,
+  # et `set -u` transformerait alors la lecture impossible en ARRET du script — c est-a-dire en
+  # panne d unit la ou la partition promet un refus NOMME. Mesure : `read error: Is a directory`
+  # suivi de `_vle_l: unbound variable`, code 1, aucun resultat remonte au central.
+  while IFS= read -r _vle_l || [ -n "${_vle_l:-}" ]; do
+    case "$_vle_l" in ''|'#'*) continue ;; esac
+    is_ip "$_vle_l" || { _resp_illisible forme_inconnue; return 0; }
+  done < "$_vle_f"
   # `-r` ne suffit pas : root le voit vrai sur un mode 000, et un repertoire le passe. Seul le CODE
   # DE RETOUR de la recherche separe « lue, absente » (1) d une erreur de lecture (>1).
   if grep -qxF "$_vle_ip" "$_vle_f" 2>/dev/null; then _vle_rc=0; else _vle_rc=$?; fi

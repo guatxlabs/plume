@@ -9,10 +9,22 @@ _r="$(git rev-parse --show-toplevel)"
 # dérive 937 -> 945 du 2026-08-07. Ce qui a manqué n'est pas une exécution de plus, c'est de LIRE
 # son verdict avant de recommencer. Un rouge sur une page qu'on n'ouvre pas ne fait rien changer.
 #
-# CE QU'IL COÛTE, MESURÉ LE 2026-08-09 : ~2 s quand `target/` est déjà dans le bon jeu de features,
-# jusqu'à ~46 s s'il doit rebasculer entre le profil par défaut et `cold_tier`. Contre 47 minutes
-# pour exécuter les deux suites. Et il ne se déclenche QUE si le commit touche le démon — un commit
-# de ROADMAP ou de manifeste ne paie rien du tout.
+# CE QU'IL COÛTE — ET IL COÛTE UNE COMPILATION (P8.9-e). Le script délégué n'EXÉCUTE aucun test,
+# mais pour les ÉNUMÉRER il fait CONSTRUIRE le harnais par cargo. Un commit qui déclenche ce hook
+# paie donc une compilation, prend le verrou du répertoire d'artefacts, et entre en concurrence
+# avec toute construction déjà en cours. RE-MESURÉ LE 2026-08-27 (12 cœurs, `target/` peuplé) :
+#     commit ne touchant QUE le compteur dans `ci.yml`  : 1 s  (rien à reconstruire)
+#     commit touchant UN fichier de `daemon/src/`       : 34 s (les deux suites ; 17 s en `--defaut`)
+#     `target/` froid (clone frais)                     : une construction complète
+# Contre ~47 min pour EXÉCUTER les deux suites. Le chiffre « ~2 s » qui figurait ici datait du
+# 2026-08-09 et décrivait un arbre INCHANGÉ — or ce hook ne se déclenche QUE quand le démon ou son
+# compteur a changé, donc presque jamais dans cet état-là. Il ne se déclenche pas du tout sur un
+# commit de ROADMAP ou de manifeste : celui-là ne paie rien.
+#
+# UNE SEULE CONSTRUCTION À LA FOIS : le script sonde le verrou d'artefacts et REFUSE (code 3) si une
+# construction tourne déjà, plutôt que d'en mettre une seconde en file — auquel cas cargo attendait
+# sans limite, et sans un mot, sa ligne d'attente étant jetée avec stderr. Pour attendre au lieu de
+# refuser : `.github/scripts/compter-les-tests.sh --attendre`, puis committer.
 #
 # INSTALLATION (une fois par clone, non versionnable autrement — git n'installe jamais de hook seul) :
 #     git config core.hooksPath .githooks
@@ -61,5 +73,7 @@ if ! git diff --cached --name-only \
     exit 0
 fi
 
-echo "[pre-commit] démon ou compteur touché -> vérification du compte de tests (aucun test exécuté)"
+echo "[pre-commit] démon ou compteur touché -> vérification du compte de tests."
+echo "[pre-commit] ATTENTION : ce contrôle CONSTRUIT (aucun test n'est exécuté, mais le harnais est"
+echo "[pre-commit] compilé pour être énuméré). Il refuse si une construction tourne déjà."
 exec "$racine/.github/scripts/compter-les-tests.sh"

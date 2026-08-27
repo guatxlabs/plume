@@ -56,6 +56,11 @@
     /// La FLOTTE (`snapshot`) NE SUIT PAS `n` : c'est précisément ce que `Cout::BorneParLaTable`
     /// affirme, et le peuplement le respecte au lieu de le contourner.
     fn peuple_pathologique(conn: &Connection, n: i64) {
+        // UNE SEULE TRANSACTION POUR TOUT LE PEUPLEMENT. Le CONTENU est identique — seul le coût de
+        // construction de la fixture change (mesuré le 2026-08-27 : la fixture à 64 000 lignes passe
+        // de 2,9 s à 0,4 s). C'est ce qui rend l'ablation de `P3.7-b` jouable sur trois volumes sans
+        // peser sur la suite.
+        conn.execute_batch("BEGIN").unwrap();
         // FLOTTE : 3 machines x 2 kinds, INDÉPENDANTE de n (borne déclarée des sondes d'instantané).
         for h in 0..3 {
             for k in ["firewall", "controls"] {
@@ -107,6 +112,7 @@
                 .unwrap();
             }
         }
+        conn.execute_batch("COMMIT").unwrap();
         conn.execute_batch("ANALYZE").unwrap();
     }
 
@@ -294,4 +300,162 @@
                 .is_ok(),
             "la tâche de fond comble le trou sur une base migrée"
         );
+    }
+
+    /// (5) `P3.7-b` — L'ABLATION, JOUÉE. CE QUE LE DÉBIT PERD QUAND ON RETIRE L'INDEX, ET À PARTIR
+    /// DE QUEL VOLUME LES SONDES DOMINENT VRAIMENT.
+    ///
+    /// CE QUE `P3.7-a` NE PROUVAIT PAS. La clé d'origine a fermé le coût par un index partiel, et
+    /// (1)/(2) ci-dessus prouvent que le coût d'une sonde ne suit plus le volume. Rien n'établissait
+    /// pour autant que ces sondes étaient le CONTRIBUTEUR DOMINANT de ce qui se passe sous le verrou
+    /// d'écriture : le correctif était cru sur sa vraisemblance. Ce test mène l'ablation — la même
+    /// ronde de production (un lot d'ingest, puis UNE passe complète de sondes, comme toutes les
+    /// 20 s) jouée sur DEUX bases identiques dont une seule porte l'index, en ALTERNANCE ronde par
+    /// ronde pour que les deux bras subissent le même ordonnancement, à TROIS volumes dans un
+    /// rapport de 4 exact.
+    ///
+    /// LE VERDICT MESURÉ LE 2026-08-27 (12 cœurs, binaire de test `debug`, lot de 500 événements,
+    /// médiane sur 5 rondes) — et il NUANCE le constat d'origine au lieu de le confirmer en bloc :
+    ///
+    /// | volume `event` | passe AVEC index | passe SANS index | part de la ronde SANS | équivalent en événements d'ingest |
+    /// |----------------|------------------|------------------|-----------------------|-----------------------------------|
+    /// |          4 000 | 0,29 ms (630 VM) | 0,96 ms (25 142 VM) |  7,2 %             |  38,6 événements                  |
+    /// |         16 000 | 0,23 ms (630 VM) | 2,30 ms (61 142 VM) | 15,5 %             |  91,7 événements                  |
+    /// |         64 000 | 0,25 ms (630 VM) | 9,74 ms (205 142 VM)| 42,4 %             | 367,7 événements                  |
+    ///
+    /// CE QUE ÇA DIT, ET CE QUE ÇA NE DIT PAS :
+    ///   * l'index tient : AVEC lui, la passe coûte 630 pas de machine virtuelle et ~1,9 % de la
+    ///     ronde, À TOUS LES VOLUMES — c'est ça, « pas O(N) », vu en débit et plus seulement en coût ;
+    ///   * SANS lui, le coût marginal vaut EXACTEMENT 3 pas de VM par ligne d'`event` (36 000 pas de
+    ///     plus pour 12 000 lignes de plus, 144 000 de plus pour 48 000 lignes de plus) : la loi de
+    ///     `P3.7-a` — 5 pas par ligne postérieure au dernier battement — se retrouve à l'identique,
+    ///     multipliée par les six sondes que la fixture laisse sans battement et par le dixième des
+    ///     lignes que chacune voit ;
+    ///   * MAIS LES SONDES NE DOMINENT PAS À TOUT VOLUME. À 4 000 lignes elles pèsent 7 % de la ronde :
+    ///     le contributeur dominant y est l'ingest lui-même. La bascule est PROGRESSIVE et le point
+    ///     de croisement se lit dans les mesures ci-dessus — la passe égale le lot de 500 événements
+    ///     vers 80 000 lignes d'`event` sur ce banc. **Le constat d'origine (« les sondes dominaient »)
+    ///     est donc VRAI SEULEMENT AU-DELÀ D'UN VOLUME, et il ne l'était pas au volume du banc de
+    ///     l'époque.** Ce qui reste vrai sans condition, et qui justifie le correctif à lui seul :
+    ///     sans l'index le coût est NON BORNÉ en volume, et une base de production dépasse ces
+    ///     volumes de plusieurs ordres de grandeur.
+    ///
+    /// CE QUI EST EXTRAPOLÉ ET DIT COMME TEL : la ligne « au volume de production » n'est PAS mesurée.
+    /// La loi mesurée (3 pas de VM par ligne) est exacte sur les trois points ; la traduire en
+    /// millisecondes à un million de lignes serait une extrapolation, et elle n'est pas écrite ici.
+    ///
+    /// CE QUE LE TEST ASSERTE, ET AVEC QUELLE FORCE. Le dur est DÉTERMINISTE et sans horloge : les pas
+    /// de machine virtuelle, constants avec l'index, et dont les incréments suivent SANS l'index le
+    /// rapport EXACT des incréments de volume. MUTATION EXÉCUTÉE le 2026-08-27 — annuler l'ablation
+    /// (ne plus retirer l'index) rend `[630, 630, 630]` et fait rougir cette assertion.
+    ///
+    /// LE MUR NE JUGE RIEN, ET C'EST UNE DÉCISION MESURÉE. Ce test a d'abord porté deux assertions de
+    /// mur ; l'une d'elles est devenue ROUGE SOUS CHARGE le 2026-08-27 sans qu'une ligne du produit ne
+    /// bouge (le détail est dans le corps du test). Elle n'apportait rien que les pas de VM ne
+    /// tiennent déjà, exactement, et sans dépendre de la machine. Le mur est donc IMPRIMÉ — c'est le
+    /// verdict en débit que la clé demandait — et il n'entre dans aucune assertion.
+    #[test]
+    fn sondes_ablation_du_debit_avec_et_sans_index() {
+        /// Volumes dans un rapport de 4 EXACT : c'est le rapport, pas les valeurs, qui porte
+        /// l'assertion déterministe ci-dessous.
+        const VOLUMES: [i64; 3] = [4_000, 16_000, 64_000];
+        /// Lot d'ingest d'une ronde. Il fixe l'unité dans laquelle le coût d'une passe est traduit
+        /// (« combien d'événements d'ingest coûte une passe »), il n'entre dans aucune assertion.
+        const LOT: i64 = 500;
+        /// Rondes alternées. La MÉDIANE réduit — sous préemption, une moyenne rapprocherait les deux
+        /// bras et l'ablation deviendrait aveugle.
+        const RONDES: usize = 5;
+
+        let mut vm_avec: Vec<i64> = Vec::new();
+        let mut vm_sans: Vec<i64> = Vec::new();
+        for volume in VOLUMES {
+            let bases = [base_pathologique(volume), base_pathologique(volume)];
+            // BRAS 1 : L'ABLATION. Même base, même contenu, l'index partiel en moins.
+            {
+                let c = bases[1].lock();
+                c.execute(&format!("DROP INDEX {IDX_BATTEMENT_SANTE}"), []).unwrap();
+                c.execute_batch("ANALYZE").unwrap();
+            }
+            let mut t_ingest: [Vec<f64>; 2] = [Vec::new(), Vec::new()];
+            let mut t_passe: [Vec<f64>; 2] = [Vec::new(), Vec::new()];
+            let mut vm = [0i64; 2];
+            for r in 0..RONDES {
+                for bras in 0..2 {
+                    let c = bases[bras].lock();
+                    // LA RONDE DE PRODUCTION : un lot d'ingest sur les sources SANS battement (le cas
+                    // du dead-man's-switch : le collecteur est mort, sa source continue d'être
+                    // alimentée par ailleurs), puis UNE passe complète de sondes.
+                    let ts = 1_760_000_000i64 + (r as i64) * LOT * 10;
+                    let srcs = ["ufw", "dataaccess", "integrity", "portscan", "fail2ban", "journal"];
+                    let cats = ["firewall", "data", "integrity", "firewall", "ban", "auth"];
+                    let t0 = std::time::Instant::now();
+                    {
+                        let mut st = c
+                            .prepare("INSERT INTO event(ts,source,category,severity,host,message) VALUES(?1,?2,?3,1,'machine0','m')")
+                            .unwrap();
+                        c.execute_batch("BEGIN").unwrap();
+                        for i in 0..LOT {
+                            let k = (i % srcs.len() as i64) as usize;
+                            st.execute(params![ts + i, srcs[k], cats[k]]).unwrap();
+                        }
+                        c.execute_batch("COMMIT").unwrap();
+                    }
+                    let t1 = std::time::Instant::now();
+                    vm[bras] = COLLECTORS.iter().map(|(_, _, _, sonde, _)| cout_vm(&c, sonde)).sum();
+                    let t2 = std::time::Instant::now();
+                    t_ingest[bras].push((t1 - t0).as_secs_f64() * 1000.0);
+                    t_passe[bras].push((t2 - t1).as_secs_f64() * 1000.0);
+                }
+            }
+            let med = |v: &mut Vec<f64>| {
+                v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                v[v.len() / 2]
+            };
+            let (ia, ib) = (med(&mut t_ingest[0]), med(&mut t_ingest[1]));
+            let (pa, pb) = (med(&mut t_passe[0]), med(&mut t_passe[1]));
+            eprintln!(
+                "[P3.7-b] volume {volume:>6} | AVEC index : passe {pa:6.3} ms ({} VM), {:5.1} % de la ronde, \
+                 {:6.1} événements-équivalents | SANS index : passe {pb:6.3} ms ({} VM), {:5.1} % de la ronde, \
+                 {:6.1} événements-équivalents | l'ablation coûte x{:.1}",
+                vm[0], 100.0 * pa / (ia + pa), LOT as f64 * pa / ia,
+                vm[1], 100.0 * pb / (ib + pb), LOT as f64 * pb / ib,
+                pb / pa
+            );
+            vm_avec.push(vm[0]);
+            vm_sans.push(vm[1]);
+        }
+
+        // (A) LE DUR, SANS AUCUNE HORLOGE. Avec l'index, le coût de la passe ne bouge PAS d'un pas de
+        // VM quand le volume est multiplié par 4 puis encore par 4.
+        assert!(
+            vm_avec[0] == vm_avec[1] && vm_avec[1] == vm_avec[2],
+            "AVEC l'index, le coût d'une passe complète doit être INDÉPENDANT du volume : {vm_avec:?} pas de VM \
+             aux volumes {VOLUMES:?}"
+        );
+        // (A bis) SANS l'index, le coût est linéaire en volume — et c'est l'ABLATION : les incréments
+        // de coût sont dans le RAPPORT EXACT des incréments de volume. Aucune constante n'est écrite
+        // ici ; le 4 vient de la mutation du volume, qui est exacte par construction.
+        let (d1, d2) = (vm_sans[1] - vm_sans[0], vm_sans[2] - vm_sans[1]);
+        assert!(
+            d1 > 0 && d2 == 4 * d1,
+            "SANS l'index, le coût d'une passe doit suivre le volume LINÉAIREMENT : {vm_sans:?} pas de VM aux \
+             volumes {VOLUMES:?}, soit des incréments de {d1} puis {d2} là où les incréments de volume sont \
+             dans un rapport de 4. Si ce rapport n'est plus 4, ce n'est pas l'ablation qui a changé, c'est la \
+             fixture ou la loi de coût de `P3.7-a`."
+        );
+        // (B) LE MUR NE JUGE PAS — IL REND, ET C'EST UNE DÉCISION MESURÉE, PAS UNE PARESSE.
+        // Ce test a d'abord porté DEUX assertions de mur : « l'ablation coûte plus que 1 » à chaque
+        // volume, et « la perte grossit avec le volume ». MESURÉ le 2026-08-27 sous charge (24
+        // brûleurs sur 12 cœurs), la seconde est devenue ROUGE sans qu'une seule ligne du produit ne
+        // change : la préemption a gonflé le bras INDEXÉ du petit volume (0,27 -> 0,49 ms), le
+        // rapport y est monté de x4,0 à x11,1, et l'assertion « le gros volume doit valoir au moins
+        // le double du petit » (x20,7 contre x22,2 exigés) est tombée. C'est exactement la faute que
+        // `P6.9-a` a fermée ailleurs, et la réintroduire ici pour décorer l'ablation d'un chiffre de
+        // mur serait un recul. Deux raisons de plus de ne pas la garder :
+        //   * ce qu'elle prétendait garder — « le coût suit le volume » — est DÉJÀ asserté au-dessus,
+        //     de façon EXACTE et insensible à la machine, par les incréments de pas de VM ;
+        //   * aucune mutation essayée ne la faisait rougir SEULE : annuler l'ablation est intercepté
+        //     avant elle par l'assertion déterministe.
+        // Le mur reste donc IMPRIMÉ (c'est le verdict en débit que `P3.7-b` demandait, et il est
+        // reproductible avec `--nocapture`), et il ne juge rien.
     }

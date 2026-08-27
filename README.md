@@ -312,22 +312,77 @@ SEVERITY=2                                # 0 info … 4 critique (défaut 1)
 FILTER=ERROR|WARN                         # optionnel : ne garde que les lignes qui matchent (grep -iE)
 MAX=100                                   # plafond de lignes PAR PASSAGE (défaut 100) — voir l'avertissement
 MAXLEN=4000                               # longueur max d'une ligne (défaut 1000 ; monter pour du JSON verbeux)
+TIMEOUT=45                                # borne de durée de CMD, en secondes (défaut PLUME_CUSTOM_TIMEOUT, sinon 45 ; 0 = aucune borne)
 ```
 
-> ⚠️ **`CMD` doit se TERMINER.** Le collecteur exécute `sh -c "$CMD"` et **attend sa sortie** ; il
-> n'a pas de minuterie, et `plume-custom.service` est un `Type=oneshot` **sans `TimeoutStartSec`**.
-> Une commande qui suit un flux — `tail -F`, `journalctl -f`, `kubectl logs -f` — ne rend jamais la
-> main : *le collecteur reste bloqué et ne publie rien*, jusqu'à ce que systemd le tue à son délai
-> par défaut, alors que le timer réarme toutes les 60 s. **Vérifié sur cet arbre :** `CMD=tail -n0 -F
-> <fichier>` → le collecteur ne rend pas la main et le spool reste vide ; la même source avec un
-> `CMD` borné (`journalctl --since -1min`, `tail -n 200`, un appel d'API) → sortie 0 et enveloppe
-> publiée. Faites donc émettre à `CMD` **uniquement le nouveau, puis sortez** : la déduplication
-> horaire (`source` + ligne) absorbe les recouvrements.
+> ⚠️ **`CMD` a intérêt à se TERMINER, et s'il ne le fait pas il est COUPÉ.** Le collecteur exécute
+> `sh -c "$CMD"` sous `timeout`, borné par `TIMEOUT` (défaut 45 s, sous la cadence de 60 s du timer).
+> Au dépassement, il **publie ce que la commande avait déjà émis** puis **émet un aveu**
+> (`category=config`, `collect_status=unavailable`, `reason=collection-capped`,
+> `borne-de-duree`) — la coupure est donc *dite*, pas subie. **Cet aveu n'est émis que si la borne a
+> été ARMÉE et que le code de retour vaut 124**, celui que `timeout` réserve au dépassement : c'est
+> le seul cas où l'attribution est certaine. Sans cette condition, une commande d'exploitant sortant
+> d'elle-même en 124 — code de retour parfaitement ordinaire — faisait publier « COLLECTE TRONQUÉE …
+> coupée à TIMEOUT=0s », levait l'alerte livrée et faisait basculer la pastille d'une source
+> **saine** (mesuré 2026‑08‑27). Un 137 (SIGKILL) n'est **plus** imputé à cette borne : `timeout`
+> est invoqué sans `-k`, il n'envoie donc jamais SIGKILL, et le collecteur ne sait pas d'où il
+> vient. **Mesuré sur cet arbre (2026‑08‑27)**,
+> avec `CMD=sh -c 'echo debut; sleep 300'` : *avant*, le collecteur ne rendait pas la main (tué à
+> 8 s par le harnais) et le spool restait **vide** — la ligne `debut`, pourtant lue, était perdue ;
+> *après*, avec `TIMEOUT=3`, il rend la main en 3 s, publie `debut`, et avoue la coupure.
+> `TIMEOUT=0` retire la borne : c'est alors un choix explicite, et le blocage revient. Faites quand
+> même émettre à `CMD` **uniquement le nouveau, puis sortez** : la déduplication horaire (`source` +
+> ligne) absorbe les recouvrements.
 >
-> ⚠️ **`MAX` est un plafond, pas une file d'attente.** Au‑delà de `MAX` lignes dans un passage, le
-> surplus est **jeté**, pas reporté au passage suivant. Une source qui produit plus de `MAX` lignes
-> par minute perd la différence, **en silence**. Dimensionnez `MAX` sur votre débit réel, ou
-> resserrez `FILTER`.
+> ⚠️ **`MAX` est un plafond, pas une file d'attente — mais il ne coupe plus en silence.** Au‑delà de
+> `MAX` lignes dans un passage, le surplus est **jeté** et **n'est pas** reporté au passage suivant :
+> ces lignes-là ne reviendront jamais. Le collecteur **compte** ce qu'il écarte et l'**avoue** avec
+> son nombre (`reason=collection-capped`, `plafond-de-lignes`), ce qui lève l'alerte livrée
+> « capteur indisponible » et fait basculer la pastille de *cette* source. **Mesuré (2026‑08‑27)** :
+> `CMD=seq 1 10`, `MAX=3` → 3 événements publiés, **7 lignes écartées**, et l'aveu porte le 7 ;
+> avant, le même passage sortait en 0 sans un mot. Le prix de ce compte est écrit : lire le surplus
+> pour le compter prend du temps de collecteur — sur `CMD=yes`, `MAX=3`, `TIMEOUT=3`, le passage dure
+> 3,1 s au lieu de 42 ms et déclare 32 767 998 lignes écartées ; la crête mémoire reste à 25 Mo (le
+> huitième du `MemoryMax` de l'unit), le surplus n'étant jamais gardé. Dimensionnez `MAX` sur votre
+> débit réel, ou resserrez `FILTER`.
+>
+> **Le surplus n'est lu QUE si la borne de durée est armée**, et c'est une correction datée du
+> 2026‑08‑27 : compter exige de lire, et lire n'est borné que par la durée. Sur un hôte **sans
+> `timeout`** — ou avec `TIMEOUT=0` — le collecteur s'arrête donc à la **MAX+1‑ième ligne**, ce qui
+> suffit à *établir* la troncature sans la *compter* : l'aveu part avec « nombre inconnu » plutôt
+> qu'un zéro rassurant. Sans cette correction, le remplacement de `head` par un compteur avait
+> **supprimé** la borne de volume qui bornait structurellement l'exécution : mesuré sur un `PATH`
+> sans `timeout`, `CMD=yes`, `MAX=3` → *avant le lot* 37 ms et 3 événements ; *pendant* le collecteur
+> ne rendait **jamais** la main (tué à 8 s), spool sans un seul événement ; *après* 87 ms, 3
+> événements et l'aveu.
+>
+> **Ce que cet aveu coûte au canal d'alerte, dit.** La clé de déduplication de l'aveu de troncature
+> ne porte **pas** le nombre : elle est faite de la source et de la borne qui a coupé. Sans cela, un
+> compte qui change à chaque passage produisait une clé neuve à chaque passage, donc jusqu'à
+> 60 lignes par heure et par source sur un canal qui *lève une alerte* (mesuré : 4 passages dans la
+> même heure → 3 clés distinctes). Le prix de ce choix est écrit aussi : dans une même heure, seul
+> le **premier** compte survit au dédoublonnage du central. Les deux bornes gardent en revanche
+> **deux** clés distinctes, donc leurs aveux restent cumulables dans un même passage.
+>
+> ⚠️ **Une borne mal écrite ne fait plus disparaître l'entrée.** `MAX=deux` faisait échouer `head` et,
+> le code de retour d'un tube étant celui de son dernier maillon, l'entrée entière disparaissait avec
+> un code de sortie 0 et un spool vide (mesuré 2026‑08‑27). Une borne non entière retombe désormais
+> sur son défaut **et le dit** (`reason=missing-config`). De même, sur un hôte **sans `timeout`**, la
+> borne de durée n'est pas armée — et cela aussi est avoué (`reason=missing-dependency`) plutôt que
+> laissé croire.
+> **Limite écrite, parce qu'elle coûte** : ces deux aveux‑là empruntent `collect_status=unavailable`,
+> donc ils lèvent l'alerte « capteur indisponible » et font basculer la pastille — alors que dans le
+> premier cas la source est **intégralement collectée** (mesuré : `MAX=deux` → 4 événements publiés
+> *et* l'aveu). Le mot dit une incapacité qui n'a pas eu lieu. Le corriger demande un
+> `collect_status` que `docs/CIM.md` ne déclare pas, donc un changement de contrat : ce n'est pas
+> fait, et c'est dit ici plutôt que laissé croire.
+>
+> ⚠️ **Une dernière ligne sans saut de ligne final est lue, elle aussi.** `while read` n'exécute pas
+> son corps sur une ligne non terminée : une déclaration écrite `SOURCE=…\nCMD=…` **sans** `\n`
+> final perdait sa dernière ligne, `CMD` restait vide, et l'entrée **entière** était écartée — une
+> source déclarée qui ne collectait rien et ne le disait pas (mesuré 2026‑08‑27). Le même défaut
+> existait dans la liste d'épargne du responder et dans les catalogues de contrôles
+> `/etc/plume/controls.d/*.check` ; les trois lecteurs sont corrigés.
 
 **④ Armer la cadence.** Le timer tourne toutes les 60 s (`OnUnitActiveSec=60s`).
 
@@ -661,6 +716,7 @@ viennent d'une constante — la commande 4 ci‑dessus la donne.
 | `PLUME_EXTRA_COLLECTORS` | liste de collecteurs à **installer sans activer** (`"journal auditd custom"`) | vide |
 | `PLUME_WITH_MAIL` · `_YARA` · `_SYSLOG` · `_RESPONDER` · `_PORTSCAN` · `_PORTPROBE` · `_ORIGIN_DROP` · `_CLOUDFLARE` · `_CLOUDFLARE_HTTP` · `_MINIO_AUDIT` · `_ENGAGEMENT` | drapeaux d'installation des modules qui demandent un binaire ou une configuration à part (11 en tout) | `0` |
 | `PLUME_INPUTS_DIR` | répertoire des *scripted inputs* | `/etc/plume/inputs.d` |
+| `PLUME_CUSTOM_TIMEOUT` | borne de durée **par défaut** appliquée à chaque `CMD` de *scripted input*, en secondes. `0` = aucune borne. Un fichier `.input` peut la redéfinir par sa clé `TIMEOUT` | `45` |
 
 **Réponse automatique** — coupée par défaut, et à raison : elle agit en root.
 
@@ -668,18 +724,43 @@ viennent d'une constante — la commande 4 ci‑dessus la donne.
 |---|---|---|
 | `PLUME_RESPONDER` | `1` = le moteur de réponse tourne | `0` |
 | `PLUME_RESPONDER_APPLY` | `1` = il **applique** ; `0` = *dry‑run* qui journalise sans agir | `0` |
-| `PLUME_RESPONDER_ALLOW` | chemin du fichier d'*allowlist* du responder d'agent — voir l'avertissement sous le tableau | `/etc/plume/responder.allow` |
+| `PLUME_RESPONDER_ALLOW` | chemin de la liste des **adresses à ne jamais bannir**, lue par le responder d'**agent** — voir l'avertissement sous le tableau | `/etc/plume/responder.allow` |
+| `PLUME_STOP_SERVICE_ALLOW` | chemin de la liste des **services systemd autorisés** pour `stop_service`, lue par le **démon** — posez-la ailleurs si la machine est à la fois centrale et agent | `/etc/plume/responder.allow` |
 | `PLUME_BAN_DURATION` | durée d'un bannissement | `4h` |
 | `PLUME_PROTECTED_IPS` / `PLUME_OPERATOR_IPS` | IP qu'aucune action ne peut bannir (ne vous enfermez pas dehors) | vide |
 
-> ⚠️ **`/etc/plume/responder.allow` porte DEUX significations incompatibles selon qui l'a créé.**
+> ⚠️ **`/etc/plume/responder.allow` a porté DEUX listes incompatibles.**
 > L'installateur du central y sème une liste de **services systemd** autorisés pour `stop_service`, et
-> c'est ainsi que le démon la lit. L'installateur d'agent sème le **même chemin** avec une liste
-> d'**adresses IP à ne jamais bannir**, et c'est ainsi que le responder d'agent la lit. Les deux ne
+> c'est ainsi que le démon la lit. L'installateur d'agent semait le **même chemin** avec une liste
+> d'**adresses à ne jamais bannir**, et c'est ainsi que le responder d'agent la lit. Les deux ne
 > créent le fichier que s'il est absent : sur une machine qui est à la fois centrale et agent, le
-> second hérite du contenu du premier et le **relit de travers**. Concrètement, un exploitant qui y
-> écrit des noms de service perd sa liste d'IP épargnées — donc peut se faire bannir lui‑même.
-> Constat ouvert : voir `P4.7-a` dans [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> second héritait du contenu du premier.
+> **Une installation d'agent neuve** sème désormais sa liste dans
+> `/etc/plume/responder-ban-exempt.allow` — deux politiques, deux fichiers. **Une installation
+> existante n'est pas touchée** (son `responder.conf` garde son chemin, qui peut rester le chemin
+> partagé) : c'est pour elle, et pour tout fichier édité à la main, que les deux lecteurs rejettent
+> ce qui n'est pas de leur politique.
+> **Ce que ça coûtait, mesuré le 2026‑08‑27** : avec des noms de service dans ce fichier, le
+> responder d'agent n'y trouvait **aucune** adresse épargnée, concluait « hors liste » et **posait le
+> ban** — l'exploitant pouvait s'enfermer dehors depuis sa propre console, et rien ne s'en plaignait.
+> **Ce qui se passe maintenant** : chaque lecteur **rejette** un contenu qui n'est pas de sa
+> politique au lieu de l'ignorer. Le responder d'agent **refuse tout ban** (*fail‑closed*, cause
+> `forme_inconnue`, remontée au central sur l'action) tant que la liste porte autre chose que des
+> adresses ; le démon **bloque** `stop_service` en **nommant** l'autre politique au lieu d'annoncer
+> « ce service n'est pas dans l'allowlist ».
+> **Y compris quand la ligne fautive est la dernière et que le fichier ne se termine pas par un saut
+> de ligne** — et ce n'était pas le cas avant le 2026‑08‑27. `while read` n'exécute pas son corps
+> sur une ligne non terminée : une liste valant exactement `nginx.service` **sans** `\n` passait pour
+> bien formée et **le ban partait** (mesuré : `nft add element …` posé, remonté au central en
+> `done`), alors que le **même** contenu **avec** son `\n` était refusé. Le versant démon n'avait pas
+> ce trou (`lines()` rend la dernière ligne partielle) : les deux lecteurs promettaient le même
+> critère et un seul le tenait.
+> **Pour tenir les deux politiques sur une même machine**, donnez un chemin propre à l'une des deux :
+> `PLUME_STOP_SERVICE_ALLOW` (démon) ou `PLUME_RESPONDER_ALLOW` (agent).
+> ⚠️ **Une ligne CIDR (`203.0.113.0/24`) dans la liste d'épargne est désormais refusée** : la
+> recherche s'est toujours faite par **égalité de ligne**, donc un masque n'a **jamais** épargné
+> personne — il laissait le ban partir en silence. Écrivez une adresse par ligne, ou employez
+> `PLUME_PROTECTED_IPS`.
 
 **Démonstration**
 

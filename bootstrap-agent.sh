@@ -220,18 +220,38 @@ if [ "${PLUME_WITH_RESPONDER:-0}" = "1" ]; then
       # CrowdSec en mode k3s (unban via \`kubectl exec\` du pod LAPI) : ns/deploy configurables.
       echo "PLUME_CROWDSEC_NS=${PLUME_CROWDSEC_NS:-crowdsec}"
       echo "PLUME_CROWDSEC_LAPI=${PLUME_CROWDSEC_LAPI:-crowdsec-lapi}"
-      echo "PLUME_RESPONDER_ALLOW=/etc/plume/responder.allow"
+      # P4.7-a — CHEMIN PROPRE A CETTE POLITIQUE. `bootstrap.sh` (central) sème dans
+      # `/etc/plume/responder.allow` des NOMS DE SERVICE pour `stop_service` et ne le crée que s'il
+      # est ABSENT — comme nous : sur une machine qui est les deux, l'un héritait du contenu de
+      # l'autre, et le responder d'agent n'y trouvait alors AUCUNE adresse épargnée (mesuré :
+      # le ban partait). Une installation NEUVE tient donc les deux politiques dans DEUX fichiers.
+      # Une installation EXISTANTE n'est PAS touchée : ce bloc n'écrit `responder.conf` que s'il est
+      # absent, donc un agent déjà installé garde son chemin — et sa liste — inchangés.
+      echo "PLUME_RESPONDER_ALLOW=/etc/plume/responder-ban-exempt.allow"
     } > /etc/plume/responder.conf
     chgrp soc /etc/plume/responder.conf && chmod 0640 /etc/plume/responder.conf
   fi
-  if [ ! -f /etc/plume/responder.allow ]; then
+  # P4.7-a — LA LISTE D EPARGNE A SON PROPRE FICHIER, ET LE CHEMIN QUI SERT EST CELUI DE LA CONF.
+  # On sème le fichier que `responder.conf` DESIGNE, jamais un nom en dur : sur un agent déjà
+  # installé, `responder.conf` existe et pointe (le plus souvent) sur l ancien chemin partagé — c est
+  # LUI qu on doit trouver ou créer, sans quoi l installateur poserait un fichier que personne ne lit
+  # et laisserait la vraie liste derriere lui. Le chemin est relu depuis la conf pour cette raison.
+  RESP_ALLOW=$(sed -n 's/^PLUME_RESPONDER_ALLOW=//p' /etc/plume/responder.conf 2>/dev/null | tail -n1)
+  [ -n "${RESP_ALLOW:-}" ] || RESP_ALLOW=/etc/plume/responder-ban-exempt.allow
+  if [ ! -f "$RESP_ALLOW" ]; then
     {
-      echo "# IP a NE JAMAIS bannir (1 par ligne). RFC1918/loopback/lien-local + le central sont DEJA exclus."
+      echo "# POLITIQUE DE CE FICHIER : IP a NE JAMAIS bannir (lu par collectors/respond.sh)."
+      echo "# 1 ADRESSE par ligne, sans masque (un CIDR n a JAMAIS epargne personne : la recherche est"
+      echo "# une egalite de ligne — il est desormais REFUSE au lieu de laisser le ban partir en silence)."
+      echo "# RFC1918/loopback/lien-local + le central sont DEJA exclus."
       echo "# Ajoute ici tes IP d'admin / sauts SSH de confiance."
-    } > /etc/plume/responder.allow
-    chgrp soc /etc/plume/responder.allow && chmod 0640 /etc/plume/responder.allow
+      echo "# N Y METTEZ PAS DE NOMS DE SERVICE : c est l autre politique (allowlist stop_service du"
+      echo "# central, /etc/plume/responder.allow). Une ligne qui n est pas une adresse fait REFUSER"
+      echo "# TOUT ban (fail-closed) : la protection ne disparait plus en silence."
+    } > "$RESP_ALLOW"
+    chgrp soc "$RESP_ALLOW" && chmod 0640 "$RESP_ALLOW"
   fi
-  echo ">> responder agent installe (OPT-IN, NON active, DRY-RUN). Edite /etc/plume/responder.{conf,allow} puis: systemctl enable --now plume-respond-agent.timer"
+  echo ">> responder agent installe (OPT-IN, NON active, DRY-RUN). Edite /etc/plume/responder.conf et $RESP_ALLOW puis: systemctl enable --now plume-respond-agent.timer"
 fi
 
 # --- relais audit MinIO (OPT-IN : PLUME_WITH_MINIO_AUDIT=1) : telemetrie d'acces objet -> source=minio-audit ---

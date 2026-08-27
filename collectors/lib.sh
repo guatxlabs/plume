@@ -452,6 +452,26 @@ kctl() {
 #
 # VOCABULAIRE FERMÉ de `reason` (requêtable, pas de la prose) :
 #   missing-dependency · missing-source · missing-config · subsystem-absent · unreachable · disabled
+#   collection-capped   — LE SEUL MOT DE CETTE LISTE QUI NE DÉCRIT PAS UNE INCAPACITÉ, ET C'EST
+#       DÉLIBÉRÉ. « Le seul » portait sur le VOCABULAIRE, et se lisait comme portant sur les EMPLOIS :
+#       c'est plus large que la mesure, et le lot qui l'a écrit a lui-même introduit un contre-exemple
+#       — `collectors/custom.sh` avoue `unavailable / missing-config` quand une borne mal écrite
+#       retombe sur son défaut, ALORS QUE la source est intégralement collectée (MESURÉ le
+#       2026-08-27 : `MAX=deux` -> 4 événements publiés ET l'aveu). Ce qui est vrai reste vrai —
+#       aucun autre MOT de la liste ne décrit autre chose qu'une incapacité — mais un EMPLOI de ces
+#       mots-là peut désormais accompagner une collecte complète, et il fait alors basculer la
+#       pastille d'une source saine. La borne est écrite ici plutôt que corrigée à la va-vite : la
+#       corriger demande un `collect_status` que `docs/CIM.md` ne déclare pas, donc un changement de
+#       contrat, du démon et des règles livrées — hors de la zone de ce lot. Il dit que
+#       le capteur a collecté, puis a COUPÉ lui-même ce qu'il rapportait, à une borne QUI EST SIENNE
+#       (un plafond de lignes par passage, une borne de durée sur une commande d'exploitant). La
+#       source allait bien ; c'est la couverture qui est incomplète, et elle l'est PAR CONSTRUCTION.
+#       IL EST INTERDIT SUR LES PRIMITIVES QUI SORTENT (`plume_unavailable`, `plume_disabled`) : une
+#       borne franchie n'est jamais une raison d'arrêter le passage, le capteur publie ce qu'il tient
+#       et rend la main. `check_collector_exit_is_classified.py` tient cette interdiction — son
+#       vocabulaire de `reason` reste à SIX mots et n'a pas bougé, si bien qu'écrire
+#       `plume_unavailable <src> collection-capped …` fait toujours rougir la CI. La porte d'entrée
+#       de ce septième mot est `plume_collecte_tronquee`, ci-dessous, qui n'exite pas.
 #
 # ROBUSTESSE : ces fonctions ne doivent JAMAIS transformer un skip en échec d'unit. `plume_init` est
 # rappelé si besoin (certains collecteurs sortent AVANT de l'avoir appelé), et l'écriture du spool est
@@ -471,11 +491,28 @@ kctl() {
 # prochain capteur — y compris celui d'un client, via `custom.sh` — refaire la même faute.
 # CE QUI RESTE EXIGÉ D'UNE CLÉ ÉMETTEUR : être STABLE et DÉTERMINISTE pour un même événement — c'est elle
 # qui absorbe les réémissions du spool (at-least-once). Le bucket horaire ci-dessous joue ce rôle.
+# 6e ARGUMENT, OPTIONNEL : LA MATIERE DE LA CLE DE DEDOUBLONNAGE (ajoute le 2026-08-27).
+# CE QUI A ETE MESURE. `_av_dd` prend l'empreinte de `_av_fields`, qui contient le DETAIL — donc,
+# depuis `P4.6-b`, le NOMBRE de lignes ecartees. Quatre passages consecutifs de `custom.sh` dans la
+# MEME heure, MEME source, avec `seq 1 10`, `seq 1 10`, `seq 1 12`, `seq 1 15` sous `MAX=3` ont
+# produit TROIS enveloppes d'aveu et TROIS cles `dedup` distinctes (`avail-t-172602547-…`,
+# `-228226048-`, `-409879386-`) : seuls les deux passages IDENTIQUES se sont confondus. Le
+# dedoublonnage HORAIRE ne tenait donc que si le compte ne bougeait pas d'un passage a l'autre,
+# c'est-a-dire presque jamais sur une source assez bavarde pour heurter son plafond — jusqu'a 60
+# lignes `event` par heure et par source tronquee, sur le canal qui LEVE UNE ALERTE et fait basculer
+# la pastille. Rendre la grandeur avait un prix, et il n'etait pas dit.
+# CE QU'ON NE FAIT PAS, ET POURQUOI. On ne retire pas le detail de la cle POUR TOUT LE MONDE : ce
+# serait defaire `S36` (deux aveux DIFFERENTS emis par la meme source dans le meme passage
+# reprendraient la meme cle, donc le meme nom de fichier, et le second EFFACERAIT le premier).
+# L'appelant qui SAIT que son detail porte une grandeur variable fournit lui-meme la matiere STABLE
+# de sa cle ; tous les autres gardent le comportement d'avant, a l'octet pres (le defaut est
+# `_av_fields`).
 plume_report_availability() {
   [ -n "${SPOOL:-}" ] || plume_init
   _av_fields=$(printf '{"type":"collector-availability","collector":"%s","collect_status":"%s","reason":"%s","detail":"%s"}' \
     "$(json_escape "$1")" "$(json_escape "$2")" "$(json_escape "$3")" "$(json_escape "${4:-}")")
-  _av_dd="avail-$1-$(printf '%s' "$_av_fields" | cksum | cut -d' ' -f1)-$((ts / 3600))"
+  _av_cle="${6:-$_av_fields}"
+  _av_dd="avail-$1-$(printf '%s' "$_av_cle" | cksum | cut -d' ' -f1)-$((ts / 3600))"
   _av_ev=$(printf '{"ts":%s,"source":"%s","category":"config","severity":%s,"message":"%s","dedup":"%s","fields":%s}' \
     "$ts" "$(json_escape "$1")" "$5" "$(json_escape "capteur $1 $2 : $3 — ${4:-}")" "$_av_dd" "$_av_fields")
   # S36 — LE NOM DE L'ENVELOPPE PORTE L'EMPREINTE DU CONTENU, ET PAS SEULEMENT LA SECONDE. Il valait
@@ -601,6 +638,72 @@ plume_lecture_partielle() {
   plume_report_availability "$1" unavailable missing-source \
     "LECTURE PARTIELLE ($(plume_cause_fermee "$2")) : le marqueur correspondant N'AVANCE PAS, la tranche sera relue au passage suivant. ${3:-}" \
     2 2>/dev/null || true
+}
+
+# =================================================================================================
+# UNE BORNE QUI COUPE LA COLLECTE LE DIT, ET DIT COMBIEN (P4.6-a / P4.6-b)
+# -------------------------------------------------------------------------------------------------
+# LA DIFFÉRENCE AVEC LES QUATRE CAS AU-DESSUS, ET POURQUOI IL FALLAIT UN CINQUIÈME NOM. La partition
+# fermée classe les raisons de S'ARRÊTER : un prérequis absent, un interrupteur, rien de neuf, une
+# lecture qui lâche. Aucune ne décrit ce qui se passe ici — LA SOURCE VA BIEN, la lecture a abouti, et
+# c'est le CAPTEUR qui a coupé, à une borne qu'il porte lui-même. Ranger ce fait dans `missing-source`
+# aurait fait accuser une source saine ; le taire aurait laissé la perte muette, qui est le défaut.
+#
+# CE QUE CE SILENCE COÛTAIT, MESURÉ SUR L'ARBRE le 2026-08-27 (`collectors/custom.sh`, une entrée
+# `CMD=seq 1 10` et `MAX=3`) : trois événements publiés, SEPT lignes jetées, aucun aveu, code de
+# sortie 0. Rien, ni dans le spool ni au central, ne distinguait cette source tronquée d'une source
+# qui n'aurait produit que trois lignes. Le plafond protégeait le central en aveuglant la source.
+#
+# LA GRANDEUR EST RENDUE, PAS SEULEMENT LE FAIT. « J'ai tronqué » sans nombre laisse l'exploitant
+# dimensionner à l'aveugle ; c'est le nombre de lignes ÉCARTÉES qui lui dit si son plafond manque de
+# 10 % ou d'un facteur cent. Il voyage dans le détail de l'aveu, à côté de la borne qui a coupé.
+#
+# ON RÉUTILISE LE CANAL D'AVEU EXISTANT, ON N'EN CRÉE PAS UN SECOND : `plume_report_availability`,
+# donc `category=config` + `collect_status=unavailable`, donc la règle livrée
+# `config.d/rules/catalog/de-collector-unavailable.json` ALERTE dessus sans être touchée, et
+# l'imputation par la donnée (S7) fait basculer la pastille de LA source tronquée. Un `fields.type`
+# `collection-reducing` — la forme que `web`/`pod-logs`/`auditd` emploient pour déclarer leurs filtres
+# — aurait dit que la perte est POSSIBLE ; il ne lève aucune alerte, et ne dit pas qu'elle a EU LIEU.
+#
+# ELLE N'EXITE PAS : un capteur qui a coupé a quelque chose à publier, et souvent d'autres sources à
+# traiter dans le même passage. C'est la forme de `plume_lecture_partielle` — avouer, puis continuer.
+#
+# plume_borne_fermee <mot> — VOCABULAIRE FERMÉ DES BORNES (le « qui a coupé », requêtable, pas de la
+# prose) : `plafond-de-lignes` · `borne-de-duree`. Un mot hors de cet ensemble est ramené à
+# `plafond-de-lignes` plutôt que de devenir une surface libre — même règle qu'ailleurs, la
+# cardinalité se borne à l'entrée et le détail libre ne vit que dans le texte de l'aveu.
+# L'ENSEMBLE EST ÉCRIT DANS LA FONCTION, PAS DANS UNE VARIABLE `PLUME_*` : il n'y a QU'UN site qui le
+# contraint, donc rien à faire diverger, et un nom en `PLUME_*` se serait compté comme un levier
+# d'exploitation — ce qu'il n'est pas.
+plume_borne_fermee() {
+  case " plafond-de-lignes borne-de-duree " in
+    *" $1 "*) printf '%s' "$1" ;;
+    *) printf 'plafond-de-lignes' ;;
+  esac
+}
+
+# plume_collecte_tronquee <capteur> <borne> <écartées> <détail> — la collecte a été COUPÉE par une
+# borne du capteur. <écartées> est le nombre de lignes perdues, ou la chaîne vide quand la borne ne
+# permet pas de le connaître (une commande tuée à la durée ne dit pas ce qu'elle aurait encore émis :
+# on écrit alors « nombre inconnu » plutôt qu'un zéro, qui se lirait comme « rien de perdu »).
+# LA CLE DE CET AVEU-CI NE PORTE PAS LE NOMBRE, ET C'EST LE POINT. La grandeur est ce que cet aveu
+# APPORTE, et c'est aussi ce qui bouge a chaque passage : la mettre dans la cle rendait le
+# dedoublonnage horaire inoperant sur exactement les sources qui declenchent l'aveu (MESURE : 3 cles
+# distinctes pour 4 passages dans la meme heure ; voir plume_report_availability). La cle est donc
+# faite de ce qui IDENTIFIE le fait — la source et LA BORNE qui a coupe —, pas de sa mesure.
+# CE QUE CELA CONSERVE, ET QU'IL FALLAIT CONSERVER : les deux bornes gardent DEUX cles distinctes,
+# donc les deux aveux restent CUMULABLES dans un meme passage (une commande peut depasser le plafond
+# ET la duree, et les deux n'appellent pas le meme geste d'exploitant).
+# CE QUE CELA COUTE, DIT : dans une meme heure, seul le PREMIER compte survit au dedoublonnage du
+# central. L'exploitant lit « cette source a ete tronquee a ce plafond, voici un ordre de grandeur »,
+# pas la serie des passages. C'est l'echange assume contre une alerte qui ne bat pas 60 fois par heure.
+plume_collecte_tronquee() {
+  _pct_borne=$(plume_borne_fermee "$2")
+  _pct_n="${3:-}"
+  case "$_pct_n" in ''|*[!0-9]*) _pct_n="nombre inconnu" ;; *) _pct_n="$_pct_n ligne(s)" ;; esac
+  plume_report_availability "$1" unavailable collection-capped \
+    "COLLECTE TRONQUÉE ($_pct_borne) : $_pct_n écartée(s) ce passage, DÉFINITIVEMENT — le surplus n'est PAS reporté au passage suivant. ${4:-}" \
+    2 "collecte-tronquee|$1|$_pct_borne" 2>/dev/null || true
 }
 
 # ====================================================================================================

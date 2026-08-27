@@ -4,6 +4,72 @@
 //! `respond_run`. Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
 
+/// « CECI EST UNE ADRESSE » — UNE SEULE DÉFINITION, DEUX LECTEURS (`P4.7-a`).
+/// Elle était écrite en ligne dans `action_valid_ctx` (cible d'un `ban_ip`) et nulle part ailleurs.
+/// `allowlist_stop_service` en a besoin pour reconnaître une liste de l'AUTRE politique ; l'écrire une
+/// seconde fois aurait fait diverger deux réponses à la même question. Extraite TELLE QUELLE : mêmes
+/// bornes, mêmes caractères, même exigence du point — le verdict de `action_valid_ctx` est inchangé.
+pub(crate) fn ressemble_a_une_adresse(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 45
+        && s.chars().all(|c| c.is_ascii_hexdigit() || c == '.' || c == ':')
+        && s.contains('.')
+}
+
+/// L'ALLOWLIST DE `stop_service` REJETTE CE QUI N'EST PAS DE SA POLITIQUE (`P4.7-a`).
+///
+/// LE DÉFAUT, MESURÉ SUR L'ARBRE le 2026-08-27. `/etc/plume/responder.allow` est écrit par les DEUX
+/// installateurs et lu par DEUX composants, avec deux significations qui ne se recouvrent pas : ici,
+/// des NOMS DE SERVICE autorisés pour `stop_service` ; côté agent (`collectors/respond.sh`), des
+/// ADRESSES à NE JAMAIS bannir. Les deux installateurs ne créent le fichier que s'il est ABSENT, si
+/// bien que sur une machine à la fois centrale et agent, le second hérite du contenu du premier.
+/// De ce côté-ci, la conséquence n'est pas dangereuse — un nom de service ne figure pas dans une
+/// liste d'adresses, donc tout `stop_service` était BLOQUÉ — mais elle était MAL DITE : le refus
+/// annonçait « ce service n'est pas dans l'allowlist » alors que le fichier ne parlait pas de
+/// services du tout. Un exploitant ajoutait alors son service à une liste que ce lecteur-ci n'aurait
+/// de toute façon jamais dû lire.
+///
+/// CE QUE CETTE FONCTION REND :
+///   `Ok(services)`  la liste a été lue et ne porte QUE des noms de service (commentaires et lignes
+///                   vides écartés — une liste par défaut, telle que l'installateur la pose, est
+///                   donc une liste VIDE et non un refus : aucun `stop_service` n'est autorisé, ce
+///                   qui est le défaut voulu) ;
+///   `Err(cause)`    la liste n'a pas pu être lue, OU elle porte l'autre politique. Les deux sont
+///                   des NON-RÉPONSES, elles ne se rendent pas comme « ce service n'y est pas ».
+///
+/// LE CRITÈRE EST DÉRIVÉ, PAS ÉNUMÉRÉ : une ligne est « de l'autre politique » quand elle est une
+/// ADRESSE au sens de `ressemble_a_une_adresse` — le prédicat que le produit emploie déjà pour la
+/// cible d'un ban —, éventuellement suivie d'un préfixe CIDR (`/24`), forme qu'un exploitant écrit
+/// spontanément dans une liste d'adresses. Aucun nom d'unité systemd n'a cette forme : un suffixe
+/// (`.service`, `.socket`, `.timer`, `.mount`…) porte des lettres hors de l'alphabet hexadécimal.
+/// LIMITE ÉCRITE : un nom d'unité qui serait composé uniquement de chiffres, de `a`-`f` et de points
+/// serait pris pour une adresse et ferait refuser la liste. Aucun suffixe d'unité connu ne le permet,
+/// et le refus va dans la direction protectrice (rien ne s'arrête), mais la borne est dite.
+pub(crate) fn allowlist_stop_service(lecture: std::io::Result<String>) -> Result<Vec<String>, String> {
+    let contenu = match lecture {
+        Ok(c) => c,
+        Err(e) => return Err(format!("lecture impossible ({e}) — aucun arrêt de service n'est autorisé tant que la liste n'est pas lisible")),
+    };
+    let mut services = Vec::new();
+    for ligne in contenu.lines() {
+        let l = ligne.trim();
+        if l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+        let tete = l.split('/').next().unwrap_or(l);
+        if ressemble_a_une_adresse(tete) {
+            return Err(format!(
+                "la ligne « {l} » est une ADRESSE, pas un nom de service : ce fichier porte la liste \
+                 des adresses à ne jamais bannir (politique de `collectors/respond.sh`), pas celle des \
+                 services autorisés pour `stop_service`. Séparez les deux — posez `PLUME_STOP_SERVICE_ALLOW` \
+                 sur un autre chemin"
+            ));
+        }
+        services.push(l.to_string());
+    }
+    Ok(services)
+}
+
 /// Validation stricte d'une action (utilisée à la création ET par le responder root — défense en profondeur).
 /// Délègue à `action_valid_ctx` avec le drapeau engagement RÉEL (byte-identique quand off : le drapeau vaut
 /// false -> la clause engagement n'est même pas évaluée -> comportement STRICTEMENT identique à aujourd'hui).
@@ -15,10 +81,7 @@ pub(crate) fn action_valid(kind: &str, target: &str, db_path: &str) -> Result<()
 pub(crate) fn action_valid_ctx(kind: &str, target: &str, engagement_on: bool, db_path: &str) -> Result<(), String> {
     match kind {
         "ban_ip" | "unban_ip" => {
-            let ok = !target.is_empty()
-                && target.len() <= 45
-                && target.chars().all(|c| c.is_ascii_hexdigit() || c == '.' || c == ':')
-                && target.contains('.'); // v1 : IPv4
+            let ok = ressemble_a_une_adresse(target); // v1 : IPv4
             if !ok { return Err("IPv4 invalide".into()); }
             // M2 : refuse le BAN d'une IP protégée (loopback/privée/opérateur/passerelle). L'unban reste permis
             // (inoffensif : ces IP ne sont jamais bannies -> no-op), on ne bride donc QUE le ban destructif.
@@ -725,12 +788,14 @@ pub(crate) fn respond_run() {
             std::process::exit(1);
         }
     };
-    let allow: Vec<String> = std::fs::read_to_string("/etc/plume/responder.allow")
-        .unwrap_or_default()
-        .lines()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty() && !s.starts_with('#'))
-        .collect();
+    // LA LISTE DE `stop_service` — SON CHEMIN SE POSE, ET SON CONTENU EST DE SA POLITIQUE (`P4.7-a`).
+    // Le chemin était écrit EN DUR ici, donc ni exerçable ni séparable de la liste de l'agent ; il
+    // se pose désormais par `PLUME_STOP_SERVICE_ALLOW`, dont le DÉFAUT est le chemin historique (le
+    // comportement d'une installation qui ne pose rien est inchangé). Ce levier porte un nom PROPRE
+    // et non `PLUME_RESPONDER_ALLOW`, qui désigne déjà la liste des adresses à ne jamais bannir de
+    // l'agent : deux politiques sous un même nom sont exactement le défaut que cette clé ferme.
+    let chemin_allow = cfg(&conf, "PLUME_STOP_SERVICE_ALLOW", "/etc/plume/responder.allow");
+    let allow = allowlist_stop_service(std::fs::read_to_string(&chemin_allow));
     let jail = cfg(&conf, "PLUME_FAIL2BAN_JAIL", "sshd");
     // déléguer le ban à l'IPS existant ; nft = fallback seulement
     let backend = match cfg(&conf, "PLUME_BAN_BACKEND", "auto").as_str() {
@@ -783,9 +848,22 @@ pub(crate) fn respond_run() {
             let _ = conn.execute("UPDATE action SET status='blocked', result=?2, done_ts=?3 WHERE id=?1", params![id, format!("invalide : {e}"), now()]);
             continue;
         }
-        if kind == "stop_service" && !allow.contains(&target) {
-            let _ = conn.execute("UPDATE action SET status='blocked', result='service hors allowlist (/etc/plume/responder.allow)', done_ts=?2 WHERE id=?1", params![id, now()]);
-            continue;
+        if kind == "stop_service" {
+            match &allow {
+                // La liste n'a PAS été lue, ou elle porte l'autre politique : le refus NOMME
+                // laquelle des deux, au lieu de se déguiser en « ce service n'y est pas ».
+                Err(pourquoi) => {
+                    let _ = conn.execute("UPDATE action SET status='blocked', result=?2, done_ts=?3 WHERE id=?1",
+                        params![id, format!("allowlist stop_service INEXPLOITABLE ({chemin_allow}) : {pourquoi}"), now()]);
+                    continue;
+                }
+                Ok(services) if !services.contains(&target) => {
+                    let _ = conn.execute("UPDATE action SET status='blocked', result=?2, done_ts=?3 WHERE id=?1",
+                        params![id, format!("service hors allowlist ({chemin_allow})"), now()]);
+                    continue;
+                }
+                Ok(_) => {}
+            }
         }
         // Résolution de la commande native via le descripteur par-plateforme (#20/#21). platform=="linux"
         // (défaut) -> action_command intact (BYTE-IDENTIQUE). Un gabarit invalide/plateforme inconnue ->

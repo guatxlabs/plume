@@ -80,6 +80,59 @@ function cadenceTitre(s) {
 // Le marquage / acquittement est un geste ÉDITORIAL : editor et admin (miroir du path-guard RBAC editor+).
 const canEditSources = () => { const r = socRole(); return r === 'admin' || r === 'editor'; };
 
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// `P11.18-y` — CE QUE L'INVENTAIRE ÉCARTE SE DIT, ET CE QU'IL NE PEUT PAS COMPTER SE DIT AUSSI.
+//
+// LA MESURE, LE 2026-08-26. La route ne rend pas « les sources » : elle rend celles que DEUX bornes
+// laissent passer. `daemon/src/handlers/sources.rs` lit `event_rollup` sous
+// `WHERE bucket>=now-FENETRE_INVENTAIRE_S` (la fenêtre, déclarée dans `daemon/src/handlers/freshness.rs`)
+// ET `HAVING SUM(n)>=3` (le volume) — une source qui a poussé une ou deux lignes sur la fenêtre n'est
+// donc PAS dans la charge utile. La fenêtre était nommée à l'écran ; le seuil ne l'était NULLE PART.
+// Sur une console de sécurité, « cette source n'existe pas » et « cette source est trop discrète pour
+// mon seuil » sont deux faits opposés : une vue qui écarte en silence fait conclure au premier.
+//
+// CE QUE CETTE VUE NE PEUT PAS DIRE, ET POURQUOI ELLE NE L'INVENTE PAS. Le COMBIEN — le nombre de
+// sources écartées — n'est dérivable d'AUCUNE charge utile servie à la console : la route ne rend que
+// les lignes RETENUES, jamais leur complément, et aucune autre route ne porte la mesure (mesuré :
+// `/api/freshness` applique les deux MÊMES bornes sur la même table — plus, le cas échéant, un filtre
+// d'environnement — donc son compte de flux ne peut pas servir de complément). Le publier demande une
+// écriture côté démon, hors de ce fichier ; ici, la vue DIT qu'elle ne le sait pas, ce qui vaut mieux
+// que de laisser lire un inventaire complet.
+//
+// POURQUOI LES DEUX BORNES SONT ÉCRITES ICI. La route ne les publie pas : les nommer à l'écran demande
+// de les recopier, et une copie finit toujours par diverger. Elle n'est donc pas laissée seule — le
+// harnais ESM (témoin 41) DÉRIVE les deux valeurs du démon (la clause `HAVING` de la requête
+// d'inventaire, la constante de fenêtre) et exige que le texte rendu les nomme : le jour où le démon
+// bouge une borne sans que cette vue suive, le témoin rougit. C'est le même geste que la table
+// `SOURCES_LIVREES` du démon, miroir dérivé tenu par une garde, jamais une liste libre.
+const FENETRE_INVENTAIRE_JOURS = 7;
+const SEUIL_EVENEMENTS_INVENTAIRE = 3;
+
+// LE PÉRIMÈTRE EST RENDU MÊME SUR UNE LISTE VIDE — c'est le seul cas où le lecteur pourrait conclure
+// « il n'y a rien » alors que la réponse est « rien n'a franchi les bornes ». Il est donc posé avant le
+// tableau, et non dans la légende, qui ne paraît qu'avec des lignes.
+function noteDePerimetreDeLInventaire() {
+  const el = document.createElement('div'); el.className = 'muted srcperimetre';
+  el.style.cssText = 'margin:0 0 9px;font-size:11px';
+  el.textContent = LANG === 'en'
+    ? 'What this inventory holds, and what it cannot count. The daemon only lets a source in once it has pushed at least '
+      + SEUIL_EVENEMENTS_INVENTAIRE + ' event(s) over the last ' + FENETRE_INVENTAIRE_JOURS + ' days; below that, the source EXISTS and pushes, but is not in this list — unless someone has already put a declaration or a piece of metadata on it, in which case it does appear, with no retained data at all (« dormant »). HOW MANY sources are set aside this way: the route only returns the rows it kept, never their count — so this view cannot say, and does not make it up. A source missing from here is looked up in the events themselves by its name (source=…): finding it there proves it pushes.'
+    : 'Ce que cet inventaire tient, et ce qu\'il ne peut pas compter. Le démon n\'y fait entrer une source qu\'à partir d\'au moins '
+      + SEUIL_EVENEMENTS_INVENTAIRE + ' événement(s) poussé(s) sur les ' + FENETRE_INVENTAIRE_JOURS + ' derniers jours ; en dessous, la source EXISTE et pousse, mais ne figure pas dans cette liste — sauf si quelqu\'un a déjà posé une déclaration ou une métadonnée sur elle, auquel cas elle y entre sans aucune donnée retenue (« dormant »). COMBIEN de sources sont ainsi écartées : la route ne rend que les lignes qu\'elle a gardées, jamais leur compte — cette vue ne peut donc pas le dire, et ne l\'invente pas. Une source absente d\'ici se cherche dans les événements eux-mêmes par son nom (source=…) : l\'y trouver prouve qu\'elle pousse.';
+  return el;
+}
+
+// CE QUE « dormant » DIT VRAIMENT, à côté du mot. MESURÉ dans `sources.rs` : une source n'entre avec
+// `last_seen` nul QUE par la porte des marquages (`obs.entry(src).or_insert((0, 0))`), qui ne sait pas si
+// la source n'a rien poussé ou si son volume est resté sous le seuil — les deux arrivent ici sous le même
+// mot, avec « dernier vu » à blanc. La légende affirmait « aucune donnée n'a été observée » : c'est FAUX
+// pour une source qui a poussé une ou deux lignes. Le mot reste (le démon le rend), sa raison est dite.
+const raisonDUnDormant = () => (LANG === 'en'
+  ? 'No data RETAINED by the inventory over its ' + FENETRE_INVENTAIRE_JOURS + '-day window. Two different facts land on this same word, and it cannot tell them apart: either nothing arrived, or what arrived stays below the volume threshold ('
+    + SEUIL_EVENEMENTS_INVENTAIRE + ' event(s)) — in which case « last seen » is blank while the source did push.'
+  : 'Aucune donnée RETENUE par l\'inventaire sur sa fenêtre de ' + FENETRE_INVENTAIRE_JOURS + ' jours. Deux faits différents arrivent sous ce même mot, et il ne les distingue pas : soit rien n\'est arrivé, soit ce qui est arrivé reste sous le seuil de volume ('
+    + SEUIL_EVENEMENTS_INVENTAIRE + ' événement(s)) — auquel cas « dernier vu » est à blanc alors que la source a bien poussé.');
+
 // RENDU PUR de l'inventaire à partir de la charge utile de /api/sources (exercé par le harnais ESM sur des
 // objets fabriqués ; `loadSourcesView` ne fait que l'appeler après le fetch).
 function renderSourcesInventory(wrap, d) {
@@ -97,6 +150,8 @@ function renderSourcesInventory(wrap, d) {
     ? 'Inventaire des sources d\'ingestion. Les déclarations et métadonnées ci-dessous (déclarée, cadence attendue, libellé, catégorie, note) ne changent que ce qui est AFFICHÉ — la collecte, les règles et les alertes ne sont jamais modifiées depuis cette console. La configuration des collecteurs hôte est hors périmètre.'
     : 'Ingestion en panne — aucune donnée reçue récemment.';
   wrap.appendChild(banner);
+  // `P11.18-y` — LE PÉRIMÈTRE AVANT LA LISTE, ET MÊME QUAND ELLE EST VIDE (voir l'en-tête du module).
+  wrap.appendChild(noteDePerimetreDeLInventaire());
   const tblHost = document.createElement('div'); wrap.appendChild(tblHost);
   const editable = canEditSources();
   const nUnexpected = sources.filter(s => s.unexpected).length;
@@ -137,8 +192,16 @@ function renderSourcesInventory(wrap, d) {
       // n'est alors plus dans la charge utile, et l'inventer serait une devinette). Là où la console ne
       // peut pas nommer, elle le DIT : un blanc se lirait comme une origine évidente.
       const prod = document.createElement('span'); prod.className = 'muted srcprod'; prod.style.cssText = 'display:block;font-size:10px';
-      if (s.in_collectors && s.expected) {
-        prod.textContent = s.raison_attendue || '';
+      // P11.16-a — LE QUATRIÈME CAS, QUI RENDAIT UN BLANC. Les deux booléens décidaient de trois cas, mais
+      // le premier posait `s.raison_attendue || ''` : une charge utile qui déclare le producteur connu par
+      // construction SANS en rendre le nom (un démon antérieur au champ, un champ renommé) laissait une
+      // ligne VIDE sous le nom de la source — exactement le blanc que le reste de ce bloc refuse, et qui se
+      // lit comme une origine évidente. La règle que ce bloc énonce vaut maintenant sur ses quatre chemins.
+      if (s.in_collectors && s.expected && !s.raison_attendue) {
+        prod.textContent = LANG === 'en' ? 'producer known by construction, but this route did not name it' : 'producteur connu par construction, mais cette route ne l\'a pas nommé';
+        prod.title = LANG === 'en' ? 'The daemon says a shipped producer emits this source, yet the payload carries no name for it — an older daemon, or a renamed field. The console does not guess one: it says what it received.' : 'Le démon dit qu\'un producteur livré émet cette source, mais la charge utile n\'en porte aucun nom — démon antérieur au champ, ou champ renommé. La console n\'en devine pas : elle dit ce qu\'elle a reçu.';
+      } else if (s.in_collectors && s.expected) {
+        prod.textContent = s.raison_attendue;
         prod.title = LANG === 'en' ? 'Where this source comes from: the producer that emits it, derived from what this repository ships, observes, aggregates or configures — never from a hand-written table. A source name and its producer name often differ. A sensor is enabled or removed on the host (its collector and its timer), not from this console.' : 'D\'où vient cette source : le producteur qui l\'émet, dérivé de ce que ce dépôt livre, observe, agrège ou configure — jamais d\'une table écrite à la main. Le nom d\'une source et celui de son producteur diffèrent souvent. Un capteur s\'active ou se retire sur l\'hôte (son collecteur et son minuteur), pas depuis cette console.';
       } else if (s.in_collectors) {
         prod.textContent = LANG === 'en' ? 'producer known by construction, not named here while the declaration is withdrawn' : 'producteur connu par construction, non nommé ici tant que la déclaration est retirée';
@@ -174,7 +237,12 @@ function renderSourcesInventory(wrap, d) {
         why.textContent = (mark.expected ? 'déclarée par ' : 'déclarée NON attendue par ') + mark.updated_by + (mark.updated ? ' le ' + fmtTs(mark.updated) : '');
       } else if (s.raison_attendue && !producteurSousLeNom) {
         why.textContent = s.raison_attendue;
-      } else if (!s.raison_attendue) {
+      } else if (!s.raison_attendue && !s.expected) {
+        // P11.16-a — « aucune déclaration » NE SE DIT QUE LÀ OÙ PERSONNE N'A DÉCLARÉ. Sans la seconde
+        // condition, une ligne DÉCLARÉE dont la route n'a pas rendu la raison (le quatrième cas traité
+        // sous le nom) portait un badge nommant son déclarant À CÔTÉ de « aucune déclaration » : la
+        // cellule démentait le badge de la même ligne. Une absence de RAISON n'est pas une absence de
+        // DÉCLARATION, et l'inventaire ne peut pas dire les deux à la fois.
         why.textContent = 'aucune déclaration';
       }
       if (why.textContent) f.appendChild(why);
@@ -200,6 +268,10 @@ function renderSourcesInventory(wrap, d) {
       const voc = vocDeSource(s);
       const dot = document.createElement('span'); dot.className = 'fdot ' + (voc ? voc.dot : 'calme');
       const lbl = document.createElement('b'); lbl.className = voc ? voc.txt : 'calm'; lbl.textContent = voc ? voc.court : '—';
+      // `P11.18-y` — SEUL `dormant` porte sa raison, et il la porte parce qu'il RECOUVRE deux faits (voir
+      // `raisonDUnDormant`). Les quatre autres mots dérivent d'un âge et d'une cadence, que la ligne montre
+      // déjà : leur coller une phrase de plus n'apprendrait rien.
+      if (s && s.status && etatDeSource(s.status) === 'dormant') lbl.title = raisonDUnDormant();
       f.append(dot, lbl); return f;
     } },
     { key: 'category', label: 'Catégorie', sortable: true, sortVal: s => s.category || '', render: s => s.category || '—' },
@@ -249,9 +321,15 @@ function renderSourcesInventory(wrap, d) {
     // `P11.18-f` — CE QUE CE STATUT PORTE DE PLUS QUE LA FRAÎCHEUR, dans son PROPRE nœud (ajouté au
     // texte ci-dessus, il l'aurait rendu intraduisible : le lexique apparie un nœud entier).
     const doublon = document.createElement('div'); doublon.className = 'muted'; doublon.style.cssText = 'margin-top:6px;font-size:11px';
+    // `P11.18-y` — LA DÉFINITION DE « dormant » ÉTAIT FAUSSE dans un cas que le démon produit : elle
+    // affirmait qu'aucune donnée n'avait été OBSERVÉE, alors que le mot couvre aussi une source qui a
+    // poussé sous le seuil de volume (mesuré : `sources.rs`, la porte des marquages insère `(0, 0)` sans
+    // regarder ce que la source a poussé). Ce qu'il dit vraiment est dit — ici, et au survol du mot.
     doublon.textContent = LANG === 'en'
-      ? 'Four of these words come from the SAME derivation as Data → Source freshness, on the same measure: they say the same thing, seen from the inventory. The fifth belongs to this view alone — « dormant » : a source declared here of which no data was observed over the inventory window (seven days). Such a source has no feed at all in Source freshness, so it does not appear there.'
-      : 'Quatre de ces mots viennent de la MÊME dérivation que Données → Fraîcheur des sources, sur la même mesure : ils disent la même chose, vue depuis l\'inventaire. Le cinquième n\'appartient qu\'à cette vue — « dormant » : une source déclarée ici dont aucune donnée n\'a été observée sur la fenêtre de l\'inventaire (sept jours). Une telle source n\'a aucun flux dans Fraîcheur des sources, elle n\'y figure donc pas.';
+      ? 'Four of these words come from the SAME derivation as Data → Source freshness, on the same measure: they say the same thing, seen from the inventory. The fifth belongs to this view alone — « dormant » : a source declared here of which the inventory RETAINED no data over its '
+        + FENETRE_INVENTAIRE_JOURS + '-day window, either because nothing arrived or because the volume stays below the threshold named above — the word does not tell the two apart. Such a source has no feed at all in Source freshness (same two bounds), so it does not appear there.'
+      : 'Quatre de ces mots viennent de la MÊME dérivation que Données → Fraîcheur des sources, sur la même mesure : ils disent la même chose, vue depuis l\'inventaire. Le cinquième n\'appartient qu\'à cette vue — « dormant » : une source déclarée ici dont l\'inventaire n\'a RETENU aucune donnée sur sa fenêtre de '
+        + FENETRE_INVENTAIRE_JOURS + ' jours, soit qu\'il ne soit rien arrivé, soit que le volume reste sous le seuil nommé plus haut — le mot ne distingue pas les deux. Une telle source n\'a aucun flux dans Fraîcheur des sources (mêmes deux bornes), elle n\'y figure donc pas.';
     wrap.appendChild(doublon);
   }
 }

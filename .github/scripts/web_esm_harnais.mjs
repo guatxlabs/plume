@@ -113,6 +113,13 @@ class Element {
   set placeholder(v) { this.setAttribute("placeholder", v); }
   get label() { return this.attributes.label ?? ""; }
   set label(v) { this.setAttribute("label", v); }
+  // `P11.15-a` — `type` EST REFLÉTÉ LUI AUSSI. Le document réel POSE l'attribut quand la propriété est
+  // écrite (`b.type = 'button'`), et c'est par l'ATTRIBUT qu'un bouton typé se distingue d'un bouton qui
+  // vaut « submit » dans un formulaire. Le shim n'en gardait qu'une propriété JavaScript : un témoin qui
+  // lisait l'attribut voyait `null` sur un bouton correctement typé, et un bouton NON typé lui aurait
+  // rendu la même chose — deux situations opposées, un seul verdict.
+  get type() { return this.attributes.type ?? ""; }
+  set type(v) { this.setAttribute("type", v); }
   // `P11.13-g` — `disabled` EST UN ATTRIBUT BOOLÉEN, et il ne l'était pas ici : `el.disabled = true`
   // ne posait qu'une propriété JavaScript, invisible à `hasAttribute`, à `getAttribute` et au sélecteur
   // `[disabled]`. Le banc en est resté aveugle à une régression réelle où un geste S'ANNULAIT LUI-MÊME
@@ -395,9 +402,22 @@ const sectionsDeLaPage = () => (mainDeLaPage ? mainDeLaPage.children.filter((c) 
 // 2026-08-25 : le réordonnancement des cartes de la Vue d'ensemble sortait les quatre du document et
 // la vue paraissait n'avoir aucune charge. Les deux trous ne se ferment donc pas séparément.
 const RE_ETAPE = /^([a-zA-Z][\w-]*)?(#[\w-]+)?((?:\.[\w-]+)*)((?:\[[^\]]+\])*)$/;
+// `P11.15-a` — UNE ÉTAPE QUE LE MOTEUR NE SAIT PAS LIRE RENDAIT « AUCUN NŒUD », ET C'EST UN VERDICT.
+// Mesuré le 2026-08-26 : `:not(…)` ne passe pas `RE_ETAPE`, donc `etapeCorrespond` rendait faux pour
+// TOUT élément, donc `querySelectorAll` rendait une liste VIDE — silencieusement. Le seul sélecteur de
+// `web/` qui l'emploie est celui de la fabrique de tableaux (`tbody > tr:not(.rowdetail) > td`, deux
+// sites, `core.js`) : le mécanisme de dépli de cellule ne pouvait donc RIEN trouver ici, et un banc qui
+// rend « 0 cellule » là où il y en a huit dit une absence qu'il n'a pas mesurée. L'exclusion est retirée
+// de l'étape AVANT la lecture, puis rejouée par la même fonction sur ce qu'elle exclut : une seule
+// grammaire, dans les deux sens. Une étape restée illisible rend toujours faux — c'est la limite, et le
+// témoin 41 l'épingle en exigeant que l'exclusion RETIRE des nœuds au lieu de tous les emporter.
+const RE_NON = /:not\(([^()]*)\)/g;
 function etapeCorrespond(el, etape) {
-  const m = RE_ETAPE.exec(etape);
+  const exclusions = [];
+  const base = String(etape).replace(RE_NON, (_, dedans) => { exclusions.push(String(dedans).trim()); return ""; });
+  const m = RE_ETAPE.exec(base);
   if (!m || !el.tagName) return false;
+  for (const ex of exclusions) if (ex && ex.split(",").some((b) => etapeCorrespond(el, b.trim()))) return false;
   if (m[1] && el.tagName !== m[1].toUpperCase()) return false;
   if (m[2] && el.id !== m[2].slice(1)) return false;
   for (const c of (m[3] || "").split(".").filter(Boolean)) if (!el.classList.contains(c)) return false;
@@ -584,7 +604,12 @@ exiger(limitesDe((c) => c.tenu()).length === 0, "(0) la dérivation déclare une
 const LIMITES = CAPACITES.filter((c) => !c.verdict);
 const TENUES = CAPACITES.filter((c) => c.verdict);
 const AVEU = LIMITES.length
-  ? LIMITES.map((c) => `${c.nom} (${c.tient}) — ${c.consequence} ; ${c.sites} site(s) de web/*${c.ext} en dépendent, aucun n'est exercé ici`).join("\n  · ")
+  // `P11.15-a` — LA CLAUSE DE FIN A ÉTÉ CORRIGÉE PARCE QU'ELLE EST DEVENUE FAUSSE. Elle disait « aucun
+  // n'est exercé ici » ; le témoin 41 exerce désormais les deux sites du prédicat de débordement, sur des
+  // largeurs qu'il POSE lui-même. Ce qui reste vrai, et qui est la seule chose que la section 0 mesure :
+  // le simulacre ne MESURE aucune de ces capacités — un témoin qui en a besoin doit la fabriquer, et il ne
+  // juge alors que le code qui la consomme, jamais le résultat peint.
+  ? LIMITES.map((c) => `${c.nom} (${c.tient}) — ${c.consequence} ; ${c.sites} site(s) de web/*${c.ext} en dépendent et le simulacre n'en mesure AUCUN : un témoin qui a besoin de cette capacité doit poser la mesure lui-même, et il ne juge alors que le code qui la consomme`).join("\n  · ")
   : "rien de ce qui est sondé — les " + CAPACITES.length + " capacités mesurées sont tenues";
 console.log(`[simulacre] ${CAPACITES.length} capacités SONDÉES sur le shim, chacune validée dans les deux sens (témoin positif + témoin négatif) : ${TENUES.length} tenue(s) — ${TENUES.map((c) => c.nom).join(", ") || "aucune"} ; ${LIMITES.length} NON tenue(s) — ${LIMITES.map((c) => c.nom).join(", ") || "aucune"}.`);
 if (LIMITES.length) console.log(`[simulacre] CE QUE LE VERT DE CE BANC NE DIT PAS :\n  · ${AVEU}`);
@@ -4240,6 +4265,1629 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   }
 
   console.log(`[recherche-armee] les SEPT listes cherchables qui n'avaient aucune identité en portent une, et la mémoire de P11.18-z est exercée sur les MODULES RÉELS par leurs propres chargeurs de vue : flotte, inventaire des sources, jetons, risque par entité, silences, registre du démon, collecteurs hôte. Sur trois d'entre elles le chemin part du BOUTON de la ligne, passe par la fenêtre de confirmation partagée, écrit (la charge utile servie CHANGE — déclaration retirée, silence levé, jeton révoqué) et revient : la recherche de l'exploitant tient, la liste revenue suit ce que la route sert, et une recherche vidée ne renaît pas. Les trois listes du panneau Suppressions, rechargées par un SEUL chargeur, ne se passent pas leur recherche. Ce que ce témoin NE tient PAS : les onze autres gestes éditoriaux de ces vues (leur dernière instruction est le chargeur, rappelé ici, mais leur fenêtre n'est pas jouée), rien de la mise en page ni du style, et rien d'une vue sans geste d'écriture au-delà de son rechargement.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 46. UN RÉGLAGE D'AXES QUI ÉCARTE LE LECTEUR DU PANNEAU ENREGISTRÉ LE DIT — ET NE LE DIT QUE LÀ
+//     (`P11.18-q`).
+//     CE QUE LE TÉMOIN DOIT ÉTABLIR. Le réglage des axes est rangé dans le magasin de préférences, qui
+//     est PAR COMPTE : deux exploitants devant le même panneau partagé peuvent voir deux graphes.
+//     `P11.18-q` a tranché du côté de la PERSONNE — le panneau n'a aucune fente où loger un axe — et
+//     exige alors que la vue DISE que ce qu'elle montre est un réglage privé.
+//     (a) L'INSTRUMENT D'ABORD, ET SON CONTRÔLE POSITIF : sans réglage, la vue ne dit rien et rend
+//         EXACTEMENT l'appel `vizElement` d'origine (empreinte épinglée) ; avec un réglage qui déplace
+//         une colonne, cette empreinte CHANGE. Sans ce second point, « l'aveu est apparu » ne prouverait
+//         pas que le lecteur voit autre chose que les autres.
+//     (b) L'AVEU EST DÉRIVÉ DE LA DIVERGENCE, PAS DE L'EXISTENCE D'UN RÉGLAGE — et c'est une MUTATION
+//         qui le prouve : un réglage qui REDONNE l'ordre par défaut (première colonne en abscisse,
+//         dernière en ordonnée) ne fait apparaître AUCUN aveu, et rend une empreinte byte-identique à
+//         celle sans réglage. Un aveu qui parlerait dès qu'un réglage existe crierait au loup.
+//     (c) L'AVEU NOMME CE QUE LES AUTRES VOIENT, et il le tient de la REPRÉSENTATION : sur le même
+//         réglage, `bar` (qui ne lit pas la fente du milieu) nomme deux colonnes, `heatmap` (qui la lit)
+//         en nomme trois. Une phrase écrite en dur ne pourrait pas faire cette différence.
+//     (d) UN CHOIX IMPOSSIBLE reste un refus, ET l'aveu l'accompagne : le lecteur voit un texte là où
+//         les autres voient un graphe, ce qui est la divergence la plus forte de toutes.
+//     (e) SANS IDENTITÉ DE PANNEAU, RIEN N'EST DÉCLARÉ : il n'existe alors aucun panneau enregistré dont
+//         on pourrait s'écarter. Ce n'est pas un silence, c'est une absence d'objet — et le témoin
+//         l'épingle pour que ce silence ne s'étende jamais au cas qui a une identité.
+//     (f) LES DEUX LANGUES, par une seconde instance du graphe sous `LANG='en'`.
+//     (g) LA PHRASE DIT « l'instantané partageable ne les emporte pas » — une garde DIT ce qu'elle ne
+//         tient pas, et ce qu'elle dit doit être VRAI. C'est DÉRIVÉ du source : le corps de
+//         `captureSnapshot` rend ses panneaux par `vizElement`, le chemin SANS réglage, et n'appelle
+//         jamais la fabrique réglée. Le jour où il l'appellerait, cette phrase deviendrait fausse et ce
+//         témoin rougit avant elle.
+//     CE QUE CE TÉMOIN NE TIENT PAS : ni la mise en page ni le style calculé (l'aveu porte la classe
+//     partagée `rf-hint`, ce banc ne sait pas s'il est LU) ; ni ce que voit l'AUTRE compte — le banc n'a
+//     qu'une identité, et c'est le magasin de préférences, mesuré ailleurs, qui est par compte ; ni la
+//     capture serveur de l'instantané, qui ne porte aucun champ d'axe (mesuré dans le démon, pas ici).
+// ---------------------------------------------------------------------------------------------
+{
+  const SUF41 = "?plume-lang=en";
+  const url41 = (f, sfx = "") => pathToFileURL(path.join(WEB, f)).href + sfx;
+  const vizFR = await import(url41("viz.js"));
+  const prefsFR = await import(url41("prefs.js"));
+
+  const COLS = ["host", "source", "count"];
+  const ROWS = [["web-01", "sshd", 12], ["db-01", "ufw", 7], ["web-02", "sshd", 3]];
+  const PANNEAU = 4141;
+  const CLE_PANNEAU = "p" + PANNEAU;
+  const CLE_SANS_PANNEAU = "c" + COLS.join("\x1f");
+  // L'AVEU est le seul `rf-hint` NU : le refus, lui, porte `rf-hint bad`. Les distinguer par la classe
+  // plutôt que par la position évite qu'un nœud ajouté demain fasse passer l'un pour l'autre.
+  const cueillir46 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir46(c, pred, acc)); return acc; };
+  const avisDe = (ns) => ns.filter((n) => n.classList && n.classList.contains("rf-hint") && !n.classList.contains("bad"));
+  const refusDe = (ns) => ns.filter((n) => n.classList && n.classList.contains("rf-hint") && n.classList.contains("bad"));
+  const dernier = (ns) => ns[ns.length - 1];
+
+  const rendre = (viz, prefs, mode, reglage, id = PANNEAU, cle = CLE_PANNEAU) => {
+    prefs.prefSet("viz_axes", reglage ? { [cle]: reglage } : {});
+    return viz.noeudsDeVizReglee(mode, COLS, ROWS, "", "", id, () => {});
+  };
+
+  // (a) INSTRUMENT + CONTRÔLE POSITIF.
+  const nsNu = rendre(vizFR, prefsFR, "bar", null);
+  const empreinteNue = dernier(nsNu).outerHTML;
+  exiger(avisDe(nsNu).length === 0, `(46a) sans aucun réglage, la vue prononce déjà un aveu de réglage privé : « ${avisDe(nsNu).map((n) => n.textContent).join(" ")} »`);
+  exiger(empreinteNue === vizFR.vizElement("bar", COLS, ROWS, "", "").outerHTML,
+    "(46a) instrument : sans réglage, la fabrique réglée ne rend PLUS l'appel `vizElement` d'origine — l'empreinte de référence ne vaut rien");
+  exiger(empreinteNue.length > 40, "(46a) instrument : l'empreinte du graphe est quasi vide, une comparaison d'empreintes ne distinguerait rien");
+
+  const nsEcarte = rendre(vizFR, prefsFR, "bar", { x: "count" });
+  const avisEcarte = avisDe(nsEcarte);
+  exiger(avisEcarte.length === 1, `(46a) un réglage qui DÉPLACE une colonne ne fait apparaître aucun aveu (${avisEcarte.length} trouvé(s)) : le lecteur croit voir le panneau tel qu'il est enregistré`);
+  exiger(dernier(nsEcarte).outerHTML !== empreinteNue,
+    "(46a) instrument : le réglage ne change PAS ce qui est rendu — l'aveu porterait sur une divergence qui n'existe pas, et ce témoin ne prouverait rien");
+  const texteEcarte = avisEcarte.map((n) => n.textContent).join(" ");
+  exiger(/VOTRE compte/.test(texteEcarte) && /pas dans le panneau/.test(texteEcarte),
+    `(46a) l'aveu ne dit pas que le réglage vit sur le compte du lecteur et non dans le panneau : « ${texteEcarte} »`);
+  exiger(/personne d’autre ne les voit/.test(texteEcarte), `(46a) l'aveu ne dit pas que personne d'autre ne voit ces axes : « ${texteEcarte} »`);
+  exiger(/\(par défaut\)/.test(texteEcarte), `(46a) l'aveu n'indique pas le chemin du retour vers ce que voient les autres : « ${texteEcarte} »`);
+
+  // (b) LA MUTATION QUI PROUVE LA DÉRIVATION : un réglage SANS divergence ne dit rien, et rend pareil.
+  const nsMeme = rendre(vizFR, prefsFR, "bar", { x: "host", y: "count" });
+  exiger(avisDe(nsMeme).length === 0,
+    `(46b) un réglage qui REDONNE l'ordre par défaut fait tout de même parler la vue (« ${avisDe(nsMeme).map((n) => n.textContent).join(" ")} ») : l'aveu suit l'EXISTENCE d'un réglage, pas la DIVERGENCE — il crierait au loup`);
+  exiger(dernier(nsMeme).outerHTML === empreinteNue,
+    "(46b) instrument : un réglage qui redonne l'ordre par défaut ne rend PAS la même chose que l'absence de réglage — le silence de (46b) ne prouverait alors rien");
+
+  // (c) L'ORDRE NOMMÉ VIENT DE LA REPRÉSENTATION, pas d'une phrase écrite.
+  const nsHeat = rendre(vizFR, prefsFR, "heatmap", { x: "count" });
+  const texteHeat = avisDe(nsHeat).map((n) => n.textContent).join(" ");
+  exiger(vizFR.sondage("bar").fentes[1] === false && vizFR.sondage("heatmap").fentes[1] === true,
+    "(46c) instrument : `bar` et `heatmap` ne se distinguent plus par la fente du milieu — les deux ordres attendus ci-dessous ne seraient plus différents");
+  exiger(/«\s*host → count\s*»/.test(texteEcarte), `(46c) sur \`bar\`, l'aveu ne nomme pas l'ordre « host → count » que le panneau enregistré remet au graphe : « ${texteEcarte} »`);
+  exiger(/«\s*host → source → count\s*»/.test(texteHeat), `(46c) sur \`heatmap\`, l'aveu ne nomme pas l'ordre « host → source → count » : la phrase ne suit pas ce que la représentation LIT : « ${texteHeat} »`);
+
+  // (d) UN CHOIX IMPOSSIBLE : refus ET aveu.
+  const nsRefus = rendre(vizFR, prefsFR, "bar", { x: "colonne_absente" });
+  exiger(refusDe(nsRefus).length === 1 && /Graphe refusé/.test(refusDe(nsRefus)[0].textContent),
+    `(46d) instrument : un réglage nommant une colonne absente ne produit plus de refus — le cas exercé n'est pas celui décrit`);
+  exiger(avisDe(nsRefus).length === 1,
+    "(46d) le lecteur voit un REFUS là où les autres voient un graphe, et rien ne lui dit que ce refus tient à SON réglage");
+
+  // (e) SANS IDENTITÉ DE PANNEAU : rien à déclarer, et le témoin épingle que ce silence ne déborde pas.
+  const nsSansPanneau = rendre(vizFR, prefsFR, "bar", { x: "count" }, 0, CLE_SANS_PANNEAU);
+  exiger(dernier(nsSansPanneau).outerHTML !== empreinteNue,
+    "(46e) instrument : sans identité de panneau le réglage n'est même plus APPLIQUÉ — le silence mesuré ci-dessous serait celui d'un réglage inerte");
+  exiger(avisDe(nsSansPanneau).length === 0,
+    `(46e) un appelant SANS identité de panneau s'entend parler d'un panneau enregistré qui n'existe pas : « ${avisDe(nsSansPanneau).map((n) => n.textContent).join(" ")} »`);
+
+  // (f) LES DEUX LANGUES.
+  localStorage.setItem("soc_lang", "en");
+  const vizEN = await import(url41("viz.js", SUF41));
+  const prefsEN = await import(url41("prefs.js", SUF41));
+  localStorage.removeItem("soc_lang");
+  const nsEN = rendre(vizEN, prefsEN, "bar", { x: "count" });
+  const texteEN = avisDe(nsEN).map((n) => n.textContent).join(" ");
+  exiger(avisDe(nsEN).length === 1 && /YOUR account/.test(texteEN) && /nobody else sees them/.test(texteEN) && /“\(default\)”/.test(texteEN),
+    `(46f) sous LANG='en' l'aveu n'est pas rendu en anglais : « ${texteEN} »`);
+  exiger(!/Réglage privé/.test(texteEN), `(46f) sous LANG='en' l'aveu rend encore la phrase française : « ${texteEN} »`);
+  exiger(/«\s*host → count\s*»/.test(texteEN) === false && /“host → count”/.test(texteEN),
+    `(46f) sous LANG='en' l'ordre nommé garde les guillemets français : « ${texteEN} »`);
+
+  // (h) LE CHEMIN DE RETOUR QUE L'AVEU NOMME EXISTE VRAIMENT, Y COMPRIS QUAND TOUT S'EST DÉROBÉ.
+  //     Un réglage posé sur trois colonnes SURVIT à une requête réécrite qui n'en rend plus qu'une : il
+  //     continuait de s'appliquer pendant que la barre — seul contrôle capable de le défaire — ne
+  //     s'affichait plus (elle était conditionnée à DEUX colonnes), et le sélecteur, lui, aurait affiché
+  //     « (par défaut) » alors que le réglage était actif. Trois façons de nommer une sortie qui n'existe
+  //     pas. Le témoin la PREND.
+  const UNE_COL = ["count"], UNE_ROW = [[12], [7]];
+  prefsFR.prefSet("viz_axes", { [CLE_PANNEAU]: { x: "host" } });
+  const nsAmputee = vizFR.noeudsDeVizReglee("bar", UNE_COL, UNE_ROW, "", "", PANNEAU, () => {});
+  const selects = (ns) => ns.flatMap((n) => cueillir46(n, (e) => e.tagName === "SELECT", []));
+  const selAmputee = selects(nsAmputee);
+  exiger(refusDe(nsAmputee).length === 1, "(46h) instrument : le réglage devenu impossible ne produit plus de refus — le cas exercé n'est pas celui décrit");
+  exiger(avisDe(nsAmputee).length === 1, "(46h) le réglage privé ne se dit plus quand la colonne choisie a disparu du résultat — le lecteur voit un texte que les autres ne voient pas, sans savoir qu'il tient à SON réglage");
+  exiger(selAmputee.length > 0, "(46h) plus aucun sélecteur n'est rendu alors qu'un réglage s'applique : l'aveu nomme « (par défaut) » comme sortie, et cette sortie n'est pas là");
+  // Les options d'un `select` CONSTRUIT (et non posé en balisage) vivent dans ses enfants : le shim ne
+  // remplit `.options` qu'à l'analyse d'une chaîne de balisage. Lire les enfants, c'est lire l'arbre réel.
+  const optionsDe = (sel) => (sel.children || []).filter((c) => c.tagName === "OPTION");
+  const selX = selAmputee.find((e) => optionsDe(e).some((o) => o.value === "host"));
+  exiger(!!selX, `(46h) la colonne CHOISIE « host », absente du résultat, n'est offerte par aucun sélecteur : re-choisir « (par défaut) » ne serait pas un changement, et le réglage n'aurait pas de sortie`);
+  exiger(!!selX && selX.value === "host", `(46h) le sélecteur affiche « ${selX && selX.value} » alors que le réglage appliqué est « host » : le contrôle dit le contraire de ce qui s'applique`);
+  if (selX) { selX.value = ""; selX.onchange(); }
+  exiger(vizFR.reglageLu(CLE_PANNEAU) === null,
+    `(46h) revenir à « (par défaut) » n'a PAS défait le réglage (${JSON.stringify(vizFR.reglageLu(CLE_PANNEAU))}) : la sortie que l'aveu nomme ne sort de rien`);
+  const nsRevenue = vizFR.noeudsDeVizReglee("bar", UNE_COL, UNE_ROW, "", "", PANNEAU, () => {});
+  exiger(refusDe(nsRevenue).length === 0 && avisDe(nsRevenue).length === 0,
+    "(46h) après le retour à « (par défaut) » la vue refuse ou avoue encore : le geste n'a pas rendu le panneau tel qu'il est enregistré");
+
+  // (i) UNE REPRÉSENTATION QUI NE LIT PAS UNE FENTE NE FAIT PAS DISPARAÎTRE LE RÉGLAGE POSÉ DESSUS —
+  //     elle le laisse s'appliquer. La fente doit donc rester OFFERTE pour être défaite ; et comme la
+  //     représentation ne la LIT pas, rien ne diverge et l'aveu se tait. Les deux moitiés comptent :
+  //     l'aveu qui parlerait ici crierait au loup, et la fente qu'on n'offrirait pas serait un piège.
+  exiger(vizFR.sondage("stat").trace === false && vizFR.sondage("stat").fentes[0] === false,
+    "(46i) instrument : `stat` trace ou lit sa première fente — la représentation choisie ne démontre plus rien");
+  const nsStat = rendre(vizFR, prefsFR, "stat", { x: "count" });
+  exiger(avisDe(nsStat).length === 0,
+    `(46i) sur une représentation qui NE LIT PAS l'abscisse, régler l'abscisse fait tout de même parler la vue (« ${avisDe(nsStat).map((n) => n.textContent).join(" ")} ») : l'aveu suit l'ordre BRUT et non ce que la représentation lit`);
+  const selStatX = selects(nsStat).find((e) => e.value === "count");
+  exiger(!!selStatX, "(46i) la fente réglée n'est plus offerte sur une représentation qui ne la lit pas : le réglage s'applique quand même et ne peut plus être défait");
+
+  // (g) LA PHRASE SUR L'INSTANTANÉ EST DÉRIVÉE DU SOURCE, jamais crue sur parole.
+  const srcDash = readFileSync(path.join(WEB, "dashboards.js"), "utf8");
+  const corpsCapture = srcDash.match(/async function captureSnapshot\([\s\S]*?\n\}/);
+  exiger(!!corpsCapture, "(46g) instrument : `captureSnapshot` introuvable dans `dashboards.js` — la phrase « l'instantané ne les emporte pas » n'est plus adossée à rien");
+  if (corpsCapture) {
+    exiger(/vizElement\(/.test(corpsCapture[0]),
+      "(46g) instrument : l'aperçu de l'instantané ne rend plus par `vizElement` — le chemin que la phrase décrit n'est plus celui-là");
+    exiger(!/noeudsDeVizReglee/.test(corpsCapture[0]),
+      "(46g) l'aperçu de l'instantané passe désormais par la fabrique RÉGLÉE : la phrase « l'instantané partageable ne les emporte pas » est devenue FAUSSE, et elle est servie telle quelle au lecteur");
+  }
+
+  prefsFR.prefSet("viz_axes", undefined);
+  prefsEN.prefSet("viz_axes", undefined);
+  try { localStorage.removeItem("plume_prefs"); } catch (e) {}
+
+  console.log("[axes-partages] le réglage d'axes d'un panneau vit sur le COMPTE du lecteur, et la vue le DIT dès que ce qu'elle montre s'écarte de ce que le panneau enregistré sert : l'aveu nomme l'ordre que les autres voient (dérivé de la représentation — deux colonnes sur `bar`, trois sur `heatmap`), nomme le chemin du retour, et accompagne aussi le refus. Un réglage qui REDONNE l'ordre par défaut ne dit rien et rend une empreinte byte-identique à l'absence de réglage ; un appelant sans identité de panneau ne dit rien non plus. Les deux langues sont rendues. La phrase sur l'instantané partageable est adossée au source : `captureSnapshot` rend par `vizElement`, le chemin sans réglage.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// 43. UN GESTE QUI EXISTE ET QU'ON NE TROUVE PAS EST, POUR CELUI QUI L'A CHERCHÉ, UN GESTE ABSENT
+//     (`P11.14-d`) — ET UN REFUS QUI DÉCLARE UN FONDEMENT QU'IL IGNORE FABRIQUE (`P11.14-h`).
+//     (a) LE MÉCANISME EXISTE, ET CE TÉMOIN EST VERT AVANT COMME APRÈS : un cas terminé rendu à un
+//         éditeur porte DÉJÀ son bouton « Rouvrir ». C'est lui qui interdit de raconter que la console
+//         n'avait pas de réouverture — le constat d'origine est réfuté sur le mécanisme.
+//     (b) LA PISTE DU RAFRAÎCHISSEMENT EST RÉFUTÉE PAR MUTATION, pas par lecture. Un cas EN COURS est
+//         résolu depuis son propre bouton, à travers la fenêtre de confirmation partagée ; la VALEUR qui
+//         change est le jeu des libellés de la barre d'actions du détail — « Résoudre » s'en va,
+//         « Rouvrir » y entre — sans qu'aucun rechargement de page n'ait lieu. Le témoin relève la barre
+//         AVANT pour que la comparaison porte sur un changement et non sur un état.
+//     (c) CE QUI MANQUAIT VRAIMENT : hors du détail, rien ne nommait le geste. Le cadre d'état d'une
+//         LIGNE de la liste le nomme désormais et dit OÙ il attend. Témoin inverse obligatoire : la ligne
+//         d'un cas EN COURS ne nomme ni le geste ni sa place — une version qui l'écrirait toujours
+//         passerait le premier témoin et mentirait sur la moitié des lignes.
+//     (d) LE RÔLE CHANGE LA PHRASE, PAS SEULEMENT LA PRÉSENCE DU BOUTON. Le même cas terminé, lu par un
+//         rôle sans écriture, dit que « Rouvrir » demande un rôle et que ce geste n'est proposé nulle
+//         part — au lieu de promettre une sortie que ce lecteur ne verra jamais. Les deux phrases sont
+//         DIFFÉRENTES, et celle de l'éditeur ne parle pas de rôle.
+//     (e) LES DEUX SURFACES DU DÉTAIL S'ACCORDENT parce qu'elles ont un seul auteur : le cadre d'état et
+//         la raison portée par le sélecteur inerte nomment le MÊME geste et la MÊME place ; sur un cas en
+//         cours, aucune des deux ne les nomme.
+//     (f) `P11.14-h` — LE REFUS DE PIVOTER NE FABRIQUE PLUS. Sa phrase affirmait deux choses qu'aucune
+//         valeur servie ne porte : que l'alerte « n'a ni règle » (faux dès que la règle a été SUPPRIMÉE —
+//         le lien tombe avec la JOINTURE, pas avec la recherche) et que « sa justification est l'état
+//         qu'elle porte » (une FONDATION déclarée sans qu'aucun champ ne la déclare). Le témoin exige
+//         désormais la phrase DÉRIVÉE — aucune fenêtre servie — l'aveu de la seconde impasse, et
+//         l'absence des deux fabrications. Témoin positif : une alerte qui PORTE son lien reçoit un autre
+//         mot et reste cliquable.
+//     CE QUE CE TÉMOIN NE TIENT PAS : que la personne aurait trouvé le geste — il tient ce que chaque
+//     surface DIT, jamais ce qu'un lecteur en fait ; rien de la mise en page ni du style calculé (un
+//     survol reste un attribut du document ici) ; et, pour `P11.14-h`, il ne tient PAS le fondement
+//     lui-même — personne ne le déclare encore, et c'est exactement ce que la clé garde ouvert.
+// ---------------------------------------------------------------------------------------------
+{
+  const { caseRow, renderCaseDetail } = await import(pathToFileURL(path.join(WEB, "cases.js")).href);
+  const { pivotDUneAlerte, dessinerLaListePlate, alertListModel } = await import(pathToFileURL(path.join(WEB, "alerts.js")).href);
+  const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const cueillir = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir(c, pred, acc)); return acc; };
+  const rep = (o) => ({ ok: true, status: 200, text: async () => JSON.stringify(o) });
+  const qsOrigine = document.querySelector, fetchOrigine = globalThis.fetch;
+  const etatOrigine = { auth: S.AUTH, sel: S.caseSelectedId, g: S.alertGroupBy, a: S.alertGroupAll, u: S.alertUncased };
+
+  const encours = { id: 7, title: "Balayage", status: "in_progress", severity: 3, priority: 2, items: 0, ts: 1000, updated: 1000 };
+  const clos = { id: 9, title: "Ancien", status: "closed", severity: 1, priority: 4, items: 0, ts: 900, updated: 950, closed_ts: 960 };
+  let statutServi = "in_progress";
+  const detail = new Element("div"); detail.id = "case-detail";
+  document.querySelector = (sel) => (sel === "#case-detail" ? detail : sel === "#cases-list" ? null : new Element("div"));
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    if (/\/cases\/\d+\/links$/.test(u)) return rep({ links: [] });
+    if (/\/cases\/\d+\/runbooks$/.test(u)) return rep({ incident_tier: null, available: [] });
+    if (/\/cases\/\d+\/steps$/.test(u)) return rep({ steps: [], progress: { total: 0, done: 0, skipped: 0 }, runbook: null });
+    if (/\/cases\/7$/.test(u) && init && init.method === "POST") { statutServi = JSON.parse(init.body).status; return rep({}); }
+    if (/\/cases\/9$/.test(u)) return rep(clos);
+    if (/\/cases\/7$/.test(u)) return rep({ ...encours, status: statutServi });
+    return rep({ cases: [], total: 0 });
+  };
+  const libelles = (hote) => cueillir(hote, (e) => e.tagName === "BUTTON", []).map((b) => b.textContent);
+  const cadre = (c) => cueillir(caseRow(c), (e) => e.classList.contains("casest"), [])[0];
+  try {
+    S.AUTH = { user: "eve", role: "editor" };
+
+    // (a) LE GESTE EXISTE — vert avant comme après le correctif.
+    const hClos = new Element("div"); renderCaseDetail(hClos, clos); await tick();
+    exiger(libelles(hClos).includes("Rouvrir"), `(43a) un cas terminé rendu à un éditeur ne porte AUCUN bouton « Rouvrir » : le constat ne serait plus « introuvable » mais « absent » — ${JSON.stringify(libelles(hClos))}`);
+
+    // (b) LA BARRE SE RECOMPOSE SANS RECHARGEMENT — preuve par MUTATION, état relevé AVANT.
+    S.caseSelectedId = 7; statutServi = "in_progress";
+    renderCaseDetail(detail, encours); await tick();
+    const avant = libelles(detail);
+    exiger(avant.includes("Résoudre") && !avant.includes("Rouvrir"), `(43b) instrument : la barre d'un cas EN COURS ne part pas de « Résoudre » sans « Rouvrir » — ${JSON.stringify(avant)}`);
+    const resoudre = cueillir(detail, (e) => e.tagName === "BUTTON" && e.textContent === "Résoudre", [])[0];
+    const geste = resoudre.onclick(); await tick();
+    const ov = document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).pop();
+    exiger(!!ov, "(43b) instrument : le bouton « Résoudre » n'a posé aucune fenêtre de confirmation, la suite ne prouverait rien");
+    ov.children[0].children[0].onsubmit({ preventDefault() {} });
+    await geste; await tick();
+    const apres = libelles(detail);
+    exiger(statutServi === "resolved", `(43b) instrument : la route n'a pas reçu la résolution (statut servi « ${statutServi} »)`);
+    exiger(apres.includes("Rouvrir") && !apres.includes("Résoudre"), `(43b) après la résolution, la barre du détail ne s'est PAS recomposée sans rechargement : ${JSON.stringify(avant)} -> ${JSON.stringify(apres)} — c'est la piste que \`P11.14-d\` proposait, et elle est réfutée`);
+
+    // (c) LA LIGNE DE LA LISTE NOMME LE GESTE ET SA PLACE. Témoin inverse : un cas en cours ne les nomme pas.
+    const tClos = (cadre(clos) || {}).title || "", tEnCours = (cadre(encours) || {}).title || "";
+    exiger(/Rouvrir/.test(tClos) && /barre d'actions/.test(tClos), `(43c) hors du détail, rien ne nomme le geste de réouverture ni l'endroit où il attend : « ${tClos} »`);
+    exiger(!/Rouvrir/.test(tEnCours) && !/barre d'actions/.test(tEnCours), `(43c) témoin inverse : la ligne d'un cas EN COURS annonce une réouverture — une version qui l'écrit toujours passerait le témoin précédent : « ${tEnCours} »`);
+
+    // (d) LE RÔLE CHANGE LA PHRASE.
+    S.AUTH = { user: "bob", role: "viewer" };
+    const tLecteur = (cadre(clos) || {}).title || "";
+    exiger(tLecteur !== tClos, "(43d) le cadre d'état dit la même chose à qui peut écrire et à qui ne peut pas : le lecteur lit une promesse de geste qu'il ne verra jamais");
+    exiger(/Rouvrir/.test(tLecteur) && /rôle/.test(tLecteur) && /nulle part/.test(tLecteur), `(43d) le lecteur n'apprend ni le nom du geste ni pourquoi il ne le voit nulle part : « ${tLecteur} »`);
+    exiger(!/rôle/.test(tClos), `(43d) témoin inverse : la phrase de l'éditeur parle de rôle — les deux causes redeviennent indiscernables : « ${tClos} »`);
+    S.AUTH = { user: "eve", role: "editor" };
+
+    // (e) LES DEUX SURFACES DU DÉTAIL S'ACCORDENT (un seul auteur).
+    const raison = (c) => { const h = new Element("div"); renderCaseDetail(h, c); return (cueillir(h, (e) => e.tagName === "LABEL" && /^Statut/.test(e.textContent), [])[0] || {}).textContent || ""; };
+    const rClos = raison(clos), rEnCours = raison(encours);
+    exiger(/Rouvrir/.test(rClos) && /barre d'actions/.test(rClos), `(43e) la raison du sélecteur inerte ne nomme pas le même geste ni la même place que le cadre d'état : « ${rClos} »`);
+    exiger(!/Rouvrir/.test(rEnCours) && !/barre d'actions/.test(rEnCours), `(43e) témoin inverse : un cas EN COURS porte la sortie d'un état terminal : « ${rEnCours} »`);
+  } finally {
+    document.querySelector = qsOrigine; globalThis.fetch = fetchOrigine;
+    S.AUTH = etatOrigine.auth; S.caseSelectedId = etatOrigine.sel;
+  }
+
+  // (f) `P11.14-h` — LE REFUS NE FABRIQUE PLUS NI RÈGLE ABSENTE NI FONDEMENT.
+  const listeA = new Element("div");
+  document.querySelector = (sel) => (sel === "#alerts .body" ? listeA : new Element("div"));
+  globalThis.fetch = async () => rep({ alerts: [], total: 0 });
+  const regleSupprimee = { id: 11, ts: 1000, rule: "rule.42", severity: 3, title: "Compte verrouille", status: "new", detail: "search action=lock", mitre: "", sources: "", case_id: null, acked_at: 0, acked_by: "", search_link: null };
+  const avecLien = { id: 12, ts: 1000, rule: "rule.3", severity: 2, title: "Scan de ports", status: "new", detail: "search source=ufw | stats count", mitre: "", sources: "ufw", case_id: null, acked_at: 0, acked_by: "", window_s: 600, search_link: { query: "search source=ufw | stats count", from: 400, to: 1000 } };
+  try {
+    S.AUTH = { user: "eve", role: "editor" };
+    const refus = pivotDUneAlerte(regleSupprimee), exact = pivotDUneAlerte(avecLien);
+    exiger(exact.mode === "exact", `(43f) instrument : une alerte qui PORTE son lien n'est pas lue comme un pivot exact (« ${exact.mode} ») — le témoin de refus ne prouverait rien`);
+    exiger(refus.mode === "aucun", `(43f) instrument : l'alerte sans fenêtre servie n'atteint pas la troisième branche (« ${refus.mode} »)`);
+    exiger(refus.survol !== exact.survol, "(43f) le refus et le pivot exact rendent le même mot");
+    exiger(!/n'a ni règle/.test(refus.survol), `(43f) le refus affirme encore que l'alerte n'a AUCUNE règle : c'est faux dès que la règle a été supprimée — le lien tombe avec la jointure, pas avec la recherche : « ${refus.survol} »`);
+    exiger(!/justification est l'état/.test(refus.survol), `(43f) le refus DÉCLARE encore sur quoi l'alerte est fondée, alors qu'aucun champ servi ne le déclare — la fabrication d'un étage plus haut (\`P11.14-h\`) : « ${refus.survol} »`);
+    exiger(/fenêtre d'évaluation/.test(refus.survol) && /refuse/.test(refus.survol), `(43f) le refus ne dit plus ce qui est DÉRIVÉ (aucune fenêtre servie) ni qu'il refuse : « ${refus.survol} »`);
+    exiger(/FONDE/.test(refus.survol) && /ne le déclare/.test(refus.survol), `(43f) le refus ne dit pas la seconde impasse — que rien de servi ne déclare le fondement de l'alerte : « ${refus.survol} »`);
+    S.alertGroupBy = ""; S.alertGroupAll = false; S.alertUncased = true;
+    dessinerLaListePlate(listeA, alertListModel(), [regleSupprimee, avecLien], undefined);
+    const rendu = String(listeA.innerHTML);
+    exiger(/data-pivot="aucun"[^>]*aria-disabled="true"/.test(rendu), "(43f) la ligne du refus ne porte plus son inertie aux aides techniques : le refus redeviendrait un clic sans effet");
+    exiger(!/data-pivot="exact"[^>]*aria-disabled/.test(rendu), "(43f) témoin inverse : la ligne d'un pivot EXACT est rendue inerte elle aussi");
+    exiger(rendu.includes(refus.survol), "(43f) le survol de la ligne refusée n'est pas le mot du refus : le survol et le clic ont deux auteurs, et ils divergeront");
+  } finally {
+    document.querySelector = qsOrigine; globalThis.fetch = fetchOrigine;
+    S.AUTH = etatOrigine.auth; S.alertGroupBy = etatOrigine.g; S.alertGroupAll = etatOrigine.a; S.alertUncased = etatOrigine.u;
+  }
+  console.log(`[sortie-et-fondement] le geste de réouverture EXISTAIT (le constat est réfuté sur le mécanisme) et la barre du détail se RECOMPOSE sans rechargement — « Résoudre » sort, « Rouvrir » entre, par le bouton et la confirmation partagée. Ce qui manquait est dit : hors du détail, la ligne d'un cas terminé NOMME le geste et l'endroit où il attend, un cas en cours ne le fait pas, et un lecteur sans écriture apprend que « Rouvrir » demande un rôle et n'est proposé nulle part au lieu de lire une promesse. Le refus de pivoter d'une alerte, lui, cesse de fabriquer : il n'affirme plus qu'elle « n'a ni règle » (faux pour une règle supprimée) ni ce sur quoi elle est fondée — il dit la fenêtre absente, refuse, et AVOUE que rien de servi ne déclare ce fondement. Ce que ce témoin NE tient PAS : que la personne aurait trouvé le geste ; rien de la mise en page ni du style calculé ; et pas le fondement lui-même, que personne ne déclare encore.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 45. UNE REPRÉSENTATION QUI NE PEUT PAS EXPRIMER CETTE DONNÉE N'EST PAS OFFERTE POUR ELLE
+//     (`P11.18-p`). Le défaut visé n'est pas un graphe laid : c'est un graphe FAUX, et un graphe faux
+//     se lit comme un graphe. MESURÉ ICI, sur les représentations RÉELLES et sans aucun réglage :
+//     six d'entre elles ramenaient une ordonnée textuelle à ZÉRO et rendaient quand même une figure —
+//     des barres à `width: 0%` avec le mot imprimé à côté, une courbe dont tous les points se
+//     superposent, une jauge « 0 / 1 » dont les DEUX termes sont fabriqués, un camembert qui annonce
+//     « aucune donnée » pendant que trois lignes existent, et une grille de chaleur entièrement vide.
+//     La septième traçante, `histogram`, n'avouait que si AUCUNE valeur n'était un nombre : sur une
+//     colonne MÉLANGÉE elle rendait la valeur textuelle en barre de hauteur zéro, comme les autres.
+//
+//     CE QUE CE TÉMOIN TIENT, ET DANS LES DEUX SENS. Le NÉGATIF est le dispatcher SANS la porte
+//     (`vizSansPorte`, que seul le sondage a le droit d'appeler) : il rend TOUJOURS les six figures
+//     fausses, chacune reconnue à la signature exacte relevée sur banc — sans quoi ce témoin
+//     prouverait seulement que quelque chose a changé, pas que le défaut existait. Le POSITIF est la
+//     porte : sur la même donnée, chaque représentation qui coerce est REFUSÉE, et le refus NOMME la
+//     colonne, le compte et un exemple. Et la NON-RÉGRESSION est byte-identique : sur une ordonnée
+//     numérique, la porte et le dispatcher nu rendent le MÊME balisage, pour les neuf modes.
+//
+//     RIEN N'EST ÉNUMÉRÉ ICI. Les modes sont LUS dans le dispatcher, et le partage entre « coerce »
+//     et « ne coerce pas » vient du SONDAGE de `P11.18-a`, c'est-à-dire de la représentation
+//     elle-même. Un mode posé demain entre dans ce témoin sans qu'on l'écrive.
+//
+//     CE QUE CE TÉMOIN NE TIENT PAS : la mise en page et le style calculé (section 0) — une barre à
+//     `width: 0%` est lue ici sur l'attribut de style EN LIGNE, jamais sur l'encre peinte ; et il ne
+//     dit rien des panneaux SEMÉS par le démon, dont les requêtes vivent hors de `web/`.
+// ---------------------------------------------------------------------------------------------
+{
+  const viz = await import(pathToFileURL(path.join(WEB, "viz.js")).href);
+  const source = readFileSync(path.join(WEB, "viz.js"), "utf8");
+
+  // -- LES MODES SONT LUS DANS LE DISPATCHER, PAS RECOPIÉS ------------------------------------
+  const iDeb = source.indexOf("function vizSansPorte(");
+  const iFin = source.indexOf("function vizElement(");
+  exiger(iDeb >= 0 && iFin > iDeb, "(45-instrument) le dispatcher de représentations n'est plus lisible dans web/viz.js : les modes de ce témoin ne dériveraient de rien");
+  const corpsDispatcher = source.slice(iDeb, iFin > iDeb ? iFin : iDeb + 1);
+  const MODES = [...new Set([...corpsDispatcher.matchAll(/mode === '([a-z]+)'/g)].map((m) => m[1]))].concat("table");
+  exiger(MODES.length >= 9, `(45-instrument) ${MODES.length} mode(s) lus dans le dispatcher, plancher 9 : la lecture est cassée et ce qui suit ne couvrirait presque rien`);
+
+  // -- LE PARTAGE VIENT DE LA REPRÉSENTATION, PAS D'UNE TABLE ÉCRITE ICI ----------------------
+  const coercantes = MODES.filter((m) => viz.sondage(m).ordonneeNumerique);
+  const libres = MODES.filter((m) => !viz.sondage(m).ordonneeNumerique);
+  exiger(coercantes.length > 0 && libres.length > 0,
+    `(45a-instrument) le sondage ne partage plus les modes (${coercantes.length} coercent, ${libres.length} non) : un verdict constant ne mesurerait rien`);
+
+  const COLS = ["host", "sev"];
+  const TXT = [["a", "rouge"], ["b", "vert"], ["c", "rouge"]];
+  const MIXTE = [["a", 3], ["b", "n/a"], ["c", 1]];
+  // Le jeu de NON-RÉGRESSION doit avoir ses DEUX fentes valides — la porte lit l'abscisse aussi.
+  const COLS_OK = ["bucket", "n"];
+  const NUM = [[10, 3], [20, 9], [30, 1]];
+  const trouver = (n, pred, out = []) => { if (n && pred(n)) out.push(n); for (const c of (n && n.children) || []) trouver(c, pred, out); return out; };
+  const classe = (n, c) => trouver(n, (x) => x.classList && x.classList.contains(c));
+
+  // ---- (a) LE NÉGATIF : SANS LA PORTE, LES SIX FIGURES FAUSSES SONT TOUJOURS LÀ ----
+  // Chacune à sa signature MESURÉE, jamais à une phrase — une phrase se reformule.
+  const nu = (m, rows) => viz.vizSansPorte(m, COLS, rows, "", "");
+  const barres = classe(nu("bar", TXT), "barfill").map((n) => n.style.width);
+  exiger(barres.length === 3 && barres.every((w) => w === "0%"),
+    `(45a-négatif) « bar » sans la porte ne trace plus ses trois barres à 0 % de large (${JSON.stringify(barres)}) : la signature du défaut a bougé, et le positif ne prouverait plus rien`);
+  exiger(nu("bar", TXT).textContent.includes("rouge"),
+    "(45a-négatif) « bar » sans la porte n'imprime plus le texte à côté de la barre vide — c'est CE voisinage qui rend le graphe faux crédible");
+  const pts = (trouver(nu("line", TXT), (n) => n.tagName === "POLYLINE")[0] || { attributes: {} }).attributes.points || "";
+  const distincts = new Set(pts.split(" ").filter(Boolean));
+  exiger(pts && distincts.size === 1,
+    `(45a-négatif) « line » sans la porte n'écrase plus ses abscisses sur un point unique (${distincts.size} point(s) distincts sur « ${pts} »)`);
+  exiger(/0\s*\/\s*1/.test(nu("gauge", TXT).textContent.replace(/\s+/g, " ")),
+    `(45a-négatif) « gauge » sans la porte n'affiche plus le rapport fabriqué « 0 / 1 » : « ${nu("gauge", TXT).textContent} »`);
+  for (const m of ["pie", "donut"]) exiger(/aucune donnée|no data/i.test(nu(m, TXT).textContent) && TXT.length === 3,
+    `(45a-négatif) « ${m} » sans la porte n'annonce plus une ABSENCE alors que ${TXT.length} lignes existent : « ${nu(m, TXT).textContent} »`);
+  const cellules = classe(nu("heatmap", TXT), "heatcell").map((n) => n.textContent);
+  exiger(cellules.length > 0 && cellules.every((t) => t === ""),
+    `(45a-négatif) « heatmap » sans la porte ne rend plus une grille ENTIÈREMENT vide sur des valeurs qui existent (${JSON.stringify(cellules)})`);
+  // `histogram` : son aveu ne sortait QUE si aucune valeur n'était un nombre. Sur une colonne MÉLANGÉE
+  // il rendait la valeur textuelle en barre de hauteur ZÉRO — donc son honnêteté n'était que partielle.
+  const hauteurs = trouver(viz.vizSansPorte("histogram", COLS, MIXTE, "", ""), (n) => n.tagName === "RECT").map((n) => Number(n.attributes.height));
+  exiger(hauteurs.length === 3 && hauteurs.filter((h) => h === 0).length === 1,
+    `(45a-négatif) « histogram » sans la porte ne rend plus la valeur non numérique d'une colonne MÉLANGÉE en barre de hauteur zéro (${JSON.stringify(hauteurs)}) : l'aveu qu'il rend sur du tout-texte cachait ce cas`);
+  // Aucune de ces figures ne DISAIT quoi que ce soit du problème : ni la colonne, ni le mot.
+  for (const m of coercantes) {
+    const t = nu(m, TXT).textContent;
+    exiger(!t.includes("sev") && !/FAUX|FALSE/.test(t),
+      `(45a-négatif) « ${m} » sans la porte nomme déjà la colonne ou dit déjà le faux (« ${t.slice(0, 100)} ») : le positif ne mesurerait plus rien`);
+  }
+
+  // ---- (b) LE POSITIF : LA PORTE REFUSE, ET LE REFUS DIT POURQUOI ----
+  for (const m of coercantes) {
+    const t = viz.vizElement(m, COLS, TXT, "", "").textContent;
+    exiger(/Graphe refusé|Chart refused/.test(t), `(45b) « ${m} » sur une ordonnée textuelle rend encore une figure au lieu d'un refus : « ${t.slice(0, 120)} »`);
+    exiger(t.includes("sev") && t.includes("3") && t.includes("rouge"),
+      `(45b) le refus de « ${m} » ne nomme pas la colonne, le compte et un exemple : « ${t.slice(0, 200)} »`);
+  }
+  for (const m of libres) {
+    const t = viz.vizElement(m, COLS, TXT, "", "").textContent;
+    exiger(!/Graphe refusé|Chart refused/.test(t) && t.includes("rouge"),
+      `(45b) « ${m} » n'exprime PAS son ordonnée en nombre (sondage) et se voit pourtant refusée, ou perd la donnée : « ${t.slice(0, 120)} »`);
+  }
+  // La colonne MÉLANGÉE, qui est le cas dangereux : la valeur fausse y serait noyée dans des vraies.
+  for (const m of coercantes) {
+    const t = viz.vizElement(m, COLS, MIXTE, "", "").textContent;
+    exiger(/Graphe refusé|Chart refused/.test(t) && t.includes("n/a"),
+      `(45b) « ${m} » trace encore une colonne MÉLANGÉE, où une seule valeur sur trois n'est pas un nombre : « ${t.slice(0, 140)} »`);
+  }
+  // UNE COLONNE SANS AUCUNE VALEUR N'EST PAS UNE COLONNE À ZÉRO — et la phrase le dit autrement.
+  const vide = viz.vizElement("bar", COLS, [["a", null], ["b", ""], ["c", null]], "", "").textContent;
+  exiger(/AUCUNE valeur|NO value/.test(vide) && !/n’en sont pas|are not numbers/.test(vide),
+    `(45b) une ordonnée sans aucune valeur reçoit la phrase des valeurs non numériques, qui compterait « 0 sur 0 » : « ${vide.slice(0, 160)} »`);
+
+  // ---- (c) LA NON-RÉGRESSION EST BYTE-IDENTIQUE SUR UNE ORDONNÉE NUMÉRIQUE ----
+  let identiques = 0, changes = 0;
+  for (const m of MODES) {
+    if (viz.vizSansPorte(m, COLS_OK, NUM, "q", "").outerHTML === viz.vizElement(m, COLS_OK, NUM, "q", "").outerHTML) identiques++; else changes++;
+  }
+  exiger(changes === 0, `(45c) ${changes} mode(s) sur ${MODES.length} ne rendent plus le MÊME balisage qu'avant la porte sur un résultat dont les DEUX fentes sont valides : la porte a changé un graphe qui était juste`);
+  // CONTRÔLE POSITIF DU COMPARATEUR : sans lui, un comparateur qui répondrait toujours « identique »
+  // passerait (45c) brillamment. Sur du texte il doit voir bouger EXACTEMENT les modes qui coercent.
+  const bougent = MODES.filter((m) => viz.vizSansPorte(m, COLS, TXT, "q", "").outerHTML !== viz.vizElement(m, COLS, TXT, "q", "").outerHTML);
+  exiger(bougent.length === coercantes.length && bougent.every((m) => coercantes.includes(m)),
+    `(45c-instrument) le comparateur voit bouger [${bougent.join(", ")}] au lieu des ${coercantes.length} modes qui coercent [${coercantes.join(", ")}] : (45c) ne prouverait rien`);
+
+  // ---- (c-bis) L'ABSCISSE EST L'AUTRE FENTE, ET LA PORTE NE LA CONFOND PAS AVEC UNE CATÉGORIE ----
+  // Le constat de la clé sur « line » est une faute d'ABSCISSE, et une porte posée sur la seule
+  // ordonnée l'aurait fermée par accident : ici l'ordonnée est NUMÉRIQUE et seule l'abscisse est du
+  // texte. NÉGATIF d'abord — sans la porte, les trois points sont empilés sur une abscisse unique.
+  const CAT = [["a", 3], ["b", 9], ["c", 1]];
+  const abscissantes = MODES.filter((m) => viz.sondage(m).abscisseNumerique);
+  exiger(abscissantes.length > 0 && abscissantes.length < MODES.length,
+    `(45c-bis-instrument) la sonde d'abscisse ne partage plus les modes (${abscissantes.length} sur ${MODES.length}) : un verdict constant ne mesurerait rien`);
+  for (const m of abscissantes) {
+    // Le marqueur de survol est un CERCLE sans abscisse tant qu'on n'a pas survolé : on ne lit que les
+    // marques réellement POSÉES, sinon le témoin compterait un point que personne ne voit.
+    const empiles = trouver(viz.vizSansPorte(m, COLS, CAT, "", ""), (n) => n.tagName === "CIRCLE").map((n) => n.attributes.cx).filter((v) => v !== undefined);
+    exiger(empiles.length === 3 && new Set(empiles).size === 1,
+      `(45c-bis-négatif) « ${m} » sans la porte n'empile plus ses trois points sur une abscisse unique (${JSON.stringify(empiles)}) : le positif ne prouverait rien`);
+    const t = viz.vizElement(m, COLS, CAT, "", "").textContent;
+    exiger(/Graphe refusé|Chart refused/.test(t) && t.includes("host") && /abscisse|X axis/.test(t),
+      `(45c-bis) « ${m} » trace encore une abscisse textuelle sous une ordonnée numérique, ou son refus ne nomme pas l'abscisse : « ${t.slice(0, 160)} »`);
+  }
+  // ET LA PORTE N'EST PAS GOURMANDE : une abscisse textuelle est une CATÉGORIE parfaitement légitime
+  // partout ailleurs. Aucun des autres modes n'est refusé sur le même jeu — la jauge comprise, dont la
+  // colonne 0 est une ÉCHELLE et non une position, et qui reçoit ici son entrée la plus naturelle.
+  for (const m of MODES.filter((x) => !abscissantes.includes(x))) {
+    const t = viz.vizElement(m, COLS, CAT, "", "").textContent;
+    exiger(!/Graphe refusé|Chart refused/.test(t),
+      `(45c-bis) « ${m} » refuse une abscisse CATÉGORIELLE, que sa sonde dit pourtant ne pas placer par la valeur : « ${t.slice(0, 160)} »`);
+  }
+
+  // ---- (d) LE REFUS PREND LA PLACE DU GRAPHE, JAMAIS CELLE DE L'ISSUE ----
+  // Un refus sans issue serait une impasse : la barre de réglage reste au-dessus, donc l'exploitant
+  // peut désigner une autre ordonnée sans quitter la vue.
+  const noeuds = viz.noeudsDeVizReglee("bar", COLS, TXT, "", "", 0, () => {});
+  const texteEntier = noeuds.map((n) => n.textContent).join(" | ");
+  exiger(noeuds.length >= 2 && /Graphe refusé|Chart refused/.test(texteEntier) && trouver({ children: noeuds }, (n) => n.tagName === "SELECT").length >= 2,
+    `(45d) le refus par défaut ne laisse pas la barre de réglage au-dessus : l'exploitant n'a aucune issue — « ${texteEntier.slice(0, 160)} »`);
+
+  // ---- (e) ZÉRO LIGNE N'EST PAS LA VALEUR ZÉRO ----
+  const jaugeVide = viz.vizElement("gauge", COLS, [], "", "").textContent.replace(/\s+/g, " ");
+  exiger(!/0\s*\/\s*1/.test(jaugeVide) && /aucune donnée|no data/i.test(jaugeVide),
+    `(45e) la jauge affirme encore un rapport sur un résultat SANS AUCUNE ligne : « ${jaugeVide} »`);
+  // NÉGATIF : la ligne d'avant, reconstituée à la main, fabriquait bien les deux termes.
+  const avant = (rows) => { const raw = rows.length ? Number(rows[0][rows[0].length - 1]) : 0; const v = Number.isFinite(raw) ? raw : 0; const m = Math.max(1, v); const p = Math.pow(10, Math.floor(Math.log10(m))); return `${v} / ${Math.ceil(m / p) * p}`; };
+  exiger(avant([]) === "0 / 1", `(45e-négatif) la reconstitution du calcul d'avant ne rend plus « 0 / 1 » sur zéro ligne (« ${avant([])} ») : (45e) ne prouverait pas qu'un rapport était fabriqué`);
+
+  // ---- (f) AUCUN MODULE NE CONTOURNE LA PORTE ----
+  // La propriété tenue : hors de `viz.js`, le dispatcher NU n'est nommé nulle part — le seul chemin
+  // vers une représentation passe donc par `vizElement`, y compris l'aperçu d'un instantané partagé,
+  // qui n'a aucune barre de réglage. DANS `viz.js`, les seules lignes qui l'appellent sont la porte
+  // elle-même et le sondage : toute autre ligne qui le nommerait fait rougir ce témoin.
+  const ailleurs = readdirSync(WEB).filter((f) => f.endsWith(".js") && f !== "viz.js")
+    .filter((f) => readFileSync(path.join(WEB, f), "utf8").includes("vizSansPorte"));
+  exiger(ailleurs.length === 0, `(45f) ${ailleurs.join(", ")} nomme(nt) le dispatcher NU : un chemin contourne la porte et rendrait un graphe faux sans un mot`);
+  const appels = source.split("\n").map((l, i) => [i + 1, l]).filter(([, l]) => /(?<!function )vizSansPorte\s*\(/.test(l));
+  // L'ENCLOS EST LU, PAS DEVINÉ À UN MOT DE LA LIGNE. Ce témoin exigeait que chaque ligne d'appel porte
+  // le texte « refus ? » — la forme que la porte avait alors. La PROPRIÉTÉ tenue n'a jamais été ce
+  // texte : c'est que les seuls appelants du dispatcher nu soient la PORTE et le SONDAGE. La porte s'est
+  // dédoublée le 2026-08-27 (une seconde décision lit le RENDU, elle ne pouvait plus tenir dans un
+  // ternaire), le texte a disparu, la propriété non. On dérive donc la FONCTION qui contient chaque
+  // appel — déclaration la plus proche au-dessus, colonne zéro — et on exige que ce soient exactement
+  // ces deux-là. Le plafond de DEUX appels ne bouge pas, et un appel posé dans une troisième fonction,
+  // que l'ancienne forme aurait laissé passer s'il portait le mot « refus ? », rougit désormais.
+  const declarations = source.split("\n").map((l, i) => [i + 1, (l.match(/^function ([\w$]+)\s*\(/) || [])[1]]).filter(([, n]) => n);
+  const fonctionDe = (ligne) => { let nom = "(hors fonction)"; for (const [n, f] of declarations) { if (n <= ligne) nom = f; else break; } return nom; };
+  const enclos = appels.map(([n]) => fonctionDe(n));
+  exiger(declarations.length > 20 && fonctionDe(appels.length ? appels[0][0] : 1) !== "(hors fonction)",
+    `(45f-instrument) la lecture des déclarations de web/viz.js est cassée (${declarations.length} vue(s)) : l'enclos jugé ci-dessous ne vaudrait rien`);
+  exiger(appels.length === 2 && enclos.includes("vizElement") && enclos.includes("rendreEnSonde") && new Set(enclos).size === 2,
+    `(45f) les appels au dispatcher NU dans web/viz.js ne sont plus les deux attendus (la porte \`vizElement\`, le sondage \`rendreEnSonde\`) : ${JSON.stringify(appels.map(([n, l], k) => n + " dans " + enclos[k] + " : " + l.trim().slice(0, 60)))}`);
+
+  // ---- (g) LE REFUS EXISTE DANS LES DEUX LANGUES, ET IL NOMME LA COLONNE DANS LES DEUX ----
+  const deuxLangues = viz.refusDeRepresentation("bar", COLS, TXT);
+  exiger(deuxLangues && deuxLangues.fr && deuxLangues.en && deuxLangues.fr !== deuxLangues.en
+    && deuxLangues.fr.includes("sev") && deuxLangues.en.includes("sev"),
+    `(45g) le refus ne porte pas deux textes distincts nommant la colonne : ${JSON.stringify(deuxLangues)}`);
+
+  console.log(`[graphe-refuse] les ${MODES.length} représentations du dispatcher sont partagées PAR LE SONDAGE, pas par une liste : ${coercantes.length} ramènent leur ORDONNÉE à un nombre (${coercantes.join(", ")}), ${libres.length} non (${libres.join(", ")}), et ${abscissantes.length} placent leurs lignes selon l'ABSCISSE et la ramènent à un nombre (${abscissantes.join(", ")}) — la faute que la clé attribuait à « line » est celle-là, et une porte posée sur la seule ordonnée l'aurait fermée par accident : sous une ordonnée NUMÉRIQUE et une abscisse textuelle, « line » empilait toujours ses trois points sur une abscisse unique, ce qui est reproduit ici. Les autres modes, dont la jauge (qui lit sa colonne 0 comme une ÉCHELLE et non comme une position), ne sont PAS refusés sur la même donnée : une abscisse textuelle y est une catégorie légitime. Sans la porte, les six figures fausses relevées sur banc sont TOUTES reproduites ici à leur signature exacte — barres à 0 % avec le mot à côté, courbe écrasée sur un point, jauge « 0 / 1 », camembert qui annonce une absence sur trois lignes, grille de chaleur vide — et l'aveu d'« histogram » se révèle partiel : sur une colonne MÉLANGÉE il rendait la valeur textuelle en barre de hauteur zéro. Avec la porte, chacune est REFUSÉE et le refus nomme la colonne, le compte et un exemple, dans les deux langues ; une colonne SANS AUCUNE valeur reçoit une phrase différente, qui ne compte pas « 0 sur 0 » ; la barre de réglage reste au-dessus du refus, donc il y a une issue ; la jauge n'affirme plus « 0 / 1 » sur zéro ligne ; et aucun module ne nomme le dispatcher NU. NON-RÉGRESSION : sur un résultat dont les DEUX fentes sont valides, les ${MODES.length} modes rendent un balisage BYTE-IDENTIQUE à celui d'avant la porte, et le comparateur qui l'établit voit bouger exactement les ${coercantes.length} modes qui coercent dès qu'on lui donne du texte. CE QUE CE TÉMOIN NE TIENT PAS : l'encre réellement peinte (section 0 — la largeur nulle est lue sur le style EN LIGNE) et les panneaux semés par le démon, dont les requêtes vivent hors de web/.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 47. LE GESTE QUI CHANGE QUI PEUT LIRE UNE VUE DEMANDE, ET NOMME CE QUI VA SE PASSER (`P11.13-b`).
+//     CE QUE LA GARDE DE ROUTES NE POUVAIT PAS DIRE. `check_sensitive_routes_are_confirmed.py` déclarait
+//     cet appel « confirmé » — mesuré le 2026-08-26 : non par une confirmation à lui, mais parce que son
+//     ANCÊTRE `initDashboards` contient le `confirmModal(` du bouton « supprimer la vue », dont la
+//     fonction (lignes 888-893 alors) ne contient pas cet appel. Une confirmation de VOISIN, lue par une
+//     remontée de portées ; la garde grep des NOMS, elle ne peut pas voir qu'aucune fenêtre ne s'ouvre.
+//     Ce témoin-ci JOUE le chemin et regarde ce qui est POSÉ et ce qui PART.
+//     (a) L'INSTRUMENT D'ABORD : la vue servie est PRIVÉE et le bouton est atteignable ; sans cela le
+//         geste exercé ne serait pas celui qui expose.
+//     (b) LA PORTE EST FERMANTE : la fenêtre s'ouvre, elle NOMME la conséquence dans sa ligne dédiée, et
+//         un REFUS ne laisse partir AUCUNE écriture. C'est le sens qui compte : une confirmation qu'on
+//         peut contourner ne vaut rien, et une écriture déjà partie ne se rattrape pas.
+//     (c) LA PORTE EST PASSANTE : validée, l'écriture part, et elle porte la visibilité demandée.
+//     (d) LA CONSÉQUENCE SUIT LA DIRECTION : partager et dé-partager ne disent pas la même chose. Une
+//         phrase unique passerait (b) et (c) en mentant à l'un des deux sens.
+//     CE QUE CE TÉMOIN NE TIENT PAS : ni la mise en page ni le style de la fenêtre ; ni ce que le démon
+//     fait de l'écriture (il n'est pas là) ; et rien des deux autres gestes du même bandeau (créer et
+//     renommer une vue), qui héritent de la même remontée de portées sans qu'on leur demande rien —
+//     créer et renommer n'exposent pas ce qui était privé, et ce témoin ne prétend pas les couvrir.
+// ---------------------------------------------------------------------------------------------
+{
+  const url42 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modDash = await import(url42("dashboards.js"));
+  const { S } = await import(url42("state.js"));
+
+  const tic = () => new Promise((r) => setTimeout(r, 0));
+  const laisserTourner = async (n = 20) => { for (let i = 0; i < n; i++) await tic(); };
+  const fenetre = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  const cueillir42 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir42(c, pred, acc)); return acc; };
+  const parClasse = (racine, cl) => cueillir42(racine, (e) => e.classList && e.classList.contains(cl), [])[0] || null;
+
+  const etatVue = { views: [{ id: 7, name: "Production", owner: "hugo", visibility: "private", dashboards: 2 }], me: "hugo", role: "admin" };
+  const ecritures = [];
+  const boutonPartage = new Element("button"), selecteurVue = new Element("select");
+  const hotes42 = { "#view-share": boutonPartage, "#view": selecteurVue };
+  const qsOrigine = document.querySelector, fetchOrigine = globalThis.fetch;
+  const etatOrigine = { role: S.viewsRole, me: S.viewsMe, liste: S.viewList };
+  document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes42, sel) ? hotes42[sel] : new Element("div"));
+  globalThis.fetch = async (u, o) => {
+    const url = String(u), methode = (o && o.method) || "GET";
+    if (methode !== "GET") { ecritures.push(methode + " " + url + " " + ((o && o.body) || "")); return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) }; }
+    if (url.includes("/api/views")) return { ok: true, status: 200, text: async () => JSON.stringify(etatVue) };
+    return { ok: true, status: 200, text: async () => JSON.stringify({}) };
+  };
+  try {
+    modDash.initDashboards();
+    await laisserTourner();
+    // La vue est CHOISIE par le sélecteur, comme un exploitant la choisit : c'est ce geste qui décide
+    // quelle vue le bouton de partage porte, et sans lui le bouton reste masqué.
+    selecteurVue.value = "7";
+    selecteurVue.dispatchEvent({ type: "change" });
+    await laisserTourner();
+
+    // (a) INSTRUMENT.
+    exiger(S.viewList.length === 1 && S.viewList[0].visibility === "private",
+      `(47a) instrument : la vue servie n'est pas celle attendue (${JSON.stringify(S.viewList)}) — le geste exercé ne serait pas celui qui EXPOSE ce qui était privé`);
+    exiger(!boutonPartage.hidden, "(47a) instrument : le bouton de partage est masqué pour le propriétaire admin de la vue — le chemin n'est pas atteignable, rien de ce qui suit ne se mesure");
+
+    // (b) REFUSÉE : une fenêtre est posée, elle NOMME la conséquence, et rien ne part.
+    const avantRefus = ecritures.length;
+    boutonPartage.dispatchEvent({ type: "click" });
+    await laisserTourner();
+    const ov1 = fenetre();
+    exiger(!!ov1, "(47b) aucun geste de confirmation n'est posé : basculer une vue PRIVÉE en vue d'équipe part sans rien demander — la garde de routes la croyait pourtant confirmée");
+    const csq = ov1 ? parClasse(ov1, "modal-consequence") : null;
+    exiger(!!csq && String(csq.textContent).trim().length > 20,
+      `(47b) la fenêtre ne porte pas de ligne de CONSÉQUENCE lisible (« ${csq && csq.textContent} ») : « confirmer » sans dire ce qui va se passer ne vaut pas mieux que ne rien demander`);
+    exiger(!!csq && /Production/.test(csq.textContent), `(47b) la conséquence ne nomme pas la vue concernée : « ${csq && csq.textContent} »`);
+    const annuler = ov1 ? parClasse(ov1, "m-cancel") : null;
+    exiger(!!annuler, "(47b) instrument : la fenêtre n'offre pas de sortie — le sens NÉGATIF ne peut pas être joué");
+    if (annuler) annuler.onclick();
+    await laisserTourner();
+    exiger(ecritures.length === avantRefus,
+      `(47b) une confirmation REFUSÉE laisse tout de même partir l'écriture (${JSON.stringify(ecritures.slice(avantRefus))}) : la fenêtre est un décor, pas une porte`);
+
+    // (c) VALIDÉE : l'écriture part, avec la visibilité demandée.
+    boutonPartage.dispatchEvent({ type: "click" });
+    await laisserTourner();
+    const ov2 = fenetre();
+    const csqPartage = ov2 ? String(parClasse(ov2, "modal-consequence").textContent) : "";
+    exiger(!!ov2 && !!ov2.children[0] && !!ov2.children[0].children[0], "(47c) instrument : la fenêtre posée n'a pas la forme attendue, le sens POSITIF ne peut pas être joué");
+    // Ce que la route SERT change avec l'écriture : le geste rappelle `loadViews`, et la vue qui revient
+    // est partagée. Sans cela, (d) rejouerait la même direction en croyant en jouer une autre.
+    etatVue.views = [{ id: 7, name: "Production", owner: "hugo", visibility: "shared", dashboards: 2 }];
+    if (ov2 && ov2.children[0] && ov2.children[0].children[0]) ov2.children[0].children[0].onsubmit({ preventDefault() {} });
+    await laisserTourner();
+    const derniere = ecritures[ecritures.length - 1] || "";
+    exiger(/POST \/api\/views\/7/.test(derniere) && /"visibility":"shared"/.test(derniere),
+      `(47c) une confirmation VALIDÉE ne fait pas partir le partage attendu (dernière écriture : « ${derniere} ») — la porte est fermée dans les deux sens, ce qui est aussi un défaut`);
+
+    // (d) LA CONSÉQUENCE SUIT LA DIRECTION.
+    exiger(S.viewList[0] && S.viewList[0].visibility === "shared",
+      `(47d) instrument : après l'écriture la vue servie n'est pas revenue PARTAGÉE (${JSON.stringify(S.viewList)}) — la seconde direction ne serait pas jouée`);
+    boutonPartage.dispatchEvent({ type: "click" });
+    await laisserTourner();
+    const ov3 = fenetre();
+    const csqRetrait = ov3 ? String(parClasse(ov3, "modal-consequence").textContent) : "";
+    const annuler3 = ov3 ? parClasse(ov3, "m-cancel") : null;
+    if (annuler3) annuler3.onclick();
+    await laisserTourner();
+    exiger(csqRetrait.trim().length > 20 && csqRetrait !== csqPartage,
+      `(47d) partager et RENDRE PRIVÉ annoncent la MÊME conséquence (« ${csqRetrait} ») : l'une des deux phrases ment sur ce qui va se passer`);
+  } finally {
+    document.querySelector = qsOrigine; globalThis.fetch = fetchOrigine;
+    S.viewsRole = etatOrigine.role; S.viewsMe = etatOrigine.me; S.viewList = etatOrigine.liste;
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  }
+
+  console.log("[partage-de-vue] basculer une vue entre PRIVÉE et partagée avec l'équipe passe désormais par la confirmation partagée qui NOMME sa conséquence, lue dans le démon (`views_list` sert la vue à tous ; `dash_list` filtre chaque tableau de bord sur SA propre visibilité — partager la vue ne partage pas les tableaux de bord privés). Refusée, aucune écriture ne part ; validée, le partage part avec la visibilité demandée ; et les deux directions n'annoncent pas la même chose. La garde de routes déclarait cet appel confirmé par la portée de son VOISIN destructif : elle grep des noms, ce témoin joue le chemin.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// 44. UN INVENTAIRE QUI ÉCARTE LE DIT — AVEC LES BORNES DU DÉMON, PAS AVEC LES SIENNES — ET UN
+//     PRODUCTEUR N'ARRIVE JAMAIS EN BLANC (`P11.18-y`, `P11.16-a`).
+//
+//     CE QUI EST MESURÉ, ET POURQUOI LE TÉMOIN LIT LE DÉMON. `/api/sources` ne rend pas « les
+//     sources » : il rend celles que DEUX bornes laissent passer — la fenêtre (`FENETRE_INVENTAIRE_S`,
+//     déclarée dans `daemon/src/handlers/freshness.rs`) et un volume minimal (`HAVING SUM(n)>=N` dans
+//     la requête d'inventaire de `daemon/src/handlers/sources.rs`). La route ne PUBLIE ni l'une ni
+//     l'autre : pour les nommer à l'écran, la console doit les écrire, et une copie écrite finit par
+//     diverger. Ce témoin est ce qui l'en empêche : il DÉRIVE les deux valeurs du démon et exige que le
+//     texte rendu les nomme. Le jour où le démon bouge une borne sans que la vue suive, il rougit.
+//     (a) LES BORNES, dérivées puis cherchées dans le TEXTE de l'arbre construit ; l'instrument se
+//         valide d'abord (les deux dérivations doivent trouver quelque chose, et l'inventaire doit
+//         VRAIMENT borner sa lecture par la constante lue dans l'autre fichier), et le témoin NÉGATIF
+//         rejoue le même prédicat sur le texte dont le nombre a été changé : sans lui, un prédicat qui
+//         ne lirait pas le chiffre passerait pour une preuve.
+//     (b) UNE LISTE VIDE DIT SES BORNES ELLE AUSSI. C'est le seul cas où un lecteur peut conclure « il
+//         n'y a rien » alors que la réponse est « rien n'a franchi les bornes » : la phrase est donc
+//         posée avant le tableau, pas dans la légende, qui ne paraît qu'avec des lignes.
+//     (c) « dormant » NE SE DIT PLUS « aucune donnée observée ». Mesuré dans `sources.rs` : une source
+//         entre avec `last_seen` nul par la porte des marquages (`or_insert((0, 0))`), qui ne sait pas
+//         si la source n'a rien poussé ou si son volume reste sous le seuil — le mot RECOUVRE deux
+//         faits. Le témoin exige que la raison le dise, et le témoin inverse (un état non dormant)
+//         interdit qu'une version qui collerait la phrase partout passe pour une correction.
+//     (d) `P11.16-a` — LE QUATRIÈME CAS DU PRODUCTEUR. Deux booléens décidaient de trois cas ; le
+//         premier rendait `raison_attendue || ''`, donc un BLANC dès qu'une charge utile déclare le
+//         producteur connu par construction sans en rendre le nom (démon antérieur, champ renommé) —
+//         exactement le blanc que ce bloc refuse ailleurs. Témoin inverse : avec le nom, c'est le NOM
+//         qui est rendu, pas l'aveu.
+//     (e) `P11.16-a` — LE RENVOI DE LA FRAÎCHEUR NE PROMET PLUS CE QUE L'INVENTAIRE NE PORTE PAS.
+//         L'inventaire est bâti sur `event_rollup` : il ne liste QUE des sources d'événements, alors
+//         que la fraîcheur rend aussi des instantanés et des métriques. Le compte des flux d'un autre
+//         genre est DÉRIVÉ des flux rendus (aucune table de genres n'est écrite dans la console), et le
+//         témoin inverse — une charge utile 100 % événements — interdit la phrase qui compterait
+//         toujours.
+//     CE QUE CE TÉMOIN NE TIENT PAS, ET IL L'ÉCRIT : il ne dit pas COMBIEN de sources le démon a
+//     écartées — la route ne rend que les lignes gardées, et ce nombre n'est dérivable d'aucune charge
+//     utile servie à la console ; il lit le TEXTE du démon, pas son exécution (un seuil appliqué
+//     ailleurs lui échapperait) ; et il ne voit ni la mise en page ni le style calculé.
+// ---------------------------------------------------------------------------------------------
+{
+  const { renderSourcesInventory } = await import(pathToFileURL(path.join(WEB, "sources.js")).href);
+  const { renderFreshnessDetail } = await import(pathToFileURL(path.join(WEB, "freshness.js")).href);
+  const srcRs = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "sources.rs"), "utf8");
+  const frRs = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "freshness.rs"), "utf8");
+  const cueillir44 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir44(c, pred, acc)); return acc; };
+  const parClasse = (racine, cls) => cueillir44(racine, (e) => e.classList && e.classList.contains(cls), []);
+  const motDEtat = (racine, mot) => cueillir44(racine, (e) => e.tagName === "B" && String(e.textContent) === mot, [])[0] || null;
+
+  // (a) L'INSTRUMENT D'ABORD : les deux bornes viennent du DÉMON.
+  const mSeuil = srcRs.match(/GROUP BY source HAVING SUM\(n\)>=(\d+)/);
+  const mFenetre = frRs.match(/FENETRE_INVENTAIRE_S:\s*i64\s*=\s*(\d+)\s*\*\s*86400/);
+  exiger(!!mSeuil, "(44a) instrument : la clause de volume de la requête d'inventaire n'est plus lisible dans `daemon/src/handlers/sources.rs` — les bornes affichées ne sont plus dérivées de rien, et ce témoin ne prouverait plus qu'un texte se ressemble");
+  exiger(!!mFenetre, "(44a) instrument : `FENETRE_INVENTAIRE_S` n'est plus lisible dans `daemon/src/handlers/freshness.rs` — la fenêtre affichée n'est plus dérivée");
+  exiger(/let cut7 = now_ts - FENETRE_INVENTAIRE_S;/.test(srcRs), "(44a) instrument : l'inventaire ne borne plus sa lecture par `FENETRE_INVENTAIRE_S` — la fenêtre dérivée de `freshness.rs` n'est plus la sienne, et la comparer au texte affiché n'aurait plus de sens");
+  const SEUIL = mSeuil ? mSeuil[1] : "";
+  const JOURS = mFenetre ? mFenetre[1] : "";
+  const nommeLesBornes = (txt) => !!SEUIL && !!JOURS
+    && new RegExp("au moins " + SEUIL + " événement").test(txt)
+    && new RegExp("les " + JOURS + " derniers jours").test(txt);
+
+  const uneSource = (o) => Object.assign({
+    source: "portprobe", expected: true, unexpected: false, in_collectors: true, declaree_par: "ce dépôt",
+    raison_attendue: "émise par un fichier livré (collectors/portprobe.sh)", marquage: null,
+    cadence_declarable: true, cadence_declaree: "non_declaree", cadence_interval_s: null, cadence_capteur: null,
+    cadence_par: null, cadence_le: null, observed_interval_s: null, last_seen: 1000, age_s: 60, n_24h: 10, status: "frais",
+  }, o);
+  const rendreInventaire = (sources) => { const h = new Element("div"); renderSourcesInventory(h, { ok: true, pipeline_fresh: true, sources }); return h; };
+
+  const roleAvant44 = document.body.className;
+  document.body.className = "role-viewer";
+  try {
+    const plein = rendreInventaire([uneSource({}), uneSource({ source: "vault-custom", in_collectors: false, declaree_par: "l'exploitant", raison_attendue: "déclarée par eve (ts 1700000000)", marquage: { expected: true, updated_by: "eve", updated: 1700000000 } })]);
+    const tPlein = texte(plein);
+    exiger(nommeLesBornes(tPlein), `(44a) l'inventaire n'écrit pas les DEUX bornes que le démon applique (seuil ${SEUIL} événement(s), fenêtre ${JOURS} jours) : « ${tPlein.slice(0, 400)} »`);
+    exiger(/ne peut donc pas le dire/.test(tPlein), `(44a) l'inventaire ne dit pas qu'il IGNORE combien de sources sont écartées — une vue qui tait ce qu'elle ne sait pas se lit comme complète : « ${tPlein.slice(0, 400)} »`);
+    // témoin NÉGATIF : le prédicat lit-il vraiment le NOMBRE, ou seulement la phrase qui l'entoure ?
+    const mute = tPlein.replace("au moins " + SEUIL + " événement", "au moins " + (Number(SEUIL) + 1) + " événement");
+    exiger(mute !== tPlein, "(44a-négatif) instrument : la mutation du nombre n'a rien changé au texte, le témoin négatif ne prouve rien");
+    exiger(!nommeLesBornes(mute), "(44a-négatif) le vérificateur ne lit pas le NOMBRE du seuil : un texte qui en nommerait un autre passerait pour dérivé du démon");
+
+    // (b) une liste VIDE dit ses bornes elle aussi.
+    const vide = rendreInventaire([]);
+    const tVide = texte(vide);
+    exiger(/aucune source/.test(tVide), `(44b) instrument : la charge utile vide ne rend pas la liste vide attendue, ce qui suit ne porte pas sur elle : « ${tVide.slice(0, 200)} »`);
+    exiger(nommeLesBornes(tVide), `(44b) un inventaire VIDE ne dit pas ce qu'il écarte : « il n'y a rien » et « rien n'a franchi les bornes » s'y lisent pareil — « ${tVide.slice(0, 400)} »`);
+
+    // (c) « dormant » porte sa raison, et lui seul.
+    const dormante = rendreInventaire([uneSource({ source: "sonde-discrete", status: "dormant", last_seen: null, age_s: null, n_24h: 0 }), uneSource({})]);
+    const bDormant = motDEtat(dormante, "dormant"), bFrais = motDEtat(dormante, "frais");
+    exiger(!!bDormant && !!bFrais, "(44c) instrument : les deux mots d'état ne sont pas rendus, la comparaison n'a pas d'objet");
+    exiger(bDormant && /soit rien n'est arrivé/.test(bDormant.title || "") && new RegExp("sous le seuil de volume \\(" + SEUIL + " ").test(bDormant.title || ""), `(44c) « dormant » ne dit pas qu'il RECOUVRE deux faits (rien poussé / sous le seuil) : « ${bDormant && bDormant.title} »`);
+    exiger(bFrais && !bFrais.title, `(44c) témoin inverse : un état non dormant porte lui aussi la raison — une version qui la collerait partout passerait le témoin précédent (« ${bFrais && bFrais.title} »)`);
+    exiger(!/aucune donnée n'a été observée/.test(texte(dormante)), "(44c) la légende affirme encore qu'aucune donnée n'a été OBSERVÉE pour un dormant — c'est faux d'une source qui a poussé sous le seuil");
+
+    // (d) P11.16-a — le producteur n'arrive jamais en blanc.
+    const muette = rendreInventaire([uneSource({ source: "capteur-sans-nom", raison_attendue: null, declaree_par: null })]);
+    const prodMuet = parClasse(muette, "srcprod")[0];
+    exiger(!!prodMuet, "(44d) instrument : la ligne du producteur n'est pas rendue, le blanc ne se mesure pas");
+    exiger(prodMuet && String(prodMuet.textContent).trim() !== "", "(44d) une source déclarée dont la route n'a pas rendu le producteur laisse une ligne VIDE sous son nom : un blanc se lit comme une origine évidente");
+    exiger(prodMuet && /cette route ne l'a pas nommé/.test(prodMuet.textContent), `(44d) le blanc est comblé par autre chose que l'aveu : « ${prodMuet && prodMuet.textContent} »`);
+    exiger(!/aucune déclaration/.test(texte(muette)), "(44d) la colonne « Déclarée » dément le badge de sa propre ligne : une absence de RAISON y est rendue comme une absence de DÉCLARATION");
+    const prodNomme = parClasse(rendreInventaire([uneSource({})]), "srcprod")[0];
+    exiger(prodNomme && /collectors\/portprobe\.sh/.test(prodNomme.textContent) && !/ne l'a pas nommé/.test(prodNomme.textContent), `(44d) témoin inverse : le producteur NOMMÉ est remplacé par l'aveu — une version qui avouerait toujours passerait le témoin précédent (« ${prodNomme && prodNomme.textContent} »)`);
+
+    // (e) P11.16-a — la fraîcheur ne renvoie plus vers un producteur que l'inventaire ne porte pas.
+    const flux = (o) => Object.assign({ kind: "event", name: "mail", status: "calme", age_s: 600, last_seen: 1000, n_24h: 96, active_alerts: 0, cadence_declaree: "non_declaree", cadence_interval_s: null, cadence_capteur: null, observed_interval_s: null }, o);
+    const nu = (h) => h.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+    const mixte = nu(renderFreshnessDetail({ pipeline_fresh: true, feeds: [flux({}), flux({ kind: "snapshot", name: "process", n_hosts: 3 }), flux({ kind: "metric", name: "métriques · 3 séries", series: [] })] }));
+    exiger(/2 flux de cette liste qui n'en sont pas/.test(mixte), `(44e) le renvoi vers l'inventaire promet un producteur pour des flux que l'inventaire ne porte pas (instantanés, métriques) : « ${mixte.slice(-600)} »`);
+    const quEvenements = nu(renderFreshnessDetail({ pipeline_fresh: true, feeds: [flux({}), flux({ name: "yara" })] }));
+    exiger(/tous les flux de cette liste en sont/.test(quEvenements) && !/qui n'en sont pas/.test(quEvenements), `(44e) témoin inverse : la phrase compte des flux d'un autre genre là où il n'y en a aucun — elle n'est pas dérivée des flux rendus : « ${quEvenements.slice(-600)} »`);
+  } finally {
+    document.body.className = roleAvant44;
+  }
+
+  console.log(`[inventaire-perimetre] l'inventaire des sources NOMME les deux bornes qui décident de son contenu — un volume minimal de ${SEUIL} événement(s) sur une fenêtre de ${JOURS} jours — et ces deux nombres sont DÉRIVÉS du démon (clause « HAVING » de la requête d'inventaire, constante de fenêtre), jamais recopiés : le témoin négatif prouve qu'un autre nombre serait vu. Il DIT aussi ce qu'il ignore — combien de sources sont écartées, que la route ne rend pas — et il le dit MÊME sur une liste vide, le seul cas où « il n'y a rien » et « rien n'a franchi les bornes » se confondent. « dormant » ne prétend plus qu'aucune donnée n'a été observée : il avoue recouvrir deux faits, et lui seul porte cette raison. Un producteur connu par construction dont la route ne rend pas le nom ne laisse plus un BLANC sous la source, et la colonne « Déclarée » ne dément plus le badge de sa propre ligne. Enfin la fraîcheur ne renvoie vers l'inventaire que pour les flux qu'il porte, en COMPTANT les autres. Ce que ce témoin NE tient PAS : le nombre de sources écartées (aucune charge utile servie ne le porte) ; il lit le TEXTE du démon, pas son exécution ; et rien de la mise en page ni du style.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 41. UNE VALEUR COUPÉE PORTE SON RECOURS, ET LE RECOURS PART AVEC LA COUPE (`P11.15-a`, `P11.18-b`).
+//     CE QUI MANQUAIT, ET POURQUOI ÇA MANQUAIT. Le mécanisme de dépli par cellule est posé dans la
+//     fabrique de tableaux depuis le 2026-08-25 ; AUCUN témoin ne le tenait. La raison est écrite en
+//     section 0 : le simulacre n'a pas de mise en page, `scrollWidth` et `clientWidth` y sont indéfinis,
+//     donc le prédicat « cette cellule déborde » y vaut TOUJOURS faux — un mécanisme entier passait sans
+//     être exercé, et la propriété se serait perdue au prochain tableau.
+//
+//     COMMENT CE TÉMOIN CONTOURNE LA CÉCITÉ, ET CE QU'IL NE PROUVE PAS. Il POSE lui-même les deux
+//     largeurs sur les nœuds qu'il fabrique. Il ne prouve donc RIEN de l'encre peinte, rien d'une
+//     largeur réelle, rien de ce que la feuille de style impose : il prouve ce que le CODE fait d'une
+//     mesure — où il pose le geste, où il refuse de le poser, ce qu'il rend quand la mesure change. La
+//     cécité de la section 0 n'est pas fermée par ce témoin ; elle est CONTOURNÉE, et la clause de la
+//     section 0 le dit maintenant mot pour mot.
+//
+//     UNE FAUTE D'INSTRUMENT MESURÉE ET FERMÉE EN CHEMIN (2026-08-26). Le sélecteur de la fabrique
+//     (`tbody > tr:not(.rowdetail) > td`) n'était pas lisible par le moteur du simulacre : `:not(…)` ne
+//     passait pas sa grammaire d'étape, donc `querySelectorAll` rendait une liste VIDE — sans un mot.
+//     Un témoin écrit au-dessus de ce trou aurait mesuré « aucune cellule » et conclu « rien à faire ».
+//     L'exclusion est désormais lue, et (41b) exige qu'elle RETIRE des nœuds au lieu de tous les emporter.
+//
+//     LES SIX PROPRIÉTÉS TENUES : (a) le prédicat et sa borne, dans les deux sens ; (b) le sélecteur ;
+//     (c) le geste posé sur ce qui déborde ET SUR RIEN D'AUTRE, les exclusions étant DÉRIVÉES du contenu
+//     (une cellule qui porte un contrôle, fût-il imbriqué) et de la table (`.onecol`, `.rowdetail`) ;
+//     (d) la valeur emboîtée sans perdre un nœud, le bouton dernier, l'état DIT et un chevron ; (e) le
+//     clic qui déplie sur place et s'arrête AVANT la ligne — dont le clic est un pivot —, avec son témoin
+//     inverse ; (f) la re-mesure qui lit la BOÎTE et non la cellule, sans quoi le recours disparaîtrait
+//     au premier survol ; (g) le retrait qui rend la cellule TELLE QU'ELLE ÉTAIT, infobulle comprise.
+// ---------------------------------------------------------------------------------------------
+{
+  const { marquerLesCellulesTronquees, celluleDeborde } = await import(pathToFileURL(path.join(WEB, "core.js")).href);
+
+  const poserLargeur = (el, contenu, place) => { el.scrollWidth = contenu; el.clientWidth = place; return el; };
+  const tableau = (classes) => {
+    const hote = document.createElement("div");
+    const table = document.createElement("table"); table.className = classes || "qtable";
+    const tbody = document.createElement("tbody");
+    table.appendChild(tbody); hote.appendChild(table);
+    return { hote, table, tbody };
+  };
+  const ligne = (tbody, cls) => { const tr = document.createElement("tr"); if (cls) tr.className = cls; tbody.appendChild(tr); return tr; };
+  const cellule = (tr, contenu, contenuPx, placePx, titre) => {
+    const td = document.createElement("td");
+    if (Array.isArray(contenu)) contenu.forEach((n) => td.appendChild(n)); else td.textContent = contenu;
+    if (titre) td.title = titre;
+    tr.appendChild(td);
+    return poserLargeur(td, contenuPx, placePx);
+  };
+  const laBoite = (td) => (td.childNodes || []).find((n) => n.classList && n.classList.contains("plval")) || null;
+  const lesBoutons = (td) => (td.childNodes || []).filter((n) => n.tagName === "BUTTON" && n.classList && n.classList.contains("plmore"));
+
+  // (41a) LE PRÉDICAT, DANS LES DEUX SENS, ET SA BORNE.
+  exiger(celluleDeborde(document.createElement("td")) === false,
+    "(41a) instrument : une cellule SANS aucune mesure est déclarée débordante — le geste se poserait au hasard sur tout arbre sans mise en page, et tout ce que ce témoin observe ensuite serait un accident");
+  exiger(celluleDeborde(poserLargeur(document.createElement("td"), 400, 200)) === true,
+    "(41a) instrument : une cellule dont le contenu fait le double de sa place n'est PAS vue comme débordante — la mesure posée à la main n'atteint pas le prédicat, et le témoin ne mesurerait rien");
+  exiger(celluleDeborde(poserLargeur(document.createElement("td"), 201, 200)) === false,
+    "(41a) la borne du prédicat a bougé : UN pixel de débordement — l'arrondi sous-pixel d'un rendu ordinaire — suffit désormais à équiper une cellule qui tient dans sa place");
+  exiger(celluleDeborde(poserLargeur(document.createElement("td"), 202, 200)) === true,
+    "(41a) la borne du prédicat a bougé dans l'autre sens : deux pixels de débordement ne déclenchent plus le geste");
+
+  // Le tableau exercé. Sept cellules, dont trois seulement doivent recevoir le geste.
+  const t = tableau();
+  const rangee = ligne(t.tbody);
+  const aChemin = cellule(rangee, "/var/log/audit/audit.log.1.gz", 400, 200);
+  const bCourte = cellule(rangee, "ok", 150, 200);
+  const g1 = document.createElement("b"); g1.textContent = "web-01";
+  const g2 = document.createElement("span"); g2.className = "muted"; g2.textContent = "· 3 min";
+  const gStructuree = cellule(rangee, [g1, g2], 400, 200);
+  const texteAvant = gStructuree.textContent;
+  const rControles = ligne(t.tbody);
+  const cBouton = cellule(rControles, [], 400, 200);
+  const btnDeLaVue = document.createElement("button"); btnDeLaVue.textContent = "Éditer"; cBouton.appendChild(btnDeLaVue);
+  const cImbrique = cellule(rControles, [], 400, 200);
+  const enveloppe = document.createElement("span"); const lien = document.createElement("a"); lien.textContent = "pivoter";
+  enveloppe.appendChild(lien); cImbrique.appendChild(enveloppe);
+  const rDetail = ligne(t.tbody, "rowdetail");
+  const dDetail = cellule(rDetail, "le détail d'un drilldown, qui s'enroule déjà", 400, 200);
+  const rTitre = ligne(t.tbody);
+  const eTitre = cellule(rTitre, "un message très long", 400, 200, "l'infobulle que la vue a écrite");
+
+  // (41b) LE SÉLECTEUR : L'EXCLUSION RETIRE, ELLE N'EMPORTE PAS TOUT.
+  const toutes = t.table.querySelectorAll("tbody > tr > td");
+  const jugees = t.table.querySelectorAll("tbody > tr:not(.rowdetail) > td");
+  exiger(toutes.length === 7, `(41b) instrument : le simulacre rend ${toutes.length} cellule(s) au lieu des 7 construites — l'arbre exercé n'est pas celui qui est décrit`);
+  exiger(jugees.length === 6 && !jugees.includes(dDetail),
+    `(41b) instrument : « :not(.rowdetail) » n'écarte pas exactement la ligne de détail (${jugees.length} cellule(s) retenues sur ${toutes.length}) — une exclusion qui rend ZÉRO nœud, comme une qui n'écarte rien, ferait passer la suite pour une mesure`);
+
+  // (41c) LE GESTE EST POSÉ SUR CE QUI DÉBORDE, ET SUR RIEN D'AUTRE.
+  const posees = marquerLesCellulesTronquees(t.table);
+  exiger(posees === 3, `(41c) ${posees} cellule(s) équipées au lieu de 3 : le recours n'est pas posé là où la valeur est coupée, ou il est posé là où elle ne l'est pas`);
+  for (const [td, quoi] of [[aChemin, "une valeur plus large que sa place"], [gStructuree, "une valeur faite de plusieurs nœuds"], [eTitre, "une valeur qui portait déjà une infobulle"]]) {
+    exiger(td.classList.contains("plcut") && lesBoutons(td).length === 1, `(41c) ${quoi} n'a pas reçu le geste (marque « plcut », un bouton de dépli)`);
+  }
+  for (const [td, quoi] of [
+    [bCourte, "une cellule qui TIENT dans sa place"],
+    [cBouton, "une cellule qui porte un contrôle — elle porte des gestes à faire, pas une valeur à lire"],
+    [cImbrique, "une cellule dont le contrôle est IMBRIQUÉ — l'exclusion se dérive du CONTENU, jamais du nom d'une colonne"],
+    [dDetail, "la ligne de détail d'un drilldown, qui s'enroule déjà"],
+  ]) {
+    exiger(!td.classList.contains("plcut") && lesBoutons(td).length === 0 && !td.getAttribute("title"), `(41c) ${quoi} a reçu le geste de dépli`);
+  }
+  exiger(aChemin.getAttribute("title") === "/var/log/audit/audit.log.1.gz",
+    `(41c) le recours immédiat — la valeur ENTIÈRE au survol, sans aucun geste — n'est pas posé : « ${aChemin.getAttribute("title")} »`);
+  exiger(eTitre.getAttribute("title") === "l'infobulle que la vue a écrite",
+    "(41c) la fabrique a ÉCRASÉ l'infobulle qu'une vue avait écrite : la vue en sait plus qu'elle sur ce qu'elle affiche");
+
+  // (41d) LA VALEUR EST EMBOÎTÉE, PAS PERDUE — ET LE BOUTON DIT SON ÉTAT.
+  const boite = laBoite(gStructuree), btn = lesBoutons(gStructuree)[0];
+  exiger(!!boite, "(41d) la valeur n'a pas reçu sa propre boîte (`P11.18-b`) : ce qu'un enfant de niveau BLOC met en ligne repasserait sous le bouton");
+  exiger(!!boite && boite.childNodes.length === 2 && boite.childNodes[0] === g1 && boite.childNodes[1] === g2,
+    "(41d) la boîte de valeur ne contient pas, dans leur ordre, les nœuds MÊMES que la vue avait construits");
+  exiger(gStructuree.childNodes.length === 2 && gStructuree.childNodes[0] === boite && gStructuree.childNodes[1] === btn,
+    "(41d) la cellule ne range pas exactement [boîte de valeur, bouton] : le bouton doit rester le DERNIER enfant, la valeur s'arrêtant où sa place commence");
+  exiger(gStructuree.textContent === texteAvant, `(41d) le texte de la cellule a CHANGÉ en recevant le geste (« ${gStructuree.textContent} » au lieu de « ${texteAvant} ») : le recours ajouterait du bruit à la valeur`);
+  exiger(btn.getAttribute("type") === "button", "(41d) le bouton de dépli n'est pas typé : dans un formulaire il vaudrait « submit »");
+  exiger(btn.getAttribute("aria-expanded") === "false", `(41d) le bouton ne DIT pas son état (aria-expanded = ${btn.getAttribute("aria-expanded")}) : le dépli partagé n'est pas celui qui a été employé`);
+  exiger(/<svg/.test(btn.innerHTML), "(41d) le bouton ne porte aucun chevron : la marque de l'état tiendrait à la seule couleur");
+
+  // (41e) LE CLIC DÉPLIE SUR PLACE, ET IL S'ARRÊTE AVANT LA LIGNE.
+  let clicsDeLaLigne = 0;
+  rangee.onclick = () => { clicsDeLaLigne++; };
+  rangee.addEventListener("click", () => { clicsDeLaLigne++; });
+  btn.click();
+  exiger(gStructuree.classList.contains("plopen") && btn.getAttribute("aria-expanded") === "true", "(41e) le clic du bouton ne déplie pas la cellule sur place");
+  exiger(clicsDeLaLigne === 0, `(41e) le clic du bouton a atteint la LIGNE (${clicsDeLaLigne} rappel(s)) : lire une valeur ferait changer de vue`);
+  btn.click();
+  exiger(!gStructuree.classList.contains("plopen") && btn.getAttribute("aria-expanded") === "false", "(41e) le second clic ne replie pas la cellule : le bouton n'ouvre et ne referme pas");
+  exiger(clicsDeLaLigne === 0, `(41e) le clic de repli a atteint la LIGNE (${clicsDeLaLigne} rappel(s))`);
+  gStructuree.click();
+  exiger(clicsDeLaLigne === 2, `(41e) témoin inverse : le clic de la CELLULE n'atteint plus la ligne (${clicsDeLaLigne} rappel(s) au lieu de 2) — l'arrêt ne serait pas propre au bouton, il aurait tué le pivot de la ligne`);
+
+  // (41f) LA RE-MESURE LIT LA BOÎTE, PAS LA CELLULE.
+  // Ce qu'un navigateur rend APRÈS le marquage : la boîte coupe ce qui dépasse, donc la CELLULE ne
+  // déborde plus ; la boîte, elle, déborde toujours. C'est le comportement d'AVANT, reconstitué à la
+  // main : une fabrique qui mesurerait la cellule retirerait le recours au premier survol.
+  for (const td of [aChemin, gStructuree, eTitre]) { poserLargeur(td, 200, 200); poserLargeur(laBoite(td), 400, 200); }
+  exiger(celluleDeborde(aChemin) === false && celluleDeborde(laBoite(aChemin)) === true,
+    "(41f) instrument : la cellule marquée et sa boîte rendent le MÊME verdict de débordement — le choix de ce qui est mesuré ne déciderait de rien, et (41f) ne prouverait pas ce qu'il annonce");
+  const secondePasse = marquerLesCellulesTronquees(t.table);
+  exiger(secondePasse === 0, `(41f) une seconde passe a re-équipé ${secondePasse} cellule(s) : le geste se poserait deux fois sur la même valeur`);
+  for (const [td, quoi] of [[aChemin, "un chemin de fichier"], [gStructuree, "une valeur à plusieurs nœuds"], [eTitre, "un message long"]]) {
+    exiger(td.classList.contains("plcut") && lesBoutons(td).length === 1, `(41f) la seconde passe a RETIRÉ le recours de ${quoi}, toujours coupé : la fabrique se mesure elle-même au lieu de mesurer la valeur`);
+  }
+
+  // (41g) LE RETRAIT REND LA CELLULE TELLE QU'ELLE ÉTAIT.
+  for (const td of [gStructuree, eTitre]) { poserLargeur(td, 150, 200); poserLargeur(laBoite(td), 150, 200); }
+  const troisiemePasse = marquerLesCellulesTronquees(t.table);
+  exiger(troisiemePasse === 0, `(41g) la passe qui RETIRE le geste en a compté ${troisiemePasse} comme posé(s) : le compte rendu ne dit pas ce qui s'est passé`);
+  exiger(!gStructuree.classList.contains("plcut") && lesBoutons(gStructuree).length === 0 && laBoite(gStructuree) === null,
+    "(41g) une valeur qui TIENT de nouveau dans sa place garde son bouton de dépli et sa boîte : le recours survivrait à la coupe qu'il servait");
+  exiger(gStructuree.childNodes.length === 2 && gStructuree.childNodes[0] === g1 && gStructuree.childNodes[1] === g2,
+    "(41g) les nœuds que la vue avait construits ne sont pas revenus à leur rang dans la cellule : le retrait en perd ou en réordonne");
+  exiger(!gStructuree.getAttribute("title"),
+    `(41g) l'infobulle POSÉE PAR LA FABRIQUE survit à la coupe qu'elle servait (« ${gStructuree.getAttribute("title")} ») : elle répète alors, au survol, un texte entièrement lisible`);
+  exiger(!eTitre.classList.contains("plcut") && eTitre.getAttribute("title") === "l'infobulle que la vue a écrite",
+    `(41g) témoin inverse : en retirant son geste, la fabrique a emporté l'infobulle de la VUE (« ${eTitre.getAttribute("title")} ») — elle ne l'avait pas posée, elle n'a pas à la reprendre`);
+  exiger(aChemin.classList.contains("plcut") && lesBoutons(aChemin).length === 1,
+    "(41g) la cellule dont la valeur DÉBORDE toujours a perdu son recours dans la même passe : le retrait ne suit pas la mesure, il suit la passe");
+
+  // (41h) LES TABLEAUX HORS MESURE SONT DÉRIVÉS, PAS ÉNUMÉRÉS.
+  const unSeulCol = tableau("qtable onecol");
+  const cUnCol = cellule(ligne(unSeulCol.tbody), "une ligne longue qui défile déjà dans sa carte", 400, 200);
+  exiger(marquerLesCellulesTronquees(unSeulCol.table) === 0 && !cUnCol.classList.contains("plcut"),
+    "(41h) un tableau à une colonne — dont la cellule est DÉ-plafonnée et défile — a reçu le geste : le recours y masquerait une valeur déjà lisible");
+  const hote = document.createElement("div");
+  const normal = tableau(), plat = tableau("qtable onecol");
+  const cNormal = cellule(ligne(normal.tbody), "une valeur coupée", 400, 200);
+  const cPlat = cellule(ligne(plat.tbody), "une valeur qui défile", 400, 200);
+  hote.appendChild(normal.hote); hote.appendChild(plat.hote);
+  const parHote = marquerLesCellulesTronquees(hote);
+  exiger(parHote === 1 && cNormal.classList.contains("plcut") && !cPlat.classList.contains("plcut"),
+    `(41h) depuis l'HÔTE d'une liste — le chemin qui couvre les tableaux construits hors de la fabrique — ${parHote} cellule(s) équipées au lieu d'une : les exclusions ne sont pas dérivées sur ce chemin-là`);
+
+  console.log(`[cellule-coupee] le dépli par cellule est EXERCÉ, sur des largeurs que ce témoin POSE lui-même : 3 cellules sur 7 reçoivent le recours (valeur entière au survol, bouton qui DIT son état, chevron), et les quatre autres ne le reçoivent pas — une valeur qui tient, deux cellules qui portent un contrôle (dont un IMBRIQUÉ), une ligne de détail —, la valeur est emboîtée sans perdre un nœud et le bouton reste dernier, le clic déplie sur place et s'arrête AVANT la ligne pendant que le clic de la cellule y va toujours, la re-mesure lit la BOÎTE (la cellule, elle, ne déborde plus) donc le recours ne disparaît pas au premier survol, et quand la valeur tient de nouveau le geste se retire ENTIÈREMENT — nœuds à leur rang, infobulle de la fabrique reprise, infobulle de la VUE laissée. Ce que ce témoin NE tient PAS : rien de l'encre peinte, rien d'une largeur réelle, rien de ce que la feuille impose — il juge ce que le code fait d'une mesure, jamais le résultat à l'écran.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 42. LA FEUILLE DIT CE QU'ELLE FAIT, ET RIEN DE PLUS (`P11.15-b`, `P11.15-c`, `P11.15-d`).
+//     POURQUOI UN TÉMOIN DE DÉCLARATION, ET NON DE RENDU. Le simulacre n'a pas de style calculé
+//     (section 0) : un masquage, une troncature, une couleur ou une marge imposés par la feuille y sont
+//     INVISIBLES. Les trois correctifs jugés ici sont pourtant des DÉCLARATIONS — un jeu de jetons, une
+//     marge, l'absence d'un aplat — et une déclaration se lit. Ce témoin lit donc `web/style.css` comme
+//     du TEXTE et juge ce qui y est écrit. IL NE DIT RIEN de l'encre réellement peinte : deux règles
+//     dont l'une l'emporte sur l'autre lui paraissent également vraies, et la preuve du RENDU passe par
+//     un vrai moteur. C'est écrit ici parce que c'est la limite de tout ce qui suit.
+//
+//     LA PROPRIÉTÉ EST DÉRIVÉE, JAMAIS ÉNUMÉRÉE. Aucune liste de sélecteurs : la classe des règles
+//     jugées est calculée sur la feuille entière (les règles qui marquent un état CHOISI, celles qui
+//     visent une CELLULE de tableau), et chaque prédicat est validé sur du texte FABRIQUÉ, dans les deux
+//     sens, avant de servir. Une règle posée demain tombe donc dessus sans qu'on y pense.
+//
+//     CE QUE LE PRÉDICAT DE « CHOISI » NE COUVRE PAS, ET POURQUOI C'EST MESURÉ. Il est ancré sur le
+//     vocabulaire d'une BASCULE — `.on`, `aria-pressed="true"`, `aria-expanded="true"`. Une règle
+//     générale sur toute classe d'état repeindrait le texte des lignes de cas et l'étoile des favoris,
+//     qui sont des boutons : c'est le piège `P11.4-m`. Reste une famille voisine, la ligne mise en avant
+//     d'une liste de complétion (`.active`) : elle n'est pas dans la classe, et le témoin ne la laisse
+//     pas pour autant sans verdict — il exige que son aplat soit celui du SURVOL, écrit dans la MÊME
+//     règle. Une mise en avant qui se marquerait par un aplat sans être un survol serait un état choisi
+//     sous un autre nom, et elle rougirait ici.
+// ---------------------------------------------------------------------------------------------
+{
+  const feuille = readFileSync(path.join(WEB, "style.css"), "utf8");
+  const sansCommentaires = (t) => t.replace(/\/\*[\s\S]*?\*\//g, " ");
+  const reglesDe = (t) => [...sansCommentaires(t).matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1].trim().replace(/\s+/g, " "), corps: m[2].trim() }));
+  // Un découpage qui RESPECTE LES PARENTHÈSES : `:is(a td, b)` est UNE branche, pas deux. Sans lui, la
+  // dernière étape d'un sélecteur fonctionnel se lirait de travers et la classe dérivée serait fausse.
+  const decouper = (texte, seps) => {
+    const out = []; let prof = 0, cur = "";
+    for (const ch of String(texte)) {
+      if (ch === "(") prof++; else if (ch === ")") prof--;
+      if (prof === 0 && seps.includes(ch)) { if (cur.trim()) out.push(cur.trim()); cur = ""; } else cur += ch;
+    }
+    if (cur.trim()) out.push(cur.trim());
+    return out;
+  };
+  const branches = (sel) => decouper(sel, ",");
+  const derniereEtape = (branche) => { const c = decouper(branche, " >+~"); return c[c.length - 1] || ""; };
+  const valeurDe = (corps, prop) => ((corps.match(new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+)`)) || [])[1] || "").trim();
+  const declarations = (jeton) => (sansCommentaires(feuille).match(new RegExp("(^|[;{\\s])" + jeton + "\\s*:", "g")) || []).length;
+
+  const REGLES = reglesDe(feuille);
+
+  // (42a) L'INSTRUMENT, AVANT TOUT VERDICT : le lecteur voit la feuille, et il ne voit pas ce qui n'y est pas.
+  exiger(REGLES.length > 500, `(42a) instrument : ${REGLES.length} règle(s) lues dans web/style.css — la feuille n'est pas lue, et tout ce qui suit jugerait du vide`);
+  exiger(declarations("--sel-bg") === 1 && declarations("--acc") > 0, "(42a) instrument : le compteur de déclarations ne trouve pas des jetons qui SONT dans la feuille");
+  exiger(declarations("--jeton-qui-n-existe-nulle-part") === 0, "(42a) instrument : le compteur de déclarations trouve un jeton INEXISTANT — un compte de sa part ne mesurerait rien");
+  exiger(branches(":is(.a td,.b>.c)>:is(.d,.e)").length === 1 && branches(".a,.b").length === 2, "(42a) instrument : le découpage des branches ne respecte pas les parenthèses — la classe dérivée plus bas serait fausse");
+  exiger(derniereEtape(".qtable td.plcut") === "td.plcut" && derniereEtape(":is(.qtable td,.kv>span)>:is(.badge,.muted)") === ":is(.badge,.muted)", "(42a) instrument : la lecture de la DERNIÈRE étape d'un sélecteur est fausse");
+
+  // (42b) `P11.15-c` — LA MARQUE DU CHOIX N'EST NI UN APLAT NI UNE GRAISSE.
+  const MARQUE = /(^|[\s>+~])[^\s>+~,]*(?:\.on|\[aria-pressed="true"\]|\[aria-expanded="true"\])(?![\w-])/;
+  const marqueUnChoix = (r) => branches(r.sel).some((b) => MARQUE.test(" " + b));
+  exiger(reglesDe('.t.on{color:red}').filter(marqueUnChoix).length === 1 && reglesDe('button[aria-pressed="true"]{color:red}').filter(marqueUnChoix).length === 1,
+    "(42b) instrument : le prédicat ne reconnaît pas un état choisi FABRIQUÉ — il ne trouverait rien parce qu'il ne cherche rien");
+  exiger(reglesDe(".t{background:red}").filter(marqueUnChoix).length === 0 && reglesDe(".online{background:red}").filter(marqueUnChoix).length === 0,
+    "(42b) instrument : le prédicat prend pour un état choisi une règle qui n'en marque aucun (« .online » n'est pas « .on ») — il jugerait la feuille entière");
+  const choisies = REGLES.filter(marqueUnChoix);
+  exiger(choisies.length >= 15, `(42b) instrument : ${choisies.length} règle(s) d'état choisi dérivées de la feuille — la classe s'est vidée, et un verdict sur une classe vide ne dit rien`);
+  for (const r of choisies) {
+    const fond = valeurDe(r.corps, "background") || valeurDe(r.corps, "background-color");
+    exiger(!fond || fond === "var(--sel-bg)",
+      `(42b) « ${r.sel} » marque un état choisi par un APLAT littéral (« ${fond} ») : dans une console de sécurité un aplat de couleur entre en concurrence avec les couleurs qui portent la GRAVITÉ`);
+    exiger(!valeurDe(r.corps, "font-weight"),
+      `(42b) « ${r.sel} » marque un état choisi par la GRAISSE du mot, que le produit réserve à l'alarme et à la valeur remarquable`);
+  }
+  for (const jeton of ["--sel-bg", "--sel-fg", "--sel-bd", "--sel-ring"]) {
+    exiger(declarations(jeton) === 1, `(42b) « ${jeton} » est déclaré ${declarations(jeton)} fois : la marque du choix n'est plus écrite à UN endroit, et le moyen réservé n'est plus vérifiable d'un coup d'œil`);
+  }
+  exiger(/--sel-bg\s*:\s*transparent/.test(sansCommentaires(feuille)), "(42b) le jeton de fond de l'état choisi n'est plus transparent : l'aplat revient par la porte des jetons, sur les 16 règles d'un coup");
+  const lecteursDesJetons = REGLES.filter((r) => /var\(--sel-(bg|fg|bd)\)/.test(r.corps));
+  // Une règle d'état choisi n'est PAS tenue de lire les jetons : l'étoile des favoris et l'interrupteur
+  // d'une source disent autre chose (un favori, un état vivant) et gardent leur couleur propre. Ce qui
+  // leur est interdit, comme aux autres, c'est l'aplat et la graisse — et c'est déjà exigé ci-dessus.
+  const sansJeton = choisies.filter((r) => !/var\(--sel-(bg|fg|bd)\)/.test(r.corps));
+  const enAvant = REGLES.filter((r) => branches(r.sel).some((b) => /(^|[\s>+~])[^\s>+~,]*\.active(?![\w-])/.test(" " + b)) && !!(valeurDe(r.corps, "background") || valeurDe(r.corps, "background-color")));
+  for (const r of enAvant) {
+    exiger(/:hover/.test(r.sel),
+      `(42b) « ${r.sel} » marque par un APLAT une ligne mise en avant SANS que cette mise en avant soit celle du survol : c'est un état choisi sous un autre nom, et il échappe à la marque partagée`);
+  }
+
+  // (42c) `P11.15-d` — LE SOUS-TITRE RESPIRE, ET SON ÉCART EST ÉCRIT UNE SEULE FOIS.
+  const sousTitre = REGLES.filter((r) => branches(r.sel).some((b) => b === ".qsub"));
+  exiger(sousTitre.length === 1, `(42c) ${sousTitre.length} règle(s) écrivent le sous-titre partagé : son écart doit venir d'UN endroit, sinon une vue finit par l'ajuster pour elle seule`);
+  if (sousTitre.length === 1) {
+    const marge = valeurDe(sousTitre[0].corps, "margin");
+    exiger(marge.length > 0, "(42c) le sous-titre partagé ne déclare aucune marge : il retombe sur celle du navigateur, qui n'est celle de personne");
+    exiger(!/-\d/.test(marge), `(42c) le sous-titre remonte contre son titre par une marge NÉGATIVE (« ${marge} ») : c'est la cause mesurée, pas un effet`);
+    exiger(!!valeurDe(sousTitre[0].corps, "line-height") && !!valeurDe(sousTitre[0].corps, "word-spacing"),
+      `(42c) le sous-titre n'a ni interligne propre ni espacement de mots : la suite de mentions qu'il porte se relit d'un bloc — « ${sousTitre[0].corps} »`);
+  }
+  const ajustements = REGLES.filter((r) => !sousTitre.includes(r) && /\.qsub(?![\w-])/.test(r.sel) && /margin/.test(r.corps));
+  exiger(ajustements.length === 0, `(42c) ${ajustements.length} règle(s) ajustent la marge du sous-titre à côté de la règle partagée (${ajustements.map((r) => r.sel).join(" · ")}) : une vue s'est écrit une exception`);
+  const ecartDesMentions = REGLES.filter((r) => !!valeurDe(r.corps, "margin-inline-start") && /\.badge/.test(r.sel) && /:not\(:first-child\)/.test(r.sel));
+  exiger(ecartDesMentions.length === 1, `(42c) ${ecartDesMentions.length} règle(s) donnent son écart à une mention qui qualifie une entrée : la règle doit être écrite UNE seule fois, sur les conteneurs partagés`);
+  if (ecartDesMentions.length === 1) {
+    exiger(/\.plval/.test(ecartDesMentions[0].sel),
+      "(42c) la règle d'écart ne traverse pas la boîte de valeur d'une cellule coupée (`P11.18-b`) : la mention perdrait son blanc au moment PRÉCIS où la valeur devient trop longue, c'est-à-dire là où elle est le plus utile");
+    exiger(/:not\(:first-child\)/.test(ecartDesMentions[0].sel),
+      "(42c) la PREMIÈRE mention est décalée elle aussi : c'est l'entrée, elle n'a rien à qualifier");
+  }
+  // LE RÉSIDU, COMPTÉ SUR LE SOURCE ET NON DEVINÉ : une marge écrite en style EN LIGNE par un module
+  // l'emporte sur la feuille. Le compte est celui des LIGNES de `web/*.js` qui écrivent à la fois une
+  // marge en ligne et l'une des deux classes de mention — c'est une lecture de TEXTE, pas un rendu.
+  const margesEnLigne = CORPUS_WEB.filter(([f]) => f.endsWith(".js"))
+    .flatMap(([f, src]) => src.split("\n").map((l, i) => [f, i + 1, l]))
+    .filter(([, , l]) => /margin(?:-left|-inline-start|\s*:)/.test(l) && /(?:cssText|style=)/.test(l) && /(?:badge|muted)/.test(l));
+
+  // (42d) `P11.15-b` — LA DENSITÉ EST UN JEU DE JETONS, ET LE DÉFAUT NE CHANGE RIEN.
+  for (const jeton of ["--dens-y", "--dens-x", "--dens-lh"]) {
+    exiger(declarations(jeton) === 3, `(42d) « ${jeton} » est déclaré ${declarations(jeton)} fois au lieu de 3 (le défaut et les deux crans) : la densité n'est plus un jeu de jetons écrit à un endroit`);
+  }
+  const corpsDuDocument = REGLES.find((r) => branches(r.sel).some((b) => b === "body"));
+  exiger(!!corpsDuDocument, "(42d) instrument : la règle du corps du document est introuvable, la comparaison des interlignes jugerait du vide");
+  const lhCorps = corpsDuDocument ? valeurDe(corpsDuDocument.corps, "line-height") : "";
+  const lhDefaut = ((sansCommentaires(feuille).match(/--dens-lh\s*:\s*([^;}]+)/) || [])[1] || "").trim();
+  exiger(!!lhCorps && lhCorps === lhDefaut,
+    `(42d) le DÉFAUT de densité change la table alors qu'aucune densité n'est demandée : interligne du corps « ${lhCorps} », défaut du jeton « ${lhDefaut} » — un jeu de jetons doit être neutre tant que personne ne choisit`);
+  const viseUneCellule = (r) => branches(r.sel).some((b) => /\.qtable/.test(b) && /^(?:td|th)\b/.test(derniereEtape(b)));
+  const cellules = REGLES.filter(viseUneCellule);
+  exiger(cellules.length >= 5, `(42d) instrument : ${cellules.length} règle(s) visent une cellule de tableau — la classe dérivée s'est vidée`);
+  const hauteurDeLigne = cellules.filter((r) => !!valeurDe(r.corps, "padding") || !!valeurDe(r.corps, "line-height"));
+  exiger(hauteurDeLigne.length === 1, `(42d) ${hauteurDeLigne.length} règle(s) font la hauteur d'une ligne de tableau (rembourrage ou interligne) : la densité n'a plus un seul point d'application`);
+  for (const r of hauteurDeLigne) {
+    exiger(/var\(--dens-y\)/.test(r.corps) && /var\(--dens-x\)/.test(r.corps) && /var\(--dens-lh\)/.test(r.corps),
+      `(42d) « ${r.sel} » fait la hauteur d'une ligne sans lire les jetons de densité : « ${r.corps} »`);
+  }
+  for (const r of cellules) {
+    exiger(!valeurDe(r.corps, "height") && !valeurDe(r.corps, "max-height"),
+      `(42d) « ${r.sel} » fixe la HAUTEUR d'une cellule (« ${r.corps} ») : le dépli de \`P11.15-a\` s'enroule SUR PLACE et fait grandir la ligne — une hauteur figée le casserait, et c'est la recommandation qui a été corrigée sur son mécanisme`);
+  }
+  const placeReservee = REGLES.find((r) => /td\.plcut(?![\w->])/.test(r.sel) && !!valeurDe(r.corps, "padding-right"));
+  exiger(!!placeReservee && /var\(--dens-plmore\)/.test(placeReservee.corps),
+    `(42d) la place réservée au bouton de dépli ne suit pas la taille de ce bouton : au cran resserré, le recours de \`P11.15-a\` serait rogné au moment précis où la table est la plus dense — « ${placeReservee && placeReservee.corps} »`);
+  const boutonDeDepli = REGLES.find((r) => branches(r.sel).some((b) => b === ".plmore"));
+  exiger(!!boutonDeDepli && valeurDe(boutonDeDepli.corps, "width") === "var(--dens-plmore)" && valeurDe(boutonDeDepli.corps, "height") === "var(--dens-plmore)"
+    && /var\(--dens-y\)/.test(valeurDe(boutonDeDepli.corps, "top")) && /var\(--dens-y\)/.test(valeurDe(boutonDeDepli.corps, "right")),
+    `(42d) la taille et le retrait du bouton de dépli ne dérivent pas des jetons de densité : « ${boutonDeDepli && boutonDeDepli.corps} »`);
+  // CE QUE LA FEUILLE N'A PAS : UNE SURFACE QUI RÈGLE LA DENSITÉ. Compté, jamais supposé — la densité est
+  // portée par un ATTRIBUT (`data-density`), et un attribut que personne ne pose laisse le mécanisme
+  // inerte. Le compte est imprimé plutôt qu'exigé : le geste qui manque vit hors de la feuille et hors de
+  // la fabrique de tableaux (une préférence d'exploitant), et un plafond posé ici le rendrait invisible.
+  const poseursDeDensite = CORPUS_WEB.filter(([f]) => !f.endsWith(".css")).filter(([, src]) => /data-density|dataset\.density/.test(src)).map(([f]) => f);
+
+  console.log(`[feuille] la feuille est lue comme du TEXTE, et trois propriétés en sont DÉRIVÉES. Choisi : ${choisies.length} règle(s) marquent un état choisi (bascule) et AUCUNE n'emploie un aplat littéral ni la graisse du mot ; ${lecteursDesJetons.length} lisent les trois jetons partagés, déclarés une fois chacun, dont le fond vaut « transparent » ; ${sansJeton.length} gardent leur couleur propre (favori, interrupteur) — ce qui leur est interdit, c'est l'aplat, pas leur encre — et ${enAvant.length} règle(s) de mise en avant par aplat sont toutes celles du SURVOL. Sous-titre : une seule règle l'écrit, sa marge est POSITIVE, elle porte interligne et espacement de mots, et une seule règle donne son écart à une mention qui qualifie une entrée — boîte de valeur d'une cellule coupée comprise. Densité : ${cellules.length} règles visent une cellule, UNE SEULE fait la hauteur d'une ligne et lit les trois jetons, aucune ne fixe de hauteur (ce qui casserait le dépli), la place et la taille du bouton dérivent du même jeu, et le défaut vaut l'interligne du corps du document — donc il ne change rien tant que personne ne choisit. CE QUE CE TÉMOIN NE TIENT PAS, ET CE QUE LA FEUILLE N'A PAS : il lit des DÉCLARATIONS, jamais l'encre peinte — la preuve du rendu passe par un vrai moteur ; ${margesEnLigne.length} ligne(s) de web/*.js écrivent une marge en style EN LIGNE sur une mention (${[...new Set(margesEnLigne.map(([f]) => f))].join(", ")}) et l'emportent donc sur la règle unique ; et ${poseursDeDensite.length} surface(s) posent « data-density » — la densité est RÉGLABLE et n'est RÉGLÉE par personne, le mécanisme est posé, pas armé.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 48. UN RÉGLAGE RANGE ET NE RETIRE RIEN ; UNE FIGURE QUI NE DESSINE RIEN EST UN REFUS, PAS UNE
+//     ABSENCE (`P11.18-a`, `P11.18-p`, `P11.18-q`). UN SEUL DÉFAUT, DEUX INSTANCES, et les deux ont
+//     été INTRODUITES ou LAISSÉES OUVERTES par le lot qui croyait les fermer : un composant qui sait
+//     son résultat incomplet et le présente comme complet.
+//
+//     PREMIÈRE INSTANCE — LE RÉGLAGE RETIRAIT DES COLONNES SERVIES. Mesuré le 2026-08-27 : sur `table`,
+//     la seule représentation qui rend TOUTES ses colonnes, un réglage « x=host, y=n » posé sur cinq
+//     colonnes servies faisait rendre QUATRE en-têtes là où le MÊME appel sans réglage en rendait SIX.
+//     Deux colonnes du démon disparaissaient, l'en-tête et la numérotation des lignes présentaient le
+//     reste comme le résultat complet, et AUCUN avis n'était émis — parce que la comparaison de
+//     `P11.18-q` ne compare que TROIS positions, et que ce réglage-là ne bougeait aucune des trois.
+//     LA CAUSE N'ÉTAIT PAS L'AVEU : `ordreDeFentes` projetait sur au plus trois rangs quel que soit le
+//     nombre de colonnes rendues. Le remède ferme le CHEMIN — le sondage répond désormais si la
+//     représentation lit AU-DELÀ des trois fentes, et pour celle-là l'ordre est une PERMUTATION
+//     COMPLÈTE. Rien à annoncer : il n'y a plus rien de retiré.
+//
+//     SECONDE INSTANCE — UNE ABSENCE AFFIRMÉE SUR DES LIGNES SERVIES. `pie` et `donut` sur trois lignes
+//     dont les valeurs sont toutes nulles — ou négatives — répondaient « aucune donnée ». La colonne EST
+//     numérique, donc la porte de DONNÉE laisse passer ; la figure borne à zéro, filtre le strictement
+//     positif, se retrouve avec un total nul, et affirme qu'il n'y a rien pendant que TROIS lignes
+//     existent. C'est l'instance que `P11.18-p` énumère, restée ouverte pendant que le module la
+//     déclarait close. Le remède est une SECONDE porte, qui ne lit pas la donnée mais le RENDU.
+//
+//     CE QUE CE TÉMOIN TIENT, ET DANS LES DEUX SENS.
+//     (a) L'INSTRUMENT : la sonde « lit au-delà des trois fentes » est recalculée ici sur une empreinte
+//         INDÉPENDANTE (`outerHTML`, là où le module compare la sienne) et les deux doivent s'accorder
+//         mode par mode — avec des modes des DEUX côtés, sans quoi un verdict constant ne dirait rien.
+//     (b) LE DÉFAUT, RECONSTITUÉ À LA MAIN : la projection d'AVANT rejouée sur les mêmes entrées perd
+//         bien deux colonnes sur cinq. Sans elle, le positif prouverait seulement que quelque chose a
+//         changé, pas que le défaut existait.
+//     (c) LE POSITIF : le même appel rend TOUTES les colonnes servies, et un réglage qui DÉPLACE les
+//         range sans en perdre aucune.
+//     (d) L'AVEU NOMME CE QUE LES AUTRES VOIENT, jusqu'à la dernière colonne — et il n'est pas devenu
+//         « tout dire » : sur une représentation qui ne lit que deux fentes, il en nomme toujours deux.
+//     (e) LA NON-RÉGRESSION EST BYTE-IDENTIQUE : sans réglage, la fabrique réglée rend l'appel d'origine
+//         pour les neuf modes sur CINQ colonnes ; et un réglage qui redonne l'ordre par défaut rend le
+//         même balisage sans prononcer un mot.
+//     (f) LA SECONDE PORTE EST DÉRIVÉE, PAS ÉCRITE PAR TYPE. Le prédicat jugé ici n'emprunte RIEN au
+//         vocabulaire des marques du module : une représentation a dessiné quelque chose pour ces
+//         lignes si et seulement si son rendu NU diffère de son rendu sur ZÉRO ligne. La porte doit
+//         refuser EXACTEMENT les modes qui tracent et dont le rendu ne diffère pas — ni plus, ni moins,
+//         sur trois jeux (tout nul, négatif, valide).
+//     (g) LE REFUS DIT CE QU'IL A MESURÉ : la colonne, le compte de lignes servies, et la raison
+//         DISTINGUÉE — « toutes NULLES » n'est pas « des valeurs NÉGATIVES ».
+//     (h) CE QUE LA FIGURE NE MONTRE PAS, ELLE LE DIT : une ligne servie qu'aucun secteur ne porte, et
+//         une catégorie dessinée que la légende ne liste pas, sont COMPTÉES et annoncées. Témoin
+//         inverse : quand rien n'est perdu, rien n'est ajouté.
+//     (i) ZÉRO LIGNE RESTE UNE ABSENCE, et chacune n'en dit que ce qu'elle a mesuré : aucun mode n'est
+//         refusé, et `histogram` n'attribue plus à la NATURE de la colonne une absence qu'il n'a pas
+//         lue. Témoin inverse : la phrase de la nature EXISTE toujours, sur le seul cas qui l'établit.
+//     CE QUE CE TÉMOIN NE TIENT PAS : ni la mise en page ni l'encre peinte (section 0) — un avis rendu
+//     est lu sur le TEXTE du document, jamais sur ce qu'un lecteur verrait ; il ne dit rien des panneaux
+//     SEMÉS par le démon, dont les requêtes vivent hors de `web/` ; et il ne tient PAS le réglage
+//     lui-même : ce qu'il vérifie est qu'un réglage ne RETIRE plus de colonne, pas qu'il HONORE la fente
+//     réglée — deux choix d'ordonnée sur cinq étaient encore inertes quand il rendait vert, et c'est le
+//     témoin 49 qui l'a fermé. La troncature de la grille de chaleur, nommée ici comme un reste, y est
+//     fermée aussi.
+// ---------------------------------------------------------------------------------------------
+{
+  const url48 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const viz48 = await import(url48("viz.js"));
+  const prefs48 = await import(url48("prefs.js"));
+  const src48 = readFileSync(path.join(WEB, "viz.js"), "utf8");
+  // LES MODES SONT LUS DANS LE DISPATCHER, comme au témoin 45 : rien n'est énuméré ici, et un mode posé
+  // demain entre dans tout ce qui suit sans qu'on l'écrive.
+  const iD = src48.indexOf("function vizSansPorte("), iF = src48.indexOf("function vizElement(");
+  exiger(iD >= 0 && iF > iD, "(48-instrument) le dispatcher de représentations n'est plus lisible dans web/viz.js : les modes de ce témoin ne dériveraient de rien");
+  const MODES48 = [...new Set([...src48.slice(iD, iF > iD ? iF : iD + 1).matchAll(/mode === '([a-z]+)'/g)].map((m) => m[1]))].concat("table");
+  exiger(MODES48.length >= 9, `(48-instrument) ${MODES48.length} mode(s) lus dans le dispatcher, plancher 9 : la lecture est cassée`);
+
+  const cueillir48 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir48(c, pred, acc)); return acc; };
+  const enTetes = (ns) => ns.flatMap((n) => cueillir48(n, (e) => e.tagName === "TH", [])).map((e) => e.textContent);
+  const avis48 = (ns) => ns.filter((n) => n.classList && n.classList.contains("rf-hint") && !n.classList.contains("bad"));
+  const dernier48 = (ns) => ns[ns.length - 1];
+
+  // ---- (a) L'INSTRUMENT : LA SONDE EST RECALCULÉE SUR UNE EMPREINTE INDÉPENDANTE ----
+  // Le module compare `empreinteDe` (balise + attributs + texte) ; ici on compare `outerHTML`. Deux
+  // instruments différents qui s'accordent sur les neuf modes, c'est une sonde ; un seul, c'est un aveu.
+  const C5 = ["host", "user", "action", "src_ip", "n"];
+  const L5 = [[10, 4, 3, 7, 2], [20, 5, 9, 8, 6]];
+  const litAuDelaIndependant = (m) => {
+    const ref = viz48.vizSansPorte(m, C5, L5, "", "").outerHTML;
+    return [2, 3].some((k) => viz48.vizSansPorte(m, C5, L5.map((r) => r.map((v, j) => (j === k ? v + 500 : v))), "", "").outerHTML !== ref);
+  };
+  const larges = MODES48.filter((m) => viz48.sondage(m).litAuDelaDesFentes);
+  const etroites = MODES48.filter((m) => !viz48.sondage(m).litAuDelaDesFentes);
+  exiger(larges.length > 0 && etroites.length > 0,
+    `(48a-instrument) la sonde ne partage plus les modes (${larges.length} lisent au-delà des trois fentes, ${etroites.length} non) : un verdict constant ne mesurerait rien`);
+  for (const m of MODES48) exiger(viz48.sondage(m).litAuDelaDesFentes === litAuDelaIndependant(m),
+    `(48a-instrument) « ${m} » : le sondage du module dit « lit au-delà des fentes = ${viz48.sondage(m).litAuDelaDesFentes} » et une empreinte INDÉPENDANTE dit « ${litAuDelaIndependant(m)} » — l'une des deux est aveugle`);
+
+  // ---- (b) LE NÉGATIF : LA PROJECTION D'AVANT, REJOUÉE À LA MAIN, PERD BIEN DEUX COLONNES ----
+  const ordreDAvant = (mode, cols, reglage) => {
+    const s = viz48.sondage(mode), rang = (nom) => cols.indexOf(nom);
+    const ix = reglage.x ? rang(reglage.x) : 0;
+    const iy = reglage.y ? rang(reglage.y) : cols.length - 1;
+    const is = reglage.s ? rang(reglage.s) : ((s.fentes[1] && cols.length >= 3) ? 1 : -1);
+    const o = [ix]; if (is >= 0) o.push(is); o.push(iy); return o;
+  };
+  const modeLarge = larges[0];
+  const perdues = C5.length - ordreDAvant(modeLarge, C5, { x: "host", y: "n" }).length;
+  exiger(perdues === 2,
+    `(48b-négatif) la projection d'AVANT rejouée sur « ${modeLarge} » ne perd plus deux colonnes sur ${C5.length} (${perdues}) : le positif ci-dessous ne prouverait pas que le défaut existait`);
+
+  // ---- (c) LE POSITIF : LE RÉGLAGE RANGE, IL NE RETIRE RIEN ----
+  const R5 = [["w1", "root", "login", "10.0.0.1", 3], ["w2", "adm", "logout", "10.0.0.2", 5]];
+  const PANNEAU48 = 4848, CLE48 = "p" + PANNEAU48;
+  const rendre48 = (mode, reglage, cols = C5, rows = R5, query = "") => {
+    prefs48.prefSet("viz_axes", reglage ? { [CLE48]: reglage } : {});
+    return viz48.noeudsDeVizReglee(mode, cols, rows, query, "", PANNEAU48, () => {});
+  };
+  const sansReglage = enTetes(rendre48(modeLarge, null));
+  exiger(sansReglage.length === C5.length + 1 && C5.every((c) => sansReglage.includes(c)),
+    `(48c-instrument) sans réglage, « ${modeLarge} » ne rend plus une colonne par colonne servie : ${JSON.stringify(sansReglage)}`);
+  const ordreRendu = enTetes(rendre48(modeLarge, { x: "host", y: "n" }));
+  exiger(ordreRendu.length === sansReglage.length && C5.every((c) => ordreRendu.includes(c)),
+    `(48c) un réglage qui REDONNE l'ordre par défaut retire encore des colonnes SERVIES : ${JSON.stringify(ordreRendu)} au lieu de ${JSON.stringify(sansReglage)}`);
+  const deplace = enTetes(rendre48(modeLarge, { x: "action" }));
+  exiger(deplace.length === sansReglage.length && C5.every((c) => deplace.includes(c)) && deplace[1] === "action",
+    `(48c) un réglage qui DÉPLACE une colonne en perd d'autres, ou ne déplace pas : ${JSON.stringify(deplace)}`);
+
+  // ---- (d) L'AVEU NOMME CE QUE LES AUTRES VOIENT, JUSQU'À LA DERNIÈRE COLONNE ----
+  const texteAveu = (mode, reglage) => avis48(rendre48(mode, reglage)).map((n) => n.textContent).join(" ");
+  const aveuLarge = texteAveu(modeLarge, { x: "action" });
+  exiger(aveuLarge && C5.every((c) => aveuLarge.includes(c)),
+    `(48d) l'aveu ne nomme pas les ${C5.length} colonnes que le panneau enregistré remet à « ${modeLarge} » : « ${aveuLarge} »`);
+  const modeEtroit = etroites.find((m) => viz48.sondage(m).trace && !viz48.sondage(m).fentes[1]) || etroites[0];
+  const aveuEtroit = texteAveu(modeEtroit, { x: "action" });
+  exiger(aveuEtroit && !aveuEtroit.includes("src_ip"),
+    `(48d-inverse) sur « ${modeEtroit} », qui ne lit pas les colonnes du milieu, l'aveu nomme désormais TOUTES les colonnes : il est devenu « tout dire » et ne suit plus ce que la représentation lit — « ${aveuEtroit} »`);
+
+  // ---- (e) LA NON-RÉGRESSION : SANS RÉGLAGE, ET SUR UN RÉGLAGE QUI NE CHANGE RIEN ----
+  for (const m of MODES48) {
+    prefs48.prefSet("viz_axes", {});
+    const nu48 = dernier48(viz48.noeudsDeVizReglee(m, C5, R5, "q", "", PANNEAU48, () => {}));
+    exiger(nu48.outerHTML === viz48.vizElement(m, C5, R5, "q", "").outerHTML,
+      `(48e) sans réglage, « ${m} » ne rend plus l'appel \`vizElement\` d'origine sur ${C5.length} colonnes : le chemin par défaut a bougé`);
+    const memeOrdre = rendre48(m, { x: C5[0], y: C5[C5.length - 1] }, C5, R5, "q");
+    exiger(dernier48(memeOrdre).outerHTML === nu48.outerHTML,
+      `(48e) sur « ${m} », un réglage qui REDONNE l'ordre par défaut ne rend plus le même balisage que l'absence de réglage`);
+    exiger(avis48(memeOrdre).length === 0,
+      `(48e) sur « ${m} », un réglage qui ne change RIEN de ce qui est rendu fait tout de même parler la vue : « ${avis48(memeOrdre).map((n) => n.textContent).join(" ")} »`);
+  }
+  prefs48.prefSet("viz_axes", {});
+
+  // ---- (f) LA SECONDE PORTE, JUGÉE SUR UN PRÉDICAT QUI N'EMPRUNTE RIEN AU MODULE ----
+  // « Cette représentation a-t-elle dessiné quelque chose pour ces lignes ? » est tranché SANS parler de
+  // marques : son rendu NU diffère-t-il de son rendu sur ZÉRO ligne ? Si non, elle n'a rien dessiné.
+  const C2 = ["bucket", "n"];
+  const JEUX = { "tout nul": [[10, 0], [20, 0], [30, 0]], "négatif": [[10, -5], [20, -3]], "valide": [[10, 3], [20, 9], [30, 1]] };
+  const neDessineRien = (m, rows) => viz48.vizSansPorte(m, C2, rows, "", "").outerHTML === viz48.vizSansPorte(m, C2, [], "", "").outerHTML;
+  const estRefusee = (m, rows) => /Graphe refusé|Chart refused/.test(viz48.vizElement(m, C2, rows, "", "").textContent);
+  let muettes = 0;
+  for (const [nom, rows] of Object.entries(JEUX)) {
+    for (const m of MODES48) {
+      const attendu = viz48.sondage(m).trace && neDessineRien(m, rows);
+      if (attendu) muettes++;
+      exiger(estRefusee(m, rows) === attendu,
+        `(48f) sur le jeu « ${nom} », « ${m} » est ${estRefusee(m, rows) ? "REFUSÉE" : "rendue"} alors qu'elle ${attendu ? "ne dessine RIEN (son rendu nu est celui de zéro ligne)" : "dessine, ou ne trace pas"} : la porte de rendu ne suit pas ce qu'elle prétend mesurer`);
+    }
+  }
+  exiger(muettes > 0, "(48f-instrument) aucun mode ne se tait sur aucun des trois jeux : ce témoin ne mesurerait qu'un accord de silences");
+  exiger(MODES48.some((m) => !estRefusee(m, JEUX["tout nul"])),
+    "(48f-inverse) la porte de rendu refuse TOUS les modes sur un total nul : elle emporte au lieu de trancher");
+
+  // ---- (g) LE REFUS DIT CE QU'IL A MESURÉ, ET DISTINGUE LES DEUX RAISONS ----
+  const modeMuet = MODES48.find((m) => viz48.sondage(m).trace && neDessineRien(m, JEUX["tout nul"]));
+  exiger(!!modeMuet, "(48g-instrument) aucun mode ne reste muet sur un total nul : les phrases jugées ci-dessous ne seraient rendues par personne");
+  const refusNul = viz48.vizElement(modeMuet, C2, JEUX["tout nul"], "", "").textContent;
+  const refusNeg = viz48.vizElement(modeMuet, C2, JEUX["négatif"], "", "").textContent;
+  exiger(refusNul.includes("n") && /3 ligne/.test(refusNul) && /NULLES/.test(refusNul),
+    `(48g) le refus sur un total nul ne nomme pas la colonne, le compte de lignes servies et la raison : « ${refusNul.slice(0, 220)} »`);
+  exiger(/NÉGATIVES/.test(refusNeg) && /-5/.test(refusNeg) && !/NULLES/.test(refusNeg),
+    `(48g) le refus sur des valeurs négatives rend la phrase du zéro : les deux raisons sont confondues — « ${refusNeg.slice(0, 220)} »`);
+  // CE QUI SÉPARE UN REFUS D'UNE ABSENCE N'EST PAS UN MOT — le refus CITE la phrase de l'absence pour dire
+  // qu'il ne la rend pas. C'est le NŒUD qui tranche : `noeudDeRefus` porte la classe partagée du refus,
+  // là où une absence est rendue par le nœud discret. Jugé sur la forme, donc, pas sur le vocabulaire.
+  const noeudNul = viz48.vizElement(modeMuet, C2, JEUX["tout nul"], "", "");
+  exiger(noeudNul.classList && noeudNul.classList.contains("rf-hint") && noeudNul.classList.contains("bad"),
+    `(48g) ce que rend la porte sur un total nul n'est pas le NŒUD DE REFUS partagé : « ${noeudNul.outerHTML.slice(0, 160)} »`);
+  exiger(cueillir48(noeudNul, (n) => n.classList && n.classList.contains("muted"), []).length === 0,
+    `(48g) le nœud rendu porte encore la mention discrète d'une absence : « ${noeudNul.outerHTML.slice(0, 160)} »`);
+  exiger(/EXISTENT|DO EXIST/.test(refusNul),
+    `(48g) le refus ne dit pas que les lignes servies EXISTENT : « ${refusNul.slice(0, 220)} »`);
+  // LES DEUX LANGUES, par une seconde instance du module : un refus servi dans une seule langue n'est
+  // pas servi. La phrase anglaise doit nommer la même colonne et ne pas garder la française.
+  const viz48EN = await import(url48("viz.js") + "?plume-lang=en");
+  const refusEN = viz48EN.vizElement(modeMuet, C2, JEUX["tout nul"], "", "").textContent;
+  exiger(/Chart refused/.test(refusEN) && refusEN.includes("n") && /ROWS DO EXIST/.test(refusEN) && !/ligne\(s\) servies/.test(refusEN),
+    `(48g) sous LANG='en' le refus de figure muette n'est pas rendu en anglais, ou n'y dit plus que les lignes existent : « ${refusEN.slice(0, 220)} »`);
+  // NÉGATIF : sans la porte de rendu, la figure affirme toujours l'absence sur des lignes servies.
+  const sansPorte = viz48.vizSansPorte(modeMuet, C2, JEUX["tout nul"], "", "").textContent;
+  exiger(/aucune donnée|no data/i.test(sansPorte) && JEUX["tout nul"].length === 3,
+    `(48g-négatif) « ${modeMuet} » sans la porte n'annonce plus une ABSENCE alors que ${JEUX["tout nul"].length} lignes existent : « ${sansPorte} »`);
+
+  // ---- (h) CE QUE LA FIGURE NE MONTRE PAS, ELLE LE DIT — ET SEULEMENT LÀ ----
+  const modeAParts = MODES48.find((m) => viz48.sondage(m).trace && neDessineRien(m, JEUX["tout nul"]));
+  const dit = (rows, cols = C2) => cueillir48(viz48.vizElement(modeAParts, cols, rows, "", ""), (n) => n.classList && n.classList.contains("rf-hint"), []).map((n) => n.textContent).join(" ");
+  const perdue = dit([[10, -5], [20, 3]]);
+  exiger(/1 des 2/.test(perdue) && /négative/.test(perdue),
+    `(48h) une ligne servie qu'aucune part ne porte disparaît sans un mot : « ${perdue} »`);
+  exiger(dit([[10, 5], [20, 3]]) === "",
+    `(48h-inverse) une figure qui ne perd RIEN annonce tout de même une perte : « ${dit([[10, 5], [20, 3]])} » — l'avis suivrait l'existence de la figure et non la perte`);
+  const beaucoup = Array.from({ length: 14 }, (_, i) => ["c" + i, i + 1]);
+  exiger(/2 catégorie/.test(dit(beaucoup, ["host", "n"])),
+    `(48h) la légende s'arrête et ne dit pas combien de catégories dessinées elle ne liste pas : « ${dit(beaucoup, ["host", "n"])} »`);
+  exiger(dit(beaucoup.slice(0, 12), ["host", "n"]) === "",
+    "(48h-inverse) une légende qui liste TOUT annonce quand même une coupe");
+
+  // ---- (i) ZÉRO LIGNE RESTE UNE ABSENCE, ET CHACUNE N'EN DIT QUE CE QU'ELLE A MESURÉ ----
+  for (const m of MODES48) exiger(!estRefusee(m, []),
+    `(48i) « ${m} » rend un REFUS sur un résultat SANS AUCUNE ligne : l'absence est un fait, pas un refus`);
+  const surZeroLigne = Object.fromEntries(MODES48.map((m) => [m, viz48.vizElement(m, C2, [], "", "").textContent]));
+  const fabriquent = MODES48.filter((m) => /numérique|numeric|0\s*\/\s*1/.test(surZeroLigne[m]));
+  exiger(fabriquent.length === 0,
+    `(48i) sur ZÉRO ligne, ${fabriquent.join(", ")} attribue(nt) encore à la NATURE de la colonne (ou à un rapport) une absence qui n'a rien fait lire : ${JSON.stringify(fabriquent.map((m) => surZeroLigne[m]))}`);
+  const disent = MODES48.filter((m) => /aucune donnée|no data/i.test(surZeroLigne[m]));
+  exiger(disent.length >= 3,
+    `(48i-instrument) seules ${disent.length} représentation(s) DISENT l'absence sur zéro ligne : la mesure du module est fausse`);
+  // TÉMOIN INVERSE : la phrase de la NATURE existe toujours — elle a changé de cas, elle n'a pas disparu.
+  const natureEncoreLa = viz48.vizSansPorte("histogram", ["h", "v"], [["a", "x"], ["b", "y"]], "", "").textContent;
+  exiger(/numérique|numeric/.test(natureEncoreLa),
+    `(48i-inverse) la phrase qui nomme la NATURE de la colonne a été SUPPRIMÉE au lieu d'être ramenée à son cas : « ${natureEncoreLa} »`);
+
+  console.log(`[reglage-et-figure-muette] un réglage RANGE et ne retire plus rien : sur « ${modeLarge} », la seule représentation des ${MODES48.length} qui lise au-delà des trois fentes, un réglage rend les ${C5.length} colonnes servies là où la projection d'avant — rejouée ici — en perdait ${perdues}, et l'aveu de réglage privé les NOMME toutes, sans devenir « tout dire » sur celles qui ne lisent que leurs fentes. Le partage entre les deux familles vient d'une sonde à CINQ colonnes, recalculée ici sur une empreinte indépendante et accordée mode par mode. NON-RÉGRESSION : sans réglage, et sous un réglage qui redonne l'ordre par défaut, les ${MODES48.length} modes rendent un balisage byte-identique à l'appel d'origine et ne prononcent pas un mot. Une figure qui ne dessine RIEN sur des lignes servies rend désormais un REFUS qui nomme la colonne, le compte de lignes et la raison — « toutes NULLES » n'étant pas « des valeurs NÉGATIVES » — là où « ${modeMuet} » affirmait « aucune donnée » sur des lignes qui existent ; le prédicat qui le juge n'emprunte rien au vocabulaire des marques du module (le rendu nu est-il celui de zéro ligne ?) et il est vérifié sur trois jeux dans les deux sens, sans emporter les modes qui dessinent. Ce qu'une figure ne montre PAS, elle le compte et le dit — une ligne servie qu'aucune part ne porte, une catégorie dessinée hors légende — et elle se tait quand elle ne perd rien. Sur zéro ligne, aucun mode n'est refusé et aucun n'attribue plus à la NATURE de la colonne une absence qu'il n'a pas lue, la phrase de la nature restant servie sur le seul cas qui l'établit. CE QUE CE TÉMOIN NE TIENT PAS : l'encre peinte et la mise en page (section 0) ; les panneaux SEMÉS par le démon, dont les requêtes vivent hors de web/ ; et le fait qu'un réglage HONORE la fente réglée — il ne juge ici que « rien n'est retiré », et deux choix d'ordonnée sur cinq restaient inertes sous ce vert : c'est le témoin 49 qui le tient, avec la coupe de la grille de chaleur.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 49. LE RÉGLAGE DE L'EXPLOITANT EST HONORÉ, OU L'IMPOSSIBILITÉ EST DITE — ET CE QU'UNE FIGURE
+//     LAISSE DE CÔTÉ EST COMPTÉ PAR SA CAUSE LUE (`P11.18-a`, `P11.18-p`, `P11.18-q`).
+//
+//     LE DÉFAUT, MESURÉ LE 2026-08-27, ET C'ÉTAIT LE PIRE DE SA FAMILLE. Un réglage d'ordonnée posé sur
+//     certaines colonnes rendait EXACTEMENT l'ordre SANS réglage : sur cinq colonnes servies, DEUX choix
+//     sur cinq étaient inertes ; sur trois colonnes, DEUX sur TROIS ; la 2e dimension portait le même
+//     défaut. Le sélecteur continuait pourtant d'afficher le choix, l'infobulle SERVIE affirmait
+//     « colonne remise au graphe en dernière position », et l'aveu de réglage privé se taisait puisque
+//     rien n'avait bougé. Un réglage qui disparaît sans un mot est pire qu'un réglage refusé : c'est
+//     l'exploitant qui croit avoir agi. CAUSE : les rangs de tête étaient RÉSERVÉS avant la boucle, si
+//     bien que la pose finale de l'ordonnée ne faisait rien quand sa colonne était déjà placée.
+//
+//     CE QUE CE TÉMOIN TIENT, ET DANS LES DEUX SENS.
+//     (a) L'INSTRUMENT : les FENTES sont lues dans la table du module (leur ORDRE y est la position
+//         qu'elles occupent), les MODES dans le dispatcher, et le partage étroit/large dans le sondage.
+//         Rien n'est recopié ici, et le contrôle positif exige que sans réglage l'ordre rendu soit
+//         l'ordre SERVI — sans quoi « l'ordre a changé » ne voudrait rien dire.
+//     (b) LE NÉGATIF, RECONSTITUÉ À LA MAIN : la projection d'AVANT, rejouée sur les mêmes entrées, est
+//         INERTE — elle rend l'ordre sans réglage — sur au moins un choix de chaque fente, et elle remet
+//         DEUX FOIS la même colonne au graphe sur le chemin étroit. Sans elle, le positif prouverait
+//         seulement que quelque chose a changé, pas que le défaut existait.
+//     (c) LE POSITIF, BALAYÉ : chaque fente, chaque colonne, sur un résultat à CINQ et à TROIS colonnes.
+//         La colonne réglée occupe la position que son infobulle promet, aucune colonne servie n'est
+//         perdue, aucune n'est rendue deux fois, et aucun refus ne se glisse là comme une échappatoire.
+//     (d) LE CHEMIN ÉTROIT AUSSI : sur une représentation qui ne lit QUE ses trois fentes mais les REND
+//         toutes, l'ordonnée réglée est bien celle que portent les cellules, et la colonne remise en
+//         première position n'est pas la même — le doublon d'avant est fermé.
+//     (e) LES DEUX IMPOSSIBILITÉS SE DISENT au lieu de s'évanouir : deux fentes sur la MÊME colonne, et
+//         une fente MÉDIANE sur un résultat sans milieu. Le refus nomme la colonne et les libellés que
+//         l'exploitant voit. INVERSE, et c'est la moitié qui empêche de crier au loup : un réglage posé
+//         sur une fente que la représentation NE LIT PAS ne refuse rien et ne déplace rien.
+//     (f) LA NON-RÉGRESSION EST BYTE-IDENTIQUE : un réglage qui nomme, pour CHAQUE fente offerte, la
+//         colonne qui y est déjà rend le même balisage que l'absence de réglage, et ne dit pas un mot.
+//     (g) UNE ABSENCE N'EST PAS UN ZÉRO, jusque dans le refus. `Number(null)` et `Number('')` valent 0 et
+//         sont FINIS : une ligne SANS valeur entrait dans le compte des zéros MESURÉS et la phrase disait
+//         « ses 2 valeur(s) sont toutes NULLES » là où UNE des deux ne portait rien. INVERSE : de vrais
+//         zéros disent toujours « toutes NULLES », et de vraies négatives toujours « NÉGATIVES ».
+//     (h) CE QU'UNE FIGURE ÉCARTE EST NOMMÉ PAR SA CAUSE LUE, pas par une cause supposée : « nulle ou
+//         négative » ne se dit plus d'une valeur ABSENTE ni d'une valeur ILLISIBLE. INVERSE : une vraie
+//         négative garde sa phrase, et rien n'est dit quand rien n'est perdu.
+//     (i) LA GRILLE DIT SA COUPE ET SES COLLISIONS : 60 lignes, 40 colonnes, et les lignes servies dont
+//         une AUTRE écrase la cellule. C'était le reste NOMMÉ du lot précédent ; il est fermé ici.
+//         INVERSE : une grille qui ne coupe rien et n'écrase rien ne dit rien.
+//     (j) UNE FIGURE QUI NE LIT QU'UNE LIGNE LE DIT — et ce n'est pas un REFUS : le nœud est celui de la
+//         perte, pas celui du refus, et il ne nomme aucune colonne. INVERSE : sur une seule ligne servie,
+//         rien n'est ajouté.
+//     (k) L'HISTOGRAMME PARTAGE SES DEUX SÉMANTIQUES SUR LA FORME DU RÉSULTAT, PAS SUR SON ARITÉ : un
+//         agrégat d'UNE ligne rend la valeur SERVIE et non « 1 ». INVERSE : un résultat à UNE colonne
+//         reste binné.
+//     (l) LA LANGUE DE « aucune donnée » EST SERVIE PAR LE LEXIQUE, ET LA MESURE L'ÉTABLIT. Lu HORS du
+//         parcours de traduction, `pie` rend du français là où `gauge` rend de l'anglais ; le parcours
+//         appliqué, les DEUX rendent « no data ». Ce témoin tient les deux moitiés, pour qu'on ne
+//         « corrige » pas une phrase qui atteint déjà son lecteur en retirant la clé qui l'y porte.
+//     CE QUE CE TÉMOIN NE TIENT PAS : ni la mise en page ni l'encre peinte (section 0) — tout y est lu
+//     sur le TEXTE du document ; il ne dit rien des panneaux SEMÉS par le démon, dont les requêtes vivent
+//     hors de `web/` ; et il ne juge pas ce qu'une chaîne de BLANCS (`' '`) devrait valoir : le module la
+//     lit comme un zéro, ce qu'il DÉCLARE, et changer cela changerait sa définition partagée du vide.
+// ---------------------------------------------------------------------------------------------
+{
+  const url49 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const viz49 = await import(url49("viz.js"));
+  const prefs49 = await import(url49("prefs.js"));
+  const src49 = readFileSync(path.join(WEB, "viz.js"), "utf8");
+
+  // ---- (a) L'INSTRUMENT : FENTES, MODES ET PARTAGE, TOUS LUS AILLEURS QU'ICI ----
+  const iT = src49.indexOf("const FENTES_DE_REGLAGE = [");
+  const iTF = src49.indexOf("\n];", iT);
+  exiger(iT >= 0 && iTF > iT, "(49a-instrument) la table des fentes n'est plus lisible dans web/viz.js : les fentes de ce témoin ne dériveraient de rien");
+  const FENTES49 = [...src49.slice(iT, iTF).matchAll(/cle: '([a-z]+)'/g)].map((m) => m[1]);
+  exiger(FENTES49.length === 3, `(49a-instrument) ${FENTES49.length} fente(s) lues dans la table du module, attendu 3 : la lecture est cassée`);
+  const iD49 = src49.indexOf("function vizSansPorte("), iF49 = src49.indexOf("function vizElement(");
+  const MODES49 = [...new Set([...src49.slice(iD49, iF49).matchAll(/mode === '([a-z]+)'/g)].map((m) => m[1]))].concat("table");
+  exiger(MODES49.length >= 9, `(49a-instrument) ${MODES49.length} mode(s) lus dans le dispatcher, plancher 9`);
+  // La POSITION d'une fente est son rang dans la table : la première est en tête, la dernière en queue,
+  // les autres à leur index. C'est ce que les infobulles SERVIES promettent, et c'est ce qui est jugé.
+  const positionDe = (j, n) => (j === 0 ? 0 : (j === FENTES49.length - 1 ? n - 1 : j));
+
+  const cueillir49 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir49(c, pred, acc)); return acc; };
+  const parClasse49 = (ns, c) => ns.flatMap((n) => cueillir49(n, (e) => e.classList && e.classList.contains(c), []));
+  const refusDe49 = (ns) => parClasse49(ns, "bad").map((n) => n.textContent);
+  // L'AVEU DE RÉGLAGE PRIVÉ EST UN NŒUD DE TÊTE, l'aveu de PERTE vit DANS la figure : les deux portent la
+  // même classe, et seule leur PLACE les sépare. Les confondre ferait passer une perte de données — qui
+  // ne dépend que de la donnée — pour un bavardage du réglage.
+  const avis49 = (ns) => ns.filter((n) => n.classList && n.classList.contains("rf-hint") && !n.classList.contains("bad")).map((n) => n.textContent);
+  const enTetes49 = (ns) => ns.flatMap((n) => cueillir49(n, (e) => e.tagName === "TH", [])).map((e) => e.textContent).filter((t) => t !== "" && t !== "#");
+
+  const C5 = ["host", "user", "action", "src_ip", "n"];
+  const R5 = [["w1", "root", "login", "10.0.0.1", 3], ["w2", "adm", "logout", "10.0.0.2", 5]];
+  const C3 = ["host", "user", "n"];
+  const R3 = [["w1", "root", 3], ["w2", "adm", 5]];
+  const PAN49 = 4949;
+  const rendre49 = (mode, reglage, cols, rows) => {
+    prefs49.prefSet("viz_axes", reglage ? { ["p" + PAN49]: reglage } : {});
+    return viz49.noeudsDeVizReglee(mode, cols, rows, "", "", PAN49, () => {});
+  };
+  // LA BARRE N'OFFRE QUE CE QUE LA REPRÉSENTATION A DIT LIRE — plus toute fente déjà réglée. Avant, la
+  // fente de queue était offerte SANS condition, écrite comme une exception. Les deux comportements ne
+  // coïncident que parce que les neuf répondent « je lis le dernier rang » : la mesure est ÉPINGLÉE ici,
+  // pour qu'un mode qui ne le lirait pas fasse rougir ce témoin au lieu de perdre un contrôle en silence.
+  const sansQueue49 = MODES49.filter((m) => !viz49.sondage(m).fentes[FENTES49.length - 1]);
+  exiger(sansQueue49.length === 0,
+    `(49a-instrument) ${sansQueue49.join(", ")} ne lit/lisent plus la fente de queue : la barre cesse de l'offrir, et l'aveu de « P11.18-q » nomme « (par défaut) » comme sortie d'un contrôle qui n'existerait plus`);
+  const large49 = MODES49.find((m) => viz49.sondage(m).litAuDelaDesFentes);
+  exiger(!!large49, "(49a-instrument) aucune représentation ne rend au-delà de ses trois fentes : l'ordre remis au graphe ne serait lisible sur aucun rendu");
+  for (const [cols, rows] of [[C5, R5], [C3, R3]]) {
+    const sans = enTetes49(rendre49(large49, null, cols, rows));
+    exiger(sans.length === cols.length && sans.every((c, i) => c === cols[i]),
+      `(49a-instrument) sans réglage, « ${large49} » ne rend plus l'ordre SERVI sur ${cols.length} colonnes (${JSON.stringify(sans)}) : « l'ordre a changé » ne voudrait rien dire`);
+  }
+
+  // ---- (b) LE NÉGATIF : LA PROJECTION D'AVANT, REJOUÉE À LA MAIN, EST INERTE ----
+  const ordreDAvant49 = (mode, cols, reglage) => {
+    const s = viz49.sondage(mode), rang = (nom) => cols.indexOf(nom);
+    const ix = reglage.x ? rang(reglage.x) : 0;
+    const iy = reglage.y ? rang(reglage.y) : cols.length - 1;
+    const is = reglage.s ? rang(reglage.s) : ((s.fentes[1] && cols.length >= 3) ? 1 : -1);
+    const ordre = [ix]; if (is >= 0) ordre.push(is); ordre.push(iy);
+    if (!s.litAuDelaDesFentes) return ordre;
+    const vus = new Set(), plein = [];
+    const poser = (i) => { if (i >= 0 && i < cols.length && !vus.has(i)) { vus.add(i); plein.push(i); } };
+    poser(ix); poser(is);
+    cols.forEach((_, i) => { if (i !== iy) poser(i); });
+    poser(iy);
+    return plein;
+  };
+  let inertes49 = 0, total49 = 0;
+  for (const [cols] of [[C5], [C3]]) {
+    const nu = ordreDAvant49(large49, cols, {}).join(",");
+    for (let j = 0; j < FENTES49.length; j++) for (const c of cols) {
+      total49++;
+      const avant = ordreDAvant49(large49, cols, { [FENTES49[j]]: c });
+      if (avant.join(",") === nu && cols[positionDe(j, cols.length)] !== c) inertes49++;
+    }
+  }
+  exiger(inertes49 >= 4,
+    `(49b-négatif) la projection d'AVANT n'est plus inerte que sur ${inertes49} des ${total49} réglages rejoués : le positif ci-dessous ne prouverait pas que le défaut existait`);
+  // ET SUR LE CHEMIN ÉTROIT, ELLE REMETTAIT DEUX FOIS LA MÊME COLONNE : le doublon est l'autre visage du
+  // même défaut — la fente non choisie gardait son rang alors que le choix venait de le prendre.
+  const etroitTrois49 = MODES49.find((m) => !viz49.sondage(m).litAuDelaDesFentes && viz49.sondage(m).fentes.every(Boolean));
+  exiger(!!etroitTrois49, "(49b-instrument) aucune représentation étroite ne lit ses trois fentes : le doublon d'avant ne serait mesurable nulle part");
+  const CN = ["a", "b", "c"], RN = [[1, 2, 3], [4, 5, 6]];
+  const avantDoublon = ordreDAvant49(etroitTrois49, CN, { [FENTES49[FENTES49.length - 1]]: CN[0] });
+  exiger(new Set(avantDoublon).size < avantDoublon.length,
+    `(49b-négatif) la projection d'AVANT ne remet plus deux fois la même colonne sur « ${etroitTrois49} » (${JSON.stringify(avantDoublon)}) : le positif de (d) ne prouverait rien`);
+
+  // ---- (c) LE POSITIF : CHAQUE FENTE, CHAQUE COLONNE, SUR CINQ ET SUR TROIS COLONNES ----
+  let honorees49 = 0;
+  for (const [cols, rows] of [[C5, R5], [C3, R3]]) {
+    for (let j = 0; j < FENTES49.length; j++) for (const c of cols) {
+      const ns = rendre49(large49, { [FENTES49[j]]: c }, cols, rows);
+      const rendu = enTetes49(ns);
+      const p = positionDe(j, cols.length);
+      exiger(refusDe49(ns).length === 0,
+        `(49c) « ${FENTES49[j]}=${c} » sur ${cols.length} colonnes rend un REFUS là où le réglage est possible : « ${refusDe49(ns).join(" ")} »`);
+      exiger(rendu[p] === c,
+        `(49c) « ${FENTES49[j]}=${c} » sur ${cols.length} colonnes : la position ${p} porte « ${rendu[p]} » et non la colonne réglée — l'ordre rendu est ${JSON.stringify(rendu)}`);
+      exiger(rendu.length === cols.length && new Set(rendu).size === cols.length && cols.every((x) => rendu.includes(x)),
+        `(49c) « ${FENTES49[j]}=${c} » perd ou double une colonne servie : ${JSON.stringify(rendu)} au lieu des ${cols.length} de ${JSON.stringify(cols)}`);
+      honorees49++;
+    }
+  }
+  exiger(honorees49 === (C5.length + C3.length) * FENTES49.length,
+    `(49c-instrument) ${honorees49} réglages balayés au lieu de ${(C5.length + C3.length) * FENTES49.length} : le balayage ne couvre plus toutes les fentes de toutes les colonnes`);
+
+  // ---- (d) LE CHEMIN ÉTROIT : L'ORDONNÉE EST HONORÉE, ET AUCUNE COLONNE N'EST REMISE DEUX FOIS ----
+  // La représentation choisie ne lit QUE ses trois fentes et les REND toutes : ses cellules portent la
+  // colonne de queue, ses en-têtes de ligne celle de tête. On lit donc sur le RENDU laquelle est où.
+  const cellules49 = (n) => cueillir49(n, (e) => e.classList && e.classList.contains("heatcell"), []).map((e) => e.textContent).filter(Boolean);
+  const tetesLignes49 = (n) => cueillir49(n, (e) => e.classList && e.classList.contains("heatrow"), []).map((e) => e.textContent);
+  const cleY49 = FENTES49[FENTES49.length - 1];
+  for (const c of CN) {
+    const i = CN.indexOf(c);
+    const ns = rendre49(etroitTrois49, { [cleY49]: c }, CN, RN);
+    const fig = ns[ns.length - 1];
+    const attendues = RN.map((r) => String(r[i]));
+    exiger(attendues.every((v) => cellules49(fig).includes(v)),
+      `(49d) sur « ${etroitTrois49} », régler l'ordonnée sur « ${c} » ne porte pas ses valeurs ${JSON.stringify(attendues)} dans les cellules : ${JSON.stringify(cellules49(fig))}`);
+    exiger(!tetesLignes49(fig).some((t) => attendues.includes(t)),
+      `(49d) sur « ${etroitTrois49} », la colonne réglée en ordonnée est AUSSI remise en première position (en-têtes ${JSON.stringify(tetesLignes49(fig))}) : une colonne est remise deux fois`);
+  }
+
+  // ---- (e) LES DEUX IMPOSSIBILITÉS SE DISENT, ET SEULEMENT LÀ OÙ ELLES EXISTENT ----
+  const cleX49 = FENTES49[0], cleS49 = FENTES49[1];
+  const doubleFente = rendre49(large49, { [cleX49]: C5[0], [cleY49]: C5[0] }, C5, R5);
+  exiger(refusDe49(doubleFente).length === 1 && refusDe49(doubleFente)[0].includes(C5[0]),
+    `(49e) deux fentes réglées sur la MÊME colonne ne rendent pas un refus qui la nomme : « ${refusDe49(doubleFente).join(" ")} »`);
+  exiger(cueillir49(doubleFente[0], (e) => e.tagName === "SELECT", []).length >= 2,
+    "(49e) le refus d'une collision retire la barre qui seule permet de la défaire : le choix serait sans issue");
+  const C2 = ["bucket", "n"], R2 = [["a", 3], ["b", 9]];
+  const sansMilieu = rendre49(large49, { [cleS49]: C2[0] }, C2, R2);
+  exiger(refusDe49(sansMilieu).length === 1 && /MÉDIANE|MIDDLE/.test(refusDe49(sansMilieu)[0]) && refusDe49(sansMilieu)[0].includes(String(C2.length)),
+    `(49e) une fente médiane réglée sur un résultat sans milieu ne rend pas un refus qui le dit : « ${refusDe49(sansMilieu).join(" ")} »`);
+  // INVERSE : sur une représentation qui NE LIT PAS cette fente, le même réglage ne refuse rien et ne
+  // déplace rien — sans quoi ce refus crierait au loup sur des panneaux qui se lisent aujourd'hui.
+  const ignoreS49 = MODES49.find((m) => !viz49.sondage(m).fentes[1]);
+  exiger(!!ignoreS49, "(49e-instrument) toutes les représentations lisent la fente médiane : l'inverse ci-dessous ne mesurerait rien");
+  const nsIgnore = rendre49(ignoreS49, { [cleS49]: C2[0] }, C2, R2);
+  prefs49.prefSet("viz_axes", {});
+  exiger(refusDe49(nsIgnore).length === 0 && nsIgnore[nsIgnore.length - 1].outerHTML === viz49.vizElement(ignoreS49, C2, R2, "", "").outerHTML,
+    `(49e-inverse) sur « ${ignoreS49} », qui NE LIT PAS la fente médiane, y poser un réglage refuse ou change le rendu : « ${refusDe49(nsIgnore).join(" ")} »`);
+
+  // ---- (f) LA NON-RÉGRESSION : UN RÉGLAGE QUI NOMME CE QUI EST DÉJÀ LÀ NE CHANGE RIEN, ET SE TAIT ----
+  for (const m of MODES49) {
+    const nu = rendre49(m, null, C5, R5);
+    const identite = {};
+    for (let j = 0; j < FENTES49.length; j++) if (viz49.sondage(m).fentes[j]) identite[FENTES49[j]] = C5[positionDe(j, C5.length)];
+    const memeOrdre = rendre49(m, identite, C5, R5);
+    exiger(memeOrdre[memeOrdre.length - 1].outerHTML === nu[nu.length - 1].outerHTML,
+      `(49f) sur « ${m} », un réglage qui nomme pour CHAQUE fente la colonne qui y est déjà change le balisage rendu`);
+    exiger(avis49(memeOrdre).length === 0,
+      `(49f) sur « ${m} », un réglage qui ne change RIEN de ce que la représentation lit fait tout de même parler la vue : « ${avis49(memeOrdre).join(" ")} »`);
+  }
+  prefs49.prefSet("viz_axes", {});
+
+  // ---- (g) UNE ABSENCE N'EST PAS UN ZÉRO, JUSQUE DANS LE REFUS ----
+  const muet49 = MODES49.find((m) => viz49.sondage(m).trace
+    && viz49.vizSansPorte(m, C2, [[10, 0], [20, 0]], "", "").outerHTML === viz49.vizSansPorte(m, C2, [], "", "").outerHTML);
+  exiger(!!muet49, "(49g-instrument) aucune représentation ne reste muette sur un total nul : les phrases jugées ici ne seraient rendues par personne");
+  const refus49 = (rows) => viz49.vizElement(muet49, C2, rows, "", "").textContent;
+  for (const vide of [null, ""]) {
+    const t = refus49([["a", 0], ["b", vide]]);
+    exiger(/1 des 2 ligne\(s\) servies ne portent AUCUNE valeur/.test(t),
+      `(49g) avec ${JSON.stringify(vide)} en valeur, le refus ne compte pas l'absence à part : « ${t.slice(0, 260)} »`);
+    exiger(!/ses 2 valeur\(s\) sont toutes NULLES/.test(t),
+      `(49g) une ligne SANS valeur est encore comptée parmi les zéros MESURÉS : « ${t.slice(0, 260)} »`);
+  }
+  // INVERSE : de vrais zéros et de vraies négatives gardent leur phrase, et l'absence n'est pas ajoutée.
+  const toutNul49 = refus49([["a", 0], ["b", 0]]);
+  exiger(/ses 2 valeur\(s\) sont toutes NULLES/.test(toutNul49) && !/AUCUNE valeur/.test(toutNul49),
+    `(49g-inverse) de vrais zéros ne disent plus « toutes NULLES », ou parlent d'une absence qui n'existe pas : « ${toutNul49.slice(0, 260)} »`);
+  const toutVide49 = viz49.vizSansPorte(muet49, C2, [["a", null], ["b", ""]], "", "");
+  exiger(/aucune donnée|no data/i.test(toutVide49.textContent),
+    `(49g-instrument) « ${muet49} » sans la porte n'annonce plus une absence sur des lignes qui n'ont AUCUNE valeur : le cinquième état ne serait atteint par rien`);
+
+  // ---- (h) CE QU'UNE FIGURE ÉCARTE EST NOMMÉ PAR SA CAUSE LUE ----
+  const dit49 = (rows, cols = C2, sansPorte = false) => parClasse49([sansPorte ? viz49.vizSansPorte(muet49, cols, rows, "", "") : viz49.vizElement(muet49, cols, rows, "", "")], "rf-hint").map((n) => n.textContent).join(" ");
+  const absente49 = dit49([[10, 5], [20, null], [30, 7]]);
+  exiger(/AUCUNE valeur/.test(absente49) && !/nulle ou négative/.test(absente49),
+    `(49h) une ligne SANS valeur est encore écartée comme « nulle ou négative » : « ${absente49} »`);
+  const illisible49 = dit49([[10, 5], [20, "n/a"], [30, 7]], C2, true);
+  exiger(/n’est PAS un nombre|NOT a number/.test(illisible49),
+    `(49h) une valeur ILLISIBLE est encore écartée comme « nulle ou négative » : « ${illisible49} »`);
+  exiger(/Graphe refusé|Chart refused/.test(viz49.vizElement(muet49, C2, [[10, 5], [20, "n/a"], [30, 7]], "", "").textContent),
+    "(49h-instrument) la porte de donnée ne refuse plus une ordonnée illisible : la borne écrite dans le module (« inatteignable par vizElement ») serait fausse");
+  const negative49 = dit49([[10, 5], [20, -3], [30, 7]]);
+  exiger(/nulle ou négative/.test(negative49) && !/AUCUNE valeur/.test(negative49),
+    `(49h-inverse) une vraie négative a perdu sa phrase, ou s'est vu attribuer une absence : « ${negative49} »`);
+  exiger(dit49([[10, 5], [20, 7]]) === "",
+    `(49h-inverse) une figure qui ne perd RIEN annonce tout de même une perte : « ${dit49([[10, 5], [20, 7]])} »`);
+
+  // ---- (i) LA GRILLE DIT SA COUPE ET SES COLLISIONS ----
+  const grille49 = MODES49.find((m) => cueillir49(viz49.vizSansPorte(m, ["r", "c", "v"], [["a", "x", 1]], "", ""), (e) => e.classList && e.classList.contains("heatcell"), []).length > 0);
+  exiger(!!grille49, "(49i-instrument) aucune représentation ne rend de cellules de grille : la coupe jugée ici ne serait celle de personne");
+  const ditGrille = (cols, rows) => parClasse49([viz49.vizElement(grille49, cols, rows, "", "")], "rf-hint").map((n) => n.textContent).join(" ");
+  const R70 = Array.from({ length: 70 }, (_, i) => ["h" + i, i + 1]);
+  const coupeL = ditGrille(["host", "n"], R70);
+  const lignesRendues = cueillir49(viz49.vizElement(grille49, ["host", "n"], R70, "", ""), (e) => e.classList && e.classList.contains("heatrow"), []).length;
+  exiger(lignesRendues < R70.length, `(49i-instrument) la grille ne coupe plus rien sur ${R70.length} lignes (${lignesRendues} rendues) : la phrase de la coupe n'aurait rien à dire`);
+  exiger(new RegExp(String(R70.length - lignesRendues) + " des " + R70.length + " ligne").test(coupeL),
+    `(49i) la grille coupe ${R70.length - lignesRendues} ligne(s) et ne le dit pas, ou dit un autre chiffre : « ${coupeL} »`);
+  const R50 = Array.from({ length: 50 }, (_, i) => ["r0", "c" + i, i + 1]);
+  const coupeC = ditGrille(["r", "c", "n"], R50);
+  exiger(/colonne\(s\) de la grille ne sont pas montrées|grid column\(s\) are not shown/.test(coupeC),
+    `(49i) la grille coupe ses colonnes et ne le dit pas : « ${coupeC} »`);
+  const collision = ditGrille(["host", "n"], [["a", 1], ["a", 2], ["b", 3]]);
+  exiger(/1 des 3 ligne\(s\) servies ne sont portées par aucune cellule/.test(collision),
+    `(49i) une ligne servie dont une AUTRE écrase la cellule disparaît sans un mot : « ${collision} »`);
+  exiger(ditGrille(["host", "n"], [["a", 1], ["b", 2]]) === "",
+    `(49i-inverse) une grille qui ne coupe rien et n'écrase rien annonce tout de même une perte : « ${ditGrille(["host", "n"], [["a", 1], ["b", 2]])} »`);
+
+  // ---- (j) UNE FIGURE QUI NE LIT QU'UNE LIGNE LE DIT, SANS ÊTRE UN REFUS ----
+  // LE NOM DE LA COLONNE EST DISTINCTIF À DESSEIN : jugé sur « n », le prédicat « la phrase ne nomme pas
+  // la colonne » serait vrai de toute phrase française qui porte la lettre n — un instrument qui répond
+  // toujours « elle la nomme » ne mesure rien. Mesuré en l'écrivant.
+  const CJ = ["bucket", "compte_servi"];
+  const CINQ = [["a", 10], ["b", 20], ["c", 30], ["d", 40], ["e", 50]];
+  const uneSeule49 = MODES49.filter((m) => {
+    const n = viz49.vizElement(m, CJ, CINQ, "", "");
+    return cueillir49(n, (e) => e.textContent === "20" || e.textContent === "50", []).length === 0 && !/Graphe refusé/.test(n.textContent);
+  });
+  exiger(uneSeule49.length >= 2 && uneSeule49.length < MODES49.length,
+    `(49j-instrument) ${uneSeule49.length} représentation(s) sur ${MODES49.length} ne rendent qu'une ligne : un verdict constant ne mesurerait rien`);
+  for (const m of uneSeule49) {
+    const n = viz49.vizElement(m, CJ, CINQ, "", "");
+    const perte = parClasse49([n], "rf-hint").map((x) => x.textContent).join(" ");
+    exiger(/4 des 5 ligne\(s\) servies ne sont pas lues/.test(perte),
+      `(49j) « ${m} » retire 4 lignes servies sur 5 sans un mot : « ${n.textContent.slice(0, 200)} »`);
+    exiger(parClasse49([n], "bad").length === 0 && !perte.includes(CJ[1]),
+      `(49j) « ${m} » rend sa perte comme un REFUS, ou nomme une colonne là où c'est une LIGNE qui manque : « ${perte} »`);
+    exiger(parClasse49([viz49.vizElement(m, CJ, [["a", 10]], "", "")], "rf-hint").length === 0,
+      `(49j-inverse) « ${m} » annonce une perte sur UNE seule ligne servie, où il n'y a rien à laisser de côté`);
+  }
+
+  // ---- (k) L'HISTOGRAMME PARTAGE SUR LA FORME, PAS SUR L'ARITÉ ----
+  const barresDe49 = (m, cols, rows) => cueillir49(viz49.vizElement(m, cols, rows, "", ""), (e) => e.tagName === "RECT", []).map((e) => Number(e.attributes.height));
+  const binneur49 = MODES49.find((m) => barresDe49(m, ["v"], [[1], [2], [3], [40]]).length > 1 && barresDe49(m, ["v"], [[1], [2], [3], [40]]).some((h) => h === 0));
+  exiger(!!binneur49, "(49k-instrument) aucune représentation ne binne une colonne seule : le partage jugé ici n'existerait pas");
+  const uneLigne49 = viz49.vizElement(binneur49, ["host", "n"], [["web-01", 42]], "", "").textContent;
+  exiger(uneLigne49.includes("web-01") && uneLigne49.includes("42"),
+    `(49k) un agrégat d'UNE ligne est encore binné : « ${binneur49} » rend « ${uneLigne49} » là où la donnée servie dit « web-01 » et « 42 »`);
+  const deuxLignes49 = viz49.vizElement(binneur49, ["host", "n"], [["web-01", 42], ["web-02", 7]], "", "").textContent;
+  exiger(deuxLignes49.includes("web-01") && deuxLignes49.includes("42"),
+    `(49k) le même agrégat à DEUX lignes ne rend plus ses libellés servis : « ${deuxLignes49} »`);
+  const seuleColonne49 = viz49.vizElement(binneur49, ["n"], [[42]], "", "").textContent;
+  exiger(!seuleColonne49.includes("web-01") && /42/.test(seuleColonne49),
+    `(49k-inverse) un résultat à UNE colonne n'est plus binné : « ${seuleColonne49} »`);
+
+  // ---- (l) LA LANGUE DE « aucune donnée » EST SERVIE PAR LE LEXIQUE, ET LA MESURE L'ÉTABLIT ----
+  const SUFFIXE49 = "?plume-lang=en";
+  localStorage.setItem("soc_lang", "en");
+  const vizEN49 = await import(url49("viz.js") + SUFFIXE49);
+  const { i18nWalk: walk49 } = await import(url49("i18n.js") + SUFFIXE49);
+  localStorage.removeItem("soc_lang");
+  const disentVide49 = MODES49.filter((m) => /aucune donnée|no data/i.test(vizEN49.vizElement(m, C2, [], "", "").textContent));
+  exiger(disentVide49.length >= 3,
+    `(49l-instrument) seules ${disentVide49.length} représentation(s) DISENT l'absence sur zéro ligne : la mesure de la langue ne porterait presque sur rien`);
+  const enDurFr49 = disentVide49.filter((m) => /aucune donnée/.test(vizEN49.vizElement(m, C2, [], "", "").textContent));
+  exiger(enDurFr49.length > 0,
+    "(49l-négatif) plus aucune de ces phrases n'est écrite en français en dur : la moitié qui montre que la mesure d'origine lisait le module HORS du parcours de traduction ne mesure plus rien");
+  for (const m of disentVide49) {
+    const n = vizEN49.vizElement(m, C2, [], "", "");
+    walk49(n);
+    exiger(/no data/i.test(n.textContent) && !/aucune donnée/.test(n.textContent),
+      `(49l) sous LANG='en', « ${m} » sert encore du français APRÈS le parcours de traduction : « ${n.textContent} » — la clé du lexique manque`);
+  }
+
+  console.log(`[reglage-honore-ou-dit] LE RÉGLAGE DE L'EXPLOITANT EST HONORÉ : sur « ${large49} », les ${FENTES49.length} fentes × toutes les colonnes d'un résultat à ${C5.length} et à ${C3.length} colonnes (${honorees49} réglages balayés) posent la colonne réglée à la position que son infobulle promet, sans perdre ni doubler une seule colonne servie — là où la projection d'avant, rejouée ici, restait INERTE sur ${inertes49} de ces ${total49} réglages (elle rendait l'ordre SANS réglage) et remettait deux fois la même colonne sur le chemin étroit. Ce qu'un réglage ne peut PAS faire se DIT au lieu de s'évanouir : deux fentes sur la même colonne, une fente médiane sur un résultat sans milieu — chacune nommée avec la colonne et les libellés que l'exploitant voit, la barre restant au-dessus pour la défaire — et un réglage posé sur une fente que la représentation NE LIT PAS ne refuse rien et ne déplace rien. NON-RÉGRESSION : sur les ${MODES49.length} modes, un réglage qui nomme pour chaque fente la colonne qui y est déjà rend un balisage byte-identique et ne prononce pas un mot. UNE ABSENCE N'EST PAS UN ZÉRO : ni dans le refus d'une figure muette (une ligne sans valeur est comptée À PART, les vrais zéros gardant « toutes NULLES »), ni dans ce qu'une figure écarte (« nulle ou négative » ne se dit plus d'une valeur absente ni d'une valeur illisible). CE QU'UNE FIGURE NE MONTRE PAS, ELLE LE COMPTE : la grille dit sa coupe (${R70.length - lignesRendues} lignes sur ${R70.length}) et les lignes qu'une autre écrase, ${uneSeule49.length} représentations disent les lignes servies qu'elles ne lisent pas — sans que ce soit un refus, et sans nommer une colonne là où c'est une ligne qui manque — et toutes se taisent quand elles ne perdent rien. L'histogramme partage ses deux sémantiques sur la FORME du résultat et non sur son arité. Enfin la langue : « aucune donnée » atteint un lecteur anglophone par le LEXIQUE là où le module l'écrit en dur, mesuré en appliquant le parcours de traduction au nœud rendu — les deux moitiés tenues, pour qu'on ne retire pas la clé qui l'y porte. CE QUE CE TÉMOIN NE TIENT PAS : l'encre peinte et la mise en page (section 0) ; les panneaux SEMÉS par le démon, dont les requêtes vivent hors de web/ ; et ce qu'une chaîne de BLANCS devrait valoir — le module la lit comme un zéro, et il le déclare.`);
 }
 
 // LE VERDICT PORTE SA PROPRE LIMITE (`P11.13-g`). Un vert qui ne dit pas ce sur quoi il ne s'engage pas

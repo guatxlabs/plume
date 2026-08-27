@@ -40,7 +40,15 @@
      sélectionnable posée demain porte la même marque sans qu'on y pense. Mesuré le 2026-08-25 avant la
      correction : 12 règles marquaient un choix par un fond (7 en accent plein, 5 en teinte), 2 par du
      gras. Ne pas réintroduire de `background` littéral dans une règle d'état choisi : le compte
-     ci-dessus est la propriété tenue. */
+     ci-dessus est la propriété tenue.
+     ET ELLE EST TENUE PAR UNE GARDE DEPUIS LE 2026-08-26, non plus par cette phrase : le témoin
+     `[feuille]` du harnais ESM DÉRIVE de la feuille entière les règles qui marquent une BASCULE (`.on`,
+     `aria-pressed="true"`, `aria-expanded="true"`) — 20 le 2026-08-26 — et refuse à chacune l'aplat
+     littéral et la graisse. Il n'exige PAS qu'elles lisent les jetons : l'étoile des favoris et
+     l'interrupteur d'une source disent autre chose et gardent leur encre propre — les y forcer serait
+     `P11.4-m`. La famille voisine de la ligne mise en avant (`.active`) n'est pas dans la classe, et
+     n'est pas laissée sans verdict pour autant : son aplat doit être celui du SURVOL, écrit dans la
+     MÊME règle, sinon c'est un état choisi sous un autre nom. */
   --sel-bg:transparent; --sel-fg:var(--acc); --sel-bd:var(--acc);
   /* `P11.15-b` — LA DENSITÉ D'UNE TABLE EST UN JEU DE JETONS, PAS UNE RÈGLE PAR VUE. Resserrer ou aérer
      les tables est ce qui reste dû après le regroupement et la paresse, et cela n'existe qu'en feuille
@@ -61,7 +69,20 @@
      la consomme n'a besoin d'aucun sélecteur de descendance, et la règle qui vise le conteneur ne
      déclare QUE des variables — elle ne peut donc pas atteindre un contrôle qu'elle ne visait pas, qui
      est le piège mesuré sous `P11.4-m`. Une valeur inconnue, ou l'absence d'attribut, vaut le défaut :
-     aucune valeur ne peut casser une table. */
+     aucune valeur ne peut casser une table.
+     CE QUE CETTE SECTION NE FAIT PAS, ET QU'IL FAUT LIRE AVANT DE LA CROIRE : PERSONNE NE POSE
+     `data-density`. Mesuré le 2026-08-26 sur tout `web/`, gabarit compris : ZÉRO surface l'écrit. La
+     densité est donc RÉGLABLE et n'est RÉGLÉE par personne — le mécanisme est posé, pas armé, et le
+     lire comme un réglage offert à l'exploitant serait exactement le défaut que `P11.15-a` a relevé sur
+     cette même feuille (un commentaire qui annonce un recours que rien ne pose). Le geste qui manque
+     n'est ni une règle de style ni la fabrique de tableaux : c'est une PRÉFÉRENCE, qui vit dans le
+     gabarit et dans le magasin de préférences par utilisateur. Le compte est IMPRIMÉ par le témoin
+     `[feuille]` du harnais ESM, donc cette phrase cessera d'être vraie d'elle-même le jour où quelqu'un
+     l'arme — elle ne peut pas vieillir en silence.
+     TENU DEPUIS LE 2026-08-26 par ce même témoin, qui DÉRIVE de la feuille les règles visant une cellule
+     de tableau et exige : une seule règle fait la hauteur d'une ligne et lit les trois jetons, aucune ne
+     fixe de hauteur (ce qui casserait le dépli de `P11.15-a`), la place et la taille du bouton dérivent
+     du même jeu, et le défaut vaut l'interligne du corps du document. */
   --dens-y:6px; --dens-x:10px; --dens-lh:1.55; --dens-plmore:19px;
   --shadow:0 6px 18px #00000033;
 }
@@ -350,7 +371,14 @@ button[aria-pressed="true"]{background:var(--sel-bg);color:var(--sel-fg);border-
    et le sous-titre lui-même touchait son titre. La cause est ICI et nulle part dans les deux vues : un
    `margin-top` NÉGATIF le remontait de 6 px contre le titre, sans hauteur de ligne propre et sans blanc
    entre les mots. La règle est celle du sous-titre PARTAGÉ : les 3 vues qui en portent un aujourd'hui
-   (2026-08-25) et celle qu'on posera demain en héritent, aucune n'est ajustée pour elle-même. */
+   (2026-08-25) et celle qu'on posera demain en héritent, aucune n'est ajustée pour elle-même.
+   TENU DEPUIS LE 2026-08-26 par le témoin `[feuille]` du harnais ESM : UNE seule règle écrit le
+   sous-titre partagé, sa marge est POSITIVE, elle porte son interligne et son espacement de mots, et
+   AUCUNE autre règle de la feuille n'ajoute une marge à `.qsub` pour une vue particulière.
+   CE QUE CETTE RÈGLE NE PEUT PAS ATTEINDRE, ET QUI EST COMPTÉ : une marge écrite en style EN LIGNE par
+   un module l'emporte sur elle. Mesuré le 2026-08-26 par lecture du source : 19 lignes de `web/*.js`
+   écrivent à la fois une marge en ligne et l'une des deux classes de mention, réparties sur 11 modules.
+   Le témoin en imprime le compte ; il ne le plafonne pas, parce que le correctif vit dans ces modules. */
 .qsub{margin:4px 0 12px;color:var(--mut);font-size:12px;line-height:1.6;word-spacing:.12em}
 .qcrumb{display:inline-flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:11px;padding:2px 9px;border-radius:var(--pill);background:var(--acc-bg);color:var(--acc);border:1px solid color-mix(in srgb,var(--acc) 30%,transparent)}
 .qcrumb b{font-weight:700;color:var(--hd)}

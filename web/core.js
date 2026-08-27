@@ -1270,6 +1270,20 @@ function peindreEnGroupes(host, rows, opts) {
 // tableaux `.qtable` construits hors de la fabrique (résultats de recherche, aperçu de connecteur) sont
 // ainsi couverts sans qu'une ligne leur soit écrite.
 //
+// LA PROPRIÉTÉ EST GARDÉE DEPUIS LE 2026-08-26, ET ELLE NE L'ÉTAIT PAS. Le mécanisme a vécu un jour sans
+// aucun témoin, pour une raison écrite en section 0 du harnais ESM : le simulacre n'a pas de mise en page,
+// donc le prédicat de débordement y vaut TOUJOURS faux et tout ceci passait sans être exercé. Le témoin
+// `[cellule-coupee]` POSE lui-même les deux largeurs et juge alors ce que le code en fait — où il équipe,
+// où il refuse, ce qu'il rend quand la mesure change. Il ne prouve rien de l'encre peinte, et il le dit.
+// DEUX FAUTES D'INSTRUMENT ONT ÉTÉ MESURÉES ET FERMÉES EN L'ÉCRIVANT, toutes deux dans le simulacre : le
+// sélecteur ci-dessous n'y était pas LISIBLE (`:not(…)` hors grammaire ⇒ liste VIDE, sans un mot), et
+// `type` n'y était pas reflété en attribut — un bouton correctement typé s'y lisait comme un bouton nu.
+//
+// ET LE RECOURS PART AVEC LA COUPE (2026-08-26). Le retrait laissait derrière lui l'infobulle que cette
+// fabrique avait posée : une fenêtre élargie rendait la valeur entièrement lisible ET la répétait au
+// survol. Le geste doit exister EXACTEMENT quand la valeur est coupée, donc il se retire entièrement ;
+// l'infobulle qu'une VUE a écrite, elle, n'a jamais été à nous et reste (voir `TITRES_DE_LA_FABRIQUE`).
+//
 // `P11.18-b` — LA PLACE RÉSERVÉE NE BORNAIT QUE CE QUE LA CELLULE METTAIT EN LIGNE ELLE-MÊME
 // --------------------------------------------------------------------------------------------------
 // LE RELEVÉ, ET LA DIFFÉRENCE QU'IL DÉSIGNE. Le chevron recouvrait le texte qu'il sert à révéler, mais
@@ -1324,13 +1338,21 @@ function boiteDeValeur(td) {
   return enfants.find(n => n && n.classList && n.classList.contains(CELL_VALEUR)) || null;
 }
 
+// L'INFOBULLE QUE LA FABRIQUE A POSÉE, ET ELLE SEULE. Le recours doit exister EXACTEMENT quand la valeur
+// est coupée : posé au marquage, il doit partir avec lui. Sans ce souvenir, la fabrique ne saurait pas
+// distinguer son infobulle de celle qu'une vue a écrite, et retirerait donc soit les deux, soit aucune —
+// une fenêtre élargie laissait jusqu'ici une infobulle qui répète mot pour mot le texte déjà lisible.
+// Un jeu FAIBLE plutôt qu'un attribut : rien n'est ajouté au document, et le souvenir meurt avec la
+// cellule, que la fabrique reconstruit à chaque peinture.
+const TITRES_DE_LA_FABRIQUE = new WeakSet();
+
 function poserLeDepliDeCellule(td) {
   if (td.classList.contains(CELL_COUPEE)) return false;
   const entier = td.textContent == null ? '' : String(td.textContent);   // AVANT d'ajouter le bouton
   td.classList.add(CELL_COUPEE);
   // Recours immédiat, sans aucun geste : la valeur entière au survol. Une infobulle déjà écrite par la
   // vue (elle en sait plus que la fabrique) n'est jamais remplacée.
-  if (entier && !td.getAttribute('title')) td.title = entier;
+  if (entier && !td.getAttribute('title')) { td.title = entier; try { TITRES_DE_LA_FABRIQUE.add(td); } catch (e) {} }
   // `P11.18-b` — LA VALEUR PASSE DANS SA PROPRE BOÎTE, ET C'EST ELLE QUI S'ARRÊTE OÙ LE BOUTON COMMENCE.
   // La place réservée par la feuille ne borne que ce que la CELLULE met en ligne elle-même ; ce qu'un
   // enfant de niveau BLOC met en ligne lui échappe (voir l'en-tête de section). La boîte rend la borne
@@ -1359,6 +1381,8 @@ function poserLeDepliDeCellule(td) {
 // les nœuds que la vue a construits reviennent à leur rang, elle n'en perd aucun.
 function retirerLeDepliDeCellule(td) {
   td.classList.remove(CELL_COUPEE);
+  // Le recours part avec la coupe — mais SEULEMENT s'il vient d'ici (voir `TITRES_DE_LA_FABRIQUE`).
+  if (TITRES_DE_LA_FABRIQUE.has(td)) { TITRES_DE_LA_FABRIQUE.delete(td); td.removeAttribute('title'); }
   const b = boutonDeDepli(td); if (b && b.remove) b.remove();
   const boite = boiteDeValeur(td);
   if (boite) { while (boite.firstChild) td.insertBefore(boite.firstChild, boite); boite.remove(); }

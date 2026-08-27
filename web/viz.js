@@ -444,7 +444,11 @@ async function runQ(query, isSoql, fromOverride, limit, offset, opts) {
   try { return JSON.parse(t); } catch { throw new Error('réponse non-JSON (tronquée ? timeout ?) : ' + t.slice(0, 120)); }
 }
 
-function vizElement(mode, cols, rows, query, drill) {
+// LA REPRÉSENTATION ELLE-MÊME, SANS LA PORTE. Un seul appelant a le droit de la prendre : le SONDAGE
+// (`rendreEnSonde`), qui doit observer ce que la représentation FAIT et non ce que la porte laisse
+// passer — et qui, passant par la porte, s'appellerait lui-même sans fin. Tout le reste passe par
+// `vizElement`.
+function vizSansPorte(mode, cols, rows, query, drill) {
   if (mode === 'stat') return statEl(cols, rows, query, drill);
   if (mode === 'bar') return barEl(cols, rows, query, drill);
   if (mode === 'line') return lineEl(cols, rows, query, drill);
@@ -455,6 +459,37 @@ function vizElement(mode, cols, rows, query, drill) {
   if (mode === 'heatmap') return heatmapEl(cols, rows, query, drill);
   if (mode === 'histogram') return histogramEl(cols, rows, query, drill);
   return tableEl(cols, rows, query, drill);
+}
+
+// `P11.18-p` — LA PORTE. Une représentation qui ne peut pas exprimer CETTE donnée n'est pas offerte
+// pour elle. Ce n'est ni un drapeau ni un avertissement posé à côté du graphe : le graphe n'est pas
+// tracé, et ce qui prend sa place DIT la colonne, le compte et la valeur qui l'ont empêché.
+// LA PORTE EST ICI, au point où une représentation est CHOISIE pour un jeu de colonnes, et non dans
+// chacune des représentations : c'est le seul endroit que tout appelant traverse — le panneau réglé,
+// l'éditeur de requête, et l'aperçu d'un instantané partagé, qui n'a AUCUNE barre de réglage. Une
+// représentation posée demain est couverte sans qu'on l'écrive, parce que la porte ne connaît aucun
+// type de graphe : elle DEMANDE au sondage ce que celui-ci a répondu.
+// LA SECONDE PORTE, ET ELLE NE LIT PAS LA DONNÉE : ELLE LIT LE RENDU (`P11.18-p`). La première décide
+// SUR LA DONNÉE — une fente ramenée à un nombre que la colonne ne porte pas. Elle ne peut pas voir le
+// cas où la donnée est PARFAITEMENT valide et où la représentation ne dessine RIEN quand même : mesuré
+// le 2026-08-27, `pie` et `donut` sur trois lignes dont les valeurs sont toutes nulles — ou négatives —
+// laissaient passer la première porte (la colonne EST numérique) puis affirmaient « aucune donnée » sur
+// des lignes SERVIES. C'est l'absence affirmée à la place d'un refus, exactement l'instance que la clé
+// énumère. La mesure qui tranche ne peut pas venir de la donnée : elle vient du RENDU LUI-MÊME, compté
+// avec la MÊME fonction que le sondage (`marquesDe`, un seul écrivain de la notion de marque). Aucun
+// type de graphe n'est nommé : une représentation posée demain qui ne dessinerait rien sur des lignes
+// servies est refusée sans qu'on l'écrive, et celle qui dessine ne paie qu'un parcours de son arbre.
+// CE QUE CETTE PORTE NE VOIT PAS, ÉCRIT PLUTÔT QUE TU : elle constate l'ABSENCE de marque, pas son
+// INVISIBILITÉ. `marquesDe` compte une déclaration de fond même quand elle vaut « transparent » —
+// mesuré le 2026-08-27, une grille de chaleur dont toutes les valeurs sont nulles rend donc ses cellules
+// (vides à l'œil) et n'est PAS refusée. Fermer ce cas-là demande de juger l'encre peinte, ce que ni ce
+// module ni son banc ne savent faire ; c'est un reste nommé, pas un reste caché.
+function vizElement(mode, cols, rows, query, drill) {
+  const refus = refusDeRepresentation(mode, cols, rows);
+  if (refus) return noeudDeRefus(refus);
+  const figure = vizSansPorte(mode, cols, rows, query, drill);
+  const muette = refusDUneFigureMuette(mode, cols, rows, figure);
+  return muette ? noeudDeRefus(muette) : figure;
 }
 
 // ==============================================================================================
@@ -477,13 +512,34 @@ function vizElement(mode, cols, rows, query, drill) {
 // partage. `vizElement` n'est PAS touché : un appelant qui ne passe pas de réglage rend exactement ce
 // qu'il rendait, et cette non-modification en est la preuve la plus courte.
 //
-// CE QUE CE BLOC NE FAIT PAS, écrit plutôt que tu : il ne redresse PAS le chemin PAR DÉFAUT. Mesuré
-// le même jour sur banc, sans aucun réglage : `gauge` sur une colonne textuelle affiche « 0 / 1 » (un
-// zéro FABRIQUÉ), `line` écrase toutes les abscisses non numériques sur un point unique, `bar` trace
-// toutes ses barres à 0 % de large tout en imprimant le texte à côté, et `pie` répond « aucune
-// donnée » alors que les lignes existent — une ABSENCE affirmée à la place d'un refus. Seul
-// `histogram` dit « aucune donnée numérique ». Les redresser changerait ce que rendent des panneaux
-// existants, ce que la borne de ce chantier interdit ; le refus ci-dessous est donc attaché au CHOIX.
+// CE QUE CE BLOC NE FAISAIT PAS, ET QUI EST FAIT DEPUIS : il ne redressait PAS le chemin PAR DÉFAUT.
+// Mesuré le même jour sur banc, sans aucun réglage : `gauge` sur une colonne textuelle affiche
+// « 0 / 1 » (un zéro FABRIQUÉ), `line` écrase toutes les abscisses non numériques sur un point unique,
+// `bar` trace toutes ses barres à 0 % de large tout en imprimant le texte à côté, et `pie` répond
+// « aucune donnée » alors que les lignes existent — une ABSENCE affirmée à la place d'un refus. Seul
+// `histogram` disait alors « aucune donnée numérique », et son honnêteté n'était que PARTIELLE : sur une
+// colonne MÉLANGÉE il rendait la valeur textuelle en barre de hauteur zéro comme les autres.
+//
+// CE QUE `P11.18-p` A FERMÉ, ET CE QU'IL AVAIT LAISSÉ OUVERT EN SE CROYANT CLOS. La PREMIÈRE porte, dans
+// `vizElement`, refuse une représentation qui ramènerait une fente à un nombre que la colonne servie ne
+// porte pas : le chemin de la fente NON NUMÉRIQUE est fermé, et c'est le seul que la phrase qui vivait
+// ici couvrait — elle disait pourtant « ce chemin », au singulier, ce qui était plus large que sa mesure.
+// MESURÉ LE 2026-08-27 : sur une colonne NUMÉRIQUE dont les valeurs sont toutes nulles — ou négatives —
+// la première porte laisse passer, et `pie` comme `donut` répondaient « aucune donnée » sur TROIS lignes
+// servies. C'est mot pour mot l'instance que la clé énumère, restée ouverte pendant que ce commentaire
+// la déclarait close. La SECONDE porte la ferme, et elle ne nomme aucun type : une représentation qui
+// TRACE et qui, sur ce rendu-là, ne pose AUCUNE marque rend un refus qui dit ce qui manque.
+// CE QUE LE REDRESSEMENT COÛTE AUX PANNEAUX EXISTANTS : sur une donnée dont les fentes sont valides ET
+// dont l'ordonnée porte au moins une valeur strictement positive, les neuf représentations rendent un
+// balisage byte-identique, porte comprise. La borne de cette phrase est celle du témoin qui l'établit :
+// il joue un jeu FABRIQUÉ, il ne dit rien des panneaux SEMÉS par le démon, dont les requêtes vivent hors
+// de `web/`. CE QUI RESTE OUVERT, ÉCRIT PLUTÔT QUE TU : une colonne numérique LÀ OÙ ELLE EST REMPLIE mais
+// trouée (`null`, chaîne vide) franchit les deux portes — `profilDeColonne` saute les vides avant de
+// conclure — et `Number(v) || 0` dessine ces trous à ZÉRO (mesuré le 2026-08-27 : `bar` sur
+// [['a',5],['b',null],['c',7]] rend trois barres, celle du milieu à 0 % de large, « - » imprimé à côté).
+// Ce n'est pas la même faute, et elle n'est pas fermée ici. Le refus ci-dessous, lui, reste attaché au
+// CHOIX : il porte en plus le plafond de cardinalité, qui juge la LISIBILITÉ et non la vérité, et que la
+// porte n'impose donc pas par défaut.
 const PLAFOND_CARDINALITE_ABSCISSE = 200;   // au-delà, une marque occupe moins de 3 unités sur les 580
                                             // utiles du canevas de 640 que ces représentations partagent :
                                             // les marques fusionnent. UN seul plafond, le même pour toutes,
@@ -505,6 +561,26 @@ const SONDE_N1 = [[10, 4, 3], [20, 5, 9]];
 const SONDE_N2 = [[10, 4, 7], [20, 5, 2]];
 const SONDE_T1 = [[10, 4, 'pa'], [20, 5, 'qb']];
 const SONDE_T2 = [[10, 4, 'rc'], [20, 5, 'sd']];
+// `P11.18-p` — LA MÊME QUESTION, POSÉE À L'ABSCISSE. Elle demande TROIS lignes et des BORNES FIXES :
+// deux lignes ne suffisent pas (une échelle qui normalise sur [min, max] pose toujours la première et
+// la dernière au même endroit, donc rien ne bougerait et la sonde ne conclurait pas — mesuré le
+// 2026-08-26, elle rendait `false` sur `line`) ; et bouger la PREMIÈRE ligne ferait parler une
+// représentation qui lit la colonne 0 pour AUTRE CHOSE qu'une position — la jauge y lit son échelle,
+// et elle s'allumait à tort. En ne mutant que le rang du MILIEU, la sonde ne répond « oui » que si la
+// représentation PLACE ses lignes selon la valeur d'abscisse. Mesuré : `line` seule.
+const SONDE_XN1 = [[10, 4, 3], [20, 5, 9], [100, 6, 1]];
+const SONDE_XN2 = [[10, 4, 3], [90, 5, 9], [100, 6, 1]];
+const SONDE_XT1 = [['pa', 4, 3], ['qb', 5, 9], ['rc', 6, 1]];
+const SONDE_XT2 = [['sd', 4, 3], ['te', 5, 9], ['uf', 6, 1]];
+// `P11.18-a` — LA QUESTION QUE TROIS FENTES NE SAVENT PAS POSER : cette représentation lit-elle AU-DELÀ
+// des trois rangs que le réglage manipule ? Les fentes ci-dessus sont sondées sur TROIS colonnes ; une
+// représentation qui en rendrait cinq répondrait EXACTEMENT la même chose, parce qu'il n'y a pas de
+// quatrième rang à muter. On lui en donne donc CINQ et on mute les deux rangs du MILIEU qu'aucune fente
+// ne désigne (le 3e et le 4e sur cinq). Si l'empreinte bouge, elle lit plus que les trois fentes — et le
+// réglage n'a alors pas le droit de projeter sur trois rangs, sous peine de RETIRER des colonnes servies.
+const SONDE_LARGE_COLS = ['sonde_a', 'sonde_b', 'sonde_c', 'sonde_d', 'sonde_e'];
+const SONDE_LARGE = [[10, 4, 3, 7, 2], [20, 5, 9, 8, 6]];
+const RANGS_HORS_FENTES = [2, 3];   // sur CINQ colonnes : ni la première, ni la deuxième, ni la dernière
 // La GÉOMÉTRIE d'un rendu = ce qui place ou dimensionne une marque. Le TEXTE en est exclu : c'est lui
 // qui rend un graphe faux crédible (une barre à 0 % qui affiche « rouge » juste à côté). Les marques
 // CONSTANTES d'un rendu (le tracé d'une icône) ne gênent pas : le sondage ne lit jamais une géométrie
@@ -526,19 +602,34 @@ function empreinteDe(n) {
   const at = Object.keys(n.attributes || {}).sort().map(k => k + '=' + n.attributes[k]).join(',');
   return n.tagName + '[' + at + ']' + (n.textContent || '');
 }
-function rendreEnSonde(mode, rows) { try { return vizElement(mode, SONDE_COLS, rows, '', ''); } catch (e) { return null; } }
+// `vizSansPorte` et non `vizElement` : le sondage mesure ce que la REPRÉSENTATION fait, et la porte
+// qu'il alimente le rappellerait sans fin s'il la traversait (`P11.18-p`).
+function rendreEnSonde(mode, rows, cols) { try { return vizSansPorte(mode, cols || SONDE_COLS, rows, '', ''); } catch (e) { return null; } }
 const _sondages = new Map();
 function sondage(mode) {
   if (_sondages.has(mode)) return _sondages.get(mode);
   const geo = rows => marquesDe(rendreEnSonde(mode, rows)).join(';');
   const trace = geo(SONDE_N1) !== geo(SONDE_N2);               // TÉMOIN POSITIF : la géométrie suit la valeur
   const ordonneeNumerique = trace && geo(SONDE_T1) === geo(SONDE_T2);
+  // MÊME FORME, MÊME TÉMOIN POSITIF, sur l'autre fente (`P11.18-p`) : la représentation place-t-elle
+  // ses lignes selon l'ABSCISSE, et si oui ramène-t-elle une abscisse textuelle à un nombre ?
+  const placeParAbscisse = geo(SONDE_XN1) !== geo(SONDE_XN2);
+  const abscisseNumerique = placeParAbscisse && geo(SONDE_XT1) === geo(SONDE_XT2);
   const ref = empreinteDe(rendreEnSonde(mode, SONDE_N1));
   const fentes = SONDE_COLS.map((_, k) => {
     const mut = SONDE_N1.map(r => r.map((v, j) => (j === k ? Number(v) + 500 : v)));
     return empreinteDe(rendreEnSonde(mode, mut)) !== ref;
   });
-  const s = { trace, ordonneeNumerique, fentes };
+  // LA MÊME FORME, SUR CINQ COLONNES (`P11.18-a`) : la représentation lit-elle un rang qu'AUCUNE fente
+  // ne désigne ? Le témoin positif est celui des fentes juste au-dessus — si muter un rang LU ne changeait
+  // rien, l'empreinte ne mesurerait pas ce qu'on croit. Ici on mute les rangs du milieu d'un jeu à cinq :
+  // `table`, qui rend toutes ses colonnes, répond OUI ; `heatmap`, qui n'en lit que trois, répond NON.
+  const refLarge = empreinteDe(rendreEnSonde(mode, SONDE_LARGE, SONDE_LARGE_COLS));
+  const litAuDelaDesFentes = RANGS_HORS_FENTES.some(k => {
+    const mut = SONDE_LARGE.map(r => r.map((v, j) => (j === k ? Number(v) + 500 : v)));
+    return empreinteDe(rendreEnSonde(mode, mut, SONDE_LARGE_COLS)) !== refLarge;
+  });
+  const s = { trace, ordonneeNumerique, placeParAbscisse, abscisseNumerique, fentes, litAuDelaDesFentes };
   _sondages.set(mode, s);
   return s;
 }
@@ -556,6 +647,10 @@ function sondage(mode) {
 // CE QUE CE CHOIX COÛTE, écrit plutôt que tu : le réglage est PAR COMPTE, il n'est pas porté par le
 // panneau partagé. Deux exploitants devant le même panneau peuvent voir deux axes. Le rendre commun
 // exige une colonne au démon ; la capacité manque, elle est nommée ici plutôt que contournée.
+// `P11.18-q` A TRANCHÉ CE COÛT PLUTÔT QUE DE LE LAISSER TACITE : le réglage appartient à la PERSONNE,
+// et la vue le DIT dès que ce qu'elle montre s'écarte de ce que le panneau enregistré sert — voir
+// `avisDeReglagePrive` plus bas. Ce commentaire seul ne rattrapait rien : il était vrai et INVISIBLE
+// pour qui compose un tableau de bord pour son équipe.
 // Le réglage retient des NOMS de colonne, pas des rangs : une requête ré-écrite qui garde la colonne
 // garde le réglage, et une requête qui la retire produit un REFUS qui la nomme — là où un rang aurait
 // silencieusement désigné une autre colonne.
@@ -578,19 +673,27 @@ function cleDeReglage(idPanneau, cols) { return idPanneau ? ('p' + idPanneau) : 
 // -- CE QUE LA REQUÊTE REND VRAIMENT -----------------------------------------------------------
 // Un fait par colonne, LU SUR LES LIGNES SERVIES : rien n'est deviné d'un nom de champ ni d'un type
 // de graphe. C'est de là, et de là seulement, que sortent les choix offerts et les refus.
-function profilsDeColonnes(cols, rows) {
-  return cols.map((nom, i) => {
-    let nonVides = 0, nombres = 0; const vus = new Set();
-    for (const r of rows) {
-      const v = r[i];
-      if (v === null || v === undefined || v === '') continue;
-      nonVides++;
-      if (Number.isFinite(Number(v))) nombres++;
-      vus.add(String(v));
-    }
-    return { nom, i, nonVides, nombres, cardinalite: vus.size, numerique: nonVides > 0 && nombres === nonVides };
-  });
+// UNE SEULE DÉFINITION DE « CETTE LIGNE PORTE UNE VALEUR », lue par le profil de colonne, par les refus
+// et par les figures qui comptent ce qu'elles laissent de côté. L'écrire deux fois laisse entrer un zéro
+// FABRIQUÉ dans un compte de zéros MESURÉS : `Number(null)` et `Number('')` valent 0 et sont FINIS, si
+// bien qu'une absence passait pour une valeur nulle lue — mesuré le 2026-08-27, et c'était exactement le
+// grief que la première porte se fait à elle-même (« le zéro affirmerait une lecture qui n'a pas eu lieu »).
+// CE QUE CE PRÉDICAT NE TRANCHE PAS, écrit plutôt que tu : une chaîne de BLANCS (`' '`) est ici une
+// valeur, et `Number(' ')` vaut 0 — elle est donc lue comme un zéro. Le dire autrement demande de changer
+// la définition que TOUT ce module partage, pas une phrase ; ce n'est pas fait ici.
+function porteUneValeur(v) { return v !== null && v !== undefined && v !== ''; }
+function profilDeColonne(nom, i, rows) {
+  let nonVides = 0, nombres = 0; const vus = new Set();
+  for (const r of rows) {
+    const v = r[i];
+    if (!porteUneValeur(v)) continue;
+    nonVides++;
+    if (Number.isFinite(Number(v))) nombres++;
+    vus.add(String(v));
+  }
+  return { nom, i, nonVides, nombres, cardinalite: vus.size, numerique: nonVides > 0 && nombres === nonVides };
 }
+function profilsDeColonnes(cols, rows) { return cols.map((nom, i) => profilDeColonne(nom, i, rows)); }
 function premiereNonNumerique(rows, i) {
   for (const r of rows) { const v = r[i]; if (v !== null && v !== undefined && v !== '' && !Number.isFinite(Number(v))) return String(v).slice(0, 40); }
   return '';
@@ -601,6 +704,205 @@ function premiereNonNumerique(rows, i) {
 // au sondage. Aucune ne cite un type de graphe. Le refus prend la place du GRAPHE, jamais celle des
 // données : il n'est décidé dans aucun test qui jugerait aussi un vide, et il nomme la colonne, le
 // compte et la valeur qui le motivent.
+// -- `P11.18-p` — CE QUE LA PORTE REFUSE, SANS QU'AUCUN AXE AIT ÉTÉ CHOISI --------------------
+// MESURÉ SUR BANC le 2026-08-26, les neuf représentations rendues sur `[['a','rouge'],['b','vert'],
+// ['c','rouge']]`, colonnes `host, sev`, AUCUN réglage :
+//   `bar`       trois barres à `width: 0%`, le texte imprimé à côté      -> FAUX
+//   `line`      les trois points empilés en (320,170), axes « 0 » / « 0 » -> FAUX
+//   `gauge`     « 0 / 1 » : numérateur ET dénominateur fabriqués          -> FAUX
+//   `pie`       « aucune donnée » alors que trois lignes existent         -> FAUX (refus rendu en absence)
+//   `donut`     idem `pie`, même fonction                                 -> FAUX
+//   `heatmap`   la grille et ses en-têtes, TOUTES les cellules vides      -> FAUX
+//   `histogram` « aucune donnée numérique »                               -> honnête
+//   `stat`      « rouge »            |  `table` les trois lignes          -> honnêtes (elles ne tracent pas)
+// SIX sur neuf, pas quatre : `donut` et `heatmap` s'ajoutent à ce que la clé nommait. ET L'HONNÊTETÉ DE
+// `histogram` N'EST QUE PARTIELLE — mesuré le même jour sur `[['a',3],['b','n/a'],['c',1]]`, il rend
+// « n/a » en barre de hauteur ZÉRO, exactement comme les autres ; son aveu ne sort que si AUCUNE valeur
+// n'est un nombre. Le mélange est le cas dangereux : la valeur fausse est noyée dans des vraies.
+//
+// LE CONSTAT DE LA CLÉ EST JUSTE SUR `line`, ET IL NE PARLE PAS DE L'ORDONNÉE : « une courbe écrase
+// les abscisses non numériques sur un SEUL point » est une faute d'ABSCISSE. Sur le banc ci-dessus les
+// deux colonnes étaient textuelles, si bien qu'une porte posée sur la seule ordonnée l'aurait fermée
+// PAR ACCIDENT. Mesuré le 2026-08-26 sur `[['a',3],['b',9],['c',1]]` — ordonnée NUMÉRIQUE, abscisse
+// textuelle : `line` rendait toujours ses trois points en `320,123.3 320,30 320,154.4`, TROIS mesures
+// distinctes empilées sur un même instant, sous des axes marqués « 0 » et « 0 ». La porte lit donc les
+// DEUX fentes, chacune par sa propre sonde.
+//
+// LA RÈGLE, ET ELLE N'ÉNUMÈRE AUCUN TYPE DE GRAPHE : si le sondage a répondu que cette représentation
+// ramène une fente à un NOMBRE, et que la colonne servie à cette fente n'en porte pas, la
+// représentation n'est pas offerte pour cette donnée. Le sondage est la MÊME source que celle du
+// réglage (`P11.18-a`) : c'est la représentation qui répond, pas une table écrite ici.
+//
+// DEUX CAUSES, DEUX PHRASES, parce qu'elles ne disent pas la même chose et qu'une phrase doit être
+// vraie mot à mot : des valeurs qui ne sont PAS des nombres (elles seraient aplaties ou empilées), et
+// une colonne SANS AUCUNE valeur (le zéro affirmerait alors une lecture qui n'a pas eu lieu).
+//
+// CE QUE LE REFUS D'ABSCISSE COÛTE AUX PANNEAUX LIVRÉS, ET POURQUOI CE COÛT EST NUL DANS LES DEUX CAS.
+// RECOMPTÉ LE 2026-08-27, PARCE QUE LA PHRASE QUI VIVAIT ICI ÉTAIT FAUSSE : elle disait « les douze
+// courbes semées passent par `| timechart` », présentant DOUZE comme la totalité. `daemon/src/seeds.rs`
+// en sème SEIZE (`grep -c '"line"'`). Douze passent bien par `| timechart`, dont la projection est
+// compilée hors de cet arbre : de celles-là on ne peut PAS établir ici que leur premier seau est un
+// nombre. LES QUATRE AUTRES sont du SQL brut — `SELECT ts AS bucket, value FROM metric WHERE name='…'
+// AND ts>=__FROM__ ORDER BY ts` (CPU %, RAM %, Réseau ↓, Température) — et leur première colonne est
+// LISIBLE ici : c'est `ts`, un entier d'époque. La phrase refusait d'établir un fait qui l'était.
+// LE COÛT RESTE NUL, ET L'ARGUMENT NE TIENT PLUS À LA POPULATION. Pour les quatre lues, l'abscisse EST
+// un nombre : la porte ne les voit jamais. Pour les douze compilées ailleurs, la même alternative que
+// toujours : si le seau est un nombre — ce que tout ce module présume déjà, le zoom temporel,
+// l'infobulle et le drill ne s'armant qu'entre 1e9 et 2e10 — la porte ne les voit pas non plus ; si ce
+// n'en est pas un, ces courbes empilent DÉJÀ tous leurs points sur une abscisse unique, et les refuser
+// est la seule issue juste. Le refus ne se déclenche donc jamais que là où le graphe était déjà faux.
+// LA BORNE DE CE RECOMPTE, écrite plutôt que tue : il porte sur les panneaux SEMÉS par ce dépôt, lus
+// dans `daemon/src/seeds.rs` à cette date. Il ne dit rien d'un panneau écrit par un exploitant.
+//
+// CE QUE LES DEUX PORTES NE REFUSENT PAS, écrit plutôt que tu. Cette liste porte sur la porte de DONNÉE
+// (juste en dessous) ET sur celle de RENDU (`refusDUneFigureMuette`), qui refuse une représentation
+// traçante n'ayant posé AUCUNE marque sur des lignes servies :
+//  · un résultat SANS LIGNE — l'absence est alors un FAIT, et la porte n'a rien à coercer. Ce que
+//    chacune en fait a été RECOMPTÉ le 2026-08-27, parce que la phrase qui vivait ici (« chaque
+//    représentation la rend déjà pour son compte ; la seule qui MENTAIT était `gauge` ») était plus
+//    large que sa mesure. Sur zéro ligne, les NEUF se répartissent en trois : `gauge`, `pie`, `donut`
+//    et `histogram` (depuis la correction dite plus bas) DISENT « aucune donnée » ; `stat` rend « - »
+//    et `table` ses en-têtes sans ligne — ce sont des faits ; `bar`, `line` et `heatmap` rendent un
+//    cadre VIDE qui n'affirme rien — ils ne mentent pas, mais ils ne disent rien non plus, et c'est un
+//    reste NOMMÉ ici, pas fermé. `gauge` était bien la seule à FABRIQUER (« 0 / 1 », dont les deux termes
+//    sont inventés), corrigée dans `gaugeEl` même, parce que c'est une valeur fabriquée et non un
+//    refus. `histogram`, lui, disait « aucune donnée NUMÉRIQUE » là où AUCUNE donnée n'avait été
+//    servie : il attribuait à la nature de la colonne une absence qu'il n'avait pas mesurée — corrigé
+//    le 2026-08-27 dans `histogramEl` même, par la phrase du fait. LA LANGUE DE CES PHRASES A ÉTÉ MISE
+//    EN DOUTE, ET LA MESURE A RÉFUTÉ LE DOUTE (2026-08-27) : `pie` et `donut` écrivent « aucune donnée »
+//    en dur là où `gauge` et `histogram` choisissent par `LANG`, mais les DEUX chemins servent l'anglais
+//    — la chaîne en dur est une clé du lexique, et `i18nWalk` rend « no data » sur le nœud de `pieEl`
+//    comme sur celui de `gaugeEl` (mesuré en appliquant le parcours au nœud rendu sous `LANG='en'`).
+//    Lire ces figures HORS du parcours de traduction fait voir un français qui n'atteint aucun lecteur.
+//    Ce que la mesure laisse ouvert n'est donc pas la langue mais la DEUX-VOIES : deux mécanismes de
+//    traduction pour la même famille de phrases, dont un seul est visible dans le module ;
+//  · l'échelle que `gauge` lit en colonne 0 — la sonde d'abscisse ne mute que le rang du MILIEU, donc
+//    elle ne confond pas « placer une ligne » avec « lire un maximum », et `gauge` n'est pas refusée
+//    sur un résultat `[libellé, compte]`, qui est son entrée la plus naturelle ;
+//  · le PLAFOND DE CARDINALITÉ de l'abscisse (`refusDeReglage`) : il juge la LISIBILITÉ, pas la
+//    VÉRITÉ. Une abscisse à mille valeurs rend un graphe illisible, pas faux, et l'imposer par défaut
+//    retirerait des panneaux qui se lisent aujourd'hui. Il reste attaché au CHOIX de l'exploitant ;
+//  · une 2e dimension non numérique — aucune représentation ne la coerce : `heatmap`, la seule qui la
+//    lise, en fait une clé de colonne, ce que le sondage rend par `fentes[1]` et non par une fente
+//    coercée ;
+//  · une figure qui dessine QUELQUE CHOSE mais pas TOUT. La porte de rendu ne compte pas les marques,
+//    elle constate leur ABSENCE : un camembert dont le total est positif mais dont une ligne servie est
+//    négative dessine, et cette ligne-là disparaît. Refuser serait retirer un graphe juste ; se taire
+//    serait présenter un résultat amputé comme complet. La figure le DIT donc elle-même, en comptant ce
+//    qu'elle a laissé de côté. LA DOCTRINE A ÉTÉ POSÉE SUR UNE SEULE FIGURE, ET C'ÉTAIT LE RESTE NOMMÉ
+//    ICI ; il est fermé le 2026-08-27, par le MÊME écrivain (`noeudNonMontre`) sur les QUATRE endroits
+//    mesurés où des lignes servies n'arrivent pas au rendu : `pieEl` (les écartées, réparties par CAUSE
+//    LUE — nulle ou négative, absente, illisible — au lieu d'être toutes dites nulles), `heatmapEl` (la
+//    coupe à 60 lignes et 40 colonnes, et les lignes dont une AUTRE écrase la cellule), `gaugeEl` et
+//    `statEl` (toutes les lignes après la première). CE QUE CE GESTE N'EST PAS : un refus. La figure
+//    reste rendue, parce qu'elle est juste sur ce qu'elle montre ; ce qui manquait était le compte.
+// LES DEUX FENTES QU'UNE REPRÉSENTATION PEUT RAMENER À UN NOMBRE. Le RANG vient de la règle
+// positionnelle mesurée par `P11.18-a` (première colonne en abscisse, dernière en ordonnée) ; le
+// VERDICT vient du sondage, donc de la représentation elle-même ; seule la CONSÉQUENCE est écrite ici,
+// parce qu'elle diffère : une ordonnée coercée aplatit les valeurs, une abscisse coercée empile les
+// lignes. Une troisième fente coercée, demain, est une entrée de plus et pas une ligne de logique.
+// Le fait se LIT par une fonction et non par un nom en littéral : un nom de propriété écrit en chaîne
+// entre dans le regard de la garde de lexique comme un texte affichable, ce qu'il n'est pas.
+// LE RANG D'UNE FENTE EST LU DANS LA TABLE DU RÉGLAGE (`FENTES_DE_REGLAGE`, plus bas), et nulle part
+// ailleurs : la règle positionnelle n'a qu'UN écrivain, si bien qu'une fente déplacée là-bas se déplace
+// ici sans qu'on y pense. L'écrire deux fois, c'est se donner deux règles qui finiront par diverger.
+const rangDeFente = (cle, n) => (FENTES_DE_REGLAGE.find(f => f.cle === cle) || { position: () => -1 }).position(n);
+const FENTES_COERCEES = [
+  {
+    coerce: s => s.ordonneeNumerique, rang: cols => rangDeFente('y', cols.length),
+    role: { fr: 'l’ordonnée', en: 'the Y axis' },
+    faux: { fr: 'Cette représentation les ramènerait toutes à ZÉRO', en: 'This representation would flatten them all to ZERO' },
+  },
+  {
+    coerce: s => s.abscisseNumerique, rang: cols => rangDeFente('x', cols.length),
+    role: { fr: 'l’abscisse', en: 'the X axis' },
+    faux: { fr: 'Cette représentation les placerait toutes AU MÊME POINT', en: 'This representation would stack them all ON ONE POINT' },
+  },
+];
+function refusDeRepresentation(mode, cols, rows) {
+  if (!rows.length || !cols.length) return null;             // rien à coercer : l'absence est un fait
+  const s = sondage(mode);
+  for (const fente of FENTES_COERCEES) {
+    if (!fente.coerce(s)) continue;                          // elle n'exprime pas cette fente en nombre
+    const i = fente.rang(cols);
+    const p = profilDeColonne(cols[i], i, rows);
+    if (p.numerique) continue;
+    if (p.nonVides === 0) return {
+      fr: fente.role.fr + ' « ' + p.nom + ' » n’a AUCUNE valeur sur les ' + rows.length + ' ligne(s) servies. ' + fente.faux.fr + ', ce qui affirmerait une lecture qui n’a pas eu lieu.',
+      en: fente.role.en + ' “' + p.nom + '” carries NO value at all across the ' + rows.length + ' served row(s). ' + fente.faux.en + ', asserting a reading that never happened.',
+    };
+    return {
+      fr: fente.role.fr + ' « ' + p.nom + ' » n’est pas un nombre — ' + (p.nonVides - p.nombres) + ' valeur(s) sur ' + p.nonVides + ' n’en sont pas, par exemple « ' + premiereNonNumerique(rows, i) + ' ». ' + fente.faux.fr + ', et le graphe serait FAUX. Règle les axes, porte un agrégat à cette place, ou choisis une représentation qui ne l’exprime pas en nombre.',
+      en: fente.role.en + ' “' + p.nom + '” is not a number — ' + (p.nonVides - p.nombres) + ' of ' + p.nonVides + ' values are not, for example “' + premiereNonNumerique(rows, i) + '”. ' + fente.faux.en + ', and the chart would be FALSE. Set the axes, put an aggregate in that slot, or pick a representation that does not express it as a number.',
+    };
+  }
+  return null;
+}
+// -- CE QUE LA REPRÉSENTATION N'A PAS DESSINÉ, LU SUR SON PROPRE RENDU (`P11.18-p`) ------------
+// TROIS FAITS, TOUS MESURÉS, AUCUN SUPPOSÉ : des lignes ont été servies ; la représentation TRACE (le
+// sondage le dit, et `stat` comme `table` en sortent d'elles-mêmes, sans être nommées) ; et sur CE
+// rendu-là elle n'a posé AUCUNE marque. Les trois ensemble ne laissent qu'une lecture : la figure ne
+// peut pas exprimer ces valeurs. Ce n'est pas une absence de données, et le dire ainsi serait le
+// mensonge que ce module poursuit — c'est un REFUS, et il prend la place du graphe comme tous les autres.
+// LA RAISON EST NOMMÉE, ET ELLE VIENT DE LA COLONNE, pas d'une phrase par type : le compte des valeurs
+// strictement positives, et la distinction entre « toutes nulles » et « des valeurs négatives » — un
+// total nul n'a rien à répartir, et une part négative n'existe pas.
+function refusDUneFigureMuette(mode, cols, rows, figure) {
+  if (!rows.length || !cols.length) return null;             // l'absence est un fait, pas un refus
+  if (!sondage(mode).trace) return null;                     // elle ne dessine pas : rien à compter
+  if (marquesDe(figure).length) return null;                 // elle a dessiné : la figure parle d'elle-même
+  // LA PHRASE SUIT LA MESURE, ELLE NE LA DEVANCE PAS. CINQ états de la colonne, cinq causes — dont celle
+  // qui avoue ne pas savoir : si la colonne porte des valeurs strictement positives et que la figure n'a
+  // rien dessiné quand même, la cause n'est PAS dans les valeurs, et l'écrire serait fabriquer une
+  // explication. Le refus reste vrai, il se contente de dire ce qu'il a vu.
+  // ILS ÉTAIENT QUATRE, ET LE COMPTE ÉTAIT FAUX (mesuré le 2026-08-27). Les valeurs étaient tirées par
+  // `Number(...)` avant toute question sur leur EXISTENCE : `Number(null)` et `Number('')` valant 0 et
+  // étant FINIS, une ligne SANS valeur entrait dans le compte des zéros. Sur `[['a',0],['b',null]]` la
+  // phrase servie disait « ses 2 valeur(s) sont toutes NULLES » là où UNE des deux ne porte rien. Le
+  // cinquième état — la colonne ne porte QUE des absences — a maintenant sa phrase, les quatre autres ne
+  // comptent que ce qui a été LU, et ce qui manque est compté À PART au lieu d'être fondu dans un zéro.
+  const i = cols.length - 1, nom = cols[i], col = 'la colonne « ' + nom + ' »', colEn = 'column “' + nom + '”';
+  const lues = rows.map(r => r[i]).filter(porteUneValeur);
+  const absentes = rows.length - lues.length;
+  const nombres = lues.map(Number).filter(n => Number.isFinite(n));
+  const negatives = nombres.filter(n => n < 0), positives = nombres.filter(n => n > 0);
+  const manque = absentes > 0 ? {
+    fr: ' ' + absentes + ' des ' + rows.length + ' ligne(s) servies ne portent AUCUNE valeur dans cette colonne : elles n’entrent dans aucun des comptes ci-dessus, une absence n’étant pas un zéro.',
+    en: ' ' + absentes + ' of the ' + rows.length + ' served row(s) carry NO value at all in that column: they enter none of the counts above — an absence is not a zero.',
+  } : { fr: '', en: '' };
+  let cause;
+  if (!lues.length) cause = {
+    fr: col + ' ne porte AUCUNE valeur sur les ' + rows.length + ' ligne(s) servies : rien n’y a été lu, et un total nul serait une lecture qui n’a pas eu lieu. Porte un agrégat à cette place, ou choisis une représentation qui n’exprime pas cette fente en nombre.',
+    en: colEn + ' carries NO value at all across the ' + rows.length + ' served row(s): nothing was read there, and a zero total would be a reading that never happened. Put an aggregate in that slot, or pick a representation that does not express this slot as a number.',
+  }; else if (positives.length) cause = {
+    fr: col + ' y porte pourtant ' + positives.length + ' valeur(s) strictement positive(s) : la cause n’est donc pas dans les valeurs, et rien ici ne permet de la nommer. Choisis une autre représentation pour cette donnée.',
+    en: colEn + ' does carry ' + positives.length + ' strictly positive value(s), so the cause is NOT in the values, and nothing here allows naming it. Pick another representation for this data.',
+  }; else if (!nombres.length) cause = {
+    fr: 'aucune des ' + lues.length + ' valeur(s) LUES de ' + col + ' n’est un nombre. Porte un agrégat à cette place, ou choisis une représentation qui n’exprime pas cette fente en nombre.',
+    en: 'none of the ' + lues.length + ' value(s) READ in ' + colEn + ' is a number. Put an aggregate in that slot, or pick a representation that does not express this slot as a number.',
+  }; else if (negatives.length) cause = {
+    fr: col + ' n’y porte aucune valeur strictement positive — ' + negatives.length + ' sur ' + nombres.length + ' sont NÉGATIVES (par exemple « ' + negatives[0] + ' »), et une valeur négative n’est pas une part d’un tout. Porte un agrégat strictement positif à cette place, ou choisis une représentation qui dessine des valeurs plutôt que des parts.',
+    en: colEn + ' carries no strictly positive value — ' + negatives.length + ' of ' + nombres.length + ' are NEGATIVE (for example “' + negatives[0] + '”), and a negative value is not a share of a whole. Put a strictly positive aggregate in that slot, or pick a representation that draws values rather than shares.',
+  }; else cause = {
+    fr: col + ' n’y porte aucune valeur strictement positive — ses ' + nombres.length + ' valeur(s) sont toutes NULLES, et un total nul n’a rien à répartir. Porte un agrégat strictement positif à cette place, ou choisis une représentation qui dessine des valeurs plutôt que des parts.',
+    en: colEn + ' carries no strictly positive value — its ' + nombres.length + ' value(s) are all ZERO, and a zero total has nothing to split. Put a strictly positive aggregate in that slot, or pick a representation that draws values rather than shares.',
+  };
+  return {
+    fr: 'sur les ' + rows.length + ' ligne(s) servies, cette représentation n’a dessiné AUCUNE marque — mesuré sur ce rendu même. ' + cause.fr + manque.fr + ' LES ' + rows.length + ' LIGNES, ELLES, EXISTENT : le rendre « aucune donnée » affirmerait une absence.',
+    en: 'across the ' + rows.length + ' served row(s), this representation drew NO mark at all — measured on this very rendering. ' + cause.en + manque.en + ' THE ' + rows.length + ' ROWS DO EXIST: rendering this as “no data” would assert an absence.',
+  };
+}
+
+// LE NŒUD DU REFUS, ÉCRIT UNE SEULE FOIS : la porte et le refus de réglage rendent le MÊME objet, donc
+// un refus se lit pareil qu'il vienne du défaut ou d'un choix. Il prend la place du GRAPHE, jamais
+// celle des données.
+function noeudDeRefus(refus) {
+  const d = document.createElement('div');
+  d.className = 'rf-hint bad';
+  d.textContent = (LANG === 'en' ? 'Chart refused — ' : 'Graphe refusé — ') + (LANG === 'en' ? refus.en : refus.fr);
+  return d;
+}
+
 function refusDeReglage(mode, cols, rows, reglage) {
   const s = sondage(mode), profils = profilsDeColonnes(cols, rows);
   const parNom = nom => profils.find(p => p.nom === nom) || null;
@@ -610,6 +912,11 @@ function refusDeReglage(mode, cols, rows, reglage) {
       en: 'column “' + nom + '” is not in the result, which now returns only ' + cols.join(', ') + '. Pick another column.',
     };
   }
+  // CE QUE LE RÉGLAGE NE PEUT PAS HONORER SE DIT ICI, avant tout jugement sur les VALEURS : deux fentes
+  // sur la même colonne, ou une fente médiane sur un résultat sans milieu. Avant le 2026-08-27, ces deux
+  // cas rendaient EXACTEMENT l'ordre sans réglage — le choix disparaissait sans un mot.
+  const impossible = refusDeFentesImpossibles(mode, cols, reglage);
+  if (impossible) return impossible;
   const y = reglage.y ? parNom(reglage.y) : null;
   if (y && s.ordonneeNumerique && !y.numerique) return {
     fr: 'ordonnée « ' + y.nom + ' » non numérique — ' + (y.nonVides - y.nombres) + ' valeur(s) sur ' + y.nonVides + ' n’en sont pas, par exemple « ' + premiereNonNumerique(rows, y.i) + ' ». Cette représentation les ramènerait toutes à zéro et tracerait un graphe FAUX.',
@@ -624,16 +931,115 @@ function refusDeReglage(mode, cols, rows, reglage) {
 }
 
 // -- LE RÉGLAGE SE POSE AU-DESSUS DE LA RÈGLE : IL REMET LES COLONNES DANS L'ORDRE VOULU --------
-// Les fentes NON choisies gardent ce que la règle positionnelle leur donnait : première colonne en
-// abscisse, dernière en ordonnée, deuxième en 2e dimension là où la représentation la lit. Régler UN
-// axe ne déplace donc pas l'autre.
+// LES TROIS FENTES, ET UN SEUL NOMBRE POUR CHACUNE. Ce nombre est À LA FOIS la POSITION que la fente
+// occupe dans ce qui est remis au graphe et le RANG que la règle positionnelle lui donne quand personne
+// ne l'a réglée (`P11.18-a` : première colonne en abscisse, deuxième en 2e dimension, dernière en
+// ordonnée). Les deux coïncident, et les écrire deux fois les ferait diverger — `FENTES_COERCEES`, plus
+// haut, LIT cette table par `rangDeFente` au lieu de réécrire les mêmes rangs. `sonde` est le rang que la fente occupe dans le jeu à
+// trois colonnes du sondage : c'est par LUI qu'on demande à la représentation si elle la lit, plutôt que
+// de l'écrire par type. `ancre` dit à quoi la position est attachée — un BORD du résultat, ou son MILIEU
+// — et de quel côté chercher une colonne libre quand le rang préféré est déjà pris par un CHOIX.
+const FENTES_DE_REGLAGE = [
+  { cle: 'x', sonde: 0, ancre: 'debut', position: () => 0,
+    libelle: { fr: 'Abscisse ', en: 'X axis ' },
+    infobulle: { fr: 'Colonne remise au graphe en première position', en: 'Column handed to the chart in first position' } },
+  { cle: 's', sonde: 1, ancre: 'milieu', position: () => 1,
+    libelle: { fr: '2e dimension ', en: '2nd dimension ' },
+    infobulle: { fr: 'Colonne remise au graphe en position médiane', en: 'Column handed to the chart in middle position' } },
+  { cle: 'y', sonde: 2, ancre: 'fin', position: n => n - 1,
+    libelle: { fr: 'Ordonnée ', en: 'Y axis ' },
+    infobulle: { fr: 'Colonne remise au graphe en dernière position', en: 'Column handed to the chart in last position' } },
+];
+// UNE FENTE MÉDIANE N'EXISTE QUE SI LE RÉSULTAT A UN MILIEU — un rang qui n'est ni le premier ni le
+// dernier — ET si la représentation a dit lire ce rang. Les deux fentes ancrées à un BORD existent dès
+// qu'une colonne est servie. Aucun type de graphe n'est nommé : le verdict vient du sondage.
+function fentePlacable(f, cols) { return f.ancre !== 'milieu' ? cols.length > 0 : (f.position(cols.length) > 0 && f.position(cols.length) < cols.length - 1); }
+function fenteOfferte(f, son, cols, reglage) { return !!reglage[f.cle] || (fentePlacable(f, cols) && !!son.fentes[f.sonde]); }
+// CE QU'UN RÉGLAGE NE PEUT PAS FAIRE, ET QUI SE DIT AU LIEU DE S'ÉVANOUIR. Deux impossibilités, toutes
+// deux DÉRIVÉES du résultat servi : deux fentes réglées sur la MÊME colonne — une colonne n'occupe
+// qu'une position — et une fente MÉDIANE réglée là où il n'y a pas de milieu (moins de trois colonnes,
+// la position médiane y ÉTANT la dernière). Elles rendent le même objet de refus que tout le reste, donc
+// elles prennent la place du GRAPHE et la barre reste au-dessus pour les défaire.
+function refusDeFentesImpossibles(mode, cols, reglage) {
+  const son = sondage(mode);
+  // Seules comptent les fentes que la représentation LIT : un choix posé sur une fente qu'elle ignore
+  // ne peut RIEN empêcher, et le refuser serait crier au loup (`P11.18-q`).
+  const posees = FENTES_DE_REGLAGE.filter(f => reglage[f.cle] && son.fentes[f.sonde]);
+  for (const f of posees) {
+    const autre = posees.find(g => g !== f && reglage[g.cle] === reglage[f.cle]);
+    if (autre) return {
+      fr: 'la colonne « ' + reglage[f.cle] + ' » est réglée à la fois sur « ' + f.libelle.fr.trim() + ' » et sur « ' + autre.libelle.fr.trim() + ' », et une colonne n’occupe qu’UNE position dans ce qui est remis au graphe. Remets l’une des deux fentes sur « (par défaut) », ou porte-la sur une autre colonne.',
+      en: 'column “' + reglage[f.cle] + '” is set on both “' + f.libelle.en.trim() + '” and “' + autre.libelle.en.trim() + '”, and one column occupies only ONE position in what is handed to the chart. Put one of the two slots back on “(default)”, or move it to another column.',
+    };
+    if (f.ancre === 'milieu' && !fentePlacable(f, cols)) return {
+      fr: '« ' + f.libelle.fr.trim() +' » est une position MÉDIANE, et un résultat de ' + cols.length + ' colonne(s) n’a pas de milieu : le rang médian y est le dernier. Ce réglage ne peut pas être honoré tel quel. Remets cette fente sur « (par défaut) », ou porte une colonne de plus au résultat.',
+      en: '“' + f.libelle.en.trim() + '” is a MIDDLE position, and a ' + cols.length + '-column result has no middle: the middle rank is the last one. This setting cannot be honoured as it stands. Put that slot back on “(default)”, or return one more column.',
+    };
+  }
+  return null;
+}
+// LE CHOIX PASSE AVANT LE DÉFAUT, ET C'ÉTAIT TOUT CE QUI MANQUAIT (mesuré le 2026-08-27). Cette fonction
+// RÉSERVAIT les rangs de tête avant sa boucle, si bien que la pose finale de l'ordonnée ne faisait RIEN
+// quand sa colonne était déjà placée : l'ordre retombait sur l'IDENTITÉ. Sur cinq colonnes servies, DEUX
+// choix d'ordonnée sur cinq étaient inertes (`y=host`, `y=user`) ; sur trois colonnes, DEUX sur TROIS ;
+// la 2e dimension portait le même défaut (`s=host` rendait l'ordre servi). Le sélecteur continuait
+// pourtant d'afficher le choix, l'infobulle affirmait « colonne remise au graphe en dernière position »,
+// et l'aveu de réglage privé se taisait puisque rien n'avait bougé — l'exploitant croyait avoir agi.
+// LE REMÈDE FERME LE CHEMIN : un CHOIX réserve sa colonne AVANT qu'un seul défaut ne soit lu, et un
+// défaut dont le rang préféré est pris se replie sur la colonne LIBRE la plus proche de son ancre. Quand
+// aucun choix n'est posé, aucun rang n'est pris et chaque fente reçoit exactement le rang que la règle
+// positionnelle lui donnait : le chemin par défaut est byte-identique, et un témoin le tient.
+function fentesResolues(mode, cols, reglage) {
+  const son = sondage(mode), n = cols.length;
+  const choisi = new Map();
+  for (const f of FENTES_DE_REGLAGE) if (reglage[f.cle]) choisi.set(f.cle, cols.indexOf(reglage[f.cle]));
+  // UN CHOIX NE RÉSERVE SA COLONNE QUE SUR UNE FENTE QUE LA REPRÉSENTATION LIT. Mesuré le 2026-08-27 :
+  // réserver sans cette condition faisait qu'un axe posé sur une fente IGNORÉE (l'abscisse de `stat`)
+  // repoussait le défaut de la fente LUE sur une autre colonne — le chiffre affiché changeait à cause
+  // d'un réglage sans effet. Un réglage qui ne déplace rien de ce que la figure lit ne doit rien
+  // déplacer du tout : c'est ce que le témoin 46i tient, et c'est la borne de cette réservation.
+  const pris = new Set(FENTES_DE_REGLAGE.filter(f => choisi.has(f.cle) && son.fentes[f.sonde]).map(f => choisi.get(f.cle)));
+  const resolu = new Map();
+  for (const f of FENTES_DE_REGLAGE) {
+    if (choisi.has(f.cle)) { resolu.set(f.cle, choisi.get(f.cle)); continue; }
+    if (!fentePlacable(f, cols) || (f.ancre === 'milieu' && !son.fentes[f.sonde])) continue;
+    const p = f.position(n);
+    if (p >= 0 && p < n && !pris.has(p)) { pris.add(p); resolu.set(f.cle, p); continue; }
+    const libres = cols.map((_, i) => i).filter(i => !pris.has(i));
+    const repli = libres.length ? (f.ancre === 'fin' ? libres[libres.length - 1] : libres[0]) : p;
+    pris.add(repli); resolu.set(f.cle, repli);
+  }
+  return resolu;
+}
+// UN RÉGLAGE RANGE, IL NE RETIRE JAMAIS — mesuré le 2026-08-27. Cette fonction construisait
+// `[abscisse, (2e dimension), ordonnée]`, soit AU PLUS TROIS rangs, quel que soit le nombre de colonnes
+// que la représentation rend. Sur `table`, qui les rend TOUTES, un réglage posé sur cinq colonnes servies
+// faisait rendre QUATRE en-têtes là où le même appel sans réglage en rendait SIX : deux colonnes servies
+// par le démon disparaissaient, l'en-tête et la numérotation des lignes présentaient le reste comme le
+// résultat complet, et rien ne le disait. Le sondage sait désormais si la représentation lit AU-DELÀ des
+// trois fentes ; pour celle-là, l'ordre est une PERMUTATION COMPLÈTE : les fentes RÉSOLUES prennent leur
+// position, et les colonnes qu'aucune fente n'occupe remplissent les positions restantes DANS LEUR ORDRE
+// SERVI. Sans réglage, cette permutation est l'IDENTITÉ.
+function ordreDeFentes(mode, cols, reglage) {
+  if (!cols.length) return [];
+  const resolu = fentesResolues(mode, cols, reglage);
+  const ordre = FENTES_DE_REGLAGE.filter(f => resolu.has(f.cle)).map(f => resolu.get(f.cle));
+  if (!sondage(mode).litAuDelaDesFentes) return ordre;
+  // La permutation ne place que les fentes que la représentation LIT, et jamais deux fois la même
+  // colonne : ce qui reste est exactement le complément, donc le remplissage ne peut pas manquer de
+  // colonne — la sortie est une permutation, pas une liste qui pourrait perdre un rang.
+  const son = sondage(mode), cible = new Map();
+  for (const f of FENTES_DE_REGLAGE) {
+    if (!resolu.has(f.cle) || !son.fentes[f.sonde]) continue;
+    const p = f.position(cols.length), i = resolu.get(f.cle);
+    if (p >= 0 && p < cols.length && !cible.has(p) && ![...cible.values()].includes(i)) cible.set(p, i);
+  }
+  const places = new Set(cible.values());
+  const reste = cols.map((_, i) => i).filter(i => !places.has(i));
+  return cols.map((_, p) => (cible.has(p) ? cible.get(p) : reste.shift()));
+}
 function projeter(mode, cols, rows, reglage) {
-  const s = sondage(mode);
-  const rang = nom => cols.indexOf(nom);
-  const ix = reglage.x ? rang(reglage.x) : 0;
-  const iy = reglage.y ? rang(reglage.y) : cols.length - 1;
-  const is = reglage.s ? rang(reglage.s) : ((s.fentes[1] && cols.length >= 3) ? 1 : -1);
-  const ordre = [ix]; if (is >= 0) ordre.push(is); ordre.push(iy);
+  const ordre = ordreDeFentes(mode, cols, reglage);
   return { cols: ordre.map(i => cols[i]), rows: rows.map(r => ordre.map(i => r[i])) };
 }
 
@@ -650,28 +1056,114 @@ function selecteurDeFente(libelle, infobulle, colonnes, choix, onChoix) {
   zero.value = ''; zero.textContent = LANG === 'en' ? '(default)' : '(par défaut)';
   s.appendChild(zero);
   colonnes.forEach(p => { const o = document.createElement('option'); o.value = p.nom; o.textContent = p.nom; s.appendChild(o); });
-  s.value = (choix && colonnes.some(p => p.nom === choix)) ? choix : '';
+  // UNE COLONNE CHOISIE QUE LE RÉSULTAT NE REND PLUS RESTE OFFERTE, marquée absente. Sans elle, le
+  // sélecteur affichait « (par défaut) » alors que le réglage était ACTIF — il disait le contraire de
+  // ce qui s'appliquait — et re-choisir « (par défaut) » ne déclenchait aucun changement : le réglage
+  // impossible n'avait plus de sortie, alors même que le refus au-dessus invitait à en changer.
+  if (choix && !colonnes.some(p => p.nom === choix)) {
+    const o = document.createElement('option');
+    o.value = choix; o.textContent = choix + (LANG === 'en' ? ' (missing from the result)' : ' (absente du résultat)');
+    s.appendChild(o);
+  }
+  s.value = choix || '';
   s.onchange = () => onChoix(s.value || '');
   l.append(libelle, s);
   return l;
 }
+// LA BARRE EST DÉRIVÉE DE LA MÊME TABLE QUE L'ORDRE, libellés et infobulles compris : le refus qui dit
+// « la colonne est réglée à la fois sur « Ordonnée » et sur « Abscisse » » nomme donc EXACTEMENT le
+// contrôle que l'exploitant voit, et une fente posée demain apporte son libellé sans qu'on l'écrive ici.
+// CE QU'UNE FENTE OFFERTE PROMET, ET RIEN DE PLUS : elle est offerte si la représentation a dit lire son
+// rang ET si sa position existe dans ce résultat. Une fente RÉGLÉE reste offerte quoi qu'il arrive — une
+// fente qu'on ne peut plus atteindre est un réglage qu'on ne peut plus défaire — et si elle ne peut pas
+// être honorée, c'est un REFUS qui le dit, à la place du graphe. Avant le 2026-08-27, une 2e dimension
+// était offerte sur un résultat de deux colonnes, où la position médiane EST la dernière : le choix
+// s'évanouissait en silence. MESURÉ ce jour-là, les neuf représentations répondent toutes « je lis le
+// dernier rang », si bien que la fente d'ordonnée reste offerte partout sans être écrite comme une
+// exception — c'est le sondage qui le dit, et non une ligne d'ici.
 function barreDeReglage(mode, cols, rows, reglage, onChoix) {
-  const s = sondage(mode), profils = profilsDeColonnes(cols, rows);
+  const son = sondage(mode), profils = profilsDeColonnes(cols, rows);
   const barre = document.createElement('div');
   barre.className = 'rf-row';
-  if (s.fentes[0]) barre.appendChild(selecteurDeFente(
-    LANG === 'en' ? 'X axis ' : 'Abscisse ',
-    LANG === 'en' ? 'Column handed to the chart in first position' : 'Colonne remise au graphe en première position',
-    profils, reglage.x, v => onChoix(Object.assign({}, reglage, { x: v }))));
-  if (s.fentes[1]) barre.appendChild(selecteurDeFente(
-    LANG === 'en' ? '2nd dimension ' : '2e dimension ',
-    LANG === 'en' ? 'Column handed to the chart in middle position' : 'Colonne remise au graphe en position médiane',
-    profils, reglage.s, v => onChoix(Object.assign({}, reglage, { s: v }))));
-  barre.appendChild(selecteurDeFente(
-    LANG === 'en' ? 'Y axis ' : 'Ordonnée ',
-    LANG === 'en' ? 'Column handed to the chart in last position' : 'Colonne remise au graphe en dernière position',
-    profils, reglage.y, v => onChoix(Object.assign({}, reglage, { y: v }))));
+  for (const f of FENTES_DE_REGLAGE) {
+    if (!fenteOfferte(f, son, cols, reglage)) continue;
+    barre.appendChild(selecteurDeFente(
+      LANG === 'en' ? f.libelle.en : f.libelle.fr,
+      LANG === 'en' ? f.infobulle.en : f.infobulle.fr,
+      profils, reglage[f.cle], v => onChoix(Object.assign({}, reglage, { [f.cle]: v }))));
+  }
   return barre;
+}
+
+// -- CE QUE CE RÉGLAGE NE PARTAGE PAS, DIT LÀ OÙ IL EST LU (`P11.18-q`) ------------------------
+// LA QUESTION QUE LA CLÉ POSAIT — le réglage appartient-il au PANNEAU ou à la PERSONNE — est
+// TRANCHÉE ICI, ET DU CÔTÉ DE LA PERSONNE. Ce n'est pas une préférence : le panneau n'a AUCUNE
+// fente où loger un axe (mesuré le 2026-08-25 et revérifié le 2026-08-26 sur `panel_update` : le
+// corps accepté est titre, requête, is_soql, fenêtre, visibilité, requête privée, largeur de grille
+// `cols` — bornée à 1..4, ce n'est pas une liste de colonnes —, hauteur, drill, position et
+// référence de bibliothèque). Le faire porter par le panneau demande une capacité NOUVELLE du démon,
+// pas une ligne de ce module. Le côté choisi étant celui de la personne, ce que la clé exige alors
+// est écrit ici : LA VUE DIT QUE CE QU'ELLE MONTRE EST UN RÉGLAGE PRIVÉ.
+//
+// L'AVEU EST DÉRIVÉ DE LA DIVERGENCE, PAS DE L'EXISTENCE D'UN RÉGLAGE. Un réglage qui redonne
+// l'ordre par défaut (choisir explicitement la première colonne en abscisse) ne cache RIEN à
+// personne : la vue rend alors EXACTEMENT ce que le panneau sert — empreinte identique, mesurée — et
+// l'annoncer serait un bruit qui apprendrait à ne plus lire l'avis. La condition est donc « ce que la
+// représentation LIT diffère de ce qu'elle lirait sans réglage » — plus le refus, qui remplace le
+// graphe par un texte que les autres ne voient pas non plus.
+// CETTE JUSTIFICATION A ÉTÉ FAUSSE, ET LA MESURE L'A MONTRÉE FAUSSE (2026-08-27). Elle valait de ce que
+// la vue LIT, jamais de ce qu'elle REND, et les deux divergeaient sur `table` — la représentation qui
+// rend TOUTES les colonnes. Sur cinq colonnes servies, le réglage « x=host, y=n », c'est-à-dire
+// exactement « l'ordre par défaut redonné », faisait rendre QUATRE en-têtes là où le même appel sans
+// réglage en rendait SIX : deux colonnes servies par le démon disparaissaient, l'en-tête et la
+// numérotation des lignes présentaient le reste comme le résultat complet, et cette comparaison
+// n'y voyait aucune divergence puisqu'elle ne compare QUE trois positions. Le lecteur ne pouvait pas
+// savoir ce qui avait été servi, donc pas savoir que deux colonnes manquaient : « ne cache rien à
+// personne » était l'inverse de ce que le code faisait. LA CAUSE ÉTAIT EN AMONT DE L'AVEU, dans
+// `ordreDeFentes`, qui projetait sur au plus TROIS rangs quel que soit le nombre de colonnes rendues.
+// Elle y est corrigée : sur une telle représentation le réglage RANGE et ne retire plus rien, l'aveu
+// n'a donc plus de colonne perdue à annoncer, et la signature comparée ci-dessous suit désormais
+// l'ordre ENTIER pour ces représentations-là.
+// ET C'EST BIEN CE QU'ELLE LIT, PAS L'ORDRE BRUT. Comparer les ordres suffirait pour les
+// représentations qui lisent tout, et mentirait pour les autres : `stat` ne lit que la DERNIÈRE fente,
+// donc régler son abscisse déplace un rang que rien ne consulte — l'ordre diffère, le graphe est
+// identique, et l'annoncer ferait crier au loup. La signature comparée est donc l'ordre RESTREINT aux
+// fentes que le sondage a dit lues (première, médiane, dernière). Rien n'est écrit par type : une
+// représentation posée demain est sondée pareil et entre dans cette comparaison sans qu'on y pense.
+//
+// L'AVEU NOMME CE QUE LES AUTRES VOIENT, sans quoi il ne serait qu'un avertissement : il rend les
+// colonnes que le panneau, TEL QU'IL EST ENREGISTRÉ, remet au graphe. Le chemin du retour n'est pas
+// un bouton de plus — c'est la fente « (par défaut) » qui existe déjà au-dessus, et l'aveu la nomme.
+//
+// CE QUE CET AVEU NE DIT PAS : rien de la mise en page ni du style. Et il ne PARLE PAS d'un appelant
+// sans identité de panneau (`idPanneau` absent) : la clé de mémorisation est alors la signature des
+// colonnes d'une surface qui n'a pas d'objet persistant, il n'existe aucun panneau enregistré dont
+// on pourrait s'écarter, donc rien à déclarer — ce n'est pas un silence, c'est une absence d'objet.
+// CE QUE CETTE SIGNATURE N'A PAS BESOIN DE FAIRE, ET LA MUTATION QUI L'ÉTABLIT (2026-08-27). L'aveu
+// nommait TROIS colonnes à qui en voyait cinq ; on a cru qu'il fallait signer l'ordre ENTIER pour les
+// représentations qui rendent toutes leurs colonnes. Rejoué par MUTATION : cette variante ne change
+// AUCUN verdict, sur aucun mode. La raison est que l'ordre entier est ENTIÈREMENT DÉTERMINÉ par les
+// trois fentes (les colonnes non choisies gardent leur ordre servi), si bien que « l'ordre entier
+// diffère » et « une des trois positions diffère » sont la MÊME phrase. Ce qui manquait n'était donc
+// pas ici : c'était que `ordreDeFentes` RETIRE des colonnes, ce qu'il ne fait plus — l'aveu lit cet
+// ordre-là et nomme désormais tout ce que le panneau sert. Une variante dont la mutation ne change
+// rien n'est pas une garde : elle n'est pas écrite.
+function signatureLue(mode, cols, ordre) {
+  const f = sondage(mode).fentes;
+  return [
+    f[0] ? cols[ordre[0]] : '',
+    (ordre.length >= 3 && f[1]) ? cols[ordre[1]] : '',
+    f[2] ? cols[ordre[ordre.length - 1]] : '',
+  ].join('\x1f');
+}
+function avisDeReglagePrive(colsParDefaut) {
+  const d = document.createElement('div');
+  d.className = 'rf-hint';
+  const ordre = colsParDefaut.join(' → ');
+  d.textContent = LANG === 'en'
+    ? 'Private setting — these axes are stored on YOUR account, not in the panel: nobody else sees them, and a shareable snapshot does not carry them. As saved, the panel hands the chart “' + ordre + '”. Put every slot back on “(default)” to get back what the others see.'
+    : 'Réglage privé — ces axes sont mémorisés sur VOTRE compte, pas dans le panneau : personne d’autre ne les voit, et l’instantané partageable ne les emporte pas. Tel qu’il est enregistré, le panneau remet au graphe « ' + ordre + ' ». Remets chaque fente sur « (par défaut) » pour retrouver ce que voient les autres.';
+  return d;
 }
 
 // -- LE GRAPHE RÉGLÉ ---------------------------------------------------------------------------
@@ -686,16 +1178,23 @@ function noeudsDeVizReglee(mode, cols, rows, query, drill, idPanneau, redessiner
   const out = [];
   // Sous DEUX colonnes il n'y a rien à choisir : le résultat n'a qu'une fente. La barre ne s'affiche pas,
   // et aucun réglage ne peut donc changer l'arité de ce qui est remis au graphe.
-  if (sondage(mode).trace && cols.length >= 2) out.push(barreDeReglage(mode, cols, rows, reglage, r => { reglageEcrit(cle, r); redessiner(); }));
+  // MAIS UN RÉGLAGE EN VIGUEUR AMÈNE TOUJOURS SA BARRE. Mesuré le 2026-08-26 : un réglage posé sur un
+  // résultat à trois colonnes SURVIT à une requête réécrite qui n'en rend plus qu'une, et à un passage
+  // vers une représentation qui ne trace pas — dans les deux cas il continuait de s'appliquer pendant
+  // que le seul contrôle capable de le défaire disparaissait. Le commentaire du refus, juste en dessous,
+  // affirmait pourtant que « la barre reste au-dessus, sans quoi un choix impossible serait sans issue » :
+  // c'était vrai du refus, faux de ce cas-là. `P11.18-q` en dépend directement — l'aveu qu'il pose nomme
+  // « (par défaut) » comme chemin de retour, et un chemin nommé doit exister.
+  if (regle || (sondage(mode).trace && cols.length >= 2)) out.push(barreDeReglage(mode, cols, rows, reglage, r => { reglageEcrit(cle, r); redessiner(); }));
   if (!regle) { out.push(vizElement(mode, cols, rows, query, drill)); return out; }
   const refus = refusDeReglage(mode, cols, rows, reglage);
-  if (refus) {
-    const d = document.createElement('div');
-    d.className = 'rf-hint bad';
-    d.textContent = (LANG === 'en' ? 'Chart refused — ' : 'Graphe refusé — ') + (LANG === 'en' ? refus.en : refus.fr);
-    out.push(d);
-    return out;
-  }
+  // `P11.18-q` — les DEUX ordres, comparés avant de rendre quoi que ce soit : celui que ce compte
+  // voit, et celui que le panneau enregistré remet au graphe pour tout le monde.
+  const ordreParDefaut = ordreDeFentes(mode, cols, {});
+  const divergent = !!refus
+    || signatureLue(mode, cols, ordreDeFentes(mode, cols, reglage)) !== signatureLue(mode, cols, ordreParDefaut);
+  if (idPanneau && divergent) out.push(avisDeReglagePrive(ordreParDefaut.map(i => cols[i])));
+  if (refus) { out.push(noeudDeRefus(refus)); return out; }   // `P11.18-p` : UN seul écrivain du nœud de refus
   const p = projeter(mode, cols, rows, reglage);
   out.push(vizElement(mode, p.cols, p.rows, query, drill));
   return out;
@@ -710,12 +1209,35 @@ function catColor(i) {
   return CSSV(PIE_COLORS[i % PIE_COLORS.length], fallback[i % fallback.length]);
 }
 
+// UNE FIGURE QUI NE LIT QU'UNE LIGNE LE DIT, ET CE N'EST PAS UN REFUS. Mesuré le 2026-08-27 : sur CINQ
+// lignes servies `[['a',10]..['e',50]]`, `stat` rendait « 10 » et `gauge` « 10 / 10 » — QUATRE lignes sur
+// cinq retirées, la valeur unique présentée comme LE résultat, et aucun mot, là où `table` sur la même
+// donnée rend les cinq. La porte de RENDU ne peut pas rattraper ce cas : elle constate l'ABSENCE de
+// marque, et l'arc de piste comme le chiffre sont bien dessinés. C'est donc la doctrine de `pieEl` qui
+// s'applique — compter ce qu'on laisse de côté et l'écrire — et elle vaut aussi pour une figure qui NE
+// TRACE PAS : `stat` ne trace pas, et présentait pourtant un résultat amputé avec les attributs du
+// résultat complet. La phrase ne nomme AUCUNE colonne : ce qui est retiré est une LIGNE, pas une valeur.
+function noeudUneSeuleLigne(figure, rows) {
+  if (rows.length <= 1) return figure;
+  const wrap = document.createElement('div');
+  wrap.append(figure, noeudNonMontre([LANG === 'en'
+    ? (rows.length - 1) + ' of the ' + rows.length + ' served row(s) are not read: this representation renders only the FIRST one'
+    : (rows.length - 1) + ' des ' + rows.length + ' ligne(s) servies ne sont pas lues : cette représentation ne rend que la PREMIÈRE']));
+  return wrap;
+}
+
 // GAUGE — une seule valeur (comme stat) rendue en arc (jauge 270°). Max déduit : name='cpu_pct'/%→100,
 // sinon la valeur elle-même sert d'échelle (pleine). Clic -> drill (comme stat).
 function gaugeEl(cols, rows, query, drill) {
   const NS = 'http://www.w3.org/2000/svg', mk = t => document.createElementNS(NS, t);
   const key = unitKeyFor(cols, query);
-  const raw = rows.length ? Number(rows[0][rows[0].length - 1]) : 0;
+  // `P11.18-p` — ZÉRO LIGNE N'EST PAS LA VALEUR ZÉRO. Mesuré le 2026-08-26 : sur un résultat SANS
+  // AUCUNE ligne, cette jauge affichait « 0 / 1 » — un rapport dont les DEUX termes sont fabriqués,
+  // alors que rien n'a été mesuré. Toutes les autres représentations rendent déjà cette absence pour
+  // leur compte (`stat` rend « - », `pie` et `histogram` la disent) ; celle-ci l'affirmait à l'envers.
+  // Ce n'est pas un REFUS — la donnée n'a rien d'impossible — donc cela se règle ici et non à la porte.
+  if (!rows.length) return muted(LANG === 'en' ? 'no data' : 'aucune donnée');
+  const raw = Number(rows[0][rows[0].length - 1]);
   const v = Number.isFinite(raw) ? raw : 0;
   // échelle : % -> 100 ; sinon max explicite (rows fournit [val,max]) sinon arrondi « joli » au-dessus de v.
   const pct = key && UNITS[key] === '%';
@@ -737,10 +1259,33 @@ function gaugeEl(cols, rows, query, drill) {
   const txt = (y, s, cls, size) => { const e = mk('text'); e.setAttribute('x', cx); e.setAttribute('y', y); e.setAttribute('text-anchor', 'middle'); e.setAttribute('fill', CSSV(cls, '#e6eef6')); e.setAttribute('font-size', size); e.textContent = s; svg.appendChild(e); };
   txt(cy - 6, fmtVal(key, v), '--fg', 26); txt(cy + 16, '/ ' + fmtVal(key, max), '--mut', 12);
   if (query || drill) { svg.style.cursor = 'pointer'; svg.onclick = () => statDrill(query, drill); }
-  return svg;
+  return noeudUneSeuleLigne(svg, rows);
 }
 
 // PIE / DONUT — catégorie + valeur ([label, count]). Secteurs SVG proportionnels + légende. Clic secteur -> drill.
+// CE QUE CETTE FIGURE NE MONTRE PAS, ELLE LE DIT (`P11.18-p`). Deux pertes, toutes deux COMPTÉES sur ce
+// rendu et jamais énumérées : les lignes servies qu'aucun secteur ne porte (`.filter(d => d.v > 0)` juste
+// en dessous), et les catégories dessinées que la légende ne liste pas. Se taire sur l'une ou l'autre
+// présenterait un résultat AMPUTÉ avec les attributs du résultat complet. Quand rien n'est perdu, rien
+// n'est ajouté : c'est ce qui garde la non-régression byte-identique des panneaux qui se lisent aujourd'hui.
+// LA PERTE EST NOMMÉE PAR SA CAUSE, ET LA CAUSE EST LUE (mesuré le 2026-08-27). Cette phrase disait « leur
+// valeur est nulle ou négative » de TOUTE ligne écartée, alors que `Math.max(0, Number(v) || 0)` fabrique
+// un zéro à partir d'une absence (`null`, chaîne vide) comme d'une valeur illisible : la figure NOMMAIT
+// une lecture qu'elle n'avait pas faite, dans le geste même dont l'objet est de dire ce qu'elle ne montre
+// pas. Les écartées sont donc réparties en TROIS causes distinctes, comptées séparément, et seule celle
+// qui a au moins une ligne est écrite. LA BORNE DE CETTE RÉPARTITION : par `vizElement`, la cause
+// « illisible » est INATTEIGNABLE — la porte de donnée refuse une ordonnée non numérique avant d'arriver
+// ici ; elle ne se rencontre que par `vizSansPorte`, et c'est là qu'un témoin l'exerce.
+// UN SEUL ÉCRIVAIN DU NŒUD « NON MONTRÉ », comme il n'y a qu'un seul écrivain du nœud de REFUS. Les deux
+// ne disent pas la même chose et ne prennent pas la même place : un REFUS remplace le graphe, un AVEU DE
+// PERTE l'accompagne. Une figure qui dessine QUELQUE CHOSE mais pas TOUT compte ce qu'elle a laissé de
+// côté et l'écrit ici ; quand elle ne perd rien, elle n'ajoute rien, et le balisage d'aujourd'hui ne bouge pas.
+function noeudNonMontre(bouts) {
+  const dit = document.createElement('div'); dit.className = 'rf-hint';
+  dit.textContent = (LANG === 'en' ? 'Not shown — ' : 'Non montré — ') + bouts.join(' ; ') + '.';
+  return dit;
+}
+const PLAFOND_LEGENDE = 12;   // au-delà, la légende dépasse la figure et cesse d'être lisible
 function pieEl(cols, rows, query, drill, donut) {
   const NS = 'http://www.w3.org/2000/svg', mk = t => document.createElementNS(NS, t);
   const vi = cols.length - 1;
@@ -770,7 +1315,7 @@ function pieEl(cols, rows, query, drill, donut) {
     svg.appendChild(seg); a0 = a1;
   });
   const legend = document.createElement('div'); legend.className = 'pielegend';
-  data.slice(0, 12).forEach((d, i) => {
+  data.slice(0, PLAFOND_LEGENDE).forEach((d, i) => {
     const row = document.createElement('div'); row.className = 'pielg';
     const sw = document.createElement('span'); sw.className = 'pieswatch'; sw.style.background = catColor(i);
     const lb = document.createElement('span'); lb.className = 'pielabel'; lb.textContent = d.label;
@@ -778,35 +1323,73 @@ function pieEl(cols, rows, query, drill, donut) {
     row.append(sw, lb, vc); legend.appendChild(row);
   });
   wrap.append(svg, legend);
+  const ecartees = rows.filter(r => !(Math.max(0, Number(r[vi]) || 0) > 0));
+  const absentes = ecartees.filter(r => !porteUneValeur(r[vi])).length;
+  const illisibles = ecartees.filter(r => porteUneValeur(r[vi]) && !Number.isFinite(Number(r[vi]))).length;
+  const nonPositives = ecartees.length - absentes - illisibles;
+  const nonListees = Math.max(0, data.length - PLAFOND_LEGENDE);
+  if (ecartees.length > 0 || nonListees > 0) {
+    const bouts = [];
+    if (nonPositives > 0) bouts.push(LANG === 'en'
+      ? nonPositives + ' of the ' + rows.length + ' served row(s) are drawn by no sector: their value is zero or negative, which is not a share of a whole'
+      : nonPositives + ' des ' + rows.length + ' ligne(s) servies ne sont portées par aucun secteur : leur valeur est nulle ou négative, ce qui n’est pas une part d’un tout');
+    if (absentes > 0) bouts.push(LANG === 'en'
+      ? absentes + ' of the ' + rows.length + ' served row(s) carry NO value in “' + cols[vi] + '”: nothing was read there, and an absence is not a zero'
+      : absentes + ' des ' + rows.length + ' ligne(s) servies ne portent AUCUNE valeur dans « ' + cols[vi] + ' » : rien n’y a été lu, et une absence n’est pas un zéro');
+    if (illisibles > 0) bouts.push(LANG === 'en'
+      ? illisibles + ' of the ' + rows.length + ' served row(s) carry a value in “' + cols[vi] + '” that is NOT a number: it was not read as zero, it was not read at all'
+      : illisibles + ' des ' + rows.length + ' ligne(s) servies portent dans « ' + cols[vi] + ' » une valeur qui n’est PAS un nombre : elle n’a pas été lue comme un zéro, elle n’a pas été lue du tout');
+    if (nonListees > 0) bouts.push(LANG === 'en'
+      ? nonListees + ' drawn categor(ies) are not listed below — the legend stops at ' + PLAFOND_LEGENDE
+      : nonListees + ' catégorie(s) dessinées ne sont pas listées ci-dessous — la légende s’arrête à ' + PLAFOND_LEGENDE);
+    wrap.appendChild(noeudNonMontre(bouts));
+  }
   return wrap;
 }
 
 // HEATMAP — deux dimensions + valeur ([ligne, colonne, valeur], ex `stats count by host, source`). Grille de
 // cellules, intensité = valeur normalisée. Repli 2 colonnes -> heatmap 1×N (dégradé sur la seule dimension).
+// CE QUE CETTE GRILLE NE MONTRE PAS, ELLE LE DIT — le même geste que `pieEl`, et par le MÊME écrivain
+// (`noeudNonMontre`). DEUX pertes, toutes deux mesurées le 2026-08-27, toutes deux muettes jusque-là :
+//  · UNE COUPE. La grille s'arrête à 60 lignes et 40 colonnes. Mesuré : 70 lignes servies rendaient 60
+//    lignes de grille, 50 colonnes en rendaient 40, et le texte du nœud ne portait AUCUN mot de coupe —
+//    le module la nommait comme un reste ouvert au lieu de la fermer, pendant que sa fonction sœur venait
+//    de recevoir exactement le geste qui manquait ici. Les plafonds sont désormais NOMMÉS une seule fois
+//    et la phrase les lit : elle ne peut plus dire un autre chiffre que celui qui coupe.
+//  · UNE COLLISION. Deux lignes servies qui portent la MÊME paire (ligne, colonne) écrivent dans la MÊME
+//    cellule, et la dernière arrivée écrase la précédente. Mesuré : `[['a',1],['a',2],['b',3]]` rend DEUX
+//    cellules, `2` et `3` — la valeur `1` a DISPARU sans un mot, et la grille se présentait comme le
+//    résultat complet. Ici la perte n'est pas un zéro écarté mais une valeur VRAIE : elle se compte et
+//    se dit. Écraser reste le comportement — sommer inventerait un agrégat que la requête n'a pas demandé.
+const PLAFOND_LIGNES_GRILLE = 60;     // au-delà, la grille ne tient plus dans le panneau
+const PLAFOND_COLONNES_GRILLE = 40;   // idem en largeur ; les DEUX sont lus par la phrase qui les avoue
 function heatmapEl(cols, rows, query, drill) {
   const has2 = cols.length >= 3;
   const ri = 0, ci = has2 ? 1 : 0, vi = cols.length - 1;
   const rowKeys = [], colKeys = [], rowSeen = new Set(), colSeen = new Set();
   const cell = new Map(); // "r\x1fc" -> value  (\x1f = unit separator : jamais present dans une valeur de dimension)
+  let ecrasees = 0;       // lignes servies dont la cellule a été réécrite par une ligne suivante
   rows.forEach(r => {
     const rk = r[ri] == null ? '-' : String(r[ri]);
     const ck = has2 ? (r[ci] == null ? '-' : String(r[ci])) : 'valeur';
     if (!rowSeen.has(rk)) { rowSeen.add(rk); rowKeys.push(rk); }
     if (!colSeen.has(ck)) { colSeen.add(ck); colKeys.push(ck); }
-    cell.set(rk + '\x1f' + ck, Number(r[vi]) || 0);
+    const k = rk + '\x1f' + ck;
+    if (cell.has(k)) ecrasees++;
+    cell.set(k, Number(r[vi]) || 0);
   });
   const max = Math.max(1, ...[...cell.values()]);
   const wrap = document.createElement('div'); wrap.className = 'heatwrap';
   const tbl = document.createElement('table'); tbl.className = 'heatmap';
   const thead = document.createElement('thead'); const htr = document.createElement('tr');
   htr.appendChild(document.createElement('th'));
-  colKeys.slice(0, 40).forEach(ck => { const th = document.createElement('th'); th.textContent = ck; th.title = ck; htr.appendChild(th); });
+  colKeys.slice(0, PLAFOND_COLONNES_GRILLE).forEach(ck => { const th = document.createElement('th'); th.textContent = ck; th.title = ck; htr.appendChild(th); });
   thead.appendChild(htr); tbl.appendChild(thead);
   const tb = document.createElement('tbody');
-  rowKeys.slice(0, 60).forEach(rk => {
+  rowKeys.slice(0, PLAFOND_LIGNES_GRILLE).forEach(rk => {
     const tr = document.createElement('tr');
     const rh = document.createElement('th'); rh.className = 'heatrow'; rh.textContent = rk; rh.title = rk; tr.appendChild(rh);
-    colKeys.slice(0, 40).forEach(ck => {
+    colKeys.slice(0, PLAFOND_COLONNES_GRILLE).forEach(ck => {
       const v = cell.get(rk + '\x1f' + ck) || 0;
       const td = document.createElement('td'); td.className = 'heatcell';
       const alpha = v > 0 ? (0.12 + 0.88 * (v / max)) : 0;
@@ -823,19 +1406,46 @@ function heatmapEl(cols, rows, query, drill) {
     tb.appendChild(tr);
   });
   tbl.appendChild(tb); wrap.appendChild(tbl);
+  const lignesCoupees = Math.max(0, rowKeys.length - PLAFOND_LIGNES_GRILLE);
+  const colonnesCoupees = Math.max(0, colKeys.length - PLAFOND_COLONNES_GRILLE);
+  const bouts = [];
+  if (lignesCoupees > 0) bouts.push(LANG === 'en'
+    ? lignesCoupees + ' of the ' + rowKeys.length + ' grid row(s) are not shown — the grid stops at ' + PLAFOND_LIGNES_GRILLE
+    : lignesCoupees + ' des ' + rowKeys.length + ' ligne(s) de la grille ne sont pas montrées — la grille s’arrête à ' + PLAFOND_LIGNES_GRILLE);
+  if (colonnesCoupees > 0) bouts.push(LANG === 'en'
+    ? colonnesCoupees + ' of the ' + colKeys.length + ' grid column(s) are not shown — the grid stops at ' + PLAFOND_COLONNES_GRILLE
+    : colonnesCoupees + ' des ' + colKeys.length + ' colonne(s) de la grille ne sont pas montrées — la grille s’arrête à ' + PLAFOND_COLONNES_GRILLE);
+  if (ecrasees > 0) bouts.push(LANG === 'en'
+    ? ecrasees + ' of the ' + rows.length + ' served row(s) are carried by no cell: another row holds the SAME (row, column) pair and the last one served wins'
+    : ecrasees + ' des ' + rows.length + ' ligne(s) servies ne sont portées par aucune cellule : une autre ligne porte la MÊME paire (ligne, colonne) et la dernière servie l’emporte');
+  if (bouts.length) wrap.appendChild(noeudNonMontre(bouts));
   return wrap;
 }
 
 // HISTOGRAM — distribution binned d'une colonne numérique. Si les lignes portent DÉJÀ [bucket,count]
 // (agrégat) on les rend en barres contiguës ; sinon on binne la dernière colonne numérique (Sturges borné).
+// LE PARTAGE VIENT DE LA FORME DU RÉSULTAT, PLUS DE SON ARITÉ (mesuré le 2026-08-27). Il lisait
+// `rows.length > 1 && cols.length >= 2` : un agrégat qui ne rendait qu'UNE ligne — un `stats count by host`
+// sur une journée où un seul hôte a parlé — tombait dans la branche du BINNING, qui compte des VALEURS.
+// Mesuré : `[['web-01', 42]]` rendait une barre pleine hauteur étiquetée « 42.0 » dont la valeur affichée,
+// et l'axe, valaient **1** — la donnée servie disait 42. Ni l'une ni l'autre porte ne le voyait (la colonne
+// est numérique, la figure dessine). Ce qui distingue un agrégat d'une liste de valeurs brutes est la
+// PRÉSENCE d'une colonne de libellé à côté de la valeur, jamais le NOMBRE de lignes : c'est cela, et cela
+// seul, qui est lu maintenant.
 function histogramEl(cols, rows, query, drill) {
   const NS = 'http://www.w3.org/2000/svg', mk = t => document.createElementNS(NS, t);
   const vi = cols.length - 1;
   const vals = rows.map(r => Number(r[vi])).filter(n => Number.isFinite(n));
   const wrap = document.createElement('div'); wrap.className = 'histwrap';
+  // UNE ABSENCE SE DIT PAR LE FAIT MESURÉ, PAS PAR UNE CAUSE INVENTÉE (`P11.18-p`). Sur ZÉRO ligne, cette
+  // représentation disait « aucune donnée NUMÉRIQUE » : elle attribuait à la NATURE de la colonne une
+  // absence qu'elle n'avait pas mesurée — rien n'avait été servi, donc rien n'avait été lu. La phrase de
+  // la nature reste, mais pour le seul cas qui l'établit : des lignes servies dont aucune valeur n'est un
+  // nombre (chemin que la porte de `vizElement` ferme, et que `vizSansPorte` laisse encore atteindre).
+  if (!rows.length) { wrap.appendChild(muted(LANG === 'en' ? 'no data' : 'aucune donnée')); return wrap; }
   if (!vals.length) { wrap.appendChild(muted('aucune donnée numérique')); return wrap; }
   let bins;
-  if (rows.length > 1 && cols.length >= 2) {
+  if (cols.length >= 2) {
     // pré-agrégé [clé, count] -> une barre par ligne (ordre préservé).
     bins = rows.map(r => ({ label: r[0] == null ? '-' : String(r[0]), c: Number(r[vi]) || 0 }));
   } else {
@@ -1053,7 +1663,7 @@ function statEl(cols, rows, query, drill) {
     d.title = drill ? 'Cliquer pour exécuter le drill du panneau' : 'Cliquer pour voir ce qui se cache derrière ce chiffre';
     d.onclick = () => statDrill(query, drill);
   }
-  return d;
+  return noeudUneSeuleLigne(d, rows);
 }
 
 function barEl(cols, rows, query, drill) {
@@ -1480,4 +2090,4 @@ async function runQuery() {
 function showQExport(has) { const el = $('#qexport'); if (el) el.hidden = !has; }
 
 
-export { banIp, clearDrillCrumb, clearZoom, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, noeudsDeVizReglee, qHistGo, queryCount, refusDeReglage, reglageLu, renderViz, runQ, runQuery, setZoom, sondage, stopExplore, tableEl, updateZoomBadge, vizElement, truncationBadge };
+export { banIp, clearDrillCrumb, clearZoom, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, noeudsDeVizReglee, qHistGo, queryCount, refusDeReglage, reglageLu, renderViz, runQ, runQuery, setZoom, sondage, stopExplore, tableEl, updateZoomBadge, vizElement, vizSansPorte, refusDeRepresentation, truncationBadge };

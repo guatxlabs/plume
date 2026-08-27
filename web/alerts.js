@@ -45,12 +45,31 @@ import { clicQuiRespecteLaSelection } from './copie_et_selection.js';
 // CE QUE CETTE BRANCHE NE PEUT PAS FAIRE, ET POURQUOI ELLE NE LE FEINT PAS : renvoyer vers l'instantané qui
 // FONDE l'alerte. Rien dans ce que /api/alerts sert ne DÉCLARE cette fondation ni ne nomme une destination ;
 // la deviner d'un jeton de règle serait refaire, un étage plus haut, la fabrication qu'on retire ici.
+// `P11.14-h` — ET LE REFUS LUI-MÊME FABRIQUAIT, MESURÉ LE 2026-08-26. Sa formulation d'origine affirmait
+// deux choses qu'aucune valeur servie ne porte, et la seconde est exactement le défaut que `P11.14-h`
+// nomme :
+//   · « cette alerte n'a ni règle ni fenêtre d'évaluation, elle n'a donc pas été levée par une recherche
+//     d'événements » — FAUX pour toute une classe d'alertes. `search_link` est nul dès que la JOINTURE
+//     `('rule.'||r.id)=alert.rule` ne trouve pas de ligne (`daemon/src/handlers/alerts.rs`, `base`), ce qui
+//     inclut le cas d'une RÈGLE SUPPRIMÉE — le démon l'écrit noir sur blanc au même endroit (« Absent pour
+//     une alerte sans règle (heartbeat.*, règle supprimée) »). Une telle alerte A une règle et A BIEN été
+//     levée par une recherche d'événements ; ce qui manque est la LIGNE de règle, pas la recherche.
+//   · « alors que sa justification est l'état qu'elle porte » — la console DÉCLARAIT le fondement de
+//     l'alerte, sans qu'aucun champ servi ne le déclare. C'est la fabrication d'un étage plus haut, dans la
+//     phrase même qui annonce refuser de fabriquer.
+// LA PHRASE NE DIT PLUS QUE CE QUI EST DÉRIVÉ : aucune fenêtre d'évaluation n'a été servie, donc la console
+// n'a pas la requête qui a compté ; elle refuse d'en inventer une ; et elle AVOUE la seconde impasse au lieu
+// de la combler — rien de ce qui est servi ne déclare sur quoi l'alerte est FONDÉE. C'est un rétrécissement
+// de ce que la console affirme, jamais un élargissement.
+// CE QUI RESTE OUVERT SOUS `P11.14-h`, ET QUE CE MODULE NE PEUT PAS FERMER : que le fondement soit ÉCRIT à
+// la levée, là où le démon sait ce qu'il fait, puis servi. Tant qu'il ne l'est pas, la troisième branche
+// reste un refus honnête et non le pivot que le constat décrit.
 // LES TROIS PHRASES SONT BILINGUES PAR CONSTRUCTION (`{fr, en}` choisi par LANG) : elles sont écrites UNE
 // fois et servent au survol du titre COMME au refus dit au clic — deux formulations divergeraient.
 const PIVOT_MOTS = {
   exact: { fr: 'Cliquer → voir les événements déclencheurs', en: 'Click → see the triggering events' },
   adresse: { fr: "Cliquer → chercher cette adresse (src_ip) dans les événements ; l'alerte ne porte pas la requête exacte d'une règle.", en: 'Click → search this address (src_ip) in the events; this alert carries no exact rule query.' },
-  aucun: { fr: "Aucun pivot exact : cette alerte n'a ni règle ni fenêtre d'évaluation, elle n'a donc pas été levée par une recherche d'événements. La console refuse d'en fabriquer une — chercher son libellé rendrait un vide qui ne prouverait rien, alors que sa justification est l'état qu'elle porte.", en: 'No exact pivot: this alert has neither rule nor evaluation window, so it was not raised by an event search. The console refuses to make one up — searching its wording would return an emptiness that proves nothing, whereas its justification is the state it carries.' },
+  aucun: { fr: "Aucun pivot exact : le démon n'a servi AUCUNE fenêtre d'évaluation pour cette alerte, la console n'a donc pas la requête qui l'a comptée. Elle refuse d'en fabriquer une — chercher son libellé rendrait un vide qui ne prouverait rien. Elle ne peut pas davantage renvoyer vers ce qui FONDE l'alerte : rien de ce qui est servi ne le déclare, et la console ne le devinera pas.", en: 'No exact pivot: the daemon served NO evaluation window for this alert, so the console does not have the query that counted it. It refuses to make one up — searching its wording would return an emptiness that proves nothing. Nor can it point to what the alert is FOUNDED on: nothing that is served declares it, and the console will not guess.' },
 };
 const motDuPivot = (mode) => (LANG === 'en' ? PIVOT_MOTS[mode].en : PIVOT_MOTS[mode].fr);
 function pivotDUneAlerte(a) {

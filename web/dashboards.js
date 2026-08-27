@@ -4,7 +4,7 @@
 // au point où ce bloc vivait (un module s'exécute à l'import, avant l'enveloppe `fetch` d'`app.js`). Les seams
 // (`viz.js`, `multitenant.js`) continuent de lire `loadDashboard` / `refreshPanels` via le ré-export d'`app.js`.
 // `renderDashboard` est exporté pour le harnais. N'importe pas `app.js`.
-import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, transientGatewayMsg, makePager, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG } from './core.js';
+import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, confirmWithConsequence, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, transientGatewayMsg, makePager, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG } from './core.js';
 import { S } from './state.js';
 import { currentFrom, currentTo, noeudsDeVizReglee, queryCount, runQuery, tableEl, vizElement } from './viz.js';
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
@@ -869,6 +869,30 @@ function initDashboards() {
     if (!v) { toast('Sélectionne une vue à partager (pas « — Sans filtre de vue — »).', 'bad'); return; }
     if (!viewCanShare(v)) { toast('Seuls le propriétaire ou un admin peuvent changer le partage.', 'bad'); return; }
     const next = v.visibility === 'shared' ? 'private' : 'shared';
+    // `P11.13-b` — CE GESTE CHANGE QUI PEUT LIRE, ET IL PARTAIT SANS RIEN DEMANDER. Un clic sur une
+    // icône basculait une vue privée en vue d'équipe (et l'inverse) : aucune conséquence n'était
+    // montrée avant l'écriture, alors que le voisin destructif du même bandeau, lui, confirmait.
+    // MESURÉ le 2026-08-26 : `check_sensitive_routes_are_confirmed.py` déclarait pourtant cet appel
+    // « confirmé » — non par une confirmation à lui, mais parce que son ancêtre `initDashboards`
+    // CONTIENT le `confirmModal(` du bouton « supprimer la vue », dont la fonction ne contient pas cet
+    // appel. Une confirmation de VOISIN. La garde regarde plus large qu'elle ne le peut ; ce qui se
+    // corrige ici est le CÔTÉ CONSOLE, celui qui manquait pour de bon.
+    // LA CONSÉQUENCE EST NOMMÉE, ET ELLE EST LUE DANS LE DÉMON, pas devinée (2026-08-26) : `views_list`
+    // sert une vue à tous dès qu'elle est `shared`, tandis que `dash_list` filtre chaque tableau de bord
+    // sur SA PROPRE visibilité. Partager la vue ne partage donc pas les tableaux de bord privés qu'elle
+    // porte, et la phrase le dit plutôt que de promettre plus que ce qui se produit.
+    const versPartage = next === 'shared';
+    const geste = LANG === 'en'
+      ? (versPartage ? 'Share this view with the team?' : 'Make this view private?')
+      : (versPartage ? 'Partager cette vue avec l’équipe ?' : 'Rendre cette vue privée ?');
+    const consequence = LANG === 'en'
+      ? (versPartage
+        ? 'The view “' + v.name + '” will show up in everyone’s list, and the SHARED dashboards it carries become reachable from it. Private dashboards stay private.'
+        : 'The view “' + v.name + '” disappears from everyone else’s list — only you and an administrator keep it. The dashboards it carries do not change visibility.')
+      : (versPartage
+        ? 'La vue « ' + v.name + ' » apparaîtra dans la liste de tout le monde, et les tableaux de bord PARTAGÉS qu’elle porte se lisent alors depuis elle. Les tableaux de bord privés restent privés.'
+        : 'La vue « ' + v.name + ' » disparaît de la liste des autres — seuls vous et un administrateur la gardez. Les tableaux de bord qu’elle porte ne changent pas de visibilité.');
+    if (!await confirmWithConsequence(geste, consequence)) return;
     try { await apiSend('/views/' + id, 'POST', { visibility: next }); }
     catch (e) { toast('Changement de partage refusé (' + (e && e.message ? e.message : e) + ')', 'bad'); return; }
     await loadViews(); sel.value = id; updateViewShareBtn();

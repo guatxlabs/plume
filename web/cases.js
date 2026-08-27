@@ -1,6 +1,6 @@
 // cases.js — extracted from app.js (DEEP state-container split). Behaviour-preserving.
 // Cases (gestion d'incident, first-class #4a): liste/detail/CRUD + rattachement d'items.
-import { $, api, apiSend, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, modal, muted, pagedList, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
+import { $, api, apiSend, confirmModal, confirmWithConsequence, disclosure, downloadText, exportPDF, fmtTs, ic, LANG, modal, muted, pagedList, sev, toCSV, toast, tsSlug, withBusy, socIsAdmin, socRole } from './core.js';
 import { S } from './state.js';
 import { refresh } from './app.js';
 // #3 incidents : « Lancer la recherche » d'une step ouvre l'Explore avec le GXQL recompilé (réutilise le
@@ -58,15 +58,68 @@ function caseBtn(label, kind) {
   return b;
 }
 
+// ======================================================================================================
+// `P11.14-d` — LA SORTIE D'UN ÉTAT TERMINAL SE DIT LÀ OÙ CET ÉTAT SE CONSTATE.
+// LE CONSTAT D'ORIGINE — « on ne peut pas rouvrir un cas » — EST RÉFUTÉ SUR LE MÉCANISME, et la réfutation
+// est REMESURÉE ici le 2026-08-26, pas recopiée : le bouton « Rouvrir » existe (plus bas dans ce fichier,
+// premier geste de la barre d'actions d'un cas terminé), `CASE_TERMINAL` contient bien `resolved`, et la
+// barre se RECOMPOSE sans rechargement — `caseUpdate` enchaîne `loadCases()` puis `refreshCaseDetail()`,
+// qui relit le cas et redessine le détail. Ni le geste ni son rafraîchissement ne manquaient.
+// CE QUI MANQUAIT, MESURÉ : HORS DU DÉTAIL, AUCUNE SURFACE NE NOMMAIT CE GESTE. Le seul porteur du fait
+// « ce cas est terminé » ailleurs que dans le détail est le cadre d'état ci-dessous — rendu par la ligne de
+// la liste COMME par l'en-tête du détail — et son survol promettait une réouverture (« tant qu'il n'est pas
+// rouvert ») sans dire NI où le geste attend NI si CE lecteur-ci le verra jamais. Un lecteur sans droit
+// d'écriture lisait donc, sur la même page, une promesse de réouverture et un « aucune action n'est
+// proposée » qui ne nommait aucune action : deux surfaces, un lecteur, aucun lien entre elles.
+// LE REMÈDE N'AJOUTE AUCUN GESTE, ET C'EST LA MOITIÉ QUI COMPTE. Un second bouton posé dans la liste ferait
+// deux chemins à maintenir pour une transition qui n'en a qu'un, et le constat ne portait pas sur un geste
+// absent mais sur un geste INTROUVABLE. Seule sa trouvabilité change : le cadre d'état le NOMME, dit où il
+// attend, et dit quand le rôle en cours l'empêche de paraître.
+// UN SEUL AUTEUR, DEUX VALEURS DÉJÀ CONNUES AU RENDU : l'état est-il terminal (`CASE_TERMINAL`) et ce
+// lecteur peut-il écrire (`canEditCases`). Le cadre d'état et la raison portée par le sélecteur inerte du
+// détail sortent de la MÊME table. Écrire la sortie à deux endroits est exactement ce qui a produit un
+// survol qui promettait et une phrase qui refusait, sans que l'un réponde à l'autre.
+// CE QUE CETTE TABLE NE DIT PAS, ET NE PEUT PAS DIRE : POURQUOI la personne n'a pas trouvé le geste. Elle
+// ferme la piste mesurable — rien ne le nommait hors du détail — et laisse les deux autres pistes du
+// constat réfutées par la mesure ci-dessus (le rafraîchissement) ou dites en clair (le rôle).
+// BILINGUE PAR CONSTRUCTION (`{fr, en}` choisi par LANG), comme les mots du pivot d'une alerte : les deux
+// langues sont côte à côte, et aucune ne peut vieillir sans l'autre.
+const SORTIE_MOTS = {
+  encours: {
+    fr: "Cas en cours : son état peut encore changer",
+    en: 'Open case: its status can still change',
+  },
+  terminal: {
+    fr: "Cas terminé : son état n'évolue plus tant qu'il n'est pas rouvert. Le geste porte le nom « Rouvrir » et il attend dans la barre d'actions du détail de ce cas.",
+    en: 'Finished case: its status no longer changes until it is reopened. The gesture is named "Reopen" and it waits in this case\'s detail action bar.',
+  },
+  terminal_sans_droit: {
+    fr: "Cas terminé : son état n'évolue plus tant qu'il n'est pas rouvert, et « Rouvrir » demande le rôle éditeur ou administrateur — avec le rôle en cours, ce geste n'est proposé nulle part.",
+    en: 'Finished case: its status no longer changes until it is reopened, and "Reopen" requires the editor or administrator role — with the current role, that gesture is offered nowhere.',
+  },
+  inerte: {
+    fr: "Inerte par nature : un cas terminé ne change plus d'état. « Rouvrir », dans la barre d'actions ci-dessous, le ramène en cours.",
+    en: 'Inert by nature: a finished case no longer changes status. "Reopen", in the action bar below, brings it back in progress.',
+  },
+};
+const motDeLaSortie = (etat) => (LANG === 'en' ? SORTIE_MOTS[etat].en : SORTIE_MOTS[etat].fr);
+// L'ÉTAT DE SORTIE EST DÉRIVÉ, JAMAIS ÉNUMÉRÉ PAR APPELANT : un appelant de plus hérite de la distinction
+// au lieu de la réécrire, et un statut terminal ajouté à `CASE_TERMINAL` la reçoit sans toucher ici.
+function sortieDunCas(status) {
+  if (!CASE_TERMINAL.has(status)) return 'encours';
+  return canEditCases() ? 'terminal' : 'terminal_sans_droit';
+}
+
 // badges color-codés (textContent -> pas d'injection ; couleur en inline-style car style.css n'est pas édité).
 // P11.11-a — le cadre d'état DIT pourquoi il est terne : `closed` est gris par palette et la ligne d'un cas
 // terminé est estompée, ce qui se lit comme un contrôle désactivé alors que rien ne l'est. L'infobulle
 // tranche entre les deux lectures : inerte PAR NATURE (le cas est terminé) ou encore modifiable.
+// `P11.14-d` — et, quand le cas est terminé, elle NOMME la sortie et son emplacement : c'est le seul endroit
+// de la liste où le fait « terminé » est écrit, donc le seul où la sortie peut être trouvée sans ouvrir.
 function caseStatusBadge(status) {
   const s = document.createElement('span'); s.className = 'casest'; const col = CASE_STATUS_COL[status] || 'var(--mut)';
   s.style.color = col; s.style.borderColor = 'color-mix(in srgb,' + col + ' 45%,transparent)';
-  if (CASE_TERMINAL.has(status)) s.title = 'Cas terminé : son état n\'évolue plus tant qu\'il n\'est pas rouvert';
-  else s.title = 'Cas en cours : son état peut encore changer';
+  s.title = motDeLaSortie(sortieDunCas(status));
   s.textContent = CASE_STATUS[status] || status; return s;
 }
 
@@ -256,7 +309,8 @@ function renderCaseDetail(host, c) {
       const o = document.createElement('option'); o.value = c.status; o.textContent = CASE_STATUS[c.status] || c.status; o.selected = true; stSel.appendChild(o);
       stSel.disabled = true;
       stLab.appendChild(stSel);
-      stLab.appendChild(muted('Inerte par nature : un cas terminé ne change plus d\'état. « Rouvrir » le ramène en cours.'));
+      // `P11.14-d` — MÊME AUTEUR que le cadre d'état : la sortie ne s'écrit pas deux fois.
+      stLab.appendChild(muted(motDeLaSortie('inerte')));
     } else {
       CASE_STEPS.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = CASE_STATUS[s]; if (caseCanonStatus(c.status) === s) o.selected = true; stSel.appendChild(o); });
       stSel.onchange = () => caseUpdate(c.id, { status: stSel.value });

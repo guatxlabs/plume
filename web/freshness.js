@@ -382,6 +382,9 @@ function barreDOrdre(ordre) {
 // fabriqués). Renvoie le HTML ; `renderFreshness` le pose et câble les gestes.
 function renderFreshnessDetail(d) {
   const feeds = (d.feeds || []).slice();
+  // P11.16-a — COMBIEN de flux de cette liste ne sont PAS des sources d'événements : l'inventaire, qui
+  // nomme les producteurs, ne porte que celles-là (voir la légende, plus bas). Dérivé des flux rendus.
+  const horsEvenement = feeds.filter(f => f && f.kind !== 'event').length;
   feeds.sort((a, c) => (rangDEtatDeSource(freshState(a)) - rangDEtatDeSource(freshState(c))) || a.name.localeCompare(c.name));
   // le STATUT = santé de collecte : muet seulement si l'ingestion est en panne ; en retard seulement au-delà
   // d'une cadence DÉCLARÉE ; sinon l'âge est INFORMATIF.
@@ -500,7 +503,17 @@ function renderFreshnessDetail(d) {
     // porte que le NOM de la source (le rapprochement dérivé vit dans `/api/sources`). Plutôt que de
     // laisser croire qu'un nom de flux nomme le fichier qui l'émet, la légende dit où ce nom se trouve.
     // Phrase posée dans son PROPRE nœud : ajoutée au texte ci-dessus, elle l'aurait rendu intraduisible.
-    `<div class="muted" style="margin-top:4px">${LANG === 'en' ? 'A feed\'s name is the name of the SOURCE, not of the file that emits it — the two often differ. The producer of each source is named in the inventory (Data → Sources).' : 'Le nom d\'un flux est celui de la SOURCE, pas du fichier qui l\'émet — les deux diffèrent souvent. Le producteur de chaque source est nommé dans l\'inventaire (Données → Sources).'}</div></div>`;
+    //
+    // ET LE RENVOI NE PROMET PLUS CE QUE L'INVENTAIRE NE PORTE PAS. Mesuré le 2026-08-26 :
+    // `daemon/src/handlers/sources.rs` construit l'inventaire à partir d'`event_rollup` et des marquages —
+    // il ne liste QUE des sources d'événements. Cette liste-ci porte en plus des flux d'un autre genre
+    // (instantanés par `kind`, métriques agrégées) : leur envoyer un lecteur chercher « le producteur »
+    // était un renvoi vers une ligne qui n'existe pas. Le COMPTE est DÉRIVÉ des flux rendus, jamais d'une
+    // table de genres écrite ici : un genre neuf y entre sans qu'on l'écrive, et disparaît de la phrase
+    // dès qu'aucun flux ne le porte.
+    `<div class="muted" style="margin-top:4px">${horsEvenement
+      ? (LANG === 'en' ? `A feed's name is the name of the SOURCE, not of the file that emits it — the two often differ. The inventory (Data → Sources) names the producer of EVENT sources, and of those only: the ${horsEvenement} feed(s) of this list that are not event sources do not appear there at all, so no producer can be read for them.` : `Le nom d'un flux est celui de la SOURCE, pas du fichier qui l'émet — les deux diffèrent souvent. L'inventaire (Données → Sources) nomme le producteur des sources d'ÉVÉNEMENTS, et d'elles seules : les ${horsEvenement} flux de cette liste qui n'en sont pas n'y figurent pas du tout, et aucun producteur ne s'y lit pour eux.`)
+      : (LANG === 'en' ? 'A feed\'s name is the name of the SOURCE, not of the file that emits it — the two often differ. The inventory (Data → Sources) names the producer of EVENT sources, and every feed of this list is one.' : 'Le nom d\'un flux est celui de la SOURCE, pas du fichier qui l\'émet — les deux diffèrent souvent. L\'inventaire (Données → Sources) nomme le producteur des sources d\'ÉVÉNEMENTS, et tous les flux de cette liste en sont.')}</div></div>`;
   return html;
 }
 async function renderFreshness(loading) {

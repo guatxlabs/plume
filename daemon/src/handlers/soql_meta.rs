@@ -45,8 +45,8 @@ pub(crate) const DOC_BASE_KEYWORDS: &[(&str, &str)] = &[
 pub(crate) const DOC_COMMANDS: &[(&str, &str)] = &[
     ("stats", "Agrège les événements : mesures (count/sum/avg…) éventuellement groupées par champ (by)."),
     ("timechart", "Série temporelle : agrège une mesure par intervalle (span=), éventuellement par champ."),
-    ("where", "Filtre les résultats sur une condition (comparaisons, and/or) après un pipe."),
-    ("sort", "Trie les résultats par un ou plusieurs champs (préfixe - pour décroissant)."),
+    ("where", "Filtre après un pipe sur UNE comparaison, ou UNE clause in/not in entière — ni and ni or."),
+    ("sort", "Trie sur UN champ (préfixe - pour décroissant) ; un second champ est ignoré en silence."),
     ("head", "Ne conserve que les N premiers résultats."),
     ("limit", "Borne le nombre de résultats retournés."),
     ("rex", "Extrait des champs d'un texte via une regex à groupes nommés (?<nom>…)."),

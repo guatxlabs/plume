@@ -374,6 +374,18 @@ const I18N_EN = {
   "Créer la règle qui la couvrira": "Create the rule that will cover it",
   "Ouvre le formulaire de règle avec cette technique déjà renseignée.": "Opens the rule form with this technique already filled in.",
   "Écrire une règle demande le rôle éditeur ; ce compte est en lecture seule.": "Writing a rule requires the editor role; this account is read-only.",
+  // P9.5-a — LE TROISIÈME ÉTAT D'UNE TECHNIQUE : une règle la porte, activée, mais rien ne la nourrit.
+  // Ni « couverte » ni « angle mort » — et le geste nommé est de BRANCHER, pas d'écrire.
+  "source manquante": "missing source",
+  "règle activée, source manquante": "enabled rule, missing source",
+  "RIEN NE PEUT LA DÉCLENCHER : la ou les règles qui portent cette technique sont ACTIVÉES, mais aucune source de cette base ne produit ce qu'elles interrogent. Brancher le producteur suffit — il n'y a pas de règle à écrire.": "NOTHING CAN TRIGGER IT: the rule or rules carrying this technique are ENABLED, but no source on this database produces what they query. Wiring the producer is enough — there is no rule to write.",
+  "Voir les règles qui attendent leur source": "See the rules waiting for their source",
+  // … et son pendant côté import Sigma : ce que l'import ne ferme pas, avec le geste qui le fermerait.
+  "Ces règles sont créées et resteront éditables : c'est leur SOURCE qui n'existe pas sur cette base. Elles ne comptent donc dans aucun des deux bouts du delta ci-dessus. Brancher le producteur leur donne de quoi tirer, une fois activées — il n'y a pas de règle à réécrire.": "These rules are created and stay editable: it is their SOURCE that does not exist on this database. They therefore count in neither end of the delta above. Wiring the producer gives them something to fire on, once enabled — there is no rule to rewrite.",
+  "Source(s) à brancher": "Source(s) to wire",
+  "Technique": "Technique",
+  "Ouvre le panneau des règles, la recherche posée sur cette technique : la ou les règles existent et sont activées — c'est leur source qui manque.": "Opens the rule panel with the search set to this technique: the rule or rules exist and are enabled — it is their source that is missing.",
+  "Ouvre le formulaire de règle avec cette technique déjà renseignée. Une règle de plus ne remplace pas le producteur qui manque : sans lui, elle ne tirera pas davantage.": "Opens the rule form with this technique already filled in. One more rule does not replace the missing producer: without it, that rule will not fire either.",
   "Le panneau des règles n'est pas chargé.": "The rule panel is not loaded.",
   "Combler les angles morts en masse : importer une bibliothèque de détection Sigma.": "Close blind spots in bulk: import a Sigma detection library.",
   "Refermer sans quitter la matrice.": "Close without leaving the matrix.",

@@ -104,7 +104,8 @@ When in doubt, add a test that proves the invariant still holds.
 ## Building & testing
 
 > **Note (open-source build):** the daemon depends on `guatx-core` as a **git dependency**
-> (`github.com/guatxlabs/core`, tag `v0.2.1`). To develop against a local core checkout, place
+> (`github.com/guatxlabs/core`), pinned to a tag **in `daemon/Cargo.toml` and nowhere else** —
+> read it with `grep -n 'guatx-core' daemon/Cargo.toml`. To develop against a local core checkout, place
 > it as a sibling directory and add a git-ignored `.cargo/config.toml` at the repo root with a
 > `[patch]` redirecting the git dep to the path:
 > ```toml
@@ -123,7 +124,7 @@ When in doubt, add a test that proves the invariant still holds.
 > warning: patch `guatx-core v0.2.2 (/path/to/core)` was not used in the crate graph
 > ```
 > Measured both ways: with the lock in place → resolved from
-> `git+…?tag=v0.2.1#a622183`; with the lock allowed to re-resolve → resolved from the local
+> the pinned `git+…?tag=…#<rev>` source of the lock; with the lock allowed to re-resolve → resolved from the local
 > path. So **do not assume — verify which core you actually compiled**:
 > ```sh
 > cargo metadata --format-version 1 | python3 -c "import json,sys; \

@@ -2293,9 +2293,19 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 //     (d) Les sorties MÈNENT : celle des règles et celle de la création appellent le panneau des règles
 //         sur CETTE technique, celle des détections pose la facette de la technique sur la file d'alertes.
 //     (e) Un lecteur voit la sortie de création, inerte, et le motif nomme le RÔLE — pas un état.
+//     (f) LE TROISIÈME ÉTAT (`P9.5-a`) : une règle EXISTE et est ACTIVÉE, mais rien sur cette base ne
+//         peut la nourrir. C'est le défaut que la correction précédente avait RETOURNÉ au lieu de le
+//         fermer : la matrice cessait — à raison — de compter la technique couverte, mais la console la
+//         rendait avec le vocabulaire de l'ABSENCE (« aucune règle activée ne couvre cette technique »),
+//         rendait INERTE la sortie vers la règle, et mettait « créer la règle » en avant. Les trois
+//         étaient faux, et le geste prescrit était nuisible. Ce témoin exige que l'état soit rendu
+//         DISTINCT des deux autres, que la RAISON (la source qui manque) soit NOMMÉE, que la sortie vers
+//         la règle soit PRATICABLE et MÈNE, et que l'import Sigma — qui ne branche aucun producteur — ne
+//         soit plus proposé. Il lit AUSSI le démon : sans les deux clés servies, cet état serait
+//         inatteignable et le vert ne prouverait rien du geste réellement servi.
 // ---------------------------------------------------------------------------------------------
 {
-  const { porteDeLaTechnique, poserLesPortesDeTechnique } = await import(pathToFileURL(path.join(WEB, "attack.js")).href);
+  const { porteDeLaTechnique, poserLesPortesDeTechnique, techniqueCell } = await import(pathToFileURL(path.join(WEB, "attack.js")).href);
   const { ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique } = await import(pathToFileURL(path.join(WEB, "detection_admin.js")).href);
   const { S } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
   const cueillir = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir(c, pred, acc)); return acc; };
@@ -2356,7 +2366,59 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     exiger(creationLecteur && creationLecteur.disabled === true, "(24e) un lecteur obtient une sortie de création praticable : la garde d'interface ne lit pas le rôle");
     exiger(creationLecteur && /rôle éditeur/.test(creationLecteur.title || ""), `(24e) le motif ne nomme pas le rôle qui manque : « ${creationLecteur && creationLecteur.title} »`);
     exiger(!parLibelle(porteLecteur, /ruleset Sigma/), "(24e) témoin inverse : un lecteur se voit offrir l'import Sigma, réservé à l'administrateur");
-    console.log(`[ATT&CK] une technique ouvre une porte : ses règles, ses détections (le pivot existant, aucune requête fabriquée) et le geste qui la couvrirait ; un angle mort le dit, met la création en avant et rend la sortie vide inerte avec son motif ; un lecteur voit la création inerte, motivée par le rôle`);
+
+    // (f) LE TROISIÈME ÉTAT. L'INSTRUMENT D'ABORD : le démon sert-il les deux clés ? Sans elles, cet
+    //     état n'est atteignable par aucune réponse réelle et tout ce qui suit ne jugerait qu'un objet
+    //     fabriqué ici.
+    const srcMat = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "alerts.rs"), "utf8");
+    const corpsMat = srcMat.match(/fn build_attack_matrix\([\s\S]*?\n\}/);
+    exiger(!!corpsMat && /"rules_en_attente_de_source"/.test(corpsMat[0]) && /"sources_manquantes"/.test(corpsMat[0]),
+      "(24f) instrument : `build_attack_matrix` ne sert plus le compte des règles en attente de source ET les sources qui manquent — le troisième état serait inatteignable, et ce témoin jugerait un objet que rien ne produit");
+    const srcLecture = readFileSync(path.join(RACINE, "daemon", "src", "detection_aveugle.rs"), "utf8");
+    exiger(/en_attente_de_source\.push\(\(mitre, manquantes\)\)/.test(srcLecture),
+      "(24f) instrument : la lecture du démon ne pousse plus la RAISON à côté du tag — elle est calculée là où le filtre décide, et la jeter est exactement le défaut que ce témoin poursuit");
+
+    S.AUTH = { user: "root", role: "admin" };
+    const enAttente = { tid: "T1552", name: "Unsecured Credentials", covered: false, rule_count: 0, alert_count: 0,
+      rules_en_attente_de_source: 1, sources_manquantes: ["vault-audit"] };
+    const porteAttente = porteDeLaTechnique(enAttente);
+    const texteAttente = porteAttente.textContent;
+    exiger(!/ANGLE MORT/.test(texteAttente),
+      `(24f) une technique dont la règle EXISTE et est ACTIVÉE est rendue comme un angle mort : « ${texteAttente} »`);
+    exiger(/ACTIVÉES/.test(texteAttente) && /vault-audit/.test(texteAttente),
+      `(24f) l'état ne dit pas que la règle est activée, ou ne NOMME pas la source qui manque — c'est le seul renseignement actionnable : « ${texteAttente} »`);
+    const versReglesAttente = parLibelle(porteAttente, /règles qui attendent leur source/);
+    exiger(!!versReglesAttente, `(24f) aucune sortie vers la règle qui attend sa source : ${JSON.stringify(sorties(porteAttente).map((x) => x.textContent))}`);
+    exiger(versReglesAttente && versReglesAttente.disabled !== true,
+      "(24f) la sortie vers la règle est INERTE alors que la règle existe et est activée : la console déclare inexistant ce qu'elle sert dans le panneau voisin");
+    exiger(versReglesAttente && versReglesAttente.classList.contains("btn-primary"),
+      "(24f) la sortie mise en avant n'est pas celle qui MÈNE À LA RÈGLE : c'est le seul geste que la console peut porter ici");
+    const creationAttente = parLibelle(porteAttente, /Créer la règle qui la couvrira/);
+    exiger(!creationAttente, "(24f) la console propose encore de « créer la règle qui la couvrira » : la règle est là — c'est son producteur qui manque, et une seconde règle sans épinglage la ré-annoncerait couverte sans que rien ne tire");
+    const ajoutAttente = parLibelle(porteAttente, /Ajouter une règle sur cette technique/);
+    exiger(!!ajoutAttente && !ajoutAttente.classList.contains("btn-primary"),
+      "(24f) écrire une règle de plus est mis en avant sur une technique qui attend son producteur : c'est le mauvais geste, prescrit en premier");
+    exiger(!parLibelle(porteAttente, /ruleset Sigma/),
+      "(24f) l'import Sigma est proposé sur une technique qui attend sa source : importer une bibliothèque n'a jamais branché un producteur");
+
+    // ET LA SORTIE MÈNE VRAIMENT — la même mesure que (24d), sur ce troisième état.
+    vus.length = 0;
+    versReglesAttente?.onclick?.();
+    exiger(vus.join(" ") === "regles:T1552", `(24f) la sortie vers la règle n'appelle pas le panneau des règles sur CETTE technique : ${JSON.stringify(vus)}`);
+
+    // LA CELLULE AUSSI : trois états, trois rendus. Le témoin NÉGATIF est la cellule d'un VRAI angle
+    // mort — sans lui, « la cellule le dit » se prouverait sur une marque que toute cellule porterait.
+    const celluleAttente = techniqueCell(enAttente, 3);
+    const celluleAveugle = techniqueCell(aveugle, 3);
+    exiger(celluleAttente.classList.contains("attente") && !celluleAttente.classList.contains("uncovered"),
+      `(24f) la cellule en attente de source porte l'habillage du vide : « ${celluleAttente.className} »`);
+    exiger(celluleAveugle.classList.contains("uncovered") && !celluleAveugle.classList.contains("attente"),
+      `(24f) témoin négatif : un VRAI angle mort porte l'habillage du troisième état : « ${celluleAveugle.className} »`);
+    exiger(/vault-audit/.test(celluleAttente.title || ""), `(24f) le survol de la cellule ne nomme pas la source à brancher : « ${celluleAttente.title} »`);
+    exiger(!/vault-audit/.test(celluleAveugle.title || "") && /ANGLE MORT/.test(celluleAveugle.title || ""),
+      `(24f) témoin négatif : le survol d'un vrai angle mort ne dit plus « angle mort », ou nomme une source : « ${celluleAveugle.title} »`);
+
+    console.log(`[ATT&CK] une technique ouvre une porte : ses règles, ses détections (le pivot existant, aucune requête fabriquée) et le geste qui la couvrirait ; un angle mort le dit, met la création en avant et rend la sortie vide inerte avec son motif ; un lecteur voit la création inerte, motivée par le rôle. ET UN TROISIÈME ÉTAT, lu de bout en bout (le démon sert le compte des règles en attente ET les sources qui manquent ; la console les rend) : une technique dont la règle EXISTE et est ACTIVÉE mais que rien ne nourrit n'est PLUS annoncée « aucune règle » — elle NOMME la source à brancher, la sortie vers la règle est praticable, mise en avant, et elle MÈNE ; « créer la règle qui la couvrira » et l'import Sigma, qui ne branchent aucun producteur, ne sont plus proposés ; et la cellule porte un habillage que le vrai angle mort ne porte pas, ce que le témoin négatif vérifie dans l'autre sens. CE QUE CE TÉMOIN NE TIENT PAS : l'encre réellement peinte (le simulacre ne lit aucun style calculé), et le fait qu'une règle en attente soit RETROUVÉE par la recherche du panneau des règles — il tient que la sortie l'appelle sur la technique, pas ce que ce panneau en fait.`);
   } finally {
     poserLesPortesDeTechnique({ regles: ouvrirLesReglesDeLaTechnique, creer: ouvrirLaCreationPourLaTechnique });
     S.AUTH = roleOrigine; location.hash = hashOrigine; globalThis.fetch = fetchOrigine; S.alertMitreFilter = "";
@@ -3857,6 +3919,12 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     exiger(!!m, `(38) vocabulaire \`${nom}\` introuvable dans la déclaration du démon : le témoin ne lit plus ce qu'il juge`);
     return m ? [...m[1].replace(/\s+/g, " ").matchAll(/\(\s*"((?:[^"\\]|\\.)*)"\s*,/g)].map((e) => e[1]) : [];
   };
+  // Le vocabulaire AVEC son libellé : même ancre, même bloc, mais la description est gardée. C'est ce que
+  // la jambe (d) confronte à la borne déclarée par le corpus ; le démon n'en porte qu'en français.
+  const paires = (nom) => {
+    const m = rsq.match(new RegExp(`const ${nom}: &\\[\\(&str, &str\\)\\] = &\\[([\\s\\S]*?)\\n\\];`));
+    return m ? [...m[1].replace(/\s+/g, " ").matchAll(/\(\s*"((?:[^"\\]|\\.)*)"\s*,\s*"((?:[^"\\]|\\.)*)"\s*\)/g)].map((e) => [e[1], e[2]]) : [];
+  };
   // Les six vocabulaires que la complétion sert (`/api/soql/schema`) et que le compilateur fermé accepte :
   // `soql_docs_cover_all_vocab` exige côté démon qu'ils couvrent 1:1 les consts `SOQL_*` du cœur.
   const NOMS = ["DOC_BASE_KEYWORDS", "DOC_COMMANDS", "DOC_STATS_FUNCTIONS", "DOC_EVAL_FUNCTIONS", "DOC_OPERATORS", "DOC_KEYWORDS"];
@@ -3912,7 +3980,8 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(parLaBarre.corps === parLeGuide.corps, `(38) le bouton « ? Aide » de la barre de requête et le guide ouvrent DEUX textes différents (${parLaBarre.corps.length} vs ${parLeGuide.corps.length} caractères) : le chemin le plus fréquenté peut à nouveau mener au texte le plus pauvre`);
 
   // (a) LES SIX VOCABULAIRES, DANS LES DEUX SENS, DANS LES DEUX LANGUES.
-  const rendus = [["fr", parLeGuide.corps], ["en", panneau(() => aideEN.openHelp("soql")).corps]];
+  const corpsEN = panneau(() => aideEN.openHelp("soql")).corps;
+  const rendus = [["fr", parLeGuide.corps], ["en", corpsEN]];
   for (const [langue, corps] of rendus) {
     exiger(corps.trim().length > 0, `(38) la référence ne rend AUCUN texte sous LANG='${langue}'`);
     const ecrits = jetonsDe(corps);
@@ -3941,6 +4010,93 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(references.every(([nom]) => nom.startsWith("soql.")),
     `(38) ${references.length} surface(s) d'aide nomment un quart ou plus des ${COMMANDES.length} commandes déclarées, donc plus d'UNE référence du langage : ${references.map(([n, v]) => `${n} (${v})`).join(", ")} — deux porteurs du même savoir, donc deux vérités dès que l'un bouge`);
 
+
+  // (d) UNE BORNE MESURÉE DU LANGAGE EST PORTÉE PAR TOUTE SURFACE QUI LA DÉCRIT (`P9.7-c`).
+  //     LE DÉFAUT, MESURÉ LE 2026-08-27 : ce témoin confrontait l'ENSEMBLE des jetons dans les deux sens
+  //     et disait lui-même ne pas tenir le LIBELLÉ des descriptions. Le libellé promettait donc plus que
+  //     le langage : `where` était décrit « comparaisons, and/or » là où le compilateur n'accepte QU'UNE
+  //     comparaison, et `sort` « un ou plusieurs champs » là où il n'en trie QU'UN. QUATRE libellés
+  //     servis portaient la promesse — la déclaration du démon (fr) et l'aide de la console (fr ET en).
+  //     Le compilateur, lui, ne refuse pas : il avale le second terme dans un LITTÉRAL DE TEXTE
+  //     (`WHERE "count" > '5 and count < 100'`) ou jette le second champ de tri. Un exploitant qui écrit
+  //     d'après la description obtient donc une réponse VIDE qui a l'air complète.
+  //     LA BORNE N'EST PAS ÉCRITE ICI : elle est DÉCLARÉE PAR LE CORPUS (`docs/GXQL.md`, tableau dont
+  //     l'en-tête porte « Commande » et « Phrase exigée »), et ce témoin exige que chaque surface qui
+  //     décrit la commande porte la phrase déclarée. Ajouter une ligne au corpus arme ce témoin sur une
+  //     commande de plus sans le toucher ; revenir à « un ou plusieurs champs » retire « un champ » et
+  //     fait rougir. Le sens inverse est tenu aussi : une commande bornée par le corpus que le démon ne
+  //     DÉCLARE pas est un corpus qui parle d'un langage disparu.
+  //     CE QU'IL NE TIENT PAS : il ne COMPILE rien — le compilateur vit dans une caisse externe. Il tient
+  //     une cohérence d'ÉCRITURE entre trois surfaces ; la mesure qui a fixé la borne est datée dans le
+  //     corpus (§3.1, §10). Et il ne juge QUE les commandes que le corpus borne : une borne jamais
+  //     déclarée reste invisible, ce qu'un PLANCHER rend au moins visible en refusant de conclure sous
+  //     deux bornes déclarées.
+  const CORPUS_LANGAGE = path.join(RACINE, "docs", "GXQL.md");
+  // Le tableau est DÉRIVÉ de son EN-TÊTE, jamais d'un numéro de ligne ni d'un titre de section : le
+  // document peut être réorganisé, la garde suit la propriété.
+  const bornesDuCorpus = (texte) => {
+    const l = String(texte).split("\n");
+    const i = l.findIndex((x) => /^\|\s*Commande\s*\|/.test(x) && /Phrase exigée \(fr\)/.test(x) && /Phrase exigée \(en\)/.test(x));
+    if (i < 0) return null;
+    const out = [];
+    for (let k = i + 2; k < l.length; k++) {
+      if (!/^\|/.test(l[k])) break;
+      const c = l[k].split("|").slice(1, -1).map((x) => x.trim());
+      if (c.length !== 4) break;
+      const cmd = (c[0].match(/^`([^`]+)`$/) || [])[1];
+      const fr = (c[2].match(/^`([^`]+)`$/) || [])[1];
+      const en = (c[3].match(/^`([^`]+)`$/) || [])[1];
+      if (cmd && fr && en) out.push({ cmd, fr, en });
+    }
+    return out;
+  };
+  // La ligne d'ITEM d'une commande dans la référence RENDUE : même forme que l'extracteur de jetons.
+  const echappe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const ligneItem = (corps, jeton) => {
+    const m = String(corps).match(new RegExp(`^ {2}${echappe(jeton)} {2,}(.*)$`, "m"));
+    return m ? m[1] : null;
+  };
+  // — instrument, DANS LES DEUX SENS, hors du disque : ce que la lecture doit voir, et ce qu'elle ne
+  //   doit pas prendre pour une borne.
+  {
+    const TEMOIN = [
+      "| Commande | Ce que le langage tient | Phrase exigée (fr) | Phrase exigée (en) |",
+      "|---|---|---|---|",
+      "| `sort` | UN champ | `un champ` | `one field` |",
+      "| prose | pas de dosseret | `x` | `y` |",
+      "",
+      "| Commande | Autre chose | Encore |",
+      "|---|---|---|",
+      "| `top` | a | b |",
+    ].join("\n");
+    const vu = bornesDuCorpus(TEMOIN);
+    exiger(!!vu && vu.length === 1 && vu[0].cmd === "sort" && vu[0].fr === "un champ" && vu[0].en === "one field",
+      `(38d) instrument : la lecture du tableau de bornes rend ${vu ? JSON.stringify(vu) : "rien"} sur son corpus témoin — 1 borne \`sort\` attendue, ni la ligne sans dosseret ni le tableau à trois colonnes`);
+    exiger(bornesDuCorpus("aucun tableau ici") === null,
+      `(38d) instrument : la lecture prétend trouver un tableau de bornes là où il n'y en a pas`);
+    exiger(ligneItem("  sort        trie sur un champ", "sort") === "trie sur un champ",
+      `(38d) instrument : la lecture d'une ligne d'item de la référence est cassée`);
+    exiger(ligneItem("  sort trie sur un champ", "sort") === null,
+      `(38d) instrument : la lecture prend pour un item une ligne qui n'a qu'UN espace — elle lirait de la prose`);
+  }
+  const bornes = bornesDuCorpus(readFileSync(CORPUS_LANGAGE, "utf8"));
+  exiger(!!bornes, `(38d) le corpus \`docs/GXQL.md\` ne déclare plus de tableau de bornes (en-tête « Commande … Phrase exigée (fr) … (en) ») : la borne du langage n'est plus déclarée nulle part, et ce témoin refuse de conclure`);
+  const BORNES_MIN = 2;
+  exiger(!bornes || bornes.length >= BORNES_MIN, `(38d) le corpus ne déclare plus que ${bornes ? bornes.length : 0} borne(s) de langage, ${BORNES_MIN} au moins étaient déclarées le 2026-08-27 (\`where\`, \`sort\`) — une borne retirée du corpus désarme ce témoin en silence`);
+  const descriptionsDemon = new Map(paires("DOC_COMMANDS"));
+  for (const b of bornes || []) {
+    exiger(COMMANDES.includes(b.cmd), `(38d) le corpus borne « ${b.cmd} », que le démon ne DÉCLARE pas comme commande de pipe — le corpus décrit un langage qui n'existe plus`);
+    const auDemon = descriptionsDemon.get(b.cmd);
+    exiger(auDemon != null && auDemon.toLowerCase().includes(b.fr.toLowerCase()),
+      `(38d) la description que le démon SERT pour « ${b.cmd} » ne porte pas la borne « ${b.fr} » déclarée par le corpus : ${JSON.stringify(auDemon)} — le texte affiché promet plus que le langage ne tient`);
+    for (const [langue, corps, exige] of [["fr", parLeGuide.corps, b.fr], ["en", corpsEN, b.en]]) {
+      const ligne = ligneItem(corps, b.cmd);
+      exiger(ligne != null, `(38d) sous LANG='${langue}', la référence RENDUE ne porte aucune ligne d'item pour « ${b.cmd} » : la borne ne peut pas y être lue`);
+      exiger(ligne == null || ligne.toLowerCase().includes(exige.toLowerCase()),
+        `(38d) sous LANG='${langue}', l'aide RENDUE décrit « ${b.cmd} » sans la borne « ${exige} » déclarée par le corpus : ${JSON.stringify(ligne)} — l'exploitant écrit d'après cette ligne et obtient une réponse vide qui a l'air complète`);
+    }
+  }
+
   // CE QUE CE TÉMOIN NE TIENT PAS, DÉRIVÉ DU DÉPÔT PLUTÔT QU'ÉCRIT : le glossaire du guide redéfinit une
   // partie des mêmes mots, hors de la référence et hors de ce verdict.
   const srcAideTexte = readFileSync(path.join(WEB, "help.js"), "utf8");
@@ -3948,7 +4104,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(termesGlossaire.length > 10, `(38) instrument : ${termesGlossaire.length} terme(s) de glossaire lus — la lecture est cassée`);
   const glossaireCommandes = termesGlossaire.filter((t) => COMMANDES.includes(t));
 
-  console.log(`[gxql-reference] UNE seule référence du langage : le bouton « ? Aide » de la barre de requête et le guide rendent le MÊME texte (${parLaBarre.corps.length} caractères). ${declares.size} jetons DÉCLARÉS par le démon en ${NOMS.length} vocabulaires (${NOMS.map((n) => `${n.replace("DOC_", "").toLowerCase()}=${(parVocabulaire.get(n) || []).length}`).join(", ")}) ; la référence les écrit TOUS, en français comme en anglais, et n'en écrit aucun que la déclaration ne porte pas. Seconde référence : refusée par un critère DÉRIVÉ (nommer >= ${SEUIL} des ${COMMANDES.length} commandes) — ${references.length} surface(s) au-dessus du seuil, toutes « soql », la plus haute des autres étant « ${plusHauteHors[0]} » à ${plusHauteHors[1]}. Ce que ce témoin NE tient PAS : le libellé des descriptions ; la liste des CHAMPS, déclarée dans le cœur partagé et illisible d'ici ; et le glossaire du guide, qui redéfinit ${glossaireCommandes.length} des ${COMMANDES.length} commandes (${glossaireCommandes.join(", ")}) sans prétendre énumérer le langage — une commande retirée y survivrait sans que ce verdict le voie.`);
+  console.log(`[gxql-reference] UNE seule référence du langage : le bouton « ? Aide » de la barre de requête et le guide rendent le MÊME texte (${parLaBarre.corps.length} caractères). ${declares.size} jetons DÉCLARÉS par le démon en ${NOMS.length} vocabulaires (${NOMS.map((n) => `${n.replace("DOC_", "").toLowerCase()}=${(parVocabulaire.get(n) || []).length}`).join(", ")}) ; la référence les écrit TOUS, en français comme en anglais, et n'en écrit aucun que la déclaration ne porte pas. Seconde référence : refusée par un critère DÉRIVÉ (nommer >= ${SEUIL} des ${COMMANDES.length} commandes) — ${references.length} surface(s) au-dessus du seuil, toutes « soql », la plus haute des autres étant « ${plusHauteHors[0]} » à ${plusHauteHors[1]}. ${(bornes || []).length} BORNE(S) du langage sont déclarées par le corpus (docs/GXQL.md) et PORTÉES par les trois surfaces qui décrivent la commande — la déclaration du démon (fr) et l'aide rendue (fr et en) : ${(bornes || []).map((x) => `${x.cmd} = « ${x.fr} » / « ${x.en} »`).join(" ; ")}. Ce que ce témoin NE tient PAS : le libellé des descriptions NON bornées par le corpus (${COMMANDES.length - (bornes || []).length} des ${COMMANDES.length} commandes) ; il ne COMPILE rien, la borne elle-même est une mesure DATÉE du corpus, pas un verdict d'ici ; la liste des CHAMPS, déclarée dans le cœur partagé et illisible d'ici ; et le glossaire du guide, qui redéfinit ${glossaireCommandes.length} des ${COMMANDES.length} commandes (${glossaireCommandes.join(", ")}) sans prétendre énumérer le langage — une commande retirée y survivrait sans que ce verdict le voie.`);
 }
 
 // ---------------------------------------------------------------------------------------------

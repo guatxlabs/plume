@@ -1,7 +1,9 @@
 # SOC central (daemon : ingestion + API + PWA). Les capteurs hôte/agents poussent via POST /api/ingest.
 #
 # CONTEXTE DE BUILD = la RACINE DE CE DÉPÔT. Le daemon résout `guatx-core` via une git-dep
-#    publique (`git = "https://github.com/guatxlabs/core", tag = "v0.2.1"`, cf. daemon/Cargo.toml) —
+#    publique dont L'ÉTIQUETTE EST CELLE QU'ÉPINGLE `daemon/Cargo.toml` — recopiée ici, elle vieillissait
+#    (elle est restée trois versions en arrière ; mesuré le 2026-08-27, `P9.7-c`), alors la voici DÉRIVÉE :
+#        grep -n 'guatx-core' daemon/Cargo.toml
 #    core est donc récupéré depuis GitHub AU BUILD, aucun crate sibling n'est requis dans le contexte.
 #    Un clone STANDALONE de ce dépôt construit directement :
 #

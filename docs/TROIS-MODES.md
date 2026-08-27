@@ -90,9 +90,9 @@ garde, appliquée au même endroit ; seule la façon d'écrire le nom change.
 
 ### 3.2 Poser ou changer un réglage `PLUME_*`
 
-**Aucun mode ne recharge un réglage `PLUME_*` à chaud.** L'unité du démon n'a pas d'`ExecReload=`,
-et le démon n'installe pas de gestionnaire de `SIGHUP` : dans les trois modes, changer un `PLUME_*`
-suppose de **redémarrer le processus**. Les deux vérifications :
+**Aucun mode n'a de geste de rechargement.** L'unité du démon n'a pas d'`ExecReload=`, et le démon
+n'installe pas de gestionnaire de `SIGHUP` : il n'existe nulle part une commande qui dise au démon
+« relis ta configuration ». Les deux vérifications :
 
 ```sh
 grep -c ExecReload systemd/plume-daemon.service          # 0 — l'unité du démon n'en a pas
@@ -100,7 +100,25 @@ grep -rn 'SIGHUP' daemon/src --include='*.rs'            # rien
 ```
 
 *(Une autre unité livrée, `plume-portscan-nft.service`, porte bien un `ExecReload=` : il recharge
-une table nftables, pas la configuration de plume.)* C'est une limite connue et portée par une clé
+une table nftables, pas la configuration de plume.)*
+
+#### Ce qui décide vraiment : le SUPPORT, pas le geste
+
+Le geste de rechargement manque partout, mais ce n'est pas ce qui borne le sujet. Ce qui le borne,
+c'est **le support depuis lequel une nouvelle valeur pourrait être lue**. La précédence est
+`environnement > fichier de configuration > défaut compilé` (`cfg()`, `daemon/src/main.rs`), et
+l'environnement d'un processus **déjà lancé ne change plus** : seul le niveau « fichier » peut porter
+une valeur neuve pendant la vie du démon. Or ce niveau est coupé en conteneur (§2).
+
+| | support d'une valeur neuve, démon en marche | conséquence |
+|---|---|---|
+| `host` | `/etc/plume/soc.conf`, relu à chaque lecture qui passe par `load_config()` | un rechargement à chaud est **possible**, et une partie existe déjà (voir §3.7) |
+| `docker` | **aucun** — `PLUME_CONFIG=/nonexistent` (`docker-compose.yml`, `Dockerfile`) | rien à relire : le rechargement à chaud est **impossible par construction**, pas seulement non implémenté |
+| `k3s` | **aucun** — `PLUME_CONFIG=/nonexistent` (`deploy/k3s.yaml`) | idem ; et le pod est de toute façon **remplacé** pour appliquer un `env:` modifié |
+
+Autrement dit : **un rechargement à chaud ne pourrait servir qu'au mode `host`.** Dans les deux
+autres, changer un réglage veut dire remplacer le conteneur — le redémarrage n'est pas le prix de la
+reconfiguration, il *est* le mécanisme de déploiement. C'est une limite connue et portée par une clé
 ouverte — voir `P9.4-a` et `P9.6-b` dans [`ROADMAP.md`](ROADMAP.md).
 
 | | où on écrit | ce qui applique |
@@ -209,6 +227,46 @@ Pour **aligner un hôte sur le planificateur interne** : posez `PLUME_BACKUP_INT
 deux en marche produit deux familles de sauvegardes dans le même répertoire, avec deux rotations
 indépendantes.
 
+#### Changer un réglage de sauvegarde : deux groupes, pas un
+
+Les réglages `PLUME_BACKUP_*` **ne se rechargent pas tous de la même façon**, et la différence est
+invisible depuis leur nom. Relevé sur l'arbre suivi le 2026-08-27 :
+
+| Groupe | Clés | Quand la valeur est lue |
+|---|---|---|
+| chiffrement et séquestre | `AGE_RECIPIENT` · `REQUIRE_ASYMMETRIC` · `FORCE_PLAINTEXT_EXPORT` · `SCRYPT_LOG_N` · `STAGING_DIR` · `AGE_IDENTITY[_FILE]` | **à chaque cycle** (`reglage_sauvegarde`, `daemon/src/backup/mod.rs`) |
+| activation, cadence, cible, rétention | `INTERVAL` · `DEST` · `KEEP` · `ON_START` | **une seule fois**, au lancement du fil (`spawn_backup_scheduler`, `daemon/src/server/sauvegarde_planifiee.rs`) |
+
+Conséquence, **en mode `host` uniquement** (c'est le seul mode où le niveau « fichier » existe, §3.2) :
+corriger un destinataire d'escrow dans `/etc/plume/soc.conf` mord **dès le cycle suivant, sans
+redémarrage**. Corriger l'intervalle, la destination ou la rétention **exige** de redémarrer. En
+`docker` et en `k3s`, les deux groupes exigent de remplacer le conteneur, faute de support à relire.
+
+#### Ce que le redémarrage coûte, et qui n'est écrit nulle part ailleurs
+
+> ⚠️ **Redémarrer le démon remet la cadence de sauvegarde à zéro.** Le planificateur ne garde aucune
+> trace de sa dernière exécution : il attend 90 s (le temps du bind et de la *liveness*), puis dort un
+> intervalle **entier** avant son premier cycle — `PLUME_BACKUP_ON_START` valant `0` par défaut et
+> n'étant posé nulle part dans `deploy/k3s.yaml`. Avec l'intervalle livré (`21600` s, soit 6 h, dans
+> `deploy/k3s.yaml`, `docker-compose.yml` et `.env.example`), **chaque redémarrage repousse la
+> prochaine sauvegarde de 6 h 1 min 30 s**, et rien ne le dit.
+>
+> Le cas qui fait mal n'est pas la reconfiguration volontaire, c'est la **churn** : un pod qui
+> redémarre plus souvent que son intervalle — déploiement, `rollout restart`, éviction, nœud
+> `NotReady`, `OOMKill` — **ne produit jamais aucune archive**, pendant que la console annonce une
+> rétention « 24 × 6 h » à côté d'un répertoire vide. Le signal SOC qui dénonce un cycle stérile
+> (`P9.4-b`) n'aide pas ici : il n'est émis que par un cycle qui **s'exécute** et échoue, jamais par un
+> cycle qui n'a pas encore eu lieu.
+>
+> Ce qu'on peut faire aujourd'hui : poser `PLUME_BACKUP_ON_START=1` — au prix d'une sauvegarde à
+> chaque redémarrage, ce qui est une tempête si le processus boucle — ou **vérifier le répertoire
+> plutôt que le réglage**, dans les trois modes :
+> ```sh
+> ls -la "$PLUME_BACKUP_DEST"     # host ; docker/k3s : la même commande via `exec` (§3.5)
+> ```
+> Un `PLUME_BACKUP_DEST` sans `plume-<TS>.db.age` est un déploiement **sans sauvegarde**, quelle que
+> soit la rétention annoncée à côté.
+
 ### 3.8 Chiffrer la base au repos
 
 Le geste est identique dans son principe — poser une clé **avant le premier démarrage** — et diffère
@@ -271,7 +329,9 @@ vides, et pourquoi.
 | lire un réglage depuis un fichier de configuration | `docker`, `k3s` | `PLUME_CONFIG=/nonexistent` — délibéré, cf. §2 |
 | éditer `/etc/hosts` pour la résolution locale | `k3s` | la résolution passe par l'`Ingress` et le DNS du cluster |
 | appliquer une `NetworkPolicy` d'egress | `host`, `docker` | c'est un objet Kubernetes ; l'équivalent hôte est le pare-feu de la machine |
-| recharger un réglage sans redémarrer | **les trois** | pas d'`ExecReload=`, pas de `SIGHUP` — cf. §3.2 |
+| recharger l'activation, la cadence, la cible ou la rétention de sauvegarde sans redémarrer | **les trois** | lues une seule fois au lancement du fil (`spawn_backup_scheduler`) — cf. §3.7 |
+| recharger **quoi que ce soit** sans redémarrer | `docker`, `k3s` | aucun support à relire : environnement figé + `PLUME_CONFIG=/nonexistent` — cf. §3.2 |
+| demander un rechargement par un signal ou une commande | **les trois** | pas d'`ExecReload=`, pas de `SIGHUP` — cf. §3.2 |
 
 ---
 

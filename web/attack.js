@@ -48,6 +48,34 @@ function techniqueDisplayName(t) {
 // Intensité de couverture d'une technique : max(rule_count, alert_count). Sert l'échelle de couleur.
 function techWeight(t) { return Math.max(Number(t && t.rule_count) || 0, Number(t && t.alert_count) || 0); }
 
+// P9.5-a — LE TROISIÈME ÉTAT D'UNE TECHNIQUE, LU UNE SEULE FOIS.
+//
+// CE QUE CETTE SURFACE DISAIT ET QUI ÉTAIT FAUX, RETIRÉ LE 2026-08-27. Le démon avait cessé de compter
+// couvertes les techniques dont la seule règle est activée mais qu'aucun producteur ne nourrit — la
+// correction juste. Il ne servait pourtant que DEUX états, et cette surface rendait donc la règle affamée
+// avec le vocabulaire de l'absence : « ANGLE MORT : aucune règle activée ne couvre cette technique »,
+// la sortie vers la règle INERTE (« il n'y a rien à ouvrir »), et « Créer la règle qui la couvrira » mis
+// en avant. Les trois étaient FAUX pour cette population : la règle EXISTE, elle est ACTIVÉE, et le geste
+// prescrit est nuisible — une seconde règle qui n'épingle aucune source rendrait la technique de nouveau
+// « couverte » sans que rien ne tire davantage. Un mensonge en remplaçait un autre.
+//
+// LE DÉMON SERT MAINTENANT LA RAISON (`rules_en_attente_de_source`, `sources_manquantes`), et c'est elle
+// qui rend ce cas ACTIONNABLE : brancher le producteur suffit, aucune règle à écrire. `enAttente` ne se
+// confond ni avec le premier état (elle ne couvre pas : `covered` reste faux, ce qui est vrai — rien ne
+// peut la déclencher) ni avec le dernier (une règle la porte, et la console doit y MENER).
+//
+// DEUX BORNES, ÉCRITES : un démon ANTÉRIEUR ne sert aucune des deux clés — `enAttente` vaut alors 0 et la
+// technique retombe dans « angle mort », c'est-à-dire le comportement d'avant, jamais une affirmation
+// neuve ; et la liste des sources peut être VIDE alors que le compte ne l'est pas (le démon a compté sans
+// pouvoir nommer) — la porte le DIT plutôt que d'afficher une énumération vide.
+function reglesEnAttente(t) { return Math.max(0, Number(t && t.rules_en_attente_de_source) || 0); }
+function sourcesManquantes(t) {
+  const v = t && t.sources_manquantes;
+  return Array.isArray(v) ? v.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim()) : [];
+}
+// Une technique est EN ATTENTE DE SOURCE quand rien ne peut la déclencher ET qu'une règle la porte déjà.
+function enAttenteDeSource(t) { return !(t && t.covered) && reglesEnAttente(t) > 0; }
+
 // Teinte d'une cellule couverte : color-mix de --ok, d'autant plus soutenu que la couverture est dense.
 // `w` = poids de la technique, `max` = poids max observé -> pourcentage 16..58 %.
 // PLAFOND 58 % (peaufinage lisibilité) : au-delà le vert sature et le texte (--fg) décroche du contraste
@@ -59,28 +87,40 @@ function coveredBg(w, max) {
   return 'color-mix(in srgb, var(--ok) ' + pct + '%, transparent)';
 }
 
-// Une cellule = une technique. Couverte -> fond vert (échelle) ; non couverte -> classe .uncovered (grisé).
+// Une cellule = une technique, en TROIS états : couverte -> fond vert (échelle) ; règle activée mais rien
+// pour la nourrir -> classe .attente (trait plein, encre d'avertissement) ; aucune règle -> .uncovered (grisé
+// pointillé). Les deux derniers partagent `covered:false`, et c'est vrai des deux — rien ne tire.
 function techniqueCell(t, max) {
   const tid = (t && t.tid) || '?';
   const covered = !!(t && t.covered);
+  const attente = enAttenteDeSource(t);
   const cell = document.createElement('button');
   cell.type = 'button';
-  cell.className = 'attack-cell' + (covered ? '' : ' uncovered');
+  // TROIS classes pour TROIS états : une cellule en attente de source n'est pas grisée comme un angle
+  // mort — la règle existe, et le grisé du vide dirait le contraire.
+  cell.className = 'attack-cell' + (covered ? '' : attente ? ' attente' : ' uncovered');
   if (covered) cell.style.background = coveredBg(techWeight(t), max);
   const rc = Number(t && t.rule_count) || 0;
   const ac = Number(t && t.alert_count) || 0;
+  const manquantes = sourcesManquantes(t);
   const idEl = document.createElement('span'); idEl.className = 'attack-tid'; idEl.textContent = tid;
   const cnt = document.createElement('span'); cnt.className = 'attack-cnt' + (covered ? '' : ' none');
-  cnt.textContent = covered ? (rc + 'r/' + ac + 'a') : 'aucune règle';
+  cnt.textContent = covered ? (rc + 'r/' + ac + 'a') : attente ? 'source manquante' : 'aucune règle';
   const nom = techniqueDisplayName(t);
   const nameEl = document.createElement('span'); nameEl.className = 'attack-tname' + (nom ? '' : ' attack-tname-inconnu');
   nameEl.textContent = nom || NOM_INCONNU;
   cell.append(cnt, idEl, nameEl);
-  // angle mort : état « aucune règle » explicite + indice pour combler (import Sigma). Le clic OUVRE LA
-  // PORTE de la technique (`P11.6-b`) : la sortie vers ses alertes y est le même appel qu'avant, à côté de
-  // celles qui manquaient. Le raccourci d'import en masse reste aussi sur la légende (admin).
+  // Le clic OUVRE LA PORTE de la technique (`P11.6-b`) : la sortie vers ses alertes y est le même appel
+  // qu'avant, à côté de celles qui manquaient. Le raccourci d'import en masse reste sur la légende (admin),
+  // et il ne s'offre qu'aux VRAIS angles morts : importer un ruleset ne branche aucun producteur.
+  const etatEnInfobulle = covered
+    ? (rc + ' règle(s) · ' + ac + ' alerte(s)')
+    : attente
+      ? ("EN ATTENTE DE SOURCE — " + reglesEnAttente(t) + " règle(s) activée(s) portent cette technique, mais rien sur cette base ne produit ce qu'elles interrogent"
+         + (manquantes.length ? '. Source(s) à brancher : ' + manquantes.join(', ') : ''))
+      : 'ANGLE MORT — aucune règle ne couvre cette technique. Importez un ruleset Sigma pour la couvrir (bouton « Importer un ruleset Sigma »).';
   cell.title = tid + ' — ' + (nom || (NOM_INCONNU + " : identifiant hors du catalogue ATT&CK connu de la console (technique retirée, personnalisée ou mal saisie)"))
-    + '\n' + (covered ? (rc + ' règle(s) · ' + ac + ' alerte(s)') : 'ANGLE MORT — aucune règle ne couvre cette technique. Importez un ruleset Sigma pour la couvrir (bouton « Importer un ruleset Sigma »).')
+    + '\n' + etatEnInfobulle
     + '\n' + 'Clic : ses règles, ses alertes, et le geste qui la couvrirait';
   cell.onclick = () => ouvrirLaPorteDeLaTechnique(t);
   return cell;
@@ -115,28 +155,48 @@ function porteDeLaTechnique(t, fermer = () => {}) {
   const tid = (t && t.tid) || '?';
   const nom = techniqueDisplayName(t);
   const couverte = !!(t && t.covered);
+  const attente = enAttenteDeSource(t);
   const rc = Number(t && t.rule_count) || 0;
   const ac = Number(t && t.alert_count) || 0;
+  const nAttente = reglesEnAttente(t);
+  const manquantes = sourcesManquantes(t);
   const box = document.createElement('div');
   box.className = 'attack-porte';
   const h = document.createElement('h3');
   h.textContent = tid + ' — ' + (nom || NOM_INCONNU);
   const etat = document.createElement('p');
   etat.className = 'modal-msg';
-  etat.textContent = couverte
-    ? rc + ' règle(s) la couvrent · ' + ac + ' alerte(s) sur la fenêtre de la matrice.'
-    : "ANGLE MORT : aucune règle activée ne couvre cette technique. Rien ne la détectera tant qu'aucune ne la porte.";
+  // LA PHRASE D'ÉTAT EST ENTIÈRE ET STATIQUE (donc au lexique), et le DÉTAIL — des comptes et des noms de
+  // source — vit dans un nœud texte à côté : une phrase qui porterait le nombre dans son corps n'aurait
+  // plus d'entrée exacte au lexique et ne se traduirait jamais.
+  if (attente) {
+    const phrase = document.createElement('span');
+    phrase.textContent = "RIEN NE PEUT LA DÉCLENCHER : la ou les règles qui portent cette technique sont ACTIVÉES, mais aucune source de cette base ne produit ce qu'elles interrogent. Brancher le producteur suffit — il n'y a pas de règle à écrire.";
+    const detail = manquantes.length
+      ? ' ' + nAttente + " règle(s) en attente · source(s) à brancher : " + manquantes.join(', ') + '.'
+      : ' ' + nAttente + " règle(s) en attente ; la matrice ne nomme aucune source, cette surface n'en invente pas.";
+    etat.append(phrase, document.createTextNode(detail));
+  } else {
+    etat.textContent = couverte
+      ? rc + ' règle(s) la couvrent · ' + ac + ' alerte(s) sur la fenêtre de la matrice.'
+      : "ANGLE MORT : aucune règle activée ne couvre cette technique. Rien ne la détectera tant qu'aucune ne la porte.";
+  }
   const sorties = document.createElement('div');
   sorties.className = 'attack-porte-sorties';
 
-  // 1. LES RÈGLES QUI LA COUVRENT — ouvre le panneau des règles sur cette technique (recherche partagée).
+  // 1. LA SORTIE VERS LES RÈGLES — ouvre le panneau des règles sur cette technique (recherche partagée).
+  //    ELLE EST PRATICABLE DANS LES DEUX CAS OÙ UNE RÈGLE EXISTE : couverte, et en attente de source. La
+  //    rendre inerte sur le second était le défaut — la règle est là, activée, et c'est vers elle qu'il
+  //    faut mener. Chaque cas porte sa phrase ENTIÈRE : un libellé composé à l'exécution n'aurait plus
+  //    d'entrée exacte au lexique.
   sorties.appendChild(sortieDePorte({
-    label: 'Voir les règles qui la couvrent',
+    label: attente ? 'Voir les règles qui attendent leur source' : 'Voir les règles qui la couvrent',
     title: !PORTES.regles ? "Le panneau des règles n'est pas chargé."
+      : attente ? "Ouvre le panneau des règles, la recherche posée sur cette technique : la ou les règles existent et sont activées — c'est leur source qui manque."
       : couverte ? "Ouvre le panneau des règles, la recherche posée sur cette technique (elle y retrouve aussi les règles taguées par une sous-technique)."
       : "Aucune règle ne couvre cette technique : il n'y a rien à ouvrir. C'est la sortie de création qui s'applique.",
-    inerte: !PORTES.regles || !couverte,
-    principal: couverte,
+    inerte: !PORTES.regles || !(couverte || attente),
+    principal: couverte || attente,
     onClick: () => { fermer(); if (PORTES.regles) PORTES.regles(tid); },
   }));
   // 2. LES DÉTECTIONS QU'ELLE A NOURRIES — le pivot qui existait déjà, inchangé.
@@ -147,19 +207,26 @@ function porteDeLaTechnique(t, fermer = () => {}) {
     inerte: !ac,
     onClick: () => { fermer(); setAlertMitreFilter(tid); },
   }));
-  // 3. LE GESTE QUI LA COUVRIRAIT — formulaire de règle, technique pré-remplie.
+  // 3. LE GESTE QUI LA COUVRIRAIT — formulaire de règle, technique pré-remplie. EN ATTENTE DE SOURCE, ce
+  //    n'est PAS le geste utile : une seconde règle qui n'épingle aucune source rendrait la technique de
+  //    nouveau « couverte » sans que rien ne tire davantage. Elle reste offerte — un exploitant peut
+  //    vouloir écrire une règle sur une autre source — mais elle n'est ni mise en avant ni libellée
+  //    « créer la règle qui la couvrira », qui serait faux.
   const peutEcrire = socRole() === 'admin' || socRole() === 'editor';
   sorties.appendChild(sortieDePorte({
-    label: couverte ? 'Ajouter une règle sur cette technique' : 'Créer la règle qui la couvrira',
+    label: (couverte || attente) ? 'Ajouter une règle sur cette technique' : 'Créer la règle qui la couvrira',
     title: !PORTES.creer ? "Le panneau des règles n'est pas chargé."
-      : peutEcrire ? "Ouvre le formulaire de règle avec cette technique déjà renseignée."
-      : "Écrire une règle demande le rôle éditeur ; ce compte est en lecture seule.",
+      : !peutEcrire ? "Écrire une règle demande le rôle éditeur ; ce compte est en lecture seule."
+      : attente ? "Ouvre le formulaire de règle avec cette technique déjà renseignée. Une règle de plus ne remplace pas le producteur qui manque : sans lui, elle ne tirera pas davantage."
+      : "Ouvre le formulaire de règle avec cette technique déjà renseignée.",
     inerte: !PORTES.creer || !peutEcrire,
-    principal: !couverte,
+    principal: !couverte && !attente,
     onClick: () => { fermer(); if (PORTES.creer) PORTES.creer(tid); },
   }));
-  // 4. COMBLER EN MASSE — l'affordance de la légende, à portée de la technique regardée (admin).
-  if (!couverte && socIsAdmin()) {
+  // 4. COMBLER EN MASSE — l'affordance de la légende, à portée de la technique regardée (admin). Réservée
+  //    aux VRAIS angles morts : importer une bibliothèque n'a jamais branché un producteur, et la proposer
+  //    ici enverrait l'exploitant écrire des règles là où il lui faut poser une entrée.
+  if (!couverte && !attente && socIsAdmin()) {
     sorties.appendChild(sortieDePorte({
       label: 'Importer un ruleset Sigma',
       title: 'Combler les angles morts en masse : importer une bibliothèque de détection Sigma.',
@@ -196,10 +263,17 @@ function tacticColumn(tac, max) {
   const h = document.createElement('div'); h.className = 'attack-col-h';
   h.textContent = (tac && tac.tactic) || '(tactique ?)';
   const sub = document.createElement('span'); sub.className = 'attack-col-sub';
-  sub.textContent = covered + ' / ' + techs.length + ' couverte(s)';
+  // Le troisième état se voit AU NIVEAU DE LA COLONNE, et il est LU sur ce que le démon sert plutôt
+  // que recompté ici : sans cela, il faudrait ouvrir une cellule pour apprendre qu'une tactique entière
+  // n'attend qu'un producteur.
+  const attCol = Math.max(0, Number(tac && tac.techniques_en_attente_de_source) || 0);
+  sub.textContent = covered + ' / ' + techs.length + ' couverte(s)' + (attCol ? ' · ' + attCol + ' en attente de source' : '');
   h.appendChild(sub); col.appendChild(h);
   // couvertes d'abord (poids décroissant), puis angles morts -> les cellules vertes remontent.
-  techs.sort((a, b) => (Number(!!(b && b.covered)) - Number(!!(a && a.covered))) || (techWeight(b) - techWeight(a)));
+  // Couvertes en tête, puis les techniques dont la règle attend sa source, puis les vrais angles morts :
+  // l'ordre suit ce que l'exploitant peut FAIRE — regarder, brancher, écrire.
+  const rang = x => (x && x.covered ? 2 : enAttenteDeSource(x) ? 1 : 0);
+  techs.sort((a, b) => (rang(b) - rang(a)) || (techWeight(b) - techWeight(a)));
   techs.forEach(t => col.appendChild(techniqueCell(t, max)));
   return col;
 }
@@ -209,24 +283,34 @@ function renderLegend(tactics) {
   const leg = $('#attack-legend'); if (!leg) return;
   leg.replaceChildren();
   leg.className = 'attack-legend';
-  let tech = 0, cov = 0;
-  tactics.forEach(tac => { (tac.techniques || []).forEach(t => { tech++; if (t && t.covered) cov++; }); });
+  let tech = 0, cov = 0, att = 0;
+  tactics.forEach(tac => { (tac.techniques || []).forEach(t => { tech++; if (t && t.covered) cov++; else if (enAttenteDeSource(t)) att++; }); });
   const mk = (bg, label, cls) => {
     const s = document.createElement('span');
     const sw = document.createElement('span'); sw.className = 'swatch' + (cls ? ' ' + cls : ''); if (bg) sw.style.background = bg;
     s.append(sw, document.createTextNode(label)); return s;
   };
+  // LES PASTILLES NE RECOPIENT PLUS AUCUNE COULEUR, ET C'EST UNE CORRECTION EN PASSANT. Les deux teintes
+  // de couverture sont DÉRIVÉES de l'échelle elle-même (`coveredBg`, aux deux bouts de son domaine) au
+  // lieu d'être deux `color-mix` écrits à la main qui vieillissaient dès qu'on touchait aux bornes ; et
+  // les deux autres empruntent la classe DE LA CELLULE, dont la feuille donne le fond aux deux à la fois.
+  // Mesuré en le faisant : la pastille « angle mort » annonçait 12 % là où la cellule en peint 10.
   leg.append(
-    mk('color-mix(in srgb, var(--ok) 22%, transparent)', 'couverte (peu de règles)'),
-    mk('color-mix(in srgb, var(--ok) 56%, transparent)', 'couverte (dense)'),
-    mk('color-mix(in srgb, var(--mut) 12%, transparent)', 'angle mort (aucune détection)'),
+    mk(coveredBg(1, 6), 'couverte (peu de règles)'),
+    mk(coveredBg(6, 6), 'couverte (dense)'),
+    mk(null, 'règle activée, source manquante', 'attente'),
+    mk(null, 'angle mort (aucune détection)', 'uncovered'),
   );
+  // LA SYNTHÈSE SÉPARE LES DEUX FAÇONS DE N'ÊTRE PAS COUVERT : les techniques dont la règle attend son
+  // producteur se ferment SANS écrire une ligne. Les confondre reviendrait à prescrire le mauvais geste
+  // sur le compte global, comme la porte le faisait sur une cellule.
   const summary = document.createElement('span');
-  summary.textContent = 'Couverture : ' + cov + ' / ' + tech + ' technique(s) · ' + (tech - cov) + ' angle(s) mort(s)';
+  summary.textContent = 'Couverture : ' + cov + ' / ' + tech + ' technique(s) · ' + (tech - cov - att) + ' angle(s) mort(s) · ' + att + ' en attente de source';
   leg.appendChild(summary);
   // AFFORDANCE « fermer les angles morts » : raccourci vers l'import Sigma en masse. Admin only (la modale
-  // re-garde de toute façon, serveur = vraie garde). N'apparaît que s'il RESTE des angles morts à combler.
-  if ((tech - cov) > 0 && socIsAdmin()) {
+  // re-garde de toute façon, serveur = vraie garde). N'apparaît que s'il RESTE de VRAIS angles morts —
+  // un import ne branche aucun producteur, donc il ne ferme rien de ce qui attend une source.
+  if ((tech - cov - att) > 0 && socIsAdmin()) {
     const btn = document.createElement('button');
     btn.type = 'button'; btn.className = 'attack-fill'; btn.textContent = 'Importer un ruleset Sigma →';
     btn.title = 'Combler les angles morts : importer une bibliothèque de détection Sigma';

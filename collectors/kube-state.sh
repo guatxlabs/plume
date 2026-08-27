@@ -154,6 +154,52 @@ else
 fi
 rm -f "$f_sts"
 
+# --- §B LE MAGASIN DE SECRETS LUI-MEME (P9.8-a) ------------------------------------------------
+# CE QUI A ETE PAYE EN VRAI : un coffre scelle plusieurs jours a empeche le rafraichissement de
+# VINGT-SEPT secrets externes de tous les espaces d'un cluster — emetteur de certificats, fournisseur
+# d'identite, tunnel d'entree, pare-feu applicatif — et RIEN ne l'a dit. Deux certificats ont expire.
+# L'etat n'a ete decouvert qu'en tapant une commande d'inspection.
+# CE QUE CE BLOC OBSERVE, ET POURQUOI CE N'EST PAS `kube_sts_notready`. Ce dernier parle du POD du
+# coffre ; il ne dit rien d'un magasin dont le pod tourne mais qui a perdu son jeton, et sa regle est
+# semee DESACTIVEE. Ici l'objet est le MAGASIN : la ressource qui declare pouvoir approvisionner.
+# UNE SEULE SERIE POUR UNE SEULE CAUSE. Compter les SECRETS bloques rendrait vingt-sept fois le meme
+# fait ; ce sont les MAGASINS qui sont comptes. Le demon leve UNE alerte dessus, sans qu'aucune regle
+# ait a etre activee (cf. `daemon/src/sonde_du_magasin_de_secrets.rs`, qui cite ces deux noms de serie).
+# CE QUI EST PRET, ET CE QUI NE L'EST PAS : la condition `Ready` a la valeur `True`, et RIEN D'AUTRE.
+# Un magasin sans condition `Ready` n'est PAS pret — il n'a rien affirme, et convertir ce silence en
+# sante est exactement le defaut poursuivi. Le regime transitoire (un magasin cree a l'instant) est
+# absorbe cote demon, qui exige l'unanimite des releves d'une heure avant de lever.
+# LE CRD EST OPTIONNEL — meme forme que cert-manager et Velero plus haut : un `get` qui echoue sur une
+# API JOIGNABLE veut dire « pas installe » (rien n'est dit), sur une API MUETTE il veut dire « je n'ai
+# pas pu regarder » (et la mesure est declaree absente). Les deux genres sont lus, un cluster peut
+# n'avoir que l'un des deux.
+f_ms=$(mktemp)
+ms_lus=0
+for _ms_kind in clustersecretstores.external-secrets.io secretstores.external-secrets.io; do
+  if kc get "$_ms_kind" -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"/"}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' >> "$f_ms" 2>/dev/null; then
+    ms_lus=$((ms_lus + 1))
+  fi
+done
+if [ "$ms_lus" -gt 0 ]; then
+  # `NF` garde les lignes vides hors du compte ; une ligne dont le second champ MANQUE (aucune
+  # condition `Ready`) a bien NF>=1 et compte comme NON prete. Un cluster reellement sans magasin
+  # publie donc un VRAI zero — sans ce cas, une version qui n'emettrait plus jamais rien passerait
+  # le temoin d'echec sans rien prouver.
+  ms_total=$(awk 'NF{c++} END{print c+0}' "$f_ms")
+  ms_nr=$(awk 'NF && $2!="True"{c++} END{print c+0}' "$f_ms")
+  add_m secretstore_total "$ms_total"
+  add_m secretstore_notready "$ms_nr"
+  # L'EVENEMENT NOMME chaque magasin et l'etat qu'il a REELLEMENT publie (ou son absence) : le compte
+  # dit qu'il faut agir, le nom dit ou. Severite 4 — une rotation de cles eteinte a l'echelle du
+  # cluster est du meme rang qu'un noeud NotReady.
+  # `sub(/^\//)` : un magasin de PORTEE CLUSTER n'a pas d'espace de noms, le champ arrive donc vide et
+  # le nom se lirait « /vault-backend ». Ce qui est retire est un separateur sans objet, jamais un nom.
+  awk 'NF && $2!="True"{n=$1; sub(/^\//,"",n); e=$2; if(e=="") e="(aucune condition Ready)"; print "4\t"n" : magasin de secrets pas pret (Ready="e") — les secrets approvisionnes par ce magasin ne se renouvellent plus"}' "$f_ms" >> "$ev"
+elif [ "$api_joignable" = 0 ]; then
+  plume_mesure_absente secretstore_notready source_illisible "kubectl get clustersecretstores/secretstores : l'API du cluster n'a pas repondu — impossible de distinguer « aucun magasin de secrets deploye » de « le magasin ne repond plus » ; la rotation des cles n'est PAS observee tant que c'est le cas"
+fi
+rm -f "$f_ms"
+
 f_vel=$(mktemp)
 if kc get backups.velero.io -A --no-headers -o custom-columns=N:.metadata.name,P:.status.phase > "$f_vel" 2>/dev/null; then
   vf=$(awk '$2 ~ /Failed/{c++} END{print c+0}' "$f_vel")

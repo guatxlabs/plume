@@ -539,19 +539,36 @@ pub(crate) fn mitre_parents(tag: &str) -> Vec<String> {
 }
 
 /// #22 — Compose la matrice de couverture ATT&CK à partir des tags des règles ACTIVÉES et des comptes
-/// d'alertes par technique. PUR (aucun AppState / DB) donc testable directement. `enabled_rule_tags` = les
-/// tags `mitre` des règles enabled=1 (un par règle) ; `alert_counts` = technique parente -> nb d'alertes sur
-/// la fenêtre (déjà agrégé depuis la table `alert`, PAS un scan d'events).
+/// d'alertes par technique. PUR (aucun AppState / DB) donc testable directement. `alert_counts` =
+/// technique parente -> nb d'alertes sur la fenêtre (déjà agrégé depuis la table `alert`, PAS un scan
+/// d'events).
 ///
-/// COUVERTURE : une technique est `covered` ssi >=1 règle activée la cible. Les techniques du CATALOG sans
-/// aucune règle sont les BLIND-SPOTS (`covered:false`, rule_count:0) — c'est tout l'intérêt d'un « navigator »
-/// global : rendre visible ce qu'on NE détecte pas. SUPERSET : une technique taguée hors CATALOG (custom /
-/// vendeur) n'est jamais perdue -> repliée dans une pseudo-tactique `unmapped` en fin de matrice.
+/// **TROIS ÉTATS PAR TECHNIQUE, PAS DEUX (`P9.5-a`)**, et les deux entrées de règles disent lequel :
+///   * `enabled_rule_tags` — les tags des règles activées QUI PEUVENT TIRER. Elles seules COUVRENT ;
+///   * `regles_en_attente_de_source` — `(tag, sources qui manquent)` d'une règle activée qu'AUCUN
+///     producteur ne nourrit sur cette base. Elle ne couvre pas — rien ne peut la déclencher — mais elle
+///     EXISTE, elle est ACTIVÉE, et la console doit y mener au lieu d'en proposer une seconde.
 ///
-/// Forme : `{ tactics:[{tactic, techniques:[{tid, name, rule_count, alert_count, covered}], rule_count, alert_count,
-/// covered}], totals:{tactics, tactics_covered, techniques, techniques_covered, techniques_uncovered,
-/// rules_mapped, alerts} }`.
-pub(crate) fn build_attack_matrix(enabled_rule_tags: &[String], alert_counts: &HashMap<String, i64>) -> Value {
+/// POURQUOI CETTE SECONDE ENTRÉE EXISTE, ÉCRIT ICI PARCE QUE C'EST LE DÉFAUT QU'ELLE FERME. Avec la seule
+/// première, une technique dont l'unique règle est affamée retombait EXACTEMENT dans le seau de
+/// `rule_count = 0` — celui de « personne n'a jamais écrit de règle ». La surface annonçait alors un angle
+/// mort là où le geste utile est de BRANCHER LE PRODUCTEUR, pas d'écrire une règle. Les deux états
+/// partagent `covered:false` (c'est vrai des deux : rien ne tire), et c'est `rules_en_attente_de_source`
+/// avec `sources_manquantes` qui les SÉPARE et porte la raison.
+///
+/// SUPERSET : une technique taguée hors CATALOG (custom / vendeur) n'est jamais perdue — repliée dans une
+/// pseudo-tactique `unmapped` en fin de matrice, y compris quand elle n'est portée QUE par une règle en
+/// attente de source.
+///
+/// Forme : `{ tactics:[{tactic, techniques:[{tid, name, rule_count, alert_count, covered,
+/// rules_en_attente_de_source, sources_manquantes}], rule_count, alert_count, covered,
+/// techniques_en_attente_de_source}], totals:{tactics, tactics_covered, techniques, techniques_covered,
+/// techniques_uncovered, techniques_en_attente_de_source, rules_mapped, alerts} }`.
+pub(crate) fn build_attack_matrix(
+    enabled_rule_tags: &[String],
+    regles_en_attente_de_source: &[(String, Vec<String>)],
+    alert_counts: &HashMap<String, i64>,
+) -> Value {
     use std::collections::HashMap as Map;
     // rule_count par technique parente (une règle compte 1 par technique DISTINCTE qu'elle cible).
     let mut rule_count: Map<String, i64> = Map::new();
@@ -561,6 +578,27 @@ pub(crate) fn build_attack_matrix(enabled_rule_tags: &[String], alert_counts: &H
         if !parents.is_empty() { rules_mapped += 1; }
         for p in parents { *rule_count.entry(p).or_insert(0) += 1; }
     }
+    // Les règles ACTIVÉES QUE RIEN NE NOURRIT, par technique parente, AVEC LES SOURCES QUI MANQUENT.
+    // Les sources sont réunies en un ensemble ORDONNÉ : une technique portée par deux règles affamées
+    // nomme les deux exigences une fois chacune, et l'ordre ne dépend pas de celui des lignes lues.
+    let mut attente_count: Map<String, i64> = Map::new();
+    let mut attente_sources: Map<String, std::collections::BTreeSet<String>> = Map::new();
+    for (tag, manquantes) in regles_en_attente_de_source {
+        for p in mitre_parents(tag) {
+            *attente_count.entry(p.clone()).or_insert(0) += 1;
+            let e = attente_sources.entry(p).or_default();
+            for s in manquantes { e.insert(s.clone()); }
+        }
+    }
+    // Le TROISIÈME état d'une technique, écrit une seule fois : son compte de règles affamées et la
+    // liste ordonnée de ce qui leur manque. Une technique qu'aucune règle ne porte rend `0` et `[]` —
+    // et c'est CE couple qui la distingue de celle dont la règle attend sa source.
+    let etat_dattente = |tid: &str| -> (i64, Vec<String>) {
+        (
+            *attente_count.get(tid).unwrap_or(&0),
+            attente_sources.get(tid).map(|s| s.iter().cloned().collect()).unwrap_or_default(),
+        )
+    };
 
     // techniques connues du CATALOG (pour détecter les tags hors-catalogue -> pseudo-tactique `unmapped`).
     let known: std::collections::HashSet<&'static str> =
@@ -568,25 +606,31 @@ pub(crate) fn build_attack_matrix(enabled_rule_tags: &[String], alert_counts: &H
 
     let mut tactics_json: Vec<Value> = Vec::new();
     let (mut tot_tech, mut tot_tech_cov, mut tot_tac_cov, mut tot_alerts) = (0i64, 0i64, 0i64, 0i64);
+    let mut tot_tech_attente = 0i64;
 
     for tac in guatx_core::attack::TACTICS {
         let mut techs: Vec<Value> = Vec::new();
-        let (mut t_rc, mut t_ac, mut t_cov) = (0i64, 0i64, false);
+        let (mut t_rc, mut t_ac, mut t_cov, mut t_att) = (0i64, 0i64, false, 0i64);
         for tid in guatx_core::attack::techniques_for_tactic(tac) {
             let rc = *rule_count.get(tid).unwrap_or(&0);
             let ac = *alert_counts.get(tid).unwrap_or(&0);
             let covered = rc > 0;
+            let (att, manquantes) = etat_dattente(tid);
             tot_tech += 1;
             if covered { tot_tech_cov += 1; }
+            // Le troisième état est ce qui reste quand rien ne peut tirer ET qu'une règle existe : il ne
+            // se confond ni avec le premier (elle ne couvre pas) ni avec le dernier (elle existe).
+            if !covered && att > 0 { tot_tech_attente += 1; t_att += 1; }
             t_rc += rc; t_ac += ac; t_cov = t_cov || covered;
             // P11.6-a : le NOM voyage avec l'identifiant (`attack_names`) ; `null` = hors catalogue, et la
             // surface doit alors le dire (« nom inconnu »), jamais rendre un vide.
-            techs.push(json!({ "tid": tid, "name": crate::attack_names::technique_name(tid), "rule_count": rc, "alert_count": ac, "covered": covered }));
+            techs.push(json!({ "tid": tid, "name": crate::attack_names::technique_name(tid), "rule_count": rc, "alert_count": ac, "covered": covered, "rules_en_attente_de_source": att, "sources_manquantes": manquantes }));
         }
         tot_alerts += t_ac;
         if t_cov { tot_tac_cov += 1; }
         tactics_json.push(json!({
-            "tactic": tac, "techniques": techs, "rule_count": t_rc, "alert_count": t_ac, "covered": t_cov
+            "tactic": tac, "techniques": techs, "rule_count": t_rc, "alert_count": t_ac, "covered": t_cov,
+            "techniques_en_attente_de_source": t_att
         }));
     }
 
@@ -595,22 +639,28 @@ pub(crate) fn build_attack_matrix(enabled_rule_tags: &[String], alert_counts: &H
     let mut extra: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for k in rule_count.keys() { if !known.contains(k.as_str()) { extra.insert(k.clone()); } }
     for k in alert_counts.keys() { if !known.contains(k.as_str()) { extra.insert(k.clone()); } }
+    // Une technique hors catalogue portée par la SEULE règle en attente de source est perdue si on ne la
+    // replie pas ici : le troisième état doit voyager par la même porte que les deux autres.
+    for k in attente_count.keys() { if !known.contains(k.as_str()) { extra.insert(k.clone()); } }
     if !extra.is_empty() {
         let mut techs: Vec<Value> = Vec::new();
-        let (mut t_rc, mut t_ac, mut t_cov) = (0i64, 0i64, false);
+        let (mut t_rc, mut t_ac, mut t_cov, mut t_att) = (0i64, 0i64, false, 0i64);
         for tid in &extra {
             let rc = *rule_count.get(tid).unwrap_or(&0);
             let ac = *alert_counts.get(tid).unwrap_or(&0);
             let covered = rc > 0;
+            let (att, manquantes) = etat_dattente(tid);
             tot_tech += 1;
             if covered { tot_tech_cov += 1; }
+            if !covered && att > 0 { tot_tech_attente += 1; t_att += 1; }
             t_rc += rc; t_ac += ac; t_cov = t_cov || covered;
-            techs.push(json!({ "tid": tid, "name": crate::attack_names::technique_name(tid), "rule_count": rc, "alert_count": ac, "covered": covered }));
+            techs.push(json!({ "tid": tid, "name": crate::attack_names::technique_name(tid), "rule_count": rc, "alert_count": ac, "covered": covered, "rules_en_attente_de_source": att, "sources_manquantes": manquantes }));
         }
         tot_alerts += t_ac;
         if t_cov { tot_tac_cov += 1; }
         tactics_json.push(json!({
-            "tactic": "unmapped", "techniques": techs, "rule_count": t_rc, "alert_count": t_ac, "covered": t_cov
+            "tactic": "unmapped", "techniques": techs, "rule_count": t_rc, "alert_count": t_ac, "covered": t_cov,
+            "techniques_en_attente_de_source": t_att
         }));
     }
 
@@ -622,6 +672,10 @@ pub(crate) fn build_attack_matrix(enabled_rule_tags: &[String], alert_counts: &H
             "techniques": tot_tech,
             "techniques_covered": tot_tech_cov,
             "techniques_uncovered": tot_tech - tot_tech_cov,
+            // SOUS-ENSEMBLE de `techniques_uncovered`, jamais un quatrième seau : une technique en attente
+            // de source N'EST PAS couverte (rien ne tire). Ce compte dit COMBIEN d'entre elles ont déjà
+            // leur règle — donc combien se ferment en branchant un producteur, sans écrire une ligne.
+            "techniques_en_attente_de_source": tot_tech_attente,
             "rules_mapped": rules_mapped,
             "alerts": tot_alerts
         }
@@ -645,15 +699,13 @@ pub(crate) async fn coverage_attack(State(st): State<AppState>, Extension(au): E
     let db_path = req_db_path(&st, &au);
     let res = tokio::task::spawn_blocking(move || {
         read_with_watchdog(&db_path, json!({ "tactics": [], "totals": {} }), move |conn| {
-            // Règles ACTIVÉES portant un tag MITRE (coverage = règle enabled).
-            let mut rule_tags: Vec<String> = Vec::new();
-            if let Ok(mut stmt) = conn.prepare(
-                "SELECT mitre FROM rule WHERE enabled=1 AND mitre IS NOT NULL AND mitre<>''",
-            ) {
-                if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-                    rule_tags = rows.flatten().collect();
-                }
-            }
+            // Règles ACTIVÉES portant un tag MITRE, MOINS celles qu'aucun producteur ne peut nourrir
+            // sur CETTE base (`P9.5-a`) : « activée » n'a jamais voulu dire « surveillante ». Point
+            // unique — la lecture directe de `rule WHERE enabled=1` a été RETIRÉE d'ici, et une garde
+            // refuse qu'elle réapparaisse. Sur une base déjà déployée, c'est le SEUL endroit qui
+            // corrige la fausse couverture : l'activation de la ligne n'est pas touchée.
+            let lecture = crate::detection_aveugle::lire_la_couverture_des_regles_activees(conn);
+            let rule_tags: Vec<String> = lecture.tirent;
             // Alertes par technique sur la fenêtre (table `alert`, indexée ; PAS la table event).
             let mut alert_counts: HashMap<String, i64> = HashMap::new();
             if let Ok(mut stmt) = conn.prepare(
@@ -666,7 +718,7 @@ pub(crate) async fn coverage_attack(State(st): State<AppState>, Extension(au): E
                     }
                 }
             }
-            build_attack_matrix(&rule_tags, &alert_counts)
+            build_attack_matrix(&rule_tags, &lecture.en_attente_de_source, &alert_counts)
         })
     })
     .await

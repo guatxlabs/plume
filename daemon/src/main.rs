@@ -149,6 +149,7 @@ pub(crate) use sondes::{
 };
 mod sonde_de_flotte; // P3.2-a : LA SONDE DE FLOTTE — un hôte qui se tait ENTIÈREMENT lève un signal, rendu comme un COMPTE et non comme une série par hôte (la portée par hôte des 21 sondes multiplierait la cardinalité par la taille du parc)
 pub(crate) use sonde_de_flotte::*;
+mod sonde_du_magasin_de_secrets; // P9.8-a : LE MAGASIN DE SECRETS QUI NE PEUT PLUS SERVIR — un coffre scellé éteint la rotation des clés de TOUS ses consommateurs à la fois, et rien ne le disait hors d'une commande d'exploitant (mesuré : les seules sorties étaient `eprintln!` et `exit(78)`). Le signal porte sur le MAGASIN, jamais sur ses consommateurs (une alerte, pas vingt-sept), il ne conclut RIEN sans relevé, et il se résout au premier relevé qui voit les magasins prêts
 mod imputation; // S7 : À QUELLE SOURCE UNE ALERTE SE RAPPORTE — lue dans la DONNÉE (colonne `event.source`, descripteur de sonde), plus dans la prose de la règle ; et un INCONNU NOMMÉ quand elle n'est pas déterminable
 pub(crate) use imputation::*;
 mod controles_de_defense; // P11.18-i : CE QU'UN INSTANTANÉ DE CONTRÔLES DIT — l'alerte NOMME les contrôles manquants, la machine et depuis quand (les trois étaient déjà en base, aucune n'était rendue) ; et un catalogue VIDE se dit au lieu de rendre « 0 manquant »

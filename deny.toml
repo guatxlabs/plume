@@ -71,8 +71,10 @@ unknown-registry = "deny"
 unknown-git = "deny"
 # `unknown-git = "deny"` refuse toute source git hors de cette liste — y compris,
 # sans cette entrée, la seule que le projet utilise réellement. Mesuré dans
-# `daemon/Cargo.lock` : une unique source git,
-# `git+https://github.com/guatxlabs/core?tag=v0.2.1`. L'autoriser NOMMÉMENT est le
+# `daemon/Cargo.lock` : une unique source git, celle du cœur — le TAG, lui, n'est PAS
+# recopié ici (il vit dans `daemon/Cargo.toml`, et une étiquette recopiée vieillit ;
+# `allow-git` ci-dessous ne porte de toute façon que le DÉPÔT, jamais la version).
+# L'autoriser NOMMÉMENT est le
 # but du réglage : le dépôt de notre cœur est admis, tout autre dépôt git reste
 # refusé. Une git-dep ajoutée à la sauvette échoue donc le contrôle.
 allow-git = ["https://github.com/guatxlabs/core"]

@@ -574,7 +574,7 @@
         let mut alerts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
         alerts.insert("T1110".into(), 3);
         alerts.insert("T1595".into(), 1); // reconnaissance : détectée mais AUCUNE règle -> blind-spot alerté.
-        let m = build_attack_matrix(&rules, &alerts);
+        let m = build_attack_matrix(&rules, &[], &alerts);
 
         // technique->tactique : T1110 rangée sous credential-access, T1046 sous discovery.
         let t1110 = find_tech(&m, "credential-access", "T1110").expect("T1110 sous credential-access");
@@ -616,7 +616,7 @@
     #[test]
     fn attack_matrix_empty_rules_all_uncovered() {
         // Aucune règle, aucune alerte -> toute la matrice non couverte (0 covered), catalogue complet présent.
-        let m = build_attack_matrix(&[], &std::collections::HashMap::new());
+        let m = build_attack_matrix(&[], &[], &std::collections::HashMap::new());
         assert_eq!(m["totals"]["techniques_covered"], 0);
         assert_eq!(m["totals"]["tactics_covered"], 0);
         assert_eq!(m["totals"]["rules_mapped"], 0);
@@ -633,7 +633,7 @@
         // SUPERSET : une seule règle taguée avec PLUSIEURS techniques (espaces/virgules) couvre chacune.
         // Sous-technique -> parente (T1562.001 -> T1562). Doublon (T1110 + T1110.001) compté une fois.
         let rules = vec!["T1110 T1046, T1562.001".to_string(), "T1110.001;T1110".to_string()];
-        let m = build_attack_matrix(&rules, &std::collections::HashMap::new());
+        let m = build_attack_matrix(&rules, &[], &std::collections::HashMap::new());
         // T1046 & T1562 couvertes par la 1re règle.
         assert_eq!(find_tech(&m, "discovery", "T1046").unwrap()["covered"], true);
         assert_eq!(find_tech(&m, "defense-evasion", "T1562").unwrap()["rule_count"], 1);
@@ -648,7 +648,7 @@
         // SUPERSET : un tag hors catalogue (technique custom/vendeur valide en format) n'est JAMAIS perdu ->
         // replié dans la pseudo-tactique `unmapped`, jamais faussement attribué à une tactique connue.
         let rules = vec!["T9999".to_string()]; // format valide, hors CATALOG curé.
-        let m = build_attack_matrix(&rules, &std::collections::HashMap::new());
+        let m = build_attack_matrix(&rules, &[], &std::collections::HashMap::new());
         let unm = find_tactic(&m, "unmapped").expect("pseudo-tactique unmapped présente");
         assert_eq!(unm["covered"], true);
         let t = find_tech(&m, "unmapped", "T9999").expect("T9999 préservée");

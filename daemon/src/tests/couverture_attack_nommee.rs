@@ -84,7 +84,7 @@
     #[test]
     fn p11_6a_la_matrice_porte_le_nom_a_cote_de_l_identifiant() {
         let tags = vec!["T1110.003".to_string(), "T1190".to_string(), "T9999".to_string()];
-        let v = crate::handlers::alerts::build_attack_matrix(&tags, &HashMap::new());
+        let v = crate::handlers::alerts::build_attack_matrix(&tags, &[], &HashMap::new());
         let mut vus = 0;
         let mut inconnus = Vec::new();
         for tac in v["tactics"].as_array().unwrap() {

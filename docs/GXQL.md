@@ -82,8 +82,12 @@ C'est ce que la barre de recherche de la console utilise pour sa complétion ; c
 expression `eval`.** D'où le motif idiomatique pour exprimer une disjonction :
 
 ```
-search category=auth | eval suspect = severity>=3 or src_ip=~"^203\.0\.113\." | where suspect = 1
+search category=auth | eval suspect = severity>=3 or src_ip="203.0.113.7" | where suspect = 1
 ```
+
+**`eval` n'accepte pas d'expression régulière** : le `~` y est refusé en le nommant
+(`eval : caractère non autorisé : '~'`). La ligne publiée ici jusqu'au 2026-08-26 en portait une —
+elle ne compilait pas. Mesuré, et corrigé, en compilant : voir §10.
 
 ### 2.3 Un nom de champ mal écrit est REFUSÉ, pas ignoré
 
@@ -122,19 +126,52 @@ d'observabilité). Quatre mots structurants les accompagnent : `by`, `span=`, `a
 
 Une commande inconnue est **refusée en la nommant**, jamais ignorée.
 
-### 3.1 Deux restrictions que la description intégrée ne dit pas
+### 3.1 Deux restrictions — et le piège n'est pas le refus, c'est l'absence de refus
 
-**MESURÉ SUR L'ARBRE le 2026-08-25**, en lisant les compilateurs d'étape :
+**MESURÉ LE 2026-08-27 EN COMPILANT** chaque forme ci-dessous par `guatx_core::soql::to_sql`, à
+l'étiquette qu'épingle `daemon/Cargo.toml`. La version précédente de cette section était établie par
+LECTURE des compilateurs d'étape, et elle se trompait sur le point qui compte.
 
 - **`where` n'accepte qu'UNE comparaison scalaire, ou UNE clause `in`/`not in` entière.** Il n'y a ni
-  `and` ni `or` dans un `where`. *La description affichée par la console annonce pourtant
-  « comparaisons, and/or ».*
+  `and` ni `or` dans un `where`.
 - **`sort` ne trie que sur UN champ** — le jeton qui suit la commande, préfixé de `-` pour
-  décroissant. *La description affichée annonce « un ou plusieurs champs ».*
+  décroissant.
 
-Ces deux écarts sont dans les tables de description (`daemon/src/handlers/soql_meta.rs`), pas dans le
-compilateur : c'est le texte affiché qui promet plus que ce que le langage fait. Écrit ici pour qu'un
-lecteur ne perde pas une heure à chercher pourquoi son `where a=1 and b=2` échoue.
+Une version antérieure de cette page invitait le lecteur à comprendre « pourquoi son
+`where a=1 and b=2` **échoue** ». **C'est faux, et faux du mauvais côté : rien n'échoue.**
+
+| Ce qu'on écrit après un tube | Ce que le compilateur émet | Ce que l'exploitant obtient |
+|---|---|---|
+| `where count > 5 and count < 100` | `WHERE "count" > '5 and count < 100'` | **aucun refus** — la fin de la ligne devient un littéral de texte, la comparaison porte sur une chaîne, la réponse est vide et a l'air complète |
+| `where a=1 and b=2` | `WHERE json_extract(fields,'$.a') = '1 and b=2'` | idem |
+| `sort host severity` | `ORDER BY "host" ASC` | **aucun refus** — le second champ est jeté en silence |
+| `sort host,severity` | *rien* | refusé : `sort : champ invalide : host,severity` |
+
+Un second terme n'est donc signalé que s'il porte une **virgule** : c'est la virgule qui casse la
+forme d'un identifiant, pas la conjonction. Une espace passe.
+
+La conjonction s'écrit par un **tube** — `… | where a=1 | where b=2` — et celle-là est rendue
+exactement : chaque étape enveloppe la précédente. La disjonction s'écrit dans un `eval` (§2.2).
+
+Ces écarts étaient dans les tables de description (`daemon/src/handlers/soql_meta.rs`, servies par
+`/api/soql/schema`) et dans l'aide intégrée de la console (`web/help_registry.js`, française **et**
+anglaise), pas dans le compilateur : c'est le texte affiché qui promettait plus que ce que le langage
+fait. **Quatre libellés servis** portaient la promesse, pas deux.
+
+#### La borne est déclarée ICI, et toute surface qui décrit la commande doit la porter
+
+Le tableau ci-dessous n'est pas de la prose : un témoin de construction le LIT, et exige de chaque
+surface qui décrit la commande qu'elle porte la phrase de sa colonne. Une surface qui reviendrait à
+« un ou plusieurs champs » ne porterait plus « un champ » et ferait rougir l'intégration continue.
+Ajouter une ligne ici arme le témoin sur une commande de plus, sans le toucher.
+
+| Commande | Ce que le langage tient (mesuré le 2026-08-27) | Phrase exigée (fr) | Phrase exigée (en) |
+|---|---|---|---|
+| `where` | UNE comparaison scalaire, ou UNE clause `in`/`not in` entière | `ni and ni or` | `no and, no or` |
+| `sort` | UN champ, le jeton qui suit la commande | `un champ` | `one field` |
+
+Ce que ce témoin ne tient pas : il ne compile rien — il tient une **cohérence d'écriture** entre le
+corpus, la déclaration du démon et l'aide rendue. La mesure, elle, reste datée (§10).
 
 ---
 
@@ -163,6 +200,19 @@ Une fonction inconnue est **refusée en la nommant**.
 
 Cette liste **est** l'allowlist : le compilateur la référence directement, il n'en tient pas une
 copie. La complétion de la console ne peut donc pas diverger de ce que le compilateur accepte.
+
+**Deux bornes d'`eval`, mesurées le 2026-08-27 en compilant :**
+
+- **Pas d'expression régulière** : le `~` est refusé en le nommant
+  (`eval : caractère non autorisé : '~'`). La disjonction sur un motif s'écrit donc autrement.
+- **`eval` ne résout PAS les clés du sac JSON**, et c'est la seule étape dans ce cas. Un nom y est
+  recopié **tel quel** dans le SQL : `… | eval r = dport * 2` émet `(dport * 2)`, pas
+  `json_extract(fields,'$.dport')`. Sur une **colonne réelle** (`severity`, `src_ip`, …) la requête
+  marche ; sur une clé du sac elle **compile** — donc `/api/soql/validate` répond `valid:true` — et
+  **échoue à la préparation** avec `no such column: dport`. Les deux moitiés ont été vérifiées : le
+  SQL rendu par le compilateur, puis sa préparation par SQLite sur le schéma de `db/schema.sql`.
+  C'est la même racine que l'absence de garde de nom dans `eval` (§2.3 vaut pour les autres étapes) :
+  `eval` est la seule surface arithmétique, et valider un nom y interdirait l'arithmétique.
 
 ---
 
@@ -316,9 +366,24 @@ parler le même langage. La règle de contribution qui en découle est écrite d
 
 ## 10. Ce qui n'a pas été vérifié
 
-- **Aucune requête n'a été exécutée contre une instance dans ce lot.** La grammaire, les bornes et
-  les refus décrits ici sont établis par lecture des compilateurs d'étape et des tables de
-  vocabulaire ; les formes de réponse le sont par lecture des gestionnaires.
+- **Aucune requête n'a été exécutée contre une instance.** Ce que cette page dit de la grammaire
+  n'est plus établi par lecture, mais par **COMPILATION** : le 2026-08-27, chaque requête publiée
+  ici, et chaque forme du tableau de §3.1, a été passée à `guatx_core::soql::to_sql` (étiquette
+  épinglée par `daemon/Cargo.toml`) et le SQL rendu a été relevé. C'est ce passage qui a montré
+  qu'un exemple de cette page ne compilait pas (§2.2) et que sa §3.1 annonçait un échec qui
+  n'arrive pas. Les BORNES d'exécution (§6.1) et les formes de réponse (§7) restent, elles,
+  établies par lecture des gestionnaires.
+
+  Les requêtes que cette page publie se relèvent — **sur l'arbre suivi, le 2026-08-27 : trois** :
+
+  ```sh
+  grep -noE '(^|`)(search|metric) [^`]*' docs/GXQL.md
+  ```
+
+  Cette commande ne voit **pas** une requête coupée sur deux lignes, ni une requête qui ne commence
+  pas par `search` ou `metric` (une étape citée seule, `| stats count by host`). Elle ne dit pas non
+  plus si elles compilent : rien dans ce dépôt ne les compile, le compilateur vivant dans une caisse
+  externe (§1). **Cette page est donc tenue par une relecture datée, pas par un cliquet.**
 - Le **corps du compilateur** appartient à une caisse externe au dépôt : les comptes publiés en §1
   sont dérivés des **miroirs** présents ici, qu'un test de la suite tient égaux aux listes du cœur.
 - Le **taux d'acceptation** de l'importeur Sigma sur le dépôt SigmaHQ complet **n'est pas mesuré**,

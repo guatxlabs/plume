@@ -1052,16 +1052,82 @@ pub(crate) fn sigma_covered_parents(tags: &[String]) -> std::collections::BTreeS
 }
 
 /// DELTA de couverture ATT&CK d'un import : `(couvertes_avant, couvertes_après, nouvellement_couvrables triées)`.
-/// « avant » = techniques couvertes par les règles DÉJÀ ACTIVÉES (même requête que coverage_attack) ; « après »
-/// = si l'on ACTIVAIT les règles importées. Comme l'import crée DÉSACTIVÉ, c'est la couverture POTENTIELLE
-/// débloquée après revue+activation — l'admin voit exactement quels blind-spots se ferment. PUR / testable.
-pub(crate) fn sigma_bulk_coverage_delta(before_tags: &[String], imported_mitre: &[String]) -> (i64, i64, Vec<String>) {
-    let before = sigma_covered_parents(before_tags);
-    let mut after_tags = before_tags.to_vec();
-    after_tags.extend(imported_mitre.iter().cloned());
+/// « avant » = techniques couvertes par les règles DÉJÀ ACTIVÉES ; « après » = si l'on ACTIVAIT les règles
+/// importées. Comme l'import crée DÉSACTIVÉ, c'est la couverture POTENTIELLE débloquée après revue+activation.
+/// PUR / testable.
+///
+/// **LES DEUX CÔTÉS DE LA SOUSTRACTION SONT COMPTÉS DE LA MÊME MANIÈRE, ET LE NOM DES PARAMÈTRES LE DIT.**
+/// C'est la faute que ce bandeau ferme, et elle avait été INTRODUITE par la correction de `P9.5-a` : le
+/// « avant » était passé au filtre des règles nourrissables, le jeu importé ne passait par RIEN, et
+/// `après = avant ∪ importées`. La différence était donc gonflée d'exactement l'ensemble que le filtre venait
+/// de retirer du « avant ». TÉMOIN MESURÉ : une base dont la seule règle `T1552` est sans producteur, plus un
+/// import taguant `T1552` et sans producteur lui aussi -> l'import s'annonçait comme fermant un angle mort
+/// qu'il ne ferme pas. Une soustraction dont les deux membres ne se comptent pas pareil ne mesure rien.
+///
+/// LE CHOIX RETENU, ÉCRIT : les DEUX côtés ne comptent que ce QUI PEUT TIRER SUR CETTE BASE. C'est le même
+/// critère que la matrice, il est le seul actionnable — annoncer une couverture qu'aucune donnée ne peut
+/// déclencher est exactement le défaut poursuivi — et l'autre choix (compter nu des deux côtés) rendrait le
+/// « avant » menteur pour rendre l'import flatteur. Ce qui est écarté n'est pas TU : `delta_de_couverture_d_un_import`
+/// rend à part les règles importées qu'aucun producteur ne nourrirait, AVEC les sources qui leur manquent.
+pub(crate) fn sigma_bulk_coverage_delta(
+    tags_avant_qui_peuvent_tirer: &[String],
+    tags_importes_qui_peuvent_tirer: &[String],
+) -> (i64, i64, Vec<String>) {
+    let before = sigma_covered_parents(tags_avant_qui_peuvent_tirer);
+    let mut after_tags = tags_avant_qui_peuvent_tirer.to_vec();
+    after_tags.extend(tags_importes_qui_peuvent_tirer.iter().cloned());
     let after = sigma_covered_parents(&after_tags);
     let newly: Vec<String> = after.difference(&before).cloned().collect();
     (before.len() as i64, after.len() as i64, newly)
+}
+
+/// CE QU'UN IMPORT CHANGE À LA COUVERTURE — **LE POINT UNIQUE**, parce que la faute vivait dans la COLLE
+/// entre la lecture de la base et le jeu importé, pas dans la soustraction. Tant que l'appelant composait
+/// les deux membres lui-même, rien ne pouvait tenir qu'ils soient comptés pareil, et aucun test ne le voyait :
+/// `sigma_bulk_coverage_delta` n'était appelé que sur des tags fabriqués à la main.
+pub(crate) struct DeltaDImport {
+    pub(crate) avant: i64,
+    pub(crate) apres: i64,
+    pub(crate) nouvellement_couvertes: Vec<String>,
+    /// Les règles du plan qu'AUCUN producteur ne nourrirait sur cette base : `(nom, mitre, sources manquantes)`.
+    /// Elles ne comptent pas dans l'après — et elles ne sont pas effacées non plus : c'est la même RAISON
+    /// actionnable que le troisième état de la matrice, servie à l'administrateur qui importe.
+    pub(crate) sans_producteur: Vec<(String, String, Vec<String>)>,
+}
+
+impl DeltaDImport {
+    /// La forme servie : une entrée par règle écartée, avec ce qu'il faut brancher.
+    pub(crate) fn sans_producteur_json(&self) -> Vec<Value> {
+        self.sans_producteur
+            .iter()
+            .map(|(nom, mitre, manquantes)| json!({ "ref": nom, "mitre": mitre, "sources_manquantes": manquantes }))
+            .collect()
+    }
+}
+
+/// Compose les DEUX membres depuis LA MÊME base et par LE MÊME prédicat : `sources_manquantes` sur les sources
+/// que cette base produit ou a reçues. Le membre « avant » vient du point unique de la couverture
+/// (`detection_aveugle::lire_la_couverture_des_regles_activees`), le membre « importé » du même prédicat
+/// appliqué à la requête TRADUITE — la requête que l'ordonnanceur exécuterait, pas une paraphrase.
+pub(crate) fn delta_de_couverture_d_un_import(
+    conn: &Connection,
+    plan: &[(&SigmaTranslation, Option<i64>)],
+) -> DeltaDImport {
+    let lecture = crate::detection_aveugle::lire_la_couverture_des_regles_activees(conn);
+    let observees = crate::handlers::soql_meta::soql_known_sources(conn);
+    let mut importes_qui_peuvent_tirer: Vec<String> = Vec::new();
+    let mut sans_producteur: Vec<(String, String, Vec<String>)> = Vec::new();
+    for (t, _) in plan {
+        let manquantes = crate::detection_aveugle::sources_manquantes(&t.query, &observees);
+        if manquantes.is_empty() {
+            importes_qui_peuvent_tirer.push(t.mitre.clone());
+        } else {
+            sans_producteur.push((t.name.clone(), t.mitre.clone(), manquantes));
+        }
+    }
+    let (avant, apres, nouvellement_couvertes) =
+        sigma_bulk_coverage_delta(&lecture.tirent, &importes_qui_peuvent_tirer);
+    DeltaDImport { avant, apres, nouvellement_couvertes, sans_producteur }
 }
 
 /// Classe des traductions face à la BASE -> (plan `(traduction, update?)`, skips de PROTECTION). Réutilise
@@ -1114,7 +1180,10 @@ pub(crate) fn sigma_bulk_apply(conn: &Connection, plan: &[(&SigmaTranslation, Op
 /// Règles créées DÉSACTIVÉES (sauf `enable:true`), UPSERT idempotent par titre (managed=2), JAMAIS écrasant un
 /// overlay git (managed=1) ni une détection native (managed=0). Transaction fail-closed + audit. `dry_run` -> RAS.
 /// Réponse : `{imported, updated, skipped:[{ref,reason}], errors, coverage_before, coverage_after,
-/// techniques_newly_covered, disabled_on_import}`.
+/// techniques_newly_covered, regles_importees_sans_producteur:[{ref,mitre,sources_manquantes}],
+/// disabled_on_import}`. Le dernier champ est le PENDANT du troisième état de la matrice, côté import :
+/// une règle importée qu'aucun producteur ne nourrirait sur cette base ne compte dans AUCUN des deux
+/// membres du delta — et elle n'est pas tue pour autant, elle est rendue avec ce qu'il faut brancher.
 pub(crate) async fn sigma_import_bulk(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let dry = b.bool_field("dry_run", false);
     let enable = b.bool_field("enable", false); // DÉFAUT : créées DÉSACTIVÉES (l'admin revoit puis active).
@@ -1127,6 +1196,7 @@ pub(crate) async fn sigma_import_bulk(State(st): State<AppState>, Extension(au):
         return Json(json!({
             "imported": 0, "updated": 0, "skipped": [], "errors": 0,
             "coverage_before": 0, "coverage_after": 0, "techniques_newly_covered": [],
+            "regles_importees_sans_producteur": [],
             "disabled_on_import": !enable, "note": "bundle vide : no-op (aucune règle créée)"
         })).into_response();
     }
@@ -1138,23 +1208,18 @@ pub(crate) async fn sigma_import_bulk(State(st): State<AppState>, Extension(au):
     let (translations, mut skipped) = sigma_bulk_translate(&docs);
 
     crate::req_conn!(st, au, conn);
-    // Couverture AVANT = tags MITRE des règles ACTIVÉES (MÊME requête que coverage_attack).
-    let before_tags: Vec<String> = {
-        let mut v = Vec::new();
-        if let Ok(mut stmt) = conn.prepare("SELECT mitre FROM rule WHERE enabled=1 AND mitre IS NOT NULL AND mitre<>''") {
-            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) { v = rows.flatten().collect(); }
-        }
-        v
-    };
     // Classification managed (protège natif/overlay) : ajoute ses skips à ceux de traduction.
     let (plan, managed_skips) = sigma_bulk_classify(&conn, &translations);
     skipped.extend(managed_skips);
     let errors = skipped.iter().filter(|s| s.is_error).count() as i64;
     let n_insert = plan.iter().filter(|(_, target)| target.is_none()).count() as i64;
     let n_update = plan.iter().filter(|(_, target)| target.is_some()).count() as i64;
-    // DELTA de couverture : couverture potentielle une fois les règles importées ACTIVÉES.
-    let imported_mitre: Vec<String> = plan.iter().map(|(t, _)| t.mitre.clone()).collect();
-    let (cov_before, cov_after, newly) = sigma_bulk_coverage_delta(&before_tags, &imported_mitre);
+    // DELTA de couverture : couverture potentielle une fois les règles importées ACTIVÉES. LES DEUX
+    // MEMBRES SONT COMPTÉS PAR LE MÊME PRÉDICAT — c'est `delta_de_couverture_d_un_import` qui les compose,
+    // parce que la faute vivait ici, dans la colle, quand l'appelant composait les deux côtés lui-même.
+    let delta = delta_de_couverture_d_un_import(&conn, &plan);
+    let (cov_before, cov_after, newly) = (delta.avant, delta.apres, delta.nouvellement_couvertes.clone());
+    let sans_producteur = delta.sans_producteur_json();
     let skipped_json: Vec<Value> = skipped.iter().map(|s| json!({ "ref": s.reference, "reason": s.reason })).collect();
 
     if dry {
@@ -1162,8 +1227,9 @@ pub(crate) async fn sigma_import_bulk(State(st): State<AppState>, Extension(au):
             "dry_run": true, "imported": n_insert, "updated": n_update,
             "skipped": skipped_json, "errors": errors,
             "coverage_before": cov_before, "coverage_after": cov_after, "techniques_newly_covered": newly,
+            "regles_importees_sans_producteur": sans_producteur,
             "disabled_on_import": !enable,
-            "note": "dry_run : rien écrit. 'coverage_after' = couverture POTENTIELLE une fois les règles activées (créées désactivées)."
+            "note": "dry_run : rien écrit. 'coverage_after' = couverture POTENTIELLE une fois les règles activées (créées désactivées) ET NOURRIES : une règle importée qu'aucun producteur n'alimente sur cette base ne compte dans aucun des deux membres, et figure dans 'regles_importees_sans_producteur' avec les sources qui lui manquent."
         })).into_response();
     }
 
@@ -1178,13 +1244,14 @@ pub(crate) async fn sigma_import_bulk(State(st): State<AppState>, Extension(au):
             .map(|(t, _)| json!({ "name": t.name, "warnings": t.warnings })).collect();
         audit_config_change(
             &conn, "config.sigma.import-bulk",
-            &format!("import Sigma EN MASSE par {} : {} insérée(s), {} mise(s) à jour, {} ignorée(s) ({} erreur(s)), créées {} ; couverture ATT&CK {}→{} techniques (+{})",
-                au.name, n_insert, n_update, skipped.len(), errors, if enable { "ACTIVÉES" } else { "désactivées" }, cov_before, cov_after, newly.len()),
+            &format!("import Sigma EN MASSE par {} : {} insérée(s), {} mise(s) à jour, {} ignorée(s) ({} erreur(s)), créées {} ; couverture ATT&CK {}→{} techniques (+{}) ; {} règle(s) importée(s) qu'aucun producteur ne nourrit ici",
+                au.name, n_insert, n_update, skipped.len(), errors, if enable { "ACTIVÉES" } else { "désactivées" }, cov_before, cov_after, newly.len(), delta.sans_producteur.len()),
             2,
             &format!("import en masse de règles de détection Sigma par {}", au.name),
             &json!({ "op": "sigma-import-bulk", "imported": n_insert, "updated": n_update, "skipped": skipped.len(),
                 "errors": errors, "enabled_on_import": enable, "coverage_before": cov_before, "coverage_after": cov_after,
-                "techniques_newly_covered": newly, "actor": au.name, "warnings": warned }).to_string(),
+                "techniques_newly_covered": newly, "regles_importees_sans_producteur": sans_producteur,
+                "actor": au.name, "warnings": warned }).to_string(),
         )?;
         Ok(())
     })();
@@ -1194,8 +1261,9 @@ pub(crate) async fn sigma_import_bulk(State(st): State<AppState>, Extension(au):
             Json(json!({
                 "imported": n_insert, "updated": n_update, "skipped": skipped_json, "errors": errors,
                 "coverage_before": cov_before, "coverage_after": cov_after, "techniques_newly_covered": newly,
+                "regles_importees_sans_producteur": sans_producteur,
                 "disabled_on_import": !enable, "managed": 2,
-                "note": "règles créées DÉSACTIVÉES (l'admin revoit puis active) ; 'coverage_after' = couverture une fois activées."
+                "note": "règles créées DÉSACTIVÉES (l'admin revoit puis active) ; 'coverage_after' = couverture une fois activées ET NOURRIES — une règle importée qu'aucun producteur n'alimente ici est rendue à part, avec les sources qui lui manquent."
             })).into_response()
         }
         Err(e) => {

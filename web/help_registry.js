@@ -234,8 +234,8 @@ CHAMPS de la première étape — colonnes de l'événement, et leurs alias :
 COMMANDES (après un |) :
   stats       agrège : mesures, éventuellement groupées par champ (by)
   timechart   série temporelle : agrège par intervalle (span=), éventuellement by
-  where       filtre sur une condition APRÈS agrégat (gère in / not in)
-  sort        trie par un ou plusieurs champs (préfixe - pour décroissant)
+  where       filtre sur UNE comparaison, ou UNE clause in / not in — ni and ni or
+  sort        trie sur un champ, le jeton qui suit (préfixe - pour décroissant)
   head        ne conserve que les N premiers résultats
   limit       borne le nombre de résultats retournés
   rex         extrait des champs d'un texte via une regex à groupes nommés
@@ -340,8 +340,8 @@ FIELDS of the first stage — event columns, and their aliases:
 COMMANDS (after a |) :
   stats       aggregates: measures, optionally grouped by field (by)
   timechart   time series: aggregates per interval (span=), optionally by
-  where       filters on a condition AFTER aggregation (supports in / not in)
-  sort        sorts by one or more fields (- prefix for descending)
+  where       filters on ONE comparison, or ONE in / not in clause — no and, no or
+  sort        sorts on one field, the token that follows (- prefix = descending)
   head        keeps only the first N results
   limit       caps the number of results returned
   rex         extracts fields from text via a named-group regex

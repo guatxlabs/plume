@@ -390,3 +390,716 @@
             );
         }
     }
+
+    // ==============================================================================================
+    // `P9.5-a` — UNE RÈGLE QU'AUCUN PRODUCTEUR LIVRÉ NE PEUT DÉCLENCHER N'EST PAS LIVRÉE ACTIVE.
+    //
+    // Le défaut est SILENCIEUX par construction : la règle s'évalue parfaitement et rend zéro, donc
+    // l'ordonnanceur n'a AUCUN abandon à consigner et l'alerte de cécité ci-dessus ne peut pas se poser.
+    // Le seul endroit où le mensonge se voit est la MATRICE ATT&CK, qui déclare une technique couverte
+    // dès qu'une règle `enabled=1` la tague. Cette suite tient les trois maillons :
+    //   ① l'instrument (la lecture des épinglages) est validé sur des témoins POSITIFS et NÉGATIFS,
+    //     hors de toute base — un extracteur qui ne reconnaît plus rien rendrait « tout va bien » ;
+    //   ② le verdict porte sur la base qu'une installation FRAÎCHE reçoit réellement (le semis est
+    //     EXÉCUTÉ, pas relu : une garde qui lirait le texte de `seeds.rs` raterait tout ce que la
+    //     migration ou un autre semeur ajoute), dans les DEUX sens — aucune active aveugle, et au
+    //     moins une éteinte POUR CETTE RAISON, sans quoi la dérivation aurait pu être retirée en
+    //     laissant le vert ;
+    //   ③ la conséquence de sécurité, tenue à l'autre bout : la matrice ne doit annoncer COUVERTE
+    //     aucune technique dont les seules règles qui la taguent sont éteintes faute de producteur.
+    //
+    // PORTÉE, DITE FRANCHEMENT : le VERROU au semis n'est posé que dans `seed_detection_rules`, là où le
+    // défaut a été mesuré. Cette garde, elle, juge TOUTES les règles actives d'une base neuve : un autre
+    // semeur qui introduirait le défaut la fait rougir, et la réponse sera d'étendre le verrou, jamais
+    // d'excepter la règle.
+
+    /// Une base NEUVE, semée exactement comme une installation fraîche (`seed_tenant_content` est le
+    /// point unique que le démarrage du serveur et la création d'un tenant partagent).
+    fn base_semee(tag: &str) -> (crate::tmp_possede::TmpPossede, Connection) {
+        let tmp = crate::tmp_possede::TmpPossede::neuf(tag);
+        let p = tmp.sous("plume.db").chemin().to_string_lossy().to_string();
+        let conn = open_db(&p).unwrap();
+        conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
+        assert!(migrate(&conn), "la chaîne de migrations doit aller au bout");
+        crate::tenants::seed_tenant_content(&conn);
+        (tmp, conn)
+    }
+
+    #[test]
+    fn aucune_regle_semee_active_n_exige_une_source_sans_producteur_livre() {
+        use crate::detection_aveugle::{producteur_livre, sources_exigees, sources_sans_producteur_livre, SourcesExigees};
+
+        // ① L'INSTRUMENT AVANT LE VERDICT — ce qu'il DOIT lire, et ce qu'il ne DOIT PAS prendre pour un
+        //    épinglage. Chaque ligne fausse ci-dessous a une conséquence : sur-lire accuse une règle
+        //    saine, sous-lire blanchit une règle éteinte.
+        let litterales = |q: &str| match sources_exigees(q) {
+            SourcesExigees::Litterales(v) => v,
+            autre => panic!("épinglages littéraux attendus pour `{q}`, obtenu {autre:?}"),
+        };
+        assert_eq!(litterales("search source=vault-audit operation=read | stats count"), vec!["vault-audit".to_string()]);
+        assert_eq!(
+            litterales("SELECT COUNT(*) FROM event WHERE source='crowdsec' AND category='health'"),
+            vec!["crowdsec".to_string()],
+            "le SQL brut épingle avec des guillemets : la lecture ne dépend pas de la langue de la requête"
+        );
+        assert_eq!(
+            litterales(crate::ATTACKER_UNMITIGATED_RULE_SQL).len(),
+            2,
+            "les DEUX branches du UNION sont lues — sinon une disjonction serait jugée sur une seule moitié"
+        );
+        assert_eq!(
+            litterales("search source=cloudflare action=blocked cf_source=firewallManaged | stats count"),
+            vec!["cloudflare".to_string()],
+            "`cf_source` est un CHAMP brut de Cloudflare, pas la source de l'événement"
+        );
+        assert_eq!(sources_exigees("search category=auth action=failure | stats count"), SourcesExigees::Aucune);
+        assert_eq!(
+            sources_exigees("search category=auth | stats count by source | sort -count"),
+            SourcesExigees::Aucune,
+            "grouper PAR source n'épingle aucune source"
+        );
+        assert_eq!(
+            sources_exigees("search source!=web | stats count"),
+            SourcesExigees::Aucune,
+            "une exclusion n'exige rien : elle retire, elle ne demande pas"
+        );
+        assert_eq!(sources_exigees("search source=~sshd | stats count"), SourcesExigees::NonDecidable);
+        assert_eq!(sources_exigees("search source=cloud* | stats count"), SourcesExigees::NonDecidable);
+        assert_eq!(sources_exigees("SELECT 1 FROM event WHERE source IN ('a','b')"), SourcesExigees::NonDecidable);
+        assert_eq!(
+            sources_exigees("SELECT 1 FROM event WHERE message='source=vault-audit'"),
+            SourcesExigees::Aucune,
+            "un texte CITÉ n'est pas un épinglage — sinon une phrase recherchée fabriquerait un aveugle"
+        );
+        // Et l'oracle de production, dans les deux sens : AGRÉGER n'est pas PRODUIRE.
+        assert!(producteur_livre("web") && producteur_livre("plume-auth") && producteur_livre("portscan"));
+        assert!(
+            !producteur_livre("vault-audit"),
+            "`vault-audit` est ATTENDUE parce que le produit l'agrège ; aucun fichier livré ne l'émet — \
+             confondre les deux est exactement le faux vert que cette clé ferme"
+        );
+        assert!(sources_sans_producteur_livre("search source=web | stats count").is_empty());
+        assert_eq!(
+            sources_sans_producteur_livre("search source=vault-audit | stats count"),
+            vec!["vault-audit".to_string()]
+        );
+
+        // ② LE VERDICT, SUR LA BASE QU'UNE INSTALLATION FRAÎCHE REÇOIT.
+        let (_tmp, conn) = base_semee("regle-sans-producteur");
+        let lignes: Vec<(String, String, i64, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT name, query, enabled, COALESCE(mitre,'') FROM rule ORDER BY id")
+                .unwrap();
+            let v = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .flatten()
+                .collect();
+            v
+        };
+        assert!(
+            lignes.len() >= 40,
+            "l'instrument n'a pas semé de base : {} règles lues (48 mesurées le 2026-08-27 ; le plancher laisse la place aux \
+             ajouts légitimes, il n'épingle que « le semis a bien tourné »)",
+            lignes.len()
+        );
+        let mut actives_aveugles: Vec<String> = Vec::new();
+        let mut eteintes_faute_de_producteur: Vec<(String, String)> = Vec::new();
+        let mut actives_nourrissables = 0usize;
+        for (nom, q, actif, mitre) in &lignes {
+            let manque = sources_sans_producteur_livre(q);
+            if manque.is_empty() {
+                if *actif == 1 && !matches!(sources_exigees(q), SourcesExigees::Aucune) {
+                    actives_nourrissables += 1;
+                }
+            } else if *actif == 1 {
+                actives_aveugles.push(format!("« {nom} » exige {}", manque.join(", ")));
+            } else {
+                eteintes_faute_de_producteur.push((nom.clone(), mitre.clone()));
+            }
+        }
+        assert!(
+            actives_aveugles.is_empty(),
+            "règle(s) semée(s) ACTIVES qu'aucun producteur livré ne peut déclencher : {actives_aveugles:?}. \
+             Elles ne tireront jamais ET feront compter leur technique comme couverte par la matrice ATT&CK. \
+             Les semer éteintes (`actif_si_un_producteur_livre_existe`), ou livrer le producteur."
+        );
+        assert!(
+            !eteintes_faute_de_producteur.is_empty(),
+            "AUCUNE règle n'est éteinte faute de producteur : soit la dérivation ne voit plus rien, soit le \
+             verrou du semis a été retiré — dans les deux cas ce vert ne prouve rien"
+        );
+        assert!(
+            actives_nourrissables >= 10,
+            "seulement {actives_nourrissables} règle(s) active(s) épinglent une source PRODUITE : la lecture \
+             des épinglages ne reconnaît plus le corpus, elle rendrait vert sur n'importe quoi"
+        );
+
+        // ③ LA CONSÉQUENCE DE SÉCURITÉ : ce que la matrice ANNONCE couvert.
+        let tags_actifs: Vec<String> = lignes.iter().filter(|(_, _, a, m)| *a == 1 && !m.is_empty()).map(|(_, _, _, m)| m.clone()).collect();
+        let matrice = crate::handlers::alerts::build_attack_matrix(&tags_actifs, &[], &std::collections::HashMap::new());
+        let mut couvertes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut non_couvertes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for tactique in matrice.get("tactics").and_then(|t| t.as_array()).into_iter().flatten() {
+            for tech in tactique.get("techniques").and_then(|t| t.as_array()).into_iter().flatten() {
+                let Some(tid) = tech.get("tid").and_then(|t| t.as_str()) else { continue };
+                match tech.get("covered").and_then(|c| c.as_bool()) {
+                    Some(true) => { couvertes.insert(tid.to_string()); }
+                    Some(false) => { non_couvertes.insert(tid.to_string()); }
+                    _ => {}
+                }
+            }
+        }
+        assert!(!couvertes.is_empty(), "la matrice n'annonce AUCUNE technique couverte : elle ne peut rien contredire");
+        let mut angles_morts_rendus: Vec<String> = Vec::new();
+        for (nom, mitre) in &eteintes_faute_de_producteur {
+            for technique in crate::handlers::alerts::mitre_parents(mitre) {
+                if tags_actifs.iter().any(|t| crate::handlers::alerts::mitre_parents(t).contains(&technique)) {
+                    continue; // une AUTRE règle active la tient : la couverture est vraie
+                }
+                assert!(
+                    !couvertes.contains(&technique),
+                    "la matrice annonce `{technique}` COUVERTE alors que la seule règle qui la tague — « {nom} » — \
+                     est éteinte faute de producteur : la couverture ne doit pas compter ce qui ne peut pas tirer"
+                );
+                // …et la technique ne DISPARAÎT pas non plus : un angle mort tu vaut un angle mort nié.
+                assert!(
+                    non_couvertes.contains(&technique),
+                    "`{technique}` n'est ni couverte ni RENDUE comme angle mort par la matrice — une technique \
+                     que plus rien ne surveille doit se VOIR, pas s'effacer"
+                );
+                angles_morts_rendus.push(format!("{technique} (« {nom} »)"));
+            }
+        }
+        assert!(
+            !angles_morts_rendus.is_empty(),
+            "aucune technique ne bascule en angle mort : ce maillon ne prouve rien tant qu'il ne juge aucun cas réel"
+        );
+    }
+
+    // ================================================================================================
+    // `P9.5-a` (SUITE) — LE CAS QUE LA BASE NEUVE NE PEUT PAS VOIR : L'INSTALLATION DÉJÀ EN SERVICE.
+    //
+    // Le verrou du semis ne tourne QUE sur une base fraîche (`seed_detection_rules` court-circuite sur son
+    // marqueur). Sur le parc réel la ligne a été posée ACTIVE par la migration, et le témoin ci-dessus —
+    // qui part d'une base à blanc — ne pouvait rien en dire. Ces deux témoins jugent l'autre population.
+    //
+    // CE QUI EST TENU ICI, DANS LES DEUX SENS :
+    //   ① sur une base remise dans l'état du parc (les règles que le semis avait éteintes faute de
+    //     producteur sont RALLUMÉES, exactement ce que l'INSERT littéral de la migration laisse), la
+    //     lecture NUE des règles activées annonce des techniques couvertes que la lecture HONNÊTE ne
+    //     compte pas ;
+    //   ② la matrice les rend dans le TROISIÈME ÉTAT — ni couvertes, ni confondues avec un angle mort —
+    //     et elle NOMME LA RAISON, c'est-à-dire la ou les sources qui manquent ;
+    //   ③ l'activation de personne n'est touchée : les lignes restent `enabled=1` après la lecture ;
+    //   ④ et la lecture honnête n'est pas un « toujours non » : dès qu'UN événement de la source
+    //     manquante existe sur cette base, la technique REDEVIENT couverte. C'est l'exploitant qui a
+    //     branché son producteur, et il ne doit rien perdre.
+    //
+    // CE QUI A ÉTÉ RETIRÉ ICI, ET POURQUOI — LA JAMBE QUI NE JUGEAIT RIEN. Ce témoin a porté une
+    // assertion « la matrice rend `t` comme angle mort », écrite `non_honnete.contains(t)`. Elle est une
+    // TAUTOLOGIE : `build_attack_matrix` parcourt TOUT le catalogue et pose `covered = rc > 0` sur
+    // chaque technique, donc l'ensemble des non-couvertes contient forcément toute technique à
+    // `rule_count = 0`. MESURÉ PAR MUTATION : le corps de `lire_la_couverture_des_regles_activees`
+    // remplacé par une lecture qui rend TOUT en attente — cette jambe restait VERTE. Elle ne pouvait
+    // donc pas voir que la correction avait RETOURNÉ le défaut au lieu de le fermer : la règle affamée
+    // retombait dans le seau de « personne n'a jamais écrit de règle ». Ce qui la remplace juge ce qui
+    // SÉPARE les deux états — le compte de règles en attente et LA RAISON — et un vrai angle mort du
+    // même catalogue sert de témoin NÉGATIF, sans quoi « la raison est rendue » se prouverait sur une
+    // valeur que toute technique porterait.
+
+    #[test]
+    fn une_base_deja_deployee_ne_compte_pas_couverte_une_regle_qu_aucun_producteur_ne_nourrit() {
+        use crate::detection_aveugle::{lire_la_couverture_des_regles_activees, sources_sans_producteur_livre};
+        use crate::handlers::alerts::{build_attack_matrix, mitre_parents};
+
+        let (_tmp, conn) = base_semee("regle-vivante-sans-producteur");
+
+        // ① REMETTRE LA BASE DANS L'ÉTAT DU PARC. On ne recopie pas le littéral `1` de la migration : on
+        //    reprend les règles que le VERROU a éteintes faute de producteur et on les rallume. C'est,
+        //    par construction, l'écart EXACT entre le chemin de semis et le chemin de migration.
+        let cibles: Vec<(i64, String, String, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, name, COALESCE(mitre,''), query FROM rule WHERE enabled=0")
+                .unwrap();
+            let v: Vec<(i64, String, String, String)> = stmt
+                .query_map([], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+                })
+                .unwrap()
+                .flatten()
+                .filter(|(_, _, m, q)| !m.is_empty() && !sources_sans_producteur_livre(q).is_empty())
+                .collect();
+            v
+        };
+        assert!(
+            !cibles.is_empty(),
+            "aucune règle semée éteinte faute de producteur ET taguée MITRE : ce témoin ne juge alors AUCUN \
+             cas réel, et son vert ne prouverait rien"
+        );
+        for (id, _, _, _) in &cibles {
+            conn.execute("UPDATE rule SET enabled=1 WHERE id=?1", rusqlite::params![id]).unwrap();
+        }
+
+        // ② LA LECTURE NUE (celle qui a survécu sur le parc) CONTRE LA LECTURE HONNÊTE.
+        let tags_nus: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT COALESCE(mitre,'') FROM rule WHERE enabled=1 AND mitre IS NOT NULL AND mitre<>''")
+                .unwrap();
+            let v: Vec<String> = stmt.query_map([], |r| r.get(0)).unwrap().flatten().collect();
+            v
+        };
+        let lecture = lire_la_couverture_des_regles_activees(&conn);
+        let tags_honnetes = lecture.tirent.clone();
+        let couvertes = |tags: &[String]| -> std::collections::BTreeSet<String> {
+            let mut s = std::collections::BTreeSet::new();
+            for t in tags {
+                for p in mitre_parents(t) {
+                    s.insert(p);
+                }
+            }
+            s
+        };
+        let nues = couvertes(&tags_nus);
+        let honnetes = couvertes(&tags_honnetes);
+        let fantomes: Vec<String> = nues.difference(&honnetes).cloned().collect();
+        assert!(
+            !fantomes.is_empty(),
+            "la lecture honnête compte EXACTEMENT ce que la lecture nue comptait ({} technique(s)) alors que \
+             {} règle(s) sans producteur viennent d'être rallumées : la dérivation ne retire plus rien, elle \
+             rendrait vert sur une base déjà déployée",
+            nues.len(),
+            cibles.len()
+        );
+
+        // ③ CE QUE LA MATRICE ANNONCE, DES DEUX CÔTÉS — trois états relevés par technique : couverte,
+        //    le compte de règles EN ATTENTE DE SOURCE, et la RAISON (les sources qui manquent).
+        let lire = |tags: &[String],
+                    attente: &[(String, Vec<String>)]|
+         -> std::collections::BTreeMap<String, (bool, i64, Vec<String>)> {
+            let m = build_attack_matrix(tags, attente, &std::collections::HashMap::new());
+            let mut out = std::collections::BTreeMap::new();
+            for tac in m.get("tactics").and_then(|t| t.as_array()).into_iter().flatten() {
+                for tech in tac.get("techniques").and_then(|t| t.as_array()).into_iter().flatten() {
+                    let Some(tid) = tech.get("tid").and_then(|t| t.as_str()) else { continue };
+                    let couverte = tech.get("covered").and_then(|c| c.as_bool()).unwrap_or(false);
+                    // `-1` quand la clé MANQUE : une matrice qui aurait cessé de publier le troisième
+                    // état ne doit pas se lire comme « zéro règle en attente », qui est un vrai fait.
+                    let en_attente = tech.get("rules_en_attente_de_source").and_then(|c| c.as_i64()).unwrap_or(-1);
+                    let manquantes: Vec<String> = tech
+                        .get("sources_manquantes")
+                        .and_then(|c| c.as_array())
+                        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                        .unwrap_or_default();
+                    out.insert(tid.to_string(), (couverte, en_attente, manquantes));
+                }
+            }
+            out
+        };
+        let nu = lire(&tags_nus, &[]);
+        let honnete = lire(&lecture.tirent, &lecture.en_attente_de_source);
+
+        // TÉMOIN NÉGATIF, ET IL EST LE CŒUR DE CETTE JAMBE : un VRAI angle mort du même catalogue —
+        // aucune règle ne le porte. Sans lui, « la raison est rendue » se prouverait sur une valeur que
+        // TOUTE technique porte, et on aurait réécrit la tautologie sous un autre nom.
+        let vrai_angle_mort = honnete
+            .iter()
+            .find(|(tid, (couverte, att, _))| !couverte && *att == 0 && !fantomes.contains(tid))
+            .map(|(tid, v)| (tid.clone(), v.clone()))
+            .expect("aucune technique du catalogue n'est un vrai angle mort : le témoin négatif manque");
+        assert!(
+            vrai_angle_mort.1 .2.is_empty(),
+            "le témoin négatif `{}` — qu'AUCUNE règle ne porte — nomme pourtant des sources manquantes \
+             {:?} : la raison serait posée sur tout le catalogue et ne distinguerait plus rien",
+            vrai_angle_mort.0,
+            vrai_angle_mort.1 .2
+        );
+
+        for t in &fantomes {
+            let (couverte_nue, _, _) = nu.get(t).unwrap_or(&(false, -1, Vec::new())).clone();
+            assert!(couverte_nue, "témoin positif : `{t}` doit être annoncée COUVERTE par la lecture nue");
+            let (couverte, en_attente, manquantes) =
+                honnete.get(t).cloned().unwrap_or((false, -1, Vec::new()));
+            assert!(
+                !couverte,
+                "la matrice annonce encore `{t}` COUVERTE sur une base déjà déployée : c'est exactement la \
+                 fausse couverture que le verrou de semis ne pouvait pas atteindre"
+            );
+            // LE DÉFAUT INTRODUIT PAR LA PREMIÈRE CORRECTION, ET C'EST LUI QUE CETTE LIGNE FERME : la
+            // règle EXISTE et elle est ACTIVÉE. La rendre à `0` la ferait retomber dans le seau du
+            // témoin négatif ci-dessus, celui de « personne n'a jamais écrit de règle ».
+            assert!(
+                en_attente >= 1,
+                "`{t}` est rendue avec {en_attente} règle(s) en attente de source : elle est donc \
+                 indistinguable de `{}`, que RIEN ne porte. Une règle activée que plus rien ne nourrit \
+                 doit se COMPTER À PART, pas s'effacer — la console y annoncerait « aucune règle » et \
+                 prescrirait d'en créer une seconde",
+                vrai_angle_mort.0
+            );
+            // ET LA RAISON, PARCE QU'ELLE EST ACTIONNABLE : brancher ce producteur suffit. Elle était
+            // CALCULÉE là où le filtre décide, puis jetée.
+            let attendues: Vec<String> = cibles
+                .iter()
+                .filter(|(_, _, m, _)| mitre_parents(m).contains(t))
+                .flat_map(|(_, _, _, q)| sources_sans_producteur_livre(q))
+                .collect();
+            assert!(
+                !attendues.is_empty(),
+                "instrument : aucune source manquante ne se dérive des règles qui portent `{t}` — cette \
+                 jambe ne comparerait rien"
+            );
+            for src in &attendues {
+                assert!(
+                    manquantes.contains(src),
+                    "`{t}` est comptée à part mais SANS SA RAISON : la matrice rend {manquantes:?} là où \
+                     la règle épingle `{src}`. C'est le seul renseignement qui mène au geste utile — \
+                     brancher le producteur — et l'attendu de `P9.5-a` le demande mot pour mot"
+                );
+            }
+        }
+
+        // ④ RIEN N'A ÉTÉ ÉTEINT. La volonté de l'exploitant n'est pas touchée : c'est la LECTURE qui a
+        //    changé, pas la ligne. Une correction qui aurait flippé `enabled` rougirait ici.
+        for (id, nom, _, _) in &cibles {
+            let actif: i64 = conn
+                .query_row("SELECT enabled FROM rule WHERE id=?1", rusqlite::params![id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(actif, 1, "la règle « {nom} » a été ÉTEINTE par le chemin de lecture : rien ne doit l'être");
+        }
+
+        // ⑤ ET CE N'EST PAS UN « TOUJOURS NON » : la source manquante OBSERVÉE sur cette base rend la
+        //    couverture. C'est le cas de l'exploitant qui a branché son producteur — la seule population
+        //    qu'une extinction rétroactive aurait sacrifiée en silence.
+        let (_, nom_cible, mitre_cible, q_cible) = cibles
+            .iter()
+            .find(|(_, _, m, _)| mitre_parents(m).iter().any(|p| fantomes.contains(p)))
+            .expect("au moins une règle rallumée porte une des techniques fantômes");
+        let source_manquante = sources_sans_producteur_livre(q_cible).into_iter().next().unwrap();
+        conn.execute(
+            "INSERT INTO event_rollup(bucket,source,n) VALUES(?1,?2,?3)",
+            rusqlite::params![0i64, source_manquante, 1i64],
+        )
+        .unwrap();
+        let lecture_apres = lire_la_couverture_des_regles_activees(&conn);
+        let apres = couvertes(&lecture_apres.tirent);
+        let rendu_apres = lire(&lecture_apres.tirent, &lecture_apres.en_attente_de_source);
+        for p in mitre_parents(mitre_cible) {
+            assert!(
+                apres.contains(&p),
+                "« {nom_cible} » épingle `{source_manquante}`, dont cette base porte désormais des \
+                 événements : sa technique `{p}` doit REDEVENIR couverte. Sans ce sens-là, la dérivation \
+                 punirait l'exploitant qui a branché son producteur"
+            );
+            // ET LE TROISIÈME ÉTAT SE RETIRE AVEC LA RAISON : une technique redevenue couverte ne peut
+            // pas rester « en attente d'une source » qui est arrivée, ni continuer à la nommer.
+            let (couverte, en_attente, manquantes) =
+                rendu_apres.get(&p).cloned().unwrap_or((false, -1, Vec::new()));
+            assert!(
+                couverte && en_attente == 0 && !manquantes.contains(&source_manquante),
+                "`{p}` est redevenue couverte mais la matrice la rend encore en attente de \
+                 {manquantes:?} ({en_attente} règle(s)) : le troisième état survivrait à sa cause"
+            );
+        }
+    }
+
+    // ================================================================================================
+    // `P9.5-a` (SUITE) — L'IMPORT SIGMA : LES DEUX CÔTÉS DE LA SOUSTRACTION SE COMPTENT PAREIL.
+    //
+    // LE DÉFAUT MESURÉ, ET IL A ÉTÉ INTRODUIT PAR LA PREMIÈRE CORRECTION. Le « avant » du delta de
+    // couverture passait par le filtre neuf ; le jeu des techniques IMPORTÉES ne passait par rien ; et
+    // l'« après » était l'union des deux. La différence était donc gonflée d'exactement l'ensemble que le
+    // filtre venait de retirer du « avant » — dans le sens INVERSE de ce que son commentaire revendiquait.
+    // Aucun test ne pouvait le voir : `sigma_bulk_coverage_delta` n'était appelé que sur des tags
+    // fabriqués à la main, jamais à travers une base.
+    //
+    // TROIS SENS, PARCE QU'UN SEUL NE PROUVERAIT QUE L'INCAPACITÉ À COMPTER :
+    //   ① un import qui tague la technique d'une règle affamée, et qui est lui-même affamé, ne ferme RIEN ;
+    //   ② un import qui n'épingle aucune source ferme bien un angle mort — le témoin POSITIF ;
+    //   ③ le MÊME import de ① ferme la technique dès que la base a REÇU la source qui manquait — la
+    //     dérivation n'est pas un « toujours non », c'est un rapprochement.
+
+    #[test]
+    fn un_import_ne_ferme_pas_un_angle_mort_qu_aucun_producteur_ne_nourrit() {
+        use crate::detection_aveugle::{lire_la_couverture_des_regles_activees, sources_sans_producteur_livre};
+        use crate::handlers::alerts::mitre_parents;
+        use crate::sigma::{delta_de_couverture_d_un_import, sigma_covered_parents, SigmaTranslation};
+
+        let (_tmp, conn) = base_semee("import-sigma-sans-producteur");
+
+        // LA BASE DU PARC : les règles que le semis a éteintes faute de producteur sont RALLUMÉES, ce que
+        // l'INSERT littéral de la migration laisse sur une installation en service.
+        let cibles: Vec<(i64, String, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, COALESCE(mitre,''), query FROM rule WHERE enabled=0")
+                .unwrap();
+            let v: Vec<(i64, String, String)> = stmt
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+                .unwrap()
+                .flatten()
+                .filter(|(_, m, q)| !m.is_empty() && !sources_sans_producteur_livre(q).is_empty())
+                .collect();
+            v
+        };
+        assert!(!cibles.is_empty(), "aucune règle semée éteinte faute de producteur ET taguée : ce témoin ne juge rien");
+        for (id, _, _) in &cibles {
+            conn.execute("UPDATE rule SET enabled=1 WHERE id=?1", rusqlite::params![id]).unwrap();
+        }
+        let lecture = lire_la_couverture_des_regles_activees(&conn);
+        let couvertes_avant = sigma_covered_parents(&lecture.tirent);
+        let (_, mitre_cible, q_cible) = cibles
+            .iter()
+            .find(|(_, m, _)| mitre_parents(m).iter().any(|p| !couvertes_avant.contains(p)))
+            .expect("au moins une règle rallumée porte une technique que la lecture honnête ne compte pas");
+        let technique = mitre_parents(mitre_cible)
+            .into_iter()
+            .find(|p| !couvertes_avant.contains(p))
+            .expect("technique cible");
+        let source_manquante = sources_sans_producteur_livre(q_cible).into_iter().next().unwrap();
+
+        // Une traduction Sigma se fabrique ici plutôt que de traduire un document : ce qui est jugé est le
+        // rapprochement entre la requête TRADUITE et les producteurs, pas la traduction elle-même.
+        let traduction = |nom: &str, mitre: &str, query: &str| SigmaTranslation {
+            name: nom.to_string(),
+            sigma_id: None,
+            query: query.to_string(),
+            severity: 3,
+            mitre: mitre.to_string(),
+            compliance: String::new(),
+            interval_s: 300,
+            window_s: 900,
+            op: ">=".to_string(),
+            threshold: 1.0,
+            warnings: Vec::new(),
+        };
+
+        // ① L'IMPORT QUI NE FERME RIEN : même technique, même source absente.
+        let affame = traduction(
+            "import affamé",
+            &technique,
+            &format!("search source={source_manquante} | stats count"),
+        );
+        let plan_affame: Vec<(&SigmaTranslation, Option<i64>)> = vec![(&affame, None)];
+        let d1 = delta_de_couverture_d_un_import(&conn, &plan_affame);
+        assert!(
+            !d1.nouvellement_couvertes.contains(&technique),
+            "l'import annonce fermer `{technique}` alors que sa règle épingle `{source_manquante}`, \
+             qu'aucun producteur ne fournit ici : le « avant » passait par le filtre et l'« après » pas, \
+             donc la différence était gonflée d'exactement ce que le filtre venait de retirer"
+        );
+        assert_eq!(
+            d1.apres, d1.avant,
+            "l'import ne nourrit rien de neuf et pourtant la couverture monte de {} à {}",
+            d1.avant, d1.apres
+        );
+        // ET CE QUI EST ÉCARTÉ N'EST PAS TU : la raison voyage, comme dans la matrice.
+        let (_, _, manquantes) = d1
+            .sans_producteur
+            .iter()
+            .find(|(nom, _, _)| nom == "import affamé")
+            .expect("la règle écartée doit être RENDUE, pas effacée : sinon l'administrateur ne sait pas quoi brancher");
+        assert!(
+            manquantes.contains(&source_manquante),
+            "la règle écartée est rendue sans sa raison : {manquantes:?} ne nomme pas `{source_manquante}`"
+        );
+
+        // ② TÉMOIN POSITIF — sans lui, le vert de ① ne prouverait que l'incapacité à compter quoi que ce
+        //    soit. Une technique du catalogue que RIEN ne couvre, importée par une règle qui n'épingle
+        //    aucune source : elle DOIT se fermer.
+        let neuve = guatx_core::attack::CATALOG
+            .iter()
+            .map(|(tid, _)| tid.to_string())
+            .find(|tid| !couvertes_avant.contains(tid) && *tid != technique)
+            .expect("aucune technique non couverte au catalogue : le témoin positif manque");
+        let nourrissable = traduction("import nourrissable", &neuve, "search category=auth action=failure | stats count");
+        let plan_ok: Vec<(&SigmaTranslation, Option<i64>)> = vec![(&nourrissable, None)];
+        let d2 = delta_de_couverture_d_un_import(&conn, &plan_ok);
+        assert!(
+            d2.nouvellement_couvertes.contains(&neuve) && d2.apres == d2.avant + 1,
+            "l'import d'une règle que TOUT peut nourrir n'est pas compté comme fermant `{neuve}` \
+             ({} -> {}, {:?}) : la dérivation refuserait tout, et ne mesurerait rien",
+            d2.avant,
+            d2.apres,
+            d2.nouvellement_couvertes
+        );
+        assert!(d2.sans_producteur.is_empty(), "une règle sans épinglage est écartée : {:?}", d2.sans_producteur);
+
+        // ③ ET LE SENS INVERSE : la base REÇOIT la source qui manquait. Le même import ferme alors la
+        //    technique — l'exploitant qui branche son producteur ne doit rien perdre.
+        conn.execute(
+            "INSERT INTO event_rollup(bucket,source,n) VALUES(?1,?2,?3)",
+            rusqlite::params![0i64, source_manquante, 1i64],
+        )
+        .unwrap();
+        let d3 = delta_de_couverture_d_un_import(&conn, &plan_affame);
+        assert!(
+            d3.sans_producteur.is_empty(),
+            "`{source_manquante}` est désormais observée sur cette base et l'import reste écarté : {:?}",
+            d3.sans_producteur
+        );
+        // La technique est REDEVENUE couverte par la règle vivante elle-même : l'import ne « ferme » donc
+        // plus rien de neuf, et c'est le compte AVANT qui a monté. C'est le fait qui compte ici.
+        assert!(
+            d3.avant > d1.avant,
+            "la couverture AVANT n'a pas bougé ({} -> {}) alors que la source manquante est arrivée",
+            d1.avant,
+            d3.avant
+        );
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // LE POINT UNIQUE EST-IL VRAIMENT UNIQUE ? La fausse couverture a survécu à sa correction PARCE QUE
+    // deux surfaces lisaient les règles activées chacune de son côté. Cette garde relit le démon et refuse
+    // qu'une troisième apparaisse — et refuse aussi le retour de la forme EXACTE qui portait le défaut.
+    //
+    // CE QU'ELLE NE TIENT PAS, ET C'EST DIT : elle lie le FICHIER, pas l'argument. Un fichier qui appellerait
+    // le point unique ET relirait la table à côté passerait. Ce qu'elle ferme, c'est le chemin par lequel le
+    // défaut est réellement revenu : une surface de couverture qui ne connaît pas la dérivation du tout.
+    #[test]
+    fn aucune_surface_de_couverture_ne_lit_les_regles_actives_directement() {
+        /// Les fonctions qui transforment des tags MITRE en VERDICT de couverture. Une surface qui en
+        /// appelle une doit connaître le point unique.
+        const VERDICTS_DE_COUVERTURE: [&str; 2] = ["build_attack_matrix(", "sigma_bulk_coverage_delta("];
+        /// La forme EXACTE que les deux lectures nues portaient. Elle ne doit plus exister hors des tests.
+        const LECTURE_NUE: &str = "SELECT mitre FROM rule WHERE enabled=1";
+
+        fn balaye(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+            let Ok(rd) = std::fs::read_dir(dir) else { return };
+            for e in rd.flatten() {
+                let p = e.path();
+                let nom = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+                if p.is_dir() {
+                    if nom != "tests" {
+                        balaye(&p, out);
+                    }
+                } else if nom.ends_with(".rs") && nom != "tests.rs" {
+                    if let Ok(t) = std::fs::read_to_string(&p) {
+                        out.push((p.display().to_string(), t));
+                    }
+                }
+            }
+        }
+        let racine = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut fichiers = Vec::new();
+        balaye(&racine, &mut fichiers);
+        assert!(
+            fichiers.len() > 50,
+            "le balayage n'a lu que {} fichier(s) : l'instrument ne voit plus le démon, il rendrait vert sur \
+             n'importe quoi",
+            fichiers.len()
+        );
+
+        // ① TÉMOIN POSITIF — des surfaces de couverture EXISTENT, sinon cette garde ne juge rien.
+        let surfaces: Vec<&(String, String)> = fichiers
+            .iter()
+            .filter(|(_, t)| VERDICTS_DE_COUVERTURE.iter().any(|f| t.contains(f)))
+            .collect();
+        assert!(
+            surfaces.len() >= 2,
+            "seulement {} surface(s) de couverture trouvée(s) : le repérage ne reconnaît plus le corpus",
+            surfaces.len()
+        );
+
+        // ② LE VERDICT — chacune passe par la dérivation. LES PORTES ADMISES NE SONT PLUS ÉNUMÉRÉES :
+        //    elles sont DÉRIVÉES de `detection_aveugle.rs` — les fonctions qui lisent l'énoncé unique des
+        //    règles activées (`ENONCE_TAGS_ACTIFS`), plus, par fermeture, celles de ce module qui les
+        //    appellent (leurs projections). Un nom recopié ici aurait rougi le jour où la lecture s'est
+        //    enrichie du troisième état, et on l'aurait « corrigé » en élargissant la garde.
+        fn portes_de_couverture(module: &str) -> Vec<String> {
+            // Un corps de fonction de premier niveau : de sa ligne `fn …` jusqu'à l'accolade seule en
+            // colonne 0. C'est la forme que rustfmt tient sur tout ce dépôt, et elle exclut les
+            // déclarations (`const`, `struct`) qui vivent ENTRE deux fonctions — sans quoi l'énoncé
+            // lui-même serait attribué à la fonction qui le précède.
+            let mut corps: Vec<(String, String)> = Vec::new();
+            let lignes: Vec<&str> = module.lines().collect();
+            let mut i = 0;
+            while i < lignes.len() {
+                let l = lignes[i];
+                let reste = l.strip_prefix("pub(crate) ").or_else(|| l.strip_prefix("pub ")).unwrap_or(l);
+                if let Some(apres) = reste.strip_prefix("fn ") {
+                    let nom: String = apres.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                    let mut j = i + 1;
+                    let mut txt = String::new();
+                    while j < lignes.len() && lignes[j] != "}" {
+                        txt.push_str(lignes[j]);
+                        txt.push('\n');
+                        j += 1;
+                    }
+                    if !nom.is_empty() {
+                        corps.push((nom, txt));
+                    }
+                    i = j + 1;
+                    continue;
+                }
+                i += 1;
+            }
+            let mut admises: Vec<String> = corps
+                .iter()
+                .filter(|(_, t)| t.contains("ENONCE_TAGS_ACTIFS"))
+                .map(|(n, _)| n.clone())
+                .collect();
+            // FERMETURE : une projection de la lecture est une porte, elle aussi.
+            loop {
+                let avant = admises.len();
+                for (n, t) in &corps {
+                    if !admises.contains(n) && admises.iter().any(|a| t.contains(&format!("{a}("))) {
+                        admises.push(n.clone());
+                    }
+                }
+                if admises.len() == avant {
+                    break;
+                }
+            }
+            admises
+        }
+
+        // L'INSTRUMENT AVANT LE VERDICT, sur un corpus FABRIQUÉ dont la réponse est connue : la lecture,
+        // sa projection, et deux formes qui ne doivent PAS entrer — une fonction qui n'y touche pas, et
+        // l'énoncé lui-même, qui vit ENTRE deux fonctions.
+        const CORPUS_TEMOIN: &str = "pub(crate) const ENONCE_TAGS_ACTIFS: &str = \"SELECT …\";\n\
+             pub(crate) fn ailleurs(x: u8) -> u8 {\n    x + 1\n}\n\
+             pub(crate) fn la_lecture(c: &Connection) -> Vec<String> {\n    c.prepare(ENONCE_TAGS_ACTIFS);\n    Vec::new()\n}\n\
+             pub(crate) fn la_projection(c: &Connection) -> usize {\n    la_lecture(c).len()\n}\n";
+        let temoin = portes_de_couverture(CORPUS_TEMOIN);
+        assert!(
+            temoin.contains(&"la_lecture".to_string()) && temoin.contains(&"la_projection".to_string()),
+            "instrument : la dérivation ne retrouve pas la lecture et sa projection sur un corpus fabriqué \
+             ({temoin:?}) — elle rendrait vert en ne voyant aucune porte"
+        );
+        assert!(
+            !temoin.contains(&"ailleurs".to_string()),
+            "instrument : la dérivation admet une fonction qui ne lit pas l'énoncé ({temoin:?}) — l'énoncé \
+             posé ENTRE deux fonctions est attribué à la mauvaise, et toute surface passerait"
+        );
+
+        let module = std::fs::read_to_string(racine.join("detection_aveugle.rs"))
+            .expect("`detection_aveugle.rs` illisible : la dérivation des portes n'a pas de source");
+        let portes = portes_de_couverture(&module);
+        assert!(
+            !portes.is_empty(),
+            "AUCUNE porte de couverture dérivée de `detection_aveugle.rs` : la lecture de l'énoncé unique a \
+             changé de forme et la garde ne la reconnaît plus — elle rendrait vert sur n'importe quelle surface"
+        );
+        let ignorantes: Vec<&str> = surfaces
+            .iter()
+            .filter(|(_, t)| !portes.iter().any(|p| t.contains(&format!("{p}("))))
+            .map(|(f, _)| f.as_str())
+            .collect();
+        assert!(
+            ignorantes.is_empty(),
+            "surface(s) de couverture qui n'appellent AUCUNE des portes dérivées {portes:?} : {ignorantes:?}. \
+             Une technique y serait annoncée couverte par une règle qu'aucun producteur ne nourrit — le défaut \
+             de `P9.5-a`, revenu par la porte qui l'avait laissé passer."
+        );
+
+        // ③ ET LA FORME NUE NE REVIENT PAS.
+        let nues: Vec<&str> = fichiers
+            .iter()
+            .filter(|(_, t)| t.contains(LECTURE_NUE))
+            .map(|(f, _)| f.as_str())
+            .collect();
+        assert!(
+            nues.is_empty(),
+            "lecture NUE des règles activées retrouvée dans {nues:?} : `{LECTURE_NUE}` compte une règle \
+             activée comme une règle surveillante. Passer par l'une des portes dérivées {portes:?}."
+        );
+    }

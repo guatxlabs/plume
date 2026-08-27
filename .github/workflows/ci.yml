@@ -48,10 +48,12 @@
 #     regression that still type-checks WILL pass this pipeline. Do not read a green CI as
 #     "these backends work"; it means "these backends still compile".
 #
-# guatx-core (the shared SOQL compiler) is a GIT dependency of the daemon
-# (daemon/Cargo.toml: `guatx-core = { git = ".../guatxlabs/core", tag = "v0.2.1" }`).
-# `guatxlabs/core@v0.2.1` must be reachable by the runner for cargo to resolve the tag (anonymous
-# fetch) — CI needs no sibling checkout and no CI-only `[patch]`. The committed
+# guatx-core (the shared SOQL compiler) is a GIT dependency of the daemon, pinned to a tag in
+# daemon/Cargo.toml and NOWHERE ELSE — a recopied label rots, and it did: nine lines of this repo
+# (four of them here) still announced an older tag than the manifest. Read the live one with
+# `grep -n 'guatx-core' daemon/Cargo.toml`; check_the_core_pin_is_never_recopied.py refuses a
+# second copy. `guatxlabs/core` must be reachable by the runner for cargo to resolve the tag
+# (anonymous fetch) — CI needs no sibling checkout and no CI-only `[patch]`. The committed
 # daemon/Cargo.lock pins guatx-core to that git source+rev, so `cargo test --locked`
 # is reproducible against exactly what public users get. (Local dev may still keep a
 # git-ignored `.cargo/config.toml` `[patch]` -> sibling checkout for build speed; it
@@ -394,7 +396,39 @@ env:
   #   - `router_un_segment_statique_gagne_sur_son_parametre_frere` — le moteur d'appariement a été
   #     REMPLACÉ (matchit 0.7.3 -> 0.8.4) et la précédence « statique avant paramètre » n'était tenue
   #     par aucun test, seulement par un commentaire qui en donnait un mécanisme FAUX.
-  EXPECTED_TESTS: "1334"
+  # RÉ-MESURÉ le 2026-08-27 par `.github/scripts/compter-les-tests.sh` (jamais par addition : une somme
+  # juste par hasard masquerait un test perdu en chemin) sur l'arbre du lot P9 : 1334 -> **1349**, soit
+  # +15, et le MÊME +15 sur `EXPECTED_COLD_TESTS` — l'écart entre les deux profils reste 222, INCHANGÉ,
+  # ce qui est la seule chose qui dise qu'aucun test n'a été gagné ni perdu du côté de la feature.
+  # Aucun des quinze n'est derrière un `cfg(feature)`, ce qui est cohérent avec ce déplacement conjoint :
+  #   - 12 pour le magasin de secrets arrêté (`P9.8-a`, `tests/magasin_de_secrets.rs`), dont DEUX portent
+  #     le dénominateur : « zéro pas prêt sur ZÉRO déclaré » ne vaut pas une santé — effacer les magasins
+  #     pendant l'incident résolvait l'alerte — et sa BORNE, un émetteur qui ne publie pas de total ne
+  #     doit pas hériter d'une alerte que rien ne peut plus résoudre ;
+  #   - 3 pour la fausse couverture (`P9.5-a`, `tests/detection_aveugle.rs`) : la règle sans producteur
+  #     semée éteinte sur une base NEUVE, puis le cas que celle-là ne peut pas voir — l'installation DÉJÀ
+  #     déployée, où la ligne est restée active — et la garde qui refuse une seconde lecture des règles
+  #     activées hors du point unique.
+  # RÉ-MESURÉ le 2026-08-27 par `.github/scripts/compter-les-tests.sh` (les DEUX profils mesurés dans la
+  # même exécution, jamais par addition) après la reprise adverse du lot P9 : 1349 -> **1351**, soit +2,
+  # et le MÊME +2 sur `EXPECTED_COLD_TESTS` — l'écart entre les deux profils reste **222**, INCHANGÉ, ce
+  # qui est la seule chose qui dise qu'aucun test n'a été gagné ni perdu du côté de la feature. Aucun des
+  # deux n'est derrière un `cfg(feature)` :
+  #   - `un_import_ne_ferme_pas_un_angle_mort_qu_aucun_producteur_ne_nourrit` (`P9.5-a`,
+  #     `tests/detection_aveugle.rs`) — les DEUX membres du delta de couverture d'un import Sigma se
+  #     comptent de la même manière. Le lot précédent filtrait le « avant » et pas le jeu importé, si bien
+  #     qu'un import annonçait fermer un angle mort qu'il ne ferme pas ; trois sens sont éprouvés, dont le
+  #     témoin POSITIF (un import que tout peut nourrir ferme bien) ;
+  #   - `mds_le_module_avoue_que_son_producteur_n_est_pas_arme` (`P9.8-a`,
+  #     `tests/magasin_de_secrets.rs`) — le module disqualifie son plus proche parent au motif qu'« un
+  #     mécanisme posé mais non armé n'est pas un signal », et son PROPRE producteur est livré éteint sans
+  #     qu'aucun capteur muet ne le couvre. Le témoin DÉRIVE les deux faits de l'arbre (l'amorçage, la
+  #     table des capteurs) et exige l'aveu tant qu'ils tiennent — et son RETRAIT le jour où ils cessent.
+  # DEUX témoins ont par ailleurs été RÉÉCRITS sans changer le compte : la jambe tautologique de
+  # `une_base_deja_deployee_…` (elle affirmait « rendue comme angle mort », ce qui est vrai de TOUTE
+  # technique à zéro règle) et le verdict de `aucune_surface_de_couverture_…`, dont les portes admises
+  # sont désormais DÉRIVÉES de `detection_aveugle.rs` au lieu d'être un nom recopié.
+  EXPECTED_TESTS: "1351"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -425,7 +459,7 @@ jobs:
 
       # DEFAULT build only: SqlcipherStore alone (rusqlite bundled-sqlcipher-vendored-openssl
       # compiles C + vendored OpenSSL; cc/perl present on ubuntu-24.04).
-      # cargo fetches the guatx-core git-dep (core@v0.2.1) from GitHub.
+      # cargo fetches the guatx-core git-dep from GitHub (tag: see daemon/Cargo.toml).
       # NOTE: do NOT add `--features cold_tier` to this job — the cold_tier suite shares
       # fixed temp paths with the default suite and must run on a SEPARATE runner
       # (CONTRIBUTING "Two testing gotchas" #2 says the same). It now HAS one: the
@@ -757,7 +791,19 @@ jobs:
           # **222**. Les +2 sont les MÊMES deux tests que ceux d'`EXPECTED_TESTS` (refus de `Path<i64>`
           # et précédence du segment statique, tous deux sans `cfg`) : les deux compteurs bougent
           # ensemble, et l'écart INCHANGÉ est ce qui dit qu'aucun test froid n'a été perdu en chemin.
-          EXPECTED_COLD_TESTS: "1556"
+          # RÉ-MESURÉ le 2026-08-27 (MÊME commande, profil `cold_tier` mesuré SÉPARÉMENT — rien ne
+          # garantit a priori le même delta, c'est justement ce qu'on vérifie) : 1571 avec `cold_tier`
+          # pour 1349 par défaut — l'écart reste **222**. Les +15 sont les MÊMES quinze que ceux
+          # d'`EXPECTED_TESTS` (magasin de secrets arrêté, fausse couverture de détection), aucun
+          # derrière un `cfg` de feature : les deux compteurs bougent ensemble, et c'est l'écart
+          # INCHANGÉ qui dit qu'aucun test froid n'a été perdu en chemin.
+          # RÉ-MESURÉ le 2026-08-27 (MÊME commande, profil `cold_tier` mesuré SÉPARÉMENT) après la reprise
+          # adverse du lot P9 : 1573 avec `cold_tier` pour 1351 par défaut — l'écart reste **222**. Les +2
+          # sont les MÊMES deux tests que ceux d'`EXPECTED_TESTS` (les deux membres du delta d'un import
+          # Sigma comptés pareil ; l'aveu dérivé du magasin de secrets sur son propre producteur), aucun
+          # derrière un `cfg` de feature : les deux compteurs bougent ensemble, et c'est l'écart INCHANGÉ
+          # qui dit qu'aucun test froid n'a été perdu en chemin.
+          EXPECTED_COLD_TESTS: "1573"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -825,6 +871,21 @@ jobs:
       # script, pas cachés.
       - name: Le compte de tests n'existe qu'à un seul endroit, et toute mesure est datée
         run: python3 .github/scripts/check_no_duplicated_test_count.py
+
+      # MÊME DOCTRINE, AUTRE VALEUR — l'étiquette du cœur. MESURÉ le 2026-08-27 : le manifeste
+      # épinglait `guatx-core` sur un tag, et NEUF autres lignes du dépôt (deux dans
+      # ARCHITECTURE.md, deux dans CONTRIBUTING.md, une dans deny.toml, QUATRE ici même)
+      # réécrivaient au présent un tag ANTÉRIEUR. Un lecteur qui vérifie « quel cœur ce dépôt
+      # compile-t-il ? » sur la documentation obtenait la mauvaise réponse, et l'exception
+      # `allow-git` de deny.toml se justifiait par une mesure périmée. La correction ligne à ligne
+      # avait déjà été faite une fois (Dockerfile, docker-compose.yml) et la dérive est revenue
+      # ailleurs : rien n'interdisait la recopie. La garde n'énumère aucun fichier et ne connaît
+      # aucun numéro — elle cherche la FORME d'un épinglage (une version accrochée à `tag`/`@`) et
+      # la refuse hors des deux fichiers qui font foi. Une version citée SANS cette syntaxe (une
+      # mesure DATÉE : « lecture du cœur v0.2.1 ») ne la déclenche pas, et c'est calibré sur
+      # l'arbre : sans cette adjacence, sept citations historiques légitimes auraient rougi.
+      - name: L'étiquette du cœur ne vit qu'au manifeste (recopiée, elle vieillit)
+        run: python3 .github/scripts/check_the_core_pin_is_never_recopied.py
 
       # Un capteur qui ne peut pas collecter doit le DIRE. MESURÉ le 2026-08-01 sur une VM Ubuntu
       # 24.04 Server fraîche : `auditd.sh` sortait en SUCCÈS sans rien émettre parce que auditd
@@ -1767,7 +1828,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # lint — fmt + clippy, CONSULTATIVE (non-blocking until the tree is proven
-  # warning-free). cargo resolves the guatx-core git-dep (core@v0.2.1)
+  # warning-free). cargo resolves the guatx-core git-dep (tag: daemon/Cargo.toml)
   # directly. TODO: make blocking (`-D warnings`, drop continue-on-error) once
   # the tree is clean.
   # ---------------------------------------------------------------------------

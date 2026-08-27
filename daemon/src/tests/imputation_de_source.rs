@@ -458,6 +458,19 @@
     /// peut plus être évaluée, et à aucun feed — elle impute à l'inconnu NOMMÉ, pour la même raison que
     /// la flotte. Cette garde l'a arrêtée à son tour, et c'est ici que son choix est dit.
     ///
+    /// LE CINQUIÈME (P9.8-a) est l'alerte de MAGASIN DE SECRETS ARRÊTÉ. Cette garde l'a arrêtée elle
+    /// aussi — troisième fois qu'elle sert. Son choix : l'INCONNU NOMMÉ. L'alerte se rapporte à un
+    /// MAGASIN, pas à un flux ; lui imputer la source qui l'a RAPPORTÉE (`k8s`) allumerait la pastille
+    /// d'un capteur qui fonctionne parfaitement, et laisser la colonne VIDE la ferait retomber en
+    /// silence sur l'extraction textuelle. C'est la MÊME raison que pour la flotte et pour la règle
+    /// aveugle, et les trois disent donc la même chose.
+    ///
+    /// LE PARTAGE EST DÉSORMAIS UN CLIQUET, PAS SEULEMENT UN RECENSEMENT. Le total et le nombre de
+    /// producteurs qui imputent restent ancrés (un producteur ne rejoint pas la liste en silence),
+    /// mais ce qui ne doit JAMAIS remonter est le nombre de ceux qui NE s'imputent PAS — il est
+    /// DÉRIVÉ (`sites.len() - imputent.len()`) et non recopié, donc un producteur ajouté sans
+    /// imputation le fait mordre même si quelqu'un met les deux ancrages à jour sans réfléchir.
+    ///
     /// LE TROISIÈME, AJOUTÉ PAR P3.2-a, EST CELUI QUI PROUVE QUE LA GARDE SERT. La sonde de flotte
     /// (`verifier_flotte_muette`) a été écrite sans penser à l'imputation ; ce test l'a arrêtée. Elle
     /// impute — mais à l'INCONNU NOMMÉ, et c'est le choix qu'elle DIT ici : son alerte se rapporte à des
@@ -501,7 +514,7 @@
         let imputent: Vec<&(String, bool)> = sites.iter().filter(|(_, ok)| *ok).collect();
         assert_eq!(
             sites.len(),
-            12,
+            13,
             "le nombre de producteurs d'alerte a bougé ({} trouvés) : chaque producteur doit dire s'il \
              impute depuis la DONNÉE (colonne `sources`) ou s'il retombe sur le texte de la règle. \
              Sites : {:?}",
@@ -510,7 +523,7 @@
         );
         assert_eq!(
             imputent.len(),
-            4,
+            5,
             "le partage a bougé : {} producteur(s) imputent depuis la donnée. Si c'est voulu, le bandeau \
              de daemon/src/imputation.rs doit le dire aussi. Sites : {:?}",
             imputent.len(),
@@ -530,6 +543,62 @@
              sonde) et celui de la FLOTTE (à l'inconnu NOMMÉ : une alerte d'hôtes ne se rapporte à aucun \
              feed) : {imputent:?}"
         );
+        assert!(
+            imputent.iter().any(|(f, _)| f.ends_with("sonde_du_magasin_de_secrets.rs")),
+            "l'alerte de magasin de secrets arrêté impute (à l'inconnu NOMMÉ : un approvisionnement en \
+             panne n'accuse pas le capteur qui l'a rapporté) : {imputent:?}"
+        );
+        // LE CLIQUET, DÉRIVÉ ET NON RECOPIÉ : le nombre de producteurs qui laissent la colonne VIDE et
+        // retombent sur l'extraction textuelle ne remonte JAMAIS. Les deux ancrages ci-dessus disent
+        // « rien n'a bougé en silence » ; celui-ci dit « et la dette n'a pas grandi », ce qui n'est pas
+        // la même propriété — mettre les deux ancrages à jour pour un producteur SANS imputation
+        // passerait les premiers et mordrait ici.
+        assert!(
+            sites.len() - imputent.len() <= 8,
+            "la dette d'imputation a GRANDI : {} producteur(s) laissent la colonne `sources` vide (plafond 8). \
+             Un producteur d'alerte neuf impute depuis la donnée, ou nomme l'inconnu — il ne rejoint pas le \
+             repli textuel. Sites : {:?}",
+            sites.len() - imputent.len(),
+            sites.iter().filter(|(_, ok)| !*ok).collect::<Vec<_>>()
+        );
+
+        // LA TROISIÈME JAMBE — LA PROSE. Les deux ancrages ci-dessus tiennent le CODE ; ils n'ont jamais
+        // rien tenu du BANDEAU, et c'est par là que la dérive est passée DEUX FOIS : « ONZE endroits »
+        // quand la garde en comptait douze, puis une parenthèse qui nommait un producteur inexistant en
+        // en omettant un réel — les deux erreurs s'annulant, le total restait juste et la liste se lisait
+        // comme exhaustive. Les trois nombres sont donc DÉRIVÉS de ce qui vient d'être mesuré, écrits en
+        // toutes lettres comme le bandeau les écrit, et cherchés dedans.
+        // CE QUE CETTE JAMBE NE TIENT PAS, ET C'EST DIT : les LIBELLÉS. Elle interdit à un NOMBRE de
+        // vieillir ; elle ne sait pas lire « corrélations ». C'est la sortie des assertions ci-dessus qui
+        // NOMME les sites, et c'est elle qui fait foi.
+        const EN_TOUTES_LETTRES: [&str; 21] = [
+            "ZÉRO", "UN", "DEUX", "TROIS", "QUATRE", "CINQ", "SIX", "SEPT", "HUIT", "NEUF", "DIX",
+            "ONZE", "DOUZE", "TREIZE", "QUATORZE", "QUINZE", "SEIZE", "DIX-SEPT", "DIX-HUIT",
+            "DIX-NEUF", "VINGT",
+        ];
+        let mot = |n: usize| -> String {
+            assert!(
+                n < EN_TOUTES_LETTRES.len(),
+                "le compte {n} dépasse la table des nombres écrits : étendre la table, pas retirer la jambe"
+            );
+            EN_TOUTES_LETTRES[n].to_string()
+        };
+        let bandeau = std::fs::read_to_string(racine.join("imputation.rs"))
+            .expect("le bandeau de `imputation.rs` doit être lisible : sans lui cette jambe ne juge rien");
+        // Ce que le bandeau DOIT dire, dérivé du balayage : total, imputants, et la dette.
+        for (n, role) in [
+            (sites.len(), "le nombre d'endroits qui insèrent une alerte"),
+            (imputent.len(), "le nombre de producteurs qui imputent depuis la DONNÉE"),
+            (sites.len() - imputent.len(), "le nombre de producteurs qui laissent la colonne VIDE"),
+        ] {
+            let attendu = mot(n);
+            assert!(
+                bandeau.contains(&attendu),
+                "le bandeau de `daemon/src/imputation.rs` n'écrit nulle part « {attendu} » alors que {role} \
+                 vaut {n}. La prose a dérivé — c'est arrivé deux fois, et c'est ce que cette jambe ferme. \
+                 Corriger le bandeau, jamais la mesure."
+            );
+        }
     }
 
     // ================================================================================================

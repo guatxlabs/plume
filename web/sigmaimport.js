@@ -1,7 +1,8 @@
 // sigmaimport.js — import Sigma EN MASSE (admin) : la boucle « fermer les angles morts » de la matrice
 // ATT&CK. Bouton « Importer un ruleset Sigma » -> modale (upload d'archive / collage multi-docs YAML ou
 // tableau JSON de docs Sigma) -> POST /api/sigma/import-bulk -> rendu du SUMMARY renvoyé :
-//   { imported, updated, skipped:[{ref,reason}], coverage_before, coverage_after, techniques_newly_covered }
+//   { imported, updated, skipped:[{ref,reason}], coverage_before, coverage_after, techniques_newly_covered,
+//     regles_importees_sans_producteur:[{ref,mitre,sources_manquantes}] }
 // On met en avant le DELTA de couverture (« X techniques nouvellement couvertes », angles morts avant->après)
 // et on liste les rejets (ref + raison) dans un tableau.
 //
@@ -64,6 +65,12 @@ function renderSummary(host, sum) {
   const before = covShape(sum.coverage_before);
   const after = covShape(sum.coverage_after);
   const nc = newlyCovered(sum.techniques_newly_covered);
+  // P9.5-a — CE QUE L'IMPORT NE FERME PAS, ET POURQUOI. Le démon compte désormais les DEUX membres du
+  // delta de la même manière : une règle importée qu'aucun producteur ne nourrit sur cette base ne compte
+  // ni dans le « avant » ni dans l'« après ». Sans ce bloc, l'écart se lirait « cet import n'apporte
+  // rien » — alors que la règle est bonne et qu'il manque une entrée à brancher. La raison est SERVIE ;
+  // la déposer ici serait refaire, côté console, le défaut que le démon vient de fermer.
+  const sansProducteur = Array.isArray(sum.regles_importees_sans_producteur) ? sum.regles_importees_sans_producteur : [];
 
   // --- bandeau de comptes (importées / mises à jour / ignorées) ---
   const errors = firstNum(sum.errors) || 0;
@@ -101,6 +108,31 @@ function renderSummary(host, sum) {
     delta.appendChild(chips);
   }
   host.appendChild(delta);
+
+  // --- ce que l'import ne ferme pas : les règles qu'aucun producteur ne nourrit ICI ---
+  if (sansProducteur.length) {
+    const cap = document.createElement('div'); cap.className = 'sigma-skip-h';
+    cap.textContent = 'Importées, mais rien ne peut les déclencher ici (' + sansProducteur.length + ')';
+    host.appendChild(cap);
+    const why = document.createElement('div'); why.className = 'sigma-servernote';
+    why.textContent = "Ces règles sont créées et resteront éditables : c'est leur SOURCE qui n'existe pas sur cette base. Elles ne comptent donc dans aucun des deux bouts du delta ci-dessus. Brancher le producteur leur donne de quoi tirer, une fois activées — il n'y a pas de règle à réécrire.";
+    host.appendChild(why);
+    const spHost = document.createElement('div'); host.appendChild(spHost);
+    pagedList(spHost, {
+      mode: 'client', pageSize: 50, rows: sansProducteur,
+      columns: [
+        { key: 'ref', label: 'Règle', sortable: true, sortVal: s => (s && s.ref) || '', render: s => (s && s.ref) || '(sans nom)' },
+        { key: 'mitre', label: 'Technique', sortable: true, sortVal: s => (s && s.mitre) || '', render: s => (s && s.mitre) || '—' },
+        { key: 'sources_manquantes', label: 'Source(s) à brancher', sortable: false,
+          render: s => {
+            const v = s && Array.isArray(s.sources_manquantes) ? s.sources_manquantes : [];
+            const d = document.createElement('span'); d.style.whiteSpace = 'normal';
+            d.textContent = v.length ? v.join(', ') : '—';
+            return d;
+          } },
+      ],
+    });
+  }
 
   // --- note : règles importées DÉSACTIVÉES (défaut backend) + lien vers la liste des règles ---
   // On honore le drapeau serveur `disabled_on_import` (défaut true) plutôt que de le présumer.

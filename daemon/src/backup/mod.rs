@@ -230,6 +230,22 @@ pub(crate) fn scrypt_log_n_depuis(brut: &str) -> u8 {
 // RELU À CHAQUE SAUVEGARDE (pas de `OnceLock`) : un opérateur qui corrige son réglage n'a pas à
 // redémarrer le démon pour que le cycle suivant en tienne compte. Le coût est une lecture de fichier
 // par sauvegarde — jamais par ligne.
+//
+// CE QUE CETTE PHRASE VAUT SELON LE MODE, PARCE QU'ELLE A ÉTÉ LUE COMME UNIVERSELLE (P9.4-a, mesuré le
+// 2026-08-27). « Sans redémarrer » suppose qu'il existe un support d'où une valeur NEUVE puisse venir.
+// `cfg()` lit `env > fichier PLUME_CONFIG > défaut`, et l'environnement d'un processus déjà lancé ne
+// change plus : le SEUL niveau relisable à chaud est le fichier. Or `docker-compose.yml`, `Dockerfile`
+// et `deploy/k3s.yaml` posent tous les trois `PLUME_CONFIG=/nonexistent` -> `load_config()` rend une
+// carte VIDE à chaque appel, pour toujours. La relecture par cycle est donc un GAIN RÉEL en mode
+// `host` et un NO-OP exact en conteneur et en cluster — ce qui ne coûte rien (la lecture échoue) mais
+// ne doit pas se lire comme une propriété du produit dans les trois modes. Cf. `docs/TROIS-MODES.md`
+// §3.2 et §3.7, qui portent le tableau par mode.
+//
+// ET CE QUE CETTE VOIE NE COUVRE PAS, à ne pas déduire de la précédence PARTAGÉE avec
+// `PLUME_BACKUP_INTERVAL` : les clés ci-dessous partagent bien la précédence de l'ordonnanceur, mais
+// PAS son MOMENT de lecture. `PLUME_BACKUP_INTERVAL` / `DEST` / `KEEP` / `ON_START` sont lues UNE FOIS,
+// au lancement du fil (`server/sauvegarde_planifiee.rs:25-35`), et rien ne les relit ensuite : les
+// changer exige un redémarrage DANS LES TROIS MODES. C'est la clé ouverte `P9.4-a`.
 
 /// Les réglages de sauvegarde qui, jusqu'au 2026-08-09, ne se lisaient QUE dans l'environnement.
 /// Cette liste est la SOURCE des noms utilisés par les lecteurs ci-dessous ET par l'annonce de

@@ -4,7 +4,8 @@
 #
 # Lancer DEPUIS la racine de ce dépôt :
 #   docker compose up -d --build
-# Le daemon résout `guatx-core` via une git-dep publique (tag v0.2.1) — aucun crate sibling requis.
+# Le daemon résout `guatx-core` via une git-dep publique — aucun crate sibling requis. L'étiquette
+# n'est PAS recopiée ici (recopiée, elle vieillit : `P9.7-c`) : `grep -n 'guatx-core' daemon/Cargo.toml`.
 #
 # AUCUNE IMAGE N'EST PUBLIÉE À CE JOUR : ce compose COMPILE le daemon depuis les sources (stage
 # `rust:1-bookworm` du Dockerfile). Vous n'avez PAS besoin d'une toolchain Rust sur l'hôte — Docker

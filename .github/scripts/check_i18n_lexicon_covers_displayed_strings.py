@@ -272,7 +272,7 @@ PLAFOND_DE_TROUS = {
 # L'abaisser est le sens attendu (déplacer un libellé vers un puits reconnu, ou apprendre la forme à la
 # garde). Le relever exige une raison écrite ici, à côté du chiffre.
 PLAFOND_HORS_REGARD = {
-    "admin_users.js": 16, "ai.js": 1, "alerting.js": 2, "alerts.js": 20, "app.js": 22, "attack.js": 7,
+    "admin_users.js": 16, "ai.js": 1, "alerting.js": 2, "alerts.js": 20, "app.js": 22, "attack.js": 6,
     "audit.js": 1, "cases.js": 70, "composer_depuis_lexistant.js": 7, "connectors.js": 27,
     "copie_et_selection.js": 3, "core.js": 29, "dashboards.js": 22, "dataaccess.js": 11, "datamodels.js": 6,
     "destinations.js": 37, "detadv.js": 14, "detection_admin.js": 28, "fieldfilters.js": 21, "fleet.js": 9,

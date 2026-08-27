@@ -749,6 +749,18 @@ pub(crate) fn seed_purple_rules(conn: &Connection) {
 ///      seuls lecteurs légitimes attendus -> toute autre identité (nouveau SA, token volé, latéralisation) =
 ///      tripwire. T1552. NB : les deux identités de l'allowlist (`svc-secrets`, `oidc-admin`) sont des
 ///      PLACEHOLDERS génériques — à adapter aux noms réels du déploiement (SA ESO + compte OIDC opérateur).
+///      `P9.5-a` — CETTE RÈGLE EST LA SEULE DU SEMIS QU'AUCUN PRODUCTEUR LIVRÉ NE PEUT DÉCLENCHER, ET
+///      C'EST MESURÉ (2026-08-27, dérivation `sources_sans_producteur_livre` sur toutes les règles
+///      qu'une base neuve reçoit actives). `vault-audit` n'est émis par AUCUN fichier de ce dépôt et
+///      observé par AUCUNE sonde : son producteur est une entrée SCRIPTÉE que l'exploitant dépose
+///      lui-même (`deploy/vault-audit.input.example` -> `/etc/plume/inputs.d/`, lue par `custom.sh`).
+///      `handlers::sources` la classe « attendue » parce que le produit l'AGRÈGE (`dim_rollup_specs`),
+///      ce qui n'a jamais rempli une table. Livrée ACTIVE, elle rendait `T1552` COUVERTE dans la
+///      matrice ATT&CK d'une installation fraîche — aucune AUTRE règle active ne tague cette
+///      technique — alors que rien ne pouvait produire l'événement. Elle est désormais semée ÉTEINTE
+///      par `actif_si_un_producteur_livre_existe`, avec sa raison AUDITÉE ; l'exploitant qui branche
+///      l'audit device Vault l'ACTIVE d'un clic. RIEN N'EST SUPPRIMÉ : la règle reste livrée, lisible
+///      et prête.
 /// (name, query, is_soql, op, threshold, severity, interval_s, window_s, mitre)
 pub(crate) const DETECTION_RULES_V50: [(&str, &str, i64, &str, f64, i64, i64, i64, &str); 7] = [
     ("MinIO: destruction de backup (suppression bulk/bucket sur *backups)",
@@ -904,8 +916,58 @@ pub(crate) const DETECTION_RULES_SEC4: [(&str, &str, i64, &str, f64, i64, i64, i
      1, ">", 0.0, 3, 300, 900, "T1567"),
 ];
 
+/// `P9.5-a` — L'ACTIVATION D'UNE RÈGLE SEMÉE EST DÉRIVÉE, PAS ÉCRITE.
+///
+/// Une règle dont AUCUNE source épinglée n'a de producteur livré ne peut PAS tirer : elle rend zéro à
+/// chaque intervalle, ne compte aucun abandon (elle s'évalue très bien), et rien ne la distingue d'un
+/// hôte sain. Livrée ACTIVE, elle fait pourtant compter sa technique comme COUVERTE par la matrice
+/// ATT&CK. Elle est donc
+/// semée ÉTEINTE : visible, éditable, activable d'un clic le jour où l'exploitant branche le
+/// producteur (entrée scriptée `custom.sh`, connecteur, agent). C'est la doctrine déjà appliquée à
+/// YARA (`DETECTION_RULES_V53`) et aux règles de menace (`seed_ti_alert_rules`) ; elle est ici
+/// DÉRIVÉE de la requête au lieu d'être décidée règle par règle.
+///
+/// ET LA RAISON EST ÉCRITE, PAS TUE : une extinction silencieuse serait exactement le défaut
+/// poursuivi, en miroir. L'audit (ledger + `plume-config`) nomme la règle et la ou les sources sans
+/// producteur ; sans lui, un exploitant verrait une règle éteinte sans savoir pourquoi ni quoi
+/// brancher. Rend l'`enabled` à écrire ; `actif_voulu=0` reste 0 sans rien auditer.
+///
+/// CE VERROU NE VAUT QUE POUR UNE BASE NEUVE, ET IL NE PRÉTEND PLUS AUTRE CHOSE : sur une installation
+/// déjà en service, la ligne a été posée ACTIVE par la migration, et rien ne l'éteint — le rattrapage
+/// est refusé sur mesure (la base ne sait pas distinguer « laissée allumée par le semis » de « allumée
+/// parce que l'exploitant la veut »). C'est la LECTURE de la couverture qui est rendue honnête pour
+/// les deux populations : `detection_aveugle::lire_la_couverture_des_regles_activees`, dont le bandeau porte la
+/// mesure et le geste écarté.
+fn actif_si_un_producteur_livre_existe(conn: &Connection, nom: &str, query: &str, actif_voulu: i64) -> i64 {
+    if actif_voulu == 0 {
+        return 0;
+    }
+    let manquantes = crate::detection_aveugle::sources_sans_producteur_livre(query);
+    if manquantes.is_empty() {
+        return 1;
+    }
+    let liste = manquantes.join(", ");
+    let _ = audit_config_change(
+        conn,
+        "config.seed.regle_sans_producteur",
+        &format!("règle « {nom} » semée DÉSACTIVÉE : aucun producteur livré n'émet {liste}"),
+        2,
+        &format!(
+            "La requête de cette règle épingle « {liste} », qu'AUCUN fichier livré n'émet et qu'AUCUNE sonde livrée \
+             n'observe. Livrée ACTIVE elle ne tirerait jamais, et sa technique ATT&CK serait pourtant comptée \
+             couverte. Semée ÉTEINTE : branchez le producteur (entrée scriptée, connecteur, agent) puis ACTIVEZ-la \
+             depuis la console."
+        ),
+        &json!({ "rule": nom, "sources_sans_producteur": manquantes, "kind": "regle_sans_producteur" }).to_string(),
+    );
+    0
+}
+
 /// Règles de détection ciblées — flag DÉDIÉ `seeded_detection_rules` (même mécanique EXACTE que
-/// seed_purple_rules : guard meta -> return si présent, sinon INSERT puis pose le flag). ENABLED=1.
+/// seed_purple_rules : guard meta -> return si présent, sinon INSERT puis pose le flag). L'activation
+/// de CHAQUE ligne passe par `actif_si_un_producteur_livre_existe` : l'intention reste écrite au site
+/// d'appel (1 = active, 0 = dark-by-default), mais une règle qu'aucun producteur livré ne peut nourrir
+/// est semée éteinte quoi qu'on ait voulu, avec sa raison auditée (`P9.5-a`).
 /// Couvre : port-scan (source=portscan, alimentée par un log de firewall NON rate-limité — un log
 /// throttlé ne suffit pas à détecter un scan), brute-force auth par-IP (journal/auth, T1110), et 5 règles
 /// taguées source=cloudflare (mitigations edge invisibles à l'origine) -> T1595.002 / T1190 / T1498 / T1595.
@@ -930,33 +992,37 @@ pub(crate) fn seed_detection_rules(conn: &Connection) {
         ("CF: volume de challenges managés (IP distinctes)", "search source=cloudflare action=challenged | stats dc(src_ip)", 1, ">", 20.0, 2, 300, 900, "T1595"),
     ];
     for (name, q, is_soql, op, th, sev, intv, win, mitre) in rules {
+        let actif = actif_si_un_producteur_livre_existe(conn, name, q, 1);
         let _ = conn.execute(
-            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1)",
-            params![name, q, is_soql, op, th, sev, intv, win, mitre],
+            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![name, q, is_soql, op, th, sev, intv, win, mitre, actif],
         );
     }
     // + règles v50 (nouveaux signaux télémétrie) — repro sur PVC neuf (la MIGRATION v50 les pose sur
     // l'instance déjà déployée où ce seed ne re-tourne plus). Source unique : DETECTION_RULES_V50.
     for (name, q, is_soql, op, th, sev, intv, win, mitre) in DETECTION_RULES_V50 {
+        let actif = actif_si_un_producteur_livre_existe(conn, name, q, 1);
         let _ = conn.execute(
-            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1)",
-            params![name, q, is_soql, op, th, sev, intv, win, mitre],
+            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![name, q, is_soql, op, th, sev, intv, win, mitre, actif],
         );
     }
     // + règle 37 v51 (self-detection brute-force auth Plume) — même mécanique : seed sur PVC neuf,
     // migration v51 sur l'instance déjà déployée. Source unique : DETECTION_RULES_V51.
     for (name, q, is_soql, op, th, sev, intv, win, mitre) in DETECTION_RULES_V51 {
+        let actif = actif_si_un_producteur_livre_existe(conn, name, q, 1);
         let _ = conn.execute(
-            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1)",
-            params![name, q, is_soql, op, th, sev, intv, win, mitre],
+            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![name, q, is_soql, op, th, sev, intv, win, mitre, actif],
         );
     }
     // + règle v52 (attaquant actif NON banni — anti-join sur banned_ip) — même mécanique : seed sur PVC
     // neuf, migration v52 sur l'instance déjà déployée. Source unique : DETECTION_RULES_V52.
     for (name, q, is_soql, op, th, sev, intv, win, mitre) in DETECTION_RULES_V52 {
+        let actif = actif_si_un_producteur_livre_existe(conn, name, q, 1);
         let _ = conn.execute(
-            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1)",
-            params![name, q, is_soql, op, th, sev, intv, win, mitre],
+            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![name, q, is_soql, op, th, sev, intv, win, mitre, actif],
         );
     }
     // + règle v53 (YARA : match malware/IOC) — même mécanique : seed sur PVC neuf, migration v53 sur
@@ -966,35 +1032,39 @@ pub(crate) fn seed_detection_rules(conn: &Connection) {
     // couverture inexistante dans la console ; un admin l'ACTIVE via le toggle une fois un producteur yara
     // câblé. (Wave 1 avait row-flippé la LIVE DB ; une DB FRAÎCHE re-seedait enabled+dark sans ce fix.)
     for (name, q, is_soql, op, th, sev, intv, win, mitre) in DETECTION_RULES_V53 {
+        let actif = actif_si_un_producteur_livre_existe(conn, name, q, 0);
         let _ = conn.execute(
-            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,0)",
-            params![name, q, is_soql, op, th, sev, intv, win, mitre],
+            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![name, q, is_soql, op, th, sev, intv, win, mitre, actif],
         );
     }
     // + règle v57 (DEAD-MAN'S-SWITCH CrowdSec : scénarios cassés / moteur dégradé — source=crowdsec
     // category=health, T1562.001) — même mécanique : seed sur PVC neuf, migration v57 sur l'instance déjà
     // déployée. Source unique : DETECTION_RULES_V57.
     for (name, q, is_soql, op, th, sev, intv, win, mitre) in DETECTION_RULES_V57 {
+        let actif = actif_si_un_producteur_livre_existe(conn, name, q, 1);
         let _ = conn.execute(
-            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1)",
-            params![name, q, is_soql, op, th, sev, intv, win, mitre],
+            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![name, q, is_soql, op, th, sev, intv, win, mitre, actif],
         );
     }
     // + règle v75 (self-detection : engagement autorisé déclaré = défense baissée) — même mécanique : seed
     // sur PVC neuf, migration v75 sur l'instance déjà déployée. event-driven : inerte tant qu'aucun event
     // source=plume-engagement (mode 0/off). Source unique : DETECTION_RULES_V75_ENGAGEMENT.
     for (name, q, is_soql, op, th, sev, intv, win, mitre) in DETECTION_RULES_V75_ENGAGEMENT {
+        let actif = actif_si_un_producteur_livre_existe(conn, name, q, 1);
         let _ = conn.execute(
-            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1)",
-            params![name, q, is_soql, op, th, sev, intv, win, mitre],
+            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![name, q, is_soql, op, th, sev, intv, win, mitre, actif],
         );
     }
     // + règles de self-detection (identité/config-tamper/RBAC-deny/export-de-masse) —
     // même mécanique : seed sur PVC neuf. event-driven : inertes en mode 0. Source unique : DETECTION_RULES_SEC4.
     for (name, q, is_soql, op, th, sev, intv, win, mitre) in DETECTION_RULES_SEC4 {
+        let actif = actif_si_un_producteur_livre_existe(conn, name, q, 1);
         let _ = conn.execute(
-            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1)",
-            params![name, q, is_soql, op, th, sev, intv, win, mitre],
+            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![name, q, is_soql, op, th, sev, intv, win, mitre, actif],
         );
     }
 }

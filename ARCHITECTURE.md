@@ -101,7 +101,8 @@ label de VOTRE ingress controller) — aucun autre pod ne peut atteindre le daem
   `SQLite format 3\0` de l'autre). `crypto::db_key_depuis(conf)` est désormais la voie unique, et
   `cold_store` l'appelle au lieu d'avoir la sienne.
 - **Image** : `Dockerfile` multi-stage. **Contexte de build = la racine de ce dépôt** (clone
-  standalone) : `guatx-core` est résolu via une git-dep publique (tag `v0.2.1`, récupérée au build),
+  standalone) : `guatx-core` est résolu via une git-dep publique dont le TAG est épinglé dans
+  `daemon/Cargo.toml` (l'écrire ici en ferait une seconde copie qui vieillit — `grep -n 'guatx-core' daemon/Cargo.toml`),
   `../../db/schema.sql` est copié depuis `db/` sibling de `daemon/`. Runtime `debian:bookworm-slim`,
   **non-root** (uid `10001`), assets web en `a+rX`. Build : `docker build -t soc:latest .` depuis la racine.
 
@@ -281,7 +282,8 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
 Trois cibles, **même binaire** (mode-aware) :
 
 - **Docker** : `docker-compose.yml` — contexte de build = **la racine de ce dépôt** (`context: .`) ;
-  `guatx-core` est résolu par une **git‑dep publique** (`guatxlabs/core@v0.2.1`), aucun crate sibling
+  `guatx-core` est résolu par une **git‑dep publique** (`guatxlabs/core`, tag épinglé dans
+  `daemon/Cargo.toml`), aucun crate sibling
   requis. `hashpw` → `.env` (`PLUME_PASS_HASH`) → `docker compose up -d --build`. `PLUME_DEMO=1` peuple
   des données de démo. Le compose active les **ops natives** (backup 6 h + auto‑vacuum quotidien).
   **Aucune image n'est publiée** : ce mode compile depuis les sources (stage `rust:1-bookworm`).

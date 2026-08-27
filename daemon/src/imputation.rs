@@ -1,7 +1,7 @@
 //! L'IMPUTATION D'UNE ALERTE — À QUELLE(S) SOURCE(S) ELLE SE RAPPORTE, ET D'OÙ VIENT CE NOM.
 //! Un seul auteur pour la question « quelles sources cette alerte concerne-t-elle ? », appelé par les
 //! producteurs d'alertes qui imputent (`run_due_rules`, `check_heartbeats`, la sonde de flotte, la
-//! détection aveugle) et lu par la fraîcheur par-source.
+//! détection aveugle, la sonde du magasin de secrets) et lu par la fraîcheur par-source.
 use crate::*;
 
 // ====================================================================================================
@@ -39,20 +39,39 @@ use crate::*;
 //      nommer sa source laisse l'exploitant décider. Un « inconnu » nommé vaut mieux qu'une imputation
 //      fausse, et il vaut mieux qu'un zéro muet.
 //
-// CE QUE ÇA NE FERME PAS, ÉCRIT POUR ÊTRE OPPOSABLE. Onze endroits du daemon insèrent une alerte ;
-// QUATRE passent par ici — l'ordonnanceur de règles et le dead-man's-switch des capteurs, c'est-à-dire
+// CE QUE ÇA NE FERME PAS, ÉCRIT POUR ÊTRE OPPOSABLE. TREIZE endroits du daemon insèrent une alerte ;
+// CINQ passent par ici — l'ordonnanceur de règles et le dead-man's-switch des capteurs, c'est-à-dire
 // les deux qui portaient le défaut S7, plus la sonde de FLOTTE (P3.2-a), plus l'alerte de DÉTECTION
-// AVEUGLE (P3.9-a, `detection_aveugle`), qui se rapporte à une RÈGLE et à aucun feed et impute donc,
-// comme la flotte, à l'INCONNU NOMMÉ. Les SEPT autres (alerting
-// avancé, corrélations, scoring par risque, pression disque à l'ingest, alerte semée) laissent la
+// AVEUGLE (P3.9-a, `detection_aveugle`), plus celle du MAGASIN DE SECRETS ARRÊTÉ (P9.8-a,
+// `sonde_du_magasin_de_secrets`). Les trois dernières se rapportent l'une à des HÔTES, l'autre à une
+// RÈGLE, la troisième à un MAGASIN — à aucun feed — et imputent donc toutes trois à l'INCONNU NOMMÉ.
+// Les HUIT autres — alerting avancé, corrélations, ANOMALIE DE RÉFÉRENCE (le second producteur de
+// `handlers/detection_advanced.rs`, qu'une rédaction précédente avait laissé de côté), scoring par
+// risque, alerte de démonstration semée, et les trois de la voie INSTANTANÉ — laissent la
 // colonne VIDE et retombent donc sur le chemin textuel : leur comportement est byte-identique à avant,
 // ni meilleur ni pire. C'est un périmètre assumé et non un oubli — imputer depuis la donnée demande, à
 // chaque producteur, de savoir QUELLES lignes ont fait tirer, et cela ne se devine pas depuis ici. Ce
-// qui est garanti, c'est qu'un DOUZIÈME producteur ne pourra pas rejoindre cette liste en silence :
-// `imputation_tout_producteur_d_alerte_declare_son_choix` compte les sites en LISANT LA SOURCE et
-// refuse un nombre qui bouge. C'est d'ailleurs cette garde qui a arrêté la sonde de flotte, écrite
+// qui est garanti, c'est qu'un QUATORZIÈME producteur ne pourra pas rejoindre cette liste en silence :
+// `imputation_tout_producteur_d_alerte_declare_son_choix` compte les sites en LISANT LA SOURCE, refuse
+// un nombre qui bouge, ET tient le nombre de ceux qui NE s'imputent PAS sous un plafond DÉRIVÉ qui ne
+// remonte jamais. C'est d'ailleurs cette garde qui a arrêté la sonde de flotte, écrite
 // sans y penser : son alerte se rapporte à des HÔTES et à AUCUN feed, donc elle impute à l'INCONNU
 // NOMMÉ. Un « inconnu » assumé vaut mieux qu'une pastille de source allumée à tort.
+// LES CHIFFRES DE CE BANDEAU ONT DÉRIVÉ DEUX FOIS, ET ILS SONT DÉSORMAIS TENUS PAR LA MACHINE. Ce
+// bandeau a annoncé ONZE endroits quand la garde en comptait DOUZE (`P11.18-i`, l'alerte de catalogue
+// de contrôles vide, écrite dans la voie INSTANTANÉ) ; et la liste qui suit le nombre a nommé un
+// producteur QUI N'EXISTE PAS (« pression disque à l'ingest » : `emit_disk_health` écrit un
+// ÉVÉNEMENT, et n'insère aucune alerte) tout en OMETTANT un producteur réel (l'anomalie de
+// référence), les
+// deux erreurs s'annulant dans le total — une liste arithmétiquement juste se lit comme exhaustive,
+// et c'est ce qui l'a fait passer. La garde relit maintenant CE BANDEAU et exige que les TROIS
+// nombres soient ceux qu'elle vient de mesurer : une prose qui dérive rougit, au lieu de vieillir.
+// CE QU'ELLE NE TIENT PAS, ET C'EST DIT : les LIBELLÉS de la parenthèse restent de la prose. La
+// machine tient les comptes ; la liste, elle, se vérifie en lisant la sortie de la garde, qui NOMME
+// les sites — c'est elle qui fait foi, pas cette phrase. ET SON EXTRACTEUR LIT DU TEXTE BRUT : écrire
+// ici, en toutes lettres, le motif d'insertion qu'il cherche fabriquerait un QUATORZIÈME site
+// imaginaire. Mesuré en écrivant ce bandeau — la garde a mordu sur une PHRASE. C'est un vrai résidu,
+// et il est nommé plutôt que contourné en silence.
 //
 // CE QUE ÇA NE CHANGE PAS. Aucune alerte n'est créée, supprimée, re-titrée ni re-sévérisée : l'alerte
 // GLOBALE d'une règle reste UNE alerte par règle, avec sa clé `rule-{id}`, son titre et son `detail`

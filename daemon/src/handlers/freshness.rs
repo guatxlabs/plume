@@ -701,7 +701,15 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) -> crate::bilan_de_t
             );
         }
     }
-    verifier_flotte_muette(&conn, now_ts)
+    // P9.8-a — LE MAGASIN DE SECRETS rejoint le MÊME tick, la MÊME famille d'alertes et le MÊME
+    // verrou que les deux dead-man's-switches ci-dessus, parce qu'il est le même genre de fait : un
+    // approvisionnement arrêté est un angle mort qui se présente comme un état normal. Les deux
+    // bilans sont ABSORBÉS plutôt que l'un rendu à la place de l'autre — sans quoi une famille
+    // aveugle serait masquée par une famille lisible, et le tick passerait pour calme.
+    let mut b = crate::bilan_de_tick::BilanDuPlanificateur::default();
+    b.absorber(verifier_flotte_muette(&conn, now_ts));
+    b.absorber(crate::sonde_du_magasin_de_secrets::verifier_le_magasin_de_secrets(&conn, now_ts));
+    b.bilan_de_tick()
 }
 
 /// P3.2-a — LE DEAD-MAN'S-SWITCH DU PARC : un hôte qui se tait ENTIÈREMENT lève un signal.

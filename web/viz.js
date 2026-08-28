@@ -395,6 +395,32 @@ function showQError(serverMsg) {
   $('#qstats').textContent = '';
 }
 
+// `P10.5-g` — LE REMÈDE MACHINE EST APPLIQUÉ, PAS SEULEMENT AFFICHÉ.
+// Un refus de curseur froid publie `restart_without_cursor` : c'est une CONDUITE adressée au
+// programme, pas une phrase adressée à l'humain. Sans l'appliquer, la table des curseurs garde le
+// curseur MORT et « Suivant » le rejoue indéfiniment — le message s'affiche et rien ne bouge, si
+// bien que l'analyste voit un produit bloqué là où le démon lui a dit exactement quoi faire. Le
+// geste existait DÉJÀ ailleurs dans la console (les panneaux remettent `cursors` à `[null]` quand
+// leur fenêtre change) ; il manquait sur ce chemin, et c'est tout le défaut.
+// LA REPRISE EST BORNÉE À UNE PAR PAGE SERVIE : le drapeau se lève ici et retombe dès qu'une page
+// est rendue, si bien que deux refus CONSÉCUTIFS sans page entre eux ne peuvent pas boucler, tandis
+// qu'un refus survenant plus loin dans le parcours redonne droit à une reprise.
+// LA FENÊTRE EST REGELÉE, PAS EFFACÉE : reprendre, c'est ouvrir un parcours NEUF, et « un parcours,
+// une fenêtre » vaut aussi pour celui-là. L'effacer ferait recalculer la fenêtre à CHAQUE page —
+// exactement ce que ce chantier a fermé.
+// ET LA REPRISE SE DIT : une page qui repart de 1 sans un mot serait un résultat juste rendu comme
+// s'il n'était rien arrivé. Le motif machine du démon est repris tel quel dans la ligne d'état.
+function reprendreSansCurseur(j) {
+  if (!j || j.restart_without_cursor !== true) return false;
+  if (S.evState.repriseSansCurseurFaite) return false;
+  S.evState.repriseSansCurseurFaite = true;
+  S.evState.repriseAnnonce = j.reason ? String(j.reason) : true;   // le démon nomme TOUJOURS sa cause ; sans elle on annonce la reprise sans en inventer une
+  S.evState.cursors = [null];
+  S.evState.page = 0;
+  S.evState.win = { from: exploreFrom(), to: exploreTo() };
+  return true;
+}
+
 // ==============================================================================================
 // `P11.18-r` — LA BORNE HAUTE EST UN ARGUMENT DE L'APPELANT, ET SON DÉFAUT N'HÉRITE DE RIEN.
 //
@@ -1932,7 +1958,8 @@ async function evLoad() {
     if (keyset) { opts.keyset = true; if (cursor) opts.cursor = cursor; else if (jumpOff) opts.offset = jumpOff; }   // curseur (séquentiel) OU offset (saut) ; sinon 1re page
     const j = await runQ(q, isSoql, win.from, limit, offset, opts);
     if (!S.exploreInflight || S.exploreInflight.qid !== qid) return;   // supersédée (autre requête lancée) -> on ignore le résultat périmé
-    if (j.error) { showQError(j.error); return; }
+    if (j.error) { if (reprendreSansCurseur(j)) { evLoad(); return; } showQError(j.error); return; }
+    S.evState.repriseSansCurseurFaite = false;   // une page SERVIE réarme la reprise pour un refus ultérieur
     const srv = j.stats ? j.stats.elapsed_ms : '?';
     const rows = j.rows || [];
     S.evState.shown = rows.length;
@@ -1980,6 +2007,11 @@ async function evLoad() {
       // « Trop lourd… ») remplissent le nœud ENTIER : eux passent bien par le lexique.
       const totTxt = S.evState.total >= 0 ? (S.evState.total + (S.evState.totalCapped ? '+' : '') + ' lignes') : (LANG === 'en' ? 'unknown total' : 'total inconnu');
       $('#qstats').textContent = `page ${S.evState.page + 1}/${pages}${S.evState.totalCapped ? '+' : ''} · ${totTxt} · serveur ${srv} ms · total ${net} ms`;
+    }
+    if (S.evState.repriseAnnonce) {   // `P10.5-g` — la reprise se DIT : une page repartie de 1 sans un mot serait muette
+      const cause = typeof S.evState.repriseAnnonce === 'string' ? ` (${S.evState.repriseAnnonce})` : '';
+      $('#qstats').textContent = `parcours repris depuis la première page${cause} · ${$('#qstats').textContent}`;
+      S.evState.repriseAnnonce = null;
     }
     // COUNT async SANS PLAFOND — keyset (total inconnu) OU offset CAPÉ (| table/| fields gardent l'offset + COUNT capé
     // à 10k) : récupère le VRAI total UNE fois -> pager numéroté COMPLET + « page X / N » réel, sans plafond qui cache des lignes.

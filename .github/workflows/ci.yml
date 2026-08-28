@@ -1293,6 +1293,17 @@ jobs:
       - name: Un reste sous une clé fermée appartient à une clé ouverte, ou se déclare
         run: python3 .github/scripts/check_every_residue_belongs_to_an_open_key.py
 
+      # `P10.5-g` — UN REMÈDE MACHINE PUBLIÉ PAR LE DÉMON EST LU PAR LA CONSOLE. Mesuré le 2026-08-28 :
+      # les trois refus de curseur froid publiaient `restart_without_cursor` — une CONDUITE, pas une
+      # phrase — et AUCUN module de `web/` ne le lisait. Le message s'affichait, la table des curseurs
+      # gardait le curseur mort, « Suivant » le rejouait indéfiniment. La population est DÉRIVÉE de la
+      # forme que le démon s'est donnée (un corps qui porte `"reason"`, un champ à `true` dedans) et le
+      # plafond est ZÉRO : un champ de conduite ajouté sans être branché fait rougir sans qu'aucune liste
+      # ne soit tenue à côté. Elle refuse de conclure sous son plancher. Ce qu'elle ne tient pas est écrit
+      # dans son en-tête : que le remède soit OBÉI, une autre forme que le booléen nu, un client hors web/.
+      - name: Un remède machine publié dans un refus est lu par la console
+        run: python3 .github/scripts/check_a_machine_remedy_is_read_by_the_console.py
+
       # `P8.9-d` — LA FORME DU TABLEAU, LÀ OÙ LES TROIS GARDES VOISINES NE LISENT QUE SON TEXTE. Mesuré
       # le 2026-08-25 : QUINZE lignes de l'index ne se terminaient pas par la barre qui clôt une cellule,
       # et SOIXANTE-DIX lignes réparties sur trois documents portaient plus de cellules que leur tableau

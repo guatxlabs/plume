@@ -918,10 +918,10 @@
         let r38 = rule_sql(ATTACKER_UNMITIGATED_RULE_SQL, false, 3600).unwrap();
         conn.prepare(&r38).unwrap_or_else(|e| panic!("SQL règle 38 invalide : {e}\n{r38}"));
 
-        // (D) PANNEAUX (affichage seul) — `compile_panel_sql` SUBSTITUE bien l'exclusion -> SQL valide, plus
+        // (D) PANNEAUX (affichage seul) — la porte des panneaux SUBSTITUE bien l'exclusion -> SQL valide, plus
         // aucun placeholder résiduel. Panneau web GXQL (src_ip + vhost) + panneaux banpass natifs.
         let web = "search source=web __OPERATOR_EXCL__ __SELF_EXCL__ | where severity>=2 | sort -ts | table vhost,path,status,src_ip,ua";
-        let wsql = compile_panel_sql(web, true, now() - 3600, 0, None).unwrap_or_else(|e| panic!("compilation web échouée : {e}"));
+        let wsql = panneau_avoue::compile_sql_de_test(web, true, now() - 3600, 0, None).unwrap_or_else(|e| panic!("compilation web échouée : {e}"));
         conn.prepare(&wsql).unwrap_or_else(|e| panic!("SQL web invalide : {e}\n{wsql}"));
         assert!(!wsql.contains("__OPERATOR_EXCL__") && !wsql.contains("__SELF_EXCL__"), "placeholders panneau web substitués : {wsql}");
         // Avec le DÉFAUT GÉNÉRIQUE vide (aucune IP perso bakée), la substitution panneau est un no-op voulu.
@@ -931,7 +931,7 @@
         assert!(op_sql_cfg.contains("203.0.113.7"), "une IP opérateur CONFIGURÉE produit la clause d'exclusion (affichage) : {op_sql_cfg}");
         for q in [BANPASS_UNMITIGATED_SQL, BANPASS_COVERAGE_SQL] {
             assert!(q.contains("__OPERATOR_EXCL__"), "les panneaux banpass GARDENT l'exclusion (affichage)");
-            let bp = compile_panel_sql(q, false, now() - 86400, 0, None).unwrap();
+            let bp = panneau_avoue::compile_sql_de_test(q, false, now() - 86400, 0, None).unwrap();
             conn.prepare(&bp).unwrap_or_else(|e| panic!("SQL banpass invalide : {e}\n{bp}"));
             assert!(!bp.contains("__OPERATOR_EXCL__"), "placeholder banpass substitué : {bp}");
         }

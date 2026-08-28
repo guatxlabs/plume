@@ -1267,7 +1267,7 @@ fn sec_ff_no_unmasked_compile_in_caller_scoped_surfaces() {
     // Chaque entrée = (fonction, pourquoi elle a le DROIT de compiler sans masque). Ces fonctions n'ont
     // PAS d'appelant : elles servent l'ordonnanceur / la validation de syntaxe / un chemin déjà gaté.
     const DECLARED_UNMASKED_GATES: &[(&str, &str)] = &[
-        ("compile_panel_sql", "panneaux : PURE, sans appelant ; la surface panel_data bascule sur panel_data_masked_live dès qu'un masque est actif"),
+        ("compile_panneau_avoue", "panneaux : UNIQUE porte de compilation d'un panneau (`handlers::panneau_avoue`, P10.5-i). CETTE PORTE A DES APPELANTS — c'est ce qui la distingue des deux autres entrées, et la justification le dit au lieu de l'inverse. MESURÉ le 2026-08-28 par `grep -rn 'compile_panneau_avoue(' daemon/src --include=*.rs | grep -v /tests/` : QUATRE sites d'appel de production (rollups.rs, dash_ergonomics.rs, dashboards.rs deux fois), auxquels s'ajoute la porte de validation `valider_panneau` du coffre lui-même, employée par overlays_oac.rs — qui n'écrit donc PAS le marqueur. C'est la PARTIE 2 qui couvre les surfaces qui l'atteignent, par ce même marqueur. La surface panel_data bascule sur panel_data_masked_live dès qu'un masque est actif"),
         ("eval_baseline", "évaluateur PARTAGÉ avec l'ordonnanceur : doit rester tenant-wide (D7) ; la SURFACE baseline_test est gardée par caller_dryrun_guard"),
         ("validate_baseline", "validation de SYNTAXE au CRUD : ne renvoie qu'une erreur de compilation, AUCUNE donnée"),
     ];
@@ -1292,7 +1292,7 @@ fn sec_ff_no_unmasked_compile_in_caller_scoped_surfaces() {
     // Marqueurs d'ATTEINTE d'une porte non masquée (portes de la partie 1 + leurs façades de règle et les
     // évaluateurs qui en dépendent). Ce sont les noms qu'un handler écrit quand il compile du GXQL.
     const REACHES_UNMASKED: &[&str] = &[
-        "soql_to_sql_x(", "rule_sql(", "compile_panel_sql(", "eval_correlation(", "eval_baseline(",
+        "soql_to_sql_x(", "rule_sql(", "compile_panneau_avoue(", "eval_correlation(", "eval_baseline(",
     ];
     // Marqueurs de RÉSOLUTION du contexte de masquage de l'appelant (les 3 seules façons légitimes).
     const RESOLVES_MASKS: &[&str] = &["effective_masks(", "rule_sql_for_caller(", "caller_dryrun_guard("];

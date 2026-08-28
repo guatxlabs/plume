@@ -930,7 +930,7 @@ fn purge_delete_rows(
 
     let (b0, b1) = purge_rollup_band(c.scope.window);
     let rollup_reaggregated = purge_rebuild_rollups(conn, b0, b1)?;
-    let panel_cache_cleared = conn.execute("DELETE FROM panel_cache", []).unwrap_or(0) as i64;
+    let panel_cache_cleared = panneau_avoue::cache_vider(conn) as i64;
 
     Ok(PurgeReceipt {
         rows_deleted: deleted,

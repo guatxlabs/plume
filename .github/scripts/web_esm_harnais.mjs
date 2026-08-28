@@ -6061,6 +6061,223 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[reglage-honore-ou-dit] LE RÉGLAGE DE L'EXPLOITANT EST HONORÉ : sur « ${large49} », les ${FENTES49.length} fentes × toutes les colonnes d'un résultat à ${C5.length} et à ${C3.length} colonnes (${honorees49} réglages balayés) posent la colonne réglée à la position que son infobulle promet, sans perdre ni doubler une seule colonne servie — là où la projection d'avant, rejouée ici, restait INERTE sur ${inertes49} de ces ${total49} réglages (elle rendait l'ordre SANS réglage) et remettait deux fois la même colonne sur le chemin étroit. Ce qu'un réglage ne peut PAS faire se DIT au lieu de s'évanouir : deux fentes sur la même colonne, une fente médiane sur un résultat sans milieu — chacune nommée avec la colonne et les libellés que l'exploitant voit, la barre restant au-dessus pour la défaire — et un réglage posé sur une fente que la représentation NE LIT PAS ne refuse rien et ne déplace rien. NON-RÉGRESSION : sur les ${MODES49.length} modes, un réglage qui nomme pour chaque fente la colonne qui y est déjà rend un balisage byte-identique et ne prononce pas un mot. UNE ABSENCE N'EST PAS UN ZÉRO : ni dans le refus d'une figure muette (une ligne sans valeur est comptée À PART, les vrais zéros gardant « toutes NULLES »), ni dans ce qu'une figure écarte (« nulle ou négative » ne se dit plus d'une valeur absente ni d'une valeur illisible). CE QU'UNE FIGURE NE MONTRE PAS, ELLE LE COMPTE : la grille dit sa coupe (${R70.length - lignesRendues} lignes sur ${R70.length}) et les lignes qu'une autre écrase, ${uneSeule49.length} représentations disent les lignes servies qu'elles ne lisent pas — sans que ce soit un refus, et sans nommer une colonne là où c'est une ligne qui manque — et toutes se taisent quand elles ne perdent rien. L'histogramme partage ses deux sémantiques sur la FORME du résultat et non sur son arité. Enfin la langue : « aucune donnée » atteint un lecteur anglophone par le LEXIQUE là où le module l'écrit en dur, mesuré en appliquant le parcours de traduction au nœud rendu — les deux moitiés tenues, pour qu'on ne retire pas la clé qui l'y porte. CE QUE CE TÉMOIN NE TIENT PAS : l'encre peinte et la mise en page (section 0) ; les panneaux SEMÉS par le démon, dont les requêtes vivent hors de web/ ; et ce qu'une chaîne de BLANCS devrait valoir — le module la lit comme un zéro, et il le déclare.`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 50. UN PANNEAU DIT À L'ÉCRAN CE QU'IL N'A PAS PU VOIR (`P10.5-i`).
+//
+//     LE DÉFAUT, ET IL A DEUX MOITIÉS. Le démon publie désormais, sur toute réponse de panneau,
+//     l'horizon sous lequel sa fenêtre n'a rien pu voir. Un aveu qu'aucun module de la console ne
+//     lit recréerait mot pour mot un défaut déjà consigné dans ce dépôt — « le démon avoue, la
+//     console n'écoute pas ». La seconde moitié est pire : `draw()` sort AVANT tout point de pose
+//     situé plus bas dès que `rows` est vide, en affichant « aucune donnée sur la fenêtre » — c'est
+//     EXACTEMENT le cas fondateur (une courbe vide sur une fenêtre plus ancienne que l'horizon), et
+//     la phrase y est FAUSSE : il y a eu des données, elles n'existent plus.
+//
+//     CE QUI EST TENU ICI, EN DEUX JAMBES. (a) EXÉCUTÉE : les deux fabriques de `viz.js` et celle de
+//     `dashboards.js` sont jouées sur le simulacre, dans les DEUX sens — un panneau réellement
+//     amputé porte l'aveu, un panneau complet ne dit RIEN (l'anti-fatigue), un horizon non mesuré ne
+//     fabrique aucune date. (b) DÉRIVÉE DU SOURCE : la POSITION de la pose. Une fabrique correcte
+//     appelée après le retour anticipé ne servirait à rien ; la population des sites est celle des
+//     PHRASES que le module affiche quand il n'a rien à montrer, jamais une liste de lignes.
+// ---------------------------------------------------------------------------------------------
+{
+  const url50 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const viz50 = await import(url50("viz.js"));
+  const dash50 = await import(url50("dashboards.js"));
+  const texte50 = (n) => (n && n.textContent !== undefined ? n.textContent : String(n));
+
+  // --- (a1) LE BADGE : il ne paraît QUE si la fenêtre est réellement passée sous l'horizon. ---
+  const AMPUTE = { coverage: { searched_from: 100, horizon_ts: 1_700_000_000, older_outside_window: true, reason: "retention_floor", notice: "réponse INCOMPLÈTE : la fenêtre demandée descend SOUS l'horizon." } };
+  const COMPLET = { coverage: { searched_from: 1_700_100_000, horizon_ts: 1_700_000_000, older_outside_window: false, reason: "retention_floor", notice: "la fenêtre demandée tient AU-DESSUS de l'horizon." } };
+  const NON_MESURE = { coverage: { searched_from: 100, reason: "horizon_non_mesure", notice: "l'horizon n'a PAS été mesuré." } };
+  const REFUS = { coverage: { searched_from: 100, reason: "portee_non_derivable", notice: "on ne sait pas jusqu'où cette réponse a pu voir." } };
+  const PLANCHER = { provenance_non_derivee: true, rollup_note: "le compte affiché est un PLANCHER (plafond top-N du pré-agrégé)." };
+
+  const badge50 = viz50.coverageBadge(AMPUTE);
+  exiger(!!badge50, "(50a) un panneau dont la fenêtre descend sous l'horizon ne porte AUCUN badge : l'aveu du démon n'atteint pas l'écran");
+  exiger(!!badge50 && /qb-approx/.test(badge50.className), `(50a) le badge n'emprunte pas l'habillage existant : « ${badge50 && badge50.className} »`);
+  exiger(!!badge50 && texte50(badge50).trim().length > 0, "(50a) le badge est vide");
+  exiger(!!badge50 && (badge50.title || "").includes("INCOMPLÈTE"),
+    "(50a) l'infobulle du badge ne reprend pas la phrase du démon : le lecteur voit un mot et aucune cause");
+  // L'ANTI-FATIGUE, ET C'EST LE TÉMOIN QUI DONNE SA VALEUR AU PRÉCÉDENT : sur une base où rien n'a
+  // jamais été purgé, douze panneaux sur douze porteraient le badge et le panneau réellement amputé
+  // serait celui qu'on ne verrait plus.
+  exiger(viz50.coverageBadge(COMPLET) === null, "(50a-inverse) un panneau COMPLET porte le badge : un aveu permanent rend la cause illisible quand elle est vraie");
+  exiger(viz50.coverageBadge(NON_MESURE) === null, "(50a-inverse) un horizon NON MESURÉ produit pourtant un badge : on annoncerait un fait qu'on n'a pas");
+  exiger(viz50.coverageBadge({}) === null && viz50.coverageBadge(null) === null, "(50a-inverse) une réponse SANS aveu produit un badge");
+
+  // --- (a2) LES DEUX NŒUDS DE L'HORIZON, ET LA RAISON DE LEUR SÉPARATION. ---
+  const noeuds50 = viz50.coverageHorizonNodes(AMPUTE);
+  exiger(Array.isArray(noeuds50) && noeuds50.length === 2,
+    "(50a2) l'horizon n'est pas rendu en DEUX nœuds : concaténé à sa date, le libellé serait classé « dynamique » et son entrée de lexique naîtrait MORTE");
+  exiger(viz50.coverageHorizonNodes(COMPLET) !== null, "(50a2) un horizon MESURÉ doit être disponible même quand rien n'est resté dehors — c'est le corps sans ligne qui décide de le montrer");
+  // LE REFUS DU DÉMON EST UN TROISIÈME CAS, ET IL NE DOIT PAS SE LIRE COMME UNE ABSENCE. `portee_non_derivable`
+  // (les panneaux `banned_ip`, livrés et semés) et `horizon_non_mesure` (pool indisponible) sortent SANS
+  // horizon : rendre `null` laissait « aucune donnée sur la fenêtre » CONCLURE là où le démon écrit
+  // « on ne sait pas jusqu'où cette réponse a pu voir ».
+  for (const [nom, cas] of [["portee_non_derivable", REFUS], ["horizon_non_mesure", NON_MESURE]]) {
+    const n = viz50.coverageHorizonNodes(cas);
+    exiger(Array.isArray(n) && n.length === 1,
+      `(50a2-refus) « ${nom} » : le refus de conclure du démon ne produit AUCUN nœud — la console conclurait à l'absence à sa place`);
+    const t = Array.isArray(n) ? n.map(texte50).join("") : "";
+    exiger(!/\d{4}|\d{2}\/\d{2}/.test(t),
+      `(50a2-refus) une DATE est fabriquée alors que l'horizon n'a pas été mesuré : « ${t} »`);
+  }
+  exiger(viz50.coverageHorizonNodes({}) === null && viz50.coverageHorizonNodes(null) === null,
+    "(50a2-inverse) une réponse SANS aveu (binaire antérieur, surface non couverte) doit retomber EXACTEMENT sur l'affichage d'avant");
+
+  // --- (a4) LE PLAFOND TOP-N D'UN PANNEAU OPAQUE ATTEINT L'ÉCRAN. Le démon publiait `rollup_note` et
+  //     aucun module ne le lisait : onze panneaux livrés affichaient un PLANCHER comme un compte exact. ---
+  const plancher50 = viz50.provenanceBadge(PLANCHER);
+  exiger(!!plancher50 && texte50(plancher50).trim().length > 0, "(50a4) un compte PLAFONNÉ par le top-N d'un pré-agrégé ne porte aucun badge : il se lit comme un compte exact");
+  exiger(!!plancher50 && (plancher50.title || "").includes("PLANCHER"), "(50a4) l'infobulle ne reprend pas la note du démon");
+  // L'ANTI-FATIGUE DE CE BADGE-CI : `provenance_non_derivee` est vrai sur TOUT panneau SQL brut (les
+  // courbes de métriques comprises, sans aucun plafond) ; seule la NOTE marque un plafond réel.
+  exiger(viz50.provenanceBadge({ provenance_non_derivee: true }) === null,
+    "(50a4-inverse) une provenance non dérivée SANS plafond mesuré produit un badge : douze panneaux sur douze le porteraient");
+  exiger(viz50.provenanceBadge({ served_from: "rollup", approx: true }) === null && viz50.provenanceBadge({}) === null,
+    "(50a4-inverse) une provenance DÉRIVÉE produit le badge du non-dit");
+
+  // … et la séparation SERT : sous LANG='en', le parcours de traduction remplace le LIBELLÉ (nœud
+  // entier) et laisse la date. Sans cette moitié, on pourrait retirer la clé sans que rien ne rougisse.
+  const SUFFIXE50 = "?plume-lang=en-p105i";
+  localStorage.setItem("soc_lang", "en");
+  const vizEN50 = await import(url50("viz.js") + SUFFIXE50);
+  const { i18nWalk: walk50 } = await import(url50("i18n.js") + SUFFIXE50);
+  localStorage.removeItem("soc_lang");
+  const hote50 = document.createElement("div");
+  const nEN50 = vizEN50.coverageHorizonNodes(AMPUTE);
+  exiger(Array.isArray(nEN50) && nEN50.length === 2, "(50a2-en) instrument : les deux nœuds ne sont pas rendus sous LANG='en'");
+  if (Array.isArray(nEN50)) {
+    hote50.append(...nEN50);
+    const avant50 = hote50.textContent;
+    walk50(hote50);
+    exiger(hote50.textContent !== avant50 && !/horizon de conservation/.test(hote50.textContent),
+      `(50a2-en) sous LANG='en', le libellé d'horizon reste français APRÈS le parcours de traduction : « ${hote50.textContent} » — la clé du lexique manque, ou le libellé n'est pas un nœud ENTIER`);
+  }
+
+  // --- (a3) LE CORPS SANS LIGNE : trois cas, et « aucune donnée » n'est FAUX que dans un seul. ---
+  const phrase50 = () => document.createTextNode("aucune donnée sur la fenêtre");
+  const sansAveu50 = dash50.corpsSansLigne({}, phrase50());
+  exiger(texte50(sansAveu50).trim() === "aucune donnée sur la fenêtre",
+    `(50a3) sans aveu, le corps sans ligne doit rester CE QU'IL ÉTAIT : « ${texte50(sansAveu50)} »`);
+  const completSansLigne50 = dash50.corpsSansLigne(COMPLET, phrase50());
+  exiger(/aucune donnée sur la fenêtre/.test(texte50(completSansLigne50)) && /horizon de conservation/.test(texte50(completSansLigne50)),
+    `(50a3) fenêtre AU-DESSUS de l'horizon : la phrase est VRAIE, elle est conservée, et l'horizon la complète — « ${texte50(completSansLigne50)} »`);
+  const ampute50 = dash50.corpsSansLigne(AMPUTE, phrase50());
+  exiger(!/aucune donnée sur la fenêtre/.test(texte50(ampute50)) && /horizon de conservation/.test(texte50(ampute50)),
+    `(50a3) fenêtre SOUS l'horizon : « aucune donnée sur la fenêtre » est FAUX (il y a eu des données) et doit être REMPLACÉ — « ${texte50(ampute50)} »`);
+  // LE REFUS DU DÉMON : la phrase reste (elle est littéralement vraie) et le refus la COMPLÈTE, sans quoi
+  // l'écran conclut à l'absence là où le démon dit ne pas savoir.
+  const refusSansLigne50 = dash50.corpsSansLigne(REFUS, phrase50());
+  exiger(/aucune donnée sur la fenêtre/.test(texte50(refusSansLigne50)) && /n'est pas établi/.test(texte50(refusSansLigne50)),
+    `(50a3-refus) un refus de conclure se relit comme une absence établie — « ${texte50(refusSansLigne50)} »`);
+  // ET LA PHRASE QUI N'AFFIRME PAS UNE ABSENCE N'EST JAMAIS JETÉE. Sur la branche `warming`, le corps est
+  // vide parce que RIEN N'A ENCORE ÉTÉ CALCULÉ : remplacer « chargement (mesure en cours) » par l'horizon
+  // fait lire une explication d'ABSENCE sur un corps que le démon déclare non calculé.
+  const chargement50 = () => document.createTextNode("… chargement (mesure en cours)");
+  const enChauffe50 = dash50.corpsSansLigne(AMPUTE, chargement50(), false);
+  exiger(/chargement \(mesure en cours\)/.test(texte50(enChauffe50)) && /horizon de conservation/.test(texte50(enChauffe50)),
+    `(50a3-chauffe) la phrase d'ÉTAT DU CALCUL a été JETÉE au profit de l'horizon : l'écran explique par la rétention un corps qui n'a jamais été calculé — « ${texte50(enChauffe50)} »`);
+  // … et le paramètre n'est pas décoratif : la MÊME phrase déclarée « affirme une absence » disparaît.
+  exiger(!/chargement \(mesure en cours\)/.test(texte50(dash50.corpsSansLigne(AMPUTE, chargement50(), true))),
+    "(50a3-chauffe-inverse) instrument : le drapeau de la fabrique ne change rien, donc il ne prouve rien");
+
+  // --- (b) LA POSITION DE LA POSE, DÉRIVÉE DU SOURCE. Une fabrique correcte appelée APRÈS le retour
+  //     anticipé ne servirait à rien : c'est précisément ce que la première rédaction de ce correctif
+  //     faisait, et c'est le cas fondateur qu'elle laissait muet. ---
+  const srcDash50 = readFileSync(path.join(WEB, "dashboards.js"), "utf8");
+  const corpsDe50 = (nom) => {
+    const i = srcDash50.indexOf(nom);
+    if (i < 0) return "";
+    let o = srcDash50.indexOf("{", i), prof = 0;
+    for (let k = o; k < srcDash50.length; k++) {
+      if (srcDash50[k] === "{") prof++;
+      else if (srcDash50[k] === "}" && --prof === 0) return srcDash50.slice(o, k + 1);
+    }
+    return "";
+  };
+  for (const [nom, cond] of [["function draw()", "!result.rows.length"], ["function renderServerPaged()", "!spg.rows.length"]]) {
+    const corps = corpsDe50(nom);
+    exiger(corps.length > 0, `(50b-instrument) « ${nom} » introuvable dans dashboards.js — la garde ne lit plus rien`);
+    const iVide = corps.indexOf(cond);
+    const iPose = corps.indexOf("corpsSansLigne(", iVide);
+    const iRetour = corps.indexOf("return", iVide);
+    exiger(iVide >= 0 && iPose > iVide && iRetour > iVide && iPose < iRetour,
+      `(50b) dans « ${nom} », l'aveu n'est pas posé AVANT le retour anticipé sur un résultat sans ligne : l'écran continuerait de dire « aucune donnée » sur une fenêtre passée sous l'horizon`);
+  }
+  // POPULATION DÉRIVÉE DE LA STRUCTURE, ET C'EST LA MOITIÉ QUI TIENT. Un site qui REMPLACE le corps d'un
+  // panneau ou d'une carte SOUS CONDITION D'UN `rows` VIDE doit passer par la fabrique. Le motif porte
+  // sur la CONDITION (`!x.rows…`) et sur le GESTE DE RENDU (`replaceChildren`/`appendChild`) — jamais sur
+  // la phrase affichée : un cinquième site écrit demain avec une formulation neuve (« aucun résultat sur
+  // cette fenêtre ») y entre le jour même. Les deux sites qui testent `rows` SANS rendre — le garde-fou
+  // de l'export et le « pas encore chargé » de la pagination serveur — en sortent par une PROPRIÉTÉ (ils
+  // ne rendent rien), pas par une exception inscrite quelque part.
+  const RE_ROWS_VIDE = /!\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.rows\b/g;
+  const sitesVides50 = [];
+  const lignesDash50 = srcDash50.split("\n");
+  const vus50 = new Set();
+  for (const m of srcDash50.matchAll(RE_ROWS_VIDE)) {
+    const ligne = srcDash50.slice(0, m.index).split("\n").length;
+    if (vus50.has(ligne)) continue;
+    vus50.add(ligne);
+    const brut = (lignesDash50[ligne - 1] || "").trim();
+    if (brut.startsWith("//") || brut.startsWith("*")) continue;
+    const fenetre = srcDash50.slice(m.index, m.index + 300);
+    const iRendu = fenetre.search(/replaceChildren\(|appendChild\(/);
+    if (iRendu < 0) continue;   // teste `rows` sans RENDRE : hors population
+    // Le site RAPPORTÉ est celui du GESTE DE RENDU, pas celui de la condition : c'est la ligne qu'il faut
+    // ouvrir quand la garde rougit.
+    const ligneRendu = srcDash50.slice(0, m.index + iRendu).split("\n").length;
+    sitesVides50.push([ligneRendu, (lignesDash50[ligneRendu - 1] || "").trim().slice(0, 90), fenetre.includes("corpsSansLigne(")]);
+  }
+  exiger(sitesVides50.length >= 3,
+    `(50b-instrument) ${sitesVides50.length} site(s) de rendu sur corps vide dérivés de dashboards.js, plancher 3 — la dérivation est cassée et la garde mesurerait le vide`);
+  const horsFabrique50 = sitesVides50.filter(([, , ok]) => !ok);
+  exiger(horsFabrique50.length === 0,
+    `(50b) ces corps sans ligne ne passent pas par la fabrique et se relisent donc comme une absence établie : ${JSON.stringify(horsFabrique50)}`);
+  // SECOND FILET, ET IL FAUT DIRE CE QU'IL EST : une recherche des DEUX phrases écrites AUJOURD'HUI. Il
+  // attrape la REFORMULATION d'un site existant (la phrase change de place sans passer par la fabrique) ;
+  // il n'attrape PAS l'ajout d'un site formulé autrement — c'est le filet structurel ci-dessus qui le
+  // fait. Les deux ensembles ne se recouvrent pas : la branche `warming` est conditionnée par `warming`,
+  // pas par `rows`, donc elle n'existe que dans celui-ci.
+  const phrasesVides50 = lignesDash50
+    .map((l, i) => [i + 1, l])
+    .filter(([, l]) => /aucune donnée|chargement \(mesure en cours\)/.test(l) && !l.trim().startsWith("//"));
+  exiger(phrasesVides50.length >= 4,
+    `(50b-instrument) ${phrasesVides50.length} phrase(s) de corps vide trouvées dans dashboards.js, plancher 4 — la dérivation est cassée`);
+  const phrasesHorsFabrique50 = phrasesVides50.filter(([, l]) => !l.includes("corpsSansLigne("));
+  exiger(phrasesHorsFabrique50.length === 0,
+    `(50b) ces phrases de corps vide ne passent pas par la fabrique : ${JSON.stringify(phrasesHorsFabrique50)}`);
+  // … et les aveux sont posés sur CHACUN des chemins qui remplacent le corps d'un panneau ou d'une carte.
+  const poses50 = (srcDash50.match(/poserLesAveuxDuPanneau\(/g) || []).length - 1; // -1 : la définition
+  exiger(poses50 >= 6,
+    `(50b) ${poses50} point(s) de pose des aveux, attendu au moins SIX (corps vide de draw, table, graphe, liste paginée pleine ET vide, chauffe, carte d'instantané) — un chemin de rendu sans aveu est un chemin muet`);
+  // LES DEUX BRANCHES JUMELLES DE LA LISTE PAGINÉE DISENT LA MÊME CHOSE. `draw()` posait la phrase ET les
+  // badges sur son corps vide ; `renderServerPaged()` ne posait que la phrase — deux chemins d'un même
+  // écran qui n'avouent pas pareil, ce qu'aucun compteur d'occurrences ne peut voir.
+  {
+    const corps = corpsDe50("function renderServerPaged()");
+    const iVide = corps.indexOf("!spg.rows.length");
+    const iRetour = corps.indexOf("return", iVide);
+    exiger(iVide >= 0 && corps.slice(iVide, iRetour).includes("poserLesAveuxDuPanneau("),
+      "(50b-jumelle) la branche « corps vide » de renderServerPaged ne pose pas les badges, alors que sa jumelle de draw() les pose");
+  }
+
+  // --- (c) LA BORNE : LA SURFACE QU'UNE LISTE DE LIGNES INTERROGE, MESURÉE PLUTÔT QU'AFFIRMÉE. ---
+  // Un panneau `table` non agrégé (`serverPaged()`) NE PASSE PAS par la route de panneau : `load()` sort
+  // sur `loadServerPage`, qui interroge `/api/query` — surface qui ne publie AUCUN `stats.coverage`. Les
+  // poses de `renderServerPaged` sont donc, sur l'arbre d'aujourd'hui, INERTES EN PRODUCTION : elles
+  // rendent `null` et la phrase d'avant est conservée. Ce n'est pas une régression (c'est l'écran
+  // d'avant le lot), c'est un RESTE — et il est mesuré ici pour qu'on ne puisse pas le croire clos.
+  const corpsPage50 = corpsDe50("async function loadServerPage(");
+  exiger(corpsPage50.length > 0, "(50c-instrument) « loadServerPage » introuvable — la borne ne lit plus rien");
+  const surfacePage50 = ((corpsPage50.match(/fetch\('([^']+)'/) || [])[1] || "");
+  exiger(surfacePage50 === "/api/query",
+    `(50c-borne) la liste de lignes d'un panneau interroge « ${surfacePage50} » et non « /api/query » : si c'est désormais la route de panneau (ou si /api/query publie un aveu), les poses de renderServerPaged cessent d'être inertes — refermez le reste et retirez cette borne.`);
+
+  console.log(`[panneau-avoue] UN PANNEAU DIT À L'ÉCRAN CE QU'IL N'A PAS PU VOIR : le badge paraît quand la fenêtre est réellement passée sous l'horizon et SE TAIT autrement (fenêtre au-dessus, réponse sans aveu) ; le REFUS de conclure du démon (portée non dérivable, horizon non mesuré) rend un nœud qui DIT ce refus et aucune date, au lieu de laisser « aucune donnée sur la fenêtre » conclure à sa place ; le plafond top-N d'un panneau opaque atteint enfin l'écran, et seulement là où une note le chiffre ; l'horizon est rendu en DEUX nœuds, ce qui laisse le parcours de traduction remplacer le libellé sans toucher à la date — mesuré sous LANG='en' ; « aucune donnée sur la fenêtre » est CONSERVÉ quand il est vrai et REMPLACÉ quand il est faux, tandis que « chargement (mesure en cours) », qui décrit un ÉTAT DU CALCUL et non une absence, n'est JAMAIS jeté ; la POSITION de la pose est dérivée du source (dans draw() comme dans renderServerPaged(), l'aveu précède le retour anticipé) et la population des corps vides est dérivée de la STRUCTURE (condition sur \`rows\` + geste de rendu), pas de l'orthographe des phrases. CE QUE CE TÉMOIN NE TIENT PAS : il ne rend aucun panneau de bout en bout (la fabrique de carte n'est pas exportée), donc il ne prouve pas que \`result.stats\` arrive intact jusqu'à draw() ; et il MESURE le reste au lieu de le taire — une liste de lignes serveur-paginée interroge \`/api/query\`, surface sans aveu, donc les poses de renderServerPaged y sont inertes tant que ce reste n'est pas fermé.`);
+}
+
 // LE VERDICT PORTE SA PROPRE LIMITE (`P11.13-g`). Un vert qui ne dit pas ce sur quoi il ne s'engage pas
 // se lit comme une COUVERTURE — et un rouge n'a pas plus le droit de laisser croire qu'il a tout regardé.
 // La phrase ci-dessous n'est pas écrite : elle est DÉRIVÉE des sondes de la section 0, donc une capacité

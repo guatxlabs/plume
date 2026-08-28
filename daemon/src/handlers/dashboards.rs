@@ -1,8 +1,13 @@
 //! Dashboards & panneaux (P3) : contrôle d'accès (`dash_editable`/`panel_access`), CRUD dashboards/
-//! panneaux/vues, et le cache SWR des panneaux (clés de plage `cache_range_key`/`query_fingerprint`,
-//! exclusions opérateur/self `ExclClauses`/`EXCL_CLAUSES`/`apply_excl_placeholders`, compilation
-//! `compile_panel_sql`, rafraîchissement `enqueue_panel_refresh`/`serve_swr`, handler `panel_data`).
+//! panneaux/vues, et le service SWR des panneaux (clés de plage `cache_range_key`/`query_fingerprint`,
+//! exclusions opérateur/self `ExclClauses`/`EXCL_CLAUSES`/`apply_excl_placeholders`,
+//! rafraîchissement `enqueue_panel_refresh`/`serve_swr`, handler `panel_data`).
 //! Extrait de main.rs (refactor split #25 — byte-identique).
+//!
+//! `P10.5-i` — LA COMPILATION D'UN PANNEAU ET LA TABLE `panel_cache` NE VIVENT PLUS ICI : elles sont
+//! dans le coffre `handlers::panneau_avoue`, seul point qui sait produire un `PanneauCompile` et seul
+//! point qui l'exécute — donc seul point qui estampe l'aveu de provenance et l'horizon. Ce module
+//! n'écrit plus une ligne de SQL nommant `panel_cache` (garde de build `cache_de_panneau`).
 use crate::*;
 
 // ---------- dashboards (P3) ----------
@@ -359,7 +364,7 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
     // INVALIDATION : invalide le cache du panneau à chaque update. On purge sans condition (le coût est nul :
     // 1 ligne max) -> aucun payload périmé servi après changement de requête/viz/fenêtre/visibilité. La
     // garde query_fp (v36) couvre déjà le cas requête, ceci couvre aussi viz/window/visibilité d'un coup.
-    let _ = conn.execute("DELETE FROM panel_cache WHERE panel_id=?1", params![id]);
+    panneau_avoue::cache_invalider_panneau(&conn, id);
     StatusCode::NO_CONTENT
 }
 
@@ -374,7 +379,7 @@ pub(crate) async fn panel_delete(State(st): State<AppState>, Extension(au): Exte
     // INVALIDATION : purge le cache du panneau supprimé -> un futur panneau réutilisant ce rowid (panel_id)
     // ne servira jamais le payload de l'ancien (fuite inter-owners/visibilités). La garde query_fp (v36)
     // est une 2e barrière, mais on supprime explicitement la ligne ici.
-    let _ = conn.execute("DELETE FROM panel_cache WHERE panel_id=?1", params![id]);
+    panneau_avoue::cache_invalider_panneau(&conn, id);
     StatusCode::NO_CONTENT
 }
 
@@ -434,10 +439,16 @@ pub(crate) fn query_fingerprint(query: &str, is_soql: bool) -> String {
 ///   - `live_ms` : seuil de CLASSIFICATION ADAPTATIVE (PHASE 3d, PLUME_PANEL_LIVE_MS, défaut 100). Un
 ///     panneau dont le coût mesuré (stats.elapsed_ms) est < seuil est servi LIVE (frais) ; >= seuil -> SWR.
 /// À calculer avant de prendre le lock, puis passer à panel_cache_ttl().
-pub(crate) fn panel_serve_cfg() -> (i64, i64) {
-    let conf = load_config();
-    let ttl_global = cfg(&conf, "PLUME_PANEL_CACHE_TTL", "60").parse().unwrap_or(60);
-    let live_ms = cfg(&conf, "PLUME_PANEL_LIVE_MS", "100").parse().unwrap_or(100);
+///
+/// `P10.5-i` — LA CONF EST UN PARAMÈTRE, ET C'EST UNE CORRECTION DE COÛT. `load_config()` fait un
+/// `read_to_string` SANS mémoïsation ; l'horizon avoué a lui aussi besoin de la conf. Si chacun la
+/// lisait pour son compte, un tableau de bord de douze panneaux ferait douze accès disque de plus PAR
+/// RAFRAÎCHISSEMENT, succès de cache compris — contre la discipline que ce fichier énonce lui-même
+/// (« HORS LOCK : lecture config … AVANT de prendre le lock writer (1 seul accès) »). `panel_data` en
+/// fait donc UN, en tête, et le passe à tout ce qui suit.
+pub(crate) fn panel_serve_cfg_de(conf: &HashMap<String, String>) -> (i64, i64) {
+    let ttl_global = cfg(conf, "PLUME_PANEL_CACHE_TTL", "60").parse().unwrap_or(60);
+    let live_ms = cfg(conf, "PLUME_PANEL_LIVE_MS", "100").parse().unwrap_or(100);
     (ttl_global, live_ms)
 }
 
@@ -503,7 +514,7 @@ pub(crate) fn panel_cache_ttl(conn: &Connection, panel_id: i64, ttl_global: i64)
 //       déploiement, ex. « plume.example.com »).
 //
 // MÉCANIQUE : placeholders `__OPERATOR_EXCL__` (par src_ip) et `__SELF_EXCL__` (par vhost),
-// substitués comme `__FROM__` à la compilation (compile_panel_sql / rule_sql), dans la BONNE
+// substitués comme `__FROM__` à la compilation (compile_panneau_avoue / rule_sql), dans la BONNE
 // cible : clause SQL booléenne pour le SQL natif (is_soql=0, ex. `src_ip != '203.0.113.7' AND
 // src_ip NOT LIKE '2001:db8:%'`) OU termes de recherche soql (is_soql=1, ex.
 // `src_ip!=203.0.113.7 src_ip!=2001:db8:*`). Liste vide -> no-op (`1=1` en SQL
@@ -600,7 +611,7 @@ impl ExclClauses {
     /// SURCHARGÉE par un `setting` éditable+audité (`excl_display_csv`). MÊME chaîne que `setting_days` : la
     /// BDD gagne, sinon repli sur l'env PLUME_* (défaut vide). BYTE-IDENTIQUE à `from_config` quand AUCUNE
     /// ligne `setting` n'existe (cas prod par défaut : la vraie valeur vient du Secret via l'env, pas d'override).
-    /// GARANTIE display-only (§4) : le CSV résolu ici n'alimente QUE ces clauses de PANNEAUX (compile_panel_sql) ;
+    /// GARANTIE display-only (§4) : le CSV résolu ici n'alimente QUE ces clauses de PANNEAUX (compile_panneau_avoue) ;
     /// il n'est JAMAIS lu par `protected_ip_matchers` (never-ban HOST) ni par `rule_sql` (détection).
     pub(crate) fn resolve(conn: &Connection, conf: &HashMap<String, String>) -> Self {
         let (op_sql, op_soql) = Self::build(
@@ -658,43 +669,22 @@ pub(crate) fn apply_excl_placeholders(query: &str, is_soql: bool) -> String {
     query.replace("__OPERATOR_EXCL__", op).replace("__SELF_EXCL__", slf)
 }
 
-/// Compile la requête d'un panneau en SQL exécutable : GXQL -> soql_to_sql, sinon substitution
-/// __FROM__/__TO__ (Phase 3b — factorisé entre panel_data, le fallback live et cache_refresh_all_panels).
-/// Substitue d'abord les placeholders d'exclusion self/opérateur (no-op si absents).
-/// `env` (#2d) : filtre par environnement propagé au chemin GXQL des panneaux (rollup-route + compilo).
-/// None (mode 0) -> aucun filtre -> SQL inchangé. NB : les panneaux is_soql=0 (SQL brut sur les rollups,
-/// ex. seeds Vue d'ensemble) ne sont PAS auto-filtrés ici (SQL opaque) -> ils restent tous-env (les
-/// rollups portent env_id v67, mais l'injection dans un SQL arbitraire exigerait un parseur : différé).
-pub(crate) fn compile_panel_sql(query: &str, is_soql: bool, from: i64, to: i64, env: Option<&str>) -> Result<String, String> {
-    let query = apply_excl_placeholders(query.trim(), is_soql);
-    if is_soql {
-        // Router les PANNEAUX vers le rollup comme /api/query : « … | stats count by source »
-        // lit event_rollup (qq ms) au lieu de scanner event (timeout 5 s -> cache figé/périmé).
-        // COUVERTURE : `compile_panel_sql` est PUR (aucune Connection tenant) -> il ne peut RIEN établir, donc
-        // il AVOUE (`RollupCoverage::unproven`). L'ancienne version passait `i64::MAX` — un site d'appel qui
-        // AFFIRMAIT que le rollup couvrait tout l'historique sans rien pour l'établir ; c'est exactement ce que
-        // le type interdit désormais, et c'est par là que le sous-compte ×6,6 mesuré le 31/07 arrivait aussi
-        // dans les panneaux. « Cache SWR = éventuellement cohérent » couvre un RETARD, pas un nombre calculé sur
-        // une table incomplète. CONSÉQUENCE : un panneau `stats count by <2 dims du grain>` retombe sur le
-        // compilo brut (exact, plus lent) ; les ROUTES A/B single-dim, qui n'ont jamais dépendu de la couverture,
-        // sont inchangées — et aucun panneau LIVRÉ n'est multi-dim (seeds.rs : tous `count by <une dim>`).
-        if let Some(rr) = try_rollup_route(&query, from, to, env, RollupCoverage::unproven(), DimRollupCoverage::unproven()) {
-            return Ok(rr.sql);
-        }
-        soql_to_sql_x(&query, from, to, env)
-    } else {
-        Ok(query.replace("__FROM__", &from.to_string()).replace("__TO__", &to.to_string()))
-    }
-}
-
 /// PHASE 3b — refresh ASYNCHRONE (SWR) d'un panneau. Déclenché par panel_data quand le cache est périmé
 /// ou absent. Ne bloque JAMAIS le chemin requête :
 ///   - anti-stampede : un seul refresh EN VOL par clé (panel_id, range_key) via st.panel_refresh_inflight ;
 ///   - borné : `refresh_sem.try_acquire_owned()` (PAS await) — sémaphore SÉPARÉ du query_sem interactif
 ///     (CHANGEMENT 1) : un refresh NE VOLE JAMAIS de permis à /api/query ni /api/search. Si refresh_sem
 ///     est saturé, on abandonne ce refresh (le cache périmé reste servi) ;
-///   - run_query en spawn_blocking, puis INSERT OR REPLACE panel_cache (même logique que le tick).
-pub(crate) fn enqueue_panel_refresh(st: &AppState, au: &AuthUser, id: i64, range_key: String, q_fp: String, sql: String, ttl_global: i64) {
+///   - `panneau_avoue::executer` en spawn_blocking, puis écriture du cache par le coffre (même logique
+///     que le tick de pré-chauffage).
+///
+/// `P10.5-i` — LA CONF EST CLONÉE AVANT LE `spawn`, PAS LUE DEDANS. La tâche a besoin de la conf pour
+/// l'horizon ; la lire dans la tâche ajouterait un accès disque par rafraîchissement. Une allocation
+/// remplace un `read_to_string`. `from` voyage aussi : l'aveu porte la fenêtre RÉELLEMENT calculée.
+pub(crate) fn enqueue_panel_refresh(
+    st: &AppState, au: &AuthUser, id: i64, range_key: String, q_fp: String, pc: PanneauCompile, from: i64,
+    ttl_global: i64, conf: HashMap<String, String>,
+) {
     let key = (id, range_key.clone());
     {
         // insertion atomique dans le set in-flight : si déjà présent, un refresh est en vol -> on sort.
@@ -711,7 +701,7 @@ pub(crate) fn enqueue_panel_refresh(st: &AppState, au: &AuthUser, id: i64, range
         // try_acquire_owned (PAS await) : si aucun permit libre, on renonce — le cache périmé reste servi.
         if let Ok(_permit) = refresh_sem.try_acquire_owned() {
             let now_s = now();
-            if let Ok(Ok(v)) = tokio::task::spawn_blocking(move || run_query(&db_path, &sql)).await {
+            if let Ok(Ok(v)) = tokio::task::spawn_blocking(move || panneau_avoue::executer(&db_path, &conf, pc, from)).await {
                 let cost_ms = measured_cost_ms(&v); // PHASE 3d : mesure du refresh -> classe le panneau
                 if let Ok(payload) = serde_json::to_string(&v) {
                     { let conn = db.lock();
@@ -720,16 +710,8 @@ pub(crate) fn enqueue_panel_refresh(st: &AppState, au: &AuthUser, id: i64, range
                             record_panel_cost(&conn, id, &q_fp, c, now_s);
                         }
                         if panel_cache_ttl(&conn, id, ttl_global) > 0 {
-                            let _ = conn.execute(
-                                "INSERT OR REPLACE INTO panel_cache(panel_id,range_key,query_fp,computed_at,payload) VALUES(?1,?2,?3,?4,?5)",
-                                params![id, range_key, q_fp, now_s, payload],
-                            );
-                            // cap anti-explosion : ne garde que les K plages les plus récentes (par computed_at).
-                            let _ = conn.execute(
-                                "DELETE FROM panel_cache WHERE panel_id=?1 AND range_key NOT IN \
-                                 (SELECT range_key FROM panel_cache WHERE panel_id=?1 ORDER BY computed_at DESC LIMIT ?2)",
-                                params![id, CACHE_MAX_RANGES_PER_PANEL],
-                            );
+                            // écriture + cap anti-explosion : le coffre POSSÈDE la table (garde de build).
+                            panneau_avoue::cache_ecrire(&conn, id, &range_key, &q_fp, now_s, &payload);
                         }
                     }
                 }
@@ -747,39 +729,68 @@ pub(crate) fn enqueue_panel_refresh(st: &AppState, au: &AuthUser, id: i64, range
 /// enqueue refresh + JSON VALIDE « warming » non bloquant. Utilisé par (a) le chemin LOURD (coût >= seuil)
 /// et (b) le FALLBACK du chemin CHEAP/LIVE quand la lane refresh_sem est saturée (jamais de blocage).
 /// Pré-conditions (vérifiées par l'appelant) : cacheable && ttl>0.
+///
+/// `P10.5-i` — CE QUE LA RE-ESTAMPE NE FAIT PAS, ET C'EST LA PROPRIÉTÉ. `cache_range_key` clé sur la
+/// DURÉE quantifiée : un payload calculé à T0 sur [T0−24 h, T0] est LÉGITIMEMENT servi à T0+n. On NE
+/// recalcule donc PAS `coverage.searched_from` sur le `from` courant — ce serait le seul champ frais
+/// d'une réponse périmée, et il se lit comme un certificat. Seul l'horizon est re-confronté, et il le
+/// DIT (`horizon_perime`). Les DEUX corps synthétiques (repli de parsing, MISS `warming`) reçoivent eux
+/// aussi un `stats.coverage` : un corps sans lignes qui ne dit rien se relit comme une absence établie.
 pub(crate) fn serve_swr(
-    st: &AppState, au: &AuthUser, id: i64, query: &str, is_soql: bool, from: i64, to: i64,
+    st: &AppState, au: &AuthUser, conf: &HashMap<String, String>, id: i64, query: &str, is_soql: bool, from: i64, to: i64,
     range_key: &str, q_fp: &str, ttl: i64, ttl_global: i64, now_s: i64, env: Option<&str>,
 ) -> Response {
     let cached = {
         // lecture cache SANS prédicat de fraîcheur : on récupère payload + computed_at quel que soit l'âge.
         let __rc = req_db(st, au);
         let conn = __rc.lock();
-        conn.query_row(
-            "SELECT payload, computed_at FROM panel_cache WHERE panel_id=?1 AND range_key=?2 AND query_fp=?3",
-            params![id, range_key, q_fp],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-        )
-        .ok()
+        panneau_avoue::cache_lire(&conn, id, range_key, q_fp)
     };
+    // COMPILÉ UNE SEULE FOIS, POUR LES DEUX BRANCHES. La compilation est PURE (aucune lecture disque) ;
+    // elle sert (a) à re-confronter l'horizon du payload servi — la portée n'est écrite QUE dans le SQL
+    // — et (b) à armer le rafraîchissement. Compilation en erreur -> `None` : on ne re-estampe rien (ce
+    // qui a été mesuré à l'écriture reste ce qui est dit) et on n'arme rien, exactement comme avant.
+    let pc = panneau_avoue::compile_panneau_avoue(query, is_soql, from, to, env).ok();
+    let db_path = req_db_path(st, au);
+    // L'HORIZON D'UN CORPS SYNTHÉTIQUE : mesuré quand la portée est dérivable, `None` sinon. Il n'est
+    // calculé que sur les deux branches qui fabriquent un corps sans ligne — jamais sur un HIT lisible,
+    // où c'est la re-estampe qui parle.
+    let horizon_courant = |pc: Option<&PanneauCompile>| pc.map(|pc| panneau_avoue::horizon(&db_path, conf, pc, from));
     match cached {
         Some((payload, computed_at)) => {
             // HIT (frais OU périmé) -> service IMMÉDIAT. Si périmé : refresh async (hors query_sem).
-            let v = serde_json::from_str::<Value>(&payload)
-                .unwrap_or_else(|_| json!({ "columns": [], "rows": [] }));
+            let v = match serde_json::from_str::<Value>(&payload) {
+                Ok(mut v) => {
+                    panneau_avoue::cache_reestamper(&mut v, &db_path, conf, pc.as_ref(), computed_at, now_s);
+                    v
+                }
+                Err(_) => {
+                    let mut v = json!({ "columns": [], "rows": [] });
+                    v["stats"]["coverage"] = panneau_avoue::coverage_synthetique(
+                        panneau_avoue::RAISON_PAYE_UTILE_ILLISIBLE, from, now_s, horizon_courant(pc.as_ref()),
+                    );
+                    v
+                }
+            };
             if now_s - computed_at > ttl {
-                if let Ok(sql) = compile_panel_sql(query, is_soql, from, to, env) {
-                    enqueue_panel_refresh(st, au, id, range_key.to_string(), q_fp.to_string(), sql, ttl_global);
+                if let Some(pc) = pc {
+                    enqueue_panel_refresh(st, au, id, range_key.to_string(), q_fp.to_string(), pc, from, ttl_global, conf.clone());
                 }
             }
             Json(v).into_response()
         }
         None => {
             // MISS total (jamais réchauffé) -> refresh async + JSON VALIDE non bloquant « warming ».
-            if let Ok(sql) = compile_panel_sql(query, is_soql, from, to, env) {
-                enqueue_panel_refresh(st, au, id, range_key.to_string(), q_fp.to_string(), sql, ttl_global);
+            // L'HORIZON EST MESURÉ AVANT L'ARMEMENT : la tâche de rafraîchissement CONSOMME le panneau
+            // compilé, et la portée ne se lit que dans son SQL.
+            let mut v = json!({ "columns": [], "rows": [], "warming": true });
+            v["stats"]["coverage"] = panneau_avoue::coverage_synthetique(
+                panneau_avoue::RAISON_MESURE_EN_COURS, from, now_s, horizon_courant(pc.as_ref()),
+            );
+            if let Some(pc) = pc {
+                enqueue_panel_refresh(st, au, id, range_key.to_string(), q_fp.to_string(), pc, from, ttl_global, conf.clone());
             }
-            Json(json!({ "columns": [], "rows": [], "warming": true })).into_response()
+            Json(v).into_response()
         }
     }
 }
@@ -807,22 +818,25 @@ pub(crate) async fn panel_data(State(st): State<AppState>, Extension(au): Extens
     //     exécution -> auto-reclassement (un cheap qui ralentit passe SWR, et inversement).
     // range_key est clé sur la DURÉE de fenêtre (cf. cache_range_key) ; q_fp lie au COUPLE (requête, is_soql).
     let now_s = now();
-    // FILTRE ENVIRONNEMENT (#2d) : env demandé (None en mode 0) -> injecté dans le SQL (compile_panel_sql)
+    // FILTRE ENVIRONNEMENT (#2d) : env demandé (None en mode 0) -> injecté dans le SQL (compile_panneau_avoue)
     // ET dans la clé de plage du cache (env_range_key) -> payloads par-env SÉPARÉS, jamais de collision.
     let env = au.env_filter();
-    // FIELD FILTERS (#45) : le panel_cache est clé par (panel_id, range) SANS le rôle -> un blob mis en cache
+    // HORS LOCK, ET UNE SEULE FOIS POUR TOUS LES CHEMINS (`P10.5-i`) : `load_config()` fait un accès
+    // DISQUE non mémoïsé. Il est remonté AVANT la bascule masquée parce que l'aveu d'horizon en a besoin
+    // sur les DEUX chemins ; le compte par requête reste UN, celui que ce fichier s'impose déjà.
+    let conf = load_config();
+    let (ttl_global, live_threshold) = panel_serve_cfg_de(&conf);
+    // FIELD FILTERS (#45) : le cache rendu est clé par (panel_id, range) SANS le rôle -> un blob mis en cache
     // NE PEUT PAS servir des vues différentes selon le rôle. Si l'appelant a des masques ACTIFS, on NE TOUCHE
     // donc PAS le cache (ni lecture ni écriture) : compilation masquée + exécution LIVE hors cache. VIDE
     // (mode 0 / admin sans règle) -> chemin cache/SWR historique STRICTEMENT INCHANGÉ (byte-identique).
     let masks = effective_masks(req_db_path(&st, &au).as_str(), &au.role, &au.tenant, env);
     if !masks.is_empty() {
-        return panel_data_masked_live(&st, &au, &query, is_soql, from, to, env, &masks).await;
+        return panel_data_masked_live(&st, &au, &conf, &query, is_soql, from, to, env, &masks).await;
     }
     let q_fp = query_fingerprint(&query, is_soql);
     let cacheable = to == 0 || (from > 0 && to > from); // fenêtre glissante OU plage absolue bornée
     let range_key = env_range_key(env, &cache_range_key(from, to, now_s));
-    // HORS LOCK : lecture config (accès disque load_config) AVANT de prendre le lock writer (1 seul accès).
-    let (ttl_global, live_threshold) = panel_serve_cfg();
     // TTL effectif + coût mesuré stocké (par panneau) — 1 prise de lock.
     let (ttl, cost) = {
         crate::req_conn!(st, au, conn);
@@ -841,20 +855,21 @@ pub(crate) async fn panel_data(State(st): State<AppState>, Extension(au): Extens
     // ---- LOURD (connu) ou INCONNU (1re fois) : SWR (3c). Sert le cache + refresh async ; ne lance JAMAIS
     //      de live synchrone. ----
     if (heavy || unknown) && cacheable && ttl > 0 {
-        return serve_swr(&st, &au, id, &query, is_soql, from, to, &range_key, &q_fp, ttl, ttl_global, now_s, env);
+        return serve_swr(&st, &au, &conf, id, &query, is_soql, from, to, &range_key, &q_fp, ttl, ttl_global, now_s, env);
     }
 
     // ---- CHEAP / INCONNU (et le cas résiduel LOURD non-cacheable / cache off) : LIVE MESURÉ. ----
     // La requête tourne à la demande -> toujours frais. Lane refresh_sem UNIQUEMENT (jamais query_sem).
     // try_acquire_owned (borné, zéro attente) : si la lane est saturée, on NE BLOQUE PAS -> fallback cache.
-    let sql = match compile_panel_sql(&query, is_soql, from, to, env) {
+    let pc = match panneau_avoue::compile_panneau_avoue(&query, is_soql, from, to, env) {
         Ok(s) => s,
         Err(e) => return bad_req(e),
     };
     match st.refresh_sem.clone().try_acquire_owned() {
         Ok(permit) => {
             let db_path = req_db_path(&st, &au);
-            let res = tokio::task::spawn_blocking(move || run_query(&db_path, &sql)).await;
+            let conf_live = conf.clone();
+            let res = tokio::task::spawn_blocking(move || panneau_avoue::executer(&db_path, &conf_live, pc, from)).await;
             drop(permit); // relâche la lane refresh dès la requête finie (avant l'écriture coût/cache)
             match res {
                 Ok(Ok(v)) => {
@@ -865,18 +880,10 @@ pub(crate) async fn panel_data(State(st): State<AppState>, Extension(au): Extens
                         if let Some(c) = cost_ms {
                             record_panel_cost(&conn, id, &q_fp, c, now_s);
                         }
-                        // peuple aussi panel_cache -> un futur fallback (lane saturée) sert du frais récent.
+                        // peuple aussi le cache rendu -> un futur fallback (lane saturée) sert du frais récent.
                         if cacheable && ttl > 0 {
                             if let Ok(payload) = serde_json::to_string(&v) {
-                                let _ = conn.execute(
-                                    "INSERT OR REPLACE INTO panel_cache(panel_id,range_key,query_fp,computed_at,payload) VALUES(?1,?2,?3,?4,?5)",
-                                    params![id, range_key, q_fp, now_s, payload],
-                                );
-                                let _ = conn.execute(
-                                    "DELETE FROM panel_cache WHERE panel_id=?1 AND range_key NOT IN \
-                                     (SELECT range_key FROM panel_cache WHERE panel_id=?1 ORDER BY computed_at DESC LIMIT ?2)",
-                                    params![id, CACHE_MAX_RANGES_PER_PANEL],
-                                );
+                                panneau_avoue::cache_ecrire(&conn, id, &range_key, &q_fp, now_s, &payload);
                             }
                         }
                     }
@@ -889,12 +896,14 @@ pub(crate) async fn panel_data(State(st): State<AppState>, Extension(au): Extens
         Err(_) => {
             // lane refresh SATURÉE -> NE JAMAIS BLOQUER. Fallback cache (SWR) si dispo.
             if cacheable && ttl > 0 {
-                serve_swr(&st, &au, id, &query, is_soql, from, to, &range_key, &q_fp, ttl, ttl_global, now_s, env)
+                serve_swr(&st, &au, &conf, id, &query, is_soql, from, to, &range_key, &q_fp, ttl, ttl_global, now_s, env)
             } else {
                 // cache off ET lane saturée (rare) : dernier recours -> live SANS permit (jamais query_sem),
                 // identique à l'ancien fallback 3c. Chemin dégradé exceptionnel (pas de mesure ici).
+                // `P10.5-i` : ce QUATRIÈME point d'exécution passe lui aussi par le coffre — c'est celui que
+                // le cadrage avait manqué, et une garde taillée pour trois l'aurait laissé dehors.
                 let db_path = req_db_path(&st, &au);
-                match tokio::task::spawn_blocking(move || run_query(&db_path, &sql)).await {
+                match tokio::task::spawn_blocking(move || panneau_avoue::executer(&db_path, &conf, pc, from)).await {
                     Ok(Ok(v)) => Json(v).into_response(),
                     Ok(Err(e)) => bad_req(e),
                     Err(_) => server_err("exécution échouée"),
@@ -910,28 +919,28 @@ pub(crate) async fn panel_data(State(st): State<AppState>, Extension(au): Extens
 /// d'injecter le masque) -> exécution puis MASQUAGE POST-REQUÊTE par nom de colonne (défense : caviarde une
 /// colonne projetée directement, ex `SELECT src_ip …`). Toujours LIVE (jamais mis en cache) -> aucune fuite
 /// inter-rôles via le cache partagé.
+///
+/// CORRECTION D'UN COMMENTAIRE FAUX (`P10.5-i`) : cette fonction ne prend AUCUN permit — ni `query_sem`
+/// ni `refresh_sem`. Les six `try_acquire` du module sont tous ailleurs. Elle s'exécute directement sur
+/// `spawn_blocking` ; c'est un chemin rare (masques actifs) et il est hors cache.
 async fn panel_data_masked_live(
-    st: &AppState, au: &AuthUser, query: &str, is_soql: bool, from: i64, to: i64, env: Option<&str>,
-    masks: &guatx_core::soql::FieldMaskSet,
+    st: &AppState, au: &AuthUser, conf: &HashMap<String, String>, query: &str, is_soql: bool, from: i64, to: i64,
+    env: Option<&str>, masks: &guatx_core::soql::FieldMaskSet,
 ) -> Response {
-    let q2 = apply_excl_placeholders(query.trim(), is_soql);
-    let sql = if is_soql {
-        // rollup-route DÉSACTIVÉ (masques actifs) -> compile masqué.
-        match soql_to_sql_masked_x(&q2, from, to, env, masks) {
-            Ok(s) => s,
-            Err(e) => return bad_req(e),
-        }
-    } else {
-        q2.replace("__FROM__", &from.to_string()).replace("__TO__", &to.to_string())
+    // rollup-route DÉSACTIVÉ (masques actifs) : les DEUX bras du coffre masqué rendent `Provenance::Opaque`.
+    let pc = match panneau_avoue::compile_panneau_avoue_masque(query, is_soql, from, to, env, masks) {
+        Ok(p) => p,
+        Err(e) => return bad_req(e),
     };
     let db_path = req_db_path(st, au);
-    // Jamais query_sem (réservé /api/query + /api/search). refresh_sem si dispo, sinon exécution directe
-    // (chemin masqué rare ; ne bloque pas les lanes interactives).
     let post_mask = !is_soql; // GXQL déjà masqué dans le SQL ; SQL brut -> masquage post-requête (idempotence).
     let dbp2 = db_path.clone();
-    let run = tokio::task::spawn_blocking(move || run_query(&dbp2, &sql)).await;
+    let conf2 = conf.clone();
+    let run = tokio::task::spawn_blocking(move || panneau_avoue::executer(&dbp2, &conf2, pc, from)).await;
     match run {
         Ok(Ok(mut v)) => {
+            // `mask_query_result` ne mute que `v["rows"]` : l'aveu posé dans `stats` lui survit — et c'est
+            // MESURÉ par témoin, pas affirmé ici.
             if post_mask {
                 mask_query_result(&db_path, masks, &mut v);
             }

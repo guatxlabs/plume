@@ -135,7 +135,7 @@ pub(crate) async fn library_panel_update(State(st): State<AppState>, Extension(a
     }
     let _ = conn.execute("UPDATE library_panel SET updated=?1 WHERE id=?2", params![now(), id]);
     // Édition d'une bibliothèque -> purge le cache des panneaux qui la référencent (leur requête a pu changer).
-    let _ = conn.execute("DELETE FROM panel_cache WHERE panel_id IN (SELECT id FROM panel WHERE library_panel_id=?1)", params![id]);
+    panneau_avoue::cache_invalider_bibliotheque(&conn, id);
     StatusCode::NO_CONTENT
 }
 
@@ -263,8 +263,16 @@ pub(crate) fn gen_snapshot_token() -> Option<String> {
 /// (mask_query_result). Le snapshot ne peut donc JAMAIS contenir un champ hors de la portée du créateur.
 /// Résout aussi les LIBRARY PANELS — par le coffre `panneau_resolu` (P7.13-a), donc par la MÊME
 /// expression que `panel_access` et `dash_get`. Renvoie {dashboard_id, name, captured_at, panels:[…]}.
+///
+/// `conf` EST UN PARAMÈTRE, ET C'EST UNE CORRECTION DE PLACEMENT MESURÉE (`P10.5-i`). Cette fonction est
+/// appelée À L'INTÉRIEUR du `req_conn!` de `snapshot_create`, c'est-à-dire sous le MUTEX WRITER du
+/// tenant. Le `load_config()` qu'elle faisait elle-même y ajoutait un `std::fs::read_to_string` NON
+/// mémoïsé (`main.rs`) — un accès DISQUE tenu sous le verrou qui bloque l'ingestion, contre la
+/// discipline que `dashboards.rs` énonce en toutes lettres (« HORS LOCK : lecture config … AVANT de
+/// prendre le lock writer ») et que ce même lot invoque pour justifier son geste là-bas. L'appelant le
+/// fait donc AVANT de prendre le verrou, une seule fois, et le passe.
 pub(crate) fn capture_dashboard_data(
-    db_path: &str, conn: &Connection, dashboard_id: i64, dash_name: &str, from: i64, to: i64,
+    db_path: &str, conn: &Connection, conf: &HashMap<String, String>, dashboard_id: i64, dash_name: &str, from: i64, to: i64,
     env: Option<&str>, masks: &guatx_core::soql::FieldMaskSet, portee: &PorteeLecture,
 ) -> Value {
     let mut panels_out: Vec<Value> = Vec::new();
@@ -290,23 +298,23 @@ pub(crate) fn capture_dashboard_data(
     // ensuite partageable par jeton. L'en-tête de ce module affirmait « hérite #45 + RBAC ».
     let rows: Vec<_> = rows.into_iter().filter(|(_, _, _, _, _, pvis)| portee.voit(pvis)).collect();
     for (title, query, is_soql, viz, _drill, _pvis) in rows {
-        let q2 = apply_excl_placeholders(query.trim(), is_soql);
-        let (sql, post_mask) = if is_soql {
-            // GXQL : masque ÉMIS dans le SQL (avant agrégation). rollup-route désactivé (masques actifs).
-            let compiled = if masks.is_empty() {
-                compile_panel_sql(&query, true, from, to, env)
-            } else {
-                soql_to_sql_masked_x(&q2, from, to, env, masks)
-            };
-            match compiled {
-                Ok(s) => (s, false),
-                Err(e) => { panels_out.push(json!({ "title": title, "viz": viz, "error": e })); continue; }
-            }
+        // `P10.5-i` — TROIS SITES DE COMPILATION deviennent DEUX BRANCHES, et c'est un déplacement pur :
+        // le coffre non masqué traite déjà `is_soql=0` par la MÊME substitution appliquée au MÊME
+        // `apply_excl_placeholders`, et le coffre masqué reproduit le corps de `panel_data_masked_live`.
+        // Le troisième site (masques NON vides + `is_soql=1`) produisait un `String` nu : sans cette
+        // réduction, la MOITIÉ des instantanés — ceux d'un appelant à masques actifs — sortirait sans aveu.
+        let compiled = if masks.is_empty() {
+            panneau_avoue::compile_panneau_avoue(&query, is_soql, from, to, env)
         } else {
-            // SQL brut opaque : substitution des bornes puis masquage POST-requête par nom de colonne.
-            (q2.replace("__FROM__", &from.to_string()).replace("__TO__", &to.to_string()), !masks.is_empty())
+            panneau_avoue::compile_panneau_avoue_masque(&query, is_soql, from, to, env, masks)
         };
-        match run_query(db_path, &sql) {
+        let pc = match compiled {
+            Ok(pc) => pc,
+            Err(e) => { panels_out.push(json!({ "title": title, "viz": viz, "error": e })); continue; }
+        };
+        // SQL brut opaque : masquage POST-requête par nom de colonne (le masque ne s'injecte pas).
+        let post_mask = !is_soql && !masks.is_empty();
+        match panneau_avoue::executer(db_path, conf, pc, from) {
             Ok(mut v) => {
                 if post_mask {
                     mask_query_result(db_path, masks, &mut v);
@@ -315,6 +323,10 @@ pub(crate) fn capture_dashboard_data(
                     "title": title, "viz": viz,
                     "columns": v.get("columns").cloned().unwrap_or_else(|| json!([])),
                     "rows": v.get("rows").cloned().unwrap_or_else(|| json!([])),
+                    // L'INSTANTANÉ EST L'ARTEFACT QUI VOYAGE : partageable par jeton, relu des semaines
+                    // plus tard, hors de tout contexte de fenêtre. Sans cette ligne, l'aveu s'arrêterait
+                    // ici — et c'est la garde dérivée du routeur (règle sur `data.panels[*]`) qui la tient.
+                    "stats": v.get("stats").cloned().unwrap_or_else(|| json!({})),
                 }));
             }
             Err(e) => panels_out.push(json!({ "title": title, "viz": viz, "error": e })),
@@ -352,9 +364,12 @@ pub(crate) async fn snapshot_create(State(st): State<AppState>, Extension(au): E
     // panneau privé d'un autre propriétaire n'y entre pas. Le paramètre est OBLIGATOIRE (E0061) : un
     // futur appelant ne peut pas l'oublier, ce qui était exactement la faute mesurée ici.
     let portee = PorteeLecture::du_dashboard(&au, &owner);
+    // HORS LOCK, ET UNE SEULE FOIS (`P10.5-i`) : `load_config()` fait un accès DISQUE non mémoïsé.
+    // Le prendre SOUS le mutex writer bloquerait l'ingestion du tenant le temps d'une lecture de fichier.
+    let conf = load_config();
     let data = {
         crate::req_conn!(st, au, conn);
-        capture_dashboard_data(&db_path, &conn, dashboard_id, &name, from, to, env, &masks, &portee)
+        capture_dashboard_data(&db_path, &conn, &conf, dashboard_id, &name, from, to, env, &masks, &portee)
     };
     let payload = serde_json::to_string(&data).unwrap_or_else(|_| "{}".into());
     let token = match gen_snapshot_token() {

@@ -1030,7 +1030,11 @@ pub(crate) fn cache_refresh_all_panels(db: &Arc<Mutex<Connection>>, db_path: &st
         // soql_to_sql ; SQL natif -> substitution __FROM__/__TO__. fingerprint sur le VRAI is_soql.
         // env=None (#2d) : le pré-chauffage remplit le slot cache TOUS-ENV (clé de plage sans préfixe env,
         // cf. env_range_key) ; les payloads par-env sont calculés À LA DEMANDE dans panel_data.
-        let sql = match compile_panel_sql(&query, is_soql, from_default, 0, None) {
+        // `P10.5-i` — LE CINQUIÈME POINT D'EXÉCUTION, et il alimente le MÊME cache que les panneaux :
+        // un aveu posé seulement dans `panel_data` produirait un champ dont la présence dépendrait de QUI
+        // a rempli le cache. Le pré-chauffage porte SON `conf` (lu une fois pour tout le tick) : le geste
+        // n'ajoute pas une seule lecture disque ici.
+        let pc = match panneau_avoue::compile_panneau_avoue(&query, is_soql, from_default, 0, None) {
             Ok(s) => s,
             Err(_) => continue, // GXQL invalide -> on saute (le panneau retombe sur le fallback live)
         };
@@ -1038,7 +1042,7 @@ pub(crate) fn cache_refresh_all_panels(db: &Arc<Mutex<Connection>>, db_path: &st
         // borne de concurrence sur le refresh_sem DÉDIÉ : si aucun permit libre, on saute ce
         // tick de pré-chauffage (jamais de permis pris à l'interactif ; le panneau reste servi du cache).
         let permit = match refresh_sem.try_acquire() { Ok(p) => p, Err(_) => break };
-        if let Ok(v) = run_query(db_path, &sql) {
+        if let Ok(v) = panneau_avoue::executer(db_path, &conf, pc, from_default) {
             let cost_ms = measured_cost_ms(&v); // PHASE 3d : pré-classe les panneaux dès le pré-chauffage
             if let Ok(payload) = serde_json::to_string(&v) {
                 { let conn = db.lock();
@@ -1049,16 +1053,8 @@ pub(crate) fn cache_refresh_all_panels(db: &Arc<Mutex<Connection>>, db_path: &st
                     // 1 ligne / (panel, range_key) sur PK composite : le pré-chauffage 24 h
                     // coexiste avec les plages zoom/preset (plus d'éviction mutuelle). computed_at = now_s
                     // (lu une fois, cohérent avec range_key).
-                    let _ = conn.execute(
-                        "INSERT OR REPLACE INTO panel_cache(panel_id,range_key,query_fp,computed_at,payload) VALUES(?1,?2,?3,?4,?5)",
-                        params![id, range_key, q_fp, now_s, payload],
-                    );
-                    // même cap anti-explosion que panel_data (garde les K plages les plus récentes).
-                    let _ = conn.execute(
-                        "DELETE FROM panel_cache WHERE panel_id=?1 AND range_key NOT IN \
-                         (SELECT range_key FROM panel_cache WHERE panel_id=?1 ORDER BY computed_at DESC LIMIT ?2)",
-                        params![id, CACHE_MAX_RANGES_PER_PANEL],
-                    );
+                    // écriture + même cap anti-explosion que panel_data : le coffre POSSÈDE la table.
+                    panneau_avoue::cache_ecrire(&conn, id, &range_key, &q_fp, now_s, &payload);
                 }
             }
         }

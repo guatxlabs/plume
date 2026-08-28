@@ -267,7 +267,9 @@ fn compiler_objet(o: &ObjetCorpus, from: i64, to: i64) -> Result<String, String>
     match o.table.as_str() {
         // Panneaux : la porte des panneaux — y compris son ROUTAGE ROLLUP, qui peut sortir la requête
         // de `event` avant même qu'un index soit en jeu. C'est le SQL que le produit exécute.
-        "panel" | "library_panel" | "panel_cache" => compile_panel_sql(&o.requete, o.is_soql, from, to, None),
+        "panel" | "library_panel" | "panel_cache" => {
+            crate::handlers::panneau_avoue::compile_sql_de_test(&o.requete, o.is_soql, from, to, None)
+        }
         // Détection : la porte SYSTÈME du moteur de règles (fenêtre glissante, aucun masque).
         "rule" | "playbook" => rule_sql(&o.requete, o.is_soql, o.window_s),
         // Le reste (gabarits d'étapes de runbook, requêtes sauvegardées…) : la porte GXQL nue.

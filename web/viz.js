@@ -351,6 +351,84 @@ function truncationBadge(stats, navigation) {
     + (stats.rollup_note ? '\n\n' + stats.rollup_note : '')];
 }
 
+// `P10.5-i` — CE QU'UN PANNEAU N'A PAS PU VOIR, DIT À L'ÉCRAN.
+//
+// LE DÉFAUT. Un panneau dont la fenêtre descend sous l'horizon de conservation rend une courbe VIDE ou
+// écourtée, et la console l'affiche comme une courbe entière — ou, pire, écrit « aucune donnée sur la
+// fenêtre », une phrase FAUSSE : il y a eu des données, elles sont sous l'horizon. Le démon publie
+// désormais `stats.coverage` ; ces deux fabriques sont ce qui le fait arriver à l'écran. Sans elles,
+// l'aveu atteindrait le navigateur et rien d'autre — le défaut déjà consigné « le démon avoue, la
+// console n'écoute pas ».
+//
+// POURQUOI `renderQBadge` N'EST PAS RÉUTILISABLE : elle écrit dans `$('#qbadge')`, nœud UNIQUE de la
+// page — l'appeler depuis un panneau déplacerait le badge d'Explore. Le précédent est tranché
+// (`dataaccess.js` importe `truncationBadge`, pas `renderQBadge`).
+
+// LE BADGE, POSÉ SEULEMENT QUAND LA FENÊTRE EST RÉELLEMENT PASSÉE SOUS L'HORIZON. `null` sinon — et
+// c'est l'ANTI-FATIGUE, pas une économie : sur une base de trois jours où rien n'a jamais été purgé,
+// douze panneaux sur douze porteraient le badge, et le panneau réellement amputé serait celui qu'on ne
+// verrait plus. Rend un ÉLÉMENT et non un triplet (contrairement à `truncationBadge`) : le libellé est
+// ainsi posé dans un puits d'affichage, donc VU par la garde du lexique et traduisible.
+function coverageBadge(stats) {
+  const c = stats && stats.coverage;
+  if (!c || c.older_outside_window !== true) return null;
+  const b = document.createElement('span');
+  b.className = 'qb qb-approx';
+  b.textContent = 'horizon atteint';
+  // L'INFOBULLE PORTE AUSSI L'INSTANT DU CALCUL. Le démon publie `coverage.calcule_a` et le service SWR
+  // rend une réponse MÉMORISÉE sans aucun prédicat de fraîcheur : un corps de trente heures se lit
+  // autrement qu'un corps de maintenant, et rien à l'écran ne les distinguait.
+  b.title = (c.notice || '')
+    + (Number.isFinite(c.horizon_ts) ? '\n\nHorizon : ' + fmtTs(c.horizon_ts) : '')
+    + (Number.isFinite(c.calcule_a) ? '\nCalculé le : ' + fmtTs(c.calcule_a) : '');
+  return b;
+}
+
+// LE PLAFOND TOP-N D'UN PANNEAU OPAQUE, DIT À L'ÉCRAN. Le démon publie `provenance_non_derivee` et, quand
+// le SQL nomme le pré-agrégé par dimension, un `rollup_note` disant que le compte affiché est un
+// PLANCHER. Aucun module de la console ne lisait ces deux champs : l'aveu arrivait dans le navigateur et
+// s'arrêtait là — le défaut « le démon avoue, la console n'écoute pas », recréé mot pour mot.
+//
+// LE BADGE NE PARAÎT QUE SUR LE SOUS-ENSEMBLE OÙ IL Y A QUELQUE CHOSE À DIRE, et c'est l'anti-fatigue :
+// `provenance_non_derivee` est vrai sur TOUT panneau SQL brut (les courbes de métriques comprises, où il
+// n'y a aucun plafond) ; seul `rollup_note` marque un plafond RÉEL. `renderQBadge` n'est pas réutilisable
+// ici : elle écrit dans `$('#qbadge')`, nœud unique d'Explore.
+function provenanceBadge(stats) {
+  if (!stats || stats.provenance_non_derivee !== true || !stats.rollup_note) return null;
+  const b = document.createElement('span');
+  b.className = 'qb qb-approx';
+  b.textContent = 'compte plancher';
+  b.title = stats.rollup_note;
+  return b;
+}
+
+// LES DEUX NŒUDS DE L'HORIZON, SÉPARÉS — et la séparation est imposée par un piège que ce dépôt nomme
+// lui-même : `i18nWalk` ne remplace que sur l'égalité du nœud texte ENTIER après `trim()`. Un libellé
+// concaténé avec sa date serait classé « dynamique » et son entrée de lexique naîtrait MORTE (c'est ce
+// qui est arrivé à « (tronqué) »). Le libellé est donc un nœud à lui seul ; la date en est un autre.
+//
+// TROIS SORTIES, PARCE QUE LE DÉMON A TROIS CHOSES À DIRE ET QUE DEUX D'ENTRE ELLES SE CONFONDAIENT.
+//   (1) horizon MESURÉ -> le libellé et sa date, deux nœuds ;
+//   (2) le démon REFUSE de conclure (`portee_non_derivable` quand la requête ne nomme aucune table dont
+//       la rétention soit connue — cas MESURÉ des panneaux `banned_ip`, livrés et semés ; ou
+//       `horizon_non_mesure` quand le pool de lecture n'a pas pu être pris) -> UN nœud qui dit ce refus,
+//       et AUCUNE date : on ne fabrique pas un horizon qu'on n'a pas. Rendre `null` ici laissait la
+//       console afficher « aucune donnée sur la fenêtre » toute seule, c'est-à-dire CONCLURE à l'absence
+//       là où le démon écrit noir sur blanc « on ne sait pas jusqu'où cette réponse a pu voir » ;
+//   (3) aucun aveu du tout (binaire antérieur, surface non couverte) -> `null`, affichage d'avant.
+function coverageHorizonNodes(stats) {
+  const c = stats && stats.coverage;
+  if (!c) return null;
+  if (Number.isFinite(c.horizon_ts)) {
+    return [
+      document.createTextNode("l'horizon de conservation s'arrête ici"),
+      document.createTextNode(' — ' + fmtTs(c.horizon_ts)),
+    ];
+  }
+  if (!c.reason) return null;
+  return [document.createTextNode("jusqu'où ce panneau a pu voir n'est pas établi")];
+}
+
 // BADGE de transparence (confiance SOC) : l'analyste DOIT voir si le chiffre vient d'un rollup, et s'il
 // est approximatif/tronqué, vs un scan brut exact. stats.served_from "rollup"|"raw" + approx + truncated.
 // `navigation` (optionnel) = { keyset, saut, page } : le contexte de feuilletage, qui change ce que
@@ -2137,4 +2215,4 @@ async function runQuery() {
 function showQExport(has) { const el = $('#qexport'); if (el) el.hidden = !has; }
 
 
-export { banIp, clearDrillCrumb, clearZoom, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, noeudsDeVizReglee, qHistGo, queryCount, refusDeReglage, reglageLu, renderViz, runQ, runQuery, setZoom, sondage, stopExplore, tableEl, updateZoomBadge, vizElement, vizSansPorte, refusDeRepresentation, truncationBadge };
+export { banIp, clearDrillCrumb, clearZoom, coverageBadge, coverageHorizonNodes, provenanceBadge, currentFrom, currentTo, evLoad, exploreFrom, exploreTo, noeudsDeVizReglee, qHistGo, queryCount, refusDeReglage, reglageLu, renderViz, runQ, runQuery, setZoom, sondage, stopExplore, tableEl, updateZoomBadge, vizElement, vizSansPorte, refusDeRepresentation, truncationBadge };

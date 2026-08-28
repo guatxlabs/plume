@@ -2924,7 +2924,10 @@ fn migrate_v36(conn: &MigTx) {
     // réutilisé après delete ne sert jamais un payload périmé/étranger. On VIDE le cache existant (les
     // anciennes lignes n'ont pas d'empreinte et le schéma de range_key a changé).
     let _ = conn.execute("ALTER TABLE panel_cache ADD COLUMN query_fp TEXT NOT NULL DEFAULT ''", []);
-    let _ = conn.execute("DELETE FROM panel_cache", []);
+    // `P10.5-i` — le NOM DE TABLE dans un contexte d'accès (INTO/FROM/UPDATE/JOIN) n'est plus écrit hors
+    // du coffre : ce site tient un `MigTx` et non un `&Connection`, d'où la constante plutôt qu'une
+    // fonction. Le DDL, lui, RESTE ici : posséder les ACCÈS n'est pas posséder le SCHÉMA.
+    let _ = conn.execute(crate::handlers::panneau_avoue::SQL_VIDE_TOUT_LE_CACHE, []);
     let _ = conn.execute("UPDATE meta SET value='36' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v36 (panel_cache.query_fp : cache lié à la requête, anti-fuite)");
 }

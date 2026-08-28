@@ -180,6 +180,14 @@ const I18N_EN = {
   "aucune donnée": "no data", "aucune donnée numérique": "no numeric data", "précédent": "previous", "suivant": "next",
   "tronqué — ampleur inconnue": "truncated — unknown extent", "page partielle — plafond de lignes du serveur": "partial page — server row cap",
   "page sautée — contenu partiel": "skipped-to page — partial content",
+  // `P10.5-i` — LES DEUX SEULS LIBELLÉS STATIQUES NEUFS DE L'AVEU D'HORIZON. Chacun est un nœud texte
+  // ENTIER là où il est posé (badge : `textContent` ; phrase : `createTextNode`), condition sans laquelle
+  // `i18nWalk` ne remplace rien et l'entrée naîtrait MORTE — le piège déjà nommé pour « (tronqué) ». La
+  // DATE qui suit la phrase est un SECOND nœud, jamais concaténé au libellé, pour la même raison.
+  "horizon atteint": "retention horizon reached",
+  "l'horizon de conservation s'arrête ici": "the retention horizon stops here",
+  "jusqu'où ce panneau a pu voir n'est pas établi": "how far back this panel could see is not established",
+  "compte plancher": "floor count",
   // P11.8-a — cas (cases.js)
   "+ Nouveau case": "+ New case", "ARCHIVÉ": "ARCHIVED", "Ajouter": "Add", "Ajouter une note…": "Add a note…", "Archiver": "Archive", "Désarchiver": "Unarchive",
   "Aucune autre case cible": "No other target case", "Aucune autre case à lier": "No other case to link", "Bloque": "Blocks", "Case": "Case",

@@ -692,10 +692,10 @@ detection:
         let resolved = ExclClauses::resolve(&conn, &conf);
         assert_eq!(resolved.op_sql, canon_sql);
         assert_eq!(resolved.op_soql, canon_soql);
-        // hot-reload -> compile_panel_sql (AFFICHAGE) porte la nouvelle exclusion ; rule_sql (DÉTECTION) JAMAIS.
+        // hot-reload -> la porte des panneaux (AFFICHAGE) porte la nouvelle exclusion ; rule_sql (DÉTECTION) JAMAIS.
         excl_clauses_refresh(&conn, &conf);
         let web = "search source=web __OPERATOR_EXCL__ | where severity>=2 | table vhost,path,status,src_ip,ua";
-        let wsql = compile_panel_sql(web, true, now() - 3600, 0, None).unwrap();
+        let wsql = panneau_avoue::compile_sql_de_test(web, true, now() - 3600, 0, None).unwrap();
         assert!(wsql.contains("203.0.113.7"), "panneau (affichage) porte la nouvelle exclusion : {wsql}");
         assert!(!wsql.contains("__OPERATOR_EXCL__"), "placeholder panneau substitué");
         let det = rule_sql("SELECT 1 FROM event WHERE __OPERATOR_EXCL__", false, 900).unwrap();

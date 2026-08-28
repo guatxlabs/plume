@@ -9,6 +9,8 @@ pub(crate) mod compliance; // #38 : mapping de conformité (tags de cadre par r�
 pub(crate) mod connectors;
 pub(crate) mod dash_ergonomics; // #54 : library panels / playlists / dashboard snapshots (ergonomie)
 pub(crate) mod dashboards;
+pub(crate) mod panneau_avoue; // P10.5-i : LE COFFRE du panneau qui avoue — la compilation d'un panneau,
+                               // la table `panel_cache`, et l'horizon sous lequel la réponse n'a rien pu voir
 pub(crate) mod portillon; // P10.7-c : L'AVEU DU PORTILLON de concurrence, écrit UNE fois — une route ne
                           // fabrique plus son corps de refus, sinon la quatrième occurrence du même défaut réapparaît
 pub(crate) mod panneau_resolu; // P7.13-a : LE COFFRE de la résolution « bibliothèque sinon panneau » — la porte SQL brut l'emprunte

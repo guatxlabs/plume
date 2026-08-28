@@ -383,7 +383,7 @@ fn tracer_panneau_sql_brut(conn: &Connection, kind: &str, name: &str) {
     );
 }
 
-/// LIBRARY-PANELS (#54 panneaux réutilisables). Aucun secret. Requête validée par compile_panel_sql.
+/// LIBRARY-PANELS (#54 panneaux réutilisables). Aucun secret. Requête validée par `valider_panneau`.
 pub(crate) fn load_overlay_library_panels(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
     let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_json);
     for path in fichiers {
@@ -392,7 +392,7 @@ pub(crate) fn load_overlay_library_panels(conn: &Connection, dir: &std::path::Pa
         let title = v.get("title").and_then(|x| x.as_str()).unwrap_or("Panneau").to_string();
         let query = v.get("query").and_then(|x| x.as_str()).unwrap_or("").to_string();
         let is_soql = v.get("is_soql").and_then(|x| x.as_bool()).unwrap_or(true);
-        if let Err(e) = compile_panel_sql(&query, is_soql, 0, 0, None) { eprintln!("[oac] WARN library-panel '{name}' : requête invalide ({e}) — ignoré"); ch.ignores += 1; continue; }
+        if let Err(e) = panneau_avoue::valider_panneau(&query, is_soql) { eprintln!("[oac] WARN library-panel '{name}' : requête invalide ({e}) — ignoré"); ch.ignores += 1; continue; }
         if !is_soql { tracer_panneau_sql_brut(conn, "library-panel", &name); }
         let viz = v.get("viz").and_then(|x| x.as_str()).unwrap_or("table").to_string();
         let drill = v.get("drill").and_then(|x| x.as_str()).unwrap_or("").to_string();
@@ -431,7 +431,7 @@ pub(crate) fn load_overlay_notification_policies(conn: &Connection, dir: &std::p
     ch
 }
 
-/// DASHBOARDS (+ leurs PANNEAUX). Aucun secret. Chaque panneau validé par compile_panel_sql. Le jeu de
+/// DASHBOARDS (+ leurs PANNEAUX). Aucun secret. Chaque panneau validé par `valider_panneau`. Le jeu de
 /// panneaux managed=1 d'un dashboard managed est REMPLACÉ à l'identique du fichier (idempotent).
 pub(crate) fn load_overlay_dashboards(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
     let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_json);
@@ -445,7 +445,7 @@ pub(crate) fn load_overlay_dashboards(conn: &Connection, dir: &std::path::Path) 
         for p in &panels {
             let query = p.get("query").and_then(|x| x.as_str()).unwrap_or("").to_string();
             let is_soql = p.get("is_soql").and_then(|x| x.as_bool()).unwrap_or(true);
-            if let Err(e) = compile_panel_sql(&query, is_soql, 0, 0, None) { eprintln!("[oac] WARN dashboard '{name}' : panneau invalide ({e}) — dashboard ignoré"); bad = true; break; }
+            if let Err(e) = panneau_avoue::valider_panneau(&query, is_soql) { eprintln!("[oac] WARN dashboard '{name}' : panneau invalide ({e}) — dashboard ignoré"); bad = true; break; }
             compiled.push((
                 p.get("title").and_then(|x| x.as_str()).unwrap_or("Panneau").to_string(),
                 query,

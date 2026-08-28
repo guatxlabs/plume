@@ -6,13 +6,64 @@
 // `renderDashboard` est exporté pour le harnais. N'importe pas `app.js`.
 import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, confirmWithConsequence, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, transientGatewayMsg, makePager, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG } from './core.js';
 import { S } from './state.js';
-import { currentFrom, currentTo, noeudsDeVizReglee, queryCount, runQuery, tableEl, vizElement } from './viz.js';
+import { coverageBadge, coverageHorizonNodes, provenanceBadge, currentFrom, currentTo, noeudsDeVizReglee, queryCount, runQuery, tableEl, vizElement } from './viz.js';
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
 import { boutonDeCopie } from './copie_et_selection.js';
 import { prefGet, prefSet } from './prefs.js';
 // P11.13-a : l'inventaire de ce que le produit porte DÉJÀ (modèles livrés, requêtes enregistrées,
 // requêtes de règles), offert à qui compose un panneau. Ce module ne connaît rien d'un tableau de bord.
 import { choisirDansLexistant } from './composer_depuis_lexistant.js';
+
+// `P10.5-i` — CE QU'UN PANNEAU N'A PAS PU VOIR ARRIVE JUSQU'À L'ÉCRAN.
+//
+// Le démon publie `stats.coverage` sur TOUTE réponse de panneau — servie, mémorisée, ou figée dans un
+// instantané. Sans ces deux fabriques, l'aveu arriverait dans le navigateur et ne s'afficherait nulle
+// part : c'est le défaut déjà consigné « le démon avoue, la console n'écoute pas », et il serait
+// recréé mot pour mot.
+//
+// LES DEUX GESTES SONT SÉPARÉS PARCE QU'ILS NE DISENT PAS LA MÊME CHOSE. Le BADGE ne paraît que si la
+// fenêtre est réellement passée SOUS l'horizon (anti-fatigue : sinon douze panneaux sur douze le
+// porteraient). La PHRASE d'horizon, elle, accompagne un corps SANS LIGNE — le cas fondateur de la clé :
+// une courbe vide sur une fenêtre plus ancienne que l'horizon, que la console annonçait « aucune donnée
+// sur la fenêtre », phrase FAUSSE (il y a eu des données ; elles n'existent plus).
+
+/// Pose LES AVEUX d'une réponse de panneau, s'il y a lieu : la portée (l'horizon atteint) et la
+/// provenance (un compte qui n'est qu'un plancher). `avant` = le nœud devant lequel les insérer
+/// (`null` -> à la fin). Dans le corps d'un panneau l'aveu se lit AVANT ce qu'il qualifie ; sur une
+/// carte d'instantané il se pose après le titre, qui est déjà là.
+///
+/// LES DEUX BADGES PASSENT PAR LE MÊME GESTE, parce que l'oubli était le même : le démon publiait
+/// `provenance_non_derivee` + `rollup_note` et AUCUN module de la console ne les lisait — onze panneaux
+/// livrés affichaient un nombre PLAFONNÉ par le top-N d'un pré-agrégé comme un nombre entier.
+function poserLesAveuxDuPanneau(hote, stats, avant) {
+  for (const b of [coverageBadge(stats), provenanceBadge(stats)]) {
+    if (!b) continue;
+    if (avant) hote.insertBefore(b, avant); else hote.appendChild(b);
+  }
+}
+
+/// LE CORPS D'UN PANNEAU SANS LIGNE. `phrase` = le nœud texte que le site d'appel employait déjà — il
+/// reste POSÉ CHEZ LUI (la garde du lexique le voit là où il est écrit), et cette fabrique décide
+/// seulement s'il est CONSERVÉ ou REMPLACÉ. Aucun aveu -> comportement d'avant, à l'identique.
+///
+/// `laPhraseAffirmeUneAbsence` — CE QUE LA PHRASE DE L'APPELANT PRÉTEND, ET IL FAUT LE DIRE ICI. La
+/// fabrique ne remplace une phrase que si elle est FAUSSE, et la fausseté dépend de ce qu'elle affirme :
+///   * « aucune donnée sur la fenêtre » AFFIRME UNE ABSENCE -> faux dès que la fenêtre descend sous
+///     l'horizon (il y a eu des données ; elles sont hors de portée) -> remplacé ;
+///   * « … chargement (mesure en cours) » décrit un ÉTAT DU CALCUL, pas une absence -> il reste VRAI
+///     quelle que soit la portée, et le jeter laissait l'écran dire « l'horizon s'arrête ici » sur un
+///     corps que le démon déclare NON ENCORE CALCULÉ, pendant que la carte re-sonde toutes les 3 s.
+/// Le défaut est asymétrique : retirer une phrase vraie et garder une phrase fausse sont la même faute.
+function corpsSansLigne(stats, phrase, laPhraseAffirmeUneAbsence = true) {
+  const d = document.createElement('div');
+  d.className = 'muted';
+  const h = coverageHorizonNodes(stats);
+  if (!h) { d.appendChild(phrase); return d; }
+  const dehors = !!(stats && stats.coverage && stats.coverage.older_outside_window === true);
+  if (!dehors || !laPhraseAffirmeUneAbsence) d.append(phrase, document.createElement('br'));
+  d.append(...h);
+  return d;
+}
 
 // --- dashboards (P3) ---
 /* state: editing, dashList, viewList, panelCards -> S (state.js) */ // mode édition + listes + cartes panneaux
@@ -554,12 +605,20 @@ async function renderPanel(p, editable = true) {
   function panelBad(m) { body.replaceChildren(Object.assign(document.createElement('div'), { className: 'bad', textContent: 'Erreur : ' + m })); }
   function renderServerPaged() {
     if (!spg.rows) return;
-    if (!spg.rows.length && !spg.total) { body.replaceChildren(Object.assign(document.createElement('div'), { className: 'muted', textContent: 'aucune donnée sur la fenêtre' })); return; }
+    const stats = result && result.stats;
+    // `P10.5-i` — POSÉ AVANT LE RETOUR ANTICIPÉ. Ce chemin porte les LISTES DE LIGNES et ne passe jamais
+    // par `draw()` : un aveu posé seulement là-bas ne l'atteindrait pas.
+    if (!spg.rows.length && !spg.total) {
+      body.replaceChildren(corpsSansLigne(stats, document.createTextNode('aucune donnée sur la fenêtre')));
+      poserLesAveuxDuPanneau(body, stats, body.firstChild);   // la branche jumelle de `draw()` posait les deux ; celle-ci n'en posait aucun
+      return;
+    }
     body.replaceChildren();
     const go = pp => loadServerPage(pp);
     const top = makePager(spg, go); if (top) body.appendChild(top);
     body.appendChild(tableEl(spg.cols, spg.rows, p.query, p.drill || ''));
     const bot = makePager(spg, go); if (bot) body.appendChild(bot);
+    poserLesAveuxDuPanneau(body, stats, body.firstChild);
   }
   // PAGE SERVEUR d'une liste de lignes : une seule page en mémoire (LIMIT/OFFSET) + total COUNT -> scale 1M.
   async function loadServerPage(page) {
@@ -635,13 +694,20 @@ async function renderPanel(p, editable = true) {
     if (!result) return;
     // TABLE serveur-paginée (liste de lignes) : re-rendu de la page en mémoire, ou 1re page si pas encore chargée.
     if (serverPaged()) { if (spg.rows) renderServerPaged(); else loadServerPage(spg.page || 0); return; }
-    if (!result.rows.length) { body.replaceChildren(Object.assign(document.createElement('div'), { className: 'muted', textContent: 'aucune donnée sur la fenêtre' })); return; }
+    // `P10.5-i` — LE CAS FONDATEUR EST ICI, ET IL SORT AVANT TOUT LE RESTE : une courbe vide sur une
+    // fenêtre plus ancienne que l'horizon. L'aveu est donc posé AVANT ce retour, pas après.
+    if (!result.rows.length) {
+      body.replaceChildren(corpsSansLigne(result.stats, document.createTextNode('aucune donnée sur la fenêtre')));
+      poserLesAveuxDuPanneau(body, result.stats, body.firstChild);
+      return;
+    }
     // TABLE (agrégation = groupes en mémoire ; OU liste de lignes SQL-brut vue par un viewer, non serveur-paginée) :
     // pagination CLIENT du DOM + vrai total = nb de lignes en mémoire, remplacé par un count_only NON plafonné si le
     // résultat a atteint le plafond run_query (aucune ligne/groupe caché en silence). Les autres viz (chart/stat) inchangées.
     if (curViz === 'table') {
       const total = drawCount.total != null ? drawCount.total : result.rows.length;
       body.replaceChildren(tableEl(result.columns, result.rows, p.query, p.drill || '', { pager: true, pageSize: PANEL_PAGE, total, totalCapped: drawCount.capped }));
+      poserLesAveuxDuPanneau(body, result.stats, body.firstChild);
       if (!drawCount.fired && result.stats && result.stats.truncated) {
         drawCount.fired = true; drawCount.capped = true;
         queryCount(p.query, pIsSoql, pFrom, pTo).then(tot => { if (typeof tot === 'number' && tot >= 0) { drawCount.total = tot; drawCount.capped = false; draw(); } });
@@ -656,6 +722,7 @@ async function renderPanel(p, editable = true) {
     // chemins TABLE ci-dessus n'y passent même pas. Le re-dessin est `draw` lui-même : le choix
     // s'applique sans repartir au démon (les lignes servies sont déjà là).
     body.replaceChildren(...noeudsDeVizReglee(curViz, result.columns, result.rows, p.query, p.drill || '', p.id, draw));
+    poserLesAveuxDuPanneau(body, result.stats, body.firstChild);
   }
   // chargement NON bloquant -> carte rendue tout de suite, requetes EN PARALLELE (WAL).
   async function load() {
@@ -688,7 +755,11 @@ async function renderPanel(p, editable = true) {
       // On montre un placeholder « chargement… » et on re-poll (3s) jusqu'aux vraies données -> plus de
       // « aucune donnée » à tort au retour sur Dashboards.
       if (j.warming === true) {
-        body.replaceChildren(Object.assign(document.createElement('div'), { className: 'muted', textContent: '… chargement (mesure en cours)' }));
+        // `P10.5-i` — CETTE BRANCHE JETTE LE CORPS ENTIER. Le démon publie pourtant l'horizon dans
+        // l'objet synthétique : sans cette pose, un panneau en chauffe ne dirait rien de ce qu'il pourra
+        // voir, alors même que c'est le premier écran que l'analyste regarde.
+        body.replaceChildren(corpsSansLigne(j.stats, document.createTextNode('… chargement (mesure en cours)'), false));
+        poserLesAveuxDuPanneau(body, j.stats, body.firstChild);
         clearTimeout(card._warmTimer);
         card._warmTimer = setTimeout(load, 3000);
         return;
@@ -782,8 +853,11 @@ async function captureSnapshot(d) {
       const t = document.createElement('div'); t.className = 'snaptitle'; t.textContent = p.title || '';
       card.appendChild(t);
       if (p.error) { card.appendChild(Object.assign(document.createElement('div'), { className: 'muted', textContent: 'erreur : ' + p.error })); }
-      else if (!p.rows || !p.rows.length) { card.appendChild(Object.assign(document.createElement('div'), { className: 'muted', textContent: 'aucune donnée' })); }
+      // `P10.5-i` — L'INSTANTANÉ EST L'ARTEFACT QUI VOYAGE : partageable par jeton, relu des semaines
+      // plus tard, hors de tout contexte de fenêtre. C'est le point de pose le plus nécessaire des quatre.
+      else if (!p.rows || !p.rows.length) { card.appendChild(corpsSansLigne(p.stats, document.createTextNode('aucune donnée'))); }
       else card.appendChild(vizElement(p.viz || 'table', p.columns || [], p.rows || [], '', ''));
+      poserLesAveuxDuPanneau(card, p.stats, null);
       return card;
     }));
   } catch (e) { prev.appendChild(Object.assign(document.createElement('div'), { className: 'muted', textContent: 'aperçu indisponible' })); }
@@ -941,4 +1015,7 @@ function initDashboards() {
   loadDashboards();
 }
 
-export { initDashboards, loadDashboard, loadDashboards, refreshPanels, renderDashboard };
+// `corpsSansLigne` est exporté POUR LE HARNAIS, comme `renderDashboard` : la règle qu'il porte — un corps
+// sans ligne n'établit une absence que si le lecteur sait jusqu'où le panneau a regardé — se prouve en
+// l'EXÉCUTANT, pas en relisant le module.
+export { corpsSansLigne, initDashboards, loadDashboard, loadDashboards, refreshPanels, renderDashboard };

@@ -519,7 +519,36 @@ env:
   #     (`stats.served_from`, le champ auquel le refus d'exactitude renvoie le lecteur) ; 1 dans
   #     `cold_store/tests.rs` — l'empreinte de numérotation SUIT ce qui numérote, mesurée sur le rang
   #     d'une même ligne dans deux hydratations qui ne diffèrent que d'UNE SECONDE de borne basse.
-  EXPECTED_TESTS: "1385"
+  #
+  # RÉ-MESURÉ le 2026-08-28 par `.github/scripts/compter-les-tests.sh` (les DEUX profils dans la MÊME
+  # exécution, JAMAIS par addition), sur le lot `P10.5-i` — « un panneau dit jusqu'où il a pu voir, et le
+  # nombre ne bouge pas » : **1385 -> 1393** (+8), et le MÊME +8 sur `EXPECTED_COLD_TESTS`
+  # (**1628 -> 1636**). LA DÉRIVATION DE L'ÉCART ENTRE PROFILS, qui est ce que ces deux nombres disent
+  # ensemble : 1628−1385 = 243 AVANT, 1636−1393 = 243 APRÈS — INCHANGÉ. C'est cet écart inchangé qui
+  # établit qu'aucun des huit n'est derrière un `cfg(feature)`, pas une lecture des sources : le module
+  # est tiré par un `include!` non gaté, et la seule ligne du lot qui touche au froid est un `assert!`
+  # porteur d'un `#[cfg(feature = "cold_tier")]` À L'INTÉRIEUR d'un test qui existe dans les deux profils.
+  # UNE ALLÉGATION VOISINE EST RÉFUTÉE PAR LA MÊME MESURE, et elle est laissée telle quelle plus haut
+  # faute d'appartenir à ce lot : le paragraphe du 2026-08-27 écrit « l'écart entre les deux profils reste
+  # 222 » alors que les deux compteurs qu'il accompagne (1385 / 1628) en donnent 243.
+  # Les huit sont TOUS dans `tests/panneau_avoue.rs` (neuf) : l'horizon avoué (positif sur la famille la
+  # plus amputée, trois négatifs dont l'anti-fatigue et la marge dérivée du cache), la valeur de l'horizon
+  # sous mutation de son levier + le défaut quand le pool de lecture manque, le couple provenance
+  # opaque/routée avec le geste naïf rejoué en mutant, l'identité BYTE À BYTE de `columns`/`rows` sur les
+  # familles semées, la garde dérivée de la table du cache rendu, la garde dérivée de la table de routage
+  # et de la FORME du corps servi, la re-estampe SWR qui ne certifie pas une fenêtre non vue, et la
+  # population dérivée des points d'exécution.
+  #
+  # RÉ-MESURÉ le 2026-08-28 par le MÊME script (les deux profils dans la MÊME exécution, jamais par
+  # addition), sur la REPRISE de `P10.5-i` après trois lectures adverses : **1393 -> 1395** (+2), et le
+  # MÊME +2 sur `EXPECTED_COLD_TESTS` (**1636 -> 1638**). L'ÉCART ENTRE PROFILS EST DE NOUVEAU DÉRIVÉ :
+  # 1636−1393 = 243 AVANT, 1638−1395 = 243 APRÈS — INCHANGÉ, donc aucun des deux n'est derrière un
+  # `cfg(feature)`. Les deux nouveaux tiennent les deux constats BLOQUANTS de la reprise : la table des
+  # familles de rétention ne peut plus nommer une clé absente de `RETENTION_FIELDS` ni se tromper d'UNITÉ
+  # (c'est ce qui faisait annoncer 90 JOURS de portée sur une table coupée à 48 HEURES) ; et les deux
+  # portes du coffre compilent le MÊME SQL brut, ce qui est l'égalité — jusque-là tenue par un seul script
+  # hors arbre — qui autorise la réduction de trois sites de compilation à deux branches.
+  EXPECTED_TESTS: "1395"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -925,7 +954,11 @@ jobs:
           # passe de 236 à **240**. Les quatre tests du delta sont froids pour DEUX raisons distinctes
           # (deux sous `cold_store/`, deux sous `#[cfg(feature)]` dans `tests/keyset.rs`) ; la
           # répartition est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1628"
+          # `P10.5-i` (2026-08-28) : +8, les MÊMES huit que sur `EXPECTED_TESTS` — aucun n'est derrière un
+          # `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (243 avant comme après) qui
+          # l'établit, pas une lecture des sources. La dérivation complète est écrite auprès
+          # d'`EXPECTED_TESTS`, une seule fois.
+          EXPECTED_COLD_TESTS: "1638"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

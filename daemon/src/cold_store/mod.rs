@@ -23,11 +23,11 @@
 use crate::*;
 use std::fmt::Display;
 
-// SURFACE TESTS-ONLY : le module enfant `tests` (via `use super::*`) référence directement `File`/`Path`/`PathBuf`
+// SURFACE TESTS-ONLY : le module enfant `tests` (via `use super::*`) référence directement `Path`/`PathBuf`
 // et exige le trait `FileReader` EN SCOPE pour `reader.metadata()`. Les sous-modules de PRODUCTION portent leurs
 // PROPRES imports parquet/std -> ce petit bloc, réservé aux tests, est `#[cfg(test)]` (jamais compilé en prod).
-#[cfg(test)]
-use std::fs::File;
+// `File` a été RETIRÉ de ce bloc le 2026-08-28 : le module `tests` ne l'employait plus, et le commentaire
+// ci-dessus l'affirmait encore — un import inutilisé est une assertion périmée que le compilateur voit.
 #[cfg(test)]
 use std::path::{Path, PathBuf};
 #[cfg(test)]
@@ -82,6 +82,10 @@ use aging::*;
 // (backup n'expose que `cold_backup_plan`, déjà dans la façade -> pas de glob du tout).
 #[cfg(test)]
 use reader::*;
+// `P10.5-c` — le type qui porte « cette réponse a-t-elle pu lire le bras froid ? » est importé ICI en
+// PRIVÉ (pas dans la façade `pub(crate)` ci-dessous) : il est consommé par `reader` au moment de former
+// la réponse, et il n'a rien à faire hors de `cold_store`. Un handler ne doit pas pouvoir le fabriquer.
+use exactness::LectureDuBrasFroid;
 // #18 P2 — les kernels vectorisés + la surface ColumnBatch/decode_batch sont exercés par le harnais de PARITÉ
 // et le BENCH du module `tests` -> glob gaté `#[cfg(test)]`.
 #[cfg(test)]
@@ -94,13 +98,18 @@ pub(crate) use paths::cold_root;
 pub(crate) use backup::cold_backup_plan;
 // `P10.13-a` — la sonde de lecture seule, consommée par le dispatch `cold-aging-plan` de `main`.
 pub(crate) use sonde_vieillissement::cold_aging_plan;
-pub(crate) use reader::{cold_query_boundary, cold_tier_runtime_on, cold_union_query};
+// `ColdUnionMeta` entre dans la façade parce que `handlers/query` NOMME désormais le type : l'aveu de
+// provenance froide (`stats.cold`) y est écrit en UN SEUL endroit, et un point unique a une signature.
+pub(crate) use reader::{cold_query_boundary, cold_tier_runtime_on, cold_union_query, parts_lues, ColdUnionMeta};
 // #18 — l'invariant de correction, consommé par les handlers : ils reçoivent une `ColdAnswer` (jamais un
 // `Value` nu) et DOIVENT la `render(AnswerShape)`. `AnswerShape` n'a pas de constructeur littéral -> un
 // handler ne peut pas affirmer que sa requête ne dérive rien, il ne peut que le faire dériver.
 pub(crate) use exactness::{AnswerShape, ColdAnswer, Rendered, TruncatedAggregate};
 // #18 P4a — surface du routeur consommée par le handler /api/query (câblage runtime) + le harnais de parité.
-pub(crate) use planner::{cold_keyset_page, cold_vectorized_armed, cold_vectorized_merge_try, cold_vectorized_try, prune_counters, route_counters, route_counters_reset};
+pub(crate) use planner::{
+    cold_keyset_page, cold_vectorized_armed, cold_vectorized_merge_try, cold_vectorized_try, prune_counters,
+    route_counters, route_counters_reset,
+};
 #[cfg(test)]
 pub(crate) use planner::{decode_gauge, decode_gauge_reset};
 // #28 PHASE B — élagage dimensionnel : le type de prédicat + l'extracteur (parse le GXQL en égalités de dims

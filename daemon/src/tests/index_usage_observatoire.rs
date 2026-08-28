@@ -449,7 +449,16 @@ fn lexposition_porte_ce_que_la_serie_ne_prouve_pas() {
         "le `# HELP` de `plume_index_usage_total` ne porte pas le texte de portée : la limite ne \
          voyagerait pas avec le chiffre. Aide lue : {aide}"
     );
-    for exigence in ["ECHANTILLONNE", "redemarrage", "plume_index_usage_stats_regime"] {
+    // `P10.9-a`, 2026-08-28 — DEUX EXIGENCES DE PLUS, et elles ne sont pas décoratives : la campagne
+    // d'observation en production a RÉFUTÉ la lecture qu'on croyait pouvoir faire de cette série, et le
+    // texte publié ne portait rien de ce qui a été appris. « ABSENT » parce que le verdict se tire de
+    // l'absence d'un index, jamais d'un zéro (un index jamais nommé n'a PAS de ligne ici) ; « trop
+    // petite » parce que l'explication qui a survécu à l'épreuve est que le planificateur préfère un
+    // parcours complet sur une petite table — ce qu'un observatoire d'usage ne sait pas distinguer de
+    // l'inutilité, et ce qui rend la liste des index jamais nommés INEXPLOITABLE comme liste de retrait.
+    for exigence in
+        ["ECHANTILLONNE", "redemarrage", "plume_index_usage_stats_regime", "ABSENT", "trop petite", "plume_index_usage_lignes_estimees"]
+    {
         assert!(
             crate::index_usage::LIMITES.contains(exigence),
             "le texte de portée ne dit rien de « {exigence} » — il ne suffirait pas à empêcher la \
@@ -478,4 +487,141 @@ fn lexposition_porte_ce_que_la_serie_ne_prouve_pas() {
             "ligne de série mal formée (une valeur d'étiquette porte un guillemet) : {l}"
         );
     }
+}
+
+/// ⑩ `P10.9-a` — LE CHIFFRE QUI DIT COMMENT LIRE LE RESTE : L'ESTIMATION DE LIGNES DU PLANIFICATEUR.
+///
+/// CE QUI A ÉTÉ MESURÉ, ET CE QUE ÇA A RENVERSÉ. La campagne d'observation en production (2026-08-23)
+/// a rendu une liste d'index qu'AUCUN plan n'a nommés. L'hypothèse naturelle — « ils servent des
+/// surfaces que personne n'a ouvertes » — a été mise à l'épreuve par une traversée délibérée de toutes
+/// les routes de lecture, et RÉFUTÉE. Ce qui restait est autrement plus gênant : les tables concernées
+/// sont assez petites pour que le planificateur préfère un parcours complet. **Un observatoire d'usage
+/// ne sait pas distinguer « cet index ne sert à rien » de « cette table est trop petite pour qu'il
+/// serve ».** Il ne l'apprendra pas ; ce n'est pas ce qu'il mesure.
+///
+/// CE QUE CE LOT CONSTRUIT, ET POURQUOI CE N'EST PAS UN CONFORT. L'observatoire ne peut pas trancher,
+/// mais il peut PUBLIER le chiffre qui laisse le lecteur trancher — et il ne le publiait pas. Un
+/// lecteur de `/metrics` voyait donc des compteurs d'usage sans aucun moyen de savoir si son
+/// installation est à une échelle où le choix du planificateur veut dire quelque chose : un résultat
+/// incomplet présenté comme complet, la famille même que ce dépôt poursuit.
+///
+/// CE QUE CE TÉMOIN EXIGE — et les trois faits sont indépendants :
+///   ① la série est publiée, et sa valeur est CELLE du catalogue, pas une valeur inventée ;
+///   ② MUTATION qui nomme la valeur qui change : la base grossit, l'analyse repasse, le chiffre PUBLIÉ
+///      suit. Sans ce fait, un chiffre constaté une fois puis figé mentirait sur toute la vie du
+///      processus — exactement ce que le régime, lui, a le droit de faire (il ne peut que monter) ;
+///   ③ TÉMOIN NÉGATIF : sans statistique, RIEN n'est publié — pas `0`. Le planificateur devine alors
+///      une constante, et publier une supposition sous le nom d'une estimation serait pire que le
+///      silence. Et l'absence est prouvée SUR UNE EXPOSITION NON VIDE, sans quoi elle ne dirait rien.
+#[test]
+fn lexposition_publie_lestimation_de_lignes_dont_le_planificateur_se_sert() {
+    // L'INSTRUMENT DE LECTURE, ÉCRIT AVANT DE S'EN SERVIR — et il a déjà été FAUX une fois, le
+    // 2026-08-28 : chercher la sous-chaîne `plume_index_usage_lignes_estimees` dans l'exposition
+    // rendait TOUJOURS vrai, parce que le texte de portée du `# HELP` NOMME la série pour renvoyer le
+    // lecteur vers elle. Un motif ancré sur un flux dont on a soi-même changé le contenu ne mesure
+    // rien. On lit donc une LIGNE DE SÉRIE : un nom en tête de ligne, jamais `# HELP`/`# TYPE`.
+    let valeur_de_serie = |expose: &str, nom: &str| -> Option<i64> {
+        expose.lines().find_map(|l| {
+            let reste = l.strip_prefix(nom)?;
+            let reste = reste.strip_prefix("{table=\"event\"}").unwrap_or(reste);
+            reste.trim().parse::<i64>().ok()
+        })
+    };
+    let serie_presente = |expose: &str, nom: &str| -> bool {
+        expose.lines().any(|l| l.starts_with(nom) && !l.starts_with("# "))
+    };
+
+    // ③ D'ABORD LE TÉMOIN NÉGATIF : base au schéma réel, JAMAIS peuplée -> aucune statistique sur `event`.
+    let (_chemin_vierge, db_vierge) = base_au_schema_reel("idxobs-lignes-vierge");
+    {
+        let conn = db_vierge.lock();
+        let obs = observatoire_neuf(crate::index_usage::INDEX_CAP, 1);
+        obs.observer(&conn, ENONCE_SANS_INDEX, crate::index_usage::Consommateur::Analyste);
+        let expose = obs.exposition_prom();
+        assert!(
+            serie_presente(&expose, "plume_index_usage_plans_lus_total"),
+            "CONTRÔLE : l'exposition doit être NON VIDE, sinon l'absence prouvée juste après ne prouverait rien"
+        );
+        assert!(
+            expose.contains("plume_index_usage_lignes_estimees"),
+            "CONTRÔLE INVERSE DE L'INSTRUMENT : le texte de portée doit bien NOMMER la série (c'est ce qui \
+             a fait mentir la première version de ce test) — l'absence vérifiée juste après porte donc sur \
+             la LIGNE DE SÉRIE, pas sur la mention"
+        );
+        assert!(
+            !serie_presente(&expose, "plume_index_usage_lignes_estimees"),
+            "sans statistique, l'estimation ne doit pas être publiée DU TOUT — pas publiée à `0`, qui \
+             affirmerait une table vide. Exposition lue : {expose}"
+        );
+        assert_eq!(obs.lignes_estimees(), None, "et l'état interne dit la même chose que la série");
+    }
+
+    // ① PUIS LA PUBLICATION. Des lignes, une analyse, une observation — sur UN SEUL observatoire, parce
+    // que c'est la persistance DANS UN observatoire vivant que la mutation ② éprouve : une première
+    // version de ce test rebâtissait un observatoire neuf à chaque lecture, et sa mutation « constatée
+    // une fois puis figée » restait VERTE. Un témoin dont la mutation ne change aucun verdict n'est pas
+    // une garde ; celui-ci l'est devenu en cessant de repartir de zéro.
+    let (_chemin, db) = base_au_schema_reel("idxobs-lignes");
+    let semer = |n: i64| {
+        let conn = db.lock();
+        for i in 0..n {
+            conn.execute(
+                "INSERT INTO event(ts,source,category,severity,host,message,fields) VALUES(?1,'sshd','auth',3,'h','m','{}')",
+                params![1_700_000_000i64 + i],
+            )
+            .expect("insertion");
+        }
+        conn.execute("ANALYZE", []).expect("analyse");
+    };
+    let obs = observatoire_neuf(crate::index_usage::INDEX_CAP, 1);
+    let observer_n = |k: u64| {
+        let conn = db.lock();
+        for _ in 0..k {
+            obs.observer(&conn, ENONCE_SANS_INDEX, crate::index_usage::Consommateur::Analyste);
+        }
+    };
+    let publiee = || -> Option<i64> {
+        let expose = obs.exposition_prom();
+        let lue = valeur_de_serie(&expose, "plume_index_usage_lignes_estimees");
+        // La série et l'état interne ne peuvent pas diverger : c'est la même lecture, publiée une fois.
+        assert_eq!(lue, obs.lignes_estimees(), "la série publiée et l'état constaté doivent coïncider");
+        lue
+    };
+    let attendu_du_catalogue = || -> i64 {
+        let conn = db.lock();
+        crate::index_usage::lignes_estimees(&conn, "event").expect("sqlite_stat1 porte `event` après ANALYZE")
+    };
+
+    semer(64);
+    observer_n(1);
+    let premier = publiee().expect("après ANALYZE, l'estimation DOIT être publiée");
+    assert_eq!(premier, attendu_du_catalogue(), "la valeur publiée est CELLE du catalogue, pas une valeur reconstruite");
+    assert!(premier > 0, "une estimation nulle après 64 insertions signalerait que le banc ne mesure rien");
+
+    // ② LA MUTATION. La base est multipliée par dix et ré-analysée.
+    semer(576); // 64 -> 640
+    let catalogue_apres = attendu_du_catalogue();
+    assert!(
+        catalogue_apres > premier,
+        "PRÉMISSE FAUSSE : le CATALOGUE lui-même n'a pas bougé ({premier} puis {catalogue_apres}) — alors \
+         ce qui suit ne mesurerait pas l'observatoire, mais SQLite"
+    );
+    // ②a LA CADENCE EST RÉELLE : le constat ne se refait pas à chaque plan lu.
+    observer_n(1);
+    assert_eq!(
+        publiee(),
+        Some(premier),
+        "le constat interroge le catalogue : s'il se refaisait à chaque plan, il coûterait plus cher que \
+         la lecture de plan qu'il accompagne"
+    );
+    // ②b MAIS IL SE REFAIT AU PAS SUIVANT — le pas est LU dans la constante, jamais recopié.
+    observer_n(crate::index_usage::PAS_DE_RECONSTAT_DU_REGIME);
+    let second = publiee().expect("estimation toujours publiée");
+    assert_eq!(second, catalogue_apres, "au pas suivant, la valeur publiée suit de nouveau le catalogue");
+    assert!(
+        second > premier,
+        "MUTATION SANS EFFET : la base a été multipliée par dix et le chiffre publié n'a pas bougé \
+         ({premier} puis {second}) — un chiffre constaté une fois puis figé mentirait sur toute la vie \
+         du processus, et c'est précisément ce que cette série existe pour ne pas faire"
+    );
 }

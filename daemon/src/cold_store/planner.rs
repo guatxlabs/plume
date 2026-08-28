@@ -268,7 +268,7 @@ fn phys_pred_cols() -> &'static [&'static str] {
 }
 
 /// `PARQUET_COLS` ∩ colonnes de PROJECTION du schéma GXQL (dims de group-by, `| table`). Idem.
-fn phys_proj_cols() -> &'static [&'static str] {
+pub(super) fn phys_proj_cols() -> &'static [&'static str] {
     static C: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
     C.get_or_init(|| {
         let s = guatx_core::soql::Schema::events();
@@ -888,6 +888,23 @@ fn map_keyset_soql(soql: &str) -> Option<(Pred, Vec<&'static str>)> {
     Some((pred, proj))
 }
 
+/// LA ROUTABILITÉ DE **FORME** DU BRAS FROID KEYSET — fonction PURE du GXQL, et c'est sa propriété
+/// essentielle : elle rend le MÊME verdict à la page 1 et à la page k d'une même traversée.
+///
+/// Elle réunit les deux refus qui ne dépendent que de la requête (la forme reconnue et le fait que le
+/// kernel sache la balayer) pour qu'ils n'aient qu'UNE définition. `cold_keyset_page` l'appelle pour
+/// obtenir son plan, et c'est désormais son SEUL appelant : la deuxième question qu'on lui posait
+/// (« ce curseur a-t-il pu être émis par cette voie ? ») était une DÉDUCTION d'espace d'identifiant, et
+/// elle a été supprimée avec la fonction qui la portait (cf. le bloc qui le dit, plus bas).
+fn map_keyset_route(soql: &str) -> Option<(Pred, Vec<&'static str>)> {
+    let (pred, proj) = map_keyset_soql(soql)?;
+    let extra: Vec<&str> = proj.iter().map(|s| &**s).collect();
+    if !can_vectorize(&pred, &extra) {
+        return None;
+    }
+    Some((pred, proj))
+}
+
 /// FUSION de deux listes `(ts,id) DÉCROISSANTES` en gardant les `limit` plus grandes (merge classique). Clés
 /// UNIQUES entre `a` (accumulateur global) et `b` (fichier courant) : disjointes par construction (une ligne
 /// appartient à un seul fichier). RAM bornée à `limit`.
@@ -910,6 +927,71 @@ fn ks_merge_desc(a: Vec<(i64, i64, MatRow)>, b: Vec<(i64, i64, MatRow)>, limit: 
     }
     out
 }
+
+/// LA FENÊTRE FROIDE D'UNE TRAVERSÉE — bornée par la REQUÊTE, jamais par la page.
+///
+/// Borne haute = `min(q_to, B-1)` (`q_to<=0` = fenêtre non bornée) ; borne basse = `q_from` si bornée,
+/// sinon le plus vieux jour scellé. Le CURSEUR n'entre pas ici : c'est ce qui rend cette fenêtre
+/// identique à la page 1 et à la page k, donc utilisable comme sujet d'une garde de traversee.
+fn fenetre_froide_de_la_traversee(conn: &Connection, q_from: i64, q_to: i64, boundary: i64) -> (i64, i64) {
+    let hi = if q_to > 0 { q_to.min(boundary - 1) } else { boundary - 1 };
+    let lo = if q_from > 0 {
+        q_from
+    } else {
+        conn.query_row("SELECT MIN(day) FROM cold_seal", [], |r| r.get::<_, Option<i64>>(0))
+            .ok()
+            .flatten()
+            .map(|d| d * SECS_PER_DAY)
+            .unwrap_or(hi)
+    };
+    (lo, hi)
+}
+
+/// GATE MONO-ENV. `cold_synth_id = seq*COLD_FILE_MAX_ROWS + position` intègre `seq`+`position` mais PAS
+/// `env_id` (TEXT, non packable), et `seq` REDÉMARRE à 0 par partition `(env_id, day)`. Deux envs avec même
+/// `(seq, position)` au MÊME `ts` (donc même jour) reçoivent le MÊME id -> clé de curseur `(ts,id)` non
+/// unique -> gap/dup en pagination (classe « ligne SOC ratée »). En MONO-ENV l'id EST unique ((ts,id)
+/// unique par env : jour fixe -> `seq` unique + `position < cap` ; jours distincts -> `ts` distinct).
+/// Donc : env SCOPÉ (`Some`) -> sûr ; env NON-SCOPÉ (`None`) avec >1 env distinct -> FALLBACK
+/// `cold_union_query` (rowid oracle global, unique tous-envs, capé mais correct). Log = pas de cap silencieux.
+///
+/// LA FENÊTRE JUGÉE EST CELLE DE LA TRAVERSÉE, PAS CELLE DE LA PAGE — et ce n'est pas un détail de
+/// paramètre. `distinct_seal_envs` est bornée par des JOURS : élaguée par le curseur, elle voyait une
+/// fenêtre qui RÉTRÉCIT de page en page, si bien qu'un second environnement présent SEULEMENT dans le haut
+/// de la fenêtre faisait décliner la page 1 (servie par l'oracle, espace d'id oracle) puis ACCEPTER la page
+/// 2 (espace d'id synthétique) — un changement d'espace d'identifiant EN COURS DE TRAVERSÉE, silencieux,
+/// dans le sens que le lot précédent n'avait pas regardé. Jugée sur la fenêtre, la garde rend le MÊME
+/// verdict à toutes les pages, à données égales. C'est un RESSERREMENT : `hi_fenetre >= hi_page`, donc
+/// l'ensemble d'envs examiné ne peut que GRANDIR, et la garde ne peut que refuser PLUS souvent.
+fn mono_env_sur_la_fenetre(conn: &Connection, env_filter: Option<&str>, lo: i64, hi: i64) -> bool {
+    if env_filter.is_some() {
+        return true;
+    }
+    let envs = distinct_seal_envs(conn, lo, hi);
+    if envs.len() > 1 {
+        eprintln!(
+            "[cold] keyset: fallback cap\u{e9} (multi-env non-scop\u{e9}, {} envs dans [{lo},{hi}]) \u{2014} raw-completeness servie via oracle cold_union_query",
+            envs.len()
+        );
+        return false;
+    }
+    true
+}
+
+// LA ROUTABILITÉ D'UNE TRAVERSÉE A ÉTÉ **SUPPRIMÉE** ICI (`P10.5-g`, 2026-08-28), ET C'EST LE CŒUR DU
+// LOT. `cold_keyset_traversee_routable` existait pour répondre à UNE question : « ce curseur froid, qui
+// ne porte pas de marque, a-t-il PU être émis par le bras colonnaire ? » — c'est-à-dire pour DÉDUIRE
+// l'espace d'identifiant d'un curseur au lieu de le LIRE. Sa promesse écrite (« à données et réglages
+// égaux, le verdict est celui qu'avait la page 1 ») était vraie ; ce qu'elle ne disait pas, c'est que
+// « la page 1 est passée par la voie routable » n'en découle pas : une page dont la part CHAUDE rend
+// toutes les lignes (`cold_limit == 0`) n'interroge JAMAIS le bras froid, donc n'éprouve aucune
+// routabilité, et rend un curseur portant un `event.id` réel. Que la frontière avance d'un jour entre
+// deux pages — elle le fait au basculement du vieillissement — et ce curseur devient « froid sans
+// marque » sur une traversée routable : la déduction le déclarait alors soit reconstruit par le client
+// (500 déterministe, accusation fausse), soit rowid d'union (page décalée en silence).
+// LES DEUX VOIES MARQUENT MAINTENANT CE QU'ELLES ÉMETTENT, donc il n'y a plus rien à déduire, donc cette
+// fonction n'a plus d'appelant de production. Elle n'est pas laissée « au cas où » : une déduction qui
+// dort est une déduction qu'un lot suivant rebranche.
 
 /// #18 ①a — UNE page keyset PUR-FROIDE : les <= `limit` lignes brutes de PLUS HAUT `(ts,id)` STRICTEMENT sous
 /// `cursor` (`ts,id` desc), `id` synthétique appendé en dernière colonne. `Ok(Some((columns, rows)))` = servi par
@@ -948,15 +1030,13 @@ pub(crate) fn cold_keyset_page(
     if !masks_empty {
         return Ok(None);
     }
-    // FORME : `search [filtres]` NU uniquement.
-    let (pred, proj) = match map_keyset_soql(soql) {
+    // FORME : `search [filtres]` NU uniquement, ET balayable par le kernel — les deux refus vivent
+    // ensemble dans `map_keyset_route` : une forme non reconnue et une forme que le kernel ne sait pas
+    // balayer sont le même refus, et il n'a qu'une définition.
+    let (pred, proj) = match map_keyset_route(soql) {
         Some(x) => x,
         None => return Ok(None),
     };
-    let extra: Vec<&str> = proj.iter().map(|s| &**s).collect();
-    if !can_vectorize(&pred, &extra) {
-        return Ok(None);
-    }
     // Colonnes de sortie = projection + `id` synthétique (dernier), MÊME forme/ordre que le hot keyset.
     let mut columns: Vec<String> = proj.iter().map(|s| s.to_string()).collect();
     columns.push("id".to_string());
@@ -974,41 +1054,20 @@ pub(crate) fn cold_keyset_page(
             .collect()
     };
 
-    // Fenêtre froide EFFECTIVE : borne haute = min(q_to|B-1, cursor_ts) (le curseur ÉLAGUE les fichiers au-dessus) ;
-    // borne basse = q_from si bornée, sinon le plus vieux jour scellé.
-    let mut hi = if q_to > 0 { q_to.min(boundary - 1) } else { boundary - 1 };
-    if let Some((cts, _)) = cursor {
-        hi = hi.min(cts);
-    }
+    // Fenêtre froide de la TRAVERSÉE (indépendante du curseur) puis GATE MONO-ENV sur CETTE fenêtre.
     let conn = open_seal_conn(db_path)?;
-    let lo = if q_from > 0 {
-        q_from
-    } else {
-        conn.query_row("SELECT MIN(day) FROM cold_seal", [], |r| r.get::<_, Option<i64>>(0))
-            .ok()
-            .flatten()
-            .map(|d| d * SECS_PER_DAY)
-            .unwrap_or(hi)
-    };
-    // GATE MONO-ENV. `cold_synth_id = seq*COLD_FILE_MAX_ROWS + position` intègre
-    // `seq`+`position` mais PAS `env_id` (TEXT, non packable), et `seq` REDÉMARRE à 0 par partition `(env_id, day)`.
-    // Deux envs avec même `(seq, position)` au MÊME `ts` (donc même jour) reçoivent le MÊME id -> clé de curseur
-    // `(ts,id)` non unique -> gap/dup en pagination (classe « ligne SOC ratée »). En MONO-ENV l'id EST unique
-    // ((ts,id) unique par env : jour fixe -> `seq` unique + `position < cap` ; jours distincts -> `ts` distinct).
-    // Donc : env SCOPÉ (`Some`) -> sûr ; env NON-SCOPÉ (`None`) avec >1 env distinct dans la fenêtre -> FALLBACK
-    // `cold_union_query` (rowid oracle global, unique tous-envs, capé mais correct). Log = pas de cap silencieux.
-    if env_filter.is_none() {
-        let envs = distinct_seal_envs(&conn, lo, hi);
-        if envs.len() > 1 {
-            eprintln!(
-                "[cold] keyset: fallback cap\u{e9} (multi-env non-scop\u{e9}, {} envs dans [{lo},{hi}]) \u{2014} raw-completeness servie via oracle cold_union_query",
-                envs.len()
-            );
-            drop(conn);
-            return Ok(None);
-        }
+    let (lo, hi_fenetre) = fenetre_froide_de_la_traversee(&conn, q_from, q_to, boundary);
+    if !mono_env_sur_la_fenetre(&conn, env_filter, lo, hi_fenetre) {
+        drop(conn);
+        return Ok(None);
     }
     drop(conn);
+    // Fenêtre EFFECTIVE de CETTE PAGE : le curseur élague les fichiers au-dessus de lui. Il n'élague QUE le
+    // parcours, jamais la garde mono-env ci-dessus (cf. `mono_env_sur_la_fenetre`).
+    let hi = match cursor {
+        Some((cts, _)) => hi_fenetre.min(cts),
+        None => hi_fenetre,
+    };
     if hi < lo || limit == 0 {
         return Ok(Some((columns, Vec::new()))); // fenêtre vide -> page cold vide (COMPLET, pas un fallback)
     }

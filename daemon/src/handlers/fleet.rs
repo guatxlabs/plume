@@ -269,7 +269,7 @@ pub(crate) async fn fleet(State(st): State<AppState>, Extension(au): Extension<A
     // puis cache. Watchdog dépassé (done=false) -> résultat NON caché (la prochaine requête retente).
     let _permit = match acquire_query_permit(&st.query_sem).await {
         Ok((p, _wait)) => p,
-        Err(_) => return Json(json!({ "hosts": [] })),
+        Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({ "hosts": [] }))),
     };
     let db2 = db_path.clone();
     let scan = tokio::task::spawn_blocking(move || {

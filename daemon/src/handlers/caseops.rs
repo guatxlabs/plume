@@ -563,7 +563,7 @@ pub(crate) fn client_case_get_json(conn: &Connection, db_path: &str, masks: &gua
 pub(crate) async fn case_queues(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     let _permit = match acquire_query_permit(&st.query_sem).await {
         Ok((p, _wait)) => p,
-        Err(_) => return Json(json!({ "queues": [] })),
+        Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({ "queues": [] }))),
     };
     let db_path = req_db_path(&st, &au);
     let now_i = now();
@@ -579,7 +579,7 @@ pub(crate) async fn case_metrics(State(st): State<AppState>, Extension(au): Exte
     let to = q.get("to").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
     let _permit = match acquire_query_permit(&st.query_sem).await {
         Ok((p, _wait)) => p,
-        Err(_) => return Json(json!({})),
+        Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({}))),
     };
     let db_path = req_db_path(&st, &au);
     let res = tokio::task::spawn_blocking(move || read_with_watchdog(&db_path, json!({}), move |conn| case_metrics_json(conn, from, to)))
@@ -720,7 +720,7 @@ pub(crate) async fn client_cases_list(State(st): State<AppState>, Extension(au):
     let offset = q.get("offset").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0).clamp(0, 100_000);
     let _permit = match acquire_query_permit(&st.query_sem).await {
         Ok((p, _wait)) => p,
-        Err(_) => return Json(json!({ "cases": [], "total": 0 })),
+        Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({ "cases": [], "total": 0 }))),
     };
     let db_path = req_db_path(&st, &au);
     let masks = client_masks(&st, &au);

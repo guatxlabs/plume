@@ -522,6 +522,57 @@ pub(crate) struct ColdHydrate {
     pub(crate) files_read: usize,
     pub(crate) rows_hydrated: usize,
     pub(crate) truncated: bool,
+    /// `P10.5-g` — L'EMPREINTE DE LA NUMÉROTATION DE CETTE HYDRATATION (cf. `empreinte_de_numerotation`).
+    pub(crate) empreinte: u64,
+}
+
+/// `P10.5-g` — L'EMPREINTE DE LA NUMÉROTATION D'UNE HYDRATATION, MESURÉE SUR CE QUI LA DÉTERMINE.
+///
+/// LE FAIT QUI L'OBLIGE. `cold_event.id` est un `INTEGER PRIMARY KEY` AUTO : c'est le RANG d'insertion
+/// dans l'ordre canonique `(day, seq, position)` des lignes RETENUES. Ce rang n'est pas une propriété de
+/// la ligne, c'est une propriété de l'ENSEMBLE hydraté — et cet ensemble bouge :
+///   • la borne basse avance d'UNE SECONDE (la console recalcule `now - fenêtre` à chaque page) ->
+///     `decode_one_file` filtre `ts >= q_start` LIGNE À LIGNE, donc k lignes disparaissent du DÉBUT de
+///     l'ordre canonique et TOUS les rangs descendent de k ;
+///   • le hard-purge retire le plus vieux fichier de la fenêtre -> même effet ;
+///   • le vieillissement ajoute un jour, l'élagage dimensionnel change de verdict, un env apparaît.
+/// Un curseur d'oracle rejoué sur une numérotation qui a bougé de k rend une page qui COMMENCE AILLEURS :
+/// `id < cid` admet k lignes DÉJÀ servies -> doublons, en silence, 200 OK.
+///
+/// CE QUE LA MARQUE PORTE DONC, ET POURQUOI CE N'EST PAS LE NOM DU LECTEUR. « `cold-union` » nomme QUI
+/// sait relire, jamais QUOI a été numéroté : la règle d'entrée qui s'en contentait acceptait le curseur
+/// sur la seule condition « il existe UNE fenêtre froide », c'est-à-dire une DÉDUCTION (« c'est donc la
+/// MÊME »). Ici il n'y a plus de déduction : la page qui ÉMET publie l'empreinte de SON hydratation, la
+/// page qui SERT recalcule la sienne, et les deux se comparent. Un désaccord se REFUSE.
+///
+/// CE QU'ELLE COUVRE, DÉRIVÉ DE `hydrate_cold` LUI-MÊME : l'env, les deux bornes de fenêtre passées au
+/// filtre ligne-à-ligne, le plafond d'hydratation (qui décide OÙ la troncature coupe), et l'identité
+/// COMPLÈTE de chaque fichier retenu dans l'ordre exact de l'insertion — jour, séquence, cardinal
+/// attendu, bornes `ts`. Deux hydratations d'empreintes égales ont donc parcouru les mêmes fichiers,
+/// dans le même ordre, avec le même filtre : elles numérotent à l'identique.
+///
+/// CE QU'ELLE NE COUVRE PAS, ET C'EST DIT : la mutation d'un fichier scellé SOUS un `(day, seq)`
+/// inchangé et un cardinal inchangé. Le tier froid ne réécrit jamais un fichier scellé (writer P2b :
+/// écriture, scellement, immuabilité ; toute altération fait échouer `verify_parquet_rows`), donc ce cas
+/// n'est pas une numérotation silencieusement différente mais un échec de page — mais l'empreinte, elle,
+/// ne le verrait pas.
+///
+/// FNV-1a 64 bits, le MÊME pas que le bloom de `seal.rs` (une seule écriture du hachage dans ce module).
+/// La collision est possible en théorie (2^-64 par comparaison) ; elle ne l'est pas en pratique entre
+/// deux hydratations consécutives d'un même client, et le mode de panne d'une collision serait celui
+/// d'aujourd'hui, pas pire.
+fn empreinte_de_numerotation(env_id: &str, q_start_ts: i64, q_end_ts: i64, cap: usize, selected: &[SelFile]) -> u64 {
+    let mut h = super::seal::fnv1a64_chaine(super::seal::FNV1A64_DEPART, b"hydratation/v1");
+    h = super::seal::fnv1a64_chaine(h, env_id.as_bytes());
+    for n in [q_start_ts, q_end_ts, cap as i64, selected.len() as i64] {
+        h = super::seal::fnv1a64_chaine(h, &n.to_le_bytes());
+    }
+    for f in selected {
+        for n in [f.day, f.seq, f.expected as i64, f.ts_min, f.ts_max] {
+            h = super::seal::fnv1a64_chaine(h, &n.to_le_bytes());
+        }
+    }
+    h
 }
 
 /// DÉCODE UN fichier cold (unité PER-FICHIER, appelée par un worker — AUCUN accès à la connexion tenant). Chaîne :
@@ -600,8 +651,12 @@ pub(crate) fn hydrate_cold(
     let mem = Connection::open_in_memory().map_err(pe)?;
     mem.execute_batch(COLD_EVENT_DDL).map_err(pe)?;
 
+    // L'EMPREINTE D'UNE HYDRATATION QUI NE RETIENT RIEN reste une empreinte de CETTE fenêtre-ci : une
+    // hydratation vide sur une fenêtre A et une sur une fenêtre B ne numérotent pas le même néant, et la
+    // page suivante peut, elle, retenir des lignes.
+    let empreinte_vide = empreinte_de_numerotation(env_id, q_start_ts, q_end_ts, cold_hydrate_row_cap(), &[]);
     let empty = |mem: Connection, pruned: usize| ColdHydrate {
-        conn: mem, files_pruned: pruned, files_read: 0, rows_hydrated: 0, truncated: false,
+        conn: mem, files_pruned: pruned, files_read: 0, rows_hydrated: 0, truncated: false, empreinte: empreinte_vide,
     };
 
     // GATE RUNTIME (miroir du writer) : sans PLUME_COLD_TIER=1, aucun tier cold -> table vide.
@@ -669,6 +724,9 @@ pub(crate) fn hydrate_cold(
     }
     // ORDRE CANONIQUE (day, seq) -> order_index = position dans `selected` (l'insertion déterministe en dépend).
     selected.sort_by(|a, b| a.day.cmp(&b.day).then(a.seq.cmp(&b.seq)));
+    // L'EMPREINTE EST PRISE **APRÈS** LE TRI CANONIQUE, donc sur l'ordre RÉEL d'insertion : c'est cet
+    // ordre-là, et lui seul, qui assigne les rangs (`P10.5-g`).
+    let empreinte = empreinte_de_numerotation(env_id, q_start_ts, q_end_ts, cold_hydrate_row_cap(), &selected);
     if selected.is_empty() {
         return Ok(empty(mem, pruned));
     }
@@ -790,7 +848,7 @@ pub(crate) fn hydrate_cold(
         return Err(format!("hydrate_cold: fichier cold sélectionné invalide -> requête ÉCHOUÉE (aucun résultat partiel): {e}"));
     }
 
-    Ok(ColdHydrate { conn: mem, files_pruned: pruned, files_read: n_sel, rows_hydrated, truncated })
+    Ok(ColdHydrate { conn: mem, files_pruned: pruned, files_read: n_sel, rows_hydrated, truncated, empreinte })
 }
 
 // ====================================================================================================
@@ -832,6 +890,21 @@ pub(crate) fn hydrate_cold(
 // l'ensemble ici, c'est `cold_hydrate_row_cap`. Ne pas s'appuyer sur un déversement qui n'existe qu'en opt-in.
 // `truncated` REMONTE au caller (jamais un cold∪hot tronqué présenté comme complet).
 
+/// LES DEUX NOMS QUI PORTENT DES LIGNES FROIDES sur une connexion d'union (`P10.5-c`). Ils sont la
+/// SOURCE dont `LectureDuBrasFroid::derivee_du_sql` dérive sa réponse : un SQL qui n'en nomme AUCUN ne
+/// peut pas lire une ligne froide, donc le plafond froid ne peut pas le refuser.
+///
+/// CE QUI LES TIENT ALIGNÉS SUR LES OBJETS RÉELS, DIT SANS EMBELLIR. Le SQL de la vue (plus bas) les
+/// LIT, donc il suit un renommage. `COLD_EVENT_DDL` (plus haut), lui, porte encore le nom `cold_event`
+/// EN LITTÉRAL : le nom existe bien en deux exemplaires, et un `concat!` ne peut pas les fondre (il
+/// n'accepte pas de constante). Ce n'est donc pas la source qui garantit l'alignement, c'est le témoin
+/// `les_deux_noms_qui_portent_le_froid_sont_ceux_que_l_union_monte`, qui LIT le catalogue d'une vraie
+/// connexion d'union et le compare à ces deux constantes. Les deux dérives possibles y rougissent :
+/// renommer la constante seule fait ÉCHOUER le montage de la vue (le `FROM` ne trouve plus la table) ;
+/// renommer la DDL seule fait diverger le catalogue de ces constantes.
+pub(super) const UNION_SHADOWED_TABLE: &str = "event";
+pub(super) const COLD_TEMP_TABLE: &str = "cold_event";
+
 /// Colonnes de `event`/`cold_event` (ORDRE FIXE) exposées par la VUE d'union — sur-ensemble de tout ce que le
 /// SQL compilé peut référencer (projection de base + WHERE + json_extract(fields)). Miroir EXACT du schéma live.
 pub(super) const UNION_COLS: [&str; 16] = [
@@ -860,6 +933,52 @@ pub(crate) struct ColdUnionMeta {
     pub(crate) rows_hydrated: usize,
     pub(crate) files_read: usize,
     pub(crate) files_pruned: usize,
+    /// `P10.5-c` — LE SQL EXÉCUTÉ A-T-IL PU LIRE LE BRAS FROID ? `false` -> aucune ligne froide n'a pu
+    /// entrer dans la réponse, quoi qu'ait fait l'hydratation. C'est ce que le handler PUBLIE (`served_from`,
+    /// `stats.cold.truncated`) : annoncer « hot+cold » à une réponse qui n'a lu que `main` serait la même
+    /// famille de défaut que le refus faux — un aveu de provenance FAUX.
+    pub(crate) bras_froid_lu: bool,
+    /// `P10.5-g` — L'EMPREINTE DE LA NUMÉROTATION QUI A SERVI CETTE RÉPONSE (cf.
+    /// `empreinte_de_numerotation`). C'est elle que le handler POSE sur le curseur qu'il émet, et c'est
+    /// elle qu'il COMPARE à celle du curseur reçu : la numérotation de l'oracle se LIT, elle ne se
+    /// déduit pas d'un « il existe une fenêtre froide ».
+    pub(crate) empreinte_de_numerotation: u64,
+}
+
+impl ColdUnionMeta {
+    /// `P10.5-c` — LA PROVENANCE QUE LA RÉPONSE A LE DROIT D'ANNONCER. Elle était écrite EN DUR
+    /// (`"hot+cold"`) sur les deux chemins du handler, donc annoncée aussi à une réponse qui n'a lu que
+    /// `main`. La décision vit ICI, avec le fait dont elle dépend, et le handler n'a plus qu'à la
+    /// publier — c'est ce qui la rend exerçable par un témoin (`la_provenance_et_la_troncature_publiees
+    /// _suivent_ce_que_la_reponse_a_lu`) au lieu d'être une expression noyée dans un `json!`.
+    pub(crate) fn provenance(&self) -> &'static str {
+        parts_lues(self.bras_froid_lu)
+    }
+
+    /// `P10.5-c` — LA TRONCATURE QUI CONCERNE CETTE RÉPONSE. `truncated` seul dit ce que l'HYDRATATION
+    /// a fait ; il ne devient une propriété de la réponse que si celle-ci a pu lire le bras froid.
+    pub(crate) fn troncature_de_la_reponse(&self) -> bool {
+        self.truncated && self.bras_froid_lu
+    }
+}
+
+/// `P10.5-c` — LES PARTS QUE LA RÉPONSE A LUES, DÉCIDÉES À UN SEUL ENDROIT.
+///
+/// IL Y AVAIT UN TROISIÈME SITE, ET IL ÉTAIT DÉJÀ LÀ. Le lot qui a fermé les deux `served_from:"hot+cold"`
+/// en dur a laissé, dans le même fichier de handler, un `json!` en ligne qui écrivait
+/// `"hot+cold-vectorized-keyset"` sur TOUTE page du browse colonnaire — y compris celles dont la part
+/// chaude remplit la page (`cold_limit == 0`) et où le bras froid n'est JAMAIS interrogé. Une page 100 %
+/// chaude s'y annonçait donc froide : exactement l'aveu de provenance FAUX que ce point unique existe pour
+/// interdire, sur le site que le lot n'avait pas regardé.
+///
+/// La ROUTE (oracle d'union, browse colonnaire) est le suffixe que chaque chemin ajoute ; les PARTS, elles,
+/// se décident ici, à partir du seul fait dont elles dépendent.
+pub(crate) fn parts_lues(bras_froid_lu: bool) -> &'static str {
+    if bras_froid_lu {
+        "hot+cold"
+    } else {
+        "hot"
+    }
 }
 
 /// Connexion d'UNION hot∪cold prête à exécuter le SQL compilé (masquage/DENY câblés). `conn` : base HOT (RO,
@@ -970,12 +1089,25 @@ pub(crate) fn open_cold_union(
     let mut rows_hydrated = 0usize;
     let mut files_read = 0usize;
     let mut files_pruned = 0usize;
+    // `P10.5-g` — L'EMPREINTE DE LA NUMÉROTATION DE **CETTE** UNION. Elle part de ce que l'union décide
+    // avant toute hydratation — les deux bornes RÉELLEMENT hydratées (`lo`/`hi`, déjà repliées sur la
+    // frontière), la frontière elle-même et le plafond global — puis elle chaîne, env par env, ce que
+    // `hydrate_cold` a mesuré. Elle n'est PAS reconstruite à côté de l'hydratation : chaque terme vient
+    // de la valeur qui a servi.
+    let mut empreinte = seal::fnv1a64_chaine(seal::FNV1A64_DEPART, b"union/v1");
+    for n in [lo, hi, boundary, cap as i64] {
+        empreinte = seal::fnv1a64_chaine(empreinte, &n.to_le_bytes());
+    }
     if hi >= lo {
         for env in &envs {
             if !env_id_ok(env) {
                 continue; // fail-safe (anti-traversée) — jamais de chemin arbitraire.
             }
             let hy = hydrate_cold(&conn, conf, db_path, env, lo, hi, &needed, dim_preds)?;
+            // L'EMPREINTE DE L'UNION CHAÎNE CELLES DES ENVS, DANS L'ORDRE DE LA BOUCLE — c'est cet ordre
+            // qui décide des rangs quand plusieurs envs sont hydratés (`P10.5-g`). Le NOM de l'env y
+            // entre aussi : deux envs qui échangeraient leurs fichiers numéroteraient autrement.
+            empreinte = seal::fnv1a64_chaine(seal::fnv1a64_chaine(empreinte, env.as_bytes()), &hy.empreinte.to_le_bytes());
             files_read += hy.files_read;
             files_pruned += hy.files_pruned;
             truncated |= hy.truncated;
@@ -1002,10 +1134,10 @@ pub(crate) fn open_cold_union(
     // (jamais d'entrée utilisateur) -> inliné sans risque d'injection.
     let proj = union_proj(&deny);
     let view_sql = format!(
-        "CREATE TEMP VIEW event AS \
-           SELECT {proj} FROM main.event WHERE ts >= {boundary} \
+        "CREATE TEMP VIEW {UNION_SHADOWED_TABLE} AS \
+           SELECT {proj} FROM main.{UNION_SHADOWED_TABLE} WHERE ts >= {boundary} \
            UNION ALL \
-           SELECT {proj} FROM cold_event WHERE ts < {boundary}"
+           SELECT {proj} FROM {COLD_TEMP_TABLE} WHERE ts < {boundary}"
     );
     conn.execute_batch(&view_sql).map_err(pe)?;
 
@@ -1016,7 +1148,13 @@ pub(crate) fn open_cold_union(
     install_fmask_udf(&conn);
     install_field_authorizer(&conn, db_path);
 
-    Ok(ColdUnionConn { conn, meta: ColdUnionMeta { truncated, rows_hydrated, files_read, files_pruned } })
+    // `bras_froid_lu` n'est PAS décidable ici (cette fonction ne voit pas le SQL) : `cold_union_query` la
+    // POSE juste après, depuis la dérivation. Le défaut est « lu », c'est-à-dire le côté conservateur —
+    // un chemin qui oublierait de la poser publierait « hot+cold », jamais un aveu de provenance trop maigre.
+    Ok(ColdUnionConn {
+        conn,
+        meta: ColdUnionMeta { truncated, rows_hydrated, files_read, files_pruned, bras_froid_lu: true, empreinte_de_numerotation: empreinte },
+    })
 }
 
 /// #18 P3 — EXÉCUTE une requête (page + COUNT optionnel) sur l'union hot∪cold. Construit la connexion d'union
@@ -1051,6 +1189,14 @@ pub(crate) fn cold_union_query(
             .and_then(|v| v.get("rows").and_then(|r| r.get(0)).and_then(|r0| r0.get(0)).and_then(|x| x.as_i64())),
         None => None,
     };
-    let answer = ColdAnswer::new(page, total, u.meta.truncated, cold_hydrate_row_cap(), u.meta.rows_hydrated);
-    Ok((answer, u.meta))
+    // `P10.5-c` — DE QUEL ENSEMBLE CETTE RÉPONSE EST TIRÉE. Le déclencheur d'union est une propriété de la
+    // FENÊTRE seule : il ne regarde pas la TABLE. Une requête de la base `metric` (compilée par le cœur en
+    // `metric ∪ metric_rollup`, deux tables de `main` que le vieillissement ne touche JAMAIS) arrivait donc
+    // ici avec un `truncated` hérité d'une hydratation qu'elle ne lit pas — et se faisait REFUSER. La portée
+    // est DÉRIVÉE du SQL RÉELLEMENT EXÉCUTÉ (page ET count), jamais déclarée par l'appelant.
+    let lecture = LectureDuBrasFroid::derivee_du_sql(&[page_sql, count_sql.unwrap_or("")]);
+    let mut meta = u.meta;
+    meta.bras_froid_lu = lecture.a_pu_lire_le_froid();
+    let answer = ColdAnswer::new(page, total, meta.truncated, cold_hydrate_row_cap(), meta.rows_hydrated, lecture);
+    Ok((answer, meta))
 }

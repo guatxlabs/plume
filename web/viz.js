@@ -1923,9 +1923,14 @@ async function evLoad() {
   $('#qstats').textContent = 'exécution…';
   const t0 = performance.now();
   try {
-    const opts = { qid, signal: ctrl.signal, to: exploreTo() };   // `P11.18-r` : l'Explore RÈGLE cet intervalle et l'AFFICHE (#zoombadge) — il le passe, il ne l'hérite pas.
+    // `P10.5-g` — LA FENÊTRE DU PARCOURS, GELÉE (cf. le site qui la capture). Les deux bornes viennent
+    // de `S.evState.win`, jamais de l'horloge : le curseur émis pour la page k n'a de sens que sur la
+    // fenêtre qui l'a numéroté. `P11.18-r` reste tenu — l'Explore RÈGLE cet intervalle et l'AFFICHE
+    // (#zoombadge), il le PASSE, il ne l'hérite pas ; il le passe simplement figé pour le parcours.
+    const win = S.evState.win || { from: exploreFrom(), to: exploreTo() };
+    const opts = { qid, signal: ctrl.signal, to: win.to };
     if (keyset) { opts.keyset = true; if (cursor) opts.cursor = cursor; else if (jumpOff) opts.offset = jumpOff; }   // curseur (séquentiel) OU offset (saut) ; sinon 1re page
-    const j = await runQ(q, isSoql, undefined, limit, offset, opts);
+    const j = await runQ(q, isSoql, win.from, limit, offset, opts);
     if (!S.exploreInflight || S.exploreInflight.qid !== qid) return;   // supersédée (autre requête lancée) -> on ignore le résultat périmé
     if (j.error) { showQError(j.error); return; }
     const srv = j.stats ? j.stats.elapsed_ms : '?';
@@ -1981,7 +1986,9 @@ async function evLoad() {
     if (!S.evState.countFired && (keyset ? S.evState.total < 0 : S.evState.totalCapped)) {
       S.evState.countFired = true;
       const cq = q;
-      exploreCount(cq, isSoql, exploreFrom(), exploreTo()).then(tot => {
+      // Le total doit compter la fenêtre que les PAGES parcourent, pas celle de l'instant où il part :
+      // sinon le nombre de pages annoncé ne se rapporte à aucun parcours (`P10.5-g`).
+      exploreCount(cq, isSoql, win.from, win.to).then(tot => {
         if (S.evState.q === cq && typeof tot === 'number' && tot >= 0) {
           S.evState.total = tot; S.evState.totalCapped = false; S.evState.realTotal = true;
           rerenderExplorePager();
@@ -2054,7 +2061,15 @@ async function runQuery() {
     // SQLite, non spécifié ; le curseur impose le plus récent d'abord), donc c'est une décision produit,
     // pas un simple alignement.
     const useKeyset = isSoql && q.indexOf('|') === -1;
-    S.evState = { q, isSoql, keyset: useKeyset, cursors: [null], page: 0, pageSize: evPageSize(), total: useKeyset ? -1 : 0, shown: 0, totalCapped: false, countFired: false };
+    // `P10.5-g` — LA FENÊTRE D'UN PARCOURS EST GELÉE À SA CRÉATION, ET C'EST UNE CORRECTION, PAS UN
+    // CONFORT. `exploreFrom()` rend `now - fenêtre`, RECALCULÉ à chaque appel : deux pages d'un même
+    // parcours partaient donc sur deux fenêtres décalées de quelques secondes. Sur une fenêtre FROIDE,
+    // le démon numérote les lignes par leur RANG dans l'ensemble hydraté : avancer la borne basse retire
+    // des lignes du DÉBUT de cet ordre et décale TOUS les rangs — le curseur de la page précédente
+    // désignait alors une AUTRE ligne, et la page suivante commençait ailleurs, en silence. Le démon
+    // refuse désormais ce curseur (`cold_cursor_autre_numerotation`) au lieu de servir décalé ; ce qui
+    // manquait ici, c'est de ne plus le lui présenter. Un parcours = une fenêtre, du début à la fin.
+    S.evState = { q, isSoql, keyset: useKeyset, cursors: [null], page: 0, pageSize: evPageSize(), total: useKeyset ? -1 : 0, shown: 0, totalCapped: false, countFired: false, win: { from: exploreFrom(), to: exploreTo() } };
     await evLoad(); return;
   }
   // chemin agrégation : dédup / cancel-previous identique à evLoad (une seule requête explore en vol).

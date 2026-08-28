@@ -453,7 +453,7 @@ pub(crate) async fn cases_list(State(st): State<AppState>, Extension(au): Extens
     // /api/query. Lecture pure (incident/incident_item) -> aucun secret dénié par l'authorizer du read-pool.
     let _permit = match acquire_query_permit(&st.query_sem).await {
         Ok((p, _wait)) => p,
-        Err(_) => return Json(json!({ "cases": [], "total": 0 })),
+        Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({ "cases": [], "total": 0 }))),
     };
     let db_path = req_db_path(&st, &au);
     let now_i = now();

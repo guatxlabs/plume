@@ -1275,6 +1275,35 @@ pub(crate) fn retention_run_tenant(db: &Arc<Mutex<Connection>>, db_path: &str) {
         )
     };
     let cutoff = n - raw_h * 3600;
+    // ==========================================================================================
+    // `P10.5-h` — L'HORIZON DES MÉTRIQUES EST `metric_days`, PAR CONCEPTION. DÉCIDÉ LE 2026-08-28.
+    //
+    // LA QUESTION POSÉE. Le tier froid ne columnarise QUE `event` : la bande froide ne contient RIEN
+    // de la base `metric`, ni lignes ni pré-agrégé (`ensure_cold_rollup_tables` plus haut : les DEUX
+    // tables du sidecar sont alimentées depuis `event`). Fallait-il en construire un ?
+    //
+    // LA DÉCISION : NON. Ce qui suit est le pré-agrégé des métriques — bucket HORAIRE, avg/min/max/n
+    // par (name, host, labels) — et il vit dans la base chaude. Un pré-agrégé FROID de métriques
+    // ajouterait une SECONDE copie d'une donnée déjà agrégée et un TROISIÈME horizon pour la même
+    // série (`metric_raw_hours`, `metric_days`, puis une rétention froide), là où l'exploitant dispose
+    // déjà du levier qui porte l'horizon : `metric_days`.
+    //
+    // CE QUI FONDE LA DÉCISION, MESURÉ SUR CET ARBRE LE 2026-08-28 :
+    //   * `metric_days` est un réglage de premier rang (`RETENTION_FIELDS`, `main.rs`) : défaut 90 j,
+    //     plancher 7 j, PLAFOND 3650 j — exactement le plafond de la rétention froide
+    //     (`COLD_RETENTION_CEIL_DAYS`). Ce que la bande froide peut atteindre, `metric_days` l'atteint.
+    //   * AU DÉFAUT, l'horizon métrique (90 j) DÉPASSE l'horizon événement (`retention_days` = 30 j) :
+    //     l'angle mort ne s'ouvre qu'après une extension DÉLIBÉRÉE de la bande froide au-delà de 90 j.
+    // Le témoin `l_horizon_des_metriques_reste_atteignable_par_son_propre_levier` (cold_store/tests)
+    // LIT ces deux plafonds chacun chez lui et rougit le jour où l'un dépasse l'autre : la décision
+    // devient alors fausse, et c'est elle qu'il faut reprendre — pas le test.
+    //
+    // CE QUE CETTE DÉCISION NE FERME PAS, ET IL FAUT LE DIRE. Au-delà de `metric_days`, la série
+    // n'existe plus NULLE PART, et une console qui trace une courbe sur une fenêtre plus ancienne rend
+    // aujourd'hui une courbe VIDE au lieu de dire que l'horizon s'arrête là. C'est un constat OUVERT :
+    // il demande une surface de publication (`/api/query`) et un rendu (`web/`), qui ne relèvent pas
+    // de ce fichier.
+    // ==========================================================================================
     // métriques fines plus vieilles que raw_h -> moyenne/min/max horaire (un seul INSERT agrégé), PUIS purge du
     // raw. COR MED-1 (atomicité, v134) : l'INSERT de rollup ET la purge sont tenus sous UN SEUL verrou writer,
     // SANS relâchement entre les deux. Sinon une métrique BACKDATÉE (ts<cutoff) committée par l'ingest ENTRE le

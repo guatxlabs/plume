@@ -261,7 +261,7 @@ pub(crate) async fn compliance_posture(
     let empty = json!({ "framework": target, "controls": [], "rules": [], "totals": {}, "frameworks": compliance_frameworks() });
     let _permit = match acquire_query_permit(&st.query_sem).await {
         Ok((p, _wait)) => p,
-        Err(_) => return Json(empty),
+        Err(_) => return Json(crate::handlers::portillon::corps_de_refus(empty)),
     };
     let db_path = req_db_path(&st, &au);
     let env = au.env_filter();

@@ -249,6 +249,93 @@ P10.2-d a retiré 9 index inutiles, P6.8 l'auto-index. Reste, mesuré : `dedup U
 prouvé douloureusement — ne PAS retoucher sans mesurer l'usage). Peu de gras restant ; **ne pas
 sur-optimiser un poste déjà nettoyé**.
 
+### Levier F — RÉDUIRE LE MODE DE DÉTAIL DE L'INDEX PLEIN-TEXTE · **PESÉ LE 2026-08-28, ET LA DÉCISION EST « NON » POUR DEUX DES TROIS FORMES**
+
+**L'INVENTAIRE D'ABORD, LA DÉCISION ENSUITE** — c'est l'ordre que `P10.2-g` impose, et il est tenu
+ici. La question ouverte était : « réduire le détail supprime des formes de recherche, mais personne
+ne sait si quelqu'un les émet ». **La réponse est : LE PRODUIT LUI-MÊME les émet, par construction,
+et pas par accident d'usage.** `fts_plan` (`daemon/src/soql_glue.rs`) a trois étages, et deux d'entre
+eux produisent des formes que le détail réduit interdit :
+
+* **étage 1, VERBATIM** — « tout ce qui marche aujourd'hui (`a OR b`, `err*`, `(x OR y)`, `NEAR(…)`)
+  continue de marcher, à l'octet près ». `NEAR(…)` est donc une capacité PUBLIÉE de la barre.
+* **étages 2 et 3, LITTÉRALISATION** — c'est le remède de `P10.7-a` : un terme que le moteur refuse
+  seul est mis **entre guillemets**, ce qui en fait une PHRASE. Et le tokeniseur par défaut découpe
+  sur la ponctuation, si bien qu'une saisie d'une seule « pièce » devient une phrase de plusieurs
+  jetons : `10.0.0.1` -> 4 jetons, `/usr/bin/dash` -> 3.
+
+**MESURE (2026-08-28, `sqlite3` 3.53.4, table `fts5` de la forme livrée).** Les CINQ saisies que
+`P10.7-a` avait mesurées comme cassées, rendues telles que le produit les rend aujourd'hui :
+
+| saisie, RENDUE par `fts_plan` | `detail=full` (livré) | `detail=column` | `detail=none` |
+|---|---|---|---|
+| `"10.0.0.1"` · `"/usr/bin/dash"` · `"kube-audit"` · `"user:root"` · `"exec(1)"` | servies | **`fts5: phrase queries are not supported (detail!=full)`** (5/5) | idem (5/5) |
+| `NEAR(failed password, 5)` | servie | **`NEAR queries are not supported`** | idem |
+| `message:sshd` (filtre de colonne) | servie | servie | **`column queries are not supported`** |
+| `sshd` · `fail*` · `sshd OR sudo` | servies | servies | servies |
+
+⇒ **`detail=column` ROUVRIRAIT `P10.7-a`**, fermée le 2026-08-09 : chercher une adresse IP dans son
+SOC redeviendrait une erreur de moteur. Ce n'est pas une capacité théorique perdue, c'est le remède
+livré qui cesse de fonctionner.
+
+**ET CE QUE ÇA RAPPORTE, MESURÉ SUR LE MÊME BANC** (300 000 lignes de type SIEM, `content='event'`,
+après `optimize` + `VACUUM`, pages de 4 Kio) :
+
+| forme | `event_fts_data` | `event_fts_docsize` | total FTS | gain vs livré | **reporté aux parts de production du 2026-08-09** (FTS 10,7 %, dont `event_fts_data` 9,3 % — le relevé qui publie LES DEUX) |
+|---|---:|---:|---:|---:|---|
+| `detail=full`, `columnsize=1` (**livré**) | 17 412 096 o | 3 612 672 o | 21 045 248 o | — | — |
+| `detail=column` | 15 994 880 o | 3 612 672 o | 19 628 032 o | **−8,1 %** du `_data` | **≈ −0,8 % du fichier** |
+| `detail=none` | 5 947 392 o | 3 612 672 o | 9 580 544 o | **−65,8 %** du `_data` | **≈ −6,1 % du fichier** |
+| `detail=full`, **`columnsize=0`** | 17 412 096 o (**identique à l'octet**) | **absente** | 17 432 576 o | **−17,2 %** du poste FTS | **≈ −1,4 % du fichier au plus** |
+
+**LES TROIS DÉCISIONS, ET LEUR RAISON :**
+
+1. **`detail=column` : ÉLIMINÉ PAR DOMINANCE.** Il coûte exactement la même famille de capacités que
+   `detail=none` (phrase + `NEAR`) et rapporte **huit fois moins**. Aucun arbitrage ne le choisit.
+2. **`detail=none` : le seul gain réel, et son prix est `P10.7-a` + `NEAR` + les filtres de colonne.**
+   Il n'est PAS engagé : il s'échange contre une capacité de recherche que le produit publie et dont
+   la perte a déjà été mesurée comme un défaut. À rediscuter seulement si la barre de recherche
+   renonce explicitement à la phrase — ce qui est une décision de produit, pas de stockage.
+3. **`columnsize=0` : la seule réduction SANS perte mesurée pour CE produit** — et c'est le résultat
+   neuf de cette pesée. Toutes les formes ci-dessus restent servies, le déclencheur de suppression
+   `event_ad` fonctionne, `merge` fonctionne, et `bm25()` **ne tombe pas en erreur** (il rend une
+   pondération différente : −1,318 contre −1,593 sur la même ligne, parce que les tailles de colonnes
+   ne sont plus stockées). **Personne ne le remarquerait ici : le dépôt n'appelle ni `bm25()`, ni
+   `ORDER BY rank`, ni `snippet()`, ni `highlight()` sur `event_fts`** — le seul `rank` du code est la
+   *commande* `INSERT INTO … (…, rank) VALUES('merge', …)` de `compactage_fts.rs`, qui n'a rien à voir.
+   La recherche ordonne par `e.ts DESC`. **Il n'est PAS engagé non plus**, pour deux raisons écrites :
+   c'est un changement de FORMAT sur disque (il faut RECONSTRUIRE la table, donc une migration et une
+   fenêtre), et le gain est **borné par 1,4 % du fichier** — moins que ce que rend une passe d'aging.
+
+**D'OÙ SORT LE « AU PLUS 15 % », ET DONC LE « 1,4 % » — LA DÉRIVATION, ÉCRITE** *(elle manquait ; le
+chiffre circulait sans elle, et il tombait du côté qui MINORE le gain, c'est-à-dire du côté qui soutient
+la conclusion « ne pas l'engager »)*. `columnsize=0` supprime `event_fts_docsize`, et rien d'autre :
+`event_fts_data` est **identique à l'octet** (colonne 1 du tableau). Le gain est donc borné par tout ce
+que le poste FTS contient EN DEHORS de `_data` :
+
+* relevé de production du 2026-08-09 — le seul qui publie les deux : **FTS 10,7 %** du fichier, dont
+  **`event_fts_data` 9,3 %** ⇒ tout-sauf-`_data` = **1,4 % du fichier**, et c'est la BORNE SUPÉRIEURE
+  du gain ;
+* rapportée à `_data`, cette borne vaut `1,4 / 9,3` = **15,1 %** — c'est exactement le « au plus 15 % »,
+  et c'est sa seule source. Le banc, lui, mesure `3 612 672 / 17 412 096` = **20,7 %** : le corpus
+  synthétique porte proportionnellement plus de `docsize` que la production ;
+* `15 % × 9,3 %` = **1,4 % du fichier**, la dernière colonne.
+
+**CE QUE CETTE BORNE N'EST PAS.** Elle majore : `event_fts_idx` et `event_fts_config` vivent AUSSI dans
+ce 1,4 %, et leur part n'a **pas** été relevée séparément — le gain réel de `columnsize=0` est donc
+strictement inférieur à 1,4 %, d'autant que ces deux objets pèsent. **PIÈGE DE LECTURE APPARIÉ, et il
+s'est produit ici :** le relevé de production suivant, six heures plus tard le même jour, publie
+**FTS 10,9 %** (freelist 7,3 % → 4,8 %) mais **aucune ventilation `_data`**. Apparier ce 10,9 % au 9,3 %
+de l'autre instantané donne 1,6 % / 17,2 % — deux photos différentes du même jour, dont l'écart est de
+la consommation de freelist, pas de la structure. La colonne cite désormais l'appariement COHÉRENT.
+
+**CE QUE CETTE PESÉE NE PROUVE PAS, ET IL FAUT LE DIRE.** Elle est faite contre `sqlite3` **3.53.4**,
+alors que le produit lie **SQLCipher (SQLite 3.39.4 vendoré)**. Les refus mesurés sont des propriétés
+de FTS5 documentées depuis son origine, mais **les tailles n'ont pas été reprises sur le moteur lié**.
+**C'est pourquoi la dernière colonne est dérivée des parts de production et non recopiée du banc** —
+un gain de banc présenté comme un gain de produit serait exactement la faute que le §1 de ce document a
+déjà commise une fois.
+
 ### Levier E — COMPACTER L'INDEX PLEIN-TEXTE (P10.7-b, construit le 2026-08-09) · le seul gratuit
 
 **Ce levier manquait à la liste ci-dessus, et son absence était mesurable.** Les quatre leviers A–D

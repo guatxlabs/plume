@@ -135,3 +135,26 @@ Elle ne juge que des familles **objectives**. Elle ne peut pas décider si une p
 « s'adresse au public » : une garde qui prétendrait le faire produirait du bruit et
 finirait désarmée. Cette part-là tient à la relecture — et la règle écrite ci-dessus est ce
 qui la rend possible.
+
+## 6. L'arbre de travail n'est jamais à soi
+
+Plusieurs travaux se croisent dans ce dépôt, et beaucoup ne sont pas encore commités. Deux gestes
+ordinaires les détruisent, et les deux ont été mesurés ici le 2026-08-28.
+
+**Ne défaites jamais une mutation par `git checkout --` ni `git restore`.** Éprouver une garde en
+mutant un fichier puis en le remettant est la bonne méthode ; le remettre par `checkout` le ramène à
+l'index, c'est-à-dire à `HEAD`, et emporte tout ce qui n'y avait pas été ajouté. Un fichier jamais
+indexé ne laisse aucun objet récupérable — `git fsck --dangling` ne rend rien, et la perte est
+définitive. Sauvegardez le contenu avant la mutation, hors du dépôt, et restaurez par cette copie ;
+ou mieux, mutez dans un miroir et ne touchez pas l'arbre partagé.
+
+**Un miroir se fait par `git archive HEAD | tar -x`, jamais par une copie récursive.** Le répertoire
+temporaire est souvent monté en mémoire vive : une copie qui emporte le répertoire de compilation y
+place plusieurs gibioctets, et à saturation *toute* commande échoue — sans message qui le dise, ce qui
+donne l'impression d'un poste cassé. `git archive` ne prend que les fichiers suivis, ce qui est
+précisément le corpus dont une garde a besoin. Supprimez vos miroirs quand vous avez fini.
+
+**Corollaire pour les gardes à corpus suivi.** Une garde dont le corpus vient de `git ls-files` est
+aveugle à un fichier neuf tant qu'il n'est pas ajouté. Son vert est alors un artefact : faites
+`git add -N` sur vos fichiers neufs *avant* de jouer la batterie, sinon vous validez un arbre que
+l'intégration ne verra pas comme vous.

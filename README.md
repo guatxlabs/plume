@@ -622,6 +622,33 @@ Les commandes 1 et 2 rendent ensemble **240** leviers avec leur défaut littéra
 instance qui tourne, un administrateur lit les valeurs **effectives** d'une liste sûre de 26 clés
 (jamais un secret) via `GET /api/system/diag`.
 
+### Ma base grossit — qu'est-ce qui grossit ?
+
+La question se pose toujours trop tard, et la réponse existe déjà. Trois instruments, du moins cher au
+plus cher :
+
+1. **`plume-daemon db-stats`** — les postes en un coup d'œil, sans parcourir la base. Il vous dit
+   lui-même comment aller plus loin, et le coût de le faire.
+2. **`plume-daemon db-stats --par-objet`** — la ventilation complète : chaque poste, et les plus gros
+   objets NOMMÉS. Il parcourt **toutes** les pages du fichier ; comptez une bonne dizaine de secondes
+   sur une base chargée, et ne le lancez pas pendant une fenêtre d'ingestion serrée.
+3. **La série `plume_db_poste_bytes`** — le même relevé, écrit tout seul à la cadence de
+   `PLUME_VENTILATION_INTERVAL_S`, donc consultable dans le temps sans rien lancer :
+
+   ```
+   metric plume_db_poste_bytes by poste | timechart span=1d avg(value)
+   ```
+
+**Ce que ces instruments font quand ils ne savent pas.** La ventilation vérifie que sa comptabilité
+FERME — que la somme des postes rend bien la taille du fichier. Quand elle ne ferme pas, elle
+n'écrit **aucune** ligne : la série porte alors un TROU, visible dans le graphe, et une seconde série
+`plume_db_ventilation_ok` passe à `0`. Un creux dans la courbe n'est donc jamais « la base a maigri » —
+c'est « ce jour-là, le relevé a refusé de conclure ». Les deux se distinguent à l'œil, et c'est
+délibéré : un chiffre inventé serait pire qu'une absence.
+
+**Ce qu'ils ne disent pas.** Ni pourquoi un poste grossit, ni s'il devrait. La ventilation nomme le
+poste et les objets ; le raisonnement reste le vôtre.
+
 ### Les leviers qu'on a une raison de toucher
 
 Les valeurs entre crochets sont les **défauts lus dans les sources** ; celles marquées *(dérivé)*
@@ -682,7 +709,9 @@ viennent d'une constante — la commande 4 ci‑dessus la donne.
 | Variable | Effet | Défaut |
 |---|---|---|
 | `PLUME_RETENTION_DAYS` | âge au‑delà duquel les événements sont purgés | `30` |
+| `PLUME_RETENTION_PURGE_BATCH` | taille de LOT des purges de rétention. La purge supprime PAR LOTS de cette taille et **relâche le verrou d'écriture entre les lots**, pour qu'un premier passage sur un gros arriéré n'affame pas l'ingestion pendant toute sa durée. L'état final est le même qu'une suppression non bornée ; seule la granularité change. Borné à `[500, 200000]` | `10000` |
 | `PLUME_AUTOVACUUM_INTERVAL` | secondes entre deux passes de *vacuum* incrémental ; `0` = désactivé | `0` |
+| `PLUME_VENTILATION_INTERVAL_S` | secondes entre deux relevés de la VENTILATION de la base — quel poste occupe quoi. `0` = aucun fil, donc aucune série. Le relevé parcourt TOUTES les pages : c'est le prix de savoir ce qui grossit | `3600` |
 | `PLUME_DISK_WARN_PCT` | seuil d'alerte d'occupation disque | `80` |
 | `PLUME_INGEST_MIN_FREE_MB` | plancher d'espace libre sous lequel l'ingestion s'arrête | `512` |
 | `PLUME_COLD_TIER` / `PLUME_COLD_DIR` | tier froid Parquet, **opt‑in** (`1` pour l'activer) | vide |
@@ -693,11 +722,13 @@ viennent d'une constante — la commande 4 ci‑dessus la donne.
 | Variable | Effet | Défaut |
 |---|---|---|
 | `PLUME_QUERY_CONCURRENCY` | requêtes simultanées (sémaphore partagé recherche + query) | `3` |
+| `PLUME_PANEL_REFRESH_CONCURRENCY` | rafraîchissements ASYNC de panneaux simultanés — sémaphore **séparé** de `PLUME_QUERY_CONCURRENCY`, de sorte qu'un tableau de bord qui se rafraîchit ne prend jamais de permis à l'interactif. Saturé, le permis n'est PAS attendu : le cache périmé reste servi. Compte aussi comme **porteur** de mémoire SQLite (le budget se divise par le nombre de porteurs, cf. `PLUME_SQLITE_BUDGET_MB`) | `2` |
 | `PLUME_QUERY_BUDGET_MS` | budget d'une requête avant abandon | `5000` |
 | `PLUME_QUERY_MAX` | plafond de lignes rendues par `/api/query` (borné dur à `100000`) | `5000` |
 | `PLUME_SEARCH_LIMIT` / `PLUME_SEARCH_MAX` | défaut et plafond de `/api/search` | `100` / `5000` |
 | `PLUME_FTS_FIELDS` | `1` = indexe aussi les champs JSON en plein texte (**coûteux en RAM**) | `0` |
 | `PLUME_SQLITE_DEVERSEMENT` | `1` = autorise les tris à déverser sur disque. **Échange de confidentialité** : les temporaires SQLite ne sont **pas** chiffrés par SQLCipher | `0` |
+| `PLUME_SQLITE_DEVERSEMENT_QUOTA_MO` | **borne le volume écrit en clair** quand `PLUME_SQLITE_DEVERSEMENT=1` : au‑delà, l'instruction en cours est ARRÊTÉE sans rendre de résultat. Ce qu'il borne exactement : **les octets que le PROCESSUS détient ouverts** sous le répertoire de déversement, relevés périodiquement. Ce qu'il **ne** borne **pas** : la requête fautive (l'instruction arrêtée est celle qui atteint le point de mesure, pas forcément celle qui a le plus écrit), la RAM, ni quoi que ce soit lorsque le déversement est à `0` (aucune mesure n'est armée). `0` = **aucune borne**. Sans effet si la mesure devient illisible : le refus cesse d'être opposable et la cause est journalisée | `1024` |
 | `PLUME_SQLITE_BUDGET_MB` | budget mémoire du moteur | *(dérivé)* |
 | `PLUME_SQLITE_PLAFOND_DUR` | `1` = le dépassement **refuse** la requête au lieu de la laisser filer | `1` |
 

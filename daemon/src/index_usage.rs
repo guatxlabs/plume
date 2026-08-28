@@ -35,7 +35,19 @@
 //!   * l'échantillonnage 1/N ne voit qu'une part des énoncés : un index employé par un chemin RARE
 //!     peut passer entre les mailles là où le chemin chaud, lui, sera vu ;
 //!   * une charge de test ne prouve rien d'une charge réelle : ce que l'instrument mesure est la
-//!     charge qu'on lui a donnée, jamais celle d'un autre déploiement.
+//!     charge qu'on lui a donnée, jamais celle d'un autre déploiement ;
+//!   * ET LE PLUS COÛTEUX DES QUATRE, parce qu'il a été appris en RÉFUTANT une lecture qu'on croyait
+//!     acquise (`P10.9-a`, campagne du 2026-08-23) : un index ABSENT de la série n'a été nommé par
+//!     aucun plan lu — la série ne porte QUE les index qu'un plan a nommés, donc le verdict se tire
+//!     par SOUSTRACTION depuis la liste des index du schéma, jamais en cherchant des zéros. Et cette
+//!     liste-là N'EST PAS UNE LISTE DE RETRAIT : l'hypothèse « ces index servent des surfaces que
+//!     personne n'a ouvertes » a été mise à l'épreuve par une traversée délibérée de toutes les
+//!     routes de lecture et RÉFUTÉE ; ce qui restait est que les tables concernées sont assez petites
+//!     pour que le planificateur préfère un parcours complet. **Un observatoire d'usage ne sait pas
+//!     distinguer « cet index ne sert à rien » de « cette table est trop petite pour qu'il serve ».**
+//!     Il ne l'apprendra pas — ce n'est pas ce qu'il mesure. Ce qu'il peut faire, et fait désormais,
+//!     c'est PUBLIER le chiffre qui laisse le lecteur trancher : `plume_index_usage_lignes_estimees`,
+//!     l'estimation dont le planificateur s'est lui-même servi pour choisir.
 //!
 //! CE QUE ÇA COÛTE, ET POURQUOI C'EST BORNÉ.
 //!   * ÉTEINT (défaut) : `Observatoire::observer` lit UN entier atomique et rend la main. Aucune
@@ -90,12 +102,21 @@ pub(crate) const INDEX_CAP: usize = 64;
 /// seau, un plafond qui mord PERDRAIT des observations en silence.
 pub(crate) const ETIQUETTE_DEBORDEMENT: &str = "(au-dela-du-plafond)";
 
-/// TOUS LES COMBIEN DE PLANS LUS le régime de statistiques est RECONSTATÉ, tant qu'il n'a pas atteint
-/// son maximum. Le reconstat est NÉCESSAIRE : l'analyse complète est une tâche de FOND lancée après le
-/// bind, donc les premiers énoncés d'un démarrage sont lus sous des statistiques qui ne sont pas
-/// celles du régime de croisière, et un régime figé à la première lecture mentirait pour tout le reste
-/// de la vie du processus. Mais il interroge le catalogue : sans ce pas, il coûterait plus cher que la
-/// lecture de plan qu'il accompagne. Une fois le régime au maximum, il n'est plus reconstaté du tout.
+/// TOUS LES COMBIEN DE PLANS LUS le catalogue est RECONSTATÉ. Le reconstat est NÉCESSAIRE :
+/// l'analyse complète est une tâche de FOND lancée après le bind, donc les premiers énoncés d'un
+/// démarrage sont lus sous des statistiques qui ne sont pas celles du régime de croisière, et un
+/// régime figé à la première lecture mentirait pour tout le reste de la vie du processus. Mais il
+/// interroge le catalogue : sans ce pas, il coûterait plus cher que la lecture de plan qu'il
+/// accompagne.
+///
+/// DEUX GRANDEURS Y SONT CONSTATÉES, ET ELLES N'ONT PAS LA MÊME RÈGLE D'ARRÊT — c'est écrit ici parce
+/// que la version précédente de cette phrase (« une fois le régime au maximum, il n'est plus
+/// reconstaté du tout ») a cessé d'être vraie pour le pas lui-même :
+///   * le RÉGIME ne peut que MONTER (`Aucune` -> `Agregees` -> `Detaillees`) : arrivé au maximum, il
+///     n'est plus interrogé ;
+///   * l'ESTIMATION DE LIGNES (`P10.9-a`) BOUGE dans les deux sens et continue donc d'être constatée
+///     à chaque pas. Le coût du pas reste UNE petite interrogation du catalogue tous les
+///     `PAS_DE_RECONSTAT_DU_REGIME` plans LUS, c'est-à-dire tous les `N x 64` énoncés observables.
 pub(crate) const PAS_DE_RECONSTAT_DU_REGIME: u64 = 64;
 
 /// LA TABLE dont le régime de statistiques est publié. C'est celle dont les index pèsent le poste
@@ -105,7 +126,7 @@ pub(crate) const TABLE_OBSERVEE: &str = "event";
 
 /// CE QUE LA SÉRIE NE PROUVE PAS — écrit ICI parce que c'est ce texte qui part dans le `# HELP`, donc
 /// sous les yeux de qui lit le verdict, et pas seulement sous ceux de qui lit ce fichier.
-pub(crate) const LIMITES: &str = "un zero dit qu'aucun enonce ECHANTILLONNE n'a nomme cet index PENDANT CETTE OBSERVATION, jamais que l'index est inutile (compteurs en memoire, remis a zero au redemarrage ; echantillonnage 1/N ; une charge de test ne prouve rien d'une charge reelle) ; et le verdict depend du regime de statistiques, cf. plume_index_usage_stats_regime";
+pub(crate) const LIMITES: &str = "un zero dit qu'aucun enonce ECHANTILLONNE n'a nomme cet index PENDANT CETTE OBSERVATION, jamais que l'index est inutile (compteurs en memoire, remis a zero au redemarrage ; echantillonnage 1/N ; une charge de test ne prouve rien d'une charge reelle) ; et le verdict depend du regime de statistiques, cf. plume_index_usage_stats_regime. UN INDEX ABSENT de cette serie n'a ete nomme par aucun plan lu : le verdict se tire en soustrayant les index observes de la liste des index du SCHEMA, pas en cherchant des zeros ici. ET CETTE LISTE N'EST PAS UNE LISTE DE RETRAIT : un observatoire d'usage ne sait pas distinguer « cet index ne sert a rien » de « cette table est trop petite pour que le planificateur le prefere a un parcours complet », et sur une installation modeste c'est la seconde qui domine — cf. plume_index_usage_lignes_estimees, l'estimation dont le planificateur lui-meme se sert";
 
 // =================================================================================================
 // LE LECTEUR DE PLAN — UNE SEULE COPIE, PARTAGÉE PAR L'OBSERVATOIRE ET PAR LE REJEU DE TEST
@@ -213,6 +234,34 @@ pub(crate) fn regime_statistiques(conn: &Connection, table: &str) -> RegimeStati
     } else {
         RegimeStatistiques::Aucune
     }
+}
+
+/// `P10.9-a` — L'ESTIMATION DE LIGNES DONT LE PLANIFICATEUR SE SERT, POUR LA TABLE OBSERVÉE.
+///
+/// POURQUOI ELLE MANQUAIT, ET CE QUE SON ABSENCE A COÛTÉ. La campagne d'observation en production a
+/// rendu une liste d'index que AUCUN plan n'a nommés, et l'hypothèse naturelle — « ils servent des
+/// surfaces que personne n'a ouvertes » — a été RÉFUTÉE par une traversée délibérée de toutes les
+/// routes de lecture. L'explication qui reste est ailleurs : les tables concernées sont assez petites
+/// pour que le planificateur préfère un parcours complet. **Un observatoire d'usage ne sait pas
+/// distinguer « cet index ne sert à rien » de « cette table est trop petite pour qu'il serve »** — et
+/// il ne le SAURA pas : ce n'est pas ce qu'il mesure. Ce qu'il peut faire, et ne faisait pas, c'est
+/// publier le chiffre qui permet au LECTEUR de trancher.
+///
+/// CE QUE CE CHIFFRE EST, EXACTEMENT. La première grandeur de `sqlite_stat1` pour la table : le
+/// nombre de lignes tel que le planificateur le CROIT au moment où il choisit. Ce n'est ni un
+/// `COUNT(*)` — qui coûterait un parcours et répondrait à une autre question — ni une vérité : c'est
+/// l'estimation datant de la dernière analyse, celle qui a réellement décidé du plan lu. `None` quand
+/// `sqlite_stat1` n'existe pas ou ne porte pas la table : le planificateur devine alors une constante,
+/// et publier cette constante ferait passer une supposition pour une mesure.
+pub(crate) fn lignes_estimees(conn: &Connection, table: &str) -> Option<i64> {
+    let stat: String = conn
+        .query_row(
+            "SELECT stat FROM sqlite_stat1 WHERE tbl=?1 AND stat IS NOT NULL AND stat<>'' LIMIT 1",
+            params![table],
+            |r| r.get(0),
+        )
+        .ok()?;
+    stat.split_whitespace().next()?.parse::<i64>().ok()
 }
 
 /// La SQLite embarquée sait-elle produire des statistiques d'index DÉTAILLÉES ? DEMANDÉ à SQLite
@@ -345,6 +394,10 @@ pub(crate) struct Observatoire {
     plans_sans_index: AtomicU64,
     /// Dernier régime de statistiques constaté ; `-1` = pas encore constaté (aucun plan lu).
     regime: AtomicI64,
+    /// `P10.9-a` — dernière estimation de lignes constatée pour `TABLE_OBSERVEE` ; `-1` = pas encore
+    /// constatée, ou constatée ABSENTE (aucune statistique ne la porte). Les deux se publient pareil :
+    /// rien. Un observatoire qui publierait `0` affirmerait une table vide.
+    lignes_estimees: AtomicI64,
 }
 
 impl Observatoire {
@@ -359,6 +412,7 @@ impl Observatoire {
             plans_refuses: AtomicU64::new(0),
             plans_sans_index: AtomicU64::new(0),
             regime: AtomicI64::new(-1),
+            lignes_estimees: AtomicI64::new(-1),
         }
     }
 
@@ -407,6 +461,16 @@ impl Observatoire {
         }
     }
 
+    /// `P10.9-a` — la dernière estimation de lignes constatée, ou `None` si aucune ne l'a été. Elle
+    /// n'est PAS lue à la demande : la publier coûterait un accès catalogue à chaque scrutation de
+    /// `/metrics`, sur une connexion que l'exposition n'a pas.
+    pub(crate) fn lignes_estimees(&self) -> Option<i64> {
+        match self.lignes_estimees.load(Ordering::Relaxed) {
+            n if n >= 0 => Some(n),
+            _ => None,
+        }
+    }
+
     /// Les compteurs d'une étiquette, créés à la première observation. Au-delà du plafond, tout tombe
     /// dans le seau de débordement : la mesure survit, son attribution non.
     fn compteurs_de(&self, nom: &str) -> Arc<Compteurs> {
@@ -451,10 +515,19 @@ impl Observatoire {
         // `PAS_DE_RECONSTAT_DU_REGIME` — nécessaire parce que l'analyse complète tourne en fond après
         // le bind, borné parce qu'il interroge le catalogue.
         let deja_lus = self.plans_lus.fetch_add(1, Ordering::Relaxed);
-        if self.regime.load(Ordering::Relaxed) < RegimeStatistiques::Detaillees as i64
-            && deja_lus % PAS_DE_RECONSTAT_DU_REGIME == 0
-        {
-            self.regime.store(regime_statistiques(conn, TABLE_OBSERVEE) as i64, Ordering::Relaxed);
+        if deja_lus % PAS_DE_RECONSTAT_DU_REGIME == 0 {
+            // Le RÉGIME ne se reconstate que tant qu'il n'est pas au maximum : il ne peut que monter.
+            if self.regime.load(Ordering::Relaxed) < RegimeStatistiques::Detaillees as i64 {
+                self.regime.store(regime_statistiques(conn, TABLE_OBSERVEE) as i64, Ordering::Relaxed);
+            }
+            // `P10.9-a` — L'ESTIMATION DE LIGNES, elle, se reconstate TOUJOURS, et c'est délibéré :
+            // elle BOUGE (la base grossit, l'analyse repasse), alors que le régime ne fait que monter.
+            // Une estimation figée à la première lecture ferait passer une installation devenue grande
+            // pour celle qu'elle était au démarrage — exactement la lecture fautive que ce chiffre
+            // existe pour empêcher. Le pas est le même, donc le coût reste UNE petite interrogation du
+            // catalogue tous les `PAS_DE_RECONSTAT_DU_REGIME` plans LUS.
+            self.lignes_estimees
+                .store(lignes_estimees(conn, TABLE_OBSERVEE).unwrap_or(-1), Ordering::Relaxed);
         }
         if lu.index.is_empty() {
             self.plans_sans_index.fetch_add(1, Ordering::Relaxed);
@@ -541,6 +614,15 @@ impl Observatoire {
             "1 si le plafond a mordu : les observations au-dela sont comptees sous une etiquette de debordement, donc non attribuees",
             u8::from(tronque).to_string(),
         );
+        // `P10.9-a` — L'ESTIMATION DE LIGNES DE LA TABLE OBSERVÉE, PUBLIÉE À CÔTÉ DES COMPTEURS parce
+        // que c'est elle qui décide comment ils se lisent. Absente tant qu'aucune statistique ne la
+        // porte : le planificateur devine alors une constante, et publier une supposition sous le nom
+        // d'une estimation serait le défaut même que cette série est là pour empêcher.
+        if let Some(lignes) = self.lignes_estimees() {
+            o.push_str(&format!(
+                "# HELP plume_index_usage_lignes_estimees Lignes de la table que le PLANIFICATEUR croit y trouver (premiere grandeur de sqlite_stat1, datant de la derniere analyse — ni un COUNT(*), ni une verite). ELLE DECIDE COMMENT LIRE LE RESTE : sous un petit nombre de lignes un parcours complet bat l'index, et un index que nul plan ne nomme n'est PAS pour autant un index inutile\n# TYPE plume_index_usage_lignes_estimees gauge\nplume_index_usage_lignes_estimees{{table=\"{TABLE_OBSERVEE}\"}} {lignes}\n"
+            ));
+        }
         // LE RÉGIME EST ABSENT tant qu'aucun plan n'a été lu sous un régime constaté : publier `0`
         // affirmerait « aucune statistique », ce qui est une mesure, pas une absence de mesure.
         if let Some(r) = self.regime() {

@@ -179,9 +179,12 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
     // possible = sémaphore fermé (shutdown). Relâché en fin de handler.
     // On le DIT (P10.7-a) : « le service s'arrête » n'est pas « aucun résultat ». Ce n'est pas la
     // branche « saturation » d'autrefois — acquire_owned attend toujours, il ne rejette pas sous charge.
+    // `P10.7-c` : la phrase n'est plus écrite ici mais dans `handlers/portillon`, UNE fois pour les
+    // treize routes qui franchissent le portillon. Seule la FORME (`results`) reste locale, parce
+    // qu'elle seule est propre à cette route.
     let (_permit, timings) = match clock.permit(&st.query_sem).await {
         Ok(x) => x,
-        Err(_) => return Json(json!({ "results": [], "error": "recherche NON EXÉCUTÉE : le service se ferme (sémaphore de lecture clos)" })),
+        Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({ "results": [] }))),
     };
     // FIELD FILTERS (#45) : /api/search NE PASSE PAS par run_query_ex (lignes construites à la main dans
     // map_row) -> on masque APRÈS coup les champs de chaque résultat (message/host/src_ip...) avec le jeu

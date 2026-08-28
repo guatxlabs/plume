@@ -425,6 +425,14 @@ fichier de déversement relus, contrôle négatif à 0. Une base chiffrée qui l
 trieur n'est pas chiffrée — **plume ne fait pas cet échange à votre place**. `PLUME_SQLITE_DEVERSEMENT=1`
 le prend explicitement, pour un déploiement dont le modèle de menace exclut le vol du volume.
 
+**Et une fois l'échange pris, il est BORNÉ.** `PLUME_SQLITE_DEVERSEMENT_QUOTA_MO` (défaut `1024`,
+`0` = aucune borne) plafonne les octets que le **processus** détient ouverts sous le répertoire de
+déversement ; au-delà, l'instruction en cours est arrêtée et aucun résultat n'est rendu — le refus
+NOMME le levier, et [`deploy/PROFILE.md`](deploy/PROFILE.md) comme le
+[README](README.md#configuration--les-variables-plume_) décrivent ce qu'il borne et ce qu'il ne
+borne pas. Il ne borne ni la RAM ni la requête fautive : la borne porte sur ce que le processus
+détient, pas sur ce qu'une requête écrit.
+
 **Conséquence, écrite pour être opposable : au défaut, une agrégation assez large tue toujours le
 processus.** Le chemin qui ferme ce défaut sans rien céder sur la confidentialité est « moins d'octets à
 trier » — compression au repos et agrégation bornée native — pas le déversement.

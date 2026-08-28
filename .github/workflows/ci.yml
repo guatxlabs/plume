@@ -447,7 +447,79 @@ env:
   #     sur un code 124 hors borne armée ; la clé d'aveu stable sous un compte qui change et son
   #     témoin inverse à deux bornes cumulables) et 1 dans `tests/allowlist_du_responder.rs` (le
   #     miroir, côté démon, du trou de lecture qui était côté shell).
-  EXPECTED_TESTS: "1376"
+  #
+  # CE QUE « L'ÉCART » DIT, ET CE QU'IL NE DIT PAS — la règle, corrigée le 2026-08-28. Les strophes
+  # ci-dessus écrivent, cinq fois, que « l'écart reste 222, ce qui est LA SEULE CHOSE qui dise qu'aucun
+  # test n'a été gagné ni perdu du côté de la feature ». C'était vrai de CES lots-là, où aucun test
+  # ajouté n'était derrière un `cfg(feature)` ; c'est FAUX comme règle, et le premier lot qui ajoute des
+  # tests DANS le module froid le montre. La règle juste : un écart qui BOUGE n'est pas suspect en soi
+  # — il l'est quand il bouge SANS RAISON ÉCRITE. La raison se dérive : `daemon/src/main.rs` porte
+  # `#[cfg(feature = "cold_tier")] mod cold_store;`, donc tout test déclaré sous `daemon/src/cold_store/`
+  # ne compte QUE dans le profil froid, et l'écart doit bouger d'EXACTEMENT ce nombre-là. Ce qui reste
+  # un signal, inchangé : un écart qui bouge d'un AUTRE nombre que celui des tests ajoutés ou retirés
+  # sous la feature.
+  #
+  # RÉ-MESURÉ le 2026-08-28 par `.github/scripts/compter-les-tests.sh` (les DEUX profils dans la même
+  # exécution, JAMAIS par addition) sur le lot P10 et sa reprise adverse : 1376 -> **1382** (+6) et
+  # 1598 -> **1618** (+20). L'écart entre les deux profils passe donc de **222 à 236**, et le +14 est
+  # ÉCRIT : ce sont les quatorze tests déclarés dans `daemon/src/cold_store/tests.rs`, module gaté par
+  # la feature. Les deux dérivations FERMENT contre la mesure — 1376+6 = 1382 et 1598+6+14 = 1618 —
+  # et c'est cette fermeture, pas une lecture des sources, qui dit qu'aucun test n'a été perdu en
+  # chemin. Répartition DÉRIVÉE du delta de déclarations par fichier (le TOTAL restant une mesure) :
+  #   - LES DEUX PROFILS (+6, aucun `cfg(feature)` dans ces fichiers) : `tests/portillon_avoue.rs`
+  #     (3, neuf — l'aveu de portillon unique et sa garde dérivée, `P10.7-c`), `tests/keyset.rs` (+2 :
+  #     l'ordre du wrap ancré en clair pour `P10.5-f`, et la garde DÉRIVÉE qui refuse qu'un module de
+  #     `web/` RECONSTRUISE un curseur keyset au lieu de renvoyer celui qu'il a reçu),
+  #     `tests/index_usage_observatoire.rs` (+1) ;
+  #   - PROFIL FROID SEUL (+14, tous dans `daemon/src/cold_store/tests.rs`) : 11 pour le lot lui-même
+  #     (browse keyset colonnaire, exactitude froide, provenance) et 3 pour la reprise adverse du
+  #     2026-08-28 — la garde mono-env jugée sur la FENÊTRE et non sur la page, l'aveu de provenance
+  #     de la voie colonnaire sur une page que le chaud a remplie seule, et le refus qui ne promet
+  #     plus « exacte » une voie que le produit publie approximative.
+  #
+  # RÉ-MESURÉ le 2026-08-28 par `.github/scripts/compter-les-tests.sh` (les DEUX profils dans la même
+  # exécution) ET par une exécution RÉELLE des deux suites, sur la reprise adverse du lot P10 :
+  # 1382 -> **1384** (+2) et 1618 -> **1624** (+6). L'écart passe de 236 à **240**, et le +4 est ÉCRIT :
+  # QUATRE tests ne comptent que dans le profil froid, et pour DEUX raisons distinctes —
+  #   · 2 sont déclarés dans `daemon/src/cold_store/tests.rs`, module que `main.rs` gate par la feature ;
+  #   · 2 vivent dans `daemon/src/tests/keyset.rs` (compilé dans les DEUX profils) mais portent
+  #     eux-mêmes `#[cfg(feature = "cold_tier")]`, parce qu'ils éprouvent une règle qui n'existe pas
+  #     en mode 0 (l'espace d'identifiant d'un curseur froid). C'est le premier lot où l'écart bouge
+  #     pour cette seconde raison : « sous `cold_store/` » n'est donc PAS la règle, la règle est
+  #     « derrière la feature, où que le test soit écrit ».
+  # Les deux dérivations FERMENT contre la mesure — 1382+2 = 1384 et 1618+2+4 = 1624 — et c'est cette
+  # fermeture, pas une lecture des sources, qui dit qu'aucun test n'a été perdu en chemin. Répartition
+  # DÉRIVÉE du delta de déclarations par fichier (le TOTAL restant une mesure) :
+  #   - LES DEUX PROFILS (+2, `tests/keyset.rs`, aucun `cfg`) : la PORTE de la voie colonnaire n'est
+  #     écrite qu'une fois et le refus la précède (`P10.5-g`) ; le retrait des colonnes d'aide n'a
+  #     qu'un site, parce qu'une page keyset n'a plus qu'une SORTIE ;
+  #   - PROFIL FROID SEUL (+4) : 2 dans `tests/keyset.rs` sous `cfg(feature)` — les quatre causes qui
+  #     ferment la voie colonnaire, éprouvées une par une, et le refus d'un curseur marqué vu par le
+  #     ROUTEUR RÉEL (422 nommé, et servi sans la marque) ; 2 dans `cold_store/tests.rs` — chaque
+  #     espace d'identifiant va à son lecteur et aucun autre, et le message d'exactitude ne promet
+  #     « exacte » aucune forme qu'une route pré-agrégée intercepte.
+  #
+  # RÉ-MESURÉ le 2026-08-28 par `.github/scripts/compter-les-tests.sh` (les DEUX profils dans la même
+  # exécution) ET par une exécution RÉELLE des deux suites, sur la SEPTIÈME reprise du même module —
+  # celle qui ferme la FAMILLE « on n'infère jamais l'espace d'un curseur » : 1384 -> **1385** (+1) et
+  # 1624 -> **1628** (+4). L'écart passe de 240 à **243**, et le +3 est ÉCRIT : trois tests ne comptent
+  # que dans le profil froid, pour les DEUX raisons déjà nommées —
+  #   · 1 est déclaré dans `daemon/src/cold_store/tests.rs`, module gaté par la feature ;
+  #   · 2 vivent dans `daemon/src/tests/keyset.rs` (compilé dans les DEUX profils) mais portent
+  #     eux-mêmes `#[cfg(feature = "cold_tier")]`, parce qu'ils éprouvent des règles qui n'existent pas
+  #     en mode 0 (l'espace d'identifiant d'un curseur froid, l'aveu de part froide).
+  # Les deux dérivations FERMENT contre la mesure — 1384+1 = 1385 et 1624+1+3 = 1628. Répartition
+  # DÉRIVÉE du delta de déclarations par fichier (le TOTAL restant une mesure) :
+  #   - LES DEUX PROFILS (+1, `tests/keyset.rs`, aucun `cfg`) : la règle d'entrée sur le curseur n'est
+  #     pas RECOPIÉE dans le handler, elle y est LUE — et la déduction supprimée (la routabilité d'une
+  #     traversée) n'est plus nommée nulle part dans le démon, marche d'arbre à l'appui ;
+  #   - PROFIL FROID SEUL (+3) : 2 dans `tests/keyset.rs` sous `cfg(feature)` — la règle d'entrée jugée
+  #     cause par cause, jambes NÉGATIVES comprises (une garde qui refuserait tout casserait la
+  #     pagination chaude), et l'aveu de part froide qui doit s'accompagner de l'aveu de VOIE
+  #     (`stats.served_from`, le champ auquel le refus d'exactitude renvoie le lecteur) ; 1 dans
+  #     `cold_store/tests.rs` — l'empreinte de numérotation SUIT ce qui numérote, mesurée sur le rang
+  #     d'une même ligne dans deux hydratations qui ne diffèrent que d'UNE SECONDE de borne basse.
+  EXPECTED_TESTS: "1385"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -839,7 +911,21 @@ jobs:
           # P3→P8 et sa reprise adverse : 1598 avec `cold_tier` pour 1376 par défaut — l'écart reste
           # **222**. Les +25 sont les MÊMES vingt-cinq que ceux d'`EXPECTED_TESTS` (leur répartition
           # par fichier est écrite là-bas, une seule fois), aucun derrière un `cfg` de feature.
-          EXPECTED_COLD_TESTS: "1598"
+          # RÉ-MESURÉ le 2026-08-28 (MÊME commande, les deux profils dans la même exécution) sur le lot
+          # P10 et sa reprise adverse : **1618** avec `cold_tier` pour **1382** par défaut — l'écart
+          # passe de 222 à **236**, ET C'EST ATTENDU : les quatorze tests neufs de
+          # `daemon/src/cold_store/tests.rs` ne comptent QUE dans ce profil (`main.rs` porte
+          # `#[cfg(feature = "cold_tier")] mod cold_store;`). La phrase « l'écart reste 222 » des
+          # strophes précédentes décrivait CES lots-là, pas une loi : ce qui dit qu'aucun test n'a été
+          # perdu, c'est que les DEUX dérivations ferment contre la mesure (1598+6+14 = 1618 ici,
+          # 1376+6 = 1382 là-bas). La répartition par fichier est écrite auprès d'`EXPECTED_TESTS`,
+          # une seule fois.
+          # RÉ-MESURÉ le 2026-08-28 (MÊME commande, les deux profils dans la même exécution) sur la
+          # reprise adverse du lot P10 : **1624** avec `cold_tier` pour **1384** par défaut — l'écart
+          # passe de 236 à **240**. Les quatre tests du delta sont froids pour DEUX raisons distinctes
+          # (deux sous `cold_store/`, deux sous `#[cfg(feature)]` dans `tests/keyset.rs`) ; la
+          # répartition est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
+          EXPECTED_COLD_TESTS: "1628"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

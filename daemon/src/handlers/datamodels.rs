@@ -335,7 +335,7 @@ async fn run_generated_soql(st: &AppState, au: &AuthUser, soql: &str, from: i64,
     if compiled.is_empty() { return bad_req("requête vide"); }
     let _permit = match acquire_query_permit(&st.query_sem).await {
         Ok((p, _wait)) => p,
-        Err(_) => return Json(json!({ "columns": [], "rows": [] })).into_response(),
+        Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({ "columns": [], "rows": [] }))).into_response(),
     };
     let db_path = req_db_path(st, au);
     let lim = limit.clamp(1, 10_000);

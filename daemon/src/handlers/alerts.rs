@@ -230,7 +230,7 @@ pub(crate) async fn alerts(State(st): State<AppState>, Extension(au): Extension<
     // (v72) évitent le tri complet. Le backlog borné (LIMIT 200) profite du même chemin sans surcoût.
     let _permit = match acquire_query_permit(&st.query_sem).await {
         Ok((p, _wait)) => p,
-        Err(_) => return Json(json!({ "alerts": [] })).into_response(),
+        Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({ "alerts": [] }))).into_response(),
     };
     let db_path = req_db_path(&st, &au);
     let gval = gval.to_string();
@@ -342,7 +342,7 @@ pub(crate) async fn alert_groups(State(st): State<AppState>, Extension(au): Exte
     let offset = q.get("offset").and_then(|s| s.trim().parse::<i64>().ok()).unwrap_or(0).clamp(0, 100_000);
     let _permit = match acquire_query_permit(&st.query_sem).await {
         Ok((p, _wait)) => p,
-        Err(_) => return Json(json!({ "groups": [], "group": group_col })).into_response(),
+        Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({ "groups": [], "group": group_col }))).into_response(),
     };
     let db_path = req_db_path(&st, &au);
     let gc = group_col.to_string();
@@ -482,7 +482,7 @@ pub(crate) async fn coverage_detections(State(st): State<AppState>, Extension(au
     // spawn_blocking + read_with_watchdog). idx_alert_mitre_ts (v72) couvre le filtre mitre<>'' + ts>=?.
     let _permit = match acquire_query_permit(&st.query_sem).await {
         Ok((p, _wait)) => p,
-        Err(_) => return Json(json!({ "detections": [] })),
+        Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({ "detections": [] }))),
     };
     let db_path = req_db_path(&st, &au);
     let res = tokio::task::spawn_blocking(move || {
@@ -694,7 +694,7 @@ pub(crate) async fn coverage_attack(State(st): State<AppState>, Extension(au): E
     // Même régime de concurrence que coverage_detections (query_sem + spawn_blocking + watchdog).
     let _permit = match acquire_query_permit(&st.query_sem).await {
         Ok((p, _wait)) => p,
-        Err(_) => return Json(json!({ "tactics": [], "totals": {} })),
+        Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({ "tactics": [], "totals": {} }))),
     };
     let db_path = req_db_path(&st, &au);
     let res = tokio::task::spawn_blocking(move || {

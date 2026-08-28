@@ -581,7 +581,10 @@ async function renderPanel(p, editable = true) {
         reqBody.keyset = true;
         const cur = spg.cursors[pg];
         const jumpOff = (!cur && pg > 0) ? pg * spg.pageSize : 0;
-        if (cur) reqBody.cursor = { ts: cur.ts, id: cur.id };
+        // LE CURSEUR EST RÉÉMIS TEL QUEL, jamais reconstruit : il portait `{ ts: cur.ts, id: cur.id }`,
+        // ce qui perd tout champ que le démon y a posé — dont l'espace d'identifiant du browse froid,
+        // sans lequel la page suivante est REFUSÉE (cf. `aucun_module_web_ne_reconstruit_le_curseur_keyset`).
+        if (cur) reqBody.cursor = cur;
         else if (jumpOff) reqBody.offset = jumpOff;
       } else {
         reqBody.offset = pg * spg.pageSize;
@@ -599,8 +602,15 @@ async function renderPanel(p, editable = true) {
       // ① KEYSET : mémorise le curseur de continuation (Suivant SÉQUENTIEL rapide, sans cap). Le total reste celui du
       // COUNT (pager NUMÉROTÉ commun) — un saut OFFSET renvoie `total`, une page séquentielle non (on garde l'ancien).
       if (spg.keyset) {
+        // LE CURSEUR EST MÉMORISÉ **TEL QUE LE SERVEUR L'A RENDU**, jamais reconstruit. Il portait
+        // `{ ts: nc.ts, id: nc.id }` — deux champs recopiés à la main — et cette recopie PERD tout
+        // champ que le serveur y ajoute. Le browse froid colonnaire en ajoute un : l'espace
+        // d'identifiant de la ligne qui a produit le curseur (une ligne froide n'a pas d'`id`, chaque
+        // voie lui en fabrique un, et pas le même). Sans lui, le démon ne peut plus savoir quelle voie
+        // sait relire ce nombre, et il REFUSE la page plutôt que d'en servir une qui commence ailleurs.
+        // La validation reste la même ; c'est la VALEUR conservée qui change.
         const nc = j.next_cursor;
-        spg.cursors[spg.page + 1] = (nc && typeof nc.ts === 'number' && typeof nc.id === 'number') ? { ts: nc.ts, id: nc.id } : null;
+        spg.cursors[spg.page + 1] = (nc && typeof nc.ts === 'number' && typeof nc.id === 'number') ? nc : null;
       }
       if (!spg.realTotal && typeof j.total === 'number') { spg.total = j.total; spg.totalCapped = !!j.total_capped; }
       else if (!spg.realTotal && !spg.keyset) { spg.total = spg.rows.length; }

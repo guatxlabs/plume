@@ -3669,6 +3669,520 @@ fn p3_truncated_surfaced() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+// ====================================================================================================
+// `P10.5-c` — LE PLAFOND DU FROID NE PEUT REFUSER QUE CE QU'IL A TRONQUÉ.
+//
+// LE DÉFAUT MESURÉ (2026-08-25, repris ici en témoin exécutable). Le déclencheur d'union est une
+// propriété de la FENÊTRE seule (`from < B`, `handlers/query.rs`) : il ne regarde pas quelle TABLE la
+// requête lit. Or le tier froid ne columnarise QUE `event` (`COLD_EVENT_DDL`, `PARQUET_COLS`) ; la base
+// `metric` du langage compile vers `metric ∪ metric_rollup` (cœur, `metric_base`) et ne NOMME jamais
+// `event`. Une série de métriques dont la fenêtre franchit la frontière était donc calculée sur ses
+// tables INTACTES, puis REFUSÉE au motif d'une troncature subie par une table qu'elle ne lit pas.
+// ====================================================================================================
+
+/// Les trois points de métrique de ces témoins, sur le jour FROID `day`. Écrits dans `metric`, que le
+/// vieillissement ne touche JAMAIS (il ne lit que `event`) -> ils restent intégralement disponibles.
+///
+/// `metric_rollup` est créée ICI (schéma MIROIR du live, cf. la chaîne de migrations) parce que la base
+/// `metric` du langage compile vers DEUX feuilles physiques — `metric ∪ metric_rollup` (cœur,
+/// `metric_base`) — et que le SQL ne PRÉPARE pas si l'une manque. C'est aussi la mesure que ces témoins
+/// portent : les deux tables lues sont dans `main`, AUCUNE des deux n'est le froid.
+fn seme_la_serie(db: &Arc<Mutex<Connection>>, base: i64) {
+    let c = db.lock();
+    c.execute_batch(
+        "CREATE TABLE IF NOT EXISTS metric_rollup(ts INTEGER NOT NULL, name TEXT NOT NULL, host TEXT, \
+           avg REAL, min REAL, max REAL, n INTEGER, labels TEXT)",
+    )
+    .unwrap();
+    for (k, v) in [(0i64, 1.0f64), (1, 2.0), (2, 6.0)] {
+        c.execute(
+            "INSERT INTO metric(ts,name,labels,value,host,env_id) VALUES(?1,'plume_sonde','{}',?2,'h1','prod')",
+            params![base + k, v],
+        )
+        .unwrap();
+    }
+}
+
+/// Le jour froid saturé (5001 lignes > plafond 5000) + le tenant de la queue + le vieillissement.
+/// Rend `(dbp, conf, base, total, B)`.
+fn banc_froid_sature(root: &Path, db: &Arc<Mutex<Connection>>) -> (String, HashMap<String, String>, i64, i64, i64) {
+    let dbp = dbp(root);
+    let conf = conf_union(HOT_WIN);
+    let day = M - 8;
+    let base = day * SECS_PER_DAY;
+    let total = 5001i64; // > cap défaut (5000) -> l'hydratation froide TRONQUE, comme p3_truncated_surfaced
+    {
+        let c = db.lock();
+        let tx = c.unchecked_transaction().unwrap();
+        for i in 0..total {
+            let r = rich_row(base + i, i);
+            tx.execute(
+                "INSERT INTO event(ts,severity,source,category,host,src_ip,dst_ip,url,xff,dedup,engagement_id,origin,env_id,message,fields) \
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                params![r.row.ts, r.row.severity, r.row.source, r.row.category, r.row.host, r.row.src_ip, r.row.dst_ip, r.row.url, r.xff, r.row.dedup, r.row.engagement_id, r.row.origin, r.row.env_id, r.row.message, r.row.fields],
+            ).unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    insert_recent_tail_holder(db);
+    seme_la_serie(db, base);
+    cold_age_run(db, &dbp, &conf, n_now(), RET_DAYS);
+    let b = union_boundary(db, &conf);
+    assert!(base < b, "fixture : la fenêtre doit franchir la frontière froide (base={base} < B={b})");
+    (dbp, conf, base, total, b)
+}
+
+/// `P10.5-c` TÉMOIN POSITIF — une série que le froid ne stocke PAS reste EXACTE sur une fenêtre large.
+/// Trois faits sont mesurés dans le même test :
+///   1. l'INSTRUMENT : le SQL compilé de la base `metric` ne nomme AUCUNE des deux tables de l'union ;
+///   2. le plafond froid a bel et bien MORDU sur cette même fenêtre (sinon le test ne prouverait rien) ;
+///   3. la réponse est EXACTE, et sa valeur est celle de la fenêtre entièrement chaude (même SQL, sans
+///      hydratation) — donc le refus qui la frappait était FAUX, pas conservateur.
+#[test]
+fn une_serie_que_le_froid_ne_stocke_pas_reste_exacte_sous_le_plafond_du_froid() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
+    let root = tmp_root("p105c-metric");
+    let db = mkdb(&root);
+    let (dbp, conf, base, total, b) = banc_froid_sature(&root, &db);
+
+    let soql = "metric plume_sonde | stats avg(value)";
+    let sql = compile_ev(soql, base, base + total, FieldMaskSet::new());
+    // (1) INSTRUMENT — dérivé du SQL RÉELLEMENT EXÉCUTÉ, pas d'une croyance sur le compilateur.
+    for interdit in ["event", "cold_event"] {
+        assert!(
+            !sql.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|t| t.eq_ignore_ascii_case(interdit)),
+            "instrument : le SQL de la base `metric` ne doit NOMMER ni `event` ni `cold_event` — {sql}"
+        );
+    }
+
+    // (2) LE PLAFOND MORD BIEN SUR CETTE FENÊTRE — mesuré par une requête qui, elle, LIT `event`.
+    let sql_ev = compile_ev("search | table source", base, base + total, FieldMaskSet::new());
+    let (_v, _t, meta_ev) =
+        union_query_oracle(&dbp, &conf, None, base, base + total, b, &sql_ev, None, 60_000, None, &[]).unwrap();
+    assert!(meta_ev.truncated, "fixture : le plafond froid DOIT mordre sur cette fenêtre");
+
+    // (3) LA RÉFÉRENCE — MÊME SQL, hydratation froide VIDE (`q_from = B` -> hi < lo), donc structurellement
+    // exacte : c'est le chemin qu'emprunte déjà `planner::hot_partial`.
+    let (ref_ans, _) = cold_union_query(&dbp, &conf, None, b, b + 1, b, &sql, None, 60_000, None, &[]).unwrap();
+    let (ref_v, _) = ref_ans.expect_exact("référence sans hydratation").expect("référence exacte");
+
+    // LA MESURE — même SQL, fenêtre LARGE (franchissant la frontière).
+    let (ans, meta) = cold_union_query(&dbp, &conf, None, base, base + total, b, &sql, None, 60_000, None, &[]).unwrap();
+    // L'AVEU DE PROVENANCE suit ce que la réponse a LU, pas ce que l'hydratation a fait : `stats.cold`
+    // en tire `served_from` et son propre `truncated` (`handlers::query::stats_cold`).
+    assert!(!meta.bras_froid_lu, "cette réponse n'a lu aucune ligne froide -> la provenance ne dit pas « hot+cold »");
+    assert!(meta.truncated, "l'HYDRATATION, elle, a bien plafonné — c'est un coût payé, pas une propriété de la réponse");
+    let rendu = ans
+        .render(AnswerShape::of_gxql(soql))
+        .unwrap_or_else(|t| panic!("REFUS FAUX : {} — la requête ne lit ni `event` ni `cold_event`", t.message()));
+    assert!(!rendu.truncated, "une série que le froid ne stocke pas n'est jamais INCOMPLÈTE par son plafond");
+    // La comparaison porte sur la RÉPONSE (colonnes + lignes), pas sur `stats`, qui porte le chronomètre.
+    for cle in ["columns", "rows"] {
+        assert_eq!(
+            rendu.value[cle], ref_v[cle],
+            "{cle} : la valeur servie sur fenêtre LARGE doit être celle de la fenêtre CHAUDE"
+        );
+    }
+    assert_eq!(rendu.value["rows"], json!([[3.0]]), "avg(1,2,6) = 3 — la moyenne des TROIS points, aucun perdu");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `P10.5-c` TÉMOIN NÉGATIF — la MUTATION qui doit changer le verdict : la MÊME fenêtre, le MÊME banc,
+/// mais une question qui LIT `event`. Elle doit rester REFUSÉE. Sans ce témoin, un correctif qui
+/// désarmerait le refus en bloc passerait pour vert.
+#[test]
+fn un_agregat_d_evenements_reste_refuse_quand_le_plafond_du_froid_a_mordu() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
+    let root = tmp_root("p105c-event");
+    let db = mkdb(&root);
+    let (dbp, conf, base, total, b) = banc_froid_sature(&root, &db);
+
+    let soql = "search | stats count";
+    let sql = compile_ev(soql, base, base + total, FieldMaskSet::new());
+    let (ans, meta) = cold_union_query(&dbp, &conf, None, base, base + total, b, &sql, None, 60_000, None, &[]).unwrap();
+    assert!(meta.truncated, "fixture : le plafond froid a mordu");
+    assert!(meta.bras_froid_lu, "la MUTATION : cette question-là LIT bien le bras froid");
+    let refus = ans.render(AnswerShape::of_gxql(soql)).err().expect("un agrégat sur un ensemble TRONQUÉ reste REFUSÉ");
+    assert_eq!(refus.rows_hydrated, 5000, "le refus chiffre ce qu'il a pu lire");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `P10.5-c` INSTRUMENT — LES DEUX NOMS QUI PORTENT LE FROID SONT CEUX QUE L'UNION MONTE.
+/// La dérivation de `LectureDuBrasFroid` ne vaut que si `UNION_SHADOWED_TABLE`/`COLD_TEMP_TABLE`
+/// désignent EXACTEMENT les objets qu'une connexion d'union fait exister. Ce témoin ne relit pas le
+/// code : il interroge le CATALOGUE d'une vraie connexion d'union. Renommer une constante sans
+/// renommer l'objet (ou l'inverse) le fait rougir.
+#[test]
+fn les_deux_noms_qui_portent_le_froid_sont_ceux_que_l_union_monte() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
+    let root = tmp_root("p105c-noms");
+    let db = mkdb(&root);
+    let dbp = dbp(&root);
+    let conf = conf_union(HOT_WIN);
+    let b = union_boundary(&db, &conf);
+    let u = open_cold_union(&dbp, &conf, Some("prod"), b - 10, b - 1, b, &[]).expect("connexion d'union");
+    let mut objets: Vec<(String, String)> = {
+        let mut st = u.conn.prepare("SELECT type,name FROM sqlite_temp_master WHERE type IN ('table','view')").unwrap();
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).unwrap();
+        rows.collect::<Result<Vec<_>, _>>().unwrap()
+    };
+    objets.sort();
+    assert_eq!(
+        objets,
+        vec![
+            ("table".to_string(), COLD_TEMP_TABLE.to_string()),
+            ("view".to_string(), UNION_SHADOWED_TABLE.to_string()),
+        ],
+        "les objets TEMP de l'union doivent être EXACTEMENT les deux noms dont la dérivation se sert"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `P10.5-c` CE QUE LA DÉRIVATION NE TIENT PAS, GARDÉ ICI. Elle conclut « hors de portée » de l'ABSENCE
+/// des deux identifiants dans le SQL. Cette conclusion tomberait si une INDIRECTION pouvait lire la
+/// table sans la nommer — en lecture, SQLite n'en offre qu'une : la VUE. Ce témoin exige du catalogue
+/// d'une base NEUVE fraîchement migrée par CE binaire qu'il n'en déclare AUCUNE. Une vue ajoutée demain
+/// fait rougir le test à l'endroit exact où vit l'argument de correction.
+#[test]
+fn aucune_vue_du_schema_ne_peut_lire_le_bras_froid_sans_le_nommer() {
+    let forme = crate::migrate::reference_shape().expect("forme de référence du binaire");
+    // TÉMOIN D'INSTRUMENT : sans lui, une forme VIDE rendrait ce test vert en ne voyant rien.
+    assert!(forme.contains("table event"), "instrument : la forme de référence doit nommer `table event` — {forme:?}");
+    let vues: Vec<&String> = forme.iter().filter(|o| o.starts_with("view ")).collect();
+    assert!(
+        vues.is_empty(),
+        "le schéma déclare {} vue(s) : {vues:?} — une vue peut lire `event` SANS le nommer dans le SQL de \
+         l'appelant, ce qui invalide `LectureDuBrasFroid::derivee_du_sql`. Reprendre la dérivation AVANT \
+         d'ajouter cette vue.",
+        vues.len()
+    );
+}
+
+/// `P10.5-c` LA DÉRIVATION ELLE-MÊME, DANS LES DEUX SENS. Positif : les formes par lesquelles une
+/// réponse peut réellement lire une ligne froide. Négatif : le SQL que le cœur émet pour la base
+/// `metric`, et les tables VOISINES qui ne sont pas le bras froid. Plus le côté SÛR (un littéral qui
+/// contient le mot compte comme une lecture) : un refus de trop, jamais un nombre faux de trop.
+#[test]
+fn seul_un_sql_qui_nomme_le_bras_froid_est_a_portee_de_son_plafond() {
+    let lu = |sql: &str| LectureDuBrasFroid::derivee_du_sql(&[sql]).a_pu_lire_le_froid();
+    for sql in [
+        "SELECT ts FROM event WHERE ts>0",
+        "SELECT ts FROM main.event",
+        "SELECT 1 FROM cold_event",
+        "select * from EVENT",
+        "SELECT * FROM \"event\"",
+    ] {
+        assert!(lu(sql), "ce SQL NOMME le bras froid : {sql}");
+    }
+    for sql in [
+        // Le SQL que `metric_base` (cœur) émet : DEUX feuilles physiques, aucune n'est le froid.
+        "SELECT ts,host,value FROM metric WHERE name='x' UNION ALL SELECT ts,host,avg AS value FROM metric_rollup WHERE name='x' ORDER BY ts",
+        "SELECT bucket,n FROM event_rollup WHERE bucket>0",
+        "SELECT day FROM cold_seal",
+    ] {
+        assert!(!lu(sql), "ce SQL ne peut lire AUCUNE ligne froide : {sql}");
+    }
+    assert!(
+        lu("SELECT 1 FROM metric WHERE labels LIKE '%event%'"),
+        "le côté SÛR : un littéral qui contient le mot compte comme une lecture"
+    );
+    assert!(
+        LectureDuBrasFroid::derivee_du_sql(&["SELECT 1 FROM metric", "SELECT COUNT(*) FROM event"]).a_pu_lire_le_froid(),
+        "il suffit que l'UN des deux SQL (page OU count) lise le froid"
+    );
+}
+
+/// `P10.5-b` — LE REFUS NOMME LA FAMILLE DE QUESTION QU'IL REFUSE.
+///
+/// LE DÉFAUT MESURÉ : le motif était UNIQUE — « cette requête calcule une valeur (count/sum/dc/…) » —
+/// y compris pour les familles qui ne calculent RIEN (un tri, une déduplication). Sur l'inventaire des
+/// vues livrées de `P10.5-b`, vingt-et-une des soixante-et-une refusées sont des tris. Le témoin exige
+/// que chaque famille reçoive son motif, que l'étage soit NOMMÉ (même inconnu du langage), et que les
+/// deux phrases toujours vraies restent là.
+#[test]
+fn le_refus_nomme_la_famille_de_question_qu_il_refuse() {
+    let body = json!({ "columns": ["c"], "rows": [[1]], "stats": {} });
+    let refus = |soql: &str| {
+        ColdAnswer::new(body.clone(), Some(1), true, 5000, 5000, LectureDuBrasFroid::indecidable())
+            .render(AnswerShape::of_gxql(soql))
+            .err()
+            .expect("un ensemble tronqué + une forme dérivée = un refus")
+            .message()
+    };
+    for (soql, etage) in [
+        ("search | stats count", "stats"),
+        ("search | timechart count", "timechart"),
+        ("search | sort -ts", "sort"),
+        ("search | dedup source", "dedup"),
+        ("search | join host [search]", "join"),
+        ("search | eventstats count", "eventstats"),
+        // L'INCONNU — un étage que le langage ne connaît pas : il est NOMMÉ, pas tu.
+        ("search | percentile95 latence", "percentile95"),
+    ] {
+        let m = refus(soql);
+        assert!(m.contains(&format!("`{etage}`")), "le refus de `{soql}` doit NOMMER l'étage `{etage}` : {m}");
+        for toujours in ["restreindre la fenêtre", "PLUME_QUERY_MAX"] {
+            assert!(m.contains(toujours), "le refus de `{soql}` doit garder « {toujours} » : {m}");
+        }
+    }
+    // LA MUTATION QUI COMPTE : un tri ne calcule aucune valeur — le refus ne doit plus le prétendre.
+    let tri = refus("search | sort -ts");
+    assert!(tri.contains("CLASSE"), "le refus d'un tri dit ce que le tri fait de l'ensemble : {tri}");
+    assert!(!tri.contains("AGRÈGE"), "un tri n'agrège rien : le refus ne doit pas l'affirmer : {tri}");
+    assert!(refus("search | stats count").contains("AGRÈGE"), "un agrégat, lui, agrège bien");
+    // LES COLONNES SONT DÉRIVÉES DU MOTEUR, PAS RECOPIÉES : la copie écrite à la main omettait `fields`.
+    // L'assertion porte sur la liste ENTIÈRE et dans l'ORDRE du moteur — chercher les noms un par un
+    // serait tautologique pour les courts (« ts » est un sous-mot de « filtres »).
+    let agg = refus("search | stats count");
+    let attendue = super::planner::phys_proj_cols().join("/");
+    assert!(agg.contains(&attendue), "la liste de colonnes doit être EXACTEMENT « {attendue} » : {agg}");
+    assert!(attendue.contains("fields"), "instrument : `fields` fait bien partie de ce que le moteur accepte");
+    // ET LA VOIE QUI SERT LES DIMENSIONS EXTRAITES DE `fields` EST NOMMÉE. Ne citer que le moteur
+    // colonnaire (dont les colonnes sont PHYSIQUES) détournait de la seule route exacte pour
+    // `stats count by path` — le pré-agrégé PAR DIMENSION, servi en base, sans ouvrir un Parquet.
+    for voie in ["stats count by <dim>", "PLUME_ROLLUP_DIMS"] {
+        assert!(agg.contains(voie), "le refus doit nommer la voie « {voie} » : {agg}");
+    }
+    // L'AVEU (SQL brut admin) : aucun étage à nommer, et il le DIT au lieu d'inventer une famille.
+    let brut = ColdAnswer::new(body, Some(1), true, 5000, 5000, LectureDuBrasFroid::indecidable())
+        .render(AnswerShape::undecidable())
+        .err()
+        .expect("indécidable = refus")
+        .message();
+    assert!(brut.contains("n'est pas analysable"), "l'aveu dit qu'il n'a rien pu dériver : {brut}");
+}
+
+/// LE REFUS NE PROMET PAS « EXACTE » UNE VOIE QUE LE PRODUIT PUBLIE APPROXIMATIVE.
+///
+/// LE DÉFAUT MESURÉ (2026-08-28). Le message d'exactitude rangeait sous « EXACT AUJOURD'HUI » la voie
+/// pré-agrégée PAR DIMENSION, en la conditionnant à « <dim> est une dimension pré-agrégée de cette
+/// source ». C'est la condition du ROUTAGE, pas celle de l'EXACTITUDE : la route existe, et ce qu'elle
+/// rend est `approx: true` avec un plafond top-N par seau. Le module qui existe POUR interdire de
+/// présenter un résultat approximatif comme exact le faisait dans son propre message.
+///
+/// CE TÉMOIN NE COMPARE PAS DEUX TEXTES : il MESURE la route sur la forme même que le message cite,
+/// puis exige que le message dise ce que la mesure a rendu. Les deux sens :
+///   ① la route EXISTE pour cette forme (sinon le message parlerait d'une voie morte) et se déclare
+///      `approx` — c'est le fait ;
+///   ② le message le DIT, et il ne range plus cette voie sous une promesse d'exactitude.
+/// CE QU'IL NE TIENT PAS : il ne mesure pas l'ÉCART entre le top-N servi et le top-N vrai (c'est la
+/// sonde `topn_ecartes` qui le chiffre, en base, à l'exécution) ; il tient que la promesse et le fait
+/// ne peuvent plus diverger sans qu'un des deux le dise.
+#[test]
+fn le_refus_ne_promet_pas_exacte_une_voie_que_le_produit_publie_approximative() {
+    // ① LA MESURE. `auditd`/`exe` est la dimension à FORTE cardinalité que `rollups` nomme explicitement
+    // comme cappée top-N/seau ; `| sort -count | head 10` est la forme complète que le message cite.
+    let (from, to, b) = (1_700_000_000i64, 1_700_086_400i64, 1_700_043_200i64);
+    let rr = crate::try_cold_rollup_route(
+        "search source=auditd | stats count by exe | sort -count | head 10",
+        from,
+        to,
+        None,
+        b,
+        RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX),
+        DimRollupCoverage::all_asserted_by_the_test(),
+    )
+    .expect("la forme citée par le message DOIT être routée par le pré-agrégé — sinon le message envoie vers une voie morte");
+    assert!(
+        rr.approx,
+        "la route par dimension se déclare APPROXIMATIVE : c'est ce fait-là que le message doit reprendre, pas la condition de routage"
+    );
+    assert!(
+        rr.sql.contains("ORDER BY \"count\"") && rr.sql.contains("LIMIT 10"),
+        "`| sort -count | head 10` est SERVI par la route, sur des sommes de top-N par seau : {}",
+        rr.sql
+    );
+
+    // ② LE MESSAGE. On isole la clause (b) — celle qui décrit CETTE voie — et on exige qu'elle dise ce
+    // que ① a mesuré, avec la grandeur qui tranche l'exactitude au cas par cas.
+    let m = ColdAnswer::new(json!({ "columns": ["c"], "rows": [[1]], "stats": {} }), Some(1), true, 5000, 5000, LectureDuBrasFroid::indecidable())
+        .render(AnswerShape::of_gxql("search | stats count"))
+        .err()
+        .expect("un ensemble tronqué + un agrégat = un refus")
+        .message();
+    let deb = m.find("(b)").expect("le message garde sa clause (b)");
+    let fin = m[deb..].find("(c)").expect("le message garde sa clause (c)") + deb;
+    let clause_b = &m[deb..fin];
+    assert!(clause_b.contains("APPROXIMATIF"), "la clause (b) doit dire ce que la route rend : {clause_b}");
+    for grandeur in ["topn_ecartes", "PLUME_ROLLUP_DIM_TOPN"] {
+        assert!(clause_b.contains(grandeur), "la clause (b) doit nommer « {grandeur} », la grandeur qui tranche : {clause_b}");
+    }
+    assert!(
+        !m.contains("EXACT AUJOURD'HUI"),
+        "l'en-tête qui faisait de TOUTE la liste une promesse d'exactitude est ce qui rendait (b) fausse : {m}"
+    );
+}
+
+/// LA MÊME CONFUSION, UNE CLAUSE PLUS LOIN : (c) PROMETTAIT « EXACT » SUR L'ENSEMBLE DE LA ROUTABILITÉ.
+///
+/// LE DÉFAUT MESURÉ (2026-08-28). Le lot précédent avait fermé la confusion routage/exactitude sur la
+/// clause (b) ; elle était REPRODUITE à la clause suivante, dans la même phrase. (c) annonçait EXACT —
+/// « jamais un nombre faux » — un `stats count [by <colonnes>]` dont l'ensemble admissible était
+/// `planner::phys_proj_cols()`. C'est l'ensemble que le moteur colonnaire sait ROUTER ; il ne dit rien
+/// de ce que l'analyste RECEVRA, parce qu'une route pré-agrégée est essayée AVANT tout chemin froid et
+/// l'emporte pour certains de ses membres — en publiant `approx: true`. Le témoin précédent découpait
+/// `let fin = m[deb..].find("(c)")` et n'assertait QUE sur la clause (b) : il s'arrêtait au caractère
+/// près là où le défaut recommençait.
+///
+/// CE TÉMOIN NE COMPARE PAS DEUX TEXTES : IL MESURE, PUIS IL LIT.
+///   ① LA MESURE, sur l'ensemble que le message publie — DÉRIVÉ de `phys_proj_cols()`, jamais recopié.
+///      Pour chaque colonne, on demande à la route pré-agrégée FROIDE si elle prend `stats count by
+///      <col>`, et ce qu'elle se déclare. L'ensemble est MIXTE : au moins une colonne est interceptée
+///      par une route qui se dit APPROXIMATIVE (témoin positif), au moins une ne l'est par aucune, donc
+///      le colonnaire la sert (témoin négatif). C'est ce mélange — pas un avis — qui interdit à cet
+///      ensemble de porter une promesse d'exactitude.
+///   ② LA LECTURE, sur TOUTES les clauses du message, découpées sur ses propres marqueurs : aucune
+///      clause n'a le droit d'écrire une promesse d'exactitude sans nommer la grandeur qui la tranche.
+///      C'est cette règle-là, et non un découpage arrêté à (b), qui aurait vu le défaut.
+#[test]
+fn le_message_ne_promet_exacte_aucune_forme_qu_une_route_prealable_intercepte() {
+    // ① LA MESURE. Fenêtre franchissant la frontière, couvertures ÉTABLIES (sinon une route pourrait
+    // décliner pour une raison qui n'a rien à voir avec la question posée).
+    let (from, to, b) = (1_700_000_000i64, 1_700_086_400i64, 1_700_043_200i64);
+    let colonnes = super::planner::phys_proj_cols();
+    let mut approximatives: Vec<&str> = Vec::new();
+    let mut colonnaires: Vec<&str> = Vec::new();
+    for c in colonnes {
+        let rr = crate::try_cold_rollup_route(
+            &format!("search | stats count by {c}"),
+            from,
+            to,
+            None,
+            b,
+            RollupCoverage::asserted_by_the_test(i64::MAX, i64::MAX),
+            DimRollupCoverage::all_asserted_by_the_test(),
+        );
+        match rr {
+            Some(r) if r.approx => approximatives.push(c),
+            Some(_) => {}
+            None => colonnaires.push(c),
+        }
+    }
+    assert!(
+        !approximatives.is_empty(),
+        "TÉMOIN POSITIF EN ÉCHEC : au moins une colonne de l'ensemble publié doit être INTERCEPTÉE par une route \
+         pré-agrégée qui se déclare APPROXIMATIVE — sans ce fait, la clause (c) serait vraie et ce témoin ne mesurerait rien"
+    );
+    assert!(
+        !colonnaires.is_empty(),
+        "TÉMOIN NÉGATIF EN ÉCHEC : au moins une colonne de l'ensemble ne doit être interceptée par AUCUNE route — c'est \
+         pour celles-là que le moteur colonnaire sert, et c'est ce qui rend l'ensemble MIXTE : {colonnaires:?}"
+    );
+
+    // ② LA LECTURE. Le message d'un refus quelconque : il est le MÊME pour toutes les familles.
+    let m = ColdAnswer::new(json!({ "columns": ["c"], "rows": [[1]], "stats": {} }), Some(1), true, 5000, 5000, LectureDuBrasFroid::indecidable())
+        .render(AnswerShape::of_gxql("search | stats count"))
+        .err()
+        .expect("un ensemble tronqué + un agrégat = un refus")
+        .message();
+    // POPULATION DÉRIVÉE : les clauses sont découpées sur les marqueurs que le message écrit lui-même,
+    // pris DANS L'ORDRE (une clause qui CITE le marqueur d'une autre — (c) renvoie à (b) — ne le
+    // redécoupe pas).
+    let mut bornes: Vec<usize> = Vec::new();
+    let mut depuis = 0usize;
+    for marque in ["(a)", "(b)", "(c)"] {
+        let i = m[depuis..].find(marque).map(|i| i + depuis).unwrap_or_else(|| panic!("INSTRUMENT : le message garde sa clause {marque} : {m}"));
+        bornes.push(i);
+        depuis = i + marque.len();
+    }
+    let clauses: Vec<&str> = (0..bornes.len())
+        .map(|k| if k + 1 < bornes.len() { &m[bornes[k]..bornes[k + 1]] } else { &m[bornes[k]..] })
+        .collect();
+    assert_eq!(clauses.len(), 3, "INSTRUMENT : trois clauses attendues, découpées sur les marqueurs du message");
+
+    // LA RÈGLE, APPLIQUÉE À CHAQUE CLAUSE — c'est elle qui aurait vu le défaut, et pas un découpage
+    // qui s'arrête avant lui.
+    for (k, clause) in clauses.iter().enumerate() {
+        let marque = ["(a)", "(b)", "(c)"][k];
+        if clause.contains("EXACT") {
+            assert!(
+                clause.contains("stats.approx"),
+                "la clause {marque} écrit une promesse d'exactitude sans nommer la grandeur que la RÉPONSE publie pour la \
+                 trancher : {clause}"
+            );
+        }
+    }
+
+    // LA CLAUSE QUI PUBLIE L'ENSEMBLE — trouvée PAR l'ensemble lui-même, pas par sa lettre.
+    let liste = colonnes.join("/");
+    let i_liste = m.find(&liste).expect("INSTRUMENT : le message publie bien l'ensemble des colonnes du moteur colonnaire");
+    let clause_c = clauses.last().expect("trois clauses");
+    assert!(
+        i_liste >= bornes[2],
+        "INSTRUMENT : l'ensemble des colonnes doit être publié DANS la clause (c) (position {i_liste}, clause à {})",
+        bornes[2]
+    );
+    assert!(
+        !clause_c.contains("EXACT"),
+        "la clause qui publie l'ensemble de la ROUTABILITÉ ne peut promettre l'EXACTITUDE de personne : pour {approximatives:?} \
+         c'est une route pré-agrégée qui sert, et elle publie `approx: true`. Clause : {clause_c}"
+    );
+    assert!(
+        clause_c.contains("stats.served_from"),
+        "à défaut de trancher, la clause doit renvoyer à ce qui tranche — la voie qui a servi, publiée par la réponse : {clause_c}"
+    );
+    assert!(
+        clause_c.contains("APPROXIMATIF"),
+        "la clause doit DIRE ce que l'analyste peut recevoir à la place du refus qu'elle annonce : {clause_c}"
+    );
+}
+
+/// `P10.5-c` — LA PROVENANCE ET LA TRONCATURE PUBLIÉES SUIVENT CE QUE LA RÉPONSE A LU.
+/// Les quatre combinaisons, donc la MUTATION dans les deux sens : c'est le seul témoin qui distingue
+/// « l'hydratation a plafonné » (un coût payé) de « l'ensemble de CETTE réponse a été tronqué » (une
+/// propriété de la réponse). Sans lui, revenir à `served_from: "hot+cold"` en dur ne casserait rien.
+#[test]
+fn la_provenance_et_la_troncature_publiees_suivent_ce_que_la_reponse_a_lu() {
+    let meta = |truncated: bool, lu: bool| ColdUnionMeta {
+        truncated,
+        rows_hydrated: 5000,
+        files_read: 3,
+        files_pruned: 0,
+        bras_froid_lu: lu,
+        empreinte_de_numerotation: 0,
+    };
+    assert_eq!(meta(true, true).provenance(), "hot+cold");
+    assert_eq!(meta(false, true).provenance(), "hot+cold", "avoir LU le froid ne dépend pas d'avoir tronqué");
+    assert_eq!(meta(true, false).provenance(), "hot", "une réponse qui n'a pas lu le froid ne vient pas du froid");
+    assert_eq!(meta(false, false).provenance(), "hot");
+    assert!(meta(true, true).troncature_de_la_reponse(), "lu ET plafonné -> la réponse est tronquée");
+    assert!(!meta(true, false).troncature_de_la_reponse(), "plafonné mais NON lu -> la réponse ne l'est pas");
+    assert!(!meta(false, true).troncature_de_la_reponse(), "lu mais non plafonné -> rien à déclarer");
+    assert!(!meta(false, false).troncature_de_la_reponse());
+}
+
+/// `P10.5-h` — L'HORIZON DES MÉTRIQUES RESTE ATTEIGNABLE PAR SON PROPRE LEVIER.
+///
+/// LA DÉCISION (2026-08-28, consignée aussi dans `rollups.rs` au site où l'horizon s'applique) : la
+/// rétention des métriques est bornée par `metric_days`, PAR CONCEPTION ; aucun pré-agrégé froid de
+/// métriques n'est construit. `metric_rollup` EST déjà le pré-agrégé (bucket horaire), il vit dans la
+/// base chaude, et son horizon est un réglage d'exploitant de premier rang.
+///
+/// CE QUE LA DÉCISION SUPPOSE, ET QUE CE TÉMOIN REND OPPOSABLE : que l'exploitant puisse TOUJOURS
+/// porter l'horizon métrique aussi loin que va la bande froide. Les deux plafonds sont lus CHACUN CHEZ
+/// LUI — le plafond froid dans `cold_store`, le plafond métrique dans la table de rétention — jamais
+/// recopiés. Le jour où le plafond froid dépasserait le plafond métrique, la décision cesserait d'être
+/// vraie et ce test le dirait.
+#[test]
+fn l_horizon_des_metriques_reste_atteignable_par_son_propre_levier() {
+    let champ = |k: &str| {
+        *crate::RETENTION_FIELDS.iter().find(|(cle, ..)| *cle == k).unwrap_or_else(|| panic!("clé de rétention {k}"))
+    };
+    let (_, _, defaut_metrique, _, plafond_metrique) = champ("metric_days");
+    let (_, _, defaut_event, _, _) = champ("retention_days");
+    assert!(
+        COLD_RETENTION_CEIL_DAYS <= plafond_metrique,
+        "le plafond froid ({COLD_RETENTION_CEIL_DAYS} j) dépasse le plafond métrique ({plafond_metrique} j) : \
+         un exploitant ne pourrait plus porter ses métriques aussi loin que ses événements, et la décision \
+         « pas de pré-agrégé froid de métriques » cesserait d'être tenable — la REPRENDRE, pas ajuster ce test."
+    );
+    assert!(
+        defaut_metrique > defaut_event,
+        "AU DÉFAUT, l'horizon métrique ({defaut_metrique} j) doit dépasser l'horizon événement ({defaut_event} j) : \
+         c'est ce qui fait que l'angle mort n'existe qu'après une extension DÉLIBÉRÉE de la bande froide."
+    );
+}
+
 // P3 (test 7) — FENÊTRE HOT-ONLY INCHANGÉE : le déclencheur (from < B) NE s'arme PAS pour une fenêtre
 // entièrement dans la fenêtre chaude (from >= B) ; et invoquée à tort sur une telle fenêtre, l'union n'hydrate
 // AUCUNE ligne cold (hi = min(to,B-1) < B <= from -> sous-fenêtre cold vide).
@@ -8772,6 +9286,37 @@ fn ks_fixture(tag: &str, n_cold_ts: i64, ties: i64, n_hot: i64, file_cap: usize)
     (P4aFix { root, db, dbp, conf, b, from: 0, to: 0 }, n_cold_ts * ties, n_hot, nfiles)
 }
 
+/// Fixture keyset à DEUX environnements (`prodA`/`prodB`) sur la MÊME plage `ts` — la cause de refus du
+/// bras froid qui dépend de la DONNÉE et non d'un réglage. Extraite du corps de
+/// `ks_multi_env_unscoped_falls_back_scoped_serves` (déplacement pur) pour que le témoin du repli puisse
+/// éprouver cette cause-là sans la ré-écrire. Rend la fixture et le jour agé.
+fn ks_fixture_deux_envs(tag: &str) -> (P4aFix, i64) {
+    let root = tmp_root(tag);
+    let db = mkdb(&root);
+    let dbp = dbp(&root);
+    let mut conf = conf_union(HOT_WIN);
+    conf.insert("PLUME_COLD_FILE_MAX_ROWS".to_string(), "8".to_string()); // split -> plusieurs seq/env
+    let day = M - 10;
+    let base = day * SECS_PER_DAY;
+    // MÊME plage `ts` pour les DEUX envs -> collisions `ts` inter-env (le cœur du Finding 1).
+    let mut idx = 0i64;
+    for env in ["prodA", "prodB"] {
+        for t in 0..12 {
+            let mut r = rich_row(base + t, idx);
+            r.row.source = "auditd".to_string();
+            r.row.env_id = Some(env.to_string());
+            insert_event(&db, &r);
+            idx += 1;
+        }
+    }
+    insert_recent_tail_holder(&db); // tail hot -> aging OK
+    cold_age_run(&db, &dbp, &conf, n_now(), RET_DAYS);
+    assert_eq!(count_hot_day(&db, "prodA", day), 0, "prodA agé en froid");
+    assert_eq!(count_hot_day(&db, "prodB", day), 0, "prodB agé en froid");
+    let b = union_boundary(&db, &conf);
+    (P4aFix { root, db, dbp, conf, b, from: 0, to: 0 }, day)
+}
+
 /// Enlève la colonne `id` d'un résultat {columns,rows} -> lignes comparables (l'`id` cold est SYNTHÉTIQUE, l'`id`
 /// oracle est un rowid éphémère ; l'invariant porte sur les VALEURS + l'ORDRE, pas sur la valeur d'`id`).
 fn ks_rows_no_id(v: &Value) -> Vec<Vec<Value>> {
@@ -8788,42 +9333,57 @@ fn ks_rows_no_id(v: &Value) -> Vec<Vec<Value>> {
         .collect()
 }
 
-/// UNE page keyset hot-puis-cold SÉQUENTIELLE — RÉPLIQUE EXACTE de la logique du handler `cold_keyset_vectorized_page`
-/// (inaccessible depuis ce module) : HOT (keyset SQLite borné `ts>=b`) puis COMPLÉTION COLD (`cold_keyset_page`).
-fn ks_page(f: &P4aFix, base_sql: &str, cursor: Option<(i64, i64)>, n: i64) -> Value {
-    let pure_cold = matches!(cursor, Some((cts, _)) if cts < f.b);
-    let mut rows: Vec<Value> = Vec::new();
-    let hot_cols: Option<Vec<Value>> = if pure_cold {
-        None
-    } else {
-        let hot_sql = format!("SELECT * FROM ({base_sql}) WHERE ts >= {}", f.b);
-        let page_sql = crate::page_sql(&hot_sql, crate::keyset_plan(cursor, 0), n);
-        let hv = crate::run_query_ex(&f.dbp, &page_sql, 60_000, None).unwrap();
-        for r in hv["rows"].as_array().unwrap() {
-            rows.push(r.clone());
-        }
-        Some(hv["columns"].as_array().unwrap().clone())
-    };
-    let hot_count = rows.len() as i64;
-    let cold_limit = if pure_cold { n } else { (n - hot_count).max(0) };
-    let cold_cursor = if pure_cold { cursor } else { None };
-    let (cold_cols, cold_rows) = if cold_limit > 0 {
-        cold_keyset_page(&f.dbp, &f.conf, None, f.from, f.to, f.b, "search source=auditd", true, cold_cursor, cold_limit as usize, &[])
-            .unwrap()
-            .expect("bare search auditd DOIT être routable (keyset vectorisé)")
-    } else {
-        (Vec::new(), Vec::new())
-    };
-    let columns: Vec<Value> = match &hot_cols {
-        Some(hc) => hc.clone(),
-        None => cold_cols.iter().map(|s| json!(s)).collect(),
-    };
-    for r in cold_rows {
-        rows.push(Value::Array(r));
+/// UNE page keyset hot-puis-cold SÉQUENTIELLE — LE PRODUIT LUI-MÊME, plus une réplique.
+///
+/// `P10.5-g`. Ce corps était une « RÉPLIQUE EXACTE de la logique du handler `cold_keyset_vectorized_page`
+/// (inaccessible depuis ce module) ». Elle ne l'était pas : une copie ne le reste que tant que personne ne
+/// touche à l'original, et c'est justement sa branche pur-froide — celle où le filet de comparaison des
+/// colonnes ne s'armait pas — que ce lot corrige. Un témoin qui juge une copie ne dit RIEN du produit.
+/// La fonction du handler est passée `pub(crate)` et c'est elle qui est appelée ici : la traversée
+/// intégrale juge désormais le code servi.
+///
+/// `soql` est passé À PART de `base_sql` parce que le handler les prend séparément : c'est ce qui permet
+/// au témoin de divergence (plus bas) de fabriquer une page dont la part froide n'a pas la forme de la
+/// part chaude, sans toucher au produit.
+fn ks_page_res(f: &P4aFix, base_sql: &str, soql: &str, cursor: KsCurseur, n: i64) -> Option<Value> {
+    let (cur, espace) = cursor;
+    crate::cold_keyset_vectorized_page(&f.dbp, &f.conf, None, base_sql, soql, f.from, f.to, f.b, cur, espace.as_deref(), n, 60_000, None, &[])
+        .expect("aucune corruption froide dans ces fixtures")
+}
+
+/// UN CURSEUR KEYSET TEL QUE LE CLIENT LE RENVOIE : `(ts,id)` **et** l'espace d'identifiant que le serveur
+/// y a posé. Les deux voyagent ENSEMBLE parce que le SPA renvoie `next_cursor` tel quel — les séparer dans
+/// le harnais ferait éprouver un client qui n'existe pas (et le témoin `ks_un_repli…` éprouve, lui, le
+/// client qui les sépare pour de bon).
+type KsCurseur = (Option<(i64, i64)>, Option<String>);
+
+/// Le curseur de continuation d'une page, LU TEL QUEL — champ `espace` compris.
+fn ks_curseur_de(v: &Value) -> KsCurseur {
+    let nc = &v["next_cursor"];
+    match (nc["ts"].as_i64(), nc["id"].as_i64()) {
+        (Some(ts), Some(id)) => (Some((ts, id)), nc["espace"].as_str().map(|s| s.to_string())),
+        _ => (None, None),
     }
-    let mut v = json!({ "columns": columns, "rows": rows, "stats": { "truncated": false } });
-    crate::keyset_finalize(&mut v, n);
-    v
+}
+
+/// La traversée nominale : même requête des deux côtés, la page DOIT être servie par le chemin vectorisé.
+fn ks_page(f: &P4aFix, base_sql: &str, cursor: KsCurseur, n: i64) -> Value {
+    ks_page_res(f, base_sql, "search source=auditd", cursor, n)
+        .expect("bare search auditd DOIT être routable (keyset vectorisé)")
+}
+
+/// La même page, RÉGLAGE IMPOSÉ et VERDICT BRUT — pour éprouver ce que le handler fait quand la part
+/// froide refuse de router : `Ok(None)` (repli vers l'oracle) ou `Err` (repli impossible).
+fn ks_page_brute(
+    f: &P4aFix,
+    conf: &HashMap<String, String>,
+    base_sql: &str,
+    soql: &str,
+    cursor: KsCurseur,
+    n: i64,
+) -> Result<Option<Value>, String> {
+    let (cur, espace) = cursor;
+    crate::cold_keyset_vectorized_page(&f.dbp, conf, None, base_sql, soql, f.from, f.to, f.b, cur, espace.as_deref(), n, 60_000, None, &[])
 }
 
 #[test]
@@ -8855,22 +9415,36 @@ fn ks_full_traversal_hot_cold_eq_raw_scan_no_gap_no_dup() {
 
     // PARCOURS KEYSET INTÉGRAL (page=7, curseur), cap TOUJOURS à 20 -> prouve l'indépendance au cap.
     let n = 7i64;
-    let mut cursor: Option<(i64, i64)> = None;
+    let mut cursor: KsCurseur = (None, None);
     let mut seen: Vec<Vec<Value>> = Vec::new();
     let mut pages = 0usize;
     loop {
-        let mut v = ks_page(&f, &base_sql, cursor, n);
+        let mut v = ks_page(&f, &base_sql, cursor.clone(), n);
         let page_len = v["rows"].as_array().unwrap().len() as i64;
         assert!(page_len <= n, "2Go-safe : une page borne la RAM à <= n lignes (page_len={page_len})");
         seen.extend(ks_rows_no_id(&v));
-        crate::keyset_finalize(&mut v, n); // idempotent (déjà appelé) ; garantit has_more/next_cursor cohérents
+        // RE-FINALISER EST IDEMPOTENT, ET LE TROISIÈME ARGUMENT EN FAIT PARTIE : c'est lui qui porte
+        // l'espace d'identifiant. Le passer différemment ici rendrait un curseur différent de celui que
+        // le produit a émis, et la traversée n'éprouverait plus le produit.
+        crate::keyset_finalize(&mut v, n, Some((crate::ESPACE_ID_COLD_VECTORISE, f.b)));
         pages += 1;
         if !v["has_more"].as_bool().unwrap() {
             assert!(v["next_cursor"].is_null(), "dernière page -> next_cursor null");
             break;
         }
-        let nc = &v["next_cursor"];
-        cursor = Some((nc["ts"].as_i64().unwrap(), nc["id"].as_i64().unwrap()));
+        // LE CURSEUR EST RENVOYÉ TEL QUEL, `espace` compris — c'est le contrat que le SPA tient déjà
+        // (`web/viz.js` mémorise `j.next_cursor` sans le reconstruire). Un curseur FROID doit porter la
+        // marque : sans elle, la page suivante serait servie dans un AUTRE espace d'identifiant.
+        cursor = ks_curseur_de(&v);
+        if cursor.0.is_some_and(|(cts, _)| cts < f.b) {
+            assert_eq!(
+                cursor.1.as_deref(),
+                Some(crate::ESPACE_ID_COLD_VECTORISE),
+                "un curseur sous la frontière vient du bras FROID de cette voie : il doit porter son espace d'id"
+            );
+        } else {
+            assert_eq!(cursor.1, None, "un curseur CHAUD porte l'`id` réel d'`event` : le marquer inventerait une incompatibilité");
+        }
         assert!(pages < (total as usize + 10), "garde-fou anti-boucle infinie");
     }
     std::env::remove_var("PLUME_QUERY_MAX");
@@ -8881,6 +9455,409 @@ fn ks_full_traversal_hot_cold_eq_raw_scan_no_gap_no_dup() {
     assert_eq!(seen, oracle_rows, "keyset paginé (hot∪cold, sans cap) == scan raw complet, ordre ts,id desc");
     // Traversée MULTI-PAGES réelle (pas tout en une page) qui FRANCHIT la frontière hot->cold.
     assert!(pages >= (total as usize) / (n as usize), "plusieurs pages parcourues (pages={pages})");
+}
+
+/// `P10.5-g` — LE FILET QUI COMPARE LES COLONNES S'ARME SUR UNE PAGE **PUREMENT FROIDE**.
+///
+/// CE QUI ÉTAIT MESURÉ. `cold_keyset_vectorized_page` compare la forme rendue par la part froide à celle
+/// rendue par la part chaude, et retombe sur `cold_union_query` si elles divergent. Mais la part chaude
+/// n'était INTERROGÉE que si la page pouvait en contenir : sur une page purement froide (curseur déjà
+/// sous la frontière), `hot_cols` valait `None` et AUCUNE comparaison n'avait lieu. Le filet manquait
+/// exactement là où la forme peut basculer — à la page qui passe du chaud au froid, au milieu d'une
+/// traversée, sous les yeux d'un client à qui les pages précédentes ont annoncé une autre forme.
+///
+/// CE QUE CE TÉMOIN JUGE. Le PRODUIT : `ks_page_res` appelle la fonction du handler, plus une réplique.
+/// Trois faits, plus un contrôle qui empêche le témoin d'être vide :
+///   ⓪ CONTRÔLE — les deux formes chaudes DIFFÈRENT vraiment, et celle du froid coïncide avec la
+///      conforme. Sans lui, les refus ① et ② passeraient même si rien ne divergeait ;
+///   ① page MIXTE aux colonnes divergentes -> refus. C'est le filet qui existait DÉJÀ ;
+///   ② page PUREMENT FROIDE aux colonnes divergentes -> refus. C'EST le constat : ce verdict-là
+///      valait `Some` avant ce lot, parce que la référence n'était pas dérivée ;
+///   ③ TÉMOIN NÉGATIF — page purement froide aux colonnes CONFORMES -> SERVIE, avec des lignes, et sous
+///      la forme que la page mixte précédente avait annoncée au client.
+///
+/// CE QUE LE FILET NE TIENT PAS, ET IL FAUT LE LIRE ICI : il compare des NOMS de colonnes et leur ORDRE,
+/// jamais les TYPES ni le sens des valeurs ; et sa référence est la compilation CHAUDE de la requête —
+/// si le chaud et le froid s'accordaient sur les noms en divergeant sur ce qu'ils mettent dedans, ce
+/// filet-ci ne dirait rien (c'est la traversée `ks_full_traversal_…`, qui compare les VALEURS à l'oracle,
+/// qui tient ce bout-là).
+#[test]
+fn ks_page_pur_froide_compare_ses_colonnes_a_la_forme_deduite_du_chaud() {
+    let _lk = p4a_lock();
+    // 12 ts × 2 ties = 24 lignes froides, 5 chaudes, 8 lignes/fichier -> plusieurs fichiers froids.
+    let (f, n_cold, n_hot, _nf) = ks_fixture("ks-p105g", 12, 2, 5, 8);
+    assert!(n_cold >= 16 && n_hot == 5, "fixture : assez de froid pour une page pur-froide (froid={n_cold}, chaud={n_hot})");
+    let vide = FieldMaskSet::new();
+    let conforme = crate::soql_to_sql_masked_keyset_x("search source=auditd", f.from, f.to, None, &vide).unwrap();
+    // LA FABRICATION. Le handler reçoit le SQL chaud et le GXQL SÉPARÉMENT ; on lui donne le SQL chaud
+    // d'une PROJECTION (augmentée en `ts,source,id` comme le fait le handler) à côté d'un GXQL NU, dont
+    // la part froide projette les 11 colonnes brutes + l'`id` synthétique. Rien du produit n'est touché.
+    let (augmente, _) = crate::keyset_projection_augment("search source=auditd | table ts,source");
+    let divergent = crate::soql_to_sql_masked_keyset_x(&augmente, f.from, f.to, None, &vide).unwrap();
+
+    // ⓪ CONTRÔLE, MESURÉ — et c'est la MÊME sonde `LIMIT 0` que le produit emploie désormais pour dériver
+    // sa référence : elle rend les NOMS de colonnes sans lire une seule ligne.
+    let forme_chaude_de = |sql: &str| -> Vec<String> {
+        let p = crate::page_sql(&format!("SELECT * FROM ({sql}) WHERE ts >= {}", f.b), crate::keyset_plan(None, 0), 0);
+        let v = crate::run_query_ex(&f.dbp, &p, 60_000, None).expect("sonde LIMIT 0");
+        assert!(v["rows"].as_array().unwrap().is_empty(), "LIMIT 0 : aucune ligne lue");
+        v["columns"].as_array().unwrap().iter().map(|c| c.as_str().unwrap().to_string()).collect()
+    };
+    let forme_conforme = forme_chaude_de(&conforme);
+    let forme_divergente = forme_chaude_de(&divergent);
+    assert_ne!(forme_conforme, forme_divergente, "la fabrication doit produire une forme DIFFÉRENTE, sinon ce témoin est vide");
+    let (cold_cols, _) = cold_keyset_page(&f.dbp, &f.conf, None, f.from, f.to, f.b, "search source=auditd", true, None, 3, &[])
+        .unwrap()
+        .expect("bare search auditd est routable");
+    assert_eq!(cold_cols, forme_conforme, "part froide et part chaude conforme : MÊME forme");
+    assert_ne!(cold_cols, forme_divergente, "part froide et forme fabriquée : formes DIVERGENTES");
+
+    let n = n_hot + 3; // > n_hot -> la page mixte contient DU CHAUD ET DU FROID (le filet d'origine s'arme)
+    let page_mixte = ks_page(&f, &conforme, (None, None), n);
+    let annonce_au_client: Vec<Value> = page_mixte["columns"].as_array().unwrap().clone();
+    assert_eq!(annonce_au_client.len(), forme_conforme.len(), "la page mixte annonce la forme conforme");
+
+    // ① Le filet qui existait déjà : page MIXTE, colonnes divergentes -> refus (fallback oracle).
+    assert!(
+        ks_page_res(&f, &divergent, "search source=auditd", (None, None), n).is_none(),
+        "page mixte aux colonnes divergentes : refus attendu (ce filet-là existait)"
+    );
+
+    // ② LE CONSTAT. Page PUREMENT FROIDE (curseur sous la frontière), colonnes divergentes -> refus.
+    // AVANT ce lot ce verdict valait `Ok(Some)` : `hot_cols` était `None`, donc la comparaison ne s'armait
+    // pas et la page partait aux colonnes du FROID, muette sur le changement de forme.
+    //
+    // ET LE REFUS EST UN ÉCHEC DE PAGE, PAS UN REPLI — c'est le constat voisin fermé dans le même lot
+    // (`ks_un_repli_vers_loracle_ne_change_jamais_despace_didentifiant`) : ici le curseur est SYNTHÉTIQUE,
+    // donc illisible par l'oracle, et se replier produirait un trou ou un doublon silencieux à la place
+    // d'une forme fausse. Deux verdicts faux ne font pas un verdict juste : on refuse la page.
+    let curseur_froid: KsCurseur = (Some((f.b - 1, i64::MAX)), Some(crate::ESPACE_ID_COLD_VECTORISE.to_string()));
+    let refus = crate::cold_keyset_vectorized_page(
+        &f.dbp,
+        &f.conf,
+        None,
+        &divergent,
+        "search source=auditd",
+        f.from,
+        f.to,
+        f.b,
+        curseur_froid.0,
+        curseur_froid.1.as_deref(),
+        n,
+        60_000,
+        None,
+        &[],
+    )
+    .expect_err("page PUREMENT FROIDE aux colonnes divergentes : refus attendu — c'est P10.5-g");
+    assert!(
+        refus.contains("colonnes froid/chaud divergentes"),
+        "le refus doit NOMMER la divergence de colonnes, pas se lire comme une panne quelconque : {refus}"
+    );
+
+    // ③ TÉMOIN NÉGATIF. Colonnes conformes, même page purement froide -> SERVIE, avec des lignes, et sous
+    // la forme déjà annoncée au client. Sans lui, le refus ② serait indistinguable d'un chemin qui refuse tout.
+    let servie = ks_page_res(&f, &conforme, "search source=auditd", curseur_froid.clone(), n)
+        .expect("colonnes conformes : la page purement froide DOIT être servie");
+    assert!(
+        !servie["rows"].as_array().unwrap().is_empty(),
+        "témoin négatif vide : il ne prouverait pas que le chemin pur-froid sert encore"
+    );
+    assert_eq!(
+        servie["columns"].as_array().unwrap().clone(),
+        annonce_au_client,
+        "la page purement froide annonce la MÊME forme que la page mixte précédente"
+    );
+
+    // ④ CE QUE LA SONDE COÛTE, MESURÉ — pas promis. Le commentaire du produit dit « une préparation, pas
+    // un parcours » ; on le VÉRIFIE en pas de machine virtuelle SQLite (déterministe, sans aucune horloge)
+    // sur les DEUX énoncés que `page_sql` fabrique, le probatoire (`LIMIT 0`) et la page réelle.
+    let pas_de_vm = |sql: &str| -> i64 {
+        let g = f.db.lock();
+        let mut st = g.prepare(sql).expect("énoncé préparable");
+        {
+            let mut rows = st.query([]).expect("exécutable");
+            while rows.next().expect("lecture").is_some() {}
+        }
+        i64::from(st.get_status(rusqlite::StatementStatus::VmStep))
+    };
+    let hot_wrap = format!("SELECT * FROM ({conforme}) WHERE ts >= {}", f.b);
+    let pas_sonde = pas_de_vm(&crate::page_sql(&hot_wrap, crate::keyset_plan(None, 0), 0));
+    let pas_page = pas_de_vm(&crate::page_sql(&hot_wrap, crate::keyset_plan(None, 0), n));
+    assert!(
+        pas_page > 0,
+        "TÉMOIN NÉGATIF : la page réelle ne coûte rien non plus -> le compteur ne mesure rien et la \
+         comparaison ci-dessous serait vraie pour la mauvaise raison"
+    );
+    assert!(
+        pas_sonde * 4 < pas_page,
+        "la sonde LIMIT 0 doit rester d'un autre ordre que la page servie (sonde={pas_sonde} pas, page={pas_page} pas) : \
+         si elle en approchait, « une préparation, pas un parcours » serait une phrase, pas une mesure"
+    );
+    eprintln!("[P10.5-g] sonde LIMIT 0 = {pas_sonde} pas de VM ; page de {n} lignes = {pas_page} pas");
+}
+
+/// LE REPLI VERS L'ORACLE NE CHANGE JAMAIS D'ESPACE D'IDENTIFIANT — ET IL N'INVENTE PAS D'ÉCHEC.
+///
+/// LE FAIT. Une ligne froide n'a pas d'`id` (il n'est pas stocké en Parquet) : les deux voies froides lui
+/// en FABRIQUENT un, et pas le même — rowid de `cold_event` (rang dans l'ensemble hydraté) côté oracle,
+/// `seq*COLD_FILE_MAX_ROWS+position` côté colonnaire. Rejouer l'un dans l'autre ne rend ni erreur ni page
+/// vide : ça rend une page qui COMMENCE AILLEURS.
+///
+/// CE QUE LE LOT PRÉCÉDENT AVAIT MESURÉ, ET LÀ OÙ IL S'EST TROMPÉ. Il en avait déduit « curseur sous la
+/// frontière => id synthétique => aucun repli », et l'avait éprouvé avec `PLUME_COLD_VECTORIZED=0` — un
+/// réglage sous lequel le handler N'APPELLE PAS cette fonction (`cold_vectorized_armed` la garde en
+/// amont). Les deux sens étaient donc prouvés sur un chemin MORT, pendant que la prémisse, elle, était
+/// FAUSSE sur le chemin vivant : l'oracle rend LUI AUSSI des curseurs sous la frontière, et c'est le cas
+/// ORDINAIRE de toute forme qu'il est seul à savoir servir. Mesuré ici en ①/② : une requête pipée sur une
+/// fenêtre entièrement froide voyait sa page 1 servie par l'oracle puis TOUTES les suivantes refusées.
+///
+/// CE QUI TRANCHE VRAIMENT, ET C'EST CE QUE CE TÉMOIN ÉPROUVE : la MARQUE que la voie colonnaire pose sur
+/// le curseur qu'elle émet (`ESPACE_ID_COLD_VECTORISE`). Quatre verdicts, toutes causes VIVANTES, route
+/// ARMÉE partout — le réglage n'est plus l'instrument :
+///   ① forme non routable (`| table`, refusée par `map_keyset_soql`), page 1 -> repli légitime ;
+///   ② MÊME forme, curseur froid PORTANT la marque de l'oracle -> repli légitime AUSSI : son lecteur sait
+///      le relire. C'est la traversée ORDINAIRE d'une forme pipée sur une fenêtre froide, et elle est
+///      SERVIE — ce que ce témoin doit prouver, sans quoi le refus ci-dessous casserait le produit ;
+///   ③ TÉMOIN NÉGATIF DU REFUS — curseur froid PORTANT la marque colonnaire, bras froid qui décline pour
+///      une cause de DONNÉE (multi-env non scopé) -> ÉCHEC DE PAGE. Ce curseur-là, l'oracle ne sait pas
+///      le lire ;
+///   ④ un curseur froid SANS AUCUNE MARQUE -> ÉCHEC DE PAGE, sur une traversée ROUTABLE **comme** sur une
+///      traversée non routable.
+/// ①/② et ③/④ sont les deux sens : sans ①/② un handler qui refuserait TOUT passerait ; sans ③/④ un
+/// handler qui se replierait TOUJOURS passerait.
+///
+/// CE QUE LA SEPTIÈME REPRISE A CHANGÉ ICI, ET POURQUOI (mesuré le 2026-08-28). ② éprouvait autrefois un
+/// curseur froid SANS marque, et attendait un repli — au motif que « la page précédente a forcément été
+/// servie par l'oracle, puisque cette forme n'est pas routable ». C'était une DÉDUCTION de l'espace d'un
+/// curseur, et elle est FAUSSE : une page dont la part CHAUDE rend toutes les lignes n'interroge jamais le
+/// bras froid, rend un curseur portant un `event.id` RÉEL non marqué, et la frontière froide avance d'un
+/// JOUR ENTIER au basculement du vieillissement — ce curseur devient alors « froid sans marque » et se
+/// faisait rejouer comme un rang d'hydratation. `ts = cts AND id < cid` admettait TOUT le groupe
+/// d'égalité (rangs bornés par le plafond d'hydratation contre un `event.id` en millions) : la page
+/// REDÉMARRAIT en haut du groupe, en silence, 200 OK. La déduction est supprimée ; ce que ② éprouve
+/// désormais, c'est la MARQUE de l'oracle, qui se LIT.
+#[test]
+fn ks_un_repli_vers_loracle_ne_change_jamais_despace_didentifiant() {
+    let _lk = p4a_lock();
+    let (f, _nc, n_hot, _nf) = ks_fixture("ks-repli", 10, 2, 4, 8);
+    let vide = FieldMaskSet::new();
+    let conforme = crate::soql_to_sql_masked_keyset_x("search source=auditd", f.from, f.to, None, &vide).unwrap();
+    let n = n_hot + 3;
+    let froid_nu: KsCurseur = (Some((f.b - 1, i64::MAX)), None);
+    let froid_marque: KsCurseur = (Some((f.b - 1, i64::MAX)), Some(crate::ESPACE_ID_COLD_VECTORISE.to_string()));
+
+    // CONTRÔLE : la route est ARMÉE et la forme NUE est servie dans les deux positions. Sans lui, les
+    // verdicts ci-dessous pourraient venir de la fixture et non de ce qu'on éprouve.
+    assert!(ks_page_brute(&f, &f.conf, &conforme, "search source=auditd", (None, None), n).unwrap().is_some(), "route armée, page 1 : servie");
+    assert!(
+        ks_page_brute(&f, &f.conf, &conforme, "search source=auditd", froid_marque.clone(), n).unwrap().is_some(),
+        "route armée, curseur froid MARQUÉ : servie"
+    );
+
+    // LA CAUSE VIVANTE : une forme que `map_keyset_soql` refuse (tout pipe) alors que `keyset_applicable`
+    // l'admet — donc une requête que la PRODUCTION amène jusqu'ici, sans toucher au moindre réglage.
+    let pipee = "search source=auditd | table ts,source";
+    assert!(crate::keyset_applicable(pipee), "le handler route bien cette forme en keyset (sinon ① et ② ne sont pas atteignables)");
+    let (augmente, _) = crate::keyset_projection_augment(pipee);
+    let sql_pipee = crate::soql_to_sql_masked_keyset_x(&augmente, f.from, f.to, None, &vide).unwrap();
+
+    // ① Page 1 (aucun curseur) : le repli est lisible -> `Ok(None)`, l'oracle sert.
+    assert!(
+        ks_page_brute(&f, &f.conf, &sql_pipee, pipee, (None, None), n).unwrap().is_none(),
+        "forme non routable, page 1 : le repli vers l'oracle est LÉGITIME (le parcours démarre dans son espace d'id)"
+    );
+
+    // ② LA TRAVERSÉE ORDINAIRE D'UNE FORME PIPÉE SUR UNE FENÊTRE FROIDE. Page suivante : le curseur vient
+    // de l'oracle et PORTE sa marque — l'oracle marque désormais ce qu'il émet, donc il n'y a plus rien à
+    // déduire. Le repli est légitime parce que la marque le DIT, pas parce que la forme le suggère.
+    let froid_oracle: KsCurseur = (Some((f.b - 1, i64::MAX)), Some(crate::espace_oracle(0x1234_5678_9abc_def0)));
+    assert!(
+        ks_page_brute(&f, &f.conf, &sql_pipee, pipee, froid_oracle.clone(), n).unwrap().is_none(),
+        "curseur froid portant la marque de l'ORACLE : on rend la main à son lecteur — c'est la pagination ordinaire \
+         d'une forme que la voie colonnaire ne route pas, et elle ne doit PAS casser"
+    );
+    // ET LA MÊME MARQUE SUR UNE FORME ROUTABLE : même verdict. La marque prime sur la forme — c'est le
+    // saut de page (`offset > 0`) suivi d'un « Suivant », geste ordinaire de la console.
+    assert!(
+        ks_page_brute(&f, &f.conf, &conforme, "search source=auditd", froid_oracle, n).unwrap().is_none(),
+        "la marque de l'oracle est LUE, pas soumise à la routabilité de la forme"
+    );
+
+    // ③ CURSEUR MARQUÉ + refus du bras froid pour une cause de DONNÉE. On fabrique la cause vivante :
+    // un SECOND environnement dans la fenêtre froide, non scopé -> la garde mono-env décline. Le curseur,
+    // lui, porte la marque : l'oracle ne sait pas le lire -> ÉCHEC DE PAGE, pas repli.
+    let (fm, _jour) = ks_fixture_deux_envs("ks-repli-multienv");
+    let sql_m = crate::soql_to_sql_masked_keyset_x("search source=auditd", fm.from, fm.to, None, &vide).unwrap();
+    assert!(
+        cold_keyset_page(&fm.dbp, &fm.conf, None, fm.from, fm.to, fm.b, "search source=auditd", true, None, 10, &[]).unwrap().is_none(),
+        "contrôle : le bras froid décline bien pour multi-env non scopé (sinon ③ n'éprouve rien)"
+    );
+    let refus = ks_page_brute(&fm, &fm.conf, &sql_m, "search source=auditd", froid_marque.clone(), 10)
+        .expect_err("curseur MARQUÉ (donc synthétique) : se replier sur l'oracle produirait un trou ou un doublon SILENCIEUX");
+    assert!(
+        refus.contains("espace-id"),
+        "le refus doit NOMMER sa cause (l'espace d'id), sinon il se lira comme une panne quelconque : {refus}"
+    );
+
+    // ④ AUCUNE MARQUE DU TOUT -> ÉCHEC DE PAGE, ET LE VERDICT NE DÉPEND PLUS DE LA FORME. Les deux
+    // traversées — routable et non routable — sont éprouvées SUR LA MÊME FIXTURE, avec le MÊME curseur :
+    // c'est exactement là que la déduction supprimée rendait deux réponses OPPOSÉES (accusation 500 d'un
+    // côté, page décalée de l'autre), et c'est ce qui rend la suppression mesurable.
+    for (etiquette, sql, gxql) in [
+        ("routable", &conforme, "search source=auditd"),
+        ("non routable", &sql_pipee, pipee),
+    ] {
+        let refus_nu = ks_page_brute(&f, &f.conf, sql, gxql, froid_nu.clone(), n).expect_err(
+            "un curseur froid SANS espace d'identifiant ne se rejoue pas : sous la frontière aucune ligne ne porte \
+             d'identifiant stocké, et les DEUX voies marquent ce qu'elles émettent",
+        );
+        assert!(
+            refus_nu.contains("SANS espace d'identifiant") && refus_nu.contains("next_cursor"),
+            "le refus ({etiquette}) doit NOMMER ce qui manque ET dire ce que le client doit faire : {refus_nu}"
+        );
+    }
+}
+
+/// `P10.5-g` — CHAQUE ESPACE D'IDENTIFIANT VA À SON LECTEUR, ET AUCUN AUTRE.
+///
+/// LE FAIT QUI MANQUAIT. Une seule des deux voies froides marquait le curseur qu'elle émet, si bien que
+/// « ce curseur vient de l'oracle » n'était pas un fait mais une DEVINETTE — la routabilité de la
+/// TRAVERSÉE. La prémisse « si je sais servir cette forme, la page précédente est passée par moi » est
+/// FAUSSE dès qu'une page précédente a été servie par l'oracle sans que la forme y soit pour rien, et
+/// c'est un geste ORDINAIRE de la console : un SAUT DE PAGE (`offset > 0`) ferme la porte colonnaire,
+/// l'oracle sert et rend un curseur froid, puis « Suivant » le renvoie sur une forme parfaitement
+/// routable. Le verdict rendu était alors `Err` — « la marque a été perdue » — c'est-à-dire un échec de
+/// page au milieu d'une traversée qui marchait, en accusant un client qui n'avait rien perdu.
+///
+/// TROIS VERDICTS, TOUS LUS SUR LE CURSEUR, AUCUN DEVINÉ :
+///   ① la marque de l'ORACLE, sur une traversée ROUTABLE -> `Ok(None)` : on rend la main à son lecteur.
+///      C'est le cas que la devinette rendait `Err` ;
+///   ② une marque dont AUCUNE voie de ce binaire n'est le lecteur -> ÉCHEC DE PAGE nommé. Un nombre
+///      dont plus personne ne connaît la numérotation ne se rejoue pas « au cas où » ;
+///   ③ NOTRE marque au-dessus de la frontière -> ÉCHEC DE PAGE nommé : la marque dit « id fabriqué »,
+///      la position dit « ligne chaude, id réel d'`event` », et aucune des deux lectures n'est sûre.
+/// TÉMOIN POSITIF DANS LA MÊME FIXTURE : la marque de CETTE voie, sous la frontière, est SERVIE — sans
+/// lui, un handler qui refuserait tout curseur marqué passerait ces trois verdicts.
+#[test]
+fn ks_chaque_espace_didentifiant_va_a_son_lecteur_et_aucun_autre() {
+    let _lk = p4a_lock();
+    let (f, _nc, n_hot, _nf) = ks_fixture("ks-espaces", 10, 2, 4, 8);
+    let vide = FieldMaskSet::new();
+    let conforme = crate::soql_to_sql_masked_keyset_x("search source=auditd", f.from, f.to, None, &vide).unwrap();
+    let n = n_hot + 3;
+    let soql = "search source=auditd";
+
+    // TÉMOIN POSITIF : notre marque, sous la frontière -> SERVIE. C'EST LUI LE CONTRÔLE, depuis que la
+    // routabilité de la traversée a été supprimée (`P10.5-g`) : il établit que cette voie SERT bien cette
+    // fixture, donc qu'un `Ok(None)` plus bas est une DÉCISION et non un repli général.
+    let notre: KsCurseur = (Some((f.b - 1, i64::MAX)), Some(crate::ESPACE_ID_COLD_VECTORISE.to_string()));
+    assert!(
+        ks_page_brute(&f, &f.conf, &conforme, soql, notre, n).unwrap().is_some(),
+        "TÉMOIN POSITIF EN ÉCHEC : la marque de cette voie, sous la frontière, doit être servie ICI"
+    );
+
+    // ① LA MARQUE DE L'ORACLE, SUR UNE TRAVERSÉE ROUTABLE -> on rend la main, sans deviner.
+    let oracle: KsCurseur = (Some((f.b - 1, 3)), Some(crate::espace_oracle(0xdead_beef_0000_0001)));
+    assert!(
+        ks_page_brute(&f, &f.conf, &conforme, soql, oracle, n).unwrap().is_none(),
+        "un curseur qui porte la marque de l'ORACLE repart à l'oracle, MÊME sur une forme que cette voie sait router — \
+         c'est le cas du saut de page suivi d'un « Suivant », que la devinette par routabilité rendait `Err`"
+    );
+
+    // ② UNE MARQUE SANS LECTEUR -> échec de page qui NOMME sa cause.
+    let inconnu: KsCurseur = (Some((f.b - 1, 3)), Some("espace-que-ce-binaire-ne-connait-pas".to_string()));
+    let refus_inconnu = ks_page_brute(&f, &f.conf, &conforme, soql, inconnu, n)
+        .expect_err("un espace d'identifiant sans lecteur ne se rejoue pas");
+    assert!(
+        refus_inconnu.contains("espace d'identifiant inconnu"),
+        "le refus doit NOMMER sa cause, sinon il se lira comme une panne quelconque : {refus_inconnu}"
+    );
+
+    // ③ NOTRE MARQUE AU-DESSUS DE LA FRONTIÈRE -> incohérence, échec de page.
+    let au_dessus: KsCurseur = (Some((f.b + 1, 7)), Some(crate::ESPACE_ID_COLD_VECTORISE.to_string()));
+    let refus_haut = ks_page_brute(&f, &f.conf, &conforme, soql, au_dessus, n)
+        .expect_err("marque de la voie colonnaire sur une position chaude : les deux lectures se contredisent");
+    assert!(
+        refus_haut.contains("AU-DESSUS de la frontière"),
+        "le refus doit dire CE QUI se contredit : {refus_haut}"
+    );
+
+    // ④ UN CURSEUR FROID **SANS** MARQUE -> ÉCHEC DE PAGE, SUR UNE TRAVERSÉE PARFAITEMENT ROUTABLE.
+    //
+    // C'EST LA BRANCHE SUPPRIMÉE. Elle interrogeait la ROUTABILITÉ pour DÉDUIRE l'espace : routable ->
+    // « le client a reconstruit son curseur » (accusation, 500 permanent) ; non routable -> « c'est un
+    // rowid d'union » (page décalée en silence quand la frontière avait bougé). Les deux verdicts
+    // sortaient de la MÊME prémisse fausse. Ici la traversée EST routable (le témoin positif ci-dessus le
+    // montre) et le verdict ne dépend plus d'elle : sous la frontière, un curseur qui ne dit pas quelle
+    // voie a fabriqué son `id` ne se rejoue pas.
+    let nu: KsCurseur = (Some((f.b - 1, 3)), None);
+    let refus_nu = ks_page_brute(&f, &f.conf, &conforme, soql, nu, n)
+        .expect_err("un curseur froid sans espace d'identifiant ne se rejoue pas, quelle que soit la forme de la traversée");
+    assert!(
+        refus_nu.contains("SANS espace d'identifiant"),
+        "le refus doit NOMMER ce qui manque, sinon il se lira comme une panne quelconque : {refus_nu}"
+    );
+}
+
+/// `P10.5-g` — LA NUMÉROTATION DE L'ORACLE DÉPEND DE LA FENÊTRE, MESURÉ ; ET SON EMPREINTE LE DIT.
+///
+/// LE DÉFAUT QUE CE TÉMOIN REND NON-ÉCRIVABLE. La marque `cold-union` nommait le LECTEUR ; la règle
+/// d'entrée l'acceptait sur la seule condition « il existe UNE fenêtre froide » et en DÉDUISAIT « c'est
+/// la MÊME ». Or l'`id` que l'oracle rend est un `INTEGER PRIMARY KEY` AUTO de `cold_event` : le RANG
+/// d'insertion dans l'ordre canonique des lignes RETENUES, et `decode_one_file` filtre `ts >= q_start`
+/// LIGNE À LIGNE. Avancer la borne basse d'une seconde retire donc des lignes du DÉBUT de cet ordre et
+/// décale TOUS les rangs — la console recalculait `now - fenêtre` à chaque page.
+///
+/// LES DEUX SENS, ET LA VALEUR QUI CHANGE :
+///   ① la MÊME fenêtre, deux fois -> MÊME empreinte ET MÊMES rangs. Sans cette jambe, une empreinte
+///      aléatoire passerait ce témoin et REFUSERAIT toute pagination froide ;
+///   ② une fenêtre décalée d'UNE SECONDE -> le rang de la MÊME ligne CHANGE, et l'empreinte change avec
+///      lui. C'est la mesure qui rend le refus non-théorique : rejouer le rang de ① dans ② désigne une
+///      autre ligne.
+/// L'INSTRUMENT SE VALIDE : la ligne témoin est cherchée par son `ts` (une propriété STOCKÉE, invariante
+/// par fenêtre) et les deux hydratations doivent la trouver — sans quoi le test comparerait deux absences.
+#[test]
+fn ks_lempreinte_de_numerotation_suit_ce_qui_numerote() {
+    let _lk = p4a_lock();
+    let (f, _n_cold, _n_hot, _nf) = ks_fixture("ks-empreinte", 10, 2, 4, 8);
+    let base = (M - 10) * SECS_PER_DAY;
+    let hi = f.b - 1;
+
+    // Le rang de la ligne de `ts = base + 5` — une ligne bien à l'intérieur des deux fenêtres.
+    let rang = |lo: i64| -> (u64, i64) {
+        let u = open_cold_union(&f.dbp, &f.conf, Some("prod"), lo, hi, f.b, &[]).expect("connexion d'union");
+        let id: i64 = u
+            .conn
+            .query_row("SELECT MIN(id) FROM cold_event WHERE ts=?1", params![base + 5], |r| r.get(0))
+            .expect("la ligne témoin doit être hydratée par les DEUX fenêtres");
+        (u.meta.empreinte_de_numerotation, id)
+    };
+
+    // ① MÊME FENÊTRE, DEUX FOIS.
+    let (e1, r1) = rang(base);
+    let (e1b, r1b) = rang(base);
+    assert_eq!(e1, e1b, "TÉMOIN NÉGATIF EN ÉCHEC : la même hydratation doit rendre la MÊME empreinte, sinon aucune page 2 froide n'est servie");
+    assert_eq!(r1, r1b, "INSTRUMENT : la même fenêtre doit numéroter à l'identique");
+
+    // ② LA BORNE BASSE AVANCE D'UNE SECONDE — ce que faisait la console entre deux pages.
+    let (e2, r2) = rang(base + 1);
+    assert_ne!(
+        r1, r2,
+        "LA VALEUR QUI TRANCHE : la MÊME ligne (ts={}) porte le rang {r1} sur la fenêtre [{base},{hi}] et le rang {r2} sur \
+         [{}, {hi}] — rejouer l'un dans l'autre désigne une AUTRE ligne, donc une page qui commence ailleurs",
+        base + 5,
+        base + 1
+    );
+    assert_ne!(
+        e1, e2,
+        "L'EMPREINTE DOIT SUIVRE CE QU'ELLE PROMET : deux numérotations différentes ne peuvent pas porter la même marque, \
+         sinon la comparaison du handler est vraie partout et ne refuse rien"
+    );
+
+    // ET DANS L'AUTRE SENS, POUR QUE LA MARQUE SOIT UTILISABLE : ce que le handler ÉCRIT sur le curseur
+    // se relit exactement, et deux empreintes distinctes donnent deux marques distinctes.
+    assert_eq!(crate::lire_espace_du_curseur(&crate::espace_oracle(e1)), crate::EspaceCurseur::Oracle { empreinte: e1 });
+    assert_ne!(crate::espace_oracle(e1), crate::espace_oracle(e2), "deux numérotations, deux marques");
 }
 
 /// GATE du browse KEYSET colonnaire : ARMÉ par défaut, `=0` le désarme. Le défaut a changé parce que le
@@ -8916,39 +9893,219 @@ fn ks_gate_armed_by_default_opt_out_and_unsupported_shapes_fall_back() {
 #[test]
 fn ks_multi_env_unscoped_falls_back_scoped_serves() {
     let _lk = p4a_lock_env_mute();
-    let root = tmp_root("ks-multienv");
+    let (f, _day) = ks_fixture_deux_envs("ks-multienv");
+
+    // NON-SCOPÉ (env_filter=None) + 2 envs distincts -> None (fallback oracle). C'EST le fix Finding 1.
+    let unscoped = cold_keyset_page(&f.dbp, &f.conf, None, 0, 0, f.b, "search source=auditd", true, None, 10, &[]).unwrap();
+    assert!(unscoped.is_none(), "multi-env non-scopé -> None (fallback oracle ; évite la collision d'id synthétique)");
+
+    // SCOPÉ prodA -> routable (id unique dans un env), rend ses 12 lignes cold.
+    let scoped = cold_keyset_page(&f.dbp, &f.conf, Some("prodA"), 0, 0, f.b, "search source=auditd", true, None, 100, &[]).unwrap();
+    let (cols, rows) = scoped.expect("env-scopé (mono-env) DOIT être routable");
+    assert!(cols.iter().any(|c| c == "id"), "colonne id synthétique présente");
+    assert_eq!(rows.len(), 12, "prodA scopé rend ses 12 lignes (page 1, limite 100)");
+    let _ = std::fs::remove_dir_all(&f.root);
+}
+
+/// `P10.5-c` — L'AVEU DE PROVENANCE DU BROWSE COLONNAIRE SUIT CE QUE LA PAGE A LU.
+///
+/// LE TROISIÈME SITE, ET IL ÉTAIT DÉJÀ LÀ. Le lot qui a fermé les deux `served_from:"hot+cold"` en dur
+/// a laissé, dans le même fichier de handler, un `json!` en ligne qui écrivait
+/// `"hot+cold-vectorized-keyset"` sur TOUTE page de cette voie. Or la voie remplit la page depuis le
+/// HAUT : quand la part chaude suffit (`cold_limit == 0`), le bras froid n'est JAMAIS interrogé et la
+/// page ne porte pas une seule ligne froide. Elle s'annonçait froide quand même.
+///
+/// LES DEUX SENS, sur la MÊME fixture — c'est ce qui empêche le verdict de venir du banc :
+///   ① page qui tient dans le CHAUD (`limit < lignes chaudes`) -> provenance « hot… », et aucune ligne
+///      sous la frontière pour le contredire ;
+///   ② page plus grande que le chaud -> le bras froid est interrogé, des lignes froides sont annexées
+///      -> provenance « hot+cold… ».
+/// La ROUTE (`-vectorized-keyset`) est présente des deux côtés : c'est le suffixe du chemin, et il ne
+/// dit rien des parts lues.
+#[test]
+fn ks_la_provenance_publiee_suit_ce_que_la_page_a_lu() {
+    let _lk = p4a_lock();
+    let (f, _nc, n_hot, _nf) = ks_fixture("ks-provenance", 10, 2, 5, 8);
+    let conforme = crate::soql_to_sql_masked_keyset_x("search source=auditd", f.from, f.to, None, &FieldMaskSet::new()).unwrap();
+    let provenance = |v: &Value| v["stats"]["cold"]["served_from"].as_str().unwrap_or("").to_string();
+    let sous_la_frontiere = |v: &Value| {
+        let ts_i = v["columns"].as_array().unwrap().iter().position(|c| c == "ts").expect("colonne ts");
+        v["rows"].as_array().unwrap().iter().filter(|r| r[ts_i].as_i64().unwrap_or(i64::MAX) < f.b).count()
+    };
+
+    // ① La page tient dans le chaud -> le bras froid n'est pas interrogé.
+    let petite = ks_page(&f, &conforme, (None, None), n_hot - 2);
+    assert_eq!(sous_la_frontiere(&petite), 0, "contrôle : cette page ne porte AUCUNE ligne froide");
+    assert_eq!(
+        provenance(&petite),
+        "hot-vectorized-keyset",
+        "une page que la part chaude a remplie seule ne s'annonce pas froide : {}",
+        provenance(&petite)
+    );
+
+    // ② TÉMOIN NÉGATIF : au-delà du chaud, le froid est annexé — et l'aveu change.
+    let grande = ks_page(&f, &conforme, (None, None), n_hot + 3);
+    assert!(sous_la_frontiere(&grande) > 0, "contrôle : cette page porte bien des lignes froides");
+    assert_eq!(
+        provenance(&grande),
+        "hot+cold-vectorized-keyset",
+        "une page qui a annexé du froid le dit — sinon l'aveu serait toujours « hot » et ① passerait pour rien"
+    );
+}
+
+/// LA GARDE MONO-ENV JUGE LA **FENÊTRE** DE LA TRAVERSÉE, PAS LA PAGE — sinon elle change d'avis en
+/// cours de route.
+///
+/// CE QUI ÉTAIT MESURÉ. `distinct_seal_envs` est bornée par des JOURS, et la borne haute qu'on lui
+/// passait était `min(fenêtre, curseur)` : elle RÉTRÉCIT à chaque page. Un second environnement présent
+/// SEULEMENT dans le haut de la fenêtre faisait donc décliner la page 1 (servie par l'oracle, espace d'id
+/// oracle) puis ACCEPTER une page plus profonde (espace d'id synthétique) — un changement d'espace
+/// d'identifiant EN COURS DE TRAVERSÉE, dans le sens inverse de celui que le lot précédent regardait, et
+/// tout aussi silencieux.
+///
+/// LES DEUX SENS, sur une fixture où prodB n'existe QUE sur le jour froid RÉCENT :
+///   ① curseur posé sur le jour ANCIEN (où prodA est seul) -> la garde voit quand même les DEUX envs de
+///      la fenêtre -> DÉCLINE, comme la page 1. C'est le constat ;
+///   ② TÉMOIN NÉGATIF — la MÊME fixture scopée `prodA` -> routable. Sans lui, une garde qui refuserait
+///      TOUT passerait ce test.
+#[test]
+fn ks_la_garde_mono_env_juge_la_fenetre_pas_la_page() {
+    let _lk = p4a_lock();
+    let root = tmp_root("ks-monoenv-fenetre");
     let db = mkdb(&root);
     let dbp = dbp(&root);
     let mut conf = conf_union(HOT_WIN);
-    conf.insert("PLUME_COLD_FILE_MAX_ROWS".to_string(), "8".to_string()); // split -> plusieurs seq/env
-    let day = M - 10;
-    let base = day * SECS_PER_DAY;
-    // MÊME plage `ts` pour les DEUX envs -> collisions `ts` inter-env (le cœur du Finding 1).
+    conf.insert("PLUME_COLD_FILE_MAX_ROWS".to_string(), "8".to_string());
+    let jour_ancien = M - 10;
+    let jour_recent = M - 5;
     let mut idx = 0i64;
+    for t in 0..12 {
+        let mut r = rich_row(jour_ancien * SECS_PER_DAY + t, idx);
+        r.row.source = "auditd".to_string();
+        r.row.env_id = Some("prodA".to_string());
+        insert_event(&db, &r);
+        idx += 1;
+    }
     for env in ["prodA", "prodB"] {
         for t in 0..12 {
-            let mut r = rich_row(base + t, idx);
+            let mut r = rich_row(jour_recent * SECS_PER_DAY + t, idx);
             r.row.source = "auditd".to_string();
             r.row.env_id = Some(env.to_string());
             insert_event(&db, &r);
             idx += 1;
         }
     }
-    insert_recent_tail_holder(&db); // tail hot -> aging OK
+    insert_recent_tail_holder(&db);
     cold_age_run(&db, &dbp, &conf, n_now(), RET_DAYS);
-    assert_eq!(count_hot_day(&db, "prodA", day), 0, "prodA agé en froid");
-    assert_eq!(count_hot_day(&db, "prodB", day), 0, "prodB agé en froid");
     let b = union_boundary(&db, &conf);
+    assert_eq!(count_hot_day(&db, "prodB", jour_recent), 0, "prodB agé en froid");
 
-    // NON-SCOPÉ (env_filter=None) + 2 envs distincts -> None (fallback oracle). C'EST le fix Finding 1.
-    let unscoped = cold_keyset_page(&dbp, &conf, None, 0, 0, b, "search source=auditd", true, None, 10, &[]).unwrap();
-    assert!(unscoped.is_none(), "multi-env non-scopé -> None (fallback oracle ; évite la collision d'id synthétique)");
+    // CONTRÔLE : la page 1 (sans curseur) décline bien — c'est le verdict que toutes les pages doivent tenir.
+    assert!(
+        cold_keyset_page(&dbp, &conf, None, 0, 0, b, "search source=auditd", true, None, 5, &[]).unwrap().is_none(),
+        "page 1 : deux envs dans la fenêtre -> déclin (sinon ce témoin est vide)"
+    );
 
-    // SCOPÉ prodA -> routable (id unique dans un env), rend ses 12 lignes cold.
-    let scoped = cold_keyset_page(&dbp, &conf, Some("prodA"), 0, 0, b, "search source=auditd", true, None, 100, &[]).unwrap();
-    let (cols, rows) = scoped.expect("env-scopé (mono-env) DOIT être routable");
-    assert!(cols.iter().any(|c| c == "id"), "colonne id synthétique présente");
-    assert_eq!(rows.len(), 12, "prodA scopé rend ses 12 lignes (page 1, limite 100)");
+    // ① Curseur sur le jour ANCIEN : la fenêtre de PAGE ne contient que prodA, celle de la TRAVERSÉE
+    // contient les deux. C'est la seconde qui décide.
+    let curseur = Some((jour_ancien * SECS_PER_DAY + 11, i64::MAX));
+    assert!(
+        cold_keyset_page(&dbp, &conf, None, 0, 0, b, "search source=auditd", true, curseur, 5, &[]).unwrap().is_none(),
+        "curseur sous le second env : la garde juge la FENÊTRE, donc elle décline comme la page 1 — \
+         accepter ici ferait basculer la traversée d'un espace d'identifiant à l'autre"
+    );
+
+    // ② TÉMOIN NÉGATIF : scopé prodA, la même fixture et le même curseur SONT routables.
+    let scoped = cold_keyset_page(&dbp, &conf, Some("prodA"), 0, 0, b, "search source=auditd", true, curseur, 5, &[]).unwrap();
+    assert!(scoped.is_some(), "env scopé : mono-env par construction -> routable (sinon la garde refuse tout)");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `P10.5-f` — L'ID SYNTHÉTIQUE NE S'ORDONNE PAS ENTRE PARTITIONS, ET LA CERTIFICATION DE TRI LE SAIT.
+///
+/// CE QUI ÉTAIT LAXISTE. `keyset_applicable` certifiait `| sort` dès que TOUTES les clés valaient `-ts`
+/// OU `-id` : `| sort -id` seul était donc déclaré applicable, et servi par un wrap qui ordonne
+/// `(ts DESC, id DESC)` — un ordre qui n'est pas `id DESC`. La certification promettait un ordre qu'elle
+/// ne tient pas ; c'est une laxité vers le HAUT (elle ADMET une forme), là où `P10.5-d` était une laxité
+/// vers le bas.
+///
+/// CE QUE CE TÉMOIN MESURE, sur DEUX partitions `(env_id, jour)` d'un MÊME environnement — le cas que le
+/// repli mono-environnement de `planner.rs` laisse passer :
+///   ① l'ordre SERVI est un ordre total STRICT sur `(ts, id)` : le repli mono-env tient sa promesse, qui
+///      est l'UNICITÉ de la clé de curseur ;
+///   ② l'`id` SEUL, lui, n'est ni décroissant ni même UNIQUE : `seq` repart à zéro à chaque partition,
+///      donc les deux jours réemploient le MÊME jeu d'identifiants. RÉPONSE à la question laissée ouverte
+///      par la cellule : le repli mono-environnement couvre la clé `(ts,id)`, PAS l'ordre de `id`, et il
+///      ne dit rien de cet ordre-là — il n'a jamais été écrit pour ça ;
+///   ③ donc `| sort -id` ne peut pas être certifié, et il ne l'est plus. `| sort -ts` l'est toujours :
+///      le wrap le RAFFINE (il départage par `id`), il ne le contredit pas.
+#[test]
+fn ks_id_synthetique_ne_sordonne_pas_entre_partitions() {
+    let _lk = p4a_lock();
+    let root = tmp_root("ks-p105f");
+    let db = mkdb(&root);
+    let dbp = dbp(&root);
+    let mut conf = conf_union(HOT_WIN);
+    conf.insert("PLUME_COLD_FILE_MAX_ROWS".to_string(), "8".to_string()); // split -> plusieurs `seq` par jour
+    let jours = [M - 10, M - 9];
+    let par_jour = 12i64;
+    let mut idx = 0i64;
+    for j in jours {
+        let base = j * SECS_PER_DAY;
+        for t in 0..par_jour {
+            let mut r = rich_row(base + t, idx);
+            r.row.source = "auditd".to_string();
+            insert_event(&db, &r);
+            idx += 1;
+        }
+    }
+    insert_recent_tail_holder(&db);
+    cold_age_run(&db, &dbp, &conf, n_now(), RET_DAYS);
+    for j in jours {
+        assert_eq!(count_hot_day(&db, "prod", j), 0, "le jour {j} doit être agé en froid");
+    }
+    let b = union_boundary(&db, &conf);
+    let (cols, rows) = cold_keyset_page(&dbp, &conf, None, 0, 0, b, "search source=auditd", true, None, 100, &[])
+        .unwrap()
+        .expect("mono-env : routable");
+    let attendu = (jours.len() as i64) * par_jour;
+    assert_eq!(rows.len() as i64, attendu, "les DEUX partitions sont servies (sinon on ne mesure qu'une)");
+    let i_ts = cols.iter().position(|c| c == "ts").expect("colonne ts");
+    let i_id = cols.iter().position(|c| c == "id").expect("colonne id");
+    let tss: Vec<i64> = rows.iter().map(|r| r[i_ts].as_i64().expect("ts entier")).collect();
+    let ids: Vec<i64> = rows.iter().map(|r| r[i_id].as_i64().expect("id entier")).collect();
+
+    // ① L'ordre du wrap tient : `(ts,id)` STRICTEMENT décroissant -> clé de curseur unique, zéro trou.
+    for i in 0..rows.len() - 1 {
+        assert!(
+            (tss[i], ids[i]) > (tss[i + 1], ids[i + 1]),
+            "ordre servi non strict en {i} : ({},{}) puis ({},{})",
+            tss[i],
+            ids[i],
+            tss[i + 1],
+            ids[i + 1]
+        );
+    }
+
+    // ② `id` seul : au moins une REMONTÉE, et des identifiants RÉPÉTÉS entre partitions.
+    let remontees = (0..rows.len() - 1).filter(|&i| ids[i] < ids[i + 1]).count();
+    assert!(
+        remontees >= 1,
+        "aucune remontée d'`id` : les deux partitions s'ordonneraient entre elles et la certification laxiste \
+         serait inoffensive — ce témoin ne mesurerait alors plus le défaut qu'il existe pour mesurer"
+    );
+    let distincts: std::collections::BTreeSet<i64> = ids.iter().copied().collect();
+    assert!(
+        distincts.len() < ids.len(),
+        "`seq` repart par partition : les identifiants doivent se RÉPÉTER entre les deux jours ({} distincts pour {} lignes)",
+        distincts.len(),
+        ids.len()
+    );
+
+    // ③ LA CERTIFICATION. `-id` seul n'est pas tenable ; `-ts` l'est, et `-ts,-id` est le wrap lui-même.
+    assert!(!crate::keyset_applicable("search source=auditd | sort -id"), "`-id` : ordre NON servi -> non certifiable");
+    assert!(crate::keyset_applicable("search source=auditd | sort -ts"), "`-ts` : le wrap le RAFFINE");
+    assert!(crate::keyset_applicable("search source=auditd | sort -ts,-id"), "`-ts,-id` : le wrap lui-même");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -9221,7 +10378,7 @@ fn answer_shape_defaults_to_refusal_for_unknown_stages() {
 fn cold_answer_render_refuses_derived_values_on_a_truncated_set() {
     let body = json!({ "columns": ["count"], "rows": [[289]], "stats": {} });
     // TRONQUÉ + agrégat -> REFUS, avec un message qui nomme la cause ET les voies exactes.
-    let refused = ColdAnswer::new(body.clone(), Some(289), true, 5000, 5000)
+    let refused = ColdAnswer::new(body.clone(), Some(289), true, 5000, 5000, LectureDuBrasFroid::indecidable())
         .render(AnswerShape::of_gxql("search source=auditd severity>=2 | stats count"))
         .err()
         .expect("un agrégat sur ensemble tronqué DOIT être refusé");
@@ -9230,13 +10387,13 @@ fn cold_answer_render_refuses_derived_values_on_a_truncated_set() {
         assert!(msg.contains(must), "le refus doit contenir « {must} » — sinon c'est un mur : {msg}");
     }
     // TRONQUÉ + par-événement -> partielle DÉCLARÉE, et total ÉCARTÉ.
-    let r = ColdAnswer::new(body.clone(), Some(4242), true, 5000, 5000)
+    let r = ColdAnswer::new(body.clone(), Some(4242), true, 5000, 5000, LectureDuBrasFroid::indecidable())
         .render(AnswerShape::of_gxql("search | table ts,source"))
         .expect("une matérialisation partielle reste rendable");
     assert!(r.truncated, "l'incomplétude est DÉCLARÉE");
     assert!(r.total.is_none(), "le total de pagination est un COUNT : jamais rendu d'un ensemble tronqué");
     // EXACT -> tout passe, total compris.
-    let r = ColdAnswer::new(body, Some(58_747), false, 5000, 120)
+    let r = ColdAnswer::new(body, Some(58_747), false, 5000, 120, LectureDuBrasFroid::indecidable())
         .render(AnswerShape::of_gxql("search source=auditd severity>=2 | stats count"))
         .expect("un ensemble complet rend tout");
     assert!(!r.truncated);

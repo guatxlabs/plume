@@ -265,9 +265,23 @@ const DIM_STATS_VERSION: u8 = 1;
 /// données). FNV-1a est figé par la spec -> le bloom est reproductible pour la VIE du fichier. `seed` sépare deux
 /// hachages indépendants (double hachage).
 fn fnv1a64(seed: u8, bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    h ^= seed as u64;
-    h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    fnv1a64_chaine(fnv1a64_chaine(FNV1A64_DEPART, &[seed]), bytes)
+}
+
+/// L'OFFSET FNV-1a 64 bits (figé par la spec) — le point de départ d'une chaîne.
+pub(super) const FNV1A64_DEPART: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// LE PAS FNV-1a, EXPOSÉ POUR ÊTRE CHAÎNÉ — un seul corps de boucle dans `cold_store`.
+///
+/// POURQUOI IL EST SORTI D'ICI (`P10.5-g`, 2026-08-28). L'empreinte de numérotation d'une hydratation
+/// (`reader::empreinte_de_numerotation`) doit hacher une SUITE de champs hétérogènes (un env, deux
+/// bornes, un plafond, puis cinq entiers par fichier sélectionné) : `fnv1a64(seed, bytes)` ne sait
+/// hacher qu'UN tampon, et concaténer les champs dans un `Vec` pour le lui passer aurait été une
+/// deuxième écriture du même hachage. Il n'y en a qu'une, et `fnv1a64` en est un CAS PARTICULIER —
+/// littéralement `chaine(chaine(DÉPART, &[seed]), bytes)`, donc le bloom PERSISTÉ hache exactement
+/// comme avant ce déplacement (c'est ce que les témoins de bloom de ce module tiennent).
+pub(super) fn fnv1a64_chaine(depart: u64, bytes: &[u8]) -> u64 {
+    let mut h = depart;
     for &b in bytes {
         h ^= b as u64;
         h = h.wrapping_mul(0x0000_0100_0000_01b3);

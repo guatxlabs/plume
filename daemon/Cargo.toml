@@ -55,7 +55,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 # age  : chiffrement STREAMING par passphrase (scrypt), crypto auditée, pure-Rust (pas de hand-rolled).
 # Les deux streament en flux borné (buffer ~1 MiB) -> tient sous la limite RAM 2 GiB du pod.
 zstd = "0.13"
-age = "0.11"
+age = "0.12"
 # Importeur Sigma (Slice #7, pièce 3) : les règles Sigma sont du YAML. `yaml-rust` est un parseur YAML
 # 100 % Rust, sans dépendance système (linked-hash-map uniquement), déjà présent dans le cache cargo.
 # Utilisé SEULEMENT par le front-end de l'importeur (YAML -> serde_json::Value) ; le cœur de traduction

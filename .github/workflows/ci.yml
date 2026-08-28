@@ -1851,13 +1851,23 @@ jobs:
       #     `cargo tree -i rkyv --all-features` prints "nothing to print" — rkyv is never compiled or
       #     linked, it exists only as a Cargo.lock entry that cargo-audit scans. Lift when rust_decimal
       #     moves its normal dep to rkyv 0.8.
+      # `P8.29-a` — UN PAS QUI ÉCHOUE NE DOIT PAS CACHER CELUI D'APRÈS. Mesuré le 2026-08-28 : le scan de
+      # secrets était rouge depuis le 2026-08-27 et DEUX exécutions ne l'ont pas montré, parce que l'audit
+      # des dépendances échoue AVANT lui et arrête le travail. Le rouge affiché nommait donc une cause
+      # vraie et en TAISAIT une autre — la famille même que ce dépôt poursuit : un résultat incomplet
+      # présenté comme complet. Les deux scans sont désormais joués DANS TOUS LES CAS, leurs issues sont
+      # RETENUES, et un pas final refuse si l'une d'elles a échoué. Aucun des deux ne devient tolérant :
+      # ce qui change est l'ORDRE DE RÉVÉLATION, pas la sévérité.
       - name: cargo audit (daemon crate — deny warnings)
+        id: cargo_audit
+        continue-on-error: true
         working-directory: daemon
         run: cargo audit --deny warnings
 
       # Ephemeral gitleaks config (runner-only, never committed) — extends defaults +
       # allowlists the documented unit-test PEM fixtures so they cannot false-positive.
       - name: Write gitleaks config (allowlist documented test PEM fixtures + env-ref/placeholder paths + schema-rebrand SQL)
+        if: always()
         run: |
           cat > "$GITHUB_WORKSPACE/.gitleaks-ci.toml" <<'EOF'
           title = "plume CI gitleaks config"
@@ -1890,8 +1900,17 @@ jobs:
           #      the files and fails on a stale digest, a missing name or a name in excess. A foreign value
           #      hidden in that table would therefore turn the suite red, which is a stronger check than the
           #      scan. Anything in that file NOT of this shape is still scanned.
+          #   8. the ESM harness's own local-storage key names in `.github/scripts/web_esm_harnais.mjs`.
+          #      The shape is `storeKey: "banc_<word>"` — a browser localStorage key handed to the paged-list
+          #      component the harness DRIVES, never a credential; the generic-api-key rule reads `key: "value"`
+          #      and cannot tell them apart. The SHAPE is allowlisted, not the file: any other `key`-like literal
+          #      in that harness — and every `storeKey` that is NOT prefixed `banc_` — is still scanned. Measured
+          #      on 2026-08-28: this single line was the ONE public-lineage finding, and it had been red since
+          #      2026-08-27 — masked for two runs by the `cargo audit` step, which fails BEFORE this one and
+          #      stops the job. A step that hides the step after it is why this went unseen for a day.
           regexTarget = "line"
           regexes = [
+            '''storeKey: "banc_[a-z0-9_]+"''',
             '''REPLACE\(query,'key=soc_\w+','key=plume_\w+'\)''',
             '''\$\{PLUME_[A-Z0-9_]+(:\?|:-|\})''',
             '''Bearer \$\{?[A-Z0-9_]+''',
@@ -1936,6 +1955,9 @@ jobs:
       # (written just above). Scans tree + full history (fetch-depth: 0 above). This job keeps only
       # `permissions: contents: read` — the binary needs no token (least privilege).
       - name: Secret scan (gitleaks, pinned binary — no token/license required)
+        id: gitleaks
+        if: always()
+        continue-on-error: true
         run: |
           set -euo pipefail
           GL_VER=8.24.3
@@ -1967,6 +1989,21 @@ jobs:
       # CE QUE ÇA A TROUVÉ, mesuré le 2026-08-03 en étendant la couverture : `agent` ÉCHOUAIT
       # (code 4) sur `webpki-roots@1.0.8` en `CDLA-Permissive-2.0`. La licence est désormais
       # autorisée NOMMÉMENT et justifiée dans `deny.toml` — pas ajoutée en silence.
+      # LE PAS QUI REND LE VERDICT DES DEUX SCANS. Sans lui, `continue-on-error` rendrait le travail vert
+      # sur un secret trouvé — exactement le défaut inverse de celui qu'on ferme. Il nomme CHAQUE issue,
+      # de sorte qu'un lecteur voit d'un coup ce qui a échoué et ce qui a passé, jamais l'un à la place
+      # de l'autre.
+      - name: Les DEUX scans de sécurité ont passé
+        if: always()
+        run: |
+          set -u
+          echo "cargo-audit : ${{ steps.cargo_audit.outcome }}"
+          echo "gitleaks    : ${{ steps.gitleaks.outcome }}"
+          rc=0
+          [ "${{ steps.cargo_audit.outcome }}" = success ] || { echo "::error::cargo audit a échoué (avis de dépendance ou version retirée)."; rc=1; }
+          [ "${{ steps.gitleaks.outcome }}" = success ] || { echo "::error::le scan de secrets a échoué."; rc=1; }
+          exit $rc
+
       - name: Licences, bans et sources des dépendances (cargo-deny, TOUS les crates découverts)
         run: |
           set -euo pipefail

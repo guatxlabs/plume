@@ -126,7 +126,16 @@ label de VOTRE ingress controller) — aucun autre pod ne peut atteindre le daem
 - **`respond.sh`** (responder, opt-in `PLUME_WITH_RESPONDER=1`) : modèle **pull** (aucune entrée
   réseau sur l'agent) — `plume-respond-agent.timer` tire `/api/actions/pending`, applique les
   bans/unbans en **déléguant** à CrowdSec → fail2ban → nft, **dry-run par défaut** (`PLUME_RESPONDER_APPLY=0`)
-  + allowlist `/etc/plume/responder.allow`. Token **lié à l'hôte** (anti-IDOR).
+  + **liste d'épargne** `PLUME_RESPONDER_ALLOW` (défaut `/etc/plume/responder-ban-exempt.allow` sur une
+  installation neuve). Token **lié à l'hôte** (anti-IDOR).
+  ⚠️ **Deux politiques, deux fichiers, deux lecteurs — et ils ne se recouvrent pas** (`P4.7-a`/`P4.7-b`) :
+  ce fichier-ci porte des **adresses à ne jamais bannir**, lues par `is_ip` (shell) ; le démon lit
+  `PLUME_STOP_SERVICE_ALLOW` (même chemin historique `/etc/plume/responder.allow`) comme des **noms de
+  service** autorisés pour `stop_service`. Les deux prédicats **ne sont pas égaux** : ce qui est tenu,
+  et mesuré sur les deux lecteurs, est que le démon reconnaît comme adresse **strictement plus** de
+  formes que l'agent — donc aucune ligne n'est acceptée en silence par les deux. Voir l'encadré du
+  README et `collectors/predicat-adresse.corpus`.
+  ⚠️ `P4.7-c`, **ouverte** : le responder du **central** ne lit **aucune** liste d'épargne.
 - **`minio-audit-relay.py`** (opt-in) : récepteur webhook MinIO (audit objet) → spool → `ship.sh`.
 - **Installation** : `bootstrap.sh` (central host) / `bootstrap-agent.sh` (agent). Arborescence host :
   binaire `/usr/local/bin/plume-daemon`, collecteurs `/usr/local/lib/plume/collectors/`, config

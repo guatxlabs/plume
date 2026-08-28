@@ -141,8 +141,11 @@ exit 0
 """
 
 
-def scenario_respond(nom, prepare_liste, attendu):
-    """attendu : ('refus', causes) | ('applique',) | ('epargnee',)"""
+def scenario_respond(nom, prepare_liste, attendu, cible="203.0.113.7"):
+    """attendu : ('refus', causes) | ('applique',) | ('epargnee',)
+
+    `cible` = l'IP de l'action `ban_ip` tirée de `/api/actions/pending`. Elle était figée sur une
+    IPv4 : c'est ce qui rendait cette garde AVEUGLE à toute la famille IPv6 (`P4.7-b`)."""
     with tempfile.TemporaryDirectory() as tmp:
         resultats = os.path.join(tmp, "resultats.jsonl")
         trace_nft = os.path.join(tmp, "nft.trace")
@@ -160,7 +163,7 @@ def scenario_respond(nom, prepare_liste, attendu):
             "PLUME_HOST_LABEL": "hote-de-garde",
             "PLUME_TOKEN": "jeton-de-garde",
             "PLUME_BAN_BACKEND": "auto",
-            "PENDING_TSV": "1\tban_ip\t203.0.113.7\t0",
+            "PENDING_TSV": f"1\tban_ip\t{cible}\t0",
             "RESULTATS": resultats,
             "NFT_TRACE": trace_nft,
         }
@@ -465,6 +468,310 @@ def temoins_adaptateur():
                         ["mode=revert-all"], [], cycles=2)
 
 
+# =============================================================================
+# `P4.7-b` — LE CORPUS PARTAGÉ : LE MÊME FICHIER, PRÉSENTÉ AUX DEUX LECTEURS
+# =============================================================================
+# LE DÉFAUT QUE CE BLOC REND NON-ÉCRIVABLE. Deux lecteurs se promettent le même critère d'adresse —
+# `ressemble_a_une_adresse` (Rust, démon) et `is_ip` (shell, agent) — et ne peuvent pas partager un
+# littéral. L'équivalence était donc AFFIRMÉE EN COMMENTAIRE, et les deux témoins qui prétendaient
+# la tenir ne se rencontraient jamais : celui du démon n'exerçait que la fonction Rust, celui-ci
+# n'exerçait que le shell, et son corpus était EXCLUSIVEMENT IPv4 (`203.0.113.7`, `203.0.113.0/24`).
+# Toute la famille IPv6 est passée entre les deux : le démon lisait une liste d'épargne
+# `2001:db8::1` / `::1` comme une liste de NOMS DE SERVICE, sans un mot, pendant que le fichier
+# affirmait à l'exploitant que « les deux lecteurs REFUSENT le contenu de l'autre politique ».
+#
+# CE QUI EST TENU ICI, ET CE QUI NE L'EST PAS. Ce bloc mesure la colonne `agent` de
+# `collectors/predicat-adresse.corpus` en EXÉCUTANT le prédicat EXTRAIT DU SCRIPT LIVRÉ ; la colonne
+# `demon` est mesurée par `daemon/src/tests/allowlist_du_responder.rs`. NI L'UN NI L'AUTRE NE PROUVE
+# SEUL LA PROPRIÉTÉ : chacun prend l'autre colonne pour acquise. C'est le FICHIER PARTAGÉ qui les
+# relie, et c'est pourquoi les deux REFUSENT DE CONCLURE s'il manque, maigrit, ou perd une
+# combinaison. La propriété promise est ÉTROITE et elle est écrite dans le corpus : tout ce que
+# l'agent lit comme une adresse, le démon le refuse (CONTENANCE) ; et aucune ligne n'est retenue par
+# les deux (AUCUN SILENCE À DEUX). L'ÉGALITÉ des deux prédicats n'est PAS promise — elle est fausse,
+# et le corpus le dit ligne par ligne.
+CORPUS_PARTAGE = os.path.join(RACINE, "collectors", "predicat-adresse.corpus")
+
+
+def corpus_partage():
+    """Lit le corpus commun. Rend `None` — et NOMME le refus — plutôt qu'une liste vide : un corpus
+    absent rendrait tous les témoins qui suivent verts en n'exerçant rien."""
+    try:
+        texte = open(CORPUS_PARTAGE, encoding="utf-8").read()
+    except OSError as e:
+        echec(f"corpus-partage: `collectors/predicat-adresse.corpus` illisible ({e}) — la frontière "
+              f"que les deux lecteurs se promettent n'est mesurée par personne, cette garde REFUSE "
+              f"DE CONCLURE.")
+        return None
+    lignes = []
+    for rang, brute in enumerate(texte.splitlines(), start=1):
+        if brute.startswith("#") or not brute.strip():
+            continue
+        champs = brute.split("\t")
+        if len(champs) != 3 or champs[1] not in ("refuse", "nom-de-service") \
+                or champs[2] not in ("adresse", "forme-inconnue"):
+            echec(f"corpus-partage: ligne {rang} hors format (`chaine<TAB>demon<TAB>agent`, "
+                  f"vocabulaires fermés) : {brute!r} — cette garde REFUSE DE CONCLURE.")
+            return None
+        lignes.append(tuple(champs))
+    if len(lignes) < 25:
+        echec(f"corpus-partage: seulement {len(lignes)} lignes de corpus — il a maigri, cette garde "
+              f"REFUSE DE CONCLURE.")
+        return None
+    for combinaison in (("refuse", "adresse"), ("refuse", "forme-inconnue"),
+                        ("nom-de-service", "forme-inconnue")):
+        if not any((d, a) == combinaison for _, d, a in lignes):
+            echec(f"corpus-partage: la combinaison {combinaison} a disparu du corpus — la couverture "
+                  f"n'est plus celle que les deux témoins annoncent. REFUS DE CONCLURE.")
+            return None
+    for chaine, d, a in lignes:
+        if (d, a) == ("nom-de-service", "adresse"):
+            echec(f"corpus-partage: `{chaine}` est DÉCLARÉE retenue par les DEUX lecteurs — c'est le "
+                  f"défaut de `P4.7-b` écrit dans le corpus, pas un cas à couvrir.")
+            return None
+    return lignes
+
+
+def predicat_d_adresse_de_l_agent():
+    """EXTRAIT `is_ip` de `collectors/respond.sh` — jamais recopié ici. Recopier ferait de ce témoin
+    une tautologie : il vérifierait que la copie se comporte comme la copie, et le jour où le script
+    livré change, la copie continuerait de dire vrai. Rend le fragment de shell, ou `None`."""
+    chemin = os.path.join(RACINE, "collectors", "respond.sh")
+    try:
+        texte = open(chemin, encoding="utf-8").read()
+    except OSError as e:
+        echec(f"corpus-partage: `collectors/respond.sh` illisible ({e}) — REFUS DE CONCLURE.")
+        return None
+    for ligne in texte.splitlines():
+        if ligne.startswith("is_ip()") and "grep" in ligne:
+            return ligne
+    echec("corpus-partage: `is_ip()` n'est plus défini sur une ligne unique de `collectors/"
+          "respond.sh` (forme changée ?) — cette garde ne peut plus l'extraire, elle REFUSE DE "
+          "CONCLURE plutôt que de juger sur une copie.")
+    return None
+
+
+def verdicts_de_l_agent(definition, chaines):
+    """Joue le prédicat sur chaque chaîne, dans un `sh` séparé. Rend {chaine: 'adresse'|'forme-inconnue'}
+    ou `None` si l'exécution elle-même a échoué (un instrument muet n'est pas un verdict)."""
+    sh = shutil.which("sh")
+    if not sh:
+        echec("corpus-partage: `sh` introuvable — REFUS DE CONCLURE.")
+        return None
+    rendu = {}
+    for c in chaines:
+        p = subprocess.run([sh, "-c", definition + '\nis_ip "$1"', "harnais", c],
+                           capture_output=True, text=True, timeout=30)
+        if p.returncode not in (0, 1):
+            echec(f"corpus-partage: le prédicat a rendu {p.returncode} sur {c!r} (ni vrai ni faux) — "
+                  f"REFUS DE CONCLURE. stderr={p.stderr.strip()[:200]}")
+            return None
+        rendu[c] = "adresse" if p.returncode == 0 else "forme-inconnue"
+    return rendu
+
+
+# `P4.7-b` (reprise du 2026-08-28) — (P1) N'ÉTAIT TENUE QUE SUR LES 30 LIGNES DU CORPUS.
+# Le corpus s'annonçait « LA DÉFINITION COMMUNE » et les installateurs écrivaient « AUCUNE ligne
+# n'est acceptée EN SILENCE par les deux » — un UNIVERSEL —, alors que les deux témoins ne
+# comparaient que des colonnes DÉCLARÉES sur un ÉCHANTILLON : une clause ajoutée demain à `is_ip`
+# sur une forme ABSENTE du corpus aurait cassé (P1) sans faire rougir personne.
+# (P1) EST DEPUIS DÉCOMPOSÉE EN DEUX MOITIÉS BALAYÉES, reliées par une borne STRUCTURELLE publiée
+# dans l'en-tête du corpus :
+#     (S)  s != "" et tous les caractères de s dans [0-9a-fA-F.:] et au moins un dans {'.', ':'}
+#   MOITIÉ AGENT (ICI)   : tout ce que `is_ip` — EXTRAIT DU SCRIPT LIVRÉ — accepte satisfait (S).
+#   MOITIÉ DÉMON (Rust)  : tout ce qui satisfait (S) est REFUSÉ par `allowlist_stop_service`.
+#   COMPOSITION          : tout ce que l'agent lit comme une adresse, le démon le refuse = (P1).
+# UN BALAYAGE EST UN ÉCHANTILLON, LUI AUSSI — ET CELUI-CI L'A ÉTÉ. Premier jet du 2026-08-28 :
+# alphabet écrit à la main, longueurs 1 à 3. MESURÉ contre lui : élargir `is_ip` à la forme
+# CROCHETÉE (`[::1]`) ne le faisait PAS rougir — aucun crochet dans l'alphabet, donc la même faute
+# que le corpus, un cran plus loin. CE QUI FERME LA CLASSE : l'alphabet est DÉRIVÉ de la ligne
+# `is_ip` ELLE-MÊME. On ne peut pas élargir un ERE sans ÉCRIRE les caractères qu'on y admet, et ces
+# caractères entrent alors dans le balayage du même geste — la mutation crochetée le fait désormais
+# rougir (mesuré).
+# LA LIMITE, ÉCRITE : une clause qui n'introduit AUCUN caractère littéral (une classe POSIX
+# `[[:alpha:]]`, un `.`) élargit sans enrichir l'alphabet. `.` est déjà couvert ; une classe
+# nommée ne l'est pas, et ce trou-là reste. Le balayage borne aussi les LONGUEURS (voir plus bas) :
+# il est plus large que 30 lignes, il n'est pas total.
+ALPHABET_DE_BASE = "09afF.:%/# -"   # un représentant par classe : chiffre, hex bas, hex haut,
+                                    # hors-hex, les deux séparateurs, les deux habillages coupés
+                                    # par le lecteur du démon, le commentaire, le blanc, le tiret.
+LONGUEUR_DE_BASE = 3                # exhaustif sur l'alphabet de base
+LONGUEUR_DERIVEE = 2                # exhaustif sur l'alphabet DÉRIVÉ, plus large donc plus court
+NOYAUX_D_ENCADREMENT = ("1", "::")  # ... complété par `c + noyau + d` : c'est ce qui atteint `[1]`
+
+
+def satisfait_la_borne_structurelle(s):
+    """(S), écrite ici dans les mots de l'en-tête du corpus. Elle est écrite DEUX fois, une par
+    langage — la même impossibilité que le prédicat lui-même ; ce qui change est qu'elle fait TROIS
+    clauses structurelles au lieu d'un prédicat complet."""
+    hexa = "0123456789abcdefABCDEF"
+    return bool(s) and all(c in hexa + ".:" for c in s) and any(c in ".:" for c in s)
+
+
+def verdicts_de_l_agent_par_lot(definition, chaines):
+    """Joue le prédicat sur BEAUCOUP de chaînes dans UN seul `sh` (une chaîne par ligne, `IFS= read -r`
+    préserve blancs de tête et de fin). Aucune chaîne du balayage ne porte de saut de ligne, donc le
+    protocole ligne à ligne est total. Rend la liste des verdicts, ou `None`."""
+    sh = shutil.which("sh")
+    if not sh:
+        echec("corpus-partage: `sh` introuvable — REFUS DE CONCLURE.")
+        return None
+    programme = definition + '\nwhile IFS= read -r _c; do if is_ip "$_c"; then printf "1\\n"; else printf "0\\n"; fi; done'
+    p = subprocess.run([sh, "-c", programme], input="\n".join(chaines) + "\n",
+                       capture_output=True, text=True, timeout=600)
+    verdicts = [l for l in p.stdout.split("\n") if l != ""]
+    if p.returncode != 0 or len(verdicts) != len(chaines) or any(v not in ("0", "1") for v in verdicts):
+        echec(f"corpus-partage: le balayage n'a pas rendu un verdict par chaîne "
+              f"({len(verdicts)} pour {len(chaines)}, rc={p.returncode}) — REFUS DE CONCLURE. "
+              f"stderr={p.stderr.strip()[:200]}")
+        return None
+    return verdicts
+
+
+def alphabet_derive(definition):
+    """L'alphabet du balayage, DÉRIVÉ de la ligne `is_ip` livrée : tout caractère imprimable qu'elle
+    porte, plus l'alphabet de base. C'est ce qui rend le balayage insensible à MON choix d'alphabet —
+    un élargissement du prédicat écrit ses propres caractères, et ils entrent ici du même geste."""
+    return "".join(sorted({c for c in definition if c.isprintable()} | set(ALPHABET_DE_BASE)))
+
+
+def balayage(definition):
+    """Trois familles, plus des chaînes LONGUES ciblées (c'est une borne de LONGUEUR qui avait laissé
+    le dernier silence à deux) :
+      (a) EXHAUSTIF jusqu'à `LONGUEUR_DE_BASE` sur l'alphabet de base ;
+      (b) EXHAUSTIF jusqu'à `LONGUEUR_DERIVEE` sur l'alphabet DÉRIVÉ de la ligne `is_ip` ;
+      (c) ENCADREMENTS `c + noyau + d` sur l'alphabet dérivé — c'est ce qui atteint une forme
+          délimitée comme `[1]` ou `[::]`, que (b) est trop court pour former."""
+    derive = alphabet_derive(definition)
+    sortie = []
+    chaines = [""]
+    for _ in range(LONGUEUR_DE_BASE):
+        chaines = [t + c for t in chaines for c in ALPHABET_DE_BASE]
+        sortie.extend(chaines)
+    chaines = [""]
+    for _ in range(LONGUEUR_DERIVEE):
+        chaines = [t + c for t in chaines for c in derive]
+        sortie.extend(chaines)
+    for c in derive:
+        for d in derive:
+            for noyau in NOYAUX_D_ENCADREMENT:
+                sortie.append(c + noyau + d)
+    sortie.extend(["dead:beef:cafe:cafe:cafe:cafe:cafe:cafe:cafe:cafe",
+                   "0000:0000:0000:0000:0000:ffff:255.255.255.255",
+                   "00000:0000:0000:0000:0000:ffff:255.255.255.255",
+                   "f" * 45, "f" * 45 + ":" + "f" * 45, ":" * 100, "dead:" * 20,
+                   "2001:0db8:0000:0000:0000:0000:0000:0001", "2001:DB8::1", "FE80::DEAD",
+                   "999.999.999.999", "01.02.03.04", "plume-daemon.service", "soc.example.com",
+                   "[::1]", "[2001:db8::1]", "fe80::1%eth0", "203.0.113.0/24"])
+    vus, uniques = set(), []
+    for c in sortie:
+        if c not in vus:
+            vus.add(c)
+            uniques.append(c)
+    return uniques
+
+
+def temoin_de_la_moitie_agent(definition):
+    """MOITIÉ AGENT DE (P1), BALAYÉE SUR LE SCRIPT LIVRÉ : tout ce que `is_ip` accepte satisfait (S).
+    C'est CE témoin qui ferme l'angle mort de l'échantillon : une clause ajoutée demain à `is_ip` sur
+    une forme absente du corpus (`[`, `]`, une zone `%`, un blanc) le fait rougir ici."""
+    chaines = balayage(definition)
+    verdicts = verdicts_de_l_agent_par_lot(definition, chaines)
+    if verdicts is None:
+        return
+    acceptees = [c for c, v in zip(chaines, verdicts) if v == "1"]
+    # NON-DÉGÉNÉRESCENCE, DANS LES DEUX SENS, AVANT TOUT VERDICT : un prédicat qui n'accepterait rien
+    # (ou tout) tiendrait ou casserait la propriété sans rien mesurer.
+    if not (50 <= len(acceptees) <= len(chaines) - 50):
+        echec(f"corpus-partage/BALAYAGE: `is_ip` accepte {len(acceptees)} chaînes sur "
+              f"{len(chaines)} — un prédicat dégénéré ne mesure rien. REFUS DE CONCLURE.")
+        return
+    for c in acceptees:
+        if not satisfait_la_borne_structurelle(c):
+            echec(f"corpus-partage/CONTENANCE-BALAYÉE: `is_ip` de `collectors/respond.sh` accepte "
+                  f"{c!r}, qui NE SATISFAIT PAS la borne structurelle (S) publiée par "
+                  f"`collectors/predicat-adresse.corpus`. La moitié AGENT de (P1) est rompue : le "
+                  f"classificateur du démon ne contient plus le lecteur d'hôte, donc une liste "
+                  f"d'épargne peut redevenir une allowlist `stop_service` silencieuse — et le "
+                  f"corpus, qui ne porte que 30 lignes, ne la verrait pas.")
+
+
+def temoins_du_corpus_partage():
+    corpus = corpus_partage()
+    definition = predicat_d_adresse_de_l_agent()
+    if corpus is None or definition is None:
+        return
+    chaines = [c for c, _, _ in corpus]
+
+    # ---- VALIDATION DE L'INSTRUMENT PAR MUTATION, AVANT TOUT VERDICT, ET DANS LES DEUX SENS.
+    # Un harnais qui rendrait toujours la même chose passerait la comparaison sans rien mesurer.
+    temoin = ["203.0.113.7", "2001:db8::1", "nginx.service"]
+    negatif = verdicts_de_l_agent("is_ip() { printf '%s' \"$1\" | grep -qE '^ZZZ$'; }", temoin)
+    positif = verdicts_de_l_agent("is_ip() { printf '%s' \"$1\" | grep -qE '.*'; }", temoin)
+    if negatif is None or positif is None:
+        return
+    if set(negatif.values()) != {"forme-inconnue"} or set(positif.values()) != {"adresse"}:
+        echec(f"corpus-partage: L'INSTRUMENT N'EST PAS VALIDÉ — un prédicat muté en `^ZZZ$` doit "
+              f"tout refuser et un prédicat muté en `.*` doit tout accepter ; mesuré "
+              f"{negatif} / {positif}. Cette garde REFUSE DE CONCLURE.")
+        return
+
+    mesures = verdicts_de_l_agent(definition, chaines)
+    if mesures is None:
+        return
+
+    # ---- (A bis) LA MOITIÉ AGENT DE (P1), BALAYÉE — elle ne dépend PAS des 30 lignes du corpus.
+    temoin_de_la_moitie_agent(definition)
+
+    # ---- (A) LA COLONNE `agent` DU CORPUS EST-ELLE CE QUE LE SCRIPT LIVRÉ FAIT ?
+    for chaine, attendu_demon, attendu_agent in corpus:
+        if mesures[chaine] != attendu_agent:
+            echec(f"corpus-partage/agent: `{chaine}` — le corpus annonce `{attendu_agent}` et "
+                  f"`is_ip` de `collectors/respond.sh` rend `{mesures[chaine]}`. Le fichier que les "
+                  f"DEUX témoins partagent ne décrit plus le lecteur d'hôte : tout ce qui en est "
+                  f"dérivé est faux, à commencer par ce que le README promet à l'exploitant.")
+
+    # ---- (B) LES DEUX PROPRIÉTÉS, DÉRIVÉES DES DEUX COLONNES — c'est ici, et NULLE PART ailleurs,
+    #      que les deux lecteurs se rencontrent sur une même chaîne.
+    for chaine, attendu_demon, _ in corpus:
+        if mesures[chaine] == "adresse" and attendu_demon != "refuse":
+            echec(f"corpus-partage/CONTENANCE: `{chaine}` est une ADRESSE pour `collectors/"
+                  f"respond.sh` (MESURÉ) et le corpus annonce que le démon la retient comme un NOM "
+                  f"DE SERVICE. C'est `P4.7-b` : une liste d'épargne parfaitement utilisable par "
+                  f"l'agent est lue par le démon comme une allowlist `stop_service`, sans un mot.")
+        if mesures[chaine] == "adresse" and attendu_demon == "nom-de-service":
+            echec(f"corpus-partage/SILENCE-A-DEUX: `{chaine}` est retenue par LES DEUX lecteurs — "
+                  f"aucun des deux ne dira jamais que le fichier porte l'autre politique.")
+
+    # ---- (C) ET LE VERDICT DE BOUT EN BOUT, PAR L'ENFORCER LIVRÉ. Le prédicat est une moitié ; ce
+    #      que l'exploitant subit est ce que `respond.sh` FAIT de la liste. Trois témoins, et ils
+    #      couvrent LES DEUX DIRECTIONS du défaut.
+    def liste_ipv6_pure(tmp):
+        """La politique de l'agent, écrite en IPv6 : elle DOIT être lue, et elle DOIT épargner."""
+        f = os.path.join(tmp, "epargne-ipv6.allow")
+        open(f, "w").write("# IP a NE JAMAIS bannir\n2001:db8::1\nfe80::dead\n")
+        return f
+
+    def liste_ipv6_mappee(tmp):
+        """L'AUTRE SENS de la divergence : la forme IPv4-mappée est une adresse pour le démon et
+        une forme illisible pour l'agent. Elle désarme TOUT ban de cet hôte — c'est fail-closed,
+        donc acceptable, mais ce n'est PAS « les deux lecteurs partagent le même critère »."""
+        f = os.path.join(tmp, "epargne-mappee.allow")
+        open(f, "w").write("::ffff:203.0.113.7\n")
+        return f
+
+    # (C1) DIRECTION « ON N'ÉPARGNE PLUS CE QU'ON DEVAIT PROTÉGER » : une liste IPv6 épargne bien
+    #      une cible IPv6. Sans ce témoin, « refuser toute IPv6 » passerait pour une correction.
+    scenario_respond("epargne-ipv6-pure-EPARGNE", liste_ipv6_pure, ("epargnee",),
+                     cible="2001:db8::1")
+    # (C2) DIRECTION « ON NE BANNIT PLUS RIEN » : la MÊME liste ne doit pas bloquer un ban légitime
+    #      sur une adresse qui n'y figure pas. Une liste IPv6 est LISIBLE, pas suspecte.
+    scenario_respond("epargne-ipv6-pure-LAISSE-PASSER", liste_ipv6_pure, ("applique",),
+                     cible="203.0.113.7")
+    # (C3) LA FORME MIXTE DÉSARME L'HÔTE, ET C'EST DIT : refus NOMMÉ, aucun ban posé. C'est la
+    #      moitié de la divergence que le correctif ne ferme PAS (le démon, lui, la reconnaît).
+    scenario_respond("epargne-ipv6-mappee-DESARME", liste_ipv6_mappee, ("refus", {"forme_inconnue"}))
+
+
 def main():
     couverts = {"collectors/respond.sh": temoins_respond,
                 "collectors/engagement-adapter.sh": temoins_adaptateur}
@@ -477,6 +784,11 @@ def main():
     for chemin, temoins in couverts.items():
         if chemin in ENFORCERS:
             temoins()
+    # `P4.7-b` — LE CORPUS PARTAGÉ. Il n'appartient à aucun des deux enforcers : il est la frontière
+    # ENTRE le lecteur d'hôte et le lecteur du démon, et c'est précisément parce qu'elle
+    # n'appartenait à personne qu'elle n'était mesurée par personne.
+    if "collectors/respond.sh" in ENFORCERS:
+        temoins_du_corpus_partage()
 
     if ERREURS:
         for e in ERREURS:

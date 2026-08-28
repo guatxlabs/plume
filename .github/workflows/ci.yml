@@ -548,7 +548,50 @@ env:
   # (c'est ce qui faisait annoncer 90 JOURS de portée sur une table coupée à 48 HEURES) ; et les deux
   # portes du coffre compilent le MÊME SQL brut, ce qui est l'égalité — jusque-là tenue par un seul script
   # hors arbre — qui autorise la réduction de trois sites de compilation à deux branches.
-  EXPECTED_TESTS: "1395"
+  #
+  # RÉ-MESURÉ le 2026-08-28 par `.github/scripts/compter-les-tests.sh` (les DEUX profils dans la MÊME
+  # exécution, JAMAIS par addition), sur le lot `P4.7-b` — « le prédicat d'adresse annoncé COMMUN aux
+  # deux lecteurs divorce sur toute la famille IPv6 » : **1395 -> 1403** (+8), et le MÊME +8 sur
+  # `EXPECTED_COLD_TESTS` (**1638 -> 1646**). LA DÉRIVATION DE L'ÉCART ENTRE PROFILS, qui est ce que
+  # ces deux nombres disent ensemble : 1638−1395 = 243 AVANT, 1646−1403 = 243 APRÈS — INCHANGÉ. C'est
+  # cet écart inchangé qui établit qu'aucun des huit n'est derrière un `cfg(feature)`, pas une lecture
+  # des sources : les huit sont dans `daemon/src/tests/allowlist_du_responder.rs`, un module tiré par
+  # un `include!` non gaté, et aucun n'écrit `#[cfg(feature = ...)]`.
+  # LES HUIT, ET CE QU'ILS TIENNENT. Cinq lisent le CORPUS PARTAGÉ `collectors/predicat-adresse.corpus`
+  # — le fichier que le témoin Rust et `.github/scripts/check_enforcer_lists_fail_closed.py` rejouent
+  # tous deux, chacun sur SON lecteur, ce qui n'existait pas : la validation de l'instrument (trois
+  # combinaisons présentes, la quatrième interdite), le verdict du démon ligne à ligne, la CONTENANCE
+  # (tout ce que l'agent lit comme adresse, le démon le refuse), l'absence de SILENCE À DEUX, et le
+  # témoin inverse (les noms de service sont encore retenus, sinon « refuser tout » passerait pour une
+  # correction). Les trois autres tiennent la borne d'enforcement INCHANGÉE clause pour clause (ce
+  # lot n'a pas le droit d'élargir ce qui part vers un pare-feu), la séparation des DEUX questions
+  # (classificateur vs borne de ban, dont la fusion redeviendrait le défaut), et le défaut lui-même —
+  # une liste d'épargne IPv6, masque et zone compris, refusée en NOMMANT l'autre politique.
+  #
+  # RÉ-MESURÉ le 2026-08-28 par le MÊME script (les DEUX profils dans la MÊME exécution, JAMAIS par
+  # addition), sur la REPRISE de `P4.7-b` après deux lectures adverses : **1403 -> 1410** (+7), et le
+  # MÊME +7 sur `EXPECTED_COLD_TESTS` (**1646 -> 1653**). L'ÉCART ENTRE PROFILS EST DE NOUVEAU DÉRIVÉ :
+  # 1646−1403 = 243 AVANT, 1653−1410 = 243 APRÈS — INCHANGÉ, donc aucun des sept n'est derrière un
+  # `cfg(feature)` ; c'est l'écart qui l'établit, pas une lecture des sources.
+  # LES SEPT, ET CE QU'ILS FERMENT — trois constats, tous MESURÉS avant d'être crus :
+  #   · (P1) N'ÉTAIT TENUE QUE SUR 30 LIGNES ÉCRITES À LA MAIN, alors que le corpus s'annonçait « la
+  #     définition commune » et que les textes servis à l'exploitant énonçaient un UNIVERSEL. DEUX
+  #     témoins de BALAYAGE la décomposent : « tout ce qui satisfait la borne structurelle (S) est
+  #     refusé par le lecteur » sur toutes les chaînes de ≤ 4 caractères d'un alphabet à un
+  #     représentant par classe (avec ses deux planchers de non-dégénérescence : 1225 chaînes sous (S)
+  #     mesurées, 17 379 retenues hors (S)), et « le classificateur du démon EST exactement (S) », qui
+  #     est ce qui rend la composition avec la moitié CI légitime. La moitié agent vit dans
+  #     `check_enforcer_lists_fail_closed.py`, sur un alphabet DÉRIVÉ de la ligne `is_ip` livrée —
+  #     mesuré : la forme crochetée `[::1]` échappait à un alphabet écrit à la main, plus maintenant.
+  #   · LE RENDU TYPÉ SE DISAIT « JAMAIS PLUS PERMISSIF QUE LA VALIDATION AMONT » ET IL L'ÉTAIT : le
+  #     premier jet avait supprimé UNE copie de la borne et laissé les deux autres, dont un plancher
+  #     de PID FAUX (`p > 0` contre `p > 300`). DEUX témoins : la grille de 19 couples action/cible où
+  #     le rendu natif ne peut pas dépasser la borne amont (avec son témoin inverse — un rendu qui
+  #     refuserait tout passerait sinon), et la séparation FORME / POLITIQUE que `run_playbooks` lit.
+  #   · UNE RIPOSTE HORS CAPACITÉ ÉTAIT JETÉE SANS UN CHIFFRE (`P4.7-d`) : TROIS témoins — le défaut
+  #     (cible IPv6 et PID sous plancher : bilan à 1, aucune action posée) et ses DEUX inverses (une
+  #     IP protégée ne gonfle pas le bilan ; une riposte portable est encore posée, bilan à zéro).
+  EXPECTED_TESTS: "1410"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -958,7 +1001,11 @@ jobs:
           # `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (243 avant comme après) qui
           # l'établit, pas une lecture des sources. La dérivation complète est écrite auprès
           # d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1638"
+          # `P4.7-b` (2026-08-28) : +8, les MÊMES huit que sur `EXPECTED_TESTS` — aucun n'est derrière
+          # un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (243 avant comme
+          # après) qui l'établit, pas une lecture des sources. La dérivation complète et la
+          # répartition sont écrites auprès d'`EXPECTED_TESTS`, une seule fois.
+          EXPECTED_COLD_TESTS: "1653"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

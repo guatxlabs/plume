@@ -293,7 +293,13 @@ d'audit.
 
 > ⚠️ Le fichier d'allowlist du responder porte **deux significations incompatibles** selon
 > l'installateur qui l'a semé. Voir l'avertissement du [`README`](../README.md#configuration--les-variables-plume_)
-> et la clé `P4.7-a` de [`ROADMAP.md`](ROADMAP.md).
+> et les clés `P4.7-a`, `P4.7-b` et `P4.7-c` de [`ROADMAP.md`](ROADMAP.md).
+> **Les deux lecteurs n'ont pas le même critère d'adresse** (`P4.7-b`) : ce qui est tenu — et mesuré
+> sur les deux — est que le démon en reconnaît **strictement plus** de formes que l'agent, donc
+> qu'aucune ligne n'est acceptée en silence par les deux. Ce n'est **pas** l'égalité, et le rejet de
+> chaque lecteur n'est **pas** dérivé du prédicat qui décide ce qu'on sait bannir.
+> **Et la liste d'épargne ne vaut que côté agent** (`P4.7-c`, ouverte) : le responder du central ne
+> la consulte pas.
 
 ---
 

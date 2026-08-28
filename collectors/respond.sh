@@ -126,8 +126,13 @@ verdict_liste_epargne() {
   # se plaignait : chacun lisait un fichier bien forme POUR LUI.
   # CE QU ON FAIT : une ligne retenue qui n est pas une ADRESSE rend la liste NON LUE, avec sa
   # cause (`forme_inconnue`), donc le refus fail-closed deja ecrit plus bas. Rejeter, jamais
-  # ignorer. Le predicat d adresse est `is_ip` — CELUI QUE CE SCRIPT EMPLOIE DEJA sur la cible des
-  # actions : une seule definition de « qu est-ce qu une adresse », pas deux qui divergeront.
+  # ignorer. Le predicat employe ici est `is_ip` — CELUI QUE CE SCRIPT EMPLOIE DEJA sur la cible des
+  # actions, donc une seule definition DANS CE FICHIER.
+  # `P4.7-b` — MAIS PAS UNE SEULE DANS LE PRODUIT, ET CETTE LIGNE A PROMIS LE CONTRAIRE. Elle
+  # disait « une seule definition de qu est-ce qu une adresse, pas deux qui divergeront » : il y en
+  # a DEUX (ici en ERE POSIX, la-bas en Rust), elles ne peuvent pas partager de litteral, et elles
+  # DIVERGEAIENT. Ce qui est promis, mesure et tenu depuis est ecrit plus bas, au paragraphe
+  # `P4.7-b` : la CONTENANCE, pas l egalite.
   # CE QUE CE CONTROLE CASSE, ET CHEZ QUI (dit, pas sous-entendu) :
   #   * une ligne CIDR (`203.0.113.0/24`) est desormais REFUSEE. Elle n a JAMAIS epargne personne —
   #     la recherche est une egalite de ligne (`grep -qxF`), donc une IP ne l a jamais appariee — et
@@ -154,8 +159,22 @@ verdict_liste_epargne() {
   #   * LES DEUX LECTEURS NE NORMALISENT PAS PAREIL, ET C EST JUSTE : le versant demon
   #     (`allowlist_stop_service`) fait `trim()` avant de tester, parce que SA recherche porte sur la
   #     valeur ROGNEE — rogner y est donc sans effet de bord. Ici, la recherche porte sur la ligne
-  #     BRUTE ; rogner y creerait l ecart decrit ci-dessus. Ce qui est COMMUN aux deux lecteurs est le
-  #     PREDICAT D ADRESSE, pas la normalisation, et c est cela seul que le lot promet.
+  #     BRUTE ; rogner y creerait l ecart decrit ci-dessus.
+  #   * `P4.7-b` — ET LE PREDICAT D ADRESSE N EST PAS COMMUN NON PLUS. Cette ligne promettait « ce qui
+  #     est COMMUN aux deux lecteurs est le PREDICAT D ADRESSE », et c etait FAUX : il y a DEUX textes,
+  #     `is_ip` ici (ERE POSIX) et `ressemble_a_une_adresse` la-bas (Rust). Aucun littéral ne peut etre
+  #     partage entre les deux, et ils ne rendaient pas le meme verdict — MESURE le 2026-08-28 : le
+  #     lecteur du demon exigeait un POINT, donc `2001:db8::1` et `::1`, que CE lecteur-ci accepte
+  #     parfaitement, tombaient chez lui dans la liste des NOMS DE SERVICE autorises, sans un mot.
+  #     CE QUI EST PROMIS DEPUIS, ET C EST PLUS ETROIT : le classificateur du demon reconnait
+  #     strictement PLUS de formes que `is_ip`, si bien qu AUCUNE ligne n est retenue par LES DEUX
+  #     lecteurs. Une meme ligne peut etre refusee des deux cotes (`::ffff:...`, `%zone`, un masque) :
+  #     ici cela desarme tout ban de l hote, la-bas cela refuse la liste — les deux le DISENT.
+  #     LA PROMESSE N EST PLUS TENUE PAR UN COMMENTAIRE, ELLE EST MESUREE. Le corpus commun est
+  #     `collectors/predicat-adresse.corpus` ; il est rejoue sur LES DEUX lecteurs, la colonne shell
+  #     par `.github/scripts/check_enforcer_lists_fail_closed.py` (qui EXTRAIT `is_ip` de CE fichier
+  #     et l EXECUTE), la colonne Rust par `daemon/src/tests/allowlist_du_responder.rs`. Ni l un ni
+  #     l autre ne prouve seul : c est le fichier partage qui les relie.
   #   * dans TOUS ces cas, la protection etait DEJA absente : le changement ne retire rien, il rend
   #     l absence VISIBLE et bloquante. Et il ne touche pas `unban_ip`, qui ne baisse aucune defense
   #     et continue de passer (le refuser transformerait une panne de lecture en verrouillage).
@@ -170,7 +189,10 @@ verdict_liste_epargne() {
   # Un fichier sans saut de ligne final n est pas une curiosite : `printf '%s' ...`, un editeur
   # regle ainsi, un `echo -n` d installeur en produisent un. Le versant DEMON n avait pas ce trou
   # (`str::lines()` rend la derniere ligne partielle), si bien que les deux lecteurs divergeaient
-  # LA OU le lot promet un critere unique. Le temoin qui le tient est
+  # SUR LA LECTURE DE LA DERNIERE LIGNE. `P4.7-b` : cette phrase disait « LA OU le lot promet un
+  # critere unique » — le lot ne promet PAS de critere unique, et il ne l a jamais tenu ; ce qui
+  # est promis est la CONTENANCE (paragraphe `P4.7-b` ci-dessus). La divergence de saut final,
+  # elle, etait bien un ecart sur la MEME question, et elle est fermee. Le temoin qui le tient est
   # `check_enforcer_lists_fail_closed.py`, scenario `liste-de-l-autre-politique-SANS-SAUT-FINAL`.
   _vle_l=""
   # `${_vle_l:-}` et non `$_vle_l` : sur un REPERTOIRE, `read` echoue SANS affecter la variable,

@@ -212,8 +212,13 @@ pub(crate) fn playbook_cell(c: &Value) -> String {
 /// Exécute les playbooks dus : la requête renvoie des CIBLES (1re colonne) -> 1 action par cible.
 /// Mode 'observe' -> pending+dry_run (on voit ce qui SERAIT fait) ; 'active' -> approved+réel (auto).
 /// REND SON BILAN (`P4.1-r`, même contrat que `run_due_rules`) : `Illisible` si la liste des playbooks dus
-/// n'a pas pu être lue, `Lue(n)` = playbooks dus abandonnés ce tick (ligne indécodable, compilation
-/// refusée, requête de sélection des cibles en échec — ce dernier cas rendait « aucune cible » en silence).
+/// n'a pas pu être lue, `Lue(n)` = ce que ce tick a ABANDONNÉ, à quelque granularité que ce soit —
+/// playbook non évalué (ligne indécodable, compilation refusée, requête de sélection des cibles en
+/// échec), hôte d'exécution illisible, déduplication illisible, et (`P4.7-d`) CIBLE DONT LA FORME
+/// N'EST PAS PORTABLE PAR CE PRODUIT (une `src_ip` IPv6 pour un `ban_ip`, un PID sous le plancher de
+/// sûreté) — ce dernier cas était jeté en silence et publiait un tick à « 0 abandon ».
+/// CE QUE `Lue(n)` NE COMPTE PAS, ET C'EST DÉLIBÉRÉ : une cible BIEN FORMÉE que la POLITIQUE refuse
+/// (IP protégée, engagement actif). Ce refus-là est écrit, la détection continue, rien n'est perdu.
 pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
     let mut abandonnes = 0u32;
@@ -274,7 +279,30 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
         };
         for row in rows {
             let target = row.as_array().and_then(|c| c.first()).map(playbook_cell).unwrap_or_default();
-            if target.is_empty() || action_valid(&kind, &target, db_path).is_err() {
+            // `P4.7-d` — UNE CIBLE QUE CE PRODUIT NE SAIT PAS PORTER N'EST PAS UN CHOIX DE POLITIQUE.
+            // Cette ligne jetait la cible en SILENCE : aucune ligne dans `action`, aucun compteur, et
+            // `abandonnes` — qui EST le bilan rendu du tick (`Mesure::Lue`, plus bas) — publiait « 0
+            // abandon » sur une riposte qui n'est jamais partie. Le cas est réel et il est MESURÉ :
+            // `extract_src_ip` garde un IPv6 nu ENTIER (`ingest/mod.rs`, « un IPv6 nu doit rester
+            // entier »), donc `2001:db8::66` arrive dans `event.src_ip`, un playbook `ban_ip` le
+            // sélectionne, et `cible_de_ban_acceptee` — la borne d'enforcement v1, IPv4 — le refuse.
+            // Tick vert, réponse évaporée, et l'exploitant ne peut pas distinguer « aucune cible » de
+            // « cible jetée ».
+            // DEUX REFUS TOMBAIENT ICI SOUS UN MÊME `Err`, ET UN SEUL EST UNE PERTE :
+            //   * la FORME n'est pas portable (`cible_de_forme_portable` = false) — le produit ne sait
+            //     pas exprimer cette cible : c'est une perte de couverture, elle se COMPTE ;
+            //   * la POLITIQUE refuse une cible pourtant bien formée (IP protégée, engagement actif) —
+            //     délibéré, écrit, et la détection continue (`action_valid_ctx` le dit à son site).
+            //     Rien n'est perdu, donc rien n'est compté : compter ici ferait du bilan du tick un
+            //     compteur d'IP privées, c'est-à-dire un chiffre que personne ne lirait plus.
+            // Le partage est DÉRIVÉ des bornes elles-mêmes, jamais du texte du message de refus.
+            if target.is_empty() {
+                continue;
+            }
+            if action_valid(&kind, &target, db_path).is_err() {
+                if !crate::handlers::actions::cible_de_forme_portable(&kind, &target) {
+                    abandonnes += 1;
+                }
                 continue;
             }
             // Cible(s) d'exécution : pour un ban d'IP, on agit sur CHAQUE hôte ayant vu cette IP sur

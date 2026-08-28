@@ -4,16 +4,122 @@
 //! `respond_run`. Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
 
-/// « CECI EST UNE ADRESSE » — UNE SEULE DÉFINITION, DEUX LECTEURS (`P4.7-a`).
-/// Elle était écrite en ligne dans `action_valid_ctx` (cible d'un `ban_ip`) et nulle part ailleurs.
-/// `allowlist_stop_service` en a besoin pour reconnaître une liste de l'AUTRE politique ; l'écrire une
-/// seconde fois aurait fait diverger deux réponses à la même question. Extraite TELLE QUELLE : mêmes
-/// bornes, mêmes caractères, même exigence du point — le verdict de `action_valid_ctx` est inchangé.
-pub(crate) fn ressemble_a_une_adresse(s: &str) -> bool {
+/// UN SEUL NOM RÉPONDAIT À DEUX QUESTIONS, ET LA PROMESSE NE PORTE QUE SUR L'UNE (`P4.7-b`).
+///
+/// `P4.7-a` a extrait « ceci est une adresse » de `action_valid_ctx` et l'a donnée à
+/// `allowlist_stop_service`, sous l'en-tête « UNE SEULE DÉFINITION, DEUX LECTEURS ». CET EN-TÊTE
+/// ÉTAIT FAUX DE DEUX FAÇONS, mesurées le 2026-08-28 :
+///   * il n'y avait pas UNE définition côté démon mais TROIS — `Slot::target_ok` recopiait les
+///     quatre clauses de `ban_ip` mot pour mot, les trois de `stop_service` mot pour mot, et une
+///     TROISIÈME version FAUSSE du plancher de PID (`p > 0` là où l'amont exige `p > 300`). Le
+///     premier jet de ce lot n'en a supprimé qu'une et a ÉCRIT que les deux autres étaient « plus
+///     étroites » : c'était l'inverse. Les trois APPELLENT désormais, il n'y a plus de miroir ;
+///   * et surtout la fonction unique répondait à DEUX questions qui n'ont pas la même réponse :
+///       (Q1) « ce produit sait-il BANNIR cette cible ? » — une borne de CAPACITÉ (v1 : IPv4, parce
+///            que c'est ce que `nft`/`cscli`/`fail2ban` reçoivent par le chemin hôte) ;
+///       (Q2) « cette LIGNE est-elle une adresse, c'est-à-dire du contenu de l'AUTRE politique ? »
+///            — une CLASSIFICATION, et c'est ELLE SEULE que le lot promet commune avec
+///            `collectors/respond.sh` (`is_ip`).
+/// Les confondre coûtait exactement ce que `P4.7-a` prétendait fermer : une liste d'épargne écrite en
+/// IPv6 hexadécimale pure (`2001:db8::1`, `::1`) ne portait pas de point, n'était donc pas reconnue
+/// comme une adresse, et TOMBAIT dans `services.push(...)` — lue comme une liste de NOMS DE SERVICE,
+/// sans un mot, pendant que le fichier affirmait à l'exploitant que « les deux lecteurs REFUSENT le
+/// contenu de l'autre politique ». Les deux fonctions ci-dessous séparent les deux questions.
+///
+/// (Q1) LA BORNE D'ENFORCEMENT — CE QUE CE PRODUIT SAIT BANNIR. Corps INCHANGÉ, clause pour clause :
+/// c'est un TÉMOIN, pas une intention. Élargir ici enverrait une IPv6 vers `nft add element inet
+/// plume blocklist` et vers `collectors/respond.sh`, dont ni les gabarits ni les jeux d'ensembles
+/// n'ont été lus ; ce lot ne touche donc PAS à ce qui part vers un pare-feu.
+/// LA BORNE EST DITE : elle accepte des chaînes qui ne sont pas des adresses (`.`, `1.2.3.4.5`,
+/// `999.999.999.999`, `cafe.beef`) et refuse toute IPv6 sans point. Le geste qui la fermerait existe
+/// à 370 lignes d'ici — `netban_validate_ip`, `parse::<IpAddr>()` + canonicalisation — mais il
+/// applique `ip_is_protected` et la garde d'engagement INCONDITIONNELLEMENT, là où `action_valid_ctx`
+/// ne les applique qu'au BAN (l'unban reste permis) et reçoit `engagement_on` par injection : le
+/// déplacer tel quel casserait la garde M2 sur l'unban. Ce n'est donc pas ce lot.
+pub(crate) fn cible_de_ban_acceptee(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 45
         && s.chars().all(|c| c.is_ascii_hexdigit() || c == '.' || c == ':')
         && s.contains('.')
+}
+
+/// (Q2) LE CLASSIFICATEUR — « CETTE LIGNE EST-ELLE UNE ADRESSE ? », LA SEULE QUESTION QUE LES DEUX
+/// LECTEURS SE PROMETTENT EN COMMUN. Il ne décide de RIEN qui parte vers un pare-feu : il sert
+/// uniquement à reconnaître qu'un fichier porte l'AUTRE politique, et son seul effet est un REFUS.
+///
+/// LA DISJONCTION `.` OU `:` N'EST PAS UNE INVENTION — C'EST UN DÉPLACEMENT, PROUVÉ PAR EMPREINTE.
+/// Le même charset avec la BONNE disjonction est déjà écrit dans le produit, du côté qui OBSERVE :
+/// `extract_src_ip` (`daemon/src/ingest/mod.rs`) emploie `all(hex|'.'|':')` puis `any('.' ou ':')`,
+/// sous le commentaire « un IPv6 nu `2001:db8:...` doit rester entier ». Le démon INGÈRE donc des
+/// `src_ip` IPv6 avec ce prédicat-ci, et sa moitié qui RÉPOND ne les reconnaissait pas : la
+/// divergence n'était pas seulement entre le démon et l'hôte, elle était interne au démon.
+///
+/// LA BORNE DE LONGUEUR A ÉTÉ RETIRÉE, ET C'EST MESURÉ, PAS ESTHÉTIQUE. `45` est la longueur de
+/// `0000:0000:0000:0000:0000:ffff:255.255.255.255` : c'est une borne d'ARGUMENT, elle appartient à
+/// (Q1). La garder ici laissait un trou : `dead:beef:cafe:cafe:cafe:cafe:cafe:cafe:cafe:cafe`
+/// (49 caractères) est ACCEPTÉ par `is_ip` de `collectors/respond.sh` (mesuré) et aurait été poussé
+/// ici comme nom de service — la SEULE ligne du corpus partagé que les DEUX lecteurs auraient
+/// acceptée en silence. Sans la borne, tout ce que l'agent lit comme adresse, le démon le refuse.
+///
+/// CE QU'IL NE PRÉTEND PAS ÊTRE : il n'est ni nécessaire ni suffisant pour « ceci est une adresse
+/// valide ». Il est DÉLIBÉRÉMENT plus large que `is_ip` (il reconnaît en plus `::ffff:192.0.2.1`,
+/// `cafe.beef`, `1.2.3.4.5`, `.`), et cette largeur va TOUJOURS dans la direction protectrice : elle
+/// ne fait que REFUSER davantage de listes, donc autoriser MOINS de `stop_service`. La direction
+/// inverse — une ligne d'adresse prise pour un nom de service — est celle qui était ouverte.
+/// LIMITE ÉCRITE, INCHANGÉE DEPUIS `P4.7-a` : un nom d'unité systemd composé uniquement de chiffres,
+/// de `a`-`f`, de points et de deux-points serait pris pour une adresse et ferait refuser la liste.
+/// Aucun suffixe d'unité connu ne le permet (`.service`, `.socket`, `.timer`, `.mount`, `.device`,
+/// `.target`, `.slice`, `.scope`, `.path`, `.swap` portent tous une lettre hors de l'alphabet
+/// hexadécimal), et le refus va dans la direction protectrice — mais la borne est dite.
+pub(crate) fn ressemble_a_une_adresse(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().all(|c| c.is_ascii_hexdigit() || c == '.' || c == ':')
+        && s.chars().any(|c| c == '.' || c == ':')
+}
+
+/// (Q1 bis) LES DEUX AUTRES BORNES DE CAPACITÉ, EXTRAITES POUR LA MÊME RAISON QUE `cible_de_ban_acceptee`
+/// — ET PARCE QUE LE COMMENTAIRE QUI LES DÉCRIVAIT ÉTAIT FAUX (`P4.7-b`, reprise du 2026-08-28).
+/// Le premier jet de ce lot a supprimé UNE copie (`Slot::target_ok(Slot::Ip)`) et laissé les deux
+/// autres debout, sous une phrase neuve qui affirmait : « `Slot::Pid`/`Slot::Service` restent des
+/// miroirs de charset écrits ici — plus étroits que la validation amont (`p > 0` contre `p > 300`),
+/// donc jamais plus permissifs qu'elle. » MESURÉ : c'est l'INVERSE. `p > 0` accepte 1..=300, que
+/// `p > 300` REFUSE ; le miroir était donc STRICTEMENT PLUS PERMISSIF que ce qu'il prétendait
+/// refléter, exactement sur la propriété qui justifie l'existence de `target_ok` (« re-vérifié ici
+/// pour que le rendu soit sûr même appelé isolément »). Et `Slot::Service` n'était pas « plus
+/// étroit » non plus : une COPIE VERBATIM des trois clauses de `action_valid_ctx`.
+/// Les deux bornes vivent désormais ICI, en un seul exemplaire chacune, et les DEUX lecteurs les
+/// APPELLENT. Un miroir ne peut plus dériver parce qu'il n'y a plus de miroir.
+/// AUCUN CHEMIN LIVRÉ NE CHANGE DE VERDICT : `respond_run` appelle `action_valid` (l. ~919) AVANT
+/// `platform_command` (l. ~944), donc un PID de 1..=300 était déjà refusé en amont. Ce qui change
+/// est le rendu appelé ISOLÉMENT — c'est-à-dire précisément le cas que la phrase promettait sûr.
+pub(crate) fn cible_de_kill_acceptee(s: &str) -> bool {
+    matches!(s.parse::<i64>(), Ok(p) if p > 300)
+}
+
+/// (Q1 ter) La borne de `stop_service` : le charset d'un nom d'unité, en UN seul exemplaire.
+/// Elle ne dit RIEN de l'allowlist (`allowlist_stop_service`), qui est un second verrou : celle-ci
+/// borne la FORME de la cible, celle-là dit quels noms l'exploitant a autorisés.
+pub(crate) fn cible_de_stop_service_acceptee(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 100
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@'))
+}
+
+/// LA FORME QUE CE PRODUIT SAIT PORTER POUR CETTE ACTION — la dispatch par `kind` des trois bornes
+/// ci-dessus, c'est-à-dire `Slot::target_ok` vue par le NOM de l'action plutôt que par son slot.
+/// ELLE SÉPARE DEUX REFUS QUE `action_valid` REND SOUS UN MÊME `Err`, et cette séparation porte une
+/// conséquence mesurable dans `run_playbooks` (`P4.7-d`) :
+///   * FORME NON PORTABLE (`false` ici) — le produit ne sait pas exprimer cette cible : une `src_ip`
+///     IPv6 que l'ingestion a gardée ENTIÈRE, un PID sous le plancher de sûreté. Une riposte
+///     sélectionnée est alors jetée, et c'est une PERTE DE COUVERTURE : elle se compte.
+///   * POLITIQUE (`true` ici, et `action_valid` refuse quand même) — IP protégée, engagement actif.
+///     C'est délibéré, écrit, et la détection continue : rien n'est perdu, rien ne se compte, sans
+///     quoi le bilan du tick deviendrait un compteur d'IP privées.
+pub(crate) fn cible_de_forme_portable(kind: &str, target: &str) -> bool {
+    match Slot::for_kind(kind) {
+        Some(slot) => slot.target_ok(target),
+        None => false,
+    }
 }
 
 /// L'ALLOWLIST DE `stop_service` REJETTE CE QUI N'EST PAS DE SA POLITIQUE (`P4.7-a`).
@@ -37,14 +143,16 @@ pub(crate) fn ressemble_a_une_adresse(s: &str) -> bool {
 ///   `Err(cause)`    la liste n'a pas pu être lue, OU elle porte l'autre politique. Les deux sont
 ///                   des NON-RÉPONSES, elles ne se rendent pas comme « ce service n'y est pas ».
 ///
-/// LE CRITÈRE EST DÉRIVÉ, PAS ÉNUMÉRÉ : une ligne est « de l'autre politique » quand elle est une
-/// ADRESSE au sens de `ressemble_a_une_adresse` — le prédicat que le produit emploie déjà pour la
-/// cible d'un ban —, éventuellement suivie d'un préfixe CIDR (`/24`), forme qu'un exploitant écrit
-/// spontanément dans une liste d'adresses. Aucun nom d'unité systemd n'a cette forme : un suffixe
-/// (`.service`, `.socket`, `.timer`, `.mount`…) porte des lettres hors de l'alphabet hexadécimal.
-/// LIMITE ÉCRITE : un nom d'unité qui serait composé uniquement de chiffres, de `a`-`f` et de points
-/// serait pris pour une adresse et ferait refuser la liste. Aucun suffixe d'unité connu ne le permet,
-/// et le refus va dans la direction protectrice (rien ne s'arrête), mais la borne est dite.
+/// LE CRITÈRE EST DÉRIVÉ, PAS ÉNUMÉRÉ : une ligne est « de l'autre politique » quand elle porte la
+/// FORME d'une ADRESSE au sens de `ressemble_a_une_adresse` — le CLASSIFICATEUR partagé avec
+/// `collectors/respond.sh` —, éventuellement habillée d'un préfixe CIDR (`/24`) ou d'un identifiant
+/// de zone (`%eth0`), formes qu'un exploitant écrit spontanément dans une liste d'adresses. Aucun nom
+/// d'unité systemd n'a cette forme : un suffixe (`.service`, `.socket`, `.timer`, `.mount`…) porte
+/// des lettres hors de l'alphabet hexadécimal.
+/// `P4.7-b` : le classificateur reconnaît DÉSORMAIS toute la famille IPv6 (`2001:db8::1`, `::1`,
+/// `fe80::1`, et les formes zonée/CIDR par la tête). Avant, elles tombaient dans `services.push(...)`
+/// SANS un mot — le défaut même que cette fonction existe pour fermer, sur la moitié de la famille
+/// des adresses. La borne et les limites du classificateur sont écrites à sa définition.
 pub(crate) fn allowlist_stop_service(lecture: std::io::Result<String>) -> Result<Vec<String>, String> {
     let contenu = match lecture {
         Ok(c) => c,
@@ -56,12 +164,19 @@ pub(crate) fn allowlist_stop_service(lecture: std::io::Result<String>) -> Result
         if l.is_empty() || l.starts_with('#') {
             continue;
         }
+        // La TÊTE de la ligne : ce qui précède un préfixe CIDR (`/24`, `/32`) OU un identifiant de
+        // zone (`%eth0`). Les deux sont des habillages qu'un exploitant écrit spontanément AUTOUR
+        // d'une adresse dans une liste d'adresses, et aucun nom d'unité systemd n'en porte. Le `%`
+        // est ajouté par `P4.7-b` : `fe80::1%eth0` est REFUSÉ par le lecteur d'hôte (mesuré : `is_ip`
+        // n'admet pas le `%`, donc `forme_inconnue` -> aucun ban n'est appliqué), et il tombait ici
+        // dans `services.push(...)` — les deux lecteurs voyaient la même ligne, un seul se plaignait.
         let tete = l.split('/').next().unwrap_or(l);
+        let tete = tete.split('%').next().unwrap_or(tete);
         if ressemble_a_une_adresse(tete) {
             return Err(format!(
-                "la ligne « {l} » est une ADRESSE, pas un nom de service : ce fichier porte la liste \
-                 des adresses à ne jamais bannir (politique de `collectors/respond.sh`), pas celle des \
-                 services autorisés pour `stop_service`. Séparez les deux — posez `PLUME_STOP_SERVICE_ALLOW` \
+                "la ligne « {l} » porte la FORME d'une ADRESSE, pas d'un nom de service : ce fichier porte \
+                 la liste des adresses à ne jamais bannir (politique de `collectors/respond.sh`), pas celle \
+                 des services autorisés pour `stop_service`. Séparez les deux — posez `PLUME_STOP_SERVICE_ALLOW` \
                  sur un autre chemin"
             ));
         }
@@ -81,7 +196,11 @@ pub(crate) fn action_valid(kind: &str, target: &str, db_path: &str) -> Result<()
 pub(crate) fn action_valid_ctx(kind: &str, target: &str, engagement_on: bool, db_path: &str) -> Result<(), String> {
     match kind {
         "ban_ip" | "unban_ip" => {
-            let ok = ressemble_a_une_adresse(target); // v1 : IPv4
+            // v1 : IPv4. `P4.7-b` — c'est la BORNE D'ENFORCEMENT (Q1), PAS le classificateur d'adresse
+            // (Q2) : ce chemin décide de ce qui PART vers `nft`/`cscli`/`fail2ban`, et son verdict est
+            // INCHANGÉ, clause pour clause. Élargir ici est un autre lot, qui devra d'abord lire les
+            // gabarits d'exécution (`platform_template`, `action_command`) et le versant hôte.
+            let ok = cible_de_ban_acceptee(target);
             if !ok { return Err("IPv4 invalide".into()); }
             // M2 : refuse le BAN d'une IP protégée (loopback/privée/opérateur/passerelle). L'unban reste permis
             // (inoffensif : ces IP ne sont jamais bannies -> no-op), on ne bride donc QUE le ban destructif.
@@ -99,16 +218,15 @@ pub(crate) fn action_valid_ctx(kind: &str, target: &str, engagement_on: bool, db
             }
             Ok(())
         }
+        // `P4.7-b` — LA BORNE EST APPELÉE, PAS RECOPIÉE (comme `ban_ip` ci-dessus). Les deux messages
+        // distincts survivent : « trop bas » et « invalide » ne disent pas la même chose à l'analyste.
         "kill_pid" => match target.parse::<i64>() {
-            Ok(p) if p > 300 => Ok(()),
+            Ok(_) if cible_de_kill_acceptee(target) => Ok(()),
             Ok(_) => Err("PID trop bas (refusé par sécurité)".into()),
             Err(_) => Err("PID invalide".into()),
         },
         "stop_service" => {
-            let ok = !target.is_empty()
-                && target.len() <= 100
-                && target.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@'));
-            if ok { Ok(()) } else { Err("nom de service invalide".into()) }
+            if cible_de_stop_service_acceptee(target) { Ok(()) } else { Err("nom de service invalide".into()) }
         }
         _ => Err(format!("action inconnue : {kind}")),
     }
@@ -545,23 +663,22 @@ impl Slot {
             _ => None,
         }
     }
-    /// Défense en profondeur : la cible respecte-t-elle le charset TYPÉ du slot ? (déjà garanti par
-    /// action_valid en amont ; re-vérifié ici pour que le rendu soit sûr même appelé isolément).
-    /// Miroir STRICT des charsets d'`action_valid_ctx` (aucun caractère shell possible par construction).
+    /// Défense en profondeur : la cible respecte-t-elle la BORNE TYPÉE du slot ? (déjà garanti par
+    /// `action_valid` en amont ; re-vérifié ici pour que le rendu soit sûr même appelé ISOLÉMENT.)
+    /// LES TROIS ARMS APPELLENT LA BORNE D'`action_valid_ctx` — il n'y a plus AUCUN miroir ici, donc
+    /// plus rien qui puisse dériver, et « jamais plus permissif que la validation amont » est vrai
+    /// PAR CONSTRUCTION au lieu d'être une phrase. Le premier jet de `P4.7-b` n'avait déplacé que
+    /// `Slot::Ip` et avait ÉCRIT que les deux autres étaient « plus étroits (`p > 0` contre
+    /// `p > 300`) » : c'était l'inverse, et le témoin
+    /// `le_rendu_type_n_est_jamais_plus_permissif_que_la_validation_amont` l'épingle désormais.
     fn target_ok(self, target: &str) -> bool {
         match self {
-            Slot::Ip => {
-                !target.is_empty()
-                    && target.len() <= 45
-                    && target.chars().all(|c| c.is_ascii_hexdigit() || c == '.' || c == ':')
-                    && target.contains('.')
-            }
-            Slot::Pid => target.parse::<i64>().map(|p| p > 0).unwrap_or(false),
-            Slot::Service => {
-                !target.is_empty()
-                    && target.len() <= 100
-                    && target.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@'))
-            }
+            // `P4.7-b` — CES TROIS LIGNES ÉTAIENT DES COPIES VERBATIM des clauses d'`action_valid_ctx`
+            // (Ip : quatre clauses ; Service : trois), sous un commentaire qui disait « miroir STRICT »,
+            // et Pid était une copie FAUSSE (`p > 0`). Ce sont des APPELS désormais.
+            Slot::Ip => cible_de_ban_acceptee(target),
+            Slot::Pid => cible_de_kill_acceptee(target),
+            Slot::Service => cible_de_stop_service_acceptee(target),
         }
     }
 }
@@ -796,6 +913,25 @@ pub(crate) fn respond_run() {
     // l'agent : deux politiques sous un même nom sont exactement le défaut que cette clé ferme.
     let chemin_allow = cfg(&conf, "PLUME_STOP_SERVICE_ALLOW", "/etc/plume/responder.allow");
     let allow = allowlist_stop_service(std::fs::read_to_string(&chemin_allow));
+    // `P4.7-c` — CE RESPONDER-CI NE LIT AUCUNE LISTE D'ÉPARGNE, ET C'EST UNE DIRECTION OUVERTE.
+    // Re-mesuré le 2026-08-28 : `grep -rn PLUME_RESPONDER_ALLOW daemon/` ne rend que des
+    // COMMENTAIRES. La liste chargée ci-dessus est celle de `stop_service`, et elle n'est consultée
+    // que sous `if kind == "stop_service"` (plus bas) : le chemin `ban_ip` ne la voit jamais — c'est
+    // ce qui rend l'élargissement du classificateur de `P4.7-b` incapable de changer un verdict de
+    // ban, et c'est aussi ce qui laisse le trou ci-dessous.
+    // CE QUE ÇA COÛTE, SUR LA MACHINE MÊME QUE `P4.7-a`/`P4.7-b` DÉCRIVENT (centrale ET agent) :
+    // l'exploitant sépare proprement les deux politiques, garde `/etc/plume/responder.allow` comme
+    // liste d'IP à NE JAMAIS bannir, y écrit son rebond d'administration — et une action `ban_ip`
+    // non ciblée est réclamée ICI (timer 20 s) AVANT que `collectors/respond.sh` ne la voie. Le ban
+    // PART : la liste d'épargne n'a jamais été ouverte. Seuls `ip_is_protected` (plages réservées,
+    // opérateur, passerelle) et la garde d'engagement filtrent de ce côté.
+    // POURQUOI CE LOT NE LA FERME PAS, ET C'EST MESURÉ, PAS PRUDENT : le DÉFAUT de
+    // `PLUME_STOP_SERVICE_ALLOW` et celui de `PLUME_RESPONDER_ALLOW` sont LE MÊME chemin. Un lecteur
+    // d'épargne calqué sur celui de l'agent (fail-closed : une ligne non-adresse désarme tout ban)
+    // refuserait donc TOUT bannissement sur toute installation centrale existante, dont le fichier
+    // porte des NOMS DE SERVICE — c'est-à-dire qu'il transformerait un trou de protection en panne
+    // d'enforcement généralisée. Fermer `P4.7-c` demande un chemin d'épargne PROPRE au démon et un
+    // arbitrage écrit sur ce que vaut une liste illisible ; c'est un lot d'enforcement, pas celui-ci.
     let jail = cfg(&conf, "PLUME_FAIL2BAN_JAIL", "sshd");
     // déléguer le ban à l'IPS existant ; nft = fallback seulement
     let backend = match cfg(&conf, "PLUME_BAN_BACKEND", "auto").as_str() {

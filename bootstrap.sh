@@ -108,8 +108,21 @@ grep -q 'soc.localhost' /etc/hosts || echo '127.0.0.1 soc.localhost' >> /etc/hos
 # de leur politique au lieu de le lire de travers (le démon : `blocked` en nommant l'autre politique ;
 # l'agent : refus fail-closed `forme_inconnue`, aucun ban appliqué). Le chemin de CETTE liste-ci se
 # pose par `PLUME_STOP_SERVICE_ALLOW`.
+# `P4.7-b` — CE QUE (3) NE DISAIT PAS, ET QUI ÉTAIT FAUX : les deux lecteurs n'ont pas le MÊME
+# critère d'adresse, ils en ont deux (Rust ici, shell là-bas, aucun littéral partagé possible).
+# MESURÉ le 2026-08-28 : le lecteur du démon exigeait un POINT, donc une liste d'épargne IPv6
+# hexadécimale pure (`2001:db8::1`, `::1`) tombait chez lui dans la liste des NOMS DE SERVICE — sans
+# un mot, pendant que ce fichier-ci promettait le contraire à l'exploitant. La promesse EST tenable,
+# mais elle est plus ÉTROITE que « le même critère » : le classificateur du démon reconnaît
+# strictement PLUS de formes que `is_ip`, donc aucune ligne n'est acceptée en silence par les deux.
+# C'est cette propriété-là qui est écrite dans le fichier ci-dessous, et elle est MESURÉE ligne par
+# ligne sur LES DEUX lecteurs par `collectors/predicat-adresse.corpus`, et par un BALAYAGE dont
+# l'alphabet est dérivé de la ligne `is_ip` livrée (un corpus de 30 lignes reste un échantillon).
+# `P4.7-c`, OUVERTE et dite ici plutôt que tue : le responder du CENTRAL ne lit AUCUNE liste
+# d'épargne. Ce fichier-ci ne gouverne QUE `stop_service` ; rien, de ce côté, n'empêche un
+# `ban_ip` de partir sur une adresse que l'agent aurait épargnée.
 if [ ! -f /etc/plume/responder.allow ]; then
-  printf '# POLITIQUE DE CE FICHIER : services systemd autorises pour l action stop_service (lu par le DEMON).\n# 1 nom de service par ligne (ex: nginx.service). vide = aucun stop_service autorise.\n# N Y METTEZ PAS D ADRESSES IP : ce chemin est aussi celui de la liste des IP a ne jamais bannir de\n# l agent (bootstrap-agent.sh). Les deux lecteurs REFUSENT le contenu de l autre politique.\n' > /etc/plume/responder.allow
+  printf '# POLITIQUE DE CE FICHIER : services systemd autorises pour l action stop_service (lu par le DEMON).\n# 1 nom de service par ligne (ex: nginx.service). vide = aucun stop_service autorise.\n# N Y METTEZ PAS D ADRESSES IP : ce chemin est aussi celui de la liste des IP a ne jamais bannir de\n# l agent (bootstrap-agent.sh). Une ligne qui a la FORME d une adresse -- IPv4 ou IPv6, avec ou sans\n# masque, avec ou sans zone -- fait REFUSER ce fichier EN ENTIER en nommant l autre politique : plus\n# aucun stop_service ne passe tant qu elle y est.\n# CE QUI EST GARANTI ENTRE LES DEUX LECTEURS, ET RIEN DE PLUS : leurs deux criteres ne sont PAS\n# identiques. Ce lecteur-ci reconnait comme adresse strictement PLUS de formes que celui de l agent,\n# si bien qu AUCUNE ligne n est acceptee EN SILENCE par les deux -- mais une forme peut etre refusee\n# des deux cotes (l agent refuse alors TOUT ban sur son hote, fail-closed). Ce qui le mesure : un\n# CORPUS ligne a ligne sur les deux lecteurs, ET un BALAYAGE sur chacun (un corpus de 30 lignes\n# reste un echantillon) -- collectors/predicat-adresse.corpus.\n# CE FICHIER NE PROTEGE AUCUNE IP (P4.7-c) : il n autorise que des ARRETS DE SERVICE. Le\n# responder du central ne lit AUCUNE liste d epargne -- la liste des IP a ne jamais bannir est\n# celle de l AGENT (PLUME_RESPONDER_ALLOW), et le demon ne la consulte pas.\n' > /etc/plume/responder.allow
   chgrp soc /etc/plume/responder.allow && chmod 0640 /etc/plume/responder.allow
 fi
 

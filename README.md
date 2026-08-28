@@ -779,19 +779,74 @@ viennent d'une constante — la commande 4 ci‑dessus la donne.
 > `forme_inconnue`, remontée au central sur l'action) tant que la liste porte autre chose que des
 > adresses ; le démon **bloque** `stop_service` en **nommant** l'autre politique au lieu d'annoncer
 > « ce service n'est pas dans l'allowlist ».
+>
+> ⚠️ **Les deux lecteurs n'ont pas le même critère d'adresse — et ce paragraphe l'a promis à tort.**
+> Il y a **deux textes** et il ne peut pas y en avoir un seul : `is_ip` (ERE POSIX, dans
+> `collectors/respond.sh`) et `ressemble_a_une_adresse` (Rust, dans le démon) ; aucun littéral n'est
+> partageable entre un script shell et un binaire. **Mesuré le 2026‑08‑28** : le lecteur du démon
+> exigeait un **point**, si bien qu'une liste d'épargne écrite en IPv6 hexadécimale pure
+> (`2001:db8::1`, `::1`, `fe80::1`) — que le responder d'agent lit et applique parfaitement — tombait
+> chez lui dans la liste des **noms de service autorisés** pour `stop_service`, **sans un mot**.
+> **Ce qui est garanti depuis, et rien de plus** : le classificateur du démon reconnaît strictement
+> **plus** de formes que celui de l'agent, donc **aucune ligne n'est retenue par les deux lecteurs**.
+> Une même ligne peut être **refusée des deux côtés** — `::ffff:203.0.113.7`, `fe80::1%eth0`,
+> `2001:db8::/32` : le démon refuse la liste, l'agent refuse tout ban sur son hôte. Les deux le
+> **disent** ; c'est ce silence à deux qui était le défaut, pas la différence de largeur.
+> **Ce que l'agent REFUSE — et un seul refus désarme le bannissement de cet hôte** jusqu'à ce que la
+> ligne parte : masque, zone (`%eth0`), forme IPv4‑mappée, commentaire indenté, ligne de blancs,
+> espace de fin, fins de ligne CRLF. C'est *fail‑closed*, donc protecteur, et c'est **borné** : les
+> plages réservées et l'hôte central restent protégés par ailleurs, seul le ban d'une IP **publique**
+> est suspendu. **Ce qu'il accepte** : l'IPv4 pointée et la forme hexadécimale à deux‑points — et
+> **plus que cela**, ce qui a été écrit ici « exhaustivement » à tort le 2026‑08‑28 : `is_ip` teste
+> une **forme**, pas une adresse, et accepte donc aussi `999.999.999.999`, `01.02.03.04`, `ab:cd`,
+> `dead:beef`, `::`, `cafe:` (mesuré en exécutant le prédicat extrait du script livré). Une telle
+> ligne est **lisible** — elle ne désarme rien — et n'épargne rien : c'est un commentaire déguisé.
+> **Et l'épargne elle‑même est une égalité d'octets** (`grep -qxF`) : `2001:0db8:0000:…:0001`
+> n'épargne pas `2001:db8::1`, et `2001:DB8::1` non plus. Copiez la chaîne telle que l'alerte
+> l'affiche.
+> **La promesse n'est plus tenue par une phrase, elle est mesurée** : `collectors/predicat-adresse.corpus`
+> est rejoué ligne par ligne **sur les deux lecteurs** — la colonne shell par
+> `.github/scripts/check_enforcer_lists_fail_closed.py`, qui **extrait `is_ip` du script livré et
+> l'exécute**, la colonne Rust par `daemon/src/tests/allowlist_du_responder.rs`. Aucun des deux ne
+> prouve seul : c'est le fichier partagé qui les relie, et les deux refusent de conclure s'il manque.
+> **Et pas seulement sur ces 30 lignes** — un corpus reste un échantillon, et une clause ajoutée
+> demain à `is_ip` sur une forme absente aurait cassé la propriété sans faire rougir personne. Elle
+> est donc **décomposée en deux moitiés balayées**, reliées par une borne structurelle publiée dans
+> l'en‑tête du corpus : côté agent, « tout ce que `is_ip` accepte satisfait la borne », balayé sur un
+> alphabet **dérivé de la ligne `is_ip` elle‑même** (on n'élargit pas un ERE sans écrire les
+> caractères qu'on y admet) ; côté démon, « tout ce qui satisfait la borne est refusé », balayé sur
+> toutes les chaînes de ≤ 4 caractères d'un alphabet à un représentant par classe. **Limites
+> écrites** : la borne est écrite deux fois (une par langage), les longueurs sont bornées, et une
+> clause qui n'introduirait aucun caractère littéral (une classe POSIX nommée) échapperait encore.
+> ⚠️ **Une IPv6 ne peut toujours pas être bannie**, et c'est délibéré ici : le prédicat qui décide de
+> ce qui part vers `nft`/`cscli`/`fail2ban` (`cible_de_ban_acceptee`) reste **IPv4 (v1)**, inchangé
+> clause pour clause. Plume **ingère** et **alerte** sur une `src_ip` IPv6 ; il ne l'auto‑bannit pas.
 > **Y compris quand la ligne fautive est la dernière et que le fichier ne se termine pas par un saut
 > de ligne** — et ce n'était pas le cas avant le 2026‑08‑27. `while read` n'exécute pas son corps
 > sur une ligne non terminée : une liste valant exactement `nginx.service` **sans** `\n` passait pour
 > bien formée et **le ban partait** (mesuré : `nft add element …` posé, remonté au central en
 > `done`), alors que le **même** contenu **avec** son `\n` était refusé. Le versant démon n'avait pas
 > ce trou (`lines()` rend la dernière ligne partielle) : les deux lecteurs promettaient le même
-> critère et un seul le tenait.
+> critère et un seul le tenait — **et cette phrase-là ne vaut que pour le saut de ligne final** ; sur
+> le critère d'adresse lui-même, voir l'avertissement ci-dessus.
 > **Pour tenir les deux politiques sur une même machine**, donnez un chemin propre à l'une des deux :
 > `PLUME_STOP_SERVICE_ALLOW` (démon) ou `PLUME_RESPONDER_ALLOW` (agent).
-> ⚠️ **Une ligne CIDR (`203.0.113.0/24`) dans la liste d'épargne est désormais refusée** : la
+> ⚠️ **Et la liste d'épargne ne protège que du côté AGENT — `P4.7-c`, ouverte.** Le responder du
+> **central** (`respond_run`) ne consulte **aucune** liste d'épargne : re‑mesuré le 2026‑08‑28,
+> `PLUME_RESPONDER_ALLOW` n'apparaît dans le démon que dans des commentaires. Sur une machine à la
+> fois centrale et agent, une action `ban_ip` non ciblée est réclamée par le démon (timer 20 s)
+> **avant** que `collectors/respond.sh` ne la voie : le ban part sans que la liste d'épargne ait été
+> ouverte. De ce côté‑là, seuls `PLUME_PROTECTED_IPS`, les plages réservées, l'opérateur et la
+> passerelle protègent. Ce n'est **pas** fermé par le lot ci‑dessus, et le naïf ne l'est pas non
+> plus : le **défaut** des deux chemins est le même fichier, donc un lecteur d'épargne calqué sur
+> celui de l'agent refuserait **tout** ban sur toute installation centrale existante — dont le
+> fichier porte des noms de service.
+> ⚠️ **Une ligne CIDR est désormais refusée** — `203.0.113.0/24` **comme** `2001:db8::/32` : la
 > recherche s'est toujours faite par **égalité de ligne**, donc un masque n'a **jamais** épargné
 > personne — il laissait le ban partir en silence. Écrivez une adresse par ligne, ou employez
-> `PLUME_PROTECTED_IPS`.
+> `PLUME_PROTECTED_IPS`. Les deux lecteurs refusent le masque, mais **pas au même endroit** : l'agent
+> le classe `forme_inconnue` et désarme tout ban ; le démon en lit la **tête** (`2001:db8::`) et
+> refuse la liste — c'est aussi ce qu'il fait d'une zone `%eth0`.
 
 **Démonstration**
 

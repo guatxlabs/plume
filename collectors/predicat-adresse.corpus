@@ -1,0 +1,134 @@
+# =================================================================================================
+# LE CORPUS PARTAGÉ DES DEUX LECTEURS — `P4.7-b`
+#
+# POURQUOI CE FICHIER EXISTE. Deux lecteurs se promettent le même critère d'adresse et ne peuvent
+# pas partager un littéral : l'un est en Rust (`daemon/src/handlers/actions.rs`,
+# `ressemble_a_une_adresse` -> `allowlist_stop_service`), l'autre en shell POSIX
+# (`collectors/respond.sh`, `is_ip` -> `verdict_liste_epargne`). Jusqu'au 2026-08-28 l'équivalence
+# était AFFIRMÉE EN COMMENTAIRE et par deux témoins qui ne se rencontraient jamais : celui du démon
+# n'exerçait que la fonction Rust, celui de la CI n'exerçait que le shell, et son corpus était
+# EXCLUSIVEMENT IPv4. La frontière que les deux prétendaient tenir n'était mesurée par personne, et
+# toute la famille IPv6 y est passée : le démon lisait `2001:db8::1` comme un NOM DE SERVICE.
+#
+# CE FICHIER EST L'ÉCHANTILLON COMMUN — pas la définition (voir plus bas : c'est la borne (S) qui
+# porte l'universel). Ni le Rust ni le shell ne le lisent à l'exécution — ce sont
+# leurs TÉMOINS qui le lisent, et qui rejouent CHAQUE ligne sur LES DEUX lecteurs :
+#   * `daemon/src/tests/allowlist_du_responder.rs` — colonne `demon`
+#   * `.github/scripts/check_enforcer_lists_fail_closed.py` — colonne `agent`
+# Les deux REFUSENT DE CONCLURE si ce fichier manque, est vide, ou cesse de couvrir les TROIS
+# combinaisons admissibles (`refuse/adresse`, `refuse/forme-inconnue`, `nom-de-service/forme-inconnue`).
+# La QUATRIÈME — `nom-de-service/adresse` — est le défaut lui-même : elle ne doit JAMAIS apparaître
+# ici, et les deux témoins la refusent comme corpus invalide autant que comme verdict mesuré.
+# Une famille d'adresses ajoutée ici sans être traitée fait ROUGIR les deux.
+#
+# FORMAT : `chaine <TAB> demon <TAB> agent`. `#` en colonne zéro = commentaire.
+#   demon : `refuse`         -> `allowlist_stop_service` rend `Err` en NOMMANT l'autre politique
+#           `nom-de-service` -> la ligne est retenue comme un nom de service (c'est SA politique)
+#   agent : `adresse`        -> `is_ip` reconnaît la ligne (c'est SA politique : elle est épargnable)
+#           `forme-inconnue` -> `is_ip` la refuse -> `verdict_liste_epargne` rend `illisible:` ->
+#                               REFUS fail-closed de TOUT ban sur cet hôte
+#
+# LES DEUX PROPRIÉTÉS QUE CE CORPUS TIENT, ET ELLES SONT ÉTROITES — ON NE PROMET PAS L'ÉGALITÉ.
+#   (P1) CONTENANCE : tout ce que l'AGENT lit comme une adresse, le DÉMON le REFUSE comme étant de
+#        l'autre politique. Autrement dit : aucune liste d'épargne utilisable par l'agent ne peut
+#        être avalée en silence par le démon. C'est la propriété que `P4.7-b` a trouvée FAUSSE.
+#   (P2) AUCUN SILENCE À DEUX : aucune ligne n'est acceptée par LES DEUX. Les deux politiques sont
+#        disjointes par construction — une ligne est une adresse (l'agent l'accepte, le démon doit
+#        la refuser) ou un nom de service (l'inverse) ; une ligne acceptée des deux côtés signifie
+#        qu'un des deux s'est trompé, sans que rien ne le dise.
+#   CE QUI N'EST PAS PROMIS, ET IL FAUT LE LIRE : la RÉCIPROQUE de (P1) est FAUSSE, délibérément.
+#   Le démon refuse EN PLUS des formes que l'agent ne sait pas lire (`::ffff:…`, `%zone`, CIDR,
+#   `cafe.beef`, `1.2.3.4.5`, `.`). Sur celles-là l'agent refuse AUSSI, mais autrement : il désarme
+#   TOUT bannissement de l'hôte (fail-closed). Les deux refusent, aucun ne se tait — c'est la
+#   propriété étroite qui est vraie, et c'est celle que les installateurs et le README écrivent.
+#
+# CE QUE CE FICHIER EST, ET CE QU'IL N'EST PAS — RELEVÉ LE 2026-08-28, ET C'ÉTAIT JUSTE.
+# Il s'annonçait « LA DÉFINITION COMMUNE » alors qu'il est un ÉCHANTILLON de 30 lignes écrites à la
+# main, pendant que (P1) et (P2) étaient énoncées en UNIVERSELLES dans le README et dans les deux
+# fichiers semés. Une clause ajoutée demain à `is_ip` sur une forme ABSENTE d'ici (un crochet, une
+# zone, une forme mixte non échantillonnée) aurait cassé (P1) sans faire rougir aucun des deux
+# témoins. LE CORPUS RESTE UN ÉCHANTILLON — c'est le rôle qu'il tient bien : il fixe les verdicts
+# CONCRETS, ligne à ligne, sur les deux lecteurs, et il refuse de conclure s'il maigrit.
+#
+# CE QUI TIENT L'UNIVERSEL, ET IL EST AILLEURS : (P1) EST DÉCOMPOSÉE EN DEUX MOITIÉS BALAYÉES,
+# reliées par une BORNE STRUCTURELLE qui est publiée ici et implémentée de chaque côté :
+#
+#     (S)   s ≠ ""  ET  tout caractère de s ∈ [0-9a-fA-F.:]  ET  au moins un ∈ { '.' , ':' }
+#
+#   Une chaîne qui satisfait (S) ne porte NI blanc, NI `/`, NI `%`, et ne commence pas par `#` :
+#   `trim`, les deux coupes de tête (`/` puis `%`) et le saut des commentaires sont donc l'IDENTITÉ
+#   sur elle, et le verdict du lecteur du démon est exactement celui de son classificateur.
+#
+#   MOITIÉ AGENT — « tout ce que `is_ip` accepte satisfait (S) ». Balayée par
+#     `.github/scripts/check_enforcer_lists_fail_closed.py` sur le prédicat EXTRAIT du script livré,
+#     avec un alphabet DÉRIVÉ de la ligne `is_ip` elle-même : on n'élargit pas un ERE sans écrire
+#     les caractères qu'on y admet, donc un élargissement entre dans le balayage du même geste.
+#     MESURÉ : la forme crochetée `[::1]` échappait à un alphabet écrit à la main, elle ne le peut
+#     plus.
+#   MOITIÉ DÉMON — « tout ce qui satisfait (S) est REFUSÉ par `allowlist_stop_service` ». Balayée
+#     par `daemon/src/tests/allowlist_du_responder.rs` sur toutes les chaînes de ≤ 4 caractères d'un
+#     alphabet portant UN REPRÉSENTANT PAR CLASSE, avec ses deux planchers de non-dégénérescence.
+#   COMPOSITION — tout ce que l'agent lit comme une adresse, le démon le refuse : (P1).
+#
+#   LES TROIS LIMITES, ÉCRITES : (S) est écrite DEUX FOIS, une par langage (aucun littéral n'est
+#   partageable entre un binaire et un script) ; les LONGUEURS sont bornées, les chaînes plus longues
+#   sont ciblées et non balayées ; et une clause qui n'introduirait AUCUN caractère littéral (une
+#   classe POSIX nommée, `[[:alpha:]]`) élargirait `is_ip` sans enrichir l'alphabet dérivé.
+#
+# MESURÉ le 2026-08-28 : colonne `agent` = `is_ip` EXTRAIT VERBATIM de `collectors/respond.sh` et
+# EXÉCUTÉ (instrument validé par MUTATION dans les deux sens : `^ZZZ$` fait basculer toute la
+# colonne en `forme-inconnue`, `.*` la fait basculer en `adresse`). Colonne `demon` = verdict de
+# `allowlist_stop_service` sur un fichier d'UNE ligne, exécuté par le témoin Rust.
+# =================================================================================================
+#
+# --- IPv4 : LE COMPORTEMENT HISTORIQUE, INCHANGÉ PAR `P4.7-b` (c'est un témoin, pas une intention)
+203.0.113.7	refuse	adresse
+198.51.100.9	refuse	adresse
+999.999.999.999	refuse	adresse
+1.2.3.4.5	refuse	forme-inconnue
+.	refuse	forme-inconnue
+203.0.113.0/24	refuse	forme-inconnue
+#
+# --- IPv6 HEXADÉCIMALE PURE : LE DÉFAUT DE `P4.7-b`. Avant, la colonne `demon` valait
+# --- `nom-de-service` sur ces SIX lignes : l'agent lisait une liste d'épargne parfaitement valide
+# --- pour lui, et le démon en faisait une allowlist de `stop_service`, sans un mot.
+2001:0db8:0000:0000:0000:0000:0000:0001	refuse	adresse
+2001:db8::1	refuse	adresse
+::1	refuse	adresse
+fe80::1	refuse	adresse
+::	refuse	adresse
+dead:beef	refuse	adresse
+ab:cd	refuse	adresse
+#
+# --- LA LIGNE QUI A FAIT RETIRER LA BORNE DE LONGUEUR DU CLASSIFICATEUR. 49 caractères : `is_ip`
+# --- l'accepte (il n'a aucune borne), et `len() <= 45` la faisait tomber côté démon dans
+# --- `services.push(...)`. C'était la SEULE ligne de ce corpus acceptée EN SILENCE par les DEUX.
+dead:beef:cafe:cafe:cafe:cafe:cafe:cafe:cafe:cafe	refuse	adresse
+#
+# --- L'AUTRE SENS DE LA DIVERGENCE — les formes que l'AGENT refuse. Il désarme alors TOUT ban sur
+# --- l'hôte (fail-closed, cause `forme_inconnue`). Le démon les refuse aussi : personne ne se tait.
+# --- `::ffff:203.0.113.7` est l'échantillon que l'ancien témoin du démon employait comme SEULE
+# --- IPv6 — c'est-à-dire précisément celle qui s'échappait du défaut.
+::ffff:203.0.113.7	refuse	forme-inconnue
+::ffff:192.0.2.1	refuse	forme-inconnue
+2001:db8::192.0.2.1	refuse	forme-inconnue
+fe80::1%eth0	refuse	forme-inconnue
+2001:db8::/32	refuse	forme-inconnue
+:	refuse	forme-inconnue
+#
+# --- LA LARGEUR ASSUMÉE DU CLASSIFICATEUR DU DÉMON : ces chaînes ne sont pas des adresses, et il
+# --- les refuse quand même. La direction est protectrice (moins de `stop_service` autorisés).
+cafe.beef	refuse	forme-inconnue
+#
+# --- TÉMOIN INVERSE, INDISPENSABLE : un classificateur qui refuserait TOUT tiendrait (P1) et (P2)
+# --- sans rien prouver — il aurait simplement supprimé `stop_service`. Ces lignes sont la politique
+# --- DU DÉMON : elles doivent être RETENUES par lui, et refusées par l'agent.
+nginx.service	nom-de-service	forme-inconnue
+sshd.service	nom-de-service	forme-inconnue
+containerd.service	nom-de-service	forme-inconnue
+plume-daemon.service	nom-de-service	forme-inconnue
+dev-sda.device	nom-de-service	forme-inconnue
+var-lib.mount	nom-de-service	forme-inconnue
+cafe.socket	nom-de-service	forme-inconnue
+add.timer	nom-de-service	forme-inconnue
+soc.example.com	nom-de-service	forme-inconnue

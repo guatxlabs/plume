@@ -591,7 +591,76 @@ env:
   #   · UNE RIPOSTE HORS CAPACITÉ ÉTAIT JETÉE SANS UN CHIFFRE (`P4.7-d`) : TROIS témoins — le défaut
   #     (cible IPv6 et PID sous plancher : bilan à 1, aucune action posée) et ses DEUX inverses (une
   #     IP protégée ne gonfle pas le bilan ; une riposte portable est encore posée, bilan à zéro).
-  EXPECTED_TESTS: "1410"
+  #
+  # RÉ-MESURÉ le 2026-08-28 par le MÊME script, LES DEUX PROFILS DANS LA MÊME EXÉCUTION (jamais par
+  # addition), sur la fermeture de la FAMILLE DE L'IDENTITÉ D'ADRESSE (`P4.7-g`, `-h`, `-i`, `-j`,
+  # `-k`) : **1410 -> 1416** (+6), et le MÊME +6 sur `EXPECTED_COLD_TESTS` (**1653 -> 1659**).
+  # L'ÉCART ENTRE PROFILS EST DE NOUVEAU DÉRIVÉ : 1653−1410 = 243 AVANT, 1659−1416 = 243 APRÈS —
+  # INCHANGÉ, donc aucun des six n'est derrière un `cfg(feature)` ; c'est l'écart qui l'établit, pas
+  # une lecture des sources. Les six vivent dans `daemon/src/tests/identite_d_adresse.rs`, tiré par un
+  # `include!` non gaté, et aucun n'écrit `#[cfg(feature = ...)]`.
+  # LES SIX, ET CE QU'ILS FERMENT :
+  #   · L'IDENTITÉ D'UNE ADRESSE EST SA VALEUR — propriété MÉTAMORPHIQUE ENGENDRÉE depuis le corpus
+  #     partagé `collectors/predicat-adresse.corpus` (aucune paire écrite : les réécritures — mappée
+  #     pointée, majuscule, expansée, hexadécimale, compressée — sont dérivées de la valeur analysée),
+  #     avec son ANTI-VACUITÉ (une fonction constante satisferait la propriété seule : on exige une
+  #     adresse protégée ET une non protégée sous matchers non vides).
+  #   · LA LARGEUR PROTÉGÉE EST CELLE QUI A ÉTÉ ÉCRITE — les quatre bornes (base, dernière, base−1,
+  #     dernière+1) DÉRIVÉES de l'arithmétique du masque DANS le témoin, jamais recopiées ; c'est le
+  #     seul qui attrape les DEUX directions (`203.0.113.0/25` protégeait tout le /24 ; `128.0.0.0/1`
+  #     ne protégeait qu'UNE adresse et est désormais REFUSÉ).
+  #   · UNE NOTATION QUE LE PRODUIT NE SAIT PAS HONORER SE REFUSE, ELLE NE S'ACCEPTE PAS DÉFORMÉE —
+  #     joker hors frontière, masque sous plancher, nom d'hôte, faute de frappe : refus NOMMÉ, jamais
+  #     matcher inerte ; avec son inverse (un item vide ne signale RIEN, six items légitimes acceptés).
+  #   · TOUTE CIBLE DE BAN S'ANALYSE — le contrat qui autorise `ip_is_protected_ctx` à rendre `false`
+  #     sur l'inanalysable sans rouvrir de trou : le refus d'analyse est un défaut de FORME, tranché
+  #     EN AMONT par la borne d'enforcement (donc COMPTÉ dans `abandonnes`), pas une réponse négative
+  #     de la politique. Le défaut de `P4.7-h` (`10.0.0.01` non protégée ET bannissable) est joué.
+  #   · LA LEVÉE DE BAN DIT CE QU'ELLE A RETIRÉ — AVANT/APRÈS dans le même corps, sur la valve de
+  #     récupération anti-verrouillage elle-même : posé sous la valeur canonique, la saisie BRUTE ne
+  #     levait RIEN et l'API répondait `{"ok": true}`.
+  #   · LE PAIR MAPPÉ EST LA MÊME MACHINE — et RIEN de plus : l'anti-spoof est joué dans les deux sens
+  #     (un pair public replié reste public), et un CIDR dans `PLUME_TRUSTED_PROXIES` n'apparie
+  #     toujours rien (l'élargissement de confiance est une décision distincte, hors de ce lot).
+  # UN SEPTIÈME TÉMOIN A CHANGÉ DE FORME SANS CHANGER LE COMPTE, et c'est le plus important à lire :
+  # `la_borne_de_ban_reste_celle_d_avant_clause_pour_clause` exigeait une ÉGALITÉ avec les quatre
+  # clauses de `P4.7-b` — elle aurait INTERDIT la correction de `P4.7-h`. Elle est devenue
+  # `la_borne_de_ban_ne_s_elargit_jamais_et_son_resserrement_est_derive` : (E) la borne n'accepte
+  # JAMAIS plus qu'avant — la garantie de `P4.7-b` intégralement conservée, rien de neuf ne part vers
+  # un pare-feu ; (R) l'écart entre l'ancienne borne et la nouvelle est EXACTEMENT « la chaîne ne
+  # s'analyse pas », dérivé et non énuméré, avec non-vacuité dans les deux sens.
+  #
+  # RÉ-MESURÉ le 2026-08-29 par le MÊME script, LES DEUX PROFILS DANS LA MÊME EXÉCUTION (jamais par
+  # addition), sur la REPRISE de la famille de l'identité d'adresse après trois lectures adverses :
+  # **1416 -> 1419** (+3), et le MÊME +3 sur `EXPECTED_COLD_TESTS` (**1659 -> 1662**). L'ÉCART ENTRE
+  # PROFILS EST DE NOUVEAU DÉRIVÉ : 1659−1416 = 243 AVANT, 1662−1419 = 243 APRÈS — INCHANGÉ, donc
+  # aucun des trois n'est derrière un `cfg(feature)` ; c'est l'écart qui l'établit, pas une lecture
+  # des sources.
+  # LES TROIS, ET CE QU'ILS FERMENT — chacun ferme un défaut que le premier jet du lot avait CRÉÉ ou
+  # laissé ouvert, et chacun a été mesuré avant d'être écrit :
+  #   · CE QUI EST PUBLIÉ EST CE QUI EST APPLIQUÉ — `etendue_du_reseau` masquait SANS replier la
+  #     forme mappée là où `ip_in_cidr`, le DÉCIDEUR, replie des DEUX côtés : `::ffff:203.0.113.0/120`
+  #     était PUBLIÉ « 256 adresses protégées » (registre never-ban, journal d'amorçage, refus de
+  #     scope) et n'en protégeait qu'UNE. La propriété est DÉRIVÉE — pour tout item accepté, les deux
+  #     bornes publiées appartiennent au réseau selon le décideur et les deux voisines immédiates
+  #     n'y appartiennent pas — donc un item écrit demain est couvert sans être nommé.
+  #   · LES DEUX ANALYSEURS DU MÊME CSV, ET L'ÉCART QUI RESTE — parité d'ACCEPTATION rétablie
+  #     (`« 172.16.0.0 /12 »` était HONORÉ par l'affichage et REFUSÉ par la denylist : l'exploitant
+  #     voyait son exclusion fonctionner dans les panneaux pendant qu'il n'était plus protégé), et
+  #     l'écart de SÉMANTIQUE qui reste — non refermable sans casser le débruitage — est MESURÉ sur
+  #     le couple (CACHÉE, BANNISSABLE), le seul sens qui compte : `172.15.0.1` reste masquée par le
+  #     préfixe « 172. » ET devient bannissable. Aucun témoin ne jouait ce couple.
+  #   · LA BORNE DIT IPv4, ET LA LEVÉE RESTE OUVERTE — la forme IPv4-compatible obsolète
+  #     (`::127.0.0.1`) et la forme mixte (`2001:db8::192.0.2.1`, qui est DANS le corpus partagé)
+  #     s'analysaient, restaient des cibles de ban ACCEPTÉES et demeuraient INVISIBLES à la
+  #     protection : les deux conditions de la fuite, sur une autre écriture. Et la dissymétrie
+  #     assumée est tenue par le même témoin : un `unban_ip` sur une notation que le BAN refuse reste
+  #     CRÉABLE — une soupape lève PLUS, jamais moins.
+  # ET LE TÉMOIN DE LA BORNE A CHANGÉ DE FORME SANS CHANGER LE COMPTE, une seconde fois : (R) disait
+  # « l'écart est le refus d'ANALYSE » et dit désormais « l'écart est : la cible ne dénote pas une
+  # valeur IPv4 » ; une clause (L) s'y ajoute — la borne de la LEVÉE est celle d'avant le lot, CLAUSE
+  # POUR CLAUSE, c'est-à-dire l'égalité de `P4.7-b` conservée là où elle doit l'être : sur la valve.
+  EXPECTED_TESTS: "1419"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1005,7 +1074,7 @@ jobs:
           # un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (243 avant comme
           # après) qui l'établit, pas une lecture des sources. La dérivation complète et la
           # répartition sont écrites auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1653"
+          EXPECTED_COLD_TESTS: "1662"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -1274,6 +1343,34 @@ jobs:
       # sans refus. Sans ce second témoin, un enforcer qui refuserait toujours passerait le premier.
       - name: Un enforcer qui ne peut pas lire sa liste de protection REFUSE (fail-closed)
         run: python3 .github/scripts/check_enforcer_lists_fail_closed.py
+
+      # `P4.7-j` — L'IDENTITÉ D'UNE ADRESSE EST SA VALEUR, ET IL N'EN EXISTE QU'UNE LECTURE.
+      # MESURÉ le 2026-08-28 : le démon portait TROIS canonicalisations aux verdicts DIFFÉRENTS sur
+      # `::ffff:a.b.c.d` — `ssrf_norm_ip` REPLIE (`to_ipv4_mapped`), `parse::<IpAddr>() + to_string()`
+      # ne replie PAS, `ipaddress`/`.compressed` côté hôte non plus. La deuxième était employée SIX
+      # fois, sur ce qui clé le store `net_ban`, sur l'IP réelle du client et sur le pair TCP : elle
+      # CONVERGEAIT les écritures exotiques VERS la forme qui traversait la protection.
+      # POPULATION DÉCOUVERTE par parcours (« obtenir une adresse comme valeur, puis la rendre en
+      # chaîne »), jamais une liste de fichiers : un site écrit demain est couvert sans être nommé.
+      # La garde inclut À DESSEIN les sites CONFORMES, sinon elle n'apparierait plus rien le jour où
+      # le dernier fautif disparaît, et son vert cesserait de dire quoi que ce soit ; population
+      # vide ou canonicaliseur introuvable -> elle REFUSE DE CONCLURE (code 2) au lieu de rendre vert.
+      # La moitié SHELL ne peut pas appeler le canonicaliseur du démon : elle doit porter un AVEU
+      # ÉCRIT qui NOMME la divergence, mesurée et inscrite dans `collectors/engagement-adapter.sh`.
+      - name: Il n'existe qu'UNE canonicalisation d'adresse, et c'est celle qui replie la forme mappée (P4.7-j)
+        run: python3 .github/scripts/check_one_canonical_address_form.py
+
+      # `P4.7-g` — UN NOM, DEUX QUESTIONS : `parse_excl_item` sert le RENDU D'AFFICHAGE (où un préfixe
+      # TEXTUEL est la BONNE réponse, la seule qui se rende en `NOT LIKE 'préfixe%'`) ET l'ENFORCEMENT
+      # (où c'est la mauvaise, et l'écart va DANS LES DEUX SENS : `172.16.0.0/12` protégeait tout
+      # 172/8, `128.0.0.0/1` une SEULE adresse). Le remède n'était donc PAS de remplacer l'analyseur —
+      # analyser les deux côtés en valeurs CASSERAIT le débruitage des panneaux, et le témoin
+      # `excl_v54_parse_and_clause_generation` le tient sur ses chaînes attendues EXACTES — mais de
+      # SÉPARER LES DEUX CONSOMMATEURS. ÉTAT MESURÉ AVANT LE LOT : QUATRE appels d'enforcement
+      # (`ledger.rs` x2, `handlers/engagement.rs` x2) -> la garde était ROUGE avant, VERTE après.
+      # Le module d'AFFICHAGE est DÉRIVÉ (le fichier qui définit `ExclClauses`), pas écrit.
+      - name: L'analyseur du rendu d'affichage n'a QUE des consommateurs d'affichage (P4.7-g)
+        run: python3 .github/scripts/check_display_parser_has_only_display_consumers.py
 
       # `P7.19-b` — « JE N'AI PAS PU MESURER » NE SORT PAS PAR LE MÊME CANAL QUE « LA PROPRIÉTÉ EST
       # VIOLÉE ». Le banc de `daemon/src/tests/query_verify.rs` refuse de conclure hors de sa fenêtre

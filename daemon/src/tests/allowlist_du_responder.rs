@@ -352,14 +352,42 @@ mod allowlist_du_responder_tests {
                    "une liste faite des noms de service du corpus doit être LUE en entier");
     }
 
-    /// LA BORNE D'ENFORCEMENT N'A PAS BOUGÉ — C'EST UN TÉMOIN, PAS UNE INTENTION. `P4.7-b` élargit
-    /// le CLASSIFICATEUR (dont le seul effet est un refus) et ne touche PAS à ce qui part vers un
-    /// pare-feu. Ce témoin rejoue les QUATRE CLAUSES D'ORIGINE, écrites ici en toutes lettres, et
-    /// exige qu'elles donnent le MÊME verdict que `cible_de_ban_acceptee` sur tout le corpus.
+    /// LA BORNE D'ENFORCEMENT NE S'ÉLARGIT JAMAIS — ET L'ÉCART EST DÉRIVÉ, PAS ÉNUMÉRÉ.
+    ///
+    /// CE TÉMOIN A CHANGÉ DE FORME LE 2026-08-28, ET IL FAUT DIRE POURQUOI. `P4.7-b` l'avait écrit
+    /// comme une ÉGALITÉ — « les quatre clauses d'origine donnent le MÊME verdict » — parce que ce
+    /// lot-là n'avait le droit de bouger NI dans un sens NI dans l'autre. `P4.7-h` a mesuré que la
+    /// borne devait se RESSERRER : `10.0.0.01`, `010.0.0.1`, `127.000.000.001` étaient des cibles
+    /// de ban ACCEPTÉES que le produit ne savait PAS analyser, si bien que la protection des plages
+    /// réservées — la seule qui marche sans configuration — ne s'exécutait pas du tout sur elles.
+    /// Une égalité aurait interdit la correction ; la retirer sans rien mettre à la place aurait
+    /// retiré la garde. La propriété qui compte est donc écrite en CONTENANCE :
+    ///
+    ///     (E)  `cible_de_ban_acceptee(s)`  =>  `avant(s)`      — la borne n'ACCEPTE jamais plus
+    ///     (R)  `avant(s) && !cible_de_ban_acceptee(s)`  <=>  `s` ne dénote pas une valeur IPv4
+    ///     (L)  `cible_de_levee_acceptee(s)`  =  `avant(s)`      — la LEVÉE, elle, n'a PAS bougé
+    ///
+    /// (E) est la garantie de `P4.7-b` intégralement conservée : rien de NEUF ne part vers un
+    /// pare-feu. (R) borne le resserrement à sa cause EXACTE — pas à une liste de chaînes — donc un
+    /// resserrement supplémentaire écrit demain sur un AUTRE critère fait rougir ce témoin.
+    ///
+    /// (R) A ÉTÉ RESSERRÉE LE 2026-08-29, ET IL FAUT DIRE POURQUOI. Elle disait « l'écart est le
+    /// refus d'ANALYSE ». Mesuré : `2001:db8::192.0.2.1` — une ligne DU CORPUS PARTAGÉ — et la forme
+    /// IPv4-compatible obsolète `::127.0.0.1` s'analysent parfaitement et restaient donc des cibles
+    /// de ban ACCEPTÉES, tout en étant INVISIBLES à la denylist (aucun item v4 ne peut apparier une
+    /// valeur v6, `to_ipv4_mapped` ne replie que `::ffff:`, et `Ipv6Addr::is_loopback` ne couvre que
+    /// `::1`) : les deux conditions de la fuite que cette famille poursuit, sur une autre écriture.
+    /// La borne exige désormais une VALEUR IPv4 — la borne « v1 : IPv4 » écrite depuis toujours,
+    /// enfin tranchée sur la valeur et non sur la présence d'un point.
+    ///
+    /// (L) EST NEUVE, ET C'EST UNE CORRECTION DE CE LOT. Le premier jet appliquait la borne
+    /// RESSERRÉE aux DEUX sens : un ban posé au pare-feu sous une notation que la nouvelle borne
+    /// refuse devenait NON LEVABLE par plume, et toute action `unban_ip` pendante sur cette cible
+    /// passait à `blocked` à la mise à jour. Une soupape doit LEVER PLUS, jamais moins.
     #[test]
-    fn la_borne_de_ban_reste_celle_d_avant_clause_pour_clause() {
-        // Les quatre clauses telles qu'elles étaient AVANT le lot (`ressemble_a_une_adresse` de
-        // `P4.7-a`). Recopiées ICI À DESSEIN : c'est le point de comparaison, pas une définition.
+    fn la_borne_de_ban_ne_s_elargit_jamais_et_son_resserrement_est_derive() {
+        // Les quatre clauses telles qu'elles étaient AVANT (`ressemble_a_une_adresse` de `P4.7-a`,
+        // puis `cible_de_ban_acceptee` de `P4.7-b`). Recopiées ICI À DESSEIN : point de comparaison.
         fn avant(s: &str) -> bool {
             !s.is_empty()
                 && s.len() <= 45
@@ -369,15 +397,41 @@ mod allowlist_du_responder_tests {
         let mut chaines: Vec<String> = corpus_partage().into_iter().map(|l| l.chaine).collect();
         for extra in ["", "0.0.0.0", "255.255.255.255", "10.0.0.1", "192.168.1.254", "8.8.8.8",
                       "01.02.03.04", "203.0.113.7 ", " 203.0.113.7", "nginx", "1234",
+                      "10.0.0.01", "010.0.0.1", "127.000.000.001", "192.168.001.1",
+                      "::127.0.0.1", "2001:db8::192.0.2.1", "::ffff:203.0.113.7",
                       "0000:0000:0000:0000:0000:ffff:255.255.255.255",
                       "00000:0000:0000:0000:0000:ffff:255.255.255.255"] {
             chaines.push(extra.to_string());
         }
+        let (mut resserrees, mut conservees) = (0usize, 0usize);
         for s in &chaines {
-            assert_eq!(cible_de_ban_acceptee(s), avant(s),
-                       "la borne d'enforcement a CHANGÉ sur `{s}` : ce lot n'a pas le droit de \
-                        modifier ce qui part vers un pare-feu");
+            let apres = cible_de_ban_acceptee(s);
+            // (E) — AUCUN ÉLARGISSEMENT. C'est la garantie que `P4.7-b` a posée, intacte.
+            if apres {
+                assert!(avant(s),
+                        "`{s}` est devenue une cible de ban : la borne d'enforcement s'est ÉLARGIE, \
+                         ce qui est interdit — c'est ce qui part vers `nft`/`cscli`/`fail2ban`");
+                conservees += 1;
+            }
+            // (R) — LE RESSERREMENT EST EXACTEMENT « la cible ne dénote pas une valeur IPv4 ».
+            let denote_une_v4 = matches!(crate::ledger::ssrf_norm_ip(s), Some(std::net::IpAddr::V4(_)));
+            assert_eq!(avant(s) && !apres, !denote_une_v4 && avant(s),
+                       "`{s}` : l'écart entre l'ancienne borne et la nouvelle n'est PAS « ne dénote \
+                        pas une valeur IPv4 » — un second critère de resserrement est apparu sans être dit");
+            if avant(s) && !apres { resserrees += 1; }
+            // (L) — LA BORNE DE LA LEVÉE EST CELLE D'AVANT LE LOT, CLAUSE POUR CLAUSE. C'est
+            // l'égalité que `P4.7-b` exigeait, conservée là où elle doit l'être : sur la SOUPAPE.
+            assert_eq!(crate::handlers::actions::cible_de_levee_acceptee(s), avant(s),
+                       "`{s}` : la borne de la LEVÉE a bougé — un ban posé au pare-feu sous cette \
+                        notation ne serait plus levable par plume, ce qui est le verrouillage même \
+                        que la valve doit empêcher");
         }
+        // NON-VACUITÉ DANS LES DEUX SENS : sans cela, une borne qui accepterait TOUT ou RIEN
+        // satisferait (E) et (R) sans rien mesurer.
+        assert!(resserrees >= 4, "INSTRUMENT : {resserrees} chaîne(s) resserrée(s) — le corpus ne porte \
+                                  plus le défaut de `P4.7-h`, ce témoin REFUSE de conclure");
+        assert!(conservees >= 4, "INSTRUMENT : {conservees} cible(s) toujours acceptée(s) — la borne a \
+                                  été vidée, ce témoin REFUSE de conclure");
         // Et le fond : l'IPv6 hexadécimale pure reste HORS du ban, comme avant le lot.
         for hors in ["2001:db8::1", "::1", "fe80::1", "::"] {
             assert!(!cible_de_ban_acceptee(hors),

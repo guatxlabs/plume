@@ -206,6 +206,22 @@ else
 fi
 
 # =============================================================================
+# `P4.7-j` — CANONICALISATION HORS DÉMON : CE CANONICALISEUR N'EST PAS CELUI DU
+# DÉMON, ET LEURS VERDICTS DIFFÈRENT SUR LA FORME MAPPÉE. Aveu écrit, pas
+# supposé — MESURÉ le 2026-08-28 (`python3 -c "import ipaddress"`) :
+#     `::ffff:203.0.113.7`, `::FFFF:203.0.113.7`, `0:0:0:0:0:ffff:203.0.113.7`
+#     et `::ffff:cb00:7107` sortent d'ICI en `::ffff:203.0.113.7` (version 6),
+#     alors que `ssrf_norm_ip` (daemon/src/ledger.rs) les REPLIE tous sur
+#     `203.0.113.7` (version 4, `to_ipv4_mapped`).
+# CONSÉQUENCE, ÉCRITE PLUTÔT QUE DÉCOUVERTE PLUS TARD : la même machine reçoit
+# ici une clé v6 et `fam_of` la range en `ip6` -> un jeu nft d'une AUTRE famille
+# que celui où le démon aurait posé la même adresse. Aucun des deux ne peut
+# appeler l'autre (langages et processus distincts) ; l'autorité sur ce que
+# PLUME enforce reste le canonicaliseur du démon, celui-ci ne sert qu'aux
+# leviers d'HÔTE (cscli/nft). Rallier les deux est une décision distincte, non
+# prise ici. `.github/scripts/check_one_canonical_address_form.py` exige cet
+# aveu et rougit s'il disparaît.
+# =============================================================================
 # VALIDATION + CANONISATION (allowlist STRICTE, pas denylist) — un seul gate.
 # echo la forme CANONIQUE (clé partout) sur stdout et return 0 si :
 #   - forme IPv4/IPv6 (ou CIDR) réellement valide (python-ipaddress),
@@ -231,6 +247,11 @@ except ValueError:
     sys.exit(1)
 if net.network_address.is_unspecified:            # 0.0.0.0/* , ::/* , 0.0.0.0 , ::
     sys.exit(1)
+# `P4.7-j` — CANONICALISATION HORS DÉMON, AU SITE MÊME QUI DIVERGE (l'aveu du bloc d'en-tête est
+# à plus de 40 lignes d'ici : il ne couvre pas ces deux lignes, et la garde CI l'exige au site).
+# `.compressed` NE REPLIE PAS la forme mappée : `::ffff:203.0.113.7` sort d'ici en version 6, là où
+# `ssrf_norm_ip` (daemon/src/ledger.rs) rend `203.0.113.7` en version 4 -> `fam_of` range la MÊME
+# machine dans un jeu nft d'une AUTRE famille que celui où le démon l'aurait posée.
 if net.version == 4:
     if net.prefixlen < minv4: sys.exit(1)
     print(net.network_address.compressed if net.prefixlen == 32 else net.compressed)

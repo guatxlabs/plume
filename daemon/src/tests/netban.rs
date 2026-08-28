@@ -195,7 +195,8 @@
         let ip = "198.51.100.42";
         assert!(netban_upsert(&c, ip, None, "test", "op", "prod"), "store non plein -> ban posé");
         assert!(net_ban_is_blocked(ip, now()), "après upsert -> bloqué (cache cohérent)");
-        netban_remove(&c, ip);
+        assert_eq!(netban_remove(&c, ip).expect("la levée est EXÉCUTABLE (un échec SQL n'est plus lu comme « rien à retirer »)"), 1,
+                   "la levée DIT ce qu'elle a retiré (`P4.7-k`)");
         assert!(!net_ban_is_blocked(ip, now()), "après remove -> plus bloqué (réversible)");
         let n: i64 = c.query_row("SELECT COUNT(*) FROM net_ban WHERE ip=?1", params![ip], |r| r.get(0)).unwrap();
         assert_eq!(n, 0, "ligne net_ban supprimée");
@@ -551,7 +552,7 @@
         // Une place libérée rend la pose possible : la borne freine, elle ne condamne pas.
         netban_remplir_le_cache(NETBAN_CACHE_CAP - 1);
         assert!(netban_upsert(&c, neuve, None, "place libre", "op", "prod"), "sous le plafond -> ban accepté");
-        netban_remove(&c, neuve);
+        let _ = netban_remove(&c, neuve); // nettoyage de fixture : le compte n'est pas la propriété mesurée ici
         netban_cache().write().clear();
     }
 

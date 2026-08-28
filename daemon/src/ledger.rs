@@ -359,21 +359,204 @@ pub(crate) fn verify_ledger_conn(conn: &Connection, pinned: Option<&[u8; 32]>) -
 /// de format — déclenche le ban d'une IP loopback/privée/opérateur (self-DoS ou coupure de l'infra). Sûr : les
 /// IP à bannir sont des attaquants EXTERNES (publiques) ; les collecteurs/réponses légitimes ne visent pas ces
 /// plages. Configurable via PLUME_OPERATOR_IPS / PLUME_PROTECTED_IPS (CSV, notation exacte ou CIDR/`*`).
-static PROTECTED_IP_MATCHERS: std::sync::OnceLock<Vec<(String, bool)>> = std::sync::OnceLock::new();
-pub(crate) fn protected_ip_matchers() -> &'static Vec<(String, bool)> {
+/// LA DENYLIST CONFIGURÉE, ANALYSÉE PAR VALEUR (`P4.7-i`, `P4.7-j`) — RÉSEAUX ET REFUS.
+///
+/// CE QUE CETTE STRUCTURE REMPLACE, ET POURQUOI CE N'ÉTAIT PAS UN OUBLI. Jusqu'au 2026-08-28 cette
+/// liste était un `Vec<(String, bool)>` produit par `parse_excl_item` — c'est-à-dire par l'analyseur
+/// du RENDU D'AFFICHAGE, qui traduit un CIDR en PRÉFIXE TEXTUEL tronqué à la frontière d'octet (v4)
+/// ou d'hextet (v6). Pour son consommateur d'origine — écrire `src_ip NOT LIKE 'préfixe%'` — un
+/// préfixe textuel est la BONNE réponse, la seule qui se rende en SQL. Pour l'ENFORCEMENT c'est la
+/// mauvaise, et l'écart va DANS LES DEUX SENS (mesuré) :
+///   `172.16.0.0/12`   -> `"172."`       protégeait tout 172/8 (x16)  — SUR-protection = trou d'enforcement
+///   `203.0.113.0/25`  -> `"203.0.113."` protégeait tout le /24 (x2)  — idem
+///   `128.0.0.0/1`     -> égalité EXACTE (octets = 0) : UNE seule adresse — SOUS-protection
+///   `fc00::/7`        -> `"fc00:"`      : `fd00::/8` échappait       — SOUS-protection
+/// Les deux consommateurs sont donc SÉPARÉS : `parse_excl_item` reste CORPS INCHANGÉ et garde
+/// l'affichage (`ExclClauses::build`, témoin `excl_v54_parse_and_clause_generation`) ; l'enforcement
+/// prend des RÉSEAUX typés. LE TYPE EST LA GARDE : `low.starts_with(...)` devient INÉCRIVABLE pour
+/// tout consommateur présent ET futur de cette liste, sans qu'aucun site soit nommé.
+pub(crate) struct DenylistProtegee {
+    /// Réseaux protégés, comparés par MASQUE (`ip_in_cidr`, qui normalise la forme mappée des deux côtés).
+    pub(crate) reseaux: Vec<(std::net::IpAddr, u32)>,
+    /// Items REFUSÉS à l'amorçage : `(item tel qu'écrit, raison)`. Un item inanalysable ne devient JAMAIS
+    /// un matcher inerte — il est REFUSÉ ET NOMMÉ, et le registre never-ban le rend à l'exploitant.
+    pub(crate) refuses: Vec<(String, String)>,
+}
+
+/// UN ITEM DE `PLUME_OPERATOR_IPS` / `PLUME_PROTECTED_IPS`, ANALYSÉ EN RÉSEAU (`P4.7-i`).
+///
+/// `None` = item VIDE (une virgule en trop, une liste vide) : rien n'est écrit, rien n'est refusé —
+/// comportement INCHANGÉ. `Some(Err(raison))` = l'exploitant a écrit quelque chose que le produit ne
+/// sait PAS honorer : on le REFUSE en le NOMMANT plutôt que de l'accepter DÉFORMÉ.
+///
+/// LES TROIS REFUS SONT UN DÉPLACEMENT, PAS UNE INVENTION : le refus du joker hors frontière et le
+/// plancher de masque (/8 v4, /16 v6) sont DÉJÀ écrits dans `validate_engagement_scope`
+/// (`handlers/engagement.rs`), avec leur mesure — « `8*` exempterait 8.x MAIS AUSSI 80-89.x + 8xxx::,
+/// ~1,1 milliard d'IP ». Ils protégeaient le scope d'engagement et pas la denylist qui l'alimente.
+/// SEULE PIÈCE NEUVE DU LOT : la traduction du joker EN CIDR sur la frontière. Elle n'a pas
+/// d'antécédent dans l'arbre, donc pas de témoin existant pour la rattraper — c'est écrit ici.
+pub(crate) fn parse_protected_item(raw: &str) -> Option<Result<(std::net::IpAddr, u32), String>> {
+    let it = raw.trim().to_ascii_lowercase();
+    if it.is_empty() { return None; }
+    // `P4.7-i` (REPRISE 2026-08-29) — LES DEUX CONSOMMATEURS DU MÊME CSV DOIVENT ACCEPTER LES MÊMES
+    // ITEMS. Mesuré : `parse_excl_item` (affichage) ROGNE autour du `/` (`base.trim()`,
+    // `masklen.trim()`), `parse_ssrf_allow` (enforcement) NON. `PLUME_OPERATOR_IPS="172.16.0.0 /12"`
+    // était donc HONORÉ côté panneau — l'exploitant VOYAIT son exclusion fonctionner — et REFUSÉ
+    // côté denylist : plus AUCUNE protection never-ban sur ce réseau, alors que le refus se lisait
+    // comme une faute de frappe isolée. On rogne ICI, exactement où l'affichage rogne ; aucun corps
+    // d'analyseur n'est touché (empreintes T5 intactes).
+    let it = match it.split_once('/') {
+        Some((base, masque)) => format!("{}/{}", base.trim(), masque.trim()),
+        None => it,
+    };
+    Some(protected_item_reseau(&it))
+}
+
+/// Plancher de masque par famille : au-dessous, l'item protégerait une part d'Internet que personne
+/// n'a voulu protéger (`128.0.0.0/1` = la moitié de l'espace v4). MÊMES valeurs que le scope d'engagement.
+fn plancher_de_masque(ip: std::net::IpAddr) -> u32 { if ip.is_ipv6() { 16 } else { 8 } }
+
+fn protected_item_reseau(it: &str) -> Result<(std::net::IpAddr, u32), String> {
+    // (a) JOKER `*` — ACCEPTÉ UNIQUEMENT SUR UNE FRONTIÈRE d'octet (v4) ou d'hextet (v6), traduit en
+    //     CIDR. Hors frontière (`8*`, `203.0.113.7*`) il n'a AUCUNE traduction honnête : refusé.
+    if let Some(p) = it.strip_suffix('*') {
+        let p = p.trim();
+        if p.is_empty() {
+            return Err("joker seul « * » : protégerait tout l'espace d'adressage".into());
+        }
+        if p.contains(':') {
+            if !p.ends_with(':') {
+                return Err(format!("« {it} » : joker hors frontière d'hextet (attendu « 2001:db8:* »)"));
+            }
+            // UN SEUL séparateur de frontière est retiré, JAMAIS tous : `trim_end_matches` rendait
+            // `2001:db8:::*` indiscernable de `2001:db8:*` — le contrôle de vacuité des composants
+            // tournait alors sur un corps DÉJÀ rogné et ne pouvait plus voir le séparateur en trop.
+            // Une faute de frappe devenait une protection SILENCIEUSE au lieu d'un refus NOMMÉ.
+            let corps = &p[..p.len() - 1];
+            let hextets: Vec<&str> = corps.split(':').collect();
+            if hextets.iter().any(|h| h.is_empty()) || hextets.is_empty() || hextets.len() > 7 {
+                return Err(format!("« {it} » : joker hors frontière d'hextet (1 à 7 hextets pleins attendus)"));
+            }
+            let bits = 16 * hextets.len() as u32;
+            let base = format!("{corps}::");
+            let ip = base.parse::<std::net::IpAddr>().map_err(|_| format!("« {it} » : base « {base} » non analysable"))?;
+            return Ok((ip, bits));
+        }
+        if !p.ends_with('.') {
+            return Err(format!("« {it} » : joker hors frontière d'octet (attendu « 203.0.113.* »)"));
+        }
+        // Idem v4 : UN SEUL point de frontière retiré -> `10..*` est REFUSÉ (il était accepté et
+        // rendu `10.0.0.0/8`), `203.0.113.*` reste accepté.
+        let corps = &p[..p.len() - 1];
+        let octets: Vec<&str> = corps.split('.').collect();
+        if octets.iter().any(|o| o.is_empty()) || octets.is_empty() || octets.len() > 3 {
+            return Err(format!("« {it} » : joker hors frontière d'octet (1 à 3 octets pleins attendus)"));
+        }
+        let bits = 8 * octets.len() as u32;
+        let base = format!("{corps}{}", ".0".repeat(4 - octets.len()));
+        let ip = base.parse::<std::net::IpAddr>().map_err(|_| format!("« {it} » : base « {base} » non analysable"))?;
+        return Ok((ip, bits));
+    }
+    // (b) CIDR `base/N` ou IP NUE — DÉPLACEMENT PUR : c'est `parse_ssrf_allow`, corps inchangé, qui
+    //     rend déjà `Net(IpAddr, bits)` et une IP nue en /32|/128. Ici la variante `Host` est REFUSÉE :
+    //     un nom d'hôte ne protège RIEN sur ce chemin (mesuré — le matcher chaîne qu'il produisait ne
+    //     pouvait apparier AUCUNE adresse), il se lisait pourtant comme une protection.
+    match parse_ssrf_allow(it) {
+        None => Err(format!("« {it} » : ni CIDR, ni adresse, ni joker de frontière")),
+        Some(SsrfAllow::Host(h)) => Err(format!(
+            "« {h} » : un NOM D'HÔTE ne protège aucune adresse ici (la denylist ban compare des réseaux, pas des noms)"
+        )),
+        Some(SsrfAllow::Net(ip, bits)) => {
+            // `P4.7-i` / `P4.7-j` (REPRISE 2026-08-29) — L'ITEM EST RANGÉ SOUS LA FORME OÙ IL SERA
+            // APPLIQUÉ, SANS QUOI CE QUI EST PUBLIÉ N'EST PAS CE QUI EST PROTÉGÉ. `ip_in_cidr`
+            // REPLIE la forme mappée des DEUX côtés puis applique `bits` TEL QUEL : un item
+            // `::ffff:203.0.113.0/120` était donc appliqué comme un /120 sur une valeur v4, c'est-à-dire
+            // masque PLEIN -> UNE seule adresse, pendant que le registre et le journal d'amorçage
+            // publiaient « ::ffff:203.0.113.0 .. ::ffff:203.0.113.255 » (256 adresses annoncées
+            // protégées, 255 bannissables). MESURÉ le 2026-08-29, rustc, copies verbatim.
+            // On replie DONC ici, valeur ET masque : `/96+n` sur une base mappée décrit exactement le
+            // réseau v4 `/n`, et c'est cette paire-là qui est stockée, comparée ET publiée.
+            // DEUX DIRECTIONS, NOMMÉES : `::ffff:203.0.113.0/120` protège désormais ses 256 adresses
+            // (il n'en protégeait qu'UNE) -> on protège PLUS ; `::ffff:203.0.113.0/24` — un masque
+            // SOUS /96, qui ne décrit aucun réseau v4 — est REFUSÉ alors qu'il protégeait
+            // accidentellement le /24 v4 -> on protège MOINS, mais BRUYAMMENT. Et l'asymétrie
+            // mesurée disparaît : `::ffff:10.0.0.0/104` est accepté comme `10.0.0.0/8` l'est, là où
+            // le plancher tranché sur `is_ipv6()` refusait `::ffff:10.0.0.0/8` pour le même réseau.
+            let (ip, bits) = match ip {
+                std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+                    Some(v4) if bits >= 96 => (std::net::IpAddr::V4(v4), bits - 96),
+                    Some(_) => return Err(format!(
+                        "« {it} » : masque /{bits} sur une forme mappée « ::ffff: » — sous /96 il ne décrit AUCUN réseau IPv4 \
+                         (écrire le réseau v4 lui-même « a.b.c.d/n », ou la forme mappée avec son masque v6 « ::ffff:a.b.c.d/(96+n) »)"
+                    )),
+                    None => (ip, bits),
+                },
+                v4 => (v4, bits),
+            };
+            let plancher = plancher_de_masque(ip);
+            if bits < plancher {
+                return Err(format!(
+                    "« {it} » : masque /{bits} sous le plancher /{plancher} — protégerait une part d'Internet que personne n'a demandée"
+                ));
+            }
+            Ok((ip, bits))
+        }
+    }
+}
+
+/// PREMIÈRE ET DERNIÈRE ADRESSE d'un réseau — l'ÉTENDUE NUMÉRIQUE, celle que l'exploitant doit
+/// pouvoir LIRE (registre never-ban). Le seul endroit où il relisait sa liste lui montrait jusqu'ici
+/// le motif tel qu'il avait été MAL compris (« 172. », préfixe), pas ce qu'il protège.
+pub(crate) fn etendue_du_reseau(net: std::net::IpAddr, bits: u32) -> (std::net::IpAddr, std::net::IpAddr) {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    // CE QUI EST PUBLIÉ EST CE QUI EST APPLIQUÉ — TENU PAR CONSTRUCTION, PAS PAR CONVENTION
+    // (REPRISE 2026-08-29). `ip_in_cidr`, le DÉCIDEUR, replie la forme mappée avant de masquer ;
+    // cette fonction masquait SANS replier, et publiait donc une plage v6 pour un ensemble
+    // réellement v4. `parse_protected_item` range désormais les items déjà repliés, mais cette
+    // fonction est aussi appelée sur des paires venues d'ailleurs (message de refus de scope
+    // d'engagement) : le repli est fait ICI aussi, si bien qu'AUCUNE entrée ne peut faire diverger
+    // l'étendue publiée du verdict d'appartenance, quelle que soit son origine.
+    let net = match net {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+        v4 => v4,
+    };
+    match net {
+        IpAddr::V4(v4) => {
+            let m: u32 = if bits >= 32 { u32::MAX } else if bits == 0 { 0 } else { u32::MAX << (32 - bits) };
+            let base = u32::from(v4) & m;
+            (IpAddr::V4(Ipv4Addr::from(base)), IpAddr::V4(Ipv4Addr::from(base | !m)))
+        }
+        IpAddr::V6(v6) => {
+            let m: u128 = if bits >= 128 { u128::MAX } else if bits == 0 { 0 } else { u128::MAX << (128 - bits) };
+            let base = u128::from(v6) & m;
+            (IpAddr::V6(Ipv6Addr::from(base)), IpAddr::V6(Ipv6Addr::from(base | !m)))
+        }
+    }
+}
+
+static PROTECTED_IP_MATCHERS: std::sync::OnceLock<DenylistProtegee> = std::sync::OnceLock::new();
+/// La denylist COMPLÈTE : réseaux retenus ET items refusés (avec leur raison).
+pub(crate) fn protected_denylist() -> &'static DenylistProtegee {
     PROTECTED_IP_MATCHERS.get_or_init(|| {
         let conf = load_config();
-        let mut v = Vec::new();
+        let mut d = DenylistProtegee { reseaux: Vec::new(), refuses: Vec::new() };
         // opérateur (défaut = l'opérateur plateforme) + liste additionnelle passerelle/DNS (défaut vide).
-        for item in cfg(&conf, "PLUME_OPERATOR_IPS", PLUME_OPERATOR_IPS_DEFAULT).split(',') {
-            if let Some(m) = parse_excl_item(item) { v.push(m); }
+        for cle in ["PLUME_OPERATOR_IPS", "PLUME_PROTECTED_IPS"] {
+            let defaut = if cle == "PLUME_OPERATOR_IPS" { PLUME_OPERATOR_IPS_DEFAULT } else { "" };
+            for item in cfg(&conf, cle, defaut).split(',') {
+                match parse_protected_item(item) {
+                    None => {}
+                    Some(Ok(net)) => d.reseaux.push(net),
+                    Some(Err(raison)) => d.refuses.push((item.trim().to_string(), raison)),
+                }
+            }
         }
-        for item in cfg(&conf, "PLUME_PROTECTED_IPS", "").split(',') {
-            if let Some(m) = parse_excl_item(item) { v.push(m); }
-        }
-        v
+        d
     })
 }
+/// Les RÉSEAUX protégés seuls (le consommateur d'enforcement). Signature volontairement typée :
+/// aucune chaîne n'en sort, donc aucune comparaison textuelle n'est écrivable en aval.
+pub(crate) fn protected_ip_matchers() -> &'static Vec<(std::net::IpAddr, u32)> { &protected_denylist().reseaux }
 /// Rabat une IPv4-mapped IPv6 (`::ffff:a.b.c.d`) sur son IPv4 embarqué -> FERME le contournement d'encodage
 /// `[::ffff:169.254.169.254]` (et une résolution AAAA vers une mapped). `None` si la chaîne n'est pas une IP
 /// (nom d'hôte : le verdict viendra de la résolution DNS, pas d'ici). Classification robuste par `IpAddr`.
@@ -407,14 +590,46 @@ pub(crate) fn ip_is_rfc1918(ip: std::net::IpAddr) -> bool {
 /// TOUJOURS protégé (bannir sa passerelle interne = auto-DoS) — la garde SSRF, elle, a sa PROPRE politique où
 /// RFC1918 est opt-in (cf. `ssrf_ipaddr_blocked`) : ne PAS confondre les deux usages.
 pub(crate) fn ip_is_protected(ip: &str) -> bool {
+    ip_is_protected_ctx(ip, protected_ip_matchers())
+}
+
+/// CŒUR PUR de `ip_is_protected` (denylist INJECTÉE) -> exerçable SANS `OnceLock` ni variable
+/// d'environnement. DÉPLACEMENT du patron maison, déjà écrit deux fois : `ssrf_blocked_policy(ip,
+/// block_private)` (« politique EXPLICITE, testable sans env », 20 lignes plus bas) et
+/// `real_client_ip_ctx(req, trusted, …)` (« cœur PUR (config injectée) », `auth.rs`). Son absence
+/// était la raison MÉCANIQUE pour laquelle la moitié CONFIGURÉE de cette protection — celle que
+/// `P4.7-g` attaque — était la seule SANS aucun témoin positif : les deux seules assertions qui
+/// existaient étaient NÉGATIVES et faites liste VIDE.
+///
+/// L'IDENTITÉ D'UNE ADRESSE EST SA VALEUR, JAMAIS SON ÉCRITURE (`P4.7-g`, `P4.7-j`). Les DEUX
+/// moitiés tranchent désormais sur la valeur analysée `p` :
+///   * la moitié DÉRIVÉE (plages réservées) le faisait DÉJÀ — c'est un TÉMOIN, pas une intention :
+///     son comportement est INCHANGÉ, `ssrf_norm_ip` replie la forme mappée depuis toujours ;
+///   * la moitié CONFIGURÉE comparait `low.starts_with(chaîne)`. Elle compare maintenant la MÊME
+///     valeur `p`, par `ip_in_cidr` — qui vit 50 lignes plus bas, normalise la forme mappée DES DEUX
+///     CÔTÉS, et était déjà exercée par un témoin. `p` était calculé, servait aux deux tests de
+///     plage, puis était JETÉ à quatre lignes de là.
+///
+/// CE QUE VAUT UN REFUS D'ANALYSE, TRANCHÉ EXPLICITEMENT (`P4.7-h`) — et ce n'est PAS ici que ça se
+/// tranche. Une chaîne dont on ne sait pas lire la valeur n'est pas une adresse, donc PAS UNE CIBLE :
+/// le refus est un défaut de FORME, et il est prononcé EN AMONT par `cible_de_ban_acceptee` (Q1),
+/// qui exige désormais que la cible s'analyse. Rendre `true` ICI aurait été la faute : `run_playbooks`
+/// partage un refus de FORME (compté dans `abandonnes` — une riposte PERDUE) d'un refus de POLITIQUE
+/// (non compté, délibéré) ; un « protégée » sur une chaîne inanalysable aurait rendu la perte
+/// INVISIBLE et rouvert `P4.7-d`. Le contrat est donc : TOUTE CIBLE DE BAN S'ANALYSE, et un témoin
+/// le tient (`une_cible_de_ban_est_toujours_analysable`) plutôt qu'une phrase.
+pub(crate) fn ip_is_protected_ctx(ip: &str, protected: &[(std::net::IpAddr, u32)]) -> bool {
     let ip = ip.trim();
     if ip.is_empty() { return false; }
     let low = ip.to_ascii_lowercase();
-    if let Some(p) = ssrf_norm_ip(&low) {
-        if ip_never_egress(p) || ip_is_rfc1918(p) { return true; }
-    }
-    // opérateur / self / passerelle-DNS configurés (préfixe LIKE ou égalité exacte).
-    protected_ip_matchers().iter().any(|(val, is_prefix)| if *is_prefix { low.starts_with(&val.to_ascii_lowercase()) } else { low == val.to_ascii_lowercase() })
+    let p = match ssrf_norm_ip(&low) {
+        Some(p) => p,
+        // FORME, pas politique — la borne d'enforcement (Q1) a déjà refusé cette chaîne comme cible.
+        None => return false,
+    };
+    if ip_never_egress(p) || ip_is_rfc1918(p) { return true; }
+    // opérateur / self / passerelle-DNS configurés : appartenance au RÉSEAU, jamais préfixe de chaîne.
+    protected.iter().any(|(net, bits)| ip_in_cidr(p, *net, *bits))
 }
 
 // ---------- garde SSRF applicative (défense en profondeur au-dessus du confinement réseau) ----------

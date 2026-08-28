@@ -773,6 +773,9 @@ const I18N_EN = {
   "ex : maintenance planifiée 22h-23h — collecte non interrompue": "e.g. planned maintenance 22:00-23:00 — collection not interrupted", "Info": "Info",
   "Attention": "Warning", "Critique": "Critical",
   // P11.8-a — suppressions.js
+  // `P4.7-i` (2026-08-29) — le registre déclaratif rend enfin son `detail` (étendue des réseaux
+  // protégés, raison de chaque item REFUSÉ) sous un repli : c'est le libellé de ce repli.
+  "détail": "detail",
   "+ Silence": "+ Silence", "Collecteur": "Collector", "Créer un silence (mute temporisé des notifications)": "Create a silence (timed mute of notifications)",
   "Dernier report": "Last report", "Durée restante (min)": "Remaining duration (min)", "Exclusion": "Exclusion", "Expire": "Expires",
   "Filtres déclarés": "Declared filters", "Lever": "Lift", "Lever le silence": "Lift the silence", "Matchers (champ=valeur, …)": "Matchers (field=value, …)",

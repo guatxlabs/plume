@@ -158,7 +158,31 @@ async function loadSuppressions() {
   const dcols = [
     { key: 'label', label: 'Exclusion', sortable: true, sortVal: e => e.label || '', render: e => { const sp = document.createElement('span'); sp.textContent = e.label || e.name; sp.title = e.name; return sp; } },
     { key: 'type', label: 'Type', sortable: true, sortVal: e => e.type || '', render: e => suppTypeBadge(e.type) },
-    { key: 'value', label: 'Valeur active', render: e => valCell(e.value) },
+    // `P4.7-i` (reprise 2026-08-29) — LE REGISTRE REND ENFIN SON `detail`. Le démon écrivait à son
+    // site que ce registre est « la surface où l'exploitant voit ce qui a cessé — ou commencé — d'être
+    // protégé » et y plaçait, pour la denylist never-ban, l'étendue numérique de chaque réseau et la
+    // RAISON de chaque item refusé. Mesuré : cette vue ne rendait AUCUN `detail` (six colonnes, aucun
+    // clic de ligne) — l'exploitant lisait un COMPTE de refus, jamais lesquels ni pourquoi, sauf à
+    // aller chercher `netban.protege.refus` dans l'onglet Audit, ce que rien ne lui disait. Le détail
+    // est REPLIÉ par défaut (aucune ligne ne s'allonge tant qu'on ne le demande pas).
+    { key: 'value', label: 'Valeur active', render: e => {
+      const box = document.createElement('div');
+      box.appendChild(valCell(e.value));
+      const det = e.detail;
+      const vide = det === null || det === undefined || (typeof det === 'object' && !Object.keys(det).length);
+      if (!vide) {
+        const dt2 = document.createElement('details'); dt2.style.marginTop = '4px';
+        const sm = document.createElement('summary');
+        sm.style.cssText = 'cursor:pointer;font-size:11px;color:var(--muted)';
+        sm.textContent = 'détail';
+        sm.onclick = ev => ev.stopPropagation();
+        const pre = document.createElement('pre');
+        pre.style.cssText = 'margin:4px 0 0;font-family:var(--font-mono);font-size:11px;white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto';
+        try { pre.textContent = JSON.stringify(det, null, 2); } catch (err) { pre.textContent = String(det); }
+        dt2.append(sm, pre); box.appendChild(dt2);
+      }
+      return box;
+    } },
     { key: 'scope', label: 'Périmètre', render: e => { const sp = document.createElement('span'); sp.className = 'muted'; sp.style.fontSize = '11px'; sp.textContent = e.scope || ''; sp.title = e.scope || ''; return sp; } },
     { key: 'source', label: 'Provenance (code)', render: e => { const sp = document.createElement('span'); sp.className = 'muted'; sp.style.fontSize = '11px'; sp.textContent = e.source || ''; sp.title = e.source || ''; return sp; } },
     { key: 'actions', label: '', render: e => {

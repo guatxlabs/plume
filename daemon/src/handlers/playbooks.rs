@@ -366,15 +366,20 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                 // OPT-IN : `PLUME_NETBAN_FROM_ACTIONS=1` requis — un auto-approve de
                 // playbook ne verrouille PAS l'opérateur au HTTP plume par défaut (anti blast-radius). Canonicalise.
                 if netban_from_actions_enabled() && status == "approved" && dry == 0 {
-                    let canon = target.trim().parse::<std::net::IpAddr>().map(|i| i.to_string()).unwrap_or_else(|_| target.trim().to_string());
-                    if kind == "ban_ip" && !ip_is_protected(&canon) {
+                    // `P4.7-j` — l'UNIQUE canonicaliseur (il REPLIE la forme mappée ; `parse + to_string` non).
+                    let canon = match ssrf_norm_ip(target.trim()) { Some(i) => i.to_string(), None => String::new() };
+                    if kind == "ban_ip" && !canon.is_empty() && !ip_is_protected(&canon) {
                         // REFUS SUR STORE PLEIN : tracé au ledger (tamper-evident). Un chemin automatique qui
                         // avale un refus laisserait croire à un blocage qui n'existe pas.
                         if !netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: playbook ban_ip", "playbook", "prod") {
                             ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (playbook:{name})"));
                         }
-                    } else if kind == "unban_ip" {
-                        netban_remove(&conn, &canon);
+                    } else if kind == "unban_ip" && !canon.is_empty() {
+                        // `P4.7-k` — le compte de la levée est DIT, jamais avalé (et son ÉCHEC aussi).
+                        match netban_remove(&conn, &canon) {
+                            Ok(retires) => ledger_append(&conn, "netban.remove", &format!("{canon} retirés={retires} (auto: playbook {name} unban_ip)")),
+                            Err(e) => ledger_append(&conn, "netban.remove.echec", &format!("{canon} NON levé (auto: playbook {name} unban_ip) : {e}")),
+                        }
                     }
                 }
             }

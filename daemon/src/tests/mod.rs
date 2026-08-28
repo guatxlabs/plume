@@ -32,7 +32,8 @@ include!("topn_ampleur.rs"); // L'AMPLEUR du plafond top-N (ligne de reste, sond
 include!("route_a_portes.rs"); // ROUTE A : par quelle porte le sur-compte s'atteindrait — la rétention la ferme, et on le prouve
 include!("backup_retention_adverse.rs"); // scheduler backup natif + rétention KEEP-N — tests-only
 include!("backup_streaming.rs"); // LE CLAIR SUR DISQUE : staging vide sous surveillance, RAM sous gros BLOB, taille/temps des deux formats
-include!("netban.rs"); // chantier ② Phase 1 — ban natif HTTP (IP réelle, store net_ban, guard, API admin)
+include!("netban.rs");
+include!("identite_d_adresse.rs"); // P4.7-g/h/i/j/k : L'IDENTITÉ D'UNE ADRESSE EST SA VALEUR — propriété métamorphique engendrée depuis le corpus partagé (aucune paire écrite), largeur protégée DÉRIVÉE de l'arithmétique du masque avec ses quatre bornes, le contrat « toute cible de ban s'analyse » qui autorise le refus d'analyse à ne PAS valoir « protégée », la levée de ban qui DIT ce qu'elle a retiré, et l'identité de valeur du pair TCP // chantier ② Phase 1 — ban natif HTTP (IP réelle, store net_ban, guard, API admin)
 include!("purge.rs"); // PURGE EXPLICITE d'événements — refus (legal-hold/tier froid/case/FTS), caducité du jeton, registre, dérivés
 include!("query_timing.rs"); // la métrique d'attente : garde SANS SEUIL (S permis >= N clients -> attente NULLE) + un seul écrivain
 include!("dedup_flotte.rs"); // LA FLOTTE : `event.dedup` cloisonné par hôte (perte silencieuse entre machines)

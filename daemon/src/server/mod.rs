@@ -511,6 +511,71 @@ pub(crate) async fn run() {
         let c = load_config();
         let conn = db.lock();
         ledger_append(&conn, "daemon.start", "démarrage plume-daemon");
+        // `P4.7-i` — L'ÉTENDUE RÉELLEMENT PROTÉGÉE EST INSCRITE AU DÉMARRAGE, ITEM PAR ITEM. Jusqu'au
+        // 2026-08-28 un item de `PLUME_OPERATOR_IPS`/`PLUME_PROTECTED_IPS` était traduit en PRÉFIXE
+        // TEXTUEL (analyseur du RENDU D'AFFICHAGE) : `172.16.0.0/12` protégeait tout 172/8, `128.0.0.0/1`
+        // une SEULE adresse. La denylist compare désormais des RÉSEAUX ; l'exploitant doit pouvoir LIRE
+        // ce qui a changé, et un item REFUSÉ (joker hors frontière, masque sous plancher, nom d'hôte)
+        // RETIRE une protection qu'il avait écrite. Rien n'est inscrit quand la liste est vide (le cas
+        // par défaut) -> journal BYTE-IDENTIQUE sur une installation qui n'a rien configuré.
+        // CE QUE CETTE LIGNE NE DIT PAS, ET C'EST DÉLIBÉRÉ : l'étendue ANCIENNE (textuelle) n'y figure
+        // pas. Un préfixe de chaîne n'a pas d'étendue numérique définie (« 8. » ne couvre RIEN en v6,
+        // « fc00: » couvre une plage v6 entière) : publier un « avant » chiffré demanderait de
+        // réimplémenter le défaut pour en tirer un nombre qui n'existe pas.
+        //
+        // REPRISE 2026-08-29 — UNE SEULE LIGNE, ET SEULEMENT QUAND ELLE CHANGE. La boucle écrivait
+        // une entrée PAR réseau ET PAR refus À CHAQUE démarrage, dans un journal que `purge.rs` ne
+        // touche explicitement jamais (« ni registre de purge, ni ledger ») : une installation à 20
+        // IP opérateur payait 20 lignes définitives par redémarrage — y compris une par itération de
+        // CrashLoopBackOff, sur un produit dont la feuille de route porte sur la tenue en 2 Go. Le
+        // coût tombait ENTIÈREMENT sur l'exploitant qui avait fait le geste de protection. Le
+        // récapitulatif est donc UNE ligne, et il n'est écrit que s'il DIFFÈRE du dernier écrit :
+        // un redémarrage qui ne change rien n'écrit RIEN. Le détail item par item, lui, vit dans le
+        // registre never-ban (`/api/suppressions`), qui se relit à la demande et ne s'accumule pas.
+        {
+            let d = protected_denylist();
+            if !d.reseaux.is_empty() || !d.refuses.is_empty() {
+                let mut morceaux: Vec<String> = d.reseaux.iter().map(|(net, bits)| {
+                    let (base, dernier) = etendue_du_reseau(*net, *bits);
+                    format!("{net}/{bits} = {base}..{dernier}")
+                }).collect();
+                for (item, raison) in &d.refuses {
+                    morceaux.push(format!("« {item} » REFUSÉ ({raison}) — NE PROTÈGE PLUS RIEN"));
+                }
+                let detail = format!("{} réseau(x) protégé(s), {} item(s) refusé(s) : {}",
+                                     d.reseaux.len(), d.refuses.len(), morceaux.join(" · "));
+                // Lecture BORNÉE aux 5 000 dernières entrées : au-delà, on ré-annonce — c'est du
+                // bruit borné, jamais un scan de tout le journal au démarrage.
+                let dernier: String = conn.query_row(
+                    "SELECT detail FROM (SELECT id, kind, detail FROM ledger ORDER BY id DESC LIMIT 5000) \
+                     WHERE kind='netban.protege' ORDER BY id DESC LIMIT 1",
+                    [], |r| r.get(0)).unwrap_or_default();
+                if dernier != detail {
+                    ledger_append(&conn, "netban.protege", &detail);
+                }
+            }
+            // `P4.7-j` (REPRISE 2026-08-29) — LE STORE `net_ban` PORTE-T-IL DES ÉCRITURES QUI NE SONT
+            // PAS LA VALEUR ? Les poses d'AVANT ce lot canonicalisaient par `parse + to_string`, qui NE
+            // REPLIE PAS : des lignes peuvent porter `::ffff:a.b.c.d`. La LECTURE du store replie
+            // désormais (`netban_try_load_cap`) — sans quoi ces bans auraient cessé de bloquer au
+            // premier redémarrage, en silence. Ce qui a été REPLIÉ est dit UNE fois, au démarrage, et
+            // seulement s'il y en a : c'est la population exacte que ce lot fait changer de clé.
+            let non_canoniques: Vec<String> = conn
+                .prepare("SELECT DISTINCT ip FROM net_ban")
+                .and_then(|mut st| st.query_map([], |r| r.get::<_, String>(0)).map(|it| it.flatten().collect()))
+                .unwrap_or_default();
+            let replies: Vec<String> = non_canoniques.into_iter()
+                .filter_map(|ecriture| crate::ledger::ssrf_norm_ip(&ecriture)
+                    .map(|v| (ecriture, v.to_string()))
+                    .filter(|(e, v)| e != v)
+                    .map(|(e, v)| format!("{e} -> {v}")))
+                .collect();
+            if !replies.is_empty() {
+                ledger_append(&conn, "netban.recanon", &format!(
+                    "{} ligne(s) `net_ban` stockée(s) sous une écriture qui n'est PAS la valeur — REPLIÉE(S) à la lecture (sans réécriture en base) : {}",
+                    replies.len(), replies.join(", ")));
+            }
+        }
         // v105 (CHANGE 2 / STEP 1 backstop) — CUTOVER VAULT : si le chemin ACTIF de la clé est un Secret
         // non-legacy ET qu'un fichier legacy résiduel coexiste (fenêtre de cutover), les DEUX clés DOIVENT
         // être identiques. Un écart = la clé escrow dans Vault n'a PAS signé la chaîne existante -> fork

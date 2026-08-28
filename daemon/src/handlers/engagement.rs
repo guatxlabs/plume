@@ -1,6 +1,6 @@
 //! Mode Engagement autorisé (v75) — pentest natif, INERTE quand off : engagement compilé
 //! `ActiveEngagement`/`ENGAGEMENT_SCOPE`, matcher/refresh de scope, cycle de vie des credentials,
-//! validation `validate_engagement_scope`/`prefixes_overlap`, expiration/activation
+//! validation `validate_engagement_scope`/`reseaux_se_recouvrent`, expiration/activation
 //! (`expire`/`activate_due_engagements_conn`), les handlers engagement et `mode_get`/`mode_set`.
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
@@ -15,13 +15,15 @@ use crate::*;
 // INERTE quand `PLUME_ENGAGEMENT_MODE` absent/0 : index scope VIDE -> tag/guard/endpoint no-op -> byte-identique.
 // =====================================================================================
 
-/// Engagement ACTIF compilé (cache lecture-chaude). `matchers` = (préfixe/valeur, is_prefix) issus de
-/// `parse_excl_item` (même matcher CIDR/préfixe que l'exclusion opérateur). `scope` = CIDRs bruts (endpoint pull).
+/// Engagement ACTIF compilé (cache lecture-chaude). `matchers` = RÉSEAUX `(base, bits)` issus de
+/// `parse_protected_item` — MÊME analyseur que la denylist never-ban, et plus `parse_excl_item`, qui
+/// est l'analyseur du RENDU D'AFFICHAGE (`P4.7-i` : `172.16.0.0/12` y devient le préfixe textuel
+/// `"172."`, soit tout 172/8). `scope` = CIDRs bruts (endpoint pull).
 #[derive(Clone)]
 pub(crate) struct ActiveEngagement {
     pub(crate) engagement_id: String,
     pub(crate) scope: Vec<String>,
-    pub(crate) matchers: Vec<(String, bool)>,
+    pub(crate) matchers: Vec<(std::net::IpAddr, u32)>,
     pub(crate) window_end: i64,
     pub(crate) box_kind: String,
     pub(crate) adapter: String,
@@ -41,15 +43,17 @@ pub(crate) fn engagement_scope_map() -> &'static parking_lot::RwLock<HashMap<Str
 /// bloqué/mort. L'expiry DB (statut + révocation des grants) reste géré par le tick ; ici on rend le
 /// guard/tag AUTORITAIRES contre window_end indépendamment de la cadence de refresh.
 pub(crate) fn engagement_scope_match(list: &[ActiveEngagement], ip: &str) -> Option<String> {
-    let low = ip.trim().to_ascii_lowercase();
-    if low.is_empty() { return None; }
+    // `P4.7-g` — APPARTENANCE AU RÉSEAU, jamais préfixe de chaîne : une cible de pentest AUTORISÉE
+    // écrite en forme mappée (`::ffff:198.51.100.9`) retrouve son exemption, et la garde qui interdit
+    // d'exempter loopback/opérateur cesse de manquer un recouvrement RÉEL écrit sous une autre notation.
+    // Une chaîne inanalysable n'est pas une adresse, donc n'appartient à aucun scope -> None (le
+    // refus de FORME est prononcé en amont par `cible_de_ban_acceptee`, pas ici).
+    let val = match ssrf_norm_ip(ip) { Some(v) => v, None => return None };
     let n = now();
     for e in list {
         if e.window_end <= n { continue; } // fenêtre dure écoulée -> plus d'exemption (self-expiry chaud)
-        for (val, is_prefix) in &e.matchers {
-            let v = val.to_ascii_lowercase();
-            let hit = if *is_prefix { low.starts_with(&v) } else { low == v };
-            if hit { return Some(e.engagement_id.clone()); }
+        if e.matchers.iter().any(|(net, bits)| ip_in_cidr(val, *net, *bits)) {
+            return Some(e.engagement_id.clone());
         }
     }
     None
@@ -79,8 +83,43 @@ pub(crate) fn ip_in_active_engagement(ip: &str, db_path: &str) -> bool {
     m.get(db_path).map(|list| engagement_scope_match(list, ip).is_some()).unwrap_or(false)
 }
 
+/// MÉMO PROCESSUS DES REFUS DE SCOPE DÉJÀ ANNONCÉS — `load_active_engagements` tourne au tick 20 s,
+/// et un refus répété toutes les 20 secondes serait du bruit non purgeable, pas un signal. On annonce
+/// donc UNE fois par processus et par refus distinct. Un redémarrage ré-annonce, ce qui est voulu :
+/// l'exploitant doit relire ce qui ne protège plus après chaque mise à jour. Borné (le mémo est vidé
+/// et l'événement dit, plutôt que de croître sans fin ou de devenir SILENCIEUX).
+static REFUS_DE_SCOPE_ANNONCES: std::sync::OnceLock<parking_lot::RwLock<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+const REFUS_DE_SCOPE_MEMO_CAP: usize = 1024;
+fn annoncer_refus_de_scope_une_fois(conn: &Connection, detail: &str) {
+    let memo = REFUS_DE_SCOPE_ANNONCES.get_or_init(|| parking_lot::RwLock::new(std::collections::HashSet::new()));
+    {
+        let lu = memo.read();
+        if lu.contains(detail) { return; }
+    }
+    let mut ecr = memo.write();
+    if !ecr.insert(detail.to_string()) { return; }
+    if ecr.len() > REFUS_DE_SCOPE_MEMO_CAP {
+        ecr.clear();
+        ledger_append(conn, "engagement.scope.refus", "mémo des refus de scope PLEIN — vidé ; les refus déjà annoncés le seront à nouveau");
+    }
+    drop(ecr);
+    ledger_append(conn, "engagement.scope.refus", detail);
+}
+
 /// Charge les engagements ACTIFS non expirés d'une base -> liste compilée (matchers CIDR). Scope JSON invalide /
 /// sans matcher -> ligne ignorée (jamais un scope vide qui matcherait tout).
+///
+/// REPRISE 2026-08-29 — UN ITEM REFUSÉ EST NOMMÉ ICI AUSSI, PAS SEULEMENT DANS LA DENYLIST. Le lot
+/// écrit que retirer une protection écrite exige un accusé bruyant, l'appliquait à la denylist
+/// never-ban (registre + journal d'amorçage) et le JETAIT ici : `filter_map(|c| …ok())` écartait en
+/// SILENCE toute ligne de scope que le nouvel analyseur refuse. Or `parse_protected_item` refuse ce
+/// que `parse_excl_item` acceptait (joker hors frontière, masque sous plancher, nom d'hôte, base
+/// inanalysable) : un engagement encore `active` en base, validé par une version ANTÉRIEURE de
+/// `validate_engagement_scope`, perdait cette ligne — et s'il perdait TOUTES ses lignes il
+/// disparaissait entièrement du cache chaud alors que sa fenêtre courait. `ip_in_active_engagement`
+/// rendait alors false, `action_valid_ctx` cessait de suspendre l'auto-ban, et plume bannissait une
+/// cible de pentest AUTORISÉE en pleine fenêtre, sans une ligne de journal. Les deux cas sont
+/// désormais dits, et le second — l'engagement qui SORT du cache — est dit à part.
 pub(crate) fn load_active_engagements(conn: &Connection, now_i: i64) -> Vec<ActiveEngagement> {
     let mut out = Vec::new();
     let mut stmt = match conn.prepare(
@@ -92,8 +131,28 @@ pub(crate) fn load_active_engagements(conn: &Connection, now_i: i64) -> Vec<Acti
     if let Ok(rows) = rows {
         for (id, scope_json, wend, boxk, adapter) in rows.flatten() {
             let scope: Vec<String> = serde_json::from_str(&scope_json).unwrap_or_default();
-            let matchers: Vec<(String, bool)> = scope.iter().filter_map(|c| parse_excl_item(c)).collect();
-            if matchers.is_empty() { continue; }
+            // `P4.7-i` — MÊME analyseur que la denylist never-ban : un item que le produit ne sait pas
+            // honorer est ÉCARTÉ (l'engagement perd cette ligne de scope), jamais accepté DÉFORMÉ —
+            // et le refus est ANNONCÉ (une fois par processus), jamais avalé.
+            let mut matchers: Vec<(std::net::IpAddr, u32)> = Vec::new();
+            for c in &scope {
+                match parse_protected_item(c) {
+                    Some(Ok(m)) => matchers.push(m),
+                    Some(Err(raison)) => annoncer_refus_de_scope_une_fois(conn, &format!(
+                        "engagement {id} : ligne de scope « {c} » REFUSÉE — {raison} (cette ligne N'EXEMPTE PLUS RIEN ; l'auto-ban peut viser une cible autorisée)"
+                    )),
+                    None => {}
+                }
+            }
+            if matchers.is_empty() {
+                // L'engagement reste `active` EN BASE et sa fenêtre court, mais il sort du cache
+                // chaud : plus AUCUNE de ses IP n'est exemptée. C'est le cas le plus coûteux, il est
+                // dit à part.
+                annoncer_refus_de_scope_une_fois(conn, &format!(
+                    "engagement {id} : AUCUNE ligne de scope exploitable ({} écrite(s)) — l'engagement reste ACTIF en base mais N'EXEMPTE PLUS AUCUNE adresse", scope.len()
+                ));
+                continue;
+            }
             out.push(ActiveEngagement { engagement_id: id, scope, matchers, window_end: wend, box_kind: boxk, adapter });
         }
     }
@@ -221,20 +280,30 @@ pub(crate) fn revoke_engagement_creds(conn: &Connection, engagement_id: &str) ->
     Ok(())
 }
 
-/// Deux préfixes se CHEVAUCHENT si l'un est préfixe de l'autre (les matchers parse_excl_item finissent sur
-/// une frontière d'octet '.'/':' -> comparaison de préfixe sûre).
-pub(crate) fn prefixes_overlap(a: &str, b: &str) -> bool {
-    !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
+/// `P4.7-i` — DEUX RÉSEAUX SE RECOUVRENT si l'un CONTIENT l'autre, dans un sens OU dans l'autre.
+/// C'était `a.starts_with(b) || b.starts_with(a)` sur des PRÉFIXES TEXTUELS, hérités de l'analyseur
+/// d'affichage : la garde qui interdit d'exempter loopback / une IP opérateur ratait donc un
+/// recouvrement RÉEL écrit sous une autre notation (`::ffff:127.0.0.1/128` ne commence pas par
+/// « 127. »), et en inventait un qui n'existe pas (`::1a00:0/112` « commence » par « ::1 »).
+/// `validate_engagement_scope` avait DÉJÀ corrigé cette figure CHEZ ELLE — « le plancher est validé
+/// sur la FAMILLE RÉELLEMENT PARSÉE (IpAddr) et non sur un test de chaîne `.contains(':')` » — sans
+/// la corriger chez son fournisseur de matchers.
+/// Familles différentes -> aucun recouvrement (`ip_in_cidr` rend `false`), là où le texte comparait
+/// `8*` contre `8.8.8.8` ET `8000::1`.
+pub(crate) fn reseaux_se_recouvrent(a: (std::net::IpAddr, u32), b: (std::net::IpAddr, u32)) -> bool {
+    ip_in_cidr(a.0, b.0, b.1) || ip_in_cidr(b.0, a.0, a.1)
 }
 /// VALIDATION scope : REFUSE (1) route par défaut / joker (0.0.0.0/0, ::/0, *) ; (2) masque plancher (IPv4 /8,
 /// IPv6 /16 : au-dessous = trop large) ; (3) chevauchement avec loopback/link-local OU une IP protégée
 /// opérateur/passerelle -> jamais de blanket-exempt d'une IP qu'un ban ne doit jamais rater (self-DoS /
 /// neutralisation). NB : RFC1918 (10/192.168/172.16) est ADMIS (pentest interne grey/whitebox légitime).
-pub(crate) fn validate_engagement_scope(scope: &[String], protected: &[(String, bool)]) -> Result<(), String> {
+pub(crate) fn validate_engagement_scope(scope: &[String], protected: &[(std::net::IpAddr, u32)]) -> Result<(), String> {
     if scope.is_empty() {
         return Err("au moins un CIDR requis".into());
     }
-    const NEVER: &[&str] = &["127.", "169.254.", "::1", "fe80:"];
+    // Les plages qu'AUCUNE exemption ne doit recouvrir, écrites en RÉSEAUX (elles l'étaient en
+    // préfixes de chaîne : « 127. », « 169.254. », « ::1 », « fe80: »).
+    const NEVER: &[(&str, u32)] = &[("127.0.0.0", 8), ("169.254.0.0", 16), ("::1", 128), ("fe80::", 10)];
     for raw in scope {
         let c = raw.trim();
         if c.is_empty() { return Err("entrée de scope vide".into()); }
@@ -269,19 +338,21 @@ pub(crate) fn validate_engagement_scope(scope: &[String], protected: &[(String, 
             // pas de '/', pas de joker : DOIT être une IP exacte bien formée (rejette "8", "20", "foo").
             return Err(format!("scope invalide : '{c}' (CIDR base/N ou IP exacte attendu)"));
         }
-        let (sval, _sp) = match parse_excl_item(c) {
-            Some(m) => m,
+        let sres = match parse_protected_item(c) {
+            Some(Ok(m)) => m,
+            Some(Err(raison)) => return Err(format!("CIDR invalide : '{c}' ({raison})")),
             None => return Err(format!("CIDR invalide : '{c}'")),
         };
-        let slow = sval.to_ascii_lowercase();
-        for p in NEVER {
-            if prefixes_overlap(&slow, &p.to_ascii_lowercase()) {
-                return Err(format!("'{c}' chevauche loopback/link-local ({p}) — exemption refusée"));
+        for (nip, nbits) in NEVER {
+            let net = (nip.parse::<std::net::IpAddr>().expect("réseau NEVER littéral"), *nbits);
+            if reseaux_se_recouvrent(sres, net) {
+                return Err(format!("'{c}' chevauche loopback/link-local ({nip}/{nbits}) — exemption refusée"));
             }
         }
-        for (pval, _pp) in protected {
-            if prefixes_overlap(&slow, &pval.to_ascii_lowercase()) {
-                return Err(format!("'{c}' chevauche une IP protégée opérateur/passerelle ('{pval}') — exemption refusée"));
+        for pnet in protected {
+            if reseaux_se_recouvrent(sres, *pnet) {
+                let (base, dernier) = etendue_du_reseau(pnet.0, pnet.1);
+                return Err(format!("'{c}' chevauche une IP protégée opérateur/passerelle ({}/{} = {base}..{dernier}) — exemption refusée", pnet.0, pnet.1));
             }
         }
     }

@@ -572,15 +572,60 @@ pub(crate) fn daemon_excl_registry(conn: &Connection, conf: &HashMap<String, Str
         edit_key: "",
     });
     // A5 — never-ban (HOST/enforcement). PIÈGE §4 : partage l'env PLUME_OPERATOR_IPS mais N'EST PAS éditable ici.
-    let nb: Vec<Value> = protected_ip_matchers().iter().map(|(v, p)| json!({ "match": v, "prefix": p })).collect();
+    //
+    // `P4.7-i` — CE QUE L'EXPLOITANT LISAIT N'ÉTAIT PAS CE QU'IL PROTÉGEAIT. Le seul endroit où il
+    // relit sa denylist affichait le MOTIF tel qu'il avait été mal compris (`{"match":"172.","prefix":true}`)
+    // — c'est-à-dire un préfixe TEXTUEL qui couvrait tout 172/8 pour un `172.16.0.0/12` écrit. Le
+    // registre rend désormais l'ÉTENDUE NUMÉRIQUE : `base/bits`, PREMIÈRE et DERNIÈRE adresse. Ce
+    // n'est pas de la courtoisie : `parse_protected_item` change l'enforcement sur toute installation
+    // qui a écrit un masque non multiple de 8 (v4) / 16 (v6), et ceci est la surface où l'exploitant
+    // voit ce qui a cessé — ou commencé — d'être protégé.
+    //
+    // REPRISE 2026-08-29 — CE QUI EST MIS DANS `detail` N'ATTEINT PAS L'ÉCRAN, ET LA PHRASE
+    // « la SEULE surface » ÉTAIT FAUSSE ICI MÊME. MESURÉ : `grep -c detail web/suppressions.js` = 0
+    // au moment où cette entrée a été écrite — l'interface rendait six colonnes (label, type, value,
+    // scope, source, actions) et JAMAIS `detail`. L'exploitant ne lisait donc qu'un COMPTE (« N
+    // réseaux protégés (M item(s) REFUSÉ(S)) »), jamais LESQUELS ni POURQUOI, sur le seul geste du
+    // lot qui RETIRE une protection qu'il a écrite. Deux corrections : (1) l'essentiel — étendue par
+    // réseau et raison de chaque refus — est porté par `value`, qui est rendu depuis toujours ;
+    // (2) `web/suppressions.js` rend désormais `detail` (repli dépliable) pour toute entrée qui en
+    // porte un. `value` reste BORNÉ (aperçu + « +N autre(s) ») : une valeur illisible ne vaut pas
+    // mieux qu'une valeur absente.
+    let d = protected_denylist();
+    let nb: Vec<Value> = d.reseaux.iter().map(|(net, bits)| {
+        let (base, dernier) = etendue_du_reseau(*net, *bits);
+        json!({ "reseau": format!("{net}/{bits}"), "base": base.to_string(), "dernier": dernier.to_string(), "famille": if net.is_ipv6() { "v6" } else { "v4" } })
+    }).collect();
+    // Un item REFUSÉ À L'AMORÇAGE est NOMMÉ avec sa raison — jamais un matcher inerte qui se lirait
+    // comme une protection. C'est le SEUL geste du lot qui RETIRE une protection écrite par
+    // l'exploitant : il doit la lire ici, et il doit l'avoir lue AVANT le premier démarrage.
+    let refuses: Vec<Value> = d.refuses.iter().map(|(item, raison)| json!({ "item": item, "raison": raison })).collect();
+    // APERÇU BORNÉ, DANS `value` — la colonne que l'interface rend DEPUIS TOUJOURS.
+    const APERCU_RESEAUX: usize = 6;
+    const APERCU_REFUS: usize = 4;
+    let mut morceaux: Vec<String> = d.reseaux.iter().take(APERCU_RESEAUX).map(|(net, bits)| {
+        let (base, dernier) = etendue_du_reseau(*net, *bits);
+        format!("{net}/{bits} = {base}..{dernier}")
+    }).collect();
+    if d.reseaux.len() > APERCU_RESEAUX { morceaux.push(format!("+{} réseau(x)", d.reseaux.len() - APERCU_RESEAUX)); }
+    let mut refus_lisibles: Vec<String> = d.refuses.iter().take(APERCU_REFUS)
+        .map(|(item, raison)| format!("« {item} » REFUSÉ : {raison}")).collect();
+    if d.refuses.len() > APERCU_REFUS { refus_lisibles.push(format!("+{} refus", d.refuses.len() - APERCU_REFUS)); }
+    let resume = format!(
+        "{} réseau(x) protégé(s){}{}{} + loopback/RFC1918/ULA (built-in)",
+        nb.len(),
+        if morceaux.is_empty() { String::new() } else { format!(" : {}", morceaux.join(" · ")) },
+        if refuses.is_empty() { String::new() } else { format!(" — {} item(s) REFUSÉ(S)", refuses.len()) },
+        if refus_lisibles.is_empty() { String::new() } else { format!(" : {}", refus_lisibles.join(" · ")) },
+    );
     out.push(ExclEntry {
         name: "protected_ip_matchers",
         label: "IP protégées (never-ban)",
         scope: "responder / enforcement ban",
         etype: ExclType::Host,
-        value: format!("{} matchers configurés + loopback/RFC1918/ULA (built-in)", nb.len()),
-        detail: json!({ "configured": nb, "builtin": "loopback/link-local/RFC1918/ULA", "note": "HOST/enforcement — partage PLUME_OPERATOR_IPS mais JAMAIS pilotable d'ici (§4 : surfacer≠piloter)" }),
-        source: "PROTECTED_IP_MATCHERS / ip_is_protected",
+        value: resume,
+        detail: json!({ "configured": nb, "refuses": refuses, "builtin": "loopback/link-local/RFC1918/ULA", "note": "HOST/enforcement — appartenance au RÉSEAU (base/bits), jamais préfixe de chaîne ; partage PLUME_OPERATOR_IPS mais JAMAIS pilotable d'ici (§4 : surfacer≠piloter)", "ecart_avec_l_affichage": "L'EXCLUSION D'AFFICHAGE (panneaux « menace externe ») LIT LE MÊME CSV AVEC UNE AUTRE SÉMANTIQUE, PLUS LARGE : un PRÉFIXE TEXTUEL tronqué à la frontière d'octet/hextet. Conséquence à connaître : pour un « 172.16.0.0/12 » écrit, 172.15.0.1 est MASQUÉE dans les panneaux (préfixe « 172. ») et pourtant BANNISSABLE (hors du /12). L'écart est délibéré — un préfixe est la seule réponse qui se rende en SQL — mais il va dans le sens « invisible ET non protégée »." }),
+        source: "PROTECTED_IP_MATCHERS / ip_is_protected_ctx",
         editable: false,
         edit_key: "",
     });

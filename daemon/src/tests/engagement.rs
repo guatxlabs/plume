@@ -9,7 +9,8 @@
     }
     fn mk_active(id: &str, cidr: &str, window_end: i64) -> ActiveEngagement {
         let scope = vec![cidr.to_string()];
-        let matchers: Vec<(String, bool)> = scope.iter().filter_map(|c| parse_excl_item(c)).collect();
+        let matchers: Vec<(std::net::IpAddr, u32)> =
+            scope.iter().filter_map(|c| parse_protected_item(c).and_then(|r| r.ok())).collect();
         ActiveEngagement { engagement_id: id.into(), scope, matchers, window_end, box_kind: "blackbox".into(), adapter: String::new() }
     }
 
@@ -215,7 +216,8 @@
     /// loopback/opérateur ; accepte un /24 public ET un /24 RFC1918 interne (pentest interne légitime).
     #[test]
     fn engagement_scope_validation() {
-        let op = vec![("203.0.113.7".to_string(), false)]; // IP opérateur configurée (exacte)
+        // IP opérateur configurée (exacte) — RÉSEAU HÔTE typé (`P4.7-i` : plus de préfixe textuel).
+        let op = vec![("203.0.113.7".parse::<std::net::IpAddr>().unwrap(), 32u32)];
         assert!(validate_engagement_scope(&[], &op).is_err(), "scope vide refusé");
         assert!(validate_engagement_scope(&["0.0.0.0/0".into()], &op).is_err(), "0.0.0.0/0 refusé");
         assert!(validate_engagement_scope(&["::/0".into()], &op).is_err(), "::/0 refusé");
@@ -224,13 +226,24 @@
         assert!(validate_engagement_scope(&["203.0.113.0/24".into()], &op).is_err(), "scope couvrant l'IP opérateur refusé");
         assert!(validate_engagement_scope(&["198.51.100.0/24".into()], &op).is_ok(), "/24 public hors protégé accepté");
         assert!(validate_engagement_scope(&["10.10.0.0/16".into()], &op).is_ok(), "/16 RFC1918 interne accepté (pentest interne)");
+        // `P4.7-i` — LE RECOUVREMENT EST CELUI DES RÉSEAUX, PLUS CELUI DES CHAÎNES, ET LES DEUX
+        // DIRECTIONS ONT ÉTÉ MESURÉES :
+        //   * AVANT, un recouvrement RÉEL écrit sous une autre notation était MANQUÉ — la garde
+        //     laissait exempter une plage qui contient une IP protégée. On refuse PLUS.
+        assert!(validate_engagement_scope(&["203.0.113.0/25".into()], &op).is_err(),
+                "un /25 qui CONTIENT l'IP opérateur est refusé (l'ancien préfixe « 203.0.113.7 » ne le voyait pas)");
+        //   * AVANT, un recouvrement INVENTÉ par la comparaison de chaînes refusait une exemption
+        //     légitime : « ::1a00:0: » « commence » par « ::1 » sans contenir la boucle locale. On
+        //     refuse MOINS — direction assumée, et c'est bien la valeur qui tranche.
+        assert!(validate_engagement_scope(&["::1a00:0:0:0:0:0/96".into()], &op).is_ok(),
+                "un réseau qui ne CONTIENT pas ::1 est accepté (l'ancien test de préfixe le refusait)");
     }
 
     /// FIX (critique) : le suffixe joker `*` contournait le plancher de masque (jamais de '/') -> "8*"
     /// exemptait ~11 /8 (8.x + 80-89.x + 8xxx::). On REJETTE tout joker et toute forme non-CIDR/non-IP-exacte.
     #[test]
     fn engagement_scope_rejects_wildcard_breadth() {
-        let op: Vec<(String, bool)> = vec![];
+        let op: Vec<(std::net::IpAddr, u32)> = vec![];
         for tok in ["8*", "2*", "3*", "4*", "5*", "6*", "7*", "9*", "*", "20*", "8", "20", "80", "foo", "2001:*"] {
             assert!(validate_engagement_scope(&[tok.into()], &op).is_err(), "scope joker/large '{tok}' DOIT être refusé");
         }

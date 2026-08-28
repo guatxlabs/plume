@@ -165,10 +165,15 @@ pub(crate) const AUTH_FAIL_CAP: usize = 4096;                        // borne an
 /// IP source du client = pair TCP (ConnectInfo posé par into_make_service_with_connect_info / axum-server).
 /// On NE fait PAS confiance à X-Forwarded-For (spoofable en standalone -> contournerait le lockout).
 /// "" si indisponible (tests, ou serve sans connect-info) -> les chemins per-IP deviennent no-op.
+/// `P4.7-j` — LE PAIR EST REPLIÉ PAR L'UNIQUE CANONICALISEUR. Sous un bind double pile (`[::]`) tout
+/// pair v4 arrive en `::ffff:a.b.c.d` : la clé de verrouillage, celle du rate-limit et celle du store
+/// `net_ban` devenaient TROIS écritures d'UNE machine. `ssrf_norm_ip` replie ; l'`and_then` ne perd
+/// jamais un pair présent (`IpAddr::to_string()` se réanalyse toujours).
 pub(crate) fn client_ip(req: &Request) -> String {
     req.extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
-        .map(|c| c.0.ip().to_string())
+        .and_then(|c| crate::ledger::ssrf_norm_ip(&c.0.ip().to_string()))
+        .map(|i| i.to_string())
         .unwrap_or_default()
 }
 
@@ -233,18 +238,43 @@ fn netban_disabled() -> bool {
 ///  - Liste vide (DÉFAUT) -> confiance à un pair PRIVÉ (RFC1918) / loopback (v4 & v6) / ULA IPv6 (fc00::/7) :
 ///    Traefik/ingress k3s pose `10.42.x`, un reverse-proxy local pose `127.0.0.1`. JAMAIS un pair PUBLIC
 ///    (anti-spoof : un attaquant en direct ne doit pas pouvoir se réécrire une fausse IP réelle via XFF).
+///
+/// `P4.7-j` — IDENTITÉ DE VALEUR, ET RIEN DE PLUS. Le pair est REPLIÉ (`ssrf_norm_ip`) avant d'être
+/// classé, et la liste explicite est comparée par ÉGALITÉ D'`IpAddr`, pas par `t.trim() == peer`.
+/// `::ffff:10.42.0.7` et `10.42.0.7` sont la MÊME machine : aucun hôte NOUVEAU n'est jugé de
+/// confiance — un pair public replié reste public, donc refusé (anti-spoof INCHANGÉ).
+/// CE QUE ÇA CHANGE, ET C'EST CONDITIONNEL : sous un bind `[::]`, un ingress v4 arrivait mappé, donc
+/// n'était PAS de confiance, donc TOUTES les décisions visaient l'IP de l'ingress au lieu du client
+/// réel. Les manifestes livrés posent `0.0.0.0:7000` — NON VÉRIFIÉ EN PROD.
+/// LA LISTE EXPLICITE N'ACCEPTE PAS DE CIDR DANS CE LOT : l'élargir serait un ÉLARGISSEMENT DE
+/// CONFIANCE (anti-spoof), c'est-à-dire une autre décision.
+///
+/// LA DIRECTION ADVERSE, ÉCRITE (REPRISE 2026-08-29) — CE N'EST PAS UN GAIN PUR. Sous un bind `[::]`
+/// et liste VIDE (le défaut), un pair privé arrivant mappé passait de NON-confiance à confiance :
+/// ses en-têtes d'IP réelle sont désormais HONORÉS. Toute machine du réseau privé qui atteint plume
+/// EN DIRECT (pas seulement l'ingress) peut donc se réécrire une IP réelle et (a) échapper à son
+/// propre `net_ban`, (b) faire porter ses échecs d'authentification — donc un éventuel `ban_ip` — à
+/// une adresse tierce de son choix. CE QUI BORNE CETTE DIRECTION, MESURÉ : c'est EXACTEMENT la
+/// politique par défaut déjà appliquée sous le bind `0.0.0.0` que posent les manifestes livrés (tout
+/// pair RFC1918 y est de confiance depuis toujours) — aucune politique n'est élargie, c'est
+/// l'ENCODAGE du pair qui cessait de la faire s'appliquer. Un pair PUBLIC replié reste public. Le
+/// durcissement qui ferme cette surface existe et est documenté : `PLUME_TRUSTED_PROXIES` (liste
+/// exacte) et/ou `PLUME_EDGE_SECRET` (sceau d'edge).
+///
+/// CONSÉQUENCE À DIRE AVANT LA MISE À JOUR, ET ELLE VA VERS LE VERROUILLAGE : sous un bind `[::]`,
+/// les en-têtes d'IP réelle étaient ignorés, donc AUCUNE ligne `net_ban` posée sur une IP cliente ne
+/// bloquait quoi que ce soit. Elles se mettent toutes à bloquer au premier redémarrage — y compris
+/// une ligne posée par erreur sur l'adresse publique de l'exploitant. Récupérable (`/api/netban` est
+/// exempté du gate et reste admin-only), mais c'est un verrouillage À LA MISE À JOUR : purger le
+/// store `net_ban` des lignes qu'on ne veut plus voir appliquées AVANT de déployer.
 pub(crate) fn proxy_is_trusted(peer: &str, trusted_list: &[String]) -> bool {
-    let peer = peer.trim();
-    if peer.is_empty() {
-        return false;
-    }
+    let peer = match crate::ledger::ssrf_norm_ip(peer) { Some(p) => p, None => return false };
     if !trusted_list.is_empty() {
-        return trusted_list.iter().any(|t| t.trim() == peer);
+        return trusted_list.iter().any(|t| crate::ledger::ssrf_norm_ip(t) == Some(peer));
     }
-    match peer.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(v4)) => v4.is_private() || v4.is_loopback(),
-        Ok(std::net::IpAddr::V6(v6)) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00, // ::1 | fc00::/7
-        Err(_) => false,
+    match peer {
+        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_loopback(),
+        std::net::IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00, // ::1 | fc00::/7
     }
 }
 
@@ -277,7 +307,9 @@ pub(crate) fn real_client_ip_ctx(req: &Request, trusted: &[String], edge_hdr: &s
         }
     }
     let hdr = |name: &str| req.headers().get(name).and_then(|h| h.to_str().ok());
-    let valid = |v: &str| v.trim().parse::<std::net::IpAddr>().ok().map(|ip| ip.to_string());
+    // `P4.7-j` — l'UNIQUE canonicaliseur : un `CF-Connecting-IP: ::ffff:203.0.113.7` et un
+    // `203.0.113.7` rendent désormais la MÊME clé, celle sur laquelle `net_ban` est stocké.
+    let valid = |v: &str| crate::ledger::ssrf_norm_ip(v).map(|ip| ip.to_string());
     if let Some(ip) = hdr("cf-connecting-ip").and_then(|v| valid(v)) {
         return ip;
     }
@@ -361,6 +393,24 @@ pub(crate) fn netban_try_load_cap(conn: &Connection, cap: usize) -> Option<(Hash
     let mut map: HashMap<String, Option<i64>> = HashMap::new();
     let mut tronque = false;
     for (ip, exp) in rows.flatten() {
+        // `P4.7-j` (REPRISE 2026-08-29) — LA CLÉ DU STORE EST LA **VALEUR**, PAS L'ÉCRITURE STOCKÉE.
+        //
+        // LA DIRECTION ADVERSE DU MÊME GESTE, QUI N'ÉTAIT ÉCRITE NULLE PART. Avant ce lot, la pose
+        // canonicalisait par `parse + to_string`, qui NE REPLIE PAS : une IP réelle arrivant en
+        // `::ffff:203.0.113.7` (bind `[::]`, ou un `CF-Connecting-IP: ::ffff:203.0.113.7` émis par un
+        // edge — ce second cas est INDÉPENDANT du bind) était STOCKÉE sous cette écriture, et le gate
+        // la retrouvait sous la même. Depuis ce lot `real_client_ip` rend `203.0.113.7` : un
+        // `map.get("203.0.113.7")` — égalité de chaîne EXACTE — ne trouve plus la ligne
+        // `::ffff:203.0.113.7`. Un ban PERMANENT posé par l'API admin aurait été silencieusement levé
+        // au premier `netban_reload`, sans journal, sans compteur, et la valve `DELETE /api/netban`
+        // n'aurait jamais été empruntée puisque rien n'aurait paru cassé.
+        //
+        // Le repli est fait à la LECTURE, jamais par réécriture des lignes : aucune donnée de
+        // l'exploitant n'est mutée, la notation d'origine reste lisible dans `GET /api/netban`, et
+        // revenir en arrière sur ce lot suffit à revenir au comportement d'avant. La FUSION de deux
+        // écritures de la même valeur est déjà écrite trois lignes plus bas (elle servait aux
+        // `env_id` multiples) : permanent l'emporte, sinon l'expiration la plus lointaine.
+        let ip = crate::ledger::ssrf_norm_ip(&ip).map(|v| v.to_string()).unwrap_or(ip);
         // Le plafond porte sur le NOMBRE D'ENTRÉES de la map, pas sur les lignes lues : une ligne qui
         // enrichit une IP déjà chargée (autre `env_id`) ne consomme rien et passe toujours.
         if map.len() >= cap && !map.contains_key(&ip) {
@@ -474,9 +524,51 @@ pub(crate) fn netban_upsert(conn: &Connection, ip: &str, expires: Option<i64>, r
 }
 
 /// Retire un ban live (TOUS les env_id de l'IP -> l'unban est GLOBAL en Phase 1) + refresh du cache.
-pub(crate) fn netban_remove(conn: &Connection, ip: &str) {
-    let _ = conn.execute("DELETE FROM net_ban WHERE ip=?1", params![ip]);
+///
+/// `P4.7-k` — REND LE NOMBRE DE LIGNES RETIRÉES, SOUS LE MÊME `#[must_use]` QUE LA POSE. Le contrat
+/// « un ban REFUSÉ doit être rapporté à l'appelant, jamais avalé » était écrit sur `netban_upsert` et
+/// manquait sur la LEVÉE, c'est-à-dire sur la valve de récupération anti-verrouillage : la route
+/// `DELETE /api/netban/{ip}` répondait `{"ok": true}` sans jamais savoir si elle avait retiré quoi
+/// que ce soit. C'est un DÉPLACEMENT du `#[must_use]` de la pose vers la levée, pas une invention.
+/// REPRISE 2026-08-29 — DEUX DÉFAUTS FERMÉS ICI, TOUS DEUX SUR LA SOUPAPE ANTI-VERROUILLAGE.
+///
+/// (a) `0 RETIRÉ` NE VEUT PLUS DIRE DEUX CHOSES À LA FOIS. Le corps faisait `unwrap_or(0)` : une
+/// erreur SQL (contention de l'écrivain pendant le tick de maintenance, base passée en lecture
+/// seule) rendait `0`, et la route répondait `{"ok": true, "retires": 0}` — EXACTEMENT ce qu'elle
+/// aurait répondu si aucun ban n'existait. Un exploitant verrouillé en concluait que son 403 venait
+/// d'ailleurs et cherchait pendant ce temps. C'est le défaut de classification que `P4.7-k` prétend
+/// fermer, déplacé d'un cran : il est rendu à l'appelant, qui répond 503 et l'inscrit au journal.
+///
+/// (b) TOUTES LES ÉCRITURES DE LA MÊME VALEUR SONT LEVÉES, PAS SEULEMENT CELLE QU'ON A TAPÉE. Les
+/// poses d'AVANT ce lot canonicalisaient par `parse + to_string`, qui NE REPLIE PAS : le store peut
+/// donc porter `::ffff:203.0.113.7` là où la valeur est `203.0.113.7`. Une levée `WHERE ip=?1` sur
+/// la seule saisie laissait cette ligne EN PLACE — et depuis que la lecture du store replie
+/// (`netban_try_load_cap`), cette ligne BLOQUE. La levée énumère donc les écritures présentes et
+/// retire celles qui dénotent la MÊME VALEUR. Direction assumée : une soupape LÈVE PLUS, jamais
+/// moins. Le coût est une lecture de la colonne `ip` (table bornée par `NETBAN_CACHE_CAP` à la pose
+/// + purge des expirés au tick), sur un chemin RARE.
+#[must_use = "une levée de ban qui n'a retiré AUCUNE ligne — ou qui a ÉCHOUÉ — doit être rapportée à l'appelant, jamais avalée"]
+pub(crate) fn netban_remove(conn: &Connection, ip: &str) -> Result<usize, String> {
+    let saisie = ip.trim();
+    let valeur = crate::ledger::ssrf_norm_ip(saisie);
+    // La saisie TELLE QUELLE est toujours retirée — elle peut être inanalysable (lignes écrites par
+    // les miroirs d'avant le lot, `unwrap_or_else(|_| raw)`), et ces lignes-là doivent rester levables.
+    let mut ecritures: Vec<String> = vec![saisie.to_string()];
+    if let Some(v) = valeur {
+        let mut stmt = conn.prepare("SELECT DISTINCT ip FROM net_ban").map_err(|e| e.to_string())?;
+        let lues = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        for l in lues.flatten() {
+            if !ecritures.contains(&l) && crate::ledger::ssrf_norm_ip(&l) == Some(v) {
+                ecritures.push(l);
+            }
+        }
+    }
+    let mut n = 0usize;
+    for e in &ecritures {
+        n += conn.execute("DELETE FROM net_ban WHERE ip=?1", params![e]).map_err(|err| err.to_string())?;
+    }
     netban_reload(conn);
+    Ok(n)
 }
 
 /// DÉCISION COMPLÈTE du guard (kill-switch + exempt + IP réelle + cache), ISOLÉE pour test unitaire. Renvoie

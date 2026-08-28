@@ -256,9 +256,15 @@
         assert!(action_valid("ban_ip", "203.0.113.7", "default").is_ok(), "ban d'une IP publique OK");
         assert!(action_valid("ban_ip", "192.0.2.18", "default").is_ok());
         // protégées (loopback / RFC1918 / link-local — codé EN DUR) -> ban REFUSÉ. NB : la protection
-        // OPÉRATEUR/self n'est plus bakée (défaut PLUME_OPERATOR_IPS vide = build générique) ; une IP
-        // opérateur CONFIGURÉE reste protégée via protected_ip_matchers -> parse_excl_item (couvert par
-        // excl_v54_parse_and_clause_generation), sans donnée perso en dur dans le test.
+        // OPÉRATEUR/self n'est plus bakée (défaut PLUME_OPERATOR_IPS vide = build générique), donc CE
+        // témoin n'exerce QUE la moitié DÉRIVÉE.
+        // `P4.7-g` — UNE PHRASE DE COUVERTURE FAUSSE A ÉTÉ RETIRÉE D'ICI, ET C'EST ELLE QUI EXPLIQUE
+        // POURQUOI PERSONNE N'AVAIT CHERCHÉ. Elle affirmait qu'« une IP opérateur CONFIGURÉE reste
+        // protégée via protected_ip_matchers -> parse_excl_item (couvert par
+        // excl_v54_parse_and_clause_generation) ». VÉRIFIÉ : ce témoin-là n'appelle JAMAIS
+        // `ip_is_protected` — il n'exerce que l'analyseur d'AFFICHAGE et la génération de clauses SQL.
+        // La moitié CONFIGURÉE était la seule SANS témoin positif ; elle en a un désormais, et il vit
+        // dans `identite_d_adresse.rs` (cœur pur `ip_is_protected_ctx`, denylist INJECTÉE).
         for ip in ["127.0.0.1", "10.0.0.5", "192.168.1.1", "172.16.0.9", "172.31.255.254", "169.254.1.1"] {
             assert!(action_valid("ban_ip", ip, "default").is_err(), "ban d'une IP protégée ({ip}) DOIT être refusé");
             assert!(ip_is_protected(ip), "{ip} doit être classée protégée");

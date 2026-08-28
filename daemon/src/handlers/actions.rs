@@ -36,7 +36,62 @@ use crate::*;
 /// applique `ip_is_protected` et la garde d'engagement INCONDITIONNELLEMENT, là où `action_valid_ctx`
 /// ne les applique qu'au BAN (l'unban reste permis) et reçoit `engagement_on` par injection : le
 /// déplacer tel quel casserait la garde M2 sur l'unban. Ce n'est donc pas ce lot.
+/// `P4.7-h` — LA BORNE SE RESSERRE, ET C'EST LA SEULE CLAUSE AJOUTÉE : LA CIBLE DOIT S'ANALYSER.
+/// Les quatre clauses ci-dessous sont INCHANGÉES, mot pour mot ; la cinquième est une CONJONCTION,
+/// donc cette borne accepte STRICTEMENT MOINS qu'avant et rien de neuf ne part vers un pare-feu.
+/// `P4.7-b` avait GELÉ cette borne parce que l'ÉLARGIR enverrait de l'IPv6 vers des gabarits non lus
+/// (`nft` déclare `type ipv4_addr`) ; la raison écrite ne couvre pas le sens RESSERRER.
+///
+/// CE QUE ÇA FERME, ET ÇA MORD SANS AUCUNE CONFIGURATION. Mesuré : `10.0.0.01`, `010.0.0.1`,
+/// `127.000.000.001`, `192.168.001.1` ÉCHOUENT à `parse::<IpAddr>()` (Rust refuse les zéros de tête).
+/// La moitié de la protection qui marche PAR DÉFAUT — les plages réservées — commence par analyser :
+/// analyse échouée, aucun test de plage ne tournait, l'adresse n'était PAS protégée. Et ces quatre
+/// chaînes étaient ACCEPTÉES ici comme cibles de ban. Les deux conditions de la fuite étaient dans la
+/// MÊME fonction, à quatre lignes d'écart. DIRECTION : on protège PLUS, et la perte devient COMPTÉE
+/// (`run_playbooks` range un refus de FORME dans `abandonnes`, jamais un refus de POLITIQUE).
+///
+/// L'AUTRE DIRECTION, ÉCRITE : une chaîne que le produit n'analyse pas mais qu'un pare-feu aurait
+/// peut-être acceptée (`010.0.0.1` = 8.0.0.1 pour `inet_aton`) cesse d'être bannissable. C'est
+/// VOULU : une notation dont deux lecteurs tirent deux adresses différentes ne se bannit pas « au
+/// mieux », elle se refuse. Le chiffre d'`abandonnes` du tick BOUGERA, et c'est le sens de la mesure.
+///
+/// REPRISE 2026-08-29 — DEUX CORRECTIONS MESURÉES, TOUTES DEUX DANS LE SENS « ACCEPTE MOINS ».
+///
+/// (a) LA CLAUSE AJOUTÉE EXIGE UNE VALEUR IPv4, PAS SEULEMENT UNE VALEUR. `ssrf_norm_ip(s).is_some()`
+/// laissait passer la forme IPv4-COMPATIBLE obsolète (`::a.b.c.d`, RFC 4291 §2.5.5.1, dépréciée) et
+/// la forme mixte (`2001:db8::192.0.2.1`, qui est DANS le corpus partagé) : hexdigits + un point,
+/// elles satisfaisaient les quatre clauses historiques ET s'analysaient. Or `::127.0.0.1` vaut
+/// `::7f00:1` — ce n'est PAS la boucle locale, `Ipv6Addr::is_loopback` ne couvre que `::1`, aucun
+/// item v4 de la denylist ne peut l'apparier (familles différentes), et `to_ipv4_mapped` ne replie
+/// QUE `::ffff:`. Les DEUX conditions de la fuite que cette clé nomme — cible ACCEPTÉE et invisible
+/// à la protection — restaient donc ouvertes sur cette écriture-là. La borne exige désormais que la
+/// cible dénote une valeur IPv4 : c'est la borne « v1 : IPv4 » écrite depuis toujours au-dessus,
+/// enfin tranchée sur la VALEUR au lieu de la présence d'un point. La forme MAPPÉE reste acceptée
+/// (elle se replie sur une v4) ; `2001:db8::192.0.2.1` et `::127.0.0.1` ne le sont plus.
+///
+/// (b) CETTE BORNE NE GARDE PLUS LA LEVÉE — VOIR `cible_de_levee_acceptee` JUSTE EN DESSOUS.
 pub(crate) fn cible_de_ban_acceptee(s: &str) -> bool {
+    cible_de_levee_acceptee(s) && matches!(ssrf_norm_ip(s), Some(std::net::IpAddr::V4(_)))
+}
+
+/// (Q1 bis) LA BORNE DE LA **LEVÉE** — LES QUATRE CLAUSES HISTORIQUES, INCHANGÉES MOT POUR MOT.
+///
+/// POURQUOI ELLE EXISTE, ET C'EST UNE CORRECTION DE CE LOT (REPRISE 2026-08-29). Le premier jet
+/// resserrait `cible_de_ban_acceptee` et laissait `action_valid_ctx` l'appliquer AUX DEUX SENS —
+/// `"ban_ip" | "unban_ip"` partagent le même bras. Conséquence MESURÉE sur le chemin de LEVÉE : un
+/// ban posé au pare-feu AVANT ce lot sous une notation que la nouvelle borne refuse (`010.0.0.1`
+/// zéro-padé d'un collecteur d'appliance, `2001:db8::192.0.2.1`) cessait d'être exprimable — `POST
+/// /api/actions` rendait 400, et `respond_run`, qui rejoue `action_valid` sur chaque action réclamée,
+/// faisait passer à `blocked` toute action `unban_ip` PENDANTE sur cette cible. Le ban restait posé
+/// sur l'hôte et plume n'avait plus aucun moyen de le lever.
+///
+/// LA DIRECTION D'ERREUR D'UNE SOUPAPE EST « LEVER PLUS », JAMAIS « LEVER MOINS » — le lot
+/// l'applique déjà à `netban_delete` (qui efface les DEUX écritures) ; il l'omettait ici, sur le
+/// chemin qui parle au PARE-FEU. La levée garde donc exactement la borne d'avant le lot : elle
+/// n'accepte rien de neuf (mêmes quatre clauses), et elle ne perd rien de ce qu'elle exprimait.
+/// Ce que la levée envoie au pare-feu n'est pas canonicalisé (`platform_command` reçoit `target`
+/// brut) : la cible qui a été bannie est celle qui est levée, à l'octet près.
+pub(crate) fn cible_de_levee_acceptee(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 45
         && s.chars().all(|c| c.is_ascii_hexdigit() || c == '.' || c == ':')
@@ -200,7 +255,12 @@ pub(crate) fn action_valid_ctx(kind: &str, target: &str, engagement_on: bool, db
             // (Q2) : ce chemin décide de ce qui PART vers `nft`/`cscli`/`fail2ban`, et son verdict est
             // INCHANGÉ, clause pour clause. Élargir ici est un autre lot, qui devra d'abord lire les
             // gabarits d'exécution (`platform_template`, `action_command`) et le versant hôte.
-            let ok = cible_de_ban_acceptee(target);
+            // REPRISE 2026-08-29 — LE BAN ET LA LEVÉE N'ONT PLUS LA MÊME BORNE, ET C'EST LA SEULE
+            // DISSYMÉTRIE ASSUMÉE : le ban se resserre (rien de neuf ne part vers un pare-feu), la
+            // levée garde la borne d'avant le lot (une soupape ne doit jamais lever MOINS que ce
+            // qui a pu être posé). `unban_ip` reste par ailleurs inoffensif : il ne crée aucun
+            // blocage, il en retire.
+            let ok = if kind == "ban_ip" { cible_de_ban_acceptee(target) } else { cible_de_levee_acceptee(target) };
             if !ok { return Err("IPv4 invalide".into()); }
             // M2 : refuse le BAN d'une IP protégée (loopback/privée/opérateur/passerelle). L'unban reste permis
             // (inoffensif : ces IP ne sont jamais bannies -> no-op), on ne bride donc QUE le ban destructif.
@@ -464,8 +524,24 @@ pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Ex
             params![id],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0)),
         ) {
-            // Canonicalise (mirror `real_client_ip`) ; les gardes protected/engagement ont déjà tourné à la création.
-            let canon = target.trim().parse::<std::net::IpAddr>().map(|i| i.to_string()).unwrap_or_else(|_| target.trim().to_string());
+            // REPRISE 2026-08-29 — LE `kind` EST REGARDÉ AVANT DE CANONICALISER. La
+            // canonicalisation était évaluée pour TOUTE action : approuver un `kill_pid 4242` ou un
+            // `stop_service nginx.service` écrivait une ligne `netban.forme` disant d'un PID ou d'un
+            // nom de service qu'il est une « forme non analysable — aucun miroir HTTP ». C'était
+            // FAUX (un PID n'a jamais eu de miroir HTTP) et cela noyait le SEUL signal que ce lot
+            // introduit : sur une flotte qui répond surtout par kill/stop, la ligne qui compte — une
+            // riposte `ban_ip` PERDUE — se perdait dans le bruit de routine. Le miroir `net_ban` ne
+            // concerne que les deux actions d'adresse ; rien d'autre n'a à être canonicalisé ici.
+            if kind != "ban_ip" && kind != "unban_ip" { return StatusCode::NO_CONTENT; }
+            // `P4.7-j` — UNE SEULE FORME CANONIQUE. `parse + to_string` NE REPLIE PAS la forme mappée
+            // (mesuré : `::ffff:cb00:7107` en ressort `::ffff:203.0.113.7`) : il CONVERGEAIT les
+            // écritures exotiques VERS celle qui traversait la protection. `ssrf_norm_ip` replie.
+            // SAUT FRANC sur l'inanalysable : le repli `unwrap_or_else(raw)` clé le store `net_ban`
+            // sur une chaîne que `real_client_ip` ne produira jamais — un ban qui ne bloque personne.
+            let canon = match ssrf_norm_ip(target.trim()) { Some(i) => i.to_string(), None => {
+                ledger_append(&conn, "netban.forme", &format!("{target} : forme non analysable — aucun miroir HTTP ({kind}, action {id})"));
+                return StatusCode::NO_CONTENT;
+            } };
             if kind == "ban_ip" && !dry && !ip_is_protected(&canon) {
                 // REFUS SUR STORE PLEIN (`NETBAN_CACHE_CAP`) : tracé au ledger. L'action reste approuvée —
                 // l'enforcement réseau délégué (CrowdSec/fail2ban/nft) n'est pas concerné par ce plafond,
@@ -474,7 +550,13 @@ pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Ex
                     ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (action {id})"));
                 }
             } else if kind == "unban_ip" {
-                netban_remove(&conn, &canon);
+                // `P4.7-k` — une levée qui n'a rien retiré SE DIT (le `#[must_use]` de la pose est
+                // déplacé sur la levée : un ban qu'on croit levé est pire que pas de levée). REPRISE
+                // 2026-08-29 : un ÉCHEC de la suppression ne se lit plus comme « rien à retirer ».
+                match netban_remove(&conn, &canon) {
+                    Ok(retires) => ledger_append(&conn, "netban.remove", &format!("{canon} retirés={retires} (auto: action unban_ip)")),
+                    Err(e) => ledger_append(&conn, "netban.remove.echec", &format!("{canon} NON levé (auto: action unban_ip) : {e}")),
+                }
             }
         }
     }
@@ -498,7 +580,9 @@ pub(crate) fn netban_from_actions_enabled() -> bool {
 /// (fin du faux no-op `01.02.03.04`). Réutilise les gardes : jamais loopback/privé/opérateur/passerelle
 /// (`ip_is_protected`), suspend sous engagement autorisé actif.
 pub(crate) fn netban_validate_ip(ip: &str, db_path: &str) -> Result<String, String> {
-    let parsed: std::net::IpAddr = ip.trim().parse().map_err(|_| "IP invalide".to_string())?;
+    // `P4.7-j` — l'UNIQUE canonicaliseur du produit (il REPLIE `::ffff:a.b.c.d`, `parse + to_string`
+    // non) : l'entrée stockée et l'IP calculée par `real_client_ip` se clent enfin sur la même VALEUR.
+    let parsed = ssrf_norm_ip(ip).ok_or_else(|| "IP invalide".to_string())?;
     let canon = parsed.to_string();
     if ip_is_protected(&canon) {
         return Err("IP protégée (loopback/privée/opérateur/passerelle) — ban refusé".into());
@@ -580,13 +664,55 @@ pub(crate) async fn netban_add(State(st): State<AppState>, Extension(au): Extens
 }
 
 /// DELETE /api/netban/{ip} — retire un ban HTTP (réversibilité). Idempotent (retirer une IP absente = ok).
+///
+/// `P4.7-k` — LA VALVE DE RÉCUPÉRATION RENDAIT « FAIT » SUR UN BAN QU'ELLE NE POUVAIT PAS LEVER.
+/// `netban_add` stocke la valeur CANONICALISÉE (`netban_validate_ip`) ; cette route effaçait
+/// `WHERE ip=?1` sur la SAISIE BRUTE et répondait `{"ok": true}` INCONDITIONNELLEMENT. Un ban posé
+/// via `::FFFF:203.0.113.7` (stocké `203.0.113.7`) n'était donc PAS levable par la MÊME saisie — et
+/// l'API affirmait le contraire. C'est le chemin que `net_ban_exempt_path` exempte du gate
+/// PRÉCISÉMENT pour qu'un opérateur banni par erreur puisse se débannir : un exploitant verrouillé
+/// appelle cette route, lit « fait », et cherche ailleurs.
+///
+/// DEUX ÉCRITURES SONT EFFACÉES, ET C'EST DÉLIBÉRÉ — LA DIRECTION D'ERREUR D'UNE SOUPAPE EST « LEVER
+/// PLUS », JAMAIS « LEVER MOINS ». La canonique ferme le défaut nommé ; la saisie BRUTE ferme un
+/// résidu que la conception n'avait pas vu : avant ce lot, les miroirs automatiques
+/// (`action_approve`, `run_playbooks`, le responder) écrivaient `unwrap_or_else(|_| raw)`, donc des
+/// lignes `net_ban` PEUVENT porter une chaîne inanalysable (`010.0.0.1`). Refuser l'inanalysable en
+/// 400 — ce que la conception proposait — aurait rendu ces lignes-là DÉFINITIVEMENT non levables,
+/// c'est-à-dire le verrouillage même que cette clé nomme. La réponse PUBLIE le compte : `ok` reste
+/// l'idempotence (la demande est honorée), `retires` dit ce qui a RÉELLEMENT été retiré.
 pub(crate) async fn netban_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(ip): Path<String>) -> Response {
     if let Err(r) = require_admin(&au) { return r; }
-    let ip = ip.trim().to_string();
+    let saisie = ip.trim().to_string();
     crate::req_conn!(st, au, conn);
-    netban_remove(&conn, &ip);
-    ledger_append(&conn, "netban.remove", &format!("{ip} by={}", au.name));
-    Json(json!({ "ok": true, "ip": ip })).into_response()
+    let canon = ssrf_norm_ip(&saisie).map(|i| i.to_string());
+    // REPRISE 2026-08-29 — `0 retiré` NE PEUT PLUS VOULOIR DIRE « la suppression a ÉCHOUÉ ».
+    // `netban_remove` avalait l'erreur SQL en `0` et la route répondait quand même `ok: true` : un
+    // exploitant verrouillé qui appelle cette valve pendant une contention SQLite (ou sur une base
+    // passée en lecture seule) lisait EXACTEMENT ce que la route lui aurait dit si aucun ban
+    // n'existait — c'est le défaut de classification que cette clé prétend fermer, déplacé d'un
+    // cran. L'échec est désormais un 503 qui NOMME la cause, et il est inscrit au journal : la
+    // soupape dit « je n'ai pas pu », jamais « c'était déjà fait ».
+    let mut retires = match netban_remove(&conn, &saisie) {
+        Ok(n) => n,
+        Err(e) => {
+            ledger_append(&conn, "netban.remove.echec", &format!("{saisie} NON levé by={} : {e}", au.name));
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("levée de ban IMPOSSIBLE (store indisponible) : {e} — RÉESSAYER ; le ban est TOUJOURS actif"));
+        }
+    };
+    if let Some(c) = canon.as_deref() {
+        if c != saisie {
+            match netban_remove(&conn, c) {
+                Ok(n) => retires += n,
+                Err(e) => {
+                    ledger_append(&conn, "netban.remove.echec", &format!("{c} (canon de {saisie}) NON levé by={} : {e}", au.name));
+                    return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("levée de ban PARTIELLE ({retires} retiré(s)) puis ÉCHEC sur la forme canonique : {e} — RÉESSAYER"));
+                }
+            }
+        }
+    }
+    ledger_append(&conn, "netban.remove", &format!("{saisie} canon={} retirés={retires} by={}", canon.as_deref().unwrap_or("(non analysable)"), au.name));
+    Json(json!({ "ok": true, "ip": saisie, "canon": canon, "retires": retires })).into_response()
 }
 pub(crate) async fn action_cancel(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
     crate::req_conn!(st, au, conn);
@@ -676,7 +802,13 @@ impl Slot {
             // `P4.7-b` — CES TROIS LIGNES ÉTAIENT DES COPIES VERBATIM des clauses d'`action_valid_ctx`
             // (Ip : quatre clauses ; Service : trois), sous un commentaire qui disait « miroir STRICT »,
             // et Pid était une copie FAUSSE (`p > 0`). Ce sont des APPELS désormais.
-            Slot::Ip => cible_de_ban_acceptee(target),
+            // REPRISE 2026-08-29 : `Slot::Ip` sert les DEUX sens (`for_kind` mappe `ban_ip` ET
+            // `unban_ip` ici) et ne connaît pas le `kind`. Il applique donc la borne de la LEVÉE —
+            // la plus large des deux, celle d'avant le lot — sinon le rendu du gabarit deviendrait
+            // PLUS strict que la validation amont pour un unban, et rejouerait exactement le
+            // verrouillage que `cible_de_levee_acceptee` vient de fermer. « Jamais plus permissif
+            // que la validation amont » reste vrai : `action_valid_ctx` a déjà tranché le sens.
+            Slot::Ip => cible_de_levee_acceptee(target),
             Slot::Pid => cible_de_kill_acceptee(target),
             Slot::Service => cible_de_stop_service_acceptee(target),
         }
@@ -1043,8 +1175,15 @@ pub(crate) fn respond_run() {
         // reload ne rafraîchit que le cache de CE processus ; le daemon LIVE, lui, re-lit la table au tick de
         // maintenance (spawn_netban_maintenance) -> convergence. `action_approve`/`run_playbooks` couvrent déjà
         // le blocage IMMÉDIAT in-process ; ceci est le filet pour un chemin qui atteindrait 'approved' hors d'eux.
-        if netban_from_actions_enabled() && status == "done" && !dry {
-            let canon = target.trim().parse::<std::net::IpAddr>().map(|i| i.to_string()).unwrap_or_else(|_| target.trim().to_string());
+        if netban_from_actions_enabled() && status == "done" && !dry && (kind == "ban_ip" || kind == "unban_ip") {
+            // REPRISE 2026-08-29 — le `kind` est dans la CONDITION : un `kill_pid`/`stop_service`
+            // exécuté avec succès n'écrit plus une ligne `netban.forme` sur son PID ou son nom de
+            // service (cf. `action_approve`). Le signal des ripostes d'adresse perdues reste lisible.
+            // `P4.7-j` — même canonicaliseur unique qu'`action_approve` ; saut franc sur l'inanalysable.
+            let canon = match ssrf_norm_ip(target.trim()) { Some(i) => i.to_string(), None => {
+                ledger_append(&conn, "netban.forme", &format!("{target} : forme non analysable — aucun miroir HTTP (responder, {kind}, action {id})"));
+                continue;
+            } };
             if kind == "ban_ip" && !ip_is_protected(&canon) {
                 // REFUS SUR STORE PLEIN : tracé au ledger. L'enforcement RÉSEAU vient d'aboutir (`done`) —
                 // seul le miroir HTTP manque, et c'est précisément ce que l'exploitant doit pouvoir lire.
@@ -1052,7 +1191,11 @@ pub(crate) fn respond_run() {
                     ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (responder, action {id})"));
                 }
             } else if kind == "unban_ip" {
-                netban_remove(&conn, &canon);
+                // `P4.7-k` — le compte de la levée est DIT, jamais avalé (et son ÉCHEC aussi).
+                match netban_remove(&conn, &canon) {
+                    Ok(retires) => ledger_append(&conn, "netban.remove", &format!("{canon} retirés={retires} (auto: responder unban_ip)")),
+                    Err(e) => ledger_append(&conn, "netban.remove.echec", &format!("{canon} NON levé (auto: responder unban_ip) : {e}")),
+                }
             }
         }
     }

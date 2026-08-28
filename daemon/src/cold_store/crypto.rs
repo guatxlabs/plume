@@ -28,25 +28,95 @@ use age::secrecy::SecretString;
 use bytes::Bytes;
 use parquet::file::reader::SerializedFileReader;
 
-/// #28 P3.5 — COMPTEUR GLOBAL DE DÉCHIFFREMENTS COLD (observabilité + PREUVE d'élagage). `open_cold_reader` est
-/// le POINT D'ENTRÉE UNIQUE de toute lecture cold (verify + décode) -> l'incrémenter ici capture CHAQUE
-/// déchiffrement de fichier, quel que soit le chemin (oracle `hydrate_cold`/`decode_one_file` ou vectorisé
+/// #28 P3.5 — COMPTEUR CUMULÉ DE DÉCHIFFREMENTS COLD (observabilité). `open_cold_reader` est le POINT
+/// D'ENTRÉE UNIQUE de toute lecture cold (verify + décode) -> l'incrémenter ici capture CHAQUE déchiffrement
+/// de fichier, quel que soit le chemin (oracle `hydrate_cold`/`decode_one_file` ou vectorisé
 /// `open_verified`). La PREUVE d'élagage seal (P3.5) est directe : un fichier ÉLAGUÉ n'atteint jamais
-/// `open_cold_reader` -> 0 incrément pour lui. Le harnais RESET puis lit ce compteur pour prouver que seuls les
-/// fichiers SCANNÉS sont déchiffrés (le ×10-100 enterprise = ce compteur qui s'effondre N -> ~1 sur `source=rare`).
+/// `open_cold_reader` -> 0 incrément pour lui (le ×10-100 enterprise = ce compte qui s'effondre N -> ~1 sur
+/// `source=rare`).
+///
+/// `P7.1-b` — CE COMPTEUR-CI EST UNE SOMME DE PROCESSUS, DONC IL N'EST PAS UNE MESURE DE TEST. La preuve
+/// d'élagage se lit dans le GRAND-LIVRE PAR FICHIER plus bas (`dechiffrements_sous`), pas dans cette somme.
 static COLD_DECRYPT_CALLS: AtomicU64 = AtomicU64::new(0);
 
-/// Nombre cumulé d'appels `open_cold_reader` (= déchiffrements de fichiers cold). Consommé par le harnais de
-/// preuve d'élagage (cfg(test)) et disponible pour l'observabilité future.
+/// Nombre cumulé d'appels `open_cold_reader` sur TOUT le processus, pour l'observabilité future.
+///
+/// `P7.1-b` — LE `cfg(not(test))` EST LE CORRECTIF, ET C'EST LE COMPILATEUR QUI LE TIENT. Il y avait ici un
+/// `cold_decrypt_count_reset()` : un test remettait la somme à zéro, lançait sa requête, relisait la somme.
+/// Or `cargo test` exécute les tests EN PARALLÈLE dans UN SEUL processus — la somme remise à zéro n'était
+/// pas la sienne, c'était celle de tout le monde. La CI publique a rougi là-dessus (`compteur=3` pour une
+/// borne à 2) alors que le poste de développement rendait vert : une COURSE, pas une régression.
+///
+/// CE QUI A ÉTÉ MESURÉ, ET QUI DIT QUE LA FENÊTRE ÉTAIT GRANDE OUVERTE — suite froide complète, 12 cœurs,
+/// verte de bout en bout en 238,62 s (son compte se lit dans `EXPECTED_COLD_TESTS`, il ne se recopie pas
+/// ici) : 5569 déchiffrements, 171 fixtures, 163 tests concernés (2026-08-28) ;
+/// **106 de ces 163 ne prennent AUCUN des verrous de la famille p4a** (2026-08-28) — le seul verrou que
+/// tenait le test qui comptait. Et les fenêtres de déchiffrement de 413 paires de fixtures se CHEVAUCHENT :
+/// la concurrence n'est pas une hypothèse, elle est la règle.
+///
+/// POURQUOI RETIRER L'ACCÈS PLUTÔT QUE SÉRIALISER. Un verrou aurait rendu la somme privée le temps d'une
+/// mesure, en laissant la somme partagée — donc en laissant l'erreur RÉÉCRIVABLE par la prochaine
+/// assertion qui oublierait le verrou, et en imposant un ordre d'acquisition global (compteur, puis
+/// environnement, puis compteur de route) que rien ne tient. Sous `cfg(test)` cette fonction N'EXISTE PAS :
+/// le patron fautif ne compile plus. Élargir la borne, lui, aurait fait taire la mesure — c'est
+/// exactement le défaut que ce dépôt poursuit.
+#[cfg(not(test))]
 #[allow(dead_code)]
 pub(super) fn cold_decrypt_count() -> u64 {
     COLD_DECRYPT_CALLS.load(Ordering::Relaxed)
 }
 
-/// RESET du compteur de déchiffrements (tests). Non utilisé en production.
-#[allow(dead_code)]
-pub(super) fn cold_decrypt_count_reset() {
-    COLD_DECRYPT_CALLS.store(0, Ordering::Relaxed);
+/// `P7.1-b` — LE GRAND-LIVRE DES DÉCHIFFREMENTS, TENU PAR FICHIER (tests uniquement).
+///
+/// LA DÉRIVATION, ET POURQUOI ELLE N'ÉNUMÈRE RIEN. Un test froid ne possède pas « le compteur » : il
+/// possède SES FICHIERS. `tmp_possede.rs` donne à chaque fixture un répertoire à elle (PID + compteur de
+/// processus + étiquette), et `cold_root` fait naître le tier froid DEDANS (`{db_path}.cold`). Mesuré le
+/// 2026-08-28 sur la suite froide complète : des 5569 déchiffrements, **5569 portaient sur un chemin situé
+/// sous un répertoire possédé, ZÉRO en dehors** — le chemin est donc une identité COMPLÈTE, et c'est la
+/// seule qui survive au saut de fil : **63,6 % des déchiffrements ont lieu sur les fils ANONYMES** des
+/// `thread::scope` de `reader.rs`/`planner.rs`, jamais sur le fil du test. Un compte par fil ne les verrait
+/// pas ; le chemin, lui, voyage avec le travail.
+///
+/// CE QU'UN TEST NEUF DOIT SAVOIR : rien. Il crée sa fixture, donc sa racine ; ses déchiffrements
+/// s'inscrivent sous elle et n'entrent dans le compte de PERSONNE d'autre. Aucune liste à tenir, aucun
+/// verrou à prendre, aucune sérialisation payée — c'est la figure de `tmp_possede.rs` (« on n'énumère pas
+/// ce qu'il faut effacer : on POSSÈDE le contenant ») appliquée au comptage.
+///
+/// CE QUE ÇA NE TIENT PAS, et il faut le dire : les compteurs de ROUTE et d'ÉLAGAGE (`ROUTE_VEC`,
+/// `ROUTE_FALLBACK`, `PRUNE_PRUNED`, `PRUNE_SCANNED`, `planner.rs`) restent des sommes de processus avec un
+/// `route_counters_reset()`, protégées par le seul `compteur_de_route_lock()` que les tests p4a prennent
+/// entre eux. Le même défaut y est donc encore écrivable par un test NON-p4a qui routerait ou élaguerait.
+#[cfg(test)]
+fn livre_des_dechiffrements() -> &'static parking_lot::Mutex<std::collections::HashMap<std::path::PathBuf, u64>> {
+    static LIVRE: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<std::path::PathBuf, u64>>> =
+        std::sync::OnceLock::new();
+    LIVRE.get_or_init(Default::default)
+}
+
+/// La CLÉ du grand-livre : le chemin DÉFINITIF du jour-file. Le writer vérifie le fichier sous son nom
+/// TEMPORAIRE (`….parquet.tmp`) avant de le renommer — les deux noms désignent le MÊME fichier et doivent
+/// tomber dans la même case, sans quoi le compte d'une fixture dépendrait de l'instant où on le lit.
+#[cfg(test)]
+fn chemin_definitif(chemin: &Path) -> std::path::PathBuf {
+    let s = chemin.to_string_lossy();
+    std::path::PathBuf::from(s.strip_suffix(".tmp").unwrap_or(s.as_ref()).to_string())
+}
+
+/// Inscrit UN déchiffrement au compte du fichier lu. Appelé depuis `open_cold_reader`, donc depuis le point
+/// de passage OBLIGÉ : aucun déchiffrement cold ne peut y échapper, d'où que vienne l'appel et sur quelque
+/// fil qu'il tourne.
+#[cfg(test)]
+fn note_dechiffrement(chemin: &Path) {
+    *livre_des_dechiffrements().lock().entry(chemin_definitif(chemin)).or_insert(0) += 1;
+}
+
+/// Combien de déchiffrements ont porté sur un fichier cold SOUS `prefixe` — soit une racine cold (tout ce
+/// qu'une fixture possède), soit UN jour-file précis. La comparaison est faite par COMPOSANTS de chemin :
+/// une racine `…-cold-a` ne peut pas absorber le compte de `…-cold-ab`.
+#[cfg(test)]
+pub(super) fn dechiffrements_sous(prefixe: &Path) -> u64 {
+    let prefixe = chemin_definitif(prefixe);
+    livre_des_dechiffrements().lock().iter().filter(|(c, _)| c.starts_with(&prefixe)).map(|(_, n)| *n).sum()
 }
 
 /// Label de DOMAINE (HKDF-SHA256 `info`) : sépare la clé cold de tout autre usage de la clé SQLCipher.
@@ -169,6 +239,10 @@ pub(super) fn open_cold_reader(path: &Path, pass: &str) -> Result<SerializedFile
     // #28 P3.5 — INSTRUMENTATION : chaque déchiffrement passe ICI (point d'entrée unique). Un fichier élagué par
     // le seal (min/max/bloom) n'atteint jamais ce point -> le compteur PROUVE l'évitement du déchiffrement.
     COLD_DECRYPT_CALLS.fetch_add(1, Ordering::Relaxed);
+    // `P7.1-b` — et le MÊME point de passage inscrit le déchiffrement au compte du FICHIER : c'est ce
+    // compte-là, et non la somme du processus, que lit la preuve d'élagage.
+    #[cfg(test)]
+    note_dechiffrement(path);
     let bytes = cold_decrypt_to_bytes(path, pass)?;
     SerializedFileReader::new(bytes).map_err(pe)
 }

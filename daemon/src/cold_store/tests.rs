@@ -7900,15 +7900,44 @@ fn p4a_prune_avoids_decryption_of_pruned_files() {
     }
     let soql = "search source=rare | stats count";
     let preds = prune_preds(&f, soql, f.to);
-    cold_decrypt_count_reset();
+    // `P7.1-b` — JE COMPTE MES FICHIERS, PAS CEUX DU PROCESSUS. La version d'avant remettait à zéro une
+    // somme GLOBALE puis la relisait : sous `cargo test`, qui exécute en parallèle dans un seul processus,
+    // elle mesurait aussi ses voisins. Ici chaque relevé est pris SOUS un jour-file qui m'appartient, donc
+    // aucun voisin ne peut y entrer — quel que soit le nombre de fils, et sans sérialiser personne.
+    let mes_fichiers: Vec<PathBuf> = (0..n as i64).map(|seq| file_path(&cold, "prod", M - 20, seq)).collect();
+    let releve = |fs: &[PathBuf]| -> Vec<u64> { fs.iter().map(|p| dechiffrements_sous(p)).collect() };
+    let avant = releve(&mes_fichiers);
+    // TÉMOIN PERMANENT DE L'ISOLATION — un VOISIN déchiffre SES fichiers en plein milieu de ma fenêtre.
+    // C'est exactement ce que fait un test froid ordinaire qui tourne en même temps que celui-ci : mesuré
+    // le 2026-08-28, 106 des 163 tests qui déchiffrent ne prennent aucun verrou de la famille p4a. Sur la
+    // somme de processus d'avant, ces trois lectures entraient dans MON compte — mesuré : 5 au lieu de 2,
+    // borne dépassée, rouge. Ici elles ne doivent RIEN changer, et ce témoin le dit à CHAQUE exécution
+    // (pas une fois sur cinq comme la course qu'il remplace).
+    let (voisin, _) = prune_fixture("p4a-prune-nodecrypt-voisin", &[("common", "h1", "10.0.0.1", 1)]);
+    let pass_voisin = cold_aead_passphrase(&voisin.conf, &voisin.dbp).expect("passphrase cold du voisin");
+    let p_voisin = file_path(&cold_root(&voisin.conf, &voisin.dbp), "prod", M - 20, 0);
+    for _ in 0..3 {
+        open_cold_reader(&p_voisin, &pass_voisin).expect("le voisin lit SON fichier");
+    }
     let on = cold_vectorized_try(&f.dbp, &f.conf, None, f.from, f.to, f.b, soql, true, 60_000, &preds)
         .expect("élagage -> fichiers corrompus JAMAIS ouverts -> pas d'Err");
     assert!(on.is_some(), "routé");
     assert_eq!(on.as_ref().unwrap()["rows"][0][0].as_i64().unwrap(), 1, "1 ligne rare comptée");
     // Le SEUL fichier scanné passe par open_verified (verify + open_cold_reader = 2 déchiffrements bornés) ; les
     // 4 corrompus = 0. Le compteur PROUVE que l'élagage a évité N-1 déchiffrements (le gain enterprise).
-    let d = cold_decrypt_count();
+    let par_fichier: Vec<u64> =
+        releve(&mes_fichiers).iter().zip(&avant).map(|(apres, avant)| apres - avant).collect();
+    let d: u64 = par_fichier.iter().sum();
     assert!(d >= 1 && d <= 2, "seul le fichier scanné déchiffré (compteur={d}, jamais les {} corrompus)", n - 1);
+    // ET PLUS FIN QUE LA SOMME, parce que le compte est désormais NOMMÉ : une somme de 2 se satisferait de
+    // deux fichiers CORROMPUS ouverts une fois chacun ; ce relevé-ci ne le peut pas.
+    for (seq, d_seq) in par_fichier.iter().enumerate() {
+        if seq == 2 {
+            assert!((1..=2).contains(d_seq), "le fichier SCANNÉ (seq=2) est déchiffré 1 à 2 fois, vu {d_seq}");
+        } else {
+            assert_eq!(*d_seq, 0, "le fichier ÉLAGUÉ seq={seq} n'est JAMAIS déchiffré, vu {d_seq}");
+        }
+    }
     // CONTRÔLE : sans élagage, les fichiers corrompus SONT ouverts -> Err fail-closed (prouve que c'est bien
     // l'élagage — pas un autre effet — qui évite le déchiffrement).
     let off = cold_vectorized_try(&f.dbp, &f.conf, None, f.from, f.to, f.b, soql, true, 60_000, &[]);

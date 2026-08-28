@@ -4362,7 +4362,18 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       await attendre(3);
       exiger(validerLaFenetre(), `(40c) ${g.nom} : aucune fenêtre de confirmation partagée n'a été posée par le geste`);
       await attendre(30);
-      exiger(ecritures.length > nEcrituresAvant && g.ecriture.test(ecritures[ecritures.length - 1]), `(40c) ${g.nom} : l'écriture attendue n'est pas partie (${JSON.stringify(ecritures.slice(nEcrituresAvant))})`);
+      // `P11.22-a` — CE TÉMOIN AFFIRME SUR CE QUE SON GESTE A PRODUIT, PAS SUR UN JOURNAL PARTAGÉ.
+      // Il exigeait que l'écriture attendue soit la DERNIÈRE du journal global. Or le magasin de
+      // préférences programme un envoi DIFFÉRÉ de 800 ms (web/prefs.js) : sur une machine lente il
+      // tombe DANS la fenêtre d'observation et prend la dernière place. Mesuré : la chaîne publique a
+      // rougi le 2026-08-28 avec `["PUT /api/hosts/settings","PUT /api/prefs"]` — l'écriture attendue
+      // était bien partie, elle n'était simplement plus la dernière. Être la dernière n'a JAMAIS été la
+      // propriété : la propriété est que le geste éditorial émet son écriture, UNE fois.
+      // LA REFORMULATION EST PLUS STRICTE, PAS PLUS LÂCHE : la tranche est celle du geste, et l'unicité
+      // y interdit un double envoi que « la dernière » laissait passer.
+      const depuisLeGeste = ecritures.slice(nEcrituresAvant);
+      const correspondantes = depuisLeGeste.filter((e) => g.ecriture.test(e));
+      exiger(correspondantes.length === 1, `(40c) ${g.nom} : le geste doit émettre son écriture EXACTEMENT une fois, vu ${correspondantes.length} (tranche : ${JSON.stringify(depuisLeGeste)})`);
       const apres = laListeQuiPorte(racine, g.marqueur);
       exiger(!!apres && apres.champ !== avant.champ, `(40c) instrument : ${g.nom} — la vue n'a pas été refabriquée après le geste (même champ), le témoin ne mesure pas un rechargement`);
       if (!apres) continue;
@@ -5007,6 +5018,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       `(47b) une confirmation REFUSÉE laisse tout de même partir l'écriture (${JSON.stringify(ecritures.slice(avantRefus))}) : la fenêtre est un décor, pas une porte`);
 
     // (c) VALIDÉE : l'écriture part, avec la visibilité demandée.
+    const nEcrituresAvantPartage = ecritures.length;
     boutonPartage.dispatchEvent({ type: "click" });
     await laisserTourner();
     const ov2 = fenetre();
@@ -5017,8 +5029,11 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     etatVue.views = [{ id: 7, name: "Production", owner: "hugo", visibility: "shared", dashboards: 2 }];
     if (ov2 && ov2.children[0] && ov2.children[0].children[0]) ov2.children[0].children[0].onsubmit({ preventDefault() {} });
     await laisserTourner();
-    const derniere = ecritures[ecritures.length - 1] || "";
-    exiger(/POST \/api\/views\/7/.test(derniere) && /"visibility":"shared"/.test(derniere),
+    // `P11.22-a` — MÊME CORRECTION QU'EN (40c) : la tranche du geste, jamais la dernière ligne d'un
+    // journal partagé qu'un envoi différé peut coiffer.
+    const partDuGeste = ecritures.slice(nEcrituresAvantPartage);
+    const derniere = partDuGeste.filter((e) => /POST \/api\/views\/7/.test(e)).at(-1) || "";
+    exiger(partDuGeste.some((e) => /POST \/api\/views\/7/.test(e)) && /"visibility":"shared"/.test(derniere),
       `(47c) une confirmation VALIDÉE ne fait pas partir le partage attendu (dernière écriture : « ${derniere} ») — la porte est fermée dans les deux sens, ce qui est aussi un défaut`);
 
     // (d) LA CONSÉQUENCE SUIT LA DIRECTION.

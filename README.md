@@ -836,8 +836,10 @@ viennent d'une constante — la commande 4 ci‑dessus la donne.
 > `PLUME_RESPONDER_ALLOW` n'apparaît dans le démon que dans des commentaires. Sur une machine à la
 > fois centrale et agent, une action `ban_ip` non ciblée est réclamée par le démon (timer 20 s)
 > **avant** que `collectors/respond.sh` ne la voie : le ban part sans que la liste d'épargne ait été
-> ouverte. De ce côté‑là, seuls `PLUME_PROTECTED_IPS`, les plages réservées, l'opérateur et la
-> passerelle protègent. Ce n'est **pas** fermé par le lot ci‑dessus, et le naïf ne l'est pas non
+> ouverte. De ce côté‑là, **seules les plages réservées EN DUR protègent par défaut** : `PLUME_PROTECTED_IPS` et `PLUME_OPERATOR_IPS` ont pour valeur par défaut la chaîne VIDE et aucun
+> installateur ne les sème, si bien qu'aucune adresse publique — donc aucun rebond
+> d'administration réel — n'est protégée tant que l'exploitant n'a pas édité sa configuration.
+> La rédaction précédente nommait « l'opérateur et la passerelle » parmi les protections : **c'était faux par défaut**, et corrigé le 2026-08-28. Ce n'est **pas** fermé par le lot ci‑dessus, et le naïf ne l'est pas non
 > plus : le **défaut** des deux chemins est le même fichier, donc un lecteur d'épargne calqué sur
 > celui de l'agent refuserait **tout** ban sur toute installation centrale existante — dont le
 > fichier porte des noms de service.

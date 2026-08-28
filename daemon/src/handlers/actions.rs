@@ -925,12 +925,20 @@ pub(crate) fn respond_run() {
     // non ciblée est réclamée ICI (timer 20 s) AVANT que `collectors/respond.sh` ne la voie. Le ban
     // PART : la liste d'épargne n'a jamais été ouverte. Seuls `ip_is_protected` (plages réservées,
     // opérateur, passerelle) et la garde d'engagement filtrent de ce côté.
-    // POURQUOI CE LOT NE LA FERME PAS, ET C'EST MESURÉ, PAS PRUDENT : le DÉFAUT de
-    // `PLUME_STOP_SERVICE_ALLOW` et celui de `PLUME_RESPONDER_ALLOW` sont LE MÊME chemin. Un lecteur
-    // d'épargne calqué sur celui de l'agent (fail-closed : une ligne non-adresse désarme tout ban)
-    // refuserait donc TOUT bannissement sur toute installation centrale existante, dont le fichier
-    // porte des NOMS DE SERVICE — c'est-à-dire qu'il transformerait un trou de protection en panne
-    // d'enforcement généralisée. Fermer `P4.7-c` demande un chemin d'épargne PROPRE au démon et un
+    // POURQUOI CE LOT NE LA FERME PAS. **LA RAISON ÉCRITE ICI JUSQU'AU 2026-08-28 ÉTAIT FAUSSE, ET
+    // C'EST UNE MESURE QUI L'A DITE.** Elle affirmait qu'un lecteur d'épargne calqué sur celui de
+    // l'agent refuserait TOUT bannissement sur toute installation centrale existante. La prémisse est
+    // vraie — les deux leviers ont le même chemin par défaut — mais la conclusion ne l'est pas : le
+    // fichier que l'installateur SÈME ne porte que des commentaires en colonne zéro, et le prédicat de
+    // l'agent y rend la branche qui BANNIT. Le comportement par défaut serait donc INCHANGÉ ; seules
+    // les installations qui peuplent RÉELLEMENT cette liste d'arrêts de service seraient touchées. Un
+    // témoin du dépôt mesure d'ailleurs déjà exactement ce contenu et exige ce verdict.
+    // LA VRAIE RAISON EST PLUS DURE, ET ELLE N'ÉTAIT ÉCRITE NULLE PART : `PLUME_RESPONDER_ALLOW` n'est
+    // posée que dans le fichier d'environnement de l'unité d'AGENT ; l'unité du responder CENTRAL
+    // charge une AUTRE configuration, qui ne porte ce levier dans aucun installateur ni manifeste. Un
+    // lecteur d'épargne côté démon clé sur ce levier lirait donc le fichier d'arrêts de service sur
+    // TOUTES les installations, y compris les duales correctement séparées : il n'ouvrirait JAMAIS la
+    // liste d'épargne réelle. Fermer `P4.7-c` demande un chemin d'épargne PROPRE au démon et un
     // arbitrage écrit sur ce que vaut une liste illisible ; c'est un lot d'enforcement, pas celui-ci.
     let jail = cfg(&conf, "PLUME_FAIL2BAN_JAIL", "sshd");
     // déléguer le ban à l'IPS existant ; nft = fallback seulement

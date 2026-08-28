@@ -33,7 +33,7 @@ fn rule_sql_masked(query: &str, is_soql: bool, window_s: i64, masks: &guatx_core
     let from = if window_s > 0 { now() - window_s } else { 0 };
     // SÉCURITÉ — AUCUNE exclusion self/opérateur sur le chemin DÉTECTION : les règles doivent TOUT
     // voir, y compris une attaque venant de l'IP opérateur (machine opérateur compromise). On NE
-    // substitue donc PAS `__OPERATOR_EXCL__` / `__SELF_EXCL__` ici (cf. compile_panel_sql pour les
+    // substitue donc PAS `__OPERATOR_EXCL__` / `__SELF_EXCL__` ici (cf. la compilation des panneaux pour les
     // PANNEAUX d'affichage seuls). Un éventuel placeholder résiduel dans une règle deviendrait du SQL
     // invalide -> visible au test/PREPARE, jamais un angle mort silencieux.
     // FILTRE ENVIRONNEMENT (#2d) : TOUJOURS None ici — la DÉTECTION est tenant-wide (D7) : une règle

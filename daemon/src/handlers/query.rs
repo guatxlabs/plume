@@ -1006,7 +1006,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     // diverger de ce que la requête filtre) et RÉTABLIT l'élagage sur `host=web1 source in (a,b)`.
     let (sql, from_soql) = if let Some(soql) = body.get("soql").and_then(|v| v.as_str()) {
         // AFFICHAGE SEUL : substitue d'abord les placeholders d'exclusion self/opérateur (mirror
-        // compile_panel_sql) -> /api/query débruite comme les panneaux ; no-op si absents. JAMAIS sur la
+        // la compilation des panneaux) -> /api/query débruite comme les panneaux ; no-op si absents. JAMAIS sur la
         // détection (rule_sql ne substitue pas ; cf invariant excl_v55_*).
         let soql = apply_excl_placeholders(soql.trim(), true);
         // #18 — capture pour la DÉRIVATION DE FORME. Inconditionnelle vis-à-vis des MASQUES (la correction

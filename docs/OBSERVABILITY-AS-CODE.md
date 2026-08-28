@@ -120,7 +120,7 @@ Every overlay-able table carries a `managed` flag with the **repo-wide** semanti
   backed by a file — and **only** those (never `managed=0`/`2`). Managed panels of a pruned dashboard are
   swept too. Idempotent.
 - **Validation.** Overlay content is checked against the **same validators the API uses** before
-  insertion — `compile_panel_sql` (dashboards/library panels), `dest_type_ok`/`dest_endpoint_ok`/
+  insertion — la compilation des panneaux (dashboards/library panels), `dest_type_ok`/`dest_endpoint_ok`/
   `DestFilter::validate` (destinations), `safe_url`/kind allowlist (notifiers), per-type config shape +
   `env_slug_ok` (connectors), `env_id_ok` + retention clamp (index policies), `validate_field` + action/
   role allowlists (field filters), `parse_matchers` field-allowlist (notification policies),

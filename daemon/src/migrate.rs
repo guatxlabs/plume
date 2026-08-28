@@ -3589,7 +3589,7 @@ fn migrate_v58(conn: &MigTx) {
     // v58 : PANNEAU d'affichage « Cloudflare (hors self) » — surface l'activité CF EXTERNE réelle en
     // débruitant l'auto-trafic opérateur (son navigateur sur le dashboard, souvent l'essentiel des events
     // source=cloudflare) ET le vhost de l'UI, via les placeholders d'AFFICHAGE __OPERATOR_EXCL__/__SELF_EXCL__
-    // (substitués SEULEMENT dans compile_panel_sql, jamais dans les règles de détection ni la collecte).
+    // (substitués SEULEMENT à la compilation des panneaux, jamais dans les règles de détection ni la collecte).
     // Posé sur le dashboard « Trafic web » (édge HTTP) déjà déployé. IDEMPOTENT : on n'INSÈRE que si le
     // dashboard existe ET que le panneau n'y est pas déjà (NOT EXISTS par titre). Sur PVC NEUF migrate()
     // PRÉCÈDE seed_web_dashboard -> « Trafic web » absent ici -> on SKIP, et seed_web_dashboard crée le

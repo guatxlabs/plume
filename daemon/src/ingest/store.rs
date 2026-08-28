@@ -95,7 +95,7 @@ pub(crate) trait SqlcipherEventStore {
     /// en FIN de projection de la base `event` (`Schema::with_cursor_id(true)`), pour que le daemon pagine par
     /// curseur `(ts,id)` — parcours INTÉGRAL du match-set, SANS plafond de comptage (fin du cap 10 000 qui CACHAIT
     /// des événements). Appelée UNIQUEMENT par la branche BROWSE d'Explore (`query.rs`). TOUS les autres sites
-    /// (détection `rule_sql`, panneaux `compile_panel_sql`, export) restent sur `soql_to_sql`/`soql_to_sql_masked`
+    /// (détection `rule_sql`, panneaux `compile_panneau_avoue`, export) restent sur `soql_to_sql`/`soql_to_sql_masked`
     /// (cursor_id=false) -> SQL BYTE-IDENTIQUE (mode 0). No-op de projection sur une base sans `id` réel
     /// (metric/Forge). DÉFAUT : DÉLÈGUE au chemin masqué normal (cursor_id OFF) — dégradation gracieuse pour un
     /// backend qui ne sait pas projeter `id` (le daemon détecte alors l'absence de colonne curseur et n'affirme

@@ -30,7 +30,7 @@
 //    entre dans le corpus SANS que son auteur connaisse ce fichier — et si elle arrive par une COLONNE
 //    neuve, `la_partition_du_corpus_est_close` la voit aussi.
 //
-//  ③ LA COMPILATION passe par les TROIS portes réelles du produit — `compile_panel_sql` (panneaux),
+//  ③ LA COMPILATION passe par les TROIS portes réelles du produit — `compile_panneau_avoue` (panneaux),
 //    `rule_sql` (moteur de détection), `soql_to_sql_x` (gabarits) — qui délèguent toutes à
 //    `guatx_core::soql` au tag épinglé dans `daemon/Cargo.toml`. Pas de réimplémentation : une
 //    réimplémentation aurait mesuré l'usage des index d'un compilateur qui n'existe pas.

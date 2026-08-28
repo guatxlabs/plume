@@ -510,7 +510,10 @@ impl ExclEntry {
 pub(crate) fn daemon_excl_registry(conn: &Connection, conf: &HashMap<String, String>) -> Vec<ExclEntry> {
     let mut out: Vec<ExclEntry> = Vec::new();
     // A1/A2 — exclusions d'AFFICHAGE opérateur/self (display-only, ÉDITABLES). value = CSV résolu (override
-    // setting sinon env) ; detail = clauses RÉELLEMENT substituées dans compile_panel_sql (jamais rule_sql, v55).
+    // setting sinon env) ; detail = clauses RÉELLEMENT substituées à la compilation des panneaux (jamais dans
+    // les règles de détection, v55). `P4.10-a` — CE QUE `detail` NOMME EST UNE SURFACE, JAMAIS UN SYMBOLE :
+    // ce registre est SERVI à l'exploitant et se dit PREUVE de ce qui est en vigueur ; un nom de fonction y
+    // devient faux au premier renommage, sans que rien ne le signale — c'est arrivé le 2026-08-28.
     // SEULE catégorie editable de tout le registre.
     let op_csv = excl_display_csv(conn, conf, EXCL_OP_SETTING, "PLUME_OPERATOR_IPS", PLUME_OPERATOR_IPS_DEFAULT);
     let self_csv = excl_display_csv(conn, conf, EXCL_SELF_SETTING, "PLUME_SELF_HOSTS", PLUME_SELF_HOSTS_DEFAULT);
@@ -521,7 +524,7 @@ pub(crate) fn daemon_excl_registry(conn: &Connection, conf: &HashMap<String, Str
         scope: "panneaux menace externe (web top-clients/4xx, Cloudflare 25-29, banpass)",
         etype: ExclType::DisplayOnly,
         value: op_csv,
-        detail: json!({ "field": "src_ip", "sql": e.op_sql, "soql": e.op_soql, "substituted_in": "compile_panel_sql", "never_in": "rule_sql (v55)" }),
+        detail: json!({ "field": "src_ip", "sql": e.op_sql, "soql": e.op_soql, "substituted_in": "la compilation des panneaux", "never_in": "les règles de détection" }),
         source: "ExclClauses / PLUME_OPERATOR_IPS (override setting excl_operator_ips)",
         editable: true,
         edit_key: "operator",
@@ -532,7 +535,7 @@ pub(crate) fn daemon_excl_registry(conn: &Connection, conf: &HashMap<String, Str
         scope: "mêmes panneaux menace externe (vhost self)",
         etype: ExclType::DisplayOnly,
         value: self_csv,
-        detail: json!({ "field": "vhost", "sql": e.self_sql, "soql": e.self_soql, "substituted_in": "compile_panel_sql", "never_in": "rule_sql (v55)" }),
+        detail: json!({ "field": "vhost", "sql": e.self_sql, "soql": e.self_soql, "substituted_in": "la compilation des panneaux", "never_in": "les règles de détection" }),
         source: "ExclClauses / PLUME_SELF_HOSTS (override setting excl_self_hosts)",
         editable: true,
         edit_key: "self",
@@ -769,7 +772,7 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
 /// d'autre n'est éditable — une action collection-reducing/host = 400 (le contrôle reste à la frontière). Admin
 /// only + double-audit fail-closed (ledger + event plume-config) sev 3 (modifier une exclusion d'AFFICHAGE = un
 /// de-bruitage auditable dans la durée, comme B8). GARANTIE angle mort : l'override n'alimente QUE
-/// compile_panel_sql (jamais rule_sql ni never-ban) -> il NE PEUT créer aucun angle mort de collecte/détection.
+/// la compilation des panneaux (jamais les règles de détection ni le bannissement) -> il NE PEUT créer aucun angle mort de collecte/détection.
 /// Recompile le cache d'exclusion (hot-reload) -> effet immédiat sur les panneaux.
 /// Cœur TESTABLE de l'édition d'une exclusion display-only : valide l'action (ENUM FERMÉ operator/self),
 /// écrit/efface le `setting`, audite (ledger + event plume-config sev 3) DANS UNE TRANSACTION fail-closed,
@@ -821,7 +824,7 @@ pub(crate) fn apply_display_excl_edit(
             &format!("exclusion affichage {field}: [{old}]->[{new}] par {actor}"),
             3,
             &format!("exclusion d'affichage {field} (display-only): [{old}]->[{new}] par {actor} — panneaux uniquement, collecte/détection inchangées"),
-            &json!({ "field": field, "old": old, "new": new, "actor": actor, "type": "display-only", "effect": "compile_panel_sql only (never rule_sql / never-ban)" }).to_string(),
+            &json!({ "field": field, "old": old, "new": new, "actor": actor, "type": "display-only", "effect": "la compilation des panneaux SEULEMENT (jamais les règles de détection, jamais le bannissement)" }).to_string(),
         )?;
         Ok((old, new))
     })();

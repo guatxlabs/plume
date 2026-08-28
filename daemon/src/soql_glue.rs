@@ -712,7 +712,7 @@ fn span_is_category_exec_equality(span: &str) -> bool {
 }
 
 /// POINT D'ENTRÉE UNIQUE de génération du SQL de base depuis une requête soql, partagé par les 3
-/// sites (query / compile_panel_sql / rule_sql). Le compilo soql vit DÉSORMAIS ENTIÈREMENT dans
+/// sites (query / compilation des panneaux / règles de détection). Le compilo soql vit DÉSORMAIS ENTIÈREMENT dans
 /// `guatx_core::soql` (cœur partagé Plume/Forge) : l'ancien compilo legacy de main.rs et le toggle
 /// PLUME_SOQL_CORE ont été supprimés — `guatx_core::soql::to_sql(.., &Schema::events())` est l'UNIQUE
 /// chemin de compilation.

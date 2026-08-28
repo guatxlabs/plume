@@ -347,7 +347,7 @@ pub(crate) fn seed_web_dashboard(conn: &Connection) {
         ("Erreurs 4xx/5xx (détail)", "search source=web __OPERATOR_EXCL__ __SELF_EXCL__ | where severity>=2 | sort -ts | table vhost,path,status,src_ip,ua", 1, "table"),
         // CF EXTERNE débruité : l'essentiel des events source=cloudflare peut être de l'auto-trafic opérateur
         // (navigateur du dashboard). Les placeholders __OPERATOR_EXCL__ (IP opérateur) + __SELF_EXCL__ (vhost self),
-        // substitués SEULEMENT dans compile_panel_sql (jamais dans les règles/la collecte), laissent l'activité CF
+        // substitués SEULEMENT à la compilation des panneaux (jamais dans les règles/la collecte), laissent l'activité CF
         // RÉELLE. Voie LIVE (les termes d'exclusion injectés bloquent le rollup-route -> soql_to_sql sur `event`).
         ("Cloudflare (hors self)", "search source=cloudflare __OPERATOR_EXCL__ __SELF_EXCL__ | stats count by src_ip | sort -count | head 30", 1, "table"),
     ];

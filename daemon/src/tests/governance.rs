@@ -664,7 +664,7 @@ detection:
     }
 
     /// (3) ÉDITION display-only AUDITÉE + reste display-only : l'édition operator/self écrit le setting, audite
-    /// (ledger + event plume-config sev 3 origin=daemon), SUBSTITUE dans compile_panel_sql (affichage) mais
+    /// (ledger + event plume-config sev 3 origin=daemon), SUBSTITUE à la compilation des panneaux (affichage) mais
     /// JAMAIS dans rule_sql (détection) — donc ne peut créer AUCUN angle mort — ni dans never-ban (HOST, §4).
     #[test]
     fn suppr_editing_operator_excl_audited_and_stays_display_only() {

@@ -189,11 +189,17 @@ export function openSigmaImport() {
   const ov = document.createElement('div'); ov.className = 'modal-ov';
   const box = document.createElement('div'); box.className = 'modal sigma-modal';
   const form = document.createElement('form');
+  // `P11.8-i` — CHAQUE BORNE DE LITTÉRAL TOMBE SUR UNE FRONTIÈRE DE BALISE, ET C'EST LA SEULE RAISON DE
+  // CE DÉCOUPAGE-LÀ. `i18nWalk` ne remplace qu'un nœud texte ENTIER, blancs retirés : un `+` posé AU MILIEU
+  // d'une phrase (« …ATT&CK. » | « Déposez un <b> ») laisse un nœud rendu que ni l'une ni l'autre moitié
+  // n'égale, donc intraduisible, et qu'aucune entrée du lexique ne peut couvrir sans naître morte. Le texte
+  // ÉMIS est identique à l'octet près ; ce qui change est que chaque nœud est désormais UN littéral, donc
+  // réclamé par la garde du lexique comme n'importe quelle autre chaîne affichée.
   form.innerHTML =
     '<h3>Importer un ruleset Sigma</h3>' +
-    '<p class="modal-msg">Absorbez une bibliothèque de détection <b>Sigma</b> (standard ouvert) pour combler les angles morts ATT&amp;CK. ' +
-    'Déposez un <b>fichier bundle</b> Sigma (<code>.yml</code>/<code>.yaml</code>/<code>.json</code>, multi-documents) <b>ou</b> collez du <b>YAML multi-documents</b> (séparés par <code>---</code>) ou un <b>tableau JSON</b> de docs Sigma. ' +
-    'Les règles importées arrivent <b>désactivées</b> — vous les relirez avant activation.</p>' +
+    '<p class="modal-msg">Absorbez une bibliothèque de détection <b>Sigma</b> (standard ouvert) pour combler les angles morts ATT&amp;CK. Déposez un ' +
+    '<b>fichier bundle</b> Sigma (<code>.yml</code>/<code>.yaml</code>/<code>.json</code>, multi-documents) <b>ou</b> collez du <b>YAML multi-documents</b> (séparés par <code>---</code>) ou un <b>tableau JSON</b> de docs Sigma. Les règles importées arrivent ' +
+    '<b>désactivées</b> — vous les relirez avant activation.</p>' +
     '<label class="modal-f"><span>Fichier bundle Sigma (YAML/JSON multi-docs)</span>' +
     '<input type="file" data-n="file" accept=".yml,.yaml,.json,.txt"></label>' +
     '<label class="modal-f"><span>… ou coller (YAML multi-docs / tableau JSON)</span>' +

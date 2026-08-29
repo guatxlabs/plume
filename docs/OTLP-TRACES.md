@@ -170,8 +170,15 @@ Le cap de décompression OTLP (**16 Mio**) est volontairement PLUS PETIT que le 
 (`INGEST_MAX_DECOMPRESS = 64 Mio`) : OTLP/JSON n'amortit pas le coût par un decode protobuf structuré —
 `serde_json::from_slice` matérialise l'arbre `Value` **entier** (plusieurs× la taille texte) avant que les
 caps span/attr ne s'appliquent. Défense en couches : (1) cap 16 Mio, (2) vérif de forme pré-parse, (3)
-borne de concurrence. Résidu assumé : au plus `PLUME_OTLP_INGEST_CONCURRENCY` arbres `Value` (≤16 Mio de
-texte source chacun) matérialisés simultanément.
+borne de concurrence. Résidu assumé : au plus `PLUME_OTLP_INGEST_CONCURRENCY` arbres `Value` matérialisés simultanément.
+**CE CHIFFRE A ÉTÉ SOUS-ESTIMÉ ET IL EST CORRIGÉ (2026-08-30).** Cette phrase nommait la taille du TEXTE
+SOURCE, ce qui se lit comme un résidu du même ordre. Mesuré au banc, allocateur compteur, sur des spans
+denses en attributs : l'empreinte VIVE au point de publication vaut environ VINGT-QUATRE FOIS le texte
+reçu — les arbres décodés en portent près de neuf dixièmes, le tampon écrit moins d'un dixième. La borne
+de concurrence tient donc un résidu bien plus lourd que sa formulation ne le laissait croire. LE RATIO
+DÉPEND DE LA FORME DU CORPS et ne se transporte pas : il est mesuré sur le cas coûteux, un corps dominé
+par une seule chaîne géante donnerait bien moins. Ce qui se transporte est la PROPRIÉTÉ — les arbres sont
+VIVANTS, et à leur MAXIMUM, à l'instant de la publication — voir le constat `S31` de la feuille de route.
 
 JSON malformé → `400` **sans panic**. Aucun SQL n'est construit à partir de la donnée de span :
 attributs et noms traversent le **même** chemin CIM→event→GXQL **masqué** que tout champ ingéré.

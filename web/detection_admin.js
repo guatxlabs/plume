@@ -5,7 +5,7 @@
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
 import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, mitreName, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, socIsAdmin, lsSet, collapsibleGroup, disclosure } from './core.js';
-import { S, lireLeStockageDuSite } from './state.js';
+import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
 import { loadAttackMatrix, poserLesPortesDeTechnique } from './attack.js';
 import { setAlertMitreFilter } from './alerts.js';
@@ -426,7 +426,14 @@ initSigmaImport({ onImported: () => { loadRules(); renderCoverage(); loadAttackM
   // P11.12-a : le champ de recherche partagé. Il REDESSINE (pas de rechargement) et se compose avec le tri.
   const champ = $('#rule-search');
   if (champ) { const poignee = champDeRecherche(champ, { auChangement: () => renderRules() }); rechercheDesRegles = poignee.valeur; poserLaRechercheDesRegles = poignee.poser; }
-  if (sortSel) { sortSel.value = S.ruleSort; sortSel.onchange = () => { S.ruleSort = sortSel.value; localStorage.setItem('soc_rule_sort', S.ruleSort); renderRules(); }; }
+  // `P4.13-b` — LE TRI S'APPLIQUE, LA PERSISTANCE EST SEULEMENT TENTÉE, ET SON REFUS SE DIT. Nue,
+  // l'écriture jetait `SecurityError` ENTRE la pose de `S.ruleSort` et `renderRules()` : mesuré le
+  // 2026-08-30 sous `PLUME_HARNAIS_STOCKAGE_REFUSE=1`, `S.ruleSort` passait bien de `id` à `sev` mais
+  // `#rule-list` n'était JAMAIS repeinte — le sélecteur annonçait « Sévérité ↓ » au-dessus d'une liste
+  // restée dans l'ordre des identifiants. Le tri, lui, vit dans `S` : il s'applique donc sans stockage,
+  // et seule sa mémoire d'un chargement à l'autre est perdue. L'avis vient EN DERNIER pour qu'il ne
+  // s'interpose pas dans la chaîne, et il est dit parce qu'une capture vide ferait croire le choix retenu.
+  if (sortSel) { sortSel.value = S.ruleSort; sortSel.onchange = () => { S.ruleSort = sortSel.value; const retenu = ecrireDansLeStockageDuSite('soc_rule_sort', S.ruleSort); renderRules(); if (!retenu) toast(LANG === 'en' ? 'Rule sort applied for this session only: this browser refuses site storage, so it will not be kept on the next load.' : "Tri des règles appliqué pour cette session seulement : ce navigateur refuse le stockage de site, il ne sera pas retenu au prochain chargement.", 'info', 5000); }; }
   deplierUnPanneauPersiste(collapse, list, 'soc_rule_open');
 })();
 
@@ -600,7 +607,10 @@ loadParsers();
 // tri + pliage du panneau Parsers (persistés)
 (() => {
   const sortSel = $('#parser-sort'), collapse = $('#parser-collapse'), list = $('#parser-list');
-  if (sortSel) { sortSel.value = S.parserSort; sortSel.onchange = () => { S.parserSort = sortSel.value; localStorage.setItem('soc_parser_sort', S.parserSort); loadParsers(); }; }
+  // `P4.13-b` — MÊME GESTE, MÊME MESURE QUE POUR LES RÈGLES (voir le bloc du tri des règles) : sous refus
+  // de stockage, `S.parserSort` passait de `default` à `source` et `loadParsers()` n'était jamais appelée,
+  // donc `#parser-list` gardait l'ordre précédent sous un sélecteur qui annonçait l'autre.
+  if (sortSel) { sortSel.value = S.parserSort; sortSel.onchange = () => { S.parserSort = sortSel.value; const retenu = ecrireDansLeStockageDuSite('soc_parser_sort', S.parserSort); loadParsers(); if (!retenu) toast(LANG === 'en' ? 'Parser sort applied for this session only: this browser refuses site storage, so it will not be kept on the next load.' : 'Tri des parsers appliqué pour cette session seulement : ce navigateur refuse le stockage de site, il ne sera pas retenu au prochain chargement.', 'info', 5000); }; }
   deplierUnPanneauPersiste(collapse, list, 'soc_parser_open');
 })();
 

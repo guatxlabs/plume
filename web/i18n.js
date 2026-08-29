@@ -722,16 +722,29 @@ const I18N_EN = {
   "relais — forwarder multi-hôtes (hôte DÉCLARÉ par l'émetteur, NON attesté)": "relay — multi-host forwarder (host DECLARED by the sender, NOT attested)",
   "relais — hôte non attesté": "relay — host not attested", "sur cet hôte (ingest + responder).": "on this host (ingest + responder).",
   // P11.8-a — sigmaimport.js
+  // P11.8-i — LES DEUX ENTRÉES CI-DESSOUS SONT DES NŒUDS, PAS DES MORCEAUX. Elles ont l'air de commencer
+  // au milieu d'une phrase, et c'est exact : la modale d'import Sigma écrit une phrase RICHE dont chaque
+  // portion entre deux balises est un nœud texte à part, et `i18nWalk` ne remplace que sur l'égalité du
+  // nœud ENTIER après `trim()`. Trois entrées vivaient ici qui n'étaient AUCUN de ces nœuds — « Déposez
+  // un », « de docs Sigma. », et l'ancienne « (standard ouvert) pour combler les angles morts ATT&CK. » —
+  // simples moitiés d'un nœud que la concaténation assemblait par-dessus une borne de littéral : elles ne
+  // pouvaient rien traduire, et la garde ne pouvait pas les voir (elle rangeait les deux moitiés en
+  // « dynamique »). Le littéral de `web/sigmaimport.js` a été recoupé sur les FRONTIÈRES DE BALISE, les
+  // deux moitiés sont devenues ces deux nœuds, et `check_i18n_lexicon_covers_displayed_strings.py` les
+  // réclame désormais comme n'importe quelle chaîne affichée. « Les règles importées arrivent » RESTE :
+  // c'est un nœud à part entière, posé par `createTextNode` quelques lignes plus haut dans le même module.
+  "(standard ouvert) pour combler les angles morts ATT&CK. Déposez un": "(an open standard) to close the ATT&CK blind spots. Drop a",
+  "de docs Sigma. Les règles importées arrivent": "of Sigma docs. Imported rules arrive",
   "title: ...\nlogsource: ...\ndetection:\n  ...\n---\ntitle: ...": "title: ...\nlogsource: ...\ndetection:\n  ...\n---\ntitle: ...",
   "(séparés par": "(separated by",
-  "Absorbez une bibliothèque de détection": "Absorb a detection library", "Déposez un": "Drop a",
+  "Absorbez une bibliothèque de détection": "Absorb a detection library",
   "Fichier bundle Sigma (YAML/JSON multi-docs)": "Sigma bundle file (multi-doc YAML/JSON)",
   "Fichier non reconnu comme bundle Sigma TEXTE. Les archives compressées (.zip/.gz) ne sont pas prises en charge — fournissez un bundle YAML/JSON (multi-docs) ou collez le texte.": "File not recognized as a TEXT Sigma bundle. Compressed archives (.zip/.gz) are not supported — provide a (multi-doc) YAML/JSON bundle or paste the text.",
   "Import Sigma réservé à l'administrateur.": "Sigma import is restricted to the administrator.", "Import Sigma traité": "Sigma import processed",
   "Import en masse indisponible : l'endpoint /api/sigma/import-bulk n'est pas encore déployé (daemon en cours). Réessayez après le déploiement.": "Bulk import unavailable: the /api/sigma/import-bulk endpoint is not deployed yet (daemon in progress). Retry after deployment.",
   "Les règles importées arrivent": "Imported rules arrive",
   "Refusé (403) : l'import Sigma est réservé à l'administrateur.": "Refused (403): Sigma import is restricted to the administrator.", "Règle": "Rule",
-  "Ré-importer": "Re-import", "Sigma": "Sigma", "Sigma (": "Sigma (", "YAML multi-documents": "multi-document YAML", "de docs Sigma.": "of Sigma docs.",
+  "Ré-importer": "Re-import", "Sigma": "Sigma", "Sigma (": "Sigma (", "YAML multi-documents": "multi-document YAML",
   "désactivées": "disabled", "la liste des règles": "the rule list", "tableau JSON": "JSON array",
   "— relisez-les puis activez celles voulues dans": "— review them then enable the ones you want in",
   "— vous les relirez avant activation.": "— you will review them before enabling.",

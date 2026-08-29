@@ -1351,6 +1351,16 @@ jobs:
       # deux sens, refus de conclure sous ses planchers. Ce qu'elle NE tient PAS — la phrase rendue
       # ensuite — est tenu par le harnais ESM (témoin 16), qui exige trois issues distinctes.
       - { name: "Un refus du démon ne se rend jamais comme une absence de données — aucune condition de web/ ne fond l'échec et le vide (P11.14-c)", run: python3 .github/scripts/check_a_refusal_is_not_rendered_as_an_absence.py }
+      # `P4.13-b` — UNE ÉCRITURE NUE AU STOCKAGE DU SITE JETTE AU MILIEU D'UN GESTE. Mesuré le
+      # 2026-08-30 sous `PLUME_HARNAIS_STOCKAGE_REFUSE=1` : le tri des règles posait son état sans que
+      # la liste soit repeinte, et un dépôt de carte laissait l'ordre inchangé. Le geste ne rend pas
+      # MOINS, il rend un état INCOHÉRENT — et c'est pire qu'un refus, parce qu'il n'y a rien à lire
+      # pour le comprendre. Population DÉRIVÉE du DISQUE (`web/**/*.js`, donc un module neuf est vu
+      # avant d'être suivi — l'inverse de la faute à corpus `git ls-files` déjà payée ici), analyseur
+      # lexical qui écarte commentaires, chaînes, gabarits et littéraux d'expression régulière, témoins
+      # FABRIQUÉS DANS LA GARDE et non lus du dépôt, cliquet à zéro, et refus de conclure (code 2) si le
+      # corpus ne porte AUCUNE écriture — contrôle positif contre le vert par vacuité.
+      - { name: "Aucune écriture au stockage du site n'est nue dans web/ (P4.13-b)", run: python3 .github/scripts/check_no_naked_site_storage_write.py }
 
       # `P11.18-w` — L'ENVIRONNEMENT DU PROCESSUS EST **UNE** RESSOURCE, ET ELLE N'A QU'UN VERROU.
       # `cfg()` résout toute clé dans l'ordre `env > conf > défaut` : un test qui pose une variable ne règle

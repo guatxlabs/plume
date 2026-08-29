@@ -1,8 +1,8 @@
 // Accès données (DLP, gouvernance d'accès en lecture seule) : cinq panneaux sur des requêtes GXQL existantes,
 // sélecteur de fenêtre d'analyse, note de périmètre, réordonnancement des cartes persisté localement. Extrait
 // d'`app.js` par déplacement pur ; le seul consommateur est la navigation (`showView`). N'importe pas `app.js`.
-import { $, ic, muted, poserLeChoixDeDates, LANG } from './core.js';
-import { S } from './state.js';
+import { $, ic, muted, poserLeChoixDeDates, toast, LANG } from './core.js';
+import { S, lireLeStockageDuSite, ecrireDansLeStockageDuSite } from './state.js';
 import { runQ, tableEl, truncationBadge } from './viz.js';
 // `P11.18-s` — LE GESTE VIENT DU POINT COMMUN, LA VALEUR VIENT DE L'AUTRE VUE. Le choix de dates
 // lui-même (`poserLeChoixDeDates`) est dans `web/core.js` et sert CETTE vue et le journal d'audit — le
@@ -254,9 +254,25 @@ async function renderDataAccess() {
 
 // réorganisation par glisser-déposer des cards d'accès données (grille 2×2), ordre persisté localement
 const DA_DT = 'text/soc-da';
-function daOrder(){ try { return JSON.parse(localStorage.getItem('soc_da_order')) || []; } catch(e){ return []; } }
+// `P4.13-b` — L'ORDRE POSÉ DANS CETTE SESSION VIT AUSSI EN MÉMOIRE, PARCE QUE LE STOCKAGE DU SITE EST
+// SON SEUL MAGASIN. Le jumeau de la Vue d'ensemble (`saveOvDrop`, `web/app.js`) n'a rien à dire quand
+// l'écriture est refusée : son ordre est tenu par le store self-scoped, inter-postes, et le stockage n'en
+// est que le miroir hors-ligne. ICI, RIEN N'EST AILLEURS — `daOrder()` relisait le stockage à CHAQUE
+// appel, si bien qu'un navigateur qui le refuse rendait le glisser-déposer INERTE : mesuré le 2026-08-30
+// sous `PLUME_HARNAIS_STOCKAGE_REFUSE=1`, les cinq cartes restaient dans l'ordre `whoami, tamper, fim,
+// acl, rbac` avant COMME après le dépôt. Le choix s'applique donc en mémoire — c'est ce qui fait aller la
+// chaîne jusqu'au bout — et la mémoire ne sert QUE de repli : quand le stockage rend la clé, c'est lui
+// qui fait foi, exactement comme avant.
+let ordreDeSession = null;
+function daOrder(){ const brut = lireLeStockageDuSite('soc_da_order'); if (brut !== null) { try { return JSON.parse(brut) || []; } catch(e){} } return ordreDeSession || []; }
 function applyDaOrder(){ const host=$('#da-body'); if(!host) return; const note=host.querySelector('.da-note'); const cards=[...host.querySelectorAll('.card[data-da]')]; const ord=daOrder(); cards.sort((a,b)=>{const ia=ord.indexOf(a.dataset.da),ib=ord.indexOf(b.dataset.da); return (ia<0?99:ia)-(ib<0?99:ib);}); cards.forEach(c=>host.insertBefore(c,note)); }
-function saveDaDrop(from,to){ const ids=[...$('#da-body').querySelectorAll('.card[data-da]')].map(c=>c.dataset.da); let o=daOrder().filter(x=>ids.includes(x)); ids.forEach(x=>{if(!o.includes(x))o.push(x);}); o.splice(o.indexOf(from),1); o.splice(o.indexOf(to),0,from); localStorage.setItem('soc_da_order',JSON.stringify(o)); applyDaOrder(); }
+// `P4.13-b` — L'ÉCRITURE ÉTAIT NUE, ET ELLE JETAIT ENTRE LE CALCUL DE L'ORDRE ET SA POSE. Mesuré le
+// 2026-08-30 : `SecurityError` était levée ICI, donc `applyDaOrder()` n'était jamais atteint et l'exception
+// remontait au gestionnaire de dépôt — la carte glissée revenait à sa place, sans un mot. L'ordre est
+// maintenant POSÉ avant la tentative d'écriture, la chaîne va jusqu'au bout, et le refus se DIT en DERNIER
+// pour qu'aucun avis ne s'interpose : se taire échangerait l'état incohérent contre une perte MUETTE —
+// l'exploitant croirait son agencement retenu et le retrouverait défait au prochain chargement.
+function saveDaDrop(from,to){ const ids=[...$('#da-body').querySelectorAll('.card[data-da]')].map(c=>c.dataset.da); let o=daOrder().filter(x=>ids.includes(x)); ids.forEach(x=>{if(!o.includes(x))o.push(x);}); o.splice(o.indexOf(from),1); o.splice(o.indexOf(to),0,from); ordreDeSession=o; const retenu=ecrireDansLeStockageDuSite('soc_da_order',JSON.stringify(o)); applyDaOrder(); if (!retenu) toast(LANG === 'en' ? 'Cards reordered for this session only: this browser refuses site storage, so the arrangement will not be kept on the next load.' : "Cartes réordonnées pour cette session seulement : ce navigateur refuse le stockage de site, l'agencement ne sera pas retenu au prochain chargement.", 'info', 5000); }
 function initDaLayout(){ $('#da-body').querySelectorAll('.card[data-da]').forEach(card=>{ const id=card.dataset.da; const grip=document.createElement('span'); grip.className='ovgrip'; grip.title='Glisser pour réorganiser'; grip.innerHTML=ic('grip'); grip.draggable=true; grip.addEventListener('dragstart',e=>{e.dataTransfer.setData(DA_DT,id); e.dataTransfer.effectAllowed='move'; card.classList.add('ovdragging');}); grip.addEventListener('dragend',()=>card.classList.remove('ovdragging')); card.addEventListener('dragover',e=>{ if(e.dataTransfer.types.includes(DA_DT)){e.preventDefault(); card.classList.add('ovdragover');} }); card.addEventListener('dragleave',()=>card.classList.remove('ovdragover')); card.addEventListener('drop',e=>{ if(!e.dataTransfer.types.includes(DA_DT))return; e.preventDefault(); card.classList.remove('ovdragover'); const from=e.dataTransfer.getData(DA_DT); if(from&&from!==id) saveDaDrop(from,id); }); card.appendChild(grip); }); applyDaOrder(); }
 
 export { daRenduDeReponse, renderDataAccess };

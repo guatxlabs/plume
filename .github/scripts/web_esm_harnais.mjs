@@ -714,6 +714,99 @@ if (STOCKAGE_REFUSE) {
   }
   console.log(`[stockage] le basculement de thème va JUSQU'AU BOUT sans stockage de site : \`data-theme\` = ${themeApres}, icône repeinte en accord, et l'exploitant est AVERTI que le choix ne sera pas retenu (« ${avis[0]} »).`);
 
+  // -------------------------------------------------------------------------------------------
+  // 1quinquies. LES TROIS AUTRES CHOIX D'INTERFACE VONT AUSSI JUSQU'AU BOUT (`P4.13-b`). Le témoin
+  //    1quater ci-dessus n'exerce QU'UN site — le thème. Il ne dit rien des trois autres écritures qui
+  //    s'exécutaient nues DANS un gestionnaire, et qui rendaient exactement le même défaut : un état
+  //    posé, une vue jamais repeinte, et rien à lire. Mesuré le 2026-08-30, avant correctif : le tri des
+  //    règles passait `S.ruleSort` de `id` à `sev` sans que `#rule-list` soit repeinte, le tri des
+  //    parsers faisait de même sur `#parser-list`, et un glisser-déposer de carte DLP laissait les cinq
+  //    cartes dans l'ordre `whoami, tamper, fim, acl, rbac` — inchangé — en levant `SecurityError`.
+  //    QUATRE exigences par site, dont un CONTRÔLE POSITIF sans lequel les trois autres seraient vraies
+  //    par vacuité : si le geste n'a RIEN produit, ce n'est pas une preuve que rien n'a cassé.
+  // -------------------------------------------------------------------------------------------
+  {
+    const modEtat = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+    const modAccesDonnees = await import(pathToFileURL(path.join(WEB, "dataaccess.js")).href);
+    const etat = modEtat.S;
+    const battement = () => new Promise((r) => setTimeout(r, 0));
+    const avis = () => document.querySelectorAll(".toast").map((t) => t.textContent);
+    const marquer = (hote) => { const m = document.createElement("div"); m.className = "temoin-non-repeint"; hote.replaceChildren(m); };
+
+    // (a) et (b) : les deux tris persistés. MÊME forme, seuls la cible, l'état et la valeur changent.
+    for (const t of [
+      { nom: "tri des règles", selecteur: "#rule-sort", liste: "#rule-list", valeur: "sev", etat: "ruleSort", site: "web/detection_admin.js" },
+      { nom: "tri des parsers", selecteur: "#parser-sort", liste: "#parser-list", valeur: "source", etat: "parserSort", site: "web/detection_admin.js" },
+    ]) {
+      const sel = document.querySelector(t.selecteur), liste = document.querySelector(t.liste);
+      if (!sel || typeof sel.onchange !== "function") {
+        console.error(`::error::(1quinquies) \`${t.selecteur}\` n'a pas de gestionnaire \`onchange\` : le ${t.nom} ne peut pas être exercé, et l'exigence ci-dessous ne mesurerait rien.`);
+        process.exit(2);
+      }
+      marquer(liste);
+      const avantAvis = avis().length, avantEtat = etat[t.etat];
+      sel.value = t.valeur;
+      let leve = null;
+      try { sel.onchange(); } catch (e) { leve = `${e && e.name} — ${e && e.message}`; }
+      await battement(); await battement(); await battement();
+      const repeinte = liste.querySelectorAll(".temoin-non-repeint").length === 0;
+      const dits = avis().slice(avantAvis);
+      if (leve) {
+        console.error(`::error::(1quinquies) le ${t.nom} JETTE quand le navigateur refuse le stockage de site (${leve}) : une ÉCRITURE NUE de \`localStorage\` s'exécute dans le gestionnaire, APRÈS la pose de \`S.${t.etat}\` et AVANT la repeinte de la liste — le sélecteur annonce un tri que la liste n'applique pas. L'écriture doit passer par \`ecrireDansLeStockageDuSite\` (web/state.js), qui REND le refus au lieu de le jeter (${t.site}).`);
+        process.exit(1);
+      }
+      if (etat[t.etat] === avantEtat) {
+        console.error(`::error::(1quinquies) CONTRÔLE POSITIF PERDU : \`S.${t.etat}\` vaut toujours « ${avantEtat} » après le changement de \`${t.selecteur}\` — le gestionnaire n'a rien fait, et les exigences ci-dessous seraient vraies par vacuité.`);
+        process.exit(2);
+      }
+      if (!repeinte) {
+        console.error(`::error::(1quinquies) \`S.${t.etat}\` est passé à « ${etat[t.etat]} » mais \`${t.liste}\` n'a pas été repeinte : la chaîne du changement ne va pas jusqu'au rendu. Le ${t.nom} est à moitié appliqué — le sélecteur dit une chose, la liste en montre une autre.`);
+        process.exit(1);
+      }
+      if (!dits.length) {
+        console.error(`::error::(1quinquies) le ${t.nom} a été appliqué, mais RIEN n'a été dit à l'exploitant alors que la persistance a été refusée : un refus avalé en silence échange l'état incohérent contre une perte MUETTE — l'exploitant croit son tri retenu et retrouvera l'ancien au prochain chargement.`);
+        process.exit(1);
+      }
+      console.log(`[stockage] le ${t.nom} va JUSQU'AU BOUT sans stockage de site : \`S.${t.etat}\` = ${etat[t.etat]}, \`${t.liste}\` repeinte en accord, et l'exploitant est AVERTI (« ${dits[0]} »).`);
+    }
+
+    // (c) le glisser-déposer des cartes DLP. Sa persistance n'a AUCUN jumeau serveur : sans repli en
+    //     mémoire, un navigateur qui refuse le stockage rendait le geste INERTE — c'est ce que
+    //     l'ordre AVANT/APRÈS mesure, et pas seulement l'absence d'exception.
+    {
+      const hote = document.querySelector("#da-body");
+      hote.replaceChildren();
+      modAccesDonnees.renderDataAccess();
+      await battement(); await battement(); await battement();
+      const ordre = () => hote.querySelectorAll(".card[data-da]").map((c) => c.dataset.da);
+      const avantOrdre = ordre(), cartes = hote.querySelectorAll(".card[data-da]");
+      if (cartes.length < 2) {
+        console.error(`::error::(1quinquies) \`#da-body\` porte ${cartes.length} carte(s) après \`renderDataAccess()\` : le glisser-déposer ne peut pas être exercé, et l'exigence ci-dessous ne mesurerait rien.`);
+        process.exit(2);
+      }
+      const avantAvis = avis().length;
+      const glissee = avantOrdre[avantOrdre.length - 1];
+      const depot = new Evenement("drop", { bubbles: false });
+      depot.dataTransfer = { types: ["text/soc-da"], getData: () => glissee };
+      let leve = null;
+      try { cartes[0].dispatchEvent(depot); } catch (e) { leve = `${e && e.name} — ${e && e.message}`; }
+      const apresOrdre = ordre(), dits = avis().slice(avantAvis);
+      if (leve) {
+        console.error(`::error::(1quinquies) le glisser-déposer des cartes d'accès aux données JETTE quand le navigateur refuse le stockage de site (${leve}) : l'écriture NUE de \`localStorage\` s'exécute entre le calcul du nouvel ordre et sa pose, donc \`applyDaOrder()\` n'est jamais atteint et la carte revient à sa place sans un mot (web/dataaccess.js).`);
+        process.exit(1);
+      }
+      if (JSON.stringify(apresOrdre) === JSON.stringify(avantOrdre)) {
+        console.error(`::error::(1quinquies) après le dépôt, l'ordre des cartes est INCHANGÉ (${apresOrdre.join(", ")}) : le geste n'a rien appliqué. La persistance de cet ordre n'a aucun jumeau serveur — sans repli en mémoire, un navigateur qui refuse le stockage rend le réordonnancement inerte.`);
+        process.exit(1);
+      }
+      if (!dits.length) {
+        console.error("::error::(1quinquies) les cartes ont bien été réordonnées, mais RIEN n'a été dit à l'exploitant alors que la persistance a été refusée : il croira son agencement retenu et le retrouvera défait au prochain chargement.");
+        process.exit(1);
+      }
+      console.log(`[stockage] le réordonnancement des cartes d'accès aux données va JUSQU'AU BOUT sans stockage de site : ${avantOrdre.join(", ")} -> ${apresOrdre.join(", ")}, et l'exploitant est AVERTI (« ${dits[0]} »).`);
+    }
+  }
+
   console.log(`OK — ${modules.length} modules web se lient alors que l'accès au stockage de site JETTE (SecurityError) : l'écran de connexion reste atteignable chez un navigateur qui bloque le stockage.`);
   process.exit(0);
 }
@@ -1659,6 +1752,24 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const statut = new Element("span"); const texteSeul = document.createTextNode("connecté"); statut.appendChild(texteSeul);
   walkEN(texteSeul);
   exiger(texteSeul.nodeValue === "connected", `(10) LANG='en' : un nœud texte passé seul à i18nWalk n'est pas traduit (« ${texteSeul.nodeValue} »)`);
+
+  // `P11.8-i` — UN NŒUD QUI TRAVERSAIT UNE BORNE DE LITTÉRAL EST TRADUIT, UNE MOITIÉ NE L'EST PAS.
+  // La garde du lexique dit que la clé EST au lexique ; seul ce banc dit que la traduction la POSE sur le
+  // nœud RENDU. La distinction n'est pas théorique : le lexique a porté trois entrées qui n'étaient que des
+  // MOITIÉS de nœud — nées mortes, invisibles à tous les canaux de la garde, parce que celle-ci découpait
+  // sur les bornes des littéraux du code là où la traduction n'opère que sur le nœud ENTIER, une fois ébarbé.
+  // La seconde exigence est la plus importante des deux : sans elle, on prouverait qu'une clé traduit, jamais
+  // qu'une DEMI-clé ne traduit pas — et c'est cette seconde propriété qui rend l'entrée morte détectable.
+  const pEntier = new Element("span");
+  const nEntier = document.createTextNode(" (standard ouvert) pour combler les angles morts ATT&CK. Déposez un ");
+  pEntier.appendChild(nEntier); walkEN(nEntier);
+  exiger(nEntier.nodeValue.includes("open standard") && nEntier.nodeValue.includes("Drop a"),
+    `(10) P11.8-i : le nœud RENDU de la fenêtre d'import n'est pas traduit (« ${nEntier.nodeValue} »)`);
+  const pMoitie = new Element("span");
+  const nMoitie = document.createTextNode(" (standard ouvert) pour combler les angles morts ATT&CK. ");
+  pMoitie.appendChild(nMoitie); walkEN(nMoitie);
+  exiger(nMoitie.nodeValue === " (standard ouvert) pour combler les angles morts ATT&CK. ",
+    "(10) P11.8-i : une MOITIÉ de nœud est TRADUITE — le lexique porte donc une entrée qui n'est pas un nœud, et une telle entrée naît MORTE");
   // Une valeur POSÉE PAR PROPRIÉTÉ (`el.placeholder = '…'`, `el.title = '…'`) : le navigateur la reflète dans
   // l'attribut, `i18nWalk` la traduit donc comme tout autre porteur. Le geste jugé est celui des nœuds texte
   // ci-dessus — rendu sous `LANG='en'`, parcouru, puis LU — et non la seule présence de la clé au lexique :

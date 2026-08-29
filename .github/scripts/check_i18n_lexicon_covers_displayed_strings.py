@@ -206,7 +206,7 @@ population sur l'arbre réel, la présence d'une clé témoin connue, et qu'aucu
 cliquet. Sans ces jambes, elle refuse de conclure (code 2), elle ne rend pas vert.
 
 Usage :  python3 .github/scripts/check_i18n_lexicon_covers_displayed_strings.py
-             [--mesure] [--trous MODULE] [--hors-regard MODULE] [--exces]
+             [--mesure] [--trous MODULE] [--hors-regard MODULE] [--exces] [--noeuds]
 Sortie :  0 = aucun module au-dessus de ses plafonds et aucune orpheline de trop ;
           1 = régression (trous, hors-regard, ou ORPHELINE PROUVÉE au-dessus du cliquet) ;
           2 = instrument invalide, module mesuré hors du cliquet, découpeur désynchronisé, ou compte
@@ -215,7 +215,9 @@ Sortie :  0 = aucun module au-dessus de ses plafonds et aucune orpheline de trop
           d'un module neuf) ; `--trous MODULE` liste les chaînes du module sans entrée au lexique ;
           `--hors-regard MODULE` liste ce que la garde ne regarde pas dans ce module, en marquant celles
           qui sont déjà des clés du lexique ; `--exces` nomme chaque clé du lexique que rien ne sert
-          (orpheline prouvée) et chaque clé que la sonde ne sait pas trancher, avec son motif.
+          (orpheline prouvée) et chaque clé que la sonde ne sait pas trancher, avec son motif ;
+          `--noeuds` nomme chaque NŒUD RENDU sans clé qui traverse une borne de littéral, et chaque
+          fragment de balisage que l'analyseur refuse de lire (`P11.8-i`).
 """
 from __future__ import annotations
 
@@ -508,7 +510,32 @@ PLAFOND_ORPHELINES = 0
 # 79 (40 %) ne tiennent qu'à UN SEUL fichier — 78 sous `web/`, 1 sous `daemon/` — de sorte qu'une seule
 # suppression de libellé les fait basculer ORPHELINES et rougir `PLAFOND_ORPHELINES` à 0. Ce n'est pas un
 # défaut du cliquet, c'est sa raison d'être : un libellé qu'on retire doit emporter sa clé.
-PLAFOND_INDECIDABLES = 230
+# 2026-08-30 (`P11.8-i`), 230 -> 228 : DEUX clés retirées qui n'étaient que des MORCEAUX d'un nœud rendu
+# (« Déposez un », « de docs Sigma. »). Elles étaient INDÉCIDABLES par construction et le seraient restées
+# pour toujours — leur texte EST dans le dépôt, la sonde ne pouvait donc jamais les accuser. C'est le compte
+# des nœuds À CHEVAL, plus bas, qui les a désignées. Le cliquet descend d'exactement ce que le lot retire :
+# le laisser à 230 le DESSERRERAIT de deux crans, et son jeu était mesuré à ZÉRO la veille.
+PLAFOND_INDECIDABLES = 228
+
+# CLIQUET DES NŒUDS À CHEVAL (`P11.8-i`) — un nœud RENDU qui traverse une borne de littéral et qu'aucune
+# clé ne couvre. Relevé le 2026-08-30 : DEUX, tous deux dans la modale d'import Sigma, comblés dans le même
+# lot ; le plafond est donc à ZÉRO et il n'y a plus rien à en descendre. C'est un MANQUE au même titre
+# qu'un trou — la chaîne est affichée, elle n'a pas d'entrée — donc son canal est la RÉGRESSION (code 1),
+# pas le refus de conclure. Ce cliquet ne double PAS celui des trous : il ne compte que ce qu'aucun
+# littéral pris seul ne rend, c'est-à-dire exactement ce que la lecture par littéral ne peut pas voir.
+PLAFOND_NOEUDS_A_CHEVAL = 0
+
+# CLIQUET DES FRAGMENTS NON ANALYSABLES (`P11.8-i`) — relevé le 2026-08-30 : HUIT, tous du même motif
+# (une interpolation tombe dans une balise), sur trois modules : alerts.js 3, core.js 2, freshness.js 3.
+# C'EST UN AVEU, PAS UNE DETTE, et son canal est donc le REFUS DE CONCLURE (code 2), comme pour les
+# indécidables. Le rendre rouge à la première occurrence rendrait la garde rouge en permanence ; le taire
+# rendrait vert sur ce qu'elle ne lit pas. Le cliquet est la seule voie honnête entre les deux : le compte
+# est PUBLIÉ à chaque exécution avec le nom de chaque fragment, et une HAUSSE fait refuser de conclure.
+# CE QU'IL FAUT FAIRE POUR L'ABAISSER : sortir l'interpolation de la balise (`class="${c}"` au lieu de
+# `<b ${c}>`), ce qui est aussi la forme la plus sûre côté injection. Le relever exige une raison écrite ici.
+# AUCUN des trois modules concernés n'est en écriture concurrente à l'heure de ce relevé ; poser le cliquet
+# au ras ne rend donc rouge le travail de personne.
+PLAFOND_FRAGMENTS_ILLISIBLES = 8
 
 # LA SEULE SURFACE EXEMPTE : la définition `const HELP = { … }` du registre des sections d'aide, DÉRIVÉE
 # (module et portée) de `check_every_help_trigger_has_a_section.py` — pas un nom de fichier, pas un module
@@ -1139,6 +1166,223 @@ def extraire_index_html(src: str) -> list[str]:
     return [x for x in st if _candidat(x)]
 
 
+# ---------------------------------------------------------------------------------------------
+# LE NŒUD RENDU, PAS LE LITTÉRAL ÉCRIT (`P11.8-i`).
+# ---------------------------------------------------------------------------------------------
+# Tout ce qui précède lit UN littéral à la fois. `i18nWalk`, lui, compare un NŒUD TEXTE entier, blancs
+# retirés. Les deux coïncident tant qu'une balise borne le littéral ; ils divergent dès qu'un nœud
+# TRAVERSE une borne de littéral (`'…ATT&CK. ' + 'Déposez un <b>…'` rend UN nœud « …ATT&CK. Déposez un »).
+# Ce nœud-là n'était jugé par personne : la lecture par littéral le voit en DEUX moitiés, les range en
+# « dynamique » — donc hors dénominateur — et le compte de trous ne bouge pas. Pire, depuis que le corpus
+# de la sonde d'excès porte une copie aux entités résolues, une clé qui n'est que le DÉBUT d'un tel nœud
+# n'est plus accusée à tort : elle est rangée en INDÉCIDABLE, c'est-à-dire TUE. Le remède avait éteint le
+# seul signal qui désignait cette famille.
+# LA SORTIE EST D'ÉNUMÉRER LES NŒUDS, PAS DE DÉCOUPER DES LITTÉRAUX, et elle demande un analyseur de
+# balisage. `html.parser` est de la BIBLIOTHÈQUE STANDARD (la CI n'installe rien) et cette garde s'en sert
+# déjà pour les littéraux HTML d'un seul tenant. LA RÉPONSE EST DONC OUI, ET ELLE EST MESURÉE — 2026-08-30,
+# sur `web/` hors la portée exempte du registre : 183 chaînes de concaténation portent du balisage, 15 sont
+# écrites en PLUSIEURS littéraux, et 175 (95,6 %) sont lues sans le moindre aveu. Les 8 restantes (4,4 %)
+# ne sont PAS lisibles, et c'est le point qui décide de tout : une garde bâtie sur un analyseur qui se
+# trompe EN SILENCE serait pire que l'angle mort qu'elle comble. Elle refuse donc de conclure sur celles-là
+# et les NOMME, une par une. Le motif relevé aujourd'hui est UN seul, sur trois modules (alerts.js 3,
+# core.js 2, freshness.js 3) : UNE INTERPOLATION TOMBE DANS UNE BALISE, hors d'une valeur d'attribut entre
+# guillemets (`` `<button …${dis}>` ``) — l'expression peut y poser un attribut, voire refermer la balise,
+# et l'arbre rendu n'est alors pas celui qui est lu. Trois autres motifs sont armés et muets aujourd'hui
+# (l'analyseur lève ; une balise hors-population jamais refermée ; un nœud texte qui porte un chevron de
+# balise, `lookup <nom> <champ>`) ; le corpus de contrôle les exerce, faute de quoi ils seraient morts sans
+# que rien ne le dise.
+# CE QUI A ÉTÉ ÉCARTÉ PAR LA MESURE, ET NON PAR L'AVIS : un premier jeu de règles avouait 14 fragments au
+# lieu de 8. SIX de ces aveux étaient FAUX. Quatre venaient de corps d'aide en TEXTE PUR que `RE_HTML`
+# prenait pour du balisage parce qu'ils citent `lookup <nom>` — ils sont dans la portée exempte du registre
+# et n'ont jamais atteint cette mesure. Les deux autres venaient d'un test de chevron trop large : `&lt;`
+# résolu en `<` par l'analyseur (« frais (donnée < 15 min) »), et un `>` sans `<` (`'"></span>'`). Un aveu
+# qui crie au loup use son propre crédit : le test porte donc sur `<` SUIVI d'un début de nom de balise.
+# CE QUE CETTE MESURE NE PRÉTEND PAS. Elle ne joint QUE `litt + litt` au MÊME niveau de groupe : elle
+# refuse de traverser une parenthèse ou un ternaire, parce qu'un ternaire rend DEUX nœuds possibles et
+# qu'en choisir un serait inventer. Le prix est mesuré : `web/fleet.js` assemble « … muet(s) » puis, sous
+# condition, « · <b>…</b> muet(s) attendu(s) » — deux nœuds réels, aucun des deux jugé ici. C'est un
+# SOUS-compte assumé, du même sens que tous les autres biais de ce fichier.
+def _colle_directe(contexte: tuple, sens: int) -> tuple[bool, int | None]:
+    """(y a-t-il une colle `+` de ce côté ?, position du littéral collé — None si l'opérande n'en est pas un).
+
+    STRICTE À DESSEIN, et c'est ce qui la distingue de `_voisin_de_concatenation` : celle-là répond « ce
+    littéral est-il le nœud ENTIER ? » et a raison de sortir des groupes ; celle-ci construit le TEXTE
+    assemblé, et sortir d'un groupe y ferait choisir une branche de ternaire au hasard."""
+    code, p, litteraux = contexte
+    j = p - 1 if sens < 0 else p + 2
+    entrant, sortant = (FERMANTES, OUVRANTES) if sens < 0 else (OUVRANTES, FERMANTES)
+    profondeur = 0
+    while 0 <= j < len(code):
+        c = code[j]
+        if c in entrant:
+            profondeur += 1
+        elif c in sortant:
+            profondeur -= 1
+            if profondeur < 0:
+                return False, None  # on SORT du groupe : l'assemblage cesse d'être inconditionnel
+        elif profondeur == 0:
+            if c in ARRETS or c in "?:":
+                return False, None
+            if c == "+":
+                k = j + sens
+                while 0 <= k < len(code) and code[k] in " \t\n":
+                    k += sens
+                debut = k - 1 if sens < 0 else k
+                if code[debut : debut + 2] == '""' and debut in litteraux:
+                    return True, debut
+                return True, None
+        j += sens
+    return False, None
+
+
+RE_CHEVRON_DE_BALISE = re.compile(r"<[a-zA-Z/!?]")
+
+
+def _interpolation_dans_une_balise(fragment: str) -> bool:
+    """Vrai si une interpolation `${…}` tombe DANS une balise ailleurs que dans une valeur d'attribut
+    entre guillemets. Là, elle peut poser un attribut entier ou refermer la balise : ce que l'analyseur
+    lit n'est plus ce que le navigateur construira."""
+    i, n = 0, len(fragment)
+    while i < n:
+        if fragment[i] == "<" and i + 1 < n and (fragment[i + 1].isalpha() or fragment[i + 1] == "/"):
+            j, guillemet = i + 1, ""
+            while j < n:
+                c = fragment[j]
+                if guillemet:
+                    if c == guillemet:
+                        guillemet = ""
+                elif c in "\"'":
+                    guillemet = c
+                elif c == ">":
+                    break
+                elif c == SENTINELLE:
+                    return True
+                j += 1
+            i = j
+        i += 1
+    return False
+
+
+def lire_fragment_de_balisage(fragment: str) -> tuple[list[str], list[str]]:
+    """(nœuds TEXTE en ordre de document, AVEUX). Un aveu non vide = fragment NON ANALYSABLE : ses nœuds
+    ne sont PAS jugés et il est NOMMÉ. Rendre un compte sur un fragment mal lu serait un vert menteur."""
+    aveux: list[str] = []
+    donnees: list[str] = []
+    ouverts: list[str] = []
+
+    class P(html.parser.HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.skip = 0
+
+        def handle_starttag(self, tag, attrs):
+            if tag in TAGS_HORS_POPULATION:
+                self.skip += 1
+                ouverts.append(tag)
+
+        def handle_endtag(self, tag):
+            if tag in TAGS_HORS_POPULATION:
+                if self.skip:
+                    self.skip -= 1
+                if ouverts and ouverts[-1] == tag:
+                    ouverts.pop()
+
+        def handle_data(self, data):
+            if not self.skip:
+                donnees.append(data)
+
+    p = P()
+    try:
+        p.feed(fragment)
+        p.close()
+    except Exception as e:  # noqa: BLE001 — un analyseur qui lève est un analyseur qui n'a pas lu
+        aveux.append(f"l'analyseur de balisage a levé {type(e).__name__}")
+    if _interpolation_dans_une_balise(fragment):
+        aveux.append("une interpolation `${…}` tombe DANS une balise, hors d'une valeur d'attribut entre "
+                     "guillemets : elle peut y poser un attribut ou refermer la balise")
+    if ouverts:
+        aveux.append(f"la balise hors-population <{ouverts[0]}> n'est jamais refermée : tout ce qui suit "
+                     f"serait tu sans qu'on sache s'il est montré tel quel")
+    for d in donnees:
+        if RE_CHEVRON_DE_BALISE.search(d):
+            aveux.append(f"un nœud texte porte un chevron de balise ({d.strip()[:60]!r}) : texte montré tel "
+                         f"quel, ou balisage que le fragment n'a pas fini d'écrire ?")
+            break
+    if getattr(p, "rawdata", ""):
+        aveux.append(f"l'analyseur laisse un reste non consommé ({p.rawdata[:60]!r})")
+    return donnees, aveux
+
+
+def noeuds_a_cheval(src: str, cles: set[str], journal: list[tuple[str, int]] | None = None
+                    ) -> tuple[list[str], list[str]]:
+    """(nœuds RENDUS sans clé qui TRAVERSENT une borne de littéral, fragments NON ANALYSABLES nommés).
+
+    Un nœud « à cheval » est celui que la lecture littéral-par-littéral ne voit JAMAIS entier. Il est
+    reconnu par DIFFÉRENCE : c'est un nœud du fragment JOINT qu'aucun littéral pris seul ne rend. Le reste
+    des nœuds est déjà jugé par `extraire_module` — les compter ici les compterait deux fois."""
+    res = chaines_js(src, journal)
+    if not res:
+        return [], []
+    texte_code = res[0][4][0]
+    litteraux = res[0][4][2]
+    manquants: list[str] = []
+    illisibles: list[str] = []
+    vues: set[tuple[int, ...]] = set()
+    for _, avant, _, bloc_en, contexte in res:
+        p = contexte[1]
+        if bloc_en or RE_CHOIX_PAR_LANG.search(avant) or RE_CLE_FR_EN.search(avant.rstrip()):
+            continue  # bilingue par construction : son pendant est ailleurs, pas au lexique
+        positions, bord_gauche, bord_droit = [p], False, False
+        q = p
+        while True:
+            colle, r = _colle_directe((texte_code, q, litteraux), -1)
+            if r is None:
+                bord_gauche = colle  # une colle dont l'opérande n'est PAS un littéral : bord ouvert
+                break
+            positions.insert(0, r)
+            q = r
+        q = p
+        while True:
+            colle, r = _colle_directe((texte_code, q, litteraux), +1)
+            if r is None:
+                bord_droit = colle
+                break
+            positions.append(r)
+            q = r
+        cle_chaine = tuple(positions)
+        if cle_chaine in vues:
+            continue
+        vues.add(cle_chaine)
+        morceaux = [litteraux[x] for x in positions]
+        fragment = "".join(morceaux)
+        if not RE_HTML.search(fragment):
+            continue
+        donnees, aveux = lire_fragment_de_balisage(fragment)
+        if aveux:
+            illisibles.append(f"{aveux[0]} — fragment : {fragment[:90]!r}")
+            continue
+        if len(positions) < 2:
+            continue  # un seul littéral : aucun nœud ne peut être à cheval, `extraire_module` les tient tous
+        par_litteral = set()
+        for m in morceaux:
+            par_litteral |= {d.strip() for d in _noeuds_html(m)[2] if d.strip()}
+        # UN NŒUD DE BORD COLLÉ À UNE EXPRESSION vaut PLUS que ce fragment : même règle qu'`extraire_module`.
+        exclus = set()
+        if donnees:
+            if bord_droit and not fragment.rstrip().endswith(">"):
+                exclus.add(len(donnees) - 1)
+            if bord_gauche and not fragment.lstrip().startswith("<"):
+                exclus.add(0)
+        for i, d in enumerate(donnees):
+            t = d.strip()
+            if not t or i in exclus or SENTINELLE in d or t in par_litteral:
+                continue
+            if _candidat(d) and t not in cles:
+                manquants.append(t)
+    return manquants, illisibles
+
+
+
 def cles_du_lexique(src: str) -> set[str]:
     m = re.search(r"const I18N_EN\s*=\s*\{(.*?)\n\};", src, re.S)
     if not m:
@@ -1455,8 +1699,49 @@ PAIRE_PARENTHESES = (
 )
 
 
+# TÉMOIN DU NŒUD À CHEVAL (`P11.8-i`) — CINQ ATTENDUS SUR QUATRE CORPUS FABRIQUÉS ICI, JAMAIS SUR L'ÉTAT
+# DU DÉPÔT. La raison est une faute mesurée le 2026-08-29 : une borne qui exigeait qu'un module PORTE ENCORE
+# son défaut « sinon le motif ne mesure plus rien » aurait rougi LE JOUR OÙ LE TRAVAIL SERAIT FINI. Un témoin
+# qui ne peut être vert que tant que le chantier est ouvert n'est pas une garde, c'est une rançon. Ceux-ci
+# restent vrais quand `web/` est parfait, et ils tiennent les DEUX SENS de chaque question : le nœud coupé
+# est vu ET le nœud bien coupé ne déclenche rien ; l'interpolation mal placée fait refuser ET la MÊME
+# interpolation bien placée est lue sans aveu — sans ce dernier, un refus qui se déclencherait sur toute
+# interpolation satisferait le témoin en ne mesurant plus rien.
+CORPUS_NOEUD_A_CHEVAL = (
+    """el.innerHTML = '<p>Ouverture <b>grasse</b>fin de ' + 'phrase coupee en deux</p>';\n""",
+    """el.innerHTML = '<p>Ouverture <b>grasse</b>fin de phrase coupee en deux</p>' + '<i>suite</i>';\n""",
+    """el.innerHTML = `<b ${cls}>fin de ` + `phrase coupee en deux</b>`;\n""",
+    """el.innerHTML = `<b class="${cls}">fin de ` + `phrase coupee en deux</b>`;\n""",
+)
+NOEUD_TEMOIN = "fin de phrase coupee en deux"
+
+
 def valider_instrument() -> list[str]:
     errs = []
+    # `P11.8-i` — L'ÉNUMÉRATION DES NŒUDS SE VALIDE DANS LES DEUX SENS, SUR DES ENTRÉES FABRIQUÉES.
+    coupe = noeuds_a_cheval(CORPUS_NOEUD_A_CHEVAL[0], set())
+    entier = noeuds_a_cheval(CORPUS_NOEUD_A_CHEVAL[1], set())
+    balise = noeuds_a_cheval(CORPUS_NOEUD_A_CHEVAL[2], set())
+    attribut = noeuds_a_cheval(CORPUS_NOEUD_A_CHEVAL[3], set())
+    couvert = noeuds_a_cheval(CORPUS_NOEUD_A_CHEVAL[0], {NOEUD_TEMOIN})
+    if coupe != ([NOEUD_TEMOIN], []):
+        errs.append(f"témoin de NŒUD À CHEVAL (positif) : un nœud coupé par une borne de littéral n'est pas vu "
+                    f"entier ({coupe}) — la mesure de `P11.8-i` ne mesure plus rien, et les trois négatifs "
+                    f"qui suivent seraient satisfaits par une sonde morte.")
+    if entier != ([], []):
+        errs.append(f"témoin de NŒUD À CHEVAL (négatif) : la MÊME phrase, dont la borne tombe sur une frontière "
+                    f"de balise, est signalée ({entier}) — la mesure accuserait un code correct, et elle "
+                    f"doublerait le compte des trous au lieu de le compléter.")
+    if balise[0] != [] or len(balise[1]) != 1:
+        errs.append(f"témoin de NON-ANALYSABLE : une interpolation posée DANS une balise doit faire REFUSER de "
+                    f"conclure sur ce fragment, en le nommant, et ses nœuds ne doivent pas être jugés ({balise}).")
+    if attribut != ([NOEUD_TEMOIN], []):
+        errs.append(f"témoin de NON-ANALYSABLE (négatif) : la MÊME interpolation dans une valeur d'attribut "
+                    f"entre guillemets doit être LUE sans aveu ({attribut}) — un refus qui se déclencherait sur "
+                    f"toute interpolation rendrait l'aveu vrai en ne lisant plus rien.")
+    if couvert != ([], []):
+        errs.append(f"témoin de NŒUD À CHEVAL (couverture) : un nœud à cheval DÉJÀ au lexique est signalé "
+                    f"({couvert}) — la mesure réclamerait une entrée qui existe.")
     # LE LECTEUR PARTAGÉ SE VALIDE ICI AUSSI (`P11.8-f`) : `registre_d_aide` s'appuie sur son
     # dépouillement, et il est IMPORTÉ — ses témoins ne tournent pas à l'import.
     try:
@@ -1582,7 +1867,11 @@ def mesurer(registre: tuple[str, str] | None) -> tuple[dict[str, dict], set[str]
             src = fh.read()
         journal: list[tuple[str, int]] = []
         lu = src
+        a_cheval: list[str] = []
+        illisibles: list[str] = []
         if f == "index.html":
+            # `web/index.html` est analysé D'UN SEUL TENANT : ses nœuds sont déjà des nœuds rendus,
+            # aucun ne peut être à cheval sur une borne de littéral.
             st, dy, pc, hr = extraire_index_html(src), [], [], []
         elif f == "i18n.js":
             # le lexique n'affiche rien, mais il doit être LU sans perte : `cles_du_lexique` s'appuie sur le
@@ -1594,6 +1883,8 @@ def mesurer(registre: tuple[str, str] | None) -> tuple[dict[str, dict], set[str]
             st, dy, pc, hr = extraire_module(lu, journal)
         else:
             st, dy, pc, hr = extraire_module(src, journal)
+        if f not in ("index.html", "i18n.js"):
+            a_cheval, illisibles = noeuds_a_cheval(lu, cles)
         if journal:
             desynchronisations[f] = [f"ligne {lu.count(chr(10), 0, o) + 1} : {motif}" for motif, o in journal]
         if f == "i18n.js":
@@ -1617,6 +1908,11 @@ def mesurer(registre: tuple[str, str] | None) -> tuple[dict[str, dict], set[str]
             # porte DÉJÀ. Aucun humain ne l'écrit — c'est le dépôt qui prouve que le périmètre du critère de
             # puits est plus étroit que l'affichage réel.
             "hors_regard_au_lexique": [s for s in aveugles if s in cles],
+            # `P11.8-i` — LE NŒUD RENDU, PAS LE LITTÉRAL ÉCRIT. Ces deux colonnes ne recoupent AUCUNE des
+            # précédentes : la première ne compte que les nœuds qu'aucun littéral pris seul ne rend, la
+            # seconde ne compte que les fragments sur lesquels l'analyseur refuse de conclure.
+            "a_cheval": sorted(set(a_cheval)),
+            "illisibles": illisibles,
             "taux": (100.0 * len(couvertes) / total) if total else 100.0,
         }
     return resultats, cles, desynchronisations
@@ -1631,6 +1927,7 @@ def main(argv: list[str]) -> int:
     hors_de = None
     if "--hors-regard" in argv:
         hors_de = argv[argv.index("--hors-regard") + 1]
+    liste_noeuds = "--noeuds" in argv
 
     errs = valider_instrument()
     if errs:
@@ -1693,6 +1990,14 @@ def main(argv: list[str]) -> int:
             return 2
         for s in r["hors_regard"]:
             print(f"{'AU LEXIQUE' if s in cles else '          '}  {s}")
+        return 0
+
+    if liste_noeuds:
+        for m, r in resultats.items():
+            for t in r["a_cheval"]:
+                print(f"À CHEVAL SANS CLÉ  {m}  {t}")
+            for x in r["illisibles"]:
+                print(f"NON ANALYSABLE     {m}  {x}")
         return 0
 
     # L'EXCÈS : la moitié que cette garde ne mesurait pas. Calculé ICI, après les sorties courtes
@@ -1821,14 +2126,34 @@ def main(argv: list[str]) -> int:
           f"(5) LA PLUS COÛTEUSE, TROUVÉE EN PAYANT `P11.8-g` le 2026-08-29 : une clé qui n'est qu'un MORCEAU "
           f"d'un nœud rendu est MORTE — `i18nWalk` n'égale que le nœud ENTIER après `trim()` — et cette sonde "
           f"ne sait pas la voir, puisque son texte EST dans le dépôt : elle la range en INDÉCIDABLE, pour "
-          f"toujours. Le lexique a été bâti en découpant sur les bornes de LITTÉRAUX, pas de nœuds : la modale "
-          f"d'import Sigma rend 20 nœuds texte porteurs de lettres (échantillons de code et zones de saisie "
-          f"exclus), dont 16 ont une clé et 4 n'en ont pas — et le lexique portait EN PLUS une entrée qui "
-          f"n'était AUCUN de ces vingt, « (standard ouvert) pour combler les angles morts ATT&CK. », simple "
-          f"début du nœud « … ATT&CK. Déposez un » que la concaténation assemble. Elle ne pouvait rien "
-          f"traduire ; elle est retirée. La sortie "
-          f"n'est PAS une sonde de plus ici : c'est d'ÉNUMÉRER LES NŒUDS d'un fragment HTML au lieu de ses "
-          f"littéraux, ce que seul un analyseur de balisage fait honnêtement — ce n'est pas fait, c'est dit.")
+          f"toujours. C'EST LA LIGNE SUIVANTE QUI TIENT CE POINT DEPUIS `P11.8-i` : elle ne mesure plus des "
+          f"littéraux, elle énumère des NŒUDS. Ce que cette sonde-ci ne tient toujours pas, c'est le SENS "
+          f"INVERSE — une clé morte parce qu'elle n'est qu'un morceau de nœud reste rangée en INDÉCIDABLE "
+          f"ici ; c'est le compte des nœuds À CHEVAL qui la désigne, en nommant le nœud entier qu'elle "
+          f"aurait dû être.")
+    # `P11.8-i` — LE NŒUD RENDU, PAS LE LITTÉRAL ÉCRIT. Publié comme tout le reste : le compte, le nom de
+    # chaque nœud manquant, et surtout le compte de ce que l'analyseur REFUSE DE LIRE. Un analyseur qui se
+    # tromperait en silence serait pire que l'angle mort qu'il comble ; celui-ci dit où il s'arrête.
+    a_cheval = sorted({t for r in resultats.values() for t in r["a_cheval"]})
+    illisibles = [(m, x) for m, r in resultats.items() for x in r["illisibles"]]
+    print(f"LE NŒUD RENDU, PAS LE LITTÉRAL ÉCRIT (`P11.8-i`) : `i18nWalk` ne remplace qu'un nœud texte "
+          f"ENTIER, blancs retirés ; un nœud qui TRAVERSE une borne de littéral (`'…ATT&CK. ' + 'Déposez "
+          f"un <b>…'`) n'est donc vu entier par aucune des mesures ci-dessus — elles le lisent en deux "
+          f"moitiés et les rangent en « dynamique ». Les chaînes `litt + litt` porteuses de balisage sont "
+          f"donc JOINTES puis analysées, et leurs nœuds énumérés : {len(a_cheval)} nœud(s) à cheval sans "
+          f"clé au lexique (plafond {PLAFOND_NOEUDS_A_CHEVAL}), et {len(illisibles)} fragment(s) que "
+          f"l'analyseur REFUSE de lire (plafond {PLAFOND_FRAGMENTS_ILLISIBLES}). `--noeuds` les nomme.")
+    for t in a_cheval:
+        print(f"    À CHEVAL SANS CLÉ  {t}")
+    for m, x in illisibles:
+        print(f"    NON ANALYSABLE     {m} : {x}")
+    print(f"CE QUE `P11.8-i` NE TIENT PAS : (1) la jointure s'arrête à toute PARENTHÈSE et à tout TERNAIRE — "
+          f"`'… muet(s)' + (c ? ' · <b>…</b> attendu(s)' : '')` rend DEUX nœuds possibles et en choisir un "
+          f"serait inventer, donc `web/fleet.js` garde là un nœud que rien ne juge. (2) Elle ne joint que "
+          f"des LITTÉRAUX : un fragment assemblé par une variable intermédiaire lui échappe entièrement. "
+          f"(3) Un nœud à cheval dont le texte existe PAR AILLEURS comme nœud d'un littéral seul n'est pas "
+          f"reconnu comme à cheval (la reconnaissance est une différence d'ensembles, pas un calcul "
+          f"d'offsets). Les trois biais vont dans le sens du SOUS-compte, comme partout ailleurs ici.")
     if mesure:
         return 0
 
@@ -1853,6 +2178,21 @@ def main(argv: list[str]) -> int:
               f"ce plafond avec la raison écrite à côté.")
         print("\nLa garde refuse de conclure : elle ne rendra pas vert sur une moitié de lexique qu'elle ne sait "
               "pas trancher, et elle n'accusera pas ce qu'elle n'a pas prouvé.")
+        return 2
+
+    # UN FRAGMENT QUE L'ANALYSEUR NE SAIT PAS LIRE N'EST PAS UNE FAUTE : c'est un aveu, et son canal est le
+    # REFUS DE CONCLURE (`P11.8-i`), exactement comme pour les indécidables. Le rendre rouge à la première
+    # occurrence rendrait la garde rouge en permanence ; le taire rendrait vert sur ce qu'elle ne lit pas.
+    if len(illisibles) > PLAFOND_FRAGMENTS_ILLISIBLES:
+        for m, x in illisibles:
+            print(f"::error::{m} : fragment de balisage NON ANALYSABLE — {x}")
+        print(f"::error::{len(illisibles)} fragment(s) de balisage que l'analyseur refuse de lire, plafond "
+              f"{PLAFOND_FRAGMENTS_ILLISIBLES} — les nœuds de ces fragments ne sont jugés par personne. La forme "
+              f"la plus fréquente est une interpolation POSÉE DANS UNE BALISE (`` `<b ${{c}}>` ``) : sortez-la "
+              f"dans une valeur d'attribut entre guillemets (`` `<b class=\"${{c}}\">` ``), ce qui est aussi la "
+              f"forme la plus sûre côté injection. Ou relevez ce plafond avec la raison écrite à côté.")
+        print("\nLa garde refuse de conclure : un analyseur de balisage qui se tromperait EN SILENCE serait "
+              "pire que l'angle mort qu'il comble.")
         return 2
 
     regressions = []
@@ -1880,6 +2220,16 @@ def main(argv: list[str]) -> int:
                 f"écrite : il garde ce que la garde IGNORE, et rendre vert sur ce qu'on ne regarde pas est pire "
                 f"qu'une garde absente. `--hors-regard {m}` les liste."
             )
+    if len(a_cheval) > PLAFOND_NOEUDS_A_CHEVAL:
+        regressions.append(
+            f"lexique : {len(a_cheval)} nœud(s) RENDU(S) sans entrée, plafond {PLAFOND_NOEUDS_A_CHEVAL} — "
+            + " · ".join(f"« {t} »" for t in a_cheval[:6])
+            + ". Chacun TRAVERSE une borne de littéral : la lecture littéral par littéral le voit en deux "
+              "moitiés et les range en « dynamique », alors que `i18nWalk` compare le nœud ENTIER. Deux "
+              "sorties, l'une et l'autre valides : déplacer la borne du littéral sur une FRONTIÈRE DE BALISE "
+              "(le nœud redevient un littéral entier, et la mesure ordinaire le réclame), ou inscrire le nœud "
+              "tel quel au lexique. Inscrire une MOITIÉ produirait une entrée morte. `--noeuds` les liste."
+        )
     if len(orphelines) > PLAFOND_ORPHELINES:
         regressions.append(
             f"lexique : {len(orphelines)} ORPHELINE(S) PROUVÉE(S), plafond {PLAFOND_ORPHELINES} — "
@@ -1895,8 +2245,10 @@ def main(argv: list[str]) -> int:
         return 1
     print(f"Aucun module au-dessus de son plafond de trous ni de hors-regard "
           f"({len(plafonds)} plafonds de trous et {len(plafonds_hr)} plafonds de hors-regard tenus) ; "
-          f"{len(orphelines)} orpheline(s) prouvée(s) pour un plafond de {PLAFOND_ORPHELINES}, et "
-          f"{len(indecidables)} indécidable(s) pour un plafond de {PLAFOND_INDECIDABLES}.")
+          f"{len(orphelines)} orpheline(s) prouvée(s) pour un plafond de {PLAFOND_ORPHELINES}, "
+          f"{len(indecidables)} indécidable(s) pour un plafond de {PLAFOND_INDECIDABLES}, "
+          f"{len(a_cheval)} nœud(s) à cheval sans clé pour un plafond de {PLAFOND_NOEUDS_A_CHEVAL} et "
+          f"{len(illisibles)} fragment(s) non analysable(s) pour un plafond de {PLAFOND_FRAGMENTS_ILLISIBLES}.")
     return 0
 
 

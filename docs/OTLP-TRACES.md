@@ -24,7 +24,8 @@ Authorization: Bearer <token-agent>     # OBLIGATOIRE (ingest authentifié)
   JSON couvre les SDK/collectors qui savent parler OTLP/JSON. Configurer l'exporteur en
   `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/json`.
 - **Réponse** : `200` + `ExportTraceServiceResponse` (`{}` = zéro rejet ; `{"partialSuccess":…}`
-  si des spans ont dépassé le plafond par requête).
+  si des spans ont dépassé le plafond par requête). Ce `200` atteste la **réception**, pas la
+  **durabilité** — §6.
 
 ### Activation
 
@@ -183,6 +184,16 @@ attributs et noms traversent le **même** chemin CIM→event→GXQL **masqué** 
 dans le **spool** (atomique, `0600`) → la boucle de fond appelle `ingest_events_batch`. **Aucun**
 travail DB sur le worker tokio (une rafale ne sature pas le runtime). Pas de host-marker : un
 collector OTel relaie légitimement plusieurs services/hôtes (host autoritatif = attribut resource).
+
+**« Atomique » n'est pas « durable », et le `200` ne couvre que le premier des deux.** L'enveloppe est
+écrite puis renommée, **jamais synchronisée** (mesuré le 2026-08-29 : `grep -rn '\.sync_all()' daemon/src/ingest`
+ne rend rien, alors que la même commande rend six appels sous `cold_store`, `crypto` et `backup`). Après une coupure d'alimentation, ses octets peuvent exister sans que
+leur entrée de répertoire existe, et le spool est relu par nom. L'exporteur OTel, lui, a pris ce `200`
+pour un acquittement et a vidé sa file. Le corps de la réponse ne le dit pas — un décodeur
+protobuf-JSON strict refuse les champs inconnus, donc la limite est écrite ici et dans
+[`AGENTS-PROTOCOLE.md`](AGENTS-PROTOCOLE.md) (§2.5) plutôt que dans un
+`ExportTraceServiceResponse` non conforme. Défaut **ouvert**, clé `S31` de
+[`ROADMAP.md`](ROADMAP.md) : la sortie est de déporter l'écriture, pas d'assumer la perte.
 
 ---
 

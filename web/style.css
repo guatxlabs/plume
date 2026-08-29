@@ -70,15 +70,19 @@
      déclare QUE des variables — elle ne peut donc pas atteindre un contrôle qu'elle ne visait pas, qui
      est le piège mesuré sous `P11.4-m`. Une valeur inconnue, ou l'absence d'attribut, vaut le défaut :
      aucune valeur ne peut casser une table.
-     CE QUE CETTE SECTION NE FAIT PAS, ET QU'IL FAUT LIRE AVANT DE LA CROIRE : PERSONNE NE POSE
-     `data-density`. Mesuré le 2026-08-26 sur tout `web/`, gabarit compris : ZÉRO surface l'écrit. La
-     densité est donc RÉGLABLE et n'est RÉGLÉE par personne — le mécanisme est posé, pas armé, et le
-     lire comme un réglage offert à l'exploitant serait exactement le défaut que `P11.15-a` a relevé sur
-     cette même feuille (un commentaire qui annonce un recours que rien ne pose). Le geste qui manque
-     n'est ni une règle de style ni la fabrique de tableaux : c'est une PRÉFÉRENCE, qui vit dans le
-     gabarit et dans le magasin de préférences par utilisateur. Le compte est IMPRIMÉ par le témoin
-     `[feuille]` du harnais ESM, donc cette phrase cessera d'être vraie d'elle-même le jour où quelqu'un
-     l'arme — elle ne peut pas vieillir en silence.
+     QUI POSE `data-density`, MESURÉ LE 2026-08-29 : `web/app.js` (`initDensity`), et lui seul. LA DENSITÉ
+     EST ARMÉE — un sélecteur de l'en-tête (`#density`, gabarit) choisit un cran, la valeur vit dans le
+     STOCKAGE DU SITE (`soc-density`) comme celle du thème, et l'attribut est posé sur la racine AVANT
+     `route()`, donc avant que `.app-ready` ne révèle `<main>`. LE MAGASIN DE PRÉFÉRENCES PAR UTILISATEUR
+     N'EST PAS TOUCHÉ, et il n'avait besoin d'aucune ligne : arbitrage de l'exploitant du 2026-08-29 — la
+     densité est un confort attaché à l'ÉCRAN qu'on a devant soi, pas une propriété du compte ; deux postes
+     = deux réglages, comme le thème. La phrase qui vivait ici (« PERSONNE NE POSE `data-density` », mesurée
+     le 2026-08-26) est donc PÉRIMÉE, et elle est retirée le jour même où elle a cessé d'être vraie.
+     CE QUE CETTE SECTION NE FAIT TOUJOURS PAS, ET QU'IL FAUT LIRE AVANT DE LA CROIRE : le témoin `[feuille]`
+     du harnais ESM IMPRIME le nombre de surfaces qui posent l'attribut, il ne l'EXIGE pas. Il est donc passé
+     de 0 à 1 sans rougir, et il resterait vert si quelqu'un défaisait `initDensity` demain. TANT QU'AUCUNE
+     EXIGENCE N'ENVELOPPE CE COMPTE, CE PARAGRAPHE EST LA SEULE TRACE DU GESTE — et « elle ne peut pas
+     vieillir en silence », qui était écrit ici, était FAUX : c'est exactement ce qu'elle vient de faire.
      TENU DEPUIS LE 2026-08-26 par ce même témoin, qui DÉRIVE de la feuille les règles visant une cellule
      de tableau et exige : une seule règle fait la hauteur d'une ligne et lit les trois jetons, aucune ne
      fixe de hauteur (ce qui casserait le dépli de `P11.15-a`), la place et la taille du bouton dérivent

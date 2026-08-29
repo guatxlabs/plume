@@ -408,6 +408,10 @@ pub(crate) fn otlp_gunzip_capped(body: &[u8], cap: usize) -> Result<Vec<u8>, ()>
 
 /// Réponse OTLP/HTTP de SUCCÈS : `ExportTraceServiceResponse` (corps `{}` = zéro rejet ; ou `partialSuccess`
 /// si des spans ont été refusés). Les clients OTLP acceptent le 200 + JSON.
+/// `S31` (temps 1) — accusé de RÉCEPTION, pas de DURABILITÉ ; le corps ne le dit pas, et ne le dira pas
+/// ici : c'est un `ExportTraceServiceResponse`, dont un décodeur protobuf-JSON strict REFUSE les champs
+/// inconnus. La limite est écrite dans `docs/AGENTS-PROTOCOLE.md`, `docs/OTLP-TRACES.md` et le bandeau de
+/// `ingest/mod.rs`.
 fn otlp_ok(rejected: i64) -> Response {
     let body = if rejected > 0 {
         json!({ "partialSuccess": { "rejectedSpans": rejected, "errorMessage": "spans over per-request cap were rejected" } })

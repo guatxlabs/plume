@@ -553,6 +553,83 @@ if ($('#tenant-form')) $('#tenant-form').addEventListener('submit', async e => {
 if ($('#opaccess-refresh')) $('#opaccess-refresh').onclick = loadOperatorAudit;
 if ($('#opaccess-src')) $('#opaccess-src').addEventListener('change', loadOperatorAudit);
 
+// ============ DENSITÉ D'AFFICHAGE DES TABLEAUX (`P11.15-b`) ============
+// LE JUMEAU EST `initTheme` (plus bas), ET LE CHEMIN EST EXACTEMENT LE SIEN : contrôle dans le gabarit,
+// valeur dans le STOCKAGE DU SITE, application sur `documentElement`. Le magasin de préférences par
+// utilisateur (`prefs.js`) n'est PAS touché, et il n'a besoin d'aucune ligne — arbitrage de l'exploitant du
+// 2026-08-29 : la densité est un confort attaché à l'ÉCRAN qu'on a devant soi, pas une propriété du compte.
+// Ce que la décision coûte est dit : qui travaille sur deux postes règle la densité deux fois, exactement
+// comme le thème. La troisième voie — défaut porté par le compte, surchargeable par appareil — est REFUSÉE :
+// ce serait un TROISIÈME mécanisme à tenir.
+//
+// POURQUOI ICI, AVANT `route()`, ET NON À CÔTÉ DE SON JUMEAU. `route()` pose `.app-ready`, et c'est CE geste
+// qui lève `html:not(.app-ready) main{visibility:hidden}` (règle en ligne d'index.html). Poser l'attribut
+// AVANT lui fait reposer « appliqué avant la première peinture » sur l'ORDRE DU SOURCE, et non sur le
+// raisonnement « tout le corps d'app.js tient dans une seule tâche, donc le navigateur ne peint pas entre les
+// deux » — vrai aujourd'hui (aucun `await` de premier niveau, mesuré), mais qu'un futur `await` rendrait faux
+// EN SILENCE. C'est la seule différence avec le jumeau, et elle est en faveur d'ici : `initTheme` s'exécute
+// APRÈS `route()`, donc sa garantie tient au raisonnement, pas à l'ordre. Le gabarit ne contient AUCUNE
+// `.qtable` (mesuré) : les seules surfaces que la densité touche (`.qtable th,.qtable td`, `td.plcut`,
+// `.plmore` dans style.css) sont bâties par les modules, donc après ce point — aucun réagencement ne peut
+// être vu.
+//
+// TROIS POSITIONS, ET PAS UN CRAN DE PLUS. La feuille sait rendre TROIS densités : son défaut (`:root`,
+// l'attribut ABSENT) et les DEUX crans qu'elle nomme (`compact`, `comfortable`). Le défaut n'est pas un
+// troisième cran, c'est l'ABSENCE d'attribut — et l'offrir est obligatoire : sans lui, le cran par défaut,
+// qui est celui de tout le monde aujourd'hui, deviendrait inatteignable dès le premier choix.
+//
+// UNE VALEUR ABSENTE, INCONNUE OU ILLISIBLE VAUT LE DÉFAUT, JAMAIS UN ÉTAT INTERMÉDIAIRE : l'attribut n'est
+// alors pas posé du tout, et `:root` reprend la main. `lireLeStockageDuSite` rend `null` — au lieu de jeter —
+// quand le navigateur REFUSE le stockage de site (`P4.13-a`), donc ce chemin couvre aussi la navigation
+// privée durcie ; l'ÉCRITURE est gardée ici pour la même raison, parce qu'elle jette dans le même cas.
+//
+// LE CONTRÔLE DIT SON ÉTAT, ET IL EN DIT PLUS QUE SON JUMEAU. Le bouton de thème porte un `aria-label` FIXE
+// (« Changer de thème ») : une aide technique entend l'action, jamais le thème COURANT. Un `<select>` annonce
+// son option choisie par construction, dans les trois positions et sans qu'aucun code n'ait à la repeindre.
+(function initDensity() {
+  const CRANS = [
+    { v: '', fr: 'Normale', en: 'Normal' },              // '' = le défaut de la feuille : aucun attribut
+    { v: 'compact', fr: 'Compacte', en: 'Compact' },     // style.css — [data-density="compact"]
+    { v: 'comfortable', fr: 'Aérée', en: 'Roomy' }       // style.css — [data-density="comfortable"]
+  ];
+  const connu = v => CRANS.some(c => c.v && c.v === v);
+  const appliquer = v => {
+    if (connu(v)) document.documentElement.setAttribute('data-density', v);
+    else document.documentElement.removeAttribute('data-density');
+  };
+  const lu = lireLeStockageDuSite('soc-density');   // UNE seule lecture du stockage, gardée par `state.js`
+  const cran = connu(lu) ? lu : '';
+  appliquer(cran);
+  const sel = $('#density');
+  if (!sel) return;
+  sel.setAttribute('aria-label', LANG === 'en' ? 'Table display density' : "Densité d'affichage des tableaux");
+  sel.setAttribute('title', LANG === 'en'
+    ? 'Table display density — kept on THIS device, like the theme'
+    : "Densité d'affichage des tableaux — retenue sur CE poste, comme le thème");
+  // ON VIDE AVANT DE PEUPLER, ET CE N'EST PAS UNE PRÉFÉRENCE D'ÉCRITURE : C'EST UNE MESURE. Une première
+  // version se contentait d'AJOUTER les options ; sondée sur le simulacre du harnais ESM (arbre réel du
+  // gabarit, `app.js` importé), le contrôle en rendait SIX au lieu de trois — ce banc importe `app.js` DEUX
+  // fois (une seconde instance sous `?plume-lang=en` pour le témoin du lexique) et un ajout CUMULE là où une
+  // pose idempotente REMPLACE. Le navigateur n'importe le module qu'une fois, donc le défaut n'y était pas
+  // visible ; le jumeau (`initTheme`) est idempotent lui aussi (`btn.innerHTML = ic(…)`), et une pose qui ne
+  // dépend d'aucune hypothèse sur le nombre d'évaluations du module est simplement plus solide.
+  // LA VALEUR EST POSÉE EN PROPRIÉTÉ, PAS EN ATTRIBUT, ET C'EST MESURÉ AUSSI : peupler par une chaîne HTML
+  // (`<option value="compact">`) rendait les trois options avec une valeur VIDE sur ce même simulacre, qui
+  // ne reflète pas l'attribut `value` vers la propriété. Un navigateur les aurait rendues justes, mais le
+  // banc qui juge ce code ne l'aurait pas vu — et un contrôle dont toutes les options valent « » ne choisit
+  // plus rien.
+  sel.innerHTML = '';   // REMPLACER, ne jamais AJOUTER (voir ci-dessus) ; la VALEUR est posée en propriété
+  CRANS.forEach(c => { const o = document.createElement('option'); o.value = c.v; o.textContent = LANG === 'en' ? c.en : c.fr; sel.append(o); });
+  sel.value = cran;
+  sel.onchange = () => {
+    const v = connu(sel.value) ? sel.value : '';
+    appliquer(v);
+    // L'ÉCRITURE PEUT JETER (`SecurityError`, stockage de site bloqué). Le choix est alors APPLIQUÉ sans
+    // être retenu : la vue suit le geste, seule la mémoire du poste manque — rien ne casse.
+    try { if (v) localStorage.setItem('soc-density', v); else localStorage.removeItem('soc-density'); } catch (e) {}
+  };
+})();
+
 initNavigation();   // navigation à 2 niveaux : écoute du hash, clics sidebar/sous-onglets, burger (navigation.js)
 route();
 initKeyboardNav();   // #62 — raccourcis clavier power-user (non-intrusifs ; `?` = aide). Indépendant de l'auth.

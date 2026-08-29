@@ -52,6 +52,10 @@ use crate::*;
 pub(crate) const PUBSUB_MAX_EVENTS: usize = 50_000;
 
 /// ACK Pub/Sub de SUCCÈS (données spoolées) : HTTP 200 `{"status":"ok"}` (petit corps). 2xx -> ACK, pas de rejeu.
+/// `S31` (temps 1) — accusé de RÉCEPTION, pas de DURABILITÉ : ce 200 fait ACQUITTER le message côté Pub/Sub,
+/// donc disparaître la seule autre copie, alors que le spool écrit juste avant n'est pas synchronisé. Le corps
+/// n'est pas étendu (Pub/Sub ne lit que le statut ; l'y écrire ne renseignerait personne). La limite est écrite
+/// dans `docs/AGENTS-PROTOCOLE.md` et dans le bandeau de `ingest/mod.rs`.
 fn pubsub_ok() -> Response {
     (StatusCode::OK, Json(json!({ "status": "ok" }))).into_response()
 }

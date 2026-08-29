@@ -237,6 +237,11 @@ pub(crate) fn hec_parse_body(raw: &str) -> Vec<Value> {
 }
 
 /// Réponse HEC de SUCCÈS (wire-compatible : les vrais clients HEC vérifient `code==0`).
+/// `S31` (temps 1) — CET ACCUSÉ ATTESTE LA RÉCEPTION, PAS LA DURABILITÉ, et son corps ne le dit PAS.
+/// C'est délibéré : cette forme est celle de Splunk HEC, donc le contrat d'un tiers ; un champ ajouté ici
+/// modifierait le protocole que des forwarders existants analysent, alors que la seule chose à dire n'est
+/// pas une nouveauté du fil mais une limite du central. Elle est donc écrite dans
+/// `docs/AGENTS-PROTOCOLE.md` et dans le bandeau de `ingest/mod.rs`, où elle vaut pour les dix surfaces.
 fn hec_ok(events: usize) -> Response {
     (StatusCode::OK, Json(json!({ "text": "Success", "code": 0, "events": events }))).into_response()
 }

@@ -1,5 +1,50 @@
 //! Couche d'ingestion (data-plane). Sous-modules extraits de main.rs (refactor split #25 —
 //! byte-identique). `store` = SPI de stockage enfichable.
+//!
+//! CE QUE L'ACCUSÉ DE RÉCEPTION DE CE MODULE ATTESTE — ET CE QU'IL N'ATTESTE PAS (`S31`, temps 1).
+//!
+//! LE CRITÈRE, PARCE QU'UNE LISTE DE NOMS SE PÉRIME. Une surface de RÉCEPTION POUSSÉE est une route de
+//! ce module telle que (1) l'émetteur est EXTERNE et détient la donnée, (2) le démon la PERSISTE pour
+//! son propre compte, et (3) la réponse HTTP est le SEUL signal dont l'émetteur dispose pour décider
+//! d'oublier sa copie. Sortent par ce critère : `/services/collector/health` (ne persiste rien),
+//! `/api/mail/body` (LIT, et n'est sur ce sous-routeur que pour hériter du plafond de corps), les
+//! connecteurs en PULL (le démon TIRE), et `/api/actions/result` (l'émetteur ne tient aucune copie à
+//! effacer — `collectors/respond.sh` poste et n'en garde rien).
+//!
+//! DÉRIVÉES DE CE CRITÈRE ET MESURÉES SUR L'ARBRE LE 2026-08-29 : DIX gestionnaires sur ONZE chemins de
+//! route (`hec_event_post` en sert deux), en DEUX régimes de durabilité, pas un.
+//!
+//!   * SEPT écrivent le SPOOL (`write` -> `set_permissions` -> `rename`) puis répondent :
+//!     `ingest_post`, `ingest_minio_post`, `ingest_journal_post`, `hec_event_post`, `otlp_traces_post`,
+//!     `firehose_ingest_post`, `pubsub_ingest_post`. Le renommage donne l'ATOMICITÉ DU CONTENU et rien
+//!     d'autre : après une coupure d'alimentation, les octets peuvent exister sans que leur entrée de
+//!     répertoire existe, et `ingest_once` parcourt le spool PAR NOM.
+//!   * TROIS écrivent la BASE dans une transaction : `metrics_prom`, `metrics_write`, `loki_push`. La
+//!     fenêtre y est plus étroite — le COMMIT survit à la mort du processus — mais elle existe : les
+//!     bases sont ouvertes en `journal_mode=WAL` + `synchronous=NORMAL`, régime dans lequel un COMMIT
+//!     n'attend aucune barrière d'écriture.
+//!
+//! AUCUN `sync_all` N'EST APPELÉ SUR CE CHEMIN, ET CE N'EST PAS UNE CAPACITÉ QUI MANQUE AU DÉPÔT : le
+//! même geste est appelé par `cold_store::writer::fsync_file` / `fsync_dir`, par `crypto` à l'écriture
+//! d'une clé, et par la sauvegarde. C'est le geste absent LÀ OÙ LA PROMESSE EST FAITE.
+//!
+//! DONC : un 2xx rendu ici atteste que le corps a été REÇU et remis au système, pas qu'il SURVIVRAIT à
+//! une coupure d'alimentation. Un expéditeur qui efface sa copie sur cet accusé accepte cette fenêtre —
+//! et il doit pouvoir le savoir sans lire ce fichier.
+//!
+//! CE QUI EST ÉCRIT, ET OÙ. Les QUATRE accusés dont le CORPS appartient à plume portent le champ
+//! `durable` (`/api/ingest`, `/api/ingest/journal`, `/api/ingest/minio`, `/api/metrics/prom`) : c'est la
+//! VALEUR qui bascule à `true` le jour où le temps 2 est fait, donc le témoin par mutation du correctif
+//! à venir. Les SIX autres accusés ont une forme dictée par un contrat ÉTRANGER (Splunk HEC, OTLP, AWS
+//! Firehose, GCP Pub/Sub, Loki push, Prometheus remote_write) — y ajouter un champ serait modifier le
+//! protocole d'un tiers, et deux d'entre eux répondent `204` sans aucun corps. Leur limite est écrite
+//! dans `docs/AGENTS-PROTOCOLE.md`, pas dans leur charge utile. MESURÉ avant de toucher un corps le
+//! 2026-08-29 : les deux expéditeurs livrés avec le produit décident sur le STATUT seul
+//! (`collectors/ship.sh` supprime sur `202`, `classify_status` dans `agent/src/ship.rs` acquitte sur
+//! `200..=299`), et aucun test n'épingle ces corps.
+//!
+//! CE N'EST PAS UN CHOIX DÉFINITIF. `S31` reste OUVERTE : le temps 2 déporte l'écriture pour rendre la
+//! promesse vraie. La perte reste un DÉFAUT ; elle est seulement DITE en attendant d'être supprimée.
 use crate::*;
 
 pub(crate) mod store;
@@ -641,7 +686,10 @@ pub(crate) async fn ingest_journal_post(State(st): State<AppState>, Extension(au
         let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur rename échoué
         return server_err("écriture spool échouée");
     }
-    (StatusCode::ACCEPTED, Json(json!({ "queued": true }))).into_response()
+    // `S31` (temps 1) — `durable: false` : cet accusé atteste la RÉCEPTION, pas la DURABILITÉ. Le
+    // renommage ci-dessus est atomique et n'est pas synchronisé ; le régime et sa sortie sont écrits une
+    // seule fois, dans le bandeau de ce module.
+    (StatusCode::ACCEPTED, Json(json!({ "queued": true, "durable": false }))).into_response()
 }
 
 /// ING-4 : âge minimal (s) d'un `.tmp` spool orphelin avant balayage au démarrage. SÛRETÉ : n'efface JAMAIS

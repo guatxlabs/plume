@@ -245,7 +245,9 @@ pub(crate) async fn ingest_minio_post(State(st): State<AppState>, Extension(au):
         let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur rename échoué
         return server_err("écriture spool échouée");
     }
-    (StatusCode::ACCEPTED, Json(json!({ "queued": true, "events": events.len() }))).into_response()
+    // `S31` (temps 1) — `durable: false` : voir le bandeau de `ingest/mod.rs`. MinIO rejoue sur un
+    // non-2xx ; il n'a aucun moyen de rejouer ce que ce 202 a laissé dans le cache de pages.
+    (StatusCode::ACCEPTED, Json(json!({ "queued": true, "events": events.len(), "durable": false }))).into_response()
 }
 
 /// Ingestion HTTP multi-OS : un agent (Windows/Mac/Linux/distant) pousse le même JSON
@@ -288,7 +290,10 @@ pub(crate) async fn ingest_post(State(st): State<AppState>, Extension(au): Exten
         let _ = std::fs::remove_file(&tmp); // ING-4 : pas d'orphelin `.tmp` sur rename échoué
         return server_err("écriture spool échouée");
     }
-    (StatusCode::ACCEPTED, Json(json!({ "queued": true }))).into_response()
+    // `S31` (temps 1) — `durable: false` : c'est sur CE code que `collectors/ship.sh` supprime le
+    // fichier de spool de l'agent. Le champ dit ce que l'accusé ne couvre pas ; le bandeau de
+    // `ingest/mod.rs` dit pourquoi et ce qui reste dû.
+    (StatusCode::ACCEPTED, Json(json!({ "queued": true, "durable": false }))).into_response()
 }
 
 /// Jeton sur : alphanum + qq ponctuations sures (email, id maildir, dossier). PAS d'espace,

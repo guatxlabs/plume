@@ -5640,13 +5640,59 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(!!boutonDeDepli && valeurDe(boutonDeDepli.corps, "width") === "var(--dens-plmore)" && valeurDe(boutonDeDepli.corps, "height") === "var(--dens-plmore)"
     && /var\(--dens-y\)/.test(valeurDe(boutonDeDepli.corps, "top")) && /var\(--dens-y\)/.test(valeurDe(boutonDeDepli.corps, "right")),
     `(42d) la taille et le retrait du bouton de dépli ne dérivent pas des jetons de densité : « ${boutonDeDepli && boutonDeDepli.corps} »`);
-  // CE QUE LA FEUILLE N'A PAS : UNE SURFACE QUI RÈGLE LA DENSITÉ. Compté, jamais supposé — la densité est
-  // portée par un ATTRIBUT (`data-density`), et un attribut que personne ne pose laisse le mécanisme
-  // inerte. Le compte est imprimé plutôt qu'exigé : le geste qui manque vit hors de la feuille et hors de
-  // la fabrique de tableaux (une préférence d'exploitant), et un plafond posé ici le rendrait invisible.
+  // LA SURFACE QUI RÈGLE LA DENSITÉ — ARMÉE LE 2026-08-29, ET CE TÉMOIN EST NÉ D'UN AVEU QUI ÉTAIT DEVENU FAUX.
+  //
+  // CE QUI ÉTAIT ÉCRIT ICI, ET POURQUOI C'ÉTAIT UN DÉFAUT. Ce bloc COMPTAIT les poseurs de `data-density`
+  // et imprimait « le mécanisme est posé, pas armé », sans rien EXIGER — au motif que le geste manquant
+  // vivait hors de la feuille. Le raisonnement se tenait tant que le compte valait zéro. Le jour où la
+  // densité a été armée, le compte est passé de 0 à 1 et CE BANC EST RESTÉ VERT en imprimant une phrase
+  // devenue FAUSSE, à chaque exécution. C'est le défaut de `P11.8-h` — un correctif que rien ne tient —
+  // dans sa forme la plus retorse : ce n'est pas qu'aucun témoin n'existait, c'est qu'il y en avait un
+  // qui REGARDAIT et ne CONCLUAIT PAS. Un compte imprimé n'est pas une garde.
+  //
+  // QUATRE PROPRIÉTÉS, TOUTES DÉRIVÉES — aucune liste de crans n'est écrite ici, et c'est le point : le
+  // jour où la feuille gagne un cran, la parité (53b) rougit tant que le contrôle ne l'offre pas.
   const poseursDeDensite = CORPUS_WEB.filter(([f]) => !f.endsWith(".css")).filter(([, src]) => /data-density|dataset\.density/.test(src)).map(([f]) => f);
+  exiger(poseursDeDensite.length >= 1,
+    `(53a) plus AUCUNE surface de web/ ne pose « data-density » : la densité est redevenue RÉGLABLE ET NON RÉGLÉE, le mécanisme est posé et désarmé`);
 
-  console.log(`[feuille] la feuille est lue comme du TEXTE, et trois propriétés en sont DÉRIVÉES. Choisi : ${choisies.length} règle(s) marquent un état choisi (bascule) et AUCUNE n'emploie un aplat littéral ni la graisse du mot ; ${lecteursDesJetons.length} lisent les trois jetons partagés, déclarés une fois chacun, dont le fond vaut « transparent » ; ${sansJeton.length} gardent leur couleur propre (favori, interrupteur) — ce qui leur est interdit, c'est l'aplat, pas leur encre — et ${enAvant.length} règle(s) de mise en avant par aplat sont toutes celles du SURVOL. Sous-titre : une seule règle l'écrit, sa marge est POSITIVE, elle porte interligne et espacement de mots, et une seule règle donne son écart à une mention qui qualifie une entrée — boîte de valeur d'une cellule coupée comprise. Densité : ${cellules.length} règles visent une cellule, UNE SEULE fait la hauteur d'une ligne et lit les trois jetons, aucune ne fixe de hauteur (ce qui casserait le dépli), la place et la taille du bouton dérivent du même jeu, et le défaut vaut l'interligne du corps du document — donc il ne change rien tant que personne ne choisit. CE QUE CE TÉMOIN NE TIENT PAS, ET CE QUE LA FEUILLE N'A PAS : il lit des DÉCLARATIONS, jamais l'encre peinte — la preuve du rendu passe par un vrai moteur ; ${margesEnLigne.length} ligne(s) de web/*.js écrivent une marge en style EN LIGNE sur une mention (${[...new Set(margesEnLigne.map(([f]) => f))].join(", ")}) et l'emportent donc sur la règle unique ; et ${poseursDeDensite.length} surface(s) posent « data-density » — la densité est RÉGLABLE et n'est RÉGLÉE par personne, le mécanisme est posé, pas armé.`);
+  // (53b) PARITÉ FEUILLE ↔ CONTRÔLE. Les crans que la feuille SAIT rendre, et les valeurs que le contrôle
+  // OFFRE, sont dérivés chacun de leur source et comparés. La position « défaut » n'est pas un cran : elle
+  // est l'ABSENCE d'attribut, donc la chaîne vide est retirée avant comparaison.
+  const srcAppPourDensite = (CORPUS_WEB.find(([f]) => f === "app.js") || [, ""])[1];
+  const srcFeuille = (CORPUS_WEB.find(([f]) => f === "style.css") || [, ""])[1];
+  const cransDeLaFeuille = [...new Set([...srcFeuille.matchAll(/\[data-density=["']([^"']+)["']\]/g)].map((m) => m[1]))].sort();
+  // Les crans OFFERTS sont dérivés de la table du contrôle, bornée à sa déclaration — jamais d'une liste
+  // écrite ici. La position par défaut y porte une valeur VIDE (l'absence d'attribut) : elle est retirée,
+  // parce que la feuille ne peut pas déclarer un sélecteur pour l'absence d'un attribut.
+  const tableDuControle = (srcAppPourDensite.match(/const CRANS = \[[\s\S]*?\n  \];/) || [""])[0];
+  const cransDuControle = [...new Set([...tableDuControle.matchAll(/\bv:\s*'([^']*)'/g)].map((m) => m[1]).filter(Boolean))].sort();
+  exiger(cransDeLaFeuille.length > 0 && cransDuControle.length > 0,
+    `(53b-instrument) un des deux ensembles de crans est VIDE — la parité ne mesure plus rien : feuille=[${cransDeLaFeuille}] contrôle=[${cransDuControle}]`);
+  exiger(cransDeLaFeuille.join(",") === cransDuControle.join(","),
+    `(53b) la feuille et le contrôle ne s'accordent pas sur les crans de densité : la feuille rend [${cransDeLaFeuille}], le contrôle offre [${cransDuControle}] — un cran que la feuille sait rendre et que personne ne peut choisir est aussi mort qu'un cran choisi que la feuille ignore`);
+
+  // (53c) L'ORDRE, ET C'EST LA SEULE PROPRIÉTÉ QUI TIENNE « AVANT LA PREMIÈRE PEINTURE ».
+  // Le jumeau (`initTheme`) ne garantit sa pré-peinture QUE parce que tout le corps de `app.js` tient dans
+  // une seule tâche synchrone — mesuré le 2026-08-29 : `route()` est appelé AVANT lui, et c'est `route()`
+  // qui pose `.app-ready`, donc qui LÈVE le masquage de `<main>`. Un `await` de premier niveau ajouté
+  // demain rendrait cette garantie fausse EN SILENCE. La densité, elle, est posée AVANT `route()` : la
+  // propriété ne dépend alors plus d'un raisonnement sur l'ordonnancement, seulement de l'ordre du source.
+  // LES DEUX ANCRES SONT DES GESTES, PAS DES MOTS. Une première version de ce témoin cherchait
+  // « route() » n'importe où : elle a trouvé un COMMENTAIRE de la l. 191 et déclaré l'ordre inversé alors
+  // qu'il est juste. L'appel d'amorçage est le seul en colonne 1 ; la pose est un appel de méthode sur la
+  // racine du document. Chaque ancre est exigée UNIQUE : deux occurrences voudraient dire que l'ancre a
+  // cessé de désigner un geste, et le témoin mesurerait alors la mauvaise.
+  const posesTrouvees = [...srcAppPourDensite.matchAll(/document\.documentElement\.(?:set|remove)Attribute\('data-density'/g)];
+  const routesTrouvees = [...srcAppPourDensite.matchAll(/^route\(\);/gm)];
+  exiger(posesTrouvees.length === 2 && routesTrouvees.length === 1,
+    `(53c-instrument) les ancres ne désignent plus un geste unique : ${posesTrouvees.length} pose(s) de l'attribut (attendu 2 : poser et retirer), ${routesTrouvees.length} appel(s) d'amorçage en colonne 1 (attendu 1) — ce témoin ne mesure plus l'ordre`);
+  const posePos = posesTrouvees.length ? posesTrouvees[0].index : -1;
+  const routePos = routesTrouvees.length ? routesTrouvees[0].index : -1;
+  exiger(posePos < routePos,
+    `(53c) la densité est posée APRÈS l'appel qui révèle la vue (pose à ${posePos}, route() à ${routePos}) : l'exploitant verra la page se réagencer sous ses yeux à chaque chargement`);
+
+  console.log(`[feuille] la feuille est lue comme du TEXTE, et trois propriétés en sont DÉRIVÉES. Choisi : ${choisies.length} règle(s) marquent un état choisi (bascule) et AUCUNE n'emploie un aplat littéral ni la graisse du mot ; ${lecteursDesJetons.length} lisent les trois jetons partagés, déclarés une fois chacun, dont le fond vaut « transparent » ; ${sansJeton.length} gardent leur couleur propre (favori, interrupteur) — ce qui leur est interdit, c'est l'aplat, pas leur encre — et ${enAvant.length} règle(s) de mise en avant par aplat sont toutes celles du SURVOL. Sous-titre : une seule règle l'écrit, sa marge est POSITIVE, elle porte interligne et espacement de mots, et une seule règle donne son écart à une mention qui qualifie une entrée — boîte de valeur d'une cellule coupée comprise. Densité : ${cellules.length} règles visent une cellule, UNE SEULE fait la hauteur d'une ligne et lit les trois jetons, aucune ne fixe de hauteur (ce qui casserait le dépli), la place et la taille du bouton dérivent du même jeu, et le défaut vaut l'interligne du corps du document — donc il ne change rien tant que personne ne choisit. CE QUE CE TÉMOIN NE TIENT PAS, ET CE QUE LA FEUILLE N'A PAS : il lit des DÉCLARATIONS, jamais l'encre peinte — la preuve du rendu passe par un vrai moteur ; ${margesEnLigne.length} ligne(s) de web/*.js écrivent une marge en style EN LIGNE sur une mention (${[...new Set(margesEnLigne.map(([f]) => f))].join(", ")}) et l'emportent donc sur la règle unique ; et ${poseursDeDensite.length} surface(s) posent « data-density » — la densité est ARMÉE depuis le 2026-08-29 et ce compte est désormais EXIGÉ, non plus seulement imprimé : (53a) rougit s'il retombe à zéro, (53b) si la feuille et le contrôle cessent de s'accorder sur les crans, (53c) si la pose passe APRÈS l'appel qui révèle la vue. La phrase qui vivait ici disait le mécanisme inerte ; elle est restée VRAIE jusqu'au jour où elle a cessé de l'être, sans que rien ne rougisse — un compte imprimé n'est pas une garde.`);
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -85,7 +85,7 @@ une erreur.** Ce qui est refusé synchroniquement est court :
 
 | Code | Quand |
 |---|---|
-| `202 {"queued":true}` | le corps est du JSON et porte `kind` |
+| `202 {"queued":true,"durable":false}` | le corps est du JSON et porte `kind` — sur `durable`, voir §2.5 |
 | `400` | JSON invalide, ou `kind` absent |
 | `413` | trop d'événements dans un lot, ou corps trop gros — le message **nomme le plafond qui a mordu et le levier qui le change** |
 | `503` + `Retry-After: 60` | plancher d'espace libre franchi (`PLUME_INGEST_MIN_FREE_MB`) |
@@ -135,6 +135,47 @@ levier qui ne mordra pas :
 La garde disque **échoue en OUVERT** : si la mesure d'espace libre est impossible, l'ingestion passe.
 C'est un choix — refuser sur une mesure absente ferait tomber l'ingestion pour une raison qui n'est
 pas la bonne.
+
+### 2.5 Ce que l'accusé de réception atteste — et ce qu'il n'atteste pas
+
+**MESURÉ SUR L'ARBRE le 2026-08-29 : aucune surface de réception ne synchronise ce qu'elle vient
+d'écrire.** Un 2xx rendu par le central atteste que le corps a été **reçu et remis au système**. Il
+n'atteste **pas** qu'il survivrait à une coupure d'alimentation.
+
+```sh
+# le motif cherche un APPEL, pas une mention — sinon cette page se contredirait elle-même
+grep -rn '\.sync_all()\|\.sync_data()' daemon/src/ingest                              # rien
+grep -rn '\.sync_all()\|\.sync_data()' daemon/src/cold_store daemon/src/crypto daemon/src/backup   # six appels
+```
+
+La seconde commande est là parce qu'une commande qui ne rend rien ne prouve rien tant qu'on ne l'a pas
+vue rendre quelque chose. Ce n'est donc **pas** une capacité qui manque au produit — le même geste est
+appelé dans l'écrivain du tier froid, à l'écriture d'une clé de chiffrement et dans la sauvegarde. Il
+est absent **là où la promesse est faite**.
+
+Deux régimes, qu'il vaut mieux ne pas confondre :
+
+| Régime | Routes | Ce qu'une coupure peut emporter |
+|---|---|---|
+| **spool** — un fichier écrit puis renommé, jamais synchronisé | `/api/ingest`, `/api/ingest/journal`, `/api/ingest/minio`, `/services/collector[/event]`, `/v1/traces`, `/api/ingest/firehose`, `/api/ingest/pubsub` | le contenu, ou **seulement l'entrée de répertoire** — les octets existent alors, leur nom non, et le spool du central est relu **par nom** |
+| **base** — une transaction validée en `journal_mode=WAL` + `synchronous=NORMAL` | `/api/metrics/prom`, `/api/metrics/write`, `/loki/api/v1/push` | les dernières transactions validées : le `COMMIT` survit à la mort du **processus**, pas à celle de la **machine** |
+
+**Ce que cela change pour un expéditeur.** L'accusé vous autorise à oublier ; il ne promet pas de se
+souvenir à votre place. Si votre source est rejouable — un journal conservé, un flux à filigrane, un
+abonnement qui redélivre — gardez de quoi rejouer une fenêtre : la déduplication du central (§4.4)
+absorbe le rejeu dès que vos événements portent une clé. Si elle ne l'est pas, cette fenêtre est une
+perte que rien ne rattrape.
+
+**Où c'est écrit dans la réponse, et où ça ne l'est pas.** Les quatre routes dont le corps appartient à
+plume portent le champ **`durable`** — `/api/ingest`, `/api/ingest/journal`, `/api/ingest/minio` et
+`/api/metrics/prom`. Il vaut `false`, et c'est la valeur qui basculera le jour où le défaut sera
+corrigé. Les six autres accusés ont une forme dictée par un contrat **étranger** (Splunk HEC, OTLP, AWS
+Firehose, GCP Pub/Sub, Loki push, Prometheus `remote_write`), quand ils ont un corps : y ajouter un
+champ modifierait le protocole d'un tiers. Leur limite est donc **ici**, et pas dans leur charge utile.
+
+> ⚠️ **Ce n'est pas un arbitrage refermé.** La perte reste un **défaut** ; elle est écrite en attendant
+> d'être supprimée. Le correctif — déporter l'écriture, pour que l'accusé cesse d'avoir besoin de cette
+> page — est la clé `S31` de [`ROADMAP.md`](ROADMAP.md), et il reste dû.
 
 ---
 
@@ -198,6 +239,11 @@ L'agent Rust tient le même contrat par une **voie unique** de publication, et u
 `rename(` écrit ailleurs dans la caisse. **Sa limite est écrite plutôt qu'affirmée** : sous Windows,
 le répertoire n'est pas synchronisé, faute d'un geste équivalent dans la bibliothèque standard.
 
+**Le central, lui, ne tient pas ce contrat sur ses propres écritures.** Ses récepteurs poussés écrivent
+puis renomment sans synchroniser — c'est-à-dire exactement la forme que cette section décrit comme
+insuffisante, mais du côté qui *reçoit*. Ce que l'accusé couvre alors, et ce qu'il ne couvre pas, est
+en §2.5.
+
 ### 4.2 La borne du tampon — et son absence
 
 | Famille | Borne | Politique quand c'est plein |
@@ -221,7 +267,8 @@ fois), pas sur le spool.
 
 L'expéditeur shell supprime un fichier **si et seulement si** la réponse est `202`. Tout le reste est
 « conservé pour réessai » — y compris un `204` (corps vide, ou lot entièrement filtré) et y compris
-une **erreur permanente** comme `400` ou `413`.
+une **erreur permanente** comme `400` ou `413`. Ce `202` n'atteste que la **réception** : ce qu'il
+laisse ouvert est en §2.5.
 
 ```sh
 sed -n '/^ship_glob/,/^}/p' collectors/ship.sh
@@ -335,7 +382,9 @@ formé.
 
 **Le tampon est côté émetteur, pas côté central.** Un central qui refuse (garde disque, limitation de
 débit) rend un code qui invite au réessai ; c'est l'agent qui garde les octets. Cela déplace le risque
-de saturation vers l'agent — d'où l'importance de §4.2.
+de saturation vers l'agent — d'où l'importance de §4.2. Et cela a un second prix, moins visible :
+l'instant où le central acquitte est l'instant où la **seule autre copie** disparaît, alors que la
+sienne n'est pas encore durable (§2.5).
 
 **L'hôte est attesté par le jeton, pas par l'émetteur.** Un inventaire dont les noms d'hôte sont
 déclarés par la machine elle-même n'est pas un inventaire. La liaison réécrit plutôt que de refuser

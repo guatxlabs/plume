@@ -84,7 +84,10 @@ pub(crate) async fn metrics_prom(State(st): State<AppState>, Extension(au): Exte
         }
     }
     let _ = conn.execute_batch("COMMIT");
-    Json(json!({ "ingested": n })).into_response()
+    // `S31` (temps 1) — `ingested` est VRAI (les lignes sont insérées et la transaction est validée) et
+    // ne suffit pas : sous `synchronous=NORMAL`, un COMMIT n'attend aucune barrière d'écriture. `durable`
+    // porte la seule chose que cet accusé ne couvre pas ; le bandeau de `ingest/mod.rs` porte le régime.
+    Json(json!({ "ingested": n, "durable": false })).into_response()
     })
 }
 
@@ -199,6 +202,9 @@ pub(crate) async fn metrics_write(State(st): State<AppState>, Extension(au): Ext
         let _ = store().insert_metric(conn, &metric_ingeree(*ts, name.as_ref(), labels.as_ref(), *value, &hote));
     }
     let _ = conn.execute_batch("COMMIT");
+    // `S31` (temps 1) — ce 204 fait avancer le WAL de l'émetteur (Alloy/Prometheus) et disparaître sa
+    // copie. Il n'a pas de corps où l'écrire, et le protocole remote_write n'en veut pas : la limite est
+    // dans `docs/AGENTS-PROTOCOLE.md` et dans le bandeau de `ingest/mod.rs`.
     StatusCode::NO_CONTENT.into_response()
     })
 }
@@ -345,6 +351,9 @@ pub(crate) async fn loki_push(State(st): State<AppState>, Extension(au): Extensi
     let db_path = req_db_path(&st, &au);
     crate::req_conn!(st, au, conn);
     match ingest_events_batch(&conn, &db_path, &evenements, now_ts, None, bind_host.as_deref()) {
+        // `S31` (temps 1) — MÊME RÉSERVE QUE CI-DESSUS, et elle porte plus loin que le doublon : ce 204
+        // atteste que le lot a été REÇU et validé, pas qu'il survivrait à une coupure d'alimentation.
+        // Sans corps où l'écrire, la limite est dans `docs/AGENTS-PROTOCOLE.md` et le bandeau du module.
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         // Le batch a été ANNULÉ (disque plein, verrou) : rendre 204 annoncerait une ingestion qui
         // n'a pas eu lieu. L'ancien code ignorait chaque échec de ligne (`let _ = stmt.execute`) —

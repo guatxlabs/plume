@@ -50,6 +50,12 @@ fn now_ms() -> i64 {
 
 /// ACK Firehose de SUCCÈS : HTTP 200 `{"requestId":<echo>,"timestamp":<ms>}`. Un non-200 fait REJOUER le stream
 /// (puis dumpe dans le bucket S3 d'erreur) -> on ne renvoie 200 QUE si la donnée est spoolée (ou vide-mais-acceptée).
+///
+/// `S31` (temps 1) — ET « SPOOLÉE » NE VEUT PAS DIRE « DURABLE ». Le fichier est écrit puis renommé, jamais
+/// synchronisé : après une coupure d'alimentation, son entrée de répertoire peut manquer. Firehose, lui, a
+/// pris ce 200 pour un acquittement définitif et ne rejouera pas. Le corps n'est pas étendu : sa forme est
+/// le contrat AWS de l'endpoint HTTP, et un champ inconnu y serait un changement de protocole. La limite est
+/// écrite dans `docs/AGENTS-PROTOCOLE.md` et dans le bandeau de `ingest/mod.rs`.
 fn firehose_ok(request_id: &str) -> Response {
     (StatusCode::OK, Json(json!({ "requestId": request_id, "timestamp": now_ms() }))).into_response()
 }

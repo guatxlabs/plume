@@ -125,6 +125,17 @@
       <option value="en">EN</option>
     </select>
     <button id="theme" class="k-theme" type="button" aria-label="Changer de thème" title="Thème clair / sombre"></button>
+    <!-- `P11.15-b` — DENSITÉ D'AFFICHAGE DES TABLEAUX. RÉGLAGE DE LA PERSONNE, SUR LE MODÈLE DU THÈME
+         (arbitrage de l'exploitant, 2026-08-29) : la valeur vit dans le STOCKAGE DU SITE (`soc-density`),
+         jamais dans le magasin de préférences par utilisateur — c'est un confort attaché à l'ÉCRAN qu'on a
+         devant soi, et un grand moniteur n'appelle pas le cran d'un portable. Le coût est assumé et dit :
+         deux postes = deux réglages, exactement comme le thème aujourd'hui.
+         VIDE ICI, PEUPLÉ PAR `app.js` — comme le bouton de thème juste au-dessus, et comme les sélecteurs de
+         tenant et d'environnement plus bas. DEUX RAISONS, ET AUCUNE N'EST UN GOÛT : les libellés sont
+         BILINGUES PAR CONSTRUCTION (`LANG === 'en' ? … : …`, le motif du dépôt) et n'attendent rien du
+         lexique ; et les valeurs des crans ne sont écrites QU'À UN SEUL ENDROIT dans la console, au lieu
+         d'être répétées ici et là-bas où elles pourraient diverger sans que rien ne le dise. -->
+    <select id="density" class="k-theme"></select>
     <!-- #2c switcher de tenant : peuplé + révélé par initTenants() UNIQUEMENT en mode 1 (super-admin OU
          >1 tenant). Mode 0 / mono-tenant : reste caché, aucun entête X-Plume-Tenant posé (invariant). -->
     <span id="tenantbox" class="tenantbox" hidden>

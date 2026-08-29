@@ -245,6 +245,16 @@ fn sec2_ssrf_guard_blocks_internal_allows_public() {
     assert!(!egress_url_ok("http://[::ffff:169.254.169.254]/"), "notifier egress metadata mapped-v6 -> refus");
     assert!(egress_url_ok("https://93.184.216.34/"), "notifier egress public -> ok");
     assert!(egress_url_ok("http://10.20.30.40/hook"), "notifier egress RFC1918 on-prem -> ok par défaut");
+    // USERINFO (`utilisateur:secret@`) — trou de corpus comblé le 2026-08-29 sous `P11.13-i`. Le
+    // comportement était LU dans `ssrf_split_authority`, jamais JOUÉ : ce couple le joue, et il
+    // DISCRIMINE. ① Le userinfo ne fait pas passer un hôte interne : la garde juge l'HÔTE, et c'est
+    // pour ça qu'elle retire le userinfo avant de trancher. ② Une URL publique CRÉDENTIALISÉE est
+    // ACCEPTÉE — donc refuser une crédence n'est pas le remède (cela casserait les puits qui
+    // s'authentifient ainsi) ; le remède est de ne pas la RECOPIER dans le journal d'audit, ce que
+    // `endpoint_sans_credence` fait et que son propre témoin tient.
+    assert!(ssrf_guard("http://svc:S3cret@169.254.169.254/").is_err(), "un userinfo ne doit pas faire passer un hôte metadata");
+    assert!(ssrf_guard("http://svc:S3cret@127.0.0.1:8200/").is_err(), "un userinfo ne doit pas faire passer un loopback");
+    assert!(ssrf_guard("http://svc:S3cret@93.184.216.34/").is_ok(), "un hôte public credentialisé reste ACCEPTÉ : le remède est le caviardage du journal, pas le refus");
 }
 
 /// FIX #2/#3 — politique SSRF au niveau IP (testable sans env global) : never-egress INCONDITIONNEL (loopback/

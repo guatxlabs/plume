@@ -4,7 +4,7 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, mitreName, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, socIsAdmin, lsSet, collapsibleGroup } from './core.js';
+import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, mitreName, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, socIsAdmin, lsSet, collapsibleGroup, disclosure } from './core.js';
 import { S, lireLeStockageDuSite } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
 import { loadAttackMatrix, poserLesPortesDeTechnique } from './attack.js';
@@ -20,8 +20,35 @@ import { champDeRecherche, filtrerParRecherche, resumeDeRecherche, texteCherchab
 // alertes filtrées par cette technique (setAlertMitreFilter). Lecture seule, idempotent.
 async function renderCoverage() {
   const b = $('#cov-body'); if (!b) return;
-  let detections = [];
-  try { ({ detections } = await api('/coverage/detections')); } catch (e) { b.innerHTML = '<div class="muted">couverture indisponible</div>'; return; }
+  // `P10.7-d` — LA RÉPONSE N'EST PLUS DÉCONSTRUITE, PARCE QUE LA DÉCONSTRUCTION JETAIT L'AVEU.
+  //
+  // CE QUE LA MESURE DU 2026-08-29 A MONTRÉ, EN EXERÇANT `renderCoverage` SUR LE CORPS EXACT DU DÉMON.
+  // `daemon/src/handlers/alerts.rs` rend, portillon de concurrence CLOS,
+  // `portillon::corps_de_refus(json!({ "detections": [] }))` — soit `{detections: [], error: <la cause>}`,
+  // en 200 : `api()` ne jette que sur `!r.ok`, sur un corps vide ou non-JSON, donc pas ici.
+  // `({ detections } = await api(…))` ne retenait QUE la clé nommée : `error` arrivait et repartait dans la
+  // même expression, sans qu'aucun nom ne le porte. La vue sortait alors « aucune technique détectée ».
+  //
+  // POURQUOI CELLE-CI EST UNE DES PIRES DE LA CONSOLE. Sur une matrice de couverture purple, « aucune
+  // technique détectée » n'est pas un vide : c'est un VERDICT DE COUVERTURE. Il se lit « rien ne nous a
+  // touchés » — ou pire, « nos règles ne détectent rien » — et c'est le genre de phrase dont on tire une
+  // décision (créer des règles, rouvrir un angle mort, déclarer une campagne infructueuse). Elle était
+  // rendue par une lecture QUI N'A PAS EU LIEU.
+  //
+  // LE CORPS EST LIÉ, PUIS LU — le test du refus AVANT celui du vide, et non fondu avec lui : les fondre
+  // est exactement ce que `check_a_refusal_is_not_rendered_as_an_absence.py` rend non-écrivable sous
+  // `web/`. La cause n'est pas recopiée ici ; elle est écrite une seule fois dans
+  // `daemon/src/handlers/portillon.rs` et rendue telle quelle.
+  let rep;
+  try { rep = await api('/coverage/detections'); } catch (e) { b.innerHTML = '<div class="muted">couverture indisponible</div>'; return; }
+  const refusServi = (rep && rep.error != null) ? String(rep.error).trim() : '';
+  if (refusServi) {
+    b.innerHTML = '<div class="bad">' + esc("Couverture ATT&CK NON LUE : le démon a refusé et en nomme la cause — « " + refusServi
+      + " » Ce n'est PAS une absence : aucune technique n'a été lue, donc rien ici n'établit qu'aucune n'a "
+      + "été détectée, ni que la couverture soit nulle.") + '</div>';
+    return;
+  }
+  const detections = rep.detections || [];
   if (!detections.length) { b.innerHTML = '<div class="muted">aucune technique détectée (les alertes taguées MITRE apparaîtront ici)</div>'; return; }
   b.innerHTML = detections.map(d => {
     const nm = mitreName(d.mitre);
@@ -29,6 +56,60 @@ async function renderCoverage() {
     `<b title="1re détection ${fmtTs(d.first_ts)}">${d.count} détection(s) <span class="muted">· depuis ${fmtTs(d.first_ts)}</span></b></div>`;
   }).join('');
   b.querySelectorAll('.mitrepivot').forEach(el => el.onclick = () => setAlertMitreFilter(el.dataset.m));
+}
+
+// `P11.20-j` — LE DERNIER DÉPLI ÉCRIT À LA MAIN DANS LA CONSOLE, RALLIÉ AU DÉPLI PARTAGÉ.
+//
+// CE QUE LE CONSTAT DE LA CLÉ DISAIT, ET CE QUE LA MESURE DU 2026-08-29 EN RÉFUTE. Il annonçait UN bouton
+// (`#rule-collapse`) câblé DEUX fois, aux lignes 350 et 532. C'est faux : `#rule-collapse` n'apparaît
+// qu'UNE seule fois dans ce module (et une fois dans `index.html`). Le second site pilotait
+// `#parser-collapse` — un AUTRE bouton, un AUTRE panneau (`#parser-list`), une AUTRE clé de stockage
+// (`soc_parser_open`). Ce n'était donc pas un double câblage (qui serait un bug : deux gestionnaires se
+// contredisant sur un même bouton) mais un PATRON RECOPIÉ sur deux panneaux — moins grave, et qui se
+// corrige autrement : en retirant le patron, pas en dédoublonnant un câblage.
+//
+// LE PRIX RÉEL, MESURÉ PLUTÔT QUE SUPPOSÉ. La question posée était « le bouton annonce-t-il son état à
+// l'assistance technique ? ». La réponse est OUI, et elle l'était déjà : les deux `apply()` posaient
+// `aria-expanded` à chaque bascule, et `index.html` le porte au repos sur les deux boutons. Le défaut
+// d'accessibilité que la clé laissait craindre N'EXISTAIT PAS. Ce qui manquait vraiment est plus petit et
+// se mesure : `aria-controls`. `disclosure` le pose depuis le panneau (`core.js`), la version écrite à la
+// main non — `index.html` n'en porte aucun. Les deux boutons ne nommaient donc pas la région qu'ils
+// commandent.
+//
+// POURQUOI LE RALLIEMENT EST SÛR ICI, ET LES DEUX OBSTACLES QUI ONT ÉTÉ VÉRIFIÉS AVANT :
+//   * `disclosure` juge l'ouverture sur `!panel.hidden && !panel.classList.contains('hidden')`. Mesuré :
+//     ni `#rule-list` ni `#parser-list` ne portent la classe `hidden` dans `index.html` — le verdict par
+//     défaut est donc juste, et aucun `isOpen` sur mesure n'est nécessaire.
+//   * `disclosure` pose `.on` sur le bouton. Mesuré sur la feuille : AUCUNE règle ne vise `.picon.on` (les
+//     règles `.on` sont toutes portées par un ancêtre : `.sidebar a`, `.subtab`, `.agseg`, `.srctoggle`,
+//     `.evnum`, `.plmore`). La marque est donc inerte visuellement sur ces deux boutons : elle ajoute un
+//     état lisible par le programme sans rien changer à l'écran.
+// Le chevron, lui, reste peint ici : `disclosure` ne connaît pas d'icône, et c'est le seul signal d'état
+// que ces boutons donnent à l'œil.
+//
+// UN GAIN QUI N'ÉTAIT PAS DEMANDÉ, ET QU'IL FAUT DIRE. L'ordre a changé : l'ancien clic ÉCRIVAIT dans le
+// stockage AVANT de repeindre, si bien qu'un navigateur refusant le stockage jetait et le panneau ne
+// bougeait pas du tout. Ici l'état visible est posé d'abord, la persistance ensuite : un stockage refusé
+// coûte la MÉMOIRE du pli, plus le pli lui-même.
+//
+// CE QUE CE RALLIEMENT NE TIENT PAS : `disclosure` installe un observateur qui resynchronise le bouton si
+// le panneau est replié AILLEURS. Mesuré : rien d'autre dans `web/` n'écrit `hidden` sur ces deux
+// panneaux — l'observateur garde donc une porte que personne n'ouvre aujourd'hui, et le chevron, lui,
+// n'est pas repeint par lui (il ne l'était pas davantage avant).
+function deplierUnPanneauPersiste(bouton, liste, cle) {
+  if (!bouton || !liste) return;
+  const peindreLeChevron = () => { bouton.innerHTML = ic(liste.hidden ? 'chevright' : 'chevdown'); };
+  // `P4.13-a` (reprise) — LECTURE FAITE À L'ÉVALUATION DU MODULE, donc gardée : un navigateur qui refuse
+  // le stockage de site JETTE à l'ACCÈS, et le graphe ES entier cessait de se lier (mesuré par le
+  // sous-banc « stockage refusé » de `web_esm_harnais.mjs`). Refus -> `null` -> le panneau s'ouvre, ce
+  // qui est déjà le défaut d'une première visite.
+  liste.hidden = lireLeStockageDuSite(cle) === '0';
+  const persister = v => { try { localStorage.setItem(cle, v); } catch (e) {} };
+  disclosure(bouton, liste, {
+    open: () => { liste.hidden = false; peindreLeChevron(); persister('1'); },
+    close: () => { liste.hidden = true; peindreLeChevron(); persister('0'); },
+  });
+  peindreLeChevron();
 }
 
 // --- page admin : règles de détection (P4) ---
@@ -346,15 +427,7 @@ initSigmaImport({ onImported: () => { loadRules(); renderCoverage(); loadAttackM
   const champ = $('#rule-search');
   if (champ) { const poignee = champDeRecherche(champ, { auChangement: () => renderRules() }); rechercheDesRegles = poignee.valeur; poserLaRechercheDesRegles = poignee.poser; }
   if (sortSel) { sortSel.value = S.ruleSort; sortSel.onchange = () => { S.ruleSort = sortSel.value; localStorage.setItem('soc_rule_sort', S.ruleSort); renderRules(); }; }
-  if (collapse && list) {
-    const apply = open => { list.hidden = !open; collapse.setAttribute('aria-expanded', open ? 'true' : 'false'); collapse.innerHTML = ic(open ? 'chevdown' : 'chevright'); };
-    // `P4.13-a` (reprise) — LECTURE FAITE À L'ÉVALUATION DU MODULE, donc gardée : un navigateur qui refuse
-    // le stockage de site JETTE à l'ACCÈS, et le graphe ES entier cessait de se lier (mesuré par le
-    // sous-banc « stockage refusé » de `web_esm_harnais.mjs`). Refus -> `null` -> le panneau s'ouvre, ce
-    // qui est déjà le défaut d'une première visite.
-    apply(lireLeStockageDuSite('soc_rule_open') !== '0');
-    collapse.onclick = () => { const open = list.hidden; localStorage.setItem('soc_rule_open', open ? '1' : '0'); apply(open); };
-  }
+  deplierUnPanneauPersiste(collapse, list, 'soc_rule_open');
 })();
 
 // --- notifications multi-canal ---
@@ -528,11 +601,7 @@ loadParsers();
 (() => {
   const sortSel = $('#parser-sort'), collapse = $('#parser-collapse'), list = $('#parser-list');
   if (sortSel) { sortSel.value = S.parserSort; sortSel.onchange = () => { S.parserSort = sortSel.value; localStorage.setItem('soc_parser_sort', S.parserSort); loadParsers(); }; }
-  if (collapse && list) {
-    const apply = open => { list.hidden = !open; collapse.setAttribute('aria-expanded', open ? 'true' : 'false'); collapse.innerHTML = ic(open ? 'chevdown' : 'chevright'); };
-    apply(lireLeStockageDuSite('soc_parser_open') !== '0');
-    collapse.onclick = () => { const open = list.hidden; localStorage.setItem('soc_parser_open', open ? '1' : '0'); apply(open); };
-  }
+  deplierUnPanneauPersiste(collapse, list, 'soc_parser_open');
 })();
 
 // --- moteur de réponse () ---

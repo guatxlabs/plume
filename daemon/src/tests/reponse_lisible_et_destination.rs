@@ -333,4 +333,55 @@
             let tick = tick_des_alertes(&sources);
             assert!(tick.contains("run_due_rules(") && tick.contains("run_playbooks(") && !tick.contains("run_due_connectors("), "bloc du tick mal borné : {tick}");
         }
+
+        // =========================================================================================
+        // UNE CRÉDENCE D'ENDPOINT N'ENTRE PAS DANS LE JOURNAL D'AUDIT.
+        //
+        // CE QUI S'EST PASSÉ, MESURÉ le 2026-08-29. `ssrf_split_authority` RETIRE le userinfo avant de
+        // valider — c'est correct pour la garde SSRF, qui juge l'HÔTE. Mais une URL portant
+        // `utilisateur:secret@` traverse donc `dest_endpoint_ok`, et `destination_create` recopiait
+        // l'endpoint VERBATIM dans ses trois écritures d'audit : détail du ledger, message de l'event,
+        // et `fields.endpoint`. Le journal d'audit est tamper-evident et NON PURGEABLE — un secret qui
+        // y entre n'en sort jamais, et aucun geste d'oubli n'existe.
+        //
+        // CE QUE CETTE SUITE TIENT. ① Le caviardage est DÉRIVÉ : aucun schéma ni hôte n'y est écrit,
+        // seule l'autorité est bornée, et une URL sans userinfo traverse INCHANGÉE — un caviardage qui
+        // abîmerait ce qui n'a rien à cacher serait un défaut de plus. ② Le témoin de SOURCE : le corps
+        // de `destination_create` ne doit plus interpoler l'endpoint brut dans ses appels d'audit. C'est
+        // lui qui survit à une réécriture — le premier ne tient que la fonction, pas son emploi.
+        #[test]
+        fn une_credence_d_endpoint_n_entre_pas_dans_le_journal() {
+            use crate::handlers::destinations::endpoint_sans_credence;
+
+            // ① Positif : la crédence part, l'hôte, le port, le chemin et la requête RESTENT.
+            let caviarde = endpoint_sans_credence("https://svc:Sup3rS3cret@sink.exemple.com:8088/services/collector?x=1");
+            assert!(!caviarde.contains("Sup3rS3cret"), "le secret survit au caviardage : {caviarde}");
+            assert!(!caviarde.contains("svc:"), "l'identifiant survit au caviardage : {caviarde}");
+            assert!(caviarde.contains("sink.exemple.com:8088"), "l'hôte a été perdu : {caviarde}");
+            assert!(caviarde.contains("/services/collector?x=1"), "le chemin a été perdu : {caviarde}");
+
+            // ② Négatif : ce qui n'a rien à cacher n'est pas touché. Sans ce témoin, une fonction qui
+            //    rendrait une constante passerait le témoin positif.
+            for nu in ["https://sink.exemple.com/collector", "http://10.0.0.4:514/", "https://h.example/a?b=c#d"] {
+                assert_eq!(endpoint_sans_credence(nu), nu, "une URL sans crédence a été abîmée");
+            }
+
+            // ③ Un `@` dans le mot de passe : c'est le DERNIER qui sépare, comme pour `ssrf_split_authority`.
+            let deux = endpoint_sans_credence("https://u:p@ss@h.example/x");
+            assert!(!deux.contains("p@ss") && deux.contains("h.example/x"), "mauvais séparateur : {deux}");
+
+            // ④ Rien à borner : pas de schéma, pas d'autorité — traverse inchangé plutôt que de deviner.
+            assert_eq!(endpoint_sans_credence("pas-une-url"), "pas-une-url");
+
+            // ⑤ TÉMOIN DE SOURCE — celui qui survit à une réécriture du handler. Le corps de
+            //    `destination_create` ne doit plus interpoler l'endpoint BRUT dans ses écritures d'audit.
+            let sources = sources_rust();
+            let index = indexer(&sources);
+            let corps = corps_de_fonction(&index, "destination_create")
+                .expect("destination_create introuvable : l'instrument ne mesure plus rien");
+            assert!(corps.contains("endpoint_sans_credence("), "le caviardage a disparu de destination_create");
+            assert!(!corps.contains("{endpoint})") && !corps.contains("endpoint={endpoint}") && !corps.contains("\"endpoint\": endpoint,"),
+                    "l'endpoint BRUT est réapparu dans une écriture d'audit de destination_create");
+        }
+
     }

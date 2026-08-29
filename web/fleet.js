@@ -66,6 +66,49 @@ function fleetExportBar(hosts) {
 // objets fabriqués ; `loadFleetView` ne fait que l'appeler après le fetch). Même découpe que
 // `renderSourcesInventory` — un rendu qui n'est atteignable qu'après un appel réseau n'est pas jugeable.
 function renderFleetInventory(wrap, d) {
+  // `P10.7-d` — UN REFUS DU DÉMON ARRIVE EN 200, ET CETTE VUE EN TIRAIT UN INCIDENT.
+  //
+  // CE QUE LA MESURE DU 2026-08-29 A MONTRÉ, EN EXERÇANT CETTE FONCTION SUR LE CORPS EXACT QUE LE DÉMON
+  // SERT. `daemon/src/handlers/fleet.rs` rend, portillon de concurrence CLOS,
+  // `portillon::corps_de_refus(json!({ "hosts": [] }))` — soit `{hosts: [], error: <la cause>}`, en 200.
+  // `api()` ne jette pas là-dessus, `fetchInto` non plus : le corps arrivait ici INTACT, et rien ne lisait
+  // `error` (le module ne citait pas ce mot une seule fois). La suite ne lisait donc que la FORME, et la
+  // forme d'un refus est celle d'un parc vide.
+  //
+  // CE QUI SORTAIT ALORS N'ÉTAIT PAS « AUCUNE DONNÉE », ET C'EST LE POINT. Deux phrases, dans cet ordre :
+  //   1. `<div class="bad">` « Ingestion en panne — aucune donnée reçue récemment (tous les hôtes
+  //      apparaîtront « en retard » / « muets ») » — parce que `pipeline_fresh` est ABSENT du corps de
+  //      refus, donc faux, donc la branche d'alarme ;
+  //   2. `<div class="muted">` « aucun hôte distant n'a encore poussé de données — hôte local uniquement ».
+  // La première est pire qu'une absence : c'est un INCIDENT AFFIRMÉ. La console n'a rien lu et déclare une
+  // panne d'ingestion — un exploitant qui la croit ouvre une intervention sur une chaîne qui va bien.
+  // Rendre moins que ce qu'on sait est une lacune ; rendre PLUS est un mensonge, et c'était celui-ci.
+  //
+  // LE TEST EST SÉPARÉ DE CELUI DU VIDE, ET IL PASSE AVANT TOUTE LECTURE DE LA FORME — y compris avant la
+  // bannière, qui est la fautive. La cause n'est PAS recopiée : elle est écrite une seule fois, dans
+  // `daemon/src/handlers/portillon.rs`, et rendue telle quelle. Ce module n'ajoute que ce que le démon ne
+  // peut pas savoir : QUELLE vue a été demandée, et ce que le refus n'établit pas.
+  //
+  // CE QUE CELA FERME EN PLUS DU LIBELLÉ : aucune ligne d'hôte n'est posée, donc aucun geste de
+  // déclaration (`declareHostExpectation` / `clearHostExpectation`, deux ÉCRITURES) ne peut partir d'une
+  // lecture qui n'a pas eu lieu. La barre d'export n'est pas posée non plus : exporter le vide d'un refus
+  // en ferait un fichier qui a l'air d'un relevé.
+  //
+  // DIRECTION DE L'ERREUR : le refus l'emporte sur ce qui serait servi à côté. Le corps du démon ne porte
+  // aujourd'hui aucun hôte avec sa cause ; s'il en portait, ce serait un résultat INCOMPLET, et le rendre
+  // en table le présenterait comme complet.
+  const refusServi = (d && d.error != null) ? String(d.error).trim() : '';
+  if (refusServi) {
+    wrap.replaceChildren();
+    const bad = document.createElement('div');
+    bad.className = 'bad';
+    bad.style.cssText = 'margin:0 0 9px;font-size:12px';
+    bad.textContent = "Inventaire de la flotte NON LU : le démon a refusé et en nomme la cause — « " + refusServi
+      + " » Ce n'est PAS une absence : aucun hôte n'a été lu, donc rien ici n'établit qu'il n'y en a pas, "
+      + "et surtout rien n'établit que l'ingestion soit en panne — cette vue ne l'a pas regardée.";
+    wrap.appendChild(bad);
+    return;
+  }
   const hosts = (d.hosts || []).slice();
   const srvNow = d.now || Math.floor(Date.now() / 1000);
   wrap.replaceChildren();

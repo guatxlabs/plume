@@ -1911,7 +1911,10 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 //     rendait des lignes, un sur-ensemble affichant moins que son sous-ensemble. Mesuré le même jour :
 //     le SQL de la fenêtre large est celui de la fenêtre étroite MOINS son conjoint `ts >= …`, et il
 //     rend toujours au moins autant de lignes ; ce que la fenêtre large rend de différent, c'est un
-//     REFUS du démon (422 « refus de rendre un nombre FAUX … », ou 400 « budget dépassé »). La
+//     REFUS du démon, NOMMÉ PAR SON SITE et non cité (`P11.21-a`) : en 422 celui que forme
+//     `TruncatedAggregate::message` (`daemon/src/cold_store/exactness.rs`) et que rend
+//     `refuse_truncated_aggregate` (`daemon/src/handlers/query.rs`) ; en 400 celui que forme
+//     `run_query_ex` (`daemon/src/query_exec.rs`) et que rend `bad_req` (`daemon/src/main.rs`). La
 //     contradiction naissait donc à l'AFFICHAGE, et ce témoin la protégeait.
 //
 //     LES TROIS ISSUES SONT DÉSORMAIS TENUES, DANS LES DEUX SENS. Un refus doit NOMMER sa cause et ne
@@ -1943,7 +1946,15 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   // c'est la CARDINALITÉ (trois classes, trois textes) qui est exigée, plus la présence de la cause
   // servie par le démon dans le seul rendu qui a le droit de la porter.
   const SOQL = "search source=dataaccess | stats count by path,user | sort -count | head 30";
-  const CAUSE = "refus de rendre un nombre FAUX : la lecture froide a dû s'arrêter à N lignes";
+  // `P11.21-a` — LA CAUSE INJECTÉE EST FABRIQUÉE ICI, ET ELLE LE DIT. Elle citait mot pour mot le refus
+  // 422 du démon ; MESURÉ le 2026-08-29, cette citation avait DÉRIVÉ — le démon sert « un RÉSULTAT FAUX »
+  // (`TruncatedAggregate::message`, `daemon/src/cold_store/exactness.rs`) là où ce banc écrivait « un
+  // NOMBRE FAUX » — et elle avait vieilli EN SILENCE, puisque rien ne l'y adossait : le rendu jugé ici
+  // n'est PAS couplé au texte, il rend le champ `error` quelle qu'en soit la forme. Une chaîne
+  // visiblement FABRIQUÉE prouve donc la propriété mieux qu'une citation réaliste, et elle ne peut plus
+  // périmer. La console a reçu le même remède un fichier plus loin (`web/dataaccess.js`) : nommer le
+  // SITE, ne jamais recopier la phrase.
+  const CAUSE = "CAUSE-DE-REFUS-FABRIQUÉE-PAR-CE-BANC : aucune phrase du démon n'est citée ici";
   const refus = daRenduDeReponse({ error: CAUSE }, "all", SOQL);
   const vide = daRenduDeReponse({ columns: ["path"], rows: [] }, "all", SOQL);
   const lignes = daRenduDeReponse({ columns: ["path", "count"], rows: [["/etc/shadow", 3]] }, "all", SOQL);
@@ -4202,16 +4213,32 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 //     réfutent : `acquire_query_permit` ATTEND sur `NoPermits` (son seul `Err` est le sémaphore FERMÉ),
 //     et `read_with_watchdog` ne rend son `default` que si `read_conn_get` échoue — le chien de garde,
 //     lui, interrompt la connexion et laisse la closure rendre une matrice PLEINE et sous-comptée.
-//     Le témoin tient donc QUATRE choses, dans les deux sens et dans les deux langues : une réponse qui
-//     porte des tactiques ne dit RIEN ; une réponse vide DIT le refus et DÉMENT l'absence ; elle AVOUE
-//     ne pas savoir laquelle des sorties dégradées a joué ; et elle NE NOMME PAS une cause que le démon
-//     ne produit pas — un `saturated`/`saturé` ou un `watchdog`/`chien de garde` réintroduit dans la
-//     phrase servie fait ROUGIR ce témoin.
-//     L'INSTRUMENT SE VALIDE : les quatre propriétés du démon sont LUES dans son arbre, jamais recopiées
-//     ici. Si l'une disparaît, le témoin refuse de conclure au lieu de garder une conclusion périmée.
-//     CE QU'IL NE TIENT PAS : que le démon SÉPARE un jour ses trois sorties (il ne les sépare pas, elles
-//     rendent le même corps) ; et la matrice PLEINE et sous-comptée que rend une lecture interrompue —
-//     le même défaut sous une forme que le tableau vide ne trahit pas, ouvert sous `P11.6-e`.
+//     Le témoin tient donc CINQ choses, dans les deux sens et dans les deux langues : une réponse qui
+//     porte des tactiques ne dit RIEN ; une réponse vide et MUETTE DIT le refus, DÉMENT l'absence et
+//     AVOUE ne pas savoir laquelle des sorties dégradées a joué ; elle NE NOMME PAS une cause que le
+//     démon ne produit pas — un `saturated`/`saturé` ou un `watchdog`/`chien de garde` réintroduit dans
+//     la phrase servie fait ROUGIR ce témoin ; et une réponse vide qui PORTE la cause du démon la rend
+//     TELLE QUELLE, sans avouer une ignorance qu'elle n'a plus.
+//     LA CINQUIÈME EST NEUVE, ET ELLE RETIRE UNE IMPOSSIBILITÉ PÉRIMÉE (`P10.7-d`, mesuré le
+//     2026-08-29). Ce témoin écrivait, dans son en-tête ET dans son verdict VERT, qu'aucune des trois
+//     sorties dégradées ne se distinguait des autres, et qu'il aurait fallu pour cela un marqueur que le
+//     démon ne posait pas. La clause périmée n'est pas RECITÉE ici : la reprendre entre guillemets la
+//     laisserait s'imprimer à chaque exécution, c'est-à-dire garder le défaut en le commentant.
+//     C'est FAUX depuis `P10.7-c` : la sortie du portillon passe par `portillon::corps_de_refus` et pose
+//     sa cause sous `error` (`daemon/src/handlers/portillon.rs`), et `coverage_attack` — la route
+//     qu'interroge `attack.js` — est l'un de ses appelants. Le marqueur EXISTE pour l'UNE des trois ; le
+//     banc affirmait qu'il n'en existait aucun, donc rendait MOINS que ce que le dépôt sait, dans la
+//     phrase même où il avoue son ignorance. La clause n'est pas remplacée par une autre clause : les
+//     DEUX nombres — combien de sorties dégradées, combien portent la cause — sont DÉRIVÉS du corps de
+//     la route, et la voie MARQUÉE est EXERCÉE plutôt qu'affirmée.
+//     L'INSTRUMENT SE VALIDE : les propriétés du démon sont LUES dans son arbre, jamais recopiées ici —
+//     et la cause elle-même est EXTRAITE du littéral `CAUSE_PORTILLON_CLOS`, jamais retapée, sans quoi
+//     ce témoin rejouerait le défaut de citation périmée que `P11.21-a` vient de fermer ailleurs. Si
+//     l'une disparaît, le témoin refuse de conclure au lieu de garder une conclusion périmée.
+//     CE QU'IL NE TIENT PAS : LAQUELLE des sorties encore MUETTES a joué — celles-là rendent bien le même
+//     corps, et seul un marqueur DE PLUS les séparerait ; et la matrice PLEINE et sous-comptée que rend
+//     une lecture interrompue — le même défaut sous une forme que le tableau vide ne trahit pas, ouvert
+//     sous `P11.6-e`.
 // ---------------------------------------------------------------------------------------------
 {
   // — instrument : les propriétés qui rendent le verdict possible sont LUES dans le démon.
@@ -4236,6 +4263,29 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const wd = srcExec.match(/pub\(crate\) fn read_with_watchdog<T>\([\s\S]*?\n\}/);
   exiger(!!wd && /read_conn_get\(db_path\) \{ Ok\(c\) => c, Err\(_\) => return default \}/.test(wd[0].replace(/\s+/g, " ")),
     "(39) instrument : `read_with_watchdog` ne rend plus son `default` sur le seul échec de `read_conn_get` — la réfutation de « chien de garde » n'est plus lisible dans le démon");
+
+  // — instrument : LE MARQUEUR QUI EXISTE (`P10.7-c`), et les DEUX NOMBRES qui remplacent l'impossibilité
+  //   périmée que ce témoin imprimait. Ils sont DÉRIVÉS du corps de la route, jamais énumérés ici : si
+  //   demain une sortie de plus se nomme, le verdict suit sans qu'on le réécrive.
+  const routeAttack = srcMatrice.match(/pub\(crate\) async fn coverage_attack\([\s\S]*?\n\}/);
+  exiger(!!routeAttack, "(39) instrument : `coverage_attack` introuvable dans le démon — le témoin ne peut plus compter les sorties dégradées de la route qu'`attack.js` interroge");
+  const corpsRoute = (routeAttack || [""])[0];
+  const FORME_VIDE = /json!\(\{\s*"tactics":\s*\[\],\s*"totals":\s*\{\}\s*\}\)/g;
+  const FORME_VIDE_MARQUEE = /corps_de_refus\(\s*json!\(\{\s*"tactics":\s*\[\],\s*"totals":\s*\{\}\s*\}\)\s*\)/g;
+  const sortiesDegradees = (corpsRoute.match(FORME_VIDE) || []).length;
+  const sortiesMarquees = (corpsRoute.match(FORME_VIDE_MARQUEE) || []).length;
+  exiger(sortiesDegradees >= 2 && sortiesMarquees >= 1 && sortiesMarquees <= sortiesDegradees,
+    `(39) instrument : ${sortiesDegradees} sortie(s) dégradée(s) et ${sortiesMarquees} marquée(s) lues dans \`coverage_attack\` — le compte est dégénéré, et un verdict qui s'appuierait dessus ne mesurerait rien`);
+  const srcPortillon = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "portillon.rs"), "utf8");
+  exiger(/corps\["error"\]\s*=\s*json!\(CAUSE_PORTILLON_CLOS\)/.test(srcPortillon),
+    "(39) instrument : `corps_de_refus` ne pose plus `CAUSE_PORTILLON_CLOS` sous `error` — la sortie marquée ne l'est plus, et la propriété neuve de ce témoin n'a plus d'objet");
+  // La cause est EXTRAITE du littéral Rust — continuations recollées — et JAMAIS retapée : une copie
+  // vieillirait en silence, ce qui est exactement le défaut que `P11.21-a` a fermé dans la console.
+  const litteralCause = srcPortillon.match(/const CAUSE_PORTILLON_CLOS: &str = "((?:[^"\\]|\\[\s\S])*)"/);
+  exiger(!!litteralCause, "(39) instrument : le littéral de `CAUSE_PORTILLON_CLOS` n'est plus lisible — le témoin devrait recopier la cause, et une copie périme sans un mot");
+  const CAUSE_DU_DEMON = ((litteralCause || ["", ""])[1] || "").replace(/\\\r?\n\s*/g, "");
+  exiger(CAUSE_DU_DEMON.length > 40 && !CAUSE_DU_DEMON.includes("\\"),
+    `(39) instrument : la cause extraite du démon fait ${CAUSE_DU_DEMON.length} caractère(s) et porte encore une continuation — le recollement du littéral Rust est faux, et tout ce qui s'appuie dessus jugerait d'un texte inventé`);
 
   const SUF = "?plume-lang=en";
   const urlM = (f, suffixe = "") => pathToFileURL(path.join(WEB, f)).href + suffixe;
@@ -4265,12 +4315,25 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       exiger(!/satur|watchdog|chien de garde/i.test(m), `(39) ${quoi} sous LANG='${langue}' : le texte nomme une cause que le démon NE PRODUIT PAS (« ${m} ») — la saturation attend, et le chien de garde rend une matrice pleine`);
     }
   }
+  // — LA VOIE MARQUÉE, EXERCÉE PLUTÔT QU'AFFIRMÉE. Un corps qui PORTE la cause du démon la rend telle
+  //   quelle, et il ne se confond plus avec le corps muet : c'est cela, et cela seul, qui rend dicible
+  //   la clause neuve du verdict. Le sens NÉGATIF est le dernier `exiger` : un texte qui avouerait
+  //   quand même son ignorance rendrait MOINS que ce que la réponse porte.
+  for (const [langue, refus] of [["fr", refusFR], ["en", refusEN]]) {
+    const m = refus({ tactics: [], totals: {}, error: CAUSE_DU_DEMON });
+    const muet = refus({ tactics: [], totals: {} });
+    exiger(typeof m === "string" && m.includes(CAUSE_DU_DEMON), `(39) corps MARQUÉ sous LANG='${langue}' : la cause SERVIE par le démon n'est pas rendue à l'analyste (« ${m} ») — le marqueur existe et la surface le jette`);
+    exiger(/refus|décliné|declined|refused/i.test(m), `(39) corps MARQUÉ sous LANG='${langue}' : le texte ne NOMME pas le refus (« ${m} »)`);
+    exiger(/pas une absence|not an absence/i.test(m), `(39) corps MARQUÉ sous LANG='${langue}' : le texte ne DÉMENT pas la lecture « aucune couverture » (« ${m} »)`);
+    exiger(m !== muet, `(39) corps MARQUÉ sous LANG='${langue}' : la surface rend la MÊME phrase avec et sans la cause — le marqueur du démon n'atteint pas l'analyste, et les sorties dégradées restent indiscernables`);
+    exiger(!/\bne (peut|sait)\b.{0,20}?\bpas\b|cannot (say|tell)/i.test(m.replace(CAUSE_DU_DEMON, "")), `(39) corps MARQUÉ sous LANG='${langue}' : le texte AVOUE une ignorance qu'il n'a PLUS (« ${m} ») — la cause est servie, la taire rend moins que ce qui est su`);
+  }
   exiger(refusFR({ tactics: [], totals: {} }) !== refusEN({ tactics: [], totals: {} }), "(39) le refus rend le même texte dans les deux langues : une des deux n'est pas écrite");
   // Deux corps de PROVENANCE différente ne reçoivent pas la même phrase : celle du corps informe n'impute
   // rien au démon, faute de pouvoir le prouver.
   exiger(refusFR({ tactics: [], totals: {} }) !== refusFR({ totals: {} }), "(39) un corps qui n'est pas de cette route reçoit la phrase des sorties dégradées du démon — c'est imputer sans preuve");
 
-  console.log(`[attack-refus] la matrice ne prononce plus d'absence sur un tableau vide, ET ne nomme plus de cause que le démon ne produit pas : sur 3 formes de réponse (forme dégradée du démon, corps sans clé, réponse informe) et dans les deux langues, le texte NOMME le refus, DÉMENT l'absence, AVOUE ce qu'il ignore, et ne prononce ni « saturé » ni « chien de garde » — deux causes que la lecture du démon RÉFUTE (la saturation ATTEND, seul le sémaphore FERMÉ rend une erreur ; le chien de garde interrompt la connexion et laisse rendre une matrice PLEINE). Les deux corps qui ne viennent pas de cette route reçoivent une phrase distincte, qui n'impute rien au démon. Quatre propriétés du démon sont LUES dans son arbre — boucle inconditionnelle sur les tactiques, test livré sur zéro règle, attente sur NoPermits, un repli réservé à l'échec de connexion — et le témoin refuse de conclure si l'une disparaît. Ce qu'il NE tient PAS : LAQUELLE des trois sorties dégradées a joué (elles rendent le même corps, seul un marqueur côté démon les séparerait) ; et la matrice PLEINE et SOUS-COMPTÉE que rend une lecture interrompue — même défaut, forme que le tableau vide ne trahit pas, ouvert sous \`P11.6-e\`.`);
+  console.log(`[attack-refus] la matrice ne prononce plus d'absence sur un tableau vide, ET ne nomme plus de cause que le démon ne produit pas : sur 3 formes de réponse (forme dégradée du démon, corps sans clé, réponse informe) et dans les deux langues, le texte NOMME le refus, DÉMENT l'absence, AVOUE ce qu'il ignore, et ne prononce ni « saturé » ni « chien de garde » — deux causes que la lecture du démon RÉFUTE (la saturation ATTEND, seul le sémaphore FERMÉ rend une erreur ; le chien de garde interrompt la connexion et laisse rendre une matrice PLEINE). Les deux corps qui ne viennent pas de cette route reçoivent une phrase distincte, qui n'impute rien au démon. Quatre propriétés du démon sont LUES dans son arbre — boucle inconditionnelle sur les tactiques, test livré sur zéro règle, attente sur NoPermits, un repli réservé à l'échec de connexion — et le témoin refuse de conclure si l'une disparaît. UNE DES SORTIES SE NOMME DÉSORMAIS, ET LE BANC CESSE D'IMPRIMER LE CONTRAIRE (\`P10.7-d\`, mesuré le 2026-08-29) : sur les ${sortiesDegradees} sorties dégradées LUES dans \`coverage_attack\`, ${sortiesMarquees} passe par \`portillon::corps_de_refus\` et pose sa cause sous \`error\` depuis \`P10.7-c\` — ce verdict imprimait qu'aucun marqueur n'existait et qu'il en aurait fallu un pour séparer les trois sorties, alors que le dépôt l'avait DÉJÀ posé. La cause est EXTRAITE de \`CAUSE_PORTILLON_CLOS\` (${CAUSE_DU_DEMON.length} caractères, jamais retapée ici) et la surface la rend TELLE QUELLE dans les deux langues, sans avouer une ignorance qu'elle n'a plus. Ce qu'il NE tient PAS : LAQUELLE des ${sortiesDegradees - sortiesMarquees} sorties encore MUETTES a joué (celles-là rendent le même corps, seul un marqueur DE PLUS les séparerait) ; et la matrice PLEINE et SOUS-COMPTÉE que rend une lecture interrompue — même défaut, forme que le tableau vide ne trahit pas, ouvert sous \`P11.6-e\`.`);
 }
 
 // ---------------------------------------------------------------------------------------------

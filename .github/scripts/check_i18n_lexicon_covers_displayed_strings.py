@@ -78,6 +78,53 @@ Elle ne juge pas non plus si le MÉCANISME applique le lexique : c'est le harnai
 `{ fr, en }` dont les deux valeurs seraient le même texte n'est pas jugée ici (le registre l'est par le
 témoin 13 du harnais : chaque section rend un anglais distinct du français).
 
+LA GARDE NE MESURAIT QUE LE MANQUE — ELLE MESURE AUSSI L'EXCÈS (`P11.8-g`)
+---------------------------------------------------------------------------
+Tout ce qui précède ne va que dans UN SENS : une chaîne affichée a-t-elle une entrée ? L'INVERSE n'était
+mesuré par rien — une entrée dont la chaîne source a été RETIRÉE du code survit, et la batterie reste
+verte. Mesuré le 2026-08-29 : la clé « Gouvernance d'accès (style Varonis) : … » vivait encore à
+`web/i18n.js:527` alors que `web/dataaccess.js` ne servait plus ce bandeau, et `web/help_registry.js`
+en sert une AUTRE. Un instrument qui sait ne regarder qu'une moitié et rend son vert comme un verdict
+complet est exactement le défaut que ce fichier combat partout ailleurs.
+CE QUE « MORTE » VEUT DIRE, ET POURQUOI L'ACCUSATION EST RARE. `i18nWalk` ne remplace un nœud que si son
+texte ENTIER, blancs retirés, ÉGALE une clé. Une clé est donc vivante s'il existe, quelque part, un nœud
+qui vaut exactement ce texte — et ce nœud naît de trois façons, dont la garde ne sait lire qu'une :
+  1. un littéral posé dans un PUITS RECONNU : c'est la population déjà mesurée. VERDICT : VIVANTE.
+  2. un texte présent dans le dépôt mais hors d'un puits reconnu — hors-regard, littéral dynamique,
+     attribut non lu, valeur rendue par le démon. VERDICT : INDÉCIDABLE, la clé est NOMMÉE.
+  3. un nœud COMPOSÉ (`'connecteur ' + etat`) : le texte entier n'est écrit nulle part, il s'ASSEMBLE.
+     VERDICT : INDÉCIDABLE dès qu'un littéral de l'arbre servi peut en former le BORD, sur une frontière
+     de mot — un assemblage coupe entre les mots, jamais au milieu de l'un d'eux.
+N'est ACCUSÉE qu'une clé dont AUCUN de ces trois chemins n'existe. Le reste est nommé, jamais accusé :
+une sonde qui accuse sur la seule absence a rendu 138 clés le 2026-08-29, en écrasante majorité des
+concaténations et du texte d'`index.html` — elle aurait fait retirer des clés VIVANTES, c'est-à-dire
+cassé l'anglais en croyant faire le ménage. LE SENS DE L'ERREUR EST CHOISI : taire une orpheline coûte
+une entrée morte, en inventer une coûte un libellé français servi à un lecteur anglophone.
+LE CORPUS EST DÉRIVÉ, ET CHACUNE DE SES EXCLUSIONS EST MOTIVÉE. Tout fichier texte du dépôt, sauf le lexique
+lui-même, les répertoires qui ne livrent rien à un navigateur (`.git`, `target`, `node_modules`, et
+`.github` — sans quoi la garde ressusciterait toute clé qu'elle NOMME dans son propre commentaire), et
+les `*.md`, qui ne sont pas SERVIS : une phrase citée dans un document ne fait pas vivre une clé, et deux
+des orphelines prouvées ci-dessous ne subsistent QUE dans `docs/CONSOLE.md` — dette de documentation, pas
+de lexique. Le corpus porte le source TEL QU'ÉCRIT **et** une copie DÉSÉCHAPPÉE (`qu\\'aucun` -> `qu'aucun`) :
+sans elle, la sonde accuse les DEUX titres que `web/alerts.js` sert dans une interpolation à guillemets
+échappés (« Toutes les alertes sont listées… » et « Seules les alertes qu'aucun cas n'a encore reprises… ») —
+deux accusations FAUSSES, donc deux libellés VIVANTS qu'on aurait retirés du lexique.
+LES COMMENTAIRES RESTENT DANS LE CORPUS, DÉLIBÉRÉMENT. Un commentaire ne devient jamais un nœud, et les
+retirer élargirait l'accusation (« ← Retour », que `web/app.js` dit lui-même « supprimé » ; « (drillé) » ;
+« voir le détail → »…). La garde préfère TAIRE une orpheline que d'en inventer une : un commentaire qui cite
+encore la phrase EMPÊCHE l'accusation. C'est dit, ce n'est pas corrigé — le biais va vers l'INDÉCIDABLE,
+jamais vers l'accusation.
+CHAQUE MOITIÉ DE CE CHOIX EST CHIFFRÉE À PART, PAR CROISEMENT 2x2 SUR UN SEUL ARBRE (2026-08-29, arbre du
+jour, la clé de `P11.20-e` déjà retirée) : déséchappé + commentaires gardés -> 18 orphelines (ce qui est
+LIVRÉ) · sans déséchappement -> 20 (+2) · commentaires retirés -> 26 (+8) · ni l'un ni l'autre -> 28 (+10).
+Un ÉCART se refait sur n'importe quel arbre, un ABSOLU se périme sous les autres agents : ce sont le +2 et
+le +8 qui sont des propriétés de l'INSTRUMENT, et eux seuls que ce paragraphe a le droit d'affirmer.
+TROIS VERDICTS, TROIS CANAUX SÉPARÉS. Orpheline PROUVÉE au-dessus de son cliquet = RÉGRESSION (code 1) ;
+compte des INDÉCIDABLES au-dessus du sien = REFUS DE CONCLURE (code 2) — une clé que la sonde ne sait pas
+trancher n'est pas une faute, c'est un aveu, et le confondre avec une faute ferait rougir qui écrit un
+libellé légitime dans une forme non lue. Les deux comptes sont PUBLIÉS à chaque exécution ; `--exces`
+nomme chaque clé avec le verdict qui la tient.
+
 L'EXEMPTION EST UNE SURFACE, PAS UN MODULE
 -----------------------------------------
 Le REGISTRE des sections d'aide (`{clé: {fr:{title,body}, en:{title,body}}}`) est le seul texte de la
@@ -150,12 +197,16 @@ population sur l'arbre réel, la présence d'une clé témoin connue, et qu'aucu
 cliquet. Sans ces jambes, elle refuse de conclure (code 2), elle ne rend pas vert.
 
 Usage :  python3 .github/scripts/check_i18n_lexicon_covers_displayed_strings.py
-             [--mesure] [--trous MODULE] [--hors-regard MODULE]
-Sortie :  0 = aucun module au-dessus de ses plafonds ; 1 = régression (trous ou hors-regard) ;
-          2 = instrument invalide, module mesuré hors du cliquet, ou découpeur désynchronisé. `--mesure` imprime le tableau par
-          module sans verdict (c'est ce qui sert à relever le compte d'un module neuf) ; `--trous MODULE`
-          liste les chaînes du module sans entrée au lexique ; `--hors-regard MODULE` liste ce que la
-          garde ne regarde pas dans ce module, en marquant celles qui sont déjà des clés du lexique.
+             [--mesure] [--trous MODULE] [--hors-regard MODULE] [--exces]
+Sortie :  0 = aucun module au-dessus de ses plafonds et aucune orpheline de trop ;
+          1 = régression (trous, hors-regard, ou ORPHELINE PROUVÉE au-dessus du cliquet) ;
+          2 = instrument invalide, module mesuré hors du cliquet, découpeur désynchronisé, ou compte
+          d'INDÉCIDABLES au-dessus du sien — la garde refuse alors de conclure au lieu d'accuser.
+          `--mesure` imprime le tableau par module sans verdict (c'est ce qui sert à relever le compte
+          d'un module neuf) ; `--trous MODULE` liste les chaînes du module sans entrée au lexique ;
+          `--hors-regard MODULE` liste ce que la garde ne regarde pas dans ce module, en marquant celles
+          qui sont déjà des clés du lexique ; `--exces` nomme chaque clé du lexique que rien ne sert
+          (orpheline prouvée) et chaque clé que la sonde ne sait pas trancher, avec son motif.
 """
 from __future__ import annotations
 
@@ -384,6 +435,57 @@ PLAFOND_HORS_REGARD = {
 # étaient FAUX — l'un (`(sans sujet)`) appartient à une interpolation et non au texte d'un gabarit, l'autre
 # était un morceau de CODE SOURCE (`").join(''); box.innerHTML =`) que le lecteur désynchronisé avait pris
 # pour un littéral. Un cliquet nourri d'une lecture fausse gardait une valeur qui ne mesurait rien.
+
+# ---------------------------------------------------------------------------------------------
+# L'EXCÈS DU LEXIQUE — une entrée dont la chaîne source n'existe plus (`P11.8-g`).
+# ---------------------------------------------------------------------------------------------
+# RÉPERTOIRES HORS CORPUS : ils ne livrent rien à un navigateur. `.github` en fait partie POUR UNE RAISON
+# QUI SE MESURE — les dix-huit orphelines sont NOMMÉES dans le commentaire du cliquet ci-dessous ; un corpus
+# qui lirait ce fichier les trouverait toutes « présentes dans le dépôt », donc indécidables. La garde se
+# rendrait aveugle en s'écrivant elle-même.
+REPERTOIRES_HORS_CORPUS = (".git", "target", "node_modules", ".github")
+RE_ECHAPPEMENT = re.compile(r"\\(['\"`\\])")
+SEPARATEUR_CORPUS = "\n\x1e\n"
+RE_CORPS_DE_MOT = re.compile(r"[0-9A-Za-zÀ-ÖØ-öø-ÿ]")
+
+# PLANCHERS DE LA SONDE D'EXCÈS. Une sonde d'orphelines validée sur un corpus VIDE accuse TOUTES les clés et
+# se croit juste — c'est la faute que ce dépôt a déjà commise (garde à corpus `git ls-files` validée sur un
+# fichier non suivi). Les deux planchers sont dérivés du relevé du 2026-08-29 moins un vingtième, exactement
+# comme MIN_POPULATION : une sonde qui perdrait plus de 5 % de son corpus, ou de ses clés vivantes, refuse de
+# conclure au lieu d'accuser.
+MIN_CORPUS = 30392882        # relevé 2026-08-29 sur l'ARBRE DE CE DÉPÔT (banc : le corpus dérivé que
+                             # cette garde construit elle-même — sources suivies, pas une installation)
+MIN_CLES_VIVANTES = 1507     # relevé 2026-08-29 : 1 586 clés vues comme chaîne affichée dans un puits reconnu
+
+# CLIQUET DES ORPHELINES PROUVÉES — relevé le 2026-08-29 APRÈS le retrait de la clé de `P11.20-e`
+# (« Gouvernance d'accès (style Varonis) : … », `web/i18n.js:527` ; `web/dataaccess.js` n'en servait plus la
+# source, `web/help_registry.js:664`/`:671` en sert une AUTRE). Dix-huit restent, chacune revérifiée à la
+# main par une recherche sur TOUT le dépôt, `docs/` compris :
+#   (standard ouvert) pour combler les angles morts ATT&CK. · Actifs + clos · Cette règle vient d'un overlay
+#   de configuration (config.d) : … · Contenus (l'option SERVIE est « Contenu », `web/index.html`) ·
+#   Dates invalides. · Identité (SSO) (le titre SERVI est « Identité fédérée (SSO) », `web/index.html`) ·
+#   Inerte par nature : … « Rouvrir » le ramène en cours. (`web/cases.js` sert une phrase PLUS LONGUE) ·
+#   Inventaire complet des sources (Données → Sources) · La cadence attendue est celle qu'une sonde du
+#   démon … · Lien copié · Marquer attendue · Marquer inattendue · Revenir à la requête précédente
+#   (drilldown) · Routage & silences · Rétablir le signal « inattendu » sur cette source (persistant,
+#   audité) · Santé par source (frais/calme/en retard/muet) : Données → Fraîcheur · Si elle est légitime :
+#   Actions → « marquer attendue » (persistant, réversible, audité). · destination activée (forward ON).
+# Deux d'entre elles — « Routage & silences » et « Identité (SSO) » — ne subsistent que dans `docs/CONSOLE.md`
+# et `docs/NATIVE-IDP.md`, qui décrivent des libellés de console que la console ne sert plus.
+# CE CLIQUET NE REMONTE PAS : une clé neuve dont rien ne sert le texte rougit (code 1). Il DESCEND à chaque
+# retrait, et ZÉRO est l'état visé — ces dix-huit sont retirables. CE LOT NE LES A PAS RETIRÉES : il ne
+# touche qu'à la clé de `P11.20-e`, et `web/` est en écriture concurrente sous plusieurs agents ; retirer une
+# clé qu'un module en cours de réécriture rendrait vivante ferait rougir le travail d'un autre.
+PLAFOND_ORPHELINES = 18
+
+# CLIQUET DES INDÉCIDABLES — relevé le 2026-08-29 : 230, dont 198 dont le TEXTE est ailleurs dans le dépôt
+# hors d'un puits reconnu, et 32 qu'un littéral de BORD peut composer. C'est l'AVEU, pas la dette : il dit
+# combien de clés la sonde ne sait pas trancher, et il est plus utile qu'un vert qui tairait la question.
+# Une HAUSSE fait REFUSER DE CONCLURE (code 2), elle ne fait pas rougir : ajouter une clé légitime que le
+# critère de puits ne lit pas n'est pas une faute — c'est la raison qui gouverne déjà PLAFOND_HORS_REGARD,
+# appliquée à l'autre sens de la mesure. L'abaisser (élargir le critère de puits, ou retirer une clé morte)
+# est le seul mouvement qui ne se discute pas.
+PLAFOND_INDECIDABLES = 230
 
 # LA SEULE SURFACE EXEMPTE : la définition `const HELP = { … }` du registre des sections d'aide, DÉRIVÉE
 # (module et portée) de `check_every_help_trigger_has_a_section.py` — pas un nom de fichier, pas un module
@@ -1030,6 +1132,157 @@ def cles_du_lexique(src: str) -> set[str]:
 
 
 # ---------------------------------------------------------------------------------------------
+# L'excès : ce que le lexique porte et que plus rien ne sert (`P11.8-g`).
+# ---------------------------------------------------------------------------------------------
+def corpus_du_depot() -> tuple[str, set[str]]:
+    """(TEXTE du dépôt qui peut atteindre un nœud rendu, LITTÉRAUX de l'arbre servi).
+
+    Le texte porte chaque source TEL QU'ÉCRIT et, quand elle en diffère, sa copie DÉSÉCHAPPÉE : sans elle,
+    une phrase servie dans une interpolation à guillemets échappés paraît ABSENTE du dépôt et sa clé se fait
+    accuser à tort (mesuré le 2026-08-29 sur `web/alerts.js`, « Toutes les alertes sont listées… »).
+    Les LITTÉRAUX, eux, ne viennent que de l'arbre servi et de sources SANS COMMENTAIRES : un littéral cité
+    dans un commentaire n'en est pas un, et c'est avec eux seuls qu'on juge si un nœud COMPOSÉ peut valoir la
+    clé. Le texte, lui, GARDE les commentaires — voir l'en-tête : le biais va vers l'indécidable."""
+    morceaux: list[str] = []
+    litteraux: set[str] = set()
+    for base, dossiers, fichiers in os.walk(RACINE):
+        dossiers[:] = [d for d in dossiers if d not in REPERTOIRES_HORS_CORPUS]
+        for f in sorted(fichiers):
+            chemin = os.path.join(base, f)
+            if chemin == LEXIQUE or f.endswith(".md"):
+                continue
+            try:
+                with open(chemin, encoding="utf-8") as fh:
+                    src = fh.read()
+            except (UnicodeDecodeError, OSError, ValueError):
+                continue  # binaire ou illisible : il ne sert aucun libellé
+            morceaux.append(src)
+            desechappe = RE_ECHAPPEMENT.sub(r"\1", src)
+            if desechappe != src:
+                morceaux.append(desechappe)
+            if os.path.dirname(chemin) == WEB and f.endswith(".js"):
+                for s, *_ in chaines_js(sans_commentaires_js(src)):
+                    litteraux.add(s)
+                    morceaux.append(s)
+            elif chemin == os.path.join(WEB, "index.html"):
+                textes, attributs = _textes_html(src)
+                litteraux.update(textes)
+                litteraux.update(attributs)
+                morceaux += textes + attributs
+    return SEPARATEUR_CORPUS.join(morceaux), litteraux
+
+
+def _coupe_entre_deux_mots(texte: str, i: int) -> bool:
+    """La coupe à l'indice `i` tombe-t-elle sur une frontière de mot ? Un assemblage de libellés coupe ENTRE
+    les mots (`'connecteur ' + 'activé'`), jamais au milieu de l'un d'eux. Sans cette condition, n'importe
+    quel littéral de deux lettres prétendrait pouvoir commencer n'importe quelle phrase : mesuré le
+    2026-08-29, le littéral `Go` (une unité d'octets de `web/viz.js`) se donnait pour le début de
+    « Gouvernance d'accès … » et rendait la clé de `P11.20-e` indécidable."""
+    return (i <= 0 or i >= len(texte)
+            or not (RE_CORPS_DE_MOT.match(texte[i - 1]) and RE_CORPS_DE_MOT.match(texte[i])))
+
+
+def fragment_de_bord(cle: str, litteraux: set[str]) -> str | None:
+    """Le plus long littéral de l'arbre servi qui pourrait former le BORD d'un nœud composé valant `cle` :
+    un préfixe ou un suffixe, coupé sur une frontière de mot, portant au moins une lettre. Un fragment sans
+    lettre (`.`, `)`) ne porte aucun texte — l'admettre rendrait composable toute phrase ponctuée."""
+    meilleur = None
+    for lit in litteraux:
+        if not lit or lit == cle or not RE_LETTRE.search(lit):
+            continue
+        if cle.startswith(lit):
+            if not _coupe_entre_deux_mots(cle, len(lit)):
+                continue
+        elif cle.endswith(lit):
+            if not _coupe_entre_deux_mots(cle, len(cle) - len(lit)):
+                continue
+        else:
+            continue
+        if meilleur is None or len(lit) > len(meilleur):
+            meilleur = lit
+    return meilleur
+
+
+def verdict_d_une_cle(cle: str, vivantes: set[str], corpus: str, litteraux: set[str]) -> tuple[str, str]:
+    """« vivante » / « indecidable » / « orpheline », avec son MOTIF. C'est le SEUL chemin de classement :
+    les témoins de l'instrument passent par lui, faute de quoi ils vaudraient pour un autre code que celui
+    qui rend le verdict."""
+    if cle in vivantes:
+        return "vivante", "vue comme chaîne affichée dans un puits reconnu"
+    if cle in corpus:
+        return "indecidable", "texte présent dans le dépôt, hors d'un puits reconnu"
+    bord = fragment_de_bord(cle, litteraux)
+    if bord is not None:
+        return "indecidable", f"composable — un littéral de l'arbre en formerait le bord : « {bord} »"
+    return "orpheline", "texte absent du dépôt entier, et aucun littéral n'en formerait le bord"
+
+
+def excedent_du_lexique(cles: set[str], vivantes: set[str], corpus: str,
+                        litteraux: set[str]) -> dict[str, list[tuple[str, str]]]:
+    verdicts: dict[str, list[tuple[str, str]]] = {"vivante": [], "indecidable": [], "orpheline": []}
+    for cle in sorted(cles):
+        verdict, motif = verdict_d_une_cle(cle, vivantes, corpus, litteraux)
+        verdicts[verdict].append((cle, motif))
+    return verdicts
+
+
+# LE TÉMOIN NÉGATIF SE CHOISIT, IL NE S'IMPROVISE PAS. Premier essai le 2026-08-29 : « Libellé témoin de la
+# sonde d'excès… » — rendu INDÉCIDABLE, et à raison, parce que `Libellé` EST un littéral de l'arbre et en
+# formait le bord. Le témoin doit donc commencer ET finir par un mot qu'aucun littéral ne peut porter, sans
+# quoi il ne prouve pas ce qu'il prétend prouver. Il ne vit que dans ce fichier, et `.github` est hors corpus :
+# c'est cette exclusion, et elle seule, qui garde ce témoin absent du dépôt.
+TEMOIN_JAMAIS_ECRIT = "Zzyxqv témoin négatif de la sonde d'excès, écrit nulle part Wqxzzy"
+
+
+def valider_sonde_d_exces(vivantes: set[str], corpus: str, litteraux: set[str],
+                          hors_regard: set[str]) -> list[str]:
+    """QUATRE TÉMOINS, JOUÉS SUR L'ARBRE RÉEL ET PAR LE CHEMIN DU VERDICT. Une sonde d'orphelines qui ne
+    trouve plus son corpus accuse TOUTES les clés et se croit juste ; une sonde validée sur un corpus VIDE
+    passe au vert en ne mesurant rien. Les deux planchers ferment ces deux morts, et les témoins ferment les
+    trois verdicts : POSITIF (une clé qu'on SAIT affichée est vivante), NÉGATIF (une clé jamais écrite est
+    accusée), COMPOSITION (un littéral de l'arbre suivi d'un mot inventé n'est PAS accusé — c'est le témoin
+    qui garde le sens de l'erreur), CORPUS (un texte que la garde publie comme hors-regard est indécidable,
+    donc la lecture du corpus fonctionne sur du texte RÉEL, pas seulement sur des chaînes inventées)."""
+    errs: list[str] = []
+    if len(corpus) < MIN_CORPUS:
+        errs.append(f"corpus de {len(corpus)} octets, plancher {MIN_CORPUS} : la lecture du dépôt est cassée. "
+                    f"Une sonde d'orphelines sur un corpus amputé ACCUSE des clés vivantes.")
+    if len(vivantes) < MIN_CLES_VIVANTES:
+        errs.append(f"{len(vivantes)} clés vues comme chaîne affichée, plancher {MIN_CLES_VIVANTES} : "
+                    f"l'appariement lexique/population est cassé, et tout le reste serait accusé.")
+    if errs:
+        return errs  # les témoins qui suivent n'auraient plus de corpus à quoi se mesurer
+    verdict, _ = verdict_d_une_cle(CLE_TEMOIN, vivantes, corpus, litteraux)
+    if verdict != "vivante":
+        errs.append(f"témoin POSITIF : la clé « {CLE_TEMOIN} », affichée par `web/index.html`, est rendue "
+                    f"« {verdict} » — la sonde ne reconnaît plus une clé vivante et va accuser le lexique entier.")
+    verdict, _ = verdict_d_une_cle(TEMOIN_JAMAIS_ECRIT, vivantes, corpus, litteraux)
+    if verdict != "orpheline":
+        errs.append(f"témoin NÉGATIF : une clé que rien n'écrit est rendue « {verdict} » au lieu d'orpheline — "
+                    f"la sonde ne sait plus rien accuser, et son vert ne mesure plus rien.")
+    socle = max((lit for lit in litteraux
+                 if RE_LETTRE.search(lit) and SENTINELLE not in lit and lit.strip() == lit),
+                key=len, default="")
+    verdict, _ = verdict_d_une_cle(socle + " témoinjamaisécrit", vivantes, corpus, litteraux)
+    if verdict != "indecidable":
+        errs.append(f"témoin de COMPOSITION : un littéral RÉEL de l'arbre suivi d'un mot inventé est rendu "
+                    f"« {verdict} » au lieu d'indécidable — la sonde accuserait les nœuds composés "
+                    f"(`'connecteur ' + etat`), c'est-à-dire ferait retirer des clés VIVANTES.")
+    temoin_corpus = max((h for h in hors_regard if h not in vivantes and RE_LETTRE.search(h)),
+                        key=len, default=None)
+    if temoin_corpus is None:
+        errs.append("témoin de CORPUS : aucun hors-regard non vivant sur l'arbre — le témoin ne peut plus se "
+                    "dériver du dépôt, et la lecture du corpus n'est plus éprouvée sur du texte réel.")
+    else:
+        verdict, _ = verdict_d_une_cle(temoin_corpus, vivantes, corpus, litteraux)
+        if verdict != "indecidable":
+            errs.append(f"témoin de CORPUS : un texte que la garde publie elle-même en hors-regard "
+                        f"(« {temoin_corpus[:60]} ») est rendu « {verdict} » au lieu d'indécidable — la sonde "
+                        f"ne retrouve plus dans le corpus un texte dont le dépôt atteste qu'il y est.")
+    return errs
+
+
+# ---------------------------------------------------------------------------------------------
 # Témoins de l'instrument : ce qu'il DOIT voir, ce qu'il NE DOIT PAS compter.
 # ---------------------------------------------------------------------------------------------
 CORPUS_TEMOIN = r"""
@@ -1338,6 +1591,7 @@ def mesurer(registre: tuple[str, str] | None) -> tuple[dict[str, dict], set[str]
 
 def main(argv: list[str]) -> int:
     mesure = "--mesure" in argv
+    liste_exces = "--exces" in argv
     trous_de = None
     if "--trous" in argv:
         trous_de = argv[argv.index("--trous") + 1]
@@ -1406,6 +1660,29 @@ def main(argv: list[str]) -> int:
             return 2
         for s in r["hors_regard"]:
             print(f"{'AU LEXIQUE' if s in cles else '          '}  {s}")
+        return 0
+
+    # L'EXCÈS : la moitié que cette garde ne mesurait pas. Calculé ICI, après les sorties courtes
+    # (`--trous`, `--hors-regard`), parce qu'il lit tout le dépôt et qu'aucune de ces deux-là n'en a besoin.
+    corpus, litteraux = corpus_du_depot()
+    vivantes = {c for r in resultats.values() for c in r["couvertes_liste"] if c in cles}
+    hors_regard_global = {h for r in resultats.values() for h in r["hors_regard"]}
+    errs_exces = valider_sonde_d_exces(vivantes, corpus, litteraux, hors_regard_global)
+    if errs_exces:
+        for e in errs_exces:
+            print(f"::error::{e}")
+        print("\nLa sonde d'excès ne se reconnaît pas elle-même : la garde refuse de conclure. Une sonde "
+              "d'orphelines qui a perdu son corpus n'est pas silencieuse, elle est CALOMNIEUSE — elle accuse "
+              "tout ce qu'elle ne retrouve plus.")
+        return 2
+    exces = excedent_du_lexique(cles, vivantes, corpus, litteraux)
+    orphelines = exces["orpheline"]
+    indecidables = exces["indecidable"]
+    if liste_exces:
+        for c, motif in orphelines:
+            print(f"ORPHELINE PROUVÉE  {c}\n                   ({motif})")
+        for c, motif in indecidables:
+            print(f"INDÉCIDABLE        {c}\n                   ({motif})")
         return 0
 
     largeur = max(len(m) for m in resultats)
@@ -1488,6 +1765,26 @@ def main(argv: list[str]) -> int:
           f"libellé ajouté sans retrait rend le code 1. Abaisser les plafonds ne ferme "
           f"donc pas ce chemin-là ; seule une garde portant sur l'ENSEMBLE des textes le fermerait, et elle "
           f"rougirait sur toute réécriture de libellé. C'est DIT, ce n'est pas corrigé (`P8.27-g`).")
+    # L'EXCÈS, PUBLIÉ AVEC SES TROIS VERDICTS (`P11.8-g`). Le compte des INDÉCIDABLES est l'aveu : il dit
+    # combien de clés la sonde ne sait pas trancher, et il vaut mieux qu'un vert qui tairait la question.
+    ailleurs = sum(1 for _, m in indecidables if m.startswith("texte présent"))
+    print(f"EXCÈS DU LEXIQUE : sur {len(cles)} clés, {len(vivantes)} sont VIVANTES (vues comme chaîne affichée "
+          f"dans un puits reconnu), {len(indecidables)} sont INDÉCIDABLES — {ailleurs} dont le texte est ailleurs "
+          f"dans le dépôt hors d'un puits reconnu, {len(indecidables) - ailleurs} qu'un littéral de bord pourrait "
+          f"composer — et {len(orphelines)} sont des ORPHELINES PROUVÉES (texte absent du dépôt ENTIER, et aucun "
+          f"littéral n'en formerait le bord). Corpus dérivé : {len(corpus)} octets, {len(litteraux)} littéraux de "
+          f"l'arbre servi ; `*.md` et {'/'.join(REPERTOIRES_HORS_CORPUS)} exclus (rien de cela n'atteint un "
+          f"navigateur, et lire `.github` ferait ressusciter toute clé que ce fichier NOMME). `--exces` les liste.")
+    for c, _ in orphelines:
+        print(f"    ORPHELINE PROUVÉE  {c}")
+    print(f"CE QUE LA MESURE DE L'EXCÈS NE TIENT PAS : (1) un COMMENTAIRE qui cite encore la phrase EMPÊCHE "
+          f"l'accusation — 8 clés de plus seraient prouvées sans lui (écart mesuré le 2026-08-29) ; c'est le prix "
+          f"assumé pour ne jamais accuser à tort. (2) Une clé dont le texte ne naîtrait qu'à l'exécution, "
+          f"d'une donnée absente du dépôt, serait accusée — la borne est que le source du démon EST dans le "
+          f"corpus. (3) Le cliquet des indécidables est un COMPTE NET, pas un ENSEMBLE : une indécidable qui "
+          f"en remplace une autre passe sans que rien ne bouge, exactement comme pour le hors-regard "
+          f"(`P8.27-g`). (4) Elle ne juge PAS la VALEUR anglaise d'une clé vivante — qu'elle soit juste, ou "
+          f"seulement différente du français, c'est le témoin 13 du harnais ESM qui le tient, pas ceci.")
     if mesure:
         return 0
 
@@ -1499,6 +1796,19 @@ def main(argv: list[str]) -> int:
         print(f"::error::module(s) mesuré(s) mais hors du cliquet : {', '.join(sans_plafond)} — inscrivez chacun dans "
               f"`PLAFOND_DE_TROUS` ET dans `PLAFOND_HORS_REGARD` à son compte relevé par `--mesure`. La garde refuse "
               f"de conclure : un module rendu sans être jugé fait rendre vert sur ce que personne ne garde.")
+        return 2
+
+    # UNE CLÉ QUE LA SONDE NE SAIT PAS TRANCHER N'EST PAS UNE FAUTE : c'est un aveu, et son canal est le REFUS
+    # DE CONCLURE, pas la régression. Confondre les deux ferait rougir qui écrit un libellé légitime dans une
+    # forme que le critère de puits ne lit pas — le contraire de ce que cette garde cherche à obtenir.
+    if len(indecidables) > PLAFOND_INDECIDABLES:
+        exemples = " · ".join(c for c, _ in indecidables[:6])
+        print(f"::error::{len(indecidables)} clés INDÉCIDABLES au lexique, plafond {PLAFOND_INDECIDABLES} — la sonde "
+              f"ne sait dire ni qu'elles sont servies, ni qu'elles sont mortes. P. ex. : {exemples}. "
+              f"`--exces` les nomme toutes avec leur motif. Faites-les entrer dans un puits reconnu, ou relevez "
+              f"ce plafond avec la raison écrite à côté.")
+        print("\nLa garde refuse de conclure : elle ne rendra pas vert sur une moitié de lexique qu'elle ne sait "
+              "pas trancher, et elle n'accusera pas ce qu'elle n'a pas prouvé.")
         return 2
 
     regressions = []
@@ -1526,13 +1836,23 @@ def main(argv: list[str]) -> int:
                 f"écrite : il garde ce que la garde IGNORE, et rendre vert sur ce qu'on ne regarde pas est pire "
                 f"qu'une garde absente. `--hors-regard {m}` les liste."
             )
+    if len(orphelines) > PLAFOND_ORPHELINES:
+        regressions.append(
+            f"lexique : {len(orphelines)} ORPHELINE(S) PROUVÉE(S), plafond {PLAFOND_ORPHELINES} — "
+            + " · ".join(f"« {c} »" for c, _ in orphelines[:6])
+            + ". Le texte de chacune est absent du dépôt ENTIER et aucun littéral de l'arbre servi n'en "
+              "formerait le bord : plus aucun nœud ne peut valoir cette clé, elle ne traduira jamais rien. "
+              "Retirez-la de `web/i18n.js` et abaissez `PLAFOND_ORPHELINES` d'autant. `--exces` les liste."
+        )
     if regressions:
         for e in regressions:
             print(f"::error::{e}")
-        print(f"\n{len(regressions)} dépassement(s) de plafond (trous du lexique ou hors-regard).")
+        print(f"\n{len(regressions)} dépassement(s) de plafond (trous du lexique, hors-regard, ou orphelines).")
         return 1
     print(f"Aucun module au-dessus de son plafond de trous ni de hors-regard "
-          f"({len(plafonds)} plafonds de trous et {len(plafonds_hr)} plafonds de hors-regard tenus).")
+          f"({len(plafonds)} plafonds de trous et {len(plafonds_hr)} plafonds de hors-regard tenus) ; "
+          f"{len(orphelines)} orpheline(s) prouvée(s) pour un plafond de {PLAFOND_ORPHELINES}, et "
+          f"{len(indecidables)} indécidable(s) pour un plafond de {PLAFOND_INDECIDABLES}.")
     return 0
 
 

@@ -524,7 +524,6 @@ const I18N_EN = {
   "Visibilité": "Visibility", "Visibilité (si nouveau)": "Visibility (if new)", "DOCKER-USER v4": "DOCKER-USER v4", "INPUT v4 / v6": "INPUT v4 / v6",
   "n/a (pas d'interface lockdown sur cet hôte)": "n/a (no lockdown interface on this host)",
   "Configuration côté hôte (auditd). Édition depuis l'UI = Phase 2 (à venir).": "Host-side configuration (auditd). Editing from the UI = Phase 2 (upcoming).",
-  "Gouvernance d'accès (style Varonis) : qui touche quoi, intégrité et droits. Lecture seule — pas de DLP de contenu, aucune action depuis cet onglet.": "Access governance (Varonis-style): who touches what, integrity and rights. Read-only — no content DLP, no action from this tab.",
   "Fenêtre d'analyse (DLP)": "Analysis window (DLP)",
   "Fenêtre d'analyse : borne le `from` des requêtes (le nombre de lignes reste cappé par panneau)": "Analysis window: bounds the `from` of the queries (the row count stays capped per panel)",
   "aucune donnée (le capteur tourne toutes les 2 min)": "no data (the sensor runs every 2 min)", "+ Ajouter un panneau": "+ Add a panel",

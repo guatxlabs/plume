@@ -5,7 +5,9 @@ import { $, ic, muted, poserLeChoixDeDates, LANG } from './core.js';
 import { S } from './state.js';
 import { runQ, tableEl, truncationBadge } from './viz.js';
 // `P11.18-s` — LE GESTE VIENT DU POINT COMMUN, LA VALEUR VIENT DE L'AUTRE VUE. Le choix de dates
-// lui-même (`poserLeChoixDeDates`) est dans `web/core.js` et sert quatre consommateurs. La CIBLE où
+// lui-même (`poserLeChoixDeDates`) est dans `web/core.js` et sert CETTE vue et le journal d'audit — le
+// chiffre qui vivait ici (« quatre consommateurs ») était celui de la FAMILLE de gestes de plage, pas
+// de ce geste-ci, que RIEN ne suivait, et la mesure du 2026-08-29 en donne DEUX. La CIBLE où
 // la plage se pose est celle du journal d'audit : le partage est celui de la VALEUR — une enquête
 // porte sur les mêmes jours d'une vue à l'autre — et c'est la vue dont la ROUTE est la plus PAUVRE
 // qui la porte. La raison du sens est écrite en tête du bloc `P11.18-c` de `web/audit.js`.

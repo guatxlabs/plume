@@ -50,7 +50,10 @@ function ledgerCell(txt, title) { const s = document.createElement('span'); s.te
 //
 // OÙ CE CHOIX VIT — LE GESTE EST AU POINT COMMUN DEPUIS `P11.18-s`, LA VALEUR EST ENCORE ICI. Le
 // contrôle lui-même (lire une saisie, refuser ce qui ne peut pas partir, écrire sur une cible) vit
-// dans `web/core.js` et sert QUATRE consommateurs. Ce qui reste ici est la VALEUR partagée par ces
+// dans `web/core.js` et sert LES DEUX VUES QUI POSENT LA BARRE — celle-ci et la prévention des fuites.
+// Le chiffre qui vivait ici (« QUATRE ») comptait la famille entière des gestes de plage, modale
+// comprise, et aucune garde ne le suivait ; la mesure du 2026-08-29 en donne DEUX pour CE geste, et un
+// compte qui n'est plus recopié ne peut plus dériver. Ce qui reste ici est la VALEUR partagée par ces
 // deux vues-ci, et le sens de ce partage n'est pas arbitraire : c'est la vue dont la ROUTE est la
 // plus PAUVRE qui la porte, parce que la plage qu'une route pauvre sait exprimer est un
 // SOUS-ENSEMBLE de ce qu'une route riche sait exprimer. Dans l'autre sens, le journal aurait hérité
@@ -294,8 +297,9 @@ async function loadLedger() {
 
 // `P11.18-s` — CE QUE CETTE VUE EXPORTE POUR L'AUTRE, ET CE QU'ELLE N'EXPORTE PLUS. Le CHOIX DE
 // DATES n'est plus ici : il est au point commun (`web/core.js`), avec son lecteur pur, ses refus et
-// son écrivain, et il sert quatre consommateurs. Ce qui part encore d'ici est ce qui appartient
-// vraiment à ces deux vues : la CIBLE où leur plage se pose — la valeur partagée — et les deux
+// son écrivain, et il sert LES DEUX VUES QUI POSENT LA BARRE. Le chiffre « quatre » écrit ici comptait
+// la famille entière des gestes de plage, modale comprise ; rien ne le suivait. Ce qui part encore
+// d'ici est ce qui appartient vraiment à ces deux vues : la CIBLE où leur plage se pose — la valeur partagée — et les deux
 // gestes qui la lisent et l'écrivent. `joursPourLeJournal` reste PURE et exportée pour être éprouvée
 // sans document ni réseau : c'est la traduction que la route de CETTE vue impose, elle n'appartient
 // donc à aucune autre.

@@ -16,7 +16,10 @@
 //!     unspecified/IPv4-mapped-v6 REFUSÉS (RFC1918 opt-in), avec re-check DNS. Une destination interne ne
 //!     peut ni être créée ni jamais égresser.
 //!   - GOUVERNANCE : create/enable/delete d'une destination est LEDGERISÉ (audit_config_change,
-//!     fail-closed transactionnel, source non-purgeable `plume-config`). La donnée qui sort = un événement
+//!     fail-closed transactionnel, source non-purgeable `plume-config`) — ET LE FLUSH MANUEL AVEC EUX
+//!     (`config.destination.flush`, `P11.13-c`) : CONFIGURER la vanne se trace, l'OUVRIR aussi. Sans cette
+//!     dernière, le seul geste par lequel la donnée sort VRAIMENT était le seul à ne rien inscrire, et
+//!     cette phrase-ci, vraie, laissait croire le module couvert. La donnée qui sort = un événement
 //!     d'audit tamper-evident, MÊME quand c'est un admin qui l'exporte.
 //!   - SECRET : l'auth du sink (hec_token / auth_header webhook) vit dans le blob `config`, JAMAIS projeté
 //!     (has_auth booléen seul, comme notifier.config) et NIÉ en lecture SQL brute par l'authorizer
@@ -577,6 +580,25 @@ pub(crate) async fn destinations_list(State(st): State<AppState>, Extension(au):
     Json(Value::Array(list)).into_response()
 }
 
+/// L'endpoint tel qu'il peut ENTRER DANS UN JOURNAL — l'autorité privée de son userinfo.
+///
+/// DÉRIVÉ, JAMAIS ÉNUMÉRÉ : la fonction ne connaît aucun schéma ni aucun hôte. Elle borne l'AUTORITÉ
+/// (ce qui suit `://` jusqu'au premier `/`, `?` ou `#`) et, si celle-ci porte un `@`, remplace tout ce
+/// qui précède le DERNIER `@` par un marqueur. Le dernier `@` est le bon séparateur : c'est celui que
+/// `ssrf_split_authority` retient déjà pour isoler l'hôte, et un `@` peut légitimement figurer dans un
+/// mot de passe. Une URL sans `@` traverse INCHANGÉE — le caviardage ne doit pas rendre illisible ce
+/// qui n'a rien à cacher.
+pub(crate) fn endpoint_sans_credence(url: &str) -> String {
+    let Some(deb) = url.find("://") else { return url.to_string() };
+    let deb = deb + 3;
+    let fin = url[deb..].find(['/', '?', '#']).map(|i| deb + i).unwrap_or(url.len());
+    let autorite = &url[deb..fin];
+    match autorite.rfind('@') {
+        None => url.to_string(),
+        Some(a) => format!("{}{}{}", &url[..deb], format_args!("<credence caviardee>@{}", &autorite[a + 1..]), &url[fin..]),
+    }
+}
+
 pub(crate) async fn destination_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     if !au.is_admin() {
         return forbidden("réservé admin");
@@ -608,7 +630,16 @@ pub(crate) async fn destination_create(State(st): State<AppState>, Extension(au)
     };
     crate::req_conn!(st, au, conn);
     // GOUVERNANCE : création + audit fail-closed (data-exfil surface). Le blob `config` (secret d'auth) n'est
-    // JAMAIS logué : l'audit ne porte que type/name/enabled/endpoint + un booléen has_auth.
+    // JAMAIS logué : l'audit ne porte que type/name/enabled + un booléen has_auth, et l'endpoint CAVIARDÉ.
+    //
+    // POURQUOI CAVIARDÉ — MESURÉ le 2026-08-29. Cette phrase disait « endpoint » tout court, et elle était
+    // honnête sur `config` tout en étant AVEUGLE à l'endpoint lui-même : `ssrf_split_authority`
+    // (`daemon/src/ledger.rs`) RETIRE le userinfo avant de valider, donc une URL portant `utilisateur:secret@`
+    // passe `ssrf_guard`, passe `dest_endpoint_ok`, et partait VERBATIM dans les trois écritures d'audit
+    // ci-dessous. Le journal d'audit est tamper-evident et non purgeable : un secret qui y entre n'en sort
+    // JAMAIS. Le geste manquant n'était pas un refus — refuser une URL créditée casserait les sinks qui
+    // s'authentifient ainsi — c'était de ne pas RECOPIER ce qu'on n'a pas besoin d'inscrire.
+    let endpoint_pour_audit = endpoint_sans_credence(&endpoint);
     if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
         return server_err("verrou base indisponible");
     }
@@ -625,10 +656,10 @@ pub(crate) async fn destination_create(State(st): State<AppState>, Extension(au)
         audit_config_change(
             &conn,
             "config.destination.create",
-            &format!("destination de sortie '{name}' ({dtype} -> {endpoint}) créée par {}", au.name),
+            &format!("destination de sortie '{name}' ({dtype} -> {endpoint_pour_audit}) créée par {}", au.name),
             3,
-            &format!("SORTIE de données : destination '{name}' ({dtype}, enabled={}, endpoint={endpoint}) créée par {} — la donnée SOC peut désormais quitter le périmètre vers ce sink", enabled != 0, au.name),
-            &json!({ "id": id, "type": dtype, "enabled": enabled != 0, "endpoint": endpoint, "has_auth": has_auth, "actor": au.name }).to_string(),
+            &format!("SORTIE de données : destination '{name}' ({dtype}, enabled={}, endpoint={endpoint_pour_audit}) créée par {} — la donnée SOC peut désormais quitter le périmètre vers ce sink", enabled != 0, au.name),
+            &json!({ "id": id, "type": dtype, "enabled": enabled != 0, "endpoint": endpoint_pour_audit, "has_auth": has_auth, "actor": au.name }).to_string(),
         )?;
         Ok(id)
     })();
@@ -770,6 +801,9 @@ pub(crate) async fn destination_flush(State(st): State<AppState>, Extension(au):
     };
     let db = __rc.clone();
     let now_ts = now();
+    // Le type part DANS la tâche bloquante (closure `move`) ; l'audit d'après-coup doit encore pouvoir le
+    // nommer. C'est une chaîne allowlistée par `dest_type_ok` (≤ 7 octets), pas une valeur libre.
+    let dtype_audite = dtype.clone();
     let _ = tokio::task::spawn_blocking(move || {
         forward_one_destination(&db, id, &dtype, &endpoint, &config_json, &filter_json, batch_max, watermark, now_ts, dest_transport);
     }).await;
@@ -779,5 +813,39 @@ pub(crate) async fn destination_flush(State(st): State<AppState>, Extension(au):
         "SELECT watermark,last_count,last_error FROM destination WHERE id=?1",
         params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     ).unwrap_or((watermark, 0, None));
+    // GOUVERNANCE (`P11.13-c`) — LE DÉCLENCHEMENT MANUEL D'UNE SORTIE DE DONNÉES EST AUDITÉ (ledger
+    // tamper-evident + event `plume-config` non-purgeable), exactement comme le poll manuel d'un
+    // connecteur en ENTRÉE (`config.connector.poll`). C'était le SEUL geste de ce module à ne laisser
+    // aucune trace, alors que c'est celui dont la trace compte le plus : create/update/delete CONFIGURENT
+    // la vanne, `flush` l'OUVRE.
+    // POST-COUP, ET NON FAIL-CLOSED : le réseau a déjà eu lieu et ne se rollback pas ; refuser l'action
+    // faute d'audit n'annulerait rien. On trace donc l'ACTION opérateur sans jamais tenir le lock writer
+    // pendant l'I/O réseau. C'est la MOITIÉ de la discipline des trois sites create/update/delete : eux
+    // ROLLBACK la mutation quand l'audit échoue, ici il n'y a rien à rollback — la même nuance que
+    // `connector_poll` a déjà tranchée.
+    // CE QUI N'Y FIGURE PAS, ET POURQUOI. Ni `endpoint` : `ssrf_split_authority` RETIRE le userinfo avant
+    // de valider, donc `https://user:motdepasse@hôte` est un endpoint ACCEPTÉ — le recopier ici écrirait
+    // une crédence en clair dans le journal ; l'`id` désigne la destination sans la recopier. Ni `config`
+    // (secret d'auth du sink). Ni `last_error` : c'est une chaîne fabriquée à partir de ce que le SINK a
+    // répondu — on n'en garde que le BOOLÉEN, comme `connector_poll`, pour que le journal d'audit ne
+    // devienne pas un second canal de sortie. Ni aucune donnée d'événement. Restent des valeurs BORNÉES :
+    // un i64, un type allowlisté, l'identité AUTHENTIFIÉE (`au.name`, posée par `auth_guard`, jamais un
+    // champ du corps de la requête) — les mêmes que les trois sites voisins inscrivent déjà.
+    // `forwarded` retombe à 0 quand le lot a ÉCHOUÉ : `last_count` n'est réécrit QUE sur succès, donc le
+    // relire tel quel après un échec recopierait le compte d'un envoi PRÉCÉDENT — un chiffre faux dans un
+    // journal d'audit est pire qu'un chiffre absent. Le couple watermark avant -> après dit, lui, la
+    // frontière exacte de ce qui a quitté le périmètre : égal = rien n'est parti.
+    let parti = if le.is_none() { lc } else { 0 };
+    if let Ok(tx) = Txn::begin(&conn) {
+        let ok = audit_config_change(
+            &conn,
+            "config.destination.flush",
+            &format!("SORTIE de données déclenchée à la main sur la destination #{id} ({dtype_audite}) par {} : {parti} event(s), watermark {watermark} -> {wm}", au.name),
+            3,
+            &format!("SORTIE de données : forward MANUEL de la destination #{id} ({dtype_audite}) déclenché par {} — {parti} event(s) ont quitté le périmètre (watermark {watermark} -> {wm})", au.name),
+            &json!({ "id": id, "type": dtype_audite, "forwarded": parti, "watermark_before": watermark, "watermark_after": wm, "ok": le.is_none(), "actor": au.name }).to_string(),
+        );
+        if ok.is_ok() { let _ = tx.commit(); } // sinon : Drop(tx) -> ROLLBACK (idem panic entre BEGIN et ici)
+    }
     Json(json!({ "ok": le.is_none(), "forwarded": lc, "watermark": wm, "last_error": le })).into_response()
 }

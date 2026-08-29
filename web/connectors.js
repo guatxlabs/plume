@@ -94,7 +94,24 @@ async function testConnector(c) {
 // D10b — POST /api/connectors/{id}/poll : déclenche UN pull+ingest IMMÉDIAT (admin-only + fail-safe serveur).
 // Feedback = nombre d'events ingérés au dernier lot / erreur (jamais le secret). Rafraîchit la liste ensuite
 // (last_run / last_count / last_error reflètent le poll qui vient de s'exécuter).
+//
+// CONFIRMATION AVEC CONSÉQUENCE (`P11.13-c`) — POURQUOI ICI ET PAS SUR « Tester la connexion ». Les deux
+// boutons sont des POST ; un seul ÉCRIT. Mesuré le 2026-08-29 dans le démon : `connector_poll` réutilise
+// `poll_one_connector`, qui INGÈRE les alertes dans la base du tenant et, EN CAS DE SUCCÈS SEULEMENT, avance
+// le curseur `connector.watermark` — le lot qui vient d'entrer ne sera donc plus jamais retiré par ce
+// connecteur. Le démon le dit lui-même : il AUDITE ce geste (`config.connector.poll`), et c'est ce
+// critère-là — le démon inscrit un changement — qui rend une route sensible. `connector_test`, lui,
+// n'exécute AUCUN `execute` : dry-run, une page, rien d'ingéré, rien d'audité, curseur immobile. Lui poser
+// une confirmation apprendrait à cliquer sans lire, et userait celle-ci.
+function consequenceDuPoll(c) {
+  return 'les alertes disponibles chez ' + (CONNECTOR_TYPES[c.type] || c.type || 'la source externe')
+    + ' sont tirées MAINTENANT et ingérées dans plume (env ' + (c.env_id || 'prod') + ', détection comprise) ; '
+    + 'en cas de succès le curseur avance et ce lot ne sera plus jamais retiré par ce connecteur. Refuser ne '
+    + 'tire rien et ne change rien à l\'état du connecteur — ni sa collecte périodique, ni son curseur.';
+}
+
 async function pollConnector(c) {
+  if (!await confirmWithConsequence('Collecter maintenant « ' + (c.name || c.id) + ' » ?', consequenceDuPoll(c))) return;
   let j;
   try { j = await apiSend('/connectors/' + c.id + '/poll', 'POST'); }
   catch (e) { toast('échec de la collecte : ' + ((e && e.message) || e), 'bad'); loadConnectors(); return; }

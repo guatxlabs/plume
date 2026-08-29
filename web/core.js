@@ -911,6 +911,10 @@ function poserLaPlageSurLaCible(cible, plage) {
     if (c.cible !== cible) return;
     c.debut.value = p ? p.texteDebut : '';
     c.fin.value = p ? p.texteFin : '';
+    // Le reflet porte sur TOUT ce que le contrôle montre, le bouton de retrait compris. L'oublier ici
+    // rendrait le remède complice du défaut qu'il corrige : une vue voisine peut retirer la plage,
+    // et le bouton resterait alors offert sur un contrôle qui n'a plus rien à retirer.
+    c.refleterLeRetrait();
   });
 }
 
@@ -945,7 +949,17 @@ function poserLeChoixDeDates(cle, cible, porte, surChangement) {
   const retirer = document.createElement('button');
   retirer.type = 'button';
   retirer.className = 'linklike';
-  retirer.textContent = LANG === 'en' ? 'Back to the shortcut' : 'Revenir au raccourci';
+  // `P11.20-f` — CE BOUTON NOMME CE QU'IL FAIT, À CE QUE L'EXPLOITANT A SOUS LES YEUX. Il s'appelait
+  // « Revenir au raccourci » : mesuré le 2026-08-29, le mot « raccourci » ne nomme RIEN sur les deux
+  // écrans qui posent cette barre (0 occurrence affichée dans `web/dataaccess.js`, 0 dans
+  // `web/audit.js` hors commentaire), pendant que la console le SERT déjà pour autre chose à quatre
+  // endroits — la section « Raccourcis » du guide (`web/help.js`), les « Raccourcis clavier »
+  // (`web/keys.js`) et la barre d'en-tête décrite comme un raccourci (`web/help_registry.js`) — avec
+  // une entrée de lexique qui le traduit en « Shortcuts », c'est-à-dire en raccourcis CLAVIER. Le mot
+  // renvoyait donc l'exploitant vers un objet qui n'existe pas ici. Le nouveau libellé ne désigne que
+  // les deux champs de CETTE barre, qui sont à côté de lui ; ce vers quoi le retrait ramène est dit
+  // par le motif ci-dessous, où il peut l'être en toutes lettres.
+  retirer.textContent = LANG === 'en' ? 'Clear these dates' : 'Effacer ces dates';
   // La ligne de refus occupe toute la largeur de la barre : une phrase qui explique un refus ne se lit
   // pas coincée entre deux champs. `hidden` tant qu'il n'y a rien à dire — jamais un vide qui se
   // confondrait avec un espace réservé.
@@ -954,10 +968,57 @@ function poserLeChoixDeDates(cle, cible, porte, surChangement) {
   refus.setAttribute('role', 'alert');
   refus.style.cssText = 'flex-basis:100%;margin:4px 0 0';
   refus.hidden = true;
-  const direLeRefus = texte => { refus.textContent = texte; refus.hidden = !texte; };
-  // Retoucher une date EFFACE le refus : il porte sur ce qui était saisi, pas sur ce qui l'est.
-  debut.addEventListener('input', () => direLeRefus(''));
-  fin.addEventListener('input', () => direLeRefus(''));
+  // `P11.20-f` — CE QU'IL Y A À RETIRER EST UNE QUESTION POSÉE À L'ÉTAT, PAS UNE LISTE TENUE À JOUR.
+  // MESURÉ le 2026-08-29 : exercé à l'ARRIVÉE — aucune plage posée, deux champs vides, aucun refus —
+  // ce bouton ne changeait RIEN (0 re-rendu, 0 écriture, pas un caractère déplacé), tout en restant
+  // offert et cliquable ; il n'agissait qu'une fois une plage posée. Il était donc inerte EXACTEMENT
+  // là où l'exploitant le rencontre en premier, ce qui lui apprend que l'interface répond à côté.
+  // Le remède n'est pas de lui inventer un effet à l'arrivée — il n'y en a aucun de juste — mais de
+  // DÉRIVER sa présence de ce qu'il aurait à retirer : il paraît quand il a quelque chose, il n'est
+  // pas là quand il n'a rien, et il DIT dans les deux cas ce qu'il fait. Rien ne se cache pour autant :
+  // ce que le retrait rendrait — la fenêtre du sélecteur — est déjà à l'écran et n'a pas bougé.
+  // La garde est dérivée et non énumérée : les trois termes sont les trois seules choses que ce
+  // contrôle porte, et un quatrième qui apparaîtrait sans passer par là ne serait pas retirable non
+  // plus. `refus.hidden` en fait partie : une phrase de refus affichée EST quelque chose à retirer,
+  // même quand rien n'est saisi ni posé.
+  const rienARetirer = () => !cible.lire() && !debut.value && !fin.value && refus.hidden;
+  // IL SE RETIRE AU LIEU DE SE GRISER, ET LA FEUILLE DE STYLE EN DÉCIDE — MESURÉ, PAS SUPPOSÉ. Le
+  // réflexe serait de le rendre inerte avec son motif, ce que fait le reste de la console. Il ne tient
+  // PAS ici : mesuré le 2026-08-29, `web/style.css` porte une règle `:disabled` pour `.btn`, `.picon`,
+  // `.evpager button`, `.alertbar button` et le bouton de connexion, et AUCUNE pour `.linklike`, qui
+  // est la classe de ce bouton-ci (l. 954 : `color:var(--acc)`, `text-decoration:underline`,
+  // `cursor:pointer`, tous inconditionnels). Un `.linklike` grisé garderait donc la couleur d'accent,
+  // le soulignement ET le curseur de main : il paraîtrait cliquable, avalerait le clic sans un mot, et
+  // ce serait le MÊME mensonge qu'on retire, en plus difficile à voir. La même feuille écrit d'ailleurs
+  // (l. 915-918) qu'elle évite `disabled` là où l'infobulle doit rester lisible. `hidden`, lui, ne
+  // demande rien de neuf : cette même feuille le TIENT DÉJÀ pour toute la console (l. 163,
+  // `[hidden]{display:none!important}`), aucune règle ne le contredit sur `.rmabs` ni sur ses boutons
+  // (mesuré le 2026-08-29), et le constat lui-même range l'ABSENT au-dessus du visible-et-inerte.
+  // Le jour où `.linklike:disabled` existera, ce choix se rediscute.
+  // `disabled` est posé AVEC, pour qu'aucun chemin (clic programmé, règle qui le rendrait visible)
+  // ne rallume un geste que rien n'attend ; les deux sortent du MÊME prédicat, jamais de deux avis.
+  // Le motif est écrit dans les DEUX cas, pas seulement dans l'inerte : un bouton qui n'explique que
+  // son refus laisse deviner ce qu'il fait quand il marche. Ce à quoi le retrait rend la main est nommé
+  // ici en toutes lettres — la « fenêtre » du sélecteur — parce que c'est le mot que les deux vues
+  // affichent réellement à côté (`Fenêtre : …` / `Window: …`, mesuré le 2026-08-29).
+  const refleterLeRetrait = () => {
+    const rien = rienARetirer();
+    retirer.hidden = rien;
+    retirer.disabled = rien;
+    retirer.title = rien
+      ? (LANG === 'en'
+        ? 'Nothing to clear: no date is typed and no range is set — the window is already the one from the selector.'
+        : "Rien à effacer : aucune date n'est saisie et aucune plage n'est posée — la fenêtre est déjà celle du sélecteur.")
+      : (LANG === 'en'
+        ? 'Clears both dates and drops the range: the window goes back to the one from the selector.'
+        : 'Efface les deux dates et retire la plage : la fenêtre redevient celle du sélecteur.');
+  };
+  const direLeRefus = texte => { refus.textContent = texte; refus.hidden = !texte; refleterLeRetrait(); };
+  // Retoucher une date EFFACE le refus : il porte sur ce qui était saisi, pas sur ce qui l'est. Et le
+  // MÊME geste remet le retrait à son reflet : sans quoi le bouton resterait inerte devant une date
+  // qui vient d'être saisie. `change` accompagne `input` parce qu'un champ de date se remplit aussi
+  // par le calendrier du navigateur et par le remplissage automatique.
+  [debut, fin].forEach(champ => ['input', 'change'].forEach(nom => champ.addEventListener(nom, () => direLeRefus(''))));
   appliquer.addEventListener('click', () => {
     const maintenant = Math.floor(Date.now() / 1000);
     const lue = lireUnePlage(debut.value, fin.value, maintenant, cible.grain);
@@ -972,11 +1033,15 @@ function poserLeChoixDeDates(cle, cible, porte, surChangement) {
     if (cible.lire()) { poserLaPlageSurLaCible(cible, null); surChangement(); }
   });
   barre.append(appliquer, retirer, refus);
-  const controle = { barre, debut, fin, appliquer, retirer, refus, direLeRefus, cible };
+  const controle = { barre, debut, fin, appliquer, retirer, refus, direLeRefus, refleterLeRetrait, cible };
   controlesDePlage.set(cle, controle);
   const posee = cible.lire();
   debut.value = posee ? posee.texteDebut : '';
   fin.value = posee ? posee.texteFin : '';
+  // À LA POSE, et pas seulement au premier geste : c'est l'état d'ARRIVÉE que l'exploitant voit, donc
+  // celui où l'aveu doit déjà être juste. Une barre posée sur une cible qui porte DÉJÀ une plage
+  // (l'autre vue l'y a mise) arrive avec son retrait offert, ce que le même appel décide.
+  refleterLeRetrait();
   return controle;
 }
 

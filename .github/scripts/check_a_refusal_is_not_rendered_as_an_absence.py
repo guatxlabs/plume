@@ -19,9 +19,13 @@ REQUÊTE ne rend moins quand la fenêtre s'élargit : pour les cinq requêtes de
 avec `from=0` est EXACTEMENT celui émis avec `from=maintenant-7j` MOINS son seul conjoint
 `ts >= <borne>`, et joué sur une base de 6 000 lignes réparties sur 30 jours il rend toujours au moins
 autant de lignes (60 contre 15 sur le panneau agrégé). Ce que la fenêtre large rend de DIFFÉRENT,
-c'est un REFUS — 422 « refus de rendre un nombre FAUX … » quand la valeur porterait sur un historique
-froid tronqué (`daemon/src/cold_store/exactness.rs`), ou 400 « budget dépassé »
-(`daemon/src/query_exec.rs`). Le démon disait la vérité dans les deux fenêtres ; la contradiction
+c'est un REFUS — le 422 que forme `TruncatedAggregate::message`
+(`daemon/src/cold_store/exactness.rs`) quand la valeur porterait sur un historique froid tronqué, ou le
+400 que forme `run_query_ex` (`daemon/src/query_exec.rs`) quand le budget est dépassé. LES DEUX SONT
+NOMMÉS PAR LEUR SITE, JAMAIS CITÉS : la citation qui vivait ici a dérivé sans que rien ne le voie — le
+démon dit « résultat », ce commentaire disait un autre substantif, dont `daemon/src` ne porte aucune
+occurrence au 2026-08-29. C'est le défaut de `P11.21-a`, et il n'est pas qu'une citation soit fausse : c'est
+qu'elle soit écrite. Le démon disait la vérité dans les deux fenêtres ; la contradiction
 était FABRIQUÉE à l'affichage, par cette condition.
 
 LA RÈGLE, ÉCRITE COMME UNE PROPRIÉTÉ DE FORME
@@ -275,21 +279,37 @@ POINT_UNIQUE = "portillon::corps_de_refus"
 APPELS_WEB = {"api": (0, "GET"), "apiSend": (0, None), "fetchInto": (1, "GET")}
 
 # PLANCHERS DE NON-DÉGÉNÉRESCENCE. Relevé le 2026-08-29 : 13 fonctions du démon passent par le point
-# unique, 14 chemins en sortent, et 20 sites de `web/` les interrogent. Sous ces planchers, c'est la
+# unique, 14 chemins en sortent, et 14 sites de `web/` les interrogent. Sous ces planchers, c'est la
 # DÉRIVATION qui est cassée (point unique renommé, table de routage déplacée, appels de la console
 # réécrits) et la garde refuse de conclure plutôt que de rendre un vert aveugle.
+#
+# LE « 20 SITES » QUI ÉTAIT ÉCRIT ICI ÉTAIT FAUX, ET IL L'ÉTAIT DÉJÀ LE JOUR OÙ IL A ÉTÉ ÉCRIT. La garde
+# imprimait « 14 site(s) de web/ les interrogent » au MÊME commit où ce commentaire en annonçait 20 : un
+# chiffre recopié à la main à côté d'un chiffre dérivé, et c'est toujours le recopié qui vieillit. Il est
+# remis à ce que la garde mesure ; la valeur qui fait foi reste celle qu'elle imprime, jamais celle-ci.
 PLANCHER_CHEMINS_A_PORTILLON = 8
 PLANCHER_SITES_WEB = 10
 
 # PLAFOND DE SITES SOURDS PAR MODULE — un CLIQUET, pas une exemption. Relevé le 2026-08-29 en fermant
-# `P10.7-d` : sur 20 sites, deux restent sourds, et tous deux sont HORS du lot qui ferme cette clé.
-#   fleet.js 1 — `/api/fleet` : `d = await api(…)`, `d.error` n'est lu nulle part (le module ne cite
-#                pas `error`). La flotte rendra « aucun hôte » sur un refus.
-#   detection_admin.js 1 — `/api/coverage/detections` : `({ detections } = await api(…))` DÉCONSTRUIT la
-#                réponse et jette l'aveu avec elle ; `renderCoverage` sort « aucune technique détectée ».
-# Un module absent de cette table est jugé à ZÉRO. Un plafond ne monte pas sans raison écrite à côté ;
-# le faire descendre est le seul mouvement qui ne se discute pas.
-PLAFOND_SOURDS = {"fleet.js": 1, "detection_admin.js": 1}
+# `P10.7-d` : sur les 14 sites dérivés, PLUS AUCUN n'est sourd. La table est donc VIDE, et vide est sa
+# forme la plus forte : un module absent est jugé à ZÉRO, donc toute régression, dans n'importe quel
+# module de `web/`, est désormais un échec — il n'existe plus une seule case où un site sourd soit toléré.
+#
+# CE QUE LES DEUX DERNIÈRES ENTRÉES DISAIENT, ET CE QUI A ÉTÉ CORRIGÉ (mesuré en EXERÇANT les deux rendus
+# sur le corps exact que le démon sert, pas en les relisant) :
+#   fleet.js — `/api/fleet`, via `fetchInto(wrap, '/fleet?…')` et NON `api(…)` comme l'annonçait la ligne
+#              qui vivait ici. Le corps du refus n'ayant pas de `pipeline_fresh`, la vue ne rendait pas
+#              « aucun hôte » : elle rendait D'ABORD, en rouge, « Ingestion en panne — aucune donnée reçue
+#              récemment ». Un refus de lire s'y présentait donc comme un INCIDENT CONSTATÉ, ce qui est
+#              strictement pire qu'une absence. `renderFleetInventory` lit maintenant `d.error` avant
+#              toute lecture de la forme, et ne pose ni bannière, ni lignes, ni barre d'export.
+#   detection_admin.js — `/api/coverage/detections` : `({ detections } = await api(…))` DÉCONSTRUISAIT la
+#              réponse et jetait l'aveu avec elle ; `renderCoverage` sortait « aucune technique détectée »,
+#              c'est-à-dire un VERDICT DE COUVERTURE tiré d'une lecture jamais faite. Le corps est
+#              désormais lié (`rep`), sa cause lue, et le test du refus précède celui du vide.
+# Un plafond ne monte pas sans raison écrite à côté ; le faire descendre est le seul mouvement qui ne se
+# discute pas. Il est descendu à ce qui est mesuré, et ce qui est mesuré est zéro.
+PLAFOND_SOURDS = {}
 
 
 def _bloc(code, i):

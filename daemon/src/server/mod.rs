@@ -27,6 +27,34 @@ use boucles_de_fond::spawn_background_jobs;
 /// Lu sur le chemin chaud (security_headers) sans relire la config -> atomic mis en cache au boot.
 pub(crate) static TLS_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// `P4.13-a` (reprise) — LA POLITIQUE DE CONTENU, ET L'EMPREINTE DU SEUL SCRIPT EN LIGNE DU DOCUMENT.
+///
+/// LE DÉFAUT MESURÉ. `index.html` porte, depuis toujours, un unique `<script>` EN LIGNE : le filet de
+/// sécurité qui révèle l'interface au bout de six secondes « si l'init JS échoue » — c'est écrit dans le
+/// document, à la ligne au-dessus. Cette politique posait `script-src 'self'` SANS `'unsafe-inline'` et sans
+/// nonce : le filet n'a JAMAIS tourné dans un navigateur. Le défaut est antérieur à `P4.13-a`, mais c'est ce
+/// lot qui fait de ce document le PREMIER octet qu'un anonyme reçoit, et le mode de panne qu'il couvre — le
+/// graphe de modules ne se lie pas — est exactement celui que la porte ouverte rend atteignable.
+///
+/// POURQUOI UNE EMPREINTE ET PAS `'unsafe-inline'`. `'unsafe-inline'` rouvrirait l'injection de script pour
+/// TOUT le document — c'est-à-dire pour une console qui pose du balisage en bloc à des centaines d'endroits.
+/// L'empreinte n'autorise QUE ce texte-là, à l'octet près. Un nonce serait plus souple mais suppose de
+/// RÉÉCRIRE le document à chaque réponse : `ServeDir` sert des octets, il ne les fabrique pas.
+///
+/// CE QUE L'EMPREINTE COÛTE, ET COMMENT ON LE PAIE. Une empreinte écrite ici et un script écrit là-bas
+/// divergent en silence — et la panne serait la même qu'aujourd'hui : le filet ne tourne plus, sans un mot.
+/// Le témoin `p4_13_a_le_filet_de_securite_du_document_est_autorise_par_la_politique_servie` la RECALCULE
+/// depuis `web/index.html` et la cherche dans l'en-tête que le serveur ÉMET : éditer le script d'un octet
+/// sans republier l'empreinte rougit. Il refuse aussi un SECOND script en ligne non autorisé.
+///
+/// CE QUE ÇA NE PROUVE PAS : aucun navigateur n'a exécuté ce script ici. Ce qui est tenu, c'est que la
+/// politique servie autorise EXACTEMENT le texte servi ; l'exécution reste une propriété du navigateur.
+pub(crate) const CSP: &str = concat!(
+    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; ",
+    "script-src 'self' 'sha256-E7PzggEekBtVdD67eNgv7mHa+HiiKKqmnfImun1jiaA='; ",
+    "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+);
+
 /// En-têtes de sécurité HTTP sur toutes les réponses.
 pub(crate) async fn security_headers(req: Request, next: Next) -> Response {
     // #51 DAY-2 OPS — compteur HTTP process-global bumpé dans une couche DÉJÀ traversée par TOUTES les
@@ -45,7 +73,7 @@ pub(crate) async fn security_headers(req: Request, next: Next) -> Response {
     set(h, "x-frame-options", "DENY");
     set(h, "referrer-policy", "no-referrer");
     set(h, "permissions-policy", "geolocation=(), microphone=(), camera=()");
-    set(h, "content-security-policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    set(h, "content-security-policy", CSP);
     // HSTS UNIQUEMENT quand le TLS natif est actif (item 1). En HTTP (défaut k3s : TLS au proxy), NE PAS
     // émettre HSTS sur le 80 d'origine -> on ne casse pas un déploiement HTTP. Émis ssi PLUME_TLS_CERT/KEY.
     if TLS_ON.load(std::sync::atomic::Ordering::Relaxed) {
@@ -122,7 +150,24 @@ pub(crate) async fn rate_limit(State(st): State<AppState>, req: Request, next: N
             return (StatusCode::TOO_MANY_REQUESTS, "rate limit (ip)").into_response();
         }
     }
-    next.run(req).await
+    // `P4.13-a` (reprise) — BUDGET D'OCTETS DE LA SURFACE PUBLIQUE. Les deux plafonds ci-dessus comptent des
+    // REQUÊTES et ont été dimensionnés quand un anonyme coûtait douze octets. Depuis que la console est
+    // servie sans identité, la même requête coûte jusqu'à 167 542 octets lus et ~6,5 ms de `gzip` (mesuré).
+    // On borne donc l'unité qui a changé — les octets — et SEULEMENT sur les chemins que `auth_guard` ouvre
+    // (le MÊME prédicat : deux lectures de la même population divergent). Clé = IP RÉELLE, pas le pair TCP,
+    // sinon k3s compterait tous les analystes derrière l'unique adresse de Traefik. Hors surface publique,
+    // ce bloc ne prend AUCUN verrou : le chemin `/api/*` est inchangé.
+    let chemin_public = crate::surface_publique_du_shell::est_publique(req.uri().path());
+    if !chemin_public {
+        return next.run(req).await;
+    }
+    let ip_reelle = real_client_ip(&req);
+    if let Some(refus) = budget_du_shell_public::refuser(&st, &ip_reelle, now) {
+        return refus;
+    }
+    let res = next.run(req).await;
+    budget_du_shell_public::facturer(&st, &ip_reelle, now, budget_du_shell_public::octets_de(&res));
+    res
 }
 
 /// Réglages SQLite (perf + sûreté en WAL) — cf. plan données. NORMAL reste sûr de la corruption en WAL.
@@ -192,6 +237,8 @@ struct BootConfig {
     rl_ip_max: u32,
     rl_auth_max: u32,
     rl_global_max: u32,
+    shell_octets_ip_max: u64,
+    shell_octets_global_max: u64,
     session_ttl_s: i64,
     session_secret: Vec<u8>,
     ingest_min_free_mb: u64,
@@ -261,6 +308,15 @@ fn boot_config() -> BootConfig {
     let rl_ip_max: u32 = cfg(&conf, "PLUME_RL_IP_MAX", "1200").parse().unwrap_or(1200).max(1);
     let rl_auth_max: u32 = cfg(&conf, "PLUME_RL_AUTH_MAX", "120").parse().unwrap_or(120).max(1);
     let rl_global_max: u32 = cfg(&conf, "PLUME_RL_GLOBAL_MAX", "6000").parse().unwrap_or(6000).max(1);
+    // `P4.13-a` (reprise) — les deux seaux d'OCTETS de la surface publique (cf. `budget_du_shell_public` pour
+    // la mesure qui fixe les défauts). `0` DÉSACTIVE le seau : c'est une porte de sortie explicite pour un
+    // exploitant qui borne déjà en amont (CDN, Ingress), pas un défaut.
+    let shell_octets_ip_max: u64 = cfg(&conf, "PLUME_SHELL_OCTETS_IP_MAX", "")
+        .parse()
+        .unwrap_or(budget_du_shell_public::OCTETS_IP_MAX_DEFAUT);
+    let shell_octets_global_max: u64 = cfg(&conf, "PLUME_SHELL_OCTETS_GLOBAL_MAX", "")
+        .parse()
+        .unwrap_or(budget_du_shell_public::OCTETS_GLOBAL_MAX_DEFAUT);
     // FORM-LOGIN (cookie de session signé HMAC) : TTL configurable (défaut 12h) + secret de signature
     // (env PLUME_SESSION_SECRET, sinon clé persistée 0600). JAMAIS de secret en dur. ADDITIF (Basic/SSO/
     // Bearer inchangés). `load_session_secret` lit/génère la clé ; `session_secret` (Vec) shadow rien.
@@ -318,6 +374,8 @@ fn boot_config() -> BootConfig {
         rl_ip_max,
         rl_auth_max,
         rl_global_max,
+        shell_octets_ip_max,
+        shell_octets_global_max,
         session_ttl_s,
         session_secret,
         ingest_min_free_mb,
@@ -480,7 +538,7 @@ fn open_and_migrate_db(db_path: String, spool: String, conf: HashMap<String, Str
 }
 
 pub(crate) async fn run() {
-    let BootConfig { conf, db_path, spool, addr, user, pass, webdir, host, host_strict, sso_secret, public_demo, metrics_token, sso_group_admin, sso_group_editor, sso_group_superadmin, sso_header_user, sso_header_groups, tls_cert, tls_key, tls_on, lock_threshold, lock_base_s, lock_max_s, rl_ip_max, rl_auth_max, rl_global_max, session_ttl_s, session_secret, ingest_min_free_mb, ingest_max_events, search_limit_default, search_limit_max, query_sem, refresh_sem, bound } = boot_config();
+    let BootConfig { conf, db_path, spool, addr, user, pass, webdir, host, host_strict, sso_secret, public_demo, metrics_token, sso_group_admin, sso_group_editor, sso_group_superadmin, sso_header_user, sso_header_groups, tls_cert, tls_key, tls_on, lock_threshold, lock_base_s, lock_max_s, rl_ip_max, rl_auth_max, rl_global_max, shell_octets_ip_max, shell_octets_global_max, session_ttl_s, session_secret, ingest_min_free_mb, ingest_max_events, search_limit_default, search_limit_max, query_sem, refresh_sem, bound } = boot_config();
     let conn = open_and_migrate_db(db_path.clone(), spool.clone(), conf.clone());
     let db = Arc::new(Mutex::new(conn));
     // PLAFOND MÉMOIRE : on RAPPORTE ce que le processus va faire, et on le rappelle (idempotent — l'effet
@@ -752,6 +810,10 @@ pub(crate) async fn run() {
         rl_ip_max,
         rl_auth_max,
         rl_global_max,
+        shell_octets_ip: Arc::new(Mutex::new(HashMap::new())),
+        shell_octets_global: Arc::new(Mutex::new((Instant::now(), 0))),
+        shell_octets_ip_max,
+        shell_octets_global_max,
         session_secret: Arc::new(session_secret),
         session_ttl_s,
         session_epoch,

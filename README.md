@@ -802,6 +802,7 @@ viennent d'une constante — la commande 4 ci‑dessus la donne.
 | Variable | Effet | Défaut |
 |---|---|---|
 | `PLUME_RL_IP_MAX` / `_AUTH_MAX` / `_GLOBAL_MAX` | limitation de débit par IP, sur l'authentification, et globale | `1200` / `120` / `6000` |
+| `PLUME_SHELL_OCTETS_IP_MAX` / `_GLOBAL_MAX` | budget d'**octets** de la console servie sans identité (fenêtre de 10 s), par IP réelle et global — les plafonds ci-dessus comptent des requêtes et ont été dimensionnés quand un anonyme coûtait 12 octets ; depuis que l'écran de connexion exige de servir le shell, la même requête rend jusqu'à 167 542 octets et ~6,5 ms de `gzip`. Un 304 de revalidation ne porte aucun corps, donc ne consomme rien : la borne ne pèse que sur l'abus. `0` désactive un seau | `67108864` / `268435456` |
 | `PLUME_AUTH_LOCK_THRESHOLD` | échecs avant verrouillage à *backoff* exponentiel | `10` |
 | `PLUME_INGEST_MAX_EVENTS` / `PLUME_INGEST_MAX_BODY_MB` | bornes d'un lot d'ingestion | *(dérivé)* |
 

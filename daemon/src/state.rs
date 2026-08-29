@@ -86,6 +86,16 @@ pub(crate) struct AppState {
     pub(crate) rl_ip_max: u32,        // PLUME_RL_IP_MAX (req/10s par IP, hors routes d'auth), défaut 1200
     pub(crate) rl_auth_max: u32,      // PLUME_RL_AUTH_MAX (req/10s par IP sur /api/setup|/api/password), défaut 120
     pub(crate) rl_global_max: u32,    // PLUME_RL_GLOBAL_MAX (garde-fou global req/10s), défaut 6000
+    // `P4.13-a` (reprise) — BUDGET D'OCTETS DE LA SURFACE PUBLIQUE (cf. `budget_du_shell_public`). Ouvrir le
+    // shell à un anonyme a fait passer le prix d'une requête sans identité de 12 octets / 0,21 ms d'UC à
+    // 1,9 Mio / ~6,5 ms de `gzip` (MESURÉ) ; les plafonds ci-dessus, eux, avaient été dimensionnés sur
+    // l'ancien prix. La borne est en OCTETS et non en requêtes, pour qu'un 304 de revalidation — qui ne
+    // porte aucun corps — ne consomme rien : elle ne pèse que sur le client qui omet l'en-tête conditionnel.
+    // La clé est l'IP RÉELLE (`real_client_ip`), donc l'analyste et non la grappe derrière un Traefik k3s.
+    pub(crate) shell_octets_ip: Arc<Mutex<HashMap<String, (Instant, u64)>>>,
+    pub(crate) shell_octets_global: Arc<Mutex<(Instant, u64)>>,
+    pub(crate) shell_octets_ip_max: u64,      // PLUME_SHELL_OCTETS_IP_MAX (octets/10 s par IP réelle), défaut 64 Mio
+    pub(crate) shell_octets_global_max: u64,  // PLUME_SHELL_OCTETS_GLOBAL_MAX (octets/10 s, tous clients), défaut 256 Mio
     // FORM-LOGIN (4e méthode d'auth, ADDITIVE) : cookie de session signé HMAC posé par /api/login.
     // `session_secret` = clé HMAC (env PLUME_SESSION_SECRET ou clé persistée 0600 ; JAMAIS en dur).
     // `session_ttl_s` = durée de vie du jeton (PLUME_SESSION_TTL_S, défaut 12h). N'altère AUCUN des

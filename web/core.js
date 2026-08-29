@@ -4,7 +4,7 @@
 // modules importent depuis ici. Comportement identique au monolithe (mêmes fonctions, juste relocalisées).
 // state.js est un pur leaf (aucun import) -> l'importer ici ne crée aucun cycle. Utilisé par socRole/socIsAdmin
 // (helpers partagés relocalisés depuis app.js, audit H1 — cassent les deps circulaires app<->vues).
-import { S } from './state.js';
+import { S, lireLeStockageDuSite } from './state.js';
 // `P11.18-m` — LA RECHERCHE D'UNE LISTE N'EST PAS RÉÉCRITE ICI : elle vit dans le module qui la porte
 // déjà pour toute la console. `recherche_de_liste.js` est un feuillet — il n'importe rien — donc
 // l'importer depuis le cœur ne crée aucun cycle, et le prédicat, le filtre et la phrase de résumé
@@ -16,8 +16,12 @@ const $ = s => document.querySelector(s);
 const CSSV = (n, d) => (getComputedStyle(document.documentElement).getPropertyValue(n).trim() || d);
 // Fuseau d'AFFICHAGE : '' = navigateur ; 'UTC' ou 'Europe/Paris' = forcé. Le stockage reste UTC
 // partout (ts = epoch) ; on ne change QUE le rendu (sélecteur #tz). Répond à « UTC 0 + Paris configurable ».
-let socTZ = localStorage.getItem('soc_tz') || '';
-const LANG = localStorage.getItem('soc_lang') || 'fr';   // langue UI (fr par défaut) ; EN via dico FR->EN
+// `P4.13-a` (reprise) — ces deux lectures s'exécutent à l'ÉVALUATION de `core.js`, racine effective du
+// graphe (`login.js` et `app.js` l'importent tous deux) : un accès NU à `localStorage` y jette
+// `SecurityError` chez un navigateur qui bloque le stockage de site, le graphe ne se lie pas et l'écran de
+// connexion n'apparaît jamais. Le lecteur gardé vit dans `state.js` (un seul auteur ; voir son en-tête).
+let socTZ = lireLeStockageDuSite('soc_tz') || '';
+const LANG = lireLeStockageDuSite('soc_lang') || 'fr';   // langue UI (fr par défaut) ; EN via dico FR->EN
 const LOC = LANG === 'en' ? 'en-US' : 'fr-FR';            // locale des dates/heures
 const tzOpts = () => (socTZ ? { timeZone: socTZ } : {});
 const fmtTs = t => t ? new Date(t * 1000).toLocaleString(LOC, tzOpts()) : '-';

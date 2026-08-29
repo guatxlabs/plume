@@ -7,6 +7,14 @@ import { LANG } from './core.js';
 // traduites ; seuls les libellés connus le sont). Observer = traduit aussi le contenu rendu dynamiquement.
 // Non traduit = reste en FR (dégradation gracieuse ; le dico s'étoffe). Actif seulement si LANG='en'.
 const I18N_EN = {
+  // `P4.13-a` (reprise) — L'AVEU D'ÉCHEC D'AMORÇAGE. Il est au lexique parce que la garde d'i18n exige que
+  // toute chaîne AFFICHÉE y soit, et c'est la bonne règle. IL FAUT DIRE CE QUE CETTE ENTRÉE NE FAIT PAS :
+  // ce bloc n'est révélé que lorsque le graphe de modules NE SE LIE PAS — or c'est `i18nWalk` (ce module)
+  // qui traduit, et il ne s'exécute pas dans ce cas. La traduction est donc écrite pour le jour où le
+  // lexique serait appliqué autrement ; en l'état, ce message s'affiche en français quoi qu'il arrive.
+  "L'interface de la console ne s'est pas chargée.": "The console interface failed to load.",
+  "Les modules JavaScript n'ont pas pu s'exécuter, donc le formulaire de connexion ne peut pas s'afficher. Rechargez la page ; si ce message revient, le démon ne sert pas tous les fichiers de la console (réglage PLUME_WEB) et la console d'erreurs du navigateur nomme le fichier fautif.":
+    "The JavaScript modules could not run, so the sign-in form cannot be shown. Reload the page; if this message comes back, the daemon is not serving every console file (PLUME_WEB setting) and the browser error console names the offending file.",
   // navigation
   "Vue d'ensemble": "Overview", "Recherche": "Search", "Cas": "Cases", "Dashboards": "Dashboards",
   // P11.7-b — l'espace ANNONCE ce qu'il porte : il contient les alertes autant que les cas. « Cas » reste

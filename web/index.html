@@ -40,10 +40,33 @@
      géométrie (les mesures de largeur des charts restent justes) ; le header/nav + l'overlay login sont HORS <main>
      donc visibles/fonctionnels immédiatement. Filet de sécurité ci-dessous : révèle après 6s si l'init JS échoue. */
   html:not(.app-ready) main { visibility: hidden; }
+  /* `P4.13-a` (reprise) — LE FILET DIT CE QUI S'EST PASSÉ, IL NE SE CONTENTE PAS DE RÉVÉLER DU VIDE.
+     Révéler <main> quand l'init JS a échoué montre une coquille sans données ET SANS FORMULAIRE — l'overlay
+     de connexion porte l'attribut `hidden` et c'est `showLogin(true)` (login.js) qui le lève, donc il ne
+     s'affiche PAS quand le graphe de modules ne se lie pas. Le visiteur voyait alors un écran muet. Ce bloc
+     est le seul contenu que le document sait afficher SANS JavaScript applicatif ; il est peint par le style
+     EN LIGNE pour survivre à l'absence de `style.css`. */
+  #init-echec { margin: 48px auto; max-width: 640px; padding: 16px 18px; border: 1px solid #d99a00;
+    border-radius: 10px; background: #14171f; color: #e6e6e6; font: 14px/1.55 system-ui, sans-serif; }
 </style>
-<script>setTimeout(function(){document.documentElement.classList.add('app-ready');},6000);</script>
+<!-- `P4.13-a` (reprise) — CE SCRIPT EN LIGNE NE S'EXÉCUTAIT PAS, ET SON COMMENTAIRE L'AFFIRMAIT QUAND MÊME.
+     Mesuré sur le démon lancé : l'en-tête servi porte `script-src 'self'` SANS `'unsafe-inline'` ni nonce
+     (`security_headers`, daemon/src/server/mod.rs) -> AUCUN navigateur n'exécutait le filet des 6 s. Le
+     démon publie désormais l'EMPREINTE sha256 de ce script exact dans sa CSP, et un témoin la RECALCULE
+     depuis ce fichier en interrogeant le serveur : éditer ce script d'un octet sans republier l'empreinte
+     rougit, au lieu de le rendre silencieusement inerte. Garder le script sur UNE ligne (l'empreinte porte
+     sur le texte du nœud, espaces compris). -->
+<script>setTimeout(function(){var r=document.documentElement;if(r.classList.contains('app-ready'))return;r.classList.add('app-ready');var b=document.getElementById('init-echec');if(b)b.hidden=false;},6000);</script>
 </head>
 <body>
+<!-- `P4.13-a` (reprise) — L'AVEU D'ÉCHEC D'AMORÇAGE. Levé UNIQUEMENT par le filet des 6 s du <head>, donc
+     visible SEULEMENT quand `route()` n'a jamais posé `app-ready` : le graphe ES ne s'est pas lié (un module
+     non servi, un `PLUME_WEB` qui pointe un autre `web/`, une SyntaxError de lien). Sans lui, ce cas rend un
+     écran sans données, sans formulaire et sans phrase. Il vit HORS de <main> (que la règle d'état masque). -->
+<div id="init-echec" role="alert" hidden>
+  <b>L'interface de la console ne s'est pas chargée.</b>
+  <span>Les modules JavaScript n'ont pas pu s'exécuter, donc le formulaire de connexion ne peut pas s'afficher. Rechargez la page ; si ce message revient, le démon ne sert pas tous les fichiers de la console (réglage PLUME_WEB) et la console d'erreurs du navigateur nomme le fichier fautif.</span>
+</div>
 <!-- Écran de login (form-login). Caché par défaut : affiché par app.js UNIQUEMENT si GET /api/me = 401
      (accès direct/standalone). En SSO k3s ou mode démo, /api/me = 200 -> overlay jamais montré. -->
 <div id="login-ov" class="login-ov" hidden>

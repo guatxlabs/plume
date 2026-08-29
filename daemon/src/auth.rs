@@ -132,7 +132,22 @@ pub(crate) async fn host_guard(State(st): State<AppState>, req: Request, next: N
     if ok {
         next.run(req).await
     } else {
-        (StatusCode::MISDIRECTED_REQUEST, "bad host").into_response()
+        // P4.13-a (reprise) — LE SECOND MUR DIT CE QU'IL EST. `host_guard` s'exécute AVANT `auth_guard`
+        // (les `.layer()` s'exécutent du dernier ajouté au premier) : un visiteur qui vise une autorité
+        // non déclarée n'atteint JAMAIS la porte du shell qu'on vient d'ouvrir — il recevait « bad host »,
+        // huit octets, EXACTEMENT la forme du défaut que ce lot ferme (une phrase, pas un formulaire).
+        // Mesuré : `PLUME_ADDR` basculé de `127.0.0.1` à `0.0.0.0` puis l'IP du serveur visée -> 421.
+        // La réponse NOMME la cause et le geste par leurs RÉGLAGES, jamais par leurs VALEURS : une première
+        // rédaction énumérait `localhost / 127.0.0.1 / ::1` et son propre témoin l'a refusée — renseigner un
+        // scanneur sur les noms qui passent n'est pas un service rendu à l'exploitant. Elle ne réfléchit pas
+        // davantage l'autorité présentée (pas d'écho d'une entrée client dans un corps de réponse).
+        (
+            StatusCode::MISDIRECTED_REQUEST,
+            "hôte non autorisé : cette instance n'accepte que les autorités déclarées par son réglage \
+             PLUME_HOST (PLUME_HOST_STRICT en restreint encore l'ensemble). Visez l'autorité déclarée pour \
+             cette instance, ou ajoutez celle que vous employez à PLUME_HOST, puis redémarrez le démon.",
+        )
+            .into_response()
     }
 }
 
@@ -1200,11 +1215,18 @@ pub(crate) async fn auth_guard(State(st): State<AppState>, mut req: Request, nex
     // métadonnées PWA). Allowlist EXACTE + GET/HEAD uniquement (aucune autre route ouverte). L'IngressRoute
     // exempte DÉJÀ /sw.js + /manifest.webmanifest du forward-auth (priority 15) ; on aligne le daemon + on
     // ajoute les favicons des deux côtés. Aucune API, aucun /data : mode 0 byte-identique.
+    // P4.13-a — LE SHELL DE LA CONSOLE REJOINT CETTE PORTE, PAR DEUX LISTES DÉRIVÉES (voir leur en-tête) :
+    // le document d'entrée + ce qu'il référence directement, et la FERMETURE des imports ES statiques
+    // depuis `/app.js`. Sans elles, un déploiement sans mandataire (`host`, `docker`) répond « auth
+    // requise » en texte brut sur `/` et l'écran de login ne peut JAMAIS s'afficher. Mêmes bornes que
+    // ci-dessus : GET/HEAD seulement, chemins EXACTS, aucun préfixe, aucune route `/api/*`. Recherche
+    // DICHOTOMIQUE sur des listes triées — ce bloc est traversé par chaque requête, y compris les API.
+    // REPRISE — LA DÉCISION EST ICI, L'ENSEMBLE EST AILLEURS, ET IL N'A QU'UN AUTEUR. Le prédicat
+    // `est_publique` lit les QUATRE listes du module (fermeture des modules, assets du document, assets
+    // du navigateur, licences des fontes distribuées) ; `budget_du_shell_public` lit LE MÊME prédicat
+    // pour borner ce que cette porte coûte en octets. Deux lectures de la même population divergent.
     if matches!(*req.method(), axum::http::Method::GET | axum::http::Method::HEAD)
-        && matches!(
-            path.as_str(),
-            "/favicon-plume.svg" | "/favicon.svg" | "/manifest.webmanifest" | "/sw.js"
-        )
+        && crate::surface_publique_du_shell::est_publique(&path)
     {
         return next.run(req).await;
     }

@@ -5,7 +5,7 @@
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
 import { $, LANG, esc, sev, fmtTs, ic, muted, api, apiSend, confirmModal, toast, pagedList, mitreName, managedBadge, gateDeleteBtn, contentSubmit, contentDelete, fetchInto, formMsg, socIsAdmin, lsSet, collapsibleGroup } from './core.js';
-import { S } from './state.js';
+import { S, lireLeStockageDuSite } from './state.js';
 import { initSigmaImport } from './sigmaimport.js';
 import { loadAttackMatrix, poserLesPortesDeTechnique } from './attack.js';
 import { setAlertMitreFilter } from './alerts.js';
@@ -348,7 +348,11 @@ initSigmaImport({ onImported: () => { loadRules(); renderCoverage(); loadAttackM
   if (sortSel) { sortSel.value = S.ruleSort; sortSel.onchange = () => { S.ruleSort = sortSel.value; localStorage.setItem('soc_rule_sort', S.ruleSort); renderRules(); }; }
   if (collapse && list) {
     const apply = open => { list.hidden = !open; collapse.setAttribute('aria-expanded', open ? 'true' : 'false'); collapse.innerHTML = ic(open ? 'chevdown' : 'chevright'); };
-    apply(localStorage.getItem('soc_rule_open') !== '0');
+    // `P4.13-a` (reprise) — LECTURE FAITE À L'ÉVALUATION DU MODULE, donc gardée : un navigateur qui refuse
+    // le stockage de site JETTE à l'ACCÈS, et le graphe ES entier cessait de se lier (mesuré par le
+    // sous-banc « stockage refusé » de `web_esm_harnais.mjs`). Refus -> `null` -> le panneau s'ouvre, ce
+    // qui est déjà le défaut d'une première visite.
+    apply(lireLeStockageDuSite('soc_rule_open') !== '0');
     collapse.onclick = () => { const open = list.hidden; localStorage.setItem('soc_rule_open', open ? '1' : '0'); apply(open); };
   }
 })();
@@ -526,7 +530,7 @@ loadParsers();
   if (sortSel) { sortSel.value = S.parserSort; sortSel.onchange = () => { S.parserSort = sortSel.value; localStorage.setItem('soc_parser_sort', S.parserSort); loadParsers(); }; }
   if (collapse && list) {
     const apply = open => { list.hidden = !open; collapse.setAttribute('aria-expanded', open ? 'true' : 'false'); collapse.innerHTML = ic(open ? 'chevdown' : 'chevright'); };
-    apply(localStorage.getItem('soc_parser_open') !== '0');
+    apply(lireLeStockageDuSite('soc_parser_open') !== '0');
     collapse.onclick = () => { const open = list.hidden; localStorage.setItem('soc_parser_open', open ? '1' : '0'); apply(open); };
   }
 })();

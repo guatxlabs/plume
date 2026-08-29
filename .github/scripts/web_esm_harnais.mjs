@@ -305,6 +305,23 @@ const fenetre = {
 for (const [k, v] of Object.entries(fenetre)) Object.defineProperty(globalThis, k, { value: v, writable: true, configurable: true });
 globalThis.window = globalThis;
 globalThis.self = globalThis;
+// `P4.13-a` (reprise) — MODE « LE NAVIGATEUR REFUSE LE STOCKAGE DE SITE ».
+// Un navigateur qui bloque le stockage de site (Chrome « bloquer tous les cookies » sur l'origine,
+// contextes durcis, profils d'entreprise) ne rend PAS `null` : l'ACCÈS à `window.localStorage` JETTE
+// `SecurityError`. Quatre lectures du dépôt s'exécutaient à l'ÉVALUATION de `state.js` et de `core.js` —
+// la racine du graphe — donc avant tout `catch` applicatif : le graphe ES ne se liait pas et l'écran de
+// connexion n'apparaissait jamais. Depuis `P4.13-a`, ce chemin est atteignable par un ANONYME.
+// Le mode est porté par l'ENVIRONNEMENT et non par un second banc : c'est le MÊME simulacre, les MÊMES
+// modules, la même section 1 — seule la propriété d'accès change. Le banc se relance LUI-MÊME dans ce
+// mode (voir la section 1bis) plutôt que de réimporter les modules en double dans ce processus, ce qui
+// rejouerait tous leurs effets de bord et fausserait les témoins qui comptent des poses.
+const STOCKAGE_REFUSE = process.env.PLUME_HARNAIS_STOCKAGE_REFUSE === "1";
+if (STOCKAGE_REFUSE) {
+  const refus = () => { const e = new Error("Access to storage is not allowed from this context."); e.name = "SecurityError"; throw e; };
+  for (const cle of ["localStorage", "sessionStorage"]) {
+    Object.defineProperty(globalThis, cle, { get: refus, set: () => {}, configurable: true });
+  }
+}
 
 // Le texte d'un sous-arbre, tel qu'un lecteur le verrait (sans mise en page).
 const texte = (el) => el.textContent;
@@ -635,7 +652,11 @@ for (const f of modules) {
   try {
     await import(pathToFileURL(path.join(WEB, f)).href);
   } catch (e) {
-    liens.push(`${f} : ${e && e.name} — ${e && e.message}`);
+    // `PLUME_HARNAIS_PILE=1` ajoute la PILE d'appel au message. Sans elle, « module qui ne se charge pas »
+    // nomme le module IMPORTÉ, pas le site fautif — or une seule ligne fautive fait tomber 23 modules par
+    // cascade, et c'est le site qu'il faut corriger. Mesuré à l'usage : c'est ce qui a montré que la liste
+    // des quatre lectures nues de `localStorage` (celle de la critique adverse) en oubliait TROIS autres.
+    liens.push(`${f} : ${e && e.name} — ${e && e.message}${process.env.PLUME_HARNAIS_PILE === "1" ? "\n" + (e && e.stack) : ""}`);
   }
 }
 if (liens.length) {
@@ -643,6 +664,68 @@ if (liens.length) {
   console.error(`\n${liens.length} module(s) sur ${modules.length} ne se chargent pas : l'interface serait VIDE.`);
   process.exit(1);
 }
+// ---------------------------------------------------------------------------------------------
+// 1bis. LE GRAPHE SE LIE ENCORE QUAND LE NAVIGATEUR REFUSE LE STOCKAGE DE SITE (`P4.13-a`, reprise).
+//    Dans le mode, le banc a déjà tout mesuré à la section 1 ci-dessus : il rend son verdict et s'arrête
+//    là (les sections suivantes exercent des surfaces qui LISENT le stockage à dessein, sous `try`, et
+//    n'ont rien à dire sur ce mode). Hors du mode, il se relance dans le mode et EXIGE que ce sous-banc
+//    conclue : c'est la seule façon d'obtenir une seconde ÉVALUATION des modules sans rejouer leurs
+//    effets de bord ici. La mutation est directe — retirer le `try` de `lireLeStockageDuSite`
+//    (`web/state.js`) fait rougir ce témoin, et lui seul.
+// ---------------------------------------------------------------------------------------------
+if (STOCKAGE_REFUSE) {
+  console.log(`OK — ${modules.length} modules web se lient alors que l'accès au stockage de site JETTE (SecurityError) : l'écran de connexion reste atteignable chez un navigateur qui bloque le stockage.`);
+  process.exit(0);
+}
+{
+  const { spawnSync } = await import("node:child_process");
+  const r = spawnSync(process.execPath, [new URL(import.meta.url).pathname], {
+    env: { ...process.env, PLUME_HARNAIS_STOCKAGE_REFUSE: "1" },
+    encoding: "utf8",
+  });
+  const sortie = `${r.stdout || ""}${r.stderr || ""}`;
+  if (r.status !== 0) {
+    console.error(`::error::le graphe de modules NE SE LIE PAS quand le navigateur refuse le stockage de site : une lecture NUE de \`localStorage\` s'exécute à l'évaluation d'un module, donc avant tout \`catch\` applicatif — le visiteur reçoit un écran muet, sans formulaire de connexion et sans message. Sortie du sous-banc :
+${sortie}`);
+    process.exit(1);
+  }
+  if (!/modules web se lient alors que l'accès au stockage de site JETTE/.test(sortie)) {
+    console.error(`::error::CONTRÔLE POSITIF PERDU : le sous-banc « stockage refusé » a rendu 0 sans prononcer son verdict — il n'a donc rien mesuré. Sortie :
+${sortie}`);
+    process.exit(2);
+  }
+  console.log(`[stockage] ${modules.length} modules web se lient AUSSI quand l'accès à localStorage jette (SecurityError) — sous-banc relancé, verdict prononcé.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 1ter. LE SEUL ACCÈS DOM NON GARDÉ DU TOP-LEVEL D'`app.js` EST TENU PAR UN CONTRÔLE POSITIF, PAS PAR
+//    UN ACCIDENT (`P4.13-a`, reprise). `app.js:288` déréférence `$('#q')` sans garde, 521 lignes AVANT
+//    `initAuthGate()` — ses ~40 voisins, eux, sont de la forme `if ($('#x')) …`. La critique adverse
+//    proposait de le garder comme eux. MESURÉ, et c'est ce qui a fait refuser le remède : en retirant
+//    `id="q"` d'`index.html`, ce banc rougit en nommant **23 modules sur 49** qui ne se chargent plus.
+//    Garder la ligne rendrait ce défaut SILENCIEUX — un champ de recherche mort, aucun rouge. Le rouge
+//    existant était pourtant ACCIDENTEL (un `TypeError` qu'aucun témoin ne réclamait) : il est remplacé
+//    ici par une exigence EXPLICITE — l'élément existe, et le raccourci de la barre d'en-tête est câblé.
+//    Ce qui borne le prix du refus : le filet des 6 s d'`index.html`, désormais autorisé par la CSP du
+//    démon, révèle l'aveu d'échec d'amorçage — l'écran n'est plus MUET quand `app.js` s'interrompt.
+// ---------------------------------------------------------------------------------------------
+{
+  const q = document.getElementById("q");
+  if (!q) {
+    console.error("::error::(1ter) `#q` (la barre de recherche de l'en-tête) est absent d'index.html : `app.js:288` déréférence `$('#q')` SANS garde au top-level, donc l'évaluation d'app.js s'interrompt, `initAuthGate()` n'est jamais atteint et l'écran de connexion ne se peint pas.");
+    process.exit(1);
+  }
+  // DEUX capteurs `keydown`, et on les NOMME : `app.js:288` (Entrée -> recopie dans l'éditeur de requête,
+  // ouvre l'onglet, exécute — P11.7-a) et `app.js:793` (Échap -> referme la liste de suggestions). Un
+  // compte EXACT plutôt qu'un plancher : retirer l'un des deux est une décision, elle doit se voir.
+  const clavier = (q._ecouteurs || []).filter((e) => e.type === "keydown");
+  if (clavier.length !== 2) {
+    console.error(`::error::(1ter) la barre de recherche de l'en-tête porte ${clavier.length} capteur(s) \`keydown\` au lieu des deux attendus (app.js:288 « Entrée -> éditeur de requête » et app.js:793 « Échap -> ferme les suggestions ») : un câblage a disparu, ou un troisième est arrivé sans décision.`);
+    process.exit(1);
+  }
+  console.log("[amorçage] la barre de recherche de l'en-tête existe et porte ses DEUX capteurs `keydown` (Entrée -> éditeur de requête, Échap -> ferme les suggestions) — le seul déréférencement DOM non gardé du top-level d'app.js est tenu par une exigence, plus par un TypeError accidentel.");
+}
+
 // Relevé ICI, avant toute instance sous `LANG='en'` : ce que la liaison française a posé sur le corps du document.
 const observateursSurLeCorpsApresLiaison = observateursPoses.filter((o) => o.cible === document.body).length;
 if (modules.length < PLANCHER_MODULES) {

@@ -6,7 +6,7 @@ import {
   ouvrirLaModaleDePlage
 } from './core.js';
 import { installI18nObserver } from './i18n_observer.js';
-import { S } from './state.js';
+import { S, lireLeStockageDuSite } from './state.js';
 import { banIp, clearDrillCrumb, clearZoom, evLoad, exploreFrom, exploreTo, qHistGo, renderViz, runQuery, setZoom, stopExplore, updateZoomBadge } from './viz.js';
 import { initDashboards, loadDashboard, loadDashboards, refreshPanels } from './dashboards.js';
 import { initLookups } from './lookups.js';
@@ -569,7 +569,7 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').cat
 
 // --- thème clair / sombre (Aurora, variante k) ---
 (function initTheme() {
-  const saved = localStorage.getItem('soc-theme');
+  const saved = lireLeStockageDuSite('soc-theme');
   if (saved) document.documentElement.dataset.theme = saved;
   const btn = $('#theme');
   const paint = () => { if (btn) btn.innerHTML = ic(document.documentElement.dataset.theme === 'light' ? 'moon' : 'sun'); };

@@ -660,7 +660,60 @@ env:
   # « l'écart est le refus d'ANALYSE » et dit désormais « l'écart est : la cible ne dénote pas une
   # valeur IPv4 » ; une clause (L) s'y ajoute — la borne de la LEVÉE est celle d'avant le lot, CLAUSE
   # POUR CLAUSE, c'est-à-dire l'égalité de `P4.7-b` conservée là où elle doit l'être : sur la valve.
-  EXPECTED_TESTS: "1419"
+  #
+  # RÉ-MESURÉ le 2026-08-29 par le MÊME script, LES DEUX PROFILS DANS LA MÊME EXÉCUTION (jamais par
+  # addition), sur le correctif de `P4.13-a` — sans mandataire, l'écran de login ne pouvait JAMAIS
+  # s'afficher : **1419 -> 1425** (+6), et le MÊME +6 sur `EXPECTED_COLD_TESTS` (**1662 -> 1668**).
+  # L'ÉCART ENTRE PROFILS EST DE NOUVEAU DÉRIVÉ : 1662−1419 = 243 AVANT, 1668−1425 = 243 APRÈS —
+  # INCHANGÉ, donc aucun des six n'est derrière un `cfg(feature)` ; c'est l'écart qui l'établit.
+  # LES SIX, ET CE QU'ILS FERMENT — ils vivent dans `daemon/src/tests/fermeture_shell_spa.rs` :
+  #   · LA FERMETURE DES IMPORTS ES STATIQUES DEPUIS `/app.js` EST CELLE QUE LA GARDE PORTE, DANS LES
+  #     DEUX SENS — atteignable mais non exempté (le login casse), exempté mais plus atteignable
+  #     (surface publique morte). L'ensemble est DÉRIVÉ, jamais énuméré : 49 des 50 modules de la
+  #     console, le cinquantième (`sw.js`) étant déjà exempté à un autre titre.
+  #   · CE QUE LE DOCUMENT D'ENTRÉE ET SA FEUILLE RÉFÉRENCENT DIRECTEMENT EST EXEMPTÉ, ET RIEN DE
+  #     PLUS — les trois listes ne se recouvrent pas et chaque chemin désigne un fichier qui existe.
+  #   · L'ORDRE EST CE QUE LA DICHOTOMIE EXIGE — listes strictement croissantes (donc sans doublon),
+  #     aucun chemin d'interface, aucune collision avec la table de routage.
+  #   · L'INSTRUMENT EST VALIDÉ DANS LES DEUX SENS AVANT DE SERVIR — le faux positif est CELUI DU
+  #     DÉPÔT (« post-import ( » en prose française dans `sigmaimport.js`, lu comme un import
+  #     dynamique par un motif naïf) et le témoin inverse exige qu'un VRAI `import(` soit VU.
+  #   · LA PREUVE PAR SERVICE — le routeur RÉEL monté sur le `web/` livré, interrogé en HTTP sans
+  #     identité : la racine rend le shell (et non douze octets de texte), et tout ce que le shell
+  #     EXIGE (population RECALCULÉE, jamais la liste qu'on vérifie) est rendu BYTE À BYTE.
+  #   · LES DEUX TÉMOINS NÉGATIFS — les lectures de la table de routage restent 401 pour un anonyme,
+  #     et aucun fichier de `web/` hors fermeture (ni voisin de nom : `/app.js.map`, `/App.js`) ne
+  #     devient public ; un élargissement en préfixe ou en suffixe rougit là.
+  # CE QUE LA MUTATION A MESURÉ, ET C'EST LA LEÇON DU LOT : le correctif RETIRÉ, les cinq témoins qui
+  # LISENT UN ARBRE restent VERTS et seul celui qui SERT rougit. C'est `P8.27-i` en une mesure.
+  #
+  # `P4.13-a` (REPRISE, 2026-08-29) — SIX TÉMOINS DE PLUS, chacun sur un défaut que DEUX CRITIQUES
+  # ADVERSES ont vu et qu'AUCUN témoin du lot ne tenait. MESURÉ par `compter-les-tests.sh`, les deux
+  # profils dans la même exécution : **1425 -> 1431** et **1668 -> 1674**, +6 des deux côtés — L'ÉCART
+  # ENTRE PROFILS RESTE 243, donc aucun des six n'est derrière un `cfg(feature)`, et c'est l'écart qui
+  # l'établit, pas une lecture des sources. Ce qu'ils tiennent :
+  #   · LA DÉRIVATION DES ASSETS REFUSE ce qu'elle ne lit pas (guillemets simples, valeur non quotée,
+  #     `srcset`/`poster`/`xlink:href`/`formaction`, `url(` du `<style>` EN LIGNE, `@import` des deux
+  #     côtés) — elle les IGNORAIT en silence, donc restait verte pendant que l'écran de login se
+  #     dégradait ; fixtures jouées dans les deux sens, document livré en contrôle positif.
+  #   · LA LICENCE ACCOMPAGNE LA FONTE DISTRIBUÉE — règle DÉRIVÉE (tout texte de licence d'un
+  #     répertoire dont une fonte est publique l'est aussi), dans les deux sens. La SIL OFL 1.1 l'exige
+  #     et les quatre `.woff2` sont servis à un anonyme depuis le lot.
+  #   · LE FILET DE SÉCURITÉ DES 6 s EST AUTORISÉ PAR LA POLITIQUE SERVIE — son empreinte sha256 est
+  #     RECALCULÉE depuis `web/index.html` et cherchée dans l'en-tête que le serveur ÉMET. Il ne
+  #     s'exécutait dans AUCUN navigateur (`script-src 'self'` sans nonce ni empreinte) : le document
+  #     promettait par écrit un mécanisme mort, sur le cas même que ce lot rend atteignable.
+  #   · UNE AUTORITÉ NON DÉCLARÉE REÇOIT UNE PHRASE — la preuve n'avait JAMAIS fait varier le `Host`
+  #     (ses trois valeurs étaient celles que `host_guard` auto-accepte), et ce second mur rendait
+  #     « bad host », huit octets : la forme exacte du défaut qu'on venait de fermer.
+  #   · LE BUDGET D'OCTETS DE LA SURFACE PUBLIQUE borne ce que la porte ouverte coûte, sans gêner un
+  #     chargement complet ni toucher l'API. MESURÉ AU BANC — poste de développement, démon du dépôt
+  #     lancé à la main sur l'arbre, rafales fabriquées ; aucune installation n'est décrite ici — un
+  #     anonyme passe de 12 octets / 0,21 ms d'UC à 167 542 octets / 13,28 ms (dont 95 % de `gzip`,
+  #     ~6,5 ms par arithmétique en release), soit 63 × un 401 et 92,7 Mo/s au banc pour une seule IP.
+  #   · CHAQUE RÉPONSE PUBLIQUE EST FACTURABLE (`content-length` présent ET égal au fichier) : sans
+  #     cela, la borne ci-dessus aurait un trou muet.
+  EXPECTED_TESTS: "1431"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1074,7 +1127,11 @@ jobs:
           # un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (243 avant comme
           # après) qui l'établit, pas une lecture des sources. La dérivation complète et la
           # répartition sont écrites auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "1662"
+          # `P4.13-a` (REPRISE, 2026-08-29) : +6, les MÊMES six que sur `EXPECTED_TESTS` — aucun n'est
+          # derrière un `cfg(feature)`, et c'est l'ÉCART INCHANGÉ entre les deux profils (243 avant
+          # comme après) qui l'établit, pas une lecture des sources. La dérivation complète et la
+          # répartition sont écrites auprès d'`EXPECTED_TESTS`, une seule fois.
+          EXPECTED_COLD_TESTS: "1674"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

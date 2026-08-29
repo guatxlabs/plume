@@ -211,6 +211,12 @@ pub(crate) use handlers::alerts::*;
 pub(crate) use handlers::overview::*;
 mod state;
 pub(crate) use state::*;
+mod surface_publique_du_shell; // P4.13-a : LES SEULS OCTETS QU'UN VISITEUR NON AUTHENTIFIÉ REÇOIT — le document d'entrée, ce qu'il référence directement, et la FERMETURE des imports ES statiques depuis `/app.js`. QUATRE listes EXACTES et DÉRIVÉES (jamais un préfixe : un fichier posé demain sous `web/` ne devient pas public sans décision) lues par l'unique prédicat `est_publique`, recalculées et comparées dans les DEUX SENS par `tests/fermeture_shell_spa.rs` ; la quatrième porte les textes de licence des fontes, que la SIL OFL 1.1 exige de distribuer AVEC les fontes désormais servies publiquement. Sans elles, un déploiement SANS mandataire rend « auth requise » sur la racine et l'écran de login ne peut jamais s'afficher
+// PAS de ré-export glob : depuis la reprise, l'unique porte d'entrée du module est le prédicat
+// `surface_publique_du_shell::est_publique`, appelé sous son chemin complet par ses DEUX lecteurs
+// (`auth_guard` et `budget_du_shell_public`). Un glob rendrait de nouveau les quatre listes lisibles
+// sans les nommer, et c'est exactement ce qui laisse deux mécanismes en lire deux sous-ensembles.
+mod budget_du_shell_public; // P4.13-a (reprise) : CE QUE LA PORTE OUVERTE COÛTE, ET SA BORNE. Ouvrir le shell a fait passer le prix d'un anonyme de 12 octets / 0,21 ms d'UC à 1,9 Mio / ~6,5 ms de `gzip` par requête (mesuré) ; les plafonds de `rate_limit` avaient été dimensionnés sur l'ancien prix. Deux seaux d'OCTETS à fenêtre de 10 s — par IP RÉELLE (`real_client_ip`, donc par analyste et non par grappe en k3s) et global — lus par `rate_limit` sur le MÊME prédicat de surface publique que la porte de `auth_guard`. Un 304 de revalidation ne porte aucun corps, donc ne consomme rien : la borne ne pèse que sur l'abus
 mod auth;
 pub(crate) use auth::*;
 mod session;

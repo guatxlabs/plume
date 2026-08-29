@@ -1207,6 +1207,14 @@
             rl_ip_max: 1200,
             rl_auth_max: 120,
             rl_global_max: 6000,
+            // `P4.13-a` (reprise) — seaux d'octets de la surface publique aux DÉFAUTS DU PRODUIT (et non
+            // désactivés) : un état de test qui neutraliserait la borne ne pourrait plus la mesurer, et le
+            // témoin qui la mutation-prouve (`…le_budget_d_octets_de_la_surface_publique_refuse…`) abaisse
+            // le plafond LUI-MÊME sur son propre état.
+            shell_octets_ip: Arc::new(Mutex::new(HashMap::new())),
+            shell_octets_global: Arc::new(Mutex::new((Instant::now(), 0))),
+            shell_octets_ip_max: crate::budget_du_shell_public::OCTETS_IP_MAX_DEFAUT,
+            shell_octets_global_max: crate::budget_du_shell_public::OCTETS_GLOBAL_MAX_DEFAUT,
             session_secret: Arc::new(b"test-session-secret".to_vec()),
             session_ttl_s: 43200,
             session_epoch: Arc::new(std::sync::atomic::AtomicI64::new(0)),
